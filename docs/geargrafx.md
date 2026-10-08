@@ -3,11 +3,19 @@
 Official project: https://github.com/drhelius/Geargrafx
 MCP documentation: https://github.com/drhelius/Geargrafx/blob/main/MCP_README.md
 
+**Bootstrap update (2026-10-08):** the pinned source-built libretro core now runs
+the original 8 KiB HuCARD smoke fixture with cold/warm RAM checkpoints and a
+negative execution case. See [setup/debug instructions](emulator-geargrafx.md)
+and [implemented test scope](testing.md). The following remains the broader
+System Card/CD/MCP plan; those stages are not claimed complete.
+
 ## Why Geargrafx first
 
 The project documents PC Engine CD emulation, a debugger, memory/register inspection and breakpoints, trace logging with CD-ROM/hardware events and an MCP server usable from automated development tools. MCP docs describe a `load_bios` operation whose `syscard` type expects **256 KiB**. Geargrafx recommends a known System Card 3.0 BIOS but explicitly describes loading other BIOS images.
 
-**This repository has not yet tested loading or executing an original ROM.** Do not claim Geargrafx confirms compatibility with arbitrarily generated 256 KiB files.
+**This repository has executed an original HuCARD fixture, but has not tested
+System Card boot.** Do not claim Geargrafx confirms compatibility with arbitrarily
+generated 256 KiB files.
 
 ## Noninteractive runner contract (to implement and verify)
 

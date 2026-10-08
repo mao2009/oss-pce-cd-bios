@@ -1,6 +1,8 @@
 # Contributing
 
-This repository develops a redistributable replacement BIOS. Open an Issue before implementing BIOS APIs where format, license or behavior is uncertain.
+This repository has a working development bootstrap and original HuCARD fixture.
+BIOS APIs remain unimplemented. Open an Issue before implementing BIOS APIs where
+the format, license or behavior is uncertain; check existing API Issues first.
 
 ## Reuse first
 
@@ -36,3 +38,18 @@ See [provenance and reuse policy](docs/provenance.md) and [initial candidate inv
 8. Don't merge if license or provenance is unresolved.
 
 Reference material: [architecture](docs/architecture.md), [spec inventory](docs/specification.md), [provenance](docs/provenance.md), [compatibility](docs/compatibility.md).
+
+## Local development and pull requests
+
+Create a feature branch from current `main`; preserve other contributors' changes.
+Run `make setup`, `make build`, `make test`, `make check`, `make clean`, then
+`make build`. Also compare `make build MODE=release` with the debug ROM for fixture
+changes. Generated `build/` contents must remain untracked. External source trees
+and their licenses live in the tool cache, never in BIOS source or artifacts.
+
+Submit a PR targeting `main` with linked Issues, actual command exit codes,
+ROM size/hash, Geargrafx revision and evidence scope, and explicit remaining work.
+CI repeats the same commands on Ubuntu 24.04. Do not automatically merge PRs or
+present a successful HuCARD smoke test as a System Card or commercial-game result.
+Details: [building](docs/building.md), [testing](docs/testing.md),
+[Geargrafx](docs/emulator-geargrafx.md), [toolchain](docs/toolchain.md).

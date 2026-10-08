@@ -44,4 +44,28 @@ Directories are aspirational until code exists; no empty directory is required.
 
 Format/ABI inventory → pinned toolchain + valid ROM → Geargrafx reset checkpoint → synthetic CD read → homebrew disc startup → named retail scenarios → independent emulator validation → optional FPGA.
 
-No stage is currently complete.
+The toolchain and standalone HuCARD smoke stage is now implemented. System Card
+format/ABI, startup, CD reading and game compatibility remain unverified.
+
+## Implemented development bootstrap
+
+`tests/fixtures/smoke.s` and `smoke.cfg` define an original one-bank test program,
+not BIOS source. Its 8 KiB bank occupies CPU `$E000-$FFFF` in this test; vectors
+occupy `$FFF6-$FFFF`. Reset sets MPR0 to `$FF`, MPR1 to `$F8`, the stack and high
+CPU speed, then copies `PCE!` into RAM `$2200` using TII. `$2204` records TMA's
+MPR1 result and `$2205` records `$5A`. Execution loops at `$E030`. These are
+fixture contracts verified against the pinned Geargrafx core, not a declaration
+of the final System Card ROM layout or official BIOS work-RAM allocation.
+
+`tools/dependencies.json` is the external version/hash/license lock.
+`tools/setup.py` fetches and builds into an external cache. `tools/build.py`
+assembles, links, validates all fixture bytes and writes a manifest.
+`tests/host/` exercises repeatability, format and failure contracts.
+`tests/integration/geargrafx_smoke.py` is an independently authored minimal
+libretro frontend: it observes real Geargrafx guest RAM, never simulates CPU
+execution. `tools/check.py` validates source and Actions using pinned actionlint.
+`tools/nightly.py` compares main against success-only build-state artifacts.
+
+No unused BIOS modules or empty `src/`/`include/` placeholders are introduced.
+Future firmware may use the proposed responsibilities above after #1/#3 establish
+contracts. GPL emulator implementation stays outside the MIT firmware boundary.
