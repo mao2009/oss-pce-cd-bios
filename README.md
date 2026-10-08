@@ -41,6 +41,7 @@ The goal is **behavioral compatibility**, not binary identity with any proprieta
 - [Compatibility and evidence](docs/compatibility.md)
 - [Originality and provenance policy](docs/provenance.md)
 - [Roadmap](docs/roadmap.md)
+- [Change-aware nightly developer ROM builds](docs/nightly.md)
 - [Contributing](CONTRIBUTING.md)
 
 ## Current build
