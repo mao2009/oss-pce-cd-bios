@@ -13,6 +13,8 @@ else
 fi
 source_sha="$(git rev-parse "refs/remotes/origin/$source_ref")"
 printf 'source_ref=%s\nsource_sha=%s\n' "$source_ref" "$source_sha" >> "$GITHUB_OUTPUT"
+workflow_fingerprint="$(sha256sum .github/workflows/nightly.yml tools/nightly_plan.sh | sha256sum | cut -d' ' -f1)"
+printf 'workflow_fingerprint=%s\n' "$workflow_fingerprint" >> "$GITHUB_OUTPUT"
 
 # A prior failed nightly must be retried even if source did not change.
 runs_file="$RUNNER_TEMP/nightly-history.json"
@@ -27,6 +29,7 @@ esac
 # A skipped-success run has no state artifact. Find last actual successful build.
 previous_sha=""
 previous_ref=""
+previous_fingerprint=""
 while IFS= read -r run_id; do
   [[ -n "$run_id" ]] || continue
   dir="$RUNNER_TEMP/nightly-baseline-$run_id"
@@ -36,6 +39,7 @@ while IFS= read -r run_id; do
     if [[ -f "$dir/nightly-state.json" ]]; then
       previous_sha="$(jq -r '.source_sha // ""' "$dir/nightly-state.json")"
       previous_ref="$(jq -r '.source_ref // ""' "$dir/nightly-state.json")"
+      previous_fingerprint="$(jq -r '.workflow_fingerprint // ""' "$dir/nightly-state.json")"
       if [[ "$previous_sha" =~ ^[0-9a-f]{40}$ ]] && [[ -n "$previous_ref" ]]; then
         break
       fi
@@ -43,6 +47,7 @@ while IFS= read -r run_id; do
   fi
   previous_sha=""
   previous_ref=""
+  previous_fingerprint=""
 done < <(jq -r '.[] | select(.status == "completed" and .conclusion == "success") | .databaseId' "$runs_file")
 
 build=true
@@ -55,6 +60,8 @@ elif [[ -z "$previous_sha" ]]; then
   reason=first-build-or-state-unavailable
 elif [[ "$previous_ref" != "$source_ref" ]]; then
   reason=build-branch-changed
+elif [[ "$previous_fingerprint" != "$workflow_fingerprint" ]]; then
+  reason=nightly-workflow-changed
 elif ! git cat-file -e "$previous_sha^{commit}" 2>/dev/null; then
   reason=previous-commit-unavailable
 elif ! git merge-base --is-ancestor "$previous_sha" "$source_sha"; then
