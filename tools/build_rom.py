@@ -71,7 +71,7 @@ def render_table(slots: list[dict], overridden: set[int]) -> str:
     return '\n'.join(lines)
 
 
-def verify_bank(bank: bytes, allow_overrides: bool = False) -> None:
+def verify_bank(bank: bytes, overridden: set[int] | None = None) -> None:
     if len(bank) != BANK_BYTES:
         raise ValueError(f'Expected {BANK_BYTES} bytes in first bank, got {len(bank)}')
     targets = []
@@ -85,19 +85,21 @@ def verify_bank(bank: bytes, allow_overrides: bool = False) -> None:
         targets.append(target)
     if len(set(targets)) != len(targets):
         raise ValueError('Main API slots share implementation entry points; use per-slot trampolines')
-    if not allow_overrides:
-        for slot, target in enumerate(targets):
-            at = target - FIRST_ENTRY
-            if bank[at:at+2] != bytes((0xA2, slot)):  # LDX #$slot
-                raise ValueError(f'API ${slot:02X} lacks unique debug marker')
-            if bank[at+2] != 0x4C:
-                raise ValueError(f'API ${slot:02X} does not JMP to diagnostic handler')
-            handler = bank[at+3] | (bank[at+4] << 8)
-            if not 0xE100 <= handler < 0xFFF6:
-                raise ValueError(f'API ${slot:02X} handler points outside ROM0')
-            pos = handler - FIRST_ENTRY
-            if bank[pos:pos+2] != b'\x80\xfe':  # BRA -2 (nonreturning)
-                raise ValueError(f'API ${slot:02X} handler does not stop in BRA loop')
+    overridden = overridden or set()
+    for slot, target in enumerate(targets):
+        if slot in overridden:
+            continue
+        at = target - FIRST_ENTRY
+        if bank[at:at+2] != bytes((0xA2, slot)):  # LDX #$slot
+            raise ValueError(f'API ${slot:02X} lacks unique debug marker')
+        if bank[at+2] != 0x4C:
+            raise ValueError(f'API ${slot:02X} does not JMP to diagnostic handler')
+        handler = bank[at+3] | (bank[at+4] << 8)
+        if not 0xE100 <= handler < 0xFFF6:
+            raise ValueError(f'API ${slot:02X} handler points outside ROM0')
+        pos = handler - FIRST_ENTRY
+        if bank[pos:pos+2] != b'\x80\xfe':  # BRA -2 (nonreturning)
+            raise ValueError(f'API ${slot:02X} handler does not stop in BRA loop')
     reset = bank[0x1FFE] | (bank[0x1FFF] << 8)
     if not (0xE000 <= reset < 0xFFF6):
         raise ValueError(f'Reset vector ${reset:04X} invalid')
@@ -120,7 +122,7 @@ def build(output: Path) -> Path:
     first_bank = output / 'bank0.bin'
     subprocess.run(['ld65', '-C', str(ROOT / 'src' / 'bank0.cfg'), '-o', str(first_bank), *map(str, objects)], check=True)
     bank = first_bank.read_bytes()
-    verify_bank(bank, allow_overrides=bool(overridden))
+    verify_bank(bank, overridden=set(overridden))
     target = output / 'dev-only-not-compatible-syscard3.pce'
     target.write_bytes(bank + b'\xFF' * (IMAGE_BYTES - BANK_BYTES))
     assert target.stat().st_size == IMAGE_BYTES
