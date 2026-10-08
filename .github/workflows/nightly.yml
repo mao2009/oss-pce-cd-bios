@@ -35,6 +35,8 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Validate nightly planner shell syntax
+        run: bash -n tools/nightly_plan.sh
       - name: Decide if developer ROM needs rebuilding
         id: decide
         shell: bash
