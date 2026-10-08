@@ -1,0 +1,77 @@
+# 18:00 UTC = 03:00 JST next day. This workflow only targets main.
+name: Nightly PCE fixture (change-aware, not BIOS)
+on:
+  schedule:
+    - cron: '0 18 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: oss-pce-cd-bios-nightly
+  cancel-in-progress: false
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      build: ${{ steps.decide.outputs.build }}
+      source_sha: ${{ steps.decide.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Compare exact main SHA against last successful built artifact
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash tools/nightly_plan.sh
+  build:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ needs.plan.outputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare pinned tools from source
+        run: make setup
+      - name: Build original HuCARD fixture
+        run: make build
+      - name: Host and real Geargrafx tests
+        run: make test
+      - name: Static checks including Actions validation
+        run: make check
+      - name: Verify release-mode fixture
+        run: |
+          make build MODE=release
+          cmp build/debug/smoke-test-not-bios.pce build/release/smoke-test-not-bios.pce
+          python3 tools/build.py --verify build/debug/smoke-test-not-bios.pce
+      - name: Record candidate success state
+        env:
+          SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
+        run: python3 tools/nightly.py record
+      - name: Archive verified original fixture (not a release)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: nightly-smoke-not-bios-${{ needs.plan.outputs.source_sha }}
+          path: |
+            build/debug/*.pce
+            build/debug/*.json
+            build/debug/*.map
+            build/debug/*.lbl
+          if-no-files-found: error
+          retention-days: 14
+      - name: Save baseline; accepted only when the whole run succeeds
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: nightly-success-state
+          path: build/nightly-state.json
+          if-no-files-found: error
+          retention-days: 90
