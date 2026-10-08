@@ -53,3 +53,11 @@ Suggested status values: UNKNOWN / HYPOTHESIS / OBSERVED / CORROBORATED / VERIFI
 Do not equate a correct ROM size or jump table with working gameplay. The project needs independently demonstrated startup, reading, presentation, input, audio, saving and continued play on defined game editions.
 
 A pure host-side HLE may inform the behavior contract but should not be the distributable firmware image.
+
+## Scoped ROM and per-API records (#1/#3)
+
+[ROM geometry/loader ledger](system-card-rom.md) and the
+[81-slot ABI ledger](abi-contracts.md) distinguish manufacturer facts, pinned
+core behavior, source-supported caller expectations and UNKNOWN callee effects.
+[Expanded Geargrafx experiments](geargrafx-contract-evidence.md) observe original
+CPU/RAM/IRQ procedures; they do not verify any BIOS API service.

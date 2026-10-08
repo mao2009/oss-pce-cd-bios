@@ -122,3 +122,22 @@ Geargrafx is one implementation, not a normative hardware specification. Its
 reset mapping and loader behavior are useful experimental context. Keep actual
 BIOS code independent of emulator-specific HLE or special hooks, and corroborate
 hardware/API contracts with independent evidence before implementation (#1/#7).
+
+## Headless System Card development diagnostics (#101)
+
+`make dev-integration` can observe PC/X/MPR without SDL/MCP by linking an original
+C++ probe to the official pinned core's existing objects. It loads the original
+DEV ROM as System Card BIOS and a generated zero-filled synthetic disc, steps
+the actual CPU and checks reset/slot checkpoints. No emulator code is copied or
+patched. The GPL-linked executable stays local and is excluded from artifacts.
+This does not complete the standalone MCP/CD harness (#6/#103) or prove hardware
+ABI compatibility. Exact assertions and limits: [API scaffold](api-stub-scaffold.md).
+
+## Instruction debugger and contract probes
+
+`make setup` additionally builds a separate debugger-enabled Geargrafx tree
+from the same verified source archive; no SDL installation or source patch is
+needed. The normal HuCARD core stays separate. `make dev-test` now verifies
+actual one-instruction stepping, registers/stack/RAM, guest bank switches,
+IRQ1/IRQ2, loader edge cases and additional negative procedures.
+[Exact conditions and API limitations](geargrafx-contract-evidence.md).

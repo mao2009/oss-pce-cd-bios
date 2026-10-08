@@ -1,0 +1,54 @@
+name: BIOS DEV diagnostics (not compatible firmware)
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  bios-dev:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare existing pinned source toolchain and Geargrafx
+        run: make setup
+      - name: Source inventory and diagnostic binary checks
+        run: |
+          python3 tools/contracts.py
+          python3 tools/build_rom.py --check-source
+          make dev-rom
+          python3 -m unittest discover -s tests/host -p 'test_api*.py' -v
+      - name: Real Geargrafx System Card diagnostic execution
+        run: make dev-integration
+      - name: Debug and release diagnostic bytes match
+        run: |
+          make dev-rom MODE=release
+          cmp build/debug/bios-dev/dev-only-not-compatible-syscard3.pce build/release/bios-dev/dev-only-not-compatible-syscard3.pce
+      - name: Incomplete firmware must fail release gate
+        run: |
+          if make dev-release-gate; then
+            echo 'FAIL: incomplete diagnostic firmware passed release gate' >&2
+            exit 1
+          fi
+      - name: Static checks with pinned actionlint
+        run: make check
+      - name: Save diagnostic ROM and evidence, no linked GPL executable
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: bios-dev-not-compatible-${{ github.sha }}
+          path: |
+            build/debug/bios-dev/*.pce
+            build/debug/bios-dev/*.json
+            build/debug/bios-dev/*.map
+            build/debug/bios-dev/*.lbl
+            build/debug/bios-dev/contract-probes/*.pce
+            build/debug/bios-dev/contract-probes/*.json
+            build/debug/bios-dev/contract-probes/*.map
+            build/debug/bios-dev/contract-probes/*.lbl
+          if-no-files-found: error
+          retention-days: 14

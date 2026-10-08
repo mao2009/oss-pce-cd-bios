@@ -93,3 +93,20 @@ the corrupt archive before retry. `make check` requires actionlint installed by
 setup. `make test` requires the real Geargrafx core; absence is BLOCKED/FAIL, not
 a passing integration test. Desktop/MCP requirements are separate in
 [Geargrafx setup](emulator-geargrafx.md).
+
+## Separate BIOS DEV diagnostics
+
+`make dev-rom` and `make dev-rom MODE=release` use the same pinned toolchain and
+write only `build/<mode>/bios-dev/`. `make dev-test` includes real Geargrafx
+System Card loader/reset/slot diagnostics. Neither mode produces compatible
+firmware. `make dev-release-gate` must fail while API/ABI/boot approval is absent.
+See [diagnostic contracts](api-stub-scaffold.md).
+
+## Instruction debugger and contract probes
+
+`make setup` additionally builds a separate debugger-enabled Geargrafx tree
+from the same verified source archive; no SDL installation or source patch is
+needed. The normal HuCARD core stays separate. `make dev-test` now verifies
+actual one-instruction stepping, registers/stack/RAM, guest bank switches,
+IRQ1/IRQ2, loader edge cases and additional negative procedures.
+[Exact conditions and API limitations](geargrafx-contract-evidence.md).
