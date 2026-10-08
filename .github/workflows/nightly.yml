@@ -1,121 +1,77 @@
-# 03:00 JST = 18:00 UTC on the previous day; scheduled runs can be delayed.
-name: Nightly PCE BIOS (change-aware)
-
+# 18:00 UTC = 03:00 JST next day. This workflow only targets main.
+name: Nightly PCE fixture (change-aware, not BIOS)
 on:
   schedule:
     - cron: '0 18 * * *'
   workflow_dispatch:
-    inputs:
-      force:
-        description: 'Build even when source and tests are unchanged'
-        type: boolean
-        required: true
-        default: true
-
 permissions:
   contents: read
   actions: read
-
 concurrency:
   group: oss-pce-cd-bios-nightly
   cancel-in-progress: false
-
 jobs:
   plan:
-    name: Diff against last successful build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     outputs:
       build: ${{ steps.decide.outputs.build }}
-      source_ref: ${{ steps.decide.outputs.source_ref }}
       source_sha: ${{ steps.decide.outputs.source_sha }}
-      reason: ${{ steps.decide.outputs.reason }}
-      workflow_fingerprint: ${{ steps.decide.outputs.workflow_fingerprint }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          fetch-depth: 0
+          ref: main
           persist-credentials: false
-      - name: Validate nightly planner shell syntax
-        run: bash -n tools/nightly_plan.sh
-      - name: Decide if developer ROM needs rebuilding
+      - name: Compare exact main SHA against last successful built artifact
         id: decide
-        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          EVENT_NAME: ${{ github.event_name }}
-          FORCE: ${{ inputs.force }}
         run: bash tools/nightly_plan.sh
-
   build:
-    name: Build and archive DEV-only ROM
     needs: plan
     if: needs.plan.outputs.build == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: ${{ needs.plan.outputs.source_sha }}
+          fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Install HuC6280 assembler
+      - name: Prepare pinned tools from source
+        run: make setup
+      - name: Build original HuCARD fixture
+        run: make build
+      - name: Host and real Geargrafx tests
+        run: make test
+      - name: Static checks including Actions validation
+        run: make check
+      - name: Verify release-mode fixture
         run: |
-          sudo apt-get update
-          sudo apt-get install -y cc65
-      - name: Source and synthetic structure tests
-        run: |
-          python3 tools/build_rom.py --check-source
-          python3 -m unittest discover -s tests -v
-      - name: Assemble and validate DEV ROM
-        run: |
-          python3 tools/build_rom.py
-          test "$(wc -c < out/dev-only-not-compatible-syscard3.pce)" -eq 262144
-      - name: Write ROM manifest and last-success state
-        shell: bash
+          make build MODE=release
+          cmp build/debug/smoke-test-not-bios.pce build/release/smoke-test-not-bios.pce
+          python3 tools/build.py --verify build/debug/smoke-test-not-bios.pce
+      - name: Record candidate success state
         env:
-          SOURCE_REF: ${{ needs.plan.outputs.source_ref }}
           SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
-          BUILD_REASON: ${{ needs.plan.outputs.reason }}
-          WORKFLOW_FINGERPRINT: ${{ needs.plan.outputs.workflow_fingerprint }}
-        run: |
-          python3 - <<'PY'
-          import datetime, hashlib, json, os
-          from pathlib import Path
-          rom = Path('out/dev-only-not-compatible-syscard3.pce')
-          metadata = {
-              'schema_version': 1,
-              'source_ref': os.environ['SOURCE_REF'],
-              'source_sha': os.environ['SOURCE_SHA'],
-              'build_reason': os.environ['BUILD_REASON'],
-              'workflow_fingerprint': os.environ['WORKFLOW_FINGERPRINT'],
-              'built_at_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
-              'rom_sha256': hashlib.sha256(rom.read_bytes()).hexdigest(),
-              'rom_bytes': rom.stat().st_size,
-              'status': 'development-only-not-a-compatible-bios',
-              'emulator_execution': 'NOT_RUN',
-              'retail_game_compatibility': 'NOT_VERIFIED'
-          }
-          for path in ['out/nightly-manifest.json', 'out/nightly-state.json']:
-              Path(path).write_text(json.dumps(metadata, indent=2) + '\n', encoding='utf-8')
-          print('SHA256:', metadata['rom_sha256'])
-          PY
-      - name: Archive DEV ROM and manifest (14 days)
-        uses: actions/upload-artifact@v4
+        run: python3 tools/nightly.py record
+      - name: Archive verified original fixture (not a release)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: nightly-dev-rom-${{ github.run_number }}
+          name: nightly-smoke-not-bios-${{ needs.plan.outputs.source_sha }}
           path: |
-            out/dev-only-not-compatible-syscard3.pce
-            out/nightly-manifest.json
-          retention-days: 14
+            build/debug/*.pce
+            build/debug/*.json
+            build/debug/*.map
+            build/debug/*.lbl
           if-no-files-found: error
-      - name: Archive successful build baseline (90 days)
-        uses: actions/upload-artifact@v4
+          retention-days: 14
+      - name: Save baseline; accepted only when the whole run succeeds
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: nightly-success-state
-          path: out/nightly-state.json
-          retention-days: 90
+          path: build/nightly-state.json
           if-no-files-found: error
+          retention-days: 90

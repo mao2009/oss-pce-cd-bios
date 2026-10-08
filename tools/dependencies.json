@@ -1,0 +1,23 @@
+{
+  "cc65": {
+    "repository": "https://github.com/cc65/cc65",
+    "revision": "71746c829e77f74c2b601a7d16821170c2610df3",
+    "url": "https://codeload.github.com/cc65/cc65/tar.gz/71746c829e77f74c2b601a7d16821170c2610df3",
+    "sha256": "2172a1fc74bf6f3026e0f9427d4159508cd801abcb35ce591394bb911adaabe4",
+    "license": "zlib (upstream LICENSE)"
+  },
+  "geargrafx": {
+    "repository": "https://github.com/drhelius/Geargrafx",
+    "revision": "b49ae82a012eade566d72e9d61c9d95a5caa4da3",
+    "url": "https://codeload.github.com/drhelius/Geargrafx/tar.gz/b49ae82a012eade566d72e9d61c9d95a5caa4da3",
+    "sha256": "a80a3eae26a8efcd994350e84bbe73c975e406ced41f8f2404c88b00d4217f68",
+    "license": "GPL-3.0 (upstream LICENSE; bundled dependencies retain their licenses)"
+  },
+  "actionlint": {
+    "repository": "https://github.com/rhysd/actionlint",
+    "revision": "v1.7.7",
+    "url": "https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz",
+    "sha256": "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757",
+    "license": "MIT (archive LICENSE)"
+  }
+}

@@ -2,7 +2,7 @@
 
 An independently authored, redistributable **PC Engine / TurboGrafx-CD System Card BIOS replacement**.
 
-> **Status: planning / bootstrap only.** There is no bootable BIOS image, confirmed System Card 3.0 ABI implementation, CD-game compatibility result, or working emulator integration yet.
+> **Status: development environment / smoke fixture only.** Pinned tools build an original HuCARD fixture and execute it in the real Geargrafx core. There is no bootable System Card BIOS, implemented BIOS API, or CD-game compatibility result.
 
 ## Objectives
 
@@ -35,6 +35,10 @@ The goal is **behavioral compatibility**, not binary identity with any proprieta
 ## Documentation
 
 - [Architecture](docs/architecture.md)
+- [Building and setup](docs/building.md)
+- [Tests and evidence scope](docs/testing.md)
+- [Toolchain selection](docs/toolchain.md)
+- [Geargrafx setup and debugging](docs/emulator-geargrafx.md)
 - [ROM and API research status](docs/specification.md)
 - [System Card 3.0 API-by-API Issue inventory](docs/api-inventory.md)
 - [Geargrafx harness plan](docs/geargrafx.md)
@@ -46,7 +50,29 @@ The goal is **behavioral compatibility**, not binary identity with any proprieta
 
 ## Current build
 
-There is **no working BIOS build command yet**. Adding a source tree, CI badge or a file with the right size does not establish a valid BIOS. Check [the issue tracker](https://github.com/mao2009/oss-pce-cd-bios/issues) for work in progress.
+On Linux x86_64 with Python 3.10+, GNU Make, GCC/G++, binutils and curl:
+
+```sh
+make setup     # checksum-verified, pinned source builds; no sudo
+make build     # build/debug/smoke-test-not-bios.pce (8192 bytes)
+make test      # host tests AND real Geargrafx cold/warm/negative checks
+make check     # source, assembler and GitHub Actions static checks
+make clean
+make build MODE=release
+```
+
+`make setup` keeps external sources outside this repository and is safe to repeat.
+The default `MODE=debug` includes a listing and debug information; release mode
+produces the same test ROM with fewer debugging artifacts. `make release` refuses
+to publish a BIOS while APIs and System Card boot remain unimplemented.
+
+Implemented: deterministic fixture builds, format/layout/negative host checks,
+headless Geargrafx HuCARD execution, CI and main-SHA-aware Nightly workflows.
+Unimplemented: all System Card API services, CD boot/read and production BIOS.
+Planned: System Card mapping verification (#1), startup (#4), MCP trace/CD harness
+(#6), and API implementations following the [inventory](docs/api-inventory.md).
+Existing Draft PR #101 is separate work; this bootstrap does not import its stubs.
+See [building](docs/building.md) and [testing](docs/testing.md) for exact scope.
 
 ## License
 
