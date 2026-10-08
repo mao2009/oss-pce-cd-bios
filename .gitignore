@@ -1,0 +1,43 @@
+# Build outputs
+build/
+out/
+dist/
+bin/
+obj/
+.cache/
+__pycache__/
+*.py[cod]
+
+# Proprietary/local BIOS & disc media: NEVER COMMIT
+*.cue
+*.iso
+*.chd
+*.ccd
+*.img
+*.sub
+*.mdf
+*.mds
+*.wav
+*.flac
+*.mp3
+*.zip
+*.7z
+*.rar
+
+# Test local inputs
+private/
+local/
+reference/
+test-data-private/
+.env
+.env.*
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# NOTE: .bin/.rom/.pce exclusions must not silently hide original
+# test fixtures in future. Track specific generated paths and always
+# separately review changes for copyrighted material.
