@@ -64,7 +64,7 @@ def save_manifest(destination, manifest):
     temporary.replace(destination / ".source-integrity.json")
 
 
-def fetch(name, desktop=False):
+def fetch(name, desktop=False, debugger=False):
     dep = DEPENDENCIES[name]
     cache = tools_dir()
     archive = cache / f"{name}-{dep['revision']}.tar.gz"
@@ -80,6 +80,8 @@ def fetch(name, desktop=False):
     destination = dependency_dir(name)
     if desktop:
         destination = destination.with_name(destination.name + "-desktop")
+    if debugger:
+        destination = destination.with_name(destination.name + "-debugger")
     stamp = destination / ".verified-archive-sha256"
     if destination.exists():
         if not stamp.is_file() or stamp.read_text().strip() != dep["sha256"]:
@@ -131,10 +133,27 @@ def fetch(name, desktop=False):
     return destination
 
 
+def build_geargrafx(source, jobs, debugger=False, desktop=False):
+    platform_dir = source / ("platforms/linux" if desktop else "platforms/libretro")
+    command = ["make", "-C", str(platform_dir), f"-j{jobs}",
+               f"GIT_VERSION={DEPENDENCIES['geargrafx']['revision']}"]
+    if debugger:
+        # Upstream's libretro default disables its debugger even with DEBUG=1.
+        # Override supported compiler variables, leaving every source byte intact.
+        includes = subprocess.run(["make", "-s", "--no-print-directory", "-C", str(platform_dir),
+                                   "--eval", "print-includes:;@echo $(INCLUDES)", "print-includes"],
+                                  capture_output=True, text=True, check=True).stdout.strip()
+        flags = ("-O2 -fPIC -fno-exceptions -D__LIBRETRO__ -DZ7_ST -DZSTD_DISABLE_ASM "
+                 "-DGG_DISABLE_VGMRECORDER -DGG_ENABLE_CDROM_CUEBIN_READAHEAD -pthread " + includes)
+        command += ["CFLAGS=" + flags, "CXXFLAGS=" + flags + " -fno-rtti"]
+    subprocess.run(command, check=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("target", choices=["all", "cc65", "geargrafx", "actionlint"])
     parser.add_argument("--desktop", action="store_true")
+    parser.add_argument("--debugger", action="store_true")
     args = parser.parse_args()
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         raise ValueError("supported bootstrap host: Linux x86_64")
@@ -142,6 +161,8 @@ def main():
     missing = [name for name in required if not shutil.which(name)]
     if missing:
         raise ValueError(f"missing host tools: {', '.join(missing)}; see docs/building.md")
+    if args.debugger and (args.target != "geargrafx" or args.desktop):
+        raise ValueError("--debugger requires geargrafx without --desktop")
     if args.desktop:
         if args.target != "geargrafx":
             raise ValueError("--desktop is only valid with geargrafx")
@@ -157,18 +178,20 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX)
         names = ["cc65", "geargrafx", "actionlint"] if args.target == "all" else [args.target]
         for name in names:
-            source = fetch(name, args.desktop)
+            source = fetch(name, args.desktop, args.debugger)
             if name == "cc65":
                 subprocess.run(["make", "-C", str(source), f"-j{jobs}",
                                 f"BUILD_ID=Git {DEPENDENCIES[name]['revision'][:9]}",
                                 "ca65", "ld65", "cc65"], check=True)
             elif name == "geargrafx":
-                platform_dir = "platforms/linux" if args.desktop else "platforms/libretro"
-                subprocess.run(["make", "-C", str(source / platform_dir),
-                                f"-j{jobs}", f"GIT_VERSION={DEPENDENCIES[name]['revision']}"], check=True)
+                build_geargrafx(source, jobs, args.debugger, args.desktop)
             else:
                 (source / "actionlint").chmod(0o755)
             print(f"READY {name}: {DEPENDENCIES[name]['revision']}", flush=True)
+        if args.target == "all":
+            source = fetch("geargrafx", debugger=True)
+            build_geargrafx(source, jobs, debugger=True)
+            print(f"READY geargrafx instruction debugger: {DEPENDENCIES['geargrafx']['revision']}", flush=True)
 
 
 if __name__ == "__main__":
