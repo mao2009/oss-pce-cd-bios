@@ -57,7 +57,7 @@
     },
     {
       "id": 13,
-      "candidate_name": "CD_SUBRQ_OR_SUBRD"
+      "candidate_name": "CD_SUBRQ / CD_SUBRD"
     },
     {
       "id": 14,
@@ -301,15 +301,15 @@
     },
     {
       "id": 74,
-      "candidate_name": "EX_MEMOPEN_OR_KEY_BIOS"
+      "candidate_name": "KEY_BIOS / EX_MEMOPEN"
     },
     {
       "id": 75,
-      "candidate_name": "PSG_DRIVER"
+      "candidate_name": "PSG_DRIVE / PSG_DRIVER"
     },
     {
       "id": 76,
-      "candidate_name": "EX_COLORCMD"
+      "candidate_name": "EX_COLORC / EX_COLORCMD"
     },
     {
       "id": 77,
@@ -325,7 +325,7 @@
     },
     {
       "id": 80,
-      "candidate_name": "MA_DIV8U_OR_MA_CBASIS"
+      "candidate_name": "MA_DIV8U / MA_CBASIS"
     }
   ]
 }

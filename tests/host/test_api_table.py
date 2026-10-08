@@ -76,7 +76,8 @@ class ApiTableTests(unittest.TestCase):
             bank[3*i:3*i+3] = bytes((0x4C, stub & 255, stub >> 8))
             pos = stub - 0xE000
             bank[pos:pos+5] = bytes((0xA2, i, 0x4C, handler & 255, handler >> 8))
-        bank[-2:] = bytes((0x00, 0xF0))
+        bank[0x1000:0x1005] = bytes.fromhex('78 a2 ff 80 fe')
+        bank[-10:] = bytes((0x00, 0xF0)) * 5
         return bytes(bank)
 
 
