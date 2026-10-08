@@ -35,6 +35,18 @@ reuses verified downloads and sources, and safely repeats incremental builds.
 Failed checksum or build checks exit nonzero. Interrupted extraction staging is
 recreated; an existing unverified final directory is refused, never overwritten.
 
+Reusing an extracted tree also hashes every original archive file and verifies
+its size/executable permission, rejects missing/changed files, extra source files and symlinks, and
+compares `.source-integrity.json` against the checksum-verified archive inventory.
+The archive is the authority even if both a source file and its saved manifest
+were edited. Old caches acquire this inventory only after full source validation.
+Known compiler objects/dependency files and target binary locations are separate
+generated outputs; their normal incremental updates do not invalidate source
+integrity. This does not attest arbitrary generated binaries or a compromised
+host compiler. Source checks read a few MiB compressed archive plus original
+files; they do not remove build objects or force compilation. The setup lock
+covers verification, atomic publication of complete trees and incremental builds.
+
 The default external cache is `/tmp/oss-pce-cd-bios-tools-<uid>`. It may be cleared
 by the OS. Set `TOOLS_DIR` to a writable absolute directory **outside this
 repository** for persistent storage; use the same value for every command:

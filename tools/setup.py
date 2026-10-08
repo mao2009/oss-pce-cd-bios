@@ -2,6 +2,7 @@
 import argparse
 import fcntl
 import hashlib
+import json
 import os
 from pathlib import Path
 import platform
@@ -10,6 +11,57 @@ import subprocess
 import tarfile
 
 from environment import DEPENDENCIES, dependency_dir, tools_dir
+
+
+def source_manifest(archive, name):
+    """Derive the source inventory from the checksum-verified archive, not disk."""
+    files = {}
+    with tarfile.open(archive) as tar:
+        for member in tar:
+            if member.isfile():
+                path = Path(member.name)
+                if path.is_absolute() or ".." in path.parts:
+                    raise ValueError(f"unsafe archive path: {member.name}")
+                relative = str(path if name == "actionlint" else Path(*path.parts[1:]))
+                files[relative] = {"bytes": member.size,
+                                   "sha256": hashlib.sha256(tar.extractfile(member).read()).hexdigest(),
+                                   "executable": bool(member.mode & 0o111)}
+    return {"schema": 1, "archive_sha256": DEPENDENCIES[name]["sha256"], "files": files}
+
+
+def generated_file(name, path):
+    """Only known output locations/suffixes are excluded from source inventory."""
+    parts = Path(path).parts
+    if name == "cc65":
+        return (parts[0] == "wrk" and Path(path).suffix in (".o", ".d", ".a")) or path in (
+            "bin/ca65", "bin/ld65", "bin/cc65")
+    if name == "geargrafx":
+        return ((parts[0] in ("src", "platforms") and Path(path).suffix in (".o", ".d"))
+                or path in ("platforms/libretro/geargrafx_libretro.so", "platforms/linux/geargrafx"))
+    return False
+
+
+def verify_sources(destination, name, manifest):
+    metadata = {".verified-archive-sha256", ".source-integrity.json", ".source-integrity.json.tmp"}
+    for path in destination.rglob("*"):
+        relative = str(path.relative_to(destination))
+        if path.is_symlink():
+            raise ValueError(f"unexpected cache symlink: {path}")
+        if (path.is_file() and relative not in manifest["files"] and relative not in metadata
+                and not generated_file(name, relative)):
+            raise ValueError(f"unexpected source cache file: {path}")
+    for relative, record in manifest["files"].items():
+        path = destination / relative
+        if (not path.is_file() or path.stat().st_size != record["bytes"]
+                or bool(path.stat().st_mode & 0o111) != record["executable"]
+                or hashlib.sha256(path.read_bytes()).hexdigest() != record["sha256"]):
+            raise ValueError(f"source cache integrity mismatch: {path}; inspect/remove this dependency cache")
+
+
+def save_manifest(destination, manifest):
+    temporary = destination / ".source-integrity.json.tmp"
+    temporary.write_text(json.dumps(manifest, sort_keys=True) + "\n")
+    temporary.replace(destination / ".source-integrity.json")
 
 
 def fetch(name, desktop=False):
@@ -24,6 +76,7 @@ def fetch(name, desktop=False):
         temporary.replace(archive)
     if hashlib.sha256(archive.read_bytes()).hexdigest() != dep["sha256"]:
         raise ValueError(f"checksum mismatch: {archive}; remove the corrupt archive and retry")
+    manifest = source_manifest(archive, name)
     destination = dependency_dir(name)
     if desktop:
         destination = destination.with_name(destination.name + "-desktop")
@@ -31,6 +84,18 @@ def fetch(name, desktop=False):
     if destination.exists():
         if not stamp.is_file() or stamp.read_text().strip() != dep["sha256"]:
             raise ValueError(f"unverified existing source directory: {destination}")
+        inventory = destination / ".source-integrity.json"
+        if inventory.exists():
+            try:
+                saved = json.loads(inventory.read_text())
+            except (ValueError, OSError) as error:
+                raise ValueError(f"corrupt source integrity manifest: {inventory}") from error
+            if saved != manifest:
+                raise ValueError(f"source integrity manifest differs from verified archive: {inventory}")
+        verify_sources(destination, name, manifest)
+        if not inventory.exists():
+            # Upgrade an old cache only after every original file was verified.
+            save_manifest(destination, manifest)
         return destination
     staging = destination.with_name(destination.name + ".extracting")
     if staging.exists():
@@ -51,15 +116,18 @@ def fetch(name, desktop=False):
                 raise ValueError(f"unsupported archive member: {member.name}")
             members.append(member)
         tar.extractall(staging, members=members)
-    if name == "actionlint":
-        staging.rename(destination)
-    else:
+    extracted = staging
+    if name != "actionlint":
         entries = list(staging.iterdir())
         if len(entries) != 1 or not entries[0].is_dir():
             raise ValueError("source archive must have exactly one root")
-        entries[0].rename(destination)
+        extracted = entries[0]
+    verify_sources(extracted, name, manifest)
+    save_manifest(extracted, manifest)
+    (extracted / ".verified-archive-sha256").write_text(dep["sha256"] + "\n")
+    extracted.rename(destination)  # Publish only a complete, verified source tree.
+    if name != "actionlint":
         staging.rmdir()
-    stamp.write_text(dep["sha256"] + "\n")
     return destination
 
 
