@@ -1,6 +1,6 @@
 # oss-pce-cd-bios
 
-An independently authored, redistributable **PC Engine / TurboGrafx-CD System Card BIOS replacement**.
+A redistributable **PC Engine / TurboGrafx-CD System Card BIOS replacement** built from original and properly licensed reusable OSS code.
 
 > **Status: development environment / smoke fixture only.** Pinned tools build an original HuCARD fixture and execute it in the real Geargrafx core. There is no bootable System Card BIOS, implemented BIOS API, or CD-game compatibility result.
 
@@ -10,8 +10,8 @@ An independently authored, redistributable **PC Engine / TurboGrafx-CD System Ca
 - Long-term aim: broad commercial CD title compatibility, starting with Japanese releases, and expansion to other regional releases and later Arcade Card-related requirements where technically applicable.
 - Replace the **BIOS software**, not the PCE CD hardware: emulators or FPGA implementations supply the HuC6280 CPU, CD-ROM interface, additional RAM, ADPCM and other peripherals.
 - Target **Geargrafx** first as the instrumented emulator/debugger; use another independent emulator for cross-checks. FPGA BIOS loading may be validated later.
-- Produce original HuC6280 code, a reproducible ROM build and freely redistributable synthetic test fixtures.
-- Share documentation, evidence formats and development methodology with [oss-mcd-bios](https://github.com/mao2009/oss-mcd-bios); keep console-specific code independent. The API/behavior specification may also inform a future RetroRecompStudio PCE runtime.
+- Reuse appropriately licensed existing OSS code where technically suitable; adapt it to the HuC6280/System Card ABI or implement original code as needed. Produce reproducible ROM builds and redistributable synthetic test fixtures.
+- Share documentation, evidence formats, tests, and reusable components with [oss-mcd-bios](https://github.com/mao2009/oss-mcd-bios) when technically and legally appropriate; isolate console-specific behavior. The API/behavior specification may also inform a future RetroRecompStudio PCE runtime.
 
 The goal is **behavioral compatibility**, not binary identity with any proprietary System Card. A homebrew disc boot is an intermediate milestone, **not** proof of retail compatibility.
 
@@ -25,7 +25,7 @@ The goal is **behavioral compatibility**, not binary identity with any proprieta
 ## Development sequence
 
 1. Verify the System Card 3.0 ROM layout, banking, vectors, HuC6280 startup and documented API calling conventions.
-2. Select and pin a HuC6280 assembler/linker and implement reproducible build/ROM checks.
+2. Maintain the implemented pinned HuC6280 assembler/linker and reproducible fixture build/ROM checks.
 3. Instrument **real Geargrafx core execution** with synthetic ROM/CD fixtures and headless traces; mocks remain separate.
 4. Implement reset, essential System Card entry points, CD commands and disc boot.
 5. Expand services and prove each compatible behavior with negative tests, independent emulator comparisons and named gameplay scenarios.
@@ -43,7 +43,8 @@ The goal is **behavioral compatibility**, not binary identity with any proprieta
 - [System Card 3.0 API-by-API Issue inventory](docs/api-inventory.md)
 - [Geargrafx harness plan](docs/geargrafx.md)
 - [Compatibility and evidence](docs/compatibility.md)
-- [Originality and provenance policy](docs/provenance.md)
+- [OSS reuse, licensing and provenance policy](docs/provenance.md)
+- [Initial OSS reuse candidate inventory](docs/reuse-inventory.md)
 - [Roadmap](docs/roadmap.md)
 - [Change-aware nightly developer ROM builds](docs/nightly.md)
 - [Contributing](CONTRIBUTING.md)
@@ -76,4 +77,4 @@ See [building](docs/building.md) and [testing](docs/testing.md) for exact scope.
 
 ## License
 
-Original source code and original documentation in this repository are MIT-licensed; see [LICENSE](LICENSE). External documents and emulators retain their own licenses and must not be relicensed through this repository. Not affiliated with NEC, Hudson Soft, Konami or other trademark holders.
+Original source code and documentation authored for this repository are MIT-licensed; see [LICENSE](LICENSE). Properly licensed third-party components may be reused under **their own** terms, with file-level approval, attribution and required notices. The presence of MIT project code does not relicense external code; see [the reuse policy](docs/provenance.md). Not affiliated with NEC, Hudson Soft, Konami or other trademark holders.

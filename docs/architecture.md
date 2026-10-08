@@ -33,7 +33,7 @@ Directories are aspirational until code exists; no empty directory is required.
 
 ## Design principles
 
-1. Favor behaviorally compatible **independently authored** code over reproducing historic ROM layout byte-for-byte.
+1. Favor behaviorally compatible **original or properly licensed reused/adapted OSS** over reproducing proprietary ROM layout byte-for-byte. Prefer direct reuse to unnecessary reinvention; review each file's origin, license and technical fit before integration.
 2. Expose and test calling conventions, register effects, memory side effects, timing/event ordering, error paths and reset/retry.
 3. Avoid game-title checks as the first response to a bug; fix the general contract, retaining precise evidence of any necessary exception.
 4. Build deterministic ROM images and require true emulator execution for functional claims.
