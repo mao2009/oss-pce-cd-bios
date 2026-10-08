@@ -50,6 +50,13 @@ def validate_contract(contract):
     bank = geometry['bank_bytes']
     require(bank == 8192 and geometry['mpr_count'] * bank == geometry['logical_bytes']
             and 256 * bank == geometry['physical_bytes'], 'MPR geometry')
+    stack = value('cpu_stack')
+    require(stack['logical_last'] - stack['logical_first'] + 1 == stack['bytes'] == 256
+            and stack['logical_first'] == 0x2100 and stack['mpr_index'] == 1
+            and stack['reset_sp'] is None, 'architectural stack')
+    flags = value('cpu_reset_flags')
+    require(flags['I'] == 1 and flags['D'] == 0 and flags['other_status_bits'] is None
+            and all(flags[r] is None for r in ('A','X','Y')), 'unspecified reset registers')
     reset = value('reset_mapping')
     require(reset['other_mpr_defaults'] is None and reset['mpr7'] == 0, 'reset defaults')
     require(reset['byte_order'] == 'little', 'vector byte order')
@@ -92,6 +99,14 @@ class RomContractTests(unittest.TestCase):
     def mutate_claim(self, name, key, value):
         claim = next(c for c in self.contract['claims'] if c['id'] == name)
         claim['value'][key] = value
+
+    def test_stack_and_status_contradictions_rejected(self):
+        for claim,key,bad in [('cpu_stack','reset_sp',255),('cpu_stack','logical_first',0x100),
+                              ('cpu_reset_flags','A',0),('cpu_reset_flags','I',0)]:
+            with self.subTest(claim=claim,key=key):
+                changed=copy.deepcopy(self.contract)
+                next(c for c in changed['claims'] if c['id']==claim)['value'][key]=bad
+                with self.assertRaises(ValueError):validate_contract(changed)
 
     def test_current_ledger_is_consistent(self):
         validate_contract(self.contract)

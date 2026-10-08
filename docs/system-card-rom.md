@@ -38,6 +38,10 @@ Reset sets MPR7 to `$00`, then fetches low/high PC bytes at logical `$FFFE/$FFFF
 physical `$001FFE/$001FFF`. MPR0–6 are unspecified by reset. Their randomized
 values in Geargrafx are a core choice, not hardware random-number semantics.
 Initialize each required register before using its window.
+The same manual, section 2.1.4 (HB-3), defines an 8-bit SP and logical stack
+`$2100-$21FF`; physical storage depends on MPR1. SP is undefined after reset.
+Section 2.5 establishes reset I=1 and D=0. No general A/X/Y values or global
+BIOS preservation rule follow. The new machine claims record those limits.
 
 | Vector | Logical low-byte address | File offset with bank0 in MPR7 |
 | --- | --- | --- |
@@ -167,4 +171,12 @@ vector offsets, RAM extents, loader lengths and misplaced UNKNOWN assertions.
 Mutation tests exercise those failures. They do not emulate a CPU or certify
 firmware. Existing real-core tests remain independent and unchanged. Remaining
 blockers are historical evidence, production bank/ABI/boot validation, CD
-transactions and independent emulator/hardware corroboration.
+transactions and additional primary evidence for historical/firmware-specific claims.
+
+## Integrated new measurements
+
+[Expanded real-core evidence](geargrafx-contract-evidence.md) now checks the
+actual loader lengths (including header stripping and all-FF acceptance),
+explicit guest bank/RAM boundaries and IRQ/stack transitions in System Card
+context. These are scoped emulator experiments, not an upgrade of every source
+claim or historical capacity to universal hardware verification.

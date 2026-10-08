@@ -358,6 +358,49 @@
         "diagnostic"
       ],
       "limit": "No CD sector read, retail title or independent-emulator/hardware compatibility established."
+    },
+    {
+      "id": "cpu_stack",
+      "scope": "cpu",
+      "status": "SOURCE_FACT",
+      "value": {
+        "logical_first": 8448,
+        "logical_last": 8703,
+        "bytes": 256,
+        "mpr_index": 1,
+        "reset_sp": null,
+        "jsr_push_order": [
+          "PCH",
+          "PCL"
+        ],
+        "irq_push_order": [
+          "PCH",
+          "PCL",
+          "P"
+        ]
+      },
+      "references": [
+        "hudson-manual"
+      ],
+      "limit": "Manual section2.1.3/2.1.4 (HB-3); logical stack only, physical RAM depends on MPR1. This is not BIOS stack ownership or a callee preservation convention."
+    },
+    {
+      "id": "cpu_reset_flags",
+      "scope": "cpu",
+      "status": "SOURCE_FACT",
+      "value": {
+        "I": 1,
+        "D": 0,
+        "other_status_bits": null,
+        "A": null,
+        "X": null,
+        "Y": null
+      },
+      "references": [
+        "hudson-manual",
+        "gear-cpu"
+      ],
+      "limit": "Manual section2.5 (HB-18) establishes I/D; other general registers/status remain unspecified here. Actual reset samples are not defaults."
     }
   ],
   "release_approved": false
