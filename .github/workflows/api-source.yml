@@ -1,0 +1,24 @@
+name: API table source checks (not BIOS boot)
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  source-only:
+    name: Source and synthetic structure checks ONLY
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check candidate 81-slot table
+        run: python3 tools/build_rom.py --check-source
+      - name: Run synthetic structural unit tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Explicit scope
+        run: echo "This job neither assembles a BIOS nor runs Geargrafx. It cannot prove BIOS compatibility."
