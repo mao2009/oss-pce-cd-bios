@@ -7,8 +7,8 @@ invalid input was rejected, never evidence that the invalid ROM works.
 
 ## Host tests
 
-`python3 -m unittest discover -s tests/host -v` currently runs 59 tests: the original
-13 retained tests plus 46 added review-regression tests.
+`python3 -m unittest discover -s tests/host -v` currently runs 89 tests: the original
+13 retained tests, 46 review-regression tests and 30 API diagnostic tests.
 
 - Two independent debug builds and a release build yield identical ROM bytes.
 - Headerless size, reset code, checkpoint loop, marker, vector words and all
@@ -101,3 +101,15 @@ structural contract but fail fixture validation; neither layer proves BIOS
 compatibility. No new BIOS layout/API specification is introduced.
 Nightly's live schedule/skip behavior can be observed only after these files
 reach main; [nightly.md](nightly.md) explains the host tests and runtime policy.
+
+## API scaffold additions (#101)
+
+The existing 59 host tests remain. `tests/host/test_api_table.py` adds the prior
+9 scaffold checks; `test_api_build.py` adds 21 checks using real pinned assembly,
+for 89 total host tests. `make test` discovers all 89 and keeps the existing
+HuCARD cold/warm/negative real-core tests. `make dev-test` runs the 30 API host
+tests and the separate real-core System Card diagnostics: reset, three slots,
+PC/X/MPR/physical bank observations and four negative execution cases.
+These are development experiments, not caller ABI or CD boot passes.
+The independent BIOS DEV workflow saves its own artifact; Nightly's original
+smoke success criteria stay unchanged. [Scope](api-stub-scaffold.md).

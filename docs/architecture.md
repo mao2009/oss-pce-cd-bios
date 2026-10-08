@@ -66,6 +66,9 @@ libretro frontend: it observes real Geargrafx guest RAM, never simulates CPU
 execution. `tools/check.py` validates source and Actions using pinned actionlint.
 `tools/nightly.py` compares main against success-only build-state artifacts.
 
-No unused BIOS modules or empty `src/`/`include/` placeholders are introduced.
+The separate development diagnostic in `src/boot.s` and `src/bank0.cfg` is
+built by `tools/build_rom.py` from `spec/api_slots.json`. It does not replace
+the HuCARD fixture or establish a production BIOS layout. Optional per-slot
+sources belong to `src/overrides/`; no empty modules are required.
 Future firmware may use the proposed responsibilities above after #1/#3 establish
 contracts. GPL emulator implementation stays outside the MIT firmware boundary.
