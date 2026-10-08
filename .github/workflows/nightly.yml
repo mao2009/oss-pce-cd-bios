@@ -1,0 +1,116 @@
+# 03:00 JST = 18:00 UTC on the previous day; scheduled runs can be delayed.
+name: Nightly PCE BIOS (change-aware)
+
+on:
+  schedule:
+    - cron: '0 18 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Build even when source and tests are unchanged'
+        type: boolean
+        required: true
+        default: true
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: oss-pce-cd-bios-nightly
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Diff against last successful build
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.decide.outputs.build }}
+      source_ref: ${{ steps.decide.outputs.source_ref }}
+      source_sha: ${{ steps.decide.outputs.source_sha }}
+      reason: ${{ steps.decide.outputs.reason }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Decide if developer ROM needs rebuilding
+        id: decide
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          FORCE: ${{ inputs.force }}
+        run: bash tools/nightly_plan.sh
+
+  build:
+    name: Build and archive DEV-only ROM
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install HuC6280 assembler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cc65
+      - name: Source and synthetic structure tests
+        run: |
+          python3 tools/build_rom.py --check-source
+          python3 -m unittest discover -s tests -v
+      - name: Assemble and validate DEV ROM
+        run: |
+          python3 tools/build_rom.py
+          test "$(wc -c < out/dev-only-not-compatible-syscard3.pce)" -eq 262144
+      - name: Write ROM manifest and last-success state
+        shell: bash
+        env:
+          SOURCE_REF: ${{ needs.plan.outputs.source_ref }}
+          SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
+          BUILD_REASON: ${{ needs.plan.outputs.reason }}
+        run: |
+          python3 - <<'PY'
+          import datetime, hashlib, json, os
+          from pathlib import Path
+          rom = Path('out/dev-only-not-compatible-syscard3.pce')
+          metadata = {
+              'schema_version': 1,
+              'source_ref': os.environ['SOURCE_REF'],
+              'source_sha': os.environ['SOURCE_SHA'],
+              'build_reason': os.environ['BUILD_REASON'],
+              'built_at_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              'rom_sha256': hashlib.sha256(rom.read_bytes()).hexdigest(),
+              'rom_bytes': rom.stat().st_size,
+              'status': 'development-only-not-a-compatible-bios',
+              'emulator_execution': 'NOT_RUN',
+              'retail_game_compatibility': 'NOT_VERIFIED'
+          }
+          for path in ['out/nightly-manifest.json', 'out/nightly-state.json']:
+              Path(path).write_text(json.dumps(metadata, indent=2) + '\n', encoding='utf-8')
+          print('SHA256:', metadata['rom_sha256'])
+          PY
+      - name: Archive DEV ROM and manifest (14 days)
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-dev-rom-${{ github.run_number }}
+          path: |
+            out/dev-only-not-compatible-syscard3.pce
+            out/nightly-manifest.json
+          retention-days: 14
+          if-no-files-found: error
+      - name: Archive successful build baseline (90 days)
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-success-state
+          path: out/nightly-state.json
+          retention-days: 90
+          if-no-files-found: error
