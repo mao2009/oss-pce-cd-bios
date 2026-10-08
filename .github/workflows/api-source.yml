@@ -1,4 +1,4 @@
-name: API table source checks (not BIOS boot)
+name: API table structure (not BIOS compatibility)
 on:
   pull_request:
   push:
@@ -20,5 +20,24 @@ jobs:
         run: python3 tools/build_rom.py --check-source
       - name: Run synthetic structural unit tests
         run: python3 -m unittest discover -s tests -v
-      - name: Explicit scope
-        run: echo "This job neither assembles a BIOS nor runs Geargrafx. It cannot prove BIOS compatibility."
+
+  assembled-dev-rom:
+    name: ca65 dev ROM structural check (NO emulator)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install ca65 and ld65
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cc65
+      - name: Assemble provisional debug ROM and check fixed JMP table
+        run: python3 tools/build_rom.py
+      - name: Verify exact dev-only image size
+        run: |
+          test "$(wc -c < out/dev-only-not-compatible-syscard3.pce)" -eq 262144
+          echo "DEV ROM only: successful assembly is NOT a compatible System Card or a Geargrafx boot pass"
