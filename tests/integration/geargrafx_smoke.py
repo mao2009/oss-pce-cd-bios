@@ -7,16 +7,43 @@ import argparse
 import ctypes as C
 import hashlib
 import json
+import re
 from pathlib import Path
 import subprocess
 import sys
+import struct
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
-from build import verify  # noqa: E402
+from build import verify_fixture  # noqa: E402
 from environment import DEPENDENCIES, core_path  # noqa: E402
 
 EXPECTED = b"PCE!\xf8\x5a"
+
+
+def missing_marker_rom(data, labels):
+    """Locate the exported instruction and assert its opcode/operands before mutation."""
+    symbols = {}
+    for line in labels.splitlines():
+        match = re.fullmatch(r"al ([0-9A-Fa-f]{6}) \.(\w+)", line)
+        if match:
+            address, name = int(match[1], 16), match[2]
+            if name in symbols and symbols[name] != address:
+                raise ValueError(f"conflicting fixture symbol: {name}")
+            symbols[name] = address
+    if not {"reset", "marker", "marker_transfer"} <= symbols.keys():
+        raise ValueError("fixture transfer/marker/reset symbols missing")
+    if symbols["reset"] != 0xe000 or len(data) != 8192:
+        raise ValueError("fixture bank mapping mismatch")
+    offset = symbols["marker_transfer"] - symbols["reset"]
+    if not 0 <= offset <= len(data) - 7 or not 0xe000 <= symbols["marker"] <= 0xffff:
+        raise ValueError("fixture transfer symbol outside mapped ROM")
+    instruction = b"\x73" + struct.pack("<HHH", symbols["marker"], 0x2200, 4)
+    if data[offset:offset + len(instruction)] != instruction:
+        raise ValueError("symbol does not point to the expected TII marker,$2200,4 instruction")
+    mutated = bytearray(data)
+    mutated[offset:offset + len(instruction)] = b"\xea" * len(instruction)
+    return mutated
 
 
 class GameInfo(C.Structure):
@@ -118,6 +145,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rom", type=Path, required=True)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--labels", type=Path)
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--core", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -125,7 +153,9 @@ def main():
     if args.worker:
         print(json.dumps(execute(core, args.rom)))
         return
-    digest = verify(args.rom.read_bytes())
+    digest = verify_fixture(args.rom.read_bytes())
+    labels = args.labels or args.rom.with_name("smoke.lbl")
+    mutated = missing_marker_rom(args.rom.read_bytes(), labels.read_text())
     observations = []
     for _ in range(2):
         result = run_worker(core, args.rom)
@@ -138,8 +168,6 @@ def main():
         raise ValueError("normalized cold/warm observations are not repeatable")
     # The real-core assertion must reject a ROM that never writes PCE!.
     with tempfile.TemporaryDirectory(prefix="pce-geargrafx-negative-") as directory:
-        mutated = bytearray(args.rom.read_bytes())
-        mutated[14:21] = b"\xea" * 7  # replace TII with NOPs; retain later writes
         negative = Path(directory) / "missing-marker.pce"
         negative.write_bytes(mutated)
         result = run_worker(core, negative)

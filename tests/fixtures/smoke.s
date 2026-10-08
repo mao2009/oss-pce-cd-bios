@@ -1,6 +1,6 @@
 ; Independently authored HuCARD fixture. No System Card API or CD boot code.
 .setcpu "huc6280"
-.export reset, checkpoint, marker
+.export reset, checkpoint, marker, marker_transfer
 .segment "RESET"
 reset:
     sei
@@ -12,6 +12,7 @@ reset:
     tam #$02                     ; MPR1: working RAM ($2000-$3fff)
     ldx #$ff
     txs
+marker_transfer:
     tii marker, $2200, 4          ; Exercise a HuC6280 block transfer.
     tma #$02
     sta $2204

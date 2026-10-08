@@ -8,13 +8,17 @@ import struct
 import subprocess
 
 from environment import DEPENDENCIES, ROOT, executable
+from rom import Placement, validate_rom_structure
 
 RESET = bytes.fromhex("78 d8 d4 a9 ff 53 01 a9 f8 53 02 a2 ff 9a 73 40 e0 00 22 04 00 43 02 8d 04 22 a9 5a 8d 05 22")
 
 
-def verify(data):
-    if len(data) != 8192:
-        raise ValueError(f"expected headerless 8192-byte fixture, got {len(data)}")
+def verify_fixture(data):
+    validate_rom_structure(data, size=8192, bank_size=8192, cpu_base=0xe000,
+                           placements=(Placement("reset", 0, len(RESET), 0xe000),
+                                       Placement("checkpoint", 0x30, 2, 0xe030),
+                                       Placement("marker", 0x40, 4, 0xe040),
+                                       Placement("vectors", 0x1ff6, 10, 0xfff6)))
     expected = bytearray(b"\xff" * 8192)
     expected[:len(RESET)] = RESET
     expected[0x30:0x32] = b"\x80\xfe"
@@ -46,7 +50,7 @@ def build(output, mode="debug", source=None, config=None):
                     "-m", str(output / "smoke.map"), "-Ln", str(output / "smoke.lbl"),
                     str(output / "smoke.o")], check=True)
     rom = output / "smoke-test-not-bios.pce"
-    digest = verify(rom.read_bytes())
+    digest = verify_fixture(rom.read_bytes())
     commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True,
                             text=True, check=True).stdout.strip()
     dirty = bool(subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, capture_output=True,
@@ -69,7 +73,7 @@ def main():
     parser.add_argument("--verify", type=Path)
     args = parser.parse_args()
     if args.verify:
-        print(f"PASS fixture structure: {verify(args.verify.read_bytes())}")
+        print(f"PASS fixture structure/content: {verify_fixture(args.verify.read_bytes())}")
     else:
         build(args.output or ROOT / "build" / args.mode, args.mode)
 

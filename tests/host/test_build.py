@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
-from build import build, verify
+from build import build, verify_fixture as verify
 from environment import ROOT, core_path, executable, tools_dir
 
 
