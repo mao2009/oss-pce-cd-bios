@@ -1,4 +1,4 @@
-# Build outputs
+# Generated build/output directories
 build/
 out/
 dist/
@@ -8,23 +8,7 @@ obj/
 __pycache__/
 *.py[cod]
 
-# Proprietary/local BIOS & disc media: NEVER COMMIT
-*.cue
-*.iso
-*.chd
-*.ccd
-*.img
-*.sub
-*.mdf
-*.mds
-*.wav
-*.flac
-*.mp3
-*.zip
-*.7z
-*.rar
-
-# Test local inputs
+# Never track private proprietary inputs from local reference environments
 private/
 local/
 reference/
@@ -32,12 +16,13 @@ test-data-private/
 .env
 .env.*
 
-# Editor / OS
+# Editors and OS
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
 
-# NOTE: .bin/.rom/.pce exclusions must not silently hide original
-# test fixtures in future. Track specific generated paths and always
-# separately review changes for copyrighted material.
+# Intentionally do NOT blanket-ignore .cue, .iso, .bin, .rom or .wav:
+# independently authored synthetic ROM/CD fixtures need to be reviewable.
+# Git ignores are not a provenance gate; enforce allowed paths, content
+# reviews and release restrictions through Issue #8.
