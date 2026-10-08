@@ -36,6 +36,7 @@ The goal is **behavioral compatibility**, not binary identity with any proprieta
 
 - [Architecture](docs/architecture.md)
 - [ROM and API research status](docs/specification.md)
+- [System Card 3.0 API-by-API Issue inventory](docs/api-inventory.md)
 - [Geargrafx harness plan](docs/geargrafx.md)
 - [Compatibility and evidence](docs/compatibility.md)
 - [Originality and provenance policy](docs/provenance.md)
