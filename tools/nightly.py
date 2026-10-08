@@ -6,33 +6,63 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
+import time
 
 SCHEMA = "hucard-bootstrap-v1"
+
+
+def valid_state(baseline):
+    return (isinstance(baseline, dict) and baseline.get("schema") == SCHEMA
+            and baseline.get("source_ref") == "main"
+            and isinstance(baseline.get("source_sha"), str)
+            and re.fullmatch(r"[0-9a-f]{40}", baseline["source_sha"]) is not None
+            and isinstance(baseline.get("rom_sha256"), str)
+            and re.fullmatch(r"[0-9a-f]{64}", baseline["rom_sha256"]) is not None
+            and baseline.get("status") == "smoke-fixture-not-bios")
 
 
 def decide(current, baseline):
     if not re.fullmatch(r"[0-9a-f]{40}", current):
         raise ValueError("invalid current SHA")
-    return not (baseline and baseline.get("schema") == SCHEMA
-                and baseline.get("source_ref") == "main"
-                and baseline.get("source_sha") == current)
+    return not (valid_state(baseline) and baseline["source_sha"] == current)
 
 
 def gh(*arguments):
-    return subprocess.run(["gh", *arguments], capture_output=True, text=True, check=True).stdout
+    for attempt in range(3):
+        try:
+            return subprocess.run(["gh", *arguments], capture_output=True, text=True, check=True).stdout
+        except subprocess.CalledProcessError as error:
+            transient = re.search(r"HTTP (429|5\d\d)|timeout|timed out|connection reset", error.stderr or "", re.I)
+            if arguments[0] != "api" or not transient or attempt == 2:
+                raise
+            time.sleep(attempt + 1)
+
+
+def api(*arguments):
+    try:
+        return json.loads(gh("api", *arguments))
+    except (subprocess.CalledProcessError, ValueError, OSError) as error:
+        raise ValueError("GitHub API unavailable/invalid response; Nightly decision indeterminate") from error
 
 
 def find_baseline(repository, current_run):
     # Paginate artifacts, not workflow runs: skipped successful runs have no marker.
-    pages = json.loads(gh("api", "--paginate", "--slurp",
-                         f"repos/{repository}/actions/artifacts?name=nightly-success-state&per_page=100"))
+    pages = api("--paginate", "--slurp",
+                f"repos/{repository}/actions/artifacts?name=nightly-success-state&per_page=100")
+    if (not isinstance(pages, list) or any(not isinstance(page, dict)
+            or not isinstance(page.get("artifacts"), list) for page in pages)):
+        raise ValueError("GitHub API invalid artifact inventory; Nightly decision indeterminate")
     artifacts = sorted((item for page in pages for item in page["artifacts"]
                         if not item["expired"]), key=lambda item: item["id"], reverse=True)
+    seen_runs = set()
     for item in artifacts:
         run_id = item["workflow_run"]["id"]
-        if str(run_id) == current_run:
+        if str(run_id) == current_run or run_id in seen_runs:
             continue
-        run = json.loads(gh("api", f"repos/{repository}/actions/runs/{run_id}"))
+        seen_runs.add(run_id)
+        run = api(f"repos/{repository}/actions/runs/{run_id}")
+        if not isinstance(run, dict) or not {"status", "conclusion", "path", "head_branch", "head_sha"} <= run.keys():
+            raise ValueError("GitHub API invalid workflow metadata; Nightly decision indeterminate")
         # A marker uploaded before a later job failure must never count as success.
         if (run["status"] != "completed" or run["conclusion"] != "success"
                 or run["path"] != ".github/workflows/nightly.yml"
@@ -45,7 +75,7 @@ def find_baseline(repository, current_run):
                 baseline = json.loads((Path(directory) / "nightly-state.json").read_text())
             except (subprocess.CalledProcessError, OSError, json.JSONDecodeError):
                 continue  # expired/racing/legacy state -> conservatively rebuild
-        if isinstance(baseline, dict) and baseline.get("schema") == SCHEMA:
+        if valid_state(baseline) and baseline["source_sha"] == run.get("head_sha"):
             return baseline
     return None
 

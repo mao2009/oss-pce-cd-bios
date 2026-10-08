@@ -11,7 +11,9 @@ The plan job checks out main, obtains its exact HEAD, and looks for the newest
 nonexpired `nightly-success-state` artifact using the paginated Actions API.
 It verifies that the artifact's owning Nightly run completed **successfully**,
 ran the expected workflow on main, and contains the current `hucard-bootstrap-v1`
-state schema. Failed/cancelled/running runs never count, even if a candidate
+state schema, complete source/ROM hashes and fixture status. The state's source
+SHA must match the owning workflow's HEAD. Failed/cancelled/running runs never
+count, even if a candidate
 marker was uploaded before a later failure. A successful skip has no marker and
 therefore cannot replace the last actual successful build baseline.
 
@@ -31,6 +33,13 @@ main advancement during the run from changing the artifact source. It runs the
 same pinned setup, build, host/Geargrafx tests, static checks and output checks as
 CI. Permissions are read-only contents plus read-only Actions in planning.
 Concurrency serializes Nightly runs without cancelling an in-progress build.
+
+Artifact download failure, missing state files, corrupt JSON, incomplete records
+or invalid schemas cause a search for the next older trustworthy baseline; if
+none exists, rebuild. Metadata API errors are distinct from absent artifacts:
+transient HTTP 429/5xx or timeout/reset errors retry up to three attempts with
+1/2-second delays, then planning fails as **indeterminate**, emitting no skip.
+Permanent API errors and invalid API responses fail explicitly as well.
 
 ## Artifacts and status
 
@@ -52,8 +61,10 @@ appeared on main and ignored documentation-only diffs. This bootstrap deliberate
 removes that fallback and changes the artifact schema: legacy markers cause one
 initial build. Draft PR #101 stays separate and is not changed or merged here.
 
-`tests/host/test_nightly.py` covers first/changed/identical SHA, legacy schema,
-other source branches and failed/current/expired artifact exclusion. API fixtures
+`tests/host/test_nightly.py` covers first/changed/identical SHA, expired/absent/
+unavailable/corrupt artifacts, incomplete and invalid states, other branches,
+failed/current/running workflows, owning SHA validation, paginated success
+selection, metadata outages/retry exhaustion and manual/scheduled equivalence. API fixtures
 are planner unit tests, not evidence of a live scheduled run. `make check` validates
 workflow syntax, schema and expressions using pinned actionlint. Inspect the
 live Actions decision summary after merging for the first-build and unchanged-SHA
