@@ -1,0 +1,331 @@
+{
+  "schema_version": 1,
+  "target": "Super System Card 3.0 (unverified API candidate mapping)",
+  "source_inventory": "docs/api-inventory.md",
+  "slots": [
+    {
+      "id": 0,
+      "candidate_name": "CD_BOOT"
+    },
+    {
+      "id": 1,
+      "candidate_name": "CD_RESET"
+    },
+    {
+      "id": 2,
+      "candidate_name": "CD_BASE"
+    },
+    {
+      "id": 3,
+      "candidate_name": "CD_READ"
+    },
+    {
+      "id": 4,
+      "candidate_name": "CD_SEEK"
+    },
+    {
+      "id": 5,
+      "candidate_name": "CD_EXEC"
+    },
+    {
+      "id": 6,
+      "candidate_name": "CD_PLAY"
+    },
+    {
+      "id": 7,
+      "candidate_name": "CD_SEARCH"
+    },
+    {
+      "id": 8,
+      "candidate_name": "CD_PAUSE"
+    },
+    {
+      "id": 9,
+      "candidate_name": "CD_STAT"
+    },
+    {
+      "id": 10,
+      "candidate_name": "CD_SUBQ"
+    },
+    {
+      "id": 11,
+      "candidate_name": "CD_DINFO"
+    },
+    {
+      "id": 12,
+      "candidate_name": "CD_CONTNTS"
+    },
+    {
+      "id": 13,
+      "candidate_name": "CD_SUBRQ_OR_SUBRD"
+    },
+    {
+      "id": 14,
+      "candidate_name": "CD_PCMRD"
+    },
+    {
+      "id": 15,
+      "candidate_name": "CD_FADE"
+    },
+    {
+      "id": 16,
+      "candidate_name": "AD_RESET"
+    },
+    {
+      "id": 17,
+      "candidate_name": "AD_TRANS"
+    },
+    {
+      "id": 18,
+      "candidate_name": "AD_READ"
+    },
+    {
+      "id": 19,
+      "candidate_name": "AD_WRITE"
+    },
+    {
+      "id": 20,
+      "candidate_name": "AD_PLAY"
+    },
+    {
+      "id": 21,
+      "candidate_name": "AD_CPLAY"
+    },
+    {
+      "id": 22,
+      "candidate_name": "AD_STOP"
+    },
+    {
+      "id": 23,
+      "candidate_name": "AD_STAT"
+    },
+    {
+      "id": 24,
+      "candidate_name": "BM_FORMAT"
+    },
+    {
+      "id": 25,
+      "candidate_name": "BM_FREE"
+    },
+    {
+      "id": 26,
+      "candidate_name": "BM_READ"
+    },
+    {
+      "id": 27,
+      "candidate_name": "BM_WRITE"
+    },
+    {
+      "id": 28,
+      "candidate_name": "BM_DELETE"
+    },
+    {
+      "id": 29,
+      "candidate_name": "BM_FILES"
+    },
+    {
+      "id": 30,
+      "candidate_name": "EX_GETVER"
+    },
+    {
+      "id": 31,
+      "candidate_name": "EX_SETVEC"
+    },
+    {
+      "id": 32,
+      "candidate_name": "EX_GETFNT"
+    },
+    {
+      "id": 33,
+      "candidate_name": "EX_JOYSNS"
+    },
+    {
+      "id": 34,
+      "candidate_name": "EX_JOYREP"
+    },
+    {
+      "id": 35,
+      "candidate_name": "EX_SCRSIZ"
+    },
+    {
+      "id": 36,
+      "candidate_name": "EX_DOTMOD"
+    },
+    {
+      "id": 37,
+      "candidate_name": "EX_SCRMOD"
+    },
+    {
+      "id": 38,
+      "candidate_name": "EX_IMODE"
+    },
+    {
+      "id": 39,
+      "candidate_name": "EX_VMODE"
+    },
+    {
+      "id": 40,
+      "candidate_name": "EX_HMODE"
+    },
+    {
+      "id": 41,
+      "candidate_name": "EX_VSYNC"
+    },
+    {
+      "id": 42,
+      "candidate_name": "EX_RCRON"
+    },
+    {
+      "id": 43,
+      "candidate_name": "EX_RCROFF"
+    },
+    {
+      "id": 44,
+      "candidate_name": "EX_IRQON"
+    },
+    {
+      "id": 45,
+      "candidate_name": "EX_IRQOFF"
+    },
+    {
+      "id": 46,
+      "candidate_name": "EX_BGON"
+    },
+    {
+      "id": 47,
+      "candidate_name": "EX_BGOFF"
+    },
+    {
+      "id": 48,
+      "candidate_name": "EX_SPRON"
+    },
+    {
+      "id": 49,
+      "candidate_name": "EX_SPROFF"
+    },
+    {
+      "id": 50,
+      "candidate_name": "EX_DSPON"
+    },
+    {
+      "id": 51,
+      "candidate_name": "EX_DSPOFF"
+    },
+    {
+      "id": 52,
+      "candidate_name": "EX_DMAMOD"
+    },
+    {
+      "id": 53,
+      "candidate_name": "EX_SPRDMA"
+    },
+    {
+      "id": 54,
+      "candidate_name": "EX_SATCLR"
+    },
+    {
+      "id": 55,
+      "candidate_name": "EX_SPRPUT"
+    },
+    {
+      "id": 56,
+      "candidate_name": "EX_SETRCR"
+    },
+    {
+      "id": 57,
+      "candidate_name": "EX_SETRED"
+    },
+    {
+      "id": 58,
+      "candidate_name": "EX_SETWRT"
+    },
+    {
+      "id": 59,
+      "candidate_name": "EX_SETDMA"
+    },
+    {
+      "id": 60,
+      "candidate_name": "EX_BINBCD"
+    },
+    {
+      "id": 61,
+      "candidate_name": "EX_BCDBIN"
+    },
+    {
+      "id": 62,
+      "candidate_name": "EX_RND"
+    },
+    {
+      "id": 63,
+      "candidate_name": "MA_MUL8U"
+    },
+    {
+      "id": 64,
+      "candidate_name": "MA_MUL8S"
+    },
+    {
+      "id": 65,
+      "candidate_name": "MA_MUL16U"
+    },
+    {
+      "id": 66,
+      "candidate_name": "MA_DIV16S"
+    },
+    {
+      "id": 67,
+      "candidate_name": "MA_DIV16U"
+    },
+    {
+      "id": 68,
+      "candidate_name": "MA_SQRT"
+    },
+    {
+      "id": 69,
+      "candidate_name": "MA_SIN"
+    },
+    {
+      "id": 70,
+      "candidate_name": "MA_COS"
+    },
+    {
+      "id": 71,
+      "candidate_name": "MA_ATNI"
+    },
+    {
+      "id": 72,
+      "candidate_name": "PSG_BIOS"
+    },
+    {
+      "id": 73,
+      "candidate_name": "GRP_BIOS"
+    },
+    {
+      "id": 74,
+      "candidate_name": "EX_MEMOPEN_OR_KEY_BIOS"
+    },
+    {
+      "id": 75,
+      "candidate_name": "PSG_DRIVER"
+    },
+    {
+      "id": 76,
+      "candidate_name": "EX_COLORCMD"
+    },
+    {
+      "id": 77,
+      "candidate_name": "AD_STREAM_START"
+    },
+    {
+      "id": 78,
+      "candidate_name": "AD_STREAM_POLL"
+    },
+    {
+      "id": 79,
+      "candidate_name": "MA_MUL16S"
+    },
+    {
+      "id": 80,
+      "candidate_name": "MA_DIV8U_OR_MA_CBASIS"
+    }
+  ]
+}
