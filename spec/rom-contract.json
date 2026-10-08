@@ -1,0 +1,364 @@
+{
+  "schema_version": 1,
+  "research_date": "2026-10-09",
+  "related_issues": [
+    1,
+    3,
+    4,
+    6,
+    100
+  ],
+  "sources": {
+    "gear-loader": {
+      "url": "https://github.com/drhelius/Geargrafx/blob/b49ae82a012eade566d72e9d61c9d95a5caa4da3/src/media.cpp",
+      "revision": "b49ae82a012eade566d72e9d61c9d95a5caa4da3",
+      "path": "src/media.cpp",
+      "sha256": "a646df1d9eb00d1c37f95eb2fdf990fae9df9865f43376b5884c2a9a65e27276",
+      "license_notice": "GPL-3.0-or-later; Ignacio Sanchez, 2024; root LICENSE",
+      "reuse_mode": "REFERENCE_ONLY",
+      "adoption_status": "PENDING"
+    },
+    "gear-memory": {
+      "url": "https://github.com/drhelius/Geargrafx/blob/b49ae82a012eade566d72e9d61c9d95a5caa4da3/src/memory.cpp",
+      "revision": "b49ae82a012eade566d72e9d61c9d95a5caa4da3",
+      "path": "src/memory.cpp",
+      "sha256": "71ab4e0f2ddb27eaa3ac7b697a3ccb05a63ad88bfebed5c0a1767aa3245694b7",
+      "license_notice": "GPL-3.0-or-later; Ignacio Sanchez, 2024; root LICENSE",
+      "reuse_mode": "REFERENCE_ONLY",
+      "adoption_status": "PENDING"
+    },
+    "gear-io": {
+      "url": "https://github.com/drhelius/Geargrafx/blob/b49ae82a012eade566d72e9d61c9d95a5caa4da3/src/memory_inline.h",
+      "revision": "b49ae82a012eade566d72e9d61c9d95a5caa4da3",
+      "path": "src/memory_inline.h",
+      "sha256": "2ab2ee4d819f970c61f599dded53d666225588a149190b0a4ed1141e1b8cc241",
+      "license_notice": "GPL-3.0-or-later; Ignacio Sanchez, 2024; root LICENSE",
+      "reuse_mode": "REFERENCE_ONLY",
+      "adoption_status": "PENDING"
+    },
+    "gear-cpu": {
+      "url": "https://github.com/drhelius/Geargrafx/blob/b49ae82a012eade566d72e9d61c9d95a5caa4da3/src/huc6280.cpp",
+      "revision": "b49ae82a012eade566d72e9d61c9d95a5caa4da3",
+      "path": "src/huc6280.cpp",
+      "sha256": "9c26ee768144f52988ea71561b2d3fd4d0dbcb3422fc993b39f6d9de12d119f2",
+      "license_notice": "GPL-3.0-or-later; Ignacio Sanchez, 2024; root LICENSE",
+      "reuse_mode": "REFERENCE_ONLY",
+      "adoption_status": "PENDING"
+    },
+    "huc-cpu": {
+      "url": "https://github.com/pce-devel/huc/blob/54f5c73606c1e7142e8095c727cab2767e2b3cb3/doc/pce/cpu.txt",
+      "revision": "54f5c73606c1e7142e8095c727cab2767e2b3cb3",
+      "path": "doc/pce/cpu.txt",
+      "sha256": "6a5ccdc99f56af063bbfdf0ba533cabd0048fe21a77b9a766028ada85ecc7232",
+      "license_notice": "Root LICENSE records mixed/uncertain legacy rights; reference only",
+      "reuse_mode": "REFERENCE_ONLY",
+      "adoption_status": "PENDING"
+    },
+    "huc-header": {
+      "url": "https://github.com/pce-devel/huc/blob/54f5c73606c1e7142e8095c727cab2767e2b3cb3/include/hucc/pcengine.inc",
+      "revision": "54f5c73606c1e7142e8095c727cab2767e2b3cb3",
+      "path": "include/hucc/pcengine.inc",
+      "sha256": "b6a25d33bb787ea1fe550c6e04aff9f8ccaaa91b649a05a963be24b440b728a9",
+      "license_notice": "File notice: Boost Software License 1.0; root LICENSE is not blanket clearance",
+      "reuse_mode": "REFERENCE_ONLY",
+      "adoption_status": "PENDING"
+    },
+    "hudson-manual": {
+      "url": "https://github.com/MiSTer-devel/TurboGrafx16_MiSTer/blob/827d45f45799b8ab3a536510847f2108a92e81bd/docs/HuC6280%20-%20CMOS%208-bit%20Microprocessor%20Hardware%20Manual.pdf",
+      "revision": "827d45f45799b8ab3a536510847f2108a92e81bd",
+      "path": "docs/HuC6280 - CMOS 8-bit Microprocessor Hardware Manual.pdf",
+      "sha256": "40a32e5dec7fefd8ea1893be91a53e6f6d4eae5f9c86154019ae792b40374fcb",
+      "license_notice": "Hudson Soft manufacturer manual scan; redistribution permission not established; factual reference only",
+      "reuse_mode": "REFERENCE_ONLY",
+      "adoption_status": "PENDING"
+    },
+    "diagnostic": {
+      "url": "https://github.com/mao2009/oss-pce-cd-bios/blob/493b2eaec0e2fc3d690f4767f3ada792135bb94a/docs/api-stub-scaffold.md",
+      "revision": "493b2eaec0e2fc3d690f4767f3ada792135bb94a",
+      "path": "docs/api-stub-scaffold.md",
+      "license_notice": "Original project documentation, MIT; reports independently authored fixture/core observations",
+      "reuse_mode": "REFERENCE_ONLY",
+      "adoption_status": "PENDING"
+    },
+    "huc-wiki": {
+      "url": "https://github.com/pce-devel/huc/wiki/Memory-Map",
+      "revision": null,
+      "path": null,
+      "accessed": "2026-10-09",
+      "license_notice": "Community wiki; page reports edited 2025-01-06; not a pinned manufacturer capacity specification",
+      "reuse_mode": "REFERENCE_ONLY",
+      "adoption_status": "PENDING"
+    },
+    "gear-defines": {
+      "url": "https://github.com/drhelius/Geargrafx/blob/b49ae82a012eade566d72e9d61c9d95a5caa4da3/src/defines.h",
+      "revision": "b49ae82a012eade566d72e9d61c9d95a5caa4da3",
+      "path": "src/defines.h",
+      "sha256": "4f916b9603a98d046310a05552dfb568839a38d0539b7411e62a67656efae4db",
+      "license_notice": "Geargrafx GPL-3.0-or-later project; external reference only, root LICENSE",
+      "reuse_mode": "REFERENCE_ONLY",
+      "adoption_status": "PENDING"
+    },
+    "gear-libretro-build": {
+      "url": "https://github.com/drhelius/Geargrafx/blob/b49ae82a012eade566d72e9d61c9d95a5caa4da3/platforms/libretro/Makefile",
+      "revision": "b49ae82a012eade566d72e9d61c9d95a5caa4da3",
+      "path": "platforms/libretro/Makefile",
+      "sha256": "5d5c631d7924f8354dda900611b6ca94ff26cd9ae0d8647aca7d6104501a683a",
+      "license_notice": "Geargrafx GPL-3.0-or-later project; external reference only, root LICENSE",
+      "reuse_mode": "REFERENCE_ONLY",
+      "adoption_status": "PENDING"
+    }
+  },
+  "claims": [
+    {
+      "id": "mpr_geometry",
+      "scope": "cpu",
+      "status": "SOURCE_FACT",
+      "value": {
+        "logical_bytes": 65536,
+        "physical_bytes": 2097152,
+        "mpr_count": 8,
+        "bank_bytes": 8192
+      },
+      "references": [
+        "hudson-manual",
+        "gear-io"
+      ],
+      "limit": "Manual sections 2.2/2.3; address = MPR[logical >> 13] * 8192 + (logical & 8191). Physical address is not necessarily file offset."
+    },
+    {
+      "id": "reset_mapping",
+      "scope": "cpu",
+      "status": "SOURCE_FACT",
+      "value": {
+        "mpr7": 0,
+        "other_mpr_defaults": null,
+        "vector_cpu": 65534,
+        "vector_physical": 8190,
+        "byte_order": "little"
+      },
+      "references": [
+        "hudson-manual",
+        "gear-cpu",
+        "gear-memory"
+      ],
+      "limit": "Manual sections 2.2/2.5: MPR0..6 unspecified, initialize before use; Gear randomization is an emulator choice."
+    },
+    {
+      "id": "vectors",
+      "scope": "cpu",
+      "status": "SOURCE_FACT",
+      "value": {
+        "IRQ2_BRK": 65526,
+        "IRQ1": 65528,
+        "TIMER": 65530,
+        "NMI": 65532,
+        "RESET": 65534
+      },
+      "references": [
+        "hudson-manual",
+        "huc-cpu"
+      ],
+      "limit": "Two-byte little-endian addresses in logical MPR7 window; NMI hardware availability and handler ABI are separate questions."
+    },
+    {
+      "id": "syscard_loader",
+      "scope": "geargrafx",
+      "status": "SOURCE_FACT",
+      "value": {
+        "payload_bytes": 262144,
+        "accepted_input_bytes": [
+          262144,
+          262656
+        ],
+        "stripped_prefix_bytes": 512,
+        "header_content_checked": false,
+        "database_match_required_for_load": false,
+        "failure_unloads_previous_bios": true
+      },
+      "references": [
+        "gear-loader",
+        "gear-defines"
+      ],
+      "limit": "LoadBiosData(syscard=true): nonnull positive buffer required; CRC database recognition differs from loaded state. No boot/ABI/content validity test."
+    },
+    {
+      "id": "syscard_rom_mapping",
+      "scope": "geargrafx",
+      "status": "SOURCE_FACT",
+      "value": {
+        "bank_count": 32,
+        "rom_bank_first": 0,
+        "rom_bank_last": 127,
+        "file_bank_modulus": 32
+      },
+      "references": [
+        "gear-loader",
+        "gear-memory"
+      ],
+      "limit": "Ordinary CD syscard path, default mapper: ROM bank b selects file bank b modulo 32. Active card RAM overrides ROM windows; not LaserActive/Game Express/Arcade mapper proof."
+    },
+    {
+      "id": "cd_ram",
+      "scope": "geargrafx",
+      "status": "SOURCE_FACT",
+      "value": {
+        "bank_first": 128,
+        "bank_last": 135,
+        "physical_first": 1048576,
+        "physical_last": 1114111,
+        "bytes": 65536
+      },
+      "references": [
+        "gear-memory"
+      ],
+      "limit": "Only when CD hardware enabled; peripheral memory, not bytes appended to BIOS file."
+    },
+    {
+      "id": "super_cd_ram",
+      "scope": "geargrafx",
+      "status": "SOURCE_FACT",
+      "value": {
+        "bank_first": 104,
+        "bank_last": 127,
+        "physical_first": 851968,
+        "physical_last": 1048575,
+        "bytes": 196608
+      },
+      "references": [
+        "gear-loader",
+        "gear-memory"
+      ],
+      "limit": "When media/configuration chooses 0x30000 card RAM; BIOS loading alone does not allocate expansion. Standard CD can omit it."
+    },
+    {
+      "id": "work_ram",
+      "scope": "geargrafx",
+      "status": "SOURCE_FACT",
+      "value": {
+        "bank_first": 248,
+        "bank_last": 251,
+        "unique_bytes": 8192,
+        "mirrored": true
+      },
+      "references": [
+        "gear-memory"
+      ],
+      "limit": "Ordinary PCE; SGX has distinct 32 KiB. No BIOS workspace allocation established."
+    },
+    {
+      "id": "cd_io",
+      "scope": "geargrafx",
+      "status": "SOURCE_FACT",
+      "value": {
+        "bank": 255,
+        "offset_first": 6144,
+        "offset_last": 7167,
+        "physical_first": 2095104,
+        "physical_last": 2096127
+      },
+      "references": [
+        "gear-io"
+      ],
+      "limit": "Core routes offsets 0x1800..0x1BFF to CD when enabled, with mapper interception at >=0x1A00; this is dispatch extent, not implemented-register inventory. CPU $1800 requires MPR0=$FF."
+    },
+    {
+      "id": "diagnostic_layout",
+      "scope": "diagnostic",
+      "status": "OBSERVED",
+      "value": {
+        "image_bytes": 262144,
+        "bank_bytes": 8192,
+        "bank0_cpu_base": 57344,
+        "reset_target_cpu": 61440,
+        "reset_vector_file_offset": 8190,
+        "vector_file_first": 8182,
+        "padding_byte": 255,
+        "padding_banks": 31,
+        "mpr7": 0,
+        "api_base_cpu": 57344,
+        "api_stride": 3,
+        "api_count": 81,
+        "api_end_cpu_exclusive": 57587
+      },
+      "references": [
+        "diagnostic",
+        "gear-libretro-build"
+      ],
+      "limit": "Existing real-core observations at base revision: reset F000 -> F003/X FF; slots 00/48/50 stop with X IDs. Table choice/padding/handlers are project diagnostic policy, not historical firmware requirements; not rerun by host contract tests. Prior default libretro results are bounded frame halt checkpoints, not instruction stepping: GG_DISABLE_DISASSEMBLER disables that capability. Parent owns separate debugger-enabled verification."
+    },
+    {
+      "id": "historical_system_card_1",
+      "scope": "historical",
+      "status": "UNKNOWN",
+      "value": null,
+      "references": [
+        "huc-wiki",
+        "gear-loader"
+      ],
+      "limit": "Retail ROM capacity, physical decode/mirroring and version/region layout not verified. Wiki reports v1/v2 256 KiB and v3 512 KiB mapped extents, differing from core 256 KiB payload; mapped extent does not prove unique ROM capacity."
+    },
+    {
+      "id": "historical_system_card_2",
+      "scope": "historical",
+      "status": "UNKNOWN",
+      "value": null,
+      "references": [
+        "huc-wiki",
+        "gear-loader"
+      ],
+      "limit": "Retail ROM capacity, physical decode/mirroring and version/region layout not verified. Wiki reports v1/v2 256 KiB and v3 512 KiB mapped extents, differing from core 256 KiB payload; mapped extent does not prove unique ROM capacity."
+    },
+    {
+      "id": "historical_system_card_3",
+      "scope": "historical",
+      "status": "UNKNOWN",
+      "value": null,
+      "references": [
+        "huc-wiki",
+        "gear-loader"
+      ],
+      "limit": "Retail ROM capacity, physical decode/mirroring and version/region layout not verified. Wiki reports v1/v2 256 KiB and v3 512 KiB mapped extents, differing from core 256 KiB payload; mapped extent does not prove unique ROM capacity."
+    },
+    {
+      "id": "final_bios_layout",
+      "scope": "final_bios",
+      "status": "UNKNOWN",
+      "value": null,
+      "references": [
+        "diagnostic"
+      ],
+      "limit": "Final bank order, headers, metadata/checksums, region and production capacity unverified."
+    },
+    {
+      "id": "api_bank_preconditions",
+      "scope": "final_bios",
+      "status": "UNKNOWN",
+      "value": null,
+      "references": [
+        "diagnostic"
+      ],
+      "limit": "Candidate E000 table does not establish every caller MPR state, JSR/RTS ABI or bank restoration."
+    },
+    {
+      "id": "boot_and_interrupt_abi",
+      "scope": "final_bios",
+      "status": "UNKNOWN",
+      "value": null,
+      "references": [
+        "diagnostic"
+      ],
+      "limit": "Reset diagnostic is nonreturning; stack/workspace/IRQ handlers and CD handoff unimplemented."
+    },
+    {
+      "id": "compatibility",
+      "scope": "final_bios",
+      "status": "UNKNOWN",
+      "value": null,
+      "references": [
+        "diagnostic"
+      ],
+      "limit": "No CD sector read, retail title or independent-emulator/hardware compatibility established."
+    }
+  ],
+  "release_approved": false
+}
