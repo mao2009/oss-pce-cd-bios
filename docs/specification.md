@@ -2,6 +2,11 @@
 
 **Status:** references and questions, **not** a complete or independently verified System Card 3.0 specification. Documentation reading is not hardware proof.
 
+
+## API Issue inventory
+
+[System Card 3.0 candidate API ledger](https://github.com/mao2009/oss-pce-cd-bios/blob/main/docs/api-inventory.md): **81 primary jump-table slots** (`$00-$50`) + **9 PSG_BIOS subfunction candidates**. Each is cross-linked to a separate open Issue. All behaviors still require ABI/provenance verification; several published sources disagree ($0D, $4A, $4C, $50) and $4D/$4E names are unofficial. This is an **issue inventory**, not a tested spec or implementation.
+
 ## Sources to review
 
 | Source | Supported starting point | Limits |
