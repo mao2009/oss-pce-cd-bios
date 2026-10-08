@@ -2,7 +2,8 @@
 
 All three dispositions are **PENDING**, planned usage **REFERENCE_ONLY**.
 Reviewer: null. Approval date: null. Human adoption approval has not been given.
-No upstream code, translation, binary or asset was incorporated. Research and
+No upstream code, translation, binary or asset was incorporated into the
+firmware or repository; externally linked test executables stay local. Research and
 host validator/tests are original. Pin and file hashes identify what was read,
 not proof of ownership or permission to adopt it. See [provenance policy](provenance.md)
 and [candidate ABI research](abi-contracts.md). Inspected 2026-10-09.

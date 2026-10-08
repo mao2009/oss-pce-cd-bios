@@ -7,8 +7,9 @@ invalid input was rejected, never evidence that the invalid ROM works.
 
 ## Host tests
 
-`python3 -m unittest discover -s tests/host -v` currently runs 89 tests: the original
-13 retained tests, 46 review-regression tests and 30 API diagnostic tests.
+`python3 -m unittest discover -s tests/host -v` currently runs 116 tests: the original
+13 retained tests, 46 review-regression tests, 30 API diagnostic tests and
+27 ROM/ABI ledger, debugger-profile and original experiment build tests.
 
 - Two independent debug builds and a release build yield identical ROM bytes.
 - Headerless size, reset code, checkpoint loop, marker, vector words and all
@@ -88,7 +89,8 @@ version observations are compared; arbitrary power-on RAM is not deterministic.
 | Fixture assembly/format/layout/reproducibility | PASS when the above host checks run |
 | Real Geargrafx HuCARD reset/marker/TAM/TMA/TII | PASS when integration produces its evidence |
 | PC/MPR register trace through standalone MCP | NOT_RUN locally; SDL3 missing; #103 |
-| System Card BIOS load/boot and 256 KiB layout | NOT_TESTED; #1/#4/#6 |
+| System Card diagnostic load/reset/bank/RAM/IRQ | PASS in the scoped Geargrafx experiment; see expanded evidence |
+| Production BIOS boot and API ABI | NOT_IMPLEMENTED/NOT_TESTED; #1/#3/#4/#6 |
 | BIOS API semantics, CD reads/homebrew disc | NOT_IMPLEMENTED/NOT_TESTED; #3/#5 and API Issues |
 | Independent emulator or real hardware | NOT_TESTED; #7 |
 | Commercial games | NOT_TESTED; no inputs required or distributed |
@@ -98,18 +100,20 @@ window and placement constraints. It does not inspect instruction semantics or
 establish a System Card contract. `tools/build.py::verify_fixture` adds the strict
 all-byte smoke-content regression on top. Size-valid random bytes can meet the
 structural contract but fail fixture validation; neither layer proves BIOS
-compatibility. No new BIOS layout/API specification is introduced.
-Nightly's live schedule/skip behavior can be observed only after these files
-reach main; [nightly.md](nightly.md) explains the host tests and runtime policy.
+compatibility. These generic validators do not establish BIOS layout/API specifications; the scoped research ledgers are separate.
+Nightly's live schedule/skip behavior is separate from host recovery tests; [nightly.md](nightly.md) explains the host tests and runtime policy.
 
 ## API scaffold additions (#101)
 
 The existing 59 host tests remain. `tests/host/test_api_table.py` adds the prior
 9 scaffold checks; `test_api_build.py` adds 21 checks using real pinned assembly,
-for 89 total host tests. `make test` discovers all 89 and keeps the existing
+bringing the prior baseline to 89. The new 27 contract/probe tests bring
+`make test` to 116; it keeps the existing
 HuCARD cold/warm/negative real-core tests. `make dev-test` runs the 30 API host
 tests and the separate real-core System Card diagnostics: reset, three slots,
 PC/X/MPR/physical bank observations and four negative execution cases.
 These are development experiments, not caller ABI or CD boot passes.
 The independent BIOS DEV workflow saves its own artifact; Nightly's original
 smoke success criteria stay unchanged. [Scope](api-stub-scaffold.md).
+
+Expanded register/stack/bank/RAM/IRQ and loader cases: [evidence scope](geargrafx-contract-evidence.md).

@@ -132,3 +132,12 @@ the actual CPU and checks reset/slot checkpoints. No emulator code is copied or
 patched. The GPL-linked executable stays local and is excluded from artifacts.
 This does not complete the standalone MCP/CD harness (#6/#103) or prove hardware
 ABI compatibility. Exact assertions and limits: [API scaffold](api-stub-scaffold.md).
+
+## Instruction debugger and contract probes
+
+`make setup` additionally builds a separate debugger-enabled Geargrafx tree
+from the same verified source archive; no SDL installation or source patch is
+needed. The normal HuCARD core stays separate. `make dev-test` now verifies
+actual one-instruction stepping, registers/stack/RAM, guest bank switches,
+IRQ1/IRQ2, loader edge cases and additional negative procedures.
+[Exact conditions and API limitations](geargrafx-contract-evidence.md).

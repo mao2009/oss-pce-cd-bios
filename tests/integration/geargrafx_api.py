@@ -22,7 +22,7 @@ from build_rom import verify_image
 def compile_probe(output):
     if not shutil.which('g++'):
         raise ValueError('BLOCKED: missing g++')
-    source = dependency_dir('geargrafx')
+    source = dependency_dir('geargrafx').with_name(dependency_dir('geargrafx').name + '-debugger')
     make_dir = source / 'platforms/libretro'
     # Ask upstream's pinned Makefile for its object list; do not copy core code.
     objects = subprocess.run(['make', '-s', '--no-print-directory', '-C', str(make_dir),
@@ -32,8 +32,8 @@ def compile_probe(output):
     if not objects or not all(p.is_file() for p in objects):
         raise ValueError('BLOCKED: official Geargrafx objects missing; run make setup')
     target = output / 'geargrafx-api-probe'
-    subprocess.run(['g++', '-std=c++11', '-O2', '-fno-rtti', '-D__LIBRETRO__',
-                    '-DGG_DISABLE_DISASSEMBLER', '-DGG_DISABLE_VGMRECORDER',
+    subprocess.run(['g++', '-std=c++11', '-O0', '-fno-rtti', '-D__LIBRETRO__',
+                    '-DGG_DISABLE_VGMRECORDER', '-DGG_ENABLE_CDROM_CUEBIN_READAHEAD',
                     '-I' + str(source / 'src'), '-I' + str(make_dir),
                     '-I' + str(source / 'platforms/shared/dependencies/miniz'),
                     '-I' + str(source / 'platforms/shared/dependencies/json'), str(Path(__file__).with_name('geargrafx_api_probe.cpp')),
@@ -45,7 +45,12 @@ def run_probe(probe, rom, cue):
     result = subprocess.run([str(probe), str(rom), str(cue)], timeout=30,
                             check=True, capture_output=True, text=True)
     observations = [json.loads(line[4:]) for line in result.stdout.splitlines() if line.startswith('OBS ')]
+    caps = [json.loads(line[4:]) for line in result.stdout.splitlines() if line.startswith('CAP ')]
+    if len(caps) != 1 or caps[0].get('instruction_step') is not True or caps[0].get('cdrom_hardware') is not True or caps[0].get('cdrom_media') is not True:
+        raise ValueError('instruction debugger/System Card capability missing')
     banks = [json.loads(line[5:]) for line in result.stdout.splitlines() if line.startswith('BANK ')]
+    if observations and (not observations[0]['p'] & 4 or observations[0]['p'] & 8):
+        raise ValueError('reset I/D flags do not match source-backed CPU contract')
     if [r['phase'] for r in observations] != ['loaded', 'cold', 'nonreturning', 'warm'] or len(banks) != 1:
         raise ValueError('missing real core observations')
     return observations, banks[0]
@@ -69,7 +74,13 @@ def main():
     probe = compile_probe(output)
     evidence = {'scope': 'synthetic-disc System Card diagnostic execution, NOT CD boot/API ABI compatibility',
                 'geargrafx_revision': DEPENDENCIES['geargrafx']['revision'],
-                'rom_sha256': hashlib.sha256(data).hexdigest(), 'observations': {}, 'negative_cases': []}
+                'rom_sha256': hashlib.sha256(data).hexdigest(), 'observations': {}, 'negative_cases': [],
+                'conditions': {'loader': 'LoadBiosFromBuffer(syscard=true) + LoadMedia(original.cue)',
+                               'disc': '32 MODE1/2352 zero-filled sectors', 'instruction_debugger': True,
+                               'geargrafx_profile': 'separate debugger-enabled source-identical build',
+                               'source_archive_sha256': DEPENDENCIES['geargrafx']['sha256']},
+                'api_exit': {'status': 'NOT_OBSERVABLE', 'reason': 'all BIOS API stubs are nonreturning; no implemented callee'},
+                'nmi': {'status': 'NOT_OBSERVABLE', 'reason': 'pinned public CPU API has no NMI line injection'}}
     with tempfile.TemporaryDirectory(prefix='pce-api-probe-') as tmp:
         folder = Path(tmp)
         (folder / 'original.bin').write_bytes(bytes(2352 * 32))
@@ -122,8 +133,11 @@ def main():
             evidence['negative_cases'].append({'case': 'wrong_guest_mpr7', 'observations': rows})
         else:
             raise ValueError('negative bank ROM unexpectedly passed')
+        from geargrafx_contracts import run_contracts
+        evidence['cpu_contract_experiments'] = run_contracts(probe, data, output, cue)
     (output / 'geargrafx-api-evidence.json').write_text(json.dumps(evidence, indent=2) + '\n')
-    print('PASS real Geargrafx System Card diagnostic: reset/cold/warm, slots 00/48/50, PC/X/MPR/banks, 4 negatives')
+    print('PASS real Geargrafx System Card diagnostic: reset/cold/warm, slots 00/48/50, original 4 negatives; '
+          '8 CPU/RAM/IRQ/JSR-slot experiments, 9 loader cases, 2 procedure negatives; A/X/Y/P/SP/MPR/RAM observed')
 
 
 if __name__ == '__main__':

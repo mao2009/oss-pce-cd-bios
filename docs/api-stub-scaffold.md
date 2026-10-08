@@ -50,13 +50,16 @@ System Card compatibility. Smoke fixture validation remains separate.
 ## Measured Geargrafx behavior
 
 `tests/integration/geargrafx_api.py` links an original C++ probe against objects
-from the existing official pinned Geargrafx libretro build. It uses public
+from the separate debugger-enabled official pinned Geargrafx libretro build. It uses public
 [`GeargrafxCore`](https://github.com/drhelius/Geargrafx/blob/b49ae82a012eade566d72e9d61c9d95a5caa4da3/src/geargrafx_core.h),
 [`HuC6280::GetState`](https://github.com/drhelius/Geargrafx/blob/b49ae82a012eade566d72e9d61c9d95a5caa4da3/src/huc6280.h),
 [`Memory::GetMpr` / `GetPhysicalAddress`](https://github.com/drhelius/Geargrafx/blob/b49ae82a012eade566d72e9d61c9d95a5caa4da3/src/memory_inline.h) APIs.
 The core's [reset initialization](https://github.com/drhelius/Geargrafx/blob/b49ae82a012eade566d72e9d61c9d95a5caa4da3/src/memory.cpp)
 is a source of emulator behavior hypotheses, not a hardware specification.
 There are no patches to Geargrafx, no Python CPU simulation and no SDL GUI dependency.
+The new debugger-enabled build proves single-instruction capability; earlier
+frame-bounded checkpoints and their corrected interpretation are documented
+in [expanded evidence](geargrafx-contract-evidence.md).
 An independently generated 32-sector zero-filled CUE/BIN activates the System Card
 path after `LoadBiosFromBuffer(..., true)` loads the diagnostic ROM.
 

@@ -4,7 +4,7 @@ The complete 81-slot ledger is [api_contracts.json](../spec/api_contracts.json).
 It preserves the names and ordering of [api_slots.json](../spec/api_slots.json)
 and [the preliminary inventory](api-inventory.md). Nothing here certifies a
 System Card implementation: no actual API implementation exists at this base,
-no callee was executed, and every verification record is `NOT_RUN`.
+no implemented service callee was executed, and every verification record is `NOT_RUN`.
 
 This research uses pinned upstream caller/emulator sources only. No proprietary
 firmware, disassembly, external implementation or asset was copied or imported.
@@ -32,10 +32,10 @@ CPU/map probes; architectural JSR/RTS/IRQ tests cannot establish these API ABIs.
 The [default pinned libretro Makefile](https://github.com/drhelius/Geargrafx/blob/b49ae82a012eade566d72e9d61c9d95a5caa4da3/platforms/libretro/Makefile#L377-L378) defines `GG_DISABLE_DISASSEMBLER`. Prior
 `RunToVBlank(debug.step_debugger=true)` probes therefore ran frames; their
 bounded halt checkpoints remain useful, but were not individual instruction
-steps. Parent work is adding a separate debugger-enabled build from the same
-archive SHA, without upstream patches, with a one-SEI/PC+1 capability check.
-That new capability and its observations are pending here; neither kind of
-architectural checkpoint verifies a BIOS API.
+steps. The integrated separate debugger-enabled build uses the same archive SHA
+without upstream patches and passes a one-SEI/PC+1 capability check.
+[Expanded observations](geargrafx-contract-evidence.md) cover CPU/RAM/IRQ
+experiments; neither kind of architectural checkpoint verifies a BIOS API.
 
 The nine PSG subselectors are not additional jump-table slots and are outside
 this 81-row ledger.

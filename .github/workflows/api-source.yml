@@ -19,6 +19,7 @@ jobs:
         run: make setup
       - name: Source inventory and diagnostic binary checks
         run: |
+          python3 tools/contracts.py
           python3 tools/build_rom.py --check-source
           make dev-rom
           python3 -m unittest discover -s tests/host -p 'test_api*.py' -v
@@ -45,5 +46,9 @@ jobs:
             build/debug/bios-dev/*.json
             build/debug/bios-dev/*.map
             build/debug/bios-dev/*.lbl
+            build/debug/bios-dev/contract-probes/*.pce
+            build/debug/bios-dev/contract-probes/*.json
+            build/debug/bios-dev/contract-probes/*.map
+            build/debug/bios-dev/contract-probes/*.lbl
           if-no-files-found: error
           retention-days: 14

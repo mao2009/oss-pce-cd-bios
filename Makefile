@@ -20,6 +20,7 @@ integration: build
 	$(PYTHON) tests/integration/geargrafx_smoke.py --rom "build/$(MODE)/smoke-test-not-bios.pce" --output "build/$(MODE)/geargrafx-evidence.json"
 
 check:
+	$(PYTHON) tools/contracts.py
 	$(PYTHON) tools/check.py
 
 clean:
