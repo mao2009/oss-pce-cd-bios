@@ -38,6 +38,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: ${{ needs.plan.outputs.source_sha }}
+          fetch-depth: 0
           persist-credentials: false
       - name: Prepare pinned tools from source
         run: make setup
