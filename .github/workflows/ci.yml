@@ -1,0 +1,41 @@
+name: CI (original fixture, not BIOS compatibility)
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Prepare pinned tools from source
+        run: make setup
+      - name: Build original HuCARD fixture
+        run: make build
+      - name: Host and real Geargrafx tests
+        run: make test
+      - name: Static checks including Actions validation
+        run: make check
+      - name: Verify release-mode fixture
+        run: |
+          make build MODE=release
+          cmp build/debug/smoke-test-not-bios.pce build/release/smoke-test-not-bios.pce
+          python3 tools/build.py --verify build/debug/smoke-test-not-bios.pce
+      - name: Save verified test fixture and evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: smoke-fixture-not-bios-${{ github.sha }}
+          path: |
+            build/debug/*.pce
+            build/debug/*.json
+            build/debug/*.map
+            build/debug/*.lbl
+            build/debug/*.lst
+          if-no-files-found: error
+          retention-days: 14
