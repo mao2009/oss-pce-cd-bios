@@ -58,6 +58,12 @@ class ApiTableTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'debug marker'):
             verify_bank(data)
 
+    def test_override_does_not_bypass_other_fallbacks(self):
+        data = bytearray(self.build_fake_bank())
+        data[0x100] = 0x60  # Corrupt slot 00 while slot 03 is overridden
+        with self.assertRaisesRegex(ValueError, 'debug marker'):
+            verify_bank(data, overridden={3})
+
     @staticmethod
     def build_fake_bank():
         """Artificial structural test fixture, NOT an emulator or assembled BIOS."""
