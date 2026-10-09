@@ -41,6 +41,20 @@ class StartupBuildTests(unittest.TestCase):
         self.assertEqual(self.payload[0x1ff6:0x1ffe], irq * 4)
         self.assertEqual(self.payload[0x1ffe:0x2000], b"\x00\xf0")
 
+    def test_duplicate_ld65_names_are_safe_but_conflicting_addresses_fail(self):
+        labels = self.root / "startup/startup.lbl"
+        lines = labels.read_text().splitlines()
+        matching = [line for line in lines if line.endswith(" .startup_entry") and line.startswith("al ")]
+        self.assertGreaterEqual(len(matching), 1)
+        with tempfile.TemporaryDirectory() as tmp:
+            duplicate = Path(tmp) / "duplicate.lbl"
+            duplicate.write_text(labels.read_text() + matching[0] + "\n")
+            self.assertEqual(parse_symbols(duplicate)["startup_entry"], 0xf000)
+            conflicting = Path(tmp) / "conflicting.lbl"
+            conflicting.write_text(labels.read_text() + "al 00F001 .startup_entry\n")
+            with self.assertRaisesRegex(ValueError, "contradictory"):
+                parse_symbols(conflicting)
+
     def test_corruptions_fail_closed(self):
         for offset in (0, 0x1000, 0x1000 + 9, 0x1000 + SYMBOL_OFFSETS["startup_marker_write"],
                        0x1000 + len(STARTUP_CODE), 0x1ff6, 0x1ffe, 0x2000):
