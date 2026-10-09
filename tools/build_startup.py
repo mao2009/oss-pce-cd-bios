@@ -64,9 +64,10 @@ def parse_symbols(path: Path) -> dict:
     symbols = {}
     for address, name in re.findall(r"^al ([0-9A-Fa-f]{6}) \.([A-Za-z_][A-Za-z_0-9]*)$", path.read_text(), re.M):
         if name.startswith("startup_"):
-            if name in symbols:
-                raise ValueError("duplicate startup label")
-            symbols[name] = int(address, 16)
+            value = int(address, 16)
+            if name in symbols and symbols[name] != value:
+                raise ValueError("contradictory startup label addresses")
+            symbols[name] = value
     expected = {key: 0xf000 + offset for key, offset in SYMBOL_OFFSETS.items()}
     if symbols != expected:
         raise ValueError(f"startup symbols/placement mismatch: {symbols}")
