@@ -25,10 +25,17 @@ jobs:
           python3 -m unittest discover -s tests/host -p 'test_api*.py' -v
       - name: Real Geargrafx System Card diagnostic execution
         run: make dev-integration
+      - name: Independent cold/warm System Card startup checkpoint (not BIOS boot)
+        run: |
+          make dev-startup
+          python3 -m unittest discover -s tests/host -p 'test_startup.py' -v
+          make dev-startup-integration
       - name: Debug and release diagnostic bytes match
         run: |
           make dev-rom MODE=release
           cmp build/debug/bios-dev/dev-only-not-compatible-syscard3.pce build/release/bios-dev/dev-only-not-compatible-syscard3.pce
+          make dev-startup MODE=release
+          cmp build/debug/startup-probe/startup-probe-not-bios.pce build/release/startup-probe/startup-probe-not-bios.pce
       - name: Incomplete firmware must fail release gate
         run: |
           if make dev-release-gate; then
@@ -50,5 +57,9 @@ jobs:
             build/debug/bios-dev/contract-probes/*.json
             build/debug/bios-dev/contract-probes/*.map
             build/debug/bios-dev/contract-probes/*.lbl
+            build/debug/startup-probe/*.pce
+            build/debug/startup-probe/*.json
+            build/debug/startup-probe/*.map
+            build/debug/startup-probe/*.lbl
           if-no-files-found: error
           retention-days: 14

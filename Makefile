@@ -40,3 +40,11 @@ dev-integration: dev-rom
 	$(PYTHON) tests/integration/geargrafx_api.py --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
 dev-release-gate:
 	$(PYTHON) tools/build_rom.py --release-gate
+
+.PHONY: dev-startup dev-startup-integration
+# Opt-in Issue #4 startup checkpoint; deliberately separate from the default DEV ROM.
+dev-startup: dev-rom
+	$(PYTHON) tools/build_startup.py --mode "$(MODE)"
+
+dev-startup-integration: dev-startup
+	$(PYTHON) tests/integration/geargrafx_startup.py --mode "$(MODE)"
