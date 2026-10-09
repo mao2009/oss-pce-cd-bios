@@ -65,12 +65,16 @@ def main():
         cue.write_text('FILE "original.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
         records = execute(probe, rom, cue, output / "trace-labels.txt")
         check_evidence(records, symbols)
-        # Negative guest execution: remove the symbol-qualified first marker store.
+        # Deterministic negative: redirect the second store to $2200, so 'O'
+        # overwrites 'B' even if uninitialized work RAM happened to contain 'B'.
         damaged = bytearray(payload)
         marker_offset = symbols["startup_marker_write"] - 0xe000
         if damaged[marker_offset:marker_offset+3] != b"\x8d\x00\x22":
             raise ValueError("symbol-qualified STA $2200 opcode mismatch")
-        damaged[marker_offset:marker_offset+3] = b"\xea" * 3
+        second_store = marker_offset + 5  # STA $2200 (3) then LDA #$4F (2)
+        if damaged[second_store:second_store+3] != b"\x8d\x01\x22":
+            raise ValueError("expected second marker store STA $2201")
+        damaged[second_store+1] = 0  # STA $2200 with A='O', not 'B'
         invalid = folder / "missing-startup-marker-not-bios.pce"
         invalid.write_bytes(damaged)
         try:
