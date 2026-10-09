@@ -59,8 +59,8 @@ require rejection.
 The integration runner invokes the actual Geargrafx debugger-enabled C++
 frontend that Issue #6 / PR #101 established. It observes real PC, P, SP,
 X, all MPRs, and RAM on cold/warm reset plus named instruction checkpoints.
-A symbol-qualified deletion of `STA $2200` is deliberately executed in the
-real emulator and must fail the same startup-marker assertion. No Python CPU
+A symbol-qualified redirection of the second marker store to `$2200` is deliberately executed in the
+real emulator, overwriting `B` with `O`, and must fail the same startup-marker assertion. No Python CPU
 simulation substitutes for emulator observations.
 
 The pinned Geargrafx source SHA and source archive SHA-256 are recorded; the
