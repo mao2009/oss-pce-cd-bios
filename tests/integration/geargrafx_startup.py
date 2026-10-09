@@ -75,7 +75,7 @@ def main():
         if damaged[second_store:second_store+3] != b"\x8d\x01\x22":
             raise ValueError("expected second marker store STA $2201")
         damaged[second_store+1] = 0  # STA $2200 with A='O', not 'B'
-        invalid = folder / "missing-startup-marker-not-bios.pce"
+        invalid = folder / "wrong-startup-marker-not-bios.pce"
         invalid.write_bytes(damaged)
         try:
             verify_startup(damaged, original)
@@ -97,7 +97,7 @@ def main():
         "source_archive_sha256": DEPENDENCIES["geargrafx"]["sha256"],
         "loader": "LoadBiosFromBuffer(syscard=true) + original synthetic 32-sector CD",
         "status": "PASS",
-        "observations": records, "missing_marker_negative": {
+        "observations": records, "wrong_marker_negative": {
             "status": "PASS_EXPECTED_FAILURE",
             "rom_sha256": hashlib.sha256(damaged).hexdigest(),
             "observations": negative,
@@ -106,7 +106,7 @@ def main():
         "proprietary_content": "NONE",
     }
     (output / "startup-evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
-    print("PASS real Geargrafx System Card startup: cold/warm PC/SP/MPR/RAM, marker negative; NOT BIOS boot")
+    print("PASS real Geargrafx System Card startup: cold/warm PC/SP/MPR/RAM, wrong-marker negative; NOT BIOS boot")
 
 
 if __name__ == "__main__":
