@@ -34,7 +34,7 @@ def generated_file(name, path):
     parts = Path(path).parts
     if name == "cc65":
         return (parts[0] == "wrk" and Path(path).suffix in (".o", ".d", ".a")) or path in (
-            "bin/ca65", "bin/ld65", "bin/cc65")
+            "bin/ca65", "bin/ld65", "bin/da65", "bin/cc65")
     if name == "geargrafx":
         return ((parts[0] in ("src", "platforms") and Path(path).suffix in (".o", ".d"))
                 or path in ("platforms/libretro/geargrafx_libretro.so", "platforms/linux/geargrafx"))
@@ -182,7 +182,7 @@ def main():
             if name == "cc65":
                 subprocess.run(["make", "-C", str(source), f"-j{jobs}",
                                 f"BUILD_ID=Git {DEPENDENCIES[name]['revision'][:9]}",
-                                "ca65", "ld65", "cc65"], check=True)
+                                "ca65", "ld65", "da65", "cc65"], check=True)
             elif name == "geargrafx":
                 build_geargrafx(source, jobs, args.debugger, args.desktop)
             else:

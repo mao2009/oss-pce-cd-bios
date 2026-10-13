@@ -30,7 +30,7 @@ release:
 	@echo 'BLOCKED: BIOS APIs and System Card boot are unimplemented; no BIOS release is available.' >&2
 	@exit 1
 
-.PHONY: dev-rom dev-test dev-integration dev-release-gate
+.PHONY: dev-rom dev-test dev-integration dev-release-gate dev-release-gate-blocked
 dev-rom:
 	$(PYTHON) tools/build_rom.py --mode "$(MODE)"
 dev-test: dev-rom
@@ -48,3 +48,7 @@ dev-startup: dev-rom
 
 dev-startup-integration: dev-startup
 	$(PYTHON) tests/integration/geargrafx_startup.py --mode "$(MODE)"
+
+# make masks the gate's exit code 3 as 2, so this wraps it: PASS only on exit 3 + 'BLOCKED:'.
+dev-release-gate-blocked:
+	$(PYTHON) tools/expect_exit.py 3 '^BLOCKED:' -- $(PYTHON) tools/build_rom.py --release-gate
