@@ -26,6 +26,41 @@ validation. `make dev-release-gate` refuses missing slots and remains blocked ev
 when all slots are overridden until ROM/ABI/boot and adoption approvals exist.
 `make release` retains the existing blanket refusal. No production ROM is emitted.
 
+### What override verification does and does not prove
+
+`build()` links every override with ld65 debug info and runs `verify_overrides`.
+This is **structural** verification of the binary, nothing more:
+
+- the table `JMP` for the slot equals the linked `api_slot_XX` address, and that
+  address is an instruction (not data/padding) of `slot_XX.s` in `OVERRIDES`;
+- every branch/`BRA`/`BSR`/`BBRn`/`BBSn`/`JMP abs`/`JSR abs` target inside
+  `$E000-$FFFF` lands on an instruction of an override or on a table/stub entry,
+  never padding, data, vectors, boot code or the middle of an instruction;
+- no instruction falls through into data or padding (code must end in
+  `JMP`/`RTS`/`RTI`/`BRA`).
+
+Not checked: register/flag/RAM behaviour, return conventions, indirect jumps,
+calls below `$E000`, or compatibility with any System Card ABI. A passing
+override is therefore **not** an implemented API; `manifest.json` records
+`override_checks: structural-only` and `abi: UNVERIFIED`, and the release gate
+stays blocked.
+
+### Release-gate exit codes
+
+`tools/build_rom.py --release-gate` exits **3** with a `BLOCKED:` message when it
+refuses as designed, and **2** for build/tool errors (a Python exception exits 1).
+`make` reports any failing recipe as 2, so CI uses `make dev-release-gate-blocked`
+(`tools/expect_exit.py 3 '^BLOCKED:' -- ...`), which passes only for exactly that
+refusal; unexpected success, missing tools or tracebacks fail the job.
+
+### Manifest provenance
+
+`manifest.json` describes the source root actually built. `source_sha` and
+`working_tree_dirty` are recorded only when that root is itself a git top level
+(otherwise `null`, `source_root_is_git_repo: false`), and `source_sha256` lists the
+hashes of `boot.s`, `bank0.cfg`, `api_slots.json` and each override source.
+`spec/api_slots.json` is always read from the tool's own checkout.
+
 ## Reproducible commands and artifacts
 
 ```sh
@@ -36,7 +71,7 @@ make test                  # all host tests + existing HuCARD real-core tests
 make dev-test              # API host tests + diagnostic real-core tests
 make dev-rom MODE=release
 cmp build/debug/bios-dev/dev-only-not-compatible-syscard3.pce build/release/bios-dev/dev-only-not-compatible-syscard3.pce
-make dev-release-gate       # expected nonzero: incomplete firmware
+make dev-release-gate-blocked  # passes only on exit 3 + BLOCKED (plain dev-release-gate: make shows 2)
 ```
 
 Both programs use the existing pinned ca65/ld65 and Geargrafx source cache.

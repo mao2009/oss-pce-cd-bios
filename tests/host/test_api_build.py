@@ -1,4 +1,5 @@
 """Real pinned assembler and diagnostic-only binary contract tests."""
+import hashlib
 import json
 import os
 import re
@@ -8,8 +9,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tools.build_rom import (ROOT, BANK_BYTES, IMAGE_BYTES, build, load_slots,
-                             overrides, release_gate, verify_bank, verify_image)
+import subprocess
+
+from tools.build_rom import (ROOT, BANK_BYTES, IMAGE_BYTES, build, load_slots, overrides, parse_dbg,
+                             release_gate, source_provenance, verify_bank, verify_image)
 
 
 class ApiBuildTests(unittest.TestCase):
@@ -110,15 +113,99 @@ class ApiBuildTests(unittest.TestCase):
         self.assertEqual(len(manifest['unimplemented_slots']), 81)
         self.assertEqual(manifest['abi'], 'UNVERIFIED')
 
+    def make_root(self, name, **slots):
+        """Source tree with slot_XX overrides; each body is assembled under api_slot_XX."""
+        root = self.folder / name
+        (root / 'src/overrides').mkdir(parents=True)
+        for item in ('boot.s', 'bank0.cfg'):
+            shutil.copy(ROOT / 'src' / item, root / 'src' / item)
+        for slot, body in slots.items():
+            header = f'.setcpu "huc6280"\n.import api_slot_00\n.segment "OVERRIDES"\n.export api_{slot}\napi_{slot}:\n'
+            (root / f'src/overrides/{slot}.s').write_text(header + body)
+        return root
+
+    GOOD = ' ldx #$03\n bra @skip\n nop\n@skip: jsr helper\n jmp api_slot_00\n.byte $12,$34\nhelper: rts\n'
+
     def test_override_assembles_without_disabling_other_stubs(self):
-        root = self.folder/'override-root'; (root/'src/overrides').mkdir(parents=True)
-        for name in ('boot.s', 'bank0.cfg'): shutil.copy(ROOT/'src'/name, root/'src'/name)
-        (root/'src/overrides/slot_03.s').write_text('.setcpu "huc6280"\n.segment "OVERRIDES"\n.export api_slot_03\napi_slot_03:\n ldx #$03\n@halt:\n bra @halt\n')
+        root = self.make_root('override-root', slot_03=self.GOOD)
         data = build(self.folder/'override-output', root=root).read_bytes()
-        verify_image(data, {3})
+        dbg = parse_dbg((self.folder/'override-output/dev.dbg').read_text())
+        verify_image(data, {3}, dbg)
         self.assertEqual(int.from_bytes(data[10:12], 'little'), 0xe600)
-        # An override is a mechanism test, not an implemented API or approval.
+        # Valid structure is a mechanism test, not an implemented API or approval.
         with self.assertRaises(ValueError): release_gate({3})
+        manifest = json.loads((self.folder/'override-output/manifest.json').read_text())
+        self.assertIn('structural-only', manifest['override_checks'])
+        self.assertEqual(manifest['abi'], 'UNVERIFIED')
+        self.assertEqual(manifest['overridden_slots'], [3])
+
+    def test_override_debug_and_release_bytes_match(self):
+        root = self.make_root('override-modes', slot_03=self.GOOD)
+        self.assertEqual(build(self.folder/'om-debug', root=root).read_bytes(),
+                         build(self.folder/'om-release', 'release', root).read_bytes())
+
+    def test_override_without_link_info_is_rejected(self):
+        data = build(self.folder/'override-nodbg', root=self.make_root('nodbg-root', slot_03=self.GOOD)).read_bytes()
+        with self.assertRaisesRegex(ValueError, 'without ld65 debug info'): verify_image(data, {3})
+
+    def test_bad_overrides_are_rejected(self):
+        cases = {
+            'falls into padding': (' ldx #$03\n nop\n', 'falls through'),
+            'conditional falls into data': (' ldx #$03\n beq api_slot_03\n.byte $60\n', 'falls through'),
+            'entry is data': ('.byte $60\n', 'not the address of an instruction|contains no code'),
+            'jumps to padding': (' jmp $E900\n', r'jumps to \$E900'),
+            'jumps into table gap': (' jmp $E0F5\n', r'jumps to \$E0F5'),
+            'jumps mid-instruction': (' ldx #$03\n jmp api_slot_03+1\n', r'jumps to \$E601'),
+            'jumps to boot body': (' jsr $F002\n rts\n', r'jumps to \$F002'),
+            'branches to data': (' bra data\n rts\ndata: .byte $EA\n', 'jumps to'),
+        }
+        for name, (body, message) in cases.items():
+            slug = name.replace(' ', '-')
+            with self.subTest(name), self.assertRaisesRegex(ValueError, message):
+                build(self.folder/('bad-'+slug), root=self.make_root('root-'+slug, slot_03=body))
+
+    def test_two_overrides_may_jump_to_each_other(self):
+        root = self.make_root('two-root', slot_03=' ldx #$03\n jmp api_slot_04\n', slot_04=' rts\n')
+        text = (root/'src/overrides/slot_03.s').read_text().replace('.import api_slot_00', '.import api_slot_00, api_slot_04')
+        (root/'src/overrides/slot_03.s').write_text(text)
+        data = build(self.folder/'two-out', root=root).read_bytes()
+        verify_image(data, {3, 4}, parse_dbg((self.folder/'two-out/dev.dbg').read_text()))
+
+    def test_tampered_override_binary_is_rejected(self):
+        root = self.make_root('tamper-root', slot_03=self.GOOD)
+        data = bytearray(build(self.folder/'tamper', root=root).read_bytes())
+        dbg = parse_dbg((self.folder/'tamper/dev.dbg').read_text())
+        at = 0x600 + data[0x600:0x620].index(0x4C)          # the override's JMP api_slot_00
+        data[at+1:at+3] = bytes((0x00, 0xE9))               # ...retargeted into padding
+        with self.assertRaisesRegex(ValueError, r'jumps to \$E900'): verify_image(bytes(data), {3}, dbg)
+        data = bytearray(build(self.folder/'tamper2', root=root).read_bytes())
+        data[1:3] = bytes((0x00, 0xE9))                     # table JMP no longer reaches the override
+        with self.assertRaises(ValueError): verify_image(bytes(data), {3}, dbg)
+
+    def test_manifest_describes_the_actual_source_root(self):
+        root = self.make_root('provenance-root', slot_03=self.GOOD)
+        build(self.folder/'prov-plain', root=root)
+        plain = json.loads((self.folder/'prov-plain/manifest.json').read_text())
+        self.assertIsNone(plain['source_sha'])            # never the tool checkout's SHA
+        self.assertFalse(plain['source_root_is_git_repo'])
+        self.assertIsNone(plain['working_tree_dirty'])
+        self.assertEqual(plain['source_sha256']['src/overrides/slot_03.s'],
+                         hashlib.sha256((root/'src/overrides/slot_03.s').read_bytes()).hexdigest())
+        for args in (['init', '-q'], ['add', '.'], ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'x']):
+            subprocess.run(['git', '-C', str(root), *args], check=True, capture_output=True)
+        head = subprocess.run(['git', '-C', str(root), 'rev-parse', 'HEAD'], check=True, capture_output=True, text=True).stdout.strip()
+        build(self.folder/'prov-git', root=root)
+        tracked = json.loads((self.folder/'prov-git/manifest.json').read_text())
+        self.assertEqual((tracked['source_sha'], tracked['working_tree_dirty']), (head, False))
+        (root/'src/overrides/slot_03.s').write_text((root/'src/overrides/slot_03.s').read_text() + '; edit' + chr(10))
+        self.assertTrue(source_provenance(root, overrides(root))['working_tree_dirty'])
+        self.assertNotEqual(source_provenance(root, overrides(root))['source_sha256'], tracked['source_sha256'])
+
+    def test_subdirectory_of_unrelated_repo_is_not_attributed(self):
+        outer = self.folder/'outer'; outer.mkdir()
+        subprocess.run(['git', '-C', str(outer), 'init', '-q'], check=True, capture_output=True)
+        root = self.make_root('outer/tree')
+        self.assertIsNone(source_provenance(root, {})['source_sha'])
 
     def test_bad_override_filename(self):
         root = self.folder/'bad-root'; (root/'src/overrides').mkdir(parents=True)

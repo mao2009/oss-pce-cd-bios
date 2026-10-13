@@ -10,6 +10,7 @@ import argparse
 import json
 import hashlib
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -23,6 +24,11 @@ FIRST_ENTRY = 0xE000
 LAST_SLOT = 0x50
 BANK_BYTES = 8192
 IMAGE_BYTES = 256 * 1024
+EXIT_OK, EXIT_ERROR, EXIT_BLOCKED = 0, 2, 3  # BLOCKED = expected release refusal, never a build error
+
+
+class ReleaseBlocked(ValueError):
+    """The release gate refused as designed (distinct from tool/build failures)."""
 
 
 def load_slots(path: Path = SLOTS_FILE) -> list[dict]:
@@ -74,8 +80,85 @@ def render_table(slots: list[dict], overridden: set[int]) -> str:
     lines += ['api_unimplemented:', '@halt:', '    bra @halt', '']
     return '\n'.join(lines)
 
+TERMINATORS = {0x4C, 0x6C, 0x7C, 0x60, 0x40, 0x80}  # JMP abs/(abs)/(abs,X), RTS, RTI, BRA: never fall through
+REL2 = {0x80, 0x44, 0x10, 0x30, 0x50, 0x70, 0x90, 0xB0, 0xD0, 0xF0}  # BRA, BSR, Bcc: pc+2+rel8
+BIT_BRANCH = {(n << 4) | 0x0F for n in range(16)}  # BBRn/BBSn zp,rel: pc+3+rel8
 
-def verify_bank(bank: bytes, overridden: set[int] | None = None) -> None:
+
+def parse_dbg(text: str) -> dict[str, list[dict[str, str]]]:
+    """Parse ld65 --dbgfile records into {kind: [fields]}."""
+    records: dict[str, list[dict[str, str]]] = {}
+    for line in text.splitlines():
+        kind, _, rest = line.partition(chr(9))  # ld65 separates the kind from its fields with a tab
+        fields = {k: v.strip('"') for k, v in re.findall(r'(\w+)=("[^"]*"|[^,]*)', rest)}
+        records.setdefault(kind, []).append(fields)
+    return records
+
+
+def override_code(dbg: dict, slot: int) -> list[tuple[int, int]]:
+    """(address, size) of every instruction span assembled from slot_XX.s, per ld65 debug info."""
+    mods = {m['id'] for m in dbg.get('mod', []) if Path(m['name']).name == f'slot_{slot:02X}.o'}
+    files = {f['id'] for f in dbg.get('file', []) if f.get('mod') in mods}
+    segs = {s['id']: s for s in dbg.get('seg', [])}
+    spans = {s['id']: s for s in dbg.get('span', [])}
+    found = set()
+    for line in dbg.get('line', []):
+        if line.get('file') not in files:
+            continue
+        for sid in filter(None, line.get('span', '').split('+')):
+            span = spans[sid]
+            if 'type' in span:  # .byte/.word data, not an instruction
+                continue
+            seg = segs[span['seg']]
+            found.add((seg['name'], int(seg['start'], 0) + int(span['start']), int(span['size'])))
+    if any(name != 'OVERRIDES' for name, _, _ in found):
+        raise ValueError(f'Override ${slot:02X} emits code outside the OVERRIDES segment')
+    return sorted((address, size) for _, address, size in found)
+
+
+def verify_overrides(bank: bytes, overridden: set[int], dbg: dict) -> None:
+    """STRUCTURAL checks of linked override code. Does NOT prove API behaviour or ABI.
+
+    Each override must be linked from its own slot_XX.s into OVERRIDES, be entered through the table
+    JMP at its api_slot_XX label (which must be an instruction, not data/padding), keep every
+    branch/JMP/JSR target inside $E000-$FFFF on a real instruction (or table/label entry), and never
+    fall through into data or padding. Calls to addresses below $E000 are not checkable here.
+    ponytail: no per-opcode decoder; instruction boundaries come from ld65 debug info.
+    """
+    labels = {s['name']: int(s['val'], 0) for s in dbg.get('sym', [])
+              if s.get('type') == 'lab' and 'val' in s and s['name'].startswith('api_slot_')}
+    code = {slot: override_code(dbg, slot) for slot in sorted(overridden)}
+    starts = {a for spans in code.values() for a, _ in spans}
+    entries = {bank[3 * i + 1] | (bank[3 * i + 2] << 8) for i in range(LAST_SLOT + 1)}  # per-slot targets
+    valid = starts | entries | {FIRST_ENTRY + 3 * i for i in range(LAST_SLOT + 1)}
+    for slot, spans in code.items():
+        name = f'api_slot_{slot:02X}'
+        if not spans:
+            raise ValueError(f'Override ${slot:02X} contains no code')
+        if labels.get(name) not in {a for a, _ in spans}:
+            raise ValueError(f'Override ${slot:02X}: {name} is not the address of an instruction in slot_{slot:02X}.s')
+        entry = bank[3 * slot + 1] | (bank[3 * slot + 2] << 8)
+        if entry != labels[name]:
+            raise ValueError(f'API ${slot:02X} table JMP ${entry:04X} != linked {name} ${labels[name]:04X}')
+        body = {a for a, _ in spans}
+        for address, size in spans:
+            if not (0xE100 <= address and address + size <= 0xFFF6):
+                raise ValueError(f'Override ${slot:02X} code ${address:04X} outside bank0 body')
+            raw = bank[address - FIRST_ENTRY:address - FIRST_ENTRY + size]
+            op = raw[0]
+            target = None
+            if op in (0x4C, 0x20) and size == 3:
+                target = raw[1] | (raw[2] << 8)
+            elif (op in REL2 and size == 2) or (op in BIT_BRANCH and size == 3):
+                target = address + size + (raw[-1] - 256 if raw[-1] & 0x80 else raw[-1])
+            if target is not None and target >= FIRST_ENTRY and target not in valid:
+                raise ValueError(f'Override ${slot:02X} ${address:04X} jumps to ${target:04X}: '
+                                 'not an instruction/entry (data, padding or mid-instruction)')
+            if op not in TERMINATORS and address + size not in body:
+                raise ValueError(f'Override ${slot:02X} ${address:04X} falls through into data or padding')
+
+
+def verify_bank(bank: bytes, overridden: set[int] | None = None, dbg: dict | None = None) -> None:
     if len(bank) != BANK_BYTES:
         raise ValueError(f'Expected {BANK_BYTES} bytes in first bank, got {len(bank)}')
     targets = []
@@ -118,13 +201,17 @@ def verify_bank(bank: bytes, overridden: set[int] | None = None) -> None:
     at = reset - FIRST_ENTRY
     if bank[at:at+5] != bytes.fromhex('78 a2 ff 80 fe'):
         raise ValueError('Reset diagnostic must SEI, LDX FF, BRA self')
+    if overridden:  # stubs and table are sound; now the override bodies (structure only)
+        if dbg is None:
+            raise ValueError('override code cannot be verified without ld65 debug info')
+        verify_overrides(bank, overridden, dbg)
 
 
-def verify_image(data: bytes, overridden: set[int] | None = None) -> None:
+def verify_image(data: bytes, overridden: set[int] | None = None, dbg: dict | None = None) -> None:
     """Validate this diagnostic layout only, never System Card compatibility."""
     if len(data) != IMAGE_BYTES:
         raise ValueError("DEV ROM must contain exactly 32 8 KiB banks without a header")
-    verify_bank(data[:BANK_BYTES], overridden)
+    verify_bank(data[:BANK_BYTES], overridden, dbg)
     if data[BANK_BYTES:] != b"\xff" * (IMAGE_BYTES - BANK_BYTES):
         raise ValueError("DEV ROM unused banks must be FF; bank ordering/padding mismatch")
 
@@ -132,8 +219,34 @@ def verify_image(data: bytes, overridden: set[int] | None = None) -> None:
 def release_gate(overridden: set[int]) -> None:
     missing = sorted(set(range(81)) - overridden)
     if missing:
-        raise ValueError(f"BLOCKED: {len(missing)} unimplemented API slots: " + ",".join(f"{i:02X}" for i in missing))
-    raise ValueError("BLOCKED: override presence does not prove implementation; ROM/ABI/boot approval unavailable")
+        raise ReleaseBlocked(f"BLOCKED: {len(missing)} unimplemented API slots: " + ",".join(f"{i:02X}" for i in missing))
+    raise ReleaseBlocked("BLOCKED: override presence does not prove implementation; ROM/ABI/boot approval unavailable")
+
+
+def _git(root: Path, *args: str) -> str | None:
+    result = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True)
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def source_provenance(root: Path, overridden: dict[int, Path]) -> dict:
+    """Describe the sources actually assembled from `root`, not the tool's own checkout.
+
+    A git SHA is recorded only when `root` is itself a repository top level;
+    otherwise (copied/test trees, or a subdirectory of an unrelated repo) it is null.
+    """
+    top = _git(root, "rev-parse", "--show-toplevel")
+    tracked = top is not None and Path(top).resolve() == root.resolve()
+    inputs = {'src/boot.s': root / 'src' / 'boot.s', 'src/bank0.cfg': root / 'src' / 'bank0.cfg',
+              'spec/api_slots.json': SLOTS_FILE,
+              **{f'src/overrides/{overridden[i].name}': overridden[i] for i in sorted(overridden)}}
+    return {"source_root_is_git_repo": tracked,
+            "source_sha": _git(root, "rev-parse", "HEAD") if tracked else None,
+            "working_tree_dirty": bool(_git(root, "status", "--porcelain")) if tracked else None,
+            "source_sha256": {name: _sha256(path) for name, path in inputs.items()}}
 
 
 def build(output: Path, mode="debug", root: Path = ROOT) -> Path:
@@ -152,24 +265,24 @@ def build(output: Path, mode="debug", root: Path = ROOT) -> Path:
     objects = []
     for src in [generated, root / 'src' / 'boot.s', *[overridden[i] for i in sorted(overridden)]]:
         obj = output / (src.stem + '.o')
-        subprocess.run([ca65, str(src), '-o', str(obj), *(['-g'] if mode == 'debug' else [])], check=True)
+        # -g never changes ROM bytes; overrides always get it because verification reads ld65 debug info.
+        debug = mode == 'debug' or src in overridden.values()
+        subprocess.run([ca65, str(src), '-o', str(obj), *(['-g'] if debug else [])], check=True)
         objects.append(obj)
     first_bank = output / 'bank0.bin'
-    subprocess.run([ld65, '-C', str(root / 'src' / 'bank0.cfg'), '-o', str(first_bank), '-m', str(output / 'dev.map'), '-Ln', str(output / 'dev.lbl'), *map(str, objects)], check=True)
+    subprocess.run([ld65, '-C', str(root / 'src' / 'bank0.cfg'), '-o', str(first_bank), '-m', str(output / 'dev.map'), '-Ln', str(output / 'dev.lbl'), '--dbgfile', str(output / 'dev.dbg'), *map(str, objects)], check=True)
     bank = first_bank.read_bytes()
-    verify_bank(bank, overridden=set(overridden))
+    dbg = parse_dbg((output / 'dev.dbg').read_text(encoding='utf-8'))
+    verify_bank(bank, set(overridden), dbg)
     target = output / 'dev-only-not-compatible-syscard3.pce'
     target.write_bytes(bank + b'\xFF' * (IMAGE_BYTES - BANK_BYTES))
-    verify_image(target.read_bytes(), set(overridden))
-    source_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT,
-                                capture_output=True, text=True, check=True).stdout.strip()
-    dirty = bool(subprocess.run(["git", "status", "--porcelain"], cwd=ROOT,
-                               capture_output=True, text=True, check=True).stdout)
-    manifest = {"source_sha": source_sha, "working_tree_dirty": dirty, "status": "development-diagnostic-not-compatible-bios", "mode": mode,
+    verify_image(target.read_bytes(), set(overridden), dbg)
+    manifest = {**source_provenance(root, overridden), "status": "development-diagnostic-not-compatible-bios", "mode": mode,
                 "rom_bytes": IMAGE_BYTES, "rom_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
                 "cc65_revision": DEPENDENCIES["cc65"]["revision"],
                 "overridden_slots": sorted(overridden), "unimplemented_slots": sorted(set(range(81)) - set(overridden)),
-                "abi": "UNVERIFIED", "release_eligible": False}
+                "abi": "UNVERIFIED", "override_checks": "structural-only; behaviour and ABI not verified",
+                "release_eligible": False}
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(f'DEV ONLY: ROM generated at {target}; not boot/retail verified')
     return target
@@ -186,7 +299,7 @@ def main() -> int:
         slots = load_slots()
         overridden = overrides()
         if args.release_gate:
-            release_gate(set(overridden))
+            release_gate(set(overridden))  # always raises today; ReleaseBlocked -> exit 3
         elif args.check_source:
             text = render_table(slots, set(overridden))
             count = sum(line.startswith('    jmp api_slot_') for line in text.splitlines())
@@ -194,10 +307,13 @@ def main() -> int:
             print(f'PASS: 81 ordered entries, {81-len(overridden)} fail-closed stubs, {len(overridden)} override(s) (source-level only)')
         else:
             build(args.output or ROOT / 'build' / args.mode / 'bios-dev', args.mode)
-        return 0
+        return EXIT_OK
+    except ReleaseBlocked as exc:
+        print(exc, file=sys.stderr)
+        return EXIT_BLOCKED
     except (ValueError, RuntimeError, OSError, subprocess.CalledProcessError) as exc:
         print(f'ERROR: {exc}', file=sys.stderr)
-        return 2
+        return EXIT_ERROR
 
 
 if __name__ == '__main__':
