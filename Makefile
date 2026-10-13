@@ -40,6 +40,15 @@ dev-integration: dev-rom
 	$(PYTHON) tests/integration/geargrafx_api.py --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
 dev-release-gate:
 	$(PYTHON) tools/build_rom.py --release-gate
+
+.PHONY: dev-startup dev-startup-integration
+# Opt-in Issue #4 startup checkpoint; deliberately separate from the default DEV ROM.
+dev-startup: dev-rom
+	$(PYTHON) tools/build_startup.py --mode "$(MODE)"
+
+dev-startup-integration: dev-startup
+	$(PYTHON) tests/integration/geargrafx_startup.py --mode "$(MODE)"
+
 # make masks the gate's exit code 3 as 2, so this wraps it: PASS only on exit 3 + 'BLOCKED:'.
 dev-release-gate-blocked:
 	$(PYTHON) tools/expect_exit.py 3 '^BLOCKED:' -- $(PYTHON) tools/build_rom.py --release-gate
