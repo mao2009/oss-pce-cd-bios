@@ -27,6 +27,10 @@ The earlier HuCC math candidate requires conversion from its PCEAS/HuCC dialect 
 - Do not place these routines in shipped firmware or CI artifact until a **human-reviewed APPROVED record** exists, required upstream license/attributions and exact changes are tracked, and ca65 + Geargrafx tests actually pass.
 - Reuse matching synthetic math test vectors in other projects if their API contract matches; do not link 6502 code into Mega-CD's 68000 or PS1's R3000A Runtime.
 
+### CD-ROM² low-level control (Issue #5)
+
+A dedicated, SHA-pinned survey of HuC cdrom.asm, ares, MAME, Hu-Go!, Mednafen, Geargrafx and others lives in [cd-oss-survey.md](cd-oss-survey.md); all dispositions are REFERENCE_ONLY / PENDING and the [CD read diagnostic](cd-read-diagnostic.md) is an original implementation.
+
 ### Important distinctions
 
 - File headers, exception clauses and dependencies override any inference from a repository's license badge. For example, Hu-Go! has a specific modified-BSD exception for `pcecd.c` but this does **not** relicense `bios.c` or `cd.c`.

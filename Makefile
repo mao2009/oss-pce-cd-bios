@@ -52,3 +52,11 @@ dev-startup-integration: dev-startup
 # make masks the gate's exit code 3 as 2, so this wraps it: PASS only on exit 3 + 'BLOCKED:'.
 dev-release-gate-blocked:
 	$(PYTHON) tools/expect_exit.py 3 '^BLOCKED:' -- $(PYTHON) tools/build_rom.py --release-gate
+
+.PHONY: dev-cdread dev-cdread-integration
+# Opt-in Issue #5 CD sector-read hardware diagnostic; separate from the default DEV ROM and startup ROM.
+dev-cdread: dev-rom
+	$(PYTHON) tools/build_cdread.py --mode "$(MODE)"
+
+dev-cdread-integration: dev-cdread
+	$(PYTHON) tests/integration/geargrafx_cdread.py --mode "$(MODE)"
