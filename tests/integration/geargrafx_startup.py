@@ -90,6 +90,31 @@ def main():
             pass
         else:
             raise ValueError("mutated startup ROM unexpectedly passed actual Geargrafx")
+        # More real-core negatives: each mutated ROM must make the SAME evidence check fail.
+        # (name, offset into STARTUP_CODE, expected original byte, replacement byte)
+        mutations = (("mpr5_value", 24, 0x03, 0x05), ("stack_pointer", 36, 0xFF, 0xFE))
+        mutation_results = {}
+        for name, offset, original_byte, replacement in mutations:
+            mutated = bytearray(payload)
+            at = symbols["startup_entry"] - 0xe000 + offset
+            if mutated[at] != original_byte:
+                raise ValueError(f"{name}: unexpected original byte at startup+{offset}")
+            mutated[at] = replacement
+            try:
+                verify_startup(bytes(mutated), original)
+            except ValueError:
+                pass
+            else:
+                raise ValueError(f"{name}: mutated ROM passed fixture verifier")
+            path = folder / f"{name}-not-bios.pce"
+            path.write_bytes(mutated)
+            observed = execute(probe, path, cue, output / "trace-labels.txt")
+            try:
+                check_evidence(observed, symbols)
+            except ValueError:
+                mutation_results[name] = "PASS_EXPECTED_FAILURE"
+            else:
+                raise ValueError(f"{name}: mutated startup ROM unexpectedly passed actual Geargrafx")
     evidence = {
         "scope": "original startup diagnostic ONLY; production BIOS/ABI/CD boot NOT_IMPLEMENTED",
         "rom_sha256": digest,
@@ -102,11 +127,13 @@ def main():
             "rom_sha256": hashlib.sha256(damaged).hexdigest(),
             "observations": negative,
         },
+        "mutation_negatives": mutation_results,
         "bios_service_abi": "UNKNOWN", "cd_boot": "NOT_TESTED",
+        "interrupt_vector_execution": "NOT_TESTED",  # vectors are checked structurally; no IRQ/NMI is ever raised
         "proprietary_content": "NONE",
     }
     (output / "startup-evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
-    print("PASS real Geargrafx System Card startup: cold/warm PC/SP/MPR/RAM, wrong-marker negative; NOT BIOS boot")
+    print("PASS real Geargrafx System Card startup: cold/warm PC/SP/MPR/RAM, marker/MPR/stack negatives; IRQ vectors NOT_TESTED; NOT BIOS boot")
 
 
 if __name__ == "__main__":

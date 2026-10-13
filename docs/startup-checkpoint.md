@@ -13,7 +13,10 @@ make dev-rom
 make dev-startup
 python3 -m unittest discover -s tests/host -p 'test_startup.py' -v
 make dev-startup-integration
+make dev-release-gate-blocked   # exit 3 + BLOCKED only (see api-stub-scaffold.md)
+make dev-rom MODE=release
 make dev-startup MODE=release
+cmp build/debug/bios-dev/dev-only-not-compatible-syscard3.pce build/release/bios-dev/dev-only-not-compatible-syscard3.pce
 cmp build/debug/startup-probe/startup-probe-not-bios.pce build/release/startup-probe/startup-probe-not-bios.pce
 ```
 
@@ -53,14 +56,17 @@ The builder assembles with the pinned ca65/ld65 and compares the linked ROM
 byte-for-byte against the intended test-only reset and marker instructions.
 It also enforces unchanged candidate API table/fallback and unused ROM banks,
 checks label addresses and all five vectors, and records the ROM SHA-256.
-Host tests mutate table, reset, MPR, marker, vectors, padding and length and
-require rejection.
+Host tests flip bit 0 of every byte in `$F000-$FFFF` (startup code,
+padding, vectors), apply targeted semantic corruptions (SEI removed, MPR7/stack/`TXS`/marker
+changed, bad reset/IRQ vectors, an added `RTS`, dirtied unused banks, API table/fallback edits),
+and reject a broken base ROM or wrong sizes.
 
 The integration runner invokes the actual Geargrafx debugger-enabled C++
 frontend that Issue #6 / PR #101 established. It observes real PC, P, SP,
 X, all MPRs, and RAM on cold/warm reset plus named instruction checkpoints.
-A symbol-qualified redirection of the second marker store to `$2200` is deliberately executed in the
-real emulator, overwriting `B` with `O`, and must fail the same startup-marker assertion. No Python CPU
+Three mutated ROMs are deliberately executed in the real emulator and must each fail the same
+evidence check: a symbol-qualified redirection of the second marker store to `$2200`
+(overwriting `B` with `O`), a wrong MPR5 value, and a wrong stack-pointer value. No Python CPU
 simulation substitutes for emulator observations.
 
 The pinned Geargrafx source SHA and source archive SHA-256 are recorded; the
@@ -75,9 +81,16 @@ JSON are uploaded.
 - Final interrupt dispatch, stack conventions, and BIOS API service ABI
 - CD register reset, disc protocol, CD boot, actual game compatibility
 - Independent emulator or real hardware compatibility
+- **Interrupt vector execution: `NOT_TESTED`.** The four vectors are checked only as bytes; no IRQ1,
+  IRQ2, timer or NMI is ever raised, and the code keeps `I` set, so `X=$EE` is never observed.
+  The evidence JSON records `interrupt_vector_execution: NOT_TESTED`.
+- Unused-RAM contents at power-on are not assumed; the marker negatives are chosen to be
+  independent of them.
 
-As a result, #1/#3 remain open, #101 remains Draft, and `make release` /
-`make dev-release-gate` must continue rejecting production output.
+As a result, #1/#3 remain open and `make release` / `make dev-release-gate` must
+continue rejecting production output. PR #101 is merged into `main` (`6b7924f`); this
+PR is based on `main`, keeps #101's `make dev-release-gate-blocked` (exit 3 + `BLOCKED:`)
+and da65-based override verification, and does not change the 81-slot API table.
 
 Sources and provenance are tracked in
 [system-card-rom.md](system-card-rom.md),

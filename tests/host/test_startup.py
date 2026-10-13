@@ -66,6 +66,46 @@ class StartupBuildTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             verify_startup(self.payload[:-1], self.base)
 
+    def test_every_byte_of_startup_code_vectors_and_padding_is_pinned(self):
+        for offset in range(0x1000, 0x2000):  # any single-bit change in $F000-$FFFF must be rejected
+            data = bytearray(self.payload)
+            data[offset] ^= 0x01
+            with self.assertRaises(ValueError, msg=f"offset {offset:#x}"):
+                verify_startup(bytes(data), self.base)
+
+    def test_targeted_semantic_corruptions(self):
+        code = 0x1000
+        cases = {
+            "sei removed": (code, 0xEA),
+            "mpr7 not reset to bank 0": (code + 32, 0x01),
+            "stack pointer changed": (code + 36, 0xFE),
+            "txs removed": (code + 37, 0xEA),
+            "marker byte changed": (code + SYMBOL_OFFSETS["startup_marker_write"] + 1, 0x00),
+            "reset vector points at API table": (0x1ffe, 0x00),
+            "irq vector points at reset": (0x1ff6, 0x00),
+            "extra instruction after checkpoint": (code + len(STARTUP_CODE), 0x60),  # RTS: false success
+            "unused bank dirtied": (0x2000, 0x00),
+            "api table entry changed": (1, 0x00),
+            "api fallback changed": (0x103, 0x00),
+        }
+        for name, (offset, value) in cases.items():
+            data = bytearray(self.payload)
+            if data[offset] == value:
+                data[offset] ^= 0xFF  # make sure it really is a mutation
+            else:
+                data[offset] = value
+            with self.subTest(name), self.assertRaises(ValueError):
+                verify_startup(bytes(data), self.base)
+
+    def test_invalid_base_rom_or_size_is_rejected(self):
+        broken_base = bytearray(self.base)
+        broken_base[0] = 0x60  # RTS where the table's first JMP must be
+        with self.assertRaises(ValueError):
+            verify_startup(self.payload, bytes(broken_base))
+        for data in (self.payload + bytes(1), self.payload[:0x2000], b""):
+            with self.assertRaises(ValueError):
+                verify_startup(data, self.base)
+
     def test_manifest_enforces_diagnostic_only(self):
         manifest = json.loads((self.root / "startup/manifest.json").read_text())
         self.assertFalse(manifest["release_eligible"])
