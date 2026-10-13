@@ -1,7 +1,7 @@
 ; Original DEVELOPMENT-ONLY CD-ROM2 sector-read hardware diagnostic (Issue #5).
 ; NOT a production BIOS, NOT CD_READ ($03) and NOT an approved System Card ABI.
-; Register/phase facts come from public documentation cross-checked with the pinned
-; Geargrafx behaviour (see docs/cd-read-diagnostic.md); no third-party code is included.
+; Register/phase facts were taken from reading public sources (HuC, ares, Geargrafx; NOT a clean-room
+; effort) and checked against the pinned Geargrafx at runtime; no code was transcribed (docs/cd-oss-survey.md).
 ; The CD controller is driven by polling only (IRQ2 masked, I flag set) with bounded waits.
 .setcpu "huc6280"
 .segment "BOOT"
@@ -21,7 +21,7 @@ PH_COMMAND = $D0
 PH_DATA_IN = $C8
 PH_STATUS  = $D8
 PH_MSG_IN  = $F8
-TMO_HI    = 8            ; wait budget = TMO_HI * 65536 polls (~0.3 s of CPU time each)
+TMO_HI    = 8            ; wait budget = TMO_HI * 65536 polls (~0.4 s of CPU time each, ~3 s per wait)
 
 ; --- guest memory (work RAM at $2000-$3FFF via MPR1) ---
 ; HuC6280 zero page is CPU $2000-$20FF; ZP operands below are offsets into it.
@@ -70,6 +70,8 @@ cd_stack_ready:
     lda #$FF
     sta RES                  ; $FF = in progress; only the success path writes 0
     sta alt                  ; no early-abort phase
+    lda #$00
+    sta CD_ACK               ; ACK off and every CD IRQ enable off
     lda #<BUF                ; fill buffer with a sentinel so stale RAM can never pass
     sta ptr
     lda #>BUF

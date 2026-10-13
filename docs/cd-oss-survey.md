@@ -52,7 +52,7 @@ in this repository's Geargrafx tests.
 | Data in: 2048 bytes, one per REQ; then STATUS (byte 0 = GOOD) then MESSAGE_IN (byte 0) then bus free | S1 G | yes | UNKNOWN |
 | `$1808` read = data + automatic ACK | S1 S2 G | NOT_TESTED (guest uses `$1801` + manual ACK) | UNKNOWN |
 | IRQ-driven transfer (`$1803` flags `$20/$40`) | S1 S2 G | NOT_TESTED (polling only) | UNKNOWN |
-| READ(6) at/after end of disc | G only | invalid start LBA → GOOD status with *no data*; sector past end mid-transfer → CHECK CONDITION | UNKNOWN |
+| READ(6) at/after end of disc | G only (status values) | guest sees STATUS instead of DATA_IN (error 5); the status byte itself (GOOD / CHECK CONDITION) is from the source and was **not** read by the guest | UNKNOWN |
 | READ(6) on a CD-DA LBA | G only | returns GOOD + 2048 bytes 16 bytes into the raw frame (as if MODE1) | UNKNOWN |
 
 Seek/spin-up timing in Geargrafx is modelled (`SeekTime`, a random initial phase up to 1/60 s); real drive

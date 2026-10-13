@@ -42,8 +42,8 @@ image is byte-identical to the base ROM and verified on every build).
 
 ## Guest program (`src/cd_read_probe.s`)
 
-Polling only (`SEI`, IRQ2 masked via `$1802` low bits = 0), every wait bounded by a 24-bit counter
-(`TMO_HI * 65536` polls, about 2.5 s of CPU time). Sequence, with the confidence of each step in
+Polling only (`SEI`, `$1802` written 0 at start so every CD IRQ enable is off), every wait bounded by a 24-bit counter
+(`TMO_HI * 65536` polls, about 3 s of CPU time). Sequence, with the confidence of each step in
 [the survey](cd-oss-survey.md):
 
 1. `SEI/CLD/CSH`, explicit MPR0-7 (`$FF,$F8,1,2,$1F,3,4,0`, same diagnostic mapping as #4), `SP=$FF`.
@@ -58,6 +58,8 @@ Polling only (`SEI`, IRQ2 masked via `$1802` low bits = 0), every wait bounded b
    store, ACK handshake.
 8. Read STATUS byte and MESSAGE byte (both must be 0), wait for bus free, store the transferred byte count,
    write `[0]=0`, set `X=$C0` and stop at `cd_halt_ok`. Any failure stops at `cd_halt_fail` with `X=error`.
+
+Error codes 1, 3, 6, 7, 8 and 10 have no negative test yet, and after any failure the bus is left as-is (no abort/reset). Warm reset (`ResetMedia`) and the eject notification are host-driven; the positive runs inject nothing.
 
 Result block (`$2300`): `+0` error code (`$FF` in progress, 0 OK), `+1` last stage, `+2/+3` bytes transferred,
 `+4` SCSI status, `+5` message byte, `+6` last `$1800` value seen.
@@ -96,7 +98,7 @@ registers.
 | LBA 14 ×3 (runs off the end) | 4096 bytes of sectors 14/15 correct, then error 5 | PASS_EXPECTED_FAILURE |
 | count 0 / 4 | error 9 before touching the bus | PASS_EXPECTED_FAILURE |
 | Selection redirected to `$1805` (nobody answers) | error 2, bounded timeout | PASS_EXPECTED_FAILURE |
-| Drive-side abort during DATA_IN (emulator media-eject notification resets the SCSI bus, injected by the probe and logged as `INJECT`) | error 4 | PASS_EXPECTED_FAILURE |
+| Drive-side abort at DATA_IN entry (emulator media-eject notification resets the SCSI bus, injected by the probe and logged as `INJECT`; it does not prove the abort *caused* the timeout beyond the injection order) | error 4 | PASS_EXPECTED_FAILURE |
 | 18 corrupted copies of the good observations (RAM bit flips, overrun, budget, MPR, missing/altered SCSI phases) | judge rejects each | PASS_EXPECTED_FAILURE |
 | Data sector with an audio track present | still reads correctly | PASS |
 | READ(6) on an audio-track LBA | observed Geargrafx behaviour recorded (see below) | OBSERVED_EMULATOR_BEHAVIOUR |
@@ -106,12 +108,13 @@ registers.
 
 ## Findings and open questions
 
-* Geargrafx answers READ(6) with GOOD status and **no data** for a start LBA at or beyond the disc end
-  (indistinguishable from a bad command until the guest sees STATUS instead of DATA_IN), and with CHECK
-  CONDITION if a later sector of a multi-sector request runs off the end. Hardware: UNKNOWN.
+* Measured: for a start LBA at or beyond the disc end, or a later sector running off the end, the guest sees a
+  STATUS phase instead of DATA_IN (error 5, with 0 or 4096 bytes already transferred). That the status byte is GOOD
+  respectively CHECK CONDITION comes from **reading the Geargrafx source only**; the guest does not read the byte on
+  these paths yet. Hardware: UNKNOWN.
 * READ(6) addressed to a CD-DA LBA is **not an error** in Geargrafx: it returns GOOD and 2048 raw PCM bytes
   starting 16 bytes into the frame. Real drives/firmware must therefore decide data-vs-audio from the TOC
-  (`$DE` mode 2 → type byte `$04` data / `$00` audio in Geargrafx); this diagnostic does not do that yet.
+  (`$DE` mode 2 → type byte `$04` data / `$00` audio per the Geargrafx source; **never sent by the guest, UNVERIFIED**); this diagnostic does not do that yet.
 * In Geargrafx the 2048-byte transfer completes about 0.78M guest instructions after the command is sent
   (modelled seek + random initial phase + per-byte REQ latency); the loop is bounded by per-byte waits, not by a fixed delay.
 * UNKNOWN: required reset-pulse width, meaning of the select byte on real hardware, behaviour when the drive is

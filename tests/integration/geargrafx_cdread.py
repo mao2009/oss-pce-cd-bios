@@ -23,7 +23,7 @@ from environment import DEPENDENCIES
 from geargrafx_api import compile_probe
 from make_cd_image import BIN_NAME, CUE_NAME, DEFAULT_SECTORS, MAGIC, audio_frame, build_image, sector_payload
 
-STEP_BUDGET = 8_000_000  # the longest legitimate path (timeout) is ~4.8M guest instructions
+STEP_BUDGET = 12_000_000  # longest legitimate path: ~0.8M (seek) + ~5.8M (one 24-bit-poll timeout) guest instructions
 DEFAULT_REQUEST = (5, 1)
 
 
@@ -200,7 +200,7 @@ def main():
             raise ValueError("data read before the end-of-disc error is wrong")
         suite.failing_guest("zero_sector_count", suite.variant(5, 0), 5, 0, 9, 1, 0)
         suite.failing_guest("oversized_sector_count", suite.variant(5, 4), 5, 4, 9, 1, 0)
-        # Timeout: selection is redirected to $1805 (a harmless CD register), so the target never answers.
+        # Timeout: selection is redirected to $1805 (a CD register this guest otherwise never touches), so the target never answers.
         stuck = bytearray(payload)
         at = symbols["cd_select"] - 0xE000
         if stuck[at:at + 3] != bytes((0x8D, 0x00, 0x18)):
@@ -213,7 +213,7 @@ def main():
         else:
             raise ValueError("fixture verifier accepted the select-redirected ROM")
         suite.failing_guest("selection_never_answered_timeout", bytes(stuck), *DEFAULT_REQUEST, 2, 3, 0)
-        eject = suite.failing_guest("drive_abort_during_data_in", payload, *DEFAULT_REQUEST, 4, 5, 0,
+        eject = suite.failing_guest("drive_abort_at_data_in_entry", payload, *DEFAULT_REQUEST, 4, 5, 0,
                                     inject="eject-in-data")
         if len(eject["INJECT"]) != 2:
             raise ValueError("drive-abort injection was not applied to both cold and warm runs")
@@ -267,7 +267,7 @@ def main():
         "tests": suite.results,
         "primary_observations": {"RUN": primary["RUN"], "PHASE": primary["PHASE"], "HIT": primary["HIT"]},
         "cd_read_api_slot_03": "NOT_IMPLEMENTED", "bios_service_abi": "UNKNOWN",
-        "interrupt_driven_transfer": "NOT_TESTED", "cd_da_track_behaviour": "NOT_TESTED",
+        "interrupt_driven_transfer": "NOT_TESTED", "cd_da_track_behaviour": "OBSERVED_EMULATOR_BEHAVIOUR only (tests.read6_on_audio_track_lba); TOC type check NOT_TESTED",
         "real_hardware_or_second_emulator": "NOT_TESTED", "proprietary_content": "NONE",
         "status": "PASS",
     }

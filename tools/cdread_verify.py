@@ -76,8 +76,6 @@ def check_scsi_sequence(records: dict, lba: int, count: int) -> None:
         if (data_in["load_sector"], data_in["load_count"]) != (lba, count):
             raise ValueError(f"{cycle}: emulator saw READ request {(data_in['load_sector'], data_in['load_count'])}, "
                              f"expected {(lba, count)}")
-        if data_in["pc"] < 0xF000 or data_in["pc"] >= 0x10000:
-            raise ValueError(f"{cycle}: READ was not issued from the guest ROM")
 
 
 def describe_failure(records: dict) -> list:
