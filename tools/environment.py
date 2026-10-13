@@ -24,6 +24,7 @@ def executable(name):
     defaults = {
         "ca65": dependency_dir("cc65") / "bin/ca65",
         "ld65": dependency_dir("cc65") / "bin/ld65",
+        "da65": dependency_dir("cc65") / "bin/da65",
         "cc65": dependency_dir("cc65") / "bin/cc65",
         "actionlint": dependency_dir("actionlint") / "actionlint",
     }

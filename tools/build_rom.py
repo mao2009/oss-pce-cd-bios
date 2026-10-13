@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import functools
 import hashlib
 import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 if __package__:
@@ -80,9 +82,9 @@ def render_table(slots: list[dict], overridden: set[int]) -> str:
     lines += ['api_unimplemented:', '@halt:', '    bra @halt', '']
     return '\n'.join(lines)
 
-TERMINATORS = {0x4C, 0x6C, 0x7C, 0x60, 0x40, 0x80}  # JMP abs/(abs)/(abs,X), RTS, RTI, BRA: never fall through
-REL2 = {0x80, 0x44, 0x10, 0x30, 0x50, 0x70, 0x90, 0xB0, 0xD0, 0xF0}  # BRA, BSR, Bcc: pc+2+rel8
-BIT_BRANCH = {(n << 4) | 0x0F for n in range(16)}  # BBRn/BBSn zp,rel: pc+3+rel8
+REL2 = {'bra', 'bsr', 'bcc', 'bcs', 'beq', 'bne', 'bmi', 'bpl', 'bvc', 'bvs'}  # target = pc + 2 + rel8
+NO_FALLTHROUGH = {'jmp', 'rts', 'rti', 'bra'}
+DA65_LINE = re.compile(r'^\s+(?:\w+:\s+)?(\S+)\s*([^;]*?)\s*;\s([0-9A-F]{4})\s((?:[0-9A-F]{2}\s)+)')
 
 
 def parse_dbg(text: str) -> dict[str, list[dict[str, str]]]:
@@ -93,6 +95,26 @@ def parse_dbg(text: str) -> dict[str, list[dict[str, str]]]:
         fields = {k: v.strip('"') for k, v in re.findall(r'(\w+)=("[^"]*"|[^,]*)', rest)}
         records.setdefault(kind, []).append(fields)
     return records
+
+
+@functools.lru_cache(maxsize=None)
+def decode(raw: bytes) -> tuple[int, str, str]:
+    """First instruction of `raw` per cc65's own da65 HuC6280 table: (length, mnemonic, operand).
+
+    Reusing da65 (same pinned cc65 revision as ca65) avoids a hand-written length table that could
+    become a verification blind spot. Undefined/truncated opcodes decode as '.byte'. Decoded at
+    address 0 on purpose: da65 splits instructions at labels, so only a branch into its own operand
+    bytes can make a valid instruction look short, and that is rejected anyway.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        binary = Path(tmp) / 'code.bin'
+        binary.write_bytes(raw)
+        text = subprocess.run([executable('da65'), '--cpu', 'huc6280', '--comments', '4', '--start-addr', '0',
+                               str(binary)], capture_output=True, text=True, check=True).stdout
+    for m in map(DA65_LINE.match, text.splitlines()):
+        if m:
+            return len(m[4].split()), m[1].lower(), m[2]
+    raise ValueError('da65 produced no instruction')
 
 
 def override_code(dbg: dict, slot: int) -> list[tuple[int, int]]:
@@ -123,7 +145,10 @@ def verify_overrides(bank: bytes, overridden: set[int], dbg: dict) -> None:
     JMP at its api_slot_XX label (which must be an instruction, not data/padding), keep every
     branch/JMP/JSR target inside $E000-$FFFF on a real instruction (or table/label entry), and never
     fall through into data or padding. Calls to addresses below $E000 are not checkable here.
-    ponytail: no per-opcode decoder; instruction boundaries come from ld65 debug info.
+    Instruction boundaries come from ld65 debug info and are cross-checked against the ROM bytes with da65.
+    Indirect jumps and calls below $E000 are not statically checkable and are accepted.
+    Limitation (fail-closed): only .byte/.word data carry a type in ld65 debug info, so raw .incbin/.res
+    inside OVERRIDES look like instructions and are rejected; use .byte/.word tables instead.
     """
     labels = {s['name']: int(s['val'], 0) for s in dbg.get('sym', [])
               if s.get('type') == 'lab' and 'val' in s and s['name'].startswith('api_slot_')}
@@ -144,17 +169,25 @@ def verify_overrides(bank: bytes, overridden: set[int], dbg: dict) -> None:
         for address, size in spans:
             if not (0xE100 <= address and address + size <= 0xFFF6):
                 raise ValueError(f'Override ${slot:02X} code ${address:04X} outside bank0 body')
-            raw = bank[address - FIRST_ENTRY:address - FIRST_ENTRY + size]
-            op = raw[0]
-            target = None
-            if op in (0x4C, 0x20) and size == 3:
+        for address, size in spans:
+            raw = bytes(bank[address - FIRST_ENTRY:address - FIRST_ENTRY + size])
+            length, mnemonic, operand = decode(raw)
+            # Debug info says where instructions are; the ROM bytes must decode to exactly that length.
+            if mnemonic == '.byte':
+                raise ValueError(f'Override ${slot:02X} ${address:04X}: undefined opcode ${raw[0]:02X} '
+                                 'or instruction length mismatch (or branch into its own operand)')
+            if length != size:
+                raise ValueError(f'Override ${slot:02X} ${address:04X}: instruction length mismatch '
+                                 f'(debug info: {size} bytes, ROM opcode {mnemonic} is {length})')
+            target = None  # ponytail: 'jmp (abs)' / '(abs,x)' targets are data-dependent and not checked
+            if mnemonic in ('jmp', 'jsr') and not operand.startswith('('):
                 target = raw[1] | (raw[2] << 8)
-            elif (op in REL2 and size == 2) or (op in BIT_BRANCH and size == 3):
+            elif mnemonic in REL2 or mnemonic.startswith(('bbr', 'bbs')):
                 target = address + size + (raw[-1] - 256 if raw[-1] & 0x80 else raw[-1])
             if target is not None and target >= FIRST_ENTRY and target not in valid:
                 raise ValueError(f'Override ${slot:02X} ${address:04X} jumps to ${target:04X}: '
                                  'not an instruction/entry (data, padding or mid-instruction)')
-            if op not in TERMINATORS and address + size not in body:
+            if mnemonic not in NO_FALLTHROUGH and address + size not in body:
                 raise ValueError(f'Override ${slot:02X} ${address:04X} falls through into data or padding')
 
 
@@ -232,17 +265,22 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def source_provenance(root: Path, overridden: dict[int, Path]) -> dict:
+def source_provenance(root: Path, overridden: dict[int, Path], includes: frozenset[Path] = frozenset()) -> dict:
     """Describe the sources actually assembled from `root`, not the tool's own checkout.
 
     A git SHA is recorded only when `root` is itself a repository top level;
     otherwise (copied/test trees, or a subdirectory of an unrelated repo) it is null.
+    `includes` are the .include/.incbin files ca65 reported (--create-dep); they are hashed too.
+    Not covered: the cc65 toolchain itself (see cc65_revision) and spec/api_slots.json's origin
+    (always the tool checkout), so this is input tracking, not a full reproducible-build proof.
     """
     top = _git(root, "rev-parse", "--show-toplevel")
     tracked = top is not None and Path(top).resolve() == root.resolve()
     inputs = {'src/boot.s': root / 'src' / 'boot.s', 'src/bank0.cfg': root / 'src' / 'bank0.cfg',
               'spec/api_slots.json': SLOTS_FILE,
               **{f'src/overrides/{overridden[i].name}': overridden[i] for i in sorted(overridden)}}
+    for path in sorted(includes):
+        inputs[f'include:{path.relative_to(root) if path.is_relative_to(root) else path}'] = path
     return {"source_root_is_git_repo": tracked,
             "source_sha": _git(root, "rev-parse", "HEAD") if tracked else None,
             "working_tree_dirty": bool(_git(root, "status", "--porcelain")) if tracked else None,
@@ -262,12 +300,15 @@ def build(output: Path, mode="debug", root: Path = ROOT) -> Path:
     output.mkdir(parents=True, exist_ok=True)
     generated = output / 'api_table.s'
     generated.write_text(render_table(slots, set(overridden)), encoding='utf-8')
-    objects = []
+    objects, includes = [], set()
     for src in [generated, root / 'src' / 'boot.s', *[overridden[i] for i in sorted(overridden)]]:
         obj = output / (src.stem + '.o')
         # -g never changes ROM bytes; overrides always get it because verification reads ld65 debug info.
         debug = mode == 'debug' or src in overridden.values()
-        subprocess.run([ca65, str(src), '-o', str(obj), *(['-g'] if debug else [])], check=True)
+        dep = obj.with_suffix('.d')  # ca65 lists every .include/.incbin it actually read
+        subprocess.run([ca65, str(src), '-o', str(obj), '--create-dep', str(dep), *(['-g'] if debug else [])], check=True)
+        if src != generated:
+            includes |= {Path(d).resolve() for d in dep.read_text(encoding='utf-8').splitlines()[0].partition(':')[2].split()[1:]}
         objects.append(obj)
     first_bank = output / 'bank0.bin'
     subprocess.run([ld65, '-C', str(root / 'src' / 'bank0.cfg'), '-o', str(first_bank), '-m', str(output / 'dev.map'), '-Ln', str(output / 'dev.lbl'), '--dbgfile', str(output / 'dev.dbg'), *map(str, objects)], check=True)
@@ -277,7 +318,7 @@ def build(output: Path, mode="debug", root: Path = ROOT) -> Path:
     target = output / 'dev-only-not-compatible-syscard3.pce'
     target.write_bytes(bank + b'\xFF' * (IMAGE_BYTES - BANK_BYTES))
     verify_image(target.read_bytes(), set(overridden), dbg)
-    manifest = {**source_provenance(root, overridden), "status": "development-diagnostic-not-compatible-bios", "mode": mode,
+    manifest = {**source_provenance(root, overridden, frozenset(includes)), "status": "development-diagnostic-not-compatible-bios", "mode": mode,
                 "rom_bytes": IMAGE_BYTES, "rom_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
                 "cc65_revision": DEPENDENCIES["cc65"]["revision"],
                 "overridden_slots": sorted(overridden), "unimplemented_slots": sorted(set(range(81)) - set(overridden)),

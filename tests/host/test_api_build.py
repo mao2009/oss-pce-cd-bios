@@ -171,6 +171,41 @@ class ApiBuildTests(unittest.TestCase):
         data = build(self.folder/'two-out', root=root).read_bytes()
         verify_image(data, {3, 4}, parse_dbg((self.folder/'two-out/dev.dbg').read_text()))
 
+    def test_conditional_branches_and_loops_are_accepted(self):
+        body = ' ldx #$03\nagain: dex\n bne again\n beq done\n nop\ndone: bbr0 $10, done2\ndone2: rts\n'
+        data = build(self.folder/'cond-out', root=self.make_root('cond-root', slot_03=body)).read_bytes()
+        verify_image(data, {3}, parse_dbg((self.folder/'cond-out/dev.dbg').read_text()))
+
+    def tampered(self, name, offset, value, body=None):
+        """Valid build, then ROM bytes altered while the ORIGINAL debug info is kept."""
+        root = self.make_root(name + '-root', slot_03=body or self.GOOD)
+        data = bytearray(build(self.folder/name, root=root).read_bytes())
+        dbg = parse_dbg((self.folder/name/'dev.dbg').read_text())
+        verify_image(bytes(data), {3}, dbg)  # untampered baseline must pass
+        data[0x600 + offset] = value
+        return bytes(data), dbg
+
+    def test_opcode_length_mismatch_is_rejected(self):
+        # GOOD starts with LDX #$03 (2 bytes). $0F is BBR0 (3 bytes) -> debug-info size no longer matches.
+        data, dbg = self.tampered('tamper-bbr0', 0, 0x0F)
+        with self.assertRaisesRegex(ValueError, 'instruction length|undefined opcode'):
+            verify_image(data, {3}, dbg)
+
+    def test_three_byte_instruction_turned_into_shorter_one_is_rejected(self):
+        body = ' ldx #$03\n jsr api_slot_00\n rts\n'
+        data, dbg = self.tampered('tamper-short', 2, 0xA2, body)  # JSR abs ($20, 3 bytes) -> LDX # (2 bytes)
+        with self.assertRaisesRegex(ValueError, 'instruction length'):
+            verify_image(data, {3}, dbg)
+
+    def test_tampered_branch_displacement_is_rejected(self):
+        body = ' ldx #$03\n bra done\n nop\ndone: rts\n'
+        data, dbg = self.tampered('tamper-rel', 3, 0x7F, body)  # BRA +127 -> beyond the override, into padding
+        with self.assertRaisesRegex(ValueError, 'jumps to'):
+            verify_image(data, {3}, dbg)
+        data, dbg = self.tampered('tamper-rel2', 3, 0xFF, body)  # BRA -1 -> into its own operand byte
+        with self.assertRaisesRegex(ValueError, 'its own operand'):
+            verify_image(data, {3}, dbg)
+
     def test_tampered_override_binary_is_rejected(self):
         root = self.make_root('tamper-root', slot_03=self.GOOD)
         data = bytearray(build(self.folder/'tamper', root=root).read_bytes())
@@ -200,6 +235,13 @@ class ApiBuildTests(unittest.TestCase):
         (root/'src/overrides/slot_03.s').write_text((root/'src/overrides/slot_03.s').read_text() + '; edit' + chr(10))
         self.assertTrue(source_provenance(root, overrides(root))['working_tree_dirty'])
         self.assertNotEqual(source_provenance(root, overrides(root))['source_sha256'], tracked['source_sha256'])
+
+    def test_included_files_are_hashed_in_manifest(self):
+        root = self.make_root('include-root', slot_03=' ldx #$03\n .include "extra.inc"\n jmp api_slot_00\n')
+        (root/'src/overrides/extra.inc').write_text(' nop\n')
+        build(self.folder/'inc-out', root=root)
+        hashes = json.loads((self.folder/'inc-out/manifest.json').read_text())['source_sha256']
+        self.assertEqual(hashes['include:src/overrides/extra.inc'], hashlib.sha256(b' nop\n').hexdigest())
 
     def test_subdirectory_of_unrelated_repo_is_not_attributed(self):
         outer = self.folder/'outer'; outer.mkdir()

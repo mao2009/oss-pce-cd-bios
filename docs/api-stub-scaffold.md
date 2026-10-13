@@ -37,8 +37,14 @@ This is **structural** verification of the binary, nothing more:
   `$E000-$FFFF` lands on an instruction of an override or on a table/stub entry,
   never padding, data, vectors, boot code or the middle of an instruction;
 - no instruction falls through into data or padding (code must end in
-  `JMP`/`RTS`/`RTI`/`BRA`).
+  `JMP`/`RTS`/`RTI`/`BRA`);
+- instruction boundaries from ld65 debug info are **cross-checked against the ROM
+  bytes** with cc65's own `da65` HuC6280 opcode table (built by `make setup`), so a
+  patched opcode whose length no longer matches, or an undefined opcode, is rejected.
 
+Limitations (all fail closed or are stated): `JMP (abs)`/`JMP (abs,X)` targets and
+calls below `$E000` are data-dependent and accepted unchecked; only `.byte`/`.word`
+data is recognised as data, so `.incbin`/`.res` inside `OVERRIDES` are rejected.
 Not checked: register/flag/RAM behaviour, return conventions, indirect jumps,
 calls below `$E000`, or compatibility with any System Card ABI. A passing
 override is therefore **not** an implemented API; `manifest.json` records
@@ -58,7 +64,9 @@ refusal; unexpected success, missing tools or tracebacks fail the job.
 `manifest.json` describes the source root actually built. `source_sha` and
 `working_tree_dirty` are recorded only when that root is itself a git top level
 (otherwise `null`, `source_root_is_git_repo: false`), and `source_sha256` lists the
-hashes of `boot.s`, `bank0.cfg`, `api_slots.json` and each override source.
+hashes of `boot.s`, `bank0.cfg`, `api_slots.json`, each override source and every
+`.include`d file ca65 reports (`--create-dep`). The cc65 toolchain is pinned by
+`cc65_revision` but not hashed; this is input tracking, not a full reproducible-build proof.
 `spec/api_slots.json` is always read from the tool's own checkout.
 
 ## Reproducible commands and artifacts
