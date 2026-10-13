@@ -21,7 +21,7 @@ from build_cdread import SECTOR_BYTES, verify_cdread, with_request
 from cdread_verify import SENTINEL, check_success, describe_failure
 from environment import DEPENDENCIES
 from geargrafx_api import compile_probe
-from make_cd_image import BIN_NAME, CUE_NAME, DEFAULT_SECTORS, build_image, sector_payload
+from make_cd_image import BIN_NAME, CUE_NAME, DEFAULT_SECTORS, MAGIC, audio_frame, build_image, sector_payload
 
 STEP_BUDGET = 8_000_000  # the longest legitimate path (timeout) is ~4.8M guest instructions
 DEFAULT_REQUEST = (5, 1)
@@ -217,6 +217,22 @@ def main():
                                     inject="eject-in-data")
         if len(eject["INJECT"]) != 2:
             raise ValueError("drive-abort injection was not applied to both cold and warm runs")
+
+        # ---- data track vs CD-DA: what Geargrafx does when READ(6) targets an audio LBA ----
+        mixed = folder / "mixed"
+        build_image(mixed, DEFAULT_SECTORS, 8)
+        data_ok = suite.run(suite.variant(15, 1), cue=mixed / CUE_NAME)
+        check_success(data_ok, symbols, suite.disc, 15, 1)  # an audio track does not disturb data reads
+        audio = suite.run(suite.variant(16, 1), cue=mixed / CUE_NAME)
+        got = bytes.fromhex(audio["RUN"][0]["buffer_hex"])[:SECTOR_BYTES]
+        if describe_failure(audio)[0] != ("cd_halt_ok", 0, 9, SECTOR_BYTES) or got != audio_frame(0)[16:16 + SECTOR_BYTES]:
+            raise ValueError("unexpected Geargrafx behaviour for READ(6) on an audio-track LBA")
+        if got[:len(MAGIC)] == MAGIC:
+            raise ValueError("audio data was mistaken for the data-track pattern")
+        suite.results["read6_on_audio_track_lba"] = {
+            "status": "OBSERVED_EMULATOR_BEHAVIOUR",
+            "observation": "Geargrafx returns GOOD status and 2048 raw PCM bytes taken 16 bytes into the frame (as if MODE1); real-hardware behaviour UNKNOWN",
+            "consequence": "firmware must check the track type (READ TOC $DE mode 2) itself; this diagnostic does not"}
 
         # ---- media-absent conditions the harness can express ----
         blocked = execute(probe, rom, None, labels)

@@ -50,6 +50,14 @@ int main(int argc, char** argv) {
     if (!core.LoadBiosFromBuffer(rom.data(), rom.size(), true)) return 3;
     bool have_disc = std::string(argv[2]) != "-";
     if (have_disc && !core.LoadMedia(argv[2])) return 4;
+    if (!have_disc) {
+        // Without media Geargrafx leaves CD hardware disabled and the CPU/mapper state uninitialised
+        // (reading it crashed intermittently), so report the one defined fact and stop.
+        std::printf("BLOCK {\"reason\":\"no media: System Card CD hardware not enabled, guest not executed\",\"disc_given\":false,\"cdrom_hardware\":%s}\n",
+                    core.GetMedia()->IsCDROMHardwareEnabled() ? "true" : "false");
+        std::fflush(stdout);
+        std::_Exit(0);
+    }
 
     auto processor = core.GetHuC6280();
     auto cpu = processor->GetState();
@@ -66,12 +74,7 @@ int main(int argc, char** argv) {
     };
 
     unsigned first_pc = cpu->PC->GetValue();
-    if (memory->Read(first_pc) != 0x78) {  // every probe begins with SEI
-        std::printf("BLOCK {\"reason\":\"guest ROM not executed at reset\",\"disc_given\":%s,\"first_pc\":%u,\"first_opcode\":%u,\"cdrom_hardware\":%s}\n",
-                    have_disc ? "true" : "false", first_pc, memory->Read(first_pc),
-                    core.GetMedia()->IsCDROMHardwareEnabled() ? "true" : "false");
-        return 0;
-    }
+    if (memory->Read(first_pc) != 0x78) return 5;  // every probe begins with SEI
     one_instruction();
     bool stepping = cpu->PC->GetValue() == first_pc + 1;
     std::printf("CAP {\"instruction_step\":%s,\"bios_loaded\":true,\"cdrom_hardware\":%s,\"cdrom_media\":%s,\"disc_given\":%s}\n",

@@ -30,12 +30,19 @@ jobs:
           make dev-startup
           python3 -m unittest discover -s tests/host -p 'test_startup.py' -v
           make dev-startup-integration
+      - name: Independent CD-ROM2 sector read by guest HuC6280 (diagnostic, not CD_READ / not BIOS)
+        run: |
+          make dev-cdread
+          python3 -m unittest tests.host.test_cdimage tests.host.test_cdread -v
+          make dev-cdread-integration
       - name: Debug and release diagnostic bytes match
         run: |
           make dev-rom MODE=release
           cmp build/debug/bios-dev/dev-only-not-compatible-syscard3.pce build/release/bios-dev/dev-only-not-compatible-syscard3.pce
           make dev-startup MODE=release
           cmp build/debug/startup-probe/startup-probe-not-bios.pce build/release/startup-probe/startup-probe-not-bios.pce
+          make dev-cdread MODE=release
+          cmp build/debug/cdread-probe/cdread-probe-not-bios.pce build/release/cdread-probe/cdread-probe-not-bios.pce
       - name: Incomplete firmware must be refused by the release gate (exit 3 + BLOCKED only)
         run: make dev-release-gate-blocked
       - name: Static checks with pinned actionlint
@@ -57,5 +64,9 @@ jobs:
             build/debug/startup-probe/*.json
             build/debug/startup-probe/*.map
             build/debug/startup-probe/*.lbl
+            build/debug/cdread-probe/*.pce
+            build/debug/cdread-probe/*.json
+            build/debug/cdread-probe/*.map
+            build/debug/cdread-probe/*.lbl
           if-no-files-found: error
           retention-days: 14

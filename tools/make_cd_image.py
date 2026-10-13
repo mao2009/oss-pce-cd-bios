@@ -47,19 +47,35 @@ def raw_sector(lba: int) -> bytes:
     return raw
 
 
-def build_image(directory: Path, sectors: int = DEFAULT_SECTORS) -> dict:
-    """Write CUE/BIN into `directory` and return the manifest (also written as JSON)."""
-    if not 1 <= sectors <= 4096:
-        raise ValueError("sector count must be 1..4096")
+def audio_frame(index: int) -> bytes:
+    """One 2352-byte CD-DA frame (16-bit stereo): a quiet, deterministic, non-silent ramp."""
+    samples = bytearray()
+    for i in range(RAW_BYTES // 4):
+        value = ((index * 588 + i) * 37 % 2001) - 1000
+        samples += value.to_bytes(2, "little", signed=True) * 2
+    return bytes(samples)
+
+
+def build_image(directory: Path, sectors: int = DEFAULT_SECTORS, audio_sectors: int = 0) -> dict:
+    """Write CUE/BIN into `directory` and return the manifest (also written as JSON).
+
+    audio_sectors > 0 appends an original CD-DA track 02 after the data track.
+    """
+    if not 1 <= sectors <= 4096 or not 0 <= audio_sectors <= 4096:
+        raise ValueError("sector count must be 1..4096, audio sector count 0..4096")
     directory.mkdir(parents=True, exist_ok=True)
     data = b"".join(raw_sector(lba) for lba in range(sectors))
-    cue = f'FILE "{BIN_NAME}" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'.encode("ascii")
+    cue_text = f'FILE "{BIN_NAME}" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+    if audio_sectors:
+        data += b"".join(audio_frame(i) for i in range(audio_sectors))
+        cue_text += (f"  TRACK 02 AUDIO\n    INDEX 01 {sectors // 4500:02d}:{sectors // 75 % 60:02d}:{sectors % 75:02d}\n")
+    cue = cue_text.encode("ascii")
     (directory / BIN_NAME).write_bytes(data)
     (directory / CUE_NAME).write_bytes(cue)
     manifest = {
         "format": "CUE/BIN, single track MODE1/2352, INDEX 01 at 00:00:00 (LBA 0 = first BIN sector)",
         "generator": "tools/make_cd_image.py",
-        "sectors": sectors, "user_bytes_per_sector": USER_BYTES, "raw_bytes_per_sector": RAW_BYTES,
+        "sectors": sectors, "audio_sectors": audio_sectors, "user_bytes_per_sector": USER_BYTES, "raw_bytes_per_sector": RAW_BYTES,
         "edc_ecc": "ZERO (not computed)",
         "bin_sha256": hashlib.sha256(data).hexdigest(),
         "cue_sha256": hashlib.sha256(cue).hexdigest(),
@@ -74,8 +90,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
     parser.add_argument("--sectors", type=int, default=DEFAULT_SECTORS)
+    parser.add_argument("--audio-sectors", type=int, default=0)
     args = parser.parse_args()
-    manifest = build_image(args.output, args.sectors)
+    manifest = build_image(args.output, args.sectors, args.audio_sectors)
     print(f"PASS original CD fixture: {args.output / CUE_NAME} bin_sha256={manifest['bin_sha256']}")
 
 
