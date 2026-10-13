@@ -20,6 +20,7 @@ integration: build
 	$(PYTHON) tests/integration/geargrafx_smoke.py --rom "build/$(MODE)/smoke-test-not-bios.pce" --output "build/$(MODE)/geargrafx-evidence.json"
 
 check:
+	$(PYTHON) tools/contracts.py
 	$(PYTHON) tools/check.py
 
 clean:
@@ -28,3 +29,17 @@ clean:
 release:
 	@echo 'BLOCKED: BIOS APIs and System Card boot are unimplemented; no BIOS release is available.' >&2
 	@exit 1
+
+.PHONY: dev-rom dev-test dev-integration dev-release-gate dev-release-gate-blocked
+dev-rom:
+	$(PYTHON) tools/build_rom.py --mode "$(MODE)"
+dev-test: dev-rom
+	$(PYTHON) -m unittest discover -s tests/host -p 'test_api*.py' -v
+	$(MAKE) dev-integration MODE="$(MODE)"
+dev-integration: dev-rom
+	$(PYTHON) tests/integration/geargrafx_api.py --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
+dev-release-gate:
+	$(PYTHON) tools/build_rom.py --release-gate
+# make masks the gate's exit code 3 as 2, so this wraps it: PASS only on exit 3 + 'BLOCKED:'.
+dev-release-gate-blocked:
+	$(PYTHON) tools/expect_exit.py 3 '^BLOCKED:' -- $(PYTHON) tools/build_rom.py --release-gate

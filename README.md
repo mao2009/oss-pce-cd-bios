@@ -2,7 +2,7 @@
 
 A redistributable **PC Engine / TurboGrafx-CD System Card BIOS replacement** built from original and properly licensed reusable OSS code.
 
-> **Status: development environment / smoke fixture only.** Pinned tools build an original HuCARD fixture and execute it in the real Geargrafx core. There is no bootable System Card BIOS, implemented BIOS API, or CD-game compatibility result.
+> **Status: development environment / diagnostic ROMs only.** Pinned tools build an original HuCARD fixture and execute it in the real Geargrafx core. There is no bootable System Card BIOS, implemented BIOS API, or CD-game compatibility result.
 
 ## Objectives
 
@@ -40,6 +40,10 @@ The goal is **behavioral compatibility**, not binary identity with any proprieta
 - [Toolchain selection](docs/toolchain.md)
 - [Geargrafx setup and debugging](docs/emulator-geargrafx.md)
 - [ROM and API research status](docs/specification.md)
+- [System Card ROM source contract](docs/system-card-rom.md)
+- [81-slot ABI contract ledger](docs/abi-contracts.md)
+- [Expanded Geargrafx CPU/RAM/IRQ evidence](docs/geargrafx-contract-evidence.md)
+- [Pinned OSS research audit](docs/oss-audit-systemcard.md)
 - [System Card 3.0 API-by-API Issue inventory](docs/api-inventory.md)
 - [Geargrafx harness plan](docs/geargrafx.md)
 - [Compatibility and evidence](docs/compatibility.md)
@@ -72,7 +76,11 @@ headless Geargrafx HuCARD execution, CI and main-SHA-aware Nightly workflows.
 Unimplemented: all System Card API services, CD boot/read and production BIOS.
 Planned: System Card mapping verification (#1), startup (#4), MCP trace/CD harness
 (#6), and API implementations following the [inventory](docs/api-inventory.md).
-Existing Draft PR #101 is separate work; this bootstrap does not import its stubs.
+Draft PR #101 adds a separate diagnostic-only 81-slot scaffold. `make dev-rom`
+builds a 256 KiB BIOS DEV image in `build/<mode>/bios-dev/`; `make dev-test`
+checks its table and real Geargrafx PC/X/MPR checkpoints with synthetic inputs.
+These stubs never return success and are not implemented API services.
+See [diagnostic scope and unresolved ABI](docs/api-stub-scaffold.md).
 See [building](docs/building.md) and [testing](docs/testing.md) for exact scope.
 
 ## License

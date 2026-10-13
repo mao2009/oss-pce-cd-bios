@@ -53,3 +53,8 @@ CI repeats the same commands on Ubuntu 24.04. Do not automatically merge PRs or
 present a successful HuCARD smoke test as a System Card or commercial-game result.
 Details: [building](docs/building.md), [testing](docs/testing.md),
 [Geargrafx](docs/emulator-geargrafx.md), [toolchain](docs/toolchain.md).
+
+For API table or diagnostic layout changes, also run `make dev-test`,
+`make dev-rom MODE=release`, compare diagnostic debug/release bytes, and verify
+that `make dev-release-gate` exits nonzero. An override file alone does not
+constitute an implemented, approved or release-eligible API.
