@@ -23,13 +23,22 @@
 static const unsigned kResultOffset = 0x300;   // work RAM offset of CPU $2300
 static const unsigned kBufferOffset = 0x800;   // CPU $2800
 static const unsigned kBufferBytes = 6144;
+static const long kHaltConfirmSteps = 64;      // keep equal to tools/build_cdread.py HALT_CONFIRM_STEPS (the judge cross-checks)
 static const int kPhaseDataIn = 4;             // ScsiController::SCSI_PHASE_DATA_IN
 
 int main(int argc, char** argv) {
-    // usage: probe rom cue|- labels max_steps [eject-in-data]
-    if (argc != 5 && argc != 6) return 2;
-    bool eject_in_data = argc == 6 && std::string(argv[5]) == "eject-in-data";
-    if (argc == 6 && !eject_in_data) return 2;
+    // usage: probe rom cue|- labels max_steps [eject-in-data] [cut-after-arrival=N]
+    // cut-after-arrival=N stops the run exactly N instructions after the PC first lands on a halt label
+    // (arrival times differ between processes because Geargrafx randomises the initial read phase).
+    if (argc < 5 || argc > 7) return 2;
+    bool eject_in_data = false;
+    long cut_after_arrival = -1;
+    for (int i = 5; i < argc; i++) {
+        std::string option = argv[i];
+        if (option == "eject-in-data") eject_in_data = true;
+        else if (option.rfind("cut-after-arrival=", 0) == 0) cut_after_arrival = std::atol(option.c_str() + 18);
+        else return 2;
+    }
     std::ifstream input(argv[1], std::ios::binary);
     if (!input) return 2;
     std::vector<u8> rom((std::istreambuf_iterator<char>(input)), {});
@@ -105,10 +114,22 @@ int main(int argc, char** argv) {
         int last_phase = (int)*scsi->PHASE;
         int events = 0;
         bool ejected = false;
-        long halted_after = -1;
+        // A halt only counts after kHaltConfirmSteps consecutive instructions were executed with the PC
+        // still on the SAME halt label (BRA self-loop). Leaving the label or running out of budget
+        // resets/abandons the confirmation: the result is then "budget", never a success reason.
+        long arrival = -1;           // instruction count when the PC first landed on the current halt label
+        long confirmed_steps = 0;    // consecutive instructions executed while staying on that label
+        unsigned halt_pc = 0;
+        bool halt_confirmed = false;
         std::string reason = "budget";
-        long step = 0;
-        for (; step < max_steps; step++) {
+        long step = 0;              // instructions executed in this run
+        auto halt_name = [&](unsigned pc) -> const char* {
+            if (pc == labels["cd_halt_ok"]) return "cd_halt_ok";
+            if (pc == labels["cd_halt_fail"]) return "cd_halt_fail";
+            if (pc == labels["cd_unexpected_interrupt"]) return "cd_unexpected_interrupt";
+            return nullptr;
+        };
+        while (step < max_steps) {
             unsigned pc = cpu->PC->GetValue();
             for (const auto& item : labels)
                 if (pc == item.second && !seen.count(item.first)) {
@@ -117,14 +138,24 @@ int main(int argc, char** argv) {
                     hex("buffer_head_hex", kBufferOffset, 32);
                     std::printf("}\n");
                 }
-            if (pc == labels["cd_halt_ok"] || pc == labels["cd_halt_fail"] || pc == labels["cd_unexpected_interrupt"]) {
-                if (halted_after < 0) {
-                    halted_after = step;
-                    reason = pc == labels["cd_halt_ok"] ? "cd_halt_ok" : pc == labels["cd_halt_fail"] ? "cd_halt_fail" : "cd_unexpected_interrupt";
-                }
-                if (step - halted_after >= 64) break;  // prove the halt is stable, not a passing PC
+            if (halt_name(pc)) {
+                if (pc != halt_pc) { halt_pc = pc; arrival = step; confirmed_steps = 0; }
+            } else {
+                halt_pc = 0; arrival = -1; confirmed_steps = 0;
             }
+            if (cut_after_arrival >= 0 && arrival >= 0 && step - arrival >= cut_after_arrival) break;  // test budget cut
             one_instruction();
+            step++;
+            if (halt_pc && cpu->PC->GetValue() == halt_pc) {
+                confirmed_steps++;
+                if (confirmed_steps >= kHaltConfirmSteps) {
+                    halt_confirmed = true;
+                    reason = halt_name(halt_pc);
+                    break;
+                }
+            } else if (halt_pc) {
+                halt_pc = 0; arrival = -1; confirmed_steps = 0;  // left the halt loop mid-confirmation
+            }
             if ((int)*scsi->PHASE != last_phase && events < 64) {
                 last_phase = (int)*scsi->PHASE;
                 events++;
@@ -138,7 +169,8 @@ int main(int argc, char** argv) {
             }
         }
         regs("RUN", reason.c_str(), step);
-        std::printf(",\"reason\":\"%s\",\"halted_after_step\":%ld", reason.c_str(), halted_after);
+        std::printf(",\"reason\":\"%s\",\"halt_confirmed\":%s,\"halted_after_step\":%ld,\"halt_confirmation_steps\":%ld,\"halt_confirmation_required\":%ld",
+                    reason.c_str(), halt_confirmed ? "true" : "false", arrival, confirmed_steps, kHaltConfirmSteps);
         hex("result_hex", kResultOffset, 32);
         hex("buffer_hex", kBufferOffset, kBufferBytes);
         std::printf("}\n");

@@ -30,6 +30,9 @@ BUFFER_BYTES = 6144
 SECTOR_BYTES = 2048
 EXPECTED_MPR = [0xff, 0xf8, 1, 2, 31, 3, 4, 0]
 DEFAULT_LBA, DEFAULT_COUNT = 5, 1
+# Consecutive guest instructions that must be observed AT a halt label before a halt counts.
+# tests/integration/geargrafx_cdread_probe.cpp keeps its own copy and reports it in every RUN row.
+HALT_CONFIRM_STEPS = 64
 ERROR_NAMES = {
     0: "OK", 1: "BUS_NOT_FREE_AFTER_RESET", 2: "SELECT_TIMEOUT", 3: "COMMAND_REQ_TIMEOUT",
     4: "DATA_TIMEOUT", 5: "PREMATURE_STATUS_PHASE", 6: "BAD_SCSI_STATUS_OR_MESSAGE",

@@ -5,9 +5,9 @@ transferred byte equals the independently generated sector data. Used both by th
 integration runner (positive and negative runs) and by host tests on synthetic records.
 """
 if __package__:
-    from .build_cdread import BUFFER_BYTES, EXPECTED_MPR, SECTOR_BYTES
+    from .build_cdread import BUFFER_BYTES, EXPECTED_MPR, HALT_CONFIRM_STEPS, SECTOR_BYTES
 else:
-    from build_cdread import BUFFER_BYTES, EXPECTED_MPR, SECTOR_BYTES
+    from build_cdread import BUFFER_BYTES, EXPECTED_MPR, HALT_CONFIRM_STEPS, SECTOR_BYTES
 
 SENTINEL = 0x5A
 # Geargrafx ScsiPhase enum order (debugger-visible, pinned revision).
@@ -27,6 +27,23 @@ def result_block(run: dict) -> dict:
             "scsi_status": block[4], "scsi_message": block[5], "last_bus": block[6]}
 
 
+def check_halt_confirmation(run: dict) -> None:
+    """A success needs HALT_CONFIRM_STEPS consecutive instructions observed on the halt loop (fail-closed)."""
+    cycle = run.get("cycle")
+    try:
+        confirmed, steps = run["halt_confirmed"], run["halt_confirmation_steps"]
+        required, arrival, step = run["halt_confirmation_required"], run["halted_after_step"], run["step"]
+    except KeyError as missing:
+        raise ValueError(f"{cycle}: halt confirmation evidence missing ({missing})") from None
+    if confirmed is not True:
+        raise ValueError(f"{cycle}: halt not confirmed (halt_confirmed={confirmed!r})")
+    if required != HALT_CONFIRM_STEPS or steps != HALT_CONFIRM_STEPS:
+        raise ValueError(f"{cycle}: halt confirmation covered {steps} of {required} steps, need {HALT_CONFIRM_STEPS}")
+    if not isinstance(arrival, int) or arrival < 0 or step != arrival + steps:
+        raise ValueError(f"{cycle}: halt confirmation step accounting inconsistent "
+                         f"(arrival={arrival}, steps={steps}, executed={step})")
+
+
 def check_success(records: dict, symbols: dict, disc: list, lba: int, count: int) -> None:
     """Raise ValueError unless cold AND warm runs read `count` sectors from `lba` exactly."""
     runs = records["RUN"]
@@ -36,8 +53,9 @@ def check_success(records: dict, symbols: dict, disc: list, lba: int, count: int
             or not records["CAP"][0].get("cdrom_hardware") or not records["CAP"][0].get("cdrom_media"):
         raise ValueError("real instruction stepping / System Card CD path capability missing")
     for run in runs:
-        if run["reason"] != "cd_halt_ok" or run["pc"] != symbols["cd_halt_ok"]:
-            raise ValueError(f"{run['cycle']}: guest did not stop at the success checkpoint ({run['reason']})")
+        if run.get("reason") != "cd_halt_ok" or run.get("pc") != symbols["cd_halt_ok"]:
+            raise ValueError(f"{run.get('cycle')}: guest did not stop at the success checkpoint ({run.get('reason')})")
+        check_halt_confirmation(run)
     if count < 1 or lba + count > len(disc):
         raise ValueError("the requested sectors are not on the reference disc")
     expected = b"".join(disc[lba + i] for i in range(count))

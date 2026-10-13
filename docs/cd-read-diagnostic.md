@@ -78,8 +78,12 @@ sources and **only Geargrafx has accepted them** - real-hardware validity is UNK
 
 ## How success is judged (`tools/cdread_verify.py`)
 
-A run passes only if, for both cold and warm reset: the guest stopped at `cd_halt_ok` (not merely "a PC was
-reached" - the probe keeps stepping 64 more instructions to show the halt is stable); `X=$C0`, `SP=$FF`, the
+A run passes only if, for both cold and warm reset: the guest stopped at `cd_halt_ok` **and the halt was confirmed**: the probe executed 64 further
+instructions one by one with the PC still on that `BRA` self-loop (`HALT_CONFIRM_STEPS`, kept equal in the C++ probe and
+`tools/build_cdread.py`; the judge cross-checks the value each RUN row reports). Leaving the loop resets the count; running out
+of step budget before the 64th instruction is reported as `reason="budget"`, `halt_confirmed=false`, never as a success.
+The judge additionally requires `halt_confirmed is true`, `halt_confirmation_steps == halt_confirmation_required == 64`, and
+`executed steps == halted_after_step + 64`; any missing field fails closed; `X=$C0`, `SP=$FF`, the
 expected MPRs, `I` set / `D` clear; the result block is `0 / stage 9 / bytes = count*2048 / status 0 / message 0`;
 **every transferred byte equals the independently generated sector data**; bytes beyond the request are still
 `$5A`; the RAM was the sentinel at `cd_buffer_ready` and the data at `cd_data_done`; and the emulator itself saw
@@ -100,6 +104,9 @@ registers.
 | Selection redirected to `$1805` (nobody answers) | error 2, bounded timeout | PASS_EXPECTED_FAILURE |
 | Drive-side abort at DATA_IN entry (emulator media-eject notification resets the SCSI bus, injected by the probe and logged as `INJECT`; it does not prove the abort *caused* the timeout beyond the injection order) | error 4 | PASS_EXPECTED_FAILURE |
 | 18 corrupted copies of the good observations (RAM bit flips, overrun, budget, MPR, missing/altered SCSI phases) | judge rejects each | PASS_EXPECTED_FAILURE |
+| Run cut 0 / 1 / 63 instructions after the PC reached the success loop (`cut-after-arrival=N`, cold and warm) | `reason=budget`, `halt_confirmed=false`, judge rejects | PASS_EXPECTED_FAILURE |
+| Run cut exactly 64 instructions after arrival | confirmed, accepted | PASS |
+| Budget exhausted before any halt label | `budget`, judge rejects | PASS_EXPECTED_FAILURE |
 | Data sector with an audio track present | still reads correctly | PASS |
 | READ(6) on an audio-track LBA | observed Geargrafx behaviour recorded (see below) | OBSERVED_EMULATOR_BEHAVIOUR |
 | No media loaded | Geargrafx leaves CD hardware disabled and does not execute the card | NOT_TESTED (not a firmware test) |

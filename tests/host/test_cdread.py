@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 from tools.build_cdread import (
-    BANK_BASE, DEFAULT_COUNT, DEFAULT_LBA, EXPECTED_MPR, REQUIRED_SYMBOLS, build_cdread, code_digest,
+    BANK_BASE, DEFAULT_COUNT, DEFAULT_LBA, EXPECTED_MPR, HALT_CONFIRM_STEPS, REQUIRED_SYMBOLS, build_cdread, code_digest,
     parse_symbols, read_request, verify_cdread, with_request,
 )
 from tools.build_rom import build
@@ -99,6 +99,8 @@ def good_records(symbols, lba=5, count=1):
     buffer = expected + bytes([0x5A]) * (6144 - len(expected))
     result = bytes((0, 9)) + len(expected).to_bytes(2, "little") + bytes(28)
     run = lambda cycle: {"cycle": cycle, "name": "cd_halt_ok", "reason": "cd_halt_ok", "step": 1000,
+                         "halt_confirmed": True, "halted_after_step": 1000 - HALT_CONFIRM_STEPS,
+                         "halt_confirmation_steps": HALT_CONFIRM_STEPS, "halt_confirmation_required": HALT_CONFIRM_STEPS,
                          "pc": symbols["cd_halt_ok"], "x": 0xC0, "sp": 0xFF, "p": 0x24, "mpr": list(EXPECTED_MPR),
                          "result_hex": result.hex(), "buffer_hex": buffer.hex()}
     phases = lambda cycle: [
@@ -140,6 +142,7 @@ class JudgeTests(unittest.TestCase):
                 self.judge(good_records(self.symbols), lba, count)
 
     def test_rejects_non_success_and_environment_differences(self):
+        symbols_pc_other = 0xF123
         mutations = {
             "failed_halt": lambda r: r["RUN"][0].update(reason="cd_halt_fail"),
             "stuck_pc": lambda r: r["RUN"][1].update(pc=0xF123),
@@ -153,6 +156,25 @@ class JudgeTests(unittest.TestCase):
             "scsi_status": lambda r: r["RUN"][0].update(result_hex=(bytes((0, 9, 0, 8, 2, 0)) + bytes(26)).hex()),
             "error_code": lambda r: r["RUN"][0].update(result_hex=(bytes((5, 5, 0, 8)) + bytes(28)).hex()),
             "missing_warm": lambda r: r["RUN"].pop(),
+            "budget_right_after_arrival": lambda r: r["RUN"][0].update(
+                reason="budget", halt_confirmed=False, halt_confirmation_steps=0, step=r["RUN"][0]["halted_after_step"]),
+            "only_63_steps_confirmed": lambda r: r["RUN"][0].update(
+                halt_confirmed=False, halt_confirmation_steps=63, step=r["RUN"][0]["halted_after_step"] + 63),
+            "63_steps_but_flag_true": lambda r: r["RUN"][0].update(halt_confirmation_steps=63),
+            "halt_confirmed_missing": lambda r: r["RUN"][0].pop("halt_confirmed"),
+            "halt_confirmed_false": lambda r: r["RUN"][1].update(halt_confirmed=False),
+            "halt_confirmed_not_bool": lambda r: r["RUN"][0].update(halt_confirmed=1),
+            "steps_field_missing": lambda r: r["RUN"][0].pop("halt_confirmation_steps"),
+            "arrival_step_missing": lambda r: r["RUN"][0].pop("halted_after_step"),
+            "arrival_step_negative": lambda r: r["RUN"][0].update(halted_after_step=-1),
+            "arrival_plus_steps_mismatch": lambda r: r["RUN"][1].update(halted_after_step=5),
+            "required_below_constant": lambda r: r["RUN"][0].update(
+                halt_confirmation_required=1, halt_confirmation_steps=1, halted_after_step=999, step=1000),
+            "pc_left_during_confirmation": lambda r: r["RUN"][0].update(
+                halt_confirmed=False, pc=symbols_pc_other, halt_confirmation_steps=10),
+            "warm_unconfirmed_cold_ok": lambda r: r["RUN"][1].update(
+                reason="budget", halt_confirmed=False, halt_confirmation_steps=30),
+            "unexpected_interrupt": lambda r: r["RUN"][0].update(reason="cd_unexpected_interrupt"),
             "no_capability": lambda r: r["CAP"][0].update(cdrom_media=False),
             "wrong_phase_order": lambda r: r["PHASE"].__setitem__(slice(0, 5), r["PHASE"][4::-1]),
             "emulator_other_lba": lambda r: r["PHASE"][1].update(load_sector=4),

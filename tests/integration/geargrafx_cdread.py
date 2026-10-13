@@ -17,7 +17,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
-from build_cdread import SECTOR_BYTES, verify_cdread, with_request
+from build_cdread import HALT_CONFIRM_STEPS, SECTOR_BYTES, verify_cdread, with_request
 from cdread_verify import SENTINEL, check_success, describe_failure
 from environment import DEPENDENCIES
 from geargrafx_api import compile_probe
@@ -27,9 +27,9 @@ STEP_BUDGET = 12_000_000  # longest legitimate path: ~0.8M (seek) + ~5.8M (one 2
 DEFAULT_REQUEST = (5, 1)
 
 
-def execute(probe, rom, cue, labels, budget=STEP_BUDGET, inject=None):
+def execute(probe, rom, cue, labels, budget=STEP_BUDGET, inject=None, options=()):
     result = subprocess.run([str(probe), str(rom), str(cue) if cue else "-", str(labels), str(budget),
-                             *([inject] if inject else [])],
+                             *([inject] if inject else []), *options],
                             check=True, capture_output=True, text=True, timeout=900)
     records = {"CAP": [], "HIT": [], "PHASE": [], "RUN": [], "BLOCK": [], "INJECT": []}
     for line in result.stdout.splitlines():
@@ -63,11 +63,11 @@ class Suite:
         self.cue = folder / "disc" / CUE_NAME
         self.n = 0
 
-    def run(self, rom_bytes, cue=None, inject=None, budget=STEP_BUDGET):
+    def run(self, rom_bytes, cue=None, inject=None, budget=STEP_BUDGET, options=()):
         self.n += 1
         path = self.folder / f"variant-{self.n}-not-bios.pce"
         path.write_bytes(rom_bytes)
-        return execute(self.probe, path, cue or self.cue, self.labels, budget, inject)
+        return execute(self.probe, path, cue or self.cue, self.labels, budget, inject, options)
 
     def variant(self, lba, count):
         return with_request(self.payload, self.symbols, lba, count)
@@ -162,6 +162,30 @@ def judge_mutation_tests(suite, records):
     suite.results["judge_observation_mutations"] = {"status": "PASS_EXPECTED_FAILURE", "mutants": sorted(mutants)}
 
 
+def halt_confirmation_tests(suite):
+    """Real Geargrafx runs cut inside the halt confirmation window must FAIL; exactly enough must PASS.
+
+    Arrival times vary between processes, so the cut is made relative to the arrival inside one process."""
+    exact = suite.run(suite.payload, options=[f"cut-after-arrival={HALT_CONFIRM_STEPS}"])
+    check_success(exact, suite.symbols, suite.disc, *DEFAULT_REQUEST)
+    suite.results["halt_confirmation_exact_window"] = {"status": "PASS", "cut_after_arrival": HALT_CONFIRM_STEPS}
+    for extra in (0, 1, HALT_CONFIRM_STEPS - 1):
+        records = suite.run(suite.payload, options=[f"cut-after-arrival={extra}"])
+        for run in records["RUN"]:
+            if (run["reason"], run["halt_confirmed"], run["halt_confirmation_steps"],
+                    run["halt_confirmation_required"]) != ("budget", False, extra, HALT_CONFIRM_STEPS):
+                raise ValueError(f"cut +{extra}: {run['cycle']} reported {run['reason']}, "
+                                 f"confirmed={run['halt_confirmed']}, steps={run['halt_confirmation_steps']}")
+        suite.must_be_rejected(f"halt_unconfirmed_cut_{extra}_steps_after_arrival", records, *DEFAULT_REQUEST,
+                               match="did not stop at the success checkpoint (budget)", confirmed_steps=extra)
+    # a failing guest must not be confirmed as a success halt either, and an unreached halt is a plain budget stop
+    short = suite.run(suite.payload, budget=1000)
+    if any(run["reason"] != "budget" or run["halt_confirmed"] for run in short["RUN"]):
+        raise ValueError("a run that never reached any halt label was not reported as budget")
+    suite.must_be_rejected("budget_exhausted_before_any_halt", short, *DEFAULT_REQUEST,
+                           match="did not stop at the success checkpoint (budget)")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("debug", "release"), default="debug")
@@ -254,6 +278,7 @@ def main():
             raise ValueError("empty disc image unexpectedly loaded")
 
         judge_mutation_tests(suite, primary)
+        halt_confirmation_tests(suite)
 
     evidence = {
         "scope": "original CD sector-read hardware diagnostic ONLY; CD_READ ($03) and every BIOS API NOT_IMPLEMENTED",
@@ -262,7 +287,8 @@ def main():
         "source_archive_sha256": DEPENDENCIES["geargrafx"]["sha256"],
         "loader": "LoadBiosFromBuffer(syscard=true) + original synthetic CUE/BIN (MODE1/2352)",
         "disc": {key: disc_manifest[key] for key in ("format", "sectors", "bin_sha256", "cue_sha256", "edc_ecc")},
-        "success_judgement": "guest halt at cd_halt_ok + result block + full RAM compare vs independent generator "
+        "halt_confirmation_steps": HALT_CONFIRM_STEPS,
+        "success_judgement": "guest halt at cd_halt_ok CONFIRMED by 64 consecutive instructions on the halt loop + result block + full RAM compare vs independent generator "
                              "+ emulator-observed SCSI READ(6) lba/count + SCSI phase order, cold AND warm",
         "tests": suite.results,
         "primary_observations": {"RUN": primary["RUN"], "PHASE": primary["PHASE"], "HIT": primary["HIT"]},
