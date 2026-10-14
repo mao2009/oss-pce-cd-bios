@@ -26,3 +26,6 @@ Thumbs.db
 # independently authored synthetic ROM/CD fixtures need to be reviewable.
 # Git ignores are not a provenance gate; enforce allowed paths, content
 # reviews and release restrictions through Issue #8.
+
+# Locally owned game disc images (never commit or distribute)
+/rom/
