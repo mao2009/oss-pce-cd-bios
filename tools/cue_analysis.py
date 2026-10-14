@@ -19,6 +19,7 @@ from pathlib import Path
 
 SYNC = b"\x00" + b"\xff" * 10 + b"\x00"
 # CD sector layouts we understand: mode -> (raw bytes, user-data offset, user bytes).
+# MODE2 Form 1/Form 2 are not supported for user data extraction; only MODE1/2352.
 MODES = {
     "MODE1/2048": (2048, 0, 2048),
     "MODE1/2352": (2352, 16, 2048),
@@ -26,6 +27,8 @@ MODES = {
     "MODE2/2352": (2352, 24, 2048),
     "AUDIO": (2352, 0, 2352),
 }
+# Modes that support 2048-byte user data extraction via user_sector()
+USER_DATA_MODES = {"MODE1/2352"}
 PCE_BOOT_SIGNATURE = b"PC Engine CD-ROM SYSTEM"
 MAX_PROBE_FRAMES = 4096  # bounded frame probing so a huge track stays fast
 
@@ -67,19 +70,31 @@ def parse_cue(path: Path) -> dict:
             elif keyword == "TRACK":
                 if not files:
                     raise CueError("TRACK before any FILE")
-                _, number_text, mode = line.split()
+                parts = line.split()
+                if len(parts) != 3:
+                    raise CueError(f"TRACK requires number and mode: {line!r}")
+                _, number_text, mode = parts
                 if mode.upper() not in MODES:
                     raise CueError(f"unsupported track mode: {mode!r}")
                 files[-1]["tracks"].append({"number": int(number_text), "mode": mode.upper(), "index": {}})
-            elif keyword in ("INDEX", "PREGAP", "POSTGAP"):
+            elif keyword == "INDEX":
+                if not files or not files[-1]["tracks"]:
+                    raise CueError("INDEX before any TRACK")
+                parts = line.split()
+                if len(parts) != 3:
+                    raise CueError(f"INDEX requires index and timestamp: {line!r}")
+                _, index_text, timestamp = parts
+                track = files[-1]["tracks"][-1]
+                track["index"][int(index_text)] = _parse_msf(timestamp)
+            elif keyword in ("PREGAP", "POSTGAP"):
                 if not files or not files[-1]["tracks"]:
                     raise CueError(f"{keyword} before any TRACK")
-                _, index_text, timestamp = line.split()
+                parts = line.split()
+                if len(parts) != 2:
+                    raise CueError(f"{keyword} requires timestamp: {line!r}")
+                _, timestamp = parts
                 track = files[-1]["tracks"][-1]
-                if keyword == "INDEX":
-                    track["index"][int(index_text)] = _parse_msf(timestamp)
-                else:
-                    track[keyword.lower()] = _parse_msf(timestamp)
+                track[keyword.lower()] = _parse_msf(timestamp)
             elif keyword in ("FLAGS", "ISRC", "CDTEXTFILE", "PERFORMER", "TITLE", "SONGWRITER"):
                 continue
             else:
@@ -131,6 +146,19 @@ def _probe_track(data: bytes, sector_bytes: int, track_lba: int, mode: str) -> d
             "mode_bytes": sorted(modes), "msf_mismatch_frames": msf_bad}
 
 
+def _sha256_file(path: Path) -> str:
+    """Streaming SHA-256 to avoid loading large files entirely into memory."""
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
 def analyze(cue_path: Path, boot_signature: bytes = PCE_BOOT_SIGNATURE) -> dict:
     """Full read-only analysis of `cue_path`; returns a JSON-serializable report and never payload bytes."""
     cue_path = Path(cue_path)
@@ -146,11 +174,12 @@ def analyze(cue_path: Path, boot_signature: bytes = PCE_BOOT_SIGNATURE) -> dict:
         bin_path = folder / file["name"]
         if not bin_path.is_file():
             raise CueError(f"referenced BIN does not exist: {bin_path}")
-        data = bin_path.read_bytes()
         sector_bytes = sizes.pop()
-        if len(data) % sector_bytes:
-            raise CueError(f"{file['name']}: size {len(data)} is not a multiple of {sector_bytes}")
-        file_frames = len(data) // sector_bytes
+        # Use file size check without reading entire file
+        file_size = bin_path.stat().st_size
+        if file_size % sector_bytes:
+            raise CueError(f"{file['name']}: size {file_size} is not a multiple of {sector_bytes}")
+        file_frames = file_size // sector_bytes
         starts = [min(t["index"].values()) if t["index"] else 0 for t in file["tracks"]]
         if starts != sorted(starts):
             raise CueError(f"{file['name']}: INDEX offsets are not increasing")
@@ -159,14 +188,25 @@ def analyze(cue_path: Path, boot_signature: bytes = PCE_BOOT_SIGNATURE) -> dict:
             length = (starts[position + 1] if position + 1 < len(starts) else file_frames) - starts[position]
             if length <= 0:
                 raise CueError(f"{file['name']}: track {track['number']} has non-positive length")
-            span = data[starts[position] * sector_bytes:(starts[position] + length) * sector_bytes]
+            # Read only the track span for hashing and probing
+            track_offset = starts[position] * sector_bytes
+            track_size = length * sector_bytes
+            with bin_path.open("rb") as f:
+                f.seek(track_offset)
+                span = f.read(track_size)
+            if len(span) != track_size:
+                raise CueError(f"{file['name']}: track {track['number']} truncated at offset {track_offset}")
             is_audio = track["mode"] == "AUDIO"
             entry = {"number": track["number"], "mode": track["mode"], "file": file["name"],
                      "audio": is_audio, "sector_bytes": sector_bytes, "length_frames": length,
                      "length_seconds": round(length / 75, 3), "start_lba": next_lba,
                      "index": {str(k): v for k, v in sorted(track["index"].items())},
                      "declared_data_lba": next_lba + declared,
-                     "sha256": hashlib.sha256(span).hexdigest()}
+                     "sha256": _sha256_bytes(span)}
+            if "pregap" in track:
+                entry["pregap"] = track["pregap"]
+            if "postgap" in track:
+                entry["postgap"] = track["postgap"]
             if is_audio:
                 if any(span[i:i + 12] == SYNC for i in range(0, min(len(span), 2352 * 64))):
                     findings.append(f"track {track['number']}: AUDIO track unexpectedly contains MODE sync frames")
@@ -189,18 +229,21 @@ def analyze(cue_path: Path, boot_signature: bytes = PCE_BOOT_SIGNATURE) -> dict:
     for track in tracks:
         if track["audio"] or "sector" not in track or track["mode"] != "MODE1/2352":
             continue
-        body = (folder / track["file"]).read_bytes()
+        bin_path = folder / track["file"]
         base = min(track["index"].values()) * track["sector_bytes"]
         step = min(track["length_frames"], MAX_PROBE_FRAMES)
-        for frame in range(step):
-            offset = base + frame * track["sector_bytes"] + 16
-            at = body[offset:offset + 2048].find(boot_signature)
-            if at >= 0:
-                signatures.append({"track": track["number"], "lba": track["start_lba"] + frame,
-                                   "user_offset": at, "signature": boot_signature.decode("ascii", "replace")})
-                break
+        with bin_path.open("rb") as f:
+            for frame in range(step):
+                offset = base + frame * track["sector_bytes"] + 16
+                f.seek(offset)
+                user_data = f.read(2048)
+                at = user_data.find(boot_signature)
+                if at >= 0:
+                    signatures.append({"track": track["number"], "lba": track["start_lba"] + frame,
+                                       "user_offset": at, "signature": boot_signature.decode("ascii", "replace")})
+                    break
     data_tracks = [t["number"] for t in tracks if not t["audio"]]
-    return {"cue": cue_path.name, "cue_sha256": hashlib.sha256(cue_path.read_bytes()).hexdigest(),
+    return {"cue": cue_path.name, "cue_sha256": _sha256_file(cue_path),
             "catalog": sheet["catalog"], "total_frames": next_lba, "total_seconds": round(next_lba / 75, 3),
             "data_tracks": data_tracks, "audio_tracks": [t["number"] for t in tracks if t["audio"]],
             "tracks": tracks, "boot_signatures": signatures, "findings": findings,
@@ -209,16 +252,25 @@ def analyze(cue_path: Path, boot_signature: bytes = PCE_BOOT_SIGNATURE) -> dict:
 
 def user_sector(cue_path: Path, report: dict, lba: int) -> bytes:
     """Return the 2048-byte user data at absolute disc `lba` (MODE1/2352 data tracks only)."""
+    if lba < 0:
+        raise CueError(f"LBA must be non-negative, got {lba}")
     for track in report["tracks"]:
-        if track["audio"] or track["start_lba"] > lba >= track["start_lba"] + track["length_frames"]:
+        if track["audio"]:
             continue
-        if track["mode"] != "MODE1/2352":
-            raise CueError(f"track {track['number']} mode {track['mode']} has no 2048-byte user area")
+        if track["mode"] not in USER_DATA_MODES:
+            raise CueError(f"track {track['number']} mode {track['mode']} has no 2048-byte user area (supported: {sorted(USER_DATA_MODES)})")
         if not track["start_lba"] <= lba < track["start_lba"] + track["length_frames"]:
             continue
-        data = (Path(cue_path).parent / track["file"]).read_bytes()
-        offset = (min(track["index"].values()) + lba - track["start_lba"]) * 2352
-        return data[offset + 16:offset + 16 + 2048]
+        bin_path = Path(cue_path).parent / track["file"]
+        index01 = min(track["index"].values())
+        user_offset = MODES[track["mode"]][1]
+        offset = (index01 + lba - track["start_lba"]) * track["sector_bytes"] + user_offset
+        with bin_path.open("rb") as f:
+            f.seek(offset)
+            data = f.read(2048)
+        if len(data) != 2048:
+            raise CueError(f"track {track['number']}: truncated user data at LBA {lba} (offset {offset})")
+        return data
     raise CueError(f"no data track covers absolute LBA {lba}")
 
 

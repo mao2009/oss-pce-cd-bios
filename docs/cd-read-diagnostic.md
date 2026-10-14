@@ -45,7 +45,7 @@ image is byte-identical to the base ROM and verified on every build).
 For locally owned CUE/BIN images (never committed to Git), `cue_analysis.py` verifies
 structure, classifies tracks, maps to absolute disc LBAs, probes MODE1/2352 sync/MSF
 consistency, and can extract user sectors via `user_sector(cue, report, lba)`. The
-report contains layout and checksums only; no sector payload is written. PC Engine
+report contains layout and validation results only; no sector payload is written. PC Engine
 CD-ROM pre-gap sync patterns are tolerated up to a reasonable window. Run with:
 
 ```sh
@@ -82,6 +82,69 @@ Result block (`$2300`): `+0` error code (`$FF` in progress, 0 OK), `+1` last sta
 | 1 | bus not free after reset | 6 | SCSI status/message not GOOD/COMPLETE |
 | 2 | selection never reached COMMAND | 7 | status/message phase timeout |
 | 3 | command byte REQ timeout | 8 | bus did not return to free |
-| 4 | data timeout | 5 | STATUS phase before all data (no data / short read) |
-| 5 | STATUS phase before all data (no data / short read) | 9 | invalid request (sector count) |
-| 10 | ACK handshake timeout | | |
+| 4 | data timeout | 9 | invalid request (sector count) |
+| 5 | STATUS phase before all data (no data / short read) | 10 | ACK handshake timeout |
+
+`wait_phase`, `ack_byte` and the loop registers are internal to the diagnostic; none of this is a System Card
+calling convention. The register values it writes (`$81` for ID/select, reset pulse length) are from public
+sources and **only Geargrafx has accepted them** - real-hardware validity is UNKNOWN.
+
+## How success is judged (`tools/cdread_verify.py`)
+
+A run passes only if, for both cold and warm reset: the guest stopped at `cd_halt_ok` **and the halt was confirmed**: the probe executed 64 further
+instructions one by one with the PC still on that `BRA` self-loop (`HALT_CONFIRM_STEPS`, kept equal in the C++ probe and
+`tools/build_cdread.py`; the judge cross-checks the value each RUN row reports). Leaving the loop resets the count; running out
+of step budget before the 64th instruction is reported as `reason="budget"`, `halt_confirmed=false`, never as a success.
+The judge additionally requires `halt_confirmed is true`, `halt_confirmation_steps == halt_confirmation_required == 64`, and
+`executed steps == halted_after_step + 64`; any missing field fails closed; `X=$C0`, `SP=$FF`, the
+expected MPRs, `I` set / `D` clear; the result block is `0 / stage 9 / bytes = count*2048 / status 0 / message 0`;
+**every transferred byte equals the independently generated sector data**; bytes beyond the request are still
+`$5A`; the RAM was the sentinel at `cd_buffer_ready` and the data at `cd_data_done`; and the emulator itself saw
+SCSI phases COMMAND, DATA_IN (with `load_sector/load_count` equal to the request), STATUS, MESSAGE_IN, BUS_FREE.
+The C++ probe (`tests/integration/geargrafx_cdread_probe.cpp`) only reads state; it never writes guest memory or
+registers.
+
+## Test matrix (measured: `build/debug/cdread-probe/cdread-evidence.json`)
+
+| Scenario | Expected | Status |
+| --- | --- | --- |
+| LBA 5 ×1 (default), LBA 0, LBA 15 (last), LBA 5 ×3, LBA 13 ×3 (ends at disc end) | full-byte match, cold+warm | PASS |
+| Disc user data changed at byte 3 / byte 2047 of sector 5 | guest reads fine; judge rejects at that exact byte | PASS_EXPECTED_FAILURE |
+| ROM requests LBA 6, judged as 5 | judge rejects at byte 24 (the LBA field) | PASS_EXPECTED_FAILURE |
+| LBA 16 / `0x1FFFFF` (invalid) | error 5, 0 bytes, no RAM written | PASS_EXPECTED_FAILURE |
+| LBA 14 ×3 (runs off the end) | 4096 bytes of sectors 14/15 correct, then error 5 | PASS_EXPECTED_FAILURE |
+| count 0 / 4 | error 9 before touching the bus | PASS_EXPECTED_FAILURE |
+| Selection redirected to `$1805` (nobody answers) | error 2, bounded timeout | PASS_EXPECTED_FAILURE |
+| Drive-side abort at DATA_IN entry (emulator media-eject notification resets the SCSI bus, injected by the probe and logged as `INJECT`; it does not prove the abort *caused* the timeout beyond the injection order) | error 4 | PASS_EXPECTED_FAILURE |
+| 18 corrupted copies of the good observations (RAM bit flips, overrun, budget, MPR, missing/altered SCSI phases) | judge rejects each | PASS_EXPECTED_FAILURE |
+| Run cut 0 / 1 / 63 instructions after the PC reached the success loop (`cut-after-arrival=N`, cold and warm) | `reason=budget`, `halt_confirmed=false`, judge rejects | PASS_EXPECTED_FAILURE |
+| Run cut exactly 64 instructions after arrival | confirmed, accepted | PASS |
+| Budget exhausted before any halt label | `budget`, judge rejects | PASS_EXPECTED_FAILURE |
+| Data sector with an audio track present | still reads correctly | PASS |
+| READ(6) on an audio-track LBA | observed Geargrafx behaviour recorded (see below) | OBSERVED_EMULATOR_BEHAVIOUR |
+| No media loaded | Geargrafx leaves CD hardware disabled and does not execute the card | NOT_TESTED (not a firmware test) |
+| Zero-sector image | Geargrafx refuses to load it | NOT_TESTED |
+| Interrupt-driven transfer, `$1808` auto-ACK, second emulator, real hardware | - | NOT_TESTED |
+
+## Findings and open questions
+
+* Measured: for a start LBA at or beyond the disc end, or a later sector running off the end, the guest sees a
+  STATUS phase instead of DATA_IN (error 5, with 0 or 4096 bytes already transferred). That the status byte is GOOD
+  respectively CHECK CONDITION comes from **reading the Geargrafx source only**; the guest does not read the byte on
+  these paths yet. Hardware: UNKNOWN.
+* READ(6) addressed to a CD-DA LBA is **not an error** in Geargrafx: it returns GOOD and 2048 raw PCM bytes
+  starting 16 bytes into the frame. Real drives/firmware must therefore decide data-vs-audio from the TOC
+  (`$DE` mode 2 → type byte `$04` data / `$00` audio per the Geargrafx source; **never sent by the guest, UNVERIFIED**); this diagnostic does not do that yet.
+* In Geargrafx the 2048-byte transfer completes about 0.78M guest instructions after the command is sent
+  (modelled seek + random initial phase + per-byte REQ latency); the loop is bounded by per-byte waits, not by a fixed delay.
+* UNKNOWN: required reset-pulse width, meaning of the select byte on real hardware, behaviour when the drive is
+  busy/spun down, retry policy, and how the real System Card splits work between BIOS and IRQ handlers.
+
+## Toward the BIOS APIs (not done here)
+
+* `CD_READ` ($03/$E009, Issue #12): the contract inputs (`al/ah/bl/bh/cl/ch/dl/dh` at `$20F8-$20FF`, destination
+  modes, return codes, register/MPR preservation) are still `HYPOTHESIS`; HuCC's caller wrappers and Hu-Go!'s HLE
+  were **not** promoted to the System Card 3.0 ABI. The reusable part of this work is the proven
+  select/command/data/status sequence, which a future `CD_READ` can wrap once the ABI is reviewed.
+* Suggested order: `CD_RESET` (#10, reuse the bus-reset + bus-free check) → `CD_BASE` (#11) → TOC/track type →
+  `CD_READ` (#12) → `CD_EXEC` (#14) → `CD_BOOT`.
