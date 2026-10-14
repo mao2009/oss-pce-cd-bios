@@ -27,6 +27,8 @@ MODES = {
     "MODE2/2352": (2352, 24, 2048),
     "AUDIO": (2352, 0, 2352),
 }
+# Modes that have RAW sync pattern (00 FF...FF 00) and MSF header at bytes 12-14
+RAW_SYNC_MODES = {"MODE1/2352", "MODE2/2352", "AUDIO"}
 # Modes that support 2048-byte user data extraction via user_sector()
 USER_DATA_MODES = {"MODE1/2352"}
 PCE_BOOT_SIGNATURE = b"PC Engine CD-ROM SYSTEM"
@@ -122,28 +124,34 @@ def _frame_lba(header: bytes) -> int:
 
 
 def _probe_track(data: bytes, sector_bytes: int, track_lba: int, mode: str) -> dict:
-    """Validate raw frames of one track: sync, mode byte and MSF == LBA + 150 for MODE1/2352."""
+    """Validate raw frames of one track: sync, mode byte and MSF == LBA + 150 for RAW modes."""
     frames = len(data) // sector_bytes
     probe = min(frames, MAX_PROBE_FRAMES)
     sync_frames, modes, msf_bad = 0, set(), []
     first_sync = first_user_data = None
     user_offset, user_bytes = MODES[mode][1], MODES[mode][2]
+    has_raw_sync = mode in RAW_SYNC_MODES
     for frame in range(probe):
         start = frame * sector_bytes
-        if data[start:start + 12] != SYNC:
-            continue
-        sync_frames += 1
-        if first_sync is None:
-            first_sync = frame
-        modes.add(data[start + 15])
-        if mode == "MODE1/2352" and _frame_lba(data[start + 12:start + 15]) != track_lba + frame + 150:
-            if len(msf_bad) < 5:
-                msf_bad.append(frame)
+        if has_raw_sync:
+            if data[start:start + 12] != SYNC:
+                continue
+            sync_frames += 1
+            if first_sync is None:
+                first_sync = frame
+            modes.add(data[start + 15])
+            if mode == "MODE1/2352" and _frame_lba(data[start + 12:start + 15]) != track_lba + frame + 150:
+                if len(msf_bad) < 5:
+                    msf_bad.append(frame)
         if first_user_data is None and any(data[start + user_offset:start + user_offset + user_bytes]):
             first_user_data = frame
-    return {"frames": frames, "probed_frames": probe, "sync_frames": sync_frames,
-            "first_sync_frame": first_sync, "first_user_data_frame": first_user_data,
-            "mode_bytes": sorted(modes), "msf_mismatch_frames": msf_bad}
+    result = {"frames": frames, "probed_frames": probe, "first_user_data_frame": first_user_data}
+    if has_raw_sync:
+        result.update({"sync_frames": sync_frames,
+                       "first_sync_frame": first_sync,
+                       "mode_bytes": sorted(modes),
+                       "msf_mismatch_frames": msf_bad})
+    return result
 
 
 def _sha256_file(path: Path) -> str:
@@ -180,17 +188,21 @@ def analyze(cue_path: Path, boot_signature: bytes = PCE_BOOT_SIGNATURE) -> dict:
         if file_size % sector_bytes:
             raise CueError(f"{file['name']}: size {file_size} is not a multiple of {sector_bytes}")
         file_frames = file_size // sector_bytes
+        # Track start frames in BIN (first INDEX, typically INDEX 00 or 0 if no INDEX 00)
         starts = [min(t["index"].values()) if t["index"] else 0 for t in file["tracks"]]
         if starts != sorted(starts):
             raise CueError(f"{file['name']}: INDEX offsets are not increasing")
         for position, track in enumerate(file["tracks"]):
-            declared = track["index"].get(1, starts[position])
-            length = (starts[position + 1] if position + 1 < len(starts) else file_frames) - starts[position]
-            if length <= 0:
-                raise CueError(f"{file['name']}: track {track['number']} has non-positive length")
+            bin_start_frame = starts[position]
+            index01_frame = track["index"].get(1, bin_start_frame)
+            pregap_frames = index01_frame - bin_start_frame
+            track_bin_length = (starts[position + 1] if position + 1 < len(starts) else file_frames) - bin_start_frame
+            user_data_frames = track_bin_length - pregap_frames
+            if user_data_frames <= 0:
+                raise CueError(f"{file['name']}: track {track['number']} has non-positive user data length")
             # Read only the track span for hashing and probing
-            track_offset = starts[position] * sector_bytes
-            track_size = length * sector_bytes
+            track_offset = bin_start_frame * sector_bytes
+            track_size = track_bin_length * sector_bytes
             with bin_path.open("rb") as f:
                 f.seek(track_offset)
                 span = f.read(track_size)
@@ -198,10 +210,12 @@ def analyze(cue_path: Path, boot_signature: bytes = PCE_BOOT_SIGNATURE) -> dict:
                 raise CueError(f"{file['name']}: track {track['number']} truncated at offset {track_offset}")
             is_audio = track["mode"] == "AUDIO"
             entry = {"number": track["number"], "mode": track["mode"], "file": file["name"],
-                     "audio": is_audio, "sector_bytes": sector_bytes, "length_frames": length,
-                     "length_seconds": round(length / 75, 3), "start_lba": next_lba,
+                     "audio": is_audio, "sector_bytes": sector_bytes, "length_frames": user_data_frames,
+                     "length_seconds": round(user_data_frames / 75, 3), "start_lba": next_lba,
                      "index": {str(k): v for k, v in sorted(track["index"].items())},
-                     "declared_data_lba": next_lba + declared,
+                     "index01_frame": index01_frame,
+                     "pregap_frames": pregap_frames,
+                     "declared_data_lba": next_lba,
                      "sha256": _sha256_bytes(span)}
             if "pregap" in track:
                 entry["pregap"] = track["pregap"]
@@ -211,26 +225,32 @@ def analyze(cue_path: Path, boot_signature: bytes = PCE_BOOT_SIGNATURE) -> dict:
                 if any(span[i:i + 12] == SYNC for i in range(0, min(len(span), 2352 * 64))):
                     findings.append(f"track {track['number']}: AUDIO track unexpectedly contains MODE sync frames")
             else:
-                entry["sector"] = _probe_track(span, sector_bytes, next_lba, track["mode"])
+                # Probe only the user data portion (from INDEX 01 onwards)
+                user_data_span = span[pregap_frames * sector_bytes:]
+                entry["sector"] = _probe_track(user_data_span, sector_bytes, next_lba, track["mode"])
                 sector = entry["sector"]
-                if declared and sector["first_sync_frame"] is not None and sector["first_sync_frame"] < declared:
-                    if sector["first_sync_frame"] < max(0, declared - 150):
-                        findings.append(f"track {track['number']}: sync data appears at frame {sector['first_sync_frame']}, "
-                                        f"before the declared INDEX 01 at frame {declared}")
-                if not sector["sync_frames"]:
-                    findings.append(f"track {track['number']}: no MODE1/2352 sync frame found in the first "
-                                    f"{sector['probed_frames']} frames")
-                if sector["msf_mismatch_frames"]:
-                    findings.append(f"track {track['number']}: MSF headers disagree with start LBA "
-                                    f"{next_lba} at frames {sector['msf_mismatch_frames']}")
+                # Check for sync frames appearing before INDEX 01 in the track span (pregap area)
+                if pregap_frames > 0:
+                    pregap_span = span[:pregap_frames * sector_bytes]
+                    if any(pregap_span[i:i + 12] == SYNC for i in range(0, len(pregap_span), sector_bytes)):
+                        findings.append(f"track {track['number']}: sync data appears in pregap before INDEX 01")
+                # Only validate sync/MSF for RAW modes
+                if track["mode"] in RAW_SYNC_MODES:
+                    if not sector["sync_frames"]:
+                        findings.append(f"track {track['number']}: no MODE1/2352 sync frame found in the first "
+                                        f"{sector['probed_frames']} frames")
+                    if sector["msf_mismatch_frames"]:
+                        findings.append(f"track {track['number']}: MSF headers disagree with start LBA "
+                                        f"{next_lba} at frames {sector['msf_mismatch_frames']}")
             tracks.append(entry)
-            next_lba += length
+            next_lba += user_data_frames
     signatures = []
     for track in tracks:
         if track["audio"] or "sector" not in track or track["mode"] != "MODE1/2352":
             continue
         bin_path = folder / track["file"]
-        base = min(track["index"].values()) * track["sector_bytes"]
+        # Search from INDEX 01 onwards
+        base = track["index01_frame"] * track["sector_bytes"]
         step = min(track["length_frames"], MAX_PROBE_FRAMES)
         with bin_path.open("rb") as f:
             for frame in range(step):
@@ -257,14 +277,18 @@ def user_sector(cue_path: Path, report: dict, lba: int) -> bytes:
     for track in report["tracks"]:
         if track["audio"]:
             continue
-        if track["mode"] not in USER_DATA_MODES:
-            raise CueError(f"track {track['number']} mode {track['mode']} has no 2048-byte user area (supported: {sorted(USER_DATA_MODES)})")
+        # First check if LBA is within this track's user data range
         if not track["start_lba"] <= lba < track["start_lba"] + track["length_frames"]:
             continue
+        # Now check if this track supports user data extraction
+        if track["mode"] not in USER_DATA_MODES:
+            raise CueError(f"track {track['number']} mode {track['mode']} has no 2048-byte user area (supported: {sorted(USER_DATA_MODES)})")
         bin_path = Path(cue_path).parent / track["file"]
-        index01 = min(track["index"].values())
+        index01_frame = track["index01_frame"]
         user_offset = MODES[track["mode"]][1]
-        offset = (index01 + lba - track["start_lba"]) * track["sector_bytes"] + user_offset
+        frame_in_track = lba - track["start_lba"]
+        bin_frame = index01_frame + frame_in_track
+        offset = bin_frame * track["sector_bytes"] + user_offset
         with bin_path.open("rb") as f:
             f.seek(offset)
             data = f.read(2048)

@@ -80,9 +80,16 @@ class CueAnalysisTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp)
             # Pregap (INDEX 00) + data (INDEX 01)
-            sectors = 20
-            data = b"".join(raw_sector(lba) for lba in range(sectors))
-            (d / "test.bin").write_bytes(data)
+            # BIN frame 150 (INDEX 01) should correspond to disc LBA 0
+            # So BIN frames 150+ should contain raw_sector(0), raw_sector(1), ...
+            pregap_frames = 150
+            user_frames = 50
+            total_frames = pregap_frames + user_frames
+            # Pregap data (zeros)
+            pregap_data = b"\x00" * (pregap_frames * 2352)
+            # User data: raw_sector(disc_lba) where disc_lba = bin_frame - 150
+            user_data = b"".join(raw_sector(lba) for lba in range(user_frames))
+            (d / "test.bin").write_bytes(pregap_data + user_data)
             cue_text = ('FILE "test.bin" BINARY\n'
                         '  TRACK 01 MODE1/2352\n'
                         '    INDEX 00 00:00:00\n'
@@ -91,7 +98,180 @@ class CueAnalysisTests(unittest.TestCase):
             rep = analyze(d / "test.cue")
             self.assertEqual(rep["tracks"][0]["index"]["0"], 0)
             self.assertEqual(rep["tracks"][0]["index"]["1"], 150)
-            self.assertEqual(rep["tracks"][0]["declared_data_lba"], 150)
+            self.assertEqual(rep["tracks"][0]["pregap_frames"], 150)
+            self.assertEqual(rep["tracks"][0]["index01_frame"], 150)
+            self.assertEqual(rep["tracks"][0]["declared_data_lba"], 0)  # INDEX 01 -> disc LBA 0
+            self.assertEqual(rep["tracks"][0]["start_lba"], 0)
+            self.assertEqual(rep["tracks"][0]["length_frames"], 50)  # 200 - 150 = 50 user data frames
+            # User sector at LBA 0 should come from BIN frame 150
+            user_data_extracted = user_sector(d / "test.cue", rep, 0)
+            self.assertEqual(len(user_data_extracted), 2048)
+            expected = sector_payload(0)
+            self.assertEqual(user_data_extracted, expected)
+
+    def test_index01_data_matches_expected_payload(self):
+        """INDEX 01 position data matches expected sector_payload."""
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            pregap_frames = 150
+            user_frames = 10
+            pregap_data = b"\x00" * (pregap_frames * 2352)
+            user_data = b"".join(raw_sector(lba) for lba in range(user_frames))
+            (d / "test.bin").write_bytes(pregap_data + user_data)
+            cue_text = ('FILE "test.bin" BINARY\n'
+                        '  TRACK 01 MODE1/2352\n'
+                        '    INDEX 00 00:00:00\n'
+                        '    INDEX 01 00:02:00\n')
+            (d / "test.cue").write_text(cue_text)
+            rep = analyze(d / "test.cue")
+            # Test multiple LBAs
+            for lba in range(user_frames):
+                extracted = user_sector(d / "test.cue", rep, lba)
+                expected = sector_payload(lba)
+                self.assertEqual(extracted, expected, f"LBA {lba} mismatch")
+
+    def test_pregap_not_extractable_as_user_data(self):
+        """Pregap (before INDEX 01) cannot be extracted as user data."""
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            pregap_frames = 150
+            user_frames = 10
+            pregap_data = b"\x00" * (pregap_frames * 2352)
+            user_data = b"".join(raw_sector(lba) for lba in range(user_frames))
+            (d / "test.bin").write_bytes(pregap_data + user_data)
+            cue_text = ('FILE "test.bin" BINARY\n'
+                        '  TRACK 01 MODE1/2352\n'
+                        '    INDEX 00 00:00:00\n'
+                        '    INDEX 01 00:02:00\n')
+            (d / "test.cue").write_text(cue_text)
+            rep = analyze(d / "test.cue")
+            # LBA -1 should fail (negative)
+            with self.assertRaises(CueError):
+                user_sector(d / "test.cue", rep, -1)
+            # LBA 0 is first user data sector (BIN frame 150)
+            # There is no way to access pregap frames via user_sector since they map to negative LBAs
+            # Verify track reports correct pregap_frames
+            self.assertEqual(rep["tracks"][0]["pregap_frames"], 150)
+
+    def test_no_false_positive_msf_mismatch(self):
+        """MSF mismatch false positives should not occur with valid INDEX 00/01."""
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            pregap_frames = 150
+            user_frames = 10
+            pregap_data = b"\x00" * (pregap_frames * 2352)
+            user_data = b"".join(raw_sector(lba) for lba in range(user_frames))
+            (d / "test.bin").write_bytes(pregap_data + user_data)
+            cue_text = ('FILE "test.bin" BINARY\n'
+                        '  TRACK 01 MODE1/2352\n'
+                        '    INDEX 00 00:00:00\n'
+                        '    INDEX 01 00:02:00\n')
+            (d / "test.cue").write_text(cue_text)
+            rep = analyze(d / "test.cue")
+            # Should have no MSF mismatch findings
+            msf_findings = [f for f in rep["findings"] if "MSF headers disagree" in f]
+            self.assertEqual(len(msf_findings), 0, f"Unexpected MSF findings: {msf_findings}")
+
+    def test_normal_track_without_index00(self):
+        """Normal track without INDEX 00 maintains existing behavior."""
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            build_image(d)  # Creates INDEX 01 at 00:00:00, no INDEX 00
+            rep = analyze(d / "oss-pce-cd-test.cue")
+            self.assertTrue(rep["structurally_valid"])
+            self.assertEqual(rep["tracks"][0]["pregap_frames"], 0)
+            self.assertEqual(rep["tracks"][0]["index01_frame"], 0)
+            self.assertEqual(rep["tracks"][0]["start_lba"], 0)
+            self.assertEqual(rep["tracks"][0]["length_frames"], 16)
+            # Verify extraction works
+            for lba in [0, 5, 15]:
+                data = user_sector(d / "oss-pce-cd-test.cue", rep, lba)
+                self.assertEqual(data, sector_payload(lba))
+
+    def test_multiple_tracks_with_index01_no_boundary_cross(self):
+        """Multiple tracks with INDEX 01 don't cross boundaries."""
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            # Track 1: 100 user frames (no pregap), Track 2: 100 user frames with 150 pregap
+            # Total BIN: 100 + 150 + 100 = 350 frames
+            track1_frames = 100
+            pregap2_frames = 150
+            track2_user_frames = 100
+            track1_data = b"".join(raw_sector(lba) for lba in range(track1_frames))
+            pregap2_data = b"\x00" * (pregap2_frames * 2352)
+            track2_data = b"".join(raw_sector(lba + track1_frames) for lba in range(track2_user_frames))
+            (d / "test.bin").write_bytes(track1_data + pregap2_data + track2_data)
+            # BIN frame offsets in MSF format (MM:SS:FF):
+            # Frame 0 = 00:00:00
+            # Frame 100 = 00:01:25 (100 frames = 1 sec 25 frames)
+            # Frame 250 = 00:03:25 (250 frames = 3 sec 25 frames)
+            cue_text = ('FILE "test.bin" BINARY\n'
+                        '  TRACK 01 MODE1/2352\n'
+                        '    INDEX 01 00:00:00\n'
+                        '  TRACK 02 MODE1/2352\n'
+                        '    INDEX 00 00:01:25\n'
+                        '    INDEX 01 00:03:25\n')
+            (d / "test.cue").write_text(cue_text)
+            rep = analyze(d / "test.cue")
+            self.assertEqual(len(rep["data_tracks"]), 2)
+            self.assertEqual(rep["tracks"][0]["start_lba"], 0)
+            self.assertEqual(rep["tracks"][0]["length_frames"], 100)
+            self.assertEqual(rep["tracks"][1]["start_lba"], 100)
+            self.assertEqual(rep["tracks"][1]["length_frames"], 100)
+            self.assertEqual(rep["tracks"][1]["pregap_frames"], 150)
+            self.assertEqual(rep["tracks"][1]["index01_frame"], 250)
+            # Test extraction at boundaries
+            # Track 1 last sector (LBA 99)
+            data = user_sector(d / "test.cue", rep, 99)
+            self.assertEqual(data, sector_payload(99))
+            # Track 2 first sector (LBA 100)
+            data = user_sector(d / "test.cue", rep, 100)
+            self.assertEqual(data, sector_payload(100))
+            # Track 2 last sector (LBA 199)
+            data = user_sector(d / "test.cue", rep, 199)
+            self.assertEqual(data, sector_payload(199))
+            # LBA 200 should fail (past end)
+            with self.assertRaises(CueError):
+                user_sector(d / "test.cue", rep, 200)
+
+    def test_multiple_bin_files_offset_calculation(self):
+        """Multiple BIN files with correct offset calculation."""
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            # Track 1 in bin1: 50 user frames
+            track1_data = b"".join(raw_sector(lba) for lba in range(50))
+            (d / "track01.bin").write_bytes(track1_data)
+            # Track 2 in bin2: 150 pregap + 50 user frames
+            pregap_data = b"\x00" * (150 * 2352)
+            track2_data = b"".join(raw_sector(lba + 50) for lba in range(50))
+            (d / "track02.bin").write_bytes(pregap_data + track2_data)
+            cue_text = ('FILE "track01.bin" BINARY\n'
+                        '  TRACK 01 MODE1/2352\n'
+                        '    INDEX 01 00:00:00\n'
+                        'FILE "track02.bin" BINARY\n'
+                        '  TRACK 02 MODE1/2352\n'
+                        '    INDEX 00 00:00:00\n'
+                        '    INDEX 01 00:02:00\n')
+            (d / "test.cue").write_text(cue_text)
+            rep = analyze(d / "test.cue")
+            self.assertEqual(len(rep["data_tracks"]), 2)
+            self.assertEqual(rep["tracks"][0]["file"], "track01.bin")
+            self.assertEqual(rep["tracks"][0]["start_lba"], 0)
+            self.assertEqual(rep["tracks"][0]["length_frames"], 50)
+            self.assertEqual(rep["tracks"][1]["file"], "track02.bin")
+            self.assertEqual(rep["tracks"][1]["start_lba"], 50)
+            self.assertEqual(rep["tracks"][1]["length_frames"], 50)
+            self.assertEqual(rep["tracks"][1]["pregap_frames"], 150)
+            self.assertEqual(rep["tracks"][1]["index01_frame"], 150)
+            # Test extraction
+            data = user_sector(d / "test.cue", rep, 0)
+            self.assertEqual(data, sector_payload(0))
+            data = user_sector(d / "test.cue", rep, 49)
+            self.assertEqual(data, sector_payload(49))
+            data = user_sector(d / "test.cue", rep, 50)
+            self.assertEqual(data, sector_payload(50))
+            data = user_sector(d / "test.cue", rep, 99)
+            self.assertEqual(data, sector_payload(99))
 
     def test_pregap_postgap(self):
         with tempfile.TemporaryDirectory() as tmp:
