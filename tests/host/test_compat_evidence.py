@@ -165,6 +165,13 @@ class MalformedInputTests(unittest.TestCase):
         result = verdict(record(), attest(record(), checkpoints=5))
         self.assertEqual(result['result'], 'FAIL')
 
+    def test_trace_delta_name_must_be_a_string(self):
+        for bad_name in (5, ['x']):
+            with self.subTest(name=bad_name):
+                rec = staged()
+                rec['trace_deltas'] = [{'name': bad_name, 'delta': 1}]
+                self.assertEqual(run_with(rec, probe_for('playable'))['result'], 'FAIL')
+
     def test_non_string_checkpoint_name_fails(self):
         bad = record(checkpoints=[{'name': ['cd-ident'], 'expected': 'ok', 'observed': 'ok'}])
         self.assertEqual(run(bad)['result'], 'FAIL')
@@ -397,10 +404,10 @@ class StageEvidenceTests(unittest.TestCase):
 class CliTrustTests(unittest.TestCase):
     """The CLI never certifies local, unsigned JSON; --ci only runs inside GitHub Actions."""
 
-    def _run_cli(self, argv, env):
+    def _run_cli(self, argv, env, rec=None):
         with tempfile.TemporaryDirectory() as tmp:
             paths = []
-            for name, value in (('record.json', record()), ('runner.json', attest(record()))):
+            for name, value in (('record.json', rec or record()), ('runner.json', attest(record()))):
                 path = Path(tmp) / name
                 path.write_text(json.dumps(value), encoding='utf-8')
                 paths.append(str(path))
@@ -429,6 +436,13 @@ class CliTrustTests(unittest.TestCase):
         self.assertEqual(output['result'], 'PASS')
         self.assertTrue(output['trust'].startswith('ci-job'))
         self.assertIn('not verified', output['authenticity'])
+
+    def test_list_stage_is_fail_verdict_not_traceback(self):
+        bad = record()
+        bad['stage'] = ['x']
+        code, text = self._run_cli([], {}, bad)
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(text)['result'], 'FAIL')
 
     def test_output_never_claims_authenticity(self):
         for argv, env in (([], {}), (['--ci'], {'GITHUB_ACTIONS': 'true'})):

@@ -5,7 +5,7 @@ Issue #7. Machine-checkable record for one compatibility stage, implemented by
 `tests/host/test_compat_evidence.py`. Stage meanings are defined in
 [compatibility.md](compatibility.md).
 
-Usage: `python3 tools/compat_evidence.py [--ci] RECORD.json [RUNNER_ATTESTATION.json [PROBE.json]]` prints the verdict and exits 0 only on PASS.
+Usage: `python tools/compat_evidence.py [--ci] RECORD.json [RUNNER_ATTESTATION.json [PROBE.json]]` prints the verdict and exits 0 only on PASS.
 
 A record is a claim, not proof. `verdict(record, runner, probe)` accepts PASS for execution stages
 (`bios-loaded` and above) only with a runner attestation: `verified: true`, and
@@ -25,7 +25,8 @@ The runner output is consistency-checked, not authenticated (see the trust bound
   Any local PASS for a `bios-loaded` or higher stage is printed as **BLOCKED**, with the raw result in
   `local_verdict`. Local runs are for development only and must not be quoted as compatibility.
 - `--ci` is accepted only when `GITHUB_ACTIONS=true` (otherwise exit 2). Its output carries
-  `"trust": "ci-job runner output ..."`. A PASS is printed as PASS only in this mode.
+  `"trust": "ci-job context (GITHUB_ACTIONS=true is an environment variable any process can set; the JSON is still unsigned, so this is not a certification)"`.
+  A PASS is printed as PASS only in this mode.
 - A future CI certification gate would be allowed only when all of these hold. **This module enforces none
   of them**; the workflow must, and no such workflow exists yet:
   1. The record and runner JSON are produced by the Geargrafx harness (#119) inside the same job,
@@ -48,9 +49,10 @@ output: `{"result": <run_job() result: status, reason, exit_code, stdout>, "forb
 `verdict()` passes `result` to the real #119 `geargrafx_harness.classify()`, which parses the `TAG {json}` lines
 itself (`parse_records()`, which rejects a body-level `tag` field). Whatever classify() does not call PASS
 (FAIL, BLOCKED, SKIP) becomes the stage finding. The verdict adds `cd_halt_fail` to the runner's `forbid`
-list, so a runner cannot drop it. A `result.status` of `PASS` or anything other than `FAIL`/`BLOCKED` is FAIL.
-`trace_deltas` in the record never supports a PASS above `homebrew`. The record needs a checkpoint named after
-the stage label, and the runner must report the same name as observed.
+list, so a runner cannot drop it. If `result.status` is present and not null, it must be `FAIL` or `BLOCKED`;
+any other value (including `PASS`) gives FAIL. An absent or null status is accepted, so a good log with no status can PASS.
+Above `homebrew`, a PASS requires a non-empty `trace_deltas` (missing or empty gives BLOCKED). The record needs a
+checkpoint named after the stage label, and the runner must report the same name as observed.
 
 **Not implemented:** no shipped producer emits `probe`. The #119 `trace` command writes parsed events and
 `counts`, not the stdout that `classify()` needs, and it does not write a `stage_evidence` summary. So a
@@ -114,13 +116,14 @@ Findings are combined with priority FAIL > BLOCKED > SKIP > PASS.
    budget or cd_halt_fail, not one cold then warm RUN, unconfirmed halt, a step outside 0..budget, a success HIT
    missing, repeated or after its RUN, malformed log) gives **FAIL**. A BLOCK record, a missing or false
    capability flag, `probe_kind` other than `cdread` (NOT_SUPPORTED) and exit 6 (debugger capability missing)
-   give **BLOCKED**, as in #119. A `retail-boot` record with no local fixture stays **SKIP** (nothing was run).
+   give **BLOCKED**, as in #119. A `retail-boot` record with no local fixture is **SKIP** (fixture missing; no stage
+   check runs). With a local fixture, a record whose stage-label checkpoint is missing is **BLOCKED**.
 9. A claim of `PASS` that the evidence does not support is an **overclaim** and gives **FAIL**. A claim of
    `BLOCKED`, `SKIP` or `FAIL` that complete evidence would otherwise pass is kept as the result, with a
    `conflict` reason. Complete evidence never silently overrides the reporter's own non-PASS claim.
 
-Source-only and rom-built records need no attestation (build checks only). A single launch never supports an all-title claim. The result is never PASS for any stage
-that lacks real-core evidence.
+Source-only and rom-built records need no attestation (build checks only). A single launch never supports an all-title claim.
+From `bios-loaded` and above, PASS requires real-core evidence; source-only and rom-built need none.
 
 ## Not covered (v1)
 

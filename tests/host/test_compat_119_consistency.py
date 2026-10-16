@@ -147,7 +147,8 @@ class Consistency119Tests(unittest.TestCase):
             with self.subTest(scenario=name):
                 self.assertEqual(classify_119(s), expected)
                 record = claim(compat_record(), expected)
-                runner = attestation_119(classify_119(s), record)
+                # Verified attestation in every case, so only the probe path decides the category.
+                runner = attestation_119('PASS', record)
                 self.assertEqual(verdict(record, runner, probe(s))['result'], expected)
 
     def test_attestation_is_verified_only_for_pass(self):

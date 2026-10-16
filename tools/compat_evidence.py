@@ -111,7 +111,7 @@ def validate(record):
     trace = record.get('trace_deltas') or []
     if not isinstance(trace, list):
         errors.append('trace_deltas must be an array')
-    elif any(not isinstance(item, dict) or not item.get('name') or 'delta' not in item for item in trace):
+    elif any(not isinstance(item, dict) or not _is_name(item.get('name')) or 'delta' not in item for item in trace):
         errors.append('trace delta needs name and delta')
     return errors
 
@@ -263,7 +263,8 @@ def main(argv):
     local = verdict(record, runner, probe)
     result = dict(local, local_verdict=local['result'], trust=TRUST_CI if ci else TRUST_LOCAL,
                   authenticity=AUTHENTICITY)
-    executed = isinstance(record, dict) and RANK.get(record.get('stage'), -1) >= CORE_STAGE
+    executed = isinstance(record, dict) and isinstance(record.get('stage'), str) \
+        and RANK.get(record['stage'], -1) >= CORE_STAGE
     if not ci and local['result'] == 'PASS' and executed:
         result.update(result='BLOCKED', blocker='untrusted local input; CI-generated runner evidence required',
                       reasons=['local PASS is not a compatibility certification'] + result['reasons'])
