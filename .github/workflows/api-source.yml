@@ -35,6 +35,8 @@ jobs:
           make dev-cdread
           python3 -m unittest tests.host.test_cdimage tests.host.test_cdread -v
           make dev-cdread-integration
+      - name: Isolated Geargrafx trace harness (Issue #6, real core; diagnostic only)
+        run: make dev-trace-integration
       - name: Debug and release diagnostic bytes match
         run: |
           make dev-rom MODE=release

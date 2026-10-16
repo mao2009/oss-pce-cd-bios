@@ -60,3 +60,8 @@ dev-cdread: dev-rom
 
 dev-cdread-integration: dev-cdread
 	$(PYTHON) tests/integration/geargrafx_cdread.py --mode "$(MODE)"
+
+.PHONY: dev-trace-integration
+# Opt-in Issue #6 isolated trace harness: real-core positive + classified negatives on the CD read ROM.
+dev-trace-integration: dev-cdread
+	$(PYTHON) tests/integration/geargrafx_trace.py --mode "$(MODE)"
