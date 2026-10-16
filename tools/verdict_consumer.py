@@ -172,7 +172,7 @@ def signature_findings(verdict_bytes, commit, producer, bundle_path):
 
 
 def consume(verdict_bytes, rom_bytes, bundle_path=None):
-    """(status per claim id, reasons). Reasons empty only when T1-T5 were promoted from the signed verdict."""
+    """(status per claim id, reasons). Reasons empty only when at least one T1-T5 claim was promoted."""
     status = cdr.compat_status()
     if not isinstance(verdict_bytes, bytes) or len(verdict_bytes) > MAX_VERDICT_BYTES:
         return status, ["verdict missing, not bytes, or larger than 65536 bytes"]
@@ -188,9 +188,14 @@ def consume(verdict_bytes, rom_bytes, bundle_path=None):
         reasons = ["VERIFIED_PATH_ENABLED is False: no independent approval on protect-main yet (#124)"]
     if reasons:
         return status, reasons
-    for claim in cdr.TRANSPORT_CLAIMS:
-        if claim["id"] in PROMOTABLE and claim["status"] == "VERIFIED" and v["claims"][claim["id"]] == "VERIFIED":
-            status[claim["id"]] = "VERIFIED"
+    promoted = [claim["id"] for claim in cdr.TRANSPORT_CLAIMS if claim["id"] in PROMOTABLE
+                and claim["status"] == "VERIFIED" and v["claims"][claim["id"]] == "VERIFIED"]
+    if not promoted:
+        # A valid signed verdict that declares no promotable transport claim (all T1-T5 BLOCKED) still BLOCKS, and
+        # must say so: an empty reason list would silently look like success to callers that only print reasons.
+        return status, ["signed verdict declares no promotable VERIFIED T1-T5 claim"]
+    for cid in promoted:
+        status[cid] = "VERIFIED"
     return status, []
 
 
