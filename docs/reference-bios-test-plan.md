@@ -144,32 +144,26 @@ functional API scenarios. Keep every `slot-XX` and `psg-48-XX`
 blocked until then.
 
 
-## Experimental real guest JSR caller (slot 0x1E only)
+## Experimental real guest JSR source (slot 0x1E, execution disabled)
 
-`tests/integration/geargrafx_reference_jsr.cpp` places an explicit, original
-five-byte test program at guest work RAM `$2200`: `JSR $E05A; BRA *`.
-It initializes a **synthetic** guest context (MPR1=$F8, MPR7=0, A/X/Y=0,
-SP=$FF), then executes the JSR with the pinned real Geargrafx HuC6280 core.
-The C++ probe emits BEFORE, ENTRY, AFTER snapshots and returns a failure when
-the target entry or return checkpoint is absent. Python
-`tools/geargrafx_reference_adapter.py` now accepts only
-`api_id=slot-1e` as an experimental callable API candidate and sends the
-result to the existing LOCAL_ONLY runner.
+`tests/integration/geargrafx_reference_jsr.cpp` retains a proof-of-concept
+`JSR $E05A; BRA *` guest program for EX_GETVER candidate slot 0x1E.
+It sets an artificial CPU/MPR/RAM context and can in principle report
+BEFORE/ENTRY/AFTER, but this is **not a normal BIOS boot/call environment**.
 
-To try locally, select slot-1e in your reviewed private config, pin both
-input file hashes, set a bounded `max_instructions` between 3 and 1000000,
-and invoke `reference_bios_runner.py` with the Python adapter.
+**Security and measurement gate:** the supported
+`tools/geargrafx_reference_adapter.py` interface explicitly **BLOCKS** slot-1e
+before compiling or executing the C++ probe. That prototype neither enforces
+the configured RAM allowlist during guest execution nor monitors mapped device
+I/O writes; it returned an empty `ram_diff` even when writes might occur.
+A completed JSR/RTS would not establish a safe, complete observation.
+Checking final RAM differences after execution cannot detect temporary writes.
 
-**Unverified assumptions:** the candidate EX_GETVER entry is $E05A and
-its ABI permits this synthetic CPU context; this must be assessed by
-observation. This experiment **does not** execute the test ROM supplied in
-the config, does not run the normal BIOS boot initialization, does not yet
-provide a true BEFORE/AFTER RAM diff, does not enforce write allowlists
-during real-core execution, and does not cover the remaining 89 services.
-Therefore even a completed JSR/RTS is **not** an ABI PASS or game compatibility
-claim. C++ build and execution against a private reference BIOS remain NOT RUN
-until performed locally.
-
+Re-enabling this path requires *in-core* RAM and I/O write interception or
+equivalent enforced isolation, a truthful bounded observation, and real-core
+negative tests that attempt and reject forbidden writes, followed by independent
+ABI review. Do not enable by merely adding an environment flag. Pure reference
+BIOS and Geargrafx JSR execution is **NOT RUN**; all API calls are **BLOCKED**.
 
 ## Complete 90-service / 270-case manifest and dispatch report
 
@@ -197,21 +191,19 @@ execution, and independent expected-value capture. Do not report the
 generator as a complete executable test suite.
 
 
-## Reviewed-case runner bridge (strictly limited)
+## Reviewed-case fixture validator (execution blocked)
 
-`tools/reference_case_execute.py` now connects a reviewed entry in the
-270-case manifest to `reference_bios_runner.run()`. The first experimental
-adapter is **only** `slot-1e`, with the synthetic guest context actually
-hardcoded by `geargrafx_reference_jsr.cpp` (A=X=Y=0, SP=$FF, entry=$E05A).
-It requires a separately reviewed local JSON fixture, a matching instruction
-budget and an explicit private run configuration. All other API IDs and
-different register fixtures are rejected, even if their catalog flag was
-manually changed. This is an opt-in experiment, not automatic execution.
+`tools/reference_case_execute.py` validates reviewed `slot-1e` input
+fixtures and checks the precise synthetic CPU context, hashes/configuration
+shape and instruction budget. **It never invokes the adapter for an API call**:
+even a fully reviewed fixture returns `BLOCKED` until runtime RAM and mapped
+I/O writes can be enforced by the emulator core itself. The catalog continues
+to contain 270 planned cases; none is executable.
 
 ```sh
 python3 tools/reference_case_catalog.py --output build/reference-bios/all-270.json
-# After independent ABI review, edit the selected local case entry and supply a
-# private run config. This command intentionally fails closed for unreviewed cases:
+# After separate ABI review, local fixture preparation can be checked.
+# Even valid fixtures fail closed without an audited in-core write guard:
 python3 tools/reference_case_execute.py build/reference-bios/all-270.json \
   --case-id slot-1e/candidate_nominal \
   --config local-reference-config.json \
@@ -220,7 +212,7 @@ python3 tools/reference_case_execute.py build/reference-bios/all-270.json \
 python3 -m unittest tests.host.test_reference_case_execute -v
 ```
 
-The catalog still contains **270 planned rows, not 270 runnable test ROMs**.
-Neither the actual HuC6280 API contract nor a trustworthy local System Card
-reference run has been established. The JSR adapter and its initialization
-remain experimental and need compilation and real-core confirmation.
+The `reference-reset-only` checkpoint remains distinct and available,
+because it does not inject or execute an API JSR. This PR records plans and
+bounded local-only reset observation infrastructure, **not** retail BIOS API
+test results, BIOS compatibility, or 270 working runnable test ROMs.
