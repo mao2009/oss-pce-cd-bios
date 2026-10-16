@@ -109,10 +109,10 @@ int main(int argc, char** argv)
     unsigned long neg_addr = std::strtoul(argv[8], &end, 0);
     if (!end || *end || neg_addr > 65535UL)
         return 2;
-    if (mode == "neg-write" && (neg_addr < 0x4000 || neg_addr >= 0x6000))
-        return 2;  // forbidden target must sit on page 2 (CD-ROM RAM bank 0x80)
-    if (mode == "pos-write" && (neg_addr < 0x2000 || neg_addr >= 0x4000))
-        return 2;  // allowed-control target must sit on allowlisted page 1 (WRAM)
+    if (mode == "neg-write" && neg_addr >= allow_start && neg_addr < allow_end)
+        return 2;  // forbidden target must lie outside the allowlist
+    if (mode == "pos-write" && (neg_addr < allow_start || neg_addr >= allow_end))
+        return 2;  // allowed-control target must lie inside the allowlist
 
     std::ifstream file(argv[1], std::ios::binary);
     if (!file)
@@ -145,11 +145,23 @@ int main(int argc, char** argv)
     // This core hardwires ZERO_PAGE_ADDR=0x2000 and STACK_ADDR=0x2100, so the
     // zero page and the 8-bit stack both live in page 1: MPR1 must map WRAM and
     // the allowlist must cover page 1 for any realistic call to return.
-    o.memory->SetMpr(0, 0xF8);  // keep every low page on work RAM for determinism
+    //
+    // MPR0 is intentionally mapped to ROM bank 0, NOT to the same WRAM bank as
+    // MPR1. If MPR0 == MPR1 == 0xF8 then physical bank 0xF8 (WRAM) is reachable
+    // from both page 0 ($0000-$1FFF) and page 1 ($2000-$3FFF). Because
+    // Memory::GetMemoryMapWrite() is indexed by physical bank, allowing page 1
+    // would wrongly also allow page 0. Mapping page 0 to ROM keeps every
+    // non-allowlisted page on a non-shared bank so per-bank write protection can
+    // isolate CPU addresses. Set PCE_REF_TEST_ALIAS to force MPR0 == MPR1 and
+    // exercise the aliasing BLOCKED path below.
     o.memory->SetMpr(1, 0xF8);  // zero page + stack + guest code -> work RAM
     o.memory->SetMpr(7, 0x00);  // API jump table at $E000 -> ROM bank 0
     for (int i = 2; i <= 6; ++i)
         o.memory->SetMpr(i, 0x00);
+    if (std::getenv("PCE_REF_TEST_ALIAS"))
+        o.memory->SetMpr(0, 0xF8);  // alias page 0 onto the page-1 WRAM bank
+    else
+        o.memory->SetMpr(0, 0x00);  // page 0 -> ROM (not shared with page 1)
     if (mode == "neg-write")
         o.memory->SetMpr(2, 0x80);  // expose core-writable CD-ROM RAM on page2
 
@@ -178,17 +190,55 @@ int main(int argc, char** argv)
     for (size_t i = 0; i < code.size(); ++i)
         wram[kStubIndex + i] = code[i];
 
-    // --- write protection: deny by default, only allowlist-covered pages stay writable
+    // --- write protection: deny by default, only allowlist-covered pages stay writable.
+    //     Memory::GetMemoryMapWrite() is indexed by PHYSICAL bank (the MPR value), not by
+    //     CPU address. If one physical bank is mapped to both an allowlisted and a
+    //     non-allowlisted CPU page then per-bank write permission cannot isolate CPU
+    //     addresses: allowing the allowlisted page would wrongly also allow the other.
+    //     Detect that situation and refuse to run (fail closed, BLOCKED before any
+    //     guest instruction executes).
+    int bank_page_mask[0x100] = {};
+    for (int page = 0; page < 8; ++page)
+        bank_page_mask[o.memory->GetMpr(page)] |= (1 << page);
+    unsigned allow_page_mask = 0;
+    for (int page = 0; page < 8; ++page) {
+        unsigned long lo = page * 0x2000UL;
+        if (lo >= allow_start && lo + 0x2000UL <= allow_end)
+            allow_page_mask |= (1u << page);
+    }
+    for (int bank = 0; bank < 0x100; ++bank) {
+        int pages = bank_page_mask[bank];
+        if (!pages) continue;
+        int allowlisted = pages & (int)allow_page_mask;
+        int nonallowlisted = pages & ~(int)allow_page_mask;
+        if (allowlisted && nonallowlisted) {
+            std::fprintf(stderr,
+                "BLOCKED: physical bank %02X shared by allowlisted and non-allowlisted CPU pages\n",
+                bank);
+            return 8;
+        }
+    }
+
     bool* map_write = o.memory->GetMemoryMapWrite();
     for (int bank = 0; bank < 0x100; ++bank)
         map_write[bank] = false;
-    for (unsigned page = 0; page < 8; ++page) {
+    for (int page = 0; page < 8; ++page) {
         unsigned long lo = page * 0x2000UL;
         if (lo >= allow_start && lo + 0x2000UL <= allow_end)
             map_write[o.memory->GetMpr(page)] = true;
     }
 
-    // --- detection: core flags any store to a page outside the allowlist
+    // --- detection: core flags any store to a page outside the allowlist.
+    //     Cover the COMPLETE non-allowlisted CPU range [0, allow_start) and
+    //     [allow_end, 0xFFFF], not just the high half: writes to page 0 (which may
+    //     alias an allowlisted work-RAM bank) must be detected too. Breakpoints fire
+    //     inside Memory::Write() before the store is performed (detection); the
+    //     map_write deny-by-default above is what prevents the store (prevention).
+    if (allow_start > 0 &&
+        !o.cpu->AddBreakpoint(HuC6280::HuC6280_BREAKPOINT_TYPE_CPU_ADDRESS,
+                              0, (u32)(allow_start - 1), /*range=*/true,
+                              /*read=*/false, /*write=*/true, /*execute=*/false))
+        return 7;
     if (allow_end <= 0xFFFFUL &&
         !o.cpu->AddBreakpoint(HuC6280::HuC6280_BREAKPOINT_TYPE_CPU_ADDRESS,
                               (u32)allow_end, 0xFFFFUL, /*range=*/true,
@@ -222,8 +272,11 @@ int main(int argc, char** argv)
     std::vector<u8> wram0 = wram_snap();
     u8 cdram0 = 0;
     if (mode == "neg-write") {
-        // Forbidden target: page 2 maps CD-ROM RAM bank 0x80 (8 KiB window).
-        cdram0 = o.memory->GetCDROMRAM()[neg_addr & 0x1FFF];
+        // Forbidden target outside the allowlist. Read the byte at the CPU address
+        // (through the same MPR mapping the store uses) so prevention can be
+        // verified by comparing before/after regardless of which physical bank the
+        // address maps to.
+        cdram0 = o.memory->Read((u16)neg_addr);
     }
     std::string before_state = state_json(o.st, o.memory);
 
@@ -299,7 +352,7 @@ int main(int argc, char** argv)
     unsigned long guard_before = 0, guard_after = 0;
     if (mode == "neg-write") {
         // Forbidden store must be both detected and prevented.
-        u8 cdram_after = o.memory->GetCDROMRAM()[neg_addr & 0x1FFF];
+        u8 cdram_after = o.memory->Read((u16)neg_addr);
         guard_before = cdram0;
         guard_after = cdram_after;
         if (!detected) {
