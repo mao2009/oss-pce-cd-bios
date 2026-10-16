@@ -1,12 +1,58 @@
+import hashlib
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from tools.cue_analysis import analyze, CueError, user_sector
+from tools import cue_analysis
+from tools.cue_analysis import analyze, CueError, user_sector, PCE_BOOT_SIGNATURE
 from tools.make_cd_image import build_image, raw_sector, sector_payload
+
+CLI = Path(__file__).resolve().parents[2] / "tools" / "cue_analysis.py"
+SYNC_BYTES = b"\x00" + b"\xff" * 10 + b"\x00"
+
+
+class _RecordingFile:
+    """Wraps a real BIN handle; records (requested, returned) per read and can cut the file short."""
+
+    def __init__(self, f, log, cut_at=None):
+        self._f, self._log, self._cut_at = f, log, cut_at
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self._f.close()
+        return False
+
+    def seek(self, *args):
+        return self._f.seek(*args)
+
+    def read(self, n=-1):
+        pos = self._f.tell()
+        data = self._f.read(n)
+        if self._cut_at is not None:  # simulate a mid-file disconnect: bytes past cut_at never arrive
+            data = data[:max(0, self._cut_at - pos)]
+        self._log.append((n, len(data)))
+        return data
+
+
+def _recording_open(log, cut_at=None):
+    real_open = Path.open
+
+    def opener(self, *args, **kwargs):
+        f = real_open(self, *args, **kwargs)
+        return _RecordingFile(f, log, cut_at) if self.suffix == ".bin" else f
+
+    return mock.patch.object(Path, "open", opener)
+
+
+def _run_cli(cue: Path):
+    return subprocess.run([sys.executable, str(CLI), str(cue)], capture_output=True, text=True)
 
 
 class CueAnalysisTests(unittest.TestCase):
@@ -422,6 +468,150 @@ class CueAnalysisTests(unittest.TestCase):
             (d / "test.cue").write_text(cue_text)
             rep = analyze(d / "test.cue")
             self.assertEqual(rep["tracks"][0]["file"], bin_name)
+
+    # --- Streaming / memory efficiency -------------------------------------------------
+
+    def test_large_bin_is_streamed_in_bounded_reads(self):
+        """No read request may approach the track size; the probe limit still applies."""
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            frames = 7000  # > MAX_PROBE_FRAMES, ~16.5 MB; mostly zero frames keep the fixture fast
+            data = b"".join(raw_sector(lba) for lba in range(16)) + bytes(2352 * (frames - 16))
+            (d / "big.bin").write_bytes(data)
+            (d / "big.cue").write_text('FILE "big.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
+            log = []
+            with _recording_open(log):
+                rep = analyze(d / "big.cue")
+            track = rep["tracks"][0]
+            self.assertEqual(track["sha256"], hashlib.sha256(data).hexdigest())
+            self.assertEqual(track["sector"]["probed_frames"], cue_analysis.MAX_PROBE_FRAMES)
+            self.assertEqual(track["length_frames"], frames)
+            requested = [n for n, _ in log]
+            self.assertLessEqual(max(requested), cue_analysis.HASH_CHUNK)
+            self.assertLess(max(requested), len(data) // 8)
+            self.assertTrue(all(got == want for want, got in log), "a read came back short")
+            self.assertGreaterEqual(sum(got for _, got in log), len(data))
+
+    def test_small_chunks_give_identical_results(self):
+        """Tiny HASH/FRAME/AUDIO chunks must not change any report field or SHA-256."""
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            build_image(d, sectors=10, audio_sectors=5)
+            cue = d / "oss-pce-cd-test.cue"
+            expected = analyze(cue)
+            with mock.patch.object(cue_analysis, "HASH_CHUNK", 7), \
+                    mock.patch.object(cue_analysis, "FRAME_CHUNK", 3), \
+                    mock.patch.object(cue_analysis, "AUDIO_SCAN_FRAMES", 1):
+                self.assertEqual(analyze(cue), expected)
+            bin_bytes = (d / "oss-pce-cd-test.bin").read_bytes()
+            self.assertEqual(expected["tracks"][0]["sha256"],
+                             hashlib.sha256(bin_bytes[:10 * 2352]).hexdigest())
+
+    def test_truncated_bin_is_detected(self):
+        """A mid-file cut must raise CueError, not silently hash or probe partial data."""
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "t.bin").write_bytes(b"".join(raw_sector(lba) for lba in range(10)))
+            (d / "t.cue").write_text('FILE "t.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
+            with _recording_open([], cut_at=5 * 2352 + 100), self.assertRaisesRegex(CueError, "short read"):
+                analyze(d / "t.cue")
+
+    def test_boot_signature_detected_with_lba(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            frames = [bytearray(raw_sector(lba)) for lba in range(4)]
+            frames[2][16 + 100:16 + 100 + len(PCE_BOOT_SIGNATURE)] = PCE_BOOT_SIGNATURE
+            (d / "t.bin").write_bytes(b"".join(bytes(f) for f in frames))
+            (d / "t.cue").write_text('FILE "t.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
+            rep = analyze(d / "t.cue")
+            self.assertEqual(rep["boot_signatures"], [{"track": 1, "lba": 2, "user_offset": 100,
+                                                       "signature": PCE_BOOT_SIGNATURE.decode("ascii")}])
+
+    def test_audio_track_sync_detected_in_scan_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "data.bin").write_bytes(raw_sector(0))
+            (d / "audio.bin").write_bytes(SYNC_BYTES + bytes(2352 - 12))
+            (d / "t.cue").write_text('FILE "data.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+                                     'FILE "audio.bin" BINARY\n  TRACK 02 AUDIO\n    INDEX 01 00:00:00\n')
+            rep = analyze(d / "t.cue")
+            self.assertTrue(any("AUDIO track unexpectedly contains MODE sync" in f for f in rep["findings"]))
+
+
+class CueCliTests(unittest.TestCase):
+    def _write(self, d: Path, bin_bytes: bytes, cue_text: str) -> Path:
+        (d / "t.bin").write_bytes(bin_bytes)
+        (d / "t.cue").write_text(cue_text)
+        return d / "t.cue"
+
+    def test_mode1_2048_cooked_does_not_crash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cue = self._write(Path(tmp), bytes(2048 * 4),
+                              'FILE "t.bin" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n')
+            res = _run_cli(cue)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertNotIn("Traceback", res.stderr)
+            self.assertIn("sync/MSF not verified", res.stdout)
+            self.assertNotIn("sync_frames=", res.stdout)
+            self.assertIn("layout validation only", res.stdout)
+
+    def test_mode2_2336_cooked_does_not_crash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cue = self._write(Path(tmp), bytes(2336 * 4),
+                              'FILE "t.bin" BINARY\n  TRACK 01 MODE2/2336\n    INDEX 01 00:00:00\n')
+            res = _run_cli(cue)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertNotIn("Traceback", res.stderr)
+            self.assertIn("sync/MSF not verified", res.stdout)
+            self.assertIn("note: user_sector() supports only", res.stdout)
+
+    def test_mode1_2352_output_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            build_image(d)
+            res = _run_cli(d / "oss-pce-cd-test.cue")
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertIn("sync_frames=16", res.stdout)
+            self.assertIn("cue_analysis: PASS structural CUE/BIN validation", res.stdout)
+
+    def test_mode2_2352_reported_as_unsupported_for_user_data(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            frame = SYNC_BYTES + bytes([0, 2, 0, 2]) + bytes(2352 - 16)
+            cue = self._write(Path(tmp), frame * 4,
+                              'FILE "t.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
+            res = _run_cli(cue)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertIn("sync_frames=4", res.stdout)
+            self.assertIn("MODE2/2352 user data is not extractable", res.stdout)
+
+    def test_audio_multi_track_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            build_image(d, sectors=10, audio_sectors=10)
+            res = _run_cli(d / "oss-pce-cd-test.cue")
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertIn("(1 data, 1 audio)", res.stdout)
+            self.assertIn("track 02 AUDIO", res.stdout)
+            audio_line = next(line for line in res.stdout.splitlines() if "track 02" in line)
+            self.assertNotIn("sync", audio_line)
+
+    def test_invalid_cue_fails_with_single_error_format(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cue = self._write(Path(tmp), bytes(2352), 'FILE "t.bin" BINARY\n  TRACK 01 MODE1/2352\n'
+                                                      '    INDEX 01 99:99:99\n')
+            res = _run_cli(cue)
+            self.assertEqual(res.returncode, 1)
+            self.assertTrue(res.stderr.startswith("cue_analysis: FAIL/BLOCKED:"), res.stderr)
+            self.assertNotIn("Traceback", res.stderr)
+
+    def test_invalid_bin_size_fails_with_single_error_format(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cue = self._write(Path(tmp), bytes(1000), 'FILE "t.bin" BINARY\n  TRACK 01 MODE1/2352\n'
+                                                      '    INDEX 01 00:00:00\n')
+            res = _run_cli(cue)
+            self.assertEqual(res.returncode, 1)
+            self.assertIn("not a multiple of 2352", res.stderr)
+            self.assertNotIn("Traceback", res.stderr)
 
 
 if __name__ == '__main__':

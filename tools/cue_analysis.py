@@ -33,6 +33,10 @@ RAW_SYNC_MODES = {"MODE1/2352", "MODE2/2352", "AUDIO"}
 USER_DATA_MODES = {"MODE1/2352"}
 PCE_BOOT_SIGNATURE = b"PC Engine CD-ROM SYSTEM"
 MAX_PROBE_FRAMES = 4096  # bounded frame probing so a huge track stays fast
+# Streaming chunk sizes: the analysis holds only these bounded buffers, never a whole track.
+FRAME_CHUNK = 64  # frames per read while probing or scanning (~150 KiB for 2352-byte frames)
+HASH_CHUNK = 1 << 20  # bytes per read while hashing a track
+AUDIO_SCAN_FRAMES = 64  # AUDIO tracks are only scanned for MODE sync in their first frames
 
 
 class CueError(ValueError):
@@ -123,27 +127,64 @@ def _frame_lba(header: bytes) -> int:
     return (_from_bcd(header[0]) * 60 + _from_bcd(header[1])) * 75 + _from_bcd(header[2])
 
 
-def _probe_track(data: bytes, sector_bytes: int, track_lba: int, mode: str) -> dict:
-    """Validate raw frames of one track: sync, mode byte and MSF == LBA + 150 for RAW modes."""
-    frames = len(data) // sector_bytes
+def _read_exact(f, size: int) -> bytes:
+    """Read exactly `size` bytes; a short read means truncation or a BIN changed during analysis."""
+    data = f.read(size)
+    if len(data) != size:
+        raise CueError(f"short read: wanted {size} bytes, got {len(data)} (BIN truncated or changed)")
+    return data
+
+
+def _iter_frames(f, start: int, count: int, sector_bytes: int):
+    """Yield (frame_index, raw_frame) for `count` frames from byte `start`, reading FRAME_CHUNK at a time."""
+    f.seek(start)
+    for first in range(0, count, FRAME_CHUNK):
+        n = min(FRAME_CHUNK, count - first)
+        chunk = _read_exact(f, n * sector_bytes)
+        for i in range(n):
+            yield first + i, chunk[i * sector_bytes:(i + 1) * sector_bytes]
+
+
+def _sha256_range(f, start: int, length: int) -> str:
+    """Streaming SHA-256 of `length` bytes from `start`, read HASH_CHUNK at a time."""
+    h = hashlib.sha256()
+    f.seek(start)
+    remaining = length
+    while remaining:
+        chunk = _read_exact(f, min(HASH_CHUNK, remaining))
+        h.update(chunk)
+        remaining -= len(chunk)
+    return h.hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    """Streaming SHA-256 to avoid loading large files entirely into memory."""
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(HASH_CHUNK), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _probe_track(f, start: int, frames: int, sector_bytes: int, track_lba: int, mode: str) -> dict:
+    """Validate up to MAX_PROBE_FRAMES frames from `start`: sync, mode byte and MSF == LBA + 150 for RAW modes."""
     probe = min(frames, MAX_PROBE_FRAMES)
     sync_frames, modes, msf_bad = 0, set(), []
     first_sync = first_user_data = None
     user_offset, user_bytes = MODES[mode][1], MODES[mode][2]
     has_raw_sync = mode in RAW_SYNC_MODES
-    for frame in range(probe):
-        start = frame * sector_bytes
+    for frame, data in _iter_frames(f, start, probe, sector_bytes):
         if has_raw_sync:
-            if data[start:start + 12] != SYNC:
+            if data[:12] != SYNC:
                 continue
             sync_frames += 1
             if first_sync is None:
                 first_sync = frame
-            modes.add(data[start + 15])
-            if mode == "MODE1/2352" and _frame_lba(data[start + 12:start + 15]) != track_lba + frame + 150:
+            modes.add(data[15])
+            if mode == "MODE1/2352" and _frame_lba(data[12:15]) != track_lba + frame + 150:
                 if len(msf_bad) < 5:
                     msf_bad.append(frame)
-        if first_user_data is None and any(data[start + user_offset:start + user_offset + user_bytes]):
+        if first_user_data is None and any(data[user_offset:user_offset + user_bytes]):
             first_user_data = frame
     result = {"frames": frames, "probed_frames": probe, "first_user_data_frame": first_user_data}
     if has_raw_sync:
@@ -152,19 +193,6 @@ def _probe_track(data: bytes, sector_bytes: int, track_lba: int, mode: str) -> d
                        "mode_bytes": sorted(modes),
                        "msf_mismatch_frames": msf_bad})
     return result
-
-
-def _sha256_file(path: Path) -> str:
-    """Streaming SHA-256 to avoid loading large files entirely into memory."""
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def _sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
 
 
 def analyze(cue_path: Path, boot_signature: bytes = PCE_BOOT_SIGNATURE) -> dict:
@@ -200,48 +228,49 @@ def analyze(cue_path: Path, boot_signature: bytes = PCE_BOOT_SIGNATURE) -> dict:
             user_data_frames = track_bin_length - pregap_frames
             if user_data_frames <= 0:
                 raise CueError(f"{file['name']}: track {track['number']} has non-positive user data length")
-            # Read only the track span for hashing and probing
+            # Stream the track span: hash in HASH_CHUNK reads, probe/scan in FRAME_CHUNK reads.
+            # Nothing here holds a whole track in memory, so peak usage does not grow with the BIN.
             track_offset = bin_start_frame * sector_bytes
             track_size = track_bin_length * sector_bytes
-            with bin_path.open("rb") as f:
-                f.seek(track_offset)
-                span = f.read(track_size)
-            if len(span) != track_size:
-                raise CueError(f"{file['name']}: track {track['number']} truncated at offset {track_offset}")
             is_audio = track["mode"] == "AUDIO"
-            entry = {"number": track["number"], "mode": track["mode"], "file": file["name"],
-                     "audio": is_audio, "sector_bytes": sector_bytes, "length_frames": user_data_frames,
-                     "length_seconds": round(user_data_frames / 75, 3), "start_lba": next_lba,
-                     "index": {str(k): v for k, v in sorted(track["index"].items())},
-                     "index01_frame": index01_frame,
-                     "pregap_frames": pregap_frames,
-                     "declared_data_lba": next_lba,
-                     "sha256": _sha256_bytes(span)}
-            if "pregap" in track:
-                entry["pregap"] = track["pregap"]
-            if "postgap" in track:
-                entry["postgap"] = track["postgap"]
-            if is_audio:
-                if any(span[i:i + 12] == SYNC for i in range(0, min(len(span), 2352 * 64))):
-                    findings.append(f"track {track['number']}: AUDIO track unexpectedly contains MODE sync frames")
-            else:
-                # Probe only the user data portion (from INDEX 01 onwards)
-                user_data_span = span[pregap_frames * sector_bytes:]
-                entry["sector"] = _probe_track(user_data_span, sector_bytes, next_lba, track["mode"])
-                sector = entry["sector"]
-                # Check for sync frames appearing before INDEX 01 in the track span (pregap area)
-                if pregap_frames > 0:
-                    pregap_span = span[:pregap_frames * sector_bytes]
-                    if any(pregap_span[i:i + 12] == SYNC for i in range(0, len(pregap_span), sector_bytes)):
-                        findings.append(f"track {track['number']}: sync data appears in pregap before INDEX 01")
-                # Only validate sync/MSF for RAW modes
-                if track["mode"] in RAW_SYNC_MODES:
-                    if not sector["sync_frames"]:
-                        findings.append(f"track {track['number']}: no MODE1/2352 sync frame found in the first "
-                                        f"{sector['probed_frames']} frames")
-                    if sector["msf_mismatch_frames"]:
-                        findings.append(f"track {track['number']}: MSF headers disagree with start LBA "
-                                        f"{next_lba} at frames {sector['msf_mismatch_frames']}")
+            with bin_path.open("rb") as f:
+                entry = {"number": track["number"], "mode": track["mode"], "file": file["name"],
+                         "audio": is_audio, "sector_bytes": sector_bytes, "length_frames": user_data_frames,
+                         "length_seconds": round(user_data_frames / 75, 3), "start_lba": next_lba,
+                         "index": {str(k): v for k, v in sorted(track["index"].items())},
+                         "index01_frame": index01_frame,
+                         "pregap_frames": pregap_frames,
+                         "declared_data_lba": next_lba,
+                         "sha256": _sha256_range(f, track_offset, track_size)}
+                if "pregap" in track:
+                    entry["pregap"] = track["pregap"]
+                if "postgap" in track:
+                    entry["postgap"] = track["postgap"]
+                if is_audio:
+                    # Bounded read: only the first AUDIO_SCAN_FRAMES frames (plus a 11-byte overlap for the sync match)
+                    scan_len = min(track_size, AUDIO_SCAN_FRAMES * 2352)
+                    f.seek(track_offset)
+                    head = _read_exact(f, min(track_size, scan_len + len(SYNC) - 1))
+                    if any(head[i:i + len(SYNC)] == SYNC for i in range(scan_len)):
+                        findings.append(f"track {track['number']}: AUDIO track unexpectedly contains MODE sync frames")
+                else:
+                    # Probe only the user data portion (from INDEX 01 onwards)
+                    entry["sector"] = _probe_track(f, track_offset + pregap_frames * sector_bytes,
+                                                   user_data_frames, sector_bytes, next_lba, track["mode"])
+                    sector = entry["sector"]
+                    # Check for sync frames appearing before INDEX 01 in the track span (pregap area)
+                    if pregap_frames > 0:
+                        if any(raw[:len(SYNC)] == SYNC
+                               for _, raw in _iter_frames(f, track_offset, pregap_frames, sector_bytes)):
+                            findings.append(f"track {track['number']}: sync data appears in pregap before INDEX 01")
+                    # Only validate sync/MSF for RAW modes
+                    if track["mode"] in RAW_SYNC_MODES:
+                        if not sector["sync_frames"]:
+                            findings.append(f"track {track['number']}: no MODE1/2352 sync frame found in the first "
+                                            f"{sector['probed_frames']} frames")
+                        if sector["msf_mismatch_frames"]:
+                            findings.append(f"track {track['number']}: MSF headers disagree with start LBA "
+                                            f"{next_lba} at frames {sector['msf_mismatch_frames']}")
             tracks.append(entry)
             next_lba += user_data_frames
     signatures = []
@@ -256,7 +285,7 @@ def analyze(cue_path: Path, boot_signature: bytes = PCE_BOOT_SIGNATURE) -> dict:
             for frame in range(step):
                 offset = base + frame * track["sector_bytes"] + 16
                 f.seek(offset)
-                user_data = f.read(2048)
+                user_data = _read_exact(f, 2048)
                 at = user_data.find(boot_signature)
                 if at >= 0:
                     signatures.append({"track": track["number"], "lba": track["start_lba"] + frame,
@@ -309,14 +338,22 @@ def main():
     print(f"CUE {report['cue']}: {len(report['tracks'])} tracks "
           f"({len(report['data_tracks'])} data, {len(report['audio_tracks'])} audio), "
           f"{report['total_frames']} frames")
+    unverified = []
     for track in report["tracks"]:
         extra = ""
         if not track["audio"]:
             sector = track["sector"]
-            extra = (f" sync_frames={sector['sync_frames']} first_sync={sector['first_sync_frame']} "
-                     f"first_user_data={sector['first_user_data_frame']} modes={sector['mode_bytes']}")
+            if track["mode"] in RAW_SYNC_MODES:
+                extra = (f" sync_frames={sector['sync_frames']} first_sync={sector['first_sync_frame']} "
+                         f"first_user_data={sector['first_user_data_frame']} modes={sector['mode_bytes']}")
+            else:
+                # Cooked frames carry no RAW sync/MSF, so only the user-data probe is available
+                extra = f" first_user_data={sector['first_user_data_frame']} sync/MSF=not verified (cooked)"
+                unverified.append(track["number"])
         print(f"  track {track['number']:02d} {track['mode']:<11} start_lba={track['start_lba']:>6} "
               f"frames={track['length_frames']:>6}{extra}")
+        if not track["audio"] and track["mode"] not in USER_DATA_MODES:
+            print(f"    note: user_sector() supports only {sorted(USER_DATA_MODES)}; {track['mode']} user data is not extractable")
     for signature in report["boot_signatures"]:
         print(f"  boot signature {signature['signature']!r} at track {signature['track']} "
               f"LBA {signature['lba']} user+0x{signature['user_offset']:X}")
@@ -324,11 +361,15 @@ def main():
         print(f"  FINDING: {finding}")
     if not report["structurally_valid"]:
         raise SystemExit("cue_analysis: FAIL (see findings)")
-    print("cue_analysis: PASS structural CUE/BIN validation (no payload emitted)")
+    if unverified:
+        print(f"cue_analysis: PASS layout validation only (no payload emitted); "
+              f"sync/MSF not verified for cooked track(s) {unverified}")
+    else:
+        print("cue_analysis: PASS structural CUE/BIN validation (no payload emitted)")
 
 
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, CueError) as error:
+    except (OSError, ValueError) as error:  # CueError is a ValueError; keep every failure in one format
         raise SystemExit(f"cue_analysis: FAIL/BLOCKED: {error}") from error

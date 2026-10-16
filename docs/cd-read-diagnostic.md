@@ -45,8 +45,43 @@ image is byte-identical to the base ROM and verified on every build).
 For locally owned CUE/BIN images (never committed to Git), `cue_analysis.py` verifies
 structure, classifies tracks, maps to absolute disc LBAs, probes MODE1/2352 sync/MSF
 consistency, and can extract user sectors via `user_sector(cue, report, lba)`. The
-report contains layout and validation results only; no sector payload is written. PC Engine
-CD-ROM pre-gap sync patterns are tolerated up to a reasonable window. Run with:
+report contains layout and validation results only; no sector payload is written.
+
+**Streaming analysis.** The BIN is never loaded as a whole track. Each track is hashed in
+`HASH_CHUNK` (1 MiB) reads, probed and pregap-scanned in `FRAME_CHUNK` (64-frame) reads, and an
+AUDIO track is scanned for MODE sync only in its first 64 frames. Memory is bounded by these
+chunks, not by BIN size. A short read (truncated or changed BIN) raises `CueError`.
+
+**SHA-256 scope.** `sha256` in each track entry is the SHA-256 of that track's full span in the
+BIN: from its first INDEX (INDEX 00 when present, otherwise INDEX 01) through the next track's
+start, including any pregap bytes. `cue_sha256` is the SHA-256 of the CUE file itself.
+
+**Format support.**
+
+| Mode | Layout / hash | Sync / MSF check | `user_sector()` |
+| --- | --- | --- | --- |
+| MODE1/2352 | yes | yes (sync, mode byte, MSF == LBA + 150) | yes (2048 bytes at +16) |
+| MODE2/2352 | yes | sync and mode byte only (no MSF check) | no |
+| MODE1/2048 (Cooked) | yes | **not verified** (no raw sync/MSF) | no |
+| MODE2/2336 (Cooked) | yes | **not verified** | no |
+| AUDIO | yes | only "no MODE sync in first 64 frames" | no (raises `CueError`) |
+
+Cooked modes are validated for file size and layout only. The CLI reports them as
+`sync/MSF not verified` and prints a PASS line that says layout validation only.
+
+**INDEX 00/01 and LBA.** Disc LBA 0 is the first sector at INDEX 01 of the first data track. Any
+pregap before INDEX 01 is excluded from user-sector LBAs: `user_sector()` maps LBA *n* to BIN frame
+`INDEX01 + (n - start_lba)` and rejects negative and out-of-range LBAs. Pregap sync data is reported
+as a finding (`structurally_valid` becomes false), not tolerated.
+
+**MODE2 Form 1/2 user data is not supported.** `user_sector()` only extracts MODE1/2352.
+Requesting a MODE2 track raises `CueError`.
+
+**Scope.** This tool proves that a locally owned image matches its CUE layout and the raw
+frame checks above. It does not prove that a real game boots, that a disc is compatible with
+System Card 3.0, or that any real-hardware behaviour matches.
+
+Run with:
 
 ```sh
 python3 tools/cue_analysis.py rom/"Shin Megami Tensei (Japan)"/"Shin Megami Tensei (Japan).cue"
