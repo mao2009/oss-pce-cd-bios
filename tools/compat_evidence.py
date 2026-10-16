@@ -232,7 +232,14 @@ def verdict(record, runner=None, probe=None):
         # Complete evidence never overrides the reporter's own BLOCKED/SKIP/FAIL claim.
         reasons.insert(0, f"conflict: reporter claimed {record['result']}, evidence supports PASS; kept {record['result']}")
         computed, blocker = record['result'], record.get('blocker')
+    if computed not in ('BLOCKED', 'SKIP'):
+        blocker = None  # a blocker reason is reported only when the overall result is BLOCKED or SKIP
     return {'result': computed, 'blocker': blocker, 'reasons': reasons}
+
+
+def _load_json(path):
+    with open(path, encoding='utf-8') as handle:
+        return json.load(handle)
 
 
 def main(argv):
@@ -251,15 +258,15 @@ def main(argv):
     if ci and os.environ.get('GITHUB_ACTIONS') != 'true':
         print('refused: --ci is accepted only inside GitHub Actions', file=sys.stderr)
         return 2
-    runner = probe = None
-    if len(args) >= 2:
-        with open(args[1], encoding='utf-8') as handle:
-            runner = json.load(handle)
-    if len(args) == 3:
-        with open(args[2], encoding='utf-8') as handle:
-            probe = json.load(handle)
-    with open(args[0], encoding='utf-8') as handle:
-        record = json.load(handle)
+    try:
+        runner = _load_json(args[1]) if len(args) >= 2 else None
+        probe = _load_json(args[2]) if len(args) == 3 else None
+        record = _load_json(args[0])
+    except (OSError, ValueError) as error:  # unreadable or malformed input is a FAIL verdict, not a traceback
+        failure = {'result': 'FAIL', 'blocker': None, 'reasons': [f'input unreadable: {error}'],
+                   'local_verdict': 'FAIL', 'trust': TRUST_CI if ci else TRUST_LOCAL, 'authenticity': AUTHENTICITY}
+        print(json.dumps(failure, indent=2))
+        return 1
     local = verdict(record, runner, probe)
     result = dict(local, local_verdict=local['result'], trust=TRUST_CI if ci else TRUST_LOCAL,
                   authenticity=AUTHENTICITY)

@@ -50,7 +50,8 @@ output: `{"result": <run_job() result: status, reason, exit_code, stdout>, "forb
 itself (`parse_records()`, which rejects a body-level `tag` field). Whatever classify() does not call PASS
 (FAIL, BLOCKED, SKIP) becomes the stage finding. The verdict adds `cd_halt_fail` to the runner's `forbid`
 list, so a runner cannot drop it. If `result.status` is present and not null, it must be `FAIL` or `BLOCKED`;
-any other value (including `PASS`) gives FAIL. An absent or null status is accepted, so a good log with no status can PASS.
+any other value (including `PASS`) gives FAIL. An explicit `null` is accepted, so a good log with `"status": null` can PASS.
+An absent `status` key gives FAIL: the #119 judge reads `result["status"]`, the lookup raises KeyError, and that is reported as FAIL.
 Above `homebrew`, a PASS requires a non-empty `trace_deltas` (missing or empty gives BLOCKED). The record needs a
 checkpoint named after the stage label, and the runner must report the same name as observed.
 

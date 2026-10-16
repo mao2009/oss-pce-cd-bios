@@ -165,6 +165,13 @@ class MalformedInputTests(unittest.TestCase):
         result = verdict(record(), attest(record(), checkpoints=5))
         self.assertEqual(result['result'], 'FAIL')
 
+    def test_fail_finding_with_blocked_finding_reports_no_blocker(self):
+        # Overall FAIL (checkpoint mismatch) while a BLOCKED finding also exists (no ROM): no blocker reported.
+        rec = record(rom=None, checkpoints=[{'name': 'cd-ident', 'expected': 'ok', 'observed': 'err'}])
+        result = run(rec)
+        self.assertEqual(result['result'], 'FAIL')
+        self.assertIsNone(result['blocker'])
+
     def test_trace_delta_name_must_be_a_string(self):
         for bad_name in (5, ['x']):
             with self.subTest(name=bad_name):
@@ -337,6 +344,12 @@ class StageEvidenceTests(unittest.TestCase):
         stdout = to_stdout(good_events(LABEL)) + '\nHIT {"tag": "RUN", "name": "playable-reached", "cycle": "cold"}'
         self.assertEqual(run_with(staged(), probe_for('playable', stdout=stdout))['result'], 'FAIL')
 
+    def test_probe_without_status_key_fails_and_null_status_passes(self):
+        no_key = probe_for('playable')
+        del no_key['result']['status']
+        self.assertEqual(run_with(staged(), no_key)['result'], 'FAIL')
+        self.assertEqual(run_with(staged(), probe_for('playable', status=None))['result'], 'PASS')
+
     def test_runner_written_probe_status_pass_is_rejected(self):
         bad = probe_for('playable', status='PASS', reason='hand-written')
         self.assertEqual(run_with(staged(), bad)['result'], 'FAIL')
@@ -405,11 +418,13 @@ class CliTrustTests(unittest.TestCase):
     """The CLI never certifies local, unsigned JSON; --ci only runs inside GitHub Actions."""
 
     def _run_cli(self, argv, env, rec=None):
+        """rec: a record object, or raw text written as record.json (default: a valid record)."""
         with tempfile.TemporaryDirectory() as tmp:
+            record_text = rec if isinstance(rec, str) else json.dumps(rec or record())
             paths = []
-            for name, value in (('record.json', rec or record()), ('runner.json', attest(record()))):
+            for name, text in (('record.json', record_text), ('runner.json', json.dumps(attest(record())))):
                 path = Path(tmp) / name
-                path.write_text(json.dumps(value), encoding='utf-8')
+                path.write_text(text, encoding='utf-8')
                 paths.append(str(path))
             out = io.StringIO()
             with mock.patch.dict(os.environ, env, clear=True), contextlib.redirect_stdout(out):
@@ -436,6 +451,11 @@ class CliTrustTests(unittest.TestCase):
         self.assertEqual(output['result'], 'PASS')
         self.assertTrue(output['trust'].startswith('ci-job'))
         self.assertIn('not verified', output['authenticity'])
+
+    def test_malformed_or_missing_input_is_fail_json_not_traceback(self):
+        code, text = self._run_cli([], {}, '{not json')
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(text)['result'], 'FAIL')
 
     def test_list_stage_is_fail_verdict_not_traceback(self):
         bad = record()
