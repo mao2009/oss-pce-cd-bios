@@ -79,3 +79,4 @@ Related work: [#105](https://github.com/mao2009/oss-pce-cd-bios/issues/105), [#8
 ## 関連
 
 - 本監査の結果: [oss-reuse-audit-r3.md](oss-reuse-audit-r3.md)（API 別候補表・ライセンス監査・優先順位）。
+- 補完監査（HuCC math/VDC/入力/カーネル、NeoCD、Cult-of-GBA）: [oss-reuse-audit-r4.md](oss-reuse-audit-r4.md)。
