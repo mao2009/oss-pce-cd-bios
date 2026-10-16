@@ -16,6 +16,10 @@ reset_entry:
 reset_mpr_ready:
     ldx #$FF                 ; SP choice inside the stack page; not a Hudson/System Card ABI
     txs
+.ifdef CD_MEDIA_STATE
+.import cd_media_state
+    jsr cd_media_state       ; Issue #144 observation point (opt-in build); result in RAM, not boot success
+.endif
 reset_ready:
     bra reset_ready          ; verifiable control point; never reports boot success
 reset_unexpected_interrupt:

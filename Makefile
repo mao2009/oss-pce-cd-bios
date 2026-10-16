@@ -98,3 +98,11 @@ dev-reset-entry: dev-rom
 
 dev-reset-entry-integration: dev-reset-entry
 	$(PYTHON) tests/integration/geargrafx_reset_entry.py --mode "$(MODE)"
+
+.PHONY: dev-cd-media-state dev-cd-media-state-integration
+# Opt-in Issue #144 media-state observation point called from the #143 reset entry.
+dev-cd-media-state: dev-rom
+	$(PYTHON) tools/build_cd_media_state.py --mode "$(MODE)"
+
+dev-cd-media-state-integration: dev-cd-media-state
+	$(PYTHON) tests/integration/geargrafx_cd_media_state.py --mode "$(MODE)"
