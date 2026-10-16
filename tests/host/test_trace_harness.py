@@ -173,6 +173,16 @@ class StageAndLimitTests(unittest.TestCase):
 
 
 class ArtifactPolicyTests(unittest.TestCase):
+    def test_attestation_is_hash_only_and_verified_only_on_pass(self):
+        ok = harness.attestation("PASS", "a" * 64, "b" * 64, "cd_halt_ok")
+        self.assertEqual(set(ok), {"verified", "rom_sha256", "fixture_sha256", "emulator_commit", "checkpoints"})
+        self.assertTrue(ok["verified"])
+        self.assertEqual(ok["checkpoints"], [{"name": "cd_halt_ok", "observed": "cd_halt_ok"}])
+        self.assertEqual(len(ok["emulator_commit"]), 40)
+        failed = harness.attestation("FAIL", "a" * 64, "b" * 64, "cd_halt_ok")
+        self.assertFalse(failed["verified"])
+        self.assertEqual(failed["checkpoints"], [])
+
     def test_trace_outputs_are_not_uploaded_by_ci(self):
         root = Path(__file__).resolve().parents[2]
         for workflow in (root / ".github/workflows").glob("*.yml"):

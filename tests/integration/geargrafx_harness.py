@@ -239,6 +239,26 @@ def classify(result, expect, forbid=()):
     return "PASS", f"checkpoint {expect!r} reached in {len(cycles)} cycle(s)", events
 
 
+def fixture_digest(disc, names):
+    """One sha256 over the staged data files, in CUE order: identifies the disc without copying it."""
+    digest = hashlib.sha256()
+    for name in names:
+        digest.update((Path(disc) / name).read_bytes())
+    return digest.hexdigest()
+
+
+def attestation(status, rom_sha, fixture_sha, expect):
+    """Hash-only runner attestation in the shape docs/compat-evidence-schema.md (#116) consumes.
+
+    Carries no guest memory or trace records, so it is the only part of a run that may be
+    shared with the compatibility-evidence record.
+    """
+    passed = status == "PASS"
+    return {"verified": passed, "rom_sha256": rom_sha, "fixture_sha256": fixture_sha,
+            "emulator_commit": DEPENDENCIES["geargrafx"]["revision"],
+            "checkpoints": [{"name": expect, "observed": expect}] if passed else []}
+
+
 def trace(args):
     report = doctor(args.rom, args.cue, args.labels)
     log = {"schema_version": 1, "evidence": "REAL_GEARGRAFX_CORE", "probe_kind": args.kind,
@@ -267,7 +287,7 @@ def trace(args):
         disc = job_dir / "disc"
         disc.mkdir()
         try:
-            stage_disc(args.cue, disc)  # only the CUE and the data files it names
+            staged = stage_disc(args.cue, disc)  # only the CUE and the data files it names
         except FileNotFoundError as error:
             log.update(status="BLOCKED", reason=str(error), evidence="NOT_RUN")
             return log
@@ -285,6 +305,8 @@ def trace(args):
                    counts={tag: sum(e["tag"] == tag for e in events) for tag in TAGS}, trace=events)
         if result["exit_code"] is None:
             log["evidence"] = "NOT_RUN"
+        log["attestation"] = attestation(log["status"], report["rom"].get("sha256"),
+                                         fixture_digest(disc, staged[1:]), args.expect)
         return log
     finally:
         if not args.keep_job:
@@ -319,6 +341,9 @@ def main(argv=None):
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(text)
+        if "attestation" in log:  # hash-only; the full log stays local
+            side = args.output.with_name(args.output.stem + ".attestation.json")
+            side.write_text(json.dumps(log["attestation"], indent=2, sort_keys=True) + "\n")
         print(f"{log['status']}: {log.get('reason', args.command)} -> {args.output}")
     else:
         sys.stdout.write(text)
