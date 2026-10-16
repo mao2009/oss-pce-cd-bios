@@ -92,7 +92,7 @@ class CandidateModelSyntheticTest(unittest.TestCase):
         cd = SyntheticCD(index01_lba=LEAD_IN)
         # base + block past 24 bits must be rejected, not wrapped to a low LBA.
         self.assertEqual(probe("BASE_PLUS_BLOCK", MAX_U24, 1, cd), REJECT)
-        # block below the lead-in cannot be a MSF-from-00:00:00 frame count for this disc.
+        # under the MSF candidate, block 149 maps to LBA -1 (before the disc start) and is rejected.
         self.assertEqual(probe("MSF_FRAMES_FROM_00_00_00", LEAD_IN - 1, 0, cd), REJECT)
 
 
