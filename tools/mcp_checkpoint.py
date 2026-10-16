@@ -32,16 +32,27 @@ class Fail(Exception):
 
 
 MAX_LINE = 1 << 20  # larger reply line = broken/hostile server: fail, don't buffer unboundedly
-OVERSIZE = object()
+MAX_QUEUED_BYTES = 4 << 20  # buffered stdout cap: a flood of short lines cannot grow memory without bound
+MAX_REPLY_BYTES = 4 << 20  # bytes consumed awaiting one reply; exceeding this is an explicit FAIL, not a hang
+OVERSIZE = object()  # a single reply line exceeded MAX_LINE
+OVERFLOW = object()  # the server produced more buffered output than this client will hold
 
 
 class Client:
-    """Newline-delimited JSON-RPC over a child's stdio; every read has a deadline."""
+    """Newline-delimited JSON-RPC over a child's stdio; every send and every read has a deadline.
+
+    Memory is bounded on both ends: one reply line may not exceed MAX_LINE, the pump holds at most
+    MAX_QUEUED_BYTES, and no request consumes more than MAX_REPLY_BYTES while waiting for its reply.
+    A child that stops reading stdin cannot block a write forever: the write is bounded by the same deadline.
+    """
 
     def __init__(self, argv, cwd):
         self.proc = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=subprocess.DEVNULL, text=True, bufsize=1)
         self.lines, self.next_id, self.schemas = queue.Queue(), 0, {}
+        self._lock = threading.Lock()
+        self._queued = 0  # buffered stdout bytes not yet consumed by a request
+        self._overflow = False
         threading.Thread(target=self._pump, daemon=True).start()
 
     def _pump(self):
@@ -51,23 +62,56 @@ class Client:
                 if not line:
                     break
                 if len(line) > MAX_LINE and not line.endswith("\n"):
+                    self._overflow = True
                     self.lines.put(OVERSIZE)
                     return
+                with self._lock:
+                    if self._queued + len(line) > MAX_QUEUED_BYTES:
+                        self._overflow = True
+                        self.lines.put(OVERFLOW)
+                        return
+                    self._queued += len(line)
                 self.lines.put(line)
         except (OSError, ValueError):
             pass
         self.lines.put(None)
 
+    def _write(self, payload, deadline):
+        """Write the whole payload within the deadline; a child that never reads stdin cannot hang the client."""
+        done, state = threading.Event(), {}
+
+        def worker():
+            try:
+                self.proc.stdin.write(payload)
+                self.proc.stdin.flush()
+                state["ok"] = True
+            except (OSError, ValueError):
+                state["ok"] = False
+            finally:
+                done.set()
+
+        threading.Thread(target=worker, daemon=True).start()
+        if not done.wait(timeout=max(0.0, deadline - time.monotonic())):
+            self._terminate()  # unblock the abandoned writer thread; close() reaps the child
+            raise Fail("TIMEOUT", "write_timeout")
+        if not state.get("ok"):
+            raise Fail("FAIL", "process_exited")
+
+    def _terminate(self):
+        try:
+            self.proc.kill()
+        except OSError:
+            pass
+
     def request(self, method, params=None, timeout=5.0):
         self.next_id += 1
         msg = {"jsonrpc": "2.0", "id": self.next_id, "method": method, "params": params or {}}
-        try:
-            self.proc.stdin.write(json.dumps(msg) + "\n")
-            self.proc.stdin.flush()
-        except OSError:
-            raise Fail("FAIL", "process_exited")
-        deadline = time.monotonic() + timeout
+        deadline = time.monotonic() + timeout  # covers the send as well as the reply (#103 review MAJOR-2)
+        self._write(json.dumps(msg) + "\n", deadline)
+        received = 0
         while True:
+            if self._overflow:
+                raise Fail("FAIL", "response_overflow")
             try:
                 line = self.lines.get(timeout=max(0.0, deadline - time.monotonic()))
             except queue.Empty:
@@ -76,6 +120,13 @@ class Client:
                 raise Fail("FAIL", "process_exited")
             if line is OVERSIZE:
                 raise Fail("FAIL", "oversized_response")
+            if line is OVERFLOW:
+                raise Fail("FAIL", "response_overflow")
+            with self._lock:
+                self._queued = max(0, self._queued - len(line))
+            received += len(line)
+            if received > MAX_REPLY_BYTES:
+                raise Fail("FAIL", "response_overflow")
             try:
                 reply = json.loads(line)
             except ValueError:
@@ -88,12 +139,9 @@ class Client:
                     raise Fail("FAIL", f"{method}_malformed_result")
                 return result
 
-    def notify(self, method):
-        try:
-            self.proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": method}) + "\n")
-            self.proc.stdin.flush()
-        except OSError:
-            raise Fail("FAIL", "process_exited")
+    def notify(self, method, timeout=5.0):
+        deadline = time.monotonic() + timeout
+        self._write(json.dumps({"jsonrpc": "2.0", "method": method}) + "\n", deadline)
 
     def call(self, name, args=None, timeout=5.0):
         args = args or {}
@@ -189,8 +237,12 @@ def checkpoint(c, deadline_s, label):
     if ram != EXPECTED_RAM:
         raise Fail("FAIL", f"ram_mismatch:{ram.hex() if ram else None}")
     trace = c.call("get_trace_log")
-    entries = find(trace, "entries", "lines", "trace")  # field name unverified at the pin
-    if not (entries if isinstance(entries, list) else trace):
+    if isinstance(trace, dict) and "error" in trace:
+        raise Fail("FAIL", "trace_error")  # an error reply is not a trace, however non-empty it looks
+    # Field name unverified at the pin, but only an explicit non-empty list of entries counts as a trace:
+    # a description string, an error object, {"entries": null} or a missing field must never pass (#103 MAJOR-1).
+    entries = trace if isinstance(trace, list) else find(trace, "entries", "lines", "trace")
+    if not isinstance(entries, list) or not entries or not all(isinstance(e, dict) for e in entries):
         raise Fail("FAIL", "empty_trace")
     return {"label": label, "pc": pc, "mpr1": mpr1, "ram": ram.hex(), "trace_nonempty": True}
 

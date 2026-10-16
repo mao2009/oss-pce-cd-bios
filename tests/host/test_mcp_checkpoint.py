@@ -31,6 +31,9 @@ FAKE = textwrap.dedent('''\
         if mode == "die" and m == "tools/list": os._exit(0)
         if mode == "oversize" and m == "tools/list":
             sys.stdout.write("x" * (3 << 20)); sys.stdout.flush(); time.sleep(60)
+        if mode == "flood" and m == "tools/list":
+            blob = json.dumps({"jsonrpc": "2.0", "id": 9999, "result": {}}) + "\\n"
+            sys.stdout.write(blob * 400000); sys.stdout.flush(); time.sleep(60)
         if mode == "bad_result" and m == "tools/list":
             print(json.dumps({"jsonrpc": "2.0", "id": r["id"], "result": [1]}), flush=True); continue
         if mode == "bad_tools" and m == "tools/list":
@@ -49,7 +52,12 @@ FAKE = textwrap.dedent('''\
             if n == "get_huc6280_status":
                 res = txt({"registers": {"PC": "%04X" % st["pc"]}, "mpr": ["FF", "00" if mode == "bad_mpr" else "F8"] + ["00"] * 6})
             if n == "read_memory": res = txt({"data": "50434521F85B" if mode == "bad_ram" else "50 43 45 21 F8 5A"})
-            if n == "get_trace_log": res = txt({"entries": [] if mode == "empty_trace" else [{"pc": "E030"}]})
+            if n == "get_trace_log":
+                if mode == "trace_error": res = txt({"error": "unavailable"})
+                elif mode == "trace_msg": res = txt({"message": "trace disabled"})
+                elif mode == "trace_null": res = txt({"entries": None})
+                elif mode == "empty_trace": res = txt({"entries": []})
+                else: res = txt({"entries": [{"pc": "E030"}]})
         print(json.dumps({"jsonrpc": "2.0", "id": r["id"], "result": res}), flush=True)
 ''')
 
@@ -93,6 +101,29 @@ class McpCheckpoint(unittest.TestCase):
                           ("empty_trace", "empty_trace")):
             with self.subTest(mode):
                 self.assertEqual(self.run_mode(mode)[:2], ("FAIL", why))
+
+    def test_non_trace_replies_never_pass_as_a_trace(self):
+        # MAJOR-1 regression: an error dict, a description string or {"entries": null} is not a trace.
+        for mode, why in (("trace_error", "trace_error"), ("trace_msg", "empty_trace"), ("trace_null", "empty_trace")):
+            with self.subTest(mode):
+                self.assertEqual(self.run_mode(mode)[:2], ("FAIL", why))
+
+    def test_stdout_flood_is_bounded_and_fails_explicitly(self):
+        # MINOR-1 regression: a flood of short lines must fail with a bounded buffer, not grow memory.
+        status, reason, ev = self.run_mode("flood", per_step=5)
+        self.assertEqual((status, reason), ("FAIL", "response_overflow"))
+        self.assertTrue(ev["process_terminated"])
+
+    def test_blocked_sender_write_is_deadline_bounded(self):
+        # MAJOR-2 regression: a child that never reads stdin must not hang the request's write forever.
+        child = self.dir / "sleeper"
+        child.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(60)\n")
+        child.chmod(0o755)
+        c = m.Client([str(child)], str(self.dir))
+        self.addCleanup(c.close)
+        with self.assertRaises(m.Fail) as ctx:
+            c.request("x", {"pad": "0" * (2 << 20)}, timeout=0.5)
+        self.assertEqual((ctx.exception.status, ctx.exception.reason), ("TIMEOUT", "write_timeout"))
 
     def test_missing_tool_and_schema_mismatch_fail(self):
         self.assertEqual(self.run_mode("missing_tool")[:2], ("FAIL", "missing_tools:get_trace_log"))
