@@ -9,7 +9,8 @@
   トラック境界・データ/音声の区別を確認。`tests/host/test_cdda_state.py` で、トラック境界に基づく
   状態遷移モデル (STOPPED / PLAYING / PAUSED / ENDED) を検証。これは我々のモデルであり、
   実機コアや System Card の挙動の検証ではない。
-- 実コア検証 (NOT RUN): Geargrafx 上の CD-DA 再生観測は実施していない。
+- 本 PR のスコープ: ホストモデルのテスト (`tests/host/test_cdda_state.py`) だけ。本 PR 自体は実コアを実行しておらず、
+  実コア検証は NOT RUN。下の #135 の実コア観測は main 側の別 PR の結果で、本 PR の検証ではない。
 - 観測点の特定 (ソース調査, NOT RUN): Geargrafx 固定版 `b49ae82` (`tools/dependencies.json`,
   SHA-256 検証済み) のソースで、CD-DA の状態と位置を読む経路を確認した。
   - 状態・位置: `GeargrafxCore::GetCDROMAudio()` (`src/geargrafx_core.h:111`) から

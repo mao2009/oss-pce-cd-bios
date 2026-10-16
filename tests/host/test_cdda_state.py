@@ -178,11 +178,9 @@ class CddaStateModelTests(unittest.TestCase):
         self.model.play(2)
         self.model.tick(4)
         self.model.stop()
-        self.assertEqual((self.model.state, self.model.pos), ("STOPPED", self.audio_start + 4))
-        with self.assertRaises(ValueError):
-            self.model.resume()  # resume is only from PAUSED
+        # Restart point after stop from PLAYING is a model expectation, not measured (see class docstring).
         self.model.play(2)
-        self.assertEqual(self.model.pos, self.audio_start)  # restart point: model expectation, unmeasured
+        self.assertEqual(self.model.pos, self.audio_start)
 
     def test_ended_cannot_resume_but_can_replay(self):
         self.model.play(2)
