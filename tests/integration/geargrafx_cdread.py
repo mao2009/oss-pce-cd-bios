@@ -132,6 +132,9 @@ class Suite:
         return records
 
 
+# exactly the "loader" strings geargrafx_cdread_probe.cpp prints in its CAP record
+LOADERS = {"disc": "LoadBiosFromBuffer(syscard)+LoadMedia(cue)",
+           "no_media": "SetCDROMType(STANDARD)+LoadHuCardFromBuffer"}
 NO_MEDIA_RESULT = ("cd_halt_fail", 5, 5, 0)  # observed: READ(6) with an empty drive -> GOOD status, no DATA_IN
 
 
@@ -139,10 +142,15 @@ def no_media_test(suite, rom, labels, expected=NO_MEDIA_RESULT):
     """Run the guest with System Card CD hardware but no disc and pin what the real core does.
 
     The judge and the status classifier must both refuse to call this a pass."""
-    records = execute(suite.probe, rom, None, labels)
+    try:
+        records = execute(suite.probe, rom, None, labels)
+    except subprocess.CalledProcessError as error:
+        if error.returncode == 7:  # geargrafx_harness.PROBE_EXIT[7]: same BLOCKED meaning on this path
+            raise RuntimeError("BLOCKED: core did not enable CD hardware for the no-media run (probe exit 7)") from error
+        raise
     caps = records["CAP"]
-    if len(caps) != 1 or (caps[0].get("cdrom_hardware"), caps[0].get("cdrom_media"), caps[0].get("disc_given")) \
-            != (True, False, False):
+    if len(caps) != 1 or (caps[0].get("cdrom_hardware"), caps[0].get("cdrom_media"), caps[0].get("disc_given"),
+                          caps[0].get("loader")) != (True, False, False, LOADERS["no_media"]):
         raise ValueError(f"no-media run: capability record is not 'CD hardware, no media': {caps}")
     for run, got in zip(records["RUN"], describe_failure(records)):
         if got != expected or run["halt_confirmed"] is not True:
@@ -156,7 +164,9 @@ def no_media_test(suite, rom, labels, expected=NO_MEDIA_RESULT):
         raise ValueError(f"no-media run: status classifier reported {outcome}/{verdicts[0].category}")
     keys = ("pc", "a", "x", "y", "p", "sp", "mpr", "step", "scsi_phase", "result_hex")
     suite.must_be_rejected("no_media_loaded", records, *DEFAULT_REQUEST, match="capability missing",
-                           loader=caps[0].get("loader"),
+                           loader=caps[0]["loader"],
+                           status_classifier={"outcome": outcome, "category": verdicts[0].category},
+                           meaning="the expected failure was verified; the media-absent run itself is BLOCKED, never a PASS",
                            observation="Geargrafx answers READ(6) on an empty drive with GOOD status and no data "
                                        "(same guest result as an LBA past the disc end); real hardware UNKNOWN",
                            runs=[{key: run[key] for key in keys} for run in records["RUN"]])
@@ -333,7 +343,7 @@ def main():
         "rom_sha256": digest,
         "geargrafx_revision": DEPENDENCIES["geargrafx"]["revision"],
         "source_archive_sha256": DEPENDENCIES["geargrafx"]["sha256"],
-        "loader": "LoadBiosFromBuffer(syscard=true) + original synthetic CUE/BIN (MODE1/2352)",
+        "loader": LOADERS,  # "disc" for every run with the original synthetic CUE/BIN (MODE1/2352), "no_media" for no_media_loaded
         "disc": {key: disc_manifest[key] for key in ("format", "sectors", "bin_sha256", "cue_sha256", "edc_ecc")},
         "halt_confirmation_steps": HALT_CONFIRM_STEPS,
         "success_judgement": "guest halt at cd_halt_ok CONFIRMED by 64 consecutive instructions on the halt loop + result block + full RAM compare vs independent generator "

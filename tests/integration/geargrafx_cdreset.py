@@ -25,7 +25,8 @@ from environment import DEPENDENCIES
 from geargrafx_api import compile_probe
 from make_cd_image import BIN_NAME, CUE_NAME, build_image
 
-from geargrafx_cdread import DEFAULT_REQUEST, Suite, halt_confirmation_tests, judge_mutation_tests, no_media_test
+from geargrafx_cdread import (DEFAULT_REQUEST, LOADERS, Suite, halt_confirmation_tests, judge_mutation_tests,
+                              no_media_test)
 
 ASSERT_RST_LOAD = b"\xa9\x02\x8d\x04\x18"   # lda #$02 / sta $1804 (the reset assertion)
 
@@ -110,7 +111,7 @@ def main():
         "rom_sha256": digest,
         "geargrafx_revision": DEPENDENCIES["geargrafx"]["revision"],
         "source_archive_sha256": DEPENDENCIES["geargrafx"]["sha256"],
-        "loader": "LoadBiosFromBuffer(syscard=true) + original synthetic CUE/BIN (MODE1/2352)",
+        "loader": LOADERS,  # "disc" for every run with the original synthetic CUE/BIN (MODE1/2352), "no_media" for no_media_loaded
         "disc": {key: disc_manifest[key] for key in ("format", "sectors", "bin_sha256", "cue_sha256", "edc_ecc")},
         "tests": suite.results,
         "primary_observations": {"RUN": primary["RUN"], "PHASE": primary["PHASE"], "HIT": primary["HIT"]},
