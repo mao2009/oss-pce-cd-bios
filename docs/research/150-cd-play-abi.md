@@ -22,7 +22,7 @@
 | stum-2 | [Why do PC Engine CD-ROM² games have a second data track?](https://www.stum.de/2026/pc-engine-second-data-track/) (cd_base 呼出で `_BH=$80`=トラック番号指定、`_AL`=BCDトラック番号。CD_PLAYではなく cd_base の記述) |
 | #135 | [cdda-core-observation.md](../cdda-core-observation.md): 生SCSI `$D8/$D9/$DA/$DD` のコア観測 |
 
-公開の System Card 公式マニュアル相当は WebSearch では確認できなかった (検索語: CD_PLAY `$E012` `_bh` CD_TRACK 等)。
+公開の System Card 公式マニュアル相当は、前作業者の WebSearch では確認できなかったとの記録がある (本レビューでは再検索していない)。
 stum-1/2 は CD_PLAY の引数を記述していない。
 
 ## 1. 呼出パラメータ (CALLER 証拠)
@@ -39,7 +39,7 @@ stum-1/2 は CD_PLAY の引数を記述していない。
 | 終了位置の種別・モード | `_dh`: 上位2bit=終了種別 (上表と同じ符号)、下位6bit=再生モード | HuCC `CD_PLAYMODE=%00111111` | CALLER |
 | 終了位置 (トラック) | `_cl`=BCDトラック番号、`_ch`=0、`_dl`=0。HuCCは終了トラック0を「ディスク末尾まで」として `CD_LEADOUT` を終了種別に設定 | HuCC `_cd_playtrk` | CALLER |
 | 終了位置 (MSF) | `_cl`=分, `_ch`=秒, `_dl`=フレーム (BCD) | HuCC `_cd_playmsf` | CALLER |
-| 再生モード値 | 0=`CDPLAY_MUTE`, 1=`CDPLAY_REPEAT`, 2=`CDPLAY_NORMAL`。`CDPLAY_ENDOFDISC=0` には HuCC 自身が「XXX: really?」とコメント | HuCC | CALLER (作者自身が不確実と表明) |
+| 再生モード値 | 0=`CDPLAY_MUTE`, 1=`CDPLAY_REPEAT`, 2=`CDPLAY_NORMAL`。`CDPLAY_ENDOFDISC=0` には HuCC 自身が「XXX: really?」とコメント | HuCC | CALLER。HuCC の「XXX: really?」は `CDPLAY_ENDOFDISC=0` にのみ付いており、MUTE/REPEAT/NORMAL の値自体への表明ではない (ENDOFDISC=0 は MUTE=0 と同値で意味が重なる) |
 | MUTE の意味 | 「ミュートで再生位置だけ進める」等の解釈は根拠なし | - | UNKNOWN |
 | 組合せの有効範囲 | 開始=トラックで終了=MSF 等の混在可否、終了<開始、範囲外 | - | UNKNOWN |
 
@@ -52,7 +52,7 @@ HCDバックエンドにのみ渡す)。`_bh==192` なら「一時停止中な�
 
 | 項目 | 内容 | 状態 |
 | --- | --- | --- |
-| 戻り値の場所 | HuCC は呼出直後に `TAX` し、Aを戻り値 (0=成功/非0=失敗と推定される用途) として返す。`cd_pause` マクロは戻りを加工せず `CLY` のみ | CALLER。成功/失敗コードの値、A以外のレジスタ・キャリーは UNKNOWN |
+| 戻り値の場所 | HuCC は呼出直後に `TAX` (A→X コピー、ソースコメントは「return code in X」) して Y:X (Y=0) で返す。BIOS が戻り値を A に置くことと 0=成功/非0=失敗は、いずれも HuCC 側の用途からの推定にすぎない。`cd_pause` マクロは戻りを加工せず `CLY` のみ | CALLER。成功/失敗コードの値、A以外のレジスタ・キャリーは UNKNOWN |
 | 戻り値の個別エラー | データトラック指定、存在しないトラック、範囲外LBA、ディスクなし、busy | UNKNOWN (#140 の未解決 4-5 と同一) |
 | Hu-Go の戻り | 常にA=0、N/T/Zを再計算して RTS。エラー経路なし | HLE。原本の成功値が0であることの証拠にはならない |
 | 終了位置到達時 | 自動停止/次トラックへ進行/無音継続 | UNKNOWN。ホストモデル (#140) は最終トラックのみ `ENDED` を持つが、モデル内部状態でありBIOSの観測ではない |
@@ -73,7 +73,7 @@ HuCCのラッパー (`call_bios` 等) による保存・復元は、BIOSの保�
 | スタック使用量 | UNKNOWN | |
 | MPR (バンク) の前提・破壊 | UNKNOWN | HuCC は MPR7 にバンク0を割付けて JSR する (ラッパー側)。CD_PLAY 固有の要件は不明 |
 | IRQ/割込許可 (CLI/SEI) の前提 | UNKNOWN | CD_READ 側のみ CLI を呼出側で行う報告あり。CD_PLAY には該当記述なし |
-| ワークRAM書込み (`$20F8-$20FF`, `$2200`台) | UNKNOWN | 引数領域を破壊するかも不明。HuCC が終了位置を `cdplay_end_*` に別保存する理由は「呼出側で再開に使うため」の想定で、被呼出側の破壊の証拠ではない |
+| ワークRAM書込み (`$20F8-$20FF` ほか) | UNKNOWN | 引数領域を破壊するかも不明。HuCC が終了位置を `cdplay_end_*` (HuCC 側変数。配置アドレスは未確認) に別保存する理由は「呼出側で再開に使うため」の想定で、被呼出側の破壊の証拠ではない |
 | 実行時間・同期 | UNKNOWN | |
 
 ## 4. 生SCSIコマンドとBIOS ABIの切り分け
