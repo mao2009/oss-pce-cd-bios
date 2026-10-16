@@ -7,9 +7,9 @@ Status tags:
 
 * **VERIFIED**: the claim names scenarios that original guest code executed on the pinned real Geargrafx core
   (`b49ae82a012eade566d72e9d61c9d95a5caa4da3`). In the ledger this tag is a *declared* claim. A self-declared
-  bundle cannot establish it (section 4). The only effective VERIFIED is `compat_status()` given raw inputs that
-  the #125 verifier accepts (PASS) and main branch rules (#153, section 4). This is emulator evidence for the
-  transport layer only; real hardware and the callee ABI stay UNKNOWN.
+  bundle cannot establish it, and neither can gh attestation output or a run record handed to the ledger
+  (section 4, #153): no function of this module returns an effective VERIFIED today. Even an effective VERIFIED
+  would be emulator evidence for the transport layer only; real hardware and the callee ABI stay UNKNOWN.
 * **LOCAL_ONLY**: a declared VERIFIED claim whose cited scenarios a self-declared bundle records consistently
   (pinned revision/archive hash, ROM hash, exact scenario kinds). The trust meaning is the same as
   `LOCAL_ONLY` in `tools/evidence_provenance.py` (#125): no attestation, never compatibility evidence. The
@@ -26,7 +26,7 @@ Status tags:
 
 Machine check: `python3 tools/cd_read_contract.py [--mode release]` (`tests/host/test_cd_read_contract.py`).
 Every line it prints carries the trust label `LOCAL_ONLY`. `python3 tools/cd_read_contract.py --compat` is the
-compatibility gate CLI; it passes no attestation to `compat_status()`, so it is always BLOCKED (exit 3).
+compatibility gate CLI; `compat_status()` is always BLOCKED for VERIFIED claims, so it always exits 3.
 It fails if the ledger is malformed, if a claim cites another emulator, or if any slot-3 field in
 [api_contracts.json](../spec/api_contracts.json) becomes VERIFIED, executed or implemented before this
 document is updated. It exits 3 with `BLOCKED` when any VERIFIED transport claim is not backed by the bundle,
@@ -62,29 +62,34 @@ by design; the CI job `make dev-cdread-integration` is what produces the bundle.
   | Level | Meaning | Where it is used | Status today |
   | --- | --- | --- | --- |
   | `LOCAL_ONLY` | Self-declared JSON. Nothing authenticates the producer, the suite source or the run. | `tools/cd_read_contract.py` output, `effective_status()` | In use. Development check for a ROM built and tested locally or in one CI job. Exit 1. |
-  | attested (#125) | GitHub artifact attestation (`actions/attest-build-provenance`) of `cdread-evidence.json` and the probe ROM, signed by `api-source.yml` at `refs/heads/main`, checked by `gh attestation verify` and `tools/evidence_provenance.py` (recomputes ROM and fixture hashes, checks scenario kinds, run correlation). | `.github/workflows/api-source.yml` jobs `attest-cdread` / `verify-cdread-attestation` (push to main); `compat_status()` (#153) | On main. Its PASS is an attested *emulator diagnostic* only (`compatibility: NOT_PROMOTED`). `compat_status()` consumes it; the CI workflow and `--compat` CLI do not call `compat_status()` with it yet. |
+  | attested (#125) | GitHub artifact attestation (`actions/attest-build-provenance`) of `cdread-evidence.json` and the probe ROM, signed by `api-source.yml` at `refs/heads/main`, checked by `gh attestation verify` and `tools/evidence_provenance.py` (recomputes ROM and fixture hashes, checks scenario kinds, run correlation). | `.github/workflows/api-source.yml` jobs `attest-cdread` / `verify-cdread-attestation` (push to main) | On main. Its PASS is an attested *emulator diagnostic* only (`compatibility: NOT_PROMOTED`). It does not raise any ledger status (#153, below). |
 
-  **Gate (#153).** `compat_status(artifact_bytes, attestation, rom_bytes=, run=, fixture=, repository=, commit=,
-  branch_rules=)` takes the raw, untrusted inputs (the artifact bytes, `gh attestation verify --format json`,
-  `gh api repos/R/actions/runs/ID/attempts/N`, the ROM bytes, the recomputed fixture hashes, the expected
-  repository and commit, and `gh api repos/R/rules/branches/main`) and calls `tools/evidence_provenance.verify()`
-  itself. It never accepts a result object from the caller, and the Geargrafx pins, the signer workflow and the
-  denylist come from this checkout. A declared VERIFIED claim becomes VERIFIED only when all of these hold;
-  otherwise it is BLOCKED:
+  **Gate (#153): no VERIFIED from caller-supplied data.** `compat_status()` returns BLOCKED for every declared
+  VERIFIED claim, whatever it is given, and takes no attestation, run record, branch rules, fixture hash,
+  repository or commit. Reason: `gh attestation verify --format json` output, a workflow run record and a
+  `rules/branches/main` listing are plain JSON once they reach a Python function. gh checks the Sigstore
+  signature, but its JSON output carries no signature this module could check, so a hand-written file with the
+  right repository, commit, ref, workflow, runner, trigger and subject digests is indistinguishable from a real
+  one (PR #154 review reproduced VERIFIED from such a file). A "trusted path" (only the `verify-cdread-attestation`
+  job's own gh output) cannot be told apart in-process either: the function cannot see which process wrote its
+  input. Rather than accept that, the gate stays closed; its meaning is LOCAL_ONLY-equivalent (not evidence).
 
-  1. #125 `verify()` returns PASS for exactly these artifact bytes (subject digest of the artifact and the ROM,
-     repository, commit, `refs/heads/main`, `api-source.yml`, GitHub-hosted runner, push or workflow_dispatch,
-     run correlation, recomputed ROM/fixture hashes, pinned Geargrafx, full scenario table). LOCAL_ONLY, FAIL,
-     BLOCKED, a non-dict result and an exception are all BLOCKED.
-  2. The main branch rules include `pull_request` and `non_fast_forward`.
-  3. The attested artifact records every cited scenario with its kind (else UNKNOWN, as for the local check).
+  `compat_reason(artifact_bytes, attestation, rom_bytes, run)` is diagnostic only. It runs the #125 verifier
+  with this checkout's values: repository `mao2009/oss-pce-cd-bios` (a fork never matches), commit = `git rev-parse
+  HEAD`, the pinned Geargrafx, the signer workflow, the denylist, and fixture hashes regenerated by
+  `tools/make_cd_image.py` (never the caller's). It returns the #125 finding, or, when #125 finds the inputs
+  consistent, `BLOCKED: attestation authenticity cannot be verified in-process ...`. It never changes a status.
 
-  T6 to T8 keep their declared HYPOTHESIS / UNKNOWN, and the callee ABI (#139, `spec/api_contracts.json` slot 3)
-  is not touched. The statuses are the existing ones; no new status was added. `integration_id` is not defined by
-  #125 or this ledger and is not an identity: the binding is the attested subject digest of the exact artifact
+  T6 to T8 keep their declared HYPOTHESIS / UNKNOWN (a `claims` list that marks them VERIFIED gets BLOCKED), and the
+  callee ABI (#139, `spec/api_contracts.json` slot 3) is not touched. No new status was added. `integration_id` is
+  not defined by #125 or this ledger and is not an identity: #125 binds by the subject digest of the exact artifact
   bytes plus the `runInvocationURI` run, so a self-declared `integration_id` field changes nothing.
-  Limits: the branch rules output is itself untrusted input and does not show ruleset bypass actors; the current
-  `pull_request` rule requires 0 approvals, so "PR required" does not mean "reviewed".
+
+  What an effective VERIFIED would need (not implemented): the result must be produced where the signature is
+  checked, for example `compat_status` running inside the `verify-cdread-attestation` job and publishing its own
+  signed attestation of the ledger result, which a consumer then verifies with gh. Branch rules would also have to
+  come from the same trusted job; the current main `pull_request` rule requires 0 approvals and bypass actors are
+  not visible, so "PR required" does not mean "reviewed".
 
   `effective_status()` (the local check) still stops at LOCAL_ONLY. Measured on the forged
   bundle of `TrustBoundaryTests` (no attestation): `tools/evidence_provenance.py` gives FAIL (exit 1) because
@@ -93,10 +98,6 @@ by design; the CI job `make dev-cdread-integration` is what produces the bundle.
   when every artifact check passes, so this ledger's LOCAL_ONLY has a looser acceptance condition; the trust
   meaning (no attestation, not compatibility evidence) is the same. `tests/host/test_cd_read_contract.py::TrustBoundaryTests` checks that a forged bundle
   with the pinned revision and ROM hash is never PASS/VERIFIED locally and stays BLOCKED for compatibility.
-* **Effective VERIFIED** (`compat_status()` only, #153): (1) the #125 verifier runs on the raw inputs instead of
-  the bare bundle; (2) ROM and fixture hashes come from that verifier's recomputation; (3) every cited scenario
-  kind in the table above matches; (4) main's `pull_request` and `non_fast_forward` rules are shown active. Even
-  then the result is emulator evidence for the transport layer, not a BIOS compatibility result.
 * **Relation to #115 and #119 (drift guard).** The scenario kinds follow the #119 result vocabulary
   (PASS / FAIL / BLOCKED). End-of-disc runs use error code 5, which #115 `tools/cd_status.py` classifies as
   PREMATURE_STATUS. The BLOCKED exit code 3 and the `LOCAL_ONLY` label match #119 `geargrafx_harness.py`

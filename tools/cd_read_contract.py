@@ -15,16 +15,17 @@ not authenticate who wrote them. A bundle written by a modified or hand-made run
 local result is LOCAL_ONLY and the CLI exits non-zero for it. The trust meaning matches LOCAL_ONLY in
 tools/evidence_provenance.py (#125: no attestation, never compatibility evidence), but the acceptance condition is
 looser: #125 also requires disc hashes, its full scenario table and primary_observations.RUN, and FAILs without them.
-compat_status() takes the raw #125 inputs and runs tools/evidence_provenance.verify() itself: only a #125 PASS for the
-exact artifact bytes, with main's PR/non-fast-forward rules shown active, makes a declared VERIFIED claim VERIFIED;
-everything else is BLOCKED. The --compat CLI passes no attestation, so it stays BLOCKED. See
-docs/cd-read-contract.md section 4.
+compat_status() keeps every declared VERIFIED claim BLOCKED, whatever it is given: gh attestation output and run
+records handed to a function are caller-supplied JSON, so their authenticity cannot be verified in-process (#153).
+compat_reason() runs tools/evidence_provenance.verify() on such inputs with this checkout's pins only to explain the
+BLOCKED. See docs/cd-read-contract.md section 4.
 """
 import argparse
 import hashlib
 import json
 from pathlib import Path
 import re
+import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -141,54 +142,39 @@ def effective_status(bundle=None, rom_sha256=None, claims=TRANSPORT_CLAIMS) -> d
     return out
 
 
-# Rules that must be active on main (gh api repos/R/rules/branches/main). #125 cannot see them in the attestation.
-MAIN_RULES = ("pull_request", "non_fast_forward")
+REPOSITORY = "mao2009/oss-pce-cd-bios"  # the only producer #125 may accept; a fork never matches
+IN_PROCESS_REASON = ("BLOCKED: attestation authenticity cannot be verified in-process. The #125 verifier found the "
+                     "supplied gh attestation output and run record consistent, but they are caller-supplied JSON "
+                     "(gh output is not a signature this function can check), so they never make a claim VERIFIED")
 
 
-def attested_problem(artifact_bytes, attestation, rom_bytes, run, fixture, repository, commit, branch_rules):
-    """Why these raw inputs cannot back VERIFIED claims, or None when #125 verify() is PASS and main is protected.
+def compat_reason(artifact_bytes=None, attestation=None, rom_bytes=None, run=None) -> str:
+    """Why the gate is BLOCKED for these inputs: a #125 finding, or IN_PROCESS_REASON when #125 finds them consistent.
 
-    Every input is untrusted. The pins and the signer workflow come from this checkout, never from the caller.
+    Diagnostic only; it never changes compat_status(). Repository, commit (git HEAD of this checkout), Geargrafx pins,
+    signer workflow, denylist and the regenerated fixture hashes come from this checkout, never from the caller.
     """
-    if not isinstance(repository, str) or not ep.REPO.fullmatch(repository):
-        return "expected repository missing or not owner/repo"
-    if not isinstance(commit, str) or not ep.HEX40.fullmatch(commit):
-        return "expected commit missing or not a 40-hex SHA"
-    rules = {_rule_type(rule) for rule in branch_rules} if isinstance(branch_rules, list) else set()
-    if not set(MAIN_RULES) <= rules:
-        return f"main branch rules {sorted(MAIN_RULES)} not shown active (gh api repos/R/rules/branches/main)"
-    if not isinstance(artifact_bytes, bytes):
-        return "evidence artifact bytes missing"
-    policy = {"repository": repository, "commit": commit, "signer_workflow": ep.SIGNER_WORKFLOW,
-              "geargrafx_revision": PINNED["revision"], "geargrafx_sha256": PINNED["sha256"],
-              "denied_sha256": load_denylist(ROOT)}
     try:
-        result = ep.verify(artifact_bytes, attestation, policy, rom_bytes, run, fixture)
+        commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True,
+                                check=True).stdout.strip()
+        policy = {"repository": REPOSITORY, "commit": commit, "signer_workflow": ep.SIGNER_WORKFLOW,
+                  "geargrafx_revision": PINNED["revision"], "geargrafx_sha256": PINNED["sha256"],
+                  "denied_sha256": load_denylist(ROOT)}
+        result = ep.verify(artifact_bytes, attestation, policy, rom_bytes, run, ep.recompute_fixture())
     except Exception as error:  # fail closed: a verifier crash is never evidence
-        return f"#125 verifier raised {type(error).__name__}"
-    if not isinstance(result, dict) or result.get("result") != ep.PASS:
-        verdict, reasons = (result.get("result"), result.get("reasons")) if isinstance(result, dict) else (result, None)
-        return f"#125 verifier result {verdict!r} is not PASS: {reasons}"
-    return None
+        return f"#125 verifier could not run: {type(error).__name__}"
+    verdict, reasons = (result.get("result"), result.get("reasons")) if isinstance(result, dict) else (result, None)
+    return IN_PROCESS_REASON if verdict == ep.PASS else f"#125 verifier result {verdict!r}: {reasons}"
 
 
-def _rule_type(rule):
-    return rule.get("type") if isinstance(rule, dict) else None
+def compat_status(bundle=None, rom_sha256=None, claims=TRANSPORT_CLAIMS) -> dict:
+    """Status for a compatibility gate. Every declared VERIFIED claim is BLOCKED, whatever the inputs.
 
-
-def compat_status(artifact_bytes=None, attestation=None, *, rom_bytes=None, run=None, fixture=None,
-                  repository=None, commit=None, branch_rules=None, claims=TRANSPORT_CLAIMS) -> dict:
-    """Status for a compatibility gate, from raw #125 inputs (see attested_problem).
-
-    A declared VERIFIED claim is VERIFIED only when the #125 verifier gives PASS for exactly these artifact bytes,
-    main is protected, and the attested artifact records every cited scenario with its kind (else UNKNOWN).
-    Otherwise it is BLOCKED; a self-declared bundle (#125 LOCAL_ONLY) never gets through. Other claims keep their
-    declared status. This is transport-layer emulator evidence only, never a BIOS compatibility result.
+    No data a caller can hand to this function (bundle, gh attestation output, run record, branch rules) proves who
+    produced it, so nothing here reaches VERIFIED (see compat_reason and docs/cd-read-contract.md section 4).
+    Claims that are not VERIFIED keep their declared status.
     """
-    if attested_problem(artifact_bytes, attestation, rom_bytes, run, fixture, repository, commit, branch_rules):
-        return {c["id"]: "BLOCKED" if c["status"] == "VERIFIED" else c["status"] for c in claims}
-    local = effective_status(json.loads(artifact_bytes), hashlib.sha256(rom_bytes).hexdigest(), claims)
-    return {k: "VERIFIED" if v == TRUST_LABEL else v for k, v in local.items()}
+    return {c["id"]: "BLOCKED" if c["status"] == "VERIFIED" else c["status"] for c in claims}
 
 
 def validate(api_contracts: dict, claims=TRANSPORT_CLAIMS) -> None:
