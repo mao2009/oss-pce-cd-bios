@@ -40,6 +40,8 @@ jobs:
           make dev-cdreset
           python3 -m unittest tests.host.test_cdreset_bus -v
           make dev-cdreset-integration
+      - name: Isolated Geargrafx trace harness (Issue #6, real core; diagnostic only)
+        run: make dev-trace-integration
       - name: Debug and release diagnostic bytes match
         run: |
           make dev-rom MODE=release

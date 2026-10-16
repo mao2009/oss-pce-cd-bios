@@ -75,3 +75,7 @@ The license text, required attribution and modification information must be incl
 6. Link accepted audit entries to [API inventory](api-inventory.md), and keep an auditable list of third-party materials shipped with the firmware.
 
 Related work: [#105](https://github.com/mao2009/oss-pce-cd-bios/issues/105), [#8](https://github.com/mao2009/oss-pce-cd-bios/issues/8), [#3](https://github.com/mao2009/oss-pce-cd-bios/issues/3).
+
+## 関連
+
+- 本監査の結果: [oss-reuse-audit-r3.md](oss-reuse-audit-r3.md)（API 別候補表・ライセンス監査・優先順位）。
