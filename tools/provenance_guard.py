@@ -11,9 +11,12 @@ content change needs a new entry. Editing the allowlist, denylist or approver li
 requires a verified maintainer approval (see pr_approval): the newest
 provenance-approved label event must come from a login listed in the PR base's
 provenance/approvers.txt, who is not the PR author and holds admin or maintain
-role on the repository. The label is never trusted on its own, and the approval
-only unlocks list edits; it never overrides rules 1-2. Editing this guard itself
-is not gated here: human review is the control for that.
+role on the repository. Deleting or renaming away a gated file counts as a change
+to it. While the base has no approver list (bootstrap), the list the PR adds is
+used instead, limited to non-author admins. An empty list at the base is closed.
+The label is never trusted on its own, and the approval only unlocks list edits;
+it never overrides rules 1-2. Editing this guard itself is not gated here: human
+review is the control for that.
 """
 import argparse
 import hashlib
@@ -83,15 +86,18 @@ def load_denylist(root):
     return digests
 
 
-def changed_paths(repo, base):
-    """Return the scan set: all tracked files without a base, else paths changed from base."""
+def changed_entries(repo, base):
+    """Return sorted (status, path) pairs: every tracked file as 'M' without a base, else changes from base.
+
+    All statuses are kept (A, M, D, T, ...). Renames are not detected (--no-renames), so a rename
+    appears as D of the old path plus A of the new one: a protected old path is gated like a deletion.
+    """
     if base is None:
-        output = git_output(repo, "ls-files", "-z")
-    else:
-        output = subprocess.run(["git", "diff", "--name-only", "-z", "--no-renames",
-                                 "--diff-filter=ACMR", base, "--"], cwd=repo, check=True,
-                                capture_output=True, text=True).stdout
-    return sorted(p for p in output.split("\0") if p)
+        return sorted(("M", p) for p in git_output(repo, "ls-files", "-z").split("\0") if p)
+    output = subprocess.run(["git", "diff", "--name-status", "-z", "--no-renames", base, "--"],
+                            cwd=repo, check=True, capture_output=True, text=True).stdout
+    fields = [field for field in output.split("\0") if field]
+    return sorted(zip(fields[0::2], fields[1::2]))
 
 
 def resolve_base(repo, event_name="local", event=None, base=None):
@@ -145,14 +151,25 @@ def scan_stream(rel, stream, allowlist, denylist):
     return problems
 
 
-def load_approvers(repo, base):
-    """Read the approver list from the PR base, never from the PR head: a PR cannot add its own approvers."""
-    if not base:
-        return set()
-    result = subprocess.run(["git", "show", f"{base}:{APPROVERS}"], cwd=repo, capture_output=True, text=True)
+def approvers_at(repo, ref):
+    """Logins listed in ref's approver file, or None when the file does not exist at ref."""
+    result = subprocess.run(["git", "show", f"{ref}:{APPROVERS}"], cwd=repo, capture_output=True, text=True)
     if result.returncode != 0:
-        return set()
+        return None
     return {line.strip() for line in result.stdout.splitlines() if line.strip() and not line.startswith("#")}
+
+
+def trusted_approvers(repo, base, author, role_of):
+    """Logins whose label may approve list edits. A PR cannot add itself to the trusted list.
+
+    With a list at the PR base, that list alone counts (an empty list stays closed). Bootstrap, only
+    while the base has no list: the list this PR adds, minus the author, limited to repository admins.
+    """
+    listed = approvers_at(repo, base)
+    if listed is not None:
+        return listed
+    proposed = approvers_at(repo, "HEAD") or set()
+    return {login for login in proposed if login != author and role_of(login) == "admin"}
 
 
 def approval_from_events(events, pr_author, approvers, role_of):
@@ -182,14 +199,21 @@ def pr_approval(event_name, event, repo, base):
     pr = (event or {}).get("pull_request", {})
     slug = os.environ.get("GITHUB_REPOSITORY", "")
     number, author = pr.get("number"), (pr.get("user") or {}).get("login", "")
-    approvers = load_approvers(repo, base)
-    if not (slug and number and author and approvers):
+    if not (slug and number and author):
+        return False
+
+    def role_of(login):
+        try:
+            return github_api(f"repos/{slug}/collaborators/{login}/permission", "--jq", ".role_name").strip()
+        except subprocess.CalledProcessError:
+            return ""  # not a collaborator: no role, so no approval
+
+    approvers = trusted_approvers(repo, base, author, role_of)
+    if not approvers:
         return False
     events = [json.loads(line) for line in
               github_api(f"repos/{slug}/issues/{number}/events", "--paginate", "--jq", ".[]").splitlines() if line]
-    return approval_from_events(
-        events, author, approvers,
-        lambda login: github_api(f"repos/{slug}/collaborators/{login}/permission", "--jq", ".role_name").strip())
+    return approval_from_events(events, author, approvers, role_of)
 
 
 def check_repo(repo, base=None, approve=lambda: False):
@@ -199,12 +223,15 @@ def check_repo(repo, base=None, approve=lambda: False):
     """
     allowlist = load_allowlist(repo)
     denylist = load_denylist(repo)
-    paths = changed_paths(repo, base)
+    entries = changed_entries(repo, base)
+    paths = sorted({rel for _, rel in entries})
     gated = sorted(p for p in paths if p in GATED)
     failures = []
     if gated and not approve():
         failures.append(f"gated files changed without maintainer approval ({APPROVAL_LABEL} label from a trusted maintainer): {', '.join(gated)}")
-    for rel in paths:
+    for status, rel in entries:
+        if status == "D":  # deleted: never opened; a protected path is already gated above
+            continue
         file = repo / rel
         if not file.is_file():
             continue

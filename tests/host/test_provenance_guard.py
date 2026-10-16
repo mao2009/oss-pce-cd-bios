@@ -3,6 +3,8 @@
 All prohibited samples are generated in memory from short markers; no real firmware, disc or ROM data.
 """
 import hashlib
+import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -53,6 +55,9 @@ class ProvenanceGuardTests(unittest.TestCase):
         path = self.repo / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
+
+    def rebase_here(self):
+        self.base = self.git('rev-parse', 'HEAD')
 
     def check(self, granted=False):
         return check_repo(self.repo, self.base, approve=lambda: granted)
@@ -212,12 +217,149 @@ class ProvenanceGuardTests(unittest.TestCase):
     def test_approver_list_is_read_from_base_not_head(self):
         self.write(guard.APPROVERS, b'# trusted maintainers\nmaintainer\n')
         self.commit()
-        trusted_base = self.git('rev-parse', 'HEAD')
+        self.rebase_here()
         self.write(guard.APPROVERS, b'maintainer\nattacker\n')  # PR head edits the list
         self.commit()
-        self.assertEqual(guard.load_approvers(self.repo, trusted_base), {'maintainer'})
-        self.assertEqual(guard.load_approvers(self.repo, self.base), set())  # no file at base: closed
+        self.assertEqual(guard.trusted_approvers(self.repo, self.base, 'author', lambda login: 'admin'), {'maintainer'})
+        self.assertEqual(guard.approvers_at(self.repo, self.base), {'maintainer'})
+        self.assertIsNone(guard.approvers_at(self.repo, 'HEAD~2'))  # setUp commit: no list yet
 
+    def test_empty_approver_list_at_base_is_closed_not_bootstrapped(self):
+        self.write(guard.APPROVERS, b'# no approvers yet\n')
+        self.commit()
+        self.rebase_here()
+        self.write(guard.APPROVERS, b'attacker\n')  # PR tries to refill an empty base list
+        self.commit()
+        self.assertEqual(guard.trusted_approvers(self.repo, self.base, 'author', lambda login: 'admin'), set())
+
+    # Bootstrap: base has no approver list yet, so only a list this PR creates can be trusted.
+    def test_bootstrap_trusts_only_non_author_admins_listed_in_the_pr(self):
+        self.write(guard.APPROVERS, b'author\nadmin1\nwriter1\n')
+        self.commit()
+        roles = {'author': 'admin', 'admin1': 'admin', 'writer1': 'write'}
+        trusted = guard.trusted_approvers(self.repo, self.base, 'author', lambda login: roles.get(login, 'read'))
+        self.assertEqual(trusted, {'admin1'})  # author cannot add itself; write role is not enough
+
+    def test_bootstrap_without_list_in_pr_is_closed(self):
+        self.write('fixtures/new.s', b'; new\n')
+        self.commit()
+        self.assertEqual(guard.trusted_approvers(self.repo, self.base, 'author', lambda login: 'admin'), set())
+
+    # Deletions and renames of gated files are gated, and deleted files are never opened.
+    def test_deleting_denylist_requires_approval(self):
+        self.write(guard.DENYLIST, f'{"b" * 64}\n'.encode())
+        self.commit()
+        self.rebase_here()
+        self.git('rm', '-q', guard.DENYLIST)
+        self.commit()
+        self.assertRejected('gated files changed without maintainer approval', granted=False)
+        self.assertEqual(self.check(granted=True), 1)
+
+    def test_deleting_allowlist_requires_approval(self):
+        self.write(guard.ALLOWLIST, f'{"c" * 64}\tfixtures/original.s\n'.encode())
+        self.commit()
+        self.rebase_here()
+        self.git('rm', '-q', guard.ALLOWLIST)
+        self.commit()
+        self.assertRejected('gated files changed without maintainer approval')
+
+    def test_deleting_approver_list_requires_base_approver(self):
+        self.write(guard.APPROVERS, b'maintainer\n')
+        self.commit()
+        self.rebase_here()
+        self.git('rm', '-q', guard.APPROVERS)
+        self.commit()
+        self.assertRejected('gated files changed without maintainer approval')
+        self.assertEqual(self.check(granted=True), 1)
+
+    def test_rename_away_from_protected_path_requires_approval(self):
+        self.write(guard.DENYLIST, f'{"d" * 64}\n'.encode())
+        self.commit()
+        self.rebase_here()
+        self.git('mv', guard.DENYLIST, 'provenance/moved.txt')
+        self.commit()
+        self.assertRejected('provenance/denylist.sha256', granted=False)
+        self.assertEqual(self.check(granted=True), 2)  # old path (D) and new path (A)
+
+    def test_rename_into_protected_path_requires_approval(self):
+        self.write('fixtures/notes.tsv', f'{"e" * 64}\tfixtures/original.s\n'.encode())
+        self.write('provenance/.keep', b'')
+        self.commit()
+        self.rebase_here()
+        self.git('mv', 'fixtures/notes.tsv', guard.ALLOWLIST)
+        self.commit()
+        self.assertRejected('gated files changed without maintainer approval')
+
+    def test_deleted_prohibited_file_passes_without_being_opened(self):
+        self.write('fixtures/disc.cue', b'synthetic\n')
+        self.commit()
+        self.rebase_here()
+        self.git('rm', '-q', 'fixtures/disc.cue')
+        self.commit()
+        self.assertEqual(self.check(), 1)  # removal is allowed; the missing file is not read
+
+    def test_changed_entries_report_each_status(self):
+        self.write('fixtures/a.s', b'; a\n')
+        self.write('fixtures/b.s', b'; b\n')
+        self.commit()
+        self.rebase_here()
+        self.write('fixtures/a.s', b'; a changed\n')
+        self.git('rm', '-q', 'fixtures/b.s')
+        self.git('mv', 'fixtures/original.s', 'fixtures/renamed.s')
+        self.commit()
+        entries = sorted(guard.changed_entries(self.repo, self.base))
+        self.assertEqual(entries, [('A', 'fixtures/renamed.s'), ('D', 'fixtures/b.s'),
+                                   ('D', 'fixtures/original.s'), ('M', 'fixtures/a.s')])
+
+    # PR approval end to end, with GitHub API answers faked.
+    def github(self, events, roles):
+        def fake(*arguments):
+            if arguments[0].endswith('/events'):
+                return '\n'.join(json.dumps(event) for event in events)
+            login = arguments[0].rsplit('/', 2)[-2]
+            return f'{roles.get(login, "none")}\n'
+        return mock.patch.dict(os.environ, {'GITHUB_REPOSITORY': 'owner/repo'}), \
+            mock.patch.object(guard, 'github_api', side_effect=fake)
+
+    def test_pr_approval_bootstrap_flow(self):
+        self.write(guard.APPROVERS, b'admin1\n')  # the PR creates the first list
+        self.commit()
+        roles = {'author': 'admin', 'admin1': 'admin'}
+        event = {'pull_request': {'number': 7, 'user': {'login': 'author'}}}
+        cases = [
+            ([label_event('labeled', 'admin1')], True),   # listed non-author admin labels
+            ([label_event('labeled', 'author')], False),  # author self-approval
+        ]
+        for events, expected in cases:
+            env, api = self.github(events, roles)
+            with self.subTest(events=events), env, api:
+                self.assertEqual(guard.pr_approval('pull_request', event, self.repo, self.base), expected)
+
+    def test_pr_approval_author_cannot_list_self_for_bootstrap(self):
+        self.write(guard.APPROVERS, b'author\n')  # only the author is listed
+        self.commit()
+        roles = {'author': 'admin'}
+        event = {'pull_request': {'number': 8, 'user': {'login': 'author'}}}
+        env, api = self.github([label_event('labeled', 'author')], roles)
+        with env, api:
+            self.assertFalse(guard.pr_approval('pull_request', event, self.repo, self.base))
+
+    def test_pr_approval_after_bootstrap_uses_base_list_only(self):
+        self.write(guard.APPROVERS, b'admin1\n')
+        self.commit()
+        self.rebase_here()  # base now carries the trusted list
+        self.write(guard.APPROVERS, b'admin1\nattacker\n')  # PR tries to add a new approver
+        self.commit()
+        roles = {'author': 'admin', 'admin1': 'admin', 'attacker': 'admin'}
+        event = {'pull_request': {'number': 9, 'user': {'login': 'author'}}}
+        env, api = self.github([label_event('labeled', 'attacker')], roles)
+        with env, api:
+            self.assertFalse(guard.pr_approval('pull_request', event, self.repo, self.base))
+
+    def test_pr_approval_without_repository_slug_fails_closed(self):
+        event = {'pull_request': {'number': 10, 'user': {'login': 'author'}}}
+        with mock.patch.dict(os.environ, {'GITHUB_REPOSITORY': ''}):
+            self.assertFalse(guard.pr_approval('pull_request', event, self.repo, self.base))
 
 if __name__ == '__main__':
     unittest.main()
