@@ -141,13 +141,16 @@ All OSS firmware reuse candidates remain PENDING under [the reuse policy](proven
 | Other MPR reset defaults, real hardware bank behavior | UNVERIFIED; core randomization is not hardware proof |
 | IRQ/NMI semantics, stack, RAM/zero page allocation | UNVERIFIED; diagnostic does not initialize/use a caller stack |
 | Register preservation/destruction, arguments, returns, PSG selectors | UNVERIFIED; X is a development diagnostic marker only |
-| CD sector reading, disc handoff, retail compatibility | NOT_IMPLEMENTED / NOT_TESTED |
+| Guest synthetic-CD READ(6) | Measured in separate low-level diagnostic; not a BIOS callee |
+| BIOS `CD_READ`, disc boot/handoff, retail compatibility | NOT_IMPLEMENTED / NOT_TESTED |
 | Production System Card validity | BLOCKED pending #1/#3/#4/#6/#8 |
 
 CI has an independent BIOS DEV workflow and artifact, preserving the HuCARD
 workflow/result. Nightly keeps its original smoke-only baseline schema and success
 criteria; BIOS DEV is intentionally not added to Nightly yet.
 
-Next: resolve ROM/ABI contracts in #1/#3, then implement #4 startup and individual
-API Issues after licensing approval. #100 remains open for those unresolved gates;
-#6/#103 retain full MCP/traces/CD work. No redundant Issue is created.
+Next: use already implemented startup and guest CD diagnostics as **scoped
+evidence**, not working BIOS services. Resolve #1/#3 ROM/caller ABI before
+implementing production #4 startup and callable CD services. The RAM payload
+experiment (#122) is merged as a diagnostic; it is not a CD boot (2026-10-16).
+#100 retains release gates; #6/#103 retain trace/MCP work.

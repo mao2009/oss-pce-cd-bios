@@ -43,7 +43,8 @@ PROBE_EXIT = {2: ("FAIL", "probe rejected arguments or input file"),
               3: ("FAIL", "core rejected the ROM (LoadBiosFromBuffer)"),
               4: ("FAIL", "core rejected the CUE/disc (LoadMedia)"),
               5: ("FAIL", "ROM entry is not the probe contract SEI"),
-              6: ("BLOCKED", "instruction-step debugger capability missing")}
+              6: ("BLOCKED", "instruction-step debugger capability missing"),
+              7: ("BLOCKED", "core did not enable CD hardware for the no-media run")}
 KINDS = {  # probe source, argv after the probe given (rom, cue, labels, steps)
     "cdread": ("geargrafx_cdread_probe.cpp", lambda r, c, l, s: [r, c, l, str(s)]),
     "api": ("geargrafx_api_probe.cpp", lambda r, c, l, s: [r, c, str(s), l]),

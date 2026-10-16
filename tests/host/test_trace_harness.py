@@ -141,6 +141,7 @@ class ClassifyTests(unittest.TestCase):
         block = 'BLOCK {"reason":"no media"}\n' + CAP
         self.assertEqual(harness.classify(finished(block), "x")[:2], ("BLOCKED", "no media"))
         self.assertEqual(harness.classify(finished("", 6), "x")[0], "BLOCKED")
+        self.assertEqual(harness.classify(finished("\n".join(GOOD), 7), "cd_halt_ok")[0], "BLOCKED")
         for code in (2, 3, 4, 5, 1, -9, 139):
             self.assertEqual(harness.classify(finished("\n".join(GOOD), code), "cd_halt_ok")[0], "FAIL", code)
 

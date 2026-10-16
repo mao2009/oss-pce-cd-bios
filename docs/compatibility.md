@@ -1,6 +1,6 @@
 # Compatibility and reproducible evidence
 
-**No retail CD game has been tested with an oss-pce-cd-bios image.** There is no bootable image at project bootstrap.
+**No retail CD game has been tested with an oss-pce-cd-bios image.** Main has loadable **development-only** System Card diagnostics and actual Geargrafx startup/synthetic-CD sector observations, but **not a bootable compatible BIOS**. See [status](status.md).
 
 ## Evidence stages
 
@@ -17,7 +17,7 @@
 | SAVE-TESTED | Persist/reload scenario passed |
 | COMPLETION-TESTED | Defined full-game finish path reached |
 
-Never promote automatically between stages.
+Never promote automatically between stages. The main-branch HuCARD smoke, 81-slot diagnostic, isolated startup and guest READ(6) are **diagnostic-only evidence**. The CD→RAM program execution (#122) and the evidence schema (#116) are merged on main (`c20ac06`, 2026-10-16) as diagnostics; neither is System Card disc boot or a compatibility verdict.
 
 ## Evidence record
 
@@ -31,7 +31,7 @@ Never promote automatically between stages.
 - Expected checkpoint and observed checkpoint; PASS/FAIL/SKIP/BLOCKED
 - Exit/timeout/error status, sanitized evidence bundle, reviewer and open uncertainties
 
-A mock runner cannot validate the real emulator. If the test fixture is missing, status is BLOCKED/SKIP, never PASS. Don't commit proprietary BIOS ROMs, commercial CD images, game assets or raw disassembly.
+A mock runner cannot validate the real emulator. If the test fixture is missing, status is BLOCKED/SKIP, never PASS. CD-read success requires 64 consecutive confirmed guest success-halt instructions plus correct RAM and SCSI phase evidence. Existing JSON contains hashes and observations, **not signed/attested CI evidence** (see #124). Don't commit proprietary BIOS ROMs, commercial CD images, game assets or raw disassembly.
 
 ## Test types
 
