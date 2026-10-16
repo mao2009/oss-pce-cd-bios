@@ -20,9 +20,9 @@ class CddaModel:
     States are HOST-MODEL states, not values read from the core. ENDED in particular is
     our expectation; the core's CdRomAudio state values are not claimed to match it.
 
-    Divergence kept on purpose: stop() clears the position here, while the SCSI-level Audio
-    Stop (0xD9 mode 0) keeps it in the core observation of #135 (not merged yet). This model
-    describes the unknown CD_PLAY/CD_STOP ABI, so the two are not forced into agreement.
+    stop() keeps the position. This matches the core observation of #135 for $DA then $D9 mode 0
+    (tools/cdda_verify.py check_pause_stop). Only the PAUSED -> stop case was measured; stop from
+    PLAYING and the restart point after stop are model expectations, not measurements.
 
     Track-end behaviour is only modelled for the final track of the disc. For a non-final
     audio track the end behaviour (stop, loop, next track) is UNKNOWN, so tick() refuses to
@@ -72,7 +72,7 @@ class CddaModel:
         self.state = "PLAYING"
 
     def stop(self):
-        self.state, self.pos, self.track = "STOPPED", None, None
+        self.state = "STOPPED"  # position is kept; see class docstring
 
 
 class CddaStateModelTests(unittest.TestCase):
@@ -178,11 +178,11 @@ class CddaStateModelTests(unittest.TestCase):
         self.model.play(2)
         self.model.tick(4)
         self.model.stop()
-        self.assertEqual((self.model.state, self.model.pos), ("STOPPED", None))
+        self.assertEqual((self.model.state, self.model.pos), ("STOPPED", self.audio_start + 4))
         with self.assertRaises(ValueError):
-            self.model.resume()  # no position to resume from
+            self.model.resume()  # resume is only from PAUSED
         self.model.play(2)
-        self.assertEqual(self.model.pos, self.audio_start)
+        self.assertEqual(self.model.pos, self.audio_start)  # restart point: model expectation, unmeasured
 
     def test_ended_cannot_resume_but_can_replay(self):
         self.model.play(2)
@@ -207,12 +207,13 @@ class CddaStateModelTests(unittest.TestCase):
             model.tick(1)  # would reach track 3 start (24)
         self.assertEqual((model.state, model.pos), ("PLAYING", 23))
 
-    def test_model_stop_clears_position_by_design_not_core_observation(self):
-        # Divergence documented in CddaModel: the model's STOPPED has no position.
+    def test_stop_after_pause_keeps_position_as_measured_in_135(self):
+        # Measured by tools/cdda_verify.py check_pause_stop ($DA, then $D9 mode 0).
         self.model.play(2)
         self.model.tick(2)
+        self.model.pause()
         self.model.stop()
-        self.assertIsNone(self.model.pos)
+        self.assertEqual((self.model.state, self.model.pos), ("STOPPED", self.audio_start + 2))
 
     def test_disc_without_audio_has_nothing_playable(self):
         with tempfile.TemporaryDirectory() as tmp:
