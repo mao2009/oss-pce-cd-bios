@@ -5,16 +5,37 @@ image or disassembly. A third-party name, caller wrapper or HLE model is never p
 
 Status tags:
 
-* **VERIFIED**: executed by original guest code on the pinned real Geargrafx core
-  (`b49ae82a012eade566d72e9d61c9d95a5caa4da3`, `make dev-cdread-integration`), with the named scenario
-  in `tests/integration/geargrafx_cdread.py`. This is emulator evidence only; real hardware stays UNKNOWN.
+* **VERIFIED**: the claim names scenarios that original guest code executed on the pinned real Geargrafx core
+  (`b49ae82a012eade566d72e9d61c9d95a5caa4da3`). This tag is a claim; it counts only as an *effective*
+  status after the evidence rule in section 4. This is emulator evidence only; real hardware stays UNKNOWN.
 * **HYPOTHESIS**: a pinned caller/HLE source shows an expectation; the System Card 3.0 callee was never executed.
-* **UNKNOWN**: no admissible evidence.
+* **UNKNOWN**: no admissible evidence. A VERIFIED claim whose cited scenarios are missing or not PASS is
+  downgraded to UNKNOWN.
+* **BLOCKED**: a VERIFIED claim that cannot be checked because no valid evidence bundle exists (no
+  `build/<mode>/cdread-probe/cdread-evidence.json`, a different ROM, or a non-pinned Geargrafx). BLOCKED is not PASS.
 
-Machine check: `python3 tools/cd_read_contract.py` (`tests/host/test_cd_read_contract.py`). It fails if a
-transport claim is VERIFIED without real-core scenarios in the suite, or if any slot-3 field in
+Machine check: `python3 tools/cd_read_contract.py [--mode release]` (`tests/host/test_cd_read_contract.py`).
+It fails if the ledger is malformed, if a claim cites another emulator, or if any slot-3 field in
 [api_contracts.json](../spec/api_contracts.json) becomes VERIFIED, executed or implemented before this
-document is updated.
+document is updated. It exits 3 with `BLOCKED:` when any VERIFIED transport claim is not backed by the bundle.
+The host unit tests run without a bundle, so they pass locally and report the transport claims as BLOCKED
+by design; the CI job `make dev-cdread-integration` is what produces the bundle.
+
+## 4. Evidence rule and limits
+
+* The integration run writes `cdread-evidence.json` only after every scenario passed. Scenario keys are
+  created only by executed runs, so a name in source text, a comment or an unexecuted branch is never evidence.
+* The checker accepts the bundle only if `status` is `PASS`, `geargrafx_revision` and
+  `source_archive_sha256` match `tools/dependencies.json`, and `rom_sha256` is the SHA-256 of the ROM on disk.
+  Each cited scenario must be `PASS` or `PASS_EXPECTED_FAILURE` in `tests`.
+* Regex limits: `tools/cd_read_contract.real_core_requests` parses the integration source with regular
+  expressions to rebuild the expected LBA/count model. It is a drift guard, not evidence. The host test
+  fails if a `suite.positive(` or end-of-disc `suite.failing_guest(` call is not matched, but a call written
+  in an unusual form (for example split over lines before the match or with computed arguments) can still
+  escape the model. The bundle does not yet record LBA/count for end-of-disc runs, so their model rows are
+  not cross-checked against a run.
+* Not verified by any of this: real hardware, a second emulator, the System Card 3.0 callee ABI (`$E009`),
+  interrupt-driven transfer, no-disc behaviour.
 
 ## 1. Callee ABI (System Card 3.0 service). No VERIFIED item
 

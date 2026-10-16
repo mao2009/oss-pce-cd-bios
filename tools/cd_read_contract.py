@@ -1,23 +1,30 @@
 """CD_READ ($03) contract ledger check + transport-layer outcome model (Issue #12).
 
-Only the *transport* layer (guest-driven SCSI READ(6) through $1800-$1804) is VERIFIED,
-and only in pinned Geargrafx by tests/integration/geargrafx_cdread.py. The System Card
-3.0 *callee* ABI (spec/api_contracts.json slot 3) has no executed-callee evidence and
-stays HYPOTHESIS/UNKNOWN; this module refuses to let either side be silently promoted.
+Only the *transport* layer (guest-driven SCSI READ(6) through $1800-$1804) can be VERIFIED, and only by
+a real Geargrafx run of tests/integration/geargrafx_cdread.py. That run writes
+build/<mode>/cdread-probe/cdread-evidence.json; this module accepts it only if it is PASS, was produced by
+the pinned Geargrafx archive, belongs to the ROM on disk, and records every cited scenario as PASS.
+Source text that merely mentions a scenario is never evidence. Without such a bundle VERIFIED claims are
+reported BLOCKED; a bundle that lacks a cited scenario makes them UNKNOWN. The System Card 3.0 *callee*
+ABI (spec/api_contracts.json slot 3) stays HYPOTHESIS/UNKNOWN.
 """
+import argparse
+import hashlib
 import json
 from pathlib import Path
 import re
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 INTEGRATION = ROOT / "tests/integration/geargrafx_cdread.py"
-GEARGRAFX = "geargrafx@b49ae82a012eade566d72e9d61c9d95a5caa4da3"
+PINNED = json.loads((ROOT / "tools/dependencies.json").read_text(encoding="utf-8"))["geargrafx"]
+GEARGRAFX = f"geargrafx@{PINNED['revision']}"
 SECTOR_BYTES = 2048
 LBA_LIMIT = 1 << 21          # READ(6) LBA field: byte1 bits 0-4, byte2, byte3
 VERIFIED_COUNTS = range(1, 4)  # only counts 1..3 were executed on the real core
 STATUSES = {"VERIFIED", "HYPOTHESIS", "UNKNOWN"}
 
-# Transport claims. VERIFIED requires real-core scenarios that exist in INTEGRATION.
+# Transport claims. VERIFIED is effective only with a matching PASS evidence bundle (see effective_status).
 TRANSPORT_CLAIMS = [
     {"id": "T1", "status": "VERIFIED", "evidence": GEARGRAFX,
      "claim": "READ(6) LBA n on the fixture (one MODE1/2352 track, INDEX 01 00:00:00) delivers BIN sector n user data (2048 bytes)",
@@ -59,17 +66,48 @@ def transport_outcome(disc_sectors: int, lba: int, count: int) -> tuple:
     return delivered, delivered < count
 
 
-def validate(api_contracts: dict, integration_text: str, claims=TRANSPORT_CLAIMS) -> None:
-    """Raise ValueError if a claim is promoted without evidence or the callee ABI got VERIFIED."""
+def provenance_problem(bundle, rom_sha256):
+    """Why the bundle cannot back VERIFIED claims, or None when it can."""
+    if bundle is None:
+        return "no real-core evidence bundle (run make dev-cdread-integration)"
+    if bundle.get("status") != "PASS":
+        return "evidence bundle status is not PASS"
+    if bundle.get("geargrafx_revision") != PINNED["revision"] or bundle.get("source_archive_sha256") != PINNED["sha256"]:
+        return "evidence bundle was not produced by the pinned Geargrafx"
+    if rom_sha256 is None or bundle.get("rom_sha256") != rom_sha256:
+        return "evidence bundle does not match the ROM on disk"
+    if not isinstance(bundle.get("tests"), dict):
+        return "evidence bundle has no tests"
+    return None
+
+
+def effective_status(bundle=None, rom_sha256=None, claims=TRANSPORT_CLAIMS) -> dict:
+    """Status per claim id after evidence.
+
+    VERIFIED only when a valid bundle records every cited scenario as PASS; BLOCKED when there is no
+    usable bundle; UNKNOWN when a valid bundle does not cover the cited scenarios.
+    """
+    problem = provenance_problem(bundle, rom_sha256)
+    out = {}
+    for claim in claims:
+        if claim["status"] != "VERIFIED":
+            out[claim["id"]] = claim["status"]
+        elif problem:
+            out[claim["id"]] = "BLOCKED"
+        else:
+            tests = bundle["tests"]
+            covered = all(str(tests.get(s, {}).get("status", "")).startswith("PASS") for s in claim["scenarios"])
+            out[claim["id"]] = "VERIFIED" if covered else "UNKNOWN"
+    return out
+
+
+def validate(api_contracts: dict, claims=TRANSPORT_CLAIMS) -> None:
+    """Raise ValueError on malformed claims, a VERIFIED claim outside the pinned emulator, or a callee ABI promotion."""
     for claim in claims:
         if claim["status"] not in STATUSES or not claim.get("evidence") or not claim.get("claim"):
             raise ValueError(f"{claim.get('id')}: status/evidence/claim required")
-        if claim["status"] == "VERIFIED":
-            if claim["evidence"] != GEARGRAFX or not claim["scenarios"]:
-                raise ValueError(f"{claim['id']}: VERIFIED needs pinned real-core scenarios")
-            missing = [s for s in claim["scenarios"] if f'"{s}"' not in integration_text]
-            if missing:
-                raise ValueError(f"{claim['id']}: scenarios not in the real-core suite: {missing}")
+        if claim["status"] == "VERIFIED" and (claim["evidence"] != GEARGRAFX or not claim["scenarios"]):
+            raise ValueError(f"{claim['id']}: VERIFIED needs the pinned Geargrafx and cited real-core scenarios")
     api = api_contracts["apis"][3]
     if api["candidate_name"] != "CD_READ" or api["candidate_entry"] != "0xE009":
         raise ValueError("slot 3 is not the CD_READ candidate")
@@ -91,11 +129,26 @@ def real_core_requests(integration_text: str) -> list:
     return rows
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--mode", choices=("debug", "release"), default="debug")
+    mode = parser.parse_args(argv).mode
     api = json.loads((ROOT / "spec/api_contracts.json").read_text(encoding="utf-8"))
-    validate(api, INTEGRATION.read_text(encoding="utf-8"))
-    counts = {s: sum(c["status"] == s for c in TRANSPORT_CLAIMS) for s in sorted(STATUSES)}
-    print(f"PASS CD_READ contract ledger: transport {counts}; callee ABI not VERIFIED (CD_READ NOT_IMPLEMENTED)")
+    validate(api)
+    out = ROOT / "build" / mode / "cdread-probe"
+    rom = out / "cdread-probe-not-bios.pce"
+    evidence = out / "cdread-evidence.json"
+    bundle = json.loads(evidence.read_text(encoding="utf-8")) if evidence.exists() else None
+    rom_sha = hashlib.sha256(rom.read_bytes()).hexdigest() if rom.exists() else None
+    status = effective_status(bundle, rom_sha)
+    declared = {c["id"]: c["status"] for c in TRANSPORT_CLAIMS}
+    downgraded = {k: v for k, v in status.items() if v != declared[k]}
+    if downgraded:
+        reason = provenance_problem(bundle, rom_sha) or "evidence bundle does not cover the cited scenarios"
+        print(f"BLOCKED CD_READ contract ledger: downgraded {downgraded}; reason: {reason}")
+        sys.exit(3)
+    print(f"PASS CD_READ contract ledger: transport {sorted(status.items())} backed by {evidence}; "
+          "callee ABI not VERIFIED (CD_READ NOT_IMPLEMENTED)")
 
 
 if __name__ == "__main__":
