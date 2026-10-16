@@ -102,6 +102,24 @@ System Card loader/reset/slot diagnostics. Neither mode produces compatible
 firmware. `make dev-release-gate` must fail while API/ABI/boot approval is absent.
 See [diagnostic contracts](api-stub-scaffold.md).
 
+## Standalone startup and CD-read diagnostics
+
+After `make setup`, these commands build prerequisite DEV ROMs automatically:
+
+```sh
+make dev-startup-integration  # real-core reset/MPR/stack marker
+make dev-cdread-integration   # real-core guest READ(6)→RAM, synthetic CUE/BIN
+make dev-cdread MODE=release
+cmp build/debug/cdread-probe/cdread-probe-not-bios.pce build/release/cdread-probe/cdread-probe-not-bios.pce
+make dev-release-gate-blocked # must refuse incomplete firmware
+```
+
+The CD diagnostic writes `build/<mode>/cdread-probe/cdread-evidence.json`
+with RAM/phase/halt evidence. This is **not** BIOS `CD_READ`, nor disc boot.
+The CD→RAM payload experiment is Draft PR #122, not main as of 2026-10-16.
+`make test` covers host/HuCARD; the separate BIOS DEV CI covers these.
+[Status](status.md).
+
 ## Instruction debugger and contract probes
 
 `make setup` additionally builds a separate debugger-enabled Geargrafx tree
