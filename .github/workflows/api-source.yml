@@ -11,10 +11,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
-      contents: read
-      id-token: write       # attestation signing (not on pull_request, see below)
-      attestations: write
-      actions: read         # gh api .../actions/runs/ID/attempts/N (runInvocationURI correlation)
+      contents: read        # builds and runs repository code: never gets signing permissions
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -40,28 +37,6 @@ jobs:
           make dev-cdread
           python3 -m unittest tests.host.test_cdimage tests.host.test_cdread -v
           make dev-cdread-integration
-      - name: Attest CD-read evidence (this workflow signs it; not on pull_request, so PR heads cannot sign)
-        if: github.event_name != 'pull_request'
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-path: |
-            build/debug/cdread-probe/cdread-evidence.json
-            build/debug/cdread-probe/cdread-probe-not-bios.pce
-      - name: Verify CD-read attestation against main (gh + tools/evidence_provenance.py)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh attestation verify build/debug/cdread-probe/cdread-evidence.json \
-            --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/api-source.yml" \
-            --source-ref refs/heads/main --source-digest "$GITHUB_SHA" --deny-self-hosted-runners \
-            --format json > "$RUNNER_TEMP/attestation-verify.json"
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" \
-            > "$RUNNER_TEMP/workflow-run.json"
-          python3 tools/evidence_provenance.py build/debug/cdread-probe/cdread-evidence.json \
-            --repo "$GITHUB_REPOSITORY" --commit "$(git rev-parse HEAD)" \
-            --attestation "$RUNNER_TEMP/attestation-verify.json" --run "$RUNNER_TEMP/workflow-run.json" \
-            --rom build/debug/cdread-probe/cdread-probe-not-bios.pce
       - name: Independent CD sector load-and-execute by guest HuC6280 (diagnostic, not BIOS / not CD_READ)
         run: |
           make dev-cdload-exec
@@ -127,3 +102,59 @@ jobs:
             build/debug/cdreset-probe/*.lbl
           if-no-files-found: error
           retention-days: 14
+  attest-cdread:
+    # Only this job can sign, and it runs no repository code: it downloads the bios-dev artifact and attests it.
+    # The job is skipped for pull_request events, so a PR (same-repo or fork) never receives id-token/attestations.
+    # A PR could edit this file, but its attestation would carry refs/pull/N/merge and a pull_request trigger,
+    # which tools/evidence_provenance.py rejects; only main is trusted.
+    needs: bios-dev
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: bios-dev-not-compatible-${{ github.sha }}
+          path: evidence
+      - name: Attest CD-read evidence and probe ROM
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            evidence/cdread-probe/cdread-evidence.json
+            evidence/cdread-probe/cdread-probe-not-bios.pce
+  verify-cdread-attestation:
+    # Push to main only. workflow_dispatch on main is signed but not verified here (verify it with the same commands).
+    needs: attest-cdread
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read         # gh api .../actions/runs/ID/attempts/N (runInvocationURI correlation)
+      attestations: read    # gh attestation verify
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: bios-dev-not-compatible-${{ github.sha }}
+          path: ${{ runner.temp }}/evidence
+      - name: Verify CD-read attestation against main (gh + tools/evidence_provenance.py)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          evidence="$RUNNER_TEMP/evidence/cdread-probe"
+          gh attestation verify "$evidence/cdread-evidence.json" \
+            --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/api-source.yml" \
+            --source-ref refs/heads/main --source-digest "$GITHUB_SHA" --deny-self-hosted-runners \
+            --format json > "$RUNNER_TEMP/attestation-verify.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" \
+            > "$RUNNER_TEMP/workflow-run.json"
+          python3 tools/evidence_provenance.py "$evidence/cdread-evidence.json" \
+            --repo "$GITHUB_REPOSITORY" --commit "$(git rev-parse HEAD)" \
+            --attestation "$RUNNER_TEMP/attestation-verify.json" --run "$RUNNER_TEMP/workflow-run.json" \
+            --rom "$evidence/cdread-probe-not-bios.pce"

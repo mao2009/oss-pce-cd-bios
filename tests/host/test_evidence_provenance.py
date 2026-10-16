@@ -306,7 +306,8 @@ class EvidenceProvenanceTests(unittest.TestCase):
             (tmp / 'deps.json').write_text(json.dumps({'geargrafx': {'revision': GEARGRAFX_REV,
                                                                      'sha256': GEARGRAFX_SHA}}))
             (tmp / 'verify.json').write_text('not json')
-            base = ['x', str(tmp / 'a.json'), '--repo', REPO, '--commit', COMMIT, '--deps', str(tmp / 'deps.json')]
+            base = ['x', str(tmp / 'a.json'), '--repo', REPO, '--commit', COMMIT, '--deps', str(tmp / 'deps.json'),
+                    '--root', str(tmp)]
             fixture = mock.patch.object(ep, 'recompute_fixture', return_value=FIXTURE)
             with fixture, mock.patch('builtins.print') as printed:
                 self.assertEqual(ep.main(base), 1)
@@ -320,6 +321,13 @@ class EvidenceProvenanceTests(unittest.TestCase):
                 self.assertIn('BLOCKED', printed.call_args[0][0])
                 (tmp / 'run.json').write_text(json.dumps(make_run()))
                 self.assertEqual(ep.main(full + ['--run', str(tmp / 'run.json')]), 0)
+                # the repository denylist (provenance/denylist.sha256, #117 format) is enforced by the CLI too
+                (tmp / 'provenance').mkdir()
+                for denied in (FIXTURE['bin_sha256'], sha(ROM).upper(), FIXTURE['cue_sha256']):
+                    (tmp / 'provenance' / 'denylist.sha256').write_text(f'# comment\n{denied}  some-title.bin\n')
+                    self.assertEqual(ep.main(full + ['--run', str(tmp / 'run.json')]), 1)
+                    self.assertIn('denylist', printed.call_args[0][0])
+                (tmp / 'provenance' / 'denylist.sha256').unlink()
                 missing_rom = base + ['--attestation', str(tmp / 'att.json'), '--rom', str(tmp / 'nope'),
                                       '--run', str(tmp / 'run.json')]
                 self.assertEqual(ep.main(missing_rom), 1)

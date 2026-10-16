@@ -38,6 +38,10 @@ import sys
 import tempfile
 from pathlib import Path
 
+from provenance_guard import load_denylist  # same denylist file and parser as the provenance guard (#117)
+
+ROOT = Path(__file__).resolve().parents[1]
+
 PASS, FAIL, BLOCKED, LOCAL_ONLY = 'PASS', 'FAIL', 'BLOCKED', 'LOCAL_ONLY'
 TRUSTED_TRIGGERS = ('push', 'workflow_dispatch')
 TRUSTED_REF = 'refs/heads/main'
@@ -247,6 +251,7 @@ def main(argv):
     parser.add_argument('--attestation', help='saved output of gh attestation verify --format json')
     parser.add_argument('--run', help='saved output of gh api repos/R/actions/runs/ID/attempts/N')
     parser.add_argument('--rom', help='probe ROM file; its sha256 is recomputed and must be an attested subject')
+    parser.add_argument('--root', default=str(ROOT), help='checkout whose provenance/denylist.sha256 is enforced')
     args = parser.parse_args(argv[1:])
     if not HEX40.fullmatch(args.commit) or not REPO.fullmatch(args.repo):
         print('refused: --commit must be a 40-hex SHA and --repo owner/repo', file=sys.stderr)
@@ -264,7 +269,8 @@ def main(argv):
         attestation = []  # unreadable gh output -> BLOCKED, never LOCAL_ONLY
     run = _load_json(args.run) if args.run else None
     policy = {'repository': args.repo, 'commit': args.commit, 'signer_workflow': SIGNER_WORKFLOW,
-              'geargrafx_revision': geargrafx['revision'], 'geargrafx_sha256': geargrafx['sha256']}
+              'geargrafx_revision': geargrafx['revision'], 'geargrafx_sha256': geargrafx['sha256'],
+              'denied_sha256': load_denylist(Path(args.root))}
     result = verify(artifact_bytes, attestation, policy, rom_bytes, run, recompute_fixture())
     print(json.dumps(result, indent=2))
     return 0 if result['result'] == PASS else 1
