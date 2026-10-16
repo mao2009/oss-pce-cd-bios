@@ -195,3 +195,32 @@ promote a category case automatically. Enabling 270 truly runnable cases still
 requires per-API ABI fixture specification and audit, reference emulator
 execution, and independent expected-value capture. Do not report the
 generator as a complete executable test suite.
+
+
+## Reviewed-case runner bridge (strictly limited)
+
+`tools/reference_case_execute.py` now connects a reviewed entry in the
+270-case manifest to `reference_bios_runner.run()`. The first experimental
+adapter is **only** `slot-1e`, with the synthetic guest context actually
+hardcoded by `geargrafx_reference_jsr.cpp` (A=X=Y=0, SP=$FF, entry=$E05A).
+It requires a separately reviewed local JSON fixture, a matching instruction
+budget and an explicit private run configuration. All other API IDs and
+different register fixtures are rejected, even if their catalog flag was
+manually changed. This is an opt-in experiment, not automatic execution.
+
+```sh
+python3 tools/reference_case_catalog.py --output build/reference-bios/all-270.json
+# After independent ABI review, edit the selected local case entry and supply a
+# private run config. This command intentionally fails closed for unreviewed cases:
+python3 tools/reference_case_execute.py build/reference-bios/all-270.json \
+  --case-id slot-1e/candidate_nominal \
+  --config local-reference-config.json \
+  --adapter tools/geargrafx_reference_adapter.py \
+  --output build/reference-bios/local-slot-1e.json
+python3 -m unittest tests.host.test_reference_case_execute -v
+```
+
+The catalog still contains **270 planned rows, not 270 runnable test ROMs**.
+Neither the actual HuC6280 API contract nor a trustworthy local System Card
+reference run has been established. The JSR adapter and its initialization
+remain experimental and need compilation and real-core confirmation.
