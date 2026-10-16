@@ -206,8 +206,9 @@ registers.
 | Budget exhausted before any halt label | `budget`, judge rejects | PASS_EXPECTED_FAILURE |
 | Data sector with an audio track present | still reads correctly | PASS |
 | READ(6) on an audio-track LBA | observed Geargrafx behaviour recorded (see below) | OBSERVED_EMULATOR_BEHAVIOUR |
-| No media loaded | Geargrafx leaves CD hardware disabled and does not execute the card | NOT_TESTED (not a firmware test) |
-| Zero-sector image | Geargrafx refuses to load it | NOT_TESTED |
+| No media loaded (ROM run as the card with `SetCDROMType(STANDARD)`, no disc image) | error 5 at stage 5, 0 bytes, SCSI status GOOD, no DATA_IN, RAM untouched; judge and status classifier (`NO_MEDIA`, BLOCKED) both refuse it | PASS_EXPECTED_FAILURE (Geargrafx only) |
+| Blank data disc (valid MODE1 headers, user data all zero) | read completes, judge rejects at byte 0 | PASS_EXPECTED_FAILURE |
+| Zero-byte BIN | `LoadMedia` rejects it (probe exit 4); the guest never runs | OBSERVED_EMULATOR_BEHAVIOUR |
 | Interrupt-driven transfer, `$1808` auto-ACK, second emulator, real hardware | - | NOT_TESTED |
 
 ## Findings and open questions

@@ -18,7 +18,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 from build_cdread import HALT_CONFIRM_STEPS, SECTOR_BYTES, verify_cdread, with_request
-from cdread_verify import SENTINEL, check_success, describe_failure
+from cdread_verify import PHASE_DATA_IN, SENTINEL, check_success, describe_failure
 from cd_status import classify_records
 from environment import DEPENDENCIES
 from geargrafx_api import compile_probe
@@ -130,6 +130,37 @@ class Suite:
         if outcome != "PASS" or any(v.category == "UNKNOWN_CODE" for v in verdicts):
             raise ValueError(f"{name}: status classifier did not accept the expected code {code}: {outcome}")
         return records
+
+
+NO_MEDIA_RESULT = ("cd_halt_fail", 5, 5, 0)  # observed: READ(6) with an empty drive -> GOOD status, no DATA_IN
+
+
+def no_media_test(suite, rom, labels, expected=NO_MEDIA_RESULT):
+    """Run the guest with System Card CD hardware but no disc and pin what the real core does.
+
+    The judge and the status classifier must both refuse to call this a pass."""
+    records = execute(suite.probe, rom, None, labels)
+    caps = records["CAP"]
+    if len(caps) != 1 or (caps[0].get("cdrom_hardware"), caps[0].get("cdrom_media"), caps[0].get("disc_given")) \
+            != (True, False, False):
+        raise ValueError(f"no-media run: capability record is not 'CD hardware, no media': {caps}")
+    for run, got in zip(records["RUN"], describe_failure(records)):
+        if got != expected or run["halt_confirmed"] is not True:
+            raise ValueError(f"no-media run: {run['cycle']} ended {got}, expected {expected}")
+        if any(b != SENTINEL for b in bytes.fromhex(run["buffer_hex"])):
+            raise ValueError(f"no-media run: {run['cycle']} guest RAM buffer was modified")
+    if any(row["scsi_phase"] == PHASE_DATA_IN for row in records["PHASE"]):
+        raise ValueError("no-media run: the emulator entered DATA_IN without a disc")
+    outcome, verdicts = classify_records(records, DEFAULT_REQUEST[1])
+    if (outcome, verdicts[0].category) != ("BLOCKED", "NO_MEDIA"):
+        raise ValueError(f"no-media run: status classifier reported {outcome}/{verdicts[0].category}")
+    keys = ("pc", "a", "x", "y", "p", "sp", "mpr", "step", "scsi_phase", "result_hex")
+    suite.must_be_rejected("no_media_loaded", records, *DEFAULT_REQUEST, match="capability missing",
+                           loader=caps[0].get("loader"),
+                           observation="Geargrafx answers READ(6) on an empty drive with GOOD status and no data "
+                                       "(same guest result as an LBA past the disc end); real hardware UNKNOWN",
+                           runs=[{key: run[key] for key in keys} for run in records["RUN"]])
+    return records
 
 
 def judge_mutation_tests(suite, records):
@@ -266,13 +297,20 @@ def main():
             "observation": "Geargrafx returns GOOD status and 2048 raw PCM bytes taken 16 bytes into the frame (as if MODE1); real-hardware behaviour UNKNOWN",
             "consequence": "firmware must check the track type (READ TOC $DE mode 2) itself; this diagnostic does not"}
 
-        # ---- media-absent conditions the harness can express ----
-        blocked = execute(probe, rom, None, labels)
-        if not blocked["BLOCK"]:
-            raise ValueError("no-media run unexpectedly executed guest code")
-        suite.results["no_media_loaded"] = {
-            "status": "NOT_TESTED", "reason": "Geargrafx does not execute the System Card ROM without media",
-            "observed": blocked["BLOCK"][0]}
+        # ---- media-absent / blank / empty discs: three distinct real-core outcomes ----
+        no_media_test(suite, rom, labels)
+        blank = folder / "blank"
+        build_image(blank)
+        raw = bytearray((blank / BIN_NAME).read_bytes())
+        for lba in range(DEFAULT_SECTORS):
+            raw[lba * 2352 + 16:lba * 2352 + 16 + SECTOR_BYTES] = bytes(SECTOR_BYTES)  # headers kept, user data zero
+        (blank / BIN_NAME).write_bytes(raw)
+        records = suite.run(payload, cue=blank / CUE_NAME)
+        for run in records["RUN"]:
+            if run["reason"] != "cd_halt_ok" or bytes.fromhex(run["buffer_hex"])[:SECTOR_BYTES] != bytes(SECTOR_BYTES):
+                raise ValueError(f"blank disc: {run['cycle']} did not read the zero sector ({run['reason']})")
+        suite.must_be_rejected("blank_data_disc", records, *DEFAULT_REQUEST, match="at byte 0 ",
+                               observed="READ(6) succeeds and returns zero user data; only the RAM compare rejects it")
         empty = folder / "empty"
         empty.mkdir()
         (empty / BIN_NAME).write_bytes(b"")
@@ -280,8 +318,10 @@ def main():
         try:
             execute(probe, rom, empty / CUE_NAME, labels)
         except subprocess.CalledProcessError as error:
-            suite.results["empty_disc_image"] = {"status": "NOT_TESTED", "probe_exit": error.returncode,
-                                                  "reason": "Geargrafx rejects a zero-sector image at load time"}
+            if error.returncode != 4:
+                raise ValueError(f"empty disc image: probe exited {error.returncode}, expected 4 (LoadMedia rejected)")
+            suite.results["empty_disc_image"] = {"status": "OBSERVED_EMULATOR_BEHAVIOUR", "probe_exit": error.returncode,
+                                                  "observation": "Geargrafx LoadMedia rejects a zero-byte BIN; the guest never runs"}
         else:
             raise ValueError("empty disc image unexpectedly loaded")
 

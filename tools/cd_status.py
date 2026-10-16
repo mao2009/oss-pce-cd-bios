@@ -59,7 +59,7 @@ def classify_run(run, count, expect=None, media=True):
     """Classify one RUN record. `expect` is an error code (0 = success) the caller asserts; None = must succeed."""
     cycle = run.get('cycle', '?')
     if not media:
-        return _verdict(BLOCKED, 'NO_MEDIA', 'no media reported: Geargrafx behaviour NOT_TESTED')
+        return _verdict(BLOCKED, 'NO_MEDIA', 'no media reported: status codes are not judged without a disc')
     reason = run.get('reason')
     if reason == BUDGET:
         # an executed run that ran out of steps never completed the halt confirmation: a failure, not a skip
