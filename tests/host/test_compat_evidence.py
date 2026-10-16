@@ -62,6 +62,15 @@ class VerdictPositiveTests(unittest.TestCase):
         result = run(record('rom-built', emulator=None, fixture=None, checkpoints=[]))
         self.assertEqual(result['result'], 'PASS')
 
+    def test_rom_built_checks_only_hash_format_not_the_build(self):
+        # rom-built passes for any well-formed self-declared hash: nothing is built or hashed here.
+        for digest in ('f' * 64, '0' * 64):
+            with self.subTest(digest=digest):
+                rec = record('rom-built', rom={'sha256': digest}, emulator=None, fixture=None, checkpoints=[])
+                self.assertEqual(run(rec)['result'], 'PASS')
+        malformed = record('rom-built', rom={'sha256': 'xyz'}, emulator=None, fixture=None, checkpoints=[])
+        self.assertEqual(run(malformed)['result'], 'FAIL')
+
     def test_retail_boot_with_local_fixture_region_and_raw_probe_passes(self):
         result = run_with(staged('retail-boot'), probe_for('retail-boot'))
         self.assertEqual(result['result'], 'PASS')
@@ -150,6 +159,37 @@ class VerdictNegativeTests(unittest.TestCase):
         result = run_with(staged(result='FAIL'), probe_for('playable'))
         self.assertEqual(result['result'], 'FAIL')
         self.assertTrue(any('conflict' in reason for reason in result['reasons']))
+
+
+class RetailWithoutFixtureTests(unittest.TestCase):
+    """A retail-stage record with no local fixture is SKIP, unless a PASS is claimed (overclaim FAIL)
+    or the runner attestation is missing (BLOCKED outranks SKIP)."""
+
+    def no_fixture(self, stage, **overrides):
+        label = STAGE_LABEL[stage]
+        rec = record(stage, fixture=None, region='JP', trace_deltas=copy.deepcopy(TRACE),
+                     checkpoints=[{'name': label, 'expected': label, 'observed': label}])
+        rec.update(overrides)
+        return rec
+
+    def test_claimed_pass_without_local_fixture_is_overclaim_fail(self):
+        for stage in ('retail-boot', 'playable', 'save-tested', 'completion-tested'):
+            with self.subTest(stage=stage):
+                result = run(self.no_fixture(stage))
+                self.assertEqual(result['result'], 'FAIL')
+                self.assertTrue(any('overclaim' in reason for reason in result['reasons']))
+
+    def test_reporter_skip_without_local_fixture_is_skip_with_attestation(self):
+        for stage in ('retail-boot', 'playable', 'save-tested', 'completion-tested'):
+            with self.subTest(stage=stage):
+                rec = self.no_fixture(stage, result='SKIP', blocker='fixture missing')
+                self.assertEqual(run(rec)['result'], 'SKIP')
+
+    def test_missing_attestation_outranks_skip(self):
+        for result in ('SKIP', 'BLOCKED'):
+            with self.subTest(result=result):
+                rec = self.no_fixture('retail-boot', result=result, blocker='x')
+                self.assertEqual(verdict(rec)['result'], 'BLOCKED')
 
 
 class MalformedInputTests(unittest.TestCase):
@@ -511,6 +551,17 @@ class CliTrustTests(unittest.TestCase):
         code, text = self._run_cli([], {}, '[' * 100_000)
         self.assertEqual(code, 1)
         self.assertEqual(json.loads(text)['result'], 'FAIL')
+
+    def test_build_only_stages_pass_locally_with_exit_zero(self):
+        # Local mode downgrades only bios-loaded and above; source-only and rom-built PASS print as PASS.
+        cases = {'source-only': record('source-only', rom=None, emulator=None, fixture=None, checkpoints=[]),
+                 'rom-built': record('rom-built', rom={'sha256': 'f' * 64}, emulator=None, fixture=None,
+                                     checkpoints=[])}
+        for stage, rec in cases.items():
+            with self.subTest(stage=stage):
+                code, text = self._run_cli([], {}, rec=rec)
+                output = json.loads(text)
+                self.assertEqual((code, output['result'], output['local_verdict']), (0, 'PASS', 'PASS'))
 
     def test_deeply_nested_probe_stdout_via_cli_is_fail_json(self):
         probe = probe_for('playable', stdout='RUN ' + '[' * 200_000)

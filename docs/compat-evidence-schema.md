@@ -24,11 +24,11 @@ The runner output is consistency-checked, not authenticated (see the trust bound
 - `GITHUB_ACTIONS=true` is an environment variable that any local process can set. It is a guard
   against accidental use, not authentication. `--ci` does not make the input trustworthy by itself.
 - Without `--ci`, the CLI output carries `"trust": "local-only, untrusted (unsigned JSON; not certifiable)"`.
-  Any local PASS for a `bios-loaded` or higher stage is printed as **BLOCKED**, with the raw result in
+  Any local PASS for a `bios-loaded` or higher stage is printed as **BLOCKED** (exit 1), with the raw result in
   `local_verdict`. Local runs are for development only and must not be quoted as compatibility.
 - `--ci` is accepted only when `GITHUB_ACTIONS=true` (otherwise exit 2). Its output carries
   `"trust": "ci-job context (GITHUB_ACTIONS=true is an environment variable any process can set; the JSON is still unsigned, so this is not a certification)"`.
-  A PASS is printed as PASS only in this mode.
+  Only `--ci` prints a PASS for `bios-loaded` and above. `source-only` and `rom-built` PASS print as PASS (exit 0) in both modes.
 - Exception to the verdict exit codes: a refused `--ci` and a usage error exit 2 and print no verdict JSON.
   Every other invocation prints a verdict JSON and exits 1 (or 0 on PASS). That includes a missing or non-UTF-8 file,
   malformed JSON, and JSON nested too deeply for the parser, each as FAIL with reason `input unreadable`. A deeply nested
@@ -51,9 +51,10 @@ The runner output is consistency-checked, not authenticated (see the trust bound
 ## Stage-specific probe evidence
 
 PASS is possible only for `source-only` and `rom-built` (build-only, no attestation or probe) and for `retail-boot`
-through `completion-tested` with a judged probe. `rom-built` PASS is a record-format check, not a compatibility claim;
-its `rom.sha256` is self-declared and unverified. `bios-loaded`, `startup`, `cd-detected` and `homebrew` are **BLOCKED** with any input:
-no #119 label defines a judge for them, so no probe can yield PASS. Extending this needs a new label, which is out of scope.
+through `completion-tested` with a runner attestation and a judged probe. `rom-built` PASS is a record-format check, not a
+compatibility claim; its `rom.sha256` is self-declared, well-formed and unverified. `bios-loaded`, `startup`, `cd-detected`
+and `homebrew` are never PASS: they are **BLOCKED** when the evidence is consistent and **FAIL** when it contradicts the record,
+because no #119 label defines a judge for them. Extending this needs a new label, which is out of scope.
 
 `retail-boot`, `playable`, `save-tested` and `completion-tested` need `probe`, the raw #119 probe
 output: `{"result": <run_job() result: status, reason, exit_code, stdout>, "forbid": [labels], "budget": int, "kind": "cdread"}`. An absent `kind` defaults to `cdread`, the only kind #119 judges.
@@ -68,12 +69,13 @@ checkpoint named after the stage label, and the runner must report the same name
 
 **Not implemented:** no shipped producer emits `probe`. The #119 `trace` command writes parsed events and
 `counts`, not the stdout that `classify()` needs, and it does not write a `stage_evidence` summary. So a
-PASS above `homebrew` cannot be produced from the CLI as shipped. Without a `probe`, these stages are **BLOCKED**.
+PASS above `homebrew` cannot be produced from the CLI as shipped. Without a `probe`, these stages are **BLOCKED**,
+or **SKIP** for a record with no local fixture (rule 8).
 A summary such as `stage_evidence` is not read by this module, so a hand-written summary cannot yield PASS.
 
 | Stage | Label (`--expect`) |
 | --- | --- |
-| `retail-boot` | `retail-boot-reached` (no #119 probe emits it yet, so retail-boot is BLOCKED until one does) |
+| `retail-boot` | `retail-boot-reached` (no #119 probe emits it yet, so a record with a local fixture is BLOCKED until one does; without a fixture it is SKIP) |
 | `playable` | `playable-reached` |
 | `save-tested` | `save-reached` |
 | `completion-tested` | `completion-reached` |
@@ -99,10 +101,10 @@ within `budget`; exactly one success HIT per cycle before its RUN.
 | `result` | enum | Reporter's claim: `PASS`, `FAIL`, `SKIP`, `BLOCKED`. The verdict is authoritative. |
 | `blocker` | string or null | Required when the claim is `BLOCKED` or `SKIP`. |
 | `claim_scope` | enum | `single-launch` or `title`. `all-titles` is always rejected. |
-| `rom` | object or null | `{"sha256": 64 lowercase hex}` of the generated ROM. |
+| `rom` | object or null | `{"sha256": 64 lowercase hex}`. Self-declared: it is checked for format and, at `bios-loaded` and above, against the runner attestation; it is never computed from a build. |
 | `emulator` | object or null | `kind`: `real-core`, `mock` or `static`. A `real-core` record needs `name`, `version` and a 40-hex `commit`. Names matching mock/stub/fake/static/dummy/simulat are rejected as real. |
 | `fixture` | object or null | `{"id", "sha256", "origin"}`. `origin` is `original-synthetic` or `local-proprietary`. |
-| `region` | string or null | Target edition region. Required for `retail-boot` and above. |
+| `region` | string or null | Target edition region. Required for `retail-boot` and above when a fixture is present (missing gives BLOCKED). |
 | `checkpoints` | array | `{"name", "expected", "observed"}`. Verdict requires the record's own `expected` to equal its `observed`; the runner's `observed` for that name must equal the record's `expected`. A `passed` flag is not trusted. A missing or null field is absent; any other non-array value is FAIL. |
 | `trace_deltas` | array | `{"name", "delta"}`. Required above `homebrew`. |
 
@@ -118,7 +120,7 @@ Findings are combined with priority FAIL > BLOCKED > SKIP > PASS.
 4. `bios-loaded` and above need a `real-core` emulator. Mock or static gives **BLOCKED**, so a mock cannot promote a stage.
    They also need a runner attestation. Missing or unverified gives **BLOCKED**. A hash, commit or checkpoint
    that does not match the record gives **FAIL**.
-5. `retail-boot` with a synthetic fixture gives **FAIL**. Missing region gives **BLOCKED**.
+5. `retail-boot` with a synthetic fixture gives **FAIL**. With a fixture, missing region gives **BLOCKED**.
 6. `startup` and above need at least one checkpoint (**BLOCKED** if none). Any mismatch gives **FAIL**.
 7. Above `homebrew`, guest trace deltas are required (**BLOCKED** if absent). They are self-reported and
    never sufficient alone.
@@ -128,23 +130,24 @@ Findings are combined with priority FAIL > BLOCKED > SKIP > PASS.
    budget or cd_halt_fail, not one cold then warm RUN, unconfirmed halt, a step outside 0..budget, a success HIT
    missing, repeated or after its RUN, malformed log) gives **FAIL**. A BLOCK record, a missing or false
    capability flag, `kind` other than `cdread` (NOT_SUPPORTED) and exit 6 (debugger capability missing)
-   give **BLOCKED**, as in #119. A `retail-boot` record with no local fixture is **SKIP** (fixture missing; no stage
-   check runs). With a local fixture, a record whose stage-label checkpoint is missing is **BLOCKED**.
+   give **BLOCKED**, as in #119. A record for a retail stage (`retail-boot` and above) with no local fixture is
+   **SKIP** (fixture missing; no probe check runs), unless its runner attestation is also missing, which is **BLOCKED**
+   and outranks SKIP. With a fixture, a record whose stage-label checkpoint is missing is **BLOCKED**.
 9. A claim of `PASS` that the evidence does not support is an **overclaim** and gives **FAIL**. A claim of
    `BLOCKED`, `SKIP` or `FAIL` that complete evidence would otherwise pass is kept as the result, with a
    `conflict` reason. Complete evidence never silently overrides the reporter's own non-PASS claim.
 
 Source-only and rom-built records need no attestation (build checks only). From `bios-loaded` to `homebrew`
-every result is BLOCKED or FAIL, never PASS (no judge label; see the stage probe section). A single launch never supports an all-title claim.
+every result is BLOCKED or FAIL, never PASS (no judge label; see the stage probe section). `claim_scope: all-titles` is always FAIL.
 From `bios-loaded` and above, PASS requires real-core evidence; source-only and rom-built need none.
 
 ## Not covered (v1)
 
 - Emulator trace capture and checkpoint extraction: the record, attestation and raw probe output are produced by the runner (#119), not by this module.
-- Not wired into `make check` or any release gate yet. Until a runner emits the raw `probe` in CI,
-  retail-boot, playable, save-tested and completion-tested are **BLOCKED** for every input that lacks it.
-  A `probe` that passes the #119 judge gives PASS (covered by unit tests with synthetic probe logs).
-  No shipped runner emits it, so this is the expected status.
+- Not wired into `make check` or any release gate. Until a runner emits the raw `probe`,
+  retail-boot, playable, save-tested and completion-tested are **BLOCKED** when a local fixture is present and
+  **SKIP** when it is not (rule 8); they are never PASS without a judged probe. A `probe` that passes the #119 judge
+  gives PASS (covered by unit tests with synthetic probe logs). No shipped runner emits it.
 - Consistency with #119: `tests/host/test_compat_119_consistency.py` imports the real `geargrafx_harness.classify()`
   and checks that the verdict gives the same category for each synthetic probe-log scenario. No #119 logic is copied.
 - Signed attestation (Issue #124, PR #125 branch `feat/124-evidence-provenance`) is not in this version.
@@ -153,3 +156,17 @@ From `bios-loaded` and above, PASS requires real-core evidence; source-only and 
   That compatibility.md definition is left unchanged here; the gap is stated in this document.
 - Retail disc handling and private fixture storage: see [provenance.md](provenance.md).
 - Schema migration beyond v1.
+
+## Does not establish
+
+Neither this module nor its output establishes any of the following. Out of scope for this PR.
+
+- **Authenticity or provenance.** Records, runner attestations and probe logs are unsigned JSON. Nothing proves who
+  produced them or that an emulator ran. Signing and provenance are Issue #124 (PR #125), not part of this PR.
+- **Compatibility.** A PASS is a consistency result on the JSON given, not a compatibility certification. Local output
+  must not be quoted as compatibility.
+- **Release gate use.** The module is not wired into `make check` or any release gate, and no CI job uses it as a gate.
+- **Build reproducibility.** `rom-built` PASS does not build the ROM or compute its hash. It checks only that
+  `rom.sha256` is well-formed.
+- **Game compatibility.** No retail disc is run here. Retail stages are SKIP without a local fixture and BLOCKED
+  with one until a judged probe exists (both BLOCKED without a runner attestation).
