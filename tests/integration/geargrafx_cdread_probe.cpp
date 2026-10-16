@@ -27,7 +27,8 @@ static const long kHaltConfirmSteps = 64;      // keep equal to tools/build_cdre
 static const int kPhaseDataIn = 4;             // ScsiController::SCSI_PHASE_DATA_IN
 
 int main(int argc, char** argv) {
-    // usage: probe rom cue|- labels max_steps [eject-in-data] [cut-after-arrival=N]   ("-" = no media)
+    // usage: probe rom [card:]cue|- labels max_steps [eject-in-data] [cut-after-arrival=N]   ("-" = no media)
+    // "card:" (Issue #144 paired control) uses ONE loader with or without a disc; see below.
     // cut-after-arrival=N stops the run exactly N instructions after the PC first lands on a halt label
     // (arrival times differ between processes because Geargrafx randomises the initial read phase).
     if (argc < 5 || argc > 7) return 2;
@@ -51,15 +52,30 @@ int main(int argc, char** argv) {
         std::string name; unsigned address;
         while (file >> name >> std::hex >> address) labels[name] = address;
     }
-    for (const char* needed : {"cd_halt_ok", "cd_halt_fail", "cd_unexpected_interrupt"})
+    // Halt labels: the #5 diagnostic's three, or the #143 reset entry's two (#144 observation point).
+    std::vector<std::string> halts = {"cd_halt_ok", "cd_halt_fail", "cd_unexpected_interrupt"};
+    if (labels.count("reset_ready")) halts = {"reset_ready", "reset_unexpected_interrupt"};
+    for (const auto& needed : halts)
         if (!labels.count(needed)) return 2;
 
     GeargrafxCore core;
     core.Init(nullptr);
-    bool have_disc = std::string(argv[2]) != "-";
-    if (have_disc) {
+    std::string disc = argv[2];
+    bool paired = disc.rfind("card:", 0) == 0;
+    if (paired) disc = disc.substr(5);
+    bool have_disc = disc != "-";
+    if (paired) {
+        // Paired control: both variants take exactly these steps; the only difference is whether a CUE
+        // is inserted into the drive (CdRomMedia) after the card load (which clears the drive) and
+        // before the cold reset. Media::IsCDROM stays false in both, so CRC/mapper/card RAM are equal.
+        core.GetMedia()->SetCDROMType(GG_CDROM_STANDARD);
+        if (!core.LoadHuCardFromBuffer(rom.data(), (int)rom.size(), "paired-card.pce")) return 3;
+        if (have_disc && !core.GetCDROMMedia()->LoadCueFromFile(disc.c_str(), true)) return 4;
+        core.ResetMedia(false);
+        if (!core.GetMedia()->IsCDROMHardwareEnabled() || core.GetMedia()->IsCDROM()) return 7;
+    } else if (have_disc) {
         if (!core.LoadBiosFromBuffer(rom.data(), rom.size(), true)) return 3;
-        if (!core.LoadMedia(argv[2])) return 4;
+        if (!core.LoadMedia(disc.c_str())) return 4;
     } else {
         // No media. LoadBiosFromBuffer alone never calls GeargrafxCore::Reset() (only LoadMedia /
         // LoadHuCardFromBuffer do), so Media stays not-ready and RunToVBlank refuses to run. Instead
@@ -89,11 +105,13 @@ int main(int argc, char** argv) {
     if (memory->Read(first_pc) != 0x78) return 5;  // every probe begins with SEI
     one_instruction();
     bool stepping = cpu->PC->GetValue() == first_pc + 1;
-    std::printf("CAP {\"instruction_step\":%s,\"bios_loaded\":%s,\"loader\":\"%s\",\"cdrom_hardware\":%s,\"cdrom_media\":%s,\"disc_given\":%s}\n",
-                stepping ? "true" : "false", have_disc ? "true" : "false",
-                have_disc ? "LoadBiosFromBuffer(syscard)+LoadMedia(cue)" : "SetCDROMType(STANDARD)+LoadHuCardFromBuffer",
+    std::printf("CAP {\"instruction_step\":%s,\"bios_loaded\":%s,\"loader\":\"%s\",\"cdrom_hardware\":%s,\"cdrom_media\":%s,\"disc_given\":%s,\"drive_ready\":%s}\n",
+                stepping ? "true" : "false", have_disc && !paired ? "true" : "false",
+                paired ? "paired:SetCDROMType(STANDARD)+LoadHuCardFromBuffer+ResetMedia(false)"
+                       : have_disc ? "LoadBiosFromBuffer(syscard)+LoadMedia(cue)" : "SetCDROMType(STANDARD)+LoadHuCardFromBuffer",
                 core.GetMedia()->IsCDROMHardwareEnabled() ? "true" : "false",
-                core.GetMedia()->IsCDROM() ? "true" : "false", have_disc ? "true" : "false");
+                core.GetMedia()->IsCDROM() ? "true" : "false", have_disc ? "true" : "false",
+                core.GetCDROMMedia()->IsReady() ? "true" : "false");
     if (!stepping) return 6;
 
     const char* cycle = "cold";
@@ -128,9 +146,8 @@ int main(int argc, char** argv) {
         std::string reason = "budget";
         long step = 0;              // instructions executed in this run
         auto halt_name = [&](unsigned pc) -> const char* {
-            if (pc == labels["cd_halt_ok"]) return "cd_halt_ok";
-            if (pc == labels["cd_halt_fail"]) return "cd_halt_fail";
-            if (pc == labels["cd_unexpected_interrupt"]) return "cd_unexpected_interrupt";
+            for (const auto& name : halts)
+                if (pc == labels[name]) return name.c_str();
             return nullptr;
         };
         while (step < max_steps) {

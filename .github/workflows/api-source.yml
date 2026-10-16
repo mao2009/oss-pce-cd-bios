@@ -37,6 +37,11 @@ jobs:
           make dev-reset-entry
           python3 -m unittest tests.host.test_reset_entry -v
           make dev-reset-entry-integration
+      - name: CD media-state observation point, paired disc/no-disc control (Issue #144, not a BIOS API)
+        run: |
+          make dev-cd-media-state
+          python3 -m unittest tests.host.test_cd_media_state -v
+          make dev-cd-media-state-integration
       - name: Independent CD-ROM2 sector read by guest HuC6280 (diagnostic, not CD_READ / not BIOS)
         run: |
           make dev-cdread
@@ -67,6 +72,8 @@ jobs:
           cmp build/debug/startup-probe/startup-probe-not-bios.pce build/release/startup-probe/startup-probe-not-bios.pce
           make dev-reset-entry MODE=release
           cmp build/debug/reset-entry/reset-entry-not-bios.pce build/release/reset-entry/reset-entry-not-bios.pce
+          make dev-cd-media-state MODE=release
+          cmp build/debug/cd-media-state/cd-media-state-not-bios.pce build/release/cd-media-state/cd-media-state-not-bios.pce
           make dev-cdread MODE=release
           cmp build/debug/cdread-probe/cdread-probe-not-bios.pce build/release/cdread-probe/cdread-probe-not-bios.pce
           make dev-cdload-exec MODE=release
