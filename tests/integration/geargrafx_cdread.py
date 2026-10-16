@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 from build_cdread import HALT_CONFIRM_STEPS, SECTOR_BYTES, verify_cdread, with_request
 from cdread_verify import SENTINEL, check_success, describe_failure
+from cd_status import classify_records
 from environment import DEPENDENCIES
 from geargrafx_api import compile_probe
 from make_cd_image import BIN_NAME, CUE_NAME, DEFAULT_SECTORS, MAGIC, audio_frame, build_image, sector_payload
@@ -121,6 +122,9 @@ class Suite:
                 raise ValueError(f"{name}: RAM beyond the transferred bytes was modified")
         self.must_be_rejected(name, records, lba, count, match="did not stop at the success checkpoint",
                               error_code=code, transferred_bytes=transferred)
+        outcome, verdicts = classify_records(records, count, expect=code)
+        if outcome != "PASS" or any(v.category == "UNKNOWN_CODE" for v in verdicts):
+            raise ValueError(f"{name}: status classifier did not accept the expected code {code}: {outcome}")
         return records
 
 
