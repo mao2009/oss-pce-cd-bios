@@ -726,5 +726,157 @@ class CueCliTests(unittest.TestCase):
             self.assertNotIn("Traceback", res.stderr)
 
 
+class CueStrictnessTests(unittest.TestCase):
+    """Regression tests for review findings: full-track sync, header mode byte, BCD/MSF, FILE and TRACK/INDEX rules."""
+
+    def _track(self, d: Path, frames, cue_body: str = '  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n') -> Path:
+        (d / "t.bin").write_bytes(b"".join(bytes(f) for f in frames))
+        (d / "t.cue").write_text('FILE "t.bin" BINARY\n' + cue_body)
+        return d / "t.cue"
+
+    def _sync_findings(self, rep):
+        return [f for f in rep["findings"] if "lack RAW sync" in f]
+
+    def test_all_frames_with_sync_are_clean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            cue = self._track(d, [raw_sector(lba) for lba in range(16)])
+            rep = analyze(cue)
+            self.assertEqual(rep["findings"], [])
+            self.assertTrue(rep["structurally_valid"])
+            self.assertEqual(rep["tracks"][0]["sector"]["sync_missing_frames"], 0)
+
+    def test_missing_sync_at_head_middle_and_last_frame_is_reported(self):
+        for position in (0, 7, 15):
+            with self.subTest(frame=position), tempfile.TemporaryDirectory() as tmp:
+                d = Path(tmp)
+                frames = [bytearray(raw_sector(lba)) for lba in range(16)]
+                frames[position][0:12] = bytes(12)  # break only the 12-byte sync, header and payload stay valid
+                rep = analyze(self._track(d, frames))
+                self.assertFalse(rep["structurally_valid"])
+                self.assertEqual(self._sync_findings(rep), [
+                    f"track 1: 1 of 16 user-data frames lack RAW sync (first at frames [{position}])"], rep["findings"])
+
+    def test_missing_sync_inside_a_long_track_is_reported_with_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            frames = [bytearray(raw_sector(lba)) for lba in range(300)]
+            for position in (3, 150, 299):
+                frames[position][0:12] = bytes(12)
+            rep = analyze(self._track(d, frames))
+            self.assertEqual(rep["tracks"][0]["sector"]["sync_missing_frames"], 3)
+            self.assertEqual(self._sync_findings(rep), [
+                "track 1: 3 of 300 user-data frames lack RAW sync (first at frames [3, 150, 299])"], rep["findings"])
+
+    def test_pregap_non_sync_frames_are_legal_but_data_frames_still_checked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            # pregap = BIN frames 0..149 (non-sync); INDEX 01 data starts at disc LBA 150 with MSF 00:04:00
+            frames = [bytes(2352) for _ in range(150)] + [raw_sector(lba) for lba in range(150, 166)]
+            cue = self._track(d, frames, '  TRACK 01 MODE1/2352\n    INDEX 00 00:00:00\n    INDEX 01 00:02:00\n')
+            rep = analyze(cue)
+            self.assertEqual(rep["findings"], [])
+            self.assertEqual(rep["tracks"][0]["pregap_sync_frames"], 0)
+
+    def test_pregap_valid_sync_frames_are_not_findings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            frames = [raw_sector(lba) for lba in range(150 + 16)]  # pregap frames carry correct sync and MSF
+            cue = self._track(d, frames, '  TRACK 01 MODE1/2352\n    INDEX 00 00:00:00\n    INDEX 01 00:02:00\n')
+            rep = analyze(cue)
+            self.assertEqual(rep["findings"], [])
+            self.assertEqual(rep["tracks"][0]["pregap_sync_frames"], 150)
+
+    def test_mode2_2352_with_mode2_header_is_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            frames = []
+            for lba in range(8):
+                f = bytearray(raw_sector(lba))
+                f[15] = 0x02  # MODE2 header byte; subheader bytes after it are not checked here
+                frames.append(f)
+            rep = analyze(self._track(d, frames, '  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n'))
+            self.assertEqual(rep["findings"], [])
+            self.assertTrue(rep["structurally_valid"])
+            self.assertEqual(rep["tracks"][0]["sector"]["mode_bytes"], [2])
+
+    def test_header_mode_byte_must_match_declared_mode(self):
+        cases = {
+            "mode2_frames_declared_mode1": ("MODE1/2352", 0x02, 0x01),
+            "mode1_frames_declared_mode2": ("MODE2/2352", 0x01, 0x02),
+        }
+        for name, (declared, actual, expected) in cases.items():
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as tmp:
+                d = Path(tmp)
+                frames = []
+                for lba in range(8):
+                    f = bytearray(raw_sector(lba))
+                    f[15] = actual
+                    frames.append(f)
+                rep = analyze(self._track(d, frames, f'  TRACK 01 {declared}\n    INDEX 01 00:00:00\n'))
+                self.assertFalse(rep["structurally_valid"])
+                self.assertTrue(any(f"!= 0x{expected:02x} for declared {declared}" in f and "(first at frames [0, 1, 2, 3, 4])" in f
+                                    for f in rep["findings"]), rep["findings"])
+
+    def test_invalid_bcd_nibble_is_not_read_as_a_number(self):
+        # 0x1A is not BCD. Frame 20 expects 00:02:20; a header of 00:02:1A would decode as 20 if nibbles were not checked.
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            frames = [bytearray(raw_sector(lba)) for lba in range(32)]
+            frames[20][14] = 0x1A
+            rep = analyze(self._track(d, frames))
+            self.assertFalse(rep["structurally_valid"])
+            self.assertTrue(any("MSF headers disagree" in f and "[20]" in f for f in rep["findings"]), rep["findings"])
+
+    def test_decode_msf_rejects_invalid_bcd_and_out_of_range_fields(self):
+        self.assertEqual(cue_analysis._decode_msf(bytes([0x00, 0x02, 0x20])), 2 * 75 + 20)
+        self.assertIsNone(cue_analysis._decode_msf(bytes([0x00, 0x02, 0x1A])))  # frame nibble A
+        self.assertIsNone(cue_analysis._decode_msf(bytes([0x00, 0x0A, 0x00])))  # second nibble A
+        self.assertIsNone(cue_analysis._decode_msf(bytes([0xA0, 0x00, 0x00])))  # minute nibble A
+        self.assertIsNone(cue_analysis._decode_msf(bytes([0x00, 0x60, 0x00])))  # second 60
+        self.assertIsNone(cue_analysis._decode_msf(bytes([0x00, 0x02, 0x75])))  # frame 75
+
+    def test_non_binary_file_types_are_rejected(self):
+        for kind in ("MOTOROLA", "AIFF", "WAVE", "MP3"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as tmp:
+                d = Path(tmp)
+                (d / "t.bin").write_bytes(bytes(2352 * 4))
+                (d / "t.cue").write_text(f'FILE "t.bin" {kind}\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
+                with self.assertRaisesRegex(CueError, f"unsupported FILE type '{kind}'"):
+                    analyze(d / "t.cue")
+
+    def test_track_numbers_must_be_sequential_from_01(self):
+        cases = {
+            "starts_at_02": ('  TRACK 02 MODE1/2352\n    INDEX 01 00:00:00\n', "expected 01"),
+            "duplicate_01": ('  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+                             '  TRACK 01 MODE1/2352\n    INDEX 01 00:00:10\n', "expected 02"),
+            "track_00": ('  TRACK 00 MODE1/2352\n    INDEX 01 00:00:00\n', "expected 01"),
+            "track_1_digit": ('  TRACK 1 MODE1/2352\n    INDEX 01 00:00:00\n', "expected 01"),
+            "track_100": ('  TRACK 100 MODE1/2352\n    INDEX 01 00:00:00\n', "expected 01"),
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "t.bin").write_bytes(bytes(2352 * 40))
+            for name, (body, message) in cases.items():
+                with self.subTest(case=name):
+                    (d / "t.cue").write_text('FILE "t.bin" BINARY\n' + body)
+                    with self.assertRaisesRegex(CueError, message):
+                        analyze(d / "t.cue")
+
+    def test_duplicate_index_is_rejected_not_overwritten(self):
+        cases = {
+            "index01_twice": '  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n    INDEX 01 00:00:10\n',
+            "index00_twice": '  TRACK 01 MODE1/2352\n    INDEX 00 00:00:00\n    INDEX 00 00:00:01\n    INDEX 01 00:00:10\n',
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "t.bin").write_bytes(bytes(2352 * 40))
+            for name, body in cases.items():
+                with self.subTest(case=name):
+                    (d / "t.cue").write_text('FILE "t.bin" BINARY\n' + body)
+                    with self.assertRaisesRegex(CueError, "duplicate INDEX"):
+                        analyze(d / "t.cue")
+
+
 if __name__ == '__main__':
     unittest.main()

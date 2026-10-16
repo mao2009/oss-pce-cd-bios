@@ -60,14 +60,19 @@ start, including any pregap bytes. `cue_sha256` is the SHA-256 of the CUE file i
 
 | Mode | Layout / hash | Sync / MSF check | `user_sector()` |
 | --- | --- | --- | --- |
-| MODE1/2352 | yes | yes (sync, mode byte, MSF == LBA + 150) | yes (2048 bytes at +16) |
-| MODE2/2352 | yes | yes (sync, mode byte, MSF == LBA + 150) | no |
+| MODE1/2352 | yes | yes (sync on every frame, header mode byte 0x01, MSF == LBA + 150) | yes (2048 bytes at +16) |
+| MODE2/2352 | yes | yes (sync on every frame, header mode byte 0x02, MSF == LBA + 150) | no |
 | MODE1/2048 (Cooked) | yes | **not verified** (no raw sync/MSF) | no |
 | MODE2/2336 (Cooked) | yes | **not verified** | no |
 | AUDIO | yes | only "no MODE sync in first 64 frames" | no (raises `CueError`) |
 
 The sync/MSF check covers every user-data frame of a RAW track (streamed in bounded reads), and the pregap
 sync check covers the full pregap. `MAX_PROBE_FRAMES` (4096) now only bounds the boot-signature search.
+
+A RAW data frame without the 12-byte sync is a finding with its exact count and the first five frame
+positions. Header byte 15 must be 0x01 for `MODE1/2352` and 0x02 for `MODE2/2352`; a mismatch is a finding.
+The header MSF is decoded only when every nibble is 0..9 with seconds <= 59 and frames <= 74. Invalid BCD
+(for example 0x1A) is a finding as an MSF mismatch and is never read as a number.
 
 Cooked modes are validated for file size and layout only. The CLI reports them as
 `sync/MSF not verified` and prints a PASS line that says layout validation only.
@@ -88,9 +93,11 @@ A CUE `PREGAP` adds disc LBAs that are not stored in the BIN; `PREGAP` together 
 same track is rejected as ambiguous. The next track's pregap (its INDEX 00..01 frames) is never counted in
 the previous track's `length_frames`.
 
-Explicitly rejected (fail closed, nothing is guessed): `INDEX` numbers other than 00 and 01, `POSTGAP`,
-a track without INDEX 01, INDEX 00 after INDEX 01, non-increasing track starts within a FILE, and BIN frames
-before the first track's start (they would belong to no track). `user_sector()` maps physical LBA *n* in
+Explicitly rejected (fail closed, nothing is guessed): `FILE` types other than `BINARY` (MOTOROLA, AIFF,
+WAVE, MP3 are not decoded), `INDEX` numbers other than 00 and 01, a duplicate INDEX in one track, `POSTGAP`,
+TRACK numbers that are not the next number from `01` (two digits, 01..99), a track without INDEX 01,
+INDEX 00 after INDEX 01, non-increasing track starts within a FILE, and BIN frames before the first track's
+start (they would belong to no track). `user_sector()` maps physical LBA *n* in
 `[start_lba, start_lba + length_frames)` to BIN frame `index01_frame + (n - start_lba)` and rejects LBAs in
 a pregap (`pregap_start_lba <= n < start_lba`), negative LBAs and LBAs past the track end.
 

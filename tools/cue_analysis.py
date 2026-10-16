@@ -33,6 +33,9 @@ RAW_SYNC_MODES = {"MODE1/2352", "MODE2/2352", "AUDIO"}
 MSF_MODES = {"MODE1/2352", "MODE2/2352"}
 # Modes that support 2048-byte user data extraction via user_sector()
 USER_DATA_MODES = {"MODE1/2352"}
+# Header byte 15 of a RAW frame must agree with the declared mode (MODE2 Form 1/2 both use 0x02 here)
+HEADER_MODE_BYTE = {"MODE1/2352": 0x01, "MODE2/2352": 0x02}
+FINDING_POSITIONS = 5  # frame positions listed per finding; sync and mode-byte counts are always exact
 PCE_BOOT_SIGNATURE = b"PC Engine CD-ROM SYSTEM"
 MAX_PROBE_FRAMES = 4096  # bounded frame probing so a huge track stays fast
 # Streaming chunk sizes: the analysis holds only these bounded buffers, never a whole track.
@@ -72,8 +75,9 @@ def parse_cue(path: Path) -> dict:
                     raise CueError("FILE requires a quoted name")
                 name = line.split('"')[1]
                 kind = line.split('"', 2)[2].strip().upper()
-                if kind not in ("BINARY", "MOTOROLA", "AIFF", "WAVE", "MP3"):
-                    raise CueError(f"unsupported FILE type: {kind!r}")
+                # Only raw BINARY is decoded; MOTOROLA/AIFF/WAVE/MP3 would be read as raw sectors and give wrong results
+                if kind != "BINARY":
+                    raise CueError(f"unsupported FILE type {kind!r}: only FILE ... BINARY is supported")
                 files.append({"name": name, "type": kind, "tracks": []})
             elif keyword == "TRACK":
                 if not files:
@@ -82,9 +86,12 @@ def parse_cue(path: Path) -> dict:
                 if len(parts) != 3:
                     raise CueError(f"TRACK requires number and mode: {line!r}")
                 _, number_text, mode = parts
+                expected = sum(len(f["tracks"]) for f in files) + 1
+                if len(number_text) != 2 or not number_text.isdigit() or int(number_text) != expected:
+                    raise CueError(f"TRACK {number_text!r} is not the next track; expected {expected:02d} (01..99, sequential)")
                 if mode.upper() not in MODES:
                     raise CueError(f"unsupported track mode: {mode!r}")
-                files[-1]["tracks"].append({"number": int(number_text), "mode": mode.upper(), "index": {}})
+                files[-1]["tracks"].append({"number": expected, "mode": mode.upper(), "index": {}})
             elif keyword == "INDEX":
                 if not files or not files[-1]["tracks"]:
                     raise CueError("INDEX before any TRACK")
@@ -95,6 +102,8 @@ def parse_cue(path: Path) -> dict:
                 if not index_text.isdigit() or int(index_text) not in (0, 1):
                     raise CueError(f"unsupported INDEX {index_text!r}; only INDEX 00 and INDEX 01 are supported")
                 track = files[-1]["tracks"][-1]
+                if int(index_text) in track["index"]:
+                    raise CueError(f"duplicate INDEX {index_text} in track {track['number']:02d}")
                 track["index"][int(index_text)] = _parse_msf(timestamp)
             elif keyword == "PREGAP":
                 if not files or not files[-1]["tracks"]:
@@ -129,9 +138,18 @@ def _from_bcd(byte: int) -> int:
     return (byte >> 4) * 10 + (byte & 0x0F)
 
 
-def _frame_lba(header: bytes) -> int:
-    """BCD MSF (12..14) -> absolute LBA, i.e. the sector address without the 150-frame lead-in."""
-    return (_from_bcd(header[0]) * 60 + _from_bcd(header[1])) * 75 + _from_bcd(header[2])
+def _decode_msf(header: bytes):
+    """BCD MSF (bytes 12..14) -> absolute LBA without the 150-frame lead-in, or None when the header is not valid BCD.
+
+    A nibble above 9 (for example 0x1A) is never read as a number; a None result compares unequal to every LBA,
+    so an invalid header is reported as an MSF mismatch.
+    """
+    if any((b >> 4) > 9 or (b & 0x0F) > 9 for b in header[:3]):
+        return None
+    minute, second, frame = (_from_bcd(b) for b in header[:3])
+    if second > 59 or frame > 74:
+        return None
+    return (minute * 60 + second) * 75 + frame
 
 
 def _read_exact(f, size: int) -> bytes:
@@ -184,39 +202,51 @@ def _check_pregap(f, start: int, frames: int, sector_bytes: int, pregap_lba: int
         if data[:len(SYNC)] != SYNC:
             continue
         sync_frames += 1
-        if _frame_lba(data[12:15]) != pregap_lba + frame + 150 and len(bad) < 5:
+        if _decode_msf(data[12:15]) != pregap_lba + frame + 150 and len(bad) < FINDING_POSITIONS:
             bad.append(frame)
     return sync_frames, bad
 
 
 def _probe_track(f, start: int, frames: int, sector_bytes: int, track_lba: int, mode: str) -> dict:
-    """Validate up to MAX_PROBE_FRAMES frames from `start`: sync, mode byte and MSF == LBA + 150 for MSF modes.
+    """Validate every frame from `start`: sync, header mode byte, and MSF == LBA + 150 for MSF modes.
 
-    `track_lba` is the physical disc LBA of the first probed frame.
+    `track_lba` is the physical disc LBA of the first probed frame. Every frame of a RAW track is checked
+    (streamed in FRAME_CHUNK reads), so a single corrupted middle or last frame cannot pass. A missing sync
+    or a mismatched header is counted exactly; only the first FINDING_POSITIONS frame indices are kept.
     """
-    probe = frames  # whole track: sync/MSF are streamed in FRAME_CHUNK reads, so memory stays bounded
-    sync_frames, modes, msf_bad = 0, set(), []
-    first_sync = first_user_data = None
+    sync_frames, sync_missing, first_sync, first_user_data = 0, [], None, None
+    modes, mode_bad, mode_bad_count, msf_bad = set(), [], 0, []
     user_offset, user_bytes = MODES[mode][1], MODES[mode][2]
     has_raw_sync = mode in RAW_SYNC_MODES
-    for frame, data in _iter_frames(f, start, probe, sector_bytes):
+    expected_mode = HEADER_MODE_BYTE.get(mode)
+    for frame, data in _iter_frames(f, start, frames, sector_bytes):
         if has_raw_sync:
             if data[:12] != SYNC:
+                if len(sync_missing) < FINDING_POSITIONS:
+                    sync_missing.append(frame)
                 continue
             sync_frames += 1
             if first_sync is None:
                 first_sync = frame
             modes.add(data[15])
-            if mode in MSF_MODES and _frame_lba(data[12:15]) != track_lba + frame + 150:
-                if len(msf_bad) < 5:
+            if expected_mode is not None and data[15] != expected_mode:
+                mode_bad_count += 1
+                if len(mode_bad) < FINDING_POSITIONS:
+                    mode_bad.append(frame)
+            if mode in MSF_MODES and _decode_msf(data[12:15]) != track_lba + frame + 150:
+                if len(msf_bad) < FINDING_POSITIONS:
                     msf_bad.append(frame)
         if first_user_data is None and any(data[user_offset:user_offset + user_bytes]):
             first_user_data = frame
-    result = {"frames": frames, "probed_frames": probe, "first_user_data_frame": first_user_data}
+    result = {"frames": frames, "probed_frames": frames, "first_user_data_frame": first_user_data}
     if has_raw_sync:
         result.update({"sync_frames": sync_frames,
+                       "sync_missing_frames": frames - sync_frames,
+                       "sync_missing_positions": sync_missing,
                        "first_sync_frame": first_sync,
                        "mode_bytes": sorted(modes),
+                       "mode_mismatch_frames": mode_bad_count,
+                       "mode_mismatch_positions": mode_bad,
                        "msf_mismatch_frames": msf_bad})
     return result
 
@@ -312,9 +342,15 @@ def analyze(cue_path: Path, boot_signature: bytes = PCE_BOOT_SIGNATURE) -> dict:
                             if pregap_bad:
                                 findings.append(f"track {track['number']}: pregap sync sectors disagree with their disc "
                                                 f"LBA (pregap starts at {pregap_lba}) at frames {pregap_bad}")
-                        if not sector["sync_frames"]:
-                            findings.append(f"track {track['number']}: no RAW sync frame found in "
-                                            f"{sector['probed_frames']} user-data frames")
+                        # Every user-data frame must carry sync; a single broken middle or last frame is corruption
+                        if sector["sync_missing_frames"]:
+                            findings.append(f"track {track['number']}: {sector['sync_missing_frames']} of "
+                                            f"{sector['frames']} user-data frames lack RAW sync "
+                                            f"(first at frames {sector['sync_missing_positions']})")
+                        if sector["mode_mismatch_frames"]:
+                            findings.append(f"track {track['number']}: {sector['mode_mismatch_frames']} frames have header "
+                                            f"mode byte != {HEADER_MODE_BYTE[track['mode']]:#04x} for declared {track['mode']} "
+                                            f"(first at frames {sector['mode_mismatch_positions']})")
                         if sector["msf_mismatch_frames"]:
                             findings.append(f"track {track['number']}: MSF headers disagree with start LBA "
                                             f"{start_lba} at frames {sector['msf_mismatch_frames']}")
