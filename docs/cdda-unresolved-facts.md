@@ -17,12 +17,21 @@
     PAUSED=0x02 / STOPPED=0x03)、`CURRENT_LBA`、`START_LBA`、`STOP_LBA` を読める。
   - SCSI 側: 再生開始 `0xD8` (`src/scsi_controller.cpp:457,564`)、停止位置 `0xD9`、一時停止 `0xDA`、
     サブチャネル Q 読み出し `0xDD` (現在位置、`scsi_controller.cpp:646-700`)。
-- BLOCKED (残る理由): 観測点は特定できたが、ゲストの診断ROMが SCSI バス (`$1800-$1804`) 経由で
-  `0xD8` を発行する経路は未実装。main の CD 基盤 (`src/cd_read_probe.s`) は READ(6) のデータ経路しか持たない。
-  `0xD8` の発行は System Card の CD_PLAY ABI ではなく SCSI ハードウェア層の操作であり、
-  この PR では ABI を確定しない。
+- 実コア観測基盤: #135 (`feat/i-cdda-core-probe`, 未マージ) で SCSI `0xD8`/`0xD9` 経由の観測基盤を
+  追加予定。main 取り込み後、#135 のマージで本節を更新する。
 - 本 PR では実コア試験を実装していない。観測点はソース上で確認したのみで、コアを実行して値を読んだ
-  証跡はない。
+  証跡はない (NOT RUN)。
+- ABI: System Card の CD_PLAY/CD_PAUSE/CD_SEARCH の引数・戻り値は UNKNOWN のまま。
+
+## ホストモデルの範囲と差異 (`tests/host/test_cdda_state.py`)
+
+- `ENDED` はホストモデル内部の状態であり、コアの `CdRomAudio` 状態値として主張しない。
+- `stop()` はモデルの位置を消去する。一方、SCSI `0xD9` mode 0 は #135 の観測で位置を保持する。
+  この差異は残す。理由: モデルは未確定の CD_PLAY/CD_STOP ABI を表すもので、SCSI レベルの観測とは
+  層が異なる。SCSI 観測に合わせると、未確認の ABI 対応を推測で固定することになる。
+  #135 のマージ後も差異として残し、ABI が確定した時点で見直す。
+- 終端処理は、盤の最終トラックの場合だけモデル化する。途中の音声トラックの終端 (停止、ループ、
+  次トラックへの移行) は UNKNOWN のため、`tick()` は到達を拒否する (`NotImplementedError`)。
 
 ## 未解決事項 (CD_PLAY 実装の前提)
 
@@ -47,7 +56,6 @@
 ## 次の作業の前提
 
 - 上記 1-3 と 6-7 が確定するまで CD_PLAY/CD_PAUSE/CD_SEARCH は実装しない。
-- 観測点は確認済み。ゲストからの `0xD8` 発行経路 (SCSI バス) を実装し、実コアで状態遷移を読めるまで
-  Geargrafx 診断ROMは BLOCKED のまま。
+- 観測点は確認済み。#135 のマージ後に、実コアで状態遷移を読めるまで Geargrafx 診断ROM は BLOCKED のまま。
 - 実コアでの PASS/FAIL を主張するには、フィクスチャ・ROM・エミュレータのハッシュを記録した
   実行結果が必要。本 PR はそれを含まない。
