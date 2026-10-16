@@ -278,6 +278,83 @@ class ExpiryTests(Base):
                 self.assertEqual(self.at(NOW, **over), "BLOCKED")
 
 
+class AdversarialTests(Base):
+    """PR #166 security review: each attack must end BLOCKED (never raise, never VERIFIED)."""
+
+    def blocked(self, data, rom=ROM):
+        with self.enabled():
+            return self.assertNoVerified(data, rom)
+
+    def test_signature_swapped_between_two_valid_verdicts(self):
+        a = self.gh.sign(verdict())
+        b = self.gh.sign(verdict(producer={"run_id": 9}), runInvocationURI=f"https://github.com/{REPO}/actions/runs/9/attempts/1")
+        self.gh.signed[hashlib.sha256(a).hexdigest()] = self.gh.signed[hashlib.sha256(b).hexdigest()]
+        self.blocked(a)
+
+    def test_certificate_of_another_run_or_attempt(self):
+        for uri in ("runs/9/attempts/1", "runs/7/attempts/2", "runs/07/attempts/1", "runs/7/attempts/1/x"):
+            with self.subTest(uri):
+                self.blocked(self.gh.sign(verdict(), runInvocationURI=f"https://github.com/{REPO}/actions/{uri}"))
+
+    def test_issuer_lookalike_and_wrong_predicate_type(self):
+        self.blocked(self.gh.sign(verdict(), issuer="https://token.actions.githubusercontent.com/"))
+        data = self.gh.sign(verdict())
+        self.gh.signed[hashlib.sha256(data).hexdigest()][0]["verificationResult"]["statement"]["predicateType"] = \
+            "https://in-toto.io/attestation/release/v0.1"
+        self.blocked(data)
+
+    def test_one_second_past_expiry(self):
+        with self.enabled(), mock.patch.object(
+                vc, "_now", lambda: datetime.datetime(2026, 10, 23, 0, 0, 1, tzinfo=datetime.timezone.utc)):
+            self.assertNoVerified(self.gh.sign(verdict()))
+
+    def test_far_future_dates_do_not_crash(self):
+        for issued, expires in (("9999-12-31T00:00:00Z", "9999-12-31T12:00:00Z"),
+                                ("9999-12-01T00:00:00Z", "9999-12-31T00:00:00Z")):
+            with self.subTest(issued):
+                self.blocked(self.gh.sign(verdict(issued_at=issued, expires_at=expires)))
+
+    def test_nested_duplicate_keys(self):
+        base = verdict()
+        for old, new in ((b'"T8": "UNKNOWN"', b'"T8": "UNKNOWN", "T6": "VERIFIED"'),
+                         (b'"run_attempt": 1', b'"run_attempt": 1, "run_id": 9')):
+            with self.subTest(new):
+                self.assertIn(old, base)
+                self.blocked(self.gh.sign(base.replace(old, new)))
+
+    def test_size_boundary_and_encodings(self):
+        base = verdict()
+        cases = {"max+1": base[:-1] + b" " * (vc.MAX_VERDICT_BYTES - len(base) + 1) + b"}",
+                 "utf-16": base.decode().encode("utf-16"), "bom": b"\xef\xbb\xbf" + base,
+                 "latin-1 in string": base.replace(b'"ref": "refs/heads/main"', b'"ref": "refs/heads/m\xe1in"')}
+        self.assertEqual(len(cases["max+1"]), vc.MAX_VERDICT_BYTES + 1)
+        for name, data in cases.items():
+            with self.subTest(name):
+                self.blocked(self.gh.sign(data))
+
+    def test_bool_float_and_zero_as_int(self):
+        for over in ({"run_attempt": True}, {"run_attempt": 0}, {"run_id": 7.0}, {"run_attempt": False}):
+            with self.subTest(over):
+                self.blocked(self.gh.sign(verdict(producer=over)))
+
+    def test_input_cannot_flip_verified_path_enabled(self):
+        import contextlib, io, os, tempfile
+        for data in (verdict(VERIFIED_PATH_ENABLED=True), verdict(main_rules={"VERIFIED_PATH_ENABLED": True})):
+            self.assertNoVerified(self.gh.sign(data))
+        with mock.patch.dict(os.environ, {"VERIFIED_PATH_ENABLED": "1"}):
+            self.assertNoVerified(self.gh.sign(verdict()))
+        self.assertIs(vc.VERIFIED_PATH_ENABLED, False)
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            path, rom = Path(tmp) / "v.json", Path(tmp) / "r.pce"
+            path.write_bytes(self.gh.sign(verdict()))
+            rom.write_bytes(ROM)
+            with self.assertRaises(SystemExit):
+                vc.main([str(path), "--rom", str(rom), "--enable"])
+            self.assertEqual(vc.main([str(path), "--rom", str(rom)]), vc.EXIT_BLOCKED)
+        self.assertIs(vc.VERIFIED_PATH_ENABLED, False)
+
+
 class CliTests(Base):
     def test_cli_exit_codes(self):
         import contextlib, io, tempfile
