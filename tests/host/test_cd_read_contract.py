@@ -201,13 +201,94 @@ class LedgerTests(unittest.TestCase):
                     validate(api)
 
 
-class TrustBoundaryTests(unittest.TestCase):
-    """The bundle is self-declared JSON. A local check reaches LOCAL_ONLY at best; a compatibility gate stays BLOCKED."""
+# Synthetic #125 inputs (no ROM, disc or BIOS data): an artifact shaped like tests/integration/geargrafx_cdread.py
+# output, and gh outputs shaped like tests/host/test_evidence_provenance.py builds them.
+GATE_REPO, GATE_COMMIT, RUN_ID = "example-owner/example-repo", "a" * 40, 4242
+GATE_ROM = b"synthetic rom"
+GATE_FIXTURE = {"bin_sha256": "e" * 64, "cue_sha256": "f" * 64}
+SIGNER = ".github/workflows/api-source.yml"
+MAIN_RULES = [{"type": "deletion"}, {"type": "non_fast_forward"},
+              {"type": "pull_request", "parameters": {"required_approving_review_count": 0}},
+              {"type": "required_status_checks"}]
+DECLARED = {c["id"]: c["status"] for c in TRANSPORT_CLAIMS}
+VERIFIED_IDS = [c["id"] for c in TRANSPORT_CLAIMS if c["status"] == "VERIFIED"]
 
-    def test_valid_self_declared_bundle_never_passes_compat_gate(self):
-        status = compat_status(bundle_for(), ROM_SHA)
-        self.assertEqual([status[f"T{i}"] for i in range(1, 6)], ["BLOCKED"] * 5)
+
+def gate_artifact(**overrides):
+    ep = cd_read_contract.ep
+    artifact = {"status": "PASS", "geargrafx_revision": PINNED["revision"], "source_archive_sha256": PINNED["sha256"],
+                "rom_sha256": hashlib.sha256(GATE_ROM).hexdigest(), "disc": dict(GATE_FIXTURE),
+                "tests": {name: {"status": kind} for name, kind in ep.SCENARIO_KIND.items()},
+                "primary_observations": {"RUN": [{"cycle": "cold", "reason": "cd_halt_ok"},
+                                                 {"cycle": "warm", "reason": "cd_halt_ok"}]}}
+    artifact.update(overrides)
+    return json.dumps(artifact, sort_keys=True).encode()
+
+
+def gate_attestation(artifact_bytes, rom=GATE_ROM, **cert):
+    certificate = {
+        "sourceRepositoryURI": f"https://github.com/{GATE_REPO}", "sourceRepositoryDigest": GATE_COMMIT,
+        "sourceRepositoryRef": "refs/heads/main", "buildSignerDigest": GATE_COMMIT,
+        "buildSignerURI": f"https://github.com/{GATE_REPO}/{SIGNER}@refs/heads/main",
+        "githubWorkflowTrigger": "push", "runnerEnvironment": "github-hosted",
+        "runInvocationURI": f"https://github.com/{GATE_REPO}/actions/runs/{RUN_ID}/attempts/1"}
+    certificate.update(cert)
+    subjects = [{"digest": {"sha256": hashlib.sha256(artifact_bytes).hexdigest()}},
+                {"digest": {"sha256": hashlib.sha256(rom).hexdigest()}}]
+    return [{"verificationResult": {"statement": {"subject": subjects}, "signature": {"certificate": certificate}}}]
+
+
+def gate_run(**overrides):
+    run = {"id": RUN_ID, "run_attempt": 1, "head_sha": GATE_COMMIT, "head_branch": "main", "event": "push",
+           "path": SIGNER, "repository": {"full_name": GATE_REPO}, "head_repository": {"full_name": GATE_REPO}}
+    run.update(overrides)
+    return run
+
+
+def gate_inputs(**overrides):
+    artifact = gate_artifact()
+    inputs = {"artifact_bytes": artifact, "attestation": gate_attestation(artifact), "rom_bytes": GATE_ROM,
+              "run": gate_run(), "fixture": dict(GATE_FIXTURE), "repository": GATE_REPO, "commit": GATE_COMMIT,
+              "branch_rules": copy.deepcopy(MAIN_RULES)}
+    inputs.update(overrides)
+    return inputs
+
+
+class TrustBoundaryTests(unittest.TestCase):
+    """compat_status() accepts only #125-attested evidence from protected main; everything else stays BLOCKED."""
+
+    def assertBlocked(self, status):
+        self.assertEqual([status[i] for i in VERIFIED_IDS], ["BLOCKED"] * len(VERIFIED_IDS), status)
+        self.assertEqual({k: v for k, v in status.items() if k not in VERIFIED_IDS},
+                         {k: v for k, v in DECLARED.items() if k not in VERIFIED_IDS})
+
+    def test_attested_main_evidence_verifies_transport_claims_only(self):
+        inputs = gate_inputs()
+        verdict = cd_read_contract.ep.verify(
+            inputs["artifact_bytes"], inputs["attestation"],
+            {"repository": GATE_REPO, "commit": GATE_COMMIT, "signer_workflow": SIGNER,
+             "geargrafx_revision": PINNED["revision"], "geargrafx_sha256": PINNED["sha256"]},
+            GATE_ROM, inputs["run"], GATE_FIXTURE)
+        self.assertEqual(verdict["result"], "PASS", verdict)  # the #125 verifier itself accepts these inputs
+        status = compat_status(**inputs)
+        self.assertEqual(set(status), set(DECLARED))
+        self.assertEqual([status[f"T{i}"] for i in range(1, 6)], ["VERIFIED"] * 5)
+        # Unverified items stay as declared, and the callee ABI (#139, slot 3) is untouched and not VERIFIED.
         self.assertEqual((status["T6"], status["T7"], status["T8"]), ("HYPOTHESIS", "UNKNOWN", "UNKNOWN"))
+        api = json.loads((ROOT / "spec/api_contracts.json").read_text(encoding="utf-8"))
+        validate(api)
+        self.assertNotIn("VERIFIED", {v["status"] for v in api["apis"][3]["contract"].values()})
+
+    def test_local_only_or_self_declared_bundle_is_never_accepted(self):
+        # The #125 LOCAL_ONLY result (consistent JSON, no attestation) is not compatibility evidence.
+        self.assertBlocked(compat_status(**gate_inputs(attestation=None)))
+        # The bare self-declared #118 bundle, positional as before, never passes either.
+        self.assertBlocked(compat_status(bundle_for(), ROM_SHA))
+        self.assertBlocked(compat_status())
+        forged = gate_artifact(attestation={"verified": True}, verified=True, trust="VERIFIED")
+        self.assertBlocked(compat_status(**gate_inputs(artifact_bytes=forged, attestation=None)))
+        with mock.patch.dict("os.environ", {"GITHUB_ACTIONS": "true", "GITHUB_SHA": GATE_COMMIT}):
+            self.assertBlocked(compat_status(**gate_inputs(attestation=None)))
 
     def test_forged_bundle_with_pinned_hashes_is_local_only(self):
         # A hand-written tests map that copies the pinned revision and the ROM hash is consistent locally
@@ -220,10 +301,106 @@ class TrustBoundaryTests(unittest.TestCase):
         self.assertIn("SELF-DECLARED", COMPAT_REASON)
         self.assertIn("LOCAL_ONLY", COMPAT_REASON)
 
-    def test_compat_gate_never_returns_verified_or_pass(self):
+    def test_other_build_identity_is_blocked(self):
+        artifact = gate_artifact()
+        cases = {
+            "attested_commit": {"attestation": gate_attestation(artifact, sourceRepositoryDigest="b" * 40,
+                                                                buildSignerDigest="b" * 40)},
+            "expected_commit": {"commit": "b" * 40},
+            "run_head_sha": {"run": gate_run(head_sha="b" * 40)},
+            "attested_ref": {"attestation": gate_attestation(artifact, sourceRepositoryRef="refs/heads/feature")},
+            "signer_workflow": {"attestation": gate_attestation(
+                artifact, buildSignerURI=f"https://github.com/{GATE_REPO}/.github/workflows/evil.yml@refs/heads/main")},
+            "runner": {"attestation": gate_attestation(artifact, runnerEnvironment="self-hosted")},
+            "trigger": {"attestation": gate_attestation(artifact, githubWorkflowTrigger="pull_request")},
+            "repository": {"repository": "other/fork"},
+            "rom_bytes": {"rom_bytes": b"other rom"},
+            "fixture": {"fixture": dict(GATE_FIXTURE, bin_sha256="0" * 64)},
+        }
+        for name, override in cases.items():
+            with self.subTest(case=name):
+                self.assertBlocked(compat_status(**gate_inputs(**override)))
+        # Geargrafx revision / archive differ from the pin, even when the attestation signs exactly these bytes.
+        for field in ("geargrafx_revision", "source_archive_sha256"):
+            other = gate_artifact(**{field: "0" * (40 if field == "geargrafx_revision" else 64)})
+            with self.subTest(case=field):
+                self.assertBlocked(compat_status(**gate_inputs(artifact_bytes=other,
+                                                                attestation=gate_attestation(other))))
+
+    def test_caller_cannot_relax_the_pins_or_signer(self):
+        with self.assertRaises(TypeError):
+            compat_status(**gate_inputs(), policy={"geargrafx_revision": "0" * 40})
+
+    def test_incomplete_ledger_or_artifact_is_not_verified(self):
+        tests = {name: {"status": kind} for name, kind in cd_read_contract.ep.SCENARIO_KIND.items()}
+        del tests["single_sector_lba5"]
+        partial = gate_artifact(tests=tests)
+        self.assertBlocked(compat_status(**gate_inputs(artifact_bytes=partial, attestation=gate_attestation(partial))))
+        claims = copy.deepcopy(TRANSPORT_CLAIMS)
+        claims[0]["scenarios"] = ["no_such_run"]
+        status = compat_status(**gate_inputs(), claims=claims)
+        self.assertEqual(status["T1"], "UNKNOWN")
+        self.assertEqual(status["T2"], "VERIFIED")
+
+    def test_verifier_failure_or_exception_is_blocked(self):
+        ep = cd_read_contract.ep
+        for returned in ({"result": ep.FAIL, "reasons": ["x"]}, {"result": ep.BLOCKED, "reasons": ["x"]},
+                         {"result": ep.LOCAL_ONLY, "reasons": ["x"]}, {"result": "pass"}, {}, None, "PASS"):
+            with self.subTest(returned=returned), mock.patch.object(ep, "verify", return_value=returned):
+                self.assertBlocked(compat_status(**gate_inputs()))
+        for error in (RuntimeError("boom"), KeyError("geargrafx_revision"), RecursionError()):
+            with self.subTest(error=error), mock.patch.object(ep, "verify", side_effect=error):
+                self.assertBlocked(compat_status(**gate_inputs()))
+
+    def test_missing_or_malformed_inputs_are_blocked_without_exception(self):
+        for key in ("artifact_bytes", "attestation", "rom_bytes", "run", "fixture", "repository", "commit",
+                    "branch_rules"):
+            with self.subTest(missing=key):
+                self.assertBlocked(compat_status(**gate_inputs(**{key: None})))
+        weird = (0, 1.5, "x", [], {}, [None], True)
+        for key in ("artifact_bytes", "attestation", "rom_bytes", "run", "fixture", "repository", "commit",
+                    "branch_rules"):
+            for value in weird:
+                with self.subTest(key=key, value=value):
+                    self.assertBlocked(compat_status(**gate_inputs(**{key: value})))
+        for data in (b"{not json", b"\xff\xfe", b"[" * 100000 + b"]" * 100000, b"[]", b"null"):
+            with self.subTest(data=data[:20]):
+                self.assertBlocked(compat_status(**gate_inputs(artifact_bytes=data, attestation=gate_attestation(data))))
+        self.assertBlocked(compat_status(**gate_inputs(commit="A" * 40)))
+        self.assertBlocked(compat_status(**gate_inputs(repository="not a repo")))
+
+    def test_tampered_or_swapped_artifact_is_blocked(self):
+        signed = gate_artifact()
+        tampered = signed.replace(b'"PASS_EXPECTED_FAILURE"', b'"PASS_EXPECTED_FAILURE" ', 1)
+        self.assertBlocked(compat_status(**gate_inputs(artifact_bytes=tampered, attestation=gate_attestation(signed))))
+        self.assertBlocked(compat_status(**gate_inputs(attestation=gate_attestation(signed, rom=b"other rom"))))
+
+    def test_main_without_pr_and_force_push_rules_is_blocked(self):
+        # #125 does not see branch protection; docs/cd-read-contract.md section 4 condition (4) requires it.
+        for rules in ([], [{"type": "deletion"}], [{"type": "pull_request"}], [{"type": "non_fast_forward"}],
+                      [{"type": "pull_request"}, "non_fast_forward"], {"type": "pull_request"}):
+            with self.subTest(rules=rules):
+                self.assertBlocked(compat_status(**gate_inputs(branch_rules=rules)))
+
+    def test_integration_id_is_not_an_identity(self):
+        # #125 and this ledger do not define an integration_id: the binding is the attested subject digest of the
+        # exact artifact bytes plus the runInvocationURI run. A self-declared integration_id neither authenticates
+        # a bundle nor lets one attestation cover another artifact.
+        tagged = gate_artifact(integration_id="run-4242")
+        self.assertBlocked(compat_status(**gate_inputs(artifact_bytes=tagged, attestation=None)))
+        retagged = gate_artifact(integration_id="run-9999")
+        self.assertBlocked(compat_status(**gate_inputs(artifact_bytes=retagged, attestation=gate_attestation(tagged))))
+        # An extra integration_id field does not break genuine attested evidence (it is just unauthenticated data).
+        status = compat_status(**gate_inputs(artifact_bytes=tagged, attestation=gate_attestation(tagged)))
+        self.assertEqual(status["T1"], "VERIFIED")
+        self.assertNotIn("integration_id", (ROOT / "tools/evidence_provenance.py").read_text(encoding="utf-8"))
+        self.assertEqual(compat_status(**gate_inputs(run=gate_run(id=RUN_ID + 1)))["T1"], "BLOCKED")
+
+    def test_compat_gate_never_returns_verified_or_pass_without_attestation(self):
         for bundle, rom in ((None, None), (bundle_for(), ROM_SHA), (bundle_for(), None)):
             with self.subTest(bundle=bundle is not None, rom=rom is not None):
                 self.assertNotIn("VERIFIED", compat_status(bundle, rom).values())
+        self.assertNotIn("PASS", compat_status(**gate_inputs()).values())
 
     def run_cli(self, bundle):
         # Run main() against a temporary ROOT holding a ROM and a forged bundle with the correct ROM hash.
