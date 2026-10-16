@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Reference-case fixture validator; execution is currently blocked.
+"""Reference-case fixture validator and guarded local executor.
 
-Even a reviewed slot-1e fixture cannot execute until the real emulator core
-independently enforces runtime RAM/I/O write boundaries. JSON observations and
-post-run diffs are not enforcement and cannot be used as an ABI oracle.
+A reviewed slot-1e fixture now executes through the guarded C++ probe, which
+independently enforces RAM write boundaries *during* execution (in-core write
+protection + CPU-address breakpoints) and whose forbidden-write rejection is
+proven by the synthetic negative test ``tests/integration/geargrafx_reference_guard.py``.
+Observations remain LOCAL_ONLY evidence, never ABI verification.
 """
 import argparse
 import hashlib
@@ -13,12 +15,14 @@ from pathlib import Path
 
 from reference_case_catalog import classify
 from reference_bios_preflight import validate
-from reference_bios_runner import Blocked
+from reference_bios_runner import Blocked, run
 
 CATALOG_SCHEMA = "oss-pce-cd-bios/reference-test-catalog/v1"
 ALLOWED_API = "slot-1e"
 ALLOWED_CASES = {ALLOWED_API + "/" + category for category in
                  ("candidate_nominal", "boundary", "invalid_or_timeout")}
+# The guarded probe drives a fixed synthetic caller. Fixtures must match it exactly.
+GUEST_CALLER = (0xAA, 0x55, 0xCC, 0xFF)  # initial_a, initial_x, initial_y, initial_sp
 
 
 def validate_case_pair(case, config):
@@ -41,9 +45,9 @@ def validate_case_pair(case, config):
     if any(type(fixture[n]) is not int or not 0 <= fixture[n] <= 255
            for n in ("initial_a", "initial_x", "initial_y", "initial_sp")):
         raise Blocked("invalid register fixture")
-    # Current C++ observer uses the following explicit constants. Reject anything else
-    # rather than pretending that it parameterizes guest registers.
-    if tuple(fixture[n] for n in ("initial_a", "initial_x", "initial_y", "initial_sp")) != (0, 0, 0, 255):
+    # Current C++ observer preloads the following fixed caller registers. Reject anything
+    # else rather than pretending the fixture parameterizes guest registers.
+    if tuple(fixture[n] for n in ("initial_a", "initial_x", "initial_y", "initial_sp")) != GUEST_CALLER:
         raise Blocked("fixture differs from actual hardwired guest caller")
     if fixture["expected_entry"] != "0xE05A":
         raise Blocked("entry differs from supported slot")
@@ -52,14 +56,9 @@ def validate_case_pair(case, config):
 
 
 def execute_case(case, config, adapter):
-    """Validate a proposed fixture, then refuse unguarded reference API execution.
-
-    Do not change this gate to call the adapter until the C++ core enforces
-    write allowlists *during* execution (including mapped devices) and a
-    real-core negative test demonstrates a forbidden write is prevented.
-    """
+    """Validate a reviewed fixture, then run it through the guarded real-core adapter."""
     validate_case_pair(case, config)
-    raise Blocked("runtime RAM/I/O write enforcement NOT_IMPLEMENTED; reference API execution BLOCKED")
+    return run(config, adapter)
 
 
 def main(argv=None):
@@ -78,9 +77,14 @@ def main(argv=None):
         if len(matching) != 1:
             raise Blocked("case ID absent or duplicated")
         config = json.loads(args.config.read_text(encoding="utf-8"))
-        execute_case(matching[0], config, args.adapter)
-        # Defense in depth: no success or output path until runtime guarding is implemented.
-        raise Blocked("reference API execution remains disabled")
+        observation = execute_case(matching[0], config, args.adapter)
+        if args.output:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(json.dumps({"trust": "LOCAL_ONLY_NOT_VERIFIED",
+                                               "observation": observation},
+                                              indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        print("OBSERVED LOCAL_ONLY: guarded slot-1e case executed; no VERIFIED claim")
+        return 0
     except (OSError, ValueError, TypeError, KeyError) as error:
         print(f"BLOCKED: {error}", file=sys.stderr)
         return 2

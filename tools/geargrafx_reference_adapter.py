@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
-"""Local Geargrafx reference reset observer; no functional API execution is enabled.
+"""Local Geargrafx reference observer for the private System Card BIOS.
 
-The test-ROM digest is checked by the driver but the test ROM is NOT executed.
-The experimental slot-1e guest JSR is disabled until actual in-core RAM and I/O
-write enforcement exists. A post-run empty ram_diff is not such enforcement.
+Two observation modes are supported, both driven by the pinned upstream core:
+
+* ``reference-reset-only`` measures the real reset vector state.
+* ``slot-1e`` calls the slot-0x1E API entry (EX_GETVER) from a synthetic guest
+  stub. It runs ONLY through the guarded C++ probe ``geargrafx_reference_jsr.cpp``,
+  which enforces in-core RAM write protection (``Memory::GetMemoryMapWrite``),
+  in-core CPU-address write breakpoints, hardware-page isolation and a per
+  instruction budget. A post-run empty ``ram_diff`` is never treated as proof.
+
+This adapter is local-only: it links the private BIOS and the GPL core. It is
+never bundled, never uploaded and never run in CI.
 """
 import argparse
 import json
@@ -17,23 +25,95 @@ sys.path.insert(0, str(ROOT / "tests/integration"))
 from geargrafx_api import compile_probe
 
 SCHEMA = "oss-pce-cd-bios/reference-observation/v1"
+JSR_CHECKPOINT = "slot_1e_ex_getver_returned_to_caller"
+JSR_STATE_FIELDS = ("a", "x", "y", "p", "sp", "pc")
 
 
-
-def observe_jsr(config):
-    """Reject unsupported JSR execution before compilation or loading private BIOS.
-
-    An instruction budget and a post-run RAM diff cannot prove that intermediate
-    RAM writes or memory-mapped I/O side effects respected an allowlist.
-    The C++ proof of concept is retained but disconnected until the core can
-    enforce and independently report all writes while it executes.
-    """
+def validate_jsr_config(config):
+    """Reject anything the guarded slot-1e probe cannot safely honour."""
     if config.get("api_id") != "slot-1e":
         raise ValueError("BLOCKED: reference JSR experiment supports only slot-1e")
     budget = config.get("max_instructions")
-    if type(budget) is not int or not 3 <= budget <= 1000000:
+    if type(budget) is not int or not 4 <= budget <= 1_000_000:
         raise ValueError("BLOCKED: invalid JSR instruction budget")
-    raise ValueError("BLOCKED: slot-1e runtime RAM/I/O write guard is NOT_IMPLEMENTED")
+    allow = config.get("ram_write_allowlist")
+    if (type(allow) is not list or len(allow) != 1 or type(allow[0]) is not dict
+            or set(allow[0]) != {"start", "end"}):
+        raise ValueError("BLOCKED: slot-1e requires exactly one RAM allowlist page interval")
+    start, end = allow[0]["start"], allow[0]["end"]
+    if (type(start) is not int or type(end) is not int
+            or start % 0x2000 or end % 0x2000 or not start < end <= 0x10000):
+        raise ValueError("BLOCKED: slot-1e allowlist must be page-aligned (8 KiB)")
+    return budget, start, end
+
+
+def _check_state(state):
+    if type(state) is not dict or set(state) != set(JSR_STATE_FIELDS) | {"mpr"}:
+        raise ValueError("BLOCKED: JSR probe state has the wrong shape")
+    for key in JSR_STATE_FIELDS:
+        value = state[key]
+        limit = 0xFFFF if key == "pc" else 0xFF
+        if type(value) is not int or not 0 <= value <= limit:
+            raise ValueError("BLOCKED: JSR probe register out of range")
+    mpr = state["mpr"]
+    if type(mpr) is not list or len(mpr) != 8 or any(type(x) is not int or not 0 <= x <= 0xFF for x in mpr):
+        raise ValueError("BLOCKED: JSR probe MPR snapshot invalid")
+
+
+def jsr_observation(row):
+    """Map a guarded-probe JSON record to a fail-closed observation, or raise BLOCKED."""
+    if type(row) is not dict or row.get("mode") != "call":
+        raise ValueError("BLOCKED: real-core JSR probe emitted no call record")
+    if row.get("status") != "ok":
+        raise ValueError(f"BLOCKED: real-core JSR probe rejected the call: {row.get('reason', '')}")
+    if row.get("entry_reached") is not True or row.get("returned") is not True:
+        raise ValueError("BLOCKED: JSR probe never entered and returned from the slot entry")
+    if row.get("detected") is not False:
+        raise ValueError("BLOCKED: JSR probe observed a store outside the allowlist")
+    _check_state(row.get("before"))
+    _check_state(row.get("after"))
+    diffs = row.get("ram_diff")
+    if type(diffs) is not list:
+        raise ValueError("BLOCKED: JSR probe RAM diff missing")
+    executed = row.get("instructions_executed")
+    if type(executed) is not int or not 0 < executed:
+        raise ValueError("BLOCKED: JSR probe instruction count invalid")
+    after = row["after"]
+    return {
+        "schema": SCHEMA, "api_id": "slot-1e", "status": "OBSERVED", "engine": "geargrafx",
+        "checkpoint": JSR_CHECKPOINT,
+        "registers": {key: after[key] for key in JSR_STATE_FIELDS},
+        "mpr": after["mpr"],
+        "ram_diff": diffs,
+        "instructions_executed": executed,
+        "before": row["before"],
+        "after": after,
+        "call": {"entry_reached": True, "callee_pc": row["callee_pc"], "returned": True},
+        "guard": {"detected": False, "status": "no_violation"},
+    }
+
+
+def observe_jsr(config):
+    """Call slot 0x1E through the guarded probe; in-core enforcement is mandatory."""
+    budget, allow_start, allow_end = validate_jsr_config(config)
+    # Local probe compilation uses the pinned Geargrafx debugger build, never bundled.
+    with tempfile.TemporaryDirectory(prefix="pce-reference-jsr-") as tmp:
+        out = Path(tmp)
+        probe = compile_probe(out, source_name="geargrafx_reference_jsr.cpp",
+                              target_name="reference-jsr-probe")
+        (out / "synthetic.bin").write_bytes(bytes(2352 * 32))
+        cue = out / "synthetic.cue"
+        cue.write_text('FILE "synthetic.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
+        cp = subprocess.run([str(probe), str(Path(config["bios_path"]).resolve()), str(cue),
+                             "0x1e", str(budget), hex(allow_start), hex(allow_end), "call", "0"],
+                            capture_output=True, text=True, timeout=60, check=False)
+        if cp.returncode or len(cp.stdout) > 1 << 20 or len(cp.stderr) > 1 << 16:
+            raise ValueError("BLOCKED: actual Geargrafx JSR probe failed")
+        try:
+            row = json.loads(cp.stderr)
+        except (ValueError, TypeError) as error:
+            raise ValueError("BLOCKED: real-core JSR probe emitted no JSON observation") from error
+        return jsr_observation(row)
 
 
 def observe(config):
@@ -56,9 +136,13 @@ def observe(config):
         cp = subprocess.run([str(probe), str(Path(config["bios_path"]).resolve()),
                              str(cue), str(budget), "auto"],
                             capture_output=True, text=True, timeout=25, check=False)
-        if cp.returncode or len(cp.stdout) > 8192:
+        if cp.returncode or len(cp.stdout) > 65536 or len(cp.stderr) > 8192:
             raise ValueError("BLOCKED: actual Geargrafx reference reset probe failed")
-        row = json.loads(cp.stdout)
+        # The core logs to stdout; the probe emits exactly one JSON record on stderr.
+        try:
+            row = json.loads(cp.stderr)
+        except (ValueError, TypeError) as error:
+            raise ValueError("BLOCKED: real-core reset probe emitted no JSON observation") from error
         if type(row) is not dict or set(row) != {"checkpoint", "instructions_executed", "registers", "mpr"}:
             raise ValueError("BLOCKED: real-core probe produced wrong shape")
         return {

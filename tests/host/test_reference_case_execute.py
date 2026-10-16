@@ -13,8 +13,8 @@ class ReferenceCaseExecuteTests(unittest.TestCase):
             "id": "slot-1e/candidate_nominal", "api_id": "slot-1e",
             "reviewed_abi": True, "measurement_status": "NOT_MEASURED",
             "expected": None, "timeout_instructions": 100,
-            "input_fixture": {"mode": "synthetic_guest_jsr", "initial_a": 0,
-                              "initial_x": 0, "initial_y": 0, "initial_sp": 255,
+            "input_fixture": {"mode": "synthetic_guest_jsr", "initial_a": 0xAA,
+                              "initial_x": 0x55, "initial_y": 0xCC, "initial_sp": 255,
                               "expected_entry": "0xE05A"},
         }
         self.cfg = {
@@ -30,9 +30,9 @@ class ReferenceCaseExecuteTests(unittest.TestCase):
     def test_explicit_reviewed_fixture_can_reach_adapter_boundary(self):
         self.assertIsNone(validate_case_pair(self.case, self.cfg))
 
-    def test_even_reviewed_case_never_executes_without_in_core_write_guard(self):
-        # This must refuse before the runner, filesystem access, or private BIOS load.
-        with self.assertRaisesRegex(Blocked, "runtime RAM/I/O write enforcement NOT_IMPLEMENTED"):
+    def test_reviewed_case_still_requires_an_audited_adapter(self):
+        # Even with in-core enforcement, execution must fail closed without a real adapter.
+        with self.assertRaisesRegex(Blocked, "adapter is NOT_IMPLEMENTED or missing"):
             execute_case(self.case, self.cfg, "nonexistent-adapter")
 
     def test_unreviewed_blocked(self):

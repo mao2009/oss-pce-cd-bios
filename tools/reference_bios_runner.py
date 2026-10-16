@@ -18,8 +18,12 @@ from reference_bios_preflight import validate
 ROOT = Path(__file__).resolve().parents[1]
 FIELDS = {"schema", "api_id", "status", "engine", "checkpoint", "registers", "mpr",
           "ram_diff", "instructions_executed"}
+# A guarded slot-1e call additionally reports the caller/entry/callee states and the
+# in-core guard verdict. Reset observation keeps the original nine-field shape.
+JSR_FIELDS = FIELDS | {"before", "after", "call", "guard"}
 OBS_SCHEMA = "oss-pce-cd-bios/reference-observation/v1"
 REGS = {"a", "x", "y", "p", "sp", "pc"}
+STATE_FIELDS = REGS | {"mpr"}
 
 
 class Blocked(ValueError):
@@ -34,8 +38,23 @@ def sha(path):
     return h.hexdigest()
 
 
+def _check_state(state):
+    if type(state) is not dict or set(state) != STATE_FIELDS:
+        raise Blocked("invalid CPU state snapshot")
+    for key in REGS:
+        value = state[key]
+        limit = 65535 if key == "pc" else 255
+        if type(value) is not int or not 0 <= value <= limit:
+            raise Blocked("invalid CPU state register")
+    mpr = state["mpr"]
+    if type(mpr) is not list or len(mpr) != 8 or any(type(x) is not int or not 0 <= x <= 255 for x in mpr):
+        raise Blocked("invalid CPU state MPR snapshot")
+
+
 def check_observation(observation, cfg):
-    if type(observation) is not dict or set(observation) != FIELDS:
+    jsr = cfg.get("api_id") == "slot-1e"
+    fields = JSR_FIELDS if jsr else FIELDS
+    if type(observation) is not dict or set(observation) != fields:
         raise Blocked("adapter observation schema mismatch")
     if (observation["schema"] != OBS_SCHEMA or observation["api_id"] != cfg["api_id"]
             or observation["engine"] != "geargrafx"
@@ -66,6 +85,23 @@ def check_observation(observation, cfg):
                 or a in seen or not any(r["start"] <= a < r["end"] for r in allow)):
             raise Blocked("out-of-range or duplicate RAM diff")
         seen.add(a)
+    if not jsr:
+        return
+    _check_state(observation["before"])
+    _check_state(observation["after"])
+    if observation["registers"] != {k: observation["after"][k] for k in REGS}:
+        raise Blocked("returned registers disagree with the after-call state")
+    if observation["mpr"] != observation["after"]["mpr"]:
+        raise Blocked("returned MPR snapshot disagrees with the after-call state")
+    call = observation["call"]
+    if (type(call) is not dict or set(call) != {"entry_reached", "callee_pc", "returned"}
+            or call["entry_reached"] is not True or call["returned"] is not True
+            or type(call["callee_pc"]) is not int or not 0 <= call["callee_pc"] <= 65535):
+        raise Blocked("slot-1e call did not enter and return from the callee")
+    guard = observation["guard"]
+    if (type(guard) is not dict or set(guard) != {"detected", "status"}
+            or guard["detected"] is not False or guard["status"] != "no_violation"):
+        raise Blocked("slot-1e guard did not confirm an in-allowlist run")
 
 
 def run(cfg, adapter):
