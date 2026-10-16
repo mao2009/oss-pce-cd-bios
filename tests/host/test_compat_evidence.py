@@ -67,6 +67,27 @@ class ConflictNoteTests(unittest.TestCase):
         self.assertEqual(sum('conflict' in reason for reason in result['reasons']), 1)
 
 
+class ForgedClaimTests(unittest.TestCase):
+    """Type-abnormal reporter claims fail closed and never reach PASS or the conflict note."""
+
+    def test_abnormal_result_claims_are_fail(self):
+        class Lying(str):
+            def __eq__(self, other):
+                return other == 'BLOCKED'
+            __hash__ = str.__hash__
+        for bad in (None, 1, True, b'PASS', ['PASS'], {'a': 'PASS'}, Lying('PASS'), 'PASS
+conflict: x', 'pass'):
+            with self.subTest(bad=bad):
+                result = run(record('homebrew', result=bad, blocker='x'))
+                self.assertEqual(result['result'], 'FAIL')
+                self.assertFalse(any('conflict' in str(r) for r in result['reasons']))
+
+    def test_abnormal_blocker_is_fail(self):
+        for bad in (['x'], {'a': 1}, b'x', 5):
+            with self.subTest(bad=bad):
+                self.assertEqual(run(record('homebrew', result='BLOCKED', blocker=bad))['result'], 'FAIL')
+
+
 class VerdictPositiveTests(unittest.TestCase):
     def test_homebrew_runner_only_is_not_pass_without_a_judge(self):
         # No #119 label exists for homebrew, so no probe can judge it: BLOCKED (reporter PASS -> overclaim FAIL).
