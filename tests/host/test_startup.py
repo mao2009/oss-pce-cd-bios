@@ -113,7 +113,7 @@ class StartupBuildTests(unittest.TestCase):
         self.assertFalse(manifest["release_eligible"])
         self.assertEqual(manifest["api_implementation"], "NONE")
         self.assertEqual(manifest["final_system_card_layout"], "UNKNOWN")
-        self.assertEqual(manifest["cd_state_value"], 0)
+        self.assertEqual(manifest["cd_state_value"], 1)
         self.assertFalse(manifest["cd_disc_presence_read"])
         self.assertEqual(manifest["startup_symbols"], {name: 0xf000 + pos for name, pos in SYMBOL_OFFSETS.items()})
 

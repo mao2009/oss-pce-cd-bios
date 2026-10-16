@@ -26,7 +26,7 @@ STARTUP_CODE = bytes.fromhex(
     "a2 ff 9a "
     "a9 42 8d 00 22 a9 4f 8d 01 22 8d 02 22 "
     "a9 54 8d 03 22 a9 21 8d 04 22 "
-    "a9 00 8d 05 22 "
+    "a9 01 8d 05 22 "
     "a2 b0 80 fe a2 ee 80 fe"
 )
 SYMBOL_OFFSETS = {
@@ -115,7 +115,7 @@ def build_startup(original_path: Path, output: Path, mode="debug") -> Path:
         "pinned_cc65": DEPENDENCIES["cc65"]["revision"],
         "startup_symbols": symbols, "expected_mpr": EXPECTED_MPR,
         "marker": MARKER.hex(), "marker_address": "2200",
-        "cd_state_address": "2205", "cd_state_value": 0, "cd_disc_presence_read": False,
+        "cd_state_address": "2205", "cd_state_value": 1, "cd_disc_presence_read": False,
         "api_implementation": "NONE",
         "final_system_card_layout": "UNKNOWN", "release_eligible": False,
     }

@@ -40,8 +40,8 @@ startup_marker_write:
     lda #$21                 ; !
     sta $2204
 startup_cd_state:
-    lda #$00                 ; CD init state: startup never reads the CD controller, so disc
-    sta $2205                ; presence cannot change this byte (synthetic disc = NOT_PROBED)
+    lda #$01                 ; CD init state: startup never reads the CD controller, so disc
+    sta $2205                ; presence cannot change this byte (synthetic disc = NOT_PROBED); non-zero so it cannot equal power-on RAM 0
     ldx #$B0                 ; startup-specific diagnostic ID, NOT a return value
 startup_checkpoint:
     bra startup_checkpoint  ; bounded real CPU observation, no fabricated success
