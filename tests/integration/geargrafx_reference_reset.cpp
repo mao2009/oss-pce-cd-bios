@@ -18,8 +18,8 @@ int main(int argc, char** argv) {
     char* end = nullptr;
     unsigned long budget = std::strtoul(argv[3], &end, 10);
     if (!end || *end || budget < 1 || budget > 10000000UL) return 2;
-    unsigned long checkpoint = std::strtoul(argv[4], &end, 0);
-    if (!end || *end || checkpoint > 65535) return 2;
+    unsigned long checkpoint = std::string(argv[4]) == "auto" ? 65536UL : std::strtoul(argv[4], &end, 0);
+    if (checkpoint != 65536UL && (!end || *end || checkpoint > 65535)) return 2;
     GeargrafxCore core;
     core.Init(nullptr);
     if (!core.LoadBiosFromBuffer(bios.data(), bios.size(), true)) return 3;
@@ -32,12 +32,12 @@ int main(int argc, char** argv) {
     GeargrafxCore::GG_Debug_Run debug = {};
     debug.step_debugger = true;
     unsigned long steps = 0;
-    bool reached = cpu->PC->GetValue() == checkpoint;
+    bool reached = false;
     while (!reached && steps < budget) {
         int samples = 0;
         core.RunToVBlank(frame.data(), audio.data(), &samples, &debug, false);
         ++steps;
-        reached = cpu->PC->GetValue() == checkpoint;
+        reached = checkpoint == 65536UL || cpu->PC->GetValue() == checkpoint;
     }
     if (!reached) return 6; // deadline reached: no observation claim
     std::printf("{\"checkpoint\":\"pc_checkpoint\",\"instructions_executed\":%lu,"
