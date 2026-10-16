@@ -114,8 +114,17 @@ class ClassifyRunTests(unittest.TestCase):
                 self.assertEqual((verdict.outcome, verdict.category), (FAIL, "PROTOCOL_MISMATCH"), (count, bad))
 
     def test_boundary_count_three_is_valid_and_nine_is_not_reported_for_it(self):
-        self.assertEqual(classify_run(run(code=9, stage=1, reason="cd_halt_fail"), 3).category, "INVALID_REQUEST")
+        self.assertEqual(classify_run(run(code=9, stage=1, reason="cd_halt_fail"), 3).category, "PROTOCOL_MISMATCH")
         self.assertEqual(classify_run(run(code=9, stage=1, reason="cd_halt_fail"), 3, expect=0).outcome, FAIL)
+
+    def test_negative_code_nine_on_valid_count_is_protocol_mismatch_even_when_expected(self):
+        # regression (ChatGPT PRRT_kwDOVA3gN86tCRLe): code 9 is only produced for a refused count, so a valid
+        # count must FAIL with code 9 even when the caller expects 9
+        for count in (1, 2, 3):
+            for expect in (None, 9):
+                verdict = classify_run(run(code=9, stage=1, transferred=0, reason="cd_halt_fail"), count,
+                                       expect=expect)
+                self.assertEqual((verdict.outcome, verdict.category), (FAIL, "PROTOCOL_MISMATCH"), (count, expect))
 
     def test_boundary_partial_transfer_before_premature_status_is_reported(self):
         verdict = classify_run(run(code=5, stage=5, transferred=4096, reason="cd_halt_fail"), 3, expect=5)

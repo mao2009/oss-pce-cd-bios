@@ -97,6 +97,11 @@ def classify_run(run, count, expect=None, media=True):
     else:
         if code == 0:
             return _verdict(FAIL, 'PROTOCOL_MISMATCH', f'{cycle}: failure halt with code 0', 0, MEASURED, transferred)
+        if code == 9:
+            # code 9 is only produced for a refused count (above), so a valid count with code 9 is a protocol
+            # mismatch whatever `expect` says
+            return _verdict(FAIL, 'PROTOCOL_MISMATCH', f'{cycle}: code 9 (invalid request) for valid count {count}',
+                            9, MEASURED, transferred)
         if code not in CODES:
             return _verdict(FAIL, 'UNKNOWN_CODE', f'{cycle}: unrecognised code {code:#x}', code, HYPOTHESIS, transferred)
         category, evidence = CODES[code]
