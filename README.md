@@ -32,6 +32,10 @@ The goal is **behavioral compatibility**, not binary identity with any proprieta
 
 **Important:** references describe the System Card function jump table around CPU address `$E000`, but precise bank mapping, ABI and service behavior must be validated per revision. Geargrafx documentation lists a `syscard` BIOS type of 256 KiB; this is a *loader target*, not confirmation that any arbitrary 256 KiB image boots.
 
+## Optional local ROM and disc images
+
+For local, **optional** diagnostics, contributors can put their own lawfully obtained game-disc images or separate System Card reference ROMs under `./rom/`. The directory is Git-ignored and is not required by setup, public tests, or CI. Tool-specific format support and test commands still apply; placing files there does **not** automatically run tests or establish BIOS/game compatibility. See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md).
+
 ## Documentation
 
 - [Actual implementation status (main vs Draft PR)](docs/status.md)
