@@ -163,7 +163,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" --commit "$(git rev-parse HEAD)" \
             --attestation "$RUNNER_TEMP/attestation-verify.json" --run "$RUNNER_TEMP/workflow-run.json" \
             --rom "$evidence/cdread-probe-not-bios.pce"
-      - name: Produce CD_READ verdict (Issue #156; docs/verdict-schema.md v1; T1-T5 written BLOCKED, never VERIFIED)
+      - name: Produce CD_READ verdict (Issue #156; docs/verdict-schema.md v1; T1-T5 from attested scenario coverage + approval boundary, BLOCKED at 0 approvals)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
