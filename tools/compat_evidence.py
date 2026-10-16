@@ -5,6 +5,7 @@ missing input yields BLOCKED/SKIP, any unsupported or contradicted claim yields
 FAIL, and PASS requires every rule for the claimed stage to hold.
 """
 import json
+import os
 import re
 import sys
 
@@ -28,9 +29,38 @@ CHECK_STAGE = RANK['startup']
 HOMEBREW_STAGE = RANK['homebrew']
 RETAIL_STAGE = RANK['retail-boot']
 
+# Stage-specific execution evidence (names and rules mirror the #119 trace judge, geargrafx_harness.classify).
+STAGE_LABEL = {'playable': 'playable-reached', 'save-tested': 'save-reached',
+               'completion-tested': 'completion-reached'}
+REQUIRED_CYCLES = ('cold', 'warm')
+CAP_FLAGS = ('instruction_step', 'cdrom_hardware', 'cdrom_media', 'disc_given')
+HALT_CONFIRM_STEPS = 64
+TRUST_LOCAL = 'local-only, untrusted (unsigned JSON; not certifiable)'
+TRUST_CI = 'ci-job runner output (unsigned; trust rests on workflow integrity)'
+
 
 def _is_hex(value, pattern):
     return isinstance(value, str) and pattern.fullmatch(value) is not None
+
+
+def _is_int(value):
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def check_halt_confirmation(run):
+    """Same rule as #119 check_halt_confirmation: 64 consecutive halt-loop instructions, fail-closed."""
+    cycle = run.get('cycle')
+    try:
+        confirmed, steps = run['halt_confirmed'], run['halt_confirmation_steps']
+        required, arrival, step = run['halt_confirmation_required'], run['halted_after_step'], run['step']
+    except KeyError as missing:
+        raise ValueError(f'{cycle}: halt confirmation evidence missing ({missing})') from None
+    if confirmed is not True:
+        raise ValueError(f'{cycle}: halt not confirmed (halt_confirmed={confirmed!r})')
+    if required != HALT_CONFIRM_STEPS or steps != HALT_CONFIRM_STEPS:
+        raise ValueError(f'{cycle}: halt confirmation covered {steps} of {required} steps, need {HALT_CONFIRM_STEPS}')
+    if not _is_int(arrival) or arrival < 0 or not _is_int(step) or step != arrival + steps:
+        raise ValueError(f'{cycle}: halt confirmation step accounting inconsistent')
 
 
 def validate(record):
@@ -113,6 +143,57 @@ def _attestation(record, runner):
     return findings
 
 
+def _stage_findings(stage, runner):
+    """Runner-verified stage evidence for playable / save-tested / completion-tested.
+
+    Only runner['stage_evidence'] counts; trace_deltas and any record field never do. Missing
+    evidence is BLOCKED. Present but contradicting the #119 rules (exit, HIT order, RUN count,
+    halt confirmation, step bounds, probe kind) is FAIL.
+    """
+    evidence = runner.get('stage_evidence') if isinstance(runner, dict) and runner.get('verified') is True else None
+    if not isinstance(evidence, dict):
+        return [('BLOCKED', f'stage-specific runner evidence required for {stage}')]
+    if evidence.get('stage') != stage:
+        return [('FAIL', f"stage evidence is for {evidence.get('stage')!r}, not {stage!r}")]
+    findings = []
+    expect = STAGE_LABEL[stage]
+    if evidence.get('expect') != expect:
+        findings.append(('FAIL', f"stage evidence expects {evidence.get('expect')!r}, need {expect!r}"))
+    if evidence.get('probe_kind') != 'cdread':
+        findings.append(('FAIL', 'probe_kind must be cdread (the api probe emits no RUN records)'))
+    exit_code = evidence.get('exit_code')
+    if not _is_int(exit_code) or exit_code != 0 \
+            or evidence.get('timed_out') is not False or evidence.get('output_capped') is not False:
+        findings.append(('FAIL', 'probe did not exit 0 within the time and output limits'))
+    cap = evidence.get('cap')
+    if not isinstance(cap, dict) or any(cap.get(flag) is not True for flag in CAP_FLAGS):
+        findings.append(('BLOCKED', 'incomplete capability record (instruction step, CD hardware, media or disc)'))
+    budget = evidence.get('budget')
+    if not _is_int(budget) or budget < 1:
+        findings.append(('FAIL', 'budget must be a positive integer'))
+        budget = None
+    runs = evidence.get('runs')
+    if not isinstance(runs, list) or not all(isinstance(run, dict) for run in runs):
+        return findings + [('FAIL', 'runs must be a list of RUN records')]
+    other = [str(run.get('reason')) for run in runs if run.get('reason') != expect]
+    if other:
+        findings.append(('FAIL', f"run ended without {expect!r}: {', '.join(other)}"))
+    if [run.get('cycle') for run in runs] != list(REQUIRED_CYCLES):
+        findings.append(('FAIL', f'RUN records must be exactly one cold then one warm, got '
+                                 f"{[run.get('cycle') for run in runs]}"))
+    for run in runs:
+        cycle, step, hits = run.get('cycle'), run.get('step'), run.get('hits_before_run')
+        if not _is_int(step) or step < 0 or (budget is not None and step > budget):
+            findings.append(('FAIL', f'{cycle}: step must be an integer in 0..{budget}'))
+        try:
+            check_halt_confirmation(run)
+        except ValueError as error:
+            findings.append(('FAIL', str(error)))
+        if not _is_int(hits) or hits != 1:
+            findings.append(('FAIL', f'{cycle}: success HIT missing, repeated or after its RUN'))
+    return findings
+
+
 def verdict(record, runner=None):
     """Return {'result', 'blocker', 'reasons'} for a record; never PASS on bad evidence.
 
@@ -148,6 +229,11 @@ def verdict(record, runner=None):
                 findings.append(('FAIL', f"checkpoint {item['name']} mismatch"))
     if rank > HOMEBREW_STAGE and not record.get('trace_deltas'):
         findings.append(('BLOCKED', 'guest trace deltas required above homebrew'))
+    if record['stage'] in STAGE_LABEL:
+        findings.extend(_stage_findings(record['stage'], runner))
+        if not any(isinstance(item, dict) and item.get('name') == STAGE_LABEL[record['stage']]
+                   for item in record.get('checkpoints') or []):
+            findings.append(('BLOCKED', f"stage checkpoint {STAGE_LABEL[record['stage']]!r} missing from record"))
     if findings:
         computed = min((result for result, _ in findings), key=WORST_FIRST.index)
     else:
@@ -162,15 +248,31 @@ def verdict(record, runner=None):
 
 
 def main(argv):
-    if len(argv) not in (2, 3):
-        print('usage: compat_evidence.py RECORD.json [RUNNER_ATTESTATION.json]', file=sys.stderr)
+    """CLI: `[--ci] RECORD.json [RUNNER.json]`. Without --ci the input is local, untrusted JSON.
+
+    A local PASS for an execution stage is printed as BLOCKED (local_verdict keeps the raw result),
+    so unsigned JSON never yields a compatibility PASS. --ci is accepted only inside GitHub Actions.
+    """
+    ci = '--ci' in argv[1:]
+    args = [arg for arg in argv[1:] if arg != '--ci']
+    if len(args) not in (1, 2):
+        print('usage: compat_evidence.py [--ci] RECORD.json [RUNNER_ATTESTATION.json]', file=sys.stderr)
+        return 2
+    if ci and os.environ.get('GITHUB_ACTIONS') != 'true':
+        print('refused: --ci is accepted only inside GitHub Actions', file=sys.stderr)
         return 2
     runner = None
-    if len(argv) == 3:
-        with open(argv[2], encoding='utf-8') as handle:
+    if len(args) == 2:
+        with open(args[1], encoding='utf-8') as handle:
             runner = json.load(handle)
-    with open(argv[1], encoding='utf-8') as handle:
-        result = verdict(json.load(handle), runner)
+    with open(args[0], encoding='utf-8') as handle:
+        record = json.load(handle)
+    local = verdict(record, runner)
+    result = dict(local, local_verdict=local['result'], trust=TRUST_CI if ci else TRUST_LOCAL)
+    executed = isinstance(record, dict) and RANK.get(record.get('stage'), -1) >= CORE_STAGE
+    if not ci and local['result'] == 'PASS' and executed:
+        result.update(result='BLOCKED', blocker='untrusted local input; CI-generated runner evidence required',
+                      reasons=['local PASS is not a compatibility certification'] + result['reasons'])
     print(json.dumps(result, indent=2))
     return 0 if result['result'] == 'PASS' else 1
 

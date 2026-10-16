@@ -1,12 +1,21 @@
 """Fail-closed verdict and validator tests for the compatibility evidence schema."""
+import contextlib
 import copy
+import io
+import json
+import os
 from pathlib import Path
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'tools'))
-from compat_evidence import SCHEMA, validate, verdict
+from compat_evidence import SCHEMA, main, validate, verdict
 
+# Probe label each upper stage must reach (pinned here; the runner passes it as --expect).
+STAGE_LABEL = {'playable': 'playable-reached', 'save-tested': 'save-reached',
+               'completion-tested': 'completion-reached'}
 REAL = {'kind': 'real-core', 'name': 'Geargrafx', 'version': '1.0', 'commit': 'b' * 40}
 SYNTH = {'id': 'synthetic-cd-001', 'sha256': 'c' * 64, 'origin': 'original-synthetic'}
 LOCAL = {'id': 'local-retail-001', 'sha256': 'd' * 64, 'origin': 'local-proprietary'}
@@ -187,6 +196,153 @@ class RunnerAttestationTests(unittest.TestCase):
     def test_source_only_needs_no_runner(self):
         self.assertEqual(verdict(record('source-only', rom=None, emulator=None, fixture=None,
                                         checkpoints=[]))['result'], 'PASS')
+
+
+def cycle(name, **overrides):
+    """One RUN record as the #119 runner summarises it (cold or warm)."""
+    run = {'cycle': name, 'reason': STAGE_LABEL['playable'], 'step': 1000, 'halt_confirmed': True,
+           'halt_confirmation_steps': 64, 'halt_confirmation_required': 64, 'halted_after_step': 936,
+           'hits_before_run': 1}
+    run.update(overrides)
+    return run
+
+
+def stage_ev(stage='playable', **overrides):
+    """Stage-specific runner evidence: the classify() rules of #119 in summary form."""
+    ev = {'stage': stage, 'expect': STAGE_LABEL[stage], 'probe_kind': 'cdread', 'exit_code': 0,
+          'timed_out': False, 'output_capped': False, 'budget': 12_000_000,
+          'cap': {'instruction_step': True, 'cdrom_hardware': True, 'cdrom_media': True,
+                  'disc_given': True},
+          'runs': [cycle('cold', reason=STAGE_LABEL[stage]), cycle('warm', reason=STAGE_LABEL[stage])]}
+    ev.update(overrides)
+    return ev
+
+
+def staged(stage='playable', **overrides):
+    """Record for a stage above homebrew whose checkpoint is the stage label."""
+    checks = [{'name': STAGE_LABEL[stage], 'expected': STAGE_LABEL[stage],
+               'observed': STAGE_LABEL[stage]}]
+    return record(stage, fixture=dict(LOCAL), region='JP', trace_deltas=copy.deepcopy(TRACE),
+                  checkpoints=checks, **overrides)
+
+
+def run_with(rec, evidence):
+    """Verdict with the attestation plus stage evidence supplied by the runner."""
+    return verdict(rec, attest(rec, stage_evidence=evidence))
+
+
+class StageEvidenceTests(unittest.TestCase):
+    """playable / save-tested / completion-tested need runner-verified stage evidence."""
+
+    def test_self_declared_trace_deltas_alone_do_not_pass_upper_stages(self):
+        for stage in ('playable', 'save-tested', 'completion-tested'):
+            with self.subTest(stage=stage):
+                result = run(staged(stage, result='BLOCKED', blocker='stage evidence'))
+                self.assertEqual(result['result'], 'BLOCKED')
+
+    def test_stage_evidence_in_record_is_ignored(self):
+        forged = staged('playable', result='BLOCKED', blocker='stage evidence',
+                        stage_evidence=stage_ev('playable'))
+        self.assertEqual(run(forged)['result'], 'BLOCKED')
+
+    def test_valid_runner_stage_evidence_passes_each_upper_stage(self):
+        for stage in ('playable', 'save-tested', 'completion-tested'):
+            with self.subTest(stage=stage):
+                self.assertEqual(run_with(staged(stage), stage_ev(stage))['result'], 'PASS')
+
+    def test_stage_evidence_for_another_stage_fails(self):
+        self.assertEqual(run_with(staged('playable'), stage_ev('save-tested'))['result'], 'FAIL')
+
+    def test_probe_kind_api_cannot_pass(self):
+        self.assertEqual(run_with(staged(), stage_ev(probe_kind='api'))['result'], 'FAIL')
+
+    def test_nonzero_exit_timeout_or_output_cap_fails(self):
+        for bad in ({'exit_code': 1}, {'timed_out': True}, {'output_capped': True}):
+            with self.subTest(bad=bad):
+                self.assertEqual(run_with(staged(), stage_ev(**bad))['result'], 'FAIL')
+
+    def test_missing_or_false_capability_is_blocked(self):
+        missing = stage_ev(cap={'instruction_step': True, 'cdrom_hardware': True, 'cdrom_media': True})
+        blocked = staged(result='BLOCKED', blocker='capability')
+        self.assertEqual(run_with(blocked, missing)['result'], 'BLOCKED')
+        off = stage_ev(cap=dict(stage_ev()['cap'], disc_given=False))
+        self.assertEqual(run_with(blocked, off)['result'], 'BLOCKED')
+
+    def test_missing_warm_cycle_fails(self):
+        ev = stage_ev(runs=[cycle('cold', reason=STAGE_LABEL['playable'])])
+        self.assertEqual(run_with(staged(), ev)['result'], 'FAIL')
+
+    def test_extra_run_with_other_reason_fails(self):
+        for reason in ('budget', 'cd_halt_fail', 'cd_unexpected_interrupt'):
+            with self.subTest(reason=reason):
+                ev = stage_ev()
+                ev['runs'].append(cycle('warm', reason=reason))
+                self.assertEqual(run_with(staged(), ev)['result'], 'FAIL')
+
+    def test_halt_not_confirmed_fails(self):
+        ev = stage_ev(runs=[cycle('cold', halt_confirmed=False), cycle('warm')])
+        self.assertEqual(run_with(staged(), ev)['result'], 'FAIL')
+
+    def test_halt_confirmation_shorter_than_64_fails(self):
+        ev = stage_ev(runs=[cycle('cold', halt_confirmation_steps=32), cycle('warm')])
+        self.assertEqual(run_with(staged(), ev)['result'], 'FAIL')
+
+    def test_success_hit_missing_or_after_run_fails(self):
+        for hits in (0, 2):
+            with self.subTest(hits=hits):
+                ev = stage_ev(runs=[cycle('cold', hits_before_run=hits), cycle('warm')])
+                self.assertEqual(run_with(staged(), ev)['result'], 'FAIL')
+
+    def test_step_must_be_non_negative_int_within_budget(self):
+        bad_steps = (-1, 1.5, True, 12_000_001)
+        for step in bad_steps:
+            with self.subTest(step=step):
+                ev = stage_ev(runs=[cycle('cold', step=step), cycle('warm')])
+                self.assertEqual(run_with(staged(), ev)['result'], 'FAIL')
+
+    def test_expect_label_must_match_stage(self):
+        self.assertEqual(run_with(staged(), stage_ev(expect='cd-ident'))['result'], 'FAIL')
+
+    def test_stage_checkpoint_missing_from_record_is_blocked(self):
+        rec = staged(result='BLOCKED', blocker='stage checkpoint missing')
+        rec['checkpoints'] = copy.deepcopy(CHECK)
+        self.assertEqual(run_with(rec, stage_ev())['result'], 'BLOCKED')
+
+
+class CliTrustTests(unittest.TestCase):
+    """The CLI never certifies local, unsigned JSON; --ci only runs inside GitHub Actions."""
+
+    def _run_cli(self, argv, env):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = []
+            for name, value in (('record.json', record()), ('runner.json', attest(record()))):
+                path = Path(tmp) / name
+                path.write_text(json.dumps(value), encoding='utf-8')
+                paths.append(str(path))
+            out = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=True), contextlib.redirect_stdout(out):
+                code = main(['x', *paths, *argv])
+        return code, out.getvalue()
+
+    def test_local_untrusted_pass_is_downgraded_to_blocked(self):
+        code, text = self._run_cli([], {})
+        self.assertEqual(code, 1)
+        output = json.loads(text)
+        self.assertEqual(output['result'], 'BLOCKED')
+        self.assertEqual(output['local_verdict'], 'PASS')
+        self.assertIn('local-only', output['trust'])
+
+    def test_ci_flag_outside_github_actions_is_refused(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            code, _ = self._run_cli(['--ci'], {})
+        self.assertEqual(code, 2)
+
+    def test_ci_flag_inside_github_actions_accepts_pass(self):
+        code, text = self._run_cli(['--ci'], {'GITHUB_ACTIONS': 'true'})
+        self.assertEqual(code, 0)
+        output = json.loads(text)
+        self.assertEqual(output['result'], 'PASS')
+        self.assertTrue(output['trust'].startswith('ci-job'))
 
 
 if __name__ == '__main__':
