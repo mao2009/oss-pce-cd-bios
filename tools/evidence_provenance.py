@@ -142,8 +142,8 @@ def verify(artifact_bytes, attestation, policy, rom_bytes=None):
     findings = [certificate_findings(result, policy) for result in matched]
     if any(not finding for finding in findings):
         return {'result': PASS, 'reasons': [],
-                'trust': f"attested by protected {policy['ref']} producer {policy['signer_workflow']} "
-                         f"at {policy['commit']}"}
+                'trust': f"attested by {policy['ref']} producer {policy['signer_workflow']} at {policy['commit']}"
+                         + (" (protected main)" if policy['ref'] == 'refs/heads/main' else " (NOT main: not a compatibility trust root)")}
     return {'result': FAIL, 'reasons': findings[0], 'trust': 'attestation present; producer not trusted'}
 
 
