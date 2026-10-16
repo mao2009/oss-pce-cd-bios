@@ -3,6 +3,10 @@
 A record claims one stage. verdict() never trusts the claimed result: any
 missing input yields BLOCKED/SKIP, any unsupported or contradicted claim yields
 FAIL, and PASS requires every rule for the claimed stage to hold.
+
+Limit: the runner output (attestation and stage_evidence) is plain unsigned JSON. verdict()
+checks that it is consistent with the record and the #119 rules; it does not authenticate
+who produced it. A PASS is therefore a consistency result, not a certification.
 """
 import json
 import os
@@ -30,13 +34,17 @@ HOMEBREW_STAGE = RANK['homebrew']
 RETAIL_STAGE = RANK['retail-boot']
 
 # Stage-specific execution evidence (names and rules mirror the #119 trace judge, geargrafx_harness.classify).
-STAGE_LABEL = {'playable': 'playable-reached', 'save-tested': 'save-reached',
-               'completion-tested': 'completion-reached'}
+# retail-boot has no probe in #119 yet, so no runner can emit its label: it stays BLOCKED until one does.
+STAGE_LABEL = {'retail-boot': 'retail-boot-reached', 'playable': 'playable-reached',
+               'save-tested': 'save-reached', 'completion-tested': 'completion-reached'}
 REQUIRED_CYCLES = ('cold', 'warm')
 CAP_FLAGS = ('instruction_step', 'cdrom_hardware', 'cdrom_media', 'disc_given')
 HALT_CONFIRM_STEPS = 64
+PROBE_DEBUGGER_MISSING = 6  # probe exit code: instruction-step debugger capability missing (#119 PROBE_EXIT)
+AUTHENTICITY = 'not verified: runner JSON is unsigned and unauthenticated; this output is not a certification'
 TRUST_LOCAL = 'local-only, untrusted (unsigned JSON; not certifiable)'
-TRUST_CI = 'ci-job runner output (unsigned; trust rests on workflow integrity)'
+TRUST_CI = ('ci-job context (GITHUB_ACTIONS=true is an environment variable any process can set; '
+            'the JSON is still unsigned, so this is not a certification)')
 
 
 def _is_hex(value, pattern):
@@ -117,11 +125,11 @@ def validate(record):
 
 
 def _attestation(record, runner):
-    """Bind a claimed execution to a runner attestation produced outside the record.
+    """Check that a runner attestation is consistent with the record.
 
-    The record's own fields (including any 'runner' key) are never trusted here.
-    ponytail: attestation is a plain dict from the harness, no signature; trust
-    ends at the runner producer. Upgrade to signed attestation if the gate is shared.
+    The record's own fields (including any 'runner' key) are never used as the attestation.
+    The attestation is unsigned: this checks consistency, not who produced it.
+    ponytail: no signature; upgrade to signed attestation if the gate is shared.
     """
     if not isinstance(runner, dict) or runner.get('verified') is not True:
         return [('BLOCKED', 'independent runner attestation required')]
@@ -144,11 +152,12 @@ def _attestation(record, runner):
 
 
 def _stage_findings(stage, runner):
-    """Runner-verified stage evidence for playable / save-tested / completion-tested.
+    """Stage evidence for retail-boot / playable / save-tested / completion-tested.
 
     Only runner['stage_evidence'] counts; trace_deltas and any record field never do. Missing
     evidence is BLOCKED. Present but contradicting the #119 rules (exit, HIT order, RUN count,
-    halt confirmation, step bounds, probe kind) is FAIL.
+    halt confirmation, step bounds, forbidden labels) is FAIL. Unsupported probe kinds and a
+    missing debugger capability (exit 6) are BLOCKED, as in #119. The JSON itself is unsigned.
     """
     evidence = runner.get('stage_evidence') if isinstance(runner, dict) and runner.get('verified') is True else None
     if not isinstance(evidence, dict):
@@ -160,11 +169,18 @@ def _stage_findings(stage, runner):
     if evidence.get('expect') != expect:
         findings.append(('FAIL', f"stage evidence expects {evidence.get('expect')!r}, need {expect!r}"))
     if evidence.get('probe_kind') != 'cdread':
-        findings.append(('FAIL', 'probe_kind must be cdread (the api probe emits no RUN records)'))
+        findings.append(('BLOCKED', 'NOT_SUPPORTED: probe kind has no RUN/HIT judge (only cdread)'))
     exit_code = evidence.get('exit_code')
-    if not _is_int(exit_code) or exit_code != 0 \
+    if exit_code == PROBE_DEBUGGER_MISSING:
+        findings.append(('BLOCKED', 'instruction-step debugger capability missing (probe exit 6)'))
+    elif not _is_int(exit_code) or exit_code != 0 \
             or evidence.get('timed_out') is not False or evidence.get('output_capped') is not False:
         findings.append(('FAIL', 'probe did not exit 0 within the time and output limits'))
+    forbid_hits = evidence.get('forbid_hits')
+    if not isinstance(forbid_hits, list):
+        findings.append(('BLOCKED', 'forbidden-label evidence (forbid_hits) missing'))
+    elif forbid_hits:
+        findings.append(('FAIL', f"forbidden checkpoint reached: {', '.join(map(str, forbid_hits))}"))
     cap = evidence.get('cap')
     if not isinstance(cap, dict) or any(cap.get(flag) is not True for flag in CAP_FLAGS):
         findings.append(('BLOCKED', 'incomplete capability record (instruction step, CD hardware, media or disc)'))
@@ -189,16 +205,18 @@ def _stage_findings(stage, runner):
             check_halt_confirmation(run)
         except ValueError as error:
             findings.append(('FAIL', str(error)))
-        if not _is_int(hits) or hits != 1:
+        total = run.get('hits')
+        if not _is_int(hits) or hits != 1 or not _is_int(total) or total != 1:
             findings.append(('FAIL', f'{cycle}: success HIT missing, repeated or after its RUN'))
     return findings
 
 
 def verdict(record, runner=None):
-    """Return {'result', 'blocker', 'reasons'} for a record; never PASS on bad evidence.
+    """Return {'result', 'blocker', 'reasons'} for a record; never PASS on inconsistent evidence.
 
-    `runner` is independent attestation (verified, hash-bound run output). Without it,
-    any stage that claims execution (bios-loaded and above) cannot PASS.
+    `runner` is runner output (attestation plus stage_evidence). It is checked for consistency
+    with the record only; it is unsigned, so a PASS here is not a compatibility certification.
+    Without an attestation, any stage that claims execution (bios-loaded and above) cannot PASS.
     """
     errors = validate(record)
     if errors:
@@ -229,7 +247,8 @@ def verdict(record, runner=None):
                 findings.append(('FAIL', f"checkpoint {item['name']} mismatch"))
     if rank > HOMEBREW_STAGE and not record.get('trace_deltas'):
         findings.append(('BLOCKED', 'guest trace deltas required above homebrew'))
-    if record['stage'] in STAGE_LABEL:
+    # A retail-boot record with no local fixture is SKIP (opt-in disc, nothing was run), not BLOCKED.
+    if record['stage'] in STAGE_LABEL and not (fixture is None and rank >= RETAIL_STAGE):
         findings.extend(_stage_findings(record['stage'], runner))
         if not any(isinstance(item, dict) and item.get('name') == STAGE_LABEL[record['stage']]
                    for item in record.get('checkpoints') or []):
@@ -248,10 +267,11 @@ def verdict(record, runner=None):
 
 
 def main(argv):
-    """CLI: `[--ci] RECORD.json [RUNNER.json]`. Without --ci the input is local, untrusted JSON.
+    """CLI: `[--ci] RECORD.json [RUNNER.json]`. The input is unsigned JSON in every mode.
 
-    A local PASS for an execution stage is printed as BLOCKED (local_verdict keeps the raw result),
-    so unsigned JSON never yields a compatibility PASS. --ci is accepted only inside GitHub Actions.
+    A local PASS for an execution stage is printed as BLOCKED (local_verdict keeps the raw result).
+    --ci is accepted only when GITHUB_ACTIONS=true; that variable is not authentication, so --ci
+    output still says it is not a certification (see AUTHENTICITY).
     """
     ci = '--ci' in argv[1:]
     args = [arg for arg in argv[1:] if arg != '--ci']
@@ -268,7 +288,8 @@ def main(argv):
     with open(args[0], encoding='utf-8') as handle:
         record = json.load(handle)
     local = verdict(record, runner)
-    result = dict(local, local_verdict=local['result'], trust=TRUST_CI if ci else TRUST_LOCAL)
+    result = dict(local, local_verdict=local['result'], trust=TRUST_CI if ci else TRUST_LOCAL,
+                  authenticity=AUTHENTICITY)
     executed = isinstance(record, dict) and RANK.get(record.get('stage'), -1) >= CORE_STAGE
     if not ci and local['result'] == 'PASS' and executed:
         result.update(result='BLOCKED', blocker='untrusted local input; CI-generated runner evidence required',

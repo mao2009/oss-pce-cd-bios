@@ -14,8 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'tools'))
 from compat_evidence import SCHEMA, main, validate, verdict
 
 # Probe label each upper stage must reach (pinned here; the runner passes it as --expect).
-STAGE_LABEL = {'playable': 'playable-reached', 'save-tested': 'save-reached',
-               'completion-tested': 'completion-reached'}
+STAGE_LABEL = {'retail-boot': 'retail-boot-reached', 'playable': 'playable-reached',
+               'save-tested': 'save-reached', 'completion-tested': 'completion-reached'}
 REAL = {'kind': 'real-core', 'name': 'Geargrafx', 'version': '1.0', 'commit': 'b' * 40}
 SYNTH = {'id': 'synthetic-cd-001', 'sha256': 'c' * 64, 'origin': 'original-synthetic'}
 LOCAL = {'id': 'local-retail-001', 'sha256': 'd' * 64, 'origin': 'local-proprietary'}
@@ -62,8 +62,7 @@ class VerdictPositiveTests(unittest.TestCase):
         self.assertEqual(result['result'], 'PASS')
 
     def test_retail_boot_with_local_fixture_region_and_trace_passes(self):
-        result = run(record('retail-boot', fixture=dict(LOCAL), region='JP',
-                                trace_deltas=copy.deepcopy(TRACE)))
+        result = run_with(staged('retail-boot'), stage_ev('retail-boot'))
         self.assertEqual(result['result'], 'PASS')
 
 
@@ -115,6 +114,10 @@ class VerdictNegativeTests(unittest.TestCase):
     def test_overclaimed_playable_with_synthetic_fixture_fails(self):
         result = run(record('playable', trace_deltas=copy.deepcopy(TRACE)))
         self.assertEqual(result['result'], 'FAIL')
+
+    def test_retail_boot_trace_deltas_alone_is_blocked(self):
+        result = run(staged('retail-boot', result='BLOCKED', blocker='stage evidence'))
+        self.assertEqual(result['result'], 'BLOCKED')
 
     def test_retail_boot_with_synthetic_fixture_fails(self):
         result = run(record('retail-boot', region='JP', trace_deltas=copy.deepcopy(TRACE)))
@@ -202,7 +205,7 @@ def cycle(name, **overrides):
     """One RUN record as the #119 runner summarises it (cold or warm)."""
     run = {'cycle': name, 'reason': STAGE_LABEL['playable'], 'step': 1000, 'halt_confirmed': True,
            'halt_confirmation_steps': 64, 'halt_confirmation_required': 64, 'halted_after_step': 936,
-           'hits_before_run': 1}
+           'hits_before_run': 1, 'hits': 1}
     run.update(overrides)
     return run
 
@@ -213,6 +216,7 @@ def stage_ev(stage='playable', **overrides):
           'timed_out': False, 'output_capped': False, 'budget': 12_000_000,
           'cap': {'instruction_step': True, 'cdrom_hardware': True, 'cdrom_media': True,
                   'disc_given': True},
+          'forbid_hits': [],
           'runs': [cycle('cold', reason=STAGE_LABEL[stage]), cycle('warm', reason=STAGE_LABEL[stage])]}
     ev.update(overrides)
     return ev
@@ -235,7 +239,7 @@ class StageEvidenceTests(unittest.TestCase):
     """playable / save-tested / completion-tested need runner-verified stage evidence."""
 
     def test_self_declared_trace_deltas_alone_do_not_pass_upper_stages(self):
-        for stage in ('playable', 'save-tested', 'completion-tested'):
+        for stage in ('retail-boot', 'playable', 'save-tested', 'completion-tested'):
             with self.subTest(stage=stage):
                 result = run(staged(stage, result='BLOCKED', blocker='stage evidence'))
                 self.assertEqual(result['result'], 'BLOCKED')
@@ -246,15 +250,31 @@ class StageEvidenceTests(unittest.TestCase):
         self.assertEqual(run(forged)['result'], 'BLOCKED')
 
     def test_valid_runner_stage_evidence_passes_each_upper_stage(self):
-        for stage in ('playable', 'save-tested', 'completion-tested'):
+        for stage in ('retail-boot', 'playable', 'save-tested', 'completion-tested'):
             with self.subTest(stage=stage):
                 self.assertEqual(run_with(staged(stage), stage_ev(stage))['result'], 'PASS')
 
     def test_stage_evidence_for_another_stage_fails(self):
         self.assertEqual(run_with(staged('playable'), stage_ev('save-tested'))['result'], 'FAIL')
 
-    def test_probe_kind_api_cannot_pass(self):
-        self.assertEqual(run_with(staged(), stage_ev(probe_kind='api'))['result'], 'FAIL')
+    def test_probe_kind_api_is_not_supported_and_blocked(self):
+        # #119 classify(): kind without a RUN/HIT judge is NOT_SUPPORTED, which is BLOCKED.
+        blocked = staged(result='BLOCKED', blocker='NOT_SUPPORTED')
+        self.assertEqual(run_with(blocked, stage_ev(probe_kind='api'))['result'], 'BLOCKED')
+
+    def test_probe_exit_6_debugger_missing_is_blocked_not_fail(self):
+        # #119 PROBE_EXIT: 6 = instruction-step debugger capability missing (BLOCKED).
+        blocked = staged(result='BLOCKED', blocker='debugger')
+        self.assertEqual(run_with(blocked, stage_ev(exit_code=6))['result'], 'BLOCKED')
+
+    def test_forbidden_label_reached_fails(self):
+        self.assertEqual(run_with(staged(), stage_ev(forbid_hits=['cd_halt_fail']))['result'], 'FAIL')
+
+    def test_missing_forbid_evidence_is_blocked(self):
+        ev = stage_ev()
+        del ev['forbid_hits']
+        blocked = staged(result='BLOCKED', blocker='forbid')
+        self.assertEqual(run_with(blocked, ev)['result'], 'BLOCKED')
 
     def test_nonzero_exit_timeout_or_output_cap_fails(self):
         for bad in ({'exit_code': 1}, {'timed_out': True}, {'output_capped': True}):
@@ -343,6 +363,13 @@ class CliTrustTests(unittest.TestCase):
         output = json.loads(text)
         self.assertEqual(output['result'], 'PASS')
         self.assertTrue(output['trust'].startswith('ci-job'))
+        self.assertIn('not verified', output['authenticity'])
+
+    def test_output_never_claims_authenticity(self):
+        for argv, env in (([], {}), (['--ci'], {'GITHUB_ACTIONS': 'true'})):
+            with self.subTest(argv=argv):
+                _, text = self._run_cli(argv, env)
+                self.assertIn('not verified', json.loads(text)['authenticity'])
 
 
 if __name__ == '__main__':
