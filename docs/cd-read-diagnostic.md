@@ -66,6 +66,9 @@ start, including any pregap bytes. `cue_sha256` is the SHA-256 of the CUE file i
 | MODE2/2336 (Cooked) | yes | **not verified** | no |
 | AUDIO | yes | only "no MODE sync in first 64 frames" | no (raises `CueError`) |
 
+The sync/MSF check covers every user-data frame of a RAW track (streamed in bounded reads), and the pregap
+sync check covers the full pregap. `MAX_PROBE_FRAMES` (4096) now only bounds the boot-signature search.
+
 Cooked modes are validated for file size and layout only. The CLI reports them as
 `sync/MSF not verified` and prints a PASS line that says layout validation only.
 
@@ -82,7 +85,12 @@ offset, BCD). Per track:
 | `pregap_frames` | INDEX 00..01 frames stored in the BIN, plus any CUE `PREGAP` frames |
 
 A CUE `PREGAP` adds disc LBAs that are not stored in the BIN; `PREGAP` together with `INDEX 00` in the
-same track is rejected as ambiguous. `user_sector()` maps physical LBA *n* in
+same track is rejected as ambiguous. The next track's pregap (its INDEX 00..01 frames) is never counted in
+the previous track's `length_frames`.
+
+Explicitly rejected (fail closed, nothing is guessed): `INDEX` numbers other than 00 and 01, `POSTGAP`,
+a track without INDEX 01, INDEX 00 after INDEX 01, non-increasing track starts within a FILE, and BIN frames
+before the first track's start (they would belong to no track). `user_sector()` maps physical LBA *n* in
 `[start_lba, start_lba + length_frames)` to BIN frame `index01_frame + (n - start_lba)` and rejects LBAs in
 a pregap (`pregap_start_lba <= n < start_lba`), negative LBAs and LBAs past the track end.
 

@@ -92,17 +92,22 @@ def parse_cue(path: Path) -> dict:
                 if len(parts) != 3:
                     raise CueError(f"INDEX requires index and timestamp: {line!r}")
                 _, index_text, timestamp = parts
+                if not index_text.isdigit() or int(index_text) not in (0, 1):
+                    raise CueError(f"unsupported INDEX {index_text!r}; only INDEX 00 and INDEX 01 are supported")
                 track = files[-1]["tracks"][-1]
                 track["index"][int(index_text)] = _parse_msf(timestamp)
-            elif keyword in ("PREGAP", "POSTGAP"):
+            elif keyword == "PREGAP":
                 if not files or not files[-1]["tracks"]:
-                    raise CueError(f"{keyword} before any TRACK")
+                    raise CueError("PREGAP before any TRACK")
                 parts = line.split()
                 if len(parts) != 2:
-                    raise CueError(f"{keyword} requires timestamp: {line!r}")
+                    raise CueError(f"PREGAP requires timestamp: {line!r}")
                 _, timestamp = parts
                 track = files[-1]["tracks"][-1]
-                track[keyword.lower()] = _parse_msf(timestamp)
+                track["pregap"] = _parse_msf(timestamp)
+            elif keyword == "POSTGAP":
+                # A POSTGAP is a virtual gap after the track data; its disc LBA placement is not defined here.
+                raise CueError("POSTGAP is not supported (virtual gap after track data is not mapped)")
             elif keyword in ("FLAGS", "ISRC", "CDTEXTFILE", "PERFORMER", "TITLE", "SONGWRITER"):
                 continue
             else:
@@ -189,7 +194,7 @@ def _probe_track(f, start: int, frames: int, sector_bytes: int, track_lba: int, 
 
     `track_lba` is the physical disc LBA of the first probed frame.
     """
-    probe = min(frames, MAX_PROBE_FRAMES)
+    probe = frames  # whole track: sync/MSF are streamed in FRAME_CHUNK reads, so memory stays bounded
     sync_frames, modes, msf_bad = 0, set(), []
     first_sync = first_user_data = None
     user_offset, user_bytes = MODES[mode][1], MODES[mode][2]
@@ -243,15 +248,22 @@ def analyze(cue_path: Path, boot_signature: bytes = PCE_BOOT_SIGNATURE) -> dict:
         if file_size % sector_bytes:
             raise CueError(f"{file['name']}: size {file_size} is not a multiple of {sector_bytes}")
         file_frames = file_size // sector_bytes
+        for track in file["tracks"]:
+            if 1 not in track["index"]:
+                raise CueError(f"track {track['number']}: INDEX 01 is required")
+            if 0 in track["index"] and track["index"][0] > track["index"][1]:
+                raise CueError(f"track {track['number']}: INDEX 00 is after INDEX 01")
         # First BIN frame of each track: its INDEX 00, or INDEX 01 when there is no INDEX 00
-        starts = [min(t["index"].values()) if t["index"] else 0 for t in file["tracks"]]
+        starts = [min(t["index"].values()) for t in file["tracks"]]
         if starts != sorted(starts):
             raise CueError(f"{file['name']}: INDEX offsets are not increasing")
+        if starts[0] != 0:
+            raise CueError(f"{file['name']}: BIN frames before the first track start are not mapped to any track")
         for position, track in enumerate(file["tracks"]):
             if "pregap" in track and 0 in track["index"]:
                 raise CueError(f"track {track['number']}: PREGAP and INDEX 00 are both given; ambiguous")
             bin_start_frame = starts[position]
-            index01_frame = track["index"].get(1, bin_start_frame)
+            index01_frame = track["index"][1]
             bin_pregap = index01_frame - bin_start_frame  # pregap frames stored in the BIN (INDEX 00..01)
             pregap_frames = bin_pregap + track.get("pregap", 0)  # CUE PREGAP frames are not stored in the BIN
             bin_end_frame = starts[position + 1] if position + 1 < len(starts) else file_frames
@@ -301,7 +313,7 @@ def analyze(cue_path: Path, boot_signature: bytes = PCE_BOOT_SIGNATURE) -> dict:
                                 findings.append(f"track {track['number']}: pregap sync sectors disagree with their disc "
                                                 f"LBA (pregap starts at {pregap_lba}) at frames {pregap_bad}")
                         if not sector["sync_frames"]:
-                            findings.append(f"track {track['number']}: no RAW sync frame found in the first "
+                            findings.append(f"track {track['number']}: no RAW sync frame found in "
                                             f"{sector['probed_frames']} user-data frames")
                         if sector["msf_mismatch_frames"]:
                             findings.append(f"track {track['number']}: MSF headers disagree with start LBA "
