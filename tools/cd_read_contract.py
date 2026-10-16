@@ -12,8 +12,9 @@ ABI (spec/api_contracts.json slot 3) stays HYPOTHESIS/UNKNOWN.
 The bundle is a plain JSON file. Its status, geargrafx_revision, source_archive_sha256, rom_sha256 and tests are
 SELF-DECLARED: this module checks that they are consistent with the pinned values and the ROM on disk, but it does
 not authenticate who wrote them. A bundle written by a modified or hand-made run passes these checks, so the best
-local result is LOCAL_ONLY (same word and meaning as tools/evidence_provenance.py, #125: no attestation, never
-compatibility evidence) and the CLI exits non-zero for it. compat_status() keeps every VERIFIED claim BLOCKED: it
+local result is LOCAL_ONLY and the CLI exits non-zero for it. The trust meaning matches LOCAL_ONLY in
+tools/evidence_provenance.py (#125: no attestation, never compatibility evidence), but the acceptance condition is
+looser: #125 also requires disc hashes, its full scenario table and primary_observations.RUN, and FAILs without them. compat_status() keeps every VERIFIED claim BLOCKED: it
 does not take the #125 attestation yet. See docs/cd-read-contract.md section 4.
 """
 import argparse

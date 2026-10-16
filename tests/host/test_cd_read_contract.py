@@ -239,7 +239,8 @@ class TrustBoundaryTests(unittest.TestCase):
                 bundle = bundle(hashlib.sha256(rom).hexdigest())
                 (out / "cdread-evidence.json").write_text(json.dumps(bundle), encoding="utf-8")
             stdout = io.StringIO()
-            with mock.patch.object(cd_read_contract, "ROOT", root), contextlib.redirect_stdout(stdout),                     self.assertRaises(SystemExit) as exit_:
+            with mock.patch.object(cd_read_contract, "ROOT", root), contextlib.redirect_stdout(stdout), \
+                    self.assertRaises(SystemExit) as exit_:
                 cd_read_contract.main([])
             return exit_.exception.code, stdout.getvalue()
 

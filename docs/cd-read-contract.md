@@ -11,15 +11,18 @@ Status tags:
   effective VERIFIED needs authenticated evidence (#125), which this ledger does not consume yet. This is
   emulator evidence only; real hardware stays UNKNOWN.
 * **LOCAL_ONLY**: a declared VERIFIED claim whose cited scenarios a self-declared bundle records consistently
-  (pinned revision/archive hash, ROM hash, exact scenario kinds). Same word and meaning as
-  `tools/evidence_provenance.py` (#125): no attestation, never compatibility evidence. A forged bundle with
-  correct hashes reaches this level, so it is not PASS and not VERIFIED.
+  (pinned revision/archive hash, ROM hash, exact scenario kinds). The trust meaning is the same as
+  `LOCAL_ONLY` in `tools/evidence_provenance.py` (#125): no attestation, never compatibility evidence. The
+  acceptance condition is looser: #125 reaches LOCAL_ONLY only after all its artifact checks pass (disc
+  hashes, its full scenario table, `primary_observations.RUN`), while this ledger checks only the fields
+  listed here. A forged bundle with correct hashes reaches this level, so it is not PASS and not VERIFIED.
 * **HYPOTHESIS**: a pinned caller/HLE source shows an expectation; the System Card 3.0 callee was never executed.
 * **UNKNOWN**: no admissible evidence. A VERIFIED claim whose cited scenarios are missing or not PASS is
   downgraded to UNKNOWN.
 * **BLOCKED**: a VERIFIED claim that cannot be checked because no valid evidence bundle exists (no
-  `build/<mode>/cdread-probe/cdread-evidence.json`, a malformed bundle or `tests` entry, a different ROM, or a
-  non-pinned Geargrafx). BLOCKED is not PASS.
+  `build/<mode>/cdread-probe/cdread-evidence.json`, a bundle that is valid JSON but not an object, a `tests`
+  entry that is not an object, a different ROM, or a non-pinned Geargrafx). BLOCKED is not PASS. A bundle that
+  is not valid JSON or not UTF-8 is not BLOCKED: the CLI stops with `CD_READ contract FAIL` (exit 1).
 
 Machine check: `python3 tools/cd_read_contract.py [--mode release]` (`tests/host/test_cd_read_contract.py`).
 Every line it prints carries the trust label `LOCAL_ONLY`. `python3 tools/cd_read_contract.py --compat` is the
@@ -62,9 +65,12 @@ by design; the CI job `make dev-cdread-integration` is what produces the bundle.
   | attested (#125) | GitHub artifact attestation (`actions/attest-build-provenance`) of `cdread-evidence.json` and the probe ROM, signed by `api-source.yml` at `refs/heads/main`, checked by `gh attestation verify` and `tools/evidence_provenance.py` (recomputes ROM and fixture hashes, checks scenario kinds, run correlation). | `.github/workflows/api-source.yml` jobs `attest-cdread` / `verify-cdread-attestation` (push to main) | On main. Its PASS is an attested *emulator diagnostic* only (`compatibility: NOT_PROMOTED`). **Not integrated with this ledger.** |
 
   This ledger does not read the #125 result: `effective_status()` stops at LOCAL_ONLY and `compat_status()`
-  (`--compat`) takes no attestation and returns BLOCKED for every VERIFIED claim. On the same forged bundle
-  #125 gives LOCAL_ONLY without an attestation and FAIL/BLOCKED with a mismatching one; this checker gives
-  LOCAL_ONLY (exit 1). `tests/host/test_cd_read_contract.py::TrustBoundaryTests` checks that a forged bundle
+  (`--compat`) takes no attestation and returns BLOCKED for every VERIFIED claim. Measured on the forged
+  bundle of `TrustBoundaryTests` (no attestation): `tools/evidence_provenance.py` gives FAIL (exit 1) because
+  `disc.bin_sha256` / `disc.cue_sha256` are missing, required scenarios are missing and
+  `primary_observations.RUN` is missing; this checker gives LOCAL_ONLY (exit 1). #125 returns LOCAL_ONLY only
+  when every artifact check passes, so this ledger's LOCAL_ONLY has a looser acceptance condition; the trust
+  meaning (no attestation, not compatibility evidence) is the same. `tests/host/test_cd_read_contract.py::TrustBoundaryTests` checks that a forged bundle
   with the pinned revision and ROM hash is never PASS/VERIFIED locally and stays BLOCKED for compatibility.
 * **Before this ledger may report an effective VERIFIED** (not done; until then the result is LOCAL_ONLY or
   BLOCKED): (1) take the #125 result (attestation from `api-source.yml` on main, checked by
