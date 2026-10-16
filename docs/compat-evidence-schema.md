@@ -28,7 +28,9 @@ The runner output is consistency-checked, not authenticated (see the trust bound
   `local_verdict`. Local runs are for development only and must not be quoted as compatibility.
 - `--ci` is accepted only when `GITHUB_ACTIONS=true` (otherwise exit 2). Its output carries
   `"trust": "ci-job context (GITHUB_ACTIONS=true is an environment variable any process can set; the JSON is still unsigned, so this is not a certification)"`.
-  Only `--ci` prints a PASS for `bios-loaded` and above. `source-only` and `rom-built` PASS print as PASS (exit 0) in both modes.
+  PASS is possible only for `source-only`, `rom-built`, and (with `--ci`, a runner attestation and a judged probe)
+  `retail-boot` through `completion-tested`. `bios-loaded`, `startup`, `cd-detected` and `homebrew` are never PASS.
+  `source-only` and `rom-built` PASS print as PASS (exit 0) in both modes.
 - Exception to the verdict exit codes: a refused `--ci` and a usage error exit 2 and print no verdict JSON.
   Every other invocation prints a verdict JSON and exits 1 (or 0 on PASS). That includes a missing or non-UTF-8 file,
   malformed JSON, and JSON nested too deeply for the parser, each as FAIL with reason `input unreadable`. A deeply nested
@@ -70,15 +72,19 @@ checkpoint named after the stage label, and the runner must report the same name
 **Not implemented:** no shipped producer emits `probe`. The #119 `trace` command writes parsed events and
 `counts`, not the stdout that `classify()` needs, and it does not write a `stage_evidence` summary. So a
 PASS above `homebrew` cannot be produced from the CLI as shipped. Without a `probe`, these stages are **BLOCKED**,
-or **SKIP** for a record with no local fixture (rule 8).
+or get a **SKIP** finding for a record with no local fixture, which stands only if nothing else blocks (rule 8).
 A summary such as `stage_evidence` is not read by this module, so a hand-written summary cannot yield PASS.
 
-| Stage | Label (`--expect`) |
+| Stage | Module-defined label (`--expect` value) |
 | --- | --- |
-| `retail-boot` | `retail-boot-reached` (no #119 probe emits it yet, so a record with a local fixture is BLOCKED until one does; without a fixture it is SKIP) |
+| `retail-boot` | `retail-boot-reached` |
 | `playable` | `playable-reached` |
 | `save-tested` | `save-reached` |
 | `completion-tested` | `completion-reached` |
+
+These four labels are defined by `tools/compat_evidence.py` (`STAGE_LABEL`), not by #119. The #119 harness judges
+only the `--expect` label it is given. No shipped producer emits any of these labels yet, so a record with a local
+fixture is BLOCKED for these stages until one does, and a record without one is SKIP (rule 8).
 
 The `classify()` rules that apply (see `tests/integration/geargrafx_harness.py`): probe `kind` must be `cdread`
 (`api` is NOT_SUPPORTED, BLOCKED); exit 6 is BLOCKED (debugger missing); other non-zero exits, timeouts and
@@ -105,7 +111,7 @@ within `budget`; exactly one success HIT per cycle before its RUN.
 | `emulator` | object or null | `kind`: `real-core`, `mock` or `static`. A `real-core` record needs `name`, `version` and a 40-hex `commit`. Names matching mock/stub/fake/static/dummy/simulat are rejected as real. |
 | `fixture` | object or null | `{"id", "sha256", "origin"}`. `origin` is `original-synthetic` or `local-proprietary`. |
 | `region` | string or null | Target edition region. Required for `retail-boot` and above when a fixture is present (missing gives BLOCKED). |
-| `checkpoints` | array | `{"name", "expected", "observed"}`. Verdict requires the record's own `expected` to equal its `observed`; the runner's `observed` for that name must equal the record's `expected`. A `passed` flag is not trusted. A missing or null field is absent; any other non-array value is FAIL. |
+| `checkpoints` | array | `{"name", "expected", "observed"}`. From `startup` up, the record's own `expected` must equal its `observed` (else FAIL). From `bios-loaded` up, the runner's `observed` for each record checkpoint name must equal the record's `expected` (else FAIL). A `passed` flag is not trusted. A missing or null field is absent; any other non-array value is FAIL. |
 | `trace_deltas` | array | `{"name", "delta"}`. Required above `homebrew`. |
 
 Proprietary material never appears in a record. Only ids, hashes and metadata.
@@ -121,7 +127,9 @@ Findings are combined with priority FAIL > BLOCKED > SKIP > PASS.
    They also need a runner attestation. Missing or unverified gives **BLOCKED**. A hash, commit or checkpoint
    that does not match the record gives **FAIL**.
 5. `retail-boot` with a synthetic fixture gives **FAIL**. With a fixture, missing region gives **BLOCKED**.
-6. `startup` and above need at least one checkpoint (**BLOCKED** if none). Any mismatch gives **FAIL**.
+6. `startup` and above need at least one checkpoint (**BLOCKED** if none). At `startup` and above, a record checkpoint
+   whose `expected` differs from its `observed` gives **FAIL**. Below `startup` this rule does not examine checkpoints
+   (from `bios-loaded` up, rule 4 still applies to the runner's observations).
 7. Above `homebrew`, guest trace deltas are required (**BLOCKED** if absent). They are self-reported and
    never sufficient alone.
 8. `retail-boot`, `playable`, `save-tested` and `completion-tested` need the raw #119 `probe` (see above).
@@ -130,12 +138,16 @@ Findings are combined with priority FAIL > BLOCKED > SKIP > PASS.
    budget or cd_halt_fail, not one cold then warm RUN, unconfirmed halt, a step outside 0..budget, a success HIT
    missing, repeated or after its RUN, malformed log) gives **FAIL**. A BLOCK record, a missing or false
    capability flag, `kind` other than `cdread` (NOT_SUPPORTED) and exit 6 (debugger capability missing)
-   give **BLOCKED**, as in #119. A record for a retail stage (`retail-boot` and above) with no local fixture is
-   **SKIP** (fixture missing; no probe check runs), unless its runner attestation is also missing, which is **BLOCKED**
-   and outranks SKIP. With a fixture, a record whose stage-label checkpoint is missing is **BLOCKED**.
+   give **BLOCKED**, as in #119. A record for a retail stage (`retail-boot` and above) with no local fixture gets a
+   **SKIP** finding (fixture missing; no probe check runs). The record is SKIP only when no other finding is BLOCKED or
+   FAIL: BLOCKED outranks SKIP, so a missing runner attestation, a missing `trace_deltas`, or empty `checkpoints` make it
+   **BLOCKED**. Example: `retail-boot`, `fixture` null, `result` SKIP, attested, `checkpoints` [], `trace_deltas` []
+   gives **BLOCKED** with blocker `fixture missing`. With a fixture, a record whose stage-label checkpoint is missing is **BLOCKED**.
 9. A claim of `PASS` that the evidence does not support is an **overclaim** and gives **FAIL**. A claim of
    `BLOCKED`, `SKIP` or `FAIL` that complete evidence would otherwise pass is kept as the result, with a
-   `conflict` reason. Complete evidence never silently overrides the reporter's own non-PASS claim.
+   `conflict` reason. Complete evidence never silently overrides the reporter's own non-PASS claim. If the evidence
+   gives a non-PASS result, that result is reported as is: a reporter BLOCKED, SKIP or FAIL that differs from it gives
+   no conflict reason, and a reporter PASS gives the overclaim FAIL.
 
 Source-only and rom-built records need no attestation (build checks only). From `bios-loaded` to `homebrew`
 every result is BLOCKED or FAIL, never PASS (no judge label; see the stage probe section). `claim_scope: all-titles` is always FAIL.
@@ -166,7 +178,14 @@ Neither this module nor its output establishes any of the following. Out of scop
 - **Compatibility.** A PASS is a consistency result on the JSON given, not a compatibility certification. Local output
   must not be quoted as compatibility.
 - **Release gate use.** The module is not wired into `make check` or any release gate, and no CI job uses it as a gate.
-- **Build reproducibility.** `rom-built` PASS does not build the ROM or compute its hash. It checks only that
-  `rom.sha256` is well-formed.
-- **Game compatibility.** No retail disc is run here. Retail stages are SKIP without a local fixture and BLOCKED
-  with one until a judged probe exists (both BLOCKED without a runner attestation).
+- **Format-only PASS.** `source-only` and `rom-built` PASS check the record format only. For `rom-built`, `rom.sha256`
+  is self-declared and well-formed, and is not verified. `source-only` has no build or hash at all.
+- **Build reproducibility.** `rom-built` PASS does not build the ROM or compute its hash.
+- **Module-defined labels.** The retail stage labels (`retail-boot-reached`, `playable-reached`, `save-reached`,
+  `completion-reached`) are defined by `tools/compat_evidence.py`, not by #119, and no shipped producer emits them.
+- **Checkpoints below startup.** Checkpoints are not examined for `source-only` and `rom-built`. From `bios-loaded` up,
+  the runner attestation must confirm each record checkpoint. The record's own `expected` and `observed` are compared from `startup` up.
+- **Fixture and region.** Fixture `id`, `sha256`, `origin` and `region` are self-declared. The fixture hash is compared
+  only with the unsigned attestation, so these are trustworthy only as far as that attestation is.
+- **Game compatibility.** No retail disc is run here. A retail record without a local fixture is SKIP only when nothing
+  else blocks. With a fixture it is BLOCKED until a judged probe exists, and BLOCKED without a runner attestation.

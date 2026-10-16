@@ -37,7 +37,9 @@ CHECK_STAGE = RANK['startup']
 HOMEBREW_STAGE = RANK['homebrew']
 RETAIL_STAGE = RANK['retail-boot']
 
-# #119 --expect label per stage. retail-boot has no #119 probe yet, so it stays BLOCKED until one exists.
+# Stage labels for the four retail-and-above stages. They are defined HERE (module-defined), not in
+# tests/integration/geargrafx_harness.py; a probe must be run with this value as --expect to be judged.
+# No shipped producer emits them yet (no #119 retail probe exists), so these stages are BLOCKED or SKIP.
 STAGE_LABEL = {'retail-boot': 'retail-boot-reached', 'playable': 'playable-reached',
                'save-tested': 'save-reached', 'completion-tested': 'completion-reached'}
 # Labels that always fail a stage's probe, added to whatever forbid list the runner passes.
@@ -225,7 +227,8 @@ def verdict(record, runner=None, probe=None):
                 findings.append(('FAIL', f"checkpoint {item['name']} mismatch"))
     if rank > HOMEBREW_STAGE and not _list_field(record, 'trace_deltas'):
         findings.append(('BLOCKED', 'guest trace deltas required above homebrew'))
-    # A retail-boot record with no local fixture is SKIP (opt-in disc, nothing was run), not BLOCKED.
+    # A retail-stage record with no local fixture gets no probe check (opt-in disc, nothing was run);
+    # its SKIP finding applies only if no other finding is BLOCKED or FAIL (BLOCKED outranks SKIP).
     if rank >= CORE_STAGE and not (fixture is None and rank >= RETAIL_STAGE):
         findings.extend(_stage_findings(record['stage'], probe))
         if record['stage'] in STAGE_LABEL and not any(
