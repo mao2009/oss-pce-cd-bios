@@ -20,8 +20,8 @@ sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_cdload_exec import (DEFAULT_LBA, DISC_SECTORS, ERROR_NAMES, EXEC_ADDRESS, EXPECTED_MPR, HDR_BYTES,
                                SECTOR_BYTES, USER_OFFSET, build_exec_disc, encode_sector, parse_labels)
-from build_cdread import HALT_CONFIRM_STEPS, with_request
-from cdread_verify import result_block
+from build_cdread import with_request
+from cdread_verify import check_halt_confirmation, check_scsi_sequence, result_block
 from environment import DEPENDENCIES
 from geargrafx_api import compile_probe
 from geargrafx_cdread import execute
@@ -35,8 +35,14 @@ ORDER = ("cd_buffer_ready", "cd_data_done", "payload_entry", "payload_done", "cd
 HEADER_FAILURES = {20, 21, 22, 23}  # rejected at stage 11, after the full sector was transferred
 
 
-def judge_success(records, code, sector, symbols):
-    """Raise ValueError unless cold AND warm runs loaded, verified, executed and returned exactly."""
+def judge_success(records, code, symbols, lba, count):
+    """Raise ValueError unless cold AND warm runs loaded, verified, executed and returned exactly.
+
+    `lba`/`count` are the requested sector; the emulator's own SCSI phase trace must match them (#5 check).
+    """
+    if count != 1:
+        raise ValueError("this judge expects exactly one requested sector")
+    sector = encode_sector(lba, code)
     caps = records["CAP"]
     if len(caps) != 1 or not (caps[0].get("instruction_step") and caps[0].get("cdrom_hardware")
                               and caps[0].get("cdrom_media")):
@@ -47,8 +53,7 @@ def judge_success(records, code, sector, symbols):
         cycle = run["cycle"]
         if run["reason"] != "cd_halt_ok" or run["pc"] != symbols["cd_halt_ok"]:
             raise ValueError(f"{cycle}: stopped with {run['reason']}, not at cd_halt_ok")
-        if run["halt_confirmed"] is not True or run["halt_confirmation_steps"] != HALT_CONFIRM_STEPS:
-            raise ValueError(f"{cycle}: halt not confirmed for {HALT_CONFIRM_STEPS} instructions")
+        check_halt_confirmation(run)
         if run["mpr"] != EXPECTED_MPR:
             raise ValueError(f"{cycle}: MPR at halt {run['mpr']} differs from {EXPECTED_MPR}")
         if run["sp"] != 0xFF:
@@ -83,6 +88,7 @@ def judge_success(records, code, sector, symbols):
         for name, pc in expected_pc.items():
             if by_name[name]["pc"] != pc:
                 raise ValueError(f"{cycle}: {name} reached at PC {by_name[name]['pc']:#x}, expected {pc:#x}")
+    check_scsi_sequence(records, lba, count)
 
 
 def judge_failure(records, code, stage, transferred):
@@ -91,8 +97,9 @@ def judge_failure(records, code, stage, transferred):
         raise ValueError("missing cold/warm runs")
     for run in records["RUN"]:
         cycle = run["cycle"]
-        if run["reason"] != "cd_halt_fail" or not run["halt_confirmed"]:
-            raise ValueError(f"{cycle}: expected a confirmed cd_halt_fail, got {run['reason']}")
+        if run["reason"] != "cd_halt_fail":
+            raise ValueError(f"{cycle}: expected cd_halt_fail, got {run['reason']}")
+        check_halt_confirmation(run)
         block = result_block(run)
         got = (block["code"], block["stage"], block["bytes"])
         if got != (code, stage, transferred):
@@ -130,7 +137,7 @@ class Suite:
     def positive(self, name, lba):
         sector = encode_sector(lba, self.code)
         records = self.run(self.rom_for(lba), self.disc(f"disc-lba{lba}", lba))
-        judge_success(records, self.code, sector, self.symbols)
+        judge_success(records, self.code, self.symbols, lba, 1)
         self.results[name] = {"status": "PASS", "lba": lba, "payload_bytes": len(self.code),
                               "sector_sha256": hashlib.sha256(sector).hexdigest(),
                               "guest_steps": [run["step"] for run in records["RUN"]]}
@@ -139,7 +146,7 @@ class Suite:
     def reject(self, name, records, **info):
         """The success judge MUST reject this observation; its reason is recorded."""
         try:
-            judge_success(records, self.code, encode_sector(DEFAULT_LBA, self.code), self.symbols)
+            judge_success(records, self.code, self.symbols, DEFAULT_LBA, 1)
         except ValueError as error:
             self.results[name] = {"status": "PASS_EXPECTED_FAILURE", "rejected_because": str(error), **info}
         else:
@@ -153,7 +160,7 @@ class Suite:
         return records
 
 
-def mutation_tests(suite, records, sector):
+def mutation_tests(suite, records):
     """Corrupt otherwise-good observations: the success judge must reject every one."""
     mutants = {}
 
@@ -210,7 +217,7 @@ def mutation_tests(suite, records, sector):
         mutated(f"{cycle}_payload_never_returned", no_return)
     for name, twin in mutants.items():
         try:
-            judge_success(twin, suite.code, sector, suite.symbols)
+            judge_success(twin, suite.code, suite.symbols, DEFAULT_LBA, 1)
         except ValueError:
             continue
         raise ValueError(f"success judge accepted mutated observation: {name}")
@@ -236,7 +243,6 @@ def main():
     probe = compile_probe(output, "geargrafx_cdread_probe.cpp", "geargrafx-cdload-exec-probe")
     with tempfile.TemporaryDirectory(prefix="pce-cdload-exec-") as tmp:
         suite = Suite(probe, labels, symbols, code, Path(tmp), rom_bytes)
-        sector = encode_sector(DEFAULT_LBA, code)
 
         # ---- positive: load, verify, copy to RAM, execute, return (cold AND warm) ----
         primary = suite.positive("payload_from_lba5", 5)
@@ -267,7 +273,7 @@ def main():
             raise ValueError("step budget run did not stop as budget before the payload")
         suite.reject("step_budget_exhausted", budget, note="budget 1000 steps, the header was never reached")
 
-        mutation_tests(suite, primary, sector)
+        mutation_tests(suite, primary)
 
     evidence = {
         "scope": "load-and-execute experiment ONLY; CD_READ ($03) and every BIOS API NOT_IMPLEMENTED",

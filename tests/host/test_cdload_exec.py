@@ -73,5 +73,147 @@ class CdLoadExecBuildTests(unittest.TestCase):
         self.assertNotEqual(hashlib.sha256(clean).hexdigest(), hashlib.sha256(bytes(damaged)).hexdigest())
 
 
+# ---- judge negatives on synthetic records (no emulator): halt confirmation and SCSI phase sequence ----
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "integration"))
+import geargrafx_cdload_exec as judge  # noqa: E402
+from tools.build_cdload_exec import EXPECTED_MPR  # noqa: E402
+from tools.cdread_verify import PHASE_BUS_FREE, PHASE_COMMAND, PHASE_DATA_IN, PHASE_MESSAGE_IN, PHASE_STATUS  # noqa: E402
+
+PAYLOAD = bytes(range(1, 41))
+SYMBOLS = {"cd_halt_ok": 0xE100, "cd_payload_return": 0xE080, "payload_done": EXEC_ADDRESS + 0x20}
+SCSI_SEQUENCE = [PHASE_COMMAND, PHASE_DATA_IN, PHASE_STATUS, PHASE_MESSAGE_IN, PHASE_BUS_FREE]
+
+
+def halt_fields(arrival=1000, steps=64):
+    return {"halt_confirmed": True, "halt_confirmation_steps": steps, "halt_confirmation_required": 64,
+            "halted_after_step": arrival, "step": arrival + steps}
+
+
+def observation(lba=5, count=1):
+    """Synthetic but internally consistent cold+warm success observation for judge_success()."""
+    sector = encode_sector(lba, PAYLOAD)
+    buffer = bytearray(b"\x5a" * 6144)
+    buffer[:SECTOR_BYTES] = sector
+    buffer[judge.EXEC_OFF:judge.EXEC_OFF + len(PAYLOAD)] = PAYLOAD
+    buffer[judge.MARK_OFF:judge.MARK_OFF + 7] = bytes([0xA5, 0x5A, 0, 0, 0xF8, 0xFF, 0x3C])
+    result = bytes([0, 16]) + SECTOR_BYTES.to_bytes(2, "little") + bytes([0, 0, 0])
+    heads = {"cd_buffer_ready": "5a" * 32, "cd_data_done": sector[:32].hex()}
+    pcs = {"payload_entry": EXEC_ADDRESS, "payload_done": SYMBOLS["payload_done"],
+           "cd_payload_return": SYMBOLS["cd_payload_return"], "cd_halt_ok": SYMBOLS["cd_halt_ok"]}
+    records = {"CAP": [{"instruction_step": True, "cdrom_hardware": True, "cdrom_media": True}],
+               "RUN": [], "HIT": [], "PHASE": []}
+    for cycle in ("cold", "warm"):
+        records["RUN"].append({"cycle": cycle, "reason": "cd_halt_ok", "pc": SYMBOLS["cd_halt_ok"],
+                               **halt_fields(), "mpr": list(EXPECTED_MPR), "sp": 0xFF,
+                               "result_hex": result.hex(), "buffer_hex": buffer.hex()})
+        for step, name in enumerate(judge.ORDER, start=1):
+            row = {"cycle": cycle, "name": name, "step": step * 10, "pc": pcs.get(name, 0xE000)}
+            if name in heads:
+                row["buffer_head_hex"] = heads[name]
+            records["HIT"].append(row)
+        for phase in SCSI_SEQUENCE:
+            row = {"cycle": cycle, "scsi_phase": phase}
+            if phase == PHASE_DATA_IN:
+                row.update(load_sector=lba, load_count=count)
+            records["PHASE"].append(row)
+    return records
+
+
+def failure_observation():
+    result = bytes([20, 11]) + SECTOR_BYTES.to_bytes(2, "little") + bytes([0, 0, 0])
+    return {"CAP": [], "HIT": [], "PHASE": [],
+            "RUN": [{"cycle": c, "reason": "cd_halt_fail", **halt_fields(), "result_hex": result.hex()}
+                    for c in ("cold", "warm")]}
+
+
+class CdLoadExecJudgeTests(unittest.TestCase):
+    def assertRejected(self, records, lba=5, count=1):
+        with self.assertRaises(ValueError):
+            judge.judge_success(records, PAYLOAD, SYMBOLS, lba, count)
+
+    def test_synthetic_success_is_accepted(self):
+        judge.judge_success(observation(), PAYLOAD, SYMBOLS, 5, 1)
+
+    def test_halt_missing_fields_rejected(self):
+        for key in ("halt_confirmed", "halt_confirmation_steps", "halt_confirmation_required",
+                    "halted_after_step", "step"):
+            with self.subTest(missing=key):
+                records = observation()
+                del records["RUN"][1][key]
+                self.assertRejected(records)
+
+    def test_halt_63_instructions_rejected(self):
+        records = observation()
+        for run in records["RUN"]:
+            run.update(halt_fields(steps=63), halt_confirmation_required=63)
+        self.assertRejected(records)
+
+    def test_halt_required_not_64_rejected(self):
+        for required in (63, 32, 0):
+            with self.subTest(required=required):
+                records = observation()
+                records["RUN"][0]["halt_confirmation_required"] = required
+                self.assertRejected(records)
+
+    def test_halt_step_accounting_and_invalid_values_rejected(self):
+        cases = {"step_not_arrival_plus_steps": lambda r: r.update(step=r["step"] + 1),
+                 "arrival_negative": lambda r: r.update(halted_after_step=-1),
+                 "arrival_none": lambda r: r.update(halted_after_step=None),
+                 "arrival_string": lambda r: r.update(halted_after_step="1000"),
+                 "confirmed_string": lambda r: r.update(halt_confirmed="True"),
+                 "confirmed_false": lambda r: r.update(halt_confirmed=False)}
+        for name, edit in cases.items():
+            with self.subTest(case=name):
+                records = observation()
+                edit(records["RUN"][0])
+                self.assertRejected(records)
+
+    def test_missing_scsi_phase_rejected(self):
+        for phase in SCSI_SEQUENCE:
+            with self.subTest(missing=phase):
+                records = observation()
+                for cycle in ("cold", "warm"):
+                    rows = [r for r in records["PHASE"] if r["cycle"] == cycle]
+                    records["PHASE"].remove(next(r for r in rows if r["scsi_phase"] == phase))
+                self.assertRejected(records)
+
+    def test_reordered_scsi_phases_rejected(self):
+        for i in range(len(SCSI_SEQUENCE) - 1):
+            with self.subTest(swap_at=i):
+                records = observation()
+                rows = [r for r in records["PHASE"] if r["cycle"] == "cold"]
+                rows[i], rows[i + 1] = rows[i + 1], rows[i]
+                records["PHASE"] = [r for r in records["PHASE"] if r["cycle"] != "cold"] + rows
+                self.assertRejected(records)
+
+    def test_wrong_lba_rejected(self):
+        records = observation(lba=6)  # emulator saw READ of LBA 6
+        self.assertRejected(records, lba=5)  # expected LBA 5
+        records = observation(lba=5)
+        for row in records["PHASE"]:
+            if row["scsi_phase"] == PHASE_DATA_IN:
+                row["load_sector"] = 6
+        self.assertRejected(records, lba=5)
+
+    def test_wrong_count_rejected(self):
+        records = observation(count=2)  # emulator saw READ of 2 sectors
+        self.assertRejected(records, count=1)
+        self.assertRejected(observation(count=1), count=2)
+
+    def test_judge_failure_requires_full_halt_confirmation(self):
+        judge.judge_failure(failure_observation(), 20, 11, SECTOR_BYTES)
+        cases = {"steps_63": lambda r: r.update(halt_confirmation_steps=63, halt_confirmation_required=63,
+                                                  step=1063),
+                 "required_missing": lambda r: r.pop("halt_confirmation_required"),
+                 "confirmed_false": lambda r: r.update(halt_confirmed=False)}
+        for name, edit in cases.items():
+            with self.subTest(case=name):
+                records = failure_observation()
+                edit(records["RUN"][0])
+                with self.assertRaises(ValueError):
+                    judge.judge_failure(records, 20, 11, SECTOR_BYTES)
+
+
 if __name__ == "__main__":
     unittest.main()
