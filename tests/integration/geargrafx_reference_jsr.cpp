@@ -216,6 +216,15 @@ int main(int argc, char** argv)
     u8* wram = o.memory->GetWorkingRAM();
     for (size_t i = 0; i < code.size(); ++i)
         wram[kStubIndex + i] = code[i];
+    // Sentinel at the physical WRAM byte that STA $0000 would target after TAM
+    // remaps MPR0 to the WRAM bank. CPU address $0000 initially maps to ROM
+    // (MPR0 = 0x00), but after TAM sets MPR0 = 0xF8 it maps to physical WRAM[0].
+    // Writing a sentinel here lets us verify the prohibited STA never executes
+    // by comparing the same physical byte before/after TAM detection.
+    const u8 kTamSentinel = 0xA5;
+    u8 tam_sentinel_before = 0;
+    if (mode == "tam")
+        tam_sentinel_before = wram[0] = kTamSentinel;
     // --- write protection: deny by default, only allowlist-covered pages stay writable.
     //     Memory::GetMemoryMapWrite() is indexed by PHYSICAL bank (the MPR value), not by
     //     CPU address. If one physical bank is mapped to both an allowlisted and a
@@ -307,6 +316,7 @@ int main(int argc, char** argv)
     u16 detected_pc = 0;
     std::vector<u8> wram0 = wram_snap();
     u8 cdram0 = 0;
+    u8 tam_sentinel_after = 0;
     if (mode == "neg-write") {
         // Forbidden target outside the allowlist. Read the byte at the CPU address
         // (through the same MPR mapping the store uses) so prevention can be
@@ -342,6 +352,8 @@ int main(int argc, char** argv)
                 char buf[64];
                 std::snprintf(buf, sizeof(buf), "mpr_changed_during_execution[mpr%d]", i);
                 reason = buf;
+                if (mode == "tam")
+                    tam_sentinel_after = wram[0];  // physical WRAM byte STA $0000 would target
                 break;
             }
         }
@@ -443,6 +455,16 @@ int main(int argc, char** argv)
         } else if (detected) {
             ok = false;
             reason = "allowed_write_was_flagged";
+        }
+    } else if (mode == "tam") {
+        // Tam mode: the prohibited STA $0000 must not execute. After TAM remaps
+        // MPR0 to the WRAM bank, CPU address $0000 maps to physical WRAM[0],
+        // which holds the sentinel. The sentinel must be unchanged.
+        guard_before = tam_sentinel_before;
+        guard_after = tam_sentinel_after;
+        if (guard_after != guard_before) {
+            ok = false;
+            reason = "tam_prohibited_store_modified_ram";
         }
     }
 

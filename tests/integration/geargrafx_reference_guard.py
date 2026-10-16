@@ -43,11 +43,22 @@ from geargrafx_api import compile_probe  # noqa: E402
 BIOS_BYTES = 256 * 1024
 ALLOW = (0x2000, 0x4000)  # page 1: this core hardwires the zero page/stack there
 ALLOWED_VALUE = 0x5A
+TAM_SENTINEL = 0xA5  # sentinel written to physical WRAM[0] before TAM execution
 
 # forbidden targets: outside the allowlist. Each must be prevented AND detected.
 NEG_TARGETS = (0x0000, 0x1FFF, 0x4000)
 # allowed-control targets: inside the allowlist. Each must land and not be flagged.
 POS_TARGETS = (0x2000, 0x3FFF, 0x3E50)
+
+# Exact TAM guest program layout (all addresses are CPU addresses):
+#   $3E00-$3E01: LDA #$F8
+#   $3E02-$3E03: TAM #$01  (MPR0: 0x00 -> 0xF8)
+#   $3E04-$3E06: STA $0000 (prohibited; must not execute)
+#   $3E07-$3E08: BRA *
+TAM_STOP_PC = 0x3E04  # PC right after TAM, before STA
+TAM_INSTRUCTIONS = 2  # LDA + TAM only; STA must not run
+TAM_MPR0_BEFORE = 0x00  # page 0 initially maps to ROM
+TAM_MPR0_AFTER = 0xF8   # after TAM, page 0 maps to WRAM bank
 
 # Exit codes the probe returns when it refuses to run.
 BLOCKED_EXIT_ALIAS = 8   # physical bank shared by allowlisted/non-allowlisted pages
@@ -121,9 +132,15 @@ def check_pos(row, target):
 def check_tam(row):
     """Tam mode: MPR change must be detected and the following STA must not execute.
 
-    Verifies status=rejected, mpr_changed=True, reason names the MPR change,
-    instruction count is small (TAM was stepped, not timed out), stop PC is
-    right after TAM (before the STA), and no RAM was modified by the STA.
+    Verifies with exact expected values (not loose ranges):
+      * status == "rejected"
+      * mpr_changed == True
+      * reason == "mpr_changed_during_execution[mpr0]"
+      * stop_pc == TAM_STOP_PC (0x3E04, right after TAM, before STA)
+      * instructions_executed == TAM_INSTRUCTIONS (2: LDA + TAM only)
+      * MPR0 changed from TAM_MPR0_BEFORE (0x00) to TAM_MPR0_AFTER (0xF8)
+      * Physical WRAM[0] sentinel unchanged (TAM_SENTINEL == 0xA5)
+      * ram_diff empty (no prohibited store reached RAM)
     """
     if row.get("exit", 0) != 0:
         raise ValueError(f"tam probe refused to run (exit {row.get('exit')}): {row.get('stderr','')[-300:]}")
@@ -132,26 +149,91 @@ def check_tam(row):
     if row.get("mpr_changed") is not True:
         raise ValueError(f"tam MPR change was not detected: mpr_changed={row.get('mpr_changed')}")
     reason = row.get("reason", "")
-    if not reason.startswith("mpr_changed_during_execution"):
-        raise ValueError(f"tam stop reason does not name MPR change: {reason}")
+    if reason != "mpr_changed_during_execution[mpr0]":
+        raise ValueError(f"tam stop reason mismatch: expected 'mpr_changed_during_execution[mpr0]', got {reason!r}")
+    stop_pc = row.get("stop_pc")
+    if type(stop_pc) is not int or stop_pc != TAM_STOP_PC:
+        raise ValueError(f"tam stop PC mismatch: expected {TAM_STOP_PC:#x} (after TAM, before STA), got {stop_pc!r}")
     executed = row.get("instructions_executed")
-    if type(executed) is not int or not 2 <= executed <= 10:
-        raise ValueError(f"tam instruction count out of expected range: {executed}")
-    # The STA after TAM must not have executed: no RAM changes at all.
+    if executed != TAM_INSTRUCTIONS:
+        raise ValueError(f"tam instruction count mismatch: expected {TAM_INSTRUCTIONS} (LDA+TAM only), got {executed}")
+    # MPR0 must have changed from ROM (0x00) to WRAM bank (0xF8).
+    before_mpr = row.get("before", {}).get("mpr", [])
+    after_mpr = row.get("after", {}).get("mpr", [])
+    if type(before_mpr) is not list or len(before_mpr) != 8:
+        raise ValueError(f"tam before MPR snapshot invalid: {before_mpr}")
+    if type(after_mpr) is not list or len(after_mpr) != 8:
+        raise ValueError(f"tam after MPR snapshot invalid: {after_mpr}")
+    if before_mpr[0] != TAM_MPR0_BEFORE:
+        raise ValueError(f"tam MPR0 before mismatch: expected {TAM_MPR0_BEFORE:#x} (ROM), got {before_mpr[0]:#x}")
+    if after_mpr[0] != TAM_MPR0_AFTER:
+        raise ValueError(f"tam MPR0 after mismatch: expected {TAM_MPR0_AFTER:#x} (WRAM), got {after_mpr[0]:#x}")
+    # The prohibited STA $0000 must not execute. After TAM remaps MPR0 to WRAM,
+    # CPU address $0000 maps to physical WRAM[0], which holds the sentinel.
+    if row.get("guard_before") != TAM_SENTINEL:
+        raise ValueError(f"tam sentinel before mismatch: expected {TAM_SENTINEL:#x}, got {row.get('guard_before')!r}")
+    if row.get("guard_after") != TAM_SENTINEL:
+        raise ValueError(f"tam sentinel after mismatch: expected {TAM_SENTINEL:#x} (STA did not execute), got {row.get('guard_after')!r}")
     if row.get("guard_before") != row.get("guard_after"):
-        raise ValueError(f"tam: prohibited STA modified RAM (guard_before={row.get('guard_before')} != guard_after={row.get('guard_after')})")
+        raise ValueError("tam: prohibited STA modified physical RAM (guard_before != guard_after)")
     ram_diff = row.get("ram_diff")
     if type(ram_diff) is not list or len(ram_diff) != 0:
         raise ValueError(f"tam: unexpected ram_diff={ram_diff}")
-    # Stop PC should be right after TAM (the STA address), before the store.
-    stop_pc = row.get("stop_pc")
-    if type(stop_pc) is not int or not 0x3E00 <= stop_pc <= 0x3EFF:
-        raise ValueError(f"tam stop PC out of guest range: {stop_pc}")
 
 
 def check_blocked(row, expected_exit):
     if row.get("exit") != expected_exit:
         raise ValueError(f"expected exit {expected_exit} but got {row.get('exit')}: {row.get('stderr','')[-300:]}")
+
+
+def mutation_test_tam():
+    import copy
+
+    def make_base():
+        """Construct a nominally-passing tam observation."""
+        return {
+            "exit": 0,
+            "status": "rejected",
+            "reason": "mpr_changed_during_execution[mpr0]",
+            "mpr_changed": True,
+            "stop_pc": TAM_STOP_PC,
+            "instructions_executed": TAM_INSTRUCTIONS,
+            "before": {"mpr": [TAM_MPR0_BEFORE, 0xF8, 0, 0, 0, 0, 0, 0]},
+            "after": {"mpr": [TAM_MPR0_AFTER, 0xF8, 0, 0, 0, 0, 0, 0]},
+            "guard_before": TAM_SENTINEL,
+            "guard_after": TAM_SENTINEL,
+            "ram_diff": [],
+        }
+
+    mutations = [
+        # (name, mutation_dict, pop_keys, expected_failure_reason)
+        # mutation_dict: keys to set/overwrite
+        # pop_keys: keys to remove from the row (for missing-field mutations)
+        ("stop_pc=0x3E05", {"stop_pc": 0x3E05}, [], "stop PC after TAM but not at STA boundary"),
+        ("stop_pc=0x3E07", {"stop_pc": 0x3E07}, [], "stop PC past STA (STA may have executed)"),
+        ("instructions_executed=3", {"instructions_executed": 3}, [], "STA instruction was stepped"),
+        ("status=ok", {"status": "ok"}, [], "tam run was accepted instead of rejected"),
+        ("mpr_changed=false", {"mpr_changed": False}, [], "MPR change not detected"),
+        ("reason=mismatch", {"reason": "mpr_changed_during_execution[mpr1]"}, [], "wrong MPR index in reason"),
+        ("mpr0_unchanged", {}, ["before", "after"], "MPR0 was already WRAM (no change detected)"),
+        ("guard_after=0x5A", {"guard_after": ALLOWED_VALUE}, [], "sentinel overwritten by prohibited STA"),
+        ("guard_before=0x5A", {"guard_before": ALLOWED_VALUE}, [], "sentinel initialized to STA value (false pass)"),
+        ("ram_diff_nonempty", {"ram_diff": [{"address": 0x2000, "before": 0, "after": 0x5A}]}, [], "prohibited store reached RAM"),
+        ("missing_stop_pc", {}, ["stop_pc"], "stop_pc field missing"),
+        ("missing_guard_before", {}, ["guard_before"], "guard_before field missing"),
+        ("missing_guard_after", {}, ["guard_after"], "guard_after field missing"),
+    ]
+
+    for name, mutation, pop_keys, _reason in mutations:
+        row = copy.deepcopy(make_base())
+        for k in pop_keys:
+            row.pop(k, None)
+        row.update(mutation)
+        try:
+            check_tam(row)
+        except ValueError:
+            continue  # expected: mutation correctly rejected
+        raise ValueError(f"mutation test FAILED: {name} was accepted but should be rejected ({_reason})")
 
 
 def main():
@@ -173,6 +255,9 @@ def main():
         # be detected before the subsequent store executes.
         check_tam(run_mode(probe, bios, cue, "tam", NEG_TARGETS[0]))
 
+        # Phase 3: mutation tests - every abnormal observation must FAIL.
+        mutation_test_tam()
+
         # Phase 1: static physical-bank aliasing must be rejected before execution.
         alias = run_mode(probe, bios, cue, "neg-write", NEG_TARGETS[0], env_alias=True)
         check_blocked(alias, BLOCKED_EXIT_ALIAS)
@@ -189,8 +274,9 @@ def main():
             check_blocked(bad, BLOCKED_EXIT_ALLOWLIST)
 
     print("PASS real-core write guard: forbidden stores prevented+detected; allowed "
-          "work-RAM stores landed; dynamic MPR change detected; physical-bank "
-          "aliasing rejected; non-standard allowlist rejected")
+          "work-RAM stores landed; dynamic MPR change detected with exact stop PC "
+          "and physical-RAM sentinel; physical-bank aliasing rejected; non-standard "
+          "allowlist rejected; mutation tests pass")
     return 0
 
 
