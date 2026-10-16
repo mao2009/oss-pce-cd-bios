@@ -17,6 +17,8 @@ from environment import DEPENDENCIES
 from geargrafx_api import compile_probe
 from geargrafx_contracts import execute, trace
 
+CD_INIT_STATE = 1  # startup_cd_state value (non-zero, distinct from power-on RAM); $2205 observed in OBS work RAM
+
 
 def check_evidence(records, symbols):
     if records["OBS"][0]["pc"] != symbols["startup_entry"]:
@@ -28,6 +30,9 @@ def check_evidence(records, symbols):
             raise ValueError("actual System Card startup PC/X/SP/MPR/RAM checkpoint mismatch")
         if not (row["p"] & 4) or row["p"] & 8:
             raise ValueError("startup interrupt/decimal flags differ")
+        # $2205 is inside the observed 64-byte window at $2200; it must hold the CD init state.
+        if bytes.fromhex(row["work_ram_0200_hex"])[5] != CD_INIT_STATE:
+            raise ValueError("observed CD init state byte differs from startup record")
     for cycle in ("cold", "warm"):
         ready = trace(records, cycle, "startup_mpr_ready")
         stack = trace(records, cycle, "startup_stack_ready")
@@ -92,14 +97,19 @@ def main():
             raise ValueError("mutated startup ROM unexpectedly passed actual Geargrafx")
         # More real-core negatives: each mutated ROM must make the SAME evidence check fail.
         # (name, offset into STARTUP_CODE, expected original byte, replacement byte)
-        mutations = (("mpr5_value", 24, 0x03, 0x05), ("stack_pointer", 36, 0xFF, 0xFE))
+        # The CD-state store must be proven by a non-zero value: power-on RAM reads 0, so a removed
+        # or redirected store would otherwise look identical to a correct one.
+        mutations = (("mpr5_value", 24, b"\x03", b"\x05"), ("stack_pointer", 36, b"\xff", b"\xfe"),
+                     ("cd_init_state_value", 62, b"\x01", b"\x00"),       # value equals power-on zero
+                     ("cd_store_removed", 63, b"\x8d\x05\x22", b"\xea\xea\xea"),
+                     ("cd_store_redirected", 64, b"\x05", b"\x06"))       # STA $2206 leaves $2205 at 0
         mutation_results = {}
-        for name, offset, original_byte, replacement in mutations:
+        for name, offset, original_bytes, replacement in mutations:
             mutated = bytearray(payload)
             at = symbols["startup_entry"] - 0xe000 + offset
-            if mutated[at] != original_byte:
-                raise ValueError(f"{name}: unexpected original byte at startup+{offset}")
-            mutated[at] = replacement
+            if bytes(mutated[at:at + len(original_bytes)]) != original_bytes:
+                raise ValueError(f"{name}: unexpected original bytes at startup+{offset}")
+            mutated[at:at + len(replacement)] = replacement
             try:
                 verify_startup(bytes(mutated), original)
             except ValueError:
@@ -111,7 +121,10 @@ def main():
             observed = execute(probe, path, cue, output / "trace-labels.txt")
             try:
                 check_evidence(observed, symbols)
-            except ValueError:
+            except ValueError as error:
+                # CD mutations must fail on the CD-state byte itself, not on an unrelated trace gap.
+                if name.startswith("cd_") and "CD init state" not in str(error):
+                    raise ValueError(f"{name}: failed for an unrelated reason: {error}") from error
                 mutation_results[name] = "PASS_EXPECTED_FAILURE"
             else:
                 raise ValueError(f"{name}: mutated startup ROM unexpectedly passed actual Geargrafx")
@@ -128,6 +141,7 @@ def main():
             "observations": negative,
         },
         "mutation_negatives": mutation_results,
+        "cd_init_state_observed": CD_INIT_STATE, "disc_absent": "NOT_TESTED (harness requires LoadMedia)",
         "bios_service_abi": "UNKNOWN", "cd_boot": "NOT_TESTED",
         "interrupt_vector_execution": "NOT_TESTED",  # vectors are checked structurally; no IRQ/NMI is ever raised
         "proprietary_content": "NONE",

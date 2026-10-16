@@ -45,6 +45,13 @@ explicit `BRA` checkpoint with `X=$B0`. Four interrupt vectors lead to a
 **different nonreturning error checkpoint** with `X=$EE`; Reset points to
 `$F000`. The test does not enable interrupts or call any BIOS service.
 
+The stage also stores the non-zero sentinel `$01` at `$2205` (`startup_cd_state`) after the
+`BOOT!` marker. The value is a diagnostic marker that the store executed, **not** an encoding of
+CD state. It is non-zero because Geargrafx power-on RAM reads `$00`. The code bytes contain no access
+to the CD-ROM2 registers (`$1800-$1804`), so the byte does not depend on disc presence by construction.
+This is not observed on the real core: disc attached is `NOT RUN` and no media is `NOT_TESTED`.
+`manifest.json` records `cd_disc_presence_read: false` as a build constant, not a measurement.
+
 All addresses except the CPU's architectural vector/stack geometry are
 **diagnostic choices**, not claimed NEC/Hudson System Card allocation or
 caller/callee preservation guarantees. In particular this is not an
@@ -64,9 +71,13 @@ and reject a broken base ROM or wrong sizes.
 The integration runner invokes the actual Geargrafx debugger-enabled C++
 frontend that Issue #6 / PR #101 established. It observes real PC, P, SP,
 X, all MPRs, and RAM on cold/warm reset plus named instruction checkpoints.
-Three mutated ROMs are deliberately executed in the real emulator and must each fail the same
+Mutated ROMs are deliberately executed in the real emulator and must each fail the same
 evidence check: a symbol-qualified redirection of the second marker store to `$2200`
-(overwriting `B` with `O`), a wrong MPR5 value, and a wrong stack-pointer value. No Python CPU
+(overwriting `B` with `O`), a wrong MPR5 value, a wrong stack-pointer value, a CD-state value equal
+to power-on RAM (`$00`), a removed CD-state store (`STA $2205` → NOPs), and a redirected CD-state
+store (`STA $2206`). The last three matter because Geargrafx power-on RAM reads `$00`: without a
+non-zero record, a missing store would be indistinguishable from a correct one (verified in WSL
+before this change: the removed and redirected store ROMs passed the old check). No Python CPU
 simulation substitutes for emulator observations.
 
 The pinned Geargrafx source SHA and source archive SHA-256 are recorded; the
