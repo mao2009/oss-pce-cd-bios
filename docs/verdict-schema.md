@@ -39,7 +39,8 @@ gh attestation verify cdread-verdict.json \
 ```
 
 gh が非 0 終了・未インストール・タイムアウト・JSON 不正の場合は BLOCKED。gh が成功しても、利用側は出力を
-信用せず以下を再確認する: subject に **利用側が再計算した verdict バイト列の sha256** が含まれること、証明書の
+信用せず以下を再確認する: subject に **利用側が再計算した verdict バイト列の sha256** が含まれること、
+`statement.predicateType` が `https://slsa.dev/provenance/v1` であること、証明書の
 `issuer`・`sourceRepositoryURI`・`sourceRepositoryDigest`（= COMMIT）・`sourceRepositoryRef`・`buildSignerURI`・
 `buildSignerDigest`（= COMMIT）・trigger・`runnerEnvironment`（#125 `certificate_findings` と同じ規則）、
 `runInvocationURI` の run ID / attempt が verdict の `producer.run_id` / `producer.run_attempt` と一致すること。

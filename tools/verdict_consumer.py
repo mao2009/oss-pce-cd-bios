@@ -122,7 +122,8 @@ def content_findings(v, commit, rom_bytes):
             and all(c[k] == declared[k] and type(c[k]) is str for k in declared if k not in PROMOTABLE)):
         errors.append("claims must be exactly T1-T8, T1-T5 VERIFIED/BLOCKED, T6-T8 as declared in the ledger")
     issued, expires, now = _time(v["issued_at"]), _time(v["expires_at"]), _now()
-    if issued is None or expires is None or not issued < expires <= issued + MAX_LIFETIME:
+    # subtract, never issued + MAX_LIFETIME: that raises OverflowError near year 9999 instead of BLOCKING
+    if issued is None or expires is None or not datetime.timedelta(0) < expires - issued <= MAX_LIFETIME:
         errors.append("issued_at/expires_at malformed or lifetime not in (0, 30 days]")
     elif not issued <= now < expires:
         errors.append("verdict is expired or not yet valid")
@@ -162,6 +163,8 @@ def signature_findings(verdict_bytes, commit, producer, bundle_path):
         f = ep.certificate_findings(res, policy) + ep.run_findings(res, run, policy)
         if ep._get(res, "signature", "certificate", "issuer") != ISSUER:
             f.append("certificate issuer is not GitHub Actions OIDC")
+        if ep._get(res, "statement", "predicateType") != PREDICATE:
+            f.append("attestation predicate type is not SLSA provenance v1")
         if not f:
             return []
         findings = findings or f
