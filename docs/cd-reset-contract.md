@@ -49,7 +49,7 @@ Plain `PASS` is unreachable until the contract above is reviewed.
 | Scenario | Defined pass condition | Verdict range |
 | --- | --- | --- |
 | `disc_ready` | entry `$E003`, returns to JSR+3, SP balanced, polls ≤ budget, `$1800 & $F8 == 0` | PASS_HYPOTHESIS / FAIL |
-| `no_disc` | none (BIOS result UNKNOWN); stack imbalance or budget overrun still FAIL. Geargrafx does not run the card without media, so real-core runs are BLOCKED in practice | OBSERVED / FAIL |
+| `no_disc` | none (BIOS result UNKNOWN); stack imbalance or budget overrun still FAIL. Real core with no media (#133) runs the guest, but READ(6) stops at error 5 / stage 5 / 0 bytes and is classified BLOCKED/NO_MEDIA; no CD_RESET run without media has been judged (NOT RUN) | OBSERVED / FAIL |
 | `drive_busy` (timeout) | none (wait/abort policy UNKNOWN); same structural FAIL rules | OBSERVED / FAIL |
 | invalid input | not meaningful: the hypothesis contract has no inputs | — |
 | any non-`geargrafx-real` source | — | SKIP |
@@ -84,6 +84,10 @@ System Card CD_RESET（`$01` / `$E003`）の完全互換は証明していない
 | 実測（負例） | `$1804` assert を NOP に置換した ROM は、データ経路が同一に成功しても reset judge が「reset not asserted」で拒否。SELECT を `$1805` にリダイレクトすると、リセット後の選択がタイムアウト（code 2, stage 3）し、リセット自体は成功として記録。リセット後の data-in でのドライブ側 abort は #5 と同じ失敗経路（code 4, stage 5）。改ざんディスクは RAM 比較で拒否。 |
 | 実測の観測限界 | リセットは「既に FREE のバス」に対してのみ発行。PHASE ログに リセット起因の遷移は出ない。BUSY 状態からのリセットによる解放は**未検証**。 |
 | 仮説（未確定） | 実機でも `$1804` bit 1 が SCSI バスリセットとして効くこと。`$1804` 読み戻しが Geargrafx の `m_reset` 由来であること（実機では未確認）。 |
+| 媒体なしでのコア起動（#133） | 実測: 媒体なし（`SetCDROMType(STANDARD)`、ディスク無し）でゲストが実行され、READ(6) はエラー 5・ステージ 5・0 バイトで停止（SCSI GOOD、DATA_IN なし、RAM 不変）。分類器は BLOCKED/NO_MEDIA で、PASS ではない。 |
+| CD_RESET 実行（媒体なし） | 未実行（NOT RUN）。#133 の媒体なし試験は cdread と同じ期待値（`cd_halt_fail`, 5, 5, 0）で判定しており、CD_RESET の reset judge は適用していない。 |
+| CD_RESET からの復帰 | 未確認（UNKNOWN）。媒体なしでの戻り（returned）は測っていない。 |
+| System Card BIOS の仕様 | UNKNOWN。媒体なし時の戻り値・エラー・タイミングは出典からも実測からも確定していない。 |
 | 未検証 | CD_RESET API（`$01`, `$E003`）の入口・戻り値・エラー・タイミング・割込み条件。BIOS の ready/busy 完了条件。実機と第 2 エミュレータでの比較。ドライブ busy 時の待機・中断方針。 |
 
 判定ツール: `tools/cdreset_bus_verify.py`（パルス記録の判定）+ `tools/cdread_verify.check_success`（データ経路）。
