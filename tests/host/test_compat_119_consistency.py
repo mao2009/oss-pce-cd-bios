@@ -1,17 +1,20 @@
-"""Consistency between the #116 stage-evidence verdict and the #119 trace judge.
+"""Consistency between the #116 verdict and the real #119 trace judge.
 
-#119's classify() lives on its own branch, so judge_119() restates its rules from the issue
-spec (items 1-9) instead of importing or copying that code. summarize() plays the runner: it
-turns one probe log into the stage_evidence summary that #116 consumes. For every scenario
-both sides must return the same category (PASS / FAIL / BLOCKED).
+Each scenario is one probe log. The verdict is fed the job result that #119 run_job() returns,
+and the reference is the real geargrafx_harness.classify() (parse_records() runs inside it).
+Nothing from #119 is restated here. Both must give the same category (PASS / FAIL / BLOCKED).
 """
 import copy
+import json
 from pathlib import Path
 import sys
 import unittest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'tools'))
-from compat_evidence import STAGE_LABEL, verdict
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'tools'))
+sys.path.insert(0, str(ROOT / 'tests' / 'integration'))
+import geargrafx_harness as harness  # noqa: E402
+from compat_evidence import STAGE_LABEL, verdict  # noqa: E402
 
 BUDGET = 12_000_000
 LABEL = STAGE_LABEL['playable']
@@ -61,6 +64,7 @@ SCENARIOS = {
     'probe_exit_nonzero_other': scenario(good(), 'FAIL', exit_code=1),
     'timeout': scenario(good(), 'FAIL', timed_out=True),
     'output_capped': scenario(good(), 'FAIL', output_capped=True),
+    'block_event': scenario(good() + [{'tag': 'BLOCK', 'reason': 'debugger missing'}], 'BLOCKED'),
     'no_cap_record': scenario([e for e in good() if e['tag'] != 'CAP'], 'BLOCKED'),
     'cap_instruction_step_false': scenario([cap(instruction_step=False)] + good()[1:], 'BLOCKED'),
     'cap_disc_not_given': scenario([cap(disc_given=False)] + good()[1:], 'BLOCKED'),
@@ -90,75 +94,25 @@ SCENARIOS = {
 }
 
 
-def judge_119(s):
-    """#119 rules restated from the issue spec (items 1-9). Returns PASS, FAIL or BLOCKED."""
-    if s['kind'] != 'cdread':
-        return 'BLOCKED'                                             # 1 NOT_SUPPORTED
-    if s['timed_out'] or s['output_capped']:
-        return 'FAIL'                                                # 8
-    if s['exit_code'] == 6:
-        return 'BLOCKED'                                             # probe: debugger capability missing
-    if s['exit_code'] != 0:
-        return 'FAIL'                                                # 8 probe abnormal exit
-    events, expect = s['events'], s['expect']
-    caps = [e for e in events if e['tag'] == 'CAP']
-    if len(caps) != 1 or caps[0].get('instruction_step') is not True:
-        return 'BLOCKED'                                             # 7
-    if any(caps[0].get(f) is not True for f in ('cdrom_hardware', 'cdrom_media', 'disc_given')):
-        return 'BLOCKED'                                             # 7
-    runs = [e for e in events if e['tag'] == 'RUN']
-    if any(r.get('reason') == 'budget' for r in runs):
-        return 'FAIL'                                                # 3, 5
-    if any(r.get('reason') != expect for r in runs):
-        return 'FAIL'                                                # 3
-    for label in s['forbid']:                                        # 8
-        if any(label in (e.get('name'), e.get('phase'), e.get('reason')) for e in events):
-            return 'FAIL'
-    if [r.get('cycle') for r in runs] != ['cold', 'warm']:           # 2
-        return 'FAIL'
-    for r in runs:
-        step = r.get('step')
-        if type(step) is not int or step < 0 or step > s['budget']:  # 4, 5
-            return 'FAIL'
-        arrival = r.get('halted_after_step')
-        if r.get('halt_confirmed') is not True or r.get('halt_confirmation_steps') != 64 \
-                or r.get('halt_confirmation_required') != 64:        # 4
-            return 'FAIL'
-        if type(arrival) is not int or step != arrival + 64:         # 4
-            return 'FAIL'
-    for cycle in ('cold', 'warm'):                                   # 6
-        run_at = next(i for i, e in enumerate(events) if e['tag'] == 'RUN' and e.get('cycle') == cycle)
-        hits = [i for i, e in enumerate(events)
-                if e['tag'] == 'HIT' and e.get('name') == expect and e.get('cycle') == cycle]
-        if len(hits) != 1 or hits[0] > run_at:
-            return 'FAIL'
-    return 'PASS'
+def job(s):
+    """The #119 run_job() result for a scenario; timeouts and output caps carry status FAIL."""
+    stdout = '\n'.join(f"{e['tag']} {json.dumps({k: v for k, v in e.items() if k != 'tag'})}" for e in s['events'])
+    status, reason = None, None
+    if s['timed_out']:
+        status, reason = 'FAIL', 'timeout'
+    elif s['output_capped']:
+        status, reason = 'FAIL', 'output exceeded'
+    return {'status': status, 'reason': reason, 'exit_code': s['exit_code'], 'stdout': stdout}
 
 
-def summarize(s, stage_label, stage='playable'):
-    """The runner side: stage_evidence (#116 schema) computed from the same probe log."""
-    events = s['events']
-    caps = [e for e in events if e['tag'] == 'CAP']
-    flags = caps[0] if len(caps) == 1 else {}
-    runs = []
-    for index, e in enumerate(events):
-        if e['tag'] != 'RUN':
-            continue
-        same = [i for i, h in enumerate(events)
-                if h['tag'] == 'HIT' and h.get('name') == s['expect'] and h.get('cycle') == e.get('cycle')]
-        runs.append({'cycle': e.get('cycle'), 'reason': e.get('reason'), 'step': e.get('step'),
-                     'halt_confirmed': e.get('halt_confirmed'),
-                     'halt_confirmation_steps': e.get('halt_confirmation_steps'),
-                     'halt_confirmation_required': e.get('halt_confirmation_required'),
-                     'halted_after_step': e.get('halted_after_step'),
-                     'hits_before_run': sum(1 for i in same if i < index),
-                     'hits': len(same)})
-    forbid_hits = sorted({label for label in s['forbid'] for e in events
-                          if label in (e.get('name'), e.get('phase'), e.get('reason'))})
-    return {'stage': stage, 'expect': stage_label, 'probe_kind': s['kind'],
-            'exit_code': s['exit_code'], 'timed_out': s['timed_out'], 'output_capped': s['output_capped'],
-            'budget': s['budget'], 'cap': {f: flags.get(f) for f in CAP_OK}, 'forbid_hits': forbid_hits,
-            'runs': runs}
+def classify_119(s):
+    """Reference: the real #119 classify() on the job result."""
+    return harness.classify(job(s), s['expect'], s['forbid'], s['budget'], s['kind'])[0]
+
+
+def probe(s):
+    """What the #116 verdict receives as raw #119 output for a scenario."""
+    return {'result': job(s), 'forbid': list(s['forbid']), 'budget': s['budget'], 'kind': s['kind']}
 
 
 def compat_record(stage='playable'):
@@ -191,33 +145,27 @@ class Consistency119Tests(unittest.TestCase):
     def test_every_scenario_gets_the_same_category_from_both_judges(self):
         for name, (s, expected) in SCENARIOS.items():
             with self.subTest(scenario=name):
-                self.assertEqual(judge_119(s), expected)
+                self.assertEqual(classify_119(s), expected)
                 record = claim(compat_record(), expected)
-                runner = {'verified': True, 'rom_sha256': 'a' * 64, 'fixture_sha256': 'd' * 64,
-                          'emulator_commit': 'b' * 40,
-                          'checkpoints': [{'name': LABEL, 'observed': LABEL}],
-                          'stage_evidence': summarize(s, LABEL)}
-                self.assertEqual(verdict(record, runner)['result'], expected)
+                runner = attestation_119(classify_119(s), record)
+                self.assertEqual(verdict(record, runner, probe(s))['result'], expected)
 
     def test_attestation_is_verified_only_for_pass(self):
         for name, (s, expected) in SCENARIOS.items():
             with self.subTest(scenario=name):
-                status = judge_119(s)
                 record = claim(compat_record(), expected)
-                runner = dict(attestation_119(status, record), stage_evidence=summarize(s, LABEL))
-                result = verdict(record, runner)['result']
+                runner = attestation_119(classify_119(s), record)
+                result = verdict(record, runner, probe(s))['result']
                 self.assertEqual(result == 'PASS', expected == 'PASS')
 
     def test_good_log_passes_at_every_upper_stage_on_both_sides(self):
         for stage, label in STAGE_LABEL.items():
             with self.subTest(stage=stage):
                 s = dict(SCENARIOS['good'][0], expect=label, events=good(label))
-                self.assertEqual(judge_119(s), 'PASS')
+                self.assertEqual(classify_119(s), 'PASS')
                 record = compat_record(stage)
-                runner = {'verified': True, 'rom_sha256': 'a' * 64, 'fixture_sha256': 'd' * 64,
-                          'emulator_commit': 'b' * 40, 'checkpoints': [{'name': label, 'observed': label}],
-                          'stage_evidence': summarize(s, label, stage)}
-                self.assertEqual(verdict(record, runner)['result'], 'PASS')
+                runner = attestation_119('PASS', record)
+                self.assertEqual(verdict(record, runner, probe(s))['result'], 'PASS')
 
 
 if __name__ == '__main__':

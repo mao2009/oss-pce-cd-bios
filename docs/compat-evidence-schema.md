@@ -5,18 +5,18 @@ Issue #7. Machine-checkable record for one compatibility stage, implemented by
 `tests/host/test_compat_evidence.py`. Stage meanings are defined in
 [compatibility.md](compatibility.md).
 
-Usage: `python3 tools/compat_evidence.py [--ci] RECORD.json [RUNNER_ATTESTATION.json]` prints the verdict and exits 0 only on PASS.
+Usage: `python3 tools/compat_evidence.py [--ci] RECORD.json [RUNNER_ATTESTATION.json [PROBE.json]]` prints the verdict and exits 0 only on PASS.
 
-A record is a claim, not proof. `verdict(record, runner)` accepts PASS for execution stages
+A record is a claim, not proof. `verdict(record, runner, probe)` accepts PASS for execution stages
 (`bios-loaded` and above) only with a runner attestation: `verified: true`, and
 `rom_sha256`, `fixture_sha256`, `emulator_commit` and `checkpoints[].observed` that match the record.
-A `runner` key or `stage_evidence` key inside the record is ignored.
+A `runner`, `stage_evidence` or `probe` key inside the record is ignored.
 The runner output is consistency-checked, not authenticated (see the trust boundary).
 
 ## Trust boundary
 
 - The verdict cannot tell a genuine runner output from hand-written JSON. Attestations and
-  `stage_evidence` are unsigned and unauthenticated. `verdict()` checks only that they are consistent
+  the raw probe output are unsigned and unauthenticated. `verdict()` checks only that they are consistent
   with the record and with the #119 rules. A PASS from `verdict()` is not a certification.
 - Every CLI output carries `"authenticity": "not verified: ..."`. It states that the JSON is unsigned.
 - `GITHUB_ACTIONS=true` is an environment variable that any local process can set. It is a guard
@@ -38,14 +38,24 @@ The runner output is consistency-checked, not authenticated (see the trust bound
   4. The workflow that runs `--ci` is taken from the protected default branch, not from the PR head.
 - Limits (not closed by v1): no signature or provenance attestation. Anyone who can write the record and
   runner JSON can forge a PASS-consistent pair, and `GITHUB_ACTIONS=true` does not prevent that. A workflow
-  edit that is itself merged can forge evidence. Signed attestation is the upgrade path before any shared gate.
+  edit that is itself merged can forge evidence. Signed attestation is the upgrade path before any shared gate:
+  Issue #124 (PR #125, branch `feat/124-evidence-provenance`). Issue #124 is open; this PR does not close it.
 
-## Stage-specific runner evidence
+## Stage-specific probe evidence
 
-`retail-boot`, `playable`, `save-tested` and `completion-tested` also need `runner["stage_evidence"]`,
-which the harness emits from its own `classify()` result (#119 rules). `trace_deltas` in the record never
-supports a PASS above `homebrew`. The record needs a checkpoint named after the stage label, and the
-runner must report the same name as observed.
+`retail-boot`, `playable`, `save-tested` and `completion-tested` also need `probe`, the raw #119 probe
+output: `{"result": <run_job() result: status, reason, exit_code, stdout>, "forbid": [labels], "budget": int, "kind": "cdread"}`.
+`verdict()` passes `result` to the real #119 `geargrafx_harness.classify()`, which parses the `TAG {json}` lines
+itself (`parse_records()`, which rejects a body-level `tag` field). Whatever classify() does not call PASS
+(FAIL, BLOCKED, SKIP) becomes the stage finding. The verdict adds `cd_halt_fail` to the runner's `forbid`
+list, so a runner cannot drop it. A `result.status` of `PASS` or anything other than `FAIL`/`BLOCKED` is FAIL.
+`trace_deltas` in the record never supports a PASS above `homebrew`. The record needs a checkpoint named after
+the stage label, and the runner must report the same name as observed.
+
+**Not implemented:** no shipped producer emits `probe`. The #119 `trace` command writes parsed events and
+`counts`, not the stdout that `classify()` needs, and it does not write a `stage_evidence` summary. So a
+PASS above `homebrew` cannot be produced from the CLI as shipped. Without a `probe`, these stages are **BLOCKED**.
+A summary such as `stage_evidence` is not read by this module, so a hand-written summary cannot yield PASS.
 
 | Stage | Label (`--expect`) |
 | --- | --- |
@@ -54,13 +64,12 @@ runner must report the same name as observed.
 | `save-tested` | `save-reached` |
 | `completion-tested` | `completion-reached` |
 
-`stage_evidence` fields: `stage`, `expect` (the label above), `probe_kind` (must be `cdread`; `api`
-emits no RUN records), `exit_code` (0), `timed_out`, `output_capped` (both false), `budget`
-(positive integer, the `--steps` limit), `cap` (`instruction_step`, `cdrom_hardware`, `cdrom_media`,
-`disc_given`, all true), `forbid_hits` (list, empty), `runs` (exactly one RUN per cycle, `cold` then
-`warm`, each with `reason`, `step`, `halt_confirmed`, `halt_confirmation_steps`,
-`halt_confirmation_required`, `halted_after_step`, `hits_before_run` and `hits` (total success HITs
-for that cycle), both exactly 1).
+The `classify()` rules that apply (see `tests/integration/geargrafx_harness.py`): probe `kind` must be `cdread`
+(`api` is NOT_SUPPORTED, BLOCKED); exit 6 is BLOCKED (debugger missing); other non-zero exits, timeouts and
+output caps are FAIL; a `BLOCK` record is BLOCKED; exactly one `CAP` record with `instruction_step`,
+`cdrom_hardware`, `cdrom_media` and `disc_given` all true (else BLOCKED); exactly one RUN per cycle, `cold`
+then `warm`, each ending on the label with a confirmed 64-instruction halt; `step` a non-negative integer
+within `budget`; exactly one success HIT per cycle before its RUN.
 
 ## Stages (ascending)
 
@@ -99,24 +108,29 @@ Findings are combined with priority FAIL > BLOCKED > SKIP > PASS.
 6. `startup` and above need at least one checkpoint (**BLOCKED** if none). Any mismatch gives **FAIL**.
 7. Above `homebrew`, guest trace deltas are required (**BLOCKED** if absent). They are self-reported and
    never sufficient alone.
-8. `retail-boot`, `playable`, `save-tested` and `completion-tested` need runner `stage_evidence` (see above).
-   Missing gives **BLOCKED**. Contradicting it gives **FAIL**: wrong stage or label, non-zero exit (except 6),
-   timeout or output cap, a forbidden label, a RUN that is not the label (budget, cd_halt_fail, ...), not
-   exactly one cold and one warm RUN, halt not confirmed over 64 instructions, a step that is not an integer
-   in 0..budget, or a success HIT that is missing, repeated or after its RUN. A missing or false capability
-   flag, `probe_kind` other than `cdread` (NOT_SUPPORTED) and exit 6 (debugger capability missing) give
-   **BLOCKED**, as in #119. A `retail-boot` record with no local fixture stays **SKIP** (nothing was run).
-9. A claim of `PASS` that the evidence does not support is an **overclaim** and gives **FAIL**.
+8. `retail-boot`, `playable`, `save-tested` and `completion-tested` need the raw #119 `probe` (see above).
+   Missing gives **BLOCKED**. Judged by #119 `classify()`: any outcome other than PASS is kept as its own
+   status, so a FAIL (non-zero exit, timeout, output cap, forbidden label, a RUN for another reason such as
+   budget or cd_halt_fail, not one cold then warm RUN, unconfirmed halt, a step outside 0..budget, a success HIT
+   missing, repeated or after its RUN, malformed log) gives **FAIL**. A BLOCK record, a missing or false
+   capability flag, `probe_kind` other than `cdread` (NOT_SUPPORTED) and exit 6 (debugger capability missing)
+   give **BLOCKED**, as in #119. A `retail-boot` record with no local fixture stays **SKIP** (nothing was run).
+9. A claim of `PASS` that the evidence does not support is an **overclaim** and gives **FAIL**. A claim of
+   `BLOCKED`, `SKIP` or `FAIL` that complete evidence would otherwise pass is kept as the result, with a
+   `conflict` reason. Complete evidence never silently overrides the reporter's own non-PASS claim.
 
 Source-only and rom-built records need no attestation (build checks only). A single launch never supports an all-title claim. The result is never PASS for any stage
 that lacks real-core evidence.
 
 ## Not covered (v1)
 
-- Emulator trace capture and checkpoint extraction: the record, attestation and `stage_evidence` are produced by the runner (#119), not by this module.
-- Not wired into `make check` or any release gate yet. Until the #119 runner emits `stage_evidence` in CI,
-  retail-boot, playable, save-tested and completion-tested are **BLOCKED** for every input. That is the expected status.
-- Consistency with #119: `tests/host/test_compat_119_consistency.py` restates the #119 rules from the issue spec
-  (no code copied) and checks that both judges give the same category for each probe-log scenario.
+- Emulator trace capture and checkpoint extraction: the record, attestation and raw probe output are produced by the runner (#119), not by this module.
+- Not wired into `make check` or any release gate yet. Until a runner emits the raw `probe` in CI,
+  retail-boot, playable, save-tested and completion-tested are **BLOCKED** for every input that lacks it.
+  A `probe` that passes the #119 judge gives PASS (covered by unit tests with synthetic probe logs).
+  No shipped runner emits it, so this is the expected status.
+- Consistency with #119: `tests/host/test_compat_119_consistency.py` imports the real `geargrafx_harness.classify()`
+  and checks that the verdict gives the same category for each synthetic probe-log scenario. No #119 logic is copied.
+- Signed attestation (Issue #124, PR #125 branch `feat/124-evidence-provenance`) is not in this version.
 - Retail disc handling and private fixture storage: see [provenance.md](provenance.md).
 - Schema migration beyond v1.
