@@ -90,3 +90,11 @@ dev-cdda: dev-rom
 
 dev-cdda-integration: dev-cdda
 	$(PYTHON) tests/integration/geargrafx_cdda.py --mode "$(MODE)"
+
+.PHONY: dev-reset-entry dev-reset-entry-integration
+# Opt-in Issue #143 minimal reset entry; separate from the default DEV ROM and other diagnostics.
+dev-reset-entry: dev-rom
+	$(PYTHON) tools/build_reset_entry.py --mode "$(MODE)"
+
+dev-reset-entry-integration: dev-reset-entry
+	$(PYTHON) tests/integration/geargrafx_reset_entry.py --mode "$(MODE)"
