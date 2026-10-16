@@ -40,6 +40,103 @@ image is byte-identical to the base ROM and verified on every build).
   (`bin_sha256` for the default disc is recorded in `cdread-evidence.json`).
 * Optional `--audio-sectors N` appends an original CD-DA track 02.
 
+## Disc analysis (`tools/cue_analysis.py`)
+
+For locally owned CUE/BIN images (never committed to Git), `cue_analysis.py` verifies
+structure, classifies tracks, maps to absolute disc LBAs, probes MODE1/2352 sync/MSF
+consistency, and can extract user sectors via `user_sector(cue, report, lba)`. The
+report contains layout and validation results only; no sector payload is written.
+
+**Streaming analysis.** The BIN is never loaded as a whole track. Each track is hashed in
+`HASH_CHUNK` (1 MiB) reads, probed and pregap-scanned in `FRAME_CHUNK` (64-frame) reads, and an
+AUDIO track is scanned for MODE sync only in its first 64 frames. Memory is bounded by these
+chunks, not by BIN size. A short read (truncated or changed BIN) raises `CueError`.
+
+**SHA-256 scope.** `sha256` in each track entry is the SHA-256 of that track's full span in the
+BIN: from its first INDEX (INDEX 00 when present, otherwise INDEX 01) through the next track's
+start, including any pregap bytes. `cue_sha256` is the SHA-256 of the CUE file itself.
+
+**Format support.**
+
+| Mode | Layout / hash | Sync / MSF check | `user_sector()` |
+| --- | --- | --- | --- |
+| MODE1/2352 | yes | yes (sync on every frame, header mode byte 0x01, MSF == LBA + 150) | yes (2048 bytes at +16) |
+| MODE2/2352 | yes | yes (sync on every frame, header mode byte 0x02, MSF == LBA + 150) | no |
+| MODE1/2048 (Cooked) | yes | **not verified** (no raw sync/MSF) | no |
+| MODE2/2336 (Cooked) | yes | **not verified** | no |
+| AUDIO | yes | only "no MODE sync in first 64 frames" | no (raises `CueError`) |
+
+The sync/MSF check covers every user-data frame of a RAW track (streamed in bounded reads), and the pregap
+sync check covers the full pregap. `MAX_PROBE_FRAMES` (4096) now only bounds the boot-signature search.
+
+A RAW data frame without the 12-byte sync is a finding with its exact count and the first five frame
+positions. Header byte 15 must be 0x01 for `MODE1/2352` and 0x02 for `MODE2/2352`; a mismatch is a finding.
+The header MSF is decoded only when every nibble is 0..9 with seconds <= 59 and frames <= 74. Invalid BCD
+(for example 0x1A) is a finding as an MSF mismatch and is never read as a number.
+
+Cooked modes are validated for file size and layout only. The CLI reports them as
+`sync/MSF not verified` and prints a PASS line that says layout validation only.
+
+**INDEX 00/01, pregap and LBA (address contract).** The BIN files of a CUE are concatenated in FILE order,
+and every frame advances the disc LBA, including pregap frames stored in the BIN and virtual CUE `PREGAP`
+frames. A sector header MSF must equal `LBA + 150` (the 2-second lead-in offset, BCD).
+
+Where BIN frame 0 sits depends on a virtual PREGAP before the first track:
+
+* **Without a virtual PREGAP** before the first track, the first BIN frame is physical disc LBA 0.
+  Examples: `INDEX 01 00:00:00` puts BIN frame 0 at LBA 0 (data starts at LBA 0). `INDEX 00 00:00:00` with
+  `INDEX 01 00:02:00` puts the pregap at BIN frames 0..149 (LBA 0..149) and data at BIN frame 150 = LBA 150.
+* **With a virtual PREGAP** (`PREGAP 00:02:00` + `INDEX 01 00:00:00`), LBA 0..149 are not stored in the BIN,
+  so BIN frame 0 is **LBA 150**, not LBA 0. Regression test `test_virtual_cue_pregap_first_track`: track 1 data
+  is BIN frames 0..149 = LBA 150..299, and track 2 (AUDIO) is BIN frames 150..249 = LBA 300..399.
+
+Per track:
+
+| Field | Meaning |
+| --- | --- |
+| `pregap_start_lba` | first disc LBA of the track (INDEX 00, or the start of a CUE `PREGAP`) |
+| `start_lba` = `declared_data_lba` | disc LBA of INDEX 01, the first user-data frame |
+| `index01_frame` | INDEX 01 as a BIN frame offset within its FILE (where the BIN bytes are read) |
+| `pregap_frames` | INDEX 00..01 frames stored in the BIN, plus any CUE `PREGAP` frames |
+
+A CUE `PREGAP` adds disc LBAs that are not stored in the BIN; `PREGAP` together with `INDEX 00` in the
+same track is rejected as ambiguous. At most one `PREGAP` per track, and it must precede `INDEX 01`. The next track's pregap (its INDEX 00..01 frames) is never counted in
+the previous track's `length_frames`.
+
+Explicitly rejected (fail closed, nothing is guessed): `FILE` types other than `BINARY` (MOTOROLA, AIFF,
+WAVE, MP3 are not decoded), `INDEX` numbers other than 00 and 01, a duplicate INDEX in one track, `POSTGAP`,
+a duplicate `PREGAP` in one track, a `PREGAP` after INDEX 01, TRACK numbers that are not the next number from `01`
+(two digits, 01..99), a track without INDEX 01, INDEX 00 after INDEX 01, non-increasing track starts within a FILE, and BIN frames before the first track's
+start (they would belong to no track). `user_sector()` maps physical LBA *n* in
+`[start_lba, start_lba + length_frames)` to BIN frame `index01_frame + (n - start_lba)` and rejects LBAs in
+a pregap (`pregap_start_lba <= n < start_lba`), negative LBAs and LBAs past the track end.
+
+Pregap sync sectors are legal (a data pregap may hold real MODE1 frames). Only a sync sector in the
+pregap whose header MSF disagrees with its disc LBA is a finding (`structurally_valid` becomes false). The
+header mode byte of pregap frames is not checked, because a pregap can still hold sectors recorded in the
+previous track's mode. User-data frames (INDEX 01 onward) must carry sync and the declared mode byte.
+
+INDEX timestamps are BIN frame offsets within their FILE (`00:00:00` = the FILE's first frame). Their disc LBA
+equals the BIN frame only without a virtual PREGAP before the first track, the same convention as
+`tools/make_cd_image.py` (`LBA 0 = first BIN sector`). An image whose headers differ by a constant from
+this convention is reported as an MSF mismatch and is not auto-corrected. Whether the real disc follows
+this convention is only confirmed by running the tool on that disc (see Issue #111); until then the
+address contract is unverified for real images.
+
+**MODE2 Form 1/2 user data is not supported.** `user_sector()` only extracts MODE1/2352.
+Requesting a MODE2 track raises `CueError`.
+
+**Scope.** This tool proves that a locally owned image matches its CUE layout and the raw
+frame checks above. It does not prove that a real game boots, that a disc is compatible with
+System Card 3.0, or that any real-hardware behaviour matches.
+
+Run with:
+
+```sh
+python3 tools/cue_analysis.py rom/"Shin Megami Tensei (Japan)"/"Shin Megami Tensei (Japan).cue"
+python3 -m unittest tests.host.test_cue_analysis -v
+```
+
 ## Guest program (`src/cd_read_probe.s`)
 
 Polling only (`SEI`, `$1802` written 0 at start so every CD IRQ enable is off), every wait bounded by a 24-bit counter
