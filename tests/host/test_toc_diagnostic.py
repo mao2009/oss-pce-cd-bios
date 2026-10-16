@@ -51,6 +51,32 @@ class TocPositiveTests(unittest.TestCase):
         self.assertEqual(report["tracks"][0]["pregap_sectors"], 150)
         self.assertTrue(report["tracks"][0]["pregap_declared"])
 
+    def test_next_track_pregap_is_not_counted_in_previous_length(self):
+        # Review finding: track 1 must end at track 2's INDEX 00, not at its INDEX 01.
+        cue = ('FILE "t.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+               '  TRACK 02 AUDIO\n    INDEX 00 00:01:25\n    INDEX 01 00:02:00\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            report = diagnose(write_case(Path(tmp), cue, 200))
+        data, audio = report["tracks"]
+        self.assertEqual(data["length_sectors"], 100)  # 0..99, pregap of track 2 excluded
+        self.assertEqual((audio["lba_start"], audio["length_sectors"]), (150, 50))
+        self.assertEqual((audio["pregap_sectors"], audio["pregap_declared"]), (50, True))
+
+    def test_track_lengths_and_pregaps_cover_bin_exactly(self):
+        # Track 2 has a 20-sector pregap (sectors 40..59). Lengths plus the pregaps of
+        # tracks 2..N must add up to the whole BIN span (130 sectors).
+        cue = ('FILE "t.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+               '  TRACK 02 AUDIO\n    INDEX 00 00:00:40\n    INDEX 01 00:00:60\n'
+               '  TRACK 03 AUDIO\n    INDEX 01 00:01:10\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            report = diagnose(write_case(Path(tmp), cue, 130))
+        rows = report["tracks"]
+        self.assertEqual([row["lba_start"] for row in rows], [0, 60, 85])
+        self.assertEqual([row["length_sectors"] for row in rows], [40, 25, 45])
+        self.assertEqual([row["pregap_sectors"] for row in rows], [0, 20, 0])
+        self.assertEqual(sum(row["length_sectors"] for row in rows)
+                         + sum(row["pregap_sectors"] for row in rows[1:]), report["sectors"])
+
     def test_text_and_json_both_state_not_verified(self):
         with tempfile.TemporaryDirectory() as tmp:
             build_image(Path(tmp), sectors=4)
@@ -112,6 +138,14 @@ class TocNegativeTests(unittest.TestCase):
     def test_audio_index_not_after_previous_track(self):
         cue = DATA_CUE + "  TRACK 02 AUDIO\n    INDEX 01 00:00:00\n"
         self.assertRejected(cue, pattern="not after the previous")
+
+    def test_next_index00_not_after_previous_index01_is_rejected(self):
+        # Equal or earlier pregap start would give track 1 a zero or negative length.
+        for pregap in ("00:00:10", "00:00:05"):
+            with self.subTest(pregap=pregap):
+                cue = ('FILE "t.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:10\n'
+                       f'  TRACK 02 AUDIO\n    INDEX 00 {pregap}\n    INDEX 01 00:00:20\n')
+                self.assertRejected(cue, pattern="not after the previous")
 
     def test_bin_size_not_sector_multiple(self):
         with tempfile.TemporaryDirectory() as tmp:

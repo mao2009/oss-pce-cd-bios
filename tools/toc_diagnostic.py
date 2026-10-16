@@ -5,6 +5,21 @@ Reads a CUE sheet and its BIN file, then reports each track's type, INDEX 01
 start (LBA and absolute MSF), length and pregap as declared by the CUE.
 Everything here is measured from the generated file on the host only. It is NOT
 a hardware or emulator TOC read: those fields stay "not verified" by design.
+
+Address definitions (physical, BIN-relative; differs from PR #110, see below):
+- lba_start: sector index in the BIN file, 0 = first BIN sector. The pregap of
+  a track is part of the BIN, so INDEX 01 of track 1 with INDEX 00 at 00:00:00
+  gives lba_start 150.
+- absolute_msf: lba_start + 150 (lead-in), i.e. BIN sector 0 is 00:02:00.
+- length_sectors: from this track's INDEX 01 to the next track's INDEX 00 (or
+  INDEX 01 when the next track has no INDEX 00), or to the end of the BIN for
+  the last track. The next track's pregap belongs to the next track and is not
+  counted here.
+- pregap_sectors: INDEX 01 - INDEX 00 of the same track, 0 when undeclared.
+
+PR #110 (cue analyzer) uses a logical LBA: disc LBA 0 is INDEX 01 of the first
+data track, and its track spans include pregap bytes. The two parsers do not
+share semantics; do not compare their numbers directly.
 """
 import argparse
 import json
@@ -105,17 +120,24 @@ def build_toc(cue: dict, bin_bytes: int) -> list:
         raise TocError(f"BIN size {bin_bytes} is not a positive multiple of {RAW_BYTES}")
     total = bin_bytes // RAW_BYTES
     rows = []
-    starts = [track["index01"] for track in cue["tracks"]]
-    for position, track in enumerate(cue["tracks"]):
+    tracks = cue["tracks"]
+    for position, track in enumerate(tracks):
         start = track["index01"]
         if start >= total:
             raise TocError(f"track {track['number']} starts at LBA {start}, beyond {total} sectors")
-        if position and start <= starts[position - 1]:
-            raise TocError(f"track {track['number']} INDEX 01 is not after the previous track")
-        end = starts[position + 1] if position + 1 < len(starts) else total
         index00 = track["index00"]
         if index00 is not None and index00 > start:
             raise TocError(f"track {track['number']} INDEX 00 is after INDEX 01")
+        if position + 1 < len(tracks):
+            following = tracks[position + 1]
+            # The next track's pregap (INDEX 00) belongs to the next track, so it ends this track.
+            boundary_index = "00" if following["index00"] is not None else "01"
+            end = following[f"index{boundary_index}"]
+            if end <= start:
+                raise TocError(f"track {following['number']} INDEX {boundary_index} "
+                               f"is not after the previous track")
+        else:
+            end = total
         rows.append({
             "track": track["number"],
             "type": track["type"],
