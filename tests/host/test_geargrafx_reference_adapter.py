@@ -11,10 +11,16 @@ import geargrafx_reference_adapter as adapter
 
 class ReferenceGeargrafxAdapterTests(unittest.TestCase):
     def test_api_execution_rejected_before_emulator(self):
-        for api in ("slot-1e", "slot-03", "psg-48-00"):
+        for api in ("slot-03", "psg-48-00"):
             with self.subTest(api=api):
                 with self.assertRaisesRegex(ValueError, "no reference BIOS API call wrapper"):
                     adapter.observe({"api_id": api, "max_instructions": 100})
+
+    def test_jsr_experiment_rejects_invalid_budgets_before_emulator(self):
+        for n in (0, 2, 1000001, True):
+            with self.subTest(n=n):
+                with self.assertRaisesRegex(ValueError, "invalid JSR instruction budget"):
+                    adapter.observe({"api_id": "slot-1e", "max_instructions": n})
 
     def test_reset_rejects_invalid_step_limits_before_emulator(self):
         for n in (0, -1, 10000001, True):
