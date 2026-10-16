@@ -47,7 +47,8 @@ _EXPECTED_FAILURES = (
     'tampered_identity_byte3', 'tampered_last_byte2047', 'zero_sector_count', 'oversized_sector_count',
     'selection_never_answered_timeout', 'drive_abort_at_data_in_entry', 'judge_observation_mutations',
     'halt_unconfirmed_cut_0_steps_after_arrival', 'halt_unconfirmed_cut_1_steps_after_arrival',
-    'halt_unconfirmed_cut_63_steps_after_arrival', 'budget_exhausted_before_any_halt')
+    'halt_unconfirmed_cut_63_steps_after_arrival', 'budget_exhausted_before_any_halt', 'no_media_loaded',
+    'blank_data_disc')
 REQUIRED_SCENARIOS = ('single_sector_lba5', 'first_sector_lba0', 'last_sector_lba15', 'three_sectors_lba5',
                       'disc_end_boundary_lba13_x3')
 # Exact result kind of every scenario tests/integration/geargrafx_cdread.py records (a superset of the #118
@@ -56,7 +57,7 @@ REQUIRED_SCENARIOS = ('single_sector_lba5', 'first_sector_lba0', 'last_sector_lb
 SCENARIO_KIND = {**dict.fromkeys(REQUIRED_SCENARIOS, 'PASS'), 'halt_confirmation_exact_window': 'PASS',
                  **dict.fromkeys(_EXPECTED_FAILURES, 'PASS_EXPECTED_FAILURE'),
                  'read6_on_audio_track_lba': 'OBSERVED_EMULATOR_BEHAVIOUR',
-                 'no_media_loaded': 'NOT_TESTED', 'empty_disc_image': 'NOT_TESTED'}
+                 'empty_disc_image': 'OBSERVED_EMULATOR_BEHAVIOUR'}
 SIGNER_WORKFLOW = '.github/workflows/api-source.yml'
 HEX40 = re.compile(r'[0-9a-f]{40}')
 HEX64 = re.compile(r'[0-9a-f]{64}')
