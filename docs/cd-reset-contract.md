@@ -71,3 +71,20 @@ sources above, a reviewed answer for returns/no-disc/busy behaviour from System 
 and a real-core harness that executes `$E003` and emits the record fields `tools/cdreset_verify.py`
 requires (`REQUIRED`). The #5 bus-reset + bus-free sequence in `src/cd_read_probe.s` is the intended
 building block once that review exists.
+
+## 実コア実測と未検証（Issue #10, B2）
+
+対象: 独自作成の HuC6280 診断 `src/cd_reset_probe.s`（`make dev-cdreset-integration`）。合成 CD のみ使用、ゲーム由来データなし。
+Geargrafx `b49ae82a` の実行で確認した。**これは低レベルのバスリセット（`$1804` bit 1）の動作確認であり、
+System Card CD_RESET（`$01` / `$E003`）の完全互換は証明していない。** エントリ、戻り値、エラー、タイミング契約は一切測っていない。
+
+| 区分 | 内容 |
+| --- | --- |
+| 実測（Geargrafx） | 診断は 2 回のバスリセットパルスを発行し、各パルスの後に BUS FREE を待つ。`$1804` 読み戻しは assert 中 `$02`、解放後 `$00`。パルス後のバスは FREE。その後 READ(6) LBA 5 x1 を完走し、セクタ全バイトが合成ディスクと一致（cold / warm）。 |
+| 実測（負例） | `$1804` assert を NOP に置換した ROM は、データ経路が同一に成功しても reset judge が「reset not asserted」で拒否。SELECT を `$1805` にリダイレクトすると、リセット後の選択がタイムアウト（code 2, stage 3）し、リセット自体は成功として記録。リセット後の data-in でのドライブ側 abort は #5 と同じ失敗経路（code 4, stage 5）。改ざんディスクは RAM 比較で拒否。 |
+| 実測の観測限界 | リセットは「既に FREE のバス」に対してのみ発行。PHASE ログに リセット起因の遷移は出ない。BUSY 状態からのリセットによる解放は**未検証**。 |
+| 仮説（未確定） | 実機でも `$1804` bit 1 が SCSI バスリセットとして効くこと。`$1804` 読み戻しが Geargrafx の `m_reset` 由来であること（実機では未確認）。 |
+| 未検証 | CD_RESET API（`$01`, `$E003`）の入口・戻り値・エラー・タイミング・割込み条件。BIOS の ready/busy 完了条件。実機と第 2 エミュレータでの比較。ドライブ busy 時の待機・中断方針。 |
+
+判定ツール: `tools/cdreset_bus_verify.py`（パルス記録の判定）+ `tools/cdread_verify.check_success`（データ経路）。
+ホスト側テスト `tests/host/test_cdreset_bus.py` は合成レコードのみで、エミュレータ成功の代わりにはしない。
