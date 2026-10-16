@@ -20,6 +20,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import signal
 import subprocess
@@ -45,6 +46,9 @@ KINDS = {  # probe source, argv after the probe given (rom, cue, labels, steps)
     "api": ("geargrafx_api_probe.cpp", lambda r, c, l, s: [r, c, str(s), l]),
 }
 STEP_LIMIT = {"cdread": 200_000_000, "api": 2048}
+MAX_OUTPUT_BYTES = 8 * 1024 * 1024  # per job, per stream; exceeding it kills the job (FAIL)
+MAX_EVENTS = 20_000                 # trace records kept per job; more is FAIL
+CUE_FILE = re.compile(r'^\s*FILE\s+(?:"([^"]*)"|(\S+))\s+\S+\s*$', re.IGNORECASE)
 
 
 def sha256(path):
@@ -56,6 +60,8 @@ def describe_file(path, rom=False):
     if path is None:
         return {"status": "SKIP", "reason": "not provided"}
     path = Path(path)
+    if path.is_symlink():
+        return {"status": "FAIL", "path": str(path), "reason": "symlink refused"}
     if not path.is_file():
         return {"status": "BLOCKED", "path": str(path), "reason": "missing"}
     size = path.stat().st_size
@@ -108,34 +114,97 @@ def isolated_env(job_dir):
     return env
 
 
-def run_job(command, job_dir, timeout):
-    """Run one process group; a timeout kills the whole group and is FAIL, never PASS."""
-    start = time.monotonic()
+def kill_tree(process):
+    """Kill the job's whole process tree: its process group on POSIX, `taskkill /T` on Windows."""
     try:
-        process = subprocess.Popen(command, cwd=job_dir, env=isolated_env(job_dir), stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE, text=True, start_new_session=True)
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(process.pid)], capture_output=True, timeout=30)
+        else:
+            os.killpg(process.pid, signal.SIGKILL)
+    except (OSError, subprocess.SubprocessError):
+        pass  # already exited; wait() below still reaps the leader
+    process.wait()
+
+
+def run_job(command, job_dir, timeout, max_output=MAX_OUTPUT_BYTES):
+    """Run one process tree with stdout/stderr going to capped files in job_dir.
+
+    A timeout or an over-long output kills the whole tree and is FAIL, never PASS. Output is
+    never held in memory beyond the cap: the probe writes to disk and is polled while it runs.
+    """
+    start = time.monotonic()
+    out_path, err_path = job_dir / "stdout.log", job_dir / "stderr.log"
+    try:
+        with out_path.open("wb") as out, err_path.open("wb") as err:
+            process = subprocess.Popen(command, cwd=job_dir, env=isolated_env(job_dir), stdout=out,
+                                       stderr=err, start_new_session=True)
+            status = reason = None
+            while process.poll() is None:
+                if time.monotonic() - start > timeout:
+                    kill_tree(process)
+                    status, reason = "FAIL", f"timeout after {timeout}s"
+                    break
+                if max(out_path.stat().st_size, err_path.stat().st_size) > max_output:
+                    kill_tree(process)
+                    status, reason = "FAIL", f"output exceeded {max_output} bytes"
+                    break
+                time.sleep(0.05)
     except OSError as error:
         return {"status": "BLOCKED", "reason": f"cannot execute: {error}", "exit_code": None,
                 "stdout": "", "stderr": "", "elapsed_s": 0.0}
-    try:
-        stdout, stderr = process.communicate(timeout=timeout)
-        status, reason = None, None
-    except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL)
-        stdout, stderr = process.communicate()
-        status, reason = "FAIL", f"timeout after {timeout}s"
+    if status is None and max(out_path.stat().st_size, err_path.stat().st_size) > max_output:
+        status, reason = "FAIL", f"output exceeded {max_output} bytes"
+    stdout = out_path.read_bytes()[:max_output].decode("utf-8", "replace")
+    stderr = err_path.read_bytes()[-3000:].decode("utf-8", "replace")
     return {"status": status, "reason": reason, "exit_code": process.returncode, "stdout": stdout,
-            "stderr": stderr[-3000:], "elapsed_s": round(time.monotonic() - start, 3)}
+            "stderr": stderr, "elapsed_s": round(time.monotonic() - start, 3)}
 
 
 def parse_records(stdout):
-    """Every 'TAG {json}' line in emission order; malformed lines are a FAIL, not ignored."""
+    """Every 'TAG {json}' line in emission order; malformed lines or too many records are a FAIL."""
     events = []
     for line in stdout.splitlines():
         tag, _, body = line.partition(" ")
         if tag in TAGS:
+            if len(events) >= MAX_EVENTS:
+                raise ValueError(f"more than {MAX_EVENTS} trace records")
             events.append({"tag": tag, **json.loads(body)})
     return events
+
+
+def cue_data_files(cue):
+    """File names a CUE sheet references; any name that could leave the CUE's folder is refused."""
+    names = []
+    for line in Path(cue).read_text(errors="replace").splitlines():
+        match = CUE_FILE.match(line)
+        if match:
+            names.append(match.group(1) if match.group(1) is not None else match.group(2))
+    if not names:
+        raise ValueError("CUE names no FILE entry")
+    for name in names:
+        if name in ("", ".", "..") or any(c in name for c in "/\\:\x00"):
+            raise ValueError(f"unsafe CUE file name {name!r}")
+    return names
+
+
+def stage_disc(cue, dest):
+    """Copy the CUE and only the data files it names into dest; the rest of its folder is never read."""
+    cue = Path(cue)
+    if cue.is_symlink():
+        raise ValueError("symlinked CUE refused")
+    if not cue.is_file():
+        raise FileNotFoundError(f"CUE missing: {cue.name}")
+    sources = [cue]
+    for name in cue_data_files(cue):
+        source = cue.parent / name
+        if source.is_symlink():
+            raise ValueError(f"symlinked data file refused: {name}")
+        if not source.is_file():
+            raise FileNotFoundError(f"CUE data file missing: {name}")
+        sources.append(source)
+    for source in sources:
+        shutil.copyfile(source, dest / source.name)
+    return [source.name for source in sources]
 
 
 def classify(result, expect, forbid=()):
@@ -149,8 +218,8 @@ def classify(result, expect, forbid=()):
         return "FAIL", f"probe exited {code}", []
     try:
         events = parse_records(result["stdout"])
-    except ValueError as error:
-        return "FAIL", f"malformed trace record: {error}", []
+    except (ValueError, TypeError) as error:
+        return "FAIL", f"trace rejected: {error}", []
     blocks = [e for e in events if e["tag"] == "BLOCK"]
     if blocks:
         return "BLOCKED", blocks[0].get("reason", "probe blocked"), events
@@ -174,6 +243,8 @@ def trace(args):
     report = doctor(args.rom, args.cue, args.labels)
     log = {"schema_version": 1, "evidence": "REAL_GEARGRAFX_CORE", "probe_kind": args.kind,
            "expect": args.expect, "forbid": args.forbid, "steps": args.steps, "timeout_s": args.timeout,
+           "limits": {"output_bytes": MAX_OUTPUT_BYTES, "events": MAX_EVENTS},
+           "artifact_policy": "LOCAL_ONLY: trace may hold raw guest RAM dumps; never upload as a CI artifact",
            "doctor": report}
     if report["status"] != "PASS":
         bad = [k for k, v in report.items() if isinstance(v, dict) and v.get("status") in ("FAIL", "BLOCKED")]
@@ -194,7 +265,15 @@ def trace(args):
         rom = job_dir / "input.pce"
         shutil.copyfile(args.rom, rom)
         disc = job_dir / "disc"
-        shutil.copytree(Path(args.cue).parent, disc)  # copy CUE with its BIN into the job
+        disc.mkdir()
+        try:
+            stage_disc(args.cue, disc)  # only the CUE and the data files it names
+        except FileNotFoundError as error:
+            log.update(status="BLOCKED", reason=str(error), evidence="NOT_RUN")
+            return log
+        except ValueError as error:
+            log.update(status="FAIL", reason=f"invalid disc input: {error}", evidence="NOT_RUN")
+            return log
         labels = job_dir / "labels.txt"
         shutil.copyfile(args.labels, labels)
         result = run_job([str(probe), *argv(str(rom), str(disc / Path(args.cue).name), str(labels), args.steps)],

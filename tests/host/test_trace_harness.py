@@ -109,6 +109,81 @@ class RunJobTests(unittest.TestCase):
                                "XDG_CONFIG_HOME": str(self.dir), "SECRET_FROM_PARENT": None})
 
 
+class StageAndLimitTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.dir = Path(self.temp.name)
+        self.disc, self.dest = self.dir / "disc-src", self.dir / "job"
+        self.disc.mkdir()
+        self.dest.mkdir()
+        (self.disc / "game.bin").write_bytes(b"track")
+        (self.disc / "secret.bin").write_bytes(b"unrelated")
+        (self.disc / "notes.txt").write_text("unrelated")
+        self.cue = self.disc / "game.cue"
+        self.cue.write_text('FILE "game.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
+
+    def test_only_cue_and_named_files_are_copied(self):
+        self.assertEqual(harness.stage_disc(self.cue, self.dest), ["game.cue", "game.bin"])
+        self.assertEqual(sorted(p.name for p in self.dest.iterdir()), ["game.bin", "game.cue"])
+
+    def test_unsafe_names_are_refused(self):
+        for name in ("../notes.txt", "/etc/passwd", "sub/game.bin", "..\\notes.txt", "C:evil.bin", ".."):
+            self.cue.write_text(f'FILE "{name}" BINARY\n')
+            with self.assertRaises(ValueError, msg=name):
+                harness.stage_disc(self.cue, self.dest)
+        self.assertEqual(list(self.dest.iterdir()), [])
+
+    def test_cue_without_file_entry_and_missing_bin(self):
+        self.cue.write_text("TRACK 01 MODE1/2352\n")
+        with self.assertRaises(ValueError):
+            harness.stage_disc(self.cue, self.dest)
+        self.cue.write_text('FILE "absent.bin" BINARY\n')
+        with self.assertRaises(FileNotFoundError):
+            harness.stage_disc(self.cue, self.dest)
+
+    def test_symlinked_data_file_or_cue_is_refused(self):
+        link = self.disc / "link.bin"
+        try:
+            os.symlink(self.disc / "secret.bin", link)
+        except OSError as error:  # Windows without symlink privilege
+            self.skipTest(f"cannot create symlink: {error}")
+        self.cue.write_text('FILE "link.bin" BINARY\n')
+        with self.assertRaises(ValueError):
+            harness.stage_disc(self.cue, self.dest)
+        cue_link = self.dir / "linked.cue"
+        os.symlink(self.cue, cue_link)
+        with self.assertRaises(ValueError):
+            harness.stage_disc(cue_link, self.dest)
+
+    def test_output_over_cap_kills_job_and_is_fail(self):
+        command = [sys.executable, "-c", "import sys\nwhile True: sys.stdout.write('x' * 4096)"]
+        start = time.monotonic()
+        result = harness.run_job(command, self.dir, 20, max_output=20_000)
+        self.assertLess(time.monotonic() - start, 15)
+        self.assertEqual((result["status"], result["reason"]), ("FAIL", "output exceeded 20000 bytes"))
+        self.assertLessEqual(len(result["stdout"]), 20_000)
+
+    def test_event_cap_is_fail(self):
+        lines = "\n".join([CAP] + [run("x", "cold")] * 3)
+        with patch.object(harness, "MAX_EVENTS", 3):
+            with self.assertRaises(ValueError):
+                harness.parse_records(lines)
+            self.assertEqual(harness.classify(finished(lines), "x")[0], "FAIL")
+
+
+class ArtifactPolicyTests(unittest.TestCase):
+    def test_trace_outputs_are_not_uploaded_by_ci(self):
+        root = Path(__file__).resolve().parents[2]
+        for workflow in (root / ".github/workflows").glob("*.yml"):
+            text = workflow.read_text(encoding="utf-8")
+            for block in text.split("uses: actions/upload-artifact")[1:]:
+                paths = block.split("if-no-files-found")[0]
+                self.assertNotIn("trace", paths, workflow.name)
+                self.assertNotIn(".bin", paths, workflow.name)
+                self.assertNotIn("rom/", paths, workflow.name)
+
+
 class DoctorTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
