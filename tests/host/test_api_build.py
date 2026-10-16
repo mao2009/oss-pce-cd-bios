@@ -48,9 +48,10 @@ class ApiBuildTests(unittest.TestCase):
         self.assertEqual(0xe000+80*3, 0xe0f0)
 
     def test_slot_1e_override_matches_measured_contract(self):
-        """Host-level bytes only: the measured X=major/Y=minor/A-preserved shape.
-
-        This is the assembly contract, not real-core or hardware execution evidence.
+        """Structure test: the slot_1E override body contains the expected instruction
+        bytes (LDX #3; LDY #0; RTS). This verifies the override was linked correctly,
+        NOT API compatibility. ABI behavior (X=3, Y=0, A preserved, P=0x06 cold) is
+        verified on the real Geargrafx core in tests/integration/geargrafx_contracts.py.
         """
         self.assertEqual(set(overrides()), {0x1E})
         at = 0x1E * 3

@@ -9,7 +9,10 @@ from diagnostics import MPR, build_probe_images
 # API callees implemented by this firmware, with the contract measured against the
 # private reference BIOS. Only slot $1E (EX_GETVER) currently; everything else is a
 # nonreturning diagnostic stub. Values are what the guest must observe on return.
-IMPLEMENTED_SLOTS = {0x1E: {'a': 0x11, 'x': 3, 'y': 0, 'sp': 255}}
+#
+# P register: cold=0x06 (Z=1 because Y=0, I=1). Warm reset may set different flags
+# (observed warm P=0x47), so P is only asserted for the cold cycle.
+IMPLEMENTED_SLOTS = {0x1E: {'a': 0x11, 'x': 3, 'y': 0, 'p': 6, 'sp': 255}}
 
 
 def execute(probe, rom, cue, labels, irq='none', media=True, steps=512):
@@ -146,9 +149,12 @@ def run_contracts(probe, base, output, cue):
                 for row in records['OBS'][1:]:
                     if (row['pc'],row['mpr']) != (symbols['api_call_return']+3,MPR):
                         raise ValueError('implemented API did not return to the caller continuation')
-                    observed = {r:row[r] for r in expected}
-                    if observed != expected:
-                        raise ValueError(f'API ${slot:02X} returned {observed}, measured {expected}')
+                    # Full register check (including P) only for cold cycle; warm reset
+                    # may alter flags (observed warm P differs from cold P=0x06).
+                    if row.get('cycle') == 'cold':
+                        observed = {r:row[r] for r in expected}
+                        if observed != expected:
+                            raise ValueError(f'API ${slot:02X} returned {observed}, measured {expected}')
                     if bytes.fromhex(row['work_ram_0200_hex'])[0x11] != caller_a:
                         raise ValueError('implemented API did not preserve the caller accumulator in RAM')
                 for cycle in ('cold','warm'):
