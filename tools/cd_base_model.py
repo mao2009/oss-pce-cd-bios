@@ -77,13 +77,22 @@ def virtual_pregap_start(index01_lba, pregap_frames):
     return index01_lba - pregap_frames
 
 
-def region(lba, index01_lba, pregap_start_lba):
-    """Classify a disc LBA against one track: 'data' (INDEX 01 onward), 'pregap', or 'before_track'.
+def region(lba, index01_lba, pregap_start_lba, end_lba):
+    """Classify a disc LBA against one track.
 
-    pregap_start_lba is None when the track has no pregap frames before INDEX 01.
+    Returns 'data' for index01_lba <= lba < end_lba, 'after_track' for lba >= end_lba (end is
+    exclusive; the next track or disc end), 'pregap' for pregap_start_lba <= lba < index01_lba,
+    and 'before_track' otherwise. end_lba is index01_lba + length_frames and must be greater
+    than index01_lba. pregap_start_lba is None when the track has no pregap frames before INDEX 01.
+    Host-side layout classification only; it does not establish the BIOS ABI.
     """
     check_u24(lba, "lba")
     check_u24(index01_lba, "index01_lba")
+    check_u24(end_lba, "end_lba")
+    if end_lba <= index01_lba:
+        raise ValueError(f"end_lba {end_lba} must be greater than index01_lba {index01_lba}")
+    if lba >= end_lba:
+        return "after_track"
     if lba >= index01_lba:
         return "data"
     if pregap_start_lba is not None and pregap_start_lba <= lba:

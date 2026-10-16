@@ -49,9 +49,9 @@ class IndexBoundaryTests(unittest.TestCase):
         index01 = 150
         pregap_start = m.virtual_pregap_start(index01, 150)
         self.assertEqual(pregap_start, 0)
-        self.assertEqual(m.region(0, index01, pregap_start), "pregap")
-        self.assertEqual(m.region(149, index01, pregap_start), "pregap")
-        self.assertEqual(m.region(150, index01, pregap_start), "data")
+        self.assertEqual(m.region(0, index01, pregap_start, 166), "pregap")
+        self.assertEqual(m.region(149, index01, pregap_start, 166), "pregap")
+        self.assertEqual(m.region(150, index01, pregap_start, 166), "data")
 
     def test_pregap_longer_than_lba_space_start_is_rejected(self):
         with self.assertRaises(ValueError):
@@ -61,23 +61,57 @@ class IndexBoundaryTests(unittest.TestCase):
     # Same disc LBAs as case A; the boundary sits at LBA 150 either way.
     def test_index00_pregap_boundaries(self):
         index00, index01 = 0, 150
-        self.assertEqual(m.region(0, index01, index00), "pregap")
-        self.assertEqual(m.region(149, index01, index00), "pregap")
-        self.assertEqual(m.region(150, index01, index00), "data")
+        self.assertEqual(m.region(0, index01, index00, 166), "pregap")
+        self.assertEqual(m.region(149, index01, index00, 166), "pregap")
+        self.assertEqual(m.region(150, index01, index00, 166), "data")
 
     # Case C: INDEX 01 00:00:00 with no pregap (fixture layout): LBA n is BIN sector n.
     def test_no_pregap_index01_at_lba0(self):
-        self.assertEqual(m.region(0, 0, None), "data")
-        self.assertEqual(m.region(15, 0, None), "data")
+        self.assertEqual(m.region(0, 0, None, 16), "data")
+        self.assertEqual(m.region(15, 0, None, 16), "data")
 
     def test_region_rejects_negative_lba(self):
         with self.assertRaises(ValueError):
-            m.region(-1, 0, None)
+            m.region(-1, 0, None, 16)
 
     def test_index01_relative_is_signed_offset(self):
         self.assertEqual(m.index01_relative(150, 150), 0)
         self.assertEqual(m.index01_relative(149, 150), -1)
         self.assertEqual(m.index01_relative(165, 150), 15)
+
+
+class TrackEndTests(unittest.TestCase):
+    # Track with INDEX01=150 and length 16 covers LBA [150, 166); the end is exclusive.
+    # Virtual PREGAP 150 frames -> pregap starts at LBA 0.
+    def test_last_lba_inside_track_is_data(self):
+        self.assertEqual(m.region(165, 150, 0, 166), "data")
+
+    def test_end_lba_is_after_track_not_data(self):
+        self.assertEqual(m.region(166, 150, 0, 166), "after_track")
+        self.assertEqual(m.region(166, 150, None, 166), "after_track")
+
+    def test_lba_far_past_end_is_after_track(self):
+        self.assertEqual(m.region(0x1000, 150, 0, 166), "after_track")
+
+    def test_track_start_is_data_and_pregap_before_it(self):
+        self.assertEqual(m.region(150, 150, 0, 166), "data")
+        self.assertEqual(m.region(0, 150, 0, 166), "pregap")
+
+    def test_before_pregap_is_before_track(self):
+        self.assertEqual(m.region(0, 150, 1, 166), "before_track")
+        self.assertEqual(m.region(0, 150, None, 166), "before_track")
+
+    def test_invalid_track_bounds_are_rejected(self):
+        for index01, end in ((150, 150), (150, 149), (150, 0)):  # zero or negative length
+            with self.subTest(index01=index01, end=end):
+                with self.assertRaises(ValueError):
+                    m.region(150, index01, None, end)
+
+    def test_end_outside_24bit_is_rejected(self):
+        with self.assertRaises(ValueError):
+            m.region(0, 150, None, 0x1000000)
+        with self.assertRaises(ValueError):
+            m.region(0, 150, None, -1)
 
 
 class BlockBaseTests(unittest.TestCase):

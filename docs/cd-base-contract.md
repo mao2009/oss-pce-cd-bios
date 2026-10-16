@@ -71,6 +71,7 @@ Zeograd や Stum の記事は名前の確認にのみ使う。
 | LBA 150 | `data` |
 | LBA -1 | 例外（拒否） |
 | INDEX 01 の前で PREGAP が無い LBA | `before_track` |
+| トラック終端 LBA（INDEX 01 + 長さ、排他。例: 150 + 16 の 166） | `after_track` |
 
 **実験で区別するための条件**: 絶対 LBA と INDEX 01 相対を分けるには、INDEX 01 が LBA 0 でないディスク
 （仮想 PREGAP、または INDEX 00 のプリギャップ）が必要である。現在のフィクスチャでは区別できない。
