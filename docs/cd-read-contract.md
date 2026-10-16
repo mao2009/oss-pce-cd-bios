@@ -27,7 +27,8 @@ by design; the CI job `make dev-cdread-integration` is what produces the bundle.
   created only by executed runs, so a name in source text, a comment or an unexecuted branch is never evidence.
 * The checker accepts the bundle only if `status` is `PASS`, `geargrafx_revision` and
   `source_archive_sha256` match `tools/dependencies.json`, and `rom_sha256` is the SHA-256 of the ROM on disk.
-  Each cited scenario must be `PASS` or `PASS_EXPECTED_FAILURE` in `tests`.
+  Each cited scenario must be `PASS`, `PASS_EXPECTED_FAILURE` or `OBSERVED_EMULATOR_BEHAVIOUR` in `tests`
+  (the last one is written only after the suite's assertion held; `NOT_TESTED` never counts).
 * Regex limits: `tools/cd_read_contract.real_core_requests` parses the integration source with regular
   expressions to rebuild the expected LBA/count model. It is a drift guard, not evidence. The host test
   fails if a `suite.positive(` or end-of-disc `suite.failing_guest(` call is not matched, but a call written

@@ -23,6 +23,8 @@ SECTOR_BYTES = 2048
 LBA_LIMIT = 1 << 21          # READ(6) LBA field: byte1 bits 0-4, byte2, byte3
 VERIFIED_COUNTS = range(1, 4)  # only counts 1..3 were executed on the real core
 STATUSES = {"VERIFIED", "HYPOTHESIS", "UNKNOWN"}
+# Scenario statuses the integration suite writes only after its assertion held. NOT_TESTED is never accepted.
+PASSING_SCENARIO = {"PASS", "PASS_EXPECTED_FAILURE", "OBSERVED_EMULATOR_BEHAVIOUR"}
 
 # Transport claims. VERIFIED is effective only with a matching PASS evidence bundle (see effective_status).
 TRANSPORT_CLAIMS = [
@@ -96,7 +98,7 @@ def effective_status(bundle=None, rom_sha256=None, claims=TRANSPORT_CLAIMS) -> d
             out[claim["id"]] = "BLOCKED"
         else:
             tests = bundle["tests"]
-            covered = all(str(tests.get(s, {}).get("status", "")).startswith("PASS") for s in claim["scenarios"])
+            covered = all(tests.get(s, {}).get("status") in PASSING_SCENARIO for s in claim["scenarios"])
             out[claim["id"]] = "VERIFIED" if covered else "UNKNOWN"
     return out
 

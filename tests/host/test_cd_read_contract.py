@@ -98,6 +98,14 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(effective_status(missing, ROM_SHA)["T1"], "UNKNOWN")
         self.assertEqual(effective_status(failing, ROM_SHA)["T3"], "UNKNOWN")
 
+    def test_asserted_observation_counts_but_not_started_or_untested_does_not(self):
+        observed = bundle_for()
+        observed["tests"]["read6_on_audio_track_lba"] = {"status": "OBSERVED_EMULATOR_BEHAVIOUR"}
+        self.assertEqual(effective_status(observed, ROM_SHA)["T5"], "VERIFIED")
+        untested = bundle_for()
+        untested["tests"]["read6_on_audio_track_lba"] = {"status": "NOT_TESTED"}
+        self.assertEqual(effective_status(untested, ROM_SHA)["T5"], "UNKNOWN")
+
     def test_claim_citing_unrun_scenario_is_not_verified(self):
         claims = copy.deepcopy(TRANSPORT_CLAIMS)
         claims[0]["scenarios"] = ["no_such_run"]
