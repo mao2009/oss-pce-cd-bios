@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Opt-in case-level execution bridge; only independently reviewed slot-1e works.
+"""Reference-case fixture validator; execution is currently blocked.
 
-Never calls an unknown ABI. A local reference observation is not an oracle,
-not a compatible ABI verdict, and never sufficient for VERIFIED.
+Even a reviewed slot-1e fixture cannot execute until the real emulator core
+independently enforces runtime RAM/I/O write boundaries. JSON observations and
+post-run diffs are not enforcement and cannot be used as an ABI oracle.
 """
 import argparse
 import hashlib
@@ -12,7 +13,7 @@ from pathlib import Path
 
 from reference_case_catalog import classify
 from reference_bios_preflight import validate
-from reference_bios_runner import Blocked, run
+from reference_bios_runner import Blocked
 
 CATALOG_SCHEMA = "oss-pce-cd-bios/reference-test-catalog/v1"
 ALLOWED_API = "slot-1e"
@@ -51,13 +52,14 @@ def validate_case_pair(case, config):
 
 
 def execute_case(case, config, adapter):
+    """Validate a proposed fixture, then refuse unguarded reference API execution.
+
+    Do not change this gate to call the adapter until the C++ core enforces
+    write allowlists *during* execution (including mapped devices) and a
+    real-core negative test demonstrates a forbidden write is prevented.
+    """
     validate_case_pair(case, config)
-    observation = run(config, adapter)
-    if observation.get("checkpoint") != "synthetic_guest_jsr_return_not_abi_verified":
-        raise Blocked("unexpected checkpoint for case")
-    return {"id": case["id"], "api_id": case["api_id"],
-            "status": "LOCAL_OBSERVATION_ONLY", "expectation": "NOT_MEASURED",
-            "observation": observation}
+    raise Blocked("runtime RAM/I/O write enforcement NOT_IMPLEMENTED; reference API execution BLOCKED")
 
 
 def main(argv=None):
@@ -76,12 +78,9 @@ def main(argv=None):
         if len(matching) != 1:
             raise Blocked("case ID absent or duplicated")
         config = json.loads(args.config.read_text(encoding="utf-8"))
-        result = execute_case(matching[0], config, args.adapter)
-        if args.output:
-            args.output.parent.mkdir(parents=True, exist_ok=True)
-            args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        print("LOCAL_OBSERVATION_ONLY: reference BIOS guest JSR observed; no ABI/compatibility PASS")
-        return 0
+        execute_case(matching[0], config, args.adapter)
+        # Defense in depth: no success or output path until runtime guarding is implemented.
+        raise Blocked("reference API execution remains disabled")
     except (OSError, ValueError, TypeError, KeyError) as error:
         print(f"BLOCKED: {error}", file=sys.stderr)
         return 2
