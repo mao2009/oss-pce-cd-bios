@@ -16,6 +16,10 @@ class ReferenceGeargrafxAdapterTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "no reference BIOS API call wrapper"):
                     adapter.observe({"api_id": api, "max_instructions": 100})
 
+    def test_valid_jsr_is_blocked_before_emulator_until_runtime_write_guard(self):
+        with self.assertRaisesRegex(ValueError, "runtime RAM/I/O write guard"):
+            adapter.observe({"api_id": "slot-1e", "max_instructions": 100})
+
     def test_jsr_experiment_rejects_invalid_budgets_before_emulator(self):
         for n in (0, 2, 1000001, True):
             with self.subTest(n=n):
