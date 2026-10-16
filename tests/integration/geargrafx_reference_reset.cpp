@@ -40,12 +40,14 @@ int main(int argc, char** argv) {
         reached = checkpoint == 65536UL || cpu->PC->GetValue() == checkpoint;
     }
     if (!reached) return 6; // deadline reached: no observation claim
-    std::printf("{\"checkpoint\":\"pc_checkpoint\",\"instructions_executed\":%lu,"
-                "\"registers\":{\"a\":%u,\"x\":%u,\"y\":%u,\"p\":%u,\"sp\":%u,\"pc\":%u},\"mpr\":[",
-                steps, cpu->A->GetValue(), cpu->X->GetValue(), cpu->Y->GetValue(),
-                cpu->P->GetValue(), cpu->S->GetValue(), cpu->PC->GetValue());
+    // The Geargrafx core logs to stdout; emit the observation on stderr so the
+    // adapter can parse it without ever touching BIOS bytes.
+    std::fprintf(stderr, "{\"checkpoint\":\"pc_checkpoint\",\"instructions_executed\":%lu,"
+                 "\"registers\":{\"a\":%u,\"x\":%u,\"y\":%u,\"p\":%u,\"sp\":%u,\"pc\":%u},\"mpr\":[",
+                 steps, cpu->A->GetValue(), cpu->X->GetValue(), cpu->Y->GetValue(),
+                 cpu->P->GetValue(), cpu->S->GetValue(), cpu->PC->GetValue());
     for (int i = 0; i < 8; ++i)
-        std::printf("%s%u", i ? "," : "", memory->GetMpr(i));
-    std::printf("]}\n");
+        std::fprintf(stderr, "%s%u", i ? "," : "", memory->GetMpr(i));
+    std::fprintf(stderr, "]}\n");
     return 0;
 }
