@@ -130,15 +130,18 @@ def effective_status(bundle=None, rom_sha256=None, claims=TRANSPORT_CLAIMS) -> d
     problem = provenance_problem(bundle, rom_sha256)
     out = {}
     for claim in claims:
-        if claim["status"] != "VERIFIED":
-            out[claim["id"]] = claim["status"]
+        cid, status = claim["id"], claim["status"]  # read once: a Mapping may change between accesses
+        if type(status) is not str or status not in ("VERIFIED", "HYPOTHESIS", "UNKNOWN"):
+            out[cid] = "BLOCKED"  # abnormal status object or unlisted state: fail closed, never pass through
+        elif status != "VERIFIED":
+            out[cid] = status
         elif problem:
-            out[claim["id"]] = "BLOCKED"
+            out[cid] = "BLOCKED"
         else:
             tests = bundle["tests"]
             covered = all(s in SCENARIO_KIND and tests.get(s, {}).get("status") == SCENARIO_KIND[s]
                           for s in claim["scenarios"])
-            out[claim["id"]] = TRUST_LABEL if covered else "UNKNOWN"
+            out[cid] = TRUST_LABEL if covered else "UNKNOWN"
     return out
 
 

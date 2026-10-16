@@ -181,6 +181,37 @@ class LedgerTests(unittest.TestCase):
         validate(self.api, claims)
         self.assertEqual(effective_status(bundle_for(), ROM_SHA, claims)["T1"], "UNKNOWN")
 
+    def test_status_is_read_once_per_claim(self):
+        """#155: a Mapping whose status changes per access must not turn a non-VERIFIED check into VERIFIED."""
+        class Flip(collections.abc.Mapping):
+            def __init__(self):
+                self.reads = 0
+            def __getitem__(self, key):
+                if key == "status":
+                    self.reads += 1
+                    return "UNKNOWN" if self.reads == 1 else "VERIFIED"
+                return {"id": "TX", "scenarios": []}[key]
+            def __iter__(self):
+                return iter(("id", "status", "scenarios"))
+            def __len__(self):
+                return 3
+        flip = Flip()
+        out = effective_status(bundle_for(), ROM_SHA, [flip])
+        self.assertEqual(flip.reads, 1)
+        self.assertNotIn("VERIFIED", out.values())
+
+    def test_abnormal_status_never_passes_through(self):
+        class Liar(str):
+            def __eq__(self, other):
+                return False
+            def __ne__(self, other):
+                return True
+            __hash__ = str.__hash__
+        for name, status in {"liar_str": Liar("VERIFIED"), "none": None, "bytes": b"VERIFIED", "unlisted": "PASS"}.items():
+            with self.subTest(case=name):
+                out = effective_status(bundle_for(), ROM_SHA, [{"id": "TX", "status": status, "scenarios": []}])
+                self.assertEqual(out, {"TX": "BLOCKED"})
+
     def test_malformed_or_foreign_promotions_are_rejected(self):
         for change in ("unknown_to_verified", "bad_status", "foreign_evidence"):
             with self.subTest(change=change):
