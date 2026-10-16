@@ -6,7 +6,8 @@ MCP documentation: https://github.com/drhelius/Geargrafx/blob/main/MCP_README.md
 **Implementation update (2026-10-16):** main executes original HuCARD,
 System Card DEV reset/startup/slot diagnostics, and guest synthetic-CD READ(6)
 on the pinned real Geargrafx core. **No BIOS boot/ABI is validated.**
-Isolated trace harness is in Draft PR #119 and standalone MCP work in #103.
+The isolated real-core trace harness (#119) is now on main, while standalone
+desktop MCP work remains in #103.
 See [status](status.md), [testing](testing.md), and [setup](emulator-geargrafx.md).
 
 ## Why Geargrafx first

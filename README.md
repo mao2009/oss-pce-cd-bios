@@ -79,6 +79,7 @@ make dev-rom                    # 256 KiB, 81 candidate API slots, nonreturning 
 make dev-test                   # real-core System Card slot/CPU diagnostics
 make dev-startup-integration    # separate reset/MPR/stack checkpoint
 make dev-cdread-integration     # guest READ(6), full-byte RAM/phase checks
+make dev-trace-integration      # real-core isolated trace and negative checks
 make dev-release-gate-blocked   # expected refusal; NOT a firmware release
 ```
 

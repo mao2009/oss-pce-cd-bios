@@ -9,6 +9,7 @@ A completed **diagnostic** is not an implemented **compatible BIOS API**.
 - [x] Original 256 KiB System Card **development diagnostic** with 81 candidate entries and fail-closed stubs
 - [x] Real-core System Card loader/reset, slot, RAM/MPR/stack/IRQ observations and isolated startup checkpoint
 - [x] Real-core guest READ(6) on synthetic discs, 1–3 2048-byte sectors, full RAM/phase/negative checks
+- [x] Isolated real-core Geargrafx trace harness, CD status classifier and host-only CD_BASE model (not BIOS services)
 - [x] Research, provenance/OSS audit and candidate API ledger
 - [ ] Verify historical/production ROM mapping/vectors and essential **caller ABI** against independent evidence (#1/#3)
 

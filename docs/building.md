@@ -109,6 +109,7 @@ After `make setup`, these commands build prerequisite DEV ROMs automatically:
 ```sh
 make dev-startup-integration  # real-core reset/MPR/stack marker
 make dev-cdread-integration   # real-core guest READ(6)→RAM, synthetic CUE/BIN
+make dev-trace-integration    # isolated Geargrafx trace/timeout negatives
 make dev-cdread MODE=release
 cmp build/debug/cdread-probe/cdread-probe-not-bios.pce build/release/cdread-probe/cdread-probe-not-bios.pce
 make dev-release-gate-blocked # must refuse incomplete firmware

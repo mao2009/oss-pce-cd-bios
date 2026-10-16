@@ -115,6 +115,7 @@ not every standalone System Card diagnostic. After `make setup`:
 make dev-test                   # 81-slot diagnostic and real-core slot observations
 make dev-startup-integration    # separate reset/MPR/stack marker
 make dev-cdread-integration     # guest READ(6), full RAM and SCSI checks
+make dev-trace-integration      # isolated pinned real-core trace and negative checks
 make dev-release-gate-blocked   # intentional non-release assertion
 ```
 
@@ -132,5 +133,7 @@ execute that ROM without media. The audio-track READ(6) observation applies
 only to Geargrafx. See [CD diagnostics](cd-read-diagnostic.md),
 [CPU evidence](geargrafx-contract-evidence.md) and [status](status.md).
 
-Draft #115/#116/#118/#119/#120/#121/#122 remain **branch-only** at the
-2026-10-16 snapshot; #122's synthetic RAM payload execution is *not* boot.
+CD status classification (#115), real-core trace harness (#119), and host-only
+CD_BASE model (#120) are **on main** at this snapshot. Draft
+#116/#118/#121/#122 remain **branch-only**; #122's synthetic RAM payload
+execution is *not* boot.
