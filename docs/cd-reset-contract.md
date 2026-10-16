@@ -55,6 +55,12 @@ Plain `PASS` is unreachable until the contract above is reviewed.
 | any non-`geargrafx-real` source | — | SKIP |
 | core revision ≠ pinned Geargrafx or no ROM hash | — | BLOCKED |
 
+Record validation (fail-closed, `ValueError`): all `REQUIRED` keys present; `rom_sha256` empty (unidentified,
+BLOCKED) or exactly 64 lowercase hex; `returned` is a bool; PCs are 0..`$FFFF`, SP/bus bytes 0..`$FF`, `polls`
+≥ 0 and `poll_budget` ≥ 1 (bool and float are rejected). The `reason` from `classify()` separates `timeout`
+(not returned, `polls == poll_budget`), `not_returned` (not returned, bound not reached), and `budget_overrun`
+(`polls > poll_budget`, FAIL for every scenario). Verdicts are never a plain `PASS` and do not verify firmware.
+
 Host tests: `python3 -m unittest tests.host.test_cdreset -v` (records are synthetic; no emulator).
 
 ## Why no ROM routine yet

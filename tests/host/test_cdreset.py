@@ -2,7 +2,7 @@
 import re
 import unittest
 
-from tools.cdreset_verify import CANDIDATE_ENTRY, REQUIRED, judge
+from tools.cdreset_verify import CANDIDATE_ENTRY, REQUIRED, classify, judge
 from tools.contracts import FIELDS, ROOT, load_contracts
 from tools.environment import DEPENDENCIES
 
@@ -54,6 +54,42 @@ class CdResetJudgeTests(unittest.TestCase):
         for bad in (dict(scenario="invalid_track"), dict(poll_budget=0), dict(poll_budget="100")):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 judge(record(**bad))
+
+    def test_rom_sha256_must_be_64_lowercase_hex_or_empty(self):
+        self.assertEqual(judge(record(rom_sha256="ab" * 32)), "PASS_HYPOTHESIS")
+        for bad in ("0" * 63, "0" * 65, "g" * 64, "A" * 64, "0" * 31 + " " + "0" * 32, "name-of-rom",
+                    0, None, b"0" * 64):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                judge(record(rom_sha256=bad))
+
+    def test_negative_and_out_of_range_numbers_fail_closed(self):
+        bad_values = (dict(entry_pc=-1), dict(entry_pc=0x10000), dict(return_pc=-1),
+                      dict(expected_return_pc=0x10000), dict(sp_entry=-1), dict(sp_exit=0x100),
+                      dict(bus_after=-1), dict(bus_after=0x100), dict(polls=-1), dict(poll_budget=-1))
+        for bad in bad_values:
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                judge(record(**bad))
+
+    def test_wrong_types_fail_closed(self):
+        bad_values = (dict(entry_pc=True), dict(entry_pc=float(CANDIDATE_ENTRY)), dict(entry_pc="0xE003"),
+                      dict(sp_exit=None), dict(bus_after=True), dict(polls="10"), dict(polls=10.0),
+                      dict(polls=True), dict(returned="yes"), dict(returned=1), dict(source=None),
+                      dict(core_revision=["x"]), dict(scenario=["disc_ready"]))
+        for bad in bad_values:
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                judge(record(**bad))
+
+    def test_timeout_budget_overrun_and_unreturned_are_distinct(self):
+        self.assertEqual(classify(record(returned=False, polls=100)), ("FAIL", "timeout"))
+        self.assertEqual(classify(record(returned=False, polls=40)), ("FAIL", "not_returned"))
+        self.assertEqual(classify(record(returned=False, polls=101)), ("FAIL", "budget_overrun"))
+        self.assertEqual(classify(record(scenario="no_disc", returned=False, polls=100)), ("OBSERVED", "timeout"))
+        self.assertEqual(classify(record(scenario="drive_busy", returned=False, polls=40)),
+                         ("OBSERVED", "not_returned"))
+        self.assertEqual(classify(record(scenario="drive_busy", returned=False, polls=101)),
+                         ("FAIL", "budget_overrun"))
+        self.assertEqual(classify(record(scenario="no_disc", returned=False, polls=101)),
+                         ("FAIL", "budget_overrun"))
 
 
 class CdResetContractDocTests(unittest.TestCase):
