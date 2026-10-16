@@ -10,10 +10,10 @@ import geargrafx_reference_adapter as adapter
 
 def probe_row(**mutation):
     state = {"a": 0xAA, "x": 0x03, "y": 0x00, "p": 0x06, "sp": 0xFF, "pc": 0x3E09,
-             "mpr": [0xF8, 0xF8, 0, 0, 0, 0, 0, 0]}
+             "mpr": [0x00, 0xF8, 0, 0, 0, 0, 0, 0]}
     row = {"mode": "call", "status": "ok", "reason": "",
            "before": dict(state, pc=0x3E00), "after": state,
-           "callee_pc": 0xF02D, "entry_reached": True, "returned": True,
+           "callee_pc": 0xE000, "entry_reached": True, "returned": True,
            "detected": False, "detected_pc": 0, "instructions_executed": 8, "budget": 3000,
            "ram_diff": [{"address": 0x21FE, "before": 0, "after": 8}]}
     row.update(mutation)

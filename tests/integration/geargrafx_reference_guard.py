@@ -104,16 +104,49 @@ def check_pos(row, target):
         raise ValueError(f"allowed control store ${target:04X} failed: {row.get('reason')}")
     if row.get("detected") is not False:
         raise ValueError(f"allowed control store ${target:04X} was wrongly flagged by the write breakpoint")
+    if row.get("guard_target") != target:
+        raise ValueError(f"allowed control store ${target:04X} targeted wrong address: {row.get('guard_target')}")
+    if row.get("guard_before") == ALLOWED_VALUE:
+        raise ValueError(f"allowed control store ${target:04X} target was already {ALLOWED_VALUE:#x} before execution")
+    if row.get("guard_before") == row.get("guard_after"):
+        raise ValueError(f"allowed control store ${target:04X} did not change the target byte")
     if row.get("guard_after") != ALLOWED_VALUE:
         raise ValueError(f"allowed control store ${target:04X} did not land; the guard drops every write")
+    # Normal execution: a small positive instruction count, not a timeout.
+    executed = row.get("instructions_executed")
+    if type(executed) is not int or not 1 <= executed <= 100:
+        raise ValueError(f"allowed control store ${target:04X} invalid instruction count: {executed}")
 
 
 def check_tam(row):
-    """Tam mode expects the MPR change to be detected (status=rejected)."""
+    """Tam mode: MPR change must be detected and the following STA must not execute.
+
+    Verifies status=rejected, mpr_changed=True, reason names the MPR change,
+    instruction count is small (TAM was stepped, not timed out), stop PC is
+    right after TAM (before the STA), and no RAM was modified by the STA.
+    """
     if row.get("exit", 0) != 0:
         raise ValueError(f"tam probe refused to run (exit {row.get('exit')}): {row.get('stderr','')[-300:]}")
+    if row.get("status") != "rejected":
+        raise ValueError(f"tam probe was not rejected: status={row.get('status')} reason={row.get('reason')}")
     if row.get("mpr_changed") is not True:
-        raise ValueError(f"tam MPR change was not detected: status={row.get('status')} reason={row.get('reason')} mpr_changed={row.get('mpr_changed')}")
+        raise ValueError(f"tam MPR change was not detected: mpr_changed={row.get('mpr_changed')}")
+    reason = row.get("reason", "")
+    if not reason.startswith("mpr_changed_during_execution"):
+        raise ValueError(f"tam stop reason does not name MPR change: {reason}")
+    executed = row.get("instructions_executed")
+    if type(executed) is not int or not 2 <= executed <= 10:
+        raise ValueError(f"tam instruction count out of expected range: {executed}")
+    # The STA after TAM must not have executed: no RAM changes at all.
+    if row.get("guard_before") != row.get("guard_after"):
+        raise ValueError(f"tam: prohibited STA modified RAM (guard_before={row.get('guard_before')} != guard_after={row.get('guard_after')})")
+    ram_diff = row.get("ram_diff")
+    if type(ram_diff) is not list or len(ram_diff) != 0:
+        raise ValueError(f"tam: unexpected ram_diff={ram_diff}")
+    # Stop PC should be right after TAM (the STA address), before the store.
+    stop_pc = row.get("stop_pc")
+    if type(stop_pc) is not int or not 0x3E00 <= stop_pc <= 0x3EFF:
+        raise ValueError(f"tam stop PC out of guest range: {stop_pc}")
 
 
 def check_blocked(row, expected_exit):

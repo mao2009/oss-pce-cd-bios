@@ -23,7 +23,7 @@
 //   m_huc6202->WriteFromCPU(), bypassing Memory::Write(), map_write, and
 //   CPU-address breakpoints entirely. They produce irreversible device side
 //   effects. The slot "$1E" guest code (LDA/LDX/LDY/JSR/BRA) and the measured
-//   EX_GETVER callee (LDX $FEC2; LDY $FEC3; RTS) contain no ST0/ST1/ST2 or TAM,
+//   EX_GETVER callee returns X=3/Y=0 with A preserved) contain no ST0/ST1/ST2 or TAM,
 //   so they are not exercised by the measured execution path. Any future API
 //   allowing arbitrary guest code must address this path before being unblocked.
 #include "geargrafx_core.h"
@@ -463,6 +463,7 @@ int main(int argc, char** argv)
     std::fprintf(out, "\"detected\":%s,", detected ? "true" : "false");
     std::fprintf(out, "\"mpr_changed\":%s,", mpr_changed ? "true" : "false");
     std::fprintf(out, "\"detected_pc\":%u,", (unsigned)detected_pc);
+    std::fprintf(out, "\"stop_pc\":%u,", (unsigned)o.st->PC->GetValue());
     std::fprintf(out, "\"instructions_executed\":%lu,", o.executed);
     std::fprintf(out, "\"budget\":%lu,", budget);
     std::fprintf(out, "\"ram_diff\":[");

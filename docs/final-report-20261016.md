@@ -156,7 +156,7 @@ PR #170のガード付き参照実行で、物理バンクエイリアスによ�
 
 #### Phase 5: 非公開BIOS情報の非公開化（完了）
 
-- 公開API入口アドレス（`$E05A`）と非公開BIOS内部実装アドレス（`$F02D`等）を区別。
+- 公開API入口アドレス（`$E05A`）と非公開BIOS内部実装アドレスを区別。
 - `docs/final-report-20261016.md`、`docs/reference-bios-test-plan.md`、PR #170本文から非公開BIOS内部アドレス・命令列・ROMバイト列を削除。
 - 公開する機能的契約: X=3, Y=0, A保持、入口 `$E05A`、信頼レベル `LOCAL_ONLY_NOT_VERIFIED`。
 

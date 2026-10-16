@@ -11,7 +11,7 @@ import reference_bios_runner as runner
 
 def jsr_observation():
     state = {"a": 0xAA, "x": 0x03, "y": 0x00, "p": 0x06, "sp": 0xFF, "pc": 0x3E09,
-             "mpr": [0xF8, 0xF8, 0, 0, 0, 0, 0, 0]}
+             "mpr": [0x00, 0xF8, 0, 0, 0, 0, 0, 0]}
     return {
         "schema": runner.OBS_SCHEMA, "api_id": "slot-1e", "status": "OBSERVED",
         "engine": "geargrafx", "checkpoint": "slot_1e_ex_getver_returned_to_caller",
@@ -21,7 +21,7 @@ def jsr_observation():
         "instructions_executed": 32,
         "before": dict(state, pc=0x3E00),
         "after": state,
-        "call": {"entry_reached": True, "callee_pc": 0xF02D, "returned": True},
+        "call": {"entry_reached": True, "callee_pc": 0xE000, "returned": True},
         "guard": {"detected": False, "status": "no_violation"},
     }
 
