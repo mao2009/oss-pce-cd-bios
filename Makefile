@@ -60,3 +60,11 @@ dev-cdread: dev-rom
 
 dev-cdread-integration: dev-cdread
 	$(PYTHON) tests/integration/geargrafx_cdread.py --mode "$(MODE)"
+
+.PHONY: dev-cdreset dev-cdreset-integration
+# Opt-in Issue #10 CD_RESET bus-reset diagnostic (original ROM, not the System Card API); separate from the #5 read ROM.
+dev-cdreset: dev-rom
+	$(PYTHON) tools/build_cdreset.py --mode "$(MODE)"
+
+dev-cdreset-integration: dev-cdreset
+	$(PYTHON) tests/integration/geargrafx_cdreset.py --mode "$(MODE)"
