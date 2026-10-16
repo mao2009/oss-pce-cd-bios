@@ -21,12 +21,21 @@ FAKE = textwrap.dedent('''\
              "get_huc6280_status", "read_memory", "write_memory", "set_trace_log", "get_trace_log"]
     if mode == "missing_tool": names.remove("get_trace_log")
     st = {"pc": 0xFFFF}
+    if os.environ.get("FAKE_PIDFILE"): open(os.environ["FAKE_PIDFILE"], "w").write(str(os.getpid()))
     def txt(o): return {"content": [{"type": "text", "text": json.dumps(o)}]}
     for line in sys.stdin:
         r = json.loads(line)
         if "id" not in r: continue
         m, p = r["method"], r.get("params", {})
         if mode == "hang" and m == "tools/list": time.sleep(60)
+        if mode == "die" and m == "tools/list": os._exit(0)
+        if mode == "oversize" and m == "tools/list":
+            sys.stdout.write("x" * (3 << 20)); sys.stdout.flush(); time.sleep(60)
+        if mode == "bad_result" and m == "tools/list":
+            print(json.dumps({"jsonrpc": "2.0", "id": r["id"], "result": [1]}), flush=True); continue
+        if mode == "bad_tools" and m == "tools/list":
+            print(json.dumps({"jsonrpc": "2.0", "id": r["id"], "result": {"tools": [5]}}), flush=True); continue
+        if mode == "noise": print("garbage {", flush=True); print(json.dumps({"id": 999, "result": {}}), flush=True)
         if m == "initialize": res = {"capabilities": {}}
         elif m == "tools/list":
             tools = [{"name": n, "inputSchema": S} for n in names]
@@ -91,6 +100,45 @@ class McpCheckpoint(unittest.TestCase):
 
     def test_invalid_image_rejected(self):
         self.assertEqual(self.run_mode("invalid_image")[:2], ("FAIL", "load_media_error"))
+
+    def test_server_exit_mid_session_fails_without_hang(self):
+        self.assertEqual(self.run_mode("die", per_step=3)[:2], ("FAIL", "process_exited"))
+
+    def test_oversized_response_fails_bounded_and_child_killed(self):
+        pidfile = self.dir / "pid"
+        os.environ["FAKE_PIDFILE"] = str(pidfile)
+        self.addCleanup(os.environ.pop, "FAKE_PIDFILE", None)
+        status, reason, ev = self.run_mode("oversize", per_step=10)
+        self.assertEqual((status, reason), ("FAIL", "oversized_response"))
+        self.assertTrue(ev["process_terminated"])
+        self.assertNotAlive(int(pidfile.read_text()))
+
+    def test_timeout_leaves_no_orphan(self):
+        pidfile = self.dir / "pid"
+        os.environ["FAKE_PIDFILE"] = str(pidfile)
+        self.addCleanup(os.environ.pop, "FAKE_PIDFILE", None)
+        self.assertEqual(self.run_mode("hang", per_step=0.3)[:2], ("TIMEOUT", "tools/list_timeout"))
+        self.assertNotAlive(int(pidfile.read_text()))
+
+    def assertNotAlive(self, pid):
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return
+        self.fail(f"child {pid} still alive")
+
+    def test_malformed_shapes_fail_cleanly(self):
+        self.assertEqual(self.run_mode("bad_result")[:2], ("FAIL", "tools/list_malformed_result"))
+        self.assertEqual(self.run_mode("bad_tools")[:2], ("FAIL", "malformed_tools_list"))
+
+    def test_non_protocol_noise_and_foreign_ids_ignored(self):
+        self.assertEqual(self.run_mode("noise")[:2], ("PASS", "ok"))
+
+    def test_non_executable_spawn_failure_is_fail_not_traceback(self):
+        bad = self.dir / "bad"
+        bad.write_text("not an executable format")
+        bad.chmod(0o755)
+        self.assertEqual(m.run_session(bad, self.rom)[:2], ("FAIL", "protocol_error"))
 
     def test_helpers_boundaries(self):
         self.assertEqual(m.parse_bytes({"data": "zz"}), None)

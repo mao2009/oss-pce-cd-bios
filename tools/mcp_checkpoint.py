@@ -31,6 +31,10 @@ class Fail(Exception):
         self.status, self.reason = status, reason
 
 
+MAX_LINE = 1 << 20  # larger reply line = broken/hostile server: fail, don't buffer unboundedly
+OVERSIZE = object()
+
+
 class Client:
     """Newline-delimited JSON-RPC over a child's stdio; every read has a deadline."""
 
@@ -41,8 +45,17 @@ class Client:
         threading.Thread(target=self._pump, daemon=True).start()
 
     def _pump(self):
-        for line in self.proc.stdout:
-            self.lines.put(line)
+        try:
+            while True:
+                line = self.proc.stdout.readline(MAX_LINE + 1)
+                if not line:
+                    break
+                if len(line) > MAX_LINE and not line.endswith("\n"):
+                    self.lines.put(OVERSIZE)
+                    return
+                self.lines.put(line)
+        except (OSError, ValueError):
+            pass
         self.lines.put(None)
 
     def request(self, method, params=None, timeout=5.0):
@@ -61,6 +74,8 @@ class Client:
                 raise Fail("TIMEOUT", f"{method}_timeout")
             if line is None:
                 raise Fail("FAIL", "process_exited")
+            if line is OVERSIZE:
+                raise Fail("FAIL", "oversized_response")
             try:
                 reply = json.loads(line)
             except ValueError:
@@ -68,11 +83,17 @@ class Client:
             if isinstance(reply, dict) and reply.get("id") == self.next_id:
                 if "error" in reply:
                     raise Fail("FAIL", f"{method}_rpc_error")
-                return reply.get("result", {})
+                result = reply.get("result", {})
+                if not isinstance(result, dict):
+                    raise Fail("FAIL", f"{method}_malformed_result")
+                return result
 
     def notify(self, method):
-        self.proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": method}) + "\n")
-        self.proc.stdin.flush()
+        try:
+            self.proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": method}) + "\n")
+            self.proc.stdin.flush()
+        except OSError:
+            raise Fail("FAIL", "process_exited")
 
     def call(self, name, args=None, timeout=5.0):
         args = args or {}
@@ -189,7 +210,9 @@ def run_session(binary, rom, per_step=5.0, deadline_s=10.0, cycles=("cold", "war
                                      "clientInfo": {"name": "pce-checkpoint", "version": "0"}}, per_step)
             c.notify("notifications/initialized")
             tools = c.request("tools/list", timeout=per_step).get("tools", [])
-            c.schemas = {t["name"]: t.get("inputSchema", {}) for t in tools}
+            if not isinstance(tools, list) or not all(isinstance(t, dict) and isinstance(t.get("name"), str) for t in tools):
+                raise Fail("FAIL", "malformed_tools_list")
+            c.schemas = {t["name"]: t.get("inputSchema") or {} for t in tools}
             missing = [t for t in REQUIRED if t not in c.schemas]
             if missing:
                 raise Fail("FAIL", "missing_tools:" + ",".join(missing))
@@ -202,6 +225,8 @@ def run_session(binary, rom, per_step=5.0, deadline_s=10.0, cycles=("cold", "war
             status, reason = "PASS", "ok"
         except Fail as f:
             status, reason = f.status, f.reason
+        except (OSError, ValueError, TypeError, AttributeError, KeyError):
+            status, reason = "FAIL", "protocol_error"  # spawn failure or malformed reply shape
         finally:
             gone = c.close() if c else True
         if not gone:
