@@ -77,10 +77,12 @@ class StartupBuildTests(unittest.TestCase):
         code = 0x1000
         cases = {
             "sei removed": (code, 0xEA),
+            "mpr5 bad bank": (code + 24, 0x04),
             "mpr7 not reset to bank 0": (code + 32, 0x01),
             "stack pointer changed": (code + 36, 0xFE),
             "txs removed": (code + 37, 0xEA),
             "marker byte changed": (code + SYMBOL_OFFSETS["startup_marker_write"] + 1, 0x00),
+            "cd state byte set to disc-dependent value": (code + SYMBOL_OFFSETS["startup_cd_state"] + 1, 0x01),
             "reset vector points at API table": (0x1ffe, 0x00),
             "irq vector points at reset": (0x1ff6, 0x00),
             "extra instruction after checkpoint": (code + len(STARTUP_CODE), 0x60),  # RTS: false success
@@ -111,6 +113,8 @@ class StartupBuildTests(unittest.TestCase):
         self.assertFalse(manifest["release_eligible"])
         self.assertEqual(manifest["api_implementation"], "NONE")
         self.assertEqual(manifest["final_system_card_layout"], "UNKNOWN")
+        self.assertEqual(manifest["cd_state_value"], 0)
+        self.assertFalse(manifest["cd_disc_presence_read"])
         self.assertEqual(manifest["startup_symbols"], {name: 0xf000 + pos for name, pos in SYMBOL_OFFSETS.items()})
 
     def test_bad_mode_refused(self):
