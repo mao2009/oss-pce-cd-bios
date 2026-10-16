@@ -177,3 +177,65 @@ jobs:
             --repo "$GITHUB_REPOSITORY" --commit "$(git rev-parse HEAD)" \
             --attestation "$RUNNER_TEMP/attestation-verify.json" --run "$RUNNER_TEMP/workflow-run.json" \
             --rom "$evidence/cdread-probe-not-bios.pce"
+      - name: Produce CD_READ verdict (Issue #156; docs/verdict-schema.md v1; T1-T5 from attested scenario coverage + approval boundary, BLOCKED at 0 approvals)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          evidence="$RUNNER_TEMP/evidence/cdread-probe"
+          gh api "repos/$GITHUB_REPOSITORY/rules/branches/main" > "$RUNNER_TEMP/main-rules.json"
+          mkdir -p "$RUNNER_TEMP/verdict"
+          python3 tools/cdread_verdict.py "$evidence/cdread-evidence.json" --rom "$evidence/cdread-probe-not-bios.pce" \
+            --attestation "$RUNNER_TEMP/attestation-verify.json" --run "$RUNNER_TEMP/workflow-run.json" \
+            --rules "$RUNNER_TEMP/main-rules.json" --out "$RUNNER_TEMP/verdict/cdread-verdict.json"
+      - name: Save verdict bytes (hashes only; no ROM, BIOS or disc data)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: cdread-verdict-${{ github.sha }}
+          path: ${{ runner.temp }}/verdict/cdread-verdict.json
+          if-no-files-found: error
+          retention-days: 14
+  attest-cdread-verdict:
+    # Signs the verdict bytes. Like attest-cdread it runs no repository code, and only on push to protected main.
+    # No secret is used: the signature is GitHub OIDC (id-token) + Sigstore. Without id-token the job fails closed.
+    needs: verify-cdread-attestation
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cdread-verdict-${{ github.sha }}
+          path: verdict
+      - name: Refuse to sign without an OIDC token
+        run: |
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_URL" || { echo "no id-token, verdict not signed"; exit 1; }
+      - name: Attest CD_READ verdict bytes
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: verdict/cdread-verdict.json
+  verify-cdread-verdict:
+    # Round-trip check of the signature only. Trusting the verdict is the consumer's job (#153).
+    needs: attest-cdread-verdict
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cdread-verdict-${{ github.sha }}
+          path: ${{ runner.temp }}/verdict
+      - name: Verify verdict attestation against main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh attestation verify "$RUNNER_TEMP/verdict/cdread-verdict.json" \
+            --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/api-source.yml" \
+            --source-ref refs/heads/main --source-digest "$GITHUB_SHA" --deny-self-hosted-runners \
+            --cert-oidc-issuer https://token.actions.githubusercontent.com \
+            --predicate-type https://slsa.dev/provenance/v1
