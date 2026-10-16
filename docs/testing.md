@@ -88,7 +88,7 @@ version observations are compared; arbitrary power-on RAM is not deterministic.
 | --- | --- |
 | Fixture assembly/format/layout/reproducibility | PASS when the above host checks run |
 | Real Geargrafx HuCARD reset/marker/TAM/TMA/TII | PASS when integration produces its evidence |
-| PC/MPR register trace through standalone MCP | NOT_RUN locally; SDL3 missing; #103 |
+| PC/MPR register trace through standalone MCP | **NOT_RUN** (SDL3/CMake missing, no standalone binary). Protocol client `tools/mcp_checkpoint.py` + synthetic fake-server tests only (`tests/host/test_mcp_checkpoint.py`); synthetic PASS is not real-core evidence; #103 |
 | System Card diagnostic load/reset/bank/RAM/IRQ | Scoped real-core PASS; not production BIOS |
 | Independent startup/MPR/stack marker | Real-core diagnostic `dev-startup-integration`; not BIOS initialization |
 | Guest synthetic CD READ(6)→RAM | Real-core diagnostic `dev-cdread-integration`; not BIOS `CD_READ` |

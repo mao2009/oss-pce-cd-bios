@@ -113,6 +113,16 @@ memory_area `cpu_addr`, execute true), `debug_reset`, bounded execution/polling,
 rather than assuming synchronous execution; use synchronous stepping where
 supported. Terminate the child process on timeout and verify shutdown.
 
+`tools/mcp_checkpoint.py --binary <geargrafx> --rom build/debug/smoke-test-not-bios.pce`
+implements this as a bounded stdio client (private `--portable` profile copy, per-request
+deadlines, kill and verify on timeout, cold then warm reset with RAM cleared, PC/MPR1/RAM
+and non-empty trace assertions). Exit 0 PASS, 1 FAIL/TIMEOUT, 3 BLOCKED (binary absent). Tool
+names come from the pin's MCP_README; arguments missing from the discovered `inputSchema`
+fail as `schema_mismatch`. UNKNOWN until a real run: exact argument names (`address`, `size`,
+`data`, `action`), status/trace JSON field names, and whether `set_breakpoint` defaults to an
+execute breakpoint on the CPU address space; the synthetic server encodes these as guesses.
+Tests: `python3 -m unittest tests.host.test_mcp_checkpoint` (fake server only).
+
 The current host does not prove these GUI/MCP steps. The follow-up
 [#103](https://github.com/mao2009/oss-pce-cd-bios/issues/103) tracks adding PC/MPR and
 trace evidence to the existing RAM smoke gate under parent #6. No upstream patch
