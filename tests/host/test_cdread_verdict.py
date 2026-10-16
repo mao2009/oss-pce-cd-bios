@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'tools'))
 sys.path.insert(0, str(ROOT / 'tests' / 'host'))
 import cdread_verdict as cv  # noqa: E402
+import cd_read_contract as crc  # noqa: E402
 from test_evidence_provenance import (  # noqa: E402
     ATTEMPT, COMMIT, FIXTURE, OTHER_COMMIT, POLICY, REPO, ROM, RUN_ID, encode, make_artifact, make_attestation,
     make_run, sha)
@@ -24,6 +25,9 @@ ENV = {'GITHUB_ACTIONS': 'true', 'GITHUB_EVENT_NAME': 'push', 'GITHUB_REF': 'ref
        'GITHUB_REPOSITORY': REPO, 'GITHUB_SHA': COMMIT, 'GITHUB_RUN_ID': str(RUN_ID),
        'GITHUB_RUN_ATTEMPT': str(ATTEMPT),
        'GITHUB_WORKFLOW_REF': f'{REPO}/.github/workflows/api-source.yml@refs/heads/main'}
+ALL_VERIFIED = {f'T{i}': 'VERIFIED' for i in range(1, 6)}
+BLOCKED_CLAIMS = {**{f'T{i}': 'BLOCKED' for i in range(1, 6)}, 'T6': 'HYPOTHESIS', 'T7': 'UNKNOWN', 'T8': 'UNKNOWN'}
+VERIFIED_CLAIMS = {**ALL_VERIFIED, 'T6': 'HYPOTHESIS', 'T7': 'UNKNOWN', 'T8': 'UNKNOWN'}
 
 
 def rules(approvals):
@@ -64,14 +68,32 @@ class ProducerTests(unittest.TestCase):
         self.assertEqual(verdict['provenance'], {'result': 'PASS', 'verifier': 'tools/evidence_provenance.py'})
         self.assertEqual((verdict['issued_at'], verdict['expires_at']), ('2026-10-16T01:02:03Z', '2026-10-23T01:02:03Z'))
 
-    def test_claims_never_verified_even_with_approvals(self):
-        for approvals in (0, 1, 5):
+    def test_claims_stay_blocked_below_the_approval_boundary(self):
+        for approvals in (0,):
             verdict = produce(branch_rules=rules(approvals))
             self.assertEqual(verdict['main_rules'], {'source': 'github-api',
                                                      'required_approving_review_count': approvals})
-            self.assertEqual(verdict['claims'], {'T1': 'BLOCKED', 'T2': 'BLOCKED', 'T3': 'BLOCKED', 'T4': 'BLOCKED',
-                                                 'T5': 'BLOCKED', 'T6': 'HYPOTHESIS', 'T7': 'UNKNOWN',
-                                                 'T8': 'UNKNOWN'})
+            self.assertEqual(verdict['claims'], BLOCKED_CLAIMS)
+            self.assertEqual(verdict['claims'], crc.compat_status())  # still the fail-closed ledger values
+
+    def test_claims_are_verified_from_authenticated_coverage_when_approvals_met(self):
+        for approvals in (1, 5):
+            with self.subTest(approvals=approvals):
+                verdict = produce(branch_rules=rules(approvals))
+                self.assertEqual(verdict['claims'], VERIFIED_CLAIMS)
+
+    def test_transport_claims_require_full_coverage_and_the_approval_boundary(self):
+        full = make_artifact()
+        self.assertEqual(cv.transport_claims(full, 1), VERIFIED_CLAIMS)
+        self.assertEqual(cv.transport_claims(full, 0), BLOCKED_CLAIMS)
+        missing = make_artifact()
+        del missing['tests']['single_sector_lba5']  # cited by T1
+        self.assertEqual(cv.transport_claims(missing, 1)['T1'], 'BLOCKED')
+        rekinded = make_artifact()
+        rekinded['tests']['read6_on_audio_track_lba']['status'] = 'PASS'  # T5 wants OBSERVED_EMULATOR_BEHAVIOUR
+        claims = cv.transport_claims(rekinded, 1)
+        self.assertEqual(claims['T5'], 'BLOCKED')
+        self.assertEqual(claims['T1'], 'VERIFIED')  # a claim whose own scenarios are covered is unaffected
 
     def test_unreadable_branch_rules_are_refused(self):
         for bad in (None, {}, [], [{'type': 'pull_request'}], [{'type': 'pull_request', 'parameters': {

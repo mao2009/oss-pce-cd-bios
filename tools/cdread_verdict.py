@@ -7,8 +7,13 @@ binds issuer (repository, ref, producer workflow/run), commit, evidence/ROM/fixt
 the attestation over the verdict bytes binds the same issuer and commit in its certificate.
 
 The verdict JSON is not evidence by itself: the consumer (#153) runs gh attestation verify on it and cross-checks.
-This producer writes T1-T5 as BLOCKED (cd_read_contract.compat_status()) and has no VERIFIED path: trusted VERIFIED
-stays disabled while protect-main has 0 required approvals (#124 plan C) and T6-T8 / the callee ABI are unverified.
+The producer writes T1-T5 from the *authenticated* #125 evidence and the approval boundary (transport_claims): a
+claim is VERIFIED only when every scenario it cites is present in the attested evidence with its required kind
+(cd_read_contract.SCENARIO_KIND) AND main requires >= 1 approving review. Otherwise it stays BLOCKED. With
+protect-main at 0 approvals (#124 plan C) the verdict is always BLOCKED, and T6-T8 / the callee ABI stay unverified.
+The consumer independently re-checks the signature, the pins and the same approval boundary, so it stays BLOCKED
+until VERIFIED_PATH_ENABLED is set in a reviewed PR (docs/verdict-schema.md section 3). Facts and authenticity are
+separate: the scenario coverage says what holds, the verdict's signature says who produced it.
 
   python3 tools/cdread_verdict.py EVIDENCE --rom ROM --attestation VERIFY.json --run RUN.json \
       --rules RULES.json --out cdread-verdict.json
@@ -32,6 +37,7 @@ from provenance_guard import load_denylist  # noqa: E402
 SCHEMA = 'oss-pce-cd-bios/cdread-verdict/v1'
 TIME_FORMAT = '%Y-%m-%dT%H:%M:%SZ'
 VALIDITY = timedelta(days=7)  # schema allows at most 30 days
+PROMOTABLE = ('T1', 'T2', 'T3', 'T4', 'T5')  # only the transport claims; T6-T8 and the callee ABI stay declared
 
 
 class Refused(Exception):
@@ -64,11 +70,37 @@ def required_approvals(branch_rules):
     return max(counts)
 
 
+def transport_claims(artifact, approvals):
+    """T1-T5 status for the verdict, derived from the authenticated #125 evidence, not from a ledger copy.
+
+    Source of facts: the `tests` table of the artifact the caller just verified as a #125 PASS. A claim is VERIFIED
+    only when every scenario it cites is present with the kind cd_read_contract.SCENARIO_KIND requires, AND main
+    requires >= 1 approving review. Missing coverage, a re-kind, or < 1 approval leaves it BLOCKED. T6-T8 keep the
+    ledger's declared status. This is what makes the consumer's promotion path reachable without inventing evidence;
+    the verdict's signature, not this function, is what later vouches for who produced it.
+    """
+    claims = crc.compat_status()  # T1-T5 BLOCKED, T6-T8 declared: never a promotion on its own
+    tests = artifact.get('tests') if isinstance(artifact, dict) else None
+    if approvals < 1 or not isinstance(tests, dict):
+        return claims
+    for claim in crc.TRANSPORT_CLAIMS:
+        cid, scenarios = claim['id'], claim['scenarios']
+        if cid not in PROMOTABLE or claim['status'] != 'VERIFIED':
+            continue
+        covered = bool(scenarios) and all(
+            scenario in crc.SCENARIO_KIND and isinstance(tests.get(scenario), dict)
+            and tests[scenario].get('status') == crc.SCENARIO_KIND[scenario]
+            for scenario in scenarios)
+        claims[cid] = 'VERIFIED' if covered else 'BLOCKED'
+    return claims
+
+
 def produce(evidence_bytes, rom_bytes, attestation, run, branch_rules, env, policy, fixture, now=None):
     """Verdict dict (docs/verdict-schema.md v1). Raises Refused whenever no verdict may be issued.
 
-    A verdict exists only for a #125 PASS of this run at this commit with readable main rules. T1-T5 are always
-    written BLOCKED here (cd_read_contract.compat_status()); this producer has no VERIFIED path.
+    A verdict exists only for a #125 PASS of this run at this commit with readable main rules. T1-T5 come from
+    transport_claims() (the authenticated evidence's scenario coverage plus the >= 1 approval boundary), so with
+    protect-main at 0 approvals the verdict stays BLOCKED.
     """
     check_env(env, policy)
     try:
@@ -99,7 +131,7 @@ def produce(evidence_bytes, rom_bytes, attestation, run, branch_rules, env, poli
                      'bin_sha256': artifact['disc']['bin_sha256'], 'cue_sha256': artifact['disc']['cue_sha256']},
         'provenance': {'result': ep.PASS, 'verifier': 'tools/evidence_provenance.py'},
         'main_rules': {'source': 'github-api', 'required_approving_review_count': approvals},
-        'claims': crc.compat_status(),
+        'claims': transport_claims(artifact, approvals),
     }
 
 
