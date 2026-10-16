@@ -394,5 +394,91 @@ class TocStrictnessTests(unittest.TestCase):
         self.assertNotIn("generated", report["evidence"]["measured_from"])
 
 
+def _frame(lba: int, mode_byte: int = 0x01) -> bytes:
+    """Raw MODE1 frame for `lba` with its header mode byte (byte 15) overridden."""
+    frame = bytearray(raw_sector(lba))
+    frame[15] = mode_byte
+    return bytes(frame)
+
+
+def _diagnose_bin(cue_text: str, frames: list) -> dict:
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        (directory / "t.bin").write_bytes(b"".join(frames))
+        (directory / "t.cue").write_text(cue_text, encoding="ascii")
+        return diagnose(directory / "t.cue")
+
+
+class TocPregapModeBoundaryTests(unittest.TestCase):
+    """Mode boundaries between tracks (single FILE). Same synthetic inputs as tests/host/test_cue_analysis.py."""
+
+    def test_pregap_keeps_previous_track_mode_and_is_accepted(self):
+        # Track 1 MODE1 (LBA 0..9). Track 2 MODE2 with INDEX 00 at BIN 10, INDEX 01 at BIN 14.
+        # The four pregap frames still carry track 1's MODE1 header (mode byte 0x01) with correct MSF.
+        cue = ('FILE "t.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+               '  TRACK 02 MODE2/2352\n    INDEX 00 00:00:10\n    INDEX 01 00:00:14\n')
+        frames = [_frame(lba) for lba in range(10)]
+        frames += [_frame(lba, 0x01) for lba in range(10, 14)]
+        frames += [_frame(lba, 0x02) for lba in range(14, 24)]
+        report = _diagnose_bin(cue, frames)
+        self.assertEqual(report["status"], "PASS")
+        track2 = report["tracks"][1]
+        self.assertEqual((track2["pregap_start_lba"], track2["lba_start"], track2["length_sectors"]), (10, 14, 10))
+        self.assertEqual(report["sector_check"]["findings"], [])
+
+    def test_pregap_frame_with_wrong_msf_fails_inside_mode_boundary(self):
+        cue = ('FILE "t.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+               '  TRACK 02 MODE2/2352\n    INDEX 00 00:00:10\n    INDEX 01 00:00:14\n')
+        frames = [_frame(lba) for lba in range(10)]
+        frames += [_frame(10, 0x01), _frame(11, 0x01), _frame(9, 0x01), _frame(13, 0x01)]  # BIN 12 has a wrong MSF
+        frames += [_frame(lba, 0x02) for lba in range(14, 24)]
+        with self.assertRaisesRegex(TocError, r"BIN frames \[12\] header MSF disagrees"):
+            _diagnose_bin(cue, frames)
+
+    def test_mode1_to_mode2_user_data_with_mode1_header_fails(self):
+        cue = ('FILE "t.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+               '  TRACK 02 MODE2/2352\n    INDEX 01 00:00:10\n')
+        frames = [_frame(lba) for lba in range(10)] + [_frame(lba, 0x01) for lba in range(10, 20)]
+        with self.assertRaisesRegex(TocError, r"10 frames have header mode byte != 0x02 for declared MODE2/2352"):
+            _diagnose_bin(cue, frames)
+
+    def test_mode2_to_mode1_pregap_with_mode2_header_is_accepted(self):
+        # Track 1 MODE2 (LBA 0..9). Track 2 MODE1: pregap frames keep track 1's MODE2 header, data is MODE1.
+        cue = ('FILE "t.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n'
+               '  TRACK 02 MODE1/2352\n    INDEX 00 00:00:10\n    INDEX 01 00:00:14\n')
+        frames = [_frame(lba, 0x02) for lba in range(10)]
+        frames += [_frame(lba, 0x02) for lba in range(10, 14)]
+        frames += [_frame(lba, 0x01) for lba in range(14, 24)]
+        report = _diagnose_bin(cue, frames)
+        self.assertEqual(report["status"], "PASS")
+        self.assertEqual(report["tracks"][1]["lba_start"], 14)
+
+    def test_mode2_to_mode1_user_data_with_mode2_header_fails(self):
+        cue = ('FILE "t.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n'
+               '  TRACK 02 MODE1/2352\n    INDEX 01 00:00:10\n')
+        frames = [_frame(lba, 0x02) for lba in range(10)] + [_frame(lba, 0x02) for lba in range(10, 20)]
+        with self.assertRaisesRegex(TocError, r"10 frames have header mode byte != 0x01 for declared MODE1/2352"):
+            _diagnose_bin(cue, frames)
+
+    def test_mode1_to_audio_pregap_and_data_are_accepted(self):
+        # Track 2 AUDIO with INDEX 00 pregap: the audio pregap and data are not header-checked.
+        cue = ('FILE "t.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+               '  TRACK 02 AUDIO\n    INDEX 00 00:00:10\n    INDEX 01 00:00:14\n')
+        frames = [_frame(lba) for lba in range(10)] + [audio_frame(k) for k in range(14)]
+        report = _diagnose_bin(cue, frames)
+        self.assertEqual(report["status"], "PASS")
+        audio = report["tracks"][1]
+        self.assertEqual((audio["type"], audio["pregap_start_lba"], audio["lba_start"], audio["length_sectors"]),
+                         ("audio", 10, 14, 10))
+
+    def test_index01_mode_mismatch_after_pregap_still_fails(self):
+        cue = ('FILE "t.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+               '  TRACK 02 MODE2/2352\n    INDEX 00 00:00:10\n    INDEX 01 00:00:14\n')
+        frames = [_frame(lba) for lba in range(10)] + [_frame(lba, 0x01) for lba in range(10, 14)]
+        frames += [_frame(lba, 0x02) for lba in range(14, 23)] + [_frame(23, 0x01)]
+        with self.assertRaisesRegex(TocError, r"1 frames have header mode byte != 0x02 for declared MODE2/2352 \(first at BIN frames \[23\]\)"):
+            _diagnose_bin(cue, frames)
+
+
 if __name__ == "__main__":
     unittest.main()

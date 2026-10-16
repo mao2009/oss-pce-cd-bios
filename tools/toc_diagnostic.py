@@ -16,23 +16,28 @@ Address terms (the same definitions as PR #110's cue_analysis.py):
 - BIN INDEX 00 pregap (`bin_start_frame` .. `bin_index01_frame`): pregap frames stored in the BIN.
 - virtual CUE PREGAP (`pregap`): frames that take disc LBA but are not stored in the BIN.
 
-LBA contract:
-1. Without a virtual PREGAP before the first track, the first BIN frame is physical LBA 0. With a
-   virtual PREGAP, the first BIN frame can be physical LBA > 0, so do not assume LBA 0 = BIN frame 0.
-2. Frames are consumed in BIN order. Pregap frames stored in the BIN (INDEX 00..01) consume LBA.
-3. `lba_start` (INDEX 01) is the first user-data frame of the track.
+LBA contract (docs/cd-read-diagnostic.md "INDEX 00/01, pregap and LBA", same as PR #110's tools/cue_analysis.py;
+this branch does not import that code):
+1. Without a virtual CUE PREGAP before the first track, BIN frame 0 is physical LBA 0. With one, BIN frame 0 is
+   not LBA 0: `PREGAP 00:02:00` + `INDEX 01 00:00:00` puts BIN frame 0 at LBA 150, and LBA 0..149 are virtual.
+   Without a virtual PREGAP, `INDEX 00 00:00:00` + `INDEX 01 00:02:00` gives pregap BIN frames 0..149 (LBA 0..149)
+   and data at BIN frame 150 = LBA 150.
+2. Every frame advances the disc LBA in BIN order. Pregap frames stored in the BIN (INDEX 00..01) consume LBA.
+3. `lba_start` (INDEX 01) is the disc LBA of the track's first user-data frame.
 4. A MODE1/2352 or MODE2/2352 sector header MSF must equal LBA + 150 (absolute_msf).
 5. The next track's pregap is not part of this track's length_sectors.
-6. A CUE PREGAP is a virtual gap: its frames take LBA but are not stored in the BIN.
+6. A CUE PREGAP is a virtual gap: its frames take LBA but are not stored in the BIN. At most one per track,
+   before INDEX 01, and not together with INDEX 00.
 7. Unsupported CUE forms are rejected explicitly, never converted.
 
 Explicit non-support (FAIL, not guessed): multiple FILE entries, Cooked modes (MODE1/2048, MODE2/2336),
 and every FILE type other than BINARY.
 
 Sector checks for data tracks (see `check_sectors`): every user-data frame (INDEX 01 onward) must carry the
-RAW sync pattern, and every sync frame (pregap or user data) must have header byte 15 equal to the
-declared mode (MODE1/2352 = 0x01, MODE2/2352 = 0x02) and a valid BCD MSF equal to its disc LBA + 150.
-Pregap frames without sync are legal.
+RAW sync pattern and header byte 15 equal to the declared mode (MODE1/2352 = 0x01, MODE2/2352 = 0x02). Every
+sync frame, pregap or user data, must have a valid BCD MSF equal to its disc LBA + 150. Pregap frames without
+sync are legal, and the header mode byte of pregap frames is not checked, because a pregap can still hold
+sectors recorded in the previous track's mode.
 """
 import argparse
 import json
@@ -224,9 +229,10 @@ def build_toc(cue: dict, bin_bytes: int) -> list:
 def check_sectors(bin_path: Path, rows: list) -> dict:
     """Bounded header check of the BIN for data tracks.
 
-    Every user-data frame (INDEX 01 onward) of a data track must carry the RAW sync pattern. Pregap
-    frames (INDEX 00..01 in the BIN) may lack sync, which is legal. Every sync frame, pregap or user data,
-    must have header byte 15 equal to its declared mode and a valid BCD MSF equal to its disc LBA + 150.
+    Every user-data frame (INDEX 01 onward) of a data track must carry the RAW sync pattern and header byte 15
+    equal to its declared mode. Pregap frames (INDEX 00..01 in the BIN) may lack sync, which is legal, and their
+    mode byte is not checked (the previous track's mode may remain there). Every sync frame, pregap or user data,
+    must have a valid BCD MSF equal to its disc LBA + 150.
     Counts are exact; only the first FINDING_POSITIONS BIN frame offsets are listed. Payload bytes are never reported.
     """
     findings, probed, sync_frames = [], 0, 0
@@ -258,7 +264,7 @@ def check_sectors(bin_path: Path, rows: list) -> dict:
                                 sync_missing_at.append(frame)
                         continue
                     sync_frames += 1
-                    if head[15] != expected_mode:
+                    if frame >= index01 and head[15] != expected_mode:
                         mode_bad += 1
                         if len(mode_bad_at) < FINDING_POSITIONS:
                             mode_bad_at.append(frame)
