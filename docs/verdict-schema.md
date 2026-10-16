@@ -99,6 +99,26 @@ T1〜T5 だけを VERIFIED にする。1 つでも欠けたら一切昇格しな
 6. `main_rules.required_approving_review_count >= 1`。
 7. `VERIFIED_PATH_ENABLED` が True（現状 False。変更は独立した人間の承認者によるレビューを経た PR でのみ行う）。
 
+### 3.1 昇格を許す事実の出所と条件（生成側 `tools/cdread_verdict.py`、#156）
+
+VERIFIED 昇格の**事実の出所（source of facts）**は、署名の有無や生成主体ではなく、信頼済み main CI ジョブが
+`gh attestation verify` で真正性を確認した `cdread-evidence.json`（#125）の **シナリオ表**である。生成側は
+台帳 `TRANSPORT_CLAIMS` の宣言値をそのままコピーせず、各 T1〜T5 について、その claim が引用する全シナリオ
+（`tools/cd_read_contract.py` の `SCENARIO_KIND`）が認証済み証跡に期待どおりの種別で揃っている場合に限り、
+その claim を `VERIFIED` とする。1 つでも欠落・種別違いならばその claim は `BLOCKED`。T6〜T8 は従来どおり
+宣言値（`HYPOTHESIS`/`UNKNOWN`）で固定する。
+
+生成側はこれに加えて `main_rules.required_approving_review_count >= 1` を要求し、満たさない限り T1〜T5 を
+`BLOCKED` のまま出力する。現状 `protect-main` の必須承認は 0 件なので、**本番の verdict は常に BLOCKED**で
+あり、この安全側の状態が既定である。生成側が `VERIFIED` を書いた場合でも、利用側は §3 の 1〜7 を独立に
+再確認するため、`VERIFIED_PATH_ENABLED` と承認数ゲートを満たすまで昇格しない。
+
+**事実（compatibility evidence）と署名の真正性（authenticity）は分離する。** 何が成り立つかは認証済み証跡の
+シナリオ被覆が決め、誰が生成したかは verdict の署名（利用側が実行する `gh attestation verify`）が決める。
+署名が存在するだけでは claim を `VERIFIED` にせず、逆に証跡のシナリオ被覆だけでは署名が無いため昇格しない
+（§1 と本節の全条件が必要）。したがって、実コアのシナリオ証跡を欠く入力や、署名だけ真似た入力は、どちらも
+`BLOCKED` のままになる。往復契約は `tests/host/test_verdict_contract.py` が同じチェックアウトで検証する。
+
 | 状況 | 結果 |
 | --- | --- |
 | 署名なし・bundle なし・gh 失敗・gh なし | BLOCKED |
