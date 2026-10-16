@@ -94,8 +94,6 @@ jobs:
             build/debug/cdload-exec/*.json
             build/debug/cdload-exec/*.map
             build/debug/cdload-exec/*.lbl
-            build/debug/cdload-exec/payload.bin
-            build/debug/cdload-exec/trace-labels.txt
             build/debug/cdreset-probe/*.pce
             build/debug/cdreset-probe/*.json
             build/debug/cdreset-probe/*.map
