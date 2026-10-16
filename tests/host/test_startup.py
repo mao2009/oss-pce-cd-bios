@@ -82,7 +82,7 @@ class StartupBuildTests(unittest.TestCase):
             "stack pointer changed": (code + 36, 0xFE),
             "txs removed": (code + 37, 0xEA),
             "marker byte changed": (code + SYMBOL_OFFSETS["startup_marker_write"] + 1, 0x00),
-            "cd state byte set to disc-dependent value": (code + SYMBOL_OFFSETS["startup_cd_state"] + 1, 0x01),
+            "cd marker set to power-on zero": (code + SYMBOL_OFFSETS["startup_cd_state"] + 1, 0x00),
             "reset vector points at API table": (0x1ffe, 0x00),
             "irq vector points at reset": (0x1ff6, 0x00),
             "extra instruction after checkpoint": (code + len(STARTUP_CODE), 0x60),  # RTS: false success

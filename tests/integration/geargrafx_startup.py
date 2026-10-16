@@ -121,7 +121,10 @@ def main():
             observed = execute(probe, path, cue, output / "trace-labels.txt")
             try:
                 check_evidence(observed, symbols)
-            except ValueError:
+            except ValueError as error:
+                # CD mutations must fail on the CD-state byte itself, not on an unrelated trace gap.
+                if name.startswith("cd_") and "CD init state" not in str(error):
+                    raise ValueError(f"{name}: failed for an unrelated reason: {error}") from error
                 mutation_results[name] = "PASS_EXPECTED_FAILURE"
             else:
                 raise ValueError(f"{name}: mutated startup ROM unexpectedly passed actual Geargrafx")

@@ -45,11 +45,12 @@ explicit `BRA` checkpoint with `X=$B0`. Four interrupt vectors lead to a
 **different nonreturning error checkpoint** with `X=$EE`; Reset points to
 `$F000`. The test does not enable interrupts or call any BIOS service.
 
-The stage also stores `CD init state = $01` at `$2205` (`startup_cd_state`) after the
-`BOOT!` marker. This is an **initialization-state record only**: the startup code never reads or
-writes the CD-ROM2 registers (`$1800-$1804`), so a synthetic disc being attached or absent cannot
-change that byte. `manifest.json` records `cd_disc_presence_read: false`. Real-core behaviour
-with a disc attached (`NOT RUN` here) and with no media (`NOT_TESTED` in Geargrafx) are not claimed.
+The stage also stores the non-zero sentinel `$01` at `$2205` (`startup_cd_state`) after the
+`BOOT!` marker. The value is a diagnostic marker that the store executed, **not** an encoding of
+CD state. It is non-zero because Geargrafx power-on RAM reads `$00`. The code bytes contain no access
+to the CD-ROM2 registers (`$1800-$1804`), so the byte does not depend on disc presence by construction.
+This is not observed on the real core: disc attached is `NOT RUN` and no media is `NOT_TESTED`.
+`manifest.json` records `cd_disc_presence_read: false` as a build constant, not a measurement.
 
 All addresses except the CPU's architectural vector/stack geometry are
 **diagnostic choices**, not claimed NEC/Hudson System Card allocation or
