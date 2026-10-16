@@ -249,6 +249,9 @@ def verdict(record, runner=None, probe=None):
         # Complete evidence never overrides the reporter's own BLOCKED/SKIP/FAIL claim.
         reasons.insert(0, f"conflict: reporter claimed {record['result']}, evidence supports PASS; kept {record['result']}")
         computed, blocker = record['result'], record.get('blocker')
+    elif record['result'] != 'PASS' and computed != record['result']:
+        # Informational only: keep why the reporter's non-PASS claim differs from the verdict (Issue #130).
+        reasons.insert(0, f"conflict: reporter claimed {record['result']}, evidence supports {computed}")
     if computed not in ('BLOCKED', 'SKIP'):
         blocker = None  # a blocker reason is reported only when the overall result is BLOCKED or SKIP
     return {'result': computed, 'blocker': blocker, 'reasons': reasons}

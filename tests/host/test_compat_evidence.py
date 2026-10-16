@@ -47,6 +47,26 @@ def record(stage='homebrew', **overrides):
     return base
 
 
+class ConflictNoteTests(unittest.TestCase):
+    """Issue #130: a differing non-PASS claim leaves a note; the verdict itself is unchanged."""
+
+    def test_differing_non_pass_claim_is_kept_as_note(self):
+        result = run(record('homebrew', result='FAIL'))
+        self.assertEqual(result['result'], 'BLOCKED')
+        self.assertIn('conflict: reporter claimed FAIL, evidence supports BLOCKED', result['reasons'])
+
+    def test_agreeing_claim_has_no_note(self):
+        result = run(record('homebrew', result='BLOCKED', blocker='no judge'))
+        self.assertEqual(result['result'], 'BLOCKED')
+        self.assertFalse(any('conflict' in reason for reason in result['reasons']))
+
+    def test_non_pass_claim_with_pass_evidence_keeps_claim(self):
+        result = run(record('source-only', result='BLOCKED', blocker='x', rom=None, emulator=None,
+                            fixture=None, checkpoints=[]))
+        self.assertEqual(result['result'], 'BLOCKED')
+        self.assertEqual(sum('conflict' in reason for reason in result['reasons']), 1)
+
+
 class VerdictPositiveTests(unittest.TestCase):
     def test_homebrew_runner_only_is_not_pass_without_a_judge(self):
         # No #119 label exists for homebrew, so no probe can judge it: BLOCKED (reporter PASS -> overclaim FAIL).
