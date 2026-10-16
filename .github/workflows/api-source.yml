@@ -63,6 +63,12 @@ jobs:
         run: make dev-release-gate-blocked
       - name: Static checks with pinned actionlint
         run: make check
+      - name: Verify CD load-and-execute evidence before archiving
+        run: |
+          test -s build/debug/cdload-exec/cdload-exec-evidence.json
+          test -s build/debug/cdload-exec/manifest.json
+          test -s build/debug/cdload-exec/cdload-exec-probe-not-bios.pce
+          test -s build/debug/cdload-exec/payload.bin
       - name: Save diagnostic ROM and evidence, no linked GPL executable
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -84,6 +90,10 @@ jobs:
             build/debug/cdread-probe/*.json
             build/debug/cdread-probe/*.map
             build/debug/cdread-probe/*.lbl
+            build/debug/cdload-exec/*.pce
+            build/debug/cdload-exec/*.json
+            build/debug/cdload-exec/*.map
+            build/debug/cdload-exec/*.lbl
             build/debug/cdreset-probe/*.pce
             build/debug/cdreset-probe/*.json
             build/debug/cdreset-probe/*.map

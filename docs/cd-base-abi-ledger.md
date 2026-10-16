@@ -100,9 +100,47 @@ System Card の CD_BASE / CD_READ の動作を検証しない。**
 INDEX 01 != 0 の条件が必要であることも確認している。実行可能な呼出先を得た後、同じプローブを実機またはエミュレータで
 実行し、どの署名に一致するかを比べるのが決着の方法である。
 
+## 4a. 実行可能な呼出先の有無と実測ハーネス
+
+### 呼出先の有無（実測）
+
+| 候補 | 結果 | 根拠 |
+| --- | --- | --- |
+| 本リポジトリの DEV ROM の `$E006` | 実行可能な呼出先なし（MEASURED）。`$E006` から fail-closed の fallback（`$E295`、`X=$02`）へ入り、cold、さらに 32 命令、warm の各時点で同じ PC に留まる。RTS がないため、呼出後の観測はできない | `make dev-cd-base-integration`（固定版 Geargrafx `b49ae82a`、debug と release の両方で PASS）。証跡は `geargrafx-cd-base-evidence.json`（ローカル生成。コミットしない） |
+| 固定版 Geargrafx の BIOS 呼出し HLE | なし（ソース確認のみ）。`src/` の検索で見つかったのは BIOS イメージの読込み（`LoadBios` / `LoadBiosFromBuffer`）だけで、`$E006` を横取りする経路は見つからなかった。網羅の証明ではない | 固定版ソースの `grep`（`hle`、`0xE006`、`syscard`） |
+| System Card（実 BIOS） | BLOCKED。リポジトリに含めず、利用者所有の BIOS を使う経路は本作業の範囲外 | §5 |
+
+この結果、(1)〜(6) の呼出先の振る舞いは、測定対象そのものがないため **BLOCKED**（実測不能）である。
+状態は UNKNOWN のまま変えない。DEV ROM の fallback の振る舞いは本 ROM の性質であり、BIOS の証拠ではない。
+
+### ハーネス（`tools/cd_base_probe.py`）
+
+- 合成ディスク: 独自の MODE1/2352 16 セクタ、CUE `PREGAP 00:02:00` + `INDEX 01 00:00:00`。`tools/cue_analysis.py` で
+  INDEX 01 がディスク LBA 150、PREGAP 150 フレームが BIN に格納されないことを毎回確認する（INDEX 01 != 0 の条件を維持）。
+  固定版 Geargrafx がこの CUE を読み込むこと（`cdrom_media`）は実測した。PREGAP を含む CUE の SCSI LBA 対応は未測定（NOT RUN）。
+- 観測項目（`OBSERVATION_PLAN`）: 問いごとに、実行された呼出先で記録すべき値を定める。READ の LBA はエミュレータの SCSI 層が見た値を使う。
+
+  | 問い | 記録する値 |
+  | --- | --- |
+  | (1) | 同じブロック番号で、入力バイト（`_al`〜`_dh`）を一つだけ変えた CD_BASE → CD_READ の READ LBA |
+  | (2) | リセット後、CD_BASE なしの CD_READ を二つ以上のブロック番号で実行した READ LBA |
+  | (3) | CD_RESET 後と、二回目の CD_READ 後のオフセット |
+  | (4) | (1) と (2) のオフセットの比較 |
+  | (5) | 一回の CD_BASE の前後の MPR0–7 と作業 RAM |
+  | (6) | 無ディスク、範囲外、INDEX 01 より前、通常の各場合の A/X/Y/P |
+
+- 判定器（`judge`）: VERIFIED を出さない。実行記録は OBSERVED（値そのまま、または整合する候補モデルの一覧）、
+  未記録は UNKNOWN、呼出先なし・非復帰は全問 BLOCKED。(2) はオフセット（READ LBA − ブロック番号）が一定のときだけ
+  候補を返し、`BASE_PLUS_BLOCK` は常に候補に残す（既定の基準値が未知のため）。INDEX 01 が 0 の記録では (2) を UNKNOWN にする。
+  ブロック数は READ が実際に出た行（READ LBA が null でない行）だけで数え、二種類以上を要する。(4) は (2) が OBSERVED で、
+  かつ CD_BASE の入力の組ごとに、READ が出たブロックが二種類以上あり、オフセットが一定のときだけ OBSERVED にする
+  （入力の組ごとのオフセットを返す）。一つでも条件を満たさない組があれば UNKNOWN。(1) も null の READ 行を証拠に使わない。
+  ブロック番号、READ LBA、INDEX 01 の LBA が整数でない記録（bool、小数、文字列）は ValueError で拒否する。
+- 試験: `tests/host/test_cd_base_probe.py` は合成記録で判定規則だけを試す（BIOS の証拠ではない）。
+
 ## 5. 残る UNKNOWN と理由
 
-- (1)、(3)、(5)、(6) の呼出先の振る舞い: 実行可能な System Card CD_BASE がリポジトリにない。BIOS 本体はリポジトリに含めず、ユーザ所有のものを使う経路は本作業の範囲外である。
+- (1)、(3)、(5)、(6) の呼出先の振る舞い: 実行可能な System Card CD_BASE がリポジトリにない（§4a で実測。DEV ROM の `$E006` は非復帰）。BIOS 本体はリポジトリに含めず、ユーザ所有のものを使う経路は本作業の範囲外である。
 - (2)、(4) の絶対・相対の決定: 上記の実行結果がない。ISO 9660 の基準は外部標準の確認が必要（本台帳では未検証）。
 - 2ISO 経路の矛盾: §3 補足を参照。
 - Hu-Go と HuC ライブラリの内容: ライセンスが確定しないため根拠にできない。maintainer によるライセンス判断が必要である。
@@ -111,5 +149,6 @@ INDEX 01 != 0 の条件が必要であることも確認している。実行可
 ## 6. 次の作業
 
 1. ライセンス判断（maintainer）: Hu-Go `bios.c` と HuC ライブラリの採否。判断が出るまで、これらの内容は根拠にしない。
-2. 実行可能な呼出先で、§3 の決着条件を測定する（#1、#12 の所管と重複しないよう調整する）。
+2. 実行可能な呼出先で、§3 の決着条件を測定する（#1、#12 の所管と重複しないよう調整する）。記録は §4a の観測項目に従い、
+   `tools/cd_base_probe.judge` に渡す。呼出先を得るまで、(1)〜(6) は BLOCKED / UNKNOWN のままである。
 3. ISO 9660 のエクステント基準（ECMA-119）の本文を確認する。

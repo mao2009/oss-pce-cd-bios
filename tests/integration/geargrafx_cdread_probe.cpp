@@ -27,7 +27,7 @@ static const long kHaltConfirmSteps = 64;      // keep equal to tools/build_cdre
 static const int kPhaseDataIn = 4;             // ScsiController::SCSI_PHASE_DATA_IN
 
 int main(int argc, char** argv) {
-    // usage: probe rom cue|- labels max_steps [eject-in-data] [cut-after-arrival=N]
+    // usage: probe rom cue|- labels max_steps [eject-in-data] [cut-after-arrival=N]   ("-" = no media)
     // cut-after-arrival=N stops the run exactly N instructions after the PC first lands on a halt label
     // (arrival times differ between processes because Geargrafx randomises the initial read phase).
     if (argc < 5 || argc > 7) return 2;
@@ -56,16 +56,19 @@ int main(int argc, char** argv) {
 
     GeargrafxCore core;
     core.Init(nullptr);
-    if (!core.LoadBiosFromBuffer(rom.data(), rom.size(), true)) return 3;
     bool have_disc = std::string(argv[2]) != "-";
-    if (have_disc && !core.LoadMedia(argv[2])) return 4;
-    if (!have_disc) {
-        // Without media Geargrafx leaves CD hardware disabled and the CPU/mapper state uninitialised
-        // (reading it crashed intermittently), so report the one defined fact and stop.
-        std::printf("BLOCK {\"reason\":\"no media: System Card CD hardware not enabled, guest not executed\",\"disc_given\":false,\"cdrom_hardware\":%s}\n",
-                    core.GetMedia()->IsCDROMHardwareEnabled() ? "true" : "false");
-        std::fflush(stdout);
-        std::_Exit(0);
+    if (have_disc) {
+        if (!core.LoadBiosFromBuffer(rom.data(), rom.size(), true)) return 3;
+        if (!core.LoadMedia(argv[2])) return 4;
+    } else {
+        // No media. LoadBiosFromBuffer alone never calls GeargrafxCore::Reset() (only LoadMedia /
+        // LoadHuCardFromBuffer do), so Media stays not-ready and RunToVBlank refuses to run. Instead
+        // load the ROM as the card itself with the CD unit forced on: Media::GatherMediaInfo enables
+        // CD hardware when is_cdrom || cdrom_type != AUTO (the libretro "geargrafx_cdrom_type" option).
+        // The drive then has no image, so every media-dependent SCSI command sees an empty drive.
+        core.GetMedia()->SetCDROMType(GG_CDROM_STANDARD);
+        if (!core.LoadHuCardFromBuffer(rom.data(), (int)rom.size(), "no-media-card.pce")) return 3;
+        if (!core.GetMedia()->IsCDROMHardwareEnabled() || core.GetMedia()->IsCDROM()) return 7;
     }
 
     auto processor = core.GetHuC6280();
@@ -86,8 +89,9 @@ int main(int argc, char** argv) {
     if (memory->Read(first_pc) != 0x78) return 5;  // every probe begins with SEI
     one_instruction();
     bool stepping = cpu->PC->GetValue() == first_pc + 1;
-    std::printf("CAP {\"instruction_step\":%s,\"bios_loaded\":true,\"cdrom_hardware\":%s,\"cdrom_media\":%s,\"disc_given\":%s}\n",
-                stepping ? "true" : "false",
+    std::printf("CAP {\"instruction_step\":%s,\"bios_loaded\":%s,\"loader\":\"%s\",\"cdrom_hardware\":%s,\"cdrom_media\":%s,\"disc_given\":%s}\n",
+                stepping ? "true" : "false", have_disc ? "true" : "false",
+                have_disc ? "LoadBiosFromBuffer(syscard)+LoadMedia(cue)" : "SetCDROMType(STANDARD)+LoadHuCardFromBuffer",
                 core.GetMedia()->IsCDROMHardwareEnabled() ? "true" : "false",
                 core.GetMedia()->IsCDROM() ? "true" : "false", have_disc ? "true" : "false");
     if (!stepping) return 6;

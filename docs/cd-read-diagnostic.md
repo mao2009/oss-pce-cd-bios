@@ -12,7 +12,7 @@ What it proves, and what it does not:
 | --- | --- |
 | Guest HuC6280 code, using no System Card ROM, no HLE and no host-side data injection, issues READ(6) and receives the sector via `$1800`-`$1804` | Real PC Engine CD hardware behaviour, a second emulator, Super CD-ROM² RAM, CD_READ's ABI |
 | All 2048 (or 6144) bytes in guest RAM equal an independently generated reference, on cold **and** warm reset | IRQ-driven transfer, `$1808` auto-ACK, ADPCM/VRAM destinations, TOC/track-type handling, retries |
-| Negative runs (tampered disc, wrong sector, bad LBA, bad counts, timeout, drive abort) are rejected by the same judge | "No disc" inside the emulator (Geargrafx does not run the card without media: `NOT_TESTED`) |
+| Negative runs (tampered disc, wrong sector, bad LBA, bad counts, timeout, drive abort, no disc, blank disc) are rejected by the same judge | No-disc behaviour of real hardware or the real System Card (the Geargrafx no-disc run is an expected failure only; see "Media-absent runs") |
 
 ## Commands
 
@@ -206,9 +206,29 @@ registers.
 | Budget exhausted before any halt label | `budget`, judge rejects | PASS_EXPECTED_FAILURE |
 | Data sector with an audio track present | still reads correctly | PASS |
 | READ(6) on an audio-track LBA | observed Geargrafx behaviour recorded (see below) | OBSERVED_EMULATOR_BEHAVIOUR |
-| No media loaded | Geargrafx leaves CD hardware disabled and does not execute the card | NOT_TESTED (not a firmware test) |
-| Zero-sector image | Geargrafx refuses to load it | NOT_TESTED |
+| No media loaded (ROM run as the card with `SetCDROMType(STANDARD)`, no disc image) | error 5 at stage 5, 0 bytes, SCSI status GOOD, no DATA_IN, RAM untouched; judge and status classifier (`NO_MEDIA`, BLOCKED) both refuse it | PASS_EXPECTED_FAILURE (Geargrafx only) |
+| Blank data disc (valid MODE1 headers, user data all zero) | read completes, judge rejects at byte 0 | PASS_EXPECTED_FAILURE |
+| Zero-byte BIN | `LoadMedia` rejects it (probe exit 4); the guest never runs | OBSERVED_EMULATOR_BEHAVIOUR |
 | Interrupt-driven transfer, `$1808` auto-ACK, second emulator, real hardware | - | NOT_TESTED |
+
+## Media-absent runs
+
+`LoadBiosFromBuffer` never resets the Geargrafx core, so a BIOS without media does not execute. The no-disc
+run (probe argument `-`) therefore uses a different loader from every disc run, and the two paths are not
+identical machines:
+
+* Loader: disc runs use `LoadBiosFromBuffer(syscard)+LoadMedia(cue)`; the no-disc run uses
+  `SetCDROMType(STANDARD)+LoadHuCardFromBuffer` (the ROM is the card; CD hardware is enabled by the forced
+  CD-ROM type). Both strings are recorded in the probe `CAP` record and in the evidence `loader` field.
+* Super CD-ROM² card RAM: enabled on the disc path (CD-ROM type AUTO), **disabled** on the no-disc path
+  (`STANDARD`). This diagnostic does not use it.
+* Header handling: the no-disc path goes through the HuCard loader, which drops a 512-byte copier header when
+  `size & 512`. The diagnostic ROM is exactly 256 KiB, so nothing is dropped here.
+* Evidence: `no_media_loaded` is `PASS_EXPECTED_FAILURE` because the expected failure was verified; its
+  `status_classifier` field records `BLOCKED`/`NO_MEDIA`, and the run itself is never a PASS.
+* Probe exit 7 (CD hardware not enabled for the no-disc run) is BLOCKED: `geargrafx_harness.classify` maps it
+  so, and the integration runners stop with `BLOCKED: ... (probe exit 7)`. `geargrafx_harness.py trace` still
+  requires `--cue`, so it never starts a no-disc run itself.
 
 ## Findings and open questions
 

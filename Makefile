@@ -75,6 +75,10 @@ dev-cdreset: dev-rom
 
 dev-cdreset-integration: dev-cdreset
 	$(PYTHON) tests/integration/geargrafx_cdreset.py --mode "$(MODE)"
+.PHONY: dev-cd-base-integration
+# Opt-in Issue #11: does the DEV ROM have an executable CD_BASE ($E006) callee? (INDEX01=150 fixture)
+dev-cd-base-integration: dev-rom
+	$(PYTHON) tests/integration/geargrafx_cd_base.py --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
 .PHONY: dev-trace-integration
 # Opt-in Issue #6 isolated trace harness: real-core positive + classified negatives on the CD read ROM.
 dev-trace-integration: dev-cdread

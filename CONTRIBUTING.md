@@ -26,6 +26,24 @@ See [provenance and reuse policy](docs/provenance.md) and [initial candidate inv
 - Never claim a software ROM is working solely because a CI docs check passes.
 - Keep proprietary paths, copyrighted sectors, private firmware, saves and local user data out of submitted logs.
 
+## Optional private ROM/CD inputs for local diagnostics
+
+Contributors may place their own lawfully obtained **local reference** inputs in the repository-root `./rom/` directory:
+
+```sh
+mkdir -p rom
+```
+
+This directory can hold game-disc images and, if separately available, reference System Card firmware. They are **different kinds of inputs**: a CD game image is not a BIOS dump. Root `/rom/` is already excluded by `.gitignore`; never stage, commit, upload, share or redistribute these inputs or proprietary data extracted from them.
+
+- Private inputs are **optional** and are neither downloaded by `make setup` nor required for the standard build, synthetic tests, CI or release checks.
+- There is no universal filename or automatic `rom/` test runner. Check each diagnostic's documented options and actual format support before running it. CUE/BIN and CHD are examples of possible local disc-image formats, **not** a promise that every tool can read them. Preserve track/index/audio layout when investigating mixed-mode CDs.
+- When a suitable local diagnostic exists, run it only as an explicit, non-destructive local test. If it does not support the input or the firmware path is not implemented, record `SKIP` or `BLOCKED`, not `PASS`; do not invent a test target.
+- Distinguish private disc-structure observations from emulator guest READ(6) diagnostics, callable System Card API behavior and actual game boot. A recognized file or valid sector does not establish BIOS compatibility.
+- Publish only sanitized test evidence: no ROM/sector/audio/firmware bytes, game assets, saves, proprietary binary extracts or local private absolute paths in issues, PRs, CI artifacts or logs.
+
+See [AGENTS.md](AGENTS.md) for the local-media rules applied to development agents.
+
 ## Suggested workflow
 
 1. Pick or create a scoped Issue; identify usable OSS candidates and assess technical fit.
