@@ -75,8 +75,7 @@ class ForgedClaimTests(unittest.TestCase):
             def __eq__(self, other):
                 return other == 'BLOCKED'
             __hash__ = str.__hash__
-        for bad in (None, 1, True, b'PASS', ['PASS'], {'a': 'PASS'}, Lying('PASS'), 'PASS
-conflict: x', 'pass'):
+        for bad in (None, 1, True, b'PASS', ['PASS'], {'a': 'PASS'}, Lying('PASS'), 'PASS\nconflict: x', 'pass'):
             with self.subTest(bad=bad):
                 result = run(record('homebrew', result=bad, blocker='x'))
                 self.assertEqual(result['result'], 'FAIL')
