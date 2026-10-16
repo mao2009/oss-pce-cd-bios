@@ -1,8 +1,11 @@
-"""Host checks for the mixed-mode synthetic disc (data track 01 + original CD-DA track 02, Issue #5).
+"""Host-only checks for the mixed-mode synthetic disc (data track 01 + original CD-DA track 02, Issue #5).
 
 Verifies the CUE/BIN produced by tools/make_cd_image.py without any emulator:
 track types, 2352-byte raw sizes, TOC consistency, sector counts, audio round-trip,
 and negative cases (audio sector read as data, out-of-range track).
+
+Scope: these are host image checks only. They do NOT exercise CD-DA play/pause/seek
+or any emulator (Geargrafx) behaviour; that verification is BLOCKED and not claimed here.
 """
 import json
 from pathlib import Path
@@ -19,7 +22,11 @@ SYNC = b"\x00" + b"\xff" * 10 + b"\x00"
 
 
 def parse_cue(text):
-    """Return [{'number', 'type', 'start_lba'}] from a single-FILE CUE (INDEX 01 only)."""
+    """Return [{'number', 'type', 'start_lba'}] from a single-FILE CUE (INDEX 01 only).
+
+    Deliberately a minimal, independent oracle for this test. It is not the canonical
+    CUE parser of PR #110 (path-based, nested dict, fail-closed on unknown keywords).
+    """
     tracks = []
     for line in text.splitlines():
         m = re.match(r"\s*TRACK (\d{2}) (\S+)", line)
@@ -75,6 +82,14 @@ class MixedModeImageTests(unittest.TestCase):
         self.assertEqual(track_end(self.tracks, last, self.total), self.total)
         # the audio track ends exactly at the BIN end: no gap, no overlap with the data track
         self.assertEqual(track_end(self.tracks, 0, self.total), self.sectors)
+
+    def test_boundary_lba_maps_to_exactly_one_track_at_edge(self):
+        def owners(lba):
+            return [t["number"] for i, t in enumerate(self.tracks)
+                    if t["start_lba"] <= lba < track_end(self.tracks, i, self.total)]
+        self.assertEqual(owners(self.sectors - 1), [1])  # last data sector
+        self.assertEqual(owners(self.sectors), [2])      # first audio sector
+        self.assertEqual(owners(self.total - 1), [2])    # last audio sector
 
     def test_audio_sectors_round_trip_exactly(self):
         for i in range(self.audio):
