@@ -77,10 +77,20 @@ The header MSF is decoded only when every nibble is 0..9 with seconds <= 59 and 
 Cooked modes are validated for file size and layout only. The CLI reports them as
 `sync/MSF not verified` and prints a PASS line that says layout validation only.
 
-**INDEX 00/01, pregap and LBA (address contract).** The first BIN frame is physical disc LBA 0. The
-BIN files of a CUE are concatenated in FILE order, and every frame advances the disc LBA, including
-pregap frames stored in the BIN. A sector header MSF must equal `LBA + 150` (the 2-second lead-in
-offset, BCD). Per track:
+**INDEX 00/01, pregap and LBA (address contract).** The BIN files of a CUE are concatenated in FILE order,
+and every frame advances the disc LBA, including pregap frames stored in the BIN and virtual CUE `PREGAP`
+frames. A sector header MSF must equal `LBA + 150` (the 2-second lead-in offset, BCD).
+
+Where BIN frame 0 sits depends on a virtual PREGAP before the first track:
+
+* **Without a virtual PREGAP** before the first track, the first BIN frame is physical disc LBA 0.
+  Examples: `INDEX 01 00:00:00` puts BIN frame 0 at LBA 0 (data starts at LBA 0). `INDEX 00 00:00:00` with
+  `INDEX 01 00:02:00` puts the pregap at BIN frames 0..149 (LBA 0..149) and data at BIN frame 150 = LBA 150.
+* **With a virtual PREGAP** (`PREGAP 00:02:00` + `INDEX 01 00:00:00`), LBA 0..149 are not stored in the BIN,
+  so BIN frame 0 is **LBA 150**, not LBA 0. Regression test `test_virtual_cue_pregap_first_track`: track 1 data
+  is BIN frames 0..149 = LBA 150..299, and track 2 (AUDIO) is BIN frames 150..249 = LBA 300..399.
+
+Per track:
 
 | Field | Meaning |
 | --- | --- |
@@ -90,21 +100,24 @@ offset, BCD). Per track:
 | `pregap_frames` | INDEX 00..01 frames stored in the BIN, plus any CUE `PREGAP` frames |
 
 A CUE `PREGAP` adds disc LBAs that are not stored in the BIN; `PREGAP` together with `INDEX 00` in the
-same track is rejected as ambiguous. The next track's pregap (its INDEX 00..01 frames) is never counted in
+same track is rejected as ambiguous. At most one `PREGAP` per track, and it must precede `INDEX 01`. The next track's pregap (its INDEX 00..01 frames) is never counted in
 the previous track's `length_frames`.
 
 Explicitly rejected (fail closed, nothing is guessed): `FILE` types other than `BINARY` (MOTOROLA, AIFF,
 WAVE, MP3 are not decoded), `INDEX` numbers other than 00 and 01, a duplicate INDEX in one track, `POSTGAP`,
-TRACK numbers that are not the next number from `01` (two digits, 01..99), a track without INDEX 01,
-INDEX 00 after INDEX 01, non-increasing track starts within a FILE, and BIN frames before the first track's
+a duplicate `PREGAP` in one track, a `PREGAP` after INDEX 01, TRACK numbers that are not the next number from `01`
+(two digits, 01..99), a track without INDEX 01, INDEX 00 after INDEX 01, non-increasing track starts within a FILE, and BIN frames before the first track's
 start (they would belong to no track). `user_sector()` maps physical LBA *n* in
 `[start_lba, start_lba + length_frames)` to BIN frame `index01_frame + (n - start_lba)` and rejects LBAs in
 a pregap (`pregap_start_lba <= n < start_lba`), negative LBAs and LBAs past the track end.
 
 Pregap sync sectors are legal (a data pregap may hold real MODE1 frames). Only a sync sector in the
-pregap whose header MSF disagrees with its disc LBA is a finding (`structurally_valid` becomes false).
+pregap whose header MSF disagrees with its disc LBA is a finding (`structurally_valid` becomes false). The
+header mode byte of pregap frames is not checked, because a pregap can still hold sectors recorded in the
+previous track's mode. User-data frames (INDEX 01 onward) must carry sync and the declared mode byte.
 
-The INDEX timestamps are read relative to their FILE with BIN start = LBA 0, the same convention as
+INDEX timestamps are BIN frame offsets within their FILE (`00:00:00` = the FILE's first frame). Their disc LBA
+equals the BIN frame only without a virtual PREGAP before the first track, the same convention as
 `tools/make_cd_image.py` (`LBA 0 = first BIN sector`). An image whose headers differ by a constant from
 this convention is reported as an MSF mismatch and is not auto-corrected. Whether the real disc follows
 this convention is only confirmed by running the tool on that disc (see Issue #111); until then the

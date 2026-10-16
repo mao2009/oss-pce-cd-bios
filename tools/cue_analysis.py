@@ -113,6 +113,10 @@ def parse_cue(path: Path) -> dict:
                     raise CueError(f"PREGAP requires timestamp: {line!r}")
                 _, timestamp = parts
                 track = files[-1]["tracks"][-1]
+                if 1 in track["index"]:
+                    raise CueError(f"track {track['number']:02d}: PREGAP must precede INDEX 01")
+                if "pregap" in track:
+                    raise CueError(f"duplicate PREGAP in track {track['number']:02d}")
                 track["pregap"] = _parse_msf(timestamp)
             elif keyword == "POSTGAP":
                 # A POSTGAP is a virtual gap after the track data; its disc LBA placement is not defined here.
@@ -254,10 +258,14 @@ def _probe_track(f, start: int, frames: int, sector_bytes: int, track_lba: int, 
 def analyze(cue_path: Path, boot_signature: bytes = PCE_BOOT_SIGNATURE) -> dict:
     """Full read-only analysis of `cue_path`; returns a JSON-serializable report and never payload bytes.
 
-    LBA contract (docs/cd-read-diagnostic.md): the first BIN frame is physical disc LBA 0, every frame
-    advances the disc position including pregap frames, and a sector header MSF must equal LBA + 150.
-    `pregap_start_lba` is the track's first frame (INDEX 00, or the CUE PREGAP start) and `start_lba`
-    (= `declared_data_lba`) is INDEX 01. A CUE PREGAP adds disc frames that are not stored in the BIN.
+    LBA contract (docs/cd-read-diagnostic.md, same as tools/toc_diagnostic.py): every frame advances the disc
+    LBA, including pregap frames stored in the BIN, and a sector header MSF must equal LBA + 150.
+    Without a virtual CUE PREGAP before the first track, BIN frame 0 is physical LBA 0. With one, BIN frame 0
+    is not LBA 0: `PREGAP 00:02:00` + `INDEX 01 00:00:00` puts BIN frame 0 at LBA 150, and LBA 0..149 are
+    virtual (not stored in the BIN). Without a virtual PREGAP, `INDEX 00 00:00:00` + `INDEX 01 00:02:00` gives
+    pregap BIN frames 0..149 (LBA 0..149) and data at BIN frame 150 = LBA 150.
+    `pregap_start_lba` is the track's first disc LBA (INDEX 00, or the CUE PREGAP start) and `start_lba`
+    (= `declared_data_lba`) is the disc LBA of INDEX 01.
     """
     cue_path = Path(cue_path)
     sheet = parse_cue(cue_path)

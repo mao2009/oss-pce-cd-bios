@@ -877,6 +877,31 @@ class CueStrictnessTests(unittest.TestCase):
                     with self.assertRaisesRegex(CueError, "duplicate INDEX"):
                         analyze(d / "t.cue")
 
+    def test_duplicate_pregap_in_one_track_is_rejected_not_overwritten(self):
+        """A second PREGAP in the same TRACK must fail closed; the first value must not be silently replaced."""
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "t.bin").write_bytes(raw_sector(0) * 200)
+            (d / "t.cue").write_text('FILE "t.bin" BINARY\n'
+                                     '  TRACK 01 MODE1/2352\n'
+                                     '    PREGAP 00:02:00\n'
+                                     '    PREGAP 00:03:00\n'
+                                     '    INDEX 01 00:00:00\n')
+            with self.assertRaisesRegex(CueError, "duplicate PREGAP"):
+                analyze(d / "t.cue")
+
+    def test_pregap_after_index01_is_rejected(self):
+        """PREGAP is a virtual gap before the data; a PREGAP written after INDEX 01 is refused, not accepted."""
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "t.bin").write_bytes(raw_sector(0) * 200)
+            (d / "t.cue").write_text('FILE "t.bin" BINARY\n'
+                                     '  TRACK 01 MODE1/2352\n'
+                                     '    INDEX 01 00:00:00\n'
+                                     '    PREGAP 00:02:00\n')
+            with self.assertRaisesRegex(CueError, "must precede INDEX 01"):
+                analyze(d / "t.cue")
+
 
 if __name__ == '__main__':
     unittest.main()
