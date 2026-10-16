@@ -16,6 +16,9 @@ build:
 * ``pos-write`` attempts a store to a CPU address **inside** the allowlist. That
   store MUST land and must NOT be flagged, proving the guard is not a blanket drop
   of every write.
+* ``tam`` attempts a dynamic MPR change (``TAM`` re-mapping page 0 to the
+  WRAM bank) followed by a store through the remapped page. The core must detect
+  the MPR change before the store executes.
 
 A third run forces MPR0 == MPR1 (both pages alias the same work-RAM bank) while
 page 1 is allowlisted and page 0 is not. Because
@@ -41,15 +44,14 @@ BIOS_BYTES = 256 * 1024
 ALLOW = (0x2000, 0x4000)  # page 1: this core hardwires the zero page/stack there
 ALLOWED_VALUE = 0x5A
 
-# forbidden targets: outside the allowlist (page 0 aliases page 1's WRAM bank;
-# page 2 is CD-ROM RAM). Each must be prevented AND detected.
+# forbidden targets: outside the allowlist. Each must be prevented AND detected.
 NEG_TARGETS = (0x0000, 0x1FFF, 0x4000)
 # allowed-control targets: inside the allowlist. Each must land and not be flagged.
 POS_TARGETS = (0x2000, 0x3FFF, 0x3E50)
 
-# Exit code the fixed probe returns when it refuses to run because a physical
-# bank is shared by an allowlisted and a non-allowlisted CPU page.
-BLOCKED_EXIT = 8
+# Exit codes the probe returns when it refuses to run.
+BLOCKED_EXIT_ALIAS = 8   # physical bank shared by allowlisted/non-allowlisted pages
+BLOCKED_EXIT_ALLOWLIST = 9  # allowlist not exactly [0x2000, 0x4000)
 
 
 def synthetic_media(directory):
@@ -61,9 +63,12 @@ def synthetic_media(directory):
     return bios, cue
 
 
-def run_mode(probe, bios, cue, mode, target, env_alias=False):
+def run_mode(probe, bios, cue, mode, target, env_alias=False, allow_start=None,
+             allow_end=None):
+    a_start = ALLOW[0] if allow_start is None else allow_start
+    a_end = ALLOW[1] if allow_end is None else allow_end
     command = [str(probe), str(bios), str(cue), "0x1e", "100",
-               hex(ALLOW[0]), hex(ALLOW[1]), mode, hex(target)]
+               hex(a_start), hex(a_end), mode, hex(target)]
     env = dict(os.environ)
     if env_alias:
         env["PCE_REF_TEST_ALIAS"] = "1"
@@ -103,6 +108,19 @@ def check_pos(row, target):
         raise ValueError(f"allowed control store ${target:04X} did not land; the guard drops every write")
 
 
+def check_tam(row):
+    """Tam mode expects the MPR change to be detected (status=rejected)."""
+    if row.get("exit", 0) != 0:
+        raise ValueError(f"tam probe refused to run (exit {row.get('exit')}): {row.get('stderr','')[-300:]}")
+    if row.get("mpr_changed") is not True:
+        raise ValueError(f"tam MPR change was not detected: status={row.get('status')} reason={row.get('reason')} mpr_changed={row.get('mpr_changed')}")
+
+
+def check_blocked(row, expected_exit):
+    if row.get("exit") != expected_exit:
+        raise ValueError(f"expected exit {expected_exit} but got {row.get('exit')}: {row.get('stderr','')[-300:]}")
+
+
 def main():
     with tempfile.TemporaryDirectory(prefix="pce-reference-guard-") as tmp:
         directory = Path(tmp)
@@ -110,20 +128,36 @@ def main():
         probe = compile_probe(directory, source_name="geargrafx_reference_jsr.cpp",
                               target_name="reference-guard-probe")
 
+        # Phase 2/3: forbidden stores must be prevented AND detected.
         for target in NEG_TARGETS:
             check_neg(run_mode(probe, bios, cue, "neg-write", target), target)
+
+        # Phase 2/3: allowed stores must land and not be flagged.
         for target in POS_TARGETS:
             check_pos(run_mode(probe, bios, cue, "pos-write", target), target)
 
-        # Aliasing BLOCKED path: page 0 and page 1 map to the same WRAM bank while
-        # only page 1 is allowlisted -> the probe must refuse to run.
-        alias = run_mode(probe, bios, cue, "neg-write", NEG_TARGETS[0], env_alias=True)
-        if alias.get("exit") != BLOCKED_EXIT:
-            raise ValueError(f"aliasing configuration was not rejected (exit {alias.get('exit')}); "
-                             "physical-bank write protection cannot isolate CPU addresses")
+        # Phase 1: dynamic MPR change (TAM remapping page 0 to WRAM bank) must
+        # be detected before the subsequent store executes.
+        check_tam(run_mode(probe, bios, cue, "tam", NEG_TARGETS[0]))
 
-    print("PASS real-core write guard: forbidden stores prevented+detected; allowed work-RAM stores landed; "
-          "physical-bank aliasing rejected before execution")
+        # Phase 1: static physical-bank aliasing must be rejected before execution.
+        alias = run_mode(probe, bios, cue, "neg-write", NEG_TARGETS[0], env_alias=True)
+        check_blocked(alias, BLOCKED_EXIT_ALIAS)
+
+        # Phase 2: allowlist must be exactly [0x2000, 0x4000); any other interval
+        # is rejected at the C++ level (defense-in-depth beyond the Python adapter).
+        # neg_addr is chosen inside each bad allowlist so the pos-write range check
+        # passes and we reach the allowlist validation.
+        for bad_start, bad_end, bad_target in ((0x0, 0x10000, 0x2000),
+                                               (0x4000, 0x6000, 0x5000),
+                                               (0x0, 0x2000, 0x1000)):
+            bad = run_mode(probe, bios, cue, "pos-write", bad_target,
+                           allow_start=bad_start, allow_end=bad_end)
+            check_blocked(bad, BLOCKED_EXIT_ALLOWLIST)
+
+    print("PASS real-core write guard: forbidden stores prevented+detected; allowed "
+          "work-RAM stores landed; dynamic MPR change detected; physical-bank "
+          "aliasing rejected; non-standard allowlist rejected")
     return 0
 
 

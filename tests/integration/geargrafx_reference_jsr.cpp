@@ -104,7 +104,7 @@ int main(int argc, char** argv)
     if (allow_start % 0x2000 != 0 || allow_end % 0x2000 != 0)
         return 2;  // enforcement granularity is the 8 KiB MPR page
     std::string mode = argv[7];
-    if (mode != "call" && mode != "neg-write" && mode != "pos-write")
+    if (mode != "call" && mode != "neg-write" && mode != "pos-write" && mode != "tam")
         return 2;
     unsigned long neg_addr = std::strtoul(argv[8], &end, 0);
     if (!end || *end || neg_addr > 65535UL)
@@ -113,6 +113,12 @@ int main(int argc, char** argv)
         return 2;  // forbidden target must lie outside the allowlist
     if (mode == "pos-write" && (neg_addr < allow_start || neg_addr >= allow_end))
         return 2;  // allowed-control target must lie inside the allowlist
+    // slot "$1E" execution environment fixes the RAM write allowlist to page 1
+    // ([0x2000, 0x4000)): this is where this core's zero page and stack live.
+    // Any other allowlist is rejected at the C++ level so that bypassing the
+    // Python adapter still cannot create an unsafe configuration.
+    if (allow_start != 0x2000UL || allow_end != 0x4000UL)
+        return 9;  // BLOCKED: slot-1e allowlist must be exactly [0x2000, 0x4000)
 
     std::ifstream file(argv[1], std::ios::binary);
     if (!file)
@@ -183,13 +189,21 @@ int main(int argc, char** argv)
     } else {
         code = {0xA9, 0x5A, 0x8D, (u8)(neg_addr & 0xFF), (u8)(neg_addr >> 8), 0x80, 0xFE};
     }
+    if (mode == "tam") {
+        // Dynamic MPR change test: LDA #$F8; TAM #$01 sets MPR0 to WRAM bank,
+        // then STA $0000 would write through page 0 into WRAM if the MPR change
+        // were not detected. The MPR change detector must block before STA runs.
+        code = {0xA9, 0xF8,   // LDA #$F8
+                0x53, 0x01,   // TAM #$01  (MPR0 = 0xF8)
+                0x8D, 0x00, 0x00,  // STA $0000
+                0x80, 0xFE}; // BRA *
+    }
     const unsigned long kReturnAddr = kGuestBase + jsr_offset + 3;
     if (kStubIndex + code.size() > 0x2000)
         return 2;
     u8* wram = o.memory->GetWorkingRAM();
     for (size_t i = 0; i < code.size(); ++i)
         wram[kStubIndex + i] = code[i];
-
     // --- write protection: deny by default, only allowlist-covered pages stay writable.
     //     Memory::GetMemoryMapWrite() is indexed by PHYSICAL bank (the MPR value), not by
     //     CPU address. If one physical bank is mapped to both an allowlisted and a
@@ -253,6 +267,15 @@ int main(int argc, char** argv)
     o.st->Y->SetValue(0);
     o.st->P->SetValue(0x04);  // I=1 (mask IRQs), D=0, T=0, B=0
 
+    // Snapshot the initial MPR configuration. Any MPR change during guest
+    // execution (e.g. via TAM) invalidates the allowlist isolation computed
+    // above: a page remapped to a writable bank would bypass the per-bank
+    // write protection. Detect this fail-closed before the next guest
+    // instruction can exploit it.
+    u8 initial_mpr[8];
+    for (int i = 0; i < 8; ++i)
+        initial_mpr[i] = o.memory->GetMpr(i);
+
     auto wram_snap = [&]() { return std::vector<u8>(wram, wram + 0x2000); };
     auto stub_ok = [&]() {
         for (size_t i = 0; i < code.size(); ++i)
@@ -268,6 +291,7 @@ int main(int argc, char** argv)
     unsigned long callee_pc = 0;
     bool returned = false;
     bool detected = false;
+    bool mpr_changed = false;
     u16 detected_pc = 0;
     std::vector<u8> wram0 = wram_snap();
     u8 cdram0 = 0;
@@ -292,6 +316,25 @@ int main(int argc, char** argv)
                          (unsigned)o.st->A->GetValue(), (unsigned)o.st->X->GetValue(),
                          (unsigned)o.st->Y->GetValue(), (unsigned)o.st->P->GetValue(),
                          (unsigned)o.st->S->GetValue());
+
+        // --- dynamic MPR change detection (Phase 1).
+        //     TAM or any other instruction that changes an MPR during execution
+        //     invalidates the allowlist isolation: a page remapped to a writable
+        //     bank (e.g. MPR0 -> 0xF8) would let a later store through that page
+        //     bypass the per-bank write protection. Detect fail-closed before the
+        //     next guest instruction can exploit the new mapping.
+        for (int i = 0; i < 8; ++i) {
+            if (o.memory->GetMpr(i) != initial_mpr[i]) {
+                mpr_changed = true;
+                ok = false;
+                char buf[64];
+                std::snprintf(buf, sizeof(buf), "mpr_changed_during_execution[mpr%d]", i);
+                reason = buf;
+                break;
+            }
+        }
+        if (!ok)
+            break;
 
         if (o.hw_reachable()) {
             ok = false;
@@ -335,6 +378,15 @@ int main(int argc, char** argv)
                 returned = true;
                 break;
             }
+        } else if (mode == "tam") {
+            // Tam mode: MPR change must be detected after TAM, before STA runs.
+            // If PC advances past the TAM without mpr_changed being set, the STA
+            // would have written through the remapped page - a security failure.
+            if (pc >= kGuestBase + 7) {
+                ok = false;
+                reason = "tam_mpr_change_not_detected";
+                break;
+            }
         } else {
             if (pc == kGuestBase + 5)
                 break;  // reached BRA* without a detected store
@@ -346,6 +398,13 @@ int main(int argc, char** argv)
             { ok = false; reason = "jsr_did_not_reach_slot_entry"; }
         else if (!returned)
             { ok = false; reason = "budget_exhausted_before_rts"; }
+    }
+    if (mode == "tam" && !mpr_changed) {
+        // Tam mode expects the MPR change to be detected; if it was not, the
+        // subsequent STA would have written through the remapped page.
+        ok = false;
+        if (reason.empty())
+            reason = "tam_mpr_change_not_detected";
     }
 
     // --- write-guard verdicts
@@ -390,6 +449,7 @@ int main(int argc, char** argv)
     std::fprintf(out, "\"entry_reached\":%s,", got_entry ? "true" : "false");
     std::fprintf(out, "\"returned\":%s,", returned ? "true" : "false");
     std::fprintf(out, "\"detected\":%s,", detected ? "true" : "false");
+    std::fprintf(out, "\"mpr_changed\":%s,", mpr_changed ? "true" : "false");
     std::fprintf(out, "\"detected_pc\":%u,", (unsigned)detected_pc);
     std::fprintf(out, "\"instructions_executed\":%lu,", o.executed);
     std::fprintf(out, "\"budget\":%lu,", budget);

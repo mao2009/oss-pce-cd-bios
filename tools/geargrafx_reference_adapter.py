@@ -41,9 +41,11 @@ def validate_jsr_config(config):
             or set(allow[0]) != {"start", "end"}):
         raise ValueError("BLOCKED: slot-1e requires exactly one RAM allowlist page interval")
     start, end = allow[0]["start"], allow[0]["end"]
+    # slot "$1E" execution environment fixes the RAM write allowlist to page 1
+    # ([0x2000, 0x4000)): this is where this core's zero page and stack live.
     if (type(start) is not int or type(end) is not int
-            or start % 0x2000 or end % 0x2000 or not start < end <= 0x10000):
-        raise ValueError("BLOCKED: slot-1e allowlist must be page-aligned (8 KiB)")
+            or start != 0x2000 or end != 0x4000):
+        raise ValueError("BLOCKED: slot-1e allowlist must be exactly [0x2000, 0x4000)")
     return budget, start, end
 
 
