@@ -8,7 +8,7 @@
 
 | ID | 出典 | 日付・ライセンス | 性質 |
 | --- | --- | --- | --- |
-| W1 | Michael Stum「Why do PC Engine CD-ROM² games have a second data track?」<https://www.stum.de/2026/pc-engine-second-data-track/> | 2026-05-01。本文 CC BY-NC-SA 4.0、掲載コードは MIT（明記がある場合を除く） | 二次資料。`CD_BASE` を呼ぶ例コードと説明文。根拠が逆アセンブル・マニュアル・トレースのいずれかは**記載なし** |
+| W1 | Michael Stum「Why do PC Engine CD-ROM² games have a second data track?」<https://www.stum.de/2026/pc-engine-second-data-track/> | 2026-05-01。本文 CC BY-NC-SA 4.0、掲載コードは MIT（明記がある場合を除く） | 二次資料。`CD_BASE` を呼ぶ例コードと説明文（`cd_base` は LBA・時刻・トラック番号を取れ、`cd_read`・`cd_exec`・`cd_seek` 等の基準を決める、と記す。`$80` は例コードのコメント `_BH = CD-TNO mode` に出る）。16回読込み失敗後は `retry?`（`$2273`）により `recbase1` を使う。根拠は「著者自身のゲームと System Card の解析」で、archive.org の System Card 1.0 開発資料へのリンクがある。ただしどの記述がどの資料に基づくかは**記載なし**（逆アセンブル・トレースの有無も不明） |
 | W2 | 同「PC Engine CD-ROM² BIOS Method offsets」<https://stum.de/2025/pcenginebiosoffsets/> | 2025-07-28。同上 | 二次資料。`cd_reset $E003`、`cd_base $E006`、`cd_read $E009` のジャンプテーブル入口と、各 System Card 版の本体アドレス表のみ。**引数・戻り値の記載なし**。著者は System Card 1.0 マニュアルを所持し公式名称を得たと記す |
 
 W1・W2 は本文を言い換えて引用し、BIOS のバイト列・逆アセンブルは取り込まない。公式 NEC/Hudson 資料（System Card 1.0 マニュアル等）の本文は今回の検索（2026-10-16）で
@@ -16,7 +16,11 @@ W1・W2 は本文を言い換えて引用し、BIOS のバイト列・逆アセ�
 
 出典間の相反: W1 の例（`_BH=$80`、`_AL`=BCD のトラック番号、`_CL=$01/$02`）は HuCC S1（`_bh=$80`、`_cl=2`、`_al`=`tnomax`）と値が整合する。
 ただし W1 の著者が HuCC を参照した可能性を排除できないため、**独立した二つの証拠とは数えない**（独立性は UNKNOWN）。
-相反する記述は見つからなかった。W1 の「`recbase1` は読込み失敗後のみ使う」は、#128 台帳 §3 補足の「2ISO 経路の矛盾」を解く候補になる（下記 (4)）。
+相反する記述は見つからなかった。W1 の「`recbase1` は読込み失敗後のみ使う」は、#128 台帳 §3 補足の「2ISO 経路の矛盾」を解く**候補**にとどまる（下記 (4)）。**矛盾は OPEN のまま**（実コア証拠なし）。
+
+補強（監査で追加）: Hu-Go! `mckayemu/hugo@64ed226d` `bios.c` L388-392 の HLE も CD_READ で `$2274+3*[$2273]` の3バイトをブロック番号に加算する（`$2273`=W1 の `retry?` と一致）。HLE であり実BIOSでなく、W1 との独立性も不明なので HYPOTHESIS を上げる根拠にはしない。
+
+**#148 台帳（`docs/research/148-cd-read-abi.md`）との関係**: #148 は当初、基点を UNKNOWN としていた。本書の「相対」は W1（と HLE）に依るのみで、両台帳とも §6 / 項目4 で同じ状態（HYPOTHESIS、実コア未測定、2ISO 矛盾 OPEN）に揃えた。
 
 ## 2. 六項目の判定
 
@@ -27,7 +31,7 @@ W1・W2 は本文を言い換えて引用し、BIOS のバイト列・逆アセ�
 | 1 | 引数の場所 | HYPOTHESIS（呼出側の書込みのみ既存どおり VERIFIED-source。呼出先の読取りは UNKNOWN） | S1 と W1 が整合: `_BH=$80` が「CD-TNO モード」、`_AL`=BCD のトラック番号、`_CL` が設定先（`$01`=recbase0、`$02`=recbase1）。LBA・MSF 指定時のレジスタ割当と `$80` 以外のモード値は W1 に**記載なし**。`_BL`・`_DL`・`_CH` の役割も不明 | 現状 BLOCKED（実行可能な呼出先なし。`docs/cd-base-abi-ledger.md` §4a） | 実 System Card を載せたコアで `JSR $E006` を実行し、`_AL/_BH/_BL/_CL/_DL/_CH` を一つずつ変えて、後続 CD_READ の SCSI READ LBA と作業 RAM 差分を記録（入力感度試験） |
 | 2 | ブロック番号は絶対 LBA か相対か | HYPOTHESIS: 相対（データトラック先頭基準） | W1「CD_READ は recbase0 を加算」「LBA はデータトラック先頭からの相対」。ただし「先頭」が INDEX 01 か PREGAP 先頭か、LBA の 0 が MSF 00:02:00 かは**記載なし**。HuCC S5/S4 は ISO 由来値を渡す（既存台帳どおり） | BLOCKED | INDEX 01 ≠ 0 の合成ディスク（PREGAP 付き。`tools/cd_base_probe.py`）で、リセット直後に CD_BASE なしで CD_READ を二つ以上のブロック番号で実行し、READ LBA − ブロック番号を記録。既存の四署名（`ABS_LBA` 等）のどれに一致するかで判定 |
 | 3 | 基準値の設定と保持 | HYPOTHESIS（部分） | W1: 基準は `recbase0`/`recbase1` の二つ。System Card が起動時に両方を「最初のデータトラックの LBA」に初期化する。保持期間、格納アドレス、CD_RESET での扱いは**記載なし**。「最初のデータトラックの LBA」の LBA が INDEX 01 か PREGAP 先頭かも不明 | BLOCKED | リセット直後、CD_BASE 後、CD_RESET 後、二回目の CD_READ 後に作業 RAM 全体を取り、`recbase0/1` の位置と値を特定。PREGAP 付きディスクで初期値が 150 か 0 かを読む |
-| 4 | CD_READ との関係 | HYPOTHESIS | W1: CD_BASE は `cd_read`・`cd_exec`・`cd_seek` 等の基準を変える。通常の読込みは recbase0、recbase1 は失敗後のみ。**含意**: HuCC の 2ISO 経路（S1、`_cl=2`）は recbase1 だけを設定するので、通常のオーバーレイ読込み（S5）の基準は変わらず、既存台帳の「矛盾」は成立しない可能性がある。ただしこれは W1 の読み方に依存する推論で未測定 | BLOCKED | `_CL=1` と `_CL=2` のそれぞれで CD_BASE → CD_READ（正常系）を実行し READ LBA を比較。さらに読込み失敗を人為的に起こし（READ 失敗の注入）、再試行が recbase1 を使うかを SCSI 層で観測 |
+| 4 | CD_READ との関係 | HYPOTHESIS | W1: CD_BASE は `cd_read`・`cd_exec`・`cd_seek` 等の基準を変える。通常の読込みは recbase0、recbase1 は失敗後のみ。**含意**: HuCC の 2ISO 経路（S1、`_cl=2`）は recbase1 だけを設定するので、通常のオーバーレイ読込み（S5）の基準は変わらず、既存台帳の「矛盾」は成立しない可能性がある。ただしこれは W1 の読み方に依存する推論で未測定であり、**矛盾は OPEN として残す** | BLOCKED | `_CL=1` と `_CL=2` のそれぞれで CD_BASE → CD_READ（正常系）を実行し READ LBA を比較。さらに読込み失敗を人為的に起こし（READ 失敗の注入）、再試行が recbase1 を使うかを SCSI 層で観測 |
 | 5 | MPR・作業 RAM の副作用 | UNKNOWN | CD_BASE について記述した資料は見つからない（W1/W2 とも記載なし）。CD_READ の MPR3 保存はHuCC 呼出側の報告にとどまる（既存台帳 S4） | BLOCKED | 一回の CD_BASE 呼出しの前後で MPR0–7・作業 RAM（`$2000–$3FFF` の関連範囲）・CPU フラグ・SP の全差分。成功・失敗経路の両方 |
 | 6 | 戻り値と失敗の規約 | UNKNOWN | W1 に「記載なし」。HuCC S1 は呼出後に戻り値を読まない（呼出側事実のみ）。失敗の定義も不明 | BLOCKED | 範囲外トラック番号（0、存在しない番号、BCD として不正な値）、無ディスク、データでないトラックを指定して A/X/Y/P と C フラグを記録。「戻り値なし」の確定には全入力で値が不変であることが要る |
 
