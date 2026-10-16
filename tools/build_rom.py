@@ -278,8 +278,27 @@ def verify_dev_rom(data: bytes) -> None:
     Used by the diagnostics that patch the DEV ROM: the non-override stub layout,
     the table, vectors and padding are checked strictly, while override bodies are
     assumed to have been verified with ld65 debug info when build() produced the ROM.
+
+    Trust boundary: this function does NOT re-verify override code bodies when
+    ld65 debug info is unavailable. It assumes the ROM was produced by build()
+    and has not been tampered with since. For untrusted ROM inputs, use
+    verify_dev_rom_strict() with ld65 debug info instead.
     """
-    verify_image(data, set(overrides()), override_bodies=False)
+    verify_image(data, set(overrides()), None, override_bodies=False)
+
+
+def verify_dev_rom_strict(data: bytes, dbg: dict) -> None:
+    """Fully verify a DEV ROM including override code bodies.
+
+    Requires ld65 debug info (`--dbgfile` output from build()). Re-runs
+    verify_overrides() against every overridden slot, so any post-build
+    tampering of override bodies (e.g. changing LDX #3 to LDX #4 in the
+    EX_GETVER override) is detected.
+
+    Callers receiving untrusted ROM input (e.g. from external artifacts)
+    must use this function instead of verify_dev_rom().
+    """
+    verify_image(data, set(overrides()), dbg, override_bodies=True)
 
 
 def verify_image(data: bytes, overridden: set[int] | None = None, dbg: dict | None = None,

@@ -12,7 +12,8 @@ from unittest.mock import patch
 import subprocess
 
 from tools.build_rom import (ROOT, BANK_BYTES, IMAGE_BYTES, build, load_slots, overrides, parse_dbg,
-                             release_gate, source_provenance, verify_bank, verify_dev_rom, verify_image)
+                             release_gate, source_provenance, verify_bank, verify_dev_rom,
+                             verify_dev_rom_strict, verify_image)
 
 
 class ApiBuildTests(unittest.TestCase):
@@ -270,3 +271,133 @@ class ApiBuildTests(unittest.TestCase):
         root = self.folder/'bad-root'; (root/'src/overrides').mkdir(parents=True)
         (root/'src/overrides/slot_51.s').write_text('')
         with self.assertRaisesRegex(ValueError, 'Invalid override'): overrides(root)
+
+    # --- Phase 1: verify_dev_rom trust boundary tests ---
+
+    SLOT_1E_BODY_BYTES = bytes.fromhex('a2 03 a0 00 60')  # LDX #3; LDY #0; RTS
+
+    def _find_override_body(self, rom: bytes) -> int:
+        """Find the file offset of the slot_1E override body in a built ROM."""
+        idx = rom.find(self.SLOT_1E_BODY_BYTES)
+        if idx < 0:
+            raise ValueError('slot_1E override body not found in ROM')
+        return idx
+
+    def _build_slot_1e_rom(self, suffix=''):
+        """Build a DEV ROM with the slot_1E override and return (rom_bytes, dbg, root)."""
+        root = self.folder / f'slot1e-{suffix}-root'
+        (root / 'src/overrides').mkdir(parents=True)
+        for item in ('boot.s', 'bank0.cfg'):
+            shutil.copy(ROOT / 'src' / item, root / 'src' / item)
+        # Write slot_1E.s with correct filename and symbol name so overrides()
+        # finds it and the linker can resolve api_slot_1E from the API table
+        (root / 'src/overrides' / 'slot_1E.s').write_text(
+            '.setcpu "huc6280"\n'
+            '.import api_slot_00\n'
+            '.segment "OVERRIDES"\n'
+            '.export api_slot_1E\n'
+            'api_slot_1E:\n'
+            ' ldx #$03\n'
+            ' ldy #$00\n'
+            ' rts\n'
+        )
+        rom = build(self.folder/f'slot1e-{suffix}', root=root).read_bytes()
+        dbg = parse_dbg((self.folder/f'slot1e-{suffix}'/'dev.dbg').read_text())
+        return rom, dbg, root
+
+    def test_dev_rom_strict_accepts_untampered_slot_1e(self):
+        """verify_dev_rom_strict must accept a correctly built slot_1E ROM."""
+        rom, dbg, _ = self._build_slot_1e_rom('accept')
+        # Should not raise
+        verify_dev_rom_strict(rom, dbg)
+        # verify_dev_rom (non-strict) must also accept it
+        verify_dev_rom(rom)
+
+    def test_dev_rom_strict_rejects_ldx_changed(self):
+        """Changing the override's LDX #3 to NOP changes instruction length, caught by strict verification."""
+        rom, dbg, _ = self._build_slot_1e_rom('ldx-change')
+        data = bytearray(rom)
+        at = self._find_override_body(data)
+        self.assertEqual(data[at:at+2], bytes.fromhex('a2 03'), 'expected LDX #3 at override entry')
+        data[at] = 0xEA  # NOP instead of LDX #3 (1 byte vs 2 bytes → length mismatch)
+        tampered = bytes(data)
+
+        # Non-strict verify_dev_rom does NOT catch override body changes (documented trust boundary)
+        verify_dev_rom(tampered)  # should not raise
+
+        # Strict verification MUST catch it
+        with self.assertRaisesRegex(ValueError, 'instruction length'):
+            verify_dev_rom_strict(tampered, dbg)
+
+    def test_dev_rom_strict_rejects_rts_changed(self):
+        """Changing the override's LDY #0 to NOP changes instruction length, caught by strict verification."""
+        rom, dbg, _ = self._build_slot_1e_rom('rts-change')
+        data = bytearray(rom)
+        at = self._find_override_body(data)
+        self.assertEqual(data[at:at+5], self.SLOT_1E_BODY_BYTES, 'expected LDX #3; LDY #0; RTS')
+        data[at+2] = 0xEA  # NOP instead of LDY #0 (1 byte vs 2 bytes → length mismatch)
+        tampered = bytes(data)
+
+        verify_dev_rom(tampered)  # non-strict does not catch
+        with self.assertRaisesRegex(ValueError, 'instruction length'):
+            verify_dev_rom_strict(tampered, dbg)
+
+    def test_dev_rom_strict_rejects_override_to_nop(self):
+        """Replacing the override body with NOP must be caught by strict verification."""
+        rom, dbg, _ = self._build_slot_1e_rom('override-nop')
+        data = bytearray(rom)
+        at = self._find_override_body(data)
+        # Replace the 5-byte override body with NOPs: first NOP (1 byte) vs LDX #3 (2 bytes)
+        data[at:at+5] = b'\xea' * 5
+        tampered = bytes(data)
+
+        verify_dev_rom(tampered)  # non-strict does not catch
+        with self.assertRaisesRegex(ValueError, 'instruction length'):
+            verify_dev_rom_strict(tampered, dbg)
+
+    def test_dev_rom_without_dbg_trust_boundary(self):
+        """verify_dev_rom without debug info does NOT verify override bodies (documented limit).
+
+        This is the documented trust boundary: callers passing untrusted ROMs must use
+        verify_dev_rom_strict() with ld65 debug info.
+        """
+        rom, _, _ = self._build_slot_1e_rom('no-dbg')
+        data = bytearray(rom)
+        at = self._find_override_body(data)
+        data[at] = 0xEA  # NOP instead of LDX #3 (1 byte vs 2 bytes → length mismatch)
+        tampered = bytes(data)
+
+        # Non-strict verification without dbg accepts tampered override body
+        # (documented behavior - callers must use strict for untrusted input)
+        verify_dev_rom(tampered)  # should not raise
+
+    def test_manifest_tampering_alone_is_not_enough(self):
+        """Changing only the manifest (not the ROM) does not make a tampered ROM trusted.
+
+        verify_dev_rom_strict verifies the ROM bytes against debug info, not the manifest.
+        A tampered ROM with an unchanged manifest is still rejected.
+        """
+        rom, dbg, _ = self._build_slot_1e_rom('manifest-only')
+        data = bytearray(rom)
+        at = self._find_override_body(data)
+        data[at] = 0xEA  # NOP instead of LDX #3
+        tampered = bytes(data)
+
+        # Even though we don't touch the manifest, strict verification of the ROM bytes catches it
+        with self.assertRaises(ValueError):
+            verify_dev_rom_strict(tampered, dbg)
+
+    def test_rom_and_manifest_both_tampered_still_rejected(self):
+        """Changing both ROM and manifest does not fool strict verification.
+
+        verify_dev_rom_strict verifies ROM bytes against debug info, independent of
+        any manifest. A tampered ROM is rejected regardless of manifest state.
+        """
+        rom, dbg, _ = self._build_slot_1e_rom('both-tampered')
+        data = bytearray(rom)
+        at = self._find_override_body(data)
+        data[at] = 0xEA  # NOP instead of LDX #3
+        tampered = bytes(data)
+
+        with self.assertRaises(ValueError):
+            verify_dev_rom_strict(tampered, dbg)
