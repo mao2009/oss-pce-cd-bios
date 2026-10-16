@@ -1,39 +1,48 @@
-# Roadmap — aspirational milestones, no date guarantees
+# Roadmap — evidence-graded milestones (no date promises)
 
-## M0 — Foundation
-- [x] README, MIT license and initial research documentation
-- [ ] Verify System Card ROM layout and entry/interrupt/banking requirements
-- [ ] Select a reproducible, pinned HuC6280 assembly toolchain
-- [ ] Document permitted sources, known API contracts and unresolved behaviors
-- [ ] Establish original fixture and evidence schema
+Use [status](status.md) to distinguish actual **main** code from Draft PRs (snapshot: main `c20ac06`, 2026-10-16).
+A completed **diagnostic** is not an implemented **compatible BIOS API**.
 
-## M1 — Minimal software BIOS
-- [ ] Build repeatable System Card-compatible image
-- [ ] Verify Geargrafx loads the independently built image
-- [ ] Reach reset/boot code checkpoint in the **real emulator core**
-- [ ] Verify repeated runs and fail-closed negative cases
+## M0 — Foundation and diagnostics
 
-## M2 — CD-ROM² homebrew bring-up
-- [ ] Implement necessary hardware/service initialization
-- [ ] Detect self-authored CD image and read original data sectors
-- [ ] Load/transfer to a self-authored CD program and execute it
-- [ ] Compare important behavior in at least one other independent emulator
+- [x] Reproducible original HuCARD fixture, pinned tools, host tests and real Geargrafx CI
+- [x] Original 256 KiB System Card **development diagnostic** with 81 candidate entries and fail-closed stubs
+- [x] Real-core System Card loader/reset, slot, RAM/MPR/stack/IRQ observations and isolated startup checkpoint with non-zero CD-state marker ([#127](https://github.com/mao2009/oss-pce-cd-bios/pull/127))
+- [x] Real-core guest READ(6) on synthetic discs, 1–3 2048-byte sectors, full RAM/phase/negative checks
+- [x] Isolated real-core Geargrafx trace harness, CD status classifier and host-only CD_BASE model (not BIOS services)
+- [x] Research, provenance/OSS audit and candidate API ledger
+- [x] CD_BASE ABI evidence ledger ([#128](https://github.com/mao2009/oss-pce-cd-bios/pull/128)): six Issue #11 items recorded; ABI remains UNKNOWN
+- [ ] Verify historical/production ROM mapping/vectors and essential **caller ABI** against independent evidence (#1/#3)
 
-## M3 — Retail-compatible BIOS API services
-- [ ] Enumerate System Card 3.0 callable interfaces with evidence
-- [ ] Implement documented ABI and caller-visible side effects
-- [ ] Exercise CD, IRQ, memory, storage, graphics/input/audio helpers as required by target software
-- [ ] Validate named local commercial titles when legally available
-- [ ] Publish limitations and regressions; preserve previous passes
+## M1 — First genuine callable firmware services
 
-## M4 — Broader compatibility
-- [ ] Cover old CD-ROM² edge cases and regional variants
-- [ ] Assess Arcade Card-related interface requirements separately
-- [ ] Verify FPGA-compatible ROM loading in systems which accept third-party firmware
-- [ ] Export behavior specs and tests reusable by future RetroRecompStudio
+- [ ] Implement actual System Card initialization instead of development reset checkpoint (#4)
+- [ ] Implement essential caller-visible API (`CD_RESET`, `CD_BASE`, `CD_READ` as contracts permit) with input/output, flags, RAM/MPR/stack/IRQ, errors and negative tests
+- [ ] Verify real caller → callee → return execution; preserve strict release gates
 
-## Explicit boundaries
+## M2 — Self-authored CD program boot
 
-The goal is compatibility with commercial CD games, ideally broad/full coverage, but no such compatibility is yet established. A synthetic test, successful build, emulator load and first menu frame are different results.
+- [x] Diagnostic guest sector read (not a BIOS service)
+- [x] Merged [#122](https://github.com/mao2009/oss-pce-cd-bios/pull/122): CD→RAM payload execution/return diagnostic (**not** disc boot)
+- [ ] Implement BIOS-mediated disc recognition, code load and execution handoff
+- [ ] Boot one original CD program **through the firmware startup/service path**
+- [ ] Cross-check key behavior in another independent emulator
 
-The first release must require independently recorded evidence and verified source provenance.
+## M3 — Retail compatibility
+
+- [ ] Implement verified CD/IRQ/memory/graphics/input/audio caller-visible services as needed
+- [ ] Test named lawful local retail editions without distributing commercial inputs
+- [ ] Verify separate audio/input/save/play scenarios and regressions
+- [ ] Release only after source provenance, ABI and independent evidence gates are met
+
+## M4 — Wider support
+
+- [ ] Older CD-ROM² and regional behaviors; Arcade Card separately
+- [ ] Optional FPGA-loading validation; share approved evidence methods with other projects
+
+## Boundaries
+
+ROM size, loader acceptance, diagnostic PC checkpoint, synthetic sector read,
+RAM payload execution, BIOS service call, homebrew disc boot, retail boot and
+playability are **different evidence milestones**. Geargrafx is not physical
+hardware proof. `make release` stays blocked until compatibility gates pass.

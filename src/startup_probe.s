@@ -4,7 +4,7 @@
 .setcpu "huc6280"
 .segment "BOOT"
 .export startup_entry, startup_mpr_ready, startup_stack_ready
-.export startup_marker_write, startup_checkpoint, startup_unexpected_interrupt
+.export startup_marker_write, startup_cd_state, startup_checkpoint, startup_unexpected_interrupt
 startup_entry:
     sei
     cld
@@ -39,6 +39,9 @@ startup_marker_write:
     sta $2203
     lda #$21                 ; !
     sta $2204
+startup_cd_state:
+    lda #$01                 ; CD init state: startup never reads the CD controller, so disc
+    sta $2205                ; presence cannot change this byte (synthetic disc = NOT_PROBED); non-zero so it cannot equal power-on RAM 0
     ldx #$B0                 ; startup-specific diagnostic ID, NOT a return value
 startup_checkpoint:
     bra startup_checkpoint  ; bounded real CPU observation, no fabricated success
