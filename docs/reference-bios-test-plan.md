@@ -80,3 +80,29 @@ enforce runtime memory writes, or perform any observation. A successful prefligh
 
 A real adapter must independently enforce budgets/allowlists and hash private inputs
 before executing any case; no unreviewed fixture may be auto-executed.
+
+
+## Reference runner (adapter boundary only)
+
+```sh
+python3 -m unittest tests.host.test_reference_bios_runner -v
+python3 tools/reference_bios_runner.py private-run-config.json \
+    --adapter /absolute/path/to/your-audited-geargrafx-adapter \
+    --output build/reference-bios/local-observation.json
+```
+
+The runner refuses missing adapters, compares the **actual bytes** of private BIOS
+and test ROM against their configured SHA-256 digests, uses a 30-second process
+timeout and validates the adapter's register/MPR/RAM-diff observation envelope.
+The adapter must accept `--config PATH` and print exactly one JSON record
+following `oss-pce-cd-bios/reference-observation/v1`. A valid record produces
+only `OBSERVED LOCAL_ONLY`, never `VERIFIED`.
+
+**Important limitation:** this PR does not contain a real retail-BIOS capable
+Geargrafx adapter or a HuC6280 API call test ROM. The existing diagnostic-only
+Geargrafx probe cannot fill that role. A separately implemented and audited
+adapter must actually step the CPU, enforce the instruction and RAM limits,
+and capture genuine source-derived checkpoints. An adapter's JSON can still
+lie, so preflight and structural checks do not establish provenance. This
+module is therefore a bounded subprocess integration seam, **not yet a
+working retail-BIOS reference test suite**.
