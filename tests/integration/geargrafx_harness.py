@@ -32,6 +32,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from environment import DEPENDENCIES, core_path, dependency_dir  # noqa: E402
+from cdread_verify import check_halt_confirmation  # noqa: E402  (same halt rule as the #5 judge)
 
 EXIT = {"PASS": 0, "FAIL": 1, "BLOCKED": 3, "SKIP": 4}
 TAGS = ("CAP", "OBS", "TRACE", "BANK", "HIT", "PHASE", "RUN", "BLOCK", "INJECT")
@@ -51,8 +52,23 @@ MAX_EVENTS = 20_000                 # trace records kept per job; more is FAIL
 CUE_FILE = re.compile(r'^\s*FILE\s+(?:"([^"]*)"|(\S+))\s+\S+\s*$', re.IGNORECASE)
 
 
-def sha256(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+CHUNK_BYTES = 1024 * 1024  # every digest streams in reads of this size; no input is read whole
+
+
+def _update_digest(digest, handle, reads=None):
+    """Feed a binary stream into digest in CHUNK_BYTES reads; `reads` records each read's size."""
+    while True:
+        chunk = handle.read(CHUNK_BYTES)
+        if not chunk:
+            return digest
+        if reads is not None:
+            reads.append(len(chunk))
+        digest.update(chunk)
+
+
+def sha256(path, reads=None):
+    with Path(path).open("rb") as handle:
+        return _update_digest(hashlib.sha256(), handle, reads).hexdigest()
 
 
 def describe_file(path, rom=False):
@@ -207,8 +223,22 @@ def stage_disc(cue, dest):
     return [source.name for source in sources]
 
 
-def classify(result, expect, forbid=()):
-    """Decide PASS/FAIL/BLOCKED from a finished job; anything unproven is not PASS."""
+REQUIRED_CYCLES = ("cold", "warm")
+CAP_FLAGS = ("cdrom_hardware", "cdrom_media", "disc_given")
+
+
+def _is_count(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def classify(result, expect, forbid=(), budget=None):
+    """Decide PASS/FAIL/BLOCKED from a finished job; anything unproven is not PASS.
+
+    PASS needs exactly one RUN per cycle, cold then warm, each ending on `expect` with a confirmed
+    halt (64 consecutive instructions on the label, the same rule as the #5 judge), and exactly one
+    success HIT for that cycle recorded before its RUN. Any RUN with another reason (failure or
+    budget) is FAIL even when the success HIT is present.
+    """
     if result["status"]:
         return result["status"], result["reason"], []
     code = result["exit_code"]
@@ -226,24 +256,46 @@ def classify(result, expect, forbid=()):
     caps = [e for e in events if e["tag"] == "CAP"]
     if len(caps) != 1 or caps[0].get("instruction_step") is not True:
         return "BLOCKED", "no instruction-step capability record", events
-    if any(e["tag"] == "RUN" and e.get("reason") == "budget" for e in events):
+    if any(caps[0].get(flag) is not True for flag in CAP_FLAGS):
+        return "BLOCKED", "incomplete capability record (CD hardware, media or disc not reported)", events
+    runs = [e for e in events if e["tag"] == "RUN"]
+    if any(e.get("reason") == "budget" for e in runs):
         return "FAIL", "instruction budget exhausted before a halt checkpoint (deterministic timeout)", events
+    other = [str(e.get("reason")) for e in runs if e.get("reason") != expect]
+    if other:
+        return "FAIL", f"run ended without {expect!r}: {', '.join(other)}", events
     names = lambda e: {e.get("name"), e.get("phase"), e.get("reason")}  # noqa: E731
     hit = [label for label in forbid if any(label in names(e) for e in events)]
     if hit:
         return "FAIL", f"forbidden checkpoint reached: {', '.join(hit)}", events
-    cycles = {e["cycle"] for e in events if "cycle" in e} or {None}
-    for cycle in sorted(cycles, key=str):
-        if not any(expect in names(e) and e.get("cycle") == cycle for e in events):
-            return "FAIL", f"expected checkpoint {expect!r} not reached in {cycle or 'run'}", events
-    return "PASS", f"checkpoint {expect!r} reached in {len(cycles)} cycle(s)", events
+    cycles = [e.get("cycle") for e in runs]
+    if cycles != list(REQUIRED_CYCLES):
+        return "FAIL", f"RUN records must be exactly one cold then one warm, got {cycles}", events
+    for run in runs:
+        cycle = run["cycle"]
+        if not _is_count(run.get("step")):
+            return "FAIL", f"{cycle}: instruction count is not a non-negative integer", events
+        if budget is not None and run["step"] > budget:
+            return "FAIL", f"{cycle}: {run['step']} instructions exceed the budget of {budget}", events
+        try:
+            check_halt_confirmation(run)
+        except ValueError as error:
+            return "FAIL", str(error), events
+    for cycle in REQUIRED_CYCLES:
+        run_at = next(i for i, e in enumerate(events) if e["tag"] == "RUN" and e.get("cycle") == cycle)
+        hits = [i for i, e in enumerate(events)
+                if e["tag"] == "HIT" and e.get("name") == expect and e.get("cycle") == cycle]
+        if len(hits) != 1 or hits[0] > run_at:
+            return "FAIL", f"{cycle}: success checkpoint HIT missing, repeated or after its RUN", events
+    return "PASS", f"checkpoint {expect!r} reached with confirmed halt in cold and warm", events
 
 
-def fixture_digest(disc, names):
+def fixture_digest(disc, names, reads=None):
     """One sha256 over the staged data files, in CUE order: identifies the disc without copying it."""
     digest = hashlib.sha256()
     for name in names:
-        digest.update((Path(disc) / name).read_bytes())
+        with (Path(disc) / name).open("rb") as handle:
+            _update_digest(digest, handle, reads)
     return digest.hexdigest()
 
 
@@ -298,7 +350,7 @@ def trace(args):
         shutil.copyfile(args.labels, labels)
         result = run_job([str(probe), *argv(str(rom), str(disc / Path(args.cue).name), str(labels), args.steps)],
                          job_dir, args.timeout)
-        status, reason, events = classify(result, args.expect, args.forbid)
+        status, reason, events = classify(result, args.expect, args.forbid, args.steps)
         log.update(status=status, reason=reason, exit_code=result["exit_code"], elapsed_s=result["elapsed_s"],
                    stderr_tail=result["stderr"], probe_sha256=sha256(probe), rom_sha256=sha256(rom),
                    geargrafx_revision=DEPENDENCIES["geargrafx"]["revision"],

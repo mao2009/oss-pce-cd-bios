@@ -1,5 +1,6 @@
 """MOCK/interface tests of the Issue #6 trace harness. Fake probes are small Python scripts;
 nothing here executes Geargrafx, so no result in this file is real-core evidence."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -13,7 +14,9 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests/integration"))
 import geargrafx_harness as harness  # noqa: E402
 
-CAP = 'CAP {"instruction_step":true,"cdrom_hardware":true}'
+CAP = 'CAP {"instruction_step":true,"cdrom_hardware":true,"cdrom_media":true,"disc_given":true}'
+HALT = 64  # tools/build_cdread.py HALT_CONFIRM_STEPS
+CHUNK = 1024 * 1024  # streaming read size the harness must use
 
 
 def hit(name, cycle, tag="HIT"):
@@ -24,19 +27,104 @@ def run(name, cycle):
     return f'RUN {json.dumps({"name": name, "reason": name, "cycle": cycle, "pc": 1})}'
 
 
+def run_ok(cycle, steps=HALT, arrival=10, drop=(), **overrides):
+    """A RUN as the probe emits it after a confirmed cd_halt_ok: `steps` instructions on the label."""
+    record = {"name": "cd_halt_ok", "reason": "cd_halt_ok", "cycle": cycle, "pc": 1, "step": arrival + steps,
+              "halt_confirmed": True, "halted_after_step": arrival,
+              "halt_confirmation_steps": steps, "halt_confirmation_required": HALT}
+    record.update(overrides)
+    for key in drop:
+        del record[key]
+    return f"RUN {json.dumps(record)}"
+
+
+GOOD = [CAP, hit("cd_halt_ok", "cold"), run_ok("cold"), hit("cd_halt_ok", "warm"), run_ok("warm")]
+
+
 def finished(stdout, code=0):
     return {"status": None, "reason": None, "exit_code": code, "stdout": stdout, "stderr": "", "elapsed_s": 0}
 
 
 class ClassifyTests(unittest.TestCase):
-    def test_pass_requires_checkpoint_in_every_cycle(self):
-        ok = "\n".join([CAP, hit("cd_halt_ok", "cold"), run("cd_halt_ok", "cold"),
-                        hit("cd_halt_ok", "warm"), run("cd_halt_ok", "warm")])
-        status, _, events = harness.classify(finished(ok), "cd_halt_ok")
+    def check(self, lines, expect="cd_halt_ok", forbid=(), budget=None):
+        return harness.classify(finished("\n".join(lines)), expect, forbid, budget)
+
+    def test_pass_requires_confirmed_run_in_both_cycles(self):
+        status, _, events = self.check(GOOD, budget=12_000_000)
         self.assertEqual(status, "PASS")
         self.assertEqual([e["tag"] for e in events], ["CAP", "HIT", "RUN", "HIT", "RUN"])
-        cold_only = "\n".join([CAP, run("cd_halt_ok", "cold"), hit("cd_select", "warm")])
-        self.assertEqual(harness.classify(finished(cold_only), "cd_halt_ok")[0], "FAIL")
+
+    def test_hit_without_run_is_not_pass(self):
+        self.assertEqual(self.check([CAP, hit("cd_halt_ok", "cold"), hit("cd_halt_ok", "warm")])[0], "FAIL")
+
+    def test_run_missing_in_one_cycle_is_fail(self):
+        cold_only = [CAP, hit("cd_halt_ok", "cold"), run_ok("cold"), hit("cd_halt_ok", "warm")]
+        warm_only = [CAP, hit("cd_halt_ok", "cold"), hit("cd_halt_ok", "warm"), run_ok("warm")]
+        for lines in (cold_only, warm_only):
+            self.assertEqual(self.check(lines)[0], "FAIL", lines)
+
+    def test_duplicate_or_reordered_runs_are_fail(self):
+        duplicate = GOOD + [run_ok("cold")]
+        reordered = [CAP, hit("cd_halt_ok", "cold"), hit("cd_halt_ok", "warm"), run_ok("warm"), run_ok("cold")]
+        for lines in (duplicate, reordered):
+            self.assertEqual(self.check(lines)[0], "FAIL", lines)
+
+    def test_success_hit_with_failing_run_is_fail(self):
+        for bad in (run("cd_halt_fail", "warm"), run("cd_unexpected_interrupt", "warm"), run("budget", "warm")):
+            lines = [CAP, hit("cd_halt_ok", "cold"), run_ok("cold"), hit("cd_halt_ok", "warm"), bad]
+            self.assertEqual(self.check(lines)[0], "FAIL", bad)  # no forbid list needed
+
+    def test_halt_confirmation_63_steps_is_fail_and_64_passes(self):
+        short = [CAP, hit("cd_halt_ok", "cold"), run_ok("cold", steps=63), hit("cd_halt_ok", "warm"),
+                 run_ok("warm", steps=63)]
+        status, reason, _ = self.check(short)
+        self.assertEqual(status, "FAIL")
+        self.assertIn("63", reason)
+        self.assertEqual(self.check(GOOD)[0], "PASS")
+
+    def test_halt_not_confirmed_or_inconsistent_steps_are_fail(self):
+        cases = [{"halt_confirmed": False}, {"step": 10 + 63}, {"halted_after_step": -1},
+                 {"halted_after_step": "10"}, {"step": "74"}, {"step": True},
+                 {"halt_confirmation_required": 63}]
+        for override in cases:
+            lines = [CAP, hit("cd_halt_ok", "cold"), run_ok("cold", **override), hit("cd_halt_ok", "warm"),
+                     run_ok("warm")]
+            self.assertEqual(self.check(lines)[0], "FAIL", override)
+        dropped = [CAP, hit("cd_halt_ok", "cold"), run_ok("cold", drop=("halt_confirmation_steps",)),
+                   hit("cd_halt_ok", "warm"), run_ok("warm")]
+        self.assertEqual(self.check(dropped)[0], "FAIL")
+
+    def test_budget_exhaustion_and_instruction_count_outside_budget_are_fail(self):
+        budget_stop = [CAP, hit("cd_halt_ok", "cold"), run("budget", "cold"), hit("cd_halt_ok", "warm"),
+                       run_ok("warm")]
+        status, reason, _ = self.check(budget_stop)
+        self.assertEqual(status, "FAIL")
+        self.assertIn("budget", reason)
+        over = [CAP, hit("cd_halt_ok", "cold"), run_ok("cold", arrival=10), hit("cd_halt_ok", "warm"),
+                run_ok("warm")]
+        self.assertEqual(harness.classify(finished("\n".join(over)), "cd_halt_ok", (), 50)[0], "FAIL")
+        self.assertEqual(harness.classify(finished("\n".join(GOOD)), "cd_halt_ok", (), 74)[0], "PASS")
+
+    def test_incomplete_capability_record_is_blocked(self):
+        for cap in ('CAP {"instruction_step":true,"cdrom_hardware":true,"disc_given":true}',
+                    'CAP {"instruction_step":true,"cdrom_hardware":true,"cdrom_media":false,"disc_given":true}',
+                    'CAP {"instruction_step":true,"cdrom_hardware":true,"cdrom_media":true}'):
+            self.assertEqual(self.check([cap] + GOOD[1:])[0], "BLOCKED", cap)
+        self.assertEqual(self.check([CAP, CAP] + GOOD[1:])[0], "BLOCKED")
+
+    def test_spoofed_success_labels_are_fail(self):
+        spoof_phase = [CAP, 'PHASE {"name":"cd_halt_ok","cycle":"cold"}', hit("cd_halt_ok", "warm"),
+                       run_ok("warm")]
+        self.assertEqual(self.check(spoof_phase)[0], "FAIL")
+        hit_after_run = [CAP, run_ok("cold"), hit("cd_halt_ok", "cold"), hit("cd_halt_ok", "warm"), run_ok("warm")]
+        self.assertEqual(self.check(hit_after_run)[0], "FAIL")
+        other_cycle = [CAP, hit("cd_halt_ok", "cold"), run_ok("cold"), hit("cd_halt_ok", "hot"), run_ok("hot")]
+        self.assertEqual(self.check(other_cycle)[0], "FAIL")
+
+    def test_partial_evidence_never_yields_verified(self):
+        partial = [CAP, hit("cd_halt_ok", "cold"), run_ok("cold", steps=63), hit("cd_halt_ok", "warm"), run_ok("warm")]
+        status, _, _ = self.check(partial)
+        self.assertFalse(harness.attestation(status, "a" * 64, "b" * 64, "cd_halt_ok")["verified"])
 
     def test_forbidden_label_and_budget_exhaustion_fail(self):
         forbidden = "\n".join([CAP, run("cd_halt_ok", "cold"), hit("cd_halt_fail", "cold")])
@@ -54,15 +142,15 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(harness.classify(finished(block), "x")[:2], ("BLOCKED", "no media"))
         self.assertEqual(harness.classify(finished("", 6), "x")[0], "BLOCKED")
         for code in (2, 3, 4, 5, 1, -9, 139):
-            self.assertEqual(harness.classify(finished(CAP + "\n" + run("x", "cold"), code), "x")[0], "FAIL", code)
+            self.assertEqual(harness.classify(finished("\n".join(GOOD), code), "cd_halt_ok")[0], "FAIL", code)
 
     def test_malformed_record_is_fail(self):
         self.assertEqual(harness.classify(finished(CAP + "\nRUN {broken"), "x")[0], "FAIL")
 
     def test_timeout_result_is_fail_even_with_good_output(self):
-        result = finished("\n".join([CAP, run("x", "cold")]))
+        result = finished("\n".join(GOOD))
         result.update(status="FAIL", reason="timeout after 1s")
-        self.assertEqual(harness.classify(result, "x")[0], "FAIL")
+        self.assertEqual(harness.classify(result, "cd_halt_ok")[0], "FAIL")
 
 
 class RunJobTests(unittest.TestCase):
@@ -170,6 +258,67 @@ class StageAndLimitTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 harness.parse_records(lines)
             self.assertEqual(harness.classify(finished(lines), "x")[0], "FAIL")
+
+
+class StreamingDigestTests(unittest.TestCase):
+    """Digests are streamed in CHUNK_BYTES reads; no input is ever held whole in memory."""
+
+    class Zeros:
+        """A virtual file of `size` zero bytes that records every read size; it allocates no disk."""
+        ZERO = bytes(CHUNK)
+
+        def __init__(self, size):
+            self.left = size
+
+        def read(self, n=-1):
+            take = min(n, self.left)
+            self.left -= take
+            return self.ZERO[:take]
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.dir = Path(self.temp.name)
+        self.no_whole_reads = patch.object(Path, "read_bytes", side_effect=AssertionError("read_bytes used"))
+        self.no_whole_reads.start()
+        self.addCleanup(self.no_whole_reads.stop)
+
+    def test_chunk_size_is_one_mib(self):
+        self.assertEqual(getattr(harness, "CHUNK_BYTES", None), CHUNK)
+
+    def test_sha256_matches_whole_file_digest(self):
+        data = os.urandom(2 * CHUNK + 123)  # spans several chunks
+        path = self.dir / "multi.bin"
+        path.write_bytes(data)
+        reads = []
+        self.assertEqual(harness.sha256(path, reads), hashlib.sha256(data).hexdigest())
+        self.assertEqual(sum(reads), len(data))
+
+    def test_fixture_digest_matches_concatenation_in_cue_order(self):
+        disc = self.dir / "disc"
+        disc.mkdir()
+        first, second = os.urandom(CHUNK + 7), os.urandom(31)
+        (disc / "a.bin").write_bytes(first)
+        (disc / "b.bin").write_bytes(second)
+        expected = hashlib.sha256(first + second).hexdigest()
+        reads = []
+        self.assertEqual(harness.fixture_digest(disc, ["a.bin", "b.bin"], reads), expected)
+        self.assertEqual(sum(reads), CHUNK + 7 + 31)
+
+    def test_reads_stay_bounded_as_the_file_grows(self):
+        for size in (3 * CHUNK + 5, 256 * CHUNK):  # 256 MiB virtual file
+            reads = []
+            digest = harness._update_digest(hashlib.sha256(), self.Zeros(size), reads)
+            if size < 8 * CHUNK:  # value check only where the reference fits comfortably
+                self.assertEqual(digest.hexdigest(), hashlib.sha256(bytes(size)).hexdigest())
+            self.assertEqual(sum(reads), size)
+            self.assertLessEqual(max(reads), CHUNK)  # memory per read never grows with the file
+            self.assertEqual(len(reads), -(-size // CHUNK))
+
+    def test_describe_file_uses_streaming_hash(self):
+        path = self.dir / "rom.pce"
+        path.write_bytes(bytes(8192))
+        self.assertEqual(harness.describe_file(path, rom=True)["sha256"], hashlib.sha256(bytes(8192)).hexdigest())
 
 
 class ArtifactPolicyTests(unittest.TestCase):
