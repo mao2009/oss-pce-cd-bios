@@ -60,3 +60,11 @@ dev-cdread: dev-rom
 
 dev-cdread-integration: dev-cdread
 	$(PYTHON) tests/integration/geargrafx_cdread.py --mode "$(MODE)"
+
+.PHONY: dev-cdload-exec dev-cdload-exec-integration
+# Opt-in Issues #14/#5 load-and-execute experiment; separate from the default DEV ROM and the other diagnostics.
+dev-cdload-exec: dev-rom
+	$(PYTHON) tools/build_cdload_exec.py --mode "$(MODE)"
+
+dev-cdload-exec-integration: dev-cdload-exec
+	$(PYTHON) tests/integration/geargrafx_cdload_exec.py --mode "$(MODE)"
