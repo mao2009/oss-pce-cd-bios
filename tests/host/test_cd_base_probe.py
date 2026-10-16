@@ -64,10 +64,32 @@ class JudgeTest(unittest.TestCase):
         rec = record(plain_reads=[{"block": 5, "read_lba": 155}, {"block": 6, "read_lba": 156}],
                      cd_base_reads=[{"inputs": base, "block": 5, "read_lba": 300},
                                     {"inputs": {**base, "_al": 2}, "block": 5, "read_lba": 400},
-                                    {"inputs": {**base, "_cl": 3}, "block": 5, "read_lba": 300}])
+                                    {"inputs": {**base, "_cl": 3}, "block": 5, "read_lba": 300},
+                                    {"inputs": base, "block": 6, "read_lba": 301}])
         out = h.judge(rec)
         self.assertEqual(out["(1)"]["bytes_that_change_the_read"], ["_al"])
         self.assertEqual(out["(4)"]["cd_base_changes_offset"], True)
+
+    def test_null_read_rows_do_not_count_as_blocks(self):
+        # MAJOR-1: only one block was actually read, so (2) must not be decided.
+        out = h.judge(record(plain_reads=[{"block": 5, "read_lba": 155}, {"block": 6, "read_lba": None}]))
+        self.assertEqual(out["(2)"]["status"], "UNKNOWN")
+
+    def test_relation_needs_two_cd_base_blocks_read(self):
+        # MAJOR-2: CD_BASE-side reads all null, or only one block read -> (4) UNKNOWN.
+        plain = [{"block": 5, "read_lba": 155}, {"block": 6, "read_lba": 156}]
+        inputs = {"_al": 1}
+        for based in ([{"inputs": inputs, "block": 5, "read_lba": None}, {"inputs": inputs, "block": 6, "read_lba": None}],
+                      [{"inputs": inputs, "block": 5, "read_lba": 300}, {"inputs": inputs, "block": 6, "read_lba": None}]):
+            self.assertEqual(h.judge(record(plain_reads=plain, cd_base_reads=based))["(4)"]["status"], "UNKNOWN")
+
+    def test_relation_unknown_when_index01_zero(self):
+        # MAJOR-2: (2) UNKNOWN on an INDEX 01 = 0 disc implies (4) UNKNOWN.
+        out = h.judge(record(fixture_index01_lba=0,
+                             plain_reads=[{"block": 5, "read_lba": 5}, {"block": 6, "read_lba": 6}],
+                             cd_base_reads=[{"inputs": {"_al": 1}, "block": 5, "read_lba": 300},
+                                            {"inputs": {"_al": 1}, "block": 6, "read_lba": 301}]))
+        self.assertEqual((out["(2)"]["status"], out["(4)"]["status"]), ("UNKNOWN", "UNKNOWN"))
 
     def test_side_effects_and_returns_are_reported_verbatim(self):
         rec = record(side_effects={"mpr_before": [0xff, 0xf8, 1, 2, 3, 4, 5, 0], "mpr_after": [0xff, 0xf8, 1, 9, 3, 4, 5, 0],
@@ -82,6 +104,9 @@ class JudgeTest(unittest.TestCase):
         self.assertEqual(h.judge(h.record_from_api_rows(rows, 0xE100))["(1)"]["status"], "BLOCKED")
         with self.assertRaises(ValueError):
             h.record_from_api_rows([{"pc": 0}, {"pc": 0xE200, "x": 2}], 0xE100)
+        for empty in ([], [{"pc": 0xF000, "x": 0}]):  # MINOR-3: no post-entry rows is not evidence
+            with self.assertRaises(ValueError):
+                h.record_from_api_rows(empty, 0xE100)
 
 
 if __name__ == "__main__":

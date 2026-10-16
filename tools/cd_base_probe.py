@@ -55,6 +55,11 @@ def _offsets(rows):
     return {row["read_lba"] - row["block"] for row in rows if row.get("read_lba") is not None}
 
 
+def _blocks_read(rows):
+    """Distinct block numbers among rows where a READ was actually issued (read_lba not null)."""
+    return len({row["block"] for row in rows if row.get("read_lba") is not None})
+
+
 def _candidates(offset, index01):
     """Candidate models (ledger §4) consistent with one constant offset read_lba - block."""
     names = []
@@ -76,7 +81,7 @@ def judge(record) -> dict:
     index01 = record.get("fixture_index01_lba")
     plain = record.get("plain_reads", [])
     plain_offsets = _offsets(plain)
-    if len({row["block"] for row in plain}) >= 2 and len(plain_offsets) == 1:
+    if _blocks_read(plain) >= 2 and len(plain_offsets) == 1:
         (offset,) = plain_offsets
         if not index01:
             out["(2)"] = {"status": "UNKNOWN", "reason": "INDEX 01 is LBA 0: absolute and track-relative coincide"}
@@ -85,7 +90,8 @@ def judge(record) -> dict:
     elif len(plain_offsets) > 1:
         out["(2)"] = {"status": "UNKNOWN", "reason": f"no constant offset: {sorted(plain_offsets)}"}
     based = record.get("cd_base_reads", [])
-    if based and len(plain_offsets) == 1:
+    # (4) needs a decided (2) baseline and the same premise on the CD_BASE side: >=2 blocks actually read.
+    if out["(2)"]["status"] == "OBSERVED" and _blocks_read(based) >= 2:
         changed = _offsets(based) != plain_offsets
         out["(4)"] = {"status": "OBSERVED", "cd_base_changes_offset": changed, "offsets": sorted(_offsets(based))}
     read_bytes = set()
@@ -112,7 +118,7 @@ def judge(record) -> dict:
 
 def record_from_api_rows(rows, handler: int) -> dict:
     """Build a judge record from geargrafx_api_probe rows of a jump to $E006 (slot $02)."""
-    stuck = all(row["pc"] == handler and row["x"] == 2 for row in rows[1:])
+    stuck = len(rows) >= 2 and all(row["pc"] == handler and row["x"] == 2 for row in rows[1:])
     if not stuck:
         raise ValueError("slot $02 rows do not show the fail-closed fallback")
     return {"callee": "nonreturning", "fixture_index01_lba": INDEX01_LBA,
