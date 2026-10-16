@@ -128,3 +128,15 @@ python3 tools/reference_bios_runner.py /tmp/opencode/refbios/reset-config.json \
 - **合成**: 合成BIOS/合成CDによるCIテスト（`geargrafx_reference_guard.py`）。
 - **推定**: 未検証の仮定（コアページ1のハードウェア相違等）。
 - **NOT RUN**: 未実行のAPI/シナリオ（80スロット＋9 PSG、起動、商用ゲーム）。
+
+---
+
+### 補足：メモリ保護の是正（セキュリティレビュー対応）
+
+PR #170のガード付き参照実行で、物理バンクエイリアスによる書込み保護の抜け穴を実コアで確認し是正した。
+
+- **欠陥（實測）**: `Memory::GetMemoryMapWrite()`は物理バンク（MPR値）単位であり、MPR0==MPR1==0xF8（ページ0とページ1が同一ワークRAMバンク）かつページ1のみ許可リストに入っていると、`STA $0000`（ページ0）が書込み禁止をすり抜けてワークRAMに到達した。CPUアドレス書込みブレークポイントも`[$4000, $FFFF]`のみを対象としていたため、ページ0への書込みは検出されなかった。実コア観測: `detected=false`, `reason=forbidden_write_not_detected`, 書込み先が`ram_diff`で`0x2000`と誤報告された。
+- **是正**: (1) 実行前に物理バンクが許可ページと非許可ページを共有する場合、プローブを終了コード8で拒否（fail closed, `BLOCKED`）; (2) ページ0をWRAMバンクではなくROMバンク0にマップし、エイリアスを解消; (3) 非許可CPUアドレス全域`[0, allow_start) ∪ [allow_end, $FFFF]`をCPUアドレス書込みブレークポイントで監視（ブレークポイントは`Memory::Write()`内でストア実行前に発火、検出；`map_write`のdeny-by-defaultで防止）; (4) ガード判定を対象アドレスの前後バイト等価＋ブレークポイント検出フラグで行う。
+- **結果（RED→GREEN）**: 是正前は`STA $0000/$1FFF`が`detected=false`で書込み到達（RED）。是正後は`detected=true`, `ram_diff`空（書込み抑制）, 許可ページ`$2000/$3FFF/$3E50`は書込み到達かつ未検出（GREEN）。エイリアス構成（MPR0==MPR1）は終了コード8で拒否。`make test` 689テスト OK、`make check` PASS。
+
+この是正後も、slot `$1E`以外の80スロット＋9 PSGサブコマンド、ST0/ST1/ST2など`Memory::Write()`を経由しないI/O経路、実ハードウェア動作、System Card起動は未検証／BLOCKEDのまま。
