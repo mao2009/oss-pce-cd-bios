@@ -112,7 +112,10 @@ class EvidenceProvenanceTests(unittest.TestCase):
         derived.update(re.findall(r'results\["(\w+)"\] = \{\s*"status": "(\w+)"', text))
         self.assertIn('f"halt_unconfirmed_cut_{extra}_steps_after_arrival"', text)
         self.assertIn('for extra in (0, 1, HALT_CONFIRM_STEPS - 1):', text)
-        derived.update({f'halt_unconfirmed_cut_{n}_steps_after_arrival': 'PASS_EXPECTED_FAILURE' for n in (0, 1, 63)})
+        steps = int(re.search(r'^HALT_CONFIRM_STEPS = (\d+)$', (ROOT / 'tools/build_cdread.py').read_text(
+            encoding='utf-8'), re.M)[1])
+        derived.update({f'halt_unconfirmed_cut_{n}_steps_after_arrival': 'PASS_EXPECTED_FAILURE'
+                        for n in (0, 1, steps - 1)})
         self.assertEqual(derived, ep.SCENARIO_KIND)
         # The #118 tools/cd_read_contract.py table is a subset with the same kinds.
         contract = {'single_sector_lba5': 'PASS', 'first_sector_lba0': 'PASS', 'last_sector_lba15': 'PASS',
@@ -317,6 +320,10 @@ class EvidenceProvenanceTests(unittest.TestCase):
                 self.assertIn('BLOCKED', printed.call_args[0][0])
                 (tmp / 'run.json').write_text(json.dumps(make_run()))
                 self.assertEqual(ep.main(full + ['--run', str(tmp / 'run.json')]), 0)
+                missing_rom = base + ['--attestation', str(tmp / 'att.json'), '--rom', str(tmp / 'nope'),
+                                      '--run', str(tmp / 'run.json')]
+                self.assertEqual(ep.main(missing_rom), 1)
+                self.assertIn('BLOCKED', printed.call_args[0][0])
             with mock.patch('builtins.print'), mock.patch('sys.stderr'):
                 self.assertEqual(ep.main(['x', 'a', '--repo', 'bad', '--commit', COMMIT]), 2)
                 with self.assertRaises(SystemExit):

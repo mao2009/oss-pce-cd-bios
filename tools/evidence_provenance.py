@@ -163,7 +163,7 @@ def run_findings(result, run, policy):
     """runInvocationURI must name the supplied workflow-run attempt, and that run must be main's signing workflow."""
     repo, commit = policy['repository'], policy['commit']
     uri = _get(result, 'signature', 'certificate', 'runInvocationURI')
-    match = re.fullmatch(rf'https://github\.com/{re.escape(repo)}/actions/runs/(\d+)/attempts/(\d+)', str(uri))
+    match = re.fullmatch(rf'https://github\.com/{re.escape(repo)}/actions/runs/([0-9]+)/attempts/([0-9]+)', str(uri))
     if not match:
         return [f'runInvocationURI {uri!r} is not a workflow run of {repo}']
     findings = []
@@ -254,7 +254,10 @@ def main(argv):
         geargrafx = json.load(handle)['geargrafx']
     with open(args.artifact, 'rb') as handle:
         artifact_bytes = handle.read()
-    rom_bytes = Path(args.rom).read_bytes() if args.rom else None
+    try:
+        rom_bytes = Path(args.rom).read_bytes() if args.rom else None
+    except OSError:
+        rom_bytes = None  # unreadable ROM -> BLOCKED
     attestation = _load_json(args.attestation) if args.attestation else None
     if args.attestation and attestation is None:
         attestation = []  # unreadable gh output -> BLOCKED, never LOCAL_ONLY
