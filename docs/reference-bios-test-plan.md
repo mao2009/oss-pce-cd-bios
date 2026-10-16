@@ -57,3 +57,26 @@ standalone execution adapter, local-only capture of pure functional outputs, and
 a differential result comparator. Prioritize EX_GETVER, BCD conversions and
 arithmetic functions for low-risk end-to-end examples, followed by CD_BASE,
 CD_READ and CD_EXEC once the call contract is sufficiently understood.
+
+
+## ABI-driven fixture worklist and safe preflight
+
+```sh
+python3 tools/reference_abi_worklist.py --output build/reference-bios/abi-worklist.json
+python3 -m unittest tests.host.test_reference_bios_preflight -v
+python3 tools/reference_bios_preflight.py local-reference-config.json
+```
+
+`reference_abi_worklist.py` extracts per-slot caller/callee hypotheses and evidence-source IDs
+from `spec/api_contracts.json`; it **does not promote** hypotheses to measured expectations
+or auto-fill runnable register/argument values. PSG selectors remain design-only until
+their independent dispatch contract is established.
+
+`reference_bios_preflight.py` validates a private per-case run configuration (digest
+format, bounded instruction budget, RAM write allowlist, explicit ABI/fixture approval).
+It does **not** open the BIOS, check file hashes against bytes, invoke Geargrafx,
+enforce runtime memory writes, or perform any observation. A successful preflight prints
+`PREFLIGHT_ONLY`, which cannot be interpreted as a BIOS test success.
+
+A real adapter must independently enforce budgets/allowlists and hash private inputs
+before executing any case; no unreviewed fixture may be auto-executed.
