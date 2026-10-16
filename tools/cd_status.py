@@ -27,6 +27,7 @@ else:
 PASS, FAIL, NOT_RUN, BLOCKED = 'PASS', 'FAIL', 'NOT_RUN', 'BLOCKED'
 MEASURED, SOURCE_DEFINED, HYPOTHESIS = 'MEASURED', 'SOURCE_DEFINED', 'HYPOTHESIS'
 MAX_SECTORS = 3  # the buffer holds three sectors (docs/cd-read-diagnostic.md, step 3)
+INVALID_REQUEST_STAGE = 1  # RES+1 is set to 1 before the count check, so a refused count halts at stage 1
 HALT_OK, HALT_FAIL, BUDGET = 'cd_halt_ok', 'cd_halt_fail', 'budget'
 REQUIRED_KEYS = ('reason', 'result_hex', 'halt_confirmed', 'halt_confirmation_steps',
                  'halt_confirmation_required', 'halted_after_step', 'step')
@@ -76,12 +77,15 @@ def classify_run(run, count, expect=None, media=True):
         block = result_block(run)
     except (ValueError, KeyError, IndexError) as error:
         return _verdict(BLOCKED, 'INCOMPLETE_RECORD', f'{cycle}: result block unreadable ({error})')
-    code, transferred = block['code'], block['bytes']
+    code, stage, transferred = block['code'], block['stage'], block['bytes']
     if not 1 <= count <= MAX_SECTORS:
-        # the probe must refuse this request with code 9 before touching the bus
-        if code != 9 or reason != HALT_FAIL:
-            return _verdict(FAIL, 'PROTOCOL_MISMATCH', f'{cycle}: count {count} outside 1..{MAX_SECTORS} '
-                            f'must halt with code 9, observed {code}', code, MEASURED)
+        # the probe refuses this request at stage 1 (src/cd_read_probe.s, @bad_request) with code 9 and no
+        # transfer. This checks the single RUN record only; it does not prove the bus was untouched (PHASE/HIT
+        # evidence is a separate step).
+        if reason != HALT_FAIL or code != 9 or stage != INVALID_REQUEST_STAGE or transferred != 0:
+            return _verdict(FAIL, 'PROTOCOL_MISMATCH', f'{cycle}: count {count} outside 1..{MAX_SECTORS} must halt '
+                            f'with code 9 at stage {INVALID_REQUEST_STAGE} and 0 bytes, observed code {code} '
+                            f'stage {stage} {transferred} bytes', code, MEASURED, transferred)
         return _verdict(PASS if expect in (None, 9) else FAIL, 'INVALID_REQUEST',
                         f'{cycle}: invalid count rejected with code 9', 9, MEASURED, transferred)
     if reason == HALT_OK:

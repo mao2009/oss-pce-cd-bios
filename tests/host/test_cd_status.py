@@ -88,12 +88,30 @@ class ClassifyRunTests(unittest.TestCase):
         self.assertEqual(classify_run(run(reason="cd_halt_fail", result_hex="00"), 1).outcome, BLOCKED)
 
     def test_boundary_request_count_zero_and_four_must_be_rejected_with_code_9(self):
+        # the probe refuses at stage 1 before any bus transfer: 0 bytes is part of the expected evidence
         for count in (0, 4):
-            self.assertEqual(classify_run(run(code=9, stage=1, reason="cd_halt_fail"), count, expect=9).outcome, PASS)
-            self.assertEqual(classify_run(run(code=9, stage=1, reason="cd_halt_fail"), count).outcome, PASS)
+            self.assertEqual(classify_run(run(code=9, stage=1, transferred=0, reason="cd_halt_fail"),
+                                          count, expect=9).outcome, PASS)
+            self.assertEqual(classify_run(run(code=9, stage=1, transferred=0, reason="cd_halt_fail"),
+                                          count).outcome, PASS)
             self.assertEqual(classify_run(run(code=0), count).category, "PROTOCOL_MISMATCH")
             self.assertEqual(classify_run(run(code=5, stage=5, reason="cd_halt_fail"), count).category,
                              "PROTOCOL_MISMATCH")
+
+    def test_negative_invalid_request_with_transferred_bytes_never_passes(self):
+        # regression: code 9 + 2048 bytes used to PASS on code and reason alone
+        for count in (0, 4):
+            for expect in (None, 9):
+                verdict = classify_run(run(code=9, stage=1, transferred=2048, reason="cd_halt_fail"),
+                                       count, expect=expect)
+                self.assertEqual((verdict.outcome, verdict.category), (FAIL, "PROTOCOL_MISMATCH"), (count, expect))
+
+    def test_negative_invalid_request_must_halt_at_stage_one_with_zero_bytes(self):
+        for count in (0, 4):
+            for bad in (dict(stage=9), dict(stage=5), dict(transferred=1), dict(transferred=6144)):
+                verdict = classify_run(run(code=9, reason="cd_halt_fail", **{"transferred": 0, **bad}),
+                                       count, expect=9)
+                self.assertEqual((verdict.outcome, verdict.category), (FAIL, "PROTOCOL_MISMATCH"), (count, bad))
 
     def test_boundary_count_three_is_valid_and_nine_is_not_reported_for_it(self):
         self.assertEqual(classify_run(run(code=9, stage=1, reason="cd_halt_fail"), 3).category, "INVALID_REQUEST")
