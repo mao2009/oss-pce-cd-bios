@@ -142,3 +142,30 @@ before/callee/after checkpoint, and enforce instruction/write budgets in
 the core itself. That execution path is still unimplemented for all 90
 functional API scenarios. Keep every `slot-XX` and `psg-48-XX`
 blocked until then.
+
+
+## Experimental real guest JSR caller (slot 0x1E only)
+
+`tests/integration/geargrafx_reference_jsr.cpp` places an explicit, original
+five-byte test program at guest work RAM `$2200`: `JSR $E05A; BRA *`.
+It initializes a **synthetic** guest context (MPR1=$F8, MPR7=0, A/X/Y=0,
+SP=$FF), then executes the JSR with the pinned real Geargrafx HuC6280 core.
+The C++ probe emits BEFORE, ENTRY, AFTER snapshots and returns a failure when
+the target entry or return checkpoint is absent. Python
+`tools/geargrafx_reference_adapter.py` now accepts only
+`api_id=slot-1e` as an experimental callable API candidate and sends the
+result to the existing LOCAL_ONLY runner.
+
+To try locally, select slot-1e in your reviewed private config, pin both
+input file hashes, set a bounded `max_instructions` between 3 and 1000000,
+and invoke `reference_bios_runner.py` with the Python adapter.
+
+**Unverified assumptions:** the candidate EX_GETVER entry is $E05A and
+its ABI permits this synthetic CPU context; this must be assessed by
+observation. This experiment **does not** execute the test ROM supplied in
+the config, does not run the normal BIOS boot initialization, does not yet
+provide a true BEFORE/AFTER RAM diff, does not enforce write allowlists
+during real-core execution, and does not cover the remaining 89 services.
+Therefore even a completed JSR/RTS is **not** an ABI PASS or game compatibility
+claim. C++ build and execution against a private reference BIOS remain NOT RUN
+until performed locally.
