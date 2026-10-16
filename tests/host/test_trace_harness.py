@@ -166,6 +166,35 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(harness.classify(result, "cd_halt_ok")[0], "FAIL")
 
 
+class ParseRecordsTests(unittest.TestCase):
+    """The line-leading tag is the only authority for event kind; the JSON body is data only."""
+
+    def test_body_tag_cannot_turn_hit_into_run(self):
+        spoof = 'HIT {"tag":"RUN","name":"cd_halt_ok","cycle":"cold","pc":61440,"mpr":[255,255,255,255,255,255,255,255]}'
+        text = "\n".join([CAP, spoof, run_ok("cold"), hit("cd_halt_ok", "warm"), run_ok("warm")])
+        with self.assertRaises(ValueError):
+            harness.parse_records(text)
+        self.assertEqual(harness.classify(finished(text), "cd_halt_ok")[0], "FAIL")
+
+    def test_body_tag_cannot_turn_run_into_cap(self):
+        spoof = run_ok("cold")[:-1] + ', "tag": "CAP"}'
+        text = "\n".join([CAP, hit("cd_halt_ok", "cold"), spoof, hit("cd_halt_ok", "warm"), run_ok("warm")])
+        with self.assertRaises(ValueError):
+            harness.parse_records(text)
+        self.assertEqual(harness.classify(finished(text), "cd_halt_ok")[0], "FAIL")
+
+    def test_invalid_json_body_is_value_error(self):
+        with self.assertRaises(ValueError):
+            harness.parse_records(CAP + "\nHIT {not json")
+
+    def test_non_dict_json_body_is_value_error(self):
+        for body in ("[1,2]", "42", '"RUN"', "null"):
+            with self.subTest(body=body):
+                with self.assertRaises(ValueError):
+                    harness.parse_records(f"HIT {body}")
+                self.assertEqual(harness.classify(finished(CAP + "\nHIT " + body), "cd_halt_ok")[0], "FAIL")
+
+
 class RunJobTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

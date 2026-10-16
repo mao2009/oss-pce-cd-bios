@@ -186,7 +186,12 @@ def parse_records(stdout):
         if tag in TAGS:
             if len(events) >= MAX_EVENTS:
                 raise ValueError(f"more than {MAX_EVENTS} trace records")
-            events.append({"tag": tag, **json.loads(body)})
+            record = json.loads(body)
+            if not isinstance(record, dict):
+                raise ValueError(f"{tag} body is not a JSON object")
+            if "tag" in record:  # the line-leading tag alone decides the kind; a body tag is a spoof
+                raise ValueError(f"{tag} body carries its own 'tag' field")
+            events.append({"tag": tag, **record})
     return events
 
 
