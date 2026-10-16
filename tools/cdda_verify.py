@@ -3,9 +3,11 @@
 Separates two different successes that look alike from the guest side:
   * READ(6) on an audio LBA: the drive returns bytes, but CdRomAudio stays IDLE and plays nothing.
   * CD-DA playback ($D8): CdRomAudio goes PLAYING and its sample BUFFER carries the BIN's PCM.
-Every claim is checked against the original fixture generator (tools/make_cd_image.audio_frame),
-never against the emulator's own output. These are pinned-Geargrafx facts, NOT the System Card
-CD_PLAY ABI and NOT real-hardware behaviour.
+Expected samples are computed with tools/make_cd_image.audio_frame(distinct_right=True), the SAME
+function that wrote the BIN: a match shows the emulator delivered the BIN's PCM at the right LBA, sample
+offset, byte order and channel, never that the generator itself is right. "Playback" here means only
+CdRomAudio PLAYING + that PCM match; the TOC track type is not consulted (see docs/cdda-core-observation.md).
+These are pinned-Geargrafx facts, NOT the System Card CD_PLAY ABI and NOT real-hardware behaviour.
 """
 import json
 
@@ -19,6 +21,7 @@ else:
 # CdRomAudio::CdAudioState in the pinned source (cdrom_audio.h)
 PLAYING, IDLE, PAUSED, STOPPED = 0, 1, 2, 3
 SAMPLES_PER_SECTOR = 588
+DISTINCT_RIGHT = True     # fixture right channel = ~left, so a channel swap cannot compare equal
 SENTINEL = 0x5A
 SECTOR_BYTES = 2048
 # Guest command script (src/cdda_probe.s cdda_table): opcode and expected data-in bytes per command.
@@ -37,7 +40,7 @@ def parse(stdout: str) -> dict:
 
 
 def pcm(lba: int, sample: int) -> tuple:
-    frame = audio_frame(lba - AUDIO_START_LBA)
+    frame = audio_frame(lba - AUDIO_START_LBA, DISTINCT_RIGHT)
     left = int.from_bytes(frame[sample * 4:sample * 4 + 2], "little", signed=True)
     right = int.from_bytes(frame[sample * 4 + 2:sample * 4 + 4], "little", signed=True)
     return left, right
@@ -85,7 +88,7 @@ def check_guest(run: dict) -> None:
 def check_read6_on_audio(records: dict, run: dict, points: dict) -> dict:
     """READ(6) LBA 16 delivered bytes, yet started no CD-DA."""
     buffer = bytes.fromhex(run["buffer_hex"])
-    if buffer[:SECTOR_BYTES] != audio_frame(0)[16:16 + SECTOR_BYTES]:
+    if buffer[:SECTOR_BYTES] != audio_frame(0, DISTINCT_RIGHT)[16:16 + SECTOR_BYTES]:
         raise ValueError("READ(6) on the audio LBA did not return the frame bytes 16.. of the BIN")
     if any(b != SENTINEL for b in buffer[SECTOR_BYTES:]):
         raise ValueError("READ(6) wrote beyond one sector")

@@ -1,7 +1,7 @@
 """Host checks for the Issue #15 CD-DA judge on synthetic observations (no emulator needed)."""
 import unittest
 
-from tools.cdda_verify import IDLE, PAUSED, PLAYING, SAMPLES_PER_SECTOR, SCRIPT, STOPPED, check_all, pcm
+from tools.cdda_verify import DISTINCT_RIGHT, IDLE, PAUSED, PLAYING, SAMPLES_PER_SECTOR, SCRIPT, STOPPED, check_all, pcm
 from tools.make_cd_image import audio_frame
 
 
@@ -35,7 +35,7 @@ def synthetic(played=SAMPLES_PER_SECTOR + 10):
     for offset, state in ((0x80, PLAYING), (0x90, PAUSED), (0xA0, STOPPED)):
         result[offset:offset + 10] = bytes((state, 1, 2, 1)) + msf(rel) + msf(ab)
     run = {"reason": "cdda_halt_ok", "halt_confirmed": True, "unattributed_nonzero": 0,
-           "result_hex": result.hex(), "buffer_hex": (audio_frame(0)[16:2064] + b"\x5a" * 256).hex()}
+           "result_hex": result.hex(), "buffer_hex": (audio_frame(0, DISTINCT_RIGHT)[16:2064] + b"\x5a" * 256).hex()}
     return {"CAP": [{"instruction_step": True, "cdrom_hardware": True, "cdrom_media": True}], "HIT": hits,
             "AUD": rows, "JUMP": [[0, 0, 16, 0, 199]], "RUN": [run]}
 
@@ -57,6 +57,7 @@ class CddaJudgeTests(unittest.TestCase):
             records["RUN"][0]["result_hex"] = data.hex()
         cases = {
             "pcm_sample_wrong": lambda r: r["AUD"][300].__setitem__(2, r["AUD"][300][2] + 1),
+            "channels_swapped": lambda r: r["AUD"].__setitem__(300, [*r["AUD"][300][:2], r["AUD"][300][3], r["AUD"][300][2], r["AUD"][300][4]]),
             "gap_in_stream": lambda r: r["AUD"].pop(100),
             "too_few_samples": lambda r: r.update(AUD=r["AUD"][:10]),
             "samples_before_play": lambda r: r["AUD"][0].__setitem__(4, 50),

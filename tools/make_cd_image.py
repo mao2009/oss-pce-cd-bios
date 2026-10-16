@@ -47,16 +47,22 @@ def raw_sector(lba: int) -> bytes:
     return raw
 
 
-def audio_frame(index: int) -> bytes:
-    """One 2352-byte CD-DA frame (16-bit stereo): a quiet, deterministic, non-silent ramp."""
+def audio_frame(index: int, distinct_right: bool = False) -> bytes:
+    """One 2352-byte CD-DA frame (16-bit stereo): a quiet, deterministic, non-silent ramp.
+
+    distinct_right=True stores ~left (never equal to left) in the right channel so a swap is detectable;
+    the default keeps L == R, the layout every existing fixture and expectation was built on.
+    """
     samples = bytearray()
     for i in range(RAW_BYTES // 4):
         value = ((index * 588 + i) * 37 % 2001) - 1000
-        samples += value.to_bytes(2, "little", signed=True) * 2
+        right = ~value if distinct_right else value
+        samples += value.to_bytes(2, "little", signed=True) + right.to_bytes(2, "little", signed=True)
     return bytes(samples)
 
 
-def build_image(directory: Path, sectors: int = DEFAULT_SECTORS, audio_sectors: int = 0) -> dict:
+def build_image(directory: Path, sectors: int = DEFAULT_SECTORS, audio_sectors: int = 0,
+                distinct_right: bool = False) -> dict:
     """Write CUE/BIN into `directory` and return the manifest (also written as JSON).
 
     audio_sectors > 0 appends an original CD-DA track 02 after the data track.
@@ -67,7 +73,7 @@ def build_image(directory: Path, sectors: int = DEFAULT_SECTORS, audio_sectors: 
     data = b"".join(raw_sector(lba) for lba in range(sectors))
     cue_text = f'FILE "{BIN_NAME}" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
     if audio_sectors:
-        data += b"".join(audio_frame(i) for i in range(audio_sectors))
+        data += b"".join(audio_frame(i, distinct_right) for i in range(audio_sectors))
         cue_text += (f"  TRACK 02 AUDIO\n    INDEX 01 {sectors // 4500:02d}:{sectors // 75 % 60:02d}:{sectors % 75:02d}\n")
     cue = cue_text.encode("ascii")
     (directory / BIN_NAME).write_bytes(data)
