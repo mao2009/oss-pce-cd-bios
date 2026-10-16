@@ -80,7 +80,7 @@ def main():
                                'geargrafx_profile': 'separate debugger-enabled source-identical build',
                                'source_archive_sha256': DEPENDENCIES['geargrafx']['sha256']},
                 'api_exit': {'status': 'NOT_OBSERVABLE', 'reason': 'all BIOS API stubs are nonreturning; no implemented callee'},
-                'nmi': {'status': 'NOT_OBSERVABLE', 'reason': 'pinned public CPU API has no NMI line injection'}}
+                'nmi': {'status': 'NOT_TESTED', 'reason': 'pinned Geargrafx HuC6280 has no NMI input or $FFFC dispatch'}}
     with tempfile.TemporaryDirectory(prefix='pce-api-probe-') as tmp:
         folder = Path(tmp)
         (folder / 'original.bin').write_bytes(bytes(2352 * 32))
@@ -137,7 +137,8 @@ def main():
         evidence['cpu_contract_experiments'] = run_contracts(probe, data, output, cue)
     (output / 'geargrafx-api-evidence.json').write_text(json.dumps(evidence, indent=2) + '\n')
     print('PASS real Geargrafx System Card diagnostic: reset/cold/warm, slots 00/48/50, original 4 negatives; '
-          '8 CPU/RAM/IRQ/JSR-slot experiments, 9 loader cases, 2 procedure negatives; A/X/Y/P/SP/MPR/RAM observed')
+          '9 CPU/RAM/IRQ1/IRQ2/timer/JSR-slot experiments, 9 loader cases, 2 procedure + 3 interrupt negatives; '
+          'A/X/Y/P/SP/MPR/RAM observed; NMI NOT_TESTED')
 
 
 if __name__ == '__main__':
