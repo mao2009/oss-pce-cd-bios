@@ -29,6 +29,8 @@ MODES = {
 }
 # Modes that have RAW sync pattern (00 FF...FF 00) and MSF header at bytes 12-14
 RAW_SYNC_MODES = {"MODE1/2352", "MODE2/2352", "AUDIO"}
+# Raw data modes whose header MSF must equal the physical disc LBA + 150 (AUDIO has no header)
+MSF_MODES = {"MODE1/2352", "MODE2/2352"}
 # Modes that support 2048-byte user data extraction via user_sector()
 USER_DATA_MODES = {"MODE1/2352"}
 PCE_BOOT_SIGNATURE = b"PC Engine CD-ROM SYSTEM"
@@ -166,8 +168,27 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def _check_pregap(f, start: int, frames: int, sector_bytes: int, pregap_lba: int) -> tuple:
+    """Count sync sectors in a pregap and report those whose header MSF disagrees with their disc LBA.
+
+    A pregap may legitimately hold sync sectors (for example a data pregap written as MODE1 frames),
+    so a sync frame is a finding only when its header does not match its position. Non-sync bytes are not checked.
+    """
+    sync_frames, bad = 0, []
+    for frame, data in _iter_frames(f, start, frames, sector_bytes):
+        if data[:len(SYNC)] != SYNC:
+            continue
+        sync_frames += 1
+        if _frame_lba(data[12:15]) != pregap_lba + frame + 150 and len(bad) < 5:
+            bad.append(frame)
+    return sync_frames, bad
+
+
 def _probe_track(f, start: int, frames: int, sector_bytes: int, track_lba: int, mode: str) -> dict:
-    """Validate up to MAX_PROBE_FRAMES frames from `start`: sync, mode byte and MSF == LBA + 150 for RAW modes."""
+    """Validate up to MAX_PROBE_FRAMES frames from `start`: sync, mode byte and MSF == LBA + 150 for MSF modes.
+
+    `track_lba` is the physical disc LBA of the first probed frame.
+    """
     probe = min(frames, MAX_PROBE_FRAMES)
     sync_frames, modes, msf_bad = 0, set(), []
     first_sync = first_user_data = None
@@ -181,7 +202,7 @@ def _probe_track(f, start: int, frames: int, sector_bytes: int, track_lba: int, 
             if first_sync is None:
                 first_sync = frame
             modes.add(data[15])
-            if mode == "MODE1/2352" and _frame_lba(data[12:15]) != track_lba + frame + 150:
+            if mode in MSF_MODES and _frame_lba(data[12:15]) != track_lba + frame + 150:
                 if len(msf_bad) < 5:
                     msf_bad.append(frame)
         if first_user_data is None and any(data[user_offset:user_offset + user_bytes]):
@@ -196,11 +217,17 @@ def _probe_track(f, start: int, frames: int, sector_bytes: int, track_lba: int, 
 
 
 def analyze(cue_path: Path, boot_signature: bytes = PCE_BOOT_SIGNATURE) -> dict:
-    """Full read-only analysis of `cue_path`; returns a JSON-serializable report and never payload bytes."""
+    """Full read-only analysis of `cue_path`; returns a JSON-serializable report and never payload bytes.
+
+    LBA contract (docs/cd-read-diagnostic.md): the first BIN frame is physical disc LBA 0, every frame
+    advances the disc position including pregap frames, and a sector header MSF must equal LBA + 150.
+    `pregap_start_lba` is the track's first frame (INDEX 00, or the CUE PREGAP start) and `start_lba`
+    (= `declared_data_lba`) is INDEX 01. A CUE PREGAP adds disc frames that are not stored in the BIN.
+    """
     cue_path = Path(cue_path)
     sheet = parse_cue(cue_path)
     folder = cue_path.parent
-    tracks, findings, next_lba = [], [], 0
+    tracks, findings, disc_cursor = [], [], 0
     for file in sheet["files"]:
         if not file["tracks"]:
             raise CueError(f"FILE {file['name']!r} has no tracks")
@@ -216,31 +243,37 @@ def analyze(cue_path: Path, boot_signature: bytes = PCE_BOOT_SIGNATURE) -> dict:
         if file_size % sector_bytes:
             raise CueError(f"{file['name']}: size {file_size} is not a multiple of {sector_bytes}")
         file_frames = file_size // sector_bytes
-        # Track start frames in BIN (first INDEX, typically INDEX 00 or 0 if no INDEX 00)
+        # First BIN frame of each track: its INDEX 00, or INDEX 01 when there is no INDEX 00
         starts = [min(t["index"].values()) if t["index"] else 0 for t in file["tracks"]]
         if starts != sorted(starts):
             raise CueError(f"{file['name']}: INDEX offsets are not increasing")
         for position, track in enumerate(file["tracks"]):
+            if "pregap" in track and 0 in track["index"]:
+                raise CueError(f"track {track['number']}: PREGAP and INDEX 00 are both given; ambiguous")
             bin_start_frame = starts[position]
             index01_frame = track["index"].get(1, bin_start_frame)
-            pregap_frames = index01_frame - bin_start_frame
-            track_bin_length = (starts[position + 1] if position + 1 < len(starts) else file_frames) - bin_start_frame
-            user_data_frames = track_bin_length - pregap_frames
+            bin_pregap = index01_frame - bin_start_frame  # pregap frames stored in the BIN (INDEX 00..01)
+            pregap_frames = bin_pregap + track.get("pregap", 0)  # CUE PREGAP frames are not stored in the BIN
+            bin_end_frame = starts[position + 1] if position + 1 < len(starts) else file_frames
+            user_data_frames = bin_end_frame - index01_frame
             if user_data_frames <= 0:
                 raise CueError(f"{file['name']}: track {track['number']} has non-positive user data length")
+            pregap_lba = disc_cursor
+            start_lba = pregap_lba + pregap_frames
             # Stream the track span: hash in HASH_CHUNK reads, probe/scan in FRAME_CHUNK reads.
             # Nothing here holds a whole track in memory, so peak usage does not grow with the BIN.
             track_offset = bin_start_frame * sector_bytes
-            track_size = track_bin_length * sector_bytes
+            track_size = (bin_end_frame - bin_start_frame) * sector_bytes
             is_audio = track["mode"] == "AUDIO"
             with bin_path.open("rb") as f:
                 entry = {"number": track["number"], "mode": track["mode"], "file": file["name"],
                          "audio": is_audio, "sector_bytes": sector_bytes, "length_frames": user_data_frames,
-                         "length_seconds": round(user_data_frames / 75, 3), "start_lba": next_lba,
+                         "length_seconds": round(user_data_frames / 75, 3),
+                         "pregap_start_lba": pregap_lba, "start_lba": start_lba,
+                         "declared_data_lba": start_lba,
                          "index": {str(k): v for k, v in sorted(track["index"].items())},
                          "index01_frame": index01_frame,
                          "pregap_frames": pregap_frames,
-                         "declared_data_lba": next_lba,
                          "sha256": _sha256_range(f, track_offset, track_size)}
                 if "pregap" in track:
                     entry["pregap"] = track["pregap"]
@@ -255,24 +288,26 @@ def analyze(cue_path: Path, boot_signature: bytes = PCE_BOOT_SIGNATURE) -> dict:
                         findings.append(f"track {track['number']}: AUDIO track unexpectedly contains MODE sync frames")
                 else:
                     # Probe only the user data portion (from INDEX 01 onwards)
-                    entry["sector"] = _probe_track(f, track_offset + pregap_frames * sector_bytes,
-                                                   user_data_frames, sector_bytes, next_lba, track["mode"])
+                    entry["sector"] = _probe_track(f, index01_frame * sector_bytes, user_data_frames,
+                                                   sector_bytes, start_lba, track["mode"])
                     sector = entry["sector"]
-                    # Check for sync frames appearing before INDEX 01 in the track span (pregap area)
-                    if pregap_frames > 0:
-                        if any(raw[:len(SYNC)] == SYNC
-                               for _, raw in _iter_frames(f, track_offset, pregap_frames, sector_bytes)):
-                            findings.append(f"track {track['number']}: sync data appears in pregap before INDEX 01")
                     # Only validate sync/MSF for RAW modes
                     if track["mode"] in RAW_SYNC_MODES:
+                        if bin_pregap:
+                            # Sync sectors inside a legal pregap are expected; only a header/position mismatch is corruption
+                            pregap_sync, pregap_bad = _check_pregap(f, track_offset, bin_pregap, sector_bytes, pregap_lba)
+                            entry["pregap_sync_frames"] = pregap_sync
+                            if pregap_bad:
+                                findings.append(f"track {track['number']}: pregap sync sectors disagree with their disc "
+                                                f"LBA (pregap starts at {pregap_lba}) at frames {pregap_bad}")
                         if not sector["sync_frames"]:
-                            findings.append(f"track {track['number']}: no MODE1/2352 sync frame found in the first "
-                                            f"{sector['probed_frames']} frames")
+                            findings.append(f"track {track['number']}: no RAW sync frame found in the first "
+                                            f"{sector['probed_frames']} user-data frames")
                         if sector["msf_mismatch_frames"]:
                             findings.append(f"track {track['number']}: MSF headers disagree with start LBA "
-                                            f"{next_lba} at frames {sector['msf_mismatch_frames']}")
+                                            f"{start_lba} at frames {sector['msf_mismatch_frames']}")
             tracks.append(entry)
-            next_lba += user_data_frames
+            disc_cursor = start_lba + user_data_frames
     signatures = []
     for track in tracks:
         if track["audio"] or "sector" not in track or track["mode"] != "MODE1/2352":
@@ -293,19 +328,21 @@ def analyze(cue_path: Path, boot_signature: bytes = PCE_BOOT_SIGNATURE) -> dict:
                     break
     data_tracks = [t["number"] for t in tracks if not t["audio"]]
     return {"cue": cue_path.name, "cue_sha256": _sha256_file(cue_path),
-            "catalog": sheet["catalog"], "total_frames": next_lba, "total_seconds": round(next_lba / 75, 3),
+            "catalog": sheet["catalog"], "total_frames": disc_cursor, "total_seconds": round(disc_cursor / 75, 3),
             "data_tracks": data_tracks, "audio_tracks": [t["number"] for t in tracks if t["audio"]],
             "tracks": tracks, "boot_signatures": signatures, "findings": findings,
             "structurally_valid": not findings and bool(data_tracks)}
 
 
 def user_sector(cue_path: Path, report: dict, lba: int) -> bytes:
-    """Return the 2048-byte user data at absolute disc `lba` (MODE1/2352 data tracks only)."""
+    """Return the 2048-byte user data at physical disc `lba` (MODE1/2352 data tracks only)."""
     if lba < 0:
         raise CueError(f"LBA must be non-negative, got {lba}")
     for track in report["tracks"]:
         if track["audio"]:
             continue
+        if track["pregap_start_lba"] <= lba < track["start_lba"]:
+            raise CueError(f"LBA {lba} is in the pregap of track {track['number']}; pregap is not user data")
         # First check if LBA is within this track's user data range
         if not track["start_lba"] <= lba < track["start_lba"] + track["length_frames"]:
             continue

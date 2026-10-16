@@ -61,7 +61,7 @@ start, including any pregap bytes. `cue_sha256` is the SHA-256 of the CUE file i
 | Mode | Layout / hash | Sync / MSF check | `user_sector()` |
 | --- | --- | --- | --- |
 | MODE1/2352 | yes | yes (sync, mode byte, MSF == LBA + 150) | yes (2048 bytes at +16) |
-| MODE2/2352 | yes | sync and mode byte only (no MSF check) | no |
+| MODE2/2352 | yes | yes (sync, mode byte, MSF == LBA + 150) | no |
 | MODE1/2048 (Cooked) | yes | **not verified** (no raw sync/MSF) | no |
 | MODE2/2336 (Cooked) | yes | **not verified** | no |
 | AUDIO | yes | only "no MODE sync in first 64 frames" | no (raises `CueError`) |
@@ -69,10 +69,31 @@ start, including any pregap bytes. `cue_sha256` is the SHA-256 of the CUE file i
 Cooked modes are validated for file size and layout only. The CLI reports them as
 `sync/MSF not verified` and prints a PASS line that says layout validation only.
 
-**INDEX 00/01 and LBA.** Disc LBA 0 is the first sector at INDEX 01 of the first data track. Any
-pregap before INDEX 01 is excluded from user-sector LBAs: `user_sector()` maps LBA *n* to BIN frame
-`INDEX01 + (n - start_lba)` and rejects negative and out-of-range LBAs. Pregap sync data is reported
-as a finding (`structurally_valid` becomes false), not tolerated.
+**INDEX 00/01, pregap and LBA (address contract).** The first BIN frame is physical disc LBA 0. The
+BIN files of a CUE are concatenated in FILE order, and every frame advances the disc LBA, including
+pregap frames stored in the BIN. A sector header MSF must equal `LBA + 150` (the 2-second lead-in
+offset, BCD). Per track:
+
+| Field | Meaning |
+| --- | --- |
+| `pregap_start_lba` | first disc LBA of the track (INDEX 00, or the start of a CUE `PREGAP`) |
+| `start_lba` = `declared_data_lba` | disc LBA of INDEX 01, the first user-data frame |
+| `index01_frame` | INDEX 01 as a BIN frame offset within its FILE (where the BIN bytes are read) |
+| `pregap_frames` | INDEX 00..01 frames stored in the BIN, plus any CUE `PREGAP` frames |
+
+A CUE `PREGAP` adds disc LBAs that are not stored in the BIN; `PREGAP` together with `INDEX 00` in the
+same track is rejected as ambiguous. `user_sector()` maps physical LBA *n* in
+`[start_lba, start_lba + length_frames)` to BIN frame `index01_frame + (n - start_lba)` and rejects LBAs in
+a pregap (`pregap_start_lba <= n < start_lba`), negative LBAs and LBAs past the track end.
+
+Pregap sync sectors are legal (a data pregap may hold real MODE1 frames). Only a sync sector in the
+pregap whose header MSF disagrees with its disc LBA is a finding (`structurally_valid` becomes false).
+
+The INDEX timestamps are read relative to their FILE with BIN start = LBA 0, the same convention as
+`tools/make_cd_image.py` (`LBA 0 = first BIN sector`). An image whose headers differ by a constant from
+this convention is reported as an MSF mismatch and is not auto-corrected. Whether the real disc follows
+this convention is only confirmed by running the tool on that disc (see Issue #111); until then the
+address contract is unverified for real images.
 
 **MODE2 Form 1/2 user data is not supported.** `user_sector()` only extracts MODE1/2352.
 Requesting a MODE2 track raises `CueError`.
