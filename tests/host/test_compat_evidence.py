@@ -48,8 +48,10 @@ def record(stage='homebrew', **overrides):
 
 
 class VerdictPositiveTests(unittest.TestCase):
-    def test_homebrew_with_real_core_and_synthetic_fixture_passes(self):
-        self.assertEqual(run(record())['result'], 'PASS')
+    def test_homebrew_runner_only_is_not_pass_without_a_judge(self):
+        # No #119 label exists for homebrew, so no probe can judge it: BLOCKED (reporter PASS -> overclaim FAIL).
+        self.assertNotEqual(run(record())['result'], 'PASS')
+        self.assertEqual(run(record('homebrew', result='BLOCKED', blocker='no judge'))['result'], 'BLOCKED')
 
     def test_source_only_needs_no_emulator_or_fixture(self):
         result = run(record('source-only', rom=None, emulator=None, fixture=None,
@@ -140,12 +142,12 @@ class VerdictNegativeTests(unittest.TestCase):
         self.assertEqual(run(record(trace_deltas=[{'delta': 1}]))['result'], 'FAIL')
 
     def test_reporter_blocked_with_complete_evidence_is_not_silently_passed(self):
-        result = run(record('homebrew', result='BLOCKED', blocker='reporter says blocked'))
+        result = run_with(staged(result='BLOCKED', blocker='reporter says blocked'), probe_for('playable'))
         self.assertEqual(result['result'], 'BLOCKED')
         self.assertTrue(any('conflict' in reason for reason in result['reasons']))
 
     def test_reporter_fail_with_complete_evidence_stays_fail(self):
-        result = run(record('homebrew', result='FAIL'))
+        result = run_with(staged(result='FAIL'), probe_for('playable'))
         self.assertEqual(result['result'], 'FAIL')
         self.assertTrue(any('conflict' in reason for reason in result['reasons']))
 
@@ -172,6 +174,26 @@ class MalformedInputTests(unittest.TestCase):
         self.assertEqual(result['result'], 'FAIL')
         self.assertIsNone(result['blocker'])
 
+    def test_falsy_non_array_checkpoints_are_fail_not_absent(self):
+        for value in (0, False, ''):
+            with self.subTest(value=value):
+                # Reporter BLOCKED so that only the malformed field can decide the result (not an overclaim).
+                rec = record('startup', checkpoints=value, result='BLOCKED', blocker='x')
+                self.assertEqual(run(rec)['result'], 'FAIL')
+                self.assertEqual(verdict(record(), attest(record(), checkpoints=value))['result'], 'FAIL')
+
+    def test_falsy_non_array_trace_deltas_are_fail_not_absent(self):
+        for value in (0, False, ''):
+            with self.subTest(value=value):
+                rec = staged(result='BLOCKED', blocker='x')
+                rec['trace_deltas'] = value
+                self.assertEqual(run_with(rec, probe_for('playable'))['result'], 'FAIL')
+
+    def test_duplicate_runner_checkpoint_names_fail(self):
+        att = attest(record())
+        att['checkpoints'] = att['checkpoints'] * 2
+        self.assertEqual(verdict(record(), att)['result'], 'FAIL')
+
     def test_trace_delta_name_must_be_a_string(self):
         for bad_name in (5, ['x']):
             with self.subTest(name=bad_name):
@@ -190,11 +212,22 @@ class VerdictBoundaryTests(unittest.TestCase):
                                 blocker='no checkpoints observed'))
         self.assertEqual(result['result'], 'BLOCKED')
 
-    def test_startup_boundary_with_one_matching_checkpoint_passes(self):
-        self.assertEqual(run(record('startup'))['result'], 'PASS')
+    def test_startup_runner_only_is_not_pass(self):
+        self.assertNotEqual(run(record('startup'))['result'], 'PASS')
 
-    def test_homebrew_is_last_stage_without_trace_deltas(self):
-        self.assertEqual(run(record('homebrew', trace_deltas=[]))['result'], 'PASS')
+    def test_homebrew_without_trace_deltas_is_not_blocked_by_trace_rule(self):
+        result = run(record('homebrew', trace_deltas=[]))
+        self.assertNotIn('guest trace deltas required above homebrew', result['reasons'])
+
+    def test_runner_only_bios_loaded_and_other_judgeless_stages_are_blocked_not_pass(self):
+        # Attestation plus matching checkpoints is not evidence of execution: no #119 probe can judge these.
+        for stage in ('bios-loaded', 'startup', 'cd-detected', 'homebrew'):
+            with self.subTest(stage=stage):
+                self.assertEqual(run(record(stage, result='BLOCKED', blocker='no judge'))['result'], 'BLOCKED')
+                self.assertNotEqual(run(record(stage))['result'], 'PASS')
+
+    def test_rom_built_build_only_stage_needs_no_probe(self):
+        self.assertEqual(run(record('rom-built', emulator=None, fixture=None, checkpoints=[]))['result'], 'PASS')
 
     def test_playable_needs_trace_deltas(self):
         result = run(record('playable', fixture=dict(LOCAL), region='JP', trace_deltas=[],
@@ -418,11 +451,15 @@ class CliTrustTests(unittest.TestCase):
     """The CLI never certifies local, unsigned JSON; --ci only runs inside GitHub Actions."""
 
     def _run_cli(self, argv, env, rec=None):
-        """rec: a record object, or raw text written as record.json (default: a valid record)."""
+        """rec: a record object, or raw text written as record.json. Default: a playable record with
+        a verified attestation and a passing raw probe, which the CLI prints as PASS in --ci mode."""
         with tempfile.TemporaryDirectory() as tmp:
-            record_text = rec if isinstance(rec, str) else json.dumps(rec or record())
+            default = staged('playable')
+            record_text = rec if isinstance(rec, str) else json.dumps(rec or default)
+            files = (('record.json', record_text), ('runner.json', json.dumps(attest(default))),
+                     ('probe.json', json.dumps(probe_for('playable'))))
             paths = []
-            for name, text in (('record.json', record_text), ('runner.json', json.dumps(attest(record())))):
+            for name, text in files:
                 path = Path(tmp) / name
                 path.write_text(text, encoding='utf-8')
                 paths.append(str(path))
@@ -461,6 +498,11 @@ class CliTrustTests(unittest.TestCase):
         bad = record()
         bad['stage'] = ['x']
         code, text = self._run_cli([], {}, bad)
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(text)['result'], 'FAIL')
+
+    def test_deeply_nested_input_is_fail_json_not_traceback(self):
+        code, text = self._run_cli([], {}, '[' * 100_000)
         self.assertEqual(code, 1)
         self.assertEqual(json.loads(text)['result'], 'FAIL')
 

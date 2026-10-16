@@ -8,8 +8,10 @@ Issue #7. Machine-checkable record for one compatibility stage, implemented by
 Usage: `python tools/compat_evidence.py [--ci] RECORD.json [RUNNER_ATTESTATION.json [PROBE.json]]` prints the verdict and exits 0 only on PASS.
 
 A record is a claim, not proof. `verdict(record, runner, probe)` accepts PASS for execution stages
-(`bios-loaded` and above) only with a runner attestation: `verified: true`, and
-`rom_sha256`, `fixture_sha256`, `emulator_commit` and `checkpoints[].observed` that match the record.
+(`bios-loaded` and above) only with a runner attestation: `verified: true`, `rom_sha256` and `emulator_commit`
+matching the record, `fixture_sha256` matching the record when the record has a fixture, and, for each record
+checkpoint name, a runner `checkpoints[].observed` equal to the record's `expected` (duplicate runner names give FAIL).
+Attestation alone never yields PASS above `rom-built`: see the stage probe section.
 A `runner`, `stage_evidence` or `probe` key inside the record is ignored.
 The runner output is consistency-checked, not authenticated (see the trust boundary).
 
@@ -27,6 +29,8 @@ The runner output is consistency-checked, not authenticated (see the trust bound
 - `--ci` is accepted only when `GITHUB_ACTIONS=true` (otherwise exit 2). Its output carries
   `"trust": "ci-job context (GITHUB_ACTIONS=true is an environment variable any process can set; the JSON is still unsigned, so this is not a certification)"`.
   A PASS is printed as PASS only in this mode.
+- Exception to the verdict exit codes: a refused `--ci` and a usage error exit 2 and print no verdict JSON.
+  Every other outcome, including unreadable, malformed or deeply nested input, prints a verdict and exits 1 (or 0 on PASS).
 - A future CI certification gate would be allowed only when all of these hold. **This module enforces none
   of them**; the workflow must, and no such workflow exists yet:
   1. The record and runner JSON are produced by the Geargrafx harness (#119) inside the same job,
@@ -44,7 +48,11 @@ The runner output is consistency-checked, not authenticated (see the trust bound
 
 ## Stage-specific probe evidence
 
-`retail-boot`, `playable`, `save-tested` and `completion-tested` also need `probe`, the raw #119 probe
+PASS is possible only for `rom-built` (build-only, no probe) and for `retail-boot` through `completion-tested`
+with a judged probe. `bios-loaded`, `startup`, `cd-detected` and `homebrew` are **BLOCKED** with any input:
+no #119 label defines a judge for them, so no probe can yield PASS. Extending this needs a new label, which is out of scope.
+
+`retail-boot`, `playable`, `save-tested` and `completion-tested` need `probe`, the raw #119 probe
 output: `{"result": <run_job() result: status, reason, exit_code, stdout>, "forbid": [labels], "budget": int, "kind": "cdread"}`.
 `verdict()` passes `result` to the real #119 `geargrafx_harness.classify()`, which parses the `TAG {json}` lines
 itself (`parse_records()`, which rejects a body-level `tag` field). Whatever classify() does not call PASS
@@ -92,7 +100,7 @@ within `budget`; exactly one success HIT per cycle before its RUN.
 | `emulator` | object or null | `kind`: `real-core`, `mock` or `static`. A `real-core` record needs `name`, `version` and a 40-hex `commit`. Names matching mock/stub/fake/static/dummy/simulat are rejected as real. |
 | `fixture` | object or null | `{"id", "sha256", "origin"}`. `origin` is `original-synthetic` or `local-proprietary`. |
 | `region` | string or null | Target edition region. Required for `retail-boot` and above. |
-| `checkpoints` | array | `{"name", "expected", "observed"}`. Verdict compares them itself; a `passed` flag is not trusted. |
+| `checkpoints` | array | `{"name", "expected", "observed"}`. Verdict requires the record's own `expected` to equal its `observed`; the runner's `observed` for that name must equal the record's `expected`. A `passed` flag is not trusted. A missing or null field is absent; any other non-array value is FAIL. |
 | `trace_deltas` | array | `{"name", "delta"}`. Required above `homebrew`. |
 
 Proprietary material never appears in a record. Only ids, hashes and metadata.
@@ -116,14 +124,15 @@ Findings are combined with priority FAIL > BLOCKED > SKIP > PASS.
    status, so a FAIL (non-zero exit, timeout, output cap, forbidden label, a RUN for another reason such as
    budget or cd_halt_fail, not one cold then warm RUN, unconfirmed halt, a step outside 0..budget, a success HIT
    missing, repeated or after its RUN, malformed log) gives **FAIL**. A BLOCK record, a missing or false
-   capability flag, `probe_kind` other than `cdread` (NOT_SUPPORTED) and exit 6 (debugger capability missing)
+   capability flag, `kind` other than `cdread` (NOT_SUPPORTED) and exit 6 (debugger capability missing)
    give **BLOCKED**, as in #119. A `retail-boot` record with no local fixture is **SKIP** (fixture missing; no stage
    check runs). With a local fixture, a record whose stage-label checkpoint is missing is **BLOCKED**.
 9. A claim of `PASS` that the evidence does not support is an **overclaim** and gives **FAIL**. A claim of
    `BLOCKED`, `SKIP` or `FAIL` that complete evidence would otherwise pass is kept as the result, with a
    `conflict` reason. Complete evidence never silently overrides the reporter's own non-PASS claim.
 
-Source-only and rom-built records need no attestation (build checks only). A single launch never supports an all-title claim.
+Source-only and rom-built records need no attestation (build checks only). From `bios-loaded` to `homebrew`
+every result is BLOCKED or FAIL, never PASS (no judge label; see the stage probe section). A single launch never supports an all-title claim.
 From `bios-loaded` and above, PASS requires real-core evidence; source-only and rom-built need none.
 
 ## Not covered (v1)

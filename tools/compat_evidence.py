@@ -60,6 +60,12 @@ def _is_name(value):
     return isinstance(value, str) and value != ''
 
 
+def _list_field(container, key):
+    """A missing or null field is absent ([]); any other value is kept so that validation can reject it."""
+    value = container.get(key)
+    return [] if value is None else value
+
+
 def validate(record):
     """Return a list of schema errors; an empty list means structurally valid."""
     if not isinstance(record, dict):
@@ -102,13 +108,13 @@ def validate(record):
             errors.append('fixture.sha256 missing or not SHA-256')
         elif fixture.get('origin') not in ORIGINS:
             errors.append('fixture.origin must be original-synthetic or local-proprietary')
-    checkpoints = record.get('checkpoints') or []
+    checkpoints = _list_field(record, 'checkpoints')
     if not isinstance(checkpoints, list):
         errors.append('checkpoints must be an array')
     elif any(not isinstance(item, dict) or not _is_name(item.get('name')) or 'expected' not in item
              or 'observed' not in item for item in checkpoints):
         errors.append('checkpoint needs name, expected and observed')
-    trace = record.get('trace_deltas') or []
+    trace = _list_field(record, 'trace_deltas')
     if not isinstance(trace, list):
         errors.append('trace_deltas must be an array')
     elif any(not isinstance(item, dict) or not _is_name(item.get('name')) or 'delta' not in item for item in trace):
@@ -136,12 +142,15 @@ def _attestation(record, runner):
         findings.append(('FAIL', 'runner fixture hash does not match record'))
     if runner.get('emulator_commit') != emulator.get('commit'):
         findings.append(('FAIL', 'runner emulator commit does not match record'))
-    runner_checkpoints = runner.get('checkpoints') or []
+    runner_checkpoints = _list_field(runner, 'checkpoints')
     if not isinstance(runner_checkpoints, list):
         return findings + [('FAIL', 'runner checkpoints must be an array')]
+    names = [item.get('name') for item in runner_checkpoints if isinstance(item, dict) and _is_name(item.get('name'))]
+    if len(names) != len(set(names)):
+        findings.append(('FAIL', 'runner checkpoint names are duplicated'))
     observed = {item.get('name'): item.get('observed')
                 for item in runner_checkpoints if isinstance(item, dict) and _is_name(item.get('name'))}
-    for item in record.get('checkpoints') or []:
+    for item in _list_field(record, 'checkpoints'):
         if item['name'] not in observed or observed[item['name']] != item['expected']:
             findings.append(('FAIL', f"checkpoint {item['name']} not confirmed by runner"))
     return findings
@@ -155,8 +164,11 @@ def _stage_findings(stage, probe):
     reads the TAG lines itself, so a runner summary or a body-level 'tag' cannot stand in for it.
     The forbid list is the runner's, plus FORBID_MIN, which it cannot drop. A missing probe is
     BLOCKED. Anything classify() does not call PASS keeps its own status (FAIL, BLOCKED or SKIP).
+    A stage with no #119 label (bios-loaded to homebrew) has no judge, so it is always BLOCKED.
     The raw output is unsigned, so this is a consistency check, not a certification.
     """
+    if stage not in STAGE_LABEL:
+        return [('BLOCKED', f'no #119 judge label for {stage}; PASS needs a judged probe, which none defines yet')]
     if not isinstance(probe, dict) or not isinstance(probe.get('result'), dict):
         return [('BLOCKED', f'raw #119 probe output required for {stage}')]
     result, budget, forbid = probe['result'], probe.get('budget'), probe.get('forbid')
@@ -204,19 +216,20 @@ def verdict(record, runner=None, probe=None):
         if not record.get('region'):
             findings.append(('BLOCKED', 'region unknown'))
     if rank >= CHECK_STAGE:
-        checkpoints = record.get('checkpoints') or []
+        checkpoints = _list_field(record, 'checkpoints')
         if not checkpoints:
             findings.append(('BLOCKED', 'no checkpoints observed'))
         for item in checkpoints:
             if item['expected'] != item['observed']:
                 findings.append(('FAIL', f"checkpoint {item['name']} mismatch"))
-    if rank > HOMEBREW_STAGE and not record.get('trace_deltas'):
+    if rank > HOMEBREW_STAGE and not _list_field(record, 'trace_deltas'):
         findings.append(('BLOCKED', 'guest trace deltas required above homebrew'))
     # A retail-boot record with no local fixture is SKIP (opt-in disc, nothing was run), not BLOCKED.
-    if record['stage'] in STAGE_LABEL and not (fixture is None and rank >= RETAIL_STAGE):
+    if rank >= CORE_STAGE and not (fixture is None and rank >= RETAIL_STAGE):
         findings.extend(_stage_findings(record['stage'], probe))
-        if not any(isinstance(item, dict) and item.get('name') == STAGE_LABEL[record['stage']]
-                   for item in record.get('checkpoints') or []):
+        if record['stage'] in STAGE_LABEL and not any(
+                isinstance(item, dict) and item.get('name') == STAGE_LABEL[record['stage']]
+                for item in _list_field(record, 'checkpoints')):
             findings.append(('BLOCKED', f"stage checkpoint {STAGE_LABEL[record['stage']]!r} missing from record"))
     if findings:
         computed = min((result for result, _ in findings), key=WORST_FIRST.index)
@@ -262,7 +275,7 @@ def main(argv):
         runner = _load_json(args[1]) if len(args) >= 2 else None
         probe = _load_json(args[2]) if len(args) == 3 else None
         record = _load_json(args[0])
-    except (OSError, ValueError) as error:  # unreadable or malformed input is a FAIL verdict, not a traceback
+    except (OSError, ValueError, RecursionError) as error:  # unreadable, malformed or too deeply nested: FAIL, not a traceback
         failure = {'result': 'FAIL', 'blocker': None, 'reasons': [f'input unreadable: {error}'],
                    'local_verdict': 'FAIL', 'trust': TRUST_CI if ci else TRUST_LOCAL, 'authenticity': AUTHENTICITY}
         print(json.dumps(failure, indent=2))
