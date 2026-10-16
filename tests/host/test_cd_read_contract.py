@@ -5,8 +5,8 @@ import re
 import unittest
 
 from tools.cd_read_contract import (
-    INTEGRATION, LBA_LIMIT, PINNED, ROOT, SECTOR_BYTES, TRANSPORT_CLAIMS, effective_status, real_core_requests,
-    transport_outcome, validate,
+    COMPAT_REASON, EXIT_BLOCKED, INTEGRATION, LBA_LIMIT, PINNED, ROOT, SECTOR_BYTES, TRANSPORT_CLAIMS, TRUST_LABEL,
+    compat_status, effective_status, real_core_requests, transport_outcome, validate,
 )
 from tools.make_cd_image import DEFAULT_SECTORS
 
@@ -179,6 +179,41 @@ class LedgerTests(unittest.TestCase):
                 if change == "renamed": slot["candidate_name"] = "CD_SEEK"
                 with self.assertRaises(ValueError):
                     validate(api)
+
+
+class TrustBoundaryTests(unittest.TestCase):
+    """The bundle is self-declared JSON. A local check may VERIFY transport claims; a compatibility gate may not."""
+
+    def test_valid_self_declared_bundle_never_passes_compat_gate(self):
+        status = compat_status(bundle_for(), ROM_SHA)
+        self.assertEqual([status[f"T{i}"] for i in range(1, 6)], ["BLOCKED"] * 5)
+        self.assertEqual((status["T6"], status["T7"], status["T8"]), ("HYPOTHESIS", "UNKNOWN", "UNKNOWN"))
+
+    def test_forged_bundle_with_pinned_hashes_is_local_only(self):
+        # A hand-written tests map that copies the pinned revision and the ROM hash passes the local check
+        # (that is the documented limit), but must stay BLOCKED for compatibility.
+        forged = bundle_for()
+        self.assertEqual(effective_status(forged, ROM_SHA)["T1"], "VERIFIED")
+        self.assertEqual(compat_status(forged, ROM_SHA)["T1"], "BLOCKED")
+        self.assertEqual(TRUST_LABEL, "LOCAL_ONLY")
+        self.assertIn("SELF-DECLARED", COMPAT_REASON)
+        self.assertIn("LOCAL_ONLY", COMPAT_REASON)
+
+    def test_compat_gate_never_returns_verified_or_pass(self):
+        for bundle, rom in ((None, None), (bundle_for(), ROM_SHA), (bundle_for(), None)):
+            with self.subTest(bundle=bundle is not None, rom=rom is not None):
+                self.assertNotIn("VERIFIED", compat_status(bundle, rom).values())
+
+    def test_blocked_exit_code_is_fixed_and_matches_harness_119(self):
+        # #119 tests/integration/geargrafx_harness.py: EXIT = {"PASS": 0, "FAIL": 1, "BLOCKED": 3, "SKIP": 4}
+        self.assertEqual(EXIT_BLOCKED, 3)
+
+    def test_end_of_disc_runs_use_premature_status_code_of_115(self):
+        # #115 tools/cd_status.py CODES: 5 -> PREMATURE_STATUS. Every end-of-disc failing_guest call uses code 5.
+        text = INTEGRATION.read_text(encoding="utf-8")
+        codes = set(re.findall(r'suite\.failing_guest\("\w+", suite\.variant\([^)]*\), \w+, \w+, (\d+), 5,', text))
+        self.assertEqual(codes, {"5"})
+        self.assertTrue(TRUST_LABEL.startswith("LOCAL_ONLY"))  # #119 artifact_policy and #116 trust both say local-only
 
 
 if __name__ == "__main__":

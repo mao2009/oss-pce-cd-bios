@@ -15,6 +15,8 @@ Status tags:
   `build/<mode>/cdread-probe/cdread-evidence.json`, a different ROM, or a non-pinned Geargrafx). BLOCKED is not PASS.
 
 Machine check: `python3 tools/cd_read_contract.py [--mode release]` (`tests/host/test_cd_read_contract.py`).
+Every line it prints carries the trust label `LOCAL_ONLY`. `python3 tools/cd_read_contract.py --compat` is the
+compatibility gate; it is always BLOCKED (exit 3) because no authenticated evidence exists.
 It fails if the ledger is malformed, if a claim cites another emulator, or if any slot-3 field in
 [api_contracts.json](../spec/api_contracts.json) becomes VERIFIED, executed or implemented before this
 document is updated. It exits 3 with `BLOCKED:` when any VERIFIED transport claim is not backed by the bundle.
@@ -45,15 +47,31 @@ by design; the CI job `make dev-cdread-integration` is what produces the bundle.
   the same trust model as the independent-runner attestation in
   [compat-evidence-schema.md](compat-evidence-schema.md) (a plain dict, no signature): trust ends at the
   producer. The output line says "SELF-DECLARED".
-* **Local trusted build output only (current use).** The ledger is a development check for a ROM built and
-  tested on the same machine or CI job. It is not a compatibility claim.
+* **Trust levels.**
+
+  | Level | Meaning | Where it is used | Status today |
+  | --- | --- | --- | --- |
+  | `LOCAL_ONLY` | Self-declared JSON. Nothing authenticates the producer, the suite source or the run. | `tools/cd_read_contract.py` output, `effective_status()` | In use. Development check for a ROM built and tested locally or in one CI job. |
+  | authenticated (not defined) | A signed attestation or a CI artifact whose producer identity the verifier checks, from an independent runner. | none | Not implemented. |
+
+  The local check may show a transport claim as VERIFIED, but that only means the bundle is consistent. It is
+  not a compatibility result. `compat_status()` (`--compat`) returns BLOCKED for every VERIFIED claim, and the
+  test `tests/host/test_cd_read_contract.py::TrustBoundaryTests` checks that a forged bundle with the pinned
+  revision and ROM hash still stays BLOCKED for compatibility.
 * **Conditions before this gate may back a compatibility claim** (not implemented; until they hold the
   result is BLOCKED): (1) the bundle is produced by an independent runner from the pinned Geargrafx and the
   ROM under test, and the run's output is authenticated (signed attestation, or a CI artifact whose producer
-  identity the verifier checks); (2) the verifier recomputes the ROM and fixture hashes from the artifacts
-  being certified, not from the bundle; (3) every cited scenario kind in the table above matches; (4) the
-  suite source at the pinned commit is the one that ran. Until then, no VERIFIED transport claim is a
+  identity the verifier checks); the workflow that runs the gate comes from the protected default branch, not
+  from a PR head (the same rule as #116); (2) the verifier recomputes the ROM and fixture hashes from the
+  artifacts being certified, not from the bundle; (3) every cited scenario kind in the table above matches;
+  (4) the suite source at the pinned commit is the one that ran. Until then, no VERIFIED transport claim is a
   compatibility result.
+* **Relation to #115 and #119 (drift guard).** The scenario kinds follow the #119 result vocabulary
+  (PASS / FAIL / BLOCKED). End-of-disc runs use error code 5, which #115 `tools/cd_status.py` classifies as
+  PREMATURE_STATUS. The BLOCKED exit code 3 and the `LOCAL_ONLY` label match #119 `geargrafx_harness.py`
+  (`EXIT`, `artifact_policy`). `TrustBoundaryTests` restates these values from those PRs, since their files are
+  not on this branch; it does not import them. The bundle is not the #116 runner attestation shape
+  (`verified`, `checkpoints`) and must never be passed to `tools/compat_evidence.py` as one.
 * Regex limits: `tools/cd_read_contract.real_core_requests` parses the integration source with regular
   expressions to rebuild the expected LBA/count model. It is a drift guard, not evidence. The host test
   fails if a `suite.positive(` or end-of-disc `suite.failing_guest(` call is not matched, but a call written
