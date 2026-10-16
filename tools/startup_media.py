@@ -1,6 +1,7 @@
 """Classify a startup-probe run as NO_MEDIA or MEDIA_PRESENT from separately recorded evidence (#142).
 
-Diagnostic only: neither verdict is a BIOS CD-boot claim. A record whose loader, disc flags and
+The media/no-media verdict labels the load branch the harness chose (probe-reported loader and flags);
+the guest never reads CD registers, so it is NOT guest-side media detection. Diagnostic only: neither verdict is a BIOS CD-boot claim. A record whose loader, disc flags and
 media flag disagree, or that lacks CPU/CD-state/RAM/stop-PC evidence, raises ValueError (BLOCKED/FAIL).
 """
 try:

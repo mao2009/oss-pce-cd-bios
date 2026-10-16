@@ -197,7 +197,7 @@ def main():
         check_evidence(nodisc, symbols)  # no-media branch runs the same startup CPU/RAM checkpoint
         without_disc = classify_startup_media(nodisc, checkpoint)
         if (with_disc["media"], without_disc["media"]) != ("MEDIA_PRESENT", "NO_MEDIA"):
-            raise ValueError("media/no-media branches were not distinguished by the real core")
+            raise ValueError("media/no-media harness branches were not labelled as expected (guest does not detect media)")
         media_negatives = {}
         # (1) a no-media run cannot be submitted as the normal-disc run
         try:
@@ -238,7 +238,8 @@ def main():
             "observations": negative,
         },
         "mutation_negatives": mutation_results,
-        "cd_init_state_observed": CD_INIT_STATE, "media_branches": {"MEDIA_PRESENT": with_disc, "NO_MEDIA": without_disc,
+        "cd_init_state_observed": CD_INIT_STATE, "media_branches": {"guest_media_detection": "NOT_PERFORMED", "verdict_meaning": "harness load branch, not guest detection",
+                           "MEDIA_PRESENT": with_disc, "NO_MEDIA": without_disc,
                            "no_media_loader": "SetCDROMType(STANDARD)+LoadHuCardFromBuffer; real hardware UNKNOWN",
                            "negatives": media_negatives, "no_media_observations": nodisc},
         "bios_service_abi": "UNKNOWN", "cd_boot": "NOT_TESTED",

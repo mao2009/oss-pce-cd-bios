@@ -56,9 +56,12 @@ What differs is the environment, recorded separately by `make dev-startup-integr
 `MEDIA_PRESENT` (System Card BIOS + synthetic CUE/BIN) and `NO_MEDIA` (`SetCDROMType(STANDARD)` +
 `LoadHuCardFromBuffer`, CD hardware on, no disc). Each verdict keeps four facts apart: CPU executed,
 CD controller state (`scsi_phase`/`cd_irq_active`, both idle), RAM marker, and stop PCs (cold, non-returning,
-warm). Rejected on the real core: a no-media run submitted as the disc run, forged media flags in both
-directions, and a 4-instruction budget that never reaches the checkpoint. This is Geargrafx-only; the guest
-does not detect media and real hardware stays `UNKNOWN`.
+warm). `MEDIA_PRESENT`/`NO_MEDIA` label the harness-chosen load branch (loader, `disc_given`, and the core's
+`IsCDROM()` flag, all reported by the probe); they are not guest-side detection and the load mode itself
+does not change what the guest executes. The classifier rejects (host-side checks on probe records): a
+no-media run submitted as the disc run, flags edited in the real records in both directions, and a
+4-instruction budget that never reaches the checkpoint. Geargrafx-only, synthetic disc; the guest does not
+detect media (`guest_media_detection: NOT_PERFORMED`) and real hardware stays `UNKNOWN`.
 `manifest.json` records `cd_disc_presence_read: false` as a build constant, not a measurement.
 
 All addresses except the CPU's architectural vector/stack geometry are
