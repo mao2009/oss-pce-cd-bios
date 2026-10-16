@@ -12,8 +12,20 @@
 //   3. Hardware page: no MPR is allowed to hold 0xFF, so the memory-mapped I/O page
 //      is unreachable. If any MPR becomes 0xFF the run is rejected before another
 //      instruction executes.
-//   4. Instruction budget is enforced by stepping the real CPU one instruction at a
-//      time and counting actual executions.
+//   4. Dynamic MPR change: every MPR is snapshotted before execution and compared
+//      after each step. Any change (e.g. via TAM) rejects the run before the next
+//      guest instruction can exploit the new mapping.
+//   5. Instruction budget: stepped one instruction at a time with actual execution
+//      counting.
+//
+// Known limitation (not blocked by this probe, documented here):
+//   ST0/ST1/ST2 (opcodes 0x03/0x13/0x23) write to VDC registers via
+//   m_huc6202->WriteFromCPU(), bypassing Memory::Write(), map_write, and
+//   CPU-address breakpoints entirely. They produce irreversible device side
+//   effects. The slot "$1E" guest code (LDA/LDX/LDY/JSR/BRA) and the measured
+//   EX_GETVER callee (LDX $FEC2; LDY $FEC3; RTS) contain no ST0/ST1/ST2 or TAM,
+//   so they are not exercised by the measured execution path. Any future API
+//   allowing arbitrary guest code must address this path before being unblocked.
 #include "geargrafx_core.h"
 #include "huc6280.h"
 #include "memory.h"
