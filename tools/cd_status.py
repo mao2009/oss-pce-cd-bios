@@ -1,8 +1,14 @@
 """Host-side status classifier for the Issue #5 CD sector-read diagnostic (pure, no emulator).
 
-Maps one observed guest result (reason + result block) to PASS / FAIL / SKIP / BLOCKED with a
+Maps one observed guest result (reason + result block) to PASS / FAIL / NOT_RUN / BLOCKED with a
 category and reason. It judges STATUS only; byte-exact data and SCSI-phase checks stay in
-tools/cdread_verify.py, which remains the authority for a success.
+tools/cdread_verify.py, which remains the authority for a success: a PASS here is necessary,
+never sufficient, and the runner must also accept the same records with check_success().
+
+  FAIL     the guest ran and did not meet the expectation (includes step-budget exhaustion,
+           which never completes the 64-step halt confirmation).
+  BLOCKED  the record cannot be judged (no media, incomplete or unreadable record).
+  NOT_RUN  no RUN record exists at all, so nothing was executed.
 
 Evidence labels (per code):
   MEASURED        exercised by a Geargrafx run in the docs/cd-read-diagnostic.md test matrix.
@@ -13,15 +19,17 @@ from collections import namedtuple
 
 if __package__:
     from .build_cdread import ERROR_NAMES, SECTOR_BYTES
-    from .cdread_verify import result_block
+    from .cdread_verify import check_halt_confirmation, result_block
 else:
     from build_cdread import ERROR_NAMES, SECTOR_BYTES
-    from cdread_verify import result_block
+    from cdread_verify import check_halt_confirmation, result_block
 
-PASS, FAIL, SKIP, BLOCKED = 'PASS', 'FAIL', 'SKIP', 'BLOCKED'
+PASS, FAIL, NOT_RUN, BLOCKED = 'PASS', 'FAIL', 'NOT_RUN', 'BLOCKED'
 MEASURED, SOURCE_DEFINED, HYPOTHESIS = 'MEASURED', 'SOURCE_DEFINED', 'HYPOTHESIS'
 MAX_SECTORS = 3  # the buffer holds three sectors (docs/cd-read-diagnostic.md, step 3)
 HALT_OK, HALT_FAIL, BUDGET = 'cd_halt_ok', 'cd_halt_fail', 'budget'
+REQUIRED_KEYS = ('reason', 'result_hex', 'halt_confirmed', 'halt_confirmation_steps',
+                 'halt_confirmation_required', 'halted_after_step', 'step')
 
 # code -> (category, evidence). Names come from build_cdread.ERROR_NAMES, never duplicated here.
 CODES = {
@@ -51,14 +59,19 @@ def classify_run(run, count, expect=None, media=True):
     cycle = run.get('cycle', '?')
     if not media:
         return _verdict(BLOCKED, 'NO_MEDIA', 'no media reported: Geargrafx behaviour NOT_TESTED')
-    missing = [key for key in ('reason', 'result_hex') if key not in run]
+    reason = run.get('reason')
+    if reason == BUDGET:
+        # an executed run that ran out of steps never completed the halt confirmation: a failure, not a skip
+        return _verdict(FAIL, 'BUDGET_EXHAUSTED', f'{cycle}: step budget exhausted before the halt was confirmed')
+    missing = [key for key in REQUIRED_KEYS if key not in run]
     if missing:
         return _verdict(BLOCKED, 'INCOMPLETE_RECORD', f'{cycle}: missing {missing}')
-    reason = run['reason']
-    if reason == BUDGET:
-        return _verdict(SKIP, 'INCONCLUSIVE', f'{cycle}: no halt reached within the step budget')
     if reason not in (HALT_OK, HALT_FAIL):
         return _verdict(FAIL, 'UNEXPECTED_HALT', f'{cycle}: stopped at {reason!r}, not a result halt')
+    try:
+        check_halt_confirmation(run)
+    except ValueError as error:
+        return _verdict(FAIL, 'HALT_NOT_CONFIRMED', f'{cycle}: {error}')
     try:
         block = result_block(run)
     except (ValueError, KeyError, IndexError) as error:
@@ -98,6 +111,8 @@ def classify_records(records, count, expect=None):
     caps = records.get('CAP') or [{}]
     media = caps[0].get('cdrom_media') is True
     runs = records.get('RUN', [])
+    if not runs:
+        return NOT_RUN, [_verdict(NOT_RUN, 'NOT_EXECUTED', 'no RUN record: the diagnostic was not executed')]
     if [run.get('cycle') for run in runs] != ['cold', 'warm']:
         return BLOCKED, [_verdict(BLOCKED, 'INCOMPLETE_RECORD', 'missing cold/warm RUN records')]
     verdicts = [classify_run(run, count, expect, media) for run in runs]
@@ -105,10 +120,10 @@ def classify_records(records, count, expect=None):
 
 
 def overall(outcomes):
-    """Aggregate: any FAIL dominates, then BLOCKED, then SKIP; all PASS (and non-empty) is PASS."""
+    """Aggregate: any FAIL dominates, then BLOCKED, then NOT_RUN; all PASS (and non-empty) is PASS."""
     if not outcomes:
-        return BLOCKED
-    for outcome in (FAIL, BLOCKED, SKIP):
+        return NOT_RUN
+    for outcome in (FAIL, BLOCKED, NOT_RUN):
         if outcome in outcomes:
             return outcome
     return PASS

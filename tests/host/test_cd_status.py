@@ -2,13 +2,14 @@
 import unittest
 
 from tools.build_cdread import ERROR_NAMES, HALT_CONFIRM_STEPS
-from tools.cd_status import BLOCKED, FAIL, MEASURED, PASS, SKIP, CODES, classify_records, classify_run, overall
+from tools.cd_status import BLOCKED, CODES, FAIL, MEASURED, NOT_RUN, PASS, classify_records, classify_run, overall
 
 
 def run(cycle="cold", code=0, stage=9, transferred=2048, reason="cd_halt_ok", scsi=0, msg=0, **extra):
     block = bytes((code, stage)) + transferred.to_bytes(2, "little") + bytes((scsi, msg, 0, 0))
     row = {"cycle": cycle, "reason": reason, "result_hex": (block + bytes(26)).hex(), "halt_confirmed": True,
-           "halt_confirmation_steps": HALT_CONFIRM_STEPS, "halt_confirmation_required": HALT_CONFIRM_STEPS}
+           "halt_confirmation_steps": HALT_CONFIRM_STEPS, "halt_confirmation_required": HALT_CONFIRM_STEPS,
+           "halted_after_step": 0, "step": HALT_CONFIRM_STEPS}
     row.update(extra)
     return row
 
@@ -53,9 +54,31 @@ class ClassifyRunTests(unittest.TestCase):
         verdict = classify_run(run(reason="cd_unexpected_interrupt"), 1, expect=0)
         self.assertEqual((verdict.outcome, verdict.category), (FAIL, "UNEXPECTED_HALT"))
 
-    def test_skip_when_budget_exhausted_without_verdict(self):
+    def test_budget_exhaustion_is_fail_never_skip_or_pass(self):
         verdict = classify_run(run(reason="budget", halt_confirmed=False), 1)
-        self.assertEqual((verdict.outcome, verdict.category), (SKIP, "INCONCLUSIVE"))
+        self.assertEqual((verdict.outcome, verdict.category), (FAIL, "BUDGET_EXHAUSTED"))
+        # even with an expectation, or with an incomplete result block, a run out of budget is not a pass
+        self.assertEqual(classify_run(run(code=0, reason="budget", halt_confirmed=False), 1, expect=0).outcome, FAIL)
+        row = run(reason="budget", halt_confirmed=False)
+        del row["result_hex"]
+        self.assertEqual(classify_run(row, 1).outcome, FAIL)
+
+    def test_negative_success_halt_not_confirmed_for_64_steps_fails(self):
+        for bad in (dict(halt_confirmed=False), dict(halt_confirmation_steps=63),
+                    dict(halt_confirmation_required=32), dict(step=63), dict(halted_after_step=-1)):
+            verdict = classify_run(run(**bad), 1)
+            self.assertEqual((verdict.outcome, verdict.category), (FAIL, "HALT_NOT_CONFIRMED"), bad)
+
+    def test_blocked_when_confirmation_keys_are_missing(self):
+        for key in ("halt_confirmed", "halt_confirmation_steps", "halted_after_step", "step"):
+            row = run()
+            del row[key]
+            verdict = classify_run(row, 1)
+            self.assertEqual((verdict.outcome, verdict.category), (BLOCKED, "INCOMPLETE_RECORD"), key)
+
+    def test_blocked_when_result_block_is_truncated_or_not_hex(self):
+        self.assertEqual(classify_run(run(result_hex="00" * 4), 1).category, "INCOMPLETE_RECORD")
+        self.assertEqual(classify_run(run(result_hex="zz"), 1).outcome, BLOCKED)
 
     def test_blocked_without_media_or_incomplete_record(self):
         self.assertEqual(classify_run(run(), 1, media=False).outcome, BLOCKED)
@@ -101,16 +124,24 @@ class ClassifyRecordsTests(unittest.TestCase):
         outcome, verdicts = classify_records(records(run("cold"), run("warm"), media=False), 1)
         self.assertEqual((outcome, verdicts[0].category), (BLOCKED, "NO_MEDIA"))
 
-    def test_boundary_missing_cycle_or_no_runs_is_blocked(self):
+    def test_boundary_one_cycle_only_is_blocked(self):
         self.assertEqual(classify_records(records(run("cold")), 1)[0], BLOCKED)
-        self.assertEqual(classify_records({"CAP": [{"cdrom_media": True}]}, 1)[0], BLOCKED)
+
+    def test_boundary_no_run_record_is_not_run_not_blocked_or_pass(self):
+        self.assertEqual(classify_records(records(), 1)[0], NOT_RUN)
+        self.assertEqual(classify_records({"CAP": [{"cdrom_media": True}]}, 1)[0], NOT_RUN)
+        self.assertEqual(classify_records({}, 1)[0], NOT_RUN)
+
+    def test_negative_budget_in_either_cycle_fails_overall(self):
+        outcome, _ = classify_records(records(run("cold"), run("warm", reason="budget", halt_confirmed=False)), 1)
+        self.assertEqual(outcome, FAIL)
 
     def test_overall_precedence(self):
-        self.assertEqual(overall([PASS, SKIP, BLOCKED, FAIL]), FAIL)
-        self.assertEqual(overall([PASS, SKIP, BLOCKED]), BLOCKED)
-        self.assertEqual(overall([PASS, SKIP]), SKIP)
+        self.assertEqual(overall([PASS, NOT_RUN, BLOCKED, FAIL]), FAIL)
+        self.assertEqual(overall([PASS, NOT_RUN, BLOCKED]), BLOCKED)
+        self.assertEqual(overall([PASS, NOT_RUN]), NOT_RUN)
         self.assertEqual(overall([PASS, PASS]), PASS)
-        self.assertEqual(overall([]), BLOCKED)
+        self.assertEqual(overall([]), NOT_RUN)
 
 
 if __name__ == "__main__":

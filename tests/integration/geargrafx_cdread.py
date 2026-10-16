@@ -77,6 +77,10 @@ class Suite:
         rom = self.payload if (lba, count) == DEFAULT_REQUEST else self.variant(lba, count)
         records = self.run(rom)
         check_success(records, self.symbols, self.disc, lba, count)
+        # the status classifier is subordinate: it may only agree with the authoritative judge, never grant a pass alone
+        outcome, _ = classify_records(records, count)
+        if outcome != "PASS":
+            raise ValueError(f"{name}: status classifier reports {outcome} where check_success accepted the run")
         expected = b"".join(self.disc[lba:lba + count])
         check_ram_transition(records, expected)
         self.results[name] = {"status": "PASS", "lba": lba, "count": count, "bytes": len(expected),
