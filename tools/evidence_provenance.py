@@ -42,18 +42,22 @@ PASS, FAIL, BLOCKED, LOCAL_ONLY = 'PASS', 'FAIL', 'BLOCKED', 'LOCAL_ONLY'
 TRUSTED_TRIGGERS = ('push', 'workflow_dispatch')
 TRUSTED_REF = 'refs/heads/main'
 NOT_PROMOTED = 'NOT_PROMOTED: attested emulator diagnostic only, never a BIOS compatibility PASS'
-# Result kind per scenario of tests/integration/geargrafx_cdread.py (same table as tools/cd_read_contract.py, #118).
-# A positive read recorded as PASS_EXPECTED_FAILURE, or a bad request recorded as PASS, is a wrong kind.
-SCENARIO_KIND = {
-    'single_sector_lba5': 'PASS', 'first_sector_lba0': 'PASS', 'last_sector_lba15': 'PASS',
-    'three_sectors_lba5': 'PASS', 'disc_end_boundary_lba13_x3': 'PASS',
-    'wrong_sector_requested_lba6': 'PASS_EXPECTED_FAILURE',
-    'invalid_sector_lba16': 'PASS_EXPECTED_FAILURE', 'invalid_sector_lba_max': 'PASS_EXPECTED_FAILURE',
-    'read_past_disc_end_lba14_x3': 'PASS_EXPECTED_FAILURE',
-    'read6_on_audio_track_lba': 'OBSERVED_EMULATOR_BEHAVIOUR',
-}
-REQUIRED_SCENARIOS = tuple(name for name, kind in SCENARIO_KIND.items() if kind == 'PASS')
-KNOWN_STATUSES = {'PASS', 'PASS_EXPECTED_FAILURE', 'OBSERVED_EMULATOR_BEHAVIOUR', 'NOT_TESTED'}
+_EXPECTED_FAILURES = (
+    'wrong_sector_requested_lba6', 'invalid_sector_lba16', 'invalid_sector_lba_max', 'read_past_disc_end_lba14_x3',
+    'tampered_identity_byte3', 'tampered_last_byte2047', 'zero_sector_count', 'oversized_sector_count',
+    'selection_never_answered_timeout', 'drive_abort_at_data_in_entry', 'judge_observation_mutations',
+    'halt_unconfirmed_cut_0_steps_after_arrival', 'halt_unconfirmed_cut_1_steps_after_arrival',
+    'halt_unconfirmed_cut_63_steps_after_arrival', 'budget_exhausted_before_any_halt')
+REQUIRED_SCENARIOS = ('single_sector_lba5', 'first_sector_lba0', 'last_sector_lba15', 'three_sectors_lba5',
+                      'disc_end_boundary_lba13_x3')
+# Exact result kind of every scenario tests/integration/geargrafx_cdread.py records (a superset of the #118
+# tools/cd_read_contract.py table). The artifact must carry exactly these names with exactly these kinds: a missing,
+# extra, or re-kinded scenario (a bad request recorded as PASS, a positive read as PASS_EXPECTED_FAILURE) is FAIL.
+SCENARIO_KIND = {**dict.fromkeys(REQUIRED_SCENARIOS, 'PASS'), 'halt_confirmation_exact_window': 'PASS',
+                 **dict.fromkeys(_EXPECTED_FAILURES, 'PASS_EXPECTED_FAILURE'),
+                 'read6_on_audio_track_lba': 'OBSERVED_EMULATOR_BEHAVIOUR',
+                 'no_media_loaded': 'NOT_TESTED', 'empty_disc_image': 'NOT_TESTED'}
+SIGNER_WORKFLOW = '.github/workflows/api-source.yml'
 HEX40 = re.compile(r'[0-9a-f]{40}')
 HEX64 = re.compile(r'[0-9a-f]{64}')
 REPO = re.compile(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+')
@@ -103,9 +107,9 @@ def artifact_findings(artifact, policy, rom_bytes=None, fixture=None):
             got = _get(tests, name, 'status')
             if got != kind:
                 errors.append(f'scenario {name} must be {kind}, got {got!r}')
-        bad = sorted(str(name) for name, item in tests.items() if _get(item, 'status') not in KNOWN_STATUSES)
-        if bad:
-            errors.append(f"scenarios with FAIL/BLOCKED/unknown status or malformed: {', '.join(bad)}")
+        extra = sorted(str(name) for name in tests if name not in SCENARIO_KIND)
+        if extra:
+            errors.append(f"unexpected scenarios (not in SCENARIO_KIND): {', '.join(extra)}")
     runs = _get(artifact, 'primary_observations', 'RUN')
     if not isinstance(runs, list) or sorted(str(_get(run, 'cycle')) for run in runs) != ['cold', 'warm']:
         errors.append('primary RUN observations must be exactly one cold and one warm run')
@@ -147,9 +151,9 @@ def certificate_findings(result, policy):
         findings.append('signing workflow identity differs from policy')
     if certificate.get('buildSignerDigest') != commit:
         findings.append('signing workflow file is not the one at the checkout commit')
-    trigger = certificate.get('githubWorkflowTrigger', certificate.get('buildTrigger'))
-    if trigger not in TRUSTED_TRIGGERS:
-        findings.append(f'producer trigger {trigger!r} is not a trusted push or workflow_dispatch')
+    triggers = [certificate[key] for key in ('githubWorkflowTrigger', 'buildTrigger') if key in certificate]
+    if not triggers or any(trigger not in TRUSTED_TRIGGERS for trigger in triggers):
+        findings.append(f'producer trigger {triggers!r} is not a trusted push or workflow_dispatch')
     if certificate.get('runnerEnvironment') != 'github-hosted':
         findings.append('producer did not run on a GitHub-hosted runner')
     return findings
@@ -191,7 +195,7 @@ def verify(artifact_bytes, attestation, policy, rom_bytes=None, run=None, fixtur
 
     try:
         artifact = json.loads(artifact_bytes.decode('utf-8'))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (UnicodeDecodeError, ValueError, RecursionError) as error:  # ValueError covers JSONDecodeError
         return out(FAIL, [f'artifact is not JSON: {error}'], LOCAL_TRUST)
     errors = artifact_findings(artifact, policy, rom_bytes, fixture)
     if errors:
@@ -229,7 +233,7 @@ def _load_json(path):
     try:
         with open(path, encoding='utf-8') as handle:
             return json.load(handle)
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return None
 
 
@@ -238,7 +242,6 @@ def main(argv):
     parser.add_argument('artifact')
     parser.add_argument('--repo', required=True, help='owner/repo expected to have produced the artifact')
     parser.add_argument('--commit', required=True, help='40-hex checkout commit (git rev-parse HEAD)')
-    parser.add_argument('--signer-workflow', default='.github/workflows/api-source.yml')
     parser.add_argument('--deps', default='tools/dependencies.json', help='pinned dependencies at the checkout')
     parser.add_argument('--attestation', help='saved output of gh attestation verify --format json')
     parser.add_argument('--run', help='saved output of gh api repos/R/actions/runs/ID/attempts/N')
@@ -256,7 +259,7 @@ def main(argv):
     if args.attestation and attestation is None:
         attestation = []  # unreadable gh output -> BLOCKED, never LOCAL_ONLY
     run = _load_json(args.run) if args.run else None
-    policy = {'repository': args.repo, 'commit': args.commit, 'signer_workflow': args.signer_workflow,
+    policy = {'repository': args.repo, 'commit': args.commit, 'signer_workflow': SIGNER_WORKFLOW,
               'geargrafx_revision': geargrafx['revision'], 'geargrafx_sha256': geargrafx['sha256']}
     result = verify(artifact_bytes, attestation, policy, rom_bytes, run, recompute_fixture())
     print(json.dumps(result, indent=2))

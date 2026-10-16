@@ -39,8 +39,6 @@ def sha(data):
 def make_artifact(**overrides):
     """Synthetic stand-in for cdread-evidence.json, shaped like tests/integration/geargrafx_cdread.py output."""
     tests = {name: {'status': kind} for name, kind in ep.SCENARIO_KIND.items()}
-    tests['judge_observation_mutations'] = {'status': 'PASS_EXPECTED_FAILURE', 'mutants': ['x']}
-    tests['no_media_loaded'] = {'status': 'NOT_TESTED'}
     artifact = {'scope': 'synthetic', 'rom_sha256': sha(ROM), 'geargrafx_revision': GEARGRAFX_REV,
                 'source_archive_sha256': GEARGRAFX_SHA, 'disc': dict(FIXTURE), 'tests': tests,
                 'primary_observations': {'RUN': [{'cycle': 'cold', 'reason': 'cd_halt_ok'},
@@ -106,16 +104,24 @@ class EvidenceProvenanceTests(unittest.TestCase):
         self.assertNotIn('compatib', result['trust'].lower())
 
     def test_scenario_kinds_match_integration_call_sites(self):
-        # Same table as tools/cd_read_contract.py (#118); here derived from where the integration suite records it.
+        # Both directions: every scenario the integration suite records is in the table with the same kind.
         text = (ROOT / 'tests/integration/geargrafx_cdread.py').read_text(encoding='utf-8')
         derived = {name: 'PASS' for name in re.findall(r'suite\.positive\("(\w+)"', text)}
-        derived.update({name: 'PASS_EXPECTED_FAILURE'
-                        for name in re.findall(r'suite\.(?:failing_guest|must_be_rejected)\("(\w+)"', text)})
-        derived.update({name: 'OBSERVED_EMULATOR_BEHAVIOUR'
-                        for name in re.findall(r'results\["(\w+)"\] = \{\s*"status": "OBSERVED_EMULATOR_BEHAVIOUR"',
-                                               text)})
-        for name, kind in ep.SCENARIO_KIND.items():
-            self.assertEqual(derived.get(name), kind, name)
+        derived.update({name: 'PASS_EXPECTED_FAILURE' for name in
+                        re.findall(r'suite\.(?:failing_guest|must_be_rejected|tampered_disc)\("(\w+)"', text)})
+        derived.update(re.findall(r'results\["(\w+)"\] = \{\s*"status": "(\w+)"', text))
+        self.assertIn('f"halt_unconfirmed_cut_{extra}_steps_after_arrival"', text)
+        self.assertIn('for extra in (0, 1, HALT_CONFIRM_STEPS - 1):', text)
+        derived.update({f'halt_unconfirmed_cut_{n}_steps_after_arrival': 'PASS_EXPECTED_FAILURE' for n in (0, 1, 63)})
+        self.assertEqual(derived, ep.SCENARIO_KIND)
+        # The #118 tools/cd_read_contract.py table is a subset with the same kinds.
+        contract = {'single_sector_lba5': 'PASS', 'first_sector_lba0': 'PASS', 'last_sector_lba15': 'PASS',
+                    'three_sectors_lba5': 'PASS', 'disc_end_boundary_lba13_x3': 'PASS',
+                    'wrong_sector_requested_lba6': 'PASS_EXPECTED_FAILURE',
+                    'invalid_sector_lba16': 'PASS_EXPECTED_FAILURE', 'invalid_sector_lba_max': 'PASS_EXPECTED_FAILURE',
+                    'read_past_disc_end_lba14_x3': 'PASS_EXPECTED_FAILURE',
+                    'read6_on_audio_track_lba': 'OBSERVED_EMULATOR_BEHAVIOUR'}
+        self.assertEqual({name: ep.SCENARIO_KIND[name] for name in contract}, contract)
         self.assertEqual(ep.REQUIRED_SCENARIOS, ('single_sector_lba5', 'first_sector_lba0', 'last_sector_lba15',
                                                  'three_sectors_lba5', 'disc_end_boundary_lba13_x3'))
 
@@ -133,11 +139,19 @@ class EvidenceProvenanceTests(unittest.TestCase):
                 with self.subTest(name=name, status=bad):
                     self.assertResult(check(data), ep.FAIL, name)
 
-    def test_extra_scenario_fail_blocked_or_unknown_status_fails(self):
-        for status in ('FAIL', 'BLOCKED', 'MAYBE', None):
+    def test_unknown_or_malformed_scenario_status_fails(self):
+        for status in ('FAIL', 'BLOCKED', 'MAYBE', None, [], {}, 1):
             artifact = make_artifact()
             artifact['tests']['zero_sector_count'] = {'status': status}
             self.assertResult(check(encode(artifact)), ep.FAIL, 'zero_sector_count')
+        for status in ('PASS', [], {}):
+            artifact = make_artifact()
+            artifact['tests']['extra_scenario'] = {'status': status}
+            self.assertResult(check(encode(artifact)), ep.FAIL, 'unexpected scenarios')
+
+    def test_deep_or_huge_json_does_not_raise(self):
+        for data in (b'[' * 100000 + b']' * 100000, b'{"rom_sha256": ' + b'9' * 5000 + b'}'):
+            self.assertResult(check(data), ep.FAIL, 'not JSON')
 
     def test_primary_run_must_be_one_cold_and_one_warm_halt(self):
         bad_runs = ([{'cycle': 'cold', 'reason': 'cd_halt_ok'}] * 2,
@@ -209,6 +223,28 @@ class EvidenceProvenanceTests(unittest.TestCase):
         tampered = encode(make_artifact(scope='tampered'))
         self.assertResult(check(tampered, attestation=make_attestation(self.data)), ep.FAIL, 'no verified attestation')
 
+    def test_subjects_cannot_be_combined_across_statements(self):
+        json_only = make_attestation(self.data, rom=None)
+        rom_only = make_attestation(self.data, rom=ROM)
+        rom_only[0]['verificationResult']['statement']['subject'].pop(0)
+        self.assertResult(check(self.data, attestation=json_only + rom_only), ep.FAIL, 'both this artifact')
+
+    def test_one_trusted_attestation_among_untrusted_ones_passes(self):
+        untrusted = make_attestation(self.data, ref='refs/heads/feature', trigger='workflow_dispatch')
+        self.assertResult(check(self.data, attestation=untrusted + make_attestation(self.data)), ep.PASS)
+        self.assertResult(check(self.data, attestation=make_attestation(self.data) + untrusted), ep.PASS)
+
+    def test_signer_digest_trigger_and_run_uri_fields_are_required(self):
+        for field, value, reason in (('buildSignerDigest', OTHER_COMMIT, 'signing workflow file'),
+                                     ('runInvocationURI', None, 'runInvocationURI'),
+                                     ('buildTrigger', 'pull_request', 'trigger')):
+            attestation = make_attestation(self.data)
+            attestation[0]['verificationResult']['signature']['certificate'][field] = value
+            self.assertResult(check(self.data, attestation=attestation), ep.FAIL, reason)
+        attestation = make_attestation(self.data)
+        del attestation[0]['verificationResult']['signature']['certificate']['githubWorkflowTrigger']
+        self.assertResult(check(self.data, attestation=attestation), ep.FAIL, 'trigger')
+
     def test_attestation_without_the_rom_subject_fails(self):
         self.assertResult(check(self.data, attestation=make_attestation(self.data, rom=None)), ep.FAIL)
         self.assertResult(check(self.data, attestation=make_attestation(self.data, rom=b'x')), ep.FAIL)
@@ -274,10 +310,19 @@ class EvidenceProvenanceTests(unittest.TestCase):
                 self.assertIn('LOCAL_ONLY', printed.call_args[0][0])
                 self.assertEqual(ep.main(base + ['--attestation', str(tmp / 'verify.json')]), 1)
                 self.assertIn('BLOCKED', printed.call_args[0][0])
+                (tmp / 'rom').write_bytes(ROM)
+                (tmp / 'att.json').write_text(json.dumps(make_attestation(self.data)))
+                full = base + ['--attestation', str(tmp / 'att.json'), '--rom', str(tmp / 'rom')]
+                self.assertEqual(ep.main(full + ['--run', str(tmp / 'verify.json')]), 1)
+                self.assertIn('BLOCKED', printed.call_args[0][0])
+                (tmp / 'run.json').write_text(json.dumps(make_run()))
+                self.assertEqual(ep.main(full + ['--run', str(tmp / 'run.json')]), 0)
             with mock.patch('builtins.print'), mock.patch('sys.stderr'):
                 self.assertEqual(ep.main(['x', 'a', '--repo', 'bad', '--commit', COMMIT]), 2)
                 with self.assertRaises(SystemExit):
                     ep.main(base + ['--ref', 'refs/heads/feature'])  # no way to accept a non-main ref
+                with self.assertRaises(SystemExit):
+                    ep.main(base + ['--signer-workflow', '.github/workflows/evil.yml'])
 
 
 if __name__ == '__main__':
