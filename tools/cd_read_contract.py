@@ -14,15 +14,23 @@ SELF-DECLARED: this module checks that they are consistent with the pinned value
 not authenticate who wrote them. A bundle written by a modified or hand-made run passes these checks, so the best
 local result is LOCAL_ONLY and the CLI exits non-zero for it. The trust meaning matches LOCAL_ONLY in
 tools/evidence_provenance.py (#125: no attestation, never compatibility evidence), but the acceptance condition is
-looser: #125 also requires disc hashes, its full scenario table and primary_observations.RUN, and FAILs without them. compat_status() keeps every VERIFIED claim BLOCKED: it
-does not take the #125 attestation yet. See docs/cd-read-contract.md section 4.
+looser: #125 also requires disc hashes, its full scenario table and primary_observations.RUN, and FAILs without them.
+compat_status() keeps every declared VERIFIED claim BLOCKED, whatever it is given: gh attestation output and run
+records handed to a function are caller-supplied JSON, so their authenticity cannot be verified in-process (#153).
+compat_reason() runs tools/evidence_provenance.verify() on such inputs with this checkout's pins only to explain the
+BLOCKED. See docs/cd-read-contract.md section 4.
 """
 import argparse
 import hashlib
 import json
 from pathlib import Path
 import re
+import subprocess
 import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import evidence_provenance as ep  # noqa: E402  (#125 verifier; diagnostics only, no path to VERIFIED)
+from provenance_guard import load_denylist  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 INTEGRATION = ROOT / "tests/integration/geargrafx_cdread.py"
@@ -134,12 +142,56 @@ def effective_status(bundle=None, rom_sha256=None, claims=TRANSPORT_CLAIMS) -> d
     return out
 
 
-def compat_status(bundle=None, rom_sha256=None, claims=TRANSPORT_CLAIMS) -> dict:
-    """Status for a compatibility gate. No authenticated attestation exists, so no VERIFIED claim gets through.
+REPOSITORY = "mao2009/oss-pce-cd-bios"  # the only producer #125 may accept; a fork never matches
+IN_PROCESS_REASON = ("BLOCKED: attestation authenticity cannot be checked in-process. The #125 verifier found the "
+                     "supplied gh attestation output and run record consistent, but they are caller-supplied JSON "
+                     "(gh output is not a signature this function can check), so the gate stays BLOCKED")
+DECLARED_UNPROVEN = frozenset({"HYPOTHESIS", "UNKNOWN"})
 
-    Claims that are not VERIFIED keep their declared status; a VERIFIED claim is BLOCKED whatever the bundle says.
+
+def _no_status_words(text):
+    """#125 reasons quote result kinds; the gate's diagnostics must never read as an acceptance."""
+    return re.sub(r"\b(PASS|VERIFIED)\b", "<accepted-kind>", text, flags=re.I)
+
+
+def compat_reason(artifact_bytes=None, attestation=None, rom_bytes=None, run=None) -> str:
+    """Why the gate is BLOCKED for these inputs: a #125 finding, or IN_PROCESS_REASON when #125 finds them consistent.
+
+    Diagnostic only; it never changes compat_status(). Repository, commit (git HEAD of this checkout), Geargrafx pins,
+    signer workflow, denylist and the regenerated fixture hashes come from this checkout, never from the caller.
     """
-    return {c["id"]: "BLOCKED" if c["status"] == "VERIFIED" else c["status"] for c in claims}
+    if not isinstance(artifact_bytes, bytes):
+        return ("#125 verifier could not run: artifact_bytes missing or not bytes "
+                "(call compat_reason(artifact_bytes, attestation, rom_bytes, run))")
+    try:
+        commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True,
+                                check=True).stdout.strip()
+        policy = {"repository": REPOSITORY, "commit": commit, "signer_workflow": ep.SIGNER_WORKFLOW,
+                  "geargrafx_revision": PINNED["revision"], "geargrafx_sha256": PINNED["sha256"],
+                  "denied_sha256": load_denylist(ROOT)}
+        result = ep.verify(artifact_bytes, attestation, policy, rom_bytes, run, ep.recompute_fixture())
+    except Exception as error:  # fail closed: a verifier crash is never evidence
+        return _no_status_words(f"#125 verifier could not run: {type(error).__name__}: {error}")
+    if not isinstance(result, dict):
+        return "#125 verifier could not run: it returned a non-dict result"
+    if result.get("result") == ep.PASS:
+        return IN_PROCESS_REASON
+    return _no_status_words(f"#125 verifier result {result.get('result')!r}: {result.get('reasons')}")
+
+
+def compat_status(bundle=None, rom_sha256=None, claims=TRANSPORT_CLAIMS) -> dict:
+    """Status for a compatibility gate. Every declared VERIFIED claim is BLOCKED, whatever the inputs.
+
+    No data a caller can hand to this function (bundle, gh attestation output, run record, branch rules) proves who
+    produced it, so nothing here reaches VERIFIED (see compat_reason and docs/cd-read-contract.md section 4).
+    A claim keeps its declared status only when it is a plain dict whose status, read once, is exactly the str
+    HYPOTHESIS or UNKNOWN; anything else (VERIFIED, look-alike strings, str subclasses, other mappings) is BLOCKED.
+    """
+    out = {}
+    for claim in claims:
+        status = claim.get("status") if type(claim) is dict else None
+        out[claim["id"]] = status if type(status) is str and status in DECLARED_UNPROVEN else "BLOCKED"
+    return out
 
 
 def validate(api_contracts: dict, claims=TRANSPORT_CLAIMS) -> None:
@@ -173,7 +225,7 @@ def real_core_requests(integration_text: str) -> list:
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("debug", "release"), default="debug")
-    parser.add_argument("--compat", action="store_true", help="compatibility gate: always BLOCKED (LOCAL_ONLY)")
+    parser.add_argument("--compat", action="store_true", help="gate: always BLOCKED (no path to VERIFIED)")
     args = parser.parse_args(argv)
     mode = args.mode
     api = json.loads((ROOT / "spec/api_contracts.json").read_text(encoding="utf-8"))
@@ -193,9 +245,10 @@ def main(argv=None):
         reason = provenance_problem(bundle, rom_sha) or "evidence bundle does not cover the cited scenarios"
         print(f"BLOCKED CD_READ contract ledger ({TRUST_LABEL}): downgraded {downgraded}; reason: {reason}")
         sys.exit(EXIT_BLOCKED)
-    print(f"{TRUST_LABEL} CD_READ contract ledger (consistent, not verified, not a compatibility result): transport "
+    print(f"{TRUST_LABEL} CD_READ contract ledger (consistent, not authenticated, not a compatibility result): "
+          f"transport "
           f"{sorted(status.items())} from SELF-DECLARED bundle {evidence} (provenance not authenticated; "
-          "tools/evidence_provenance.py checks the attestation); callee ABI not VERIFIED (CD_READ NOT_IMPLEMENTED)")
+          "tools/evidence_provenance.py checks the attestation); callee ABI unproven (CD_READ NOT_IMPLEMENTED)")
     sys.exit(EXIT_LOCAL_ONLY)
 
 
