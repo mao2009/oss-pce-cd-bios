@@ -48,7 +48,7 @@ python3 tools/reference_bios_runner.py /tmp/opencode/refbios/reset-config.json \
 
 - ガード解放前は `slot-1e` パスは明示的に BLOCKED（post-run空ram_diffでは不充分）。
 - `Memory::GetMemoryMapWrite`（防止）+ `AddBreakpoint`（検出）+ MPR0xFF隔離 + 命令単位予算による**コア内強制**を実装し、負例・正例を実コアで検証した後、パスを開放（CIは合成BIOS/合成CDで実行）。
-- ゲスト呼び出し `LDA #$AA; LDX #$55; LDY #$CC; JSR $E05A; BRA *` が実BIOSのslot `$1E` (`0xE000+3*0x1E = $E05A`, テーブルバイト `4C 2D F0` = `JMP $F02D`) に到達し、手続き `$F02D` (`LDX $FEC2; LDY $FEC3; RTS`) から呼び出し元に戻ることを実コアで確認。
+- ゲスト呼び出し `LDA #$AA; LDX #$55; LDY #$CC; JSR $E05A; BRA *` が実BIOSのslot `$1E` (`0xE000+3*0x1E = $E05A`) に到達し、呼び出し元に戻ることを実コアで確認。ジャンプテーブル先の内部手続きアドレスや内部命令列は非公開BIOSの実装詳細であり、本レポートでは公開しない（公開する機能的契約は§5の表に限定）。
 - 負例 `neg-write` (宛先 0x4000, CD-ROM RAMバンク0): `detected=true`, 書込み未着地。正例 `pos-write` (宛先 0x3E50, ワークRAM): `guard_after=0x5A` 着地。双方合成BIOSでPASS（`make test` / `make integration` に組込済）。
 
 評価: EX_GETVER スロットのゲストJSR/RTSは**実コア上で実行・戻り可能**。他80スロット＋9 PSGサブコマンドは未解放。
@@ -59,8 +59,8 @@ python3 tools/reference_bios_runner.py /tmp/opencode/refbios/reset-config.json \
 
 | 項目 | 値 |
 | --- | --- |
-| スロット | `$1E`（入口 `$E05A`、ジャンプテーブル ROM `0x5A` = `4C 2D F0`） |
-| 手続き | `$F02D`: `LDX $FEC2` / `LDY $FEC3` / `RTS` |
+| スロット | `$1E`（入口 `$E05A`、ジャンプテーブルスロット `0x5A`） |
+| 手続き | 非公開BIOS内部実装（実コア観測済み、未公開） |
 | 戻り値 | X=3（メジャー）、Y=0（マイナー）→ バージョン "3.0"、**A保持**（呼出し前 0xAA → 後も 0xAA） |
 | フラグ後 | P=$06（Y=0によりZ=1） |
 | SP | $FF（呼出し前と同一、スタック釣り合い） |

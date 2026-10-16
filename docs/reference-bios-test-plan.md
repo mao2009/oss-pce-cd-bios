@@ -191,8 +191,8 @@ deterministic across runs):**
 
 | item | value |
 | --- | --- |
-| slot | `0x1E`, entry `$E05A`, jump-table bytes `4C 2D F0` (`JMP $F02D`) |
-| callee | `$F02D`: `LDX $FEC2` / `LDY $FEC3` / `RTS` |
+| slot | `0x1E`, entry `$E05A` (jump table slot `0x5A`) |
+| callee | Non-public BIOS internal implementation (observed via real core, not published) |
 | returns | X = 3 (major), Y = 0 (minor) → "3.0"; **A preserved** (`0xAA` still `0xAA`) |
 | flags after | `P = $06` (Z set because Y = 0) |
 | SP after | `$FF` (balanced — the call returned) |
