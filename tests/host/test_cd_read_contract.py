@@ -1,4 +1,5 @@
 """Issue #12: CD_READ contract ledger + transport outcome model (host-only; real core is authoritative)."""
+import collections.abc
 import contextlib
 import copy
 import hashlib
@@ -306,6 +307,61 @@ class TrustBoundaryTests(unittest.TestCase):
         self.assertEqual([status[i] for i in ("T6", "T7", "T8")], ["BLOCKED"] * 3)
         self.assertNotIn("VERIFIED", status.values())
 
+    def test_claim_status_is_read_once_and_must_be_an_exact_unverified_str(self):
+        class Str(str):
+            pass
+
+        class Flip(collections.abc.Mapping):
+            """Answers HYPOTHESIS on the first read of status and VERIFIED afterwards."""
+            def __init__(self, base):
+                self.base, self.reads = base, 0
+
+            def __getitem__(self, key):
+                if key == "status":
+                    self.reads += 1
+                    return "HYPOTHESIS" if self.reads == 1 else "VERIFIED"
+                return self.base[key]
+
+            def __iter__(self):
+                return iter(self.base)
+
+            def __len__(self):
+                return len(self.base)
+
+        class DictFlip(dict):
+            def __getitem__(self, key):
+                return "VERIFIED" if key == "status" else super().__getitem__(key)
+
+        base = TRANSPORT_CLAIMS[5]  # T6, HYPOTHESIS
+        for value in ("VERIFIED", "VERIFIED ", " HYPOTHESIS", "VERIFIED​", "HYPOTHESIS​", "hypothesis",
+                      Str("HYPOTHESIS"), Str("VERIFIED"), None, 1, ["HYPOTHESIS"], "BLOCKED", "LOCAL_ONLY", "PASS"):
+            with self.subTest(value=value):
+                self.assertEqual(compat_status(claims=[dict(base, status=value)]), {"T6": "BLOCKED"})
+        for claim in (Flip(dict(base)), DictFlip(base)):
+            with self.subTest(claim=type(claim).__name__):
+                self.assertEqual(compat_status(claims=[claim]), {"T6": "BLOCKED"})
+        self.assertEqual(compat_status(claims=[dict(base)]), {"T6": "HYPOTHESIS"})
+        for status in compat_status().values():
+            self.assertIs(type(status), str)
+
+    def test_compat_reason_never_says_pass_or_verified(self):
+        artifact = gate_artifact()
+        reasons = [reason_for(artifact), reason_for(artifact, attestation=None), reason_for(b"{}"),
+                   reason_for(gate_artifact(status="FAIL", tests={})), cd_read_contract.compat_reason()]
+        with mock.patch.object(cd_read_contract.ep, "verify", return_value="PASS"):
+            reasons.append(reason_for(artifact))
+        with mock.patch.object(cd_read_contract.ep, "verify", side_effect=RuntimeError("PASS VERIFIED")):
+            reasons.append(reason_for(artifact))
+        for reason in reasons:
+            with self.subTest(reason=reason[:60]):
+                self.assertIsNone(re.search(r"\b(PASS|VERIFIED)\b", reason, re.I), reason)
+
+    def test_compat_reason_without_arguments_names_the_missing_input(self):
+        reason = cd_read_contract.compat_reason()
+        self.assertTrue(reason.startswith("#125 verifier could not run: "), reason)
+        self.assertIn("artifact_bytes", reason)
+        self.assertNotIn("AttributeError", reason)
+
     def test_declared_unverified_items_and_callee_abi_stay_as_declared(self):
         status = compat_status(bundle_for(), ROM_SHA)
         self.assertBlocked(status)
@@ -373,8 +429,7 @@ class TrustBoundaryTests(unittest.TestCase):
         self.assertEqual(code, EXIT_LOCAL_ONLY)
         self.assertNotEqual(code, 0)
         self.assertTrue(text.startswith("LOCAL_ONLY "), text)
-        self.assertNotIn("PASS ", text)
-        self.assertNotIn("VERIFIED'", text)
+        self.assertIsNone(re.search(r"\b(PASS|VERIFIED)\b", text, re.I), text)
 
     def test_cli_malformed_tests_entry_is_blocked(self):
         code, text = self.run_cli(lambda sha: bundle_for(rom_sha256=sha, tests={"single_sector_lba5": "PASS"}))
