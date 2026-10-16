@@ -1,4 +1,4 @@
-# CD_RESET calling contract (Issue #10) — research only, no implementation
+# CD_RESET calling contract (Issue #10) — research and bus-reset diagnostic (#121); no callable CD_RESET
 
 Slot `$01`, candidate CPU-visible entry `$E003`. **spec=HYPOTHESIS, provenance=PENDING,
 implementation=NOT_STARTED, verification=NOT_RUN.** Nothing below was measured on an executed

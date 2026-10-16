@@ -17,7 +17,7 @@
 | SAVE-TESTED | Persist/reload scenario passed |
 | COMPLETION-TESTED | Defined full-game finish path reached |
 
-Never promote automatically between stages. The main-branch HuCARD smoke, 81-slot diagnostic, isolated startup and guest READ(6) are **diagnostic-only evidence**. Draft PR #122's CD→RAM program execution is not merged (2026-10-16 snapshot) and is not System Card disc boot. Draft PR #116's formal evidence schema is likewise not main code.
+Never promote automatically between stages. The main-branch HuCARD smoke, 81-slot diagnostic, isolated startup and guest READ(6) are **diagnostic-only evidence**. The CD→RAM program execution (#122) and the evidence schema (#116) are merged on main (`0476724`, 2026-10-16) as diagnostics; neither is System Card disc boot or a compatibility verdict.
 
 ## Evidence record
 

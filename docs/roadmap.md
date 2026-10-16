@@ -1,6 +1,6 @@
 # Roadmap — evidence-graded milestones (no date promises)
 
-Use [status](status.md) to distinguish actual **main** code from Draft PRs.
+Use [status](status.md) to distinguish actual **main** code from Draft PRs (snapshot: main `0476724`, 2026-10-16).
 A completed **diagnostic** is not an implemented **compatible BIOS API**.
 
 ## M0 — Foundation and diagnostics
@@ -22,7 +22,7 @@ A completed **diagnostic** is not an implemented **compatible BIOS API**.
 ## M2 — Self-authored CD program boot
 
 - [x] Diagnostic guest sector read (not a BIOS service)
-- [ ] Review/merge [Draft #122](https://github.com/mao2009/oss-pce-cd-bios/pull/122): CD→RAM payload execution/return (**not** disc boot)
+- [x] Merged [#122](https://github.com/mao2009/oss-pce-cd-bios/pull/122): CD→RAM payload execution/return diagnostic (**not** disc boot)
 - [ ] Implement BIOS-mediated disc recognition, code load and execution handoff
 - [ ] Boot one original CD program **through the firmware startup/service path**
 - [ ] Cross-check key behavior in another independent emulator

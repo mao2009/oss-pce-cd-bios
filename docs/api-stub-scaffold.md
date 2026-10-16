@@ -152,5 +152,5 @@ criteria; BIOS DEV is intentionally not added to Nightly yet.
 Next: use already implemented startup and guest CD diagnostics as **scoped
 evidence**, not working BIOS services. Resolve #1/#3 ROM/caller ABI before
 implementing production #4 startup and callable CD services. The RAM payload
-experiment is in Draft #122, not merged main or CD boot (2026-10-16).
+experiment (#122) is merged as a diagnostic; it is not a CD boot (2026-10-16).
 #100 retains release gates; #6/#103 retain trace/MCP work.

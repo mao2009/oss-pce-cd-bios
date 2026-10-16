@@ -85,9 +85,8 @@ make dev-release-gate-blocked   # expected refusal; NOT a firmware release
 
 The low-level **CD sector read diagnostic works**; the System Card **CD_READ
 callee is unimplemented**, as are production boot and other BIOS services.
-The self-authored CD→RAM execution experiment is in
-[Draft PR #122](https://github.com/mao2009/oss-pce-cd-bios/pull/122)
-(**not merged** at the 2026-10-16 snapshot, and not itself a CD boot).
+The self-authored CD→RAM execution experiment is merged as a diagnostic
+([#122](https://github.com/mao2009/oss-pce-cd-bios/pull/122)); it is not itself a CD boot.
 CI tests original HuCARD and separate DEV diagnostics; Nightly is HuCARD-only.
 See [building](docs/building.md), [testing](docs/testing.md) and the
 [81-slot scaffold limits](docs/api-stub-scaffold.md).

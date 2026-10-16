@@ -92,7 +92,7 @@ version observations are compared; arbitrary power-on RAM is not deterministic.
 | System Card diagnostic load/reset/bank/RAM/IRQ | Scoped real-core PASS; not production BIOS |
 | Independent startup/MPR/stack marker | Real-core diagnostic `dev-startup-integration`; not BIOS initialization |
 | Guest synthetic CD READ(6)→RAM | Real-core diagnostic `dev-cdread-integration`; not BIOS `CD_READ` |
-| Synthetic CD→RAM code execution/return | Draft PR #122 only at 2026-10-16; not main, not CD boot |
+| Synthetic CD→RAM code execution/return | `dev-cdload-exec-integration` (merged #122); not BIOS service, not CD boot |
 | Production BIOS boot and caller ABI | NOT_IMPLEMENTED/NOT_TESTED; #1/#3/#4 |
 | BIOS APIs and homebrew disc boot | NOT_IMPLEMENTED/NOT_TESTED on main |
 | Independent emulator or real hardware | NOT_TESTED; #7 |
@@ -133,7 +133,7 @@ execute that ROM without media. The audio-track READ(6) observation applies
 only to Geargrafx. See [CD diagnostics](cd-read-diagnostic.md),
 [CPU evidence](geargrafx-contract-evidence.md) and [status](status.md).
 
-CD status classification (#115), real-core trace harness (#119), and host-only
-CD_BASE model (#120) are **on main** at this snapshot. Draft
-#116/#118/#121/#122 remain **branch-only**; #122's synthetic RAM payload
-execution is *not* boot.
+CD status classification (#115), evidence schema (#116), real-core trace harness (#119),
+host-only CD_BASE model (#120), CD_RESET bus-reset diagnostic (#121) and synthetic RAM payload
+execution (#122) are **on main** at snapshot `0476724`. Draft #118 remains **branch-only**; #122's
+RAM payload execution is *not* boot.
