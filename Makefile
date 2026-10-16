@@ -68,3 +68,14 @@ dev-cdload-exec: dev-rom
 
 dev-cdload-exec-integration: dev-cdload-exec
 	$(PYTHON) tests/integration/geargrafx_cdload_exec.py --mode "$(MODE)"
+.PHONY: dev-cdreset dev-cdreset-integration
+# Opt-in Issue #10 CD_RESET bus-reset diagnostic (original ROM, not the System Card API); separate from the #5 read ROM.
+dev-cdreset: dev-rom
+	$(PYTHON) tools/build_cdreset.py --mode "$(MODE)"
+
+dev-cdreset-integration: dev-cdreset
+	$(PYTHON) tests/integration/geargrafx_cdreset.py --mode "$(MODE)"
+.PHONY: dev-trace-integration
+# Opt-in Issue #6 isolated trace harness: real-core positive + classified negatives on the CD read ROM.
+dev-trace-integration: dev-cdread
+	$(PYTHON) tests/integration/geargrafx_trace.py --mode "$(MODE)"
