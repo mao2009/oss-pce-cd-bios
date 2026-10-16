@@ -31,7 +31,7 @@ def observe(config):
                               target_name="reference-reset-probe")
         (out / "synthetic.bin").write_bytes(bytes(2352 * 32))
         cue = out / "synthetic.cue"
-        cue.write_text('FILE "synthetic.bin" BINARY\\n  TRACK 01 MODE1/2352\\n    INDEX 01 00:00:00\\n')
+        cue.write_text('FILE "synthetic.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
         # The actual C++ probe enforces the budget too; auto means stop after 1 CPU instruction.
         cp = subprocess.run([str(probe), str(Path(config["bios_path"]).resolve()),
                              str(cue), str(budget), "auto"],
