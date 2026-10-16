@@ -43,7 +43,8 @@ The code executes `SEI/CLD/CSH`, initializes these MPRs and `SP=$FF`,
 writes original `BOOT!` bytes to guest `$2200..$2204`, then stops in an
 explicit `BRA` checkpoint with `X=$B0`. Four interrupt vectors lead to a
 **different nonreturning error checkpoint** with `X=$EE`; Reset points to
-`$F000`. The test does not enable interrupts or call any BIOS service.
+`$F000`. The startup code does not enable interrupts or call any BIOS service
+(see "Interrupt vector execution" below for the separate IRQ runs).
 
 The stage also stores the non-zero sentinel `$01` at `$2205` (`startup_cd_state`) after the
 `BOOT!` marker. The value is a diagnostic marker that the store executed, **not** an encoding of
@@ -86,15 +87,29 @@ evidence. The GPL-linked local probe executable is **not distributed** or
 included in Actions artifacts. Only original ROM, manifests, maps, labels and
 JSON are uploaded.
 
+### Interrupt vector execution (IRQ1/IRQ2)
+
+`interrupt_vector_execution` in the evidence JSON holds real-core results per source:
+
+- **Masked:** the unmodified ROM runs to `startup_checkpoint`, where the harness asserts IRQ1 or
+  IRQ2. With `I` set the line stays pending (IRR `$02`/`$01`), PC/X/SP/MPR/RAM still pass the
+  startup check, and the `X=$EE` handler is never reached, on cold and warm reset.
+- **Dispatched:** a test-only variant replaces `LDX #$B0` with `CLI; NOP` (the fixture verifier
+  rejects it). The asserted line is taken through the startup ROM's own `$FFF8`/`$FFF6` vector:
+  PC reaches `startup_unexpected_interrupt` with IRR showing the requested source, SP `$FF→$FC`,
+  `I` set, stacked P with `I` clear and stacked PC `startup_checkpoint`; it stops with `X=$EE`.
+  The normal startup check must reject this run; the rejection message is recorded.
+
+The variant exists only to execute the vectors. It is not the startup ROM and enables nothing in it.
+
 ### Still unverified
 
 - Historical and production System Card physical ROM layout and startup RAM
 - Final interrupt dispatch, stack conventions, and BIOS API service ABI
 - CD register reset, disc protocol, CD boot, actual game compatibility
 - Independent emulator or real hardware compatibility
-- **Interrupt vector execution: `NOT_TESTED`.** The four vectors are checked only as bytes; no IRQ1,
-  IRQ2, timer or NMI is ever raised, and the code keeps `I` set, so `X=$EE` is never observed.
-  The evidence JSON records `interrupt_vector_execution: NOT_TESTED`.
+- **Timer and NMI vector execution: `NOT_TESTED`.** The startup code never programs the timer, and
+  the pinned Geargrafx HuC6280 has no NMI input (no `$FFFC` dispatch), so neither is raised.
 - Unused-RAM contents at power-on are not assumed; the marker negatives are chosen to be
   independent of them.
 

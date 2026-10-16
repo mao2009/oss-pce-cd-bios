@@ -71,13 +71,15 @@ no test turns the core's random reset values into hardware defaults.
 The original reset diagnostic reaches `$F003`, X `$FF`; candidate entries
 `$00/$48/$50` reach slot-specific X markers in a nonreturning loop. Their old
 cold/warm assertions and four wrong-target/bank negatives are retained. API
-exits are `NOT_OBSERVABLE`: no implemented BIOS callee exists. The public CPU
-interface has IRQ1/IRQ2 injection but no NMI injection, so NMI execution is
-`NOT_OBSERVABLE`, not PASS. The NMI vector address is a separate source fact.
+exits are `NOT_OBSERVABLE`: no implemented BIOS callee exists. The pinned
+core's `HuC6280::HandleIRQ` dispatches only `$FFFA` (timer), `$FFF8` (IRQ1)
+and `$FFF6` (IRQ2/BRK); it has no NMI input and never reads `$FFFC`. NMI
+execution is therefore `NOT_TESTED`, not PASS. The NMI vector address is a
+separate source fact.
 
 ## Additional real-core experiments
 
-Eight independently linked test variants run 512 instruction steps to cold/warm
+Nine independently linked test variants run 512 instruction steps to cold/warm
 checkpoints (cold also includes the initial one-SEI capability step), with
 another 32 steps checking the terminal state. Exact counts are in JSON. Their code lives
 in an isolated `$E800..$EFFF` overlay, retaining all 81 base table entries.
@@ -91,13 +93,25 @@ implementations. Reset/vector overrides are explicit test inputs.
 | CD/Super RAM | Maps `$80/$87` and `$68/$7F`, writes/reads first/last bytes; markers `81 8F 91 9F 61 6F 71 7F` | Default pinned core reports 192 KiB card RAM; configuration is not BIOS version proof |
 | JSR into slots `$01/$03/$1E` | Real candidate entry PC/A/X/Y/P/SP/MPR, SP `$FF→$FD`, slot-specific halt; continuation never executes | Unimplemented stubs only, no successful BIOS return or service semantics |
 | Original JSR/RTS procedure | Entry/return PC, A/X/Y/P, SP `$FF→$FD→$FF`, stacked return address, temporary MPR2 switch/restoration | Its own authored preservation contract, not EX_GETVER/CD_RESET/CD_READ ABI |
-| IRQ1 and IRQ2 | Public line assertion after guest CLI; source-specific vectors, SP `$FF→$FC→$FF`, stacked P/PC, I flag, guest marker `$77`, RTI restoration | CPU interrupt mechanism plus original handler, not BIOS IRQ dispatch or CD event behavior |
+| IRQ1 and IRQ2 | Public line assertion after guest CLI; source-specific vectors, SP `$FF→$FC→$FF`, stacked P/PC, I flag, IRR bit (`$02`/`$01`) at handler entry, guest marker `$77`, RTI restoration | CPU interrupt mechanism plus original handler, not BIOS IRQ dispatch or CD event behavior |
+| Timer IRQ | Guest writes `$0C00=$00`, `$0C01=$01`, CLI; no harness injection. Vector `$FFFA`, IRR `$04` at entry, SP `$FF→$FC→$FF`, stacked P/PC; handler stops the timer, acknowledges `$1403`, writes `$7A`, RTI restores A/X/Y/P/MPR | Pinned core timer timing only, not BIOS timer/VSync use |
+
+In each interrupt image only the vector under test points to a returning
+handler; the other three of IRQ2/IRQ1/timer/NMI point to a nonreturning
+`irq_unexpected` trap, and reaching it fails the check.
 
 Two additional real execution negatives remove the symbol-qualified RTS or
 change the symbol-qualified TAM restore mask. The first remains at a
 nonreturning procedure checkpoint with SP `$FD`; the second returns with the
 wrong MPR2/MPR3. Each fails the same positive procedure assertion, with observed
 failure state recorded. They do not replace any unimplemented API with RTS.
+
+Three interrupt negatives must fail the same IRQ check: IRQ1/IRQ2 vectors
+swapped (IRQ1 lands in `irq_unexpected` with SP `$FC`), and RTS instead of
+RTI in the IRQ1 and timer handlers. With RTS the CPU pops the stacked P as a
+return-address byte, runs into zero-filled RAM, executes `BRK` and reaches the
+trap through the shared IRQ2/BRK vector with SP `$FB`. The rejection reason
+is recorded per case.
 
 ## Loader acceptance is not firmware validity
 

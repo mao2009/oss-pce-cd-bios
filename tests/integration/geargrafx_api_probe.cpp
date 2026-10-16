@@ -37,8 +37,14 @@ int main(int argc, char** argv) {
         while (file >> name >> std::hex >> address) labels[name] = address;
     }
     std::string irq = argc > 5 ? argv[5] : "none";
-    if (irq != "none" && irq != "irq1" && irq != "irq2") return 2;
+    // timer: the guest programs the timer itself; the frontend only records checkpoints.
+    if (irq != "none" && irq != "irq1" && irq != "irq2" && irq != "timer") return 2;
+    const std::string entry_label = irq == "timer" ? "timer_entry" : "irq_entry";
     auto processor = core.GetHuC6280();
+    auto line = [&](bool asserted) {
+        if (irq == "irq1") processor->AssertIRQ1(asserted);
+        else if (irq == "irq2") processor->AssertIRQ2(asserted);
+    };
     auto cpu = processor->GetState();
     auto memory = core.GetMemory();
     const char* cycle = "cold";
@@ -74,14 +80,14 @@ int main(int argc, char** argv) {
             if (irq != "none" && labels.count("irq_wait") && pc == labels["irq_wait"]) {
                 if (!injected) {
                     observe("TRACE", "irq_asserted");
-                    if (irq == "irq1") processor->AssertIRQ1(true); else processor->AssertIRQ2(true);
+                    line(true);
                     injected=true;
                 } else if (entered && !seen.count("irq_resumed")) {
                     observe("TRACE", "irq_resumed"); seen.insert("irq_resumed");
                 }
             }
-            if (injected && labels.count("irq_entry") && pc == labels["irq_entry"] && !entered) {
-                if (irq == "irq1") processor->AssertIRQ1(false); else processor->AssertIRQ2(false);
+            if (injected && labels.count(entry_label) && pc == labels[entry_label] && !entered) {
+                line(false);
                 entered=true;
             }
             one_instruction();

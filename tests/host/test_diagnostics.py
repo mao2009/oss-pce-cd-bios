@@ -31,17 +31,22 @@ class DiagnosticBuildTests(unittest.TestCase):
             self.assertEqual(data[entry-0xe000],0x78)
 
     def test_vectors_select_distinct_actual_irq_sources(self):
-        for name,offset in [('irq1',0x1ff8),('irq2',0x1ff6)]:
+        handlers = {'irq1':'irq_entry','irq2':'irq_entry','timer':'timer_entry'}
+        for name,offset in [('irq1',0x1ff8),('irq2',0x1ff6),('timer',0x1ffa)]:
             data = self.images[name].read_bytes()
-            self.assertEqual(int.from_bytes(data[offset:offset+2],'little'),self.symbols['irq_entry'])
-            other = 0x1ff6 if offset == 0x1ff8 else 0x1ff8
-            self.assertEqual(data[other:other+2],self.base[other:other+2])
+            vectors = {at:int.from_bytes(data[at:at+2],'little') for at in range(0x1ff6,0x1ffe,2)}
+            self.assertEqual(vectors.pop(offset),self.symbols[handlers[name]])
+            # IRQ2/IRQ1/timer/NMI vectors that are not under test must all reach the nonreturning trap.
+            self.assertEqual(set(vectors.values()),{self.symbols['irq_unexpected']})
+            self.assertEqual(len(vectors),3)
 
     def test_negative_instructions_are_symbol_qualified(self):
         data=self.images['call'].read_bytes()
         self.assertEqual(data[self.symbols['call_rts']-0xe000],0x60)
         at=self.symbols['restore_mpr']-0xe000
         self.assertEqual(data[at:at+2],b'\x53\x04')
+        for name,label in (('irq1','irq_exit'),('timer','timer_exit')):
+            self.assertEqual(self.images[name].read_bytes()[self.symbols[label]-0xe000],0x40)  # RTI
 
     def test_probe_debug_release_bytes_match(self):
         release,_,_=build_probe_images(self.base,self.root/'release','release')
@@ -58,4 +63,4 @@ class DiagnosticBuildTests(unittest.TestCase):
     def test_manifest_cannot_be_confused_with_api_implementation(self):
         data=json.loads((self.root/'probes/manifest.json').read_text())
         self.assertEqual(data['api_implementation'],'NONE')
-        self.assertEqual(set(data['images']),{'bank','call','irq1','irq2','ram','api_jsr_01','api_jsr_03','api_jsr_1E'})
+        self.assertEqual(set(data['images']),{'bank','call','irq1','irq2','timer','ram','api_jsr_01','api_jsr_03','api_jsr_1E'})

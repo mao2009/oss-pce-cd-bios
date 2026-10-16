@@ -61,19 +61,27 @@ def check_call(records, symbols):
             raise ValueError('actual JSR return address bytes mismatch')
 
 
+# source: (IRR bit, handler label, guest RAM marker written by that handler)
+IRQ_SOURCES = {'irq2': (1, 'irq_entry', 0x77), 'irq1': (2, 'irq_entry', 0x77), 'timer': (4, 'timer_entry', 0x7a)}
+
+
 def check_irq(records, symbols, irq):
+    bit, handler, marker = IRQ_SOURCES[irq]
+    for cycle in ('cold','warm'):
+        if any(r['cycle'] == cycle and r['phase'] == 'irq_unexpected' for r in records['TRACE']):
+            raise ValueError('interrupt dispatched through an unexpected vector')
     for row in records['OBS'][1:]:
         if row['pc'] != symbols['irq_wait'] or row['sp'] != 255 or row['mpr'] != MPR:
             raise ValueError('IRQ fixture did not resume with balanced stack/mapping')
-        if bytes.fromhex(row['work_ram_0200_hex'])[16] != 0x77:
+        if bytes.fromhex(row['work_ram_0200_hex'])[16] != marker:
             raise ValueError('IRQ guest RAM marker not observed')
     for cycle in ('cold','warm'):
         before = trace(records, cycle, 'irq_asserted')
-        entry = trace(records, cycle, 'irq_entry')
+        entry = trace(records, cycle, handler)
         after = trace(records, cycle, 'irq_resumed')
         if before['p'] & 4 or not entry['p'] & 4 or entry['sp'] != 252 or after['sp'] != 255:
             raise ValueError('IRQ/RTI P/SP transitions missing')
-        if entry['irr'] & (2 if irq == 'irq1' else 1) == 0:
+        if entry['irr'] & bit == 0:
             raise ValueError('requested actual interrupt source not observed')
         for register in ('a','x','y','p','mpr'):
             if before[register] != after[register]:
@@ -92,15 +100,21 @@ def run_contracts(probe, base, output, cue):
                                'total_instructions_to_cold':513, 'total_instructions_to_warm':512,
                                'extra_instructions':32,
                                'irq_injection':'public AssertIRQ1/AssertIRQ2 at original irq_wait, deassert on handler entry',
+                               'timer_source':'guest writes $0C00=0/$0C01=1; handler stops timer and acks $1403',
+                               'unselected_vectors':'IRQ2/IRQ1/timer/NMI not under test point to nonreturning irq_unexpected',
                                'ram':'physical working RAM offsets 0200..023F and stack 01F8..01FF',
-                               'explicit_guest_mpr':MPR}, 'symbols':symbols}
+                               'explicit_guest_mpr':MPR},
+                'nmi': {'status':'NOT_TESTED',
+                        'reason':'pinned Geargrafx HuC6280 HandleIRQ dispatches only $FFFA/$FFF8/$FFF6; '
+                                 'no NMI input or $FFFC dispatch exists, so NMI cannot be raised'},
+                'symbols':symbols}
     for name, rom in images.items():
         selected_labels = labels
         if name.startswith('api_jsr'):
             slot = int(name[-2:],16)
             selected_labels = folder/(name+'.trace-labels')
             selected_labels.write_text(labels.read_text()+f'api_slot_entry {0xe000+3*slot:04x}\n')
-        records = execute(probe, rom, cue, selected_labels, name if name.startswith('irq') else 'none')
+        records = execute(probe, rom, cue, selected_labels, name if name in IRQ_SOURCES else 'none')
         if name == 'bank':
             expected = bytes.fromhex('11 1f 22 2f a1 af 33 3f 5a a5 22 11 4c') + bytes([symbols['bank_probe'] >> 8])
             check_terminal(records, symbols['bank_halt'], expected)
@@ -167,4 +181,25 @@ def run_contracts(probe, base, output, cue):
         except ValueError:
             evidence['negative_cases'].append({'case':name,'observations':records})
         else: raise ValueError(f'negative CPU procedure unexpectedly passed: {name}')
+    # Interrupt negatives: a wrong vector or a wrong return must fail the same check_irq.
+    unexpected = symbols['irq_unexpected'].to_bytes(2, 'little')
+    entry = symbols['irq_entry'].to_bytes(2, 'little')
+    for name, irq, edits in (
+            ('irq1_vector_swapped_with_irq2', 'irq1', ((0x1ff8, entry, unexpected), (0x1ff6, unexpected, entry))),
+            ('irq1_rts_instead_of_rti', 'irq1', ((symbols['irq_exit']-0xe000, b'\x40', b'\x60'),)),
+            ('timer_rts_instead_of_rti', 'timer', ((symbols['timer_exit']-0xe000, b'\x40', b'\x60'),))):
+        data = bytearray(images[irq].read_bytes())
+        for offset, before, after in edits:
+            if data[offset:offset+len(before)] != before:
+                raise ValueError(f'{name}: interrupt negative contract mismatch')
+            data[offset:offset+len(after)] = after
+        path = folder/(name+'-not-bios.pce'); path.write_bytes(data)
+        records = execute(probe, path, cue, labels, irq)
+        if name.startswith('irq1_vector') and any(
+                (r['pc'], r['sp']) != (symbols['irq_unexpected'], 252) for r in records['OBS'][1:]):
+            raise ValueError('swapped vector negative did not dispatch to irq_unexpected')
+        try: check_irq(records, symbols, irq)
+        except ValueError as error:
+            evidence['negative_cases'].append({'case':name, 'rejected_by':str(error), 'observations':records})
+        else: raise ValueError(f'interrupt negative unexpectedly passed: {name}')
     return evidence
