@@ -135,5 +135,5 @@ only to Geargrafx. See [CD diagnostics](cd-read-diagnostic.md),
 
 CD status classification (#115), evidence schema (#116), real-core trace harness (#119),
 host-only CD_BASE model (#120), CD_RESET bus-reset diagnostic (#121) and synthetic RAM payload
-execution (#122) are **on main** at snapshot `0476724`. Draft #118 remains **branch-only**; #122's
+execution (#122), the startup CD-state record (#127) and the CD_BASE ABI evidence ledger (#128) are **on main** at snapshot `c20ac06`. Draft #118 (and #125, #126) remain **branch-only**; #122's
 RAM payload execution is *not* boot.

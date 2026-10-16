@@ -117,7 +117,7 @@ make dev-release-gate-blocked # must refuse incomplete firmware
 
 The CD diagnostic writes `build/<mode>/cdread-probe/cdread-evidence.json`
 with RAM/phase/halt evidence. This is **not** BIOS `CD_READ`, nor disc boot.
-The CD→RAM payload experiment (#122) is merged on main as of 2026-10-16 (`0476724`) as a diagnostic only.
+The CD→RAM payload experiment (#122) is merged on main as of 2026-10-16 (`c20ac06`) as a diagnostic only.
 `make test` covers host/HuCARD; the separate BIOS DEV CI covers these.
 [Status](status.md).
 

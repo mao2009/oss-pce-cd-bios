@@ -1,16 +1,17 @@
 # Roadmap — evidence-graded milestones (no date promises)
 
-Use [status](status.md) to distinguish actual **main** code from Draft PRs (snapshot: main `0476724`, 2026-10-16).
+Use [status](status.md) to distinguish actual **main** code from Draft PRs (snapshot: main `c20ac06`, 2026-10-16).
 A completed **diagnostic** is not an implemented **compatible BIOS API**.
 
 ## M0 — Foundation and diagnostics
 
 - [x] Reproducible original HuCARD fixture, pinned tools, host tests and real Geargrafx CI
 - [x] Original 256 KiB System Card **development diagnostic** with 81 candidate entries and fail-closed stubs
-- [x] Real-core System Card loader/reset, slot, RAM/MPR/stack/IRQ observations and isolated startup checkpoint
+- [x] Real-core System Card loader/reset, slot, RAM/MPR/stack/IRQ observations and isolated startup checkpoint with non-zero CD-state marker ([#127](https://github.com/mao2009/oss-pce-cd-bios/pull/127))
 - [x] Real-core guest READ(6) on synthetic discs, 1–3 2048-byte sectors, full RAM/phase/negative checks
 - [x] Isolated real-core Geargrafx trace harness, CD status classifier and host-only CD_BASE model (not BIOS services)
 - [x] Research, provenance/OSS audit and candidate API ledger
+- [x] CD_BASE ABI evidence ledger ([#128](https://github.com/mao2009/oss-pce-cd-bios/pull/128)): six Issue #11 items recorded; ABI remains UNKNOWN
 - [ ] Verify historical/production ROM mapping/vectors and essential **caller ABI** against independent evidence (#1/#3)
 
 ## M1 — First genuine callable firmware services

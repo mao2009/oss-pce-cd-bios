@@ -81,6 +81,6 @@ ordered SCSI phases and 64-instruction success-halt confirmation. These are
 not callable BIOS services or disc boot. `api-source.yml` independently
 tests diagnostics; primary CI tests HuCARD/provenance; Nightly is HuCARD-only.
 
-Synthetic CD→RAM **payload execution** is merged as a diagnostic (#122, main `0476724`,
+Synthetic CD→RAM **payload execution** is merged as a diagnostic (#122, main `c20ac06`,
 2026-10-16); it is not a BIOS service or CD boot. Proposed firmware modules require validated #1/#3
 contracts; GPL emulator code stays outside MIT firmware source.
