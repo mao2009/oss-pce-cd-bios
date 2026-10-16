@@ -6,8 +6,9 @@ import subprocess
 from diagnostics import MPR, build_probe_images
 
 
-def execute(probe, rom, cue, labels, irq='none'):
-    result = subprocess.run([str(probe), str(rom), str(cue), '512', str(labels), irq],
+def execute(probe, rom, cue, labels, irq='none', media=True, steps=512):
+    """cue '-' + media=False runs the no-media branch (#142): CD hardware on, no disc."""
+    result = subprocess.run([str(probe), str(rom), str(cue), str(steps), str(labels), irq],
                             check=True, capture_output=True, text=True, timeout=30)
     records = {}
     for prefix in ('OBS', 'TRACE', 'CAP', 'BANK'):
@@ -15,7 +16,7 @@ def execute(probe, rom, cue, labels, irq='none'):
                            if line.startswith(prefix+' ')]
     if len(records['CAP']) != 1 or records['CAP'][0].get('instruction_step') is not True:
         raise ValueError('real instruction stepping capability missing')
-    if records['CAP'][0].get('cdrom_hardware') is not True or records['CAP'][0].get('cdrom_media') is not True:
+    if records['CAP'][0].get('cdrom_hardware') is not True or records['CAP'][0].get('cdrom_media') is not media:
         raise ValueError('contract probe did not use System Card/CD path')
     if [r['phase'] for r in records['OBS']] != ['loaded', 'cold', 'nonreturning', 'warm']:
         raise ValueError('missing contract execution observations')
