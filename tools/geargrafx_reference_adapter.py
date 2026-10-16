@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Local Geargrafx adapter for a private BIOS RESET checkpoint, not an API call.
+"""Local Geargrafx reference reset observer; no functional API execution is enabled.
 
 The test-ROM digest is checked by the driver but the test ROM is NOT executed.
-Only api_id=reference-reset-only is supported, fail-closed for all 90 API IDs.
+The experimental slot-1e guest JSR is disabled until actual in-core RAM and I/O
+write enforcement exists. A post-run empty ram_diff is not such enforcement.
 """
 import argparse
 import json
@@ -20,42 +21,20 @@ SCHEMA = "oss-pce-cd-bios/reference-observation/v1"
 
 
 def observe_jsr(config):
-    """Real guest JSR in an explicitly injected test-only CPU/RAM environment."""
+    """Reject unsupported JSR execution before compilation or loading private BIOS.
+
+    An instruction budget and a post-run RAM diff cannot prove that intermediate
+    RAM writes or memory-mapped I/O side effects respected an allowlist.
+    The C++ proof of concept is retained but disconnected until the core can
+    enforce and independently report all writes while it executes.
+    """
     if config.get("api_id") != "slot-1e":
         raise ValueError("BLOCKED: reference JSR experiment supports only slot-1e")
     budget = config.get("max_instructions")
     if type(budget) is not int or not 3 <= budget <= 1000000:
         raise ValueError("BLOCKED: invalid JSR instruction budget")
-    with tempfile.TemporaryDirectory(prefix="pce-reference-jsr-") as tmp:
-        out = Path(tmp)
-        probe = compile_probe(out, source_name="geargrafx_reference_jsr.cpp",
-                              target_name="reference-jsr-probe")
-        (out / "synthetic.bin").write_bytes(bytes(2352 * 32))
-        cue = out / "synthetic.cue"
-        cue.write_text('FILE "synthetic.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
-        cp = subprocess.run([str(probe), str(Path(config["bios_path"]).resolve()),
-                             str(cue), "0x1e", str(budget)],
-                            capture_output=True, text=True, timeout=25, check=False)
-        if cp.returncode or len(cp.stdout) > 16384:
-            raise ValueError("BLOCKED: reference JSR did not complete within limits")
-        lines = cp.stdout.splitlines()
-        if len(lines) != 3 or [x.split(" ", 1)[0] for x in lines] != ["BEFORE", "ENTRY", "AFTER"]:
-            raise ValueError("BLOCKED: reference JSR checkpoints missing")
-        before, entry, after = [json.loads(x.split(" ", 1)[1]) for x in lines]
-        if (before["pc"] != 0x2200 or before["sp"] != 255 or
-                entry["pc"] != 0xe05a or entry["sp"] != 253 or
-                after["pc"] != 0x2203 or after["step"] > budget):
-            raise ValueError("BLOCKED: unexpected JSR call/return")
-        if len(after["mpr"]) != 8:
-            raise ValueError("BLOCKED: malformed MPR")
-        return {
-            "schema": SCHEMA, "api_id": "slot-1e",
-            "status": "OBSERVED", "engine": "geargrafx",
-            "checkpoint": "synthetic_guest_jsr_return_not_abi_verified",
-            "registers": {k: after[k] for k in ("a", "x", "y", "p", "sp", "pc")},
-            "mpr": after["mpr"], "ram_diff": [],
-            "instructions_executed": after["step"],
-        }
+    raise ValueError("BLOCKED: slot-1e runtime RAM/I/O write guard is NOT_IMPLEMENTED")
+
 
 def observe(config):
     if config.get("api_id") == "slot-1e":
