@@ -373,6 +373,10 @@ class StageEvidenceTests(unittest.TestCase):
         events = good_events(LABEL) + [{'tag': 'HIT', 'name': 'cd_halt_fail', 'cycle': 'cold'}]
         self.assertEqual(run_with(staged(), probe_for('playable', events, forbid=()))['result'], 'FAIL')
 
+    def test_deeply_nested_probe_stdout_is_fail_not_traceback(self):
+        stdout = 'RUN ' + '[' * 200_000
+        self.assertEqual(run_with(staged(), probe_for('playable', stdout=stdout))['result'], 'FAIL')
+
     def test_body_tag_spoof_in_raw_log_is_rejected(self):
         stdout = to_stdout(good_events(LABEL)) + '\nHIT {"tag": "RUN", "name": "playable-reached", "cycle": "cold"}'
         self.assertEqual(run_with(staged(), probe_for('playable', stdout=stdout))['result'], 'FAIL')
@@ -450,14 +454,16 @@ class StageEvidenceTests(unittest.TestCase):
 class CliTrustTests(unittest.TestCase):
     """The CLI never certifies local, unsigned JSON; --ci only runs inside GitHub Actions."""
 
-    def _run_cli(self, argv, env, rec=None):
-        """rec: a record object, or raw text written as record.json. Default: a playable record with
-        a verified attestation and a passing raw probe, which the CLI prints as PASS in --ci mode."""
+    def _run_cli(self, argv, env, rec=None, probe=None):
+        """rec: a record object, or raw text written as record.json. probe: raw probe JSON (or text).
+        Default: a playable record with a verified attestation and a passing raw probe, which the
+        CLI prints as PASS in --ci mode."""
         with tempfile.TemporaryDirectory() as tmp:
             default = staged('playable')
             record_text = rec if isinstance(rec, str) else json.dumps(rec or default)
+            probe_text = probe if isinstance(probe, str) else json.dumps(probe or probe_for('playable'))
             files = (('record.json', record_text), ('runner.json', json.dumps(attest(default))),
-                     ('probe.json', json.dumps(probe_for('playable'))))
+                     ('probe.json', probe_text))
             paths = []
             for name, text in files:
                 path = Path(tmp) / name
@@ -503,6 +509,12 @@ class CliTrustTests(unittest.TestCase):
 
     def test_deeply_nested_input_is_fail_json_not_traceback(self):
         code, text = self._run_cli([], {}, '[' * 100_000)
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(text)['result'], 'FAIL')
+
+    def test_deeply_nested_probe_stdout_via_cli_is_fail_json(self):
+        probe = probe_for('playable', stdout='RUN ' + '[' * 200_000)
+        code, text = self._run_cli([], {}, probe=probe)
         self.assertEqual(code, 1)
         self.assertEqual(json.loads(text)['result'], 'FAIL')
 

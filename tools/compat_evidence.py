@@ -172,7 +172,7 @@ def _stage_findings(stage, probe):
     if not isinstance(probe, dict) or not isinstance(probe.get('result'), dict):
         return [('BLOCKED', f'raw #119 probe output required for {stage}')]
     result, budget, forbid = probe['result'], probe.get('budget'), probe.get('forbid')
-    kind = probe.get('kind', 'cdread')
+    kind = probe.get('kind', 'cdread')  # absent kind defaults to cdread, the only kind #119 judges
     if result.get('status') not in (None, 'FAIL', 'BLOCKED'):
         return [('FAIL', 'probe status must be absent, FAIL or BLOCKED; the judge sets it, not the runner')]
     if not _is_int(budget) or budget < 1:
@@ -182,8 +182,9 @@ def _stage_findings(stage, probe):
     labels = tuple(sorted(set(forbid) | set(FORBID_MIN)))
     try:
         status, reason, _ = geargrafx_harness.classify(result, STAGE_LABEL[stage], labels, budget, kind)
-    except (KeyError, TypeError, ValueError, AttributeError) as error:
-        return [('FAIL', f'probe output rejected: {error!r}')]
+    except (KeyError, TypeError, ValueError, AttributeError, RecursionError) as error:
+        # RecursionError: #119 parse_records() json.loads() on deeply nested stdout (not caught by classify()).
+        return [('FAIL', f'probe output rejected: {type(error).__name__}: {error}')]
     return [] if status == 'PASS' else [(status, reason)]
 
 

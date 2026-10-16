@@ -30,7 +30,9 @@ The runner output is consistency-checked, not authenticated (see the trust bound
   `"trust": "ci-job context (GITHUB_ACTIONS=true is an environment variable any process can set; the JSON is still unsigned, so this is not a certification)"`.
   A PASS is printed as PASS only in this mode.
 - Exception to the verdict exit codes: a refused `--ci` and a usage error exit 2 and print no verdict JSON.
-  Every other outcome, including unreadable, malformed or deeply nested input, prints a verdict and exits 1 (or 0 on PASS).
+  Every other invocation prints a verdict JSON and exits 1 (or 0 on PASS). That includes a missing or non-UTF-8 file,
+  malformed JSON, and JSON nested too deeply for the parser, each as FAIL with reason `input unreadable`. A deeply nested
+  probe log (`stdout` in the probe) is FAIL through the stage judge, not through the input-load path.
 - A future CI certification gate would be allowed only when all of these hold. **This module enforces none
   of them**; the workflow must, and no such workflow exists yet:
   1. The record and runner JSON are produced by the Geargrafx harness (#119) inside the same job,
@@ -48,12 +50,13 @@ The runner output is consistency-checked, not authenticated (see the trust bound
 
 ## Stage-specific probe evidence
 
-PASS is possible only for `rom-built` (build-only, no probe) and for `retail-boot` through `completion-tested`
-with a judged probe. `bios-loaded`, `startup`, `cd-detected` and `homebrew` are **BLOCKED** with any input:
+PASS is possible only for `source-only` and `rom-built` (build-only, no attestation or probe) and for `retail-boot`
+through `completion-tested` with a judged probe. `rom-built` PASS is a record-format check, not a compatibility claim;
+its `rom.sha256` is self-declared and unverified. `bios-loaded`, `startup`, `cd-detected` and `homebrew` are **BLOCKED** with any input:
 no #119 label defines a judge for them, so no probe can yield PASS. Extending this needs a new label, which is out of scope.
 
 `retail-boot`, `playable`, `save-tested` and `completion-tested` need `probe`, the raw #119 probe
-output: `{"result": <run_job() result: status, reason, exit_code, stdout>, "forbid": [labels], "budget": int, "kind": "cdread"}`.
+output: `{"result": <run_job() result: status, reason, exit_code, stdout>, "forbid": [labels], "budget": int, "kind": "cdread"}`. An absent `kind` defaults to `cdread`, the only kind #119 judges.
 `verdict()` passes `result` to the real #119 `geargrafx_harness.classify()`, which parses the `TAG {json}` lines
 itself (`parse_records()`, which rejects a body-level `tag` field). Whatever classify() does not call PASS
 (FAIL, BLOCKED, SKIP) becomes the stage finding. The verdict adds `cd_halt_fail` to the runner's `forbid`
@@ -145,5 +148,8 @@ From `bios-loaded` and above, PASS requires real-core evidence; source-only and 
 - Consistency with #119: `tests/host/test_compat_119_consistency.py` imports the real `geargrafx_harness.classify()`
   and checks that the verdict gives the same category for each synthetic probe-log scenario. No #119 logic is copied.
 - Signed attestation (Issue #124, PR #125 branch `feat/124-evidence-provenance`) is not in this version.
+- `docs/compatibility.md` defines BUILT as a reproducible ROM hash plus structural validation. This module does not
+  implement that: `rom-built` checks only the record format and a self-declared `rom.sha256`, which it does not verify.
+  That compatibility.md definition is left unchanged here; the gap is stated in this document.
 - Retail disc handling and private fixture storage: see [provenance.md](provenance.md).
 - Schema migration beyond v1.
