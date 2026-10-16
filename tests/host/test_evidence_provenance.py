@@ -1,17 +1,21 @@
-"""Evidence provenance (Issue #124): synthetic artifacts and an injected gh attestation result. No network, no gh.
+"""Evidence provenance (Issue #124): synthetic artifacts and injected gh outputs. No network, no gh.
 
-All hashes come from short synthetic strings. No ROM, disc, BIOS or fixture data is used.
+All hashes come from short synthetic strings or the original synthetic CD generator. No ROM, disc, BIOS or
+third-party data is used.
 """
+import copy
 import hashlib
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'tools'))
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'tools'))
 import evidence_provenance as ep  # noqa: E402
 
 REPO = 'example-owner/example-repo'
@@ -19,10 +23,12 @@ COMMIT = 'a' * 40
 OTHER_COMMIT = 'b' * 40
 WORKFLOW = '.github/workflows/api-source.yml'
 REF = 'refs/heads/main'
+RUN_ID, ATTEMPT = 4242, 1
 GEARGRAFX_REV = 'c' * 40
 GEARGRAFX_SHA = 'd' * 64
 ROM = b'synthetic rom'
-POLICY = {'repository': REPO, 'commit': COMMIT, 'signer_workflow': WORKFLOW, 'ref': REF,
+FIXTURE = {'bin_sha256': 'e' * 64, 'cue_sha256': 'f' * 64}
+POLICY = {'repository': REPO, 'commit': COMMIT, 'signer_workflow': WORKFLOW,
           'geargrafx_revision': GEARGRAFX_REV, 'geargrafx_sha256': GEARGRAFX_SHA}
 
 
@@ -31,12 +37,14 @@ def sha(data):
 
 
 def make_artifact(**overrides):
-    """Synthetic stand-in for cdread-evidence.json: a status that is consistent with its scenarios."""
-    tests = {name: {'status': 'PASS', 'lba': 0, 'count': 1} for name in ep.REQUIRED_SCENARIOS}
+    """Synthetic stand-in for cdread-evidence.json, shaped like tests/integration/geargrafx_cdread.py output."""
+    tests = {name: {'status': kind} for name, kind in ep.SCENARIO_KIND.items()}
     tests['judge_observation_mutations'] = {'status': 'PASS_EXPECTED_FAILURE', 'mutants': ['x']}
+    tests['no_media_loaded'] = {'status': 'NOT_TESTED'}
     artifact = {'scope': 'synthetic', 'rom_sha256': sha(ROM), 'geargrafx_revision': GEARGRAFX_REV,
-                'source_archive_sha256': GEARGRAFX_SHA, 'disc': {'bin_sha256': 'e' * 64, 'cue_sha256': 'f' * 64},
-                'tests': tests, 'primary_observations': {'RUN': [{'cycle': 'cold'}, {'cycle': 'warm'}]},
+                'source_archive_sha256': GEARGRAFX_SHA, 'disc': dict(FIXTURE), 'tests': tests,
+                'primary_observations': {'RUN': [{'cycle': 'cold', 'reason': 'cd_halt_ok'},
+                                                 {'cycle': 'warm', 'reason': 'cd_halt_ok'}]},
                 'status': 'PASS'}
     artifact.update(overrides)
     return artifact
@@ -46,112 +54,230 @@ def encode(artifact):
     return json.dumps(artifact, sort_keys=True).encode()
 
 
-def make_attestation(artifact_bytes, commit=COMMIT, repo=REPO, workflow=WORKFLOW, ref=REF,
-                     trigger='push', runner='github-hosted'):
-    """Synthetic stand-in for one entry of `gh attestation verify --format json` (field names unconfirmed live)."""
+def make_attestation(artifact_bytes, commit=COMMIT, repo=REPO, workflow=WORKFLOW, ref=REF, trigger='push',
+                     runner='github-hosted', rom=ROM, run_uri=None):
+    """One entry shaped like `gh attestation verify --format json` (shape checked against a real gh 2.x output)."""
+    subjects = [{'name': 'cdread-evidence.json', 'digest': {'sha256': sha(artifact_bytes)}}]
+    if rom is not None:
+        subjects.append({'name': 'cdread-probe-not-bios.pce', 'digest': {'sha256': sha(rom)}})
     return [{'verificationResult': {
-        'statement': {'subject': [{'name': 'cdread-evidence.json', 'digest': {'sha256': sha(artifact_bytes)}}]},
+        'statement': {'subject': subjects},
         'signature': {'certificate': {
             'sourceRepositoryURI': f'https://github.com/{repo}',
             'sourceRepositoryDigest': commit,
             'sourceRepositoryRef': ref,
             'buildSignerURI': f'https://github.com/{repo}/{workflow}@{ref}',
+            'buildSignerDigest': commit,
             'githubWorkflowTrigger': trigger,
             'runnerEnvironment': runner,
+            'runInvocationURI': run_uri or f'https://github.com/{repo}/actions/runs/{RUN_ID}/attempts/{ATTEMPT}',
         }},
     }}]
+
+
+def make_run(**overrides):
+    """Shaped like `gh api repos/R/actions/runs/ID/attempts/N`."""
+    run = {'id': RUN_ID, 'run_attempt': ATTEMPT, 'head_sha': COMMIT, 'head_branch': 'main', 'event': 'push',
+           'path': WORKFLOW, 'repository': {'full_name': REPO}, 'head_repository': {'full_name': REPO}}
+    run.update(overrides)
+    return run
+
+
+def check(data, attestation='default', rom=ROM, run='default', fixture=FIXTURE, policy=POLICY):
+    attestation = make_attestation(data) if attestation == 'default' else attestation
+    run = make_run() if run == 'default' else run
+    return ep.verify(data, attestation, policy, rom, run, fixture)
 
 
 class EvidenceProvenanceTests(unittest.TestCase):
     def setUp(self):
         self.data = encode(make_artifact())
 
-    def test_normal_attested_producer_passes(self):
-        result = ep.verify(self.data, make_attestation(self.data), POLICY, ROM)
-        self.assertEqual(result['result'], ep.PASS, result)
+    def assertResult(self, result, expected, reason=None):
+        self.assertEqual(result['result'], expected, result)
+        self.assertTrue(result['compatibility'].startswith('NOT_PROMOTED'))
+        if reason:
+            self.assertTrue(any(reason in item for item in result['reasons']), result)
+
+    def test_normal_attested_producer_passes_but_never_promotes_compatibility(self):
+        result = check(self.data)
+        self.assertResult(result, ep.PASS)
         self.assertEqual(result['reasons'], [])
+        self.assertNotIn('compatib', result['trust'].lower())
+
+    def test_scenario_kinds_match_integration_call_sites(self):
+        # Same table as tools/cd_read_contract.py (#118); here derived from where the integration suite records it.
+        text = (ROOT / 'tests/integration/geargrafx_cdread.py').read_text(encoding='utf-8')
+        derived = {name: 'PASS' for name in re.findall(r'suite\.positive\("(\w+)"', text)}
+        derived.update({name: 'PASS_EXPECTED_FAILURE'
+                        for name in re.findall(r'suite\.(?:failing_guest|must_be_rejected)\("(\w+)"', text)})
+        derived.update({name: 'OBSERVED_EMULATOR_BEHAVIOUR'
+                        for name in re.findall(r'results\["(\w+)"\] = \{\s*"status": "OBSERVED_EMULATOR_BEHAVIOUR"',
+                                               text)})
+        for name, kind in ep.SCENARIO_KIND.items():
+            self.assertEqual(derived.get(name), kind, name)
+        self.assertEqual(ep.REQUIRED_SCENARIOS, ('single_sector_lba5', 'first_sector_lba0', 'last_sector_lba15',
+                                                 'three_sectors_lba5', 'disc_end_boundary_lba13_x3'))
+
+    def test_missing_forged_or_wrong_kind_scenarios_fail(self):
+        for name, kind in ep.SCENARIO_KIND.items():
+            for bad in (None, 'PASS', 'PASS_EXPECTED_FAILURE', 'OBSERVED_EMULATOR_BEHAVIOUR', 'NOT_TESTED', 'FAIL'):
+                if bad == kind:
+                    continue
+                artifact = make_artifact()
+                if bad is None:
+                    del artifact['tests'][name]
+                else:
+                    artifact['tests'][name] = {'status': bad}
+                data = encode(artifact)
+                with self.subTest(name=name, status=bad):
+                    self.assertResult(check(data), ep.FAIL, name)
+
+    def test_extra_scenario_fail_blocked_or_unknown_status_fails(self):
+        for status in ('FAIL', 'BLOCKED', 'MAYBE', None):
+            artifact = make_artifact()
+            artifact['tests']['zero_sector_count'] = {'status': status}
+            self.assertResult(check(encode(artifact)), ep.FAIL, 'zero_sector_count')
+
+    def test_primary_run_must_be_one_cold_and_one_warm_halt(self):
+        bad_runs = ([{'cycle': 'cold', 'reason': 'cd_halt_ok'}] * 2,
+                    [{'cycle': 'warm', 'reason': 'cd_halt_ok'}] * 2,
+                    [{'cycle': 'cold', 'reason': 'cd_halt_ok'}],
+                    [{'cycle': 'cold', 'reason': 'cd_halt_ok'}, {'cycle': 'warm', 'reason': 'cd_halt_ok'},
+                     {'cycle': 'warm', 'reason': 'cd_halt_ok'}],
+                    [{'cycle': 'cold', 'reason': 'cd_halt_ok'}, {'cycle': 'warm', 'reason': 'budget'}],
+                    ['cold', 'warm'], {'cold': 1, 'warm': 1}, None)
+        for runs in bad_runs:
+            data = encode(make_artifact(primary_observations={'RUN': runs}))
+            with self.subTest(runs=runs):
+                self.assertResult(check(data), ep.FAIL)
+
+    def test_unexpected_json_types_never_raise(self):
+        weird = (None, 0, 1.5, 'x', [], [None], {}, {'a': None}, True)
+        artifacts = [encode(value) for value in weird]
+        for key in ('tests', 'disc', 'primary_observations', 'rom_sha256', 'status'):
+            artifacts += [encode(make_artifact(**{key: value})) for value in weird]
+        artifacts += [encode(make_artifact(tests={**make_artifact()['tests'], 'x': value})) for value in weird]
+        artifacts += [b'\xff\xfe', b'{not json']
+        for data in artifacts:
+            with self.subTest(data=data[:60]):
+                self.assertIn(check(data)['result'], (ep.FAIL, ep.BLOCKED))
+        for attestation in weird[1:] + ([{'verificationResult': value} for value in weird],
+                                    [{'verificationResult': {'statement': value, 'signature': value}}
+                                     for value in weird]):
+            with self.subTest(attestation=attestation):
+                self.assertIn(check(self.data, attestation=attestation)['result'], (ep.FAIL, ep.BLOCKED))
+        for run in weird:
+            with self.subTest(run=run):
+                self.assertIn(check(self.data, run=run)['result'], (ep.FAIL, ep.BLOCKED))
+        att = make_attestation(self.data)
+        for value in weird:
+            broken = copy.deepcopy(att)
+            broken[0]['verificationResult']['signature']['certificate'] = value
+            self.assertResult(check(self.data, attestation=broken), ep.FAIL)
+
+    def test_rom_and_fixture_are_recomputed_not_trusted(self):
+        self.assertResult(check(self.data, rom=b'other rom'), ep.FAIL, 'recomputed ROM')
+        for key in FIXTURE:
+            self.assertResult(check(self.data, fixture=dict(FIXTURE, **{key: '0' * 64})), ep.FAIL, key)
+        denied = dict(POLICY, denied_sha256={'e' * 64})
+        self.assertResult(check(self.data, policy=denied), ep.FAIL, 'denylist')
+
+    def test_recompute_fixture_uses_the_generator_on_disk(self):
+        fixture = ep.recompute_fixture()
+        self.assertEqual(fixture, ep.recompute_fixture())  # deterministic
+        self.assertTrue(all(re.fullmatch(r'[0-9a-f]{64}', value) for value in fixture.values()))
+
+    def test_missing_rom_fixture_run_or_gh_output_is_blocked(self):
+        self.assertResult(check(self.data, rom=None), ep.BLOCKED, 'ROM file')
+        self.assertResult(check(self.data, fixture=None), ep.BLOCKED, 'fixture')
+        self.assertResult(check(self.data, run=None), ep.BLOCKED, 'workflow run')
+        for attestation in ([], {'verified': True}, 'ok', [{}]):
+            self.assertResult(check(self.data, attestation=attestation), ep.BLOCKED)
 
     def test_forged_json_without_attestation_is_local_only(self):
         # Everything in the JSON looks like a PASS, and the environment claims CI. Neither is proof.
         forged = encode(make_artifact(attestation={'verified': True}, verified=True))
-        env = {'GITHUB_ACTIONS': 'true', 'GITHUB_SHA': COMMIT}
-        with mock.patch.dict(os.environ, env):
-            result = ep.verify(forged, None, POLICY, ROM)
-        self.assertEqual(result['result'], ep.LOCAL_ONLY)
+        with mock.patch.dict(os.environ, {'GITHUB_ACTIONS': 'true', 'GITHUB_SHA': COMMIT}):
+            result = ep.verify(forged, None, POLICY, ROM, make_run(), FIXTURE)
+        self.assertResult(result, ep.LOCAL_ONLY)
         self.assertTrue(result['trust'].startswith('LOCAL_ONLY'))
 
-    def test_forged_json_with_copied_attestation_fails_digest(self):
+    def test_copied_or_tampered_artifact_fails_digest(self):
         other = encode(make_artifact(scope='other'))
-        result = ep.verify(self.data, make_attestation(other), POLICY, ROM)
-        self.assertEqual(result['result'], ep.FAIL)
-        self.assertIn('no verified attestation subject matches', result['reasons'][0])
+        self.assertResult(check(self.data, attestation=make_attestation(other)), ep.FAIL, 'no verified attestation')
+        tampered = encode(make_artifact(scope='tampered'))
+        self.assertResult(check(tampered, attestation=make_attestation(self.data)), ep.FAIL, 'no verified attestation')
 
-    def test_tampered_artifact_fails_digest(self):
-        tampered = encode(make_artifact(tests={**make_artifact()['tests'],
-                                               'single_sector_lba5': {'status': 'FAIL'}}))
-        result = ep.verify(tampered, make_attestation(self.data), POLICY, ROM)
-        self.assertEqual(result['result'], ep.FAIL)
+    def test_attestation_without_the_rom_subject_fails(self):
+        self.assertResult(check(self.data, attestation=make_attestation(self.data, rom=None)), ep.FAIL)
+        self.assertResult(check(self.data, attestation=make_attestation(self.data, rom=b'x')), ep.FAIL)
 
-    def test_different_commit_fails(self):
-        result = ep.verify(self.data, make_attestation(self.data, commit=OTHER_COMMIT), POLICY, ROM)
-        self.assertEqual(result['result'], ep.FAIL)
-        self.assertIn('commit SHA differs', result['reasons'][0])
-
-    def test_different_workflow_fails(self):
-        result = ep.verify(self.data, make_attestation(self.data, workflow='.github/workflows/evil.yml'), POLICY, ROM)
-        self.assertEqual(result['result'], ep.FAIL)
-        self.assertIn('signing workflow identity', result['reasons'][0])
-
-    def test_different_repository_fails(self):
-        result = ep.verify(self.data, make_attestation(self.data, repo='other/fork'), POLICY, ROM)
-        self.assertEqual(result['result'], ep.FAIL)
-        self.assertIn('source repository differs', result['reasons'][0])
-
-    def test_pr_head_and_fork_producers_are_not_trusted(self):
-        pr = make_attestation(self.data, ref='refs/pull/7/merge', trigger='pull_request')
-        self.assertEqual(ep.verify(self.data, pr, POLICY, ROM)['result'], ep.FAIL)
-        fork = make_attestation(self.data, trigger='pull_request')  # same ref string, PR-triggered
-        self.assertEqual(ep.verify(self.data, fork, POLICY, ROM)['result'], ep.FAIL)
-
-    def test_self_hosted_producer_is_not_trusted(self):
-        result = ep.verify(self.data, make_attestation(self.data, runner='self-hosted'), POLICY, ROM)
-        self.assertEqual(result['result'], ep.FAIL)
-
-    def test_empty_or_non_array_attestation_is_blocked(self):
-        for attestation in ([], {'verified': True}, 'ok'):
-            self.assertEqual(ep.verify(self.data, attestation, POLICY, ROM)['result'], ep.BLOCKED, attestation)
-
-    def test_content_pins_and_scenarios_fail_closed(self):
+    def test_untrusted_producers_fail(self):
         cases = {
-            'missing rom_sha256': make_artifact(rom_sha256=None),
-            'wrong geargrafx revision': make_artifact(geargrafx_revision='0' * 40),
-            'wrong archive hash': make_artifact(source_archive_sha256='0' * 64),
-            'status not PASS': make_artifact(status='FAIL'),
-            'required scenario missing': make_artifact(tests={'first_sector_lba0': {'status': 'PASS'}}),
-            'RUN not cold and warm': make_artifact(primary_observations={'RUN': [{'cycle': 'cold'}]}),
+            'commit SHA differs': make_attestation(self.data, commit=OTHER_COMMIT),
+            'signing workflow identity': make_attestation(self.data, workflow='.github/workflows/evil.yml'),
+            'source repository differs': make_attestation(self.data, repo='other/fork'),
+            'source ref is not': make_attestation(self.data, ref='refs/pull/7/merge', trigger='pull_request'),
+            'pull_request': make_attestation(self.data, trigger='pull_request'),
+            'pull_request_target': make_attestation(self.data, trigger='pull_request_target'),
+            'GitHub-hosted': make_attestation(self.data, runner='self-hosted'),
         }
-        for label, artifact in cases.items():
-            data = encode(artifact)
-            self.assertEqual(ep.verify(data, make_attestation(data), POLICY, ROM)['result'], ep.FAIL, label)
-        missing = make_artifact()
-        del missing['tests']
-        self.assertEqual(ep.verify(encode(missing), None, POLICY, ROM)['result'], ep.FAIL)
+        for reason, attestation in cases.items():
+            with self.subTest(reason=reason):
+                self.assertResult(check(self.data, attestation=attestation), ep.FAIL, reason)
 
-    def test_rom_file_and_denylist_fail_closed(self):
-        self.assertEqual(ep.verify(self.data, make_attestation(self.data), POLICY, b'other rom')['result'], ep.FAIL)
-        denied = dict(POLICY, denied_sha256={'e' * 64})
-        self.assertEqual(ep.verify(self.data, make_attestation(self.data), denied, ROM)['result'], ep.FAIL)
+    def test_workflow_dispatch_on_other_branch_is_not_main(self):
+        branch = 'refs/heads/feat/124-evidence-provenance'
+        attestation = make_attestation(self.data, ref=branch, trigger='workflow_dispatch')
+        run = make_run(event='workflow_dispatch', head_branch='feat/124-evidence-provenance')
+        result = check(self.data, attestation=attestation, run=run)
+        self.assertResult(result, ep.FAIL, 'source ref is not refs/heads/main')
+        # workflow_dispatch on main is the same producer as push on main
+        ok = check(self.data, attestation=make_attestation(self.data, trigger='workflow_dispatch'),
+                   run=make_run(event='workflow_dispatch'))
+        self.assertResult(ok, ep.PASS)
 
-    def test_cli_unattested_run_exits_nonzero_with_local_only(self):
+    def test_run_invocation_uri_must_match_the_supplied_run(self):
+        cases = {
+            'not a workflow run': make_attestation(self.data, run_uri='https://evil.example/actions/runs/1/attempts/1'),
+            'not a workflow run of': make_attestation(
+                self.data, run_uri=f'https://github.com/other/fork/actions/runs/{RUN_ID}/attempts/1'),
+            'does not name': make_attestation(
+                self.data, run_uri=f'https://github.com/{REPO}/actions/runs/{RUN_ID + 1}/attempts/1'),
+        }
+        for reason, attestation in cases.items():
+            self.assertResult(check(self.data, attestation=attestation), ep.FAIL, reason)
+        runs = {
+            'does not name': make_run(run_attempt=2),
+            'head_sha differs': make_run(head_sha=OTHER_COMMIT),
+            'did not run on main': make_run(head_branch='feature'),
+            'is not push or workflow_dispatch': make_run(event='pull_request'),
+            'not the signing workflow': make_run(path='.github/workflows/ci.yml'),
+            'fork': make_run(head_repository={'full_name': 'other/fork'}),
+        }
+        for reason, run in runs.items():
+            with self.subTest(reason=reason):
+                self.assertResult(check(self.data, run=run), ep.FAIL, reason)
+
+    def test_cli_runs_without_network_and_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
-            artifact = Path(tmp) / 'cdread-evidence.json'
-            artifact.write_bytes(self.data)
-            deps = Path(tmp) / 'dependencies.json'
-            deps.write_text(json.dumps({'geargrafx': {'revision': GEARGRAFX_REV, 'sha256': GEARGRAFX_SHA}}))
-            with mock.patch('builtins.print') as printed:
-                code = ep.main(['x', str(artifact), '--repo', REPO, '--commit', COMMIT, '--deps', str(deps)])
-        self.assertEqual(code, 1)
-        self.assertIn('LOCAL_ONLY', printed.call_args[0][0])
+            tmp = Path(tmp)
+            (tmp / 'a.json').write_bytes(self.data)
+            (tmp / 'deps.json').write_text(json.dumps({'geargrafx': {'revision': GEARGRAFX_REV,
+                                                                     'sha256': GEARGRAFX_SHA}}))
+            (tmp / 'verify.json').write_text('not json')
+            base = ['x', str(tmp / 'a.json'), '--repo', REPO, '--commit', COMMIT, '--deps', str(tmp / 'deps.json')]
+            fixture = mock.patch.object(ep, 'recompute_fixture', return_value=FIXTURE)
+            with fixture, mock.patch('builtins.print') as printed:
+                self.assertEqual(ep.main(base), 1)
+                self.assertIn('LOCAL_ONLY', printed.call_args[0][0])
+                self.assertEqual(ep.main(base + ['--attestation', str(tmp / 'verify.json')]), 1)
+                self.assertIn('BLOCKED', printed.call_args[0][0])
+            with mock.patch('builtins.print'), mock.patch('sys.stderr'):
+                self.assertEqual(ep.main(['x', 'a', '--repo', 'bad', '--commit', COMMIT]), 2)
+                with self.assertRaises(SystemExit):
+                    ep.main(base + ['--ref', 'refs/heads/feature'])  # no way to accept a non-main ref
 
 
 if __name__ == '__main__':
