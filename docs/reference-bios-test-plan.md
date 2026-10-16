@@ -169,3 +169,29 @@ during real-core execution, and does not cover the remaining 89 services.
 Therefore even a completed JSR/RTS is **not** an ABI PASS or game compatibility
 claim. C++ build and execution against a private reference BIOS remain NOT RUN
 until performed locally.
+
+
+## Complete 90-service / 270-case manifest and dispatch report
+
+```sh
+python3 tools/reference_case_catalog.py --output build/reference-bios/all-270.json --summary
+python3 tools/reference_case_dispatch.py build/reference-bios/all-270.json \
+  --output build/reference-bios/dispatch-report.json
+python3 -m unittest tests.host.test_reference_case_catalog -v
+```
+
+This generates exactly three specifically identified *categories* per each of 81
+System Card API slots and nine provisional PSG subcommands. Every row includes
+a stable case ID, candidate service, candidate entry/selector, source-linked
+argument hypotheses, required fixture class, observer targets and a bounded-run
+configuration placeholder. Unknown register values, mode arguments, initial
+MPRs, expected results and execution budgets remain explicitly unset.
+
+The dispatcher validates all 270 entries and produces a complete blocking/status
+report. It does not invoke an emulator: until a reviewed, API-specific guest
+fixture exists, **all 270 remain BLOCKED_ABI**, not PASS. The experimental
+`slot-1e` real-core JSR backend is separate from this catalog and cannot
+promote a category case automatically. Enabling 270 truly runnable cases still
+requires per-API ABI fixture specification and audit, reference emulator
+execution, and independent expected-value capture. Do not report the
+generator as a complete executable test suite.
