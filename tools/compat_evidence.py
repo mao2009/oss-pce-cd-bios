@@ -78,13 +78,16 @@ def validate(record):
     if record.get('stage') not in STAGES:
         errors.append('unknown stage')
     claimed = record.get('result')
-    if claimed not in RESULTS:
+    if type(claimed) is not str or claimed not in RESULTS:  # exact str: a str subclass could lie in == and in output
         errors.append('unknown result')
     if record.get('claim_scope') == 'all-titles':
         errors.append('all-title compatibility cannot be claimed from launch evidence')
     elif record.get('claim_scope') not in SCOPES:
         errors.append('claim_scope must be single-launch or title')
-    if claimed in ('BLOCKED', 'SKIP') and not record.get('blocker'):
+    blocker = record.get('blocker')
+    if blocker is not None and type(blocker) is not str:
+        errors.append('blocker must be a string')
+    elif claimed in ('BLOCKED', 'SKIP') and not blocker:
         errors.append('BLOCKED/SKIP requires a blocker reason')
     rom = record.get('rom')
     if rom is not None and not (isinstance(rom, dict) and _is_hex(rom.get('sha256'), HEX64)):
@@ -249,6 +252,9 @@ def verdict(record, runner=None, probe=None):
         # Complete evidence never overrides the reporter's own BLOCKED/SKIP/FAIL claim.
         reasons.insert(0, f"conflict: reporter claimed {record['result']}, evidence supports PASS; kept {record['result']}")
         computed, blocker = record['result'], record.get('blocker')
+    elif record['result'] != 'PASS' and computed != record['result']:
+        # Informational only: keep why the reporter's non-PASS claim differs from the verdict (Issue #130).
+        reasons.insert(0, f"conflict: reporter claimed {record['result']}, evidence supports {computed}")
     if computed not in ('BLOCKED', 'SKIP'):
         blocker = None  # a blocker reason is reported only when the overall result is BLOCKED or SKIP
     return {'result': computed, 'blocker': blocker, 'reasons': reasons}
