@@ -43,7 +43,15 @@ The code executes `SEI/CLD/CSH`, initializes these MPRs and `SP=$FF`,
 writes original `BOOT!` bytes to guest `$2200..$2204`, then stops in an
 explicit `BRA` checkpoint with `X=$B0`. Four interrupt vectors lead to a
 **different nonreturning error checkpoint** with `X=$EE`; Reset points to
-`$F000`. The test does not enable interrupts or call any BIOS service.
+`$F000`. The startup code does not enable interrupts or call any BIOS service
+(see "Interrupt vector execution" below for the separate IRQ runs).
+
+The stage also stores the non-zero sentinel `$01` at `$2205` (`startup_cd_state`) after the
+`BOOT!` marker. The value is a diagnostic marker that the store executed, **not** an encoding of
+CD state. It is non-zero because Geargrafx power-on RAM reads `$00`. The code bytes contain no access
+to the CD-ROM2 registers (`$1800-$1804`), so the byte does not depend on disc presence by construction.
+This is not observed on the real core: disc attached is `NOT RUN` and no media is `NOT_TESTED`.
+`manifest.json` records `cd_disc_presence_read: false` as a build constant, not a measurement.
 
 All addresses except the CPU's architectural vector/stack geometry are
 **diagnostic choices**, not claimed NEC/Hudson System Card allocation or
@@ -64,9 +72,13 @@ and reject a broken base ROM or wrong sizes.
 The integration runner invokes the actual Geargrafx debugger-enabled C++
 frontend that Issue #6 / PR #101 established. It observes real PC, P, SP,
 X, all MPRs, and RAM on cold/warm reset plus named instruction checkpoints.
-Three mutated ROMs are deliberately executed in the real emulator and must each fail the same
+Mutated ROMs are deliberately executed in the real emulator and must each fail the same
 evidence check: a symbol-qualified redirection of the second marker store to `$2200`
-(overwriting `B` with `O`), a wrong MPR5 value, and a wrong stack-pointer value. No Python CPU
+(overwriting `B` with `O`), a wrong MPR5 value, a wrong stack-pointer value, a CD-state value equal
+to power-on RAM (`$00`), a removed CD-state store (`STA $2205` → NOPs), and a redirected CD-state
+store (`STA $2206`). The last three matter because Geargrafx power-on RAM reads `$00`: without a
+non-zero record, a missing store would be indistinguishable from a correct one (verified in WSL
+before this change: the removed and redirected store ROMs passed the old check). No Python CPU
 simulation substitutes for emulator observations.
 
 The pinned Geargrafx source SHA and source archive SHA-256 are recorded; the
@@ -75,15 +87,35 @@ evidence. The GPL-linked local probe executable is **not distributed** or
 included in Actions artifacts. Only original ROM, manifests, maps, labels and
 JSON are uploaded.
 
+### Interrupt vector execution (IRQ1/IRQ2)
+
+`interrupt_vector_execution` in the evidence JSON holds real-core results per source:
+
+- **Masked:** the unmodified ROM runs to `startup_checkpoint`, where the harness asserts IRQ1 or
+  IRQ2. With `I` set the line stays pending (IRR `$02`/`$01`), PC/X/SP/MPR/RAM still pass the
+  startup check, and the `X=$EE` handler is never reached, on cold and warm reset.
+- **Dispatched:** a test-only variant replaces `LDX #$B0` with `CLI; NOP` (the fixture verifier
+  rejects it). Observed: the asserted line is taken, PC reaches `startup_unexpected_interrupt`
+  with IRR showing the requested source, SP `$FF→$FC`, `I` set, stacked P with `I` clear and
+  stacked PC `startup_checkpoint`; it stops with `X=$EE`. The normal startup check must reject
+  this run; the rejection message is recorded.
+- **Which vector was read is inferred, not observed.** All four startup vectors point to the same
+  `startup_unexpected_interrupt`, so the landing PC cannot tell `$FFF8` from `$FFF6`. That IRQ1 used
+  `$FFF8` and IRQ2 used `$FFF6` comes from the pinned core source (`HuC6280::HandleIRQ`) plus the
+  single asserted line. Vector-specific dispatch is observed only in the contract-probe images,
+  where the unselected vectors point to a separate trap
+  ([geargrafx-contract-evidence.md](geargrafx-contract-evidence.md)).
+
+The variant exists only to execute the vectors. It is not the startup ROM and enables nothing in it.
+
 ### Still unverified
 
 - Historical and production System Card physical ROM layout and startup RAM
 - Final interrupt dispatch, stack conventions, and BIOS API service ABI
 - CD register reset, disc protocol, CD boot, actual game compatibility
 - Independent emulator or real hardware compatibility
-- **Interrupt vector execution: `NOT_TESTED`.** The four vectors are checked only as bytes; no IRQ1,
-  IRQ2, timer or NMI is ever raised, and the code keeps `I` set, so `X=$EE` is never observed.
-  The evidence JSON records `interrupt_vector_execution: NOT_TESTED`.
+- **Timer and NMI vector execution: `NOT_TESTED`.** The startup code never programs the timer, and
+  the pinned Geargrafx HuC6280 has no NMI input (no `$FFFC` dispatch), so neither is raised.
 - Unused-RAM contents at power-on are not assumed; the marker negatives are chosen to be
   independent of them.
 

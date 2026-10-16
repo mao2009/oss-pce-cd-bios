@@ -17,6 +17,8 @@ from environment import DEPENDENCIES
 from geargrafx_api import compile_probe
 from geargrafx_contracts import execute, trace
 
+CD_INIT_STATE = 1  # startup_cd_state value (non-zero, distinct from power-on RAM); $2205 observed in OBS work RAM
+
 
 def check_evidence(records, symbols):
     if records["OBS"][0]["pc"] != symbols["startup_entry"]:
@@ -28,6 +30,9 @@ def check_evidence(records, symbols):
             raise ValueError("actual System Card startup PC/X/SP/MPR/RAM checkpoint mismatch")
         if not (row["p"] & 4) or row["p"] & 8:
             raise ValueError("startup interrupt/decimal flags differ")
+        # $2205 is inside the observed 64-byte window at $2200; it must hold the CD init state.
+        if bytes.fromhex(row["work_ram_0200_hex"])[5] != CD_INIT_STATE:
+            raise ValueError("observed CD init state byte differs from startup record")
     for cycle in ("cold", "warm"):
         ready = trace(records, cycle, "startup_mpr_ready")
         stack = trace(records, cycle, "startup_stack_ready")
@@ -42,6 +47,65 @@ def check_evidence(records, symbols):
         if any(row["cycle"] == cycle and row["phase"] == "startup_unexpected_interrupt"
                for row in records["TRACE"]):
             raise ValueError("unexpected interrupt diagnostic was executed")
+
+
+def check_dispatched(records, symbols, bit):
+    """Real IRQ taken through a startup vector: X=$EE trap, SP $FF->$FC, I set, stacked P (I clear)/PC."""
+    halt = symbols["startup_unexpected_interrupt"] + 2  # LDX #$EE then BRA @halt
+    for row in records["OBS"][1:]:
+        stack = bytes.fromhex(row["stack_01f8_hex"])
+        if ((row["pc"], row["x"], row["sp"]) != (halt, 0xee, 0xfc) or row["mpr"] != EXPECTED_MPR
+                or not row["p"] & 4 or stack[5] & 4
+                or int.from_bytes(stack[6:8], "little") != symbols["startup_checkpoint"]):
+            raise ValueError("startup IRQ dispatch PC/X/SP/P/stack/MPR mismatch")
+    for cycle in ("cold", "warm"):
+        before = trace(records, cycle, "irq_asserted")
+        entry = trace(records, cycle, "startup_unexpected_interrupt")
+        if before["p"] & 4 or before["sp"] != 0xff or not entry["p"] & 4 or entry["sp"] != 0xfc:
+            raise ValueError("startup IRQ I-flag/stack transition missing")
+        if not entry["irr"] & bit:
+            raise ValueError("requested interrupt source not pending at startup vector entry")
+
+
+def run_interrupts(probe, payload, original, cue, output, folder, symbols):
+    """Execute the startup ROM's IRQ1/IRQ2 vectors in the real core; timer/NMI stay NOT_TESTED."""
+    labels = folder / "startup-irq-labels.txt"  # the harness asserts the line when PC reaches irq_wait
+    labels.write_text((output / "trace-labels.txt").read_text()
+                      + f"irq_wait {symbols['startup_checkpoint']:04x}\n", encoding="ascii")
+    at = symbols["startup_checkpoint"] - 0xe000 - 2
+    if payload[at:at + 2] != b"\xa2\xb0":
+        raise ValueError("expected LDX #$B0 before startup_checkpoint")
+    cli = bytearray(payload)
+    cli[at:at + 2] = b"\x58\xea"  # CLI; NOP — test-only variant so the asserted line can be taken
+    try:
+        verify_startup(bytes(cli), original)
+    except ValueError:
+        pass
+    else:
+        raise ValueError("CLI variant passed fixture verifier")
+    variant = folder / "startup-cli-not-bios.pce"
+    variant.write_bytes(cli)
+    results = {}
+    for irq, bit in (("irq1", 2), ("irq2", 1)):
+        masked = execute(probe, output / "startup-probe-not-bios.pce", cue, labels, irq)
+        check_evidence(masked, symbols)  # unmodified ROM keeps I set: still the startup checkpoint
+        if not all(row["irr"] & bit and row["p"] & 4 for row in masked["OBS"][1:]):
+            raise ValueError(f"{irq} asserted at the I=1 checkpoint was not left pending")
+        taken = execute(probe, variant, cue, labels, irq)
+        check_dispatched(taken, symbols, bit)
+        try:
+            check_evidence(taken, symbols)
+        except ValueError as error:
+            rejected = str(error)
+        else:
+            raise ValueError(f"{irq} dispatch to the X=$EE trap passed the startup check")
+        results[irq] = {"masked_at_checkpoint": "PASS", "dispatched_cli_variant": "PASS",
+                        "startup_check_rejects_dispatch": rejected,
+                        "observations": {"masked": masked, "dispatched": taken}}
+    results["timer"] = "NOT_TESTED (startup ROM never programs the HuC6280 timer)"
+    results["nmi"] = "NOT_TESTED (pinned Geargrafx HuC6280 has no NMI input or $FFFC dispatch)"
+    results["cli_variant_sha256"] = hashlib.sha256(cli).hexdigest()
+    return results
 
 
 def main():
@@ -92,14 +156,19 @@ def main():
             raise ValueError("mutated startup ROM unexpectedly passed actual Geargrafx")
         # More real-core negatives: each mutated ROM must make the SAME evidence check fail.
         # (name, offset into STARTUP_CODE, expected original byte, replacement byte)
-        mutations = (("mpr5_value", 24, 0x03, 0x05), ("stack_pointer", 36, 0xFF, 0xFE))
+        # The CD-state store must be proven by a non-zero value: power-on RAM reads 0, so a removed
+        # or redirected store would otherwise look identical to a correct one.
+        mutations = (("mpr5_value", 24, b"\x03", b"\x05"), ("stack_pointer", 36, b"\xff", b"\xfe"),
+                     ("cd_init_state_value", 62, b"\x01", b"\x00"),       # value equals power-on zero
+                     ("cd_store_removed", 63, b"\x8d\x05\x22", b"\xea\xea\xea"),
+                     ("cd_store_redirected", 64, b"\x05", b"\x06"))       # STA $2206 leaves $2205 at 0
         mutation_results = {}
-        for name, offset, original_byte, replacement in mutations:
+        for name, offset, original_bytes, replacement in mutations:
             mutated = bytearray(payload)
             at = symbols["startup_entry"] - 0xe000 + offset
-            if mutated[at] != original_byte:
-                raise ValueError(f"{name}: unexpected original byte at startup+{offset}")
-            mutated[at] = replacement
+            if bytes(mutated[at:at + len(original_bytes)]) != original_bytes:
+                raise ValueError(f"{name}: unexpected original bytes at startup+{offset}")
+            mutated[at:at + len(replacement)] = replacement
             try:
                 verify_startup(bytes(mutated), original)
             except ValueError:
@@ -111,10 +180,14 @@ def main():
             observed = execute(probe, path, cue, output / "trace-labels.txt")
             try:
                 check_evidence(observed, symbols)
-            except ValueError:
+            except ValueError as error:
+                # CD mutations must fail on the CD-state byte itself, not on an unrelated trace gap.
+                if name.startswith("cd_") and "CD init state" not in str(error):
+                    raise ValueError(f"{name}: failed for an unrelated reason: {error}") from error
                 mutation_results[name] = "PASS_EXPECTED_FAILURE"
             else:
                 raise ValueError(f"{name}: mutated startup ROM unexpectedly passed actual Geargrafx")
+        interrupt_results = run_interrupts(probe, payload, original, cue, output, folder, symbols)
     evidence = {
         "scope": "original startup diagnostic ONLY; production BIOS/ABI/CD boot NOT_IMPLEMENTED",
         "rom_sha256": digest,
@@ -128,12 +201,14 @@ def main():
             "observations": negative,
         },
         "mutation_negatives": mutation_results,
+        "cd_init_state_observed": CD_INIT_STATE, "disc_absent": "NOT_TESTED (harness requires LoadMedia)",
         "bios_service_abi": "UNKNOWN", "cd_boot": "NOT_TESTED",
-        "interrupt_vector_execution": "NOT_TESTED",  # vectors are checked structurally; no IRQ/NMI is ever raised
+        "interrupt_vector_execution": interrupt_results,
         "proprietary_content": "NONE",
     }
     (output / "startup-evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
-    print("PASS real Geargrafx System Card startup: cold/warm PC/SP/MPR/RAM, marker/MPR/stack negatives; IRQ vectors NOT_TESTED; NOT BIOS boot")
+    print("PASS real Geargrafx System Card startup: cold/warm PC/SP/MPR/RAM, marker/MPR/stack negatives; "
+          "IRQ1/IRQ2 masked at checkpoint and dispatched to X=$EE trap in CLI variant; timer/NMI NOT_TESTED; NOT BIOS boot")
 
 
 if __name__ == "__main__":

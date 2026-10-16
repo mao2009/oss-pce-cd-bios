@@ -2,7 +2,7 @@
 
 A redistributable **PC Engine / TurboGrafx-CD System Card BIOS replacement** built from original and properly licensed reusable OSS code.
 
-> **Status: development environment / diagnostic ROMs only.** Pinned tools build an original HuCARD fixture and execute it in the real Geargrafx core. There is no bootable System Card BIOS, implemented BIOS API, or CD-game compatibility result.
+> **Status: development-only diagnostics, not a compatible BIOS.** Main builds an original HuCARD fixture and a separate 81-slot System Card diagnostic ROM. Real pinned Geargrafx verifies startup checkpoints and guest synthetic-CD READ(6) → RAM, but **no caller-visible BIOS API, CD-game boot or retail compatibility** is established. See the [dated implementation status](docs/status.md).
 
 ## Objectives
 
@@ -32,8 +32,13 @@ The goal is **behavioral compatibility**, not binary identity with any proprieta
 
 **Important:** references describe the System Card function jump table around CPU address `$E000`, but precise bank mapping, ABI and service behavior must be validated per revision. Geargrafx documentation lists a `syscard` BIOS type of 256 KiB; this is a *loader target*, not confirmation that any arbitrary 256 KiB image boots.
 
+## Optional local ROM and disc images
+
+For local, **optional** diagnostics, contributors can put their own lawfully obtained game-disc images or separate System Card reference ROMs under `./rom/`. The directory is Git-ignored and is not required by setup, public tests, or CI. Tool-specific format support and test commands still apply; placing files there does **not** automatically run tests or establish BIOS/game compatibility. See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md).
+
 ## Documentation
 
+- [Actual implementation status (main vs Draft PR)](docs/status.md)
 - [Architecture](docs/architecture.md)
 - [Building and setup](docs/building.md)
 - [Tests and evidence scope](docs/testing.md)
@@ -71,17 +76,24 @@ The default `MODE=debug` includes a listing and debug information; release mode
 produces the same test ROM with fewer debugging artifacts. `make release` refuses
 to publish a BIOS while APIs and System Card boot remain unimplemented.
 
-Implemented: deterministic fixture builds, format/layout/negative host checks,
-headless Geargrafx HuCARD execution, CI and main-SHA-aware Nightly workflows.
-Unimplemented: all System Card API services, CD boot/read and production BIOS.
-Planned: System Card mapping verification (#1), startup (#4), MCP trace/CD harness
-(#6), and API implementations following the [inventory](docs/api-inventory.md).
-Draft PR #101 adds a separate diagnostic-only 81-slot scaffold. `make dev-rom`
-builds a 256 KiB BIOS DEV image in `build/<mode>/bios-dev/`; `make dev-test`
-checks its table and real Geargrafx PC/X/MPR checkpoints with synthetic inputs.
-These stubs never return success and are not implemented API services.
-See [diagnostic scope and unresolved ABI](docs/api-stub-scaffold.md).
-See [building](docs/building.md) and [testing](docs/testing.md) for exact scope.
+On **main** the additional, development-only targets are:
+
+```sh
+make dev-rom                    # 256 KiB, 81 candidate API slots, nonreturning stubs
+make dev-test                   # real-core System Card slot/CPU diagnostics
+make dev-startup-integration    # separate reset/MPR/stack checkpoint
+make dev-cdread-integration     # guest READ(6), full-byte RAM/phase checks
+make dev-trace-integration      # real-core isolated trace and negative checks
+make dev-release-gate-blocked   # expected refusal; NOT a firmware release
+```
+
+The low-level **CD sector read diagnostic works**; the System Card **CD_READ
+callee is unimplemented**, as are production boot and other BIOS services.
+The self-authored CD→RAM execution experiment is merged as a diagnostic
+([#122](https://github.com/mao2009/oss-pce-cd-bios/pull/122)); it is not itself a CD boot.
+CI tests original HuCARD and separate DEV diagnostics; Nightly is HuCARD-only.
+See [building](docs/building.md), [testing](docs/testing.md) and the
+[81-slot scaffold limits](docs/api-stub-scaffold.md).
 
 ## License
 

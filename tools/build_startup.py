@@ -26,6 +26,7 @@ STARTUP_CODE = bytes.fromhex(
     "a2 ff 9a "
     "a9 42 8d 00 22 a9 4f 8d 01 22 8d 02 22 "
     "a9 54 8d 03 22 a9 21 8d 04 22 "
+    "a9 01 8d 05 22 "
     "a2 b0 80 fe a2 ee 80 fe"
 )
 SYMBOL_OFFSETS = {
@@ -33,6 +34,7 @@ SYMBOL_OFFSETS = {
     "startup_mpr_ready": 35,
     "startup_stack_ready": 38,
     "startup_marker_write": 40,
+    "startup_cd_state": 61,
     "startup_checkpoint": len(STARTUP_CODE) - 6,
     "startup_unexpected_interrupt": len(STARTUP_CODE) - 4,
 }
@@ -112,7 +114,9 @@ def build_startup(original_path: Path, output: Path, mode="debug") -> Path:
         "original_api_rom_sha256": hashlib.sha256(original).hexdigest(),
         "pinned_cc65": DEPENDENCIES["cc65"]["revision"],
         "startup_symbols": symbols, "expected_mpr": EXPECTED_MPR,
-        "marker": MARKER.hex(), "api_implementation": "NONE",
+        "marker": MARKER.hex(), "marker_address": "2200",
+        "cd_state_address": "2205", "cd_state_value": 1, "cd_disc_presence_read": False,
+        "api_implementation": "NONE",
         "final_system_card_layout": "UNKNOWN", "release_eligible": False,
     }
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")

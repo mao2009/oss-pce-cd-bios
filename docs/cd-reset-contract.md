@@ -1,4 +1,4 @@
-# CD_RESET calling contract (Issue #10) — research only, no implementation
+# CD_RESET calling contract (Issue #10) — research and bus-reset diagnostic (#121); no callable CD_RESET
 
 Slot `$01`, candidate CPU-visible entry `$E003`. **spec=HYPOTHESIS, provenance=PENDING,
 implementation=NOT_STARTED, verification=NOT_RUN.** Nothing below was measured on an executed
@@ -49,7 +49,7 @@ Plain `PASS` is unreachable until the contract above is reviewed.
 | Scenario | Defined pass condition | Verdict range |
 | --- | --- | --- |
 | `disc_ready` | entry `$E003`, returns to JSR+3, SP balanced, polls ≤ budget, `$1800 & $F8 == 0` | PASS_HYPOTHESIS / FAIL |
-| `no_disc` | none (BIOS result UNKNOWN); stack imbalance or budget overrun still FAIL. Geargrafx does not run the card without media, so real-core runs are BLOCKED in practice | OBSERVED / FAIL |
+| `no_disc` | none (BIOS result UNKNOWN); stack imbalance or budget overrun still FAIL. Real core with no media (#133) runs the guest, but READ(6) stops at error 5 / stage 5 / 0 bytes and is classified BLOCKED/NO_MEDIA; no CD_RESET run without media has been judged (NOT RUN) | OBSERVED / FAIL |
 | `drive_busy` (timeout) | none (wait/abort policy UNKNOWN); same structural FAIL rules | OBSERVED / FAIL |
 | invalid input | not meaningful: the hypothesis contract has no inputs | — |
 | any non-`geargrafx-real` source | — | SKIP |
@@ -71,3 +71,24 @@ sources above, a reviewed answer for returns/no-disc/busy behaviour from System 
 and a real-core harness that executes `$E003` and emits the record fields `tools/cdreset_verify.py`
 requires (`REQUIRED`). The #5 bus-reset + bus-free sequence in `src/cd_read_probe.s` is the intended
 building block once that review exists.
+
+## 実コア実測と未検証（Issue #10, B2）
+
+対象: 独自作成の HuC6280 診断 `src/cd_reset_probe.s`（`make dev-cdreset-integration`）。合成 CD のみ使用、ゲーム由来データなし。
+Geargrafx `b49ae82a` の実行で確認した。**これは低レベルのバスリセット（`$1804` bit 1）の動作確認であり、
+System Card CD_RESET（`$01` / `$E003`）の完全互換は証明していない。** エントリ、戻り値、エラー、タイミング契約は一切測っていない。
+
+| 区分 | 内容 |
+| --- | --- |
+| 実測（Geargrafx） | 診断は 2 回のバスリセットパルスを発行し、各パルスの後に BUS FREE を待つ。`$1804` 読み戻しは assert 中 `$02`、解放後 `$00`。パルス後のバスは FREE。その後 READ(6) LBA 5 x1 を完走し、セクタ全バイトが合成ディスクと一致（cold / warm）。 |
+| 実測（負例） | `$1804` assert を NOP に置換した ROM は、データ経路が同一に成功しても reset judge が「reset not asserted」で拒否。SELECT を `$1805` にリダイレクトすると、リセット後の選択がタイムアウト（code 2, stage 3）し、リセット自体は成功として記録。リセット後の data-in でのドライブ側 abort は #5 と同じ失敗経路（code 4, stage 5）。改ざんディスクは RAM 比較で拒否。 |
+| 実測の観測限界 | リセットは「既に FREE のバス」に対してのみ発行。PHASE ログに リセット起因の遷移は出ない。BUSY 状態からのリセットによる解放は**未検証**。 |
+| 仮説（未確定） | 実機でも `$1804` bit 1 が SCSI バスリセットとして効くこと。`$1804` 読み戻しが Geargrafx の `m_reset` 由来であること（実機では未確認）。 |
+| 媒体なしでのコア起動（#133） | 実測: 媒体なし（`SetCDROMType(STANDARD)`、ディスク無し）でゲストが実行され、READ(6) はエラー 5・ステージ 5・0 バイトで停止（SCSI GOOD、DATA_IN なし、RAM 不変）。分類器は BLOCKED/NO_MEDIA で、PASS ではない。 |
+| CD_RESET 実行（媒体なし） | 未実行（NOT RUN）。#133 の媒体なし試験は cdread と同じ期待値（`cd_halt_fail`, 5, 5, 0）で判定しており、CD_RESET の reset judge は適用していない。 |
+| CD_RESET からの復帰 | 未確認（UNKNOWN）。媒体なしでの戻り（returned）は測っていない。 |
+| System Card BIOS の仕様 | UNKNOWN。媒体なし時の戻り値・エラー・タイミングは出典からも実測からも確定していない。 |
+| 未検証 | CD_RESET API（`$01`, `$E003`）の入口・戻り値・エラー・タイミング・割込み条件。BIOS の ready/busy 完了条件。実機と第 2 エミュレータでの比較。ドライブ busy 時の待機・中断方針。 |
+
+判定ツール: `tools/cdreset_bus_verify.py`（パルス記録の判定）+ `tools/cdread_verify.check_success`（データ経路）。
+ホスト側テスト `tests/host/test_cdreset_bus.py` は合成レコードのみで、エミュレータ成功の代わりにはしない。

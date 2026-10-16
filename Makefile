@@ -60,3 +60,33 @@ dev-cdread: dev-rom
 
 dev-cdread-integration: dev-cdread
 	$(PYTHON) tests/integration/geargrafx_cdread.py --mode "$(MODE)"
+
+.PHONY: dev-cdload-exec dev-cdload-exec-integration
+# Opt-in Issues #14/#5 load-and-execute experiment; separate from the default DEV ROM and the other diagnostics.
+dev-cdload-exec: dev-rom
+	$(PYTHON) tools/build_cdload_exec.py --mode "$(MODE)"
+
+dev-cdload-exec-integration: dev-cdload-exec
+	$(PYTHON) tests/integration/geargrafx_cdload_exec.py --mode "$(MODE)"
+.PHONY: dev-cdreset dev-cdreset-integration
+# Opt-in Issue #10 CD_RESET bus-reset diagnostic (original ROM, not the System Card API); separate from the #5 read ROM.
+dev-cdreset: dev-rom
+	$(PYTHON) tools/build_cdreset.py --mode "$(MODE)"
+
+dev-cdreset-integration: dev-cdreset
+	$(PYTHON) tests/integration/geargrafx_cdreset.py --mode "$(MODE)"
+.PHONY: dev-cd-base-integration
+# Opt-in Issue #11: does the DEV ROM have an executable CD_BASE ($E006) callee? (INDEX01=150 fixture)
+dev-cd-base-integration: dev-rom
+	$(PYTHON) tests/integration/geargrafx_cd_base.py --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
+.PHONY: dev-trace-integration
+# Opt-in Issue #6 isolated trace harness: real-core positive + classified negatives on the CD read ROM.
+dev-trace-integration: dev-cdread
+	$(PYTHON) tests/integration/geargrafx_trace.py --mode "$(MODE)"
+.PHONY: dev-cdda dev-cdda-integration
+# Opt-in Issue #15 CD-DA observation diagnostic (raw SCSI $D8/$DA/$D9/$DD, not the System Card CD_PLAY API).
+dev-cdda: dev-rom
+	$(PYTHON) tools/build_cdda.py --mode "$(MODE)"
+
+dev-cdda-integration: dev-cdda
+	$(PYTHON) tests/integration/geargrafx_cdda.py --mode "$(MODE)"
