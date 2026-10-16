@@ -128,9 +128,10 @@ The CD read judge requires cold and warm success PC and result block, all
 expected bytes in guest RAM, unchanged sentinel tail, SCSI READ(6) LBA/count
 and phase order, and **64 confirmed consecutive instructions in the success
 halt loop**. Budget/timeout/incomplete-halt runs are not successful. No-media
-guest execution is NOT_TESTED because the pinned Geargrafx loader does not
-execute that ROM without media. The audio-track READ(6) observation applies
-only to Geargrafx. See [CD diagnostics](cd-read-diagnostic.md),
+runs load the ROM as the card with CD hardware forced on
+(`SetCDROMType(STANDARD)` + `LoadHuCardFromBuffer`), because `LoadBiosFromBuffer`
+alone never resets the core; they are expected failures, never a pass. The
+audio-track and no-media READ(6) observations apply only to Geargrafx. See [CD diagnostics](cd-read-diagnostic.md),
 [CPU evidence](geargrafx-contract-evidence.md) and [status](status.md).
 
 CD status classification (#115), evidence schema (#116), real-core trace harness (#119),
