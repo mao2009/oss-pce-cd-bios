@@ -6,6 +6,8 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  issues: read
+  pull-requests: read
 jobs:
   verify:
     runs-on: ubuntu-24.04
@@ -15,9 +17,9 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Provenance guard on changed content (allowlist edits need the maintainer label)
+      - name: Provenance guard on changed content (list edits need a verified maintainer approval)
         env:
-          PROVENANCE_APPROVAL: ${{ contains(github.event.pull_request.labels.*.name, 'provenance-approved') && 'granted' || '' }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           python3 tools/provenance_guard.py
           python3 -m unittest discover -s tests/host -p 'test_provenance_guard.py' -v

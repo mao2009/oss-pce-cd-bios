@@ -6,11 +6,14 @@ a legal clearance. See docs/provenance.md. Rules, in order:
   2. Firmware/CD-image signatures in content -> always fail.
   3. Prohibited extensions, unallowlisted binaries, third-party paths, and
      third-party license markers in code files -> fail unless allowlisted.
-Allowlist (provenance/allowlist.tsv: "<sha256>\t<path>") is hash-pinned, so any
-content change needs a new entry. Editing the allowlist or denylist requires
-PROVENANCE_APPROVAL=granted, which CI derives from a maintainer-applied label.
-That gate only unlocks list edits; it never overrides rules 1-2. Editing this
-guard itself is not gated here: human review is the control for that.
+Allowlist (provenance/allowlist.tsv: "<sha256>\\t<path>") is hash-pinned, so any
+content change needs a new entry. Editing the allowlist, denylist or approver list
+requires a verified maintainer approval (see pr_approval): the newest
+provenance-approved label event must come from a login listed in the PR base's
+provenance/approvers.txt, who is not the PR author and holds admin or maintain
+role on the repository. The label is never trusted on its own, and the approval
+only unlocks list edits; it never overrides rules 1-2. Editing this guard itself
+is not gated here: human review is the control for that.
 """
 import argparse
 import hashlib
@@ -27,9 +30,14 @@ from check import git_output, resolve_commit  # noqa: E402  (shared Git helpers)
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWLIST = "provenance/allowlist.tsv"
 DENYLIST = "provenance/denylist.sha256"
-GATED = {ALLOWLIST, DENYLIST}
-APPROVAL_ENV = "PROVENANCE_APPROVAL"
+APPROVERS = "provenance/approvers.txt"
+GATED = {ALLOWLIST, DENYLIST, APPROVERS}
+APPROVAL_LABEL = "provenance-approved"
+APPROVER_ROLES = {"admin", "maintain"}
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+CHUNK_SIZE = 1 << 20  # bounded reads: large media is never loaded whole
+OVERLAP = 64          # longer than every marker below, so chunk-spanning matches are still seen
 
 PROHIBITED_EXTENSIONS = {".pce", ".hcd", ".bin", ".iso", ".img", ".cue", ".ccd", ".sub", ".toc",
                          ".chd", ".cdi", ".rom", ".wav", ".zip", ".7z", ".rar", ".tar", ".gz",
@@ -41,8 +49,10 @@ SIGNATURES = {
     "ISO9660 volume descriptor": re.compile(rb"\x01CD001\x01"),
     "CD-ROM raw sector sync": re.compile(rb"\x00\xff{10}\x00"),
 }
-# Written with escapes so this file does not contain the marker strings it searches for.
-LICENSE_MARKERS = re.compile(r"SPDX\-License|Copyright \(c\)|GNU General Public License|Permission is hereby granted")
+# Marker text is split into adjacent literals so this file does not contain the text it scans for;
+# tests/host/test_provenance_guard.py scans this file to keep that true.
+LICENSE_MARKERS = re.compile(b"|".join(re.escape(text.encode()) for text in (
+    "SPDX-" "License", "Copyright " "(c)", "GNU General " "Public License", "Permission is hereby " "granted")))
 
 
 class ProvenanceViolation(Exception):
@@ -100,47 +110,107 @@ def resolve_base(repo, event_name="local", event=None, base=None):
     return git_output(repo, "merge-base", probe.stdout.strip(), "HEAD") if probe.returncode == 0 else None
 
 
-def scan_file(rel, content, allowlist, denylist):
-    """Return a list of violation strings for one file's path and bytes."""
-    problems = []
-    digest = hashlib.sha256(content).hexdigest()
-    allowed = (digest, rel) in allowlist
+def scan_stream(rel, stream, allowlist, denylist):
+    """Return violation strings for one file, read in CHUNK_SIZE pieces without loading it whole."""
+    digest = hashlib.sha256()
+    head = b""          # first 8192 bytes, for the binary sniff
+    tail = b""          # last OVERLAP bytes, so markers split across chunks are still matched
+    found = set()
+    licensed = False
+    while chunk := stream.read(CHUNK_SIZE):
+        digest.update(chunk)
+        head = (head + chunk)[:8192]
+        window = tail + chunk
+        found.update(name for name, pattern in SIGNATURES.items() if pattern.search(window))
+        licensed = licensed or LICENSE_MARKERS.search(window) is not None
+        tail = window[-OVERLAP:]
+    sha = digest.hexdigest()
+    allowed = (sha, rel) in allowlist
     suffix = PurePosixPath(rel).suffix.lower()
-    if digest in denylist:
+    problems = []
+    if sha in denylist:
         problems.append("sha256 is on the denylist")
-    for name, pattern in SIGNATURES.items():
-        if pattern.search(content):
-            problems.append(f"{name} signature")
+    problems.extend(f"{name} signature" for name in SIGNATURES if name in found)
     if allowed:
         return problems
     if suffix in PROHIBITED_EXTENSIONS:
         problems.append(f"prohibited extension {suffix}")
-    if b"\x00" in content[:8192]:
+    if b"\x00" in head:
         problems.append("unallowlisted binary content")
     parts = PurePosixPath(rel).parts
     if parts[0].lower() in THIRD_PARTY_DIRS or rel == ".gitmodules":
         problems.append("third-party path or submodule")
-    if suffix in CODE_EXTENSIONS and LICENSE_MARKERS.search(content[:4096].decode("utf-8", "replace")):
+    if suffix in CODE_EXTENSIONS and licensed:
         problems.append("third-party license marker in code (needs audit + allowlist)")
     return problems
 
 
-def check_repo(repo, base=None, approval=None):
-    """Raise ProvenanceViolation listing every failing path; return the number of files scanned."""
-    approval = os.environ.get(APPROVAL_ENV, "") if approval is None else approval
+def load_approvers(repo, base):
+    """Read the approver list from the PR base, never from the PR head: a PR cannot add its own approvers."""
+    if not base:
+        return set()
+    result = subprocess.run(["git", "show", f"{base}:{APPROVERS}"], cwd=repo, capture_output=True, text=True)
+    if result.returncode != 0:
+        return set()
+    return {line.strip() for line in result.stdout.splitlines() if line.strip() and not line.startswith("#")}
+
+
+def approval_from_events(events, pr_author, approvers, role_of):
+    """True only if the latest provenance-approved label event is a trusted maintainer's labeling.
+
+    events: issue timeline events (oldest first). role_of(login) -> repository role name.
+    """
+    label_events = [e for e in events if e.get("event") in ("labeled", "unlabeled")
+                    and (e.get("label") or {}).get("name") == APPROVAL_LABEL]
+    if not label_events:
+        return False
+    latest = sorted(label_events, key=lambda e: e.get("created_at", ""))[-1]
+    actor = (latest.get("actor") or {}).get("login", "")
+    if latest["event"] != "labeled" or not actor or actor == pr_author or actor not in approvers:
+        return False
+    return role_of(actor) in APPROVER_ROLES
+
+
+def github_api(*arguments):
+    return subprocess.run(["gh", "api", *arguments], check=True, capture_output=True, text=True).stdout
+
+
+def pr_approval(event_name, event, repo, base):
+    """Query GitHub for a verified approval of the list edits. Any missing piece means no approval."""
+    if event_name != "pull_request":
+        return False
+    pr = (event or {}).get("pull_request", {})
+    slug = os.environ.get("GITHUB_REPOSITORY", "")
+    number, author = pr.get("number"), (pr.get("user") or {}).get("login", "")
+    approvers = load_approvers(repo, base)
+    if not (slug and number and author and approvers):
+        return False
+    events = [json.loads(line) for line in
+              github_api(f"repos/{slug}/issues/{number}/events", "--paginate", "--jq", ".[]").splitlines() if line]
+    return approval_from_events(
+        events, author, approvers,
+        lambda login: github_api(f"repos/{slug}/collaborators/{login}/permission", "--jq", ".role_name").strip())
+
+
+def check_repo(repo, base=None, approve=lambda: False):
+    """Raise ProvenanceViolation listing every failing path; return the number of files scanned.
+
+    approve() is consulted only when gated list files changed, so unrelated PRs never call the API.
+    """
     allowlist = load_allowlist(repo)
     denylist = load_denylist(repo)
     paths = changed_paths(repo, base)
     gated = sorted(p for p in paths if p in GATED)
     failures = []
-    if gated and approval != "granted":
-        failures.append(f"gated files changed without maintainer approval ({APPROVAL_ENV}=granted): {', '.join(gated)}")
+    if gated and not approve():
+        failures.append(f"gated files changed without maintainer approval ({APPROVAL_LABEL} label from a trusted maintainer): {', '.join(gated)}")
     for rel in paths:
         file = repo / rel
         if not file.is_file():
             continue
-        for problem in scan_file(rel, file.read_bytes(), allowlist, denylist):
-            failures.append(f"{rel}: {problem}")
+        with file.open("rb") as stream:
+            for problem in scan_stream(rel, stream, allowlist, denylist):
+                failures.append(f"{rel}: {problem}")
     if failures:
         raise ProvenanceViolation("\n".join(failures))
     return len(paths)
@@ -155,7 +225,7 @@ def main(argv=None):
     event = json.loads(Path(event_path).read_text()) if event_path else {}
     try:
         base = resolve_base(ROOT, event_name, event, args.base or os.environ.get("CHECK_BASE"))
-        count = check_repo(ROOT, base)
+        count = check_repo(ROOT, base, approve=lambda: pr_approval(event_name, event, ROOT, base))
     except (ProvenanceViolation, ValueError, OSError, subprocess.CalledProcessError) as error:
         raise SystemExit(f"provenance-guard FAIL: {error}") from error
     print(f"PASS provenance guard: {count} files scanned against {base or 'all tracked files'}")
