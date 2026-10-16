@@ -45,6 +45,11 @@ jobs:
           make dev-cdreset
           python3 -m unittest tests.host.test_cdreset_bus -v
           make dev-cdreset-integration
+      - name: Real-core CD-DA observation via raw SCSI $D8/$DA/$D9/$DD (diagnostic, not the System Card CD_PLAY API)
+        run: |
+          make dev-cdda
+          python3 -m unittest tests.host.test_cdda_verify -v
+          make dev-cdda-integration
       - name: Isolated Geargrafx trace harness (Issue #6, real core; diagnostic only)
         run: make dev-trace-integration
       - name: Debug and release diagnostic bytes match
