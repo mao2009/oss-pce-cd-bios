@@ -6,20 +6,29 @@ image or disassembly. A third-party name, caller wrapper or HLE model is never p
 Status tags:
 
 * **VERIFIED**: the claim names scenarios that original guest code executed on the pinned real Geargrafx core
-  (`b49ae82a012eade566d72e9d61c9d95a5caa4da3`). This tag is a claim; it counts only as an *effective*
-  status after the evidence rule in section 4. This is emulator evidence only; real hardware stays UNKNOWN.
+  (`b49ae82a012eade566d72e9d61c9d95a5caa4da3`). In the ledger this tag is a *declared* claim. It is never an
+  effective result of `tools/cd_read_contract.py`: a self-declared bundle cannot establish it (section 4). An
+  effective VERIFIED needs authenticated evidence (#125), which this ledger does not consume yet. This is
+  emulator evidence only; real hardware stays UNKNOWN.
+* **LOCAL_ONLY**: a declared VERIFIED claim whose cited scenarios a self-declared bundle records consistently
+  (pinned revision/archive hash, ROM hash, exact scenario kinds). Same word and meaning as
+  `tools/evidence_provenance.py` (#125): no attestation, never compatibility evidence. A forged bundle with
+  correct hashes reaches this level, so it is not PASS and not VERIFIED.
 * **HYPOTHESIS**: a pinned caller/HLE source shows an expectation; the System Card 3.0 callee was never executed.
 * **UNKNOWN**: no admissible evidence. A VERIFIED claim whose cited scenarios are missing or not PASS is
   downgraded to UNKNOWN.
 * **BLOCKED**: a VERIFIED claim that cannot be checked because no valid evidence bundle exists (no
-  `build/<mode>/cdread-probe/cdread-evidence.json`, a different ROM, or a non-pinned Geargrafx). BLOCKED is not PASS.
+  `build/<mode>/cdread-probe/cdread-evidence.json`, a malformed bundle or `tests` entry, a different ROM, or a
+  non-pinned Geargrafx). BLOCKED is not PASS.
 
 Machine check: `python3 tools/cd_read_contract.py [--mode release]` (`tests/host/test_cd_read_contract.py`).
 Every line it prints carries the trust label `LOCAL_ONLY`. `python3 tools/cd_read_contract.py --compat` is the
-compatibility gate; it is always BLOCKED (exit 3) because no authenticated evidence exists.
+compatibility gate; it is always BLOCKED (exit 3) because it does not take the #125 attestation yet.
 It fails if the ledger is malformed, if a claim cites another emulator, or if any slot-3 field in
 [api_contracts.json](../spec/api_contracts.json) becomes VERIFIED, executed or implemented before this
-document is updated. It exits 3 with `BLOCKED:` when any VERIFIED transport claim is not backed by the bundle.
+document is updated. It exits 3 with `BLOCKED` when any VERIFIED transport claim is not backed by the bundle,
+and exits 1 with `LOCAL_ONLY` when the bundle is consistent. It never prints PASS and never exits 0 on a bundle,
+like `tools/evidence_provenance.py`, which exits non-zero for everything but an attested PASS.
 The host unit tests run without a bundle, so they pass locally and report the transport claims as BLOCKED
 by design; the CI job `make dev-cdread-integration` is what produces the bundle.
 
@@ -43,34 +52,32 @@ by design; the CI job `make dev-cdread-integration` is what produces the bundle.
   `source_archive_sha256`, `rom_sha256` and `tests` are plain JSON fields written by the same process that
   produced them. The checker compares them with the pinned values and the ROM on disk, which catches a stale or
   mismatched bundle. It does **not** prove that the pinned Geargrafx actually ran, or that the suite was not
-  edited or the JSON not hand-written. A forged `tests` map with a matching revision and hash passes. This is
-  the same trust model as the independent-runner attestation in
-  [compat-evidence-schema.md](compat-evidence-schema.md) (a plain dict, no signature): trust ends at the
-  producer. The output line says "SELF-DECLARED".
+  edited or the JSON not hand-written. A forged `tests` map with a matching revision and hash is consistent,
+  so the local result is LOCAL_ONLY, never PASS or VERIFIED. The output line says "SELF-DECLARED".
 * **Trust levels.**
 
   | Level | Meaning | Where it is used | Status today |
   | --- | --- | --- | --- |
-  | `LOCAL_ONLY` | Self-declared JSON. Nothing authenticates the producer, the suite source or the run. | `tools/cd_read_contract.py` output, `effective_status()` | In use. Development check for a ROM built and tested locally or in one CI job. |
-  | authenticated (not defined) | A signed attestation or a CI artifact whose producer identity the verifier checks, from an independent runner. | none | Not implemented. |
+  | `LOCAL_ONLY` | Self-declared JSON. Nothing authenticates the producer, the suite source or the run. | `tools/cd_read_contract.py` output, `effective_status()` | In use. Development check for a ROM built and tested locally or in one CI job. Exit 1. |
+  | attested (#125) | GitHub artifact attestation (`actions/attest-build-provenance`) of `cdread-evidence.json` and the probe ROM, signed by `api-source.yml` at `refs/heads/main`, checked by `gh attestation verify` and `tools/evidence_provenance.py` (recomputes ROM and fixture hashes, checks scenario kinds, run correlation). | `.github/workflows/api-source.yml` jobs `attest-cdread` / `verify-cdread-attestation` (push to main) | On main. Its PASS is an attested *emulator diagnostic* only (`compatibility: NOT_PROMOTED`). **Not integrated with this ledger.** |
 
-  The local check may show a transport claim as VERIFIED, but that only means the bundle is consistent. It is
-  not a compatibility result. `compat_status()` (`--compat`) returns BLOCKED for every VERIFIED claim, and the
-  test `tests/host/test_cd_read_contract.py::TrustBoundaryTests` checks that a forged bundle with the pinned
-  revision and ROM hash still stays BLOCKED for compatibility.
-* **Conditions before this gate may back a compatibility claim** (not implemented; until they hold the
-  result is BLOCKED): (1) the bundle is produced by an independent runner from the pinned Geargrafx and the
-  ROM under test, and the run's output is authenticated (signed attestation, or a CI artifact whose producer
-  identity the verifier checks); the workflow that runs the gate comes from the protected default branch, not
-  from a PR head (the same rule as #116); (2) the verifier recomputes the ROM and fixture hashes from the
-  artifacts being certified, not from the bundle; (3) every cited scenario kind in the table above matches;
-  (4) the suite source at the pinned commit is the one that ran. Until then, no VERIFIED transport claim is a
-  compatibility result.
+  This ledger does not read the #125 result: `effective_status()` stops at LOCAL_ONLY and `compat_status()`
+  (`--compat`) takes no attestation and returns BLOCKED for every VERIFIED claim. On the same forged bundle
+  #125 gives LOCAL_ONLY without an attestation and FAIL/BLOCKED with a mismatching one; this checker gives
+  LOCAL_ONLY (exit 1). `tests/host/test_cd_read_contract.py::TrustBoundaryTests` checks that a forged bundle
+  with the pinned revision and ROM hash is never PASS/VERIFIED locally and stays BLOCKED for compatibility.
+* **Before this ledger may report an effective VERIFIED** (not done; until then the result is LOCAL_ONLY or
+  BLOCKED): (1) take the #125 result (attestation from `api-source.yml` on main, checked by
+  `tools/evidence_provenance.py`) as input instead of the bare bundle; (2) ROM and fixture hashes come from
+  that verifier's recomputation, not from the bundle; (3) every cited scenario kind in the table above
+  matches; (4) branch protection on main, which #125 does not check, is in place. Even then the result is
+  emulator evidence for the transport layer, not a BIOS compatibility result.
 * **Relation to #115 and #119 (drift guard).** The scenario kinds follow the #119 result vocabulary
   (PASS / FAIL / BLOCKED). End-of-disc runs use error code 5, which #115 `tools/cd_status.py` classifies as
   PREMATURE_STATUS. The BLOCKED exit code 3 and the `LOCAL_ONLY` label match #119 `geargrafx_harness.py`
-  (`EXIT`, `artifact_policy`). `TrustBoundaryTests` restates these values from those PRs, since their files are
-  not on this branch; it does not import them. The bundle is not the #116 runner attestation shape
+  (`EXIT`, `artifact_policy`). These files are on main (`tools/cd_status.py`,
+  `tests/integration/geargrafx_harness.py`). `TrustBoundaryTests` restates the values instead of importing them
+  (no import of integration code into the host test). The bundle is not the #116 runner attestation shape
   (`verified`, `checkpoints`) and must never be passed to `tools/compat_evidence.py` as one.
 * Regex limits: `tools/cd_read_contract.real_core_requests` parses the integration source with regular
   expressions to rebuild the expected LBA/count model. It is a drift guard, not evidence. The host test

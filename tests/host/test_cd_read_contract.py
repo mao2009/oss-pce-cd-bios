@@ -1,11 +1,20 @@
 """Issue #12: CD_READ contract ledger + transport outcome model (host-only; real core is authoritative)."""
+import contextlib
 import copy
+import hashlib
+import io
 import json
 import re
+import shutil
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
+
+import tools.cd_read_contract as cd_read_contract
 
 from tools.cd_read_contract import (
-    COMPAT_REASON, EXIT_BLOCKED, INTEGRATION, LBA_LIMIT, PINNED, ROOT, SECTOR_BYTES, TRANSPORT_CLAIMS, TRUST_LABEL,
+    COMPAT_REASON, EXIT_BLOCKED, EXIT_LOCAL_ONLY, INTEGRATION, LBA_LIMIT, PINNED, ROOT, SECTOR_BYTES, TRANSPORT_CLAIMS, TRUST_LABEL,
     compat_status, effective_status, real_core_requests, transport_outcome, validate,
 )
 from tools.make_cd_image import DEFAULT_SECTORS
@@ -86,9 +95,9 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual([status[f"T{i}"] for i in range(1, 6)], ["BLOCKED"] * 5)
         self.assertEqual((status["T6"], status["T7"], status["T8"]), ("HYPOTHESIS", "UNKNOWN", "UNKNOWN"))
 
-    def test_matching_passing_bundle_verifies_transport_only(self):
+    def test_matching_bundle_is_local_only_never_verified(self):
         status = effective_status(bundle_for(), ROM_SHA)
-        self.assertEqual([status[f"T{i}"] for i in range(1, 6)], ["VERIFIED"] * 5)
+        self.assertEqual([status[f"T{i}"] for i in range(1, 6)], ["LOCAL_ONLY"] * 5)
         self.assertEqual((status["T6"], status["T7"], status["T8"]), ("HYPOTHESIS", "UNKNOWN", "UNKNOWN"))
 
     def test_bundle_from_other_rom_emulator_or_run_is_refused(self):
@@ -115,7 +124,7 @@ class LedgerTests(unittest.TestCase):
     def test_asserted_observation_counts_but_not_started_or_untested_does_not(self):
         observed = bundle_for()
         observed["tests"]["read6_on_audio_track_lba"] = {"status": "OBSERVED_EMULATOR_BEHAVIOUR"}
-        self.assertEqual(effective_status(observed, ROM_SHA)["T5"], "VERIFIED")
+        self.assertEqual(effective_status(observed, ROM_SHA)["T5"], "LOCAL_ONLY")
         untested = bundle_for()
         untested["tests"]["read6_on_audio_track_lba"] = {"status": "NOT_TESTED"}
         self.assertEqual(effective_status(untested, ROM_SHA)["T5"], "UNKNOWN")
@@ -152,6 +161,17 @@ class LedgerTests(unittest.TestCase):
         for name, kind in EXPECTED_KIND.items():
             self.assertEqual(declared.get(name), kind, name)
 
+    def test_malformed_bundle_is_blocked_not_an_exception(self):
+        cases = {
+            "test_entry_string": bundle_for(tests={"single_sector_lba5": "PASS"}),
+            "test_entry_list": bundle_for(tests={"single_sector_lba5": ["PASS"]}),
+            "bundle_list": [bundle_for()],
+            "bundle_string": "PASS",
+        }
+        for name, bundle in cases.items():
+            with self.subTest(case=name):
+                self.assertEqual(effective_status(bundle, ROM_SHA)["T1"], "BLOCKED")
+
     def test_claim_citing_unrun_scenario_is_not_verified(self):
         claims = copy.deepcopy(TRANSPORT_CLAIMS)
         claims[0]["scenarios"] = ["no_such_run"]
@@ -182,7 +202,7 @@ class LedgerTests(unittest.TestCase):
 
 
 class TrustBoundaryTests(unittest.TestCase):
-    """The bundle is self-declared JSON. A local check may VERIFY transport claims; a compatibility gate may not."""
+    """The bundle is self-declared JSON. A local check reaches LOCAL_ONLY at best; a compatibility gate stays BLOCKED."""
 
     def test_valid_self_declared_bundle_never_passes_compat_gate(self):
         status = compat_status(bundle_for(), ROM_SHA)
@@ -190,10 +210,11 @@ class TrustBoundaryTests(unittest.TestCase):
         self.assertEqual((status["T6"], status["T7"], status["T8"]), ("HYPOTHESIS", "UNKNOWN", "UNKNOWN"))
 
     def test_forged_bundle_with_pinned_hashes_is_local_only(self):
-        # A hand-written tests map that copies the pinned revision and the ROM hash passes the local check
-        # (that is the documented limit), but must stay BLOCKED for compatibility.
+        # A hand-written tests map that copies the pinned revision and the ROM hash is consistent locally
+        # (that is the documented limit): it is LOCAL_ONLY, never VERIFIED/PASS, and BLOCKED for compatibility.
         forged = bundle_for()
-        self.assertEqual(effective_status(forged, ROM_SHA)["T1"], "VERIFIED")
+        self.assertEqual(set(effective_status(forged, ROM_SHA).values()) & {"VERIFIED", "PASS"}, set())
+        self.assertEqual(effective_status(forged, ROM_SHA)["T1"], "LOCAL_ONLY")
         self.assertEqual(compat_status(forged, ROM_SHA)["T1"], "BLOCKED")
         self.assertEqual(TRUST_LABEL, "LOCAL_ONLY")
         self.assertIn("SELF-DECLARED", COMPAT_REASON)
@@ -203,6 +224,37 @@ class TrustBoundaryTests(unittest.TestCase):
         for bundle, rom in ((None, None), (bundle_for(), ROM_SHA), (bundle_for(), None)):
             with self.subTest(bundle=bundle is not None, rom=rom is not None):
                 self.assertNotIn("VERIFIED", compat_status(bundle, rom).values())
+
+    def run_cli(self, bundle):
+        # Run main() against a temporary ROOT holding a ROM and a forged bundle with the correct ROM hash.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "spec").mkdir()
+            shutil.copy(ROOT / "spec/api_contracts.json", root / "spec/api_contracts.json")
+            out = root / "build/debug/cdread-probe"
+            out.mkdir(parents=True)
+            rom = b"forged rom"
+            (out / "cdread-probe-not-bios.pce").write_bytes(rom)
+            if bundle is not None:
+                bundle = bundle(hashlib.sha256(rom).hexdigest())
+                (out / "cdread-evidence.json").write_text(json.dumps(bundle), encoding="utf-8")
+            stdout = io.StringIO()
+            with mock.patch.object(cd_read_contract, "ROOT", root), contextlib.redirect_stdout(stdout),                     self.assertRaises(SystemExit) as exit_:
+                cd_read_contract.main([])
+            return exit_.exception.code, stdout.getvalue()
+
+    def test_cli_forged_bundle_is_not_pass_and_exits_nonzero(self):
+        code, text = self.run_cli(lambda sha: bundle_for(rom_sha256=sha))
+        self.assertEqual(code, EXIT_LOCAL_ONLY)
+        self.assertNotEqual(code, 0)
+        self.assertTrue(text.startswith("LOCAL_ONLY "), text)
+        self.assertNotIn("PASS ", text)
+        self.assertNotIn("VERIFIED'", text)
+
+    def test_cli_malformed_tests_entry_is_blocked(self):
+        code, text = self.run_cli(lambda sha: bundle_for(rom_sha256=sha, tests={"single_sector_lba5": "PASS"}))
+        self.assertEqual(code, EXIT_BLOCKED)
+        self.assertTrue(text.startswith("BLOCKED "), text)
 
     def test_blocked_exit_code_is_fixed_and_matches_harness_119(self):
         # #119 tests/integration/geargrafx_harness.py: EXIT = {"PASS": 0, "FAIL": 1, "BLOCKED": 3, "SKIP": 4}

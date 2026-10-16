@@ -5,15 +5,16 @@ a real Geargrafx run of tests/integration/geargrafx_cdread.py. That run writes
 build/<mode>/cdread-probe/cdread-evidence.json; this module accepts it only if it is PASS, was produced by
 the pinned Geargrafx archive, belongs to the ROM on disk, and records every cited scenario as PASS.
 Source text that merely mentions a scenario is never evidence. Without such a bundle VERIFIED claims are
-reported BLOCKED; a bundle that lacks a cited scenario makes them UNKNOWN. The System Card 3.0 *callee*
+reported BLOCKED; a bundle that lacks a cited scenario makes them UNKNOWN; a consistent bundle makes them
+LOCAL_ONLY (never VERIFIED or PASS, because the bundle is not authenticated). The System Card 3.0 *callee*
 ABI (spec/api_contracts.json slot 3) stays HYPOTHESIS/UNKNOWN.
 
 The bundle is a plain JSON file. Its status, geargrafx_revision, source_archive_sha256, rom_sha256 and tests are
 SELF-DECLARED: this module checks that they are consistent with the pinned values and the ROM on disk, but it does
-not authenticate who wrote them. A bundle written by a modified or hand-made run can pass these checks, so every
-result from this module is TRUST_LABEL (LOCAL_ONLY): a development check. It is never a compatibility result.
-compat_status() therefore keeps every VERIFIED claim BLOCKED. See docs/cd-read-contract.md section 4 for the trust
-conditions a compatibility gate would need (none is implemented).
+not authenticate who wrote them. A bundle written by a modified or hand-made run passes these checks, so the best
+local result is LOCAL_ONLY (same word and meaning as tools/evidence_provenance.py, #125: no attestation, never
+compatibility evidence) and the CLI exits non-zero for it. compat_status() keeps every VERIFIED claim BLOCKED: it
+does not take the #125 attestation yet. See docs/cd-read-contract.md section 4.
 """
 import argparse
 import hashlib
@@ -31,6 +32,7 @@ LBA_LIMIT = 1 << 21          # READ(6) LBA field: byte1 bits 0-4, byte2, byte3
 VERIFIED_COUNTS = range(1, 4)  # only counts 1..3 were executed on the real core
 STATUSES = {"VERIFIED", "HYPOTHESIS", "UNKNOWN"}
 EXIT_BLOCKED = 3  # same exit code as the #119 harness (BLOCKED 3)
+EXIT_LOCAL_ONLY = 1  # same as tools/evidence_provenance.py (#125): anything but an attested PASS exits non-zero
 TRUST_LABEL = "LOCAL_ONLY"
 COMPAT_REASON = ("LOCAL_ONLY: the evidence bundle is SELF-DECLARED JSON (status, geargrafx_revision, "
                  "source_archive_sha256, rom_sha256, tests) with no authenticated runner or CI attestation; "
@@ -93,22 +95,28 @@ def provenance_problem(bundle, rom_sha256):
     """Why the bundle cannot back VERIFIED claims, or None when it can."""
     if bundle is None:
         return "no real-core evidence bundle (run make dev-cdread-integration)"
+    if not isinstance(bundle, dict):
+        return "evidence bundle is not a JSON object"
     if bundle.get("status") != "PASS":
         return "evidence bundle status is not PASS"
     if bundle.get("geargrafx_revision") != PINNED["revision"] or bundle.get("source_archive_sha256") != PINNED["sha256"]:
         return "evidence bundle was not produced by the pinned Geargrafx"
     if rom_sha256 is None or bundle.get("rom_sha256") != rom_sha256:
         return "evidence bundle does not match the ROM on disk"
-    if not isinstance(bundle.get("tests"), dict):
+    tests = bundle.get("tests")
+    if not isinstance(tests, dict):
         return "evidence bundle has no tests"
+    if not all(isinstance(v, dict) for v in tests.values()):
+        return "evidence bundle tests entries must be JSON objects"
     return None
 
 
 def effective_status(bundle=None, rom_sha256=None, claims=TRANSPORT_CLAIMS) -> dict:
-    """Local (LOCAL_ONLY) status per claim id after evidence. Not a compatibility result: see compat_status.
+    """Local status per claim id after evidence. Not a compatibility result: see compat_status.
 
-    VERIFIED only when a valid bundle records every cited scenario as PASS; BLOCKED when there is no
-    usable bundle; UNKNOWN when a valid bundle does not cover the cited scenarios.
+    A declared VERIFIED claim becomes LOCAL_ONLY when a consistent (but self-declared) bundle records every cited
+    scenario with its kind; BLOCKED when there is no usable bundle; UNKNOWN when the bundle does not cover the
+    cited scenarios. It never returns VERIFIED: that needs authenticated evidence this function does not take.
     """
     problem = provenance_problem(bundle, rom_sha256)
     out = {}
@@ -121,7 +129,7 @@ def effective_status(bundle=None, rom_sha256=None, claims=TRANSPORT_CLAIMS) -> d
             tests = bundle["tests"]
             covered = all(s in SCENARIO_KIND and tests.get(s, {}).get("status") == SCENARIO_KIND[s]
                           for s in claim["scenarios"])
-            out[claim["id"]] = "VERIFIED" if covered else "UNKNOWN"
+            out[claim["id"]] = TRUST_LABEL if covered else "UNKNOWN"
     return out
 
 
@@ -179,14 +187,15 @@ def main(argv=None):
         sys.exit(EXIT_BLOCKED)
     status = effective_status(bundle, rom_sha)
     declared = {c["id"]: c["status"] for c in TRANSPORT_CLAIMS}
-    downgraded = {k: v for k, v in status.items() if v != declared[k]}
+    downgraded = {k: v for k, v in status.items() if v != declared[k] and v != TRUST_LABEL}
     if downgraded:
         reason = provenance_problem(bundle, rom_sha) or "evidence bundle does not cover the cited scenarios"
         print(f"BLOCKED CD_READ contract ledger ({TRUST_LABEL}): downgraded {downgraded}; reason: {reason}")
         sys.exit(EXIT_BLOCKED)
-    print(f"PASS CD_READ contract ledger ({TRUST_LABEL}, not a compatibility result): transport {sorted(status.items())} "
-          f"from SELF-DECLARED bundle {evidence} (provenance not authenticated); "
-          "callee ABI not VERIFIED (CD_READ NOT_IMPLEMENTED)")
+    print(f"{TRUST_LABEL} CD_READ contract ledger (consistent, not verified, not a compatibility result): transport "
+          f"{sorted(status.items())} from SELF-DECLARED bundle {evidence} (provenance not authenticated; "
+          "tools/evidence_provenance.py checks the attestation); callee ABI not VERIFIED (CD_READ NOT_IMPLEMENTED)")
+    sys.exit(EXIT_LOCAL_ONLY)
 
 
 if __name__ == "__main__":
