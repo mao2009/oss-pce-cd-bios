@@ -86,7 +86,7 @@ def classify_run(run, count, expect=None, media=True):
             return _verdict(FAIL, 'PROTOCOL_MISMATCH', f'{cycle}: count {count} outside 1..{MAX_SECTORS} must halt '
                             f'with code 9 at stage {INVALID_REQUEST_STAGE} and 0 bytes, observed code {code} '
                             f'stage {stage} {transferred} bytes', code, MEASURED, transferred)
-        return _verdict(PASS if expect in (None, 9) else FAIL, 'INVALID_REQUEST',
+        return _verdict(PASS if expect == 9 else FAIL, 'INVALID_REQUEST',
                         f'{cycle}: invalid count rejected with code 9', 9, MEASURED, transferred)
     if reason == HALT_OK:
         if (code, block['stage'], block['scsi_status'], block['scsi_message']) != (0, 9, 0, 0) \

@@ -92,8 +92,9 @@ class ClassifyRunTests(unittest.TestCase):
         for count in (0, 4):
             self.assertEqual(classify_run(run(code=9, stage=1, transferred=0, reason="cd_halt_fail"),
                                           count, expect=9).outcome, PASS)
+            # expect=None means a normal load must succeed: a rejected count is never a silent PASS
             self.assertEqual(classify_run(run(code=9, stage=1, transferred=0, reason="cd_halt_fail"),
-                                          count).outcome, PASS)
+                                          count).outcome, FAIL)
             self.assertEqual(classify_run(run(code=0), count).category, "PROTOCOL_MISMATCH")
             self.assertEqual(classify_run(run(code=5, stage=5, reason="cd_halt_fail"), count).category,
                              "PROTOCOL_MISMATCH")
