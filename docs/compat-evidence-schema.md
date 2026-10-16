@@ -5,7 +5,13 @@ Issue #7. Machine-checkable record for one compatibility stage, implemented by
 `tests/host/test_compat_evidence.py`. Stage meanings are defined in
 [compatibility.md](compatibility.md).
 
-Usage: `python3 tools/compat_evidence.py RECORD.json` prints the verdict and exits 0 only on PASS.
+Usage: `python3 tools/compat_evidence.py RECORD.json [RUNNER_ATTESTATION.json]` prints the verdict and exits 0 only on PASS.
+
+A record is a claim, not proof. `verdict(record, runner)` accepts PASS for execution stages
+(`bios-loaded` and above) only with an independent runner attestation: `verified: true`, and
+`rom_sha256`, `fixture_sha256`, `emulator_commit` and `checkpoints[].observed` that match the record.
+A `runner` key inside the record is ignored. The attestation is produced by the Geargrafx harness;
+this module does not verify its signature (trust ends at the runner producer).
 
 ## Stages (ascending)
 
@@ -38,16 +44,19 @@ Findings are combined with priority FAIL > BLOCKED > SKIP > PASS.
 2. `rom-built` and above need a ROM. Missing ROM gives **BLOCKED**.
 3. `cd-detected` and above need a fixture. Missing gives **BLOCKED**, or **SKIP** for `retail-boot` and above (local, opt-in).
 4. `bios-loaded` and above need a `real-core` emulator. Mock or static gives **BLOCKED**, so a mock cannot promote a stage.
+   They also need a runner attestation. Missing or unverified gives **BLOCKED**. A hash, commit or checkpoint
+   that does not match the record gives **FAIL**.
 5. `retail-boot` with a synthetic fixture gives **FAIL**. Missing region gives **BLOCKED**.
 6. `startup` and above need at least one checkpoint (**BLOCKED** if none). Any mismatch gives **FAIL**.
 7. Above `homebrew`, guest trace deltas are required (**BLOCKED** if absent).
 8. A claim of `PASS` that the evidence does not support is an **overclaim** and gives **FAIL**.
 
-A single launch never supports an all-title claim. The result is never PASS for any stage
+Source-only and rom-built records need no attestation (build checks only). A single launch never supports an all-title claim. The result is never PASS for any stage
 that lacks real-core evidence.
 
 ## Not covered (v1)
 
-- Emulator trace capture and checkpoint extraction: the record is produced by the runner, not by this module.
+- Emulator trace capture and checkpoint extraction: the record and attestation are produced by the runner (#119), not by this module.
+- Not wired into `make check` or any release gate yet. Until the runner exists, no record can reach PASS above rom-built.
 - Retail disc handling and private fixture storage: see [provenance.md](provenance.md).
 - Schema migration beyond v1.

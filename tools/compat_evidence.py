@@ -86,14 +86,47 @@ def validate(record):
     return errors
 
 
-def verdict(record):
-    """Return {'result', 'blocker', 'reasons'} for a record; never PASS on bad evidence."""
+def _attestation(record, runner):
+    """Bind a claimed execution to a runner attestation produced outside the record.
+
+    The record's own fields (including any 'runner' key) are never trusted here.
+    ponytail: attestation is a plain dict from the harness, no signature; trust
+    ends at the runner producer. Upgrade to signed attestation if the gate is shared.
+    """
+    if not isinstance(runner, dict) or runner.get('verified') is not True:
+        return [('BLOCKED', 'independent runner attestation required')]
+    rom = record.get('rom') or {}
+    fixture = record.get('fixture') or {}
+    emulator = record.get('emulator') or {}
+    findings = []
+    if runner.get('rom_sha256') != rom.get('sha256'):
+        findings.append(('FAIL', 'runner ROM hash does not match record'))
+    if fixture and runner.get('fixture_sha256') != fixture.get('sha256'):
+        findings.append(('FAIL', 'runner fixture hash does not match record'))
+    if runner.get('emulator_commit') != emulator.get('commit'):
+        findings.append(('FAIL', 'runner emulator commit does not match record'))
+    observed = {item.get('name'): item.get('observed')
+                for item in runner.get('checkpoints') or [] if isinstance(item, dict)}
+    for item in record.get('checkpoints') or []:
+        if item['name'] not in observed or observed[item['name']] != item['expected']:
+            findings.append(('FAIL', f"checkpoint {item['name']} not confirmed by runner"))
+    return findings
+
+
+def verdict(record, runner=None):
+    """Return {'result', 'blocker', 'reasons'} for a record; never PASS on bad evidence.
+
+    `runner` is independent attestation (verified, hash-bound run output). Without it,
+    any stage that claims execution (bios-loaded and above) cannot PASS.
+    """
     errors = validate(record)
     if errors:
         return {'result': 'FAIL', 'blocker': None, 'reasons': errors}
     rank = RANK[record['stage']]
     findings = []  # (result, reason)
     rom, fixture, emulator = record.get('rom'), record.get('fixture'), record.get('emulator')
+    if rank >= CORE_STAGE:
+        findings.extend(_attestation(record, runner))
     if rank >= ROM_STAGE and not rom:
         findings.append(('BLOCKED', 'ROM not built'))
     if rank >= CD_STAGE and fixture is None:
@@ -129,11 +162,15 @@ def verdict(record):
 
 
 def main(argv):
-    if len(argv) != 2:
-        print('usage: compat_evidence.py RECORD.json', file=sys.stderr)
+    if len(argv) not in (2, 3):
+        print('usage: compat_evidence.py RECORD.json [RUNNER_ATTESTATION.json]', file=sys.stderr)
         return 2
+    runner = None
+    if len(argv) == 3:
+        with open(argv[2], encoding='utf-8') as handle:
+            runner = json.load(handle)
     with open(argv[1], encoding='utf-8') as handle:
-        result = verdict(json.load(handle))
+        result = verdict(json.load(handle), runner)
     print(json.dumps(result, indent=2))
     return 0 if result['result'] == 'PASS' else 1
 
