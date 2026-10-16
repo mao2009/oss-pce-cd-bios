@@ -11,7 +11,7 @@ import unittest
 
 from tools.make_cd_image import RAW_BYTES, audio_frame, build_image, raw_sector
 from tools.toc_diagnostic import (
-    NOT_VERIFIED, TocError, build_toc, diagnose, format_msf, main, parse_cue, parse_msf,
+    NOT_VERIFIED, TocError, _decode_msf, build_toc, diagnose, format_msf, main, parse_cue, parse_msf,
 )
 
 DATA_CUE = 'FILE "t.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
@@ -35,7 +35,8 @@ class TocPositiveTests(unittest.TestCase):
         self.assertEqual(report["sectors"], 16)
         self.assertEqual(report["sector_check"]["findings"], [])
         self.assertEqual(report["tracks"], [{
-            "track": 1, "type": "data", "pregap_start_lba": 0, "lba_start": 0, "absolute_msf": "00:02:00",
+            "track": 1, "type": "data", "declared_mode": "MODE1/2352",
+            "pregap_start_lba": 0, "lba_start": 0, "absolute_msf": "00:02:00",
             "length_sectors": 16, "pregap_sectors": 0, "pregap_declared": False,
             "bin_start_frame": 0, "bin_index01_frame": 0, "bin_end_frame": 16}])
 
@@ -308,6 +309,89 @@ class TocBoundaryTests(unittest.TestCase):
             (Path(tmp) / "t.bin").write_bytes(raw_sector(0) + raw_sector(1) + audio_frame(0) + audio_frame(1))
             report = diagnose(cue_path)
         self.assertEqual(report["tracks"][1]["length_sectors"], 2)
+
+
+class TocStrictnessTests(unittest.TestCase):
+    """Review fixes: sync on every user-data frame, declared header mode byte, BCD/MSF validity, provenance wording."""
+
+    def _diagnose_frames(self, cue_text, frames):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "t.bin").write_bytes(b"".join(bytes(frame) for frame in frames))
+            cue = d / "t.cue"
+            cue.write_text(cue_text, encoding="ascii")
+            return diagnose(cue)
+
+    def test_missing_sync_at_user_data_head_middle_and_last_frame_fails(self):
+        for position in (0, 7, 15):
+            with self.subTest(frame=position):
+                frames = [bytearray(raw_sector(lba)) for lba in range(16)]
+                frames[position][0:12] = bytes(12)  # header and payload intact; only the sync is broken
+                with self.assertRaisesRegex(TocError, rf"1 of 16 user-data frames lack RAW sync "
+                                                      rf"\(first at BIN frames \[{position}\]\)"):
+                    self._diagnose_frames(DATA_CUE, frames)
+
+    def test_missing_sync_in_long_track_is_counted_exactly(self):
+        frames = [bytearray(raw_sector(lba)) for lba in range(300)]
+        for position in (3, 150, 299):
+            frames[position][0:12] = bytes(12)
+        with self.assertRaisesRegex(TocError, r"3 of 300 user-data frames lack RAW sync "
+                                              r"\(first at BIN frames \[3, 150, 299\]\)"):
+            self._diagnose_frames(DATA_CUE, frames)
+
+    def test_pregap_frames_without_sync_pass_while_user_data_sync_is_checked(self):
+        cue = ('FILE "t.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 00 00:00:00\n    INDEX 01 00:00:10\n')
+        frames = [bytes(RAW_BYTES) for _ in range(10)] + [raw_sector(lba) for lba in range(10, 26)]
+        report = self._diagnose_frames(cue, frames)
+        self.assertEqual(report["status"], "PASS")
+        self.assertEqual(report["sector_check"]["findings"], [])
+
+    def test_header_mode_byte_must_match_declared_mode(self):
+        cases = {"mode2_frames_declared_mode1": ("MODE1/2352", 0x02, 0x01),
+                 "mode1_frames_declared_mode2": ("MODE2/2352", 0x01, 0x02)}
+        for name, (declared, actual, expected) in cases.items():
+            with self.subTest(case=name):
+                frames = []
+                for lba in range(8):
+                    frame = bytearray(raw_sector(lba))
+                    frame[15] = actual
+                    frames.append(frame)
+                cue = f'FILE "t.bin" BINARY\n  TRACK 01 {declared}\n    INDEX 01 00:00:00\n'
+                with self.assertRaisesRegex(TocError, rf"8 frames have header mode byte != 0x{expected:02x} "
+                                                      rf"for declared {declared} \(first at BIN frames \[0, 1, 2, 3, 4\]\)"):
+                    self._diagnose_frames(cue, frames)
+
+    def test_correct_mode2_header_passes_and_is_reported_as_declared(self):
+        frames = []
+        for lba in range(8):
+            frame = bytearray(raw_sector(lba))
+            frame[15] = 0x02
+            frames.append(frame)
+        report = self._diagnose_frames('FILE "t.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n', frames)
+        self.assertEqual(report["status"], "PASS")
+        self.assertEqual(report["tracks"][0]["declared_mode"], "MODE2/2352")
+
+    def test_invalid_bcd_header_is_a_mismatch_not_a_number(self):
+        # Frame 20 expects 00:02:20. A header of 00:02:1A must not decode as 20.
+        frames = [bytearray(raw_sector(lba)) for lba in range(32)]
+        frames[20][14] = 0x1A
+        with self.assertRaisesRegex(TocError, r"BIN frames \[20\] header MSF disagrees"):
+            self._diagnose_frames(DATA_CUE, frames)
+
+    def test_decode_msf_rejects_invalid_bcd_and_out_of_range_fields(self):
+        self.assertEqual(_decode_msf(bytes([0x00, 0x02, 0x20])), 2 * 75 + 20)
+        self.assertIsNone(_decode_msf(bytes([0x00, 0x02, 0x1A])))  # frame nibble A
+        self.assertIsNone(_decode_msf(bytes([0x00, 0x0A, 0x00])))  # second nibble A
+        self.assertIsNone(_decode_msf(bytes([0xA0, 0x00, 0x00])))  # minute nibble A
+        self.assertIsNone(_decode_msf(bytes([0x00, 0x60, 0x00])))  # second 60
+        self.assertIsNone(_decode_msf(bytes([0x00, 0x02, 0x75])))  # frame 75
+
+    def test_provenance_does_not_claim_generated_origin(self):
+        frames = [raw_sector(lba) for lba in range(16)]
+        report = self._diagnose_frames(DATA_CUE, frames)
+        self.assertEqual(report["evidence"]["measured_from"],
+                         "provided local CUE/BIN input (host-side parse; origin not asserted)")
+        self.assertNotIn("generated", report["evidence"]["measured_from"])
 
 
 if __name__ == "__main__":

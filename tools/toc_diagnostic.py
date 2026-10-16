@@ -9,15 +9,30 @@ pregap, data start LBA, absolute MSF and length. Everything here is measured fro
 CUE/BIN file on the host only. It is NOT a hardware or emulator TOC read: those fields
 stay "not verified" by design.
 
-LBA contract (same as PR #110):
-1. The first BIN frame is LBA 0. Frames are consumed in BIN order.
-2. Pregap frames stored in the BIN (INDEX 00..01) consume LBA.
-3. lba_start (INDEX 01) is the first user-data frame of the track.
+Address terms (the same definitions as PR #110's cue_analysis.py):
+- physical disc LBA: the disc address. It advances by one for every frame, pregap frames included.
+- INDEX 01 start (`lba_start`): the physical LBA of the track's first user-data frame.
+- BIN frame offset (`bin_*_frame`): a frame index within the single BIN file. It is not a disc LBA.
+- BIN INDEX 00 pregap (`bin_start_frame` .. `bin_index01_frame`): pregap frames stored in the BIN.
+- virtual CUE PREGAP (`pregap`): frames that take disc LBA but are not stored in the BIN.
+
+LBA contract:
+1. Without a virtual PREGAP before the first track, the first BIN frame is physical LBA 0. With a
+   virtual PREGAP, the first BIN frame can be physical LBA > 0, so do not assume LBA 0 = BIN frame 0.
+2. Frames are consumed in BIN order. Pregap frames stored in the BIN (INDEX 00..01) consume LBA.
+3. `lba_start` (INDEX 01) is the first user-data frame of the track.
 4. A MODE1/2352 or MODE2/2352 sector header MSF must equal LBA + 150 (absolute_msf).
 5. The next track's pregap is not part of this track's length_sectors.
 6. A CUE PREGAP is a virtual gap: its frames take LBA but are not stored in the BIN.
 7. Unsupported CUE forms are rejected explicitly, never converted.
-Multiple FILE entries are refused (single BIN only).
+
+Explicit non-support (FAIL, not guessed): multiple FILE entries, Cooked modes (MODE1/2048, MODE2/2336),
+and every FILE type other than BINARY.
+
+Sector checks for data tracks (see `check_sectors`): every user-data frame (INDEX 01 onward) must carry the
+RAW sync pattern, and every sync frame (pregap or user data) must have header byte 15 equal to the
+declared mode (MODE1/2352 = 0x01, MODE2/2352 = 0x02) and a valid BCD MSF equal to its disc LBA + 150.
+Pregap frames without sync are legal.
 """
 import argparse
 import json
@@ -39,6 +54,9 @@ MAX_TRACK = 99
 CHUNK_FRAMES = 64  # frames per read while checking sector headers (bounded memory)
 DATA_TYPES = {"MODE1/2352", "MODE2/2352"}
 AUDIO_TYPE = "AUDIO"
+# Header byte 15 of a RAW data frame must equal the value for the mode declared in the CUE
+HEADER_MODE_BYTE = {"MODE1/2352": 0x01, "MODE2/2352": 0x02}
+FINDING_POSITIONS = 5  # frame positions listed per finding; sync and mode-byte counts are always exact
 SYNC = b"\x00" + b"\xff" * 10 + b"\x00"
 NOT_VERIFIED = ("not verified: host-side CUE/BIN measurement only; "
                 "no real hardware or Geargrafx TOC read was performed")
@@ -69,10 +87,18 @@ def _bcd_to_int(byte: int) -> int:
     return (byte >> 4) * 10 + (byte & 0x0F)
 
 
-def _bcd_msf_frames(header: bytes) -> int:
-    """BCD MSF header bytes (minute, second, frame) to an absolute frame count (lead-in included)."""
-    return (_bcd_to_int(header[0]) * SECONDS_PER_MINUTE + _bcd_to_int(header[1])) * FRAMES_PER_SECOND \
-        + _bcd_to_int(header[2])
+def _decode_msf(header: bytes):
+    """BCD MSF header bytes (minute, second, frame) to an absolute frame count (lead-in included), or None.
+
+    None when any nibble is above 9 or a field is out of range. A None result never equals an LBA + 150,
+    so an invalid header is reported as a mismatch and 0x1A is never read as the number 20.
+    """
+    if any((b >> 4) > 9 or (b & 0x0F) > 9 for b in header[:3]):
+        return None
+    minute, second, frame = (_bcd_to_int(b) for b in header[:3])
+    if second >= SECONDS_PER_MINUTE or frame >= FRAMES_PER_SECOND:
+        return None
+    return (minute * SECONDS_PER_MINUTE + second) * FRAMES_PER_SECOND + frame
 
 
 def parse_cue(text: str) -> dict:
@@ -101,7 +127,7 @@ def parse_cue(text: str) -> dict:
                 raise TocError(f"{where}: track numbers must be consecutive (got {number})")
             if not tracks and number != 1:
                 raise TocError(f"{where}: first track must be 1")
-            tracks.append({"number": number, "type": "data" if kind in DATA_TYPES else "audio",
+            tracks.append({"number": number, "type": "data" if kind in DATA_TYPES else "audio", "mode": kind,
                            "pregap": None, "index00": None, "index01": None})
         elif line.startswith("PREGAP "):
             match = re.match(r"^PREGAP (\S+)$", line)
@@ -181,6 +207,7 @@ def build_toc(cue: dict, bin_bytes: int) -> list:
         rows.append({
             "track": number,
             "type": track["type"],
+            "declared_mode": track["mode"],
             "pregap_start_lba": pregap_start_lba,
             "lba_start": start_lba,
             "absolute_msf": format_msf(start_lba + LEAD_IN_FRAMES),
@@ -197,9 +224,10 @@ def build_toc(cue: dict, bin_bytes: int) -> list:
 def check_sectors(bin_path: Path, rows: list) -> dict:
     """Bounded header check of the BIN for data tracks.
 
-    A stored frame with a sync pattern must carry an MSF header equal to its disc LBA + 150.
-    The first user-data frame of each data track must have sync. Pregap frames without sync
-    are legal (silence or unknown data). Payload bytes are never reported.
+    Every user-data frame (INDEX 01 onward) of a data track must carry the RAW sync pattern. Pregap
+    frames (INDEX 00..01 in the BIN) may lack sync, which is legal. Every sync frame, pregap or user data,
+    must have header byte 15 equal to its declared mode and a valid BCD MSF equal to its disc LBA + 150.
+    Counts are exact; only the first FINDING_POSITIONS BIN frame offsets are listed. Payload bytes are never reported.
     """
     findings, probed, sync_frames = [], 0, 0
     with open(bin_path, "rb") as f:
@@ -207,6 +235,10 @@ def check_sectors(bin_path: Path, rows: list) -> dict:
             if row["type"] != "data":
                 continue
             index01 = row["bin_index01_frame"]
+            expected_mode = HEADER_MODE_BYTE[row["declared_mode"]]
+            sync_missing, sync_missing_at = 0, []
+            mode_bad, mode_bad_at = 0, []
+            msf_bad_at = []
             # Whole stored span of the track, streamed in bounded CHUNK_FRAMES reads.
             for first in range(row["bin_start_frame"], row["bin_end_frame"], CHUNK_FRAMES):
                 count = min(CHUNK_FRAMES, row["bin_end_frame"] - first)
@@ -216,17 +248,34 @@ def check_sectors(bin_path: Path, rows: list) -> dict:
                     raise TocError(f"short read at BIN frame {first}: BIN changed during analysis")
                 for i in range(count):
                     frame = first + i
-                    head = chunk[i * RAW_BYTES:i * RAW_BYTES + 15]
+                    head = chunk[i * RAW_BYTES:i * RAW_BYTES + 16]  # sync (0..11), MSF (12..14), mode (15)
                     probed += 1
-                    disc = row["lba_start"] + (frame - index01)
                     if head[:12] != SYNC:
-                        if frame == index01:
-                            findings.append(f"track {row['track']}: first user-data frame has no sync")
+                        # A pregap frame without sync is legal; a user-data frame without sync is corruption
+                        if frame >= index01:
+                            sync_missing += 1
+                            if len(sync_missing_at) < FINDING_POSITIONS:
+                                sync_missing_at.append(frame)
                         continue
                     sync_frames += 1
-                    if _bcd_msf_frames(head[12:15]) != disc + LEAD_IN_FRAMES and len(findings) < 5:
-                        findings.append(f"track {row['track']}: BIN frame {frame} header MSF disagrees with "
-                                        f"LBA {disc} + 150")
+                    if head[15] != expected_mode:
+                        mode_bad += 1
+                        if len(mode_bad_at) < FINDING_POSITIONS:
+                            mode_bad_at.append(frame)
+                    disc = row["lba_start"] + (frame - index01)
+                    if _decode_msf(head[12:15]) != disc + LEAD_IN_FRAMES and len(msf_bad_at) < FINDING_POSITIONS:
+                        msf_bad_at.append(frame)
+            number = row["track"]
+            if sync_missing:
+                findings.append(f"track {number}: {sync_missing} of {row['length_sectors']} user-data frames lack "
+                                f"RAW sync (first at BIN frames {sync_missing_at})")
+            if mode_bad:
+                findings.append(f"track {number}: {mode_bad} frames have header mode byte != "
+                                f"0x{expected_mode:02x} for declared {row['declared_mode']} "
+                                f"(first at BIN frames {mode_bad_at})")
+            if msf_bad_at:
+                findings.append(f"track {number}: BIN frames {msf_bad_at} header MSF disagrees with their "
+                                f"disc LBA + 150 (invalid BCD counts as a mismatch)")
     return {"probed_frames": probed, "sync_frames": sync_frames, "findings": findings}
 
 
@@ -255,7 +304,7 @@ def diagnose(cue_path: Path) -> dict:
         "bin": name,
         "bin_bytes": bin_bytes,
         "sectors": bin_bytes // RAW_BYTES if bin_bytes % RAW_BYTES == 0 else None,
-        "evidence": {"measured_from": "generated CUE/BIN file (host-side parse)",
+        "evidence": {"measured_from": "provided local CUE/BIN input (host-side parse; origin not asserted)",
                      "hardware_verified": False, "emulator_verified": False, "note": NOT_VERIFIED},
         "sector_check": sector_check,
         "tracks": rows,
