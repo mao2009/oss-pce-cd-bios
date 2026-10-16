@@ -27,8 +27,6 @@
 
 評価: コア上での実CPUステップ実行と観測は成功。実コア観測は**エミュレータ動作であり、実ハードウェアの証跡ではない**。
 
----
-
 ## 3. RESET 観測（實測、私的BIOS × 実コア、1命令）
 
 コマンド（成功）:
@@ -108,7 +106,7 @@ python3 tools/reference_bios_runner.py /tmp/opencode/refbios/reset-config.json \
 - PR #170（Draft, `origin/test/reference-bios-scenarios-90`, `documentation`ラベル）: 参照テスト計画・安全側実行境界・コア内書込みガード・guard統合テスト・test-plan改訂・EX_GETVER実測記録。タイトル/本文を最新状態に更新済。CI通過を待ってレビュー。
 - PR #174（Draft, `feat/40-ex-getver`, `documentation`+`enhancement`ラベル）: Issue #40 EX_GETVER OSS実装。Issue #40にコメントで紐付け。
 - Issue #40 `[API][P0][EX] $1E EX_GETVER`: 実装進行中（実装コードあり、ABI未検証のため完了ではない）。
-- コミット: `pr170` に3コミット（ガード実装/証明、ガード付きslot-1e実行、test-plan改訂）；`feat/40-ex-getver` に1コミット（EX_GETVER実装＋テスト）。
+- コミット: `pr170` に6コミット（ガード実装/証明 ×2、ガード付きslot-1e実行、test-plan改訂、EX_GETVER実測記録、メモリ保護是正、非公開BIOS情報の非公開化、ST0/ST1/ST2制限文書化）；`feat/40-ex-getver` に1コミット（EX_GETVER実装＋テスト）。
 
 ---
 
@@ -135,8 +133,31 @@ python3 tools/reference_bios_runner.py /tmp/opencode/refbios/reset-config.json \
 
 PR #170のガード付き参照実行で、物理バンクエイリアスによる書込み保護の抜け穴を実コアで確認し是正した。
 
+#### Phase 1: 静的物理バンクエイリアスの是正（完了）
+
 - **欠陥（實測）**: `Memory::GetMemoryMapWrite()`は物理バンク（MPR値）単位であり、MPR0==MPR1==0xF8（ページ0とページ1が同一ワークRAMバンク）かつページ1のみ許可リストに入っていると、`STA $0000`（ページ0）が書込み禁止をすり抜けてワークRAMに到達した。CPUアドレス書込みブレークポイントも`[$4000, $FFFF]`のみを対象としていたため、ページ0への書込みは検出されなかった。実コア観測: `detected=false`, `reason=forbidden_write_not_detected`, 書込み先が`ram_diff`で`0x2000`と誤報告された。
 - **是正**: (1) 実行前に物理バンクが許可ページと非許可ページを共有する場合、プローブを終了コード8で拒否（fail closed, `BLOCKED`）; (2) ページ0をWRAMバンクではなくROMバンク0にマップし、エイリアスを解消; (3) 非許可CPUアドレス全域`[0, allow_start) ∪ [allow_end, $FFFF]`をCPUアドレス書込みブレークポイントで監視（ブレークポイントは`Memory::Write()`内でストア実行前に発火、検出；`map_write`のdeny-by-defaultで防止）; (4) ガード判定を対象アドレスの前後バイト等価＋ブレークポイント検出フラグで行う。
-- **結果（RED→GREEN）**: 是正前は`STA $0000/$1FFF`が`detected=false`で書込み到達（RED）。是正後は`detected=true`, `ram_diff`空（書込み抑制）, 許可ページ`$2000/$3FFF/$3E50`は書込み到達かつ未検出（GREEN）。エイリアス構成（MPR0==MPR1）は終了コード8で拒否。`make test` 689テスト OK、`make check` PASS。
+- **結果（RED→GREEN）**: 是正前は`STA $0000/$1FFF`が`detected=false`で書込み到達（RED）。是正後は`detected=true`, `ram_diff`空（書込み抑制）, 許可ページ`$2000/$3FFF/$3E50`は書込み到達かつ未検出（GREEN）。エイリアス構成（MPR0==MPR1）は終了コード8で拒否。
+
+#### Phase 2: 動的MPR変更の検出（新規、完了）
+
+- **欠陥**: 実行開始後に`TAM`命令でMPRが変更されると、実行前の許可リスト検査が無効になる。例：MPR0をROMバンクからWRAMバンク0xF8に変更すると、ページ0から許可済みWRAMバンクへの書込みが可能になる。
+- **是正**: 全MPRを実行前にスナップショットし、各ステップ後に比較。変更があれば次のゲスト命令を実行する前に拒否（fail closed）。新規 `tam` プローブモードで`LDA #$F8; TAM #$01; STA $0000; BRA *`を実行し、MPR変更検出によりSTAが実行されないことを確認（RED→GREEN）。
+
+#### Phase 3: 許可リストの固定（新規、完了）
+
+- **欠陥**: Pythonアダプターの`validate_jsr_config()`が任意のページ揃え間隔を許可しており、Pythonを回避して直接プローブを起動した場合に安全でない構成が作れる。
+- **是正**: slot "$1E" の許可リストを`[0x2000, 0x4000)`に固定。PythonアダプターとC++プローブの両方で強制。非標準許可リストは終了コード9で拒否。
+
+#### Phase 4: ST0/ST1/ST2 I/Oバイパスの文書化（新規、完了）
+
+- **調査結果**: ST0/ST1/ST2（オプコード 0x03/0x13/0x23）は`m_huc6202->WriteFromCPU()`でVDCレジスタへ直接書き込み、`Memory::Write()`、`map_write`、CPUアドレス書込みブレークポイントをすべてバイパスする。不可逆なデバイス副作用を生じさせる。
+- **対策**: slot "$1E" のゲストコード（`LDA/LDX/LDY/JSR/BRA`）と測定済みEX_GETVER手続きにはST0/ST1/ST2やTAMは含まれないため、測定対象の実行経路では発生しない。将来の任意ゲストコードを許可するAPIは、この経路を対策せずに解放してはならない。プローブヘッダーに制限を文書化。
+
+#### Phase 5: 非公開BIOS情報の非公開化（完了）
+
+- 公開API入口アドレス（`$E05A`）と非公開BIOS内部実装アドレス（`$F02D`等）を区別。
+- `docs/final-report-20261016.md`、`docs/reference-bios-test-plan.md`、PR #170本文から非公開BIOS内部アドレス・命令列・ROMバイト列を削除。
+- 公開する機能的契約: X=3, Y=0, A保持、入口 `$E05A`、信頼レベル `LOCAL_ONLY_NOT_VERIFIED`。
 
 この是正後も、slot `$1E`以外の80スロット＋9 PSGサブコマンド、ST0/ST1/ST2など`Memory::Write()`を経由しないI/O経路、実ハードウェア動作、System Card起動は未検証／BLOCKEDのまま。
