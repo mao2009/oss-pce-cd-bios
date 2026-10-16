@@ -10,6 +10,10 @@ jobs:
   bios-dev:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write       # attestation signing (not on pull_request, see below)
+      attestations: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -35,6 +39,21 @@ jobs:
           make dev-cdread
           python3 -m unittest tests.host.test_cdimage tests.host.test_cdread -v
           make dev-cdread-integration
+      - name: Attest CD-read evidence (this workflow signs it; not on pull_request, so PR heads cannot sign)
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: build/debug/cdread-probe/cdread-evidence.json
+      - name: Verify CD-read attestation against protected main (gh + tools/evidence_provenance.py)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh attestation verify build/debug/cdread-probe/cdread-evidence.json \
+            --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/api-source.yml" \
+            --format json > attestation-verify.json
+          python3 tools/evidence_provenance.py build/debug/cdread-probe/cdread-evidence.json \
+            --repo "$GITHUB_REPOSITORY" --commit "$(git rev-parse HEAD)" --attestation attestation-verify.json
       - name: Independent CD sector load-and-execute by guest HuC6280 (diagnostic, not BIOS / not CD_READ)
         run: |
           make dev-cdload-exec

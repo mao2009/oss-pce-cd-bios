@@ -1,21 +1,27 @@
-"""Evidence provenance verifier (Issue #124): binds a compat evidence bundle to a GitHub artifact attestation.
+"""Evidence provenance verifier (Issue #124): binds a Geargrafx evidence artifact to a GitHub attestation.
 
-The bundle file is the attested artifact. In CI the flow is (not wired yet, see the PR):
-  gh attestation verify BUNDLE.json --repo OWNER/REPO --signer-workflow PATH --format json > VERIFY.json
-  python tools/evidence_provenance.py BUNDLE.json --repo OWNER/REPO --signer-workflow PATH --attestation VERIFY.json
-verify() takes the gh result as an injected input and never runs gh or the network. Fields inside the
-bundle, hashes, and environment variables (GITHUB_ACTIONS, GITHUB_SHA, ...) are never proof of origin.
+The artifact is build/<mode>/cdread-probe/cdread-evidence.json, written by tests/integration/geargrafx_cdread.py
+inside the BIOS DEV workflow (api-source.yml). That workflow signs it with actions/attest-build-provenance.
+CI then runs (protected main only, see api-source.yml):
+  gh attestation verify ARTIFACT --repo OWNER/REPO --signer-workflow .github/workflows/api-source.yml \
+      --format json > VERIFY.json
+  python3 tools/evidence_provenance.py ARTIFACT --repo OWNER/REPO --commit SHA --attestation VERIFY.json
+
+verify() takes the gh result as an injected input and never runs gh or the network. Self-declared JSON fields,
+hashes, and environment variables (GITHUB_ACTIONS, GITHUB_SHA, ...) are never proof of origin.
 
 Results:
-  PASS       every check holds against a verified attestation whose subject is this exact bundle file.
-  FAIL       a check contradicts the evidence (tampered digest, other repo, commit or signing workflow,
-             bad fields, denylisted or unpinned ROM hash).
-  BLOCKED    an attestation is required but gh output is missing or unusable.
-  LOCAL_ONLY no attestation supplied: local or unsigned output. It is never compatibility evidence.
+  PASS       the artifact content is consistent (pinned Geargrafx, scenarios PASS, ROM hash) AND a verified
+             attestation whose subject is this exact file was produced by the protected main branch, the signing
+             workflow, the expected repository and commit, on a GitHub-hosted runner via push or workflow_dispatch.
+  FAIL       content contradicts the pins, OR the attested producer is not the trusted one (PR head, fork,
+             other workflow/ref/repo/commit), OR the digest does not match.
+  BLOCKED    an attestation is required but the gh output is missing or unusable.
+  LOCAL_ONLY no attestation: local, unsigned, or forged JSON. Never compatibility evidence.
 
-Limits: the gh JSON field names used here (verificationResult.statement.subject, signature.certificate
-sourceRepositoryURI / sourceRepositoryDigest / buildSignerURI) are not yet confirmed against a live
-attestation from this repository. The live check is BLOCKED until a CI run produces one.
+PASS here means attested diagnostic evidence only. It does not promote any compatibility stage.
+Not checked: branch protection on main (a repository setting, not visible in the attestation), and whether a
+PR-added workflow was reviewed before it was merged to main (human review control).
 """
 import argparse
 import hashlib
@@ -23,62 +29,56 @@ import json
 import re
 import sys
 
-SCHEMA = 'pce-compat-evidence-provenance-v1'
 PASS, FAIL, BLOCKED, LOCAL_ONLY = 'PASS', 'FAIL', 'BLOCKED', 'LOCAL_ONLY'
-ORIGINS = ('original-synthetic', 'local-proprietary')
-REPO = re.compile(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+')
+TRUSTED_TRIGGERS = ('push', 'workflow_dispatch')
+# Positive scenarios of tests/integration/geargrafx_cdread.py; each must be PASS in the artifact.
+REQUIRED_SCENARIOS = ('single_sector_lba5', 'first_sector_lba0', 'last_sector_lba15',
+                      'three_sectors_lba5', 'disc_end_boundary_lba13_x3')
 HEX40 = re.compile(r'[0-9a-f]{40}')
 HEX64 = re.compile(r'[0-9a-f]{64}')
-LOCAL_TRUST = 'LOCAL_ONLY: no GitHub artifact attestation; unsigned output is not compatibility evidence'
+REPO = re.compile(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+')
+LOCAL_TRUST = 'LOCAL_ONLY: no GitHub artifact attestation; local or unsigned output is not evidence'
 
 
-def _hex(value, pattern):
-    return isinstance(value, str) and pattern.fullmatch(value) is not None
-
-
-def structure_errors(bundle):
-    """Return schema errors; missing or malformed fields fail closed."""
-    if not isinstance(bundle, dict):
-        return ['bundle is not an object']
+def artifact_findings(artifact, policy, rom_bytes=None):
+    """Content checks: the artifact must reproduce the pinned Geargrafx and the required scenarios."""
+    if not isinstance(artifact, dict):
+        return ['artifact is not a JSON object']
     errors = []
-    if bundle.get('schema') != SCHEMA:
-        errors.append(f'schema must be {SCHEMA}')
-    if not isinstance(bundle.get('repository'), str) or not REPO.fullmatch(bundle['repository']):
-        errors.append('repository missing or not owner/repo')
-    if not _hex(bundle.get('commit'), HEX40):
-        errors.append('commit missing or not a 40-hex Git SHA')
-    rom = bundle.get('rom')
-    if 'rom' not in bundle or (rom is not None and not (isinstance(rom, dict) and _hex(rom.get('sha256'), HEX64))):
-        errors.append('rom must be null or {"sha256": 64 hex}')
-    fixture = bundle.get('fixture')
-    if fixture is not None:
-        if not isinstance(fixture, dict) or not fixture.get('id'):
-            errors.append('fixture.id missing')
-        elif not _hex(fixture.get('sha256'), HEX64):
-            errors.append('fixture.sha256 missing or not SHA-256')
-        elif fixture.get('origin') not in ORIGINS:
-            errors.append('fixture.origin must be original-synthetic or local-proprietary')
-    if not isinstance(bundle.get('record'), dict):
-        errors.append('record missing (the compat evidence record being attested)')
-    return errors
-
-
-def hash_policy_errors(bundle, policy):
-    """ROM and fixture hashes: never on the denylist, and the ROM must match a pinned hash when one is set."""
-    errors = []
-    rom_sha = (bundle.get('rom') or {}).get('sha256')
-    fixture_sha = (bundle.get('fixture') or {}).get('sha256')
-    denied = policy.get('denied_sha256', set())
-    if rom_sha in denied or fixture_sha in denied:
-        errors.append('ROM or fixture sha256 is on the denylist')
-    pinned = policy.get('rom_sha256')
-    if pinned and rom_sha != pinned:
-        errors.append('ROM sha256 differs from the pinned ROM hash')
+    if artifact.get('status') != 'PASS':
+        errors.append('artifact status is not PASS')
+    if artifact.get('geargrafx_revision') != policy['geargrafx_revision']:
+        errors.append('geargrafx_revision differs from the pinned tools/dependencies.json revision')
+    if artifact.get('source_archive_sha256') != policy['geargrafx_sha256']:
+        errors.append('source_archive_sha256 differs from the pinned Geargrafx archive hash')
+    rom_sha = artifact.get('rom_sha256')
+    if not isinstance(rom_sha, str) or not HEX64.fullmatch(rom_sha):
+        errors.append('rom_sha256 missing or not SHA-256')
+    elif rom_bytes is not None and hashlib.sha256(rom_bytes).hexdigest() != rom_sha:
+        errors.append('ROM file does not match rom_sha256')
+    disc = artifact.get('disc') or {}
+    hashes = {rom_sha, disc.get('bin_sha256'), disc.get('cue_sha256')}
+    if hashes & policy.get('denied_sha256', set()):
+        errors.append('ROM or disc sha256 is on the denylist')
+    tests = artifact.get('tests')
+    if not isinstance(tests, dict):
+        errors.append('tests missing')
+    else:
+        for name in REQUIRED_SCENARIOS:
+            if (tests.get(name) or {}).get('status') != 'PASS':
+                errors.append(f'required scenario {name} is not PASS')
+        bad = sorted(name for name, item in tests.items()
+                     if isinstance(item, dict) and item.get('status') in ('FAIL', 'BLOCKED'))
+        if bad:
+            errors.append(f"scenarios FAIL or BLOCKED: {', '.join(bad)}")
+    runs = (artifact.get('primary_observations') or {}).get('RUN')
+    if not isinstance(runs, list) or len(runs) != 2:
+        errors.append('primary RUN observations must be exactly cold and warm')
     return errors
 
 
 def _statements(attestation):
-    """Return the verificationResult objects from gh attestation verify --format json, or None if unusable."""
+    """Return verificationResult objects from gh attestation verify --format json, or None if unusable."""
     if not isinstance(attestation, list) or not attestation:
         return None
     results = [entry.get('verificationResult') for entry in attestation if isinstance(entry, dict)]
@@ -91,81 +91,91 @@ def _subject_digests(result):
     return {(subject.get('digest') or {}).get('sha256') for subject in subjects if isinstance(subject, dict)}
 
 
-def _certificate_findings(result, bundle, policy):
-    """Compare one verified attestation's signing certificate with the bundle and the policy."""
+def certificate_findings(result, policy):
+    """Producer identity: the attested run must be the protected main branch's signing workflow."""
     certificate = (result.get('signature') or {}).get('certificate') or {}
-    repo = bundle['repository']
+    repo, commit, ref = policy['repository'], policy['commit'], policy['ref']
     findings = []
     if certificate.get('sourceRepositoryURI') != f'https://github.com/{repo}':
-        findings.append('attested source repository differs from bundle repository')
-    if certificate.get('sourceRepositoryDigest') != bundle['commit']:
-        findings.append('attested commit SHA differs from bundle commit')
-    signer_prefix = f"https://github.com/{policy['repository']}/{policy['signer_workflow']}@"
-    signer = certificate.get('buildSignerURI') or ''
-    if not (signer.startswith(signer_prefix) and signer[len(signer_prefix):] == policy['ref']):
+        findings.append('attested source repository differs from policy repository')
+    if certificate.get('sourceRepositoryDigest') != commit:
+        findings.append('attested commit SHA differs from checkout commit')
+    if certificate.get('sourceRepositoryRef') != ref:
+        findings.append(f"attested source ref is not {ref} (PR head, fork or other branch)")
+    signer = f"https://github.com/{repo}/{policy['signer_workflow']}@{ref}"
+    if certificate.get('buildSignerURI') != signer:
         findings.append('signing workflow identity differs from policy')
+    trigger = certificate.get('githubWorkflowTrigger', certificate.get('buildTrigger'))
+    if trigger not in TRUSTED_TRIGGERS:
+        findings.append(f'producer trigger {trigger!r} is not a trusted push or workflow_dispatch')
+    if certificate.get('runnerEnvironment') != 'github-hosted':
+        findings.append('producer did not run on a GitHub-hosted runner')
     return findings
 
 
-def verify(bundle_bytes, attestation, policy):
-    """Return {'result', 'reasons', 'trust'} for the raw bundle bytes and the injected gh verify output.
+def verify(artifact_bytes, attestation, policy, rom_bytes=None):
+    """Return {'result', 'reasons', 'trust'} for the artifact bytes and the injected gh verify output.
 
-    policy: {'repository': 'owner/repo', 'signer_workflow': '.github/workflows/x.yml',
-             'ref': 'refs/heads/main', 'commit': optional 40-hex, 'rom_sha256': optional, 'denied_sha256': set}
+    policy: {'repository', 'commit' (checkout SHA), 'signer_workflow', 'ref', 'geargrafx_revision',
+             'geargrafx_sha256', 'denied_sha256' (optional set)}
     attestation: parsed JSON from `gh attestation verify --format json`, or None for a local run.
     """
     try:
-        bundle = json.loads(bundle_bytes.decode('utf-8'))
+        artifact = json.loads(artifact_bytes.decode('utf-8'))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        return {'result': FAIL, 'reasons': [f'bundle is not JSON: {error}'], 'trust': LOCAL_TRUST}
-    errors = structure_errors(bundle)
-    if errors:
-        return {'result': FAIL, 'reasons': errors, 'trust': LOCAL_TRUST}
-    errors = hash_policy_errors(bundle, policy)
-    if bundle['repository'] != policy['repository']:
-        errors.append('bundle repository differs from policy repository')
-    if policy.get('commit') and bundle['commit'] != policy['commit']:
-        errors.append('bundle commit differs from policy commit')
+        return {'result': FAIL, 'reasons': [f'artifact is not JSON: {error}'], 'trust': LOCAL_TRUST}
+    errors = artifact_findings(artifact, policy, rom_bytes)
     if errors:
         return {'result': FAIL, 'reasons': errors, 'trust': LOCAL_TRUST}
     if attestation is None:
-        return {'result': LOCAL_ONLY, 'reasons': ['no attestation supplied; local or unsigned run'],
-                'trust': LOCAL_TRUST}
+        return {'result': LOCAL_ONLY, 'reasons': ['no attestation supplied'], 'trust': LOCAL_TRUST}
     results = _statements(attestation)
     if results is None:
         return {'result': BLOCKED, 'reasons': ['gh attestation output is empty or not a verification array'],
                 'trust': 'attestation required; not available'}
-    digest = hashlib.sha256(bundle_bytes).hexdigest()
+    digest = hashlib.sha256(artifact_bytes).hexdigest()
     matched = [result for result in results if digest in _subject_digests(result)]
     if not matched:
-        return {'result': FAIL, 'reasons': ['no verified attestation subject matches this bundle digest '
-                                            '(tampered bundle or another artifact)'],
+        return {'result': FAIL, 'reasons': ['no verified attestation subject matches this artifact digest '
+                                            '(forged, tampered, or another artifact)'],
                 'trust': 'attestation present; subject mismatch'}
-    findings = [_certificate_findings(result, bundle, policy) for result in matched]
+    findings = [certificate_findings(result, policy) for result in matched]
     if any(not finding for finding in findings):
         return {'result': PASS, 'reasons': [],
-                'trust': f"GitHub artifact attestation verified for {bundle['repository']}@{bundle['commit']}"}
-    return {'result': FAIL, 'reasons': findings[0], 'trust': 'attestation present; certificate mismatch'}
+                'trust': f"attested by protected {policy['ref']} producer {policy['signer_workflow']} "
+                         f"at {policy['commit']}"}
+    return {'result': FAIL, 'reasons': findings[0], 'trust': 'attestation present; producer not trusted'}
 
 
 def main(argv):
-    parser = argparse.ArgumentParser(description='Verify a compat evidence bundle against gh attestation output.')
-    parser.add_argument('bundle')
-    parser.add_argument('--repo', required=True, help='owner/repo expected to have signed the bundle')
-    parser.add_argument('--signer-workflow', required=True, help='path of the signing workflow in the repo')
-    parser.add_argument('--ref', default='refs/heads/main', help='git ref the signing workflow ran from')
-    parser.add_argument('--commit', help='optional expected 40-hex commit SHA (from the checkout, not env)')
+    parser = argparse.ArgumentParser(description='Verify a Geargrafx evidence artifact against gh attestation output.')
+    parser.add_argument('artifact')
+    parser.add_argument('--repo', required=True, help='owner/repo expected to have produced the artifact')
+    parser.add_argument('--commit', required=True, help='40-hex checkout commit (git rev-parse HEAD)')
+    parser.add_argument('--signer-workflow', default='.github/workflows/api-source.yml')
+    parser.add_argument('--ref', default='refs/heads/main', help='protected ref the producer must have run from')
+    parser.add_argument('--deps', default='tools/dependencies.json', help='pinned dependencies at the checkout')
     parser.add_argument('--attestation', help='saved output of gh attestation verify --format json')
+    parser.add_argument('--rom', help='ROM file whose sha256 must equal rom_sha256')
     args = parser.parse_args(argv[1:])
-    with open(args.bundle, 'rb') as handle:
-        bundle_bytes = handle.read()
+    if not HEX40.fullmatch(args.commit) or not REPO.fullmatch(args.repo):
+        print('refused: --commit must be a 40-hex SHA and --repo owner/repo', file=sys.stderr)
+        return 2
+    with open(args.deps, encoding='utf-8') as handle:
+        geargrafx = json.load(handle)['geargrafx']
+    with open(args.artifact, 'rb') as handle:
+        artifact_bytes = handle.read()
+    rom_bytes = None
+    if args.rom:
+        with open(args.rom, 'rb') as handle:
+            rom_bytes = handle.read()
     attestation = None
     if args.attestation:
         with open(args.attestation, encoding='utf-8') as handle:
             attestation = json.load(handle)
-    policy = {'repository': args.repo, 'signer_workflow': args.signer_workflow, 'ref': args.ref,
-              'commit': args.commit}
-    result = verify(bundle_bytes, attestation, policy)
+    policy = {'repository': args.repo, 'commit': args.commit, 'signer_workflow': args.signer_workflow,
+              'ref': args.ref, 'geargrafx_revision': geargrafx['revision'], 'geargrafx_sha256': geargrafx['sha256']}
+    result = verify(artifact_bytes, attestation, policy, rom_bytes)
     print(json.dumps(result, indent=2))
     return 0 if result['result'] == PASS else 1
 
