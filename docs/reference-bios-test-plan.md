@@ -106,3 +106,39 @@ and capture genuine source-derived checkpoints. An adapter's JSON can still
 lie, so preflight and structural checks do not establish provenance. This
 module is therefore a bounded subprocess integration seam, **not yet a
 working retail-BIOS reference test suite**.
+
+
+## First real-core backend: private reference BIOS reset checkpoint
+
+`tools/geargrafx_reference_adapter.py` now compiles and runs
+`tests/integration/geargrafx_reference_reset.cpp` using the **existing pinned
+Geargrafx debugger-enabled source build** via `compile_probe`. It loads the
+user-provided BIOS with `LoadBiosFromBuffer(..., true)`, attaches a newly
+generated zero-filled synthetic disc, runs **one** real CPU instruction and
+captures PC/A/X/Y/P/SP/MPR. It uses the CLI's instruction-step debugger and
+never reads/dumps proprietary BIOS bytes.
+
+To run locally, supply a private config using the
+`reference-bios-run-config/v1` schema, set `api_id` to the special
+`reference-reset-only`, and ensure that BOTH private BIOS and test-ROM
+digests point to real files (the test-ROM digest is a preflight integrity
+guard; **the test ROM is not loaded or executed by this reset-only backend**):
+
+```sh
+python3 tools/reference_bios_runner.py local-reference-config.json \
+  --adapter tools/geargrafx_reference_adapter.py \
+  --output build/reference-bios/reset-local-observation.json
+python3 -m unittest tests.host.test_geargrafx_reference_adapter -v
+```
+
+Requires locally compiled Geargrafx debugger objects and g++. Execution is
+**NOT RUN** unless this command succeeds in the user's environment. A
+successful result is only `OBSERVED LOCAL_ONLY` for reset, **not an API
+test, not a successful guest JSR/RTS call, and not BIOS compatibility VERIFIED**.
+
+**Remaining blocker:** a safe guest-side HuC6280 API caller must actually
+execute while the reference BIOS is present, reach a separately observable
+before/callee/after checkpoint, and enforce instruction/write budgets in
+the core itself. That execution path is still unimplemented for all 90
+functional API scenarios. Keep every `slot-XX` and `psg-48-XX`
+blocked until then.
