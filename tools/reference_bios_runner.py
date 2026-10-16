@@ -85,7 +85,9 @@ def run(cfg, adapter):
         p = Path(tmp) / "config.json"
         p.write_text(json.dumps(cfg), encoding="utf-8")
         try:
-            result = subprocess.run([str(Path(adapter).resolve()), "--config", str(p)],
+            command = ([sys.executable, str(Path(adapter).resolve())] if Path(adapter).suffix == ".py"
+                       else [str(Path(adapter).resolve())])
+            result = subprocess.run([*command, "--config", str(p)],
                                     capture_output=True, text=True, timeout=30, check=False)
         except (OSError, subprocess.TimeoutExpired) as error:
             raise Blocked(f"adapter unavailable or timed out: {type(error).__name__}") from error
