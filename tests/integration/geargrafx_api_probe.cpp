@@ -79,7 +79,8 @@ int main(int argc, char** argv) {
             }
             if (irq != "none" && labels.count("irq_wait") && pc == labels["irq_wait"]) {
                 if (!injected) {
-                    observe("TRACE", "irq_asserted");
+                    // timer: nothing is injected; the guest already armed its own timer before CLI.
+                    observe("TRACE", irq == "timer" ? "timer_armed" : "irq_asserted");
                     line(true);
                     injected=true;
                 } else if (entered && !seen.count("irq_resumed")) {

@@ -95,10 +95,16 @@ JSON are uploaded.
   IRQ2. With `I` set the line stays pending (IRR `$02`/`$01`), PC/X/SP/MPR/RAM still pass the
   startup check, and the `X=$EE` handler is never reached, on cold and warm reset.
 - **Dispatched:** a test-only variant replaces `LDX #$B0` with `CLI; NOP` (the fixture verifier
-  rejects it). The asserted line is taken through the startup ROM's own `$FFF8`/`$FFF6` vector:
-  PC reaches `startup_unexpected_interrupt` with IRR showing the requested source, SP `$FF→$FC`,
-  `I` set, stacked P with `I` clear and stacked PC `startup_checkpoint`; it stops with `X=$EE`.
-  The normal startup check must reject this run; the rejection message is recorded.
+  rejects it). Observed: the asserted line is taken, PC reaches `startup_unexpected_interrupt`
+  with IRR showing the requested source, SP `$FF→$FC`, `I` set, stacked P with `I` clear and
+  stacked PC `startup_checkpoint`; it stops with `X=$EE`. The normal startup check must reject
+  this run; the rejection message is recorded.
+- **Which vector was read is inferred, not observed.** All four startup vectors point to the same
+  `startup_unexpected_interrupt`, so the landing PC cannot tell `$FFF8` from `$FFF6`. That IRQ1 used
+  `$FFF8` and IRQ2 used `$FFF6` comes from the pinned core source (`HuC6280::HandleIRQ`) plus the
+  single asserted line. Vector-specific dispatch is observed only in the contract-probe images,
+  where the unselected vectors point to a separate trap
+  ([geargrafx-contract-evidence.md](geargrafx-contract-evidence.md)).
 
 The variant exists only to execute the vectors. It is not the startup ROM and enables nothing in it.
 

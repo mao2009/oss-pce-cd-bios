@@ -61,12 +61,14 @@ def check_call(records, symbols):
             raise ValueError('actual JSR return address bytes mismatch')
 
 
-# source: (IRR bit, handler label, guest RAM marker written by that handler)
-IRQ_SOURCES = {'irq2': (1, 'irq_entry', 0x77), 'irq1': (2, 'irq_entry', 0x77), 'timer': (4, 'timer_entry', 0x7a)}
+# source: (IRR bit, handler label, guest RAM marker, pre-interrupt trace phase at irq_wait)
+# The timer phase is 'timer_armed' because the harness injects nothing for it.
+IRQ_SOURCES = {'irq2': (1, 'irq_entry', 0x77, 'irq_asserted'), 'irq1': (2, 'irq_entry', 0x77, 'irq_asserted'),
+               'timer': (4, 'timer_entry', 0x7a, 'timer_armed')}
 
 
 def check_irq(records, symbols, irq):
-    bit, handler, marker = IRQ_SOURCES[irq]
+    bit, handler, marker, armed = IRQ_SOURCES[irq]
     for cycle in ('cold','warm'):
         if any(r['cycle'] == cycle and r['phase'] == 'irq_unexpected' for r in records['TRACE']):
             raise ValueError('interrupt dispatched through an unexpected vector')
@@ -76,7 +78,7 @@ def check_irq(records, symbols, irq):
         if bytes.fromhex(row['work_ram_0200_hex'])[16] != marker:
             raise ValueError('IRQ guest RAM marker not observed')
     for cycle in ('cold','warm'):
-        before = trace(records, cycle, 'irq_asserted')
+        before = trace(records, cycle, armed)
         entry = trace(records, cycle, handler)
         after = trace(records, cycle, 'irq_resumed')
         if before['p'] & 4 or not entry['p'] & 4 or entry['sp'] != 252 or after['sp'] != 255:
@@ -198,6 +200,12 @@ def run_contracts(probe, base, output, cue):
         if name.startswith('irq1_vector') and any(
                 (r['pc'], r['sp']) != (symbols['irq_unexpected'], 252) for r in records['OBS'][1:]):
             raise ValueError('swapped vector negative did not dispatch to irq_unexpected')
+        # RTS pops stacked P as a return-address byte, runs into zero RAM and BRKs (pushed P has B=$10)
+        # into the shared IRQ2/BRK trap with SP $FB.
+        if name.endswith('rts_instead_of_rti') and any(
+                (r['pc'], r['sp']) != (symbols['irq_unexpected'], 0xfb)
+                or not bytes.fromhex(r['stack_01f8_hex'])[4] & 0x10 for r in records['OBS'][1:]):
+            raise ValueError('RTS negative did not reach the trap through BRK with SP $FB')
         try: check_irq(records, symbols, irq)
         except ValueError as error:
             evidence['negative_cases'].append({'case':name, 'rejected_by':str(error), 'observations':records})

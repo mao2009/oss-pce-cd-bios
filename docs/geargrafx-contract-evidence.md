@@ -94,7 +94,7 @@ implementations. Reset/vector overrides are explicit test inputs.
 | JSR into slots `$01/$03/$1E` | Real candidate entry PC/A/X/Y/P/SP/MPR, SP `$FF→$FD`, slot-specific halt; continuation never executes | Unimplemented stubs only, no successful BIOS return or service semantics |
 | Original JSR/RTS procedure | Entry/return PC, A/X/Y/P, SP `$FF→$FD→$FF`, stacked return address, temporary MPR2 switch/restoration | Its own authored preservation contract, not EX_GETVER/CD_RESET/CD_READ ABI |
 | IRQ1 and IRQ2 | Public line assertion after guest CLI; source-specific vectors, SP `$FF→$FC→$FF`, stacked P/PC, I flag, IRR bit (`$02`/`$01`) at handler entry, guest marker `$77`, RTI restoration | CPU interrupt mechanism plus original handler, not BIOS IRQ dispatch or CD event behavior |
-| Timer IRQ | Guest writes `$0C00=$00`, `$0C01=$01`, CLI; no harness injection. Vector `$FFFA`, IRR `$04` at entry, SP `$FF→$FC→$FF`, stacked P/PC; handler stops the timer, acknowledges `$1403`, writes `$7A`, RTI restores A/X/Y/P/MPR | Pinned core timer timing only, not BIOS timer/VSync use |
+| Timer IRQ | Guest writes `$0C00=$00`, `$0C01=$01`, CLI; no harness injection (the pre-interrupt trace phase is `timer_armed`, not `irq_asserted`). Vector `$FFFA`, IRR `$04` at entry, SP `$FF→$FC→$FF`, stacked P/PC; handler stops the timer, acknowledges `$1403`, writes `$7A`, RTI restores A/X/Y/P/MPR | Pinned core timer timing only, not BIOS timer/VSync use |
 
 In each interrupt image only the vector under test points to a returning
 handler; the other three of IRQ2/IRQ1/timer/NMI point to a nonreturning
@@ -110,8 +110,11 @@ Three interrupt negatives must fail the same IRQ check: IRQ1/IRQ2 vectors
 swapped (IRQ1 lands in `irq_unexpected` with SP `$FC`), and RTS instead of
 RTI in the IRQ1 and timer handlers. With RTS the CPU pops the stacked P as a
 return-address byte, runs into zero-filled RAM, executes `BRK` and reaches the
-trap through the shared IRQ2/BRK vector with SP `$FB`. The rejection reason
-is recorded per case.
+trap through the shared IRQ2/BRK vector with SP `$FB`. The harness asserts
+this path on every cold/warm terminal observation: PC `irq_unexpected`, SP `$FB`,
+and B (`$10`) set in the P byte pushed by BRK at `$01FC`. The swapped-vector
+case asserts PC `irq_unexpected` with SP `$FC`. The rejection reason is
+recorded per case.
 
 ## Loader acceptance is not firmware validity
 
