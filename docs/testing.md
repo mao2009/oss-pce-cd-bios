@@ -7,9 +7,9 @@ invalid input was rejected, never evidence that the invalid ROM works.
 
 ## Host tests
 
-`python3 -m unittest discover -s tests/host -v` currently runs 116 tests: the original
-13 retained tests, 46 review-regression tests, 30 API diagnostic tests and
-27 ROM/ABI ledger, debugger-profile and original experiment build tests.
+`python3 -m unittest discover -s tests/host -v` runs the current host
+suite. **Do not use a fixed count here**: new tests merge independently; the
+`unittest` summary and exact CI commit identify the true current count.
 
 - Two independent debug builds and a release build yield identical ROM bytes.
 - Headerless size, reset code, checkpoint loop, marker, vector words and all
@@ -89,9 +89,12 @@ version observations are compared; arbitrary power-on RAM is not deterministic.
 | Fixture assembly/format/layout/reproducibility | PASS when the above host checks run |
 | Real Geargrafx HuCARD reset/marker/TAM/TMA/TII | PASS when integration produces its evidence |
 | PC/MPR register trace through standalone MCP | NOT_RUN locally; SDL3 missing; #103 |
-| System Card diagnostic load/reset/bank/RAM/IRQ | PASS in the scoped Geargrafx experiment; see expanded evidence |
-| Production BIOS boot and API ABI | NOT_IMPLEMENTED/NOT_TESTED; #1/#3/#4/#6 |
-| BIOS API semantics, CD reads/homebrew disc | NOT_IMPLEMENTED/NOT_TESTED; #3/#5 and API Issues |
+| System Card diagnostic load/reset/bank/RAM/IRQ | Scoped real-core PASS; not production BIOS |
+| Independent startup/MPR/stack marker | Real-core diagnostic `dev-startup-integration`; not BIOS initialization |
+| Guest synthetic CD READ(6)→RAM | Real-core diagnostic `dev-cdread-integration`; not BIOS `CD_READ` |
+| Synthetic CD→RAM code execution/return | `dev-cdload-exec-integration` (merged #122); not BIOS service, not CD boot |
+| Production BIOS boot and caller ABI | NOT_IMPLEMENTED/NOT_TESTED; #1/#3/#4 |
+| BIOS APIs and homebrew disc boot | NOT_IMPLEMENTED/NOT_TESTED on main |
 | Independent emulator or real hardware | NOT_TESTED; #7 |
 | Commercial games | NOT_TESTED; no inputs required or distributed |
 
@@ -103,17 +106,34 @@ structural contract but fail fixture validation; neither layer proves BIOS
 compatibility. These generic validators do not establish BIOS layout/API specifications; the scoped research ledgers are separate.
 Nightly's live schedule/skip behavior is separate from host recovery tests; [nightly.md](nightly.md) explains the host tests and runtime policy.
 
-## API scaffold additions (#101)
+## Separate System Card/CD diagnostics and CI
 
-The existing 59 host tests remain. `tests/host/test_api_table.py` adds the prior
-9 scaffold checks; `test_api_build.py` adds 21 checks using real pinned assembly,
-bringing the prior baseline to 89. The new 27 contract/probe tests bring
-`make test` to 116; it keeps the existing
-HuCARD cold/warm/negative real-core tests. `make dev-test` runs the 30 API host
-tests and the separate real-core System Card diagnostics: reset, three slots,
-PC/X/MPR/physical bank observations and four negative execution cases.
-These are development experiments, not caller ABI or CD boot passes.
-The independent BIOS DEV workflow saves its own artifact; Nightly's original
-smoke success criteria stay unchanged. [Scope](api-stub-scaffold.md).
+`make test` runs the host suite **and original HuCARD Geargrafx smoke**,
+not every standalone System Card diagnostic. After `make setup`:
 
-Expanded register/stack/bank/RAM/IRQ and loader cases: [evidence scope](geargrafx-contract-evidence.md).
+```sh
+make dev-test                   # 81-slot diagnostic and real-core slot observations
+make dev-startup-integration    # separate reset/MPR/stack marker
+make dev-cdread-integration     # guest READ(6), full RAM and SCSI checks
+make dev-trace-integration      # isolated pinned real-core trace and negative checks
+make dev-release-gate-blocked   # intentional non-release assertion
+```
+
+`.github/workflows/api-source.yml` runs these experiments with related
+host tests, debug/release binary comparison and the release refusal.
+`.github/workflows/ci.yml` covers HuCARD/host/provenance; Nightly only
+covers the HuCARD fixture. **Nightly PASS does not imply CD/BIOS PASS.**
+
+The CD read judge requires cold and warm success PC and result block, all
+expected bytes in guest RAM, unchanged sentinel tail, SCSI READ(6) LBA/count
+and phase order, and **64 confirmed consecutive instructions in the success
+halt loop**. Budget/timeout/incomplete-halt runs are not successful. No-media
+guest execution is NOT_TESTED because the pinned Geargrafx loader does not
+execute that ROM without media. The audio-track READ(6) observation applies
+only to Geargrafx. See [CD diagnostics](cd-read-diagnostic.md),
+[CPU evidence](geargrafx-contract-evidence.md) and [status](status.md).
+
+CD status classification (#115), evidence schema (#116), real-core trace harness (#119),
+host-only CD_BASE model (#120), CD_RESET bus-reset diagnostic (#121) and synthetic RAM payload
+execution (#122), the startup CD-state record (#127) and the CD_BASE ABI evidence ledger (#128) are **on main** at snapshot `c20ac06`. Draft #118 (and #125, #126) remain **branch-only**; #122's
+RAM payload execution is *not* boot.

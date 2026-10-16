@@ -3,21 +3,22 @@
 Official project: https://github.com/drhelius/Geargrafx
 MCP documentation: https://github.com/drhelius/Geargrafx/blob/main/MCP_README.md
 
-**Bootstrap update (2026-10-08):** the pinned source-built libretro core now runs
-the original 8 KiB HuCARD smoke fixture with cold/warm RAM checkpoints and a
-negative execution case. See [setup/debug instructions](emulator-geargrafx.md)
-and [implemented test scope](testing.md). The following remains the broader
-System Card/CD/MCP plan; those stages are not claimed complete.
+**Implementation update (2026-10-16):** main executes original HuCARD,
+System Card DEV reset/startup/slot diagnostics, and guest synthetic-CD READ(6)
+on the pinned real Geargrafx core. **No BIOS boot/ABI is validated.**
+The isolated real-core trace harness (#119) is now on main, while standalone
+desktop MCP work remains in #103.
+See [status](status.md), [testing](testing.md), and [setup](emulator-geargrafx.md).
 
 ## Why Geargrafx first
 
 The project documents PC Engine CD emulation, a debugger, memory/register inspection and breakpoints, trace logging with CD-ROM/hardware events and an MCP server usable from automated development tools. MCP docs describe a `load_bios` operation whose `syscard` type expects **256 KiB**. Geargrafx recommends a known System Card 3.0 BIOS but explicitly describes loading other BIOS images.
 
-**This repository has executed an original HuCARD fixture, but has not tested
-System Card boot.** Do not claim Geargrafx confirms compatibility with arbitrarily
-generated 256 KiB files.
+**Original HuCARD and development System Card diagnostics have executed, but
+compatible System Card boot has not been demonstrated.** Loader acceptance
+and checkpoints do not establish firmware or retail compatibility.
 
-## Noninteractive runner contract (to implement and verify)
+## Broader standalone MCP runner contract (remaining work)
 
 1. Detect the installed Geargrafx binary and report precise version/commit.
 2. Set isolated writable profile/configuration for each parallel job; do not run agents against one shared emulator instance.
@@ -43,7 +44,7 @@ generated 256 KiB files.
 - H2: reset PC and minimal code checkpoint reached through actual HuC6280 execution.
 - H3: two consecutive runs produce reproducible normalized observations.
 - H4: invalid size or invalid fixture fails as expected.
-- H5: original synthetic CD read and boot handoff.
+- H5: synthetic CD read (**diagnostic done**); firmware boot handoff (**not done**).
 - H6: independent emulator cross-check with documented differences.
 
 CI should distinguish pure fixture/schema checks (always-on) and actual emulator runs (only where verified install/source is available).

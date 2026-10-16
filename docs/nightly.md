@@ -2,8 +2,8 @@
 
 The workflow [nightly.yml](../.github/workflows/nightly.yml) schedules daily at
 `0 18 * * *` UTC (03:00 JST next day) and supports `workflow_dispatch`.
-GitHub runs schedules only from the default branch; the new schedule behavior
-can be observed after this PR is merged into main. Main is the only build target.
+GitHub runs schedules from the default branch. This workflow is on `main`
+and uses `main` as its only build target; scheduled runs may be delayed.
 
 ## Decision and trusted baseline
 
@@ -56,10 +56,10 @@ days; skipping avoids tool setup, compilation, tests and artifacts.
 
 ## Migration and validation
 
-The prior workflow selected `feat/100-api-stub-table` until a BIOS build script
-appeared on main and ignored documentation-only diffs. This bootstrap deliberately
-removes that fallback and changes the artifact schema: legacy markers cause one
-initial build. Draft PR #101 stays separate and is not changed or merged here.
+Historical note: a previous workflow used the `feat/100-api-stub-table`
+fallback and ignored docs-only changes. Current main uses exact main SHA;
+docs-only commits also cause rebuilds. The 81-slot DEV scaffold is already
+on main, but Nightly's success criteria and artifacts are **HuCARD-only**.
 
 `tests/host/test_nightly.py` covers first/changed/identical SHA, expired/absent/
 unavailable/corrupt artifacts, incomplete and invalid states, other branches,

@@ -1,4 +1,4 @@
-# Architecture — proposal, not an implemented system
+# Architecture — proposed firmware and current development diagnostics
 
 ## Target
 
@@ -44,8 +44,10 @@ Directories are aspirational until code exists; no empty directory is required.
 
 Format/ABI inventory → pinned toolchain + valid ROM → Geargrafx reset checkpoint → synthetic CD read → homebrew disc startup → named retail scenarios → independent emulator validation → optional FPGA.
 
-The toolchain and standalone HuCARD smoke stage is now implemented. System Card
-format/ABI, startup, CD reading and game compatibility remain unverified.
+Pinned tools, original HuCARD smoke and separate System Card startup/CD
+**diagnostics** are implemented and run in pinned real Geargrafx. Production
+ROM format/ABI, callable BIOS startup/CD services, disc boot and retail-game
+compatibility remain unimplemented/unverified. [Status](status.md).
 
 ## Implemented development bootstrap
 
@@ -70,5 +72,15 @@ The separate development diagnostic in `src/boot.s` and `src/bank0.cfg` is
 built by `tools/build_rom.py` from `spec/api_slots.json`. It does not replace
 the HuCARD fixture or establish a production BIOS layout. Optional per-slot
 sources belong to `src/overrides/`; no empty modules are required.
-Future firmware may use the proposed responsibilities above after #1/#3 establish
-contracts. GPL emulator implementation stays outside the MIT firmware boundary.
+Current main also has `src/startup_probe.s` and `src/cd_read_probe.s`,
+assembled by `tools/build_startup.py` and `tools/build_cdread.py` and run
+by `tests/integration/geargrafx_startup.py` /
+`tests/integration/geargrafx_cdread.py`. The CD guest issues READ(6) and
+fills RAM itself; `tools/cdread_verify.py` asserts cold/warm full data,
+ordered SCSI phases and 64-instruction success-halt confirmation. These are
+not callable BIOS services or disc boot. `api-source.yml` independently
+tests diagnostics; primary CI tests HuCARD/provenance; Nightly is HuCARD-only.
+
+Synthetic CD→RAM **payload execution** is merged as a diagnostic (#122, main `c20ac06`,
+2026-10-16); it is not a BIOS service or CD boot. Proposed firmware modules require validated #1/#3
+contracts; GPL emulator code stays outside MIT firmware source.
