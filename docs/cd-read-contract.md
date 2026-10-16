@@ -25,10 +25,35 @@ by design; the CI job `make dev-cdread-integration` is what produces the bundle.
 
 * The integration run writes `cdread-evidence.json` only after every scenario passed. Scenario keys are
   created only by executed runs, so a name in source text, a comment or an unexecuted branch is never evidence.
-* The checker accepts the bundle only if `status` is `PASS`, `geargrafx_revision` and
-  `source_archive_sha256` match `tools/dependencies.json`, and `rom_sha256` is the SHA-256 of the ROM on disk.
-  Each cited scenario must be `PASS`, `PASS_EXPECTED_FAILURE` or `OBSERVED_EMULATOR_BEHAVIOUR` in `tests`
-  (the last one is written only after the suite's assertion held; `NOT_TESTED` never counts).
+* Each cited scenario has one fixed result kind (`SCENARIO_KIND` in `tools/cd_read_contract.py`). The bundle's
+  `tests[name].status` must equal that kind exactly, otherwise the claim is UNKNOWN:
+
+  | Kind | Scenarios | Meaning |
+  | --- | --- | --- |
+  | `PASS` | `single_sector_lba5`, `first_sector_lba0`, `last_sector_lba15`, `three_sectors_lba5`, `disc_end_boundary_lba13_x3` | Normal read: the guest got the right bytes, judged by the independent comparison. |
+  | `PASS_EXPECTED_FAILURE` | `wrong_sector_requested_lba6`, `invalid_sector_lba16`, `invalid_sector_lba_max`, `read_past_disc_end_lba14_x3` | Deliberately bad request: the judge had to reject it (or the guest had to stop with the expected error). |
+  | `OBSERVED_EMULATOR_BEHAVIOUR` | `read6_on_audio_track_lba` | Emulator observation only. Written after the suite's assertion held. |
+
+  A positive read recorded as `PASS_EXPECTED_FAILURE`, a bad request recorded as `PASS`, or any `NOT_TESTED`
+  does not verify the claim. `tests/host/test_cd_read_contract.py` ties the table to the integration suite's
+  call sites.
+* **Provenance is self-declared, not authenticated.** The bundle's `status`, `geargrafx_revision`,
+  `source_archive_sha256`, `rom_sha256` and `tests` are plain JSON fields written by the same process that
+  produced them. The checker compares them with the pinned values and the ROM on disk, which catches a stale or
+  mismatched bundle. It does **not** prove that the pinned Geargrafx actually ran, or that the suite was not
+  edited or the JSON not hand-written. A forged `tests` map with a matching revision and hash passes. This is
+  the same trust model as the independent-runner attestation in
+  [compat-evidence-schema.md](compat-evidence-schema.md) (a plain dict, no signature): trust ends at the
+  producer. The output line says "SELF-DECLARED".
+* **Local trusted build output only (current use).** The ledger is a development check for a ROM built and
+  tested on the same machine or CI job. It is not a compatibility claim.
+* **Conditions before this gate may back a compatibility claim** (not implemented; until they hold the
+  result is BLOCKED): (1) the bundle is produced by an independent runner from the pinned Geargrafx and the
+  ROM under test, and the run's output is authenticated (signed attestation, or a CI artifact whose producer
+  identity the verifier checks); (2) the verifier recomputes the ROM and fixture hashes from the artifacts
+  being certified, not from the bundle; (3) every cited scenario kind in the table above matches; (4) the
+  suite source at the pinned commit is the one that ran. Until then, no VERIFIED transport claim is a
+  compatibility result.
 * Regex limits: `tools/cd_read_contract.real_core_requests` parses the integration source with regular
   expressions to rebuild the expected LBA/count model. It is a drift guard, not evidence. The host test
   fails if a `suite.positive(` or end-of-disc `suite.failing_guest(` call is not matched, but a call written

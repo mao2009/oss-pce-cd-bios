@@ -13,11 +13,25 @@ from tools.make_cd_image import DEFAULT_SECTORS
 ROM_SHA = "ab" * 32
 
 
+# The expected result kind per cited scenario, written independently of tools/cd_read_contract.py.
+# Positive reads must be PASS; deliberate bad requests must be PASS_EXPECTED_FAILURE; the CD-DA read is an
+# observation. test_scenario_kinds_match_checker and test_scenario_kinds_match_integration_source tie these
+# to the checker and to the integration suite.
+EXPECTED_KIND = {
+    "single_sector_lba5": "PASS", "first_sector_lba0": "PASS", "last_sector_lba15": "PASS",
+    "three_sectors_lba5": "PASS", "disc_end_boundary_lba13_x3": "PASS",
+    "wrong_sector_requested_lba6": "PASS_EXPECTED_FAILURE",
+    "invalid_sector_lba16": "PASS_EXPECTED_FAILURE", "invalid_sector_lba_max": "PASS_EXPECTED_FAILURE",
+    "read_past_disc_end_lba14_x3": "PASS_EXPECTED_FAILURE",
+    "read6_on_audio_track_lba": "OBSERVED_EMULATOR_BEHAVIOUR",
+}
+
+
 def bundle_for(rom_sha256=ROM_SHA, **overrides):
     """A bundle as tests/integration/geargrafx_cdread.py writes it after a full PASS run."""
     names = {s for c in TRANSPORT_CLAIMS if c["status"] == "VERIFIED" for s in c["scenarios"]}
     bundle = {"status": "PASS", "geargrafx_revision": PINNED["revision"], "source_archive_sha256": PINNED["sha256"],
-              "rom_sha256": rom_sha256, "tests": {n: {"status": "PASS"} for n in names}}
+              "rom_sha256": rom_sha256, "tests": {n: {"status": EXPECTED_KIND[n]} for n in names}}
     bundle.update(overrides)
     return bundle
 
@@ -105,6 +119,38 @@ class LedgerTests(unittest.TestCase):
         untested = bundle_for()
         untested["tests"]["read6_on_audio_track_lba"] = {"status": "NOT_TESTED"}
         self.assertEqual(effective_status(untested, ROM_SHA)["T5"], "UNKNOWN")
+
+    def test_scenario_recorded_with_wrong_kind_is_not_verified(self):
+        # A positive read rewritten as an expected failure, a deliberate bad request recorded as a plain PASS,
+        # and a CD-DA observation recorded as a plain PASS must each leave their claim unverified.
+        cases = {
+            "positive_as_expected_failure": ("single_sector_lba5", "PASS_EXPECTED_FAILURE", "T1"),
+            "negative_as_plain_pass": ("wrong_sector_requested_lba6", "PASS", "T1"),
+            "bad_request_as_plain_pass": ("invalid_sector_lba16", "PASS", "T3"),
+            "observation_as_plain_pass": ("read6_on_audio_track_lba", "PASS", "T5"),
+        }
+        for name, (scenario, kind, claim) in cases.items():
+            with self.subTest(case=name):
+                bundle = bundle_for()
+                bundle["tests"][scenario] = {"status": kind}
+                self.assertEqual(effective_status(bundle, ROM_SHA)[claim], "UNKNOWN")
+
+    def test_scenario_kinds_match_checker(self):
+        from tools.cd_read_contract import SCENARIO_KIND
+        self.assertEqual(dict(SCENARIO_KIND), EXPECTED_KIND)
+        for claim in TRANSPORT_CLAIMS:
+            if claim["status"] == "VERIFIED":
+                self.assertTrue(set(claim["scenarios"]) <= set(EXPECTED_KIND), claim["id"])
+
+    def test_scenario_kinds_match_integration_source(self):
+        # The integration suite decides each scenario's kind; the table must agree with its call sites.
+        text = INTEGRATION.read_text(encoding="utf-8")
+        declared = {}
+        for call, name in re.findall(r'suite\.(positive|failing_guest|must_be_rejected|tampered_disc)\("(\w+)"', text):
+            declared[name] = "PASS" if call == "positive" else "PASS_EXPECTED_FAILURE"
+        declared.update(re.findall(r'results\["(\w+)"\] = \{\s*"status": "(\w+)"', text))
+        for name, kind in EXPECTED_KIND.items():
+            self.assertEqual(declared.get(name), kind, name)
 
     def test_claim_citing_unrun_scenario_is_not_verified(self):
         claims = copy.deepcopy(TRANSPORT_CLAIMS)

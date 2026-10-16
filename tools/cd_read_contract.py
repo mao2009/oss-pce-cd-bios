@@ -7,6 +7,12 @@ the pinned Geargrafx archive, belongs to the ROM on disk, and records every cite
 Source text that merely mentions a scenario is never evidence. Without such a bundle VERIFIED claims are
 reported BLOCKED; a bundle that lacks a cited scenario makes them UNKNOWN. The System Card 3.0 *callee*
 ABI (spec/api_contracts.json slot 3) stays HYPOTHESIS/UNKNOWN.
+
+The bundle is a plain JSON file. Its revision, archive hash, ROM hash and statuses are SELF-DECLARED: this module
+checks that they are consistent with the pinned values and the ROM on disk, but it does not authenticate who
+wrote them. A bundle written by a modified or hand-made run can pass these checks. This is acceptable only for a
+locally trusted build output; see docs/cd-read-contract.md section 4 for the trust conditions a compatibility gate
+would need.
 """
 import argparse
 import hashlib
@@ -23,8 +29,17 @@ SECTOR_BYTES = 2048
 LBA_LIMIT = 1 << 21          # READ(6) LBA field: byte1 bits 0-4, byte2, byte3
 VERIFIED_COUNTS = range(1, 4)  # only counts 1..3 were executed on the real core
 STATUSES = {"VERIFIED", "HYPOTHESIS", "UNKNOWN"}
-# Scenario statuses the integration suite writes only after its assertion held. NOT_TESTED is never accepted.
-PASSING_SCENARIO = {"PASS", "PASS_EXPECTED_FAILURE", "OBSERVED_EMULATOR_BEHAVIOUR"}
+# The result kind each cited scenario must carry in the bundle. The kind is fixed per scenario, so a positive
+# read recorded as PASS_EXPECTED_FAILURE (or a deliberate bad request recorded as PASS) never counts.
+# tests/host/test_cd_read_contract.py checks this table against the integration suite's call sites.
+SCENARIO_KIND = {
+    "single_sector_lba5": "PASS", "first_sector_lba0": "PASS", "last_sector_lba15": "PASS",
+    "three_sectors_lba5": "PASS", "disc_end_boundary_lba13_x3": "PASS",
+    "wrong_sector_requested_lba6": "PASS_EXPECTED_FAILURE",
+    "invalid_sector_lba16": "PASS_EXPECTED_FAILURE", "invalid_sector_lba_max": "PASS_EXPECTED_FAILURE",
+    "read_past_disc_end_lba14_x3": "PASS_EXPECTED_FAILURE",
+    "read6_on_audio_track_lba": "OBSERVED_EMULATOR_BEHAVIOUR",
+}
 
 # Transport claims. VERIFIED is effective only with a matching PASS evidence bundle (see effective_status).
 TRANSPORT_CLAIMS = [
@@ -98,7 +113,8 @@ def effective_status(bundle=None, rom_sha256=None, claims=TRANSPORT_CLAIMS) -> d
             out[claim["id"]] = "BLOCKED"
         else:
             tests = bundle["tests"]
-            covered = all(tests.get(s, {}).get("status") in PASSING_SCENARIO for s in claim["scenarios"])
+            covered = all(s in SCENARIO_KIND and tests.get(s, {}).get("status") == SCENARIO_KIND[s]
+                          for s in claim["scenarios"])
             out[claim["id"]] = "VERIFIED" if covered else "UNKNOWN"
     return out
 
@@ -149,8 +165,8 @@ def main(argv=None):
         reason = provenance_problem(bundle, rom_sha) or "evidence bundle does not cover the cited scenarios"
         print(f"BLOCKED CD_READ contract ledger: downgraded {downgraded}; reason: {reason}")
         sys.exit(3)
-    print(f"PASS CD_READ contract ledger: transport {sorted(status.items())} backed by {evidence}; "
-          "callee ABI not VERIFIED (CD_READ NOT_IMPLEMENTED)")
+    print(f"PASS CD_READ contract ledger: transport {sorted(status.items())} from SELF-DECLARED bundle {evidence} "
+          "(provenance not authenticated); callee ABI not VERIFIED (CD_READ NOT_IMPLEMENTED)")
 
 
 if __name__ == "__main__":
