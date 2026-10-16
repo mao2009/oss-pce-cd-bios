@@ -62,6 +62,19 @@ class CdResetBusJudgeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "reset pulses"):
                 check_reset_pulses(run)
 
+    def test_malformed_result_hex_is_rejected_with_stable_message(self):
+        good = good_run()["result_hex"]
+        malformed = {
+            "empty": "",
+            "odd_digit_count": good[:-1],
+            "non_hex": "zz" + good[2:],
+            "short_record": good[:46],  # 23 bytes: one byte short of 8 + 2 x 8
+        }
+        for name, result_hex in malformed.items():
+            with self.subTest(case=name):
+                with self.assertRaisesRegex(ValueError, r"^c1: malformed result_hex \(need even-length hex, at least 24 bytes\)$"):
+                    pulse_records({"cycle": "c1", "result_hex": result_hex})
+
     def test_bus_while_asserted_is_recorded_not_judged(self):
         # Geargrafx resets the bus immediately, so a busy sample while asserted is an observation, not a failure
         check_reset_pulses(mutate(good_run(), 0, 0, 0x40))

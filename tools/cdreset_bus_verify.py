@@ -6,17 +6,23 @@ judge the System Card CD_RESET API: a bus reset that behaves here is necessary e
 low-level register effect only, never proof of API compatibility (docs/cd-reset-diagnostic.md).
 The data path itself is judged by tools/cdread_verify.check_success, which must also pass.
 """
+import re
+
 RESET_PULSES = 2
 PHASE_MASK = 0xF8          # $1800 BSY/REQ/MSG/CD/IO; 0 = bus free
 RST_BIT = 0x02             # $1804 bit 1 = SCSI bus reset
 RECORD_OFFSET = 8          # first per-pulse record in the result block (CPU $2308)
 RECORD_BYTES = 8           # one record per pulse
 RECORD_FIELDS = ("bus_asserted", "bus_released", "wait_result", "readback_asserted", "readback_released")
+MIN_BLOCK_BYTES = RECORD_OFFSET + RESET_PULSES * RECORD_BYTES  # 24: header + two pulse records
 
 
 def pulse_records(run: dict) -> list:
-    """Per-pulse records; raises ValueError if the guest reports a count other than RESET_PULSES."""
-    block = bytes.fromhex(run["result_hex"])
+    """Per-pulse records; raises ValueError on malformed hex/length or a pulse count other than RESET_PULSES."""
+    text = run["result_hex"]
+    if not re.fullmatch(r"(?:[0-9a-fA-F]{2})+", text) or len(text) // 2 < MIN_BLOCK_BYTES:
+        raise ValueError(f"{run.get('cycle')}: malformed result_hex (need even-length hex, at least {MIN_BLOCK_BYTES} bytes)")
+    block = bytes.fromhex(text)
     if block[7] != RESET_PULSES:
         raise ValueError(f"{run.get('cycle')}: guest completed {block[7]} reset pulses, expected {RESET_PULSES}")
     rows = []
