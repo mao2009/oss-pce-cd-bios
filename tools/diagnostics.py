@@ -15,6 +15,8 @@ else:
 MARKERS = {1: (0x11, 0x1f), 2: (0x22, 0x2f), 3: (0x33, 0x3f),
            4: (0x44, 0x4f), 31: (0xa1, 0xaf)}
 MPR = [0xff, 0xf8, 1, 2, 31, 3, 4, 0]
+# ROM offsets of HuC6280 vectors in bank0 ($FFF6 IRQ2/BRK, $FFF8 IRQ1, $FFFA timer; $FFFC NMI unused).
+IRQ_VECTORS = {'irq2': 0x1ff6, 'irq1': 0x1ff8, 'timer': 0x1ffa}
 
 
 def parse_labels(text):
@@ -25,7 +27,8 @@ def parse_labels(text):
             raise ValueError('contradictory diagnostic symbol')
         result[name] = value
     required = {'bank_probe', 'bank_halt', 'call_probe', 'call_before', 'call_entry', 'call_return',
-                'call_rts', 'restore_mpr', 'call_halt', 'irq_probe', 'irq_wait', 'irq_entry', 'irq_exit', 'ram_probe', 'ram_halt', 'mirror_read', 'mirror_restore', 'api_call_probe', 'api_jsr', 'api_call_return', 'diagnostic_end'}
+                'call_rts', 'restore_mpr', 'call_halt', 'irq_probe', 'irq_wait', 'irq_entry', 'irq_exit',
+                'timer_probe', 'timer_entry', 'timer_exit', 'irq_unexpected', 'ram_probe', 'ram_halt', 'mirror_read', 'mirror_restore', 'api_call_probe', 'api_jsr', 'api_call_return', 'diagnostic_end'}
     if not required <= result.keys() or any(not 0xe800 <= result[n] < 0xf000 for n in required):
         raise ValueError('diagnostic labels missing or outside isolated overlay')
     return {name: result[name] for name in sorted(required)}
@@ -54,16 +57,18 @@ def build_probe_images(base, output, mode='debug'):
     traces = output / 'trace-labels.txt'
     traces.write_text(''.join(f'{name} {address:04x}\n' for name, address in sorted(symbols.items())))
     images = {}
-    for name in ('bank', 'call', 'irq1', 'irq2', 'ram', 'api_jsr_01', 'api_jsr_03', 'api_jsr_1E'):
+    for name in ('bank', 'call', 'irq1', 'irq2', 'timer', 'ram', 'api_jsr_01', 'api_jsr_03', 'api_jsr_1E'):
         data = bytearray(base)
         data[0x800:0x1000] = code[0x800:0x1000]
         for bank, (first, last) in MARKERS.items():
             data[bank*8192] = first; data[(bank+1)*8192-1] = last
         entry = symbols[('irq' if name.startswith('irq') else 'api_call' if name.startswith('api_jsr') else name) + '_probe']
         data[0x1ffe:0x2000] = entry.to_bytes(2, 'little')
-        if name.startswith('irq'):
-            offset = 0x1ff8 if name == 'irq1' else 0x1ff6
-            data[offset:offset+2] = symbols['irq_entry'].to_bytes(2, 'little')
+        if name in IRQ_VECTORS:
+            # Only the selected source reaches a returning handler; IRQ2/IRQ1/timer/NMI others never return.
+            data[0x1ff6:0x1ffe] = symbols['irq_unexpected'].to_bytes(2, 'little') * 4
+            offset = IRQ_VECTORS[name]
+            data[offset:offset+2] = symbols['timer_entry' if name == 'timer' else 'irq_entry'].to_bytes(2, 'little')
         if name.startswith('api_jsr'):
             at = symbols['api_jsr']-0xe000
             if data[at:at+3] != bytes.fromhex('20 03 e0'):

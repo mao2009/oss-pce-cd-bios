@@ -3,6 +3,7 @@
 .segment "DIAGNOSTIC"
 .export bank_probe, bank_halt, call_probe, call_before, call_entry, call_return
 .export call_rts, restore_mpr, call_halt, irq_probe, irq_wait, irq_entry, irq_exit
+.export timer_probe, timer_entry, timer_exit, irq_unexpected
 .export ram_probe, ram_halt, mirror_read, mirror_restore, api_call_probe, api_jsr, api_call_return, diagnostic_end
 
 .macro initialize
@@ -139,6 +140,33 @@ irq_entry:
     pla
 irq_exit:
     rti
+
+; Timer source: the guest programs the HuC6280 timer itself (no harness line injection).
+timer_probe:
+    initialize
+    lda #$00
+    sta $1402            ; unmask IRQ2/IRQ1/timer
+    sta $0C00            ; reload 0: request after one timer period
+    lda #$01
+    sta $0C01            ; start timer
+    lda #$44
+    ldx #$55
+    ldy #$66
+    cli
+    bra irq_wait
+timer_entry:
+    pha
+    stz $0C01            ; stop timer so it cannot re-request
+    sta $1403            ; acknowledge timer request
+    lda #$7A
+    sta $2210
+    pla
+timer_exit:
+    rti
+
+; Every vector not selected by an experiment lands here: wrong dispatch never returns.
+irq_unexpected:
+    bra irq_unexpected
 
 ram_probe:
     initialize
