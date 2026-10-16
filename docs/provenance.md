@@ -61,3 +61,14 @@ See [reuse audit inventory](reuse-inventory.md) for initial candidates. An initi
 - [ ] The accepted behavior is actually measured; unverified behavior is labeled NOT_RUN/BLOCKED, not PASS.
 
 A human reviewer must resolve uncertain origin or permission **before merging**. This policy is not a legal warranty or substitute for specialist advice in disputed cases.
+
+## Automated provenance guard (Issue #8)
+
+`tools/provenance_guard.py` scans the **changed content** (tracked files differing from the PR base, or all tracked files without a base), not just file extensions. It runs as the first step of the `verify` job in `.github/workflows/ci.yml`.
+
+- **Always rejected:** content whose SHA-256 is listed in `provenance/denylist.sha256`; ISO9660 volume-descriptor and CD-ROM raw-sector-sync signatures, whatever the file name.
+- **Rejected unless hash-pinned in `provenance/allowlist.tsv`:** prohibited extensions (`.pce .bin .cue .iso .img .chd .wav` and similar), unlabelled binaries, third-party paths (`vendor/`, `third_party/`, `.gitmodules`, ...), and third-party license markers in code files. This is default-deny for unclear third-party code.
+- **Approval gate:** changing `provenance/allowlist.tsv` or `provenance/denylist.sha256` requires `PROVENANCE_APPROVAL=granted`. CI derives it from a maintainer-applied `provenance-approved` label. The label unlocks list edits only; it never overrides the denylist or signature rules and is not a legal clearance.
+- Tests: `python3 -m unittest discover -s tests/host -p 'test_provenance_guard.py' -v`. Prohibited samples are generated in memory from short synthetic markers; no firmware, disc or ROM data is committed.
+
+**Limitations.** A signature scanner is a tripwire, not a guarantee against infringement. It cannot detect paraphrased, translated, or re-encoded material; it cannot establish ownership or license validity; and a PR that edits the guard itself is controlled only by human review. Human review of the audit record above remains mandatory before merge.

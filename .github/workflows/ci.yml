@@ -15,6 +15,12 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Provenance guard on changed content (allowlist edits need the maintainer label)
+        env:
+          PROVENANCE_APPROVAL: ${{ contains(github.event.pull_request.labels.*.name, 'provenance-approved') && 'granted' || '' }}
+        run: |
+          python3 tools/provenance_guard.py
+          python3 -m unittest discover -s tests/host -p 'test_provenance_guard.py' -v
       - name: Prepare pinned tools from source
         run: make setup
       - name: Build original HuCARD fixture
