@@ -7,10 +7,10 @@ import subprocess
 
 if __package__:
     from .environment import ROOT, DEPENDENCIES, executable
-    from .build_rom import verify_image
+    from .build_rom import verify_dev_rom
 else:
     from environment import ROOT, DEPENDENCIES, executable
-    from build_rom import verify_image
+    from build_rom import verify_dev_rom
 
 MARKERS = {1: (0x11, 0x1f), 2: (0x22, 0x2f), 3: (0x33, 0x3f),
            4: (0x44, 0x4f), 31: (0xa1, 0xaf)}
@@ -35,7 +35,7 @@ def parse_labels(text):
 
 
 def build_probe_images(base, output, mode='debug'):
-    verify_image(base)
+    verify_dev_rom(base)
     if mode not in ('debug', 'release'):
         raise ValueError('MODE must be debug or release')
     output = Path(output); output.mkdir(parents=True, exist_ok=True)
@@ -80,6 +80,7 @@ def build_probe_images(base, output, mode='debug'):
     manifest = {'status': 'original-cpu-experiments-not-bios-abi', 'mode': mode,
                 'labels': symbols, 'explicit_mpr': MPR, 'cc65_revision': DEPENDENCIES['cc65']['revision'],
                 'images': {name: {'bytes': path.stat().st_size, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
-                           for name, path in images.items()}, 'api_implementation': 'NONE'}
+                           for name, path in images.items()},
+                'api_implementation': 'slot_1E EX_GETVER only; 80 slots unimplemented'}
     (output/'manifest.json').write_text(json.dumps(manifest, indent=2)+'\n')
     return images, symbols, traces

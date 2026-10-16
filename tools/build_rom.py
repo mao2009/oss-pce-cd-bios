@@ -62,6 +62,28 @@ def overrides(root: Path = ROOT) -> dict[int, Path]:
     return result
 
 
+def assemble_api_objects(output: Path, mode: str = 'debug', root: Path = ROOT) -> list[Path]:
+    """Assemble the generated API table plus every src/overrides/slot_XX.s object.
+
+    Shared by the diagnostics that re-link bank0, so their API table and override
+    area match the DEV ROM byte for byte. Returns objects in link order (generated
+    table first, then overrides). Does not link or verify; the caller does that.
+    """
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True)
+    ca65 = executable('ca65')
+    chosen = overrides(root)
+    generated = output / 'api_table.s'
+    generated.write_text(render_table(load_slots(), set(chosen)), encoding='utf-8')
+    objects = []
+    for src in [generated, *[chosen[i] for i in sorted(chosen)]]:
+        obj = output / (src.stem + '.o')
+        debug = mode == 'debug' or src in chosen.values()
+        subprocess.run([ca65, str(src), '-o', str(obj), *(['-g'] if debug else [])], check=True)
+        objects.append(obj)
+    return objects
+
+
 def render_table(slots: list[dict], overridden: set[int]) -> str:
     lines = [
         '; GENERATED -- never edit directly. See spec/api_slots.json and tools/build_rom.py.',
@@ -191,7 +213,16 @@ def verify_overrides(bank: bytes, overridden: set[int], dbg: dict) -> None:
                 raise ValueError(f'Override ${slot:02X} ${address:04X} falls through into data or padding')
 
 
-def verify_bank(bank: bytes, overridden: set[int] | None = None, dbg: dict | None = None) -> None:
+def verify_bank(bank: bytes, overridden: set[int] | None = None, dbg: dict | None = None,
+                override_bodies: bool = True) -> None:
+    """Validate the DEV layout of one bank. Never a System Card compatibility claim.
+
+    `overridden` lists slots replaced by src/overrides/slot_XX.s. Their bodies are
+    verified with ld65 debug info when `dbg` is given. If `dbg` is absent the default
+    `override_bodies=True` refuses to trust an override blindly; pass
+    `override_bodies=False` only when the bodies were already verified at build time
+    (see verify_dev_rom) and the caller re-checks a ROM produced by build().
+    """
     if len(bank) != BANK_BYTES:
         raise ValueError(f'Expected {BANK_BYTES} bytes in first bank, got {len(bank)}')
     targets = []
@@ -235,16 +266,28 @@ def verify_bank(bank: bytes, overridden: set[int] | None = None, dbg: dict | Non
     if bank[at:at+5] != bytes.fromhex('78 a2 ff 80 fe'):
         raise ValueError('Reset diagnostic must SEI, LDX FF, BRA self')
     if overridden:  # stubs and table are sound; now the override bodies (structure only)
-        if dbg is None:
+        if dbg is not None:
+            verify_overrides(bank, overridden, dbg)
+        elif override_bodies:
             raise ValueError('override code cannot be verified without ld65 debug info')
-        verify_overrides(bank, overridden, dbg)
 
 
-def verify_image(data: bytes, overridden: set[int] | None = None, dbg: dict | None = None) -> None:
+def verify_dev_rom(data: bytes) -> None:
+    """Re-check a DEV ROM already built (and body-verified) by build().
+
+    Used by the diagnostics that patch the DEV ROM: the non-override stub layout,
+    the table, vectors and padding are checked strictly, while override bodies are
+    assumed to have been verified with ld65 debug info when build() produced the ROM.
+    """
+    verify_image(data, set(overrides()), override_bodies=False)
+
+
+def verify_image(data: bytes, overridden: set[int] | None = None, dbg: dict | None = None,
+                 override_bodies: bool = True) -> None:
     """Validate this diagnostic layout only, never System Card compatibility."""
     if len(data) != IMAGE_BYTES:
         raise ValueError("DEV ROM must contain exactly 32 8 KiB banks without a header")
-    verify_bank(data[:BANK_BYTES], overridden, dbg)
+    verify_bank(data[:BANK_BYTES], overridden, dbg, override_bodies)
     if data[BANK_BYTES:] != b"\xff" * (IMAGE_BYTES - BANK_BYTES):
         raise ValueError("DEV ROM unused banks must be FF; bank ordering/padding mismatch")
 

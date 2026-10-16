@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'tools'))
 from environment import DEPENDENCIES, dependency_dir
-from build_rom import verify_image
+from build_rom import verify_dev_rom
 
 
 def compile_probe(output, source_name='geargrafx_api_probe.cpp', target_name='geargrafx-api-probe'):
@@ -69,7 +69,7 @@ def main():
     parser.add_argument('--rom', type=Path, required=True)
     args = parser.parse_args()
     data = args.rom.read_bytes()
-    verify_image(data)
+    verify_dev_rom(data)
     output = args.rom.parent
     probe = compile_probe(output)
     evidence = {'scope': 'synthetic-disc System Card diagnostic execution, NOT CD boot/API ABI compatibility',
@@ -79,7 +79,8 @@ def main():
                                'disc': '32 MODE1/2352 zero-filled sectors', 'instruction_debugger': True,
                                'geargrafx_profile': 'separate debugger-enabled source-identical build',
                                'source_archive_sha256': DEPENDENCIES['geargrafx']['sha256']},
-                'api_exit': {'status': 'NOT_OBSERVABLE', 'reason': 'all BIOS API stubs are nonreturning; no implemented callee'},
+                'api_exit': {'status': 'OBSERVED_ONE_SLOT',
+                             'reason': 'slot $1E EX_GETVER returns the measured contract; the other 80 slots are nonreturning stubs'},
                 'nmi': {'status': 'NOT_TESTED', 'reason': 'pinned Geargrafx HuC6280 has no NMI input or $FFFC dispatch'}}
     with tempfile.TemporaryDirectory(prefix='pce-api-probe-') as tmp:
         folder = Path(tmp)
@@ -138,7 +139,7 @@ def main():
     (output / 'geargrafx-api-evidence.json').write_text(json.dumps(evidence, indent=2) + '\n')
     print('PASS real Geargrafx System Card diagnostic: reset/cold/warm, slots 00/48/50, original 4 negatives; '
           '9 CPU/RAM/IRQ1/IRQ2/timer/JSR-slot experiments, 9 loader cases, 2 procedure + 3 interrupt negatives; '
-          'A/X/Y/P/SP/MPR/RAM observed; NMI NOT_TESTED')
+          'slot 1E EX_GETVER returned its measured contract; A/X/Y/P/SP/MPR/RAM observed; NMI NOT_TESTED')
 
 
 if __name__ == '__main__':

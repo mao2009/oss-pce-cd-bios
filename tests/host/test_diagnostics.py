@@ -60,7 +60,8 @@ class DiagnosticBuildTests(unittest.TestCase):
         with self.assertRaises(ValueError):parse_labels('al 00E800 .bank_probe\n')
         with self.assertRaises(ValueError):build_probe_images(self.base,self.root/'bad-mode','invalid')
 
-    def test_manifest_cannot_be_confused_with_api_implementation(self):
+    def test_manifest_records_only_the_implemented_slot(self):
         data=json.loads((self.root/'probes/manifest.json').read_text())
-        self.assertEqual(data['api_implementation'],'NONE')
+        # The probe manifest must never claim more than the single implemented slot.
+        self.assertEqual(data['api_implementation'],'slot_1E EX_GETVER only; 80 slots unimplemented')
         self.assertEqual(set(data['images']),{'bank','call','irq1','irq2','timer','ram','api_jsr_01','api_jsr_03','api_jsr_1E'})

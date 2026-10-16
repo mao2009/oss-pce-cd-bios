@@ -12,7 +12,7 @@ from unittest.mock import patch
 import subprocess
 
 from tools.build_rom import (ROOT, BANK_BYTES, IMAGE_BYTES, build, load_slots, overrides, parse_dbg,
-                             release_gate, source_provenance, verify_bank, verify_image)
+                             release_gate, source_provenance, verify_bank, verify_dev_rom, verify_image)
 
 
 class ApiBuildTests(unittest.TestCase):
@@ -27,18 +27,34 @@ class ApiBuildTests(unittest.TestCase):
         cls.tmp.cleanup()
 
     def test_actual_image_structure(self):
-        verify_image(self.rom)
+        verify_dev_rom(self.rom)
         self.assertEqual(len(self.rom), IMAGE_BYTES)
         self.assertEqual(self.rom[BANK_BYTES:], b'\xff' * (31 * BANK_BYTES))
 
     def test_actual_all_81_jmps_and_ids(self):
+        overridden = set(overrides())
         for slot in range(81):
             with self.subTest(slot=slot):
                 at = slot * 3
                 self.assertEqual(self.rom[at], 0x4c)
                 address = int.from_bytes(self.rom[at+1:at+3], 'little')
-                self.assertEqual(self.rom[address-0xe000:address-0xe000+2], bytes((0xa2, slot)))
+                if slot in overridden:
+                    # An override replaces the generated LDX #slot stub; its own body
+                    # is checked separately (test_slot_1e_override_matches_measured_contract).
+                    self.assertNotEqual(self.rom[address-0xe000:address-0xe000+2], bytes((0xa2, slot)))
+                else:
+                    self.assertEqual(self.rom[address-0xe000:address-0xe000+2], bytes((0xa2, slot)))
         self.assertEqual(0xe000+80*3, 0xe0f0)
+
+    def test_slot_1e_override_matches_measured_contract(self):
+        """Host-level bytes only: the measured X=major/Y=minor/A-preserved shape.
+
+        This is the assembly contract, not real-core or hardware execution evidence.
+        """
+        self.assertEqual(set(overrides()), {0x1E})
+        at = 0x1E * 3
+        entry = int.from_bytes(self.rom[at+1:at+3], 'little')
+        self.assertEqual(self.rom[entry-0xe000:entry-0xe000+5], bytes.fromhex('a2 03 a0 00 60'))
 
     def test_debug_release_and_rebuild_match(self):
         for name, mode in [('release', 'release'), ('again', 'debug')]:
@@ -57,43 +73,43 @@ class ApiBuildTests(unittest.TestCase):
 
     def test_wrong_size(self):
         for data in (self.rom[:-1], self.rom+b'\xff', self.rom[:8192]):
-            with self.assertRaises(ValueError): verify_image(data)
+            with self.assertRaises(ValueError): verify_dev_rom(data)
 
     def test_headered_image(self):
-        with self.assertRaises(ValueError): verify_image(bytes(512)+self.rom)
+        with self.assertRaises(ValueError): verify_dev_rom(bytes(512)+self.rom)
 
     def test_wrong_bank_order(self):
-        with self.assertRaises(ValueError): verify_image(self.rom[8192:16384]+self.rom[:8192]+self.rom[16384:])
+        with self.assertRaises(ValueError): verify_dev_rom(self.rom[8192:16384]+self.rom[:8192]+self.rom[16384:])
 
     def test_non_padding_bank(self):
         data = bytearray(self.rom); data[8192] = 0
-        with self.assertRaises(ValueError): verify_image(data)
+        with self.assertRaises(ValueError): verify_dev_rom(data)
 
     def test_target_crosses_bank(self):
         data = bytearray(self.rom); data[1:3] = b'\x00\xc0'
-        with self.assertRaises(ValueError): verify_image(data)
+        with self.assertRaises(ValueError): verify_dev_rom(data)
 
     def test_handler_outside_bank(self):
         data = bytearray(self.rom); data[0x103:0x105] = b'\x00\xc0'
-        with self.assertRaises(ValueError): verify_image(data)
+        with self.assertRaises(ValueError): verify_dev_rom(data)
 
     def test_returning_halt_rejected(self):
         data = bytearray(self.rom)
         target = int.from_bytes(data[0x103:0x105], 'little') - 0xe000
         data[target] = 0x60
-        with self.assertRaises(ValueError): verify_image(data)
+        with self.assertRaises(ValueError): verify_dev_rom(data)
 
     def test_bad_reset_vector(self):
         data = bytearray(self.rom); data[0x1ffe:0x2000] = b'\x00\xe0'
-        with self.assertRaises(ValueError): verify_image(data)
+        with self.assertRaises(ValueError): verify_dev_rom(data)
 
     def test_bad_irq_vector(self):
         data = bytearray(self.rom); data[0x1ff6:0x1ff8] = b'\x00\x00'
-        with self.assertRaises(ValueError): verify_image(data)
+        with self.assertRaises(ValueError): verify_dev_rom(data)
 
     def test_reset_success_return_rejected(self):
         data = bytearray(self.rom); data[0x1003] = 0x60
-        with self.assertRaises(ValueError): verify_image(data)
+        with self.assertRaises(ValueError): verify_dev_rom(data)
 
     def test_missing_tool(self):
         with patch.dict(os.environ, {'CA65': '/missing/ca65'}):
@@ -110,7 +126,8 @@ class ApiBuildTests(unittest.TestCase):
     def test_manifest_never_claims_release(self):
         manifest = json.loads((self.folder/'debug/manifest.json').read_text())
         self.assertFalse(manifest['release_eligible'])
-        self.assertEqual(len(manifest['unimplemented_slots']), 81)
+        self.assertEqual(manifest['overridden_slots'], [0x1E])
+        self.assertEqual(len(manifest['unimplemented_slots']), 80)
         self.assertEqual(manifest['abi'], 'UNVERIFIED')
 
     def make_root(self, name, **slots):

@@ -11,10 +11,10 @@ import re
 import subprocess
 
 if __package__:
-    from .build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, load_slots, render_table, verify_image
+    from .build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
     from .environment import DEPENDENCIES, executable
 else:
-    from build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, load_slots, render_table, verify_image
+    from build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
     from environment import DEPENDENCIES, executable
 
 # SEI CLD; LDA #$FF TAM #1; LDA #$F8 TAM #2; LDX #$FF TXS; BRA self; LDX #$EE BRA self
@@ -26,7 +26,7 @@ UNKNOWN = ["mpr2_to_mpr6_layout", "csh_speed_policy", "stack_pointer_abi", "inte
 
 
 def verify_reset_entry(data: bytes, original: bytes) -> str:
-    verify_image(original)
+    verify_dev_rom(original)
     if len(data) != IMAGE_BYTES:
         raise ValueError("reset entry image must have 262144 bytes")
     if data[:0x1000] != original[:0x1000]:
@@ -57,13 +57,11 @@ def build_reset_entry(original_path: Path, output: Path, mode="debug") -> Path:
     if mode not in ("debug", "release"):
         raise ValueError("MODE must be debug or release")
     original = original_path.read_bytes()
-    verify_image(original)
+    verify_dev_rom(original)
     ca65, ld65 = executable("ca65"), executable("ld65")
     output.mkdir(parents=True, exist_ok=True)
-    table = output / "api_table.s"
-    table.write_text(render_table(load_slots(), set()), encoding="utf-8")
-    objects = []
-    for source in (table, ROOT / "src/reset_entry.s"):
+    objects = assemble_api_objects(output, mode)
+    for source in (ROOT / "src/reset_entry.s",):
         obj = output / (source.stem + ".o")
         subprocess.run([ca65, str(source), "-o", str(obj), *(["-g"] if mode == "debug" else [])], check=True)
         objects.append(obj)

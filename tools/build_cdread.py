@@ -12,10 +12,10 @@ import re
 import subprocess
 
 if __package__:
-    from .build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, load_slots, render_table, verify_image
+    from .build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
     from .environment import DEPENDENCIES, executable
 else:
-    from build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, load_slots, render_table, verify_image
+    from build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
     from environment import DEPENDENCIES, executable
 
 BANK_BASE = 0xE000
@@ -62,7 +62,7 @@ def code_digest(data: bytes, symbols: dict) -> str:
 
 def verify_cdread(data: bytes, original: bytes, symbols: dict, code_sha256=None) -> str:
     """Structural gate (+ optional pinned code digest); behaviour is judged only by real emulator execution."""
-    verify_image(original)
+    verify_dev_rom(original)
     if code_sha256 is not None and code_digest(data, symbols) != code_sha256:
         raise ValueError("CD diagnostic code differs from the manifest digest")
     if len(data) != IMAGE_BYTES:
@@ -108,17 +108,15 @@ def build_cdread(original_path: Path, output: Path, mode="debug") -> Path:
     if mode not in ("debug", "release"):
         raise ValueError("MODE must be debug or release")
     original = original_path.read_bytes()
-    verify_image(original)
+    verify_dev_rom(original)
     ca65, ld65 = executable("ca65"), executable("ld65")
     for tool in (ca65, ld65):
         version = subprocess.run([tool, "--version"], check=True, capture_output=True, text=True)
         if DEPENDENCIES["cc65"]["revision"][:9] not in version.stdout + version.stderr:
             raise ValueError("CD diagnostic compiler/linker does not report pinned cc65 build ID")
     output.mkdir(parents=True, exist_ok=True)
-    table = output / "api_table.s"
-    table.write_text(render_table(load_slots(), set()), encoding="utf-8")
-    objects = []
-    for source in (table, ROOT / "src/cd_read_probe.s"):
+    objects = assemble_api_objects(output, mode)
+    for source in (ROOT / "src/cd_read_probe.s",):
         obj = output / (source.stem + ".o")
         subprocess.run([ca65, str(source), "-o", str(obj), *(['-g'] if mode == "debug" else [])], check=True)
         objects.append(obj)

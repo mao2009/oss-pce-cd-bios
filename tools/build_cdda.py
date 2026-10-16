@@ -12,10 +12,10 @@ import re
 import subprocess
 
 if __package__:
-    from .build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, load_slots, render_table, verify_image
+    from .build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
     from .environment import DEPENDENCIES, executable
 else:
-    from build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, load_slots, render_table, verify_image
+    from build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
     from environment import DEPENDENCIES, executable
 
 SOURCE = ROOT / "src/cdda_probe.s"
@@ -36,7 +36,7 @@ def parse_symbols(path: Path) -> dict:
 
 
 def verify_cdda(data: bytes, original: bytes, symbols: dict) -> str:
-    verify_image(original)
+    verify_dev_rom(original)
     if len(data) != IMAGE_BYTES or data[:0x1000] != original[:0x1000]:
         raise ValueError("CD-DA diagnostic size or API table/fallback overlay differs")
     irq = symbols["cdda_unexpected_interrupt"].to_bytes(2, "little")
@@ -51,17 +51,15 @@ def build_cdda(original_path: Path, output: Path, mode="debug") -> Path:
     if mode not in ("debug", "release"):
         raise ValueError("MODE must be debug or release")
     original = original_path.read_bytes()
-    verify_image(original)
+    verify_dev_rom(original)
     ca65, ld65 = executable("ca65"), executable("ld65")
     for tool in (ca65, ld65):
         version = subprocess.run([tool, "--version"], check=True, capture_output=True, text=True)
         if DEPENDENCIES["cc65"]["revision"][:9] not in version.stdout + version.stderr:
             raise ValueError("CD-DA diagnostic compiler/linker does not report pinned cc65 build ID")
     output.mkdir(parents=True, exist_ok=True)
-    table = output / "api_table.s"
-    table.write_text(render_table(load_slots(), set()), encoding="utf-8")
-    objects = []
-    for source in (table, SOURCE):
+    objects = assemble_api_objects(output, mode)
+    for source in (SOURCE,):
         obj = output / (source.stem + ".o")
         subprocess.run([ca65, str(source), "-o", str(obj), *(['-g'] if mode == "debug" else [])], check=True)
         objects.append(obj)
