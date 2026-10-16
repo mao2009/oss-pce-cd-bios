@@ -365,7 +365,8 @@ class TrustBoundaryTests(unittest.TestCase):
                     self.assertBlocked(compat_status(**gate_inputs(**{key: value})))
         for data in (b"{not json", b"\xff\xfe", b"[" * 100000 + b"]" * 100000, b"[]", b"null"):
             with self.subTest(data=data[:20]):
-                self.assertBlocked(compat_status(**gate_inputs(artifact_bytes=data, attestation=gate_attestation(data))))
+                inputs = gate_inputs(artifact_bytes=data, attestation=gate_attestation(data))
+                self.assertBlocked(compat_status(**inputs))
         self.assertBlocked(compat_status(**gate_inputs(commit="A" * 40)))
         self.assertBlocked(compat_status(**gate_inputs(repository="not a repo")))
 
