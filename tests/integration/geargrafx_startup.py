@@ -6,6 +6,7 @@ proprietary BIOS, production boot, or third-party code enters the ROM.
 import argparse
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
@@ -14,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 from build_startup import EXPECTED_MPR, MARKER, SYMBOL_OFFSETS, verify_startup
 from environment import DEPENDENCIES
+from startup_media import classify_startup_media
 from geargrafx_api import compile_probe
 from geargrafx_contracts import execute, trace
 
@@ -187,6 +189,41 @@ def main():
                 mutation_results[name] = "PASS_EXPECTED_FAILURE"
             else:
                 raise ValueError(f"{name}: mutated startup ROM unexpectedly passed actual Geargrafx")
+        # ---- #142: same ROM, CD hardware on, with and without a disc. Four facts recorded separately. ----
+        labels = output / "trace-labels.txt"
+        checkpoint = symbols["startup_checkpoint"]
+        with_disc = classify_startup_media(records, checkpoint)
+        nodisc = execute(probe, rom, "-", labels, media=False)
+        check_evidence(nodisc, symbols)  # no-media branch runs the same startup CPU/RAM checkpoint
+        without_disc = classify_startup_media(nodisc, checkpoint)
+        if (with_disc["media"], without_disc["media"]) != ("MEDIA_PRESENT", "NO_MEDIA"):
+            raise ValueError("media/no-media branches were not distinguished by the real core")
+        media_negatives = {}
+        # (1) a no-media run cannot be submitted as the normal-disc run
+        try:
+            execute(probe, rom, "-", labels)
+        except ValueError:
+            media_negatives["no_media_as_disc_run"] = "PASS_EXPECTED_FAILURE"
+        else:
+            raise ValueError("no-media run was accepted as a disc run")
+        # (2) forged flags on real records are rejected
+        for name, source, patch in (("no_media_claims_media", nodisc, {"cdrom_media": True, "disc_given": True}),
+                                    ("disc_claims_no_media", records, {"cdrom_media": False, "disc_given": False})):
+            forged = {**source, "CAP": [{**source["CAP"][0], **patch}]}
+            try:
+                classify_startup_media(forged, checkpoint)
+            except ValueError:
+                media_negatives[name] = "PASS_EXPECTED_FAILURE"
+            else:
+                raise ValueError(f"{name}: forged media flags were accepted")
+        # (3) boundary: 4 instructions never reach the checkpoint, so the real run is not a verdict
+        short = execute(probe, rom, "-", labels, media=False, steps=4)
+        try:
+            classify_startup_media(short, checkpoint)
+        except ValueError:
+            media_negatives["step_budget_too_small"] = "PASS_EXPECTED_FAILURE"
+        else:
+            raise ValueError("a run that stopped before the checkpoint was classified")
         interrupt_results = run_interrupts(probe, payload, original, cue, output, folder, symbols)
     evidence = {
         "scope": "original startup diagnostic ONLY; production BIOS/ABI/CD boot NOT_IMPLEMENTED",
@@ -201,7 +238,9 @@ def main():
             "observations": negative,
         },
         "mutation_negatives": mutation_results,
-        "cd_init_state_observed": CD_INIT_STATE, "disc_absent": "NOT_TESTED (harness requires LoadMedia)",
+        "cd_init_state_observed": CD_INIT_STATE, "media_branches": {"MEDIA_PRESENT": with_disc, "NO_MEDIA": without_disc,
+                           "no_media_loader": "SetCDROMType(STANDARD)+LoadHuCardFromBuffer; real hardware UNKNOWN",
+                           "negatives": media_negatives, "no_media_observations": nodisc},
         "bios_service_abi": "UNKNOWN", "cd_boot": "NOT_TESTED",
         "interrupt_vector_execution": interrupt_results,
         "proprietary_content": "NONE",
@@ -214,5 +253,5 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, ValueError, RuntimeError) as error:
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         raise SystemExit(f"startup integration FAIL/BLOCKED: {error}") from error

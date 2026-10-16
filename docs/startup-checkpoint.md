@@ -50,7 +50,15 @@ The stage also stores the non-zero sentinel `$01` at `$2205` (`startup_cd_state`
 `BOOT!` marker. The value is a diagnostic marker that the store executed, **not** an encoding of
 CD state. It is non-zero because Geargrafx power-on RAM reads `$00`. The code bytes contain no access
 to the CD-ROM2 registers (`$1800-$1804`), so the byte does not depend on disc presence by construction.
-This is not observed on the real core: disc attached is `NOT RUN` and no media is `NOT_TESTED`.
+The guest never reads the CD registers, so the byte is identical with and without a disc (Issue #142).
+What differs is the environment, recorded separately by `make dev-startup-integration`
+(`media_branches` in `startup-evidence.json`, classifier `tools/startup_media.py`):
+`MEDIA_PRESENT` (System Card BIOS + synthetic CUE/BIN) and `NO_MEDIA` (`SetCDROMType(STANDARD)` +
+`LoadHuCardFromBuffer`, CD hardware on, no disc). Each verdict keeps four facts apart: CPU executed,
+CD controller state (`scsi_phase`/`cd_irq_active`, both idle), RAM marker, and stop PCs (cold, non-returning,
+warm). Rejected on the real core: a no-media run submitted as the disc run, forged media flags in both
+directions, and a 4-instruction budget that never reaches the checkpoint. This is Geargrafx-only; the guest
+does not detect media and real hardware stays `UNKNOWN`.
 `manifest.json` records `cd_disc_presence_read: false` as a build constant, not a measurement.
 
 All addresses except the CPU's architectural vector/stack geometry are

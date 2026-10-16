@@ -3,6 +3,8 @@
 #include "huc6280.h"
 #include "memory.h"
 #include "media.h"
+#include "cdrom.h"
+#include "scsi_controller.h"
 #include <fstream>
 #include <iterator>
 #include <vector>
@@ -19,14 +21,23 @@ int main(int argc, char** argv) {
     std::vector<u8> rom((std::istreambuf_iterator<char>(input)), {});
     GeargrafxCore core;
     core.Init(nullptr);
-    bool loaded = core.LoadBiosFromBuffer(rom.data(), rom.size(), true);
+    // "-" = no media: the ROM becomes the card with CD hardware forced on (same loader as
+    // geargrafx_cdread_probe.cpp; LoadBiosFromBuffer alone never Reset()s, so nothing would run).
+    const bool have_disc = std::string(argv[2]) != "-";
+    bool loaded = have_disc ? core.LoadBiosFromBuffer(rom.data(), rom.size(), true) : true;
     if (std::string(argv[2]) == "--load-only") {
         std::printf("LOAD {\"accepted\":%s,\"input_bytes\":%zu,\"execution\":\"NOT_RUN\"}\n",
                     loaded ? "true" : "false", rom.size());
         return 0;
     }
     if (!loaded) return 3;
-    if (!core.LoadMedia(argv[2])) return 4;
+    if (have_disc) {
+        if (!core.LoadMedia(argv[2])) return 4;
+    } else {
+        core.GetMedia()->SetCDROMType(GG_CDROM_STANDARD);
+        if (!core.LoadHuCardFromBuffer(rom.data(), (int)rom.size(), "no-media-card.pce")) return 3;
+        if (!core.GetMedia()->IsCDROMHardwareEnabled() || core.GetMedia()->IsCDROM()) return 7;
+    }
     int count = argc > 3 ? std::atoi(argv[3]) : 16;
     if (count < 1 || count > 2048) return 2;
     std::map<std::string, unsigned> labels;
@@ -99,10 +110,13 @@ int main(int argc, char** argv) {
     if (memory->Read(first_pc) != 0x78) return 5; // all execution probes begin SEI
     one_instruction();
     bool stepping = cpu->PC->GetValue() == first_pc + 1;
-    std::printf("CAP {\"instruction_step\":%s,\"pc_before\":%u,\"pc_after\":%u,\"bios_loaded\":true,\"cdrom_hardware\":%s,\"cdrom_media\":%s,\"card_ram_bytes\":%d}\n",
+    std::printf("CAP {\"instruction_step\":%s,\"pc_before\":%u,\"pc_after\":%u,\"bios_loaded\":true,\"loader\":\"%s\",\"disc_given\":%s,\"cdrom_hardware\":%s,\"cdrom_media\":%s,\"card_ram_bytes\":%d,\"scsi_phase\":%d,\"cd_irq_active\":%u}\n",
                 stepping ? "true" : "false", first_pc, cpu->PC->GetValue(),
+                have_disc ? "LoadBiosFromBuffer(syscard)+LoadMedia(cue)" : "SetCDROMType(STANDARD)+LoadHuCardFromBuffer",
+                have_disc ? "true" : "false",
                 core.GetMedia()->IsCDROMHardwareEnabled() ? "true" : "false",
-                core.GetMedia()->IsCDROM() ? "true" : "false", core.GetMedia()->GetCardRAMSize());
+                core.GetMedia()->IsCDROM() ? "true" : "false", core.GetMedia()->GetCardRAMSize(),
+                (int)*core.GetScsiController()->GetState()->PHASE, (unsigned)*core.GetCDROM()->GetState()->ACTIVE_IRQS);
     if (!stepping) return 6;
     steps(count); observe("OBS", "cold");
     steps(32); observe("OBS", "nonreturning");
