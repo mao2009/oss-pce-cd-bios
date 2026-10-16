@@ -31,7 +31,8 @@ OBSERVATION_PLAN = {
     "(2)": "plain_reads: [{block, read_lba}] - CD_READ after reset, no CD_BASE, >=2 distinct blocks; "
            "read_lba is the READ LBA the emulator's SCSI layer saw (null when no READ was issued)",
     "(3)": "retention: {after_cd_reset: offset|null, after_second_read: offset|null}",
-    "(4)": "cd_base_reads compared with plain_reads (offset = read_lba - block)",
+    "(4)": "cd_base_reads, >=2 distinct blocks per input set, offset per input set compared with plain_reads "
+           "(offset = read_lba - block)",
     "(5)": "side_effects: {mpr_before, mpr_after, ram_before_hex, ram_after_hex, ram_base} around one CD_BASE call",
     "(6)": "returns: [{case, a, x, y, p}] for no-disc / out-of-range / before-INDEX-01 / normal",
 }
@@ -51,13 +52,36 @@ def build_fixture(directory: Path) -> dict:
     return report
 
 
-def _offsets(rows):
-    return {row["read_lba"] - row["block"] for row in rows if row.get("read_lba") is not None}
+def _int(value, name):
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{name} must be an integer, got {value!r}")
+    return value
 
 
-def _blocks_read(rows):
-    """Distinct block numbers among rows where a READ was actually issued (read_lba not null)."""
-    return len({row["block"] for row in rows if row.get("read_lba") is not None})
+def _issued(rows):
+    """Rows where a READ was actually issued (read_lba not null); block/read_lba type-checked."""
+    out = []
+    for row in rows:
+        _int(row["block"], "block")
+        if row.get("read_lba") is not None:
+            _int(row["read_lba"], "read_lba")
+            out.append(row)
+    return out
+
+
+def _constant_offset(rows):
+    """(offset, None) when >=2 distinct blocks were read with one offset read_lba - block, else (None, reason)."""
+    rows = _issued(rows)
+    offsets = {row["read_lba"] - row["block"] for row in rows}
+    if len(offsets) > 1:
+        return None, f"no constant offset: {sorted(offsets)}"
+    if len({row["block"] for row in rows}) < 2:
+        return None, "fewer than 2 distinct blocks were read"
+    return offsets.pop(), None
+
+
+def _inputs_key(row):
+    return tuple(sorted(row["inputs"].items()))
 
 
 def _candidates(offset, index01):
@@ -78,23 +102,34 @@ def judge(record) -> dict:
     if not record or record.get("callee") != "returned":
         reason = (record or {}).get("callee_reason", "no executable CD_BASE callee")
         return {q: {"status": "BLOCKED", "reason": reason} for q in QUESTIONS}
-    index01 = record.get("fixture_index01_lba")
-    plain = record.get("plain_reads", [])
-    plain_offsets = _offsets(plain)
-    if _blocks_read(plain) >= 2 and len(plain_offsets) == 1:
-        (offset,) = plain_offsets
-        if not index01:
-            out["(2)"] = {"status": "UNKNOWN", "reason": "INDEX 01 is LBA 0: absolute and track-relative coincide"}
-        else:
-            out["(2)"] = {"status": "OBSERVED", "offset": offset, "consistent_with": _candidates(offset, index01)}
-    elif len(plain_offsets) > 1:
-        out["(2)"] = {"status": "UNKNOWN", "reason": f"no constant offset: {sorted(plain_offsets)}"}
+    index01 = _int(record.get("fixture_index01_lba"), "fixture_index01_lba")
+    plain_offset, reason = _constant_offset(record.get("plain_reads", []))
+    if plain_offset is None:
+        out["(2)"] = {"status": "UNKNOWN", "reason": reason}
+    elif index01 == 0:
+        out["(2)"] = {"status": "UNKNOWN", "reason": "INDEX 01 is LBA 0: absolute and track-relative coincide"}
+    else:
+        out["(2)"] = {"status": "OBSERVED", "offset": plain_offset, "consistent_with": _candidates(plain_offset, index01)}
     based = record.get("cd_base_reads", [])
-    # (4) needs a decided (2) baseline and the same premise on the CD_BASE side: >=2 blocks actually read.
-    if out["(2)"]["status"] == "OBSERVED" and _blocks_read(based) >= 2:
-        changed = _offsets(based) != plain_offsets
-        out["(4)"] = {"status": "OBSERVED", "cd_base_changes_offset": changed, "offsets": sorted(_offsets(based))}
+    # (4): same premise as (2), per CD_BASE input set: >=2 blocks read under ONE input set, one offset.
+    groups = {}
+    for row in based:
+        groups.setdefault(_inputs_key(row), []).append(row)
+    per_inputs, problems = [], []
+    for key, rows in groups.items():
+        offset, why = _constant_offset(rows)
+        if offset is None:
+            problems.append(f"inputs {dict(key)}: {why}")
+        else:
+            per_inputs.append({"inputs": dict(key), "offset": offset, "changes_offset": offset != plain_offset})
+    if out["(2)"]["status"] != "OBSERVED":
+        out["(4)"] = {"status": "UNKNOWN", "reason": "(2) is not OBSERVED"}
+    elif problems or not per_inputs:
+        out["(4)"] = {"status": "UNKNOWN", "reason": "; ".join(problems) or "not recorded"}
+    else:
+        out["(4)"] = {"status": "OBSERVED", "per_inputs": per_inputs}
     read_bytes = set()
+    based = _issued(based)  # a null READ is not evidence for (1) either
     for a in based:
         for b in based:
             diff = [k for k in INPUT_BYTES if a["inputs"].get(k) != b["inputs"].get(k)]

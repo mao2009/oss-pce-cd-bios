@@ -133,7 +133,9 @@ INDEX 01 != 0 の条件が必要であることも確認している。実行可
   未記録は UNKNOWN、呼出先なし・非復帰は全問 BLOCKED。(2) はオフセット（READ LBA − ブロック番号）が一定のときだけ
   候補を返し、`BASE_PLUS_BLOCK` は常に候補に残す（既定の基準値が未知のため）。INDEX 01 が 0 の記録では (2) を UNKNOWN にする。
   ブロック数は READ が実際に出た行（READ LBA が null でない行）だけで数え、二種類以上を要する。(4) は (2) が OBSERVED で、
-  かつ CD_BASE 側でも READ が出たブロックが二種類以上あるときだけ OBSERVED にする。それ以外は UNKNOWN。
+  かつ CD_BASE の入力の組ごとに、READ が出たブロックが二種類以上あり、オフセットが一定のときだけ OBSERVED にする
+  （入力の組ごとのオフセットを返す）。一つでも条件を満たさない組があれば UNKNOWN。(1) も null の READ 行を証拠に使わない。
+  ブロック番号、READ LBA、INDEX 01 の LBA が整数でない記録（bool、小数、文字列）は ValueError で拒否する。
 - 試験: `tests/host/test_cd_base_probe.py` は合成記録で判定規則だけを試す（BIOS の証拠ではない）。
 
 ## 5. 残る UNKNOWN と理由

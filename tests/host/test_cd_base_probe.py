@@ -62,13 +62,46 @@ class JudgeTest(unittest.TestCase):
     def test_input_sensitivity_and_relation_to_cd_read(self):
         base = {"_al": 1, "_bh": 0x80, "_cl": 2}
         rec = record(plain_reads=[{"block": 5, "read_lba": 155}, {"block": 6, "read_lba": 156}],
-                     cd_base_reads=[{"inputs": base, "block": 5, "read_lba": 300},
-                                    {"inputs": {**base, "_al": 2}, "block": 5, "read_lba": 400},
-                                    {"inputs": {**base, "_cl": 3}, "block": 5, "read_lba": 300},
-                                    {"inputs": base, "block": 6, "read_lba": 301}])
+                     cd_base_reads=[{"inputs": inputs, "block": block, "read_lba": offset + block}
+                                    for inputs, offset in ((base, 295), ({**base, "_al": 2}, 395),
+                                                           ({**base, "_cl": 3}, 295))
+                                    for block in (5, 6)])
         out = h.judge(rec)
         self.assertEqual(out["(1)"]["bytes_that_change_the_read"], ["_al"])
-        self.assertEqual(out["(4)"]["cd_base_changes_offset"], True)
+        self.assertEqual(out["(4)"]["status"], "OBSERVED")
+        self.assertEqual([(g["offset"], g["changes_offset"]) for g in out["(4)"]["per_inputs"]],
+                         [(295, True), (395, True), (295, True)])
+
+    def test_relation_needs_two_blocks_per_input_set(self):
+        # MAJOR-A: each input set read only one block, so no input set shows a constant offset.
+        out = h.judge(record(plain_reads=[{"block": 5, "read_lba": 155}, {"block": 6, "read_lba": 156}],
+                             cd_base_reads=[{"inputs": {"_al": 1}, "block": 5, "read_lba": 155},
+                                            {"inputs": {"_al": 2}, "block": 6, "read_lba": 156}]))
+        self.assertEqual(out["(4)"]["status"], "UNKNOWN")
+
+    def test_relation_needs_constant_offset_per_input_set(self):
+        # MAJOR-A: [300@5, 500@6] under one input set has no constant offset.
+        out = h.judge(record(plain_reads=[{"block": 5, "read_lba": 155}, {"block": 6, "read_lba": 156}],
+                             cd_base_reads=[{"inputs": {"_al": 1}, "block": 5, "read_lba": 300},
+                                            {"inputs": {"_al": 1}, "block": 6, "read_lba": 500}]))
+        self.assertEqual(out["(4)"]["status"], "UNKNOWN")
+        self.assertIn("no constant offset", out["(4)"]["reason"])
+
+    def test_null_read_is_not_input_sensitivity_evidence(self):
+        # MINOR-B
+        out = h.judge(record(cd_base_reads=[{"inputs": {"_al": 1}, "block": 5, "read_lba": None},
+                                            {"inputs": {"_al": 2}, "block": 5, "read_lba": 300}]))
+        self.assertEqual(out["(1)"]["status"], "UNKNOWN")
+
+    def test_wrong_types_are_rejected(self):
+        # MINOR-C
+        plain = [{"block": 5, "read_lba": 155}, {"block": 6, "read_lba": 156}]
+        for bad in (record(fixture_index01_lba="150", plain_reads=plain),
+                    record(plain_reads=[{"block": True, "read_lba": 155}, plain[1]]),
+                    record(plain_reads=[{"block": 5.0, "read_lba": 155}, plain[1]]),
+                    record(plain_reads=[{"block": 5, "read_lba": 155.0}, plain[1]])):
+            with self.assertRaises(ValueError):
+                h.judge(bad)
 
     def test_null_read_rows_do_not_count_as_blocks(self):
         # MAJOR-1: only one block was actually read, so (2) must not be decided.
