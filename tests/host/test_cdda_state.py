@@ -36,6 +36,8 @@ class CddaModel:
 
     def tick(self, sectors=1):
         """Advance playback. Only PLAYING moves; reaching the track end sets ENDED."""
+        if sectors < 0:
+            raise ValueError(f"tick requires a non-negative sector count, got {sectors}")
         if self.state != "PLAYING":
             return
         index = next(i for i, t in enumerate(self.tracks) if t["number"] == self.track)
@@ -98,6 +100,29 @@ class CddaStateModelTests(unittest.TestCase):
         self.model.tick(1000)
         self.assertEqual(self.model.pos, self.total)
         self.assertNotIn(self.model.pos, range(0, self.sectors))
+
+    def test_tick_zero_keeps_position_and_state(self):
+        self.model.play(2)
+        self.model.tick(0)
+        self.assertEqual((self.model.state, self.model.pos), ("PLAYING", self.audio_start))
+
+    def test_tick_negative_rejected_in_every_state(self):
+        with self.assertRaises(ValueError):
+            self.model.tick(-1)  # STOPPED
+        self.assertEqual((self.model.state, self.model.pos), ("STOPPED", None))
+        self.model.play(2)
+        with self.assertRaises(ValueError):
+            self.model.tick(-1)  # PLAYING
+        self.assertEqual((self.model.state, self.model.pos), ("PLAYING", self.audio_start))
+        self.model.pause()
+        with self.assertRaises(ValueError):
+            self.model.tick(-self.audio)  # PAUSED
+        self.assertEqual((self.model.state, self.model.pos), ("PAUSED", self.audio_start))
+
+    def test_tick_huge_value_clamps_to_disc_end(self):
+        self.model.play(2)
+        self.model.tick(2 ** 40)
+        self.assertEqual((self.model.state, self.model.pos), ("ENDED", self.total))
 
     def test_pause_keeps_position_and_resume_continues(self):
         self.model.play(2)
