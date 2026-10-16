@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
-from reference_case_execute import validate_case_pair
+from reference_case_execute import validate_case_pair, execute_case
 from reference_bios_runner import Blocked
 
 class ReferenceCaseExecuteTests(unittest.TestCase):
@@ -29,6 +29,11 @@ class ReferenceCaseExecuteTests(unittest.TestCase):
 
     def test_explicit_reviewed_fixture_can_reach_adapter_boundary(self):
         self.assertIsNone(validate_case_pair(self.case, self.cfg))
+
+    def test_even_reviewed_case_never_executes_without_in_core_write_guard(self):
+        # This must refuse before the runner, filesystem access, or private BIOS load.
+        with self.assertRaisesRegex(Blocked, "runtime RAM/I/O write enforcement NOT_IMPLEMENTED"):
+            execute_case(self.case, self.cfg, "nonexistent-adapter")
 
     def test_unreviewed_blocked(self):
         with self.assertRaises(Blocked):
