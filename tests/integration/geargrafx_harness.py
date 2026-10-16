@@ -7,7 +7,9 @@
 
 Status: PASS (expected checkpoint reached, no forbidden label), FAIL (timeout, crash,
 invalid input, checkpoint missed), BLOCKED (emulator/toolchain/input absent, debugger
-capability missing), SKIP (optional input deliberately not provided).
+capability missing, or NOT_SUPPORTED kind), SKIP (optional input deliberately not provided).
+Only kind "cdread" has a RUN/HIT checkpoint judge (JUDGED_KINDS); the "api" probe emits
+CAP/TRACE/OBS/BANK records and no RUN, so `--kind api` is BLOCKED as NOT_SUPPORTED.
 Exit codes: PASS 0, FAIL 1, BLOCKED 3, SKIP 4.
 
 No listener is opened: the probe talks only over its own stdout pipe, so there is
@@ -223,6 +225,7 @@ def stage_disc(cue, dest):
     return [source.name for source in sources]
 
 
+JUDGED_KINDS = ("cdread",)  # kinds whose probe emits the RUN/HIT checkpoint records classify() reads
 REQUIRED_CYCLES = ("cold", "warm")
 CAP_FLAGS = ("cdrom_hardware", "cdrom_media", "disc_given")
 
@@ -231,7 +234,7 @@ def _is_count(value):
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
-def classify(result, expect, forbid=(), budget=None):
+def classify(result, expect, forbid=(), budget=None, kind="cdread"):
     """Decide PASS/FAIL/BLOCKED from a finished job; anything unproven is not PASS.
 
     PASS needs exactly one RUN per cycle, cold then warm, each ending on `expect` with a confirmed
@@ -239,6 +242,8 @@ def classify(result, expect, forbid=(), budget=None):
     success HIT for that cycle recorded before its RUN. Any RUN with another reason (failure or
     budget) is FAIL even when the success HIT is present.
     """
+    if kind not in JUDGED_KINDS:
+        return "BLOCKED", f"NOT_SUPPORTED: kind {kind!r} has no RUN/HIT checkpoint judge", []
     if result["status"]:
         return result["status"], result["reason"], []
     code = result["exit_code"]
@@ -322,6 +327,10 @@ def trace(args):
         bad = [k for k, v in report.items() if isinstance(v, dict) and v.get("status") in ("FAIL", "BLOCKED")]
         log.update(status=report["status"], reason=f"doctor: {', '.join(bad)}", evidence="NOT_RUN")
         return log
+    if args.kind not in JUDGED_KINDS:
+        log.update(status="BLOCKED", reason=f"NOT_SUPPORTED: kind {args.kind!r} has no RUN/HIT checkpoint judge",
+                   evidence="NOT_RUN")
+        return log
     if not 1 <= args.steps <= STEP_LIMIT[args.kind]:
         log.update(status="FAIL", reason=f"steps outside 1..{STEP_LIMIT[args.kind]}", evidence="NOT_RUN")
         return log
@@ -350,7 +359,7 @@ def trace(args):
         shutil.copyfile(args.labels, labels)
         result = run_job([str(probe), *argv(str(rom), str(disc / Path(args.cue).name), str(labels), args.steps)],
                          job_dir, args.timeout)
-        status, reason, events = classify(result, args.expect, args.forbid, args.steps)
+        status, reason, events = classify(result, args.expect, args.forbid, args.steps, args.kind)
         log.update(status=status, reason=reason, exit_code=result["exit_code"], elapsed_s=result["elapsed_s"],
                    stderr_tail=result["stderr"], probe_sha256=sha256(probe), rom_sha256=sha256(rom),
                    geargrafx_revision=DEPENDENCIES["geargrafx"]["revision"],

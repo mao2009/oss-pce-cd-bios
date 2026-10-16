@@ -144,6 +144,19 @@ class ClassifyTests(unittest.TestCase):
         for code in (2, 3, 4, 5, 1, -9, 139):
             self.assertEqual(harness.classify(finished("\n".join(GOOD), code), "cd_halt_ok")[0], "FAIL", code)
 
+    def test_unsupported_kind_never_passes_even_with_cdread_records(self):
+        # The API probe has no RUN/HIT contract; a cdread-shaped PASS log must not leak to kind "api".
+        ok_text = "\n".join(GOOD)
+        self.assertEqual(harness.classify(finished(ok_text), "cd_halt_ok", (), None, kind="api")[0], "BLOCKED")
+        self.assertEqual(harness.classify(finished(ok_text), "cd_halt_ok", (), None, kind="cdread")[0], "PASS")
+
+    def test_api_probe_output_without_run_is_not_judged_as_cdread(self):
+        # Shape of geargrafx_api_probe.cpp output: CAP/TRACE/OBS/BANK, no RUN and no HIT records.
+        api_out = "\n".join([CAP, 'OBS {"phase":"loaded"}', 'TRACE {"phase":"cd_halt_ok"}',
+                             'BANK {"mpr7":1,"physical_e000":8192,"byte_e000":255}'])
+        self.assertEqual(self.check(api_out.split("\n"))[0], "FAIL")  # cdread judge: no RUN records
+        self.assertEqual(harness.classify(finished(api_out), "cd_halt_ok", (), None, kind="api")[0], "BLOCKED")
+
     def test_malformed_record_is_fail(self):
         self.assertEqual(harness.classify(finished(CAP + "\nRUN {broken"), "x")[0], "FAIL")
 
@@ -382,11 +395,25 @@ class DoctorTests(unittest.TestCase):
         log = json.loads(out.read_text())
         self.assertEqual((code, log["status"], log["evidence"]), (3, "BLOCKED", "NOT_RUN"))
 
+    def test_api_kind_is_not_supported_and_never_probed(self):
+        rom, cue, labels = self.dir / "r.pce", self.dir / "d.cue", self.dir / "l.txt"
+        rom.write_bytes(bytes(8192))
+        cue.write_text("x")
+        labels.write_text("x 1")
+        out = self.dir / "api.json"
+        with patch.object(harness, "doctor", return_value={"status": "PASS"}), \
+                patch("geargrafx_api.compile_probe", side_effect=AssertionError("api probe was built")):
+            code = harness.main(["trace", "--kind", "api", "--rom", str(rom), "--cue", str(cue),
+                                 "--labels", str(labels), "--expect", "x", "--output", str(out)])
+        log = json.loads(out.read_text())
+        self.assertEqual((code, log["status"], log["evidence"]), (3, "BLOCKED", "NOT_RUN"))
+        self.assertIn("NOT_SUPPORTED", log["reason"])
+
     def test_step_budget_bounds(self):
         rom = self.dir / "r.pce"
         rom.write_bytes(bytes(8192))
         with patch.object(harness, "doctor", return_value={"status": "PASS"}):
-            for steps, kind in ((0, "cdread"), (2049, "api"), (200_000_001, "cdread")):
+            for steps, kind in ((0, "cdread"), (200_000_001, "cdread")):
                 args = harness.argparse.Namespace(rom=rom, cue=rom, labels=rom, kind=kind, expect="x",
                                                   forbid=[], steps=steps, timeout=1, keep_job=False)
                 self.assertEqual(harness.trace(args)["status"], "FAIL", (steps, kind))
