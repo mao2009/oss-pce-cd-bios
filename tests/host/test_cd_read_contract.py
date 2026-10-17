@@ -17,8 +17,8 @@ from unittest import mock
 import tools.cd_read_contract as cd_read_contract
 
 from tools.cd_read_contract import (
-    COMPAT_REASON, EXIT_BLOCKED, EXIT_LOCAL_ONLY, INTEGRATION, LBA_LIMIT, PINNED, ROOT, SECTOR_BYTES, TRANSPORT_CLAIMS, TRUST_LABEL,
-    compat_status, effective_status, real_core_requests, transport_outcome, validate,
+    CALLER_LEDGER, COMPAT_REASON, EXIT_BLOCKED, EXIT_LOCAL_ONLY, INTEGRATION, LBA_LIMIT, PINNED, ROOT, SECTOR_BYTES, TRANSPORT_CLAIMS, TRUST_LABEL,
+    compat_status, effective_status, real_core_requests, transport_outcome, validate, validate_caller_ledger,
 )
 from tools.make_cd_image import DEFAULT_SECTORS
 
@@ -233,6 +233,165 @@ class LedgerTests(unittest.TestCase):
                 if change == "renamed": slot["candidate_name"] = "CD_SEEK"
                 with self.assertRaises(ValueError):
                     validate(api)
+
+
+DOC = ROOT / "docs/research/148-cd-read-abi.md"
+
+
+def _norm_slot(slot):
+    """Normalize a doc-table slot to its first whitespace token, lowercased, backticks removed.
+
+    This lets doc Japanese annotations such as "`$E009` 入口" compare equal to the module's
+    "$E009 entry" on the meaningful token."""
+    return slot.replace("`", "").strip().split()[0].lower()
+
+
+def _doc_ledger_rows():
+    """Parse the doc section 2.1 ledger table into normalized row dicts."""
+    rows = []
+    text = DOC.read_text(encoding="utf-8")
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if len(cells) < 5:
+            continue
+        rid = cells[0]
+        if not re.fullmatch(r"C\d\d", rid):
+            continue  # skip header / separator rows
+        src_line = cells[1]
+        if ":" not in src_line:
+            continue
+        src, line_s = src_line.rsplit(":", 1)
+        src = src.strip()
+        try:
+            lineno = int(line_s.strip())
+        except ValueError:
+            continue
+        rows.append({
+            "id": rid,
+            "source": src,
+            "line": lineno,
+            "slot": _norm_slot(cells[2]),
+            "direction": cells[3],
+            "status": cells[4],
+        })
+    return rows
+
+
+def _module_ledger_rows():
+    """Return the module CALLER_LEDGER rows normalized the same way as the doc rows."""
+    rows = []
+    for row in CALLER_LEDGER:
+        rows.append({
+            "id": row["id"],
+            "source": row["source"].rsplit("/", 1)[-1],
+            "line": row["line"],
+            "slot": _norm_slot(row["slot"]),
+            "direction": row["direction"],
+            "status": row["status"],
+        })
+    return rows
+
+
+def _ledger_key(row):
+    return (row["id"], row["source"], row["line"], row["direction"], row["status"], row["slot"])
+
+
+def _ledger_diff(doc_rows, mod_rows):
+    """Return (doc_only, mod_only) as sets of normalized row keys."""
+    doc_keys = {_ledger_key(r) for r in doc_rows}
+    mod_keys = {_ledger_key(r) for r in mod_rows}
+    return doc_keys - mod_keys, mod_keys - doc_keys
+
+
+class CallerLedgerTests(unittest.TestCase):
+    """#148: the caller-side usage ledger is pinned to caller sources and can never be VERIFIED."""
+
+    def setUp(self):
+        self.api = json.loads((ROOT / "spec/api_contracts.json").read_text(encoding="utf-8"))
+
+    def test_every_row_pins_a_real_caller_revision_and_line(self):
+        validate_caller_ledger(CALLER_LEDGER, self.api)
+        sources = self.api["sources"]
+        for row in CALLER_LEDGER:
+            with self.subTest(row=row["id"]):
+                source = sources[row["source"]]
+                self.assertEqual(source["kind"], "CALLER_SOURCE")
+                self.assertEqual(source["revision"], row["revision"])
+                self.assertEqual(len(row["revision"]), 40)
+                self.assertIs(type(row["line"]), int)
+                self.assertGreaterEqual(row["line"], 1)
+        # The issue names inputs and return-usage separately, so all five directions must be present.
+        self.assertEqual({r["direction"] for r in CALLER_LEDGER},
+                         {"CALLER_IN", "CALLER_OUT", "CALLER_SAVE", "CALLER_DECLARATION", "UNOBSERVED"})
+
+    def test_row_without_a_source_or_with_unknown_source_is_rejected(self):
+        for change in ("missing_source", "unknown_source", "missing_revision", "wrong_revision", "bad_line", "duplicate_id"):
+            row = dict(CALLER_LEDGER[0])
+            if change == "missing_source": del row["source"]
+            if change == "unknown_source": row["source"] = "huc:not-a-source"
+            if change == "missing_revision": del row["revision"]
+            if change == "wrong_revision": row["revision"] = "0" * 40
+            if change == "bad_line": row["line"] = 0
+            rows = (row, dict(row)) if change == "duplicate_id" else (row,)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                validate_caller_ledger(rows, self.api)
+
+    def test_caller_claim_cannot_be_promoted_to_verified(self):
+        # C01 is a CALLER_IN row, so its only valid status is HYPOTHESIS; every other state must be refused.
+        for status in ("VERIFIED", "PASS", "LOCAL_ONLY", "UNKNOWN", None, 1):
+            row = dict(CALLER_LEDGER[0], status=status)
+            with self.subTest(status=status), self.assertRaises(ValueError):
+                validate_caller_ledger((row,), self.api)
+        self.assertNotIn("VERIFIED", {r["status"] for r in CALLER_LEDGER})
+        self.assertTrue(all(r["status"] in ("HYPOTHESIS", "UNKNOWN") for r in CALLER_LEDGER))
+
+    def test_hle_or_emulator_source_is_not_caller_evidence(self):
+        # A caller-side claim may not cite the HLE or an emulator source as its caller evidence.
+        for source in ("hugo:bios.c", "gear:src/cdrom.cpp"):
+            with self.subTest(source=source), self.assertRaises(ValueError):
+                validate_caller_ledger((dict(CALLER_LEDGER[0], source=source, revision=self.api["sources"][source]["revision"]),), self.api)
+
+    def test_unobserved_rows_are_unknown_and_callee_abi_stays_unpromoted(self):
+        for row in CALLER_LEDGER:
+            if row["direction"] == "UNOBSERVED":
+                self.assertEqual(row["status"], "UNKNOWN")
+        # A callee-ABI field with no executed-callee evidence still cannot be VERIFIED.
+        api = copy.deepcopy(self.api)
+        api["apis"][3]["contract"]["returns"]["status"] = "VERIFIED"
+        with self.assertRaises(ValueError):
+            validate(api)
+
+    def test_doc_ledger_table_matches_the_module_full_row(self):
+        """The doc table and the module CALLER_LEDGER must agree per row (id, source, line, slot,
+        direction, status), not merely on id. Source names are normalized by basename; slots are
+        normalized to their first whitespace token (lowercased) so doc Japanese annotations such as
+        "入口" do not break the comparison."""
+        doc_only, mod_only = _ledger_diff(_doc_ledger_rows(), _module_ledger_rows())
+        self.assertEqual(doc_only, set(), f"doc rows not present in module: {sorted(doc_only)}")
+        self.assertEqual(mod_only, set(), f"module rows not present in doc: {sorted(mod_only)}")
+
+    def test_doc_row_line_mutation_is_detected(self):
+        """Changing a doc table line number must be detected by the consistency check."""
+        doc_rows = _doc_ledger_rows()
+        mod_rows = _module_ledger_rows()
+        mutated = [dict(r) for r in doc_rows]
+        mutated[0] = dict(mutated[0], line=mutated[0]["line"] + 1)
+        doc_only, mod_only = _ledger_diff(mutated, mod_rows)
+        self.assertNotEqual(doc_only, set(), "mutated doc line should not match the module")
+
+    def test_doc_row_direction_mutation_is_detected(self):
+        """Changing a doc table direction must be detected by the consistency check."""
+        doc_rows = _doc_ledger_rows()
+        mod_rows = _module_ledger_rows()
+        mutated = [dict(r) for r in doc_rows]
+        target = mutated[1]
+        flipped = "CALLER_OUT" if target["direction"] == "CALLER_IN" else "CALLER_IN"
+        mutated[1] = dict(target, direction=flipped)
+        doc_only, mod_only = _ledger_diff(mutated, mod_rows)
+        self.assertNotEqual(doc_only, set(), "mutated doc direction should not match the module")
 
 
 # Synthetic #125 inputs (no ROM, disc or BIOS data). The attacker controls every one of them: the artifact, the
