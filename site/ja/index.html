@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#090e17">
+  <meta name="description" content="PCエンジン CD-ROM²向けのオープンソース System Card BIOS 代替実装。ミッション、実測に基づく進捗、コントリビューター向け案内。">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="oss-pce-cd-bios — 検証可能なオープンファームウェアへ">
+  <meta property="og:description" content="PCエンジンCDのBIOSを独立したOSSとして開発するプロジェクト。現在は開発段階です。">
+  <link rel="alternate" hreflang="en" href="https://mao2009.github.io/oss-pce-cd-bios/">
+  <link rel="alternate" hreflang="ja" href="https://mao2009.github.io/oss-pce-cd-bios/ja/">
+  <link rel="icon" type="image/svg+xml" href="../assets/mark.svg">
+  <link rel="stylesheet" href="../assets/styles.css">
+  <title>oss-pce-cd-bios — オープンなSystem Card BIOSを目指して</title>
+</head>
+<body>
+  <a class="skip-link" href="#content">本文へスキップ</a>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="../" aria-label="oss-pce-cd-bios トップページ">
+        <img class="brand-mark" src="../assets/mark.svg" width="32" height="32" alt="">
+        <span>oss-pce-<span>cd-bios</span></span>
+      </a>
+      <nav class="site-nav" aria-label="メインナビゲーション">
+        <a href="#mission">ミッション</a>
+        <a href="#progress">進捗</a>
+        <a href="#contribute">参加方法</a>
+        <a href="https://github.com/mao2009/oss-pce-cd-bios">GitHub ↗</a>
+        <a class="lang-switch" href="../" lang="en" hreflang="en">English</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="content">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="wrap hero-grid">
+        <div>
+          <p class="eyebrow">Open-source firmware / PC Engine CD</p>
+          <h1 id="hero-title">System Cardを、<em>誰もが使えるOSSへ。</em></h1>
+          <p class="hero-lead">PCエンジン / TurboGrafx-CD向けの<strong>再配布可能なSystem Card BIOS代替実装</strong>を、独自コードと適切にライセンスされたOSSで開発しています。動作を確認できた範囲と、まだ分からない範囲を明確に公開します。</p>
+          <div class="button-row">
+            <a class="button primary" href="#progress">現在の進捗を見る <span class="arrow" aria-hidden="true">↗</span></a>
+            <a class="button ghost" href="#contribute">開発に参加する <span class="arrow" aria-hidden="true">→</span></a>
+          </div>
+          <p class="micro-note"><span class="dot" aria-hidden="true"></span><span><strong>現在は開発段階。</strong>互換BIOSとして一般配布できる状態ではありません。</span></p>
+        </div>
+        <div class="terminal" aria-label="開発用System Card ROMのAPI構成イメージ">
+          <div class="terminal-head"><span>system-card / dev-only</span><span class="terminal-lights" aria-hidden="true"><i></i><i></i><i></i></span></div>
+          <div class="terminal-body">
+            <div class="terminal-kicker">▶ BOOTSTRAP / HU-C6280</div>
+            <div class="chip">
+              <div class="chip-name">OSS<span>/</span>PCE-CD</div>
+              <div class="chip-sub">SYSTEM CARD 3.0 · TARGET</div>
+            </div>
+            <div class="chip-lines">
+              <div><b>0x1E</b> EX_GETVER → X=3 / Y=0</div>
+              <div><b>CORE</b> Geargrafx / cold + warm</div>
+              <div><b>80</b> remaining stub slots</div>
+            </div>
+            <div class="terminal-foot"><span>ABI: UNVERIFIED</span><strong>RELEASE: BLOCKED</strong></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="mission" class="section" aria-labelledby="mission-title">
+      <div class="wrap">
+        <div class="section-heading">
+          <p class="eyebrow">01 / ミッション</p>
+          <h2 id="mission-title">プラットフォームを残す。<br>ファームウェアを開く。</h2>
+          <p class="section-intro">まず目指すのはSuper System Card 3.0のソフトウェア互換性です。独自にビルド・検証・再配布できるBIOSを育て、将来的に正規のゲームソフトを楽しむために別途プロプライエタリBIOSを用意する必要性を減らします。純正ROMや市販ゲームデータは配布しません。</p>
+        </div>
+        <div class="card-grid">
+          <article class="card"><span class="number">01 — ACCESS</span><h3>オープンな代替手段</h3><p>誰もがソースからビルドできるSystem Card実装を目指し、エミュレータや互換環境の利用者に選択肢を増やします。</p></article>
+          <article class="card"><span class="number">02 — EVIDENCE</span><h3>憶測より実測</h3><p>ホストモデル・エミュレータ実測・純正BIOSの契約・市販ゲーム互換性を分け、未検証なら未検証と示します。</p></article>
+          <article class="card"><span class="number">03 — COMMUNITY</span><h3>参加しやすい開発</h3><p>ソース、テスト、来歴審査、未解決事項を公開し、小さなIssueから貢献できるプロジェクトにします。</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section id="progress" class="section" aria-labelledby="progress-title">
+      <div class="wrap">
+        <div class="section-topline">
+          <div class="section-heading">
+            <p class="eyebrow">02 / 進捗</p>
+            <h2 id="progress-title">「動いた」の根拠を、はっきりさせる。</h2>
+            <p class="section-intro">2026年10月17日時点の統合済み <a href="https://github.com/mao2009/oss-pce-cd-bios/pull/174">PR #174</a> に基づくスナップショットです。数字は実装・テストの範囲を表し、市販ゲーム互換率ではありません。</p>
+          </div>
+          <a href="https://github.com/mao2009/oss-pce-cd-bios/blob/main/docs/status.md">詳しい進捗 ↗</a>
+        </div>
+        <div class="stats" aria-label="プロジェクトの実績">
+          <div class="stat"><div class="stat-value"><span>1</span> / 81</div><div class="stat-label">開発用ROMで呼び出し・復帰できる候補APIスロット数</div></div>
+          <div class="stat"><div class="stat-value">80</div><div class="stat-label">未実装の非復帰スタブが残るスロット数</div></div>
+          <div class="stat"><div class="stat-value">765</div><div class="stat-label">PR #174の統合報告時点でPASSしたホストテスト数（過去の実績）</div></div>
+        </div>
+        <div class="milestones" aria-label="検証段階ごとのロードマップ">
+          <article class="milestone done"><div class="milestone-tag">M0 / 概ね整備済み</div><h3>検証基盤の構築</h3><p>ツールチェーン、開発用ROM、実コアでのCPU/RAM確認、合成CDのセクター転送。ROM構造やABI調査には残課題があります。</p></article>
+          <article class="milestone current"><div class="milestone-tag">M1 / 進行中</div><h3>呼び出せるBIOS API</h3><p>EX_GETVERはGeargrafxで呼び出し・復帰を確認。純正ABIの全面的な検証やCDサービスの実装は未完了です。</p></article>
+          <article class="milestone"><div class="milestone-tag">M2 / 未達成</div><h3>自作CDプログラム起動</h3><p>合成CDからRAMへコードを読み込み実行できていますが、BIOSの起動・サービス経路を通したものではありません。</p></article>
+          <article class="milestone"><div class="milestone-tag">M3 / 未検証</div><h3>市販ゲームとの互換性</h3><p>市販ゲームの起動、別エミュレータとの照合、実機での互換性はまだ確認できていません。</p></article>
+        </div>
+        <p class="progress-note"><strong>重要：</strong>Geargrafxで診断処理が動くことと、純正System Cardと互換であることは別です。互換性やリリース可能性は認定しておらず、リリースゲートは閉じたままです。</p>
+        <div class="evidence">
+          <div class="evidence-item"><span class="evidence-symbol" aria-hidden="true">✓</span><div><h3>Geargrafx実コアで観測済み</h3><p>EX_GETVERのcold/warm呼び出し・復帰、合成CDのREAD(6)からRAMへの転送、独立した初期化診断など。</p></div></div>
+          <div class="evidence-item"><span class="evidence-symbol pending" aria-hidden="true">!</span><div><h3>未確定・未実装の領域</h3><p>純正BIOSの完全なABI、CD_RESET/CD_BASE/CD_READの実API、自作CDのBIOS経由起動、別コア・実機の互換性。</p></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="contribute" class="section" aria-labelledby="contribute-title">
+      <div class="wrap">
+        <div class="section-heading">
+          <p class="eyebrow">03 / コントリビューター</p>
+          <h2 id="contribute-title">小さなIssueから、<br>確かな成果を。</h2>
+          <p class="section-intro">BIOSのアセンブリ実装だけが貢献ではありません。仕様の根拠確認、再現テスト、文章の改善も大切です。まずIssueを確認し、観測結果と未検証事項を区別してPRを作ってください。</p>
+        </div>
+        <div class="contribute-grid">
+          <article class="path-card"><span class="path-category">Documentation / Research</span><h3>APIの契約を調べる</h3><p>公開資料の出典を固定し、根拠の薄いABIの項目を調査し、契約台帳に記録します。</p><a href="https://github.com/mao2009/oss-pce-cd-bios/issues/3">Issue #3（API台帳）を見る ↗</a></article>
+          <article class="path-card"><span class="path-category">Testing / Tooling</span><h3>テストの再現性を高める</h3><p>実コアの観測、境界・異常系テスト、実行環境の整備、証跡取得の改善を担当します。</p><a href="https://github.com/mao2009/oss-pce-cd-bios/issues/103">Issue #103（ツール）を見る ↗</a></article>
+          <article class="path-card"><span class="path-category">Firmware / Systems</span><h3>次のCD APIに近づく</h3><p>まずCD_READの呼び出し規約を確かめ、根拠がそろった範囲から最小実装を目指します。</p><a href="https://github.com/mao2009/oss-pce-cd-bios/issues/148">Issue #148（CD_READ調査）を見る ↗</a></article>
+        </div>
+        <div class="terminal-inline" aria-label="開発者向けクイックスタート">
+          <p class="mono">/ quick start · Linux + pinned tools</p>
+          <pre><code><span>$</span> git clone https://github.com/mao2009/oss-pce-cd-bios.git
+<span>$</span> cd oss-pce-cd-bios
+<span>$</span> make setup
+<span>$</span> make test
+<span>$</span> make check
+<span>$</span> make dev-integration  <span># 開発用BIOS APIの検証</span></code></pre>
+        </div>
+        <div class="contribute-note"><span class="lock" aria-hidden="true">◇</span><div><strong>コードの来歴とライセンスも開発の一部です。</strong><p>純正BIOS ROM、市販ディスク、権利保護されたコード、私的なバイナリ抽出物をPRやログへ含めないでください。既存OSSの流用にはファイル単位のライセンス・来歴審査と人間の承認が必要です。合成テストには私有BIOSは不要です。詳しくは <a href="https://github.com/mao2009/oss-pce-cd-bios/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a> と <a href="https://github.com/mao2009/oss-pce-cd-bios/blob/main/docs/provenance.md">来歴ポリシー</a> を参照してください。</p></div></div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="join-title">
+      <div class="wrap">
+        <div class="final-cta">
+          <div><h2 id="join-title">オープンなBIOS開発に参加しませんか。</h2><p>Issueの調査、実測の再現、範囲を絞ったPR。第三者が確かめられる小さな成果の積み重ねが、このプロジェクトを前に進めます。</p></div>
+          <a class="button primary" href="https://github.com/mao2009/oss-pce-cd-bios/issues">Issue一覧を見る <span class="arrow" aria-hidden="true">↗</span></a>
+        </div>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap footer-inner">
+      <div><p><strong>oss-pce-cd-bios</strong> · 開発中のOSSであり、正式BIOSのリリースではありません。</p><p>NEC、Hudson Soft、Konamiとは無関係の独立プロジェクトです。</p></div>
+      <nav class="footer-links" aria-label="フッターナビゲーション"><a href="https://github.com/mao2009/oss-pce-cd-bios">ソース</a><a href="https://github.com/mao2009/oss-pce-cd-bios/blob/main/LICENSE">ライセンス</a><a href="https://github.com/mao2009/oss-pce-cd-bios/blob/main/docs/roadmap.md">ロードマップ</a><a href="../" lang="en">English</a></nav>
+    </div>
+  </footer>
+</body>
+</html>
