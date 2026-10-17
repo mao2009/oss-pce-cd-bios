@@ -113,7 +113,7 @@ read back from disk goes through `verify_dev_rom` before any code assumes a trus
 | --- | --- |
 | Fixture assembly/format/layout/reproducibility | PASS when the above host checks run |
 | Real Geargrafx HuCARD reset/marker/TAM/TMA/TII | PASS when integration produces its evidence |
-| PC/MPR register trace through standalone MCP | NOT_RUN locally; SDL3 missing; #103 |
+| PC/MPR register trace through standalone MCP | **NOT_RUN** (SDL3/CMake missing, no standalone binary). Protocol client `tools/mcp_checkpoint.py` + synthetic fake-server tests only (`tests/host/test_mcp_checkpoint.py`); synthetic PASS is not real-core evidence; #103 |
 | System Card DEV ROM load/reset/bank/RAM/IRQ | Scoped real-core diagnostic observations; not production BIOS initialization |
 | Callable DEV-only `EX_GETVER` (`$1E`, candidate `$E05A`) | Real Geargrafx cold/warm caller → OSS callee → RTS return observed by `make dev-integration`: X=3, Y=0, A preserved and SP balanced ([#174](https://github.com/mao2009/oss-pce-cd-bios/pull/174)); **reference BIOS ABI remains UNVERIFIED** |
 | Independent startup/MPR/stack marker | Real-core diagnostic `dev-startup-integration`; not BIOS initialization |
