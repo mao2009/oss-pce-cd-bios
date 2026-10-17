@@ -13,11 +13,11 @@ import re
 import subprocess
 
 if __package__:
-    from .build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, load_slots, render_table, verify_image
+    from .build_rom import API_IMPLEMENTATION, BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
     from .environment import DEPENDENCIES, executable
     from .make_cd_image import BIN_NAME, CUE_NAME, RAW_BYTES, build_image, sector_payload
 else:
-    from build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, load_slots, render_table, verify_image
+    from build_rom import API_IMPLEMENTATION, BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
     from environment import DEPENDENCIES, executable
     from make_cd_image import BIN_NAME, CUE_NAME, RAW_BYTES, build_image, sector_payload
 
@@ -83,7 +83,7 @@ def build_cdload_exec(original_path: Path, output: Path, mode="debug") -> Path:
     if mode not in ("debug", "release"):
         raise ValueError("MODE must be debug or release")
     original = original_path.read_bytes()
-    verify_image(original)
+    verify_dev_rom(original, manifest=original_path.parent / 'manifest.json')
     ca65, ld65 = executable("ca65"), executable("ld65")
     for tool in (ca65, ld65):
         version = subprocess.run([tool, "--version"], check=True, capture_output=True, text=True)
@@ -93,10 +93,8 @@ def build_cdload_exec(original_path: Path, output: Path, mode="debug") -> Path:
     debug_flags = ["-g"] if mode == "debug" else []
 
     # Stage 0 ROM, linked with the API table exactly as the Issue #5 diagnostic does.
-    table = output / "api_table.s"
-    table.write_text(render_table(load_slots(), set()), encoding="utf-8")
-    objects = []
-    for source in (table, ROOT / "src/cd_load_exec_probe.s"):
+    objects = assemble_api_objects(output, mode)
+    for source in (ROOT / "src/cd_load_exec_probe.s",):
         obj = output / (source.stem + ".o")
         subprocess.run([ca65, str(source), "-o", str(obj), *debug_flags], check=True)
         objects.append(obj)
@@ -143,7 +141,7 @@ def build_cdload_exec(original_path: Path, output: Path, mode="debug") -> Path:
         "payload_checksum": sum(code) & 0xFF, "payload_entry_offset": 0, "exec_address": EXEC_ADDRESS,
         "default_request": {"lba": DEFAULT_LBA, "count": 1}, "sector_bytes": SECTOR_BYTES,
         "symbols": symbols, "expected_mpr": EXPECTED_MPR, "pinned_cc65": DEPENDENCIES["cc65"]["revision"],
-        "api_implementation": "NONE", "cd_read_api_slot_03": "NOT_IMPLEMENTED",
+        "api_implementation": API_IMPLEMENTATION, "cd_read_api_slot_03": "NOT_IMPLEMENTED",
         "final_system_card_layout": "UNKNOWN", "release_eligible": False,
     }
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")

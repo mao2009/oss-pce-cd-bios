@@ -12,10 +12,10 @@ import re
 import subprocess
 
 if __package__:
-    from .build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, load_slots, render_table, verify_image
+    from .build_rom import API_IMPLEMENTATION, BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
     from .environment import DEPENDENCIES, executable
 else:
-    from build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, load_slots, render_table, verify_image
+    from build_rom import API_IMPLEMENTATION, BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
     from environment import DEPENDENCIES, executable
 
 # Exact independently authored fixture bytes; intentionally not a generic BIOS verifier.
@@ -44,7 +44,7 @@ MARKER = b"BOOT!"
 
 def verify_startup(data: bytes, original: bytes) -> str:
     """Enforce only the tested diagnostic layout and keep API table unchanged."""
-    verify_image(original)
+    verify_dev_rom(original)
     if len(data) != IMAGE_BYTES:
         raise ValueError("startup diagnostic must have 262144 bytes")
     if data[:0x1000] != original[:0x1000]:
@@ -80,17 +80,15 @@ def build_startup(original_path: Path, output: Path, mode="debug") -> Path:
     if mode not in ("debug", "release"):
         raise ValueError("MODE must be debug or release")
     original = original_path.read_bytes()
-    verify_image(original)
+    verify_dev_rom(original, manifest=original_path.parent / 'manifest.json')
     ca65, ld65 = executable("ca65"), executable("ld65")
     for tool in (ca65, ld65):
         version = subprocess.run([tool, "--version"], check=True, capture_output=True, text=True)
         if DEPENDENCIES["cc65"]["revision"][:9] not in version.stdout + version.stderr:
             raise ValueError("startup compiler/linker does not report pinned cc65 build ID")
     output.mkdir(parents=True, exist_ok=True)
-    table = output / "api_table.s"
-    table.write_text(render_table(load_slots(), set()), encoding="utf-8")
-    objects = []
-    for source in (table, ROOT / "src/startup_probe.s"):
+    objects = assemble_api_objects(output, mode)
+    for source in (ROOT / "src/startup_probe.s",):
         obj = output / (source.stem + ".o")
         subprocess.run([ca65, str(source), "-o", str(obj), *(['-g'] if mode == "debug" else [])], check=True)
         objects.append(obj)
@@ -116,7 +114,7 @@ def build_startup(original_path: Path, output: Path, mode="debug") -> Path:
         "startup_symbols": symbols, "expected_mpr": EXPECTED_MPR,
         "marker": MARKER.hex(), "marker_address": "2200",
         "cd_state_address": "2205", "cd_state_value": 1, "cd_disc_presence_read": False,
-        "api_implementation": "NONE",
+        "api_implementation": API_IMPLEMENTATION,
         "final_system_card_layout": "UNKNOWN", "release_eligible": False,
     }
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")

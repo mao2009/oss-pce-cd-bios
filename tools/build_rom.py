@@ -7,6 +7,8 @@ with X carrying the API slot. Reset loops with X=$FF. No host-side HLE.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import functools
 import hashlib
@@ -27,6 +29,10 @@ LAST_SLOT = 0x50
 BANK_BYTES = 8192
 IMAGE_BYTES = 256 * 1024
 EXIT_OK, EXIT_ERROR, EXIT_BLOCKED = 0, 2, 3  # BLOCKED = expected release refusal, never a build error
+# What the DEV images (bios-dev and the diagnostic probes) actually implement. They link
+# src/overrides/*.s through assemble_api_objects(), so "NONE" would be false. This is one
+# diagnostic slot, not ABI compatibility; the ROM stays abi: UNVERIFIED / release_eligible: false.
+API_IMPLEMENTATION = 'slot_1E EX_GETVER only; 80 slots unimplemented'
 
 
 class ReleaseBlocked(ValueError):
@@ -60,6 +66,28 @@ def overrides(root: Path = ROOT) -> dict[int, Path]:
             raise ValueError(f'Duplicate override {num:02X}')
         result[num] = path
     return result
+
+
+def assemble_api_objects(output: Path, mode: str = 'debug', root: Path = ROOT) -> list[Path]:
+    """Assemble the generated API table plus every src/overrides/slot_XX.s object.
+
+    Shared by the diagnostics that re-link bank0, so their API table and override
+    area match the DEV ROM byte for byte. Returns objects in link order (generated
+    table first, then overrides). Does not link or verify; the caller does that.
+    """
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True)
+    ca65 = executable('ca65')
+    chosen = overrides(root)
+    generated = output / 'api_table.s'
+    generated.write_text(render_table(load_slots(), set(chosen)), encoding='utf-8')
+    objects = []
+    for src in [generated, *[chosen[i] for i in sorted(chosen)]]:
+        obj = output / (src.stem + '.o')
+        debug = mode == 'debug' or src in chosen.values()
+        subprocess.run([ca65, str(src), '-o', str(obj), *(['-g'] if debug else [])], check=True)
+        objects.append(obj)
+    return objects
 
 
 def render_table(slots: list[dict], overridden: set[int]) -> str:
@@ -191,7 +219,16 @@ def verify_overrides(bank: bytes, overridden: set[int], dbg: dict) -> None:
                 raise ValueError(f'Override ${slot:02X} ${address:04X} falls through into data or padding')
 
 
-def verify_bank(bank: bytes, overridden: set[int] | None = None, dbg: dict | None = None) -> None:
+def verify_bank(bank: bytes, overridden: set[int] | None = None, dbg: dict | None = None,
+                override_bodies: bool = True) -> None:
+    """Validate the DEV layout of one bank. Never a System Card compatibility claim.
+
+    `overridden` lists slots replaced by src/overrides/slot_XX.s. Their bodies are
+    verified with ld65 debug info when `dbg` is given. If `dbg` is absent the default
+    `override_bodies=True` refuses to trust an override blindly; `override_bodies=False`
+    skips the body check entirely and is therefore unsound on untrusted input - it is
+    only for verify_dev_rom_layout(), which pairs it with an independent rebuild.
+    """
     if len(bank) != BANK_BYTES:
         raise ValueError(f'Expected {BANK_BYTES} bytes in first bank, got {len(bank)}')
     targets = []
@@ -235,16 +272,104 @@ def verify_bank(bank: bytes, overridden: set[int] | None = None, dbg: dict | Non
     if bank[at:at+5] != bytes.fromhex('78 a2 ff 80 fe'):
         raise ValueError('Reset diagnostic must SEI, LDX FF, BRA self')
     if overridden:  # stubs and table are sound; now the override bodies (structure only)
-        if dbg is None:
+        if dbg is not None:
+            verify_overrides(bank, overridden, dbg)
+        elif override_bodies:
             raise ValueError('override code cannot be verified without ld65 debug info')
-        verify_overrides(bank, overridden, dbg)
 
 
-def verify_image(data: bytes, overridden: set[int] | None = None, dbg: dict | None = None) -> None:
+def verify_dev_rom_layout(data: bytes, root: Path = ROOT) -> None:
+    """LAYOUT check only: 81-slot JMP table, non-override stub markers, vectors and padding.
+
+    Makes NO claim about override code bytes: any same-length byte substitution inside an
+    override passes. Never use alone to accept an untrusted ROM - call verify_dev_rom(),
+    which adds an independent rebuild comparison.
+    """
+    verify_image(data, set(overrides(root)), None, override_bodies=False)
+
+
+def verify_dev_rom_structure(data: bytes, dbg: dict, root: Path = ROOT) -> None:
+    """LAYOUT plus STRUCTURAL verification of override bodies using ld65 debug info.
+
+    Detects length-changing edits, undefined opcodes, branch/JMP/JSR targets that leave the
+    override or land mid-instruction, and fall-through into data. It does NOT prove byte
+    authenticity: a same-length substitution that keeps every instruction boundary and does not
+    fall out of the override (LDX #3 -> LDX #4, LDY #0 -> LDY #1, RTS -> RTI) passes. ld65 debug
+    info is structural evidence only; never accept an untrusted ROM on this check alone.
+    """
+    verify_image(data, set(overrides(root)), dbg, override_bodies=True)
+
+
+def _trusted_sources(root: Path) -> tuple:
+    """Cache key describing the trusted inputs a DEV ROM rebuild reads.
+
+    Covers this tool's spec file (build() always reads SLOTS_FILE = ROOT/spec/api_slots.json,
+    never root/spec/) and every .s/.cfg under root/src. This is a caching fingerprint, not a
+    security boundary: the source tree is inside the trust boundary. If a stat-visible change
+    were missed, the worst case is comparing against a previously trusted build - it can never
+    make an untrusted image pass.
+    """
+    inputs = [SLOTS_FILE, *(root / 'src').rglob('*.s'), *(root / 'src').rglob('*.cfg')]
+    return tuple(sorted((str(path), path.stat().st_size, path.stat().st_mtime_ns)
+                        for path in inputs if path.exists()))
+
+
+@functools.lru_cache(maxsize=16)
+def _trusted_dev_rom(root: Path, sources: tuple) -> bytes:
+    """Rebuild the DEV ROM from trusted sources, memoized per (root, source fingerprint).
+
+    The rebuild is ~17 ms, and the negative diagnostics re-verify one unchanged base ROM
+    thousands of times, so caching keeps those loops fast without ever caching a result
+    derived from `data`.
+    """
+    with tempfile.TemporaryDirectory(prefix='pce-dev-identity-') as tmp, \
+            contextlib.redirect_stdout(io.StringIO()):
+        return build(Path(tmp), root=root).read_bytes()
+
+
+def verify_dev_rom(data: bytes, root: Path = ROOT, manifest: Path | None = None) -> None:
+    """Accept a loaded DEV ROM only when it is byte-identical to an independent rebuild.
+
+    Stage 1 runs the layout checks (fast, specific error messages). Stage 2 rebuilds the DEV
+    ROM from the trusted source tree at `root` with build() and compares every byte of `data`
+    against that rebuild. Debug and release builds emit identical bytes (asserted by the host
+    tests), so the rebuild is a pure function of the trusted sources; the expectation never comes
+    from `data` or from any manifest shipped beside it. Tampering the ROM, its manifest, or both
+    is therefore rejected, including same-length instruction substitutions that
+    verify_dev_rom_structure() cannot see.
+
+    The rebuild is memoized per (root, source fingerprint); it is always built in debug mode and
+    always uses this tool's spec/api_slots.json, regardless of `root`.
+
+    `manifest`, when given and present, must be the manifest.json built next to this ROM: its
+    rom_sha256 is cross-checked against the rebuild and a disagreement is rejected. Other
+    manifest fields are descriptive only and never used to accept a ROM. When no manifest path
+    is given, manifest-only edits are outside this function's scope, but they still cannot make
+    tampered ROM bytes pass.
+    """
+    verify_dev_rom_layout(data, root)
+    trusted = _trusted_dev_rom(root, _trusted_sources(root))
+    if data != trusted:
+        at = next(index for index, (got, want) in enumerate(zip(data, trusted)) if got != want)
+        raise ValueError(f'DEV ROM is not byte-identical to an independent rebuild from trusted '
+                         f'sources (first difference at offset ${at:04X}: ROM ${data[at]:02X}, '
+                         f'rebuild ${trusted[at]:02X}); tampered or foreign input rejected')
+    if manifest is not None and manifest.is_file():
+        try:
+            claimed = json.loads(manifest.read_text(encoding='utf-8'))['rom_sha256']
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise ValueError(f'DEV ROM manifest is unreadable: {manifest}') from error
+        if claimed != hashlib.sha256(trusted).hexdigest():
+            raise ValueError('DEV ROM manifest rom_sha256 disagrees with the independent rebuild; '
+                             'inconsistent manifest rejected (a manifest never makes a ROM trusted)')
+
+
+def verify_image(data: bytes, overridden: set[int] | None = None, dbg: dict | None = None,
+                 override_bodies: bool = True) -> None:
     """Validate this diagnostic layout only, never System Card compatibility."""
     if len(data) != IMAGE_BYTES:
         raise ValueError("DEV ROM must contain exactly 32 8 KiB banks without a header")
-    verify_bank(data[:BANK_BYTES], overridden, dbg)
+    verify_bank(data[:BANK_BYTES], overridden, dbg, override_bodies)
     if data[BANK_BYTES:] != b"\xff" * (IMAGE_BYTES - BANK_BYTES):
         raise ValueError("DEV ROM unused banks must be FF; bank ordering/padding mismatch")
 

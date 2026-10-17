@@ -12,12 +12,12 @@ import re
 import subprocess
 
 if __package__:
-    from .build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, load_slots, render_table, verify_image
+    from .build_rom import API_IMPLEMENTATION, BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
     from .build_reset_entry import RESET_CODE
     from .environment import DEPENDENCIES, executable
     from .make_cd_image import MAGIC
 else:
-    from build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, load_slots, render_table, verify_image
+    from build_rom import API_IMPLEMENTATION, BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
     from build_reset_entry import RESET_CODE
     from environment import DEPENDENCIES, executable
     from make_cd_image import MAGIC
@@ -38,7 +38,7 @@ SYMBOLS = ("reset_entry", "reset_mpr_ready", "reset_ready", TRAP, "cd_media_stat
 
 
 def verify_cd_media_state(data: bytes, original: bytes) -> str:
-    verify_image(original)
+    verify_dev_rom(original)
     if len(data) != IMAGE_BYTES or data[:0x1000] != original[:0x1000]:
         raise ValueError("media-state image size or API table/fallback area differs")
     target = int.from_bytes(data[0x100E:0x1010], "little")
@@ -57,13 +57,11 @@ def build_cd_media_state(original_path: Path, output: Path, mode="debug") -> Pat
     if mode not in ("debug", "release"):
         raise ValueError("MODE must be debug or release")
     original = original_path.read_bytes()
-    verify_image(original)
+    verify_dev_rom(original, manifest=original_path.parent / 'manifest.json')
     ca65, ld65 = executable("ca65"), executable("ld65")
     output.mkdir(parents=True, exist_ok=True)
-    table = output / "api_table.s"
-    table.write_text(render_table(load_slots(), set()), encoding="utf-8")
-    objects = []
-    for source in (table, ROOT / "src/reset_entry.s", ROOT / "src/cd_media_state.s"):
+    objects = assemble_api_objects(output, mode)
+    for source in (ROOT / "src/reset_entry.s", ROOT / "src/cd_media_state.s"):
         obj = output / (source.stem + ".o")
         subprocess.run([ca65, str(source), "-D", "CD_MEDIA_STATE", "-o", str(obj),
                         *(["-g"] if mode == "debug" else [])], check=True)
@@ -82,7 +80,7 @@ def build_cd_media_state(original_path: Path, output: Path, mode="debug") -> Pat
     (output / "manifest.json").write_text(json.dumps({
         "status": "development-cd-media-state-not-compatible-bios", "mode": mode, "rom_sha256": digest,
         "pinned_cc65": DEPENDENCIES["cc65"]["revision"], "symbols": found, "scsi_commands": ["READ(6) LBA 0 x1"],
-        "api_implementation": "NONE", "release_eligible": False,
+        "api_implementation": API_IMPLEMENTATION, "release_eligible": False,
     }, indent=2, sort_keys=True) + "\n")
     return rom
 

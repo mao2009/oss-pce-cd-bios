@@ -7,16 +7,22 @@ import subprocess
 
 if __package__:
     from .environment import ROOT, DEPENDENCIES, executable
-    from .build_rom import verify_image
+    from .build_rom import API_IMPLEMENTATION, verify_dev_rom
 else:
     from environment import ROOT, DEPENDENCIES, executable
-    from build_rom import verify_image
+    from build_rom import API_IMPLEMENTATION, verify_dev_rom
 
 MARKERS = {1: (0x11, 0x1f), 2: (0x22, 0x2f), 3: (0x33, 0x3f),
            4: (0x44, 0x4f), 31: (0xa1, 0xaf)}
 MPR = [0xff, 0xf8, 1, 2, 31, 3, 4, 0]
 # ROM offsets of HuC6280 vectors in bank0 ($FFF6 IRQ2/BRK, $FFF8 IRQ1, $FFFA timer; $FFFC NMI unused).
 IRQ_VECTORS = {'irq2': 0x1ff6, 'irq1': 0x1ff8, 'timer': 0x1ffa}
+# Allowed modifications of the trusted base image, and nothing else: the test overlay copied over
+# file $0800-$1000 (CPU $E800-$EFFF), one marker byte at each end of banks 1/2/3/4/31, and the
+# reset/IRQ vectors at file $1FF6-$2000. The overlay copy would silently discard anything linked
+# in $E800-$EFFF, so build_probe_images() requires that whole window to still be padding.
+OVERLAY_START = 0xE800
+OVERLAY_FILE_START = 0x0800
 
 
 def parse_labels(text):
@@ -34,8 +40,12 @@ def parse_labels(text):
     return {name: result[name] for name in sorted(required)}
 
 
-def build_probe_images(base, output, mode='debug'):
-    verify_image(base)
+def build_probe_images(base, output, mode='debug', root=ROOT):
+    verify_dev_rom(base, root)
+    if base[OVERLAY_FILE_START:0x1000] != b'\xff' * (0x1000 - OVERLAY_FILE_START):
+        raise ValueError('trusted base has linked bytes in the probe overlay window '
+                         f'${OVERLAY_START:04X}-$EFFF; the overlay copy would discard them, '
+                         f'so this probe cannot be built; relocate them below ${OVERLAY_START:04X}')
     if mode not in ('debug', 'release'):
         raise ValueError('MODE must be debug or release')
     output = Path(output); output.mkdir(parents=True, exist_ok=True)
@@ -80,6 +90,7 @@ def build_probe_images(base, output, mode='debug'):
     manifest = {'status': 'original-cpu-experiments-not-bios-abi', 'mode': mode,
                 'labels': symbols, 'explicit_mpr': MPR, 'cc65_revision': DEPENDENCIES['cc65']['revision'],
                 'images': {name: {'bytes': path.stat().st_size, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
-                           for name, path in images.items()}, 'api_implementation': 'NONE'}
+                           for name, path in images.items()},
+                'api_implementation': API_IMPLEMENTATION}
     (output/'manifest.json').write_text(json.dumps(manifest, indent=2)+'\n')
     return images, symbols, traces
