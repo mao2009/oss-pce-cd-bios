@@ -166,21 +166,6 @@
       </div>
     </section>
 
-    <section id="faq" class="section" aria-labelledby="faq-title">
-      <div class="wrap">
-        <div class="section-heading">
-          <p class="eyebrow">04 / よくある質問</p>
-          <h2 id="faq-title">今、何ができるの？</h2>
-          <p class="section-intro">検索やAIによる案内でも誤解が起きないよう、実装済みの機能と未検証の範囲を分けて説明します。</p>
-        </div>
-        <div class="card-grid">
-          <article class="card"><span class="number">01 / 対応状況</span><h3>実際のゲームで使えるBIOS？</h3><p>まだ使えません。256KiBの開発用ROMには呼び出せるEX_GETVERが1件あり、残り80スロットは未実装です。市販ゲームの互換性や配布可能な製品版は未達成です。</p></article>
-          <article class="card"><span class="number">02 / 検証</span><h3>どこまで動作確認した？</h3><p>Geargrafxの実コアでEX_GETVERの復帰と合成CDセクター読み込みを確認しています。ただし純正BIOSの完全なABI互換性やゲーム起動の証明ではありません。<a href="https://github.com/mao2009/oss-pce-cd-bios/pull/174">PR #174</a> を参照してください。</p></article>
-          <article class="card"><span class="number">03 / 参加</span><h3>開発に参加するには？</h3><p><a href="https://github.com/mao2009/oss-pce-cd-bios/issues">GitHub Issues</a>から仕様調査、テスト、独自実装に取り組めます。<a href="https://github.com/mao2009/oss-pce-cd-bios/blob/main/CONTRIBUTING.md">参加方針</a>を確認し、純正BIOSデータをアップロードしないでください。</p></article>
-        </div>
-      </div>
-    </section>
-
     <section id="contribute" class="section" aria-labelledby="contribute-title">
       <div class="wrap">
         <div class="section-heading">
@@ -203,6 +188,21 @@
 <span>$</span> make dev-integration  <span># 開発用BIOS APIの検証</span></code></pre>
         </div>
         <div class="contribute-note"><span class="lock" aria-hidden="true">◇</span><div><strong>コードの来歴とライセンスも開発の一部です。</strong><p>純正BIOS ROM、市販ディスク、権利保護されたコード、私的なバイナリ抽出物をPRやログへ含めないでください。既存OSSの流用にはファイル単位のライセンス・来歴審査と人間の承認が必要です。合成テストには私有BIOSは不要です。詳しくは <a href="https://github.com/mao2009/oss-pce-cd-bios/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a> と <a href="https://github.com/mao2009/oss-pce-cd-bios/blob/main/docs/provenance.md">来歴ポリシー</a> を参照してください。</p></div></div>
+      </div>
+    </section>
+
+    <section id="faq" class="section" aria-labelledby="faq-title">
+      <div class="wrap">
+        <div class="section-heading">
+          <p class="eyebrow">04 / よくある質問</p>
+          <h2 id="faq-title">今、何ができるの？</h2>
+          <p class="section-intro">検索やAIによる案内でも誤解が起きないよう、実装済みの機能と未検証の範囲を分けて説明します。</p>
+        </div>
+        <div class="card-grid">
+          <article class="card"><span class="number">01 / 対応状況</span><h3>実際のゲームで使えるBIOS？</h3><p>まだ使えません。256KiBの開発用ROMには呼び出せるEX_GETVERが1件あり、残り80スロットは未実装です。市販ゲームの互換性や配布可能な製品版は未達成です。</p></article>
+          <article class="card"><span class="number">02 / 検証</span><h3>どこまで動作確認した？</h3><p>Geargrafxの実コアでEX_GETVERの復帰と合成CDセクター読み込みを確認しています。ただし純正BIOSの完全なABI互換性やゲーム起動の証明ではありません。<a href="https://github.com/mao2009/oss-pce-cd-bios/pull/174">PR #174</a> を参照してください。</p></article>
+          <article class="card"><span class="number">03 / 参加</span><h3>開発に参加するには？</h3><p><a href="https://github.com/mao2009/oss-pce-cd-bios/issues">GitHub Issues</a>から仕様調査、テスト、独自実装に取り組めます。<a href="https://github.com/mao2009/oss-pce-cd-bios/blob/main/CONTRIBUTING.md">参加方針</a>を確認し、純正BIOSデータをアップロードしないでください。</p></article>
+        </div>
       </div>
     </section>
 
