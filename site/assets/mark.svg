@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="oss-pce-cd-bios">
+  <rect x="7" y="7" width="50" height="50" rx="13" fill="#142c37" stroke="#80f0d8" stroke-width="3"/>
+  <circle cx="32" cy="32" r="14" fill="none" stroke="#91b7ff" stroke-width="3"/>
+  <circle cx="32" cy="32" r="4" fill="#80f0d8"/>
+  <path d="M32 18v-7M46 32h7M32 46v7M18 32h-7" stroke="#80f0d8" stroke-width="3" stroke-linecap="round"/>
+</svg>
