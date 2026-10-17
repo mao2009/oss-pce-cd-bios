@@ -4,15 +4,73 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#090e17">
-  <meta name="description" content="PCエンジン CD-ROM²向けのオープンソース System Card BIOS 代替実装。ミッション、実測に基づく進捗、コントリビューター向け案内。">
+  <meta name="description" content="PCエンジン CD-ROM² / SUPER CD-ROM² 向けSystem Card 3.0のオープンソースBIOS代替開発。Geargrafx実測、進捗、課題、開発参加方法を公開しています。">
+  <link rel="canonical" href="https://mao2009.github.io/oss-pce-cd-bios/ja/">
+  <meta name="robots" content="index, follow">
   <meta property="og:type" content="website">
-  <meta property="og:title" content="oss-pce-cd-bios — 検証可能なオープンファームウェアへ">
-  <meta property="og:description" content="PCエンジンCDのBIOSを独立したOSSとして開発するプロジェクト。現在は開発段階です。">
+  <meta property="og:site_name" content="oss-pce-cd-bios">
+  <meta property="og:url" content="https://mao2009.github.io/oss-pce-cd-bios/ja/">
+  <meta property="og:locale" content="ja_JP">
+  <meta property="og:locale:alternate" content="en_US">
+  <meta property="og:title" content="oss-pce-cd-bios — PCエンジンCDのOSS BIOS開発">
+  <meta property="og:description" content="System Card 3.0の独立した代替実装。実測に基づく進捗、未実装の課題、コントリビューター向け情報を公開。">
   <link rel="alternate" hreflang="en" href="https://mao2009.github.io/oss-pce-cd-bios/">
   <link rel="alternate" hreflang="ja" href="https://mao2009.github.io/oss-pce-cd-bios/ja/">
+  <link rel="alternate" hreflang="x-default" href="https://mao2009.github.io/oss-pce-cd-bios/">
   <link rel="icon" type="image/svg+xml" href="../assets/mark.svg">
   <link rel="stylesheet" href="../assets/styles.css">
-  <title>oss-pce-cd-bios — オープンなSystem Card BIOSを目指して</title>
+  <title>PCエンジンCD オープンソースBIOS開発 | oss-pce-cd-bios</title>
+  <script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebSite",
+      "@id": "https://mao2009.github.io/oss-pce-cd-bios/#website",
+      "name": "oss-pce-cd-bios",
+      "url": "https://mao2009.github.io/oss-pce-cd-bios/",
+      "description": "Independent, open-source PC Engine CD System Card BIOS replacement development project.",
+      "inLanguage": [
+        "en",
+        "ja"
+      ]
+    },
+    {
+      "@type": "SoftwareSourceCode",
+      "@id": "https://github.com/mao2009/oss-pce-cd-bios#source",
+      "name": "oss-pce-cd-bios",
+      "url": "https://github.com/mao2009/oss-pce-cd-bios",
+      "codeRepository": "https://github.com/mao2009/oss-pce-cd-bios",
+      "license": "https://github.com/mao2009/oss-pce-cd-bios/blob/main/LICENSE",
+      "description": "Development-only open-source replacement for the PC Engine / TurboGrafx-CD Super System Card 3.0 BIOS. One callable DEV EX_GETVER slot; 80 nonreturning stub slots; full ABI and commercial compatibility unverified.",
+      "programmingLanguage": "Assembly",
+      "keywords": [
+        "PC Engine",
+        "TurboGrafx-CD",
+        "Super System Card 3.0",
+        "CD-ROM2",
+        "HuC6280",
+        "open-source BIOS",
+        "Geargrafx"
+      ]
+    },
+    {
+      "@type": "WebPage",
+      "@id": "https://mao2009.github.io/oss-pce-cd-bios/ja/#webpage",
+      "url": "https://mao2009.github.io/oss-pce-cd-bios/ja/",
+      "inLanguage": "ja",
+      "name": "PCエンジンCD オープンソースBIOS開発 | oss-pce-cd-bios",
+      "description": "PCエンジン CD-ROM² / SUPER CD-ROM² 向けSystem Card 3.0のオープンソースBIOS代替開発。Geargrafx実測、進捗、課題、開発参加方法を公開しています。",
+      "isPartOf": {
+        "@id": "https://mao2009.github.io/oss-pce-cd-bios/#website"
+      },
+      "about": {
+        "@id": "https://github.com/mao2009/oss-pce-cd-bios#source"
+      }
+    }
+  ]
+}
+  </script>
 </head>
 <body>
   <a class="skip-link" href="#content">本文へスキップ</a>
@@ -104,6 +162,21 @@
         <div class="evidence">
           <div class="evidence-item"><span class="evidence-symbol" aria-hidden="true">✓</span><div><h3>Geargrafx実コアで観測済み</h3><p>EX_GETVERのcold/warm呼び出し・復帰、合成CDのREAD(6)からRAMへの転送、独立した初期化診断など。</p></div></div>
           <div class="evidence-item"><span class="evidence-symbol pending" aria-hidden="true">!</span><div><h3>未確定・未実装の領域</h3><p>純正BIOSの完全なABI、CD_RESET/CD_BASE/CD_READの実API、自作CDのBIOS経由起動、別コア・実機の互換性。</p></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="faq" class="section" aria-labelledby="faq-title">
+      <div class="wrap">
+        <div class="section-heading">
+          <p class="eyebrow">04 / よくある質問</p>
+          <h2 id="faq-title">今、何ができるの？</h2>
+          <p class="section-intro">検索やAIによる案内でも誤解が起きないよう、実装済みの機能と未検証の範囲を分けて説明します。</p>
+        </div>
+        <div class="card-grid">
+          <article class="card"><span class="number">01 / 対応状況</span><h3>実際のゲームで使えるBIOS？</h3><p>まだ使えません。256KiBの開発用ROMには呼び出せるEX_GETVERが1件あり、残り80スロットは未実装です。市販ゲームの互換性や配布可能な製品版は未達成です。</p></article>
+          <article class="card"><span class="number">02 / 検証</span><h3>どこまで動作確認した？</h3><p>Geargrafxの実コアでEX_GETVERの復帰と合成CDセクター読み込みを確認しています。ただし純正BIOSの完全なABI互換性やゲーム起動の証明ではありません。<a href="https://github.com/mao2009/oss-pce-cd-bios/pull/174">PR #174</a> を参照してください。</p></article>
+          <article class="card"><span class="number">03 / 参加</span><h3>開発に参加するには？</h3><p><a href="https://github.com/mao2009/oss-pce-cd-bios/issues">GitHub Issues</a>から仕様調査、テスト、独自実装に取り組めます。<a href="https://github.com/mao2009/oss-pce-cd-bios/blob/main/CONTRIBUTING.md">参加方針</a>を確認し、純正BIOSデータをアップロードしないでください。</p></article>
         </div>
       </div>
     </section>
