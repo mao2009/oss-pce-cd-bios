@@ -120,13 +120,17 @@ pinned Geargrafx `b49ae82a` の静的コード確認（コード上の事実で�
 | H7 | 命令予算 / タイムアウト | 無限ループ・未復帰・時間超過 | あり: 1 命令ずつ実行し予算超過で停止 | 実測（同上） | 充足 |
 
 判定関数（`tools/cdreset_safety_preflight.py::decide`）は、**全危険が副作用前に充足**し、
-かつ **ABI が `REVIEWED` で entry environment が再現**されている場合のみ `ALLOWED` を返す。
+かつ **ABI が `REVIEWED` で entry environment が再現**されているモデル入力に対してのみ
+`MODEL_ELIGIBLE` を返す。これは**合成モデル上の適格性であり、純正 BIOS JSR の実行許可ではない**。
+実行許可には #179 / #173 の独立した実コア側の副作用前強制と承認済み ABI 証拠が別途必要で、
+本判定関数は `ALLOWED` を返さず、slot `$01` の実行ゲートも解放しない。
 現行 `CURRENT_POSTURE`（#170）は H3 を「`$FF` 禁止による到達不能」でしか塞げず、その同じ
 MPR 固定が HuCC 規約の entry（MPR0=`$FF`, HYPOTHESIS）を再現しないため、H3/H4/H5 と entry
 再現が未充足となり `BLOCKED` になる。UNKNOWN ABI は「何でも起こりうる」ため、どの危険も
 免除しない。安全不明の I/O を許可する posture（`hardware_page_policy` = `allow`）は H3
-未充足として拒否する。合成 posture の正例が `ALLOWED` を返すため、この判定は反証可能
-（トートロジーではない）。
+未充足として拒否する。また `forbid` が候補エントリの MPR0=`$FF` 仮説と衝突するときは
+`H3:` 固有の拒否理由を返す。合成 posture の正例は `MODEL_ELIGIBLE` になるためモデル判定は
+反証可能（トートロジーではない）が、実コアの副作用前遮断や純正 BIOS の動作を検証した証拠ではない。
 
 `python3 tools/cdreset_safety_preflight.py --check` は上記を評価して `BLOCKED: ...` を表示し
 exit 3 を返す。ホストテスト `tests/host/test_cdreset_safety_preflight.py` は合成 posture の
