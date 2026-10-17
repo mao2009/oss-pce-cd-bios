@@ -1,12 +1,16 @@
 # Roadmap — evidence-graded milestones (no date promises)
 
-Use [status](status.md) to distinguish actual **main** code from Draft PRs (snapshot: main `c20ac06`, 2026-10-16).
-A completed **diagnostic** is not an implemented **compatible BIOS API**.
+Use the [dated implementation status](status.md) to distinguish merged **main** code,
+real Geargrafx observations and unmerged work. Baseline: [PR #174](https://github.com/mao2009/oss-pce-cd-bios/pull/174)
+merged as `05a0ea54` on 2026-10-17; later [#175](https://github.com/mao2009/oss-pce-cd-bios/pull/175)
+updated public status wording and [#176](https://github.com/mao2009/oss-pce-cd-bios/pull/176)
+added community Pages. A completed **diagnostic**, even one executing an original
+OSS routine, is not proof of a **fully reference-compatible BIOS API** or release.
 
 ## M0 — Foundation and diagnostics
 
 - [x] Reproducible original HuCARD fixture, pinned tools, host tests and real Geargrafx CI
-- [x] Original 256 KiB System Card **development diagnostic** with 81 candidate entries and fail-closed stubs
+- [x] Original 256 KiB System Card **development-only** ROM with 81 candidate entries: one callable `EX_GETVER` override and 80 fail-closed nonreturning stubs ([#174](https://github.com/mao2009/oss-pce-cd-bios/pull/174))
 - [x] Real-core System Card loader/reset, slot, RAM/MPR/stack/IRQ observations and isolated startup checkpoint with non-zero CD-state marker ([#127](https://github.com/mao2009/oss-pce-cd-bios/pull/127))
 - [x] Real-core guest READ(6) on synthetic discs, 1–3 2048-byte sectors, full RAM/phase/negative checks
 - [x] Isolated real-core Geargrafx trace harness, CD status classifier and host-only CD_BASE model (not BIOS services)
@@ -14,11 +18,14 @@ A completed **diagnostic** is not an implemented **compatible BIOS API**.
 - [x] CD_BASE ABI evidence ledger ([#128](https://github.com/mao2009/oss-pce-cd-bios/pull/128)): six Issue #11 items recorded; ABI remains UNKNOWN
 - [ ] Verify historical/production ROM mapping/vectors and essential **caller ABI** against independent evidence (#1/#3)
 
-## M1 — First genuine callable firmware services
+## M1 — Callable development firmware services and ABI validation
 
-- [ ] Implement actual System Card initialization instead of development reset checkpoint (#4)
-- [ ] Implement essential caller-visible API (`CD_RESET`, `CD_BASE`, `CD_READ` as contracts permit) with input/output, flags, RAM/MPR/stack/IRQ, errors and negative tests
-- [ ] Verify real caller → callee → return execution; preserve strict release gates
+- [x] Implement the first **development-only callable OSS** service: `EX_GETVER` at slot `$1E` (candidate entry `$E05A`), returning X=3, Y=0 and preserving A in the tested setup ([#174](https://github.com/mao2009/oss-pce-cd-bios/pull/174))
+- [x] Observe DEV `EX_GETVER` caller → callee → RTS return and balanced SP in pinned real Geargrafx cold/warm runs; retain independent-rebuild ROM byte-identity checks and blocked release gate
+- [ ] Independently validate the **full reference-BIOS `EX_GETVER` ABI** (including relevant flags/interrupts/conditions, provenance and cross-emulator evidence); [Issue #40](https://github.com/mao2009/oss-pce-cd-bios/issues/40) remains open; `abi: UNVERIFIED`
+- [ ] Implement actual System Card initialization instead of the development reset checkpoint (#4)
+- [ ] Implement callable `CD_RESET`, `CD_BASE`, `CD_READ` only as contracts permit, with inputs/outputs, flags, RAM/MPR/stack/IRQ, errors and negative tests. Current bus/host models are **not** callable BIOS services
+- [ ] Test those new callers end-to-end, independently cross-check significant behaviors and satisfy all provenance/compatibility gates before any firmware release
 
 ## M2 — Self-authored CD program boot
 
@@ -43,6 +50,11 @@ A completed **diagnostic** is not an implemented **compatible BIOS API**.
 ## Boundaries
 
 ROM size, loader acceptance, diagnostic PC checkpoint, synthetic sector read,
-RAM payload execution, BIOS service call, homebrew disc boot, retail boot and
-playability are **different evidence milestones**. Geargrafx is not physical
-hardware proof. `make release` stays blocked until compatibility gates pass.
+RAM payload execution, DEV-only caller return, independently verified reference
+BIOS ABI, homebrew disc boot, retail boot and playability are **different
+milestones**. Geargrafx is not physical hardware proof. The guarded reference-ROM
+90-function/270-scenario **plan** from [#170](https://github.com/mao2009/oss-pce-cd-bios/pull/170)
+does not mean those tests have been run, and optional private reference firmware
+is never a distributed or CI input. `make release` remains BLOCKED;
+`release_eligible: false` until compatibility, provenance and independent
+verification gates are satisfied.

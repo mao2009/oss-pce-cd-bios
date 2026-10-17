@@ -84,12 +84,17 @@ version observations are compared; arbitrary power-on RAM is not deterministic.
 
 ## DEV ROM verification layers
 
-The development `build/debug/bios-dev/dev-only-not-compatible-syscard3.pce` is accepted by
-callers in three distinct layers, and only the last is an acceptance gate:
+Since merged [PR #174](https://github.com/mao2009/oss-pce-cd-bios/pull/174), the
+256 KiB development ROM has **81 candidate slots: one original callable OSS
+`EX_GETVER` override at slot `$1E` (candidate entry `$E05A`) and 80 nonreturning
+stubs**. This is development-only functionality, not a verified reference BIOS
+ABI or release-eligible firmware. The on-disk
+`build/debug/bios-dev/dev-only-not-compatible-syscard3.pce` image is checked in
+three distinct layers; only the last is a byte-identity acceptance gate:
 
 | Function (`tools/build_rom.py`) | Checks | Blind to |
 | --- | --- | --- |
-| `verify_dev_rom_layout` | 81-slot table, stub markers, vectors, padding | every override byte |
+| `verify_dev_rom_layout` | 81-slot table, remaining stub markers, vectors, padding | every override byte |
 | `verify_dev_rom_structure` | the above plus ld65/da65 instruction boundaries, target ranges and fall-through | same-length substitutions (e.g. `LDX #3`→`LDX #4`, `LDY #0`→`LDY #1`, `RTS`→`RTI`) |
 | `verify_dev_rom` | layout plus **byte identity against an independent rebuild** of the trusted source tree | nothing in the ROM image |
 
@@ -109,12 +114,14 @@ read back from disk goes through `verify_dev_rom` before any code assumes a trus
 | Fixture assembly/format/layout/reproducibility | PASS when the above host checks run |
 | Real Geargrafx HuCARD reset/marker/TAM/TMA/TII | PASS when integration produces its evidence |
 | PC/MPR register trace through standalone MCP | NOT_RUN locally; SDL3 missing; #103 |
-| System Card diagnostic load/reset/bank/RAM/IRQ | Scoped real-core PASS; not production BIOS |
+| System Card DEV ROM load/reset/bank/RAM/IRQ | Scoped real-core diagnostic observations; not production BIOS initialization |
+| Callable DEV-only `EX_GETVER` (`$1E`, candidate `$E05A`) | Real Geargrafx cold/warm caller → OSS callee → RTS return observed by `make dev-integration`: X=3, Y=0, A preserved and SP balanced ([#174](https://github.com/mao2009/oss-pce-cd-bios/pull/174)); **reference BIOS ABI remains UNVERIFIED** |
 | Independent startup/MPR/stack marker | Real-core diagnostic `dev-startup-integration`; not BIOS initialization |
 | Guest synthetic CD READ(6)→RAM | Real-core diagnostic `dev-cdread-integration`; not BIOS `CD_READ` |
 | Synthetic CD→RAM code execution/return | `dev-cdload-exec-integration` (merged #122); not BIOS service, not CD boot |
-| Production BIOS boot and caller ABI | NOT_IMPLEMENTED/NOT_TESTED; #1/#3/#4 |
-| BIOS APIs and homebrew disc boot | NOT_IMPLEMENTED/NOT_TESTED on main |
+| Production System Card initialization and BIOS-mediated CD boot | NOT_IMPLEMENTED/NOT_TESTED; #1/#3/#4; synthetic CD→RAM execution is not BIOS-mediated boot |
+| Remaining 80 candidate BIOS API slots and CD services | 80 nonreturning stubs; callable `CD_RESET`/`CD_BASE`/`CD_READ` NOT_IMPLEMENTED despite separate transport/host diagnostics |
+| Reference-BIOS caller ABI (including full `EX_GETVER` contract) | UNVERIFIED/PENDING independent comparison; the DEV-only return observation does not certify production ABI or IRQ/NMI/hardware behavior |
 | Independent emulator or real hardware | NOT_TESTED; #7 |
 | Commercial games | NOT_TESTED; no inputs required or distributed |
 
@@ -132,15 +139,18 @@ Nightly's live schedule/skip behavior is separate from host recovery tests; [nig
 not every standalone System Card diagnostic. After `make setup`:
 
 ```sh
-make dev-test                   # 81-slot diagnostic and real-core slot observations
+make dev-test                   # 81 candidate slots, host API tests and real-core DEV checks
+make dev-integration            # EX_GETVER DEV-only caller return; other 80 slots are stubs
 make dev-startup-integration    # separate reset/MPR/stack marker
 make dev-cdread-integration     # guest READ(6), full RAM and SCSI checks
 make dev-trace-integration      # isolated pinned real-core trace and negative checks
 make dev-release-gate-blocked   # intentional non-release assertion
 ```
 
-`.github/workflows/api-source.yml` runs these experiments with related
-host tests, debug/release binary comparison and the release refusal.
+`.github/workflows/api-source.yml` runs DEV `EX_GETVER` real-core integration
+and the independent CD/startup experiments with related host tests,
+debug/release binary comparison and the release refusal. A passing DEV test
+is not a complete caller-ABI verification or a playable BIOS.
 `.github/workflows/ci.yml` covers HuCARD/host/provenance; Nightly only
 covers the HuCARD fixture. **Nightly PASS does not imply CD/BIOS PASS.**
 
@@ -154,7 +164,17 @@ alone never resets the core; they are expected failures, never a pass. The
 audio-track and no-media READ(6) observations apply only to Geargrafx. See [CD diagnostics](cd-read-diagnostic.md),
 [CPU evidence](geargrafx-contract-evidence.md) and [status](status.md).
 
-CD status classification (#115), evidence schema (#116), real-core trace harness (#119),
-host-only CD_BASE model (#120), CD_RESET bus-reset diagnostic (#121) and synthetic RAM payload
-execution (#122), the startup CD-state record (#127) and the CD_BASE ABI evidence ledger (#128) are **on main** at snapshot `c20ac06`. Draft #118 (and #125, #126) remain **branch-only**; #122's
-RAM payload execution is *not* boot.
+Evidence-scoped snapshot: merged [#118](https://github.com/mao2009/oss-pce-cd-bios/pull/118)
+provides a `CD_READ` contract ledger/model, **not** a callable firmware callee;
+[#120](https://github.com/mao2009/oss-pce-cd-bios/pull/120) is a host-only
+`CD_BASE` model; [#121](https://github.com/mao2009/oss-pce-cd-bios/pull/121)
+probes CD bus reset but is **not** callable `CD_RESET`; [#122](https://github.com/mao2009/oss-pce-cd-bios/pull/122)
+executes a synthetic RAM payload but is **not** firmware-mediated disc boot.
+[#125](https://github.com/mao2009/oss-pce-cd-bios/pull/125) and later producer/consumer
+work supply attestation and signed-verdict infrastructure, not a guarantee of
+compatible behavior. Trusted `VERIFIED` promotion remains BLOCKED pending
+[#171](https://github.com/mao2009/oss-pce-cd-bios/issues/171). The guarded
+reference-BIOS scenario **plan** in [#170](https://github.com/mao2009/oss-pce-cd-bios/pull/170)
+is not evidence that all planned scenarios ran. Private reference ROMs are not
+part of CI or public deliverables. Consult the [dated implementation status](status.md)
+for the scope of any later changes.
