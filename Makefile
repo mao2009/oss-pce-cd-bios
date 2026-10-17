@@ -18,6 +18,7 @@ test: build
 
 integration: build
 	$(PYTHON) tests/integration/geargrafx_smoke.py --rom "build/$(MODE)/smoke-test-not-bios.pce" --output "build/$(MODE)/geargrafx-evidence.json"
+	$(PYTHON) tests/integration/geargrafx_reference_guard.py
 
 check:
 	$(PYTHON) tools/contracts.py
@@ -90,3 +91,19 @@ dev-cdda: dev-rom
 
 dev-cdda-integration: dev-cdda
 	$(PYTHON) tests/integration/geargrafx_cdda.py --mode "$(MODE)"
+
+.PHONY: dev-reset-entry dev-reset-entry-integration
+# Opt-in Issue #143 minimal reset entry; separate from the default DEV ROM and other diagnostics.
+dev-reset-entry: dev-rom
+	$(PYTHON) tools/build_reset_entry.py --mode "$(MODE)"
+
+dev-reset-entry-integration: dev-reset-entry
+	$(PYTHON) tests/integration/geargrafx_reset_entry.py --mode "$(MODE)"
+
+.PHONY: dev-cd-media-state dev-cd-media-state-integration
+# Opt-in Issue #144 media-state observation point called from the #143 reset entry.
+dev-cd-media-state: dev-rom
+	$(PYTHON) tools/build_cd_media_state.py --mode "$(MODE)"
+
+dev-cd-media-state-integration: dev-cd-media-state
+	$(PYTHON) tests/integration/geargrafx_cd_media_state.py --mode "$(MODE)"

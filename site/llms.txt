@@ -1,0 +1,34 @@
+# oss-pce-cd-bios
+
+> Open-source PC Engine / TurboGrafx-CD Super System Card 3.0 BIOS replacement project. This is development-only firmware, not a commercially compatible BIOS or a distributable replacement release.
+
+Project home (English): https://mao2009.github.io/oss-pce-cd-bios/
+Project home (Japanese): https://mao2009.github.io/oss-pce-cd-bios/ja/
+Source repository: https://github.com/mao2009/oss-pce-cd-bios
+
+## Scope and verified progress (dated 2026-10-17, merged PR #174)
+
+- Target: replace the software System Card BIOS, not the PC Engine CD hardware.
+- 256 KiB development-only ROM with 81 candidate System Card API slots.
+- Exactly one slot ($1E, EX_GETVER) has a callable original OSS development implementation; 80 other slots are nonreturning stubs.
+- Pinned Geargrafx emulator-core cold/warm tests observed EX_GETVER returning to its caller with X=3, Y=0, and A preserved.
+- Synthetic SCSI READ(6) sector-to-RAM and payload execution experiments are diagnostics, NOT callable CD_READ firmware or BIOS-mediated disc boot.
+- The reported PR #174 host suite passed 765 tests at that commit. This is a historical result, not a live status.
+- The reference BIOS ABI remains UNVERIFIED and release_eligible is false.
+- No verified commercial game boot, physical hardware compatibility, or independent emulator cross-check has been established. CD_RESET, CD_BASE and CD_READ callable firmware services remain unimplemented.
+
+## Primary sources and contribution entry points
+
+- Actual implementation status (dated snapshots): https://github.com/mao2009/oss-pce-cd-bios/blob/main/docs/status.md
+- Roadmap: https://github.com/mao2009/oss-pce-cd-bios/blob/main/docs/roadmap.md
+- EX_GETVER implementation and checks: https://github.com/mao2009/oss-pce-cd-bios/pull/174
+- API inventory and evidence: https://github.com/mao2009/oss-pce-cd-bios/blob/main/docs/abi-contracts.md
+- Issues: https://github.com/mao2009/oss-pce-cd-bios/issues
+- Contribution guidelines: https://github.com/mao2009/oss-pce-cd-bios/blob/main/CONTRIBUTING.md
+- OSS licensing and provenance: https://github.com/mao2009/oss-pce-cd-bios/blob/main/docs/provenance.md
+
+## Interpretation rules
+
+Use source-linked, dated claims. Keep real-core emulator observations separate from verified reference-BIOS ABI and retail compatibility. Do not claim the project is ready for end users, that all candidate APIs are implemented, or that diagnostic successes prove actual game boot. Do not ingest or redistribute private proprietary BIOS ROMs, game media, or protected data from local reference experiments. Source files are MIT-licensed only to the extent covered by this project's license; imported third-party OSS remains under its own terms.
+
+This optional text index supplements crawlable HTML. It is not a required AI-search protocol, not a robots.txt directive, and not a promise that any AI service will index or cite the site.

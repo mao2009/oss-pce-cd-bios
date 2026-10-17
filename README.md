@@ -2,7 +2,7 @@
 
 A redistributable **PC Engine / TurboGrafx-CD System Card BIOS replacement** built from original and properly licensed reusable OSS code.
 
-> **Status: development-only diagnostics, not a compatible BIOS.** Main builds an original HuCARD fixture and a separate 81-slot System Card diagnostic ROM. Real pinned Geargrafx verifies startup checkpoints and guest synthetic-CD READ(6) → RAM, but **no caller-visible BIOS API, CD-game boot or retail compatibility** is established. See the [dated implementation status](docs/status.md).
+> **Status: development-only firmware, not a compatible BIOS.** Main builds an original HuCARD fixture and a separate 256 KiB System Card DEV ROM with 81 candidate jump-table entries: **one callable OSS `EX_GETVER` service** (slot `$1E`, entry `$E05A`) and **80 nonreturning stubs**. Pinned Geargrafx real-core tests observe `EX_GETVER` caller return on cold/warm runs, alongside separate startup and synthetic-CD READ(6) → RAM diagnostics. **Full reference-BIOS ABI compatibility, callable CD services, BIOS-mediated disc boot, retail-game compatibility and release eligibility are not established.** See the [dated implementation status](docs/status.md).
 
 ## Objectives
 
@@ -74,23 +74,23 @@ make build MODE=release
 `make setup` keeps external sources outside this repository and is safe to repeat.
 The default `MODE=debug` includes a listing and debug information; release mode
 produces the same test ROM with fewer debugging artifacts. `make release` refuses
-to publish a BIOS while APIs and System Card boot remain unimplemented.
+to publish a BIOS because most APIs and System Card boot remain unimplemented.
 
 On **main** the additional, development-only targets are:
 
 ```sh
-make dev-rom                    # 256 KiB, 81 candidate API slots, nonreturning stubs
-make dev-test                   # real-core System Card slot/CPU diagnostics
+make dev-rom                    # 256 KiB; 1 EX_GETVER override + 80 nonreturning stubs
+make dev-test                   # host API tests plus DEV ROM real-core integration
+make dev-integration            # EX_GETVER cold/warm caller/return observations
 make dev-startup-integration    # separate reset/MPR/stack checkpoint
 make dev-cdread-integration     # guest READ(6), full-byte RAM/phase checks
 make dev-trace-integration      # real-core isolated trace and negative checks
 make dev-release-gate-blocked   # expected refusal; NOT a firmware release
 ```
 
-The low-level **CD sector read diagnostic works**; the System Card **CD_READ
-callee is unimplemented**, as are production boot and other BIOS services.
-The self-authored CD→RAM execution experiment is merged as a diagnostic
-([#122](https://github.com/mao2009/oss-pce-cd-bios/pull/122)); it is not itself a CD boot.
+**`EX_GETVER` is the first callable, development-only BIOS API** ([#174](https://github.com/mao2009/oss-pce-cd-bios/pull/174)): the OSS implementation returns X=3/Y=0 and preserves A in the tested caller contract. The full reference ABI and behavior on other emulators or physical hardware are **not verified**; Issue [#40](https://github.com/mao2009/oss-pce-cd-bios/issues/40) remains open. The DEV ROM manifest keeps `abi: UNVERIFIED` and `release_eligible: false`.
+
+The low-level **CD sector read diagnostic works**, but callable `CD_RESET`, `CD_BASE` and **`CD_READ` are not implemented**. The self-authored CD→RAM execution experiment ([#122](https://github.com/mao2009/oss-pce-cd-bios/pull/122)) is a diagnostic, **not** BIOS-mediated CD boot. ROM byte-identity checks protect the DEV image against unintended modifications; they do not prove BIOS compatibility.
 CI tests original HuCARD and separate DEV diagnostics; Nightly is HuCARD-only.
 See [building](docs/building.md), [testing](docs/testing.md) and the
 [81-slot scaffold limits](docs/api-stub-scaffold.md).

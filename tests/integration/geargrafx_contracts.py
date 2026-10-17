@@ -6,8 +6,56 @@ import subprocess
 from diagnostics import MPR, build_probe_images
 
 
-def execute(probe, rom, cue, labels, irq='none'):
-    result = subprocess.run([str(probe), str(rom), str(cue), '512', str(labels), irq],
+# API callees implemented by this firmware, with the contract measured against the
+# private reference BIOS. Only slot $1E (EX_GETVER) currently; everything else is a
+# nonreturning diagnostic stub. Values are what the guest must observe on return.
+#
+# P register: only a partial bitmask is asserted, never the whole byte. The emulator seeds the
+# initial CPU state from a PRNG, so P (in particular carry, overflow and decimal) differs between
+# runs and environments - the caller's carry was 1 in one cold run and 0 in another. The asserted
+# bits are Z=1 and N=0 (LDY #0 is the last flag-setting instruction) and I=1 (the caller's SEI,
+# which the callee does not clear). Carry is not claimed to hold a value; instead carry-in vs
+# carry-out equality across the JSR/RTS is verified on the real core. See FLAG_* below.
+IMPLEMENTED_SLOTS = {0x1E: {'a': 0x11, 'x': 3, 'y': 0, 'sp': 255}}
+
+FLAG_CARRY, FLAG_ZERO, FLAG_INTERRUPT, FLAG_NEGATIVE = 0x01, 0x02, 0x04, 0x80
+
+
+def check_implemented_slot(records, symbols, slot, expected):
+    """Assert the measured partial contract of an implemented API slot on real-core records.
+
+    Registers A/X/Y/SP are compared to `expected` (IMPLEMENTED_SLOTS). P is checked as a
+    bitmask only: Z=1, N=0, I=1, plus carry preserved from the caller's P at the same JSR
+    checkpoint. V and D are not asserted, and the absolute P byte is never fixed. Returns
+    nothing; raises ValueError on any deviation (used by the negative tests).
+    """
+    if len(records['OBS']) < 4:  # loaded/cold/nonreturning/warm; otherwise the loop below is vacuous
+        raise ValueError('execution records are incomplete; the contract cannot be established')
+    for row in records['OBS'][1:]:
+        if (row['pc'], row['mpr']) != (symbols['api_call_return']+3, MPR):
+            raise ValueError('implemented API did not return to the caller continuation')
+        observed = {r: row[r] for r in expected}
+        if observed != expected:
+            raise ValueError(f'API ${slot:02X} returned {observed}, measured {expected}')
+        if not row['p'] & FLAG_ZERO:
+            raise ValueError(f'API ${slot:02X} returned with Z clear; the measured contract requires Z=1')
+        if row['p'] & FLAG_NEGATIVE:
+            raise ValueError(f'API ${slot:02X} returned with N set; the measured contract requires N=0')
+        if not row['p'] & FLAG_INTERRUPT:
+            raise ValueError(f'API ${slot:02X} returned with I clear; the measured contract requires I=1')
+        caller_p = trace(records, row['cycle'], 'api_jsr')['p']
+        if (row['p'] ^ caller_p) & FLAG_CARRY:
+            raise ValueError(f'API ${slot:02X} did not preserve carry across the call')
+        if bytes.fromhex(row['work_ram_0200_hex'])[0x11] != expected['a']:
+            raise ValueError('implemented API did not preserve the caller accumulator in RAM')
+    for cycle in ('cold', 'warm'):
+        if not any(r['cycle'] == cycle and r['phase'] == 'api_call_return' for r in records['TRACE']):
+            raise ValueError('implemented API did not return to the caller')
+
+
+def execute(probe, rom, cue, labels, irq='none', media=True, steps=512):
+    """cue '-' + media=False runs the no-media branch (#142): CD hardware on, no disc."""
+    result = subprocess.run([str(probe), str(rom), str(cue), str(steps), str(labels), irq],
                             check=True, capture_output=True, text=True, timeout=30)
     records = {}
     for prefix in ('OBS', 'TRACE', 'CAP', 'BANK'):
@@ -15,7 +63,7 @@ def execute(probe, rom, cue, labels, irq='none'):
                            if line.startswith(prefix+' ')]
     if len(records['CAP']) != 1 or records['CAP'][0].get('instruction_step') is not True:
         raise ValueError('real instruction stepping capability missing')
-    if records['CAP'][0].get('cdrom_hardware') is not True or records['CAP'][0].get('cdrom_media') is not True:
+    if records['CAP'][0].get('cdrom_hardware') is not True or records['CAP'][0].get('cdrom_media') is not media:
         raise ValueError('contract probe did not use System Card/CD path')
     if [r['phase'] for r in records['OBS']] != ['loaded', 'cold', 'nonreturning', 'warm']:
         raise ValueError('missing contract execution observations')
@@ -96,7 +144,7 @@ def check_irq(records, symbols, irq):
 def run_contracts(probe, base, output, cue):
     folder = output / 'contract-probes'
     images, symbols, labels = build_probe_images(base, folder)
-    evidence = {'scope': 'original CPU/memory procedures only; no executed BIOS API callee',
+    evidence = {'scope': 'original CPU/memory procedures plus the single implemented slot $1E callee; not a general BIOS ABI proof',
                 'cases': {}, 'negative_cases': [], 'loader_cases': [],
                 'conditions': {'requested_checkpoint_instructions':512, 'capability_instruction_before_cold':1,
                                'total_instructions_to_cold':513, 'total_instructions_to_warm':512,
@@ -125,19 +173,25 @@ def run_contracts(probe, base, output, cue):
                     raise ValueError('physical bank20 mirror not observed')
         elif name.startswith('api_jsr'):
             slot = int(name[-2:],16)
-            address = int.from_bytes(base[3*slot+1:3*slot+3],'little')
-            halt = int.from_bytes(base[address-0xe000+3:address-0xe000+5],'little')
-            for row in records['OBS'][1:]:
-                if (row['pc'],row['x'],row['sp']) != (halt,slot,253) or row['mpr'] != MPR:
-                    raise ValueError('unimplemented JSR slot returned or lost its diagnostic state')
             for cycle in ('cold','warm'):
                 before = trace(records,cycle,'api_jsr'); entry = trace(records,cycle,'api_slot_entry')
                 if (before['a'],before['x'],before['y'],before['sp']) != (0x11,0x22,0x33,255):
                     raise ValueError('JSR slot caller register inputs missing')
                 if (entry['a'],entry['x'],entry['y'],entry['sp']) != (0x11,0x22,0x33,253):
                     raise ValueError('actual API ingress registers/stack mismatch')
-                if any(r['cycle']==cycle and r['phase']=='api_call_return' for r in records['TRACE']):
-                    raise ValueError('unimplemented API falsely returned')
+            if slot in IMPLEMENTED_SLOTS:
+                # Implemented callee: assert the partial contract measured against the private
+                # reference BIOS (docs/abi-contracts.md). One slot, not a general ABI proof.
+                check_implemented_slot(records, symbols, slot, IMPLEMENTED_SLOTS[slot])
+            else:
+                address = int.from_bytes(base[3*slot+1:3*slot+3],'little')
+                halt = int.from_bytes(base[address-0xe000+3:address-0xe000+5],'little')
+                for row in records['OBS'][1:]:
+                    if (row['pc'],row['x'],row['sp']) != (halt,slot,253) or row['mpr'] != MPR:
+                        raise ValueError('unimplemented JSR slot returned or lost its diagnostic state')
+                for cycle in ('cold','warm'):
+                    if any(r['cycle']==cycle and r['phase']=='api_call_return' for r in records['TRACE']):
+                        raise ValueError('unimplemented API falsely returned')
         elif name == 'ram':
             if records['CAP'][0]['card_ram_bytes'] != 196608:
                 raise ValueError('Super CD RAM configuration not available')

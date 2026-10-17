@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'tools'))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from build_rom import verify_image  # noqa: E402
+from build_rom import verify_dev_rom  # noqa: E402
 from environment import DEPENDENCIES  # noqa: E402
 from geargrafx_api import assert_execution, compile_probe, run_probe  # noqa: E402
 import cd_base_probe  # noqa: E402
@@ -27,7 +27,7 @@ def main():
     parser.add_argument('--rom', type=Path, required=True)
     args = parser.parse_args()
     data = args.rom.read_bytes()
-    verify_image(data)
+    verify_dev_rom(data, manifest=args.rom.parent / 'manifest.json')
     output = args.rom.parent
     probe = compile_probe(output)
     with tempfile.TemporaryDirectory(prefix='pce-cd-base-') as tmp:
