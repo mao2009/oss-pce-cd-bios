@@ -92,3 +92,41 @@ System Card CD_RESET（`$01` / `$E003`）の完全互換は証明していない
 
 判定ツール: `tools/cdreset_bus_verify.py`（パルス記録の判定）+ `tools/cdread_verify.check_success`（データ経路）。
 ホスト側テスト `tests/host/test_cdreset_bus.py` は合成レコードのみで、エミュレータ成功の代わりにはしない。
+
+## 実行前安全preflight（Issue #178, Safety-01） — slot `$01` は BLOCKED
+
+この節は slot `$01` / 候補 `$E003` の参照 JSR を **実行する前** に判定できる副作用リスクを
+1 行ずつ分離して列挙し、`tools/cdreset_safety_preflight.py` の判定と一致させる。
+**この PR でゲートは解放しない。実参照 BIOS の API JSR は一切実行していない。** 実行時の
+共通監視は #173（既存 slot-`$1E` ガードは #170）に委ね、ここでは再実装せず「#170 が既に
+副作用前に強制しているか / していないか」だけを区別する。
+
+pinned Geargrafx `b49ae82a` のコア読解（コード上の事実であり、実機実測ではない）:
+
+- `Memory::Write` は先頭で CPU アドレス書込みフックを評価する（`src/memory_inline.h` L277-278 → `CheckMemoryHooks` L561-563 が `m_huc6280->CheckCpuAddressHooks(address, read)` を呼ぶ）。
+- `bank == 0xFF` の Hardware Page 分岐は `m_memory_map_write` の対象外で、I/O 書込みは常に発生する（同 L290-364）。
+- `$1804` は `offset & 0x1C00 == 0x1800` → `m_cdrom->WriteRegister` → `CdRom::WriteRegister` reg `0x04`（Reset, `src/cdrom.cpp` L292-307）で SCSI RST 信号を立て `AssertIRQ2()` を呼ぶ。
+- `ST0/ST1/ST2` は `m_huc6202->WriteFromCPU(...)` を直接呼び（`src/huc6280_opcodes.cpp` L41-48 / L139-146 / L244-251、`src/huc6202_inline.h` `WriteFromCPU` 約 L150）、`Memory::Write`・`m_memory_map_write`・CPU アドレスブレークポイントを全て迂回する。コア内に捕捉点が無い。
+
+| ID | 危険 | 発生機構（実コア） | #170/#173 の実行前強制 | 残存リスク（証拠区分） | slot-`$01` 判定 |
+| --- | --- | --- | --- | --- | --- |
+| H1 | 物理バンク別名 | 1つの物理バンクが allowlist 内/外の両 CPU ページを裏付けると `GetMemoryMapWrite()` のページ隔離が崩れる | あり: 実行前に拒否（exit 8） | 実測（合成実コア `geargrafx_reference_guard.py`） | 充足 |
+| H2 | 動的 MPR 変更 | `TAM` 等が実行中にページを書込み可能バンクへ再マップ | あり: MPR スナップショット差分で次の命令前に拒否 | 実測（同上） | 充足 |
+| H3 | 未監視 MMIO `$1804` | `$FF` ページ経由の `STA $1804` が副作用前に捕捉されない | 部分的: `$FF` を禁止し到達不能にするだけ（トラップ無し） | 推定（コアコード読解; トラップは #179 未検証） | BLOCKED（entry env と両立しない） |
+| H4 | VDC ST0/ST1/ST2 迂回 | `WriteFromCPU` がコア内フックを全迂回し不可逆な VDC 副作用 | なし（捕捉点が存在しない） | 実測（コアコード読解） | BLOCKED |
+| H5 | IRQ / 割込レジスタ | `$1804` の `AssertIRQ2()`、`$1802`・timer 書込み、ABI の I フラグ条件 | なし（I=1 前提と `$FF` 禁止のみ。実行時 IRQ 捕捉無し） | UNKNOWN（`irq` は slot-1 で UNKNOWN） | BLOCKED |
+| H6 | allowlist 外 RAM 書込み | allowlist 外 CPU ページへの store | あり: `map_write` deny-by-default（防止）+ 書込み BP（検出） | 実測（同上） | 充足 |
+| H7 | 命令予算 / タイムアウト | 無限ループ・未復帰・時間超過 | あり: 1 命令ずつ実行し予算超過で停止 | 実測（同上） | 充足 |
+
+判定関数（`tools/cdreset_safety_preflight.py::decide`）は、**全危険が副作用前に充足**し、
+かつ **ABI が `REVIEWED` で entry environment が再現**されている場合のみ `ALLOWED` を返す。
+現行 `CURRENT_POSTURE`（#170）は H3 を「`$FF` 禁止による到達不能」でしか塞げず、その同じ
+MPR 固定が HuCC 規約の entry（MPR0=`$FF`, HYPOTHESIS）を再現しないため、H3/H4/H5 と entry
+再現が未充足となり `BLOCKED` になる。UNKNOWN ABI は「何でも起こりうる」ため、どの危険も
+免除しない。安全不明の I/O を許可する posture（`hardware_page_policy` = `allow`）は H3
+未充足として拒否する。合成 posture の正例が `ALLOWED` を返すため、この判定は反証可能
+（トートロジーではない）。
+
+`python3 tools/cdreset_safety_preflight.py --check` は上記を評価して `BLOCKED: ...` を表示し
+exit 3 を返す。ホストテスト `tests/host/test_cdreset_safety_preflight.py` は合成 posture の
+正例・負例のみを扱い、エミュレータも参照 BIOS も起動しない。
