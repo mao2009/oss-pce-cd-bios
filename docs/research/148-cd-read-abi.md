@@ -40,6 +40,7 @@ CD_READ 呼出の前後に何をするかだけを記録する。callee の実�
 * `CALLER_IN` = 呼出前に呼出側が書く入力 (callee がそれを読むかは HYPOTHESIS)。
 * `CALLER_OUT` = 呼出後に呼出側が読む戻り値 (callee がそう返すかは HYPOTHESIS)。
 * `CALLER_SAVE` = 呼出側が自前で退避/復元する (呼出側防御。callee の保存の証明ではない)。
+* `CALLER_DECLARATION` = 宣言/プロトタイプ (呼出前に実際に書かれた命令ではない)。
 * `UNOBSERVED` = 引用した呼出側が観測していない → `UNKNOWN`。
 
 ### 2.1 ピン留めした行
@@ -49,8 +50,8 @@ CD_READ 呼出の前後に何をするかだけを記録する。callee の実�
 | C01 | pcengine.inc : 471 | `$E009` 入口 | CALLER_IN | HYPOTHESIS |
 | C02 | core.inc : 42 | Y | CALLER_IN | HYPOTHESIS |
 | C03 | core-kernel.asm : 509 | Y | CALLER_IN | HYPOTHESIS |
-| C04 | pcengine.inc : 329 | `$20F8-$20FF` | CALLER_IN | HYPOTHESIS |
-| C05 | hucc-systemcard.h : 95 | `$20F8-$20FF` | CALLER_IN | HYPOTHESIS |
+| C04 | pcengine.inc : 329 | `$20F8-$20FF` | CALLER_DECLARATION | HYPOTHESIS |
+| C05 | hucc-systemcard.h : 95 | `$20F8-$20FF` | CALLER_DECLARATION | HYPOTHESIS |
 | C06 | hucc-systemcard.asm : 384 | `_dh` | CALLER_IN | HYPOTHESIS |
 | C07 | hucc-systemcard.asm : 441 | `_dh` | CALLER_IN | HYPOTHESIS |
 | C08 | hucc-systemcard.asm : 322 | `_dh` | CALLER_IN | HYPOTHESIS |
@@ -72,7 +73,7 @@ CD_READ 呼出の前後に何をするかだけを記録する。callee の実�
 | C24 | hucc-systemcard.asm : 390 | A/NZ | CALLER_OUT | HYPOTHESIS |
 | C25 | core-kernel.asm : 600 | A | CALLER_OUT | HYPOTHESIS |
 | C26 | hucc-systemcard.asm : 300 | Y:A | CALLER_OUT | HYPOTHESIS |
-| C27 | hucc-systemcard.asm : 448 | MPR3 | CALLER_OUT | HYPOTHESIS |
+| C27 | hucc-systemcard.asm : 448 | MPR3 | CALLER_SAVE | HYPOTHESIS |
 | C28 | hucc-systemcard.asm : 388 | X | UNOBSERVED | UNKNOWN |
 | C29 | hucc-systemcard.asm : 388 | Y | UNOBSERVED | UNKNOWN |
 | C30 | hucc-systemcard.asm : 388 | P (N/V/Z/C/D/B/T) | UNOBSERVED | UNKNOWN |
@@ -106,7 +107,8 @@ CD_READ 呼出の前後に何をするかだけを記録する。callee の実�
   Hu-Go! HLE が「相対 (`recbase0` 加算)」を示すのみ (どちらも実コアの callee 実行ではない)。HYPOTHESIS のまま
   とし、#146 台帳との不一致は §6 に記録する。
 * 呼出側が読む戻り値 (CALLER_OUT): A (C23-C25) のみ。X/Y は呼出側が上書きする (C26)。P フラグは読まれない
-  (C30)。
+  (C30)。C26 は callee の Y を読むのではなく、CLY で Y をゼロにして LEAVE (X→A) で返値を整形する
+  **caller 側の返値整形**であり、callee の返値使用とは分ける。
 
 ### 2.3 観測していない項目 = UNKNOWN
 

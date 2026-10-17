@@ -69,6 +69,7 @@ SCENARIO_KIND = {
 #   CALLER_IN   - the caller writes this input before JSR (HYPOTHESIS about the callee)
 #   CALLER_OUT  - the caller reads this value from the call (HYPOTHESIS about the callee)
 #   CALLER_SAVE - the caller saves/restores this itself (caller defence, not callee proof)
+#   CALLER_DECLARATION - a declaration/prototype (not a runtime caller write before the call)
 #   UNOBSERVED  - no cited caller reads it; stays UNKNOWN
 # The human-readable twin table lives in docs/research/148-cd-read-abi.md section 2; tests/host/
 # test_cd_read_contract.py checks both against this module and spec/api_contracts.json.
@@ -79,7 +80,7 @@ HUC_H = "huc:include/hucc/hucc-systemcard.h"
 HUC_CORE = "huc:include/hucc/core.inc"
 HUC_KERNEL = "huc:include/hucc/core-kernel.asm"
 HUC_STARTUP = "huc:include/hucc/core-startup.asm"
-CALLER_LEDGER_DIRECTIONS = ("CALLER_IN", "CALLER_OUT", "CALLER_SAVE", "UNOBSERVED")
+CALLER_LEDGER_DIRECTIONS = ("CALLER_IN", "CALLER_OUT", "CALLER_SAVE", "CALLER_DECLARATION", "UNOBSERVED")
 CALLER_LEDGER = (
     {"id": "C01", "source": HUC_INC, "revision": HUC_REV, "line": 471, "slot": "$E009 entry", "direction": "CALLER_IN", "status": "HYPOTHESIS",
      "note": "cd_read equated to $00:E009 (FUNC): the caller's entry candidate, not a callee observation"},
@@ -87,10 +88,10 @@ CALLER_LEDGER = (
      "note": "system macro loads Y with the vector lo-byte: Y is the $E000 jump-table selector, not a CD_READ argument"},
     {"id": "C03", "source": HUC_KERNEL, "revision": HUC_REV, "line": 509, "slot": "Y", "direction": "CALLER_IN", "status": "HYPOTHESIS",
      "note": "call_bios JSRs $E000 with Y=selector; the dispatcher is BIOS code, unobserved here"},
-    {"id": "C04", "source": HUC_INC, "revision": HUC_REV, "line": 329, "slot": "$20F8-$20FF", "direction": "CALLER_IN", "status": "HYPOTHESIS",
-     "note": "HuCC names _ax/_bx/_cx/_dx at $F8:20F8-$20FF: SDK work-area aliases, not a proven callee ABI"},
-    {"id": "C05", "source": HUC_H, "revision": HUC_REV, "line": 95, "slot": "$20F8-$20FF", "direction": "CALLER_IN", "status": "HYPOTHESIS",
-     "note": "cd_fastvram/loadvram/loaddata/loadbank prototypes fix which ZP field each wrapper fills"},
+    {"id": "C04", "source": HUC_INC, "revision": HUC_REV, "line": 329, "slot": "$20F8-$20FF", "direction": "CALLER_DECLARATION", "status": "HYPOTHESIS",
+     "note": "pcengine.inc equates _ax/_bx/_cx/_dx at $F8:20F8-$20FF: SDK declaration/alias, not a runtime caller write before the call"},
+    {"id": "C05", "source": HUC_H, "revision": HUC_REV, "line": 95, "slot": "$20F8-$20FF", "direction": "CALLER_DECLARATION", "status": "HYPOTHESIS",
+     "note": "cd_fastvram/loadvram/loaddata/loadbank prototypes fix which ZP field each wrapper fills: declaration, not a runtime write"},
     {"id": "C06", "source": HUC_ASM, "revision": HUC_REV, "line": 384, "slot": "_dh", "direction": "CALLER_IN", "status": "HYPOTHESIS",
      "note": "_cd_loaddata.4 sets _dh=0 (local bytes in _ax)"},
     {"id": "C07", "source": HUC_ASM, "revision": HUC_REV, "line": 441, "slot": "_dh", "direction": "CALLER_IN", "status": "HYPOTHESIS",
@@ -132,8 +133,8 @@ CALLER_LEDGER = (
     {"id": "C25", "source": HUC_KERNEL, "revision": HUC_REV, "line": 600, "slot": "A", "direction": "CALLER_OUT", "status": "HYPOTHESIS",
      "note": "exec_overlay CMPs A with 0 and retries: 0 is assumed success"},
     {"id": "C26", "source": HUC_ASM, "revision": HUC_REV, "line": 300, "slot": "Y:A", "direction": "CALLER_OUT", "status": "HYPOTHESIS",
-     "note": "callers CLY then LEAVE (X->A): they zero Y and never read the callee's Y"},
-    {"id": "C27", "source": HUC_ASM, "revision": HUC_REV, "line": 448, "slot": "MPR3", "direction": "CALLER_OUT", "status": "HYPOTHESIS",
+     "note": "caller return-shaping: CLY zeroes Y then LEAVE moves X to A; the caller never reads callee Y, so this is not callee-output evidence"},
+    {"id": "C27", "source": HUC_ASM, "revision": HUC_REV, "line": 448, "slot": "MPR3", "direction": "CALLER_SAVE", "status": "HYPOTHESIS",
      "note": "_cd_loadbank.4 restores MPR3 after the call; its comment asserts MPR3 is destroyed on a CD error (callee unverified)"},
     {"id": "C28", "source": HUC_ASM, "revision": HUC_REV, "line": 388, "slot": "X", "direction": "UNOBSERVED", "status": "UNKNOWN",
      "note": "callers overwrite X with TAX, so the callee's X is never observed"},
