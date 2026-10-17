@@ -4,15 +4,73 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#090e17">
-  <meta name="description" content="An open-source PC Engine / TurboGrafx-CD System Card BIOS replacement. Explore the mission, measured progress, and how to contribute.">
+  <meta name="description" content="Open-source PC Engine / TurboGrafx-CD (Super CD-ROM²) System Card 3.0 BIOS replacement in development. View verified emulator tests, roadmap, source code and contribution opportunities.">
+  <link rel="canonical" href="https://mao2009.github.io/oss-pce-cd-bios/">
+  <meta name="robots" content="index, follow">
   <meta property="og:type" content="website">
-  <meta property="og:title" content="oss-pce-cd-bios — An open System Card, built with evidence">
-  <meta property="og:description" content="Open firmware for the PC Engine CD ecosystem. Development-only, transparent about limits, and open to contributors.">
+  <meta property="og:site_name" content="oss-pce-cd-bios">
+  <meta property="og:url" content="https://mao2009.github.io/oss-pce-cd-bios/">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:locale:alternate" content="ja_JP">
+  <meta property="og:title" content="oss-pce-cd-bios — Open-source PC Engine CD BIOS project">
+  <meta property="og:description" content="Independent System Card 3.0 BIOS replacement project. See evidence-based progress, known limitations and how to contribute.">
   <link rel="alternate" hreflang="ja" href="https://mao2009.github.io/oss-pce-cd-bios/ja/">
   <link rel="alternate" hreflang="en" href="https://mao2009.github.io/oss-pce-cd-bios/">
+  <link rel="alternate" hreflang="x-default" href="https://mao2009.github.io/oss-pce-cd-bios/">
   <link rel="icon" type="image/svg+xml" href="./assets/mark.svg">
   <link rel="stylesheet" href="./assets/styles.css">
-  <title>oss-pce-cd-bios — Open firmware. Verifiable progress.</title>
+  <title>Open-source PC Engine CD System Card BIOS | oss-pce-cd-bios</title>
+  <script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebSite",
+      "@id": "https://mao2009.github.io/oss-pce-cd-bios/#website",
+      "name": "oss-pce-cd-bios",
+      "url": "https://mao2009.github.io/oss-pce-cd-bios/",
+      "description": "Independent, open-source PC Engine CD System Card BIOS replacement development project.",
+      "inLanguage": [
+        "en",
+        "ja"
+      ]
+    },
+    {
+      "@type": "SoftwareSourceCode",
+      "@id": "https://github.com/mao2009/oss-pce-cd-bios#source",
+      "name": "oss-pce-cd-bios",
+      "url": "https://github.com/mao2009/oss-pce-cd-bios",
+      "codeRepository": "https://github.com/mao2009/oss-pce-cd-bios",
+      "license": "https://github.com/mao2009/oss-pce-cd-bios/blob/main/LICENSE",
+      "description": "Development-only open-source replacement for the PC Engine / TurboGrafx-CD Super System Card 3.0 BIOS. One callable DEV EX_GETVER slot; 80 nonreturning stub slots; full ABI and commercial compatibility unverified.",
+      "programmingLanguage": "Assembly",
+      "keywords": [
+        "PC Engine",
+        "TurboGrafx-CD",
+        "Super System Card 3.0",
+        "CD-ROM2",
+        "HuC6280",
+        "open-source BIOS",
+        "Geargrafx"
+      ]
+    },
+    {
+      "@type": "WebPage",
+      "@id": "https://mao2009.github.io/oss-pce-cd-bios/#webpage",
+      "url": "https://mao2009.github.io/oss-pce-cd-bios/",
+      "inLanguage": "en",
+      "name": "Open-source PC Engine CD System Card BIOS | oss-pce-cd-bios",
+      "description": "Open-source PC Engine / TurboGrafx-CD (Super CD-ROM²) System Card 3.0 BIOS replacement in development. View verified emulator tests, roadmap, source code and contribution opportunities.",
+      "isPartOf": {
+        "@id": "https://mao2009.github.io/oss-pce-cd-bios/#website"
+      },
+      "about": {
+        "@id": "https://github.com/mao2009/oss-pce-cd-bios#source"
+      }
+    }
+  ]
+}
+  </script>
 </head>
 <body>
   <a class="skip-link" href="#content">Skip to content</a>
@@ -104,6 +162,21 @@
         <div class="evidence">
           <div class="evidence-item"><span class="evidence-symbol" aria-hidden="true">✓</span><div><h3>Observed on a real emulator core</h3><p>EX_GETVER caller return (cold/warm); synthetic SCSI READ(6) → RAM; independent reset and startup diagnostics.</p></div></div>
           <div class="evidence-item"><span class="evidence-symbol pending" aria-hidden="true">!</span><div><h3>Still unknown or blocked</h3><p>Full reference BIOS ABI, callable CD_RESET/CD_BASE/CD_READ, BIOS-mediated disc boot, independent emulator and hardware results.</p></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="faq" class="section" aria-labelledby="faq-title">
+      <div class="wrap">
+        <div class="section-heading">
+          <p class="eyebrow">04 / Frequently asked questions</p>
+          <h2 id="faq-title">What does the project actually support?</h2>
+          <p class="section-intro">A short, source-linked summary for developers, researchers and anyone discovering this open-source PC Engine CD BIOS effort.</p>
+        </div>
+        <div class="card-grid">
+          <article class="card"><span class="number">01 / SCOPE</span><h3>Is it a usable System Card BIOS?</h3><p>Not yet. The 256 KiB development ROM has one callable EX_GETVER API, while 80 other slots remain stubs. No retail-game compatibility or firmware release is established.</p></article>
+          <article class="card"><span class="number">02 / EVIDENCE</span><h3>What has been tested?</h3><p>Geargrafx real-core tests have observed EX_GETVER return and independent synthetic CD sector reads. These diagnostics do not certify full reference-BIOS ABI compatibility or game boot. See <a href="https://github.com/mao2009/oss-pce-cd-bios/pull/174">PR #174</a>.</p></article>
+          <article class="card"><span class="number">03 / CONTRIBUTE</span><h3>How can I help?</h3><p>Start with a focused <a href="https://github.com/mao2009/oss-pce-cd-bios/issues">GitHub Issue</a> covering API research, reproducible testing or original firmware code. Follow the <a href="https://github.com/mao2009/oss-pce-cd-bios/blob/main/CONTRIBUTING.md">contribution policy</a> and do not upload private BIOS images.</p></article>
         </div>
       </div>
     </section>
