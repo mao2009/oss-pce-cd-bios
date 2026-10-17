@@ -19,6 +19,10 @@ compat_status() keeps every declared VERIFIED claim BLOCKED, whatever it is give
 records handed to a function are caller-supplied JSON, so their authenticity cannot be verified in-process (#153).
 compat_reason() runs tools/evidence_provenance.verify() on such inputs with this checkout's pins only to explain the
 BLOCKED. See docs/cd-read-contract.md section 4.
+
+Issue #148 adds the caller-side usage ledger (CALLER_LEDGER): what independent caller sources write before the
+call and read afterwards. It is CALLER evidence only, is pinned by revision and line, and is validated so that
+no row can be promoted to VERIFIED.
 """
 import argparse
 import hashlib
@@ -57,6 +61,95 @@ SCENARIO_KIND = {
     "read_past_disc_end_lba14_x3": "PASS_EXPECTED_FAILURE",
     "read6_on_audio_track_lba": "OBSERVED_EMULATOR_BEHAVIOUR",
 }
+
+# Issue #148: pinned caller-side usage ledger. Each row fixes an *independent caller source* by revision and
+# line and records only what that source shows the caller doing with CD_READ ($03 / candidate $E009): the
+# inputs it writes before the call and the return values it reads afterwards. This is CALLER evidence (a
+# third-party SDK convention); it never proves the BIOS callee. No row is VERIFIED. direction is one of:
+#   CALLER_IN   - the caller writes this input before JSR (HYPOTHESIS about the callee)
+#   CALLER_OUT  - the caller reads this value from the call (HYPOTHESIS about the callee)
+#   CALLER_SAVE - the caller saves/restores this itself (caller defence, not callee proof)
+#   UNOBSERVED  - no cited caller reads it; stays UNKNOWN
+# The human-readable twin table lives in docs/research/148-cd-read-abi.md section 2; tests/host/
+# test_cd_read_contract.py checks both against this module and spec/api_contracts.json.
+HUC_REV = "54f5c73606c1e7142e8095c727cab2767e2b3cb3"
+HUC_INC = "huc:include/hucc/pcengine.inc"
+HUC_ASM = "huc:include/hucc/hucc-systemcard.asm"
+HUC_H = "huc:include/hucc/hucc-systemcard.h"
+HUC_CORE = "huc:include/hucc/core.inc"
+HUC_KERNEL = "huc:include/hucc/core-kernel.asm"
+HUC_STARTUP = "huc:include/hucc/core-startup.asm"
+CALLER_LEDGER_DIRECTIONS = ("CALLER_IN", "CALLER_OUT", "CALLER_SAVE", "UNOBSERVED")
+CALLER_LEDGER = (
+    {"id": "C01", "source": HUC_INC, "revision": HUC_REV, "line": 471, "slot": "$E009 entry", "direction": "CALLER_IN", "status": "HYPOTHESIS",
+     "note": "cd_read equated to $00:E009 (FUNC): the caller's entry candidate, not a callee observation"},
+    {"id": "C02", "source": HUC_CORE, "revision": HUC_REV, "line": 42, "slot": "Y", "direction": "CALLER_IN", "status": "HYPOTHESIS",
+     "note": "system macro loads Y with the vector lo-byte: Y is the $E000 jump-table selector, not a CD_READ argument"},
+    {"id": "C03", "source": HUC_KERNEL, "revision": HUC_REV, "line": 509, "slot": "Y", "direction": "CALLER_IN", "status": "HYPOTHESIS",
+     "note": "call_bios JSRs $E000 with Y=selector; the dispatcher is BIOS code, unobserved here"},
+    {"id": "C04", "source": HUC_INC, "revision": HUC_REV, "line": 329, "slot": "$20F8-$20FF", "direction": "CALLER_IN", "status": "HYPOTHESIS",
+     "note": "HuCC names _ax/_bx/_cx/_dx at $F8:20F8-$20FF: SDK work-area aliases, not a proven callee ABI"},
+    {"id": "C05", "source": HUC_H, "revision": HUC_REV, "line": 95, "slot": "$20F8-$20FF", "direction": "CALLER_IN", "status": "HYPOTHESIS",
+     "note": "cd_fastvram/loadvram/loaddata/loadbank prototypes fix which ZP field each wrapper fills"},
+    {"id": "C06", "source": HUC_ASM, "revision": HUC_REV, "line": 384, "slot": "_dh", "direction": "CALLER_IN", "status": "HYPOTHESIS",
+     "note": "_cd_loaddata.4 sets _dh=0 (local bytes in _ax)"},
+    {"id": "C07", "source": HUC_ASM, "revision": HUC_REV, "line": 441, "slot": "_dh", "direction": "CALLER_IN", "status": "HYPOTHESIS",
+     "note": "_cd_loadbank.4 sets _dh=3 (MPR3 bank mode)"},
+    {"id": "C08", "source": HUC_ASM, "revision": HUC_REV, "line": 322, "slot": "_dh", "direction": "CALLER_IN", "status": "HYPOTHESIS",
+     "note": "_cd_loadvram.4 sets _dh=$FE (VRAM bytes, count in _ax)"},
+    {"id": "C09", "source": HUC_ASM, "revision": HUC_REV, "line": 294, "slot": "_dh", "direction": "CALLER_IN", "status": "HYPOTHESIS",
+     "note": "_cd_fastvram.4 sets _dh=$FF (VRAM sectors, count in _al)"},
+    {"id": "C10", "source": HUC_KERNEL, "revision": HUC_REV, "line": 593, "slot": "_dh", "direction": "CALLER_IN", "status": "HYPOTHESIS",
+     "note": "exec_overlay sets _dh=6 (MPR6 bank mode)"},
+    {"id": "C11", "source": HUC_ASM, "revision": HUC_REV, "line": 381, "slot": "_ax", "direction": "CALLER_IN", "status": "HYPOTHESIS",
+     "note": "_cd_loaddata.4 sets _ax to the byte count of the next chunk"},
+    {"id": "C12", "source": HUC_ASM, "revision": HUC_REV, "line": 436, "slot": "_al", "direction": "CALLER_IN", "status": "HYPOTHESIS",
+     "note": "_cd_loadbank.4 copies the entry _dh count into _al (0=whole file): the count field is reused"},
+    {"id": "C13", "source": HUC_ASM, "revision": HUC_REV, "line": 361, "slot": "_bx", "direction": "CALLER_IN", "status": "HYPOTHESIS",
+     "note": "_cd_loaddata.4 sets _bx as the RAM destination pointer (TII _bp->_bx)"},
+    {"id": "C14", "source": HUC_KERNEL, "revision": HUC_REV, "line": 589, "slot": "_bl/_bh", "direction": "CALLER_IN", "status": "HYPOTHESIS",
+     "note": "exec_overlay sets _bl=core_1stbank and _bh=0 before _dh=6"},
+    {"id": "C15", "source": HUC_KERNEL, "revision": HUC_REV, "line": 539, "slot": "_cl/_ch/_dl", "direction": "CALLER_IN", "status": "HYPOTHESIS",
+     "note": "get_file_lba fills the 3-byte LBA triple; _cl is the record-base high byte and also carried the overlay index"},
+    {"id": "C16", "source": HUC_ASM, "revision": HUC_REV, "line": 594, "slot": "_dl/_ch/_cl", "direction": "CALLER_IN", "status": "HYPOTHESIS",
+     "note": "_add_sectors adds the sector offset into the LBA triple _dl/_ch/_cl"},
+    {"id": "C17", "source": HUC_KERNEL, "revision": HUC_REV, "line": 585, "slot": "P.I", "direction": "CALLER_IN", "status": "HYPOTHESIS",
+     "note": "exec_overlay executes CLI before cd_read; no caller deliberately sets the other P bits"},
+    {"id": "C18", "source": HUC_STARTUP, "revision": HUC_REV, "line": 125, "slot": "MPR0/MPR1", "direction": "CALLER_IN", "status": "HYPOTHESIS",
+     "note": "startup maps MPR0=$FF and MPR1=$F8 as the caller's general BIOS-call prerequisite"},
+    {"id": "C19", "source": HUC_KERNEL, "revision": HUC_REV, "line": 503, "slot": "MPR7", "direction": "CALLER_SAVE", "status": "HYPOTHESIS",
+     "note": "call_bios saves caller MPR7 (L503-504), maps bank 0, restores it after the call (L511-514)"},
+    {"id": "C20", "source": HUC_ASM, "revision": HUC_REV, "line": 346, "slot": "MPR3/MPR4", "direction": "CALLER_SAVE", "status": "HYPOTHESIS",
+     "note": "_cd_loaddata.4 saves and restores MPR3/MPR4 itself (caller defence, not callee proof)"},
+    {"id": "C21", "source": HUC_ASM, "revision": HUC_REV, "line": 443, "slot": "MPR3", "direction": "CALLER_SAVE", "status": "HYPOTHESIS",
+     "note": "_cd_loadbank.4 preserves MPR3 across the call"},
+    {"id": "C22", "source": HUC_ASM, "revision": HUC_REV, "line": 386, "slot": "$20FA-$20FE", "direction": "CALLER_SAVE", "status": "HYPOTHESIS",
+     "note": "_cd_loaddata.4 preserves 5 bytes (_bl,_bh,_cl,_ch,_dl); it does not preserve _ax or _dh"},
+    {"id": "C23", "source": HUC_ASM, "revision": HUC_REV, "line": 389, "slot": "A", "direction": "CALLER_OUT", "status": "HYPOTHESIS",
+     "note": "callers TAX the return, assuming the status is in A"},
+    {"id": "C24", "source": HUC_ASM, "revision": HUC_REV, "line": 390, "slot": "A/NZ", "direction": "CALLER_OUT", "status": "HYPOTHESIS",
+     "note": "_cd_loaddata.4 branches on NZ after its own TAX, not on a BIOS flag"},
+    {"id": "C25", "source": HUC_KERNEL, "revision": HUC_REV, "line": 600, "slot": "A", "direction": "CALLER_OUT", "status": "HYPOTHESIS",
+     "note": "exec_overlay CMPs A with 0 and retries: 0 is assumed success"},
+    {"id": "C26", "source": HUC_ASM, "revision": HUC_REV, "line": 300, "slot": "Y:A", "direction": "CALLER_OUT", "status": "HYPOTHESIS",
+     "note": "callers CLY then LEAVE (X->A): they zero Y and never read the callee's Y"},
+    {"id": "C27", "source": HUC_ASM, "revision": HUC_REV, "line": 448, "slot": "MPR3", "direction": "CALLER_OUT", "status": "HYPOTHESIS",
+     "note": "_cd_loadbank.4 restores MPR3 after the call; its comment asserts MPR3 is destroyed on a CD error (callee unverified)"},
+    {"id": "C28", "source": HUC_ASM, "revision": HUC_REV, "line": 388, "slot": "X", "direction": "UNOBSERVED", "status": "UNKNOWN",
+     "note": "callers overwrite X with TAX, so the callee's X is never observed"},
+    {"id": "C29", "source": HUC_ASM, "revision": HUC_REV, "line": 388, "slot": "Y", "direction": "UNOBSERVED", "status": "UNKNOWN",
+     "note": "Y is consumed as the selector; no caller reads Y after the call"},
+    {"id": "C30", "source": HUC_ASM, "revision": HUC_REV, "line": 388, "slot": "P (N/V/Z/C/D/B/T)", "direction": "UNOBSERVED", "status": "UNKNOWN",
+     "note": "no caller branches on a BIOS flag; branches use the caller's own TAX/CMP result"},
+    {"id": "C31", "source": HUC_ASM, "revision": HUC_REV, "line": 388, "slot": "S (stack)", "direction": "UNOBSERVED", "status": "UNKNOWN",
+     "note": "only JSR/RTS are visible at the call site; callee stack depth/balance unobserved"},
+    {"id": "C32", "source": HUC_ASM, "revision": HUC_REV, "line": 388, "slot": "MPR0-2,5,6", "direction": "UNOBSERVED", "status": "UNKNOWN",
+     "note": "no caller reads these MPRs after cd_read; only MPR3/MPR4 are defended"},
+    {"id": "C33", "source": HUC_ASM, "revision": HUC_REV, "line": 388, "slot": "IRQ/completion", "direction": "UNOBSERVED", "status": "UNKNOWN",
+     "note": "callers neither wait on nor observe an interrupt/completion signal"},
+    {"id": "C34", "source": HUC_ASM, "revision": HUC_REV, "line": 388, "slot": "$20F8-$20F9,$20FF", "direction": "UNOBSERVED", "status": "UNKNOWN",
+     "note": "the caller re-sets _ax and _dh each loop; callee writes to them are unobserved"},
+)
 
 # Transport claims. VERIFIED is effective only with a matching PASS evidence bundle (see effective_status).
 TRANSPORT_CLAIMS = [
@@ -197,6 +290,41 @@ def compat_status(bundle=None, rom_sha256=None, claims=TRANSPORT_CLAIMS) -> dict
     return out
 
 
+def validate_caller_ledger(rows=CALLER_LEDGER, api_contracts=None) -> None:
+    """Raise ValueError unless every #148 caller-ledger row pins a real caller source and stays unverified.
+
+    A row must name a `source` key present in spec/api_contracts.json with the same pinned `revision`, that
+    source must be a CALLER_SOURCE (an HLE or emulator source is not caller evidence), `line` must be a
+    positive integer at that revision, `direction` must be known, and `status` must be UNKNOWN only for an
+    UNOBSERVED row and HYPOTHESIS otherwise. No caller row can be VERIFIED or carry any other state.
+    """
+    if api_contracts is None:
+        api_contracts = json.loads((ROOT / "spec/api_contracts.json").read_text(encoding="utf-8"))
+    sources = api_contracts["sources"]
+    seen = set()
+    for row in rows:
+        rid = row.get("id")
+        if type(rid) is not str or not rid or rid in seen:
+            raise ValueError(f"caller ledger id missing or duplicate: {rid!r}")
+        seen.add(rid)
+        source = sources.get(row.get("source"))
+        if not isinstance(source, dict):
+            raise ValueError(f"{rid}: source {row.get('source')!r} is not a pinned source")
+        if source["kind"] != "CALLER_SOURCE":
+            raise ValueError(f"{rid}: {row['source']} is not caller evidence")
+        if row.get("revision") != source["revision"]:
+            raise ValueError(f"{rid}: revision does not pin {row['source']}")
+        if type(row.get("line")) is not int or row["line"] < 1:
+            raise ValueError(f"{rid}: line must be a positive integer at the pinned revision")
+        if row.get("direction") not in CALLER_LEDGER_DIRECTIONS:
+            raise ValueError(f"{rid}: unknown direction {row.get('direction')!r}")
+        expected = "UNKNOWN" if row["direction"] == "UNOBSERVED" else "HYPOTHESIS"
+        if row.get("status") != expected:
+            raise ValueError(f"{rid}: {row['direction']} rows must be {expected}")
+        if type(row.get("note")) is not str or not row["note"]:
+            raise ValueError(f"{rid}: note required")
+
+
 def validate(api_contracts: dict, claims=TRANSPORT_CLAIMS) -> None:
     """Raise ValueError on malformed claims, a VERIFIED claim outside the pinned emulator, or a callee ABI promotion."""
     for claim in claims:
@@ -212,6 +340,7 @@ def validate(api_contracts: dict, claims=TRANSPORT_CLAIMS) -> None:
     bad = [k for k, v in api["contract"].items() if v["status"] not in STATUSES - {"VERIFIED"}]
     if bad:
         raise ValueError(f"callee ABI fields promoted without executed-callee evidence: {bad}")
+    validate_caller_ledger(CALLER_LEDGER, api_contracts)
 
 
 def real_core_requests(integration_text: str) -> list:

@@ -17,8 +17,8 @@ from unittest import mock
 import tools.cd_read_contract as cd_read_contract
 
 from tools.cd_read_contract import (
-    COMPAT_REASON, EXIT_BLOCKED, EXIT_LOCAL_ONLY, INTEGRATION, LBA_LIMIT, PINNED, ROOT, SECTOR_BYTES, TRANSPORT_CLAIMS, TRUST_LABEL,
-    compat_status, effective_status, real_core_requests, transport_outcome, validate,
+    CALLER_LEDGER, COMPAT_REASON, EXIT_BLOCKED, EXIT_LOCAL_ONLY, INTEGRATION, LBA_LIMIT, PINNED, ROOT, SECTOR_BYTES, TRANSPORT_CLAIMS, TRUST_LABEL,
+    compat_status, effective_status, real_core_requests, transport_outcome, validate, validate_caller_ledger,
 )
 from tools.make_cd_image import DEFAULT_SECTORS
 
@@ -233,6 +233,71 @@ class LedgerTests(unittest.TestCase):
                 if change == "renamed": slot["candidate_name"] = "CD_SEEK"
                 with self.assertRaises(ValueError):
                     validate(api)
+
+
+DOC = ROOT / "docs/research/148-cd-read-abi.md"
+
+
+class CallerLedgerTests(unittest.TestCase):
+    """#148: the caller-side usage ledger is pinned to caller sources and can never be VERIFIED."""
+
+    def setUp(self):
+        self.api = json.loads((ROOT / "spec/api_contracts.json").read_text(encoding="utf-8"))
+
+    def test_every_row_pins_a_real_caller_revision_and_line(self):
+        validate_caller_ledger(CALLER_LEDGER, self.api)
+        sources = self.api["sources"]
+        for row in CALLER_LEDGER:
+            with self.subTest(row=row["id"]):
+                source = sources[row["source"]]
+                self.assertEqual(source["kind"], "CALLER_SOURCE")
+                self.assertEqual(source["revision"], row["revision"])
+                self.assertEqual(len(row["revision"]), 40)
+                self.assertIs(type(row["line"]), int)
+                self.assertGreaterEqual(row["line"], 1)
+        # The issue names inputs and return-usage separately, so all four directions must be present.
+        self.assertEqual({r["direction"] for r in CALLER_LEDGER}, {"CALLER_IN", "CALLER_OUT", "CALLER_SAVE", "UNOBSERVED"})
+
+    def test_row_without_a_source_or_with_unknown_source_is_rejected(self):
+        for change in ("missing_source", "unknown_source", "missing_revision", "wrong_revision", "bad_line", "duplicate_id"):
+            row = dict(CALLER_LEDGER[0])
+            if change == "missing_source": del row["source"]
+            if change == "unknown_source": row["source"] = "huc:not-a-source"
+            if change == "missing_revision": del row["revision"]
+            if change == "wrong_revision": row["revision"] = "0" * 40
+            if change == "bad_line": row["line"] = 0
+            rows = (row, dict(row)) if change == "duplicate_id" else (row,)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                validate_caller_ledger(rows, self.api)
+
+    def test_caller_claim_cannot_be_promoted_to_verified(self):
+        # C01 is a CALLER_IN row, so its only valid status is HYPOTHESIS; every other state must be refused.
+        for status in ("VERIFIED", "PASS", "LOCAL_ONLY", "UNKNOWN", None, 1):
+            row = dict(CALLER_LEDGER[0], status=status)
+            with self.subTest(status=status), self.assertRaises(ValueError):
+                validate_caller_ledger((row,), self.api)
+        self.assertNotIn("VERIFIED", {r["status"] for r in CALLER_LEDGER})
+        self.assertTrue(all(r["status"] in ("HYPOTHESIS", "UNKNOWN") for r in CALLER_LEDGER))
+
+    def test_hle_or_emulator_source_is_not_caller_evidence(self):
+        # A caller-side claim may not cite the HLE or an emulator source as its caller evidence.
+        for source in ("hugo:bios.c", "gear:src/cdrom.cpp"):
+            with self.subTest(source=source), self.assertRaises(ValueError):
+                validate_caller_ledger((dict(CALLER_LEDGER[0], source=source, revision=self.api["sources"][source]["revision"]),), self.api)
+
+    def test_unobserved_rows_are_unknown_and_callee_abi_stays_unpromoted(self):
+        for row in CALLER_LEDGER:
+            if row["direction"] == "UNOBSERVED":
+                self.assertEqual(row["status"], "UNKNOWN")
+        # A callee-ABI field with no executed-callee evidence still cannot be VERIFIED.
+        api = copy.deepcopy(self.api)
+        api["apis"][3]["contract"]["returns"]["status"] = "VERIFIED"
+        with self.assertRaises(ValueError):
+            validate(api)
+
+    def test_doc_ledger_table_matches_the_module(self):
+        ids = re.findall(r"^\| (C\d\d) \|", DOC.read_text(encoding="utf-8"), re.MULTILINE)
+        self.assertEqual(ids, [row["id"] for row in CALLER_LEDGER])
 
 
 # Synthetic #125 inputs (no ROM, disc or BIOS data). The attacker controls every one of them: the artifact, the
