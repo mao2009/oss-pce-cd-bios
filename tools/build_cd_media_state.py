@@ -12,12 +12,12 @@ import re
 import subprocess
 
 if __package__:
-    from .build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
+    from .build_rom import API_IMPLEMENTATION, BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
     from .build_reset_entry import RESET_CODE
     from .environment import DEPENDENCIES, executable
     from .make_cd_image import MAGIC
 else:
-    from build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
+    from build_rom import API_IMPLEMENTATION, BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
     from build_reset_entry import RESET_CODE
     from environment import DEPENDENCIES, executable
     from make_cd_image import MAGIC
@@ -80,7 +80,7 @@ def build_cd_media_state(original_path: Path, output: Path, mode="debug") -> Pat
     (output / "manifest.json").write_text(json.dumps({
         "status": "development-cd-media-state-not-compatible-bios", "mode": mode, "rom_sha256": digest,
         "pinned_cc65": DEPENDENCIES["cc65"]["revision"], "symbols": found, "scsi_commands": ["READ(6) LBA 0 x1"],
-        "api_implementation": "NONE", "release_eligible": False,
+        "api_implementation": API_IMPLEMENTATION, "release_eligible": False,
     }, indent=2, sort_keys=True) + "\n")
     return rom
 

@@ -19,7 +19,8 @@ from geargrafx_contracts import (FLAG_CARRY, FLAG_INTERRUPT, FLAG_NEGATIVE, FLAG
 
 SLOT = 0x1E
 RETURN_PC = 0x9003  # symbols['api_call_return'] + 3 (the self-loop after the caller's STA)
-# Cold P=0x06 is one measured value; warm P=0x07 shows a different carry, which must not matter.
+# Synthetic checker inputs, not real-core measurements: a cold caller P with C=0 and a warm one
+# with C=1, so the carry-in==carry-out check is exercised with both carry values.
 CALLER_P = {'cold': 0x06, 'warm': 0x07}
 
 
@@ -59,7 +60,7 @@ class ImplementedSlotContractTests(unittest.TestCase):
         self.assert_rejected('requires I=1', cold_p=0x06 & ~FLAG_INTERRUPT)
 
     def test_carry_not_preserved_is_rejected(self):
-        # warm caller carried C=1 (P=0x07) but the callee returned with C=0 (P=0x06).
+        # warm caller P has C=1 but the synthetic callee return has C=0 (both here are synthetic).
         self.assert_rejected('did not preserve carry', warm_p=0x06)
 
     def test_wrong_x_is_rejected(self):
@@ -96,6 +97,17 @@ class ImplementedSlotContractTests(unittest.TestCase):
 
     def test_wrong_return_address_is_rejected(self):
         self.assert_rejected('continuation', pc=RETURN_PC + 1)
+
+    def test_incomplete_observation_set_cannot_pass(self):
+        """The contract must fail closed if the loader returns too few observations: an empty
+        or loaded-only OBS list must not be accepted just because it has nothing to contradict."""
+        for obs in ([], [{'phase': 'loaded', 'cycle': 'cold', 'pc': 0, 'a': 0, 'x': 0, 'y': 0,
+                          'p': 0, 'sp': 0, 'mpr': MPR, 'work_ram_0200_hex': '00' * 0x40}]):
+            with self.subTest(observations=len(obs)):
+                data = records()
+                data['OBS'] = obs
+                with self.assertRaisesRegex(ValueError, 'incomplete'):
+                    check_implemented_slot(data, self.SYMBOLS, SLOT, self.EXPECTED)
 
 
 if __name__ == '__main__':

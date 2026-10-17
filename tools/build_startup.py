@@ -12,10 +12,10 @@ import re
 import subprocess
 
 if __package__:
-    from .build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
+    from .build_rom import API_IMPLEMENTATION, BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
     from .environment import DEPENDENCIES, executable
 else:
-    from build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
+    from build_rom import API_IMPLEMENTATION, BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
     from environment import DEPENDENCIES, executable
 
 # Exact independently authored fixture bytes; intentionally not a generic BIOS verifier.
@@ -114,7 +114,7 @@ def build_startup(original_path: Path, output: Path, mode="debug") -> Path:
         "startup_symbols": symbols, "expected_mpr": EXPECTED_MPR,
         "marker": MARKER.hex(), "marker_address": "2200",
         "cd_state_address": "2205", "cd_state_value": 1, "cd_disc_presence_read": False,
-        "api_implementation": "NONE",
+        "api_implementation": API_IMPLEMENTATION,
         "final_system_card_layout": "UNKNOWN", "release_eligible": False,
     }
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")

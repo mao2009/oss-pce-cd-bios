@@ -96,6 +96,14 @@ Exact minor encoding, A/X/Y/S/P preservation, work-RAM changes, MPR behavior,
 IRQ requirements, errors and timing are `UNKNOWN`. Hu-Go contains an EX_GETVER
 name but no dedicated execution switch case; a name is not an implementation.
 
+This repository still does not claim the above is implemented. A candidate `$E05A` callee
+exists in `src/overrides/slot_1E.s` for the development ROM only, with a partial, real-core
+measured contract (X=3, Y=0, A preserved, Z=1/N=0/I=1, carry preserved) observed by
+`tests/integration/geargrafx_contracts.py`. The ledger's slot `$1E` record keeps
+`implementation_status: NOT_STARTED` / `verification: NOT_RUN` on purpose: `spec/api_contracts.json`
+records reference-BIOS verification state and has no representation for a development
+implementation. The ROM stays `abi: UNVERIFIED`, `release_eligible: false`.
+
 ### CD_RESET — slot `$01`, candidate `$E003`
 
 [HuCC lines 96–100](https://github.com/pce-devel/huc/blob/54f5c73606c1e7142e8095c727cab2767e2b3cb3/include/hucc/hucc-systemcard.asm#L96-L100)

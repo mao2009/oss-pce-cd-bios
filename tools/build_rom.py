@@ -29,6 +29,10 @@ LAST_SLOT = 0x50
 BANK_BYTES = 8192
 IMAGE_BYTES = 256 * 1024
 EXIT_OK, EXIT_ERROR, EXIT_BLOCKED = 0, 2, 3  # BLOCKED = expected release refusal, never a build error
+# What the DEV images (bios-dev and the diagnostic probes) actually implement. They link
+# src/overrides/*.s through assemble_api_objects(), so "NONE" would be false. This is one
+# diagnostic slot, not ABI compatibility; the ROM stays abi: UNVERIFIED / release_eligible: false.
+API_IMPLEMENTATION = 'slot_1E EX_GETVER only; 80 slots unimplemented'
 
 
 class ReleaseBlocked(ValueError):
@@ -296,15 +300,46 @@ def verify_dev_rom_structure(data: bytes, dbg: dict, root: Path = ROOT) -> None:
     verify_image(data, set(overrides(root)), dbg, override_bodies=True)
 
 
+def _trusted_sources(root: Path) -> tuple:
+    """Cache key describing the trusted inputs a DEV ROM rebuild reads.
+
+    Covers this tool's spec file (build() always reads SLOTS_FILE = ROOT/spec/api_slots.json,
+    never root/spec/) and every .s/.cfg under root/src. This is a caching fingerprint, not a
+    security boundary: the source tree is inside the trust boundary. If a stat-visible change
+    were missed, the worst case is comparing against a previously trusted build - it can never
+    make an untrusted image pass.
+    """
+    inputs = [SLOTS_FILE, *(root / 'src').rglob('*.s'), *(root / 'src').rglob('*.cfg')]
+    return tuple(sorted((str(path), path.stat().st_size, path.stat().st_mtime_ns)
+                        for path in inputs if path.exists()))
+
+
+@functools.lru_cache(maxsize=16)
+def _trusted_dev_rom(root: Path, sources: tuple) -> bytes:
+    """Rebuild the DEV ROM from trusted sources, memoized per (root, source fingerprint).
+
+    The rebuild is ~17 ms, and the negative diagnostics re-verify one unchanged base ROM
+    thousands of times, so caching keeps those loops fast without ever caching a result
+    derived from `data`.
+    """
+    with tempfile.TemporaryDirectory(prefix='pce-dev-identity-') as tmp, \
+            contextlib.redirect_stdout(io.StringIO()):
+        return build(Path(tmp), root=root).read_bytes()
+
+
 def verify_dev_rom(data: bytes, root: Path = ROOT, manifest: Path | None = None) -> None:
     """Accept a loaded DEV ROM only when it is byte-identical to an independent rebuild.
 
     Stage 1 runs the layout checks (fast, specific error messages). Stage 2 rebuilds the DEV
     ROM from the trusted source tree at `root` with build() and compares every byte of `data`
-    against that rebuild. Debug and release builds emit identical bytes, so the rebuild is a
-    pure function of the trusted sources; the expectation never comes from `data` or from any
-    manifest shipped beside it. Tampering the ROM, its manifest, or both is therefore rejected,
-    including same-length instruction substitutions that verify_dev_rom_structure() cannot see.
+    against that rebuild. Debug and release builds emit identical bytes (asserted by the host
+    tests), so the rebuild is a pure function of the trusted sources; the expectation never comes
+    from `data` or from any manifest shipped beside it. Tampering the ROM, its manifest, or both
+    is therefore rejected, including same-length instruction substitutions that
+    verify_dev_rom_structure() cannot see.
+
+    The rebuild is memoized per (root, source fingerprint); it is always built in debug mode and
+    always uses this tool's spec/api_slots.json, regardless of `root`.
 
     `manifest`, when given and present, must be the manifest.json built next to this ROM: its
     rom_sha256 is cross-checked against the rebuild and a disagreement is rejected. Other
@@ -313,9 +348,7 @@ def verify_dev_rom(data: bytes, root: Path = ROOT, manifest: Path | None = None)
     tampered ROM bytes pass.
     """
     verify_dev_rom_layout(data, root)
-    with tempfile.TemporaryDirectory(prefix='pce-dev-identity-') as tmp, \
-            contextlib.redirect_stdout(io.StringIO()):
-        trusted = build(Path(tmp), root=root).read_bytes()
+    trusted = _trusted_dev_rom(root, _trusted_sources(root))
     if data != trusted:
         at = next(index for index, (got, want) in enumerate(zip(data, trusted)) if got != want)
         raise ValueError(f'DEV ROM is not byte-identical to an independent rebuild from trusted '

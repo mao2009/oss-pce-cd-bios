@@ -11,10 +11,10 @@ import re
 import subprocess
 
 if __package__:
-    from .build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
+    from .build_rom import API_IMPLEMENTATION, BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
     from .environment import DEPENDENCIES, executable
 else:
-    from build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
+    from build_rom import API_IMPLEMENTATION, BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
     from environment import DEPENDENCIES, executable
 
 # SEI CLD; LDA #$FF TAM #1; LDA #$F8 TAM #2; LDX #$FF TXS; BRA self; LDX #$EE BRA self
@@ -81,7 +81,7 @@ def build_reset_entry(original_path: Path, output: Path, mode="debug") -> Path:
         "status": "development-reset-entry-not-compatible-bios", "mode": mode, "rom_sha256": digest,
         "rom_bytes": IMAGE_BYTES, "pinned_cc65": DEPENDENCIES["cc65"]["revision"],
         "symbols": symbols, "mpr0": 0xFF, "mpr1": 0xF8, "sp": 0xFF,
-        "api_implementation": "NONE", "unknown": UNKNOWN, "release_eligible": False,
+        "api_implementation": API_IMPLEMENTATION, "unknown": UNKNOWN, "release_eligible": False,
     }, indent=2, sort_keys=True) + "\n")
     return rom
 

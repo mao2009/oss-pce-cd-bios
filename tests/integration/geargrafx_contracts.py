@@ -10,11 +10,11 @@ from diagnostics import MPR, build_probe_images
 # private reference BIOS. Only slot $1E (EX_GETVER) currently; everything else is a
 # nonreturning diagnostic stub. Values are what the guest must observe on return.
 #
-# P register: only a partial bitmask is asserted, never the whole byte. Cold P=0x06
-# (Z=1, I=1, C=0) and CI P=0x07 (Z=1, I=1, C=1) differ because the initial CPU state is
-# PRNG-seeded, so C (and V/D) are not fixed. The asserted bits are Z=1 (LDY #0 is the last
-# flag-setting instruction), N=0 (that same LDY #0) and I=1 (the caller's SEI, which the
-# callee does not clear). Carry is not claimed to hold a value; instead carry-in vs
+# P register: only a partial bitmask is asserted, never the whole byte. The emulator seeds the
+# initial CPU state from a PRNG, so P (in particular carry, overflow and decimal) differs between
+# runs and environments - the caller's carry was 1 in one cold run and 0 in another. The asserted
+# bits are Z=1 and N=0 (LDY #0 is the last flag-setting instruction) and I=1 (the caller's SEI,
+# which the callee does not clear). Carry is not claimed to hold a value; instead carry-in vs
 # carry-out equality across the JSR/RTS is verified on the real core. See FLAG_* below.
 IMPLEMENTED_SLOTS = {0x1E: {'a': 0x11, 'x': 3, 'y': 0, 'sp': 255}}
 
@@ -29,6 +29,8 @@ def check_implemented_slot(records, symbols, slot, expected):
     checkpoint. V and D are not asserted, and the absolute P byte is never fixed. Returns
     nothing; raises ValueError on any deviation (used by the negative tests).
     """
+    if len(records['OBS']) < 4:  # loaded/cold/nonreturning/warm; otherwise the loop below is vacuous
+        raise ValueError('execution records are incomplete; the contract cannot be established')
     for row in records['OBS'][1:]:
         if (row['pc'], row['mpr']) != (symbols['api_call_return']+3, MPR):
             raise ValueError('implemented API did not return to the caller continuation')

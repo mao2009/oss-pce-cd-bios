@@ -12,10 +12,10 @@ import re
 import subprocess
 
 if __package__:
-    from .build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
+    from .build_rom import API_IMPLEMENTATION, BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
     from .environment import DEPENDENCIES, executable
 else:
-    from build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
+    from build_rom import API_IMPLEMENTATION, BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
     from environment import DEPENDENCIES, executable
 
 BANK_BASE = 0xE000
@@ -147,7 +147,7 @@ def build_cdread(original_path: Path, output: Path, mode="debug") -> Path:
         "symbols": symbols, "expected_mpr": EXPECTED_MPR,
         "result_address": RESULT_ADDRESS, "buffer_address": BUFFER_ADDRESS,
         "default_request": {"lba": DEFAULT_LBA, "count": DEFAULT_COUNT},
-        "api_implementation": "NONE", "cd_read_api_slot_03": "NOT_IMPLEMENTED",
+        "api_implementation": API_IMPLEMENTATION, "cd_read_api_slot_03": "NOT_IMPLEMENTED",
         "final_system_card_layout": "UNKNOWN", "release_eligible": False,
     }
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")

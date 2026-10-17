@@ -15,12 +15,12 @@ import subprocess
 if __package__:
     from .build_cdread import (CDB_BYTES, DEFAULT_LBA, DEFAULT_COUNT, EXPECTED_MPR, HALT_CONFIRM_STEPS,
                                BUFFER_ADDRESS, RESULT_ADDRESS, code_digest, read_request, verify_cdread)
-    from .build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
+    from .build_rom import API_IMPLEMENTATION, BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
     from .environment import DEPENDENCIES, executable
 else:
     from build_cdread import (CDB_BYTES, DEFAULT_LBA, DEFAULT_COUNT, EXPECTED_MPR, HALT_CONFIRM_STEPS,
                               BUFFER_ADDRESS, RESULT_ADDRESS, code_digest, read_request, verify_cdread)
-    from build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
+    from build_rom import API_IMPLEMENTATION, BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
     from environment import DEPENDENCIES, executable
 
 SOURCE = ROOT / "src/cd_reset_probe.s"
@@ -86,7 +86,7 @@ def build_cdreset(original_path: Path, output: Path, mode="debug") -> Path:
         "result_address": RESULT_ADDRESS, "buffer_address": BUFFER_ADDRESS,
         "halt_confirm_steps": HALT_CONFIRM_STEPS,
         "default_request": {"lba": DEFAULT_LBA, "count": DEFAULT_COUNT},
-        "api_implementation": "NONE", "cd_reset_api_slot_01": "NOT_IMPLEMENTED",
+        "api_implementation": API_IMPLEMENTATION, "cd_reset_api_slot_01": "NOT_IMPLEMENTED",
         "release_eligible": False,
     }
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")

@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from tools.build_rom import build
+from tools.build_rom import API_IMPLEMENTATION, build
 from tools.build_startup import (
     STARTUP_CODE, SYMBOL_OFFSETS, build_startup, parse_symbols, verify_startup,
 )
@@ -111,7 +111,7 @@ class StartupBuildTests(unittest.TestCase):
     def test_manifest_enforces_diagnostic_only(self):
         manifest = json.loads((self.root / "startup/manifest.json").read_text())
         self.assertFalse(manifest["release_eligible"])
-        self.assertEqual(manifest["api_implementation"], "NONE")
+        self.assertEqual(manifest["api_implementation"], API_IMPLEMENTATION)
         self.assertEqual(manifest["final_system_card_layout"], "UNKNOWN")
         self.assertEqual(manifest["cd_state_value"], 1)
         self.assertFalse(manifest["cd_disc_presence_read"])
