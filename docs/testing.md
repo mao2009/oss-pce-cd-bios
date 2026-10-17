@@ -82,6 +82,26 @@ observations, frames/reset and explicit untested fields. Only normalized RAM and
 version observations are compared; arbitrary power-on RAM is not deterministic.
 `make clean` removes evidence, so run `make integration` again if needed.
 
+## DEV ROM verification layers
+
+The development `build/debug/bios-dev/dev-only-not-compatible-syscard3.pce` is accepted by
+callers in three distinct layers, and only the last is an acceptance gate:
+
+| Function (`tools/build_rom.py`) | Checks | Blind to |
+| --- | --- | --- |
+| `verify_dev_rom_layout` | 81-slot table, stub markers, vectors, padding | every override byte |
+| `verify_dev_rom_structure` | the above plus ld65/da65 instruction boundaries, target ranges and fall-through | same-length substitutions (e.g. `LDX #3`→`LDX #4`, `LDY #0`→`LDY #1`, `RTS`→`RTI`) |
+| `verify_dev_rom` | layout plus **byte identity against an independent rebuild** of the trusted source tree | nothing in the ROM image |
+
+`verify_dev_rom` never hashes the input and compares it to itself, and it never trusts a
+`manifest.json` shipped beside the ROM as proof of authenticity: the expected bytes come from a
+fresh `build()` of `src/` into a temporary directory. Debug and release builds emit identical
+ROM bytes, so the rebuild is a pure function of the trusted sources. When a `manifest` path is
+supplied, only its `rom_sha256` is cross-checked against that rebuild; a tampered ROM and a
+tampered manifest are both rejected. ld65 debug info is structural evidence only, never a
+byte-authenticity proof. A ROM produced by `build()` in-process is already trusted; every ROM
+read back from disk goes through `verify_dev_rom` before any code assumes a trusted DEV ROM.
+
 ## Coverage status
 
 | Area | Status |

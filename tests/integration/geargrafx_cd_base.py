@@ -27,7 +27,7 @@ def main():
     parser.add_argument('--rom', type=Path, required=True)
     args = parser.parse_args()
     data = args.rom.read_bytes()
-    verify_dev_rom(data)
+    verify_dev_rom(data, manifest=args.rom.parent / 'manifest.json')
     output = args.rom.parent
     probe = compile_probe(output)
     with tempfile.TemporaryDirectory(prefix='pce-cd-base-') as tmp:

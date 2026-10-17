@@ -7,6 +7,8 @@ with X carrying the API slot. Reset loops with X=$FF. No host-side HLE.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import functools
 import hashlib
@@ -219,9 +221,9 @@ def verify_bank(bank: bytes, overridden: set[int] | None = None, dbg: dict | Non
 
     `overridden` lists slots replaced by src/overrides/slot_XX.s. Their bodies are
     verified with ld65 debug info when `dbg` is given. If `dbg` is absent the default
-    `override_bodies=True` refuses to trust an override blindly; pass
-    `override_bodies=False` only when the bodies were already verified at build time
-    (see verify_dev_rom) and the caller re-checks a ROM produced by build().
+    `override_bodies=True` refuses to trust an override blindly; `override_bodies=False`
+    skips the body check entirely and is therefore unsound on untrusted input - it is
+    only for verify_dev_rom_layout(), which pairs it with an independent rebuild.
     """
     if len(bank) != BANK_BYTES:
         raise ValueError(f'Expected {BANK_BYTES} bytes in first bank, got {len(bank)}')
@@ -272,33 +274,61 @@ def verify_bank(bank: bytes, overridden: set[int] | None = None, dbg: dict | Non
             raise ValueError('override code cannot be verified without ld65 debug info')
 
 
-def verify_dev_rom(data: bytes) -> None:
-    """Re-check a DEV ROM already built (and body-verified) by build().
+def verify_dev_rom_layout(data: bytes, root: Path = ROOT) -> None:
+    """LAYOUT check only: 81-slot JMP table, non-override stub markers, vectors and padding.
 
-    Used by the diagnostics that patch the DEV ROM: the non-override stub layout,
-    the table, vectors and padding are checked strictly, while override bodies are
-    assumed to have been verified with ld65 debug info when build() produced the ROM.
-
-    Trust boundary: this function does NOT re-verify override code bodies when
-    ld65 debug info is unavailable. It assumes the ROM was produced by build()
-    and has not been tampered with since. For untrusted ROM inputs, use
-    verify_dev_rom_strict() with ld65 debug info instead.
+    Makes NO claim about override code bytes: any same-length byte substitution inside an
+    override passes. Never use alone to accept an untrusted ROM - call verify_dev_rom(),
+    which adds an independent rebuild comparison.
     """
-    verify_image(data, set(overrides()), None, override_bodies=False)
+    verify_image(data, set(overrides(root)), None, override_bodies=False)
 
 
-def verify_dev_rom_strict(data: bytes, dbg: dict) -> None:
-    """Fully verify a DEV ROM including override code bodies.
+def verify_dev_rom_structure(data: bytes, dbg: dict, root: Path = ROOT) -> None:
+    """LAYOUT plus STRUCTURAL verification of override bodies using ld65 debug info.
 
-    Requires ld65 debug info (`--dbgfile` output from build()). Re-runs
-    verify_overrides() against every overridden slot, so any post-build
-    tampering of override bodies (e.g. changing LDX #3 to LDX #4 in the
-    EX_GETVER override) is detected.
-
-    Callers receiving untrusted ROM input (e.g. from external artifacts)
-    must use this function instead of verify_dev_rom().
+    Detects length-changing edits, undefined opcodes, branch/JMP/JSR targets that leave the
+    override or land mid-instruction, and fall-through into data. It does NOT prove byte
+    authenticity: a same-length substitution that keeps every instruction boundary and does not
+    fall out of the override (LDX #3 -> LDX #4, LDY #0 -> LDY #1, RTS -> RTI) passes. ld65 debug
+    info is structural evidence only; never accept an untrusted ROM on this check alone.
     """
-    verify_image(data, set(overrides()), dbg, override_bodies=True)
+    verify_image(data, set(overrides(root)), dbg, override_bodies=True)
+
+
+def verify_dev_rom(data: bytes, root: Path = ROOT, manifest: Path | None = None) -> None:
+    """Accept a loaded DEV ROM only when it is byte-identical to an independent rebuild.
+
+    Stage 1 runs the layout checks (fast, specific error messages). Stage 2 rebuilds the DEV
+    ROM from the trusted source tree at `root` with build() and compares every byte of `data`
+    against that rebuild. Debug and release builds emit identical bytes, so the rebuild is a
+    pure function of the trusted sources; the expectation never comes from `data` or from any
+    manifest shipped beside it. Tampering the ROM, its manifest, or both is therefore rejected,
+    including same-length instruction substitutions that verify_dev_rom_structure() cannot see.
+
+    `manifest`, when given and present, must be the manifest.json built next to this ROM: its
+    rom_sha256 is cross-checked against the rebuild and a disagreement is rejected. Other
+    manifest fields are descriptive only and never used to accept a ROM. When no manifest path
+    is given, manifest-only edits are outside this function's scope, but they still cannot make
+    tampered ROM bytes pass.
+    """
+    verify_dev_rom_layout(data, root)
+    with tempfile.TemporaryDirectory(prefix='pce-dev-identity-') as tmp, \
+            contextlib.redirect_stdout(io.StringIO()):
+        trusted = build(Path(tmp), root=root).read_bytes()
+    if data != trusted:
+        at = next(index for index, (got, want) in enumerate(zip(data, trusted)) if got != want)
+        raise ValueError(f'DEV ROM is not byte-identical to an independent rebuild from trusted '
+                         f'sources (first difference at offset ${at:04X}: ROM ${data[at]:02X}, '
+                         f'rebuild ${trusted[at]:02X}); tampered or foreign input rejected')
+    if manifest is not None and manifest.is_file():
+        try:
+            claimed = json.loads(manifest.read_text(encoding='utf-8'))['rom_sha256']
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise ValueError(f'DEV ROM manifest is unreadable: {manifest}') from error
+        if claimed != hashlib.sha256(trusted).hexdigest():
+            raise ValueError('DEV ROM manifest rom_sha256 disagrees with the independent rebuild; '
+                             'inconsistent manifest rejected (a manifest never makes a ROM trusted)')
 
 
 def verify_image(data: bytes, overridden: set[int] | None = None, dbg: dict | None = None,

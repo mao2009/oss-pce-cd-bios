@@ -46,7 +46,7 @@ def build_cdreset(original_path: Path, output: Path, mode="debug") -> Path:
     if mode not in ("debug", "release"):
         raise ValueError("MODE must be debug or release")
     original = original_path.read_bytes()
-    verify_dev_rom(original)
+    verify_dev_rom(original, manifest=original_path.parent / 'manifest.json')
     ca65, ld65 = executable("ca65"), executable("ld65")
     for tool in (ca65, ld65):
         version = subprocess.run([tool, "--version"], check=True, capture_output=True, text=True)

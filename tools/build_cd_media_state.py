@@ -57,7 +57,7 @@ def build_cd_media_state(original_path: Path, output: Path, mode="debug") -> Pat
     if mode not in ("debug", "release"):
         raise ValueError("MODE must be debug or release")
     original = original_path.read_bytes()
-    verify_dev_rom(original)
+    verify_dev_rom(original, manifest=original_path.parent / 'manifest.json')
     ca65, ld65 = executable("ca65"), executable("ld65")
     output.mkdir(parents=True, exist_ok=True)
     objects = assemble_api_objects(output, mode)

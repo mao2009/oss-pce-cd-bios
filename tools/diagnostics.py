@@ -7,16 +7,21 @@ import subprocess
 
 if __package__:
     from .environment import ROOT, DEPENDENCIES, executable
-    from .build_rom import verify_dev_rom
+    from .build_rom import overrides, verify_dev_rom
 else:
     from environment import ROOT, DEPENDENCIES, executable
-    from build_rom import verify_dev_rom
+    from build_rom import overrides, verify_dev_rom
 
 MARKERS = {1: (0x11, 0x1f), 2: (0x22, 0x2f), 3: (0x33, 0x3f),
            4: (0x44, 0x4f), 31: (0xa1, 0xaf)}
 MPR = [0xff, 0xf8, 1, 2, 31, 3, 4, 0]
 # ROM offsets of HuC6280 vectors in bank0 ($FFF6 IRQ2/BRK, $FFF8 IRQ1, $FFFA timer; $FFFC NMI unused).
 IRQ_VECTORS = {'irq2': 0x1ff6, 'irq1': 0x1ff8, 'timer': 0x1ffa}
+# Allowed modifications of the trusted base image, and nothing else: the test overlay copied over
+# file $0800-$1000 (CPU $E800-$EFFF), one marker byte at each end of banks 1/2/3/4/31, and the
+# reset/IRQ vectors at file $1FF6-$2000. Any override entry that lived in the overlay window would
+# be silently discarded by that copy, so build_probe_images() refuses it up front.
+OVERLAY_START = 0xE800
 
 
 def parse_labels(text):
@@ -34,8 +39,13 @@ def parse_labels(text):
     return {name: result[name] for name in sorted(required)}
 
 
-def build_probe_images(base, output, mode='debug'):
-    verify_dev_rom(base)
+def build_probe_images(base, output, mode='debug', root=ROOT):
+    verify_dev_rom(base, root)
+    for slot in sorted(overrides(root)):
+        target = int.from_bytes(base[3*slot+1:3*slot+3], 'little')
+        if target >= OVERLAY_START:
+            raise ValueError(f'API ${slot:02X} override ${target:04X} lies in the probe overlay '
+                             f'${OVERLAY_START:04X}-$EFFF; relocate it below ${OVERLAY_START:04X}')
     if mode not in ('debug', 'release'):
         raise ValueError('MODE must be debug or release')
     output = Path(output); output.mkdir(parents=True, exist_ok=True)
