@@ -166,21 +166,6 @@
       </div>
     </section>
 
-    <section id="faq" class="section" aria-labelledby="faq-title">
-      <div class="wrap">
-        <div class="section-heading">
-          <p class="eyebrow">04 / Frequently asked questions</p>
-          <h2 id="faq-title">What does the project actually support?</h2>
-          <p class="section-intro">A short, source-linked summary for developers, researchers and anyone discovering this open-source PC Engine CD BIOS effort.</p>
-        </div>
-        <div class="card-grid">
-          <article class="card"><span class="number">01 / SCOPE</span><h3>Is it a usable System Card BIOS?</h3><p>Not yet. The 256 KiB development ROM has one callable EX_GETVER API, while 80 other slots remain stubs. No retail-game compatibility or firmware release is established.</p></article>
-          <article class="card"><span class="number">02 / EVIDENCE</span><h3>What has been tested?</h3><p>Geargrafx real-core tests have observed EX_GETVER return and independent synthetic CD sector reads. These diagnostics do not certify full reference-BIOS ABI compatibility or game boot. See <a href="https://github.com/mao2009/oss-pce-cd-bios/pull/174">PR #174</a>.</p></article>
-          <article class="card"><span class="number">03 / CONTRIBUTE</span><h3>How can I help?</h3><p>Start with a focused <a href="https://github.com/mao2009/oss-pce-cd-bios/issues">GitHub Issue</a> covering API research, reproducible testing or original firmware code. Follow the <a href="https://github.com/mao2009/oss-pce-cd-bios/blob/main/CONTRIBUTING.md">contribution policy</a> and do not upload private BIOS images.</p></article>
-        </div>
-      </div>
-    </section>
-
     <section id="contribute" class="section" aria-labelledby="contribute-title">
       <div class="wrap">
         <div class="section-heading">
@@ -203,6 +188,21 @@
 <span>$</span> make dev-integration  <span># DEV-only System Card API check</span></code></pre>
         </div>
         <div class="contribute-note"><span class="lock" aria-hidden="true">◇</span><div><strong>Provenance is part of the contribution.</strong><p>Do not submit proprietary System Card ROMs, commercial discs, protected code, or private binary extracts. Reused OSS needs a file-level license/provenance review and human approval before inclusion. Synthetic test inputs do not require a private BIOS. Read <a href="https://github.com/mao2009/oss-pce-cd-bios/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a> and the <a href="https://github.com/mao2009/oss-pce-cd-bios/blob/main/docs/provenance.md">reuse policy</a>.</p></div></div>
+      </div>
+    </section>
+
+    <section id="faq" class="section" aria-labelledby="faq-title">
+      <div class="wrap">
+        <div class="section-heading">
+          <p class="eyebrow">04 / Frequently asked questions</p>
+          <h2 id="faq-title">What does the project actually support?</h2>
+          <p class="section-intro">A short, source-linked summary for developers, researchers and anyone discovering this open-source PC Engine CD BIOS effort.</p>
+        </div>
+        <div class="card-grid">
+          <article class="card"><span class="number">01 / SCOPE</span><h3>Is it a usable System Card BIOS?</h3><p>Not yet. The 256 KiB development ROM has one callable EX_GETVER API, while 80 other slots remain stubs. No retail-game compatibility or firmware release is established.</p></article>
+          <article class="card"><span class="number">02 / EVIDENCE</span><h3>What has been tested?</h3><p>Geargrafx real-core tests have observed EX_GETVER return and independent synthetic CD sector reads. These diagnostics do not certify full reference-BIOS ABI compatibility or game boot. See <a href="https://github.com/mao2009/oss-pce-cd-bios/pull/174">PR #174</a>.</p></article>
+          <article class="card"><span class="number">03 / CONTRIBUTE</span><h3>How can I help?</h3><p>Start with a focused <a href="https://github.com/mao2009/oss-pce-cd-bios/issues">GitHub Issue</a> covering API research, reproducible testing or original firmware code. Follow the <a href="https://github.com/mao2009/oss-pce-cd-bios/blob/main/CONTRIBUTING.md">contribution policy</a> and do not upload private BIOS images.</p></article>
+        </div>
       </div>
     </section>
 
