@@ -52,6 +52,6 @@ The following milestones were merged before #174: [#115](https://github.com/mao2
 3. Adapt guest CD transport and payload handoff into actual BIOS services and **self-authored disc boot** through the intended firmware path.
 4. Independently cross-check important emulator behavior; only then begin defined lawful retail scenarios.
 
-This page corrects the post-#174 status; some older wording in `README.md`, `docs/testing.md` coverage and `docs/roadmap.md` still reflects earlier snapshots and should be reconciled in separately scoped documentation work. Do not treat those older summaries as proof that the merged DEV-only `EX_GETVER` does not exist.
+This page and `README.md` reflect the post-#174 DEV-only `EX_GETVER` milestone. Some older wording in `docs/testing.md` coverage and `docs/roadmap.md` still reflects earlier snapshots and should be reconciled in separately scoped documentation work. Do not treat those older summaries as proof that the merged DEV-only `EX_GETVER` does not exist.
 
 Whenever updating status, distinguish **main vs Draft**, **host model vs real Geargrafx**, **source hypothesis vs measured behavior**, and **diagnostic vs compatible BIOS**.
