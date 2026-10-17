@@ -12,8 +12,11 @@ facts they rely on (``Memory::Write`` hook order, the ungated ``bank == 0xFF`` h
 ``WriteFromCPU`` bypass) and the per-row evidence category are in docs/cd-reset-contract.md.
 
 The decision is falsifiable: a synthetic posture that covers every hazard together with a
-reviewed ABI returns ``ALLOWED``; every missing, malformed, unsafe-I/O-allowing or UNKNOWN-ABI
-posture fails closed to ``BLOCKED`` with per-condition reasons.
+reviewed ABI returns ``MODEL_ELIGIBLE``; every missing, malformed, unsafe-I/O-allowing or
+UNKNOWN-ABI posture fails closed to ``BLOCKED`` with per-condition reasons. ``MODEL_ELIGIBLE``
+is **not** execution permission: granting execution of the reference JSR additionally requires
+independent real-core enforcement of every hazard plus approved ABI evidence (Issue #179 / #173).
+This module never grants execution permission.
 """
 import argparse
 from typing import NamedTuple
@@ -112,8 +115,10 @@ def hazard_covered(hazard, posture):
 def decide(posture, abi):
     """Return ``(verdict, reasons)``. Malformed or incomplete inputs fail closed to BLOCKED.
 
-    An UNKNOWN ABI means the candidate callee may do anything, so it can never excuse a hazard;
-    only a reviewed ABI plus an explicit, side-effect-before mechanism may cover one.
+    ``MODEL_ELIGIBLE`` means a synthetic posture covers every hazard with a reviewed ABI: it is
+    **not** execution permission. Execution permission additionally requires independent real-core
+    enforcement of every hazard plus approved ABI evidence (Issue #179 / #173); this module never
+    grants it.
     """
     errors = validate_posture(posture) + validate_abi(abi)
     if errors:
@@ -129,16 +134,20 @@ def decide(posture, abi):
             reasons.append(f"{hazard.id}: {hazard.name} not covered before a side effect")
     if not posture["entry_environment_reproduced"]:
         reasons.append("entry_environment_not_reproduced")
-    elif posture["hardware_page_policy"] == "forbid":
-        # The guard's only way to cover $1804 cannot coexist with the required MPR0 = $FF entry.
-        reasons.append("entry_environment_contradiction: forbid_$FF conflicts with MPR0=$FF hypothesis")
-    return ("ALLOWED", []) if not reasons else ("BLOCKED", reasons)
+    if posture["hardware_page_policy"] == "forbid":
+        # The guard's only way to cover $1804 (forbid $FF) conflicts with the MPR0 = $FF entry
+        # environment required by the HuCC hypothesis: $1804 coverage and entry reproduction are
+        # mutually exclusive today, so H3 is a specific rejection reason here.
+        reasons.append("H3: entry_environment_contradiction: forbid_$FF conflicts with MPR0=$FF hypothesis")
+    return ("MODEL_ELIGIBLE", []) if not reasons else ("BLOCKED", reasons)
 
 
 def format_verdict(verdict, reasons):
     """Render the CLI line; BLOCKED carries the per-condition reasons."""
-    if verdict == "ALLOWED":
-        return "ALLOWED: every hazard covered and entry environment reproduced"
+    if verdict == "MODEL_ELIGIBLE":
+        return ("MODEL_ELIGIBLE: synthetic posture covers every hazard; not execution permission. "
+                "Real-core enforcement plus approved ABI evidence (Issue #179 / #173) is required "
+                "before any reference JSR may run.")
     return "BLOCKED: " + "; ".join(reasons)
 
 
@@ -151,7 +160,7 @@ def main(argv=None):
         parser.error("--check is required")
     verdict, reasons = decide(CURRENT_POSTURE, CURRENT_ABI)
     print(format_verdict(verdict, reasons))
-    return EXIT_ALLOWED if verdict == "ALLOWED" else EXIT_BLOCKED
+    return EXIT_ALLOWED if verdict == "MODEL_ELIGIBLE" else EXIT_BLOCKED
 
 
 if __name__ == "__main__":

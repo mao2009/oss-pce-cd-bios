@@ -49,6 +49,8 @@ class CdResetSafetyPreflightTests(unittest.TestCase):
         joined = "; ".join(reasons)
         self.assertIn("abi_status_unknown", joined)
         self.assertIn("entry_environment_not_reproduced", joined)
+        # H3 is a specific rejection reason in the current #170 posture (forbid $FF vs MPR0=$FF).
+        self.assertIn("H3:", joined)
         # ST/IRQ/$1804 coverage is absent today: each is reported separately, never merged.
         for hazard in M.HAZARDS:
             with self.subTest(hazard=hazard.id):
@@ -57,9 +59,21 @@ class CdResetSafetyPreflightTests(unittest.TestCase):
 
     def test_complete_synthetic_posture_is_falsifiable(self):
         # If a posture could cover every hazard with a reviewed ABI, the decision is not a
-        # tautology. This synthetic case must return ALLOWED.
+        # tautology. This synthetic case must return MODEL_ELIGIBLE (not execution permission).
         verdict, reasons = M.decide(complete_posture(), REVIEWED)
-        self.assertEqual((verdict, reasons), ("ALLOWED", []))
+        self.assertEqual((verdict, reasons), ("MODEL_ELIGIBLE", []))
+
+    def test_model_eligible_is_not_execution_permission(self):
+        # MODEL_ELIGIBLE is a synthetic-model result; this module never returns execution
+        # permission ("ALLOWED"). Granting execution needs independent real-core enforcement plus
+        # approved ABI evidence (Issue #179 / #173).
+        verdict, reasons = M.decide(complete_posture(), REVIEWED)
+        self.assertEqual(verdict, "MODEL_ELIGIBLE")
+        self.assertNotEqual(verdict, "ALLOWED")
+        self.assertEqual(reasons, [])
+        rendered = M.format_verdict(verdict, reasons)
+        self.assertIn("not execution permission", rendered)
+        self.assertIn("Issue #179 / #173", rendered)
 
     def test_each_missing_capability_blocks_with_its_own_reason(self):
         mutations = {
@@ -99,7 +113,7 @@ class CdResetSafetyPreflightTests(unittest.TestCase):
                        entry_environment_reproduced=True)
         verdict, reasons = M.decide(posture, REVIEWED)
         self.assertEqual(verdict, "BLOCKED")
-        self.assertTrue(any(("contradiction" in reason) for reason in reasons))
+        self.assertTrue(any(reason.startswith("H3:") and "contradiction" in reason for reason in reasons))
 
     def test_unsafe_io_allow_policy_is_rejected(self):
         # A configuration that permits unmonitored I/O must never be accepted.
