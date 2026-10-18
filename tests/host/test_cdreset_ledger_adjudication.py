@@ -203,6 +203,20 @@ class AdjudicateClaimTests(unittest.TestCase):
             adjudicate_claim(OBSERVED, {'gear:src/cdrom.cpp': 'EMULATOR_TRACE'}, field='stack',
                              context='slot 1 stack', executed_callee=True)
 
+    def test_malformed_types_raise_valueerror_not_typeerror(self):
+        cases = [(dict(OBSERVED, status=['OBSERVED']), 'stack', True),
+                 (OBSERVED, ['x'], True),
+                 (dict(HYPOTHESIS, evidence=0), 'arguments', False),
+                 (dict(UNKNOWN, evidence=None), 'flags', False),
+                 (OBSERVED, 'stack', 'no'),
+                 (dict(OBSERVED, registers=['Q']), 'stack', True),
+                 (dict(OBSERVED, evidence=[dict(EVIDENCE_ENTRY, core_revision='x')]), 'stack', True),
+                 (dict(OBSERVED, evidence=[dict(EVIDENCE_ENTRY, execution_conditions=' ')]), 'stack', True)]
+        for claim, field, executed in cases:
+            with self.assertRaises(ValueError, msg=repr((claim, field, executed))):
+                adjudicate_claim(claim, {**REAL, **CALLER}, field=field, context='x',
+                                 executed_callee=executed)
+
 
 class LedgerAdjudicationTests(unittest.TestCase):
     def test_ledger_statuses_stay_in_the_four_categories(self):
