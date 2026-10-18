@@ -18,6 +18,13 @@
 //   5. Instruction budget: stepped one instruction at a time with actual execution
 //      counting.
 //
+// Issue #179 measurement mode "mmio1804": deliberately maps MPR0 = $FF (item 3
+// does NOT apply to this mode) to measure whether the resulting $1804 store can
+// be rejected before its device side effect. It cannot: the CPU-address write
+// breakpoint only raises a flag inside Memory::Write, the device write still
+// completes, and the core stops at the next instruction boundary. Evidence and
+// verdict: tests/integration/geargrafx_mmio1804_trap.py (BLOCKED).
+//
 // Known limitation (not blocked by this probe, documented here):
 //   ST0/ST1/ST2 (opcodes 0x03/0x13/0x23) write to VDC registers via
 //   m_huc6202->WriteFromCPU(), bypassing Memory::Write(), map_write, and
@@ -116,10 +123,15 @@ int main(int argc, char** argv)
     if (allow_start % 0x2000 != 0 || allow_end % 0x2000 != 0)
         return 2;  // enforcement granularity is the 8 KiB MPR page
     std::string mode = argv[7];
-    if (mode != "call" && mode != "neg-write" && mode != "pos-write" && mode != "tam")
+    if (mode != "call" && mode != "neg-write" && mode != "pos-write" && mode != "tam" &&
+        mode != "mmio1804")
         return 2;
     unsigned long neg_addr = std::strtoul(argv[8], &end, 0);
     if (!end || *end || neg_addr > 65535UL)
+        return 2;
+    // Issue #179 measures exactly one path: a guest store to the CD-ROM reset
+    // register at CPU address $1804 through the Hardware Page (MPR0 == $FF).
+    if (mode == "mmio1804" && neg_addr != 0x1804)
         return 2;
     if (mode == "neg-write" && neg_addr >= allow_start && neg_addr < allow_end)
         return 2;  // forbidden target must lie outside the allowlist
@@ -176,7 +188,9 @@ int main(int argc, char** argv)
     o.memory->SetMpr(7, 0x00);  // API jump table at $E000 -> ROM bank 0
     for (int i = 2; i <= 6; ++i)
         o.memory->SetMpr(i, 0x00);
-    if (std::getenv("PCE_REF_TEST_ALIAS"))
+    if (mode == "mmio1804")
+        o.memory->SetMpr(0, 0xFF);  // Issue #179: page 0 -> Hardware Page, $1804 reachable
+    else if (std::getenv("PCE_REF_TEST_ALIAS"))
         o.memory->SetMpr(0, 0xF8);  // alias page 0 onto the page-1 WRAM bank
     else
         o.memory->SetMpr(0, 0x00);  // page 0 -> ROM (not shared with page 1)
@@ -209,6 +223,13 @@ int main(int argc, char** argv)
                 0x53, 0x01,   // TAM #$01  (MPR0 = 0xF8)
                 0x8D, 0x00, 0x00,  // STA $0000
                 0x80, 0xFE}; // BRA *
+    }
+    if (mode == "mmio1804") {
+        // Issue #179 synthetic guest: LDA #$02 / STA $1804 / BRA *.
+        // $02 is the SCSI RST assert bit (docs/cd-reset-contract.md), so a
+        // landing store is observable as the $1804 readback (m_reset).
+        code = {0xA9, 0x02, 0x8D, (u8)(neg_addr & 0xFF), (u8)(neg_addr >> 8),
+                0x80, 0xFE};
     }
     const unsigned long kReturnAddr = kGuestBase + jsr_offset + 3;
     if (kStubIndex + code.size() > 0x2000)
@@ -325,6 +346,15 @@ int main(int argc, char** argv)
         cdram0 = o.memory->Read((u16)neg_addr);
     }
     std::string before_state = state_json(o.st, o.memory);
+    // Issue #179 device-state observation (measured, never assumed): the $1804
+    // readback is CdRom::m_reset (docs/cd-reset-contract.md: $02 asserted /
+    // $00 released) and $1403 reads the interrupt request register (IRQ2 = bit 0).
+    u8 mmio_rst_before = 0, mmio_irq2_before = 0;
+    u8 mmio_rst_after = 0, mmio_irq2_after = 0;
+    if (mode == "mmio1804") {
+        mmio_rst_before = o.memory->Read((u16)neg_addr);
+        mmio_irq2_before = o.memory->Read(0x1403);
+    }
 
     FILE* trace = nullptr;
     if (const char* tp = std::getenv("PCE_REF_TRACE"))
@@ -360,7 +390,9 @@ int main(int argc, char** argv)
         if (!ok)
             break;
 
-        if (o.hw_reachable()) {
+        if (mode != "mmio1804" && o.hw_reachable()) {
+            // mmio1804 deliberately keeps MPR0 == $FF: the whole point of the
+            // measurement is a Hardware-Page-reachable $1804.
             ok = false;
             reason = "hardware_page_made_reachable";
             break;
@@ -466,6 +498,19 @@ int main(int argc, char** argv)
             ok = false;
             reason = "tam_prohibited_store_modified_ram";
         }
+    } else if (mode == "mmio1804") {
+        // Classification (side effect before/after the stop) is made from the
+        // device-state readback below, in the Python adapter. Here we only
+        // fail closed when the store itself was never detected.
+        if (!detected) {
+            ok = false;
+            reason = "mmio1804_write_not_detected";
+        }
+    }
+    if (mode == "mmio1804") {
+        // Read the device state after the core stopped; no state is written back.
+        mmio_rst_after = o.memory->Read((u16)neg_addr);
+        mmio_irq2_after = o.memory->Read(0x1403);
     }
 
     FILE* out = stderr;
@@ -475,7 +520,7 @@ int main(int argc, char** argv)
     std::fprintf(out, "\"reason\":\"%s\",", reason.c_str());
     std::fprintf(out, "\"before\":%s,", before_state.c_str());
     std::fprintf(out, "\"after\":%s,", state_json(o.st, o.memory).c_str());
-    if (mode != "call") {
+    if (mode != "call" && mode != "mmio1804") {
         std::fprintf(out, "\"guard_target\":%lu,\"guard_before\":%lu,\"guard_after\":%lu,",
                      neg_addr, guard_before, guard_after);
     }
@@ -503,7 +548,16 @@ int main(int argc, char** argv)
         std::fprintf(out, "{\"address\":%lu,\"before\":%u,\"after\":%u}",
                      0x2000UL + i, (unsigned)wram0[i], (unsigned)wramN[i]);
     }
-    std::fprintf(out, "]}");
+    std::fprintf(out, "]");
+    if (mode == "mmio1804") {
+        std::fprintf(out, ",\"mmio1804_addr\":%u,\"mmio_rst_before\":%u,"
+                          "\"mmio_rst_after\":%u,\"mmio_irq2_before\":%u,"
+                          "\"mmio_irq2_after\":%u",
+                     (unsigned)neg_addr, (unsigned)mmio_rst_before,
+                     (unsigned)mmio_rst_after, (unsigned)mmio_irq2_before,
+                     (unsigned)mmio_irq2_after);
+    }
+    std::fprintf(out, "}");
     std::fflush(out);
     if (trace)
         std::fclose(trace);
