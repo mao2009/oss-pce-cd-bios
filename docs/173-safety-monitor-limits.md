@@ -10,8 +10,8 @@
 - 最小対象: `slot-1e` / `EX_GETVER` 仮説（合成 ROM のみ、私的 System Card 3.0 BIOS は読み込み・実行しない）
 - 負例: 一時書込み→復元、許可域外 RAM、書込可 MMIO、IRQ、命令予算超過、タイムアウト、プロセス異常、未知ABI、ROM hash不一致
 
-## 手法（GPL非混入の検証方式）
-pinned Geargrafx（GPL-3.0, revision `b49ae82a012eade566d72e9d61c9d95a5caa4da3`）のプリビルドオブジェクトファイルを `tests/integration/geargrafx_api.py::compile_probe` でリンクし、**コアソースコードを MIT リポジトリに持ち込まない**。リンク実行物はローカルのみで、CIアーティファクト・gitに含めない。
+## 手法（GPLソースを持ち込まない方針）
+pinned Geargrafx（GPL-3.0, revision `b49ae82a012eade566d72e9d61c9d95a5caa4da3`）のプリビルドオブジェクトファイルを `tests/integration/geargrafx_api.py::compile_probe` でリンクし、**コアソースコードを MIT リポジトリに持ち込まない**。リンク実行物は CIアーティファクト・gitに含めない（CI ランナー上での実行有無とライセンス上の扱いは下記「GPL/MIT ライセンス境界と配布の扱い」を参照。GPL 条件への適合は未確認）。
 
 検討した代替案:
 - 独立した隔離プロセス/スタブ方式: コアの挙動を再現するスタブを作ればGPL非混入は達成できるが、実コア実測の真正性が失われ、「実コアで観測・拒否できるか」の受入条件を満たさない。採用しない。
