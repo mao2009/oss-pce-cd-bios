@@ -163,8 +163,10 @@ def validate_evidence(evidence, context):
     for entry in evidence:
         require(isinstance(entry, dict) and set(entry) == set(EVIDENCE_FIELDS),
                 f'{context}: evidence entry must contain exactly {sorted(EVIDENCE_FIELDS)}')
-        require(all(isinstance(entry[field], str) and entry[field] for field in EVIDENCE_FIELDS),
+        require(all(isinstance(entry[field], str) and entry[field].strip() for field in EVIDENCE_FIELDS),
                 f'{context}: evidence entry values must be non-empty strings')
+        require(re.fullmatch(r'[0-9a-f]{40}', entry['core_revision']) is not None,
+                f'{context}: core_revision must be a 40-hex lowercase git revision')
         require(EVIDENCE_HASH_RE.fullmatch(entry['evidence_hash']) is not None and
                 len(set(entry['evidence_hash'])) > 1,
                 f'{context}: evidence_hash must be a 64-hex lowercase sha256 digest')
@@ -198,8 +200,13 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
         if not ok:
             raise ValueError(message)
 
+    require(isinstance(field, str), f'{context}: claim field must be a string')
     require(field in CALLEE_BEHAVIOR_FIELDS | HARDWARE_OBSERVATION_FIELDS,
             f'{context}: unknown claim field {field!r}')
+    require(executed_callee is True or executed_callee is False,
+            f'{context}: executed_callee must be a bool')
+    require(isinstance(claim.get('status'), str), f'{context}: unsupported claim status (must be a string)')
+    require(isinstance(claim.get('evidence', []), list), f'{context}: claim evidence must be a list')
     require(set(claim) <= CLAIM_KEYS, f'{context}: unknown claim keys {sorted(set(claim) - CLAIM_KEYS)}')
     require(all(kind in SOURCE_KINDS for kind in source_kinds.values()),
             f'{context}: invalid source kind')
@@ -226,7 +233,7 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
         require(value != 'UNKNOWN' and confidence == 'SOURCE_SUPPORTED' and sources,
                 f'{context}: invalid HYPOTHESIS claim')
     elif status == 'OBSERVED':
-        require(value != 'UNKNOWN' and confidence == 'SOURCE_SUPPORTED' and sources,
+        require(value != 'UNKNOWN' and confidence == 'SOURCE_SUPPORTED' and sources and not registers,
                 f'{context}: invalid OBSERVED claim')
         require(any(source_kinds[source] == EMULATOR_SOURCE_KIND for source in sources),
                 f'{context}: OBSERVED requires an EMULATOR_SOURCE measurement')
