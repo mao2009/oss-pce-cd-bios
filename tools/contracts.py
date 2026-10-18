@@ -13,6 +13,22 @@ FIELDS = {'arguments', 'returns', 'clobbered', 'preserved', 'stack', 'mpr',
 CLAIM_STATUSES = {'UNKNOWN', 'HYPOTHESIS', 'OBSERVED', 'BLOCKED'}
 EMULATOR_SOURCE_KIND = 'EMULATOR_SOURCE'
 
+# Source-kind semantics (Issue #209 / MEDIUM-1). The source kind alone never
+# proves callee execution or evidence strength; it only classifies provenance.
+#
+#   CALLER_SOURCE: HuCC SDK 等 caller 側仕様。callee の実行を保証しない。
+#       HYPOTHESIS = caller 側の期待のみ；callee ABI/実行は未観測。
+#   HLE_SOURCE: Hu-Go 等の HLE エミュレータ。実機ファームウェアの証拠ではない。
+#       HYPOTHESIS = HLE エミュレータ挙動のみ；実機ファームウェアとは無関係。
+#   EMULATOR_SOURCE: 実コア（Geargrafx ピンrev）での実測。ハードウェアレベルの観測。
+#       HYPOTHESIS = 実コア実測ありだが callee ABI/実行は未確認。
+#       callee execution なしでは OBSERVED に昇格しない（callee ABI は HYPOTHESIS のまま）。
+SOURCE_KIND_MEANINGS = {
+    'CALLER_SOURCE': 'HuCC SDK 等 caller 側仕様。callee の実行を保証しない。',
+    'HLE_SOURCE': 'Hu-Go 等の HLE エミュレータ。実機ファームウェアの証拠ではない。',
+    'EMULATOR_SOURCE': '実コア（Geargrafx ピンrev）での実測。ハードウェアレベルの観測。',
+}
+
 
 def validate_contracts(data, inventory, inventory_text):
     """Return normally for consistent unexecuted research; raise ValueError otherwise.
@@ -120,9 +136,19 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
     UNKNOWN/BLOCKED; it rejects any status outside the set (including VERIFIED)
     so an unexecuted callee can never be promoted.
 
+    Source-kind semantics (Issue #209 / MEDIUM-1):
+      CALLER_SOURCE: HuCC SDK 等 caller 側仕様。callee の実行を保証しない。
+          HYPOTHESIS = caller 側の期待のみ；callee ABI/実行は未観測。
+      HLE_SOURCE: Hu-Go 等の HLE エミュレータ。実機ファームウェアの証拠ではない。
+          HYPOTHESIS = HLE エミュレータ挙動のみ；実機ファームウェアとは無関係。
+      EMULATOR_SOURCE: 実コア（Geargrafx ピンrev）での実測。ハードウェアレベルの観測。
+          HYPOTHESIS = 実コア実測ありだが callee ABI/実行は未確認。
+          callee execution なしでは OBSERVED に昇格しない（callee ABI は HYPOTHESIS のまま）。
+
     Rules:
       UNKNOWN     - value exactly 'UNKNOWN', no sources, confidence UNKNOWN, no registers
-      HYPOTHESIS  - caller/HLE source text only, non-empty sources, confidence SOURCE_SUPPORTED
+      HYPOTHESIS  - caller/HLE/emulator source text only, non-empty sources, confidence SOURCE_SUPPORTED
+                    (source kind does not by itself imply callee execution or evidence strength)
       OBSERVED    - requires at least one EMULATOR_SOURCE (real-core measurement);
                     callee-behavior claims additionally require executed_callee
       BLOCKED     - value exactly 'UNKNOWN', confidence UNKNOWN, no registers;
@@ -149,6 +175,13 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
         require(value == 'UNKNOWN' and confidence == 'UNKNOWN' and sources == [] and not registers,
                 f'{context}: invalid UNKNOWN claim')
     elif status == 'HYPOTHESIS':
+        # HYPOTHESIS 受理条件（各 source kind 共通）: value != 'UNKNOWN',
+        # confidence == 'SOURCE_SUPPORTED', かつ非空の sources。
+        #   CALLER_SOURCE: caller 側の期待のみ（callee の実行を保証しない）。
+        #   HLE_SOURCE:    HLE エミュレータ挙動のみ（実機ファームウェアの証拠ではない）。
+        #   EMULATOR_SOURCE: 実コア実測だが callee ABI/実行は未確認；
+        #                    callee execution なしでは OBSERVED に昇格しない
+        #                    （callee ABI は HYPOTHESIS のまま）。
         require(value != 'UNKNOWN' and confidence == 'SOURCE_SUPPORTED' and sources,
                 f'{context}: invalid HYPOTHESIS claim')
     elif status == 'OBSERVED':
