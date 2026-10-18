@@ -352,25 +352,29 @@
             "huc:include/hucc/hucc-systemcard.h",
             "huc:include/hucc/core.inc"
           ],
-          "confidence": "SOURCE_SUPPORTED"
+          "confidence": "SOURCE_SUPPORTED",
+          "evidence": []
         },
         "returns": {
           "status": "UNKNOWN",
           "value": "UNKNOWN",
           "sources": [],
-          "confidence": "UNKNOWN"
+          "confidence": "UNKNOWN",
+          "evidence": []
         },
         "clobbered": {
           "status": "UNKNOWN",
           "value": "UNKNOWN",
           "sources": [],
-          "confidence": "UNKNOWN"
+          "confidence": "UNKNOWN",
+          "evidence": []
         },
         "preserved": {
           "status": "UNKNOWN",
           "value": "UNKNOWN",
           "sources": [],
-          "confidence": "UNKNOWN"
+          "confidence": "UNKNOWN",
+          "evidence": []
         },
         "stack": {
           "status": "HYPOTHESIS",
@@ -379,7 +383,8 @@
             "huc:include/hucc/core.inc",
             "huc:include/hucc/core-kernel.asm"
           ],
-          "confidence": "SOURCE_SUPPORTED"
+          "confidence": "SOURCE_SUPPORTED",
+          "evidence": []
         },
         "mpr": {
           "status": "HYPOTHESIS",
@@ -389,7 +394,8 @@
             "huc:include/hucc/core-kernel.asm",
             "huc:include/hucc/core-startup.asm"
           ],
-          "confidence": "SOURCE_SUPPORTED"
+          "confidence": "SOURCE_SUPPORTED",
+          "evidence": []
         },
         "ram": {
           "status": "HYPOTHESIS",
@@ -397,19 +403,22 @@
           "sources": [
             "hugo:bios.c"
           ],
-          "confidence": "SOURCE_SUPPORTED"
+          "confidence": "SOURCE_SUPPORTED",
+          "evidence": []
         },
         "flags": {
           "status": "UNKNOWN",
           "value": "UNKNOWN",
           "sources": [],
-          "confidence": "UNKNOWN"
+          "confidence": "UNKNOWN",
+          "evidence": []
         },
         "irq": {
           "status": "UNKNOWN",
           "value": "UNKNOWN",
           "sources": [],
-          "confidence": "UNKNOWN"
+          "confidence": "UNKNOWN",
+          "evidence": []
         },
         "errors": {
           "status": "HYPOTHESIS",
@@ -417,7 +426,8 @@
           "sources": [
             "hugo:bios.c"
           ],
-          "confidence": "SOURCE_SUPPORTED"
+          "confidence": "SOURCE_SUPPORTED",
+          "evidence": []
         },
         "synchronization": {
           "status": "HYPOTHESIS",
@@ -425,7 +435,8 @@
           "sources": [
             "hugo:bios.c"
           ],
-          "confidence": "SOURCE_SUPPORTED"
+          "confidence": "SOURCE_SUPPORTED",
+          "evidence": []
         }
       },
       "sources": [
