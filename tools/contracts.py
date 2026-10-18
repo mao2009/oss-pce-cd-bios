@@ -13,12 +13,23 @@ FIELDS = {'arguments', 'returns', 'clobbered', 'preserved', 'stack', 'mpr',
 CLAIM_STATUSES = {'UNKNOWN', 'HYPOTHESIS', 'OBSERVED', 'BLOCKED'}
 EMULATOR_SOURCE_KIND = 'EMULATOR_SOURCE'
 
+# Measurement-evidence schema. A source entry (repository/revision/path/url/sha256)
+# only proves that source text exists; it is not measurement evidence. An OBSERVED
+# claim must additionally reference non-empty, well-formed evidence describing the
+# execution conditions, the emulator core revision that produced the measurement,
+# the input type fed to the callee, the verification result and a sha256 evidence
+# hash. Source references alone are not sufficient for OBSERVED.
+EVIDENCE_FIELDS = ('execution_conditions', 'core_revision', 'input_type',
+                   'verification_result', 'evidence_hash')
+EVIDENCE_HASH_RE = re.compile(r'[0-9a-f]{64}\Z')
+
 
 def validate_contracts(data, inventory, inventory_text):
     """Return normally for consistent unexecuted research; raise ValueError otherwise.
 
-    This schema deliberately cannot represent VERIFIED. Future implementation
-    work must introduce an evidence schema before promoting any claim.
+    This schema deliberately cannot represent VERIFIED. OBSERVED promotion
+    additionally requires non-empty, well-formed measurement evidence; source
+    code references alone are not measurement evidence.
     """
     def require(ok, message):
         if not ok:
@@ -93,9 +104,11 @@ def validate_contracts(data, inventory, inventory_text):
         for field, claim in contract.items():
             context = f'slot {i} {field}'
             require(isinstance(claim, dict) and set(claim) <=
-                    {'status', 'value', 'sources', 'confidence', 'registers'}, f'{context}: claim fields')
+                    {'status', 'value', 'sources', 'confidence', 'registers', 'evidence'},
+                    f'{context}: claim fields')
             adjudicate_claim(claim, source_kinds, field=field, context=context,
                              executed_callee=executed_callee)
+            validate_evidence(claim.get('evidence', []), context)
             refs(claim.get('sources'), context,
                  claim['status'] in {'HYPOTHESIS', 'OBSERVED'})
             if 'registers' in claim:
@@ -111,6 +124,29 @@ def validate_contracts(data, inventory, inventory_text):
                      preserved['value'] == clobbered['value']), f'slot {i}: contradictory state claims')
 
 
+def validate_evidence(evidence, context):
+    """Validate one claim's measurement-evidence reference structure.
+
+    Each entry must name the execution conditions, the emulator core revision
+    that produced the measurement, the input type fed to the callee, the
+    verification result and a 64-hex lowercase sha256 evidence hash. The hash
+    makes the entry formally verifiable against the recorded measurement
+    artifact. Returns None when consistent, raises ValueError otherwise.
+    """
+    def require(ok, message):
+        if not ok:
+            raise ValueError(message)
+
+    require(isinstance(evidence, list), f'{context}: claim evidence must be a list')
+    for entry in evidence:
+        require(isinstance(entry, dict) and set(entry) == set(EVIDENCE_FIELDS),
+                f'{context}: evidence entry must contain exactly {sorted(EVIDENCE_FIELDS)}')
+        require(all(isinstance(entry[field], str) and entry[field] for field in EVIDENCE_FIELDS),
+                f'{context}: evidence entry values must be non-empty strings')
+        require(EVIDENCE_HASH_RE.fullmatch(entry['evidence_hash']) is not None,
+                f'{context}: evidence_hash must be a 64-hex lowercase sha256 digest')
+
+
 def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=False):
     """Pure fail-closed adjudication of one contract claim's classification.
 
@@ -124,7 +160,11 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
       UNKNOWN     - value exactly 'UNKNOWN', no sources, confidence UNKNOWN, no registers
       HYPOTHESIS  - caller/HLE source text only, non-empty sources, confidence SOURCE_SUPPORTED
       OBSERVED    - requires at least one EMULATOR_SOURCE (real-core measurement);
-                    callee-behavior claims additionally require executed_callee
+                    callee-behavior claims additionally require executed_callee;
+                    non-empty, well-formed measurement evidence (execution
+                    conditions, core revision, input type, verification result,
+                    sha256 evidence hash) is required; source references alone
+                    are not sufficient
       BLOCKED     - value exactly 'UNKNOWN', confidence UNKNOWN, no registers;
                     sources may cite the blocking evidence
     """
@@ -158,6 +198,10 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
                 f'{context}: OBSERVED requires a real-core EMULATOR_SOURCE measurement')
         require(executed_callee,
                 f'{context}: OBSERVED callee behavior requires an executed callee (verification is NOT_RUN)')
+        evidence = claim.get('evidence', [])
+        require(isinstance(evidence, list) and bool(evidence),
+                f'{context}: OBSERVED requires non-empty measurement evidence')
+        validate_evidence(evidence, context)
     elif status == 'BLOCKED':
         require(value == 'UNKNOWN' and confidence == 'UNKNOWN' and not registers,
                 f'{context}: invalid BLOCKED claim')

@@ -4,6 +4,12 @@
 dicts are fed directly. No emulator, no ROM, no reference BIOS execution is involved.
 VERIFIED is outside CLAIM_STATUSES and must never be reachable: an unexecuted callee can
 not be promoted by these rules.
+
+Issue #208 strengthens OBSERVED: a source reference (source code URL/revision) only proves
+that source text exists; it is not measurement evidence. OBSERVED promotion now additionally
+requires non-empty, well-formed measurement evidence (execution conditions, core revision,
+input type, verification result, sha256 evidence hash). `verification.executed_callee` is
+part of the evidence and is not sufficient by itself.
 """
 import sys
 import unittest
@@ -24,9 +30,18 @@ HYPOTHESIS = {
     'status': 'HYPOTHESIS', 'value': 'HuCC caller-side expectation only',
     'sources': ['huc:include/hucc/pcengine.inc'], 'confidence': 'SOURCE_SUPPORTED',
 }
+# Complete, well-formed measurement evidence for a synthetic OBSERVED claim.
+EVIDENCE_ENTRY = {
+    'execution_conditions': 'Geargrafx core cold boot; Super System Card 3.0 JP candidate; no disc',
+    'core_revision': 'b49ae82a012eade566d72e9d61c9d95a5caa4da3',
+    'input_type': 'CD_RESET system-call selector passed in Y',
+    'verification_result': '$1804 readback $02 while asserted, $00 after release',
+    'evidence_hash': 'd1a2f529224a70666ede15c4cf774da484bf1b96495a53e08d474f09f8ff5a50',
+}
 OBSERVED = {
     'status': 'OBSERVED', 'value': '$1804 readback $02 while asserted, $00 after release',
     'sources': ['gear:src/cdrom.cpp'], 'confidence': 'SOURCE_SUPPORTED',
+    'evidence': [EVIDENCE_ENTRY],
 }
 BLOCKED = {'status': 'BLOCKED', 'value': 'UNKNOWN', 'sources': [], 'confidence': 'UNKNOWN'}
 
@@ -42,7 +57,8 @@ class AdjudicateClaimTests(unittest.TestCase):
     def test_hypothesis_claim_is_accepted(self):
         adjudicate_claim(HYPOTHESIS, CALLER, field='arguments', context='slot 1 arguments')
 
-    def test_observed_claim_with_real_core_source_is_accepted(self):
+    def test_observed_claim_with_complete_evidence_is_accepted(self):
+        # Issue #208 positive case: EMULATOR_SOURCE + executed callee + complete evidence.
         adjudicate_claim(OBSERVED, REAL, field='stack', context='slot 1 stack',
                          executed_callee=True)
 
@@ -79,7 +95,43 @@ class AdjudicateClaimTests(unittest.TestCase):
         # HLE/caller text alone can never be OBSERVED: it is not real-core measurement evidence.
         bad = dict(OBSERVED, sources=['huc:include/hucc/pcengine.inc'])
         with self.assertRaisesRegex(ValueError, 'EMULATOR_SOURCE measurement'):
-            adjudicate_claim(bad, CALLER, field='stack', context='slot 1 stack')
+            adjudicate_claim(bad, CALLER, field='stack', context='slot 1 stack',
+                             executed_callee=True)
+
+    def test_observed_requires_non_empty_evidence(self):
+        # Issue #208 negative case: an OBSERVED claim without measurement evidence is rejected
+        # even with an EMULATOR_SOURCE and an executed callee.
+        bad = dict(OBSERVED, evidence=[])
+        with self.assertRaisesRegex(ValueError, 'non-empty measurement evidence'):
+            adjudicate_claim(bad, REAL, field='stack', context='slot 1 stack',
+                             executed_callee=True)
+
+    def test_observed_without_evidence_key_is_rejected(self):
+        bad = {k: v for k, v in OBSERVED.items() if k != 'evidence'}
+        with self.assertRaisesRegex(ValueError, 'non-empty measurement evidence'):
+            adjudicate_claim(bad, REAL, field='stack', context='slot 1 stack',
+                             executed_callee=True)
+
+    def test_observed_with_invalid_evidence_hash_is_rejected(self):
+        bad = dict(OBSERVED, evidence=[dict(EVIDENCE_ENTRY, evidence_hash='not-a-sha256')])
+        with self.assertRaisesRegex(ValueError, 'sha256'):
+            adjudicate_claim(bad, REAL, field='stack', context='slot 1 stack',
+                             executed_callee=True)
+
+    def test_observed_with_incomplete_evidence_entry_is_rejected(self):
+        incomplete = dict(EVIDENCE_ENTRY)
+        del incomplete['verification_result']
+        bad = dict(OBSERVED, evidence=[incomplete])
+        with self.assertRaisesRegex(ValueError, 'evidence entry must contain exactly'):
+            adjudicate_claim(bad, REAL, field='stack', context='slot 1 stack',
+                             executed_callee=True)
+
+    def test_executed_callee_alone_without_evidence_is_insufficient(self):
+        # Issue #208: executed_callee self-attestation is part of the evidence, not sufficient.
+        bad = {k: v for k, v in OBSERVED.items() if k != 'evidence'}
+        with self.assertRaisesRegex(ValueError, 'non-empty measurement evidence'):
+            adjudicate_claim(bad, REAL, field='stack', context='slot 1 stack',
+                             executed_callee=True)
 
     def test_observed_callee_field_rejected_without_executed_callee(self):
         with self.assertRaisesRegex(ValueError, 'executed callee'):
@@ -112,6 +164,7 @@ class AdjudicateClaimTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'duplicate'):
             adjudicate_claim(bad, CALLER, field='arguments', context='slot 1 arguments')
 
+
 class LedgerAdjudicationTests(unittest.TestCase):
     def test_ledger_statuses_stay_in_the_four_categories(self):
         data = load_contracts()
@@ -134,6 +187,9 @@ class LedgerAdjudicationTests(unittest.TestCase):
         self.assertEqual(slot1['contract']['returns']['status'], 'UNKNOWN')
         self.assertEqual(slot1['verification'],
                          {'status': 'NOT_RUN', 'executed_callee': False, 'evidence': []})
+        # Slot 1 claims declare evidence slots but no measurement has been performed.
+        for field in FIELDS:
+            self.assertEqual(slot1['contract'][field]['evidence'], [])
         # Nothing in the whole ledger is VERIFIED: no executed reference-ROM callee exists.
         for api in data['apis']:
             for field in FIELDS:
