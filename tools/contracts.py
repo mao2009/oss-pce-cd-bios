@@ -7,6 +7,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 FIELDS = {'arguments', 'returns', 'clobbered', 'preserved', 'stack', 'mpr',
           'ram', 'flags', 'irq', 'errors', 'synchronization'}
+# Contract fields whose status describes callee ABI behavior: these can only be
+# known by executing the callee, so OBSERVED status on them additionally
+# requires an executed callee (executed_callee=True). Verification is NOT_RUN
+# for every slot, so no contract claim may currently reach OBSERVED.
+#
+# Low-level hardware observations (e.g. hw_bus_reset: a $1804 register/bus
+# fact documented in docs/cd-reset-contract.md) are NOT callee behavior and
+# are not contract fields: they never require an executed callee. Hardware
+# observation alone must never promote callee ABI claims (returns/flags/irq/
+# errors/synchronization/...) to OBSERVED.
+CALLEE_BEHAVIOR_FIELDS = set(FIELDS)
 # Adjudication categories for every contract claim. VERIFIED is deliberately
 # absent: it can only be earned by an executed reference-ROM callee, which no
 # slot has (verification stays NOT_RUN / executed_callee false).
@@ -124,7 +135,10 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
       UNKNOWN     - value exactly 'UNKNOWN', no sources, confidence UNKNOWN, no registers
       HYPOTHESIS  - caller/HLE source text only, non-empty sources, confidence SOURCE_SUPPORTED
       OBSERVED    - requires at least one EMULATOR_SOURCE (real-core measurement);
-                    callee-behavior claims additionally require executed_callee
+                    callee-behavior claims (fields in CALLEE_BEHAVIOR_FIELDS)
+                    additionally require executed_callee. Low-level hardware
+                    observations (e.g. hw_bus_reset) are not callee behavior and
+                    never require an executed callee.
       BLOCKED     - value exactly 'UNKNOWN', confidence UNKNOWN, no registers;
                     sources may cite the blocking evidence
     """
@@ -156,8 +170,9 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
                 f'{context}: invalid OBSERVED claim')
         require(any(source_kinds[source] == EMULATOR_SOURCE_KIND for source in sources),
                 f'{context}: OBSERVED requires a real-core EMULATOR_SOURCE measurement')
-        require(executed_callee,
-                f'{context}: OBSERVED callee behavior requires an executed callee (verification is NOT_RUN)')
+        if field in CALLEE_BEHAVIOR_FIELDS:
+            require(executed_callee,
+                    f'{context}: OBSERVED callee behavior requires an executed callee (verification is NOT_RUN)')
     elif status == 'BLOCKED':
         require(value == 'UNKNOWN' and confidence == 'UNKNOWN' and not registers,
                 f'{context}: invalid BLOCKED claim')

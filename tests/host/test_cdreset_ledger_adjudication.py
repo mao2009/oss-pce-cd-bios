@@ -82,12 +82,38 @@ class AdjudicateClaimTests(unittest.TestCase):
             adjudicate_claim(bad, CALLER, field='stack', context='slot 1 stack')
 
     def test_observed_callee_field_rejected_without_executed_callee(self):
+        # Callee ABI behavior (returns) may not be OBSERVED without an executed callee.
         with self.assertRaisesRegex(ValueError, 'executed callee'):
             adjudicate_claim(OBSERVED, REAL, field='returns', context='slot 1 returns')
 
     def test_observed_callee_field_accepted_when_callee_executed(self):
         adjudicate_claim(OBSERVED, REAL, field='returns', context='slot 1 returns',
                          executed_callee=True)
+
+    def test_observed_hardware_observation_accepted_without_executed_callee(self):
+        # hw_bus_reset is a low-level $1804 register/bus fact (hardware observation),
+        # not callee ABI behavior: OBSERVED with a real-core EMULATOR_SOURCE must be
+        # accepted even though no callee was executed.
+        claim = dict(OBSERVED,
+                     value='$1804 bit 1: assert -> readback $02, release -> $00, bus FREE')
+        adjudicate_claim(claim, REAL, field='hw_bus_reset',
+                         context='slot 1 hw_bus_reset', executed_callee=False)
+
+    def test_observed_hardware_observation_rejects_caller_only_source(self):
+        # A hardware observation still needs a real-core EMULATOR_SOURCE; caller/HLE
+        # text alone can never be OBSERVED.
+        bad = dict(OBSERVED, sources=['huc:include/hucc/pcengine.inc'])
+        with self.assertRaisesRegex(ValueError, 'EMULATOR_SOURCE measurement'):
+            adjudicate_claim(bad, CALLER, field='hw_bus_reset',
+                             context='slot 1 hw_bus_reset', executed_callee=False)
+
+    def test_hardware_observation_does_not_promote_callee_abi(self):
+        # hw_bus_reset being OBSERVED must not relax callee-behavior claims: returns
+        # observed on hardware evidence alone (no executed callee) is still rejected.
+        claim = dict(OBSERVED, value='returns $00 in A')
+        with self.assertRaisesRegex(ValueError, 'executed callee'):
+            adjudicate_claim(claim, REAL, field='returns', context='slot 1 returns',
+                             executed_callee=False)
 
     def test_blocked_requires_unknown_value_confidence_and_no_registers(self):
         for bad in (dict(BLOCKED, value='some blocker text'),
