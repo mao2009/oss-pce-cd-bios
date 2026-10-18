@@ -345,8 +345,9 @@
       "contract": {
         "arguments": {
           "status": "HYPOTHESIS",
-          "value": "HuCC cd_reset(void) supplies no explicit API arguments beyond the system trampoline selector in Y.",
+          "value": "Caller-side HuCC SDK only (not callee behavior; no callee execution): `void cd_reset(void)` takes no explicit A/X/Y or `$20F8-$20FF` work-RAM arguments; the trampoline passes only the system-call selector in Y. Source: huc:include/hucc/pcengine.inc @54f5c736 (equates L468-552), huc:include/hucc/hucc-systemcard.asm @54f5c736, huc:include/hucc/hucc-systemcard.h @54f5c736. Callee argument contract unobserved.",
           "sources": [
+            "huc:include/hucc/pcengine.inc",
             "huc:include/hucc/hucc-systemcard.asm",
             "huc:include/hucc/hucc-systemcard.h",
             "huc:include/hucc/core.inc"
@@ -354,13 +355,10 @@
           "confidence": "SOURCE_SUPPORTED"
         },
         "returns": {
-          "status": "HYPOTHESIS",
-          "value": "HuCC exposes void and ignores any BIOS return value. Actual return registers/status UNKNOWN.",
-          "sources": [
-            "huc:include/hucc/hucc-systemcard.asm",
-            "huc:include/hucc/hucc-systemcard.h"
-          ],
-          "confidence": "SOURCE_SUPPORTED"
+          "status": "UNKNOWN",
+          "value": "UNKNOWN",
+          "sources": [],
+          "confidence": "UNKNOWN"
         },
         "clobbered": {
           "status": "UNKNOWN",
@@ -376,7 +374,7 @@
         },
         "stack": {
           "status": "HYPOTHESIS",
-          "value": "HuCC system macro uses JSR call_bios; trampoline uses JSR candidate entry and RTS with balanced PHA/PLA around bank changes. This is caller source only; callee stack depth, balance and return behavior UNKNOWN.",
+          "value": "Caller-side HuCC SDK only (not callee behavior; no callee execution): JSR entry with expected RTS to the caller's continuation; trampoline balances PHA/PLA around bank changes. Callee stack depth, balance and return behavior unobserved. Source: huc:include/hucc/core.inc @54f5c736, huc:include/hucc/core-kernel.asm @54f5c736.",
           "sources": [
             "huc:include/hucc/core.inc",
             "huc:include/hucc/core-kernel.asm"
@@ -385,7 +383,7 @@
         },
         "mpr": {
           "status": "HYPOTHESIS",
-          "value": "HuCC caller maps bank 0 into MPR7 for the call and restores caller MPR7 afterward. Startup maps MPR0=$FF and MPR1=$F8. Actual callee mapping prerequisites and preservation UNKNOWN.",
+          "value": "Caller-side HuCC SDK only (not callee behavior; no callee execution): caller maps bank 0 into MPR7 for the call and restores caller MPR7 afterward; startup maps MPR0=$FF/MPR1=$F8. Actual callee MPR prerequisites and preservation unobserved. Source: huc:include/hucc/core.inc @54f5c736, huc:include/hucc/core-kernel.asm @54f5c736, huc:include/hucc/core-startup.asm @54f5c736.",
           "sources": [
             "huc:include/hucc/core.inc",
             "huc:include/hucc/core-kernel.asm",
@@ -395,7 +393,7 @@
         },
         "ram": {
           "status": "HYPOTHESIS",
-          "value": "Hu-Go HLE writes 1 to CPU address $222D as its disc-present marker. Actual BIOS RAM writes and range UNKNOWN.",
+          "value": "Hu-Go HLE only (not adopted as BIOS behavior; no callee execution): writes 1 to CPU address $222D as its disc-present marker; physical-drive init failure exits the host with code 4 - not a BIOS error return. Actual BIOS RAM writes/range unobserved. Source: hugo:bios.c @64ed226da.",
           "sources": [
             "hugo:bios.c"
           ],
@@ -415,7 +413,7 @@
         },
         "errors": {
           "status": "HYPOTHESIS",
-          "value": "Hu-Go physical-drive initialization failure exits the host with code 4; this is not a BIOS error return. BIOS timeout/no-disc/error values UNKNOWN.",
+          "value": "Hu-Go HLE only (not a BIOS error return; no callee execution): physical-drive initialization failure exits the host with code 4. BIOS no-disc/timeout/error values and the callee error/flag convention unobserved. Source: hugo:bios.c @64ed226da.",
           "sources": [
             "hugo:bios.c"
           ],
@@ -423,7 +421,7 @@
         },
         "synchronization": {
           "status": "HYPOTHESIS",
-          "value": "Hu-Go HLE initializes physical media or fills image metadata before simulated RTS. BIOS completion, busy and IRQ requirements UNKNOWN.",
+          "value": "Hu-Go HLE only (not callee behavior; no callee execution): returns after media initialization/image metadata fill. Real ready/busy completion condition, wait budget and blocking behavior unobserved. Source: hugo:bios.c @64ed226da.",
           "sources": [
             "hugo:bios.c"
           ],
