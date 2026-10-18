@@ -42,6 +42,7 @@
 //   so they are not exercised by the measured execution path. Any future API
 //   allowing arbitrary guest code must address this path before being unblocked.
 #include "geargrafx_core.h"
+#include "huc6270.h"
 #include "huc6280.h"
 #include "memory.h"
 #include <cstdio>
@@ -134,7 +135,8 @@ int main(int argc, char** argv)
         return 2;  // enforcement granularity is the 8 KiB MPR page
     std::string mode = argv[7];
     if (mode != "call" && mode != "neg-write" && mode != "pos-write" && mode != "tam" &&
-        mode != "mmio1804" && mode != "mmio1804-preblock" && mode != "irqreg")
+        mode != "mmio1804" && mode != "mmio1804-preblock" && mode != "st0" && mode != "st1" &&
+        mode != "st2" && mode != "irqreg")
         return 2;
     unsigned long neg_addr = std::strtoul(argv[8], &end, 0);
     if (!end || *end || neg_addr > 65535UL)
@@ -243,6 +245,23 @@ int main(int argc, char** argv)
         code = {0xA9, 0x02, 0x8D, (u8)(neg_addr & 0xFF), (u8)(neg_addr >> 8),
                 0x80, 0xFE};
     }
+    // Issue #198: VDC register index selected by ST0 (0 = MAWR). Used for code
+    // generation below and for the HUC6270_REGISTER breakpoint armed later.
+    u8 st_reg = 0;
+    if (mode == "st0" || mode == "st1" || mode == "st2") {
+        // Issue #198 synthetic guest: ST0 #$nn / ST1 #$nn / ST2 #$nn then BRA *.
+        // ST opcodes call m_huc6202->WriteFromCPU() directly: they bypass
+        // Memory::Write(), map_write and CPU-address breakpoints, and reach the
+        // VDC whatever MPR0 holds (here fixed to $00, i.e. != $FF - the reachability
+        // denial that works for STA $1804 does NOT mitigate ST0/ST1/ST2).
+        st_reg = 0x00;  // VDC register index selected by the leading ST0 (0 = MAWR, mask 0xFFFF)
+        u8 st_op = (mode == "st0") ? 0x03 : (mode == "st1") ? 0x13 : 0x23;
+        u8 st_val = (mode == "st0") ? 0x07 : (mode == "st1") ? 0x5A : 0xA5;
+        if (mode == "st0")
+            code = {st_op, st_val, 0x80, 0xFE};   // ST0 #$07 at $3E00, BRA * at $3E02
+        else
+            code = {0x03, st_reg, st_op, st_val, 0x80, 0xFE};  // ST0 #$00, ST1/ST2 #nn, BRA * at $3E04
+    }
     if (mode == "irqreg") {
         // Issue #199 synthetic guest: LDA #$01 / STA $1802 / BRA *.
         // Enables CD IRQ bit 0 in $1802; $1804 is then written directly below so
@@ -329,6 +348,15 @@ int main(int argc, char** argv)
                               (u32)kMmioStaPc, 0, /*range=*/false,
                               /*read=*/false, /*write=*/false, /*execute=*/true))
         return 7;
+    // Issue #198: arm a HUC6270_REGISTER write breakpoint on VDC register 0 (MAWR)
+    // to observe whether ST1/ST2 data writes can be intercepted at all. ST0's
+    // address-register case has no CheckMemoryBreakpoints call site, so even an
+    // armed breakpoint can never fire for it.
+    if ((mode == "st0" || mode == "st1" || mode == "st2") &&
+        !o.cpu->AddBreakpoint(HuC6280::HuC6280_BREAKPOINT_TYPE_HUC6270_REGISTER,
+                              (u32)st_reg, 0, /*range=*/false,
+                              /*read=*/false, /*write=*/true, /*execute=*/false))
+        return 7;
 
     // --- pin the guest CPU context
     o.st->PC->SetValue((u16)kGuestBase);
@@ -389,9 +417,19 @@ int main(int argc, char** argv)
     u8 d1402_after_invalid = 0, d1403_after_invalid = 0;
     u8 d1400_after = 0, d1401_after = 0;
     u8 d_ram_before = 0, d_ram_after = 0;
+    // Issue #198: VDC readback (core public API).
+    u16 vdc_ar_before = 0, vdc_ar_after = 0;
+    u16 vdc_r_before = 0, vdc_r_after = 0;
     if (mode == "mmio1804" || mode == "mmio1804-preblock") {
         mmio_rst_before = o.memory->Read((u16)neg_addr);
         mmio_irq2_before = o.memory->Read(0x1403);
+    }
+    if (mode == "st0" || mode == "st1" || mode == "st2") {
+        // Issue #198: VDC state before the ST opcode (core public API readback).
+        HuC6270* vdc = o.core.GetHuC6270_1();
+        HuC6270::HuC6270_State* vs = vdc->GetState();
+        vdc_ar_before = (u8)*vs->AR;
+        vdc_r_before = vs->R[st_reg];
     }
     if (mode == "irqreg") {
         // $1802 enable + $1403 IRQ2 + $1402 mask readback before the guest runs.
@@ -497,6 +535,9 @@ int main(int argc, char** argv)
         } else {
             if (pc == kGuestBase + 5)
                 break;  // reached BRA* without a detected store
+            if ((mode == "st0" || mode == "st1" || mode == "st2") &&
+                pc == kGuestBase + (mode == "st0" ? 2UL : 4UL))
+                break;  // BRA* directly follows the ST opcode: the VDC side effect has landed
         }
     }
 
@@ -520,6 +561,14 @@ int main(int argc, char** argv)
         // Read the device state after the core stopped; no state is written back.
         mmio_rst_after = o.memory->Read((u16)neg_addr);
         mmio_irq2_after = o.memory->Read(0x1403);
+    }
+    if (mode == "st0" || mode == "st1" || mode == "st2") {
+        // Issue #198: VDC state after the core stopped; the side effect has
+        // already landed (stop is at the instruction boundary AFTER the ST).
+        HuC6270* vdc = o.core.GetHuC6270_1();
+        HuC6270::HuC6270_State* vs = vdc->GetState();
+        vdc_ar_after = (u8)*vs->AR;
+        vdc_r_after = vs->R[st_reg];
     }
     if (mode == "irqreg") {
         // $1802 enable + $1403 IRQ2 + $1402 mask readback after the guest stopped.
@@ -660,6 +709,17 @@ int main(int argc, char** argv)
         if (mode == "mmio1804-preblock")
             std::fprintf(out, ",\"execbp_hit\":%s,\"execbp_addr\":%u",
                          execbp_hit ? "true" : "false", (unsigned)kMmioStaPc);
+    }
+    if (mode == "st0" || mode == "st1" || mode == "st2") {
+        // Issue #198: measured VDC side-effect observation for the ST path.
+        std::fprintf(out, ",\"st_mode\":\"%s\",\"st_opcode_pc\":%u,\"vdc_reg_index\":%u,"
+                          "\"vdc_ar_before\":%u,\"vdc_ar_after\":%u,"
+                          "\"vdc_r_before\":%u,\"vdc_r_after\":%u",
+                     mode.c_str(),
+                     (unsigned)(mode == "st0" ? kGuestBase : kGuestBase + 2),
+                     (unsigned)st_reg,
+                     (unsigned)vdc_ar_before, (unsigned)vdc_ar_after,
+                     (unsigned)vdc_r_before, (unsigned)vdc_r_after);
     }
     if (mode == "irqreg") {
         std::fprintf(out, ",\"irq1802_before\":%u,\"irq1802_after\":%u,"
