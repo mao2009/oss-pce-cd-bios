@@ -22,6 +22,13 @@ EMULATOR_SOURCE_KIND = 'EMULATOR_SOURCE'
 EVIDENCE_FIELDS = ('execution_conditions', 'core_revision', 'input_type',
                    'verification_result', 'evidence_hash')
 EVIDENCE_HASH_RE = re.compile(r'[0-9a-f]{64}\Z')
+# Trust level of evidence entries: FORMAT_ONLY. validate_evidence checks shape
+# only. Nothing here resolves evidence_hash to a stored measurement artifact or
+# checks core_revision against a pin, so a well-formed hash is NOT proof that the
+# measurement happened. Do not read an accepted OBSERVED claim as VERIFIED.
+EVIDENCE_TRUST_LEVEL = 'FORMAT_ONLY'
+SOURCE_KINDS = frozenset({'CALLER_SOURCE', 'HLE_SOURCE', 'EMULATOR_SOURCE'})
+CLAIM_KEYS = frozenset({'status', 'value', 'sources', 'confidence', 'registers', 'evidence'})
 
 
 def validate_contracts(data, inventory, inventory_text):
@@ -104,8 +111,7 @@ def validate_contracts(data, inventory, inventory_text):
         for field, claim in contract.items():
             context = f'slot {i} {field}'
             require(isinstance(claim, dict) and set(claim) <=
-                    {'status', 'value', 'sources', 'confidence', 'registers', 'evidence'},
-                    f'{context}: claim fields')
+                    CLAIM_KEYS, f'{context}: claim fields')
             adjudicate_claim(claim, source_kinds, field=field, context=context,
                              executed_callee=executed_callee)
             validate_evidence(claim.get('evidence', []), context)
@@ -129,9 +135,10 @@ def validate_evidence(evidence, context):
 
     Each entry must name the execution conditions, the emulator core revision
     that produced the measurement, the input type fed to the callee, the
-    verification result and a 64-hex lowercase sha256 evidence hash. The hash
-    makes the entry formally verifiable against the recorded measurement
-    artifact. Returns None when consistent, raises ValueError otherwise.
+    verification result and a 64-hex lowercase sha256 evidence hash.
+    Trust level is EVIDENCE_TRUST_LEVEL (FORMAT_ONLY): shape is checked, the
+    hash is not resolved to a measurement artifact, so acceptance does not
+    prove authenticity. Returns None when consistent, raises ValueError otherwise.
     """
     def require(ok, message):
         if not ok:
@@ -143,7 +150,8 @@ def validate_evidence(evidence, context):
                 f'{context}: evidence entry must contain exactly {sorted(EVIDENCE_FIELDS)}')
         require(all(isinstance(entry[field], str) and entry[field] for field in EVIDENCE_FIELDS),
                 f'{context}: evidence entry values must be non-empty strings')
-        require(EVIDENCE_HASH_RE.fullmatch(entry['evidence_hash']) is not None,
+        require(EVIDENCE_HASH_RE.fullmatch(entry['evidence_hash']) is not None and
+                len(set(entry['evidence_hash'])) > 1,
                 f'{context}: evidence_hash must be a 64-hex lowercase sha256 digest')
 
 
@@ -159,7 +167,7 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
     Rules:
       UNKNOWN     - value exactly 'UNKNOWN', no sources, confidence UNKNOWN, no registers
       HYPOTHESIS  - caller/HLE source text only, non-empty sources, confidence SOURCE_SUPPORTED
-      OBSERVED    - requires at least one EMULATOR_SOURCE (real-core measurement);
+      OBSERVED    - requires at least one EMULATOR_SOURCE reference (necessary, not sufficient);
                     callee-behavior claims additionally require executed_callee;
                     non-empty, well-formed measurement evidence (execution
                     conditions, core revision, input type, verification result,
@@ -172,6 +180,9 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
         if not ok:
             raise ValueError(message)
 
+    require(set(claim) <= CLAIM_KEYS, f'{context}: unknown claim keys {sorted(set(claim) - CLAIM_KEYS)}')
+    require(all(kind in SOURCE_KINDS for kind in source_kinds.values()),
+            f'{context}: invalid source kind')
     status = claim.get('status')
     require(status in CLAIM_STATUSES,
             f'{context}: unsupported claim status {status!r}; VERIFIED is not represented')
@@ -185,6 +196,9 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
     confidence = claim.get('confidence')
     registers = claim.get('registers')
 
+    require(status == 'OBSERVED' or not claim.get('evidence'),
+            f'{context}: only an OBSERVED claim may carry evidence')
+
     if status == 'UNKNOWN':
         require(value == 'UNKNOWN' and confidence == 'UNKNOWN' and sources == [] and not registers,
                 f'{context}: invalid UNKNOWN claim')
@@ -195,7 +209,7 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
         require(value != 'UNKNOWN' and confidence == 'SOURCE_SUPPORTED' and sources,
                 f'{context}: invalid OBSERVED claim')
         require(any(source_kinds[source] == EMULATOR_SOURCE_KIND for source in sources),
-                f'{context}: OBSERVED requires a real-core EMULATOR_SOURCE measurement')
+                f'{context}: OBSERVED requires an EMULATOR_SOURCE measurement')
         require(executed_callee,
                 f'{context}: OBSERVED callee behavior requires an executed callee (verification is NOT_RUN)')
         evidence = claim.get('evidence', [])

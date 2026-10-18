@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 from contracts import (  # noqa: E402
-    CLAIM_STATUSES, FIELDS, adjudicate_claim, load_contracts,
+    CLAIM_STATUSES, EVIDENCE_TRUST_LEVEL, FIELDS, adjudicate_claim, load_contracts,
 )
 
 CALLER = {'huc:include/hucc/pcengine.inc': 'CALLER_SOURCE'}
@@ -163,6 +163,45 @@ class AdjudicateClaimTests(unittest.TestCase):
         bad = dict(HYPOTHESIS, sources=['huc:include/hucc/pcengine.inc'] * 2)
         with self.assertRaisesRegex(ValueError, 'duplicate'):
             adjudicate_claim(bad, CALLER, field='arguments', context='slot 1 arguments')
+
+    # ---- Issue #208 (MAJOR-2): evidence trust boundary. EVIDENCE_ENTRY is SYNTHETIC test data,
+    # never a real measurement; acceptance only means the *shape* is valid (FORMAT_ONLY).
+    def test_evidence_trust_level_is_format_only(self):
+        self.assertEqual(EVIDENCE_TRUST_LEVEL, 'FORMAT_ONLY')
+
+    def test_complete_structural_evidence_is_schema_accepted_not_authenticated(self):
+        # Accepted for shape only: nothing resolves the hash to a stored artifact.
+        adjudicate_claim(OBSERVED, REAL, field='stack', context='slot 1 stack', executed_callee=True)
+
+    def test_invalid_evidence_hashes_are_rejected(self):
+        for h in ('0' * 64, 'a' * 64, 'D1A2' + 'f' * 60, 'f' * 63, 'g' * 64, 12345, None):
+            bad = dict(OBSERVED, evidence=[dict(EVIDENCE_ENTRY, evidence_hash=h)])
+            with self.assertRaises(ValueError, msg=repr(h)):
+                adjudicate_claim(bad, REAL, field='stack', context='slot 1 stack', executed_callee=True)
+
+    def test_evidence_entry_with_unknown_or_non_string_field_is_rejected(self):
+        for entry in (dict(EVIDENCE_ENTRY, extra='x'), dict(EVIDENCE_ENTRY, core_revision=1),
+                      dict(EVIDENCE_ENTRY, input_type='')):
+            bad = dict(OBSERVED, evidence=[entry])
+            with self.assertRaises(ValueError):
+                adjudicate_claim(bad, REAL, field='stack', context='slot 1 stack', executed_callee=True)
+
+    def test_non_observed_claim_carrying_evidence_is_rejected(self):
+        # Evidence must not ride along on HYPOTHESIS: no implicit promotion path.
+        bad = dict(HYPOTHESIS, evidence=[EVIDENCE_ENTRY])
+        with self.assertRaisesRegex(ValueError, 'only an OBSERVED claim may carry evidence'):
+            adjudicate_claim(bad, CALLER, field='arguments', context='slot 1 arguments')
+
+    def test_unknown_claim_key_cannot_bypass_checks(self):
+        # e.g. a self-declared executed_callee inside the claim is not a recognised key.
+        bad = dict(OBSERVED, executed_callee=True)
+        with self.assertRaisesRegex(ValueError, 'unknown claim keys'):
+            adjudicate_claim(bad, REAL, field='returns', context='slot 1 returns')
+
+    def test_invalid_source_kind_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'invalid source kind'):
+            adjudicate_claim(OBSERVED, {'gear:src/cdrom.cpp': 'EMULATOR_TRACE'}, field='stack',
+                             context='slot 1 stack', executed_callee=True)
 
 
 class LedgerAdjudicationTests(unittest.TestCase):
