@@ -134,7 +134,7 @@ int main(int argc, char** argv)
         return 2;  // enforcement granularity is the 8 KiB MPR page
     std::string mode = argv[7];
     if (mode != "call" && mode != "neg-write" && mode != "pos-write" && mode != "tam" &&
-        mode != "mmio1804" && mode != "mmio1804-preblock")
+        mode != "mmio1804" && mode != "mmio1804-preblock" && mode != "irqreg")
         return 2;
     unsigned long neg_addr = std::strtoul(argv[8], &end, 0);
     if (!end || *end || neg_addr > 65535UL)
@@ -143,6 +143,8 @@ int main(int argc, char** argv)
     // register at CPU address $1804 through the Hardware Page (MPR0 == $FF).
     if ((mode == "mmio1804" || mode == "mmio1804-preblock") && neg_addr != 0x1804)
         return 2;
+    // Issue #199: irqreg probes the $1802/$1804/$1402/$1403 register set through
+    // direct Hardware-Page accesses; neg_addr is only a label, not a target.
     if (mode == "neg-write" && neg_addr >= allow_start && neg_addr < allow_end)
         return 2;  // forbidden target must lie outside the allowlist
     if (mode == "pos-write" && (neg_addr < allow_start || neg_addr >= allow_end))
@@ -198,8 +200,8 @@ int main(int argc, char** argv)
     o.memory->SetMpr(7, 0x00);  // API jump table at $E000 -> ROM bank 0
     for (int i = 2; i <= 6; ++i)
         o.memory->SetMpr(i, 0x00);
-    if (mode == "mmio1804" || mode == "mmio1804-preblock")
-        o.memory->SetMpr(0, 0xFF);  // Issue #179: page 0 -> Hardware Page, $1804 reachable
+    if (mode == "mmio1804" || mode == "mmio1804-preblock" || mode == "irqreg")
+        o.memory->SetMpr(0, 0xFF);  // page 0 -> Hardware Page, $1802/$1804/$1402/$1403 reachable
     else if (std::getenv("PCE_REF_TEST_ALIAS"))
         o.memory->SetMpr(0, 0xF8);  // alias page 0 onto the page-1 WRAM bank
     else
@@ -240,6 +242,12 @@ int main(int argc, char** argv)
         // landing store is observable as the $1804 readback (m_reset).
         code = {0xA9, 0x02, 0x8D, (u8)(neg_addr & 0xFF), (u8)(neg_addr >> 8),
                 0x80, 0xFE};
+    }
+    if (mode == "irqreg") {
+        // Issue #199 synthetic guest: LDA #$01 / STA $1802 / BRA *.
+        // Enables CD IRQ bit 0 in $1802; $1804 is then written directly below so
+        // the compound ($1802 enable + $1804 bit1) IRQ2 behaviour can be observed.
+        code = {0xA9, 0x01, 0x8D, 0x02, 0x18, 0x80, 0xFE};
     }
     const unsigned long kReturnAddr = kGuestBase + jsr_offset + 3;
     if (kStubIndex + code.size() > 0x2000)
@@ -373,9 +381,23 @@ int main(int argc, char** argv)
     // $00 released) and $1403 reads the interrupt request register (IRQ2 = bit 0).
     u8 mmio_rst_before = 0, mmio_irq2_before = 0;
     u8 mmio_rst_after = 0, mmio_irq2_after = 0;
+    u8 mmio_1802_before = 0, mmio_1802_after = 0;
+    u8 mmio_1402_before = 0, mmio_1402_after = 0;
+    // Issue #199 direct-poke results (set only in irqreg mode).
+    u8 d1804_after = 0, d1403_after_1804 = 0;
+    u8 d1402_after_mask = 0, d1403_after_ack = 0;
+    u8 d1402_after_invalid = 0, d1403_after_invalid = 0;
+    u8 d1400_after = 0, d1401_after = 0;
+    u8 d_ram_before = 0, d_ram_after = 0;
     if (mode == "mmio1804" || mode == "mmio1804-preblock") {
         mmio_rst_before = o.memory->Read((u16)neg_addr);
         mmio_irq2_before = o.memory->Read(0x1403);
+    }
+    if (mode == "irqreg") {
+        // $1802 enable + $1403 IRQ2 + $1402 mask readback before the guest runs.
+        mmio_1802_before = o.memory->Read(0x1802);
+        mmio_irq2_before = o.memory->Read(0x1403);
+        mmio_1402_before = o.memory->Read(0x1402);
     }
 
     FILE* trace = nullptr;
@@ -412,7 +434,7 @@ int main(int argc, char** argv)
         if (!ok)
             break;
 
-        if (mode != "mmio1804" && mode != "mmio1804-preblock" && o.hw_reachable()) {
+        if (mode != "mmio1804" && mode != "mmio1804-preblock" && mode != "irqreg" && o.hw_reachable()) {
             // mmio1804 modes deliberately keep MPR0 == $FF: the whole point of the
             // measurement is a Hardware-Page-reachable $1804.
             ok = false;
@@ -499,6 +521,33 @@ int main(int argc, char** argv)
         mmio_rst_after = o.memory->Read((u16)neg_addr);
         mmio_irq2_after = o.memory->Read(0x1403);
     }
+    if (mode == "irqreg") {
+        // $1802 enable + $1403 IRQ2 + $1402 mask readback after the guest stopped.
+        mmio_1802_after = o.memory->Read(0x1802);
+        mmio_irq2_after = o.memory->Read(0x1403);
+        mmio_1402_after = o.memory->Read(0x1402);
+        // --- Issue #199: direct Hardware-Page pokes through Memory::Write.
+        //     Each goes through CheckMemoryHooks (detection) and then completes the
+        //     device write (no pre-side-effect block). The state changes below prove it.
+        o.memory->Write(0x1804, 0x02);   // compound: $1804 bit1 (SCSI RST) with $1802 enabled
+        d1804_after = o.memory->Read(0x1804);                       // m_reset must land
+        d1403_after_1804 = o.memory->Read(0x1403);                  // IRQ2 must stay 0 (m_active_irqs==0)
+        o.memory->Write(0x1402, 0x05);                              // IRQ mask write
+        d1402_after_mask = o.memory->Read(0x1402);                  // mask must change
+        o.memory->Write(0x1403, 0xFF);                              // TIQ ack write: clears bit2 only
+        d1403_after_ack = o.memory->Read(0x1403);                   // bit0 (IRQ2) untouched
+        o.memory->Write(0x1400, 0xAA);                              // invalid interrupt register
+        o.memory->Write(0x1401, 0xAA);                              // invalid interrupt register
+        d1402_after_invalid = o.memory->Read(0x1402);               // no device side effect
+        d1403_after_invalid = o.memory->Read(0x1403);               // no device side effect
+        d1400_after = o.memory->Read(0x1400);                       // stale io_buffer (invalid read)
+        d1401_after = o.memory->Read(0x1401);                       // stale io_buffer (invalid read)
+        // Positive control: allowlisted page-1 RAM write lands; it is outside the
+        // armed write-breakpoint range ([0x2000,0x4000) is not covered).
+        d_ram_before = o.memory->Read(0x3E50);
+        o.memory->Write(0x3E50, 0x5A);
+        d_ram_after = o.memory->Read(0x3E50);
+    }
     if (mode == "neg-write") {
         // Forbidden store must be both detected and prevented.
         u8 cdram_after = o.memory->Read((u16)neg_addr);
@@ -553,6 +602,15 @@ int main(int argc, char** argv)
             ok = false;
             reason = "side_effect_landed_before_stop";
         }
+    } else if (mode == "irqreg") {
+        // Issue #199: detection is expected (the write breakpoint fires on the
+        // $1802 store) and the store completes (no pre-side-effect block). Fail
+        // closed only if the $1802 store was never detected, which would invalidate
+        // the measurement; classification is done from device state in Python.
+        if (!detected) {
+            ok = false;
+            reason = "irqreg_1802_write_not_detected";
+        }
     }
 
     FILE* out = stderr;
@@ -562,7 +620,8 @@ int main(int argc, char** argv)
     std::fprintf(out, "\"reason\":\"%s\",", reason.c_str());
     std::fprintf(out, "\"before\":%s,", before_state.c_str());
     std::fprintf(out, "\"after\":%s,", state_json(o.st, o.memory).c_str());
-    if (mode != "call" && mode != "mmio1804" && mode != "mmio1804-preblock") {
+    if (mode != "call" && mode != "mmio1804" && mode != "mmio1804-preblock" &&
+        mode != "irqreg") {
         std::fprintf(out, "\"guard_target\":%lu,\"guard_before\":%lu,\"guard_after\":%lu,",
                      neg_addr, guard_before, guard_after);
     }
@@ -601,6 +660,24 @@ int main(int argc, char** argv)
         if (mode == "mmio1804-preblock")
             std::fprintf(out, ",\"execbp_hit\":%s,\"execbp_addr\":%u",
                          execbp_hit ? "true" : "false", (unsigned)kMmioStaPc);
+    }
+    if (mode == "irqreg") {
+        std::fprintf(out, ",\"irq1802_before\":%u,\"irq1802_after\":%u,"
+                          "\"irq1403_before\":%u,\"irq1403_after\":%u,"
+                          "\"irq1402_before\":%u,\"irq1402_after\":%u,"
+                          "\"d1804_after\":%u,\"d1403_after_1804\":%u,"
+                          "\"d1402_after_mask\":%u,\"d1403_after_ack\":%u,"
+                          "\"d1402_after_invalid\":%u,\"d1403_after_invalid\":%u,"
+                          "\"d1400_after\":%u,\"d1401_after\":%u,"
+                          "\"d_ram_before\":%u,\"d_ram_after\":%u",
+                     (unsigned)mmio_1802_before, (unsigned)mmio_1802_after,
+                     (unsigned)mmio_irq2_before, (unsigned)mmio_irq2_after,
+                     (unsigned)mmio_1402_before, (unsigned)mmio_1402_after,
+                     (unsigned)d1804_after, (unsigned)d1403_after_1804,
+                     (unsigned)d1402_after_mask, (unsigned)d1403_after_ack,
+                     (unsigned)d1402_after_invalid, (unsigned)d1403_after_invalid,
+                     (unsigned)d1400_after, (unsigned)d1401_after,
+                     (unsigned)d_ram_before, (unsigned)d_ram_after);
     }
     std::fprintf(out, "}");
     std::fflush(out);
