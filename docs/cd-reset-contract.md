@@ -157,3 +157,44 @@ exit 3 を返す。ホストテスト `tests/host/test_cdreset_safety_preflight.
 しない（`execution` は `NOT_RUN` のまま）。`spec/api_contracts.json` slot 1 は HYPOTHESIS/PENDING/
 NOT_STARTED/NOT_RUN のまま変更しない。
 ホストテスト: `python3 -m unittest tests.host.test_cdreset_slot01_fixture -v`（合成のみ）。
+
+## 観測プランと実行ゲート判定（Issue #181） — 2条件とも NOT_RUN / BLOCKED
+
+`tools/cdreset_slot01_reference_plan.py` は #180 の2件 fixture（媒体あり/なし）から LOCAL_ONLY の
+**観測レコード構造**だけを導き、実行可否を安全ゲート材料から判定する。**実行経路は存在しない**
+（エミュレータ起動・純正 BIOS JSR 実行・ROM バイト読取を一切含まない）ため、2条件は実測ではなく
+`execution: NOT_RUN` のままである。
+
+### 観測レコード（事実のみ・全項目 UNKNOWN）と期待値の分離
+
+| レコード | 内容 | 値 |
+| --- | --- | --- |
+| `observation.caller_pc` / `jsr_pc` / `return_pc` | 呼出元 PC・JSR・復帰 | 全て `UNKNOWN` |
+| `observation.A/X/Y/P`・`sp`・`mpr` | レジスタ・スタック・MPR | 全て `UNKNOWN` |
+| `observation.ram_diff` | 許可RAM差分 | `UNKNOWN` |
+| `observation.bus_state`・`timeout` | バス状態・タイムアウト | `UNKNOWN` |
+| `observation.core_sha256` | 実コアSHA | `UNKNOWN`（未実行のため） |
+| `expectation.entry/returns/stack/mpr/ram/errors` 等 | 期待値の**タグ**（内容は本ページ上部の契約表） | `HYPOTHESIS` または `UNKNOWN`（観測値と混ぜない） |
+
+推測値（`UNKNOWN` でない observation 値）、タグなしの期待値、`$01` / `$E003` 以外の API は
+構造検証で拒否（`malformed_configuration` / `BLOCKED`）。実行禁止は `$01` 以外すべてに及ぶ。
+
+### 安全ゲート判定材料（4種）と現時点の結論
+
+| 材料 | 現実の値 | 状態 |
+| --- | --- | --- |
+| (a) 実コア `$1804` 副作用前トラップ | `blocked_side_effect_before_stop`（#194 実測） | 未充足 |
+| (b) hazard posture（#191 `decide()`） | #170 posture + slot-`$01` ABI `UNKNOWN` → `BLOCKED` | 未充足 |
+| (c) ST/IRQ/MPR/alias 未保証フラグ | ST0/1/2・IRQ は未保証（H4/H5）。MPR/alias は #170 で充足（H1/H2） | 未充足 |
+| (d) 独立レビュー承認証拠（reviewer・PR番号・ラベル） | なし | 未充足 |
+
+自己申告の `safety_gate_approved: true` は証拠として一切扱わず（(d) 欠落として `BLOCKED`），
+4材料が揃っても (a) の実コア未充足など1つでも残れば `BLOCKED`。出力は常に `NOT_RUN` +
+`BLOCKED`（理由を個別列挙）で exit 3。`MODEL_ELIGIBLE`（#191）は材料 (b) の適格性であり実行
+許可ではなく、権限語（ALLOWED/PASS/VERIFIED）や270シナリオ実測を意味する表示は出力しない。
+全材料が充足した**合成**入力でのみ判定が `MATERIALS_COMPLETE` に反転する（反証可能性。実行路
+は依然として無い）。**独立レビュー（(d)）が未了のため slot `$01` の実行は禁止のままであり、
+純正 BIOS JSR は一切実行していない。** `spec/api_contracts.json` slot 1 は変更しない。
+
+ホストテスト: `python3 -m unittest tests.host.test_cdreset_slot01_reference_plan -v`（合成のみ、
+エミュレータ・ROM 不使用）。
