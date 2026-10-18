@@ -20,6 +20,7 @@ integration: build
 	$(PYTHON) tests/integration/geargrafx_smoke.py --rom "build/$(MODE)/smoke-test-not-bios.pce" --output "build/$(MODE)/geargrafx-evidence.json"
 	$(PYTHON) tests/integration/geargrafx_reference_guard.py
 	$(PYTHON) tests/integration/geargrafx_mmio1804_trap.py
+	$(PYTHON) tests/integration/geargrafx_mmio1804_preblock.py
 
 check:
 	$(PYTHON) tools/contracts.py
