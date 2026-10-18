@@ -21,6 +21,7 @@ integration: build
 	$(PYTHON) tests/integration/geargrafx_reference_guard.py
 	$(PYTHON) tests/integration/geargrafx_mmio1804_trap.py
 	$(PYTHON) tests/integration/geargrafx_mmio1804_preblock.py
+	$(PYTHON) tests/integration/geargrafx_st_bypass.py
 
 check:
 	$(PYTHON) tools/contracts.py
