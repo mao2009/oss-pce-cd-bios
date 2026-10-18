@@ -7,7 +7,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 FIELDS = {'arguments', 'returns', 'clobbered', 'preserved', 'stack', 'mpr',
           'ram', 'flags', 'irq', 'errors', 'synchronization'}
-CLAIM_STATUSES = {'UNKNOWN', 'HYPOTHESIS'}
+# Adjudication categories for every contract claim. VERIFIED is deliberately
+# absent: it can only be earned by an executed reference-ROM callee, which no
+# slot has (verification stays NOT_RUN / executed_callee false).
+CLAIM_STATUSES = {'UNKNOWN', 'HYPOTHESIS', 'OBSERVED', 'BLOCKED'}
+EMULATOR_SOURCE_KIND = 'EMULATOR_SOURCE'
 
 
 def validate_contracts(data, inventory, inventory_text):
@@ -84,20 +88,16 @@ def validate_contracts(data, inventory, inventory_text):
             require(obs['source'] in api['sources'], f'slot {i}: observation source missing')
         contract = api.get('contract')
         require(isinstance(contract, dict) and set(contract) == FIELDS, f'slot {i}: contract fields')
+        source_kinds = {key: source['kind'] for key, source in sources.items()}
+        executed_callee = bool(api.get('verification', {}).get('executed_callee'))
         for field, claim in contract.items():
             context = f'slot {i} {field}'
             require(isinstance(claim, dict) and set(claim) <=
                     {'status', 'value', 'sources', 'confidence', 'registers'}, f'{context}: claim fields')
-            require(claim.get('status') in CLAIM_STATUSES, f'{context}: invalid claim status')
-            require(isinstance(claim.get('value'), str) and claim['value'], f'{context}: value required')
-            refs(claim.get('sources'), context, claim['status'] == 'HYPOTHESIS')
-            require(set(claim['sources']) <= set(api['sources']), f'{context}: API source union incomplete')
-            if claim['status'] == 'UNKNOWN':
-                require(claim['value'] == 'UNKNOWN' and claim.get('confidence') == 'UNKNOWN' and
-                        claim['sources'] == [] and not claim.get('registers'), f'{context}: invalid UNKNOWN')
-            else:
-                require(claim['value'] != 'UNKNOWN' and claim.get('confidence') == 'SOURCE_SUPPORTED',
-                        f'{context}: invalid hypothesis')
+            adjudicate_claim(claim, source_kinds, field=field, context=context,
+                             executed_callee=executed_callee)
+            refs(claim.get('sources'), context,
+                 claim['status'] in {'HYPOTHESIS', 'OBSERVED'})
             if 'registers' in claim:
                 registers = claim['registers']
                 require(field in {'preserved', 'clobbered'} and isinstance(registers, list) and
@@ -109,6 +109,58 @@ def validate_contracts(data, inventory, inventory_text):
                 f'slot {i}: contradictory preserved/clobbered registers')
         require(not (preserved['status'] != 'UNKNOWN' and clobbered['status'] != 'UNKNOWN' and
                      preserved['value'] == clobbered['value']), f'slot {i}: contradictory state claims')
+
+
+def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=False):
+    """Pure fail-closed adjudication of one contract claim's classification.
+
+    Deterministic and side-effect free: synthetic claim dicts can be passed
+    directly from host tests. Returns None when consistent, raises ValueError
+    otherwise. This is the classification rule behind OBSERVED/HYPOTHESIS/
+    UNKNOWN/BLOCKED; it rejects any status outside the set (including VERIFIED)
+    so an unexecuted callee can never be promoted.
+
+    Rules:
+      UNKNOWN     - value exactly 'UNKNOWN', no sources, confidence UNKNOWN, no registers
+      HYPOTHESIS  - caller/HLE source text only, non-empty sources, confidence SOURCE_SUPPORTED
+      OBSERVED    - requires at least one EMULATOR_SOURCE (real-core measurement);
+                    callee-behavior claims additionally require executed_callee
+      BLOCKED     - value exactly 'UNKNOWN', confidence UNKNOWN, no registers;
+                    sources may cite the blocking evidence
+    """
+    def require(ok, message):
+        if not ok:
+            raise ValueError(message)
+
+    status = claim.get('status')
+    require(status in CLAIM_STATUSES,
+            f'{context}: unsupported claim status {status!r}; VERIFIED is not represented')
+    value = claim.get('value')
+    require(isinstance(value, str) and value, f'{context}: claim value required')
+    sources = claim.get('sources', [])
+    require(isinstance(sources, list) and all(isinstance(x, str) for x in sources),
+            f'{context}: claim sources must be a list of strings')
+    require(len(sources) == len(set(sources)), f'{context}: duplicate claim sources')
+    require(set(sources) <= set(source_kinds), f'{context}: claim sources must be known sources')
+    confidence = claim.get('confidence')
+    registers = claim.get('registers')
+
+    if status == 'UNKNOWN':
+        require(value == 'UNKNOWN' and confidence == 'UNKNOWN' and sources == [] and not registers,
+                f'{context}: invalid UNKNOWN claim')
+    elif status == 'HYPOTHESIS':
+        require(value != 'UNKNOWN' and confidence == 'SOURCE_SUPPORTED' and sources,
+                f'{context}: invalid HYPOTHESIS claim')
+    elif status == 'OBSERVED':
+        require(value != 'UNKNOWN' and confidence == 'SOURCE_SUPPORTED' and sources,
+                f'{context}: invalid OBSERVED claim')
+        require(any(source_kinds[source] == EMULATOR_SOURCE_KIND for source in sources),
+                f'{context}: OBSERVED requires a real-core EMULATOR_SOURCE measurement')
+        require(executed_callee,
+                f'{context}: OBSERVED callee behavior requires an executed callee (verification is NOT_RUN)')
+    elif status == 'BLOCKED':
+        require(value == 'UNKNOWN' and confidence == 'UNKNOWN' and not registers,
+                f'{context}: invalid BLOCKED claim')
 
 
 def load_contracts(path=ROOT / 'spec/api_contracts.json'):

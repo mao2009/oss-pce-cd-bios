@@ -26,20 +26,20 @@ slot-1 row of [spec/api_contracts.json](../spec/api_contracts.json).
 
 | Item | Status | Content |
 | --- | --- | --- |
-| `entry` | HYPOTHESIS | `$E000 + 3*1 = $E003`, jump-table convention; ROM mapping owned by #1 |
-| `arguments` | HYPOTHESIS | No explicit A/X/Y or `$20F8-$20FF` (`al..dh`) inputs per HuCC; Y carries the trampoline selector only |
-| `returns` | HYPOTHESIS | HuCC treats as void; any A/X/Y/flag result UNKNOWN |
+| `entry` | HYPOTHESIS | Caller-side HuCC equate `$E000 + 3*1 = $E003` (pcengine.inc @54f5c736, L468-552). Callee entry detail at `$E003` UNKNOWN: the callee is not executed. |
+| `arguments` | HYPOTHESIS | Caller-side only: HuCC `cd_reset(void)` takes no explicit A/X/Y or `$20F8-$20FF` (`al..dh`) inputs; Y carries only the trampoline selector (pcengine.inc/hucc-systemcard.asm @54f5c736). Callee argument contract unobserved. |
+| `returns` | UNKNOWN | Callee never executed; HuCC `void` is caller-side only. Return registers/flags UNKNOWN. |
 | `clobbered` | UNKNOWN | — |
-| `preserved` | UNKNOWN | No A/X/Y/P or `al..dh` preservation claim |
-| `stack` | HYPOTHESIS | Entered by JSR, expected to return by RTS; callee depth/balance UNKNOWN |
-| `mpr` | HYPOTHESIS | HuCC maps bank 0 to MPR7 and restores it itself; MPR0=`$FF`/MPR1=`$F8` are SDK startup choices, not proven prerequisites |
-| `ram` | HYPOTHESIS | Hu-Go HLE writes `$222D`; real BIOS writes UNKNOWN |
+| `preserved` | UNKNOWN | No A/X/Y/P or `al..dh` preservation claim; callee not executed. |
+| `stack` | HYPOTHESIS | Caller-side only: JSR entry with expected RTS to the caller's continuation; trampoline balances PHA/PLA around bank changes (core.inc/core-kernel.asm @54f5c736). Callee depth/balance UNKNOWN. |
+| `mpr` | HYPOTHESIS | Caller-side only: HuCC maps bank 0 into MPR7 for the call and restores caller MPR7 (core.inc/core-startup.asm @54f5c736). Callee MPR prerequisites/preservation UNKNOWN. |
+| `ram` | HYPOTHESIS | Hu-Go HLE writes `$222D` as its disc-present marker — HLE, not adopted as BIOS behavior (bios.c @64ed226da). Real BIOS RAM writes/range UNKNOWN. |
 | `flags` | UNKNOWN | — |
-| `irq` | UNKNOWN | Whether it runs with I set, enables `$1802` IRQs or relies on IRQ2 handlers |
-| `errors` | HYPOTHESIS | Hu-Go host exit is not a BIOS error; no-disc/timeout result UNKNOWN |
-| `synchronization` | HYPOTHESIS | Hu-Go returns after media init; real ready/busy completion condition UNKNOWN |
-| `timing` | UNKNOWN | Reset pulse width, wait budget, whether it blocks |
-| `hw_bus_reset` | HYPOTHESIS | That CD_RESET pulses `$1804` bit 1 at all is unproven; only the register effect is Geargrafx-measured |
+| `irq` | UNKNOWN | #201 measured IRQ2 non-arrival only in a synthetic `$1802`+`$1804` guest on Geargrafx b49ae82a — not a CD_RESET callee run; callee IRQ conditions UNKNOWN. |
+| `errors` | HYPOTHESIS | Hu-Go host exit code 4 is not a BIOS error return (bios.c @64ed226da). BIOS no-disc/timeout/error values UNKNOWN. |
+| `synchronization` | HYPOTHESIS | Hu-Go HLE returns after media init — not callee behavior (bios.c @64ed226da). Real ready/busy completion condition UNKNOWN. |
+| `timing` | UNKNOWN | Reset pulse width, wait budget, whether the callee blocks: unmeasured. |
+| `hw_bus_reset` | OBSERVED | `$1804` bit 1: assert → readback `$02`, release → `$00`, bus FREE after pulse (PHASE_MASK `$F8` clear). Geargrafx b49ae82a, #121 diagnostic ROM (synthetic CD, cold + warm). Register fact only — NOT evidence that the CD_RESET callee pulses `$1804`. |
 
 ## Synthetic scenarios (`tools/cdreset_verify.py`)
 
@@ -62,6 +62,41 @@ BLOCKED) or exactly 64 lowercase hex; `returned` is a bool; PCs are 0..`$FFFF`, 
 (`polls > poll_budget`, FAIL for every scenario). Verdicts are never a plain `PASS` and do not verify firmware.
 
 Host tests: `python3 -m unittest tests.host.test_cdreset -v` (records are synthetic; no emulator).
+
+## Adjudication basis and non-promotion rules (Issue #182)
+
+Caller side vs callee: every `HYPOTHESIS` row above is a caller-side HuCC SDK claim or a Hu-Go HLE model
+(pcengine.inc / hucc-systemcard.asm / core-*.asm @54f5c736; bios.c @64ed226da). It documents what callers
+*expect*, not what the `$E003` callee does; the callee has never been executed (`verification: NOT_RUN`,
+`executed_callee: false`) and none of its register/flag/SP/RAM/MPR behavior is observed.
+
+Hardware measurements are kept strictly separate from callee behavior:
+- `hw_bus_reset` is OBSERVED only as a `$1804` register/bus fact measured by the #10/#121 original HuC6280
+  diagnostic on Geargrafx b49ae82a (synthetic CD). It is not evidence that CD_RESET pulses `$1804`.
+- #201's IRQ2 non-arrival was measured in a synthetic `$1802`+`$1804` guest, not a CD_RESET run; `irq`
+  stays UNKNOWN.
+- #194: `$1804` write side effects are detectable but cannot be stopped at an instruction boundary → the
+  pre-side-effect trap is BLOCKED.
+- #202: ST0/ST1/ST2 `WriteFromCPU` bypasses all MMIO/address-hook capture points, even with MPR0≠`$FF` → ST
+  interception is BLOCKED.
+
+VERIFIED is not granted for any item: no reference-ROM (`rom/syscard3.pce`) callee execution exists, and the
+schema cannot represent VERIFIED. Success values, flags and completion conditions are not inferred.
+
+## #183 への引き継ぎ: 実装可能な最小範囲と前提条件
+
+全 CD_RESET callee 契約項目（returns, flags, clobbered, preserved, irq, errors, synchronization,
+RAM 差分, MPR 変化, 無媒体時動作, ready/busy 完了条件）が UNKNOWN のため、**ROM の CD_RESET
+(`$01`/`$E003`) 実装は BLOCKED**。#183 で実装できるのは、#121 で計測済みの**低レベルバスリセット
+原始処理のみ**（独立した HuC6280 ルーチン、`$1804` bit 1 アサート → BUS FREE 待ち → リリース）:
+
+- 開始条件: バスは既に FREE であること（BUSY からの解放リセットは未検証・範囲外）
+- 計測条件: Geargrafx b49ae82a, 合成 CD, cold/warm; `$1804` 読み戻し `$02`→`$00`, パルス後バス FREE
+- ブロッカー周知: `$1804` 書き込みの副作用前捕捉は不可能 (#194); ST0/1/2 書き込みはフック迂回 (#202);
+  IRQ2 到達は保証されない (#201) → ルーチンは I=1 前提か IRQ 非依存とする
+- 副作用範囲: 他 80 スロット、EX_GETVER (`$1E`)、ROM 配置への副作用なし。`$01` ジャンプテーブル配線
+  や CD_BASE/CD_READ には関与しない。`release_eligible=false` を維持。
+- これは CD_RESET API 実装ではない: エントリ/戻り値/エラー/タイミング契約は保留。
 
 ## Why no ROM routine yet
 
