@@ -25,6 +25,14 @@
 // completes, and the core stops at the next instruction boundary. Evidence and
 // verdict: tests/integration/geargrafx_mmio1804_trap.py (BLOCKED).
 //
+// Issue #173 mode "mmio1804-preblock": same guest plus an EXECUTE breakpoint on
+// the STA opcode. HuC6280::CheckBreakpoints() runs at the END of RunInstruction()
+// with the NEXT instruction's PC, so the flag rises before the STA executes and
+// the step monitor refuses to re-enter the core. Honest limit: it needs the
+// store's PC (known guest layout) - prevention for known code, not a general MMIO
+// interceptor. Verdict: tests/integration/geargrafx_mmio1804_preblock.py. No gate
+// change: slot "$01" stays BLOCKED.
+//
 // Known limitation (not blocked by this probe, documented here):
 //   ST0/ST1/ST2 (opcodes 0x03/0x13/0x23) write to VDC registers via
 //   m_huc6202->WriteFromCPU(), bypassing Memory::Write(), map_write, and
@@ -49,6 +57,8 @@ namespace {
 const unsigned long kGuestBase = 0x3E00;  // page1 -> WRAM, guest program entry
 const unsigned long kStubIndex = 0x1E00;   // WRAM index the guest program is written to
 const unsigned long kSlot = 0x1E;
+// Synthetic mmio guest: LDA #$02, STA $1804 ($3E02), BRA *; preblock arms here.
+const unsigned long kMmioStaPc = kGuestBase + 2;
 const unsigned long kEntry = 0xE000 + 3 * kSlot;
 const unsigned kAllowPages = 8 * 0x2000;   // full CPU space
 
@@ -124,14 +134,14 @@ int main(int argc, char** argv)
         return 2;  // enforcement granularity is the 8 KiB MPR page
     std::string mode = argv[7];
     if (mode != "call" && mode != "neg-write" && mode != "pos-write" && mode != "tam" &&
-        mode != "mmio1804")
+        mode != "mmio1804" && mode != "mmio1804-preblock")
         return 2;
     unsigned long neg_addr = std::strtoul(argv[8], &end, 0);
     if (!end || *end || neg_addr > 65535UL)
         return 2;
     // Issue #179 measures exactly one path: a guest store to the CD-ROM reset
     // register at CPU address $1804 through the Hardware Page (MPR0 == $FF).
-    if (mode == "mmio1804" && neg_addr != 0x1804)
+    if ((mode == "mmio1804" || mode == "mmio1804-preblock") && neg_addr != 0x1804)
         return 2;
     if (mode == "neg-write" && neg_addr >= allow_start && neg_addr < allow_end)
         return 2;  // forbidden target must lie outside the allowlist
@@ -188,7 +198,7 @@ int main(int argc, char** argv)
     o.memory->SetMpr(7, 0x00);  // API jump table at $E000 -> ROM bank 0
     for (int i = 2; i <= 6; ++i)
         o.memory->SetMpr(i, 0x00);
-    if (mode == "mmio1804")
+    if (mode == "mmio1804" || mode == "mmio1804-preblock")
         o.memory->SetMpr(0, 0xFF);  // Issue #179: page 0 -> Hardware Page, $1804 reachable
     else if (std::getenv("PCE_REF_TEST_ALIAS"))
         o.memory->SetMpr(0, 0xF8);  // alias page 0 onto the page-1 WRAM bank
@@ -224,7 +234,7 @@ int main(int argc, char** argv)
                 0x8D, 0x00, 0x00,  // STA $0000
                 0x80, 0xFE}; // BRA *
     }
-    if (mode == "mmio1804") {
+    if (mode == "mmio1804" || mode == "mmio1804-preblock") {
         // Issue #179 synthetic guest: LDA #$02 / STA $1804 / BRA *.
         // $02 is the SCSI RST assert bit (docs/cd-reset-contract.md), so a
         // landing store is observable as the $1804 readback (m_reset).
@@ -301,6 +311,17 @@ int main(int argc, char** argv)
                               /*read=*/false, /*write=*/true, /*execute=*/false))
         return 7;
 
+    // --- pre-execution prevention (Issue #173, "mmio1804-preblock"): EXECUTE
+    //     breakpoint on the STA opcode. CheckBreakpoints() runs at the END of
+    //     RunInstruction() with the PC of the instruction about to run, so the
+    //     flag rises BEFORE the STA is fetched and the step monitor below
+    //     refuses to re-enter the core for it (needs the store's PC).
+    if (mode == "mmio1804-preblock" &&
+        !o.cpu->AddBreakpoint(HuC6280::HuC6280_BREAKPOINT_TYPE_CPU_ADDRESS,
+                              (u32)kMmioStaPc, 0, /*range=*/false,
+                              /*read=*/false, /*write=*/false, /*execute=*/true))
+        return 7;
+
     // --- pin the guest CPU context
     o.st->PC->SetValue((u16)kGuestBase);
     o.st->S->SetValue(0xFF);
@@ -333,6 +354,7 @@ int main(int argc, char** argv)
     unsigned long callee_pc = 0;
     bool returned = false;
     bool detected = false;
+    bool execbp_hit = false;   // execute breakpoint raised BEFORE the STA ran
     bool mpr_changed = false;
     u16 detected_pc = 0;
     std::vector<u8> wram0 = wram_snap();
@@ -351,7 +373,7 @@ int main(int argc, char** argv)
     // $00 released) and $1403 reads the interrupt request register (IRQ2 = bit 0).
     u8 mmio_rst_before = 0, mmio_irq2_before = 0;
     u8 mmio_rst_after = 0, mmio_irq2_after = 0;
-    if (mode == "mmio1804") {
+    if (mode == "mmio1804" || mode == "mmio1804-preblock") {
         mmio_rst_before = o.memory->Read((u16)neg_addr);
         mmio_irq2_before = o.memory->Read(0x1403);
     }
@@ -390,11 +412,18 @@ int main(int argc, char** argv)
         if (!ok)
             break;
 
-        if (mode != "mmio1804" && o.hw_reachable()) {
-            // mmio1804 deliberately keeps MPR0 == $FF: the whole point of the
+        if (mode != "mmio1804" && mode != "mmio1804-preblock" && o.hw_reachable()) {
+            // mmio1804 modes deliberately keep MPR0 == $FF: the whole point of the
             // measurement is a Hardware-Page-reachable $1804.
             ok = false;
             reason = "hardware_page_made_reachable";
+            break;
+        }
+        if (mode == "mmio1804-preblock" && o.cpu->BreakpointHit() &&
+            !o.cpu->MemoryBreakpointHit()) {
+            // Flag raised at the boundary while PC still points at the STA: the
+            // prohibited store has NOT executed; never re-enter the core for it.
+            execbp_hit = true;
             break;
         }
         if (o.cpu->MemoryBreakpointHit()) {
@@ -465,6 +494,11 @@ int main(int argc, char** argv)
 
     // --- write-guard verdicts
     unsigned long guard_before = 0, guard_after = 0;
+    if (mode == "mmio1804" || mode == "mmio1804-preblock") {
+        // Read the device state after the core stopped; no state is written back.
+        mmio_rst_after = o.memory->Read((u16)neg_addr);
+        mmio_irq2_after = o.memory->Read(0x1403);
+    }
     if (mode == "neg-write") {
         // Forbidden store must be both detected and prevented.
         u8 cdram_after = o.memory->Read((u16)neg_addr);
@@ -500,17 +534,25 @@ int main(int argc, char** argv)
         }
     } else if (mode == "mmio1804") {
         // Classification (side effect before/after the stop) is made from the
-        // device-state readback below, in the Python adapter. Here we only
+        // device-state readback above, in the Python adapter. Here we only
         // fail closed when the store itself was never detected.
         if (!detected) {
             ok = false;
             reason = "mmio1804_write_not_detected";
         }
-    }
-    if (mode == "mmio1804") {
-        // Read the device state after the core stopped; no state is written back.
-        mmio_rst_after = o.memory->Read((u16)neg_addr);
-        mmio_irq2_after = o.memory->Read(0x1403);
+    } else if (mode == "mmio1804-preblock") {
+        // Pre-side-effect block: the flag must have risen at the STA PC, the STA
+        // must not have executed, and $1804 must be unchanged (fail closed).
+        if (!execbp_hit) {
+            ok = false;
+            reason = "preblock_flag_not_raised_before_sta";
+        } else if ((unsigned long)o.st->PC->GetValue() != kMmioStaPc) {
+            ok = false;
+            reason = "preblock_stopped_not_at_sta_pc";
+        } else if (mmio_rst_after != mmio_rst_before) {
+            ok = false;
+            reason = "side_effect_landed_before_stop";
+        }
     }
 
     FILE* out = stderr;
@@ -520,7 +562,7 @@ int main(int argc, char** argv)
     std::fprintf(out, "\"reason\":\"%s\",", reason.c_str());
     std::fprintf(out, "\"before\":%s,", before_state.c_str());
     std::fprintf(out, "\"after\":%s,", state_json(o.st, o.memory).c_str());
-    if (mode != "call" && mode != "mmio1804") {
+    if (mode != "call" && mode != "mmio1804" && mode != "mmio1804-preblock") {
         std::fprintf(out, "\"guard_target\":%lu,\"guard_before\":%lu,\"guard_after\":%lu,",
                      neg_addr, guard_before, guard_after);
     }
@@ -549,13 +591,16 @@ int main(int argc, char** argv)
                      0x2000UL + i, (unsigned)wram0[i], (unsigned)wramN[i]);
     }
     std::fprintf(out, "]");
-    if (mode == "mmio1804") {
+    if (mode == "mmio1804" || mode == "mmio1804-preblock") {
         std::fprintf(out, ",\"mmio1804_addr\":%u,\"mmio_rst_before\":%u,"
                           "\"mmio_rst_after\":%u,\"mmio_irq2_before\":%u,"
                           "\"mmio_irq2_after\":%u",
                      (unsigned)neg_addr, (unsigned)mmio_rst_before,
                      (unsigned)mmio_rst_after, (unsigned)mmio_irq2_before,
                      (unsigned)mmio_irq2_after);
+        if (mode == "mmio1804-preblock")
+            std::fprintf(out, ",\"execbp_hit\":%s,\"execbp_addr\":%u",
+                         execbp_hit ? "true" : "false", (unsigned)kMmioStaPc);
     }
     std::fprintf(out, "}");
     std::fflush(out);
