@@ -135,3 +135,25 @@ MPR 固定が HuCC 規約の entry（MPR0=`$FF`, HYPOTHESIS）を再現しない
 `python3 tools/cdreset_safety_preflight.py --check` は上記を評価して `BLOCKED: ...` を表示し
 exit 3 を返す。ホストテスト `tests/host/test_cdreset_safety_preflight.py` は合成 posture の
 正例・負例のみを扱い、エミュレータも参照 BIOS も起動しない。
+
+## 非実行ケース fixture と入力スキーマ preflight（Issue #180）
+
+`tools/cdreset_slot01_fixture.py` は slot `$01` / 候補 `$E003` の**単一 API** に絞った、媒体あり/なしの
+2 件のローカルケース定義（`slot01_media_present` / `slot01_media_absent`）と、実行前の fail-closed
+入力検証だけを持つ。**どちらも非実行 fixture で実行経路は存在しない**（エミュレータ起動・参照 JSR
+実行・ROM バイト読取を含まない。ROM は path/sha256 の形式検査のみ）。entry は固定 `$01` / `$E003`、
+`execution` は `NOT_RUN`。A/X/Y/P, work-RAM, MPR, stack, IRQ, ディスク状態、期待結果は証拠がないため
+全て `UNKNOWN` のまま（推測値を書いた case・命令列・戻り値は構造検証で拒否される）。
+
+実行前に拒否する入力（`malformed_configuration` として `BLOCKED` / exit 3）: フィールド欠落・型違い、
+未知の schema、ROM path/hash 欠落（run config 欠如含む）、`unsafe_io_allow` /
+`side_effects_allowed` / `execution_allowed` が true。安全ゲート（#179）未承認なら slot `$01`
+ケースの実行は `BLOCKED`。構造が valid でも出力は `NOT_RUN`（構造）+ `BLOCKED`（実行）で exit 3
+のままで、ゲート承認だけでも解放しない。`MODEL_ELIGIBLE`（#178/#191/#193）は合成モデル上の適格性
+であり実行許可ではないため、この preflight では権限として扱わない／表示しない。
+
+公開 CI はこの fixture を合成ホストテスト（正/負例）としてのみ検査し、ケース実行・参照 JSR 実行は
+行わない。ケース追加によって既存参照カタログ（#170/#172）のシナリオ数が「実測済み」になる表示は
+しない（`execution` は `NOT_RUN` のまま）。`spec/api_contracts.json` slot 1 は HYPOTHESIS/PENDING/
+NOT_STARTED/NOT_RUN のまま変更しない。
+ホストテスト: `python3 -m unittest tests.host.test_cdreset_slot01_fixture -v`（合成のみ）。
