@@ -38,7 +38,10 @@
 
 ## 3. 項目別の裁定
 
-状態語: `SOURCE_FACT`（固定版の一次資料〔pin 済みコード〕に記載の呼出し側の事実。出所の PENDING とは独立。System Card 側（被呼出側）の挙動の証拠ではない）、`SECONDARY_SOURCE`（二次資料〔Zeograd、Stum、MacDonald 複写〕のみが根拠。原典・コードで未確認）、`HYPOTHESIS`（仮説。採用しない）、`UNKNOWN`（出典にない、または矛盾）。`VERIFIED` と `OBSERVED` は本書の範囲で使わない（NOT_RUN のため証跡がない）。
+状態語: `SOURCE_FACT`（下記の定義行）、`SECONDARY_SOURCE`（二次資料〔Zeograd、Stum、MacDonald 複写〕のみが根拠。原典・コードで未確認）、`HYPOTHESIS`（仮説。採用しない）、`UNKNOWN`（出典にない、または矛盾）。`VERIFIED` と `OBSERVED` は本書の範囲で使わない（NOT_RUN のため証跡がない）。
+
+- `SOURCE_FACT`: SOURCE_FACT = a caller-side fact written in a pinned primary source. It is independent of provenance PENDING. It does NOT indicate BIOS callee behavior.
+  （訳: 固定版の一次出典に書かれた呼出側の事実。出典の provenance が PENDING かどうかとは独立。BIOS 呼出先の振る舞いを示さない。）出典が第三者の記述のみ、または再実装・開発者の主張である場合は `HYPOTHESIS` とする。ライセンス上の利用可否、呼出先の実測、実装可能性は別の軸であり、SOURCE_FACT はそのいずれも示さない。
 
 | ID | 項目 | 主張（出典） | 状態 | 裁定 |
 | --- | --- | --- | --- | --- |

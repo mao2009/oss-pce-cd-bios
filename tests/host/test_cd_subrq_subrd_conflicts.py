@@ -12,6 +12,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 DOC = ROOT / 'docs' / 'research' / 'cd-subrq-subrd-conflicts.md'
 
+SOURCE_FACT_CANON = (
+    '- `SOURCE_FACT`: SOURCE_FACT = a caller-side fact written in a pinned primary source. It is independent of provenance PENDING. It does NOT indicate BIOS callee behavior.'
+    + '\n'
+    + '  （訳: 固定版の一次出典に書かれた呼出側の事実。出典の provenance が PENDING かどうかとは独立。BIOS 呼出先の振る舞いを示さない。）出典が第三者の記述のみ、または再実装・開発者の主張である場合は `HYPOTHESIS` とする。ライセンス上の利用可否、呼出先の実測、実装可能性は別の軸であり、SOURCE_FACT はそのいずれも示さない。'
+)
+
 ALLOWED = {'SOURCE_FACT', 'SECONDARY_SOURCE', 'HYPOTHESIS', 'UNKNOWN'}
 EXPECTED = {
     'C1': 'SOURCE_FACT', 'C2': 'SOURCE_FACT', 'C3': 'SECONDARY_SOURCE', 'C4': 'UNKNOWN',
@@ -83,6 +89,9 @@ class CdSubrqSubrdConflictLedgerTests(unittest.TestCase):
         cls.text = DOC.read_text(encoding='utf-8')
         cls.rows = _claim_rows(cls.text)
 
+    def test_canonical_source_fact_definition_present(self):
+        self.assertIn(SOURCE_FACT_CANON, self.text)
+
     def test_claim_statuses_are_pinned_and_within_allowed_set(self):
         statuses = {cid: cells[3] for cid, cells in self.rows.items()}
         self.assertEqual(statuses, EXPECTED)
@@ -129,7 +138,9 @@ class CdSubrqSubrdConflictLedgerTests(unittest.TestCase):
 
     def test_no_reference_bios_execution_claimed(self):
         self.assertIn('一切していない', self.text)
-        self.assertEqual(_exec_violations(self.text), [], 'affirmative execution wording found')
+        # The verbatim canonical definition (negated callee wording, 'pinned') is exempt.
+        scanned = self.text.replace(SOURCE_FACT_CANON, '')
+        self.assertEqual(_exec_violations(scanned), [], 'affirmative execution wording found')
         for cid, cells in self.rows.items():
             for cell in cells:
                 self.assertFalse(set(re.findall(r'[A-Z_]+', cell)) & FORBIDDEN_CELL_TOKENS, cid)
