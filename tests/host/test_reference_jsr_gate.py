@@ -55,17 +55,15 @@ class ReferenceJsrGateTest(unittest.TestCase):
 
     def test_complete_materials_reach_unauthenticated_state_never_allowed(self):
         record = G.resolve(1, complete_ledger(), CONTRACTS, APPROVAL)
-        self.assertEqual(record["execution"], "UNAUTHENTICATED_MATERIALS_RECORDED")
+        self.assertEqual(record["execution"], "MATERIALS_COMPLETE")
         self.assertEqual(record["reasons"], [])
         self.assertEqual(record["runner"], "NONE")
         self.assertNotIn("ALLOWED", json.dumps(record))
 
-    def test_state_name_is_distinct_from_reference_plan_materials_complete(self):
-        # The two gates use different vocabulary on purpose (docs/cd-reset-contract.md table).
-        source = (ROOT / "tools" / "reference_jsr_gate.py").read_text(encoding="utf-8")
-        self.assertNotIn("MATERIALS_COMPLETE", source)
+    def test_materials_complete_meaning_is_documented(self):
+        # MATERIALS_COMPLETE is not renamed; its meaning per gate lives in docs/cd-reset-contract.md.
         doc = (ROOT / "docs" / "cd-reset-contract.md").read_text(encoding="utf-8")
-        for name in ("UNAUTHENTICATED_MATERIALS_RECORDED", "MATERIALS_COMPLETE", "MODEL_ELIGIBLE"):
+        for name in ("MATERIALS_COMPLETE", "MODEL_ELIGIBLE"):
             self.assertIn(f"| `{name}` |", doc)
 
     def test_fake_approval_on_every_slot_never_grants_execution(self):

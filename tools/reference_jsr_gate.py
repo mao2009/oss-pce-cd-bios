@@ -6,8 +6,10 @@ VERIFIED), the *verification* (executed_callee / NOT_RUN in the same ledger) and
 gate* (this module plus spec/reference_jsr_gate.json). Every slot defaults to BLOCKED. A ledger
 entry can only restate BLOCKED with release_eligible=false and per-hazard control status; it
 cannot unlock anything. Approval input is unauthenticated: it is not authorisation and cannot
-produce ALLOWED. At most it reaches UNAUTHENTICATED_MATERIALS_RECORDED, which grants no execution
-because this repository has no reference-JSR runner (runner NONE).
+produce ALLOWED. At most it reaches MATERIALS_COMPLETE. The name is kept for continuity with
+tools/cdreset_slot01_reference_plan.py and means only "caller-supplied, unauthenticated inputs are
+well-formed and the ledger shows all hazards CONTROLLED". It is not approval or authorisation and
+grants no execution because this repository has no reference-JSR runner (runner NONE).
 MODEL_ELIGIBLE (#178/#191), host PASS and self-declared flags are never accepted as approval.
 Synthetic inputs only: no emulator, no BIOS, no ROM byte is read.
 """
@@ -65,7 +67,7 @@ def resolve(slot, ledger, contracts, approval=None):
     ``approval`` is caller-supplied input, not an authenticated review record. Its fields (reviewer,
     pr, abi_status, hazard_controls, callee_run_evidence) are not verified against any source and
     are not authorisation. Even when every field is well-formed and the ledger reports all hazards
-    CONTROLLED, the result is at most UNAUTHENTICATED_MATERIALS_RECORDED, because no reference-JSR
+    CONTROLLED, the result is at most MATERIALS_COMPLETE, because no reference-JSR
     runner exists.
     This function never returns ALLOWED.
     """
@@ -103,7 +105,7 @@ def resolve(slot, ledger, contracts, approval=None):
     return {
         "slot": f"${slot:02X}",
         "candidate_entry": api["candidate_entry"],
-        "execution": "BLOCKED" if reasons else "UNAUTHENTICATED_MATERIALS_RECORDED",
+        "execution": "BLOCKED" if reasons else "MATERIALS_COMPLETE",
         "runner": "NONE",
         "jsr_count": 0,
         "release_eligible": False,
