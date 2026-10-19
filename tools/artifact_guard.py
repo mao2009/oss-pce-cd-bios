@@ -263,9 +263,29 @@ def _step_keys(lines, start, end, dash):
     return [lines[start].lstrip()[2:].strip()] + [l.strip() for l in lines[start + 1:end] if _live(l) and _indent(l) == dash + 2]
 
 
+def _run_command(lines, start, end, dash):
+    """First command word-line of the step's `run:` value (single-line or block scalar), or None."""
+    for i in range(start, end):
+        l = lines[i].lstrip()
+        if i == start:
+            l = l[2:].lstrip() if l.startswith("- ") else l
+        elif not (_live(lines[i]) and _indent(lines[i]) == dash + 2):
+            continue
+        m = re.match(r"run\s*:\s*(.*)$", l)
+        if not m:
+            continue
+        value = m.group(1).strip()
+        if re.match(r"[|>][+-]?\d*\s*(#.*)?$", value):
+            return next((x.strip() for x in lines[i + 1:end] if _live(x)), None)
+        return value or None
+    return None
+
+
 def guard_placement_violations(text, workflow):
     """Each upload step needs exactly one guard step in its job, before it: real `run:`, no `if:`, no `continue-on-error:`."""
     lines = text.splitlines()
+    if any(re.match(r"\s*steps\s*:\s*\[", l) for l in lines):
+        raise ValueError(f"{workflow}: flow-style steps unsupported")
     problems = []
     for uses, line in enumerate(lines):
         if not (_live(line) and USES_RE.search(line)):
@@ -287,13 +307,12 @@ def guard_placement_violations(text, workflow):
         if start >= up[0]:
             problems.append(f"{label}: guard step is not before the upload step")
         keys = _step_keys(lines, start, end, dash_indent)
-        if not any(k.startswith("run:") for k in keys):
-            problems.append(f"{label}: guard step has no run:")
+        command = _run_command(lines, start, end, dash_indent)
+        if not (command and re.match(r"(python3?\s+)?" + re.escape(call) + r"(\s|$)", command)):
+            problems.append(f"{label}: guard call is not the command of the step's run:")
         for key in ("if", "continue-on-error"):
             if any(re.match(rf"""["']?{key}["']?\s*:""", k) for k in keys):
                 problems.append(f"{label}: guard step has {key}:")
-        if any(call in l and l.lstrip().startswith("#") for l in lines[start:end]):
-            problems.append(f"{label}: guard call line is commented")
     return problems
 
 

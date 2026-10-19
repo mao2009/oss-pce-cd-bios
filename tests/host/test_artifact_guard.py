@@ -368,6 +368,34 @@ class GuardPlacementTests(unittest.TestCase):
                 self.assertNotEqual([], self.violations(text))
 
 
+    def test_call_must_be_the_run_command(self):
+        run = '        run: |\n          ' + CALL
+        bad = {
+            'echo comment': f'        run: echo # {CALL}',
+            'echo call': f'        run: echo {CALL}',
+            'env only': f'        env:\n          X: {CALL}\n        run: true',
+            'block echo': '        run: |\n          echo ' + CALL,
+            'comment first': '        run: |\n          # ' + CALL,
+        }
+        for label, step in bad.items():
+            with self.subTest(bad=label):
+                text = GUARDED.replace(run, step)
+                self.assertNotEqual(text, GUARDED)
+                self.assertNotEqual([], self.violations(text))
+
+    def test_accepted_run_forms(self):
+        run = '        run: |\n          ' + CALL
+        for step in (f'        run: {CALL}',
+                     '        run: python3 tools/artifact_guard.py --post-build w.yml "Save" --x',
+                     '        run: >\n          ' + CALL, run + '\n          echo done'):
+            with self.subTest(step=step):
+                self.assertEqual([], self.violations(GUARDED.replace(run, step)))
+
+    def test_flow_style_steps_raise_clear_error(self):
+        with self.assertRaisesRegex(ValueError, 'w.yml: flow-style steps unsupported'):
+            self.violations('jobs:\n  build:\n    steps: [ {uses: ' + UPLOAD + '} ]\n')
+
+
 class RepositoryTests(unittest.TestCase):
     def test_every_repository_upload_step_has_a_post_build_guard_before_it(self):
         # Owner decision: the guard runs after the build and before upload-artifact, in every upload workflow.
