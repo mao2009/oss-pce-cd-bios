@@ -432,6 +432,91 @@ class GuardPlacementTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'w.yml: flow-style steps unsupported'):
             self.violations('jobs:\n  build:\n    steps: [ {uses: ' + UPLOAD + '} ]\n')
 
+    def test_build_step_inserted_between_guard_and_upload_is_refused(self):
+        build = '      - name: Build\n        run: make build\n'
+        self.assertNotEqual([], self.violations(GUARDED.replace(SAVE_STEP, build + SAVE_STEP)))
+        mutate = '      - name: Mutate\n        run: cp x build/x\n'
+        self.assertNotEqual([], self.violations(GUARDED.replace(SAVE_STEP, mutate + SAVE_STEP)))
+
+    def test_guard_must_be_the_step_immediately_before_each_upload(self):
+        build = '      - name: Build\n        run: make build\n'
+        text = 'jobs:\n  build:\n    steps:\n' + GUARD_STEP + SAVE_STEP + build + SAVE_STEP
+        self.assertNotEqual([], self.violations(text))
+        text = 'jobs:\n  build:\n    steps:\n' + GUARD_STEP + build + SAVE_STEP
+        self.assertNotEqual([], self.violations(text))
+
+    def test_reordered_guard_after_build_is_refused(self):
+        build = '      - name: Build\n        run: make build\n'
+        text = 'jobs:\n  build:\n    steps:\n' + SAVE_STEP + build + GUARD_STEP
+        self.assertNotEqual([], self.violations(text))
+
+    def test_dotted_job_name_cannot_borrow_another_jobs_guard(self):
+        # Before the fix, "a.b" and "a.c" both parsed as job None, so a guard in one satisfied the other.
+        text = 'jobs:\n  a.b:\n    steps:\n' + GUARD_STEP + '  a.c:\n    steps:\n' + SAVE_STEP
+        self.assertNotEqual([], self.violations(text))
+
+    def test_quoted_job_name_cannot_borrow_another_jobs_guard(self):
+        text = 'jobs:\n  "a.b":\n    steps:\n' + GUARD_STEP + "  'a.c':\n    steps:\n" + SAVE_STEP
+        self.assertNotEqual([], self.violations(text))
+
+    def test_dotted_job_names_each_with_own_guard_pass(self):
+        # Legitimate dotted names must not be mistaken for a duplicate or missing guard.
+        text = ('jobs:\n  build.x:\n    steps:\n' + GUARD_STEP + SAVE_STEP
+                + '  build.y:\n    steps:\n' + GUARD_STEP.replace('Guard', 'Guard2') + SAVE_STEP)
+        self.assertEqual([], self.violations(text))
+
+    def test_duplicate_job_name_is_refused(self):
+        text = 'jobs:\n  build:\n    steps:\n' + GUARD_STEP + '  build:\n    steps:\n' + SAVE_STEP
+        with self.assertRaisesRegex(ValueError, 'duplicate job name'):
+            self.violations(text)
+
+    def test_guard_step_with_env_or_working_directory_is_refused(self):
+        run = '        run: |\n          ' + CALL
+        bad = {
+            'env RUNNER_TEMP': '        env:\n          RUNNER_TEMP: /tmp/x\n' + run,
+            'env PATH': '        env:\n          PATH: /tmp/x\n' + run,
+            'working-directory': '        working-directory: /tmp\n' + run,
+            'duplicate run': run + '\n        run: true',
+            'extra key': '        timeout-minutes: 1\n' + run,
+        }
+        for label, step in bad.items():
+            with self.subTest(bad=label):
+                text = GUARDED.replace(run, step)
+                self.assertNotEqual(text, GUARDED)
+                self.assertNotEqual([], self.violations(text))
+
+    def test_job_or_workflow_env_and_defaults_are_refused(self):
+        bad = {
+            'job env': GUARDED.replace('    steps:\n', '    env:\n      PATH: /tmp/x\n    steps:\n', 1),
+            'top env': 'env:\n  RUNNER_TEMP: /tmp/x\n' + GUARDED,
+            'job defaults': GUARDED.replace('    steps:\n', '    defaults:\n      run:\n        working-directory: /tmp\n    steps:\n', 1),
+            'job container': GUARDED.replace('    steps:\n', '    container: other-image\n    steps:\n', 1),
+        }
+        for label, text in bad.items():
+            with self.subTest(bad=label):
+                self.assertNotEqual([], self.violations(text))
+
+    def test_guard_in_other_job_that_is_needed_is_refused(self):
+        # needs: is not a substitute for a guard in the upload's own job, immediately before it.
+        text = ('jobs:\n  build:\n    steps:\n' + GUARD_STEP
+                + '  publish:\n    needs: build\n    steps:\n' + SAVE_STEP)
+        self.assertNotEqual([], self.violations(text))
+
+    def test_make_check_path_enforces_placement_not_only_patterns(self):
+        # check.py calls check_guard_placement; a build step inserted after the guard must fail there too.
+        import tempfile
+        rel = '.github/workflows/w.yml'
+        call = f'python3 tools/artifact_guard.py --post-build {rel} "Save"'
+        guard_step = f'      - name: Guard\n        run: |\n          {call}\n'
+        build = '      - name: Build\n        run: make build\n'
+        text = ('jobs:\n  build:\n    steps:\n' + guard_step + build
+                + f'      - name: Save\n        uses: {UPLOAD}\n        with:\n          path: build/x\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, '.github', 'workflows').mkdir(parents=True)
+            Path(tmp, rel).write_text(text, encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'guard step is not the step immediately before'):
+                guard.check_guard_placement(Path(tmp))
+
 
 class RepositoryTests(unittest.TestCase):
     def test_every_repository_upload_step_has_a_post_build_guard_before_it(self):

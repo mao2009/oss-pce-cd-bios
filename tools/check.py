@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 
-from artifact_guard import check_upload_artifacts
+from artifact_guard import check_upload_artifacts, check_guard_placement
 from environment import ROOT, executable, core_path
 
 
@@ -72,6 +72,8 @@ def main():
                     *map(str, sorted(ROOT.glob(".github/workflows/*.yml")))], check=True)
     # Fail closed before upload: no linked GPL probe executable or object may reach upload-artifact (#227).
     check_upload_artifacts(ROOT)
+    # The guard must sit immediately before each upload in the same job (no build step in between).
+    check_guard_placement(ROOT)
     core_path()
     output = ROOT / "build/check"
     output.mkdir(parents=True, exist_ok=True)

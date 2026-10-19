@@ -9,7 +9,9 @@ evidence JSON may contain "geargrafx". This is a content/signature tripwire only
 from run: (a `gh release` mention is refused outright), and the verdict-upload exemption is unchanged. Distribution conditions
 stay with docs/provenance.md and Issue #105. It does not detect BIOS-like content (.pce, .rom, .bin, .iso by content).
 
-Two layers: `check_upload_artifacts()` is a static pre-build check of the checkout (run by make check); the binding
+Three layers: `check_upload_artifacts()` is a static pre-build check of the checkout (run by make check);
+`check_guard_placement()` requires each guard step to be the step immediately before its upload step, in the same job
+(so no build step can run in between); the binding
 layer is `--post-build FILE STEP`, run in each workflow after the build and before upload-artifact, which expands the
 named step's patterns against the real build output and fails when a pattern matches nothing, is unsafe or is refused.
 """
@@ -222,7 +224,8 @@ def check_upload_artifacts(root=ROOT):
     base = Path(root)
     for workflow in _workflow_files(base):
         label = workflow.relative_to(base).as_posix()
-        for pattern in upload_patterns(workflow.read_text(encoding="utf-8")):
+        text = workflow.read_text(encoding="utf-8")
+        for pattern in upload_patterns(text):
             total += 1
             count, found = pattern_problems(base, label, pattern, False)
             matched += count
@@ -235,12 +238,21 @@ def check_upload_artifacts(root=ROOT):
     print(f"PASS upload-artifact guard: {total} patterns, {matched} local entries, no linked executable or object")
 
 
-JOB_RE = re.compile(r"^  [\w-]+\s*:\s*$")
+# A job id is any YAML key at indent 2 (dots and quotes allowed); the name is the key without quotes.
+JOB_RE = re.compile(r"""^  (?:"([^"]+)"|'([^']+)'|([^\s"'#:][^#:]*?))\s*:\s*(?:#.*)?$""")
 GUARD_CALL = "tools/artifact_guard.py --post-build"
+GUARD_STEP_KEYS = {"name", "run", "shell"}
+# Job-level or workflow-level settings that can change PATH, RUNNER_TEMP or the working directory the guard sees.
+SCOPE_KEYS_REFUSED = {"env", "defaults", "container", "services"}
 
 
 def _live(line):
     return line.strip() and not line.lstrip().startswith("#")
+
+
+def _job_name(line):
+    m = JOB_RE.match(line)
+    return next(g for g in m.groups() if g is not None) if m else None
 
 
 def _step_ranges(lines, dash):
@@ -253,7 +265,7 @@ def _step_ranges(lines, dash):
             if _live(lines[i]) and _indent(lines[i]) < dash:
                 end = i
                 break
-        job = next((lines[j].strip() for j in range(start, -1, -1) if JOB_RE.match(lines[j])), None)
+        job = next((_job_name(lines[j]) for j in range(start, -1, -1) if _job_name(lines[j]) is not None), None)
         result.append((start, end, job))
     return result
 
@@ -300,12 +312,44 @@ def _guard_is_bare(command, call, keys):
     return bool(m) and shell_ok and not re.search(r"[|&;#`$()<>\\]", command[0][m.end():])
 
 
+def check_guard_placement(root=ROOT):
+    """Static placement layer (run by make check): every upload step must have its guard immediately before it."""
+    base = Path(root)
+    problems = []
+    for workflow in _workflow_files(base):
+        text = workflow.read_text(encoding="utf-8")
+        if any(USES_RE.search(l) for l in text.splitlines()):
+            problems += guard_placement_violations(text, workflow.relative_to(base).as_posix())
+    if problems:
+        raise ValueError("artifact guard placement: " + "; ".join(problems))
+    print("PASS artifact guard placement: every upload step is preceded by its guard in the same job")
+
+
 def guard_placement_violations(text, workflow):
-    """Each upload step needs exactly one guard step in its job, before it: real `run:`, no `if:`, no `continue-on-error:`."""
+    """Each upload step needs exactly one guard step, and it must be the step immediately before it in the same job.
+
+    The guard step's keys are limited to name/run/shell (each once) and its run: is the bare guard call. Job ids
+    may contain dots or quotes and must be unique; a workflow that sets env/defaults/container/services at the
+    top level or in a job is refused, since those can change the PATH or RUNNER_TEMP the guard depends on.
+    Any step outside a job is refused. Anything else unparseable raises ValueError (fail closed).
+    """
     lines = text.splitlines()
     if any(re.match(r"\s*steps\s*:\s*\[", l) for l in lines):
         raise ValueError(f"{workflow}: flow-style steps unsupported")
+    job_names = [_job_name(l) for l in lines if _live(l) and _job_name(l) is not None]
+    dup = next((n for n in job_names if job_names.count(n) > 1), None)
+    if dup is not None:
+        raise ValueError(f"{workflow}: duplicate job name {dup!r}")
+    has_jobs = any(_live(l) and l.startswith("jobs:") for l in lines)
     problems = []
+    scope_re = re.compile(r"""["']?(%s)["']?\s*:""" % "|".join(sorted(SCOPE_KEYS_REFUSED)))
+    for l in lines:
+        if not _live(l):
+            continue
+        m = scope_re.match(l.strip())
+        if m and _indent(l) in (0, 4):   # workflow-level (indent 0) or job-level (indent 4) only; step env is checked per step
+            where = "top-level" if _indent(l) == 0 else "job-level"
+            problems.append(f"{workflow}: {where} {m.group(1)} is refused (can change the guard's PATH or RUNNER_TEMP)")
     for uses, line in enumerate(lines):
         if not (_live(line) and USES_RE.search(line)):
             continue
@@ -314,24 +358,29 @@ def guard_placement_violations(text, workflow):
                     and _indent(lines[j]) + 2 <= key_indent)
         dash_indent = _indent(lines[dash])
         steps = _step_ranges(lines, dash_indent)
-        up = next(s for s in steps if s[0] <= uses < s[1])
+        index = next(n for n, s in enumerate(steps) if s[0] <= uses < s[1])
+        up = steps[index]
         name = next((NAME_RE.search(k).group(1) for k in _step_keys(lines, up[0], up[1], dash_indent) if k.startswith("name:")), "")
         call = f'{GUARD_CALL} {workflow} "{name}"'
         label = f"{workflow}: {name!r}"
+        if has_jobs and up[2] is None:
+            problems.append(f"{label}: upload step is outside any job")
+            continue
         guards = [s for s in steps if s[2] == up[2] and any(_live(l) and call in l for l in lines[s[0]:s[1]])]
         if len(guards) != 1:
             problems.append(f"{label}: expected exactly one live guard step in the same job, found {len(guards)}")
             continue
+        if index == 0 or guards[0] != steps[index - 1]:
+            problems.append(f"{label}: guard step is not the step immediately before the upload step (a step in between could alter the uploaded files)")
+            continue
         start, end, _ = guards[0]
-        if start >= up[0]:
-            problems.append(f"{label}: guard step is not before the upload step")
         keys = _step_keys(lines, start, end, dash_indent)
+        names = [k.split(":", 1)[0].strip().strip("\"'") for k in keys]
+        if len(set(names)) != len(names) or not set(names) <= GUARD_STEP_KEYS:
+            problems.append(f"{label}: guard step may only have name, run and shell, each once (found {names})")
         command = _run_lines(lines, start, end, dash_indent)
         if not _guard_is_bare(command, call, keys):
             problems.append(f"{label}: guard call is not the bare command of the step's run: (single line, nothing after it, no custom shell:)")
-        for key in ("if", "continue-on-error"):
-            if any(re.match(rf"""["']?{key}["']?\s*:""", k) for k in keys):
-                problems.append(f"{label}: guard step has {key}:")
     return problems
 
 
