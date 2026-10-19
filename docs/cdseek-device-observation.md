@@ -46,15 +46,63 @@ System Card API の意味とは別物である。
 
 ### ユーザーが実行する手順（`!` 経由、エージェントは実行しない）
 
-WSL のホーム配下に clean clone を作り、固定版を取得して既存 CD-DA 診断を実行する。`GIT_DIR` / `GIT_WORK_TREE` は設定しない。
+WSL のホーム配下に clean clone を作り、固定版を取得して既存 CD-DA 診断を実行する。対象は PR #220 の HEAD
+`d79bd47cb60e375aa0c27e99d56d959f327ea496`。`GIT_DIR` / `GIT_WORK_TREE` は**設定しないこと**（既存の作業ツリーを参照すると検証にならない）。
+`TOOLS_DIR` はリポジトリ外の `$HOME` 配下に固定する（既定の `/tmp` は使わない）。
+
+**手順 A（推奨）: WSL のターミナルで直接貼り付けて実行する。** 途中で失敗するとサブシェルごと終了する。
+
+```bash
+(
+set -euo pipefail
+W="$HOME/cdseek215"
+rm -rf "$W"
+git clone https://github.com/mao2009/oss-pce-cd-bios.git "$W"
+cd "$W"
+git checkout --detach d79bd47cb60e375aa0c27e99d56d959f327ea496
+test "$(git rev-parse HEAD)" = "d79bd47cb60e375aa0c27e99d56d959f327ea496"
+export TOOLS_DIR="$HOME/oss-pce-cd-bios-tools"
+python3 tools/setup.py cc65
+python3 tools/setup.py geargrafx
+test "$(cat "$TOOLS_DIR/geargrafx-b49ae82a012eade566d72e9d61c9d95a5caa4da3/.verified-archive-sha256")" = "a80a3eae26a8efcd994350e84bbe73c975e406ced41f8f2404c88b00d4217f68"
+test "$(cat "$TOOLS_DIR/cc65-71746c829e77f74c2b601a7d16821170c2610df3/.verified-archive-sha256")" = "2172a1fc74bf6f3026e0f9427d4159508cd801abcb35ce591394bb911adaabe4"
+make dev-cdda-integration MODE=debug 2>&1 | tee "$HOME/cdseek215-cdda.log"
+echo "EXIT_OK"
+)
+```
+
+**手順 B: Windows の Git Bash から実行する場合。** Git Bash のパス変換を止めるため `MSYS_NO_PATHCONV=1` を付ける。
+中身は手順 A と同一（先頭の `(` と末尾の `)` を外し、`bash -c` の引数として渡す）。
 
 ```
-MSYS_NO_PATHCONV=1 wsl.exe -- bash -lc 'set -e -o pipefail; cd "$HOME" && rm -rf cdseek215 && git clone https://github.com/mao2009/oss-pce-cd-bios.git cdseek215 && cd cdseek215 && git checkout 50d3e4c && python3 tools/setup.py geargrafx && python3 tools/setup.py cc65 && make dev-cdda-integration MODE=debug 2>&1 | tee "$HOME/cdseek215-cdda.log"'
+MSYS_NO_PATHCONV=1 wsl.exe -- bash -c 'set -euo pipefail; W="$HOME/cdseek215"; rm -rf "$W"; git clone https://github.com/mao2009/oss-pce-cd-bios.git "$W"; cd "$W"; git checkout --detach d79bd47cb60e375aa0c27e99d56d959f327ea496; test "$(git rev-parse HEAD)" = "d79bd47cb60e375aa0c27e99d56d959f327ea496"; export TOOLS_DIR="$HOME/oss-pce-cd-bios-tools"; python3 tools/setup.py cc65; python3 tools/setup.py geargrafx; test "$(cat "$TOOLS_DIR/geargrafx-b49ae82a012eade566d72e9d61c9d95a5caa4da3/.verified-archive-sha256")" = "a80a3eae26a8efcd994350e84bbe73c975e406ced41f8f2404c88b00d4217f68"; test "$(cat "$TOOLS_DIR/cc65-71746c829e77f74c2b601a7d16821170c2610df3/.verified-archive-sha256")" = "2172a1fc74bf6f3026e0f9427d4159508cd801abcb35ce591394bb911adaabe4"; make dev-cdda-integration MODE=debug 2>&1 | tee "$HOME/cdseek215-cdda.log"; echo EXIT_OK'
 ```
 
-完了後に次を記録する: `git rev-parse HEAD`、固定版の `git -C <TOOLS_DIR>/geargrafx rev-parse HEAD`（`b49ae82a012eade566d72e9d61c9d95a5caa4da3` と一致すること）、
-cc65 の revision（`71746c829e77f74c2b601a7d16821170c2610df3`）、ROM の SHA-256、`bin_sha256`、テスト件数と出力の要点。
-ログ全文はコミットしない（純正 BIOS・市販 ROM 由来のバイトを含めない）。
+前提: WSL に `git` `python3` `curl` `make` `gcc` `g++` `ar` があること（不足時は `tools/setup.py` が不足ツール名を表示して止まる。その表示を記録する）。
+`setup.py` は取得アーカイブの SHA-256 を検証し、展開後のソースは `.source-integrity.json` と照合する。失敗時はそのまま BLOCKED として記録し、再試行前に原因を記録する。
+
+ログ全文はコミットしない（純正 BIOS・市販 ROM 由来のバイトを含めない）。ログは `$HOME/cdseek215-cdda.log`（リポジトリ外）に残る。
+
+#### 結果記録欄（実行後にユーザーが記入する。エージェントは記入しない）
+
+判定規則: 手順の終了コードが 0 かつログに `PASS real Geargrafx CD-DA observation` がある場合のみ、下表の各ケースを「ログ上の status」どおりに記録する。
+それ以外は全体を FAIL/BLOCKED とし、個別ケースを PASS にしない。`cdda-evidence.json` の `"status": "PASS"` はチェック通過後に書かれるため独立した根拠ではない。
+
+| 区分 | 既存テストのキー（`tests/integration/geargrafx_cdda.py`） | 期待 status | 実測 status（記入） | 補足（記入） |
+| --- | --- | --- | --- | --- |
+| 正例 | `mixed_mode_script` | PASS | | `samples_verified_against_bin`、`cdda_play` |
+| 負例 1 | `tampered_pcm_byte_in_lba20` | PASS_EXPECTED_FAILURE | | ログの rejected_because |
+| 負例 2 | `channels_swapped_lba21_sample30` | PASS_EXPECTED_FAILURE | | 同上 |
+| 負例 3（データトラック上の `$D8`） | `play_on_data_track` | PASS_EXPECTED_FAILURE | | `cdda_state_after_d8`、`nonzero_samples` |
+| 負例 4（`$D8` byte1=0 で pause） | `d8_byte1_zero_seeks_paused` | PASS_EXPECTED_FAILURE | | `cdda_state_after_d8` |
+| timeout | 固定 instruction budget（`STEP_BUDGET`）、ホスト側 `subprocess` 900 秒 | 超過時は FAIL。PASS にしない | | `TimeoutExpired` の有無（ログを検索して記録） |
+| IRQ | 既存診断はポーリングのみ | NOT_TESTED | NOT_TESTED（変更しないこと） | |
+| 無媒体・媒体外 LBA の明示ケース | 現行テストに無い | NOT_IMPLEMENTED | NOT_IMPLEMENTED | 追加は未着手 |
+
+完了後に次も記録する（`cdda-evidence.json` は `$W/build/debug/cdda-probe/` 配下）:
+`git rev-parse HEAD`（`d79bd47…` と一致）、`$TOOLS_DIR/geargrafx-b49ae82…/.verified-archive-sha256`（`a80a3eae…`）、
+`$TOOLS_DIR/cc65-71746c8…/.verified-archive-sha256`（`2172a1fc…`）、evidence の `rom_sha256`・`bin_sha256`・`cue_sha256`・`geargrafx_revision`、ログの終了コード。
+固定版の `git rev-parse` は使わない（取得物は git リポジトリではない）。
 
 ## 固定版ソースの読解 (SOURCE_READ, `src/scsi_controller.cpp` @ `b49ae82`)
 
