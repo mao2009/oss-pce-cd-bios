@@ -31,6 +31,31 @@ System Card API の意味とは別物である。
 （存在せず）、`<repo>/rom/`（`Geargrafx/`, 市販ゲームのフォルダ, `syscard3.pce` の存在のみ確認。中身は読んでいない）、PATH 上の
 `make` / `ca65` / `ld65`（無し）、`python`（3.14 あり、`gcc` は WinLibs の mingw のみ）。
 
+## 再試行記録 (2026-10-19)
+
+- 対象: PR #220 のヘッド `50d3e4c`（`feat/215-cdseek-device-observation`）。同ブランチは別 worktree（locked）で
+  チェックアウト中のため、本 worktree は detached HEAD で同一コミットを使用し、`HEAD:feat/215-cdseek-device-observation` へ
+  fast-forward push する。
+- WSL: `wsl.exe` の呼出しは再度、実行ガードで拒否された（「worktree 隔離エージェントの plain command で wsl を実行するため、
+  git 操作の可否を示せない」）。ガードは迂回していない。WSL のディストリ一覧・固定版の有無は未確認（NOT_RUN）。
+- Windows 側: `make` / `ca65` / `ld65` は PATH に無し（従来どおり）。`<repo>/rom/Geargrafx/Geargrafx.exe` は
+  5,742,080 バイト、SHA-256 `742B2D8D21060368134324E1CE6C32A9751E7A9776549ED78448ECA93E6E8563`、更新日時 2026-10-16。
+  固定版 (`b49ae82`) のビルド証跡がなく、`tools/dependencies.json` の SHA とも照合できないため、**証拠として使わない**。
+- 既存 CD-DA 統合テスト (`make dev-cdda-integration`): 固定版コアで実行できないため **NOT_RUN**（0 件 PASS / 0 件 FAIL）。
+- 正例・負例・timeout・IRQ の実測: **なし**（すべて NOT_RUN / NOT_TESTED のまま）。
+
+### ユーザーが実行する手順（`!` 経由、エージェントは実行しない）
+
+WSL のホーム配下に clean clone を作り、固定版を取得して既存 CD-DA 診断を実行する。`GIT_DIR` / `GIT_WORK_TREE` は設定しない。
+
+```
+MSYS_NO_PATHCONV=1 wsl.exe -- bash -lc 'set -e; cd "$HOME" && rm -rf cdseek215 && git clone https://github.com/mao2009/oss-pce-cd-bios.git cdseek215 && cd cdseek215 && git checkout 50d3e4c && python3 tools/setup.py geargrafx && python3 tools/setup.py cc65 && make dev-cdda-integration MODE=debug 2>&1 | tee "$HOME/cdseek215-cdda.log"'
+```
+
+完了後に次を記録する: `git rev-parse HEAD`、固定版の `git -C <TOOLS_DIR>/geargrafx rev-parse HEAD`（`b49ae82a012eade566d72e9d61c9d95a5caa4da3` と一致すること）、
+cc65 の revision（`71746c829e77f74c2b601a7d16821170c2610df3`）、ROM の SHA-256、`bin_sha256`、テスト件数と出力の要点。
+ログ全文はコミットしない（純正 BIOS・市販 ROM 由来のバイトを含めない）。
+
 ## 固定版ソースの読解 (SOURCE_READ, `src/scsi_controller.cpp` @ `b49ae82`)
 
 `ScsiController::ExecuteCommand` のディスパッチは次の opcode のみ（それ以外は `Debug` 出力のみで無視）:
