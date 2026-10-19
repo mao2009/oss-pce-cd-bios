@@ -27,6 +27,14 @@ APPROVAL_KEYS = frozenset({"reviewer", "pr", "abi_status", "hazard_controls", "c
 VERIFICATION_NOT_RUN = {"status": "NOT_RUN", "executed_callee": False, "evidence": []}
 
 
+def _no_duplicate_keys(pairs):
+    """json object_pairs_hook: reject duplicate keys instead of letting the last one win."""
+    keys = [key for key, _ in pairs]
+    if len(keys) != len(set(keys)):
+        raise ValueError(f"duplicate JSON key: {sorted({k for k in keys if keys.count(k) > 1})}")
+    return dict(pairs)
+
+
 def validate_ledger(ledger, contracts):
     """Fail closed (ValueError) on any ledger that could carry an unlock or drift from the claims."""
     def require(ok, message):
@@ -51,7 +59,14 @@ def validate_ledger(ledger, contracts):
 
 
 def resolve(slot, ledger, contracts, approval=None):
-    """Return the execution-gate record for one slot. Never returns ALLOWED."""
+    """Return the execution-gate record for one slot. Never returns ALLOWED.
+
+    ``approval`` is caller-supplied input, not an authenticated review record. Its fields (reviewer,
+    pr, abi_status, hazard_controls, callee_run_evidence) are not verified against any source and
+    are not authorisation. Even when every field is well-formed and the ledger reports all hazards
+    CONTROLLED, the result is at most MATERIALS_COMPLETE, because no reference-JSR runner exists.
+    This function never returns ALLOWED.
+    """
     reasons = []
     entry = ledger["slots"].get(str(slot))
     if entry is None:
@@ -61,7 +76,7 @@ def resolve(slot, ledger, contracts, approval=None):
                     if entry["hazard_controls"][h] != "CONTROLLED"]
     api = contracts["apis"][slot]
     if api["verification"] != VERIFICATION_NOT_RUN:
-        reasons.append("CALLEE_VERIFICATION_NOT_RUN")
+        reasons.append("CALLEE_VERIFICATION_RECORDED")
     if approval is None:
         reasons.append("NO_INDEPENDENT_APPROVAL")
     elif not isinstance(approval, dict):
@@ -95,8 +110,8 @@ def resolve(slot, ledger, contracts, approval=None):
 
 
 def load(ledger_path=LEDGER_PATH, contracts_path=ROOT / "spec" / "api_contracts.json"):
-    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
-    contracts = json.loads(contracts_path.read_text(encoding="utf-8"))
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"), object_pairs_hook=_no_duplicate_keys)
+    contracts = json.loads(contracts_path.read_text(encoding="utf-8"), object_pairs_hook=_no_duplicate_keys)
     validate_ledger(ledger, contracts)
     return ledger, contracts
 

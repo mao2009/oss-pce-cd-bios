@@ -7,8 +7,10 @@ not be readable as permission, and MODEL_ELIGIBLE / PASS / self-declared flags m
 """
 import copy
 import json
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -83,12 +85,28 @@ class ReferenceJsrGateTest(unittest.TestCase):
                 self.assertEqual(record["execution"], "BLOCKED")
                 self.assertTrue(any(r.startswith("UNRECOGNIZED_APPROVAL_FIELD_") for r in record["reasons"]))
 
-    def test_verification_not_run_is_always_reported(self):
+    def test_recorded_callee_verification_is_reported_and_blocked(self):
         contracts = copy.deepcopy(CONTRACTS)
         contracts["apis"][1]["verification"] = {"status": "OBSERVED", "executed_callee": True, "evidence": []}
         record = G.resolve(1, complete_ledger(), contracts, APPROVAL)
         self.assertEqual(record["execution"], "BLOCKED")
-        self.assertIn("CALLEE_VERIFICATION_NOT_RUN", record["reasons"])
+        self.assertIn("CALLEE_VERIFICATION_RECORDED", record["reasons"])
+        self.assertNotIn("CALLEE_VERIFICATION_NOT_RUN", record["reasons"])
+
+    def test_not_run_callee_verification_emits_no_verification_reason(self):
+        record = G.resolve(1, complete_ledger(), CONTRACTS, APPROVAL)
+        self.assertFalse([r for r in record["reasons"] if r.startswith("CALLEE_VERIFICATION")])
+
+    def test_duplicate_ledger_key_is_rejected_not_last_wins(self):
+        blocked = LEDGER["slots"]["1"]
+        all_controlled = {**blocked, "hazard_controls": dict(HAZARD_CONTROLLED)}
+        text = ('{"schema": "%s", "claim_ledger": "%s", "slots": {"1": %s, "1": %s}}'
+                % (LEDGER["schema"], LEDGER["claim_ledger"], json.dumps(blocked), json.dumps(all_controlled)))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "ledger.json"
+            path.write_text(text, encoding="utf-8")
+            with self.assertRaises(ValueError):
+                G.load(path, ROOT / "spec" / "api_contracts.json")
 
     def test_tampered_ledger_fails_closed(self):
         def mutate(path_fn):
@@ -116,6 +134,28 @@ class ReferenceJsrGateTest(unittest.TestCase):
         for api in CONTRACTS["apis"]:
             self.assertEqual(api["verification"], G.VERIFICATION_NOT_RUN)
         self.assertNotIn("VERIFIED", json.dumps(CONTRACTS["apis"][1]["contract"]))
+
+    def test_cli_fails_closed_with_exit_3_on_unusable_ledger(self):
+        broken = {
+            "missing ledger": None,
+            "malformed JSON": "{not json",
+            "duplicate key": ('{"schema": "%s", "claim_ledger": "spec/api_contracts.json", "slots": {}, '
+                              '"slots": {"1": {"execution": "ALLOWED"}}}' % LEDGER["schema"]),
+        }
+        for name, text in broken.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                tree = Path(tmp)
+                (tree / "tools").mkdir()
+                (tree / "spec").mkdir()
+                shutil.copy(ROOT / "tools" / "reference_jsr_gate.py", tree / "tools")
+                shutil.copy(ROOT / "spec" / "api_contracts.json", tree / "spec")
+                if text is not None:
+                    (tree / "spec" / "reference_jsr_gate.json").write_text(text, encoding="utf-8")
+                result = subprocess.run([sys.executable, str(tree / "tools" / "reference_jsr_gate.py"), "--check"],
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, G.EXIT_BLOCKED)
+                self.assertTrue(result.stdout.startswith("BLOCKED: gate ledger unusable"), result.stdout)
+                self.assertNotIn("Traceback", result.stderr)
 
     def test_cli_exits_blocked_for_all_slots(self):
         result = subprocess.run([sys.executable, str(ROOT / "tools" / "reference_jsr_gate.py"), "--check"],
