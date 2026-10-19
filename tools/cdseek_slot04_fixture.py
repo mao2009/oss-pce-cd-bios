@@ -5,7 +5,8 @@ Four local cases (nominal candidate, no media, invalid position, boundary) defin
 slot $04 / $E00C API with every behavioural field UNKNOWN: the ABI is pending PR #214 adjudication,
 so no argument, register, stack or return value is invented. There is no execution path here: no
 process launch, no reference API JSR, no ROM byte read (path/sha256 shape and comparison only).
-Every outcome is ``BLOCKED_ABI`` (exit 3), ROM mismatch or unsafe hardware I/O is ``REJECTED``
+Well-formed input is ``BLOCKED_ABI`` (exit 3), malformed input is ``BLOCKED`` (exit 3), and ROM
+mismatch or unsafe hardware I/O is ``REJECTED``
 (exit 3). Nothing here ever emits a permission, result or verification verdict.
 
 Input identity: the file extension is NOT a content identity. ``--config`` accepts only a small
@@ -35,7 +36,8 @@ CONFIG_FIELDS = frozenset({"schema", "rom_path", "rom_sha256", "approved_rom_sha
 EVIDENCE_FIELDS = ("position", "work_ram", "mpr", "stack", "irq", "disk_state", "expected_result")
 PERMISSION_FIELDS = ("unsafe_io_allow", "side_effects_allowed", "execution_allowed")
 # PC Engine hardware page $0000-$1FFF: any write is a side effect. This is deliberately wider than the
-# CD unit register block $1800-$1BFF alone, so the refusal does not depend on a narrower guess.
+# CD unit register block (commonly cited as $1800-$1BFF, not verified here) alone, so the refusal
+# does not depend on a narrower guess.
 HARDWARE_PAGE = range(0x0000, 0x2000)
 MAX_CONFIG_BYTES = 65536  # a run config is small JSON; anything larger is refused unread
 HEX = set("0123456789abcdef")
@@ -168,7 +170,11 @@ def main(argv=None):
             path = arguments.config
             if path.suffix != ".json" or not path.is_file() or path.stat().st_size > MAX_CONFIG_BYTES:
                 raise ValueError("config path refused")
-            config = json.loads(path.read_text(encoding="utf-8"))
+            with path.open("rb") as handle:  # bounded read: the size stat alone is racy
+                data = handle.read(MAX_CONFIG_BYTES + 1)
+            if len(data) > MAX_CONFIG_BYTES:
+                raise ValueError("config path refused")
+            config = json.loads(data.decode("utf-8"))
         except (OSError, ValueError, RecursionError):
             # Parse failure (incl. a ROM renamed to .json) and refusal both yield None: BLOCKED.
             # Only fixed text is printed; the file's bytes or parse error text are never echoed.

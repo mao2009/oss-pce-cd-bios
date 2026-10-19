@@ -9,6 +9,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -190,7 +191,9 @@ class Slot04FixtureTests(unittest.TestCase):
                 result = self.run_cli_path(path)
                 self.assertEqual(result.returncode, M.EXIT_FAIL_CLOSED, result.stderr)
                 self.assertTrue(result.stdout.startswith("BLOCKED: "), result.stdout)
-                self.assertIn("ROM path/sha256 unspecified", result.stdout)
+                # Exact fixed text: no parser error message or byte of the file is echoed.
+                self.assertEqual(result.stdout, "BLOCKED: malformed_configuration: config: run config "
+                                                "missing: ROM path/sha256 unspecified\n")
                 self.assertNotIn("CDSEEK_ROM_MARKER", result.stdout + result.stderr)
 
     def test_oversized_renamed_rom_is_refused_unread(self):
@@ -228,8 +231,9 @@ class Slot04FixtureTests(unittest.TestCase):
             _OPENS_ON[0] = False
         self.assertEqual(code, M.EXIT_FAIL_CLOSED)
         self.assertTrue(out.getvalue().startswith("BLOCKED_ABI: "), out.getvalue())
-        self.assertIn(str(path), _OPENS)  # the run config itself is read
-        self.assertNotIn(str(rom), _OPENS)  # the ROM it names is not
+        opened = {os.path.normcase(os.path.realpath(p)) for p in _OPENS}
+        self.assertIn(os.path.normcase(os.path.realpath(path)), opened)  # the run config itself is read
+        self.assertNotIn(os.path.normcase(os.path.realpath(rom)), opened)  # the ROM it names is not
 
     def test_malformed_config_never_echoes_its_values(self):
         secret = "SECRET_VALUE_7731"
@@ -260,7 +264,7 @@ class Slot04FixtureTests(unittest.TestCase):
                 self.assertNotIn("reference_bios_runner", text)
         source = (ROOT / "tools" / "cdseek_slot04_fixture.py").read_text(encoding="utf-8")
         for banned in ("import subprocess", "os.system", "popen(", "Popen", "exec(", "os.exec",
-                       ".read_bytes"):
+                       ".read_bytes", "hashlib"):  # hashlib: the ROM file is never hashed
             self.assertNotIn(banned, source)
 
     def test_cli_fails_closed_with_exit_3(self):
