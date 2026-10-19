@@ -26,9 +26,10 @@ SIGNATURES = (b"\x7fELF", b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf", b"\xce\xfa\x
 BLOCK_SCALARS = ("|", "|-", "|+")   # line-based; folded '>' forms and anchors/aliases are refused as unparseable
 # Step key: optional quotes, optional spacing before the colon, any letter case. Only the upload-artifact action matches.
 USES_RE = re.compile(r"""["']?uses["']?\s*:\s*["']?actions/upload-(?:pages-)?artifact@""", re.IGNORECASE)
-# Any other publishing route (release assets, third-party upload actions) is refused rather than guessed.
-UPLOAD_RE = re.compile(r"upload-(?:pages-)?artifact|gh\s+release|action-gh-release|release-asset|create-release",
-                       re.IGNORECASE)
+# Any other publishing route (release assets, third-party upload actions, local actions and reusable workflows
+# whose upload cannot be seen from here) is refused rather than guessed.
+UPLOAD_RE = re.compile(r"""upload-(?:pages-)?artifact|\bgh\s+release\b|release-action|action-gh-release|release-asset"""
+                       r"""|create-release|["']?uses["']?\s*:\s*["']?(?:\./|[^#\s]*\.github/workflows/)""", re.IGNORECASE)
 # pathlib glob has no brace, extglob or alternation syntax: such a pattern would match nothing and hide its files.
 UNSUPPORTED_PATTERN_CHARS = "{}()|"
 

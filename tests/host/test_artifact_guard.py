@@ -248,11 +248,18 @@ class WorkflowTests(unittest.TestCase):
         (action / 'action.yaml').write_text(workflow(['site']), encoding='utf-8')
         with self.assertRaisesRegex(ValueError, 'action.yaml: site/tool'):
             check_upload_artifacts(self.root)
-        for route in ('run: gh release upload v1 build/x', 'uses: softprops/action-gh-release@v2'):
+        for route in ('run: gh release upload v1 build/x', 'uses: softprops/action-gh-release@v2',
+                      'uses: ncipollo/release-action@v1', 'uses: ./.github/actions/up',
+                      'uses: o/r/.github/workflows/u.yml@v1'):
             with self.subTest(route=route):
                 self.write_workflow(workflow(['build/debug/*.pce']) + f'      - {route}\n', name='rel.yaml')
                 with self.assertRaisesRegex(ValueError, 'not a parsed step'):
                     check_upload_artifacts(self.root)
+
+    def test_prose_containing_release_is_not_a_false_positive(self):
+        self.write_workflow(workflow(['build/debug/*.pce']) + '      - name: pass through release gate\n', name='ok.yaml')
+        self.write_build('build/debug/smoke-test-not-bios.pce', FIXTURE_PCE)
+        check_upload_artifacts(self.root)
 
     def test_legitimate_evidence_and_self_made_rom_in_yaml_workflow_pass(self):
         self.write_workflow(workflow(['build/debug/*.pce', 'build/debug/*.json']), name='ok.yaml')
