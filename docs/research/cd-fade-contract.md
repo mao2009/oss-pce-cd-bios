@@ -24,7 +24,7 @@
 
 ## 3. 出典（固定版・取得日 2026-10-19）
 
-HuC は `pce-devel/huc` の commit `54f5c73606c1e7142e8095c727cab2767e2b3cb3` を使う。アーカイブ SHA-256 は `9fe91254051381077bd4ea217b718ec033a52da185283ae9479c1abac365311b`（台帳 §2 と一致）。
+HuC は `pce-devel/huc` の commit `54f5c73606c1e7142e8095c727cab2767e2b3cb3` を使う。アーカイブ SHA-256 は `9fe91254051381077bd4ea217b718ec033a52da185283ae9479c1abac365311b`（台帳 §2 と一致）。取得元は `https://codeload.github.com/pce-devel/huc/tar.gz/54f5c73606c1e7142e8095c727cab2767e2b3cb3`（`https://github.com/pce-devel/huc/archive/54f5c73606c1e7142e8095c727cab2767e2b3cb3.tar.gz` も同一の SHA-256）。
 展開物は読み取りのみで、実行していない。
 
 | ID | 出典（固定版内のパス） | 行 | ライセンス | 本書での用途 | 状態 |
@@ -83,7 +83,7 @@ HuC は `pce-devel/huc` の commit `54f5c73606c1e7142e8095c727cab2767e2b3cb3` �
 | F32 | 完了条件とタイムアウト | UNKNOWN | — | 呼出側は呼出し後に完了を待たない（S2 の宣言とマクロに待ち処理なし）。BIOS 側は未確認 |
 | F33 | 無ディスク、再生中トラックの有無による挙動 | UNKNOWN | — | 出典に記述がない |
 | F34 | フェード中の他の CD 呼出し（CD_PLAY 等）との相互作用 | UNKNOWN | — | 出典に記述がない |
-| F35 | HuC 固定版内の cd_fade 呼出し | SOURCE_FACT | 固定版 `54f5c736` の `git grep`（`cd_fade`、`CDFADE_`、`E02D`、大小無視）。許容出典（S1–S5、BSL-1.0 の `include/hucc/`）に呼出しはなく、定義（S1 483、`pcengine.inc`）と呼出し手順を包むマクロ（S2 127–128、`hucc-systemcard.asm`）のみ | 除外源の一致は次の 5 ファイル（いずれも根拠に使わない）。`include/huc/cdrom.asm`（74、85、87 行。呼出しはここの 87 行のみ。ライセンス不明）、`include/huc/cdrom.inc`（23–27 行、`CDFADE_*` 定数のみ。ライセンス不明）、`include/huc/huc.h`（88–92 行、`CDFADE_*` 定数のみ。ライセンス不明）、`include/huc/system.inc`（80 行、`cd_fade = $E02D` の定義のみ。ライセンス不明）、`examples/asm/elmer/kickc/bios.h`（41 行、定義のみ。例示コードでライセンス未確認）。`doc/` 内の一致は散文と宣言のみ（`huc3_doc.htm`、`whats.new`、`hucc-function-reference.md`）。`src/**/crc32.h` の `E02D` は CRC 表の 16 進数で無関係。列挙の確認方法は、固定版 `54f5c736` のタルボールを `gh api repos/pce-devel/huc/tarball/54f5c736…` で取得し、`grep -rniE 'cd_fade|CDFADE_|E02D'` を実行した結果 |
+| F35 | HuC 固定版内の cd_fade 呼出し | SOURCE_FACT | 固定版 `54f5c736` の `git grep`（`cd_fade`、`CDFADE_`、`E02D`、大小無視）。許容出典（S1–S5、BSL-1.0 の `include/hucc/`）に呼出しはなく、定義（S1 483、`pcengine.inc`）と呼出し手順を包むマクロ（S2 127–128、`hucc-systemcard.asm`）のみ | 除外源の一致は次の 5 ファイル（いずれも根拠に使わない）。`include/huc/cdrom.asm`（74、85、87 行。呼出しはここの 87 行のみ。ライセンス不明）、`include/huc/cdrom.inc`（23–27 行、`CDFADE_*` 定数のみ。ライセンス不明）、`include/huc/huc.h`（88–92 行、`CDFADE_*` 定数のみ。ライセンス不明）、`include/huc/system.inc`（80 行、`cd_fade = $E02D` の定義のみ。ライセンス不明）、`examples/asm/elmer/kickc/bios.h`（41 行、定義のみ。例示コードでライセンス未確認）。`doc/` 内の一致は散文と宣言のみ（`huc3_doc.htm`、`whats.new`、`hucc-function-reference.md`）。`src/**/crc32.h` の `E02D` は CRC 表の 16 進数で無関係。列挙の確認方法は、固定版 `54f5c736` のアーカイブ（上記 codeload URL。SHA-256 `9fe91254…`）を展開し、`grep -rniE 'cd_fade|CDFADE_|E02D'` を実行した結果。なお `gh api repos/pce-devel/huc/tarball/54f5c736…` のタルボールは別のアーカイブ（SHA-256 `bc36727fc44560fb25fe38364313b065c0f62b30f5527fc66eacfa570d3fde51`）で、展開後のファイル内容は同一（最上位ディレクトリ名と圧縮バイトのみ異なる）。ハッシュの取得元ではない |
 | F36 | Hu-Go HLE の処理本体 | UNKNOWN | S10 50、184–185 | 定義と名前のみ。処理本体は見つからなかった。HLE であり BIOS の証拠ではない |
 | F37 | (b) 値 `$00` が実際の BIOS でフェードを解除するか | UNKNOWN | — | 実際の BIOS 挙動。許可された観測方法（実行可能な呼出先での測定）が無く未確認。BIOS のバイト列・逆アセンブルからは転記しない |
 
@@ -99,7 +99,7 @@ HuC は `pce-devel/huc` の commit `54f5c73606c1e7142e8095c727cab2767e2b3cb3` �
 
 ## 6. 検証
 
-- 実行: `python3 -m unittest discover -s tests/host -p 'test_cd_fade_contract.py' -v`（WSL のクリーン clone。結果は PR 本文と Issue コメントに記す）。
+- 実行: `python -m unittest discover -s tests/host -p test_cd_fade_contract.py -v`（`PYTHONUTF8=1`、Windows。結果は PR 本文と Issue コメントに記す）。
 - テストは、表の判定列が SOURCE_FACT、HYPOTHESIS、UNKNOWN のいずれか一つだけであること、表に OBSERVED、VERIFIED、PASS、DEV_CALLABLE が無いこと、`BLOCKED_ABI` と `release_eligible=false` の記載があることを確かめる。F01–F37 の判定はテスト内で一行ずつ固定し、件数（15/4/18）も確かめる。SOURCE_FACT の定義文が本書にあること、PENDING 出典を引く SOURCE_FACT 行が降格されないこと、呼出先の挙動の行（F10、F18、F37 等）が SOURCE_FACT でないこと、第三者出典（S8–S10）のみを根拠にした SOURCE_FACT が無いことも確かめる。判定の昇格（F13、F10、F18、F37 を SOURCE_FACT へ）も失敗させる。
 - NOT_RUN: `make setup`、`make build`、`make test`、`make check`（指示により実行しない）。実コア（Geargrafx）、実機、CI の最新 HEAD、独立レビューは未実施。
 
