@@ -35,7 +35,7 @@ System Card API の意味とは別物である。
 
 - 対象: PR #220 のヘッド `50d3e4c`（`feat/215-cdseek-device-observation`）。同ブランチは別 worktree（locked）で
   チェックアウト中のため、本 worktree は detached HEAD で同一コミットを使用し、`HEAD:feat/215-cdseek-device-observation` へ
-  fast-forward push する。
+  fast-forward で push した（PR #220 の Draft は維持）。
 - WSL: `wsl.exe` の呼出しは再度、実行ガードで拒否された（「worktree 隔離エージェントの plain command で wsl を実行するため、
   git 操作の可否を示せない」）。ガードは迂回していない。WSL のディストリ一覧・固定版の有無は未確認（NOT_RUN）。
 - Windows 側: `make` / `ca65` / `ld65` は PATH に無し（従来どおり）。`<repo>/rom/Geargrafx/Geargrafx.exe` は
@@ -49,7 +49,7 @@ System Card API の意味とは別物である。
 WSL のホーム配下に clean clone を作り、固定版を取得して既存 CD-DA 診断を実行する。`GIT_DIR` / `GIT_WORK_TREE` は設定しない。
 
 ```
-MSYS_NO_PATHCONV=1 wsl.exe -- bash -lc 'set -e; cd "$HOME" && rm -rf cdseek215 && git clone https://github.com/mao2009/oss-pce-cd-bios.git cdseek215 && cd cdseek215 && git checkout 50d3e4c && python3 tools/setup.py geargrafx && python3 tools/setup.py cc65 && make dev-cdda-integration MODE=debug 2>&1 | tee "$HOME/cdseek215-cdda.log"'
+MSYS_NO_PATHCONV=1 wsl.exe -- bash -lc 'set -e -o pipefail; cd "$HOME" && rm -rf cdseek215 && git clone https://github.com/mao2009/oss-pce-cd-bios.git cdseek215 && cd cdseek215 && git checkout 50d3e4c && python3 tools/setup.py geargrafx && python3 tools/setup.py cc65 && make dev-cdda-integration MODE=debug 2>&1 | tee "$HOME/cdseek215-cdda.log"'
 ```
 
 完了後に次を記録する: `git rev-parse HEAD`、固定版の `git -C <TOOLS_DIR>/geargrafx rev-parse HEAD`（`b49ae82a012eade566d72e9d61c9d95a5caa4da3` と一致すること）、
