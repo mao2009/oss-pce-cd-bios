@@ -83,7 +83,7 @@ HuC は `pce-devel/huc` の commit `54f5c73606c1e7142e8095c727cab2767e2b3cb3` �
 | F32 | 完了条件とタイムアウト | UNKNOWN | — | 呼出側は呼出し後に完了を待たない（S2 の宣言とマクロに待ち処理なし）。BIOS 側は未確認 |
 | F33 | 無ディスク、再生中トラックの有無による挙動 | UNKNOWN | — | 出典に記述がない |
 | F34 | フェード中の他の CD 呼出し（CD_PLAY 等）との相互作用 | UNKNOWN | — | 出典に記述がない |
-| F35 | HuC 固定版内の cd_fade 呼出し | SOURCE_FACT | 固定版 `54f5c736` の `git grep`（`cd_fade`、`CDFADE_`、`E02D`、大小無視）。許容出典（S1–S5、BSL-1.0 の `include/hucc/`）に呼出しはなく、定義（S1 483、`pcengine.inc`）と呼出し手順を包むマクロ（S2 127–128、`hucc-systemcard.asm`）のみ | 除外源には呼出しがある: `include/huc/cdrom.asm` の 87 行（ライセンス不明のため根拠に使わない）。`examples/asm/elmer/kickc/bios.h` の 41 行は除外源の定義。`doc/` 内の一致は散文と宣言のみ |
+| F35 | HuC 固定版内の cd_fade 呼出し | SOURCE_FACT | 固定版 `54f5c736` の `git grep`（`cd_fade`、`CDFADE_`、`E02D`、大小無視）。許容出典（S1–S5、BSL-1.0 の `include/hucc/`）に呼出しはなく、定義（S1 483、`pcengine.inc`）と呼出し手順を包むマクロ（S2 127–128、`hucc-systemcard.asm`）のみ | 除外源の一致は次の 5 ファイル（いずれも根拠に使わない）。`include/huc/cdrom.asm`（74、85、87 行。呼出しはここの 87 行のみ。ライセンス不明）、`include/huc/cdrom.inc`（23–27 行、`CDFADE_*` 定数のみ。ライセンス不明）、`include/huc/huc.h`（88–92 行、`CDFADE_*` 定数のみ。ライセンス不明）、`include/huc/system.inc`（80 行、`cd_fade = $E02D` の定義のみ。ライセンス不明）、`examples/asm/elmer/kickc/bios.h`（41 行、定義のみ。例示コードでライセンス未確認）。`doc/` 内の一致は散文と宣言のみ（`huc3_doc.htm`、`whats.new`、`hucc-function-reference.md`）。`src/**/crc32.h` の `E02D` は CRC 表の 16 進数で無関係。列挙の確認方法は、固定版 `54f5c736` のタルボールを `gh api repos/pce-devel/huc/tarball/54f5c736…` で取得し、`grep -rniE 'cd_fade|CDFADE_|E02D'` を実行した結果 |
 | F36 | Hu-Go HLE の処理本体 | UNKNOWN | S10 50、184–185 | 定義と名前のみ。処理本体は見つからなかった。HLE であり BIOS の証拠ではない |
 | F37 | (b) 値 `$00` が実際の BIOS でフェードを解除するか | UNKNOWN | — | 実際の BIOS 挙動。許可された観測方法（実行可能な呼出先での測定）が無く未確認。BIOS のバイト列・逆アセンブルからは転記しない |
 
