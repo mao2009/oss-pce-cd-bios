@@ -30,16 +30,17 @@ HYPOTHESIS = {
     'status': 'HYPOTHESIS', 'value': 'HuCC caller-side expectation only',
     'sources': ['huc:include/hucc/pcengine.inc'], 'confidence': 'SOURCE_SUPPORTED',
 }
-# Complete, well-formed measurement evidence for a synthetic OBSERVED claim.
+# SYNTHETIC evidence: well-formed in shape only. It is NOT a real measurement, does not
+# support any particular contract field, and its hash resolves to nothing.
 EVIDENCE_ENTRY = {
-    'execution_conditions': 'Geargrafx core cold boot; Super System Card 3.0 JP candidate; no disc',
+    'execution_conditions': 'SYNTHETIC test fixture; no real execution took place',
     'core_revision': 'b49ae82a012eade566d72e9d61c9d95a5caa4da3',
-    'input_type': 'CD_RESET system-call selector passed in Y',
-    'verification_result': '$1804 readback $02 while asserted, $00 after release',
+    'input_type': 'SYNTHETIC placeholder input',
+    'verification_result': 'SYNTHETIC placeholder result',
     'evidence_hash': 'd1a2f529224a70666ede15c4cf774da484bf1b96495a53e08d474f09f8ff5a50',
 }
 OBSERVED = {
-    'status': 'OBSERVED', 'value': '$1804 readback $02 while asserted, $00 after release',
+    'status': 'OBSERVED', 'value': 'SYNTHETIC observed value (not a measurement)',
     'sources': ['gear:src/cdrom.cpp'], 'confidence': 'SOURCE_SUPPORTED',
     'evidence': [EVIDENCE_ENTRY],
 }
@@ -57,8 +58,9 @@ class AdjudicateClaimTests(unittest.TestCase):
     def test_hypothesis_claim_is_accepted(self):
         adjudicate_claim(HYPOTHESIS, CALLER, field='arguments', context='slot 1 arguments')
 
-    def test_observed_claim_with_complete_evidence_is_accepted(self):
-        # Issue #208 positive case: EMULATOR_SOURCE + executed callee + complete evidence.
+    def test_observed_claim_with_format_valid_evidence_is_accepted(self):
+        # Issue #208 positive case: shape-valid SYNTHETIC evidence is accepted. This asserts
+        # nothing about measurement, ABI correctness or authenticity (FORMAT_ONLY).
         adjudicate_claim(OBSERVED, REAL, field='stack', context='slot 1 stack',
                          executed_callee=True)
 
@@ -102,13 +104,13 @@ class AdjudicateClaimTests(unittest.TestCase):
         # Issue #208 negative case: an OBSERVED claim without measurement evidence is rejected
         # even with an EMULATOR_SOURCE and an executed callee.
         bad = dict(OBSERVED, evidence=[])
-        with self.assertRaisesRegex(ValueError, 'non-empty measurement evidence'):
+        with self.assertRaisesRegex(ValueError, 'non-empty evidence entries'):
             adjudicate_claim(bad, REAL, field='stack', context='slot 1 stack',
                              executed_callee=True)
 
     def test_observed_without_evidence_key_is_rejected(self):
         bad = {k: v for k, v in OBSERVED.items() if k != 'evidence'}
-        with self.assertRaisesRegex(ValueError, 'non-empty measurement evidence'):
+        with self.assertRaisesRegex(ValueError, 'non-empty evidence entries'):
             adjudicate_claim(bad, REAL, field='stack', context='slot 1 stack',
                              executed_callee=True)
 
@@ -129,7 +131,7 @@ class AdjudicateClaimTests(unittest.TestCase):
     def test_executed_callee_alone_without_evidence_is_insufficient(self):
         # Issue #208: executed_callee self-attestation is part of the evidence, not sufficient.
         bad = {k: v for k, v in OBSERVED.items() if k != 'evidence'}
-        with self.assertRaisesRegex(ValueError, 'non-empty measurement evidence'):
+        with self.assertRaisesRegex(ValueError, 'non-empty evidence entries'):
             adjudicate_claim(bad, REAL, field='stack', context='slot 1 stack',
                              executed_callee=True)
 
@@ -172,6 +174,37 @@ class AdjudicateClaimTests(unittest.TestCase):
     def test_complete_structural_evidence_is_schema_accepted_not_authenticated(self):
         # Accepted for shape only: nothing resolves the hash to a stored artifact.
         adjudicate_claim(OBSERVED, REAL, field='stack', context='slot 1 stack', executed_callee=True)
+
+    def test_format_only_acceptance_does_not_check_field_correspondence(self):
+        # Documents a known limit (not a feature): the same evidence entry is accepted for
+        # unrelated fields because only its shape is checked. Semantic correspondence of
+        # evidence to the claim field is NOT verified; a follow-up Issue owns that.
+        for field in ('stack', 'returns', 'irq', 'flags'):
+            adjudicate_claim(OBSERVED, REAL, field=field, context=field, executed_callee=True)
+
+    def test_malformed_input_types_raise_valueerror(self):
+        good = dict(OBSERVED)
+        for bad_claim in (None, [], 'OBSERVED', 123, ('status',)):
+            with self.assertRaisesRegex(ValueError, 'claim must be a dict', msg=repr(bad_claim)):
+                adjudicate_claim(bad_claim, REAL, field='stack', context='x', executed_callee=True)
+        for bad_kinds in (None, [], 'EMULATOR_SOURCE', 123):
+            with self.assertRaisesRegex(ValueError, 'source_kinds must be a dict', msg=repr(bad_kinds)):
+                adjudicate_claim(good, bad_kinds, field='stack', context='x', executed_callee=True)
+        for bad_kinds in ({1: 'EMULATOR_SOURCE'}, {None: 'EMULATOR_SOURCE'}):
+            with self.assertRaisesRegex(ValueError, 'source keys must be strings'):
+                adjudicate_claim(good, bad_kinds, field='stack', context='x', executed_callee=True)
+        for bad_kinds in ({'gear:src/cdrom.cpp': 'NOPE'}, {'gear:src/cdrom.cpp': None},
+                          {'gear:src/cdrom.cpp': ['EMULATOR_SOURCE']}):
+            with self.assertRaisesRegex(ValueError, 'invalid source kind'):
+                adjudicate_claim(good, bad_kinds, field='stack', context='x', executed_callee=True)
+        for bad_field in (None, 1, ['stack'], b'stack'):
+            with self.assertRaisesRegex(ValueError, 'claim field must be a string'):
+                adjudicate_claim(good, REAL, field=bad_field, context='x', executed_callee=True)
+        for bad_exec in (1, 0, 'true', None):
+            with self.assertRaisesRegex(ValueError, 'executed_callee must be a bool', msg=repr(bad_exec)):
+                adjudicate_claim(good, REAL, field='stack', context='x', executed_callee=bad_exec)
+        with self.assertRaisesRegex(ValueError, 'claim keys must be strings'):
+            adjudicate_claim({1: 'x'}, REAL, field='stack', context='x', executed_callee=True)
 
     def test_invalid_evidence_hashes_are_rejected(self):
         for h in ('0' * 64, 'a' * 64, 'D1A2' + 'f' * 60, 'f' * 63, 'g' * 64, 12345, None):
