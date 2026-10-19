@@ -13,7 +13,9 @@ LEDGER = ROOT / 'docs' / 'research' / 'cd-subq-contract.md'
 
 ALLOWED_STATUS = {'SOURCE_FACT', 'HYPOTHESIS', 'UNKNOWN', 'BLOCKED'}
 FORBIDDEN_STATUS = {'VERIFIED', 'OBSERVED', 'PASS', 'DEV_CALLABLE', 'CALLABLE'}
-FORBIDDEN_WORD_RE = re.compile(r'\b(VERIFIED|OBSERVED|PASS|DEV_CALLABLE|CALLABLE)\b')
+# \b does not split CJK-adjacent text (e.g. 'VERIFIED扱い'), so the boundary is an explicit
+# ASCII alnum/underscore lookaround: any non-ASCII character counts as a boundary.
+FORBIDDEN_WORD_RE = re.compile(r'(?<![A-Za-z0-9_])(VERIFIED|OBSERVED|PASS|DEV_CALLABLE|CALLABLE)(?![A-Za-z0-9_])')
 # Only sources recorded as BSL-1.0 with an unambiguous origin may back a SOURCE_FACT row.
 # S5 is excluded: its header says it is based on Hudson code whose rights are unconfirmed (PENDING).
 BSL_SOURCES = {'S1', 'S2', 'S3'}
@@ -162,6 +164,15 @@ class CheckerSelfTests(unittest.TestCase):
 
     def test_forbidden_word_in_any_cell_is_rejected(self):
         self.assertTrue(check_row(self._row(status='UNKNOWN', value='UNKNOWN', reason='VERIFIED 扱い')))
+
+    def test_forbidden_word_adjacent_to_cjk_is_rejected(self):
+        # \b used to miss these; the forbidden-word violation must be reported.
+        for col, val in (('reason', 'VERIFIED扱い'), ('value', 'PASS中')):
+            with self.subTest(col=col):
+                row = self._row()
+                row[col] = val
+                problems = check_row(row)
+                self.assertTrue(any('forbidden word' in p and f'in {col}' in p for p in problems), problems)
 
     def test_hypothesis_without_value_is_rejected(self):
         self.assertTrue(check_row(self._row(status='HYPOTHESIS', value='UNKNOWN', source='Z1')))
