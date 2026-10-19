@@ -3,7 +3,7 @@
 状態（時点ごとに分けて記録する）:
 - **過去のエージェント再試行（2026-10-19、対象 `50d3e4c` 以前）:** BLOCKED。この実行環境からは実コアを実行していない。
 - **ユーザー提示の基準実測（対象 `655244f`、既存 CD-DA 診断）:** PASS。ユーザーが WSL で手順 A を実行し、結果を提示した。エージェント自身は再実行していない。実行時 `TARGET_SHA` は `655244f` と一致（ログの `TARGET_SHA=` と `EXIT_OK` の記録による）。
-- **追加3ケース（A 有効 LBA40、B 媒体範囲外 LBA80、C 予算超過）:** 対象 `8c064f1` のユーザー提示結果は PASS / PASS / PASS_EXPECTED_FAILURE（エージェント未再実行。下記「追加3ケースのユーザー提示結果」を参照）。evidence JSON の照合と既存5ケースの個別 status は未提示のため未照合。ホストテストと CI の成功は、実コアの PASS とは扱わない。
+- **追加3ケース（A 有効 LBA40、B 媒体範囲外 LBA80、C 予算超過）:** 対象 `8c064f1` のユーザー提示結果は PASS / PASS / PASS_EXPECTED_FAILURE（エージェント未再実行。下記「追加3ケースのユーザー提示結果」を参照）。evidence JSON の要約と既存5ケースの回帰結果もユーザーが提示した（下記「evidence JSON 要約と既存5ケース回帰」）。ホストテストと CI の成功は、実コアの PASS とは扱わない。
 
 以下の SOURCE_READ は固定版ソースの読解であり、PASS / VERIFIED ではない。
 
@@ -301,8 +301,27 @@ echo "wsl exit=$?"
 - `CASE invalid_audio_start_lba_at_medium_end PASS`、`CASE timeout_budget_exhausted PASS_EXPECTED_FAILURE`、`CASE valid_audio_start_lba40 PASS`。
 - ログとワークツリーのパスは本文書に記録しない（ユーザー環境のパスを含むため）。
 
+### evidence JSON 要約と既存5ケース回帰（ユーザー提示、対象 `8c064f1`、エージェント未再実行）
+
+提示された値（`SOURCE_HEAD=8c064f13a42bcef312bfa8695d4bce710a331e3e`、ハッシュはユーザー環境で計算された値）:
+- `cdda-scenarios-evidence.json` の SHA-256: `5b365a9c9818b9efa1d9eb7ec5cb6b36cb1de3922b711123d07757a3b98a2f26`。ファイル本体は提示されていない。
+- 全体 status: PASS。診断 ROM SHA-256 `1f96fc3f…e6206`、Geargrafx revision `b49ae82a…`、アーカイブ SHA-256 `a80a3eae…`。合成 CD の BIN `52809b19…5da25f`、CUE `ee9a8c89…d1d55`（上記と一致）。
+
+個別の観測値（提示された JSON 要約）:
+- `valid_audio_start_lba40`（PASS）: `start_lba` 40。`cdda_play` は first `[40, 0]`、last `[73, 402]`、`samples_verified_against_bin` 19807、`sectors_played` 33.69。`pause_stop` は paused_at `[73, 403]`、stopped_at `[73, 403]`。
+- `invalid_audio_start_lba_at_medium_end`（PASS）: `start_lba` 80、`medium_sectors` 80。`invalid_start` は `cdda_state_before` 1、`cdda_state_after` 1、`samples` 0、`seeks` 0。`scsi_status_message_bytes_after_d8` は `00000000`、`scsi_phase_after_d8` は 0（数値的な意味は UNKNOWN、アサートしていない）。
+- `timeout_budget_exhausted`（PASS_EXPECTED_FAILURE）: `budget_steps` 1000000、`rejected_because` は「guest did not stop at the success checkpoint (budget)」。
+
+既存5ケースの回帰（同じ `8c064f1`、`make dev-cdda-integration MODE=debug`）:
+- 終了コード 0。`PASS real Geargrafx CD-DA observation`。
+- 個別 status: `mixed_mode_script` PASS、`tampered_pcm_byte_in_lba20` PASS_EXPECTED_FAILURE、`channels_swapped_lba21_sample30` PASS_EXPECTED_FAILURE、`play_on_data_track` PASS_EXPECTED_FAILURE、`d8_byte1_zero_seeks_paused` PASS_EXPECTED_FAILURE。
+- 判定: `REGRESSION_5_CASES = PASS`（期待値と完全一致）。
+- `cdda-evidence.json` の SHA-256: `4864787591372fa6fb11cf5b184b91cec3f180d472b26057eecc666efac15ed2`（提示値）。
+
+**不一致の記録:** 本文書の「基準実測」の節では、`mixed_mode_script` の音声照合を 29685 サンプルと記録している（以前の提示値）。今回のログでは同じ診断が `29686 samples matched` と表示されている。どちらが正しいかは、この文書では確定させない。両方の提示値を残し、確認が必要な項目として扱う。
+
 **提示されていない項目（未検証）:**
-- evidence JSON（`cdda-scenarios-evidence.json`）の SHA-256 と、個別の観測値（START_LBA、CURRENT_STATE、PCM の一致数、SCSI フェーズ値）。照合は未実施。
+- evidence JSON 本体（`cdda-scenarios-evidence.json`）のファイルそのもの。提示されたのは要約と SHA-256 だけで、エージェントは元のファイルを再ハッシュできないため、要約の内容は提示値として記録する。
 - 既存の診断5ケース（`mixed_mode_script` と負例4件）の、この実行における個別の status。今回の提示には含まれない。
 - 純正 CD_SEEK の callee ABI、IRQ による完了通知、無媒体ケース、実機・第2エミュレータ、SCSI トレース固有の診断イベント。いずれも未検証。
 
