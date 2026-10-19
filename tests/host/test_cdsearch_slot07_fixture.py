@@ -22,46 +22,67 @@ POSITIVE, NEGATIVE = "POSITIVE", "NEGATIVE"
 
 
 NAME = "cdsearch-slot07"
-# Build/ROM surfaces: any mention is real wiring (Makefile, CI, scripts, ca65/ld65 sources and configs = jump table).
-BUILD_GLOBS = ("Makefile", "*.mk", ".github/**/*", "scripts/**/*", "src/**/*")
-# spec JSON keys that make a value an executable/registered target; plain evidence/notes strings are allowed.
-EXEC_KEYS = {"entry", "target", "callable", "rom_entry", "jump_table", "build", "make", "command", "script"}
-# tools/ lines count only when they hand the name to a build/exec step.
-TOOL_EXEC = re.compile(r"subprocess|Popen|os\.system|\bmake\b|ca65|ld65|cl65|\.cfg|\bjsr\b|\bjmp\b", re.I)
+FIXTURE_ALIASES = (NAME, "cdsearch_slot07", "fixtures/*.json", "fixtures/**")
+# Build/ROM surfaces anywhere outside docs/: a non-comment mention is real wiring (Makefile, CMake, CI yaml,
+# ca65/ld65 sources and linker configs = ROM jump table, shell/PowerShell runners).
+BUILD_SUFFIXES = {".mk", ".cmake", ".yml", ".yaml", ".cfg", ".s", ".inc", ".sh", ".ps1"}
+BUILD_NAMES = ("Makefile", "GNUmakefile", "CMakeLists.txt")
+# spec JSON: the name is allowed only under these documentary keys (at any ancestor level).
+DOC_KEYS = {"evidence", "notes", "note", "description", "fixture", "fixtures", "source", "sources", "rationale"}
+# Python/other runners in tools/ and tests/ that execute something and also mention the name.
+EXEC_RUNNERS = re.compile(r"subprocess|Popen|os\.system|os\.exec|\bmake\b|ca65|ld65|cl65|\bjsr\b|\bjmp\b", re.I)
+SKIP_DIRS = {".git", "docs", "rom", "node_modules", "__pycache__"}
+SELF = Path(__file__).resolve()
 
 
 def _text(path):
     return path.read_text(encoding="utf-8", errors="ignore")
 
 
-def _json_exec_hits(node, key=None):
+def _code_lines(path):
+    """Lines of a build/runner file without whole-line comments (# or ;), so prose mentions don't count."""
+    return [ln for ln in _text(path).splitlines() if not ln.lstrip().startswith(("#", ";", "//"))]
+
+
+def _json_exec_hits(node, documentary=False):
     if isinstance(node, dict):
-        return any(_json_exec_hits(v, k) for k, v in node.items())
+        return any(
+            (any(a in k for a in FIXTURE_ALIASES) and not documentary)
+            or _json_exec_hits(v, documentary or k in DOC_KEYS)
+            for k, v in node.items())
     if isinstance(node, list):
-        return any(_json_exec_hits(v, key) for v in node)
-    return isinstance(node, str) and NAME in node and key in EXEC_KEYS
+        return any(_json_exec_hits(v, documentary) for v in node)
+    return isinstance(node, str) and not documentary and any(a in node for a in FIXTURE_ALIASES)
 
 
 def wiring_violations(root):
     """Return relative paths where the fixture is really wired (build, ROM jump table, exec registration).
-    Plain references in docs/*.md, spec evidence strings and tools data/comments are allowed."""
+    Plain references in docs/, spec evidence strings and comments/docstrings are allowed.
+    ponytail: detection is by name/alias substring; a wildcard that picks the fixture up without naming it
+    is only caught for the aliases above."""
     hits = set()
-    for glob in BUILD_GLOBS:
-        for path in root.glob(glob):
-            if path.is_file() and NAME in _text(path):
-                hits.add(path)
-    for path in (root / "spec").rglob("*.json"):
-        if NAME in _text(path):
-            try:
-                if _json_exec_hits(json.loads(_text(path))):
-                    hits.add(path)
-            except ValueError:
-                hits.add(path)  # unparsable file mentioning the name: fail closed
-    for path in (root / "tools").rglob("*"):
-        if path.is_file() and path.suffix in {".py", ".sh", ""} and any(
-                NAME in line and TOOL_EXEC.search(line) for line in _text(path).splitlines()):
-            hits.add(path)
-    return sorted(str(p.relative_to(root)).replace("\\", "/") for p in hits)
+    for path in root.rglob("*"):
+        rel = path.relative_to(root)
+        if not path.is_file() or SKIP_DIRS & set(rel.parts) or path.resolve() == SELF \
+                or rel.as_posix() == "tests/fixtures/cdsearch-slot07-cases.json":
+            continue
+        build = path.suffix in BUILD_SUFFIXES or path.name in BUILD_NAMES or path.name.startswith("Makefile")
+        if build and any(a in ln for ln in _code_lines(path) for a in FIXTURE_ALIASES):
+            hits.add(rel.as_posix())
+        elif rel.parts[0] == "spec" and path.suffix != ".md":
+            text = _text(path)
+            if any(a in text for a in FIXTURE_ALIASES):
+                try:
+                    bad = path.suffix == ".json" and _json_exec_hits(json.loads(text))
+                except ValueError:
+                    bad = True  # unparsable: fail closed
+                if bad or path.suffix != ".json":
+                    hits.add(rel.as_posix())
+        elif rel.parts[0] in ("tools", "tests") and path.suffix in {".py", ".js", ".ts", ""}:
+            code = "\n".join(_code_lines(path))
+            if NAME in code and EXEC_RUNNERS.search(code):
+                hits.add(rel.as_posix())
+    return sorted(hits)
 
 
 def canonical_sha256(data):
@@ -155,6 +176,7 @@ class CdSearchSlot07FixtureTests(unittest.TestCase):
         self.assertEqual(slot7["verification"]["status"], "NOT_RUN")
         self.assertIs(slot7["verification"]["executed_callee"], False)
         self.assertEqual(slot7["mapping_status"], "HYPOTHESIS")
+        self.assertTrue((ROOT / "Makefile").is_file())
         self.assertEqual(wiring_violations(ROOT), [], "fixture wired into build/ROM/exec target")
 
     def _scratch(self, files):
@@ -168,29 +190,48 @@ class CdSearchSlot07FixtureTests(unittest.TestCase):
 
     def test_plain_documentation_references_are_allowed(self):
         root = self._scratch({
-            "Makefile": "all:\n\t@echo ok\n",
-            "docs/note.md": "see tests/fixtures/cdsearch-slot07-cases.json (BLOCKED_ABI)\n",
+            "Makefile": "# cdsearch-slot07 must stay unwired\nall:\n\t@echo ok\n",
+            "docs/note.md": "see tests/fixtures/cdsearch-slot07-cases.json (BLOCKED_ABI) and make jmp jsr\n",
             "tools/doc.py": '"""cdsearch-slot07 is a data fixture."""\n# cdsearch-slot07 only read by tests\n',
-            "spec/api_contracts.json": json.dumps({"apis": [{"slot": 7, "evidence": "cdsearch-slot07 fixture"}]}),
+            "src/a.s": "; cdsearch-slot07 is not linked\n",
+            "spec/api_contracts.json": json.dumps({"apis": [
+                {"slot": 7, "evidence": "cdsearch-slot07 fixture", "notes": {"a": ["cdsearch-slot07"]}}]}),
         })
         self.assertEqual(wiring_violations(root), [])
 
     def test_wiring_probe_catches_invalid_connections(self):
         base = {"Makefile": "all:\n", "spec/api_contracts.json": "{}"}
+        spec = "spec/api_contracts.json"
         mutations = {
             "makefile": ("Makefile", "check: tests/fixtures/cdsearch-slot07-cases.json\n"),
+            "makefile_wildcard": ("Makefile", "check: $(wildcard tests/fixtures/*.json)\n"),
+            "tests_makefile": ("tests/Makefile", "t: cdsearch-slot07-cases.json\n"),
+            "cmake": ("CMakeLists.txt", "add_custom_target(x DEPENDS cdsearch-slot07)\n"),
             "ci": (".github/workflows/ci.yml", "run: make cdsearch-slot07\n"),
+            "root_yaml": ("ci.yml", "run: cdsearch-slot07\n"),
             "script": ("scripts/run.sh", "cat cdsearch-slot07\n"),
             "jump_table": ("src/boot.s", "  jmp cdsearch-slot07\n"),
-            "linker_cfg": ("src/bank0.cfg", "# cdsearch-slot07\n"),
-            "exec_registration": ("spec/api_contracts.json",
-                                  json.dumps({"apis": [{"slot": 7, "entry": "cdsearch-slot07"}]})),
+            "linker_cfg": ("tests/fixtures/x.cfg", "FILE cdsearch-slot07\n"),
+            "exec_registration": (spec, json.dumps({"apis": [{"slot": 7, "entry": "cdsearch-slot07"}]})),
+            "nested_entry": (spec, json.dumps({"apis": [{"entry": {"x": "cdsearch-slot07"}}]})),
+            "entries_list": (spec, json.dumps({"entries": ["cdsearch-slot07"]})),
+            "name_as_key": (spec, json.dumps({"cdsearch-slot07": {"callable": True}})),
+            "spec_yaml": ("spec/x.yaml", "entry: cdsearch-slot07\n"),
             "tool_exec": ("tools/run.py", "subprocess.run(['ca65', 'cdsearch-slot07'])\n"),
+            "tool_split": ("tools/run.py", "cmd = ['cdsearch-slot07']\nsubprocess.run(cmd)\n"),
+            "test_exec": ("tests/host/test_x.py", "subprocess.run(['make', 'cdsearch-slot07'])\n"),
         }
         for name, (rel, body) in mutations.items():
             with self.subTest(mutation=name):
                 root = self._scratch({**base, rel: body})
                 self.assertEqual(wiring_violations(root), [rel])
+
+    def test_wiring_probe_detects_reference_appended_to_real_makefile_copy(self):
+        root = self._scratch({"Makefile": (ROOT / "Makefile").read_text(encoding="utf-8")})
+        self.assertEqual(wiring_violations(root), [])
+        with (root / "Makefile").open("a", encoding="utf-8") as fh:
+            fh.write("\ncheck: tests/fixtures/cdsearch-slot07-cases.json\n")
+        self.assertEqual(wiring_violations(root), ["Makefile"])
 
 
 if __name__ == "__main__":
