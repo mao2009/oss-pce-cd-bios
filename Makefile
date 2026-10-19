@@ -108,11 +108,6 @@ dev-reset-entry: dev-rom
 dev-reset-entry-integration: dev-reset-entry
 	$(PYTHON) tests/integration/geargrafx_reset_entry.py --mode "$(MODE)"
 
-.PHONY: dev-core-harness-integration
-# Opt-in HuC6280 routine harness: synthetic inputs, A/X/Y/P/SP/MPR/ZP before/after, RETURNED vs TIMEOUT.
-dev-core-harness-integration: dev-rom
-	$(PYTHON) tests/integration/geargrafx_core_harness.py --mode "$(MODE)" $(if $(CASES),--cases "$(CASES)")
-
 .PHONY: dev-cd-media-state dev-cd-media-state-integration
 # Opt-in Issue #144 media-state observation point called from the #143 reset entry.
 dev-cd-media-state: dev-rom
