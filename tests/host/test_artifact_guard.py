@@ -370,7 +370,7 @@ CHECK_CALL = GUARD_PREFIX + ' --check-placement'
 TRUSTED_CHECKOUT = ('      - name: Trusted guard (main)\n'
                     '        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683\n'
                     '        with:\n          ref: main\n          path: .trusted-main\n'
-                    '          sparse-checkout: tools/artifact_guard.py\n          persist-credentials: false\n')
+                    '          sparse-checkout: tools/artifact_guard.py\n          sparse-checkout-cone-mode: false\n          persist-credentials: false\n')
 PY_RESOLVE = ('      - name: Resolve python3 (trusted)\n        id: pyresolve\n'
               '        run: echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"\n')
 PLACEMENT_STEP = '      - name: Guard placement (trusted)\n        run: ' + CHECK_CALL + '\n'
