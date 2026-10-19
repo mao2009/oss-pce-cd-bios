@@ -52,11 +52,16 @@ def _case(case_id, category, media):
             "abi_status": ABI_STATUS, "execution": "NOT_RUN"}
 
 
+# The single source of the required case set: case_id -> (category, media). Each case_id must carry
+# exactly this category and media. The set is CLOSED (reject, do not allow subsets or extras): a
+# missing, duplicated or added case would silently change what slot $04 coverage means.
+REQUIRED_CASES = {"slot04_nominal_media_present": ("candidate_nominal", "present"),
+                  "slot04_no_media": ("no_media", "absent"),
+                  "slot04_invalid_position": ("invalid_position", "present"),
+                  "slot04_boundary": ("boundary", "present")}
+
 #: The four local cases for the single slot-$04 API. Definition-only; never executed.
-CASES = (_case("slot04_nominal_media_present", "candidate_nominal", "present"),
-         _case("slot04_no_media", "no_media", "absent"),
-         _case("slot04_invalid_position", "invalid_position", "present"),
-         _case("slot04_boundary", "boundary", "present"))
+CASES = tuple(_case(case_id, category, media) for case_id, (category, media) in REQUIRED_CASES.items())
 
 
 def validate_case(case):
@@ -70,6 +75,12 @@ def validate_case(case):
         errors.append("unknown category")
     if case["media"] not in ("present", "absent"):
         errors.append("media must be present or absent")
+    # Semantic check: case_id, category and media must be the defined combination. The pairs are
+    # unique across REQUIRED_CASES, so this also catches a right category under the wrong case_id.
+    if type(case["case_id"]) is not str or case["case_id"] not in REQUIRED_CASES:
+        errors.append("unknown case_id")
+    elif (case["category"], case["media"]) != REQUIRED_CASES[case["case_id"]]:
+        errors.append("category/media do not match the defined case_id")
     registers = case["registers"]
     if (not isinstance(registers, dict) or set(registers) != {"A", "X", "Y", "P"}
             or any(type(v) is not str or v != UNKNOWN for v in registers.values())):
@@ -85,6 +96,21 @@ def validate_case(case):
         errors.append("abi_status must be BLOCKED_ABI (slot $04 ABI unreviewed)")
     if case["execution"] != "NOT_RUN":
         errors.append("execution must be NOT_RUN (this fixture is never run)")
+    return errors
+
+
+def validate_case_set(cases):
+    """Set-level errors: exactly the REQUIRED_CASES ids, each once. Ids are printed only as our own
+    fixed names; a caller-supplied id value is never echoed."""
+    ids = [case["case_id"] for case in cases if isinstance(case, dict) and type(case.get("case_id")) is str]
+    errors = []
+    if len(cases) != len(REQUIRED_CASES):
+        errors.append(f"exactly {len(REQUIRED_CASES)} cases required, got {len(cases)}")
+    if len(set(ids)) != len(ids):
+        errors.append("duplicate case_id")
+    missing = sorted(set(REQUIRED_CASES) - set(ids))
+    if missing:
+        errors.append("missing required case_id: " + ", ".join(missing))
     return errors
 
 
@@ -138,6 +164,7 @@ def preflight(cases, config):
         return "BLOCKED", ["malformed_configuration: at least one fixture case is required"]
     errors = [f"case[{index}]: {error}" for index, case in enumerate(cases)
               for error in validate_case(case)]
+    errors += validate_case_set(cases)
     errors += [f"config: {error}" for error in validate_config(config)]
     if errors:
         return "BLOCKED", [f"malformed_configuration: {error}" for error in errors]

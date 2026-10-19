@@ -49,9 +49,11 @@ def approved_config(**overrides):
     return good_config(approved_rom_sha256=HASH_A, safety_gate_approved=True, **overrides)
 
 
-def case_with(index=0, **overrides):
-    case = dict(M.CASES[index], **overrides)
-    return case
+def suite_with(index=0, **overrides):
+    """The full required case set with one case overridden (preflight now needs all four)."""
+    cases = list(M.CASES)
+    cases[index] = dict(M.CASES[index], **overrides)
+    return cases
 
 
 class Slot04FixtureTests(unittest.TestCase):
@@ -119,6 +121,85 @@ class Slot04FixtureTests(unittest.TestCase):
                 self.assertEqual(status, "BLOCKED")
                 self.assertIn(marker, "; ".join(reasons))
 
+    def test_category_media_mismatch_is_blocked(self):
+        # Each combination below is individually valid, but not the defined pair for its case_id.
+        wrong_pairs = (("no_media", "present"), ("candidate_nominal", "absent"), ("boundary", "absent"))
+        for index in range(len(M.CASES)):
+            for category, media in wrong_pairs:
+                if (category, media) == (M.CASES[index]["category"], M.CASES[index]["media"]):
+                    continue
+                with self.subTest(index=index, category=category, media=media):
+                    status, reasons = M.preflight(suite_with(index, category=category, media=media), good_config())
+                    self.assertEqual(status, "BLOCKED")
+                    self.assertIn("category/media do not match", "; ".join(reasons))
+
+    def test_case_id_category_mismatch_is_blocked(self):
+        # Each category/media is valid on its own, but filed under another defined case_id.
+        for index, case_id in ((0, "slot04_no_media"), (3, "slot04_invalid_position")):
+            with self.subTest(index=index, case_id=case_id):
+                status, reasons = M.preflight(suite_with(index, case_id=case_id), good_config())
+                self.assertEqual(status, "BLOCKED")
+                self.assertIn("category/media do not match", "; ".join(reasons))
+
+    def test_duplicate_case_id_is_blocked(self):
+        cases = list(M.CASES)
+        cases[1] = dict(M.CASES[0])  # slot04_nominal_media_present appears twice, slot04_no_media is gone
+        status, reasons = M.preflight(cases, good_config())
+        self.assertEqual(status, "BLOCKED")
+        self.assertIn("duplicate case_id", "; ".join(reasons))
+
+    def test_missing_or_extra_cases_are_blocked(self):
+        status, reasons = M.preflight(list(M.CASES[:3]), good_config())
+        self.assertEqual(status, "BLOCKED")
+        self.assertIn("missing required case_id: slot04_boundary", "; ".join(reasons))
+        status, reasons = M.preflight(list(M.CASES) + [dict(M.CASES[0])], good_config())
+        self.assertEqual(status, "BLOCKED")
+        self.assertIn("exactly 4 cases required", "; ".join(reasons))
+        status, reasons = M.preflight([M.CASES[0]], good_config())  # a subset is never accepted
+        self.assertEqual(status, "BLOCKED")
+
+    def test_unknown_case_id_is_blocked_without_echo(self):
+        for bad_id in ("slot04_unknown", "SECRET_CASE_ID_42", None, 0, ["slot04_boundary"]):
+            with self.subTest(case_id=repr(bad_id)):
+                status, reasons = M.preflight(suite_with(0, case_id=bad_id), good_config())
+                self.assertEqual(status, "BLOCKED")
+                joined = "; ".join(reasons)
+                self.assertIn("unknown case_id", joined)
+                self.assertNotIn("SECRET_CASE_ID_42", joined)
+
+    def test_wrong_types_fail_closed_without_exception(self):
+        # Every field of every case and config, and the container itself, fed wrong types: never a raise.
+        # True is excluded: it is a valid bool, so a permission True is REJECTED (tested elsewhere).
+        bad_values = (None, 0, 1.5, "x", [], {"k": 1}, [None])
+        # Values that are legal for their field (no writes, unapproved ROM hash, a path string): not wrong types.
+        legal = {("io_writes", repr([])), ("approved_rom_sha256", repr(None)), ("rom_path", repr("x"))}
+        for field in M.CASE_FIELDS:
+            for value in bad_values:
+                if (field, repr(value)) in legal:
+                    continue
+                with self.subTest(case_field=field, value=repr(value)):
+                    status, _ = M.preflight(suite_with(0, **{field: value}), good_config())
+                    self.assertEqual(status, "BLOCKED")
+        for field in M.CONFIG_FIELDS:
+            for value in bad_values:
+                if (field, repr(value)) in legal:
+                    continue
+                with self.subTest(config_field=field, value=repr(value)):
+                    status, _ = M.preflight(list(M.CASES), good_config(**{field: value}))
+                    self.assertEqual(status, "BLOCKED")
+        for container in (None, "case", 5, {}, [None], (None,)):
+            with self.subTest(container=repr(container)):
+                status, _ = M.preflight(container, good_config())
+                self.assertEqual(status, "BLOCKED")
+
+    def test_tampered_case_set_via_cli_path_exits_3(self):
+        # Built-in set tampered (e.g. a dropped case): the CLI path must still fail closed with exit 3.
+        path = self.write_bytes(json.dumps(approved_config()).encode(), ".json")
+        with mock.patch.object(M, "CASES", tuple(M.CASES[:3])), contextlib.redirect_stdout(io.StringIO()) as out:
+            code = M.main(["--check", "--config", str(path)])
+        self.assertEqual(code, M.EXIT_FAIL_CLOSED)
+        self.assertTrue(out.getvalue().startswith("BLOCKED: malformed_configuration: "), out.getvalue())
+
     def test_rom_mismatch_is_rejected_and_match_is_not_execution(self):
         status, reasons = M.preflight(list(M.CASES), good_config(approved_rom_sha256=HASH_B))
         self.assertEqual(status, "REJECTED")
@@ -134,11 +215,10 @@ class Slot04FixtureTests(unittest.TestCase):
                 self.assertIn(field, "; ".join(reasons))
         for address in (0x0000, 0x0800, 0x1804, 0x1FFF):  # VDC, PSG, CD unit, edge of page $1FFF
             with self.subTest(io=hex(address)):
-                cases = [case_with(io_writes=[address])]
-                status, reasons = M.preflight(cases, approved_config())
+                status, reasons = M.preflight(suite_with(io_writes=[address]), approved_config())
                 self.assertEqual(status, "REJECTED")
                 self.assertIn("hardware I/O page", "; ".join(reasons))
-        status, _ = M.preflight([case_with(io_writes=[0x2000])], approved_config())
+        status, _ = M.preflight(suite_with(io_writes=[0x2000]), approved_config())
         self.assertEqual(status, "BLOCKED_ABI")  # outside the hardware page: only unknown, not refused
 
     def test_non_bool_permission_values_are_blocked_not_accepted(self):
