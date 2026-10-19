@@ -3,8 +3,8 @@
 
 Slot ``$04`` / candidate ``$E00C``. The gate decides, before any guest instruction runs,
 whether the genuine callee may be JSR'd. It always returns BLOCKED: the callee bytes and ABI
-are UNKNOWN (#13), and the pinned Geargrafx ``b49ae82a`` core has no general pre-side-effect
-interception point for the hazards below (#173, #194, #200, #202). The gate has no
+are UNKNOWN (#13), and no general pre-side-effect interception point has been established on the
+pinned Geargrafx ``b49ae82a`` core for the hazards below (#173, #194, #200, #202). The gate has no
 unlock input and never invokes any runner.
 
 Evidence per hazard is recorded in docs/217-cdseek-safety-audit.md. This module never reads a
@@ -58,7 +58,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.parse_args(argv)
     print(json.dumps(decide(), ensure_ascii=False, indent=2))
-    return EXIT_BLOCKED  # BLOCKED is the only verdict, so the exit status is always 3
+    return EXIT_BLOCKED  # BLOCKED is the only verdict; argument errors exit 2 inside parse_args
 
 
 if __name__ == "__main__":
