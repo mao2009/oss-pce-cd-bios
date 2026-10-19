@@ -70,7 +70,7 @@ def validate_contracts(data, inventory, inventory_text):
     """Return normally for consistent unexecuted research; raise ValueError otherwise.
 
     This schema deliberately cannot represent VERIFIED. OBSERVED promotion
-    additionally requires non-empty, well-formed measurement evidence; source
+    additionally requires non-empty, format-valid evidence entries (FORMAT_ONLY; not authenticated); source
     code references alone are not measurement evidence.
     """
     def require(ok, message):
@@ -214,7 +214,8 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
                     require executed_callee; hardware observations
                     (HARDWARE_OBSERVATION_FIELDS, e.g. hw_bus_reset) do not;
                     any other field name is rejected;
-                    non-empty, well-formed measurement evidence (execution
+                    non-empty, format-valid evidence entries (FORMAT_ONLY;
+                    not authenticated) (execution
                     conditions, core revision, input type, verification result,
                     sha256 evidence hash) is required for both; source
                     references alone are not sufficient
