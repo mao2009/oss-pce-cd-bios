@@ -6,7 +6,7 @@
 
 ## 1. 規則
 
-確度の意味（HYPOTHESIS と UNKNOWN の定義は `cd-base-abi-ledger.md` §1 と同じ。SOURCE_FACT は本台帳で独自に定義し、同ファイルの VERIFIED と異なり APPROVED の出典に限る）:
+確度の意味（HYPOTHESIS と UNKNOWN の定義は `cd-base-abi-ledger.md` §1 と実質的に同じ。差分: HYPOTHESIS は「出典の記述から」と限定し（同ファイルは「出典から」）、UNKNOWN は「失敗値も定義しない」を加えた。SOURCE_FACT は本台帳で独自に定義し、同ファイルの VERIFIED と異なり APPROVED の出典に限る）:
 
 - `SOURCE_FACT`: 固定版の出典本文にあり、**APPROVED の出典**に限って引用できる事実。呼出側の記述（「この呼出しがある」「この値を書く」「この宣言である」）にのみ付ける。**BIOS 本体の振る舞いには付けない。** §2 の出典は全件 PENDING のため、現時点で本台帳に SOURCE_FACT の項目はない。PENDING の出典のみに依る事実は、呼出側の記述であっても `HYPOTHESIS` とする。
 - `HYPOTHESIS`: 出典の記述から推測したが、呼出先を実行して確認していない。
@@ -105,7 +105,7 @@ E1 と E2 は、呼出先（BIOS）ではなく、同じ著者が書いた**再�
 | 11 | スタック（SP） | wrapper は入口で A を push し、出口で pull する。BIOS のスタック使用は UNKNOWN | HYPOTHESIS（wrapper）、UNKNOWN（BIOS） | H5 | スタックポインタの前後比較。 |
 | 12 | MPR | 呼出側は MPR7 を System Card のバンクに割り当て、戻りで復元する。BIOS が他の MPR を変えるかは UNKNOWN | HYPOTHESIS（wrapper）、UNKNOWN（BIOS） | H5 | MPR0〜7 の前後比較（成功経路と失敗経路）。 |
 | 13 | 作業 RAM | UNKNOWN。E1 の再実装は作業 RAM を書かない（ハードウェアレジスタのみ） | UNKNOWN（BIOS）、HYPOTHESIS（E1 の内容） | E1 | RAM 全差分。 |
-| 14 | ハードウェア副作用（ADPCM 制御、DMA、IRQ マスク、再生速度） | 再実装は制御レジスタに reset を書き、DMA と再生速度を 0 にし、IRQ マスクの一部を clear する | HYPOTHESIS（再実装の内容）、HYPOTHESIS（BIOS も同じ書込みをする、とのコメント） | E1、E2 | BIOS 実行前後のハードウェアレジスタ差分。 |
+| 14 | ハードウェア副作用（ADPCM 制御、DMA、IRQ マスク、再生速度） | 再実装は制御レジスタに reset を書き、DMA と再生速度を 0 にし、IRQ マスクの一部を clear する | HYPOTHESIS（再実装の内容）、UNKNOWN（BIOS 側。E1・E2 の「BIOS も同じ書込み」は開発者の主張で、未確認） | E1、E2 | BIOS 実行前後のハードウェアレジスタ差分。 |
 | 15 | フラグ（P） | UNKNOWN。wrapper は `pla` で A を戻すため、戻り時の N/Z は A に従う。BIOS 後の P は未確認 | UNKNOWN（BIOS）、HYPOTHESIS（wrapper の `pla`） | H5 | 戻り時の P の比較。 |
 | 16 | IRQ | UNKNOWN（BIOS が割込みを禁止・許可するか）。E1 の再実装は IRQ マスクの一部を clear | UNKNOWN（BIOS）、HYPOTHESIS（E1 の内容。再実装と同じ効果） | E1 | 割込み状態（I フラグ、IRQ マスク）の前後比較。 |
 | 17 | タイムアウト | UNKNOWN。出典に待機ループの記述がない | UNKNOWN | — | 完了条件の観測（busy の解除まで）。 |
@@ -124,7 +124,7 @@ E1 と E2 は、呼出先（BIOS）ではなく、同じ著者が書いた**再�
 
 合計 19 行。
 
-注: 行 5、10、11、12、13、14、15、16 は呼出側・再実装の事実（HYPOTHESIS、出典 PENDING）を併記しているが、BIOS 側の結論は UNKNOWN であるため UNKNOWN で数えた。行 1 のエントリ番地は HuCC の宣言（H1）の記述であり、宣言であっても出典が PENDING のため SOURCE_FACT ではなく HYPOTHESIS とした。行 2 の本体番地は第三者の記述のみ（P1）のため HYPOTHESIS とした。行 7 の引数の宣言（H2、H3）も、出典が PENDING のため HYPOTHESIS とした。行 19 の「HYPOTHESIS」（E1 のコメント）は開発者の記述であり、BIOS 側の結論ではないため UNKNOWN で数えた。
+注: 行 5、10、11、12、13、14、15、16 は呼出側・再実装の事実（HYPOTHESIS、出典 PENDING）を併記しているが、BIOS 側の結論は UNKNOWN であるため UNKNOWN で数えた。行 1 のエントリ番地は HuCC の宣言（H1）の記述であり、宣言であっても出典が PENDING のため SOURCE_FACT ではなく HYPOTHESIS とした。行 2 の本体番地は第三者の記述のみ（P1）のため HYPOTHESIS とした。行 7 の引数の宣言（H2、H3）も、出典が PENDING のため HYPOTHESIS とした。行 19 の「HYPOTHESIS」（E1 のコメント）は開発者の記述であり、BIOS 側の結論ではないため UNKNOWN で数えた。行 14 は、再実装の内容（HYPOTHESIS）と BIOS 側（UNKNOWN）を分けて記し、BIOS 側で UNKNOWN と数えた（行 14 を HYPOTHESIS に数えると 0/4/15 になる）。
 
 ## 5a. 証拠の区分（レビュー・CI・実測）
 
