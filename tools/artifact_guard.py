@@ -136,7 +136,11 @@ def tree_problems(path):
         reason = entry_problem(path)
         return [(path, reason)] if reason else []
     found = []
-    for directory, dirnames, filenames in os.walk(path):   # followlinks is off: symlinked dirs are listed, not entered
+
+    def unreadable(error):   # os.walk skips unreadable directories silently; that would hide files, so refuse
+        raise error
+
+    for directory, dirnames, filenames in os.walk(path, onerror=unreadable):   # followlinks is off: symlinked dirs are listed, not entered
         for name in dirnames + filenames:
             child = Path(directory, name)
             reason = entry_problem(child)

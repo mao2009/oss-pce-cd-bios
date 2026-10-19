@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'tools'))
 import artifact_guard as guard
@@ -161,6 +162,19 @@ class WorkflowTests(unittest.TestCase):
         self.write_build('build/debug/evidence.json/nested/linked-probe', ELF_PROBE)
         with self.assertRaisesRegex(ValueError, 'linked-probe'):
             check_upload_artifacts(self.root)
+
+    def test_unreadable_directory_fails_closed(self):
+        # os.walk skips directories it cannot list; the guard must refuse instead of passing them unseen.
+        self.write_workflow(workflow(['build/debug/*.json']))
+        self.write_build('build/debug/evidence.json/nested/file.txt', PLAIN_JSON)
+        real = guard.os.walk
+        def failing(top, onerror=None, **kwargs):
+            if onerror:
+                onerror(PermissionError('simulated unreadable directory'))
+            return real(top, onerror=onerror, **kwargs)
+        with unittest.mock.patch.object(guard.os, 'walk', failing):
+            with self.assertRaises(PermissionError):
+                check_upload_artifacts(self.root)
 
     def test_symlink_inside_matched_directory_is_refused(self):
         self.write_workflow(workflow(['build/debug/*.json']))
