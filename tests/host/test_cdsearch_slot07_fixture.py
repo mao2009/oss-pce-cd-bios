@@ -8,7 +8,7 @@ and must not be wired into any callable entry.
 """
 import hashlib
 import json
-import shutil
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,8 +21,47 @@ FIXTURE_SHA256 = "eebc25bf74e7a4b769d7960d409bac653f0c9108395079a81c01b3d1dfeabf
 POSITIVE, NEGATIVE = "POSITIVE", "NEGATIVE"
 
 
-def makefile_references_fixture(path):
-    return "cdsearch-slot07" in path.read_text(encoding="utf-8", errors="ignore")
+NAME = "cdsearch-slot07"
+# Build/ROM surfaces: any mention is real wiring (Makefile, CI, scripts, ca65/ld65 sources and configs = jump table).
+BUILD_GLOBS = ("Makefile", "*.mk", ".github/**/*", "scripts/**/*", "src/**/*")
+# spec JSON keys that make a value an executable/registered target; plain evidence/notes strings are allowed.
+EXEC_KEYS = {"entry", "target", "callable", "rom_entry", "jump_table", "build", "make", "command", "script"}
+# tools/ lines count only when they hand the name to a build/exec step.
+TOOL_EXEC = re.compile(r"subprocess|Popen|os\.system|\bmake\b|ca65|ld65|cl65|\.cfg|\bjsr\b|\bjmp\b", re.I)
+
+
+def _text(path):
+    return path.read_text(encoding="utf-8", errors="ignore")
+
+
+def _json_exec_hits(node, key=None):
+    if isinstance(node, dict):
+        return any(_json_exec_hits(v, k) for k, v in node.items())
+    if isinstance(node, list):
+        return any(_json_exec_hits(v, key) for v in node)
+    return isinstance(node, str) and NAME in node and key in EXEC_KEYS
+
+
+def wiring_violations(root):
+    """Return relative paths where the fixture is really wired (build, ROM jump table, exec registration).
+    Plain references in docs/*.md, spec evidence strings and tools data/comments are allowed."""
+    hits = set()
+    for glob in BUILD_GLOBS:
+        for path in root.glob(glob):
+            if path.is_file() and NAME in _text(path):
+                hits.add(path)
+    for path in (root / "spec").rglob("*.json"):
+        if NAME in _text(path):
+            try:
+                if _json_exec_hits(json.loads(_text(path))):
+                    hits.add(path)
+            except ValueError:
+                hits.add(path)  # unparsable file mentioning the name: fail closed
+    for path in (root / "tools").rglob("*"):
+        if path.is_file() and path.suffix in {".py", ".sh", ""} and any(
+                NAME in line and TOOL_EXEC.search(line) for line in _text(path).splitlines()):
+            hits.add(path)
+    return sorted(str(p.relative_to(root)).replace("\\", "/") for p in hits)
 
 
 def canonical_sha256(data):
@@ -116,24 +155,42 @@ class CdSearchSlot07FixtureTests(unittest.TestCase):
         self.assertEqual(slot7["verification"]["status"], "NOT_RUN")
         self.assertIs(slot7["verification"]["executed_callee"], False)
         self.assertEqual(slot7["mapping_status"], "HYPOTHESIS")
-        makefile = ROOT / "Makefile"
-        self.assertTrue(makefile.is_file())
-        self.assertFalse(makefile_references_fixture(makefile), "fixture wired into Makefile")
-        for shared in ("tools", "spec", "docs"):
-            for path in (ROOT / shared).rglob("*"):
-                if path.is_file() and path.suffix in {".py", ".json", ".md", ""}:
-                    self.assertNotIn("cdsearch-slot07", path.read_text(encoding="utf-8", errors="ignore"),
-                                     f"fixture wired into {path.relative_to(ROOT)}")
+        self.assertEqual(wiring_violations(ROOT), [], "fixture wired into build/ROM/exec target")
 
-    def test_wiring_probe_detects_reference_in_scratch_makefile(self):
-        # Probe: the Makefile check must fail when a reference is inserted. Runs on a temp copy only.
-        with tempfile.TemporaryDirectory() as tmp:
-            scratch = Path(tmp) / "Makefile"
-            shutil.copyfile(ROOT / "Makefile", scratch)
-            self.assertFalse(makefile_references_fixture(scratch))
-            with scratch.open("a", encoding="utf-8") as fh:
-                fh.write("\ncheck: tests/fixtures/cdsearch-slot07-cases.json\n")
-            self.assertTrue(makefile_references_fixture(scratch))
+    def _scratch(self, files):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        for rel, body in files.items():
+            f = Path(tmp.name) / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(body, encoding="utf-8")
+        return Path(tmp.name)
+
+    def test_plain_documentation_references_are_allowed(self):
+        root = self._scratch({
+            "Makefile": "all:\n\t@echo ok\n",
+            "docs/note.md": "see tests/fixtures/cdsearch-slot07-cases.json (BLOCKED_ABI)\n",
+            "tools/doc.py": '"""cdsearch-slot07 is a data fixture."""\n# cdsearch-slot07 only read by tests\n',
+            "spec/api_contracts.json": json.dumps({"apis": [{"slot": 7, "evidence": "cdsearch-slot07 fixture"}]}),
+        })
+        self.assertEqual(wiring_violations(root), [])
+
+    def test_wiring_probe_catches_invalid_connections(self):
+        base = {"Makefile": "all:\n", "spec/api_contracts.json": "{}"}
+        mutations = {
+            "makefile": ("Makefile", "check: tests/fixtures/cdsearch-slot07-cases.json\n"),
+            "ci": (".github/workflows/ci.yml", "run: make cdsearch-slot07\n"),
+            "script": ("scripts/run.sh", "cat cdsearch-slot07\n"),
+            "jump_table": ("src/boot.s", "  jmp cdsearch-slot07\n"),
+            "linker_cfg": ("src/bank0.cfg", "# cdsearch-slot07\n"),
+            "exec_registration": ("spec/api_contracts.json",
+                                  json.dumps({"apis": [{"slot": 7, "entry": "cdsearch-slot07"}]})),
+            "tool_exec": ("tools/run.py", "subprocess.run(['ca65', 'cdsearch-slot07'])\n"),
+        }
+        for name, (rel, body) in mutations.items():
+            with self.subTest(mutation=name):
+                root = self._scratch({**base, rel: body})
+                self.assertEqual(wiring_violations(root), [rel])
 
 
 if __name__ == "__main__":
