@@ -1,8 +1,9 @@
 """Opt-in real-core run of src/ex_bcdbin.s (Issue #71). Linux only; NOT part of host tests.
 
 Run: python3 tests/integration/geargrafx_bcdbin.py   (pinned cc65 + Geargrafx core via make setup)
-Off Linux, or when the pinned tools/core are absent, the run is BLOCKED: it errors and exits nonzero
-(never SKIP, never PASS). Project-own contract only; not a public BIOS API check.
+Off Linux, or when the pinned tools/core are absent, the run is BLOCKED: exit 3 (same as
+tests/integration/geargrafx_harness.py EXIT["BLOCKED"]). Other failures exit 1. Never SKIP, never PASS.
+Project-own contract only; not a public BIOS API check.
 """
 from pathlib import Path
 import json
@@ -17,6 +18,9 @@ sys.path.insert(0, str(ROOT / "tests/host"))
 from environment import core_path, executable  # noqa: E402
 from test_ex_bcdbin import RESULT_BYTES, check_ram  # noqa: E402
 
+BLOCKED_EXIT = 3
+BLOCKED_TAG = "BLOCKED real core"
+
 # (name, original bytes in ex_bcdbin, mutated bytes): each must be caught by check_ram on the core
 MUTATIONS = (("ones check", "c9 0a", "c9 0b"), ("tens check", "c9 a0", "c9 b0"),
              ("tens weight", "69 0a", "69 0b"))
@@ -26,20 +30,24 @@ class GeargrafxTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if not sys.platform.startswith("linux"):
-            raise RuntimeError("BLOCKED real core: Linux-pinned target required")
+            raise RuntimeError(f"{BLOCKED_TAG}: Linux-pinned target required")
         try:
             cls.core, ca65, ld65 = core_path(), executable("ca65"), executable("ld65")
         except (ValueError, OSError) as error:
-            raise RuntimeError(f"BLOCKED real core: {error}") from error
+            raise RuntimeError(f"{BLOCKED_TAG}: {error}") from error
         cls.tmp = tempfile.TemporaryDirectory(prefix="pce-bcdbin-")
-        out = Path(cls.tmp.name)
-        objects = []
-        for source in (ROOT / "src/ex_bcdbin.s", ROOT / "tests/fixtures/bcdbin_harness.s"):
-            objects.append(str(out / (source.stem + ".o")))
-            subprocess.run([ca65, "--cpu", "huc6280", "-o", objects[-1], str(source)], check=True)
-        cls.rom = out / "bcdbin-harness-not-bios.pce"
-        subprocess.run([ld65, "-C", str(ROOT / "tests/fixtures/bcdbin.cfg"), "-o", str(cls.rom),
-                        *objects], check=True)
+        try:
+            out = Path(cls.tmp.name)
+            objects = []
+            for source in (ROOT / "src/ex_bcdbin.s", ROOT / "tests/fixtures/bcdbin_harness.s"):
+                objects.append(str(out / (source.stem + ".o")))
+                subprocess.run([ca65, "--cpu", "huc6280", "-o", objects[-1], str(source)], check=True)
+            cls.rom = out / "bcdbin-harness-not-bios.pce"
+            subprocess.run([ld65, "-C", str(ROOT / "tests/fixtures/bcdbin.cfg"), "-o", str(cls.rom),
+                            *objects], check=True)
+        except BaseException:
+            cls.tmp.cleanup()
+            raise
 
     @classmethod
     def tearDownClass(cls):
@@ -63,6 +71,10 @@ class GeargrafxTests(unittest.TestCase):
             check_ram(ram)
 
     def test_mutations_are_rejected_on_core(self):
+        # Positive control first: the unmutated ROM must pass on the real core, or no mutation
+        # result below means anything. A failure here is an error, never a PASS.
+        for ram in self.run_core(self.rom):
+            check_ram(ram)
         data = self.rom.read_bytes()
         for name, old, new in MUTATIONS:
             with self.subTest(name):
@@ -75,4 +87,7 @@ class GeargrafxTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    outcome = unittest.main(exit=False).result
+    if any(BLOCKED_TAG in text for _, text in outcome.errors + outcome.failures):
+        sys.exit(BLOCKED_EXIT)
+    sys.exit(0 if outcome.wasSuccessful() else 1)

@@ -27,6 +27,9 @@ API の既存スタブは従来どおりである。
 - 実コア：`tests/fixtures/bcdbin_harness.s` が全 256 入力で `ex_bcdbin` を呼び、A / P / X / Y と最終 SP を
   作業 RAM に書く。`geargrafx_smoke.execute` で cold / warm の両方を読み出してモデルと照合する。
   一の位チェック（`CMP #10`）・十の位チェック（`CMP #$A0`）・十の位の重み（`ADC #10`）を書き換えた ROM が
-  不一致として検出されることも実コアで確かめる。Linux 以外、または pinned cc65 / コアが無いときは BLOCKED として非ゼロ終了する（SKIP による成功終了も PASS もしない）。
+  不一致として検出されることも実コアで確かめる。Linux 以外、または pinned cc65 / コアが無いときは BLOCKED として終了コード 3 で終了する（`geargrafx_harness.py` の BLOCKED=3 に合わせた。SKIP による成功終了も PASS もしない）。実行時の失敗（起動失敗・タイムアウト・検証不一致）は終了コード 1。
+- 陽性対照：変異試験の前に、未変異 ROM が実コアで全256入力を通ることを assert する。陽性対照が通らなければ変異の結果は PASS にならない。
+- 負例（`tests/host/test_ex_bcdbin.py` の `RealCoreFailurePathTests`）：core 不在、ca65 不在、ld65 不在、起動失敗、タイムアウトを個別に非ゼロ終了させる。終了コードと原因の文字列は Linux でだけ確認する。
+- Windows では core 不在・ca65/ld65 不在・起動失敗・タイムアウトの経路は検証されない。プラットフォーム判定（BLOCKED）で止まるため、非ゼロ終了のみ確認する。
 
 Geargrafx での観測は実機での動作を証明しない。BIOS 互換も主張しない。
