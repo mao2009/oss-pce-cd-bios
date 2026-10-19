@@ -88,13 +88,17 @@ dev-cd-base-integration: dev-rom
 # Opt-in Issue #6 isolated trace harness: real-core positive + classified negatives on the CD read ROM.
 dev-trace-integration: dev-cdread
 	$(PYTHON) tests/integration/geargrafx_trace.py --mode "$(MODE)"
-.PHONY: dev-cdda dev-cdda-integration
+.PHONY: dev-cdda dev-cdda-integration dev-cdda-scenarios-integration
 # Opt-in Issue #15 CD-DA observation diagnostic (raw SCSI $D8/$DA/$D9/$DD, not the System Card CD_PLAY API).
 dev-cdda: dev-rom
 	$(PYTHON) tools/build_cdda.py --mode "$(MODE)"
 
 dev-cdda-integration: dev-cdda
 	$(PYTHON) tests/integration/geargrafx_cdda.py --mode "$(MODE)"
+
+# Opt-in Issue #215 additional CD-DA scenarios on the same probe (separate evidence file, cdda-scenarios-evidence.json).
+dev-cdda-scenarios-integration: dev-cdda
+	$(PYTHON) tests/integration/geargrafx_cdda_scenarios.py --mode "$(MODE)"
 
 .PHONY: dev-reset-entry dev-reset-entry-integration
 # Opt-in Issue #143 minimal reset entry; separate from the default DEV ROM and other diagnostics.
