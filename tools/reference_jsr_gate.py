@@ -148,7 +148,8 @@ def main(argv=None):
     print(f"BLOCKED: reference JSR execution gate closed for {closed}/{len(records)} slots; jsr_count=0")
     print(json.dumps({"slot_01": records[1], "blocked": closed, "total": len(records)},
                      ensure_ascii=False, indent=2))
-    return EXIT_BLOCKED if closed else 0
+    # Unconditional: no exit-0 path exists, so a shell consumer can never read this CLI as an allow.
+    return EXIT_BLOCKED
 
 
 if __name__ == "__main__":

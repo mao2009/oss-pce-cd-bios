@@ -202,6 +202,22 @@ class ReferenceJsrGateTest(unittest.TestCase):
                 self.assertTrue(result.stdout.startswith("BLOCKED: gate ledger unusable"), result.stdout)
                 self.assertNotIn("Traceback", result.stderr)
 
+    def test_cli_never_returns_zero_even_if_a_record_reports_allowed(self):
+        # Negative: the real data is all BLOCKED, so also force resolve() to report an allowed
+        # value and an unexpected one. main() must still return a nonzero code, never 0.
+        import contextlib
+        import io
+        from unittest import mock
+        real_resolve = G.resolve
+        for value in ("ALLOWED", "", None, "MATERIALS_COMPLETE"):
+            with self.subTest(value=value):
+                def forced(slot, ledger, contracts, approval=None, _value=value):
+                    return dict(real_resolve(slot, ledger, contracts, approval), execution=_value)
+                with mock.patch.object(G, "resolve", forced), contextlib.redirect_stdout(io.StringIO()):
+                    code = G.main(["--check"])
+                self.assertEqual(code, G.EXIT_BLOCKED)
+                self.assertNotEqual(code, 0)
+
     def test_cli_exits_blocked_for_all_slots(self):
         result = subprocess.run([sys.executable, str(ROOT / "tools" / "reference_jsr_gate.py"), "--check"],
                                 capture_output=True, text=True)

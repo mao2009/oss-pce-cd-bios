@@ -93,7 +93,12 @@ def validate_plan(record):
 
 
 def validate_materials(materials):
-    """Structural errors for the gate materials; missing or mistyped evidence fails closed."""
+    """Structural errors for the gate materials; missing or mistyped evidence fails closed.
+
+    The review evidence (d) is checked for shape only. It is unauthenticated caller input: a
+    self-declared review that passes this shape check satisfies (d) structurally, but it is not
+    an independent review and is not a basis for execution permission.
+    """
     if not isinstance(materials, dict) or set(materials) != set(MATERIAL_FIELDS):
         return [f"materials must be exactly {sorted(MATERIAL_FIELDS)}"]
     errors = []
@@ -129,6 +134,9 @@ def decide(materials):
     ``MATERIALS_COMPLETE``. That word means the materials are complete and nothing more: it is
     not an execution permission. The real materials can never reach it today, so this is a
     falsifiability property, not a release.
+    Material (d) is shape-checked only: a self-declared review that passes the shape check
+    still yields ``MATERIALS_COMPLETE`` and nothing more; it is never a basis for execution
+    permission.
     The #191 ``MODEL_ELIGIBLE`` posture result is accepted only as material (b); it is not
     execution permission and is never echoed as a verdict here.
     """
