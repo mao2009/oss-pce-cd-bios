@@ -63,25 +63,14 @@ def _section3(text):
     return m.group(1) if m else ''
 
 
-def _id_like_token(s):
-    """Return the first word of a pipe-less line if it looks like an ID (K11, **K11**, `k11`, - K11:).
-
-    Prose such as headings, notes or Japanese sentences does not match and returns None.
-    """
-    s = re.sub(r'^[-+>]\s+', '', s)
-    tok = s.split()[0]
-    return tok if re.fullmatch(r'[A-Za-z]+\d+', tok.strip('*`:.,;')) else None
-
-
 def parse_ledger(text):
     """Return (item rows, source ids, malformed item rows) for the ledger.
 
-    Items come only from the §3 table. Every non-blank line in §3 must be a canonical ID row with a
-    leading and trailing pipe and all cells (the header and separator excepted), or it is malformed.
-    A line with a pipe that does not start with one is malformed too. A line without a pipe is
-    malformed when its first word looks like an ID (K11 K x, **K11** K x, - K11: K x); other
-    prose (headings, notes, blank lines) is ignored. Source ids (S1..S7) come from the whole
-    document and never become items.
+    Items come only from the §3 table. In §3, blank lines are ignored. A line that starts with a
+    pipe is a table row: it must be a canonical ID row with a leading and trailing pipe and all
+    cells (the header and separator excepted), or it is malformed. Any other non-blank line is
+    malformed, whatever it looks like, because §3 contains nothing but the table. Source ids
+    (S1..S7) come from the whole document and never become items.
     """
     sources = set()
     for line in text.splitlines():
@@ -95,12 +84,7 @@ def parse_ledger(text):
         if not s:
             continue
         if not s.startswith('|'):
-            if '|' in s:
-                malformed.append(s.split('|', 1)[0].strip())
-            else:
-                tok = _id_like_token(s)
-                if tok is not None:
-                    malformed.append(tok)
+            malformed.append(s.split('|', 1)[0].strip())
             continue
         if set(s) <= set('|-: ') and '-' in s:
             continue
@@ -311,13 +295,38 @@ class LedgerMutationTests(unittest.TestCase):
         lines = self._lines()
         i = self._idx(lines, '| K10 |')
         lines.insert(i + 1, 'K11 K x\n')
-        self.assertIn('malformed row K11', self._problems(lines))
+        self.assertIn('malformed row K11 K x', self._problems(lines))
 
     def test_pipeless_bold_id_line_is_detected_as_malformed(self):
         lines = self._lines()
         i = self._idx(lines, '| K10 |')
         lines.insert(i + 1, '**K11** K x\n')
-        self.assertIn('malformed row **K11**', self._problems(lines))
+        self.assertIn('malformed row **K11** K x', self._problems(lines))
+
+    def test_any_non_pipe_line_in_section3_is_malformed(self):
+        # §3 は表だけで構成される。| で始まらない非空行は、ID 風かどうかに関係なく形式不正。
+        bad = [
+            '* K11 K x',
+            '1. K11 K x',
+            'K11、K x',
+            'K11：K x',
+            'K11｜K｜x',
+            'K 11 K x',
+            '- K11: K x',
+        ]
+        for line in bad:
+            with self.subTest(line=line):
+                lines = self._lines()
+                i = self._idx(lines, '| K10 |')
+                lines.insert(i + 1, line + '\n')
+                self.assertIn('malformed row ' + line, self._problems(lines))
+
+    def test_blank_lines_in_section3_are_ignored(self):
+        lines = self._lines()
+        i = self._idx(lines, '| K10 |')
+        lines.insert(i + 1, '\n')
+        lines.insert(i + 2, '   \n')
+        self.assertEqual(self._problems(lines), [])
 
     def test_row_with_missing_cell_is_detected(self):
         lines = self._lines()
