@@ -7,7 +7,7 @@ not be promoted by these rules.
 
 Issue #208 strengthens OBSERVED: a source reference (source code URL/revision) only proves
 that source text exists; it is not measurement evidence. OBSERVED promotion now additionally
-requires non-empty, well-formed measurement evidence (execution conditions, core revision,
+requires non-empty, format-valid evidence entries (FORMAT_ONLY; not authenticated) (execution conditions, core revision,
 input type, verification result, sha256 evidence hash). `verification.executed_callee` is
 part of the evidence and is not sufficient by itself.
 """
