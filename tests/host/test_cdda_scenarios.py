@@ -1,5 +1,10 @@
 """Host checks for the Issue #215 CD-DA scenario judges on synthetic observations (no emulator needed)."""
+import sys
 import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "integration"))
+import geargrafx_cdda_scenarios as scenarios  # noqa: E402
 
 from tools.cdda_verify import IDLE, PAUSED, PLAYING, SAMPLES_PER_SECTOR, check_guest, check_invalid_audio_start, check_playback, pcm
 
@@ -46,6 +51,29 @@ class BudgetTests(unittest.TestCase):
         run = {"reason": "budget", "halt_confirmed": False, "result_hex": "00" * 0xB0}
         with self.assertRaisesRegex(ValueError, r"\(budget\)"):
             check_guest(run)
+
+
+class TimeoutRejectedTests(unittest.TestCase):
+    """Judge for the real-core timeout scenario: a budget overrun is rejected, never a PASS (synthetic runs)."""
+    def make_run(self, **changes):
+        run = {"reason": "budget", "halt_confirmed": False, "step": scenarios.TIMEOUT_BUDGET, "result_hex": "00" * 0xB0}
+        run.update(changes)
+        return run
+
+    def test_unfinished_budget_exhaustion_is_rejected_as_budget(self):
+        self.assertIn("(budget)", scenarios.timeout_rejected(self.make_run()))
+
+    def test_successful_halt_is_not_accepted_as_timeout(self):
+        with self.assertRaisesRegex(ValueError, "budget not exhausted"):
+            scenarios.timeout_rejected(self.make_run(reason="cdda_halt_ok", halt_confirmed=True))
+
+    def test_budget_reason_with_confirmed_halt_is_not_accepted(self):
+        with self.assertRaisesRegex(ValueError, "budget not exhausted"):
+            scenarios.timeout_rejected(self.make_run(halt_confirmed=True))
+
+    def test_budget_reason_at_another_step_count_is_not_accepted(self):
+        with self.assertRaisesRegex(ValueError, "budget not exhausted"):
+            scenarios.timeout_rejected(self.make_run(step=scenarios.TIMEOUT_BUDGET - 1))
 
 
 if __name__ == "__main__":
