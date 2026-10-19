@@ -52,6 +52,17 @@ def parse_lbl(text):
     return {n: int(a, 16) for a, n in re.findall(r"^al ([0-9A-Fa-f]{6}) \.(\w+)$", text, re.M)}
 
 
+def ram_writes(expect, name="case"):
+    """Normalise expect.ram to {offset: value}; two spellings of one offset are an error, not last-wins."""
+    writes = {}
+    for key, value in expect.get("ram", {}).items():
+        offset = int(key, 0)
+        if offset in writes:
+            raise ValueError(f"{name}: duplicate expect.ram offset {offset} ({key!r})")
+        writes[offset] = value
+    return writes
+
+
 def validate(case, symbols, plugin=False):
     """Reject anything a judge could silently ignore; every problem is a ValueError.
 
@@ -77,6 +88,8 @@ def validate(case, symbols, plugin=False):
         raise ValueError(f"{case['name']}: ram seed must be hex text, expect.ram an object")
     if "p_mask" in expect and not (byte(expect["p_mask"]) and expect["p_mask"]):
         raise ValueError(f"{case['name']}: p_mask must be a non-zero byte, or P is never checked")
+    if expect.get("p_mask", 0) & 0x30:  # B/T are not inputs (judge ignores them): a check on them is empty
+        raise ValueError(f"{case['name']}: p_mask must not include B/T (0x30); they are not compared")
     if plugin and not (set(expect) & {"a", "x", "y"} or "p" in expect or expect.get("ram")):
         raise ValueError(f"{case['name']}: plug-in expect must check at least one of a/x/y/p/ram "
                          "(an empty expect would PASS any returning routine)")
@@ -84,6 +97,7 @@ def validate(case, symbols, plugin=False):
             re.fullmatch(r"0x[0-9a-fA-F]+|[1-9][0-9]*|0", k) and int(k, 0) < 32 and byte(v)
             for k, v in expect.get("ram", {}).items()):
         raise ValueError(f"{case['name']}: expect values must be bytes, ram offsets 0..31")
+    ram_writes(expect, case["name"])  # rejects duplicate offsets such as "0" and "0x0"
     if len(bytes.fromhex(case.get("ram", "00" * 32))) != 32:
         raise ValueError(f"{case['name']}: ram seed must be 32 bytes")
 
@@ -130,8 +144,8 @@ def judge(records, case, symbols):
         if (after["p"] ^ expect.get("p", 0)) & expect.get("p_mask", 0):
             failures.append(f"{cycle}: P={after['p']:#04x} mismatches mask {expect['p_mask']:#04x}")
         want = bytearray(seed)
-        for offset, value in expect.get("ram", {}).items():
-            want[int(offset, 0)] = value
+        for offset, value in ram_writes(expect, case["name"]).items():
+            want[offset] = value
         if post != want:
             failures.append(f"{cycle}: ZP {post.hex()} != expected {bytes(want).hex()}")
     return ("PASS" if not failures else "FAIL"), statuses, failures, observed

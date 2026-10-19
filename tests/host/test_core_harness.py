@@ -68,6 +68,18 @@ class JudgeTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             h.validate({**CASE, "expect": {"p": 0, "p_mask": 0}}, SYM)
 
+    def test_p_mask_on_b_t_bits_is_rejected(self):
+        # judge() ignores B/T as inputs, so a mask on 0x30 could compare nothing and still PASS.
+        for mask in (0x10, 0x20, 0x30, 0x31):
+            with self.assertRaises(ValueError):
+                h.validate({**CASE, "expect": {"p": 0, "p_mask": mask}}, SYM, plugin=True)
+        h.validate({**CASE, "expect": {"p": 0, "p_mask": 0x0F}}, SYM, plugin=True)
+
+    def test_duplicate_ram_offsets_are_rejected(self):
+        # "0" and "0x0" name the same byte; the later one silently won before.
+        with self.assertRaises(ValueError):
+            h.validate({**CASE, "expect": {"ram": {"0": 1, "0x0": 2}}}, SYM, plugin=True)
+
     def test_invalid_inputs_rejected(self):
         for bad in ({"p": 0x24}, {"p": 0}, {"a": 256}, {"a": True}, {"target": "nope"}, {"ram": "00"},
                     {"carry": 1}, {"expect": {"p": 1}}, {"expect": {"A": 1}}, {"expect": {"ram": {"32": 1}}},
