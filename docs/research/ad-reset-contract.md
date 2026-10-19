@@ -6,7 +6,7 @@
 
 ## 1. 規則
 
-確度の意味（`cd-base-abi-ledger.md` §1 と同一）:
+確度の意味（HYPOTHESIS と UNKNOWN の定義は `cd-base-abi-ledger.md` §1 と同じ。SOURCE_FACT は本台帳で独自に定義し、同ファイルの VERIFIED と異なり APPROVED の出典に限る）:
 
 - `SOURCE_FACT`: 固定版の出典本文にあり、**APPROVED の出典**に限って引用できる事実。呼出側の記述（「この呼出しがある」「この値を書く」「この宣言である」）にのみ付ける。**BIOS 本体の振る舞いには付けない。** §2 の出典は全件 PENDING のため、現時点で本台帳に SOURCE_FACT の項目はない。PENDING の出典のみに依る事実は、呼出側の記述であっても `HYPOTHESIS` とする。
 - `HYPOTHESIS`: 出典の記述から推測したが、呼出先を実行して確認していない。
@@ -114,7 +114,7 @@ E1 と E2 は、呼出先（BIOS）ではなく、同じ著者が書いた**再�
 
 ## 5. 確度の集計
 
-項目 1〜19 の各行（単一の結論のみを記録）を一つの値として数える。複合行（例: 行 3 は SOURCE_FACT と UNKNOWN の両方を含む）は、その行の主たる結論（BIOS 側の値）で数える。
+項目 1〜19 の各行（単一の結論のみを記録）を一つの値として数える。BIOS の振る舞いに関する行は、BIOS 側の結論で数える。宣言・アドレスの行（1、2、7）は BIOS の証拠ではないため、宣言・出典の記述の確度で数える（出典が PENDING のため HYPOTHESIS）。複合行（例: 行 3 は「呼出側は渡す」（HYPOTHESIS の記述）と「BIOS が読むか」（UNKNOWN）を含む）は、BIOS 側の結論を主たる値として UNKNOWN で数える。
 
 | 確度 | 件数 | 行 |
 | --- | --- | --- |
@@ -124,7 +124,7 @@ E1 と E2 は、呼出先（BIOS）ではなく、同じ著者が書いた**再�
 
 合計 19 行。
 
-注: 行 5、10、11、12、13、14、15、16 は呼出側・再実装の事実（HYPOTHESIS、出典 PENDING）を併記しているが、BIOS 側の結論は UNKNOWN であるため UNKNOWN で数えた。行 1 と 7 は、呼出側の記述であっても出典が PENDING のため SOURCE_FACT ではなく HYPOTHESIS とした。行 19 の「HYPOTHESIS」（E1 のコメント）は開発者の記述であり、BIOS 側の結論ではないため UNKNOWN で数えた。
+注: 行 5、10、11、12、13、14、15、16 は呼出側・再実装の事実（HYPOTHESIS、出典 PENDING）を併記しているが、BIOS 側の結論は UNKNOWN であるため UNKNOWN で数えた。行 1 のエントリ番地は HuCC の宣言（H1）の記述であり、宣言であっても出典が PENDING のため SOURCE_FACT ではなく HYPOTHESIS とした。行 2 の本体番地は第三者の記述のみ（P1）のため HYPOTHESIS とした。行 7 の引数の宣言（H2、H3）も、出典が PENDING のため HYPOTHESIS とした。行 19 の「HYPOTHESIS」（E1 のコメント）は開発者の記述であり、BIOS 側の結論ではないため UNKNOWN で数えた。
 
 ## 5a. 証拠の区分（レビュー・CI・実測）
 
