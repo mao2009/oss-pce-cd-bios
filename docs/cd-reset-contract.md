@@ -239,8 +239,8 @@ NOT_STARTED/NOT_RUN のまま変更しない。
 | --- | --- | --- | --- |
 | `MODEL_ELIGIBLE` | `tools/cdreset_safety_preflight.py` (#191) | 合成 posture が全危険を覆い ABI が `REVIEWED` というモデル適格性 | なし |
 | `MATERIALS_COMPLETE` | `tools/cdreset_slot01_reference_plan.py` (#181) | 合成の4材料（(a)-(d)）が全て充足したときの判定反転（反証可能性）。実材料では到達不能 | なし（実行路なし） |
-| `MATERIALS_COMPLETE` | `tools/reference_jsr_gate.py` (#228) | 呼び出し元が渡した**未認証**の承認入力が整形済みで、台帳も全危険 CONTROLLED という意味のみ。承認・認可ではなく真正性は未検証 | なし（runner `NONE`、`jsr_count=0`） |
-| `ALLOWED` | どこからも返さない | 独立した実コア強制と現状は到達不能な予約語 | 本リポジトリでは生成しない |
+| `MATERIALS_COMPLETE` | `tools/reference_jsr_gate.py` (#228) | 呼び出し元が渡した**未認証**の承認入力が整形済みで、台帳も全危険 CONTROLLED 、かつ台帳の callee verification が `NOT_RUN` という意味のみ。承認・認可ではなく真正性は未検証 | なし（runner `NONE`、`jsr_count=0`） |
+| `ALLOWED` | どこからも返さない | 予約語。独立した実コア強制が存在しないため、現状のゲートでは到達不能 | 本リポジトリでは生成しない |
 
 `MATERIALS_COMPLETE` は改名しない。同名でもゲートごとに意味が異なるため、上表で意味を明示する
 （名称は「材料が揃った」だけを表し、承認・認可・実行許可を意味しない）。

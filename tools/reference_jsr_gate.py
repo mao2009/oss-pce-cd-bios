@@ -49,7 +49,7 @@ def validate_ledger(ledger, contracts):
     require(isinstance(ledger["slots"], dict), "slots must be an object")
     apis = contracts["apis"]
     for key, entry in ledger["slots"].items():
-        require(key.isdigit() and 0 <= int(key) < len(apis), f"slot key {key!r} out of range")
+        require(key.isascii() and key.isdigit() and key == str(int(key)) and 0 <= int(key) < len(apis), f"slot key {key!r} out of range")
         slot = int(key)
         require(isinstance(entry, dict) and set(entry) == ENTRY_KEYS, f"slot {key}: entry keys")
         require(entry["execution"] == "BLOCKED" and entry["release_eligible"] is False,

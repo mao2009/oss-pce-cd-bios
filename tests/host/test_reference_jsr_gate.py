@@ -65,6 +65,10 @@ class ReferenceJsrGateTest(unittest.TestCase):
         doc = (ROOT / "docs" / "cd-reset-contract.md").read_text(encoding="utf-8")
         for name in ("MATERIALS_COMPLETE", "MODEL_ELIGIBLE"):
             self.assertIn(f"| `{name}` |", doc)
+        rows = [l for l in doc.splitlines() if "`tools/reference_jsr_gate.py`" in l]
+        self.assertEqual(len(rows), 1)
+        for keyword in ("未認証", "NONE", "jsr_count=0", "NOT_RUN"):
+            self.assertIn(keyword, rows[0])
 
     def test_fake_approval_on_every_slot_never_grants_execution(self):
         # A well-formed but unauthenticated approval must not read as permission: no ALLOWED,
@@ -139,6 +143,8 @@ class ReferenceJsrGateTest(unittest.TestCase):
             "approval inside ledger": lambda l: l["slots"]["1"].update(approval=APPROVAL),
             "entry drift": lambda l: l["slots"]["1"].update(candidate_entry="0xE00C"),
             "slot out of range": lambda l: l["slots"].update({"81": l["slots"]["1"]}),
+            "leading-zero slot": lambda l: l["slots"].update({"01": l["slots"]["1"]}),
+            "non-ascii digit slot": lambda l: l["slots"].update({"١": l["slots"]["1"]}),
             "non-numeric slot": lambda l: l["slots"].update({"x": l["slots"]["1"]}),
             "missing hazard": lambda l: l["slots"]["1"]["hazard_controls"].pop("H7"),
             "unknown control state": lambda l: l["slots"]["1"]["hazard_controls"].update(H1="PASS"),
