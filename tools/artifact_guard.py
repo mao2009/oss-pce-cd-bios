@@ -1,11 +1,12 @@
 """Fail-closed artifact guard (Issue #227): no linked executable or object reaches upload-artifact.
 
-Every upload-artifact step in .github/workflows/*.yml is parsed as a whole block (key order does not matter),
+Every upload-artifact / upload-pages-artifact step in .github/workflows/*.yml|*.yaml and composite actions
+(.github/actions/**/action.yml|yaml) is parsed as a whole block (key order does not matter),
 its `path:` patterns are expanded against the checkout, and each matched entry is checked by content:
 directories are walked, symlinks are refused, and ELF/Mach-O/PE/ar signatures and object/executable suffixes
 are rejected. Unrecognised `path:` forms are refused rather than guessed. Names are not used, because legitimate
 evidence JSON may contain "geargrafx". This is a content/signature tripwire only; it does not cover uploads made
-from run: or composite/reusable workflows, and the verdict-upload exemption is unchanged. Distribution conditions
+from run: (a `gh release` mention is refused outright), and the verdict-upload exemption is unchanged. Distribution conditions
 stay with docs/provenance.md and Issue #105.
 """
 from pathlib import Path
@@ -15,6 +16,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ".github/workflows"
+ACTIONS = ".github/actions"
 # Upload patterns that resolve outside the checkout (runner temp). Exact match only; anything else with
 # a GitHub expression is refused so that a new expression pattern gets reviewed.
 OUTSIDE_CHECKOUT = {"${{ runner.temp }}/verdict/cdread-verdict.json"}
@@ -23,8 +25,10 @@ SIGNATURES = (b"\x7fELF", b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf", b"\xce\xfa\x
               b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"!<arch>\n")
 BLOCK_SCALARS = ("|", "|-", "|+")   # line-based; folded '>' forms and anchors/aliases are refused as unparseable
 # Step key: optional quotes, optional spacing before the colon, any letter case. Only the upload-artifact action matches.
-USES_RE = re.compile(r"""["']?uses["']?\s*:\s*["']?actions/upload-artifact@""", re.IGNORECASE)
-UPLOAD_RE = re.compile("upload-artifact", re.IGNORECASE)
+USES_RE = re.compile(r"""["']?uses["']?\s*:\s*["']?actions/upload-(?:pages-)?artifact@""", re.IGNORECASE)
+# Any other publishing route (release assets, third-party upload actions) is refused rather than guessed.
+UPLOAD_RE = re.compile(r"upload-(?:pages-)?artifact|gh\s+release|action-gh-release|release-asset|create-release",
+                       re.IGNORECASE)
 # pathlib glob has no brace, extglob or alternation syntax: such a pattern would match nothing and hide its files.
 UNSUPPORTED_PATTERN_CHARS = "{}()|"
 
@@ -145,21 +149,24 @@ def check_upload_artifacts(root=ROOT):
     total = 0
     matched = 0
     problems = []
-    for workflow in sorted((Path(root) / WORKFLOWS).glob("*.yml")):
+    base = Path(root)
+    files = [f for ext in ("yml", "yaml") for f in (*(base / WORKFLOWS).glob(f"*.{ext}"),
+                                                   *(base / ACTIONS).glob(f"**/action.{ext}"))]
+    for workflow in sorted(files):
         for pattern in upload_patterns(workflow.read_text(encoding="utf-8")):
             total += 1
             if pattern in OUTSIDE_CHECKOUT:
                 continue
             if not pattern or "${{" in pattern or pattern.startswith("/") or ".." in Path(pattern).parts:
-                problems.append(f"{workflow.name}: unresolvable or unsafe pattern {pattern!r}")
+                problems.append(f"{workflow.relative_to(base).as_posix()}: unresolvable or unsafe pattern {pattern!r}")
                 continue
             if any(char in pattern for char in UNSUPPORTED_PATTERN_CHARS):
-                problems.append(f"{workflow.name}: unsupported pattern {pattern!r} (brace, extglob or alternation)")
+                problems.append(f"{workflow.relative_to(base).as_posix()}: unsupported pattern {pattern!r} (brace, extglob or alternation)")
                 continue
             for path in Path(root).glob(pattern):
                 matched += 1
                 for entry, reason in tree_problems(path):
-                    problems.append(f"{workflow.name}: {entry.relative_to(root).as_posix()} ({reason})")
+                    problems.append(f"{workflow.relative_to(base).as_posix()}: {entry.relative_to(root).as_posix()} ({reason})")
     if total == 0:
         raise ValueError("no upload-artifact path patterns found; guard cannot establish the upload set")
     if problems:

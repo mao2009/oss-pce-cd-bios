@@ -221,6 +221,45 @@ class WorkflowTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'unsupported pattern'):
                     check_upload_artifacts(self.root)
 
+    def test_yaml_extension_workflow_is_scanned(self):
+        # Review MAJOR: a new *.yaml workflow was never globbed, so its ELF upload bypassed the guard.
+        self.write_workflow(workflow(['build/debug/*.pce']), name='ci.yml')
+        self.write_workflow(workflow(['build/probe/*']), name='extra.yaml')
+        self.write_build('build/probe/linked-probe', ELF_PROBE)
+        with self.assertRaisesRegex(ValueError, r'extra\.yaml: build/probe/linked-probe'):
+            check_upload_artifacts(self.root)
+        for name, data in (('probe.exe', PLAIN_JSON), ('probe.obj', PLAIN_JSON), ('macho', MACHO), ('pe.dat', PE_STUB)):
+            with self.subTest(name=name):
+                self.write_build('build/probe/' + name, data)
+                self.write_build('build/probe/linked-probe', FIXTURE_PCE)
+                with self.assertRaisesRegex(ValueError, 'extra.yaml'):
+                    check_upload_artifacts(self.root)
+                (self.root / 'build/probe' / name).unlink()
+
+    def test_pages_artifact_composite_action_and_release_routes_are_guarded(self):
+        pages = workflow(['site']).replace('upload-artifact', 'upload-pages-artifact')
+        self.write_workflow(pages)
+        self.write_build('site/tool', ELF_PROBE)
+        with self.assertRaisesRegex(ValueError, 'site/tool'):
+            check_upload_artifacts(self.root)
+        self.write_workflow(workflow(['build/debug/*.pce']))
+        action = self.root / '.github' / 'actions' / 'save'
+        action.mkdir(parents=True)
+        (action / 'action.yaml').write_text(workflow(['site']), encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'action.yaml: site/tool'):
+            check_upload_artifacts(self.root)
+        for route in ('run: gh release upload v1 build/x', 'uses: softprops/action-gh-release@v2'):
+            with self.subTest(route=route):
+                self.write_workflow(workflow(['build/debug/*.pce']) + f'      - {route}\n', name='rel.yaml')
+                with self.assertRaisesRegex(ValueError, 'not a parsed step'):
+                    check_upload_artifacts(self.root)
+
+    def test_legitimate_evidence_and_self_made_rom_in_yaml_workflow_pass(self):
+        self.write_workflow(workflow(['build/debug/*.pce', 'build/debug/*.json']), name='ok.yaml')
+        self.write_build('build/debug/geargrafx-evidence.json', PLAIN_JSON)
+        self.write_build('build/debug/smoke-test-not-bios.pce', FIXTURE_PCE)
+        check_upload_artifacts(self.root)
+
     def test_missing_upload_steps_fail_closed(self):
         self.write_workflow('jobs:\n  build:\n    steps:\n      - run: make check\n')
         with self.assertRaisesRegex(ValueError, 'no upload-artifact'):
@@ -230,7 +269,7 @@ class WorkflowTests(unittest.TestCase):
 class RepositoryTests(unittest.TestCase):
     def test_repository_upload_patterns_are_visible_to_the_guard(self):
         patterns = []
-        for path in sorted((ROOT / guard.WORKFLOWS).glob('*.yml')):
+        for path in sorted((ROOT / guard.WORKFLOWS).glob('*.y*ml')):
             patterns.extend(upload_patterns(path.read_text(encoding='utf-8')))
         self.assertIn('build/debug/cdread-probe/*.pce', patterns)
         self.assertIn('build/debug/*.pce', patterns)
