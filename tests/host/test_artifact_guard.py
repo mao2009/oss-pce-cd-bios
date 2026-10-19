@@ -338,15 +338,42 @@ class WorkflowTests(unittest.TestCase):
             check_upload_artifacts(self.root)
 
 
+CALL = 'python3 tools/artifact_guard.py --post-build w.yml "Save"'
+GUARD_STEP = f'      - name: Guard\n        run: |\n          {CALL}\n'
+SAVE_STEP = f'      - name: Save\n        uses: {UPLOAD}\n        with:\n          path: build/x\n'
+GUARDED = 'jobs:\n  build:\n    steps:\n' + GUARD_STEP + SAVE_STEP
+
+
+class GuardPlacementTests(unittest.TestCase):
+    def violations(self, text):
+        return guard.guard_placement_violations(text, 'w.yml')
+
+    def test_well_formed_guard_passes(self):
+        self.assertEqual([], self.violations(GUARDED))
+
+    def test_each_defect_is_a_violation(self):
+        head = 'jobs:\n  build:\n    steps:\n'
+        defects = {
+            'if': GUARDED.replace('        run: |', '        if: ${{ false }}\n        run: |'),
+            'continue-on-error': GUARDED.replace('        run: |', '        continue-on-error: true\n        run: |'),
+            'commented': GUARDED.replace('          ' + CALL, '          # ' + CALL),
+            'other job': head + GUARD_STEP + '  other:\n    steps:\n' + SAVE_STEP,
+            'after upload': head + SAVE_STEP + GUARD_STEP,
+            'duplicate': head + GUARD_STEP + GUARD_STEP.replace('Guard', 'Guard2') + SAVE_STEP,
+            'not a run': GUARDED.replace('        run: |\n          ' + CALL, '        name2: x\n        with:\n          x: ' + CALL),
+            'missing': GUARDED.replace(CALL, 'true'),
+        }
+        for label, text in defects.items():
+            with self.subTest(defect=label):
+                self.assertNotEqual([], self.violations(text))
+
+
 class RepositoryTests(unittest.TestCase):
     def test_every_repository_upload_step_has_a_post_build_guard_before_it(self):
         # Owner decision: the guard runs after the build and before upload-artifact, in every upload workflow.
         for path in sorted((ROOT / guard.WORKFLOWS).glob('*.y*ml')):
-            text = path.read_text(encoding='utf-8')
-            for name, _ in guard.upload_steps(text):
-                call = f'artifact_guard.py --post-build {path.relative_to(ROOT).as_posix()} "{name}"'
-                self.assertIn(call, text, f'{path.name}: no post-build guard for {name!r}')
-                self.assertLess(text.index(call), text.index(f'name: {name}'), f'{path.name}: guard after upload')
+            rel = path.relative_to(ROOT).as_posix()
+            self.assertEqual([], guard.guard_placement_violations(path.read_text(encoding='utf-8'), rel))
 
     def test_repository_upload_patterns_are_visible_to_the_guard(self):
         patterns = []

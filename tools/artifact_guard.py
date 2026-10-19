@@ -235,6 +235,68 @@ def check_upload_artifacts(root=ROOT):
     print(f"PASS upload-artifact guard: {total} patterns, {matched} local entries, no linked executable or object")
 
 
+JOB_RE = re.compile(r"^  [\w-]+\s*:\s*$")
+GUARD_CALL = "tools/artifact_guard.py --post-build"
+
+
+def _live(line):
+    return line.strip() and not line.lstrip().startswith("#")
+
+
+def _step_ranges(lines, dash):
+    """Line-based step ranges (start, end, job) for every '- ' item at indent `dash`."""
+    starts = [i for i, l in enumerate(lines) if _live(l) and _indent(l) == dash and l.lstrip().startswith("- ")]
+    result = []
+    for n, start in enumerate(starts):
+        end = starts[n + 1] if n + 1 < len(starts) else len(lines)
+        for i in range(start + 1, end):   # a live line dedented below the dash ends the step
+            if _live(lines[i]) and _indent(lines[i]) < dash:
+                end = i
+                break
+        job = next((lines[j].strip() for j in range(start, -1, -1) if JOB_RE.match(lines[j])), None)
+        result.append((start, end, job))
+    return result
+
+
+def _step_keys(lines, start, end, dash):
+    """Top-level mapping lines of one step (the dash line's own content plus lines at dash+2)."""
+    return [lines[start].lstrip()[2:].strip()] + [l.strip() for l in lines[start + 1:end] if _live(l) and _indent(l) == dash + 2]
+
+
+def guard_placement_violations(text, workflow):
+    """Each upload step needs exactly one guard step in its job, before it: real `run:`, no `if:`, no `continue-on-error:`."""
+    lines = text.splitlines()
+    problems = []
+    for uses, line in enumerate(lines):
+        if not (_live(line) and USES_RE.search(line)):
+            continue
+        key_indent = _indent(line) + (2 if line.lstrip().startswith("- ") else 0)
+        dash = next(j for j in range(uses, -1, -1) if _live(lines[j]) and lines[j].lstrip().startswith("- ")
+                    and _indent(lines[j]) + 2 <= key_indent)
+        dash_indent = _indent(lines[dash])
+        steps = _step_ranges(lines, dash_indent)
+        up = next(s for s in steps if s[0] <= uses < s[1])
+        name = next((NAME_RE.search(k).group(1) for k in _step_keys(lines, up[0], up[1], dash_indent) if k.startswith("name:")), "")
+        call = f'{GUARD_CALL} {workflow} "{name}"'
+        label = f"{workflow}: {name!r}"
+        guards = [s for s in steps if s[2] == up[2] and any(_live(l) and call in l for l in lines[s[0]:s[1]])]
+        if len(guards) != 1:
+            problems.append(f"{label}: expected exactly one live guard step in the same job, found {len(guards)}")
+            continue
+        start, end, _ = guards[0]
+        if start >= up[0]:
+            problems.append(f"{label}: guard step is not before the upload step")
+        keys = _step_keys(lines, start, end, dash_indent)
+        if not any(k.startswith("run:") for k in keys):
+            problems.append(f"{label}: guard step has no run:")
+        for key in ("if", "continue-on-error"):
+            if any(re.match(rf"""["']?{key}["']?\s*:""", k) for k in keys):
+                problems.append(f"{label}: guard step has {key}:")
+        if any(call in l and l.lstrip().startswith("#") for l in lines[start:end]):
+            problems.append(f"{label}: guard call line is commented")
+    return problems
+
+
 def check_post_build(workflow, step, root=ROOT):
     """Binding layer: after the build, check the real output of the named upload step. Missing output fails closed."""
     base = Path(root)
