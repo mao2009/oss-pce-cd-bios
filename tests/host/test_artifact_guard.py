@@ -107,6 +107,30 @@ class EntryTests(unittest.TestCase):
         self.assertEqual(entry_problem(link), 'symlink')
 
 
+class PcePolicyTests(unittest.TestCase):
+    """Approved policy: .pce is not refused by suffix alone; content signatures still apply to .pce files."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+
+    def make(self, name, data):
+        path = self.root / name
+        path.write_bytes(data)
+        return path
+
+    def test_pce_with_ordinary_content_is_not_refused_by_suffix(self):
+        self.assertIsNone(entry_problem(self.make('dev-diagnostic.pce', b'PCE original bytes, no signature')))
+        self.assertIsNone(entry_problem(self.make('original.pce', bytes(range(256)))))
+
+    def test_pce_with_executable_or_archive_content_is_still_refused(self):
+        self.assertIsNotNone(entry_problem(self.make('a.pce', ELF_PROBE)))
+        self.assertIsNotNone(entry_problem(self.make('b.pce', PE_STUB)))
+        self.assertIsNotNone(entry_problem(self.make('c.pce', AR_ARCHIVE)))
+        self.assertIsNotNone(entry_problem(self.make('d.pce', b'PK\x03\x04' + b'\x00' * 8)))
+
+
 class WorkflowTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -527,6 +551,29 @@ class GuardPlacementTests(unittest.TestCase):
         for label, step in bad.items():
             with self.subTest(bad=label):
                 self.assertNotEqual([], self.violations(GUARDED.replace(SAVE_STEP, step)))
+
+    def test_unquoted_operator_name_is_refused_while_quoted_name_passes(self):
+        # MINOR-B: run "w.yml Save||true" unquoted lets bash parse "||" (guard failure swallowed). The quoted form
+        # with the same characters is a single argument and is accepted; both directions are pinned.
+        upload = f'      - name: "Save||true"\n        uses: {UPLOAD}\n        with:\n          path: build/x\n'
+        quoted = ('jobs:\n  build:\n    steps:\n      - name: Guard\n'
+                  '        run: python3 tools/artifact_guard.py --post-build w.yml "Save||true"\n' + upload)
+        self.assertEqual([], self.violations(quoted))
+        unquoted = ('jobs:\n  build:\n    steps:\n'
+                    '      - name: tools/artifact_guard.py --post-build w.yml "Save||true"\n'
+                    '        run: python3 tools/artifact_guard.py --post-build w.yml Save||true\n' + upload)
+        self.assertNotEqual([], self.violations(unquoted))
+
+    def test_multiline_plain_name_is_refused(self):
+        # MINOR-A: a continuation line after `name:` changes the YAML name; the guard must not match on the first line only.
+        text = ('jobs:\n  build:\n    steps:\n      - name: Guard\n'
+                '        run: python3 tools/artifact_guard.py --post-build w.yml "Save"\n'
+                f'      - name: Save\n          continued\n        uses: {UPLOAD}\n        with:\n          path: build/x\n')
+        self.assertNotEqual([], self.violations(text))
+
+    def test_workflow_path_with_shell_characters_is_refused(self):
+        with self.assertRaisesRegex(ValueError, 'unsafe workflow path'):
+            guard.guard_placement_violations(GUARDED, 'w y.yml')
 
     def test_guard_in_other_job_that_is_needed_is_refused(self):
         # needs: is not a substitute for a guard in the upload's own job, immediately before it.

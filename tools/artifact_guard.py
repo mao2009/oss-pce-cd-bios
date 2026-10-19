@@ -7,7 +7,8 @@ directories are walked, symlinks are refused, and ELF/Mach-O/PE/ar signatures an
 are rejected. Unrecognised `path:` forms are refused rather than guessed. Names are not used, because legitimate
 evidence JSON may contain "geargrafx". This is a content/signature tripwire only; it does not cover uploads made
 from run: (a `gh release` mention is refused outright), and the verdict-upload exemption is unchanged. Distribution conditions
-stay with docs/provenance.md and Issue #105. It does not detect BIOS-like content (.pce, .rom, .bin, .iso by content).
+stay with docs/provenance.md and Issue #105. It does not reject .pce by extension (approved policy: original HuCARD and DEV diagnostic ROMs are legitimate
+artifacts), it does not detect BIOS-like content, and a passing .pce is not proof of GPL-free origin (Issue #335).
 
 Three layers: `check_upload_artifacts()` is a static pre-build check of the checkout (run by make check);
 `check_guard_placement()` requires each guard step to be the step immediately before its upload step, in the same job
@@ -18,7 +19,6 @@ named step's patterns against the real build output and fails when a pattern mat
 from pathlib import Path
 import os
 import re
-import shlex
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -307,22 +307,18 @@ def _run_lines(lines, start, end, dash):
 def _guard_is_bare(command, workflow, name, keys):
     """The step's whole `run:` value is ONE live line that is exactly the guard call for this workflow and step name.
 
-    The line is split with POSIX shell quoting and must equal [python3|python] tools/artifact_guard.py --post-build
-    WORKFLOW NAME token for token: no `|| true`, `;`, `&`, pipes, comments or extra arguments before, between or after.
-    Matching the call as a text prefix is not enough, because the name is part of the call (MAJOR-1). `shell:` may be
-    absent or `bash`. Anything that does not split (unbalanced quotes) is refused.
+    The line must be EXACTLY [python3 |python |]tools/artifact_guard.py --post-build WORKFLOW "NAME" as text. The name
+    is double-quoted in that text and cannot contain `"`, `$`, backtick or backslash, so nothing inside the quotes is
+    expanded by the shell. Any unquoted operator (`||`, `;`, `&`, `|`), comment, extra argument or glob outside the
+    quotes makes the text differ and is refused. A token-based check was not enough: shlex does not split `||` unless
+    punctuation is requested (MINOR-B). `shell:` may be absent or `bash`.
     """
     if len(command) != 1:
         return False
-    try:
-        tokens = shlex.split(command[0], posix=True)
-    except ValueError:
-        return False
-    if tokens[:1] in (["python3"], ["python"]):
-        tokens = tokens[1:]
+    expected = f'{GUARD_CALL} {workflow} "{name}"'
     shell_ok = all(re.sub(r"""["']""", "", k.split(":", 1)[1]).split("#")[0].strip() == "bash"
                    for k in keys if re.match(r"""["']?shell["']?\s*:""", k))
-    return shell_ok and tokens == [GUARD_SCRIPT, "--post-build", workflow, name]
+    return shell_ok and command[0] in (expected, f"python3 {expected}", f"python {expected}")
 
 
 def check_guard_placement(root=ROOT):
@@ -338,6 +334,26 @@ def check_guard_placement(root=ROOT):
     print("PASS artifact guard placement: every upload step is preceded by its guard in the same job")
 
 
+def _continued_name(lines, start, end, dash):
+    """True if a `name:` key of this step has a continuation line (multi-line plain or quoted scalar, or a block)."""
+    for i in range(start, end):
+        if not _live(lines[i]):
+            continue
+        body = lines[i].lstrip()
+        if i == start:
+            body = body[2:].lstrip() if body.startswith("- ") else body
+        elif _indent(lines[i]) != dash + 2:
+            continue
+        if not re.match(r"""["']?name["']?\s*:""", body):
+            continue
+        for j in range(i + 1, end):
+            if _live(lines[j]):
+                if _indent(lines[j]) > dash + 2:
+                    return True
+                break
+    return False
+
+
 def guard_placement_violations(text, workflow):
     """Each upload step needs exactly one guard step, and it must be the step immediately before it in the same job.
 
@@ -347,6 +363,8 @@ def guard_placement_violations(text, workflow):
     top level or in a job is refused, since those can change the PATH or RUNNER_TEMP the guard depends on.
     Any step outside a job is refused. Anything else unparseable raises ValueError (fail closed).
     """
+    if not re.fullmatch(r"[A-Za-z0-9._/-]+", workflow):
+        raise ValueError(f"unsafe workflow path {workflow!r} (only letters, digits, . _ / - are allowed in the guard call)")
     lines = text.splitlines()
     if any(re.match(r"\s*steps\s*:\s*\[", l) for l in lines):
         raise ValueError(f"{workflow}: flow-style steps unsupported")
@@ -390,6 +408,8 @@ def guard_placement_violations(text, workflow):
         up_keys = [k.split(":", 1)[0].strip().strip("\"'") for k in _step_keys(lines, up[0], up[1], dash_indent)]
         if len(set(up_keys)) != len(up_keys) or not set(up_keys) <= UPLOAD_STEP_KEYS:
             problems.append(f"{label}: upload step may only have name, uses and with, each once (found {up_keys})")
+        if _continued_name(lines, up[0], up[1], dash_indent):
+            problems.append(f"{label}: upload step name continues on the next line (the YAML name would differ from the guard call)")
         if has_jobs and up[2] is None:
             problems.append(f"{label}: upload step is outside any job")
             continue
@@ -405,6 +425,8 @@ def guard_placement_violations(text, workflow):
         names = [k.split(":", 1)[0].strip().strip("\"'") for k in keys]
         if len(set(names)) != len(names) or not set(names) <= GUARD_STEP_KEYS:
             problems.append(f"{label}: guard step may only have name, run and shell, each once (found {names})")
+        if _continued_name(lines, start, end, dash_indent):
+            problems.append(f"{label}: guard step name continues on the next line")
         command = _run_lines(lines, start, end, dash_indent)
         if not _guard_is_bare(command, workflow, name, keys):
             problems.append(f"{label}: guard call is not the bare command of the step's run: (single line, exactly the guard call with this name, no custom shell:)")
