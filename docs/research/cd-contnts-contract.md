@@ -69,26 +69,26 @@
 | F09 | callee | 戻り A の意味 | HYPOTHESIS | 0 を成功とみなす | S4 700–701（呼出側の期待から推測） | 呼出先の実行で未確認。失敗コードの値は F21 で UNKNOWN。 |
 | F10 | callee | 戻り X・Y の意味 | UNKNOWN | UNKNOWN | — | 出力の有無は不明。 |
 | F11 | caller | 戻りフラグ N/Z（wrapper による） | SOURCE_FACT | N/Z は復元された戻り A で決まる | S2 511–514（`pha`、`lda #`、`tam7`、`pla`） | 戻り時の `lda #` と `pla` が N/Z を上書きする。呼出先の N/Z の値とは無関係。 |
-| F12 | callee | 戻りフラグ C/V/D/I | UNKNOWN | UNKNOWN | S2 500–516 | 呼出先が設定するかは不明。wrapper の命令（`lda`、`pla`、`pha`、`tam`、`tma`、`cla`）は C/V/D/I を変えないと読めるが（HYPOTHESIS）、命令仕様との照合は未実施。 |
+| F12 | callee | 戻りフラグ C/V/D/I | UNKNOWN | UNKNOWN | S2 500–516 | 呼出先が設定するかは不明。wrapper の命令（`lda`、`pla`、`pha`、`tam`、`tma`、`cla`）は C/V/D/I を変えないという読みがあるが、命令仕様との照合は未実施のため状態には反映しない。 |
 | F13 | callee | 戻り機構（SP と復帰） | HYPOTHESIS | 呼出先は RTS で `call_bios` へ戻る | S2 500–516（`jsr` 直後に後処理がある構造） | wrapper の構造からの推測。呼出先の実行で未確認。呼出先が残すスタックの量は UNKNOWN。 |
 | F14 | caller | MPR7（呼出し中の値） | SOURCE_FACT | 呼出し中 MPR7=`$00`、戻り時に呼出側の値へ復元 | S2 503–514（`tma7`、`sta`、`cla`、`tam7`、`lda`、`tam7`） | wrapper が MPR7 を退避し、bank 0 を見せてから復元する。 |
-| F15 | callee | MPR0–6（呼出し中の値） | HYPOTHESIS | 版の前提として MPR0=`$FF`、MPR1=`$F8` を仮定する記述がある | S7（二次出典の要約） | 二次出典の要約であり、CD_CONTNTS 固有の根拠ではない。原文照合まで昇格しない。 |
+| F15 | callee | MPR0–6（呼出し中の値） | UNKNOWN | UNKNOWN | S7（原文照合 PENDING） | 二次出典 S7 に MPR の前提値の記述があるが、値は本台帳に転載しない（§5）。CD_CONTNTS 固有の根拠ではなく、原文照合まで値を記録しない。 |
 | F16 | callee | 作業 RAM の副作用・出力バッファ | UNKNOWN | UNKNOWN | S4（TOC の読取りは行わない） | 結果を格納するバッファの位置・形式は不明。 |
 | F17 | callee | IRQ とイベント順序 | UNKNOWN | UNKNOWN | S4 681–697（`wait_nvsync` は呼出側の待機）、S4 1390 行以降は他関数の試験 | 呼出し中の IRQ マスクと、IRQ2 の発生順序は不明。 |
-| F18 | caller | 呼出し前の事前条件（ドライブ状態） | SOURCE_FACT | `cd_stat` で busy=0、ready=0 を確認してから呼ぶ | S4 681–697 | 呼出側の前提。CD_CONTNTS の要件であるとは言えない。 |
+| F18 | caller | 呼出し前の事前条件（ドライブ状態） | SOURCE_FACT | 呼出側は `cd_stat` の戻りを busy・ready の分岐に使い、待機してから呼ぶ | S4 681–697 | 呼出側の分岐の記述。`cd_stat` の戻りを ready フラグとは扱わない。CD_CONTNTS の要件であるとは言えない。 |
 | F19 | callee | busy・タイムアウト・所要時間 | UNKNOWN | UNKNOWN | — | 呼出先の待機条件は不明。 |
 | F20 | caller | 失敗時の呼出側の処理 | SOURCE_FACT | 非 0 で `cd_reset` に戻り、待機からやり直す | S4 699–701、681–697 | 呼出側の動作記述。 |
 | F21 | callee | 失敗条件・エラー値（無ディスク、不正な入力、タイムアウト） | UNKNOWN | UNKNOWN | — | 出典がない。失敗時の A・フラグ・出力の有無は不明。 |
 | F22 | name | 名称（綴り） | SOURCE_FACT | HuC `cd_contnts`、Hu-Go `CD_CONTENTS`、本リポジトリ `CD_CONTNTS` | S1 480、S4 699、S5 47・178–179、`docs/api-inventory.md` 37 行 | 綴りが二種類ある（`docs/abi-contracts.md` 54 行も記録）。綴りが同じ関数を指すかは未確認。 |
 | F23 | callee | ルーチンの所在（版ごと） | HYPOTHESIS | 版ごとに値が異なる。3.0 の列は 2.x と同じ値で、1.0 および TG3.0 の列とは異なる | S7（二次出典の要約） | JSR の入口（`$E024`）は全列で同じ。ルーチンの位置は版で異なると読める。**数値は本台帳に転載しない**（§5）。 |
-| F24 | reference | Hu-Go の `$0C` の処理 | SOURCE_FACT | 名前定義のみ。`default:` で未処理扱い（元のバイト列へ戻す） | S5 47、178–179、1091–1094 | 参照専用（GPL-2）。HLE の対象外であり、BIOS の振る舞いの根拠にしない。 |
+| F24 | reference | Hu-Go の `$0C` の処理 | HYPOTHESIS | 名前定義のみ。`default:` で未処理扱い（元のバイト列へ戻す、dispatcher の挙動） | S5 47、178–179、1091–1094 | 参照専用（GPL-2）。dispatcher の既定動作であり、呼出先の ABI の根拠にしない。HLE 実装の観察として未確認。 |
 | F25 | reference | Zeograd の CD_CONTNTS の説明 | UNKNOWN | UNKNOWN | S6 | 見出しのみで、入出力・失敗条件の説明はない。 |
 
 ## 4. System Card 3.0 固有の不一致（明示）
 
 1. **綴りの不一致**: HuC は `cd_contnts`、Hu-Go は `CD_CONTENTS`、本リポジトリは `CD_CONTNTS`（F22）。同じ `$0C` を指すことは、入口 `$E024` の一致だけでは確認できない。
 2. **版による所在の差**: 二次出典の表では、3.0 の列のルーチン所在が 2.x と同じで、1.0 および TG3.0 の列と異なる（F23）。3.0 の所在を 2.x や 1.0 から推定しない。3.0 の所在は、人手で原文を照合するまで HYPOTHESIS のままである。
-3. **3.0 の振る舞いの証拠がない**: Zeograd に CD_CONTNTS の説明はない（F25）。Hu-Go は HLE の対象外（F24）。HuC の唯一の呼出側（S4）は自作の試験プログラムで、3.0 の仕様を述べるものではない。
+3. **3.0 の振る舞いの証拠がない**: WebFetch の要約では Zeograd に CD_CONTNTS の説明は見当たらなかった。要約取得のため原文との照合は未実施で、この点は未確認である（F25）。Hu-Go は HLE の対象外（F24）。HuC の唯一の呼出側（S4）は自作の試験プログラムで、3.0 の仕様を述べるものではない。
 4. **呼出側の期待と呼出先の仕様を分ける**: S4 の分岐（F08、F20）は呼出側の期待であり、3.0 の戻り値の仕様ではない。
 
 ## 5. 除外・未転載
