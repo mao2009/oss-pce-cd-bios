@@ -27,7 +27,7 @@ PINNED_ROWS = {
     'K5': ('SOURCE_FACT', '`lda <_dh` の値（元の nb_sectors）が `beq` と `sta` の後も残り、`call_bios` の `pha`/`pla` で保存されて入口の A になる'),
     'K6': ('SOURCE_FACT', 'マクロは P を明示的に設定しない。入口の P は直前の演算（`beq`、`pla` など）の結果で、呼出側は意味のある値を渡さない'),
     'K7': ('SOURCE_FACT', '`_dh` が 0 のとき `get_file_info` が書いたファイル長の下位 8 bit を使う。`_dh` が非 0 のときは `_dh` の値を `_al` に書く。`_ah`（上位）も呼出側が設定する。呼出側が書くのは `_al` と `_ah` で、BIOS がどちらを読むかは本行の範囲外'),
-    'K8': ('SOURCE_FACT', 'マクロは呼出し前に `_dh` を 0 にする（`stz`）。HuCC の経路から BIOS に渡る `_dh` は常に 0'),
+    'K8': ('SOURCE_FACT', 'マクロは呼出し前に `_dh` を 0 にする（`stz`）。HuCC の経路で呼出側が書く `_dh` は常に 0'),
     'K9': ('SOURCE_FACT', 'マクロは `_bx` を設定も変更もしない。呼出側が事前に設定する前提（宣言 `ad_addr<_bx>`）。`get_file_info` と `_add_sectors` は `_bx` を使わない'),
     'K10': ('SOURCE_FACT', 'マクロが書く番地: `$20F8`（`_al`）、`$20F9`（`_ah`）、`$20FC`〜`$20FE`（`_cl`、`_ch`、`_dl`）、`$20FF`（`_dh` を 0 に）。書かない番地: `$20FA`〜`$20FB`（`_bx`）'),
     'K11': ('SOURCE_FACT', 'trampoline は MPR7 を `$00` にして呼び、戻りで保存値を復元する。`call_bios` は A を 1 バイト push し、`jsr` が戻り先を積む'),
@@ -108,7 +108,7 @@ def ledger_problems(items, defined, malformed=()):
             problems.append(f'status {rid}={status}')
             continue
         if rid in PINNED_ROWS and (status, value) != PINNED_ROWS[rid]:
-            problems.append(f'{rid} changed from {PINNED_ROWS[rid][0]} to {status}')
+            problems.append(f'{rid} differs from its pinned status/value')
         if side in ('C', 'R') and status not in CALLEE_STATUSES:
             problems.append(f'{side} row {rid} promoted to {status}')
         if status in ('UNKNOWN', 'BLOCKED') and value != 'UNKNOWN':
