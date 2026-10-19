@@ -63,7 +63,7 @@ class ReferenceJsrGateTest(unittest.TestCase):
     def test_state_name_is_distinct_from_reference_plan_materials_complete(self):
         # The two gates use different vocabulary on purpose (docs/cd-reset-contract.md table).
         source = (ROOT / "tools" / "reference_jsr_gate.py").read_text(encoding="utf-8")
-        self.assertNotIn('"MATERIALS_COMPLETE"', source)
+        self.assertNotIn("MATERIALS_COMPLETE", source)
         doc = (ROOT / "docs" / "cd-reset-contract.md").read_text(encoding="utf-8")
         for name in ("UNAUTHENTICATED_MATERIALS_RECORDED", "MATERIALS_COMPLETE", "MODEL_ELIGIBLE"):
             self.assertIn(f"| `{name}` |", doc)
