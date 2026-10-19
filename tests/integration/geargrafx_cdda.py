@@ -24,8 +24,8 @@ from make_cd_image import BIN_NAME, CUE_NAME, RAW_BYTES, build_image
 STEP_BUDGET = 12_000_000   # a full script runs ~3.6M guest instructions
 
 
-def execute(probe, rom: Path, cue: Path, labels: Path) -> dict:
-    result = subprocess.run([str(probe), str(rom), str(cue), str(labels), str(STEP_BUDGET)],
+def execute(probe, rom: Path, cue: Path, labels: Path, budget: int = STEP_BUDGET) -> dict:
+    result = subprocess.run([str(probe), str(rom), str(cue), str(labels), str(budget)],
                             check=True, capture_output=True, text=True, timeout=900)
     return parse(result.stdout)
 

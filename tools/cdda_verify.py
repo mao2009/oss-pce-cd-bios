@@ -100,17 +100,17 @@ def check_read6_on_audio(records: dict, run: dict, points: dict) -> dict:
     return {"bytes": SECTOR_BYTES, "cdda_state_after": "IDLE", "cdda_samples_before_play": 0}
 
 
-def check_playback(records: dict, points: dict) -> dict:
+def check_playback(records: dict, points: dict, start_lba: int = AUDIO_START_LBA) -> dict:
     play, played = points[1]
-    if play["audio"]["state"] != PLAYING or play["audio"]["start_lba"] != AUDIO_START_LBA:
-        raise ValueError(f"after $D8: {play['audio']}; expected PLAYING from LBA {AUDIO_START_LBA}")
+    if play["audio"]["state"] != PLAYING or play["audio"]["start_lba"] != start_lba:
+        raise ValueError(f"after $D8: {play['audio']}; expected PLAYING from LBA {start_lba}")
     jumps = records["JUMP"]
-    if len(jumps) != 1 or jumps[0][2:4] != [AUDIO_START_LBA, 0] or not points[0][0]["step"] < jumps[0][4] <= play["step"]:
-        raise ValueError(f"expected exactly one seek to LBA {AUDIO_START_LBA} during $D8, saw {jumps}")
+    if len(jumps) != 1 or jumps[0][2:4] != [start_lba, 0] or not points[0][0]["step"] < jumps[0][4] <= play["step"]:
+        raise ValueError(f"expected exactly one seek to LBA {start_lba} during $D8, saw {jumps}")
     rows = records["AUD"]
     if len(rows) < SAMPLES_PER_SECTOR:
         raise ValueError(f"only {len(rows)} CD-DA samples; need at least one sector")
-    position = AUDIO_START_LBA * SAMPLES_PER_SECTOR
+    position = start_lba * SAMPLES_PER_SECTOR
     for lba, sample, left, right, _ in rows:
         if lba * SAMPLES_PER_SECTOR + sample != position:
             raise ValueError(f"CD-DA sample stream not contiguous at LBA {lba} sample {sample}")
@@ -120,7 +120,7 @@ def check_playback(records: dict, points: dict) -> dict:
             raise ValueError(f"CD-DA sample at LBA {lba}+{sample} is {(left, right)}, BIN has {pcm(lba, sample)}")
         position += 1
     end_lba, end_sample = divmod(position, SAMPLES_PER_SECTOR)
-    if played["audio"]["state"] != PLAYING or played["audio"]["current_lba"] <= AUDIO_START_LBA:
+    if played["audio"]["state"] != PLAYING or played["audio"]["current_lba"] <= start_lba:
         raise ValueError("CD-DA did not advance while the guest waited")
     pause = points[3][0]
     if rows[-1][4] > pause["step"]:
@@ -129,6 +129,20 @@ def check_playback(records: dict, points: dict) -> dict:
         raise ValueError("pause position differs from the last played sample")
     return {"samples_verified_against_bin": len(rows), "first": rows[0][:2], "last": rows[-1][:2],
             "sectors_played": round(len(rows) / SAMPLES_PER_SECTOR, 2)}
+
+
+def check_invalid_audio_start(records: dict, points: dict) -> dict:
+    """$D8 to an LBA at or past the medium end. Pinned CommandAudioStartPosition returns GOOD before StartAudio
+    (scsi_controller.cpp: start_lba >= GetSectorCount()), so CD-DA state and position must stay as READ(6) left them."""
+    before, after, later = points[0][0], points[1][0], points[1][1]
+    keys = ("state", "start_lba", "current_lba", "current_sample")
+    for name, hit in (("after $D8", after), ("after the $D8 wait", later)):
+        if any(hit["audio"][key] != before["audio"][key] for key in keys):
+            raise ValueError(f"CD-DA changed {name}: {hit['audio']}; before $D8 it was {before['audio']}")
+    if records["JUMP"] or records["AUD"]:
+        raise ValueError(f"CD-DA seek or samples on an invalid start LBA: JUMP={records['JUMP']}, AUD rows={len(records['AUD'])}")
+    return {"cdda_state_before": before["audio"]["state"], "cdda_state_after": after["audio"]["state"],
+            "samples": 0, "seeks": 0}
 
 
 def check_pause_stop(points: dict) -> dict:
@@ -169,7 +183,8 @@ def check_audio_accounting(run: dict) -> None:
         raise ValueError(f"{run['unattributed_nonzero']} nonzero CD-DA samples not explained by play-position advance")
 
 
-def check_all(records: dict) -> dict:
+def check_run(records: dict) -> tuple:
+    """Capability, single-run and guest-completion gates shared by every scenario. Returns (run, checkpoints)."""
     if len(records["CAP"]) != 1 or not all(records["CAP"][0].get(k) for k in ("instruction_step", "cdrom_hardware", "cdrom_media")):
         raise ValueError("real instruction stepping / System Card CD path capability missing")
     if len(records["RUN"]) != 1:
@@ -178,7 +193,12 @@ def check_all(records: dict) -> dict:
     check_guest(run)
     points = checkpoints(records)
     check_audio_accounting(run)
+    return run, points
+
+
+def check_all(records: dict, start_lba: int = AUDIO_START_LBA) -> dict:
+    run, points = check_run(records)
     return {"read6_on_audio_lba": check_read6_on_audio(records, run, points),
-            "cdda_play": check_playback(records, points),
+            "cdda_play": check_playback(records, points, start_lba),
             "pause_stop": check_pause_stop(points),
             "subq": check_subq(run, points)}
