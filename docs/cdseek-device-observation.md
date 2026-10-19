@@ -292,6 +292,15 @@ echo "wsl exit=$?"
 - `invalid_audio_start_lba_at_medium_end`: PASS（提示された status）
 - `timeout_budget_exhausted`: PASS_EXPECTED_FAILURE（提示された status。予算超過が検証器で拒否されたことを意味し、成功ではない）
 
+**提示されたログの要点（対象 `8c064f1`、ユーザーが WSL で実行。エージェント未再実行）:**
+- `TARGET_SHA=8c064f13a42bcef312bfa8695d4bce710a331e3e`。`EXIT_OK` の行にも同じ SHA が記録されている。
+- `tools/build_rom.py --mode debug`: 開発専用 ROM を生成。出力に `DEV ONLY ... not boot/retail verified` と明記されている。
+- `tools/build_cdda.py --mode debug`: `PASS original CD-DA observation diagnostic (NOT BIOS, CD_PLAY API NOT_IMPLEMENTED)`。
+- `tests/integration/geargrafx_cdda_scenarios.py --mode debug`: コンパイル時に警告（`Compiling without optimizations`、debug ビルドのため。エラーではない）。
+- `PASS real Geargrafx CD-DA scenarios: valid start LBA 40 followed, invalid start LBA 80 left CD-DA unchanged, budget 1000000 rejected as unfinished; NOT BIOS, CD_PLAY API NOT_IMPLEMENTED`。
+- `CASE invalid_audio_start_lba_at_medium_end PASS`、`CASE timeout_budget_exhausted PASS_EXPECTED_FAILURE`、`CASE valid_audio_start_lba40 PASS`。
+- ログとワークツリーのパスは本文書に記録しない（ユーザー環境のパスを含むため）。
+
 **提示されていない項目（未検証）:**
 - evidence JSON（`cdda-scenarios-evidence.json`）の SHA-256 と、個別の観測値（START_LBA、CURRENT_STATE、PCM の一致数、SCSI フェーズ値）。照合は未実施。
 - 既存の診断5ケース（`mixed_mode_script` と負例4件）の、この実行における個別の status。今回の提示には含まれない。
