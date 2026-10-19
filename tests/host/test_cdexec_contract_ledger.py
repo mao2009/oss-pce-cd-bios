@@ -23,9 +23,11 @@ KNOWN_TABLES = {
 LEDGER_ROW_ID = re.compile(r'^[A-Z]\d+$')
 ALLOWED = {'SOURCE_FACT', 'HYPOTHESIS', 'UNKNOWN', 'BLOCKED'}
 FORBIDDEN = {'OBSERVED', 'VERIFIED', 'PASS'}
-FORBIDDEN_TOKEN = re.compile(r'\b(?:OBSERVED|VERIFIED|PASS)\b')
-# Section 2 is the only prose allowed to name the forbidden words, and it says they are not used.
-RULE_LINE_MARK = '使わない'
+# Case-insensitive, no word boundary: catches "OBSERVED済み", "PASS済", "observed".
+FORBIDDEN_TOKEN = re.compile(r'OBSERVED|VERIFIED|PASS', re.IGNORECASE)
+# The one line allowed to name the forbidden words: the section 2 rule sentence, matched exactly.
+# Any other line containing one of them, including a sentence that merely adds "使わない", is rejected.
+RULE_LINE = '`OBSERVED` / `VERIFIED` / `PASS` は本台帳では使わない。実行証拠がないためである。'
 SCOPES = {'caller', 'callee', 'repo'}
 CALLEE_ALLOWED = {'HYPOTHESIS', 'UNKNOWN', 'BLOCKED'}
 REQUIRED_IDS = {'A1', 'A2', 'A3', 'B1', 'B2', 'C1', 'C2', 'C3', 'C4', 'D1', 'D2', 'E1', 'F1'}
@@ -35,19 +37,33 @@ UNWIRED = re.compile(r'E00F|CD_EXEC|\b57359\b', re.IGNORECASE)
 
 def split_cells(line):
     s = line.strip()
+    if s.startswith('|'):
+        s = s[1:]
     if s.endswith('|'):
         s = s[:-1]
-    return tuple(c.strip() for c in s[1:].split('|'))
+    return tuple(c.strip() for c in s.split('|'))
+
+
+def is_table_line(line, in_fence):
+    # Markdown headings and fenced code are not tables; every other line with two or more '|' is one,
+    # with or without leading and trailing pipes.
+    if in_fence or line.lstrip().startswith('#'):
+        return False
+    return line.count('|') >= 2 or line.lstrip().startswith('|')
 
 
 def table_blocks(text):
-    """Contiguous runs of lines starting with '|', as cell tuples, separator rows removed."""
-    blocks, cur = [], []
+    """Contiguous runs of table lines, as cell tuples, separator rows removed."""
+    blocks, cur, in_fence = [], [], False
     for line in text.splitlines() + ['']:
-        if line.lstrip().startswith('|'):
+        if line.lstrip().startswith('```'):
+            in_fence = not in_fence
+        if is_table_line(line, in_fence):
             cur.append(split_cells(line))
         elif cur:
-            blocks.append([c for c in cur if not all(re.fullmatch(r':?-+:?', x) for x in c)])
+            block = [c for c in cur if not all(re.fullmatch(r':?-+:?', x) for x in c)]
+            if block:
+                blocks.append(block)
             cur = []
     return blocks
 
@@ -100,7 +116,7 @@ def check_text(text):
 
 def prose_violations(text):
     return [f'forbidden word in prose: {line[:40]}' for line in text.splitlines()
-            if FORBIDDEN_TOKEN.search(line) and RULE_LINE_MARK not in line]
+            if FORBIDDEN_TOKEN.search(line) and line.strip() != RULE_LINE]
 
 
 def unwired_hits():
@@ -127,8 +143,7 @@ class LedgerTests(unittest.TestCase):
 
     def test_no_forbidden_word_in_status_or_next_cells_or_prose(self):
         for row in self.rows:
-            for word in FORBIDDEN:
-                self.assertNotIn(word, row['status'] + row['next'], row['id'])
+            self.assertIsNone(FORBIDDEN_TOKEN.search(row['status'] + row['next']), row['id'])
         self.assertEqual(prose_violations(self.text), [])
 
     def test_no_bios_execution_or_rom_wiring_is_claimed(self):
@@ -153,6 +168,20 @@ class RegressionTests(unittest.TestCase):
 
     def test_forbidden_word_in_prose_is_rejected(self):
         self.assertTrue(check_text(self.inject_after_f1('') + '\nCD_EXEC は OBSERVED 済み。\n'))
+
+    def test_negation_escape_hatch_does_not_allow_forbidden_word(self):
+        self.assertTrue(check_text(self.inject_after_f1('') + '\nCD_EXEC は OBSERVED 済み（使わない）。\n'))
+
+    def test_forbidden_word_glued_to_japanese_is_rejected(self):
+        for line in ('CD_EXEC は OBSERVED済み。', 'B2 は PASS済。'):
+            with self.subTest(line=line):
+                self.assertTrue(check_text(self.inject_after_f1('') + '\n' + line + '\n'))
+
+    def test_lowercase_forbidden_word_is_rejected(self):
+        self.assertTrue(check_text(self.inject_after_f1('') + '\nCD_EXEC is observed.\n'))
+
+    def test_row_without_leading_pipe_is_parsed_and_rejected(self):
+        self.assertTrue(check_text(self.inject_after_f1('Z9 | callee | fake | SOURCE_FACT | s | n |')))
 
     def test_malformed_ledger_line_is_rejected(self):
         self.assertTrue(check_text(self.inject_after_f1('| A9 | caller | extra |')))

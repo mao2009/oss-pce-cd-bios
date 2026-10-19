@@ -48,6 +48,8 @@
 - HuC 側の `_cd_execoverlay`（`cdrom.asm` 312–329 行）も `cd_overlay` という独自の読込み経路を使い、`$E00F` を呼ばない。
 - 固定版の `examples/` と `test/manual/` 内の `cd_execoverlay` 呼出しは、いずれも SDK のオーバーレイ関数である（`examples/hucc/overlay/*.c` ほか）。
 
+注（grep 範囲）: 上記の grep は H1 アーカイブ（本リポジトリ外、新しい空ディレクトリへ展開して検索）に対して前回行った検索の結果である。アーカイブは本リポジトリに含まれず、本 PR の範囲では再実行できない。A1 の結論は前回の検索結果に基づく。
+
 以上から、固定版 HuCC の CD_EXEC に対する呼出側の期待（引数、戻り、保存レジスタ）は **存在しない**。
 `exec_overlay` の記述は SDK 自身のローダの記述であり、CD_EXEC の契約ではない。
 
@@ -55,14 +57,14 @@
 
 | ID | 区分 | 項目 | 確度 | 出典 | 決着条件 |
 | --- | --- | --- | --- | --- | --- |
-| A1 | caller | 固定版（`54f5c736`）の全体に、`cd_exec` / `CD_EXEC` / `E00F` を呼ぶ箇所はない | SOURCE_FACT | §4 の grep 結果の不在（範囲: `grep -rIn -E` で `cd_exec`、`CD_EXEC`、`E00F` の語を検索。ヒットは定義と X1 のみ）。網羅の証明は grep の文字列に一致する記述に限る | 呼出側が現れる別リビジョンの確認（本台帳の範囲外） |
+| A1 | caller | 固定版（`54f5c736`）の全体に、`cd_exec` / `CD_EXEC` / `E00F` を呼ぶ箇所はない | SOURCE_FACT | §4 の grep 結果の不在（範囲: `grep -rIn -E` で `cd_exec`、`CD_EXEC`、`E00F` の語を検索。ヒットは定義と X1 のみ）。網羅の証明は grep の文字列に一致する記述に限る。再現には H1 アーカイブが必要で、本 PR では再実行していない（§4 注） | 呼出側が現れる別リビジョンの確認（本台帳の範囲外） |
 | A2 | caller | SDK のオーバーレイ実行は `$E00F` を経由せず、`exec_overlay` が `cd_read` を直接呼ぶ | SOURCE_FACT | H1c 81–83、H1b 578–614、H1d 117、171 | なし（呼出側の事実） |
 | A3 | caller | `exec_overlay` は `cd_read` に、ISO ディレクトリ由来の長さ（`_al`/`_ah`）、位置（`_cl`/`_ch`/`_dl`）、先頭バンク（`_bl` = `core_1stbank`、`_bh` = 0）、モード `_dh` = 6 を渡す | SOURCE_FACT | H1b 531–549、589–594 | なし（`cd_read` 側の確認は `docs/cd-read-contract.md` の所管） |
 | B1 | callee | 成功時、CD_EXEC は呼出側へ戻らない | HYPOTHESIS | SDK 側の推測のみ: H1b 614（SDK ローダの `jmp $4000`）、H1e 39 行（オーバーレイに自動復帰機構がない、文書）、H1d `cdrom.asm` 323 行（別関数 `cd_execoverlay` の `jmp ovlentry`。参照のみ・ライセンス未確認） | 成功した読込みの後、CD_EXEC の戻りアドレスに戻らないことを実行で測る |
 | B2 | callee | 失敗時、CD_EXEC は呼出側へ戻る（戻り値は A） | UNKNOWN | CD_EXEC の出典なし（§4）。別関数の参考: HuC `cdrom.asm` 320–329 行（`cd_execoverlay` の失敗時 `rts`、参照のみ・ライセンス未確認）と HuCC `hucc-baselib.asm` 79 行（`cd_execoverlay` は「does not return, even if there's an error」）。両者は食い違うが、どちらも CD_EXEC ではない | 失敗入力（無ディスク、読込み失敗）で CD_EXEC の戻りの有無を実行で測る |
 | C1 | callee | 入口時の引数、MPR、SP、IRQ 状態 | UNKNOWN | H1b 583（`tam7`）、585（`cli`）、H1a 330–343（`$20F8`〜のラベル） | CD_EXEC を実行して入口の全レジスタ、MPR、SP を記録する（呼出側のラベルは callee の入力を意味しない） |
 | C2 | callee | 戻り時の保存・破壊レジスタ | UNKNOWN | 呼出側の記述なし（B2 が前提） | B2 が「戻る」と決まった後、入出力の差分を実行で測る |
-| C3 | caller | 呼出側は、読込み後に MPR2〜MPR6 を元の値へ戻してから `$4000` へ入る | SOURCE_FACT | H1b 603–614 | なし（呼出側の事実） |
+| C3 | caller | 呼出側は、読込み後に MPR2 を `core_1stbank`（ソース注記では「CORE(not TM)」の既定）へ、MPR3〜MPR6 を `core_1stbank`+1〜+4 へ設定してから `$4000` へ入る。元の値へ戻すとは書かれていない | SOURCE_FACT | H1b 603–614 | なし（呼出側の事実） |
 | C4 | callee | 読込みエラー時に MPRn が壊れる | UNKNOWN | CD_EXEC の出典なし。別経路の参考: HuCC `core-kernel.asm` 605–609 行のコメント（System Card のエラー処理の不具合で `cd_read` 先の MPRn が壊れうる、という SDK 側の記述。CD_EXEC のものではない。測定なし） | エラー経路で MPR0–7 の全差分を実行で測る（`docs/cd-read-contract.md` の CD_READ 側と同じ方法） |
 | D1 | callee | 成功時の PC は読込み先（`$4000` 相当）へ移る | UNKNOWN | H1b 614 は SDK のローダの PC であり、CD_EXEC の PC ではない | 読込み後の PC と、読込み先アドレスの関係を実行で測る |
 | D2 | callee | 引数の意味（トラック/セクタ、転送先、個数、`$20F8`–`$20FF` の入力） | UNKNOWN | 呼出側なし（A1）。§6 の候補のみ | 入力感度試験（入力バイトを一つずつ変える）を実行可能な callee で行う |
