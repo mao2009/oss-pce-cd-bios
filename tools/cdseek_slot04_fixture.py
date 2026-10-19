@@ -26,7 +26,8 @@ CONFIG_FIELDS = frozenset({"schema", "rom_path", "rom_sha256", "approved_rom_sha
                            "safety_gate_approved"})
 EVIDENCE_FIELDS = ("position", "work_ram", "mpr", "stack", "irq", "disk_state", "expected_result")
 PERMISSION_FIELDS = ("unsafe_io_allow", "side_effects_allowed", "execution_allowed")
-HARDWARE_PAGE = range(0x1800, 0x1C00)  # PC Engine I/O page: any write is a side effect
+HARDWARE_PAGE = range(0x0000, 0x2000)  # PC Engine hardware page $0000-$1FFF: any write is a side effect
+MAX_CONFIG_BYTES = 65536  # a run config is small JSON; anything larger is refused unread
 HEX = set("0123456789abcdef")
 
 
@@ -92,6 +93,7 @@ def validate_config(config):
         errors.append("approved_rom_sha256 must be null or lowercase sha256")
     if type(config["safety_gate_approved"]) is not bool:
         errors.append("safety_gate_approved must be a bool")
+    errors += [f"{field} must be a bool" for field in PERMISSION_FIELDS if type(config[field]) is not bool]
     return errors
 
 
@@ -147,8 +149,12 @@ def main(argv=None):
     config = None
     if arguments.config is not None:
         try:
-            config = json.loads(arguments.config.read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError):
+            # Only a small .json regular file is read; a ROM or any other file is refused unread.
+            path = arguments.config
+            if path.suffix != ".json" or not path.is_file() or path.stat().st_size > MAX_CONFIG_BYTES:
+                raise ValueError("config path refused")
+            config = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, RecursionError):
             config = None  # unreadable config is indistinguishable from an unspecified one: BLOCKED
     status, reasons = preflight(CASES, config)
     print(f"{status}: " + "; ".join(reasons))

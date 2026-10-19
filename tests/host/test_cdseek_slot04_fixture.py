@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location("cdseek_slot04_fixture", ROOT / "tools" / "cdseek_slot04_fixture.py")
@@ -112,14 +113,21 @@ class Slot04FixtureTests(unittest.TestCase):
                 status, reasons = M.preflight(list(M.CASES), approved_config(**{field: True}))
                 self.assertEqual(status, "REJECTED")
                 self.assertIn(field, "; ".join(reasons))
-        for address in (0x1800, 0x1804, 0x1BFF):
+        for address in (0x0000, 0x0800, 0x1804, 0x1FFF):  # VDC, PSG, CD unit, edge of page $1FFF
             with self.subTest(io=hex(address)):
                 cases = [case_with(io_writes=[address])]
                 status, reasons = M.preflight(cases, approved_config())
                 self.assertEqual(status, "REJECTED")
                 self.assertIn("hardware I/O page", "; ".join(reasons))
         status, _ = M.preflight([case_with(io_writes=[0x2000])], approved_config())
-        self.assertEqual(status, "BLOCKED_ABI")  # non-hardware-page list is only unknown, not refused
+        self.assertEqual(status, "BLOCKED_ABI")  # outside the hardware page: only unknown, not refused
+
+    def test_non_bool_permission_values_are_blocked_not_accepted(self):
+        for value in (None, 0, "false"):
+            with self.subTest(value=value):
+                status, reasons = M.preflight(list(M.CASES), approved_config(execution_allowed=value))
+                self.assertEqual(status, "BLOCKED")
+                self.assertIn("execution_allowed must be a bool", "; ".join(reasons))
 
     def test_gate_approval_and_matching_rom_never_grant_execution(self):
         status, reasons = M.preflight(list(M.CASES), approved_config())
@@ -133,7 +141,16 @@ class Slot04FixtureTests(unittest.TestCase):
         self.assertEqual(self.run_cli(approved_config()).returncode, M.EXIT_FAIL_CLOSED)
 
     def test_rom_file_is_never_read(self):
-        # A non-existent ROM path still yields a verdict: the bytes are never opened.
+        # --config pointing at a ROM-like file must be refused without any read of its bytes.
+        handle = tempfile.NamedTemporaryFile("wb", suffix=".pce", delete=False)
+        handle.write(b"\x00" * 16)
+        handle.close()
+        self.addCleanup(lambda: Path(handle.name).unlink(missing_ok=True))
+        with mock.patch.object(Path, "read_text", side_effect=AssertionError("read")), \
+                mock.patch.object(Path, "read_bytes", side_effect=AssertionError("read")):
+            code = M.main(["--check", "--config", handle.name])
+        self.assertEqual(code, M.EXIT_FAIL_CLOSED)
+        # A non-existent ROM path in a valid run config still yields a verdict without opening it.
         result = self.run_cli(approved_config(rom_path="local/does-not-exist.pce"))
         self.assertEqual(result.returncode, M.EXIT_FAIL_CLOSED, result.stderr)
         self.assertTrue(result.stdout.startswith("BLOCKED_ABI: "), result.stdout)
@@ -145,7 +162,8 @@ class Slot04FixtureTests(unittest.TestCase):
                 self.assertNotIn("cdseek_slot04", text)
                 self.assertNotIn("reference_bios_runner", text)
         source = (ROOT / "tools" / "cdseek_slot04_fixture.py").read_text(encoding="utf-8")
-        for banned in ("import subprocess", "os.system", "popen(", ".read_bytes", "open("):
+        for banned in ("import subprocess", "os.system", "popen(", "Popen", "exec(", "os.exec",
+                       ".read_bytes"):
             self.assertNotIn(banned, source)
 
     def test_cli_fails_closed_with_exit_3(self):
@@ -157,7 +175,7 @@ class Slot04FixtureTests(unittest.TestCase):
         self.assertEqual(valid.returncode, M.EXIT_FAIL_CLOSED, valid.stderr)
         self.assertTrue(valid.stdout.startswith("BLOCKED_ABI: "), valid.stdout)
         for result in (missing, valid):
-            for banned in ("MODEL_ELIGIBLE", "ALLOWED", "PASS", "VERIFIED", "270"):
+            for banned in ("MODEL_ELIGIBLE", "ALLOWED", "PASS", "VERIFIED", "270"):  # 270: full catalog count, never shown here
                 self.assertNotIn(banned, result.stdout)
 
 
