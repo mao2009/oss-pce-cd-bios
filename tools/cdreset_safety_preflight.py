@@ -22,7 +22,9 @@ import argparse
 from typing import NamedTuple
 
 EXIT_BLOCKED = 3  # repo BLOCKED convention (tools/build_rom.py, tools/cd_read_contract.py)
-EXIT_ALLOWED = 0
+#: Synthetic model eligibility. Nonzero on purpose: exit 0 must never read as "allowed to run",
+#: and this module never grants execution permission. Not a permission code.
+EXIT_MODEL_ELIGIBLE = 4
 
 
 class Hazard(NamedTuple):
@@ -160,7 +162,16 @@ def main(argv=None):
         parser.error("--check is required")
     verdict, reasons = decide(CURRENT_POSTURE, CURRENT_ABI)
     print(format_verdict(verdict, reasons))
-    return EXIT_ALLOWED if verdict == "MODEL_ELIGIBLE" else EXIT_BLOCKED
+    return exit_code(verdict)
+
+
+def exit_code(verdict):
+    """Map a verdict to a process exit code. Only the exact MODEL_ELIGIBLE gets its own code,
+    and it is nonzero; any other verdict (including unknown ones) is BLOCKED. Exit 0 is never
+    returned, so no shell consumer can read this CLI as an allow."""
+    if verdict == "MODEL_ELIGIBLE":
+        return EXIT_MODEL_ELIGIBLE
+    return EXIT_BLOCKED
 
 
 if __name__ == "__main__":

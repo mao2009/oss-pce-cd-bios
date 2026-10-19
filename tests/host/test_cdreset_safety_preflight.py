@@ -166,6 +166,37 @@ class CdResetSafetyPreflightTests(unittest.TestCase):
         self.assertIn("H4", result.stdout)
         self.assertIn("H5", result.stdout)
 
+    def test_exit_code_never_zero_and_model_eligible_is_not_allowed(self):
+        # Exit 0 must never mean "allowed": every verdict maps to a nonzero code.
+        self.assertNotEqual(M.EXIT_BLOCKED, 0)
+        self.assertNotEqual(M.EXIT_MODEL_ELIGIBLE, 0)
+        self.assertNotEqual(M.EXIT_MODEL_ELIGIBLE, M.EXIT_BLOCKED)
+        self.assertEqual(M.exit_code("MODEL_ELIGIBLE"), M.EXIT_MODEL_ELIGIBLE)
+        # Negative: BLOCKED, empty, unknown, and case/whitespace variants are all BLOCKED.
+        for verdict in ("BLOCKED", "", "ALLOWED", "model_eligible", " MODEL_ELIGIBLE", None, "PASS"):
+            with self.subTest(verdict=verdict):
+                self.assertEqual(M.exit_code(verdict), M.EXIT_BLOCKED)
+
+    def test_cli_returns_model_eligible_code_only_for_complete_synthetic_posture(self):
+        # Positive: synthetic-complete posture + reviewed ABI -> MODEL_ELIGIBLE, nonzero, not permission.
+        import contextlib
+        import io
+        from unittest import mock
+        complete_posture = dict(M.CURRENT_POSTURE, hardware_page_policy="intercept",
+                                st_instruction_intercept=True, irq_register_intercept=True,
+                                entry_environment_reproduced=True)
+        with mock.patch.object(M, "CURRENT_POSTURE", complete_posture), \
+                mock.patch.object(M, "CURRENT_ABI", {"status": "REVIEWED", "entry_environment": "KNOWN"}), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            code = M.main(["--check"])
+        self.assertEqual(code, M.EXIT_MODEL_ELIGIBLE)
+        self.assertNotEqual(code, 0)
+        self.assertIn("not execution permission", out.getvalue())
+        self.assertFalse(out.getvalue().startswith("BLOCKED: "))
+        # Negative: the real posture stays BLOCKED with exit 3 (never 0 or 4).
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(M.main(["--check"]), M.EXIT_BLOCKED)
+
     def test_cli_requires_check(self):
         result = subprocess.run([sys.executable, str(ROOT / "tools" / "cdreset_safety_preflight.py")],
                                 capture_output=True, text=True, check=False)
