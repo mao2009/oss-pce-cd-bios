@@ -4,6 +4,9 @@ The guest checks all 65,536 pairs against a repeated-addition reference plus Y/C
 preservation; this script checks the guest's pair count and an edge table against Python
 a*b, and requires ROMs with the loop count, clc and ror a mutated to report FAIL. Project-internal
 interface only: the reference MA_MUL8U ABI is UNVERIFIED and the jump table is untouched.
+
+Not part of `make test`/`make integration`. Run directly from a clean clone on Linux with TOOLS_DIR set:
+    TOOLS_DIR=<tools dir> python3 tests/integration/geargrafx_ma_mul8u.py
 """
 import argparse
 import ctypes as C
