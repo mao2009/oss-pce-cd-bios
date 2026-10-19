@@ -66,16 +66,17 @@ def parse_ledger(text):
     """
     items, sources, malformed = [], set(), []
     for line in text.splitlines():
-        if not line.startswith('| '):
+        if not line.lstrip().startswith('|'):
             continue
         cells = _cells(line)
-        if re.fullmatch(r'S\d+', cells[0]):
-            sources.add(cells[0])
-        elif ID_LIKE_RE.fullmatch(cells[0]):
-            if CANONICAL_ID_RE.fullmatch(cells[0]) and len(cells) == len(FIELDS):
+        cells[0] = first = _bare(cells[0])
+        if re.fullmatch(r'S\d+', first):
+            sources.add(first)
+        elif ID_LIKE_RE.fullmatch(first):
+            if CANONICAL_ID_RE.fullmatch(first) and len(cells) == len(FIELDS):
                 items.append(dict(zip(FIELDS, cells)))
             else:
-                malformed.append(cells[0])
+                malformed.append(first)
     return items, sources, malformed
 
 
@@ -224,6 +225,18 @@ class LedgerMutationTests(unittest.TestCase):
         i = self._idx(lines, '| K10 |')
         lines.insert(i + 1, lines[i].replace('| K10 |', '| K 11 |', 1))
         self.assertIn('malformed row K 11', self._problems(lines))
+
+    def test_row_without_space_after_pipe_is_detected(self):
+        lines = self._lines()
+        i = self._idx(lines, '| K10 |')
+        lines.insert(i + 1, lines[i].replace('| K10 |', '|K11 |', 1))
+        self.assertIn('unexpected K11', self._problems(lines))
+
+    def test_row_with_backticked_id_is_detected(self):
+        lines = self._lines()
+        i = self._idx(lines, '| K10 |')
+        lines.insert(i + 1, lines[i].replace('| K10 |', '| `K11` |', 1))
+        self.assertIn('unexpected K11', self._problems(lines))
 
     def test_row_with_missing_cell_is_detected(self):
         lines = self._lines()
