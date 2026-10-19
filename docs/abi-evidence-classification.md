@@ -24,7 +24,8 @@
 
 - 問い: ピン留めした公開ソース（caller SDK、HLE エミュレータ、実コアのソース）がその項目について何を書いているか。
 - 取り得る値: `UNKNOWN`（根拠なし） / `HYPOTHESIS`（ソースに記述がある。`confidence: SOURCE_SUPPORTED`）。
-  claim status の `BLOCKED` はこの軸ではなく、2.3 の「判定できない」に含める。
+  `SOURCE_FACT` は文書上のラベルであり、スキーマのフィールドはまだ無い（移行しないため）。
+  claim status の `BLOCKED` はこの軸ではなく、2.3 の「判定できない」にのみ含める。
 - 上限: `HYPOTHESIS` / `SOURCE_SUPPORTED`。ソースの記述だけでは `OBSERVED` / `VERIFIED` にならない。
 - 既存フィールドとの対応: `spec/api_contracts.json` の各 claim の `status`・`value`・`sources`・`confidence`、
   `mapping_status`、`name_observations`。ソース種別は `tools/contracts.py` の `SOURCE_KIND_MEANINGS`
@@ -32,7 +33,7 @@
 - `SOURCE_FACT` の位置づけ: 固定版の一次ソース本文に書かれた**呼出側（caller）の事実**に限る。provenance が `PENDING`
   でも `SOURCE_FACT` は成立する（軸2から独立）。BIOS callee の挙動の証拠ではなく、`HYPOTHESIS` が根拠を持つ場合の
   根拠欄にあたる。callee の行には付けない（`docs/cd-exec-contract-ledger.md`）。
-- 3つの状態: 一次ソースの事実（`SOURCE_FACT`）／仮説（`HYPOTHESIS`）／不明・判定不能（`UNKNOWN`・`BLOCKED`）は混ぜずに別の欄で扱う。
+- 3区分: 一次ソースの事実（`SOURCE_FACT`）／仮説（`HYPOTHESIS`）／不明（`UNKNOWN`）は混ぜずに別の欄で扱う。
   スキーマ移行は本書では行わない（§6、別 Issue）。
 - 判断者: 調査者。誤りがあればレビューで直す。
 
