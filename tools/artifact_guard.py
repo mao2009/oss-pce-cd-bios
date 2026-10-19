@@ -263,8 +263,8 @@ def _step_keys(lines, start, end, dash):
     return [lines[start].lstrip()[2:].strip()] + [l.strip() for l in lines[start + 1:end] if _live(l) and _indent(l) == dash + 2]
 
 
-def _run_command(lines, start, end, dash):
-    """First command word-line of the step's `run:` value (single-line or block scalar), or None."""
+def _run_lines(lines, start, end, dash):
+    """Live lines of the step's `run:` value (inline value, or the body of a `|` / `>` block); [] if no run:."""
     for i in range(start, end):
         l = lines[i].lstrip()
         if i == start:
@@ -276,18 +276,28 @@ def _run_command(lines, start, end, dash):
             continue
         value = m.group(1).strip()
         if re.match(r"[|>][+-]?\d*\s*(#.*)?$", value):
-            return next((x.strip() for x in lines[i + 1:end] if _live(x)), None)
-        return value or None
-    return None
+            body = []
+            for x in lines[i + 1:end]:
+                if _live(x) and _indent(x) <= dash + 2:
+                    break
+                if _live(x):
+                    body.append(x.strip())
+            return body
+        return [value] if value else []
+    return []
 
 
 def _guard_is_bare(command, call, keys):
-    """Exit status must gate the step: bare guard call, optionally `&& more`; default shell or `shell: bash` only."""
-    m = re.match(r"(python3?\s+)?" + re.escape(call) + r"(\s|$)", command or "")
-    rest = (command[m.end():] if m else "").replace("&&", " ")
+    """The step's whole `run:` value is ONE live line: the guard call and nothing after its arguments.
+
+    `command` is the list of live run lines. Under `bash -e` a failure left of a non-final `&&`/`||`
+    or inside a pipe, `;`, `&` is exempt from errexit, so any second line or shell operator/comment
+    after the call is rejected. `shell:` may be absent or `bash`.
+    """
+    m = len(command) == 1 and re.match(r"(python3?\s+)?" + re.escape(call) + r"(\s|$)", command[0])
     shell_ok = all(re.sub(r"""["']""", "", k.split(":", 1)[1]).split("#")[0].strip() == "bash"
                    for k in keys if re.match(r"""["']?shell["']?\s*:""", k))
-    return bool(m) and shell_ok and not re.search(r"[|&;]|\\$", rest)
+    return bool(m) and shell_ok and not re.search(r"[|&;#`$()<>\\]", command[0][m.end():])
 
 
 def guard_placement_violations(text, workflow):
@@ -316,9 +326,9 @@ def guard_placement_violations(text, workflow):
         if start >= up[0]:
             problems.append(f"{label}: guard step is not before the upload step")
         keys = _step_keys(lines, start, end, dash_indent)
-        command = _run_command(lines, start, end, dash_indent)
+        command = _run_lines(lines, start, end, dash_indent)
         if not _guard_is_bare(command, call, keys):
-            problems.append(f"{label}: guard call is not the bare command of the step's run: (no ||, |, &, ;, custom shell:)")
+            problems.append(f"{label}: guard call is not the bare command of the step's run: (single line, nothing after it, no custom shell:)")
         for key in ("if", "continue-on-error"):
             if any(re.match(rf"""["']?{key}["']?\s*:""", k) for k in keys):
                 problems.append(f"{label}: guard step has {key}:")

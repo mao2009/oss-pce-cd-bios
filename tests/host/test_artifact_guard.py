@@ -391,6 +391,7 @@ class GuardPlacementTests(unittest.TestCase):
             'pipe': f'        run: {CALL} | cat',
             'semicolon': f'        run: {CALL} ; true',
             'and then or': f'        run: {CALL} && echo x || true',
+            'and tail inline': f'        run: {CALL} && echo done',
             'block or true': run + ' || true',
             'block continuation': run + ' \\n          || true',
             'shell python': '        shell: python\n' + run,
@@ -406,9 +407,26 @@ class GuardPlacementTests(unittest.TestCase):
         run = '        run: |\n          ' + CALL
         for step in (f'        run: {CALL}',
                      '        run: python3 tools/artifact_guard.py --post-build w.yml "Save" --x',
-                     '        run: >\n          ' + CALL, run + '\n          echo done'):
+                     '        run: >-\n          ' + CALL, run,
+                     '        shell: bash\n' + run, '        shell: "bash"\n' + run):
             with self.subTest(step=step):
                 self.assertEqual([], self.violations(GUARDED.replace(run, step)))
+
+    def test_single_live_line_is_required(self):
+        run = '        run: |\n          ' + CALL
+        bad = {
+            'multi-line and': run + ' && echo a\n          echo done',
+            'second line': run + '\n          echo done',
+            'and tail': run + ' && echo done',
+            'comment tail': run + ' # note',
+            'set +e': '        run: |\n          set +e\n          ' + CALL,
+            'set +o errexit': '        run: |\n          set +o errexit\n          ' + CALL,
+        }
+        for label, step in bad.items():
+            with self.subTest(bad=label):
+                text = GUARDED.replace(run, step)
+                self.assertNotEqual(text, GUARDED)
+                self.assertNotEqual([], self.violations(text))
 
     def test_flow_style_steps_raise_clear_error(self):
         with self.assertRaisesRegex(ValueError, 'w.yml: flow-style steps unsupported'):
