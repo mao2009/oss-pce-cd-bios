@@ -52,7 +52,7 @@ HuCC の `ad_reset` 呼出側は、`include/hucc/` 内ではマクロ定義（H2
 
 | ID | 出典（固定版内のパス） | 行 | ライセンス表示 | provenance | 使い方 |
 | --- | --- | --- | --- | --- | --- |
-| E1 | `examples/asm/elmer/include/adpcm.asm` | 56–72（`adpcm_reset`。56 行に "BIOS AD_RESET" の注記、72 行に "BIOS sets 2KHz playback!" の注記） | BSL-1.0（John Brandwood 2022、ヘッダ 10–14 行） | PENDING | 開発者による**再実装**。BIOS ではない（§3 で扱う） |
+| E1 | `examples/asm/elmer/include/adpcm.asm` | 56–73（`adpcm_reset`、コード 63–73。56 行に "BIOS AD_RESET" の注記、72 行に "BIOS sets 2KHz playback!" の注記） | BSL-1.0（John Brandwood 2022、ヘッダ 10–14 行） | PENDING | 開発者による**再実装**。BIOS ではない（§3 で扱う） |
 | E2 | `examples/asm/elmer/rom-bare-clktest/clktest.asm` | 446–463（E1 とほぼ同一の `adpcm_reset`） | BSL-1.0（John Brandwood 2026、ヘッダ 8、10–12 行） | PENDING | E1 と同じ。独立の証拠ではなく同じ著者の複製 |
 
 E1 と E2 は、呼出先（BIOS）ではなく、同じ著者が書いた**再実装**の内容である。そこから読めるのは、その再実装が何を書くかだけである。BIOS の振る舞いの根拠にはしない。
@@ -84,7 +84,7 @@ E1 と E2 は、呼出先（BIOS）ではなく、同じ著者が書いた**再�
 4. **X の扱い**（H5、SOURCE_FACT）: `call_bios` は X に触れない。BIOS が X を読むか書くかは UNKNOWN。
 5. **副作用の不記載**（H5 の `Uses:` 注記（492 行）、SOURCE_FACT）: `call_bios` のコメントは、呼出される関数が何を使うかを「Whatever the System Card function uses!」と記し、副作用を明記していない。源泉側が副作用を規定していないことの記録であり、副作用なしの証拠ではない。
 6. **引数・戻り値の宣言**（H2、H3、SOURCE_FACT）: C 宣言は `void` で、引数・戻り値はない。これは呼出側の宣言であり、BIOS が引数を読まないことの証拠ではない。
-7. **再実装の内容**（E1 の 63–73 行、HYPOTHESIS（再実装の記述。BIOS の記述ではない））: 開発者の `adpcm_reset` は、ADPCM 制御レジスタに reset の値を書いて 0 に戻し、DMA 制御、IRQ マスク（一部ビットを clear）、再生速度レジスタを書く。これは再実装が行う書込みの記録であり、BIOS の書込みの記録ではない。
+7. **再実装の内容**（E1 のコード 63–73 行、HYPOTHESIS（再実装の記述。BIOS の記述ではない））: 開発者の `adpcm_reset` は、ADPCM 制御レジスタに reset の値を書いて 0 に戻し、DMA 制御、IRQ マスク（一部ビットを clear）、再生速度レジスタを書く。これは再実装が行う書込みの記録であり、BIOS の書込みの記録ではない。
 8. **再実装のコメント**（E1 の 56、59、72 行、HYPOTHESIS）: "BIOS AD_RESET" と "BIOS sets 2KHz playback!" は、開発者による BIOS 振る舞いの主張であり、本台帳では確認していない。E2 は同じ記述を複製している。
 
 ## 4. 項目別の台帳
@@ -143,7 +143,7 @@ E1 と E2 は、呼出先（BIOS）ではなく、同じ著者が書いた**再�
 | --- | --- | --- |
 | 独立レビュー | NOT_RUN | 別エージェントによる台帳レビューは行っていない。 |
 | provenance 審査 | PENDING | §2 の全出典はレビュア・決定日が未記録。 |
-| 関連 CI | NOT_RUN | 本 PR はホストテストを追加しない（Issue が要求しない）。`python3 -m unittest` 対象モジュールなし。 |
+| 関連 CI | 実施（台帳の形式のみ） | 本 PR は `tests/host/test_ad_reset_source_fact.py` を追加する。実行: `python -I -m unittest discover -s tests/host -p test_ad_reset_source_fact.py -v`（`python -I` では `tests.host...` 形式の import はできない）。`make test` は `$(PYTHON) -m unittest discover -s tests/host -v`（Makefile 16 行）で `tests/host` を探索するため、同じテストを実行する。CI ワークフローは変更しない。検査内容: §1 の SOURCE_FACT 定義の文言、§4 の表の行数 31 と確度別件数（SOURCE_FACT 10 / HYPOTHESIS 5 / UNKNOWN 16）、b 行（BIOS 側）に SOURCE_FACT がないこと、SOURCE_FACT の段落に APPROVED を条件とする記述がないこと。検査しない内容: 出典の内容の正しさ、行番号、BIOS の振る舞い、b の接尾辞を持たない BIOS 側の行（2、6、9、17、18）の分類。 |
 | 実測（callee 実行） | NOT_RUN | System Card の AD_RESET を実行していない（BLOCKED_ABI）。 |
 | 固定版ソースの読取り | 実施 | §2 の commit と SHA-256 を確認し、`grep` と `sed -n` で行番号を確認した（展開物は実行していない）。 |
 
