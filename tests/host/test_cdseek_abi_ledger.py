@@ -1,9 +1,10 @@
 """Host tests for the Issue #214 CD_SEEK ($04, $E00C) caller-ABI ledger.
 
 These tests check the ledger's rules (status vocabulary, no VERIFIED/OBSERVED, callee rows never
-promoted from caller source, UNKNOWN values never filled) and one pure fact quoted from the
-pinned HuCC source: the cd_seek equate. No emulator, no ROM and no System Card code is involved,
-and the table arithmetic is NOT evidence of BIOS behaviour.
+promoted from caller source, UNKNOWN values never filled), the exact row set (K1-K10, C1-C11,
+R1-R3), and one pure fact quoted from the pinned HuCC source: the cd_seek equate. No emulator,
+no ROM and no System Card code is involved, and the table arithmetic is NOT evidence of BIOS
+behaviour.
 
 外部由来の LBA 表は本ファイルに埋め込まない。表の算術の検査は合成値で行い、固定版での一回限りの
 確認結果は docs/cd-seek-abi-ledger.md §4 に残す。
@@ -11,6 +12,7 @@ and the table arithmetic is NOT evidence of BIOS behaviour.
 import re
 import sys
 import unittest
+from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -28,6 +30,15 @@ SYNTH_TABLE_COUNT = 38
 SYNTH_VIDEO_COUNT = 37
 SYNTH_TABLE = [0x010000 + 0x100 * i for i in range(SYNTH_VIDEO_COUNT)] + [0x000001]
 
+# 台帳の行の正本: ID と側。K1-K10（呼出側）、C1-C11（呼出先）、R1-R3（関係）の 24 項目。
+EXPECTED_SIDES = {
+    **{f'K{i}': 'K' for i in range(1, 11)},
+    **{f'C{i}': 'C' for i in range(1, 12)},
+    **{f'R{i}': 'R' for i in range(1, 4)},
+}
+C1_ENTRY = '$E00C'
+FIELDS = ['id', 'side', 'item', 'status', 'value', 'source', 'reason', 'test']
+
 STATUSES = {'SOURCE_FACT', 'CALLER_INFERENCE', 'HYPOTHESIS', 'UNKNOWN', 'BLOCKED'}
 CALLEE_STATUSES = {'HYPOTHESIS', 'UNKNOWN', 'BLOCKED'}
 FORBIDDEN = {'VERIFIED', 'OBSERVED'}
@@ -38,19 +49,43 @@ def _cells(line):
     return [c.strip() for c in line.strip().strip('|').split('|')]
 
 
-def load_rows():
-    """Return (item rows, source ids) parsed from the ledger's markdown tables."""
-    items, sources = [], set()
-    for line in DOC.read_text(encoding='utf-8').splitlines():
+def _bare(value):
+    """Cell text without the Markdown code-span backticks."""
+    return value.strip().strip('`').strip()
+
+
+def parse_ledger(text):
+    """Return (item rows, source ids, malformed item IDs) parsed from the ledger's markdown tables."""
+    items, sources, malformed = [], set(), []
+    for line in text.splitlines():
         if not line.startswith('| '):
             continue
         cells = _cells(line)
         if re.fullmatch(r'S\d+', cells[0]):
             sources.add(cells[0])
-        elif re.fullmatch(r'[KCR]\d+', cells[0]) and len(cells) == 8:
-            items.append(dict(zip(
-                ['id', 'side', 'item', 'status', 'value', 'source', 'reason', 'test'], cells)))
-    return items, sources
+        elif re.fullmatch(r'[KCR]\d+', cells[0]):
+            if len(cells) == len(FIELDS):
+                items.append(dict(zip(FIELDS, cells)))
+            else:
+                malformed.append(cells[0])
+    return items, sources, malformed
+
+
+def ledger_problems(items, malformed=()):
+    """Return a list of row-set problems; an empty list means the ledger is exactly the 24 rows."""
+    problems = [f'malformed row {i}' for i in malformed]
+    counts = Counter(r['id'] for r in items)
+    problems += [f'duplicate {i} x{n}' for i, n in counts.items() if n > 1]
+    problems += [f'missing {i}' for i in EXPECTED_SIDES if i not in counts]
+    problems += [f'unexpected {i}' for i in counts if i not in EXPECTED_SIDES]
+    for r in items:
+        want = EXPECTED_SIDES.get(r['id'])
+        if want is not None and r['side'] != want:
+            problems.append(f"side {r['id']}={r['side']} expected {want}")
+    for r in items:
+        if r['id'] == 'C1' and _bare(r['value']) != C1_ENTRY:
+            problems.append(f"C1 value {r['value']!r} expected {C1_ENTRY!r}")
+    return problems
 
 
 def is_valid_binary_msf(b):
@@ -67,18 +102,29 @@ def is_valid_bcd_msf(b):
     return s < 60 and f < 75 and m < 100
 
 
+TEXT = DOC.read_text(encoding='utf-8')
+
+
+class LedgerRowTests(unittest.TestCase):
+    def test_ledger_rows_are_exactly_the_24_expected_ids_and_sides(self):
+        items, _, malformed = parse_ledger(TEXT)
+        self.assertEqual(len(EXPECTED_SIDES), 24)
+        self.assertEqual(ledger_problems(items, malformed), [])
+        self.assertEqual(len(items), 24)
+
+    def test_c1_entry_cell_is_e00c_in_the_parsed_row(self):
+        items, _, _ = parse_ledger(TEXT)
+        c1 = [r for r in items if r['id'] == 'C1']
+        self.assertEqual(len(c1), 1)
+        self.assertEqual(c1[0]['side'], 'C')
+        self.assertEqual(_bare(c1[0]['value']), C1_ENTRY)
+
+
 class LedgerRuleTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.items, cls.sources = load_rows()
-        cls.text = DOC.read_text(encoding='utf-8')
-
-    def test_ledger_has_enough_rows_and_unique_ids(self):
-        ids = [r['id'] for r in self.items]
-        self.assertGreaterEqual(len(ids), 20)
-        self.assertEqual(len(ids), len(set(ids)))
-        for side in 'KCR':
-            self.assertTrue(any(r['side'] == side for r in self.items), side)
+        cls.items, cls.sources, _ = parse_ledger(TEXT)
+        cls.text = TEXT
 
     def test_status_vocabulary_excludes_verified_and_observed(self):
         for r in self.items:
@@ -108,6 +154,65 @@ class LedgerRuleTests(unittest.TestCase):
         self.assertEqual(self.sources, {'S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7'})
 
 
+class LedgerMutationTests(unittest.TestCase):
+    """Deliberate ledger edits must be caught by ledger_problems (the real file is not touched)."""
+
+    def _lines(self):
+        return TEXT.splitlines(keepends=True)
+
+    def _idx(self, lines, prefix):
+        hits = [i for i, l in enumerate(lines) if l.startswith(prefix)]
+        self.assertEqual(len(hits), 1, prefix)
+        return hits[0]
+
+    def _problems(self, lines):
+        items, _, malformed = parse_ledger(''.join(lines))
+        return ledger_problems(items, malformed)
+
+    def test_real_ledger_has_no_problems(self):
+        self.assertEqual(self._problems(self._lines()), [])
+
+    def test_deleted_row_is_detected(self):
+        lines = self._lines()
+        del lines[self._idx(lines, '| K5 |')]
+        self.assertIn('missing K5', self._problems(lines))
+
+    def test_changed_c1_entry_is_detected_even_though_e00c_appears_elsewhere(self):
+        # 文書の他の箇所に $E00C が残っていても、C1 の入口欄が変われば失敗する。
+        lines = self._lines()
+        i = self._idx(lines, '| C1 |')
+        self.assertIn('`$E00C`', lines[i])
+        lines[i] = lines[i].replace('`$E00C`', '`$E00D`')
+        self.assertIn('$E00C', ''.join(lines))
+        self.assertTrue(any(p.startswith('C1 value') for p in self._problems(lines)))
+
+    def test_swapped_side_is_detected(self):
+        lines = self._lines()
+        i = self._idx(lines, '| K3 |')
+        self.assertIn('| K3 | K |', lines[i])
+        lines[i] = lines[i].replace('| K3 | K |', '| K3 | C |', 1)
+        self.assertIn('side K3=C expected K', self._problems(lines))
+
+    def test_duplicate_row_is_detected(self):
+        lines = self._lines()
+        i = self._idx(lines, '| K1 |')
+        lines.insert(i + 1, lines[i])
+        self.assertIn('duplicate K1 x2', self._problems(lines))
+
+    def test_unexpected_row_is_detected(self):
+        lines = self._lines()
+        i = self._idx(lines, '| K10 |')
+        lines.insert(i + 1, lines[i].replace('| K10 |', '| K11 |', 1))
+        self.assertIn('unexpected K11', self._problems(lines))
+
+    def test_row_with_missing_cell_is_detected(self):
+        lines = self._lines()
+        i = self._idx(lines, '| K2 |')
+        cells = _cells(lines[i])
+        lines[i] = '| ' + ' | '.join(cells[:-1]) + ' |\n'
+        self.assertIn('malformed row K2', self._problems(lines))
+
+
 class CallerFactTests(unittest.TestCase):
     def test_cd_seek_entry_is_call_bios_base_plus_y(self):
         m = re.search(r'\$00:([0-9A-F]{4})', CD_SEEK_EQUATE)
@@ -115,9 +220,6 @@ class CallerFactTests(unittest.TestCase):
         entry = int(m.group(1), 16)
         self.assertEqual(entry, CALL_BIOS_BASE + CALL_BIOS_Y_FOR_SEEK)
         self.assertEqual(entry, 0xE00C)
-
-    def test_ledger_entry_matches_quoted_equate(self):
-        self.assertIn('$E00C', DOC.read_text(encoding='utf-8'))
 
     def test_synthetic_table_is_24bit_and_video_part_is_increasing(self):
         # 合成表の形だけを確かめる。実表の検査ではない。
