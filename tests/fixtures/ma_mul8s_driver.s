@@ -46,24 +46,20 @@ row:
     jsr ma_mul8s
     php
     cld
-    sta tmp
-    stx tmp + 1
-    sty tmp + 2
-    tsx
-    stx tmp + 3
-    ldx cur_b
+    sty tmp              ; Y after the call
+    ldy cur_b
+    sta $2200,y
+    txa
+    sta $2300,y
     lda tmp
-    sta $2200,x
-    lda tmp + 1
-    sta $2300,x
-    lda tmp + 2
-    sta $2400,x
-    lda tmp + 3
-    sta $2500,x
+    sta $2400,y
+    tsx
+    txa
+    sta $2500,y
     pla
-    sta $2600,x
+    sta $2600,y
     pla
-    sta $2700,x
+    sta $2700,y
     inc cur_b
     bne row
     lda req_id

@@ -148,10 +148,7 @@ def run_worker(core, rom):
 
 
 def judge(observation):
-    errors = []
-    for a, row in enumerate(observation["rows"]):
-        errors += check_row(a, bytes.fromhex(row))
-    return errors
+    return [e for a, row in enumerate(observation["rows"]) for e in check_row(a, bytes.fromhex(row))]
 
 
 def run(output):
@@ -198,7 +195,6 @@ def main():
         return
     evidence = run(args.output)
     (args.output / "evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
-    print(json.dumps({k: v for k, v in evidence.items() if k != "edge_products_hex"}, sort_keys=True))
     print(f"PASS MA_MUL8S: 65536 pairs on real Geargrafx; evidence {args.output / 'evidence.json'}")
 
 
