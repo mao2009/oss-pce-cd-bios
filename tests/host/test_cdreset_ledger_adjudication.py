@@ -124,7 +124,8 @@ class AdjudicateClaimTests(unittest.TestCase):
         self.assertEqual(set(SOURCE_KIND_MEANINGS),
                          {'CALLER_SOURCE', 'HLE_SOURCE', 'EMULATOR_SOURCE'})
         for meaning in SOURCE_KIND_MEANINGS.values():
-            self.assertIsInstance(meaning, str) and self.assertTrue(meaning)
+            self.assertIsInstance(meaning, str)
+            self.assertTrue(meaning)
 
     def test_observed_rejected_for_caller_source_only(self):
         # CALLER_SOURCE だけでは OBSERVED になれない（callee 実行を保証しない）。
