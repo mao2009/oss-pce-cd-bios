@@ -27,13 +27,14 @@ System Card API の意味とは別物である。
 3. **固定版コアのバイナリが無い。** `<repo>/rom/Geargrafx/Geargrafx.exe` は存在するが、版と SHA が固定版と照合できず、
    リリース版の GUI バイナリであるため、証拠としては使わない（`tools/dependencies.json` の固定版ではない）。
 
-探索したパス（名称のみ）: worktree 直下（`Makefile`, `tools/`, `tests/`, `docs/` を確認）、`C:/Users/<user>/oss-pce-cd-bios-tools`
+探索したパス（名称のみ）: worktree 直下（`Makefile`, `tools/`, `tests/`, `docs/` を確認）、リポジトリ外の既定 tools ディレクトリ
 （存在せず）、`<repo>/rom/`（`Geargrafx/`, 市販ゲームのフォルダ, `syscard3.pce` の存在のみ確認。中身は読んでいない）、PATH 上の
 `make` / `ca65` / `ld65`（無し）、`python`（3.14 あり、`gcc` は WinLibs の mingw のみ）。
 
 ## 再試行記録 (2026-10-19)
 
-- 対象: PR #220 のヘッド `50d3e4c`（`feat/215-cdseek-device-observation`）。同ブランチは別 worktree（locked）で
+- 対象: 前回の再試行時点の PR #220 ヘッドは `50d3e4c`（履歴として残す。以後の文書コミットで PR ヘッドは進むため、
+  現在の対象 SHA は下記の手順で実行開始時に取得して固定する）。`feat/215-cdseek-device-observation` は別 worktree（locked）で
   チェックアウト中のため、本 worktree は detached HEAD で同一コミットを使用し、`HEAD:feat/215-cdseek-device-observation` へ
   fast-forward で push した（PR #220 の Draft は維持）。
 - WSL: `wsl.exe` の呼出しは再度、実行ガードで拒否された（「worktree 隔離エージェントの plain command で wsl を実行するため、
@@ -46,43 +47,100 @@ System Card API の意味とは別物である。
 
 ### ユーザーが実行する手順（`!` 経由、エージェントは実行しない）
 
-WSL のホーム配下に clean clone を作り、固定版を取得して既存 CD-DA 診断を実行する。対象は PR #220 の HEAD
-`d79bd47cb60e375aa0c27e99d56d959f327ea496`。`GIT_DIR` / `GIT_WORK_TREE` は**設定しないこと**（既存の作業ツリーを参照すると検証にならない）。
-`TOOLS_DIR` はリポジトリ外の `$HOME` 配下に固定する（既定の `/tmp` は使わない）。
+WSL のホーム配下に clean clone を作り、固定版を取得して既存 CD-DA 診断を実行する。対象は PR #220 の HEAD。
+文書内に SHA を直書きしない（文書更新のたびに古くなるため）。代わりに、実行開始時に `git ls-remote` で
+`feat/215-cdseek-device-observation` の先頭 SHA を取得し、`TARGET_SHA` として固定する（PR の `headRefOid` と同じ値）。
+実行中に PR ヘッドが進んでも、証拠として使うのは開始時に固定した `TARGET_SHA` のみとする。
 
-**手順 A（推奨）: WSL のターミナルで直接貼り付けて実行する。** 途中で失敗するとサブシェルごと終了する。
+共通の方針:
+
+- `GIT_DIR` / `GIT_WORK_TREE` は**設定しないこと**（既存の作業ツリーを参照すると検証にならない）。手順は、これらが設定されていれば停止する。
+- 作業ディレクトリは `mktemp -d` で毎回新規作成する。既存のディレクトリ・ファイル（ほかの作業ツリー、ツールキャッシュ、ログ）は削除・上書きしない。
+- ログは `$HOME/cdseek215-logs/` に `mktemp` で一意なファイル名として保存する（既存ログは上書きしない）。リポジトリ外。
+- `TOOLS_DIR` はリポジトリ外の `$HOME` 配下に固定する（既定の `/tmp` は使わない）。
+- SHA の取得手段: `git ls-remote`（`git` があれば WSL でも Git Bash でも可）を正とする。WSL に `gh` がある場合のみ、
+  `gh pr view 220 --json headRefOid --jq .headRefOid` と一致することを追加で確認する。`gh` が無い環境では ls-remote の結果のみを使う。
+
+**手順 A（推奨）: WSL のターミナルで直接貼り付けて実行する。** `set -euo pipefail` により、途中で失敗するとサブシェルごと終了し、
+終了コードが非 0 になる。成功時のみ最後に `EXIT_OK` を出す。
 
 ```bash
 (
 set -euo pipefail
-W="$HOME/cdseek215"
-rm -rf "$W"
-git clone https://github.com/mao2009/oss-pce-cd-bios.git "$W"
-cd "$W"
-git checkout --detach d79bd47cb60e375aa0c27e99d56d959f327ea496
-test "$(git rev-parse HEAD)" = "d79bd47cb60e375aa0c27e99d56d959f327ea496"
+if [ -n "${GIT_DIR:-}" ] || [ -n "${GIT_WORK_TREE:-}" ]; then
+  echo "GIT_DIR または GIT_WORK_TREE が設定されています。これらを unset した新しいシェルで実行してください" >&2
+  exit 1
+fi
+REPO_URL="https://github.com/mao2009/oss-pce-cd-bios.git"
+PR_BRANCH="feat/215-cdseek-device-observation"
+TARGET_SHA="$(git ls-remote "$REPO_URL" "refs/heads/$PR_BRANCH" | cut -f1)"
+[[ "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "SHA の取得に失敗しました" >&2; exit 1; }
+if command -v gh >/dev/null 2>&1; then
+  test "$(gh pr view 220 --repo mao2009/oss-pce-cd-bios --json headRefOid --jq .headRefOid)" = "$TARGET_SHA"
+fi
+W="$(mktemp -d "$HOME/cdseek215-work.XXXXXX")"
+LOG_DIR="$HOME/cdseek215-logs"
+mkdir -p "$LOG_DIR"
+LOG="$(mktemp "$LOG_DIR/cdda-${TARGET_SHA:0:12}.XXXXXX.log")"
+echo "TARGET_SHA=$TARGET_SHA" | tee -a "$LOG"
+git clone "$REPO_URL" "$W/repo"
+cd "$W/repo"
+git checkout --detach "$TARGET_SHA"
+test "$(git rev-parse HEAD)" = "$TARGET_SHA"
 export TOOLS_DIR="$HOME/oss-pce-cd-bios-tools"
 python3 tools/setup.py cc65
 python3 tools/setup.py geargrafx
 python3 tools/setup.py geargrafx --debugger
 test "$(cat "$TOOLS_DIR/geargrafx-b49ae82a012eade566d72e9d61c9d95a5caa4da3-debugger/.verified-archive-sha256")" = "a80a3eae26a8efcd994350e84bbe73c975e406ced41f8f2404c88b00d4217f68"
 test "$(cat "$TOOLS_DIR/cc65-71746c829e77f74c2b601a7d16821170c2610df3/.verified-archive-sha256")" = "2172a1fc74bf6f3026e0f9427d4159508cd801abcb35ce591394bb911adaabe4"
-make dev-cdda-integration MODE=debug 2>&1 | tee "$HOME/cdseek215-cdda.log"
-echo "EXIT_OK"
+make dev-cdda-integration MODE=debug 2>&1 | tee -a "$LOG"
+echo "EXIT_OK TARGET_SHA=$TARGET_SHA WORK=$W LOG=$LOG" | tee -a "$LOG"
 )
 ```
 
-**手順 B: Windows の Git Bash から実行する場合。** Git Bash のパス変換を止めるため `MSYS_NO_PATHCONV=1` を付ける。
-中身は手順 A と同一（先頭の `(` と末尾の `)` を外し、`bash -lc` の引数として渡す。ログイン シェルで PATH を読み込ませるため）。
+**手順 B: Windows の Git Bash から実行する場合。** Git Bash のパス変換を止めるため `MSYS_NO_PATHCONV=1` を付け、
+手順 A の本体（外側の `(` と `)` を除く）を heredoc で `bash -l -s` の標準入力として WSL に渡す。`-l` でログイン シェルの PATH を読ませる。
+終了コードは `wsl exit=` の行で確認する（非 0 なら BLOCKED）。この手順は本文書の作成時点では実行していない（未検証）。
 
-```
-MSYS_NO_PATHCONV=1 wsl.exe -- bash -lc 'set -euo pipefail; W="$HOME/cdseek215"; rm -rf "$W"; git clone https://github.com/mao2009/oss-pce-cd-bios.git "$W"; cd "$W"; git checkout --detach d79bd47cb60e375aa0c27e99d56d959f327ea496; test "$(git rev-parse HEAD)" = "d79bd47cb60e375aa0c27e99d56d959f327ea496"; export TOOLS_DIR="$HOME/oss-pce-cd-bios-tools"; python3 tools/setup.py cc65; python3 tools/setup.py geargrafx; python3 tools/setup.py geargrafx --debugger; test "$(cat "$TOOLS_DIR/geargrafx-b49ae82a012eade566d72e9d61c9d95a5caa4da3-debugger/.verified-archive-sha256")" = "a80a3eae26a8efcd994350e84bbe73c975e406ced41f8f2404c88b00d4217f68"; test "$(cat "$TOOLS_DIR/cc65-71746c829e77f74c2b601a7d16821170c2610df3/.verified-archive-sha256")" = "2172a1fc74bf6f3026e0f9427d4159508cd801abcb35ce591394bb911adaabe4"; make dev-cdda-integration MODE=debug 2>&1 | tee "$HOME/cdseek215-cdda.log"; echo EXIT_OK'
+```bash
+MSYS_NO_PATHCONV=1 wsl.exe -- bash -l -s <<'CDSEEK_EOS'
+set -euo pipefail
+if [ -n "${GIT_DIR:-}" ] || [ -n "${GIT_WORK_TREE:-}" ]; then
+  echo "GIT_DIR または GIT_WORK_TREE が設定されています。これらを unset した新しいシェルで実行してください" >&2
+  exit 1
+fi
+REPO_URL="https://github.com/mao2009/oss-pce-cd-bios.git"
+PR_BRANCH="feat/215-cdseek-device-observation"
+TARGET_SHA="$(git ls-remote "$REPO_URL" "refs/heads/$PR_BRANCH" | cut -f1)"
+[[ "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "SHA の取得に失敗しました" >&2; exit 1; }
+if command -v gh >/dev/null 2>&1; then
+  test "$(gh pr view 220 --repo mao2009/oss-pce-cd-bios --json headRefOid --jq .headRefOid)" = "$TARGET_SHA"
+fi
+W="$(mktemp -d "$HOME/cdseek215-work.XXXXXX")"
+LOG_DIR="$HOME/cdseek215-logs"
+mkdir -p "$LOG_DIR"
+LOG="$(mktemp "$LOG_DIR/cdda-${TARGET_SHA:0:12}.XXXXXX.log")"
+echo "TARGET_SHA=$TARGET_SHA" | tee -a "$LOG"
+git clone "$REPO_URL" "$W/repo"
+cd "$W/repo"
+git checkout --detach "$TARGET_SHA"
+test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+export TOOLS_DIR="$HOME/oss-pce-cd-bios-tools"
+python3 tools/setup.py cc65
+python3 tools/setup.py geargrafx
+python3 tools/setup.py geargrafx --debugger
+test "$(cat "$TOOLS_DIR/geargrafx-b49ae82a012eade566d72e9d61c9d95a5caa4da3-debugger/.verified-archive-sha256")" = "a80a3eae26a8efcd994350e84bbe73c975e406ced41f8f2404c88b00d4217f68"
+test "$(cat "$TOOLS_DIR/cc65-71746c829e77f74c2b601a7d16821170c2610df3/.verified-archive-sha256")" = "2172a1fc74bf6f3026e0f9427d4159508cd801abcb35ce591394bb911adaabe4"
+make dev-cdda-integration MODE=debug 2>&1 | tee -a "$LOG"
+echo "EXIT_OK TARGET_SHA=$TARGET_SHA WORK=$W LOG=$LOG" | tee -a "$LOG"
+CDSEEK_EOS
+echo "wsl exit=$?"
 ```
 
 前提: WSL に `git` `python3` と、`tools/setup.py` が検査する `curl` `make` `gcc` `g++` `ar` があること（検査されるのはこの 5 つ。`git` `python3` は別途確認する）。不足時は `tools/setup.py` が不足ツール名を表示して止まるので、その表示を記録する。
 `setup.py` は取得アーカイブの SHA-256 を検証し、展開後のソースは `.source-integrity.json` と照合する。失敗時はそのまま BLOCKED として記録し、再試行前に原因を記録する。
 
-ログ全文はコミットしない（純正 BIOS・市販 ROM 由来のバイトを含めない）。ログは `$HOME/cdseek215-cdda.log`（リポジトリ外）に残る。
+ログ全文はコミットしない（純正 BIOS・市販 ROM 由来のバイトを含めない）。ログは `$HOME/cdseek215-logs/cdda-<SHA先頭12桁>.*.log`（リポジトリ外）に残り、作業ディレクトリは `$HOME/cdseek215-work.*`（リポジトリ外・未削除）に残る。不要になった作業ディレクトリは利用者が確認のうえ手動で削除する。
 
 #### 結果記録欄（実行後にユーザーが記入する。エージェントは記入しない）
 
@@ -91,6 +149,8 @@ MSYS_NO_PATHCONV=1 wsl.exe -- bash -lc 'set -euo pipefail; W="$HOME/cdseek215"; 
 
 | 区分 | 既存テストのキー（`tests/integration/geargrafx_cdda.py`） | 期待 status | 実測 status（記入） | 補足（記入） |
 | --- | --- | --- | --- | --- |
+| 実行対象 SHA（開始時固定） | `TARGET_SHA`（ログ 1 行目） | — | | ls-remote の取得値。`gh` で照合した場合はその結果も補足に記入 |
+| 作業ディレクトリ / ログ | — | — | | `cdseek215-work.*` と `cdseek215-logs/cdda-*.log` の実パスは記入しない（ファイル名のみ） |
 | 正例 | `mixed_mode_script` | PASS | | `samples_verified_against_bin`、`cdda_play` |
 | 負例 1 | `tampered_pcm_byte_in_lba20` | PASS_EXPECTED_FAILURE | | ログの rejected_because |
 | 負例 2 | `channels_swapped_lba21_sample30` | PASS_EXPECTED_FAILURE | | 同上 |
@@ -100,9 +160,10 @@ MSYS_NO_PATHCONV=1 wsl.exe -- bash -lc 'set -euo pipefail; W="$HOME/cdseek215"; 
 | IRQ | 既存診断は想定外の割り込みを検出して報告するのみ（完了通知は IRQ 経由で待たない） | NOT_TESTED | NOT_TESTED（変更しないこと） | 想定外割り込みの有無をログで確認して補足に記録 |
 | 無媒体・媒体外 LBA の明示ケース | 現行テストに無い | NOT_IMPLEMENTED | NOT_IMPLEMENTED | 追加は未着手 |
 
-完了後に次も記録する（`cdda-evidence.json` は `$W/build/debug/cdda-probe/` 配下）:
-`git rev-parse HEAD`（`d79bd47…` と一致）、`$TOOLS_DIR/geargrafx-b49ae82…-debugger/.verified-archive-sha256`（`a80a3eae…`）、
+完了後に次も記録する（`cdda-evidence.json` は `<作業ディレクトリ>/repo/build/debug/cdda-probe/` 配下。`<作業ディレクトリ>` は EXIT_OK 行の `WORK=` に出力される）:
+`git rev-parse HEAD`（`TARGET_SHA` と一致すること）、`$TOOLS_DIR/geargrafx-b49ae82…-debugger/.verified-archive-sha256`（`a80a3eae…`）、
 `$TOOLS_DIR/cc65-71746c8…/.verified-archive-sha256`（`2172a1fc…`）、evidence の `rom_sha256`・`geargrafx_revision`・`disc.bin_sha256`・`disc.cue_sha256`、ログの終了コード。
+実行後に PR ヘッドが変わっていても、証拠の対象は開始時の `TARGET_SHA` である。変化したことは補足に別途記録する（判定には使わない）。
 固定版の `git rev-parse` は使わない（取得物は git リポジトリではない）。
 
 ## 固定版ソースの読解 (SOURCE_READ, `src/scsi_controller.cpp` @ `b49ae82`)
