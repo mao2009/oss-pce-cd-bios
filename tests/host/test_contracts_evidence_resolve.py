@@ -45,7 +45,7 @@ class ResolveEvidenceTests(unittest.TestCase):
 
     def test_missing_artifact_is_rejected(self):
         with self.assertRaisesRegex(ValueError, 'missing or not a regular file'):
-            self.resolve(entry(evidence_hash='1' * 64))
+            self.resolve(entry(evidence_hash=hashlib.sha256(b'absent').hexdigest()))
 
     def test_format_valid_but_unstored_synthetic_hash_is_rejected(self):
         # The FORMAT_ONLY synthetic hash used in the ledger tests has no stored artifact: never PASS.
