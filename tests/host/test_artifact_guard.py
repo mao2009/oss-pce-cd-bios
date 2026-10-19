@@ -362,19 +362,23 @@ class WorkflowTests(unittest.TestCase):
             check_upload_artifacts(self.root)
 
 
-TRUSTED_GUARD = '"${{ runner.temp }}/trusted-main/tools/artifact_guard.py"'
+TRUSTED_GUARD = '".trusted-main/tools/artifact_guard.py"'
 GUARD_PREFIX = '"${{ steps.pyresolve.outputs.python }}" ' + TRUSTED_GUARD + ' --root "$GITHUB_WORKSPACE"'
 CALL = GUARD_PREFIX + ' --stage w.yml "Save"'
 VERIFY_CALL = GUARD_PREFIX + ' --verify w.yml "Save"'
 CHECK_CALL = GUARD_PREFIX + ' --check-placement'
 TRUSTED_CHECKOUT = ('      - name: Trusted guard (main)\n'
                     '        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683\n'
-                    '        with:\n          ref: main\n          path: ${{ runner.temp }}/trusted-main\n'
+                    '        with:\n          ref: main\n          path: .trusted-main\n'
                     '          sparse-checkout: tools/artifact_guard.py\n          persist-credentials: false\n')
 PY_RESOLVE = ('      - name: Resolve python3 (trusted)\n        id: pyresolve\n'
               '        run: echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"\n')
 PLACEMENT_STEP = '      - name: Guard placement (trusted)\n        run: ' + CHECK_CALL + '\n'
-PREAMBLE = TRUSTED_CHECKOUT + PY_RESOLVE + PLACEMENT_STEP
+PR_CHECKOUT = ('      - name: Checkout workflow files only\n'
+               '        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683\n'
+               '        with:\n          sparse-checkout: .github/workflows\n'
+               '          persist-credentials: false\n')
+PREAMBLE = PR_CHECKOUT + TRUSTED_CHECKOUT + PY_RESOLVE + PLACEMENT_STEP
 STAGE_STEP = '      - name: Stage\n        run: |\n          ' + CALL + '\n'
 VERIFY_STEP = '      - name: Verify\n        run: |\n          ' + VERIFY_CALL + '\n'
 GUARD_STEP = PREAMBLE + STAGE_STEP + VERIFY_STEP
@@ -735,13 +739,13 @@ BUILD_STEPS = ('      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364
                '      - name: Build\n        run: make build\n'
                '      - name: Hand off\n        run: |\n          mkdir -p intermediate\n          cp --parents build/x.json intermediate/\n'
                '      - name: Intermediate\n        uses: ' + UPLOAD + '\n        with:\n          name: intermediate-x\n          path: intermediate/\n')
-GUARD_STEPS = (TRUSTED_CHECKOUT + PY_RESOLVE + PLACEMENT_STEP
+GUARD_STEPS = (PR_CHECKOUT + TRUSTED_CHECKOUT + PY_RESOLVE + PLACEMENT_STEP
                + '      - name: Download\n        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0\n'
-               '        with:\n          name: intermediate-x\n          path: ${{ runner.temp }}/intake\n'
+               '        with:\n          name: intermediate-x\n          path: .intake\n'
                '      - name: Stage\n        run: |\n          ' + guard.INTAKE_PY + ' --stage w.yml "Save"\n'
                '      - name: Verify\n        run: |\n          ' + guard.INTAKE_PY + ' --verify w.yml "Save"\n'
                '      - name: Save\n        uses: ' + UPLOAD + '\n        with:\n          name: final\n'
-               '          path: ${{ runner.temp }}/intake/.artifact-stage/build/x.json\n')
+               '          path: .intake/.artifact-stage/build/x.json\n')
 BUILD_JOB = '  build:\n    steps:\n' + BUILD_STEPS
 GUARD_JOB = '  publish:\n    needs: build\n    steps:\n' + GUARD_STEPS
 SEPARATED = 'jobs:\n' + BUILD_JOB + GUARD_JOB
@@ -771,7 +775,7 @@ class JobSeparationTests(unittest.TestCase):
         self.assertNotEqual([], self.violations('jobs:\n' + BUILD_JOB))
 
     def test_download_must_use_the_intake_root(self):
-        text = 'jobs:\n' + BUILD_JOB + GUARD_JOB.replace('path: ${{ runner.temp }}/intake', 'path: .', 1)
+        text = 'jobs:\n' + BUILD_JOB + GUARD_JOB.replace('path: .intake', 'path: .', 1)
         self.assertNotEqual([], self.violations(text))
 
     def test_stage_must_use_the_intake_root(self):
@@ -785,7 +789,7 @@ class JobSeparationTests(unittest.TestCase):
 
     def test_final_upload_must_come_from_the_intake_stage(self):
         text = 'jobs:\n' + BUILD_JOB + GUARD_JOB.replace(
-            '${{ runner.temp }}/intake/.artifact-stage/build/x.json', 'build/x.json', 1)
+            '.intake/.artifact-stage/build/x.json', 'build/x.json', 1)
         self.assertNotEqual([], self.violations(text))
 
 if __name__ == '__main__':

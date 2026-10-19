@@ -324,14 +324,14 @@ NAME_FORBIDDEN = '"$`\\'
 # Job-level or workflow-level settings that can change PATH, RUNNER_TEMP or the working directory the guard sees.
 SCOPE_KEYS_REFUSED = {"env", "defaults", "container", "services"}
 # Exact text of the trusted commands (the workflow must contain these runs verbatim, with the step name quoted).
-TRUSTED_GUARD = '"${{ runner.temp }}/trusted-main/tools/artifact_guard.py"'
+TRUSTED_GUARD = '".trusted-main/tools/artifact_guard.py"'
 TRUSTED_PY = '"${{ steps.pyresolve.outputs.python }}" ' + TRUSTED_GUARD + ' --root "$GITHUB_WORKSPACE"'
 CHECK_TEXT = TRUSTED_PY + " --check-placement"
 PY_RESOLVE_RUN = 'echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"'
 CHECKOUT_RE = re.compile(r"uses:\s*actions/checkout@[0-9a-f]{40}$")
-TRUSTED_CHECKOUT_LINES = ("ref: main", "path: ${{ runner.temp }}/trusted-main")
+TRUSTED_CHECKOUT_LINES = ("ref: main", "path: .trusted-main")
 # Guard jobs publish from an intake directory that holds the downloaded intermediate artifact.
-INTAKE_ROOT = "${{ runner.temp }}/intake"
+INTAKE_ROOT = ".intake"
 INTAKE_STAGE = INTAKE_ROOT + "/" + STAGE_DIR + "/"
 INTAKE_PY = ('"${{ steps.pyresolve.outputs.python }}" ' + TRUSTED_GUARD + ' --root "' + INTAKE_ROOT
              + '" --workflow-root "$GITHUB_WORKSPACE"')
@@ -454,6 +454,11 @@ def _continued_name(lines, start, end, dash):
 def _is_trusted_checkout(lines, step, dash):
     body = [l.strip() for l in lines[step[0]:step[1]] if _live(l)]
     return (any(CHECKOUT_RE.search(b) for b in body) and all(t in body for t in TRUSTED_CHECKOUT_LINES))
+
+
+def _is_checkout(lines, step, dash):
+    body = [l.strip() for l in lines[step[0]:step[1]] if _live(l)]
+    return any(re.search(r"uses:\s*actions/checkout@[0-9a-f]{40}$", b) for b in body)
 
 
 def _is_py_resolve(lines, step, dash):
@@ -640,11 +645,13 @@ def guard_placement_violations(text, workflow):
             run = _run_lines(lines, s[0], s[1], dash)
             if not run or not _allowed_guard_run(run, finals, workflow):
                 problems.append(f"{workflow}: guard job {job!r} may only run trusted steps; found step {body[0]!r}")
-        if len(job_steps) < 2 or not _is_trusted_checkout(lines, job_steps[0], dash):
-            problems.append(f"{workflow}: guard job {job!r}: the first step must be the trusted main checkout (ref: main into ${{{{ runner.temp }}}}/trusted-main)")
-        if len(job_steps) < 2 or not _is_py_resolve(lines, job_steps[1], dash):
-            problems.append(f"{workflow}: guard job {job!r}: the second step must resolve python3 (id: pyresolve)")
-        for s in job_steps[:2]:
+        if len(job_steps) < 3 or not _is_checkout(lines, job_steps[0], dash):
+            problems.append(f"{workflow}: guard job {job!r}: the first step must be a checkout (before the trusted checkout, whose path must not be cleaned)")
+        if len(job_steps) < 3 or not _is_trusted_checkout(lines, job_steps[1], dash):
+            problems.append(f"{workflow}: guard job {job!r}: the second step must be the trusted main checkout (ref: main into .trusted-main)")
+        if len(job_steps) < 3 or not _is_py_resolve(lines, job_steps[2], dash):
+            problems.append(f"{workflow}: guard job {job!r}: the third step must resolve python3 (id: pyresolve)")
+        for s in job_steps[:3]:
             keys = _key_names(_step_keys(lines, s[0], s[1], dash))
             if not set(keys) <= PREAMBLE_STEP_KEYS or len(set(keys)) != len(keys):
                 problems.append(f"{workflow}: guard job {job!r}: a trusted preamble step may only have {sorted(PREAMBLE_STEP_KEYS)}, each once (found {keys})")
