@@ -8,7 +8,7 @@ TIMEOUT (step budget used up). Only RETURNED with every expectation met is PASS.
 Plug-in: --cases FILE.json, a list of {"name", "target" (symbol from the harness overlay or
 build/<mode>/bios-dev/dev.lbl), "a", "x", "y", "p", "ram" (64 hex chars, optional),
 "expect": {"a"/"x"/"y": int, "p_mask"/"p": int, "ram": {"offset": byte}}}. ZP bytes not named
-in expect.ram must be unchanged (writes outside the window are not observed); optional "want" defaults to ["PASS", "RETURNED"]. Built-in self-test cases always run first and must behave.
+in expect.ram must be unchanged (writes outside the window are not observed); plug-in cases cannot declare "want" (always PASS+RETURNED). Built-in self-test cases always run first and must behave.
 """
 import argparse
 import hashlib
@@ -52,10 +52,16 @@ def parse_lbl(text):
     return {n: int(a, 16) for a, n in re.findall(r"^al ([0-9A-Fa-f]{6}) \.(\w+)$", text, re.M)}
 
 
-def validate(case, symbols):
-    """Reject anything a judge could silently ignore; every problem is a ValueError."""
+def validate(case, symbols, plugin=False):
+    """Reject anything a judge could silently ignore; every problem is a ValueError.
+
+    plugin=True (user --cases): "want" is refused outright, so a plug-in routine can only PASS.
+    Only the built-in self-tests may declare an expected non-PASS verdict.
+    """
     def byte(v):
         return isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 255
+    if plugin and "want" in case:
+        raise ValueError(f"case {case.get('name')!r}: plug-in cases cannot declare 'want'")
     expect = case.get("expect")
     if not isinstance(case.get("name"), str) or not isinstance(expect, dict) \
             or set(case) - {"name", "target", "a", "x", "y", "p", "ram", "expect", "want"} \
@@ -169,9 +175,14 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     code, harness = build_overlay(out)
     symbols = parse_lbl((dev / "dev.lbl").read_text()) | harness
-    cases = SELFTEST + (json.loads(args.cases.read_text()) if args.cases else [])
-    for case in cases:
+    user = json.loads(args.cases.read_text()) if args.cases else []
+    if not isinstance(user, list):
+        raise ValueError("--cases must be a JSON list")
+    cases = SELFTEST + user
+    for case in SELFTEST:
         validate(case, symbols)
+    for case in user:
+        validate(case, symbols, plugin=True)
     probe = compile_probe(out)
     labels = out / "trace-labels.txt"
     labels.write_text("".join(f"{n} {symbols[n]:04x}\n" for n in CHECKPOINTS))

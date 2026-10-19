@@ -37,6 +37,15 @@ class JudgeTest(unittest.TestCase):
         self.assertEqual(h.judge(records(a_after=8), CASE, SYM)[0], "FAIL")
         self.assertEqual(h.judge({"TRACE": [], "OBS": []}, CASE, SYM)[0], "FAIL")
 
+    def test_plugin_case_cannot_accept_a_failing_verdict(self):
+        # A plug-in "want" of FAIL/TIMEOUT/TRAPPED would let a broken routine exit 0.
+        for want in (["FAIL", "RETURNED"], ["FAIL", "TIMEOUT"], ["FAIL", "TRAPPED"], ["PASS", "TIMEOUT"],
+                     ["PASS", "RETURNED"]):
+            with self.assertRaises(ValueError):
+                h.validate({**CASE, "want": want}, SYM, plugin=True)
+        h.validate(CASE, SYM, plugin=True)
+        h.validate({**CASE, "want": ["FAIL", "RETURNED"]}, SYM, plugin=False)  # built-in self-tests may
+
     def test_invalid_inputs_rejected(self):
         for bad in ({"p": 0x24}, {"p": 0}, {"a": 256}, {"a": True}, {"target": "nope"}, {"ram": "00"},
                     {"carry": 1}, {"expect": {"p": 1}}, {"expect": {"A": 1}}, {"expect": {"ram": {"32": 1}}},
