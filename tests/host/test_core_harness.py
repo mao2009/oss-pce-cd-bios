@@ -46,6 +46,28 @@ class JudgeTest(unittest.TestCase):
         h.validate(CASE, SYM, plugin=True)
         h.validate({**CASE, "want": ["FAIL", "RETURNED"]}, SYM, plugin=False)  # built-in self-tests may
 
+    def test_plugin_expect_needs_a_checked_field(self):
+        # {} would PASS on any RETURNED routine with an unchanged ZP window: wrong A/X/Y/P undetected.
+        for expect in ({}, {"ram": {}}):
+            with self.assertRaises(ValueError):
+                h.validate({**CASE, "expect": expect}, SYM, plugin=True)
+        for expect in ({"a": 9}, {"x": 0}, {"y": 0}, {"p": 0, "p_mask": 1}, {"ram": {"0": 1}}):
+            h.validate({**CASE, "expect": expect}, SYM, plugin=True)
+        h.validate({**CASE, "expect": {}}, SYM, plugin=False)  # self-tests with an empty expect stay valid
+
+    def test_non_dict_plugin_case_is_value_error(self):
+        for bad in ("abc", ["x"], 5, None):
+            with self.assertRaises(ValueError):
+                h.validate(bad, SYM, plugin=True)
+
+    def test_timeout_message_names_the_budget(self):
+        failures = h.judge(records(()), CASE, SYM)[2]
+        self.assertTrue(failures and all("budget" in f for f in failures), failures)
+
+    def test_zero_p_mask_is_rejected(self):
+        with self.assertRaises(ValueError):
+            h.validate({**CASE, "expect": {"p": 0, "p_mask": 0}}, SYM)
+
     def test_invalid_inputs_rejected(self):
         for bad in ({"p": 0x24}, {"p": 0}, {"a": 256}, {"a": True}, {"target": "nope"}, {"ram": "00"},
                     {"carry": 1}, {"expect": {"p": 1}}, {"expect": {"A": 1}}, {"expect": {"ram": {"32": 1}}},

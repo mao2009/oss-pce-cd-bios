@@ -119,7 +119,7 @@ Linux 上のクリーンクローンで、リポジトリルートから `TOOLS_
 ルーチンを JSR し、合成入力 A/X/Y/P とゼロページ `$20E0-$20FF` 32 バイトを与えて、
 呼出前後の A/X/Y/P/SP/MPR とゼロページを実 Geargrafx コア（ディスクなし HuCard
 ロード、cold/warm、各 2048 命令）で記録する。各サイクルは `RETURNED` / `TRAPPED`
-/ `TIMEOUT` に分類し、`RETURNED` かつ全期待値一致のみ PASS。未完了は PASS に
+/ `TIMEOUT` に分類し、`RETURNED` かつ全期待値一致のみ PASS。`TIMEOUT` は 1 サイクル 2048 命令の予算超過（長いルーチンを含む）と無限ループを区別しない。プラグインケースは `expect` で a/x/y/p（非ゼロ `p_mask`）/ram のいずれかを必ず照合する。未完了は PASS に
 ならない。ケース JSON の形式と組込み自己検証ケースは
 `tests/integration/geargrafx_core_harness.py` の docstring を参照。リファレンス
 BIOS は実行せず、BIOS ABI 互換の証拠ではない。

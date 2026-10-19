@@ -60,6 +60,8 @@ def validate(case, symbols, plugin=False):
     """
     def byte(v):
         return isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 255
+    if not isinstance(case, dict):
+        raise ValueError(f"case {case!r}: must be a JSON object")
     if plugin and "want" in case:
         raise ValueError(f"case {case.get('name')!r}: plug-in cases cannot declare 'want'")
     expect = case.get("expect")
@@ -73,6 +75,11 @@ def validate(case, symbols, plugin=False):
         raise ValueError(f"{case['name']}: inputs must be bytes, P needs I=1 and T=0")
     if not isinstance(expect.get("ram", {}), dict) or not isinstance(case.get("ram", ""), str):
         raise ValueError(f"{case['name']}: ram seed must be hex text, expect.ram an object")
+    if "p_mask" in expect and not (byte(expect["p_mask"]) and expect["p_mask"]):
+        raise ValueError(f"{case['name']}: p_mask must be a non-zero byte, or P is never checked")
+    if plugin and not (set(expect) & {"a", "x", "y"} or "p" in expect or expect.get("ram")):
+        raise ValueError(f"{case['name']}: plug-in expect must check at least one of a/x/y/p/ram "
+                         "(an empty expect would PASS any returning routine)")
     if not all(byte(expect[k]) for k in expect if k != "ram") or not all(
             re.fullmatch(r"0x[0-9a-fA-F]+|[1-9][0-9]*|0", k) and int(k, 0) < 32 and byte(v)
             for k, v in expect.get("ram", {}).items()):
@@ -99,7 +106,9 @@ def judge(records, case, symbols):
     for cycle, row in (("cold", records["OBS"][1]), ("warm", records["OBS"][3])):
         statuses[cycle] = status = classify(records, cycle, row, symbols)
         if status != "RETURNED":
-            failures.append(f"{cycle}: {status}")
+            hint = (" (step budget of %d exhausted: infinite loop or routine longer than the budget)"
+                    % STEPS) if status == "TIMEOUT" else ""
+            failures.append(f"{cycle}: {status}{hint}")
             continue
         before, after = (next(r for r in records["TRACE"] if r["cycle"] == cycle and r["phase"] == p)
                          for p in ("harness_call", "harness_after"))
