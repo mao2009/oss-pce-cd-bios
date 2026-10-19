@@ -8,7 +8,7 @@ TIMEOUT (step budget used up). Only RETURNED with every expectation met is PASS.
 Plug-in: --cases FILE.json, a list of {"name", "target" (symbol from the harness overlay or
 build/<mode>/bios-dev/dev.lbl), "a", "x", "y", "p", "ram" (64 hex chars, optional),
 "expect": {"a"/"x"/"y": int, "p_mask"/"p": int, "ram": {"offset": byte}}}. ZP bytes not named
-in expect.ram must be unchanged; optional "want" defaults to ["PASS", "RETURNED"]. Built-in self-test cases always run first and must behave.
+in expect.ram must be unchanged (writes outside the window are not observed); optional "want" defaults to ["PASS", "RETURNED"]. Built-in self-test cases always run first and must behave.
 """
 import argparse
 import hashlib
@@ -43,7 +43,7 @@ SELFTEST = [  # validates the harness; "want" is the verdict/status the harness 
      "want": ["FAIL", "TIMEOUT"], "expect": {}},
     {"name": "neg_brk", "target": "harness_selftest_brk", "a": 0, "x": 0, "y": 0, "p": 0x04,
      "want": ["FAIL", "TRAPPED"], "expect": {}},
-    {"name": "dev_ex_getver", "target": "api_slot_1E", "a": 0x11, "x": 0x22, "y": 0x33, "p": 0x04,
+    {"name": "plugin_demo_dev_rom_ex_getver", "target": "api_slot_1E", "a": 0x11, "x": 0x22, "y": 0x33, "p": 0x04,
      "want": ["PASS", "RETURNED"], "expect": {"a": 0x11, "x": 3, "y": 0}},
 ]
 
@@ -53,10 +53,24 @@ def parse_lbl(text):
 
 
 def validate(case, symbols):
-    if case["target"] not in symbols or not 0xE000 <= symbols[case["target"]] <= 0xFFFF:
-        raise ValueError(f"{case['name']}: target {case['target']} is not a bank0 symbol")
-    if any(not 0 <= case[r] <= 255 for r in "axyp") or case["p"] & T_FLAG or not case["p"] & I_FLAG:
+    """Reject anything a judge could silently ignore; every problem is a ValueError."""
+    def byte(v):
+        return isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 255
+    expect = case.get("expect")
+    if not isinstance(case.get("name"), str) or not isinstance(expect, dict) \
+            or set(case) - {"name", "target", "a", "x", "y", "p", "ram", "expect", "want"} \
+            or set(expect) - {"a", "x", "y", "p", "p_mask", "ram"} or ("p" in expect) != ("p_mask" in expect):
+        raise ValueError(f"case {case.get('name')!r}: unknown/missing keys (p needs p_mask)")
+    if case.get("target") not in symbols or not 0xE000 <= symbols[case["target"]] <= 0xFFFF:
+        raise ValueError(f"{case['name']}: target {case.get('target')} is not a bank0 symbol")
+    if not all(byte(case.get(r)) for r in "axyp") or case["p"] & T_FLAG or not case["p"] & I_FLAG:
         raise ValueError(f"{case['name']}: inputs must be bytes, P needs I=1 and T=0")
+    if not isinstance(expect.get("ram", {}), dict) or not isinstance(case.get("ram", ""), str):
+        raise ValueError(f"{case['name']}: ram seed must be hex text, expect.ram an object")
+    if not all(byte(expect[k]) for k in expect if k != "ram") or not all(
+            re.fullmatch(r"0x[0-9a-fA-F]+|[1-9][0-9]*|0", k) and int(k, 0) < 32 and byte(v)
+            for k, v in expect.get("ram", {}).items()):
+        raise ValueError(f"{case['name']}: expect values must be bytes, ram offsets 0..31")
     if len(bytes.fromhex(case.get("ram", "00" * 32))) != 32:
         raise ValueError(f"{case['name']}: ram seed must be 32 bytes")
 
@@ -90,7 +104,7 @@ def judge(records, case, symbols):
                            "after": {k: after[k] for k in keys} | {"zp": post.hex()}}
         if pre != seed or [before[r] for r in "axy"] != [case[r] for r in "axy"] \
                 or before["mpr"][:2] != [0xFF, 0xF8] or before["mpr"][7] != 0:
-            failures.append(f"{cycle}: harness did not deliver the synthetic inputs")
+            failures.append(f"{cycle}: inputs not delivered or pre-snapshot clobbered")
         if (before["p"] ^ case["p"]) & 0xCF:  # B/T bits are not inputs
             failures.append(f"{cycle}: P input not delivered")
         if before["sp"] != 0xFF or after["sp"] != 0xFF or after["mpr"] != before["mpr"]:
@@ -161,8 +175,8 @@ def main():
     labels.write_text("".join(f"{n} {symbols[n]:04x}\n" for n in CHECKPOINTS))
     results, bad = [], []
     with tempfile.TemporaryDirectory(prefix="pce-core-harness-") as tmp:
-        for case in cases:
-            rom = Path(tmp) / f"{case['name']}.pce"
+        for index, case in enumerate(cases):
+            rom = Path(tmp) / f"case{index:03d}.pce"
             rom.write_bytes(image(base, code, symbols, case))
             records = execute(probe, rom, "-", labels, media=False, steps=STEPS)
             verdict, statuses, failures, observed = judge(records, case, symbols)

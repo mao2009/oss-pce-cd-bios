@@ -26,12 +26,21 @@ class JudgeTest(unittest.TestCase):
             got = h.judge(records(phases), CASE, SYM)
             self.assertEqual((got[0], set(got[1].values())), (verdict, {status}))
 
+    def test_late_or_partial_return_is_timeout(self):
+        late = records()
+        for row in late["OBS"]:
+            row["pc"] = SYM["harness_selftest"]
+        for rec in (late, records(("harness_after",))):
+            self.assertEqual(set(h.judge(rec, CASE, SYM)[1].values()), {"TIMEOUT"})
+
     def test_wrong_result_or_incomplete_output_fails(self):
         self.assertEqual(h.judge(records(a_after=8), CASE, SYM)[0], "FAIL")
         self.assertEqual(h.judge({"TRACE": [], "OBS": []}, CASE, SYM)[0], "FAIL")
 
     def test_invalid_inputs_rejected(self):
-        for bad in ({"p": 0x24}, {"p": 0}, {"a": 256}, {"target": "nope"}, {"ram": "00"}):
+        for bad in ({"p": 0x24}, {"p": 0}, {"a": 256}, {"a": True}, {"target": "nope"}, {"ram": "00"},
+                    {"carry": 1}, {"expect": {"p": 1}}, {"expect": {"A": 1}}, {"expect": {"ram": {"32": 1}}},
+                    {"expect": {"ram": {"-1": 1}}}, {"expect": {"ram": {"0": 256}}}, {"ram": 5}):
             with self.assertRaises(ValueError):
                 h.validate({**CASE, **bad}, SYM)
 
