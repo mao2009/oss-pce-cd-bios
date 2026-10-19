@@ -12,14 +12,22 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 DOC = ROOT / 'docs' / 'research' / 'cd-subrq-subrd-conflicts.md'
 
-ALLOWED = {'SOURCE_FACT', 'HYPOTHESIS', 'UNKNOWN'}
+ALLOWED = {'SOURCE_FACT', 'SECONDARY_SOURCE', 'HYPOTHESIS', 'UNKNOWN'}
 EXPECTED = {
-    'C1': 'SOURCE_FACT', 'C2': 'SOURCE_FACT', 'C3': 'SOURCE_FACT', 'C4': 'UNKNOWN',
-    'C5': 'UNKNOWN', 'C6': 'SOURCE_FACT', 'C7': 'SOURCE_FACT', 'C8': 'UNKNOWN',
-    'C9': 'SOURCE_FACT', 'C10': 'UNKNOWN', 'C11': 'UNKNOWN', 'C12': 'UNKNOWN',
-    'C13': 'UNKNOWN', 'C14': 'UNKNOWN', 'C15': 'SOURCE_FACT', 'C16': 'UNKNOWN',
+    'C1': 'SOURCE_FACT', 'C2': 'SOURCE_FACT', 'C3': 'SECONDARY_SOURCE', 'C4': 'UNKNOWN',
+    'C5': 'UNKNOWN', 'C6': 'SECONDARY_SOURCE', 'C7': 'SECONDARY_SOURCE', 'C8': 'UNKNOWN',
+    'C9': 'SECONDARY_SOURCE', 'C10': 'UNKNOWN', 'C11': 'UNKNOWN', 'C12': 'UNKNOWN',
+    'C13': 'UNKNOWN', 'C14': 'UNKNOWN', 'C15': 'SECONDARY_SOURCE', 'C16': 'UNKNOWN',
     'C17': 'HYPOTHESIS',
 }
+# Commit pins. 797845ce is a git blob (pctech.txt), not a commit, so it is cited only as a blob.
+MD_COMMIT = 'ducalex/retro-go@05e97e80'
+MD_BLOB = 'blob `797845ce`'
+GG_COMMIT = 'drhelius/Geargrafx@3685f8cf'
+GG_UNRESOLVED = 'drhelius/Geargrafx@1e52d13f'
+# Reference callee execution: affirmative wording only ("未実行" / "一度も...していない" are allowed).
+EXEC_CLAIM = re.compile(r'(?<!未)(?<!一度も)実行(した|済み?|完了)|\bexecuted\b|\bran\b', re.I)
+FORBIDDEN_CELL_TOKENS = {'VERIFIED', 'OBSERVED', 'PASS'}
 
 
 def _claim_rows(text):
@@ -31,6 +39,12 @@ def _claim_rows(text):
         if re.fullmatch(r'C\d+', cells[0]):
             rows[cells[0]] = cells
     return rows
+
+
+def _source_row(text, sid):
+    hits = [line for line in text.splitlines() if line.startswith(f'| {sid} |')]
+    assert len(hits) == 1, (sid, len(hits))
+    return hits[0]
 
 
 class CdSubrqSubrdConflictLedgerTests(unittest.TestCase):
@@ -64,8 +78,25 @@ class CdSubrqSubrdConflictLedgerTests(unittest.TestCase):
         self.assertIn('release_eligible=false', self.text)
         self.assertIn('DEV_CALLABLE', self.text)
 
+    def test_citation_pins_resolve_to_commits(self):
+        md = _source_row(self.text, 'MD')
+        self.assertIn(MD_COMMIT, md)
+        self.assertIn(MD_BLOB, md)
+        self.assertNotIn('@797845ce', self.text)
+        self.assertIn('1473–1487 行', md)
+        gg = _source_row(self.text, 'GG')
+        self.assertIn(GG_COMMIT, gg)
+        self.assertNotIn(GG_UNRESOLVED, self.text)
+        hc = _source_row(self.text, 'HC')
+        self.assertIn('692 行', hc)
+        self.assertIn('481 行', hc)
+
     def test_no_reference_bios_execution_claimed(self):
         self.assertIn('一切していない', self.text)
+        self.assertIsNone(EXEC_CLAIM.search(self.text), 'affirmative execution wording found')
+        for cid, cells in self.rows.items():
+            for cell in cells:
+                self.assertFalse(set(re.findall(r'[A-Z_]+', cell)) & FORBIDDEN_CELL_TOKENS, cid)
 
 
 if __name__ == '__main__':
