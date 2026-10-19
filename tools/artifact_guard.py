@@ -1,28 +1,46 @@
-"""Fail-closed artifact guard (Issue #227): no linked executable or object reaches upload-artifact.
+"""Fail-closed artifact guard (Issue #227): no linked executable or object reaches a publication step.
+
+The workflows are split into two kinds of job, on separate ephemeral GitHub-hosted runners. A build job runs the
+pull-request code and hands its output over as an intermediate artifact (name intermediate-*); it runs no guard. A
+guard job runs no pull-request code: its steps are the trusted checkout, the python resolve, the workflow checkouts
+and downloads, the placement check, the stage and verify steps, the upload steps and the Pages steps. It downloads
+the intermediate artifact of a job it `needs:` into .intake/, stages what it will publish, and only then uploads.
 
 Every upload-artifact / upload-pages-artifact step in .github/workflows/*.yml|*.yaml and composite actions
 (.github/actions/**/action.yml|yaml) is parsed as a whole block (key order does not matter). Its step name is the
-dash-level `name:` only. Its `path:` patterns must be staged paths under .artifact-stage/. The job runs, in order:
+dash-level `name:` only. Its `path:` patterns must be staged paths under .artifact-stage/ (or .intake/.artifact-stage/).
+The guard runs from the trusted main copy and, in order:
 
-  1. trusted checkout of main into ${{ runner.temp }}/trusted-main (sparse: this file only), first in the job;
-  2. resolve python3 into a step output, before any pull-request code runs in the job;
-  3. the placement check (this file, from the main copy) on the checked-out workflows;
-  4. the build (pull-request code);
-  5. --stage: the main copy expands the source patterns, checks every matched entry by content, and copies the
-     matched files into a fresh .artifact-stage/ with a sha256 manifest;
-  6. --verify: the main copy recomputes the hashes and refuses any change, extra, missing or swapped file;
-  7. upload-artifact of .artifact-stage/ paths only.
+  1. trusted checkout of main into .trusted-main (ref: main; sparse: this file only), second step of the guard job,
+     after the workflow-files checkout, before any pull-request code could run there;
+  2. resolve python3 into a step output (id: pyresolve), before any pull-request code runs in the job;
+  3. --check-placement (this file, from the main copy) on the checked-out workflows;
+  4. (build job) the build and the intermediate-artifact hand-off;
+  5. --stage: expand the source patterns, check every matched entry by content, copy the matched files into a fresh
+     .artifact-stage/ and record their sha256 in .artifact-stage-manifest.json;
+  6. --verify: recompute the hashes and refuse any change, extra, missing or swapped file;
+  7. upload the staged paths only.
 
 Content checks: directories are walked, symlinks are refused, and ELF/Mach-O/PE/ar signatures and object/executable
 suffixes are rejected. Unrecognised `path:` forms are refused rather than guessed. Names are not used, because legitimate
 evidence JSON may contain "geargrafx". This is a content/signature tripwire only. It does not reject .pce by extension
 (approved policy: original HuCARD and DEV diagnostic ROMs are legitimate artifacts), it does not detect BIOS-like content,
-and a passing .pce is not proof of GPL-free origin (Issue #335). Distribution conditions stay with docs/provenance.md
-and Issue #105.
+and a passing .pce is not proof of GPL-free origin (Issue #335). A signature check cannot establish where a .pce came
+from; distribution conditions stay with docs/provenance.md and Issue #105.
 
-Limits: the trusted copy and the staging are in the same job as the build, under the same runner user. A build step
-can still overwrite the trusted copy file or the python3 binary in the same job, and a background process can race the
-verify-to-upload window. See the pull request description for the residual risk.
+Publication routes the parser cannot see through are refused rather than guessed. `check_upload_artifacts` and
+`check_guard_placement` scan the same files with the same parser, so a route such as `gh release upload`,
+`softprops/action-gh-release`, `ncipollo/release-action`, a local action or a reusable workflow fails both, and a
+workflow with no upload step is not silently skipped by the placement check. The route list is closed: a newly
+introduced publishing action must be taught to this file explicitly. The parser is line based, not a full YAML
+parser: folded scalars, anchors/aliases, flow-style steps and YAML merge keys are refused where they could hide an
+upload, and that limit is stated here rather than ignored.
+
+Limits: each job is a fresh GitHub-hosted runner VM, so nothing from an earlier run or job survives into it, and no
+pull-request code runs in the guard job. Within the guard job, however, the trusted copy, the staging and the upload
+run under the same runner user in the same job: a compromised trusted step (or runner) could still overwrite the
+trusted copy or the python3 binary, and the stage and verify steps narrow but cannot close the window between verify
+and upload. See the pull request description for the residual risk.
 
 Command line (run by the workflows from the trusted copy, with --root "$GITHUB_WORKSPACE"):
   --stage WORKFLOW STEP | --verify WORKFLOW STEP | --post-build WORKFLOW STEP | --check-placement | (no argument: static)
@@ -318,6 +336,9 @@ def check_upload_artifacts(root=ROOT):
 JOB_RE = re.compile(r"""^  (?:"([^"]+)"|'([^']+)'|([^\s"'#:][^#:]*?))\s*:\s*(?:#.*)?$""")
 UPLOAD_STEP_KEYS = {"name", "uses", "with"}   # no if:, continue-on-error:, env: on the upload itself
 GUARD_STEP_KEYS = {"name", "run", "shell"}    # stage and verify steps
+# Steps that run a trusted command (python resolve, placement check, stage, verify). `id` is for the python resolve;
+# no if:, continue-on-error:, env: or working-directory is allowed, because any of them can skip or reroute the guard.
+RUN_STEP_KEYS = {"name", "id", "run", "shell"}
 PREAMBLE_STEP_KEYS = {"name", "id", "uses", "with", "run", "shell"}   # trusted checkout, python resolve, placement check
 # The upload step's name is embedded in double quotes in the guard calls, so these must not appear in it.
 NAME_FORBIDDEN = '"$`\\'
@@ -329,7 +350,11 @@ TRUSTED_PY = '"${{ steps.pyresolve.outputs.python }}" ' + TRUSTED_GUARD + ' --ro
 CHECK_TEXT = TRUSTED_PY + " --check-placement"
 PY_RESOLVE_RUN = 'echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"'
 CHECKOUT_RE = re.compile(r"uses:\s*actions/checkout@[0-9a-f]{40}$")
-TRUSTED_CHECKOUT_LINES = ("ref: main", "path: .trusted-main", "sparse-checkout-cone-mode: false")
+TRUSTED_CHECKOUT_LINES = ("ref: main", "path: .trusted-main",
+                          "sparse-checkout: tools/artifact_guard.py", "sparse-checkout-cone-mode: false")
+# The trusted checkout may only carry these with: inputs. Anything else (repository:, token:, ssh-key:, clean:)
+# could fetch the guard file from somewhere other than this repository's main, or leave a planted copy in place.
+TRUSTED_CHECKOUT_WITH = {"ref", "path", "sparse-checkout", "sparse-checkout-cone-mode", "persist-credentials"}
 # Guard jobs publish from an intake directory that holds the downloaded intermediate artifact.
 INTAKE_ROOT = ".intake"
 INTAKE_STAGE = INTAKE_ROOT + "/" + STAGE_DIR + "/"
@@ -402,6 +427,12 @@ def _run_lines(lines, start, end, dash):
     return []
 
 
+def _shell_ok(keys):
+    """True when every `shell:` key of a step is absent or exactly `bash`/`"bash"` (no injected command)."""
+    return all(re.sub(r"""["']""", "", k.split(":", 1)[1]).split("#")[0].strip() == "bash"
+               for k in keys if re.match(r"""["']?shell["']?\s*:""", k))
+
+
 def _guard_is_bare(command, expected, keys):
     """The step's whole `run:` value is ONE live line, and that line is exactly `expected`.
 
@@ -412,20 +443,33 @@ def _guard_is_bare(command, expected, keys):
     """
     if len(command) != 1:
         return False
-    shell_ok = all(re.sub(r"""["']""", "", k.split(":", 1)[1]).split("#")[0].strip() == "bash"
-                   for k in keys if re.match(r"""["']?shell["']?\s*:""", k))
-    return shell_ok and command[0] == expected
+    return _shell_ok(keys) and command[0] == expected
 
 
 def check_guard_placement(root=ROOT):
     """Static placement layer (run by make check and by the trusted copy): the preamble and stage/verify steps must
-    surround every upload step, in the same job, exactly as written here."""
+    surround every upload step, in the same job, exactly as written here.
+
+    It scans the same files with the same parser as check_upload_artifacts, so a publication route the parser cannot
+    see through (release assets, `gh release`, reusable workflows) fails here too. Gating on "this file contains an
+    upload-artifact uses: line" left those routes uninspected by --check-placement while check_upload_artifacts
+    refused them (review finding A). A file with no upload step and no such route is not a publication and passes.
+    """
     base = Path(root)
     problems = []
-    for workflow in _workflow_files(base):
+    files = _workflow_files(base)
+    if not files:
+        raise ValueError(f"no workflow or action files under {WORKFLOWS}/ or {ACTIONS}/ to check; "
+                         "refusing to pass an empty placement check")
+    for workflow in files:
+        label = workflow.relative_to(base).as_posix()
         text = workflow.read_text(encoding="utf-8")
-        if any(USES_RE.search(l) for l in text.splitlines()):
-            problems += guard_placement_violations(text, workflow.relative_to(base).as_posix())
+        try:
+            steps = upload_steps(text)
+        except ValueError as error:   # an unsupported publishing route or an unparseable upload step
+            raise ValueError(f"{label}: {error}") from error
+        if steps:
+            problems += guard_placement_violations(text, label)
     if problems:
         raise ValueError("artifact guard placement: " + "; ".join(problems))
     print("PASS artifact guard placement: trusted preamble, staged paths, stage and verify before every upload")
@@ -451,9 +495,32 @@ def _continued_name(lines, start, end, dash):
     return False
 
 
+def _with_keys(lines, start, end):
+    """The `with:` input keys of one step, in order (the block nested under its `with:` line). [] when there is none."""
+    for i in range(start, end):
+        if not _live(lines[i]):
+            continue
+        body = lines[i].lstrip()
+        if i == start:
+            body = body[2:].lstrip() if body.startswith("- ") else body
+        if not re.match(r"""["']?with["']?\s*:\s*(?:#.*)?$""", body):
+            continue
+        keys = []
+        for j in range(i + 1, end):
+            if not _live(lines[j]):
+                continue
+            if _indent(lines[j]) <= _indent(lines[i]):
+                break
+            keys.append(lines[j].strip().split(":", 1)[0].strip().strip("\"'"))
+        return keys
+    return []
+
+
 def _is_trusted_checkout(lines, step, dash):
     body = [l.strip() for l in lines[step[0]:step[1]] if _live(l)]
-    return (any(CHECKOUT_RE.search(b) for b in body) and all(t in body for t in TRUSTED_CHECKOUT_LINES))
+    if not (any(CHECKOUT_RE.search(b) for b in body) and all(t in body for t in TRUSTED_CHECKOUT_LINES)):
+        return False
+    return all(key in TRUSTED_CHECKOUT_WITH for key in _with_keys(lines, step[0], step[1]))
 
 
 def _is_checkout(lines, step, dash):
@@ -642,6 +709,11 @@ def guard_placement_violations(text, workflow):
             if any(re.search(r"uses:\s*actions/(checkout|download-artifact|configure-pages|deploy-pages|upload-artifact|upload-pages-artifact)@", b)
                    for b in body):
                 continue
+            keys = _step_keys(lines, s[0], s[1], dash)
+            names = _key_names(keys)
+            if len(set(names)) != len(names) or not set(names) <= RUN_STEP_KEYS or not _shell_ok(keys):
+                problems.append(f"{workflow}: guard job {job!r}: a trusted run step may only have {sorted(RUN_STEP_KEYS)} "
+                                f"(shell: bash), each once; found {names}")
             run = _run_lines(lines, s[0], s[1], dash)
             if not run or not _allowed_guard_run(run, finals, workflow):
                 problems.append(f"{workflow}: guard job {job!r} may only run trusted steps; found step {body[0]!r}")

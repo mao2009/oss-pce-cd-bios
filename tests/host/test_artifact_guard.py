@@ -609,6 +609,37 @@ class GuardPlacementTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'immediately before'):
                 guard.check_guard_placement(Path(tmp))
 
+    def test_placement_refuses_a_publication_route_without_an_upload_step(self):
+        # Review finding A (MEDIUM): check_guard_placement only inspected files that contained an upload-artifact
+        # uses: line, so --check-placement silently passed a workflow that published through a release route while
+        # check_upload_artifacts refused it. The two layers must scan the same files and refuse the same routes.
+        step_head = ('jobs:\n  build:\n    steps:\n'
+                     '      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683\n')
+        routes = {
+            'gh release': step_head + '      - name: Release\n        run: gh release upload v1 build/x\n',
+            'softprops': step_head + '      - name: Release\n        uses: softprops/action-gh-release@v2\n',
+            'ncipollo': step_head + '      - name: Release\n        uses: ncipollo/release-action@v1\n',
+            'local action': step_head + '      - name: Release\n        uses: ./.github/actions/up\n',
+            'reusable workflow': 'jobs:\n  call:\n    uses: ./.github/workflows/other.yml\n',
+        }
+        for label, text in routes.items():
+            with self.subTest(route=label):
+                with tempfile.TemporaryDirectory() as tmp:
+                    Path(tmp, '.github', 'workflows').mkdir(parents=True)
+                    Path(tmp, '.github', 'workflows', 'w.yml').write_text(text, encoding='utf-8')
+                    with self.assertRaises(ValueError):
+                        guard.check_guard_placement(Path(tmp))
+                    with self.assertRaises(ValueError):   # the content layer already refused these
+                        guard.check_upload_artifacts(Path(tmp))
+
+    def test_placement_passes_a_workflow_that_publishes_nothing(self):
+        # A file with no upload step and no publishing route is not a publication and must not become a false positive.
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, '.github', 'workflows').mkdir(parents=True)
+            Path(tmp, '.github', 'workflows', 'build.yml').write_text(
+                'jobs:\n  build:\n    steps:\n      - run: make build\n', encoding='utf-8')
+            guard.check_guard_placement(Path(tmp))
+
     def test_binding_name_is_the_dash_level_name_not_a_nested_one(self):
         # MAJOR-1: a name: under with: that appears first must not become the step name.
         text = ('jobs:\n  build:\n    steps:\n      - uses: ' + UPLOAD + '\n        with:\n'
@@ -644,6 +675,60 @@ class GuardPlacementTests(unittest.TestCase):
 
     def test_verify_step_is_required_before_upload(self):
         self.assertNotEqual([], self.violations(GUARDED.replace(VERIFY_STEP, '')))
+
+    def test_trusted_checkout_cannot_be_redirected_away_from_this_repository(self):
+        # The trusted checkout's with: inputs were unrestricted, so `repository:` (or token:, ssh-key:, clean:)
+        # could fetch the guard from another repository, or leave a planted copy in place: the guard would then be
+        # attacker code and every later check would be defeated.
+        for extra in ('          repository: attacker/evil-guard\n',
+                      '          token: ${{ secrets.X }}\n',
+                      '          ssh-key: ${{ secrets.X }}\n',
+                      '          clean: false\n'):
+            with self.subTest(extra=extra.strip()):
+                text = GUARDED.replace('          path: .trusted-main\n',
+                                       extra + '          path: .trusted-main\n', 1)
+                self.assertNotEqual(GUARDED, text)
+                self.assertNotEqual([], self.violations(text))
+
+    def test_trusted_checkout_must_pin_the_guard_file(self):
+        # Without the sparse checkout of this exact file, a .trusted-main copy planted by an earlier step would not
+        # be overwritten by main, so the guard could run from planted code.
+        without = GUARDED.replace('          sparse-checkout: tools/artifact_guard.py\n', '')
+        self.assertNotEqual(GUARDED, without)
+        self.assertNotEqual([], self.violations(without))
+        self.assertEqual([], self.violations(GUARDED))   # the real form still passes
+
+    def test_trusted_run_steps_cannot_be_skipped_or_rerouted(self):
+        # The placement check step (and the python resolve) run trusted commands. An if:, continue-on-error:, env:,
+        # working-directory or shell: on them could skip the check, swallow its failure or run arbitrary code, while
+        # the pure text match on run: still looked correct. Only name, id, run and shell: bash are allowed.
+        placement = PLACEMENT_STEP
+        self.assertIn(placement, GUARDED)
+        placement_bad = {
+            'if false': '      - name: Guard placement (trusted)\n        if: ${{ false }}\n        run: ' + CHECK_CALL + '\n',
+            'continue-on-error': '      - name: Guard placement (trusted)\n        continue-on-error: true\n        run: ' + CHECK_CALL + '\n',
+            'env': '      - name: Guard placement (trusted)\n        env:\n          RUNNER_TEMP: /tmp/x\n        run: ' + CHECK_CALL + '\n',
+            'working-directory': '      - name: Guard placement (trusted)\n        working-directory: /tmp\n        run: ' + CHECK_CALL + '\n',
+            'shell injection': '      - name: Guard placement (trusted)\n        shell: bash -c "evil"\n        run: ' + CHECK_CALL + '\n',
+            'extra key': '      - name: Guard placement (trusted)\n        timeout-minutes: 1\n        run: ' + CHECK_CALL + '\n',
+        }
+        for label, step in placement_bad.items():
+            with self.subTest(step=label):
+                text = GUARDED.replace(placement, step)
+                self.assertNotEqual(GUARDED, text)
+                self.assertNotEqual([], self.violations(text))
+        self.assertIn(PY_RESOLVE, GUARDED)
+        py_shell = GUARDED.replace(PY_RESOLVE, PY_RESOLVE.replace('        run:', '        shell: bash -c "evil"\n        run:', 1))
+        self.assertNotEqual(GUARDED, py_shell)
+        self.assertNotEqual([], self.violations(py_shell))
+
+    def test_placement_fails_closed_when_no_workflow_files_are_present(self):
+        # A first checkout that fetches no workflow files (or a wrong sparse-checkout) must not turn the trusted
+        # placement check into a vacuous pass.
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, '.github', 'workflows').mkdir(parents=True)
+            with self.assertRaisesRegex(ValueError, 'no workflow or action files'):
+                guard.check_guard_placement(Path(tmp))
 
 
 
