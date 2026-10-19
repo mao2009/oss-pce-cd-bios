@@ -21,7 +21,8 @@ from geargrafx_smoke import GameInfo, SystemInfo  # noqa: E402
 
 EDGES = (-128, -1, 0, 1, 127)
 ROW = 0x200            # driver result block at CPU $2200 (RAM offset $200), 6 pages
-SIGN_FIX = bytes.fromhex("38 fd 02 21")  # sec; sbc $2102,x  (a<0 correction), negative control
+SIGN_FIXES = {"a<0": bytes.fromhex("38 fd 02 21"),  # sec; sbc $2102,x  (a<0 correction)
+              "b<0": bytes.fromhex("38 fd 03 21")}  # sec; sbc $2103,x  (b<0 correction)
 
 
 def signed(value):
@@ -162,13 +163,16 @@ def run(output):
     if errors:
         raise ValueError(f"{len(errors)} MA_MUL8S mismatches on real core, first: {errors[:5]}")
     data = rom.read_bytes()
-    if data.count(SIGN_FIX) != 1:
-        raise ValueError("negative control: sign-correction pattern not unique")
-    negative = output / "ma-mul8s-no-sign-fix.pce"
-    negative.write_bytes(data.replace(SIGN_FIX, b"\xea" * len(SIGN_FIX)))
-    negative_errors = judge(run_worker(core, negative))
-    if len(negative_errors) != 128 * 255:  # exactly the a<0, b!=0 pairs
-        raise ValueError(f"negative control: {len(negative_errors)} mismatches, expected 32640")
+    negatives = {}
+    for name, fix in SIGN_FIXES.items():
+        if data.count(fix) != 1:
+            raise ValueError(f"negative control {name}: sign-correction pattern not unique")
+        negative = output / f"ma-mul8s-no-{name[0]}-fix.pce"
+        negative.write_bytes(data.replace(fix, b"\xea" * len(fix)))
+        count = len(judge(run_worker(core, negative)))
+        if count != 128 * 255:  # exactly the (a<0, b!=0) or (b<0, a!=0) pairs
+            raise ValueError(f"negative control {name}: {count} mismatches, expected 32640")
+        negatives[name] = count
     rows = [bytes.fromhex(row) for row in observed["rows"]]
     edges = {f"{a},{b}": f"{rows[a & 0xFF][b & 0xFF] | rows[a & 0xFF][256 + (b & 0xFF)] << 8:04x}"
              for a in EDGES for b in EDGES}
@@ -179,7 +183,7 @@ def run(output):
             "geargrafx_revision": observed["core_version"],
             "cc65_revision": DEPENDENCIES["cc65"]["revision"],
             "max_frames_per_row": observed["max_frames_per_row"], "edge_products_hex": edges,
-            "negative_control": f"FAIL as expected ({len(negative_errors)} mismatches without a<0 fix)",
+            "negative_control": {name: f"FAIL as expected ({n} mismatches without {name} fix)" for name, n in negatives.items()},
             "jump_table": "NOT_CONNECTED", "release_eligible": False}
 
 

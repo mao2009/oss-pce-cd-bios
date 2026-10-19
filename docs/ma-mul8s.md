@@ -20,11 +20,12 @@ API ジャンプテーブルには接続していない（`release_eligible=fals
 `tests/integration/geargrafx_ma_mul8s.py` はルーチンと独自ドライバ（`tests/fixtures/ma_mul8s_driver.s`）を
 pinned cc65 で 8 KiB HuCARD テスト ROM にし、pinned Geargrafx libretro コアで実行する。乗算はゲスト CPU が行い、
 ホストは要求・stale 埋め・初期化確認値の書込みと RAM 読出しだけを行う。全 65,536 組を host モデルと照合し、各呼出で
-Y（`b^$5A`）、S、P（C=b bit0、D=b bit1 を変化）の保存も確認する。負の対照として `a<0` 補正
-（`sec; sbc $2102,x`）を NOP にした ROM が実コアでちょうど 32,640 組不一致になることを確認する（`b<0` 補正の負の対照は無く、全組照合のみで検出）。
-`tests/host/test_ma_mul8s.py` は境界値モデル・判定器の破損検出・上記実コア実行を含み、ツール欠如は失敗扱い。
+Y（`b^$5A`）、S、P（C=b bit0、D=b bit1 を変化）の保存も確認する。負の対照として `a<0` 補正（`sec; sbc $2102,x`）と `b<0` 補正（`sec; sbc $2103,x`）を
+それぞれ NOP にした ROM が実コアでちょうど 32,640 組ずつ不一致になることを確認する。
+`tests/host/test_ma_mul8s.py` は境界値モデルと判定器の破損検出のみ（実コア非依存）。実コア実行は上記スクリプトを
+Linux 固定環境で明示的に実行する（通常の host テスト・既定 CI には含めない）。
 
-2026-10-19 WSL Ubuntu: PASS（exit 0）、65,536 組不一致 0、負の対照は期待どおり FAIL（32,640 組 = a<0 かつ b≠0）。
+2026-10-19 WSL Ubuntu: PASS（exit 0）、65,536 組不一致 0、負の対照（a<0 補正なし・b<0 補正なし）は各々期待どおり FAIL（32,640 組）。
 Geargrafx `b49ae82a012eade566d72e9d61c9d95a5caa4da3`（core sha256 `38c9af41e76ab0df0bdd451d537ba770b2d1bc5e4644e9647f21b76170cad52c`）、
 cc65 `71746c829e77f74c2b601a7d16821170c2610df3`、テスト ROM sha256 `13a063583cea3d600a4d2bba970b9b3f842b3ce73f5b3dcd42926aea39efa3a5`。
 実コア境界値（16 進）: `-128×-128=4000`、`-128×127=C080`、`-128×-1=0080`、`-1×-1=0001`、`-1×127=FF81`、`127×127=3F01`、`0×n=0000`。

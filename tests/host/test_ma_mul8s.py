@@ -1,7 +1,6 @@
-"""MA_MUL8S (Issue #74): host model, judge negatives and the real-core exhaustive run."""
+"""MA_MUL8S (Issue #74): host model and judge negatives. Real core: tests/integration/geargrafx_ma_mul8s.py (Linux-pinned, opt-in)."""
 from pathlib import Path
 import sys
-import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "integration"))
@@ -33,16 +32,6 @@ class ModelTest(unittest.TestCase):
             bad = bytearray(good)
             bad[offset] ^= 0x01
             self.assertEqual(len(mul.check_row(0x80, bytes(bad))), 1, hex(offset))
-
-
-class RealCoreTest(unittest.TestCase):
-    def test_exhaustive_pairs_on_geargrafx(self):
-        """Real Geargrafx execution of the assembled routine; missing tools fail, never skip."""
-        with tempfile.TemporaryDirectory(prefix="ma-mul8s-") as directory:
-            evidence = mul.run(Path(directory))
-        self.assertEqual((evidence["status"], evidence["pairs_checked"]), ("PASS", 65536))
-        self.assertEqual(evidence["edge_products_hex"]["-128,-128"], "4000")
-        self.assertEqual(evidence["edge_products_hex"]["-1,127"], "ff81")
 
 
 if __name__ == "__main__":
