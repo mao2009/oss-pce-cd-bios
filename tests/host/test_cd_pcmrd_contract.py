@@ -44,10 +44,16 @@ class CdPcmrdContractTest(unittest.TestCase):
                 self.assertNotIn(bad, label_cell, cells[1])
 
     def test_unknown_fields_are_not_promoted(self):
-        # Rows whose label cell starts with UNKNOWN must not claim a source fact.
-        for cells in _claim_rows(self.text):
-            if cells[4].startswith("UNKNOWN"):
-                self.assertNotIn("SOURCE_FACT（", cells[4], cells[1])
+        # Pinned dispositions: a silent UNKNOWN -> SOURCE_FACT promotion must fail.
+        expected = {
+            "A1": "SOURCE_FACT", "A2": "SOURCE_FACT",
+            "A3": "UNKNOWN", "A5": "UNKNOWN", "A6": "UNKNOWN", "A7": "UNKNOWN",
+            "A8": "UNKNOWN", "A9": "UNKNOWN", "A10": "UNKNOWN", "A11": "UNKNOWN",
+        }
+        found = {cells[1]: cells[4] for cells in _claim_rows(self.text)}
+        for cid, label in expected.items():
+            self.assertTrue(found[cid].startswith(label), (cid, found[cid]))
+        self.assertIn("UNKNOWN", found["A4"])  # C1 stays open: no source fact claimed for X/Y output
 
     def test_conflicts_remain_unresolved(self):
         for cid in ("C1", "C2", "C3"):

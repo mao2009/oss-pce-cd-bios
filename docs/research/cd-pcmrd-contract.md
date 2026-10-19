@@ -64,7 +64,7 @@ HuC の内容は固定版 `pce-devel/huc` @ `54f5c73606c1e7142e8095c727cab2767e2
 | A1 | 入口アドレス `$00:E02A`（jump table） | 採用 | SOURCE_FACT（S1、S6 が同じ値）。呼出先の実装は未検証 | S1、S6 | 本体の実行で、$E02A から RTS までの経路を確認する（呼出先が必要） |
 | A2 | 関数番号 `$0E` | 採用 | SOURCE_FACT（S5、S7 が一致。`$E000 + 3×14 = $E02A` と整合） | S5、S7 | 同上 |
 | A3 | 入力 `A` の意味 | 未確定 | UNKNOWN（単一出典、送り先「zeo」の意味が不明） | S5 | 入力感度試験（A を変えた呼出しの結果を比較） |
-| A4 | 出力 `X` / `Y`（PCM 値） | **conflict unresolved（C1）** | S5 は SOURCE_FACT と記す。S7 は X/Y を書かず、HLE のため採用しない。S7 は裁定の材料にならない | S5、S7 | 呼出後の X/Y の実測（呼出先が必要） |
+| A4 | 出力 `X` / `Y`（PCM 値） | **conflict unresolved（C1）** | UNKNOWN（S5 は X/Y を出力と記すが、S7 と食い違うため SOURCE_FACT にしない。S7 は HLE で裁定の材料にならない） | S5、S7 | 呼出後の X/Y の実測（呼出先が必要） |
 | A5 | 出力 `A`（エラー） | **conflict unresolved（C2、C3）** | UNKNOWN。S5 内部でも「1st bit of $1803」と「$00/$01」が食い違う（C2）。S7 は `A` を `$41` の値とし、エラーではない（C3） | S5、S7 | エラー条件（無ディスク、再生中でない等）ごとの `A` の実測 |
 | A6 | フラグ（N/Z/C/V/T） | 未確定 | UNKNOWN（どの出典も CD_PCMRD 固有に記していない。S7 の N/Z は HLE） | S5、S7 | 呼出前後の P の全比較 |
 | A7 | SP・MPR・ゼロページ・作業 RAM の副作用 | 未確定 | UNKNOWN。総論のみ（§2 の注記） | S5、S6 | MPR0–7、作業 RAM の全差分 |
