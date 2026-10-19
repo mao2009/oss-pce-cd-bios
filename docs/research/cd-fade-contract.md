@@ -25,20 +25,22 @@ HuC は `pce-devel/huc` の commit `54f5c73606c1e7142e8095c727cab2767e2b3cb3` �
 | ID | 出典（固定版内のパス） | 行 | ライセンス | 本書での用途 | 状態 |
 | --- | --- | --- | --- | --- | --- |
 | S1 | `include/hucc/pcengine.inc` | 202、215–221、483 | BSL-1.0（ヘッダー 8 行目） | 入口定義 `cd_fade = $00:E02D`、IFU_AUDIO_FADE の注釈 | 転載なし。行番号と要約のみ。出自は PENDING |
-| S2 | `include/hucc/hucc-systemcard.asm` | 41–46（CDFADE 定数）、119–128（宣言コメントとマクロ） | BSL-1.0（John Brandwood 2024） | 入力 A、許容値、時間の呼出側記述 | 同上 |
-| S3 | `include/hucc/hucc-systemcard.h` | 13、92 | BSL-1.0 | `void` 宣言（入力 `<acc>`） | 同上 |
-| S4 | `include/hucc/core.inc` | 41–44（`system` マクロ） | BSL-1.0（John Brandwood 2021–2024） | Y に入口の下位バイトを入れて call_bios を呼ぶ | 同上 |
-| S5 | `include/hucc/core-kernel.asm` | 488–516（`call_bios`） | BSL-1.0（同上） | MPR7 の切替え、A の保存、戻り値の経路 | 同上 |
+| S2 | `include/hucc/hucc-systemcard.asm` | 41–46（CDFADE 定数）、119–128（宣言コメントとマクロ） | BSL-1.0（John Brandwood 2024） | 入力 A、許容値、時間の呼出側記述 | PENDING（S1 と同じ） |
+| S3 | `include/hucc/hucc-systemcard.h` | 13、92 | BSL-1.0 | `void` 宣言（入力 `<acc>`） | PENDING（S1 と同じ） |
+| S4 | `include/hucc/core.inc` | 41–44（`system` マクロ） | BSL-1.0（John Brandwood 2021–2024） | Y に入口の下位バイトを入れて call_bios を呼ぶ | PENDING（S1 と同じ） |
+| S5 | `include/hucc/core-kernel.asm` | 488–516（`call_bios`） | BSL-1.0（同上） | MPR7 の切替え、A の保存、戻り値の経路 | PENDING（S1 と同じ） |
 | S6 | `doc/huc/whats.new` 462、`doc/huc/huc3_doc.htm` 124 | 一行 | HuC ルート `LICENSE` は「混在・不確実」と記す | 「ADPCM/PCM のみ、CD 音楽ではない」（462）と「PCM と ADPCM の音楽をフェードする」（124）の矛盾 | PENDING。根拠にしない。矛盾の記録のみ |
 | S7 | `doc/hucc/hucc-function-reference.md` 930–931 | 一行 | 未確認（PENDING） | 「CD-ROM 音声をフェードする」という記述 | PENDING。矛盾の記録のみ |
-| S8 | Zeograd System Card notes（`https://www.zeograd.com/download/pce_bios.html`）、「CD_FADE, Function #$0F」 | 325–343（OUT は 338、その値は 340 行の N/A） | 表示なし（PENDING） | 入力の値一覧、「6.0 秒／2.5 秒」、戻り値 N/A の注記 | 部分的に RE に基づくノート。証拠にしない |
-| S9 | Stum 2025 offsets（`https://www.stum.de/2025/pcenginebiosoffsets/`） | 212–213 | 文章 CC BY-NC-SA 4.0 | `cd_fade` の入口 `$E02D` の一致 | 地図としての参照のみ。revision 別の内部アドレスは記載しない |
-| S10 | Hu-Go `bios.c` @`64ed226da2288738781743eeef228c069e8973a4` | 50、184–185 | GPL-2（参照のみ） | `CD_FADE 0x0F` の定義と名前文字列のみ。処理本体は見つからない | HLE であり、BIOS の証拠にしない。コードは転載しない。出自は PENDING |
+| S8 | Zeograd System Card notes（`https://www.zeograd.com/download/pce_bios.html`）、「CD_FADE, Function #$0F」 | 325–343（OUT は 338、その値は 340 行の N/A） | 表示なし（PENDING） | 入力の値一覧、「6.0 秒／2.5 秒」、戻り値 N/A の注記 | PENDING。部分的に RE に基づくノート。証拠にしない |
+| S9 | Stum 2025 offsets（`https://www.stum.de/2025/pcenginebiosoffsets/`） | 212–213 | 文章 CC BY-NC-SA 4.0 | `cd_fade` の入口 `$E02D` の一致 | PENDING。地図としての参照のみ。revision 別の内部アドレスは記載しない |
+| S10 | Hu-Go `bios.c` @`64ed226da2288738781743eeef228c069e8973a4` | 50、184–185 | GPL-2（参照のみ） | `CD_FADE 0x0F` の定義と名前文字列のみ。処理本体は見つからない | PENDING。HLE であり、BIOS の証拠にしない。コードは転載しない |
 
 除外: `include/huc/`（`cdrom.inc`、`system.inc`）と `examples/asm/elmer/kickc/bios.h` は、ライセンスが不明なため内容を根拠にしない（台帳 S6 と同じ扱い）。
 `./rom/` は読んでいない。BIOS バイト列、逆アセンブルは使っていない。
 
 ## 4. フィールド裁定（フィールド表）
+
+呼出側（HuC 固定版）の記述に基づく行と、BIOS 側（呼出先）の未検証の振る舞いの行を分けて読むこと。呼出側の行は最大でも HYPOTHESIS、呼出先の行（F02、F07、F10、F12、F13、F16、F18、F19、F22、F24、F27、F28、F31–F34、F36）は HYPOTHESIS か UNKNOWN で、SOURCE_FACT にしない。
 
 | ID | 項目 | 判定 | 根拠 | 備考 |
 | --- | --- | --- | --- | --- |

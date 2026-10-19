@@ -88,6 +88,16 @@ def check_pins(text):
     return errors
 
 
+# Callee (BIOS-side) rows: unverified behavior, never SOURCE_FACT.
+CALLEE_ROWS = ["F02", "F07", "F10", "F12", "F13", "F16", "F18", "F19", "F22", "F24",
+               "F27", "F28", "F31", "F32", "F33", "F34", "F36"]
+
+
+def source_rows(text):
+    """Return the section-3 source table rows (S1..S10)."""
+    return [l for l in text.splitlines() if re.match(r"^\| S\d+ \|", l)]
+
+
 def promote(text, fid, verdict):
     """Return text with the verdict cell of one field row replaced."""
     return re.sub(rf"^(\| {fid} \|[^|]*\| )[A-Z_]+( \|)", rf"\g<1>{verdict}\2",
@@ -149,6 +159,41 @@ class PromotionRegressionTest(unittest.TestCase):
         mutated = promote(self.text, "F01", "SOURCE_FACT")
         errors = check_pins(mutated)
         self.assertIn("F01: SOURCE_FACT cites PENDING source ['S1']", errors)
+
+    def test_every_field_promotion_to_source_fact_is_rejected(self):
+        for fid, want in EXPECTED.items():
+            if want == "SOURCE_FACT":
+                continue
+            with self.subTest(fid=fid):
+                self.assert_promotion_rejected(fid, "SOURCE_FACT")
+
+    def test_every_unknown_promotion_is_rejected(self):
+        for fid, want in EXPECTED.items():
+            if want == "UNKNOWN":
+                with self.subTest(fid=fid):
+                    self.assert_promotion_rejected(fid, "HYPOTHESIS")
+
+    def test_callee_rows_are_not_source_fact(self):
+        rows = parse_fields(self.text)
+        for fid in CALLEE_ROWS:
+            self.assertIn(rows[fid][0], {"HYPOTHESIS", "UNKNOWN"}, fid)
+
+    def test_all_sources_stay_pending(self):
+        rows = source_rows(self.text)
+        self.assertEqual(len(rows), 10)
+        for row in rows:
+            self.assertIn("PENDING", row)
+            self.assertNotIn("APPROVED", row)
+
+    def test_source_approval_mutation_is_detected(self):
+        # Flipping a source from PENDING to APPROVED must be caught by the source rule.
+        mutated = self.text.replace("出自は PENDING", "出自は APPROVED", 1)
+        self.assertNotEqual(mutated, self.text)
+        self.assertTrue(any("APPROVED" in r for r in source_rows(mutated)))
+
+    def test_ledger_declares_zero_source_fact(self):
+        self.assertIn("SOURCE_FACT は 0 件", self.text)
+        self.assertIn("SOURCE_FACT 0、HYPOTHESIS 21、UNKNOWN 15", self.text)
 
 
 if __name__ == "__main__":
