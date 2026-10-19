@@ -93,24 +93,34 @@ HuCC（`pce-devel/huc`）の固定版を使う。
 - `SOURCE_FACT` / `CALLER_INFERENCE` / `HYPOTHESIS` の行は、§2 に定義した出典 ID（S1〜S6）を一つ以上引用する。
 - 入口の値は、S1 の等号 `cd_seek = $00:E00C` を `call_bios` の `$E000 + Y`（`Y=$0C`）で再計算した値と一致する。
 - 合成表（テスト内の値）で、件数 38、24 ビット、先頭 37 件の単調増加、末尾 1 件の順序外れを検査する。判定器（binary MSF / BCD MSF）は合成値で合格と不合格を確かめる。
-- 固定版の S4 表については、取得時にホストで一回限り確認した（表は本リポジトリに含めない）: 38 件（`$00`〜`$25`）、すべて 24 ビットの整数。`$00`〜`$24` の映像表 37 件は単調増加し、`$25` は read 速度試験用のセクタで映像の LBA ではないため順序を外れる。38 件中 34 件（例: `$018660`）は BCD MSF でも binary MSF でも成立しない。この確認はテストとして再現されないため、再確認は §5 の手順で行う。
+- 固定版の S4 表については、取得時にホストで一回限り確認した（表は本リポジトリに含めない）: 38 件（`$00`〜`$25`）、すべて 24 ビットの整数。`$00`〜`$24` の映像表 37 件は単調増加し、`$25` は read 速度試験用のセクタで映像の LBA ではないため順序を外れる。38 件中 34 件は BCD MSF でも binary MSF でも成立しない。この確認はテストとして再現されないため、再確認は §5 の手順で行う。
   このため表全体を MSF として読むことはできず、C4 と C5 は UNKNOWN のままとする。
 
 ## 5. 独立検証（再確認の手順）
 
-HuCC 固定版は、アーカイブを新しい空ディレクトリに展開して読む。展開物は実行しない。以下の `<…>` は絶対パスに置き換える（`cd` の後でも参照できるように）。
+HuCC 固定版は、空の作業ディレクトリに取得・展開して読む。展開物は実行しない。以下のパスはすべて絶対パスで指定し、カレントディレクトリに依存しない。`W` は空の作業ディレクトリの絶対パスとし、その下に `dl`、`src`、`check` を作る。
 
 ```sh
-curl -sL -o huc.tar.gz https://codeload.github.com/pce-devel/huc/tar.gz/54f5c73606c1e7142e8095c727cab2767e2b3cb3
-sha256sum huc.tar.gz    # 9fe91254051381077bd4ea217b718ec033a52da185283ae9479c1abac365311b
-tar xzf huc.tar.gz -C <空ディレクトリ>
-grep -rIn -E 'cd_seek|cd_base|cd_read' <空ディレクトリ>
-# S4 の LBA 表（gulliver_lba と dd 行）を抜き出し、検査スクリプトを別の空ディレクトリで実行する（表は転載しない）
-mkdir <別の空ディレクトリ> && cd <別の空ディレクトリ>
-grep -E '(^gulliver_lba:|^\s+dd\s)' <空ディレクトリ>/examples/asm/elmer/ted2-core-gulliver/gulliver.asm > gl_dd.txt
-cat > check.py <<'EOF'
+W=<空の作業ディレクトリの絶対パス>
+mkdir -p "$W/dl" "$W/src" "$W/check"
+curl -sSfL -o "$W/dl/huc.tar.gz" https://codeload.github.com/pce-devel/huc/tar.gz/54f5c73606c1e7142e8095c727cab2767e2b3cb3
+echo "9fe91254051381077bd4ea217b718ec033a52da185283ae9479c1abac365311b  $W/dl/huc.tar.gz" | sha256sum -c -
+tar -xzf "$W/dl/huc.tar.gz" -C "$W/src" --strip-components=1
+grep -rIn -E 'cd_seek|cd_base|cd_read' "$W/src"
+# S4 の LBA 表（gulliver_lba と dd 行）だけを抜き出す（表は転載しない）
+grep -E '(^gulliver_lba:|^\s+dd\s)' "$W/src/examples/asm/elmer/ted2-core-gulliver/gulliver.asm" > "$W/check/gl_dd.txt"
+cat > "$W/check/check.py" <<'EOF'
 import re
-v = [int(m.group(1), 16) for l in open('gl_dd.txt') for m in [re.search(r'dd\s+\$([0-9A-Fa-f]+)', l)] if m]
+import sys
+EXPR = re.compile(r'\s*\$([0-9A-Fa-f]+)\s*(?:([+-])\s*([0-9]+))?\s*$')
+def value(expr):
+    m = EXPR.fullmatch(expr.split(';', 1)[0].strip())
+    if not m: raise SystemExit('unparsed dd operand: ' + expr)
+    x = int(m.group(1), 16)
+    if m.group(2) == '+': x += int(m.group(3))
+    elif m.group(2) == '-': x -= int(m.group(3))
+    return x
+v = [value(m.group(1)) for l in open(sys.argv[1], encoding='utf-8') for m in [re.search(r'\bdd\s+(.*)$', l)] if m]
 def split(x): return (x >> 16) & 0xFF, (x >> 8) & 0xFF, x & 0xFF
 def binok(b): m, s, f = b; return m < 100 and s < 60 and f < 75
 def bcdok(b):
@@ -118,8 +128,12 @@ def bcdok(b):
     m, s, f = ((x >> 4) * 10 + (x & 0xF) for x in b); return m < 100 and s < 60 and f < 75
 print(len(v), all(x < 1 << 24 for x in v), all(a < b for a, b in zip(v[:37], v[1:37])), v[-1] < v[36], sum(not (binok(split(x)) or bcdok(split(x))) for x in v))
 EOF
-python3 -I check.py
+python3 -I "$W/check/check.py" "$W/check/gl_dd.txt"
 ```
+
+末尾の行は `dd $000F26 - 1` の形（定数式）で、検査スクリプトは `-` の項を評価する（末尾の定数を無視しない）。
+Windows の Git Bash で `tar` が `C:` を遠隔ホストと解釈する場合は、`tar` に `--force-local` を付けるか、パスを `/c/...` の形で指定する。
+
 期待値: `38 True True True 34`（件数、24 ビット、映像 37 件の単調増加、末尾が映像の最後より小さい、binary と BCD のどちらでも MSF として成立しない件数）。
 
 本台帳の作成時に、上記で展開して行番号を確認した。#11（`docs/cd-base-abi-ledger.md` §2）と #12（`docs/cd-read-contract.md`）の記述は、
