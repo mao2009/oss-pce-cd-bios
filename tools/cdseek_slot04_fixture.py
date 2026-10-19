@@ -7,6 +7,14 @@ so no argument, register, stack or return value is invented. There is no executi
 process launch, no reference API JSR, no ROM byte read (path/sha256 shape and comparison only).
 Every outcome is ``BLOCKED_ABI`` (exit 3), ROM mismatch or unsafe hardware I/O is ``REJECTED``
 (exit 3). Nothing here ever emits a permission, result or verification verdict.
+
+Input identity: the file extension is NOT a content identity. ``--config`` accepts only a small
+regular file whose name ends in ``.json`` as a convenience filter; its content is then parsed as
+JSON and checked field by field against ``CONFIG_SCHEMA``. A ROM renamed to ``.json`` therefore
+fails to parse (or fails the schema) and is ``BLOCKED`` without echoing any of its bytes. The
+``rom_path`` string inside the config names a ROM that is never opened. ``rom_sha256`` is a
+declared value: the ROM file itself is never hashed, so the hash check compares two declared
+strings (declared vs approved), not the bytes on disk.
 """
 import argparse
 import json
@@ -26,7 +34,9 @@ CONFIG_FIELDS = frozenset({"schema", "rom_path", "rom_sha256", "approved_rom_sha
                            "safety_gate_approved"})
 EVIDENCE_FIELDS = ("position", "work_ram", "mpr", "stack", "irq", "disk_state", "expected_result")
 PERMISSION_FIELDS = ("unsafe_io_allow", "side_effects_allowed", "execution_allowed")
-HARDWARE_PAGE = range(0x0000, 0x2000)  # PC Engine hardware page $0000-$1FFF: any write is a side effect
+# PC Engine hardware page $0000-$1FFF: any write is a side effect. This is deliberately wider than the
+# CD unit register block $1800-$1BFF alone, so the refusal does not depend on a narrower guess.
+HARDWARE_PAGE = range(0x0000, 0x2000)
 MAX_CONFIG_BYTES = 65536  # a run config is small JSON; anything larger is refused unread
 HEX = set("0123456789abcdef")
 
@@ -108,7 +118,8 @@ def _reject_reasons(cases, config):
                for field in PERMISSION_FIELDS if config[field] is not False]
     approved = config["approved_rom_sha256"]
     if approved is not None and config["rom_sha256"] != approved:
-        reasons.append("rom_sha256_mismatch: local ROM differs from the approved hash")
+        # Compares declared strings only: the ROM file is never hashed (no ROM read in this module).
+        reasons.append("rom_sha256_mismatch: declared rom_sha256 differs from approved_rom_sha256")
     for index, case in enumerate(cases):
         writes = case["io_writes"]
         if writes != UNKNOWN and any(address in HARDWARE_PAGE for address in writes):
@@ -142,19 +153,25 @@ def preflight(cases, config):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="validate the built-in slot $04 cases")
-    parser.add_argument("--config", type=Path, help="local run-config JSON (never a ROM)")
+    parser.add_argument("--config", type=Path,
+                        help="local run-config JSON (.json filter only; content must be a run config, "
+                             "and the rom_path it names is never opened)")
     arguments = parser.parse_args(argv)
     if not arguments.check:
         parser.error("--check is required")
     config = None
     if arguments.config is not None:
         try:
-            # Only a small .json regular file is read; a ROM or any other file is refused unread.
+            # The .json suffix is a convenience filter, not identity: a renamed ROM is refused by the
+            # JSON parse and CONFIG_SCHEMA check below. ponytail: no magic-byte sniffing (ROMs have no
+            # reliable header); the strict schema is the gate.
             path = arguments.config
             if path.suffix != ".json" or not path.is_file() or path.stat().st_size > MAX_CONFIG_BYTES:
                 raise ValueError("config path refused")
             config = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError, RecursionError):
+            # Parse failure (incl. a ROM renamed to .json) and refusal both yield None: BLOCKED.
+            # Only fixed text is printed; the file's bytes or parse error text are never echoed.
             config = None  # unreadable config is indistinguishable from an unspecified one: BLOCKED
     status, reasons = preflight(CASES, config)
     print(f"{status}: " + "; ".join(reasons))
