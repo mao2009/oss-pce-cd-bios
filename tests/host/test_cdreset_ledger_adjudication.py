@@ -209,6 +209,26 @@ class AdjudicateClaimTests(unittest.TestCase):
         for field in ('stack', 'returns', 'irq', 'flags'):
             adjudicate_claim(OBSERVED, REAL, field=field, context=field, executed_callee=True)
 
+    def test_observed_claim_must_not_contain_registers_key(self):
+        for regs in ([], None, ['A'], ['A', 'X']):
+            for field in ('preserved', 'stack'):
+                with self.assertRaisesRegex(ValueError, 'must not contain registers',
+                                            msg=repr((regs, field))):
+                    adjudicate_claim(dict(OBSERVED, registers=regs), REAL, field=field,
+                                     context='x', executed_callee=True)
+
+    def test_observed_without_registers_key_and_other_statuses_unchanged(self):
+        self.assertNotIn('registers', OBSERVED)
+        adjudicate_claim(OBSERVED, REAL, field='preserved', context='x', executed_callee=True)
+        # UNKNOWN / HYPOTHESIS / BLOCKED regression: registers rules unchanged.
+        adjudicate_claim(UNKNOWN, CALLER, field='flags', context='x')
+        adjudicate_claim(HYPOTHESIS, CALLER, field='preserved', context='x')
+        adjudicate_claim(dict(HYPOTHESIS, registers=['A', 'X']), CALLER, field='preserved', context='x')
+        adjudicate_claim(BLOCKED, CALLER, field='flags', context='x')
+        for bad in (dict(UNKNOWN, registers=['A']), dict(BLOCKED, registers=['A'])):
+            with self.assertRaises(ValueError):
+                adjudicate_claim(bad, CALLER, field='flags', context='x')
+
     def test_malformed_input_types_raise_valueerror(self):
         good = dict(OBSERVED)
         for bad_claim in (None, [], 'OBSERVED', 123, ('status',)):
@@ -230,9 +250,6 @@ class AdjudicateClaimTests(unittest.TestCase):
         for bad_exec in (1, 0, 'true', None):
             with self.assertRaisesRegex(ValueError, 'executed_callee must be a bool', msg=repr(bad_exec)):
                 adjudicate_claim(good, REAL, field='stack', context='x', executed_callee=bad_exec)
-        with self.assertRaisesRegex(ValueError, 'must not carry a register list'):
-            adjudicate_claim(dict(good, registers=['A']), REAL, field='preserved', context='x',
-                             executed_callee=True)
         for bad_regs in ({1: 2}, 0, 'A', ['Q'], ['A', 'A'], [1]):
             with self.assertRaisesRegex(ValueError, 'registers must be a list', msg=repr(bad_regs)):
                 adjudicate_claim(dict(good, registers=bad_regs), REAL, field='stack', context='x',
