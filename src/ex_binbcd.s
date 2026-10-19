@@ -12,12 +12,12 @@
 .segment "CODE"
 ex_binbcd_packed:
     cmp #100
-    bcs binbcd_done         ; out of range: C=1, A/X/Y untouched
+    bcs binbcd_done           ; out of range: C=1, A/X/Y untouched
     phx
     ldx #0                   ; X accumulates tens digit << 4
 binbcd_tens:
     cmp #10
-    bcc binbcd_ones         ; A = ones digit 0..9
+    bcc binbcd_ones           ; A = ones digit 0..9
     sbc #10                  ; C=1 from CMP, so exact subtract
     sax
     clc

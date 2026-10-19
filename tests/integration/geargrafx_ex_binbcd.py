@@ -49,6 +49,8 @@ def execute(core_file, rom):
             getattr(core, "retro_set_" + name)(callback)
         info = SystemInfo()
         core.retro_get_system_info(C.byref(info))
+        if info.name.decode() != "Geargrafx":
+            raise ValueError(f"unexpected core: {info.name.decode()}")
         core.retro_get_memory_data.restype = C.c_void_p
         core.retro_get_memory_size.restype = C.c_size_t
         core.retro_load_game.restype = C.c_bool
