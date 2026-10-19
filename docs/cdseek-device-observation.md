@@ -20,7 +20,7 @@ System Card API の意味とは別物である。
 ## 実行不能の原因（BLOCKED）
 
 1. **WSL 経由の実行が拒否された。** この worktree 専用エージェントから `wsl.exe` を呼ぶコマンドは実行ガードで拒否された
-   （worktree 外の git 操作の可能性を理由とする）。固定版コアと cc65 のセットアップは WSL 側 (`/home/loach` 配下) の手順
+   （worktree 外の git 操作の可能性を理由とする）。固定版コアと cc65 のセットアップは WSL 側 (ユーザーのホーム配下) の手順
    (`tools/setup.py geargrafx`, `tools/setup.py cc65`) が前提であり、このエージェントから起動できなかった。
 2. **Windows ホストに ROM ビルド用ツールがない。** `make` / `ca65` / `ld65` が PATH に無く、`tools/setup.py` は `fcntl` を
    使うため Windows では動かない（既存メモリの記録と一致）。自作 ROM (`make dev-cdda`) をビルドできない。
@@ -40,7 +40,7 @@ System Card API の意味とは別物である。
 | `$00` | TEST UNIT READY | 媒体の有無に関係なく GOOD（`cd-media-state.md` と同じ） |
 | `$03` | REQUEST SENSE | 参照のみ |
 | `$08` | READ(6) | 位置変更あり。`SeekTime(current, target)` と `NotifyScsiReadStart` からシーク時間を計算し、初回読み出し位相に乱数の遅延を加える |
-| `$D8` | AUDIO START POSITION | `AudioLBA()` が媒体のセクタ数以上なら GOOD で何もしない。それ以外は CD-DA の開始位置を設定 |
+| `$D8` | AUDIO START POSITION | `AudioLBA()` が媒体のセクタ数以上なら CD-DA 状態は変えず STATUS GOOD を返す（SCSI フェーズは STATUS に進む）。それ以外は CD-DA の開始位置を設定 |
 | `$D9` | AUDIO STOP POSITION | 停止位置 |
 | `$DA` | AUDIO PAUSE | 一時停止 |
 | `$DD` | READ SUBCODE Q | 絶対/相対 MSF の応答 |
@@ -53,7 +53,7 @@ SCSI コマンドではなく、READ(6) の内部計算と CD-DA の開始位置
 本診断の「位置変更」の観測点候補は次のとおり（いずれも未実行）:
 
 - `$D8` の `CURRENT_STATE` / `START_LBA` / `SEEK_CYCLES`（`cdda-core-observation.md` と同じ観測点を流用可能）
-- READ(6) の `SeekTime` 由来のシーク・遅延サイクル（ログ上は `SCSI CMD Read: ... seek cycles` の debug 行。実行時にのみ確認できる）
+- READ(6) のシーク・遅延サイクル。通常は `SeekTime` 由来だが、LaserActive が有効なときは `NotifyScsiReadStart` の値で上書きされ、初回のみ乱数の初期位相が加算される（ログ上は `SCSI CMD Read: ... seek cycles` の debug 行。実行時にのみ確認できる）
 
 ## 観測計画（再開後に実施するもの）
 
@@ -63,14 +63,14 @@ SCSI コマンドではなく、READ(6) の内部計算と CD-DA の開始位置
 | 区分 | ケース | 期待（SOURCE_READ に基づく仮説、未検証） | 判定 |
 | --- | --- | --- | --- |
 | 正例 | `$D8` で有効な音声 LBA (16 以上) を指定 | `CURRENT_STATE` が PLAYING、`START_LBA` が指定値 | 既存判定（PCM 一致）を流用 |
-| 負例 | `$D8` で媒体のセクタ数以上の LBA | GOOD を返し、状態は変わらない（PLAYING にならない） | 状態不変と `TRACE_SCSI_PROBLEM_INVALID_AUDIO_START_LBA` の発生を確認 |
+| 負例 | `$D8` で媒体のセクタ数以上の LBA | GOOD を返し、CD-DA 状態は変わらない（PLAYING にならない） | CD-DA 状態の不変と `TRACE_SCSI_PROBLEM_INVALID_AUDIO_START_LBA` の発生を確認 |
 | 負例 | 無媒体（既存の no-disc 経路） | READ 系は CHECK CONDITION ではなく GOOD のまま（ソース上は TEST UNIT READY も GOOD）。**実行証拠なし**。判定は BLOCKED 扱い | `cd-media-state.md` の NOT_RUN 項目を継続 |
 | timeout | 既存のゲスト側有界ループ（24-bit カウンタ）を流用 | 上限超過は FAIL/TIMEOUT として記録し、PASS にしない | 既存 `cdread` と同じ規則 |
 | IRQ | 既存 CD-DA 診断は**ポーリングのみ** | IRQ 経由の完了通知は観測していない | NOT_TESTED |
 
 ## 再開条件
 
-1. WSL 上の `/home/loach` 配下のクリーンクローンで `python3 tools/setup.py geargrafx` と `python3 tools/setup.py cc65` を完了する
+1. WSL 上のホーム配下のクリーンクローンで `python3 tools/setup.py geargrafx` と `python3 tools/setup.py cc65` を完了する
    （`TOOLS_DIR` はリポジトリ外。`GIT_DIR` / `GIT_WORK_TREE` は export しない）。
 2. `make dev-cdda-integration MODE=debug` を実行し、固定版の core revision、ROM の SHA-256、`bin_sha256` を証拠として保存する。
 3. 上記の正例・負例を `tests/integration/geargrafx_cdda.py` に追加し、結果を `docs/cdseek-device-observation.md` に追記する。
