@@ -207,13 +207,8 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
 
     Rules:
       UNKNOWN     - value exactly 'UNKNOWN', no sources, confidence UNKNOWN, no registers
-<<<<<<< HEAD
       HYPOTHESIS  - caller/HLE/emulator source text only, non-empty sources, confidence SOURCE_SUPPORTED
-      OBSERVED    - requires at least one EMULATOR_SOURCE reference (necessary, not sufficient);
-=======
-      HYPOTHESIS  - caller/HLE source text only, non-empty sources, confidence SOURCE_SUPPORTED
       OBSERVED    - must not carry registers; requires at least one EMULATOR_SOURCE reference (necessary, not sufficient);
->>>>>>> l211
                     callee-behavior claims (CALLEE_BEHAVIOR_FIELDS) additionally
                     require executed_callee; hardware observations
                     (HARDWARE_OBSERVATION_FIELDS, e.g. hw_bus_reset) do not;
