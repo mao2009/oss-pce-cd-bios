@@ -15,6 +15,10 @@ LEDGER = ROOT / 'docs/research/cd-boot-contract-ledger.json'
 STATUSES = {'SOURCE_FACT', 'HYPOTHESIS', 'UNKNOWN', 'PROJECT_DEV_FACT'}
 # These fields must stay at exactly this status. Promotion is a failure.
 REQUIRED_STATUS = {
+    'entry_address': 'SOURCE_FACT',
+    'entry_jmp_table': 'HYPOTHESIS',
+    'body_address_by_version': 'HYPOTHESIS',
+    'stated_purpose': 'UNKNOWN',
     'returns_to_caller': 'HYPOTHESIS',
     'caller_stack_expectation': 'HYPOTHESIS',
     'callee_input_registers_a_x_y_p': 'UNKNOWN',
@@ -103,6 +107,14 @@ class CdBootContractLedgerTests(unittest.TestCase):
             if field['id'] == 'media_detection':
                 field.update(status='SOURCE_FACT', value='disc present', sources=['HUC_CORE_KERNEL'])
         self.assertTrue(any('media_detection' in e for e in check_ledger(bad)))
+
+    def test_promoting_secondary_only_rows_is_rejected(self):
+        for fid in ('body_address_by_version', 'entry_jmp_table', 'stated_purpose'):
+            bad = copy.deepcopy(self.ledger)
+            for field in bad['fields']:
+                if field['id'] == fid:
+                    field['status'] = 'SOURCE_FACT'
+            self.assertTrue(any(fid in e for e in check_ledger(bad)), fid)
 
     def test_promoting_a_hypothesis_is_rejected(self):
         bad = copy.deepcopy(self.ledger)

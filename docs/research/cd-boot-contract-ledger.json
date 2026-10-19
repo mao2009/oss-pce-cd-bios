@@ -97,16 +97,24 @@
     {
       "id": "entry_address",
       "status": "SOURCE_FACT",
-      "value": "$E000",
+      "value": "$00:E000 (declared as cd_boot)",
       "sources": [
-        "HUC_PCENGINE",
+        "HUC_PCENGINE"
+      ],
+      "note": "HuC declares the address only. Whether $E000 is a jump-table entry is not stated by HuC (see entry_jmp_table)."
+    },
+    {
+      "id": "entry_jmp_table",
+      "status": "HYPOTHESIS",
+      "value": "$E000 is a JMP table entry",
+      "sources": [
         "STUM_2025_OFFSETS"
       ],
-      "note": "CPU-visible JSR entry of the jump table. Not the body address."
+      "note": "Only the unverified secondary page says so. Not promoted."
     },
     {
       "id": "body_address_by_version",
-      "status": "SOURCE_FACT",
+      "status": "HYPOTHESIS",
       "value": {
         "System Card 1.0": "$E0E7",
         "System Card 2.0/2.1/3.0": "$E0F3"
@@ -114,16 +122,14 @@
       "sources": [
         "STUM_2025_OFFSETS"
       ],
-      "note": "Secondary only. Not checked against a manufacturer manual; not verified by execution."
+      "note": "Secondary only. Not checked against a manufacturer manual; not verified by execution. Not promoted."
     },
     {
       "id": "stated_purpose",
-      "status": "SOURCE_FACT",
-      "value": "CD-ROM start-up screen (boot screen) is brought up",
-      "sources": [
-        "ZEOGRAD_BIOS_NOTES"
-      ],
-      "note": "Secondary, one sentence. Says nothing about media detection, transfer, or return."
+      "status": "UNKNOWN",
+      "value": null,
+      "sources": [],
+      "note": "Only an unverified secondary page mentions a start-up screen. Its text is not recorded here and is not used as evidence."
     },
     {
       "id": "caller_mpr7_before_call",

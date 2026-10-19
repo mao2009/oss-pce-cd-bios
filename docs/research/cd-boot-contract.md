@@ -9,7 +9,7 @@
 - caller 側の根拠は揃った。HuC SDK（BSL-1.0）は、CD 時にソフトリセットの処理として `Y=$00` で `JSR $E000` を呼び、呼ぶ前に MPR7 を bank `$00` へ切り替え、戻り後に呼出側の MPR7 を復元する。これは**呼出側の振る舞い**であり、callee の規約ではない。
 - callee 側の規約（A/X/Y/P の入力と出力、`$20F8-$20FF`、MPR0-6 の要求、スタック、IRQ 状態、ディスク検出、移譲先、停止、エラー）は、取得した公開資料のどれにも記載がなく、**すべて UNKNOWN**。
 - 「戻る」は HYPOTHESIS にとどめる。呼出側のコードが戻りを前提にしているが、callee の記述はない。
-- `$E000` は JMP テーブル入口であり、本体アドレスは版ごとに異なる（二次資料のみ）。`$E000` を callable とも非復帰とも断定しない。
+- HuC は `cd_boot = $00:E000` と宣言するのみである。`$E000` が JMP テーブルの入口かどうかは HuC に記載がなく、その説は Stum（未照合の二次資料）にのみあるため HYPOTHESIS とする。本体アドレスも同じ理由で HYPOTHESIS。`$E000` を callable とも非復帰とも断定しない。
 - リセット起動（ハードウェアが MPR7=`$00` にして `$FFFE` を読む）と slot 呼出し（稼働中プログラムからの `JSR`）は別の経路である。
 
 ## 2. 出典（固定版・ライセンス）
@@ -22,7 +22,7 @@
 | HUC_CORE_INC | `include/hucc/core.inc` 10 行目、41-43 行（`system` マクロ: `ldy #<\1`、`jsr call_bios`） | 同上 | BSL-1.0 | 一次（呼出側） |
 | HUC_CPU_TXT | `doc/pce/cpu.txt` 30、64-66、131 行（page 7 = bank `$00`、リセット後の注記、`$FFFE RESET`） | 同上 | **ファイル内に記載なし** | コミュニティ SDK の注記。製造元マニュアルではない |
 | STUM_2025_OFFSETS | <https://stum.de/2025/pcenginebiosoffsets/>（2025-07-28） | 取得日 2026-10-19 | 本文 CC BY-NC-SA 4.0、掲載コード MIT | 二次資料（版別の本体アドレス表） |
-| ZEOGRAD_BIOS_NOTES | <https://www.zeograd.com/download/pce_bios.html> | 取得日 2026-10-19 | 取得内容に記載なし | 二次資料（機能説明の一文のみ） |
+| ZEOGRAD_BIOS_NOTES | <https://www.zeograd.com/download/pce_bios.html> | 取得日 2026-10-19 | 取得内容に記載なし | 二次資料（機能説明の一文のみ。未照合のため台帳の根拠には使わない） |
 | REPO_TESTING_DOC | `docs/testing.md`（DEV ROM の 81 スロット表） | 本リポジトリ | — | 本プロジェクトの記述（参照挙動ではない） |
 | REPO_SYSTEM_CARD_ROM_DOC | `docs/system-card-rom.md`（リセット時 MPR7 と各ベクタ） | 本リポジトリ | — | 本プロジェクトの要約。製造元マニュアルは本 PR で未照合 |
 
@@ -43,9 +43,9 @@
 
 | 項目 | 判定 | 根拠（種類別） | 残る UNKNOWN / 未決 |
 | --- | --- | --- | --- |
-| エントリ | SOURCE_FACT | HUC_PCENGINE、STUM（`$E000` は JMP テーブル入口） | 本体アドレス以外の入口の意味 |
-| 本体アドレス | SOURCE_FACT（二次・版別） | STUM: SC1.0 は `$E0E7`、SC2.x/3.0 は `$E0F3`（`$E0F3` は本リポジトリの DEV 表の終端と偶然一致するが、同一視しない） | 一次資料での照合なし |
-| 機能の説明 | SOURCE_FACT（二次） | ZEOGRAD: 「CD-ROM のスタートアップ画面へ導く」 | 移譲・検出・復帰は記載なし |
+| エントリ | SOURCE_FACT | HUC_PCENGINE: `cd_boot = $00:E000` と宣言 | 入口の意味（JMP テーブルかどうか）は HuC に記載なし。JMP テーブル説は HYPOTHESIS（STUM のみ） |
+| 本体アドレス | HYPOTHESIS（二次・版別・未照合） | STUM: SC1.0 は `$E0E7`、SC2.x/3.0 は `$E0F3`（`$E0F3` は本リポジトリの DEV 表の終端と偶然一致するが、同一視しない） | 一次資料での照合なし、実行による確認なし |
+| 機能の説明 | UNKNOWN | — | 二次資料の一文のみで未確認のため採らない。移譲・検出・復帰も記載なし |
 | 呼出し前の MPR7 | SOURCE_FACT（呼出側） | HUC_CORE_KERNEL: `cla; tam7` で bank `$00` を選ぶ | callee が要求する MPR は UNKNOWN |
 | 戻り後の MPR7 | SOURCE_FACT（呼出側） | HUC_CORE_KERNEL: 保存した MPR7 を復元 | callee が MPR0-6 を保存するかは UNKNOWN |
 | A・X・Y（呼出側の提供） | SOURCE_FACT（呼出側） | `call_bios` は A を push/pull して退避し、X には触れない。Y は `system` マクロの低位バイト（slot 0 は `cly` で `$00`） | callee の入力要求は UNKNOWN |
@@ -78,6 +78,7 @@
 - `block_status` は BLOCKED_ABI、`release_eligible` は false、`DEV_CALLABLE` と `VERIFIED`・`PASS` の文字列はない。
 - 各項目の状態は、この PR で決めた値（UNKNOWN・HYPOTHESIS の項目）から変わらない。UNKNOWN は `value: null`、出典なし、説明あり。
 - SOURCE_FACT は出典が 1 件以上あり、すべて台帳の出典表に存在する。
+- 二次資料のみに基づく行（本体アドレス、JMP テーブル説、機能の説明）は SOURCE_FACT に昇格させない。
 - 候補エントリは `callable: UNKNOWN`、`returns_to_caller: UNKNOWN`。`true` は不合格。
 - `include/huc/cdrom.asm`、`./rom/`、Hu-Go `bios.c` を出典として参照しない。
 
