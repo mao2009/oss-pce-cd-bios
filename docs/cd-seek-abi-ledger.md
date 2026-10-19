@@ -37,16 +37,16 @@ HuCC（`pce-devel/huc`）の固定版を使う。
 | S2 | `include/hucc/core-kernel.asm` | 500–516（`call_bios`） | BSL-1.0（John Brandwood 2021–2024） | 呼出し経路（trampoline） |
 | S3 | `include/hucc/core.inc` | 41–45（`system` マクロ: `ldy #<\1` と `jsr call_bios`） | BSL-1.0（同上） | マクロの展開 |
 | S4 | `examples/asm/elmer/ted2-core-gulliver/gulliver.asm` | 316–335（seek の引数設定と `system cd_seek`）、346–371（read の引数設定と `system cd_read`、367 行）、536 行以降（`gulliver_lba` 表） | Boost 1.0（John Brandwood 2022） | 呼出側の実例 |
-| S5 | `examples/asm/elmer/include/movie.asm` | 246（`BUFFER_1ST_BANK = $6A`） | Boost 1.0（同上） | S4 が include する定数 |
+| S5 | `examples/asm/elmer/include/movie.asm` | 246（`BUFFER_1ST_BANK = $6A`） | Boost 1.0（"Modifications copyright John Brandwood 2022" は改変部分の表示。元のファイルの権利状態は未確認） | S4 が include する定数 |
 | S6 | `examples/asm/elmer/ted2-test-sherlock/sherlock-hack.asm` | 170（ゲーム側の呼出し点へのフック）、404–408（`begin_seek` → `jmp $E00C`） | Boost 1.0（2024）。ただしゲーム実行コードへのパッチ | 補助のみ。引数の設定はこの断片に無いので証拠にしない |
 | S7 | `include/huc/equ.inc` | 34–44（`__al` などの別名で `$20F8`〜`$20FF` を定義。`_al` などの名前は S1 の `pcengine.inc` 330–343 が定義） | 表示なし（下記の注） | 番地の定義のみ |
 
 除外する出典:
 
-- `examples/asm/elmer/kickc/bios.h` 30 行: 名前の宣言のみ。ライセンス未確認（#11 と同じ扱い）。
+- `examples/asm/elmer/kickc/bios.h` 30 行: 名前の宣言のみ。ライセンス表示は Boost 1.0（8–10 行）。除外の理由は #11 と同じ扱い（呼出しの根拠に使わない）。
 - `examples/asm/elmer/cd-core-scsitest/scsitest.asm` 1023 行の「Perform a cd_seek」と 1100 行の「Read 1 sector, i.e. cd_seek」: 同ファイルの自作ルーチン `test_cd_read`（SCSI READ）への注釈であり、System Card の呼出しではない。
 - `examples/asm/elmer/ted2-test-sherlock/dat2csv.c` 334、338 行: ログ文字列のみ。
-- Hu-Go! `bios.c`: HLE であり、ライセンス未確定のため使わない（#11 の規則に従う）。
+- Hu-Go! `bios.c`: 固定版ツリーに該当ファイルがない（`**/bios.c` の検索で 0 件）。`doc/huc/huc3_doc.htm` 344 行の言及のみで、HLE である根拠にはしない。
 - `include/huc/system.inc` 69 行: `cd_seek = $E00C` の宣言のみ。
 
 注（ライセンス）: 固定版ルートの `LICENSE` は、コレクション全体の法的地位を「正確に述べることはほぼ不可能」とし、例外として MagicKit、TGEmu、GCC 由来のテスト、Ulrich Hecht の変更部分（BSD 系）だけを挙げる。ファイル単位のライセンス表示（BSL-1.0、Boost 1.0）がない S7（`equ.inc`）は、法的状態を未確定として扱う。
@@ -63,7 +63,7 @@ HuCC（`pce-devel/huc`）の固定版を使う。
 | K2 | K | `$20F8`（`_al`） | SOURCE_FACT | 呼出側は 1 を書く | S4 316–317 | 書込みの事実のみ。意味は C3 | 入力感度試験（§7） |
 | K3 | K | `$20FA`（`_bl`） | SOURCE_FACT | 呼出側は `BUFFER_1ST_BANK`（`$6A`、S5）を書く | S4 318–319、S5 246 | 値の意味は C3 | 同上 |
 | K4 | K | `$20FF`（`_dh`） | SOURCE_FACT | 呼出側は 3 を書く。同じ値を `cd_read` の前にも書く（S4 348–349） | S4 320–321 | 意味は UNKNOWN（C3） | 同上 |
-| K5 | K | `$20FC` / `$20FD` / `$20FE`（`_cl` / `_ch` / `_dl`） | SOURCE_FACT | `gulliver_lba` の 3 バイトを `_dl`、`_ch`、`_cl` の順に書く（添字 `X` は映像番号の 4 倍。`dd` の 1 件は 4 バイト） | S4 313–332 | 書込みの事実のみ。`$20F8`〜`$20FF` の定義は `include/huc/equ.inc` 34–44 行（S7、`__al` などの別名）と `pcengine.inc` 330–343 行（S1） | 同上 |
+| K5 | K | `$20FC` / `$20FD` / `$20FE`（`_cl` / `_ch` / `_dl`） | SOURCE_FACT | `gulliver_lba` の 3 バイトを `_dl`、`_ch`、`_cl` の順に書く（添字 `X` は映像番号の 4 倍。`dd` 1 件を 4 バイトとみなす添字計算。PCEAS の `dd` 規約は未確認） | S4 313–332 | 書込みの事実のみ。`$20F8`〜`$20FF` の定義は `include/huc/equ.inc` 34–44 行（S7、`__al` などの別名）と `pcengine.inc` 330–343 行（S1） | 同上 |
 | K6 | K | 3 バイト値の桁の重み | CALLER_INFERENCE | `_dl` が最下位、`_cl` が最上位 | S4 357–364 | 呼出側は read の前に 24 ビットで `adc #1`、`adc #0`、`adc #0` の順に加算しており、`_dl` を最下位として扱っている。呼出側内の一貫性のみで、PCEAS の `dd` の順序規約は未確認 | 同上 |
 | K7 | K | 戻り値の使用 | SOURCE_FACT | 呼出側は `system cd_seek` の後で A、X、Y、P を読まず、エラー判定もない。次の命令は `irq_cnt` の読出し（表示用） | S4 335–339 | 「戻り値が無い」とは言えない。呼出側が読まないという事実のみ | C2、C8 |
 | K8 | K | 割込みの扱い | SOURCE_FACT | 呼出し前に `irq_cnt` を 0 にする。`SEI` / `CLI` で囲まない | S4 333 | 呼出側の事実。callee の割込み方針は C10 | C10 |
@@ -108,7 +108,7 @@ grep -rIn -E 'cd_seek|cd_base|cd_read' <空ディレクトリ>
 
 本台帳の作成時に、上記で展開して行番号を確認した。#11（`docs/cd-base-abi-ledger.md` §2）と #12（`docs/cd-read-contract.md`）の記述は、
 この固定版で `cd_base` と `cd_read` の呼出し箇所を見直した。#11 台帳（`docs/cd-base-abi-ledger.md` §3 の (4)）の「CD_READ の呼出し 5 箇所」は HuCC（`include/hucc`）に限った数（`hucc-systemcard.asm` の 4 箇所と `core-kernel.asm` の 1 箇所）であり、
-`include/huc` には別に 6 箇所（`ac_lib.asm`、`cdrom.asm` の 3 箇所、`startup.asm` の 2 箇所）があり、examples には S4 の 367 行と `ipl-scd.asm` の 236 行がある。
+`include/huc` には別に 6 箇所（`ac_lib.asm`、`cdrom.asm` の 3 箇所、`startup.asm` の 2 箇所）があり、examples には S4 の 367 行と `ipl-scd.asm` の 236 行がある（`examples/asm/elmer/doc/syscard-cd-ipl.txt` の `jsr cd_read` は逆アセンブル表の文字列で、ソースではない。この件数は文書内の全件ではない）。
 
 ## 6. 依存関係と PR の境界
 
