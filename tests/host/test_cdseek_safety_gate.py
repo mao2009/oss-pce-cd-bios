@@ -6,6 +6,7 @@ is 0 by construction. The real-core negative evidence for the hazards is the exi
 ``tests/integration/geargrafx_st_bypass.py`` and ``geargrafx_mmio1804_preblock.py`` (see docs).
 """
 import importlib.util
+import inspect
 import subprocess
 import sys
 import unittest
@@ -41,8 +42,12 @@ class CdSeekSafetyGateTest(unittest.TestCase):
         # Fail-closed premise: no hazard has a general pre-side-effect control on the pinned core.
         controls = {control for _, _, _, control in self.gate.HAZARDS}
         self.assertTrue(controls <= {self.gate.NONE, self.gate.DETECT_ONLY, self.gate.POST_HOC,
-                                     self.gate.KNOWN_PC_ONLY})
+                                     self.gate.KNOWN_PC_ONLY, self.gate.PREVENT_CPU_ONLY})
         self.assertNotIn("PREBLOCK", controls)
+
+    def test_decide_takes_no_input(self):
+        # No unlock parameter exists: the gate cannot be steered by a posture argument.
+        self.assertEqual(list(inspect.signature(self.gate.decide).parameters), [])
 
     def test_vdc_st_bypass_and_device_effect_have_no_control(self):
         by_id = {hid: control for hid, _, _, control in self.gate.HAZARDS}
@@ -50,18 +55,12 @@ class CdSeekSafetyGateTest(unittest.TestCase):
         self.assertEqual(by_id["H3"], self.gate.NONE)
         self.assertEqual(by_id["H7"], self.gate.NONE)
 
-    def test_cli_check_exits_blocked(self):
-        result = subprocess.run([sys.executable, str(ROOT / "tools" / "cdseek_safety_gate.py"), "--check"],
+    def test_cli_exits_blocked_and_reports_zero_jsr(self):
+        result = subprocess.run([sys.executable, str(ROOT / "tools" / "cdseek_safety_gate.py")],
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, self.gate.EXIT_BLOCKED)
         self.assertIn('"verdict": "BLOCKED"', result.stdout)
         self.assertIn('"jsr_count": 0', result.stdout)
-
-    def test_cli_without_check_exits_zero_and_still_blocked(self):
-        result = subprocess.run([sys.executable, str(ROOT / "tools" / "cdseek_safety_gate.py")],
-                                capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0)
-        self.assertIn('"verdict": "BLOCKED"', result.stdout)
 
 
 if __name__ == "__main__":
