@@ -6,9 +6,11 @@ judged by a local reference judge; a passing run validates only this fixture and
 reference CD_SEARCH behaviour. The fixture must stay ``BLOCKED_ABI`` and ``release_eligible=false``,
 and must not be wired into any callable entry.
 """
+import fnmatch
 import hashlib
 import json
 import re
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,20 +21,27 @@ FIXTURE = ROOT / "tests" / "fixtures" / "cdsearch-slot07-cases.json"
 # fixture requires updating this value in the same change, so silent edits are caught.
 FIXTURE_SHA256 = "eebc25bf74e7a4b769d7960d409bac653f0c9108395079a81c01b3d1dfeabff0"
 POSITIVE, NEGATIVE = "POSITIVE", "NEGATIVE"
+APPROVED_PROVENANCE = ("synthetic: author-defined medium and cases only; no System Card BIOS byte, disassembly, "
+                       "retail data, or ./rom/ content; no reference callee is executed")
+TOP_LEVEL_KEYS = {"schema", "issue", "slot", "entry_candidate", "candidate_name", "abi_status", "release_eligible",
+                  "execution", "provenance", "callee_abi", "medium", "io_range", "cases"}
 
 
 NAME = "cdsearch-slot07"
 FIXTURE_ALIASES = (NAME, "cdsearch_slot07", "fixtures/*.json", "fixtures/**")
-# Build/ROM surfaces anywhere outside docs/: a non-comment mention is real wiring (Makefile, CMake, CI yaml,
-# ca65/ld65 sources and linker configs = ROM jump table, shell/PowerShell runners).
-BUILD_SUFFIXES = {".mk", ".cmake", ".yml", ".yaml", ".cfg", ".s", ".inc", ".sh", ".ps1"}
-BUILD_NAMES = ("Makefile", "GNUmakefile", "CMakeLists.txt")
+FIXTURE_REL = "tests/fixtures/cdsearch-slot07-cases.json"
 # spec JSON: the name is allowed only under these documentary keys (at any ancestor level).
 DOC_KEYS = {"evidence", "notes", "note", "description", "fixture", "fixtures", "source", "sources", "rationale"}
-# Python/other runners in tools/ and tests/ that execute something and also mention the name.
-EXEC_RUNNERS = re.compile(r"subprocess|Popen|os\.system|os\.exec|\bmake\b|ca65|ld65|cl65|\bjsr\b|\bjmp\b", re.I)
+# A .py file that mentions the name is wiring only if it also loads/executes something (docstrings are allowed).
+EXEC_RUNNERS = re.compile(r"subprocess|Popen|os\.system|os\.exec|\bmake\b|ca65|ld65|cl65|\bjsr\b|\bjmp\b"
+                          r"|open\(|read_text|json\.load|glob|rglob|listdir|scandir|import_module", re.I)
 SKIP_DIRS = {".git", "docs", "rom", "node_modules", "__pycache__"}
+COMMENT_PREFIXES = ("#", ";", "//", "rem ", "::")
+# In C-family files "#include"/"#define" are code, not comments.
+C_SUFFIXES = {".c", ".h", ".cpp", ".hpp", ".cc"}
+C_COMMENT_PREFIXES = ("//", "/*", "*")
 SELF = Path(__file__).resolve()
+WILDCARD = re.compile(r"[\w./\-]*[*?][\w./*?\-]*")
 
 
 def _text(path):
@@ -40,48 +49,71 @@ def _text(path):
 
 
 def _code_lines(path):
-    """Lines of a build/runner file without whole-line comments (# or ;), so prose mentions don't count."""
-    return [ln for ln in _text(path).splitlines() if not ln.lstrip().startswith(("#", ";", "//"))]
+    """Lines of a file without whole-line comments (# ; // REM ::), so prose mentions don't count."""
+    prefixes = C_COMMENT_PREFIXES if path.suffix in C_SUFFIXES else COMMENT_PREFIXES
+    return [ln for ln in _text(path).splitlines() if not ln.lstrip().lower().startswith(prefixes)]
+
+
+def _wildcard_hits(line):
+    """True if a glob-like token in the line would match the fixture path (fnmatch semantics)."""
+    for tok in WILDCARD.findall(line):
+        tok = tok[2:] if tok.startswith("./") else tok
+        if ("/" in tok and fnmatch.fnmatchcase(FIXTURE_REL, tok)) or                 (tok[:1].isalpha() and "/" not in tok and fnmatch.fnmatchcase(FIXTURE_REL.rsplit("/", 1)[1], tok)):
+            return True
+    return False
 
 
 def _json_exec_hits(node, documentary=False):
     if isinstance(node, dict):
         return any(
-            (any(a in k for a in FIXTURE_ALIASES) and not documentary)
+            (any(a in k.lower() for a in FIXTURE_ALIASES) and not documentary)
             or _json_exec_hits(v, documentary or k in DOC_KEYS)
             for k, v in node.items())
     if isinstance(node, list):
         return any(_json_exec_hits(v, documentary) for v in node)
-    return isinstance(node, str) and not documentary and any(a in node for a in FIXTURE_ALIASES)
+    return isinstance(node, str) and not documentary and any(a in node.lower() for a in FIXTURE_ALIASES)
+
+
+def _tracked_files(root):
+    """Tracked files (git ls-files) when root is a git work tree, so untracked/generated files are excluded;
+    otherwise (scratch dirs in tests) every file below root."""
+    if (root / ".git").exists():
+        out = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], capture_output=True, check=True).stdout
+        return [root / n for n in out.decode("utf-8").split("\0") if n]
+    return [p for p in root.rglob("*") if p.is_file()]
 
 
 def wiring_violations(root):
     """Return relative paths where the fixture is really wired (build, ROM jump table, exec registration).
-    Plain references in docs/, spec evidence strings and comments/docstrings are allowed.
-    ponytail: detection is by name/alias substring; a wildcard that picks the fixture up without naming it
-    is only caught for the aliases above."""
+    Every tracked text file is scanned (any suffix: .bat .cmd .asm .c .h .ld .s .mk .py ...), case-insensitively,
+    except docs/, *.md, the fixture itself and this test. spec/ JSON is judged structurally (documentary keys
+    allowed). Comment lines are ignored; .py files need an exec/load keyword besides the name.
+    LIMITS (ponytail): text scan only. Not caught: a name assembled at run time (N=cdsearch- then $(N)slot07,
+    string concatenation), wildcard forms beyond fnmatch-style tokens (regex, brace expansion), a loader in a
+    .py file that reaches the fixture without naming it or any EXEC_RUNNERS keyword, encoded/binary files.
+    Not full coverage."""
     hits = set()
-    for path in root.rglob("*"):
+    for path in _tracked_files(root):
         rel = path.relative_to(root)
-        if not path.is_file() or SKIP_DIRS & set(rel.parts) or path.resolve() == SELF \
-                or rel.as_posix() == "tests/fixtures/cdsearch-slot07-cases.json":
+        if SKIP_DIRS & set(rel.parts) or path.suffix == ".md" or path.resolve() == SELF or rel.as_posix() == FIXTURE_REL:
             continue
-        build = path.suffix in BUILD_SUFFIXES or path.name in BUILD_NAMES or path.name.startswith("Makefile")
-        if build and any(a in ln for ln in _code_lines(path) for a in FIXTURE_ALIASES):
-            hits.add(rel.as_posix())
-        elif rel.parts[0] == "spec" and path.suffix != ".md":
-            text = _text(path)
-            if any(a in text for a in FIXTURE_ALIASES):
+        if b"\0" in path.read_bytes()[:4096]:
+            continue
+        low = _text(path).lower()
+        if rel.parts[0] == "spec":
+            if any(a in low for a in FIXTURE_ALIASES):
                 try:
-                    bad = path.suffix == ".json" and _json_exec_hits(json.loads(text))
+                    bad = path.suffix == ".json" and _json_exec_hits(json.loads(_text(path)))
                 except ValueError:
                     bad = True  # unparsable: fail closed
                 if bad or path.suffix != ".json":
                     hits.add(rel.as_posix())
-        elif rel.parts[0] in ("tools", "tests") and path.suffix in {".py", ".js", ".ts", ""}:
-            code = "\n".join(_code_lines(path))
-            if NAME in code and EXEC_RUNNERS.search(code):
-                hits.add(rel.as_posix())
+            continue
+        code = "\n".join(_code_lines(path))
+        lowcode = code.lower()
+        named = any(a in lowcode for a in FIXTURE_ALIASES) or any(_wildcard_hits(ln) for ln in code.splitlines())
+        if named and (path.suffix != ".py" or EXEC_RUNNERS.search(code)):
+            hits.add(rel.as_posix())
     return sorted(hits)
 
 
@@ -90,15 +122,24 @@ def canonical_sha256(data):
                           .encode("utf-8")).hexdigest()
 
 
-def judge(medium, track, lba):
-    """Reference judge for a seek to (track, lba) on the synthetic medium. Returns POSITIVE only for an
-    integer LBA inside an audio track's range. Never a PASS/VERIFIED verdict; ABI stays BLOCKED_ABI."""
+def judge_reason(medium, track, lba):
+    """(verdict, reason) for a seek to (track, lba). POSITIVE only for an integer LBA inside an audio
+    track's range. bool is rejected explicitly (type(x) is int; True == 1 would otherwise select data track 1)."""
+    if type(track) is bool:
+        return NEGATIVE, "bool is not an int track (malformed)"
     if type(track) is not int or type(lba) is not int:
-        return NEGATIVE  # malformed: wrong type (bool, float, str are refused)
+        return NEGATIVE, "malformed: wrong type (float, str, bool are refused)"
     entry = next((t for t in medium["tracks"] if t["no"] == track), None)
     if entry is None or entry["type"] != "audio":
-        return NEGATIVE  # no such track, or a data track designation
-    return POSITIVE if entry["start"] <= lba <= entry["end"] else NEGATIVE
+        return NEGATIVE, "no such track, or a data track designation"
+    if entry["start"] <= lba <= entry["end"]:
+        return POSITIVE, "inside audio track range"
+    return NEGATIVE, "LBA outside the audio track range"
+
+
+def judge(medium, track, lba):
+    """Reference judge verdict only. Never a PASS/VERIFIED verdict; ABI stays BLOCKED_ABI."""
+    return judge_reason(medium, track, lba)[0]
 
 
 def lenient_judge(medium, track, lba):
@@ -129,6 +170,20 @@ class CdSearchSlot07FixtureTests(unittest.TestCase):
 
     def test_fixture_hash_matches_recorded_value(self):
         self.assertEqual(canonical_sha256(self.fixture), FIXTURE_SHA256)
+
+    def test_provenance_and_top_level_keys_are_explicitly_pinned(self):
+        # Explicit, not hash-only: a re-hashed fixture with new provenance wording or an extra verdict key fails here.
+        self.assertEqual(set(self.fixture), TOP_LEVEL_KEYS)
+        self.assertEqual(self.fixture["provenance"], APPROVED_PROVENANCE)
+        self.assertNotRegex(self.fixture["provenance"], r"(?i)derived|extracted|dumped|copied|based on|from (the )?(system card )?bios")
+
+    def test_bool_track_is_rejected_with_the_fixture_reason(self):
+        case = next(c for c in self.cases if c["id"] == "neg_bool_track")
+        self.assertEqual(judge_reason(self.medium, case["track"], case["lba"]), (NEGATIVE, case["reason"]))
+        # Discriminating medium: track 1 audio, so a judge that accepts True (== 1) would say POSITIVE.
+        alt = {"tracks": [{"no": 1, "type": "audio", "start": 0, "end": 99}]}
+        self.assertEqual(judge_reason(alt, True, 50), (NEGATIVE, case["reason"]))
+        self.assertEqual(judge_reason(alt, 1, 50)[0], POSITIVE)
 
     def test_io_range_is_recorded_and_consistent_with_medium(self):
         io = self.fixture["io_range"]
@@ -200,6 +255,8 @@ class CdSearchSlot07FixtureTests(unittest.TestCase):
         self.assertEqual(wiring_violations(root), [])
 
     def test_wiring_probe_catches_invalid_connections(self):
+        """Documented limits (not detected, text scan only): runtime-assembled names (N=cdsearch- then $(N)slot07),
+        regex/brace-expansion globs, a .py loader that never names the fixture. Not full coverage."""
         base = {"Makefile": "all:\n", "spec/api_contracts.json": "{}"}
         spec = "spec/api_contracts.json"
         mutations = {
@@ -220,6 +277,23 @@ class CdSearchSlot07FixtureTests(unittest.TestCase):
             "tool_exec": ("tools/run.py", "subprocess.run(['ca65', 'cdsearch-slot07'])\n"),
             "tool_split": ("tools/run.py", "cmd = ['cdsearch-slot07']\nsubprocess.run(cmd)\n"),
             "test_exec": ("tests/host/test_x.py", "subprocess.run(['make', 'cdsearch-slot07'])\n"),
+            "bat": ("run.bat", "type cdsearch-slot07\n"),
+            "cmd": ("scripts/run.cmd", "copy cdsearch-slot07 x\n"),
+            "asm": ("src/x.asm", ' .incbin "cdsearch-slot07"\n'),
+            "c_src": ("src/x.c", '#include "cdsearch-slot07.h"\n'),
+            "h_src": ("src/x.h", '#define F "cdsearch-slot07"\n'),
+            "ld": ("link.ld", "INPUT(cdsearch-slot07)\n"),
+            "py_src": ("src/gen.py", "open('cdsearch-slot07')\n"),
+            "py_scripts": ("scripts/gen.py", "Path('cdsearch-slot07').read_text()\n"),
+            "py_loader_underscore": ("tools/l.py", "data = open('tests/fixtures/cdsearch_slot07')\n"),
+            "bare_make_rule": ("build.mak", "x: cdsearch-slot07\n"),
+            "bare_make_rule_makefile": ("Makefile", "x: cdsearch-slot07\n"),
+            "uppercase": ("Makefile", "x: CDSEARCH-SLOT07\n"),
+            "spec_uppercase": (spec, json.dumps({"entries": ["CDSEARCH-SLOT07"]})),
+            "wildcard_func": ("Makefile", "x: $(wildcard tests/fixtures/cdsearch*)\n"),
+            "wildcard_name": ("scripts/x.sh", "cat tests/fixtures/cdsearch*\n"),
+            "wildcard_dir": ("scripts/y.sh", "cat tests/fixtures/*.json\n"),
+            "json_outside_spec": ("tests/other.json", json.dumps({"run": "cdsearch-slot07"})),
         }
         for name, (rel, body) in mutations.items():
             with self.subTest(mutation=name):
