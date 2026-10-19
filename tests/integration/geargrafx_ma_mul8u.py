@@ -65,12 +65,17 @@ def execute(core_file, rom, max_frames=1200):
             getattr(core, "retro_set_" + name)(callback)
         info = SystemInfo()
         core.retro_get_system_info(C.byref(info))
+        if info.name.decode() != "Geargrafx":
+            raise ValueError("unexpected libretro core")
         core.retro_get_memory_data.restype = C.c_void_p
+        core.retro_load_game.restype = C.c_bool
         core.retro_init()
-        if not core.retro_load_game(C.byref(GameInfo(str(rom.resolve()).encode(), None, 0, None))):
-            raise ValueError("Geargrafx rejected the test image")
+        loaded = False
         try:
+            loaded = core.retro_load_game(C.byref(GameInfo(str(rom.resolve()).encode(), None, 0, None)))
             ram = core.retro_get_memory_data(2)  # RETRO_MEMORY_SYSTEM_RAM, $2000 = +0
+            if not loaded or not ram:
+                raise ValueError("Geargrafx rejected the test image or exposed no work RAM")
             C.memset(ram + 0x200, 0xCC, 0x30)
             for frame in range(1, max_frames + 1):
                 core.retro_run()
@@ -79,7 +84,8 @@ def execute(core_file, rom, max_frames=1200):
                     break
             return {"core_version": info.version.decode(), "frames": frame, "block": block.hex()}
         finally:
-            core.retro_unload_game()
+            if loaded:
+                core.retro_unload_game()
             core.retro_deinit()
 
 

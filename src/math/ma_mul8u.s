@@ -9,6 +9,8 @@
 ;   kept: Y and P (decimal mode is forced off inside, then restored)
 ;   uses: 2 zero-page bytes (ma_mul8u_zp, placed by the linker) and 1 stack
 ;         byte besides the JSR return address; no I/O, I flag never changed.
+;         Not reentrant (shared ZP scratch); do not call from an interrupt
+;         that may preempt another call.
 .setcpu "huc6280"
 .export ma_mul8u
 .exportzp ma_mul8u_zp

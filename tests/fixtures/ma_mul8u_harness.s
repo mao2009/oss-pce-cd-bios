@@ -2,8 +2,8 @@
 ; Calls ma_mul8u for a fixed edge table, then for all 65,536 (a, b) pairs and
 ; compares each result with an independent repeated-addition reference.
 ; Result block at CPU $2200 (work RAM +$200):
-;   +0 "DONE"/"FAIL"; +4..+6 pairs passed; +7..+9 A/X/Y and +$A/+$B a/b at
-;   failure; +$10.. edge products low, +$20.. edge products high.
+;   +0 "DONE"/"FAIL"; +4..+6 pairs passed; +7..+9 A/X/Y (A = masked P on a
+;   flag failure) and +$A/+$B a/b at failure; +$10../+$20.. edge low/high.
 .setcpu "huc6280"
 .import ma_mul8u
 
@@ -50,7 +50,7 @@ reset:
     lda cur_b
     and #$01
     beq @even
-    lda #$09                     ; odd b: caller enters with C=1 and D=1
+    lda #$CB                     ; odd b: caller enters with N=V=D=Z=C=1
 @even:
     ora #$04                     ; keep I=1
     sta pflag
@@ -69,7 +69,7 @@ reset:
     cpx ref+1
     bne fail
     pla
-    and #$0D                     ; returned C, I and D must equal the caller's
+    and #$CF                     ; returned N/V/D/I/Z/C must equal the caller's
     cmp pflag
     bne fail
     tsx

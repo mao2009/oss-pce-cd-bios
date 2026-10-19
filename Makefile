@@ -23,6 +23,7 @@ integration: build
 	$(PYTHON) tests/integration/geargrafx_mmio1804_preblock.py
 	$(PYTHON) tests/integration/geargrafx_irq_register.py
 	$(PYTHON) tests/integration/geargrafx_st_bypass.py
+	$(PYTHON) tests/integration/geargrafx_ma_mul8u.py
 
 check:
 	$(PYTHON) tools/contracts.py
