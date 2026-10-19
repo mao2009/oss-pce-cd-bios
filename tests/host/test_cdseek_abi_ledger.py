@@ -54,29 +54,43 @@ def _bare(value):
     return value.strip().strip('`').strip()
 
 
-ID_LIKE_RE = re.compile(r'[A-Z]+\s*\d+')  # any ID-shaped first cell, including "D1" and "K 11"
 CANONICAL_ID_RE = re.compile(r'[A-Z]+\d+')
+SECTION3_RE = re.compile(r'^## 3\..*?$(.*?)(?=^## |\Z)', re.M | re.S)
+
+
+def _section3(text):
+    m = SECTION3_RE.search(text)
+    return m.group(1) if m else ''
 
 
 def parse_ledger(text):
-    """Return (item rows, source ids, malformed item IDs) parsed from the ledger's markdown tables.
+    """Return (item rows, source ids, malformed item rows) for the ledger.
 
-    Every row whose first cell is ID-shaped is collected: a canonical ID with all cells is an item
-    (its prefix and number are checked later against EXPECTED_SIDES), anything else is malformed.
+    Items come only from the §3 table. Every non-blank line in §3 that contains a pipe (other than
+    the header and the separator) must be a canonical ID with a leading and trailing pipe and all
+    cells, or it is malformed: bold, lowercase, backticked, a missing leading pipe, or a missing
+    cell. Source ids (S1..S7) come from the whole document and never become items.
     """
-    items, sources, malformed = [], set(), []
+    sources = set()
     for line in text.splitlines():
-        if not line.lstrip().startswith('|'):
+        if line.lstrip().startswith('|'):
+            first = _bare(_cells(line)[0])
+            if re.fullmatch(r'S\d+', first):
+                sources.add(first)
+    items, malformed = [], []
+    for line in _section3(text).splitlines():
+        s = line.strip()
+        if '|' not in s or (set(s) <= set('|-: ') and '-' in s):
             continue
-        cells = _cells(line)
-        cells[0] = first = _bare(cells[0])
-        if re.fullmatch(r'S\d+', first):
-            sources.add(first)
-        elif ID_LIKE_RE.fullmatch(first):
-            if CANONICAL_ID_RE.fullmatch(first) and len(cells) == len(FIELDS):
-                items.append(dict(zip(FIELDS, cells)))
-            else:
-                malformed.append(first)
+        cells = [c.strip() for c in s.strip('|').split('|')]
+        first = cells[0]
+        if first == 'ID':
+            continue
+        if s.startswith('|') and s.endswith('|') and CANONICAL_ID_RE.fullmatch(first) \
+                and len(cells) == len(FIELDS):
+            items.append(dict(zip(FIELDS, cells)))
+        else:
+            malformed.append(first)
     return items, sources, malformed
 
 
@@ -236,7 +250,41 @@ class LedgerMutationTests(unittest.TestCase):
         lines = self._lines()
         i = self._idx(lines, '| K10 |')
         lines.insert(i + 1, lines[i].replace('| K10 |', '| `K11` |', 1))
-        self.assertIn('unexpected K11', self._problems(lines))
+        self.assertIn('malformed row `K11`', self._problems(lines))
+
+    def test_row_with_bold_id_is_detected(self):
+        lines = self._lines()
+        i = self._idx(lines, '| K10 |')
+        lines.insert(i + 1, lines[i].replace('| K10 |', '| **K11** |', 1))
+        self.assertIn('malformed row **K11**', self._problems(lines))
+
+    def test_row_with_lowercase_id_is_detected(self):
+        lines = self._lines()
+        i = self._idx(lines, '| K10 |')
+        lines.insert(i + 1, lines[i].replace('| K10 |', '| k11 |', 1))
+        self.assertIn('malformed row k11', self._problems(lines))
+
+    def test_row_without_leading_pipe_is_detected(self):
+        lines = self._lines()
+        i = self._idx(lines, '| K10 |')
+        lines.insert(i + 1, 'K11 | K | x\n')
+        self.assertIn('malformed row K11', self._problems(lines))
+
+    def test_existing_k1_changed_to_lowercase_is_detected(self):
+        lines = self._lines()
+        i = self._idx(lines, '| K1 |')
+        lines[i] = lines[i].replace('| K1 |', '| k1 |', 1)
+        problems = self._problems(lines)
+        self.assertIn('malformed row k1', problems)
+        self.assertIn('missing K1', problems)
+
+    def test_existing_k1_changed_to_bold_is_detected(self):
+        lines = self._lines()
+        i = self._idx(lines, '| K1 |')
+        lines[i] = lines[i].replace('| K1 |', '| **K1** |', 1)
+        problems = self._problems(lines)
+        self.assertIn('malformed row **K1**', problems)
+        self.assertIn('missing K1', problems)
 
     def test_row_with_missing_cell_is_detected(self):
         lines = self._lines()
