@@ -54,8 +54,16 @@ def _bare(value):
     return value.strip().strip('`').strip()
 
 
+ID_LIKE_RE = re.compile(r'[A-Z]+\s*\d+')  # any ID-shaped first cell, including "D1" and "K 11"
+CANONICAL_ID_RE = re.compile(r'[A-Z]+\d+')
+
+
 def parse_ledger(text):
-    """Return (item rows, source ids, malformed item IDs) parsed from the ledger's markdown tables."""
+    """Return (item rows, source ids, malformed item IDs) parsed from the ledger's markdown tables.
+
+    Every row whose first cell is ID-shaped is collected: a canonical ID with all cells is an item
+    (its prefix and number are checked later against EXPECTED_SIDES), anything else is malformed.
+    """
     items, sources, malformed = [], set(), []
     for line in text.splitlines():
         if not line.startswith('| '):
@@ -63,8 +71,8 @@ def parse_ledger(text):
         cells = _cells(line)
         if re.fullmatch(r'S\d+', cells[0]):
             sources.add(cells[0])
-        elif re.fullmatch(r'[KCR]\d+', cells[0]):
-            if len(cells) == len(FIELDS):
+        elif ID_LIKE_RE.fullmatch(cells[0]):
+            if CANONICAL_ID_RE.fullmatch(cells[0]) and len(cells) == len(FIELDS):
                 items.append(dict(zip(FIELDS, cells)))
             else:
                 malformed.append(cells[0])
@@ -204,6 +212,18 @@ class LedgerMutationTests(unittest.TestCase):
         i = self._idx(lines, '| K10 |')
         lines.insert(i + 1, lines[i].replace('| K10 |', '| K11 |', 1))
         self.assertIn('unexpected K11', self._problems(lines))
+
+    def test_row_with_other_prefix_is_detected_as_unexpected(self):
+        lines = self._lines()
+        i = self._idx(lines, '| K10 |')
+        lines.insert(i + 1, lines[i].replace('| K10 |', '| D1 |', 1))
+        self.assertIn('unexpected D1', self._problems(lines))
+
+    def test_row_with_malformed_id_is_detected(self):
+        lines = self._lines()
+        i = self._idx(lines, '| K10 |')
+        lines.insert(i + 1, lines[i].replace('| K10 |', '| K 11 |', 1))
+        self.assertIn('malformed row K 11', self._problems(lines))
 
     def test_row_with_missing_cell_is_detected(self):
         lines = self._lines()
