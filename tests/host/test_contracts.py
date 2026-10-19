@@ -94,6 +94,28 @@ class ContractsTests(unittest.TestCase):
         for api in self.data['apis'][77:]:
             self.assertEqual(api['mapping_sources'], [])
 
+    def test_hardware_observation_field_has_no_ledger_storage(self):
+        # adjudicate_claim() accepts hw_bus_reset, but the formal ledger must not:
+        # judging it acceptable != being storable in the 81-API contract ledger.
+        self.data['apis'][1]['contract']['hw_bus_reset'] = copy.deepcopy(
+            self.data['apis'][1]['contract']['stack'])
+        with self.assertRaisesRegex(ValueError, 'contract fields'):
+            self.check()
+
+    def test_unknown_contract_field_is_rejected_by_ledger(self):
+        self.data['apis'][1]['contract']['bogus_field'] = copy.deepcopy(
+            self.data['apis'][1]['contract']['stack'])
+        with self.assertRaisesRegex(ValueError, 'contract fields'):
+            self.check()
+
+    def test_ledger_rejects_observed_callee_returns_from_hardware_style_claim(self):
+        claim = self.data['apis'][1]['contract']['returns']
+        claim.update(status='OBSERVED', value='SYNTHETIC hardware-style value',
+                     sources=['gear:src/huc6280.cpp'], confidence='SOURCE_SUPPORTED')
+        self.data['apis'][1]['verification']['executed_callee'] = False
+        with self.assertRaisesRegex(ValueError, 'executed callee'):
+            self.check()
+
 
 if __name__ == '__main__':
     unittest.main()

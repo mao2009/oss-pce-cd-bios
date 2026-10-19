@@ -22,6 +22,11 @@ CALLEE_BEHAVIOR_FIELDS = frozenset(FIELDS)
 # neither set is rejected, so an unknown name cannot bypass the executed_callee
 # check by not being listed as callee behavior.
 HARDWARE_OBSERVATION_FIELDS = frozenset({'hw_bus_reset'})
+# LIMIT: adjudicate_claim() can accept a hardware observation, but the formal
+# API contract ledger (spec/api_contracts.json, validate_contracts) only stores
+# CALLEE_BEHAVIOR_FIELDS per slot. A hardware observation therefore has no
+# storage in the ledger; validate_contracts is intentionally NOT relaxed.
+# A dedicated hardware-observation store needs its own Issue.
 # Adjudication categories for every contract claim. VERIFIED is deliberately
 # absent: it can only be earned by an executed reference-ROM callee, which no
 # slot has (verification stays NOT_RUN / executed_callee false).
