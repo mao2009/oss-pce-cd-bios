@@ -29,6 +29,7 @@ System Card の CD_PAUSE は一度も実行していない。本台帳の全項�
 | S4 | 同 `include/hucc/core-kernel.asm` | 488–516（`call_bios`。500 の `sty`、502–507 の MPR7 退避と切替、509 の `jsr $E000`、511–514 の MPR7 復元、516 の `rts`） | BSL-1.0（John Brandwood 2021–2024） | SOURCE_FACT（呼出ラッパー） |
 | S11 | 同 `include/hucc/core.inc` | 41–44（`system .macro`: `ldy #<` の後に `jsr call_bios`） | BSL-1.0（John Brandwood 2021–2024）。出自は PENDING | SOURCE_FACT（呼出側マクロ） |
 | S5 | 同 `include/hucc/hucc-systemcard.asm` | 145–159（`_cd_unpause`。`cd_play` を呼ぶ。CD_PAUSE は呼ばない） | BSL-1.0 | SOURCE_FACT（再開経路は CD_PLAY） |
+| S12 | 同 `include/hucc/hucc-systemcard.asm` | 28–35（`CD_CURRPOS = %11000000` は 33 行。`CD_LEADOUT` と同値）、155（`_cd_unpause` が `_bh` に `CD_CURRPOS` を設定） | BSL-1.0。出自は PENDING | SOURCE_FACT（定数の値。`$C0` の出典） |
 | S6 | 同 `doc/hucc/hucc-function-reference.md` | 924–925（`cd_pause( void );` の説明） | ルート LICENSE は混在・不確実と既存監査に記録。PENDING | SOURCE_FACT（文書の記述のみ。挙動の証拠ではない） |
 | S7 | 同 `doc/huc/clibref.txt` | 758–762（`cd_pause();   [3.01+]`） | 同上 | SOURCE_FACT。`[3.01+]` は HuC コンパイラの版であり System Card の版ではない |
 | S8 | Stum（Michael Stum）「PC Engine CD-ROM² BIOS Method offsets」`https://www.stum.de/2025/pcenginebiosoffsets/` | 表の `cd_pause` 行（JSR 列 `$E018`、1.0 `$F01B`、2.0 `$EF94`、2.1 `$EF94`、3.0 `$EF94`、TG2.0 `$EFAD`、TG3.0 `$EFAD`）。本文冒頭の MPR の記述 | ページ末尾に CC BY-NC-SA 4.0 の表示。値は引用のみ、表を複製しない | HYPOTHESIS（第三者の表。未検証）。MPR の記述も HYPOTHESIS |
@@ -74,7 +75,7 @@ HuC のマクロ `_cd_pause` は引数を設定せず、`system cd_pause` の後
 | F20 | MPR2〜MPR6 の BIOS による変更 | UNKNOWN | 未確認 | - | |
 | F21 | IRQ・CLI/SEI | SOURCE_FACT（経路）／UNKNOWN（BIOS） | wrapper とマクロに SEI/CLI はない。BIOS の割込み状態の変更は未確認 | S2、S4 | |
 | F22 | 副作用の対象（CD-DA 状態、停止位置、再開位置） | HYPOTHESIS | 文書は「CD-DA 再生中の一時停止」と記す（対象の説明）。挙動は未確認 | S6、S7 | 再生していない場合の挙動は UNKNOWN |
-| F23 | 再開との関係 | SOURCE_FACT（経路）／UNKNOWN（BIOS） | HuC の `cd_unpause` は CD_PAUSE ではなく CD_PLAY を呼ぶ（`$C0`）。CD_PAUSE の後に再開する正しい経路は未確認 | S5 | `$C0`（CD_CURRPOS）は CD_PLAY の開始位置種別の値（`docs/research/150-cd-play-abi.md` §1 参照） |
+| F23 | 再開との関係 | SOURCE_FACT（経路）／UNKNOWN（BIOS） | HuC の `cd_unpause` は CD_PAUSE ではなく CD_PLAY を呼ぶ（`$C0`）。CD_PAUSE の後に再開する正しい経路は未確認 | S5、S12 | `$C0`（CD_CURRPOS）は S12 の 33 行で定義される（`$C0` の出典）。pcengine.inc（S1）には定義がない。CD_PLAY の開始位置種別としての意味は `docs/research/150-cd-play-abi.md` §1 参照 |
 | F24 | 失敗条件（ディスクなし、データトラック、非再生中の呼出し） | UNKNOWN | 出典に本体の記述がない（S9 は CD_PAUSE の本体を持たない） | S9 | HLE（S10）は常に A=0 で、エラー経路がない。証拠にしない |
 | F25 | 入口エントリ `$E018` | HYPOTHESIS | 第三者の表は全 revision で JSR 列 `$E018` と記す。HuC の定義と一致 | S1 476、S8 | 本体アドレスは未検証 |
 | F26 | 本体アドレス（3.0 は `$EF94`、TG3.0 は `$EFAD`） | HYPOTHESIS | 第三者の表の値。実機・実コアでは未確認。ROM を読んでいない | S8 | 本台帳ではこの値を実装・検証に使わない |
