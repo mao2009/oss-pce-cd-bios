@@ -18,16 +18,21 @@ EXPECTED = {
     'C5': 'UNKNOWN', 'C6': 'SECONDARY_SOURCE', 'C7': 'SECONDARY_SOURCE', 'C8': 'UNKNOWN',
     'C9': 'SECONDARY_SOURCE', 'C10': 'UNKNOWN', 'C11': 'UNKNOWN', 'C12': 'UNKNOWN',
     'C13': 'UNKNOWN', 'C14': 'UNKNOWN', 'C15': 'SECONDARY_SOURCE', 'C16': 'UNKNOWN',
-    'C17': 'HYPOTHESIS',
+    'C17': 'HYPOTHESIS', 'C18': 'SECONDARY_SOURCE',
 }
 # Commit pins. 797845ce is a git blob (pctech.txt), not a commit, so it is cited only as a blob.
 MD_COMMIT = 'ducalex/retro-go@05e97e80'
 MD_BLOB = 'blob `797845ce`'
 GG_COMMIT = 'drhelius/Geargrafx@3685f8cf'
 GG_UNRESOLVED = 'drhelius/Geargrafx@1e52d13f'
-# Affirmative execution wording. "未実行" and "一度も...していない" are not matched.
-EXEC_CLAIM = re.compile(
-    r'(?<!未)(?<!一度も)(実行|起動|呼出)[^。\n]{0,8}?(した|済み?|完了)|\bexecuted\b|\bran\b', re.I)
+# Structural execution rule. Any verb that asserts a reference callee was run is banned in
+# every cell (table cell, or whole prose line). The only exemption is a cell that carries an
+# explicit "未実行" or "NOT_RUN" statement. Phrase lists are not used, so a new inflection
+# cannot slip past by changing its particle or tense.
+EXEC_VERB = re.compile(
+    r'呼び出|走らせ|boot|動かし|実行|起動|invoked|called|calling|\bran\b|\bexecuted\b|\brun it\b',
+    re.I)
+NOT_RUN_MARK = re.compile(r'未実行|NOT_RUN')
 FORBIDDEN_CELL_TOKENS = {'VERIFIED', 'OBSERVED', 'PASS'}
 
 
@@ -40,6 +45,15 @@ def _claim_rows(text):
         if re.fullmatch(r'C\d+', cells[0]):
             rows[cells[0]] = cells
     return rows
+
+
+def _exec_violations(text):
+    out = []
+    for lineno, line in enumerate(text.splitlines(), 1):
+        for cell in line.split('|'):
+            if EXEC_VERB.search(cell) and not NOT_RUN_MARK.search(cell):
+                out.append((lineno, cell.strip()))
+    return out
 
 
 def _source_row(text, sid):
@@ -66,6 +80,12 @@ class CdSubrqSubrdConflictLedgerTests(unittest.TestCase):
     def test_name_conflict_is_kept_unresolved(self):
         self.assertIn('conflict unresolved', self.rows['C1'][4])
         self.assertIn('同一と断定しない', self.rows['C1'][4])
+
+    def test_zeograd_name_leg_is_not_source_fact(self):
+        # C1 is the HuC/Hu-Go/huexpress leg only; the Zeograd leg is split into C18.
+        self.assertNotIn('Z、', self.rows['C1'][2])
+        self.assertEqual(self.rows['C18'][3], 'SECONDARY_SOURCE')
+        self.assertIn('conflict unresolved', self.rows['C18'][4])
 
     def test_return_and_q_conflicts_are_kept_unresolved(self):
         self.assertIn('conflict unresolved', self.rows['C4'][4])
@@ -94,11 +114,19 @@ class CdSubrqSubrdConflictLedgerTests(unittest.TestCase):
 
     def test_no_reference_bios_execution_claimed(self):
         self.assertIn('一切していない', self.text)
-        self.assertIsNone(EXEC_CLAIM.search(self.text), 'affirmative execution wording found')
+        self.assertEqual(_exec_violations(self.text), [], 'affirmative execution wording found')
         for cid, cells in self.rows.items():
             for cell in cells:
                 self.assertFalse(set(re.findall(r'[A-Z_]+', cell)) & FORBIDDEN_CELL_TOKENS, cid)
 
+    def test_exec_rule_flags_missed_phrasings(self):
+        # Regression: these three slipped past the former phrase list.
+        for phrase in ('BIOS を呼び出した', 'ROM を走らせた', 'boot した'):
+            self.assertTrue(_exec_violations(phrase), phrase)
+
+    def test_exec_rule_allows_only_explicit_not_run(self):
+        self.assertEqual(_exec_violations('| 実行は未実行（NOT_RUN） |'), [])
+        self.assertTrue(_exec_violations('| 実行 | 未実行（NOT_RUN） |'))  # verb needs its own cell mark
 
 if __name__ == '__main__':
     unittest.main()
