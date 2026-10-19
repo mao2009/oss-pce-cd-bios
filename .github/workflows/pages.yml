@@ -54,6 +54,9 @@ jobs:
           persist-credentials: false
       - name: Configure Pages
         uses: actions/configure-pages@v5
+      - name: Guard post-build artifacts before upload (Upload static site)
+        run: |
+          python3 tools/artifact_guard.py --post-build .github/workflows/pages.yml "Upload static site"
       - name: Upload static site
         uses: actions/upload-pages-artifact@v4
         with:

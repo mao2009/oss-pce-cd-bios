@@ -36,6 +36,9 @@ jobs:
           make build MODE=release
           cmp build/debug/smoke-test-not-bios.pce build/release/smoke-test-not-bios.pce
           python3 tools/build.py --verify build/debug/smoke-test-not-bios.pce
+      - name: Guard post-build artifacts before upload (Save verified test fixture and evidence)
+        run: |
+          python3 tools/artifact_guard.py --post-build .github/workflows/ci.yml "Save verified test fixture and evidence"
       - name: Save verified test fixture and evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

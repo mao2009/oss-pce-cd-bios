@@ -90,6 +90,9 @@ jobs:
           test -s build/debug/cdload-exec/manifest.json
           test -s build/debug/cdload-exec/cdload-exec-probe-not-bios.pce
           test -s build/debug/cdload-exec/payload.bin
+      - name: Guard post-build artifacts before upload (Save diagnostic ROM and evidence, no linked GPL executable)
+        run: |
+          python3 tools/artifact_guard.py --post-build .github/workflows/api-source.yml "Save diagnostic ROM and evidence, no linked GPL executable"
       - name: Save diagnostic ROM and evidence, no linked GPL executable
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -187,6 +190,9 @@ jobs:
           python3 tools/cdread_verdict.py "$evidence/cdread-evidence.json" --rom "$evidence/cdread-probe-not-bios.pce" \
             --attestation "$RUNNER_TEMP/attestation-verify.json" --run "$RUNNER_TEMP/workflow-run.json" \
             --rules "$RUNNER_TEMP/main-rules.json" --out "$RUNNER_TEMP/verdict/cdread-verdict.json"
+      - name: Guard post-build artifacts before upload (Save verdict bytes (hashes only; no ROM, BIOS or disc data))
+        run: |
+          python3 tools/artifact_guard.py --post-build .github/workflows/api-source.yml "Save verdict bytes (hashes only; no ROM, BIOS or disc data)"
       - name: Save verdict bytes (hashes only; no ROM, BIOS or disc data)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

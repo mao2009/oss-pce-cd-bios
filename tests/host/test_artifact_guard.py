@@ -66,14 +66,31 @@ class EntryTests(unittest.TestCase):
         self.assertIsNotNone(entry_problem(self.make('probe.bin.dat', MACHO)))
         self.assertIsNotNone(entry_problem(self.make('probe.dat', PE_STUB)))
 
-    def test_mz_without_pe_header_is_not_refused(self):
+    def test_short_mz_fixture_is_not_refused(self):
         self.assertIsNone(entry_problem(self.make('rom.dat', FIXTURE_PCE)))
+
+    def test_mz_with_ne_or_le_header_is_refused(self):
+        for tag in (b'NE', b'LE', b'LX'):
+            with self.subTest(tag=tag):
+                data = b'MZ' + b'\x00' * 58 + (0x40).to_bytes(4, 'little') + tag + b'\x00\x00'
+                self.assertIn('executable', entry_problem(self.make('old-' + tag.decode() + '.dat', data)))
+
+    def test_archives_are_refused_by_suffix_and_magic(self):
+        for suffix in ('.zip', '.tar', '.gz', '.7z', '.tgz', '.xz', '.rar'):
+            with self.subTest(suffix=suffix):
+                self.assertIn('archive suffix', entry_problem(self.make('a' + suffix, PLAIN_JSON)))
+        for name, magic in (('zip', b'PK\x03\x04'), ('gz', b'\x1f\x8b\x08'), ('7z', b'7z\xbc\xaf\x27\x1c'),
+                            ('bz2', b'BZh9'), ('xz', b'\xfd7zXZ\x00'), ('rar', b'Rar!\x1a\x07')):
+            with self.subTest(magic=name):
+                self.assertEqual('archive signature', entry_problem(self.make('blob-' + name + '.dat', magic + b'\x00' * 8)))
+        tar = b'\x00' * 257 + b'ustar\x00' + b'\x00' * 10
+        self.assertEqual('archive signature', entry_problem(self.make('blob.tar.dat', tar)))
 
     def test_pe_header_past_4k_is_refused(self):
         # Regression (review finding 3): e_lfanew above the old 4096-byte head window was never checked.
         pe_offset = 5000
         data = b'MZ' + b'\x00' * 58 + pe_offset.to_bytes(4, 'little') + b'\x00' * (pe_offset - 64) + b'PE\x00\x00'
-        self.assertIn('PE executable', entry_problem(self.make('late-pe.dat', data)))
+        self.assertIn('PE/NE/LE executable', entry_problem(self.make('late-pe.dat', data)))
 
     def test_mz_with_pe_header_beyond_eof_is_refused(self):
         # Regression (review finding 3): a header that cannot be read in full must fail closed.
@@ -193,6 +210,40 @@ class WorkflowTests(unittest.TestCase):
         self.write_build('build/debug/smoke-test-not-bios.pce', FIXTURE_PCE)
         check_upload_artifacts(self.root)
 
+    def test_quoted_path_key_next_to_env_is_refused(self):
+        # Review finding 3: `"path":` was invisible to the parser, so the ELF-magic file below passed.
+        self.write_build('build/probe', ELF_PROBE)
+        self.write_workflow(HEAD + f'        uses: {UPLOAD}\n        env:\n          X: 1\n        with:\n'
+                            '          "path": build/probe\n')
+        with self.assertRaisesRegex(ValueError, 'ambiguous path key'):
+            check_upload_artifacts(self.root)
+        for section in ('          path : build/probe\n', "          'path': build/probe\n",
+                        '          path: a\n          "path": b\n'):
+            with self.subTest(section=section):
+                with self.assertRaises(ValueError):
+                    upload_patterns(raw_step('        with:\n' + section))
+
+    def test_tilde_home_pattern_is_refused(self):
+        for pattern in ('~/x', '~', '~/.ssh/*'):
+            with self.subTest(pattern=pattern):
+                self.write_workflow(workflow([pattern]))
+                with self.assertRaisesRegex(ValueError, 'unsafe pattern'):
+                    check_upload_artifacts(self.root)
+
+    def test_post_build_checks_real_output_and_fails_closed(self):
+        step = 'Save'
+        self.write_workflow(workflow(['build/out/*.pce']))
+        rel = '.github/workflows/ci.yml'
+        with self.assertRaisesRegex(ValueError, 'matched no built artifact'):   # build output missing
+            guard.check_post_build(rel, step, self.root)
+        self.write_build('build/out/ok.pce', FIXTURE_PCE)
+        guard.check_post_build(rel, step, self.root)
+        self.write_build('build/out/bad.pce', ELF_PROBE)
+        with self.assertRaisesRegex(ValueError, 'executable signature'):
+            guard.check_post_build(rel, step, self.root)
+        with self.assertRaisesRegex(ValueError, 'expected exactly one'):   # unknown step name
+            guard.check_post_build(rel, 'Nope', self.root)
+
     def test_unsafe_or_expression_patterns_are_refused(self):
         for pattern in ('../outside/*.pce', '/abs/*.pce', '${{ github.workspace }}/*.pce'):
             with self.subTest(pattern=pattern):
@@ -288,6 +339,15 @@ class WorkflowTests(unittest.TestCase):
 
 
 class RepositoryTests(unittest.TestCase):
+    def test_every_repository_upload_step_has_a_post_build_guard_before_it(self):
+        # Owner decision: the guard runs after the build and before upload-artifact, in every upload workflow.
+        for path in sorted((ROOT / guard.WORKFLOWS).glob('*.y*ml')):
+            text = path.read_text(encoding='utf-8')
+            for name, _ in guard.upload_steps(text):
+                call = f'artifact_guard.py --post-build {path.relative_to(ROOT).as_posix()} "{name}"'
+                self.assertIn(call, text, f'{path.name}: no post-build guard for {name!r}')
+                self.assertLess(text.index(call), text.index(f'name: {name}'), f'{path.name}: guard after upload')
+
     def test_repository_upload_patterns_are_visible_to_the_guard(self):
         patterns = []
         for path in sorted((ROOT / guard.WORKFLOWS).glob('*.y*ml')):

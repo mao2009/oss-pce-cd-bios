@@ -57,6 +57,9 @@ jobs:
         env:
           SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
         run: python3 tools/nightly.py record
+      - name: Guard post-build artifacts before upload (Archive verified original fixture (not a release))
+        run: |
+          python3 tools/artifact_guard.py --post-build .github/workflows/nightly.yml "Archive verified original fixture (not a release)"
       - name: Archive verified original fixture (not a release)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -68,6 +71,9 @@ jobs:
             build/debug/*.lbl
           if-no-files-found: error
           retention-days: 14
+      - name: Guard post-build artifacts before upload (Save baseline; accepted only when the whole run succeeds)
+        run: |
+          python3 tools/artifact_guard.py --post-build .github/workflows/nightly.yml "Save baseline; accepted only when the whole run succeeds"
       - name: Save baseline; accepted only when the whole run succeeds
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
