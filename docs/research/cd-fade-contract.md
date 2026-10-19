@@ -47,12 +47,12 @@ HuC は `pce-devel/huc` の commit `54f5c73606c1e7142e8095c727cab2767e2b3cb3` �
 | F03 | 呼出し経路（Y に下位バイト、`call_bios` 経由の JSR） | SOURCE_FACT | S4 41–44、S5 500–509 | マクロ `system` が Y を設定して `call_bios` を呼ぶ |
 | F04 | 呼出し中の MPR7 | SOURCE_FACT | S5 502–513 | 呼出し中は MPR7 をバンク `$00` に切替え、呼出し後に元へ戻す |
 | F05 | 入力 A は type | SOURCE_FACT | S2 119–128、S3 92 | `unsigned char type<acc>` |
-| F06 | 入力の許容値 `$00`/`$08`/`$0A`/`$0C`/`$0E` | SOURCE_FACT | S2 42–46、S8 329–335 | 呼出側定義。S8 も同じ一覧を記す |
+| F06 | 入力の許容値 `$00`/`$08`/`$0A`/`$0C`/`$0E` | HYPOTHESIS | S2 42–46 | 呼出側の定義一覧のみ。S8（PENDING）は根拠にしない |
 | F07 | 許容値以外の入力の挙動 | UNKNOWN | — | 出典に記述がない |
 | F08 | 値 `$00` が「フェードの解除」を意味するか | HYPOTHESIS | S2 121、S8 331 | 呼出側記述と S8 注記の一致のみ。BIOS の挙動は未確認 |
 | F09 | 呼出側が記す時間（`$08`/`$0A` は 6 秒、`$0C`/`$0E` は 2.5 秒） | SOURCE_FACT | S2 122–125 | 呼出側の記述であり、BIOS の実測ではない |
 | F10 | BIOS が実際にその時間でフェードするか | HYPOTHESIS | S8 332–335 | 呼出側記述と S8 ノートの一致のみ |
-| F11 | 呼出側が PCM と ADPCM を対象と記すこと | SOURCE_FACT | S2 121–125、S6 124 | 記述の事実のみ |
+| F11 | 呼出側が PCM と ADPCM を対象と記すこと | HYPOTHESIS | S2 121–125 | 呼出側の注釈の読みのみ。S6（PENDING、124 行は S6 462 と矛盾）は根拠にしない |
 | F12 | 「PCM」が指す信号経路の実体 | UNKNOWN | — | 出典に実体の記述がない |
 | F13 | CD-DA（CD 音楽）音量フェードの対象か | UNKNOWN | S6 462、S7 930–931、S6 124 | 出典が矛盾（CD 音楽ではない／CD-ROM 音声をフェード）。呼出側の値に CD-DA 用の値はない |
 | F14 | IFU の CD オーディオ選択ビットの注釈（`$FF:180F`、bit `$02` は ADPCM または CDAUDIO） | SOURCE_FACT | S1 202、215–218 | ハードウェア定義の注釈であり、cd_fade の挙動ではない |
@@ -76,10 +76,10 @@ HuC は `pce-devel/huc` の commit `54f5c73606c1e7142e8095c727cab2767e2b3cb3` �
 | F32 | 完了条件とタイムアウト | UNKNOWN | — | 呼出側は呼出し後に完了を待たない（S2 の宣言とマクロに待ち処理なし）。BIOS 側は未確認 |
 | F33 | 無ディスク、再生中トラックの有無による挙動 | UNKNOWN | — | 出典に記述がない |
 | F34 | フェード中の他の CD 呼出し（CD_PLAY 等）との相互作用 | UNKNOWN | — | 出典に記述がない |
-| F35 | HuC 固定版内の cd_fade 呼出し | SOURCE_FACT | 固定版全体の検索 | `cd_fade` / `_cd_fade` / `CDFADE_` / `E02D` の検索で、定義とマクロ以外の呼出しは見つからなかった |
+| F35 | HuC 固定版内の cd_fade 呼出し | SOURCE_FACT | 固定版 `54f5c736` の `git grep`（`cd_fade`、`CDFADE_`、`E02D`、大小無視）。許容出典（BSL-1.0 の `include/hucc/`）に呼出しはなく、定義（`pcengine.inc` 483）と呼出し手順を包むマクロ（`hucc-systemcard.asm` 127–128）のみ | 除外源には呼出しがある: `include/huc/cdrom.asm` の 87 行（ライセンス不明のため根拠に使わない）。`examples/asm/elmer/kickc/bios.h` の 41 行は除外源の定義。`doc/` 内の一致は散文と宣言のみ |
 | F36 | Hu-Go HLE の処理本体 | SOURCE_FACT | S10 50、184–185 | 定義と名前のみ。処理本体は見つからなかった。HLE であり BIOS の証拠ではない |
 
-判定の数: SOURCE_FACT 18、HYPOTHESIS 4、UNKNOWN 14（合計 36 行。本表の判定列を数えた値）。
+判定の数: SOURCE_FACT 16、HYPOTHESIS 6、UNKNOWN 14（合計 36 行。本表の判定列を数えた値）。
 
 ## 5. 矛盾と決着条件
 
@@ -92,7 +92,7 @@ HuC は `pce-devel/huc` の commit `54f5c73606c1e7142e8095c727cab2767e2b3cb3` �
 ## 6. 検証
 
 - 実行: `python3 -m unittest discover -s tests/host -p 'test_cd_fade_contract.py' -v`（WSL のクリーン clone。結果は PR 本文と Issue コメントに記す）。
-- テストは、表の判定列が SOURCE_FACT、HYPOTHESIS、UNKNOWN のいずれか一つだけであること、表に OBSERVED、VERIFIED、PASS、DEV_CALLABLE が無いこと、`BLOCKED_ABI` と `release_eligible=false` の記載があることを確かめる。判定の昇格（UNKNOWN に SOURCE_FACT を併記する等）も失敗させる。
+- テストは、表の判定列が SOURCE_FACT、HYPOTHESIS、UNKNOWN のいずれか一つだけであること、表に OBSERVED、VERIFIED、PASS、DEV_CALLABLE が無いこと、`BLOCKED_ABI` と `release_eligible=false` の記載があることを確かめる。F01–F36 の判定はテスト内で一行ずつ固定し、件数（16/6/14）も確かめる。判定の昇格（F13 を SOURCE_FACT、F02 を HYPOTHESIS、F18 を SOURCE_FACT へ）と、PENDING 出典（S6–S9）を根拠にした SOURCE_FACT も失敗させる。
 - NOT_RUN: `make setup`、`make build`、`make test`、`make check`（指示により実行しない）。実コア（Geargrafx）、実機、CI の最新 HEAD、独立レビューは未実施。
 
 ## 7. 限界と省いたもの
