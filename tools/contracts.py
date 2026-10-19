@@ -13,7 +13,7 @@ FIELDS = {'arguments', 'returns', 'clobbered', 'preserved', 'stack', 'mpr',
 CLAIM_STATUSES = {'UNKNOWN', 'HYPOTHESIS', 'OBSERVED', 'BLOCKED'}
 EMULATOR_SOURCE_KIND = 'EMULATOR_SOURCE'
 
-# Measurement-evidence schema. A source entry (repository/revision/path/url/sha256)
+# Evidence-entry schema (shape only). A source entry (repository/revision/path/url/sha256)
 # only proves that source text exists; it is not execution evidence. An OBSERVED
 # claim must additionally reference non-empty, well-formed evidence describing the
 # execution conditions, the emulator core revision claimed for the run,
@@ -25,7 +25,7 @@ EVIDENCE_HASH_RE = re.compile(r'[0-9a-f]{64}\Z')
 # Trust level of evidence entries: FORMAT_ONLY. validate_evidence checks shape
 # only. Nothing here resolves evidence_hash to a stored artifact or
 # checks core_revision against a pin, so a well-formed hash is NOT proof that the
-# measurement happened. Do not read an accepted OBSERVED claim as VERIFIED.
+# run happened. Do not read an accepted OBSERVED claim as VERIFIED.
 EVIDENCE_TRUST_LEVEL = 'FORMAT_ONLY'
 SOURCE_KINDS = frozenset({'CALLER_SOURCE', 'HLE_SOURCE', 'EMULATOR_SOURCE'})
 CLAIM_KEYS = frozenset({'status', 'value', 'sources', 'confidence', 'registers', 'evidence'})
@@ -171,7 +171,7 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
     Rules:
       UNKNOWN     - value exactly 'UNKNOWN', no sources, confidence UNKNOWN, no registers
       HYPOTHESIS  - caller/HLE source text only, non-empty sources, confidence SOURCE_SUPPORTED
-      OBSERVED    - requires at least one EMULATOR_SOURCE reference (necessary, not sufficient);
+      OBSERVED    - must not carry registers; requires at least one EMULATOR_SOURCE reference (necessary, not sufficient);
                     callee-behavior claims additionally require executed_callee;
                     and non-empty, format-valid evidence entries are required
                     (execution conditions, core revision, input type, verification
@@ -226,8 +226,11 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
         require(value != 'UNKNOWN' and confidence == 'SOURCE_SUPPORTED' and sources,
                 f'{context}: invalid HYPOTHESIS claim')
     elif status == 'OBSERVED':
-        require(value != 'UNKNOWN' and confidence == 'SOURCE_SUPPORTED' and sources and not registers,
+        require(value != 'UNKNOWN' and confidence == 'SOURCE_SUPPORTED' and sources,
                 f'{context}: invalid OBSERVED claim')
+        # Design: an OBSERVED claim carries no register list. Register lists belong to
+        # preserved/clobbered, which cannot be OBSERVED without an executed callee.
+        require(not registers, f'{context}: OBSERVED claim must not carry a register list')
         require(any(source_kinds[source] == EMULATOR_SOURCE_KIND for source in sources),
                 f'{context}: OBSERVED requires an EMULATOR_SOURCE source reference')
         require(executed_callee,
