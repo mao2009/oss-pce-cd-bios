@@ -33,11 +33,17 @@ REQUIRED_STATUS = {
     'stop_condition': 'UNKNOWN',
     'error_contract': 'UNKNOWN',
     'callable_reference': 'UNKNOWN',
+    'reset_vs_slot_call': 'HYPOTHESIS',
 }
 FORBIDDEN_WORDS = ('VERIFIED', 'PASS', 'DEV_CALLABLE')
-# A SOURCE_FACT needs at least one source of these tiers; secondary-only citations do not qualify.
-PRIMARY_TIERS = {'primary-sdk', 'project'}
 EXCLUDED_PATH_FRAGMENTS = ('include/huc/cdrom.asm', 'rom/', 'bios.c')
+
+
+def qualifies_for_source_fact(src):
+    """primary-sdk always qualifies. A project doc qualifies only if it is itself a verified primary source."""
+    if src.get('tier') == 'primary-sdk':
+        return True
+    return src.get('tier') == 'project' and src.get('verified_primary') is True
 
 
 def check_ledger(ledger):
@@ -76,9 +82,9 @@ def check_ledger(ledger):
         if status == 'SOURCE_FACT':
             if not field.get('sources'):
                 errors.append(f'{fid}: SOURCE_FACT without a source')
-            elif not any(ledger['sources'].get(src, {}).get('tier') in PRIMARY_TIERS
+            elif not any(qualifies_for_source_fact(ledger['sources'].get(src, {}))
                          for src in field['sources']):
-                errors.append(f'{fid}: SOURCE_FACT needs a primary-sdk or project source')
+                errors.append(f'{fid}: SOURCE_FACT needs a primary-sdk or verified project source')
         if status == 'UNKNOWN':
             if field.get('value') is not None:
                 errors.append(f'{fid}: UNKNOWN must have value null')
@@ -128,6 +134,13 @@ class CdBootContractLedgerTests(unittest.TestCase):
                               'value': 'x', 'sources': ['ZEOGRAD_BIOS_NOTES'], 'note': ''})
         errors = check_ledger(bad)
         self.assertTrue(any('regression_secondary_only' in e and 'primary-sdk' in e for e in errors), errors)
+
+    def test_source_fact_citing_only_project_summary_is_rejected(self):
+        bad = copy.deepcopy(self.ledger)
+        bad['fields'].append({'id': 'regression_project_only', 'status': 'SOURCE_FACT',
+                              'value': 'x', 'sources': ['REPO_SYSTEM_CARD_ROM_DOC'], 'note': ''})
+        errors = check_ledger(bad)
+        self.assertTrue(any('regression_project_only' in e for e in errors), errors)
 
     def test_promoting_a_hypothesis_is_rejected(self):
         bad = copy.deepcopy(self.ledger)

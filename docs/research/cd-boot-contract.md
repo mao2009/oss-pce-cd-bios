@@ -67,7 +67,7 @@
 
 ## 5. リセット起動と slot 呼出しの違い
 
-- リセット: CPU リセットで MPR7 は `$00` になり、PC は `$FFFE/$FFFF` から読まれる（HUC_CPU_TXT 64-66、131 行、REPO_SYSTEM_CARD_ROM_DOC の表）。割込みと D フラグの初期状態は、本書では製造元マニュアルを照合していないため扱わない。
+- リセット: CPU リセットで MPR7 は `$00` になり、PC は `$FFFE/$FFFF` から読まれる（HUC_CPU_TXT 64-66、131 行、REPO_SYSTEM_CARD_ROM_DOC の表）。ただし primary-sdk の出典はこれを述べておらず、コミュニティ注記と未照合の repo 要約のみのため、台帳の `reset_vs_slot_call` は HYPOTHESIS に留める。割込みと D フラグの初期状態は、本書では製造元マニュアルを照合していないため扱わない。
 - slot 呼出し: 稼働中プログラムからの `JSR $E000`。HuC の呼出側は MPR7 を `$00` にする処理を自分で行う（HUC_CORE_KERNEL 500-506）。ハードウェアのリセット処理はここで行われない。
 - したがって `$E000` の挙動を、リセットベクタの挙動から推定しない。
 
@@ -77,12 +77,12 @@
 
 - `block_status` は BLOCKED_ABI、`release_eligible` は false、`DEV_CALLABLE` と `VERIFIED`・`PASS` の文字列はない。
 - 各項目の状態は、この PR で決めた値（UNKNOWN・HYPOTHESIS の項目）から変わらない。UNKNOWN は `value: null`、出典なし、説明あり。
-- SOURCE_FACT は出典が 1 件以上あり、すべて台帳の出典表に存在し、そのうち 1 件以上の tier が primary-sdk または project である。secondary-web のみに基づく SOURCE_FACT は不合格。
+- SOURCE_FACT は出典が 1 件以上あり、すべて台帳の出典表に存在し、そのうち 1 件以上が適格である。適格とは、tier が primary-sdk の出典、または tier が project で `verified_primary: true` の出典（リポジトリ文書のうち一次資料として照合済みのもの）を指す。secondary-web・community-sdk-notes のみ、または未照合の project 要約のみに基づく SOURCE_FACT は不合格。現時点で `verified_primary` を true とする project 出典はない。
 - 本体アドレス・JMP テーブル説・機能の説明の 3 行は、上の tier 規則とは別に、REQUIRED_STATUS で状態（HYPOTHESIS・UNKNOWN）を固定している。
 - 候補エントリは `callable: UNKNOWN`、`returns_to_caller: UNKNOWN`。`true` は不合格。
 - `include/huc/cdrom.asm`、`./rom/`、Hu-Go `bios.c` を出典として参照しない。
 
-テストには、UNKNOWN の昇格、HYPOTHESIS の昇格、callable の設定、`release_eligible`/`dev_callable` の変更、除外出典の参照、二次資料のみに基づく SOURCE_FACT を、それぞれ不合格にする変異テストを含む。
+テストには、UNKNOWN の昇格、HYPOTHESIS の昇格、callable の設定、`release_eligible`/`dev_callable` の変更、除外出典の参照、二次資料のみに基づく SOURCE_FACT、未照合の project 要約のみに基づく SOURCE_FACT を、それぞれ不合格にする変異テストを含む。
 
 ## 7. 未実施・制限
 

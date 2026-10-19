@@ -61,11 +61,13 @@
     "REPO_TESTING_DOC": {
       "path": "docs/testing.md",
       "tier": "project",
+      "verified_primary": false,
       "licence": "PROJECT_INTERNAL (repository document, not third-party)"
     },
     "REPO_SYSTEM_CARD_ROM_DOC": {
       "path": "docs/system-card-rom.md",
       "tier": "project",
+      "verified_primary": false,
       "licence": "PROJECT_INTERNAL (repository document, not third-party)"
     }
   },
@@ -275,13 +277,13 @@
     },
     {
       "id": "reset_vs_slot_call",
-      "status": "SOURCE_FACT",
+      "status": "HYPOTHESIS",
       "value": "hardware reset sets MPR7 to $00 and vectors through $FFFE; a slot call is a software jsr to $E000 from a running program",
       "sources": [
         "HUC_CPU_TXT",
         "REPO_SYSTEM_CARD_ROM_DOC"
       ],
-      "note": "The CPU reset facts are from community notes and the repo summary, not a manufacturer manual checked in this PR. The slot-call side is caller-only; no callee reset behaviour is implied."
+      "note": "Not promoted: no primary-sdk source states the reset facts. HUC_CPU_TXT is a community note and REPO_SYSTEM_CARD_ROM_DOC is an unverified project summary of the manual. The slot-call side is caller-only; no callee reset behaviour is implied."
     },
     {
       "id": "callable_reference",
