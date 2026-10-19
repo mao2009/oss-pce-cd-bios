@@ -171,7 +171,7 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
     Rules:
       UNKNOWN     - value exactly 'UNKNOWN', no sources, confidence UNKNOWN, no registers
       HYPOTHESIS  - caller/HLE source text only, non-empty sources, confidence SOURCE_SUPPORTED
-      OBSERVED    - must not carry registers; requires at least one EMULATOR_SOURCE reference (necessary, not sufficient);
+      OBSERVED    - must not contain a `registers` key (even empty/None); requires at least one EMULATOR_SOURCE reference (necessary, not sufficient);
                     callee-behavior claims additionally require executed_callee;
                     and non-empty, format-valid evidence entries are required
                     (execution conditions, core revision, input type, verification
@@ -228,9 +228,10 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
     elif status == 'OBSERVED':
         require(value != 'UNKNOWN' and confidence == 'SOURCE_SUPPORTED' and sources,
                 f'{context}: invalid OBSERVED claim')
-        # Design: an OBSERVED claim carries no register list. Register lists belong to
-        # preserved/clobbered, which cannot be OBSERVED without an executed callee.
-        require(not registers, f'{context}: OBSERVED claim must not carry a register list')
+        # Design: an OBSERVED claim has no `registers` key at all (not even [] or None).
+        # Register lists belong to preserved/clobbered, which cannot be OBSERVED without
+        # an executed callee.
+        require('registers' not in claim, f'{context}: OBSERVED claim must not contain registers')
         require(any(source_kinds[source] == EMULATOR_SOURCE_KIND for source in sources),
                 f'{context}: OBSERVED requires an EMULATOR_SOURCE source reference')
         require(executed_callee,
