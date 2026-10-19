@@ -2,9 +2,11 @@
 
 The workflows are split into two kinds of job, on separate ephemeral GitHub-hosted runners. A build job runs the
 pull-request code and hands its output over as an intermediate artifact (name intermediate-*); it runs no guard. A
-guard job runs no pull-request code: its steps are the trusted checkout, the python resolve, the workflow checkouts
-and downloads, the placement check, the stage and verify steps, the upload steps and the Pages steps. It downloads
-the intermediate artifact of a job it `needs:` into .intake/, stages what it will publish, and only then uploads.
+guard job runs no pull-request code: only its first two steps may be checkouts (the pull-request workflow checkout,
+then the trusted main checkout into .trusted-main), no later step may check out, a job that publishes from its own
+checkout may not download at all, and every other non-`uses:` step must be one of the trusted run steps (python
+resolve, placement check, stage, verify). It downloads the intermediate artifact of a job it `needs:` into .intake/,
+stages what it will publish, and only then uploads.
 
 Every upload-artifact / upload-pages-artifact step in .github/workflows/*.yml|*.yaml and composite actions
 (.github/actions/**/action.yml|yaml) is parsed as a whole block (key order does not matter). Its step name is the
@@ -21,7 +23,8 @@ The guard runs from the trusted main copy and, in order:
   6. --verify: recompute the hashes and refuse any change, extra, missing or swapped file;
   7. upload the staged paths only.
 
-Content checks: directories are walked, symlinks are refused, and ELF/Mach-O/PE/ar signatures and object/executable
+Content checks: directories are walked, symlinks are refused (including a symlinked directory used as a path component,
+which would otherwise reach outside the checkout), and ELF/Mach-O/PE/ar signatures and object/executable
 suffixes are rejected. Unrecognised `path:` forms are refused rather than guessed. Names are not used, because legitimate
 evidence JSON may contain "geargrafx". This is a content/signature tripwire only. It does not reject .pce by extension
 (approved policy: original HuCARD and DEV diagnostic ROMs are legitimate artifacts), it does not detect BIOS-like content,
@@ -64,10 +67,10 @@ RUNNER_TEMP_PREFIX = "${{ runner.temp }}/"
 OUTSIDE_CHECKOUT = {"${{ runner.temp }}/verdict/cdread-verdict.json"}
 OBJECT_SUFFIXES = {".o", ".obj", ".a", ".lib", ".so", ".dll", ".dylib", ".exe", ".elf", ".out"}
 ARCHIVE_SUFFIXES = {".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar", ".zst", ".lz4", ".cab", ".jar", ".whl", ".z"}
-ARCHIVE_MAGICS = (b"PK\x03\x04", b"PK\x05\x06", b"\x1f\x8b", b"7z\xbc\xaf\x27\x1c", b"BZh", b"\xfd7zXZ\x00",
+ARCHIVE_MAGICS = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08", b"\x1f\x8b", b"7z\xbc\xaf\x27\x1c", b"BZh", b"\xfd7zXZ\x00",
                   b"Rar!", b"\x28\xb5\x2f\xfd")
 SIGNATURES = (b"\x7fELF", b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf", b"\xce\xfa\xed\xfe",
-              b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"!<arch>\n")
+              b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\xca\xfe\xba\xbf", b"!<arch>\n")
 BLOCK_SCALARS = ("|", "|-", "|+")   # line-based; folded '>' forms and anchors/aliases are refused as unparseable
 # Step key: optional quotes, optional spacing before the colon, any letter case. Only the upload-artifact action matches.
 USES_RE = re.compile(r"""["']?uses["']?\s*:\s*["']?actions/upload-(?:pages-)?artifact@""", re.IGNORECASE)
@@ -77,6 +80,10 @@ UPLOAD_RE = re.compile(r"""upload-(?:pages-)?artifact|\bgh\s+release\b|release-a
                        r"""|create-release|["']?uses["']?\s*:\s*["']?(?:\./|[^#\s]*\.github/workflows/)""", re.IGNORECASE)
 # pathlib glob has no brace, extglob or alternation syntax: such a pattern would match nothing and hide its files.
 UNSUPPORTED_PATTERN_CHARS = "{}()|"
+# The only actions a guard job step may `uses:`. Any other action is refused (it is treated as a run step and must
+# therefore be a trusted run). The action name is captured so checkout/download placement can be enforced.
+GUARD_ACTION_RE = re.compile(
+    r"uses:\s*actions/(checkout|download-artifact|configure-pages|deploy-pages|upload-artifact|upload-pages-artifact)@")
 
 
 def _indent(line):
@@ -274,6 +281,21 @@ def _rel(path, base):
         return str(path)
 
 
+def _symlinked_component(base, path):
+    """The first path component of `path` below `base` that is a symlink, or None. Named, never followed, so a
+    glob that reaches through a symlinked directory ('link/file') cannot escape the checkout."""
+    try:
+        parts = path.relative_to(base).parts
+    except ValueError:
+        return None
+    current = Path(base)
+    for part in parts:
+        current = current / part
+        if current.is_symlink():
+            return current
+    return None
+
+
 def _paths_for(base, pattern):
     """Return (matched paths, error) for one source pattern. An unsafe or unsupported pattern gives an error."""
     if pattern in OUTSIDE_CHECKOUT:
@@ -286,7 +308,12 @@ def _paths_for(base, pattern):
         return [], f"unresolvable or unsafe pattern {pattern!r}"
     if any(char in pattern for char in UNSUPPORTED_PATTERN_CHARS):
         return [], f"unsupported pattern {pattern!r} (brace, extglob or alternation)"
-    return list(Path(base).glob(pattern)), None
+    paths = list(Path(base).glob(pattern))
+    for path in paths:
+        link = _symlinked_component(base, path)
+        if link is not None:
+            return [], f"pattern {pattern!r} reaches through a symlink ({_rel(link, base)}); refusing rather than stage it"
+    return paths, None
 
 
 def pattern_problems(base, label, pattern, strict):
@@ -563,6 +590,15 @@ def _step_body(lines, step):
     return [l.strip() for l in lines[step[0]:step[1]] if _live(l)]
 
 
+def _uses_action(lines, step):
+    """The actions/* action of a step's `uses:` line (e.g. 'checkout'), or None when the step is not such a run step."""
+    for body in _step_body(lines, step):
+        match = GUARD_ACTION_RE.search(body)
+        if match:
+            return match.group(1)
+    return None
+
+
 def _downloads(lines, steps, job):
     """(step, artifact name or None, path is the intake root) for each download-artifact step of one job."""
     found = []
@@ -704,10 +740,19 @@ def guard_placement_violations(text, workflow):
         if intake and not needed:
             problems.append(f"{workflow}: guard job {job!r} has no needs: (it must follow the build job that produced its intermediate artifact)")
         job_steps = sorted((s for s in steps if s[2] == job), key=lambda s: s[0])
-        for s in job_steps:
+        for index, s in enumerate(job_steps):
             body = _step_body(lines, s)
-            if any(re.search(r"uses:\s*actions/(checkout|download-artifact|configure-pages|deploy-pages|upload-artifact|upload-pages-artifact)@", b)
-                   for b in body):
+            action = _uses_action(lines, s)
+            if action:
+                # The trusted copy is fetched into .trusted-main by job_steps[1]. Any later action that writes files
+                # could overwrite it with the pull-request content and run it as the guard, so the only checkouts a
+                # guard job may have are the first two steps (the pull-request checkout and the trusted checkout).
+                if action == "checkout" and index > 1:
+                    problems.append(f"{workflow}: guard job {job!r}: only the first two steps may be checkouts; "
+                                    f"step {index + 1} is another checkout (it could overwrite .trusted-main)")
+                if action == "download-artifact" and not intake:
+                    problems.append(f"{workflow}: guard job {job!r}: a job that publishes from the checkout must not "
+                                    f"download an artifact")
                 continue
             keys = _step_keys(lines, s[0], s[1], dash)
             names = _key_names(keys)
@@ -886,6 +931,11 @@ def verify_artifacts(workflow, step, root=ROOT, workflows_root=None):
             problems.append(f"{location} is a symlink")
             continue
         actual[location] = _sha256(entry)
+    for directory, dirnames, _ in os.walk(stage):   # followlinks is off: a symlinked directory is listed, not entered
+        for name in dirnames:
+            entry = Path(directory, name)
+            if entry.is_symlink():
+                problems.append(f"{_rel(entry, base)} is a symlink")
     for location in sorted(set(recorded) | set(actual)):
         if location not in actual:
             problems.append(f"{location} is missing from the staging directory")

@@ -730,6 +730,50 @@ class GuardPlacementTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'no workflow or action files'):
                 guard.check_guard_placement(Path(tmp))
 
+    def test_a_second_checkout_cannot_overwrite_the_trusted_copy(self):
+        # The trusted copy lives in .trusted-main. A second actions/checkout inserted after it (with ref: the pull
+        # request and path: .trusted-main) would replace it with the pull-request tool, which every later trusted
+        # step would then run. Only the first two steps may be checkouts; the real form still passes.
+        extra = ('      - name: Replace trusted copy\n'
+                 '        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683\n'
+                 '        with:\n'
+                 '          ref: ${{ github.head_ref }}\n'
+                 '          path: .trusted-main\n')
+        for anchor in (STAGE_STEP, PLACEMENT_STEP, VERIFY_STEP):
+            with self.subTest(anchor=anchor.splitlines()[0]):
+                text = GUARDED.replace(anchor, extra + anchor)
+                self.assertNotEqual(GUARDED, text)
+                self.assertNotEqual([], self.violations(text))
+        self.assertEqual([], self.violations(GUARDED))
+
+    def test_a_non_intake_guard_job_cannot_download_an_artifact(self):
+        # A guard job that publishes from its own checkout has no reason to download. Allowing it lets a step drop a
+        # planted copy (into .trusted-main) that the later trusted steps would run.
+        extra = ('      - name: Plant\n'
+                 '        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093\n'
+                 '        with:\n'
+                 '          name: x\n'
+                 '          path: .trusted-main\n')
+        text = GUARDED.replace(STAGE_STEP, extra + STAGE_STEP)
+        self.assertNotEqual(GUARDED, text)
+        self.assertNotEqual([], self.violations(text))
+
+    def test_a_glob_that_reaches_through_a_symlinked_directory_is_refused(self):
+        # `build/debug/link/*` is globbed through the link, so it could stage a file from outside the checkout. The
+        # component is named and refused rather than followed.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            Path(base, 'outside').mkdir()
+            Path(base, 'outside', 'probe.json').write_text('{"x": 1}\n', encoding='utf-8')
+            Path(base, 'build', 'debug').mkdir(parents=True)
+            try:
+                Path(base, 'build', 'debug', 'link').symlink_to(Path(base, 'outside'))
+            except (OSError, NotImplementedError):
+                self.skipTest('symlinks unavailable on this host')
+            count, problems = guard.pattern_problems(base, 'w.yml', 'build/debug/link/*', False)
+            self.assertEqual(0, count)
+            self.assertTrue(any('symlink' in problem for problem in problems), problems)
+
 
 
 class TrustedCopyTests(unittest.TestCase):
@@ -817,6 +861,18 @@ class StagingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.stage()
         self.assertFalse(self.staged().exists())
+
+    def test_a_symlinked_directory_injected_into_staging_is_detected(self):
+        # os.walk lists a symlinked directory without entering it and _entry_files sees only filenames, so a link
+        # planted in the staging tree between stage and verify would otherwise be invisible (it could redirect an
+        # upload outside the checkout). verify must name it.
+        self.stage()
+        try:
+            Path(self.root, '.artifact-stage', 'link').symlink_to(Path(self.root, 'build'))
+        except (OSError, NotImplementedError):
+            self.skipTest('symlinks unavailable on this host')
+        with self.assertRaisesRegex(ValueError, 'symlink'):
+            self.verify()
 
 
 BUILD_STEPS = ('      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683\n'
