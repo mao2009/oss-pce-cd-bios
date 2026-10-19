@@ -63,13 +63,25 @@ def _section3(text):
     return m.group(1) if m else ''
 
 
+def _id_like_token(s):
+    """Return the first word of a pipe-less line if it looks like an ID (K11, **K11**, `k11`, - K11:).
+
+    Prose such as headings, notes or Japanese sentences does not match and returns None.
+    """
+    s = re.sub(r'^[-+>]\s+', '', s)
+    tok = s.split()[0]
+    return tok if re.fullmatch(r'[A-Za-z]+\d+', tok.strip('*`:.,;')) else None
+
+
 def parse_ledger(text):
     """Return (item rows, source ids, malformed item rows) for the ledger.
 
-    Items come only from the §3 table. Every non-blank line in §3 that contains a pipe (other than
-    the header and the separator) must be a canonical ID with a leading and trailing pipe and all
-    cells, or it is malformed: bold, lowercase, backticked, a missing leading pipe, or a missing
-    cell. Source ids (S1..S7) come from the whole document and never become items.
+    Items come only from the §3 table. Every non-blank line in §3 must be a canonical ID row with a
+    leading and trailing pipe and all cells (the header and separator excepted), or it is malformed.
+    A line with a pipe that does not start with one is malformed too. A line without a pipe is
+    malformed when its first word looks like an ID (K11 K x, **K11** K x, - K11: K x); other
+    prose (headings, notes, blank lines) is ignored. Source ids (S1..S7) come from the whole
+    document and never become items.
     """
     sources = set()
     for line in text.splitlines():
@@ -80,14 +92,23 @@ def parse_ledger(text):
     items, malformed = [], []
     for line in _section3(text).splitlines():
         s = line.strip()
-        if '|' not in s or (set(s) <= set('|-: ') and '-' in s):
+        if not s:
+            continue
+        if not s.startswith('|'):
+            if '|' in s:
+                malformed.append(s.split('|', 1)[0].strip())
+            else:
+                tok = _id_like_token(s)
+                if tok is not None:
+                    malformed.append(tok)
+            continue
+        if set(s) <= set('|-: ') and '-' in s:
             continue
         cells = [c.strip() for c in s.strip('|').split('|')]
         first = cells[0]
         if first == 'ID':
             continue
-        if s.startswith('|') and s.endswith('|') and CANONICAL_ID_RE.fullmatch(first) \
-                and len(cells) == len(FIELDS):
+        if s.endswith('|') and CANONICAL_ID_RE.fullmatch(first) and len(cells) == len(FIELDS):
             items.append(dict(zip(FIELDS, cells)))
         else:
             malformed.append(first)
@@ -285,6 +306,18 @@ class LedgerMutationTests(unittest.TestCase):
         problems = self._problems(lines)
         self.assertIn('malformed row **K1**', problems)
         self.assertIn('missing K1', problems)
+
+    def test_pipeless_id_line_is_detected_as_malformed(self):
+        lines = self._lines()
+        i = self._idx(lines, '| K10 |')
+        lines.insert(i + 1, 'K11 K x\n')
+        self.assertIn('malformed row K11', self._problems(lines))
+
+    def test_pipeless_bold_id_line_is_detected_as_malformed(self):
+        lines = self._lines()
+        i = self._idx(lines, '| K10 |')
+        lines.insert(i + 1, '**K11** K x\n')
+        self.assertIn('malformed row **K11**', self._problems(lines))
 
     def test_row_with_missing_cell_is_detected(self):
         lines = self._lines()
