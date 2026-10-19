@@ -27,12 +27,7 @@ PENDING_SOURCES = {f"S{i}" for i in range(1, 11)}
 # Third-party / re-implementation sources: a row resting only on these is never SOURCE_FACT.
 THIRD_PARTY_SOURCES = {"S8", "S9", "S10"}
 EXPECTED_COUNTS = {"SOURCE_FACT": 15, "HYPOTHESIS": 4, "UNKNOWN": 18}
-SOURCE_FACT_DEF = (
-    "- `SOURCE_FACT`: 固定版の出典本文に書かれた**呼出側**の記述（「この呼出しがある」「この値を書く」「この宣言である」）。"
-    "**BIOS 本体の振る舞いには付けない。** 出典の provenance/採用が PENDING でも付けられる（他の API 台帳と同じ）。"
-    "SOURCE_FACT は「出典にそう書いてある」ことだけを示し、ライセンス上の利用可否、呼出先の実測、実装可能性のいずれも示さない。"
-    "出典が第三者の記述のみ、または再実装・開発者の主張である場合は `HYPOTHESIS` とする。"
-)
+SOURCE_FACT_DEF = ''
 
 # Pinned verdict per field row. A verdict change must edit this table in review.
 EXPECTED = {

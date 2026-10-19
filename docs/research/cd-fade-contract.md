@@ -12,7 +12,11 @@
 
 ## 2. 証拠区分
 
-- `SOURCE_FACT`: 固定版の出典本文に書かれた**呼出側**の記述（「この呼出しがある」「この値を書く」「この宣言である」）。**BIOS 本体の振る舞いには付けない。** 出典の provenance/採用が PENDING でも付けられる（他の API 台帳と同じ）。SOURCE_FACT は「出典にそう書いてある」ことだけを示し、ライセンス上の利用可否、呼出先の実測、実装可能性のいずれも示さない。出典が第三者の記述のみ、または再実装・開発者の主張である場合は `HYPOTHESIS` とする。
+- `SOURCE_FACT`: SOURCE_FACT = a caller-side fact written in a pinned primary source. It is independent of provenance PENDING. It does NOT indicate BIOS callee behavior.
+  （訳: 固定版の一次出典に書かれた呼出側の事実。出典の provenance が PENDING かどうかとは独立。BIOS 呼出先の振る舞いを示さない。）出典が第三者の記述のみ、または再実装・開発者の主張である場合は `HYPOTHESIS` とする。ライセンス上の利用可否、呼出先の実測、実装可能性は別の軸であり、SOURCE_FACT はそのいずれも示さない。
+  固定版の出典本文に書かれた呼出側の記述の例は「この呼出しがある」「この値を書く」「この宣言である」であり、**BIOS 本体の振る舞いには付けない。** 出典の provenance/採用が PENDING でも付けられる（他の API 台帳と同じ）。
+  SOURCE_FACT は「出典にそう書いてある」ことだけを示し、ライセンス上の利用可否、呼出先の実測、実装可能性のいずれも示さない。
+  出典が第三者の記述のみ、または再実装・開発者の主張である場合は `HYPOTHESIS` とする。
 - `HYPOTHESIS`: 出典の記述からの推測、または第三者・再実装の記述。呼出先の実測なし。
 - `UNKNOWN`: 出典が不足している。推測で埋めない。
 - 出典 S1–S10 の provenance は PENDING のままで、本書はそれを変更しない（人間のレビュアの決定に属する）。
