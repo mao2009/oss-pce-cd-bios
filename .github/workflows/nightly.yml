@@ -35,11 +35,25 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Trusted guard (main)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: main
+          path: ${{ runner.temp }}/trusted-main
+          sparse-checkout: tools/artifact_guard.py
+          persist-credentials: false
+      - name: Resolve python3 (trusted)
+        id: pyresolve
+        run: |
+          echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: ${{ needs.plan.outputs.source_sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Guard placement (trusted)
+        run: |
+          "${{ steps.pyresolve.outputs.python }}" "${{ runner.temp }}/trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --check-placement
       - name: Prepare pinned tools from source
         run: make setup
       - name: Build original HuCARD fixture
@@ -57,27 +71,33 @@ jobs:
         env:
           SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
         run: python3 tools/nightly.py record
-      - name: Guard post-build artifacts before upload (Archive verified original fixture (not a release))
+      - name: Stage artifacts (trusted guard) for Archive verified original fixture (not a release)
         run: |
-          python3 tools/artifact_guard.py --post-build .github/workflows/nightly.yml "Archive verified original fixture (not a release)"
+          "${{ steps.pyresolve.outputs.python }}" "${{ runner.temp }}/trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --stage .github/workflows/nightly.yml "Archive verified original fixture (not a release)"
+      - name: Verify staged artifacts (trusted guard) for Archive verified original fixture (not a release)
+        run: |
+          "${{ steps.pyresolve.outputs.python }}" "${{ runner.temp }}/trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --verify .github/workflows/nightly.yml "Archive verified original fixture (not a release)"
       - name: Archive verified original fixture (not a release)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: nightly-smoke-not-bios-${{ needs.plan.outputs.source_sha }}
           path: |
-            build/debug/*.pce
-            build/debug/*.json
-            build/debug/*.map
-            build/debug/*.lbl
+            .artifact-stage/build/debug/*.pce
+            .artifact-stage/build/debug/*.json
+            .artifact-stage/build/debug/*.map
+            .artifact-stage/build/debug/*.lbl
           if-no-files-found: error
           retention-days: 14
-      - name: Guard post-build artifacts before upload (Save baseline; accepted only when the whole run succeeds)
+      - name: Stage artifacts (trusted guard) for Save baseline; accepted only when the whole run succeeds
         run: |
-          python3 tools/artifact_guard.py --post-build .github/workflows/nightly.yml "Save baseline; accepted only when the whole run succeeds"
+          "${{ steps.pyresolve.outputs.python }}" "${{ runner.temp }}/trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --stage .github/workflows/nightly.yml "Save baseline; accepted only when the whole run succeeds"
+      - name: Verify staged artifacts (trusted guard) for Save baseline; accepted only when the whole run succeeds
+        run: |
+          "${{ steps.pyresolve.outputs.python }}" "${{ runner.temp }}/trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --verify .github/workflows/nightly.yml "Save baseline; accepted only when the whole run succeeds"
       - name: Save baseline; accepted only when the whole run succeeds
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: nightly-success-state
-          path: build/nightly-state.json
+          path: .artifact-stage/build/nightly-state.json
           if-no-files-found: error
           retention-days: 90

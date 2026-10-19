@@ -13,10 +13,24 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
+      - name: Trusted guard (main)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: main
+          path: ${{ runner.temp }}/trusted-main
+          sparse-checkout: tools/artifact_guard.py
+          persist-credentials: false
+      - name: Resolve python3 (trusted)
+        id: pyresolve
+        run: |
+          echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Guard placement (trusted)
+        run: |
+          "${{ steps.pyresolve.outputs.python }}" "${{ runner.temp }}/trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --check-placement
       - name: Provenance guard on changed content (list edits need a verified maintainer approval)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -36,18 +50,21 @@ jobs:
           make build MODE=release
           cmp build/debug/smoke-test-not-bios.pce build/release/smoke-test-not-bios.pce
           python3 tools/build.py --verify build/debug/smoke-test-not-bios.pce
-      - name: Guard post-build artifacts before upload (Save verified test fixture and evidence)
+      - name: Stage artifacts (trusted guard) for Save verified test fixture and evidence
         run: |
-          python3 tools/artifact_guard.py --post-build .github/workflows/ci.yml "Save verified test fixture and evidence"
+          "${{ steps.pyresolve.outputs.python }}" "${{ runner.temp }}/trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --stage .github/workflows/ci.yml "Save verified test fixture and evidence"
+      - name: Verify staged artifacts (trusted guard) for Save verified test fixture and evidence
+        run: |
+          "${{ steps.pyresolve.outputs.python }}" "${{ runner.temp }}/trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --verify .github/workflows/ci.yml "Save verified test fixture and evidence"
       - name: Save verified test fixture and evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: smoke-fixture-not-bios-${{ github.sha }}
           path: |
-            build/debug/*.pce
-            build/debug/*.json
-            build/debug/*.map
-            build/debug/*.lbl
-            build/debug/*.lst
+            .artifact-stage/build/debug/*.pce
+            .artifact-stage/build/debug/*.json
+            .artifact-stage/build/debug/*.map
+            .artifact-stage/build/debug/*.lbl
+            .artifact-stage/build/debug/*.lst
           if-no-files-found: error
           retention-days: 14

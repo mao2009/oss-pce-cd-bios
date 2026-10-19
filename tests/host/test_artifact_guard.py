@@ -362,10 +362,32 @@ class WorkflowTests(unittest.TestCase):
             check_upload_artifacts(self.root)
 
 
-CALL = 'python3 tools/artifact_guard.py --post-build w.yml "Save"'
-GUARD_STEP = f'      - name: Guard\n        run: |\n          {CALL}\n'
-SAVE_STEP = f'      - name: Save\n        uses: {UPLOAD}\n        with:\n          path: build/x\n'
+TRUSTED_GUARD = '"${{ runner.temp }}/trusted-main/tools/artifact_guard.py"'
+GUARD_PREFIX = '"${{ steps.pyresolve.outputs.python }}" ' + TRUSTED_GUARD + ' --root "$GITHUB_WORKSPACE"'
+CALL = GUARD_PREFIX + ' --stage w.yml "Save"'
+VERIFY_CALL = GUARD_PREFIX + ' --verify w.yml "Save"'
+CHECK_CALL = GUARD_PREFIX + ' --check-placement'
+TRUSTED_CHECKOUT = ('      - name: Trusted guard (main)\n'
+                    '        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683\n'
+                    '        with:\n          ref: main\n          path: ${{ runner.temp }}/trusted-main\n'
+                    '          sparse-checkout: tools/artifact_guard.py\n          persist-credentials: false\n')
+PY_RESOLVE = ('      - name: Resolve python3 (trusted)\n        id: pyresolve\n'
+              '        run: echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"\n')
+PLACEMENT_STEP = '      - name: Guard placement (trusted)\n        run: ' + CHECK_CALL + '\n'
+PREAMBLE = TRUSTED_CHECKOUT + PY_RESOLVE + PLACEMENT_STEP
+STAGE_STEP = '      - name: Stage\n        run: |\n          ' + CALL + '\n'
+VERIFY_STEP = '      - name: Verify\n        run: |\n          ' + VERIFY_CALL + '\n'
+GUARD_STEP = PREAMBLE + STAGE_STEP + VERIFY_STEP
+SAVE_STEP = f'      - name: Save\n        uses: {UPLOAD}\n        with:\n          path: .artifact-stage/build/x\n'
 GUARDED = 'jobs:\n  build:\n    steps:\n' + GUARD_STEP + SAVE_STEP
+
+
+def guarded_with_name(name):
+    """A complete, well-formed job whose upload step (and its stage and verify calls) use `name`."""
+    return ('jobs:\n  build:\n    steps:\n' + PREAMBLE
+            + f'      - name: Stage\n        run: {GUARD_PREFIX} --stage w.yml "{name}"\n'
+            + f'      - name: Verify\n        run: {GUARD_PREFIX} --verify w.yml "{name}"\n'
+            + f'      - name: {name}\n        uses: {UPLOAD}\n        with:\n          path: .artifact-stage/build/x\n')
 
 
 class GuardPlacementTests(unittest.TestCase):
@@ -485,7 +507,7 @@ class GuardPlacementTests(unittest.TestCase):
     def test_dotted_job_names_each_with_own_guard_pass(self):
         # Legitimate dotted names must not be mistaken for a duplicate or missing guard.
         text = ('jobs:\n  build.x:\n    steps:\n' + GUARD_STEP + SAVE_STEP
-                + '  build.y:\n    steps:\n' + GUARD_STEP.replace('Guard', 'Guard2') + SAVE_STEP)
+                + '  build.y:\n    steps:\n' + GUARD_STEP.replace('\"Save\"', '\"Save2\"') + SAVE_STEP.replace('name: Save\n', 'name: Save2\n'))
         self.assertEqual([], self.violations(text))
 
     def test_duplicate_job_name_is_refused(self):
@@ -520,21 +542,14 @@ class GuardPlacementTests(unittest.TestCase):
                 self.assertNotEqual([], self.violations(text))
 
     def test_upload_name_cannot_smuggle_shell_into_guard_call(self):
-        # MAJOR-1: the guard call embeds the upload step's name; a quote-breaking name must not make the
-        # run line "guard "Save" || true; echo "x"" pass as a bare guard call (guard failure swallowed, upload runs).
-        name = 'Save" || true; echo "x'
-        run = f'        run: python3 tools/artifact_guard.py --post-build w.yml "{name}"'
-        text = ('jobs:\n  build:\n    steps:\n' + '      - name: Guard\n' + run + '\n'
-                + f'      - name: {name}\n        uses: {UPLOAD}\n        with:\n          path: build/x\n')
-        self.assertNotEqual([], self.violations(text))
+        # The name is embedded in the guard calls. A quote-breaking name must not make the run line pass as a
+        # bare guard call (guard failure swallowed, upload runs).
+        self.assertNotEqual([], self.violations(guarded_with_name('Save" || true; echo "x')))
 
     def test_upload_name_with_expansion_or_escape_characters_is_refused(self):
         for name in ('Save $(rm -rf x)', 'Save `id`', 'Save \\\\ x', 'Save $HOME'):
             with self.subTest(name=name):
-                call = f'python3 tools/artifact_guard.py --post-build w.yml "{name}"'
-                text = ('jobs:\n  build:\n    steps:\n      - name: Guard\n        run: |\n          ' + call + '\n'
-                        + f'      - name: {name}\n        uses: {UPLOAD}\n        with:\n          path: build/x\n')
-                self.assertNotEqual([], self.violations(text))
+                self.assertNotEqual([], self.violations(guarded_with_name(name)))
 
     def test_run_line_with_extra_argument_is_refused(self):
         run = '        run: |\n          ' + CALL
@@ -553,22 +568,19 @@ class GuardPlacementTests(unittest.TestCase):
                 self.assertNotEqual([], self.violations(GUARDED.replace(SAVE_STEP, step)))
 
     def test_unquoted_operator_name_is_refused_while_quoted_name_passes(self):
-        # MINOR-B: run "w.yml Save||true" unquoted lets bash parse "||" (guard failure swallowed). The quoted form
-        # with the same characters is a single argument and is accepted; both directions are pinned.
-        upload = f'      - name: "Save||true"\n        uses: {UPLOAD}\n        with:\n          path: build/x\n'
-        quoted = ('jobs:\n  build:\n    steps:\n      - name: Guard\n'
-                  '        run: python3 tools/artifact_guard.py --post-build w.yml "Save||true"\n' + upload)
-        self.assertEqual([], self.violations(quoted))
-        unquoted = ('jobs:\n  build:\n    steps:\n'
-                    '      - name: tools/artifact_guard.py --post-build w.yml "Save||true"\n'
-                    '        run: python3 tools/artifact_guard.py --post-build w.yml Save||true\n' + upload)
-        self.assertNotEqual([], self.violations(unquoted))
+        # MINOR-B: an unquoted "||" in the name is an operator for bash. The quoted form is one argument.
+        def job(call_arg, upload_name):
+            return ('jobs:\n  build:\n    steps:\n' + PREAMBLE
+                    + f'      - name: Stage\n        run: {GUARD_PREFIX} --stage w.yml {call_arg}\n'
+                    + f'      - name: Verify\n        run: {GUARD_PREFIX} --verify w.yml {call_arg}\n'
+                    + f'      - name: {upload_name}\n        uses: {UPLOAD}\n        with:\n          path: .artifact-stage/build/x\n')
+        self.assertEqual([], self.violations(job('"Save||true"', '"Save||true"')))
+        self.assertNotEqual([], self.violations(job('Save||true', 'Save||true')))
 
     def test_multiline_plain_name_is_refused(self):
-        # MINOR-A: a continuation line after `name:` changes the YAML name; the guard must not match on the first line only.
-        text = ('jobs:\n  build:\n    steps:\n      - name: Guard\n'
-                '        run: python3 tools/artifact_guard.py --post-build w.yml "Save"\n'
-                f'      - name: Save\n          continued\n        uses: {UPLOAD}\n        with:\n          path: build/x\n')
+        # MINOR-A: a continuation line after `name:` changes the YAML name.
+        text = ('jobs:\n  build:\n    steps:\n' + PREAMBLE + STAGE_STEP + VERIFY_STEP
+                + f'      - name: Save\n          continued\n        uses: {UPLOAD}\n        with:\n          path: .artifact-stage/build/x\n')
         self.assertNotEqual([], self.violations(text))
 
     def test_workflow_path_with_shell_characters_is_refused(self):
@@ -582,19 +594,157 @@ class GuardPlacementTests(unittest.TestCase):
         self.assertNotEqual([], self.violations(text))
 
     def test_make_check_path_enforces_placement_not_only_patterns(self):
-        # check.py calls check_guard_placement; a build step inserted after the guard must fail there too.
+        # check.py calls check_guard_placement; a build step inserted between verify and upload must fail there too.
         import tempfile
         rel = '.github/workflows/w.yml'
-        call = f'python3 tools/artifact_guard.py --post-build {rel} "Save"'
-        guard_step = f'      - name: Guard\n        run: |\n          {call}\n'
-        build = '      - name: Build\n        run: make build\n'
-        text = ('jobs:\n  build:\n    steps:\n' + guard_step + build
-                + f'      - name: Save\n        uses: {UPLOAD}\n        with:\n          path: build/x\n')
+        text = (GUARDED.replace(' w.yml ', f' {rel} ')
+                .replace(SAVE_STEP, '      - name: Build\n        run: make build\n' + SAVE_STEP))
         with tempfile.TemporaryDirectory() as tmp:
             Path(tmp, '.github', 'workflows').mkdir(parents=True)
             Path(tmp, rel).write_text(text, encoding='utf-8')
-            with self.assertRaisesRegex(ValueError, 'guard step is not the step immediately before'):
+            with self.assertRaisesRegex(ValueError, 'immediately before'):
                 guard.check_guard_placement(Path(tmp))
+
+    def test_binding_name_is_the_dash_level_name_not_a_nested_one(self):
+        # MAJOR-1: a name: under with: that appears first must not become the step name.
+        text = ('jobs:\n  build:\n    steps:\n      - uses: ' + UPLOAD + '\n        with:\n'
+                '          name: z\n          path: build/x\n        name: Y\n')
+        self.assertEqual(['Y'], [name for name, _ in guard.upload_steps(text)])
+
+    def test_inline_comment_is_not_part_of_the_name(self):
+        # MINOR-1: `name: Save #x` is the name Save.
+        text = ('jobs:\n  build:\n    steps:\n      - name: Save #x\n        uses: ' + UPLOAD
+                + '\n        with:\n          path: build/x\n')
+        self.assertEqual(['Save'], [name for name, _ in guard.upload_steps(text)])
+
+    def test_duplicate_upload_names_in_one_workflow_are_refused(self):
+        # MAJOR-1 (second repro): two upload steps with the same name would let the binding check see only one.
+        text = GUARDED + '  second:\n    steps:\n' + GUARD_STEP + SAVE_STEP
+        self.assertNotEqual([], self.violations(text))
+
+    def test_upload_path_must_be_staged(self):
+        unstaged = GUARDED.replace('.artifact-stage/build/x', 'build/x')
+        self.assertNotEqual([], self.violations(unstaged))
+
+    def test_trusted_checkout_must_be_the_first_step_of_the_job(self):
+        text = ('jobs:\n  build:\n    steps:\n      - name: Build\n        run: make build\n'
+                + GUARD_STEP + SAVE_STEP)
+        self.assertNotEqual([], self.violations(text))
+
+    def test_guard_call_must_use_trusted_copy_not_workspace_tools(self):
+        # The workspace copy (tools/artifact_guard.py in the PR) must never be what a workflow runs.
+        old_form = ('jobs:\n  build:\n    steps:\n      - name: Guard\n'
+                    '        run: |\n          python3 tools/artifact_guard.py --post-build w.yml "Save"\n'
+                    '      - name: Save\n        uses: ' + UPLOAD + '\n        with:\n          path: build/x\n')
+        self.assertNotEqual([], self.violations(old_form))
+
+    def test_verify_step_is_required_before_upload(self):
+        self.assertNotEqual([], self.violations(GUARDED.replace(VERIFY_STEP, '')))
+
+
+
+class TrustedCopyTests(unittest.TestCase):
+    """A: the guard that decides is the trusted main copy, not a copy in the checked-out workspace."""
+
+    def test_workflows_call_only_the_trusted_main_copy(self):
+        for path in sorted((ROOT / guard.WORKFLOWS).glob('*.y*ml')):
+            for line in path.read_text(encoding='utf-8').splitlines():
+                if 'artifact_guard.py' in line and 'sparse-checkout' not in line:   # invocations, not the checkout config
+                    self.assertIn('${{ runner.temp }}/trusted-main/tools/artifact_guard.py', line, path.name)
+
+    def test_tampered_workspace_copy_does_not_change_the_verdict(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            Path(root, 'tools').mkdir()
+            Path(root, 'tools', 'artifact_guard.py').write_text('import sys\nsys.exit(0)\n', encoding='utf-8')
+            Path(root, '.github', 'workflows').mkdir(parents=True)
+            Path(root, '.github', 'workflows', 'w.yml').write_text(
+                'jobs:\n  build:\n    steps:\n      - name: Save\n        uses: ' + UPLOAD
+                + '\n        with:\n          path: build/x.bin\n', encoding='utf-8')
+            Path(root, 'build').mkdir()
+            Path(root, 'build', 'x.bin').write_bytes(ELF_PROBE)
+            result = subprocess.run(
+                [sys.executable, str(Path(guard.__file__)), '--root', str(root),
+                 '--post-build', '.github/workflows/w.yml', 'Save'],
+                capture_output=True, text=True)
+            self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+            self.assertIn('signature', result.stderr)
+
+
+class StagingTests(unittest.TestCase):
+    """B: the uploaded bytes are the staged copies, and a rewrite after staging is detected by verify."""
+    WORKFLOW = '.github/workflows/w.yml'
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        Path(self.root, '.github', 'workflows').mkdir(parents=True)
+        Path(self.root, self.WORKFLOW).write_text(
+            'jobs:\n  build:\n    steps:\n      - name: Save\n        uses: ' + UPLOAD
+            + '\n        with:\n          path: .artifact-stage/build/x.json\n', encoding='utf-8')
+        Path(self.root, 'build').mkdir()
+        Path(self.root, 'build', 'x.json').write_bytes(b'{"ok": true}\n')
+
+    def stage(self):
+        guard.stage_artifacts(self.WORKFLOW, 'Save', self.root)
+
+    def verify(self):
+        guard.verify_artifacts(self.WORKFLOW, 'Save', self.root)
+
+    def staged(self):
+        return Path(self.root, '.artifact-stage', 'build', 'x.json')
+
+    def test_stage_then_verify_passes(self):
+        self.stage()
+        self.verify()
+
+    def test_rewrite_of_the_staged_copy_after_staging_is_detected(self):
+        self.stage()
+        self.staged().write_bytes(b'rewritten by a background process')
+        with self.assertRaises(ValueError):
+            self.verify()
+
+    def test_extra_file_added_to_staging_is_detected(self):
+        self.stage()
+        Path(self.root, '.artifact-stage', 'extra.bin').write_bytes(b'x')
+        with self.assertRaises(ValueError):
+            self.verify()
+
+    def test_deleted_staged_file_is_detected(self):
+        self.stage()
+        self.staged().unlink()
+        with self.assertRaises(ValueError):
+            self.verify()
+
+    def test_workspace_rewrite_after_staging_does_not_change_the_staged_copy(self):
+        self.stage()
+        Path(self.root, 'build', 'x.json').write_bytes(b'changed in the workspace')
+        self.verify()
+
+    def test_preexisting_staging_content_is_discarded(self):
+        Path(self.root, '.artifact-stage').mkdir()
+        Path(self.root, '.artifact-stage', 'evil.bin').write_bytes(b'pre-created by a build step')
+        self.stage()
+        self.assertFalse(Path(self.root, '.artifact-stage', 'evil.bin').exists())
+
+    def test_stage_refuses_a_linked_executable_and_stages_nothing(self):
+        Path(self.root, 'build', 'x.json').write_bytes(ELF_PROBE)
+        with self.assertRaises(ValueError):
+            self.stage()
+        self.assertFalse(self.staged().exists())
+
+
+class PathPolicyTests(unittest.TestCase):
+    """D: no repository upload uses a wildcard root pattern; a future one must be a reviewed change."""
+
+    def test_no_repository_upload_uses_a_wildcard_root_pattern(self):
+        for path in sorted((ROOT / guard.WORKFLOWS).glob('*.y*ml')):
+            for pattern in upload_patterns(path.read_text(encoding='utf-8')):
+                source = guard.source_pattern(pattern)
+                self.assertNotIn(source, ('*', '**', '*/*', '**/*'), path.name)
+                self.assertFalse(source.startswith(('*', '**')), path.name)
 
 
 class RepositoryTests(unittest.TestCase):
@@ -608,6 +758,7 @@ class RepositoryTests(unittest.TestCase):
         patterns = []
         for path in sorted((ROOT / guard.WORKFLOWS).glob('*.y*ml')):
             patterns.extend(upload_patterns(path.read_text(encoding='utf-8')))
+        patterns = [guard.source_pattern(p) for p in patterns]
         self.assertIn('build/debug/cdread-probe/*.pce', patterns)
         self.assertIn('build/debug/*.pce', patterns)
         self.assertIn('${{ runner.temp }}/verdict/cdread-verdict.json', patterns)
