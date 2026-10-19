@@ -15,20 +15,21 @@ ALLOWED = {"SOURCE_FACT", "HYPOTHESIS", "UNKNOWN"}
 FORBIDDEN = re.compile(r"\b(OBSERVED|VERIFIED|PASS|DEV_CALLABLE)\b")
 FIELD_ROW = re.compile(r"^\| (F\d{2}) \|")
 SOURCE_ID = re.compile(r"\bS\d+\b")
-PENDING_SOURCES = {"S6", "S7", "S8", "S9"}
-EXPECTED_COUNTS = {"SOURCE_FACT": 16, "HYPOTHESIS": 6, "UNKNOWN": 14}
+# No source is APPROVED yet; every source S1-S10 is PENDING until the owner records approval.
+PENDING_SOURCES = {f"S{i}" for i in range(1, 11)}
+EXPECTED_COUNTS = {"HYPOTHESIS": 21, "UNKNOWN": 15}
 
 # Pinned verdict per field row. A verdict change must edit this table in review.
 EXPECTED = {
-    "F01": "SOURCE_FACT", "F02": "UNKNOWN", "F03": "SOURCE_FACT", "F04": "SOURCE_FACT",
-    "F05": "SOURCE_FACT", "F06": "HYPOTHESIS", "F07": "UNKNOWN", "F08": "HYPOTHESIS",
-    "F09": "SOURCE_FACT", "F10": "HYPOTHESIS", "F11": "HYPOTHESIS", "F12": "UNKNOWN",
-    "F13": "UNKNOWN", "F14": "SOURCE_FACT", "F15": "HYPOTHESIS", "F16": "UNKNOWN",
-    "F17": "SOURCE_FACT", "F18": "HYPOTHESIS", "F19": "UNKNOWN", "F20": "SOURCE_FACT",
-    "F21": "SOURCE_FACT", "F22": "UNKNOWN", "F23": "SOURCE_FACT", "F24": "UNKNOWN",
-    "F25": "SOURCE_FACT", "F26": "SOURCE_FACT", "F27": "UNKNOWN", "F28": "UNKNOWN",
-    "F29": "SOURCE_FACT", "F30": "SOURCE_FACT", "F31": "UNKNOWN", "F32": "UNKNOWN",
-    "F33": "UNKNOWN", "F34": "UNKNOWN", "F35": "SOURCE_FACT", "F36": "SOURCE_FACT",
+    "F01": "HYPOTHESIS", "F02": "UNKNOWN", "F03": "HYPOTHESIS", "F04": "HYPOTHESIS",
+    "F05": "HYPOTHESIS", "F06": "HYPOTHESIS", "F07": "UNKNOWN", "F08": "HYPOTHESIS",
+    "F09": "HYPOTHESIS", "F10": "HYPOTHESIS", "F11": "HYPOTHESIS", "F12": "UNKNOWN",
+    "F13": "UNKNOWN", "F14": "HYPOTHESIS", "F15": "HYPOTHESIS", "F16": "UNKNOWN",
+    "F17": "HYPOTHESIS", "F18": "HYPOTHESIS", "F19": "UNKNOWN", "F20": "HYPOTHESIS",
+    "F21": "HYPOTHESIS", "F22": "UNKNOWN", "F23": "HYPOTHESIS", "F24": "UNKNOWN",
+    "F25": "HYPOTHESIS", "F26": "HYPOTHESIS", "F27": "UNKNOWN", "F28": "UNKNOWN",
+    "F29": "HYPOTHESIS", "F30": "HYPOTHESIS", "F31": "UNKNOWN", "F32": "UNKNOWN",
+    "F33": "UNKNOWN", "F34": "UNKNOWN", "F35": "HYPOTHESIS", "F36": "UNKNOWN",
 }
 
 
@@ -143,6 +144,11 @@ class PromotionRegressionTest(unittest.TestCase):
 
     def test_f18_hypothesis_to_source_fact_is_rejected(self):
         self.assert_promotion_rejected("F18", "SOURCE_FACT")
+
+    def test_source_fact_on_pending_source_is_rejected(self):
+        mutated = promote(self.text, "F01", "SOURCE_FACT")
+        errors = check_pins(mutated)
+        self.assertIn("F01: SOURCE_FACT cites PENDING source ['S1']", errors)
 
 
 if __name__ == "__main__":
