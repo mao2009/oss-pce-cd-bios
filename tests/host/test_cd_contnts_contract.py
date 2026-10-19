@@ -16,6 +16,8 @@ FIELDS = ['id', 'side', 'item', 'status', 'value', 'source', 'reason']
 SIDES = {'caller', 'callee', 'reference', 'name'}
 STATUSES = {'SOURCE_FACT', 'HYPOTHESIS', 'UNKNOWN', 'BLOCKED_ABI'}
 FORBIDDEN_WORDS = ('VERIFIED', 'OBSERVED', 'PASS', 'DEV_CALLABLE')
+# Summary sources (S6, S7) and PENDING are not a basis for SOURCE_FACT on any side.
+SUMMARY_SOURCES = {'S6', 'S7'}
 
 # Pinned snapshot of (side, status, value) for every ledger row. Changing any of them fails the ledger
 # test until this snapshot is updated in the same change.
@@ -58,6 +60,11 @@ REQUIRED_FIELD_ROWS = {
 }
 
 
+def token_in(kw, text):
+    """True if kw occurs as a whole token: not adjacent to an ASCII letter (so 'A' does not match 'Abc', 'MPR' matches 'MPR0–6')."""
+    return re.search(rf'(?<![A-Za-z]){re.escape(kw)}(?![A-Za-z])', text) is not None
+
+
 def parse_rows(text):
     """Return field rows (ID starting with F) as dicts. Raises ValueError on a malformed F row."""
     rows = []
@@ -94,6 +101,8 @@ def problems(rows, cells_text=()):
             out.append(f'{rid}: callee fact promoted to SOURCE_FACT')
         if status == 'SOURCE_FACT' and (not source or source in {'—', '-'}):
             out.append(f'{rid}: SOURCE_FACT without a source')
+        if status == 'SOURCE_FACT' and not any(i not in SUMMARY_SOURCES for i in re.findall(r'S\d+', source)):
+            out.append(f'{rid}: SOURCE_FACT cites only summary or PENDING sources {source!r}')
         if status == 'UNKNOWN' and value.strip('`') != 'UNKNOWN':
             out.append(f'{rid}: UNKNOWN row with a filled value {value!r}')
         if side == 'callee' and status not in {'HYPOTHESIS', 'UNKNOWN', 'BLOCKED_ABI'}:
@@ -152,7 +161,7 @@ class CdContntsLedgerTest(unittest.TestCase):
         by_id = {r['id']: r for r in self.rows}
         for kw, rid in REQUIRED_FIELD_ROWS.items():
             self.assertIn(rid, by_id, f'row {rid} missing')
-            self.assertIn(kw, by_id[rid]['item'], f'{rid} item must cover {kw!r}')
+            self.assertTrue(token_in(kw, by_id[rid]['item']), f'{rid} item must cover {kw!r}')
 
     def test_blocked_and_release_status_stated(self):
         self.assertIn('BLOCKED_ABI', self.text)
@@ -181,6 +190,15 @@ class LedgerMutationTest(unittest.TestCase):
         rows = self._mutate('F25', status='SOURCE_FACT', value='説明あり', source='S6')
         self.assertTrue(ledger_problems(rows))
 
+    def test_reference_unknown_promoted_from_summary_fails_rule_layer(self):
+        # Rule layer alone (no pinned snapshot): S6 is summary-only, so a reference-side SOURCE_FACT is rejected.
+        rows = self._mutate('F25', status='SOURCE_FACT', value='説明あり', source='S6')
+        self.assertTrue(any(p.startswith('F25:') for p in problems(rows)))
+
+    def test_reference_unknown_promoted_from_pending_fails_rule_layer(self):
+        rows = self._mutate('F25', status='SOURCE_FACT', value='説明あり', source='PENDING')
+        self.assertTrue(any(p.startswith('F25:') for p in problems(rows)))
+
     def test_callee_unknown_promoted_to_source_fact_is_rejected(self):
         rows = self._mutate('F03', status='SOURCE_FACT', value='A=0', source='S4 688–697')
         self.assertTrue(ledger_problems(rows))
@@ -203,6 +221,13 @@ class RuleCheckerNegativeTest(unittest.TestCase):
 
     def test_rejects_filled_unknown(self):
         self.assertTrue(problems([self._row(status='UNKNOWN', value='0')]))
+
+    def test_rejects_source_fact_from_summary_only(self):
+        self.assertTrue(problems([self._row(side='reference', source='S6')]))
+        self.assertTrue(problems([self._row(side='caller', source='S7 表')]))
+
+    def test_accepts_source_fact_with_primary_and_summary(self):
+        self.assertEqual(problems([self._row(side='reference', source='S1 480、S6')]), [])
 
     def test_rejects_forbidden_status_word(self):
         self.assertTrue(problems([], ['VERIFIED']))

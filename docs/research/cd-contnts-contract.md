@@ -75,7 +75,7 @@
 | F15 | callee | MPR0–6（呼出し中の値） | UNKNOWN | UNKNOWN | S7（原文照合 PENDING） | 二次出典 S7 に MPR の前提値の記述があるが、値は本台帳に転載しない（§5）。CD_CONTNTS 固有の根拠ではなく、原文照合まで値を記録しない。 |
 | F16 | callee | 作業 RAM の副作用・出力バッファ | UNKNOWN | UNKNOWN | S4（TOC の読取りは行わない） | 結果を格納するバッファの位置・形式は不明。 |
 | F17 | callee | IRQ とイベント順序 | UNKNOWN | UNKNOWN | S4 681–697（`wait_nvsync` は呼出側の待機）、S4 1390 行以降は他関数の試験 | 呼出し中の IRQ マスクと、IRQ2 の発生順序は不明。 |
-| F18 | caller | 呼出し前の事前条件（ドライブ状態） | SOURCE_FACT | 呼出側は `cd_stat` の戻りを busy・ready の分岐に使い、待機してから呼ぶ | S4 681–697 | 呼出側の分岐の記述。`cd_stat` の戻りを ready フラグとは扱わない。CD_CONTNTS の要件であるとは言えない。 |
+| F18 | caller | 呼出し前の事前条件（ドライブ状態） | SOURCE_FACT | 呼出側は `cd_stat` の戻りを busy・ready の分岐に使い、待機してから呼ぶ | S4 681–697 | 呼出側の分岐の記述。呼出側は `lda #1`、`cd_stat`、`cmp`、`beq .drive_ready`（S4 689–691）で戻り値を ready の分岐に使う。呼出先（callee）側で戻り値が ready を意味するかは UNKNOWN。CD_CONTNTS の要件であるとは言えない。 |
 | F19 | callee | busy・タイムアウト・所要時間 | UNKNOWN | UNKNOWN | — | 呼出先の待機条件は不明。 |
 | F20 | caller | 失敗時の呼出側の処理 | SOURCE_FACT | 非 0 で `cd_reset` に戻り、待機からやり直す | S4 699–701、681–697 | 呼出側の動作記述。 |
 | F21 | callee | 失敗条件・エラー値（無ディスク、不正な入力、タイムアウト） | UNKNOWN | UNKNOWN | — | 出典がない。失敗時の A・フラグ・出力の有無は不明。 |
