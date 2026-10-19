@@ -6,7 +6,7 @@ VERIFIED is outside CLAIM_STATUSES and must never be reachable: an unexecuted ca
 not be promoted by these rules.
 
 Issue #208 strengthens OBSERVED: a source reference (source code URL/revision) only proves
-that source text exists; it is not measurement evidence. OBSERVED promotion now additionally
+that source text exists; it is not execution evidence. OBSERVED promotion now additionally
 requires non-empty, format-valid evidence entries (FORMAT_ONLY; not authenticated) (execution conditions, core revision,
 input type, verification result, sha256 evidence hash). `verification.executed_callee` is
 part of the evidence and is not sufficient by itself.
@@ -94,14 +94,14 @@ class AdjudicateClaimTests(unittest.TestCase):
                 adjudicate_claim(bad, CALLER, field='arguments', context='slot 1 arguments')
 
     def test_observed_requires_emulator_source(self):
-        # HLE/caller text alone can never be OBSERVED: it is not real-core measurement evidence.
+        # HLE/caller text alone can never be OBSERVED: it is not an emulator-source reference.
         bad = dict(OBSERVED, sources=['huc:include/hucc/pcengine.inc'])
-        with self.assertRaisesRegex(ValueError, 'EMULATOR_SOURCE measurement'):
+        with self.assertRaisesRegex(ValueError, 'EMULATOR_SOURCE source reference'):
             adjudicate_claim(bad, CALLER, field='stack', context='slot 1 stack',
                              executed_callee=True)
 
     def test_observed_requires_non_empty_evidence(self):
-        # Issue #208 negative case: an OBSERVED claim without measurement evidence is rejected
+        # Issue #208 negative case: an OBSERVED claim without evidence entries is rejected
         # even with an EMULATOR_SOURCE and an executed callee.
         bad = dict(OBSERVED, evidence=[])
         with self.assertRaisesRegex(ValueError, 'non-empty evidence entries'):
@@ -203,6 +203,10 @@ class AdjudicateClaimTests(unittest.TestCase):
         for bad_exec in (1, 0, 'true', None):
             with self.assertRaisesRegex(ValueError, 'executed_callee must be a bool', msg=repr(bad_exec)):
                 adjudicate_claim(good, REAL, field='stack', context='x', executed_callee=bad_exec)
+        for bad_regs in ({1: 2}, 0, 'A', ['Q'], ['A', 'A'], [1]):
+            with self.assertRaisesRegex(ValueError, 'registers must be a list', msg=repr(bad_regs)):
+                adjudicate_claim(dict(good, registers=bad_regs), REAL, field='stack', context='x',
+                                 executed_callee=True)
         with self.assertRaisesRegex(ValueError, 'claim keys must be strings'):
             adjudicate_claim({1: 'x'}, REAL, field='stack', context='x', executed_callee=True)
 
@@ -273,7 +277,7 @@ class LedgerAdjudicationTests(unittest.TestCase):
         self.assertEqual(slot1['contract']['returns']['status'], 'UNKNOWN')
         self.assertEqual(slot1['verification'],
                          {'status': 'NOT_RUN', 'executed_callee': False, 'evidence': []})
-        # Slot 1 claims declare evidence slots but no measurement has been performed.
+        # Slot 1 claims declare evidence slots but no execution has been performed.
         for field in FIELDS:
             self.assertEqual(slot1['contract'][field]['evidence'], [])
         # Nothing in the whole ledger is VERIFIED: no executed reference-ROM callee exists.
