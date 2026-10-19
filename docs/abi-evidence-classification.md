@@ -61,8 +61,9 @@
   - `tools/reference_bios_runner.py` のローカル観測 `OBSERVED LOCAL_ONLY`（`LOCAL_ONLY_NOT_VERIFIED`）: 台帳の外の記録。
 - 判断者: 実行記録（ROM ハッシュ、コア revision、入力、結果）。現状は全スロット `NOT_RUN`。
   slot `$1E` のローカル観測は `LOCAL_ONLY_NOT_VERIFIED` で、台帳には昇格していない。
-- `MATERIALS_COMPLETE`（`tools/cdreset_slot01_reference_plan.py`）は名称を変えない。意味は「実行ゲートの材料がすべて
-  揃った（実行を試みてよいと判定される）」であり、実行済み・検証済み・互換の意味はない。判定時の実行状態は `NOT_RUN` のまま。
+- `MATERIALS_COMPLETE`（`tools/cdreset_slot01_reference_plan.py`、`tools/reference_jsr_gate.py`）は名称を変えない。
+  意味は「材料がすべて揃った（判定の反転）」だけであり、実行許可ではない（実行を試みてよいことを意味しない）。
+  実行済み・検証済み・互換の意味もない。判定時の実行状態は `NOT_RUN` のまま。実行許可は明示的な `ALLOWED` の一値のみで、現状どこからも生成しない。
 - 注意: 実測した事実と、その事実を公開してよいかは別の問題。callee の内部実装の詳細は公開しない（`docs/provenance.md`）。
 
 ## 3. 軸の間に含意はない

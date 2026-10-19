@@ -126,8 +126,9 @@ def decide(materials):
 
     Returns ``(verdict, reasons)`` with one reason per unmet material, fail closed. The verdict
     is ``BLOCKED`` unless *every* material is satisfied; only then does it become
-    ``MATERIALS_COMPLETE`` (the gate decision would permit an execution attempt) — which the
-    real materials can never reach today, so this is a falsifiability property, not a release.
+    ``MATERIALS_COMPLETE``. That word means the materials are complete and nothing more: it is
+    not an execution permission. The real materials can never reach it today, so this is a
+    falsifiability property, not a release.
     The #191 ``MODEL_ELIGIBLE`` posture result is accepted only as material (b); it is not
     execution permission and is never echoed as a verdict here.
     """
@@ -177,10 +178,11 @@ def main(argv=None):
         parser.error("--check is required")
     execution, verdict, reasons = evaluate([build_plan(case) for case in CASES], CURRENT_MATERIALS)
     print(f"{execution}: 2 slot $01 media present/absent observation records; no run, no ROM read")
-    if verdict == "BLOCKED":
+    if verdict == "MATERIALS_COMPLETE":  # unreachable for the real materials
+        print("MATERIALS_COMPLETE: every synthetic gate material satisfied; "
+              "NOT an execution permission; no execution path exists here")
+    else:  # any other verdict is BLOCKED (fail closed)
         print("BLOCKED: " + "; ".join(reasons))
-    else:  # unreachable for the real materials; still fail closed, never print a permission
-        print("MATERIALS_COMPLETE: every gate material satisfied; no execution path exists here")
     return EXIT_BLOCKED
 
 

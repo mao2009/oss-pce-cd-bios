@@ -30,6 +30,13 @@ APPROVAL_KEYS = frozenset({"reviewer", "pr", "abi_status", "hazard_controls", "c
 VERIFICATION_NOT_RUN = {"status": "NOT_RUN", "executed_callee": False, "evidence": []}
 
 
+def is_execution_permitted(execution):
+    """Fail-closed permission test: only the exact string "ALLOWED" permits. Every other value
+    (BLOCKED, MATERIALS_COMPLETE, None, "", "allowed", " ALLOWED ") does not. resolve() never
+    returns "ALLOWED", so this is unreachable today by design (no independent real-core gate)."""
+    return type(execution) is str and execution == "ALLOWED"
+
+
 def _no_duplicate_keys(pairs):
     """json object_pairs_hook: reject duplicate keys instead of letting the last one win."""
     keys = [key for key, _ in pairs]
@@ -106,6 +113,9 @@ def resolve(slot, ledger, contracts, approval=None):
         "slot": f"${slot:02X}",
         "candidate_entry": api["candidate_entry"],
         "execution": "BLOCKED" if reasons else "MATERIALS_COMPLETE",
+        # MATERIALS_COMPLETE means the caller-supplied materials are well-formed. It is not a
+        # permission: no code path in this module sets execution_permitted to True.
+        "execution_permitted": False,
         "runner": "NONE",
         "jsr_count": 0,
         "release_eligible": False,
@@ -132,11 +142,13 @@ def main(argv=None):
         print(f"BLOCKED: gate ledger unusable: {error}")
         return EXIT_BLOCKED
     records = [resolve(slot, ledger, contracts) for slot in range(len(contracts["apis"]))]
-    blocked = sum(record["execution"] == "BLOCKED" for record in records)
-    print(f"BLOCKED: reference JSR execution gate closed for {blocked}/{len(records)} slots; jsr_count=0")
-    print(json.dumps({"slot_01": records[1], "blocked": blocked, "total": len(records)},
+    # Count closed slots by the explicit permission test, not by "== BLOCKED": any value other than
+    # the exact "ALLOWED" is closed, so an unexpected value can never produce exit 0.
+    closed = sum(not is_execution_permitted(record["execution"]) for record in records)
+    print(f"BLOCKED: reference JSR execution gate closed for {closed}/{len(records)} slots; jsr_count=0")
+    print(json.dumps({"slot_01": records[1], "blocked": closed, "total": len(records)},
                      ensure_ascii=False, indent=2))
-    return EXIT_BLOCKED if blocked else 0
+    return EXIT_BLOCKED if closed else 0
 
 
 if __name__ == "__main__":

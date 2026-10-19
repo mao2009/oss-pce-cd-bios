@@ -60,6 +60,26 @@ class ReferenceJsrGateTest(unittest.TestCase):
         self.assertEqual(record["runner"], "NONE")
         self.assertNotIn("ALLOWED", json.dumps(record))
 
+    def test_permission_accepts_only_the_exact_allowed_value(self):
+        # Fail-closed: every non-exact value is refused, including case/whitespace variants.
+        for value in ("BLOCKED", "MATERIALS_COMPLETE", "", " ALLOWED", "ALLOWED ", "\tALLOWED",
+                      "allowed", "Allowed", "ALLOW", "PASS", "VERIFIED", "MODEL_ELIGIBLE", None, True, 1):
+            with self.subTest(value=value):
+                self.assertFalse(G.is_execution_permitted(value))
+        self.assertTrue(G.is_execution_permitted("ALLOWED"))
+
+    def test_self_declared_full_approval_is_materials_complete_never_permitted(self):
+        # A reviewer-only or fully self-declared approval cannot reach permission on any slot.
+        for approval in ({"reviewer": "x", "pr": 228}, {**APPROVAL, "reviewer": "self"}):
+            with self.subTest(approval=approval):
+                record = G.resolve(1, complete_ledger(), CONTRACTS, approval)
+                self.assertFalse(G.is_execution_permitted(record["execution"]))
+                self.assertIs(record["execution_permitted"], False)
+        record = G.resolve(1, complete_ledger(), CONTRACTS, APPROVAL)
+        self.assertEqual(record["execution"], "MATERIALS_COMPLETE")
+        self.assertIs(record["execution_permitted"], False)
+        self.assertFalse(G.is_execution_permitted(record["execution"]))
+
     def test_materials_complete_meaning_is_documented(self):
         # MATERIALS_COMPLETE is not renamed; its meaning per gate lives in docs/cd-reset-contract.md.
         doc = (ROOT / "docs" / "cd-reset-contract.md").read_text(encoding="utf-8")

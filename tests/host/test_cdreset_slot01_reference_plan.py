@@ -145,6 +145,18 @@ class Slot01ReferencePlanTests(unittest.TestCase):
                                      capture_output=True, text=True, check=False)
         self.assertNotEqual(no_argument.returncode, 0)
 
+    def test_materials_complete_output_is_explicitly_not_a_permission(self):
+        # If the synthetic materials are complete, the wording must say it is not permission.
+        import contextlib
+        import io
+        from unittest import mock
+        with mock.patch.object(M, "CURRENT_MATERIALS", complete_materials()), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            code = M.main(["--check"])
+        self.assertEqual(code, M.EXIT_BLOCKED)
+        self.assertIn("NOT an execution permission", out.getvalue())
+        self.assertNotIn("BLOCKED:", out.getvalue())
+
     def test_tool_has_no_execution_capability(self):
         source = (ROOT / "tools" / "cdreset_slot01_reference_plan.py").read_text(encoding="utf-8")
         for banned in ("import subprocess", "os.system", "popen(", ".read_bytes", "ALLOWED",
