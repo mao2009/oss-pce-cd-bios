@@ -10,6 +10,7 @@ stay with docs/provenance.md and Issue #105.
 """
 from pathlib import Path
 import os
+import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,15 +22,19 @@ OBJECT_SUFFIXES = {".o", ".obj", ".a", ".lib", ".so", ".dll", ".dylib", ".exe", 
 SIGNATURES = (b"\x7fELF", b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf", b"\xce\xfa\xed\xfe",
               b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"!<arch>\n")
 BLOCK_SCALARS = ("|", "|-", "|+")   # line-based; folded '>' forms and anchors/aliases are refused as unparseable
+# Step key: optional quotes, optional spacing before the colon, any letter case. Only the upload-artifact action matches.
+USES_RE = re.compile(r"""["']?uses["']?\s*:\s*["']?actions/upload-artifact@""", re.IGNORECASE)
+UPLOAD_RE = re.compile("upload-artifact", re.IGNORECASE)
+# pathlib glob has no brace, extglob or alternation syntax: such a pattern would match nothing and hide its files.
+UNSUPPORTED_PATTERN_CHARS = "{}()|"
 
 
 def _indent(line):
     return len(line) - len(line.lstrip())
 
 
-def _step_patterns(lines, index):
-    """Return every path pattern of the upload-artifact step whose `uses:` line is lines[index]."""
-    column = lines[index].index("uses:")
+def _step_patterns(lines, index, column):
+    """Return every path pattern of the upload-artifact step whose `uses` key starts at lines[index][column]."""
     start = index
     while not (lines[start].lstrip().startswith("- ") and _indent(lines[start]) < column):
         start -= 1
@@ -86,8 +91,12 @@ def upload_patterns(text):
     lines = text.splitlines()
     patterns = []
     for index, line in enumerate(lines):
-        if "uses:" in line and "actions/upload-artifact@" in line:
-            patterns.extend(_step_patterns(lines, index))
+        match = USES_RE.search(line)
+        if match:
+            patterns.extend(_step_patterns(lines, index, match.start()))
+        elif UPLOAD_RE.search(line):
+            # Fail closed: a mention that is not a parsed upload step may still be an upload of unknown shape.
+            raise ValueError(f"unsupported upload-artifact reference (not a parsed step): {line.strip()!r}")
     return patterns
 
 
@@ -101,12 +110,16 @@ def entry_problem(path):
         return f"object or executable suffix {path.suffix}"
     with path.open("rb") as handle:
         head = handle.read(4096)
-    if head.startswith(SIGNATURES):
-        return "ELF/Mach-O/ar object or executable signature"
-    if head.startswith(b"MZ") and len(head) >= 0x40:
-        offset = int.from_bytes(head[0x3C:0x40], "little")
-        if head[offset:offset + 4] == b"PE\0\0":
-            return "PE executable signature"
+        if head.startswith(SIGNATURES):
+            return "ELF/Mach-O/ar object or executable signature"
+        # A file under 0x40 bytes cannot carry the e_lfanew field, so it is not treated as a PE candidate.
+        if head.startswith(b"MZ") and len(head) >= 0x40:
+            handle.seek(int.from_bytes(head[0x3C:0x40], "little"))
+            window = handle.read(4)
+            if len(window) < 4:
+                return "MZ header whose PE header lies beyond end of file"
+            if window == b"PE\0\0":
+                return "PE executable signature"
     return None
 
 
@@ -139,6 +152,9 @@ def check_upload_artifacts(root=ROOT):
                 continue
             if not pattern or "${{" in pattern or pattern.startswith("/") or ".." in Path(pattern).parts:
                 problems.append(f"{workflow.name}: unresolvable or unsafe pattern {pattern!r}")
+                continue
+            if any(char in pattern for char in UNSUPPORTED_PATTERN_CHARS):
+                problems.append(f"{workflow.name}: unsupported pattern {pattern!r} (brace, extglob or alternation)")
                 continue
             for path in Path(root).glob(pattern):
                 matched += 1
