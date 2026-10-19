@@ -1,0 +1,38 @@
+name: HuC6280 core harness (real Geargrafx, diagnostic not BIOS)
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  core-harness:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read        # runs repository code only: no secrets, no id-token, no attestations
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare existing pinned source toolchain and Geargrafx
+        run: make setup
+      - name: Build DEV ROM only (no retail or reference BIOS)
+        run: make dev-rom
+      - name: Real-core harness, built-in self-tests and plug-in case
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/debug/core-harness
+          python3 tests/integration/geargrafx_core_harness.py --mode debug \
+            --cases tests/fixtures/core-harness-plugin.json 2>&1 | tee build/debug/core-harness/run.log
+      - name: Save harness log and evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: core-harness-${{ github.sha }}
+          path: |
+            build/debug/core-harness/run.log
+            build/debug/core-harness/core-harness-evidence.json
+          if-no-files-found: error
+          retention-days: 14
