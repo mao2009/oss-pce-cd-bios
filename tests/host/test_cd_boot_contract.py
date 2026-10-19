@@ -35,6 +35,8 @@ REQUIRED_STATUS = {
     'callable_reference': 'UNKNOWN',
 }
 FORBIDDEN_WORDS = ('VERIFIED', 'PASS', 'DEV_CALLABLE')
+# A SOURCE_FACT needs at least one source of these tiers; secondary-only citations do not qualify.
+PRIMARY_TIERS = {'primary-sdk', 'project'}
 EXCLUDED_PATH_FRAGMENTS = ('include/huc/cdrom.asm', 'rom/', 'bios.c')
 
 
@@ -71,8 +73,12 @@ def check_ledger(ledger):
         for src in field.get('sources', []):
             if src not in ledger['sources']:
                 errors.append(f'{fid}: dangling source {src}')
-        if status == 'SOURCE_FACT' and not field.get('sources'):
-            errors.append(f'{fid}: SOURCE_FACT without a source')
+        if status == 'SOURCE_FACT':
+            if not field.get('sources'):
+                errors.append(f'{fid}: SOURCE_FACT without a source')
+            elif not any(ledger['sources'].get(src, {}).get('tier') in PRIMARY_TIERS
+                         for src in field['sources']):
+                errors.append(f'{fid}: SOURCE_FACT needs a primary-sdk or project source')
         if status == 'UNKNOWN':
             if field.get('value') is not None:
                 errors.append(f'{fid}: UNKNOWN must have value null')
@@ -115,6 +121,13 @@ class CdBootContractLedgerTests(unittest.TestCase):
                 if field['id'] == fid:
                     field['status'] = 'SOURCE_FACT'
             self.assertTrue(any(fid in e for e in check_ledger(bad)), fid)
+
+    def test_secondary_only_source_fact_is_rejected(self):
+        bad = copy.deepcopy(self.ledger)
+        bad['fields'].append({'id': 'regression_secondary_only', 'status': 'SOURCE_FACT',
+                              'value': 'x', 'sources': ['ZEOGRAD_BIOS_NOTES'], 'note': ''})
+        errors = check_ledger(bad)
+        self.assertTrue(any('regression_secondary_only' in e and 'primary-sdk' in e for e in errors), errors)
 
     def test_promoting_a_hypothesis_is_rejected(self):
         bad = copy.deepcopy(self.ledger)
