@@ -138,10 +138,10 @@ def main(argv=None):
         parser.error("--check is required")
     try:
         ledger, contracts = load()
+        records = [resolve(slot, ledger, contracts) for slot in range(len(contracts["apis"]))]
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
         print(f"BLOCKED: gate ledger unusable: {error}")
         return EXIT_BLOCKED
-    records = [resolve(slot, ledger, contracts) for slot in range(len(contracts["apis"]))]
     # Count closed slots by the explicit permission test, not by "== BLOCKED": any value other than
     # the exact "ALLOWED" is closed, so an unexpected value can never produce exit 0.
     closed = sum(not is_execution_permitted(record["execution"]) for record in records)
