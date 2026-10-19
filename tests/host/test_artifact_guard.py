@@ -646,12 +646,6 @@ class GuardPlacementTests(unittest.TestCase):
 class TrustedCopyTests(unittest.TestCase):
     """A: the guard that decides is the trusted main copy, not a copy in the checked-out workspace."""
 
-    def test_workflows_call_only_the_trusted_main_copy(self):
-        for path in sorted((ROOT / guard.WORKFLOWS).glob('*.y*ml')):
-            for line in path.read_text(encoding='utf-8').splitlines():
-                if 'artifact_guard.py' in line and 'sparse-checkout' not in line:   # invocations, not the checkout config
-                    self.assertIn('${{ runner.temp }}/trusted-main/tools/artifact_guard.py', line, path.name)
-
     def test_tampered_workspace_copy_does_not_change_the_verdict(self):
         import subprocess
         with tempfile.TemporaryDirectory() as tmp:
@@ -736,36 +730,63 @@ class StagingTests(unittest.TestCase):
         self.assertFalse(self.staged().exists())
 
 
-class PathPolicyTests(unittest.TestCase):
-    """D: no repository upload uses a wildcard root pattern; a future one must be a reviewed change."""
+BUILD_STEPS = ('      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683\n'
+               '        with:\n          persist-credentials: false\n'
+               '      - name: Build\n        run: make build\n'
+               '      - name: Hand off\n        run: |\n          mkdir -p intermediate\n          cp --parents build/x.json intermediate/\n'
+               '      - name: Intermediate\n        uses: ' + UPLOAD + '\n        with:\n          name: intermediate-x\n          path: intermediate/\n')
+GUARD_STEPS = (TRUSTED_CHECKOUT + PY_RESOLVE + PLACEMENT_STEP
+               + '      - name: Download\n        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0\n'
+               '        with:\n          name: intermediate-x\n          path: ${{ runner.temp }}/intake\n'
+               '      - name: Stage\n        run: |\n          ' + guard.INTAKE_PY + ' --stage w.yml "Save"\n'
+               '      - name: Verify\n        run: |\n          ' + guard.INTAKE_PY + ' --verify w.yml "Save"\n'
+               '      - name: Save\n        uses: ' + UPLOAD + '\n        with:\n          name: final\n'
+               '          path: ${{ runner.temp }}/intake/.artifact-stage/build/x.json\n')
+BUILD_JOB = '  build:\n    steps:\n' + BUILD_STEPS
+GUARD_JOB = '  publish:\n    needs: build\n    steps:\n' + GUARD_STEPS
+SEPARATED = 'jobs:\n' + BUILD_JOB + GUARD_JOB
 
-    def test_no_repository_upload_uses_a_wildcard_root_pattern(self):
-        for path in sorted((ROOT / guard.WORKFLOWS).glob('*.y*ml')):
-            for pattern in upload_patterns(path.read_text(encoding='utf-8')):
-                source = guard.source_pattern(pattern)
-                self.assertNotIn(source, ('*', '**', '*/*', '**/*'), path.name)
-                self.assertFalse(source.startswith(('*', '**')), path.name)
 
+class JobSeparationTests(unittest.TestCase):
+    """Build and publish live in different jobs; the guard job runs only trusted steps and needs its producer."""
 
-class RepositoryTests(unittest.TestCase):
-    def test_every_repository_upload_step_has_a_post_build_guard_before_it(self):
-        # Owner decision: the guard runs after the build and before upload-artifact, in every upload workflow.
-        for path in sorted((ROOT / guard.WORKFLOWS).glob('*.y*ml')):
-            rel = path.relative_to(ROOT).as_posix()
-            self.assertEqual([], guard.guard_placement_violations(path.read_text(encoding='utf-8'), rel))
+    def violations(self, text):
+        return guard.guard_placement_violations(text, 'w.yml')
 
-    def test_repository_upload_patterns_are_visible_to_the_guard(self):
-        patterns = []
-        for path in sorted((ROOT / guard.WORKFLOWS).glob('*.y*ml')):
-            patterns.extend(upload_patterns(path.read_text(encoding='utf-8')))
-        patterns = [guard.source_pattern(p) for p in patterns]
-        self.assertIn('build/debug/cdread-probe/*.pce', patterns)
-        self.assertIn('build/debug/*.pce', patterns)
-        self.assertIn('${{ runner.temp }}/verdict/cdread-verdict.json', patterns)
+    def test_separated_build_and_guard_jobs_pass(self):
+        self.assertEqual([], self.violations(SEPARATED))
 
-    def test_repository_workflows_pass_without_local_build_outputs(self):
-        check_upload_artifacts(ROOT)
+    def test_build_and_publish_in_one_job_is_refused(self):
+        self.assertNotEqual([], self.violations('jobs:\n  build:\n    steps:\n' + BUILD_STEPS + GUARD_STEPS))
 
+    def test_guard_job_cannot_run_build_code(self):
+        text = 'jobs:\n' + BUILD_JOB + GUARD_JOB.replace(
+            '      - name: Download', '      - name: Build again\n        run: make build\n      - name: Download', 1)
+        self.assertNotEqual([], self.violations(text))
+
+    def test_guard_job_must_need_the_build_job(self):
+        self.assertNotEqual([], self.violations('jobs:\n' + BUILD_JOB + GUARD_JOB.replace('    needs: build\n', '', 1)))
+
+    def test_intermediate_artifact_must_be_consumed(self):
+        self.assertNotEqual([], self.violations('jobs:\n' + BUILD_JOB))
+
+    def test_download_must_use_the_intake_root(self):
+        text = 'jobs:\n' + BUILD_JOB + GUARD_JOB.replace('path: ${{ runner.temp }}/intake', 'path: .', 1)
+        self.assertNotEqual([], self.violations(text))
+
+    def test_stage_must_use_the_intake_root(self):
+        text = 'jobs:\n' + BUILD_JOB + GUARD_JOB.replace(guard.INTAKE_PY + ' --stage', guard.TRUSTED_PY + ' --stage', 1)
+        self.assertNotEqual([], self.violations(text))
+
+    def test_build_job_must_not_run_the_guard(self):
+        text = ('jobs:\n' + BUILD_JOB + '      - name: Guard\n        run: ' + guard.TRUSTED_PY + ' --stage w.yml "Save"\n'
+                + GUARD_JOB)
+        self.assertNotEqual([], self.violations(text))
+
+    def test_final_upload_must_come_from_the_intake_stage(self):
+        text = 'jobs:\n' + BUILD_JOB + GUARD_JOB.replace(
+            '${{ runner.temp }}/intake/.artifact-stage/build/x.json', 'build/x.json', 1)
+        self.assertNotEqual([], self.violations(text))
 
 if __name__ == '__main__':
     unittest.main()

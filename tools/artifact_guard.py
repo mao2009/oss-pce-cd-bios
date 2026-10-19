@@ -163,7 +163,9 @@ def _unquote(value):
 
 
 def source_pattern(pattern):
-    """The workspace pattern that a staged upload path mirrors. An unstaged pattern is returned unchanged."""
+    """The workspace (or intake) pattern that a staged upload path mirrors. An unstaged pattern is returned unchanged."""
+    if pattern.startswith(INTAKE_STAGE):
+        return pattern[len(INTAKE_STAGE):]
     prefix = STAGE_DIR + "/"
     if not pattern.startswith(prefix):
         return pattern
@@ -328,6 +330,11 @@ CHECK_TEXT = TRUSTED_PY + " --check-placement"
 PY_RESOLVE_RUN = 'echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"'
 CHECKOUT_RE = re.compile(r"uses:\s*actions/checkout@[0-9a-f]{40}$")
 TRUSTED_CHECKOUT_LINES = ("ref: main", "path: ${{ runner.temp }}/trusted-main")
+# Guard jobs publish from an intake directory that holds the downloaded intermediate artifact.
+INTAKE_ROOT = "${{ runner.temp }}/intake"
+INTAKE_STAGE = INTAKE_ROOT + "/" + STAGE_DIR + "/"
+INTAKE_PY = ('"${{ steps.pyresolve.outputs.python }}" ' + TRUSTED_GUARD + ' --root "' + INTAKE_ROOT
+             + '" --workflow-root "$GITHUB_WORKSPACE"')
 
 
 def _stage_text(workflow, name):
@@ -454,15 +461,92 @@ def _is_py_resolve(lines, step, dash):
     return "id: pyresolve" in body and _run_lines(lines, step[0], step[1], dash) == [PY_RESOLVE_RUN]
 
 
-def guard_placement_violations(text, workflow):
-    """Every upload step needs, in the same job and as the steps immediately before it: the stage step, then the
-    verify step. The job starts with the trusted checkout, then the python3 resolve, then the placement check.
+def _job_needs(lines, job):
+    """The job ids listed in `needs:` of one job (inline, flow list or block list). [] when there is none."""
+    start = next((i for i, l in enumerate(lines) if _live(l) and _job_name(l) == job), None)
+    if start is None:
+        return []
+    needs = []
+    i = start + 1
+    while i < len(lines) and not (_live(lines[i]) and (_job_name(lines[i]) is not None or _indent(lines[i]) == 0)):
+        l = lines[i]
+        if _live(l) and _indent(l) == 4 and l.strip().startswith("needs:"):
+            value = l.strip()[len("needs:"):].strip()
+            if value.startswith("["):
+                needs += [v.strip().strip("\"'") for v in value.strip("[]").split(",") if v.strip()]
+            elif value:
+                needs.append(value.strip("\"'"))
+            else:
+                j = i + 1
+                while j < len(lines) and (not _live(lines[j]) or _indent(lines[j]) >= 6):
+                    if _live(lines[j]) and lines[j].strip().startswith("- "):
+                        needs.append(lines[j].strip()[2:].strip().strip("\"'"))
+                    j += 1
+        i += 1
+    return needs
 
-    Upload step: keys name/uses/with only, one dash-level name (non-empty, no quote, $, backtick or backslash, no
-    continuation line), and every path under .artifact-stage/. Stage, verify, and the preamble steps: keys limited, no
-    if: or continue-on-error:. Names must be unique in the workflow. Job ids may contain dots or quotes and must be
-    unique. A workflow that sets env/defaults/container/services at the top level or in a job is refused. Anything
-    unparseable raises ValueError (fail closed).
+
+def _step_body(lines, step):
+    """The live lines of one step, stripped (the dash line first)."""
+    return [l.strip() for l in lines[step[0]:step[1]] if _live(l)]
+
+
+def _downloads(lines, steps, job):
+    """(step, artifact name or None, path is the intake root) for each download-artifact step of one job."""
+    found = []
+    for s in steps:
+        if s[2] != job:
+            continue
+        body = _step_body(lines, s)
+        if not any(re.search(r"uses:\s*actions/download-artifact@", b) for b in body):
+            continue
+        names = [b.split(":", 1)[1].strip() for b in body[1:] if b.startswith("name:")]
+        paths = [b for b in body if b.startswith("path:")]
+        found.append((s, names[0] if len(names) == 1 else None, paths == [f"path: {INTAKE_ROOT}"]))
+    return found
+
+
+def _nested_artifact_name(lines, step):
+    """The artifact name of an upload or download step: its nested `name:` (under with:), or None."""
+    body = _step_body(lines, step)
+    names = [b.split(":", 1)[1].strip() for b in body[1:] if b.startswith("name:")]
+    return names[0] if len(names) == 1 else None
+
+
+def _upload_kind(name, patterns, artifact):
+    """intermediate: a build job's hand-off to the guard job (artifact name intermediate-*). final-intake: publication
+    from the guard job's intake (downloaded intermediate, staged). final-workspace: publication of a staged checkout
+    tree (pages). None: refused."""
+    if artifact and artifact.startswith("intermediate-") and all(p.startswith("intermediate/") for p in patterns):
+        return "intermediate"
+    if all(p.startswith(INTAKE_STAGE) for p in patterns):
+        return "final-intake"
+    if all(p.startswith(STAGE_DIR + "/") for p in patterns):
+        return "final-workspace"
+    return None
+
+
+def _guard_text(kind, workflow, name, what):
+    """The exact run text of the stage or verify step for one upload, by the root it works on."""
+    py = INTAKE_PY if kind == "final-intake" else TRUSTED_PY
+    return f'{py} --{what} {workflow} "{name}"'
+
+
+def _allowed_guard_run(run, finals, workflow):
+    """Run lines a guard job may contain: the python resolve, the placement check, and the stage/verify of its uploads."""
+    if run in ([PY_RESOLVE_RUN], [CHECK_TEXT]):
+        return True
+    return any(run in ([_guard_text(u["kind"], workflow, u["name"], "stage")],
+                       [_guard_text(u["kind"], workflow, u["name"], "verify")]) for u in finals)
+
+
+def guard_placement_violations(text, workflow):
+    """Two kinds of job. A build job uploads only intermediate/ artifacts and runs no guard. A guard job publishes
+    only staged paths: it needs the build job that produced its intermediate artifact, and its steps are the trusted
+    checkout, the python resolve, checkouts, downloads, the placement check, stage and verify, the uploads and the
+    Pages steps. Nothing else runs there, so no build code runs in it. Each upload is preceded by its stage and verify
+    steps, and the intake download must be the intermediate artifact of a needed job. Anything unparseable raises
+    ValueError (fail closed).
     """
     if not re.fullmatch(r"[A-Za-z0-9._/-]+", workflow):
         raise ValueError(f"unsafe workflow path {workflow!r} (only letters, digits, . _ / - are allowed in the guard call)")
@@ -480,12 +564,13 @@ def guard_placement_violations(text, workflow):
         if not _live(l):
             continue
         m = scope_re.match(l.strip())
-        if m and _indent(l) in (0, 4):   # workflow-level (indent 0) or job-level (indent 4) only; step env is checked per step
+        if m and _indent(l) in (0, 4):
             where = "top-level" if _indent(l) == 0 else "job-level"
             problems.append(f"{workflow}: {where} {m.group(1)} is refused (can change the guard's PATH or RUNNER_TEMP)")
     names = [name for name, _ in upload_steps(text)]
     for name in sorted({n for n in names if names.count(n) > 1}):
         problems.append(f"{workflow}: upload step name {name!r} is used more than once (the binding check would see one)")
+    uploads = []
     for uses, line in enumerate(lines):
         match = USES_RE.search(line) if _live(line) else None
         if not match:
@@ -509,8 +594,11 @@ def guard_placement_violations(text, workflow):
             problems.append(f"{label}: upload step name must be non-empty and contain none of the characters {NAME_FORBIDDEN!r} "
                             "(the guard calls embed it in double quotes)")
             continue
-        if any(not p.startswith(STAGE_DIR + "/") for p in patterns):
-            problems.append(f"{label}: upload paths must be staged under {STAGE_DIR}/ (found {patterns})")
+        artifact = _nested_artifact_name(lines, up)
+        kind = _upload_kind(name, patterns, artifact)
+        if kind is None:
+            problems.append(f"{label}: upload paths must be intermediate/ (build job) or staged (guard job); found {patterns}")
+            continue
         up_keys = _key_names(_step_keys(lines, up[0], up[1], dash_indent))
         if len(set(up_keys)) != len(up_keys) or not set(up_keys) <= UPLOAD_STEP_KEYS:
             problems.append(f"{label}: upload step may only have name, uses and with, each once (found {up_keys})")
@@ -519,41 +607,95 @@ def guard_placement_violations(text, workflow):
         if has_jobs and up[2] is None:
             problems.append(f"{label}: upload step is outside any job")
             continue
-        job_steps = sorted((s for s in steps if s[2] == up[2]), key=lambda s: s[0])
-        if not job_steps or not _is_trusted_checkout(lines, job_steps[0], dash_indent):
-            problems.append(f"{label}: the first step of the job must be the trusted main checkout (ref: main into ${{{{ runner.temp }}}}/trusted-main)")
-        if len(job_steps) < 2 or not _is_py_resolve(lines, job_steps[1], dash_indent):
-            problems.append(f"{label}: the second step of the job must resolve python3 (id: pyresolve)")
-        for s in job_steps[:2]:
-            preamble_keys = _key_names(_step_keys(lines, s[0], s[1], dash_indent))
-            if not set(preamble_keys) <= PREAMBLE_STEP_KEYS or len(set(preamble_keys)) != len(preamble_keys):
-                problems.append(f"{label}: a trusted preamble step may only have {sorted(PREAMBLE_STEP_KEYS)}, each once (found {preamble_keys})")
-        placed = [s for s in job_steps if s[0] < up[0] and _run_lines(lines, s[0], s[1], dash_indent) == [CHECK_TEXT]]
-        if not placed:
-            problems.append(f"{label}: the job must run the trusted placement check before its upload step")
-        if index < 2 or steps[index - 1][2] != up[2] or steps[index - 2][2] != up[2]:
-            problems.append(f"{label}: the verify step is not the step immediately before the upload step")
+        uploads.append({"name": name, "artifact": artifact, "kind": kind, "label": label, "step": up, "steps": steps,
+                        "dash": dash_indent, "job": up[2], "patterns": patterns})
+    for job in sorted({u["job"] for u in uploads}, key=str):
+        job_uploads = [u for u in uploads if u["job"] == job]
+        finals = [u for u in job_uploads if u["kind"].startswith("final")]
+        inters = [u for u in job_uploads if u["kind"] == "intermediate"]
+        steps = job_uploads[0]["steps"]
+        dash = job_uploads[0]["dash"]
+        if finals and inters:
+            problems.append(f"{workflow}: job {job!r} both builds (intermediate upload) and publishes (final upload); split them")
             continue
-        verify_step, stage_step = steps[index - 1], steps[index - 2]
-        for step_range, expected, what, before in (
-                (verify_step, _verify_text(workflow, name), "verify", "upload step"),
-                (stage_step, _stage_text(workflow, name), "stage", "verify step")):
-            start, end, _ = step_range
-            keys = _step_keys(lines, start, end, dash_indent)
-            names_of_keys = _key_names(keys)
-            if not _guard_is_bare(_run_lines(lines, start, end, dash_indent), expected, keys):
-                problems.append(f"{label}: the {what} step is not the step immediately before the {before} "
-                                f"(or its run: is not the trusted {what} command for this step name)")
+        if inters:
+            if any(_live(l) and "artifact_guard.py" in l for s in steps if s[2] == job for l in lines[s[0]:s[1]]):
+                problems.append(f"{workflow}: build job {job!r} runs the guard; the guard belongs in the job that needs it")
+            for u in inters:
+                consumers = [g for g in set(job_names) if g != job and job in _job_needs(lines, g)
+                             and any(art == u["artifact"] for _, art, _ in _downloads(lines, steps, g))]
+                if not consumers:
+                    problems.append(f"{u['label']}: no job that needs {job!r} downloads this intermediate artifact")
+            continue
+        intake = any(u["kind"] == "final-intake" for u in finals)
+        needed = _job_needs(lines, job)
+        if intake and not needed:
+            problems.append(f"{workflow}: guard job {job!r} has no needs: (it must follow the build job that produced its intermediate artifact)")
+        job_steps = sorted((s for s in steps if s[2] == job), key=lambda s: s[0])
+        for s in job_steps:
+            body = _step_body(lines, s)
+            if any(re.search(r"uses:\s*actions/(checkout|download-artifact|configure-pages|deploy-pages|upload-artifact|upload-pages-artifact)@", b)
+                   for b in body):
                 continue
-            if len(set(names_of_keys)) != len(names_of_keys) or not set(names_of_keys) <= GUARD_STEP_KEYS:
-                problems.append(f"{label}: the {what} step may only have name, run and shell, each once (found {names_of_keys})")
-            if _continued_name(lines, start, end, dash_indent):
-                problems.append(f"{label}: the {what} step name continues on the next line")
-        for expected, what in ((_stage_text(workflow, name), "stage"), (_verify_text(workflow, name), "verify"),
-                               (CHECK_TEXT, "placement check")):
-            count = sum(_run_lines(lines, s[0], s[1], dash_indent) == [expected] for s in job_steps)
-            if count != 1:
-                problems.append(f"{label}: the job must contain exactly one trusted {what} command for this upload (found {count})")
+            run = _run_lines(lines, s[0], s[1], dash)
+            if not run or not _allowed_guard_run(run, finals, workflow):
+                problems.append(f"{workflow}: guard job {job!r} may only run trusted steps; found step {body[0]!r}")
+        if len(job_steps) < 2 or not _is_trusted_checkout(lines, job_steps[0], dash):
+            problems.append(f"{workflow}: guard job {job!r}: the first step must be the trusted main checkout (ref: main into ${{{{ runner.temp }}}}/trusted-main)")
+        if len(job_steps) < 2 or not _is_py_resolve(lines, job_steps[1], dash):
+            problems.append(f"{workflow}: guard job {job!r}: the second step must resolve python3 (id: pyresolve)")
+        for s in job_steps[:2]:
+            keys = _key_names(_step_keys(lines, s[0], s[1], dash))
+            if not set(keys) <= PREAMBLE_STEP_KEYS or len(set(keys)) != len(keys):
+                problems.append(f"{workflow}: guard job {job!r}: a trusted preamble step may only have {sorted(PREAMBLE_STEP_KEYS)}, each once (found {keys})")
+        for u in finals:
+            for expected, what in ((_guard_text(u["kind"], workflow, u["name"], "stage"), "stage"),
+                                   (_guard_text(u["kind"], workflow, u["name"], "verify"), "verify"),
+                                   (CHECK_TEXT, "placement check")):
+                count = sum(_run_lines(lines, s[0], s[1], dash) == [expected] for s in job_steps)
+                if count != 1:
+                    problems.append(f"{u['label']}: the guard job must contain exactly one trusted {what} run (found {count})")
+        first_final = min(u["step"][0] for u in finals)
+        if not any(s[0] < first_final and _run_lines(lines, s[0], s[1], dash) == [CHECK_TEXT] for s in job_steps):
+            problems.append(f"{workflow}: guard job {job!r}: the trusted placement check must run before the first upload")
+        for u in finals:
+            pos = next((p for p, s in enumerate(job_steps) if s == u["step"]), None)
+            if pos is None or pos < 2:
+                problems.append(f"{u['label']}: the stage and verify steps must be the two steps immediately before the upload")
+                continue
+            for step_range, what, before in ((job_steps[pos - 1], "verify", "upload step"),
+                                              (job_steps[pos - 2], "stage", "verify step")):
+                expected = _guard_text(u["kind"], workflow, u["name"], what)
+                run = _run_lines(lines, step_range[0], step_range[1], dash)
+                keys = _step_keys(lines, step_range[0], step_range[1], dash)
+                if not _guard_is_bare(run, expected, keys):
+                    problems.append(f"{u['label']}: the {what} step is not the step immediately before the {before} "
+                                    f"(or its run: is not the trusted {what} command)")
+                names_of_keys = _key_names(keys)
+                if len(set(names_of_keys)) != len(names_of_keys) or not set(names_of_keys) <= GUARD_STEP_KEYS:
+                    problems.append(f"{u['label']}: the {what} step may only have name, run and shell, each once (found {names_of_keys})")
+                if _continued_name(lines, step_range[0], step_range[1], dash):
+                    problems.append(f"{u['label']}: the {what} step name continues on the next line")
+        if intake:
+            downloads = _downloads(lines, steps, job)
+            if not downloads:
+                problems.append(f"{workflow}: guard job {job!r} downloads no intermediate artifact")
+            stage_starts = [s[0] for s in job_steps
+                            if any(_run_lines(lines, s[0], s[1], dash) == [_guard_text(u["kind"], workflow, u["name"], "stage")]
+                                   for u in finals)]
+            first_stage = min(stage_starts) if stage_starts else None
+            for s, art, path_ok in downloads:
+                if art is None or not path_ok:
+                    problems.append(f"{workflow}: guard job {job!r}: a download must name one artifact and use path: {INTAKE_ROOT}")
+                    continue
+                if first_stage is not None and s[0] > first_stage:
+                    problems.append(f"{workflow}: guard job {job!r}: the download of {art!r} must come before stage")
+                if not any(u["kind"] == "intermediate" and u["artifact"] == art and u["job"] in needed for u in uploads):
+                    problems.append(f"{workflow}: guard job {job!r} downloads {art!r}, which no needed job uploads")
+            downloaded = {art for _, art, _ in downloads}
+            for u in uploads:
+                if u["kind"] == "intermediate" and u["job"] in needed and u["artifact"] not in downloaded:
+                    problems.append(f"{workflow}: guard job {job!r} does not download the intermediate artifact {u['artifact']!r}")
     return problems
 
 
@@ -577,36 +719,38 @@ def _sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _named_step_patterns(base, workflow, step):
-    found = [patterns for name, patterns in upload_steps((base / workflow).read_text(encoding="utf-8")) if name == step]
+def _named_step_patterns(workflows_base, workflow, step):
+    found = [patterns for name, patterns in upload_steps((workflows_base / workflow).read_text(encoding="utf-8"))
+             if name == step]
     if len(found) != 1:
         raise ValueError(f"{workflow}: expected exactly one upload-artifact step named {step!r}, found {len(found)}")
-    if any(not p.startswith(STAGE_DIR + "/") for p in found[0]):
+    if any(not (p.startswith(STAGE_DIR + "/") or p.startswith(INTAKE_STAGE)) for p in found[0]):
         raise ValueError(f"{workflow} [{step}]: upload paths must be staged under {STAGE_DIR}/")
     return found[0]
 
 
-def _selected_files(base, patterns):
-    """The set of workspace-relative files that the staged patterns select (for the stage and verify comparison)."""
+def _selected_locations(base, patterns):
+    """The staged locations that the upload patterns select under base: what stage copies and verify compares."""
     selected = set()
     for pattern in patterns:
-        paths, error = _paths_for(base, pattern)
+        paths, error = _paths_for(base, source_pattern(pattern))
         if error:
             raise ValueError(error)
         for path in paths:
             for entry in _entry_files(path):
-                selected.add(entry.relative_to(base).as_posix())
+                selected.add(_staged_location(base, entry))
     return selected
 
 
-def stage_artifacts(workflow, step, root=ROOT):
+def stage_artifacts(workflow, step, root=ROOT, workflows_root=None):
     """Check the source patterns of one upload step (as post-build), then copy the matched files into a fresh staging
-    directory and record their sha256 in a manifest. Nothing is staged when any check fails."""
+    directory under root and record their sha256 in a manifest. Nothing is staged when any check fails.
+    root is the checkout, or the intake of a guard job; workflows_root is where the workflow file is read."""
     base = Path(root).resolve()
-    staged = _named_step_patterns(base, workflow, step)
+    patterns = _named_step_patterns(Path(workflows_root or root).resolve(), workflow, step)
     problems = []
     copies = []
-    for pattern in staged:
+    for pattern in patterns:
         source = source_pattern(pattern)
         paths, error = _paths_for(base, source)
         if error:
@@ -634,17 +778,17 @@ def stage_artifacts(workflow, step, root=ROOT):
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source_file, target)
         files[location] = _sha256(target)
-    if _selected_files(base, staged) != set(files):
-        raise ValueError(f"{workflow} [{step}]: staged files do not match what the staged patterns select")
+    if _selected_locations(base, patterns) != set(files):
+        raise ValueError(f"{workflow} [{step}]: staged files do not match what the upload patterns select")
     manifest_path.write_text(json.dumps({"workflow": workflow, "step": step, "files": files}, sort_keys=True),
                              encoding="utf-8")
     print(f"PASS artifact guard stage: {workflow} [{step}] {len(files)} files staged with sha256 manifest")
 
 
-def verify_artifacts(workflow, step, root=ROOT):
+def verify_artifacts(workflow, step, root=ROOT, workflows_root=None):
     """Recompute the hashes of the staged files and refuse any missing, extra, changed or symlinked entry."""
     base = Path(root).resolve()
-    staged = _named_step_patterns(base, workflow, step)
+    patterns = _named_step_patterns(Path(workflows_root or root).resolve(), workflow, step)
     manifest_path = base / STAGE_MANIFEST
     if manifest_path.is_symlink() or not manifest_path.is_file():
         raise ValueError("no staging manifest: the stage step did not run for this upload")
@@ -670,8 +814,8 @@ def verify_artifacts(workflow, step, root=ROOT):
             problems.append(f"{location} is an extra file in the staging directory")
         elif actual[location] != recorded[location]:
             problems.append(f"{location} changed after staging (sha256 mismatch)")
-    if _selected_files(base, staged) != set(recorded):
-        problems.append("the staged patterns no longer select exactly the staged files")
+    if _selected_locations(base, patterns) != set(recorded):
+        problems.append("the upload patterns no longer select exactly the staged files")
     if problems:
         raise ValueError(f"artifact guard (verify) {workflow} [{step}]: " + "; ".join(problems))
     print(f"PASS artifact guard verify: {workflow} [{step}] {len(recorded)} files match the manifest")
@@ -696,23 +840,28 @@ def check_post_build(workflow, step, root=ROOT):
 
 
 def main(argv):
-    root = ROOT
-    if argv[:1] == ["--root"]:
+    root, workflows_root = ROOT, None
+    while argv[:1] in (["--root"], ["--workflow-root"]):
         if len(argv) < 2:
-            raise ValueError("usage: --root DIR")
-        root, argv = Path(argv[1]), argv[2:]
+            raise ValueError("usage: --root DIR | --workflow-root DIR")
+        if argv[0] == "--root":
+            root = Path(argv[1])
+        else:
+            workflows_root = Path(argv[1])
+        argv = argv[2:]
     if not argv:
         check_upload_artifacts(root)
     elif argv[0] == "--post-build" and len(argv) == 3:
         check_post_build(argv[1], argv[2], root)
     elif argv[0] == "--stage" and len(argv) == 3:
-        stage_artifacts(argv[1], argv[2], root)
+        stage_artifacts(argv[1], argv[2], root, workflows_root)
     elif argv[0] == "--verify" and len(argv) == 3:
-        verify_artifacts(argv[1], argv[2], root)
+        verify_artifacts(argv[1], argv[2], root, workflows_root)
     elif argv == ["--check-placement"]:
         check_guard_placement(root)
     else:
-        raise ValueError("usage: artifact_guard.py [--root DIR] [--post-build|--stage|--verify WORKFLOW STEP | --check-placement]")
+        raise ValueError("usage: artifact_guard.py [--root DIR] [--workflow-root DIR] "
+                         "[--post-build|--stage|--verify WORKFLOW STEP | --check-placement]")
 
 
 if __name__ == "__main__":
