@@ -95,7 +95,7 @@ E1 と E2 は、呼出先（BIOS）ではなく、同じ著者が書いた**再�
 | 1 | エントリ番地（名前 → `$E030`） | `$E030` | SOURCE_FACT（HuCC の宣言の記述。BIOS の実行確認ではない） | H1 | 実行可能な callee を得て `$E030` に入ること自体を確認する。DEV ROM の `$E030` は BIOS ではない（`cd-base-abi-ledger.md` §4a と同じ扱い）。 |
 | 2 | 本体番地（版別） | 版別の番地の候補 | HYPOTHESIS | P1 のみ | 単独出典。実行しない限り HYPOTHESIS 維持。 |
 | 3 | 入力 A | 呼出側は渡す（wrapper が保持）。BIOS が読むか UNKNOWN | UNKNOWN（呼出側の書込みは SOURCE_FACT） | H5 | 呼出先で A を変えた感度試験。 |
-| 4 | 入力 X | UNKNOWN | UNKNOWN | H5（wrapper は X に触れない） | 同上。 |
+| 4 | 入力 X | UNKNOWN | UNKNOWN（BIOS）、SOURCE_FACT（wrapper は X に触れない） | H5（wrapper は X に触れない） | 同上。 |
 | 5 | 入力 Y | Y は selector（下位バイト `$30`）。BIOS 内の使用は UNKNOWN | SOURCE_FACT（呼出側の selector）、UNKNOWN（BIOS 内） | H4、H5 | Y の変更でエントリが変わるかを確認。 |
 | 6 | 入力 P | UNKNOWN | UNKNOWN | — | 呼出側の P の扱いの記述なし。 |
 | 7 | 引数（C 宣言） | 引数なし（`void`） | SOURCE_FACT（HuCC の宣言の記述。BIOS の証拠ではない） | H2、H3 | BIOS が引数を読まないことは未確認。 |
@@ -149,7 +149,7 @@ E1 と E2 は、呼出先（BIOS）ではなく、同じ著者が書いた**再�
 
 - 本台帳は呼出先（callee）を実行していない。BLOCKED_ABI は解除しない。
 - `release_eligible=false` を維持する。`DEV_CALLABLE` にはしない。
-- VERIFIED、PASS、互換の主張はしない。出典は provenance 審査が全件 PENDING のため、callee 側は未検証である。
+- VERIFIED、PASS、互換の主張はしない。callee 側は未実測（NOT_RUN）のため未検証である。出典の provenance 審査は全件 PENDING で、これは別の問題である。
 - System Card の BIOS バイト、逆アセンブル、市販媒体のデータは、本台帳に含めない（`AGENTS.md` と `docs/provenance.md` の除外）。
 - 固定版のソースは、読取りと行番号の確認のみに使った。展開物を実行していない。
 - 共有ファイル（`spec/api_contracts.json`、`docs/api-inventory.md`、`docs/status.md`、`Makefile`）は変更していない。
