@@ -50,7 +50,7 @@ def _claim_rows(text):
     # by (and hidden behind) a later valid row.
     rows = {}
     for line in text.splitlines():
-        if not line.startswith('| C'):
+        if not re.match(r'\s*\|\s*[Cc]\d', line):
             continue
         cells = [c.strip() for c in line.strip().strip('|').split('|')]
         if not re.fullmatch(r'C\d+', cells[0]):
@@ -201,6 +201,11 @@ class ClaimRowNegativeTests(unittest.TestCase):
     def test_malformed_id_is_rejected(self):
         with self.assertRaises(ValueError):
             _claim_rows(self._doc('| Cx | a | b | UNKNOWN | c |\n'))
+
+    def test_loosely_formatted_claim_rows_are_not_skipped(self):
+        for row in ('|C5| a | b | UNKNOWN |\n', '  | C5 | a | b | UNKNOWN |\n', '| c5 | a | b | UNKNOWN | c |\n'):
+            with self.assertRaises(ValueError, msg=row):
+                _claim_rows(self._doc(row))
 
     def test_valid_rows_still_parse(self):
         rows = _claim_rows(self._doc(self.ROW.format(i='C1', st='UNKNOWN'), self.ROW.format(i='C2', st='HYPOTHESIS')))
