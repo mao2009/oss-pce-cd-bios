@@ -98,7 +98,7 @@ HuCC（`pce-devel/huc`）の固定版を使う。
 
 ## 5. 独立検証（再確認の手順）
 
-HuCC 固定版は、アーカイブを新しい空ディレクトリに展開して読む。展開物は実行しない。
+HuCC 固定版は、アーカイブを新しい空ディレクトリに展開して読む。展開物は実行しない。以下の `<…>` は絶対パスに置き換える（`cd` の後でも参照できるように）。
 
 ```sh
 curl -sL -o huc.tar.gz https://codeload.github.com/pce-devel/huc/tar.gz/54f5c73606c1e7142e8095c727cab2767e2b3cb3
