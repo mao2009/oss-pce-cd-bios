@@ -130,13 +130,13 @@ class AdjudicateClaimTests(unittest.TestCase):
     def test_observed_rejected_for_caller_source_only(self):
         # CALLER_SOURCE だけでは OBSERVED になれない（callee 実行を保証しない）。
         bad = dict(OBSERVED, sources=['huc:include/hucc/pcengine.inc'])
-        with self.assertRaisesRegex(ValueError, 'EMULATOR_SOURCE measurement'):
+        with self.assertRaisesRegex(ValueError, 'EMULATOR_SOURCE source reference'):
             adjudicate_claim(bad, CALLER, field='stack', context='slot 1 stack')
 
     def test_observed_rejected_for_hle_source_only(self):
         # HLE_SOURCE だけでは OBSERVED になれない（実機ファームウェアの証拠ではない）。
         bad = dict(OBSERVED, sources=['hugo:bios.c'])
-        with self.assertRaisesRegex(ValueError, 'EMULATOR_SOURCE measurement'):
+        with self.assertRaisesRegex(ValueError, 'EMULATOR_SOURCE source reference'):
             adjudicate_claim(bad, HLE, field='stack', context='slot 1 stack')
 
     def test_emulator_source_hypothesis_not_promotable_to_observed_without_executed_callee(self):
