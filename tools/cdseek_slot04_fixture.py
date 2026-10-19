@@ -26,7 +26,7 @@ EXIT_FAIL_CLOSED = 3  # repo BLOCKED convention (tools/cdreset_safety_preflight.
 CASE_SCHEMA = "oss-pce-cd-bios/cdseek-slot04-case/v1"
 CONFIG_SCHEMA = "oss-pce-cd-bios/cdseek-slot04-run-config/v1"
 SLOT, ENTRY_CANDIDATE, UNKNOWN = "$04", "$E00C", "UNKNOWN"
-ABI_STATUS = "BLOCKED_ABI"  # slot $04 callee ABI unresolved (Issue #214 ledger, PR #223); released only by measurement
+ABI_STATUS = "BLOCKED_ABI"  # slot $04 callee ABI unresolved (Issue #214 ledger, PR #223); not released by this module
 CATEGORIES = ("candidate_nominal", "no_media", "invalid_position", "boundary")
 CASE_FIELDS = frozenset({"schema", "case_id", "slot", "entry_candidate", "category", "media",
                          "position", "registers", "work_ram", "mpr", "stack", "irq", "disk_state",
@@ -144,7 +144,7 @@ def preflight(cases, config):
     rejects = _reject_reasons(cases, config)
     if rejects:
         return "REJECTED", rejects
-    reasons = ["abi_unreviewed: slot $04 / $E00C callee ABI unresolved (Issue #214 ledger keeps it UNKNOWN); BLOCKED_ABI"]
+    reasons = ["abi_unreviewed: slot $04 / $E00C callee ABI unresolved (Issue #214 ledger: callee items UNKNOWN/HYPOTHESIS/BLOCKED); BLOCKED_ABI"]
     if not config["safety_gate_approved"]:
         reasons.append("safety_gate_not_approved: slot $04 case execution BLOCKED")
     if config["approved_rom_sha256"] is None:
