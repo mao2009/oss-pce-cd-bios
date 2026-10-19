@@ -119,6 +119,12 @@ read back from disk goes through `verify_dev_rom` before any code assumes a trus
 `tests/integration/geargrafx_core_harness.py` の docstring を参照。リファレンス
 BIOS は実行せず、BIOS ABI 互換の証拠ではない。
 
+実コア実行はこの Makefile ターゲット 1 つに限り、Linux 固定（pinned Geargrafx の
+`.so`。他 OS では BLOCKED で終了し PASS にならない）。`make test` / `make check` /
+host unittest には含まれない（`tests/host/test_core_harness.py` は合成記録の判定器のみ）。
+ジャンプテーブル未接続の内部ルーチンは `target` に解決できないため、ハーネスへ載せるには
+別途リンク手段が要る（各ルーチンの Issue で扱う）。
+
 ## Coverage status
 
 | Area | Status |

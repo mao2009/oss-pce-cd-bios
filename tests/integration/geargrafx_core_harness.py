@@ -154,6 +154,8 @@ def main():
     parser.add_argument("--mode", choices=("debug", "release"), default="debug")
     parser.add_argument("--cases", type=Path, help="JSON list of plug-in routine cases")
     args = parser.parse_args()
+    if sys.platform != "linux":  # pinned Geargrafx core is a Linux .so; never skip silently
+        raise ValueError(f"real-core harness is Linux-pinned (platform {sys.platform}); BLOCKED, not PASS")
     from build_rom import verify_dev_rom
     from environment import DEPENDENCIES
     from geargrafx_api import compile_probe
