@@ -282,6 +282,23 @@ echo "wsl exit=$?"
 | B 媒体範囲外 LBA | `invalid_audio_start_lba_at_medium_end` | PASS | | `scsi_phase_after_d8` の生の値 |
 | C 予算超過 | `timeout_budget_exhausted` | PASS_EXPECTED_FAILURE | | `rejected_because` |
 
+### 追加3ケースのユーザー提示結果（対象 `8c064f1`、エージェント未再実行）
+
+以下は、オーナーが WSL で手順 C（追加シナリオ）を実行して提示した結果である。**エージェント自身の実測ではない。** 再実行はしていない。
+
+- 対象: `8c064f1`（実行時 `TARGET_SHA` と `EXIT_OK` の記録による）。その後 `229ee6d` で本文の1行を訂正したのみで、コードは同一。
+- 終了コード: 0。`EXIT_OK` の記録あり。`TARGET_SHA` の一致あり。
+- `valid_audio_start_lba40`: PASS（提示された status）
+- `invalid_audio_start_lba_at_medium_end`: PASS（提示された status）
+- `timeout_budget_exhausted`: PASS_EXPECTED_FAILURE（提示された status。予算超過が検証器で拒否されたことを意味し、成功ではない）
+
+**提示されていない項目（未検証）:**
+- evidence JSON（`cdda-scenarios-evidence.json`）の SHA-256 と、個別の観測値（START_LBA、CURRENT_STATE、PCM の一致数、SCSI フェーズ値）。照合は未実施。
+- 既存の診断5ケース（`mixed_mode_script` と負例4件）の、この実行における個別の status。今回の提示には含まれない。
+- 純正 CD_SEEK の callee ABI、IRQ による完了通知、無媒体ケース、実機・第2エミュレータ、SCSI トレース固有の診断イベント。いずれも未検証。
+
+**判定の範囲:** 上記3ケースの status は、提示された範囲でのみ記録する。BLOCKED_ABI は解除しない。純正 CD_SEEK の互換性は主張しない。
+
 ## 固定版ソースの読解 (SOURCE_READ, `src/scsi_controller.cpp` @ `b49ae82`)
 
 `ScsiController::ExecuteCommand` のディスパッチは次の opcode のみ（それ以外は `Debug` 出力のみで無視）:
