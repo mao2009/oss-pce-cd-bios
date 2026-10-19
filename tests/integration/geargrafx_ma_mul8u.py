@@ -2,7 +2,7 @@
 
 The guest checks all 65,536 pairs against a repeated-addition reference plus Y/C/I/D/SP
 preservation; this script checks the guest's pair count and an edge table against Python
-a*b, and requires a ROM with the loop count mutated to report FAIL. Project-internal
+a*b, and requires ROMs with the loop count, clc and ror a mutated to report FAIL. Project-internal
 interface only: the reference MA_MUL8U ABI is UNVERIFIED and the jump table is untouched.
 """
 import argparse
@@ -38,7 +38,11 @@ def build(output):
     loop = entry - 0xE000 + 8  # php cld sta stx lda# -> ldx #8
     if len(data) != 8192 or data[loop:loop + 2] != b"\xa2\x08":
         raise ValueError("ma_mul8u image size or ldx #8 placement mismatch")
-    return data, loop + 1
+    # (offset, expected opcode, mutant opcode): ldx #8->#7, clc->nop, ror a->lsr a (carry lost)
+    mutations = [(loop + 1, 0x08, 0x07), (loop + 6, 0x18, 0xEA), (loop + 9, 0x6A, 0x4A)]
+    if any(data[o] != good for o, good, _ in mutations):
+        raise ValueError("ma_mul8u mutation offsets do not match the image")
+    return data, mutations
 
 
 def execute(core_file, rom, max_frames=1200):
@@ -110,7 +114,7 @@ def main():
         return
     core = core_path()
     with tempfile.TemporaryDirectory(prefix="pce-ma-mul8u-build-") as tmp:
-        data, loop_operand = build(Path(tmp))
+        data, mutations = build(Path(tmp))
         rom = Path(tmp) / "ma-mul8u-test-not-bios.pce"
         run, block = run_worker(core, rom)
         pairs = int.from_bytes(block[4:7], "little")
@@ -119,21 +123,22 @@ def main():
         edges = [block[0x10 + i] | block[0x20 + i] << 8 for i in range(len(EDGES))]
         if edges != [a * b for a, b in EDGES]:
             raise ValueError(f"edge products differ from host a*b: {edges}")
-        mutated = Path(tmp) / "ldx7.pce"
-        mutated.write_bytes(data[:loop_operand] + b"\x07" + data[loop_operand + 1:])
-        _, negative = run_worker(core, mutated)
-        if negative[:4] != b"FAIL":
-            raise ValueError("mutated ldx #7 image was not rejected by the guest")
+        for offset, _, bad in mutations:
+            mutated = Path(tmp) / "mutant.pce"
+            mutated.write_bytes(data[:offset] + bytes([bad]) + data[offset + 1:])
+            _, negative = run_worker(core, mutated)
+            if negative[:4] != b"FAIL":
+                raise ValueError(f"mutant at +{offset:#x} was not rejected by the guest")
     evidence = {"scope": "Issue #73 project-internal ma_mul8u only; reference MA_MUL8U ABI UNVERIFIED",
                 "status": "PASS", "rom_sha256": hashlib.sha256(data).hexdigest(),
                 "geargrafx_revision": run["core_version"], "frames": run["frames"], "pairs_checked": pairs,
                 "edge_products": {f"{a}*{b}": p for (a, b), p in zip(EDGES, edges)},
-                "mutation_ldx7": "PASS_EXPECTED_FAILURE", "mutation_fail_block": negative[:12].hex(),
+                "mutations_rejected": len(mutations), "mutation_fail_block": negative[:12].hex(),
                 "jump_table": "NOT_CONNECTED", "release_eligible": False}
     if args.output:
         args.output.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
     print(json.dumps(evidence, sort_keys=True))
-    print("PASS real Geargrafx ma_mul8u: 65536 pairs, edge table vs host a*b, ldx #7 mutation rejected")
+    print("PASS real Geargrafx ma_mul8u: 65536 pairs, edge table vs host a*b, ldx/clc/ror mutations rejected")
 
 
 if __name__ == "__main__":
