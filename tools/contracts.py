@@ -33,7 +33,7 @@ HARDWARE_OBSERVATION_FIELDS = frozenset({'hw_bus_reset'})
 CLAIM_STATUSES = {'UNKNOWN', 'HYPOTHESIS', 'OBSERVED', 'BLOCKED'}
 EMULATOR_SOURCE_KIND = 'EMULATOR_SOURCE'
 
-# Measurement-evidence schema. A source entry (repository/revision/path/url/sha256)
+# Evidence-entry schema (shape only). A source entry (repository/revision/path/url/sha256)
 # only proves that source text exists; it is not execution evidence. An OBSERVED
 # claim must additionally reference non-empty, well-formed evidence describing the
 # execution conditions, the emulator core revision claimed for the run,
@@ -45,7 +45,7 @@ EVIDENCE_HASH_RE = re.compile(r'[0-9a-f]{64}\Z')
 # Trust level of evidence entries: FORMAT_ONLY. validate_evidence checks shape
 # only. Nothing here resolves evidence_hash to a stored artifact or
 # checks core_revision against a pin, so a well-formed hash is NOT proof that the
-# measurement happened. Do not read an accepted OBSERVED claim as VERIFIED.
+# run happened. Do not read an accepted OBSERVED claim as VERIFIED.
 EVIDENCE_TRUST_LEVEL = 'FORMAT_ONLY'
 # Source-kind semantics (Issue #209 / MEDIUM-1). A source kind classifies the
 # provenance of a *source-code reference* only. It never proves that anything was
@@ -55,7 +55,7 @@ EVIDENCE_TRUST_LEVEL = 'FORMAT_ONLY'
 #   CALLER_SOURCE:   caller 側(HuCC SDK 等)のソース。caller の期待のみ。callee の実行を保証しない。
 #   HLE_SOURCE:      HLE エミュレータ(Hu-Go 等)のソース。実機ファームウェアの証拠ではない。
 #   EMULATOR_SOURCE: 実コア(Geargrafx ピン rev)のソース参照。実行証跡ではない。
-#       OBSERVED の必要条件(1つ以上)だが十分条件ではない: 非空の測定 evidence が別途必要で、
+#       OBSERVED の必要条件(1つ以上)だが十分条件ではない: 非空の evidence entries が別途必要で、
 #       callee ABI は executed_callee も必要。HYPOTHESIS から OBSERVED への暗黙昇格は無い。
 SOURCE_KIND_MEANINGS = {
     'CALLER_SOURCE': 'caller 側ソース。caller の期待のみで callee 実行を保証しない。',
@@ -207,8 +207,13 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
 
     Rules:
       UNKNOWN     - value exactly 'UNKNOWN', no sources, confidence UNKNOWN, no registers
+<<<<<<< HEAD
       HYPOTHESIS  - caller/HLE/emulator source text only, non-empty sources, confidence SOURCE_SUPPORTED
       OBSERVED    - requires at least one EMULATOR_SOURCE reference (necessary, not sufficient);
+=======
+      HYPOTHESIS  - caller/HLE source text only, non-empty sources, confidence SOURCE_SUPPORTED
+      OBSERVED    - must not carry registers; requires at least one EMULATOR_SOURCE reference (necessary, not sufficient);
+>>>>>>> l211
                     callee-behavior claims (CALLEE_BEHAVIOR_FIELDS) additionally
                     require executed_callee; hardware observations
                     (HARDWARE_OBSERVATION_FIELDS, e.g. hw_bus_reset) do not;
@@ -269,8 +274,11 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
         require(value != 'UNKNOWN' and confidence == 'SOURCE_SUPPORTED' and sources,
                 f'{context}: invalid HYPOTHESIS claim')
     elif status == 'OBSERVED':
-        require(value != 'UNKNOWN' and confidence == 'SOURCE_SUPPORTED' and sources and not registers,
+        require(value != 'UNKNOWN' and confidence == 'SOURCE_SUPPORTED' and sources,
                 f'{context}: invalid OBSERVED claim')
+        # Design: an OBSERVED claim carries no register list. Register lists belong to
+        # preserved/clobbered, which cannot be OBSERVED without an executed callee.
+        require(not registers, f'{context}: OBSERVED claim must not carry a register list')
         require(any(source_kinds[source] == EMULATOR_SOURCE_KIND for source in sources),
                 f'{context}: OBSERVED requires an EMULATOR_SOURCE source reference')
         if field in CALLEE_BEHAVIOR_FIELDS:
