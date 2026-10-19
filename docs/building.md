@@ -121,6 +121,15 @@ The CD→RAM payload experiment (#122) is merged on main as of 2026-10-16 (`c20a
 `make test` covers host/HuCARD; the separate BIOS DEV CI covers these.
 [Status](status.md).
 
+### ルーチン実コアテスト（opt-in, #330）
+
+`make routine-real-core` は EX_BINBCD / MA_MUL8S / MA_MUL8U / EX_BCDBIN の実コア（Geargrafx）テストを順に実行する。
+
+- Linux 専用。Linux 以外は `BLOCKED: real-core target requires Linux` で終了コード1。
+- `make test` / `make integration` / `make check` / CI には含まれない。
+- 前提: Geargrafx セットアップ済みで `TOOLS_DIR` を指定、各ルーチンのテストスクリプトが main にマージ済みであること（未マージだと欠落で失敗する。fail-closed）。
+- 実行: `TOOLS_DIR=$HOME/oss-pce-cd-bios-tools make routine-real-core`
+
 ## Instruction debugger and contract probes
 
 `make setup` additionally builds a separate debugger-enabled Geargrafx tree
