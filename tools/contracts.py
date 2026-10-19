@@ -22,6 +22,11 @@ CALLEE_BEHAVIOR_FIELDS = frozenset(FIELDS)
 # neither set is rejected, so an unknown name cannot bypass the executed_callee
 # check by not being listed as callee behavior.
 HARDWARE_OBSERVATION_FIELDS = frozenset({'hw_bus_reset'})
+# LIMIT: adjudicate_claim() can accept a hardware observation, but the formal
+# API contract ledger (spec/api_contracts.json, validate_contracts) only stores
+# CALLEE_BEHAVIOR_FIELDS per slot. A hardware observation therefore has no
+# storage in the ledger; validate_contracts is intentionally NOT relaxed.
+# A dedicated hardware-observation store needs its own Issue.
 # Adjudication categories for every contract claim. VERIFIED is deliberately
 # absent: it can only be earned by an executed reference-ROM callee, which no
 # slot has (verification stays NOT_RUN / executed_callee false).
@@ -168,7 +173,10 @@ def validate_evidence(evidence, context):
     verification result and a 64-hex lowercase sha256 evidence hash.
     Trust level is EVIDENCE_TRUST_LEVEL (FORMAT_ONLY): shape is checked, the
     hash is not resolved to a measurement artifact, so acceptance does not
-    prove authenticity. Returns None when consistent, raises ValueError otherwise.
+    prove authenticity. It also does NOT check that the evidence supports the
+    claim's contract field (e.g. nothing ties a $1804 readback entry to `stack`
+    or `returns`); field/evidence semantic correspondence is unverified.
+    Returns None when consistent, raises ValueError otherwise.
     """
     def require(ok, message):
         if not ok:
@@ -217,16 +225,23 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
         if not ok:
             raise ValueError(message)
 
+    # Input-type gate: nothing below may touch claim/source_kinds before their types
+    # are known, so malformed input raises ValueError and never AttributeError/TypeError.
+    require(isinstance(claim, dict), f'{context}: claim must be a dict')
+    require(isinstance(source_kinds, dict), f'{context}: source_kinds must be a dict')
+    require(all(isinstance(key, str) for key in source_kinds),
+            f'{context}: source keys must be strings')
+    require(all(isinstance(kind, str) and kind in SOURCE_KINDS for kind in source_kinds.values()),
+            f'{context}: invalid source kind')
     require(isinstance(field, str), f'{context}: claim field must be a string')
     require(field in CALLEE_BEHAVIOR_FIELDS | HARDWARE_OBSERVATION_FIELDS,
             f'{context}: unknown claim field {field!r}')
     require(executed_callee is True or executed_callee is False,
             f'{context}: executed_callee must be a bool')
+    require(all(isinstance(key, str) for key in claim), f'{context}: claim keys must be strings')
     require(isinstance(claim.get('status'), str), f'{context}: unsupported claim status (must be a string)')
     require(isinstance(claim.get('evidence', []), list), f'{context}: claim evidence must be a list')
     require(set(claim) <= CLAIM_KEYS, f'{context}: unknown claim keys {sorted(set(claim) - CLAIM_KEYS)}')
-    require(all(kind in SOURCE_KINDS for kind in source_kinds.values()),
-            f'{context}: invalid source kind')
     status = claim.get('status')
     require(status in CLAIM_STATUSES,
             f'{context}: unsupported claim status {status!r}; VERIFIED is not represented')
@@ -260,7 +275,7 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
                     f'{context}: OBSERVED callee behavior requires an executed callee (verification is NOT_RUN)')
         evidence = claim.get('evidence', [])
         require(isinstance(evidence, list) and bool(evidence),
-                f'{context}: OBSERVED requires non-empty measurement evidence')
+                f'{context}: OBSERVED requires non-empty evidence entries (format-checked only)')
         validate_evidence(evidence, context)
     elif status == 'BLOCKED':
         require(value == 'UNKNOWN' and confidence == 'UNKNOWN' and not registers,
