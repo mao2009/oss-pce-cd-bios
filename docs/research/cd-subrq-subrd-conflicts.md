@@ -38,13 +38,13 @@
 
 ## 3. 項目別の裁定
 
-状態語: `SOURCE_FACT`（出典が明示。ただし未実行のため機能は未確認）、`SECONDARY_SOURCE`（二次資料〔Zeograd、Stum、MacDonald 複写〕のみが根拠。原典・コードで未確認）、`HYPOTHESIS`（仮説。採用しない）、`UNKNOWN`（出典にない、または矛盾）。`VERIFIED` と `OBSERVED` は本書の範囲で使わない（NOT_RUN のため証跡がない）。
+状態語: `SOURCE_FACT`（固定版の一次資料〔pin 済みコード〕に記載の呼出し側の事実。出所の PENDING とは独立。BIOS 呼出先の挙動の証拠ではない）、`SECONDARY_SOURCE`（二次資料〔Zeograd、Stum、MacDonald 複写〕のみが根拠。原典・コードで未確認）、`HYPOTHESIS`（仮説。採用しない）、`UNKNOWN`（出典にない、または矛盾）。`VERIFIED` と `OBSERVED` は本書の範囲で使わない（NOT_RUN のため証跡がない）。
 
 | ID | 項目 | 主張（出典） | 状態 | 裁定 |
 | --- | --- | --- | --- | --- |
 | C1 | 名称（HuC・Hu-Go・huexpress の leg） | HG、HX は $0D を CD_SUBRQ と名づける。HC は $E027 を cd_subrd とし、$0D に CD_SUBRD を当てる記載はない | SOURCE_FACT | **conflict unresolved**。同一と断定しない |
 | C18 | 名称（Zeograd の leg） | Z は $0D を CD_SUBRQ と記す。二次資料のため、HG・HX と独立の裏付けにはしない | SECONDARY_SOURCE | **conflict unresolved**。同一と断定しない |
-| C2 | エントリ | $E027 に入口（ST、HC）。Z は 3n 規則からの導出 | SOURCE_FACT | 入口の所在のみ。機能の証拠ではない |
+| C2 | エントリ | $E027 に入口（HC の equate 481 行）。ST、Z の記述は裏付けとして数えない | SOURCE_FACT | 呼出し側の定義の所在のみ。BIOS 側の機能・挙動の証拠ではない |
 | C3 | 入力（IN） | 入力なし（Z の「N/A」のみ） | SECONDARY_SOURCE | 単一出典。他の出典に記載なし |
 | C4 | 戻り値 A | A = 00 ok / 01 error（Z の OUT）。ただし同項の注記は A = $1807 の複写と記す | UNKNOWN | **conflict unresolved**（Z 内部の矛盾） |
 | C5 | キャリーフラグ | $1803 bit 4 が立つとキャリーを立てる（Z の注記のみ）。エラーとの対応は不明 | UNKNOWN | 解釈未確定 |
