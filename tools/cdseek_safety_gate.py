@@ -21,6 +21,8 @@ DETECT_ONLY = "DETECT_ONLY"  # observed after the write completed (#173)
 PREVENT_CPU_ONLY = "PREVENT_CPU_ONLY"  # CPU Memory::Write path denied; ST path bypasses (#170/#202)
 KNOWN_PC_ONLY = "KNOWN_PC_ONLY"  # pre-block only for statically known guest PC (#200)
 POST_HOC = "POST_HOC"  # snapshot/budget after execution, does not stop the side effect
+TAM_BOUNDARY_SYNTHETIC = "TAM_BOUNDARY_SYNTHETIC"  # MPR change stops at the next instruction boundary, measured
+# only for synthetic LDA+TAM+STA (geargrafx_reference_guard.py tam); not a general control for callees
 
 #: (id, hazard, why it matters for CD_SEEK, strongest pre-side-effect control on pinned core)
 HAZARDS = (
@@ -31,8 +33,8 @@ HAZARDS = (
      NONE),
     ("H4", "irq_side_effect", "$1802/$1402/$1403 writes complete before stop; IRQ2 arrival not guaranteed (#173/#201)",
      DETECT_ONLY),
-    ("H5", "mpr_dynamic_change", "TAM/TMA remaps memory mid-callee; only the post-run MPR snapshot sees it (#170)",
-     POST_HOC),
+    ("H5", "mpr_dynamic_change", "TAM/TMA remaps memory mid-callee; core stops after the TAM only in the synthetic "
+     "LDA+TAM+STA case (#170); other remap-then-side-effect sequences unestablished", TAM_BOUNDARY_SYNTHETIC),
     ("H6", "ram_write_outside_allowlist", "CPU-path writes denied by map_write; ST path bypasses the hook (#170/#202)",
      PREVENT_CPU_ONLY),
     ("H7", "unknown_callee_abi", "callee bytes, return/flag/error/completion contract UNKNOWN (#13/#178)", NONE),
@@ -48,7 +50,7 @@ def decide():
         "candidate": "$E00C",
         "verdict": "BLOCKED",
         "jsr_count": 0,
-        "reasons": [f"{hid} {name}: pre-side-effect control = {control}" for hid, name, _, control in HAZARDS],
+        "reasons": [f"{hid} {name}: {why}; pre-side-effect control = {control}" for hid, name, why, control in HAZARDS],
     }
 
 
