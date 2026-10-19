@@ -200,7 +200,7 @@ class ClaimRowNegativeTests(unittest.TestCase):
 
     def test_malformed_id_is_rejected(self):
         with self.assertRaises(ValueError):
-            _claim_rows(self._doc('| Cx | a | b | UNKNOWN | c |\n'))
+            _claim_rows(self._doc('| C5x | a | b | UNKNOWN | c |\n'))
 
     def test_loosely_formatted_claim_rows_are_not_skipped(self):
         for row in ('|C5| a | b | UNKNOWN |\n', '  | C5 | a | b | UNKNOWN |\n', '| c5 | a | b | UNKNOWN | c |\n'):
