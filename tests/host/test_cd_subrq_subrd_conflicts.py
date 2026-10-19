@@ -42,14 +42,24 @@ RESULT_CLAIM = re.compile(r'(?:観測|実測|確認)(?:した|され|できた)'
 FORBIDDEN_CELL_TOKENS = {'VERIFIED', 'OBSERVED', 'PASS'}
 
 
+CLAIM_COLUMNS = 5  # ID, 項目, 主張, 状態, 裁定
+
+
 def _claim_rows(text):
+    # Fail closed: a malformed or duplicate claim row raises instead of being overwritten
+    # by (and hidden behind) a later valid row.
     rows = {}
     for line in text.splitlines():
         if not line.startswith('| C'):
             continue
         cells = [c.strip() for c in line.strip().strip('|').split('|')]
-        if re.fullmatch(r'C\d+', cells[0]):
-            rows[cells[0]] = cells
+        if not re.fullmatch(r'C\d+', cells[0]):
+            raise ValueError(f'malformed claim id: {cells[0]}')
+        if len(cells) != CLAIM_COLUMNS:
+            raise ValueError(f'{cells[0]}: {len(cells)} columns, expected {CLAIM_COLUMNS}')
+        if cells[0] in rows:
+            raise ValueError(f'duplicate claim id: {cells[0]}')
+        rows[cells[0]] = cells
     return rows
 
 
@@ -149,6 +159,52 @@ class CdSubrqSubrdConflictLedgerTests(unittest.TestCase):
     def test_exec_rule_allows_not_run_and_plans_without_past_claim(self):
         self.assertEqual(_exec_violations('| 実行は未実行（NOT_RUN） |'), [])
         self.assertEqual(_exec_violations('BIOS は呼んでいない。$E027 を呼ぶ前後で差分を取る'), [])
+
+
+class ClaimRowNegativeTests(unittest.TestCase):
+    ROW = '| {i} | 項目 | 主張 | {st} | 裁定 |\n'
+
+    def _doc(self, *rows):
+        return '# t\n' + ''.join(rows)
+
+    def test_every_id_duplicate_is_rejected_in_either_order(self):
+        for n in range(1, 19):
+            cid = f'C{n}'
+            good = self.ROW.format(i=cid, st='UNKNOWN')
+            bad = self.ROW.format(i=cid, st='VERIFIED')
+            for order in ((bad, good), (good, bad), (good, good)):
+                with self.assertRaises(ValueError, msg=(cid, order)):
+                    _claim_rows(self._doc(*order))
+
+    def test_real_doc_rows_each_duplicated_are_rejected(self):
+        lines = [l for l in DOC.read_text(encoding='utf-8').splitlines() if l.startswith('| C')]
+        self.assertEqual(len(lines), 18)
+        for l in lines:
+            for dup in (lines + [l], [l] + lines):
+                with self.assertRaises(ValueError, msg=l[:8]):
+                    _claim_rows('\n'.join(dup))
+
+    def test_wrong_column_count_is_rejected_for_every_id(self):
+        for n in range(1, 19):
+            cid = f'C{n}'
+            for row in (f'| {cid} | a | b | UNKNOWN |\n', f'| {cid} | a | b | UNKNOWN | c | d |\n'):
+                with self.assertRaises(ValueError, msg=row):
+                    _claim_rows(self._doc(row))
+
+    def test_invalid_row_is_not_hidden_by_later_valid_row(self):
+        bad = '| C4 | a | b | UNKNOWN |\n'
+        good = self.ROW.format(i='C4', st='UNKNOWN')
+        for order in ((bad, good), (good, bad)):
+            with self.assertRaises(ValueError):
+                _claim_rows(self._doc(*order))
+
+    def test_malformed_id_is_rejected(self):
+        with self.assertRaises(ValueError):
+            _claim_rows(self._doc('| Cx | a | b | UNKNOWN | c |\n'))
+
+    def test_valid_rows_still_parse(self):
+        rows = _claim_rows(self._doc(self.ROW.format(i='C1', st='UNKNOWN'), self.ROW.format(i='C2', st='HYPOTHESIS')))
+        self.assertEqual(list(rows), ['C1', 'C2'])
 
 
 if __name__ == '__main__':
