@@ -230,6 +230,9 @@ class AdjudicateClaimTests(unittest.TestCase):
         for bad_exec in (1, 0, 'true', None):
             with self.assertRaisesRegex(ValueError, 'executed_callee must be a bool', msg=repr(bad_exec)):
                 adjudicate_claim(good, REAL, field='stack', context='x', executed_callee=bad_exec)
+        with self.assertRaisesRegex(ValueError, 'must not carry a register list'):
+            adjudicate_claim(dict(good, registers=['A']), REAL, field='preserved', context='x',
+                             executed_callee=True)
         for bad_regs in ({1: 2}, 0, 'A', ['Q'], ['A', 'A'], [1]):
             with self.assertRaisesRegex(ValueError, 'registers must be a list', msg=repr(bad_regs)):
                 adjudicate_claim(dict(good, registers=bad_regs), REAL, field='stack', context='x',
