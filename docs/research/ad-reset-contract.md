@@ -6,9 +6,10 @@
 
 ## 1. 規則
 
-確度の意味（HYPOTHESIS と UNKNOWN の定義は `cd-base-abi-ledger.md` §1 と実質的に同じ。差分: HYPOTHESIS は「出典の記述から」と限定し（同ファイルは「出典から」）、UNKNOWN は「失敗値も定義しない」を加えた。SOURCE_FACT は `cd-seek-abi-ledger.md` §1 の SOURCE_FACT、`cd-base-abi-ledger.md` §1 の VERIFIED と範囲が同等（`abi-contracts.md` の SOURCE_FACT の段落も参照。本台帳は第三者・再実装の記述を HYPOTHESIS とする区別を明記））:
+確度の意味は `docs/cd-base-abi-ledger.md` §1 と `docs/cd-seek-abi-ledger.md` §1 に従う。SOURCE_FACT の定義は #321（CD_FADE 台帳）と同一の一つの定義を使う（下記）:
 
-- `SOURCE_FACT`: 固定版の出典本文に書かれた**呼出側**の記述（「この呼出しがある」「この値を書く」「この宣言である」）。**BIOS 本体の振る舞いには付けない。** 出典の provenance/採用が PENDING でも付けられる（他の API 台帳と同じ）。SOURCE_FACT は「出典にそう書いてある」ことだけを示し、ライセンス上の利用可否、呼出先の実測、実装可能性のいずれも示さない。出典が第三者の記述のみ、または再実装・開発者の主張である場合は `HYPOTHESIS` とする。
+- `SOURCE_FACT`: SOURCE_FACT = a caller-side fact written in a pinned primary source. It is independent of provenance PENDING. It does NOT indicate BIOS callee behavior.
+  （訳: 固定版の一次出典に書かれた呼出側の事実。出典の provenance が PENDING かどうかとは独立。BIOS 呼出先の振る舞いを示さない。）出典が第三者の記述のみ、または再実装・開発者の主張である場合は `HYPOTHESIS` とする。ライセンス上の利用可否、呼出先の実測、実装可能性は別の軸であり、SOURCE_FACT はそのいずれも示さない。
 - `HYPOTHESIS`: 出典の記述から推測したが、呼出先を実行して確認していない。
 - `UNKNOWN`: 出典が不足している。推測で埋めない。成功値・失敗値も定義しない。
 
@@ -75,7 +76,7 @@ E1 と E2 は、呼出先（BIOS）ではなく、同じ著者が書いた**再�
 
 ## 3. 呼出側から読める事実（公開 caller）
 
-以下は、HuCC の呼出側（H2〜H5）と、開発者の再実装（E1、E2）の記述である。BIOS の振る舞いではない。項目 1〜6 は呼出側の記述で `SOURCE_FACT`、項目 7、8 は再実装・開発者の記述で `HYPOTHESIS` とする（出典は全件 PENDING で、採用の可否は別問題）。
+以下は、HuCC の呼出側（H2〜H5）と、開発者の再実装（E1、E2）の記述である。BIOS の振る舞いではない。項目 1〜6 は呼出側の記述で `SOURCE_FACT`、項目 7、8 は再実装・開発者の記述で `HYPOTHESIS` とする（出典が PENDING でも SOURCE_FACT は付く。採用の可否は別問題）。
 
 1. **エントリ番地**（H1、SOURCE_FACT）: `ad_reset` は `$00:E030` として宣言されている。
 2. **呼出し経路**（H4、H5、SOURCE_FACT）: `system ad_reset` マクロは `Y = $30` を設定し、`call_bios` を呼ぶ。`call_bios` は Y の値を `jsr $E000` の下位バイトに書き込み（自己書換え）、MPR7 に System Card のバンクを割り当ててから `jsr` し、戻ると MPR7 を復元する。
@@ -88,43 +89,53 @@ E1 と E2 は、呼出先（BIOS）ではなく、同じ著者が書いた**再�
 
 ## 4. 項目別の台帳
 
-入力・戻り・副作用は、`spec/api_contracts.json` の AD_RESET の項目（arguments、returns、clobbered、preserved、stack、mpr、ram、flags、irq、errors、synchronization）と、Issue #292 の項目（A/X/Y/P、作業 RAM、MPR/SP、フラグ、IRQ、タイムアウト、失敗結果）に対応させる。
+入力・戻り・副作用は、`spec/api_contracts.json` の AD_RESET の項目と Issue #292 の項目に対応させる。呼出側（wrapper・宣言）、再実装、BIOS 側が混ざる項目は a（呼出側または再実装）と b（BIOS 側）に分け、各行に確度を一つだけ付ける。
 
 | # | 項目 | 結論 | 確度 | 出典 | 備考・決着条件 |
 | --- | --- | --- | --- | --- | --- |
-| 1 | エントリ番地（名前 → `$E030`） | `$E030` | SOURCE_FACT（HuCC の宣言の記述。BIOS の実行確認ではない） | H1 | 実行可能な callee を得て `$E030` に入ること自体を確認する。DEV ROM の `$E030` は BIOS ではない（`cd-base-abi-ledger.md` §4a と同じ扱い）。 |
-| 2 | 本体番地（版別） | 版別の番地の候補 | HYPOTHESIS | P1 のみ | 単独出典。実行しない限り HYPOTHESIS 維持。 |
-| 3 | 入力 A | 呼出側は渡す（wrapper が保持）。BIOS が読むか UNKNOWN | UNKNOWN（呼出側の書込みは SOURCE_FACT） | H5 | 呼出先で A を変えた感度試験。 |
-| 4 | 入力 X | UNKNOWN | UNKNOWN（BIOS）、SOURCE_FACT（wrapper は X に触れない） | H5（wrapper は X に触れない） | 同上。 |
-| 5 | 入力 Y | Y は selector（下位バイト `$30`）。BIOS 内の使用は UNKNOWN | SOURCE_FACT（呼出側の selector）、UNKNOWN（BIOS 内） | H4、H5 | Y の変更でエントリが変わるかを確認。 |
-| 6 | 入力 P | UNKNOWN | UNKNOWN | — | 呼出側の P の扱いの記述なし。 |
-| 7 | 引数（C 宣言） | 引数なし（`void`） | SOURCE_FACT（HuCC の宣言の記述。BIOS の証拠ではない） | H2、H3 | BIOS が引数を読まないことは未確認。 |
-| 8 | 戻り値 A/X/Y/P | 呼出側は戻り値を読まない（マクロ・宣言に戻り値なし） | UNKNOWN（BIOS の戻り値） | H2、H3 | 戻り値の実測。 |
-| 9 | 破壊されるレジスタ（clobbered） | UNKNOWN（呼出側のコメントは「使うものを使う」） | UNKNOWN | H5（Uses 注記） | 呼出前後のレジスタ差分。 |
-| 10 | 保存されるレジスタ（preserved） | UNKNOWN（BIOS 側）。wrapper は MPR7 を保存・復元する。A は呼出側の値を戻さず、BIOS 後の A が返る（502–507 行で退避して BIOS に渡し、511–514 行で BIOS 後の A を保存・復元する） | UNKNOWN（BIOS 側）、SOURCE_FACT（wrapper 側） | H5 | 呼出前後の A、X、Y、P、MPR7 の比較。 |
-| 11 | スタック（SP） | wrapper は入口で A を push し、出口で pull する。BIOS のスタック使用は UNKNOWN | SOURCE_FACT（wrapper）、UNKNOWN（BIOS） | H5 | スタックポインタの前後比較。 |
-| 12 | MPR | 呼出側は MPR7 を System Card のバンクに割り当て、戻りで復元する。BIOS が他の MPR を変えるかは UNKNOWN | SOURCE_FACT（wrapper）、UNKNOWN（BIOS） | H5 | MPR0〜7 の前後比較（成功経路と失敗経路）。 |
-| 13 | 作業 RAM | UNKNOWN。E1 の再実装は作業 RAM を書かない（ハードウェアレジスタのみ） | UNKNOWN（BIOS）、HYPOTHESIS（E1 の内容） | E1 | RAM 全差分。 |
-| 14 | ハードウェア副作用（ADPCM 制御、DMA、IRQ マスク、再生速度） | 再実装は制御レジスタに reset を書き、DMA と再生速度を 0 にし、IRQ マスクの一部を clear する | HYPOTHESIS（再実装の内容）、UNKNOWN（BIOS 側。E1・E2 の「BIOS も同じ書込み」は開発者の主張で、未確認） | E1、E2 | BIOS 実行前後のハードウェアレジスタ差分。 |
-| 15 | フラグ（P） | UNKNOWN。wrapper は `pla` で A を戻すため、戻り時の N/Z は A に従う。BIOS 後の P は未確認 | UNKNOWN（BIOS）、SOURCE_FACT（wrapper の `pla`） | H5 | 戻り時の P の比較。 |
-| 16 | IRQ | UNKNOWN（BIOS が割込みを禁止・許可するか）。E1 の再実装は IRQ マスクの一部を clear | UNKNOWN（BIOS）、HYPOTHESIS（E1 の内容。再実装と同じ効果） | E1 | 割込み状態（I フラグ、IRQ マスク）の前後比較。 |
-| 17 | タイムアウト | UNKNOWN。出典に待機ループの記述がない | UNKNOWN | — | 完了条件の観測（busy の解除まで）。 |
-| 18 | 失敗結果（errors） | UNKNOWN。`ad_reset` にはエラー規約の記述がない（出典は宣言とマクロのみ） | UNKNOWN | H2、H3 | 失敗条件（無ディスク等）での戻り値とフラグの実測。 |
-| 19 | busy 状態・同期（synchronization） | UNKNOWN。E1 のコメントは、OKI チップが reset を 2 クロック以上保持する必要があると述べる | UNKNOWN（BIOS）、HYPOTHESIS（再実装の開発者の記述） | E1 56–60 行 | reset 保持時間と busy の解除の観測。 |
+| 1 | エントリ番地（名前 → `$E030`） | `$E030` と宣言されている | SOURCE_FACT | H1 | 呼出側の宣言。実行可能な callee で `$E030` に入ることを確認する（DEV ROM の `$E030` は BIOS ではない）。 |
+| 2 | 本体番地（版別） | 版別の番地の候補 | HYPOTHESIS | P1 のみ | 第三者の記述のみ。実行しない限り HYPOTHESIS。 |
+| 3a | 入力 A（呼出側） | wrapper は A を BIOS へ渡す | SOURCE_FACT | H5 502–507 | 呼出側の記述。 |
+| 3b | 入力 A（BIOS） | BIOS が A を読むか不明 | UNKNOWN | — | 呼出先で A を変えた感度試験。 |
+| 4a | 入力 X（呼出側） | wrapper は X に触れない | SOURCE_FACT | H5 | 呼出側の記述。 |
+| 4b | 入力 X（BIOS） | BIOS が X を読み書きするか不明 | UNKNOWN | — | 同上。 |
+| 5a | 入力 Y（呼出側） | Y は selector（下位バイト `$30`） | SOURCE_FACT | H4、H5 | 呼出側の記述。 |
+| 5b | 入力 Y（BIOS） | BIOS 内の Y の使用は不明 | UNKNOWN | — | Y の変更でエントリが変わるかを確認。 |
+| 6 | 入力 P | 呼出側の P の扱いの記述なし | UNKNOWN | — | 出典不足。 |
+| 7 | 引数（C 宣言） | 引数なし（`void`） | SOURCE_FACT | H2、H3 | 呼出側の宣言。BIOS が引数を読まない証拠ではない。 |
+| 8a | 戻り値（呼出側） | マクロ・宣言に戻り値がなく、呼出側は読まない | SOURCE_FACT | H2、H3 | 呼出側の記述。 |
+| 8b | 戻り値 A/X/Y/P（BIOS） | BIOS の戻り値は不明 | UNKNOWN | — | 戻り値の実測。 |
+| 9 | 破壊されるレジスタ | 呼出側のコメントは「使うものを使う」のみ。規定なし | UNKNOWN | H5（492 行） | 呼出前後のレジスタ差分。 |
+| 10a | 保存（wrapper） | wrapper は MPR7 を保存・復元する。戻りの A は BIOS 後の値（502–514 行） | SOURCE_FACT | H5 | 呼出側の記述。 |
+| 10b | 保存（BIOS） | BIOS が A/X/Y/P を保存するか不明 | UNKNOWN | — | 呼出前後の A、X、Y、P、MPR7 の比較。 |
+| 11a | スタック（wrapper） | 入口で A を push し、出口で pull する | SOURCE_FACT | H5 | 呼出側の記述。 |
+| 11b | スタック（BIOS） | BIOS のスタック使用は不明 | UNKNOWN | — | SP の前後比較。 |
+| 12a | MPR（wrapper） | MPR7 を System Card のバンクに割り当て、戻りで復元する | SOURCE_FACT | H5 | 呼出側の記述。 |
+| 12b | MPR（BIOS） | BIOS が他の MPR を変えるか不明 | UNKNOWN | — | MPR0〜7 の前後比較（成功・失敗経路）。 |
+| 13a | 作業 RAM（再実装） | E1 の再実装は作業 RAM を書かない | HYPOTHESIS | E1 | 再実装の記述で BIOS の記述ではない。 |
+| 13b | 作業 RAM（BIOS） | BIOS の RAM 書込みは不明 | UNKNOWN | — | RAM 全差分。 |
+| 14a | ハードウェア副作用（再実装） | E1 は制御レジスタに reset を書き、DMA と再生速度を 0 にし、IRQ マスクの一部を clear する | HYPOTHESIS | E1、E2 | 再実装の内容。「BIOS も同じ」は開発者の主張。 |
+| 14b | ハードウェア副作用（BIOS） | BIOS の書込みは不明 | UNKNOWN | — | 実行前後のハードウェアレジスタ差分。 |
+| 15a | フラグ（wrapper） | wrapper は `pla` で A を戻すため、戻り時の N/Z は A に従う | SOURCE_FACT | H5 | 呼出側の記述。 |
+| 15b | フラグ（BIOS） | BIOS 後の P は不明 | UNKNOWN | — | 戻り時の P の比較。 |
+| 16a | IRQ（再実装） | E1 は IRQ マスクの一部を clear する | HYPOTHESIS | E1 | 再実装の内容。 |
+| 16b | IRQ（BIOS） | BIOS が割込みを禁止・許可するか不明 | UNKNOWN | — | I フラグ、IRQ マスクの前後比較。 |
+| 17 | タイムアウト | 出典に待機ループの記述がない | UNKNOWN | — | 完了条件の観測（busy の解除まで）。 |
+| 18 | 失敗結果（errors） | エラー規約の記述がない（宣言とマクロのみ） | UNKNOWN | H2、H3 | 失敗条件での戻り値とフラグの実測。 |
+| 19a | 同期（再実装のコメント） | E1 は、OKI チップが reset を 2 クロック以上保持する必要があると述べる | HYPOTHESIS | E1 56–60 行 | 開発者の記述。 |
+| 19b | busy・同期（BIOS） | BIOS の busy 状態と同期は不明 | UNKNOWN | — | reset 保持時間と busy の解除の観測。 |
 
 ## 5. 確度の集計
 
-項目 1〜19 の各行（単一の結論のみを記録）を一つの値として数える。BIOS の振る舞いに関する行は、BIOS 側の結論で数える。宣言・アドレスの行（1、2、7）は BIOS の証拠ではないため、宣言・出典の記述の確度で数える（呼出側の宣言は SOURCE_FACT、第三者のみの本体番地は HYPOTHESIS）。複合行（例: 行 3 は「呼出側は渡す」（SOURCE_FACT の記述）と「BIOS が読むか」（UNKNOWN）を含む）は、BIOS 側の結論を主たる値として UNKNOWN で数える。
+行は 31 件（上表を数えた値）。SOURCE_FACT は呼出側の事実（出典の provenance 状態とは独立）で、BIOS の振る舞いの証拠ではない。
 
 | 確度 | 件数 | 行 |
 | --- | --- | --- |
-| SOURCE_FACT（呼出側・宣言の記述） | 2 | 1、7 |
-| HYPOTHESIS | 1 | 2 |
-| UNKNOWN（BIOS 側） | 16 | 3、4、5、6、8、9、10、11、12、13、14、15、16、17、18、19 |
+| SOURCE_FACT | 10 | 1、3a、4a、5a、7、8a、10a、11a、12a、15a |
+| HYPOTHESIS | 5 | 2、13a、14a、16a、19a |
+| UNKNOWN | 16 | 3b、4b、5b、6、8b、9、10b、11b、12b、13b、14b、15b、16b、17、18、19b |
 
-合計 19 行。
-
-注: 行 5、10、11、12、13、14、15、16 は呼出側・再実装の事実（呼出側は SOURCE_FACT、再実装は HYPOTHESIS）を併記しているが、BIOS 側の結論は UNKNOWN であるため UNKNOWN で数えた。行 1 のエントリ番地と行 7 の引数の宣言は HuCC の宣言（H1、H2、H3）の記述であり、呼出側の記述として SOURCE_FACT とした（出典の採否 PENDING は確度と独立）。行 2 の本体番地は第三者の記述のみ（P1）のため HYPOTHESIS とした。行 19 の「HYPOTHESIS」（E1 のコメント）は開発者の記述であり、BIOS 側の結論ではないため UNKNOWN で数えた。行 14 は、再実装の内容（HYPOTHESIS）と BIOS 側（UNKNOWN）を分けて記し、BIOS 側で UNKNOWN と数えた（行 14 を HYPOTHESIS に数えると 2/2/15 になる）。
+合計 31 行（10 + 5 + 16）。BIOS 側の行（b）と出典不足の行はすべて UNKNOWN で、BIOS の振る舞いに SOURCE_FACT はない。
 
 ## 5a. 証拠の区分（レビュー・CI・実測）
 
@@ -138,12 +149,12 @@ E1 と E2 は、呼出先（BIOS）ではなく、同じ著者が書いた**再�
 
 ## 6. 実装に影響する残る UNKNOWN
 
-- **入力 A/X/Y/P と戻り値（行 3〜8）**: 呼出先が読むか書くかを知らないと、呼出側が `ad_reset` の前後で何を保持すべきかを決められない。
-- **busy 状態と完了条件（行 17、19）**: reset の後に ADPCM 再生・転送を始めてよい条件が無い。`ad_trans` や `ad_play` の前提が決まらない。
+- **入力 A/X/Y/P と戻り値（行 3b〜8b）**: 呼出先が読むか書くかを知らないと、呼出側が `ad_reset` の前後で何を保持すべきかを決められない。
+- **busy 状態と完了条件（行 17、19b）**: reset の後に ADPCM 再生・転送を始めてよい条件が無い。`ad_trans` や `ad_play` の前提が決まらない。
 - **失敗結果（行 18）**: 失敗の表現がないため、呼出側の成否判定を作れない。
-- **IRQ とフラグ（行 15、16）**: 割込みの状態が reset 後にどう変わるかが不明で、IRQ を使う経路の前提が決まらない。
+- **IRQ とフラグ（行 15b、16b）**: 割込みの状態が reset 後にどう変わるかが不明で、IRQ を使う経路の前提が決まらない。
 
-これらは、実行可能な System Card の AD_RESET（callee）を得た後、行 3〜19 の観測を同じ条件で実測することで決着する。この PR は、その実測を行わない。
+これらは、実行可能な System Card の AD_RESET（callee）を得た後、行 3b〜19b の観測を同じ条件で実測することで決着する。この PR は、その実測を行わない。
 
 ## 7. 境界
 
@@ -157,5 +168,5 @@ E1 と E2 は、呼出先（BIOS）ではなく、同じ著者が書いた**再�
 ## 8. 次の作業
 
 1. provenance 審査（maintainer）: §2 の全出典に APPROVED / PENDING / RESTRICTED を付け、レビュア・日付を記録する。`include/huc/startup.asm` と `include/huc/cdrom.asm`（H の呼出側の最も有用な例）の採否も、この審査で判断する。判断が出るまで、その内容は根拠にしない。
-2. 実行可能な AD_RESET callee を得た後、§4 の行 3〜19 を同じ条件で測定する。
+2. 実行可能な AD_RESET callee を得た後、§4 の行 3b〜19b を同じ条件で測定する。
 3. Stum 2025 の本体番地（行 2）は、実行して確認するまで HYPOTHESIS のままとする。
