@@ -225,7 +225,7 @@ NOT_STARTED/NOT_RUN のまま変更しない。
 
 自己申告の `safety_gate_approved: true` は証拠として一切扱わず（(d) 欠落として `BLOCKED`），
 4材料が揃っても (a) の実コア未充足など1つでも残れば `BLOCKED`。出力は常に `NOT_RUN` +
-`BLOCKED`（理由を個別列挙）で exit 3。終了コードは `EXIT_MODEL_ELIGIBLE=4`（`MODEL_ELIGIBLE` のみ）と `EXIT_BLOCKED=3`（それ以外すべて）で、exit 0 は返さない。`MODEL_ELIGIBLE`（#191）は材料 (b) の適格性であり実行
+`BLOCKED`（理由を個別列挙）で exit 3。なお `EXIT_MODEL_ELIGIBLE=4` は事前安全チェック CLI（`tools/cdreset_safety_preflight.py`）専用で、その `MODEL_ELIGIBLE` のみに割り当てる。本 plan ツール（`tools/cdreset_slot01_reference_plan.py`）は `MATERIALS_COMPLETE` / `BLOCKED` のみを扱い、終了コードは常に `EXIT_BLOCKED=3` で 4 を返さない。いずれの CLI も exit 0 は返さない。`MODEL_ELIGIBLE`（#191）は材料 (b) の適格性であり実行
 許可ではなく、権限語（ALLOWED/PASS/VERIFIED）や270シナリオ実測を意味する表示は出力しない。
 全材料が充足した**合成**入力でのみ判定が `MATERIALS_COMPLETE` に反転する（反証可能性。実行路
 は依然として無い）。**独立レビュー（(d)）が未了のため slot `$01` の実行は禁止のままであり、
