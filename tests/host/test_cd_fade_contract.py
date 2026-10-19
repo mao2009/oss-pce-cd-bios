@@ -12,7 +12,14 @@ ROOT = Path(__file__).resolve().parents[2]
 DOC = ROOT / "docs" / "research" / "cd-fade-contract.md"
 
 ALLOWED = {"SOURCE_FACT", "HYPOTHESIS", "UNKNOWN"}
-FORBIDDEN = re.compile(r"\b(OBSERVED|VERIFIED|PASS|DEV_CALLABLE)\b")
+FORBIDDEN = re.compile(r"(?<![A-Za-z_])(OBSERVED|VERIFIED|PASS|DEV_CALLABLE)(?![A-Za-z_])")
+GATE_CLAIMS = re.compile(r"release_eligible\s*[:=]\s*true|DEV_CALLABLE`?\s*を付ける|互換(を満た|である|性あり|確認)|BLOCKED_ABI.{0,10}解除")
+
+
+def section1(text):
+    return text.split("## 1.")[1].split("## 2.")[0]
+
+
 FIELD_ROW = re.compile(r"^\| (F\d{2}) \|")
 SOURCE_ID = re.compile(r"\bS\d+\b")
 # No source is APPROVED yet; every source S1-S10 is PENDING until the owner records approval.
@@ -147,8 +154,29 @@ class CdFadeLedgerTest(unittest.TestCase):
         self.assertEqual(check_pins(self.text), [])
 
     def test_release_gate_stays_closed(self):
-        self.assertIn("BLOCKED_ABI", self.text)
-        self.assertIn("release_eligible=false", self.text)
+        s1 = section1(self.text)
+        self.assertIn("BLOCKED_ABI を維持", s1)
+        self.assertIn("`release_eligible=false`。`DEV_CALLABLE` は付けない", s1)
+        self.assertIsNone(GATE_CLAIMS.search(self.text))
+
+    def test_source_fact_definition_requires_approved_source(self):
+        self.assertIn("APPROVED（人間が裁定済みで、承認者と日付がある）出典", self.text)
+
+    def test_gate_mutations_are_detected(self):
+        for old, new in [
+            ("BLOCKED_ABI を維持", "BLOCKED_ABI を解除"),
+            ("`DEV_CALLABLE` は付けない", "`DEV_CALLABLE` を付ける"),
+            ("`release_eligible=false`。", "`release_eligible=false`。release_eligible: true に変更。"),
+            ("BIOS 側の振る舞いに対する実行証拠はない", "BIOS 互換を満たす"),
+        ]:
+            with self.subTest(new=new):
+                m = self.text.replace(old, new, 1)
+                self.assertNotEqual(m, self.text)
+                self.assertTrue(GATE_CLAIMS.search(m) or "BLOCKED_ABI を維持" not in section1(m))
+
+    def test_forbidden_words_adjacent_to_japanese_are_detected(self):
+        self.assertTrue(check_ledger("| F90 | x | UNKNOWN | 実機PASS | y |"))
+        self.assertTrue(check_ledger("| F90 | x | UNKNOWN | VERIFIEDの定義 | y |"))
 
 
 class PromotionRegressionTest(unittest.TestCase):
