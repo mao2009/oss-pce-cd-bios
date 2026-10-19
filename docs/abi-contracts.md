@@ -23,6 +23,13 @@ model can be located in a pinned source; it does not establish BIOS behavior.
 A field may contain a reported observation while explicitly leaving the actual
 callee behavior unknown. `NOT_STARTED` applies to firmware implementation.
 
+`SOURCE_FACT` (used by the per-API ledgers; `VERIFIED` in cd-base-abi-ledger.md has the same scope) is limited to a caller-side statement
+located in the pinned source text; it never applies to callee (BIOS) behavior.
+It is independent of three other questions that the ledgers keep separate: whether
+the source license permits use or copying (provenance/adoption, still `PENDING`),
+callee measurement (`NOT_RUN`), and implementability (`NOT_STARTED`). A
+`SOURCE_FACT` does not turn `PENDING` into `APPROVED`.
+
 Source objects include repository, exact SHA, path, file SHA-256 and immutable
 URL. Source status never implies legal adoption approval. The observations use
 upstream symbols; candidate names remain unchanged even where aliases conflict.

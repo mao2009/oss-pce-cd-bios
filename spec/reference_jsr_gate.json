@@ -1,0 +1,20 @@
+{
+  "schema": "oss-pce-cd-bios/reference-jsr-gate/v1",
+  "claim_ledger": "spec/api_contracts.json",
+  "slots": {
+    "1": {
+      "candidate_entry": "0xE003",
+      "execution": "BLOCKED",
+      "release_eligible": false,
+      "hazard_controls": {
+        "H1": "CONTROLLED",
+        "H2": "CONTROLLED",
+        "H3": "PARTIAL",
+        "H4": "UNCONTROLLED",
+        "H5": "UNCONTROLLED",
+        "H6": "CONTROLLED",
+        "H7": "CONTROLLED"
+      }
+    }
+  }
+}
