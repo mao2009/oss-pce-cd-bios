@@ -105,11 +105,22 @@ curl -sL -o huc.tar.gz https://codeload.github.com/pce-devel/huc/tar.gz/54f5c736
 sha256sum huc.tar.gz    # 9fe91254051381077bd4ea217b718ec033a52da185283ae9479c1abac365311b
 tar xzf huc.tar.gz -C <空ディレクトリ>
 grep -rIn -E 'cd_seek|cd_base|cd_read' <空ディレクトリ>
-# S4 の LBA 表（gulliver_lba と dd 行）を抜き出し、件数・24 ビット・順序・MSF 成立数を数える（表は転載しない）
+# S4 の LBA 表（gulliver_lba と dd 行）を抜き出し、検査スクリプトを別の空ディレクトリで実行する（表は転載しない）
+mkdir <別の空ディレクトリ> && cd <別の空ディレクトリ>
 grep -E '(^gulliver_lba:|^\s+dd\s)' <空ディレクトリ>/examples/asm/elmer/ted2-core-gulliver/gulliver.asm > gl_dd.txt
-python3 -I -c "import re,sys; v=[int(m.group(1),16) for l in open('gl_dd.txt') for m in [re.search(r'dd\s+\\$([0-9A-Fa-f]+)',l)] if m]; print(len(v), all(x<1<<24 for x in v), all(a<b for a,b in zip(v[:37],v[1:37])), v[-1]<v[36])"
+cat > check.py <<'EOF'
+import re
+v = [int(m.group(1), 16) for l in open('gl_dd.txt') for m in [re.search(r'dd\s+\$([0-9A-Fa-f]+)', l)] if m]
+def split(x): return (x >> 16) & 0xFF, (x >> 8) & 0xFF, x & 0xFF
+def binok(b): m, s, f = b; return m < 100 and s < 60 and f < 75
+def bcdok(b):
+    if not all((x >> 4) <= 9 and (x & 0xF) <= 9 for x in b): return False
+    m, s, f = ((x >> 4) * 10 + (x & 0xF) for x in b); return m < 100 and s < 60 and f < 75
+print(len(v), all(x < 1 << 24 for x in v), all(a < b for a, b in zip(v[:37], v[1:37])), v[-1] < v[36], sum(not (binok(split(x)) or bcdok(split(x))) for x in v))
+EOF
+python3 -I check.py
 ```
-期待値: `38 True True True`（件数、24 ビット、映像 37 件の単調増加、末尾が映像の最後より小さい）。MSF の判定（binary は m<100, s<60, f<75。BCD は各桁が 0〜9 のうえで同じ上限）で、どちらでも成立しない件数は 34。
+期待値: `38 True True True 34`（件数、24 ビット、映像 37 件の単調増加、末尾が映像の最後より小さい、binary と BCD のどちらでも MSF として成立しない件数）。
 
 本台帳の作成時に、上記で展開して行番号を確認した。#11（`docs/cd-base-abi-ledger.md` §2）と #12（`docs/cd-read-contract.md`）の記述は、
 この固定版で `cd_base` と `cd_read` の呼出し箇所を見直した。#11 台帳（`docs/cd-base-abi-ledger.md` §3 の (4)）の「CD_READ の呼出し 5 箇所」は HuCC（`include/hucc`）に限った数（`hucc-systemcard.asm` の 4 箇所と `core-kernel.asm` の 1 箇所）であり、
