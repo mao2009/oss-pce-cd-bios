@@ -17,7 +17,7 @@ FIELD_ROW = re.compile(r"^\| (F\d{2}) \|")
 SOURCE_ID = re.compile(r"\bS\d+\b")
 # No source is APPROVED yet; every source S1-S10 is PENDING until the owner records approval.
 PENDING_SOURCES = {f"S{i}" for i in range(1, 11)}
-EXPECTED_COUNTS = {"HYPOTHESIS": 21, "UNKNOWN": 15}
+EXPECTED_COUNTS = {"SOURCE_FACT": 0, "HYPOTHESIS": 21, "UNKNOWN": 15}
 
 # Pinned verdict per field row. A verdict change must edit this table in review.
 EXPECTED = {
@@ -96,6 +96,24 @@ CALLEE_ROWS = ["F02", "F07", "F10", "F12", "F13", "F16", "F18", "F19", "F22", "F
 def source_rows(text):
     """Return the section-3 source table rows (S1..S10)."""
     return [l for l in text.splitlines() if re.match(r"^\| S\d+ \|", l)]
+
+
+def check_sources(text):
+    """Every source row must be PENDING and not APPROVED; SOURCE_FACT needs an APPROVED source."""
+    errors = []
+    rows = source_rows(text)
+    approved = set()
+    for row in rows:
+        sid = SOURCE_ID.search(row).group(0)
+        if "APPROVED" in row:
+            approved.add(sid)
+            errors.append(f"{sid}: source is APPROVED without owner record")
+        elif "PENDING" not in row:
+            errors.append(f"{sid}: source row does not state PENDING")
+    for fid, (verdict, basis) in parse_fields(text).items():
+        if verdict == "SOURCE_FACT" and not (set(SOURCE_ID.findall(basis)) & approved):
+            errors.append(f"{fid}: SOURCE_FACT cites no APPROVED source")
+    return errors
 
 
 def promote(text, fid, verdict):
@@ -179,17 +197,30 @@ class PromotionRegressionTest(unittest.TestCase):
             self.assertIn(rows[fid][0], {"HYPOTHESIS", "UNKNOWN"}, fid)
 
     def test_all_sources_stay_pending(self):
-        rows = source_rows(self.text)
-        self.assertEqual(len(rows), 10)
-        for row in rows:
-            self.assertIn("PENDING", row)
-            self.assertNotIn("APPROVED", row)
+        self.assertEqual(len(source_rows(self.text)), 10)
+        self.assertEqual(check_sources(self.text), [])
 
-    def test_source_approval_mutation_is_detected(self):
-        # Flipping a source from PENDING to APPROVED must be caught by the source rule.
-        mutated = self.text.replace("出自は PENDING", "出自は APPROVED", 1)
+    def test_source_approval_mutation_is_detected_for_every_source(self):
+        for sid in sorted(PENDING_SOURCES):
+            with self.subTest(sid=sid):
+                mutated = re.sub(rf"^(\| {sid} \|.*)PENDING", r"\g<1>APPROVED", self.text,
+                                 count=1, flags=re.M)
+                self.assertNotEqual(mutated, self.text)
+                self.assertTrue(check_sources(mutated))
+
+    def test_source_pending_removal_is_detected(self):
+        mutated = re.sub(r"^(\| S2 \|.*)PENDING（S1 と同じ）", r"\g<1>同上", self.text,
+                         count=1, flags=re.M)
         self.assertNotEqual(mutated, self.text)
-        self.assertTrue(any("APPROVED" in r for r in source_rows(mutated)))
+        self.assertTrue(check_sources(mutated))
+
+    def test_source_fact_without_approved_source_is_rejected(self):
+        for basis_fid in ("F01", "F13", "F36"):
+            mutated = promote(self.text, basis_fid, "SOURCE_FACT")
+            self.assertTrue(any("APPROVED" in e for e in check_sources(mutated)), basis_fid)
+
+    def test_release_gate_wording_is_negative_only(self):
+        self.assertNotRegex(self.text, r"(BLOCKED_ABI.{0,10}解除|release_eligible=true)")
 
     def test_ledger_declares_zero_source_fact(self):
         self.assertIn("SOURCE_FACT は 0 件", self.text)

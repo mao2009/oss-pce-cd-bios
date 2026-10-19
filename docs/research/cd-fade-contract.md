@@ -6,7 +6,7 @@
 
 - 本書は公開ソースの文書調査のみ。System Card の CD_FADE は実行していない。実行可能な呼出先がないため **BLOCKED_ABI を維持**する。
 - `release_eligible=false`。`DEV_CALLABLE` は付けない。BIOS 側の振る舞いに対する実行証拠はないため、VERIFIED や PASS は主張しない。
-- 確定できるのは **呼出側（HuCC の固定版）の ABI** だけである。入口番地 `$00:E02D`、入力 A（type）、呼出し手順、void 宣言は HYPOTHESIS（呼出側の記述。出自が PENDING の出典に基づく）として扱う。
+- 記述できるのは **呼出側（HuCC の固定版）の ABI を仮説として整理したもの** だけである。入口番地 `$00:E02D`、入力 A（type）、呼出し手順、void 宣言は HYPOTHESIS（呼出側の記述。出自が PENDING の出典に基づく）として扱う。
 - BIOS 側の戻り値、フラグ、作業 RAM、MPR/SP の副作用、IRQ、完了条件、タイムアウトは UNKNOWN または HYPOTHESIS にとどめる。
 - **CD-DA（CD 音楽）の音量フェードが対象かは UNKNOWN。** 公開出典が互いに矛盾する（F13）。CD-DA 対象を根拠付きで示せる出典はない。
 
