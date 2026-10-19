@@ -27,17 +27,18 @@ GG_COMMIT = 'drhelius/Geargrafx@3685f8cf'
 GG_UNRESOLVED = 'drhelius/Geargrafx@1e52d13f'
 # Execution rule (structural, not a verb list). A line is a claim when it contains a
 # completed-action or past-tense marker AND either a reference-callee subject (BIOS, ROM,
-# callee, slot, $0D, $E0xx, CD_SUBRQ/CD_SUBRD) or an observed-result word. Such a line
-# fails, even if it also says 未実行/NOT_RUN. A line with no past marker is not a claim,
-# so "未実行" / "NOT_RUN" wording passes on its own.
+# callee, slot, $0D, $E0xx, CD_SUBRQ/CD_SUBRD). A line that asserts an observed result
+# (観測した, 実測値 ...) fails on its own. A failing line fails even if it also says
+# 未実行/NOT_RUN. A line with no past marker is not a claim, so 未実行/NOT_RUN wording passes.
 # Limits: a past verb with no subject word on the same line is not caught; present-tense
 # plans ("呼ぶ") are not caught; subject detection is a fixed token set. Keep the doc to
 # present or negated wording about execution.
-PAST_MARK = re.compile(r'(?:た|んだ)(?![ぁ-ん])|(?i:\b\w+ed\b|\bran\b)')
+# English: "-ed" words, except "un-" adjectives such as "unresolved" (the doc's own status words).
+PAST_MARK = re.compile(r'(?:た|んだ)(?![ぁ-ん])|(?i:\b(?!un)\w+ed\b|\bran\b)')
 CALLEE_SUBJECT = re.compile(
     r'\bBIOS\b|\bROM\b|[Cc]allee|呼出先|呼び出し先|スロット|\bslot\b|\$0D|\$E0[0-9A-Fa-f]{2}'
     r'|CD_SUBR[QD]')
-RESULT_WORD = re.compile(r'観測|実測|結果|確認')
+RESULT_CLAIM = re.compile(r'(?:観測|実測|確認)(?:した|され|できた)')
 FORBIDDEN_CELL_TOKENS = {'VERIFIED', 'OBSERVED', 'PASS'}
 
 
@@ -55,7 +56,7 @@ def _claim_rows(text):
 def _exec_violations(text):
     out = []
     for lineno, line in enumerate(text.splitlines(), 1):
-        if PAST_MARK.search(line) and (CALLEE_SUBJECT.search(line) or RESULT_WORD.search(line)):
+        if (PAST_MARK.search(line) and CALLEE_SUBJECT.search(line)) or RESULT_CLAIM.search(line):
             out.append((lineno, line.strip()))
     return out
 
