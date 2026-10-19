@@ -25,7 +25,7 @@
 | S3 | HuC `include/hucc/core-kernel.asm` | 同上 | 486–516（`call_bios`、MPR7 の退避・復元） | BSL-1.0（John Brandwood） | 呼出側の trampoline |
 | S4 | Hu-Go `bios.c` | `mckayemu/hugo` `64ed226da2288738781743eeef228c069e8973a4`。取得 tar の SHA-256 は `e52a6acd0a53f6485fa022341b00c72f28414b3a4bb276523bae9312fb05fc1a` | 37（ID 定義）、168、631–665（`CD_SEARCH` の HLE） | `COPYING` により GPL-2（例外: `pcecd.c` のみ BSD） | **HLE。BIOS の証拠に使わない。H 行のみ** |
 | S5 | Stum「PC Engine CD-ROM² BIOS Method offsets」（2025-07-28） | <https://www.stum.de/2025/pcenginebiosoffsets/>。2026-10-19 に閲覧。「Method Addresses across CD-ROM² System Cards」表と本文 | 表の `cd_search` 行（JSR、1.0、2.0、2.1、3.0、TG2.0、TG3.0 の 7 列） | 本文 CC BY-NC-SA 4.0、コード MIT（ページ末尾の表示）。**数値のみ採録し、本文は引用しない** | 実装アドレスの候補（HYPOTHESIS） |
-| S6 | Zeograd「PC-Engine Documentation: The System card」 | <https://www.zeograd.com/download/pce_bios.html>。2026-10-19 に閲覧 | 228–230（`CD_SEARCH` 見出し） | **ページに明示なし（UNKNOWN）。参照のみ、内容は引用しない** | 見出しの有無の確認のみ |
+| S6 | Zeograd「PC-Engine Documentation: The System card」 | <https://www.zeograd.com/download/pce_bios.html>。2026-10-19 に閲覧 | `CD_SEARCH` の見出し（行番号は要約取得の未検証の所見のため記載しない） | **ページに明示なし（UNKNOWN）。参照のみ、内容は引用しない** | 見出しの有無の確認のみ。要約取得の所見は根拠として固定しない |
 
 除外（根拠に使わない）:
 
@@ -66,7 +66,7 @@ HuC の固定版全体で `cd_search` を単語として検索すると、一致
 | C4 | C | 入力 `_al`〜`_dh` の意味（トラック、MSF、セクタ、フラグ） | UNKNOWN | UNKNOWN | — | 呼出側に書く箇所がない。H2、H3 は HLE であり根拠にできない |
 | C5 | C | 入力 A、X、Y、P | UNKNOWN | UNKNOWN | — | 呼出側の入力の記述がない |
 | C6 | C | 戻り値（A、X、Y、P、フラグ） | UNKNOWN | UNKNOWN | — | 呼出側が戻りを読まない（K8）。HLE の戻り（H4）は根拠にできない |
-| C7 | C | MPR の前提 | HYPOTHESIS | MPR0 = `$FF`、MPR1 = `$F8` を前提とする（BIOS 全般） | S5 本文の記述 | 二次資料の記述。`cd_search` 固有の確認はない |
+| C7 | C | MPR の前提 | UNKNOWN | UNKNOWN | — | S5 は数値のみを採録する方針のため本文の記述は根拠にしない。MPR の前提を示す出典が本台帳にない |
 | C8 | C | スタックの使用量・深さ | UNKNOWN | UNKNOWN | — | 出典がない |
 | C9 | C | IRQ・割込み許可（CLI/SEI）の前提 | UNKNOWN | UNKNOWN | — | 呼出側に `cd_search` の記述がない |
 | C10 | C | 副作用（作業 RAM、バッファ、音声の停止） | UNKNOWN | UNKNOWN | — | 呼出先の書込みは未観測。H4 の音声停止は HLE の記述 |
@@ -78,18 +78,18 @@ HuC の固定版全体で `cd_search` を単語として検索すると、一致
 
 | ID | 側 | 項目 | 判定 | 値 | 出典 | 理由・確度 |
 | --- | --- | --- | --- | --- | --- | --- |
-| M1 | M | 名前と番号の一致 | SOURCE_FACT | `CD_SEARCH` = `$07` = `$E015`（S1、S4、S5 の表で一致） | S1 475、S4 37、S5 表 | 名前と番号の組の一致のみ。振る舞いの一致ではない |
-| M2 | M | System Card 3.0 固有の実装アドレス | SOURCE_FACT | S5 の表では 3.0 が `$EF34`、1.0 が `$EFB1`、TG3.0 が `$EF4D`。3.0 と TG3.0 は異なる | S5 表 | 公開表が示す差。実装アドレスの正しさは未確認（C2、C3） |
+| M1 | M | 入口名の宣言 | SOURCE_FACT | HuC の宣言 `cd_search = $00:E015`（呼出先の入口名）。`$07` は S4 の HLE 定義のみ（H1） | S1 475 | HuC の宣言の事実のみ。振る舞いの一致ではない。他出典は名前の裏付けに限る: S5 表は HYPOTHESIS（C1）、S6 は見出しのみ（UNKNOWN 出典）、S4 は `$07` のみで `$E015` を含まない |
+| M2 | M | System Card 3.0 固有の実装アドレス | HYPOTHESIS | S5 の表では 3.0 が `$EF34`、1.0 が `$EFB1`、TG3.0 が `$EF4D`。3.0 と TG3.0 は異なる | S5 表 | 二次資料の表が示す差。実装アドレスの正しさは未確認（C2、C3）。SOURCE_FACT にしない |
 | M3 | M | HuC の equate の版の区別 | SOURCE_FACT | HuC は版を区別せず `$E015` を一つだけ宣言する | S1 475 | S5 は版ごとに異なるアドレスを載せる。HuC の equate はジャンプテーブルの番号として読める |
-| M4 | M | Zeograd の `CD_SEARCH` の本文 | SOURCE_FACT | 見出しだけで本文がない。直前の「Play an audio track.」は `CD_PLAY` の説明であり、`CD_SEARCH` の説明ではない | S6 228–230 | 見出し群（`CD_SEARCH`、`CD_PAUSE`、`CD_STAT`、`CD_SUBQ`）の後の IN/OUT は `CD_SUBQ` のもの。`CD_SEARCH` の IN/OUT は UNKNOWN |
-| M5 | M | 検索の意味（位置指定、トラック再生、非同期） | UNKNOWN | UNKNOWN | S1 388、S4 631–665、S6 228–230 | HuC は「バックグラウンドの検索」と書く。Hu-Go HLE は「トラック再生」として模擬する。Zeograd は本文がない。三つは一致せず、決着の出典がない |
+| M4 | M | Zeograd の `CD_SEARCH` の本文 | HYPOTHESIS | 見出しだけで本文がないと読める（要約取得による所見）。直前の段落は `CD_PLAY` の説明と読める（引用しない）。見出し群の後の入出力の記述は `CD_SUBQ` のものと読める | S6 | 未検証の要約に基づく。Zeograd は無許諾で内容を引用しない。`CD_SEARCH` の IN/OUT は UNKNOWN |
+| M5 | M | 検索の意味（位置指定、トラック再生、非同期） | UNKNOWN | UNKNOWN | S1 388、S4 631–665、S6 | HuC は「バックグラウンドの検索」と書く。Hu-Go HLE は「トラック再生」として模擬する。Zeograd は本文がない。三つは一致せず、決着の出典がない |
 
 ## 6. System Card 3.0 固有の不一致（明示）
 
-- 3.0 の入口 `$E015` の名前は HuC、Stum、Zeograd、Hu-Go で一致する（M1）。
-- ただし、3.0 の実装アドレスとして公開表が示す `$EF34` は、1.0 の `$EFB1` と TG3.0 の `$EF4D` と異なる（M2）。
-  この 3.0 の値は二次資料の表だけに基づき、実行で確認していない（C2）。
-- Zeograd は「3.0 について記述する」と書くが、`CD_SEARCH` の本文がない（M4）。3.0 の引数と戻り値は出典からは得られない。
+- 3.0 の入口 `$E015` の名前は HuC の宣言が根拠である（M1、SOURCE_FACT）。Stum の表は名前の裏付けとして HYPOTHESIS、Zeograd は見出しのみ（M4、HYPOTHESIS）、Hu-Go は `$07` のみを示し `$E015` を示さない。
+- 3.0 の実装アドレスとして公開表が示す `$EF34` は、1.0 の `$EFB1` と TG3.0 の `$EF4D` と異なる（M2、HYPOTHESIS）。
+  この値は二次資料の表だけに基づき、実行で確認していない（C2）。
+- Zeograd は 3.0 を対象とする記述があると読めるが、`CD_SEARCH` の本文がない（M4）。3.0 の引数と戻り値は出典からは得られない。
 - Hu-Go の HLE は 3.0 固有の記述を持たない。トラック再生として模擬するが、これを 3.0 の振る舞いの根拠にはしない（H2〜H4）。
 
 ## 7. 実装に対する残る UNKNOWN（ブロック要因）

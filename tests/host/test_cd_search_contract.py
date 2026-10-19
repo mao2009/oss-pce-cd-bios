@@ -23,9 +23,9 @@ EXPECTED = {
     "K5": "SOURCE_FACT", "K6": "HYPOTHESIS", "K7": "SOURCE_FACT", "K8": "UNKNOWN",
     "H1": "SOURCE_FACT", "H2": "SOURCE_FACT", "H3": "SOURCE_FACT", "H4": "SOURCE_FACT",
     "C1": "HYPOTHESIS", "C2": "HYPOTHESIS", "C3": "HYPOTHESIS", "C4": "UNKNOWN",
-    "C5": "UNKNOWN", "C6": "UNKNOWN", "C7": "HYPOTHESIS", "C8": "UNKNOWN",
+    "C5": "UNKNOWN", "C6": "UNKNOWN", "C7": "UNKNOWN", "C8": "UNKNOWN",
     "C9": "UNKNOWN", "C10": "UNKNOWN", "C11": "UNKNOWN", "C12": "UNKNOWN", "C13": "UNKNOWN",
-    "M1": "SOURCE_FACT", "M2": "SOURCE_FACT", "M3": "SOURCE_FACT", "M4": "SOURCE_FACT",
+    "M1": "SOURCE_FACT", "M2": "HYPOTHESIS", "M3": "SOURCE_FACT", "M4": "HYPOTHESIS",
     "M5": "UNKNOWN",
 }
 
@@ -85,6 +85,10 @@ class LedgerTest(unittest.TestCase):
         for rid, r in self.rows.items():
             if r["side"] == "H":
                 self.assertIn("HLE", r["reason"], rid)
+
+    def test_m1_source_fact_cites_huc_only(self):
+        self.assertEqual(self.rows["M1"]["source"], "S1 475")
+        self.assertIn("E015", self.rows["M1"]["value"])
 
     def test_forbidden_status_words_only_outside_table_rows(self):
         for line in self.text.splitlines():
