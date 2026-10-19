@@ -18,6 +18,7 @@ named step's patterns against the real build output and fails when a pattern mat
 from pathlib import Path
 import os
 import re
+import shlex
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -240,8 +241,12 @@ def check_upload_artifacts(root=ROOT):
 
 # A job id is any YAML key at indent 2 (dots and quotes allowed); the name is the key without quotes.
 JOB_RE = re.compile(r"""^  (?:"([^"]+)"|'([^']+)'|([^\s"'#:][^#:]*?))\s*:\s*(?:#.*)?$""")
-GUARD_CALL = "tools/artifact_guard.py --post-build"
+GUARD_SCRIPT = "tools/artifact_guard.py"
+GUARD_CALL = f"{GUARD_SCRIPT} --post-build"
 GUARD_STEP_KEYS = {"name", "run", "shell"}
+UPLOAD_STEP_KEYS = {"name", "uses", "with"}   # no if:, continue-on-error:, env: on the upload itself
+# The upload step's name is embedded in double quotes in the guard call, so these must not appear in it.
+NAME_FORBIDDEN = '"$`\\'
 # Job-level or workflow-level settings that can change PATH, RUNNER_TEMP or the working directory the guard sees.
 SCOPE_KEYS_REFUSED = {"env", "defaults", "container", "services"}
 
@@ -299,17 +304,25 @@ def _run_lines(lines, start, end, dash):
     return []
 
 
-def _guard_is_bare(command, call, keys):
-    """The step's whole `run:` value is ONE live line: the guard call and nothing after its arguments.
+def _guard_is_bare(command, workflow, name, keys):
+    """The step's whole `run:` value is ONE live line that is exactly the guard call for this workflow and step name.
 
-    `command` is the list of live run lines. Under `bash -e` a failure left of a non-final `&&`/`||`
-    or inside a pipe, `;`, `&` is exempt from errexit, so any second line or shell operator/comment
-    after the call is rejected. `shell:` may be absent or `bash`.
+    The line is split with POSIX shell quoting and must equal [python3|python] tools/artifact_guard.py --post-build
+    WORKFLOW NAME token for token: no `|| true`, `;`, `&`, pipes, comments or extra arguments before, between or after.
+    Matching the call as a text prefix is not enough, because the name is part of the call (MAJOR-1). `shell:` may be
+    absent or `bash`. Anything that does not split (unbalanced quotes) is refused.
     """
-    m = len(command) == 1 and re.match(r"(python3?\s+)?" + re.escape(call) + r"(\s|$)", command[0])
+    if len(command) != 1:
+        return False
+    try:
+        tokens = shlex.split(command[0], posix=True)
+    except ValueError:
+        return False
+    if tokens[:1] in (["python3"], ["python"]):
+        tokens = tokens[1:]
     shell_ok = all(re.sub(r"""["']""", "", k.split(":", 1)[1]).split("#")[0].strip() == "bash"
                    for k in keys if re.match(r"""["']?shell["']?\s*:""", k))
-    return bool(m) and shell_ok and not re.search(r"[|&;#`$()<>\\]", command[0][m.end():])
+    return shell_ok and tokens == [GUARD_SCRIPT, "--post-build", workflow, name]
 
 
 def check_guard_placement(root=ROOT):
@@ -328,6 +341,7 @@ def check_guard_placement(root=ROOT):
 def guard_placement_violations(text, workflow):
     """Each upload step needs exactly one guard step, and it must be the step immediately before it in the same job.
 
+    The upload step's keys are limited to name/uses/with and its name may not contain quote, $, backtick or backslash.
     The guard step's keys are limited to name/run/shell (each once) and its run: is the bare guard call. Job ids
     may contain dots or quotes and must be unique; a workflow that sets env/defaults/container/services at the
     top level or in a job is refused, since those can change the PATH or RUNNER_TEMP the guard depends on.
@@ -354,15 +368,28 @@ def guard_placement_violations(text, workflow):
         if not (_live(line) and USES_RE.search(line)):
             continue
         key_indent = _indent(line) + (2 if line.lstrip().startswith("- ") else 0)
-        dash = next(j for j in range(uses, -1, -1) if _live(lines[j]) and lines[j].lstrip().startswith("- ")
-                    and _indent(lines[j]) + 2 <= key_indent)
+        dash = next((j for j in range(uses, -1, -1) if _live(lines[j]) and lines[j].lstrip().startswith("- ")
+                     and _indent(lines[j]) + 2 <= key_indent), None)
+        if dash is None:
+            problems.append(f"{workflow}: line {uses + 1} is an upload-artifact reference outside a list item")
+            continue
         dash_indent = _indent(lines[dash])
         steps = _step_ranges(lines, dash_indent)
-        index = next(n for n, s in enumerate(steps) if s[0] <= uses < s[1])
+        index = next((n for n, s in enumerate(steps) if s[0] <= uses < s[1]), None)
+        if index is None:
+            problems.append(f"{workflow}: line {uses + 1} is an upload-artifact reference outside a parsed step")
+            continue
         up = steps[index]
         name = next((NAME_RE.search(k).group(1) for k in _step_keys(lines, up[0], up[1], dash_indent) if k.startswith("name:")), "")
-        call = f'{GUARD_CALL} {workflow} "{name}"'
         label = f"{workflow}: {name!r}"
+        if not name or any(c in NAME_FORBIDDEN for c in name):
+            problems.append(f"{label}: upload step name must be non-empty and contain none of the characters {NAME_FORBIDDEN!r} "
+                            "(the guard call embeds it in double quotes)")
+            continue
+        call = f'{GUARD_CALL} {workflow} "{name}"'
+        up_keys = [k.split(":", 1)[0].strip().strip("\"'") for k in _step_keys(lines, up[0], up[1], dash_indent)]
+        if len(set(up_keys)) != len(up_keys) or not set(up_keys) <= UPLOAD_STEP_KEYS:
+            problems.append(f"{label}: upload step may only have name, uses and with, each once (found {up_keys})")
         if has_jobs and up[2] is None:
             problems.append(f"{label}: upload step is outside any job")
             continue
@@ -379,8 +406,8 @@ def guard_placement_violations(text, workflow):
         if len(set(names)) != len(names) or not set(names) <= GUARD_STEP_KEYS:
             problems.append(f"{label}: guard step may only have name, run and shell, each once (found {names})")
         command = _run_lines(lines, start, end, dash_indent)
-        if not _guard_is_bare(command, call, keys):
-            problems.append(f"{label}: guard call is not the bare command of the step's run: (single line, nothing after it, no custom shell:)")
+        if not _guard_is_bare(command, workflow, name, keys):
+            problems.append(f"{label}: guard call is not the bare command of the step's run: (single line, exactly the guard call with this name, no custom shell:)")
     return problems
 
 

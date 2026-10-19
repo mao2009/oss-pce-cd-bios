@@ -406,7 +406,6 @@ class GuardPlacementTests(unittest.TestCase):
     def test_accepted_run_forms(self):
         run = '        run: |\n          ' + CALL
         for step in (f'        run: {CALL}',
-                     '        run: python3 tools/artifact_guard.py --post-build w.yml "Save" --x',
                      '        run: >-\n          ' + CALL, run,
                      '        shell: bash\n' + run, '        shell: "bash"\n' + run):
             with self.subTest(step=step):
@@ -495,6 +494,39 @@ class GuardPlacementTests(unittest.TestCase):
         for label, text in bad.items():
             with self.subTest(bad=label):
                 self.assertNotEqual([], self.violations(text))
+
+    def test_upload_name_cannot_smuggle_shell_into_guard_call(self):
+        # MAJOR-1: the guard call embeds the upload step's name; a quote-breaking name must not make the
+        # run line "guard "Save" || true; echo "x"" pass as a bare guard call (guard failure swallowed, upload runs).
+        name = 'Save" || true; echo "x'
+        run = f'        run: python3 tools/artifact_guard.py --post-build w.yml "{name}"'
+        text = ('jobs:\n  build:\n    steps:\n' + '      - name: Guard\n' + run + '\n'
+                + f'      - name: {name}\n        uses: {UPLOAD}\n        with:\n          path: build/x\n')
+        self.assertNotEqual([], self.violations(text))
+
+    def test_upload_name_with_expansion_or_escape_characters_is_refused(self):
+        for name in ('Save $(rm -rf x)', 'Save `id`', 'Save \\\\ x', 'Save $HOME'):
+            with self.subTest(name=name):
+                call = f'python3 tools/artifact_guard.py --post-build w.yml "{name}"'
+                text = ('jobs:\n  build:\n    steps:\n      - name: Guard\n        run: |\n          ' + call + '\n'
+                        + f'      - name: {name}\n        uses: {UPLOAD}\n        with:\n          path: build/x\n')
+                self.assertNotEqual([], self.violations(text))
+
+    def test_run_line_with_extra_argument_is_refused(self):
+        run = '        run: |\n          ' + CALL
+        text = GUARDED.replace(run, '        run: ' + CALL + ' --x')
+        self.assertNotEqual([], self.violations(text))
+
+    def test_upload_step_if_and_continue_on_error_are_refused(self):
+        # MAJOR-2: only name, uses, with are allowed on the upload step.
+        bad = {
+            'if': SAVE_STEP.replace('        uses:', '        if: ${{ false }}\n        uses:'),
+            'continue-on-error': SAVE_STEP.replace('        uses:', '        continue-on-error: true\n        uses:'),
+            'env': SAVE_STEP.replace('        uses:', '        env:\n          X: 1\n        uses:'),
+        }
+        for label, step in bad.items():
+            with self.subTest(bad=label):
+                self.assertNotEqual([], self.violations(GUARDED.replace(SAVE_STEP, step)))
 
     def test_guard_in_other_job_that_is_needed_is_refused(self):
         # needs: is not a substitute for a guard in the upload's own job, immediately before it.
