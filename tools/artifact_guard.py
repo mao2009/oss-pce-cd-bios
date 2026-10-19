@@ -80,10 +80,12 @@ UPLOAD_RE = re.compile(r"""upload-(?:pages-)?artifact|\bgh\s+release\b|release-a
                        r"""|create-release|["']?uses["']?\s*:\s*["']?(?:\./|[^#\s]*\.github/workflows/)""", re.IGNORECASE)
 # pathlib glob has no brace, extglob or alternation syntax: such a pattern would match nothing and hide its files.
 UNSUPPORTED_PATTERN_CHARS = "{}()|"
-# The only actions a guard job step may `uses:`. Any other action is refused (it is treated as a run step and must
-# therefore be a trusted run). The action name is captured so checkout/download placement can be enforced.
-GUARD_ACTION_RE = re.compile(
-    r"uses:\s*actions/(checkout|download-artifact|configure-pages|deploy-pages|upload-artifact|upload-pages-artifact)@")
+# A guard-job step's own (top-level) `uses:` key and the actions/* action it names. Only these actions may be a
+# guarded step; any other step must be one of the trusted run steps. Reading the top-level key only stops a
+# `uses:`-looking line inside a run: block from masquerading as an allowed action and skipping the run checks.
+USES_KEY_RE = re.compile(r"""["']?uses["']?\s*:\s*(.*)$""", re.IGNORECASE)
+ACTION_PATH_RE = re.compile(
+    r"actions/(checkout|download-artifact|configure-pages|deploy-pages|upload-artifact|upload-pages-artifact)@")
 
 
 def _indent(line):
@@ -547,7 +549,10 @@ def _is_trusted_checkout(lines, step, dash):
     body = [l.strip() for l in lines[step[0]:step[1]] if _live(l)]
     if not (any(CHECKOUT_RE.search(b) for b in body) and all(t in body for t in TRUSTED_CHECKOUT_LINES)):
         return False
-    return all(key in TRUSTED_CHECKOUT_WITH for key in _with_keys(lines, step[0], step[1]))
+    keys = _with_keys(lines, step[0], step[1])
+    # A repeated with: key (e.g. `ref: main` then `ref: <pull request>`) could override the trusted value if the
+    # YAML parser keeps the last duplicate, so duplicates are refused along with out-of-allowlist keys.
+    return len(set(keys)) == len(keys) and all(key in TRUSTED_CHECKOUT_WITH for key in keys)
 
 
 def _is_checkout(lines, step, dash):
@@ -590,12 +595,19 @@ def _step_body(lines, step):
     return [l.strip() for l in lines[step[0]:step[1]] if _live(l)]
 
 
-def _uses_action(lines, step):
-    """The actions/* action of a step's `uses:` line (e.g. 'checkout'), or None when the step is not such a run step."""
-    for body in _step_body(lines, step):
-        match = GUARD_ACTION_RE.search(body)
-        if match:
-            return match.group(1)
+def _uses_action(lines, start, end, dash):
+    """The actions/* action of a step's own top-level `uses:` key (e.g. 'checkout'), or None.
+
+    Only the step's top-level keys are read, so a `uses:`-looking line inside a run: block cannot masquerade as an
+    allowed action and skip the trusted-run checks.
+    """
+    for key in _step_keys(lines, start, end, dash):
+        match = USES_KEY_RE.match(key)
+        if not match:
+            continue
+        value = match.group(1).split("#")[0].strip().strip("\"'")
+        found = ACTION_PATH_RE.match(value)
+        return found.group(1) if found else None
     return None
 
 
@@ -742,11 +754,14 @@ def guard_placement_violations(text, workflow):
         job_steps = sorted((s for s in steps if s[2] == job), key=lambda s: s[0])
         for index, s in enumerate(job_steps):
             body = _step_body(lines, s)
-            action = _uses_action(lines, s)
+            names = _key_names(_step_keys(lines, s[0], s[1], dash))
+            action = _uses_action(lines, s[0], s[1], dash)
             if action:
                 # The trusted copy is fetched into .trusted-main by job_steps[1]. Any later action that writes files
                 # could overwrite it with the pull-request content and run it as the guard, so the only checkouts a
                 # guard job may have are the first two steps (the pull-request checkout and the trusted checkout).
+                if "run" in names:
+                    problems.append(f"{workflow}: guard job {job!r}: a step may not have both uses: and run:")
                 if action == "checkout" and index > 1:
                     problems.append(f"{workflow}: guard job {job!r}: only the first two steps may be checkouts; "
                                     f"step {index + 1} is another checkout (it could overwrite .trusted-main)")
@@ -755,7 +770,6 @@ def guard_placement_violations(text, workflow):
                                     f"download an artifact")
                 continue
             keys = _step_keys(lines, s[0], s[1], dash)
-            names = _key_names(keys)
             if len(set(names)) != len(names) or not set(names) <= RUN_STEP_KEYS or not _shell_ok(keys):
                 problems.append(f"{workflow}: guard job {job!r}: a trusted run step may only have {sorted(RUN_STEP_KEYS)} "
                                 f"(shell: bash), each once; found {names}")

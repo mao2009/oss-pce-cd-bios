@@ -690,6 +690,15 @@ class GuardPlacementTests(unittest.TestCase):
                 self.assertNotEqual(GUARDED, text)
                 self.assertNotEqual([], self.violations(text))
 
+    def test_trusted_checkout_refuses_a_duplicate_with_key(self):
+        # `ref: main` followed by `ref: <pull request>` could override the trusted ref if the YAML parser keeps the
+        # last duplicate key, so a repeated with: key is refused.
+        duplicate = GUARDED.replace('          ref: main\n',
+                                    '          ref: main\n          ref: ${{ github.head_ref }}\n', 1)
+        self.assertNotEqual(GUARDED, duplicate)
+        self.assertNotEqual([], self.violations(duplicate))
+        self.assertEqual([], self.violations(GUARDED))
+
     def test_trusted_checkout_must_pin_the_guard_file(self):
         # Without the sparse checkout of this exact file, a .trusted-main copy planted by an earlier step would not
         # be overwritten by main, so the guard could run from planted code.
@@ -757,6 +766,20 @@ class GuardPlacementTests(unittest.TestCase):
         text = GUARDED.replace(STAGE_STEP, extra + STAGE_STEP)
         self.assertNotEqual(GUARDED, text)
         self.assertNotEqual([], self.violations(text))
+
+    def test_a_uses_line_inside_a_run_block_cannot_masquerade_as_an_allowed_action(self):
+        # Only the step's own top-level uses: key may classify it. A run: body that contains 'uses:
+        # actions/configure-pages@v5' must not let the step skip the trusted-run checks.
+        evil = ('      - name: Evil\n'
+                '        run: |\n'
+                '          echo hi\n'
+                '          uses: actions/configure-pages@v5\n')
+        for action in ('configure-pages', 'deploy-pages'):
+            with self.subTest(action=action):
+                body = evil.replace('actions/configure-pages@v5', f'actions/{action}@v5')
+                text = GUARDED.replace(STAGE_STEP, body + STAGE_STEP)
+                self.assertNotEqual(GUARDED, text)
+                self.assertNotEqual([], self.violations(text))
 
     def test_a_glob_that_reaches_through_a_symlinked_directory_is_refused(self):
         # `build/debug/link/*` is globbed through the link, so it could stage a file from outside the checkout. The
