@@ -39,15 +39,17 @@ HuCC（`pce-devel/huc`）の固定版を使う。
 | S4 | `examples/asm/elmer/ted2-core-gulliver/gulliver.asm` | 316–335（seek の引数設定と `system cd_seek`）、346–371（read の引数設定と `system cd_read`、367 行）、536 行以降（`gulliver_lba` 表） | Boost 1.0（John Brandwood 2022） | 呼出側の実例 |
 | S5 | `examples/asm/elmer/include/movie.asm` | 246（`BUFFER_1ST_BANK = $6A`） | Boost 1.0（同上） | S4 が include する定数 |
 | S6 | `examples/asm/elmer/ted2-test-sherlock/sherlock-hack.asm` | 170（ゲーム側の呼出し点へのフック）、404–408（`begin_seek` → `jmp $E00C`） | Boost 1.0（2024）。ただしゲーム実行コードへのパッチ | 補助のみ。引数の設定はこの断片に無いので証拠にしない |
-| S7 | `include/huc/equ.inc` | 34–44（`__al` などの別名で `$20F8`〜`$20FF` を定義。`_al` などの名前は S1 の `pcengine.inc` 330–343 が定義） | 要確認（ライセンス表示は未確認） | 番地の定義のみ |
+| S7 | `include/huc/equ.inc` | 34–44（`__al` などの別名で `$20F8`〜`$20FF` を定義。`_al` などの名前は S1 の `pcengine.inc` 330–343 が定義） | 表示なし（下記の注） | 番地の定義のみ |
 
 除外する出典:
 
 - `examples/asm/elmer/kickc/bios.h` 30 行: 名前の宣言のみ。ライセンス未確認（#11 と同じ扱い）。
-- `examples/asm/elmer/cd-core-scsitest/scsitest.asm` 1023、1100 行の「Perform a cd_seek」: 同ファイルの自作ルーチン `test_cd_read`（SCSI READ）への注釈であり、System Card の呼出しではない。
+- `examples/asm/elmer/cd-core-scsitest/scsitest.asm` 1023 行の「Perform a cd_seek」と 1100 行の「Read 1 sector, i.e. cd_seek」: 同ファイルの自作ルーチン `test_cd_read`（SCSI READ）への注釈であり、System Card の呼出しではない。
 - `examples/asm/elmer/ted2-test-sherlock/dat2csv.c` 334、338 行: ログ文字列のみ。
 - Hu-Go! `bios.c`: HLE であり、ライセンス未確定のため使わない（#11 の規則に従う）。
 - `include/huc/system.inc` 69 行: `cd_seek = $E00C` の宣言のみ。
+
+注（ライセンス）: 固定版ルートの `LICENSE` は、コレクション全体の法的地位を「正確に述べることはほぼ不可能」とし、例外として MagicKit、TGEmu、GCC 由来のテスト、Ulrich Hecht の変更部分（BSD 系）だけを挙げる。ファイル単位のライセンス表示（BSL-1.0、Boost 1.0）がない S7（`equ.inc`）は、法的状態を未確定として扱う。
 
 固定版全体で `cd_seek` を含む行は 9 行。呼出し（`system cd_seek` と `jmp $E00C`）は S4 と S6 の 2 箇所だけである。
 `docs/oss-reuse-audit-r3.md` の「呼び出し無し」は `hucc-systemcard.asm` と `core-*.asm` の範囲の記録であり、
@@ -79,7 +81,7 @@ HuCC（`pce-devel/huc`）の固定版を使う。
 | C10 | C | 割込み（IRQ）の扱い | UNKNOWN | UNKNOWN | — | K8 は呼出側の事実のみ | IRQ 有無での比較（§7） |
 | C11 | C | 読込みの副作用（バッファへの書込み） | HYPOTHESIS | 呼出側コメントに従えば、seek の中で 1 セクタの読込みが起きる | S4 316–320 | コメントのみ。`_bl` への書込みが実際に起きるかは未確認 | 読込み先バンクの観測（§7） |
 | R1 | R | CD_BASE（#11）との関係 | UNKNOWN | UNKNOWN | S1、S2、S4、S5 | 固定版で `cd_base`（`$E006`）を呼ぶのは `include/hucc/core-startup.asm` 300 行の 1 箇所だけ（2ISO 経路）。S4 は `cd_base` を呼ばずに `cd_seek` と `cd_read` を使う。CD_SEEK が CD_BASE の基準を使うかは、ソースから決まらない | #11 の枠組みで、CD_BASE の後の `cd_seek` と READ LBA を比べる（callee 実行が前提） |
-| R2 | R | CD_READ（#12）との関係 | HYPOTHESIS | seek と read が同じアドレス空間を指す（呼出側の仮定） | S4 335、357–367 | 呼出側は seek に表の値、続く read に同じ表の値に 1 を加えた値（`adc #1`）を与え、同じ 24 ビット表現（K5）を使う。#12 台帳の「ブロック番号の表現」（HYPOTHESIS）と整合するが、観測していない | seek と read の READ LBA の比較（§7） |
+| R2 | R | CD_READ（#12）との関係 | HYPOTHESIS | seek と read が同じアドレス空間を指す（呼出側の仮定） | S4 335、357–367 | 呼出側は seek に表の値、続く read に同じ表の値に 1 を加えた値（`adc #1`）を与え、同じ 24 ビット表現（K5）を使う。#12 台帳（`docs/cd-read-contract.md`）の「Block number」行（HYPOTHESIS）と整合するが、観測していない | seek と read の READ LBA の比較（§7） |
 | R3 | R | 観測可能性 | BLOCKED | UNKNOWN | — | 実行可能な System Card の `$E00C` が無い。`cd-base-abi-ledger.md` §4a の DEV ROM の測定は `$E006` だけで、`$E00C` は未測定。固定版 Geargrafx での `$E00C` の実行経路も未確認 | NOT_RUN（§7） |
 
 ## 4. ホスト単体テスト（表と値の不変条件）
@@ -105,8 +107,8 @@ grep -rIn -E 'cd_seek|cd_base|cd_read' <空ディレクトリ>
 ```
 
 本台帳の作成時に、上記で展開して行番号を確認した。#11（`docs/cd-base-abi-ledger.md` §2）と #12（`docs/cd-read-contract.md`）の記述は、
-この固定版で `cd_base` と `cd_read` の呼出し箇所を見直した。#12 台帳の「CD_READ の呼出し 5 箇所」は HuCC（`include/hucc`）に限った数であり、
-`include/huc` には別に 6 箇所（`ac_lib.asm`、`cdrom.asm` の 3 箇所、`startup.asm` の 2 箇所）があり、examples には S4 の 367 行がある。
+この固定版で `cd_base` と `cd_read` の呼出し箇所を見直した。#11 台帳（`docs/cd-base-abi-ledger.md` §3 の (4)）の「CD_READ の呼出し 5 箇所」は HuCC（`include/hucc`）に限った数（`hucc-systemcard.asm` の 4 箇所と `core-kernel.asm` の 1 箇所）であり、
+`include/huc` には別に 6 箇所（`ac_lib.asm`、`cdrom.asm` の 3 箇所、`startup.asm` の 2 箇所）があり、examples には S4 の 367 行と `ipl-scd.asm` の 236 行がある。
 
 ## 6. 依存関係と PR の境界
 
