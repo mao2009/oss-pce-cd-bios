@@ -231,5 +231,20 @@ NOT_STARTED/NOT_RUN のまま変更しない。
 は依然として無い）。**独立レビュー（(d)）が未了のため slot `$01` の実行は禁止のままであり、
 純正 BIOS JSR は一切実行していない。** `spec/api_contracts.json` slot 1 は変更しない。
 
+### 状態名の対応表（実行ゲート系の語彙、Issue #228）
+
+似た名前の状態は**別の意味**を持つため統合しない。いずれも実行許可ではない。
+
+| 状態名 | 出所 | 意味 | 実行許可 |
+| --- | --- | --- | --- |
+| `MODEL_ELIGIBLE` | `tools/cdreset_safety_preflight.py` (#191) | 合成 posture が全危険を覆い ABI が `REVIEWED` というモデル適格性 | なし |
+| `MATERIALS_COMPLETE` | `tools/cdreset_slot01_reference_plan.py` (#202) | 合成の4材料（(a)-(d)）が全て充足したときの判定反転（反証可能性）。実材料では到達不能 | なし（実行路なし） |
+| `UNAUTHENTICATED_MATERIALS_RECORDED` | `tools/reference_jsr_gate.py` (#228) | 呼び出し元が渡した**未認証**の承認入力が整形済みで、台帳も全危険 CONTROLLED。真正性は未検証 | なし（runner `NONE`、`jsr_count=0`） |
+| `ALLOWED` | どこからも返さない | 独立した実コア強制と認証済み承認が揃った場合の予約語 | 本リポジトリでは生成しない |
+
+`MATERIALS_COMPLETE` を `UNAUTHENTICATED_MATERIALS_RECORDED` に改名したのは `reference_jsr_gate.py` のみ
+（承認入力を承認と読ませないため）。`reference_plan` 側の名称統一は**オーナー判断で保留**:
+案A 現状維持（意味が異なり別モジュールのため衝突しない。推奨）／案B plan 側も改名（既存テスト・文書の更新が必要）。
+
 ホストテスト: `python3 -m unittest tests.host.test_cdreset_slot01_reference_plan -v`（合成のみ、
 エミュレータ・ROM 不使用）。
