@@ -8,6 +8,8 @@ and must not be wired into any callable entry.
 """
 import hashlib
 import json
+import shutil
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -17,6 +19,10 @@ FIXTURE = ROOT / "tests" / "fixtures" / "cdsearch-slot07-cases.json"
 # fixture requires updating this value in the same change, so silent edits are caught.
 FIXTURE_SHA256 = "eebc25bf74e7a4b769d7960d409bac653f0c9108395079a81c01b3d1dfeabff0"
 POSITIVE, NEGATIVE = "POSITIVE", "NEGATIVE"
+
+
+def makefile_references_fixture(path):
+    return "cdsearch-slot07" in path.read_text(encoding="utf-8", errors="ignore")
 
 
 def canonical_sha256(data):
@@ -110,11 +116,24 @@ class CdSearchSlot07FixtureTests(unittest.TestCase):
         self.assertEqual(slot7["verification"]["status"], "NOT_RUN")
         self.assertIs(slot7["verification"]["executed_callee"], False)
         self.assertEqual(slot7["mapping_status"], "HYPOTHESIS")
-        for shared in ("tools", "Makefile", "spec", "docs"):
+        makefile = ROOT / "Makefile"
+        self.assertTrue(makefile.is_file())
+        self.assertFalse(makefile_references_fixture(makefile), "fixture wired into Makefile")
+        for shared in ("tools", "spec", "docs"):
             for path in (ROOT / shared).rglob("*"):
                 if path.is_file() and path.suffix in {".py", ".json", ".md", ""}:
                     self.assertNotIn("cdsearch-slot07", path.read_text(encoding="utf-8", errors="ignore"),
                                      f"fixture wired into {path.relative_to(ROOT)}")
+
+    def test_wiring_probe_detects_reference_in_scratch_makefile(self):
+        # Probe: the Makefile check must fail when a reference is inserted. Runs on a temp copy only.
+        with tempfile.TemporaryDirectory() as tmp:
+            scratch = Path(tmp) / "Makefile"
+            shutil.copyfile(ROOT / "Makefile", scratch)
+            self.assertFalse(makefile_references_fixture(scratch))
+            with scratch.open("a", encoding="utf-8") as fh:
+                fh.write("\ncheck: tests/fixtures/cdsearch-slot07-cases.json\n")
+            self.assertTrue(makefile_references_fixture(scratch))
 
 
 if __name__ == "__main__":
