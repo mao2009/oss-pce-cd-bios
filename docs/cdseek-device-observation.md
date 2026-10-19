@@ -33,6 +33,8 @@ System Card API の意味とは別物である。
 
 ## 再試行記録 (2026-10-19)
 
+この節は時点 `50d3e4c` の再試行記録（結果は NOT_RUN）である。下記「実測記録」の提示結果（対象 `655244f`）とは、時点と対象が異なる。
+
 - 対象: 前回の再試行時点の PR #220 ヘッドは `50d3e4c`（履歴として残す。以後の文書コミットで PR ヘッドは進むため、
   現在の対象 SHA は下記の手順で実行開始時に取得して固定する）。`feat/215-cdseek-device-observation` は別 worktree（locked）で
   チェックアウト中のため、本 worktree は detached HEAD で同一コミットを使用し、`HEAD:feat/215-cdseek-device-observation` へ
@@ -171,7 +173,9 @@ echo "wsl exit=$?"
 以下は、オーナーが手順 A（`### ユーザーが実行する手順`）を WSL で実行して提示した結果である。**エージェントが自ら実行して得た結果ではない。** 再実行はしていない。ログ全文・ROM・BIOS のバイトはこの文書に含めない。
 
 ### 実行環境（提示された値）
-- 対象 SHA: 提示された記録には、実行時に `git ls-remote` で固定された `TARGET_SHA` の値が含まれていない。基準 HEAD `655244f`（PR #220）との一致は**未確認**であり、実行時 SHA は本記録の証拠として扱わない。
+- 対象 SHA: 提示されたログの `TARGET_SHA` 行と `EXIT_OK` 行に `655244fddd826b28c407f44dc9d7b725d3038abd` が記録されている。
+  これはオーナーが提示したログの値であり、エージェントが再実行して得た値ではない。基準 HEAD `655244f`（PR #220）と一致する。
+  `655244f` から本記録時点の PR ヘッドまでの差分は文書のみ（`git diff 655244f..<ヘッド>` は `docs/cdseek-device-observation.md` のみ）であり、検証対象のコードは同一。
 - Geargrafx revision: `b49ae82a012eade566d72e9d61c9d95a5caa4da3`（固定版、デバッガ版）
 - Geargrafx アーカイブ SHA-256: `a80a3eae26a8efcd994350e84bbe73c975e406ced41f8f2404c88b00d4217f68`
 - cc65 アーカイブ SHA-256: `2172a1fc74bf6f3026e0f9427d4159508cd801abcb35ce591394bb911adaabe4`（手順 A の照合対象）
@@ -194,10 +198,86 @@ echo "wsl exit=$?"
 | IRQ | — | NOT_TESTED | 変更なし |
 | 無媒体・媒体外 LBA | — | NOT_IMPLEMENTED | 未実装 |
 
+負例 1〜4 の `PASS_EXPECTED_FAILURE` は、**検証器（`tools/cdda_verify.py`）が期待どおり不合格を検出したこと**を意味する。
+SCSI コマンド（`$D8` など）が拒否されたことを意味しない。負例は、判定器が誤った観測を通さないことの確認である。
+
 ### この結果で言えること／言えないこと
 - **言える:** 固定版 Geargrafx（デバッガ版）上で、自作の合成 CD に対する既存 CD-DA 診断（音声再生の開始、負例の拒否、`$D8` の byte1=0 による一時停止）が、提示された記録のとおり成立した。
 - **言えない:** 純正 BIOS の CD_SEEK の互換性、callee（`$E00C`）の入力・出力・失敗の意味、ABI の確定、BLOCKED_ABI の解除。これらは本観測の対象外である。
 - **未検証:** timeout の超過有無、IRQ の挙動、媒体外 LBA の負例、`$D8` による有効 LBA 指定の状態遷移の追加検証。
+
+## 追加シナリオ（#215 Phase C-2、実コア未実行 = NOT_RUN）
+
+既存プローブ（`src/cdda_probe.s`、変更なし）を使い、既存の実行経路とは別の `tests/integration/geargrafx_cdda_scenarios.py`
+（`make dev-cdda-scenarios-integration`）で次の 3 件を実行する。`$D8`（コマンド表の 1 件目）の LBA 3〜5 バイトを書き換えた
+ROM の派生物をテスト用に作るだけで、新しい ROM は作らず、コミットもしない。結果は `cdda-scenarios-evidence.json` に書き、
+既存の `cdda-evidence.json` には触れない。
+
+| 区分 | evidence キー | 入力 | 期待（出典） | 判定の扱い | 実コア結果 |
+| --- | --- | --- | --- | --- | --- |
+| A 有効な音声 LBA | `valid_audio_start_lba40` | `$D8` play、LBA 40（音声トラック LBA 16〜79 の内側、先頭ではない） | `$D8` 直後の START_LBA = 40、CURRENT_STATE = PLAYING（mode 1 のため `StartAudio(lba, pause=false)`）。シークは LBA 40 への 1 回のみ。PCM は BIN の LBA 40 から連続。`$DA` 後 PAUSED、`$D9` 後 STOPPED。（`scsi_controller.cpp` 544-570、`AudioLBA` 856-866、`cdrom_audio_inline.h` 135-140） | 既存 `check_all` に開始 LBA を渡す | NOT_RUN |
+| B 媒体範囲外 LBA | `invalid_audio_start_lba_at_medium_end` | `$D8` play、LBA 80（媒体セクタ数 80 の先頭の外） | `start_lba >= GetSectorCount()` の分岐で GOOD を返し、`StartAudio` を呼ばない（`scsi_controller.cpp` 544-552）。よって CD-DA の状態・START_LBA・位置は `$D8` 前（READ(6) 後の IDLE）から変化せず、シークも音声サンプルも出ない。媒体セクタ数は TOC の `sector_count`（`cdrom_media_inline.h` 143-152）で、CUE/BIN では最終トラックの end_lba + 1（`cdrom_cuebin_image.cpp` 1165-1184、1205-1210）。STATUS 相の GOOD は `StartStatus`（226-234）による。 | `check_invalid_audio_start`。`$D8` 直後と wait 後の両方で不変を確認 | NOT_RUN |
+| C 予算超過 | `timeout_budget_exhausted` | 無変更の ROM、予算 1,000,000 命令（通常は 12,000,000） | プローブは `reason=budget` を報告し、判定器は `(budget)` で拒否しなければならない。予算超過を PASS にしない。ソースの要求はなし（本リポジトリのプローブの上限） | `PASS_EXPECTED_FAILURE` は「判定器が予算超過を拒否した」の意味。ゲストの成功ではない | NOT_RUN |
+
+UNKNOWN（未確定のまま残す項目。推測で埋めない）:
+
+- `TRACE_SCSI_PROBLEM_INVALID_AUDIO_START_LBA` の発生（trace 出力）は、本プローブが trace を取らないため観測しない。
+- SCSI フェーズの数値の意味は本書では確定しない。`scsi_phase` は生の値を記録する。
+- 媒体外 LBA の無媒体（no-disc）の経路は本シナリオの対象外（従来どおり NOT_IMPLEMENTED）。
+
+## 追加シナリオの実行手順（手順 C、PR ヘッド固定）
+
+手順 A と同じく、`TARGET_SHA` を `git ls-remote` で実行開始時に固定し、`EXIT_OK` 行に出す。既存の作業ディレクトリ・ログ・
+`cdda-evidence.json` は上書きしない。新しい作業ディレクトリ（`cdseek215-scn-work.*`）、新しいログ（`cdda-scenarios-*.log`）、
+新しい evidence（`cdda-scenarios-evidence.json`）を使う。`GIT_DIR` / `GIT_WORK_TREE` は設定しないこと。
+
+```bash
+(
+set -euo pipefail
+if [ -n "${GIT_DIR:-}" ] || [ -n "${GIT_WORK_TREE:-}" ]; then
+  echo "GIT_DIR または GIT_WORK_TREE が設定されています。これらを unset した新しいシェルで実行してください" >&2
+  exit 1
+fi
+REPO_URL="https://github.com/mao2009/oss-pce-cd-bios.git"
+PR_BRANCH="feat/215-cdseek-device-observation"
+TARGET_SHA="$(git ls-remote "$REPO_URL" "refs/heads/$PR_BRANCH" | cut -f1)"
+[[ "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "SHA の取得に失敗しました" >&2; exit 1; }
+if command -v gh >/dev/null 2>&1; then
+  test "$(gh pr view 220 --repo mao2009/oss-pce-cd-bios --json headRefOid --jq .headRefOid)" = "$TARGET_SHA"
+fi
+W="$(mktemp -d "$HOME/cdseek215-scn-work.XXXXXX")"
+LOG_DIR="$HOME/cdseek215-logs"
+mkdir -p "$LOG_DIR"
+LOG="$(mktemp "$LOG_DIR/cdda-scenarios-${TARGET_SHA:0:12}.XXXXXX.log")"
+echo "TARGET_SHA=$TARGET_SHA" | tee -a "$LOG"
+git clone "$REPO_URL" "$W/repo"
+cd "$W/repo"
+git checkout --detach "$TARGET_SHA"
+test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+export TOOLS_DIR="$HOME/oss-pce-cd-bios-tools"
+python3 tools/setup.py cc65
+python3 tools/setup.py geargrafx
+python3 tools/setup.py geargrafx --debugger
+test "$(cat "$TOOLS_DIR/geargrafx-b49ae82a012eade566d72e9d61c9d95a5caa4da3-debugger/.verified-archive-sha256")" = "a80a3eae26a8efcd994350e84bbe73c975e406ced41f8f2404c88b00d4217f68"
+test "$(cat "$TOOLS_DIR/cc65-71746c829e77f74c2b601a7d16821170c2610df3/.verified-archive-sha256")" = "2172a1fc74bf6f3026e0f9427d4159508cd801abcb35ce591394bb911adaabe4"
+make dev-cdda-scenarios-integration MODE=debug 2>&1 | tee -a "$LOG"
+EVIDENCE="$W/repo/build/debug/cdda-probe/cdda-scenarios-evidence.json"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); [print("CASE", k, v["status"]) for k,v in d["tests"].items()]' "$EVIDENCE" | tee -a "$LOG"
+echo "EXIT_OK TARGET_SHA=$TARGET_SHA WORK=$W LOG=$LOG EVIDENCE=$EVIDENCE" | tee -a "$LOG"
+)
+echo "wsl exit=$?"
+```
+
+判定規則: 次の 3 つがすべて成り立つ場合のみ、下表の各ケースを `CASE` 行の status どおりに記録する。
+(1) `wsl exit=0`、(2) ログに `PASS real Geargrafx CD-DA scenarios` がある、(3) `CASE` 行に 3 件のキーがすべてある。
+いずれか欠ける場合は全体を FAIL/BLOCKED とし、個別ケースを PASS にしない。`EXIT_OK` 行は `TARGET_SHA` を含むため、対象 SHA の照合に使う。
+
+| 区分 | evidence キー | 期待 status | 実測 status（記入） | 補足（記入） |
+| --- | --- | --- | --- | --- |
+| 実行対象 SHA（開始時固定） | `TARGET_SHA`（ログ 1 行目） | — | | `ls-remote` の値 |
+| A 有効な音声 LBA | `valid_audio_start_lba40` | PASS | | |
+| B 媒体範囲外 LBA | `invalid_audio_start_lba_at_medium_end` | PASS | | `scsi_phase_after_d8` の生の値 |
+| C 予算超過 | `timeout_budget_exhausted` | PASS_EXPECTED_FAILURE | | `rejected_because` |
 
 ## 固定版ソースの読解 (SOURCE_READ, `src/scsi_controller.cpp` @ `b49ae82`)
 
@@ -246,10 +326,16 @@ SCSI コマンドではなく、READ(6) の内部計算と CD-DA の開始位置
 
 ## 次に実装可能な範囲
 
-- 既存 CD-DA 診断への負例 2 件（無効 LBA の `$D8`、状態不変の確認）の追加。ROM 側の変更は `src/cdda_probe.s` の小さな分岐のみを想定。
+- 追加シナリオ（有効 LBA・媒体範囲外 LBA・予算超過）は実装済みだが、実コア未実行（NOT_RUN）。下記「追加シナリオ」と「追加シナリオの実行手順」を参照。
 - 無媒体の観測は、#5 の no-disc 経路（`SetCDROMType(STANDARD)`）と同じ制約（別ローダー）を明記したうえで行う。
 
 ## 変更範囲
 
-本 PR はドキュメントのみ。コード・ROM・テストは追加していない。理由は、実コア上で実行していない観測を
-テストとして書いても PASS 根拠にならず、既存の CD-DA 診断に統合する方が重複が少ないため。
+- 既存の ROM ソース（`src/cdda_probe.s`）と既存の ROM は変更していない。
+- `tools/cdda_verify.py`: `check_playback` に開始 LBA の引数を追加（既定値は従来どおり 16）。`check_all` に同じ引数を追加し、
+  共通の検査を `check_run` に分離。`check_invalid_audio_start` を追加。
+- `tests/integration/geargrafx_cdda.py`: `execute` に予算の引数を追加（既定値は従来どおり）。既存の `main` は変更していない。
+- `tests/integration/geargrafx_cdda_scenarios.py`（新規）: 追加シナリオの実行経路。`cdda-scenarios-evidence.json` を書く。
+- `tests/host/test_cdda_scenarios.py`（新規）: 合成観測による判定ロジックの検査。実コアの証拠ではない。
+- `Makefile`: `dev-cdda-scenarios-integration` を追加。
+- 既存 4 負例の判定期待値・期待する拒否理由・evidence のキーとスキーマは変更していない。
