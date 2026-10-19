@@ -178,7 +178,7 @@ echo "wsl exit=$?"
 ### 実行環境（提示された値）
 - 対象 SHA: 提示されたログの `TARGET_SHA` 行と `EXIT_OK` 行に `655244fddd826b28c407f44dc9d7b725d3038abd` が記録されている。
   これはオーナーが提示したログの値であり、エージェントが再実行して得た値ではない。基準 HEAD `655244f`（PR #220）と一致する。
-  `655244f` から本記録時点の PR ヘッドまでの差分は文書のみ（`git diff 655244f..<ヘッド>` は `docs/cdseek-device-observation.md` のみ）であり、検証対象のコードは同一。
+  ただし、提示された PASS は `655244f` のコードに対する既存 CD-DA 診断の結果である。`655244f` から本記録時点の PR ヘッドまでには、追加シナリオ用のコードと Makefile 規則の変更（`Makefile`、`tools/cdda_verify.py`、`tests/integration/geargrafx_cdda.py`、`tests/integration/geargrafx_cdda_scenarios.py`、`tests/host/test_cdda_scenarios.py`）が含まれる。`src/` は変更していない。したがって、提示された PASS は追加シナリオを含む現在のヘッドの結果ではない。
 - Geargrafx revision: `b49ae82a012eade566d72e9d61c9d95a5caa4da3`（固定版、デバッガ版）
 - Geargrafx アーカイブ SHA-256: `a80a3eae26a8efcd994350e84bbe73c975e406ced41f8f2404c88b00d4217f68`
 - cc65 アーカイブ SHA-256: `2172a1fc74bf6f3026e0f9427d4159508cd801abcb35ce591394bb911adaabe4`（手順 A の照合対象）
