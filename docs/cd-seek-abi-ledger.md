@@ -39,6 +39,7 @@ HuCC（`pce-devel/huc`）の固定版を使う。
 | S4 | `examples/asm/elmer/ted2-core-gulliver/gulliver.asm` | 316–335（seek の引数設定と `system cd_seek`）、346–371（read の引数設定と `system cd_read`、367 行）、536 行以降（`gulliver_lba` 表） | Boost 1.0（John Brandwood 2022） | 呼出側の実例 |
 | S5 | `examples/asm/elmer/include/movie.asm` | 246（`BUFFER_1ST_BANK = $6A`） | Boost 1.0（同上） | S4 が include する定数 |
 | S6 | `examples/asm/elmer/ted2-test-sherlock/sherlock-hack.asm` | 170（ゲーム側の呼出し点へのフック）、404–408（`begin_seek` → `jmp $E00C`） | Boost 1.0（2024）。ただしゲーム実行コードへのパッチ | 補助のみ。引数の設定はこの断片に無いので証拠にしない |
+| S7 | `include/huc/equ.inc` | 34–44（`__al` などの別名で `$20F8`〜`$20FF` を定義。`_al` などの名前は S1 の `pcengine.inc` 330–343 が定義） | 要確認（ライセンス表示は未確認） | 番地の定義のみ |
 
 除外する出典:
 
@@ -60,15 +61,15 @@ HuCC（`pce-devel/huc`）の固定版を使う。
 | K2 | K | `$20F8`（`_al`） | SOURCE_FACT | 呼出側は 1 を書く | S4 316–317 | 書込みの事実のみ。意味は C3 | 入力感度試験（§7） |
 | K3 | K | `$20FA`（`_bl`） | SOURCE_FACT | 呼出側は `BUFFER_1ST_BANK`（`$6A`、S5）を書く | S4 318–319、S5 246 | 値の意味は C3 | 同上 |
 | K4 | K | `$20FF`（`_dh`） | SOURCE_FACT | 呼出側は 3 を書く。同じ値を `cd_read` の前にも書く（S4 348–349） | S4 320–321 | 意味は UNKNOWN（C3） | 同上 |
-| K5 | K | `$20FC` / `$20FD` / `$20FE`（`_cl` / `_ch` / `_dl`） | SOURCE_FACT | `gulliver_lba` の 3 バイトを `_dl`、`_ch`、`_cl` の順に書く（表の `X` 番目） | S4 326–332 | 書込みの事実のみ | 同上 |
+| K5 | K | `$20FC` / `$20FD` / `$20FE`（`_cl` / `_ch` / `_dl`） | SOURCE_FACT | `gulliver_lba` の 3 バイトを `_dl`、`_ch`、`_cl` の順に書く（添字 `X` は映像番号の 4 倍。`dd` の 1 件は 4 バイト） | S4 313–332 | 書込みの事実のみ。`$20F8`〜`$20FF` の定義は `include/huc/equ.inc` 34–44 行（S7、`__al` などの別名）と `pcengine.inc` 330–343 行（S1） | 同上 |
 | K6 | K | 3 バイト値の桁の重み | CALLER_INFERENCE | `_dl` が最下位、`_cl` が最上位 | S4 357–364 | 呼出側は read の前に 24 ビットで `adc #1`、`adc #0`、`adc #0` の順に加算しており、`_dl` を最下位として扱っている。呼出側内の一貫性のみで、PCEAS の `dd` の順序規約は未確認 | 同上 |
 | K7 | K | 戻り値の使用 | SOURCE_FACT | 呼出側は `system cd_seek` の後で A、X、Y、P を読まず、エラー判定もない。次の命令は `irq_cnt` の読出し（表示用） | S4 335–339 | 「戻り値が無い」とは言えない。呼出側が読まないという事実のみ | C2、C8 |
 | K8 | K | 割込みの扱い | SOURCE_FACT | 呼出し前に `irq_cnt` を 0 にする。`SEI` / `CLI` で囲まない | S4 333 | 呼出側の事実。callee の割込み方針は C10 | C10 |
 | K9 | K | 完了の待ち方 | HYPOTHESIS | 呼出側は「時間が一定でなく、セクタを読んだ直後に終わる」と書く | S4 318–320 | 呼出側の期待。同期の戻りか、非同期かは不明 | 完了時刻の測定（§7） |
-| K10 | K | 呼出側の MPR とスタック | SOURCE_FACT | trampoline は JSR の前に A を push し、戻りで MPR7 を復元する。呼出側のスタック使用は K1 の範囲内 | S2 502–514 | callee のスタック使用は C7 | C7 |
+| K10 | K | 呼出側の MPR とスタック | SOURCE_FACT | trampoline は MPR7 の切替えの前後で A を push/pull して素通しし、JSR の後で MPR7 を復元する。呼出側のスタック使用は K1 の範囲内 | S2 502–514 | callee のスタック使用は C7 | C7 |
 | C1 | C | 入口 | HYPOTHESIS | `$E00C` | S1 | 呼出側の等号。callee は実行していない | §7 の入口確認 |
 | C2 | C | A、X、Y、P の戻り | UNKNOWN | UNKNOWN | — | callee 未実行。K7 は呼出側の事実のみ | 戻り値の実測（BLOCKED、§7） |
-| C3 | C | `$20F8`〜`$20FF` の入力の意味 | HYPOTHESIS | 呼出側の書き方から、`_al` が件数、`_bl` がバッファのバンク、`_dh` が読込みモードの読込み系と同形に見える（推定） | S4 316–321、S5 | 呼出側のコメントと同形の書き方のみ。callee の解釈は未確認 | 入力感度試験（§7） |
+| C3 | C | `$20F8`〜`$20FF` の入力の意味 | HYPOTHESIS | UNKNOWN（名前からの推定。呼出側のコメントは「読込み」を示すが、件数やモードの意味は書かれていない） | S4 316–321、S5 | 呼出側のコメントと同形の書き方のみ。callee の解釈は未確認 | 入力感度試験（§7） |
 | C4 | C | 位置の基準（絶対 LBA、INDEX 01 相対、MSF 起点、基準値相対） | UNKNOWN | UNKNOWN | S4、S5 | 候補は四つ（§4、#11 §4 と同じ式）。K5 と K6 の表は MSF として全件は成立しない（§4 のテスト）。ただし callee がどれを使うかは未確認 | INDEX 01 ≠ 0 の合成ディスクで READ LBA を比べる（§7） |
 | C5 | C | 数値表現（BCD、binary） | UNKNOWN | UNKNOWN | S4 | 表の全件は BCD MSF でも binary MSF でも成立しない。binary の 24 ビット LBA という読みは CALLER_INFERENCE の候補にとどまる | C4 と同じ |
 | C6 | C | トラック番号、INDEX 01 との関係 | UNKNOWN | UNKNOWN | S4 | 呼出側 S4 は `cd_base`（CD_BASE）を呼ばずに `cd_seek` と `cd_read` を使う。基準値の継承は観測できない | §5（R1） |
@@ -78,7 +79,7 @@ HuCC（`pce-devel/huc`）の固定版を使う。
 | C10 | C | 割込み（IRQ）の扱い | UNKNOWN | UNKNOWN | — | K8 は呼出側の事実のみ | IRQ 有無での比較（§7） |
 | C11 | C | 読込みの副作用（バッファへの書込み） | HYPOTHESIS | 呼出側コメントに従えば、seek の中で 1 セクタの読込みが起きる | S4 316–320 | コメントのみ。`_bl` への書込みが実際に起きるかは未確認 | 読込み先バンクの観測（§7） |
 | R1 | R | CD_BASE（#11）との関係 | UNKNOWN | UNKNOWN | S1、S2、S4、S5 | 固定版で `cd_base`（`$E006`）を呼ぶのは `include/hucc/core-startup.asm` 300 行の 1 箇所だけ（2ISO 経路）。S4 は `cd_base` を呼ばずに `cd_seek` と `cd_read` を使う。CD_SEEK が CD_BASE の基準を使うかは、ソースから決まらない | #11 の枠組みで、CD_BASE の後の `cd_seek` と READ LBA を比べる（callee 実行が前提） |
-| R2 | R | CD_READ（#12）との関係 | HYPOTHESIS | seek と read が同じアドレス空間を指す（呼出側の仮定） | S4 335、357–367 | 呼出側は seek に `X`、続く read に `X+1` を与え、同じ 24 ビット表現（K5）を使う。#12 台帳の「ブロック番号の表現」（HYPOTHESIS）と整合するが、観測していない | seek と read の READ LBA の比較（§7） |
+| R2 | R | CD_READ（#12）との関係 | HYPOTHESIS | seek と read が同じアドレス空間を指す（呼出側の仮定） | S4 335、357–367 | 呼出側は seek に表の値、続く read に同じ表の値に 1 を加えた値（`adc #1`）を与え、同じ 24 ビット表現（K5）を使う。#12 台帳の「ブロック番号の表現」（HYPOTHESIS）と整合するが、観測していない | seek と read の READ LBA の比較（§7） |
 | R3 | R | 観測可能性 | BLOCKED | UNKNOWN | — | 実行可能な System Card の `$E00C` が無い。`cd-base-abi-ledger.md` §4a の DEV ROM の測定は `$E006` だけで、`$E00C` は未測定。固定版 Geargrafx での `$E00C` の実行経路も未確認 | NOT_RUN（§7） |
 
 ## 4. ホスト単体テスト（表と値の不変条件）
@@ -89,7 +90,7 @@ HuCC（`pce-devel/huc`）の固定版を使う。
 - 状態が `UNKNOWN` / `BLOCKED` の行は値を `UNKNOWN` とする。
 - `SOURCE_FACT` / `CALLER_INFERENCE` / `HYPOTHESIS` の行は、§2 に定義した出典 ID（S1〜S6）を一つ以上引用する。
 - 入口の値は、S1 の等号 `cd_seek = $00:E00C` を `call_bios` の `$E000 + Y`（`Y=$0C`）で再計算した値と一致する。
-- S4 の表の 25 件は 24 ビットの整数で、単調増加する。さらに、少なくとも一件（`$018660`）は BCD MSF でも binary MSF でも成立しない。
+- S4 の表は 38 件（`$00`〜`$25`）で、すべて 24 ビットの整数。`$00`〜`$24` の映像表 37 件は単調増加する。`$25` は read 速度試験用のセクタで映像の LBA ではないため、順序を外れる（テストで明示）。さらに、少なくとも一件（`$018660`）は BCD MSF でも binary MSF でも成立しない。
   このため表全体を MSF として読むことはできず、C4 と C5 は UNKNOWN のままとする。
 
 ## 5. 独立検証（再確認の手順）

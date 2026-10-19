@@ -19,13 +19,17 @@ CD_SEEK_EQUATE = 'cd_seek\t\t= $00:E00C, FUNC'
 CALL_BIOS_BASE = 0xE000
 CALL_BIOS_Y_FOR_SEEK = 0x0C
 
-# Caller data from examples/asm/elmer/ted2-core-gulliver/gulliver.asm L536-560 (24-bit dd entries).
+# Caller data from examples/asm/elmer/ted2-core-gulliver/gulliver.asm L536-582 (24-bit dd entries).
+# $00-$24 are the video table (37 entries). $25 is a read-speed test sector, not a video LBA.
 GULLIVER_LBA = [
     0x015002, 0x018660, 0x018FA0, 0x019A90, 0x019CCE, 0x01A34A, 0x01A6DE, 0x01B27C,
     0x01B736, 0x01CF1C, 0x01F038, 0x01FC2A, 0x01FFFA, 0x020D12, 0x021196, 0x02149A,
     0x021840, 0x021C7C, 0x02288C, 0x022BEA, 0x023476, 0x0239F0, 0x023F82, 0x02448A,
-    0x0258E6,
+    0x0258E6, 0x025F20, 0x026D9A, 0x0270CE, 0x027750, 0x027CDC, 0x028D54, 0x029586,
+    0x02A07C, 0x02C23A, 0x02D858, 0x02EF9C, 0x02F4B0,
+    0x000F25,
 ]
+GULLIVER_VIDEO_COUNT = 37
 
 STATUSES = {'SOURCE_FACT', 'CALLER_INFERENCE', 'HYPOTHESIS', 'UNKNOWN', 'BLOCKED'}
 CALLEE_STATUSES = {'HYPOTHESIS', 'UNKNOWN', 'BLOCKED'}
@@ -104,7 +108,7 @@ class LedgerRuleTests(unittest.TestCase):
             self.assertTrue(cited <= self.sources, (r['id'], cited - self.sources))
 
     def test_ids_used_in_table_are_defined_sources(self):
-        self.assertEqual(self.sources, {'S1', 'S2', 'S3', 'S4', 'S5', 'S6'})
+        self.assertEqual(self.sources, {'S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7'})
 
 
 class CallerFactTests(unittest.TestCase):
@@ -118,12 +122,15 @@ class CallerFactTests(unittest.TestCase):
     def test_ledger_entry_matches_quoted_equate(self):
         self.assertIn('$E00C', DOC.read_text(encoding='utf-8'))
 
-    def test_gulliver_table_is_24bit_and_strictly_increasing(self):
-        self.assertEqual(len(GULLIVER_LBA), 25)
+    def test_gulliver_table_is_24bit_and_video_part_is_increasing(self):
+        self.assertEqual(len(GULLIVER_LBA), 38)
         for v in GULLIVER_LBA:
             self.assertLess(v, 1 << 24)
-        for a, b in zip(GULLIVER_LBA, GULLIVER_LBA[1:]):
+        video = GULLIVER_LBA[:GULLIVER_VIDEO_COUNT]
+        for a, b in zip(video, video[1:]):
             self.assertLess(a, b)
+        # The $25 read-speed sector breaks the order on purpose: it is not a video LBA.
+        self.assertLess(GULLIVER_LBA[-1], video[-1])
 
     def test_table_is_not_uniformly_msf_under_either_encoding(self):
         # Host arithmetic only: rules out a uniform MSF reading, does not choose LBA or any base.
