@@ -320,7 +320,7 @@ class AdjudicateClaimTests(unittest.TestCase):
 
     def test_hardware_observed_without_evidence_is_rejected(self):
         for bad in (dict(OBSERVED, evidence=[]), {k: v for k, v in OBSERVED.items() if k != 'evidence'}):
-            with self.assertRaisesRegex(ValueError, 'non-empty measurement evidence'):
+            with self.assertRaisesRegex(ValueError, 'non-empty evidence entries'):
                 adjudicate_claim(bad, REAL, field='hw_bus_reset', context='hw_bus_reset',
                                  executed_callee=False)
 
@@ -331,7 +331,7 @@ class AdjudicateClaimTests(unittest.TestCase):
 
     def test_callee_observed_executed_true_without_evidence_is_rejected(self):
         bad = dict(OBSERVED, evidence=[])
-        with self.assertRaisesRegex(ValueError, 'non-empty measurement evidence'):
+        with self.assertRaisesRegex(ValueError, 'non-empty evidence entries'):
             adjudicate_claim(bad, REAL, field='returns', context='slot 1 returns', executed_callee=True)
 
     def test_unknown_field_name_cannot_bypass_executed_callee(self):
