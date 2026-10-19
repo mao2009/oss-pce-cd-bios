@@ -231,5 +231,19 @@ NOT_STARTED/NOT_RUN のまま変更しない。
 は依然として無い）。**独立レビュー（(d)）が未了のため slot `$01` の実行は禁止のままであり、
 純正 BIOS JSR は一切実行していない。** `spec/api_contracts.json` slot 1 は変更しない。
 
+### 状態名の対応表（実行ゲート系の語彙、Issue #228）
+
+似た名前の状態は**別の意味**を持つため統合しない。いずれも実行許可ではない。
+
+| 状態名 | 出所 | 意味 | 実行許可 |
+| --- | --- | --- | --- |
+| `MODEL_ELIGIBLE` | `tools/cdreset_safety_preflight.py` (#191) | 合成 posture が全危険を覆い ABI が `REVIEWED` というモデル適格性 | なし |
+| `MATERIALS_COMPLETE` | `tools/cdreset_slot01_reference_plan.py` (#181) | 合成の4材料（(a)-(d)）が全て充足したときの判定反転（反証可能性）。実材料では到達不能 | なし（実行路なし） |
+| `MATERIALS_COMPLETE` | `tools/reference_jsr_gate.py` (#228) | 呼び出し元が渡した**未認証**の承認入力が整形済みで、台帳も全危険 CONTROLLED 、かつ台帳の callee verification が `NOT_RUN` という意味のみ。承認・認可ではなく真正性は未検証 | なし（runner `NONE`、`jsr_count=0`） |
+| `ALLOWED` | どこからも返さない | 予約語。独立した実コア強制が存在しないため、現状のゲートでは到達不能 | 本リポジトリでは生成しない |
+
+`MATERIALS_COMPLETE` は改名しない。同名でもゲートごとに意味が異なるため、上表で意味を明示する
+（名称は「材料が揃った」だけを表し、承認・認可・実行許可を意味しない）。
+
 ホストテスト: `python3 -m unittest tests.host.test_cdreset_slot01_reference_plan -v`（合成のみ、
 エミュレータ・ROM 不使用）。

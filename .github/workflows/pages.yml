@@ -52,12 +52,33 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
+      - name: Trusted guard (main)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: main
+          path: .trusted-main
+          sparse-checkout: tools/artifact_guard.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Resolve python3 (trusted)
+        id: pyresolve
+        run: |
+          echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"
+      - name: Guard placement (trusted)
+        run: |
+          "${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --check-placement
       - name: Configure Pages
         uses: actions/configure-pages@v5
+      - name: Stage artifacts (trusted guard) for Upload static site
+        run: |
+          "${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --stage .github/workflows/pages.yml "Upload static site"
+      - name: Verify staged artifacts (trusted guard) for Upload static site
+        run: |
+          "${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --verify .github/workflows/pages.yml "Upload static site"
       - name: Upload static site
         uses: actions/upload-pages-artifact@v4
         with:
-          path: site
+          path: .artifact-stage/site
       - name: Deploy from main
         id: deployment
         uses: actions/deploy-pages@v4

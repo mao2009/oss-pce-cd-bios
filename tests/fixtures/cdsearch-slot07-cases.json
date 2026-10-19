@@ -1,0 +1,47 @@
+{
+  "schema": "oss-pce-cd-bios/cdsearch-slot07-fixture/v1",
+  "issue": 250,
+  "slot": "$07",
+  "entry_candidate": "$E015",
+  "candidate_name": "CD_SEARCH",
+  "abi_status": "BLOCKED_ABI",
+  "release_eligible": false,
+  "execution": "NOT_RUN",
+  "provenance": "synthetic: author-defined medium and cases only; no System Card BIOS byte, disassembly, retail data, or ./rom/ content; no reference callee is executed",
+  "callee_abi": {
+    "arguments": "UNKNOWN",
+    "returns": "UNKNOWN",
+    "registers": "UNKNOWN",
+    "reference_jsr": "NOT_CALLED"
+  },
+  "medium": {
+    "synthetic": true,
+    "leadout_lba": 200,
+    "tracks": [
+      {"no": 1, "type": "data", "start": 0, "end": 99},
+      {"no": 2, "type": "audio", "start": 100, "end": 199}
+    ]
+  },
+  "io_range": {
+    "lba_min": 0,
+    "lba_max": 200,
+    "track_numbers": [1, 2]
+  },
+  "cases": [
+    {"id": "pos_audio_start", "track": 2, "lba": 100, "expected": "POSITIVE", "reason": "first LBA of the valid audio track"},
+    {"id": "pos_audio_end", "track": 2, "lba": 199, "expected": "POSITIVE", "reason": "last LBA of the valid audio track"},
+    {"id": "pos_audio_middle", "track": 2, "lba": 150, "expected": "POSITIVE", "reason": "interior LBA of the valid audio track"},
+    {"id": "neg_leadout", "track": 2, "lba": 200, "expected": "NEGATIVE", "reason": "lead-out LBA, one past the audio track end"},
+    {"id": "neg_past_leadout", "track": 2, "lba": 201, "expected": "NEGATIVE", "reason": "beyond the medium lead-out"},
+    {"id": "neg_before_track", "track": 2, "lba": 99, "expected": "NEGATIVE", "reason": "last data LBA, one before the audio track start"},
+    {"id": "neg_negative_lba", "track": 2, "lba": -1, "expected": "NEGATIVE", "reason": "negative LBA"},
+    {"id": "neg_data_track_start", "track": 1, "lba": 0, "expected": "NEGATIVE", "reason": "data track designation at its start LBA"},
+    {"id": "neg_data_track_mid", "track": 1, "lba": 50, "expected": "NEGATIVE", "reason": "data track designation inside its range"},
+    {"id": "neg_no_such_track", "track": 3, "lba": 100, "expected": "NEGATIVE", "reason": "track number not on the medium"},
+    {"id": "neg_track_zero", "track": 0, "lba": 100, "expected": "NEGATIVE", "reason": "track number zero is not a track"},
+    {"id": "neg_float_lba", "track": 2, "lba": 100.0, "expected": "NEGATIVE", "reason": "non-integer LBA type (malformed)"},
+    {"id": "neg_string_lba", "track": 2, "lba": "100", "expected": "NEGATIVE", "reason": "string LBA type (malformed)"},
+    {"id": "neg_bool_track", "track": true, "lba": 100, "expected": "NEGATIVE", "reason": "bool is not an int track (malformed)"},
+    {"id": "neg_huge_lba", "track": 2, "lba": 4294967296, "expected": "NEGATIVE", "reason": "LBA beyond 32-bit range"}
+  ]
+}
