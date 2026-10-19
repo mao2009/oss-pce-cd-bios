@@ -22,6 +22,8 @@
 
 ## 2. 出典
 
+provenance 区分（`docs/provenance.md` の per-source 審査）: 本台帳の全出典は **PENDING**（人間のレビュアと決定日は未記録）。このため本台帳は VERIFIED ではない。区分が APPROVED になるまで、本台帳の結論は設計入力に限る。
+
 ### 2.1 HuCC（`pce-devel/huc`、固定版）
 
 - 固定版: commit `54f5c73606c1e7142e8095c727cab2767e2b3cb3`
@@ -29,14 +31,13 @@
 - アーカイブ SHA-256: `9fe91254051381077bd4ea217b718ec033a52da185283ae9479c1abac365311b`（取得時に一致を確認）
 - 展開物は実行していない。解析は `grep` と `sed -n` による読取りのみ。
 
-| ID | 出典（固定版内のパス） | 行 | ライセンス表示 | 使い方 |
-| --- | --- | --- | --- | --- |
-| H1 | `include/hucc/pcengine.inc` | 485（`ad_reset = $00:E030, FUNC`、ファイル内の他の System Card 関数と同じ形式） | BSL-1.0（ヘッダ。著作権者名は本ファイル内で確認せず） | エントリ番地の宣言 |
-| H2 | `include/hucc/hucc-systemcard.asm` | 476–480（`_ad_reset` マクロが `system ad_reset` を展開。オペランドなし） | BSL-1.0（John Brandwood 2024、11–15 行） | 呼出側マクロ |
-| H3 | `include/hucc/hucc-systemcard.h` | 101（`extern void __fastcall __macro ad_reset( void );`） | BSL-1.0（John Brandwood 2024、11–15 行） | 呼出側の C 宣言（引数・戻り値の宣言のみ） |
-| H4 | `include/hucc/core.inc` | 41–44（`system` マクロ: `ldy #<\1` の後に `jsr call_bios`） | BSL-1.0（John Brandwood 2021–2024） | 呼出側の selector 設定 |
-| H5 | `include/hucc/core-kernel.asm` | 488–516（`call_bios`、コメント 488–499、本体 500–516） | BSL-1.0（John Brandwood 2021–2024） | 呼出側の MPR7 の切替えと復元 |
-| H6 | `doc/hucc/hucc-function-reference.md` | 968–971（"Resets ADPCM hardware."） | **ファイル内にライセンス表示なし** | 指示のみ。引用しない（§2.4） |
+| ID | 出典（固定版内のパス） | 行 | ライセンス表示 | provenance | 使い方 |
+| --- | --- | --- | --- | --- | --- |
+| H1 | `include/hucc/pcengine.inc` | 485（`ad_reset	= $00:E030, FUNC`、ファイル内の他の System Card 関数と同じ形式） | BSL-1.0（ヘッダ 8–10 行。著作権者: ファイル内に記載なし） | PENDING（著作権者 未記録） | エントリ番地の宣言 |
+| H2 | `include/hucc/hucc-systemcard.asm` | 476–480（`_ad_reset` マクロが `system ad_reset` を展開。オペランドなし） | BSL-1.0（John Brandwood 2024、ヘッダ 8、10–12 行） | PENDING | 呼出側マクロ |
+| H3 | `include/hucc/hucc-systemcard.h` | 101（`extern void __fastcall __macro ad_reset( void );`） | BSL-1.0（John Brandwood 2024、ヘッダ 11、13–15 行） | PENDING | 呼出側の C 宣言（引数・戻り値の宣言のみ） |
+| H4 | `include/hucc/core.inc` | 41–44（`system` マクロ: `ldy #<\1` の後に `jsr call_bios`） | BSL-1.0（John Brandwood 2021–2024、ヘッダ 8、10–12 行） | PENDING | 呼出側の selector 設定 |
+| H5 | `include/hucc/core-kernel.asm` | 488–516（`call_bios`、コメント 488–498、本体 500–516） | BSL-1.0（John Brandwood 2021–2024、ヘッダ 8、10 行） | PENDING | 呼出側の MPR7 の切替えと復元、A の退避 |
 
 固定版の再確認（展開物は実行しない）:
 
@@ -48,23 +49,24 @@ HuCC の `ad_reset` 呼出側は、`include/hucc/` 内ではマクロ定義（H2
 
 ### 2.2 公開 example の再実装（BSL-1.0 のファイルヘッダ）
 
-| ID | 出典（固定版内のパス） | 行 | ライセンス表示 | 使い方 |
-| --- | --- | --- | --- | --- |
-| E1 | `examples/asm/elmer/include/adpcm.asm` | 56–72（`adpcm_reset`。56 行に "BIOS AD_RESET" の注記、72 行に "BIOS sets 2KHz playback!" の注記） | BSL-1.0（John Brandwood 2022、ヘッダ 10–14 行） | 開発者による**再実装**。BIOS ではない（§3 で扱う） |
-| E2 | `examples/asm/elmer/rom-bare-clktest/clktest.asm` | 446–462（E1 とほぼ同一の `adpcm_reset`） | BSL-1.0（John Brandwood 2026、ヘッダ 2–4 行） | E1 と同じ。独立の証拠ではなく同じ著者の複製 |
+| ID | 出典（固定版内のパス） | 行 | ライセンス表示 | provenance | 使い方 |
+| --- | --- | --- | --- | --- | --- |
+| E1 | `examples/asm/elmer/include/adpcm.asm` | 56–72（`adpcm_reset`。56 行に "BIOS AD_RESET" の注記、72 行に "BIOS sets 2KHz playback!" の注記） | BSL-1.0（John Brandwood 2022、ヘッダ 10–14 行） | PENDING | 開発者による**再実装**。BIOS ではない（§3 で扱う） |
+| E2 | `examples/asm/elmer/rom-bare-clktest/clktest.asm` | 446–462（E1 とほぼ同一の `adpcm_reset`） | BSL-1.0（John Brandwood 2026、ヘッダ 8、10–12 行） | PENDING | E1 と同じ。独立の証拠ではなく同じ著者の複製 |
 
 E1 と E2 は、呼出先（BIOS）ではなく、同じ著者が書いた**再実装**の内容である。そこから読めるのは、その再実装が何を書くかだけである。BIOS の振る舞いの根拠にはしない。
 
 ### 2.3 公開の説明（単独では根拠にしない）
 
-| ID | 出典 | ライセンス | 記述された事実 | 扱い |
-| --- | --- | --- | --- | --- |
-| P1 | Stum 2025 System Card method offsets（`https://www.stum.de/2025/pcenginebiosoffsets/`） | CC BY-NC-SA 4.0（ページ注記。ブログ掲載コードは MIT と記載） | 名前 `ad_reset`、エントリ `JSR $E030`。本体番地は版ごとに記載（1.0: `$F3E0`、2.0: `$F375`、2.1/3.0: `$F37F`、TG2.0/TG3.0: `$F398`）。入力・戻り・副作用は記載なし | エントリ番地の名前対応は SOURCE_FACT 扱いの候補として §4 に記録。本体番地は HYPOTHESIS（第三者の記述で、実行していない）。引用はせず要点のみ。 |
-| P2 | Zeograd System Card notes（`https://www.zeograd.com/download/pce_bios.html`） | ページに著作権・ライセンス表示なし | `$E030` は関数番号 `$10` × 3 + `$E000`。目的は「ADPCM コントローラのリセット」。入力・出力・レジスタ・副作用・エラーは未記載 | 目的の一文のみ HYPOTHESIS 扱い。ライセンス表示がないため引用しない。 |
+| ID | 出典 | ライセンス | provenance | 記述された事実 | 扱い |
+| --- | --- | --- | --- | --- | --- |
+| P1 | Stum 2025 System Card method offsets（`https://www.stum.de/2025/pcenginebiosoffsets/`） | CC BY-NC-SA 4.0（ページ注記。ブログ掲載コードは MIT と記載） | PENDING | 名前 `ad_reset`、エントリ `JSR $E030`。本体番地は版ごとに記載（1.0: `$F3E0`、2.0: `$F375`、2.1/3.0: `$F37F`、TG2.0/TG3.0: `$F398`）。入力・戻り・副作用は記載なし | 単独では根拠にしない（§1）。エントリ番地の照合の補助のみ。本体番地は HYPOTHESIS（第三者の記述で、実行していない）。引用はせず要点のみ。 |
+| P2 | Zeograd System Card notes（`https://www.zeograd.com/download/pce_bios.html`） | ページに著作権・ライセンス表示なし | PENDING | `$E030` は関数番号 `$10` × 3 + `$E000`。目的は ADPCM コントローラのリセットに関するものと記述。入力・出力・レジスタ・副作用・エラーは未記載 | 目的の一文のみ HYPOTHESIS 扱い。ライセンス表示がないため引用しない。 |
 
 ### 2.4 除外した出典
 
 - `include/huc/startup.asm` 486 行（`jsr ad_reset` の呼出し）と `include/huc/cdrom.asm` 541–547 行: ライセンス表示がないため除外。`cd-base-abi-ledger.md` §2 の決定に従う。この呼出しが公開 caller の最も有用な例だが、根拠にできない。ライセンス判断が出るまで扱わない。
+- `doc/hucc/hucc-function-reference.md`（`ad_reset` / `ad_trans` の説明文）: ファイル内にライセンス表示がないため除外。`ad_trans` の説明は本台帳で使わない。
 - `examples/asm/elmer/include/movie.asm` 1341、1497 行: ファイルヘッダ（"derived from Hudson's original HuVIDEO player code in Gulliver Boy"）が、Hudson 由来コードからの派生を明記している。`docs/provenance.md` の除外規則（"Do not silently incorporate proprietary-derived code"）に従い、**REJECTED**。
 - `examples/asm/elmer/kickc/bios.h`: 名前の宣言のみ。ライセンス未確認で除外。
 - Hu-Go `bios.c`: GPL-2 の HLE。BIOS の ABI の証拠にならないため、読まず、引用しない。
@@ -77,9 +79,9 @@ E1 と E2 は、呼出先（BIOS）ではなく、同じ著者が書いた**再�
 
 1. **エントリ番地**（H1、SOURCE_FACT）: `ad_reset` は `$00:E030` として宣言されている。
 2. **呼出し経路**（H4、H5、SOURCE_FACT）: `system ad_reset` マクロは `Y = $30` を設定し、`call_bios` を呼ぶ。`call_bios` は Y の値を `jsr $E000` の下位バイトに書き込み（自己書換え）、MPR7 に System Card のバンクを割り当ててから `jsr` し、戻ると MPR7 を復元する。
-3. **A の扱い**（H5、SOURCE_FACT）: `call_bios` は入口で A を push し、MPR7 の切替えの後に pull して BIOS に渡す。戻りでは、BIOS 後の A を push し、MPR7 を復元した後に pull する。よって A は呼出側から BIOS へ渡り、BIOS から呼出側へ戻る。ただし BIOS が A をどう使うかは UNKNOWN。
+3. **A の扱い**（H5、SOURCE_FACT）: `call_bios` は入口で A を push し（502 行）、MPR7 の切替えの後に pull して BIOS に渡す（507 行）。戻りでは、BIOS 後の A を push し（511 行）、MPR7 を復元した後に pull する（514 行）。よって A は呼出側から BIOS へ渡り、BIOS から呼出側へ戻る。ただし BIOS が A をどう使うかは UNKNOWN。
 4. **X の扱い**（H5、SOURCE_FACT）: `call_bios` は X に触れない。BIOS が X を読むか書くかは UNKNOWN。
-5. **副作用の不記載**（H5 の `Uses:` 注記、SOURCE_FACT）: `call_bios` のコメントは、呼出される関数が何を使うかを「Whatever the System Card function uses!」と記し、副作用を明記していない。源泉側が副作用を規定していないことの記録であり、副作用なしの証拠ではない。
+5. **副作用の不記載**（H5 の `Uses:` 注記（492 行）、SOURCE_FACT）: `call_bios` のコメントは、呼出される関数が何を使うかを「Whatever the System Card function uses!」と記し、副作用を明記していない。源泉側が副作用を規定していないことの記録であり、副作用なしの証拠ではない。
 6. **引数・戻り値の宣言**（H2、H3、SOURCE_FACT）: C 宣言は `void` で、引数・戻り値はない。これは呼出側の宣言であり、BIOS が引数を読まないことの証拠ではない。
 7. **再実装の内容**（E1 の 63–72 行、SOURCE_FACT（当該コード内容のみ））: 開発者の `adpcm_reset` は、ADPCM 制御レジスタに reset の値を書いて 0 に戻し、DMA 制御、IRQ マスク（一部ビットを clear）、再生速度レジスタを書く。これは再実装が行う書込みの記録であり、BIOS の書込みの記録ではない。
 8. **再実装のコメント**（E1 の 56、59、72 行、HYPOTHESIS）: "BIOS AD_RESET" と "BIOS sets 2KHz playback!" は、開発者による BIOS 振る舞いの主張であり、本台帳では確認していない。E2 は同じ記述を複製している。
@@ -90,7 +92,7 @@ E1 と E2 は、呼出先（BIOS）ではなく、同じ著者が書いた**再�
 
 | # | 項目 | 結論 | 確度 | 出典 | 備考・決着条件 |
 | --- | --- | --- | --- | --- | --- |
-| 1 | エントリ番地（名前 → `$E030`） | `$E030` | SOURCE_FACT（宣言。BIOS の実行確認ではない） | H1、P1（P2 は目的のみ） | 実行可能な callee を得て `$E030` に入ること自体を確認する。DEV ROM の `$E030` は BIOS ではない（`cd-base-abi-ledger.md` §4a と同じ扱い）。 |
+| 1 | エントリ番地（名前 → `$E030`） | `$E030` | SOURCE_FACT（宣言。BIOS の実行確認ではない） | H1（P1 は照合の補助のみ、根拠にしない。P2 は目的のみ） | 実行可能な callee を得て `$E030` に入ること自体を確認する。DEV ROM の `$E030` は BIOS ではない（`cd-base-abi-ledger.md` §4a と同じ扱い）。 |
 | 2 | 本体番地（版別） | 版別の番地の候補 | HYPOTHESIS | P1 のみ | 単独出典。実行しない限り HYPOTHESIS 維持。 |
 | 3 | 入力 A | 呼出側は渡す（wrapper が保持）。BIOS が読むか UNKNOWN | UNKNOWN（呼出側の書込みは SOURCE_FACT） | H5 | 呼出先で A を変えた感度試験。 |
 | 4 | 入力 X | UNKNOWN | UNKNOWN | H5（wrapper は X に触れない） | 同上。 |
@@ -99,7 +101,7 @@ E1 と E2 は、呼出先（BIOS）ではなく、同じ著者が書いた**再�
 | 7 | 引数（C 宣言） | 引数なし（`void`） | SOURCE_FACT（宣言。BIOS の証拠ではない） | H2、H3 | BIOS が引数を読まないことは未確認。 |
 | 8 | 戻り値 A/X/Y/P | 呼出側は戻り値を読まない（マクロ・宣言に戻り値なし） | UNKNOWN（BIOS の戻り値） | H2、H3 | 戻り値の実測。 |
 | 9 | 破壊されるレジスタ（clobbered） | UNKNOWN（呼出側のコメントは「使うものを使う」） | UNKNOWN | H5（Uses 注記） | 呼出前後のレジスタ差分。 |
-| 10 | 保存されるレジスタ（preserved） | UNKNOWN。wrapper は A と MPR7 を自身で保存する | UNKNOWN（BIOS 側）、SOURCE_FACT（wrapper 側） | H5 | 同上。 |
+| 10 | 保存されるレジスタ（preserved） | UNKNOWN（BIOS 側）。wrapper は MPR7 を保存・復元する。A は呼出側の値を戻さず、BIOS 後の A が返る（502–507 行で退避して BIOS に渡し、511–514 行で BIOS 後の A を保存・復元する） | UNKNOWN（BIOS 側）、SOURCE_FACT（wrapper 側） | H5 | 呼出前後の A、X、Y、P、MPR7 の比較。 |
 | 11 | スタック（SP） | wrapper は入口で A を push し、出口で pull する。BIOS のスタック使用は UNKNOWN | SOURCE_FACT（wrapper）、UNKNOWN（BIOS） | H5 | スタックポインタの前後比較。 |
 | 12 | MPR | 呼出側は MPR7 を System Card のバンクに割り当て、戻りで復元する。BIOS が他の MPR を変えるかは UNKNOWN | SOURCE_FACT（wrapper）、UNKNOWN（BIOS） | H5 | MPR0〜7 の前後比較（成功経路と失敗経路）。 |
 | 13 | 作業 RAM | UNKNOWN。E1 の再実装は作業 RAM を書かない（ハードウェアレジスタのみ） | UNKNOWN（BIOS）、SOURCE_FACT（E1 の内容） | E1 | RAM 全差分。 |
@@ -107,7 +109,7 @@ E1 と E2 は、呼出先（BIOS）ではなく、同じ著者が書いた**再�
 | 15 | フラグ（P） | UNKNOWN。wrapper は `pla` で A を戻すため、戻り時の N/Z は A に従う。BIOS 後の P は未確認 | UNKNOWN（BIOS）、SOURCE_FACT（wrapper の `pla`） | H5 | 戻り時の P の比較。 |
 | 16 | IRQ | UNKNOWN（BIOS が割込みを禁止・許可するか）。E1 の再実装は IRQ マスクの一部を clear | UNKNOWN（BIOS）、HYPOTHESIS（再実装と同じ効果）、SOURCE_FACT（E1 の内容） | E1 | 割込み状態（I フラグ、IRQ マスク）の前後比較。 |
 | 17 | タイムアウト | UNKNOWN。出典に待機ループの記述がない | UNKNOWN | — | 完了条件の観測（busy の解除まで）。 |
-| 18 | 失敗結果（errors） | UNKNOWN。`ad_trans` は非 0 をエラーとするが、`ad_reset` にはエラー規約の記述がない | UNKNOWN | H6（ad_trans のみ、引用しない）、H2、H3 | 失敗条件（無ディスク等）での戻り値とフラグの実測。 |
+| 18 | 失敗結果（errors） | UNKNOWN。`ad_reset` にはエラー規約の記述がない（出典は宣言とマクロのみ） | UNKNOWN | H2、H3 | 失敗条件（無ディスク等）での戻り値とフラグの実測。 |
 | 19 | busy 状態・同期（synchronization） | UNKNOWN。E1 のコメントは、OKI チップが reset を 2 クロック以上保持する必要があると述べる | UNKNOWN（BIOS）、HYPOTHESIS（再実装の開発者の記述） | E1 56–60 行 | reset 保持時間と busy の解除の観測。 |
 
 ## 5. 確度の集計
@@ -129,6 +131,7 @@ E1 と E2 は、呼出先（BIOS）ではなく、同じ著者が書いた**再�
 | 区分 | 状態 | 内容 |
 | --- | --- | --- |
 | 独立レビュー | NOT_RUN | 別エージェントによる台帳レビューは行っていない。 |
+| provenance 審査 | PENDING | §2 の全出典はレビュア・決定日が未記録。 |
 | 関連 CI | NOT_RUN | 本 PR はホストテストを追加しない（Issue が要求しない）。`python3 -m unittest` 対象モジュールなし。 |
 | 実測（callee 実行） | NOT_RUN | System Card の AD_RESET を実行していない（BLOCKED_ABI）。 |
 | 固定版ソースの読取り | 実施 | §2 の commit と SHA-256 を確認し、`grep` と `sed -n` で行番号を確認した（展開物は実行していない）。 |
@@ -146,13 +149,13 @@ E1 と E2 は、呼出先（BIOS）ではなく、同じ著者が書いた**再�
 
 - 本台帳は呼出先（callee）を実行していない。BLOCKED_ABI は解除しない。
 - `release_eligible=false` を維持する。`DEV_CALLABLE` にはしない。
-- VERIFIED、PASS、互換の主張はしない。
+- VERIFIED、PASS、互換の主張はしない。出典は provenance 審査が全件 PENDING のため、本台帳は VERIFIED ではない。
 - System Card の BIOS バイト、逆アセンブル、市販媒体のデータは、本台帳に含めない（`AGENTS.md` と `docs/provenance.md` の除外）。
 - 固定版のソースは、読取りと行番号の確認のみに使った。展開物を実行していない。
 - 共有ファイル（`spec/api_contracts.json`、`docs/api-inventory.md`、`docs/status.md`、`Makefile`）は変更していない。
 
 ## 8. 次の作業
 
-1. ライセンス判断（maintainer）: `include/huc/startup.asm` と `include/huc/cdrom.asm`（H の呼出側の最も有用な例）の採否。判断が出るまで、その内容は根拠にしない。
+1. provenance 審査（maintainer）: §2 の全出典に APPROVED / PENDING / RESTRICTED を付け、レビュア・日付を記録する。`include/huc/startup.asm` と `include/huc/cdrom.asm`（H の呼出側の最も有用な例）の採否も、この審査で判断する。判断が出るまで、その内容は根拠にしない。
 2. 実行可能な AD_RESET callee を得た後、§4 の行 3〜19 を同じ条件で測定する。
 3. Stum 2025 の本体番地（行 2）は、実行して確認するまで HYPOTHESIS のままとする。
