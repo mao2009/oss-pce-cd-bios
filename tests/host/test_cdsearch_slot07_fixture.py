@@ -331,7 +331,7 @@ class CdSearchSlot07FixtureTests(unittest.TestCase):
         self.assertEqual(wiring_violations(root), [])
         self.assertEqual(wiring_violations(self._scratch({"src/d.c": "/* x */\n*p = cdsearch_slot07;\n"})), ["src/d.c"])
 
-    
+
 
     def test_wiring_probe_detects_reference_appended_to_real_makefile_copy(self):
         root = self._scratch({"Makefile": (ROOT / "Makefile").read_text(encoding="utf-8")})
