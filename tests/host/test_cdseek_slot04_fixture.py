@@ -83,7 +83,7 @@ class Slot04FixtureTests(unittest.TestCase):
         status, reasons = M.preflight(list(M.CASES), good_config())
         self.assertEqual(status, "BLOCKED_ABI")
         joined = "; ".join(reasons)
-        self.assertIn("PR #214", joined)
+        self.assertIn("callee ABI unresolved", joined)
         self.assertIn("safety_gate_not_approved", joined)
         self.assertIn("rom_not_approved", joined)
         self.assertIn("no execution path", joined)
