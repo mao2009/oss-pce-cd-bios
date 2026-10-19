@@ -125,7 +125,8 @@ The CD→RAM payload experiment (#122) is merged on main as of 2026-10-16 (`c20a
 
 `make routine-real-core` は EX_BINBCD / MA_MUL8S / MA_MUL8U / EX_BCDBIN の実コア（Geargrafx）テストを順に実行する。
 
-- Linux 専用。Linux 以外は `BLOCKED: real-core target requires Linux` で終了コード1。
+- Linux 専用。Linux 以外は `BLOCKED: real-core target requires Linux` を stderr に出して失敗する。
+- 失敗時の終了コードは **make が返す 2**（レシピ内の `exit 1` は `make: *** ... Error 1` と表示されるだけ）。`TOOLS_DIR` 未指定（空を含む）は `ERROR: TOOLS_DIR is required ...`、スクリプト欠落は python の `can't open file` を出して、いずれも終了コード 2 で止まる。
 - `make test` / `make integration` / `make check` / CI には含まれない。
 - 前提: Geargrafx セットアップ済みで `TOOLS_DIR` を指定、各ルーチンのテストスクリプトが main にマージ済みであること（未マージだと欠落で失敗する。fail-closed）。
 - 実行: `TOOLS_DIR=$HOME/oss-pce-cd-bios-tools make routine-real-core`
