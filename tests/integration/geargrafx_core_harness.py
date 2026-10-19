@@ -1,0 +1,191 @@
+"""HuC6280 core verification harness on the real Geargrafx core (test-only, NOT a BIOS ABI proof).
+
+Each case JSRs one routine in bank0 with synthetic A/X/Y/P and a 32-byte zero-page seed
+($20E0-$20FF), then records A/X/Y/P/SP/MPR and the ZP window before and after, cold and warm.
+Status per cycle: RETURNED (harness_done reached after RTS), TRAPPED (IRQ/BRK vector taken) or
+TIMEOUT (step budget used up). Only RETURNED with every expectation met is PASS.
+
+Plug-in: --cases FILE.json, a list of {"name", "target" (symbol from the harness overlay or
+build/<mode>/bios-dev/dev.lbl), "a", "x", "y", "p", "ram" (64 hex chars, optional),
+"expect": {"a"/"x"/"y": int, "p_mask"/"p": int, "ram": {"offset": byte}}}. ZP bytes not named
+in expect.ram must be unchanged; optional "want" defaults to ["PASS", "RETURNED"]. Built-in self-test cases always run first and must behave.
+"""
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from diagnostics import OVERLAY_FILE_START  # noqa: E402
+
+STEPS = 2048  # probe maximum, per cycle
+CHECKPOINTS = ("harness_call", "harness_after", "harness_done", "harness_trap")
+T_FLAG, I_FLAG = 0x20, 0x04
+SELFTEST = [  # validates the harness; "want" is the verdict/status the harness must report
+    {"name": "selftest_add", "target": "harness_selftest", "a": 0x40, "x": 0x02, "y": 0x99, "p": 0x05,
+     "ram": "00" * 30 + "10ff", "want": ["PASS", "RETURNED"],
+     "expect": {"a": 0x43, "x": 0x02, "y": 0x99, "p_mask": 0x01, "p": 0x00,
+                "ram": {"0": 0x02, "30": 0x11, "31": 0x43}}},
+    {"name": "selftest_add_carry_out", "target": "harness_selftest", "a": 0xff, "x": 0x01, "y": 0, "p": 0x04,
+     "want": ["PASS", "RETURNED"],
+     "expect": {"a": 0x00, "p_mask": 0x83, "p": 0x01, "ram": {"0": 0x01, "30": 0x01, "31": 0x00}}},  # C from ADC; N/Z from the final INC
+    {"name": "neg_wrong_expectation", "target": "harness_selftest", "a": 1, "x": 1, "y": 0, "p": 0x04,
+     "want": ["FAIL", "RETURNED"], "expect": {"a": 0x03, "ram": {"0": 1, "30": 1, "31": 2}}},
+    {"name": "neg_undeclared_ram_write", "target": "harness_selftest", "a": 1, "x": 1, "y": 0, "p": 0x04,
+     "want": ["FAIL", "RETURNED"], "expect": {"a": 0x02, "ram": {"0": 1, "31": 2}}},
+    {"name": "neg_hang", "target": "harness_selftest_hang", "a": 0, "x": 0, "y": 0, "p": 0x04,
+     "want": ["FAIL", "TIMEOUT"], "expect": {}},
+    {"name": "neg_brk", "target": "harness_selftest_brk", "a": 0, "x": 0, "y": 0, "p": 0x04,
+     "want": ["FAIL", "TRAPPED"], "expect": {}},
+    {"name": "dev_ex_getver", "target": "api_slot_1E", "a": 0x11, "x": 0x22, "y": 0x33, "p": 0x04,
+     "want": ["PASS", "RETURNED"], "expect": {"a": 0x11, "x": 3, "y": 0}},
+]
+
+
+def parse_lbl(text):
+    return {n: int(a, 16) for a, n in re.findall(r"^al ([0-9A-Fa-f]{6}) \.(\w+)$", text, re.M)}
+
+
+def validate(case, symbols):
+    if case["target"] not in symbols or not 0xE000 <= symbols[case["target"]] <= 0xFFFF:
+        raise ValueError(f"{case['name']}: target {case['target']} is not a bank0 symbol")
+    if any(not 0 <= case[r] <= 255 for r in "axyp") or case["p"] & T_FLAG or not case["p"] & I_FLAG:
+        raise ValueError(f"{case['name']}: inputs must be bytes, P needs I=1 and T=0")
+    if len(bytes.fromhex(case.get("ram", "00" * 32))) != 32:
+        raise ValueError(f"{case['name']}: ram seed must be 32 bytes")
+
+
+def classify(records, cycle, row, symbols):
+    phases = {r["phase"] for r in records["TRACE"] if r["cycle"] == cycle}
+    if "harness_trap" in phases:
+        return "TRAPPED"
+    if {"harness_after", "harness_done"} <= phases and row["pc"] == symbols["harness_done"]:
+        return "RETURNED"
+    return "TIMEOUT"  # unfinished within the step budget: never PASS
+
+
+def judge(records, case, symbols):
+    """Return (verdict, statuses, failures, observations); PASS needs RETURNED + every expectation."""
+    seed = bytes.fromhex(case.get("ram", "00" * 32))
+    expect, failures, statuses, observed = case["expect"], [], {}, {}
+    if [r["phase"] for r in records["OBS"]] != ["loaded", "cold", "nonreturning", "warm"]:
+        return "FAIL", {}, ["probe observations incomplete"], {}
+    for cycle, row in (("cold", records["OBS"][1]), ("warm", records["OBS"][3])):
+        statuses[cycle] = status = classify(records, cycle, row, symbols)
+        if status != "RETURNED":
+            failures.append(f"{cycle}: {status}")
+            continue
+        before, after = (next(r for r in records["TRACE"] if r["cycle"] == cycle and r["phase"] == p)
+                         for p in ("harness_call", "harness_after"))
+        ram = bytes.fromhex(row["work_ram_0200_hex"])
+        pre, post = ram[:32], ram[32:64]
+        keys = ("a", "x", "y", "p", "sp", "mpr")
+        observed[cycle] = {"before": {k: before[k] for k in keys} | {"zp": pre.hex()},
+                           "after": {k: after[k] for k in keys} | {"zp": post.hex()}}
+        if pre != seed or [before[r] for r in "axy"] != [case[r] for r in "axy"] \
+                or before["mpr"][:2] != [0xFF, 0xF8] or before["mpr"][7] != 0:
+            failures.append(f"{cycle}: harness did not deliver the synthetic inputs")
+        if (before["p"] ^ case["p"]) & 0xCF:  # B/T bits are not inputs
+            failures.append(f"{cycle}: P input not delivered")
+        if before["sp"] != 0xFF or after["sp"] != 0xFF or after["mpr"] != before["mpr"]:
+            failures.append(f"{cycle}: SP/MPR not balanced across the call")
+        for reg in "axy":
+            if reg in expect and after[reg] != expect[reg]:
+                failures.append(f"{cycle}: {reg}={after[reg]:#04x}, expected {expect[reg]:#04x}")
+        if (after["p"] ^ expect.get("p", 0)) & expect.get("p_mask", 0):
+            failures.append(f"{cycle}: P={after['p']:#04x} mismatches mask {expect['p_mask']:#04x}")
+        want = bytearray(seed)
+        for offset, value in expect.get("ram", {}).items():
+            want[int(offset, 0)] = value
+        if post != want:
+            failures.append(f"{cycle}: ZP {post.hex()} != expected {bytes(want).hex()}")
+    return ("PASS" if not failures else "FAIL"), statuses, failures, observed
+
+
+def build_overlay(output):
+    from environment import executable
+    ca65, ld65 = executable("ca65"), executable("ld65")
+    obj, overlay, labels = output / "core-harness.o", output / "overlay.bin", output / "core-harness.lbl"
+    subprocess.run([ca65, str(ROOT / "tests/fixtures/core-harness.s"), "-o", str(obj)], check=True)
+    subprocess.run([ld65, "-C", str(ROOT / "tests/fixtures/contract-probe.cfg"), "-o", str(overlay),
+                    "-Ln", str(labels), str(obj)], check=True)
+    code = overlay.read_bytes()
+    if len(code) != 8192 or code[:0x800] != b"\xff" * 0x800 or code[0x1000:] != b"\xff" * 0x1000:
+        raise ValueError("harness escaped the $E800-$EFFF test overlay")
+    return code, parse_lbl(labels.read_text())
+
+
+def image(base, code, symbols, case):
+    data = bytearray(base)
+    data[OVERLAY_FILE_START:0x1000] = code[OVERLAY_FILE_START:0x1000]
+    data[0x1FF6:0x1FFE] = symbols["harness_trap"].to_bytes(2, "little") * 4
+    data[0x1FFE:0x2000] = symbols["harness_entry"].to_bytes(2, "little")
+    at = symbols["harness_input"] - 0xE000
+    data[at:at + 36] = bytes(case[r] for r in "axyp") + bytes.fromhex(case.get("ram", "00" * 32))
+    call = symbols["harness_call"] - 0xE000
+    if data[call] != 0x20:
+        raise ValueError("harness JSR opcode missing")
+    data[call + 1:call + 3] = symbols[case["target"]].to_bytes(2, "little")
+    return bytes(data)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--mode", choices=("debug", "release"), default="debug")
+    parser.add_argument("--cases", type=Path, help="JSON list of plug-in routine cases")
+    args = parser.parse_args()
+    from build_rom import verify_dev_rom
+    from environment import DEPENDENCIES
+    from geargrafx_api import compile_probe
+    from geargrafx_contracts import execute
+    dev = ROOT / "build" / args.mode / "bios-dev"
+    base = (dev / "dev-only-not-compatible-syscard3.pce").read_bytes()
+    verify_dev_rom(base, manifest=dev / "manifest.json")
+    if base[OVERLAY_FILE_START:0x1000] != b"\xff" * (0x1000 - OVERLAY_FILE_START):
+        raise ValueError("DEV ROM uses the $E800-$EFFF overlay window")
+    out = ROOT / "build" / args.mode / "core-harness"
+    out.mkdir(parents=True, exist_ok=True)
+    code, harness = build_overlay(out)
+    symbols = parse_lbl((dev / "dev.lbl").read_text()) | harness
+    cases = SELFTEST + (json.loads(args.cases.read_text()) if args.cases else [])
+    for case in cases:
+        validate(case, symbols)
+    probe = compile_probe(out)
+    labels = out / "trace-labels.txt"
+    labels.write_text("".join(f"{n} {symbols[n]:04x}\n" for n in CHECKPOINTS))
+    results, bad = [], []
+    with tempfile.TemporaryDirectory(prefix="pce-core-harness-") as tmp:
+        for case in cases:
+            rom = Path(tmp) / f"{case['name']}.pce"
+            rom.write_bytes(image(base, code, symbols, case))
+            records = execute(probe, rom, "-", labels, media=False, steps=STEPS)
+            verdict, statuses, failures, observed = judge(records, case, symbols)
+            want = case.get("want", ["PASS", "RETURNED"])
+            ok = verdict == want[0] and set(statuses.values()) == {want[1]}
+            results.append({"name": case["name"], "target": case["target"], "verdict": verdict,
+                            "status": statuses, "failures": failures, "observed": observed,
+                            "rom_sha256": hashlib.sha256(rom.read_bytes()).hexdigest(),
+                            "harness_behaved": ok})
+            print(f"{case['name']}: {verdict} {statuses} {'ok' if ok else 'UNEXPECTED'} {failures}")
+            if not ok:
+                bad.append(case["name"])
+    (out / "core-harness-evidence.json").write_text(json.dumps({
+        "scope": "original harness on real Geargrafx, no-media HuCard load; NOT reference BIOS ABI",
+        "geargrafx_revision": DEPENDENCIES["geargrafx"]["revision"], "steps_per_cycle": STEPS,
+        "cases": results}, indent=2) + "\n")
+    if bad:
+        raise ValueError(f"unexpected verdicts: {bad}")
+    print(f"PASS core harness: {len(results)} cases behaved as declared (cold+warm)")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        raise SystemExit(f"core harness FAIL/BLOCKED: {error}") from error

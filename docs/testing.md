@@ -107,6 +107,18 @@ tampered manifest are both rejected. ld65 debug info is structural evidence only
 byte-authenticity proof. A ROM produced by `build()` in-process is already trusted; every ROM
 read back from disk goes through `verify_dev_rom` before any code assumes a trusted DEV ROM.
 
+## HuC6280 コア検証ハーネス
+
+`make dev-core-harness-integration [CASES=cases.json]` は検証済み DEV ROM の
+`$E800-$EFFF` テストオーバーレイ（`tests/fixtures/core-harness.s`）から bank0 の
+ルーチンを JSR し、合成入力 A/X/Y/P とゼロページ `$20E0-$20FF` 32 バイトを与えて、
+呼出前後の A/X/Y/P/SP/MPR とゼロページを実 Geargrafx コア（ディスクなし HuCard
+ロード、cold/warm、各 2048 命令）で記録する。各サイクルは `RETURNED` / `TRAPPED`
+/ `TIMEOUT` に分類し、`RETURNED` かつ全期待値一致のみ PASS。未完了は PASS に
+ならない。ケース JSON の形式と組込み自己検証ケースは
+`tests/integration/geargrafx_core_harness.py` の docstring を参照。リファレンス
+BIOS は実行せず、BIOS ABI 互換の証拠ではない。
+
 ## Coverage status
 
 | Area | Status |
