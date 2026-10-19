@@ -281,6 +281,15 @@ def _run_command(lines, start, end, dash):
     return None
 
 
+def _guard_is_bare(command, call, keys):
+    """Exit status must gate the step: bare guard call, optionally `&& more`; default shell or `shell: bash` only."""
+    m = re.match(r"(python3?\s+)?" + re.escape(call) + r"(\s|$)", command or "")
+    rest = (command[m.end():] if m else "").replace("&&", " ")
+    shell_ok = all(re.sub(r"""["']""", "", k.split(":", 1)[1]).split("#")[0].strip() == "bash"
+                   for k in keys if re.match(r"""["']?shell["']?\s*:""", k))
+    return bool(m) and shell_ok and not re.search(r"[|&;]|\\$", rest)
+
+
 def guard_placement_violations(text, workflow):
     """Each upload step needs exactly one guard step in its job, before it: real `run:`, no `if:`, no `continue-on-error:`."""
     lines = text.splitlines()
@@ -308,8 +317,8 @@ def guard_placement_violations(text, workflow):
             problems.append(f"{label}: guard step is not before the upload step")
         keys = _step_keys(lines, start, end, dash_indent)
         command = _run_command(lines, start, end, dash_indent)
-        if not (command and re.match(r"(python3?\s+)?" + re.escape(call) + r"(\s|$)", command)):
-            problems.append(f"{label}: guard call is not the command of the step's run:")
+        if not _guard_is_bare(command, call, keys):
+            problems.append(f"{label}: guard call is not the bare command of the step's run: (no ||, |, &, ;, custom shell:)")
         for key in ("if", "continue-on-error"):
             if any(re.match(rf"""["']?{key}["']?\s*:""", k) for k in keys):
                 problems.append(f"{label}: guard step has {key}:")

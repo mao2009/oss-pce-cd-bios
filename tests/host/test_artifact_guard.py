@@ -383,6 +383,25 @@ class GuardPlacementTests(unittest.TestCase):
                 self.assertNotEqual(text, GUARDED)
                 self.assertNotEqual([], self.violations(text))
 
+    def test_guard_exit_status_must_not_be_swallowed(self):
+        run = '        run: |\n          ' + CALL
+        bad = {
+            'or true': f'        run: {CALL} || true',
+            'background': f'        run: {CALL} &',
+            'pipe': f'        run: {CALL} | cat',
+            'semicolon': f'        run: {CALL} ; true',
+            'and then or': f'        run: {CALL} && echo x || true',
+            'block or true': run + ' || true',
+            'block continuation': run + ' \\n          || true',
+            'shell python': '        shell: python\n' + run,
+            'shell echo': '        shell: echo {0}\n' + run,
+        }
+        for label, step in bad.items():
+            with self.subTest(bad=label):
+                text = GUARDED.replace(run, step)
+                self.assertNotEqual(text, GUARDED)
+                self.assertNotEqual([], self.violations(text))
+
     def test_accepted_run_forms(self):
         run = '        run: |\n          ' + CALL
         for step in (f'        run: {CALL}',
