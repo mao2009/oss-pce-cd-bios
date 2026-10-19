@@ -1,7 +1,8 @@
 """Opt-in real-core run of src/ex_bcdbin.s (Issue #71). Linux only; NOT part of host tests.
 
 Run: python3 tests/integration/geargrafx_bcdbin.py   (pinned cc65 + Geargrafx core via make setup)
-Skipped (SKIP, not PASS) off Linux or when the pinned tools/core are absent. Project-own contract only.
+Off Linux, or when the pinned tools/core are absent, the run is BLOCKED: it errors and exits nonzero
+(never SKIP, never PASS). Project-own contract only; not a public BIOS API check.
 """
 from pathlib import Path
 import json
@@ -25,11 +26,11 @@ class GeargrafxTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if not sys.platform.startswith("linux"):
-            raise unittest.SkipTest("SKIP real core: Linux-pinned target")
+            raise RuntimeError("BLOCKED real core: Linux-pinned target required")
         try:
             cls.core, ca65, ld65 = core_path(), executable("ca65"), executable("ld65")
         except (ValueError, OSError) as error:
-            raise unittest.SkipTest(f"SKIP real core: {error}")
+            raise RuntimeError(f"BLOCKED real core: {error}") from error
         cls.tmp = tempfile.TemporaryDirectory(prefix="pce-bcdbin-")
         out = Path(cls.tmp.name)
         objects = []

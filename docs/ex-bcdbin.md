@@ -27,6 +27,6 @@ API の既存スタブは従来どおりである。
 - 実コア：`tests/fixtures/bcdbin_harness.s` が全 256 入力で `ex_bcdbin` を呼び、A / P / X / Y と最終 SP を
   作業 RAM に書く。`geargrafx_smoke.execute` で cold / warm の両方を読み出してモデルと照合する。
   一の位チェック（`CMP #10`）・十の位チェック（`CMP #$A0`）・十の位の重み（`ADC #10`）を書き換えた ROM が
-  不一致として検出されることも実コアで確かめる。Linux 以外、または pinned cc65 / コアが無いときは SKIP（PASS ではない）。
+  不一致として検出されることも実コアで確かめる。Linux 以外、または pinned cc65 / コアが無いときは BLOCKED として非ゼロ終了する（SKIP による成功終了も PASS もしない）。
 
 Geargrafx での観測は実機での動作を証明しない。BIOS 互換も主張しない。

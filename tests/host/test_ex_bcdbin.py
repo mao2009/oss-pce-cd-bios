@@ -3,6 +3,11 @@
 The contract is this project's own spec (docs/ex-bcdbin.md), not the reference BIOS ABI.
 The real-core run is opt-in: tests/integration/geargrafx_bcdbin.py (Linux only), not part of host tests.
 """
+from pathlib import Path
+import os
+import subprocess
+import sys
+import tempfile
 import unittest
 
 RESULT_BYTES = 4 * 256 + 1  # A, P, X, Y tables + final SP (tests/fixtures/bcdbin_harness.s)
@@ -47,6 +52,21 @@ class ModelTests(unittest.TestCase):
         # Later integration target: replace this encoder with EX_BINBCD (#70) once it exists.
         for n in range(100):
             self.assertEqual(model((n // 10) << 4 | n % 10), (n, 0))
+
+
+class RealCoreBlockedTests(unittest.TestCase):
+    """Negative: an unavailable real core must exit nonzero as BLOCKED, never SKIP (OK) or PASS."""
+
+    def test_missing_core_exits_nonzero_not_skip(self):
+        script = Path(__file__).resolve().parents[1] / "integration/geargrafx_bcdbin.py"
+        missing = Path(tempfile.gettempdir()) / "missing-geargrafx-core-issue71.so"
+        env = dict(os.environ, GEARGRAFX_CORE=str(missing))
+        result = subprocess.run([sys.executable, str(script)], capture_output=True, text=True,
+                                env=env, timeout=120)
+        output = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0, output)
+        self.assertIn("BLOCKED real core", output)
+        self.assertNotIn("skipped", output.lower())
 
 
 if __name__ == "__main__":
