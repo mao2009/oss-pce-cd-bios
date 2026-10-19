@@ -24,6 +24,7 @@
 
 - 問い: ピン留めした公開ソース（caller SDK、HLE エミュレータ、実コアのソース）がその項目について何を書いているか。
 - 取り得る値: `UNKNOWN`（根拠なし） / `HYPOTHESIS`（ソースに記述がある。`confidence: SOURCE_SUPPORTED`）。
+  claim status の `BLOCKED` はこの軸ではなく、2.3 の「判定できない」に含める。
 - 上限: `HYPOTHESIS` / `SOURCE_SUPPORTED`。ソースの記述だけでは `OBSERVED` / `VERIFIED` にならない。
 - 既存フィールドとの対応: `spec/api_contracts.json` の各 claim の `status`・`value`・`sources`・`confidence`、
   `mapping_status`、`name_observations`。ソース種別は `tools/contracts.py` の `SOURCE_KIND_MEANINGS`
@@ -36,19 +37,22 @@
 - 取り得る値: `PENDING` / `APPROVED` / `RESTRICTED`（`docs/provenance.md` の処分）。
   利用形態は `DIRECT` / `ADAPTED` / `REFERENCE_ONLY` / `REJECTED`。
 - 既存フィールドとの対応: `spec/api_contracts.json` の `provenance_status`（schema 1 では `PENDING` 固定）、
-  `docs/oss-audit-systemcard.md`、`provenance/allowlist.tsv` と `provenance/approvers.txt`
-  （approver bootstrap は現在 `BLOCKED`）。
+  `docs/oss-audit-systemcard.md`。`tools/provenance_guard.py` が参照する `provenance/allowlist.tsv` と
+  `provenance/approvers.txt` は、現時点ではリポジトリに存在しない（approver bootstrap は `BLOCKED`）。
 - 判断者: 人間の承認者のみ。CI・スキャナ・エージェントは承認できない。
 - 注意: `APPROVED` は法的な再利用許可であって、挙動が正しいことの根拠にはならない。
 
 ### 2.3 CALLEE_VERIFICATION（参照 BIOS callee の実測）
 
 - 問い: 参照 BIOS の callee を実コアで実行し、入出力・フラグ・MPR・スタック・RAM 差分を測ったか。
-- 取り得る値: `NOT_RUN` / `BLOCKED`（`BLOCKED_ABI` など）/ `OBSERVED`（`LOCAL_ONLY`）/ `VERIFIED`。
+- 取り得る値: `NOT_RUN` / `BLOCKED`（判定できない。claim status の `BLOCKED`、`BLOCKED_ABI` など）/ `OBSERVED`（`LOCAL_ONLY`）/ `VERIFIED`。
   `VERIFIED` は現スキーマでは表せない（`CLAIM_STATUSES` に無い。Issue #171 の対象）。
-- 既存フィールドとの対応: `verification`（`status`・`executed_callee`・`evidence`）、claim の `evidence`
-  （`EVIDENCE_TRUST_LEVEL = FORMAT_ONLY`）、`tools/reference_case_catalog.py` の
-  `execution_status` / `measurement_status`、`tools/reference_bios_runner.py` の `OBSERVED LOCAL_ONLY`。
+- 既存フィールドとの対応: `verification`（`status`・`executed_callee`・`evidence`）、
+  `tools/reference_case_catalog.py` の `execution_status` / `measurement_status`。`OBSERVED` には次の2種類があり、別物として扱う。
+  - 台帳 claim の `OBSERVED`（`tools/contracts.py`）: `executed_callee` と形式検査だけの evidence
+    （`EVIDENCE_TRUST_LEVEL = FORMAT_ONLY`）が必要。この claim に付く `confidence` / `sources` は
+    この軸の前提条件であって、SOURCE_EVIDENCE の根拠ではない。
+  - `tools/reference_bios_runner.py` のローカル観測 `OBSERVED LOCAL_ONLY`（`LOCAL_ONLY_NOT_VERIFIED`）: 台帳の外の記録。
 - 判断者: 実行記録（ROM ハッシュ、コア revision、入力、結果）。現状は全スロット `NOT_RUN`。
   slot `$1E` のローカル観測は `LOCAL_ONLY_NOT_VERIFIED` で、台帳には昇格していない。
 - 注意: 実測した事実と、その事実を公開してよいかは別の問題。callee の内部実装の詳細は公開しない（`docs/provenance.md`）。
@@ -82,11 +86,12 @@
 | フィールド | 内容 | 制約 |
 | --- | --- | --- |
 | `slot` / `override` | 例: `0x1E` / `src/overrides/slot_1E.s` | `tools/build_rom.py` の `overrides()` と一致すること |
-| `origin` | `ORIGINAL` / `ADAPTED` | `ADAPTED` は APPROVED の provenance 記録への参照が必須 |
-| `provenance_approval` | 2.2 の値。人間の承認者と日付 | `APPROVED` 以外は DEV 専用のまま |
-| `structural_check` | `verify_dev_rom()` の結果 | 構造検査だけで、挙動の検証ではない |
+| `origin` | `ORIGINAL` / `ADAPTED` / `DIRECT` | `ADAPTED` / `DIRECT` は APPROVED の provenance 記録への参照が必須。APPROVED でなければ DEV ROM を含むどのバイナリにも入れない（`docs/provenance.md`） |
+| `provenance_approval` | 2.2 の値。人間の承認者と日付 | `ORIGINAL` で `APPROVED` 以外の場合は DEV_CALLABLE にしない |
+| `structural_check` | `verify_dev_rom()` の結果 | ソースからの再ビルドとのバイト一致検査と構造検査。挙動の検証ではない |
 | `dev_test` | OSS 実装に対する実コアテスト（例: `tests/integration/geargrafx_contracts.py`）の記録 | 測る対象は OSS 実装で、参照 BIOS ではない |
-| `compatibility_basis` | CALLEE_VERIFICATION 記録への参照、または `NONE` | 未指定は `NONE`。SOURCE_EVIDENCE は参照できない |
+| `source_sha256` / `rom_sha256` / `core_revision` | override ソース、DEV ROM、Geargrafx の識別子 | 現在の値と一致しなければ、その行は DEV_CALLABLE から外れる |
+| `compatibility_basis` | `VERIFIED` の CALLEE_VERIFICATION 記録への参照、または `NONE` | `VERIFIED` は現スキーマで表せない（#171）ため、当面は `NONE` 固定。`OBSERVED` / `LOCAL_ONLY` / SOURCE_EVIDENCE は参照できない |
 | `abi` / `release_eligible` | `UNVERIFIED` / `false` | 定数。この台帳から変更できない |
 
 ### 4.3 DEV_CALLABLE の扱い
@@ -98,10 +103,14 @@
 - 条件（すべて必要）: `structural_check` PASS、`dev_test` を実行して PASS、`provenance_approval` が `APPROVED`
   （`ORIGINAL` の場合も人間の確認が必要）、人間による記入。ツールによる自動記入はしない。
 - `compatibility_basis: NONE` の行は、DEV_CALLABLE であっても「互換性根拠なし」と表示する。
-  DEV テストの期待値が CALLEE_VERIFICATION 記録に結び付いていない場合、その期待値は OSS 側の
-  自前仕様として扱い、互換性の根拠にはしない。
-- SOURCE_EVIDENCE（`HYPOTHESIS`）だけを根拠に DEV_CALLABLE にすることはできない。
+  DEV テストの期待値が `VERIFIED` の記録に結び付いていない場合、その期待値は OSS 側の自前仕様として扱い、
+  互換性の根拠にはしない。`tests/integration/geargrafx_contracts.py` の slot `$1E` の期待値は
+  `LOCAL_ONLY` の実測に基づくので、これも自前仕様にあたる。
+- SOURCE_EVIDENCE（`HYPOTHESIS`）や `OBSERVED LOCAL_ONLY` を根拠に、互換性があるものとして扱うことはできない。
   これで「未検証の互換性が DEV_CALLABLE に昇格する」経路を塞ぐ。
+- 現行の slot `$1E` は、provenance の承認者がいない（bootstrap `BLOCKED`）ため、この提案の下では
+  DEV_CALLABLE にならない。`docs/testing.md` の「Callable DEV-only」は DEV ROM 上で呼び出して戻ることを
+  実測したという記述で、この状態語とは別のものである。
 
 ## 5. 既存ゲートへの影響
 
@@ -116,12 +125,13 @@
 | `tools/provenance_guard.py` | allowlist 変更には承認者が必要。bootstrap は `BLOCKED` | 変更なし。2.2 の `APPROVED` はこのゲートを迂回しない |
 | `tools/evidence_provenance.py` | PASS でも `compatibility: NOT_PROMOTED` | 変更なし |
 | `tools/compat_evidence.py` | stage を自動昇格しない | 変更なし |
-| 研究台帳の禁止語テスト | `DEV_CALLABLE`/`VERIFIED`/`PASS` を禁止 | 変更なし。§4.3 で書き込み先を第4台帳だけに限るため、両立する |
+| 研究台帳の禁止語テスト | `DEV_CALLABLE`/`VERIFIED`/`OBSERVED`/`PASS` などを禁止 | 変更なし。§4.3 で書き込み先を第4台帳だけに限るため、両立する |
 
 実装時に追加すべき負例テスト（提案）:
 
 - 第4台帳を読んで `spec/api_contracts.json` の値や `reviewed_abi` を書き換えるツールがあれば失敗する。
-- `compatibility_basis` が SOURCE_EVIDENCE（`sources` キー）を指していたら失敗する。
+- `compatibility_basis` が `VERIFIED` 以外（SOURCE_EVIDENCE、`OBSERVED`、`LOCAL_ONLY`、FORMAT_ONLY evidence）を指していたら失敗する。
+- `source_sha256` / `rom_sha256` / `core_revision` が現在の値と一致しない行が DEV_CALLABLE のままなら失敗する。
 - `abi != UNVERIFIED` または `release_eligible != false` なら失敗する。
 - `release_gate` が第4台帳の内容にかかわらず `BLOCKED` を返すこと。
 
