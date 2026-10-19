@@ -166,6 +166,39 @@ echo "wsl exit=$?"
 実行後に PR ヘッドが変わっていても、証拠の対象は開始時の `TARGET_SHA` である。変化したことは補足に別途記録する（判定には使わない）。
 固定版の `git rev-parse` は使わない（取得物は git リポジトリではない）。
 
+## 実測記録（ユーザーが提示した結果、2026-10-19）
+
+以下は、オーナーが手順 A（`### ユーザーが実行する手順`）を WSL で実行して提示した結果である。**エージェントが自ら実行して得た結果ではない。** 再実行はしていない。ログ全文・ROM・BIOS のバイトはこの文書に含めない。
+
+### 実行環境（提示された値）
+- 対象 SHA: 提示された記録には、実行時に `git ls-remote` で固定された `TARGET_SHA` の値が含まれていない。基準 HEAD `655244f`（PR #220）との一致は**未確認**であり、実行時 SHA は本記録の証拠として扱わない。
+- Geargrafx revision: `b49ae82a012eade566d72e9d61c9d95a5caa4da3`（固定版、デバッガ版）
+- Geargrafx アーカイブ SHA-256: `a80a3eae26a8efcd994350e84bbe73c975e406ced41f8f2404c88b00d4217f68`
+- cc65 アーカイブ SHA-256: `2172a1fc74bf6f3026e0f9427d4159508cd801abcb35ce591394bb911adaabe4`（手順 A の照合対象）
+
+### 合成 CD と診断 ROM（自作・非公開バイトなし）
+- 診断 ROM SHA-256: `1f96fc3f173e3ee52f1955f1741c3f85f70b53987e0e1c75d023f2e1403e6206`
+- 合成 CD BIN SHA-256: `52809b19c577a9ace46a1306f8dde7730a1b92bb0f98661b34c8feeb3c5da25f`
+- 合成 CD CUE SHA-256: `ee9a8c89e4f46eb89d9a3e8cd5d7234797adc845b0a24c884dadb55673655d1d`
+
+### 既存 CD-DA 診断の結果（提示された値）
+| 区分 | キー | 提示された status | 扱い |
+| --- | --- | --- | --- |
+| 全体 | — | PASS | 手順の終了コード 0 と `PASS real Geargrafx CD-DA observation` の提示に基づく |
+| 正例 | `mixed_mode_script` | PASS | 音声照合 29685 サンプル一致 |
+| 負例 1 | `tampered_pcm_byte_in_lba20` | PASS_EXPECTED_FAILURE | 期待どおり拒否 |
+| 負例 2 | `channels_swapped_lba21_sample30` | PASS_EXPECTED_FAILURE | 期待どおり拒否 |
+| 負例 3 | `play_on_data_track` | PASS_EXPECTED_FAILURE | 期待どおり拒否 |
+| 負例 4 | `d8_byte1_zero_seeks_paused` | PASS_EXPECTED_FAILURE | 期待どおり拒否 |
+| timeout | 固定 instruction budget、ホスト側 900 秒 | 提示なし（未確認） | 超過の有無は未報告。FAIL 扱いの判定には未使用 |
+| IRQ | — | NOT_TESTED | 変更なし |
+| 無媒体・媒体外 LBA | — | NOT_IMPLEMENTED | 未実装 |
+
+### この結果で言えること／言えないこと
+- **言える:** 固定版 Geargrafx（デバッガ版）上で、自作の合成 CD に対する既存 CD-DA 診断（音声再生の開始、負例の拒否、`$D8` の byte1=0 による一時停止）が、提示された記録のとおり成立した。
+- **言えない:** 純正 BIOS の CD_SEEK の互換性、callee（`$E00C`）の入力・出力・失敗の意味、ABI の確定、BLOCKED_ABI の解除。これらは本観測の対象外である。
+- **未検証:** timeout の超過有無、IRQ の挙動、媒体外 LBA の負例、`$D8` による有効 LBA 指定の状態遷移の追加検証。
+
 ## 固定版ソースの読解 (SOURCE_READ, `src/scsi_controller.cpp` @ `b49ae82`)
 
 `ScsiController::ExecuteCommand` のディスパッチは次の opcode のみ（それ以外は `Debug` 出力のみで無視）:
