@@ -15,7 +15,7 @@ class WorkflowRepositoryTests(unittest.TestCase):
         for path in sorted((ROOT / guard.WORKFLOWS).glob('*.y*ml')):
             for line in path.read_text(encoding='utf-8').splitlines():
                 if 'artifact_guard.py' in line and 'sparse-checkout' not in line:   # invocations, not the checkout config
-                    self.assertIn('${{ runner.temp }}/trusted-main/tools/artifact_guard.py', line, path.name)
+                    self.assertIn('.trusted-main/tools/artifact_guard.py', line, path.name)
 
     def test_real_ci_workflow_with_a_build_step_moved_into_the_guard_job_is_refused(self):
         path = ROOT / '.github' / 'workflows' / 'ci.yml'
@@ -29,12 +29,15 @@ class WorkflowRepositoryTests(unittest.TestCase):
 class PathPolicyTests(unittest.TestCase):
     """D: no repository upload uses a wildcard root pattern; a future one must be a reviewed change."""
 
+    # Glob metacharacters, held as a constant so that the first path segment is tested rather than whole patterns.
+    WILDCARD_CHARS = '*?'
+
     def test_no_repository_upload_uses_a_wildcard_root_pattern(self):
         for path in sorted((ROOT / guard.WORKFLOWS).glob('*.y*ml')):
             for pattern in upload_patterns(path.read_text(encoding='utf-8')):
                 source = guard.source_pattern(pattern)
-                self.assertNotIn(source, ('*', '**', '*/*', '**/*'), path.name)
-                self.assertFalse(source.startswith(('*', '**')), path.name)
+                first_segment = source.split('/')[0]
+                self.assertFalse(any(char in first_segment for char in self.WILDCARD_CHARS), (path.name, source))
 
 
 class RepositoryTests(unittest.TestCase):

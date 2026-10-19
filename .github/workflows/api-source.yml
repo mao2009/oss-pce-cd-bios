@@ -110,65 +110,65 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Checkout workflow files only (data for the placement check)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          sparse-checkout: .github/workflows
+          persist-credentials: false
       - name: Trusted guard (main)
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: main
-          path: ${{ runner.temp }}/trusted-main
+          path: .trusted-main
           sparse-checkout: tools/artifact_guard.py
           persist-credentials: false
       - name: Resolve python3 (trusted)
         id: pyresolve
         run: |
           echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"
-      - name: Checkout workflow files only (data for the placement check)
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          sparse-checkout: .github/workflows
-          persist-credentials: false
       - name: Guard placement (trusted)
         run: |
-          "${{ steps.pyresolve.outputs.python }}" "${{ runner.temp }}/trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --check-placement
+          "${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --check-placement
       - name: Download intermediate bios-dev artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: intermediate-bios-dev-${{ github.sha }}
-          path: ${{ runner.temp }}/intake
+          path: .intake
       - name: Stage artifacts (trusted guard) for Save diagnostic ROM and evidence, no linked GPL executable
         run: |
-          "${{ steps.pyresolve.outputs.python }}" "${{ runner.temp }}/trusted-main/tools/artifact_guard.py" --root "${{ runner.temp }}/intake" --workflow-root "$GITHUB_WORKSPACE" --stage .github/workflows/api-source.yml "Save diagnostic ROM and evidence, no linked GPL executable"
+          "${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root ".intake" --workflow-root "$GITHUB_WORKSPACE" --stage .github/workflows/api-source.yml "Save diagnostic ROM and evidence, no linked GPL executable"
       - name: Verify staged artifacts (trusted guard) for Save diagnostic ROM and evidence, no linked GPL executable
         run: |
-          "${{ steps.pyresolve.outputs.python }}" "${{ runner.temp }}/trusted-main/tools/artifact_guard.py" --root "${{ runner.temp }}/intake" --workflow-root "$GITHUB_WORKSPACE" --verify .github/workflows/api-source.yml "Save diagnostic ROM and evidence, no linked GPL executable"
+          "${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root ".intake" --workflow-root "$GITHUB_WORKSPACE" --verify .github/workflows/api-source.yml "Save diagnostic ROM and evidence, no linked GPL executable"
       - name: Save diagnostic ROM and evidence, no linked GPL executable
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: bios-dev-not-compatible-${{ github.sha }}
           path: |
-            ${{ runner.temp }}/intake/.artifact-stage/build/debug/bios-dev/*.pce
-            ${{ runner.temp }}/intake/.artifact-stage/build/debug/bios-dev/*.json
-            ${{ runner.temp }}/intake/.artifact-stage/build/debug/bios-dev/*.map
-            ${{ runner.temp }}/intake/.artifact-stage/build/debug/bios-dev/*.lbl
-            ${{ runner.temp }}/intake/.artifact-stage/build/debug/bios-dev/contract-probes/*.pce
-            ${{ runner.temp }}/intake/.artifact-stage/build/debug/bios-dev/contract-probes/*.json
-            ${{ runner.temp }}/intake/.artifact-stage/build/debug/bios-dev/contract-probes/*.map
-            ${{ runner.temp }}/intake/.artifact-stage/build/debug/bios-dev/contract-probes/*.lbl
-            ${{ runner.temp }}/intake/.artifact-stage/build/debug/startup-probe/*.pce
-            ${{ runner.temp }}/intake/.artifact-stage/build/debug/startup-probe/*.json
-            ${{ runner.temp }}/intake/.artifact-stage/build/debug/startup-probe/*.map
-            ${{ runner.temp }}/intake/.artifact-stage/build/debug/startup-probe/*.lbl
-            ${{ runner.temp }}/intake/.artifact-stage/build/debug/cdread-probe/*.pce
-            ${{ runner.temp }}/intake/.artifact-stage/build/debug/cdread-probe/*.json
-            ${{ runner.temp }}/intake/.artifact-stage/build/debug/cdread-probe/*.map
-            ${{ runner.temp }}/intake/.artifact-stage/build/debug/cdread-probe/*.lbl
-            ${{ runner.temp }}/intake/.artifact-stage/build/debug/cdload-exec/*.pce
-            ${{ runner.temp }}/intake/.artifact-stage/build/debug/cdload-exec/*.json
-            ${{ runner.temp }}/intake/.artifact-stage/build/debug/cdload-exec/*.map
-            ${{ runner.temp }}/intake/.artifact-stage/build/debug/cdload-exec/*.lbl
-            ${{ runner.temp }}/intake/.artifact-stage/build/debug/cdreset-probe/*.pce
-            ${{ runner.temp }}/intake/.artifact-stage/build/debug/cdreset-probe/*.json
-            ${{ runner.temp }}/intake/.artifact-stage/build/debug/cdreset-probe/*.map
-            ${{ runner.temp }}/intake/.artifact-stage/build/debug/cdreset-probe/*.lbl
+            .intake/.artifact-stage/build/debug/bios-dev/*.pce
+            .intake/.artifact-stage/build/debug/bios-dev/*.json
+            .intake/.artifact-stage/build/debug/bios-dev/*.map
+            .intake/.artifact-stage/build/debug/bios-dev/*.lbl
+            .intake/.artifact-stage/build/debug/bios-dev/contract-probes/*.pce
+            .intake/.artifact-stage/build/debug/bios-dev/contract-probes/*.json
+            .intake/.artifact-stage/build/debug/bios-dev/contract-probes/*.map
+            .intake/.artifact-stage/build/debug/bios-dev/contract-probes/*.lbl
+            .intake/.artifact-stage/build/debug/startup-probe/*.pce
+            .intake/.artifact-stage/build/debug/startup-probe/*.json
+            .intake/.artifact-stage/build/debug/startup-probe/*.map
+            .intake/.artifact-stage/build/debug/startup-probe/*.lbl
+            .intake/.artifact-stage/build/debug/cdread-probe/*.pce
+            .intake/.artifact-stage/build/debug/cdread-probe/*.json
+            .intake/.artifact-stage/build/debug/cdread-probe/*.map
+            .intake/.artifact-stage/build/debug/cdread-probe/*.lbl
+            .intake/.artifact-stage/build/debug/cdload-exec/*.pce
+            .intake/.artifact-stage/build/debug/cdload-exec/*.json
+            .intake/.artifact-stage/build/debug/cdload-exec/*.map
+            .intake/.artifact-stage/build/debug/cdload-exec/*.lbl
+            .intake/.artifact-stage/build/debug/cdreset-probe/*.pce
+            .intake/.artifact-stage/build/debug/cdreset-probe/*.json
+            .intake/.artifact-stage/build/debug/cdreset-probe/*.map
+            .intake/.artifact-stage/build/debug/cdreset-probe/*.lbl
           if-no-files-found: error
           retention-days: 14
   attest-cdread:
@@ -256,41 +256,41 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Checkout workflow files only (data for the placement check)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          sparse-checkout: .github/workflows
+          persist-credentials: false
       - name: Trusted guard (main)
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: main
-          path: ${{ runner.temp }}/trusted-main
+          path: .trusted-main
           sparse-checkout: tools/artifact_guard.py
           persist-credentials: false
       - name: Resolve python3 (trusted)
         id: pyresolve
         run: |
           echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"
-      - name: Checkout workflow files only (data for the placement check)
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          sparse-checkout: .github/workflows
-          persist-credentials: false
       - name: Guard placement (trusted)
         run: |
-          "${{ steps.pyresolve.outputs.python }}" "${{ runner.temp }}/trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --check-placement
+          "${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --check-placement
       - name: Download intermediate verdict artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: intermediate-cdread-verdict-${{ github.sha }}
-          path: ${{ runner.temp }}/intake
+          path: .intake
       - name: Stage artifacts (trusted guard) for Save verdict bytes (hashes only; no ROM, BIOS or disc data)
         run: |
-          "${{ steps.pyresolve.outputs.python }}" "${{ runner.temp }}/trusted-main/tools/artifact_guard.py" --root "${{ runner.temp }}/intake" --workflow-root "$GITHUB_WORKSPACE" --stage .github/workflows/api-source.yml "Save verdict bytes (hashes only; no ROM, BIOS or disc data)"
+          "${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root ".intake" --workflow-root "$GITHUB_WORKSPACE" --stage .github/workflows/api-source.yml "Save verdict bytes (hashes only; no ROM, BIOS or disc data)"
       - name: Verify staged artifacts (trusted guard) for Save verdict bytes (hashes only; no ROM, BIOS or disc data)
         run: |
-          "${{ steps.pyresolve.outputs.python }}" "${{ runner.temp }}/trusted-main/tools/artifact_guard.py" --root "${{ runner.temp }}/intake" --workflow-root "$GITHUB_WORKSPACE" --verify .github/workflows/api-source.yml "Save verdict bytes (hashes only; no ROM, BIOS or disc data)"
+          "${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root ".intake" --workflow-root "$GITHUB_WORKSPACE" --verify .github/workflows/api-source.yml "Save verdict bytes (hashes only; no ROM, BIOS or disc data)"
       - name: Save verdict bytes (hashes only; no ROM, BIOS or disc data)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: cdread-verdict-${{ github.sha }}
-          path: ${{ runner.temp }}/intake/.artifact-stage/verdict/cdread-verdict.json
+          path: .intake/.artifact-stage/verdict/cdread-verdict.json
           if-no-files-found: error
           retention-days: 14
   attest-cdread-verdict:

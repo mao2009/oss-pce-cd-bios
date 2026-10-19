@@ -56,45 +56,45 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Checkout workflow files only (data for the placement check)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          sparse-checkout: .github/workflows
+          persist-credentials: false
       - name: Trusted guard (main)
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: main
-          path: ${{ runner.temp }}/trusted-main
+          path: .trusted-main
           sparse-checkout: tools/artifact_guard.py
           persist-credentials: false
       - name: Resolve python3 (trusted)
         id: pyresolve
         run: |
           echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"
-      - name: Checkout workflow files only (data for the placement check)
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          sparse-checkout: .github/workflows
-          persist-credentials: false
       - name: Guard placement (trusted)
         run: |
-          "${{ steps.pyresolve.outputs.python }}" "${{ runner.temp }}/trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --check-placement
+          "${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --check-placement
       - name: Download intermediate test fixture artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: intermediate-ci-fixture-${{ github.sha }}
-          path: ${{ runner.temp }}/intake
+          path: .intake
       - name: Stage artifacts (trusted guard) for Save verified test fixture and evidence
         run: |
-          "${{ steps.pyresolve.outputs.python }}" "${{ runner.temp }}/trusted-main/tools/artifact_guard.py" --root "${{ runner.temp }}/intake" --workflow-root "$GITHUB_WORKSPACE" --stage .github/workflows/ci.yml "Save verified test fixture and evidence"
+          "${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root ".intake" --workflow-root "$GITHUB_WORKSPACE" --stage .github/workflows/ci.yml "Save verified test fixture and evidence"
       - name: Verify staged artifacts (trusted guard) for Save verified test fixture and evidence
         run: |
-          "${{ steps.pyresolve.outputs.python }}" "${{ runner.temp }}/trusted-main/tools/artifact_guard.py" --root "${{ runner.temp }}/intake" --workflow-root "$GITHUB_WORKSPACE" --verify .github/workflows/ci.yml "Save verified test fixture and evidence"
+          "${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root ".intake" --workflow-root "$GITHUB_WORKSPACE" --verify .github/workflows/ci.yml "Save verified test fixture and evidence"
       - name: Save verified test fixture and evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: smoke-fixture-not-bios-${{ github.sha }}
           path: |
-            ${{ runner.temp }}/intake/.artifact-stage/build/debug/*.pce
-            ${{ runner.temp }}/intake/.artifact-stage/build/debug/*.json
-            ${{ runner.temp }}/intake/.artifact-stage/build/debug/*.map
-            ${{ runner.temp }}/intake/.artifact-stage/build/debug/*.lbl
-            ${{ runner.temp }}/intake/.artifact-stage/build/debug/*.lst
+            .intake/.artifact-stage/build/debug/*.pce
+            .intake/.artifact-stage/build/debug/*.json
+            .intake/.artifact-stage/build/debug/*.map
+            .intake/.artifact-stage/build/debug/*.lbl
+            .intake/.artifact-stage/build/debug/*.lst
           if-no-files-found: error
           retention-days: 14
