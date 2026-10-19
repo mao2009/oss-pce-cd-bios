@@ -37,9 +37,10 @@ EXEC_RUNNERS = re.compile(r"subprocess|Popen|os\.system|os\.exec|\bmake\b|ca65|l
                           r"|open\(|read_text|json\.load|glob|rglob|listdir|scandir|import_module", re.I)
 SKIP_DIRS = {".git", "docs", "rom", "node_modules", "__pycache__"}
 COMMENT_PREFIXES = ("#", ";", "//", "rem ", "::")
-# In C-family files "#include"/"#define" are code, not comments.
+# C-family: "#include"/"#define" are code; comments are // and /* ... */ only.
 C_SUFFIXES = {".c", ".h", ".cpp", ".hpp", ".cc"}
-C_COMMENT_PREFIXES = ("//", "/*", "*")
+# Preprocessed assembler/include (.S .inc .i): C comment rules plus ";" whole-line comments. Plain ".s" is NOT here.
+PP_SUFFIXES = {".S", ".inc", ".i"}
 SELF = Path(__file__).resolve()
 WILDCARD = re.compile(r"[\w./\-]*[*?][\w./*?\-]*")
 
@@ -49,9 +50,24 @@ def _text(path):
 
 
 def _code_lines(path):
-    """Lines of a file without whole-line comments (# ; // REM ::), so prose mentions don't count."""
-    prefixes = C_COMMENT_PREFIXES if path.suffix in C_SUFFIXES else COMMENT_PREFIXES
-    return [ln for ln in _text(path).splitlines() if not ln.lstrip().lower().startswith(prefixes)]
+    """Lines of a file without whole-line comments, so prose mentions don't count.
+    Comment rules per family: C (.c .h .cpp .hpp .cc): // and /* ... */ (a "*" line is a comment only inside an
+    open block; "*p = ..." outside is code; #include/#define are code). Preprocessed (.S .inc .i): the C rules
+    plus ";" lines. Everything else (incl. plain .s): # ; // REM ::."""
+    lines = _text(path).splitlines()
+    if path.suffix not in C_SUFFIXES | PP_SUFFIXES:
+        return [ln for ln in lines if not ln.lstrip().lower().startswith(COMMENT_PREFIXES)]
+    extra = (";",) if path.suffix in PP_SUFFIXES else ()
+    out, in_block = [], False
+    for ln in lines:
+        st = ln.lstrip()
+        if in_block:
+            in_block = "*/" not in st
+        elif st.startswith("/*"):
+            in_block = "*/" not in st
+        elif not st.startswith(("//",) + extra):
+            out.append(ln)
+    return out
 
 
 def _wildcard_hits(line):
@@ -282,6 +298,9 @@ class CdSearchSlot07FixtureTests(unittest.TestCase):
             "asm": ("src/x.asm", ' .incbin "cdsearch-slot07"\n'),
             "c_src": ("src/x.c", '#include "cdsearch-slot07.h"\n'),
             "h_src": ("src/x.h", '#define F "cdsearch-slot07"\n'),
+            "c_deref": ("src/a.c", '*p = "cdsearch-slot07";\n'),
+            "pp_include": ("src/a.S", '#include "cdsearch-slot07.inc"\n'),
+            "pp_define": ("src/b.S", '#define X cdsearch-slot07\n'),
             "ld": ("link.ld", "INPUT(cdsearch-slot07)\n"),
             "py_src": ("src/gen.py", "open('cdsearch-slot07')\n"),
             "py_scripts": ("scripts/gen.py", "Path('cdsearch-slot07').read_text()\n"),
@@ -299,6 +318,17 @@ class CdSearchSlot07FixtureTests(unittest.TestCase):
             with self.subTest(mutation=name):
                 root = self._scratch({**base, rel: body})
                 self.assertEqual(wiring_violations(root), [rel])
+
+    def test_block_comment_star_lines_are_not_code(self):
+        root = self._scratch({
+            "src/a.c": "/*\n * cdsearch-slot07 is not linked\n * more\n */\nint x;\n",
+            "src/b.S": "/* c\n * cdsearch-slot07\n */\n; cdsearch-slot07\n",
+            "src/c.s": "; cdsearch-slot07\n# cdsearch-slot07\n",
+        })
+        self.assertEqual(wiring_violations(root), [])
+        self.assertEqual(wiring_violations(self._scratch({"src/d.c": "/* x */\n*p = cdsearch_slot07;\n"})), ["src/d.c"])
+
+    
 
     def test_wiring_probe_detects_reference_appended_to_real_makefile_copy(self):
         root = self._scratch({"Makefile": (ROOT / "Makefile").read_text(encoding="utf-8")})
