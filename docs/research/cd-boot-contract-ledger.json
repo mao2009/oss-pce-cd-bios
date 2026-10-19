@@ -1,0 +1,296 @@
+{
+  "schema": "cd-boot-contract-ledger/1",
+  "issue": 289,
+  "parent_issue": 9,
+  "scope": "slot $00 (candidate name CD_BOOT, candidate entry $E000): caller-side evidence and UNKNOWN boundaries only. No ROM entry is wired, no reference callee is executed.",
+  "block_status": "BLOCKED_ABI",
+  "release_eligible": false,
+  "dev_callable": false,
+  "sources": {
+    "HUC_PCENGINE": {
+      "repo": "https://github.com/pce-devel/huc",
+      "commit": "54f5c73606c1e7142e8095c727cab2767e2b3cb3",
+      "path": "include/hucc/pcengine.inc",
+      "lines": "8, 467-468",
+      "licence": "BSL-1.0",
+      "tier": "primary-sdk"
+    },
+    "HUC_SYSCARD_ASM": {
+      "repo": "https://github.com/pce-devel/huc",
+      "commit": "54f5c73606c1e7142e8095c727cab2767e2b3cb3",
+      "path": "include/hucc/hucc-systemcard.asm",
+      "lines": "10, 85-88",
+      "licence": "BSL-1.0",
+      "tier": "primary-sdk"
+    },
+    "HUC_CORE_KERNEL": {
+      "repo": "https://github.com/pce-devel/huc",
+      "commit": "54f5c73606c1e7142e8095c727cab2767e2b3cb3",
+      "path": "include/hucc/core-kernel.asm",
+      "lines": "10, 478-481, 500-516",
+      "licence": "BSL-1.0",
+      "tier": "primary-sdk"
+    },
+    "HUC_CORE_INC": {
+      "repo": "https://github.com/pce-devel/huc",
+      "commit": "54f5c73606c1e7142e8095c727cab2767e2b3cb3",
+      "path": "include/hucc/core.inc",
+      "lines": "10, 41-43",
+      "licence": "BSL-1.0",
+      "tier": "primary-sdk"
+    },
+    "HUC_CPU_TXT": {
+      "repo": "https://github.com/pce-devel/huc",
+      "commit": "54f5c73606c1e7142e8095c727cab2767e2b3cb3",
+      "path": "doc/pce/cpu.txt",
+      "lines": "30, 64-66, 131",
+      "licence": "NOT_STATED_IN_FILE",
+      "tier": "community-sdk-notes"
+    },
+    "STUM_2025_OFFSETS": {
+      "url": "https://stum.de/2025/pcenginebiosoffsets/",
+      "date": "2025-07-28",
+      "licence": "CC BY-NC-SA 4.0 (text); MIT (posted code), per page footer",
+      "tier": "secondary-web"
+    },
+    "ZEOGRAD_BIOS_NOTES": {
+      "url": "https://www.zeograd.com/download/pce_bios.html",
+      "licence": "NOT_STATED_IN_FETCHED_CONTENT",
+      "tier": "secondary-web"
+    },
+    "REPO_TESTING_DOC": {
+      "path": "docs/testing.md",
+      "tier": "project",
+      "verified_primary": false,
+      "licence": "PROJECT_INTERNAL (repository document, not third-party)"
+    },
+    "REPO_SYSTEM_CARD_ROM_DOC": {
+      "path": "docs/system-card-rom.md",
+      "tier": "project",
+      "verified_primary": false,
+      "licence": "PROJECT_INTERNAL (repository document, not third-party)"
+    }
+  },
+  "excluded_sources": [
+    {
+      "path": "include/huc/cdrom.asm",
+      "reason": "licence indeterminate; not read, not quoted"
+    },
+    {
+      "path": "Hu-Go bios.c (mckayemu/hugo@64ed226d)",
+      "reason": "GPL-2 HLE, not BIOS ABI evidence; not read"
+    },
+    {
+      "path": "./rom/",
+      "reason": "private inputs; not read"
+    }
+  ],
+  "entries": [
+    {
+      "slot": 0,
+      "entry_candidate": "$E000",
+      "name_candidate": "CD_BOOT",
+      "callable": "UNKNOWN",
+      "returns_to_caller": "UNKNOWN",
+      "dev_rom_status": "PROJECT_DEV_FACT: one of 80 nonreturning stubs (docs/testing.md); not reference behaviour"
+    }
+  ],
+  "fields": [
+    {
+      "id": "entry_address",
+      "status": "SOURCE_FACT",
+      "value": "$00:E000 (declared as cd_boot)",
+      "sources": [
+        "HUC_PCENGINE"
+      ],
+      "note": "HuC declares the address only. Whether $E000 is a jump-table entry is not stated by HuC (see entry_jmp_table)."
+    },
+    {
+      "id": "entry_jmp_table",
+      "status": "HYPOTHESIS",
+      "value": "$E000 is a JMP table entry",
+      "sources": [
+        "STUM_2025_OFFSETS"
+      ],
+      "note": "Only the unverified secondary page says so. Not promoted."
+    },
+    {
+      "id": "body_address_by_version",
+      "status": "HYPOTHESIS",
+      "value": {
+        "System Card 1.0": "$E0E7",
+        "System Card 2.0/2.1/3.0": "$E0F3"
+      },
+      "sources": [
+        "STUM_2025_OFFSETS"
+      ],
+      "note": "Secondary only. Not checked against a manufacturer manual; not verified by execution. Not promoted."
+    },
+    {
+      "id": "stated_purpose",
+      "status": "UNKNOWN",
+      "value": null,
+      "sources": [],
+      "note": "Only an unverified secondary page mentions a start-up screen. Its text is not recorded here and is not used as evidence."
+    },
+    {
+      "id": "caller_mpr7_before_call",
+      "status": "SOURCE_FACT",
+      "value": "bank $00 (caller sets MPR7 to 0 with cla; tam7 before jsr $E000)",
+      "sources": [
+        "HUC_CORE_KERNEL"
+      ],
+      "note": "Caller-side fact only. The callee's own MPR requirements are not stated."
+    },
+    {
+      "id": "caller_mpr7_after_return",
+      "status": "SOURCE_FACT",
+      "value": "caller restores its saved MPR7 after the jsr returns",
+      "sources": [
+        "HUC_CORE_KERNEL"
+      ],
+      "note": "Caller-side only. Says nothing about whether the callee preserves MPR0-6."
+    },
+    {
+      "id": "caller_a_x_y_on_entry",
+      "status": "SOURCE_FACT",
+      "value": "A and X are the caller's values (A is pushed and pulled around the bank switch); Y is the low byte of the entry, $00 for slot 0 on the soft-reset path",
+      "sources": [
+        "HUC_CORE_KERNEL",
+        "HUC_CORE_INC"
+      ],
+      "note": "Caller-side provision only. The callee's input requirement is a separate field."
+    },
+    {
+      "id": "caller_p_flags_on_soft_reset",
+      "status": "SOURCE_FACT",
+      "value": "caller executes sei before the call on the CD soft-reset path",
+      "sources": [
+        "HUC_CORE_KERNEL"
+      ],
+      "note": "Caller-side only. Not a callee requirement."
+    },
+    {
+      "id": "caller_stack_expectation",
+      "status": "HYPOTHESIS",
+      "value": "caller expects the call to return with a balanced stack",
+      "sources": [
+        "HUC_CORE_KERNEL"
+      ],
+      "note": "Inferred from the push/pull code after jsr. No callee source states it. Not promoted."
+    },
+    {
+      "id": "returns_to_caller",
+      "status": "HYPOTHESIS",
+      "value": "returns to the instruction after jsr",
+      "sources": [
+        "HUC_CORE_KERNEL",
+        "HUC_SYSCARD_ASM"
+      ],
+      "note": "Caller restore code assumes a return. HuC declares cd_boot as void, which does not establish a return. Not promoted."
+    },
+    {
+      "id": "callee_input_registers_a_x_y_p",
+      "status": "UNKNOWN",
+      "value": null,
+      "sources": [],
+      "note": "No source states what the callee reads from A/X/Y/P."
+    },
+    {
+      "id": "callee_return_registers_flags",
+      "status": "UNKNOWN",
+      "value": null,
+      "sources": [],
+      "note": "No source states returned registers, flags, or error indication."
+    },
+    {
+      "id": "scratch_20F8_20FF",
+      "status": "UNKNOWN",
+      "value": null,
+      "sources": [],
+      "note": "Not found in the fetched HuC files or in the secondary pages. The repo does not define this range either."
+    },
+    {
+      "id": "callee_mpr_beyond_mpr7",
+      "status": "UNKNOWN",
+      "value": null,
+      "sources": [],
+      "note": "Whether the callee maps other banks, or preserves MPR0-6, is not stated."
+    },
+    {
+      "id": "callee_stack_contract",
+      "status": "UNKNOWN",
+      "value": null,
+      "sources": [],
+      "note": "Stack depth used, stack-neutral or not, and the boot-transfer stack shape are not stated."
+    },
+    {
+      "id": "irq_state_on_entry_and_during_boot",
+      "status": "UNKNOWN",
+      "value": null,
+      "sources": [],
+      "note": "The caller does sei on the soft-reset path only (see caller_p_flags_on_soft_reset). The callee's I flag and IRQ handling are not stated."
+    },
+    {
+      "id": "media_detection",
+      "status": "UNKNOWN",
+      "value": null,
+      "sources": [],
+      "note": "No source states how disc presence, type, or boot-able status is detected."
+    },
+    {
+      "id": "disc_absent_behavior",
+      "status": "UNKNOWN",
+      "value": null,
+      "sources": [],
+      "note": "No source states the behaviour without a disc."
+    },
+    {
+      "id": "boot_transfer_target",
+      "status": "UNKNOWN",
+      "value": null,
+      "sources": [],
+      "note": "Where control goes after the boot screen (program entry, MPR, stack, IRQ) is not stated."
+    },
+    {
+      "id": "stop_condition",
+      "status": "UNKNOWN",
+      "value": null,
+      "sources": [],
+      "note": "Whether the call stops, waits, or loops is not stated. The dev ROM stub (PROJECT_DEV_FACT) is not reference evidence."
+    },
+    {
+      "id": "error_contract",
+      "status": "UNKNOWN",
+      "value": null,
+      "sources": [],
+      "note": "No error code, return convention, or failure path is stated in any fetched source."
+    },
+    {
+      "id": "dev_rom_slot0_stub",
+      "status": "PROJECT_DEV_FACT",
+      "value": "nonreturning stub in the 81-slot development image",
+      "sources": [
+        "REPO_TESTING_DOC"
+      ],
+      "note": "Project implementation statement from docs/testing.md. Describes the dev image only; says nothing about the reference System Card."
+    },
+    {
+      "id": "reset_vs_slot_call",
+      "status": "HYPOTHESIS",
+      "value": "hardware reset sets MPR7 to $00 and vectors through $FFFE; a slot call is a software jsr to $E000 from a running program",
+      "sources": [
+        "HUC_CPU_TXT",
+        "REPO_SYSTEM_CARD_ROM_DOC"
+      ],
+      "note": "Not promoted: no primary-sdk source states the reset facts. HUC_CPU_TXT is a community note and REPO_SYSTEM_CARD_ROM_DOC is an unverified project summary of the manual. The slot-call side is caller-only; no callee reset behaviour is implied."
+    },
+    {
+      "id": "callable_reference",
+      "status": "UNKNOWN",
+      "value": null,
+      "sources": [],
+      "note": "The reference callee must not be treated as callable. Remains BLOCKED_ABI."
+    }
+  ]
+}
