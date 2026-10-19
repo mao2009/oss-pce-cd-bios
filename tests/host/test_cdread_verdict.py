@@ -172,7 +172,8 @@ class WorkflowWiringTests(unittest.TestCase):
 
     def test_verdict_signer_runs_no_repository_code(self):
         job = self.jobs['attest-cdread-verdict']
-        self.assertIn('needs: verify-cdread-attestation', job)
+        # Signs only the guarded publication: its dependency is the guard job, which itself needs the verdict producer.
+        self.assertIn('needs: guard-cdread-verdict', job)
         self.assertIn("github.event_name == 'push' && github.ref == 'refs/heads/main'", job)
         self.assertIn('id-token: write', job)
         self.assertIn('actions/attest-build-provenance@', job)
