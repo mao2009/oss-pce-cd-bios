@@ -29,7 +29,7 @@ HAZARDS = (
     ("H1", "vdc_st_bypass", "ST0/ST1/ST2 WriteFromCPU lands VDC writes without Memory::Write hooks (#202)", NONE),
     ("H2", "unmonitored_mmio_write", "$1804 SCSI RST lands before stop; known guest PC only (#194/#200)",
      KNOWN_PC_ONLY),
-    ("H3", "cd_device_side_effect", "seek command and SCSI/CD register writes change the device; no host rollback",
+    ("H3", "cd_device_side_effect", "seek command and SCSI/CD register writes change the device; no host rollback established",
      NONE),
     ("H4", "irq_side_effect", "$1802/$1402/$1403 writes complete before stop; IRQ2 arrival not guaranteed (#173/#201)",
      DETECT_ONLY),
