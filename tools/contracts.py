@@ -1,5 +1,6 @@
 """Validate research bookkeeping, never certify a BIOS implementation."""
 import argparse
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -192,6 +193,35 @@ def validate_evidence(evidence, context):
         require(EVIDENCE_HASH_RE.fullmatch(entry['evidence_hash']) is not None and
                 len(set(entry['evidence_hash'])) > 1,
                 f'{context}: evidence_hash must be a 64-hex lowercase sha256 digest')
+
+
+# Artifact resolution (Issue #224). validate_evidence() stays FORMAT_ONLY and is NOT replaced: resolve_evidence()
+# is an explicit, separate step. The entry's evidence_hash is the file name of a synthetic artifact in
+# EVIDENCE_ARTIFACT_DIR (content-addressed, so no path is built from other entry text). The artifact's SHA-256 is
+# recomputed and must equal that name, and core_revision must equal the pinned Geargrafx revision. This proves the
+# bytes are the ones recorded and that the revision matches the pin. It does NOT prove who produced them: producer
+# authentication is attestation (Issue #124 / #171). Not yet wired into validate_contracts (no OBSERVED claim exists).
+EVIDENCE_ARTIFACT_DIR = ROOT / 'build' / 'evidence-artifacts'
+ARTIFACT_TRUST_LEVEL = 'ARTIFACT_HASH_RESOLVED'
+PINNED_CORE_REVISION = json.loads((ROOT / 'tools/dependencies.json').read_text())['geargrafx']['revision']
+
+
+def resolve_evidence(entry, artifact_dir=EVIDENCE_ARTIFACT_DIR, pinned_revision=PINNED_CORE_REVISION):
+    """Resolve one evidence entry to its local artifact and check it. Returns the artifact Path.
+
+    Fail closed: raises ValueError for malformed entries, a revision other than the pin, a missing or
+    symlinked artifact, and any artifact whose recomputed SHA-256 differs from evidence_hash (altered
+    or substituted file). Acceptance means hash-and-pin consistency only, not authenticity.
+    """
+    validate_evidence([entry], 'evidence')
+    if entry['core_revision'] != pinned_revision:
+        raise ValueError(f"core_revision {entry['core_revision']} differs from pinned {pinned_revision}")
+    path = Path(artifact_dir) / entry['evidence_hash']
+    if not path.is_file() or path.is_symlink():
+        raise ValueError(f"evidence artifact missing or not a regular file: {entry['evidence_hash']}")
+    if hashlib.sha256(path.read_bytes()).hexdigest() != entry['evidence_hash']:
+        raise ValueError('evidence artifact sha256 does not match evidence_hash (altered or different file)')
+    return path
 
 
 def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=False):
