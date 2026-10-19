@@ -34,9 +34,10 @@ HAZARDS = (
      NONE),
     ("H4", "irq_side_effect", "$1802/$1402/$1403 writes complete before stop; IRQ2 arrival not guaranteed (#173/#201)",
      DETECT_ONLY),
-    ("H5", "mpr_dynamic_change", "TAM/TMA remaps memory mid-callee; the TAM itself executes (MPR already changed) and "
-     "the core stops at the next boundary only in the synthetic LDA+TAM+STA case (#170), so the following STA is "
-     "prevented; other remap-then-side-effect sequences unestablished", TAM_BOUNDARY_SYNTHETIC),
+    ("H5", "mpr_dynamic_change", "TAM writes a register value into MPR (remap mid-callee); TMA only reads MPR into a "
+     "register. The TAM itself executes (MPR already changed) and the core stops at the next boundary only in the "
+     "synthetic LDA+TAM+STA case (#170), so the following STA is prevented; this is not a pre-block of the MPR change; "
+     "other remap-then-side-effect sequences unestablished", TAM_BOUNDARY_SYNTHETIC),
     ("H6", "ram_write_outside_allowlist", "CPU-path writes denied by map_write; ST path bypasses the hook (#170/#202)",
      PREVENT_CPU_ONLY),
     ("H7", "unknown_callee_abi", "callee bytes, return/flag/error/completion contract UNKNOWN (#13/#178)", NONE),
