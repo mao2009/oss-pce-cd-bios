@@ -58,6 +58,7 @@ jobs:
           ref: main
           path: .trusted-main
           sparse-checkout: tools/artifact_guard.py
+          sparse-checkout-cone-mode: false
           persist-credentials: false
       - name: Resolve python3 (trusted)
         id: pyresolve

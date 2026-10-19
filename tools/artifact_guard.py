@@ -329,7 +329,7 @@ TRUSTED_PY = '"${{ steps.pyresolve.outputs.python }}" ' + TRUSTED_GUARD + ' --ro
 CHECK_TEXT = TRUSTED_PY + " --check-placement"
 PY_RESOLVE_RUN = 'echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"'
 CHECKOUT_RE = re.compile(r"uses:\s*actions/checkout@[0-9a-f]{40}$")
-TRUSTED_CHECKOUT_LINES = ("ref: main", "path: .trusted-main")
+TRUSTED_CHECKOUT_LINES = ("ref: main", "path: .trusted-main", "sparse-checkout-cone-mode: false")
 # Guard jobs publish from an intake directory that holds the downloaded intermediate artifact.
 INTAKE_ROOT = ".intake"
 INTAKE_STAGE = INTAKE_ROOT + "/" + STAGE_DIR + "/"
