@@ -27,7 +27,7 @@ PINNED_ROWS = {
     'K5': ('SOURCE_FACT', '`lda <_dh` の値（元の nb_sectors）が `beq` と `sta` の後も残り、`call_bios` の `pha`/`pla` で保存されて入口の A になる'),
     'K6': ('SOURCE_FACT', 'マクロは P を明示的に設定しない。入口の P は直前の演算（`beq`、`pla` など）の結果で、呼出側は意味のある値を渡さない'),
     'K7': ('SOURCE_FACT', '`_dh` が 0 のとき `get_file_info` が書いたファイル長の下位 8 bit を使う。`_dh` が非 0 のときは `_dh` の値を `_al` に書く。`_ah`（上位）も呼出側が設定する。呼出側が書くのは `_al` と `_ah` で、BIOS がどちらを読むかは本行の範囲外'),
-    'K8': ('SOURCE_FACT', 'マクロは呼出し前に `_dh` を 0 にする（`stz`）。HuCC の経路で呼出側が書く `_dh` は常に 0'),
+    'K8': ('SOURCE_FACT', 'マクロは `system` の前に `_dh` を 0 にする（`stz <_dh`）。宣言は `nb_sectors<_dh>` として `_dh` を引数に取る'),
     'K9': ('SOURCE_FACT', 'マクロは `_bx` を設定も変更もしない。呼出側が事前に設定する前提（宣言 `ad_addr<_bx>`）。`get_file_info` と `_add_sectors` は `_bx` を使わない'),
     'K10': ('SOURCE_FACT', 'マクロが書く番地: `$20F8`（`_al`）、`$20F9`（`_ah`）、`$20FC`〜`$20FE`（`_cl`、`_ch`、`_dl`）、`$20FF`（`_dh` を 0 に）。書かない番地: `$20FA`〜`$20FB`（`_bx`）'),
     'K11': ('SOURCE_FACT', 'trampoline は MPR7 を `$00` にして呼び、戻りで保存値を復元する。`call_bios` は A を 1 バイト push し、`jsr` が戻り先を積む'),
@@ -55,6 +55,13 @@ PINNED_ROWS = {
     'R3': ('UNKNOWN', 'UNKNOWN'),
     'R4': ('UNKNOWN', 'UNKNOWN'),
     'R5': ('BLOCKED', 'UNKNOWN'),
+}
+# Source and reason cells of rows whose wording is a known conflict: a resolution in prose must fail.
+PINNED_CELLS = {
+    'C6': {
+        'source': 'S7（dh が偽なら宛先を設定しない、真なら bx に設定する）、S1 493–498（HuCC は dh を 0 にして bx を渡す）',
+        'reason': '二つの記述は両立しない（矛盾）。S7 は RE 由来である。dh = 0 の呼出しで宛先が更新されるか、前回の宛先が残るかは未確定。宛先の副作用に直結する',
+    },
 }
 FIELDS = ['id', 'side', 'item', 'status', 'value', 'source', 'reason', 'test']
 STATUSES = {'SOURCE_FACT', 'HYPOTHESIS', 'UNKNOWN', 'BLOCKED'}
@@ -109,6 +116,9 @@ def ledger_problems(items, defined, malformed=()):
             continue
         if rid in PINNED_ROWS and (status, value) != PINNED_ROWS[rid]:
             problems.append(f'{rid} differs from its pinned status/value')
+        for cell, text in PINNED_CELLS.get(rid, {}).items():
+            if r[cell] != text:
+                problems.append(f'{rid} {cell} differs from its pinned text')
         if side in ('C', 'R') and status not in CALLEE_STATUSES:
             problems.append(f'{side} row {rid} promoted to {status}')
         if status in ('UNKNOWN', 'BLOCKED') and value != 'UNKNOWN':
@@ -185,6 +195,13 @@ class LedgerMutationTests(unittest.TestCase):
         # Regression: C6 (dh, source conflict) must not change status silently.
         row = self._row('C6')
         new = row.replace('| UNKNOWN | UNKNOWN |', '| HYPOTHESIS | UNKNOWN |', 1)
+        self.assertNotEqual(row, new)
+        self.assertTrue(self._problems_for(row, new))
+
+    def test_c6_reason_resolved_in_prose_fails(self):
+        # Regression: resolving the C6 conflict in the reason cell must fail without a status change.
+        row = self._row('C6')
+        new = row.replace(PINNED_CELLS['C6']['reason'], '_dh=0 で宛先は更新されない', 1)
         self.assertNotEqual(row, new)
         self.assertTrue(self._problems_for(row, new))
 

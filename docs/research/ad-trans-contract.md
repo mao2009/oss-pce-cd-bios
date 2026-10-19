@@ -75,7 +75,7 @@ callee を実行していないため、callee の行に SOURCE_FACT や VERIFIE
 | K5 | K | A（入口時） | SOURCE_FACT | `lda <_dh` の値（元の nb_sectors）が `beq` と `sta` の後も残り、`call_bios` の `pha`/`pla` で保存されて入口の A になる | S1 493–501、S3 501–512 | 命令列の読取り。BIOS の入力意味は C7 | C7 |
 | K6 | K | P（入口時） | SOURCE_FACT | マクロは P を明示的に設定しない。入口の P は直前の演算（`beq`、`pla` など）の結果で、呼出側は意味のある値を渡さない | S1、S3 | 命令列の読取り | C7 |
 | K7 | K | `_al`（ブロック数、8 bit） | SOURCE_FACT | `_dh` が 0 のとき `get_file_info` が書いたファイル長の下位 8 bit を使う。`_dh` が非 0 のときは `_dh` の値を `_al` に書く。`_ah`（上位）も呼出側が設定する。呼出側が書くのは `_al` と `_ah` で、BIOS がどちらを読むかは本行の範囲外 | S1 491–499、S3 531–537 | 255 セクタを超える全体読込みで `_ah` が BIOS の入力になるかは未確認（C3） | C3 |
-| K8 | K | `_dh`（呼出し前） | SOURCE_FACT | マクロは呼出し前に `_dh` を 0 にする（`stz`）。HuCC の経路で呼出側が書く `_dh` は常に 0 | S1 493–498 | `_dh` の意味は C6（第三者文献と不一致） | C6 |
+| K8 | K | `_dh`（呼出し前） | SOURCE_FACT | マクロは `system` の前に `_dh` を 0 にする（`stz <_dh`）。宣言は `nb_sectors<_dh>` として `_dh` を引数に取る | S1 497、S2 102 | `_dh` の意味は C6（第三者文献と不一致） | C6 |
 | K9 | K | `_bx`（宛先） | SOURCE_FACT | マクロは `_bx` を設定も変更もしない。呼出側が事前に設定する前提（宣言 `ad_addr<_bx>`）。`get_file_info` と `_add_sectors` は `_bx` を使わない | S1、S2 102、S3 531–552 | 宛先の意味は C5 | C5 |
 | K10 | K | 作業 RAM（呼出し前の書込み） | SOURCE_FACT | マクロが書く番地: `$20F8`（`_al`）、`$20F9`（`_ah`）、`$20FC`〜`$20FE`（`_cl`、`_ch`、`_dl`）、`$20FF`（`_dh` を 0 に）。書かない番地: `$20FA`〜`$20FB`（`_bx`） | S1、S3 531–552、S6 330–343 | 呼出側の書込み。BIOS の書込みは C11 | C11 |
 | K11 | K | MPR とスタック（呼出側） | SOURCE_FACT | trampoline は MPR7 を `$00` にして呼び、戻りで保存値を復元する。`call_bios` は A を 1 バイト push し、`jsr` が戻り先を積む | S3 500–516 | BIOS 内部の MPR と SP は C11、C12 | C11、C12 |
