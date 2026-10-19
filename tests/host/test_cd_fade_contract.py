@@ -22,21 +22,30 @@ def section1(text):
 
 FIELD_ROW = re.compile(r"^\| (F\d{2}) \|")
 SOURCE_ID = re.compile(r"\bS\d+\b")
-# No source is APPROVED yet; every source S1-S10 is PENDING until the owner records approval.
+# Every source S1-S10 stays PENDING (provenance), which is independent of SOURCE_FACT.
 PENDING_SOURCES = {f"S{i}" for i in range(1, 11)}
-EXPECTED_COUNTS = {"SOURCE_FACT": 0, "HYPOTHESIS": 21, "UNKNOWN": 15}
+# Third-party / re-implementation sources: a row resting only on these is never SOURCE_FACT.
+THIRD_PARTY_SOURCES = {"S8", "S9", "S10"}
+EXPECTED_COUNTS = {"SOURCE_FACT": 15, "HYPOTHESIS": 4, "UNKNOWN": 18}
+SOURCE_FACT_DEF = (
+    "- `SOURCE_FACT`: 固定版の出典本文に書かれた**呼出側**の記述（「この呼出しがある」「この値を書く」「この宣言である」）。"
+    "**BIOS 本体の振る舞いには付けない。** 出典の provenance/採用が PENDING でも付けられる（他の API 台帳と同じ）。"
+    "SOURCE_FACT は「出典にそう書いてある」ことだけを示し、ライセンス上の利用可否、呼出先の実測、実装可能性のいずれも示さない。"
+    "出典が第三者の記述のみ、または再実装・開発者の主張である場合は `HYPOTHESIS` とする。"
+)
 
 # Pinned verdict per field row. A verdict change must edit this table in review.
 EXPECTED = {
-    "F01": "HYPOTHESIS", "F02": "UNKNOWN", "F03": "HYPOTHESIS", "F04": "HYPOTHESIS",
-    "F05": "HYPOTHESIS", "F06": "HYPOTHESIS", "F07": "UNKNOWN", "F08": "HYPOTHESIS",
-    "F09": "HYPOTHESIS", "F10": "HYPOTHESIS", "F11": "HYPOTHESIS", "F12": "UNKNOWN",
-    "F13": "UNKNOWN", "F14": "HYPOTHESIS", "F15": "HYPOTHESIS", "F16": "UNKNOWN",
-    "F17": "HYPOTHESIS", "F18": "HYPOTHESIS", "F19": "UNKNOWN", "F20": "HYPOTHESIS",
-    "F21": "HYPOTHESIS", "F22": "UNKNOWN", "F23": "HYPOTHESIS", "F24": "UNKNOWN",
-    "F25": "HYPOTHESIS", "F26": "HYPOTHESIS", "F27": "UNKNOWN", "F28": "UNKNOWN",
-    "F29": "HYPOTHESIS", "F30": "HYPOTHESIS", "F31": "UNKNOWN", "F32": "UNKNOWN",
-    "F33": "UNKNOWN", "F34": "UNKNOWN", "F35": "HYPOTHESIS", "F36": "UNKNOWN",
+    "F01": "SOURCE_FACT", "F02": "UNKNOWN", "F03": "SOURCE_FACT", "F04": "SOURCE_FACT",
+    "F05": "SOURCE_FACT", "F06": "SOURCE_FACT", "F07": "UNKNOWN", "F08": "HYPOTHESIS",
+    "F09": "HYPOTHESIS", "F10": "UNKNOWN", "F11": "HYPOTHESIS", "F12": "UNKNOWN",
+    "F13": "UNKNOWN", "F14": "SOURCE_FACT", "F15": "HYPOTHESIS", "F16": "UNKNOWN",
+    "F17": "SOURCE_FACT", "F18": "UNKNOWN", "F19": "UNKNOWN", "F20": "SOURCE_FACT",
+    "F21": "SOURCE_FACT", "F22": "UNKNOWN", "F23": "SOURCE_FACT", "F24": "UNKNOWN",
+    "F25": "SOURCE_FACT", "F26": "SOURCE_FACT", "F27": "UNKNOWN", "F28": "UNKNOWN",
+    "F29": "SOURCE_FACT", "F30": "SOURCE_FACT", "F31": "UNKNOWN", "F32": "UNKNOWN",
+    "F33": "UNKNOWN", "F34": "UNKNOWN", "F35": "SOURCE_FACT", "F36": "UNKNOWN",
+    "F37": "UNKNOWN",
 }
 
 
@@ -88,16 +97,32 @@ def check_pins(text):
     counts = Counter(verdict for verdict, _ in rows.values())
     if counts != Counter(EXPECTED_COUNTS):
         errors.append(f"verdict counts {dict(counts)} != {EXPECTED_COUNTS}")
+    errors += check_source_fact(rows)
+    return errors
+
+
+def check_source_fact(rows):
+    """SOURCE_FACT = caller-side fact in a pinned source; PENDING provenance is irrelevant.
+
+    It needs a cited source, must not rest on third-party notes, and must not be a callee row.
+    """
+    errors = []
     for fid, (verdict, basis) in rows.items():
-        bad = set(SOURCE_ID.findall(basis)) & PENDING_SOURCES
-        if verdict == "SOURCE_FACT" and bad:
-            errors.append(f"{fid}: SOURCE_FACT cites PENDING source {sorted(bad)}")
+        if verdict != "SOURCE_FACT":
+            continue
+        cited = set(SOURCE_ID.findall(basis))
+        if not cited:
+            errors.append(f"{fid}: SOURCE_FACT cites no source")
+        if cited & THIRD_PARTY_SOURCES:
+            errors.append(f"{fid}: SOURCE_FACT cites third-party source {sorted(cited & THIRD_PARTY_SOURCES)}")
+        if fid in CALLEE_ROWS:
+            errors.append(f"{fid}: callee-behavior row must not be SOURCE_FACT")
     return errors
 
 
 # Callee (BIOS-side) rows: unverified behavior, never SOURCE_FACT.
 CALLEE_ROWS = ["F02", "F07", "F10", "F12", "F13", "F16", "F18", "F19", "F22", "F24",
-               "F27", "F28", "F31", "F32", "F33", "F34", "F36"]
+               "F27", "F28", "F31", "F32", "F33", "F34", "F36", "F37"]
 
 
 def source_rows(text):
@@ -106,20 +131,14 @@ def source_rows(text):
 
 
 def check_sources(text):
-    """Every source row must be PENDING and not APPROVED; SOURCE_FACT needs an APPROVED source."""
+    """Every source row must be PENDING and not APPROVED (this PR records no approval)."""
     errors = []
-    rows = source_rows(text)
-    approved = set()
-    for row in rows:
+    for row in source_rows(text):
         sid = SOURCE_ID.search(row).group(0)
         if "APPROVED" in row:
-            approved.add(sid)
             errors.append(f"{sid}: source is APPROVED without owner record")
         elif "PENDING" not in row:
             errors.append(f"{sid}: source row does not state PENDING")
-    for fid, (verdict, basis) in parse_fields(text).items():
-        if verdict == "SOURCE_FACT" and not (set(SOURCE_ID.findall(basis)) & approved):
-            errors.append(f"{fid}: SOURCE_FACT cites no APPROVED source")
     return errors
 
 
@@ -159,8 +178,9 @@ class CdFadeLedgerTest(unittest.TestCase):
         self.assertIn("`release_eligible=false`。`DEV_CALLABLE` は付けない", s1)
         self.assertIsNone(GATE_CLAIMS.search(self.text))
 
-    def test_source_fact_definition_requires_approved_source(self):
-        self.assertIn("APPROVED（人間が裁定済みで、承認者と日付がある）出典", self.text)
+    def test_source_fact_definition_is_unified_text(self):
+        self.assertIn(SOURCE_FACT_DEF, self.text)
+        self.assertNotIn("APPROVED（人間が裁定済み", self.text)
 
     def test_gate_mutations_are_detected(self):
         for old, new in [
@@ -201,10 +221,36 @@ class PromotionRegressionTest(unittest.TestCase):
     def test_f18_hypothesis_to_source_fact_is_rejected(self):
         self.assert_promotion_rejected("F18", "SOURCE_FACT")
 
-    def test_source_fact_on_pending_source_is_rejected(self):
-        mutated = promote(self.text, "F01", "SOURCE_FACT")
-        errors = check_pins(mutated)
-        self.assertIn("F01: SOURCE_FACT cites PENDING source ['S1']", errors)
+    def test_pending_source_does_not_force_downgrade(self):
+        rows = parse_fields(self.text)
+        # F01 is SOURCE_FACT while citing PENDING S1: provenance is independent.
+        self.assertEqual(rows["F01"][0], "SOURCE_FACT")
+        self.assertIn("S1", rows["F01"][1])
+        self.assertEqual(check_pins(self.text), [])
+        for fid, want in EXPECTED.items():
+            if want == "SOURCE_FACT":
+                with self.subTest(fid=fid):
+                    self.assert_promotion_rejected(fid, "HYPOTHESIS")
+
+    def test_callee_claim_is_not_source_fact(self):
+        for fid in ("F10", "F18", "F37", "F13"):
+            with self.subTest(fid=fid):
+                self.assert_promotion_rejected(fid, "SOURCE_FACT")
+                errors = check_source_fact(parse_fields(promote(self.text, fid, "SOURCE_FACT")))
+                self.assertIn(f"{fid}: callee-behavior row must not be SOURCE_FACT", errors)
+
+    def test_third_party_only_source_fact_is_rejected(self):
+        self.assertIn("F10: SOURCE_FACT cites third-party source ['S8']",
+                      check_source_fact({"F10": ("SOURCE_FACT", "S8 332")}))
+        self.assertTrue(check_source_fact({"F90": ("SOURCE_FACT", "—")}))
+
+    def test_f10_f18_unknown_and_f08_split(self):
+        rows = parse_fields(self.text)
+        self.assertEqual(rows["F10"][0], "UNKNOWN")
+        self.assertEqual(rows["F18"][0], "UNKNOWN")
+        self.assertEqual(rows["F08"][0], "HYPOTHESIS")  # (a) cited document's description
+        self.assertEqual(rows["F37"][0], "UNKNOWN")  # (b) actual BIOS behavior
+        self.assertNotIn("S8", rows["F08"][1])
 
     def test_every_field_promotion_to_source_fact_is_rejected(self):
         for fid, want in EXPECTED.items():
@@ -242,17 +288,11 @@ class PromotionRegressionTest(unittest.TestCase):
         self.assertNotEqual(mutated, self.text)
         self.assertTrue(check_sources(mutated))
 
-    def test_source_fact_without_approved_source_is_rejected(self):
-        for basis_fid in ("F01", "F13", "F36"):
-            mutated = promote(self.text, basis_fid, "SOURCE_FACT")
-            self.assertTrue(any("APPROVED" in e for e in check_sources(mutated)), basis_fid)
-
     def test_release_gate_wording_is_negative_only(self):
         self.assertNotRegex(self.text, r"(BLOCKED_ABI.{0,10}解除|release_eligible=true)")
 
-    def test_ledger_declares_zero_source_fact(self):
-        self.assertIn("SOURCE_FACT は 0 件", self.text)
-        self.assertIn("SOURCE_FACT 0、HYPOTHESIS 21、UNKNOWN 15", self.text)
+    def test_ledger_declares_counts(self):
+        self.assertIn("SOURCE_FACT 15、HYPOTHESIS 4、UNKNOWN 18", self.text)
 
 
 if __name__ == "__main__":
