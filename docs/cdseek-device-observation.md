@@ -218,9 +218,9 @@ ROM の派生物をテスト用に作るだけで、新しい ROM は作らず�
 
 | 区分 | evidence キー | 入力 | 期待（出典） | 判定の扱い | 実コア結果 |
 | --- | --- | --- | --- | --- | --- |
-| A 有効な音声 LBA | `valid_audio_start_lba40` | `$D8` play、LBA 40（音声トラック LBA 16〜79 の内側、先頭ではない） | `$D8` 直後の START_LBA = 40、CURRENT_STATE = PLAYING（mode 1 のため `StartAudio(lba, pause=false)`）。シークは LBA 40 への 1 回のみ。PCM は BIN の LBA 40 から連続。`$DA` 後 PAUSED、`$D9` 後 STOPPED。（`scsi_controller.cpp` 544-570、`AudioLBA` 856-866、`cdrom_audio_inline.h` 135-140） | 既存 `check_all` に開始 LBA を渡す | NOT_RUN |
-| B 媒体範囲外 LBA | `invalid_audio_start_lba_at_medium_end` | `$D8` play、LBA 80（媒体セクタ数 80 の先頭の外） | `start_lba >= GetSectorCount()` の分岐で GOOD を返し、`StartAudio` を呼ばない（`scsi_controller.cpp` 544-552）。よって CD-DA の状態・START_LBA・位置は `$D8` 前（READ(6) 後の IDLE）から変化せず、シークも音声サンプルも出ない。媒体セクタ数は TOC の `sector_count`（`cdrom_media_inline.h` 143-152）で、CUE/BIN では最終トラックの end_lba + 1（`cdrom_cuebin_image.cpp` 1165-1184、1205-1210）。STATUS 相の GOOD は `StartStatus`（226-234）による。 | `check_invalid_audio_start`。`$D8` 直後と wait 後の両方で不変を確認 | NOT_RUN |
-| C 予算超過 | `timeout_budget_exhausted` | 無変更の ROM、予算 1,000,000 命令（通常は 12,000,000） | プローブは `reason=budget` を報告し、判定器は `(budget)` で拒否しなければならない。予算超過を PASS にしない。ソースの要求はなし（本リポジトリのプローブの上限） | `PASS_EXPECTED_FAILURE` は「判定器が予算超過を拒否した」の意味。ゲストの成功ではない | NOT_RUN |
+| A 有効な音声 LBA | `valid_audio_start_lba40` | `$D8` play、LBA 40（音声トラック LBA 16〜79 の内側、先頭ではない） | `$D8` 直後の START_LBA = 40、CURRENT_STATE = PLAYING（mode 1 のため `StartAudio(lba, pause=false)`）。シークは LBA 40 への 1 回のみ。PCM は BIN の LBA 40 から連続。`$DA` 後 PAUSED、`$D9` 後 STOPPED。（`scsi_controller.cpp` 544-570、`AudioLBA` 856-866、`cdrom_audio_inline.h` 135-140） | 既存 `check_all` に開始 LBA を渡す | 設計時点は NOT_RUN。ユーザー提示の結果は下記「追加3ケースのユーザー提示結果」（対象 `8c064f1`、エージェント未再実行） |
+| B 媒体範囲外 LBA | `invalid_audio_start_lba_at_medium_end` | `$D8` play、LBA 80（媒体セクタ数 80 の先頭の外） | `start_lba >= GetSectorCount()` の分岐で GOOD を返し、`StartAudio` を呼ばない（`scsi_controller.cpp` 544-552）。よって CD-DA の状態・START_LBA・位置は `$D8` 前（READ(6) 後の IDLE）から変化せず、シークも音声サンプルも出ない。媒体セクタ数は TOC の `sector_count`（`cdrom_media_inline.h` 143-152）で、CUE/BIN では最終トラックの end_lba + 1（`cdrom_cuebin_image.cpp` 1165-1184、1205-1210）。STATUS 相の GOOD は `StartStatus`（226-234）による。 | `check_invalid_audio_start`。`$D8` 直後と wait 後の両方で不変を確認 | 設計時点は NOT_RUN。ユーザー提示の結果は下記「追加3ケースのユーザー提示結果」（対象 `8c064f1`、エージェント未再実行） |
+| C 予算超過 | `timeout_budget_exhausted` | 無変更の ROM、予算 1,000,000 命令（通常は 12,000,000） | プローブは `reason=budget` を報告し、判定器は `(budget)` で拒否しなければならない。予算超過を PASS にしない。ソースの要求はなし（本リポジトリのプローブの上限） | `PASS_EXPECTED_FAILURE` は「判定器が予算超過を拒否した」の意味。ゲストの成功ではない | 設計時点は NOT_RUN。ユーザー提示の結果は下記「追加3ケースのユーザー提示結果」（対象 `8c064f1`、エージェント未再実行） |
 
 UNKNOWN（未確定のまま残す項目。推測で埋めない）:
 
@@ -359,6 +359,8 @@ SCSI コマンドではなく、READ(6) の内部計算と CD-DA の開始位置
 - READ(6) のシーク・遅延サイクル。通常は `SeekTime` 由来だが、LaserActive が有効なときは `NotifyScsiReadStart` の値で上書きされ、初回のみ乱数の初期位相が加算される（ログ上は `SCSI CMD Read: ... seek cycles` の debug 行。実行時にのみ確認できる）
 
 ## 観測計画（再開後に実施するもの）
+
+注: 下記の計画は当初の設計（無媒体・IRQ・追加の観測点を含む）である。追加3ケースは別スクリプト `tests/integration/geargrafx_cdda_scenarios.py` に実装済みで、既存 `geargrafx_cdda.py` への追加ではない。`TRACE_SCSI_PROBLEM_INVALID_AUDIO_START_LBA` の観測は、プローブが trace を取らないため行っていない（UNKNOWN）。
 
 既存の `make dev-cdda-integration`（#15、`src/cdda_probe.s`、`tests/integration/geargrafx_cdda.py`）が `$D8` の
 開始位置と状態遷移をすでに観測している。新規 ROM を追加すると重複するため、**まず既存 CD-DA 診断に次の 2 件を追加する**方針とする。
