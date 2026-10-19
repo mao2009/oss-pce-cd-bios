@@ -25,8 +25,9 @@ MD_COMMIT = 'ducalex/retro-go@05e97e80'
 MD_BLOB = 'blob `797845ce`'
 GG_COMMIT = 'drhelius/Geargrafx@3685f8cf'
 GG_UNRESOLVED = 'drhelius/Geargrafx@1e52d13f'
-# Reference callee execution: affirmative wording only ("未実行" / "一度も...していない" are allowed).
-EXEC_CLAIM = re.compile(r'(?<!未)(?<!一度も)実行(した|済み?|完了)|\bexecuted\b|\bran\b', re.I)
+# Affirmative execution wording. "未実行" and "一度も...していない" are not matched.
+EXEC_CLAIM = re.compile(
+    r'(?<!未)(?<!一度も)(実行|起動|呼出)[^。\n]{0,8}?(した|済み?|完了)|\bexecuted\b|\bran\b', re.I)
 FORBIDDEN_CELL_TOKENS = {'VERIFIED', 'OBSERVED', 'PASS'}
 
 
@@ -42,8 +43,8 @@ def _claim_rows(text):
 
 
 def _source_row(text, sid):
+    # Section 1 (source table) comes first; section 2 reuses the same ids.
     hits = [line for line in text.splitlines() if line.startswith(f'| {sid} |')]
-    assert len(hits) == 1, (sid, len(hits))
     return hits[0]
 
 
