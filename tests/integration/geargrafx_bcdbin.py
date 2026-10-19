@@ -1,4 +1,4 @@
-"""Opt-in real-core run of src/ex_bcdbin.s (Issue #71). Linux only; NOT part of host tests.
+"""Real-core run of src/ex_bcdbin.s (Issue #71), wired into `make integration` (so `make test` and CI).
 
 Run: python3 tests/integration/geargrafx_bcdbin.py   (pinned cc65 + Geargrafx core via make setup)
 Off Linux, or when the pinned tools/core are absent, the run is BLOCKED: exit 3 (same as
@@ -28,6 +28,21 @@ MUTATIONS = (("ones check", "c9 0a", "c9 0b"), ("tens check", "c9 a0", "c9 b0"),
 
 class GeargrafxTests(unittest.TestCase):
     @classmethod
+    def run_core(cls, rom):
+        code = ("import json, sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); "
+                "from geargrafx_smoke import execute; "
+                "print(json.dumps(execute(Path(sys.argv[2]), Path(sys.argv[3]), int(sys.argv[4]))))")
+        result = subprocess.run([sys.executable, "-c", code, str(ROOT / "tests/integration"),
+                                 str(cls.core), str(rom), str(RESULT_BYTES)],
+                                capture_output=True, text=True, timeout=30)
+        if result.returncode:
+            raise ValueError(f"Geargrafx run failed: {result.stderr[-2000:]}")
+        observations = json.loads(result.stdout)["cold_and_warm_reset_ram"]
+        if len(observations) != 2:
+            raise ValueError(f"expected cold and warm observations, got {len(observations)}")
+        return [bytes.fromhex(item)[6:] for item in observations]
+
+    @classmethod
     def setUpClass(cls):
         if not sys.platform.startswith("linux"):
             raise RuntimeError(f"{BLOCKED_TAG}: Linux-pinned target required")
@@ -45,6 +60,8 @@ class GeargrafxTests(unittest.TestCase):
             cls.rom = out / "bcdbin-harness-not-bios.pce"
             subprocess.run([ld65, "-C", str(ROOT / "tests/fixtures/bcdbin.cfg"), "-o", str(cls.rom),
                             *objects], check=True)
+            # One unmutated real-core run, shared by the coverage test and the positive control.
+            cls.clean = cls.run_core(cls.rom)
         except BaseException:
             cls.tmp.cleanup()
             raise
@@ -53,27 +70,14 @@ class GeargrafxTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def run_core(self, rom):
-        code = ("import json, sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); "
-                "from geargrafx_smoke import execute; "
-                "print(json.dumps(execute(Path(sys.argv[2]), Path(sys.argv[3]), int(sys.argv[4]))))")
-        result = subprocess.run([sys.executable, "-c", code, str(ROOT / "tests/integration"),
-                                 str(self.core), str(rom), str(RESULT_BYTES)],
-                                capture_output=True, text=True, timeout=30)
-        if result.returncode:
-            raise ValueError(f"Geargrafx run failed: {result.stderr[-2000:]}")
-        observations = json.loads(result.stdout)["cold_and_warm_reset_ram"]
-        self.assertEqual(len(observations), 2)
-        return [bytes.fromhex(item)[6:] for item in observations]
-
     def test_all_256_inputs_cold_and_warm(self):
-        for ram in self.run_core(self.rom):
+        for ram in self.clean:
             check_ram(ram)
 
     def test_mutations_are_rejected_on_core(self):
-        # Positive control first: the unmutated ROM must pass on the real core, or no mutation
-        # result below means anything. A failure here is an error, never a PASS.
-        for ram in self.run_core(self.rom):
+        # Positive control: the unmutated ROM must pass on the real core, or no mutation result
+        # below means anything. A failure here is an error, never a PASS.
+        for ram in self.clean:
             check_ram(ram)
         data = self.rom.read_bytes()
         for name, old, new in MUTATIONS:

@@ -1,7 +1,8 @@
 """ex_bcdbin (Issue #71): host reference model of src/ex_bcdbin.s.
 
 The contract is this project's own spec (docs/ex-bcdbin.md), not the reference BIOS ABI.
-The real-core run is opt-in: tests/integration/geargrafx_bcdbin.py (Linux only), not part of host tests.
+The real-core run is tests/integration/geargrafx_bcdbin.py, executed by `make integration` (Linux only).
+This module's RealCoreFailurePathTests (negative paths of that run) are host tests, so `make test` and CI run them.
 """
 from pathlib import Path
 import os
@@ -58,11 +59,11 @@ INTEGRATION = Path(__file__).resolve().parents[1] / "integration/geargrafx_bcdbi
 
 
 class RealCoreFailurePathTests(unittest.TestCase):
-    """Negative paths of the real-core run: each must exit nonzero, never SKIP (OK) or PASS.
+    """Negative paths of the real-core run: each must fail, never SKIP (OK) or PASS.
 
-    Linux (with make setup) checks the exact exit code and cause. On other hosts only the
-    nonzero exit is asserted; those hosts fail at the platform BLOCKED check, so the core-missing,
-    tool-missing, launch and timeout causes are NOT exercised there.
+    Linux (make setup) checks the exact exit code (3 for BLOCKED, 1 for run failures) and the cause.
+    Non-Linux hosts stop at the platform check: every path must then exit 3 with the BLOCKED tag.
+    Only Linux exercises the core-missing, tool-missing, launch and timeout causes.
     """
 
     def run_integration(self, env_updates, timeout=120):
@@ -73,11 +74,13 @@ class RealCoreFailurePathTests(unittest.TestCase):
 
     def assert_failure(self, env_updates, cause, exit_code, timeout=120):
         returncode, output = self.run_integration(env_updates, timeout)
-        self.assertNotEqual(returncode, 0, output)
         self.assertNotIn("skipped", output.lower())
         if sys.platform.startswith("linux"):
             self.assertEqual(returncode, exit_code, output)
             self.assertIn(cause, output)
+        else:
+            self.assertEqual(returncode, 3, output)
+            self.assertIn("BLOCKED real core", output)
 
     def test_core_missing_is_blocked(self):
         missing = Path(tempfile.gettempdir()) / "missing-geargrafx-core-issue71.so"

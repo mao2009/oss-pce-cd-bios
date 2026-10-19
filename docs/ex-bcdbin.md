@@ -18,9 +18,8 @@ API の既存スタブは従来どおりである。
 
 ## 検証
 
-ホスト：`python3 -m unittest tests.host.test_ex_bcdbin -v`
-実コア（opt-in、Linux 限定、通常のホストテスト・既定 CI には含めない）：`python3 tests/integration/geargrafx_bcdbin.py`
-
+ホスト：`python3 -m unittest tests.host.test_ex_bcdbin -v`（実コア負例 5 件を含む。`make test` の host discover で実行される）
+実コア：`python3 tests/integration/geargrafx_bcdbin.py`。`make integration` から呼ばれるため、`make test` と既定 CI（`ci.yml` の `make test`、ubuntu-24.04、`make setup` 済み）で実行される。
 - ホスト参照モデル：全 256 入力を独立な判定式と照合し、0 / 9 / 10 / 99 や `$0A` / `$9A` / `$A0` / `$FF`
   などの境界値も確認する。BIN→BCD→BIN の往復はモデル内の符号化で確認しており、EX_BINBCD（#70）が
   できたら差し替える予定である。
