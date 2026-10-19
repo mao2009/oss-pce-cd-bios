@@ -47,7 +47,22 @@ EVIDENCE_HASH_RE = re.compile(r'[0-9a-f]{64}\Z')
 # checks core_revision against a pin, so a well-formed hash is NOT proof that the
 # run happened. Do not read an accepted OBSERVED claim as VERIFIED.
 EVIDENCE_TRUST_LEVEL = 'FORMAT_ONLY'
-SOURCE_KINDS = frozenset({'CALLER_SOURCE', 'HLE_SOURCE', 'EMULATOR_SOURCE'})
+# Source-kind semantics (Issue #209 / MEDIUM-1). A source kind classifies the
+# provenance of a *source-code reference* only. It never proves that anything was
+# executed: execution evidence is the separate `evidence` entries (Issue #208),
+# and callee execution is the separate `executed_callee` flag.
+#
+#   CALLER_SOURCE:   caller 側(HuCC SDK 等)のソース。caller の期待のみ。callee の実行を保証しない。
+#   HLE_SOURCE:      HLE エミュレータ(Hu-Go 等)のソース。実機ファームウェアの証拠ではない。
+#   EMULATOR_SOURCE: 実コア(Geargrafx ピン rev)のソース参照。実行証跡ではない。
+#       OBSERVED の必要条件(1つ以上)だが十分条件ではない: 非空の evidence entries が別途必要で、
+#       callee ABI は executed_callee も必要。HYPOTHESIS から OBSERVED への暗黙昇格は無い。
+SOURCE_KIND_MEANINGS = {
+    'CALLER_SOURCE': 'caller 側ソース。caller の期待のみで callee 実行を保証しない。',
+    'HLE_SOURCE': 'HLE エミュレータのソース。実機ファームウェアの証拠ではない。',
+    'EMULATOR_SOURCE': '実コアのソース参照。実行証跡ではなく、単独では OBSERVED の十分条件でない。',
+}
+SOURCE_KINDS = frozenset(SOURCE_KIND_MEANINGS)
 CLAIM_KEYS = frozenset({'status', 'value', 'sources', 'confidence', 'registers', 'evidence'})
 
 
@@ -84,7 +99,7 @@ def validate_contracts(data, inventory, inventory_text):
         require(source['repository'].startswith('https://github.com/') and
                 source['url'] == f"{source['repository']}/blob/{source['revision']}/{source['path']}",
                 f'{key}: source URL must match pin/path')
-        require(source['kind'] in {'CALLER_SOURCE', 'HLE_SOURCE', 'EMULATOR_SOURCE'} and
+        require(source['kind'] in SOURCE_KINDS and
                 source.get('provenance_status') == 'PENDING', f'{key}: invalid source status')
 
     def refs(value, context, required=False):
@@ -188,9 +203,11 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
     UNKNOWN/BLOCKED; it rejects any status outside the set (including VERIFIED)
     so an unexecuted callee can never be promoted.
 
+    Source-kind semantics: see SOURCE_KIND_MEANINGS (source references, not execution proof).
+
     Rules:
       UNKNOWN     - value exactly 'UNKNOWN', no sources, confidence UNKNOWN, no registers
-      HYPOTHESIS  - caller/HLE source text only, non-empty sources, confidence SOURCE_SUPPORTED
+      HYPOTHESIS  - caller/HLE/emulator source text only, non-empty sources, confidence SOURCE_SUPPORTED
       OBSERVED    - must not contain a `registers` key (even empty/None); requires at least one EMULATOR_SOURCE reference (necessary, not sufficient);
                     callee-behavior claims (CALLEE_BEHAVIOR_FIELDS) additionally
                     require executed_callee; hardware observations
@@ -248,6 +265,7 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
         require(value == 'UNKNOWN' and confidence == 'UNKNOWN' and sources == [] and not registers,
                 f'{context}: invalid UNKNOWN claim')
     elif status == 'HYPOTHESIS':
+        # HYPOTHESIS: source kind (any) never implies execution; no implicit promotion to OBSERVED.
         require(value != 'UNKNOWN' and confidence == 'SOURCE_SUPPORTED' and sources,
                 f'{context}: invalid HYPOTHESIS claim')
     elif status == 'OBSERVED':

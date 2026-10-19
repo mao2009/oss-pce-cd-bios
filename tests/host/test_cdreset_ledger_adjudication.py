@@ -20,10 +20,11 @@ sys.path.insert(0, str(ROOT / 'tools'))
 
 from contracts import (  # noqa: E402
     CALLEE_BEHAVIOR_FIELDS, CLAIM_STATUSES, EVIDENCE_TRUST_LEVEL, FIELDS,
-    HARDWARE_OBSERVATION_FIELDS, adjudicate_claim, load_contracts,
+    HARDWARE_OBSERVATION_FIELDS, SOURCE_KIND_MEANINGS, adjudicate_claim, load_contracts,
 )
 
 CALLER = {'huc:include/hucc/pcengine.inc': 'CALLER_SOURCE'}
+HLE = {'hugo:bios.c': 'HLE_SOURCE'}
 REAL = {'gear:src/cdrom.cpp': 'EMULATOR_SOURCE'}
 
 UNKNOWN = {'status': 'UNKNOWN', 'value': 'UNKNOWN', 'sources': [], 'confidence': 'UNKNOWN'}
@@ -93,6 +94,56 @@ class AdjudicateClaimTests(unittest.TestCase):
                     dict(HYPOTHESIS, confidence='UNKNOWN')):
             with self.assertRaisesRegex(ValueError, 'invalid HYPOTHESIS claim'):
                 adjudicate_claim(bad, CALLER, field='arguments', context='slot 1 arguments')
+
+    def test_hypothesis_caller_source_accepted(self):
+        # CALLER_SOURCE + HYPOTHESIS = caller 側の期待のみ。callee の実行は保証されない。
+        adjudicate_claim(HYPOTHESIS, CALLER, field='arguments', context='slot 1 arguments')
+
+    def test_hypothesis_hle_source_accepted(self):
+        # HLE_SOURCE + HYPOTHESIS = HLE エミュレータ挙動のみ。実機ファームウェアの証拠ではない。
+        hle_hypothesis = {
+            'status': 'HYPOTHESIS', 'value': 'Hu-Go HLE writes $222D as disc-present marker',
+            'sources': ['hugo:bios.c'], 'confidence': 'SOURCE_SUPPORTED',
+        }
+        adjudicate_claim(hle_hypothesis, HLE, field='ram', context='slot 1 ram')
+
+    def test_hypothesis_emulator_source_accepted(self):
+        # EMULATOR_SOURCE + HYPOTHESIS = 実コアのソース参照のみ。実行証跡ではなく callee ABI/実行は未確認。
+        # callee execution なしでは OBSERVED に昇格しない（callee ABI は HYPOTHESIS のまま）。
+        emulator_hypothesis = {
+            'status': 'HYPOTHESIS', 'value': 'Geargrafx core source suggests $1804 readback',
+            'sources': ['gear:src/cdrom.cpp'], 'confidence': 'SOURCE_SUPPORTED',
+        }
+        adjudicate_claim(emulator_hypothesis, REAL, field='stack', context='slot 1 stack')
+
+    def test_emulator_source_meaning_does_not_claim_execution(self):
+        self.assertIn('実行証跡ではなく', SOURCE_KIND_MEANINGS['EMULATOR_SOURCE'])
+        self.assertNotIn('実測', SOURCE_KIND_MEANINGS['EMULATOR_SOURCE'])
+
+    def test_source_kind_meanings_document_all_three_kinds(self):
+        self.assertEqual(set(SOURCE_KIND_MEANINGS),
+                         {'CALLER_SOURCE', 'HLE_SOURCE', 'EMULATOR_SOURCE'})
+        for meaning in SOURCE_KIND_MEANINGS.values():
+            self.assertIsInstance(meaning, str)
+            self.assertTrue(meaning)
+
+    def test_observed_rejected_for_caller_source_only(self):
+        # CALLER_SOURCE だけでは OBSERVED になれない（callee 実行を保証しない）。
+        bad = dict(OBSERVED, sources=['huc:include/hucc/pcengine.inc'])
+        with self.assertRaisesRegex(ValueError, 'EMULATOR_SOURCE source reference'):
+            adjudicate_claim(bad, CALLER, field='stack', context='slot 1 stack')
+
+    def test_observed_rejected_for_hle_source_only(self):
+        # HLE_SOURCE だけでは OBSERVED になれない（実機ファームウェアの証拠ではない）。
+        bad = dict(OBSERVED, sources=['hugo:bios.c'])
+        with self.assertRaisesRegex(ValueError, 'EMULATOR_SOURCE source reference'):
+            adjudicate_claim(bad, HLE, field='stack', context='slot 1 stack')
+
+    def test_emulator_source_hypothesis_not_promotable_to_observed_without_executed_callee(self):
+        # EMULATOR_SOURCE + HYPOTHESIS は callee ABI を HYPOTHESIS のまま保つ。
+        # callee execution なしでは OBSERVED へ昇格しない。
+        with self.assertRaisesRegex(ValueError, 'executed callee'):
+            adjudicate_claim(OBSERVED, REAL, field='returns', context='slot 1 returns')
 
     def test_observed_requires_emulator_source(self):
         # HLE/caller text alone can never be OBSERVED: it is not an emulator-source reference.
