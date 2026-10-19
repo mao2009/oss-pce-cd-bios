@@ -28,13 +28,13 @@
 | #173 (`docs/173-safety-monitor-limits.md`) | `$1802`/`$1402`/`$1403` は書込み検出のみで書込みが完遂。ST0/1/2 は `WriteFromCPU` 迂回。`$1804` は既知 PC の実行ブレークのみ事前遮断 | 汎用の副作用前拒否フックは本記録の調査範囲では確認されていない |
 | #194 (`docs/cd-reset-contract.md` 78 行付近の引用) | `$1804` 書込みは検出できるが SCSI RST が着地。副作用前捕捉は不可能と記載 | 本 Issue の既知 PC 事前遮断と**記載が食い違う**（後述） |
 | #200 (`tests/integration/geargrafx_st_bypass.py` 14 行の "PR #194/#200" 参照、`geargrafx_mmio1804_preblock.py` の GREEN 判定) | `$1804` の既知 PC（STA の PC）に対する実行ブレークで、書込み前に停止 | 既知 PC 限定の事前遮断。一般化しない |
-| #201 (`docs/cd-reset-contract.md` 38 行付近の引用) | IRQ2 **非到達**は合成 `$1802`+`$1804` ゲストでのみ観測、CD_RESET 経路では未観測 | IRQ 副作用は UNKNOWN |
-| #198 (`tests/integration/geargrafx_st_bypass.py`), #202 (`docs/cd-reset-contract.md` 80 行付近) | ST0/ST1/ST2 は副作用が着地し、ST0 には検出サイトがない。ST1/ST2 は書込み完了後にのみ検出フラグが立つ | VDC 書込みの阻止手段は確認されていない |
+| #199 / #201（`tests/integration/geargrafx_irq_register.py`、`docs/cd-reset-contract.md` 38 行付近の引用） | 合成ゲストで `$1802` 有効化単独、および `$1802`+`$1804` の複合で IRQ2 **非到達**を観測（`m_active_irqs==0`、合成メディアのため実 CD の IRQ 源は無い）。`$1402`/`$1403` の書込みは検出のみで完遂し、`$1403` 書込みは IRQ2 bit0 を変えない（TIQ ack のみ）。CD_RESET 経路では未観測 | IRQ 副作用は UNKNOWN |
+| #198 (`tests/integration/geargrafx_st_bypass.py` 21〜31 行。#202 の引用は `docs/cd-reset-contract.md` 80 行付近) | ST0/ST1/ST2 は副作用が着地し、ST0 には検出サイトがない。ST1/ST2 は書込み完了後にのみ検出フラグが立つ | VDC 書込みの阻止手段は確認されていない |
 | #203 | #173 の子 Issue（単一 MMIO `$1804` 書込みの既知 PC 事前遮断の実証）。Issue 本文に「既知 PC の停止成功は任意呼出しの安全性を保証しない」とは書かれていない。当該文言は #217 本文の依存欄にある | 既知 PC の成功を一般化しない。#203 の本文は OPEN の子 Issue の記述として参照のみ |
 
 ### 源泉間の不整合（開示）
 - `docs/cd-reset-contract.md`（78 行付近）は #194 について "the pre-side-effect trap is BLOCKED" と記す一方、`geargrafx_mmio1804_preblock.py` は既知 PC の実行ブレークによる事前遮断を GREEN と記録している。両者は「一般的な `$1804` 事前遮断」と「既知 PC の事前遮断」を区別して読む必要がある。本記録は後者のみを認める。
-- `docs/173-safety-monitor-limits.md`（36 行付近）は MPR 変更について「実行前の静的バンクページ整合チェックと実行後の動的 MPR 比較で事前阻止・拒否可能」と記す。静的チェックは既知コードに対してのみ有効であり、callee のバイト列が未確認の本件には適用できない。H5 は合成 `tam` 経路の実行中停止のみを根拠に TAM_BOUNDARY_SYNTHETIC とし、一般的な事前遮断とは扱わない。
+- `docs/173-safety-monitor-limits.md`（36 行付近）は MPR 変更について「実行前の静的バンクページ整合チェックと実行後の動的 MPR 比較で事前阻止・拒否可能」と記す。静的チェックは既知コードに対してのみ有効であり、callee のバイト列が未確認の本件には適用できない。H5 は合成 `tam` 経路で TAM 実行後の命令境界停止（MPR 変更は既に発生済み、後続 STA のみ防止）を根拠に TAM_BOUNDARY_SYNTHETIC とし、MPR 変更の事前遮断や一般的な事前遮断とは扱わない。
 
 ### 再測定の判断
 上記の副作用経路は `$04` 専用の callee に依存せず、既存の合成ゲスト（ST、`$1804`、`$1802`/`$1402`/`$1403`）で既に「事前遮断は確認されていない」または「既知 PC のみ」と記録されている。`$04` callee の内容が未知である以上、追加の合成測定を重ねても callee の安全性を確定させる見込みが乏しいと判断したため、**本 Issue では新たな実コア測定を行わない**。既存の統合テストは `make integration` で再実行可能。
@@ -48,7 +48,7 @@
 | H2 | `$1804` SCSI RST 書込み | 既知 PC の実行ブレークでのみ事前遮断。未知 PC では書込みが着地 (#194/#200) | 既知 PC のみ（KNOWN_PC_ONLY） |
 | H3 | CD デバイス副作用（シーク命令、SCSI/CD レジスタ書込み） | 監視手段は確認されていない。ホスト側からの巻戻し手段も確認していない（推論） | 確認されず（NONE） |
 | H4 | `$1802`/`$1402`/`$1403` の IRQ 関連書込み、IRQ2 到達の保証なし | 書込みは完遂し、検出のみ (#173)。IRQ2 非到達は合成ゲストで観測 (#201) | 確認されず（DETECT_ONLY） |
-| H5 | TAM/TMA による MPR 動的変更 | 合成 LDA+TAM+STA では TAM 直後の命令境界で停止し後続 STA は実行されない（`geargrafx_reference_guard.py` の `tam`、#170）。他の再配置→副作用の並びは未確立 | 合成の TAM 直後のみ（TAM_BOUNDARY_SYNTHETIC）。一般化しない |
+| H5 | TAM/TMA による MPR 動的変更 | TAM 命令自体は実行され、MPR は既に変更される。合成 LDA+TAM+STA では TAM 直後の命令境界で停止し、後続 STA が実行されないことを確認（`geargrafx_reference_guard.py` の `tam`、#170）。他の再配置→副作用の並びは未確立 | MPR 変更の事前遮断ではない。合成の TAM 直後の境界停止による後続命令の防止のみ（TAM_BOUNDARY_SYNTHETIC）。一般化しない |
 | H6 | 許可域外の RAM 書込み | CPU 経路は `map_write` で拒否可能。ST 経路は迂回 (#170/#202) | CPU 経路のみ（PREVENT_CPU_ONLY） |
 | H7 | callee のバイト列・ABI（戻り値、フラグ、完了条件）が未確認 | 監視対象を本記録では列挙できていない | 確認されず（NONE） |
 | H8 | 命令予算超過・タイムアウト | 実行の上限のみ。副作用の防止は確認されていない | 確認されず（POST_HOC） |
@@ -56,7 +56,7 @@
 未監視経路の要点: ST0/1/2 の VDC 書込みと CD デバイス副作用について、pinned コアで副作用前に捕捉する手段は本記録の調査範囲では確認されていない（未測定。ST0 は検出サイトなし、ST1/ST2 は #202 の記録）。`$04` は CD デバイスへのシーク命令そのものが目的であるため、H3 は「副作用が起きないこと」を前提にできない。
 
 ## fail-closed の不変条件
-- `decide()` は入力を取らず常に `verdict: BLOCKED`、`jsr_count: 0` を返す。解除入力は持たない（テストで確認）（テストで引数の無いことを確認）。
+- `decide()` は入力を取らず常に `verdict: BLOCKED`、`jsr_count: 0` を返す。解除入力は持たない（テストで引数の無いことを確認）。
 - CLI は判定 BLOCKED を終了コード 3 で返す（`EXIT_BLOCKED`）。引数エラー（未定義の引数）は argparse が終了コード 2 で終了し、判定結果ではない。`-h` は argparse のヘルプを表示して終了コード 0 で終了する（判定ではない）。`--check` オプションは本ツールに実装されていない。
 - ガード緩和、既知 PC の成功、事後 diff、ホスト許可リスト、タイムアウトのいずれも解禁根拠にしない（#217 本文の依存欄の制約）。
 - `$01` / `$E003` の BLOCKED 状態は変更しない。`MODEL_ELIGIBLE` 相当の表示も作らない。
@@ -64,7 +64,7 @@
 ## 負例検証（実施結果）
 | 検証 | 内容 | 結果 |
 |------|------|------|
-| `python -m unittest tests.host.test_cdseek_safety_gate -v` | 判定 BLOCKED・JSR 0、8 件の副作用の列挙、一般的な事前遮断が登録されていないこと（HAZARDS の control 値）、H1/H3/H7 が NONE、`decide()` が引数を取らないこと、CLI の終了コード 3 | 6 件 OK（`Ran 6 tests`, OK） |
+| `python -m unittest tests.host.test_cdseek_safety_gate -v` | 判定 BLOCKED・JSR 0、8 件の副作用の列挙、一般的な事前遮断が登録されていないこと（HAZARDS の control 値。HAZARDS 定数表の整合検査であり、実コアの遮断能力の証明ではない）、H1/H3/H7 が NONE、`decide()` が引数を取らないこと、CLI の終了コード 3 | 6 件 OK（`Ran 6 tests`, OK） |
 | `python tools/cdseek_safety_gate.py` | CLI の出力と終了コード | 終了コード 3、`"verdict": "BLOCKED"`, `"jsr_count": 0` |
 | `python tools/cdseek_safety_gate.py --check` | 未実装オプションの扱い（引数エラー） | 終了コード 2（argparse のエラー。判定ではない） |
 
