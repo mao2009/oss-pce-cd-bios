@@ -4,6 +4,7 @@ Synthetic only: exercises ``tools/reference_jsr_gate.py`` (pure functions + ``--
 the committed ledger. No emulator, no reference BIOS and no reference JSR are involved. The
 gate must stay BLOCKED for slot $01 and every other slot; claims in spec/api_contracts.json must
 not be readable as permission, and MODEL_ELIGIBLE / PASS / self-declared flags must never unlock.
+Approval input is unauthenticated: it is not authorisation and must never produce ALLOWED.
 """
 import copy
 import json
@@ -52,12 +53,24 @@ class ReferenceJsrGateTest(unittest.TestCase):
         for reason in ("LEDGER_H3_PARTIAL", "LEDGER_H4_UNCONTROLLED", "LEDGER_H5_UNCONTROLLED"):
             self.assertIn(reason, record["reasons"])
 
-    def test_complete_materials_reach_materials_complete_never_allowed(self):
+    def test_complete_materials_reach_unauthenticated_state_never_allowed(self):
         record = G.resolve(1, complete_ledger(), CONTRACTS, APPROVAL)
-        self.assertEqual(record["execution"], "MATERIALS_COMPLETE")
+        self.assertEqual(record["execution"], "UNAUTHENTICATED_MATERIALS_RECORDED")
         self.assertEqual(record["reasons"], [])
         self.assertEqual(record["runner"], "NONE")
         self.assertNotIn("ALLOWED", json.dumps(record))
+
+    def test_fake_approval_on_every_slot_never_grants_execution(self):
+        # A well-formed but unauthenticated approval must not read as permission: no ALLOWED,
+        # no runner, no JSR, no release eligibility, on any slot.
+        ledger = complete_ledger()
+        for slot in range(len(CONTRACTS["apis"])):
+            with self.subTest(slot=slot):
+                record = G.resolve(slot, ledger, CONTRACTS, APPROVAL)
+                self.assertNotEqual(record["execution"], "ALLOWED")
+                self.assertEqual((record["runner"], record["jsr_count"], record["release_eligible"]),
+                                 ("NONE", 0, False))
+        self.assertEqual(G.resolve(1, LEDGER, CONTRACTS, APPROVAL)["execution"], "BLOCKED")
 
     def test_missing_or_unapproved_evidence_fails_closed(self):
         cases = (
