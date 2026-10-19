@@ -19,9 +19,9 @@ API ジャンプテーブルには接続していない（`release_eligible=fals
 
 `tests/integration/geargrafx_ma_mul8s.py` はルーチンと独自ドライバ（`tests/fixtures/ma_mul8s_driver.s`）を
 pinned cc65 で 8 KiB HuCARD テスト ROM にし、pinned Geargrafx libretro コアで実行する。乗算はゲスト CPU が行い、
-ホストは要求の書込みと RAM 読出しだけを行う。全 65,536 組を host モデルと照合し、各呼出で
+ホストは要求・stale 埋め・初期化確認値の書込みと RAM 読出しだけを行う。全 65,536 組を host モデルと照合し、各呼出で
 Y（`b^$5A`）、S、P（C=b bit0、D=b bit1 を変化）の保存も確認する。負の対照として `a<0` 補正
-（`sec; sbc $2102,x`）を NOP にした ROM が実コアで不一致になることを確認する。
+（`sec; sbc $2102,x`）を NOP にした ROM が実コアでちょうど 32,640 組不一致になることを確認する（`b<0` 補正の負の対照は無く、全組照合のみで検出）。
 `tests/host/test_ma_mul8s.py` は境界値モデル・判定器の破損検出・上記実コア実行を含み、ツール欠如は失敗扱い。
 
 2026-10-19 WSL Ubuntu: PASS（exit 0）、65,536 組不一致 0、負の対照は期待どおり FAIL（32,640 組 = a<0 かつ b≠0）。

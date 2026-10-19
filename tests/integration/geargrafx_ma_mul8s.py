@@ -118,7 +118,7 @@ def execute(core_file, rom):
                 raise ValueError("driver did not initialise its request/done ids")
             rows, max_frames = [], 0
             for a in range(256):
-                stale = bytes(x ^ 0xFF for x in expected_row(a)) + b"\x00" * 512
+                stale = bytes(x ^ 0xFF for x in expected_row(a)) + b"\xff" * 256 + b"\x00" * 256
                 C.memmove(ram + ROW, stale, len(stale))
                 request = (a + 1) & 0xFF
                 C.memset(ram, a, 1)
@@ -167,8 +167,8 @@ def run(output):
     negative = output / "ma-mul8s-no-sign-fix.pce"
     negative.write_bytes(data.replace(SIGN_FIX, b"\xea" * len(SIGN_FIX)))
     negative_errors = judge(run_worker(core, negative))
-    if not negative_errors:
-        raise ValueError("negative control ROM was not rejected")
+    if len(negative_errors) != 128 * 255:  # exactly the a<0, b!=0 pairs
+        raise ValueError(f"negative control: {len(negative_errors)} mismatches, expected 32640")
     rows = [bytes.fromhex(row) for row in observed["rows"]]
     edges = {f"{a},{b}": f"{rows[a & 0xFF][b & 0xFF] | rows[a & 0xFF][256 + (b & 0xFF)] << 8:04x}"
              for a in EDGES for b in EDGES}
