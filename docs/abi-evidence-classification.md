@@ -29,6 +29,11 @@
 - 既存フィールドとの対応: `spec/api_contracts.json` の各 claim の `status`・`value`・`sources`・`confidence`、
   `mapping_status`、`name_observations`。ソース種別は `tools/contracts.py` の `SOURCE_KIND_MEANINGS`
   （`CALLER_SOURCE` / `HLE_SOURCE` / `EMULATOR_SOURCE`）。各 `docs/research/*-contract.md` の SOURCE_FACT 行もこの軸にあたる。
+- `SOURCE_FACT` の位置づけ: 固定版の一次ソース本文に書かれた**呼出側（caller）の事実**に限る。provenance が `PENDING`
+  でも `SOURCE_FACT` は成立する（軸2から独立）。BIOS callee の挙動の証拠ではなく、`HYPOTHESIS` が根拠を持つ場合の
+  根拠欄にあたる。callee の行には付けない（`docs/cd-exec-contract-ledger.md`）。
+- 3つの状態: 一次ソースの事実（`SOURCE_FACT`）／仮説（`HYPOTHESIS`）／不明・判定不能（`UNKNOWN`・`BLOCKED`）は混ぜずに別の欄で扱う。
+  スキーマ移行は本書では行わない（§6、別 Issue）。
 - 判断者: 調査者。誤りがあればレビューで直す。
 
 ### 2.2 PROVENANCE_APPROVAL（再利用・配布の承認）
@@ -55,6 +60,8 @@
   - `tools/reference_bios_runner.py` のローカル観測 `OBSERVED LOCAL_ONLY`（`LOCAL_ONLY_NOT_VERIFIED`）: 台帳の外の記録。
 - 判断者: 実行記録（ROM ハッシュ、コア revision、入力、結果）。現状は全スロット `NOT_RUN`。
   slot `$1E` のローカル観測は `LOCAL_ONLY_NOT_VERIFIED` で、台帳には昇格していない。
+- `MATERIALS_COMPLETE`（`tools/cdreset_slot01_reference_plan.py`）は名称を変えない。意味は「実行ゲートの材料がすべて
+  揃った（実行を試みてよいと判定される）」であり、実行済み・検証済み・互換の意味はない。判定時の実行状態は `NOT_RUN` のまま。
 - 注意: 実測した事実と、その事実を公開してよいかは別の問題。callee の内部実装の詳細は公開しない（`docs/provenance.md`）。
 
 ## 3. 軸の間に含意はない
@@ -106,6 +113,9 @@
   DEV テストの期待値が `VERIFIED` の記録に結び付いていない場合、その期待値は OSS 側の自前仕様として扱い、
   互換性の根拠にはしない。`tests/integration/geargrafx_contracts.py` の slot `$1E` の期待値は
   `LOCAL_ONLY` の実測に基づくので、これも自前仕様にあたる。
+- ジャンプテーブルに配線されていないルーチンは内部実装であり、参照 ABI も DEV_CALLABLE も主張しない。
+- 実コアのテスト（`dev_test`）は通常のホストテストと分け、Linux 固定の単一の明示ターゲットで実行する（本書では導入しない。共有ファイルの変更は別 PR）。
+  実行して PASS を確認していない記録は PASS と書かない。
 - SOURCE_EVIDENCE（`HYPOTHESIS`）や `OBSERVED LOCAL_ONLY` を根拠に、互換性があるものとして扱うことはできない。
   これで「未検証の互換性が DEV_CALLABLE に昇格する」経路を塞ぐ。
 - 現行の slot `$1E` は、provenance の承認者がいない（bootstrap `BLOCKED`）ため、この提案の下では
