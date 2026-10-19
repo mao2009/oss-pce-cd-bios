@@ -1,4 +1,4 @@
-; MA_MUL8S candidate: signed 8x8 -> 16-bit multiply (Issue #74).
+; MA_MUL8S (project-internal, not in the jump table, reference ABI UNVERIFIED): signed 8x8 -> 16-bit multiply (Issue #74).
 ;
 ; Original OSS implementation written from this project's OWN specification
 ; (docs/ma-mul8s.md), not from proprietary BIOS code. The reference BIOS

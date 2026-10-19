@@ -1,10 +1,10 @@
-"""MA_MUL8S (Issue #74): host model and judge negatives. Real core: tests/integration/geargrafx_ma_mul8s.py (Linux-pinned, opt-in)."""
+"""MA_MUL8S (Issue #74): host model and judge negatives. Model: tools/ma_mul8s_model.py."""
 from pathlib import Path
 import sys
 import unittest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "integration"))
-import geargrafx_ma_mul8s as mul  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+import ma_mul8s_model as mul  # noqa: E402
 
 
 class ModelTest(unittest.TestCase):

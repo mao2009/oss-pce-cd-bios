@@ -18,41 +18,12 @@ sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from environment import DEPENDENCIES, core_path, executable  # noqa: E402
 from geargrafx_smoke import GameInfo, SystemInfo  # noqa: E402
+from ma_mul8s_model import check_row, expected_row  # noqa: E402
 
 EDGES = (-128, -1, 0, 1, 127)
 ROW = 0x200            # driver result block at CPU $2200 (RAM offset $200), 6 pages
 SIGN_FIXES = {"a<0": bytes.fromhex("38 fd 02 21"),  # sec; sbc $2102,x  (a<0 correction)
               "b<0": bytes.fromhex("38 fd 03 21")}  # sec; sbc $2103,x  (b<0 correction)
-
-
-def signed(value):
-    return value - 256 if value & 0x80 else value
-
-
-def expected(a, b):
-    """Project contract: X:A = two's-complement 16-bit product of signed a and b."""
-    return (signed(a) * signed(b)) & 0xFFFF
-
-
-def expected_row(a):
-    """Bytes the driver must leave at $2200-$27FF for request a (P pages are checked separately)."""
-    products = [expected(a, b) for b in range(256)]
-    return (bytes(p & 0xFF for p in products) + bytes(p >> 8 for p in products)
-            + bytes(b ^ 0x5A for b in range(256)) + b"\xfd" * 256)
-
-
-def check_row(a, data):
-    """Mismatch strings for one row: product, Y, S, and P preserved (with the C/D inputs varied)."""
-    errors = []
-    want = expected_row(a)
-    for b in range(256):
-        got = [data[page * 256 + b] for page in range(6)]
-        exp = [want[page * 256 + b] for page in range(4)]
-        if got[:4] != exp:
-            errors.append(f"a={a:02x} b={b:02x} lo/hi/Y/S={bytes(got[:4]).hex()} expected {bytes(exp).hex()}")
-        if got[4] != got[5] or (got[5] & 0x09) != ((b & 1) | (b & 2) << 2):  # C=bit0, D=bit1 of b
-            errors.append(f"a={a:02x} b={b:02x} P before {got[5]:02x} after {got[4]:02x}")
-    return errors
 
 
 def build(output):
