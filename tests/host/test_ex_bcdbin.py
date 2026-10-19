@@ -1,8 +1,9 @@
 """ex_bcdbin (Issue #71): host reference model of src/ex_bcdbin.s.
 
 The contract is this project's own spec (docs/ex-bcdbin.md), not the reference BIOS ABI.
-The real-core run is tests/integration/geargrafx_bcdbin.py, executed by `make integration` (Linux only).
-This module's RealCoreFailurePathTests (negative paths of that run) are host tests, so `make test` and CI run them.
+The real-core run is tests/integration/geargrafx_bcdbin.py (Linux only), executed by `make integration`
+and by .github/workflows/core-bcdbin.yml. This module's RealCoreFailurePathTests (negative paths of that
+run) are host tests, so `make test` in the default CI job runs them.
 """
 from pathlib import Path
 import os

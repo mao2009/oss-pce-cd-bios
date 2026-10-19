@@ -1,4 +1,7 @@
-"""Real-core run of src/ex_bcdbin.s (Issue #71), wired into `make integration` (so `make test` and CI).
+"""Real-core run of src/ex_bcdbin.s (Issue #71).
+
+Executed by `make integration` (hence `make test` and the default CI job) and by the dedicated
+workflow .github/workflows/core-bcdbin.yml, which is the main CI evidence for this run.
 
 Run: python3 tests/integration/geargrafx_bcdbin.py   (pinned cc65 + Geargrafx core via make setup)
 Off Linux, or when the pinned tools/core are absent, the run is BLOCKED: exit 3 (same as

@@ -1,0 +1,30 @@
+name: Real Geargrafx ex_bcdbin (Issue #71, internal routine, not BIOS)
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  bcdbin-core:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Prepare pinned cc65 and Geargrafx from source
+        run: make setup
+      - name: Real-core ex_bcdbin run (exit code is the job result; BLOCKED=3, failure=1)
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p build/ci-bcdbin
+          python3 tests/integration/geargrafx_bcdbin.py 2>&1 | tee build/ci-bcdbin/bcdbin-core.log
+      - name: Save real-core ex_bcdbin log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: bcdbin-core-log-${{ github.sha }}
+          path: build/ci-bcdbin/bcdbin-core.log
+          if-no-files-found: error
+          retention-days: 14
