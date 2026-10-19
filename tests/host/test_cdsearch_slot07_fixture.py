@@ -107,6 +107,9 @@ def wiring_violations(root):
     LIMITS (ponytail): text scan only. Not caught: a name assembled at run time (N=cdsearch- then $(N)slot07,
     string concatenation), wildcard forms beyond fnmatch-style tokens (regex, brace expansion), a loader in a
     .py file that reaches the fixture without naming it or any EXEC_RUNNERS keyword, encoded/binary files.
+    Also not caught: code on the SAME line as a block-comment delimiter (`/* x */ int a = "cdsearch-slot07";`,
+    or `*/ int a = ...` closing a multi-line comment) because that line is treated as comment; and comment-like
+    text inside a string literal is not distinguished from a real comment.
     Not full coverage."""
     hits = set()
     for path in _tracked_files(root):
