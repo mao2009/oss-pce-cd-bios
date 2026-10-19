@@ -25,14 +25,19 @@ MD_COMMIT = 'ducalex/retro-go@05e97e80'
 MD_BLOB = 'blob `797845ce`'
 GG_COMMIT = 'drhelius/Geargrafx@3685f8cf'
 GG_UNRESOLVED = 'drhelius/Geargrafx@1e52d13f'
-# Structural execution rule. Any verb that asserts a reference callee was run is banned in
-# every cell (table cell, or whole prose line). The only exemption is a cell that carries an
-# explicit "未実行" or "NOT_RUN" statement. Phrase lists are not used, so a new inflection
-# cannot slip past by changing its particle or tense.
-EXEC_VERB = re.compile(
-    r'呼び出|走らせ|boot|動かし|実行|起動|invoked|called|calling|\bran\b|\bexecuted\b|\brun it\b',
-    re.I)
-NOT_RUN_MARK = re.compile(r'未実行|NOT_RUN')
+# Execution rule (structural, not a verb list). A line is a claim when it contains a
+# completed-action or past-tense marker AND either a reference-callee subject (BIOS, ROM,
+# callee, slot, $0D, $E0xx, CD_SUBRQ/CD_SUBRD) or an observed-result word. Such a line
+# fails, even if it also says 未実行/NOT_RUN. A line with no past marker is not a claim,
+# so "未実行" / "NOT_RUN" wording passes on its own.
+# Limits: a past verb with no subject word on the same line is not caught; present-tense
+# plans ("呼ぶ") are not caught; subject detection is a fixed token set. Keep the doc to
+# present or negated wording about execution.
+PAST_MARK = re.compile(r'(?:た|んだ)(?![ぁ-ん])|(?i:\b\w+ed\b|\bran\b)')
+CALLEE_SUBJECT = re.compile(
+    r'\bBIOS\b|\bROM\b|[Cc]allee|呼出先|呼び出し先|スロット|\bslot\b|\$0D|\$E0[0-9A-Fa-f]{2}'
+    r'|CD_SUBR[QD]')
+RESULT_WORD = re.compile(r'観測|実測|結果|確認')
 FORBIDDEN_CELL_TOKENS = {'VERIFIED', 'OBSERVED', 'PASS'}
 
 
@@ -50,9 +55,8 @@ def _claim_rows(text):
 def _exec_violations(text):
     out = []
     for lineno, line in enumerate(text.splitlines(), 1):
-        for cell in line.split('|'):
-            if EXEC_VERB.search(cell) and not NOT_RUN_MARK.search(cell):
-                out.append((lineno, cell.strip()))
+        if PAST_MARK.search(line) and (CALLEE_SUBJECT.search(line) or RESULT_WORD.search(line)):
+            out.append((lineno, line.strip()))
     return out
 
 
@@ -83,7 +87,7 @@ class CdSubrqSubrdConflictLedgerTests(unittest.TestCase):
 
     def test_zeograd_name_leg_is_not_source_fact(self):
         # C1 is the HuC/Hu-Go/huexpress leg only; the Zeograd leg is split into C18.
-        self.assertNotIn('Z、', self.rows['C1'][2])
+        self.assertIsNone(re.search(r'(?<![A-Za-z0-9_])Z(?![A-Za-z0-9_])', ' '.join(self.rows['C1'])))
         self.assertEqual(self.rows['C18'][3], 'SECONDARY_SOURCE')
         self.assertIn('conflict unresolved', self.rows['C18'][4])
 
@@ -119,14 +123,32 @@ class CdSubrqSubrdConflictLedgerTests(unittest.TestCase):
             for cell in cells:
                 self.assertFalse(set(re.findall(r'[A-Z_]+', cell)) & FORBIDDEN_CELL_TOKENS, cid)
 
-    def test_exec_rule_flags_missed_phrasings(self):
-        # Regression: these three slipped past the former phrase list.
-        for phrase in ('BIOS を呼び出した', 'ROM を走らせた', 'boot した'):
+    def test_exec_rule_flags_past_tense_callee_phrasings(self):
+        # Regression: each of these passed the former verb-stem list.
+        for phrase in (
+            'BIOS を呼んだ',
+            'BIOS を呼出した',
+            '$E027 を call した',
+            'BIOS を動作させた',
+            'ROM をブートした',
+            # Earlier regressions, kept with an explicit subject so the rule covers them.
+            'BIOS を呼び出した',
+            'ROM を走らせた',
+            'ROM を boot した',
+        ):
             self.assertTrue(_exec_violations(phrase), phrase)
 
-    def test_exec_rule_allows_only_explicit_not_run(self):
+    def test_exec_rule_flags_not_run_mixed_with_past_claim(self):
+        # Regression: a 未実行/NOT_RUN mark must not exempt a past-tense execution claim.
+        self.assertTrue(_exec_violations('BIOS を呼び出した。実行は未実行（NOT_RUN）'))
+
+    def test_exec_rule_flags_observed_result_claim(self):
+        self.assertTrue(_exec_violations('CD_SUBRQ の戻り値を観測した'))
+
+    def test_exec_rule_allows_not_run_and_plans_without_past_claim(self):
         self.assertEqual(_exec_violations('| 実行は未実行（NOT_RUN） |'), [])
-        self.assertTrue(_exec_violations('| 実行 | 未実行（NOT_RUN） |'))  # verb needs its own cell mark
+        self.assertEqual(_exec_violations('BIOS は呼んでいない。$E027 を呼ぶ前後で差分を取る'), [])
+
 
 if __name__ == '__main__':
     unittest.main()

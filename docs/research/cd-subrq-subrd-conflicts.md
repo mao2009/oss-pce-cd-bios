@@ -20,7 +20,7 @@
 | HX | huexpress `kallisti5/huexpress` `src/engine/bios.c`（41、173–174 行） | 最終更新 `b91fd8e3` | GitHub 判定 NOASSERTION（ライセンス不明）。引用しない | 名称の所在のみ |
 | GG | Geargrafx `drhelius/Geargrafx@3685f8cf`（コミット、2026-10-05）の `platforms/shared/desktop/gui_debug_constants.h`（168 行） | 最終更新コミット `3685f8cf`。旧 pin `1e52d13f` は commit として解決しないため不採用 | GPL-3.0（GitHub 判定） | デバッガのラベル 0xE027 の所在のみ |
 
-除外: HuC の `include/huc/system.inc`（78 行）と `examples/asm/elmer/kickc/bios.h`（39 行）はライセンス未確認のため根拠に使わない。`include/huc/cdrom.asm` は読まない。
+除外: HuC の `include/huc/system.inc` と `examples/asm/elmer/kickc/bios.h` はライセンス未確認のため根拠に使わない（内容は読んでいない）。`include/huc/cdrom.asm` も読まない。
 
 ## 2. 出典別の $0D 記述（統合しない）
 
