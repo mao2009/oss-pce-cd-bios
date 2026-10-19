@@ -26,6 +26,6 @@ slot `$3D` は従来どおり非復帰スタブのままである。
 - 実コア：`tests/fixtures/bcdbin_harness.s` が全 256 入力で `ex_bcdbin` を呼び、A / P / X / Y と最終 SP を
   作業 RAM に書く。`geargrafx_smoke.execute` で cold / warm の両方を読み出してモデルと照合する。
   一の位チェック（`CMP #10`）を書き換えた ROM が不一致として検出されることも実コアで確かめる。
-  pinned cc65 または Geargrafx コアが無いときは SKIP になる（PASS ではない）。
+  pinned cc65 または Geargrafx コアが無いとき、および非 POSIX ホストでは SKIP になる（PASS ではない）。
 
 Geargrafx での観測は実機での動作を証明しない。BIOS 互換も主張しない。

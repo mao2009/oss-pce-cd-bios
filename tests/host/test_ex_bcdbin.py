@@ -64,7 +64,7 @@ class GeargrafxTests(unittest.TestCase):
     def setUpClass(cls):
         try:
             cls.core, ca65, ld65 = core_path(), executable("ca65"), executable("ld65")
-        except (ValueError, OSError) as error:
+        except (ValueError, OSError, AttributeError) as error:  # AttributeError: os.getuid on non-POSIX
             raise unittest.SkipTest(f"SKIP real core: {error}")
         cls.tmp = tempfile.TemporaryDirectory(prefix="pce-bcdbin-")
         out = Path(cls.tmp.name)
