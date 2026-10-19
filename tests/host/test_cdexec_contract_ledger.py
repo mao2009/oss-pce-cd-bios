@@ -1,8 +1,9 @@
 """Host tests for the Issue #239 CD_EXEC (slot $05, candidate $E00F) contract ledger.
 
-Bookkeeping only: the ledger table in docs/cd-exec-contract-ledger.md, the slot 5 record in
-spec/api_contracts.json, and the absence of $E00F from src/ and the Makefile. Nothing is
-executed and ./rom/ is never read. A callee row may never be SOURCE_FACT, OBSERVED, VERIFIED or PASS.
+Bookkeeping only: the tables in docs/cd-exec-contract-ledger.md, the slot 5 record in
+spec/api_contracts.json, and the absence of CD_EXEC / $E00F / 57359 from src/ and the Makefile.
+Nothing is executed and ./rom/ is never read. A callee row may never be SOURCE_FACT, OBSERVED,
+VERIFIED or PASS.
 """
 import json
 import re
@@ -13,15 +14,42 @@ ROOT = Path(__file__).resolve().parents[2]
 LEDGER = ROOT / 'docs' / 'cd-exec-contract-ledger.md'
 CONTRACTS = ROOT / 'spec' / 'api_contracts.json'
 
-ROW = re.compile(r'^\| ([A-F]\d) \| (caller|callee|repo) \| (.+?) \| (\S+) \| (.+?) \| (.+?) \|$', re.M)
+LEDGER_HEADER = ('ID', '区分', '項目', '確度', '出典', '決着条件')
+# Other tables in the ledger: header -> column count. Any other table line is a violation.
+KNOWN_TABLES = {
+    ('ID', '出典（固定版・パス・行）', 'ライセンス表示', '状態'): 4,
+    ('コマンド', '結果'): 2,
+}
+LEDGER_ROW_ID = re.compile(r'^[A-Z]\d+$')
 ALLOWED = {'SOURCE_FACT', 'HYPOTHESIS', 'UNKNOWN', 'BLOCKED'}
 FORBIDDEN = {'OBSERVED', 'VERIFIED', 'PASS'}
+FORBIDDEN_TOKEN = re.compile(r'\b(?:OBSERVED|VERIFIED|PASS)\b')
+# Section 2 is the only prose allowed to name the forbidden words, and it says they are not used.
+RULE_LINE_MARK = '使わない'
+SCOPES = {'caller', 'callee', 'repo'}
 CALLEE_ALLOWED = {'HYPOTHESIS', 'UNKNOWN', 'BLOCKED'}
 REQUIRED_IDS = {'A1', 'A2', 'A3', 'B1', 'B2', 'C1', 'C2', 'C3', 'C4', 'D1', 'D2', 'E1', 'F1'}
+# CD_EXEC aliases: symbol, $E00F / 0xE00F, and decimal 57359 (= $E00F).
+UNWIRED = re.compile(r'E00F|CD_EXEC|\b57359\b', re.IGNORECASE)
 
 
-def parse_rows(text):
-    return [{'id': m[1], 'scope': m[2], 'status': m[4], 'next': m[6]} for m in ROW.finditer(text)]
+def split_cells(line):
+    s = line.strip()
+    if s.endswith('|'):
+        s = s[:-1]
+    return tuple(c.strip() for c in s[1:].split('|'))
+
+
+def table_blocks(text):
+    """Contiguous runs of lines starting with '|', as cell tuples, separator rows removed."""
+    blocks, cur = [], []
+    for line in text.splitlines() + ['']:
+        if line.lstrip().startswith('|'):
+            cur.append(split_cells(line))
+        elif cur:
+            blocks.append([c for c in cur if not all(re.fullmatch(r':?-+:?', x) for x in c)])
+            cur = []
+    return blocks
 
 
 def check_rows(rows):
@@ -31,6 +59,10 @@ def check_rows(rows):
     problems += [f'duplicate id {rid}' for rid in {i for i in ids if ids.count(i) > 1}]
     for row in rows:
         status = row['status']
+        if not LEDGER_ROW_ID.match(row['id']):
+            problems.append(f"bad id {row['id']!r}")
+        if row['scope'] not in SCOPES:
+            problems.append(f"{row['id']}: bad scope {row['scope']!r}")
         if status in FORBIDDEN:
             problems.append(f"{row['id']}: forbidden status {status}")
         elif status not in ALLOWED:
@@ -40,15 +72,51 @@ def check_rows(rows):
     return problems
 
 
+def ledger_rows(text):
+    return [{'id': c[0], 'scope': c[1], 'status': c[3], 'next': c[5]}
+            for block in table_blocks(text) if block and block[0] == LEDGER_HEADER for c in block[1:]
+            if len(c) == 6]
+
+
+def check_text(text):
+    """Whole-document check: table layout, row rules, and forbidden words in any prose line."""
+    problems, rows = [], []
+    for block in table_blocks(text):
+        header, body = block[0], block[1:]
+        if header == LEDGER_HEADER:
+            for cells in body:
+                if len(cells) != 6:
+                    problems.append(f'malformed ledger line ({len(cells)} cells): {cells[:2]}')
+                else:
+                    rows.append({'id': cells[0], 'scope': cells[1], 'status': cells[3], 'next': cells[5]})
+        elif header in KNOWN_TABLES:
+            problems += [f'malformed table line {cells[:2]}' for cells in body
+                         if len(cells) != KNOWN_TABLES[header]]
+        else:
+            problems.append(f'unknown table header {header[:2]}')
+    problems += prose_violations(text)
+    return problems + check_rows(rows)
+
+
+def prose_violations(text):
+    return [f'forbidden word in prose: {line[:40]}' for line in text.splitlines()
+            if FORBIDDEN_TOKEN.search(line) and RULE_LINE_MARK not in line]
+
+
+def unwired_hits():
+    paths = [p for p in (ROOT / 'src').rglob('*') if p.is_file()] + [ROOT / 'Makefile']
+    return [str(p.relative_to(ROOT)) for p in paths
+            if p.exists() and UNWIRED.search(p.read_text(encoding='utf-8', errors='ignore'))]
+
+
 class LedgerTests(unittest.TestCase):
     def setUp(self):
         self.text = LEDGER.read_text(encoding='utf-8')
-        self.rows = parse_rows(self.text)
+        self.rows = ledger_rows(self.text)
 
-    def test_rows_are_well_formed_and_promote_nothing(self):
-        self.assertEqual(check_rows(self.rows), [])
-        # A malformed row must not be silently dropped by the parser.
-        self.assertEqual(len(re.findall(r'^\| [A-F]\d \|', self.text, re.M)), len(self.rows))
+    def test_document_is_well_formed_and_promotes_nothing(self):
+        self.assertEqual(check_text(self.text), [])
+        self.assertTrue(self.rows)
 
     def test_required_criteria_rows_exist_with_expected_status(self):
         by_id = {row['id']: row for row in self.rows}
@@ -57,14 +125,42 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(by_id['B2']['status'], 'UNKNOWN')
         self.assertEqual(by_id['E1']['status'], 'BLOCKED')
 
-    def test_no_forbidden_word_in_status_or_next_cells(self):
+    def test_no_forbidden_word_in_status_or_next_cells_or_prose(self):
         for row in self.rows:
             for word in FORBIDDEN:
                 self.assertNotIn(word, row['status'] + row['next'], row['id'])
+        self.assertEqual(prose_violations(self.text), [])
 
     def test_no_bios_execution_or_rom_wiring_is_claimed(self):
         self.assertIn('ROM 配線なし', self.text)
         self.assertIn('危険な純正 JSR は 0 回', self.text)
+
+
+class RegressionTests(unittest.TestCase):
+    """Synthetic rows injected into the real ledger table must be rejected by check_text."""
+
+    def inject_after_f1(self, line):
+        text = LEDGER.read_text(encoding='utf-8')
+        injected, n = re.subn(r'^(\| F1 \|.*)$', lambda m: m.group(1) + '\n' + line, text, flags=re.M)
+        self.assertEqual(n, 1)
+        return injected
+
+    def test_g1_observed_row_is_rejected(self):
+        self.assertTrue(check_text(self.inject_after_f1('| G1 | callee | synthetic | OBSERVED | s | n |')))
+
+    def test_compact_b2_pass_row_is_rejected(self):
+        self.assertTrue(check_text(self.inject_after_f1('|B2|callee|synthetic|PASS|s|n|')))
+
+    def test_forbidden_word_in_prose_is_rejected(self):
+        self.assertTrue(check_text(self.inject_after_f1('') + '\nCD_EXEC は OBSERVED 済み。\n'))
+
+    def test_malformed_ledger_line_is_rejected(self):
+        self.assertTrue(check_text(self.inject_after_f1('| A9 | caller | extra |')))
+
+    def test_unwired_aliases_are_detected(self):
+        for sample in ('E00F', '0xE00F', '$e00f', 'CD_EXEC', 'cd_exec', '57359'):
+            with self.subTest(sample=sample):
+                self.assertIsNotNone(UNWIRED.search(sample))
 
 
 class CheckerNegativeTests(unittest.TestCase):
@@ -115,12 +211,8 @@ class Slot5Tests(unittest.TestCase):
 
 
 class SlotUnwiredTests(unittest.TestCase):
-    def test_no_e00f_reference_in_src_or_makefile(self):
-        paths = [p for p in (ROOT / 'src').rglob('*') if p.is_file()] + [ROOT / 'Makefile']
-        hits = [str(p.relative_to(ROOT)) for p in paths
-                if p.exists() and re.search(r'E00F', p.read_text(encoding='utf-8', errors='ignore'),
-                                            re.IGNORECASE)]
-        self.assertEqual(hits, [])
+    def test_no_cd_exec_e00f_or_57359_reference_in_src_or_makefile(self):
+        self.assertEqual(unwired_hits(), [])
 
 
 if __name__ == '__main__':
