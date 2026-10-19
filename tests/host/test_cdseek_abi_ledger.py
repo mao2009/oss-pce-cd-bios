@@ -1,9 +1,12 @@
 """Host tests for the Issue #214 CD_SEEK ($04, $E00C) caller-ABI ledger.
 
 These tests check the ledger's rules (status vocabulary, no VERIFIED/OBSERVED, callee rows never
-promoted from caller source, UNKNOWN values never filled) and two pure facts quoted from the
-pinned HuCC source: the cd_seek equate and the gulliver LBA table. No emulator, no ROM and no
-System Card code is involved, and the table arithmetic is NOT evidence of BIOS behaviour.
+promoted from caller source, UNKNOWN values never filled) and one pure fact quoted from the
+pinned HuCC source: the cd_seek equate. No emulator, no ROM and no System Card code is involved,
+and the table arithmetic is NOT evidence of BIOS behaviour.
+
+外部由来の LBA 表は本ファイルに埋め込まない。表の算術の検査は合成値で行い、固定版での一回限りの
+確認結果は docs/cd-seek-abi-ledger.md §4 に残す。
 """
 import re
 import sys
@@ -19,17 +22,11 @@ CD_SEEK_EQUATE = 'cd_seek\t\t= $00:E00C, FUNC'
 CALL_BIOS_BASE = 0xE000
 CALL_BIOS_Y_FOR_SEEK = 0x0C
 
-# Caller data from examples/asm/elmer/ted2-core-gulliver/gulliver.asm L536-582 (24-bit dd entries).
-# $00-$24 are the video table (37 entries). $25 is a read-speed test sector, not a video LBA.
-GULLIVER_LBA = [
-    0x015002, 0x018660, 0x018FA0, 0x019A90, 0x019CCE, 0x01A34A, 0x01A6DE, 0x01B27C,
-    0x01B736, 0x01CF1C, 0x01F038, 0x01FC2A, 0x01FFFA, 0x020D12, 0x021196, 0x02149A,
-    0x021840, 0x021C7C, 0x02288C, 0x022BEA, 0x023476, 0x0239F0, 0x023F82, 0x02448A,
-    0x0258E6, 0x025F20, 0x026D9A, 0x0270CE, 0x027750, 0x027CDC, 0x028D54, 0x029586,
-    0x02A07C, 0x02C23A, 0x02D858, 0x02EF9C, 0x02F4B0,
-    0x000F25,
-]
-GULLIVER_VIDEO_COUNT = 37
+# 合成値の表（外部データではない）。台帳の記載どおり 38 件、先頭 37 件が映像表、末尾 1 件は
+# 映像の LBA ではない（順序を外れる）という形だけを真似る。
+SYNTH_TABLE_COUNT = 38
+SYNTH_VIDEO_COUNT = 37
+SYNTH_TABLE = [0x010000 + 0x100 * i for i in range(SYNTH_VIDEO_COUNT)] + [0x000001]
 
 STATUSES = {'SOURCE_FACT', 'CALLER_INFERENCE', 'HYPOTHESIS', 'UNKNOWN', 'BLOCKED'}
 CALLEE_STATUSES = {'HYPOTHESIS', 'UNKNOWN', 'BLOCKED'}
@@ -122,25 +119,34 @@ class CallerFactTests(unittest.TestCase):
     def test_ledger_entry_matches_quoted_equate(self):
         self.assertIn('$E00C', DOC.read_text(encoding='utf-8'))
 
-    def test_gulliver_table_is_24bit_and_video_part_is_increasing(self):
-        self.assertEqual(len(GULLIVER_LBA), 38)
-        for v in GULLIVER_LBA:
+    def test_synthetic_table_is_24bit_and_video_part_is_increasing(self):
+        # 合成表の形だけを確かめる。実表の検査ではない。
+        self.assertEqual(len(SYNTH_TABLE), SYNTH_TABLE_COUNT)
+        for v in SYNTH_TABLE:
             self.assertLess(v, 1 << 24)
-        video = GULLIVER_LBA[:GULLIVER_VIDEO_COUNT]
+        video = SYNTH_TABLE[:SYNTH_VIDEO_COUNT]
         for a, b in zip(video, video[1:]):
             self.assertLess(a, b)
-        # The $25 read-speed sector breaks the order on purpose: it is not a video LBA.
-        self.assertLess(GULLIVER_LBA[-1], video[-1])
+        # 末尾の非映像エントリは意図的に順序を外す（映像 LBA ではない）。
+        self.assertLess(SYNTH_TABLE[-1], video[-1])
 
-    def test_table_is_not_uniformly_msf_under_either_encoding(self):
-        # Host arithmetic only: rules out a uniform MSF reading, does not choose LBA or any base.
+    def test_msf_checkers_accept_and_reject_synthetic_values(self):
+        # 判定器の挙動だけを確かめる。BIOS の証拠ではない。
+        self.assertTrue(is_valid_binary_msf((0, 2, 0)))
+        self.assertFalse(is_valid_binary_msf((0, 60, 0)))
+        self.assertFalse(is_valid_binary_msf((0, 0, 75)))
+        self.assertFalse(is_valid_binary_msf((100, 0, 0)))
+        self.assertTrue(is_valid_bcd_msf((0x00, 0x02, 0x00)))
+        self.assertFalse(is_valid_bcd_msf((0x00, 0x0A, 0x00)))
+        self.assertFalse(is_valid_bcd_msf((0x00, 0x60, 0x00)))
+
+        # 二通りのどちらの MSF としても成立しない合成値は、判定器で必ず不成立になる。
         def split(v):
             return (v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF
 
-        bad = [v for v in GULLIVER_LBA
+        bad = [v for v in SYNTH_TABLE + [0xFF0000]
                if not (is_valid_binary_msf(split(v)) or is_valid_bcd_msf(split(v)))]
-        self.assertIn(0x018660, bad)
-        self.assertGreater(len(bad), 0)
+        self.assertEqual(bad, [0xFF0000])
 
 
 if __name__ == '__main__':

@@ -33,12 +33,12 @@ HuCC（`pce-devel/huc`）の固定版を使う。
 
 | ID | 出典（固定版内のパス） | 行 | ライセンス表示 | 用途 |
 | --- | --- | --- | --- | --- |
-| S1 | `include/hucc/pcengine.inc` | 467–472（`cd_seek = $00:E00C, FUNC`） | BSL-1.0 | 名前と入口の宣言（呼出側） |
-| S2 | `include/hucc/core-kernel.asm` | 500–516（`call_bios`） | BSL-1.0（John Brandwood 2021–2024） | 呼出し経路（trampoline） |
-| S3 | `include/hucc/core.inc` | 41–45（`system` マクロ: `ldy #<\1` と `jsr call_bios`） | BSL-1.0（同上） | マクロの展開 |
-| S4 | `examples/asm/elmer/ted2-core-gulliver/gulliver.asm` | 316–335（seek の引数設定と `system cd_seek`）、346–371（read の引数設定と `system cd_read`、367 行）、536 行以降（`gulliver_lba` 表） | Boost 1.0（John Brandwood 2022） | 呼出側の実例 |
-| S5 | `examples/asm/elmer/include/movie.asm` | 246（`BUFFER_1ST_BANK = $6A`） | Boost 1.0（"Modifications copyright John Brandwood 2022" は改変部分の表示。元のファイルの権利状態は未確認） | S4 が include する定数 |
-| S6 | `examples/asm/elmer/ted2-test-sherlock/sherlock-hack.asm` | 170（ゲーム側の呼出し点へのフック）、404–408（`begin_seek` → `jmp $E00C`） | Boost 1.0（2024）。ただしゲーム実行コードへのパッチ | 補助のみ。引数の設定はこの断片に無いので証拠にしない |
+| S1 | `include/hucc/pcengine.inc` | 467–472（`cd_seek = $00:E00C, FUNC`） | BSL-1.0（著作権者の表示なし。冒頭 8–10 行はライセンス表示のみ） | 名前と入口の宣言（呼出側） |
+| S2 | `include/hucc/core-kernel.asm` | 500–516（`call_bios`） | BSL-1.0（8 行に "Copyright John Brandwood 2021-2024."） | 呼出し経路（trampoline） |
+| S3 | `include/hucc/core.inc` | 41–45（`system` マクロ: `ldy #<\1` と `jsr call_bios`） | BSL-1.0（8 行に "Copyright John Brandwood 2021-2024."） | マクロの展開 |
+| S4 | `examples/asm/elmer/ted2-core-gulliver/gulliver.asm` | 316–335（seek の引数設定と `system cd_seek`）、346–371（read の引数設定と `system cd_read`、367 行）、536 行以降（`gulliver_lba` 表。本台帳には表の値を転載しない） | BSL-1.0（8 行に "Copyright John Brandwood 2022."） | 呼出側の実例 |
+| S5 | `examples/asm/elmer/include/movie.asm` | 246（`BUFFER_1ST_BANK = $6A`） | BSL-1.0（13 行 "Modifications copyright John Brandwood 2022." は改変部分の表示。元のファイルの権利状態は未確認） | S4 が include する定数 |
+| S6 | `examples/asm/elmer/ted2-test-sherlock/sherlock-hack.asm` | 170（ゲーム側の呼出し点へのフック）、404–408（`begin_seek` → `jmp $E00C`） | BSL-1.0（12 行 "Copyright John Brandwood 2024."）。ただしゲーム実行コードへのパッチ | 補助のみ。引数の設定はこの断片に無いので証拠にしない |
 | S7 | `include/huc/equ.inc` | 34–44（`__al` などの別名で `$20F8`〜`$20FF` を定義。`_al` などの名前は S1 の `pcengine.inc` 330–343 が定義） | 表示なし（下記の注） | 番地の定義のみ |
 
 除外する出典:
@@ -49,7 +49,7 @@ HuCC（`pce-devel/huc`）の固定版を使う。
 - Hu-Go! `bios.c`: 固定版ツリーに該当ファイルがない（`**/bios.c` の検索で 0 件）。`doc/huc/huc3_doc.htm` 344 行の言及のみで、HLE である根拠にはしない。
 - `include/huc/system.inc` 69 行: `cd_seek = $E00C` の宣言のみ。
 
-注（ライセンス）: 固定版ルートの `LICENSE` は、コレクション全体の法的地位を「正確に述べることはほぼ不可能」とし、例外として MagicKit、TGEmu、GCC 由来のテスト、Ulrich Hecht の変更部分（BSD 系）だけを挙げる。ファイル単位のライセンス表示（BSL-1.0、Boost 1.0）がない S7（`equ.inc`）は、法的状態を未確定として扱う。
+注（ライセンス）: BSL-1.0 は Boost Software License 1.0 の SPDX 識別子で、各ファイル冒頭の "Boost Software License, Version 1.0" の表示と同じ。著作権表示（氏名と年）はファイルごとに異なるため、上表の欄に個別に記した。固定版ルートの `LICENSE` は、コレクション全体の法的地位を「正確に述べることはほぼ不可能」とし、例外として MagicKit、TGEmu、GCC 由来のテスト、Ulrich Hecht の変更部分（BSD 系）だけを挙げる。ファイル単位のライセンス表示（BSL-1.0）がない S7（`equ.inc`）は、法的状態を未確定として扱う。
 
 固定版全体で `cd_seek` を含む行は 9 行。呼出し（`system cd_seek` と `jmp $E00C`）は S4 と S6 の 2 箇所だけである。
 `docs/oss-reuse-audit-r3.md` の「呼び出し無し」は `hucc-systemcard.asm` と `core-*.asm` の範囲の記録であり、
@@ -86,13 +86,14 @@ HuCC（`pce-devel/huc`）の固定版を使う。
 
 ## 4. ホスト単体テスト（表と値の不変条件）
 
-`tests/host/test_cdseek_abi_ledger.py` は次を検査する。これは台帳の規則と、S4 の表の算術だけを確かめるもので、BIOS の証拠ではない。
+`tests/host/test_cdseek_abi_ledger.py` は次を検査する。これは台帳の規則と判定器の挙動を確かめるもので、BIOS の証拠ではない。表の算術は合成値で検査し、S4 の実表は本リポジトリに含めない。
 
 - 状態の語彙に `VERIFIED` と `OBSERVED` が無い。側 `C` と `R` の行は `HYPOTHESIS` / `UNKNOWN` / `BLOCKED` のみ。
 - 状態が `UNKNOWN` / `BLOCKED` の行は値を `UNKNOWN` とする。
 - `SOURCE_FACT` / `CALLER_INFERENCE` / `HYPOTHESIS` の行は、§2 に定義した出典 ID（S1〜S6）を一つ以上引用する。
 - 入口の値は、S1 の等号 `cd_seek = $00:E00C` を `call_bios` の `$E000 + Y`（`Y=$0C`）で再計算した値と一致する。
-- S4 の表は 38 件（`$00`〜`$25`）で、すべて 24 ビットの整数。`$00`〜`$24` の映像表 37 件は単調増加する。`$25` は read 速度試験用のセクタで映像の LBA ではないため、順序を外れる（テストで明示）。さらに、少なくとも一件（`$018660`）は BCD MSF でも binary MSF でも成立しない。
+- 合成表（テスト内の値）で、件数 38、24 ビット、先頭 37 件の単調増加、末尾 1 件の順序外れを検査する。判定器（binary MSF / BCD MSF）は合成値で合格と不合格を確かめる。
+- 固定版の S4 表については、取得時にホストで一回限り確認した（表は本リポジトリに含めない）: 38 件（`$00`〜`$25`）、すべて 24 ビットの整数。`$00`〜`$24` の映像表 37 件は単調増加し、`$25` は read 速度試験用のセクタで映像の LBA ではないため順序を外れる。38 件中 34 件（例: `$018660`）は BCD MSF でも binary MSF でも成立しない。この確認はテストとして再現されないため、再確認は §5 の手順で行う。
   このため表全体を MSF として読むことはできず、C4 と C5 は UNKNOWN のままとする。
 
 ## 5. 独立検証（再確認の手順）
