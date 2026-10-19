@@ -17,6 +17,20 @@ OTHER = b'a different synthetic artifact'
 DIGEST = hashlib.sha256(ARTIFACT).hexdigest()
 
 
+def _symlinks_supported():
+    with tempfile.TemporaryDirectory() as d:
+        target = Path(d) / 'target'
+        target.write_bytes(b'x')
+        try:
+            os.symlink(target, Path(d) / 'link')
+        except (OSError, NotImplementedError):
+            return False
+        return True
+
+
+SYMLINKS_OK = _symlinks_supported()
+
+
 def entry(**overrides):
     base = {'execution_conditions': 'synthetic', 'core_revision': PINNED_CORE_REVISION,
             'input_type': 'synthetic', 'verification_result': 'synthetic', 'evidence_hash': DIGEST}
@@ -94,6 +108,16 @@ class ResolveEvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'differs from pinned'):
             self.resolve(entry(), pinned_revision='b' * 40)
         self.assertEqual(len(PINNED_CORE_REVISION), 40)
+
+    @unittest.skipUnless(SYMLINKS_OK, 'symlink creation not permitted on this OS/account (SKIP)')
+    def test_symlinked_artifact_is_rejected_even_when_target_hash_matches(self):
+        # The link target has the correct bytes and name, so only the is_symlink() guard can reject it.
+        artdir = self.dir / 'art'
+        artdir.mkdir()
+        (self.dir / 'real.bin').write_bytes(ARTIFACT)
+        os.symlink(self.dir / 'real.bin', artdir / DIGEST)
+        with self.assertRaisesRegex(ValueError, 'missing or not a regular file'):
+            resolve_evidence(entry(), artifact_dir=artdir)
 
     def test_artifact_directory_is_not_consulted_for_unrelated_names(self):
         # Only <dir>/<evidence_hash> is read; a sibling file with another name never satisfies the lookup.

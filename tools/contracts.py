@@ -198,8 +198,9 @@ def validate_evidence(evidence, context):
 # Artifact resolution (Issue #224). validate_evidence() stays FORMAT_ONLY and is NOT replaced: resolve_evidence()
 # is an explicit, separate step. The entry's evidence_hash is the file name of a synthetic artifact in
 # EVIDENCE_ARTIFACT_DIR (content-addressed, so no path is built from other entry text). The artifact's SHA-256 is
-# recomputed and must equal that name, and core_revision must equal the pinned Geargrafx revision. This proves the
-# bytes are the ones recorded and that the revision matches the pin. It does NOT prove who produced them: producer
+# recomputed and must equal that name. core_revision is the ledger-declared string and is only compared with the
+# pinned Geargrafx revision; the artifact file carries no revision, so nothing here shows which revision produced the
+# bytes. This proves the bytes match the recorded hash, not what they are or who produced them: producer
 # authentication is attestation (Issue #124 / #171). Not yet wired into validate_contracts (no OBSERVED claim exists).
 EVIDENCE_ARTIFACT_DIR = ROOT / 'build' / 'evidence-artifacts'
 ARTIFACT_TRUST_LEVEL = 'ARTIFACT_HASH_RESOLVED'
@@ -211,7 +212,8 @@ def resolve_evidence(entry, artifact_dir=EVIDENCE_ARTIFACT_DIR, pinned_revision=
 
     Fail closed: raises ValueError for malformed entries, a revision other than the pin, a missing or
     symlinked artifact, and any artifact whose recomputed SHA-256 differs from evidence_hash (altered
-    or substituted file). Acceptance means hash-and-pin consistency only, not authenticity.
+    or substituted file). core_revision is checked as the declared string against the pin only; the artifact
+    does not carry a revision. Acceptance means hash-and-pin consistency only, not authenticity.
     """
     validate_evidence([entry], 'evidence')
     if entry['core_revision'] != pinned_revision:
