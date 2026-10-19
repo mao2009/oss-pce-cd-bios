@@ -80,6 +80,33 @@ class JudgeTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             h.validate({**CASE, "expect": {"ram": {"0": 1, "0x0": 2}}}, SYM, plugin=True)
 
+    def test_duplicate_json_keys_rejected(self):
+        # json.loads kept the last value silently: a duplicated "a" or "expect" hid the real check.
+        for text in ('[{"name":"c","name":"d"}]',
+                     '[{"name":"c","target":"harness_selftest","target":"harness_done"}]',
+                     '[{"name":"c","expect":{"a":1,"a":2}}]',
+                     '[{"name":"c","expect":{"ram":{"0":1,"0":2}}}]'):
+            with self.assertRaises(ValueError):
+                h.load_cases(text)
+        loaded = h.load_cases('[{"name":"c","expect":{"ram":{"0":1}}}]')
+        self.assertEqual(loaded[0]["expect"]["ram"], {"0": 1})
+
+    def test_same_ram_offset_in_different_spellings_rejected(self):
+        for ram in ({"0x10": 1, "16": 2}, {"16": 1, "0x10": 2}, {"0x0": 1, "0": 2}):
+            with self.assertRaises(ValueError):
+                h.validate({**CASE, "expect": {"ram": ram}}, SYM, plugin=True)
+        with self.assertRaises(ValueError):  # "$10" is not an accepted offset spelling
+            h.validate({**CASE, "expect": {"ram": {"$10": 1}}}, SYM, plugin=True)
+
+    def test_non_string_target_is_value_error(self):
+        for bad in (["harness_selftest"], {"name": "harness_selftest"}, 5, None):
+            with self.assertRaises(ValueError):
+                h.validate({**CASE, "target": bad}, SYM, plugin=True)
+
+    def test_unknown_symbol_target_is_value_error(self):
+        with self.assertRaises(ValueError):
+            h.validate({**CASE, "target": "no_such_symbol"}, SYM, plugin=True)
+
     def test_invalid_inputs_rejected(self):
         for bad in ({"p": 0x24}, {"p": 0}, {"a": 256}, {"a": True}, {"target": "nope"}, {"ram": "00"},
                     {"carry": 1}, {"expect": {"p": 1}}, {"expect": {"A": 1}}, {"expect": {"ram": {"32": 1}}},

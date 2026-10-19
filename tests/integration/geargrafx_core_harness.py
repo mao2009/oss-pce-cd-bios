@@ -48,6 +48,20 @@ SELFTEST = [  # validates the harness; "want" is the verdict/status the harness 
 ]
 
 
+def reject_duplicate_keys(pairs):
+    """json object_pairs_hook: json.loads keeps the last duplicate silently, so refuse it."""
+    obj = {}
+    for key, value in pairs:
+        if key in obj:
+            raise ValueError(f"duplicate JSON key {key!r}: the earlier value would be silently dropped")
+        obj[key] = value
+    return obj
+
+
+def load_cases(text):
+    return json.loads(text, object_pairs_hook=reject_duplicate_keys)
+
+
 def parse_lbl(text):
     return {n: int(a, 16) for a, n in re.findall(r"^al ([0-9A-Fa-f]{6}) \.(\w+)$", text, re.M)}
 
@@ -80,8 +94,9 @@ def validate(case, symbols, plugin=False):
             or set(case) - {"name", "target", "a", "x", "y", "p", "ram", "expect", "want"} \
             or set(expect) - {"a", "x", "y", "p", "p_mask", "ram"} or ("p" in expect) != ("p_mask" in expect):
         raise ValueError(f"case {case.get('name')!r}: unknown/missing keys (p needs p_mask)")
-    if case.get("target") not in symbols or not 0xE000 <= symbols[case["target"]] <= 0xFFFF:
-        raise ValueError(f"{case['name']}: target {case.get('target')} is not a bank0 symbol")
+    target = case.get("target")
+    if not isinstance(target, str) or target not in symbols or not 0xE000 <= symbols[target] <= 0xFFFF:
+        raise ValueError(f"{case['name']}: target {target!r} is not a bank0 symbol name")
     if not all(byte(case.get(r)) for r in "axyp") or case["p"] & T_FLAG or not case["p"] & I_FLAG:
         raise ValueError(f"{case['name']}: inputs must be bytes, P needs I=1 and T=0")
     if not isinstance(expect.get("ram", {}), dict) or not isinstance(case.get("ram", ""), str):
@@ -198,7 +213,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     code, harness = build_overlay(out)
     symbols = parse_lbl((dev / "dev.lbl").read_text()) | harness
-    user = json.loads(args.cases.read_text()) if args.cases else []
+    user = load_cases(args.cases.read_text()) if args.cases else []
     if not isinstance(user, list):
         raise ValueError("--cases must be a JSON list")
     cases = SELFTEST + user
