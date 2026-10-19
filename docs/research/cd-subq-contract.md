@@ -1,4 +1,4 @@
-# CD_SUBQ（スロット `$0A`、候補 `$E01E`）呼出側 ABI・呼出契約 根拠台帳（Issue #259）
+# CD_SUBQ（repo 棚卸しの候補スロット `$0A`、入口候補 `$E01E`）呼出側 ABI・呼出契約 根拠台帳（Issue #259）
 
 **状態: callee の ABI は未確定。ROM 実装なし。** `release_eligible=false`、callee 状態は `BLOCKED_ABI`、
 `DEV_CALLABLE` なし、`VERIFIED` / `PASS`（参照 BIOS の振る舞い）なし。親 Issue #19。
@@ -40,7 +40,7 @@ HuCC（`pce-devel/huc`）の固定版を使う。
 | S1 | `include/hucc/pcengine.inc` | 478（`cd_subq = $00:E01E, FUNC`）、330–343（`_al`〜`_dh`） | BSL-1.0（ファイル冒頭 8–10 行。著作権者表示なし） | 呼出側の宣言。SOURCE_FACT |
 | S2 | `include/hucc/core-kernel.asm` | 500–516（`call_bios`） | BSL-1.0（Copyright John Brandwood 2021-2024） | 呼出し経路（MPR7 の退避と復元）。SOURCE_FACT |
 | S3 | `include/hucc/core.inc` | 41–45（`system` マクロ: `ldy #<\1`、`jsr call_bios`） | BSL-1.0（Copyright John Brandwood 2021-2024） | マクロ展開。SOURCE_FACT |
-| S5 | `examples/asm/elmer/include/cdrom.asm` | 140（`CDROM_READSUBQ = $DD`）、2010（SCSI 応答の `Track SubQ Flags` コメント） | BSL-1.0（Modifications copyright John Brandwood 2022）。ただし冒頭に「Hudson の Legend of Xanadu 2 由来のコードを基にする」とあり、元コードの権利状態は未確認 | SCSI 層の定数定義のみ。`$DD` を使う箇所は固定版に無い（SOURCE_FACT、disposition PENDING） |
+| S5 | `examples/asm/elmer/include/cdrom.asm` | 140（`CDROM_READSUBQ = $DD`）、2010（SCSI 応答の `Track SubQ Flags` コメント） | BSL-1.0（Modifications copyright John Brandwood 2022）。ただし冒頭に「Hudson の Legend of Xanadu 2 由来のコードを基にする」とあり、元コードの権利状態は未確認 | SCSI 層の定数定義のみ。`$DD` を使う箇所は固定版に無い（SOURCE_FACT の根拠にしない、disposition PENDING） |
 | X1 | `include/huc/system.inc` | 75（`cd_subq = $E01E`） | 表示なし（冒頭はコメントのみ） | 除外（ライセンス不明。`include/huc/` は #11 / #214 と同じく根拠にしない） |
 | X2 | `examples/asm/elmer/kickc/bios.h` | 36 | 冒頭に Boost 1.0 の表示 | 名前の宣言のみ。除外（#214 と同じ扱い） |
 | X3 | Hu-Go `bios.c`（mckayemu/hugo @64ed226d、GPL-2） | 未読 | GPL-2 | `CD_SUBA` の名称は `docs/abi-contracts.md` の記録を引用するのみ。HLE であり ABI の証拠にしない。コードは読まず転載しない |
@@ -56,7 +56,7 @@ SCSI 定数の定義（S5 の 140 行）だけである。SCSI の `$DD` を使�
 | ID | 項目 | 状態 | 値 | 出典 | 理由・確度 |
 | --- | --- | --- | --- | --- | --- |
 | F1 | 名称（HuCC 宣言） | SOURCE_FACT | `cd_subq`（`$00:E01E`、FUNC） | S1 478 行 | 呼出側の宣言のみ。名前が ABI を意味するとは限らない。 |
-| F2 | 固定版内の SUBQ 呼出し箇所 | SOURCE_FACT | 0 件（検索結果） | S1、S5、X1、X2 | 検索の結果。SUBQ 固有の呼出側 ABI（入力の設定）は、この固定版からは得られない。 |
+| F2 | 固定版内の SUBQ 呼出し箇所 | HYPOTHESIS | 0 件（固定版の検索結果） | §2 の grep コマンド | 出典 1 行に対応しない否定結果のため SOURCE_FACT にしない。§2 のコマンドで再現して確かめる。SUBQ 固有の呼出側 ABI（入力の設定）は、この固定版からは得られない。 |
 | F3 | 入口番地 | SOURCE_FACT | `$E01E`（宣言） | S1 478 行 | 宣言の値。`$E01E` が実際に System Card の入口であることは未確認（callee 未実行）。 |
 | F4 | 関数番号 `$0A` と入口の対応（`$1E = $0A × 3`） | HYPOTHESIS | 関数番号 `$0A`、入口は関数番号 × 3 | Z1 | Z1 の番地計算規則による。Z1 の要約のみで検証していない。 |
 | F5 | 呼出し経路（一般） | SOURCE_FACT | `ldy #<cd_subq` の後 `jsr call_bios`。`call_bios` は MPR7 を System Card 側に切替え、呼出し後に復元する | S2 500–516、S3 41–45 | SUBQ 固有の事実ではない。Y は下位バイトのみを渡す。呼出先が何を読むかは別。 |
@@ -71,7 +71,7 @@ SCSI 定数の定義（S5 の 140 行）だけである。SCSI の `$DD` を使�
 | F14 | IRQ・割込みの扱い | UNKNOWN | UNKNOWN | — | 出典に記述がない。 |
 | F15 | 副作用（RAM、VDC、CD ドライブ状態） | UNKNOWN | UNKNOWN | Z1、Z2（記述なし） | Z1 は「副作用なし」と読める要約だが、バッファ以外の記述がないだけで、無いことの証拠ではない。 |
 | F16 | 失敗条件（無ディスク、範囲外等）と返却 | UNKNOWN | UNKNOWN | — | 出典になし。 |
-| F17 | 別名 `CD_SUBA`（Hu-Go 側の表記） | HYPOTHESIS | `CD_SUBA` という名称（`docs/abi-contracts.md` の記録） | X3（記録の引用） | HLE の名称。入口の証拠ではない。X3 は読んでいない。 |
+| F17 | 別名 `CD_SUBA`（Hu-Go 側の表記） | HYPOTHESIS | `CD_SUBA` という名称（`docs/abi-contracts.md` の記録） | X3（記録の引用） | HLE の名称。入口の証拠ではない。X3 は読んでいない。名称の不一致は未解決（§4）。 |
 | F18 | 第三者の名称 `CD_SUBQ`（Z1） | HYPOTHESIS | `CD_SUBQ` | Z1 | F1 と同じ名称。独立した証拠ではない。 |
 | F19 | System Card 3.0 での `$E01E` の存在と名称 | UNKNOWN | UNKNOWN | S1、Z2 | S1 は改訂番号を示さない。Z2 は改訂ごとに番地が異なると述べるが、3.0 の対応を示していない。 |
 | F20 | SCSI 層の `$DD`（READ SUBCODE-Q）と CD_SUBQ の関係 | UNKNOWN | UNKNOWN | S5 140 行 | 定数の定義のみで使用箇所がない。BIOS 関数との関係は出典から決められない。 |
