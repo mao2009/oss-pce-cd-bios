@@ -12,29 +12,29 @@
 .segment "CODE"
 ex_binbcd_packed:
     cmp #100
-    bcs @done                ; out of range: C=1, A/X/Y untouched
+    bcs binbcd_done         ; out of range: C=1, A/X/Y untouched
     phx
     ldx #0                   ; X accumulates tens digit << 4
-@tens:
+binbcd_tens:
     cmp #10
-    bcc @ones                ; A = ones digit 0..9
+    bcc binbcd_ones         ; A = ones digit 0..9
     sbc #10                  ; C=1 from CMP, so exact subtract
     sax
     clc
 ex_binbcd_tens_step:
     adc #$10                 ; one more ten in the high nibble (max $90, no carry)
     sax
-    bra @tens
-@ones:
+    bra binbcd_tens
+binbcd_ones:
     sax                      ; A = tens << 4, X = ones
-@add_ones:
+binbcd_add_ones:
     cpx #0
-    beq @packed
+    beq binbcd_packed
     inc a
     dex
-    bra @add_ones
-@packed:
+    bra binbcd_add_ones
+binbcd_packed:
     plx
     clc
-@done:
+binbcd_done:
     rts
