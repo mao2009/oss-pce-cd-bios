@@ -7,6 +7,26 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 FIELDS = {'arguments', 'returns', 'clobbered', 'preserved', 'stack', 'mpr',
           'ram', 'flags', 'irq', 'errors', 'synchronization'}
+# Contract fields whose status describes callee ABI behavior: these can only be
+# known by executing the callee, so OBSERVED status on them additionally
+# requires an executed callee (executed_callee=True). Verification is NOT_RUN
+# for every slot, so no contract claim may currently reach OBSERVED.
+#
+# Low-level hardware observations (e.g. hw_bus_reset: a $1804 register/bus
+# fact documented in docs/cd-reset-contract.md) are NOT callee behavior and
+# are not contract fields: they never require an executed callee. Hardware
+# observation alone must never promote callee ABI claims (returns/flags/irq/
+# errors/synchronization/...) to OBSERVED.
+CALLEE_BEHAVIOR_FIELDS = frozenset(FIELDS)
+# Explicit allowlist of hardware-observation field names. Any field name in
+# neither set is rejected, so an unknown name cannot bypass the executed_callee
+# check by not being listed as callee behavior.
+HARDWARE_OBSERVATION_FIELDS = frozenset({'hw_bus_reset'})
+# LIMIT: adjudicate_claim() can accept a hardware observation, but the formal
+# API contract ledger (spec/api_contracts.json, validate_contracts) only stores
+# CALLEE_BEHAVIOR_FIELDS per slot. A hardware observation therefore has no
+# storage in the ledger; validate_contracts is intentionally NOT relaxed.
+# A dedicated hardware-observation store needs its own Issue.
 # Adjudication categories for every contract claim. VERIFIED is deliberately
 # absent: it can only be earned by an executed reference-ROM callee, which no
 # slot has (verification stays NOT_RUN / executed_callee false).
@@ -172,9 +192,12 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
       UNKNOWN     - value exactly 'UNKNOWN', no sources, confidence UNKNOWN, no registers
       HYPOTHESIS  - caller/HLE source text only, non-empty sources, confidence SOURCE_SUPPORTED
       OBSERVED    - must not contain a `registers` key (even empty/None); requires at least one EMULATOR_SOURCE reference (necessary, not sufficient);
-                    callee-behavior claims additionally require executed_callee;
-                    and non-empty, format-valid evidence entries are required
-                    (execution conditions, core revision, input type, verification
+                    callee-behavior claims (CALLEE_BEHAVIOR_FIELDS) additionally
+                    require executed_callee; hardware observations
+                    (HARDWARE_OBSERVATION_FIELDS, e.g. hw_bus_reset) do not;
+                    any other field name is rejected;
+                    and non-empty, format-valid evidence entries are required for
+                    both (execution conditions, core revision, input type, verification
                     result, sha256 evidence hash). Trust level is FORMAT_ONLY: shape
                     is checked, authenticity and field correspondence are not.
       BLOCKED     - value exactly 'UNKNOWN', confidence UNKNOWN, no registers;
@@ -193,6 +216,8 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
     require(all(isinstance(kind, str) and kind in SOURCE_KINDS for kind in source_kinds.values()),
             f'{context}: invalid source kind')
     require(isinstance(field, str), f'{context}: claim field must be a string')
+    require(field in CALLEE_BEHAVIOR_FIELDS | HARDWARE_OBSERVATION_FIELDS,
+            f'{context}: unknown claim field {field!r}')
     require(executed_callee is True or executed_callee is False,
             f'{context}: executed_callee must be a bool')
     require(all(isinstance(key, str) for key in claim), f'{context}: claim keys must be strings')
@@ -234,8 +259,9 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
         require('registers' not in claim, f'{context}: OBSERVED claim must not contain registers')
         require(any(source_kinds[source] == EMULATOR_SOURCE_KIND for source in sources),
                 f'{context}: OBSERVED requires an EMULATOR_SOURCE source reference')
-        require(executed_callee,
-                f'{context}: OBSERVED callee behavior requires an executed callee (verification is NOT_RUN)')
+        if field in CALLEE_BEHAVIOR_FIELDS:
+            require(executed_callee,
+                    f'{context}: OBSERVED callee behavior requires an executed callee (verification is NOT_RUN)')
         evidence = claim.get('evidence', [])
         require(isinstance(evidence, list) and bool(evidence),
                 f'{context}: OBSERVED requires non-empty evidence entries (format-checked only)')

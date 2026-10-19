@@ -19,7 +19,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 from contracts import (  # noqa: E402
-    CLAIM_STATUSES, EVIDENCE_TRUST_LEVEL, FIELDS, adjudicate_claim, load_contracts,
+    CALLEE_BEHAVIOR_FIELDS, CLAIM_STATUSES, EVIDENCE_TRUST_LEVEL, FIELDS,
+    HARDWARE_OBSERVATION_FIELDS, adjudicate_claim, load_contracts,
 )
 
 CALLER = {'huc:include/hucc/pcengine.inc': 'CALLER_SOURCE'}
@@ -136,12 +137,38 @@ class AdjudicateClaimTests(unittest.TestCase):
                              executed_callee=True)
 
     def test_observed_callee_field_rejected_without_executed_callee(self):
+        # Callee ABI behavior (returns) may not be OBSERVED without an executed callee.
         with self.assertRaisesRegex(ValueError, 'executed callee'):
             adjudicate_claim(OBSERVED, REAL, field='returns', context='slot 1 returns')
 
     def test_observed_callee_field_accepted_when_callee_executed(self):
         adjudicate_claim(OBSERVED, REAL, field='returns', context='slot 1 returns',
                          executed_callee=True)
+
+    def test_observed_hardware_observation_accepted_without_executed_callee(self):
+        # hw_bus_reset is a low-level $1804 register/bus fact (hardware observation),
+        # not callee ABI behavior: OBSERVED with an EMULATOR_SOURCE reference plus evidence must be
+        # accepted even though no callee was executed.
+        claim = dict(OBSERVED,
+                     value='$1804 bit 1: assert -> readback $02, release -> $00, bus FREE')
+        adjudicate_claim(claim, REAL, field='hw_bus_reset',
+                         context='slot 1 hw_bus_reset', executed_callee=False)
+
+    def test_observed_hardware_observation_rejects_caller_only_source(self):
+        # A hardware observation still needs an EMULATOR_SOURCE reference; caller/HLE
+        # text alone can never be OBSERVED.
+        bad = dict(OBSERVED, sources=['huc:include/hucc/pcengine.inc'])
+        with self.assertRaisesRegex(ValueError, 'EMULATOR_SOURCE source reference'):
+            adjudicate_claim(bad, CALLER, field='hw_bus_reset',
+                             context='slot 1 hw_bus_reset', executed_callee=False)
+
+    def test_hardware_observation_does_not_promote_callee_abi(self):
+        # hw_bus_reset being OBSERVED must not relax callee-behavior claims: returns
+        # observed on hardware evidence alone (no executed callee) is still rejected.
+        claim = dict(OBSERVED, value='returns $00 in A')
+        with self.assertRaisesRegex(ValueError, 'executed callee'):
+            adjudicate_claim(claim, REAL, field='returns', context='slot 1 returns',
+                             executed_callee=False)
 
     def test_blocked_requires_unknown_value_confidence_and_no_registers(self):
         for bad in (dict(BLOCKED, value='some blocker text'),
@@ -259,6 +286,50 @@ class AdjudicateClaimTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'invalid source kind'):
             adjudicate_claim(OBSERVED, {'gear:src/cdrom.cpp': 'EMULATOR_TRACE'}, field='stack',
                              context='slot 1 stack', executed_callee=True)
+
+    # ---- Issue #207 (MAJOR-1) x #208: callee ABI vs hardware observation.
+    def test_hardware_observed_with_evidence_and_no_callee_is_conditionally_accepted(self):
+        adjudicate_claim(OBSERVED, REAL, field='hw_bus_reset', context='hw_bus_reset',
+                         executed_callee=False)
+
+    def test_hardware_observed_without_evidence_is_rejected(self):
+        for bad in (dict(OBSERVED, evidence=[]), {k: v for k, v in OBSERVED.items() if k != 'evidence'}):
+            with self.assertRaisesRegex(ValueError, 'non-empty evidence entries'):
+                adjudicate_claim(bad, REAL, field='hw_bus_reset', context='hw_bus_reset',
+                                 executed_callee=False)
+
+    def test_callee_observed_with_executed_false_is_rejected_even_with_evidence(self):
+        with self.assertRaisesRegex(ValueError, 'executed callee'):
+            adjudicate_claim(OBSERVED, REAL, field='returns', context='slot 1 returns',
+                             executed_callee=False)
+
+    def test_callee_observed_executed_true_without_evidence_is_rejected(self):
+        bad = dict(OBSERVED, evidence=[])
+        with self.assertRaisesRegex(ValueError, 'non-empty evidence entries'):
+            adjudicate_claim(bad, REAL, field='returns', context='slot 1 returns', executed_callee=True)
+
+    def test_unknown_field_name_cannot_bypass_executed_callee(self):
+        for name in ('hw_bus_reset2', 'returns ', 'Returns', 'callee_returns', ''):
+            with self.assertRaisesRegex(ValueError, 'unknown claim field', msg=repr(name)):
+                adjudicate_claim(OBSERVED, REAL, field=name, context='x', executed_callee=False)
+
+    def test_hardware_and_callee_field_sets_are_disjoint(self):
+        self.assertFalse(CALLEE_BEHAVIOR_FIELDS & HARDWARE_OBSERVATION_FIELDS)
+        self.assertEqual(CALLEE_BEHAVIOR_FIELDS, FIELDS)
+
+    def test_caller_or_hle_evidence_cannot_promote_callee_observed(self):
+        hle = {'hugo:bios.c': 'HLE_SOURCE'}
+        for kinds, src in ((CALLER, 'huc:include/hucc/pcengine.inc'), (hle, 'hugo:bios.c')):
+            bad = dict(OBSERVED, sources=[src])
+            with self.assertRaisesRegex(ValueError, 'EMULATOR_SOURCE source reference'):
+                adjudicate_claim(bad, kinds, field='returns', context='slot 1 returns',
+                                 executed_callee=True)
+
+    def test_verified_is_unreachable(self):
+        bad = dict(OBSERVED, status='VERIFIED')
+        for field in ('returns', 'hw_bus_reset'):
+            with self.assertRaisesRegex(ValueError, 'VERIFIED'):
+                adjudicate_claim(bad, REAL, field=field, context='x', executed_callee=True)
 
     def test_malformed_types_raise_valueerror_not_typeerror(self):
         cases = [(dict(OBSERVED, status=['OBSERVED']), 'stack', True),
