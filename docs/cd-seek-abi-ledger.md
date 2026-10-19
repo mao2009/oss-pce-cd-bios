@@ -101,6 +101,7 @@ HuCC（`pce-devel/huc`）の固定版を使う。
 HuCC 固定版は、空の作業ディレクトリに取得・展開して読む。展開物は実行しない。以下のパスはすべて絶対パスで指定し、カレントディレクトリに依存しない。`W` は空の作業ディレクトリの絶対パスとし、その下に `dl`、`src`、`check` を作る。
 
 ```sh
+set -e   # 途中の失敗（取得・照合・展開）で止める
 W=<空の作業ディレクトリの絶対パス>
 mkdir -p "$W/dl" "$W/src" "$W/check"
 curl -sSfL -o "$W/dl/huc.tar.gz" https://codeload.github.com/pce-devel/huc/tar.gz/54f5c73606c1e7142e8095c727cab2767e2b3cb3
@@ -131,8 +132,8 @@ EOF
 python3 -I "$W/check/check.py" "$W/check/gl_dd.txt"
 ```
 
-末尾の行は `dd $000F26 - 1` の形（定数式）で、検査スクリプトは `-` の項を評価する（末尾の定数を無視しない）。
-Windows の Git Bash で `tar` が `C:` を遠隔ホストと解釈する場合は、`tar` に `--force-local` を付けるか、パスを `/c/...` の形で指定する。
+末尾の行は `dd` に定数式（`dd $XXXXXX - 1` の形の加減算）を書いたものである。検査スクリプトは加減算を評価し、末尾の定数を無視しない（値は本台帳に書かない）。
+Windows の Git Bash で `tar` が `C:` を遠隔ホストと解釈する場合は、`tar` に `--force-local` を付けるか、パスを `/c/...` の形で指定する。`python3` が無い環境（Windows の `py` ランチャーなど）では、同じスクリプトを `python` 等の 3.x の実行ファイルで実行する。
 
 期待値: `38 True True True 34`（件数、24 ビット、映像 37 件の単調増加、末尾が映像の最後より小さい、binary と BCD のどちらでも MSF として成立しない件数）。
 
