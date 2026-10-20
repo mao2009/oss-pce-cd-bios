@@ -5,10 +5,11 @@ and is not reimplemented here. adjudicate_observation() only delegates, once, so
 second validation pass. An OBSERVED claim must declare observation_kind covering its field; the
 kind is a declaration, not a measurement (evidence is FORMAT_ONLY, see contracts.EVIDENCE_TRUST_LEVEL).
 
-This is a rejection based on the declared kind. The provenance of the evidence is NOT verified: a
-caller that declares CALLEE_EXECUTION (with executed_callee=True) passes the kind rule regardless of
-what the evidence actually measured. Preventing that needs a measurement-point identifier on the
-evidence side, which is a follow-up Issue, not part of this check.
+The declared kind is also matched against the measurement-point registry (spec/measurement_points.json,
+Issue #364): a kind must be the kind of a registry point covering the field, and the registry pin must have
+its review marker. This binds the declaration to the registry, not to a measured log: the provenance of the
+evidence is NOT verified (a caller can still declare a covered kind), and OBSERVED is refused until
+producer authentication exists (#124).
 
 Reachability: validate_contracts calls adjudicate_claim for every claim, but the shipped ledger has
 no OBSERVED claim and its verification gate forces executed_callee False, so no OBSERVED claim can

@@ -39,7 +39,7 @@ slot-1 row of [spec/api_contracts.json](../spec/api_contracts.json).
 | `errors` | HYPOTHESIS | Hu-Go host exit code 4 is not a BIOS error return (bios.c @64ed226da). BIOS no-disc/timeout/error values UNKNOWN. |
 | `synchronization` | HYPOTHESIS | Hu-Go HLE returns after media init — not callee behavior (bios.c @64ed226da). Real ready/busy completion condition UNKNOWN. |
 | `timing` | UNKNOWN | Reset pulse width, wait budget, whether the callee blocks: unmeasured. |
-| `hw_bus_reset` | OBSERVED | `$1804` bit 1: assert → readback `$02`, release → `$00`, bus FREE after pulse (PHASE_MASK `$F8` clear). Geargrafx b49ae82a, #121 diagnostic ROM (synthetic CD, cold + warm). Register fact only — NOT evidence that the CD_RESET callee pulses `$1804`. |
+| `hw_bus_reset` | BLOCKED | `$1804` bit 1 の記録値（未検証の主張）: assert → readback `$02`, release → `$00`, bus FREE after pulse (PHASE_MASK `$F8` clear). 理由: 検証可能なハードウェアバス証拠が存在しないため BLOCKED とする。Geargrafx b49ae82a, #121 診断 ROM の実行記録は保存もハッシュ固定もされておらず、実行主体も認証されていない（#124）。測定点 `HW_BUS_READBACK_1804` は hook 未実装で実測はない（`spec/measurement_points.json`）。レジスタの事実の記録のみ。CD_RESET callee が `$1804` をパルスすることの証拠ではない。 |
 
 ## Synthetic scenarios (`tools/cdreset_verify.py`)
 
@@ -71,8 +71,9 @@ Caller side vs callee: every `HYPOTHESIS` row above is a caller-side HuCC SDK cl
 `executed_callee: false`) and none of its register/flag/SP/RAM/MPR behavior is observed.
 
 Hardware measurements are kept strictly separate from callee behavior:
-- `hw_bus_reset` is OBSERVED only as a `$1804` register/bus fact measured by the #10/#121 original HuC6280
-  diagnostic on Geargrafx b49ae82a (synthetic CD). It is not evidence that CD_RESET pulses `$1804`.
+- `hw_bus_reset` は BLOCKED である（OBSERVED ではない）。理由: 検証可能なハードウェアバス証拠が存在しないため。
+  #10/#121 の診断 ROM（Geargrafx b49ae82a、合成 CD）の記録は、保存もハッシュ固定もされず、実行主体も認証されていない（#124）ので、
+  観測済みの証拠として採用しない。CD_RESET が `$1804` をパルスすることの証拠ではない。
 - #201's IRQ2 non-arrival was measured in a synthetic `$1802`+`$1804` guest, not a CD_RESET run; `irq`
   stays UNKNOWN.
 - #194: `$1804` write side effects are detectable but cannot be stopped at an instruction boundary → the
@@ -262,6 +263,6 @@ runner を作る前に実装しなければならない（未実装のままで�
 - 根拠: 上の契約表で `returns`・`flags`・`clobbered`・`preserved`・`irq`・`timing` が UNKNOWN、`entry`・`arguments`・`stack`・`mpr`・`ram`・`errors`・`synchronization` は caller 側または HLE 由来の HYPOTHESIS のみ。`VERIFIED` は 0 件。
 - 実装前提の充足状況（将来実装しうる最小範囲節の開始条件）: #1 ジャンプテーブル配線、#8 出典採否（provenance PENDING）、System Card 3.0 の戻り・無媒体・busy 動作の裁定、callee を実行できる実コア harness は、いずれも未充足。安全 preflight 側では、#173（API JSR 用 in-core RAM/I/O 強制監視、OPEN、子 PR #360・#362 は Draft、子 Issue #365〜#367（Research、OPEN）が未完）と、#179（Issue CLOSED、実行時強制は未検証。`$1804` 書込の副作用前捕捉・拒否）が未充足。
 - 理由: 未確定の callee 契約の上に独自 ABI を作ると、ゲームや実 BIOS 呼出しと矛盾するおそれがある。推測で通すことは禁止。
-- 残る候補: `$1804` bit 1 のバスリセット観測（OBSERVED、Geargrafx b49ae82a の register fact のみ）。これを独立ルーチンにする作業は、上の前提が揃った後に別 Issue で行う。
+- 残る候補: `$1804` bit 1 のバスリセット観測（BLOCKED。検証可能な証拠がなく、Geargrafx b49ae82a の記録は未認証の register fact のみ）。これを独立ルーチンにする作業は、上の前提が揃った後に別 Issue で行う。
 - 代替作業: AD_RESET（`$10` / `$E030`）の合成 fixture #293 へ切り替え（別 PR）。
 - 実行した確認: 本 PR は docs のみの変更。callee 実行、ROM ビルド、実コア実行は行っていない。

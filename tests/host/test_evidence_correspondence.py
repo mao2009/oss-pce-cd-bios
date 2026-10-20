@@ -10,6 +10,7 @@ import hashlib
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'tools'))
@@ -17,7 +18,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 from contracts import (  # noqa: E402
     CALLEE_BEHAVIOR_FIELDS, FIELDS, HARDWARE_OBSERVATION_FIELDS, load_contracts,
 )
-from contracts import adjudicate_claim  # noqa: E402
+from contracts import adjudicate_claim, load_registry  # noqa: E402
 from evidence_correspondence import OBSERVATION_KIND_FIELDS, adjudicate_observation  # noqa: E402
 
 REAL = {'gear:src/cdrom.cpp': 'EMULATOR_SOURCE'}
@@ -205,6 +206,55 @@ class FormalPathTests(unittest.TestCase):
     def test_formal_path_rejects_kind_on_non_observed_claim(self):
         with self.assertRaisesRegex(ValueError, 'only an OBSERVED claim may declare'):
             self.formal(dict(HYPOTHESIS, observation_kind='HW_BUS_READBACK'), 'arguments', kinds=CALLER)
+
+
+class RegistryRuleTests(unittest.TestCase):
+    """Issue #364 rules inside the formal path: an OBSERVED kind must equal the kind of a registry measurement
+    point covering the field, the provenance marker must be present, and the registry pin must be reviewed.
+    Every case is refused (OBSERVED is unreachable until #124); the tests pin which rule refuses it."""
+
+    def formal(self, claim, field, executed_callee=False):
+        return adjudicate_claim(claim, REAL, field=field, context=f'slot 1 {field}',
+                                executed_callee=executed_callee, resolved_evidence_hashes=RESOLVED)
+
+    def registry(self, **changes):
+        reg = copy.deepcopy(load_registry())
+        for point in reg.values():
+            if 'hw_bus_reset' in point['covers_fields']:
+                point.update(changes)
+        return reg
+
+    def test_only_hw_readback_point_covers_hw_bus_reset(self):
+        covering = {p['kind'] for p in load_registry().values() if 'hw_bus_reset' in p['covers_fields']}
+        self.assertEqual(covering, {'HW_BUS_READBACK'})
+
+    def test_matching_kind_is_refused_only_by_authentication(self):
+        with self.assertRaisesRegex(ValueError, 'not authenticated'):
+            self.formal(HW_OBSERVED, 'hw_bus_reset')
+
+    def test_kind_not_matching_registry_point_is_rejected(self):
+        with mock.patch('contracts.load_registry', return_value=self.registry(kind='CALLEE_EXECUTION')):
+            with self.assertRaisesRegex(ValueError, 'no measurement point of kind HW_BUS_READBACK covers'):
+                self.formal(HW_OBSERVED, 'hw_bus_reset')
+
+    def test_field_not_covered_by_registry_point_is_rejected(self):
+        with mock.patch('contracts.load_registry', return_value=self.registry(covers_fields=['returns'])):
+            with self.assertRaisesRegex(ValueError, "covers field 'hw_bus_reset'"):
+                self.formal(HW_OBSERVED, 'hw_bus_reset')
+
+    def test_unreviewed_registry_pin_is_rejected(self):
+        with mock.patch('contracts.check_pin_review', side_effect=ValueError('pin review marker missing')):
+            with self.assertRaisesRegex(ValueError, 'pin review marker missing'):
+                self.formal(HW_OBSERVED, 'hw_bus_reset')
+
+    def test_unverified_provenance_without_realcore_marker_is_rejected(self):
+        evidence = dict(EVIDENCE_ENTRY, execution_conditions='cd-read probe run on a local build')
+        with self.assertRaisesRegex(ValueError, 'lacks the REALCORE provenance marker'):
+            self.formal(dict(HW_OBSERVED, evidence=[evidence]), 'hw_bus_reset')
+
+    def test_callee_kind_for_hw_bus_reset_is_rejected_by_field_rule(self):
+        with self.assertRaisesRegex(ValueError, 'does not support field'):
+            self.formal(CALLEE_OBSERVED, 'hw_bus_reset', executed_callee=True)
 
 
 class LedgerRegressionTests(unittest.TestCase):

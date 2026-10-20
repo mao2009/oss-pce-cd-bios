@@ -3,10 +3,14 @@ import argparse
 import hashlib
 import json
 import re
+import sys
 import unicodedata
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+# Issue #364 measurement-point registry and pin-review rules (the OBSERVED check must match them).
+from measurement_evidence import check_pin_review, load_registry  # noqa: E402
 FIELDS = {'arguments', 'returns', 'clobbered', 'preserved', 'stack', 'mpr',
           'ram', 'flags', 'irq', 'errors', 'synchronization'}
 # Contract fields whose status describes callee ABI behavior: these can only be
@@ -446,6 +450,12 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
                 f'{context}: OBSERVED requires {OBSERVATION_KIND_KEY} in {sorted(OBSERVATION_KIND_FIELDS)}')
         require(field in OBSERVATION_KIND_FIELDS[kind],
                 f'{context}: observation kind {kind} does not support field {field!r}')
+        # Issue #364 rule (same as measurement_evidence.verify_record): the declared kind must equal the kind of a
+        # registry measurement point that covers this field, and the registry pin must have its review marker.
+        check_pin_review()
+        require(any(point['kind'] == kind and field in point['covers_fields']
+                    for point in load_registry().values()),
+                f'{context}: no measurement point of kind {kind} covers field {field!r} (spec/measurement_points.json)')
         # An executed callee can only back a callee-execution observation (declaration, not verified).
         require(not executed_callee or kind == 'CALLEE_EXECUTION',
                 f'{context}: executed_callee=True requires observation kind CALLEE_EXECUTION, not {kind}')
