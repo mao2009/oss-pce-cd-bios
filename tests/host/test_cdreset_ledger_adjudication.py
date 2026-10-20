@@ -514,6 +514,39 @@ class ProvenanceBypassTests(unittest.TestCase):
         entry = dict(REAL_ENTRY, execution_conditions='cd-read probe run on the pinned core')
         self.assertRefused(dict(REAL_OBSERVED_CALLEE, evidence=[entry]))
 
+    # Issue #359 round 2: marker normalization must fold homoglyphs, combining marks and field splits.
+    # Each case is a REAL-CORE entry (REALCORE marker present) whose SYNTHETIC marker is disguised.
+    def assertRefusedSynthetic(self, claim):
+        with self.assertRaisesRegex(ValueError, 'SYNTHETIC'):
+            adjudicate_claim(claim, REAL, field='stack', context='slot 1 stack', executed_callee=True,
+                             resolved_evidence_hashes=REAL_RESOLVED)
+
+    def test_cyrillic_homoglyph_synthetic_marker_is_refused(self):
+        # Cyrillic U+0423 (for Y), U+041D (H), U+0415 (E), U+0421 (C).
+        for text in ('REALCORE SУNTHETIC fixture', 'REALCORE SYNTНЕTIС fixture'):
+            with self.subTest(text=text):
+                entry = dict(REAL_ENTRY, execution_conditions=text)
+                self.assertRefusedSynthetic(dict(REAL_OBSERVED_CALLEE, evidence=[entry]))
+
+    def test_greek_homoglyph_synthetic_marker_is_refused(self):
+        # Greek U+03A5 (Y), U+039D (N), U+03A4 (T), U+0397 (H), U+0395 (E), U+0399 (I).
+        for text in ('REALCORE SΥNΤHΕTΙC fixture', 'REALCORE SΥΝTHETIC fixture'):
+            with self.subTest(text=text):
+                entry = dict(REAL_ENTRY, execution_conditions=text)
+                self.assertRefusedSynthetic(dict(REAL_OBSERVED_CALLEE, evidence=[entry]))
+
+    def test_combining_mark_synthetic_marker_is_refused(self):
+        # Combining acute U+0301 inserted inside the marker.
+        for text in ('REALCORE SÝNTHETIC fixture', 'REALCORE SYNTHETÍC fixture'):
+            with self.subTest(text=text):
+                entry = dict(REAL_ENTRY, execution_conditions=text)
+                self.assertRefusedSynthetic(dict(REAL_OBSERVED_CALLEE, evidence=[entry]))
+
+    def test_marker_split_across_two_fields_is_refused(self):
+        # 'SYN' in execution_conditions and 'THETIC' in input_type: each field alone is clean.
+        entry = dict(REAL_ENTRY, execution_conditions='REALCORE SYN', input_type='THETIC')
+        self.assertRefusedSynthetic(dict(REAL_OBSERVED_CALLEE, evidence=[entry]))
+
     def test_fully_resolved_real_core_entry_still_yields_observed(self):
         self.assertIsNone(adjudicate_claim(REAL_OBSERVED_CALLEE, REAL, field='stack',
                                            context='slot 1 stack', executed_callee=True,

@@ -56,10 +56,32 @@ SYNTHETIC_MARKER = 'SYNTHETIC'
 REAL_CORE_MARKER = 'REALCORE'
 
 
+# Explicit confusables for the Latin letters used in the markers (S Y N T H E I C R A L O), taken from the
+# Cyrillic and Greek look-alikes that UTS #39 maps to them. Not exhaustive: other scripts are a remaining gap.
+_CONFUSABLES_TO_LATIN = str.maketrans({
+    # Cyrillic look-alikes of the marker letters (S Y N T H E I C A O)
+    'Ѕ': 'S', 'ѕ': 'S', 'У': 'Y', 'у': 'Y', 'Ү': 'Y', 'Н': 'H', 'Т': 'T', 'Е': 'E', 'е': 'E',
+    'І': 'I', 'і': 'I', 'С': 'C', 'с': 'C', 'А': 'A', 'а': 'A', 'О': 'O', 'о': 'O',
+    # Greek look-alikes of the marker letters (A E H I N O T Y)
+    'Α': 'A', 'α': 'A', 'Ε': 'E', 'ε': 'E', 'Η': 'H', 'Ι': 'I', 'ι': 'I', 'Ν': 'N',
+    'Ο': 'O', 'ο': 'O', 'Τ': 'T', 'Υ': 'Y',
+})
+
+
 def _marker_text(text):
-    # Marker comparison form: NFKC, case-folded, all whitespace/punctuation/underscore removed, so
-    # 'S Y N T H E T I C', 'syn-thetic' and 'Synthetic' all match the marker.
-    return re.sub(r'[\W_]', '', unicodedata.normalize('NFKC', text)).casefold()
+    # Marker comparison form: NFKD with combining marks (Mn/Me) removed, NFKC, confusables folded to Latin,
+    # case-folded, all whitespace/punctuation/underscore removed, so 'S Y N T H E T I C', 'syn-thetic',
+    # 'Synthetic', 'SÝNTHETIC' and Cyrillic/Greek look-alikes all match the marker.
+    decomposed = unicodedata.normalize('NFKD', text)
+    base = ''.join(ch for ch in decomposed if unicodedata.category(ch) not in ('Mn', 'Me'))
+    folded = unicodedata.normalize('NFKC', base).translate(_CONFUSABLES_TO_LATIN)
+    return re.sub(r'[\W_]', '', folded).casefold()
+
+
+def _has_marker(marker, texts):
+    # Field-splitting guard: the marker is searched in all texts concatenated, so a marker split across
+    # fields such as 'SYN' + 'THETIC' is still found.
+    return _marker_text(marker) in _marker_text(''.join(texts))
 
 
 # Source-kind semantics (Issue #209 / MEDIUM-1). A source kind classifies the
@@ -255,7 +277,7 @@ def resolve_evidence(entry, artifact_dir=EVIDENCE_ARTIFACT_DIR, pinned_revision=
 
 def is_synthetic_evidence(entry):
     """True when any text field of an evidence entry carries the SYNTHETIC marker (fixtures, placeholders)."""
-    return any(_marker_text(SYNTHETIC_MARKER) in _marker_text(entry[field]) for field in EVIDENCE_FIELDS)
+    return _has_marker(SYNTHETIC_MARKER, [entry[field] for field in EVIDENCE_FIELDS])
 
 
 def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=False,
@@ -373,7 +395,7 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
         # adjudicator sees is marker-checked, after normalization, so the marker cannot hide in value/sources/etc.
         texts = [value, confidence, kind, *sources]
         texts += [entry[name] for entry in evidence for name in EVIDENCE_FIELDS]
-        require(not any(_marker_text(SYNTHETIC_MARKER) in _marker_text(text) for text in texts),
+        require(not _has_marker(SYNTHETIC_MARKER, texts),
                 f'{context}: OBSERVED refuses SYNTHETIC content (not real-core provenance)')
         require(bool(resolved_evidence_hashes),
                 f'{context}: OBSERVED requires real-core evidence, but the resolved evidence set is empty')
