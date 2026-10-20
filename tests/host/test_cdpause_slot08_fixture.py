@@ -9,6 +9,7 @@ release_eligible=false, and must not be wired into any callable entry.
 """
 import hashlib
 import json
+import re
 import subprocess
 import unittest
 from pathlib import Path
@@ -39,6 +40,11 @@ def canonical_sha256(data):
                           .encode("utf-8")).hexdigest()
 
 
+def _strict_uint(arg):
+    """Digits only (ASCII, 1-4 chars). Rejects sign, whitespace, exponent, empty and non-ASCII digits."""
+    return int(arg) if re.fullmatch(r"[0-9]{1,4}", arg) else None
+
+
 def _audio_track(medium, lba):
     for t in medium["tracks"]:
         if t["type"] == "audio" and t["start"] <= lba <= t["end"]:
@@ -58,22 +64,25 @@ def judge(ops, medium, mutant=None):
         if name == "play":
             if state != "STOPPED":
                 return UNKNOWN, state, pos, op          # replay while playing is not modelled
-            try:
-                lba = int(arg)
-            except ValueError:
-                return NEGATIVE, state, pos, op         # malformed LBA
+            lba = _strict_uint(arg)
+            if lba is None:
+                return NEGATIVE, state, pos, op         # malformed LBA (empty, signed, non-numeric, too long)
             if _audio_track(medium, lba) is None:
                 return NEGATIVE, state, pos, op         # data track, lead-out, or out of range
             state, pos = "PLAYING", lba
         elif name == "tick":
             if state != "PLAYING":
                 return NEGATIVE, state, pos, op         # no playback to advance
+            n = _strict_uint(arg)
+            if n is None or n > medium["leadout_lba"]:
+                return NEGATIVE, state, pos, op         # malformed or abnormally large step
             track = _audio_track(medium, pos)
-            n = int(arg)
             if pos + n > track["end"]:
                 return UNKNOWN, state, pos, op          # end-of-track behaviour unmodelled
             pos += n
         elif name == "pause":
+            if arg:
+                return UNKNOWN, state, pos, op          # pause with an argument is an unmodelled form
             if state == "STOPPED":
                 if mutant != "accept_stopped_pause":
                     return NEGATIVE, state, pos, op     # pause needs playback
@@ -169,6 +178,51 @@ class CdPauseMutantsAreCaught(unittest.TestCase):
 
     def test_double_pause_is_never_positive(self):
         self.assertEqual(run_all(load())["unk_double_pause"][0], UNKNOWN)
+
+
+class CdPauseArgumentValidation(unittest.TestCase):
+    """Malformed arguments are rejected as NEGATIVE without raising; unsupported forms stay UNKNOWN."""
+
+    def setUp(self):
+        self.medium = load()["medium"]
+
+    def test_negative_tick_is_rejected(self):
+        self.assertEqual(judge(["play:150", "tick:-5"], self.medium)[0], NEGATIVE)
+
+    def test_non_integer_tick_is_rejected_without_exception(self):
+        self.assertEqual(judge(["play:150", "tick:abc"], self.medium)[0], NEGATIVE)
+
+    def test_empty_tick_and_play_arguments_are_rejected(self):
+        self.assertEqual(judge(["play:150", "tick:"], self.medium)[0], NEGATIVE)
+        self.assertEqual(judge(["play:"], self.medium)[0], NEGATIVE)
+
+    def test_abnormally_large_tick_is_rejected(self):
+        self.assertEqual(judge(["play:150", "tick:999999"], self.medium)[0], NEGATIVE)
+        self.assertEqual(judge(["play:150", "tick:201"], self.medium)[0], NEGATIVE)
+
+    def test_signed_or_padded_numbers_are_rejected(self):
+        for op in ("tick:+5", "tick: 5", "tick:5 ", "tick:1e3", "play:+150", "play: 150"):
+            with self.subTest(op=op):
+                ops = ["play:150", op] if op.startswith("tick") else [op]
+                self.assertEqual(judge(ops, self.medium)[0], NEGATIVE)
+
+    def test_malformed_inputs_never_raise(self):
+        samples = ["tick:-5", "tick:abc", "tick:", "tick:999999999999", "tick:٢", "play:-5",
+                   "play:abc", "play:", "pause:5", "seek:1", "", ":", "tick"]
+        for op in samples:
+            with self.subTest(op=op):
+                outcome = judge(["play:150", op], self.medium)[0]
+                self.assertIn(outcome, OUTCOMES)
+
+    def test_track_end_overrun_stays_unknown(self):
+        self.assertEqual(judge(["play:195", "tick:10", "pause"], self.medium)[0], UNKNOWN)
+
+    def test_double_pause_stays_unknown(self):
+        self.assertEqual(judge(["play:150", "pause", "pause"], self.medium)[0], UNKNOWN)
+
+    def test_unsupported_operation_stays_unknown(self):
+        self.assertEqual(judge(["play:150", "seek:160", "pause"], self.medium)[0], UNKNOWN)
+        self.assertEqual(judge(["play:150", "pause:5"], self.medium)[0], UNKNOWN)
 
 
 class CdPauseNotWired(unittest.TestCase):
