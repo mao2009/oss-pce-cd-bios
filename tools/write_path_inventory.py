@@ -17,7 +17,8 @@ Consequently:
   It is a claim about source text, not a measurement.
 - A marker alone is not enough. The evidence file must also carry a record bound to the row (row-id,
   write-path-category, exact write-path, detection-point, prevention, and a non-placeholder evidence-summary).
-  The record is still self-declared, so it does not prove that a run happened.
+  The record is still self-declared, and a copy of public inventory data passes it. So every prevention claim is
+  refused at the end of validation until an authenticated run producer exists (#124, AUTHENTICATED_RUN_PRODUCER).
 - PREVENTED_MEASURED asserts a real-core measurement. It is unreachable here and fails closed.
 - REAL_CORE_SYNTHETIC evidence never backs a prevention claim.
 - Passing this check never changes a gate. Every row stays BLOCKED.
@@ -62,6 +63,9 @@ PLACEHOLDER_RUN = re.compile(r"^RUN-([0-9A-F])\1{11}$")
 # Evidence record: the marker's file must also carry these `key: value` lines, each bound to the row it backs.
 # Values are compared exactly with the row (id, category, path, detection point, prevention). The summary is free text
 # that must be substantive and must not be a template word. Self-declared like the marker, so it is still not proof of a run.
+# No authenticated run producer exists (#124). Until one does, no prevention claim may pass, whatever the file holds.
+# Flip only together with a real, authenticated producer; this is the single upgrade point.
+AUTHENTICATED_RUN_PRODUCER = False
 RECORD_BINDINGS = ("row-id", "write-path-category", "write-path", "detection-point", "prevention")
 RECORD_SUMMARY = "evidence-summary"
 RECORD_SUMMARY_MIN = 20
@@ -217,6 +221,10 @@ def validate(inventory, pinned_revision, root=ROOT):
                 if RUN_MARKER.search(texts[item]):
                     problem = _record_problem(row, texts[item])
                     require(problem is None, f"{row_id}: evidence record rejected in {item}: {problem}")
+            # Final gate, after the format checks above. A record copied from public data (this inventory) passes
+            # them, so no evidence file can establish a prevention claim until an authenticated run producer exists.
+            require(AUTHENTICATED_RUN_PRODUCER,
+                    f"{row_id}: {row['monitor_status']} requires an authenticated run producer (#124); none exists")
 
         counts[row["monitor_status"]] = counts.get(row["monitor_status"], 0) + 1
         text += " " + row["path"]
