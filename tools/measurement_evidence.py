@@ -4,7 +4,8 @@ Scope: registry + verifier only. No real core is run here and no real-core evide
 A record is accepted only if the recomputed SHA-256 of the raw log bytes equals log_sha256, the
 log names the same measurement point id, the claim field is covered by that point, and any
 declared observation kind equals the registry kind. Self-declared kinds are never trusted alone.
-Only REAL_CORE provenance can yield OBSERVED; SYNTHETIC provenance yields UNKNOWN at best.
+Every passing record yields UNKNOWN: OBSERVED is unreachable by design until producer authentication (#124).
+binary_sha256 and provenance are caller-supplied and are not authenticated here.
 """
 import hashlib
 import json
@@ -43,7 +44,8 @@ def verify_record(record, log_path, *, field, binary_sha256, declared_kind=None,
                   registry=None, pinned_revision=PINNED_CORE_REVISION):
     """Return the claim status for one record, or raise ValueError (fail closed).
 
-    Returns 'OBSERVED' only for REAL_CORE provenance; SYNTHETIC records that bind correctly return 'UNKNOWN'.
+    Always returns 'UNKNOWN' when every check passes. OBSERVED is unreachable until producer
+    authentication exists (#124); a caller-supplied provenance value cannot promote a record.
     """
     def require(ok, message):
         if not ok:
@@ -71,4 +73,6 @@ def verify_record(record, log_path, *, field, binary_sha256, declared_kind=None,
             'log measurement point marker differs from record')
     if point['kind'] == 'CALLEE_EXECUTION':
         require(EXECUTED.search(data) is not None, 'log has no EXECUTED_CALLEE 1 record')
-    return 'OBSERVED' if record['provenance'] == 'REAL_CORE' else 'UNKNOWN'
+    # Fail closed: OBSERVED is unreachable by design until a real producer authenticates the run (#124).
+    # The caller-supplied provenance field is not evidence of a real core run, so it never yields OBSERVED.
+    return 'UNKNOWN'

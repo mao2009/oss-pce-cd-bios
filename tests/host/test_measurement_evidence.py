@@ -13,6 +13,8 @@ from tools.measurement_evidence import (PINNED_CORE_REVISION, REGISTRY_PATH, loa
 
 BINARY = 'b' * 64
 HW_LOG = b'MEASUREMENT_POINT HW_BUS_READBACK_1804\nSYNTHETIC_READBACK 00\n'
+# SHA-256 of HW_LOG bytes, computed outside the test (printf ... | sha256sum). Not derived in-test.
+HW_LOG_SHA256 = 'afac3b478530bcc1eb73241b12004944a0b6a4fc3b95053c4092e6034282abbd'
 CALLEE_LOG = b'MEASUREMENT_POINT CALLEE_EXECUTION_SLOT\nEXECUTED_CALLEE 1\n'
 
 
@@ -39,7 +41,16 @@ class MeasurementEvidenceTest(unittest.TestCase):
 
     def test_positive_recomputed_hash_matches_and_synthetic_stays_unknown(self):
         record, path = self._record(HW_LOG, 'HW_BUS_READBACK_1804')
-        self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), record['log_sha256'])
+        self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), HW_LOG_SHA256)
+        self.assertEqual(record['log_sha256'], HW_LOG_SHA256)
+        self.assertEqual(self._verify(record, path, declared_kind='HW_BUS_READBACK'), 'UNKNOWN')
+
+    def test_real_core_labelled_record_is_unknown_not_observed(self):
+        # NOT OBSERVED, by design: producer authentication is not implemented (#124), so a caller-supplied
+        # provenance='REAL_CORE' label must not promote a record. This fails on 3ab083c (returns OBSERVED).
+        record, path = self._record(CALLEE_LOG, 'CALLEE_EXECUTION_SLOT', provenance='REAL_CORE')
+        self.assertEqual(self._verify(record, path, field='stack', declared_kind='CALLEE_EXECUTION'), 'UNKNOWN')
+        record, path = self._record(HW_LOG, 'HW_BUS_READBACK_1804', provenance='REAL_CORE')
         self.assertEqual(self._verify(record, path, declared_kind='HW_BUS_READBACK'), 'UNKNOWN')
 
     def test_tampered_log_is_rejected(self):
