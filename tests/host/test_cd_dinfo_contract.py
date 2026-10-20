@@ -30,7 +30,7 @@ EXPECTED = {
     'F05': ('caller', 'SOURCE_FACT', '`2`'),
     'F06': ('caller', 'SOURCE_FACT', '`$20F8`（_al）、`$20F9`（_ah）'),
     'F07': ('callee', 'HYPOTHESIS', '下位 2 ビットのみ使用'),
-    'F08': ('caller', 'SOURCE_FACT', '種別 0 の結果 `tnomin` を渡す'),
+    'F08': ('caller', 'SOURCE_FACT', '最初の呼出しは `tnomin`、以降は十進加算で増やした値'),
     'F09': ('callee', 'HYPOTHESIS', 'BCD'),
     'F10': ('callee', 'UNKNOWN', 'UNKNOWN'),
     'F11': ('caller', 'UNKNOWN', 'UNKNOWN'),
@@ -187,6 +187,28 @@ class CdDinfoLedgerTest(unittest.TestCase):
         self.assertTrue(unknown)
         for r in unknown:
             self.assertEqual(r['value'], 'UNKNOWN', r['id'])
+
+    def test_f08_covers_first_call_and_increment(self):
+        # The caller passes tnomin on the first call and then the decimal-add result (S2 1883-1891), not only tnomin.
+        row = {r['id']: r for r in self.rows}['F08']
+        self.assertIn('最初の呼出し', row['value'])
+        self.assertIn('以降', row['value'])
+        self.assertIn('1883–1891', row['source'])
+
+    def test_f09_cites_author_comment_and_increment(self):
+        row = {r['id']: r for r in self.rows}['F09']
+        self.assertIn('S2 1842', row['source'])
+        self.assertIn('1888–1889', row['source'])
+
+    def test_f15_cites_only_type2_spec(self):
+        # S3 1574-1577 is the type 1 (end-of-disc) spec, so it must not ground the type 2 row.
+        row = {r['id']: r for r in self.rows}['F15']
+        self.assertIn('S2 2005–2011', row['source'])
+        self.assertNotIn('1574', row['source'])
+
+    def test_s1_range_covers_ax_to_dh(self):
+        self.assertIn('329–343（`_ax`〜`_dh`）', self.text)
+        self.assertNotIn('330–343（`_al`〜`_dh`）', self.text)
 
 
 class LedgerMutationTest(unittest.TestCase):
