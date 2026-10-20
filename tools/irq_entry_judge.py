@@ -41,6 +41,8 @@ def judge_entry(row, vector, expected_handler, build="debugger"):
         return BLOCKED, f"no valid observation (exit={row.get('exit')}, status={row.get('status')})"
     if row.get("vector") != vector:
         return BLOCKED, f"observation is for {row.get('vector')!r}, expected {vector!r}"
+    if _int(row, "vector_addr") != VECTORS[vector]:
+        return BLOCKED, "vector address not observed or does not match expected vector"
     stop_pc, executed = _int(row, "stop_pc"), _int(row, "handler_instructions")
     vec_lo, vec_hi = _int(row, "vector_lo"), _int(row, "vector_hi")
     if None in (stop_pc, executed, vec_lo, vec_hi):
@@ -55,7 +57,10 @@ def judge_entry(row, vector, expected_handler, build="debugger"):
         return FAIL, f"{vector} stopped at {stop_pc:#06x}, expected handler entry {expected_handler:#06x}"
     if executed != 0:
         return FAIL, f"{vector}: {executed} handler instruction(s) executed before the stop"
-    if row.get("handler_writes") not in ([], None):
+    handler_writes = row.get("handler_writes")
+    if type(handler_writes) is not list:
+        return BLOCKED, "handler writes not observed"
+    if handler_writes:
         return FAIL, f"{vector}: handler body wrote memory before the stop"
     writes = row.get("stack_writes")
     if type(writes) is not list or not all(type(a) is int for a in writes):
@@ -78,6 +83,8 @@ def mutation_self_check(base_row, expected_handler, vector):
         ("vector_lo wrong", {"vector_lo": (expected_handler + 1) & 0xFF}),
         ("stack_write outside page 1", {"stack_writes": [0x1FFF, 0x21FF, 0x21FE]}),
         ("handler wrote memory", {"handler_writes": [0x2010]}),
+        ("handler writes missing", {"handler_writes": None}),
+        ("vector address mismatch", {"vector_addr": 0x0000}),
         ("stack writes=4", {"stack_writes": [0x21FF, 0x21FE, 0x21FD, 0x21FC]}),
         ("build=libretro", {"__build": "libretro"}),
         ("status=rejected", {"status": "rejected"}),
