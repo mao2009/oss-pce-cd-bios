@@ -6,13 +6,16 @@ stay fail-closed: every row BLOCKED, evidence present, and ST/IRQ/MPR/MMIO/RAM p
 observation must never be read as real-core evidence unless its provenance says so, and a fixture
 can never claim it.
 """
+import contextlib
 import copy
+import io
 import json
 import shutil
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -31,6 +34,17 @@ def fresh():
 
 def row(inventory, row_id):
     return next(r for r in inventory["rows"] if r["id"] == row_id)
+
+
+def record_text(r, kind="STATIC_SOURCE_REFERENCE", run="RUN-0123456789AB"):
+    """A complete evidence record bound to row r: marker plus the row's own id, category, path and claim."""
+    return (f"measurement-run-id: {run} {kind}\n"
+            f"row-id: {r['id']}\n"
+            f"write-path-category: {r['category']}\n"
+            f"write-path: {r['path']}\n"
+            f"detection-point: {r['detection_point']}\n"
+            f"prevention: {r['prevents_before_side_effect']}\n"
+            "evidence-summary: static source reference reviewed for this write path\n")
 
 
 def real_observation():
@@ -63,12 +77,12 @@ class WritePathInventoryTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, True)
 
     def claimed(self, inventory, row_id, kind="STATIC_SOURCE_REFERENCE", marker=True):
-        """Give row_id a static prevention claim whose evidence file (in the temp root) carries a run marker."""
-        text = f"measurement-run-id: RUN-0123456789AB {kind}\n" if marker else "no run recorded here\n"
+        """Give row_id a static prevention claim whose evidence file (in the temp root) carries a complete record."""
+        r = row(inventory, row_id)
+        r.update(monitor_status="PREVENTED_STATIC", prevents_before_side_effect="YES",
+                 detection_point="BEFORE_RUN", measurement="STATIC_SOURCE_REFERENCE", evidence=["run.txt"])
+        text = record_text(r, kind) if marker else "no run recorded here\n"
         (self.tmp / "run.txt").write_text(text, encoding="utf-8")
-        row(inventory, row_id).update(monitor_status="PREVENTED_STATIC", prevents_before_side_effect="YES",
-                                      detection_point="BEFORE_RUN", measurement="STATIC_SOURCE_REFERENCE",
-                                      evidence=["run.txt"])
         return inventory
 
     def validate_in_tmp(self, inventory):
@@ -388,6 +402,83 @@ class WritePathInventoryTest(unittest.TestCase):
         row(inv, "W03")["measurement"] = "REAL_CORE_SYNTHETIC"
         with self.assertRaisesRegex(ValueError, "W03: prevention claimed without measurement"):
             self.validate_in_tmp(inv)
+
+    # Review counterexample: a marker alone (or a marker with nothing else) is form, not evidence.
+    def test_marker_only_evidence_file_is_rejected(self):
+        inv = self.claimed(fresh(), "W03")
+        (self.tmp / "run.txt").write_text("measurement-run-id: RUN-0123456789AB STATIC_SOURCE_REFERENCE\n",
+                                          encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "W03: evidence record rejected in run.txt: missing field row-id"):
+            self.validate_in_tmp(inv)
+
+    def test_marker_with_only_blank_lines_is_rejected(self):
+        inv = self.claimed(fresh(), "W03")
+        (self.tmp / "run.txt").write_text("\n\nmeasurement-run-id: RUN-0123456789AB STATIC_SOURCE_REFERENCE\n\n",
+                                          encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "W03: evidence record rejected in run.txt: missing field row-id"):
+            self.validate_in_tmp(inv)
+
+    def test_record_bound_to_another_row_is_rejected(self):
+        inv = self.claimed(fresh(), "W03")
+        other = record_text(row(inv, "W04"))
+        (self.tmp / "run.txt").write_text(other, encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "W03: evidence record rejected in run.txt: field row-id does not match"):
+            self.validate_in_tmp(inv)
+
+    def test_record_with_wrong_write_path_is_rejected(self):
+        inv = self.claimed(fresh(), "W03")
+        text = record_text(row(inv, "W03")).replace("Dynamic MPR change", "Hardware page write")
+        (self.tmp / "run.txt").write_text(text, encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "field write-path does not match"):
+            self.validate_in_tmp(inv)
+
+    def test_record_missing_any_binding_field_is_rejected(self):
+        for key in ("write-path-category", "write-path", "detection-point", "prevention", "evidence-summary"):
+            with self.subTest(missing=key):
+                inv = self.claimed(fresh(), "W03")
+                text = "".join(l for l in record_text(row(inv, "W03")).splitlines(True) if not l.startswith(key + ":"))
+                (self.tmp / "run.txt").write_text(text, encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, f"evidence record rejected in run.txt: missing field {key}"):
+                    self.validate_in_tmp(inv)
+
+    def test_record_with_placeholder_summary_is_rejected(self):
+        for summary in ("evidence-summary: TBD", "evidence-summary: placeholder text here for later",
+                        "evidence-summary: short"):
+            with self.subTest(summary=summary):
+                inv = self.claimed(fresh(), "W03")
+                text = record_text(row(inv, "W03")).replace(
+                    "evidence-summary: static source reference reviewed for this write path", summary)
+                (self.tmp / "run.txt").write_text(text, encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "evidence-summary is empty or a placeholder"):
+                    self.validate_in_tmp(inv)
+
+    def test_record_with_duplicated_field_is_rejected(self):
+        inv = self.claimed(fresh(), "W03")
+        text = record_text(row(inv, "W03")) + "row-id: W04\n"
+        (self.tmp / "run.txt").write_text(text, encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "duplicate field row-id"):
+            self.validate_in_tmp(inv)
+
+    # Contradiction guard: prevention and monitor status must agree.
+    def test_prevention_claim_on_detected_row_is_rejected_even_with_complete_record(self):
+        inv = fresh()
+        r = row(inv, "W03")
+        r.update(monitor_status="DETECTED_AT_INSTRUCTION_BOUNDARY", prevents_before_side_effect="YES",
+                 detection_point="INSTRUCTION_BOUNDARY", measurement="STATIC_SOURCE_REFERENCE", evidence=["run.txt"])
+        (self.tmp / "run.txt").write_text(record_text(r), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "W03: prevention claim requires a PREVENTED_"):
+            self.validate_in_tmp(inv)
+
+    # main() must report an unhashable inventory value as FAIL, not as a traceback.
+    def test_unhashable_inventory_value_reports_fail_not_traceback(self):
+        bad = fresh()
+        bad["categories"] = [["X"]]
+        out = io.StringIO()
+        with mock.patch.object(W, "load", side_effect=lambda: W.validate(bad, PINNED)), \
+                contextlib.redirect_stdout(out):
+            code = W.main([])
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL: write-path inventory invalid", out.getvalue())
 
     def test_prevention_claim_with_evidence_without_run_marker_is_rejected(self):
         inv = self.claimed(fresh(), "W03", marker=False)
