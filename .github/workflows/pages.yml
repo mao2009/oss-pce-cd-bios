@@ -22,10 +22,14 @@ concurrency:
   group: pages-${{ github.ref }}
   cancel-in-progress: false
 
+# Privilege split: validate and build hold contents: read only. Only deploy holds pages: write and id-token: write,
+# and it runs no checkout, no run: and no env:; it deploys the artifact that build uploaded in this same run.
 jobs:
   validate:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -34,19 +38,15 @@ jobs:
       - name: Validate pages
         run: python3 tools/check_pages.py
 
-  deploy:
+  build:
+    # A guard job: it runs no build code. It stages site/ and verifies the staged files before the Pages upload, using the
+    # trusted main copy of the guard. The guard layout requires the stage and verify steps immediately before the upload
+    # in the same job, so they live here rather than in validate.
     needs: validate
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
-      actions: read
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -69,16 +69,29 @@ jobs:
           "${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --check-placement
       - name: Configure Pages
         uses: actions/configure-pages@v5
-      - name: Stage artifacts (trusted guard) for Upload static site
+      - name: Stage Pages artifact (trusted guard)
         run: |
-          "${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --stage .github/workflows/pages.yml "Upload static site"
-      - name: Verify staged artifacts (trusted guard) for Upload static site
+          "${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --stage .github/workflows/pages.yml "Upload Pages artifact"
+      - name: Verify Pages artifact (trusted guard)
         run: |
-          "${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --verify .github/workflows/pages.yml "Upload static site"
-      - name: Upload static site
+          "${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --verify .github/workflows/pages.yml "Upload Pages artifact"
+      - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
         with:
           path: .artifact-stage/site
+
+  deploy:
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - name: Deploy from main
         id: deployment
         uses: actions/deploy-pages@v4
