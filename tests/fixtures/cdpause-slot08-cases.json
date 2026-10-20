@@ -1,0 +1,41 @@
+{
+  "schema": "oss-pce-cd-bios/cdpause-slot08-fixture/v1",
+  "issue": 255,
+  "slot": "$08",
+  "entry_candidate": "$E018",
+  "candidate_name": "CD_PAUSE",
+  "abi_status": "BLOCKED_ABI",
+  "release_eligible": false,
+  "execution": "NOT_RUN",
+  "provenance": "synthetic: author-defined medium and cases only; no System Card BIOS byte, disassembly, retail data, or ./rom/ content; no reference callee is executed",
+  "callee_abi": {
+    "arguments": "UNKNOWN",
+    "returns": "UNKNOWN",
+    "registers": "UNKNOWN",
+    "reference_jsr": "NOT_CALLED"
+  },
+  "medium": {
+    "synthetic": true,
+    "leadout_lba": 200,
+    "tracks": [
+      {"no": 1, "type": "data", "start": 0, "end": 99},
+      {"no": 2, "type": "audio", "start": 100, "end": 199}
+    ]
+  },
+  "ops": ["play:<lba>", "tick:<sectors>", "pause"],
+  "outcomes": ["POSITIVE", "NEGATIVE", "UNKNOWN"],
+  "cases": [
+    {"id": "pos_pause_playing_keeps_pos", "ops": ["play:150", "tick:10", "pause"], "expected": "POSITIVE", "state": "PAUSED", "pos": 160, "reason": "pause during playback keeps the position"},
+    {"id": "pos_pause_at_audio_start", "ops": ["play:100", "pause"], "expected": "POSITIVE", "state": "PAUSED", "pos": 100, "reason": "pause on the first audio LBA keeps it"},
+    {"id": "pos_pause_at_audio_last", "ops": ["play:199", "pause"], "expected": "POSITIVE", "state": "PAUSED", "pos": 199, "reason": "pause on the last audio LBA keeps it"},
+    {"id": "pos_pause_one_before_end", "ops": ["play:198", "tick:1", "pause"], "expected": "POSITIVE", "state": "PAUSED", "pos": 199, "reason": "boundary: pause one sector before track end"},
+    {"id": "neg_pause_when_stopped", "ops": ["pause"], "expected": "NEGATIVE", "reason": "pause with no playback is refused in the model"},
+    {"id": "neg_tick_when_stopped", "ops": ["tick:5"], "expected": "NEGATIVE", "reason": "position advance without playback is refused"},
+    {"id": "neg_play_data_track", "ops": ["play:50", "pause"], "expected": "NEGATIVE", "reason": "play start on a data track is refused"},
+    {"id": "neg_play_leadout", "ops": ["play:200"], "expected": "NEGATIVE", "reason": "play start on the lead-out LBA is refused"},
+    {"id": "neg_play_malformed_lba", "ops": ["play:abc"], "expected": "NEGATIVE", "reason": "non-numeric LBA is malformed input"},
+    {"id": "unk_double_pause", "ops": ["play:150", "pause", "pause"], "expected": "UNKNOWN", "reason": "second pause while paused is not measured or specified; must not be a positive"},
+    {"id": "unk_pause_after_track_end", "ops": ["play:195", "tick:10", "pause"], "expected": "UNKNOWN", "reason": "end-of-track behaviour before pause is unmodelled"},
+    {"id": "unk_unsupported_op", "ops": ["play:150", "seek:160", "pause"], "expected": "UNKNOWN", "reason": "operation outside the model"}
+  ]
+}
