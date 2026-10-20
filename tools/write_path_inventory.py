@@ -15,6 +15,9 @@ Nothing here authenticates a producer or a run (producer authentication is #124,
 Consequently:
 - A static source reference (measurement STATIC_SOURCE_REFERENCE) may back PREVENTED_STATIC only.
   It is a claim about source text, not a measurement.
+- A marker alone is not enough. The evidence file must also carry a record bound to the row (row-id,
+  write-path-category, exact write-path, detection-point, prevention, and a non-placeholder evidence-summary).
+  The record is still self-declared, so it does not prove that a run happened.
 - PREVENTED_MEASURED asserts a real-core measurement. It is unreachable here and fails closed.
 - REAL_CORE_SYNTHETIC evidence never backs a prevention claim.
 - Passing this check never changes a gate. Every row stays BLOCKED.
@@ -56,6 +59,36 @@ PREVENTION_MEASUREMENTS = ("STATIC_SOURCE_REFERENCE",)
 RUN_MARKER = re.compile(r"^measurement-run-id: (RUN-[0-9A-F]{12}) ([A-Z_]+)$", re.M)
 # Template or filler ids (RUN-000000000000, RUN-FFFFFFFFFFFF) match the format but name no run. Always refused.
 PLACEHOLDER_RUN = re.compile(r"^RUN-([0-9A-F])\1{11}$")
+# Evidence record: the marker's file must also carry these `key: value` lines, each bound to the row it backs.
+# Values are compared exactly with the row (id, category, path, detection point, prevention). The summary is free text
+# that must be substantive and must not be a template word. Self-declared like the marker, so it is still not proof of a run.
+RECORD_BINDINGS = ("row-id", "write-path-category", "write-path", "detection-point", "prevention")
+RECORD_SUMMARY = "evidence-summary"
+RECORD_SUMMARY_MIN = 20
+FIELD_LINE = re.compile(r"^([a-z][a-z-]*): (.+)$", re.M)
+PLACEHOLDER_TEXT = re.compile(r"(?i)\b(TBD|TODO|FIXME|XXX|PLACEHOLDER|LOREM|DUMMY|N/A)\b")
+
+
+def _record_problem(row, text):
+    """Return why the record in text does not back row's claim, or None when it does."""
+    fields = {}
+    for key, value in FIELD_LINE.findall(text):
+        if key in fields:
+            return f"duplicate field {key}"
+        fields[key] = value.strip()
+    expected = {"row-id": row["id"], "write-path-category": row["category"], "write-path": row["path"],
+                "detection-point": row["detection_point"], "prevention": row["prevents_before_side_effect"]}
+    for key in RECORD_BINDINGS:
+        if key not in fields:
+            return f"missing field {key}"
+        if fields[key] != expected[key]:
+            return f"field {key} does not match the row"
+    if RECORD_SUMMARY not in fields:
+        return f"missing field {RECORD_SUMMARY}"
+    summary = fields[RECORD_SUMMARY]
+    if len(summary) < RECORD_SUMMARY_MIN or PLACEHOLDER_TEXT.search(summary):
+        return f"field {RECORD_SUMMARY} is empty or a placeholder"
+    return None
 # Unreachable by design until authenticated real-core evidence exists (#124). Rejected whatever the marker says.
 MEASURED_PREVENTED_STATUS = "PREVENTED_MEASURED"
 PRE_SIDE_EFFECT_POINTS = ("BEFORE_RUN", "BEFORE_STORE", "INSTRUCTION_BOUNDARY")
@@ -153,14 +186,20 @@ def validate(inventory, pinned_revision, root=ROOT):
             require(row["gate_status"] == "BLOCKED", f"{row_id}: unresolved path must remain BLOCKED")
         # A prevention claim, full or partial (KNOWN_PC_ONLY included), must name a detection point before the side effect.
         if row["prevents_before_side_effect"] in PREVENTION_VALUES:
+            # Contradiction guard: a prevention claim needs a PREVENTED_* status, so a DETECTED_* or UNKNOWN row
+            # cannot carry prevention, whatever its detection point says.
+            require(row["monitor_status"].startswith(PREVENTED_PREFIX),
+                    f"{row_id}: prevention claim requires a PREVENTED_* monitor_status")
             require(row["detection_point"] in PRE_SIDE_EFFECT_POINTS,
                     f"{row_id}: prevention requires a pre-side-effect detection point")
             require(row["measurement"] in PREVENTION_MEASUREMENTS,
                     f"{row_id}: prevention claimed without measurement")
             # Existence of the evidence file is not enough: its content must carry a run id for this measurement.
             markers = []
+            texts = {}
             for item in evidence:
-                markers += RUN_MARKER.findall((root / item).read_text(encoding="utf-8", errors="replace"))
+                texts[item] = (root / item).read_text(encoding="utf-8", errors="replace")
+                markers += RUN_MARKER.findall(texts[item])
             require(any(kind == row["measurement"] for _, kind in markers),
                     f"{row_id}: prevention claimed without content-validated run evidence")
             # Tampered or mixed evidence (conflicting markers or two run ids) fails closed.
@@ -172,6 +211,12 @@ def validate(inventory, pinned_revision, root=ROOT):
             # One run id backs one claim. Reusing another row's result for this claim is refused.
             require(claimed_runs.setdefault(run_id, row_id) == row_id,
                     f"{row_id}: run id {run_id} is reused from {claimed_runs.get(run_id)}")
+            # A marker alone is not evidence. Every file carrying the marker must hold a complete record bound to
+            # this row: its id, category, exact path, detection point, prevention value and a real summary.
+            for item in evidence:
+                if RUN_MARKER.search(texts[item]):
+                    problem = _record_problem(row, texts[item])
+                    require(problem is None, f"{row_id}: evidence record rejected in {item}: {problem}")
 
         counts[row["monitor_status"]] = counts.get(row["monitor_status"], 0) + 1
         text += " " + row["path"]
@@ -196,7 +241,7 @@ def main(argv=None):
         return 2
     try:
         summary, _ = load()
-    except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
         print(f"FAIL: write-path inventory invalid: {error}")
         return 1
     print(f"PASS: write-path inventory valid; rows={summary['rows']} unresolved={summary['unresolved']} "
