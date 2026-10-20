@@ -1,4 +1,5 @@
 """Host checks for the Issue #10 CD_RESET contract doc and its fail-closed judge (synthetic records only)."""
+import json
 import re
 import unittest
 
@@ -104,6 +105,20 @@ class CdResetContractDocTests(unittest.TestCase):
             with self.subTest(field=field):
                 self.assertEqual(rows[field], ledger["contract"][field]["status"])
         self.assertNotIn("VERIFIED", rows.values())
+
+    def test_hw_bus_reset_is_blocked_in_doc_and_ledger_never_observed(self):
+        # Issue #364 / #225 round: hw_bus_reset has no verifiable hardware-bus evidence, so the contract row,
+        # the basis line and the checked-in hardware ledger all say BLOCKED (never OBSERVED).
+        text = (ROOT / "docs/cd-reset-contract.md").read_text(encoding="utf-8")
+        status = re.search(r"^\| `hw_bus_reset` \| (\w+) \|", text, re.M)
+        self.assertIsNotNone(status)
+        self.assertEqual(status.group(1), "BLOCKED")
+        self.assertRegex(text, r"(?m)^- `hw_bus_reset` は BLOCKED である")
+        ledger = json.loads((ROOT / "spec/hardware_observations.json").read_text(encoding="utf-8"))
+        entries = {e["field"]: e["status"] for e in ledger["entries"]}
+        self.assertEqual(entries, {"hw_bus_reset": "BLOCKED"})
+        self.assertNotRegex(text, r"`hw_bus_reset` \| OBSERVED")
+        self.assertNotRegex(text, r"`hw_bus_reset` is OBSERVED")
 
     def test_decision_basis_lists_exactly_the_table_statuses(self):
         text = (ROOT / "docs/cd-reset-contract.md").read_text(encoding="utf-8")

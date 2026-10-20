@@ -11,7 +11,9 @@ requires non-empty, format-valid evidence entries (FORMAT_ONLY; not authenticate
 input type, verification result, sha256 evidence hash). `verification.executed_callee` is
 part of the evidence and is not sufficient by itself.
 """
+import hashlib
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -21,6 +23,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 from contracts import (  # noqa: E402
     CALLEE_BEHAVIOR_FIELDS, CLAIM_STATUSES, EVIDENCE_TRUST_LEVEL, FIELDS,
     HARDWARE_OBSERVATION_FIELDS, SOURCE_KIND_MEANINGS, adjudicate_claim, load_contracts,
+    resolve_evidence,
 )
 
 CALLER = {'huc:include/hucc/pcengine.inc': 'CALLER_SOURCE'}
@@ -46,7 +49,25 @@ OBSERVED = {
     'sources': ['gear:src/cdrom.cpp'], 'confidence': 'SOURCE_SUPPORTED',
     'evidence': [EVIDENCE_ENTRY],
 }
+# Issue #225: an OBSERVED claim must declare observation_kind covering its field.
+OBSERVED_CALLEE = dict(OBSERVED, observation_kind='CALLEE_EXECUTION')
+OBSERVED_HW = dict(OBSERVED, observation_kind='HW_BUS_READBACK')
 BLOCKED = {'status': 'BLOCKED', 'value': 'UNKNOWN', 'sources': [], 'confidence': 'UNKNOWN'}
+# Real-core provenance fixture (Issue #359 fix): no SYNTHETIC marker, and its hash is in REAL_RESOLVED,
+# which stands for resolve_evidence() having accepted the artifact. test_real_core_artifact_resolves_and_yields_observed
+# exercises that path end to end; the other positive tests pass REAL_RESOLVED directly.
+REAL_ARTIFACT_BYTES = b'real-core cd-read probe artifact (test fixture bytes)\n'
+REAL_ENTRY = {
+    'execution_conditions': 'REAL-CORE cd-read probe run on the pinned Geargrafx core',
+    'core_revision': 'b49ae82a012eade566d72e9d61c9d95a5caa4da3',
+    'input_type': 'cd-read probe sector',
+    'verification_result': 'probe observation matches the stored artifact',
+    'evidence_hash': hashlib.sha256(REAL_ARTIFACT_BYTES).hexdigest(),
+}
+REAL_RESOLVED = frozenset({REAL_ENTRY['evidence_hash']})
+REAL_OBSERVED = dict(OBSERVED, value='real-core observed value', evidence=[REAL_ENTRY])
+REAL_OBSERVED_CALLEE = dict(REAL_OBSERVED, observation_kind='CALLEE_EXECUTION')
+REAL_OBSERVED_HW = dict(REAL_OBSERVED, observation_kind='HW_BUS_READBACK')
 
 
 class AdjudicateClaimTests(unittest.TestCase):
@@ -60,11 +81,43 @@ class AdjudicateClaimTests(unittest.TestCase):
     def test_hypothesis_claim_is_accepted(self):
         adjudicate_claim(HYPOTHESIS, CALLER, field='arguments', context='slot 1 arguments')
 
-    def test_observed_claim_with_format_valid_evidence_is_accepted(self):
-        # Issue #208 positive case: shape-valid SYNTHETIC evidence is accepted. This asserts
-        # nothing about measurement, ABI correctness or authenticity (FORMAT_ONLY).
-        adjudicate_claim(OBSERVED, REAL, field='stack', context='slot 1 stack',
-                         executed_callee=True)
+    def test_real_core_hash_match_is_refused_without_producer_authentication(self):
+        # Issue #359 / #124: non-synthetic evidence whose hash matches is still refused. Nothing
+        # authenticates the executing principal, so a hash match or a REALCORE string is not a measurement.
+        with self.assertRaisesRegex(ValueError, 'not authenticated'):
+            adjudicate_claim(REAL_OBSERVED_CALLEE, REAL, field='stack', context='slot 1 stack',
+                             executed_callee=True, resolved_evidence_hashes=REAL_RESOLVED)
+
+    def test_synthetic_evidence_with_executed_callee_is_never_observed(self):
+        # Issue #359 MAJOR: SYNTHETIC evidence + executed_callee=True must NOT yield OBSERVED, with or
+        # without a resolved set (the synthetic text is refused even if its hash were listed).
+        synthetic = dict(OBSERVED_CALLEE)
+        with self.assertRaisesRegex(ValueError, 'SYNTHETIC'):
+            adjudicate_claim(synthetic, REAL, field='stack', context='slot 1 stack', executed_callee=True)
+        with self.assertRaisesRegex(ValueError, 'SYNTHETIC'):
+            adjudicate_claim(synthetic, REAL, field='stack', context='slot 1 stack', executed_callee=True,
+                             resolved_evidence_hashes=frozenset({EVIDENCE_ENTRY['evidence_hash']}))
+        hw = dict(OBSERVED_HW, value='$1804 readback')
+        with self.assertRaisesRegex(ValueError, 'SYNTHETIC'):
+            adjudicate_claim(hw, REAL, field='hw_bus_reset', context='hw_bus_reset', executed_callee=False)
+
+    def test_unresolved_real_looking_evidence_is_refused_for_observed(self):
+        # Non-synthetic text alone is not provenance: the hash must be resolved by resolve_evidence().
+        with self.assertRaisesRegex(ValueError, 'requires real-core evidence'):
+            adjudicate_claim(REAL_OBSERVED_CALLEE, REAL, field='stack', context='slot 1 stack',
+                             executed_callee=True)
+
+    def test_real_core_artifact_resolves_but_observed_is_still_refused(self):
+        # End to end: artifact bytes on disk -> resolve_evidence (pinned revision + sha256) resolves, yet
+        # OBSERVED stays refused: hash-and-pin consistency is not producer authentication (#124).
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / REAL_ENTRY['evidence_hash']).write_bytes(REAL_ARTIFACT_BYTES)
+            resolved = frozenset({REAL_ENTRY['evidence_hash']}) if resolve_evidence(
+                REAL_ENTRY, artifact_dir=tmp, pinned_revision=REAL_ENTRY['core_revision']) else frozenset()
+        self.assertEqual(resolved, REAL_RESOLVED)
+        with self.assertRaisesRegex(ValueError, 'not authenticated'):
+            adjudicate_claim(REAL_OBSERVED_CALLEE, REAL, field='stack', context='slot 1 stack',
+                             executed_callee=True, resolved_evidence_hashes=resolved)
 
     def test_blocked_claim_is_accepted(self):
         adjudicate_claim(BLOCKED, CALLER, field='stack', context='slot 1 stack')
@@ -192,18 +245,21 @@ class AdjudicateClaimTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'executed callee'):
             adjudicate_claim(OBSERVED, REAL, field='returns', context='slot 1 returns')
 
-    def test_observed_callee_field_accepted_when_callee_executed(self):
-        adjudicate_claim(OBSERVED, REAL, field='returns', context='slot 1 returns',
-                         executed_callee=True)
+    def test_observed_callee_field_refused_even_when_callee_executed(self):
+        with self.assertRaisesRegex(ValueError, 'not authenticated'):
+            adjudicate_claim(REAL_OBSERVED_CALLEE, REAL, field='returns', context='slot 1 returns',
+                             executed_callee=True, resolved_evidence_hashes=REAL_RESOLVED)
 
     def test_observed_hardware_observation_accepted_without_executed_callee(self):
         # hw_bus_reset is a low-level $1804 register/bus fact (hardware observation),
-        # not callee ABI behavior: OBSERVED with an EMULATOR_SOURCE reference plus evidence must be
+        # not callee ABI behavior: OBSERVED with an EMULATOR_SOURCE reference plus real-core evidence must be
         # accepted even though no callee was executed.
-        claim = dict(OBSERVED,
+        claim = dict(REAL_OBSERVED_HW,
                      value='$1804 bit 1: assert -> readback $02, release -> $00, bus FREE')
-        adjudicate_claim(claim, REAL, field='hw_bus_reset',
-                         context='slot 1 hw_bus_reset', executed_callee=False)
+        with self.assertRaisesRegex(ValueError, 'not authenticated'):
+            adjudicate_claim(claim, REAL, field='hw_bus_reset',
+                             context='slot 1 hw_bus_reset', executed_callee=False,
+                             resolved_evidence_hashes=REAL_RESOLVED)
 
     def test_observed_hardware_observation_rejects_caller_only_source(self):
         # A hardware observation still needs an EMULATOR_SOURCE reference; caller/HLE
@@ -249,16 +305,18 @@ class AdjudicateClaimTests(unittest.TestCase):
     def test_evidence_trust_level_is_format_only(self):
         self.assertEqual(EVIDENCE_TRUST_LEVEL, 'FORMAT_ONLY')
 
-    def test_complete_structural_evidence_is_schema_accepted_not_authenticated(self):
-        # Accepted for shape only: nothing resolves the hash to a stored artifact.
-        adjudicate_claim(OBSERVED, REAL, field='stack', context='slot 1 stack', executed_callee=True)
+    def test_real_core_evidence_is_refused_for_callee_field_without_authentication(self):
+        with self.assertRaisesRegex(ValueError, 'not authenticated'):
+            adjudicate_claim(REAL_OBSERVED_CALLEE, REAL, field='stack', context='slot 1 stack', executed_callee=True,
+                             resolved_evidence_hashes=REAL_RESOLVED)
 
-    def test_format_only_acceptance_does_not_check_field_correspondence(self):
-        # Documents a known limit (not a feature): the same evidence entry is accepted for
-        # unrelated fields because only its shape is checked. Semantic correspondence of
-        # evidence to the claim field is NOT verified; a follow-up Issue owns that.
+    def test_evidence_entry_is_refused_for_every_field_without_authentication(self):
+        # The same evidence entry used to pass for unrelated fields (only shape and hash were checked).
+        # Now every field is refused: authentication is missing, so the field correspondence is moot.
         for field in ('stack', 'returns', 'irq', 'flags'):
-            adjudicate_claim(OBSERVED, REAL, field=field, context=field, executed_callee=True)
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'not authenticated'):
+                adjudicate_claim(REAL_OBSERVED_CALLEE, REAL, field=field, context=field, executed_callee=True,
+                                 resolved_evidence_hashes=REAL_RESOLVED)
 
     def test_observed_claim_must_not_contain_registers_key(self):
         for regs in ([], None, ['A'], ['A', 'X']):
@@ -270,14 +328,17 @@ class AdjudicateClaimTests(unittest.TestCase):
 
     def test_observed_without_registers_key_and_other_statuses_unchanged(self):
         self.assertNotIn('registers', OBSERVED)
-        adjudicate_claim(OBSERVED, REAL, field='preserved', context='x', executed_callee=True)
+        with self.assertRaisesRegex(ValueError, 'not authenticated'):
+            adjudicate_claim(REAL_OBSERVED_CALLEE, REAL, field='preserved', context='x', executed_callee=True,
+                             resolved_evidence_hashes=REAL_RESOLVED)
         # UNKNOWN / HYPOTHESIS / BLOCKED regression: registers rules unchanged.
         adjudicate_claim(UNKNOWN, CALLER, field='flags', context='x')
         adjudicate_claim(HYPOTHESIS, CALLER, field='preserved', context='x')
         adjudicate_claim(dict(HYPOTHESIS, registers=['A', 'X']), CALLER, field='preserved', context='x')
         adjudicate_claim(BLOCKED, CALLER, field='flags', context='x')
-        for bad in (dict(UNKNOWN, registers=['A']), dict(BLOCKED, registers=['A'])):
-            with self.assertRaises(ValueError):
+        for bad, message in ((dict(UNKNOWN, registers=['A']), 'invalid UNKNOWN claim'),
+                             (dict(BLOCKED, registers=['A']), 'invalid BLOCKED claim')):
+            with self.assertRaisesRegex(ValueError, message):
                 adjudicate_claim(bad, CALLER, field='flags', context='x')
 
     def test_malformed_input_types_raise_valueerror(self):
@@ -309,16 +370,20 @@ class AdjudicateClaimTests(unittest.TestCase):
             adjudicate_claim({1: 'x'}, REAL, field='stack', context='x', executed_callee=True)
 
     def test_invalid_evidence_hashes_are_rejected(self):
-        for h in ('0' * 64, 'a' * 64, 'D1A2' + 'f' * 60, 'f' * 63, 'g' * 64, 12345, None):
+        for h, message in (('0' * 64, 'evidence_hash must be a 64-hex'), ('a' * 64, 'evidence_hash must be a 64-hex'),
+                           ('D1A2' + 'f' * 60, 'evidence_hash must be a 64-hex'),
+                           ('f' * 63, 'evidence_hash must be a 64-hex'), ('g' * 64, 'evidence_hash must be a 64-hex'),
+                           (12345, 'values must be non-empty strings'), (None, 'values must be non-empty strings')):
             bad = dict(OBSERVED, evidence=[dict(EVIDENCE_ENTRY, evidence_hash=h)])
-            with self.assertRaises(ValueError, msg=repr(h)):
+            with self.subTest(h=repr(h)), self.assertRaisesRegex(ValueError, message):
                 adjudicate_claim(bad, REAL, field='stack', context='slot 1 stack', executed_callee=True)
 
     def test_evidence_entry_with_unknown_or_non_string_field_is_rejected(self):
-        for entry in (dict(EVIDENCE_ENTRY, extra='x'), dict(EVIDENCE_ENTRY, core_revision=1),
-                      dict(EVIDENCE_ENTRY, input_type='')):
+        for entry, message in ((dict(EVIDENCE_ENTRY, extra='x'), 'evidence entry must contain exactly'),
+                               (dict(EVIDENCE_ENTRY, core_revision=1), 'values must be non-empty strings'),
+                               (dict(EVIDENCE_ENTRY, input_type=''), 'values must be non-empty strings')):
             bad = dict(OBSERVED, evidence=[entry])
-            with self.assertRaises(ValueError):
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 adjudicate_claim(bad, REAL, field='stack', context='slot 1 stack', executed_callee=True)
 
     def test_non_observed_claim_carrying_evidence_is_rejected(self):
@@ -339,9 +404,10 @@ class AdjudicateClaimTests(unittest.TestCase):
                              context='slot 1 stack', executed_callee=True)
 
     # ---- Issue #207 (MAJOR-1) x #208: callee ABI vs hardware observation.
-    def test_hardware_observed_with_evidence_and_no_callee_is_conditionally_accepted(self):
-        adjudicate_claim(OBSERVED, REAL, field='hw_bus_reset', context='hw_bus_reset',
-                         executed_callee=False)
+    def test_hardware_observed_with_evidence_and_no_callee_is_refused_without_authentication(self):
+        with self.assertRaisesRegex(ValueError, 'not authenticated'):
+            adjudicate_claim(REAL_OBSERVED_HW, REAL, field='hw_bus_reset', context='hw_bus_reset',
+                             executed_callee=False, resolved_evidence_hashes=REAL_RESOLVED)
 
     def test_hardware_observed_without_evidence_is_rejected(self):
         for bad in (dict(OBSERVED, evidence=[]), {k: v for k, v in OBSERVED.items() if k != 'evidence'}):
@@ -383,18 +449,78 @@ class AdjudicateClaimTests(unittest.TestCase):
                 adjudicate_claim(bad, REAL, field=field, context='x', executed_callee=True)
 
     def test_malformed_types_raise_valueerror_not_typeerror(self):
-        cases = [(dict(OBSERVED, status=['OBSERVED']), 'stack', True),
-                 (OBSERVED, ['x'], True),
-                 (dict(HYPOTHESIS, evidence=0), 'arguments', False),
-                 (dict(UNKNOWN, evidence=None), 'flags', False),
-                 (OBSERVED, 'stack', 'no'),
-                 (dict(OBSERVED, registers=['Q']), 'stack', True),
-                 (dict(OBSERVED, evidence=[dict(EVIDENCE_ENTRY, core_revision='x')]), 'stack', True),
-                 (dict(OBSERVED, evidence=[dict(EVIDENCE_ENTRY, execution_conditions=' ')]), 'stack', True)]
-        for claim, field, executed in cases:
-            with self.assertRaises(ValueError, msg=repr((claim, field, executed))):
+        cases = [(dict(OBSERVED, status=['OBSERVED']), 'stack', True, 'unsupported claim status'),
+                 (OBSERVED, ['x'], True, 'claim field must be a string'),
+                 (dict(HYPOTHESIS, evidence=0), 'arguments', False, 'claim evidence must be a list'),
+                 (dict(UNKNOWN, evidence=None), 'flags', False, 'claim evidence must be a list'),
+                 (OBSERVED, 'stack', 'no', 'executed_callee must be a bool'),
+                 (dict(OBSERVED, registers=['Q']), 'stack', True, 'registers must be a list'),
+                 (dict(OBSERVED, evidence=[dict(EVIDENCE_ENTRY, core_revision='x')]), 'stack', True,
+                  'core_revision must be a 40-hex'),
+                 (dict(OBSERVED, evidence=[dict(EVIDENCE_ENTRY, execution_conditions=' ')]), 'stack', True,
+                  'values must be non-empty strings')]
+        for claim, field, executed, message in cases:
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 adjudicate_claim(claim, {**REAL, **CALLER}, field=field, context='x',
                                  executed_callee=executed)
+
+
+class DeclarationFailClosedTests(unittest.TestCase):
+    """Issue #359 round 3: declaration-level fail-closed text rule.
+
+    OBSERVED refuses any non-ASCII text, and any field carrying a SYNTHETIC fragment (a 4+ letter run,
+    or a whole field that is a fragment of the marker). Look-alikes outside the confusables table
+    (Cyrillic Һ/И/palochka, Cherokee, dotless i) and cross-field splits in any order must be refused.
+    Every case here is a REAL-CORE entry, so the REALCORE and executed_callee rules are not the reason.
+    """
+
+    # Each refusal is asserted against the message the intended check raises (ASCII rule or SYNTHETIC rule),
+    # so a removed or weakened check fails its own test. The REALCORE marker is present in every case here.
+    def assertRefusedClaim(self, claim, message):
+        with self.assertRaisesRegex(ValueError, message):
+            adjudicate_claim(claim, REAL, field='stack', context='slot 1 stack', executed_callee=True,
+                             resolved_evidence_hashes=REAL_RESOLVED)
+
+    def assertRefusedText(self, text, message):
+        # Later evidence fields carry no 'i' or 'c', so fe6cb52's ordered marker check cannot complete the
+        # marker from other fields: the look-alike itself is what must be refused.
+        entry = dict(REAL_ENTRY, execution_conditions=text, input_type='probe', verification_result='stored')
+        self.assertRefusedClaim(dict(REAL_OBSERVED_CALLEE, evidence=[entry]), message)
+
+    def test_cyrillic_shha_marker_outside_table_is_refused(self):
+        self.assertRefusedText('REALCORE SYNTҺETIC fixture', 'pure ASCII')  # U+04BA (Һ)
+
+    def test_cyrillic_i_marker_outside_table_is_refused(self):
+        self.assertRefusedText('REALCORE SYNTHETИC fixture', 'SYNTHETIC content')  # U+0418 (И)
+
+    def test_palochka_marker_outside_table_is_refused(self):
+        self.assertRefusedText('REALCORE SYNTHETӀC fixture', 'SYNTHETIC content')  # U+04C0 (palochka)
+
+    def test_cherokee_marker_outside_table_is_refused(self):
+        for text, message in (('REALCORE SᎩNTHETIC fixture', 'SYNTHETIC content'),
+                              ('REALCORE SYNᎻᎬTIC fixture', 'pure ASCII')):
+            with self.subTest(text=text):
+                self.assertRefusedText(text, message)
+
+    def test_dotless_i_marker_is_refused(self):
+        for text in ('REALCORE SYNTHETıC fixture', 'REALCORE SYNTHETǀC fixture'):
+            with self.subTest(text=text):
+                self.assertRefusedText(text, 'SYNTHETIC content')
+
+    def test_non_ascii_letter_outside_the_marker_is_refused(self):
+        self.assertRefusedText('REALCORE probe sector é', 'pure ASCII')
+
+    def test_reversed_split_thetic_earlier_syn_later_is_refused(self):
+        claim = dict(REAL_OBSERVED_CALLEE, evidence=[dict(REAL_ENTRY, execution_conditions='REALCORE THETIC'),
+                                                     dict(REAL_ENTRY, execution_conditions='REALCORE SYN')])
+        self.assertRefusedClaim(claim, 'SYNTHETIC content')
+
+    def test_field_containing_only_syn_with_valid_realcore_is_refused(self):
+        self.assertRefusedClaim(dict(REAL_OBSERVED_CALLEE, evidence=[dict(REAL_ENTRY, input_type='SYN')]),
+                                'SYNTHETIC content')
+
+    def test_fullwidth_marker_is_still_refused(self):
+        self.assertRefusedText('REALCORE ＳＹＮＴＨＥＴＩＣ fixture', 'SYNTHETIC content')
 
 
 class LedgerAdjudicationTests(unittest.TestCase):
@@ -426,6 +552,103 @@ class LedgerAdjudicationTests(unittest.TestCase):
         for api in data['apis']:
             for field in FIELDS:
                 self.assertNotEqual(api['contract'][field]['status'], 'VERIFIED')
+
+
+class ProvenanceBypassTests(unittest.TestCase):
+    """Issue #359 MEDIUM fix: OBSERVED refuses unverified evidence. Each case must be refused (ValueError)."""
+
+    def assertRefused(self, claim, message, *, field='stack', executed_callee=True, resolved=REAL_RESOLVED):
+        with self.assertRaisesRegex(ValueError, message):
+            adjudicate_claim(claim, REAL, field=field, context=f'slot 1 {field}',
+                             executed_callee=executed_callee, resolved_evidence_hashes=resolved)
+
+    def test_synthetic_text_with_marker_removed_is_refused(self):
+        entry = dict(REAL_ENTRY, execution_conditions='test fixture; no real execution took place')
+        self.assertRefused(dict(REAL_OBSERVED_CALLEE, evidence=[entry]), 'lacks the REALCORE provenance marker')
+
+    def test_spaced_synthetic_marker_is_refused(self):
+        entry = dict(REAL_ENTRY, execution_conditions='REAL-CORE S Y N T H E T I C fixture')
+        self.assertRefused(dict(REAL_OBSERVED_CALLEE, evidence=[entry]), 'SYNTHETIC content')
+
+    def test_synthetic_marker_in_claim_value_with_valid_hash_is_refused(self):
+        self.assertRefused(dict(REAL_OBSERVED_CALLEE, value='SYNTHETIC observed value'), 'SYNTHETIC content')
+
+    def test_arbitrary_hash_not_in_resolved_set_is_refused(self):
+        entry = dict(REAL_ENTRY, evidence_hash='ab' * 32)
+        self.assertRefused(dict(REAL_OBSERVED_CALLEE, evidence=[entry]), 'resolved by resolve_evidence')
+
+    def test_forged_executed_callee_with_hardware_kind_is_refused(self):
+        self.assertRefused(REAL_OBSERVED_HW, 'requires observation kind CALLEE_EXECUTION',
+                           field='hw_bus_reset', executed_callee=True)
+
+    def test_unresolved_real_core_evidence_is_refused(self):
+        self.assertRefused(REAL_OBSERVED_CALLEE, 'resolved evidence set is empty', resolved=frozenset())
+
+    def test_entry_without_real_core_marker_is_refused(self):
+        entry = dict(REAL_ENTRY, execution_conditions='cd-read probe run on the pinned core')
+        self.assertRefused(dict(REAL_OBSERVED_CALLEE, evidence=[entry]), 'lacks the REALCORE provenance marker')
+
+    # Issue #359 round 2: marker normalization must fold homoglyphs, combining marks and field splits.
+    # Each case is a REAL-CORE entry (REALCORE marker present) whose SYNTHETIC marker is disguised.
+    def assertRefusedSynthetic(self, claim):
+        with self.assertRaisesRegex(ValueError, 'SYNTHETIC'):
+            adjudicate_claim(claim, REAL, field='stack', context='slot 1 stack', executed_callee=True,
+                             resolved_evidence_hashes=REAL_RESOLVED)
+
+    def test_cyrillic_homoglyph_synthetic_marker_is_refused(self):
+        # Cyrillic U+0423 (for Y), U+041D (H), U+0415 (E), U+0421 (C).
+        for text in ('REALCORE SУNTHETIC fixture', 'REALCORE SYNTНЕTIС fixture'):
+            with self.subTest(text=text):
+                entry = dict(REAL_ENTRY, execution_conditions=text)
+                self.assertRefusedSynthetic(dict(REAL_OBSERVED_CALLEE, evidence=[entry]))
+
+    def test_greek_homoglyph_synthetic_marker_is_refused(self):
+        # Greek U+03A5 (Y), U+039D (N), U+03A4 (T), U+0397 (H), U+0395 (E), U+0399 (I).
+        for text in ('REALCORE SΥNΤHΕTΙC fixture', 'REALCORE SΥΝTHETIC fixture'):
+            with self.subTest(text=text):
+                entry = dict(REAL_ENTRY, execution_conditions=text)
+                self.assertRefusedSynthetic(dict(REAL_OBSERVED_CALLEE, evidence=[entry]))
+
+    def test_combining_mark_synthetic_marker_is_refused(self):
+        # Combining acute U+0301 inserted inside the marker.
+        for text in ('REALCORE SÝNTHETIC fixture', 'REALCORE SYNTHETÍC fixture'):
+            with self.subTest(text=text):
+                entry = dict(REAL_ENTRY, execution_conditions=text)
+                self.assertRefusedSynthetic(dict(REAL_OBSERVED_CALLEE, evidence=[entry]))
+
+    def test_marker_split_across_two_fields_is_refused(self):
+        # 'SYN' in execution_conditions and 'THETIC' in input_type: each field alone is clean.
+        entry = dict(REAL_ENTRY, execution_conditions='REALCORE SYN', input_type='THETIC')
+        self.assertRefusedSynthetic(dict(REAL_OBSERVED_CALLEE, evidence=[entry]))
+
+    # Issue #359 / #124: a record dressed up as a real measurement must not reach OBSERVED. Every case below
+    # carries the REALCORE text, a matching hash, executed_callee=True and the declared kind. None is
+    # authenticated, so each is refused with the authentication message.
+    def assertRefusedUnauthenticated(self, claim, *, field='stack', executed_callee=True, resolved=REAL_RESOLVED):
+        with self.assertRaisesRegex(ValueError, 'not authenticated'):
+            adjudicate_claim(claim, REAL, field=field, context=f'slot 1 {field}',
+                             executed_callee=executed_callee, resolved_evidence_hashes=resolved)
+
+    def test_fully_resolved_real_core_entry_is_refused_without_authentication(self):
+        self.assertRefusedUnauthenticated(REAL_OBSERVED_CALLEE)
+
+    def test_caller_built_resolved_set_is_not_authentication(self):
+        # Any hash the caller places in the set is a declaration, not a resolve_evidence() result.
+        entry = dict(REAL_ENTRY, evidence_hash='ef' * 32)
+        self.assertRefusedUnauthenticated(dict(REAL_OBSERVED_CALLEE, evidence=[entry]),
+                                          resolved=frozenset({entry['evidence_hash']}))
+
+    def test_unknown_verification_result_is_never_promoted_to_measured(self):
+        # A validation result of UNKNOWN (Issue #371 vocabulary) must not become a measurement.
+        entry = dict(REAL_ENTRY, verification_result='UNKNOWN')
+        self.assertRefusedUnauthenticated(dict(REAL_OBSERVED_CALLEE, evidence=[entry]))
+
+    def test_declared_callee_kind_on_hardware_claim_with_real_text_is_refused(self):
+        # Kind relabelled to CALLEE_EXECUTION for a hw readback: the correspondence check refuses it.
+        with self.assertRaisesRegex(ValueError, 'does not support field'):
+            adjudicate_claim(dict(REAL_OBSERVED_HW, observation_kind='CALLEE_EXECUTION'), REAL,
+                             field='hw_bus_reset', context='slot 1 hw_bus_reset', executed_callee=True,
+                             resolved_evidence_hashes=REAL_RESOLVED)
 
 
 if __name__ == '__main__':

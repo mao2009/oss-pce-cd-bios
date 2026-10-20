@@ -95,6 +95,9 @@ def validate_entry(entry, seen_fields):
     if entry['status'] == 'OBSERVED':
         _require(entry['trust_level'] != 'NOT_MEASURED', f'{context}: OBSERVED requires a measured trust level')
         _require(bool(env['runs']), f'{context}: OBSERVED requires at least one run')
+        # Fail closed (Issue #124 / #171): the trust_level, runs and source above are self-declared. Nothing
+        # authenticates the run, so no entry may be OBSERVED. Matching a file is not authenticity either.
+        raise ValueError(f'{context}: OBSERVED refused: executing principal not authenticated (#124)')
     else:
         _require(entry['trust_level'] == 'NOT_MEASURED' and env['runs'] == [],
                  f'{context}: {entry["status"]} must not claim a measurement or runs')

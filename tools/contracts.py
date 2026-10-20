@@ -3,9 +3,14 @@ import argparse
 import hashlib
 import json
 import re
+import sys
+import unicodedata
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+# Issue #364 measurement-point registry and pin-review rules (the OBSERVED check must match them).
+from measurement_evidence import check_pin_review, load_registry  # noqa: E402
 FIELDS = {'arguments', 'returns', 'clobbered', 'preserved', 'stack', 'mpr',
           'ram', 'flags', 'irq', 'errors', 'synchronization'}
 # Contract fields whose status describes callee ABI behavior: these can only be
@@ -48,6 +53,94 @@ EVIDENCE_HASH_RE = re.compile(r'[0-9a-f]{64}\Z')
 # checks core_revision against a pin, so a well-formed hash is NOT proof that the
 # run happened. Do not read an accepted OBSERVED claim as VERIFIED.
 EVIDENCE_TRUST_LEVEL = 'FORMAT_ONLY'
+# Synthetic fixtures and placeholders carry this marker in their text. adjudicate_claim() refuses OBSERVED for them.
+SYNTHETIC_MARKER = 'SYNTHETIC'
+# Positive provenance marker: an OBSERVED evidence entry must say in execution_conditions that it came from the real
+# core. Declaration only (no artifact content is read here); absence fails closed.
+REAL_CORE_MARKER = 'REALCORE'
+
+
+# Explicit confusables for the Latin letters used in the markers (S Y N T H E I C R A L O), taken from the
+# Cyrillic and Greek look-alikes that UTS #39 maps to them. Not exhaustive: other scripts are a remaining gap.
+_CONFUSABLES_TO_LATIN = str.maketrans({
+    # Cyrillic look-alikes of the marker letters (S Y N T H E I C A O)
+    'Ѕ': 'S', 'ѕ': 'S', 'У': 'Y', 'у': 'Y', 'Ү': 'Y', 'Н': 'H', 'Т': 'T', 'Е': 'E', 'е': 'E',
+    'І': 'I', 'і': 'I', 'С': 'C', 'с': 'C', 'А': 'A', 'а': 'A', 'О': 'O', 'о': 'O',
+    # Greek look-alikes of the marker letters (A E H I N O T Y)
+    'Α': 'A', 'α': 'A', 'Ε': 'E', 'ε': 'E', 'Η': 'H', 'Ι': 'I', 'ι': 'I', 'Ν': 'N',
+    'Ο': 'O', 'ο': 'O', 'Τ': 'T', 'Υ': 'Y',
+})
+
+
+def _marker_text(text):
+    # Marker comparison form: NFKD with combining marks (Mn/Me) removed, NFKC, confusables folded to Latin,
+    # case-folded, all whitespace/punctuation/underscore removed, so 'S Y N T H E T I C', 'syn-thetic',
+    # 'Synthetic', 'SÝNTHETIC' and Cyrillic/Greek look-alikes all match the marker.
+    decomposed = unicodedata.normalize('NFKD', text)
+    base = ''.join(ch for ch in decomposed if unicodedata.category(ch) not in ('Mn', 'Me'))
+    folded = unicodedata.normalize('NFKC', base).translate(_CONFUSABLES_TO_LATIN)
+    return re.sub(r'[\W_]', '', folded).casefold()
+
+
+def _has_marker(marker, texts):
+    # Field-splitting guard: True when the marker occurs across the texts in order, each field contributing one
+    # contiguous piece and other fields (e.g. core_revision) allowed in between. Plain concatenation is not
+    # enough: 'SYN' + <hex core_revision> + 'THETIC' would pass it.
+    target = _marker_text(marker)
+    reached = {0}  # marker prefix lengths matched so far
+    for text in texts:
+        piece = _marker_text(text)
+        new = set()
+        for k in reached:
+            for start in range(len(piece)):
+                n = 0
+                while k + n < len(target) and start + n < len(piece) and piece[start + n] == target[k + n]:
+                    n += 1
+                    new.add(k + n)
+        reached |= new
+    return len(target) in reached
+
+
+# Declaration-level fail-closed text rule (Issue #359 round 3). Folding look-alikes into Latin cannot close
+# every script (Cyrillic H/I/palochka, Cherokee, dotless i, ... are outside the table), so OBSERVED no longer
+# depends on folding alone:
+#   (1) every text the adjudicator sees must be pure ASCII, raw and after NFKC; any other codepoint is refused;
+#   (2) no single field may contain a run of >= 5 case-folded marker letters (a 5-letter substring of 'synthetic');
+#   (3) no field may be a whole fragment of the marker (any length >= 1, e.g. 'SYN', 'THE', 'C').
+# Soundness for splits in any order: a marker occurrence in the joined fields is a contiguous 9-letter run.
+# An edge field contributes at most 4 of those letters (rule 2) and an interior field lies wholly inside the
+# marker (rule 3, refused). Two edge fields give at most 8 < 9, so an occurrence cannot form without a refused field.
+# Why 5, not 4: a 4-letter run is 'nthe' in ordinary 'in the' / 'on the' text, which would refuse most real
+# execution_conditions prose. 5-letter runs are 'synth', 'ynthe', 'nthet', 'theti', 'hetic'.
+# False-positive cost: adjudicated text containing one of those 5-letter runs ('synthesis', 'pathetic', 'sympathetic')
+# is refused for OBSERVED, and a field that is a whole fragment of the marker ('the', 'tic', 'syn') is refused.
+# Non-ASCII text (even legitimate) is refused for OBSERVED.
+# Declaration-level only: a caller can still supply REALCORE and a hash it chose; nothing here authenticates them.
+def _is_pure_ascii(text):
+    return text.isascii() and unicodedata.normalize('NFKC', text).isascii()
+
+
+def _leaf_strings(obj):
+    # Every string under a claim (keys, values, nested lists such as sources and evidence entries).
+    if isinstance(obj, str):
+        return [obj]
+    if isinstance(obj, dict):
+        return [text for key, value in obj.items() for text in _leaf_strings(key) + _leaf_strings(value)]
+    if isinstance(obj, (list, tuple)):
+        return [text for value in obj for text in _leaf_strings(value)]
+    return []
+
+
+def _marker_fragment_refused(texts):
+    # True when one field has a 5+ letter run of the marker, or is wholly a fragment of it (rules 2 and 3 above).
+    target = _marker_text(SYNTHETIC_MARKER)
+    for text in texts:
+        piece = _marker_text(text)
+        if piece and (piece in target or any(piece[i:i + 5] in target for i in range(len(piece) - 4))):
+            return True
+    return False
+
+
 # Source-kind semantics (Issue #209 / MEDIUM-1). A source kind classifies the
 # provenance of a *source-code reference* only. It never proves that anything was
 # executed: execution evidence is the separate `evidence` entries (Issue #208),
@@ -64,7 +157,20 @@ SOURCE_KIND_MEANINGS = {
     'EMULATOR_SOURCE': '実コアのソース参照。実行証跡ではなく、単独では OBSERVED の十分条件でない。',
 }
 SOURCE_KINDS = frozenset(SOURCE_KIND_MEANINGS)
-CLAIM_KEYS = frozenset({'status', 'value', 'sources', 'confidence', 'registers', 'evidence'})
+CLAIM_KEYS = frozenset({'status', 'value', 'sources', 'confidence', 'registers', 'evidence',
+                        'observation_kind'})
+# Issue #225: every OBSERVED claim must declare which kind of observation its evidence is, and the
+# kind must cover the claim's field. Enforced in adjudicate_claim() (the formal path used by
+# validate_contracts) so no wrapper can skip it. The kind is a declaration, not a measurement:
+# the rule rejects a kind that does not cover the field, but it does not verify where the evidence
+# came from, so a caller can still declare CALLEE_EXECUTION for a hardware readback.
+OBSERVATION_KIND_KEY = 'observation_kind'
+OBSERVATION_KIND_FIELDS = {
+    # Low-level bus/register fact only; never callee ABI (returns/flags/irq/...).
+    'HW_BUS_READBACK': HARDWARE_OBSERVATION_FIELDS,
+    # Behavior of an executed callee; still needs executed_callee=True in adjudicate_claim.
+    'CALLEE_EXECUTION': CALLEE_BEHAVIOR_FIELDS,
+}
 
 
 def validate_contracts(data, inventory, inventory_text):
@@ -204,7 +310,7 @@ def validate_evidence(evidence, context):
 # authentication is attestation (Issue #124 / #171). Not yet wired into validate_contracts (no OBSERVED claim exists).
 EVIDENCE_ARTIFACT_DIR = ROOT / 'build' / 'evidence-artifacts'
 ARTIFACT_TRUST_LEVEL = 'ARTIFACT_HASH_RESOLVED'
-PINNED_CORE_REVISION = json.loads((ROOT / 'tools/dependencies.json').read_text())['geargrafx']['revision']
+PINNED_CORE_REVISION = json.loads((ROOT / 'tools/dependencies.json').read_text(encoding='utf-8'))['geargrafx']['revision']
 
 
 def resolve_evidence(entry, artifact_dir=EVIDENCE_ARTIFACT_DIR, pinned_revision=PINNED_CORE_REVISION):
@@ -226,7 +332,13 @@ def resolve_evidence(entry, artifact_dir=EVIDENCE_ARTIFACT_DIR, pinned_revision=
     return path
 
 
-def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=False):
+def is_synthetic_evidence(entry):
+    """True when any text field of an evidence entry carries the SYNTHETIC marker (fixtures, placeholders)."""
+    return _has_marker(SYNTHETIC_MARKER, [entry[field] for field in EVIDENCE_FIELDS])
+
+
+def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=False,
+                     resolved_evidence_hashes=frozenset()):
     """Pure fail-closed adjudication of one contract claim's classification.
 
     Deterministic and side-effect free: synthetic claim dicts can be passed
@@ -236,6 +348,18 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
     so an unexecuted callee can never be promoted.
 
     Source-kind semantics: see SOURCE_KIND_MEANINGS (source references, not execution proof).
+    An OBSERVED claim must declare observation_kind (OBSERVATION_KIND_FIELDS) covering its field;
+    a non-OBSERVED claim must not declare it.
+
+    Declaration-level text rule (Issue #359 round 3): an OBSERVED claim's strings must be pure ASCII and carry
+    no SYNTHETIC fragment in any single field (see the comment above _marker_fragment_refused).
+
+    Real-core provenance: resolved_evidence_hashes is the set of evidence_hash values that
+    resolve_evidence() accepted (pinned core revision + artifact sha256). An OBSERVED claim is refused
+    unless every evidence entry is non-SYNTHETIC and its hash is in that set, so executed_callee=True
+    alone never promotes a claim. The hash set is a caller-supplied hash match, not authenticity: it is
+    not evidence of who executed the callee. Therefore OBSERVED is refused for every claim until producer
+    authentication exists (#124); all other checks are necessary and fail closed.
 
     Rules:
       UNKNOWN     - value exactly 'UNKNOWN', no sources, confidence UNKNOWN, no registers
@@ -269,6 +393,9 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
             f'{context}: unknown claim field {field!r}')
     require(executed_callee is True or executed_callee is False,
             f'{context}: executed_callee must be a bool')
+    require(isinstance(resolved_evidence_hashes, (set, frozenset)) and
+            all(isinstance(h, str) for h in resolved_evidence_hashes),
+            f'{context}: resolved_evidence_hashes must be a set of strings')
     require(all(isinstance(key, str) for key in claim), f'{context}: claim keys must be strings')
     require(isinstance(claim.get('status'), str), f'{context}: unsupported claim status (must be a string)')
     require(isinstance(claim.get('evidence', []), list), f'{context}: claim evidence must be a list')
@@ -278,6 +405,8 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
                                   len(registers) == len(set(registers))),
             f'{context}: registers must be a list of unique A/X/Y/S/P')
     require(set(claim) <= CLAIM_KEYS, f'{context}: unknown claim keys {sorted(set(claim) - CLAIM_KEYS)}')
+    require(claim.get('status') == 'OBSERVED' or OBSERVATION_KIND_KEY not in claim,
+            f'{context}: only an OBSERVED claim may declare {OBSERVATION_KIND_KEY}')
     status = claim.get('status')
     require(status in CLAIM_STATUSES,
             f'{context}: unsupported claim status {status!r}; VERIFIED is not represented')
@@ -316,15 +445,51 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
         require(isinstance(evidence, list) and bool(evidence),
                 f'{context}: OBSERVED requires non-empty evidence entries (format-checked only)')
         validate_evidence(evidence, context)
+        kind = claim.get(OBSERVATION_KIND_KEY)
+        require(isinstance(kind, str) and kind in OBSERVATION_KIND_FIELDS,
+                f'{context}: OBSERVED requires {OBSERVATION_KIND_KEY} in {sorted(OBSERVATION_KIND_FIELDS)}')
+        require(field in OBSERVATION_KIND_FIELDS[kind],
+                f'{context}: observation kind {kind} does not support field {field!r}')
+        # Issue #364 rule (same as measurement_evidence.verify_record): the declared kind must equal the kind of a
+        # registry measurement point that covers this field, and the registry pin must have its review marker.
+        check_pin_review()
+        require(any(point['kind'] == kind and field in point['covers_fields']
+                    for point in load_registry().values()),
+                f'{context}: no measurement point of kind {kind} covers field {field!r} (spec/measurement_points.json)')
+        # An executed callee can only back a callee-execution observation (declaration, not verified).
+        require(not executed_callee or kind == 'CALLEE_EXECUTION',
+                f'{context}: executed_callee=True requires observation kind CALLEE_EXECUTION, not {kind}')
+        # Declaration-level fail-closed text checks (Issue #359 round 3, see the rule above _marker_fragment_refused):
+        # every string under the claim (value, sources, evidence entries, ...) plus `field` must be pure ASCII and
+        # carry no SYNTHETIC fragment in any single field. executed_callee=True is never a substitute.
+        texts = [field, *_leaf_strings(claim)]
+        require(not _marker_fragment_refused(texts),
+                f'{context}: OBSERVED refuses SYNTHETIC content (not real-core provenance)')
+        require(all(_is_pure_ascii(text) for text in texts),
+                f'{context}: OBSERVED requires pure ASCII text (non-ASCII codepoint refused)')
+        require(bool(resolved_evidence_hashes),
+                f'{context}: OBSERVED requires real-core evidence, but the resolved evidence set is empty')
+        for entry in evidence:
+            require(_marker_text(REAL_CORE_MARKER) in _marker_text(entry['execution_conditions']),
+                    f'{context}: OBSERVED evidence lacks the {REAL_CORE_MARKER} provenance marker')
+            require(entry['evidence_hash'] in resolved_evidence_hashes,
+                    f'{context}: OBSERVED requires real-core evidence resolved by resolve_evidence')
+        # Producer authentication (Issue #124 / #171): nothing in this repository authenticates the principal
+        # that executed the callee, so every OBSERVED claim is refused here (fail closed). The checks above are
+        # necessary, never sufficient. A self-declared REALCORE string, executed_callee=True, a caller-supplied
+        # resolved_evidence_hashes set and a matching sha256 are declarations or hash matches only. Matching
+        # hashes do NOT prove that the evidence is authentic or that a real core produced it.
+        raise ValueError(f'{context}: OBSERVED refused: executing principal not authenticated (#124); '
+                         'REALCORE text, executed_callee, observation_kind and hash match are not authentication')
     elif status == 'BLOCKED':
         require(value == 'UNKNOWN' and confidence == 'UNKNOWN' and not registers,
                 f'{context}: invalid BLOCKED claim')
 
 
 def load_contracts(path=ROOT / 'spec/api_contracts.json'):
-    data = json.loads(Path(path).read_text())
-    validate_contracts(data, json.loads((ROOT / 'spec/api_slots.json').read_text()),
-                       (ROOT / 'docs/api-inventory.md').read_text())
+    data = json.loads(Path(path).read_text(encoding='utf-8'))
+    validate_contracts(data, json.loads((ROOT / 'spec/api_slots.json').read_text(encoding='utf-8')),
+                       (ROOT / 'docs/api-inventory.md').read_text(encoding='utf-8'))
     return data
 
 

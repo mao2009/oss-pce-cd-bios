@@ -21,10 +21,15 @@ from contracts import FIELDS, HARDWARE_OBSERVATION_FIELDS  # noqa: E402
 from hw_observation_ledger import LEDGER_PATH, validate_ledger  # noqa: E402
 
 LEDGER = json.loads(LEDGER_PATH.read_text(encoding='utf-8'))
+# Negative-test base only: the pre-downgrade shape of the checked-in entry (OBSERVED, measured trust, runs).
+# Every entry derived from it must be refused. The checked-in ledger itself is BLOCKED (Issue #124).
+MEASURED_BASE = copy.deepcopy(LEDGER)
+MEASURED_BASE['entries'][0].update(status='OBSERVED', trust_level='EMULATOR_CORE_UNARCHIVED')
+MEASURED_BASE['entries'][0]['environment']['runs'] = ['cold', 'warm']
 
 
 def ledger_with(entry_changes=None, top_changes=None, drop=()):
-    data = copy.deepcopy(LEDGER)
+    data = copy.deepcopy(MEASURED_BASE)
     for key, value in (top_changes or {}).items():
         data[key] = value
     for key, value in (entry_changes or {}).items():
@@ -101,6 +106,10 @@ class NegativeLedgerTests(unittest.TestCase):
     def test_unknown_trust_level_is_rejected(self):
         self.assertRejected(ledger_with(entry_changes={'trust_level': 'FORMAT_ONLY'}), 'unsupported trust_level')
 
+    def test_observed_entry_with_measured_trust_and_runs_is_refused_without_authentication(self):
+        # Self-declared trust level and runs are not authentication (#124): OBSERVED is never accepted.
+        self.assertRejected(ledger_with(), 'not authenticated')
+
     def test_observed_without_measured_trust_is_rejected(self):
         self.assertRejected(ledger_with(entry_changes={'trust_level': 'NOT_MEASURED'}),
                             'OBSERVED requires a measured trust level')
@@ -118,7 +127,7 @@ class NegativeLedgerTests(unittest.TestCase):
         self.assertRejected(ledger_with(entry_changes={'not_evidence_for': []}), 'not_evidence_for')
 
     def test_duplicate_field_is_rejected(self):
-        data = ledger_with()
+        data = copy.deepcopy(LEDGER)
         data['entries'].append(copy.deepcopy(data['entries'][0]))
         self.assertRejected(data, 'duplicate entry')
 
@@ -144,7 +153,7 @@ class SourceReferenceConfinementTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def check(self, reference):
-        data = ledger_with()
+        data = copy.deepcopy(LEDGER)  # checked-in (BLOCKED) entry: acceptance must not depend on OBSERVED
         data['entries'][0]['source']['reference'] = reference
         validate_ledger(data)
 
