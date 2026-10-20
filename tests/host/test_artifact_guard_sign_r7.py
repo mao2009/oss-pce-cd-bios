@@ -1,9 +1,9 @@
-"""Issue #337 round 7: the run: allowlist reads every simple command, not only the first word of a run: value.
+"""Issue #337 round 7: the run: refusals that read every simple command, not only the first word of a run: value.
 
-Shell separators are a newline, ;, |, |&, &&, parentheses and braces. A GitHub expression is allowed only as the first word
-of a command. Each case adds one step to the real pages.yml deploy job in memory. Cases marked 'allowlist' use no
-signing term, so only the allowlist can refuse them; on ede72c06 they pass (the first word is echo), which is the regression.
-The unmutated workflows and the real pages.yml run steps must still pass.
+Shell separators are a newline, ;, |, |&, &&, parentheses and braces. A GitHub expression is refused outside the first word of
+a command. Each case adds one step to the real pages.yml deploy job in memory. Round 8 makes acceptance an exact match
+(test_artifact_guard_exact_r8), so every probe step here is refused; these cases pin the refusal layer behind it.
+The unmutated workflows and the real pages.yml must still pass.
 """
 from pathlib import Path
 import sys
@@ -28,59 +28,55 @@ class SeparatorTests(unittest.TestCase):
     def assertRefused(self, body):
         self.assertTrue(guard.signing_violations(with_run(body), PAGES), body)
 
-    def assertAccepted(self, body):
-        self.assertEqual([], guard.signing_violations(with_run(body), PAGES), body)
-
     def test_unmutated_workflows_pass(self):
         for path in sorted((guard.ROOT / guard.WORKFLOWS).glob('*.y*ml')):
             rel = path.relative_to(guard.ROOT).as_posix()
             with self.subTest(workflow=rel):
                 self.assertEqual([], guard.signing_violations(path.read_text(encoding='utf-8'), rel))
 
-    def test_real_pages_run_steps_pass(self):   # the three real run: steps of the pages.yml deploy job
-        self.assertAccepted('echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"')
-        self.assertAccepted('"${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --check-placement')
+    def test_real_pages_yml_passes(self):   # the three real run: steps and the Resolve step of the pages.yml deploy job
+        self.assertEqual([], guard.signing_violations(real(), PAGES))
 
-    def test_newline_split_stem_is_refused(self):   # fails on ede72c06 (the stem is split by a newline, not by a command)
+    def test_newline_split_stem_is_refused(self):
         self.assertRefused('echo a\nx=sign\nco$x sign-blob evidence/x.json')
 
-    def test_newline_then_signing_command_is_refused(self):   # fails on ede72c06 (the signing term is found after decoding)
+    def test_newline_then_signing_command_is_refused(self):
         self.assertRefused('echo a\ncosign sign-blob evidence/x.json')
 
-    def test_newline_then_allowlist_miss_is_refused(self):   # allowlist; fails on ede72c06
+    def test_newline_then_allowlist_miss_is_refused(self):
         self.assertRefused('echo a\nprintf hi')
 
-    def test_semicolon_then_command_is_refused(self):   # allowlist; fails on ede72c06
+    def test_semicolon_then_command_is_refused(self):
         self.assertRefused('echo a; printf hi')
 
-    def test_pipe_into_command_is_refused(self):   # allowlist; fails on ede72c06
+    def test_pipe_into_command_is_refused(self):
         self.assertRefused('echo a | printf hi')
 
-    def test_pipe_ampersand_into_command_is_refused(self):   # allowlist; fails on ede72c06
+    def test_pipe_ampersand_into_command_is_refused(self):
         self.assertRefused('echo a |& printf hi')
 
-    def test_and_or_then_command_is_refused(self):   # allowlist; fails on ede72c06
+    def test_and_or_then_command_is_refused(self):
         self.assertRefused('echo a && printf hi')
         self.assertRefused('echo a || printf hi')
 
-    def test_grouping_then_command_is_refused(self):   # allowlist; fails on ede72c06
+    def test_grouping_then_command_is_refused(self):
         self.assertRefused('(printf hi)')
         self.assertRefused('{ printf hi; }')
 
-    def test_semicolon_then_cosign_is_refused(self):   # fails on ede72c06 (signing term after the separator)
+    def test_semicolon_then_cosign_is_refused(self):
         self.assertRefused('echo a; cosign sign-blob evidence/x.json')
 
-    def test_pipe_into_cosign_is_refused(self):   # fails on ede72c06 (signing term after the pipe)
+    def test_pipe_into_cosign_is_refused(self):
         self.assertRefused('echo a | cosign sign-blob evidence/x.json')
 
-    def test_github_expression_in_echo_argument_is_refused(self):   # fails on ede72c06 (allowed anywhere before)
+    def test_github_expression_in_echo_argument_is_refused(self):
         self.assertRefused('echo "${{ steps.pyresolve.outputs.python }}"')
 
-    def test_ansi_c_quote_split_stem_is_refused(self):   # fails on ede72c06 (only the first word was read)
+    def test_ansi_c_quote_split_stem_is_refused(self):
         self.assertRefused("echo a\nc$'osign' sign-blob evidence/x.json")
 
-    def test_redirections_are_not_separators(self):
-        self.assertAccepted('echo a 2>&1 >/dev/null')
+    def test_redirections_are_not_separators(self):   # a reader-level check: 2>&1 and >/dev/null do not split the command
+        self.assertEqual(1, len(guard._simple_commands('echo a 2>&1 >/dev/null')))
 
 
 if __name__ == '__main__':

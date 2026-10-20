@@ -3,7 +3,7 @@
 Each case adds one step to the real pages.yml deploy job (the only such job today) in memory. The run: value is read after
 YAML decoding, so escapes are already applied. On 2f9002a the negative cases pass the check (escaped stems, an assembled
 command word, a $VAR command word, eval, and shell indirection), which is the regression they pin. The unmutated workflows
-must pass, and the allowlisted echo step must pass.
+must pass. Round 8: an added echo step is refused too, because acceptance is an exact match (test_artifact_guard_exact_r8).
 """
 from pathlib import Path
 import sys
@@ -63,11 +63,11 @@ class RunAllowlistTests(unittest.TestCase):
             with self.subTest(run=run):
                 self.assertRefused(f'        run: {run}\n')
 
-    def test_allowlisted_command_passes(self):
-        self.assertEqual([], guard.signing_violations(with_step('        run: echo hello\n'), PAGES))
+    def test_echo_step_added_to_the_deploy_job_is_refused(self):   # round 8: exact match, the real echo step is the only one
+        self.assertRefused('        run: echo hello\n')
         block = ('        run: |\n'
                  '          echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"\n')
-        self.assertEqual([], guard.signing_violations(with_step(block), PAGES))
+        self.assertRefused(block)
 
 
 if __name__ == '__main__':

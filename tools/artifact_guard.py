@@ -857,8 +857,8 @@ def signing_violations(text, label):
     (b) an approved signing job keeps id-token and attestations write, and keeps the job that produces its artifact in needs:.
     (c) continue-on-error is refused in an approved signing job, at job or step level, in any spelling on the line.
     Round 5 and 6: the signing terms are also tested on each run: value as YAML decodes it and _shell_text normalizes it, in
-    any job. In a job with id-token: write that is not approved, each run: must pass the command allowlist
-    (run_allowlist_violations).
+    any job. In a job with id-token: write that is not approved, each run: must exactly match APPROVED_RUN_TEXTS
+    (run_allowlist_violations, round 8).
     Not covered here: a signing call under a name none of these terms match is refused by the uses: allowlist, not here."""
     name = Path(label).name
     lines = text.splitlines()
@@ -906,11 +906,23 @@ def signing_violations(text, label):
 # normalized as shell text by _shell_text before the signing terms are tested, in every job (GH_VERIFY_SPAN_RE: read-only
 # verification is exempt wherever it occurs).
 GH_VERIFY_SPAN_RE = re.compile(r"gh attestation verify\b")
-# Round 6 allowlist. In a job with id-token: write that is not an approved signing job, every simple command of a run: value
-# must start with a word on RUN_ALLOWLIST for that job (a job not listed has no allowed command). The first word is compared
-# whole, and a word with $, a quote, a backslash or a backtick is refused. `command` is allowed only as `command -v NAME`.
-# Today only the Pages deploy job (pages.yml) holds id-token outside the approved signing jobs: echo writes GITHUB_OUTPUT,
-# command -v finds python3, and the trusted python3 path from the pyresolve step is the one GitHub expression allowed there.
+# Issue #337 round 8: EXACT MATCH is the rule. In a job with id-token: write that is not an approved signing job, a run: value is
+# accepted only if its YAML-decoded text, less one trailing newline, equals APPROVED_RUN_TEXTS[(workflow, job, step name)].
+# Anything else is refused, so no shell parsing decides acceptance. Keyed by workflow, job and step name, a changed run text
+# fails, and the same text in another job or under another step name fails. Each key may be used once per job.
+# The pages.yml test (test_artifact_guard_exact_r8) loads the real file and fails if this registry drifts from it.
+APPROVED_RUN_TEXTS = {
+    ("pages.yml", "deploy", "Resolve python3 (trusted)"):
+        'echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"',
+    ("pages.yml", "deploy", "Guard placement (trusted)"):
+        '"${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --check-placement',
+    ("pages.yml", "deploy", "Stage artifacts (trusted guard) for Upload static site"):
+        '"${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --stage .github/workflows/pages.yml "Upload static site"',
+    ("pages.yml", "deploy", "Verify staged artifacts (trusted guard) for Upload static site"):
+        '"${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --verify .github/workflows/pages.yml "Upload static site"',
+}
+# Round 6/7 refusals, kept as a second layer behind the exact match (they can refuse, never accept). Only the Pages deploy job
+# holds id-token outside the approved signing jobs. `command` is allowed only as `command -v NAME`.
 RUN_ALLOWLIST = {("pages.yml", "deploy"): frozenset({"echo", "command"})}
 RUN_EXPRESSIONS = {("pages.yml", "deploy"): frozenset({"${{ steps.pyresolve.outputs.python }}"})}
 SHELL_PUNCTUATION = "();<>|&{}"
@@ -1018,7 +1030,8 @@ def _script_problems(script, names, expressions, where):
 def run_allowlist_violations(text, label):
     """Issue #337 round 4 (a) and round 6, for one workflow or composite action file (YAML decoded, not line-read).
     The signing terms are tested on every run: value, in every job. In a job with id-token: write that is not an
-    approved signing job (ATTEST_NEEDS), each run: must pass _script_problems, and the job may not set defaults: or a
+    approved signing job (ATTEST_NEEDS), each run: must exactly match APPROVED_RUN_TEXTS (round 8), must also pass
+    _script_problems (round 6/7 refusals), and the job may not set defaults: or a
     step may not set shell: (both would change how the run: is read). A composite action has no job, so only the
     signing-term test applies to it. Residuals: docs/provenance.md."""
     try:
@@ -1048,6 +1061,7 @@ def run_allowlist_violations(text, label):
         if not isinstance(steps, list):
             problems.append(f"{label}: steps of job {job!r} are not a list (Issue #337 round 6)")
             continue
+        used = set()
         for step in steps:
             if not isinstance(step, dict):
                 if checked:
@@ -1065,6 +1079,13 @@ def run_allowlist_violations(text, label):
                 problems.append(f"{label}: job {job!r} run: calls signing or an OIDC token after YAML decoding and shell "
                                 f"normalization ({run!r}, Issue #337 round 4 (a), round 5, round 6)")
             if checked:
+                step_name = step.get("name") if isinstance(step.get("name"), str) else None
+                key = (name, job, step_name)
+                text = run[:-1] if run.endswith("\n") else run
+                if key in used or key not in APPROVED_RUN_TEXTS or APPROVED_RUN_TEXTS[key] != text:
+                    problems.append(f"{label}: job {job!r} run: {run!r} is not the approved run text for step "
+                                    f"{step_name!r} (exact match, Issue #337 round 8)")
+                used.add(key)
                 names = RUN_ALLOWLIST.get((name, job), frozenset())
                 expressions = RUN_EXPRESSIONS.get((name, job), frozenset())
                 problems += _script_problems(run, names, expressions, f"{label}: job {job!r} run: {run!r}")
