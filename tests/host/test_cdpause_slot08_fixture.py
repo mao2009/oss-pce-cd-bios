@@ -9,10 +9,14 @@ release_eligible=false, and must not be wired into any callable entry.
 """
 import hashlib
 import json
+import os
 import re
 import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "tests" / "fixtures" / "cdpause-slot08-cases.json"
@@ -29,6 +33,11 @@ TOP_LEVEL_KEYS = {"schema", "issue", "slot", "entry_candidate", "candidate_name"
                   "execution", "provenance", "callee_abi", "medium", "ops", "outcomes", "cases"}
 PREFIX_CLASS = {"pos_": POSITIVE, "neg_": NEGATIVE, "unk_": UNKNOWN}
 MUTANTS = ("reset_pos", "accept_stopped_pause")
+
+
+def _clean_env():
+    # Drop GIT_* variables (e.g. GIT_DIR) so git resolves the repository from -C only.
+    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
 
 
 def load():
@@ -254,24 +263,34 @@ class CdPauseArgumentValidation(unittest.TestCase):
 
 
 ENTRY_TOKEN_RE = re.compile(r"\$E018|0xE018|CD_PAUSE", re.IGNORECASE)
-# Files outside docs/, spec/ and *.md that already mention CD_PAUSE in prose, comments or a scenario-name list.
-# None binds $E018/0xE018 or exposes this fixture as a callable entry. Any other hit fails the wiring check.
-ENTRY_TOKEN_ALLOWLIST = {
-    "src/cdda_probe.s": "comment: states CD_PAUSE ($08) is not what this probe is",
-    "tests/host/test_cd_pause_contract.py": "CD_PAUSE caller-ABI ledger text (Issue #254)",
-    "tests/host/test_cdda_state.py": "module docstring: CD_PAUSE is not a verified description",
-    "tests/integration/geargrafx_cdda.py": "docstring: CD_PAUSE ABI is not measured here",
-    "tools/reference_bios_scenarios.py": "scenario name list; no entry binding",
-    FIXTURE_REL: "this fixture",
-    "tests/host/test_cdpause_slot08_fixture.py": "this checker",
+# Whole-file exemptions (mirrors #357): this fixture and this checker name the token by design; neither is a callable entry.
+SELF_PATHS = {FIXTURE_REL, "tests/host/test_cdpause_slot08_fixture.py"}
+# Exact (path, stripped line) pairs that already mention CD_PAUSE in prose, comments or a scenario-name list.
+# Per-line matching: a new binding on any other line of these files, or in any other file, fails the wiring check.
+# None of these lines binds $E018/0xE018 or exposes this fixture as a callable entry.
+ENTRY_TOKEN_ALLOWED_LINES = {
+    ("src/cdda_probe.s", "; NOT a production BIOS, NOT CD_PLAY ($06) / CD_PAUSE ($08) and NOT a System Card ABI."):
+        "comment: states CD_PAUSE ($08) is not what this probe is",
+    ("tests/host/test_cd_pause_contract.py", '"""Host checks for the CD_PAUSE caller-ABI evidence ledger (Issue #254).'):
+        "module docstring: CD_PAUSE caller-ABI ledger (Issue #254)",
+    ("tests/host/test_cd_pause_contract.py", "self.assertIn('System Card の CD_PAUSE は一度も実行していない', self.text)"):
+        "ledger assertion text (Issue #254)",
+    ("tests/host/test_cdda_state.py", "PAUSED / ENDED). It is NOT a verified description of the System Card CD_PLAY / CD_PAUSE /"):
+        "module docstring: CD_PAUSE is not a verified description",
+    ("tests/integration/geargrafx_cdda.py", "behaviour of the SCSI layer. The System Card CD_PLAY/CD_PAUSE/CD_SEARCH ABI is NOT measured here and"):
+        "docstring: CD_PAUSE ABI is not measured here",
+    ("tools/reference_bios_scenarios.py", '"CD_EXEC", "CD_PLAY", "CD_SEARCH", "CD_PAUSE", "CD_STAT",'):
+        "scenario name list; no entry binding",
 }
 
 
 class CdPauseNotWired(unittest.TestCase):
-    def _tracked_text_files(self):
+    def _text_files(self):
+        """(name, text) for every tracked or untracked (not ignored) text file outside docs/, spec/, rom/ and *.md."""
         if not (ROOT / ".git").exists():
-            self.skipTest("not a git work tree; wiring check needs tracked files")
-        out = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z"], capture_output=True, check=True).stdout
+            self.skipTest("not a git work tree; wiring check needs the file list")
+        out = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+                             capture_output=True, check=True, env=_clean_env()).stdout
         for name in out.decode("utf-8").split("\0"):
             if not name or name.startswith(("docs/", "spec/", "rom/")) or name.endswith(".md"):
                 continue
@@ -280,22 +299,50 @@ class CdPauseNotWired(unittest.TestCase):
                 continue
             yield name, path.read_text(encoding="utf-8", errors="ignore")
 
-    def test_no_tracked_non_doc_file_names_the_fixture(self):
-        hits = [name for name, text in self._tracked_text_files() if "cdpause-slot08" in text.lower()
-                and name not in (FIXTURE_REL, "tests/host/test_cdpause_slot08_fixture.py")]
+    def _entry_hits(self):
+        return [f"{name}: {line.strip()}" for name, text in self._text_files() if name not in SELF_PATHS
+                for line in text.splitlines()
+                if ENTRY_TOKEN_RE.search(line) and (name, line.strip()) not in ENTRY_TOKEN_ALLOWED_LINES]
+
+    def test_no_non_doc_file_names_the_fixture(self):
+        hits = [name for name, text in self._text_files() if "cdpause-slot08" in text.lower()
+                and name not in SELF_PATHS]
         self.assertEqual(hits, [])
 
-    def test_entry_tokens_are_only_in_allowlisted_files(self):
-        hits = [(name, m.group(0)) for name, text in self._tracked_text_files()
-                for m in ENTRY_TOKEN_RE.finditer(text) if name not in ENTRY_TOKEN_ALLOWLIST]
-        self.assertEqual(hits, [])
+    def test_entry_tokens_are_only_in_allowlisted_lines(self):
+        self.assertEqual(self._entry_hits(), [])
 
-    def test_allowlist_entries_still_exist_and_still_match(self):
-        present = {name: text for name, text in self._tracked_text_files()}
-        for name in ENTRY_TOKEN_ALLOWLIST:
-            with self.subTest(file=name):
-                self.assertIn(name, present)
-                self.assertRegex(present[name], ENTRY_TOKEN_RE)
+    def test_allowlisted_lines_still_exist(self):
+        present = {(name, line.strip()) for name, text in self._text_files() for line in text.splitlines()}
+        for key in ENTRY_TOKEN_ALLOWED_LINES:
+            with self.subTest(file=key[0]):
+                self.assertIn(key, present)
+
+    def _fails_on_repo(self, method, files):
+        """Run one wiring check against a throwaway git repo (never this worktree). True = the check reported a hit."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        subprocess.run(["git", "-C", str(root), "init", "-q"], check=True, env=_clean_env())
+        for rel, text in files.items():
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text(text, encoding="utf-8")
+        with mock.patch.object(sys.modules[__name__], "ROOT", root):
+            try:
+                getattr(self, method)()
+            except AssertionError:
+                return True
+        return False
+
+    def test_binding_on_non_allowed_line_of_allowed_file_is_reported(self):
+        allowed = '         "CD_EXEC", "CD_PLAY", "CD_SEARCH", "CD_PAUSE", "CD_STAT",\n'
+        m = "test_entry_tokens_are_only_in_allowlisted_lines"
+        self.assertFalse(self._fails_on_repo(m, {"tools/reference_bios_scenarios.py": allowed}))
+        self.assertTrue(self._fails_on_repo(m, {"tools/reference_bios_scenarios.py": allowed + "    jsr $E018\n"}))
+
+    def test_untracked_binding_is_reported(self):
+        self.assertTrue(self._fails_on_repo("test_entry_tokens_are_only_in_allowlisted_lines",
+                                            {"src/new.s": "    jsr $E018\n"}))
 
 
 if __name__ == "__main__":
