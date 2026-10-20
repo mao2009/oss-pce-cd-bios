@@ -10,6 +10,7 @@ import json
 import subprocess
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_REL = "tests/fixtures/cdpcmrd-slot0e-cases.json"
@@ -126,6 +127,41 @@ class CdPcmrdSlot0eFixtureTest(unittest.TestCase):
                              capture_output=True, text=True)
         hits = {p for p in out.stdout.split() if p not in (FIXTURE_REL, "tests/host/test_cdpcmrd_slot0e_fixture.py")}
         self.assertEqual(sorted(hits), [], "fixture name referenced outside the fixture and this test")
+
+    # --- git grep failure modes (mocked): exit 2+, launch failure, untracked scope, clean/hit paths ---
+    def test_git_grep_exit_2_is_a_failure(self):
+        done = subprocess.CompletedProcess([], 2, "", "fatal: bad pattern")
+        with mock.patch("subprocess.run", return_value=done):
+            with self.assertRaises(AssertionError):
+                self.test_fixture_is_not_wired_into_callable_entries()
+
+    def test_git_grep_fatal_128_is_a_failure(self):
+        done = subprocess.CompletedProcess([], 128, "", "fatal: not a git repository")
+        with mock.patch("subprocess.run", return_value=done):
+            with self.assertRaises(AssertionError):
+                self.test_fixture_is_not_wired_into_callable_entries()
+
+    def test_git_grep_launch_failure_is_a_failure(self):
+        with mock.patch("subprocess.run", side_effect=OSError("git: command not found")):
+            with self.assertRaises(AssertionError):
+                self.test_fixture_is_not_wired_into_callable_entries()
+
+    def test_git_grep_exit_1_means_no_reference(self):
+        done = subprocess.CompletedProcess([], 1, "", "")
+        with mock.patch("subprocess.run", return_value=done):
+            self.test_fixture_is_not_wired_into_callable_entries()
+
+    def test_git_grep_reported_hit_is_a_failure(self):
+        done = subprocess.CompletedProcess([], 0, "tests/host/test_other.py\n", "")
+        with mock.patch("subprocess.run", return_value=done):
+            with self.assertRaises(AssertionError):
+                self.test_fixture_is_not_wired_into_callable_entries()
+
+    def test_untracked_files_are_scanned(self):
+        done = subprocess.CompletedProcess([], 1, "", "")
+        with mock.patch("subprocess.run", return_value=done) as run:
+            self.test_fixture_is_not_wired_into_callable_entries()
+        self.assertIn("--untracked", run.call_args.args[0])
 
 
 if __name__ == "__main__":
