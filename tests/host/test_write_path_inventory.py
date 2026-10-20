@@ -193,6 +193,48 @@ class WritePathInventoryTest(unittest.TestCase):
                 line = next(l for l in lines if l.startswith(f"| {r['id']} |"))
                 self.assertIn(r["monitor_status"], line)
 
+    def test_mutation_unmonitored_or_permitted_cannot_claim_yes(self):
+        inv = fresh()
+        row(inv, "W05")["prevents_before_side_effect"] = "YES"
+        with self.assertRaisesRegex(ValueError, "W05: UNMONITORED or PERMITTED_UNISOLATED cannot claim prevention"):
+            W.validate(inv, PINNED)
+
+    def test_mutation_permitted_cannot_claim_yes(self):
+        inv = fresh()
+        row(inv, "W16")["prevents_before_side_effect"] = "YES"
+        with self.assertRaisesRegex(ValueError, "W16: UNMONITORED or PERMITTED_UNISOLATED cannot claim prevention"):
+            W.validate(inv, PINNED)
+
+    def test_mutation_unmonitored_block_cannot_claim_per_write(self):
+        inv = fresh()
+        row(inv, "W14")["prevents_before_side_effect"] = "PER_WRITE"
+        with self.assertRaisesRegex(ValueError, "W14: UNMONITORED or PERMITTED_UNISOLATED cannot claim prevention"):
+            W.validate(inv, PINNED)
+
+    def test_mutation_prevention_needs_a_pre_side_effect_detection_point(self):
+        inv = fresh()
+        row(inv, "W03")["detection_point"] = "AFTER_SIDE_EFFECT"
+        with self.assertRaisesRegex(ValueError, "W03: prevention requires a pre-side-effect detection point"):
+            W.validate(inv, PINNED)
+        inv = fresh()
+        row(inv, "W02")["detection_point"] = "NONE"
+        with self.assertRaisesRegex(ValueError, "W02: prevention requires a pre-side-effect detection point"):
+            W.validate(inv, PINNED)
+
+    def test_mutation_detected_after_side_effect_needs_after_detection_point(self):
+        inv = fresh()
+        row(inv, "W06")["detection_point"] = "BEFORE_STORE"
+        with self.assertRaisesRegex(ValueError, "W06: DETECTED_AFTER_SIDE_EFFECT requires detection point AFTER_SIDE_EFFECT"):
+            W.validate(inv, PINNED)
+        inv = fresh()
+        row(inv, "W06")["detection_point"] = "INSTRUCTION_BOUNDARY"
+        with self.assertRaisesRegex(ValueError, "W06: DETECTED_AFTER_SIDE_EFFECT requires detection point AFTER_SIDE_EFFECT"):
+            W.validate(inv, PINNED)
+
+    def test_current_rows_are_accepted_by_the_new_rules(self):
+        summary = W.validate(fresh(), PINNED)
+        self.assertEqual(summary["rows"], len(INVENTORY["rows"]))
+
     def test_cli_exits_zero_on_committed_inventory(self):
         self.assertEqual(W.main(["--check"]), 0)
         self.assertEqual(W.main(["--bogus"]), 2)
