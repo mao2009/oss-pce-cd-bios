@@ -24,8 +24,14 @@ APPROVED_PROVENANCE = ("synthetic: author-defined media and cases only; no Syste
 APPROVED_MODEL_ORIGIN = "AUTHOR_SYNTHETIC: CD_CONTNTS の観測ではない"
 TOP_LEVEL_KEYS = {"schema", "issue", "slot", "entry_candidate", "candidate_name", "abi_status", "release_eligible",
                   "execution", "provenance", "model_origin", "callee_abi", "query_model", "media", "cases"}
-# Files whose mention of CD_CONTNTS/E024 is pre-existing and not a build or callable-entry wiring.
-WIRING_ALLOWLIST = {"tools/reference_bios_scenarios.py"}
+# Exact (stripped) lines that mention CD_CONTNTS/E024 without wiring it into the build or a callable entry.
+# Line-level, so any other line in these files still fails. spec/api_contracts.json lines are HYPOTHESIS records.
+WIRING_ALLOWLIST = {
+    "tools/reference_bios_scenarios.py": {'"CD_SUBQ", "CD_DINFO", "CD_CONTNTS", "CD_SUBRQ / CD_SUBRD",'},
+    "spec/api_slots.json": {'"candidate_name": "CD_CONTNTS"'},
+    "spec/api_contracts.json": {'"candidate_name": "CD_CONTNTS",', '"candidate_entry": "0xE024",',
+                                '"name": "CD_CONTNTS",', '"entry": "0xE024",'},
+}
 WIRING_PATTERN = re.compile(r"E024|CD_CONTNTS|cdcontnts-track-cases")
 FORBIDDEN = ("VERIFIED", "DEV_CALLABLE", "PASS", "OBSERVED")
 
@@ -145,23 +151,26 @@ class CdContntsTrackFixtureTests(unittest.TestCase):
         out = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z"], capture_output=True, check=True).stdout
         tracked = [n for n in out.decode("utf-8").split("\0") if n]
 
-        def in_scope(rel):  # build inputs and callable sources; spec/, docs/, *.md and tests are out of scope
-            return (rel == "Makefile" or rel.startswith(("src/", "tools/"))
+        def in_scope(rel):  # build inputs, spec data and callable sources; docs/, *.md and tests are out of scope
+            return (rel == "Makefile" or rel.startswith(("src/", "tools/", "spec/"))
                     or (rel.startswith("tests/fixtures/") and rel.endswith(".s")))
 
         hits = []
         for rel in tracked:
-            if not in_scope(rel) or rel in WIRING_ALLOWLIST:
+            if not in_scope(rel):
                 continue
             p = ROOT / rel
             if not p.is_file() or b"\0" in p.read_bytes()[:4096]:
                 continue
-            if WIRING_PATTERN.search(p.read_text(encoding="utf-8", errors="ignore")):
-                hits.append(rel)
+            allowed = WIRING_ALLOWLIST.get(rel, set())
+            for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
+                if WIRING_PATTERN.search(line) and line.strip() not in allowed:
+                    hits.append(f"{rel}: {line.strip()}")
         self.assertEqual(hits, [], "CD_CONTNTS/E024 wired into build or callable sources")
-        for rel in WIRING_ALLOWLIST:  # stale allowlist entries must not linger
+        for rel, allowed in WIRING_ALLOWLIST.items():  # stale allowlist entries must not linger
             self.assertIn(rel, tracked)
-            self.assertRegex((ROOT / rel).read_text(encoding="utf-8", errors="ignore"), WIRING_PATTERN)
+            present = {ln.strip() for ln in (ROOT / rel).read_text(encoding="utf-8", errors="ignore").splitlines()}
+            self.assertLessEqual(allowed, present, f"stale allowlist entry in {rel}")
 
 
 if __name__ == "__main__":
