@@ -11,6 +11,27 @@ invalid input was rejected, never evidence that the invalid ROM works.
 suite. **Do not use a fixed count here**: new tests merge independently; the
 `unittest` summary and exact CI commit identify the true current count.
 
+### cc65-dependent tests: SKIP versus required
+
+Tests that really execute cc65 (`build`, `ca65`, `ld65`, `cc65`, `da65`) are gated with
+`@requires_cc65` (`tools/environment.py`). The decorator on a class gates **every** `test*` method of that
+class, not only the ones that use the fixture. So a test that needs no cc65 must live in a separate,
+ungated class beside it (for example `ApiContractTests` or `CdLoadExecContractTests`).
+`tests/host/test_cc65_gate.py` checks this for the moved cc65-independent tests in `test_cdload_exec.py`
+and `test_reset_entry.py`.
+
+| Host / run | cc65 missing | cc65 present |
+| --- | --- | --- |
+| `make host-test` (local, no build) | gated tests SKIP with reason `cc65 unavailable (<tool>: ...); run make setup`; the rest run | every test runs |
+| `make test` (required gate, sets `OSS_PCE_REQUIRE_CC65=1`) | gated tests **FAIL**, never SKIP | every test runs |
+
+`make test` also depends on `build`, so it cannot pass without cc65 anyway. The required flag makes the
+policy explicit: a SKIP is never reported as success in the required gate. Windows hosts also carry
+platform issues outside this policy (`os.getuid` in `tools/environment.py`, `cp932` text reads, no
+`make`); tests affected by those are reported as ERROR there and are not evidence either way.
+Linux CI (Ubuntu 24.04, `make setup` first) is the only required environment. WSL verification is a
+separate, clean-clone run of the same commands.
+
 - Two independent debug builds and a release build yield identical ROM bytes.
 - Headerless size, reset code, checkpoint loop, marker, vector words and all
   unused padding match the **fixture contract**. Truncation, fake 8 KiB data,
