@@ -602,6 +602,12 @@ ATTEST_DOWNLOADS = {
     ("api-source.yml", "attest-cdread-verdict"): {
         "name": "cdread-verdict-${{ github.sha }}", "path": "verdict", "files": frozenset({"cdread-verdict.json"})},
 }
+# Issue #337 round 11 (review): the intermediate downloads of the two guard jobs feed the uploads that are signed, so they are
+# pinned the same way (name of the matching upload, path, with: keys). They sign nothing, so there is no subject check.
+GUARD_DOWNLOADS = {
+    ("api-source.yml", "guard-bios-dev"): {"name": "intermediate-bios-dev-${{ github.sha }}", "path": ".intake"},
+    ("api-source.yml", "guard-cdread-verdict"): {"name": "intermediate-cdread-verdict-${{ github.sha }}", "path": ".intake"},
+}
 ROM_CANDIDATES = ("x.pce", "x.bin", "x.rom")
 ROM_SUFFIXES = (".pce", ".bin", ".rom")
 # The ROM upload patterns that exist today (staged form), per workflow file. Each is a synthetic probe ROM or the project's
@@ -689,15 +695,52 @@ def attest_input_violations(text, label):
     return problems
 
 
-def attest_download_violations(text, label):
-    """Issue #337 round 11, for one workflow file (YAML decoded with the strict loader). For each approved signing job of
-    this file (ATTEST_DOWNLOADS): exactly one download-artifact step and one attest-build-provenance step; the download
-    step has only uses and with, uses is DOWNLOAD_USES, and with: is exactly {name, path} with the pinned values (so
-    run-id, repository, github-token, merge-multiple and any other key are refused); the subject-path is exactly
-    path + "/" + each pinned file, and that set equals ATTEST_SUBJECTS for the job."""
+def _download_problems(label, job, steps, pin):
+    """Issue #337 round 11: problems with the one download-artifact step of one job, and that step (None if not found).
+    The step has only uses and with; uses is DOWNLOAD_USES; with: is exactly {name, path} with the pinned values, so run-id,
+    repository, github-token, merge-multiple and any other key are refused."""
+    uses = [s.get("uses") if isinstance(s, dict) else None for s in steps]
+    downloads = [s for s, u in zip(steps, uses) if isinstance(u, str) and u.startswith("actions/download-artifact@")]
+    if len(downloads) != 1:
+        return [f"{label}: job {job!r} must have exactly one download-artifact step (found {len(downloads)}, "
+                "Issue #337 round 11)"], None
+    download = downloads[0]
+    problems = []
+    extra = sorted(set(download) - {"name", "uses", "with"}, key=str)   # name is the step's display name only
+    if extra:
+        problems.append(f"{label}: download-artifact step in job {job!r} sets {extra} (only name, uses and with are "
+                        "allowed, Issue #337 round 11)")
+    if download.get("uses") != DOWNLOAD_USES:
+        problems.append(f"{label}: download-artifact step in job {job!r} must use {DOWNLOAD_USES!r} "
+                        f"(found {download.get('uses')!r}, Issue #337 round 11)")
+    with_ = download.get("with")
+    if not isinstance(with_, dict):
+        problems.append(f"{label}: download-artifact step in job {job!r} has no with: mapping (Issue #337 round 11)")
+    else:
+        bad = sorted(set(with_) - DOWNLOAD_WITH_KEYS, key=str)
+        if bad:
+            problems.append(f"{label}: download-artifact step in job {job!r} may not set with: {bad} (allowed "
+                            f"{sorted(DOWNLOAD_WITH_KEYS)}; run-id, repository, github-token and merge-multiple are "
+                            "refused, Issue #337 round 11)")
+        if with_.get("name") != pin["name"] or with_.get("path") != pin["path"]:
+            problems.append(f"{label}: download-artifact step in job {job!r} must fetch {pin['name']!r} into "
+                            f"{pin['path']!r} (found name {with_.get('name')!r}, path {with_.get('path')!r}, "
+                            "Issue #337 round 11)")
+    return problems, download
+
+
+def attest_download_violations(text, label, partial_fixtures=False):
+    """Issue #337 round 11, for one workflow file (YAML decoded with the strict loader). For each pinned job of this file:
+    GUARD_DOWNLOADS (the two guard jobs) and ATTEST_DOWNLOADS (the two signing jobs), the download step is checked by
+    _download_problems. For a signing job, the job also has exactly one attest-build-provenance step, and its subject-path is
+    exactly path + "/" + each pinned file, a set equal to ATTEST_SUBJECTS for the job.
+
+    A pinned job missing from the file is refused. Only a caller that passes partial_fixtures=True (a test fixture that holds
+    part of the workflow) skips a missing job. The real workflow is checked with partial_fixtures=False."""
     import yaml
     name = Path(label).name
-    pins = {job: pin for (file, job), pin in ATTEST_DOWNLOADS.items() if file == name}
+    pins = {job: (pin, True) for (file, job), pin in ATTEST_DOWNLOADS.items() if file == name}
+    pins.update({job: (pin, False) for (file, job), pin in GUARD_DOWNLOADS.items() if file == name})
     if not pins:
         return []
     try:
@@ -706,42 +749,27 @@ def attest_download_violations(text, label):
         return [f"{label}: YAML cannot be read, download pins cannot be checked ({error}; Issue #337 round 11)"]
     jobs = doc.get("jobs") if isinstance(doc, dict) else None
     problems = []
-    for job, pin in sorted(pins.items()):
-        if isinstance(jobs, dict) and job not in jobs:
-            continue   # an absent signing job signs nothing here; attest_condition_violations and publish_violations cover it
-        body = jobs.get(job) if isinstance(jobs, dict) else None
+    for job, (pin, signing) in sorted(pins.items()):
+        if not isinstance(jobs, dict) or job not in jobs:
+            if not partial_fixtures:
+                problems.append(f"{label}: job {job!r} is missing from {name}; the real workflow must keep it "
+                                "(Issue #337 round 11)")
+            continue
+        body = jobs.get(job)
         steps = body.get("steps") if isinstance(body, dict) else None
         if not isinstance(steps, list):
-            problems.append(f"{label}: signing job {job!r} has no steps list to check (Issue #337 round 11)")
+            problems.append(f"{label}: job {job!r} has no steps list to check (Issue #337 round 11)")
             continue
-        uses = [s.get("uses") if isinstance(s, dict) else None for s in steps]
-        downloads = [s for s, u in zip(steps, uses) if isinstance(u, str) and u.startswith("actions/download-artifact@")]
-        attests = [s for s, u in zip(steps, uses) if isinstance(u, str) and u.startswith("actions/attest-build-provenance@")]
-        if len(downloads) != 1 or len(attests) != 1:
-            problems.append(f"{label}: signing job {job!r} must have exactly one download-artifact and one "
-                            f"attest-build-provenance step (found {len(downloads)} and {len(attests)}, Issue #337 round 11)")
+        step_problems, download = _download_problems(label, job, steps, pin)
+        problems += step_problems
+        if not signing or download is None:
             continue
-        download = downloads[0]
-        extra = sorted(set(download) - {"uses", "with"}, key=str)
-        if extra:
-            problems.append(f"{label}: download-artifact step in job {job!r} sets {extra} (only uses and with are allowed, "
-                            "Issue #337 round 11)")
-        if download.get("uses") != DOWNLOAD_USES:
-            problems.append(f"{label}: download-artifact step in job {job!r} must use {DOWNLOAD_USES!r} "
-                            f"(found {download.get('uses')!r}, Issue #337 round 11)")
-        with_ = download.get("with")
-        if not isinstance(with_, dict):
-            problems.append(f"{label}: download-artifact step in job {job!r} has no with: mapping (Issue #337 round 11)")
-        else:
-            bad = sorted(set(with_) - DOWNLOAD_WITH_KEYS, key=str)
-            if bad:
-                problems.append(f"{label}: download-artifact step in job {job!r} may not set with: {bad} (allowed "
-                                f"{sorted(DOWNLOAD_WITH_KEYS)}; run-id, repository, github-token and merge-multiple are "
-                                "refused, Issue #337 round 11)")
-            if with_.get("name") != pin["name"] or with_.get("path") != pin["path"]:
-                problems.append(f"{label}: download-artifact step in job {job!r} must fetch {pin['name']!r} into "
-                                f"{pin['path']!r} (found name {with_.get('name')!r}, path {with_.get('path')!r}, "
-                                "Issue #337 round 11)")
+        attests = [s for s in steps if isinstance(s, dict) and isinstance(s.get("uses"), str)
+                   and s["uses"].startswith("actions/attest-build-provenance@")]
+        if len(attests) != 1:
+            problems.append(f"{label}: signing job {job!r} must have exactly one attest-build-provenance step "
+                            f"(found {len(attests)}, Issue #337 round 11)")
+            continue
         attest_with = attests[0].get("with")
         subject_text = attest_with.get("subject-path") if isinstance(attest_with, dict) else None
         subjects = {line.strip() for line in subject_text.splitlines() if line.strip()} if isinstance(subject_text, str) else set()
@@ -1506,7 +1534,7 @@ def _pages_single_problems(jobs, per_job, label):
                                PAGES_JOB_KEYS)
 
 
-def check_guard_placement(root=ROOT):
+def check_guard_placement(root=ROOT, partial_fixtures=False):
     """Static placement layer (run by make check and by the trusted copy): the preamble and stage/verify steps must
     surround every upload step, in the same job, exactly as written here.
 
@@ -1514,6 +1542,9 @@ def check_guard_placement(root=ROOT):
     see through (release assets, `gh release`, reusable workflows) fails here too. Gating on "this file contains an
     upload-artifact uses: line" left those routes uninspected by --check-placement while check_upload_artifacts
     refused them (review finding A). A file with no upload step and no such route is not a publication and passes.
+
+    partial_fixtures=True is for tests only: a fixture api-source.yml may hold part of the workflow. main() never sets it,
+    so the real workflow must keep both signing jobs and both guard jobs (Issue #337 round 11).
     """
     base = Path(root)
     problems = []
@@ -1534,7 +1565,7 @@ def check_guard_placement(root=ROOT):
         problems += pages_structure_violations(text, label)
         problems += yaml_integrity_violations(text, label)
         problems += attest_input_violations(text, label)
-        problems += attest_download_violations(text, label)
+        problems += attest_download_violations(text, label, partial_fixtures)
         problems += attest_condition_violations(text, label)
         problems += signing_violations(text, label)
         problems += rom_upload_violations(text, label)

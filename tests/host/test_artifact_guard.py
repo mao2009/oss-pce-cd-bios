@@ -701,7 +701,7 @@ class GuardPlacementTests(unittest.TestCase):
             Path(tmp, '.github', 'workflows').mkdir(parents=True)
             rel = '.github/workflows/api-source.yml'
             Path(tmp, rel).write_text(WF_HEADER + GUARDED.replace(' w.yml ', f' {rel} ') + text, encoding='utf-8')
-            guard.check_guard_placement(Path(tmp))
+            guard.check_guard_placement(Path(tmp), partial_fixtures=True)   # a partial fixture, not the real workflow
 
     def test_flow_form_job_after_attest_is_refused(self):
         # Review MEDIUM-HIGH (#349): a flow-form job line is not a block job id, so its publish use was attributed to the
@@ -745,7 +745,7 @@ class GuardPlacementTests(unittest.TestCase):
                         with self.assertRaisesRegex(ValueError, 'attest-cdread'):
                             guard.check_guard_placement(Path(tmp))
                     else:
-                        guard.check_guard_placement(Path(tmp))
+                        guard.check_guard_placement(Path(tmp), partial_fixtures=True)   # a partial fixture
 
     def test_placement_passes_a_workflow_that_publishes_nothing(self):
         # A file with no upload step and no publishing route is not a publication and must not become a false positive.
