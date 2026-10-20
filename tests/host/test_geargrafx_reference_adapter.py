@@ -2,6 +2,7 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -68,6 +69,14 @@ class ReferenceGeargrafxAdapterTests(unittest.TestCase):
             with self.subTest(mutation=mutation):
                 with self.assertRaisesRegex(ValueError, message):
                     adapter.jsr_observation(probe_row(**mutation))
+
+    def test_reset_rejects_invalid_step_limits_before_emulator(self):
+        # Gate patched to pass so the reset-only step-budget check itself is reached.
+        for n in (0, -1, 10000001, True):
+            with self.subTest(n=n), mock.patch.object(adapter.G, "require_allowed", return_value=None):
+                with self.assertRaisesRegex(ValueError, "invalid step budget"):
+                    adapter.observe({"api_id": "reference-reset-only",
+                                     "max_instructions": n})
 
     def test_reset_is_gated_before_step_limits_and_emulator(self):
         # reference-reset-only is not a gated slot id, so the gate refuses it before budget checks.
