@@ -1,7 +1,7 @@
 """HuC6280 core verification harness on the real Geargrafx core (test-only, NOT a BIOS ABI proof).
 
 Each case JSRs one routine in bank0 with synthetic A/X/Y/P and a 32-byte zero-page seed
-($20E0-$20FF), then records A/X/Y/P/SP/MPR and the ZP window before and after, cold and warm.
+(code address $00E0-$00FF), then records A/X/Y/P/SP/MPR and the ZP window before and after, cold and warm.
 Status per cycle: RETURNED (harness_done reached after RTS), TRAPPED (IRQ/BRK vector taken) or
 TIMEOUT (step budget used up). Only RETURNED with every expectation met is PASS.
 
@@ -43,6 +43,10 @@ SELFTEST = [  # validates the harness; "want" is the verdict/status the harness 
      "want": ["FAIL", "TIMEOUT"], "expect": {}},
     {"name": "neg_brk", "target": "harness_selftest_brk", "a": 0, "x": 0, "y": 0, "p": 0x04,
      "want": ["FAIL", "TRAPPED"], "expect": {}},
+    {"name": "neg_mpr_changed", "target": "harness_selftest_mpr", "a": 0, "x": 0, "y": 0, "p": 0x04,
+     "want": ["FAIL", "RETURNED"], "expect": {}},  # routine remaps MPR2: MPR balance check must catch it
+    {"name": "neg_sp_unbalanced", "target": "harness_selftest_sp", "a": 0, "x": 0, "y": 0, "p": 0x04,
+     "want": ["FAIL", "RETURNED"], "expect": {}},  # returns with SP off by one: SP balance check must catch it
     {"name": "plugin_demo_dev_rom_ex_getver", "target": "api_slot_1E", "a": 0x11, "x": 0x22, "y": 0x33, "p": 0x04,
      "want": ["PASS", "RETURNED"], "expect": {"a": 0x11, "x": 3, "y": 0}},
 ]
@@ -151,8 +155,10 @@ def judge(records, case, symbols):
             failures.append(f"{cycle}: inputs not delivered or pre-snapshot clobbered")
         if (before["p"] ^ case["p"]) & 0xCF:  # B/T bits are not inputs
             failures.append(f"{cycle}: P input not delivered")
-        if before["sp"] != 0xFF or after["sp"] != 0xFF or after["mpr"] != before["mpr"]:
-            failures.append(f"{cycle}: SP/MPR not balanced across the call")
+        if before["sp"] != 0xFF or after["sp"] != 0xFF:
+            failures.append(f"{cycle}: SP not balanced across the call")
+        if after["mpr"] != before["mpr"]:
+            failures.append(f"{cycle}: MPR not balanced across the call")
         for reg in "axy":
             if reg in expect and after[reg] != expect[reg]:
                 failures.append(f"{cycle}: {reg}={after[reg]:#04x}, expected {expect[reg]:#04x}")
