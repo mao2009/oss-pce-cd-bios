@@ -79,9 +79,22 @@ def _marker_text(text):
 
 
 def _has_marker(marker, texts):
-    # Field-splitting guard: the marker is searched in all texts concatenated, so a marker split across
-    # fields such as 'SYN' + 'THETIC' is still found.
-    return _marker_text(marker) in _marker_text(''.join(texts))
+    # Field-splitting guard: True when the marker occurs across the texts in order, each field contributing one
+    # contiguous piece and other fields (e.g. core_revision) allowed in between. Plain concatenation is not
+    # enough: 'SYN' + <hex core_revision> + 'THETIC' would pass it.
+    target = _marker_text(marker)
+    reached = {0}  # marker prefix lengths matched so far
+    for text in texts:
+        piece = _marker_text(text)
+        new = set()
+        for k in reached:
+            for start in range(len(piece)):
+                n = 0
+                while k + n < len(target) and start + n < len(piece) and piece[start + n] == target[k + n]:
+                    n += 1
+                    new.add(k + n)
+        reached |= new
+    return len(target) in reached
 
 
 # Source-kind semantics (Issue #209 / MEDIUM-1). A source kind classifies the
