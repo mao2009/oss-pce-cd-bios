@@ -399,7 +399,8 @@ PAGES_GUARDED = ('jobs:\n  build:\n    steps:\n' + PREAMBLE
 
 
 # The approved attest-cdread job (owner decision, Issue #349): its subject-path is exactly the two synthetic files.
-ATTEST_CDREAD_JOB = ('  attest-cdread:\n    steps:\n      - name: Attest\n'
+ATTEST_CDREAD_JOB = ('  attest-cdread:\n    if: github.event_name == \'push\' && github.ref == \'refs/heads/main\'\n'
+                     '    steps:\n      - name: Attest\n'
                      '        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2\n'
                      '        with:\n          subject-path: |\n'
                      '            evidence/cdread-probe/cdread-evidence.json\n'
@@ -1278,6 +1279,81 @@ class UnlistedRouteTests(unittest.TestCase):
                 f'      - name: Save\n        uses: {UPLOAD}\n        with:\n          path: |\n            build/debug/*.pce\n')
         self.write(text)
         guard.check_upload_artifacts(self.root)
+
+
+class SignConditionTests(unittest.TestCase):
+    """Issue #337 PR review (MEDIUM, fix in #349 follow-up): the signing jobs' `if:` is enforced by the guard. Editing it
+    to a looser condition must fail --check-placement, not only a repository test."""
+    REL = '.github/workflows/api-source.yml'
+    IF_LINE = "    if: github.event_name == 'push' && github.ref == 'refs/heads/main'"
+
+    def real(self):
+        return (ROOT / self.REL).read_text(encoding='utf-8')
+
+    def mutate_if(self, job, new_line):
+        """The real workflow with the `if:` line of `job` replaced by new_line ('' deletes it)."""
+        text = self.real()
+        head = text.index(f'\n  {job}:\n')
+        at = text.index(self.IF_LINE + '\n', head)
+        return text[:at] + (new_line + '\n' if new_line else '') + text[at + len(self.IF_LINE) + 1:]
+
+    def placement(self, text):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, '.github', 'workflows').mkdir(parents=True)
+            Path(tmp, self.REL).write_text(text, encoding='utf-8')
+            guard.check_guard_placement(Path(tmp))
+
+    def test_unmutated_workflow_passes_placement_and_condition_check(self):
+        self.assertEqual([], guard.attest_condition_violations(self.real(), self.REL))
+        self.placement(self.real())
+
+    def test_each_if_mutation_fails_for_both_signing_jobs(self):
+        mutations = {
+            'if deleted': '',
+            '== changed to !=': self.IF_LINE.replace('==', '!=', 1),
+            'main changed to head_ref': self.IF_LINE.replace('main', '${{ github.head_ref }}'),
+            '&& weakened to ||': self.IF_LINE.replace('&&', '||'),
+            'quoted scalar': '    if: "' + self.IF_LINE.split(': ', 1)[1] + '"',
+            'block scalar': '    if: >-\n      github.event_name == \'push\'',
+        }
+        for job in ('attest-cdread', 'attest-cdread-verdict'):
+            for label, new_line in mutations.items():
+                with self.subTest(job=job, mutation=label):
+                    text = self.mutate_if(job, new_line)
+                    self.assertNotEqual([], guard.attest_condition_violations(text, self.REL))
+                    with self.assertRaisesRegex(ValueError, 'if:'):
+                        self.placement(text)
+
+    def test_second_signing_job_is_refused(self):
+        # A copy of attest-cdread (same if:, same subjects) is a second signer: publish_violations refuses it.
+        text = self.real()
+        block = text.split('\n  attest-cdread:\n', 1)[1].split('\n  verify-cdread-attestation:', 1)[0]
+        mutated = text.rstrip('\n') + '\n  attest-cdread-copy:\n' + block.rstrip('\n') + '\n'
+        with self.assertRaisesRegex(ValueError, 'publish action'):
+            self.placement(mutated)
+
+    def test_duplicate_if_in_signing_job_is_refused(self):
+        text = self.mutate_if('attest-cdread', self.IF_LINE + '\n' + self.IF_LINE)
+        self.assertNotEqual([], guard.attest_condition_violations(text, self.REL))
+
+    def test_flow_form_signing_job_is_refused(self):
+        text = self.real()
+        block = text.split('\n  attest-cdread:\n', 1)[1].split('\n  verify-cdread-attestation:', 1)[0]
+        flow = text.replace('\n  attest-cdread:\n' + block, '\n  attest-cdread: {runs-on: ubuntu-24.04}\n', 1)
+        self.assertNotEqual([], guard.attest_condition_violations(flow, self.REL))
+
+    def test_other_attest_action_in_signing_job_is_refused(self):
+        # An allowed job must sign only with attest-build-provenance; attest-sbom with the same subjects is refused.
+        text = self.real().replace('actions/attest-build-provenance@', 'actions/attest-sbom@', 1)
+        with self.assertRaisesRegex(ValueError, 'attest-sbom'):   # refused by the uses allowlist or the attest-input check
+            self.placement(text)
+
+    def test_private_subject_mixed_into_verdict_is_refused(self):
+        text = self.real().replace('          subject-path: verdict/cdread-verdict.json',
+                                   '          subject-path: |\n            verdict/cdread-verdict.json\n'
+                                   '            .intake/private.pce', 1)
+        with self.assertRaisesRegex(ValueError, 'attest'):
+            self.placement(text)
 
 
 if __name__ == '__main__':

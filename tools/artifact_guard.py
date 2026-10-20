@@ -101,7 +101,7 @@ KNOWN_ACTIONS = frozenset({
 FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
 # Publishing actions that must not appear in a file without an upload-artifact step (Issue #349, finding 1): such a
 # file is not covered by the upload layer, so the placement check refuses it outright.
-PUBLISH_USES_RE = re.compile(r"actions/(?:deploy-pages|upload-pages-artifact|attest-build-provenance)@", re.IGNORECASE)
+PUBLISH_USES_RE = re.compile(r"actions/(?:deploy-pages|upload-pages-artifact|attest[\w-]*)@", re.IGNORECASE)   # attest*: any attest action (Issue #349)
 _UNLISTED_MESSAGE = ("uses: action not on the allowlist or not pinned to one full commit SHA "
                      "(fail closed, Issue #337, #349)")
 # A uses: key anywhere on a line: block form, quoted key, or inside a flow mapping such as {uses: x}.
@@ -561,6 +561,11 @@ ATTEST_SUBJECTS = {
 PUBLISH_JOB_ALLOWLIST = frozenset(ATTEST_SUBJECTS)
 PAGES_PUBLISH_ACTIONS = ("actions/deploy-pages@", "actions/upload-pages-artifact@")
 ATTEST_USES_RE = re.compile(r"actions/attest-build-provenance@", re.IGNORECASE)
+ATTEST_ANY_RE = re.compile(r"actions/attest", re.IGNORECASE)
+# The only condition under which a signing job may run (owner decision, Issue #349). Compared as a whole expression after
+# whitespace normalization: any removal, `!=`, a different ref, `||`, or a quoted/block form is a refusal. Policy lives in
+# the workflow; this guard only enforces it. Residual risks not covered here: see the note at attest_condition_violations.
+SIGN_CONDITION = "github.event_name == 'push' && github.ref == 'refs/heads/main'"
 
 
 def _enclosing_job(lines, index):
@@ -609,12 +614,16 @@ def attest_input_violations(text, label):
     lines = text.splitlines()
     problems = []
     for i, line in enumerate(lines):
-        if not (_live(line) and ATTEST_USES_RE.search(line)):
+        if not (_live(line) and ATTEST_ANY_RE.search(line)):
             continue
         job = _enclosing_job(lines, i)
         expected = ATTEST_SUBJECTS.get((Path(label).name, job))
         if expected is None:
             continue   # publish_violations refuses the job itself
+        if not ATTEST_USES_RE.search(line):
+            problems.append(f"{label}: job {job!r} may only sign with actions/attest-build-provenance "
+                            f"(found {line.strip()!r}, Issue #349)")
+            continue
         column = _indent(line) + (2 if line.lstrip().startswith("- ") else 0)
         dash = next((j for j in range(i, -1, -1) if _live(lines[j]) and lines[j].lstrip().startswith("- ")
                      and _indent(lines[j]) < column), None)
@@ -628,6 +637,39 @@ def attest_input_violations(text, label):
             got = "unparseable" if found is None else f"keys {found[0]} subjects {sorted(found[1])}"
             problems.append(f"{label}: attest step in job {job!r} may only have subject-path with the approved subjects "
                             f"{sorted(expected)} (found {got}, Issue #349)")
+    return problems
+
+
+def attest_condition_violations(text, label):
+    """Each signing job present in this file must be a block-form job with exactly one job-level `if:`, equal to
+    SIGN_CONDITION after whitespace normalization (Issue #349). Flow-form, duplicated or missing jobs, and any other value
+    (including a quoted or block scalar) are refused. A signing job absent from the file is not checked here: publish_violations
+    refuses any attest step that appears in another job or file.
+
+    Known residual risks, NOT detected here (recorded in docs/provenance.md "Attestation publication scope"):
+    - a `run:` step that calls Sigstore directly with the OIDC token (no attest action) is not seen by this guard;
+    - the job's `permissions: id-token: write` is not checked;
+    - guard-bios-dev does not inspect .pce contents, only the synthetic subject files are signed.
+    """
+    lines = text.splitlines()
+    problems = []
+    for name, job in sorted(ATTEST_SUBJECTS):
+        if name != Path(label).name:
+            continue
+        heads = [i for i, l in enumerate(lines) if _live(l) and _indent(l) == 2
+                 and re.match(r"""^\s*["']?%s["']?\s*:""" % re.escape(job), l)]
+        if not heads:
+            continue
+        if len(heads) != 1 or _job_name(lines[heads[0]]) != job:
+            problems.append(f"{label}: signing job {job!r} must appear once in block form (found {len(heads)}; "
+                            "flow form is refused, Issue #349)")
+            continue
+        end = next((j for j in range(heads[0] + 1, len(lines)) if _live(lines[j]) and _indent(lines[j]) <= 2), len(lines))
+        values = [" ".join(l.strip().split(":", 1)[1].split(" #")[0].split()) for l in lines[heads[0] + 1:end]
+                  if _live(l) and _indent(l) == 4 and re.match(r"""["']?if["']?\s*:""", l.strip())]
+        if values != [SIGN_CONDITION]:
+            problems.append(f"{label}: signing job {job!r} must have exactly one job-level if: {SIGN_CONDITION!r} "
+                            f"(found {values}, Issue #349)")
     return problems
 
 
@@ -682,6 +724,7 @@ def check_guard_placement(root=ROOT):
             problems += guard_placement_violations(text, label)
         problems += publish_violations(text, label)
         problems += attest_input_violations(text, label)
+        problems += attest_condition_violations(text, label)
     if problems:
         raise ValueError("artifact guard placement: " + "; ".join(problems))
     print("PASS artifact guard placement: trusted preamble, staged paths, stage and verify before every upload")
