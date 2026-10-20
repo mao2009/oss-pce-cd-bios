@@ -33,7 +33,7 @@
     },
     {
       "id": "W02",
-      "path": "CPU store to non-allowlisted CPU pages (page 0, page 2 with CD RAM bank $80, pages 3-7)",
+      "path": "CPU store to non-allowlisted CPU addresses $0000, $1FFF and $4000 (measured subset only)",
       "category": "RAM",
       "monitor_status": "PREVENTED_MEASURED",
       "prevents_before_side_effect": "PER_WRITE",
@@ -62,10 +62,10 @@
       "monitor_status": "PREVENTED_BY_REACHABILITY",
       "prevents_before_side_effect": "YES",
       "detection_point": "INSTRUCTION_BOUNDARY",
-      "measurement": "REAL_CORE_SYNTHETIC",
+      "measurement": "STATIC_SOURCE_REFERENCE",
       "evidence": ["tests/integration/geargrafx_reference_jsr.cpp"],
       "gate_status": "BLOCKED",
-      "notes": "Slot-1e mode rejects any run where an MPR holds $FF. This denies I/O reachability through MPR only. It does not cover the ST path (W05-W07), which ignores MPR."
+      "notes": "Reachability is a static check in the probe source (the hardware-page branch was not reached in any measurement). Slot-1e mode rejects any run where an MPR holds $FF. This denies I/O reachability through MPR only. It does not cover the ST path (W05-W07), which ignores MPR."
     },
     {
       "id": "W05",
@@ -119,25 +119,25 @@
       "id": "W09",
       "path": "$1402 IRQ mask write",
       "category": "IRQ",
-      "monitor_status": "DETECTED_AFTER_SIDE_EFFECT",
+      "monitor_status": "UNKNOWN",
       "prevents_before_side_effect": "NO",
-      "detection_point": "AFTER_SIDE_EFFECT",
+      "detection_point": "UNKNOWN",
       "measurement": "REAL_CORE_SYNTHETIC",
       "evidence": ["tests/integration/geargrafx_irq_register.py", "tests/integration/geargrafx_reference_jsr.cpp"],
       "gate_status": "BLOCKED",
-      "notes": "Detected; the mask change is observed as landed (d1402_after_mask)."
+      "notes": "No detection point recorded. The only CPU-address detection in the irqreg probe is the $1802 store (W08). The $1402 write was observed as landed (d1402_after_mask) through Memory::Write, not through a recorded detection."
     },
     {
       "id": "W10",
       "path": "$1403 TIQ acknowledge write",
       "category": "IRQ",
-      "monitor_status": "DETECTED_AFTER_SIDE_EFFECT",
+      "monitor_status": "UNKNOWN",
       "prevents_before_side_effect": "NO",
-      "detection_point": "AFTER_SIDE_EFFECT",
+      "detection_point": "UNKNOWN",
       "measurement": "REAL_CORE_SYNTHETIC",
       "evidence": ["tests/integration/geargrafx_irq_register.py", "tests/integration/geargrafx_reference_jsr.cpp"],
       "gate_status": "BLOCKED",
-      "notes": "Detected; bit2 is cleared and bit0 (IRQ2) is unchanged in the measured case."
+      "notes": "No detection point recorded (same as W09). Landed write observed: bit2 is cleared and bit0 (IRQ2) is unchanged in the measured case."
     },
     {
       "id": "W11",
@@ -192,12 +192,12 @@
       "path": "Block-move instructions (TII/TIN/TDD/TIA/TAI): many writes inside one instruction",
       "category": "CPU",
       "monitor_status": "UNKNOWN",
-      "prevents_before_side_effect": "PER_WRITE",
+      "prevents_before_side_effect": "UNKNOWN",
       "detection_point": "UNKNOWN",
       "measurement": "NOT_MEASURED",
       "evidence": ["tests/integration/geargrafx_reference_jsr.cpp"],
       "gate_status": "BLOCKED",
-      "notes": "map_write denies each write, but the MPR and hardware-page checks run only at instruction boundaries. Whether the core stops mid-instruction after a breakpoint hit is unknown. Writes to the Hardware Page within one block move are unverified."
+      "notes": "Per-write stop is not measured: map_write denies each write, but the MPR and hardware-page checks run only at instruction boundaries, and whether the core stops mid-instruction after a breakpoint hit is unknown. Writes to the Hardware Page within one block move are unverified."
     },
     {
       "id": "W16",
@@ -213,7 +213,7 @@
     },
     {
       "id": "W17",
-      "path": "Device-initiated writes into RAM (VDC DMA, CD-ROM/ADPCM transfer) that bypass Memory::Write",
+      "path": "Device-initiated RAM writes: CD/ADPCM transfer (unaudited)",
       "category": "DEVICE",
       "monitor_status": "UNKNOWN",
       "prevents_before_side_effect": "UNKNOWN",
@@ -222,6 +222,18 @@
       "evidence": ["docs/cd-reset-contract.md"],
       "gate_status": "BLOCKED",
       "notes": "No source audit of device-to-RAM transfer paths was done for this inventory. Not measured. Treat as unmonitored until audited."
+    },
+    {
+      "id": "W18",
+      "path": "CPU store to non-allowlisted CPU addresses other than $0000, $1FFF and $4000 (pages 3-7 and the rest of page 2)",
+      "category": "RAM",
+      "monitor_status": "UNKNOWN",
+      "prevents_before_side_effect": "UNKNOWN",
+      "detection_point": "UNKNOWN",
+      "measurement": "NOT_MEASURED",
+      "evidence": ["tests/integration/geargrafx_reference_jsr.cpp"],
+      "gate_status": "BLOCKED",
+      "notes": "Split from W02. The probe sets CPU-address breakpoints over these ranges, but no store there was measured, so the stop before the side effect is not established."
     }
   ]
 }

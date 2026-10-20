@@ -28,6 +28,7 @@ UNRESOLVED_STATUSES = frozenset({"UNMONITORED", "UNKNOWN", "DETECTED_AFTER_SIDE_
 REQUIRED_CATEGORIES = frozenset({"MPR", "ST", "MMIO", "IRQ", "RAM", "DEVICE", "CPU"})
 # Named paths the inventory must keep, so that a silent deletion cannot hide a bypass.
 REQUIRED_PATH_MARKERS = ("ST0", "ST1", "ST2", "$1802", "$1804", "TAM", "CLI", "TII", "$FF")
+PREVENTION_VALUES = ("YES", "PER_WRITE", "KNOWN_PC_ONLY")
 PIN_KEY = "geargrafx"
 
 
@@ -84,11 +85,21 @@ def validate(inventory, pinned_revision, root=ROOT):
             require(isinstance(item, str) and item and not Path(item).is_absolute() and ".." not in Path(item).parts,
                     f"{row_id}: evidence must be a repository-relative path")
             require((root / item).is_file(), f"{row_id}: evidence file missing: {item}")
-        # A claimed prevention must be backed by a measurement or a static reference, never NOT_MEASURED.
-        if row["monitor_status"].startswith(PREVENTED_PREFIX):
+        # Any prevention value (YES, PER_WRITE, KNOWN_PC_ONLY) must be backed by a measurement or a static
+        # reference, never NOT_MEASURED.
+        if row["prevents_before_side_effect"] in PREVENTION_VALUES:
             require(row["measurement"] != "NOT_MEASURED", f"{row_id}: prevention claimed without measurement")
-            require(row["prevents_before_side_effect"] in ("YES", "PER_WRITE", "KNOWN_PC_ONLY"),
+        if row["monitor_status"].startswith(PREVENTED_PREFIX):
+            require(row["prevents_before_side_effect"] in PREVENTION_VALUES,
                     f"{row_id}: prevention status with non-prevention value")
+        # A row detected after the side effect has landed cannot also claim a stop before it.
+        if row["monitor_status"] == "DETECTED_AFTER_SIDE_EFFECT":
+            require(row["prevents_before_side_effect"] in ("NO", "KNOWN_PC_ONLY"),
+                    f"{row_id}: DETECTED_AFTER_SIDE_EFFECT cannot claim prevention before side effect")
+        # An UNKNOWN row has no recorded detection point, so it cannot claim any prevention value.
+        if row["monitor_status"] == "UNKNOWN":
+            require(row["prevents_before_side_effect"] in ("UNKNOWN", "NO"),
+                    f"{row_id}: UNKNOWN status must not claim a prevention value")
         # A row that is not prevented before the side effect must not be recorded as prevented.
         if row["prevents_before_side_effect"] == "NO":
             require(row["monitor_status"] not in ("PREVENTED_MEASURED", "PREVENTED_STATIC"),

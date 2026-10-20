@@ -12,6 +12,10 @@ Two observation modes are supported, both driven by the pinned upstream core:
 
 This adapter is local-only: it links the private BIOS and the GPL core. It is
 never bundled, never uploaded and never run in CI.
+
+The slot-1e output of ``jsr_observation()`` is a private-BIOS run record (``reference-observation/v1``).
+It is not the V08 observation record: the schema of record for V08 is ``tools/jsr_observation.py``,
+which accepts synthetic provenance only and records IRQ as OBSERVED or UNKNOWN.
 """
 import argparse
 import json
