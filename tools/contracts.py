@@ -64,7 +64,18 @@ SOURCE_KIND_MEANINGS = {
     'EMULATOR_SOURCE': '実コアのソース参照。実行証跡ではなく、単独では OBSERVED の十分条件でない。',
 }
 SOURCE_KINDS = frozenset(SOURCE_KIND_MEANINGS)
-CLAIM_KEYS = frozenset({'status', 'value', 'sources', 'confidence', 'registers', 'evidence'})
+CLAIM_KEYS = frozenset({'status', 'value', 'sources', 'confidence', 'registers', 'evidence',
+                        'observation_kind'})
+# Issue #225: every OBSERVED claim must declare which kind of observation its evidence is, and the
+# kind must cover the claim's field. Enforced in adjudicate_claim() (the formal path used by
+# validate_contracts) so no wrapper can skip it. The kind is a declaration, not a measurement.
+OBSERVATION_KIND_KEY = 'observation_kind'
+OBSERVATION_KIND_FIELDS = {
+    # Low-level bus/register fact only; never callee ABI (returns/flags/irq/...).
+    'HW_BUS_READBACK': HARDWARE_OBSERVATION_FIELDS,
+    # Behavior of an executed callee; still needs executed_callee=True in adjudicate_claim.
+    'CALLEE_EXECUTION': CALLEE_BEHAVIOR_FIELDS,
+}
 
 
 def validate_contracts(data, inventory, inventory_text):
@@ -236,6 +247,8 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
     so an unexecuted callee can never be promoted.
 
     Source-kind semantics: see SOURCE_KIND_MEANINGS (source references, not execution proof).
+    An OBSERVED claim must declare observation_kind (OBSERVATION_KIND_FIELDS) covering its field;
+    a non-OBSERVED claim must not declare it.
 
     Rules:
       UNKNOWN     - value exactly 'UNKNOWN', no sources, confidence UNKNOWN, no registers
@@ -278,6 +291,8 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
                                   len(registers) == len(set(registers))),
             f'{context}: registers must be a list of unique A/X/Y/S/P')
     require(set(claim) <= CLAIM_KEYS, f'{context}: unknown claim keys {sorted(set(claim) - CLAIM_KEYS)}')
+    require(claim.get('status') == 'OBSERVED' or OBSERVATION_KIND_KEY not in claim,
+            f'{context}: only an OBSERVED claim may declare {OBSERVATION_KIND_KEY}')
     status = claim.get('status')
     require(status in CLAIM_STATUSES,
             f'{context}: unsupported claim status {status!r}; VERIFIED is not represented')
@@ -316,6 +331,11 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
         require(isinstance(evidence, list) and bool(evidence),
                 f'{context}: OBSERVED requires non-empty evidence entries (format-checked only)')
         validate_evidence(evidence, context)
+        kind = claim.get(OBSERVATION_KIND_KEY)
+        require(isinstance(kind, str) and kind in OBSERVATION_KIND_FIELDS,
+                f'{context}: OBSERVED requires {OBSERVATION_KIND_KEY} in {sorted(OBSERVATION_KIND_FIELDS)}')
+        require(field in OBSERVATION_KIND_FIELDS[kind],
+                f'{context}: observation kind {kind} does not support field {field!r}')
     elif status == 'BLOCKED':
         require(value == 'UNKNOWN' and confidence == 'UNKNOWN' and not registers,
                 f'{context}: invalid BLOCKED claim')

@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 from contracts import (  # noqa: E402
     CALLEE_BEHAVIOR_FIELDS, FIELDS, HARDWARE_OBSERVATION_FIELDS, load_contracts,
 )
+from contracts import adjudicate_claim  # noqa: E402
 from evidence_correspondence import OBSERVATION_KIND_FIELDS, adjudicate_observation  # noqa: E402
 
 REAL = {'gear:src/cdrom.cpp': 'EMULATOR_SOURCE'}
@@ -145,6 +146,39 @@ class NegativeCorrespondenceTests(unittest.TestCase):
     def test_kind_key_cannot_smuggle_unknown_claim_keys(self):
         with self.assertRaisesRegex(ValueError, 'unknown claim keys'):
             adjudicate(dict(CALLEE_OBSERVED, executed_callee=True), 'returns', executed_callee=True)
+
+
+class FormalPathTests(unittest.TestCase):
+    """Issue #225 / PR #359: the formal path (contracts.adjudicate_claim, used by validate_contracts)
+    must enforce observation_kind itself. Calling only the wrapper is not enough."""
+
+    def formal(self, claim, field, executed_callee=False, kinds=REAL):
+        return adjudicate_claim(claim, kinds, field=field, context=f'slot 1 {field}',
+                                executed_callee=executed_callee)
+
+    def test_formal_path_rejects_observed_callee_field_without_kind(self):
+        # Old formal check accepts this: any OBSERVED claim with executed callee passes.
+        with self.assertRaisesRegex(ValueError, 'requires observation_kind'):
+            self.formal(OBSERVED, 'returns', executed_callee=True)
+
+    def test_formal_path_rejects_hw_readback_reused_as_returns(self):
+        with self.assertRaisesRegex(ValueError, 'does not support field'):
+            self.formal(HW_OBSERVED, 'returns', executed_callee=True)
+
+    def test_formal_path_rejects_callee_kind_when_callee_not_executed(self):
+        with self.assertRaisesRegex(ValueError, 'executed callee'):
+            self.formal(CALLEE_OBSERVED, 'returns', executed_callee=False)
+
+    def test_formal_path_rejects_hw_observed_without_kind(self):
+        with self.assertRaisesRegex(ValueError, 'requires observation_kind'):
+            self.formal(OBSERVED, 'hw_bus_reset')
+
+    def test_formal_path_accepts_hw_readback_for_hw_bus_reset(self):
+        self.formal(HW_OBSERVED, 'hw_bus_reset', executed_callee=False)
+
+    def test_formal_path_rejects_kind_on_non_observed_claim(self):
+        with self.assertRaisesRegex(ValueError, 'only an OBSERVED claim may declare'):
+            self.formal(dict(HYPOTHESIS, observation_kind='HW_BUS_READBACK'), 'arguments', kinds=CALLER)
 
 
 class LedgerRegressionTests(unittest.TestCase):

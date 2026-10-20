@@ -46,6 +46,9 @@ OBSERVED = {
     'sources': ['gear:src/cdrom.cpp'], 'confidence': 'SOURCE_SUPPORTED',
     'evidence': [EVIDENCE_ENTRY],
 }
+# Issue #225: an OBSERVED claim must declare observation_kind covering its field.
+OBSERVED_CALLEE = dict(OBSERVED, observation_kind='CALLEE_EXECUTION')
+OBSERVED_HW = dict(OBSERVED, observation_kind='HW_BUS_READBACK')
 BLOCKED = {'status': 'BLOCKED', 'value': 'UNKNOWN', 'sources': [], 'confidence': 'UNKNOWN'}
 
 
@@ -63,7 +66,7 @@ class AdjudicateClaimTests(unittest.TestCase):
     def test_observed_claim_with_format_valid_evidence_is_accepted(self):
         # Issue #208 positive case: shape-valid SYNTHETIC evidence is accepted. This asserts
         # nothing about measurement, ABI correctness or authenticity (FORMAT_ONLY).
-        adjudicate_claim(OBSERVED, REAL, field='stack', context='slot 1 stack',
+        adjudicate_claim(OBSERVED_CALLEE, REAL, field='stack', context='slot 1 stack',
                          executed_callee=True)
 
     def test_blocked_claim_is_accepted(self):
@@ -193,14 +196,14 @@ class AdjudicateClaimTests(unittest.TestCase):
             adjudicate_claim(OBSERVED, REAL, field='returns', context='slot 1 returns')
 
     def test_observed_callee_field_accepted_when_callee_executed(self):
-        adjudicate_claim(OBSERVED, REAL, field='returns', context='slot 1 returns',
+        adjudicate_claim(OBSERVED_CALLEE, REAL, field='returns', context='slot 1 returns',
                          executed_callee=True)
 
     def test_observed_hardware_observation_accepted_without_executed_callee(self):
         # hw_bus_reset is a low-level $1804 register/bus fact (hardware observation),
         # not callee ABI behavior: OBSERVED with an EMULATOR_SOURCE reference plus evidence must be
         # accepted even though no callee was executed.
-        claim = dict(OBSERVED,
+        claim = dict(OBSERVED_HW,
                      value='$1804 bit 1: assert -> readback $02, release -> $00, bus FREE')
         adjudicate_claim(claim, REAL, field='hw_bus_reset',
                          context='slot 1 hw_bus_reset', executed_callee=False)
@@ -251,14 +254,14 @@ class AdjudicateClaimTests(unittest.TestCase):
 
     def test_complete_structural_evidence_is_schema_accepted_not_authenticated(self):
         # Accepted for shape only: nothing resolves the hash to a stored artifact.
-        adjudicate_claim(OBSERVED, REAL, field='stack', context='slot 1 stack', executed_callee=True)
+        adjudicate_claim(OBSERVED_CALLEE, REAL, field='stack', context='slot 1 stack', executed_callee=True)
 
     def test_format_only_acceptance_does_not_check_field_correspondence(self):
         # Documents a known limit (not a feature): the same evidence entry is accepted for
         # unrelated fields because only its shape is checked. Semantic correspondence of
         # evidence to the claim field is NOT verified; a follow-up Issue owns that.
         for field in ('stack', 'returns', 'irq', 'flags'):
-            adjudicate_claim(OBSERVED, REAL, field=field, context=field, executed_callee=True)
+            adjudicate_claim(OBSERVED_CALLEE, REAL, field=field, context=field, executed_callee=True)
 
     def test_observed_claim_must_not_contain_registers_key(self):
         for regs in ([], None, ['A'], ['A', 'X']):
@@ -270,7 +273,7 @@ class AdjudicateClaimTests(unittest.TestCase):
 
     def test_observed_without_registers_key_and_other_statuses_unchanged(self):
         self.assertNotIn('registers', OBSERVED)
-        adjudicate_claim(OBSERVED, REAL, field='preserved', context='x', executed_callee=True)
+        adjudicate_claim(OBSERVED_CALLEE, REAL, field='preserved', context='x', executed_callee=True)
         # UNKNOWN / HYPOTHESIS / BLOCKED regression: registers rules unchanged.
         adjudicate_claim(UNKNOWN, CALLER, field='flags', context='x')
         adjudicate_claim(HYPOTHESIS, CALLER, field='preserved', context='x')
@@ -340,7 +343,7 @@ class AdjudicateClaimTests(unittest.TestCase):
 
     # ---- Issue #207 (MAJOR-1) x #208: callee ABI vs hardware observation.
     def test_hardware_observed_with_evidence_and_no_callee_is_conditionally_accepted(self):
-        adjudicate_claim(OBSERVED, REAL, field='hw_bus_reset', context='hw_bus_reset',
+        adjudicate_claim(OBSERVED_HW, REAL, field='hw_bus_reset', context='hw_bus_reset',
                          executed_callee=False)
 
     def test_hardware_observed_without_evidence_is_rejected(self):
