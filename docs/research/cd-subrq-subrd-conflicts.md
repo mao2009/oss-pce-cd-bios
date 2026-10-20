@@ -62,8 +62,8 @@
 | C15 | 版ごとの本体アドレス（ST の表） | 1.0 から 3.0 まで本体の番地が異なる | SECONDARY_SOURCE | アドレスは ABI ではない |
 | C16 | ST の「公式名」主張 | ST は 1.0 マニュアルを持ち公式名を得たと記すが、$0D の名称と出典の対応は示さない | UNKNOWN | マニュアル本文は未入手 |
 | C17 | CD_SUBRQ と CD_SUBRD は同じ機構か | C6 の機構を両名称に当てはめる仮説。出典の裏付けなし | HYPOTHESIS | **採用しない。conflict unresolved** |
-| C18 | 名称（Zeograd・Hu-Go・huexpress の leg） | Z は $0D を CD_SUBRQ と記す（二次資料）。HG・HX も $0D を CD_SUBRQ と名づけるが、いずれも HLE の再実装で一次出典ではない | SECONDARY_SOURCE | **conflict unresolved**。同一と断定しない。HG・HX は独立の裏付けにはしない |
-| C19 | X・Y・P の入出力 | 記載なし。Z、ST、MD、HC、HG、HX、GG のいずれも X・Y・P の扱いを記さない（A と C5 のキャリーのみ言及）。Z の 18 行目は全関数の一般記述のみで $0D 固有の記載はない | UNKNOWN | 観測が必要 |
+| C18 | 名称（Zeograd・Hu-Go・huexpress の leg） | Z は $0D を CD_SUBRQ と記す（二次資料）。HG・HX も $0D を CD_SUBRQ と名づけるが、いずれも HLE の再実装で一次出典ではない（再実装は HYPOTHESIS とする定義に従う） | HYPOTHESIS | **conflict unresolved**。同一と断定しない。本行の状態は HG・HX の再実装に合わせ HYPOTHESIS とし、独立の裏付けにはしない |
+| C19 | X・Y・P の入出力 | 記載なし。Z、ST、MD、HC、HG、HX、GG のいずれも X・Y・P の扱いを記さない（A と C5 のキャリーのみ言及）。Z の一般記述のみで $0D 固有の記載はない | UNKNOWN | 観測が必要 |
 
 ## 4. 観測計画（未実施。BLOCKED_ABI を維持）
 

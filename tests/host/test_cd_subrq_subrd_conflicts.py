@@ -24,7 +24,7 @@ EXPECTED = {
     'C5': 'UNKNOWN', 'C6': 'SECONDARY_SOURCE', 'C7': 'SECONDARY_SOURCE', 'C8': 'UNKNOWN',
     'C9': 'SECONDARY_SOURCE', 'C10': 'UNKNOWN', 'C11': 'UNKNOWN', 'C12': 'UNKNOWN',
     'C13': 'UNKNOWN', 'C14': 'UNKNOWN', 'C15': 'SECONDARY_SOURCE', 'C16': 'UNKNOWN',
-    'C17': 'HYPOTHESIS', 'C18': 'SECONDARY_SOURCE', 'C19': 'UNKNOWN',
+    'C17': 'HYPOTHESIS', 'C18': 'HYPOTHESIS', 'C19': 'UNKNOWN',
 }
 # Full 40-hex pins, resolved with `gh api` (commits) and the retro-go tree (blob).
 # 797845ce... is a git blob (pctech.txt), not a commit, so it is cited only as a blob.
@@ -120,7 +120,7 @@ class CdSubrqSubrdConflictLedgerTests(unittest.TestCase):
     def test_zeograd_name_leg_is_not_source_fact(self):
         # C1 is the HuC/Hu-Go/huexpress leg only; the Zeograd leg is split into C18.
         self.assertIsNone(re.search(r'(?<![A-Za-z0-9_])Z(?![A-Za-z0-9_])', ' '.join(self.rows['C1'])))
-        self.assertEqual(self.rows['C18'][3], 'SECONDARY_SOURCE')
+        self.assertEqual(self.rows['C18'][3], 'HYPOTHESIS')
         self.assertIn('conflict unresolved', self.rows['C18'][4])
 
     def test_return_and_q_conflicts_are_kept_unresolved(self):
@@ -169,16 +169,18 @@ class CdSubrqSubrdConflictLedgerTests(unittest.TestCase):
         self.assertNotIn('HG', c1[2])
         self.assertNotIn('HX', c1[2])
 
-    def test_hg_hx_name_legs_are_secondary(self):
+    def test_hg_hx_name_legs_are_hypothesis(self):
+        # Ledger SOURCE_FACT definition: reimplementation / developer claims are HYPOTHESIS.
         c18 = self.rows['C18']
-        self.assertEqual(c18[3], 'SECONDARY_SOURCE')
+        self.assertEqual(c18[3], 'HYPOTHESIS')
         for src in ('Z', 'HG', 'HX'):
             self.assertIn(src, c18[2], src)
         self.assertIn('HLE', c18[2])
         self.assertIn('conflict unresolved', c18[4])
 
     def test_c19_notes_zeograd_general_description_only(self):
-        self.assertIn('Z の 18 行目は全関数の一般記述のみで $0D 固有の記載はない', self.rows['C19'][2])
+        self.assertIn('Z の一般記述のみで $0D 固有の記載はない', self.rows['C19'][2])
+        self.assertNotIn('18 行目', self.rows['C19'][2])
 
     def test_hc_zero_callers_is_local_grep_only(self):
         hc = [l for l in self.text.splitlines() if l.startswith('| HC | cd_subrd = $00:E027')][0]
