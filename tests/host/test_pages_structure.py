@@ -76,6 +76,13 @@ class SplitLayoutTests(unittest.TestCase):
         doc['jobs']['build']['permissions']['id-token'] = 'write'
         self.assertRefused(doc, "job 'build' must have permissions")
 
+    def test_pages_write_or_id_token_on_validate_is_refused(self):
+        for key, value in (('pages', 'write'), ('id-token', 'write')):
+            with self.subTest(permission=key):
+                doc = split_doc()
+                doc['jobs']['validate']['permissions'][key] = value
+                self.assertRefused(doc, "job 'validate' must have permissions")
+
     def test_extra_permission_on_deploy_is_refused(self):
         doc = split_doc()
         doc['jobs']['deploy']['permissions']['contents'] = 'write'

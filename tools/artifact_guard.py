@@ -1321,6 +1321,9 @@ def _pages_split_problems(jobs, per_job, label):
         return [f"{label}: the split layout must hold exactly one upload in build and exactly one deploy in deploy, and no "
                 f"Pages action elsewhere (found {per_job}, Issue #349)"]
     problems = []
+    # validate holds no Pages action, but it must not hold pages: write or id-token: write either (Issue #349, review).
+    problems += _pages_job_problems("validate", jobs["validate"], label, None, None, PAGES_BUILD_PERMISSIONS,
+                                    PAGES_BUILD_KEYS)
     if not PAGES_UPLOAD_USES.fullmatch(upload[0]):
         problems.append(f"{label}: build upload-pages-artifact must be pinned to a full commit SHA (Issue #349)")
     problems += _pages_job_problems("build", jobs["build"], label, "validate", None, PAGES_BUILD_PERMISSIONS,
