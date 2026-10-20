@@ -6,6 +6,7 @@ closed, and that Windows (no pinned core) is BLOCKED rather than skipped.
 """
 import io
 import json
+import subprocess
 import sys
 import unittest
 from contextlib import redirect_stdout
@@ -372,6 +373,29 @@ class PresideProbeTest(unittest.TestCase):
         self.assertEqual(verdict, P.PARTIAL)
         self.assertIn("検出のみ、遮断ではない", detail)
         self.assertIn("PARTIAL", P.__doc__)
+
+    def test_build_failure_reports_blocked_with_cause_and_nonzero_exit(self):
+        # Synthetic: the g++ build fails with CalledProcessError. The probe must print BLOCKED naming the
+        # failing command and the stderr cause, and main() must return non-zero (never an uncaught crash).
+        def fake_run(cmd, *args, **kwargs):
+            if cmd[0] == "make":
+                return subprocess.CompletedProcess(cmd, 0, stdout=str(Path(__file__)) + "\n", stderr="")
+            raise subprocess.CalledProcessError(1, cmd, stderr="fatal error: synthetic_missing.h: No such file\n")
+
+        out = io.StringIO()
+        with mock.patch.object(P.sys, "platform", "linux"), \
+                mock.patch.object(P.guard, "synthetic_media", return_value=(Path("bios"), Path("cue"))), \
+                mock.patch("geargrafx_api.shutil.which", return_value="/usr/bin/g++"), \
+                mock.patch("geargrafx_api.subprocess.run", side_effect=fake_run), \
+                redirect_stdout(out):
+            rc = P.main()
+        text = out.getvalue()
+        self.assertNotEqual(rc, 0)
+        self.assertIn("BLOCKED", text)
+        self.assertIn("g++", text)
+        self.assertIn("synthetic_missing.h", text)
+        self.assertIn("OVERALL BLOCKED", text)
+        self.assertNotIn("OVERALL PASS", text)
 
 
 if __name__ == "__main__":

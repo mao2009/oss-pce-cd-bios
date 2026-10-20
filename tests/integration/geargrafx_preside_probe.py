@@ -45,7 +45,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import geargrafx_reference_guard as guard  # noqa: E402
 import geargrafx_st_bypass as st  # noqa: E402
-from geargrafx_api import InvalidObservation, compile_probe  # noqa: E402
+from geargrafx_api import InvalidObservation, ProbeBuildError, compile_probe  # noqa: E402
 
 PASS, BLOCKED, PARTIAL, NOT_RUN, FAIL = "PASS", "BLOCKED", "PARTIAL", "NOT_RUN", "FAIL"
 PROBE_SOURCE = "geargrafx_reference_jsr.cpp"
@@ -148,7 +148,12 @@ def main():
     with tempfile.TemporaryDirectory(prefix="pce-preside-") as tmp:
         directory = Path(tmp)
         bios, cue = guard.synthetic_media(directory)
-        probe = compile_probe(directory, source_name=PROBE_SOURCE, target_name="preside-probe")
+        try:
+            probe = compile_probe(directory, source_name=PROBE_SOURCE, target_name="preside-probe")
+        except ProbeBuildError as error:  # a failed build is BLOCKED with its cause, never a crash
+            print(error)
+            print("OVERALL BLOCKED (release_eligible=false; V01-V08 のみ; ゲート解放ではない)")
+            return 1
         results = [run_case(case, probe, bios, cue) for case in CASES]
     for case_id, verdict, detail in results:
         print(f"{case_id} {verdict}: {detail}")
