@@ -30,6 +30,7 @@ class AdResetFixture(unittest.TestCase):
         for name in ("idle_reset", "transfer_boundary", "playing_boundary"):
             c = fx.CASES[name]
             with self.subTest(name=name):
+                # Self-consistency of the synthetic model only; the REFERENCE_OBS line is the independent check.
                 self.assertEqual(fx.judge(c, fx.model(c)), fx.MODEL_OK)
                 self.assertEqual(fx.judge(c, REFERENCE_OBS[name]), fx.MODEL_OK)
 
@@ -41,16 +42,51 @@ class AdResetFixture(unittest.TestCase):
             "playing_survives": {"state_after": "PLAYING"},
             "over_budget": {"polls": fx.POLL_BUDGET + 1},
             "zero_polls": {"polls": 0},
-            "bool_polls": {"polls": True},
             "abort_flag_missing": {"aborted": False},
+            "wrong_entry_observed": {"entry": 0xE00C},
         }
         for name, patch in mutations.items():
             with self.subTest(name=name):
                 self.assertEqual(fx.judge(c, {**good, **patch}), fx.FAIL)
 
-    def test_wrong_entry_in_observation_is_rejected(self):
+    def test_mistyped_observations_are_blocked(self):
+        # Type mismatches are malformed input (BLOCKED), not a model/observation disagreement (FAIL).
+        c = fx.CASES["transfer_boundary"]
+        good = REFERENCE_OBS["transfer_boundary"]
+        mistyped = {
+            "bool_polls": {"polls": True},
+            "float_polls": {"polls": 1.0},
+            "none_polls": {"polls": None},
+            "str_polls": {"polls": "1"},
+            "bool_busy": {"busy_after": False},
+            "float_busy": {"busy_after": 0.0},
+            "none_busy": {"busy_after": None},
+            "int_aborted": {"aborted": 1},
+            "none_aborted": {"aborted": None},
+            "none_state_after": {"state_after": None},
+            "float_entry": {"entry": 57392.0},
+        }
+        for name, patch in mistyped.items():
+            with self.subTest(name=name):
+                self.assertEqual(fx.judge(c, {**good, **patch}), fx.BLOCKED)
+
+    def test_wrong_entry_in_observation_is_fail(self):
         c = fx.CASES["idle_reset"]
-        self.assertEqual(fx.judge(c, {**fx.model(c), "entry": 0xE00C}), fx.REJECTED)
+        self.assertEqual(fx.judge(c, {**fx.model(c), "entry": 0xE00C}), fx.FAIL)
+
+    def test_float_or_bool_case_entry_is_blocked(self):
+        for entry in (57392.0, True):
+            with self.subTest(entry=entry):
+                c = {**fx.CASES["idle_reset"], "entry": entry}
+                self.assertEqual(fx.judge(c, fx.model(c)), fx.BLOCKED)
+
+    def test_non_bool_forbidden_flags_are_blocked(self):
+        base = fx.CASES["idle_reset"]
+        for flag in fx.FORBIDDEN_FLAGS:
+            for value in (0, 1, "false", "true", None):
+                with self.subTest(flag=flag, value=value):
+                    c = {**base, flag: value}
+                    self.assertEqual(fx.judge(c, fx.model(c)), fx.BLOCKED)
 
     def test_out_of_scope_and_unauthorized_are_rejected(self):
         # Even with an otherwise well-formed observation, these requests must never pass.
@@ -86,8 +122,8 @@ class AdResetFixture(unittest.TestCase):
     def test_bool_is_not_accepted_as_busy_or_abort_flag(self):
         c = fx.CASES["idle_reset"]
         good = REFERENCE_OBS["idle_reset"]
-        self.assertEqual(fx.judge(c, {**good, "busy_after": False}), fx.FAIL)
-        self.assertEqual(fx.judge(c, {**good, "aborted": 0}), fx.FAIL)
+        self.assertEqual(fx.judge(c, {**good, "busy_after": False}), fx.BLOCKED)
+        self.assertEqual(fx.judge(c, {**good, "aborted": 0}), fx.BLOCKED)
 
     def test_no_pass_verdict_and_cli_fails_closed(self):
         buf = io.StringIO()

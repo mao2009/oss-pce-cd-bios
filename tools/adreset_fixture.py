@@ -27,23 +27,32 @@ def model(case):
 
 
 def judge(case, obs):
-    """Judge one observation record against one case. Never returns a PASS-like verdict for a callee."""
+    """Judge one observation record against one case. Never returns a PASS-like verdict for a callee.
+
+    Input shape is checked first (type mismatch -> BLOCKED, never FAIL), then scope (REJECTED),
+    then the observation's values against the synthetic model (FAIL).
+    """
     if not isinstance(case, dict):
         return BLOCKED  # malformed case record: fail closed without raising
+    flags = [case[flag] for flag in FORBIDDEN_FLAGS if flag in case]
+    if (type(case.get("entry")) is not int or case.get("state") not in STATES
+            or any(type(v) is not bool for v in flags)):
+        return BLOCKED  # wrong-typed or missing case fields
     if case.get("entry") != ENTRY_CANDIDATE or case.get("op") != "reset":
         return REJECTED  # other slots or operations are out of scope for this fixture
-    if any(case.get(flag) for flag in FORBIDDEN_FLAGS):
-        return REJECTED
-    if case.get("state") not in STATES or not isinstance(obs, dict):
-        return BLOCKED  # malformed case or missing observation: fail closed
-    if "entry" not in obs:
-        return BLOCKED  # observation record without its entry field: no observation
-    if obs.get("entry") != ENTRY_CANDIDATE:
-        return REJECTED
-    polls, busy = obs.get("polls"), obs.get("busy_after")
-    ok = (obs.get("state_after") == "IDLE" and type(busy) is int and busy == 0
-          and type(polls) is int and 0 < polls <= POLL_BUDGET
-          and obs.get("aborted") is (case["state"] != "IDLE"))
+    if any(flags):
+        return REJECTED  # an execution, side-effect or real-JSR request is refused outright
+    if not isinstance(obs, dict) or "entry" not in obs:
+        return BLOCKED  # missing observation, or observation without its entry field
+    entry, state_after = obs["entry"], obs.get("state_after")
+    polls, busy, aborted = obs.get("polls"), obs.get("busy_after"), obs.get("aborted")
+    if (type(entry) is not int or type(state_after) is not str or type(busy) is not int
+            or type(polls) is not int or type(aborted) is not bool):
+        return BLOCKED  # observation fields of the wrong type
+    if entry != ENTRY_CANDIDATE:
+        return FAIL  # the observation names another entry than the model expects
+    ok = (state_after == "IDLE" and busy == 0 and 0 < polls <= POLL_BUDGET
+          and aborted == (case["state"] != "IDLE"))
     return MODEL_OK if ok else FAIL
 
 
