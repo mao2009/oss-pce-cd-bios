@@ -46,7 +46,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from geargrafx_api import InvalidObservation, compile_probe  # noqa: E402
+from geargrafx_api import InvalidObservation, compile_probe, require_mpr_bytes  # noqa: E402
 from geargrafx_reference_guard import check_pos, run_mode, synthetic_media  # noqa: E402
 
 # Synthetic guest layout (all CPU addresses, page 1 = WRAM, MPR1 = $F8):
@@ -90,10 +90,8 @@ def check_st(row, mode):
     # The MPR0 != $FF negative case: Hardware Page unreachable for the whole run.
     before_mpr = row.get("before", {}).get("mpr", [])
     after_mpr = row.get("after", {}).get("mpr", [])
-    if type(before_mpr) is not list or len(before_mpr) != 8:
-        raise InvalidObservation(f"{mode} before MPR snapshot invalid: {before_mpr}")
-    if type(after_mpr) is not list or len(after_mpr) != 8:
-        raise InvalidObservation(f"{mode} after MPR snapshot invalid: {after_mpr}")
+    require_mpr_bytes(before_mpr, f"{mode} before")
+    require_mpr_bytes(after_mpr, f"{mode} after")
     if before_mpr[0] != MPR0_NON_FF:
         raise InvalidObservation(f"{mode} MPR0 before {before_mpr[0]:#x}, expected {MPR0_NON_FF:#x} (!= $FF)")
     if after_mpr[0] != MPR0_NON_FF:

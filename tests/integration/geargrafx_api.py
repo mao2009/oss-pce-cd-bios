@@ -21,6 +21,18 @@ class InvalidObservation(ValueError):
     ValueError and is judged FAIL by the preside probe.
     """
 
+
+def require_mpr_bytes(snapshot, label):
+    """Raise InvalidObservation unless snapshot is a list of 8 integer bytes (0..0xFF).
+
+    Checked before any MPR value is compared or formatted, so a malformed value (None, a string, a float,
+    a bool or an out-of-range number) is invalid evidence, never a formatting error.
+    """
+    if type(snapshot) is not list or len(snapshot) != 8 or any(
+            type(v) is not int or not 0 <= v <= 0xFF for v in snapshot):
+        raise InvalidObservation(f"{label} MPR snapshot is not 8 integer bytes: {snapshot!r}")
+
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'tools'))
 from environment import DEPENDENCIES, dependency_dir

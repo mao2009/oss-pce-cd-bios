@@ -76,6 +76,42 @@ class PresideProbeTest(unittest.TestCase):
             _, verdict, _ = P.run_case(case, None, None, None)
         self.assertEqual(verdict, P.BLOCKED)
 
+    def _tam_row(self, before_mpr0=0x00, after_mpr0=0xF8, guard_after=0xA5, ram_diff=()):
+        # A V06 observation that passes every check except the ones a test varies.
+        G = P.guard
+        return {"exit": 0, "status": "rejected", "mpr_changed": True,
+                "reason": "mpr_changed_during_execution[mpr0]", "stop_pc": G.TAM_STOP_PC,
+                "instructions_executed": G.TAM_INSTRUCTIONS,
+                "before": {"mpr": [before_mpr0] + [0] * 7}, "after": {"mpr": [after_mpr0] + [0] * 7},
+                "guard_before": G.TAM_SENTINEL, "guard_after": guard_after, "ram_diff": list(ram_diff)}
+
+    def test_v06_malformed_mpr_value_is_blocked(self):
+        # Malformed MPR values are invalid evidence (BLOCKED), never a formatting error or an escape.
+        case = next(c for c in P.CASES if c[0] == "V06")
+        for bad in (None, "x", 1.5, True, 0x100, -1):
+            with mock.patch.object(P.guard, "run_mode", return_value=self._tam_row(before_mpr0=bad)):
+                _, verdict, detail = P.run_case(case, None, None, None)
+            self.assertEqual(verdict, P.BLOCKED, repr(bad))
+            self.assertIn("no valid evidence", detail, repr(bad))
+
+    def test_v06_malformed_section_is_blocked_not_escaped(self):
+        # A section that is not a dict (before = None) must not raise past run_case.
+        case = next(c for c in P.CASES if c[0] == "V06")
+        row = self._tam_row()
+        row["before"] = None
+        with mock.patch.object(P.guard, "run_mode", return_value=row):
+            _, verdict, detail = P.run_case(case, None, None, None)
+        self.assertEqual(verdict, P.BLOCKED)
+        self.assertIn("no valid evidence", detail)
+
+    def test_v06_valid_landed_observation_stays_fail(self):
+        # A VALID V06 observation in which the prohibited STA landed (guard_after changed) is FAIL.
+        case = next(c for c in P.CASES if c[0] == "V06")
+        with mock.patch.object(P.guard, "run_mode", return_value=self._tam_row(guard_after=0x00)):
+            _, verdict, detail = P.run_case(case, None, None, None)
+        self.assertEqual(verdict, P.FAIL)
+        self.assertIn("sentinel after mismatch", detail)
+
     def test_v05_run_targets_are_planned_samples(self):
         # Every measured V05 target must be one of the planned samples.
         self.assertTrue(set(P.V05_RUN) <= set(P.V05_PLANNED))

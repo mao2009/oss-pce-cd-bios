@@ -38,7 +38,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from geargrafx_api import InvalidObservation, compile_probe  # noqa: E402
+from geargrafx_api import InvalidObservation, compile_probe, require_mpr_bytes  # noqa: E402
 
 BIOS_BYTES = 256 * 1024
 ALLOW = (0x2000, 0x4000)  # page 1: this core hardwires the zero page/stack there
@@ -169,10 +169,8 @@ def check_tam(row):
     # MPR0 must have changed from ROM (0x00) to WRAM bank (0xF8).
     before_mpr = row.get("before", {}).get("mpr", [])
     after_mpr = row.get("after", {}).get("mpr", [])
-    if type(before_mpr) is not list or len(before_mpr) != 8:
-        raise InvalidObservation(f"tam before MPR snapshot invalid: {before_mpr}")
-    if type(after_mpr) is not list or len(after_mpr) != 8:
-        raise InvalidObservation(f"tam after MPR snapshot invalid: {after_mpr}")
+    require_mpr_bytes(before_mpr, "tam before")
+    require_mpr_bytes(after_mpr, "tam after")
     if before_mpr[0] != TAM_MPR0_BEFORE:
         raise InvalidObservation(f"tam MPR0 before mismatch: expected {TAM_MPR0_BEFORE:#x} (ROM), got {before_mpr[0]:#x}")
     if after_mpr[0] != TAM_MPR0_AFTER:
