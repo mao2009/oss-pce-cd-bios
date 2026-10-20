@@ -28,7 +28,7 @@ CLI は判定を出した後も常に終了コード 3 を返す。ABI が未確
 
 | 区分 | 状態 | 内容 |
 | --- | --- | --- |
-| 合成ホストテスト | 実施 | `python -I -m unittest discover -s tests/host -p test_adreset_fixture.py -v`（6 件） |
+| 合成ホストテスト | 実施 | `python -I -m unittest discover -s tests/host -p test_adreset_fixture.py -v`（9 件） |
 | 独立レビュー | NOT_RUN | 別エージェントによる台帳レビューは行っていない。 |
 | provenance 審査 | PENDING | §2 の出典は本 PR で追加していない。 |
 | callee 実行 | NOT_RUN | System Card の AD_RESET を実行していない。 |

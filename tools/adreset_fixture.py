@@ -18,25 +18,32 @@ FORBIDDEN_FLAGS = ("execution_allowed", "side_effects_allowed", "unsafe_io_allow
 
 
 def model(case):
-    """Synthetic model: reset aborts an active transfer or playback, returns to IDLE, clears busy in one poll."""
-    return {"entry": case["entry"], "state_after": "IDLE", "busy_after": 0,
-            "polls": 1, "aborted": case["state"] != "IDLE"}
+    """Synthetic model: reset aborts an active transfer or playback, returns to IDLE, clears busy in one poll.
+    A non-mapping case yields no observation; judge() then blocks it."""
+    if not isinstance(case, dict):
+        return {}
+    return {"entry": case.get("entry"), "state_after": "IDLE", "busy_after": 0,
+            "polls": 1, "aborted": case.get("state") != "IDLE"}
 
 
 def judge(case, obs):
     """Judge one observation record against one case. Never returns a PASS-like verdict for a callee."""
+    if not isinstance(case, dict):
+        return BLOCKED  # malformed case record: fail closed without raising
     if case.get("entry") != ENTRY_CANDIDATE or case.get("op") != "reset":
         return REJECTED  # other slots or operations are out of scope for this fixture
     if any(case.get(flag) for flag in FORBIDDEN_FLAGS):
         return REJECTED
     if case.get("state") not in STATES or not isinstance(obs, dict):
         return BLOCKED  # malformed case or missing observation: fail closed
+    if "entry" not in obs:
+        return BLOCKED  # observation record without its entry field: no observation
     if obs.get("entry") != ENTRY_CANDIDATE:
         return REJECTED
-    polls = obs.get("polls")
-    ok = (obs.get("state_after") == "IDLE" and obs.get("busy_after") == 0
+    polls, busy = obs.get("polls"), obs.get("busy_after")
+    ok = (obs.get("state_after") == "IDLE" and type(busy) is int and busy == 0
           and type(polls) is int and 0 < polls <= POLL_BUDGET
-          and obs.get("aborted") == (case["state"] != "IDLE"))
+          and obs.get("aborted") is (case["state"] != "IDLE"))
     return MODEL_OK if ok else FAIL
 
 
