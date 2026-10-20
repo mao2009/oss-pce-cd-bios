@@ -1,0 +1,88 @@
+name: HuC6280 core harness (real Geargrafx, diagnostic not BIOS)
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  core-harness:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read        # runs repository code only: no secrets, no id-token, no attestations
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare existing pinned source toolchain and Geargrafx
+        run: make setup
+      - name: Build DEV ROM only (no retail or reference BIOS)
+        run: make dev-rom
+      - name: Real-core harness, built-in self-tests and plug-in case
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/debug/core-harness
+          python3 tests/integration/geargrafx_core_harness.py --mode debug \
+            --cases tests/fixtures/core-harness-plugin.json 2>&1 | tee build/debug/core-harness/run.log
+      - name: Hand off harness log and evidence as an intermediate artifact (unverified here; the guard job checks them)
+        run: |
+          mkdir -p intermediate
+          cp --parents build/debug/core-harness/run.log build/debug/core-harness/core-harness-evidence.json intermediate/
+      - name: Intermediate harness log and evidence artifact (the guard job publishes it)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: intermediate-core-harness-${{ github.sha }}
+          path: intermediate/
+          if-no-files-found: error
+          retention-days: 1
+  guard-core-harness:
+    # Publishes only what the core-harness job handed over. It runs no build code: the trusted main tools, python3 resolved
+    # before anything else, the workflow files for the placement check, the download, the guard and the upload.
+    needs: core-harness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout workflow files only (data for the placement check)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          sparse-checkout: .github/workflows
+          persist-credentials: false
+      - name: Trusted guard (main)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: main
+          path: .trusted-main
+          sparse-checkout: tools/artifact_guard.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Resolve python3 (trusted)
+        id: pyresolve
+        run: |
+          echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"
+      - name: Guard placement (trusted)
+        run: |
+          "${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --check-placement
+      - name: Download intermediate harness log and evidence artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: intermediate-core-harness-${{ github.sha }}
+          path: .intake
+      - name: Stage artifacts (trusted guard) for Save harness log and evidence
+        run: |
+          "${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root ".intake" --workflow-root "$GITHUB_WORKSPACE" --stage .github/workflows/core-harness.yml "Save harness log and evidence"
+      - name: Verify staged artifacts (trusted guard) for Save harness log and evidence
+        run: |
+          "${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root ".intake" --workflow-root "$GITHUB_WORKSPACE" --verify .github/workflows/core-harness.yml "Save harness log and evidence"
+      - name: Save harness log and evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: core-harness-${{ github.sha }}
+          path: |
+            .intake/.artifact-stage/build/debug/core-harness/run.log
+            .intake/.artifact-stage/build/debug/core-harness/core-harness-evidence.json
+          if-no-files-found: error
+          retention-days: 14

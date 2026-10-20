@@ -107,6 +107,33 @@ tampered manifest are both rejected. ld65 debug info is structural evidence only
 byte-authenticity proof. A ROM produced by `build()` in-process is already trusted; every ROM
 read back from disk goes through `verify_dev_rom` before any code assumes a trusted DEV ROM.
 
+## HuC6280 コア検証ハーネス
+
+Linux 上のクリーンクローンで、リポジトリルートから `TOOLS_DIR` を設定して次の順に実行する。
+
+1. `make dev-rom MODE=debug`（DEV ROM を先にビルドする。省略するとハーネスは失敗または BLOCKED）
+2. `python3 tests/integration/geargrafx_core_harness.py --mode debug [--cases cases.json]`
+
+本 PR は Makefile ターゲットを追加しない（共有ターゲット `routine-real-core` は PR #331 に属し、本ツリーには存在しない）。ハーネスは検証済み DEV ROM の
+`$E800-$EFFF` テストオーバーレイ（`tests/fixtures/core-harness.s`）から bank0 の
+ルーチンを JSR し、合成入力 A/X/Y/P とゼロページ `$20E0-$20FF` 32 バイトを与えて、
+呼出前後の A/X/Y/P/SP/MPR とゼロページを実 Geargrafx コア（ディスクなし HuCard
+ロード、cold/warm、各 2048 命令）で記録する。各サイクルは `RETURNED` / `TRAPPED`
+/ `TIMEOUT` に分類し、`RETURNED` かつ全期待値一致のみ PASS。`TIMEOUT` は 1 サイクル 2048 命令の予算超過（長いルーチンを含む）と無限ループを区別しない。プラグインケースは `expect` で a/x/y/p（非ゼロ `p_mask`）/ram のいずれかを必ず照合する。未完了は PASS に
+ならない。ケース JSON の形式と組込み自己検証ケースは
+`tests/integration/geargrafx_core_harness.py` の docstring を参照。リファレンス
+BIOS は実行せず、BIOS ABI 互換の証拠ではない。
+
+CI 用フィクスチャ `tests/fixtures/core-harness-plugin.json` の期待値（a=17, x=3, y=0）は、
+リポジトリ内 OSS 実装 slot_1E の観測値（`docs/final-report-20261016.md` §6、`api_jsr_1E`
+プローブの cold 観測）に基づく **回帰用の期待値** である。BIOS ABI の独立した正解ではない。
+
+実コア実行は opt-in で上記コマンド 1 つに限り、Linux 固定（pinned Geargrafx の
+`.so`。他 OS では BLOCKED で終了し PASS にならない）。`make test` / `make check` /
+host unittest には含まれない（`tests/host/test_core_harness.py` は合成記録の判定器のみ）。
+ジャンプテーブル未接続の内部ルーチンは `target` に解決できないため、ハーネスへ載せるには
+別途リンク手段が要る（各ルーチンの Issue で扱う）。
+
 ## Coverage status
 
 | Area | Status |
