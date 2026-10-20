@@ -551,16 +551,84 @@ def _guard_is_bare(command, expected, keys):
 # Issue #349 (review, MAJOR): a publishing action may sit in any job of any file. It is refused unless its job is one of
 # these (file name, job) pairs (the owner decision: the two attestations only), or it is a Pages action in a guard job
 # that carries a final upload (pages.yml deploy: its placement is checked by guard_placement_violations).
-PUBLISH_JOB_ALLOWLIST = frozenset({("api-source.yml", "attest-cdread"), ("api-source.yml", "attest-cdread-verdict")})
+# The attestation subjects each allowed job may sign (owner decision, Issue #349). The allowance binds the subject-path
+# value and the with: keys too, not only the job name.
+ATTEST_SUBJECTS = {
+    ("api-source.yml", "attest-cdread"): frozenset({"evidence/cdread-probe/cdread-evidence.json",
+                                                    "evidence/cdread-probe/cdread-probe-not-bios.pce"}),
+    ("api-source.yml", "attest-cdread-verdict"): frozenset({"verdict/cdread-verdict.json"}),
+}
+PUBLISH_JOB_ALLOWLIST = frozenset(ATTEST_SUBJECTS)
 PAGES_PUBLISH_ACTIONS = ("actions/deploy-pages@", "actions/upload-pages-artifact@")
+ATTEST_USES_RE = re.compile(r"actions/attest-build-provenance@", re.IGNORECASE)
 
 
 def _enclosing_job(lines, index):
-    """The job id whose block contains lines[index] (its nearest job line above), or None."""
+    """The block job id that contains lines[index], or None. A line at indent 2 that is not a block job id (for example
+    a flow-form job `zz: {...}`) ends the search with None, so it is never attributed to the job above it (Issue #349)."""
     for j in range(index, -1, -1):
-        if _live(lines[j]) and _job_name(lines[j]) is not None:
-            return _job_name(lines[j])
+        if _live(lines[j]) and _indent(lines[j]) <= 2:
+            return _job_name(lines[j]) if _indent(lines[j]) == 2 else None
     return None
+
+
+def _attest_inputs(lines, dash, end):
+    """(with: keys, subject-path values) of one attest step whose list item starts at lines[dash], or None when the
+    with: block is not plain block form. Keys and values are read from the step's own block only."""
+    dash_indent = _indent(lines[dash])
+    keys, paths, in_with, current = [], set(), False, None
+    for j in range(dash + 1, end):
+        if not _live(lines[j]):
+            continue
+        indent, text = _indent(lines[j]), lines[j].strip()
+        if indent == dash_indent + 2:
+            current = None
+            in_with = text == "with:"
+            if text.startswith("with:") and not in_with:
+                return None
+        elif indent == dash_indent + 4 and in_with:
+            key, sep, value = text.partition(":")
+            if not sep:
+                return None
+            key = key.strip().strip("\"'")
+            keys.append(key)
+            current = key if key == "subject-path" else None
+            value = value.split(" #")[0].strip()
+            if current and value and value not in BLOCK_SCALARS and value != ">":
+                paths.add(value.strip("\"'"))
+        elif indent > dash_indent + 4 and in_with and current == "subject-path":
+            paths.add(text)
+        elif indent > dash_indent + 2 and in_with:
+            return None
+    return keys, paths
+
+
+def attest_input_violations(text, label):
+    """Problems for an attest step in an allowed job: its with: must be exactly subject-path, and its subject-path must be
+    the approved subject set for that (file, job). A step that cannot be parsed in this form is refused (Issue #349)."""
+    lines = text.splitlines()
+    problems = []
+    for i, line in enumerate(lines):
+        if not (_live(line) and ATTEST_USES_RE.search(line)):
+            continue
+        job = _enclosing_job(lines, i)
+        expected = ATTEST_SUBJECTS.get((Path(label).name, job))
+        if expected is None:
+            continue   # publish_violations refuses the job itself
+        column = _indent(line) + (2 if line.lstrip().startswith("- ") else 0)
+        dash = next((j for j in range(i, -1, -1) if _live(lines[j]) and lines[j].lstrip().startswith("- ")
+                     and _indent(lines[j]) < column), None)
+        if dash is None or column != _indent(lines[dash]) + 2:
+            problems.append(f"{label}: attest step in job {job!r} is not a plain list item (refused, Issue #349)")
+            continue
+        end = next((j for j in range(dash + 1, len(lines)) if _live(lines[j]) and _indent(lines[j]) <= _indent(lines[dash])),
+                   len(lines))
+        found = _attest_inputs(lines, dash, end)
+        if found is None or found[0] != ["subject-path"] or found[1] != set(expected):
+            got = "unparseable" if found is None else f"keys {found[0]} subjects {sorted(found[1])}"
+            problems.append(f"{label}: attest step in job {job!r} may only have subject-path with the approved subjects "
+                            f"{sorted(expected)} (found {got}, Issue #349)")
+    return problems
 
 
 def publish_violations(text, label):
@@ -613,6 +681,7 @@ def check_guard_placement(root=ROOT):
         if steps:
             problems += guard_placement_violations(text, label)
         problems += publish_violations(text, label)
+        problems += attest_input_violations(text, label)
     if problems:
         raise ValueError("artifact guard placement: " + "; ".join(problems))
     print("PASS artifact guard placement: trusted preamble, staged paths, stage and verify before every upload")

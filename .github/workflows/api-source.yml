@@ -177,8 +177,9 @@ jobs:
     # The job is skipped for pull_request events, so a PR (same-repo or fork) never receives id-token/attestations.
     # A PR could edit this file, but its attestation would carry refs/pull/N/merge and a pull_request trigger,
     # which tools/evidence_provenance.py rejects; only main is trusted.
+    # Owner review (Issue #349): sign only on push to main. A workflow_dispatch on any ref, main included, does not sign.
     needs: guard-bios-dev
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -198,7 +199,7 @@ jobs:
             evidence/cdread-probe/cdread-evidence.json
             evidence/cdread-probe/cdread-probe-not-bios.pce
   verify-cdread-attestation:
-    # Push to main only. workflow_dispatch on main is signed but not verified here (verify it with the same commands).
+    # Push to main only. attest-cdread signs only on push to main (Issue #349), so there is no dispatch attestation to verify.
     needs: attest-cdread
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
