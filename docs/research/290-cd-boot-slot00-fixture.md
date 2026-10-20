@@ -20,6 +20,7 @@
 | 結果 | 条件 |
 | --- | --- |
 | BLOCKED | 自己申告が無い、形式不正、未知の結果（`UNKNOWN` や未定義の error_code）、`executed_callee` が false 以外、SHA が不正 |
+| BLOCKED（構造検査） | ケース側の期待 SHA や分類の改ざん（`validate_case` が malformed case と判定し、judge は BLOCKED） |
 | REJECTED | 形式は正しいが、媒体 SHA 不一致（なりすまし・別媒体）、モデルと矛盾する boot_claimed や error_code |
 | MODEL_CONSISTENT | モデルとだけ一致する。実行の証拠ではなく、PASS でもない |
 

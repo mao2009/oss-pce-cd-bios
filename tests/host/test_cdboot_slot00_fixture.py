@@ -113,7 +113,7 @@ class Slot00FixtureTests(unittest.TestCase):
                 status, _ = M.judge(CASE["valid_synthetic"], dict(base, error_code=value))
                 self.assertEqual(status, "BLOCKED")
 
-    def test_unhashable_or_mismatched_model_classification_is_rejected_by_gate(self):
+    def test_unhashable_or_mismatched_model_classification_is_blocked_by_gate(self):
         for kind in M.MEDIA_KINDS:
             with self.subTest(kind=kind, label="unhashable"):
                 case = copy.deepcopy(CASE[kind])
@@ -125,7 +125,7 @@ class Slot00FixtureTests(unittest.TestCase):
         self.assertTrue(M.validate_case(case), "classification must match its media")
         self.assertEqual(M.judge(case, truthful(CASE["malformed"]))[0], "BLOCKED")
 
-    def test_tampered_expected_media_sha_is_rejected_by_gate(self):
+    def test_tampered_expected_media_sha_is_blocked_by_gate(self):
         for kind in M.MEDIA_KINDS:
             for tampered in (None, "ab", CASE["valid_synthetic"]["expected_media_sha256"]):
                 if tampered == CASE[kind]["expected_media_sha256"]:
