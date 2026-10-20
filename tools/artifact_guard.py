@@ -590,6 +590,18 @@ ATTEST_STEPS = {
         ("run", ('test -n "$ACTIONS_ID_TOKEN_REQUEST_URL" || { echo "no id-token, verdict not signed"; exit 1; }',)),
         ("uses", "actions/attest-build-provenance")],
 }
+# Issue #337 round 11. The download step of each approved signing job is pinned: the action pin, the artifact name it fetches
+# (the name of the upload step in the same file), the directory it extracts into, and the only with: keys allowed. `files`
+# are the signed files relative to that directory, so each subject-path must be path + "/" + file (attest_download_violations).
+DOWNLOAD_USES = "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+DOWNLOAD_WITH_KEYS = frozenset({"name", "path"})
+ATTEST_DOWNLOADS = {
+    ("api-source.yml", "attest-cdread"): {
+        "name": "bios-dev-not-compatible-${{ github.sha }}", "path": "evidence",
+        "files": frozenset({"cdread-probe/cdread-evidence.json", "cdread-probe/cdread-probe-not-bios.pce"})},
+    ("api-source.yml", "attest-cdread-verdict"): {
+        "name": "cdread-verdict-${{ github.sha }}", "path": "verdict", "files": frozenset({"cdread-verdict.json"})},
+}
 ROM_CANDIDATES = ("x.pce", "x.bin", "x.rom")
 ROM_SUFFIXES = (".pce", ".bin", ".rom")
 # The ROM upload patterns that exist today (staged form), per workflow file. Each is a synthetic probe ROM or the project's
@@ -674,6 +686,88 @@ def attest_input_violations(text, label):
             got = "unparseable" if found is None else f"keys {found[0]} subjects {sorted(found[1])}"
             problems.append(f"{label}: attest step in job {job!r} may only have subject-path with the approved subjects "
                             f"{sorted(expected)} (found {got}, Issue #349)")
+    return problems
+
+
+def attest_download_violations(text, label):
+    """Issue #337 round 11, for one workflow file (YAML decoded with the strict loader). For each approved signing job of
+    this file (ATTEST_DOWNLOADS): exactly one download-artifact step and one attest-build-provenance step; the download
+    step has only uses and with, uses is DOWNLOAD_USES, and with: is exactly {name, path} with the pinned values (so
+    run-id, repository, github-token, merge-multiple and any other key are refused); the subject-path is exactly
+    path + "/" + each pinned file, and that set equals ATTEST_SUBJECTS for the job."""
+    import yaml
+    name = Path(label).name
+    pins = {job: pin for (file, job), pin in ATTEST_DOWNLOADS.items() if file == name}
+    if not pins:
+        return []
+    try:
+        doc = yaml.load(text, Loader=_strict_loader())
+    except (yaml.YAMLError, ValueError) as error:
+        return [f"{label}: YAML cannot be read, download pins cannot be checked ({error}; Issue #337 round 11)"]
+    jobs = doc.get("jobs") if isinstance(doc, dict) else None
+    problems = []
+    for job, pin in sorted(pins.items()):
+        if isinstance(jobs, dict) and job not in jobs:
+            continue   # an absent signing job signs nothing here; attest_condition_violations and publish_violations cover it
+        body = jobs.get(job) if isinstance(jobs, dict) else None
+        steps = body.get("steps") if isinstance(body, dict) else None
+        if not isinstance(steps, list):
+            problems.append(f"{label}: signing job {job!r} has no steps list to check (Issue #337 round 11)")
+            continue
+        uses = [s.get("uses") if isinstance(s, dict) else None for s in steps]
+        downloads = [s for s, u in zip(steps, uses) if isinstance(u, str) and u.startswith("actions/download-artifact@")]
+        attests = [s for s, u in zip(steps, uses) if isinstance(u, str) and u.startswith("actions/attest-build-provenance@")]
+        if len(downloads) != 1 or len(attests) != 1:
+            problems.append(f"{label}: signing job {job!r} must have exactly one download-artifact and one "
+                            f"attest-build-provenance step (found {len(downloads)} and {len(attests)}, Issue #337 round 11)")
+            continue
+        download = downloads[0]
+        extra = sorted(set(download) - {"uses", "with"}, key=str)
+        if extra:
+            problems.append(f"{label}: download-artifact step in job {job!r} sets {extra} (only uses and with are allowed, "
+                            "Issue #337 round 11)")
+        if download.get("uses") != DOWNLOAD_USES:
+            problems.append(f"{label}: download-artifact step in job {job!r} must use {DOWNLOAD_USES!r} "
+                            f"(found {download.get('uses')!r}, Issue #337 round 11)")
+        with_ = download.get("with")
+        if not isinstance(with_, dict):
+            problems.append(f"{label}: download-artifact step in job {job!r} has no with: mapping (Issue #337 round 11)")
+        else:
+            bad = sorted(set(with_) - DOWNLOAD_WITH_KEYS, key=str)
+            if bad:
+                problems.append(f"{label}: download-artifact step in job {job!r} may not set with: {bad} (allowed "
+                                f"{sorted(DOWNLOAD_WITH_KEYS)}; run-id, repository, github-token and merge-multiple are "
+                                "refused, Issue #337 round 11)")
+            if with_.get("name") != pin["name"] or with_.get("path") != pin["path"]:
+                problems.append(f"{label}: download-artifact step in job {job!r} must fetch {pin['name']!r} into "
+                                f"{pin['path']!r} (found name {with_.get('name')!r}, path {with_.get('path')!r}, "
+                                "Issue #337 round 11)")
+        attest_with = attests[0].get("with")
+        subject_text = attest_with.get("subject-path") if isinstance(attest_with, dict) else None
+        subjects = {line.strip() for line in subject_text.splitlines() if line.strip()} if isinstance(subject_text, str) else set()
+        expected = {f"{pin['path']}/{file}" for file in pin["files"]}
+        if subjects != expected or subjects != set(ATTEST_SUBJECTS[(name, job)]):
+            problems.append(f"{label}: attest step in job {job!r} must sign exactly the files of the pinned download, "
+                            f"{sorted(expected)} (found {sorted(subjects)}, Issue #337 round 11)")
+    return problems
+
+
+def yaml_integrity_violations(text, label):
+    """Issue #337 round 11, for every workflow and composite action file. A mapping with a duplicate key is refused (PyYAML
+    keeps the last value silently) and so is any YAML anchor or alias, which can repeat or hide a value. Applies to the whole
+    file, so it covers jobs outside the signing set too."""
+    import yaml
+    try:
+        yaml.load(text, Loader=_strict_loader())
+        events = list(yaml.parse(text, Loader=yaml.SafeLoader))
+    except (yaml.YAMLError, ValueError) as error:
+        return [f"{label}: YAML refused ({error}; Issue #337 round 11)"]
+    problems = []
+    for event in events:
+        if isinstance(event, yaml.AliasEvent):
+            problems.append(f"{label}: YAML alias *{event.anchor} is refused (Issue #337 round 11)")
+        elif getattr(event, "anchor", None):
+            problems.append(f"{label}: YAML anchor &{event.anchor} is refused (Issue #337 round 11)")
     return problems
 
 
@@ -1438,7 +1532,9 @@ def check_guard_placement(root=ROOT):
             problems += guard_placement_violations(text, label)
         problems += publish_violations(text, label)
         problems += pages_structure_violations(text, label)
+        problems += yaml_integrity_violations(text, label)
         problems += attest_input_violations(text, label)
+        problems += attest_download_violations(text, label)
         problems += attest_condition_violations(text, label)
         problems += signing_violations(text, label)
         problems += rom_upload_violations(text, label)
