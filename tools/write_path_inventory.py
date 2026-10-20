@@ -102,6 +102,15 @@ NO_MONITOR_STATUSES = ("UNMONITORED", "PERMITTED_UNISOLATED")
 PIN_KEY = "geargrafx"
 
 
+def _prevention_proven(row):
+    """True only for a PREVENTED_* row with a stop-before claim, and only once the producer gate is open.
+
+    Monitoring state (monitor_status) and prevention proof are separate questions: a DETECTED row can still be unproven.
+    """
+    return (AUTHENTICATED_RUN_PRODUCER and row["monitor_status"].startswith(PREVENTED_PREFIX)
+            and row["prevents_before_side_effect"] in PREVENTION_VALUES)
+
+
 def _no_duplicate_keys(pairs):
     keys = [key for key, _ in pairs]
     if len(keys) != len(set(keys)):
@@ -235,8 +244,10 @@ def validate(inventory, pinned_revision, root=ROOT):
         require(row_id in by_id and marker in by_id[row_id]["path"],
                 f"required path marker missing from inventory: {row_id} ({marker})")
     unresolved = sum(counts.get(s, 0) for s in UNRESOLVED_STATUSES)
-    return {"rows": len(rows), "unresolved": unresolved, "status_counts": dict(sorted(counts.items())),
-            "gate_status": "BLOCKED"}
+    # Monitoring-state count (kept for compatibility) plus the proof count: every row whose prevention is not proven.
+    prevention_unproven = sum(1 for r in rows if not _prevention_proven(r))
+    return {"rows": len(rows), "unresolved": unresolved, "prevention_unproven": prevention_unproven,
+            "status_counts": dict(sorted(counts.items())), "gate_status": "BLOCKED"}
 
 
 def load(path=INVENTORY_PATH):
@@ -255,7 +266,7 @@ def main(argv=None):
         print(f"FAIL: write-path inventory invalid: {error}")
         return 1
     print(f"PASS: write-path inventory valid; rows={summary['rows']} unresolved={summary['unresolved']} "
-          f"gate={summary['gate_status']}")
+          f"prevention_unproven={summary['prevention_unproven']} gate={summary['gate_status']}")
     print(json.dumps(summary["status_counts"], ensure_ascii=False, indent=2, sort_keys=True))
     return 0
 

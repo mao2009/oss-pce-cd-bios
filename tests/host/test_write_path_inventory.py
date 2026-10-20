@@ -99,6 +99,21 @@ class WritePathInventoryTest(unittest.TestCase):
         self.assertEqual(summary["rows"], len(INVENTORY["rows"]))
         self.assertGreater(summary["unresolved"], 0)
 
+    # W03 is detected (not an UNRESOLVED_STATUSES member) but its prevention is UNKNOWN: monitoring state and proof differ.
+    def test_prevention_unproven_counts_detected_row_with_unknown_prevention(self):
+        summary, _ = W.load()
+        self.assertNotIn(row(INVENTORY, "W03")["monitor_status"], W.UNRESOLVED_STATUSES)
+        self.assertEqual(row(INVENTORY, "W03")["prevents_before_side_effect"], "UNKNOWN")
+        self.assertEqual(summary["unresolved"], sum(summary["status_counts"].get(s, 0) for s in W.UNRESOLVED_STATUSES))
+        self.assertEqual(summary["prevention_unproven"], summary["rows"])
+
+    def test_prevention_unproven_is_zero_only_when_every_row_is_proven(self):
+        inv = self.claimed(fresh(), "W03")
+        with mock.patch.object(W, "AUTHENTICATED_RUN_PRODUCER", True):
+            summary = self.validate_in_tmp(inv)
+        self.assertEqual(summary["prevention_unproven"], summary["rows"] - 1)
+        self.assertNotEqual(summary["prevention_unproven"], 0)
+
     def test_committed_inventory_claims_no_prevention_without_a_run_identifier(self):
         for r in INVENTORY["rows"]:
             with self.subTest(row=r["id"]):

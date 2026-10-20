@@ -42,7 +42,7 @@ CPU/デバイス書込み経路のうち、**監視されていないもの・�
 | W17 | デバイス起点の RAM 書込み: CD/ADPCM 転送（未監査） | DEVICE | UNKNOWN | UNKNOWN | UNKNOWN | 未監査・未測定 | docs/cd-reset-contract.md |
 | W18 | 許可外CPUアドレスのうち W02 以外（ページ3〜7、ページ2の残り） | RAM | UNKNOWN | UNKNOWN | UNKNOWN | 未測定（ブレーク範囲は設定されるが、ストアは未観測） | probe |
 
-集計（`--check` の出力）: 18行、未解決 17行。
+集計（`--check` の出力）: 18行、未解決（監視状態が未解決）17行、副作用前遮断が未証明 18行（`prevention_unproven`。監視状態が検出済みでも遮断が UNKNOWN の行、例: W03、は未証明に数える。未証明が 0 になるのは全行が証明された場合のみ）。
 副作用前遮断を主張する行は 0 件。以前の実測・到達性の主張（W01〜W04・W13）は撤回した。合成BIOSの実測（REAL_CORE_SYNTHETIC）は副作用前遮断の根拠にならず、静的な到達性の主張も実行IDを含む証拠ファイルで検証されていないため。W12 の既知PCのみの実行ブレークも主張しない（副作用後検出）。
 ST0/1/2（W05〜W07）と IRQ 書込み（W08〜W10）には汎用の副作用前遮断が無く、割込みエントリ（W14）は未監視。W09・W10 は検出点が未記録（UNKNOWN）。
 
@@ -66,7 +66,7 @@ W05 の遮断手段はコア側フックが無いと成立しない可能性が�
 
 ## ホスト側テストの結果（この worktree）
 
-- `tests/host/test_write_path_inventory.py`: 89 件（インベントリの不変条件・改変テスト、観測スキーマの正負例、ドキュメント整合）
+- `tests/host/test_write_path_inventory.py`: 91 件（インベントリの不変条件・改変テスト、観測スキーマの正負例、ドキュメント整合）
 - `tests/host/test_reference_jsr_gate.py`: 既存のゲートテストを維持（BLOCKED）
 - 全体の `python -m unittest discover -s tests/host`（UTF-8 モード）: 1225 件中、残りの失敗は Windows 固有（`os.getuid`、`fcntl`、非 Win32 バイナリ、cc65 不在）による既存のもので、この PR の変更ファイルとは無関係。`make test` は NOT_RUN（Windows では Makefile と cc65 が動かないため）。
 
