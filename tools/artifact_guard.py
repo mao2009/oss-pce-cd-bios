@@ -96,6 +96,14 @@ KNOWN_ACTIONS = frozenset({
     "actions/checkout", "actions/upload-artifact", "actions/download-artifact", "actions/upload-pages-artifact",
     "actions/configure-pages", "actions/deploy-pages", "actions/attest-build-provenance",
 })
+# Issue #349: the ref must be one full 40-digit commit SHA. A tag can be moved after review, and a ref that is any
+# text let `actions/checkout@v4 acme/publisher@v1` through.
+FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
+# Publishing actions that must not appear in a file without an upload-artifact step (Issue #349, finding 1): such a
+# file is not covered by the upload layer, so the placement check refuses it outright.
+PUBLISH_USES_RE = re.compile(r"actions/(?:deploy-pages|upload-pages-artifact|attest-build-provenance)@", re.IGNORECASE)
+_UNLISTED_MESSAGE = ("uses: action not on the allowlist or not pinned to one full commit SHA "
+                     "(fail closed, Issue #337, #349)")
 # A uses: key anywhere on a line: block form, quoted key, or inside a flow mapping such as {uses: x}.
 USES_ANY_RE = re.compile(r"""(?:^|[\s{,\[-])["']?uses["']?\s*:""", re.IGNORECASE)
 # A key the line reader cannot see as text: a complex key (`? uses` with the value on the next line) or a double-quoted
@@ -104,13 +112,13 @@ OPAQUE_KEY_RE = re.compile(r"""^\s*(?:-\s+)?\?(?:\s|$)|"[^"]*\\[^"]*"\s*:""")
 
 
 def _unlisted_uses(line):
-    """The uses: values on one line that do not name a KNOWN_ACTIONS entry with a ref. Empty values (a value on the
-    next line, a folded scalar indicator) are unlisted too."""
+    """The uses: values on one line that do not name a KNOWN_ACTIONS entry pinned to one full commit SHA. Empty values
+    (a value on the next line, a folded scalar indicator) are unlisted too."""
     values = []
     for key in USES_ANY_RE.finditer(line):
         value = _unquote(re.split(r"\s#|[,}\]]", line[key.end():], maxsplit=1)[0].strip())
         name, at, ref = value.partition("@")
-        if not (at and ref.strip() and name.lower() in KNOWN_ACTIONS):
+        if not (at and FULL_SHA_RE.fullmatch(ref) and name.lower() in KNOWN_ACTIONS):
             values.append(value)
     return values
 
@@ -255,6 +263,9 @@ def upload_steps(text):
                 raise ValueError(f"unsupported uses: value (escape sequence or alias): {line.strip()!r}")
         match = USES_RE.search(line)
         if match:
+            # Issue #349: an upload step's own action is held to the same allowlist and full-SHA pin as any other.
+            if _unlisted_uses(line):
+                raise ValueError(_UNLISTED_MESSAGE + f": {line.strip()!r}")
             patterns.append(_step_patterns(lines, index, match.start()))
         elif UPLOAD_RE.search(line):
             # Fail closed: a mention that is not a parsed upload step may still be an upload of unknown shape.
@@ -262,7 +273,7 @@ def upload_steps(text):
         elif not line.lstrip().startswith("#") and OPAQUE_KEY_RE.search(line):
             raise ValueError(f"YAML key the line reader cannot see (complex or escaped key, fail closed): {line.strip()!r}")
         elif not line.lstrip().startswith("#") and _unlisted_uses(line):
-            raise ValueError(f"uses: action not on the allowlist (fail closed, Issue #337): {line.strip()!r}")
+            raise ValueError(_UNLISTED_MESSAGE + f": {line.strip()!r}")
     return patterns
 
 
@@ -561,6 +572,13 @@ def check_guard_placement(root=ROOT):
             raise ValueError(f"{label}: {error}") from error
         if steps:
             problems += guard_placement_violations(text, label)
+        else:
+            # Issue #349 (finding 1): with no upload step the placement check above is skipped, so a publishing action
+            # here (deploy-pages, attest-build-provenance) would pass unseen. Refuse it outright.
+            publish = [m.group(0) for line in text.splitlines() if _live(line) for m in [PUBLISH_USES_RE.search(line)] if m]
+            if publish:
+                problems.append(f"{label}: publish action {publish[0]!r} in a file with no upload-artifact step; refused "
+                                "(the placement check cannot see what it publishes)")
     if problems:
         raise ValueError("artifact guard placement: " + "; ".join(problems))
     print("PASS artifact guard placement: trusted preamble, staged paths, stage and verify before every upload")

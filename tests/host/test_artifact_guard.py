@@ -385,6 +385,9 @@ GUARD_STEP = PREAMBLE + STAGE_STEP + VERIFY_STEP
 SAVE_STEP = f'      - name: Save\n        uses: {UPLOAD}\n        with:\n          path: .artifact-stage/build/x\n'
 GUARDED = 'jobs:\n  build:\n    steps:\n' + GUARD_STEP + SAVE_STEP
 # The shape of .github/workflows/pages.yml: configure-pages after the placement check, the Pages upload, then deploy.
+# Pinned Pages action SHAs (resolved with gh api repos/actions/<name>/commits/<tag>, Issue #349).
+CFG_SHA = '983d7736d9b0ae728b81ab479565c72886d7745b'
+PINS = {'configure-pages': CFG_SHA, 'deploy-pages': 'd6db90164ac5ed86f2b6aed7e0febac5b3c0c03e'}
 PAGES_UPLOAD = 'actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b'
 PAGES_GUARDED = ('jobs:\n  build:\n    steps:\n' + PREAMBLE
                  + '      - name: Configure Pages\n'
@@ -798,10 +801,10 @@ class GuardPlacementTests(unittest.TestCase):
         evil = ('      - name: Evil\n'
                 '        run: |\n'
                 '          echo hi\n'
-                '          uses: actions/configure-pages@v5\n')
+                '          uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b\n')
         for action in ('configure-pages', 'deploy-pages'):
             with self.subTest(action=action):
-                body = evil.replace('actions/configure-pages@v5', f'actions/{action}@v5')
+                body = evil.replace('actions/configure-pages@' + CFG_SHA, f'actions/{action}@{PINS[action]}')
                 text = GUARDED.replace(STAGE_STEP, body + STAGE_STEP)
                 self.assertNotEqual(GUARDED, text)
                 self.assertNotEqual([], self.violations(text))
@@ -824,7 +827,7 @@ class GuardPlacementTests(unittest.TestCase):
 
     def test_a_configure_pages_step_may_not_carry_extra_inputs(self):
         # configure-pages can run a site generator, so a with: (e.g. one writing into .trusted-main) is refused.
-        step = ('      - name: Configure Pages\n        uses: actions/configure-pages@v5\n'
+        step = ('      - name: Configure Pages\n        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b\n'
                 '        with:\n          output_dir: .trusted-main\n')
         text = GUARDED.replace(STAGE_STEP, step + STAGE_STEP)
         self.assertNotEqual(GUARDED, text)
@@ -920,7 +923,7 @@ class GuardPlacementTests(unittest.TestCase):
         # the second (a checkout into .trusted-main).
         text = GUARDED.replace(STAGE_STEP,
                                '      - name: Sneaky\n'
-                               '        uses: actions/configure-pages@v5\n'
+                               '        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b\n'
                                '        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683\n'
                                '        with:\n          ref: ${{ github.head_ref }}\n          path: .trusted-main\n'
                                + STAGE_STEP)
