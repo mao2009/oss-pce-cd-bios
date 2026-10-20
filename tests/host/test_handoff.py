@@ -6,11 +6,11 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tests/integration"))
 sys.path.insert(0, str(ROOT / "tools"))
-from geargrafx_handoff import RAM_ENTRY, check_handoff_contract, judge  # noqa: E402
+from geargrafx_handoff import RAM_ENTRY, check_handoff_contract, expected_payload, judge  # noqa: E402
 
 GOOD_MPR = [0xFF, 0xF8, 1, 2, 31, 3, 4, 0]
 LABELS = {"handoff_jump": 0xF0A0, "handoff_done": 0xF0B0}
-PAYLOAD = bytes.fromhex("a9a58d2022a95a8d2122")  # synthetic bytes; the judge compares them, it does not run them
+PAYLOAD = expected_payload(LABELS["handoff_done"])  # compared as bytes; never executed here
 
 
 def _row(cycle, phase, pc, sp=0xFF, mpr=GOOD_MPR):

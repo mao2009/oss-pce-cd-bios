@@ -5,7 +5,7 @@
 ; The host builder (tests/integration/geargrafx_handoff.py) patches bytes at these labels for negatives.
 .setcpu "huc6280"
 .export handoff_reset, handoff_bank, handoff_jump, handoff_done, handoff_trap
-.export handoff_entry, handoff_payload_end
+.export handoff_entry, handoff_payload_end, handoff_payload_src
 .import __RAMCODE_RUN__, __RAMCODE_SIZE__, __RAMCODE_LOAD__
 
 .segment "BOOT"
@@ -32,6 +32,8 @@ handoff_done:
     bra handoff_done          ; control returned from the RAM payload
 handoff_trap:
     bra handoff_trap          ; all IRQ/BRK vectors
+handoff_payload_src:          ; data: ROM address the linker placed the payload at (read by the host builder)
+    .word __RAMCODE_LOAD__
 
 .segment "RAMCODE"
 handoff_entry:

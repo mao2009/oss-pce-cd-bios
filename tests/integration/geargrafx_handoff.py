@@ -26,20 +26,27 @@ from geargrafx_api import compile_probe  # noqa: E402
 from geargrafx_contracts import execute  # noqa: E402
 
 ROM_BASE, BANK_BYTES, IMAGE_BYTES = 0xE000, 0x2000, 0x40000
-PAYLOAD_LOAD = 0xF100              # RAMCODE load address in ROM (fixed by the linker config below)
 RAM_WINDOW = (0x2000, 0x4000)      # CPU window of MPR1 = work RAM bank $F8
 RAM_ENTRY = 0x2200
 IO_BANK, WORK_BANK = 0xFF, 0xF8
 MARKER_OFF, MARKER = 0x20, b"\xa5\x5a"  # written at $2220-$2221
 DUMP_BYTES = 64                    # probe dumps work RAM offset $200..$23F
 PHASES = ("handoff_jump", "handoff_entry", "handoff_done")
+# Independent expectation, typed here from the source (ca65 encoding of the four payload instructions
+# before the final JMP): lda #$A5 / sta $2220 / lda #$5A / sta $2221. The JMP operand is appended from
+# the handoff_done label, so the expected bytes never come from the ROM copy they are checking.
+PAYLOAD_PREFIX = bytes.fromhex("a9a58d2022a95a8d2122")
+
+
+def expected_payload(handoff_done: int) -> bytes:
+    return PAYLOAD_PREFIX + b"\x4c" + handoff_done.to_bytes(2, "little")
 CFG = """MEMORY {
     ROM0: start = $E000, size = $2000, file = %O, fill = yes, fillval = $FF;
     WRAM: start = $2200, size = $0100, type = rw;
 }
 SEGMENTS {
     BOOT: load = ROM0, type = ro, start = $F000;
-    RAMCODE: load = ROM0, run = WRAM, type = ro, start = $F100;
+    RAMCODE: load = ROM0, run = WRAM, type = ro;
     VECTORS: load = ROM0, type = ro, start = $FFF6;
 }
 """
@@ -80,8 +87,15 @@ def build_handoff(output: Path, mode: str):
     if labels.get("handoff_entry") != RAM_ENTRY or any(name not in labels for name in PHASES):
         raise ValueError(f"handoff symbols/placement mismatch: {labels}")
     size = labels["handoff_payload_end"] - RAM_ENTRY
-    if not 1 <= size <= DUMP_BYTES - MARKER_OFF:
-        raise ValueError("payload size outside the dumped window")
+    if size != len(expected_payload(labels["handoff_done"])):
+        raise ValueError(f"payload size {size} differs from the typed expectation")
+    src_at = labels["handoff_payload_src"] - ROM_BASE
+    load = int.from_bytes(data[src_at:src_at + 2], "little")  # ROM address of the payload copy source
+    if not (ROM_BASE <= load and load + size <= ROM_BASE + BANK_BYTES):
+        raise ValueError(f"payload source {load:#06x} is outside bank0")
+    head = len(PAYLOAD_PREFIX)
+    if data[load - ROM_BASE:load - ROM_BASE + head + 1] != PAYLOAD_PREFIX + b"\x4c":
+        raise ValueError("ROM payload source differs from the typed instructions")
     rom = output / "handoff-not-bios.pce"
     rom.write_bytes(data + b"\xff" * (IMAGE_BYTES - BANK_BYTES))
     trace_labels = output / "trace-labels.txt"
@@ -143,7 +157,7 @@ def main():
     out = ROOT / "build" / mode / "handoff"
     rom_path, labels, size, trace_labels = build_handoff(out, mode)
     rom = rom_path.read_bytes()
-    payload = rom[PAYLOAD_LOAD - ROM_BASE:PAYLOAD_LOAD - ROM_BASE + size]
+    payload = expected_payload(labels["handoff_done"])
     probe = compile_probe(out)
     negatives = {}
     with tempfile.TemporaryDirectory(prefix="pce-handoff-") as tmp:
@@ -158,7 +172,8 @@ def main():
             path.write_bytes(mutate(rom, labels, kind))
             try:
                 judge(execute(probe, path, cue, trace_labels), labels, payload)
-            except ValueError as error:
+            except (ValueError, subprocess.CalledProcessError) as error:
+                # A probe crash on a mutant is also a rejection: that run was not accepted as a handoff.
                 negatives[kind] = f"REJECTED: {error}"
             else:
                 raise ValueError(f"mutated ROM {kind} passed the handoff judge on the real core")
