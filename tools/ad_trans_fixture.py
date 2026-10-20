@@ -30,6 +30,9 @@ def validate(req, disc_sectors):
         return 'REJECT_NO_MEDIA'
     if req['busy']:
         return 'REJECT_BUSY'
+    # Exact int only: bool is a subclass of int, and float/str must not reach the range checks or slicing.
+    if any(type(req[k]) is not int for k in ('count', 'lba', 'dest')):
+        return 'REJECT_TYPE'
     if req['count'] != 1:
         return 'REJECT_COUNT'
     if not 0 <= req['lba'] < disc_sectors:
