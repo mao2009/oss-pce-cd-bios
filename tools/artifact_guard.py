@@ -640,11 +640,51 @@ def attest_input_violations(text, label):
     return problems
 
 
+def _if_scalars(lines, head, end):
+    """Each job-level `if:` key in lines[head+1:end], as its scalar parts: the key line's own value, then every live line
+    indented deeper than the key (a plain or quoted continuation, or a block body). Issue #337 round 2: a continuation
+    line was ignored before, so `|| github.event_name == 'pull_request'` under `if:` passed the text check."""
+    found = []
+    for i in range(head + 1, end):
+        line = lines[i]
+        if not (_live(line) and _indent(line) == 4 and re.match(r"""["']?if["']?\s*:""", line.strip())):
+            continue
+        parts = [re.split(r"\s#", line.strip().split(":", 1)[1], maxsplit=1)[0]]
+        for j in range(i + 1, end):
+            if _live(lines[j]) and _indent(lines[j]) <= 4:
+                break
+            if _live(lines[j]):
+                parts.append(re.split(r"\s#", lines[j].strip(), maxsplit=1)[0])
+        found.append(parts)
+    return found
+
+
+def _effective_if(lines, head, end, job):
+    """The job's `if:` value as PyYAML parses the job's own block (lines[head:end]), or None when it cannot be read as one
+    string. Issue #337 round 2: this is the source of truth next to the text check. The block is parsed alone, so a
+    malformed unrelated part of the file cannot hide a signing job's value. No PyYAML means None, so the caller refuses."""
+    try:
+        import yaml
+    except ImportError:
+        return None
+    try:
+        value = yaml.safe_load("\n".join(lines[head:end]) + "\n")[job]["if"]
+    except (yaml.YAMLError, KeyError, TypeError):
+        return None
+    return value if isinstance(value, str) else None
+
+
+def _normal(value):
+    return " ".join(value.split())
+
+
 def attest_condition_violations(text, label):
     """Each signing job present in this file must be a block-form job with exactly one job-level `if:`, equal to
     SIGN_CONDITION after whitespace normalization (Issue #349). Flow-form, duplicated or missing jobs, and any other value
-    (including a quoted or block scalar) are refused. A signing job absent from the file is not checked here: publish_violations
-    refuses any attest step that appears in another job or file.
+    are refused. Issue #337 round 2: the WHOLE value is compared, continuation lines included, and a block or quoted scalar
+    is refused. The effective value that PyYAML parses must agree with the text value, or the check refuses.
+    A signing job absent from the file is not checked here: publish_violations refuses any attest step that appears in
+    another job or file.
 
     Known residual risks, NOT detected here (recorded in docs/provenance.md "Attestation publication scope"):
     - a `run:` step that calls Sigstore directly with the OIDC token (no attest action) is not seen by this guard;
@@ -665,11 +705,14 @@ def attest_condition_violations(text, label):
                             "flow form is refused, Issue #349)")
             continue
         end = next((j for j in range(heads[0] + 1, len(lines)) if _live(lines[j]) and _indent(lines[j]) <= 2), len(lines))
-        values = [" ".join(l.strip().split(":", 1)[1].split(" #")[0].split()) for l in lines[heads[0] + 1:end]
-                  if _live(l) and _indent(l) == 4 and re.match(r"""["']?if["']?\s*:""", l.strip())]
-        if values != [SIGN_CONDITION]:
+        found = _if_scalars(lines, heads[0], end)
+        values = [_normal(" ".join(parts)) for parts in found]
+        effective = _effective_if(lines, heads[0], end, job)
+        scalar_form = any(parts[0].strip()[:1] in ("|", ">", '"', "'") for parts in found if parts[0].strip())
+        if (len(found) != 1 or scalar_form or values != [SIGN_CONDITION]
+                or effective is None or _normal(effective) != SIGN_CONDITION):
             problems.append(f"{label}: signing job {job!r} must have exactly one job-level if: {SIGN_CONDITION!r} "
-                            f"(found {values}, Issue #349)")
+                            f"(found {values}, effective {effective!r}, block or quoted form refused, Issue #349, #337)")
     return problems
 
 

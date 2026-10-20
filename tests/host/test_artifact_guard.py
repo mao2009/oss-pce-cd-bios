@@ -1356,5 +1356,32 @@ class SignConditionTests(unittest.TestCase):
             self.placement(text)
 
 
+    # Round 2 (Issue #337 re-review, MAJOR): a continuation line indented deeper than the if: key was ignored, so
+    # `|| github.event_name == 'pull_request'` on the next line passed --check-placement and would sign a PR run.
+    def test_continuation_or_pull_request_is_refused_on_attest_cdread(self):
+        text = self.mutate_if('attest-cdread', self.IF_LINE + "\n     || github.event_name == 'pull_request'")
+        self.assertNotEqual([], guard.attest_condition_violations(text, self.REL))
+        with self.assertRaisesRegex(ValueError, 'if:'):
+            self.placement(text)
+
+    def test_continuation_or_pull_request_is_refused_on_attest_cdread_verdict(self):
+        text = self.mutate_if('attest-cdread-verdict', self.IF_LINE + "\n     || github.event_name == 'pull_request'")
+        self.assertNotEqual([], guard.attest_condition_violations(text, self.REL))
+        with self.assertRaisesRegex(ValueError, 'if:'):
+            self.placement(text)
+
+    def test_continuation_or_true_is_refused(self):
+        text = self.mutate_if('attest-cdread', self.IF_LINE + "\n     || true")
+        self.assertNotEqual([], guard.attest_condition_violations(text, self.REL))
+        with self.assertRaisesRegex(ValueError, 'if:'):
+            self.placement(text)
+
+    def test_block_scalar_if_on_signing_job_is_refused(self):
+        text = self.mutate_if('attest-cdread', "    if: |\n      github.event_name == 'push' && github.ref == 'refs/heads/main'")
+        self.assertNotEqual([], guard.attest_condition_violations(text, self.REL))
+        with self.assertRaisesRegex(ValueError, 'if:'):
+            self.placement(text)
+
+
 if __name__ == '__main__':
     unittest.main()
