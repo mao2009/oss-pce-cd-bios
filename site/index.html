@@ -115,7 +115,7 @@
             <div class="chip-lines">
               <div><b>0x1E</b> EX_GETVER → X=3 / Y=0</div>
               <div><b>CORE</b> Geargrafx / cold + warm</div>
-              <div><b>0x50</b> remaining stub slots</div>
+              <div><b>80</b> remaining stub slots</div>
             </div>
             <div class="terminal-foot"><span>ABI: UNVERIFIED</span><strong>RELEASE: BLOCKED</strong></div>
           </div>
@@ -144,14 +144,14 @@
           <div class="section-heading">
             <p class="eyebrow">02 / Progress</p>
             <h2 id="progress-title">Evidence before green checkmarks.</h2>
-            <p class="section-intro">Snapshot based on merged <a href="https://github.com/mao2009/oss-pce-cd-bios/pull/174">PR #174</a>, October 17, 2026. These numbers describe implementation and testing scope—not a percentage of retail-game compatibility.</p>
+            <p class="section-intro">Snapshot checked against <a href="https://github.com/mao2009/oss-pce-cd-bios/commit/963f3a36ed59ab190406d815ab7d267fd21a680b">2026-10-20 main</a>. Recent merges improve safety and evidence review, not callable BIOS APIs or game compatibility.</p>
           </div>
           <a href="https://github.com/mao2009/oss-pce-cd-bios/blob/main/docs/status.md">Detailed status ↗</a>
         </div>
         <div class="stats" aria-label="Project snapshot">
           <div class="stat"><div class="stat-value"><span>1</span> / 81</div><div class="stat-label">Candidate BIOS slots with a callable DEV implementation</div></div>
           <div class="stat"><div class="stat-value">80</div><div class="stat-label">Other API slots remain nonreturning stubs</div></div>
-          <div class="stat"><div class="stat-value">765</div><div class="stat-label">Host tests passed in the #174 integration report; historical result</div></div>
+          <div class="stat"><div class="stat-value">0</div><div class="stat-label">Verified BIOS-mediated CD program boots at this snapshot</div></div>
         </div>
         <div class="milestones" aria-label="Evidence-graded roadmap">
           <article class="milestone done"><div class="milestone-tag">M0 / Foundation · largely established</div><h3>Repeatable diagnostics</h3><p>Toolchain, DEV ROM layout, real-core CPU/RAM checks, and synthetic CD sector transfer. Some ROM/ABI research remains.</p></article>
@@ -159,7 +159,8 @@
           <article class="milestone"><div class="milestone-tag">M2 / Not yet achieved</div><h3>Homebrew disc boot</h3><p>Synthetic CD → RAM code execution is proven as a diagnostic, but not through the BIOS startup/service path.</p></article>
           <article class="milestone"><div class="milestone-tag">M3 / Not tested</div><h3>Retail compatibility</h3><p>No verified commercial-game boot, second-emulator validation, or physical-hardware compatibility claim.</p></article>
         </div>
-        <p class="progress-note"><strong>Important distinction:</strong> Geargrafx executing a diagnostic is not the same as the System Card API contract being verified, a game booting, or a production BIOS being ready. The release gate remains blocked.</p>
+        <p class="progress-note"><strong>Important distinction:</strong> Standalone HuC6280 routines and Geargrafx diagnostics are not extra callable BIOS APIs. Reference ABI and retail compatibility remain unverified, with release BLOCKED.</p>
+        <p class="progress-note"><strong>2026-10-20 safety/evidence updates:</strong> <a href="https://github.com/mao2009/oss-pce-cd-bios/pull/360">write-path inventory</a> and <a href="https://github.com/mao2009/oss-pce-cd-bios/pull/362">pre-side-effect probes</a>; <a href="https://github.com/mao2009/oss-pce-cd-bios/pull/371">measurement/log binding</a> and <a href="https://github.com/mao2009/oss-pce-cd-bios/pull/359">claim validation</a>; <a href="https://github.com/mao2009/oss-pce-cd-bios/pull/374">Pages privilege separation</a> and <a href="https://github.com/mao2009/oss-pce-cd-bios/pull/349">fail-closed publishing checks</a>. Reference JSR and release gates stay closed.</p>
         <div class="evidence">
           <div class="evidence-item"><span class="evidence-symbol" aria-hidden="true">✓</span><div><h3>Observed on a real emulator core</h3><p>EX_GETVER caller return (cold/warm); synthetic SCSI READ(6) → RAM; independent reset and startup diagnostics.</p></div></div>
           <div class="evidence-item"><span class="evidence-symbol pending" aria-hidden="true">!</span><div><h3>Still unknown or blocked</h3><p>Full reference BIOS ABI, callable CD_RESET/CD_BASE/CD_READ, BIOS-mediated disc boot, independent emulator and hardware results.</p></div></div>

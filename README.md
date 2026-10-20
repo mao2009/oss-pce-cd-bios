@@ -4,6 +4,19 @@ A redistributable **PC Engine / TurboGrafx-CD System Card BIOS replacement** bui
 
 > **Status: development-only firmware, not a compatible BIOS.** Main builds an original HuCARD fixture and a separate 256 KiB System Card DEV ROM with 81 candidate jump-table entries: **one callable OSS `EX_GETVER` service** (slot `$1E`, entry `$E05A`) and **80 nonreturning stubs**. Pinned Geargrafx real-core tests observe `EX_GETVER` caller return on cold/warm runs, alongside separate startup and synthetic-CD READ(6) → RAM diagnostics. **Full reference-BIOS ABI compatibility, callable CD services, BIOS-mediated disc boot, retail-game compatibility and release eligibility are not established.** See the [dated implementation status](docs/status.md).
 
+## Latest merged progress (2026-10-20, main `963f3a36`)
+
+**Callable development-only System Card BIOS services: 1 / 81 (`EX_GETVER`, slot `$1E`).** The other **80 entries are nonreturning stubs**. `CD_RESET`, `CD_BASE`, `CD_READ`, BIOS-mediated homebrew boot, retail-game compatibility and releasable firmware remain unimplemented or unverified.
+
+What improved since the October 17 status report:
+
+- **Standalone HuC6280 routines**, including `EX_BINBCD`, `EX_BCDBIN`, `MA_MUL8S` and `MA_MUL8U`, are tested independently ([#328](https://github.com/mao2009/oss-pce-cd-bios/pull/328), [#331](https://github.com/mao2009/oss-pce-cd-bios/pull/331)); they are **not wired into the BIOS jump table**.
+- **Reference BIOS execution safeguards:** write-path inventory ([#360](https://github.com/mao2009/oss-pce-cd-bios/pull/360)) and pre-side-effect probe evaluation ([#362](https://github.com/mao2009/oss-pce-cd-bios/pull/362)). Unresolved paths keep reference-JSR execution **BLOCKED**.
+- **Evidence gates:** measurement-point/log binding ([#371](https://github.com/mao2009/oss-pce-cd-bios/pull/371)) and observation-kind/claim-field validation ([#359](https://github.com/mao2009/oss-pce-cd-bios/pull/359)). These checks do **not** independently authenticate a producer or certify reference ABI compatibility.
+- **Publication safeguards:** Pages validation/build/deploy privilege separation ([#374](https://github.com/mao2009/oss-pce-cd-bios/pull/374)) and fail-closed artifact-action checks ([#349](https://github.com/mao2009/oss-pce-cd-bios/pull/349)), each within its documented coverage.
+
+**Next milestone:** caller-safe minimal CD firmware services and a self-authored disc boot **through the BIOS**. See the [dated status](docs/status.md) for evidence limits, not a game compatibility percentage.
+
 ## Objectives
 
 - Prioritize a software **Super System Card 3.0-compatible ROM** as the first target, serving CD-ROM² and SUPER CD-ROM² software where the emulated hardware configuration permits.
