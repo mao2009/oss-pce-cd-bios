@@ -106,8 +106,11 @@ an ABI that games may contradict. Prerequisites: #1 jump-table mapping, #8 adopt
 sources above, a reviewed answer for returns/no-disc/busy behaviour from System Card 3.0 observation,
 a real-core harness that executes `$E003` and emits the record fields `tools/cdreset_verify.py`
 requires (`REQUIRED`), and, for the safety preflight, #173 (in-core RAM/I/O enforcement; OPEN, child PRs
-#360 and #362 are Draft) plus the pre-side-effect enforcement of #179. The #5 bus-reset + bus-free sequence in `src/cd_read_probe.s` is the intended
-building block once that review exists.
+#360 and #362 are Draft; child Issues #365〜#367（Research、OPEN）) plus #179（Issue CLOSED、実行時強制は未検証）
+for the pre-side-effect enforcement.
+
+The #5 bus-reset + bus-free sequence in `src/cd_read_probe.s` is the intended building block once that
+review exists.
 
 ## 実コア実測と未検証（Issue #10, B2）
 
@@ -139,7 +142,7 @@ System Card CD_RESET（`$01` / `$E003`）の完全互換は証明していない
 副作用前に強制しているか / していないか」だけを区別する。
 
 pinned Geargrafx `b49ae82a` の静的コード確認（コード上の事実であり、実機実測ではない。実行時の
-捕捉・遮断は #179 で未検証）：
+捕捉・遮断は #179（Issue CLOSED、実行時強制は未検証）：
 
 - `Memory::Write` は先頭で CPU アドレス書込みフックを評価する（`src/memory_inline.h` L277-278 → `CheckMemoryHooks` L561-563 が `m_huc6280->CheckCpuAddressHooks(address, read)` を呼ぶ）。
 - `bank == 0xFF` の Hardware Page 分岐は `m_memory_map_write` の対象外で、I/O 書込みは常に発生する（同 L290-364）。
@@ -257,7 +260,7 @@ runner を作る前に実装しなければならない（未実装のままで�
 
 - 判定: **BLOCKED（ROM 実装なし）**。CD_RESET（`$01` / `$E003`）の callee ABI は未確定であり、本 PR はコードを追加しない。
 - 根拠: 上の契約表で `returns`・`flags`・`clobbered`・`preserved`・`irq`・`timing` が UNKNOWN、`entry`・`arguments`・`stack`・`mpr`・`ram`・`errors`・`synchronization` は caller 側または HLE 由来の HYPOTHESIS のみ。`VERIFIED` は 0 件。
-- 実装前提の充足状況（将来実装しうる最小範囲節の開始条件）: #1 ジャンプテーブル配線、#8 出典採否（provenance PENDING）、System Card 3.0 の戻り・無媒体・busy 動作の裁定、callee を実行できる実コア harness は、いずれも未充足。安全 preflight 側では、#173（API JSR 用 in-core RAM/I/O 強制監視、OPEN、子 PR #360・#362 は Draft）と、#179（`$1804` 書込の副作用前捕捉・拒否。Issue は CLOSED だが実行時の副作用前強制は未検証）が未充足。
+- 実装前提の充足状況（将来実装しうる最小範囲節の開始条件）: #1 ジャンプテーブル配線、#8 出典採否（provenance PENDING）、System Card 3.0 の戻り・無媒体・busy 動作の裁定、callee を実行できる実コア harness は、いずれも未充足。安全 preflight 側では、#173（API JSR 用 in-core RAM/I/O 強制監視、OPEN、子 PR #360・#362 は Draft、子 Issue #365〜#367（Research、OPEN）が未完）と、#179（Issue CLOSED、実行時強制は未検証。`$1804` 書込の副作用前捕捉・拒否）が未充足。
 - 理由: 未確定の callee 契約の上に独自 ABI を作ると、ゲームや実 BIOS 呼出しと矛盾するおそれがある。推測で通すことは禁止。
 - 残る候補: `$1804` bit 1 のバスリセット観測（OBSERVED、Geargrafx b49ae82a の register fact のみ）。これを独立ルーチンにする作業は、上の前提が揃った後に別 Issue で行う。
 - 代替作業: AD_RESET（`$10` / `$E030`）の合成 fixture #293 へ切り替え（別 PR）。
