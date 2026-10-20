@@ -10,10 +10,13 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 from build import build, verify_fixture as verify
-from environment import ROOT, core_path, executable, tools_dir
+from environment import ROOT, cc65_skip_reason, core_path, executable, tools_dir
 
+
+CC65_SKIP = cc65_skip_reason()
 
 class BuildTests(unittest.TestCase):
+    @unittest.skipIf(CC65_SKIP, CC65_SKIP)
     def test_reproducible_clean_directories_and_modes(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -34,6 +37,7 @@ class BuildTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     verify(damaged)
 
+    @unittest.skipIf(CC65_SKIP, CC65_SKIP)
     def test_tools_present(self):
         for name in ("ca65", "ld65", "cc65", "actionlint"):
             self.assertTrue(Path(executable(name)).is_file())
@@ -65,6 +69,7 @@ class BuildTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 tools_dir()
 
+    @unittest.skipIf(CC65_SKIP, CC65_SKIP)
     def test_assembler_rejects_invalid_syntax(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "invalid.s"
@@ -73,6 +78,7 @@ class BuildTests(unittest.TestCase):
                                      str(source)], capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
 
+    @unittest.skipIf(CC65_SKIP, CC65_SKIP)
     def test_linker_rejects_overlap_and_bank_overflow(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -88,16 +94,18 @@ class BuildTests(unittest.TestCase):
                 build(base / "overflow", source=source)
 
     def test_unpinned_tool_fails(self):
-        with patch.dict(os.environ, {"CA65": "/usr/bin/true"}):
+        with patch.dict(os.environ, {"CA65": "/usr/bin/true", "LD65": "/usr/bin/true"}):
             with tempfile.TemporaryDirectory() as directory:
                 with self.assertRaisesRegex(ValueError, "pinned"):
                     build(Path(directory))
 
+    @unittest.skipIf(CC65_SKIP, CC65_SKIP)
     def test_huc6280_opcode_families(self):
         with tempfile.TemporaryDirectory() as directory:
             subprocess.run([executable("ca65"), "-o", str(Path(directory) / "probe.o"),
                             str(ROOT / "tests/fixtures/opcodes.s")], check=True)
 
+    @unittest.skipIf(CC65_SKIP, CC65_SKIP)
     def test_c_frontend_assembly_interoperability(self):
         # Compile-only probe: cc65 runtime/startup/linking into BIOS remains future work.
         with tempfile.TemporaryDirectory() as directory:

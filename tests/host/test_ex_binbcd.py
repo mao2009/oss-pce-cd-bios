@@ -1,9 +1,12 @@
 """Host checks for the project-own EX_BINBCD packed-BCD model and probe build (Issue #70)."""
 import tempfile
 import unittest
+from tools.environment import cc65_skip_reason
 
 from tools.ex_binbcd import binbcd_packed, build_probe
 
+
+CC65_SKIP = cc65_skip_reason()
 
 class ExBinBcdPackedModelTests(unittest.TestCase):
     def test_boundary_vectors(self):
@@ -26,6 +29,7 @@ class ExBinBcdPackedModelTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 binbcd_packed(value)
 
+    @unittest.skipIf(CC65_SKIP, CC65_SKIP)
     def test_probe_assembles_with_exported_mutation_point(self):
         with tempfile.TemporaryDirectory() as directory:
             rom, symbols = build_probe(directory)

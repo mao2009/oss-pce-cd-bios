@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from tools.environment import cc65_skip_reason
 
 from tools.build_rom import API_IMPLEMENTATION, build
 from tools.build_startup import (
@@ -11,6 +12,9 @@ from tools.build_startup import (
 )
 
 
+CC65_SKIP = cc65_skip_reason()
+
+@unittest.skipIf(CC65_SKIP, CC65_SKIP)
 class StartupBuildTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

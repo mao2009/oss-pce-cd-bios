@@ -2,12 +2,16 @@
 import json
 import tempfile
 import unittest
+from tools.environment import cc65_skip_reason
 from pathlib import Path
 
 from tools.build_rom import API_IMPLEMENTATION, build
 from tools.diagnostics import build_probe_images, parse_labels
 
 
+CC65_SKIP = cc65_skip_reason()
+
+@unittest.skipIf(CC65_SKIP, CC65_SKIP)
 class DiagnosticBuildTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

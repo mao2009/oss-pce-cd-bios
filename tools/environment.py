@@ -35,6 +35,16 @@ def executable(name):
     return found
 
 
+def cc65_skip_reason():
+    """None when the pinned cc65 tools are usable, else a SKIP/BLOCKED reason for unittest skips."""
+    for name in ("ca65", "ld65", "cc65", "da65"):
+        try:
+            executable(name)
+        except Exception as error:  # e.g. os.getuid missing on Windows: still a reasoned skip, not an import crash
+            return f"SKIP/BLOCKED (cc65 unavailable, run make setup): {type(error).__name__}: {error}"
+    return None
+
+
 def core_path():
     path = Path(os.environ.get("GEARGRAFX_CORE", str(
         dependency_dir("geargrafx") / "platforms/libretro/geargrafx_libretro.so")))

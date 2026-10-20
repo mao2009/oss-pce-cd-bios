@@ -6,6 +6,7 @@ import re
 import shutil
 import tempfile
 import unittest
+from tools.environment import cc65_skip_reason
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,6 +17,9 @@ from tools.build_rom import (ROOT, BANK_BYTES, IMAGE_BYTES, build, load_slots, o
                              verify_dev_rom_layout, verify_dev_rom_structure, verify_image)
 
 
+CC65_SKIP = cc65_skip_reason()
+
+@unittest.skipIf(CC65_SKIP, CC65_SKIP)
 class ApiBuildTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
