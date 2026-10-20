@@ -450,6 +450,60 @@ class AdjudicateClaimTests(unittest.TestCase):
                                  executed_callee=executed)
 
 
+class DeclarationFailClosedTests(unittest.TestCase):
+    """Issue #359 round 3: declaration-level fail-closed text rule.
+
+    OBSERVED refuses any non-ASCII text, and any field carrying a SYNTHETIC fragment (a 4+ letter run,
+    or a whole field that is a fragment of the marker). Look-alikes outside the confusables table
+    (Cyrillic Һ/И/palochka, Cherokee, dotless i) and cross-field splits in any order must be refused.
+    Every case here is a REAL-CORE entry, so the REALCORE and executed_callee rules are not the reason.
+    """
+
+    def assertRefusedClaim(self, claim):
+        with self.assertRaises(ValueError):
+            adjudicate_claim(claim, REAL, field='stack', context='slot 1 stack', executed_callee=True,
+                             resolved_evidence_hashes=REAL_RESOLVED)
+
+    def assertRefusedText(self, text):
+        # Later evidence fields carry no 'i' or 'c', so fe6cb52's ordered marker check cannot complete the
+        # marker from other fields: the look-alike itself is what must be refused.
+        entry = dict(REAL_ENTRY, execution_conditions=text, input_type='probe', verification_result='stored')
+        self.assertRefusedClaim(dict(REAL_OBSERVED_CALLEE, evidence=[entry]))
+
+    def test_cyrillic_shha_marker_outside_table_is_refused(self):
+        self.assertRefusedText('REALCORE SYNTҺETIC fixture')  # U+04BA (Һ)
+
+    def test_cyrillic_i_marker_outside_table_is_refused(self):
+        self.assertRefusedText('REALCORE SYNTHETИC fixture')  # U+0418 (И)
+
+    def test_palochka_marker_outside_table_is_refused(self):
+        self.assertRefusedText('REALCORE SYNTHETӀC fixture')  # U+04C0 (palochka)
+
+    def test_cherokee_marker_outside_table_is_refused(self):
+        for text in ('REALCORE SᎩNTHETIC fixture', 'REALCORE SYNᎻᎬTIC fixture'):
+            with self.subTest(text=text):
+                self.assertRefusedText(text)
+
+    def test_dotless_i_marker_is_refused(self):
+        for text in ('REALCORE SYNTHETıC fixture', 'REALCORE SYNTHETǀC fixture'):
+            with self.subTest(text=text):
+                self.assertRefusedText(text)
+
+    def test_non_ascii_letter_outside_the_marker_is_refused(self):
+        self.assertRefusedText('REALCORE probe sector é')
+
+    def test_reversed_split_thetic_earlier_syn_later_is_refused(self):
+        claim = dict(REAL_OBSERVED_CALLEE, evidence=[dict(REAL_ENTRY, execution_conditions='REALCORE THETIC'),
+                                                     dict(REAL_ENTRY, execution_conditions='REALCORE SYN')])
+        self.assertRefusedClaim(claim)
+
+    def test_field_containing_only_syn_with_valid_realcore_is_refused(self):
+        self.assertRefusedClaim(dict(REAL_OBSERVED_CALLEE, evidence=[dict(REAL_ENTRY, input_type='SYN')]))
+
+    def test_fullwidth_marker_is_still_refused(self):
+        self.assertRefusedText('REALCORE ＳＹＮＴＨＥＴＩＣ fixture')
+
+
 class LedgerAdjudicationTests(unittest.TestCase):
     def test_ledger_statuses_stay_in_the_four_categories(self):
         data = load_contracts()

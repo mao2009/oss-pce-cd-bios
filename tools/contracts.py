@@ -97,6 +97,46 @@ def _has_marker(marker, texts):
     return len(target) in reached
 
 
+# Declaration-level fail-closed text rule (Issue #359 round 3). Folding look-alikes into Latin cannot close
+# every script (Cyrillic H/I/palochka, Cherokee, dotless i, ... are outside the table), so OBSERVED no longer
+# depends on folding alone:
+#   (1) every text the adjudicator sees must be pure ASCII, raw and after NFKC; any other codepoint is refused;
+#   (2) no single field may contain a run of >= 5 case-folded marker letters (a 5-letter substring of 'synthetic');
+#   (3) no field may be a whole fragment of the marker (any length >= 1, e.g. 'SYN', 'THE', 'C').
+# Soundness for splits in any order: a marker occurrence in the joined fields is a contiguous 9-letter run.
+# An edge field contributes at most 4 of those letters (rule 2) and an interior field lies wholly inside the
+# marker (rule 3, refused). Two edge fields give at most 8 < 9, so an occurrence cannot form without a refused field.
+# Why 5, not 4: a 4-letter run is 'nthe' in ordinary 'in the' / 'on the' text, which would refuse most real
+# execution_conditions prose. 5-letter runs are 'synth', 'ynthe', 'nthet', 'theti', 'hetic'.
+# False-positive cost: adjudicated text containing one of those 5-letter runs ('synthesis', 'pathetic', 'sympathetic')
+# is refused for OBSERVED, and a field that is a whole fragment of the marker ('the', 'tic', 'syn') is refused.
+# Non-ASCII text (even legitimate) is refused for OBSERVED.
+# Declaration-level only: a caller can still supply REALCORE and a hash it chose; nothing here authenticates them.
+def _is_pure_ascii(text):
+    return text.isascii() and unicodedata.normalize('NFKC', text).isascii()
+
+
+def _leaf_strings(obj):
+    # Every string under a claim (keys, values, nested lists such as sources and evidence entries).
+    if isinstance(obj, str):
+        return [obj]
+    if isinstance(obj, dict):
+        return [text for key, value in obj.items() for text in _leaf_strings(key) + _leaf_strings(value)]
+    if isinstance(obj, (list, tuple)):
+        return [text for value in obj for text in _leaf_strings(value)]
+    return []
+
+
+def _marker_fragment_refused(texts):
+    # True when one field has a 5+ letter run of the marker, or is wholly a fragment of it (rules 2 and 3 above).
+    target = _marker_text(SYNTHETIC_MARKER)
+    for text in texts:
+        piece = _marker_text(text)
+        if piece and (piece in target or any(piece[i:i + 5] in target for i in range(len(piece) - 4))):
+            return True
+    return False
+
+
 # Source-kind semantics (Issue #209 / MEDIUM-1). A source kind classifies the
 # provenance of a *source-code reference* only. It never proves that anything was
 # executed: execution evidence is the separate `evidence` entries (Issue #208),
@@ -307,6 +347,9 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
     An OBSERVED claim must declare observation_kind (OBSERVATION_KIND_FIELDS) covering its field;
     a non-OBSERVED claim must not declare it.
 
+    Declaration-level text rule (Issue #359 round 3): an OBSERVED claim's strings must be pure ASCII and carry
+    no SYNTHETIC fragment in any single field (see the comment above _marker_fragment_refused).
+
     Real-core provenance: resolved_evidence_hashes is the set of evidence_hash values that
     resolve_evidence() accepted (pinned core revision + artifact sha256). An OBSERVED claim is refused
     unless every evidence entry is non-SYNTHETIC and its hash is in that set, so executed_callee=True
@@ -404,12 +447,14 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
         # An executed callee can only back a callee-execution observation (declaration, not verified).
         require(not executed_callee or kind == 'CALLEE_EXECUTION',
                 f'{context}: executed_callee=True requires observation kind CALLEE_EXECUTION, not {kind}')
-        # Real-core provenance (fail closed). executed_callee=True is never a substitute. Every text field the
-        # adjudicator sees is marker-checked, after normalization, so the marker cannot hide in value/sources/etc.
-        texts = [value, confidence, kind, *sources]
-        texts += [entry[name] for entry in evidence for name in EVIDENCE_FIELDS]
-        require(not _has_marker(SYNTHETIC_MARKER, texts),
+        # Declaration-level fail-closed text checks (Issue #359 round 3, see the rule above _marker_fragment_refused):
+        # every string under the claim (value, sources, evidence entries, ...) plus `field` must be pure ASCII and
+        # carry no SYNTHETIC fragment in any single field. executed_callee=True is never a substitute.
+        texts = [field, *_leaf_strings(claim)]
+        require(not _marker_fragment_refused(texts),
                 f'{context}: OBSERVED refuses SYNTHETIC content (not real-core provenance)')
+        require(all(_is_pure_ascii(text) for text in texts),
+                f'{context}: OBSERVED requires pure ASCII text (non-ASCII codepoint refused)')
         require(bool(resolved_evidence_hashes),
                 f'{context}: OBSERVED requires real-core evidence, but the resolved evidence set is empty')
         for entry in evidence:
