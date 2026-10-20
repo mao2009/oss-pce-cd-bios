@@ -136,4 +136,7 @@ routine-real-core:
 	$(PYTHON) tests/integration/geargrafx_ex_binbcd.py --mode debug
 	$(PYTHON) tests/integration/geargrafx_ma_mul8s.py
 	$(PYTHON) tests/integration/geargrafx_ma_mul8u.py
+	$(PYTHON) tests/integration/geargrafx_ma_mul16u.py
+	$(PYTHON) tests/integration/geargrafx_ma_div16u.py
+	$(PYTHON) tests/integration/geargrafx_ma_div16s.py
 	$(PYTHON) tests/integration/geargrafx_bcdbin.py
