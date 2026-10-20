@@ -659,19 +659,78 @@ def _if_scalars(lines, head, end):
     return found
 
 
+SAFE_TAGS = frozenset({"tag:yaml.org,2002:str", "tag:yaml.org,2002:map"})
+# A job-level key (indent 4) must be a plain key: no tag `!`, anchor `&`, alias `*`, quotes or complex-key `?` (Issue #337 r3).
+JOB_KEY_RE = re.compile(r"[A-Za-z_][\w.-]*[ \t]*:(\s|$)")
+
+
+def _strict_loader():
+    """SafeLoader subclass that refuses a mapping with a duplicate key (Issue #337 round 3: last-wins hid a second `if:`)."""
+    import yaml
+
+    class StrictLoader(yaml.SafeLoader):
+        def construct_mapping(self, node, deep=False):
+            if isinstance(node, yaml.MappingNode):
+                keys = [k.value for k, _ in node.value if isinstance(k, yaml.ScalarNode)]
+                dups = sorted({k for k in keys if keys.count(k) > 1})
+                if dups:
+                    raise ValueError(f"duplicate mapping key(s) {dups}")
+            return super().construct_mapping(node, deep)
+    return StrictLoader
+
+
+def _node_problems(block):
+    """Reasons the job block is refused by the event stream: any anchor, any alias, or any tag other than str/map.
+    Issue #337 round 3. Empty when clean; an unparseable block is a refusal too."""
+    try:
+        import yaml
+    except ImportError:
+        return ["PyYAML unavailable"]
+    reasons = []
+    try:
+        for event in yaml.parse("\n".join(block) + "\n", Loader=yaml.SafeLoader):
+            if isinstance(event, yaml.AliasEvent):
+                reasons.append(f"alias *{event.anchor}")
+                continue
+            if getattr(event, "anchor", None):
+                reasons.append(f"anchor &{event.anchor}")
+            tag = getattr(event, "tag", None)
+            if tag and tag not in SAFE_TAGS:
+                reasons.append(f"tag {tag}")
+    except yaml.YAMLError:
+        reasons.append("unparseable")
+    return reasons
+
+
 def _effective_if(lines, head, end, job):
     """The job's `if:` value as PyYAML parses the job's own block (lines[head:end]), or None when it cannot be read as one
     string. Issue #337 round 2: this is the source of truth next to the text check. The block is parsed alone, so a
-    malformed unrelated part of the file cannot hide a signing job's value. No PyYAML means None, so the caller refuses."""
+    malformed unrelated part of the file cannot hide a signing job's value. No PyYAML means None, so the caller refuses.
+    Issue #337 round 3: a duplicate key anywhere in the block makes this None (strict loader)."""
     try:
         import yaml
     except ImportError:
         return None
     try:
-        value = yaml.safe_load("\n".join(lines[head:end]) + "\n")[job]["if"]
-    except (yaml.YAMLError, KeyError, TypeError):
+        value = yaml.load("\n".join(lines[head:end]) + "\n", Loader=_strict_loader())[job]["if"]
+    except (yaml.YAMLError, KeyError, TypeError, ValueError):
         return None
     return value if isinstance(value, str) else None
+
+
+def _key_problems(lines, head, end):
+    """Job-level keys (indent 4) that are not plain keys, and how many keys normalize to `if` (Issue #337 round 3).
+    The approved form is exactly one plain `if:` line; a tagged, anchored, quoted, `?` or duplicate key is refused."""
+    bad, if_keys = [], 0
+    for i in range(head + 1, end):
+        if not (_live(lines[i]) and _indent(lines[i]) == 4):
+            continue
+        text = lines[i].strip()
+        if not JOB_KEY_RE.match(text):
+            bad.append(text)
+        elif text.split(":", 1)[0].strip().lower() == "if":
+            if_keys += 1
+    return bad, if_keys
 
 
 def _normal(value):
@@ -686,10 +745,16 @@ def attest_condition_violations(text, label):
     A signing job absent from the file is not checked here: publish_violations refuses any attest step that appears in
     another job or file.
 
+    Issue #337 round 3: a job-level key with a tag, anchor, alias, quotes or `?` is refused, a second key normalizing to
+    `if` is refused, a duplicate key anywhere in the job block is refused (strict loader), and any anchor, alias or tag
+    other than str/map in the job block is refused (event stream).
+
     Known residual risks, NOT detected here (recorded in docs/provenance.md "Attestation publication scope"):
     - a `run:` step that calls Sigstore directly with the OIDC token (no attest action) is not seen by this guard;
     - the job's `permissions: id-token: write` is not checked;
-    - guard-bios-dev does not inspect .pce contents, only the synthetic subject files are signed.
+    - guard-bios-dev does not inspect .pce contents, only the synthetic subject files are signed;
+    - `continue-on-error` on a signing job or its attest step is not checked;
+    - `needs:` removal or change on a signing job is not checked.
     """
     lines = text.splitlines()
     problems = []
@@ -705,6 +770,14 @@ def attest_condition_violations(text, label):
                             "flow form is refused, Issue #349)")
             continue
         end = next((j for j in range(heads[0] + 1, len(lines)) if _live(lines[j]) and _indent(lines[j]) <= 2), len(lines))
+        bad_keys, if_keys = _key_problems(lines, heads[0], end)
+        if bad_keys or if_keys != 1:
+            problems.append(f"{label}: signing job {job!r} must have exactly one plain job-level if: key "
+                            f"(non-plain keys {bad_keys}, if keys {if_keys}, Issue #337 round 3)")
+        node_reasons = _node_problems(lines[heads[0]:end])
+        if node_reasons:
+            problems.append(f"{label}: signing job {job!r} refused: anchor, alias or non-standard tag {node_reasons} "
+                            "(Issue #337 round 3)")
         found = _if_scalars(lines, heads[0], end)
         values = [_normal(" ".join(parts)) for parts in found]
         effective = _effective_if(lines, heads[0], end, job)
