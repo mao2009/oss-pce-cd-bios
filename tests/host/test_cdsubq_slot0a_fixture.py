@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "tests" / "fixtures" / "cdsubq-slot0a-cases.json"
 # sha256 of the canonical JSON (sort_keys, compact separators, UTF-8) of the fixture data.
-FIXTURE_SHA256 = "5c5a6bce787668f3b54e53e3a7ad2dfd60e7d1254adb032124c8865dc8af2fcd"
+FIXTURE_SHA256 = "d5f18d810edf55da9de9bc384ba748c61c77872be91a6500105c387cdb27d605"
 POSITIVE, NEGATIVE = "POSITIVE", "NEGATIVE"
 TOP_LEVEL_KEYS = {"schema", "issue", "parent_issue", "slot", "entry_candidate", "candidate_name", "abi_status",
                   "release_eligible", "execution", "provenance", "callee_abi", "medium", "io_range", "cases"}
@@ -153,6 +153,25 @@ class CdSubqSlot0aFixtureTests(unittest.TestCase):
         leadout = copy.deepcopy(by_id["neg_leadout"])
         leadout["expected"] = POSITIVE
         self.assertEqual(judge(leadout, medium), NEGATIVE)
+
+    def test_not_wired_into_build_or_rom(self):
+        # Lighter than the #347 helper: text scan of the tree. Not caught: names built at run time or encoded.
+        hits = []
+        for path in ROOT.rglob("*"):
+            rel = path.relative_to(ROOT)
+            if not path.is_file() or {".git", "docs", "rom", "__pycache__"} & set(rel.parts):
+                continue
+            if path.suffix == ".md" or path.resolve() == Path(__file__).resolve():
+                continue
+            if rel.as_posix() == "tests/fixtures/cdsubq-slot0a-cases.json":
+                continue
+            raw = path.read_bytes()
+            if b"\x00" in raw[:4096]:
+                continue
+            low = raw.decode("utf-8", errors="ignore").lower()
+            if "cdsubq-slot0a" in low or "cdsubq_slot0a" in low:
+                hits.append(rel.as_posix())
+        self.assertEqual(hits, [], "fixture named outside the fixture and this test")
 
 
 if __name__ == "__main__":
