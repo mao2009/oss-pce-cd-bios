@@ -94,11 +94,38 @@ class PresideProbeTest(unittest.TestCase):
 
     def test_uncovered_ids_are_documented_not_silently_dropped(self):
         rc, out, _ = self._run_main_with(P.NOT_RUN)
-        for wid in ("W08", "W09", "W10", "W11", "W12", "W13", "W16"):
+        uncovered = ("W08", "W09", "W10", "W11", "W12", "W13", "W14", "W15", "W16", "W17", "W18")
+        for wid in ("W14", "W15", "W17", "W18"):
+            self.assertIn(wid, P.UNCOVERED_IDS)
+        for wid in uncovered:
             self.assertIn(wid, out)
-        labels = " ".join(c[1] for c in P.CASES)
-        self.assertIn("W15", labels)
-        self.assertIn("W17", labels)
+
+    def test_v05_planned_covers_every_page_start_and_end(self):
+        starts = {p * 0x2000 for p in range(8)}
+        ends = {p * 0x2000 + 0x1FFF for p in range(8)}
+        self.assertEqual(set(P.V05_PLANNED), starts | ends)
+
+    def test_v05_partial_detail_lists_unrun_remainder(self):
+        with mock.patch.object(P.guard, "check_neg"), \
+                mock.patch.object(P.guard, "run_mode", return_value={}):
+            case = next(c for c in P.CASES if c[0] == "V05")
+            _, verdict, detail = P.run_case(case, None, None, None)
+        self.assertEqual(verdict, P.PARTIAL)
+        for addr in ("$C000", "$5FFF", "$FFFF", "$2000"):
+            self.assertIn(addr, detail)
+        self.assertNotIn("$0000", detail.split("unrun")[-1])
+
+    def test_no_case_can_yield_pass(self):
+        with mock.patch.object(P.guard, "run_mode", return_value={}), \
+                mock.patch.object(P.st, "check_st", return_value=st.BLOCKED_VERDICT), \
+                mock.patch.object(P.guard, "check_neg"), mock.patch.object(P.guard, "check_tam"):
+            verdicts = [P.run_case(c, None, None, None)[1] for c in P.CASES]
+        self.assertNotIn(P.PASS, verdicts)
+
+    def test_docstring_states_no_pass_and_no_gate_release(self):
+        self.assertIn("PASS を出力しない", P.__doc__)
+        self.assertIn("上限 PARTIAL", P.__doc__)
+        self.assertIn("ゲート解放の経路はない", P.__doc__)
 
     def test_v06_partial_states_detection_only_not_block(self):
         with mock.patch.object(P.guard, "run_mode", return_value={}), mock.patch.object(P.guard, "check_tam"):
