@@ -71,8 +71,19 @@ class AuditVerdictTest(unittest.TestCase):
         self.assertEqual(B.audit("TIN", 0x2000, 0x2000, 1, allowed)["verdict"], "REFUSED_STATIC")
 
     def test_tia_crossing_window_end_refused(self):
-        # TIA walks dst upward (the pair is a finite superset), so a run that ends past the window is refused.
+        # Generic window-end refusal: the covered span crosses the exclusive window end (0x4000),
+        # so the run is refused and 0x4000 is the first refused address. (The TIA-specific pair
+        # superset is covered separately by test_tia_covers_pair_superset.)
         r = B.audit("TIA", 0x2000, 0x3FFE, 8, ALLOWED)
+        self.assertEqual(r["verdict"], "REFUSED_STATIC")
+        self.assertEqual(r["first_refused"], 0x4000)
+
+    def test_tia_extra_byte_pins_window_end_refused(self):
+        # dst+count == 0x3FFF stays inside the window; only TIA's extra over-approximation byte
+        # reaches 0x4000, so this case is refused only when the TIA superset is modelled.
+        inside = B.destination_set("TII", 0x3FF9, 7)
+        self.assertEqual(max(inside), 0x3FFF)
+        r = B.audit("TIA", 0x2000, 0x3FF9, 7, ALLOWED)
         self.assertEqual(r["verdict"], "REFUSED_STATIC")
         self.assertEqual(r["first_refused"], 0x4000)
 
