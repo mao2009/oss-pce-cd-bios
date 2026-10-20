@@ -391,6 +391,7 @@ PINS = {'configure-pages': CFG_SHA, 'deploy-pages': 'd6db90164ac5ed86f2b6aed7e0f
 PAGES_UPLOAD = 'actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b'
 # Issue #349 (#374 split layout) as pages.yml: upload in build (needs validate, contents: read), deploy-pages alone in deploy.
 PAGES_SPLIT_GUARDED = (
+    'on:\n  push:\n  workflow_dispatch:\n'   # Issue #349 review: pages.yml must declare its triggers (allowed set only)
     'jobs:\n  validate:\n    permissions:\n      contents: read\n    steps:\n'
     '      - name: Checkout\n        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683\n'
     '        with:\n          persist-credentials: false\n'
@@ -400,7 +401,7 @@ PAGES_SPLIT_GUARDED = (
     + STAGE_STEP + VERIFY_STEP
     + f'      - name: Save\n        uses: {PAGES_UPLOAD}\n        with:\n          path: .artifact-stage/build/x\n'
     + '  deploy:\n    needs: build\n'
-    + "    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'\n"
+    + "    if: github.event_name == 'push' && github.ref == 'refs/heads/main'\n"
     + '    permissions:\n      pages: write\n      id-token: write\n'
     + '    environment:\n      name: github-pages\n      url: ${{ steps.deployment.outputs.page_url }}\n'
     + '    steps:\n      - name: Deploy from main\n        id: deployment\n'

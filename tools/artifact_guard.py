@@ -1229,7 +1229,8 @@ def publish_violations(text, label):
 # loader): the split layout (validate -> build -> deploy) or the single-job layout. Any other shape is refused.
 PAGES_FILE = "pages.yml"
 PAGES_SPLIT_JOBS = frozenset({"validate", "build", "deploy"})
-PAGES_DEPLOY_IF = "github.event_name != 'pull_request' && github.ref == 'refs/heads/main'"
+PAGES_DEPLOY_IF = "github.event_name == 'push' && github.ref == 'refs/heads/main'"   # push only: pull_request_target and workflow_run also report ref main (Issue #349 review)
+PAGES_ALLOWED_TRIGGERS = frozenset({"pull_request", "push", "workflow_dispatch"})   # main's pages.yml triggers (2026-10-20)
 PAGES_DEPLOY_PERMISSIONS = {"pages": "write", "id-token": "write"}
 PAGES_BUILD_PERMISSIONS = {"contents": "read"}
 PAGES_LEGACY_PERMISSIONS = {"contents": "read", "actions": "read", "pages": "write", "id-token": "write"}
@@ -1299,6 +1300,42 @@ def pages_structure_violations(text, label):
         doc = yaml.load(text, Loader=_strict_loader())
     except (yaml.YAMLError, ValueError) as error:
         return [f"{label}: YAML cannot be read, Pages structure cannot be checked ({error}; Issue #349)"]
+    return _privilege_problems(doc, label) + _pages_structure_problems(doc, label)
+
+
+def _grants_write(perms, scope):
+    """True if a permissions value grants write to scope: `write-all`, or `scope: write`."""
+    return perms == "write-all" or (isinstance(perms, dict) and perms.get(scope) == "write")
+
+
+def _privilege_problems(doc, label):
+    """Issue #349 (review): pages: write is held only by the deploy job of pages.yml, contents: write by no job in any file
+    (no release route is approved), and pages.yml takes only the triggers main has. Checked for every workflow file, at
+    the workflow level and per job, so a new job or a top-level grant cannot hold the Pages API unseen."""
+    if not isinstance(doc, dict):
+        return []
+    jobs = doc.get("jobs") if isinstance(doc.get("jobs"), dict) else {}
+    holders = [("workflow", doc.get("permissions"))]
+    holders += [(job, body.get("permissions")) for job, body in jobs.items() if isinstance(body, dict)]
+    problems = []
+    for holder, perms in holders:
+        where = "workflow" if holder == "workflow" else f"job {holder!r}"
+        if _grants_write(perms, "contents"):
+            problems.append(f"{label}: {where} grants contents: write (refused, no release route is approved, Issue #349)")
+        if _grants_write(perms, "pages") and not (Path(label).name == PAGES_FILE and holder == "deploy"):
+            problems.append(f"{label}: {where} grants pages: write outside the deploy job of {PAGES_FILE} "
+                            "(refused, Issue #349)")
+    if Path(label).name == PAGES_FILE:
+        on = doc.get("on", doc.get(True))   # YAML 1.1 reads a bare `on:` key as True
+        names = set(on) if isinstance(on, (dict, list)) else {on} if isinstance(on, str) else set()
+        extra = sorted(str(n) for n in names - PAGES_ALLOWED_TRIGGERS)
+        if not names or extra:
+            problems.append(f"{label}: triggers {sorted(map(str, names))} refused; {PAGES_FILE} may use only "
+                            f"{sorted(PAGES_ALLOWED_TRIGGERS)} (extra {extra}, Issue #349)")
+    return problems
+
+
+def _pages_structure_problems(doc, label):
     found = list(_pages_uses(doc))
     if not found:
         return []

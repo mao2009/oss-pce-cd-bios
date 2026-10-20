@@ -178,6 +178,60 @@ class SplitLayoutTests(unittest.TestCase):
                 self.assertTrue(any('outside pages.yml' in p for p in found), found)
 
 
+class PrivilegeAndTriggerTests(unittest.TestCase):
+    """Issue #349 review: triggers, pages: write outside the deploy job, contents: write, and run: in the deploy job."""
+
+    def assertRefusedWith(self, doc, mention, label=PAGES):
+        found = problems_of(doc, label)
+        self.assertTrue(any(mention in p for p in found), found)
+
+    def test_real_file_passes_with_push_only_deploy_condition(self):
+        self.assertEqual([], problems_of(split_doc()))
+        self.assertEqual("github.event_name == 'push' && github.ref == 'refs/heads/main'",
+                         split_doc()['jobs']['deploy']['if'])
+
+    def test_pull_request_target_trigger_on_pages_is_refused(self):
+        doc = split_doc()
+        doc[True]['pull_request_target'] = None   # the bare `on:` key loads as True (YAML 1.1)
+        self.assertRefusedWith(doc, "extra ['pull_request_target']")
+
+    def test_workflow_run_trigger_on_pages_is_refused(self):
+        doc = split_doc()
+        doc[True]['workflow_run'] = {'workflows': ['CI'], 'types': ['completed']}
+        self.assertRefusedWith(doc, "extra ['workflow_run']")
+
+    def test_deploy_condition_admitting_pull_request_target_is_refused(self):
+        doc = split_doc()
+        doc['jobs']['deploy']['if'] = "github.event_name != 'pull_request' && github.ref == 'refs/heads/main'"
+        self.assertRefusedWith(doc, "job 'deploy' must have if:")
+
+    def test_new_pages_write_job_in_pages_yml_is_refused(self):
+        doc = split_doc()
+        doc['jobs']['extra'] = {'runs-on': 'ubuntu-24.04', 'permissions': {'pages': 'write'},
+                                'steps': [{'name': 'x', 'run': 'echo x'}]}
+        self.assertRefusedWith(doc, "job 'extra' grants pages: write")
+
+    def test_pages_write_in_a_new_workflow_file_is_refused(self):
+        doc = {'on': 'push', 'jobs': {'pages-extra': {'runs-on': 'ubuntu-24.04', 'permissions': {'pages': 'write'},
+                                                      'steps': [{'run': 'curl -X POST https://api.github.com/repos/x/pages'}]}}}
+        self.assertRefusedWith(doc, "job 'pages-extra' grants pages: write", '.github/workflows/pages-extra.yml')
+
+    def test_pages_write_via_write_all_in_ci_is_refused(self):
+        doc = {'on': 'push', 'jobs': {'verify': {'runs-on': 'ubuntu-24.04', 'permissions': 'write-all',
+                                                 'steps': [{'run': 'true'}]}}}
+        self.assertRefusedWith(doc, "job 'verify' grants pages: write", '.github/workflows/ci.yml')
+
+    def test_contents_write_on_a_non_release_job_is_refused(self):
+        doc = {'on': 'push', 'jobs': {'verify': {'runs-on': 'ubuntu-24.04', 'permissions': {'contents': 'write'},
+                                                 'steps': [{'run': 'true'}]}}}
+        self.assertRefusedWith(doc, "job 'verify' grants contents: write", '.github/workflows/ci.yml')
+
+    def test_run_step_in_deploy_job_is_refused(self):
+        doc = split_doc()
+        doc['jobs']['deploy']['steps'][0]['run'] = 'echo x'
+        self.assertRefusedWith(doc, "job 'deploy' step sets 'run'")
+
+
 class SingleJobLayoutTests(unittest.TestCase):
     """The pre-#374 layout: one deploy job holds the upload and the deploy."""
 

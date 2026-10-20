@@ -9,7 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PAGES = ROOT / '.github' / 'workflows' / 'pages.yml'
-DEPLOY_IF = "github.event_name != 'pull_request' && github.ref == 'refs/heads/main'"
+DEPLOY_IF = "github.event_name == 'push' && github.ref == 'refs/heads/main'"
 
 
 def _scalar(value):
