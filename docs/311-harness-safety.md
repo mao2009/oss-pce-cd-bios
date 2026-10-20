@@ -63,8 +63,8 @@ cold/warm 各 2048 命令、DEV ROM（`make dev-rom MODE=debug`）。
 | neg_undeclared_ram_write | FAIL / RETURNED | FAIL / RETURNED |
 | neg_hang | FAIL / TIMEOUT | FAIL / TIMEOUT |
 | neg_brk | FAIL / TRAPPED | FAIL / TRAPPED |
-| neg_mpr_changed（本 PR で追加） | FAIL / RETURNED | FAIL / RETURNED（SP/MPR not balanced） |
-| neg_sp_unbalanced（本 PR で追加） | FAIL / RETURNED | FAIL / RETURNED（SP/MPR not balanced） |
+| neg_mpr_changed（本 PR で追加） | FAIL / RETURNED | FAIL / RETURNED（CI 時点の文言 `SP/MPR not balanced`。現行コードでは SP / MPR に分割済み、CI は未確認） |
+| neg_sp_unbalanced（本 PR で追加） | FAIL / RETURNED | FAIL / RETURNED（CI 時点の文言 `SP/MPR not balanced`。現行コードでは SP / MPR に分割済み、CI は未確認） |
 | plugin_demo_dev_rom_ex_getver（DEV ROM 回帰、観測値） | PASS / RETURNED | PASS / RETURNED |
 
 プラグイン判定の負例として、期待値を誤らせた `plugin_neg_wrong_a`（a=17 に対し 18 を期待。**この JSON はリポジトリに追跡されておらず、再現は一時ファイルで行った記録のみ**）は
