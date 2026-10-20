@@ -849,6 +849,79 @@ def _signing_exempt(line):
     return bool(match) and not SIGNING_TERMS_RE.search(key[match.end():])
 
 
+# Issue #337 round 10. A key that changes the environment a step runs in changes how the approved run texts resolve python3,
+# bash and sh, so it is refused. Top-level env: and defaults: are refused for the whole file. In a job that holds id-token:
+# write (approved or not), only HELD_JOB_KEYS may appear at job level (fail-closed: env, container, services, defaults and
+# any unknown key are refused), and a step may carry only its own keys (HELD_*_STEP_KEYS).
+HELD_JOB_KEYS = frozenset({"name", "runs-on", "permissions", "needs", "steps", "if", "outputs", "timeout-minutes",
+                           "strategy", "concurrency", "environment"})
+HELD_ENVIRONMENT_KEYS = frozenset({"name", "url"})   # a mapping form is accepted only with these keys and string values
+HELD_RUN_STEP_KEYS = frozenset({"name", "id", "run"})
+HELD_USES_STEP_KEYS = frozenset({"name", "id", "uses", "with"})
+
+
+def _plain_environment(value):
+    """environment: as a name, or a mapping with only name and url, all string values (Issue #337 round 10)."""
+    if isinstance(value, str):
+        return True
+    return (isinstance(value, dict) and set(value) <= HELD_ENVIRONMENT_KEYS
+            and all(isinstance(v, str) for v in value.values()))
+
+
+def execution_scope_violations(text, label):
+    """Issue #337 round 10, for one workflow file (YAML decoded). Refused:
+    - top-level env: (any key; it can set PATH, BASH_ENV, PYTHONPATH, GIT_* and similar) and top-level defaults: (a shell
+      override for every run:);
+    - in a job whose permissions hold id-token: write (or write-all), any job-level key outside HELD_JOB_KEYS, so env,
+      container, services and defaults, and any unknown key;
+    - in such a job, a step with a key outside its allowed set (a run: step allows name, id, run; a uses: step allows name,
+      id, uses, with), so env, shell, working-directory and if are refused.
+    Residual: a job without id-token is not checked here; its env: and container: are not a signing risk by themselves.
+    """
+    try:
+        import yaml
+    except ImportError:
+        return [f"{label}: PyYAML unavailable, execution scope cannot be checked (Issue #337 round 10)"]
+    try:
+        doc = yaml.load(text, Loader=_strict_loader())
+    except (yaml.YAMLError, ValueError) as error:
+        return [f"{label}: YAML cannot be read, execution scope cannot be checked ({error}; Issue #337 round 10)"]
+    if not isinstance(doc, dict):
+        return [f"{label}: the file is not a mapping (Issue #337 round 10)"]
+    problems = []
+    if "env" in doc:
+        problems.append(f"{label}: top-level env: is refused (it can change how python3, bash or sh resolve, "
+                        "Issue #337 round 10)")
+    if "defaults" in doc:
+        problems.append(f"{label}: top-level defaults: is refused (it sets the shell of every run:, Issue #337 round 10)")
+    jobs = doc.get("jobs")
+    if not isinstance(jobs, dict):
+        return problems
+    for job, body in jobs.items():
+        if not isinstance(body, dict):
+            continue   # run_allowlist_violations refuses a job that is not a mapping
+        perms = body.get("permissions", doc.get("permissions"))
+        if not (perms == "write-all" or (isinstance(perms, dict) and perms.get("id-token") == "write")):
+            continue
+        for key in sorted(set(body) - HELD_JOB_KEYS, key=str):
+            problems.append(f"{label}: job {job!r} holds id-token and sets job-level {key!r} (refused; allowed keys "
+                            f"{sorted(HELD_JOB_KEYS)}, Issue #337 round 10)")
+        if "environment" in body and not _plain_environment(body["environment"]):
+            problems.append(f"{label}: job {job!r} environment: must be a name, or name and url only (Issue #337 round 10)")
+        steps = body.get("steps")
+        if not isinstance(steps, list):
+            continue
+        for step in steps:
+            if not isinstance(step, dict):
+                problems.append(f"{label}: job {job!r} has a step that is not a mapping (Issue #337 round 10)")
+                continue
+            allowed = HELD_RUN_STEP_KEYS if "run" in step else HELD_USES_STEP_KEYS
+            for key in sorted(set(step) - allowed, key=str):
+                problems.append(f"{label}: job {job!r} step {step.get('name')!r} sets {key!r} (refused; a step in a job "
+                                f"that holds id-token may carry only {sorted(allowed)}, Issue #337 round 10)")
+    return problems
+
+
 def signing_violations(text, label):
     """Issue #337 round 4 (a)(b)(c), for one workflow file.
     (a) signing or OIDC-token text (sigstore, cosign, attest, gh attestation, the OIDC request token) on any live line that is
@@ -898,6 +971,7 @@ def signing_violations(text, label):
         if steps != ATTEST_STEPS[(name, job)]:
             problems.append(f"{label}: signing job {job!r} must run exactly the approved steps, found {steps} "
                             "(a step that runs code would hold the OIDC token, Issue #337 round 4 (a))")
+    problems += execution_scope_violations(text, label)
     problems += run_allowlist_violations(text, label)
     return problems
 
