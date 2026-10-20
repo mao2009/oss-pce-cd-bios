@@ -36,10 +36,11 @@ row:
     ldx $2300,y          ; dividend high -> X
     jsr ma_div16s
     sta $2600,y
-    stx $2700,y
-    php
+    php                  ; capture P from ma_div16s before any flag-changing instruction
     pla
     sta $2A00,y
+    txa                  ; quotient high (txa changes N/Z, so it must follow the php)
+    sta $2700,y
     pla                  ; remainder high (top)
     sta $2900,y
     pla                  ; remainder low
