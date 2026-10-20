@@ -151,6 +151,7 @@ class WritePathInventoryTest(unittest.TestCase):
     def test_mutation_per_write_claim_on_unknown_block_move_is_rejected(self):
         inv = fresh()
         row(inv, "W15")["prevents_before_side_effect"] = "PER_WRITE"
+        row(inv, "W15")["measurement"] = "REAL_CORE_SYNTHETIC"  # isolate the status rule from the measurement rule
         with self.assertRaisesRegex(ValueError, "W15: UNKNOWN status must not claim"):
             W.validate(inv, PINNED)
 
