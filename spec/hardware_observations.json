@@ -5,7 +5,7 @@
   "entries": [
     {
       "field": "hw_bus_reset",
-      "status": "OBSERVED",
+      "status": "BLOCKED",
       "value": "$1804 bit 1: assert -> readback $02, release -> $00; bus FREE after pulse (PHASE_MASK $F8 clear)",
       "source": {
         "kind": "EMULATOR_SOURCE",
@@ -17,16 +17,16 @@
         "kind": "EMULATOR_CORE",
         "platform": "Geargrafx libretro core (object link only; not hardware)",
         "media": "synthetic CD (no commercial disc)",
-        "runs": ["cold", "warm"]
+        "runs": []
       },
-      "trust_level": "EMULATOR_CORE_UNARCHIVED",
+      "trust_level": "NOT_MEASURED",
       "not_evidence_for": [
         "CD_RESET callee ($01 / $E003) pulsing $1804",
         "callee returns, flags, clobbered, preserved, irq, errors",
         "real System Card hardware behavior (#7 NOT_TESTED)",
         "BIOS API compatibility"
       ],
-      "notes": "Register/bus fact only. Run artifact is not stored or hash-pinned, so it is not authenticated."
+      "notes": "Register/bus fact only. Downgraded from OBSERVED: the run artifact is not stored or hash-pinned and the executing principal is not authenticated (#124), so no OBSERVED entry is accepted. Recorded as BLOCKED with no run: a real-core run must be re-recorded with an authenticated producer before it can be OBSERVED."
     }
   ]
 }

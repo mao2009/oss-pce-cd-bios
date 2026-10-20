@@ -52,13 +52,17 @@ def adjudicate(claim, field, executed_callee=False, kinds=REAL):
 
 
 class PositiveCorrespondenceTests(unittest.TestCase):
-    def test_hardware_readback_supports_hw_bus_reset_without_callee(self):
-        adjudicate(HW_OBSERVED, 'hw_bus_reset', executed_callee=False)
+    # Issue #359 / #124: a kind that covers the field is necessary, never sufficient. With no producer
+    # authentication, these structurally valid claims are refused. The correspondence itself still holds.
+    def test_hardware_readback_matching_its_field_is_refused_without_authentication(self):
+        with self.assertRaisesRegex(ValueError, 'not authenticated'):
+            adjudicate(HW_OBSERVED, 'hw_bus_reset', executed_callee=False)
 
-    def test_callee_kind_supports_each_callee_field_when_callee_executed(self):
+    def test_callee_kind_matching_each_callee_field_is_refused_without_authentication(self):
         for field in CALLEE_FIELDS:
             with self.subTest(field=field):
-                adjudicate(CALLEE_OBSERVED, field, executed_callee=True)
+                with self.assertRaisesRegex(ValueError, 'not authenticated'):
+                    adjudicate(CALLEE_OBSERVED, field, executed_callee=True)
 
     def test_kinds_partition_every_contract_field(self):
         self.assertEqual(OBSERVATION_KIND_FIELDS['HW_BUS_READBACK'], HARDWARE_OBSERVATION_FIELDS)
@@ -73,7 +77,8 @@ class PositiveCorrespondenceTests(unittest.TestCase):
 
     def test_input_claim_is_not_mutated(self):
         claim = copy.deepcopy(HW_OBSERVED)
-        adjudicate(claim, 'hw_bus_reset')
+        with self.assertRaisesRegex(ValueError, 'not authenticated'):
+            adjudicate(claim, 'hw_bus_reset')
         self.assertEqual(claim, HW_OBSERVED)
 
 
@@ -97,7 +102,8 @@ class NegativeCorrespondenceTests(unittest.TestCase):
             with self.subTest(field=field):
                 with self.assertRaisesRegex(ValueError, 'does not support field'):
                     adjudicate(HW_OBSERVED, field, executed_callee=True)
-        self.assertIsNone(adjudicate(HW_OBSERVED, 'hw_bus_reset'))
+        with self.assertRaisesRegex(ValueError, 'not authenticated'):
+            adjudicate(HW_OBSERVED, 'hw_bus_reset')
         with self.assertRaisesRegex(ValueError, 'VERIFIED is not represented'):
             adjudicate(dict(OBSERVED, status='VERIFIED'), 'hw_bus_reset')
 
@@ -192,8 +198,9 @@ class FormalPathTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'requires observation_kind'):
             self.formal(OBSERVED, 'hw_bus_reset')
 
-    def test_formal_path_accepts_hw_readback_for_hw_bus_reset(self):
-        self.formal(HW_OBSERVED, 'hw_bus_reset', executed_callee=False)
+    def test_formal_path_refuses_hw_readback_for_hw_bus_reset_without_authentication(self):
+        with self.assertRaisesRegex(ValueError, 'not authenticated'):
+            self.formal(HW_OBSERVED, 'hw_bus_reset', executed_callee=False)
 
     def test_formal_path_rejects_kind_on_non_observed_claim(self):
         with self.assertRaisesRegex(ValueError, 'only an OBSERVED claim may declare'):

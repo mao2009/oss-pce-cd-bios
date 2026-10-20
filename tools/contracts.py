@@ -353,7 +353,9 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
     Real-core provenance: resolved_evidence_hashes is the set of evidence_hash values that
     resolve_evidence() accepted (pinned core revision + artifact sha256). An OBSERVED claim is refused
     unless every evidence entry is non-SYNTHETIC and its hash is in that set, so executed_callee=True
-    alone never promotes a claim.
+    alone never promotes a claim. The hash set is a caller-supplied hash match, not authenticity: it is
+    not evidence of who executed the callee. Therefore OBSERVED is refused for every claim until producer
+    authentication exists (#124); all other checks are necessary and fail closed.
 
     Rules:
       UNKNOWN     - value exactly 'UNKNOWN', no sources, confidence UNKNOWN, no registers
@@ -462,6 +464,13 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
                     f'{context}: OBSERVED evidence lacks the {REAL_CORE_MARKER} provenance marker')
             require(entry['evidence_hash'] in resolved_evidence_hashes,
                     f'{context}: OBSERVED requires real-core evidence resolved by resolve_evidence')
+        # Producer authentication (Issue #124 / #171): nothing in this repository authenticates the principal
+        # that executed the callee, so every OBSERVED claim is refused here (fail closed). The checks above are
+        # necessary, never sufficient. A self-declared REALCORE string, executed_callee=True, a caller-supplied
+        # resolved_evidence_hashes set and a matching sha256 are declarations or hash matches only. Matching
+        # hashes do NOT prove that the evidence is authentic or that a real core produced it.
+        raise ValueError(f'{context}: OBSERVED refused: executing principal not authenticated (#124); '
+                         'REALCORE text, executed_callee, observation_kind and hash match are not authentication')
     elif status == 'BLOCKED':
         require(value == 'UNKNOWN' and confidence == 'UNKNOWN' and not registers,
                 f'{context}: invalid BLOCKED claim')

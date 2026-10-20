@@ -81,11 +81,12 @@ class AdjudicateClaimTests(unittest.TestCase):
     def test_hypothesis_claim_is_accepted(self):
         adjudicate_claim(HYPOTHESIS, CALLER, field='arguments', context='slot 1 arguments')
 
-    def test_observed_claim_with_real_core_evidence_is_accepted(self):
-        # Issue #208 positive case, Issue #359 provenance: non-synthetic evidence whose hash was
-        # resolved. This asserts nothing about ABI correctness or authenticity (FORMAT_ONLY).
-        adjudicate_claim(REAL_OBSERVED_CALLEE, REAL, field='stack', context='slot 1 stack',
-                         executed_callee=True, resolved_evidence_hashes=REAL_RESOLVED)
+    def test_real_core_hash_match_is_refused_without_producer_authentication(self):
+        # Issue #359 / #124: non-synthetic evidence whose hash matches is still refused. Nothing
+        # authenticates the executing principal, so a hash match or a REALCORE string is not a measurement.
+        with self.assertRaisesRegex(ValueError, 'not authenticated'):
+            adjudicate_claim(REAL_OBSERVED_CALLEE, REAL, field='stack', context='slot 1 stack',
+                             executed_callee=True, resolved_evidence_hashes=REAL_RESOLVED)
 
     def test_synthetic_evidence_with_executed_callee_is_never_observed(self):
         # Issue #359 MAJOR: SYNTHETIC evidence + executed_callee=True must NOT yield OBSERVED, with or
@@ -106,15 +107,17 @@ class AdjudicateClaimTests(unittest.TestCase):
             adjudicate_claim(REAL_OBSERVED_CALLEE, REAL, field='stack', context='slot 1 stack',
                              executed_callee=True)
 
-    def test_real_core_artifact_resolves_and_yields_observed(self):
-        # End to end: artifact bytes on disk -> resolve_evidence (pinned revision + sha256) -> OBSERVED.
+    def test_real_core_artifact_resolves_but_observed_is_still_refused(self):
+        # End to end: artifact bytes on disk -> resolve_evidence (pinned revision + sha256) resolves, yet
+        # OBSERVED stays refused: hash-and-pin consistency is not producer authentication (#124).
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / REAL_ENTRY['evidence_hash']).write_bytes(REAL_ARTIFACT_BYTES)
             resolved = frozenset({REAL_ENTRY['evidence_hash']}) if resolve_evidence(
                 REAL_ENTRY, artifact_dir=tmp, pinned_revision=REAL_ENTRY['core_revision']) else frozenset()
         self.assertEqual(resolved, REAL_RESOLVED)
-        adjudicate_claim(REAL_OBSERVED_CALLEE, REAL, field='stack', context='slot 1 stack',
-                         executed_callee=True, resolved_evidence_hashes=resolved)
+        with self.assertRaisesRegex(ValueError, 'not authenticated'):
+            adjudicate_claim(REAL_OBSERVED_CALLEE, REAL, field='stack', context='slot 1 stack',
+                             executed_callee=True, resolved_evidence_hashes=resolved)
 
     def test_blocked_claim_is_accepted(self):
         adjudicate_claim(BLOCKED, CALLER, field='stack', context='slot 1 stack')
@@ -242,9 +245,10 @@ class AdjudicateClaimTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'executed callee'):
             adjudicate_claim(OBSERVED, REAL, field='returns', context='slot 1 returns')
 
-    def test_observed_callee_field_accepted_when_callee_executed(self):
-        adjudicate_claim(REAL_OBSERVED_CALLEE, REAL, field='returns', context='slot 1 returns',
-                         executed_callee=True, resolved_evidence_hashes=REAL_RESOLVED)
+    def test_observed_callee_field_refused_even_when_callee_executed(self):
+        with self.assertRaisesRegex(ValueError, 'not authenticated'):
+            adjudicate_claim(REAL_OBSERVED_CALLEE, REAL, field='returns', context='slot 1 returns',
+                             executed_callee=True, resolved_evidence_hashes=REAL_RESOLVED)
 
     def test_observed_hardware_observation_accepted_without_executed_callee(self):
         # hw_bus_reset is a low-level $1804 register/bus fact (hardware observation),
@@ -252,9 +256,10 @@ class AdjudicateClaimTests(unittest.TestCase):
         # accepted even though no callee was executed.
         claim = dict(REAL_OBSERVED_HW,
                      value='$1804 bit 1: assert -> readback $02, release -> $00, bus FREE')
-        adjudicate_claim(claim, REAL, field='hw_bus_reset',
-                         context='slot 1 hw_bus_reset', executed_callee=False,
-                         resolved_evidence_hashes=REAL_RESOLVED)
+        with self.assertRaisesRegex(ValueError, 'not authenticated'):
+            adjudicate_claim(claim, REAL, field='hw_bus_reset',
+                             context='slot 1 hw_bus_reset', executed_callee=False,
+                             resolved_evidence_hashes=REAL_RESOLVED)
 
     def test_observed_hardware_observation_rejects_caller_only_source(self):
         # A hardware observation still needs an EMULATOR_SOURCE reference; caller/HLE
@@ -300,17 +305,18 @@ class AdjudicateClaimTests(unittest.TestCase):
     def test_evidence_trust_level_is_format_only(self):
         self.assertEqual(EVIDENCE_TRUST_LEVEL, 'FORMAT_ONLY')
 
-    def test_real_core_evidence_is_accepted_for_callee_field(self):
-        adjudicate_claim(REAL_OBSERVED_CALLEE, REAL, field='stack', context='slot 1 stack', executed_callee=True,
-                         resolved_evidence_hashes=REAL_RESOLVED)
-
-    def test_format_only_acceptance_does_not_check_field_correspondence(self):
-        # Documents a known limit (not a feature): the same evidence entry is accepted for
-        # unrelated fields because only its provenance and shape are checked. Semantic correspondence of
-        # evidence to the claim field is NOT verified; a follow-up Issue owns that.
-        for field in ('stack', 'returns', 'irq', 'flags'):
-            adjudicate_claim(REAL_OBSERVED_CALLEE, REAL, field=field, context=field, executed_callee=True,
+    def test_real_core_evidence_is_refused_for_callee_field_without_authentication(self):
+        with self.assertRaisesRegex(ValueError, 'not authenticated'):
+            adjudicate_claim(REAL_OBSERVED_CALLEE, REAL, field='stack', context='slot 1 stack', executed_callee=True,
                              resolved_evidence_hashes=REAL_RESOLVED)
+
+    def test_evidence_entry_is_refused_for_every_field_without_authentication(self):
+        # The same evidence entry used to pass for unrelated fields (only shape and hash were checked).
+        # Now every field is refused: authentication is missing, so the field correspondence is moot.
+        for field in ('stack', 'returns', 'irq', 'flags'):
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'not authenticated'):
+                adjudicate_claim(REAL_OBSERVED_CALLEE, REAL, field=field, context=field, executed_callee=True,
+                                 resolved_evidence_hashes=REAL_RESOLVED)
 
     def test_observed_claim_must_not_contain_registers_key(self):
         for regs in ([], None, ['A'], ['A', 'X']):
@@ -322,8 +328,9 @@ class AdjudicateClaimTests(unittest.TestCase):
 
     def test_observed_without_registers_key_and_other_statuses_unchanged(self):
         self.assertNotIn('registers', OBSERVED)
-        adjudicate_claim(REAL_OBSERVED_CALLEE, REAL, field='preserved', context='x', executed_callee=True,
-                         resolved_evidence_hashes=REAL_RESOLVED)
+        with self.assertRaisesRegex(ValueError, 'not authenticated'):
+            adjudicate_claim(REAL_OBSERVED_CALLEE, REAL, field='preserved', context='x', executed_callee=True,
+                             resolved_evidence_hashes=REAL_RESOLVED)
         # UNKNOWN / HYPOTHESIS / BLOCKED regression: registers rules unchanged.
         adjudicate_claim(UNKNOWN, CALLER, field='flags', context='x')
         adjudicate_claim(HYPOTHESIS, CALLER, field='preserved', context='x')
@@ -392,9 +399,10 @@ class AdjudicateClaimTests(unittest.TestCase):
                              context='slot 1 stack', executed_callee=True)
 
     # ---- Issue #207 (MAJOR-1) x #208: callee ABI vs hardware observation.
-    def test_hardware_observed_with_evidence_and_no_callee_is_conditionally_accepted(self):
-        adjudicate_claim(REAL_OBSERVED_HW, REAL, field='hw_bus_reset', context='hw_bus_reset',
-                         executed_callee=False, resolved_evidence_hashes=REAL_RESOLVED)
+    def test_hardware_observed_with_evidence_and_no_callee_is_refused_without_authentication(self):
+        with self.assertRaisesRegex(ValueError, 'not authenticated'):
+            adjudicate_claim(REAL_OBSERVED_HW, REAL, field='hw_bus_reset', context='hw_bus_reset',
+                             executed_callee=False, resolved_evidence_hashes=REAL_RESOLVED)
 
     def test_hardware_observed_without_evidence_is_rejected(self):
         for bad in (dict(OBSERVED, evidence=[]), {k: v for k, v in OBSERVED.items() if k != 'evidence'}):
@@ -601,10 +609,34 @@ class ProvenanceBypassTests(unittest.TestCase):
         entry = dict(REAL_ENTRY, execution_conditions='REALCORE SYN', input_type='THETIC')
         self.assertRefusedSynthetic(dict(REAL_OBSERVED_CALLEE, evidence=[entry]))
 
-    def test_fully_resolved_real_core_entry_still_yields_observed(self):
-        self.assertIsNone(adjudicate_claim(REAL_OBSERVED_CALLEE, REAL, field='stack',
-                                           context='slot 1 stack', executed_callee=True,
-                                           resolved_evidence_hashes=REAL_RESOLVED))
+    # Issue #359 / #124: a record dressed up as a real measurement must not reach OBSERVED. Every case below
+    # carries the REALCORE text, a matching hash, executed_callee=True and the declared kind. None is
+    # authenticated, so each is refused with the authentication message.
+    def assertRefusedUnauthenticated(self, claim, *, field='stack', executed_callee=True, resolved=REAL_RESOLVED):
+        with self.assertRaisesRegex(ValueError, 'not authenticated'):
+            adjudicate_claim(claim, REAL, field=field, context=f'slot 1 {field}',
+                             executed_callee=executed_callee, resolved_evidence_hashes=resolved)
+
+    def test_fully_resolved_real_core_entry_is_refused_without_authentication(self):
+        self.assertRefusedUnauthenticated(REAL_OBSERVED_CALLEE)
+
+    def test_caller_built_resolved_set_is_not_authentication(self):
+        # Any hash the caller places in the set is a declaration, not a resolve_evidence() result.
+        entry = dict(REAL_ENTRY, evidence_hash='ef' * 32)
+        self.assertRefusedUnauthenticated(dict(REAL_OBSERVED_CALLEE, evidence=[entry]),
+                                          resolved=frozenset({entry['evidence_hash']}))
+
+    def test_unknown_verification_result_is_never_promoted_to_measured(self):
+        # A validation result of UNKNOWN (Issue #371 vocabulary) must not become a measurement.
+        entry = dict(REAL_ENTRY, verification_result='UNKNOWN')
+        self.assertRefusedUnauthenticated(dict(REAL_OBSERVED_CALLEE, evidence=[entry]))
+
+    def test_declared_callee_kind_on_hardware_claim_with_real_text_is_refused(self):
+        # Kind relabelled to CALLEE_EXECUTION for a hw readback: the correspondence check refuses it.
+        with self.assertRaisesRegex(ValueError, 'does not support field'):
+            adjudicate_claim(dict(REAL_OBSERVED_HW, observation_kind='CALLEE_EXECUTION'), REAL,
+                             field='hw_bus_reset', context='slot 1 hw_bus_reset', executed_callee=True,
+                             resolved_evidence_hashes=REAL_RESOLVED)
 
 
 if __name__ == '__main__':
