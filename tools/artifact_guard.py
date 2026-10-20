@@ -51,10 +51,12 @@ Command line (run by the workflows from the trusted copy, with --root "$GITHUB_W
   --stage WORKFLOW STEP | --verify WORKFLOW STEP | --post-build WORKFLOW STEP | --check-placement | (no argument: static)
 """
 from pathlib import Path
+import fnmatch
 import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import sys
 
@@ -79,7 +81,8 @@ USES_RE = re.compile(r"""["']?uses["']?\s*:\s*["']?actions/upload-(?:pages-)?art
 # Any other publishing route (release assets, third-party upload actions, local actions and reusable workflows
 # whose upload cannot be seen from here) is refused rather than guessed.
 UPLOAD_RE = re.compile(r"""upload-(?:pages-)?artifact|\bgh\s+release\b|release-action|action-gh-release|release-asset"""
-                       r"""|create-release|["']?uses["']?\s*:\s*["']?(?:\./|[^#\s]*\.github/workflows/)""", re.IGNORECASE)
+                       r"""|create-release|uploads\.github\.com|api\.github\.com/repos/\S*/releases|/releases\b|\bgh\s+api\b.*\breleases\b"""
+                       r"""|["']?uses["']?\s*:\s*["']?(?:\./|[^#\s]*\.github/workflows/)""", re.IGNORECASE)
 # pathlib glob has no brace, extglob or alternation syntax: such a pattern would match nothing and hide its files.
 UNSUPPORTED_PATTERN_CHARS = "{}()|"
 # A guard-job step's own (top-level) `uses:` key and the actions/* action it names. Only these actions may be a
@@ -88,6 +91,38 @@ UNSUPPORTED_PATTERN_CHARS = "{}()|"
 USES_KEY_RE = re.compile(r"""["']?uses["']?\s*:\s*(.*)$""", re.IGNORECASE)
 ACTION_PATH_RE = re.compile(
     r"actions/(checkout|download-artifact|configure-pages|deploy-pages|upload-artifact|upload-pages-artifact)@")
+# Fail-closed allowlist (Issue #337). Every uses: key in a workflow or composite action must name one of these
+# actions with a ref; any other action (a release action, a third-party upload) is refused, because a publication
+# route the guard does not name would otherwise pass both layers. Adding an action is a reviewed change here.
+KNOWN_ACTIONS = frozenset({
+    "actions/checkout", "actions/upload-artifact", "actions/download-artifact", "actions/upload-pages-artifact",
+    "actions/configure-pages", "actions/deploy-pages", "actions/attest-build-provenance",
+})
+# Issue #349: the ref must be one full 40-digit commit SHA. A tag can be moved after review, and a ref that is any
+# text let `actions/checkout@v4 acme/publisher@v1` through.
+FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
+# Publishing actions that must not appear in a file without an upload-artifact step (Issue #349, finding 1): such a
+# file is not covered by the upload layer, so the placement check refuses it outright.
+PUBLISH_USES_RE = re.compile(r"actions/(?:deploy-pages|upload-pages-artifact|attest[\w-]*)@", re.IGNORECASE)   # attest*: any attest action (Issue #349)
+_UNLISTED_MESSAGE = ("uses: action not on the allowlist or not pinned to one full commit SHA "
+                     "(fail closed, Issue #337, #349)")
+# A uses: key anywhere on a line: block form, quoted key, or inside a flow mapping such as {uses: x}.
+USES_ANY_RE = re.compile(r"""(?:^|[\s{,\[-])["']?uses["']?\s*:""", re.IGNORECASE)
+# A key the line reader cannot see as text: a complex key (`? uses` with the value on the next line) or a double-quoted
+# key with an escape (`"uses": x` is the key uses). Refused rather than guessed.
+OPAQUE_KEY_RE = re.compile(r"""^\s*(?:-\s+)?\?(?:\s|$)|"[^"]*\\[^"]*"\s*:""")
+
+
+def _unlisted_uses(line):
+    """The uses: values on one line that do not name a KNOWN_ACTIONS entry pinned to one full commit SHA. Empty values
+    (a value on the next line, a folded scalar indicator) are unlisted too."""
+    values = []
+    for key in USES_ANY_RE.finditer(line):
+        value = _unquote(re.split(r"\s#|[,}\]]", line[key.end():], maxsplit=1)[0].strip())
+        name, at, ref = value.partition("@")
+        if not (at and FULL_SHA_RE.fullmatch(ref) and name.lower() in KNOWN_ACTIONS):
+            values.append(value)
+    return values
 
 
 def _indent(line):
@@ -230,10 +265,17 @@ def upload_steps(text):
                 raise ValueError(f"unsupported uses: value (escape sequence or alias): {line.strip()!r}")
         match = USES_RE.search(line)
         if match:
+            # Issue #349: an upload step's own action is held to the same allowlist and full-SHA pin as any other.
+            if _unlisted_uses(line):
+                raise ValueError(_UNLISTED_MESSAGE + f": {line.strip()!r}")
             patterns.append(_step_patterns(lines, index, match.start()))
         elif UPLOAD_RE.search(line):
             # Fail closed: a mention that is not a parsed upload step may still be an upload of unknown shape.
             raise ValueError(f"unsupported upload-artifact reference (not a parsed step): {line.strip()!r}")
+        elif not line.lstrip().startswith("#") and OPAQUE_KEY_RE.search(line):
+            raise ValueError(f"YAML key the line reader cannot see (complex or escaped key, fail closed): {line.strip()!r}")
+        elif not line.lstrip().startswith("#") and _unlisted_uses(line):
+            raise ValueError(_UNLISTED_MESSAGE + f": {line.strip()!r}")
     return patterns
 
 
@@ -344,8 +386,12 @@ def pattern_problems(base, label, pattern, strict):
 
 
 def _workflow_files(base):
-    return sorted(f for ext in ("yml", "yaml") for f in (*(base / WORKFLOWS).glob(f"*.{ext}"),
-                                                         *(base / ACTIONS).glob(f"**/action.{ext}")))
+    """Workflow and composite-action files. Matched by name case-insensitively: Linux globs are case-sensitive, so a
+    `extra.YML` workflow would otherwise be skipped by the scan while GitHub-side tooling may still read it."""
+    workflows, actions = base / WORKFLOWS, base / ACTIONS
+    found = [p for p in workflows.iterdir() if p.is_file() and p.suffix.lower() in (".yml", ".yaml")] if workflows.is_dir() else []
+    found += [p for p in actions.rglob("*") if p.is_file() and p.name.lower() in ("action.yml", "action.yaml")] if actions.is_dir() else []
+    return sorted(found)
 
 
 def check_upload_artifacts(root=ROOT):
@@ -504,7 +550,991 @@ def _guard_is_bare(command, expected, keys):
     return _shell_ok(keys) and command[0] == expected
 
 
-def check_guard_placement(root=ROOT):
+# Issue #349 (review, MAJOR): a publishing action may sit in any job of any file. It is refused unless its job is one of
+# these (file name, job) pairs (the owner decision: the two attestations only), or it is a Pages action in a guard job
+# that carries a final upload (pages.yml deploy: its placement is checked by guard_placement_violations).
+# The attestation subjects each allowed job may sign (owner decision, Issue #349). The allowance binds the subject-path
+# value and the with: keys too, not only the job name.
+ATTEST_SUBJECTS = {
+    ("api-source.yml", "attest-cdread"): frozenset({"evidence/cdread-probe/cdread-evidence.json",
+                                                    "evidence/cdread-probe/cdread-probe-not-bios.pce"}),
+    ("api-source.yml", "attest-cdread-verdict"): frozenset({"verdict/cdread-verdict.json"}),
+}
+PUBLISH_JOB_ALLOWLIST = frozenset(ATTEST_SUBJECTS)
+PAGES_PUBLISH_ACTIONS = ("actions/deploy-pages@", "actions/upload-pages-artifact@")
+ATTEST_USES_RE = re.compile(r"actions/attest-build-provenance@", re.IGNORECASE)
+ATTEST_ANY_RE = re.compile(r"actions/attest", re.IGNORECASE)
+# The only condition under which a signing job may run (owner decision, Issue #349). Compared as a whole expression after
+# whitespace normalization: any removal, `!=`, a different ref, `||`, or a quoted/block form is a refusal. Policy lives in
+# the workflow; this guard only enforces it. Residual risks not covered here: see the note at attest_condition_violations.
+SIGN_CONDITION = "github.event_name == 'push' && github.ref == 'refs/heads/main'"
+# Issue #337 round 4. (a) signing or OIDC-token text is refused on any live line except the approved attest uses: line,
+# a display name, and a read-only `gh attestation verify`; (b) an approved signing job keeps the job that produces its
+# artifact in needs:; (c) continue-on-error is refused in a signing job; (d) an upload pattern that can select a ROM file
+# must be on APPROVED_ROM_UPLOADS, and a staged ROM file must come from an approved pattern.
+ATTEST_NEEDS = {("api-source.yml", "attest-cdread"): {"guard-bios-dev"},
+                ("api-source.yml", "attest-cdread-verdict"): {"guard-cdread-verdict"}}
+SIGNING_TERMS_RE = re.compile(r"sigstore|cosign|fulcio|rekor|(?<![\w-])attest(?![\w-])|actions/attest|gh\s+attestation"
+                              r"|ACTIONS_ID_TOKEN_REQUEST_TOKEN", re.IGNORECASE)
+SIGNING_PERMISSION_RE = re.compile(r"""^\s*(?:-\s+)?["']?(id-token|attestations)["']?\s*:\s*(\S+)""")
+APPROVED_ATTEST_USES_RE = re.compile(r"""uses\s*:\s*actions/attest-build-provenance@[0-9a-f]{40}\s*(?:#.*)?$""")
+GH_VERIFY_RE = re.compile(r"""(?:run\s*:\s*)?gh attestation verify\b""")
+READ_ONLY_ATTEST_PERMISSION_RE = re.compile(r"""\s*(?:-\s+)?attestations\s*:\s*read\s*""")
+# (a) An approved signing job runs exactly these steps, in order: a step that runs code (a script from the downloaded
+# artifact, `printenv`, `uses: ./local`) would hold the OIDC token without any signing word, so it is refused by shape.
+ATTEST_STEPS = {
+    ("api-source.yml", "attest-cdread"): [("uses", "actions/download-artifact"),
+                                          ("uses", "actions/attest-build-provenance")],
+    ("api-source.yml", "attest-cdread-verdict"): [
+        ("uses", "actions/download-artifact"),
+        ("run", ('test -n "$ACTIONS_ID_TOKEN_REQUEST_URL" || { echo "no id-token, verdict not signed"; exit 1; }',)),
+        ("uses", "actions/attest-build-provenance")],
+}
+# Issue #337 round 11. The download step of each approved signing job is pinned: the action pin, the artifact name it fetches
+# (the name of the upload step in the same file), the directory it extracts into, and the only with: keys allowed. `files`
+# are the signed files relative to that directory, so each subject-path must be path + "/" + file (attest_download_violations).
+DOWNLOAD_USES = "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+DOWNLOAD_WITH_KEYS = frozenset({"name", "path"})
+ATTEST_DOWNLOADS = {
+    ("api-source.yml", "attest-cdread"): {
+        "name": "bios-dev-not-compatible-${{ github.sha }}", "path": "evidence",
+        "files": frozenset({"cdread-probe/cdread-evidence.json", "cdread-probe/cdread-probe-not-bios.pce"})},
+    ("api-source.yml", "attest-cdread-verdict"): {
+        "name": "cdread-verdict-${{ github.sha }}", "path": "verdict", "files": frozenset({"cdread-verdict.json"})},
+}
+# Issue #337 round 11 (review): the intermediate downloads of the two guard jobs feed the uploads that are signed, so they are
+# pinned the same way (name of the matching upload, path, with: keys). They sign nothing, so there is no subject check.
+GUARD_DOWNLOADS = {
+    ("api-source.yml", "guard-bios-dev"): {"name": "intermediate-bios-dev-${{ github.sha }}", "path": ".intake"},
+    ("api-source.yml", "guard-cdread-verdict"): {"name": "intermediate-cdread-verdict-${{ github.sha }}", "path": ".intake"},
+}
+ROM_CANDIDATES = ("x.pce", "x.bin", "x.rom")
+ROM_SUFFIXES = (".pce", ".bin", ".rom")
+# The ROM upload patterns that exist today (staged form), per workflow file. Each is a synthetic probe ROM or the project's
+# own debug build; the guard does not inspect what a glob selects beyond the executable and archive checks.
+APPROVED_ROM_UPLOADS = frozenset(
+    {("api-source.yml", ".intake/.artifact-stage/build/debug/bios-dev/*.pce"),
+     ("api-source.yml", ".intake/.artifact-stage/build/debug/bios-dev/contract-probes/*.pce"),
+     ("api-source.yml", ".intake/.artifact-stage/build/debug/startup-probe/*.pce"),
+     ("api-source.yml", ".intake/.artifact-stage/build/debug/cdread-probe/*.pce"),
+     ("api-source.yml", ".intake/.artifact-stage/build/debug/cdload-exec/*.pce"),
+     ("api-source.yml", ".intake/.artifact-stage/build/debug/cdreset-probe/*.pce"),
+     ("ci.yml", ".intake/.artifact-stage/build/debug/*.pce"),
+     ("nightly.yml", ".intake/.artifact-stage/build/debug/*.pce")})
+
+
+def _enclosing_job(lines, index):
+    """The block job id that contains lines[index], or None. A line at indent 2 that is not a block job id (for example
+    a flow-form job `zz: {...}`) ends the search with None, so it is never attributed to the job above it (Issue #349)."""
+    for j in range(index, -1, -1):
+        if _live(lines[j]) and _indent(lines[j]) <= 2:
+            return _job_name(lines[j]) if _indent(lines[j]) == 2 else None
+    return None
+
+
+def _attest_inputs(lines, dash, end):
+    """(with: keys, subject-path values) of one attest step whose list item starts at lines[dash], or None when the
+    with: block is not plain block form. Keys and values are read from the step's own block only."""
+    dash_indent = _indent(lines[dash])
+    keys, paths, in_with, current = [], set(), False, None
+    for j in range(dash + 1, end):
+        if not _live(lines[j]):
+            continue
+        indent, text = _indent(lines[j]), lines[j].strip()
+        if indent == dash_indent + 2:
+            current = None
+            in_with = text == "with:"
+            if text.startswith("with:") and not in_with:
+                return None
+        elif indent == dash_indent + 4 and in_with:
+            key, sep, value = text.partition(":")
+            if not sep:
+                return None
+            key = key.strip().strip("\"'")
+            keys.append(key)
+            current = key if key == "subject-path" else None
+            value = value.split(" #")[0].strip()
+            if current and value and value not in BLOCK_SCALARS and value != ">":
+                paths.add(value.strip("\"'"))
+        elif indent > dash_indent + 4 and in_with and current == "subject-path":
+            paths.add(text)
+        elif indent > dash_indent + 2 and in_with:
+            return None
+    return keys, paths
+
+
+def attest_input_violations(text, label):
+    """Problems for an attest step in an allowed job: its with: must be exactly subject-path, and its subject-path must be
+    the approved subject set for that (file, job). A step that cannot be parsed in this form is refused (Issue #349)."""
+    lines = text.splitlines()
+    problems = []
+    for i, line in enumerate(lines):
+        if not (_live(line) and ATTEST_ANY_RE.search(line)):
+            continue
+        job = _enclosing_job(lines, i)
+        expected = ATTEST_SUBJECTS.get((Path(label).name, job))
+        if expected is None:
+            continue   # publish_violations refuses the job itself
+        if not ATTEST_USES_RE.search(line):
+            problems.append(f"{label}: job {job!r} may only sign with actions/attest-build-provenance "
+                            f"(found {line.strip()!r}, Issue #349)")
+            continue
+        column = _indent(line) + (2 if line.lstrip().startswith("- ") else 0)
+        dash = next((j for j in range(i, -1, -1) if _live(lines[j]) and lines[j].lstrip().startswith("- ")
+                     and _indent(lines[j]) < column), None)
+        if dash is None or column != _indent(lines[dash]) + 2:
+            problems.append(f"{label}: attest step in job {job!r} is not a plain list item (refused, Issue #349)")
+            continue
+        end = next((j for j in range(dash + 1, len(lines)) if _live(lines[j]) and _indent(lines[j]) <= _indent(lines[dash])),
+                   len(lines))
+        found = _attest_inputs(lines, dash, end)
+        if found is None or found[0] != ["subject-path"] or found[1] != set(expected):
+            got = "unparseable" if found is None else f"keys {found[0]} subjects {sorted(found[1])}"
+            problems.append(f"{label}: attest step in job {job!r} may only have subject-path with the approved subjects "
+                            f"{sorted(expected)} (found {got}, Issue #349)")
+    return problems
+
+
+def _download_problems(label, job, steps, pin):
+    """Issue #337 round 11: problems with the one download-artifact step of one job, and that step (None if not found).
+    The step has only uses and with; uses is DOWNLOAD_USES; with: is exactly {name, path} with the pinned values, so run-id,
+    repository, github-token, merge-multiple and any other key are refused."""
+    uses = [s.get("uses") if isinstance(s, dict) else None for s in steps]
+    downloads = [s for s, u in zip(steps, uses) if isinstance(u, str) and u.startswith("actions/download-artifact@")]
+    if len(downloads) != 1:
+        return [f"{label}: job {job!r} must have exactly one download-artifact step (found {len(downloads)}, "
+                "Issue #337 round 11)"], None
+    download = downloads[0]
+    problems = []
+    extra = sorted(set(download) - {"name", "uses", "with"}, key=str)   # name is the step's display name only
+    if extra:
+        problems.append(f"{label}: download-artifact step in job {job!r} sets {extra} (only name, uses and with are "
+                        "allowed, Issue #337 round 11)")
+    if download.get("uses") != DOWNLOAD_USES:
+        problems.append(f"{label}: download-artifact step in job {job!r} must use {DOWNLOAD_USES!r} "
+                        f"(found {download.get('uses')!r}, Issue #337 round 11)")
+    with_ = download.get("with")
+    if not isinstance(with_, dict):
+        problems.append(f"{label}: download-artifact step in job {job!r} has no with: mapping (Issue #337 round 11)")
+    else:
+        bad = sorted(set(with_) - DOWNLOAD_WITH_KEYS, key=str)
+        if bad:
+            problems.append(f"{label}: download-artifact step in job {job!r} may not set with: {bad} (allowed "
+                            f"{sorted(DOWNLOAD_WITH_KEYS)}; run-id, repository, github-token and merge-multiple are "
+                            "refused, Issue #337 round 11)")
+        if with_.get("name") != pin["name"] or with_.get("path") != pin["path"]:
+            problems.append(f"{label}: download-artifact step in job {job!r} must fetch {pin['name']!r} into "
+                            f"{pin['path']!r} (found name {with_.get('name')!r}, path {with_.get('path')!r}, "
+                            "Issue #337 round 11)")
+    return problems, download
+
+
+def attest_download_violations(text, label, partial_fixtures=False):
+    """Issue #337 round 11, for one workflow file (YAML decoded with the strict loader). For each pinned job of this file:
+    GUARD_DOWNLOADS (the two guard jobs) and ATTEST_DOWNLOADS (the two signing jobs), the download step is checked by
+    _download_problems. For a signing job, the job also has exactly one attest-build-provenance step, and its subject-path is
+    exactly path + "/" + each pinned file, a set equal to ATTEST_SUBJECTS for the job.
+
+    A pinned job missing from the file is refused. Only a caller that passes partial_fixtures=True (a test fixture that holds
+    part of the workflow) skips a missing job. The real workflow is checked with partial_fixtures=False."""
+    import yaml
+    name = Path(label).name
+    pins = {job: (pin, True) for (file, job), pin in ATTEST_DOWNLOADS.items() if file == name}
+    pins.update({job: (pin, False) for (file, job), pin in GUARD_DOWNLOADS.items() if file == name})
+    if not pins:
+        return []
+    try:
+        doc = yaml.load(text, Loader=_strict_loader())
+    except (yaml.YAMLError, ValueError) as error:
+        return [f"{label}: YAML cannot be read, download pins cannot be checked ({error}; Issue #337 round 11)"]
+    jobs = doc.get("jobs") if isinstance(doc, dict) else None
+    problems = []
+    for job, (pin, signing) in sorted(pins.items()):
+        if not isinstance(jobs, dict) or job not in jobs:
+            if not partial_fixtures:
+                problems.append(f"{label}: job {job!r} is missing from {name}; the real workflow must keep it "
+                                "(Issue #337 round 11)")
+            continue
+        body = jobs.get(job)
+        steps = body.get("steps") if isinstance(body, dict) else None
+        if not isinstance(steps, list):
+            problems.append(f"{label}: job {job!r} has no steps list to check (Issue #337 round 11)")
+            continue
+        step_problems, download = _download_problems(label, job, steps, pin)
+        problems += step_problems
+        if not signing or download is None:
+            continue
+        attests = [s for s in steps if isinstance(s, dict) and isinstance(s.get("uses"), str)
+                   and s["uses"].startswith("actions/attest-build-provenance@")]
+        if len(attests) != 1:
+            problems.append(f"{label}: signing job {job!r} must have exactly one attest-build-provenance step "
+                            f"(found {len(attests)}, Issue #337 round 11)")
+            continue
+        attest_with = attests[0].get("with")
+        subject_text = attest_with.get("subject-path") if isinstance(attest_with, dict) else None
+        subjects = {line.strip() for line in subject_text.splitlines() if line.strip()} if isinstance(subject_text, str) else set()
+        expected = {f"{pin['path']}/{file}" for file in pin["files"]}
+        if subjects != expected or subjects != set(ATTEST_SUBJECTS[(name, job)]):
+            problems.append(f"{label}: attest step in job {job!r} must sign exactly the files of the pinned download, "
+                            f"{sorted(expected)} (found {sorted(subjects)}, Issue #337 round 11)")
+    return problems
+
+
+def yaml_integrity_violations(text, label):
+    """Issue #337 round 11, for every workflow and composite action file. A mapping with a duplicate key is refused (PyYAML
+    keeps the last value silently) and so is any YAML anchor or alias, which can repeat or hide a value. Applies to the whole
+    file, so it covers jobs outside the signing set too."""
+    import yaml
+    try:
+        yaml.load(text, Loader=_strict_loader())
+        events = list(yaml.parse(text, Loader=yaml.SafeLoader))
+    except (yaml.YAMLError, ValueError) as error:
+        return [f"{label}: YAML refused ({error}; Issue #337 round 11)"]
+    problems = []
+    for event in events:
+        if isinstance(event, yaml.AliasEvent):
+            problems.append(f"{label}: YAML alias *{event.anchor} is refused (Issue #337 round 11)")
+        elif getattr(event, "anchor", None):
+            problems.append(f"{label}: YAML anchor &{event.anchor} is refused (Issue #337 round 11)")
+    return problems
+
+
+def _if_scalars(lines, head, end):
+    """Each job-level `if:` key in lines[head+1:end], as its scalar parts: the key line's own value, then every live line
+    indented deeper than the key (a plain or quoted continuation, or a block body). Issue #337 round 2: a continuation
+    line was ignored before, so `|| github.event_name == 'pull_request'` under `if:` passed the text check."""
+    found = []
+    for i in range(head + 1, end):
+        line = lines[i]
+        if not (_live(line) and _indent(line) == 4 and re.match(r"""["']?if["']?\s*:""", line.strip())):
+            continue
+        parts = [re.split(r"\s#", line.strip().split(":", 1)[1], maxsplit=1)[0]]
+        for j in range(i + 1, end):
+            if _live(lines[j]) and _indent(lines[j]) <= 4:
+                break
+            if _live(lines[j]):
+                parts.append(re.split(r"\s#", lines[j].strip(), maxsplit=1)[0])
+        found.append(parts)
+    return found
+
+
+SAFE_TAGS = frozenset({"tag:yaml.org,2002:str", "tag:yaml.org,2002:map"})
+# A job-level key (indent 4) must be a plain key: no tag `!`, anchor `&`, alias `*`, quotes or complex-key `?` (Issue #337 r3).
+JOB_KEY_RE = re.compile(r"[A-Za-z_][\w.-]*[ \t]*:(\s|$)")
+
+
+def _strict_loader():
+    """SafeLoader subclass that refuses a mapping with a duplicate key (Issue #337 round 3: last-wins hid a second `if:`)."""
+    import yaml
+
+    class StrictLoader(yaml.SafeLoader):
+        def construct_mapping(self, node, deep=False):
+            if isinstance(node, yaml.MappingNode):
+                keys = [k.value for k, _ in node.value if isinstance(k, yaml.ScalarNode)]
+                dups = sorted({k for k in keys if keys.count(k) > 1})
+                if dups:
+                    raise ValueError(f"duplicate mapping key(s) {dups}")
+            return super().construct_mapping(node, deep)
+    return StrictLoader
+
+
+def _node_problems(block):
+    """Reasons the job block is refused by the event stream: any anchor, any alias, or any tag other than str/map.
+    Issue #337 round 3. Empty when clean; an unparseable block is a refusal too."""
+    try:
+        import yaml
+    except ImportError:
+        return ["PyYAML unavailable"]
+    reasons = []
+    try:
+        for event in yaml.parse("\n".join(block) + "\n", Loader=yaml.SafeLoader):
+            if isinstance(event, yaml.AliasEvent):
+                reasons.append(f"alias *{event.anchor}")
+                continue
+            if getattr(event, "anchor", None):
+                reasons.append(f"anchor &{event.anchor}")
+            tag = getattr(event, "tag", None)
+            if tag and tag not in SAFE_TAGS:
+                reasons.append(f"tag {tag}")
+    except yaml.YAMLError:
+        reasons.append("unparseable")
+    return reasons
+
+
+def _effective_if(lines, head, end, job):
+    """The job's `if:` value as PyYAML parses the job's own block (lines[head:end]), or None when it cannot be read as one
+    string. Issue #337 round 2: this is the source of truth next to the text check. The block is parsed alone, so a
+    malformed unrelated part of the file cannot hide a signing job's value. No PyYAML means None, so the caller refuses.
+    Issue #337 round 3: a duplicate key anywhere in the block makes this None (strict loader)."""
+    try:
+        import yaml
+    except ImportError:
+        return None
+    try:
+        value = yaml.load("\n".join(lines[head:end]) + "\n", Loader=_strict_loader())[job]["if"]
+    except (yaml.YAMLError, KeyError, TypeError, ValueError):
+        return None
+    return value if isinstance(value, str) else None
+
+
+def _key_problems(lines, head, end):
+    """Job-level keys (indent 4) that are not plain keys, and how many keys normalize to `if` (Issue #337 round 3).
+    The approved form is exactly one plain `if:` line; a tagged, anchored, quoted, `?` or duplicate key is refused."""
+    bad, if_keys = [], 0
+    for i in range(head + 1, end):
+        if not (_live(lines[i]) and _indent(lines[i]) == 4):
+            continue
+        text = lines[i].strip()
+        if not JOB_KEY_RE.match(text):
+            bad.append(text)
+        elif text.split(":", 1)[0].strip().lower() == "if":
+            if_keys += 1
+    return bad, if_keys
+
+
+def _normal(value):
+    return " ".join(value.split())
+
+
+def attest_condition_violations(text, label):
+    """Each signing job present in this file must be a block-form job with exactly one job-level `if:`, equal to
+    SIGN_CONDITION after whitespace normalization (Issue #349). Flow-form, duplicated or missing jobs, and any other value
+    are refused. Issue #337 round 2: the WHOLE value is compared, continuation lines included, and a block or quoted scalar
+    is refused. The effective value that PyYAML parses must agree with the text value, or the check refuses.
+    A signing job absent from the file is not checked here: publish_violations refuses any attest step that appears in
+    another job or file.
+
+    Issue #337 round 3: a job-level key with a tag, anchor, alias, quotes or `?` is refused, a second key normalizing to
+    `if` is refused, a duplicate key anywhere in the job block is refused (strict loader), and any anchor, alias or tag
+    other than str/map in the job block is refused (event stream).
+
+    Round 4: a direct Sigstore or cosign call in run:, id-token permission, continue-on-error and needs: removal are checked
+    by signing_violations; ROM uploads by rom_upload_violations. Residuals of those checks are listed in their docstrings.
+    """
+    lines = text.splitlines()
+    problems = []
+    for name, job in sorted(ATTEST_SUBJECTS):
+        if name != Path(label).name:
+            continue
+        heads = [i for i, l in enumerate(lines) if _live(l) and _indent(l) == 2
+                 and re.match(r"""^\s*["']?%s["']?\s*:""" % re.escape(job), l)]
+        if not heads:
+            continue
+        if len(heads) != 1 or _job_name(lines[heads[0]]) != job:
+            problems.append(f"{label}: signing job {job!r} must appear once in block form (found {len(heads)}; "
+                            "flow form is refused, Issue #349)")
+            continue
+        end = next((j for j in range(heads[0] + 1, len(lines)) if _live(lines[j]) and _indent(lines[j]) <= 2), len(lines))
+        bad_keys, if_keys = _key_problems(lines, heads[0], end)
+        if bad_keys or if_keys != 1:
+            problems.append(f"{label}: signing job {job!r} must have exactly one plain job-level if: key "
+                            f"(non-plain keys {bad_keys}, if keys {if_keys}, Issue #337 round 3)")
+        node_reasons = _node_problems(lines[heads[0]:end])
+        if node_reasons:
+            problems.append(f"{label}: signing job {job!r} refused: anchor, alias or non-standard tag {node_reasons} "
+                            "(Issue #337 round 3)")
+        found = _if_scalars(lines, heads[0], end)
+        values = [_normal(" ".join(parts)) for parts in found]
+        effective = _effective_if(lines, heads[0], end, job)
+        scalar_form = any(parts[0].strip()[:1] in ("|", ">", '"', "'") for parts in found if parts[0].strip())
+        if (len(found) != 1 or scalar_form or values != [SIGN_CONDITION]
+                or effective is None or _normal(effective) != SIGN_CONDITION):
+            problems.append(f"{label}: signing job {job!r} must have exactly one job-level if: {SIGN_CONDITION!r} "
+                            f"(found {values}, effective {effective!r}, block or quoted form refused, Issue #349, #337)")
+    return problems
+
+
+def _job_blocks(lines):
+    """(job id, header index, end index) of each block-form job (an indent-2 key). The end is the next top-level line."""
+    blocks = []
+    for head, line in enumerate(lines):
+        job = _job_name(line) if _live(line) and _indent(line) == 2 else None
+        if job is None:
+            continue
+        end = next((j for j in range(head + 1, len(lines)) if _live(lines[j]) and _indent(lines[j]) <= 2), len(lines))
+        blocks.append((job, head, end))
+    return blocks
+
+
+def _signing_exempt(line):
+    """A line whose signing words name no action: a display name at key level, the approved attest uses: line, or a
+    read-only `gh attestation verify` with no other signing term after it (Issue #337 round 4)."""
+    body = line.lstrip()
+    key = body[2:].lstrip() if body.startswith("- ") else body
+    if re.match(r"name\s*:", key) and _indent(line) in (4, 6, 8):
+        return True
+    if APPROVED_ATTEST_USES_RE.match(key) and _indent(line) in (6, 8):
+        return True
+    if READ_ONLY_ATTEST_PERMISSION_RE.fullmatch(line.split(" #", 1)[0]):
+        return True   # `attestations: read` (the trailing comment is not executed)
+    match = GH_VERIFY_RE.match(key)
+    return bool(match) and not SIGNING_TERMS_RE.search(key[match.end():])
+
+
+# Issue #337 round 10. A key that changes the environment a step runs in changes how the approved run texts resolve python3,
+# bash and sh, so it is refused. Top-level env: and defaults: are refused for the whole file. In a job that holds id-token:
+# write (approved or not), only HELD_JOB_KEYS may appear at job level (fail-closed: env, container, services, defaults and
+# any unknown key are refused), and a step may carry only its own keys (HELD_*_STEP_KEYS).
+HELD_JOB_KEYS = frozenset({"name", "runs-on", "permissions", "needs", "steps", "if", "outputs", "timeout-minutes",
+                           "strategy", "concurrency", "environment"})
+HELD_ENVIRONMENT_KEYS = frozenset({"name", "url"})   # a mapping form is accepted only with these keys and string values
+HELD_RUN_STEP_KEYS = frozenset({"name", "id", "run"})
+HELD_USES_STEP_KEYS = frozenset({"name", "id", "uses", "with"})
+
+
+def _plain_environment(value):
+    """environment: as a name, or a mapping with only name and url, all string values (Issue #337 round 10)."""
+    if isinstance(value, str):
+        return True
+    return (isinstance(value, dict) and set(value) <= HELD_ENVIRONMENT_KEYS
+            and all(isinstance(v, str) for v in value.values()))
+
+
+def execution_scope_violations(text, label):
+    """Issue #337 round 10, for one workflow file (YAML decoded). Refused:
+    - top-level env: (any key; it can set PATH, BASH_ENV, PYTHONPATH, GIT_* and similar) and top-level defaults: (a shell
+      override for every run:);
+    - in a job whose permissions hold id-token: write (or write-all), any job-level key outside HELD_JOB_KEYS, so env,
+      container, services and defaults, and any unknown key;
+    - in such a job, a step with a key outside its allowed set (a run: step allows name, id, run; a uses: step allows name,
+      id, uses, with), so env, shell, working-directory and if are refused.
+    Residual: a job without id-token is not checked here; its env: and container: are not a signing risk by themselves.
+    """
+    try:
+        import yaml
+    except ImportError:
+        return [f"{label}: PyYAML unavailable, execution scope cannot be checked (Issue #337 round 10)"]
+    try:
+        doc = yaml.load(text, Loader=_strict_loader())
+    except (yaml.YAMLError, ValueError) as error:
+        return [f"{label}: YAML cannot be read, execution scope cannot be checked ({error}; Issue #337 round 10)"]
+    if not isinstance(doc, dict):
+        return [f"{label}: the file is not a mapping (Issue #337 round 10)"]
+    problems = []
+    if "env" in doc:
+        problems.append(f"{label}: top-level env: is refused (it can change how python3, bash or sh resolve, "
+                        "Issue #337 round 10)")
+    if "defaults" in doc:
+        problems.append(f"{label}: top-level defaults: is refused (it sets the shell of every run:, Issue #337 round 10)")
+    jobs = doc.get("jobs")
+    if not isinstance(jobs, dict):
+        return problems
+    for job, body in jobs.items():
+        if not isinstance(body, dict):
+            continue   # run_allowlist_violations refuses a job that is not a mapping
+        perms = body.get("permissions", doc.get("permissions"))
+        if not (perms == "write-all" or (isinstance(perms, dict) and perms.get("id-token") == "write")):
+            continue
+        for key in sorted(set(body) - HELD_JOB_KEYS, key=str):
+            problems.append(f"{label}: job {job!r} holds id-token and sets job-level {key!r} (refused; allowed keys "
+                            f"{sorted(HELD_JOB_KEYS)}, Issue #337 round 10)")
+        if "environment" in body and not _plain_environment(body["environment"]):
+            problems.append(f"{label}: job {job!r} environment: must be a name, or name and url only (Issue #337 round 10)")
+        steps = body.get("steps")
+        if not isinstance(steps, list):
+            continue
+        for step in steps:
+            if not isinstance(step, dict):
+                problems.append(f"{label}: job {job!r} has a step that is not a mapping (Issue #337 round 10)")
+                continue
+            allowed = HELD_RUN_STEP_KEYS if "run" in step else HELD_USES_STEP_KEYS
+            for key in sorted(set(step) - allowed, key=str):
+                problems.append(f"{label}: job {job!r} step {step.get('name')!r} sets {key!r} (refused; a step in a job "
+                                f"that holds id-token may carry only {sorted(allowed)}, Issue #337 round 10)")
+    return problems
+
+
+def signing_violations(text, label):
+    """Issue #337 round 4 (a)(b)(c), for one workflow file.
+    (a) signing or OIDC-token text (sigstore, cosign, attest, gh attestation, the OIDC request token) on any live line that is
+    not an exempt form, in any job; a job that holds attestations write must be an approved signing job. id-token alone is
+    not a signing right (pages.yml deploy needs it), so it is not refused by itself.
+    (b) an approved signing job keeps id-token and attestations write, and keeps the job that produces its artifact in needs:.
+    (c) continue-on-error is refused in an approved signing job, at job or step level, in any spelling on the line.
+    Round 5 and 6: the signing terms are also tested on each run: value as YAML decodes it and _shell_text normalizes it, in
+    any job. In a job with id-token: write that is not approved, each run: must exactly match APPROVED_RUN_TEXTS
+    (run_allowlist_violations, round 8).
+    Not covered here: a signing call under a name none of these terms match is refused by the uses: allowlist, not here."""
+    name = Path(label).name
+    lines = text.splitlines()
+    problems = []
+    if any(_live(line) and "write-all" in line for line in lines):
+        problems.append(f"{label}: write-all permissions are refused (Issue #337 round 4)")
+    for i, line in enumerate(lines):
+        if _live(line) and SIGNING_TERMS_RE.search(line) and not _signing_exempt(line):
+            problems.append(f"{label}: line {i + 1} calls signing or an OIDC token outside the approved attest step "
+                            f"({line.strip()!r}, Issue #337 round 4 (a))")
+        if _live(line) and _indent(line) == 2 and _job_name(line) is None and re.search(r"id-token|attestations", line):
+            problems.append(f"{label}: line {i + 1} is a flow-form job with an id-token or attestations key (refused, "
+                            "Issue #337 round 4 (a))")
+    for job, head, end in _job_blocks(lines):
+        body = [line for line in lines[head + 1:end] if _live(line)]
+        perms = {}
+        for line in body:
+            match = SIGNING_PERMISSION_RE.match(line)
+            if match:
+                perms[match.group(1)] = match.group(2)
+        approved = (name, job) in ATTEST_NEEDS
+        if perms.get("attestations") not in (None, "read", "none") and not approved:
+            problems.append(f"{label}: job {job!r} holds attestations write and is not an approved signing job "
+                            "(Issue #337 round 4 (a))")
+        if not approved:
+            continue
+        if perms.get("id-token") != "write" or perms.get("attestations") != "write":
+            problems.append(f"{label}: signing job {job!r} must keep id-token: write and attestations: write "
+                            "(Issue #337 round 4)")
+        missing = ATTEST_NEEDS[(name, job)] - set(_job_needs(lines, job))
+        if missing:
+            problems.append(f"{label}: signing job {job!r} must keep needs: {sorted(missing)}, the job that produces its "
+                            "artifact (removal refused, Issue #337 round 4 (b))")
+        if any("continue-on-error" in line for line in body):
+            problems.append(f"{label}: signing job {job!r} may not use continue-on-error (Issue #337 round 4 (c))")
+        steps = [_step_kind(lines, s, e) for s, e, j in _step_ranges(lines, 6) if j == job]
+        if steps != ATTEST_STEPS[(name, job)]:
+            problems.append(f"{label}: signing job {job!r} must run exactly the approved steps, found {steps} "
+                            "(a step that runs code would hold the OIDC token, Issue #337 round 4 (a))")
+    problems += execution_scope_violations(text, label)
+    problems += run_allowlist_violations(text, label)
+    return problems
+
+
+# Issue #337 round 6: a run: value is the YAML-decoded string (escapes such as \x63 and c are already decoded), and it is
+# normalized as shell text by _shell_text before the signing terms are tested, in every job (GH_VERIFY_SPAN_RE: read-only
+# verification is exempt wherever it occurs).
+GH_VERIFY_SPAN_RE = re.compile(r"gh attestation verify\b")
+# Issue #337 round 8: EXACT MATCH is the rule. In a job with id-token: write that is not an approved signing job, a run: value is
+# accepted only if its YAML-decoded text, less one trailing newline, equals APPROVED_RUN_TEXTS[(workflow, job, step name)].
+# Anything else is refused, so no shell parsing decides acceptance. Keyed by workflow, job and step name, a changed run text
+# fails, and the same text in another job or under another step name fails. Each key may be used once per job.
+# The pages.yml test (test_artifact_guard_exact_r8) loads the real file and fails if this registry drifts from it.
+APPROVED_RUN_TEXTS = {
+    ("pages.yml", "deploy", "Resolve python3 (trusted)"):
+        'echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"',
+    ("pages.yml", "deploy", "Guard placement (trusted)"):
+        '"${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --check-placement',
+    ("pages.yml", "deploy", "Stage artifacts (trusted guard) for Upload static site"):
+        '"${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --stage .github/workflows/pages.yml "Upload static site"',
+    ("pages.yml", "deploy", "Verify staged artifacts (trusted guard) for Upload static site"):
+        '"${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --verify .github/workflows/pages.yml "Upload static site"',
+}
+# Round 6/7 refusals, kept as a second layer behind the exact match (they can refuse, never accept). Only the Pages deploy job
+# holds id-token outside the approved signing jobs. `command` is allowed only as `command -v NAME`.
+RUN_ALLOWLIST = {("pages.yml", "deploy"): frozenset({"echo", "command"})}
+RUN_EXPRESSIONS = {("pages.yml", "deploy"): frozenset({"${{ steps.pyresolve.outputs.python }}"})}
+SHELL_PUNCTUATION = "();<>|&{}"
+SHELL_OPERATOR_RE = re.compile(r"[();<>|&{}]+")   # a token made only of operator characters (a quoted word never is)
+SHELL_SEPARATOR_RE = re.compile(r"[;()|&{}]")
+REDIRECTION_RE = re.compile(r"[<>][&|]?")
+GH_EXPRESSION_RE = re.compile(r"\$\{\{.*?\}\}")
+
+
+def _shell_text(parts):
+    """One run: value as shell text: each backslash-newline joins its two lines, then quotes and backslashes are removed."""
+    joined = []
+    for part in parts:
+        if joined and joined[-1].endswith("\\"):
+            joined[-1] = joined[-1][:-1] + part
+        else:
+            joined.append(part)
+    return " ".join(re.sub(r"[\\'\"]", "", "\n".join(joined)).split())
+
+
+def _simple_commands(script):
+    """The simple commands of one shell script, each a list of words. A newline ends a command (shlex treats it as plain
+    whitespace, which is why round 6 let a multi-line run through), and so does an operator token holding one of ;()|&{}
+    (`;`, `|`, `|&`, `&&`, parentheses, braces). A redirection such as >, >>, >&, >| or <& does not end one.
+    Non-POSIX shlex keeps quotes in a word, so the quote rule can see them."""
+    lexer = shlex.shlex(re.sub(r"[\r\n]+", " ; ", script), posix=False, punctuation_chars=SHELL_PUNCTUATION)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    commands, command = [], []
+    for token in lexer:
+        if SHELL_OPERATOR_RE.fullmatch(token) and SHELL_SEPARATOR_RE.search(token) and not REDIRECTION_RE.fullmatch(token):
+            if command:
+                commands.append(command)
+            command = []
+        else:
+            command.append(token)
+    if command:
+        commands.append(command)
+    return commands
+
+
+def _close_paren(text, open_index):
+    """Index of the parenthesis that closes text[open_index], or None."""
+    depth = 0
+    for j in range(open_index, len(text)):
+        depth += {"(": 1, ")": -1}.get(text[j], 0)
+        if depth == 0:
+            return j
+    return None
+
+
+def _command_problem(command, names, expressions):
+    """The problem with one simple command (its words), or None. The first word is compared whole (round 6)."""
+    word = command[0]
+    if word in {f'"{expression}"' for expression in expressions}:
+        return None
+    if any(char in word for char in "$'\""):
+        return f"command word {word!r} contains $ or a quote"
+    if word not in names:
+        return f"command word {word!r} is not on the allowlist for this job"
+    if word == "command" and (len(command) != 3 or command[1] != "-v"):
+        return "command is allowed only as `command -v NAME`"
+    return None
+
+
+def _script_problems(script, names, expressions, where):
+    """Problems in one run: script of a job that holds id-token: write and is not an approved signing job (round 6).
+    Only the allowlisted command words pass. A backslash or backtick, a parameter expansion, a process substitution, an
+    unlisted GitHub expression, or an unclosed quote is refused, because the shell and the word reader could disagree
+    on it. Each command substitution is read as a script of its own."""
+    refuse = f"{where} (Issue #337 round 4 (a), round 6)"
+    if "\\" in script or "`" in script:
+        return [f"{refuse}: run: contains a backslash or backtick"]
+    for expression in GH_EXPRESSION_RE.findall(script):
+        if expression not in expressions:
+            return [f"{refuse}: run: uses the GitHub expression {expression!r}, which is not allowed in this job"]
+    rest = script
+    for expression in expressions:
+        rest = rest.replace(expression, "")
+    if "${" in rest or "<(" in rest or ">(" in rest:
+        return [f"{refuse}: run: uses parameter expansion or process substitution"]
+    problems = []
+    start = script.find("$(")
+    while start != -1:
+        end = _close_paren(script, start + 1)
+        if end is None:
+            return [f"{refuse}: run: has an unclosed command substitution"]
+        problems += _script_problems(script[start + 2:end], names, expressions, where)
+        start = script.find("$(", end)
+    try:
+        commands = _simple_commands(script)
+    except ValueError:   # shlex: no closing quotation
+        return problems + [f"{refuse}: run: has an unclosed quote"]
+    quoted = {f'"{expression}"' for expression in expressions}
+    for command in commands:
+        for index, word in enumerate(command):   # a GitHub expression is allowed only as the first word of a command
+            if "${{" in word and not (index == 0 and word in quoted):
+                return problems + [f"{refuse}: run: uses a GitHub expression outside the first word of a command"]
+        problem = _command_problem(command, names, expressions)
+        if problem:
+            problems.append(f"{refuse}: {problem}")
+    return problems
+
+
+def run_allowlist_violations(text, label):
+    """Issue #337 round 4 (a) and round 6, for one workflow or composite action file (YAML decoded, not line-read).
+    The signing terms are tested on every run: value, in every job. In a job with id-token: write that is not an
+    approved signing job (ATTEST_NEEDS), each run: must exactly match APPROVED_RUN_TEXTS (round 8), must also pass
+    _script_problems (round 6/7 refusals), and the job may not set defaults: or a
+    step may not set shell: (both would change how the run: is read). A composite action has no job, so only the
+    signing-term test applies to it. Residuals: docs/provenance.md."""
+    try:
+        import yaml
+    except ImportError:
+        return [f"{label}: PyYAML unavailable, run: values cannot be checked (Issue #337 round 6)"]
+    try:
+        doc = yaml.load(text, Loader=_strict_loader())
+    except (yaml.YAMLError, ValueError) as error:
+        return [f"{label}: YAML cannot be read, run: values cannot be checked ({error}; Issue #337 round 6)"]
+    if not isinstance(doc, dict):
+        return [f"{label}: the file is not a mapping (Issue #337 round 6)"]
+    name = Path(label).name
+    jobs = doc.get("jobs")
+    scopes = list(jobs.items()) if isinstance(jobs, dict) else [(None, doc.get("runs") or {})]
+    problems = []
+    for job, body in scopes:
+        if not isinstance(body, dict):
+            problems.append(f"{label}: job {job!r} is not a mapping (Issue #337 round 6)")
+            continue
+        perms = body.get("permissions", doc.get("permissions"))
+        held = perms == "write-all" or (isinstance(perms, dict) and perms.get("id-token") == "write")
+        checked = job is not None and (name, job) not in ATTEST_NEEDS and held
+        if checked and "defaults" in body:
+            problems.append(f"{label}: job {job!r} sets defaults: (a shell override is refused, Issue #337 round 4 (a), round 6)")
+        steps = body.get("steps") or []
+        if not isinstance(steps, list):
+            problems.append(f"{label}: steps of job {job!r} are not a list (Issue #337 round 6)")
+            continue
+        used = set()
+        for step in steps:
+            if not isinstance(step, dict):
+                if checked:
+                    problems.append(f"{label}: job {job!r} has a step that is not a mapping (Issue #337 round 4 (a), round 6)")
+                continue
+            if checked and "shell" in step:
+                problems.append(f"{label}: job {job!r} sets shell: (refused, Issue #337 round 4 (a), round 6)")
+            run = step.get("run")
+            if run is None:
+                continue
+            if not isinstance(run, str):
+                problems.append(f"{label}: job {job!r} has a run: that is not a string (Issue #337 round 6)")
+                continue
+            if SIGNING_TERMS_RE.search(GH_VERIFY_SPAN_RE.sub("", _shell_text(run.split("\n")))):
+                problems.append(f"{label}: job {job!r} run: calls signing or an OIDC token after YAML decoding and shell "
+                                f"normalization ({run!r}, Issue #337 round 4 (a), round 5, round 6)")
+            if checked:
+                step_name = step.get("name") if isinstance(step.get("name"), str) else None
+                key = (name, job, step_name)
+                text = run[:-1] if run.endswith("\n") else run
+                # Round 9: an approved step may carry only name, id (optional) and run. Any other key (env, if,
+                # working-directory, shell, continue-on-error, ...) changes how the run: is executed, so it is refused.
+                extra_keys = set(step) - {"name", "id", "run"}
+                if key in used or extra_keys or key not in APPROVED_RUN_TEXTS or APPROVED_RUN_TEXTS[key] != text:
+                    problems.append(f"{label}: job {job!r} run: {run!r} is not the approved run text for step "
+                                    f"{step_name!r} (exact match, Issue #337 round 8)")
+                used.add(key)
+                names = RUN_ALLOWLIST.get((name, job), frozenset())
+                expressions = RUN_EXPRESSIONS.get((name, job), frozenset())
+                problems += _script_problems(run, names, expressions, f"{label}: job {job!r} run: {run!r}")
+    return problems
+
+
+def _step_kind(lines, start, end):
+    """('uses', action path without @ref) for a step whose only action is a uses: key, ('run', body lines) for a run: step,
+    or ('other', ()) for anything else (both keys, no key, a flow form the line reader cannot read)."""
+    keys = _step_keys(lines, start, end, 6)
+    uses = [m.group(1).split("#")[0].strip().strip("\"'").split("@")[0]
+            for m in (USES_KEY_RE.match(k) for k in keys) if m]
+    run = _run_lines(lines, start, end, 6)
+    if len(uses) == 1 and not run:
+        return ("uses", uses[0])
+    if run and not uses:
+        return ("run", tuple(run))
+    return ("other", ())
+
+
+def _rom_capable(pattern):
+    """True when an upload pattern can select a ROM file by its last path segment. A plain directory name is not judged
+    here: stage_artifacts refuses a ROM file that a directory selects unless its pattern is approved (Issue #337 round 4 (d))."""
+    last = pattern.rstrip("/").rsplit("/", 1)[-1].lower()
+    if last.endswith(ROM_SUFFIXES) or any(fnmatch.fnmatchcase(candidate, last) for candidate in ROM_CANDIDATES):
+        return True
+    return any(c in last for c in "*?[") and "." not in last
+
+
+def rom_upload_violations(text, label):
+    """Issue #337 round 4 (d): every upload pattern that can select a ROM file must be on APPROVED_ROM_UPLOADS for this file."""
+    name = Path(label).name
+    return [f"{label}: upload path {p!r} can select a ROM file (*.pce, *.bin, *.rom) and is not on APPROVED_ROM_UPLOADS "
+            "(Issue #337 round 4 (d))"
+            for p in upload_patterns(text) if _rom_capable(p) and (name, p) not in APPROVED_ROM_UPLOADS]
+
+
+def publish_violations(text, label):
+    """Problems for publishing actions (attest-build-provenance, deploy-pages, upload-pages-artifact) in one file, by job.
+    A signing action is allowed only in its allowlisted (file, job) pair. A Pages action is decided by
+    pages_structure_violations (Issue #349, the Pages structure of the publishing job), and only in pages.yml; a Pages
+    action in any other file is refused here."""
+    lines = text.splitlines()
+    name = Path(label).name
+    problems = []
+    for i, line in enumerate(lines):
+        match = PUBLISH_USES_RE.search(line) if _live(line) else None
+        if not match:
+            continue
+        job = _enclosing_job(lines, i)
+        if match.group(0).lower() in PAGES_PUBLISH_ACTIONS:
+            if name != PAGES_FILE:
+                problems.append(f"{label}: Pages publish action {match.group(0)!r} in job {job!r} is refused outside "
+                                f"{PAGES_FILE} (Issue #349)")
+            continue   # pages.yml: pages_structure_violations decides the job
+        if (name, job) in PUBLISH_JOB_ALLOWLIST:
+            continue
+        problems.append(f"{label}: publish action {match.group(0)!r} in job {job!r} is refused unless the (file, job) "
+                        "pair is allowlisted (Issue #349)")
+    return problems
+
+
+# Issue #349 (Pages privilege split, #374). The publishing job is judged by its structure, from the decoded YAML (strict
+# loader): the split layout (validate -> build -> deploy) or the single-job layout. Any other shape is refused.
+PAGES_FILE = "pages.yml"
+PAGES_SPLIT_JOBS = frozenset({"validate", "build", "deploy"})
+PAGES_DEPLOY_IF = "github.event_name == 'push' && github.ref == 'refs/heads/main'"   # push only: pull_request_target and workflow_run also report ref main (Issue #349 review)
+PAGES_ALLOWED_TRIGGERS = frozenset({"pull_request", "push", "workflow_dispatch"})   # main's pages.yml triggers (2026-10-20)
+WORKFLOW_ALLOWED_TRIGGERS = frozenset({"pull_request", "push", "workflow_dispatch"})   # triggers used on main (2026-10-20); pull_request_target and workflow_run are refused everywhere
+SCHEDULE_WORKFLOWS = frozenset({"nightly.yml"})   # the only workflow on main that uses schedule:
+PAGES_DEPLOY_PERMISSIONS = {"pages": "write", "id-token": "write"}
+PAGES_BUILD_PERMISSIONS = {"contents": "read"}
+PAGES_LEGACY_PERMISSIONS = {"contents": "read", "actions": "read", "pages": "write", "id-token": "write"}
+PAGES_JOB_KEYS = frozenset({"name", "runs-on", "needs", "if", "permissions", "environment", "timeout-minutes", "steps"})
+PAGES_BUILD_KEYS = frozenset({"name", "runs-on", "needs", "permissions", "timeout-minutes", "steps"})
+PAGES_DEPLOY_STEP_KEYS = frozenset({"name", "id", "uses"})   # a deploy step: no run, env, if, with, shell or working-directory
+PAGES_DEPLOY_USES = re.compile(r"actions/deploy-pages@[0-9a-f]{40}")
+PAGES_UPLOAD_USES = re.compile(r"actions/upload-pages-artifact@[0-9a-f]{40}")
+
+
+def _pages_uses(node):
+    """Every uses: value that names a Pages publishing action, anywhere in the decoded document."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "uses" and isinstance(value, str) and value.lower().startswith(PAGES_PUBLISH_ACTIONS):
+                yield value
+            yield from _pages_uses(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _pages_uses(item)
+
+
+def _pages_job_problems(job, body, label, needs, condition, permissions, keys):
+    """Job-level shape of a publishing job: needs:, if: and permissions: exactly, and only the allowed keys."""
+    problems = []
+    if body.get("needs") != needs:
+        problems.append(f"{label}: job {job!r} must have needs: {needs!r} (found {body.get('needs')!r}, Issue #349)")
+    if condition is not None and body.get("if") != condition:
+        problems.append(f"{label}: job {job!r} must have if: {condition!r} (found {body.get('if')!r}, Issue #349)")
+    if body.get("permissions") != permissions:
+        problems.append(f"{label}: job {job!r} must have permissions {permissions} exactly "
+                        f"(found {body.get('permissions')!r}, Issue #349)")
+    for key in sorted(set(body) - keys, key=str):
+        problems.append(f"{label}: job {job!r} sets job-level {key!r} (refused; allowed {sorted(keys)}, Issue #349)")
+    if "environment" in body and not _plain_environment(body["environment"]):
+        problems.append(f"{label}: job {job!r} environment: must be a name, or name and url only (Issue #349)")
+    return problems
+
+
+def _pages_deploy_step_problems(job, body, label):
+    """The deploy job runs exactly one step: actions/deploy-pages pinned to a full SHA, with only name, id and uses."""
+    steps = body.get("steps")
+    if not isinstance(steps, list) or len(steps) != 1 or not isinstance(steps[0], dict):
+        return [f"{label}: job {job!r} must have exactly one step, the deploy action (Issue #349)"]
+    step = steps[0]
+    problems = [f"{label}: job {job!r} step sets {key!r} (refused, Issue #349)"
+                for key in sorted(set(step) - PAGES_DEPLOY_STEP_KEYS, key=str)]
+    if not (isinstance(step.get("uses"), str) and PAGES_DEPLOY_USES.fullmatch(step["uses"])):
+        problems.append(f"{label}: job {job!r} deploy action must be actions/deploy-pages pinned to a full commit SHA "
+                        f"(found {step.get('uses')!r}, Issue #349)")
+    return problems
+
+
+def pages_structure_violations(text, label):
+    """Issue #349, for one workflow file (decoded YAML). A Pages publishing action is allowed only in a job whose structure
+    is approved here. Split layout (validate, build, deploy): actions/upload-pages-artifact in build (needs: validate,
+    permissions exactly contents: read, no id-token) and actions/deploy-pages in deploy (needs: build, the main-only if:,
+    permissions exactly pages: write and id-token: write, exactly one SHA-pinned step). Single-job layout (deploy holds
+    both the upload and the deploy): its own exact shape. Any other shape, a Pages action outside those jobs, a second deploy
+    action, or an unpinned action is refused. Residual: stage and verify placement is checked by
+    guard_placement_violations; this checks the job structure, not the commands inside the upload job."""
+    try:
+        import yaml
+    except ImportError:
+        return [f"{label}: PyYAML unavailable, Pages structure cannot be checked (Issue #349)"]
+    try:
+        doc = yaml.load(text, Loader=_strict_loader())
+    except (yaml.YAMLError, ValueError) as error:
+        return [f"{label}: YAML cannot be read, Pages structure cannot be checked ({error}; Issue #349)"]
+    return _privilege_problems(doc, label) + _pages_structure_problems(doc, label)
+
+
+def _write_scopes(perms):
+    """Scopes a permissions value grants write to: `write-all` as one token, else every key whose value is `write`."""
+    if perms == "write-all":
+        return ["write-all"]
+    if isinstance(perms, dict):
+        return sorted(str(k) for k, v in perms.items() if v == "write")
+    return []
+
+
+# Issue #349 (review): every write grant is refused unless it is listed here for its exact (file, job). Keyed by file and
+# job, and each entry is the exact set of scopes allowed there. The entries are the approved Pages deploy job and the
+# approved attest jobs in api-source.yml; nothing else holds a write grant.
+WRITE_ALLOWANCES = {
+    ("pages.yml", "deploy"): {"pages", "id-token"},
+    ("api-source.yml", "attest-cdread"): {"id-token", "attestations"},
+    ("api-source.yml", "attest-cdread-verdict"): {"id-token", "attestations"},
+}
+
+
+def _privilege_problems(doc, label):
+    """Issue #349 (review): pages: write is held only by the deploy job of pages.yml, contents: write by no job in any file
+    (no release route is approved), and pages.yml takes only the triggers main has. Checked for every workflow file, at
+    the workflow level and per job, so a new job or a top-level grant cannot hold the Pages API unseen."""
+    if not isinstance(doc, dict):
+        return []
+    jobs = doc.get("jobs") if isinstance(doc.get("jobs"), dict) else {}
+    holders = [("workflow", doc.get("permissions"))]
+    holders += [(job, body.get("permissions")) for job, body in jobs.items() if isinstance(body, dict)]
+    problems = []
+    name = Path(label).name
+    for holder, perms in holders:
+        where = "workflow" if holder == "workflow" else f"job {holder!r}"
+        allowed = WRITE_ALLOWANCES.get((name, holder), set())
+        for scope in _write_scopes(perms):
+            if scope not in allowed:
+                grant = "write-all" if scope == "write-all" else f"{scope}: write"
+                problems.append(f"{label}: {where} grants {grant} (refused unless allowlisted in WRITE_ALLOWANCES, "
+                                "Issue #349)")
+    # Triggers: every workflow file may use only the triggers main uses; pages.yml may use only its own set.
+    on = doc.get("on", doc.get(True))   # YAML 1.1 reads a bare `on:` key as True
+    names = set(on) if isinstance(on, (dict, list)) else {on} if isinstance(on, str) else set()
+    if Path(label).name == PAGES_FILE:
+        allowed = PAGES_ALLOWED_TRIGGERS
+    else:
+        allowed = WORKFLOW_ALLOWED_TRIGGERS | ({"schedule"} if Path(label).name in SCHEDULE_WORKFLOWS else set())
+    extra = sorted(str(n) for n in names - allowed)
+    if not names or extra:
+        problems.append(f"{label}: triggers {sorted(map(str, names))} refused; only {sorted(allowed)} are allowed "
+                        f"(extra {extra}, Issue #349)")
+    # Permissions: without a workflow-level block, every job needs its own, or it inherits the repository default scope.
+    if "permissions" not in doc:
+        for job, body in jobs.items():
+            if isinstance(body, dict) and "permissions" not in body:
+                problems.append(f"{label}: job {job!r} has no permissions and the workflow has none (repository default "
+                                "GITHUB_TOKEN scope would apply, Issue #349)")
+    return problems
+
+
+def _pages_structure_problems(doc, label):
+    found = list(_pages_uses(doc))
+    if not found:
+        return []
+    if Path(label).name != PAGES_FILE:
+        return [f"{label}: Pages publish action outside {PAGES_FILE} is refused (Issue #349)"]
+    jobs = doc.get("jobs") if isinstance(doc, dict) else None
+    if not isinstance(jobs, dict) or any(not isinstance(body, dict) for body in jobs.values()):
+        return [f"{label}: Pages publish action without a mapping of jobs is refused (Issue #349)"]
+    per_job = {job: uses for job, body in jobs.items() if (uses := list(_pages_uses(body)))}
+    if sum(len(v) for v in per_job.values()) != len(found):
+        return [f"{label}: Pages publish action outside a job step is refused (Issue #349)"]
+    if set(jobs) == PAGES_SPLIT_JOBS:
+        return _pages_split_problems(jobs, per_job, label)
+    return _pages_single_problems(jobs, per_job, label)
+
+
+def _pages_split_problems(jobs, per_job, label):
+    upload, deploy = per_job.get("build", []), per_job.get("deploy", [])
+    if per_job.get("validate") or set(per_job) - {"build", "deploy"} or len(upload) != 1 or len(deploy) != 1:
+        return [f"{label}: the split layout must hold exactly one upload in build and exactly one deploy in deploy, and no "
+                f"Pages action elsewhere (found {per_job}, Issue #349)"]
+    problems = []
+    # validate holds no Pages action, but it must not hold pages: write or id-token: write either (Issue #349, review).
+    problems += _pages_job_problems("validate", jobs["validate"], label, None, None, PAGES_BUILD_PERMISSIONS,
+                                    PAGES_BUILD_KEYS)
+    if not PAGES_UPLOAD_USES.fullmatch(upload[0]):
+        problems.append(f"{label}: build upload-pages-artifact must be pinned to a full commit SHA (Issue #349)")
+    problems += _pages_job_problems("build", jobs["build"], label, "validate", None, PAGES_BUILD_PERMISSIONS,
+                                    PAGES_BUILD_KEYS)
+    problems += _pages_job_problems("deploy", jobs["deploy"], label, "build", PAGES_DEPLOY_IF, PAGES_DEPLOY_PERMISSIONS,
+                                    PAGES_JOB_KEYS)
+    problems += _pages_deploy_step_problems("deploy", jobs["deploy"], label)
+    return problems
+
+
+def _pages_single_problems(jobs, per_job, label):
+    uses = per_job.get("deploy", [])
+    if set(per_job) - {"deploy"} or len(uses) != 2:
+        return [f"{label}: the single-job layout must hold one upload and one deploy in job 'deploy' and no Pages action "
+                f"elsewhere (found {per_job}, Issue #349)"]
+    if sum(bool(PAGES_DEPLOY_USES.fullmatch(u)) for u in uses) != 1 or not all(
+            PAGES_DEPLOY_USES.fullmatch(u) or PAGES_UPLOAD_USES.fullmatch(u) for u in uses):
+        return [f"{label}: the single-job layout needs exactly one deploy action and one upload, both pinned to full commit "
+                "SHAs (Issue #349)"]
+    return _pages_job_problems("deploy", jobs["deploy"], label, "validate", PAGES_DEPLOY_IF, PAGES_LEGACY_PERMISSIONS,
+                               PAGES_JOB_KEYS)
+
+
+def check_guard_placement(root=ROOT, partial_fixtures=False):
     """Static placement layer (run by make check and by the trusted copy): the preamble and stage/verify steps must
     surround every upload step, in the same job, exactly as written here.
 
@@ -512,6 +1542,9 @@ def check_guard_placement(root=ROOT):
     see through (release assets, `gh release`, reusable workflows) fails here too. Gating on "this file contains an
     upload-artifact uses: line" left those routes uninspected by --check-placement while check_upload_artifacts
     refused them (review finding A). A file with no upload step and no such route is not a publication and passes.
+
+    partial_fixtures=True is for tests only: a fixture api-source.yml may hold part of the workflow. main() never sets it,
+    so the real workflow must keep both signing jobs and both guard jobs (Issue #337 round 11).
     """
     base = Path(root)
     problems = []
@@ -528,6 +1561,14 @@ def check_guard_placement(root=ROOT):
             raise ValueError(f"{label}: {error}") from error
         if steps:
             problems += guard_placement_violations(text, label)
+        problems += publish_violations(text, label)
+        problems += pages_structure_violations(text, label)
+        problems += yaml_integrity_violations(text, label)
+        problems += attest_input_violations(text, label)
+        problems += attest_download_violations(text, label, partial_fixtures)
+        problems += attest_condition_violations(text, label)
+        problems += signing_violations(text, label)
+        problems += rom_upload_violations(text, label)
     if problems:
         raise ValueError("artifact guard placement: " + "; ".join(problems))
     print("PASS artifact guard placement: trusted preamble, staged paths, stage and verify before every upload")
@@ -991,6 +2032,10 @@ def stage_artifacts(workflow, step, root=ROOT, workflows_root=None):
         for path in paths:
             for entry, reason in tree_problems(path):
                 problems.append(f"{workflow}: {_rel(entry, base)} ({reason})")
+            for entry in _entry_files(path):
+                if entry.suffix.lower() in ROM_SUFFIXES and (Path(workflow).name, pattern) not in APPROVED_ROM_UPLOADS:
+                    problems.append(f"{workflow}: {_rel(entry, base)} is a ROM file selected by {pattern!r}, which is not on "
+                                    "APPROVED_ROM_UPLOADS (Issue #337 round 4 (d))")
             copies += [(f, _staged_location(base, f)) for f in _entry_files(path)]
     if problems:
         raise ValueError("artifact guard (stage): " + "; ".join(problems))
@@ -1085,7 +2130,9 @@ def main(argv):
             workflows_root = Path(argv[1])
         argv = argv[2:]
     if not argv:
+        # Issue #349 (review): the default entry point is fail-closed. It runs every check that --check-placement runs.
         check_upload_artifacts(root)
+        check_guard_placement(root)
     elif argv[0] == "--post-build" and len(argv) == 3:
         check_post_build(argv[1], argv[2], root)
     elif argv[0] == "--stage" and len(argv) == 3:

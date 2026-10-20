@@ -21,6 +21,8 @@ PLAIN_JSON = b'{"synthetic": true}\n'
 
 UPLOAD = 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02'
 HEAD = 'jobs:\n  build:\n    steps:\n      - name: Save\n'
+# Issue #349 review: a workflow needs its triggers and a permissions block to pass the privilege rules.
+WF_HEADER = 'on: push\npermissions:\n  contents: read\n'
 
 
 def workflow(paths=(), inline=None, path_first=False):
@@ -373,7 +375,7 @@ TRUSTED_CHECKOUT = ('      - name: Trusted guard (main)\n'
                     '          sparse-checkout: tools/artifact_guard.py\n          sparse-checkout-cone-mode: false\n          persist-credentials: false\n')
 PY_RESOLVE = ('      - name: Resolve python3 (trusted)\n        id: pyresolve\n'
               '        run: echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"\n')
-PLACEMENT_STEP = '      - name: Guard placement (trusted)\n        run: ' + CHECK_CALL + '\n'
+PLACEMENT_STEP = '      - name: Guard placement (trusted)\n        run: |\n          ' + CHECK_CALL + '\n'
 PR_CHECKOUT = ('      - name: Checkout workflow files only\n'
                '        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683\n'
                '        with:\n          sparse-checkout: .github/workflows\n'
@@ -384,6 +386,41 @@ VERIFY_STEP = '      - name: Verify\n        run: |\n          ' + VERIFY_CALL +
 GUARD_STEP = PREAMBLE + STAGE_STEP + VERIFY_STEP
 SAVE_STEP = f'      - name: Save\n        uses: {UPLOAD}\n        with:\n          path: .artifact-stage/build/x\n'
 GUARDED = 'jobs:\n  build:\n    steps:\n' + GUARD_STEP + SAVE_STEP
+# The shape of .github/workflows/pages.yml: configure-pages after the placement check, the Pages upload, then deploy.
+# Pinned Pages action SHAs (resolved with gh api repos/actions/<name>/commits/<tag>, Issue #349).
+CFG_SHA = '983d7736d9b0ae728b81ab479565c72886d7745b'
+PINS = {'configure-pages': CFG_SHA, 'deploy-pages': 'd6db90164ac5ed86f2b6aed7e0febac5b3c0c03e'}
+PAGES_UPLOAD = 'actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b'
+# Issue #349 (#374 split layout) as pages.yml: upload in build (needs validate, contents: read), deploy-pages alone in deploy.
+PAGES_SPLIT_GUARDED = (
+    'on:\n  push:\n  workflow_dispatch:\n'   # Issue #349 review: pages.yml must declare its triggers (allowed set only)
+    'jobs:\n  validate:\n    permissions:\n      contents: read\n    steps:\n'
+    '      - name: Checkout\n        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683\n'
+    '        with:\n          persist-credentials: false\n'
+    '  build:\n    needs: validate\n    permissions:\n      contents: read\n    steps:\n' + PREAMBLE
+    + '      - name: Configure Pages\n'
+    + '        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5\n'
+    + STAGE_STEP + VERIFY_STEP
+    + f'      - name: Save\n        uses: {PAGES_UPLOAD}\n        with:\n          path: .artifact-stage/build/x\n'
+    + '  deploy:\n    needs: build\n'
+    + "    if: github.event_name == 'push' && github.ref == 'refs/heads/main'\n"
+    + '    permissions:\n      pages: write\n      id-token: write\n'
+    + '    environment:\n      name: github-pages\n      url: ${{ steps.deployment.outputs.page_url }}\n'
+    + '    steps:\n      - name: Deploy from main\n        id: deployment\n'
+    + '        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4\n')
+
+
+# The approved attest-cdread job (owner decision, Issue #349): its subject-path is exactly the two synthetic files.
+ATTEST_CDREAD_JOB = ('  attest-cdread:\n    needs: guard-bios-dev\n'   # Issue #337 round 4: the real job keeps these (b)
+                     '    if: github.event_name == \'push\' && github.ref == \'refs/heads/main\'\n'
+                     '    permissions:\n      id-token: write\n      attestations: write\n'
+                     '    steps:\n      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0\n'
+                     '        with:\n          name: bios-dev-not-compatible-${{ github.sha }}\n          path: evidence\n'
+                     '      - name: Attest\n'   # the real job's approved steps: download, then attest (Issue #337 round 4 (a))
+                     '        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2\n'
+                     '        with:\n          subject-path: |\n'
+                     '            evidence/cdread-probe/cdread-evidence.json\n'
+                     '            evidence/cdread-probe/cdread-probe-not-bios.pce\n')
 
 
 def guarded_with_name(name):
@@ -632,12 +669,90 @@ class GuardPlacementTests(unittest.TestCase):
                     with self.assertRaises(ValueError):   # the content layer already refused these
                         guard.check_upload_artifacts(Path(tmp))
 
+    def test_publish_action_without_any_upload_step_is_refused(self):
+        # Review finding 1 (MEDIUM, #349): a file with no upload-artifact step skipped the placement check, so a
+        # workflow whose only publication is deploy-pages or attest-build-provenance passed it.
+        publish_only = {
+            'deploy-pages': '      - name: Deploy\n        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4\n',
+            'attest': '      - name: Attest\n        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2\n',
+        }
+        for label, step in publish_only.items():
+            with self.subTest(publish=label):
+                with tempfile.TemporaryDirectory() as tmp:
+                    Path(tmp, '.github', 'workflows').mkdir(parents=True)
+                    Path(tmp, '.github', 'workflows', 'w.yml').write_text(
+                        'jobs:\n  publish:\n    steps:\n' + step, encoding='utf-8')
+                    with self.assertRaisesRegex(ValueError, 'publish action'):
+                        guard.check_guard_placement(Path(tmp))
+
+    def test_publish_in_a_job_without_upload_beside_guarded_uploads_is_refused(self):
+        # Review MAJOR (#349): a file with a guarded upload still let a publishing action sit in a job with no upload.
+        sneaky = ('  sneaky-publish:\n    steps:\n      - name: Deploy\n'
+                  '        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, '.github', 'workflows').mkdir(parents=True)
+            Path(tmp, '.github', 'workflows', 'w.yml').write_text(
+                GUARDED.replace(' w.yml ', ' .github/workflows/w.yml ') + sneaky, encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, "sneaky-publish"):
+                guard.check_guard_placement(Path(tmp))
+
+    def _check_api_source(self, text):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, '.github', 'workflows').mkdir(parents=True)
+            rel = '.github/workflows/api-source.yml'
+            Path(tmp, rel).write_text(WF_HEADER + GUARDED.replace(' w.yml ', f' {rel} ') + text, encoding='utf-8')
+            guard.check_guard_placement(Path(tmp), partial_fixtures=True)   # a partial fixture, not the real workflow
+
+    def test_flow_form_job_after_attest_is_refused(self):
+        # Review MEDIUM-HIGH (#349): a flow-form job line is not a block job id, so its publish use was attributed to the
+        # allowlisted attest-cdread job above it and passed.
+        flow = ('  zz: {runs-on: ubuntu-24.04, steps: [{uses: '
+                'actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8}]}\n')
+        with self.assertRaisesRegex(ValueError, 'publish action'):
+            self._check_api_source(ATTEST_CDREAD_JOB + flow)
+
+    def test_attest_inputs_are_limited_to_the_approved_subjects(self):
+        # Review MEDIUM (#349): with-keys other than subject-path (subject-checksums, subject-name, subject-digest)
+        # and any other subject than the approved one must be refused. The allowance covers the subject, not the inputs.
+        for key in ('subject-checksums', 'subject-name', 'subject-digest'):
+            with self.subTest(attest_cdread_key=key):
+                job = ATTEST_CDREAD_JOB + f'          {key}: evidence/cdread-probe/cdread-evidence.json\n'
+                with self.assertRaisesRegex(ValueError, 'attest'):
+                    self._check_api_source(job)
+        head = ('  attest-cdread-verdict:\n    steps:\n      - name: Attest\n'
+                '        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2\n')
+        for label, body in (
+                ('verdict subject-path other file', '        with:\n          subject-path: verdict/other.json\n'),
+                ('verdict extra subject-name', '        with:\n          subject-path: verdict/cdread-verdict.json\n'
+                                               '          subject-name: x\n'),
+                ('verdict extra subject-digest', '        with:\n          subject-path: verdict/cdread-verdict.json\n'
+                                                 '          subject-digest: sha256:00\n')):
+            with self.subTest(verdict=label):
+                with self.assertRaisesRegex(ValueError, 'attest'):
+                    self._check_api_source(head + body)
+        self._check_api_source(ATTEST_CDREAD_JOB)   # the approved pair still passes
+
+    def test_attest_job_is_allowed_only_in_api_source_workflow(self):
+        # Review (#349): the allowance is a (file, job) pair. attest-cdread passes in api-source.yml and nowhere else.
+        attest = ATTEST_CDREAD_JOB
+        for name, expect_refused in (('api-source.yml', False), ('other.yml', True)):
+            with self.subTest(file=name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    Path(tmp, '.github', 'workflows').mkdir(parents=True)
+                    rel = f'.github/workflows/{name}'
+                    Path(tmp, rel).write_text(WF_HEADER + GUARDED.replace(' w.yml ', f' {rel} ') + attest, encoding='utf-8')
+                    if expect_refused:
+                        with self.assertRaisesRegex(ValueError, 'attest-cdread'):
+                            guard.check_guard_placement(Path(tmp))
+                    else:
+                        guard.check_guard_placement(Path(tmp), partial_fixtures=True)   # a partial fixture
+
     def test_placement_passes_a_workflow_that_publishes_nothing(self):
         # A file with no upload step and no publishing route is not a publication and must not become a false positive.
         with tempfile.TemporaryDirectory() as tmp:
             Path(tmp, '.github', 'workflows').mkdir(parents=True)
             Path(tmp, '.github', 'workflows', 'build.yml').write_text(
-                'jobs:\n  build:\n    steps:\n      - run: make build\n', encoding='utf-8')
+                WF_HEADER + 'jobs:\n  build:\n    steps:\n      - run: make build\n', encoding='utf-8')
             guard.check_guard_placement(Path(tmp))
 
     def test_binding_name_is_the_dash_level_name_not_a_nested_one(self):
@@ -714,12 +829,12 @@ class GuardPlacementTests(unittest.TestCase):
         placement = PLACEMENT_STEP
         self.assertIn(placement, GUARDED)
         placement_bad = {
-            'if false': '      - name: Guard placement (trusted)\n        if: ${{ false }}\n        run: ' + CHECK_CALL + '\n',
-            'continue-on-error': '      - name: Guard placement (trusted)\n        continue-on-error: true\n        run: ' + CHECK_CALL + '\n',
-            'env': '      - name: Guard placement (trusted)\n        env:\n          RUNNER_TEMP: /tmp/x\n        run: ' + CHECK_CALL + '\n',
-            'working-directory': '      - name: Guard placement (trusted)\n        working-directory: /tmp\n        run: ' + CHECK_CALL + '\n',
-            'shell injection': '      - name: Guard placement (trusted)\n        shell: bash -c "evil"\n        run: ' + CHECK_CALL + '\n',
-            'extra key': '      - name: Guard placement (trusted)\n        timeout-minutes: 1\n        run: ' + CHECK_CALL + '\n',
+            'if false': '      - name: Guard placement (trusted)\n        if: ${{ false }}\n        run: |\n          ' + CHECK_CALL + '\n',
+            'continue-on-error': '      - name: Guard placement (trusted)\n        continue-on-error: true\n        run: |\n          ' + CHECK_CALL + '\n',
+            'env': '      - name: Guard placement (trusted)\n        env:\n          RUNNER_TEMP: /tmp/x\n        run: |\n          ' + CHECK_CALL + '\n',
+            'working-directory': '      - name: Guard placement (trusted)\n        working-directory: /tmp\n        run: |\n          ' + CHECK_CALL + '\n',
+            'shell injection': '      - name: Guard placement (trusted)\n        shell: bash -c "evil"\n        run: |\n          ' + CHECK_CALL + '\n',
+            'extra key': '      - name: Guard placement (trusted)\n        timeout-minutes: 1\n        run: |\n          ' + CHECK_CALL + '\n',
         }
         for label, step in placement_bad.items():
             with self.subTest(step=label):
@@ -773,10 +888,10 @@ class GuardPlacementTests(unittest.TestCase):
         evil = ('      - name: Evil\n'
                 '        run: |\n'
                 '          echo hi\n'
-                '          uses: actions/configure-pages@v5\n')
+                '          uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b\n')
         for action in ('configure-pages', 'deploy-pages'):
             with self.subTest(action=action):
-                body = evil.replace('actions/configure-pages@v5', f'actions/{action}@v5')
+                body = evil.replace('actions/configure-pages@' + CFG_SHA, f'actions/{action}@{PINS[action]}')
                 text = GUARDED.replace(STAGE_STEP, body + STAGE_STEP)
                 self.assertNotEqual(GUARDED, text)
                 self.assertNotEqual([], self.violations(text))
@@ -799,7 +914,7 @@ class GuardPlacementTests(unittest.TestCase):
 
     def test_a_configure_pages_step_may_not_carry_extra_inputs(self):
         # configure-pages can run a site generator, so a with: (e.g. one writing into .trusted-main) is refused.
-        step = ('      - name: Configure Pages\n        uses: actions/configure-pages@v5\n'
+        step = ('      - name: Configure Pages\n        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b\n'
                 '        with:\n          output_dir: .trusted-main\n')
         text = GUARDED.replace(STAGE_STEP, step + STAGE_STEP)
         self.assertNotEqual(GUARDED, text)
@@ -895,7 +1010,7 @@ class GuardPlacementTests(unittest.TestCase):
         # the second (a checkout into .trusted-main).
         text = GUARDED.replace(STAGE_STEP,
                                '      - name: Sneaky\n'
-                               '        uses: actions/configure-pages@v5\n'
+                               '        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b\n'
                                '        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683\n'
                                '        with:\n          ref: ${{ github.head_ref }}\n          path: .trusted-main\n'
                                + STAGE_STEP)
@@ -1060,6 +1175,282 @@ class JobSeparationTests(unittest.TestCase):
         text = 'jobs:\n' + BUILD_JOB + GUARD_JOB.replace(
             '.intake/.artifact-stage/build/x.json', 'build/x.json', 1)
         self.assertNotEqual([], self.violations(text))
+
+class UnlistedRouteTests(unittest.TestCase):
+    """Issue #337: a publication route the guard does not name is refused (fail closed) by both layers."""
+    CHECKOUT = 'actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683'
+    RELEASE = 'marvinpinto/action-automatic-releases@v1'
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        (self.root / '.github' / 'workflows').mkdir(parents=True)
+        self.write_build('build/debug/x.pce', FIXTURE_PCE)
+
+    def write_build(self, relative, data):
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+    def write(self, text, name='ci.yml'):
+        (self.root / '.github' / 'workflows' / name).write_text(text, encoding='utf-8')
+
+    def assert_refused(self, text, reason, name='ci.yml'):
+        """Both layers refuse the text, and each refusal gives the stated reason (review finding 5, #349)."""
+        self.write(text, name)
+        with self.assertRaisesRegex(ValueError, reason):
+            guard.check_upload_artifacts(self.root)
+        with self.assertRaisesRegex(ValueError, reason):
+            guard.check_guard_placement(self.root)
+
+    def test_unlisted_release_action_is_refused_in_every_spelling(self):
+        # Regression (#337 INFO-3): a release action is not an upload-artifact step and matched no keyword, so it
+        # passed both layers. Every spelling of a uses: key that names an unlisted action must be refused.
+        base = workflow(['build/debug/*.pce'])
+        spellings = {
+            'block key': f'      - name: Release\n        uses: {self.RELEASE}\n',
+            'spaced colon': f'      - name: Release\n        uses : {self.RELEASE}\n',
+            'quoted key': f'      - name: Release\n        "uses": "{self.RELEASE}"\n',
+            'flow mapping': f'      - {{name: Release, uses: {self.RELEASE}}}\n',
+            'folded scalar': f'      - name: Release\n        uses: >-\n          {self.RELEASE}\n',
+            'value on next line': f'      - name: Release\n        uses:\n          {self.RELEASE}\n',
+            'uppercase name': '      - name: Release\n        uses: Marvinpinto/Action-Automatic-Releases@v1\n',
+            'trailing comment': f'      - name: Release\n        uses: {self.RELEASE} # pinned later\n',
+            'no ref': '      - name: Release\n        uses: marvinpinto/action-automatic-releases\n',
+        }
+        for label, step in spellings.items():
+            with self.subTest(spelling=label):
+                self.assert_refused(base + step, 'allowlist', name='rel.yaml')
+
+    def test_complex_or_escaped_key_cannot_name_an_unlisted_action(self):
+        # Review gap (#337): `? uses` and "uses" are the same YAML key, but no literal `uses:` text appears.
+        base = workflow(['build/debug/*.pce'])
+        for label, step in {
+            'complex key': f'      - ? uses\n        : {self.RELEASE}\n',
+            'escaped double-quoted key': f'      - "\\u0075ses": {self.RELEASE}\n',
+        }.items():
+            with self.subTest(spelling=label):
+                self.assert_refused(base + step, 'cannot see', name='rel.yaml')
+
+    def test_release_route_split_across_shell_continuation_is_refused(self):
+        # Review gap (#337): `gh api` on one line and the releases path on the next was not seen as one route.
+        base = workflow(['build/debug/*.pce'])
+        step = ('      - name: Publish\n        run: |\n          gh api \\\n'
+                '            -X POST repos/o/r/releases -f tag_name=v1\n')
+        self.assert_refused(base + step, 'unsupported upload-artifact reference')
+
+    def test_two_uses_keys_on_one_flow_line_are_both_checked(self):
+        text = ('jobs:\n  build:\n    steps: [{uses: ' + self.CHECKOUT + '}, {uses: ' + self.RELEASE + '}]\n'
+                '  save:\n    steps:\n      - name: Save\n        uses: ' + UPLOAD + '\n        with:\n'
+                '          path: |\n            build/debug/*.pce\n')
+        self.assert_refused(text, 'allowlist')
+
+    def test_run_routes_to_github_releases_or_uploads_are_refused(self):
+        for line in ('run: curl -X POST https://uploads.github.com/repos/o/r/releases/1/assets --data-binary @x',
+                     'run: gh api repos/o/r/releases -f tag_name=v1',
+                     'run: curl https://api.github.com/repos/o/r/releases'):
+            with self.subTest(line=line):
+                self.assert_refused(workflow(['build/debug/*.pce']) + f'      - name: Publish\n        {line}\n',
+                                    'unsupported upload-artifact reference')
+
+    def test_a_listed_action_ref_must_be_a_single_full_sha(self):
+        # Review finding 4 (LOW, #349): `actions/checkout@v4 acme/publisher@v1` passed, because the ref was any text.
+        base = workflow(['build/debug/*.pce'])
+        for label, value in {
+            'second value after the ref': f'actions/checkout@v4 {self.RELEASE}',
+            'tag only': 'actions/checkout@v4',
+            'short sha': 'actions/checkout@11bd719',
+        }.items():
+            with self.subTest(ref=label):
+                self.assert_refused(base + f'      - name: Fetch\n        uses: {value}\n', 'allowlist', name='rel.yaml')
+
+    def test_tagged_pages_and_upload_actions_are_refused(self):
+        # Issue #349: the allowlist accepted any ref, so a movable tag of a Pages action passed both layers.
+        base = workflow(['build/debug/*.pce'])
+        for action in ('actions/configure-pages@v5', 'actions/upload-pages-artifact@v4',
+                       'actions/deploy-pages@v4', 'actions/upload-artifact@v4'):
+            with self.subTest(action=action):
+                self.assert_refused(base + f'      - name: Pages\n        uses: {action}\n', 'allowlist', name='pages.yml')
+
+    def test_allowlisted_pages_actions_pass_both_layers(self):
+        # Item 6 (#349): the placement layer, not only the upload layer, must pass a guarded Pages workflow that
+        # carries configure-pages and deploy-pages (both pinned to full SHAs), in the approved split layout (#374).
+        # Issue #349: the structure of that layout is checked by test_pages_structure.py.
+        # The stage and verify calls must name the workflow path as the placement check labels it.
+        self.write(PAGES_SPLIT_GUARDED.replace(' w.yml ', ' .github/workflows/pages.yml '), name='pages.yml')
+        guard.check_upload_artifacts(self.root)
+        guard.check_guard_placement(self.root)
+
+    def test_upper_case_workflow_extension_is_scanned(self):
+        # Review-style gap: glob was case-sensitive on Linux, so extra.YML was never read.
+        self.write(workflow(['build/debug/*.pce']))
+        self.write(workflow(['build/probe/*']), name='extra.YML')
+        self.write_build('build/probe/linked-probe', ELF_PROBE)
+        with self.assertRaisesRegex(ValueError, 'extra.YML'):
+            guard.check_upload_artifacts(self.root)
+
+    def test_allowlisted_build_action_still_passes_the_upload_layer(self):
+        text = ('jobs:\n  build:\n    steps:\n'
+                f'      - uses: {self.CHECKOUT}\n'
+                f'      - name: Save\n        uses: {UPLOAD}\n        with:\n          path: |\n            build/debug/*.pce\n')
+        self.write(text)
+        guard.check_upload_artifacts(self.root)
+
+
+class PagesWriteRefusalTests(unittest.TestCase):
+    """Issue #349 review (LOW 2): pages: write outside the deploy job of pages.yml is refused by this suite too."""
+
+    def test_pages_write_in_a_non_pages_job_is_refused(self):
+        text = ('on: push\npermissions:\n  contents: read\njobs:\n  extra:\n    runs-on: ubuntu-24.04\n'
+                '    permissions:\n      pages: write\n    steps:\n      - run: true\n')
+        problems = guard.pages_structure_violations(text, '.github/workflows/ci.yml')
+        self.assertTrue(any("job 'extra' grants pages: write" in p for p in problems), problems)
+
+
+# Issue #349 (review): the write-grant table is pinned. A change to WRITE_ALLOWANCES must change this expectation in the
+# same change, so a widened entry cannot pass unnoticed.
+PINNED_WRITE_ALLOWANCES = {
+    ('pages.yml', 'deploy'): {'pages', 'id-token'},
+    ('api-source.yml', 'attest-cdread'): {'id-token', 'attestations'},
+    ('api-source.yml', 'attest-cdread-verdict'): {'id-token', 'attestations'},
+}
+ATTEST_CONTENTS_WRITE = ('on:\n  push:\npermissions:\n  contents: read\njobs:\n  attest-cdread:\n    permissions:\n'
+                         '      id-token: write\n      attestations: write\n      contents: write\n    steps:\n      - run: true\n')
+
+
+class WriteAllowancePinTests(unittest.TestCase):
+    def test_table_matches_the_pinned_contents(self):
+        self.assertEqual(PINNED_WRITE_ALLOWANCES, {k: set(v) for k, v in guard.WRITE_ALLOWANCES.items()})
+
+    def test_stock_table_refuses_contents_write_in_the_attest_job(self):
+        problems = guard.pages_structure_violations(ATTEST_CONTENTS_WRITE, '.github/workflows/api-source.yml')
+        self.assertTrue(any("job 'attest-cdread' grants contents: write" in p for p in problems), problems)
+
+    def test_widened_table_is_detected(self):
+        widened = {k: set(v) for k, v in PINNED_WRITE_ALLOWANCES.items()}
+        widened[('api-source.yml', 'attest-cdread')].add('contents')
+        with unittest.mock.patch.dict(guard.WRITE_ALLOWANCES, widened, clear=True):
+            # The widened table would accept the contents: write grant, so only the pin can catch it.
+            self.assertEqual([], guard.pages_structure_violations(ATTEST_CONTENTS_WRITE, '.github/workflows/api-source.yml'))
+            self.assertNotEqual(PINNED_WRITE_ALLOWANCES,
+                                {k: set(v) for k, v in guard.WRITE_ALLOWANCES.items()})
+
+
+class EntryPointTests(unittest.TestCase):
+    def test_default_entry_point_runs_the_placement_checks(self):
+        # Issue #349 (review): with no argument, main runs every check --check-placement runs, not only the upload check.
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, '.github', 'workflows').mkdir(parents=True)
+            Path(tmp, '.github', 'workflows', 'noperm.yml').write_text(
+                'on: push\njobs:\n  job:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: true\n', encoding='utf-8')
+            # The upload check needs a real upload set; it is out of scope here, so it is stubbed. The placement check runs.
+            with unittest.mock.patch.object(guard, 'check_upload_artifacts', lambda root=None: None):
+                with self.assertRaisesRegex(ValueError, "has no permissions"):
+                    guard.main(['--root', tmp])
+
+
+class SignConditionTests(unittest.TestCase):
+    """Issue #337 PR review (MEDIUM, fix in #349 follow-up): the signing jobs' `if:` is enforced by the guard. Editing it
+    to a looser condition must fail --check-placement, not only a repository test."""
+    REL = '.github/workflows/api-source.yml'
+    IF_LINE = "    if: github.event_name == 'push' && github.ref == 'refs/heads/main'"
+
+    def real(self):
+        return (ROOT / self.REL).read_text(encoding='utf-8')
+
+    def mutate_if(self, job, new_line):
+        """The real workflow with the `if:` line of `job` replaced by new_line ('' deletes it)."""
+        text = self.real()
+        head = text.index(f'\n  {job}:\n')
+        at = text.index(self.IF_LINE + '\n', head)
+        return text[:at] + (new_line + '\n' if new_line else '') + text[at + len(self.IF_LINE) + 1:]
+
+    def placement(self, text):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, '.github', 'workflows').mkdir(parents=True)
+            Path(tmp, self.REL).write_text(text, encoding='utf-8')
+            guard.check_guard_placement(Path(tmp))
+
+    def test_unmutated_workflow_passes_placement_and_condition_check(self):
+        self.assertEqual([], guard.attest_condition_violations(self.real(), self.REL))
+        self.placement(self.real())
+
+    def test_each_if_mutation_fails_for_both_signing_jobs(self):
+        mutations = {
+            'if deleted': '',
+            '== changed to !=': self.IF_LINE.replace('==', '!=', 1),
+            'main changed to head_ref': self.IF_LINE.replace('main', '${{ github.head_ref }}'),
+            '&& weakened to ||': self.IF_LINE.replace('&&', '||'),
+            'quoted scalar': '    if: "' + self.IF_LINE.split(': ', 1)[1] + '"',
+            'block scalar': '    if: >-\n      github.event_name == \'push\'',
+        }
+        for job in ('attest-cdread', 'attest-cdread-verdict'):
+            for label, new_line in mutations.items():
+                with self.subTest(job=job, mutation=label):
+                    text = self.mutate_if(job, new_line)
+                    self.assertNotEqual([], guard.attest_condition_violations(text, self.REL))
+                    with self.assertRaisesRegex(ValueError, 'if:'):
+                        self.placement(text)
+
+    def test_second_signing_job_is_refused(self):
+        # A copy of attest-cdread (same if:, same subjects) is a second signer: publish_violations refuses it.
+        text = self.real()
+        block = text.split('\n  attest-cdread:\n', 1)[1].split('\n  verify-cdread-attestation:', 1)[0]
+        mutated = text.rstrip('\n') + '\n  attest-cdread-copy:\n' + block.rstrip('\n') + '\n'
+        with self.assertRaisesRegex(ValueError, 'publish action'):
+            self.placement(mutated)
+
+    def test_duplicate_if_in_signing_job_is_refused(self):
+        text = self.mutate_if('attest-cdread', self.IF_LINE + '\n' + self.IF_LINE)
+        self.assertNotEqual([], guard.attest_condition_violations(text, self.REL))
+
+    def test_flow_form_signing_job_is_refused(self):
+        text = self.real()
+        block = text.split('\n  attest-cdread:\n', 1)[1].split('\n  verify-cdread-attestation:', 1)[0]
+        flow = text.replace('\n  attest-cdread:\n' + block, '\n  attest-cdread: {runs-on: ubuntu-24.04}\n', 1)
+        self.assertNotEqual([], guard.attest_condition_violations(flow, self.REL))
+
+    def test_other_attest_action_in_signing_job_is_refused(self):
+        # An allowed job must sign only with attest-build-provenance; attest-sbom with the same subjects is refused.
+        text = self.real().replace('actions/attest-build-provenance@', 'actions/attest-sbom@', 1)
+        with self.assertRaisesRegex(ValueError, 'attest-sbom'):   # refused by the uses allowlist or the attest-input check
+            self.placement(text)
+
+    def test_private_subject_mixed_into_verdict_is_refused(self):
+        text = self.real().replace('          subject-path: verdict/cdread-verdict.json',
+                                   '          subject-path: |\n            verdict/cdread-verdict.json\n'
+                                   '            .intake/private.pce', 1)
+        with self.assertRaisesRegex(ValueError, 'attest'):
+            self.placement(text)
+
+
+    # Round 2 (Issue #337 re-review, MAJOR): a continuation line indented deeper than the if: key was ignored, so
+    # `|| github.event_name == 'pull_request'` on the next line passed --check-placement and would sign a PR run.
+    def test_continuation_or_pull_request_is_refused_on_attest_cdread(self):
+        text = self.mutate_if('attest-cdread', self.IF_LINE + "\n     || github.event_name == 'pull_request'")
+        self.assertNotEqual([], guard.attest_condition_violations(text, self.REL))
+        with self.assertRaisesRegex(ValueError, 'if:'):
+            self.placement(text)
+
+    def test_continuation_or_pull_request_is_refused_on_attest_cdread_verdict(self):
+        text = self.mutate_if('attest-cdread-verdict', self.IF_LINE + "\n     || github.event_name == 'pull_request'")
+        self.assertNotEqual([], guard.attest_condition_violations(text, self.REL))
+        with self.assertRaisesRegex(ValueError, 'if:'):
+            self.placement(text)
+
+    def test_continuation_or_true_is_refused(self):
+        text = self.mutate_if('attest-cdread', self.IF_LINE + "\n     || true")
+        self.assertNotEqual([], guard.attest_condition_violations(text, self.REL))
+        with self.assertRaisesRegex(ValueError, 'if:'):
+            self.placement(text)
+
+    def test_block_scalar_if_on_signing_job_is_refused(self):
+        text = self.mutate_if('attest-cdread', "    if: |\n      github.event_name == 'push' && github.ref == 'refs/heads/main'")
+        self.assertNotEqual([], guard.attest_condition_violations(text, self.REL))
+        with self.assertRaisesRegex(ValueError, 'if:'):
+            self.placement(text)
+
 
 if __name__ == '__main__':
     unittest.main()

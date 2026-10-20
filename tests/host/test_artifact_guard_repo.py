@@ -2,6 +2,7 @@
 
 They read this repository's workflows and check that the real workflows pass the guard. They run only where the
 workflows carry the guard; the tool-level tests are in test_artifact_guard.py."""
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -26,6 +27,53 @@ class WorkflowRepositoryTests(unittest.TestCase):
         self.assertNotEqual([], guard.guard_placement_violations(mutated, '.github/workflows/ci.yml'))
 
 
+class AttestationScopeTests(unittest.TestCase):
+    """Owner decision (Issue #349): the only attested subjects are the two synthetic CD-read files. The workflow's
+    subject-path and the documented publication scope must both say exactly that."""
+    SCOPE = {'evidence/cdread-probe/cdread-evidence.json', 'evidence/cdread-probe/cdread-probe-not-bios.pce'}
+
+    def attest_subjects(self, text):
+        """Every path named by subject-path in the attest-cdread job: an inline value or the indented block below it."""
+        job = text.split('\n  attest-cdread:\n', 1)[1].split('\n  verify-cdread-attestation:', 1)[0]
+        lines = job.splitlines()
+        paths = []
+        for i, line in enumerate(lines):
+            match = re.match(r'''^(\s*)(?:-\s+)?["']?subject-path["']?\s*:\s*(.*)$''', line)
+            if not match:
+                continue
+            indent, inline = len(match.group(1)), match.group(2).split(' #')[0].strip()
+            if inline and inline not in ('|', '|-', '|+', '>'):
+                paths += inline.strip('"\'').split()
+            for rest in lines[i + 1:]:
+                if rest.strip() and len(rest) - len(rest.lstrip()) <= indent:
+                    break
+                if rest.strip() and not rest.lstrip().startswith('#'):
+                    paths.append(rest.strip())
+        return set(paths)
+
+    def test_attest_cdread_subject_path_is_exactly_the_two_synthetic_files(self):
+        text = (ROOT / '.github' / 'workflows' / 'api-source.yml').read_text(encoding='utf-8')
+        self.assertEqual(self.SCOPE, self.attest_subjects(text))
+
+    def test_attest_cdread_signs_only_on_push_to_main(self):
+        # Review MEDIUM (#349): a workflow_dispatch on a non-main ref must not produce a signature.
+        text = (ROOT / '.github' / 'workflows' / 'api-source.yml').read_text(encoding='utf-8')
+        job = text.split('\n  attest-cdread:\n', 1)[1].split('\n  verify-cdread-attestation:', 1)[0]
+        conditions = re.findall(r'^    if: (.*)$', job, re.M)
+        self.assertEqual(["github.event_name == 'push' && github.ref == 'refs/heads/main'"], conditions)
+
+    def test_inline_subject_path_is_read(self):
+        # Review LOW (#349): `subject-path: evidence/x` on one line was not read, so an extra subject could hide.
+        fixture = 'jobs:\n  attest-cdread:\n    steps:\n      - uses: x\n        with:\n          subject-path: evidence/x.json\n'
+        self.assertEqual({'evidence/x.json'}, self.attest_subjects(fixture))
+
+    def test_publication_scope_and_residual_risk_are_documented(self):
+        doc = (ROOT / 'docs' / 'provenance.md').read_text(encoding='utf-8')
+        self.assertIn('**Attestation publication scope**', doc)
+        for path in self.SCOPE:
+            self.assertIn(path, doc)
+
+
 class PathPolicyTests(unittest.TestCase):
     """D: no repository upload uses a wildcard root pattern; a future one must be a reviewed change."""
 
@@ -41,6 +89,14 @@ class PathPolicyTests(unittest.TestCase):
 
 
 class RepositoryTests(unittest.TestCase):
+    def test_pages_workflow_actions_are_pinned_to_a_full_commit_sha(self):
+        # Issue #349: the Pages actions were pinned to movable tags, which a maintainer can re-point after review.
+        text = (ROOT / '.github' / 'workflows' / 'pages.yml').read_text(encoding='utf-8')
+        refs = dict(re.findall(r'uses:\s*actions/([\w-]+)@(\S+)', text))
+        for action in ('configure-pages', 'upload-pages-artifact', 'deploy-pages', 'checkout'):
+            self.assertIn(action, refs)
+            self.assertRegex(refs[action], r'^[0-9a-f]{40}$', action)
+
     def test_every_repository_upload_step_has_a_post_build_guard_before_it(self):
         # Owner decision: the guard runs after the build and before upload-artifact, in every upload workflow.
         for path in sorted((ROOT / guard.WORKFLOWS).glob('*.y*ml')):

@@ -1,90 +1,123 @@
-# Licensed reuse and provenance policy
+# ライセンスと来歴の方針
 
-This project builds a redistributable PC Engine / TurboGrafx-CD System Card replacement. **Reuse proven OSS instead of reinventing it** when the code is technically suitable and its license permits the planned use. An original implementation, properly licensed upstream code, and properly licensed modified/ported code are all acceptable. The project must never distribute copied proprietary System Card firmware, commercial games, or their protected assets.
+本プロジェクトは再配布可能な PC Engine / TurboGrafx-CD System Card 互換 BIOS を作成する。コードが技術的に適合し、ライセンスが計画中の利用を許す場合は、**実績のある OSS を再発明せず再利用する**。独自実装、適切にライセンスされた上流コード、適切にライセンスされた改変・移植コードはいずれも受け入れる。複製された独占的な System Card ファームウェア、商用ゲーム、およびそれらの保護された資産を配布してはならない。
 
-## Implementation preference (in order)
+## 実装の優先順位（上から順に検討する）
 
-1. **Reuse unchanged:** select maintained, appropriate upstream OSS, including target-console runtimes and other OSS BIOS implementations, if its exact files and dependencies are cleared.
-2. **Adapt or port:** change CPU syntax, ABI, registers, bank mapping, integration, or test harness as needed while preserving licensing and authorship requirements.
-3. **Reference behavior and tests:** when direct inclusion is unsuitable, record the source and use public functional descriptions, independently validated contracts, and independently authored tests. A direct translation of protected code is not automatically an independent implementation.
-4. **Implement from scratch:** when no suitable, permitted implementation exists, or an independent implementation is demonstrably simpler, safer, or more correct. Record the reason to avoid duplicate future effort.
+1. **無改変で再利用:** 正確なファイルと依存関係の許諾が済んでいれば、保守されている適切な上流 OSS（対象コンソールのランタイムや他の OSS BIOS 実装を含む）を選ぶ。
+2. **適応または移植:** ライセンスと著作者表示の要件を守ったうえで、CPU 構文、ABI、レジスタ、バンク割り当て、統合、テストハーネスを必要に応じて変更する。
+3. **動作と試験を参照:** 直接の取り込みが適さない場合は、出典を記録し、公開された機能説明、独立に検証された契約、独立に作成された試験を用いる。保護されたコードの直訳は、自動的に独立実装とはみなさない。
+4. **ゼロから実装:** 適切で許諾された実装が存在しない場合、または独立実装の方が単純・安全・正確であると明確に言える場合に行う。将来の重複作業を避けるため、その理由を記録する。
 
-Treat **technical suitability and legal clearance as separate gates**. A compatible license does not establish compatible functionality. Never claim any API works just because an upstream routine compiles.
+**技術的適合性と法的許諾は別々の関門として扱う。** 互換性のあるライセンスは、機能の互換性を証明しない。上流のルーチンがコンパイルできたという理由だけで、どの API も動作すると主張してはならない。
 
-## Non-negotiable exclusions
+## 除外事項（交渉の余地なし）
 
-1. Do not commit/distribute proprietary NEC/Hudson/Konami or third-party BIOS dumps, extracted/translated firmware code, disassembly listings, copied tables/assets, commercial disc sectors, ROM graphics/audio, patches containing protected bytes, or private saves.
-2. Do not silently incorporate proprietary-derived code from an emulator or article. Public visibility is not a license.
-3. Keep private lawful reference firmware and commercial discs out of the repository, Issues, CI, release assets, and unsanitized logs.
-4. Hardware facts and caller-observable interfaces may be investigated, but investigate whether a claimed contract is actually correct and whether its source is permissible. Do not claim a strict clean room where one did not exist.
-5. No affiliation or endorsement by NEC, Hudson Soft, Konami, or their successors.
+1. NEC、Hudson、Konami、または第三者の BIOS ダンプ、抽出・翻訳されたファームウェアコード、逆アセンブル一覧、複製された表・資産、商用ディスクのセクタ、ROM のグラフィックと音声、保護されたバイトを含むパッチ、非公開のセーブデータを、コミットも配布もしてはならない。
+2. エミュレータや記事から、独占的な由来のコードを黙って取り込んではならない。公開されていることは、ライセンスの代わりにはならない。
+3. 非公開の正規ファームウェアと商用ディスクは、リポジトリ、Issue、CI、リリース資産、そして無加工のログに入れない。
+4. ハードウェアの事実と呼び出し側から観測できるインターフェースは調査してよいが、主張された契約が本当に正しいか、その出典が許されるものかを確認する。クリーンルームでなかった場合に、厳密なクリーンルームだと主張しない。
+5. NEC、Hudson Soft、Konami、およびその承継者による提携や推奨はない。
 
-## License gate for each adopted file or substantial fragment
+## 採用するファイルまたは大きな断片ごとのライセンス関門
 
-Before a file or substantial fragment is copied, translated, adapted, vendored, linked, embedded, or included in generated ROM output:
+ファイルまたは大きな断片を、コピー、翻訳、適応、ベンダリング、リンク、埋め込み、生成 ROM への組み込みのいずれかを行う前に、次を満たす。
 
-- Pin **repository URL, exact commit/tag, path and hash**, upstream author(s)/copyright holder(s), file-level license header, accompanying license text, and any third-party origins. A GitHub repository's summary license alone is insufficient.
-- Identify all imported dependencies, templates, generated files, submodules and copied assets, each with their actual terms.
-- Check permission for **copying, adaptation, compilation into a ROM, distribution of source and binary, and the project's current intended MIT-licensed distribution**. Keep any required copyright text, license copy, attribution, notices, source offers, and modification statements in source and release bundles.
-- Record what was changed, what code was copied unchanged, build-generated content and whether the reused unit can actually satisfy the target HuC6280/System Card ABI.
-- Do **not** relicense third-party material merely because this repository's own code is MIT. Keep license boundaries explicit.
-- For copyleft material (GPL, LGPL, etc.), assess the **actual form of integration and conveyance**. GPL-only code should not be folded into a ROM represented as MIT-only. A change to the overall licensing strategy requires an explicit maintainer decision and complete obligation review. LGPL and exceptions are not automatic approval for static firmware integration.
-- Lack of an explicit license is **not** permission to copy. Resolve ambiguity, obtain separate permission from an authorized rights holder, or use behavior-level reference and independently created code instead.
-- Require human-reviewed evidence and disposition **APPROVED / PENDING / RESTRICTED**, with approver and decision date. PENDING/RESTRICTED materials cannot enter distributed firmware, CI binaries or releases. CI scanners cannot establish copyright ownership or licensing validity by themselves.
+- **リポジトリ URL、正確なコミットまたはタグ、パス、ハッシュ**、上流の著作者または著作権者、ファイル単位のライセンスヘッダ、添付のライセンス文、第三者の出所を固定する。GitHub リポジトリの要約ライセンスだけでは不十分である。
+- 取り込むすべての依存関係、テンプレート、生成ファイル、サブモジュール、複製資産を特定し、それぞれの実際の条件を確認する。
+- **コピー、改変、ROM へのコンパイル、ソースとバイナリの配布、本リポジトリの現在の MIT ライセンスによる配布**の許諾を確認する。必要な著作権表示、ライセンス文、帰属表示、通知、ソース提供、改変の記載は、ソースとリリースの一式に残す。
+- 何を変更したか、何を無改変でコピーしたか、ビルドで生成された内容は何か、再利用する単位が対象の HuC6280 / System Card ABI を本当に満たせるかを記録する。
+- 本リポジトリ自体の MIT ライセンスを理由に、第三者の資料を再ライセンスしてはならない。ライセンスの境界を明示する。
+- コピーレフト資料（GPL、LGPL など）は、**実際の統合と頒布の形態**を評価する。GPL のみのコードを MIT のみと表示する ROM に組み込んではならない。ライセンス戦略全体の変更には、保守者の明示的な決定と義務の完全な確認が必要である。LGPL や例外規定は、静的なファームウェアへの統合を自動的に承認するものではない。
+- ライセンスが明示されていないことは、コピーの許可**ではない**。曖昧さを解消するか、権利を持つ者から別途許諾を得るか、動作レベルの参照と独立に作成したコードを使う。
+- 人が確認した証拠と処分状況（**APPROVED / PENDING / RESTRICTED**）を、承認者と決定日付きで必要とする。PENDING と RESTRICTED の資料は、配布されるファームウェア、CI のバイナリ、リリースに入れてはならない。CI のスキャナ単独では、著作権の所有や、ライセンスの有効性を確立できない。
 
-## Reference-only use
+## 参照のみの利用
 
-- Record public sources, exact revision, relevant contract/observations, confidence and any known disagreement; validate with synthetic fixtures and the real Geargrafx emulator.
-- Do not treat an emulator's HLE shortcut as hardware proof or translate third-party code line-by-line to evade a license.
-- Reverse-engineering-based descriptions may contain uncertain or restricted details; review provenance by claim. Preserve disagreement rather than turning guesses into normative requirements.
-- A test-only dependency may remain external to the distributable ROM; still honor its license when the test harness, binary, or artifacts are redistributed.
+- 公開された出典、正確な版、関連する契約や観測結果、信頼度、既知の食い違いを記録する。合成フィクスチャと実物の Geargrafx エミュレータで検証する。
+- エミュレータの HLE 近道を、ハードウェアの証明として扱わない。ライセンスを回避するために、第三者のコードを行単位で翻訳しない。
+- リバースエンジニアリングに基づく説明には、不確かな点や制限された詳細が含まれうる。主張ごとに来歴を確認する。推測を規範的な要件に変えず、食い違いを残す。
+- テスト専用の依存関係は、配布可能な ROM の外に置いてよい。ただし、テストハーネス、バイナリ、成果物を再配布するときは、そのライセンスを守る。
 
-## Required per-source audit record
+## 出典ごとに必要な監査記録
 
-- Component/API and planned usage: `DIRECT` / `ADAPTED` / `REFERENCE_ONLY` / `REJECTED`.
-- Upstream repo URL, commit SHA/tag, file path and integrity hash; authors, copyright holders and origins.
-- Exact file-level license and obligations; dependencies/embedded materials; original license files/NOTICE links.
-- Fit assessment: CPU, assembler syntax, bank mapping, ABI, behavior, timing, memory, error cases.
-- Legal/technical disposition: `APPROVED` / `PENDING` / `RESTRICTED`, rationale, reviewer and date.
-- Modifications, attribution/NOTICE locations, release/source obligations and related Issue/PR.
-- Validation evidence: host tests, Geargrafx real-core traces, negative tests, and known limitations.
+- コンポーネントまたは API と予定する用途: `DIRECT` / `ADAPTED` / `REFERENCE_ONLY` / `REJECTED` のいずれか。
+- 上流リポジトリ URL、コミット SHA またはタグ、ファイルパス、完全性ハッシュ、著作者、著作権者、出所。
+- ファイル単位の正確なライセンスと義務、依存関係や埋め込み資料、元のライセンスファイルや NOTICE へのリンク。
+- 適合性の評価: CPU、アセンブラ構文、バンク割り当て、ABI、動作、タイミング、メモリ、エラーケース。
+- 法的・技術的な処分: `APPROVED` / `PENDING` / `RESTRICTED`、根拠、レビュー者と日付。
+- 改変内容、帰属表示と NOTICE の場所、リリースとソースに関する義務、関連する Issue や PR。
+- 検証の証拠: ホスト側の試験、Geargrafx 実機コアのトレース、否定試験、既知の制限。
 
-See [reuse audit inventory](reuse-inventory.md) for initial candidates. An initial inventory entry is **not** clearance to integrate code.
+初期候補は [再利用監査インベントリ](reuse-inventory.md) を参照する。初期インベントリの項目は、コードを取り込む許諾**ではない**。
 
-## PR and release review checklist
+## PR とリリースのレビュー項目
 
-- [ ] An existing-OSS search was performed for this capability; reuse, adaptation or new implementation choice is documented.
-- [ ] Every incorporated upstream file/fragment has an APPROVED, pin-specific audit record; generated ROM content is included in the analysis.
-- [ ] Source and release preserve license/copyright/NOTICE and modification records; original project MIT LICENSE remains accurate about **only the parts owned/licensed accordingly**.
-- [ ] No proprietary firmware/game data, copied protected assets, or unlicensed third-party content appears in sources, diffs, generated binaries, tests or artifacts.
-- [ ] External emulator/test dependencies are not silently linked into shipped ROM.
-- [ ] The accepted behavior is actually measured; unverified behavior is labeled NOT_RUN/BLOCKED, not PASS.
+- [ ] この機能について既存 OSS の調査を行い、再利用・適応・新規実装の選択を記録している。
+- [ ] 取り込んだ上流のファイルや断片はすべて、版を固定した APPROVED の監査記録を持つ。生成された ROM の内容も分析に含めている。
+- [ ] ソースとリリースに、ライセンス、著作権表示、NOTICE、改変記録が残っている。本リポジトリの元の MIT LICENSE は、**自ら所有または許諾を受けた部分についてのみ**正確である。
+- [ ] 独占的なファームウェアやゲームのデータ、複製された保護資産、無許諾の第三者コンテンツが、ソース、差分、生成バイナリ、試験、成果物のいずれにも含まれていない。
+- [ ] 外部のエミュレータやテスト用の依存関係を、出荷する ROM に黙ってリンクしていない。
+- [ ] 受け入れた動作は実際に測定されている。検証されていない動作は PASS ではなく NOT_RUN / BLOCKED と表示する。
 
-A human reviewer must resolve uncertain origin or permission **before merging**. This policy is not a legal warranty or substitute for specialist advice in disputed cases.
+不確かな出所や許諾は、**マージの前に**人のレビュアーが解決する必要がある。本方針は法的保証ではなく、争いのある場合に専門家の助言に代わるものでもない。
 
-## Automated provenance guard (Issue #8)
+## 自動来歴ガード（Issue #8）
 
-`tools/provenance_guard.py` scans the **changed content** (tracked files differing from the PR base, or all tracked files without a base), not just file extensions. It runs as the first step of the `verify` job in `.github/workflows/ci.yml`.
+`tools/provenance_guard.py` は、ファイル拡張子だけでなく、**変更された内容**（PR のベースと異なる追跡ファイル。ベースがなければすべての追跡ファイル）を検査する。`.github/workflows/ci.yml` の `verify` ジョブの最初のステップとして実行される。
 
-- **Always rejected:** content whose SHA-256 is listed in `provenance/denylist.sha256`; ISO9660 volume-descriptor and CD-ROM raw-sector-sync signatures, whatever the file name.
-- **Rejected unless hash-pinned in `provenance/allowlist.tsv`:** prohibited extensions (`.pce .bin .cue .iso .img .chd .wav` and similar), unlabelled binaries, third-party paths (`vendor/`, `third_party/`, `.gitmodules`, ...), and third-party license markers in code files. This is default-deny for unclear third-party code.
-- **Approval gate:** changing `provenance/allowlist.tsv`, `provenance/denylist.sha256` or `provenance/approvers.txt` requires a verified maintainer approval. The label alone is not enough. The guard queries the PR's issue timeline (`gh api`) and grants approval only when the newest `provenance-approved` label event was applied (not removed afterwards) by a login listed in `provenance/approvers.txt` at the **PR base**, that login is not the PR author, and its repository role is `admin` or `maintain`. An empty list at the base is closed (fail closed). Deleting a gated file, or renaming one away from its path (renames are detected as delete plus add), counts as a change to it and needs the same approval. Deleted files are never opened; a rename into a gated path is gated as an addition. The approval unlocks list edits only; it never overrides the denylist or signature rules and is not a legal clearance.
-- **Bootstrap (no approver list at the base yet):** the list added by the PR is trusted instead, but only non-author repository admins listed in it count, and the `provenance-approved` label must come from one of them. The PR author cannot add itself. Once that list is merged, the base list governs and the bootstrap path is closed. Approvers are never hard-coded in the guard. **Status: BLOCKED.** The initial approver logins are a repository-owner decision, and the `provenance-approved` label does not exist yet. Until a second admin or maintainer is added, no PR can satisfy the bootstrap rule, so list edits stay blocked.
-- **Residual risk:** the approval check runs from the PR merge commit, so a PR that edits the guard or `ci.yml` is controlled only by human review. Approval is not re-bound to later commits; re-check the label and list diff after any new push.
-- Tests: `python3 -m unittest discover -s tests/host -p 'test_provenance_guard.py' -v`. Prohibited samples are generated in memory from short synthetic markers; no firmware, disc or ROM data is committed.
+- **常に拒否:** SHA-256 が `provenance/denylist.sha256` に載っている内容。ファイル名に関係なく、ISO9660 のボリューム記述子と CD-ROM の生セクタ同期シグネチャ。
+- **`provenance/allowlist.tsv` でハッシュを固定していなければ拒否:** 禁止拡張子（`.pce .bin .cue .iso .img .chd .wav` など）、ラベルのないバイナリ、第三者のパス（`vendor/`、`third_party/`、`.gitmodules` など）、コードファイル内の第三者ライセンス表記。出所の不明な第三者コードは、既定で拒否する。
+- **承認の関門:** `provenance/allowlist.tsv`、`provenance/denylist.sha256`、`provenance/approvers.txt` の変更には、検証された保守者の承認が必要である。ラベルだけでは足りない。ガードは PR の Issue タイムライン（`gh api`）を照会し、最新の `provenance-approved` ラベルイベントが、取り消されずに、**PR のベース**の `provenance/approvers.txt` に載ったログインによって付与され、そのログインが PR の作成者ではなく、リポジトリ上の権限が `admin` か `maintain` である場合にのみ承認とする。ベースのリストが空なら閉じる（fail closed）。ゲート対象のファイルの削除、またはパスからの改名（改名は削除と追加として検出する）は、そのファイルの変更とみなし、同じ承認を必要とする。削除されたファイルは開かない。ゲート対象のパスへの改名は、追加としてゲートする。承認はリストの編集だけを解除し、拒否リストと署名のルールを覆すことはなく、法的な許諾でもない。
+- **ブートストラップ（ベースにまだ承認者リストがない場合）:** PR が追加したリストを代わりに信頼する。ただし、そのリストに載った、作成者以外のリポジトリ管理者だけが数えられ、`provenance-approved` ラベルはそのうちの一人から付与されなければならない。PR の作成者は自分を追加できない。そのリストがマージされると、ベースのリストが優先され、ブートストラップの経路は閉じる。承認者はガードに直接書き込まない。**状態: BLOCKED。** 初期の承認者のログインは、リポジトリ所有者が決める事項であり、`provenance-approved` ラベルはまだ存在しない。2人目の管理者または保守者が加わるまで、どの PR もブートストラップの規則を満たせないため、リストの編集はブロックされたままである。
+- **残存リスク:** 承認の確認は PR のマージコミットから実行されるため、ガードや `ci.yml` を編集する PR は人のレビューにのみ依存する。承認は後のコミットに結び付けられない。新しいプッシュのたびに、ラベルとリストの差分を再確認する。
+- 試験: `python3 -m unittest discover -s tests/host -p 'test_provenance_guard.py' -v`。禁止サンプルは短い合成マーカーからメモリ上で生成し、ファームウェア、ディスク、ROM のデータはコミットしない。
 
-**Limitations.** A signature scanner is a tripwire, not a guarantee against infringement. It cannot detect paraphrased, translated, or re-encoded material; it cannot establish ownership or license validity; and a PR that edits the guard itself is controlled only by human review. Human review of the audit record above remains mandatory before merge.
+**制限。** シグネチャ検査は警報装置であり、侵害を防ぐ保証ではない。言い換え、翻訳、再エンコードされた資料は検出できない。所有権やライセンスの有効性を確立できない。ガード自体を編集する PR は人のレビューのみが統制する。マージの前に、上記の監査記録を人が確認することは依然として必須である。
 
-## Artifact upload guard (Issue #227, PR #286)
+## 成果物アップロードガード（Issue #227、PR #286）
 
-`tools/artifact_guard.py` checks the files that `actions/upload-artifact` would publish from CI. It is a separate layer from the committed-content guard above.
+`tools/artifact_guard.py` は、CI で `actions/upload-artifact` が公開するファイルを検査する。上記のコミット済み内容のガードとは別の層である。
 
-- **Design decision: `.pce` is not refused by extension.** Original HuCARD images and DEV diagnostic ROMs generated by this project are legitimate artifacts. The artifact guard applies the content signature checks (ELF, Mach-O, PE/NE/LE, ar, archive signatures) to `.pce` files as well.
-- **A passing `.pce` is not proof of provenance.** Signature checks do not establish that a `.pce` contains no GPL-derived code, that it was built from the stated source, or that a rebuild reproduces it. Origin, build procedure and reproducibility are **unresolved** and tracked in Issue #335. Until that is closed, every uploaded `.pce` needs human review of how it was produced.
-- **Committed `.pce` files are unaffected.** The committed-content guard above still rejects prohibited extensions unless hash-pinned. The artifact guard does not change that rule.
-- **Two jobs.** Build code and publication are in different jobs. A build job (it runs pull-request code) hands its outputs over as an `intermediate-*` artifact and never runs the guard. A guard job `needs:` that build job, downloads the intermediate artifact into `.intake` (inside the workspace), and runs only trusted steps: the checkout of `main` into `.trusted-main` (inside the workspace) (sparse: `tools/artifact_guard.py` only), the `python3` resolve, a checkout of the workflow files for the placement check, the download, stage, verify, and the upload. No build step runs in a guard job. The guard runs from the `main` copy; a change to the guard takes effect only after it is merged. The placement check rejects a job that mixes a build with a publication, a guard job that runs any other step, a guard job without `needs:`, and an intermediate artifact nothing consumes.
-- **Staging.** The uploaded bytes are copies in `.artifact-stage/` made by the stage step, with sha256 recorded in a manifest. The verify step, immediately before the upload, recomputes the hashes and refuses a change, an extra file, a missing file, or a symlink. Upload paths must begin with `.artifact-stage/`.
-- **Residual limits.** The hand-off is hash-checked by the guard job only after the artifact is downloaded: the guard job does not trust the build job's copy, and what it checks is what it publishes. The guard job runs on its own runner, and its checkouts are inside the workspace: `.trusted-main` holds only `tools/artifact_guard.py` from `main`, and it is created after the PR workflow checkout (a later checkout cleans the workspace, which would remove it). `.intake` holds only the downloaded intermediate artifact, never PR build output that was not handed over. This relies on GitHub-hosted runners starting each job on a fresh VM (a self-hosted runner would break it), so a build cannot alter the guard's files or the `python3` resolved in the guard job. Still open: the intermediate artifact is readable by repository readers until its retention ends (one day), and an unverified intermediate is visible while the workflow runs. The publication itself is attested only by the content checks; provenance is Issue #335.
-- **Wildcards and broad patterns.** Current workflows use specific paths only, and no upload pattern is `*` or `**`. A new pattern that matches a whole directory, or that uses a wildcard at the root, uploads whatever it matches; the content check is signature-only and does not judge what kind of data a file contains. **Adding such a pattern needs an explicit review** of what it can match. A test (`PathPolicyTests`) fails if a repository upload uses a root wildcard, so the addition is at least visible.
-- **Workflow changes are mandatory review.** Changes under `.github/workflows/` change what runs and must be reviewed by a maintainer. The guard cannot detect a workflow edit that removes its own steps; branch protection (set by the owner) is required for that.
-- Tests: `python3 -B -m unittest discover -s tests/host -p 'test_artifact_guard.py' -v`.
+- **設計判断: `.pce` は拡張子では拒否しない。** 本プロジェクトが生成する正規の HuCARD イメージや DEV 診断 ROM は、正当な成果物である。成果物ガードは `.pce` にも ELF、Mach-O、PE/NE/LE、ar、アーカイブのシグネチャ検査を適用する。
+- **`.pce` が通ったことは、来歴の証明ではない。** シグネチャ検査は、`.pce` が GPL 由来のコードを含まないこと、記載されたソースから作られたこと、再ビルドで再現できることを示さない。出所、ビルド手順、再現性は**未解決**であり、Issue #335 で追跡する。それまで、アップロードされるすべての `.pce` は、作成方法について人のレビューが必要である。
+- **コミット済みの `.pce` は影響を受けない。** 上記のコミット済み内容のガードは、ハッシュ固定がない禁止拡張子を今も拒否する。成果物ガードはその規則を変えない。
+- **ジョブを分ける。** ビルドと公開は別のジョブで行う。ビルドジョブ（PR のコードを実行する）は、出力を `intermediate-*` 成果物として渡し、ガードは実行しない。ガードジョブは、そのビルドジョブに `needs:` し、中間成果物を `.intake`（ワークスペース内）にダウンロードし、信頼されたステップのみを実行する。信頼されたステップとは、`main` を `.trusted-main`（ワークスペース内）にチェックアウトすること（sparse で `tools/artifact_guard.py` のみ）、`python3` の解決、配置検査のためのワークフローファイルのチェックアウト、ダウンロード、ステージ、検証、アップロードである。ガードジョブでビルドステップは実行しない。ガードは `main` のコピーから実行する。ガードの変更は、マージされてから有効になる。配置検査は、ビルドと公開を混在させるジョブ、公開以外のステップを実行するガードジョブ、`needs:` のないガードジョブ、どこからも消費されない中間成果物を拒否する。
+- **ステージング。** アップロードされるバイト列は、ステージングステップが `.artifact-stage/` に作る複製であり、sha256 はマニフェストに記録する。アップロードの直前の検証ステップは、ハッシュを再計算し、変更、余分なファイル、欠落、シンボリックリンクを拒否する。アップロードのパスは `.artifact-stage/` で始まらなければならない。
+- **残存する制限。** ハンドオフのハッシュ検査は、成果物のダウンロード後にガードジョブが行う。ガードジョブはビルドジョブのコピーを信頼せず、検査するのは公開するものそのものである。ガードジョブは独自のランナーで動き、そのチェックアウトはワークスペース内に置く。`.trusted-main` には `main` の `tools/artifact_guard.py` のみが入り、PR のワークフローのチェックアウトの後に作られる（後のチェックアウトがワークスペースを消去すると、それが消えるため）。`.intake` には、ダウンロードした中間成果物のみが入り、渡されなかった PR のビルド出力は入らない。これは、GitHub がホストするランナーが各ジョブを新しい VM で始めることに依存する（セルフホストランナーでは成立しない）。そのためビルドは、ガードジョブのファイルや、ガードジョブで解決された `python3` を変更できない。未解決の点として、中間成果物は保持期間（1日）が終わるまでリポジトリの閲覧者が読める。また、検証されていない中間成果物は、ワークフローの実行中に見える。公開そのものは内容検査によってのみ証明され、来歴は Issue #335 の課題である。
+- **ワイルドカードと広いパターン。** 現在のワークフローは特定のパスだけを使い、アップロードのパターンに `*` や `**` はない。ディレクトリ全体に一致する新しいパターン、またはルートにワイルドカードを置くパターンは、一致したものすべてをアップロードする。内容検査はシグネチャのみで、ファイルが何のデータかは判定しない。**そのようなパターンの追加は、一致しうる範囲について明示的なレビューが必要である。** リポジトリのアップロードがルートのワイルドカードを使うと `PathPolicyTests` が失敗するため、少なくとも追加は見えるようになる。
+- **未リストの経路は拒否する（fail closed、Issue #337）。** ワークフローまたは composite action のすべての `uses:` キーは、参照（ref）付きで `KNOWN_ACTIONS`（`tools/artifact_guard.py`）のアクションに一致しなければならない。表記（引用キー、フロー形式のマッピング、折りたたみや次行の値）は問わない。それ以外のアクションは、アップロード成果物ではないリリース用アクションを含めて、アップロード層と `--check-placement` の両方で拒否する。GitHub Releases やアップロードのエンドポイントを呼ぶ `run:` の文字列（`gh api .../releases`、`uploads.github.com`、シェルの行継続の行にあっても `/releases` のパスセグメント）も拒否する。複雑なキー（`? uses`）や、エスケープを含む二重引用符のキー（`"uses"`）も、行読みからは中身が見えないため拒否する。許可リストに載るアクションは、40 桁の完全なコミット SHA に固定しなければならない。タグや短い SHA は、両層で、アップロード成果物のステップを含めて拒否する（Issue #349）。SHA は、そのコミットのコードとして信頼する。ガードはその内容を検証しない。公開アクション（`deploy-pages`、`upload-pages-artifact`、`attest-build-provenance`）は、ガードがブロック形式のジョブとして読むワークフローのすべてのジョブで、`--check-placement` が拒否する。ジョブ ID は、インデント 2 のブロック形式の行からのみ取る。フロー形式のジョブ（例: `zz: {runs-on: ..., steps: [...]}`）はブロックのジョブ ID を持たないため、その中の公開の使用は、直前のジョブに帰属させずに拒否する（Issue #349、レビュー MEDIUM-HIGH）。許可されたペアは `PUBLISH_JOB_ALLOWLIST` の `(api-source.yml, attest-cdread)` と `(api-source.yml, attest-cdread-verdict)` のみである。この 2 組では、各 attest ステップの `with:` は正確に `subject-path` でなければならず、その値は `ATTEST_SUBJECTS` で承認された対象の集合でなければならない。`subject-checksums`、`subject-name`、`subject-digest`、その他の対象は拒否する。もう一つの例外は、最終アップロードを持つガードジョブ内の Pages アクション（`pages.yml` の deploy ジョブ）であり、その配置はガードが既に検査している（Issue #349、レビュー MAJOR）。代償として、ワークフローが新たに必要とする、ビルドだけを行うアクションは、レビュアーが SHA つきでリストに加えるまで拒否される。
+- **保証の外（検出しない。ブロックしているとも主張しない）。** ガードが認識するのは上記の経路だけである。次のものは見えない。ファイルをホストへ送るすべての `curl`/`wget` などのネットワークツール（手書きの `curl -F` によるアップロードを含む）、タグやブランチの `git push`、`gh gist` の作成、リリースパス以外のエンドポイントへの `gh api` の書き込み（`-X PUT`、`-X POST`、`-X PATCH`）、`gh api graphql` で送られる `createRelease` などの GraphQL の変更、この一覧のどの名前にも一致しないコマンドによるあらゆる公開。これらの経路には、ガードによる保証ではなく、`run:` の文字列に対する人のレビューが必要である。
+- **Issue #349 レビュー（LOW）の後も、ガードが強制しない事項。**
+  - **署名の条件。** ガードは、各署名ジョブ（`attest-cdread`、`attest-cdread-verdict`）の承認された `if:` を `attest_condition_violations` で検査する。値全体が、空白を正規化した後で `github.event_name == 'push' && github.ref == 'refs/heads/main'` と一致しなければならない。テキストと、PyYAML が解釈した値の両方を見る。ブロック形式、引用形式、フロー形式、重複、タグつきの形式は拒否する。その式が正しい方針かどうかは、ワークフローの審査対象のままである。
+  - **別の経路による署名呼び出し。** ガードは、すべてのワークフローと composite action の、すべての有効な行で署名の文字列（`sigstore`、`cosign`、`fulcio`、`rekor`、`attest`、`actions/attest`、`gh attestation`、OIDC のリクエストトークン）を拒否する。例外は、承認された attest の `uses:` 行と、読み取り専用の `gh attestation verify` のみである。round 6 では、`run:` の値を YAML で解釈し、シェル正規化（`_shell_text`）を経た後で署名の文字列を検査し、すべてのジョブに適用する。**`id-token: write` を持ち、承認された署名ジョブではないジョブでは**、各 `run:` は次の完全一致の登録（round 8）と一致しなければならない。以下に詳述する。
+  - **許可リストと対象の編集。** `PUBLISH_JOB_ALLOWLIST`、`ATTEST_SUBJECTS`、`KNOWN_ACTIONS`、`APPROVED_RUN_TEXTS`、`RUN_ALLOWLIST`、`RUN_EXPRESSIONS` は審査対象の契約である。これらの変更はレビューで見えるが、実行時には止めない。
+  - **残存する制限（Issue #337 round 6）。** 以下の 3 点は、ガードが検出または保証しない残存ギャップである。
+    1. **承認外ジョブから呼ばれる composite action の中の署名呼び出し**は、ローカルの `uses:` の確認を超えて検出しない。
+    2. **承認済みジョブの検査は固定形のみ。** 承認済みの署名ジョブは、`ATTEST_STEPS` と `ATTEST_NEEDS` による固定形（許可されたステップの順序と内容、`needs:`、`continue-on-error` の拒否）で検査する。コマンド単位の許可リストは、承認外の `id-token` ジョブにのみ適用する。
+    3. **生成元の認証はワークフローの方針に依存する。** ガードは、実行したワークフローの作成者やコードの出所を検証しない。信頼は、ブランチ保護、承認済みの署名ジョブのみ、審査された `RUN_ALLOWLIST` の内容に依存する。
+- **承認外の id-token ジョブの完全一致（Issue #337 round 8）。** `id-token: write` を持ち、承認済みの署名ジョブ（`ATTEST_NEEDS`）ではないジョブでは、`run:` の値は次の条件を満たす場合にのみ受理する。YAML が解釈した文字列から末尾の改行を 1 つ除いたものが、`APPROVED_RUN_TEXTS` の `(ワークフローのファイル名, ジョブ ID, ステップ名)` に登録された文字列と**バイト単位で等しい**こと。それ以外の `run:` は、内容によらず拒否する。シェルの構文を解析して判定しないため、先頭語の許可リストや引数の検査には依存しない。登録は `pages.yml` の `deploy` ジョブの 4 件のみで、`test_artifact_guard_exact_r8` が実ファイルを読み、登録と一致しなければ失敗する。同じ文字列でも別のジョブや別のステップ名では拒否し、同じキーをジョブ内で二度使うことも拒否する。承認されるステップは `name`、`id`（任意）、`run` の 3 つのキーだけを持てる。`env`、`if`、`working-directory`、`shell`、`continue-on-error`、`timeout-minutes`、`with` など、それ以外のキーを持つステップは、`run:` の文字列が登録と完全一致していても拒否する（Issue #337 round 9）。round 6 と round 7 の拒否（先頭語の許可リスト、GitHub 式の位置、バックスラッシュ、パラメータ展開、間接実行など）は第二層として残すが、拒否するだけで、完全一致の受理を広げることはない。
+- **実行環境を変えるキーの拒否（Issue #337 round 10）。** `execution_scope_violations`（`signing_violations` から呼ばれる）が、次を拒否する。
+  - **ワークフロー全体:** トップレベルの `env:`（キーの種類を問わず）と `defaults:`。`env:` は `PATH`、`BASH_ENV`、`PYTHONPATH`、`LD_PRELOAD`、`GIT_*` などで `python3`、`bash`、`sh` の解決を変えうる。現在のワークフローには `env:` と `defaults:` のどちらもない。
+  - **`id-token: write`（承認の有無を問わず）を持つジョブのジョブレベルのキー:** 許可するのは `name`、`runs-on`、`permissions`、`needs`、`steps`、`if`、`outputs`、`timeout-minutes`、`strategy`、`concurrency`、`environment` のみ。`environment` は名前、または `name` と `url` だけの対応表（文字列の値）とする。`env`、`container`、`services`、`defaults` を含め、それ以外の未知のキーはすべて拒否する（fail closed）。
+  - **同じジョブのステップのキー:** `run:` のステップは `name`、`id`、`run` のみ。`uses:` のステップは `name`、`id`、`uses`、`with` のみ。`env`、`shell`、`working-directory`、`if` などは拒否する。
+  - **残存する制限（round 10）。** `id-token` を持たないジョブの `env:` と `container:` は検査しない（署名の経路ではないため）。ジョブ単位の `permissions:` を経由しない権限の継承（ワークフローの `permissions:` の既定値）は、`id-token: write` の有無の判定に反映している。`environment:` の `url` の値は式を含みうるが、実行環境は変えない。許可リストに無い未知のキーは、それが実行環境を変えないと人が確認するまで拒否したままとする。
+- **署名は承認された合成ファイルと verdict JSON に限る。** `attest-cdread` が署名するのは、`evidence/cdread-probe/cdread-evidence.json` と `evidence/cdread-probe/cdread-probe-not-bios.pce` の 2 ファイルだけである。`attest-cdread-verdict` が署名するのは `verdict/cdread-verdict.json` だけで、どちらも `push` to main のみである。
+- **Attestation publication scope**（Attestation の公開範囲。Issue #349、所有者の決定）。`.github/workflows/api-source.yml` の `attest-cdread` ジョブは、正確に次の 2 ファイルのみを attest し、それ以外は attest しない。
+  - `evidence/cdread-probe/cdread-evidence.json`: 合成の診断結果 JSON。
+  - `evidence/cdread-probe/cdread-probe-not-bios.pce`: 合成の診断 ROM。
+  - 署名の条件（Issue #349 レビュー）: `if: github.event_name == 'push' && github.ref == 'refs/heads/main'`。`workflow_dispatch` は、main を含むどの ref でも署名しない。ガードは、この正確な `if:` をテキストと解釈後の値の両方で検査する（上記「保証の外」を参照）。
+  - Attest の入力（Issue #349 レビュー）: ステップの `with:` は、承認された対象を持つ `subject-path` のみでなければならない。`subject-checksums`、`subject-name`、`subject-digest` はガードが拒否する。
+
+  生成と権利（リポジトリのソースから確認、2026-10-20）:
+  - ROM は、`src/` と `src/bank0.cfg` のみから、`build_rom.py` がリポジトリのソースから導く開発専用の API ビルドの上に、cc65（`ca65`/`ld65`、版を固定）で組み立てる。外部の BIOS、商用 ROM、ディスクの入力はなく、cc65 のランタイムライブラリもリンクしない。
+  - 実行に使うディスクは `tools/make_cd_image.py` が生成する（`OSSPCE-CD-TEST-V1` のペイロード、決定的な SHA-256 ストリーム）。JSON にはハッシュ、フェーズと結果の状態、自己申告の `"proprietary_content": "NONE"` が記録される。
+  - Geargrafx は、試験の実行にのみ使う第三者のエミュレータである。そのソースはこれらのファイルに含まれず、記録するのは版とアーカイブのハッシュだけである。
+  - **制限:** `"proprietary_content": "NONE"` は試験スクリプトの自己申告フィールドであり、機械的には検証されていない。ワークフローはリポジトリのコードを実行しないため、attest ジョブは生成元を再検査できない。
+
+  率直な残存リスク: attestation は、両ファイルの**ファイル名と sha256 ダイジェスト**を公開する。ROM の名前は「not-bios」の性質を表し、ダイジェストによって、誰でもこれらの正確なファイルのコピーを確認できる。これは、2 つの合成ファイルに限って受け入れる。リストのどのファイルでも、検証された出所と権利がない場合は、`subject-path` から削除しなければならない。それはレビューの対象となる変更であり、attest ジョブが決めることではない。
+  - この 2 ファイルの範囲の外にあるのは `attest-cdread-verdict`（`verdict/cdread-verdict.json`、main への push のみ）である。これもファイル名とダイジェストを attest する。本決定の対象ではなく、所有者による別個の決定が必要である。`PUBLISH_JOB_ALLOWLIST` に残し、成果物ガードの変更によって削除はしない。削除は人の決定事項である。
+  - attestation によって、これらのファイルがいかなるライセンスの下でも配布可能になるわけではない。配布条件は Issue #335 と上記の方針に委ねる。
+- **Pages アクションの固定（Issue #349）。** `pages.yml` は、`configure-pages`、`upload-pages-artifact`、`deploy-pages` を、`gh api repos/actions/<name>/commits/<tag>` で 2026-10-20 に解決したコミット SHA に固定する。更新には新しい解決と審査が必要である。SHA はタグに対して再検査しない。
+- **ワークフローの変更は必ず審査する。** `.github/workflows/` の変更は、何が実行されるかを変える。保守者のレビューが必要である。ガードは、自身のステップを削除するワークフローの編集を検出できない。それには、所有者が設定するブランチ保護が必要である。
+- 試験: `python3 -B -m unittest discover -s tests/host -p 'test_artifact_guard.py' -v`。round 6 の試験は `python3 -B -m unittest discover -s tests/host -p 'test_artifact_guard_sign_r6.py' -v`。
