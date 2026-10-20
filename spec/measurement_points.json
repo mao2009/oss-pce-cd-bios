@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "points": [
+    {
+      "id": "HW_BUS_READBACK_1804",
+      "kind": "HW_BUS_READBACK",
+      "covers_fields": ["hw_bus_reset"],
+      "hook": "Read-back of the $1804 bus register. Hook not implemented; no real-core measurement in this entry."
+    },
+    {
+      "id": "CALLEE_EXECUTION_SLOT",
+      "kind": "CALLEE_EXECUTION",
+      "covers_fields": ["arguments", "returns", "clobbered", "preserved", "stack", "mpr", "ram", "flags", "irq", "errors", "synchronization"],
+      "hook": "Entry and exit of one API slot in the reference ROM. Hook not implemented; no real-core measurement in this entry."
+    }
+  ]
+}
