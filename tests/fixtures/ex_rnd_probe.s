@@ -9,17 +9,18 @@
 .export probe_reset
 
 .macro rnd_phase base
+    .local loop, ok
     ldy #0
-@loop:
+loop:
     ldx #$a5
     jsr ex_rnd_next
     sta base,y
     cpx #$a5
-    beq @ok
+    beq ok
     inc $2204
-@ok:
+ok:
     iny
-    bne @loop
+    bne loop
 .endmacro
 
 .segment "RESET"
