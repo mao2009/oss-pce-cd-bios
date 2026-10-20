@@ -116,7 +116,7 @@ Linux 上のクリーンクローンで、リポジトリルートから `TOOLS_
 
 本 PR は Makefile ターゲットを追加しない（共有ターゲット `routine-real-core` は PR #331 に属し、本ツリーには存在しない）。ハーネスは検証済み DEV ROM の
 `$E800-$EFFF` テストオーバーレイ（`tests/fixtures/core-harness.s`）から bank0 の
-ルーチンを JSR し、合成入力 A/X/Y/P とゼロページ `$20E0-$20FF` 32 バイトを与えて、
+ルーチンを JSR し、合成入力 A/X/Y/P とゼロページ `$E0-$FF`（コード上の番地 `$00E0-$00FF`、32 バイト。番地の対応は docs/311-harness-safety.md の番地表記を参照）を与えて、
 呼出前後の A/X/Y/P/SP/MPR とゼロページを実 Geargrafx コア（ディスクなし HuCard
 ロード、cold/warm、各 2048 命令）で記録する。各サイクルは `RETURNED` / `TRAPPED`
 / `TIMEOUT` に分類し、`RETURNED` かつ全期待値一致のみ PASS。`TIMEOUT` は 1 サイクル 2048 命令の予算超過（長いルーチンを含む）と無限ループを区別しない。プラグインケースは `expect` で a/x/y/p（非ゼロ `p_mask`）/ram のいずれかを必ず照合する。未完了は PASS に
