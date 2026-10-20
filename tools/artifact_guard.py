@@ -913,7 +913,10 @@ GH_VERIFY_SPAN_RE = re.compile(r"gh attestation verify\b")
 # command -v finds python3, and the trusted python3 path from the pyresolve step is the one GitHub expression allowed there.
 RUN_ALLOWLIST = {("pages.yml", "deploy"): frozenset({"echo", "command"})}
 RUN_EXPRESSIONS = {("pages.yml", "deploy"): frozenset({"${{ steps.pyresolve.outputs.python }}"})}
-SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "(", ")", "{", "}"})
+SHELL_PUNCTUATION = "();<>|&{}"
+SHELL_OPERATOR_RE = re.compile(r"[();<>|&{}]+")   # a token made only of operator characters (a quoted word never is)
+SHELL_SEPARATOR_RE = re.compile(r"[;()|&{}]")
+REDIRECTION_RE = re.compile(r"[<>][&|]?")
 GH_EXPRESSION_RE = re.compile(r"\$\{\{.*?\}\}")
 
 
@@ -928,12 +931,25 @@ def _shell_text(parts):
     return " ".join(re.sub(r"[\\'\"]", "", "\n".join(joined)).split())
 
 
-def _shell_words(script):
-    """The words of one shell script. Non-POSIX shlex keeps quotes in a word, so the quote rule can see them."""
-    lexer = shlex.shlex(script, posix=False, punctuation_chars=True)
+def _simple_commands(script):
+    """The simple commands of one shell script, each a list of words. A newline ends a command (shlex treats it as plain
+    whitespace, which is why round 6 let a multi-line run through), and so does an operator token holding one of ;()|&{}
+    (`;`, `|`, `|&`, `&&`, parentheses, braces). A redirection such as >, >>, >&, >| or <& does not end one.
+    Non-POSIX shlex keeps quotes in a word, so the quote rule can see them."""
+    lexer = shlex.shlex(re.sub(r"[\r\n]+", " ; ", script), posix=False, punctuation_chars=SHELL_PUNCTUATION)
     lexer.whitespace_split = True
     lexer.commenters = ""
-    return list(lexer)
+    commands, command = [], []
+    for token in lexer:
+        if SHELL_OPERATOR_RE.fullmatch(token) and SHELL_SEPARATOR_RE.search(token) and not REDIRECTION_RE.fullmatch(token):
+            if command:
+                commands.append(command)
+            command = []
+        else:
+            command.append(token)
+    if command:
+        commands.append(command)
+    return commands
 
 
 def _close_paren(text, open_index):
@@ -985,18 +1001,17 @@ def _script_problems(script, names, expressions, where):
         problems += _script_problems(script[start + 2:end], names, expressions, where)
         start = script.find("$(", end)
     try:
-        words = _shell_words(script)
+        commands = _simple_commands(script)
     except ValueError:   # shlex: no closing quotation
         return problems + [f"{refuse}: run: has an unclosed quote"]
-    command = []
-    for word in words + [";"]:
-        if word not in SHELL_SEPARATORS:
-            command.append(word)
-            continue
-        problem = _command_problem(command, names, expressions) if command else None
+    quoted = {f'"{expression}"' for expression in expressions}
+    for command in commands:
+        for index, word in enumerate(command):   # a GitHub expression is allowed only as the first word of a command
+            if "${{" in word and not (index == 0 and word in quoted):
+                return problems + [f"{refuse}: run: uses a GitHub expression outside the first word of a command"]
+        problem = _command_problem(command, names, expressions)
         if problem:
             problems.append(f"{refuse}: {problem}")
-        command = []
     return problems
 
 
