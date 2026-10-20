@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""Issue #361: pre-side-effect blocking plan V01-V08 on the pinned real core (synthetic inputs only).
+
+Orchestrates EXISTING real-core probe runs (ST paths, neg/pos write guard, TAM) from
+``geargrafx_st_bypass`` and ``geargrafx_reference_guard`` and maps each planned check to a verdict.
+No core code is copied and no core hook is added here.
+
+Verdicts per case:
+* PASS    - measured, every planned sub-check prevented the side effect before it landed.
+* BLOCKED - measured: the side effect lands before any stop (no pre-side-effect point).
+* PARTIAL - only a measured subset of the planned sub-checks ran; the rest is listed.
+* NOT_RUN - no probe mode / audit exists in this PR; nothing was executed for the case.
+* FAIL    - a probe run did not match its declared expectation (unexpected behaviour).
+
+The overall gate is PASS only when every case is PASS, so this PR can never report PASS.
+Run by the parent on Linux after ``make setup``:
+    python3 tests/integration/geargrafx_preside_probe.py
+Under Windows or WSL-from-worker it fails closed (BLOCKED); a refusal is never a PASS.
+"""
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import geargrafx_reference_guard as guard  # noqa: E402
+import geargrafx_st_bypass as st  # noqa: E402
+from geargrafx_api import compile_probe  # noqa: E402
+
+PASS, BLOCKED, PARTIAL, NOT_RUN, FAIL = "PASS", "BLOCKED", "PARTIAL", "NOT_RUN", "FAIL"
+PROBE_SOURCE = "geargrafx_reference_jsr.cpp"
+# W02 targets: the three that the existing neg-write probe runs; the rest of the plan is unrun.
+V05_RUN = (0x0000, 0x1FFF, 0x4000)
+V05_PLANNED = V05_RUN + (0x6000, 0x8000, 0xA000, 0xE000)
+
+# (case id, inventory row, kind, parameters, reason when not runnable)
+CASES = (
+    ("V01", "W05 ST0 address register", "st", ("st0",), None),
+    ("V02", "W06/W07 ST1/ST2 data registers", "st", ("st1", "st2"), None),
+    ("V03", "W14 interrupt entry", "none", (),
+     "no probe mode runs a CLI/IRQ entry; a pre-handler hook does not exist on the pinned core"),
+    ("V04", "W15 block-transfer instructions", "none", (),
+     "no probe mode executes TII/TIN/TDD/TIA/TAI; mid-instruction stop behaviour unmeasured"),
+    ("V05", "W02 remaining banks and boundaries", "neg", V05_PLANNED, None),
+    ("V06", "W03 MPR changes", "tam", (), None),
+    ("V07", "W17 device-origin RAM writes", "none", (),
+     "core-source audit not performed in this PR (pinned source is outside the repository)"),
+    ("V08", "observation schema (IRQ UNKNOWN or OBSERVED)", "none", (),
+     "tools/jsr_observation.py lives on feat/173-inrun-write-guard (PR #360), not on main"),
+)
+
+
+def run_case(case, probe, bios, cue):
+    """Return (case id, verdict, detail). Calls the real probe only for runnable kinds."""
+    case_id, label, kind, params, reason = case
+    try:
+        if kind == "st":
+            verdicts = [st.check_st(guard.run_mode(probe, bios, cue, mode, 0), mode) for mode in params]
+            if set(verdicts) != {st.BLOCKED_VERDICT}:
+                raise ValueError(f"unexpected ST verdicts {verdicts}")
+            return case_id, BLOCKED, f"{label}: side effect lands before the stop (measured)"
+        if kind == "neg":
+            for target in V05_RUN:
+                guard.check_neg(guard.run_mode(probe, bios, cue, "neg-write", target), target)
+            missing = [f"${t:04X}" for t in V05_PLANNED if t not in V05_RUN]
+            return case_id, PARTIAL, f"{label}: prevented+detected at {len(V05_RUN)} targets; unrun {missing}"
+        if kind == "tam":
+            guard.check_tam(guard.run_mode(probe, bios, cue, "tam", 0))
+            return case_id, PARTIAL, f"{label}: TAM detected before the next instruction; other MPR paths unaudited"
+    except ValueError as error:
+        return case_id, FAIL, f"{label}: {error}"
+    return case_id, NOT_RUN, f"{label}: {reason}"
+
+
+def overall(verdicts):
+    """PASS only when every case is PASS; anything else keeps the gate BLOCKED."""
+    return PASS if verdicts and all(v == PASS for v in verdicts) else BLOCKED
+
+
+def main():
+    if sys.platform != "linux":  # pinned Geargrafx core is a Linux .so; never skip silently
+        raise ValueError(f"real-core probe is Linux-pinned (platform {sys.platform}); BLOCKED, not PASS")
+    with tempfile.TemporaryDirectory(prefix="pce-preside-") as tmp:
+        directory = Path(tmp)
+        bios, cue = guard.synthetic_media(directory)
+        probe = compile_probe(directory, source_name=PROBE_SOURCE, target_name="preside-probe")
+        results = [run_case(case, probe, bios, cue) for case in CASES]
+    for case_id, verdict, detail in results:
+        print(f"{case_id} {verdict}: {detail}")
+    print(f"OVERALL {overall([v for _, v, _ in results])} (release_eligible=false)")
+    return 1 if any(v == FAIL for _, v, _ in results) else 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (ValueError, OSError, subprocess.TimeoutExpired) as error:
+        print(f"FAIL/BLOCKED pre-side-effect probe: {error}", file=sys.stderr)
+        raise SystemExit(1) from error
