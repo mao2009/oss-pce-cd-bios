@@ -8,14 +8,22 @@ No core code is copied and no core hook is added here.
 Verdicts per case:
 * PASS    - measured, every planned sub-check prevented the side effect before it landed.
 * BLOCKED - measured: the side effect lands before any stop (no pre-side-effect point).
-* PARTIAL - only a measured subset of the planned sub-checks ran; the rest is listed.
+* PARTIAL - only a measured subset of the planned sub-checks ran; the rest is listed in the detail.
+            V06 (TAM) is PARTIAL because TAM is a detection-only check at the instruction boundary,
+            not a block: the MPR write itself is not stopped, and other MPR paths are unaudited.
 * NOT_RUN - no probe mode / audit exists in this PR; nothing was executed for the case.
 * FAIL    - a probe run did not match its declared expectation (unexpected behaviour).
 
-The overall gate is PASS only when every case is PASS, so this PR can never report PASS.
+Scope: this script covers V01-V08 only. An overall PASS is NOT a gate release (ゲート解放ではない).
+The slot-1e gate stays BLOCKED (spec/reference_jsr_gate.json) regardless of this script's output.
+Not covered by any V-case (listed in UNCOVERED_IDS, no cases added here): W08-W11 (IRQ register
+writes), W12 ($1804), W13 (other MMIO), W16 (allowlisted unisolated writes). W15 and W17 are only
+covered as NOT_RUN in V04/V07.
+
+Exit status: 0 only when the overall verdict is PASS; BLOCKED and FAIL both exit 1.
 Run by the parent on Linux after ``make setup``:
     python3 tests/integration/geargrafx_preside_probe.py
-Under Windows or WSL-from-worker it fails closed (BLOCKED); a refusal is never a PASS.
+On Windows or WSL-from-worker the run is BLOCKED (exit 1); a refusal is never a PASS.
 """
 import subprocess
 import sys
@@ -32,6 +40,8 @@ PROBE_SOURCE = "geargrafx_reference_jsr.cpp"
 # W02 targets: the three that the existing neg-write probe runs; the rest of the plan is unrun.
 V05_RUN = (0x0000, 0x1FFF, 0x4000)
 V05_PLANNED = V05_RUN + (0x6000, 0x8000, 0xA000, 0xE000)
+# Inventory rows (spec/write_path_inventory.json) with no V-case; reported, never run here.
+UNCOVERED_IDS = ("W08", "W09", "W10", "W11", "W12", "W13", "W16")
 
 # (case id, inventory row, kind, parameters, reason when not runnable)
 CASES = (
@@ -66,7 +76,8 @@ def run_case(case, probe, bios, cue):
             return case_id, PARTIAL, f"{label}: prevented+detected at {len(V05_RUN)} targets; unrun {missing}"
         if kind == "tam":
             guard.check_tam(guard.run_mode(probe, bios, cue, "tam", 0))
-            return case_id, PARTIAL, f"{label}: TAM detected before the next instruction; other MPR paths unaudited"
+            return case_id, PARTIAL, (f"{label}: TAM detected before the next instruction "
+                                      "(検出のみ、遮断ではない); other MPR paths unaudited")
     except ValueError as error:
         return case_id, FAIL, f"{label}: {error}"
     return case_id, NOT_RUN, f"{label}: {reason}"
@@ -79,7 +90,9 @@ def overall(verdicts):
 
 def main():
     if sys.platform != "linux":  # pinned Geargrafx core is a Linux .so; never skip silently
-        raise ValueError(f"real-core probe is Linux-pinned (platform {sys.platform}); BLOCKED, not PASS")
+        print(f"BLOCKED: real-core probe is Linux-pinned (platform {sys.platform}); not PASS")
+        print("OVERALL BLOCKED (release_eligible=false; V01-V08 のみ; ゲート解放ではない)")
+        return 1
     with tempfile.TemporaryDirectory(prefix="pce-preside-") as tmp:
         directory = Path(tmp)
         bios, cue = guard.synthetic_media(directory)
@@ -87,13 +100,15 @@ def main():
         results = [run_case(case, probe, bios, cue) for case in CASES]
     for case_id, verdict, detail in results:
         print(f"{case_id} {verdict}: {detail}")
-    print(f"OVERALL {overall([v for _, v, _ in results])} (release_eligible=false)")
-    return 1 if any(v == FAIL for _, v, _ in results) else 0
+    print(f"UNCOVERED (no V-case, not run here): {', '.join(UNCOVERED_IDS)}")
+    verdict = overall([v for _, v, _ in results])
+    print(f"OVERALL {verdict} (release_eligible=false; V01-V08 のみ; ゲート解放ではない)")
+    return 0 if verdict == PASS else 1
 
 
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except (ValueError, OSError, subprocess.TimeoutExpired) as error:
-        print(f"FAIL/BLOCKED pre-side-effect probe: {error}", file=sys.stderr)
+        print(f"BLOCKED pre-side-effect probe error: {error}", file=sys.stderr)
         raise SystemExit(1) from error

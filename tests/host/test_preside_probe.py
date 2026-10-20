@@ -4,8 +4,10 @@ Synthetic only: no emulator is built or run. Checks the case table covers V01-V0
 the overall gate can never report PASS without every case PASS, that a probe mismatch fails
 closed, and that Windows (no pinned core) is BLOCKED rather than skipped.
 """
+import io
 import sys
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -54,9 +56,57 @@ class PresideProbeTest(unittest.TestCase):
         self.assertEqual(verdict, P.FAIL)
 
     def test_non_linux_is_blocked_not_skipped(self):
-        with mock.patch.object(P.sys, "platform", "win32"):
-            with self.assertRaisesRegex(ValueError, "BLOCKED, not PASS"):
-                P.main()
+        out = io.StringIO()
+        with mock.patch.object(P.sys, "platform", "win32"), redirect_stdout(out):
+            rc = P.main()
+        self.assertEqual(rc, 1)
+        self.assertIn("BLOCKED", out.getvalue())
+        self.assertIn("OVERALL BLOCKED", out.getvalue())
+        self.assertNotIn("OVERALL PASS", out.getvalue())
+
+    def _run_main_with(self, verdict):
+        out = io.StringIO()
+        results = [(c[0], verdict, "x") for c in P.CASES]
+        with mock.patch.object(P.sys, "platform", "linux"), \
+                mock.patch.object(P.guard, "synthetic_media", return_value=(Path("b"), Path("c"))), \
+                mock.patch.object(P, "compile_probe", return_value=None), \
+                mock.patch.object(P, "run_case", side_effect=lambda case, *_: (case[0], verdict, "x")), \
+                redirect_stdout(out):
+            rc = P.main()
+        return rc, out.getvalue(), results
+
+    def test_main_exit_code_is_nonzero_when_overall_blocked(self):
+        for verdict in (P.NOT_RUN, P.PARTIAL, P.BLOCKED):
+            rc, out, _ = self._run_main_with(verdict)
+            self.assertEqual(rc, 1, verdict)
+            self.assertIn("OVERALL BLOCKED", out)
+
+    def test_main_exit_code_is_zero_only_when_every_case_passes(self):
+        rc, out, _ = self._run_main_with(P.PASS)
+        self.assertEqual(rc, 0)
+        self.assertIn("OVERALL PASS", out)
+
+    def test_output_states_pass_is_not_a_gate_release(self):
+        rc, out, _ = self._run_main_with(P.PASS)
+        self.assertIn("V01-V08 のみ", out)
+        self.assertIn("ゲート解放ではない", out)
+        self.assertIn("ゲート解放ではない", P.__doc__)
+
+    def test_uncovered_ids_are_documented_not_silently_dropped(self):
+        rc, out, _ = self._run_main_with(P.NOT_RUN)
+        for wid in ("W08", "W09", "W10", "W11", "W12", "W13", "W16"):
+            self.assertIn(wid, out)
+        labels = " ".join(c[1] for c in P.CASES)
+        self.assertIn("W15", labels)
+        self.assertIn("W17", labels)
+
+    def test_v06_partial_states_detection_only_not_block(self):
+        with mock.patch.object(P.guard, "run_mode", return_value={}), mock.patch.object(P.guard, "check_tam"):
+            case = next(c for c in P.CASES if c[0] == "V06")
+            _, verdict, detail = P.run_case(case, None, None, None)
+        self.assertEqual(verdict, P.PARTIAL)
+        self.assertIn("検出のみ、遮断ではない", detail)
+        self.assertIn("PARTIAL", P.__doc__)
 
 
 if __name__ == "__main__":
