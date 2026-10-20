@@ -15,6 +15,7 @@ Synthetic inputs only: no emulator, no BIOS, no ROM byte is read.
 """
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -121,6 +122,32 @@ def resolve(slot, ledger, contracts, approval=None):
         "release_eligible": False,
         "reasons": reasons,
     }
+
+
+class GateRefused(ValueError):
+    """The execution gate did not return ALLOWED for the exact target entry (fail closed)."""
+
+
+def require_allowed(api_id):
+    """Refuse unless resolve() returns ALLOWED for the slot named by ``api_id`` (e.g. "slot-1e"),
+    bound to that slot's exact candidate entry. Takes no approval and no allow flag, and always
+    reads the committed ledger, so a caller cannot substitute a ledger or contracts."""
+    match = re.fullmatch(r"slot-([0-9a-f]{2})", api_id) if isinstance(api_id, str) else None
+    if match is None:
+        raise GateRefused("GATE_TARGET_UNMAPPED")
+    try:
+        ledger, contracts = load()
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise GateRefused("GATE_LEDGER_UNUSABLE") from error
+    slot = int(match.group(1), 16)
+    if slot >= len(contracts["apis"]):
+        raise GateRefused("GATE_TARGET_UNMAPPED")
+    record = resolve(slot, ledger, contracts)
+    entry = contracts["apis"][slot]["candidate_entry"]
+    if not (is_execution_permitted(record["execution"]) and record["candidate_entry"] == entry):
+        raise GateRefused(f"BLOCKED: reference JSR gate refused {api_id} ({entry}): "
+                          + ", ".join(record["reasons"]))
+    return record
 
 
 def load(ledger_path=LEDGER_PATH, contracts_path=ROOT / "spec" / "api_contracts.json"):

@@ -26,6 +26,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests/integration"))
+import reference_jsr_gate as G
 from geargrafx_api import compile_probe
 
 SCHEMA = "oss-pce-cd-bios/reference-observation/v1"
@@ -102,6 +103,9 @@ def jsr_observation(row):
 def observe_jsr(config):
     """Call slot 0x1E through the guarded probe; in-core enforcement is mandatory."""
     budget, allow_start, allow_end = validate_jsr_config(config)
+    # Execution gate: refuse unless the reference JSR gate allows this slot entry. This runs
+    # before the probe is compiled or bios_path is opened; no caller flag can skip it.
+    G.require_allowed(config["api_id"])
     # Local probe compilation uses the pinned Geargrafx debugger build, never bundled.
     with tempfile.TemporaryDirectory(prefix="pce-reference-jsr-") as tmp:
         out = Path(tmp)
@@ -123,6 +127,8 @@ def observe_jsr(config):
 
 
 def observe(config):
+    # Gate every branch (slot-1e and reset-only alike) before any dispatch or bios_path access.
+    G.require_allowed(config.get("api_id"))
     if config.get("api_id") == "slot-1e":
         return observe_jsr(config)
     if config.get("api_id") != "reference-reset-only":

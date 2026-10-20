@@ -1,0 +1,51 @@
+{
+  "schema": "oss-pce-cd-bios/cdsubq-slot0a-fixture/v1",
+  "issue": 260,
+  "parent_issue": 19,
+  "slot": "$0A",
+  "entry_candidate": "$E01E",
+  "candidate_name": "CD_SUBQ",
+  "abi_status": "BLOCKED_ABI",
+  "release_eligible": false,
+  "execution": "NOT_RUN",
+  "provenance": "synthetic: author-defined medium and cases only; no System Card BIOS byte, disassembly, retail data, or ./rom/ content; no reference callee is executed",
+  "callee_abi": {
+    "arguments": "UNKNOWN",
+    "returns": "UNKNOWN",
+    "registers": "UNKNOWN",
+    "q_buffer_layout": "UNKNOWN",
+    "reference_jsr": "NOT_CALLED"
+  },
+  "medium": {
+    "synthetic": true,
+    "leadout_lba": 200,
+    "tracks": [
+      {"no": 1, "type": "data", "start": 0, "end": 99},
+      {"no": 2, "type": "audio", "start": 100, "end": 199}
+    ]
+  },
+  "io_range": {
+    "lba_min": 0,
+    "lba_max": 199,
+    "track_numbers": [1, 2]
+  },
+  "cases": [
+    {"id": "pos_track1_start", "playback_state": "PLAYING", "track": 1, "lba": 0, "expected": "POSITIVE", "reason": "作者定義: first LBA of the data track while playing"},
+    {"id": "pos_track1_end", "playback_state": "PLAYING", "track": 1, "lba": 99, "expected": "POSITIVE", "reason": "作者定義: last LBA of the data track while playing"},
+    {"id": "pos_track2_start", "playback_state": "PLAYING", "track": 2, "lba": 100, "expected": "POSITIVE", "reason": "作者定義: first LBA of the audio track while playing"},
+    {"id": "pos_track2_middle", "playback_state": "PLAYING", "track": 2, "lba": 150, "expected": "POSITIVE", "reason": "作者定義: interior LBA of the audio track while playing"},
+    {"id": "pos_track2_end", "playback_state": "PLAYING", "track": 2, "lba": 199, "expected": "POSITIVE", "reason": "作者定義: last LBA of the audio track while playing"},
+    {"id": "neg_not_started", "playback_state": "NOT_STARTED", "track": 1, "lba": 0, "expected": "NEGATIVE", "reason": "作者定義: unplayed medium: no current Q position exists"},
+    {"id": "neg_stopped_track2", "playback_state": "STOPPED", "track": 2, "lba": 150, "expected": "NEGATIVE", "reason": "作者定義: stopped: an in-range position is not a current Q state"},
+    {"id": "neg_leadout", "playback_state": "PLAYING", "track": 2, "lba": 200, "expected": "NEGATIVE", "reason": "作者定義: lead-out LBA, one past the audio track end"},
+    {"id": "neg_past_leadout", "playback_state": "PLAYING", "track": 2, "lba": 201, "expected": "NEGATIVE", "reason": "作者定義: beyond the medium lead-out"},
+    {"id": "neg_before_track2", "playback_state": "PLAYING", "track": 2, "lba": 99, "expected": "NEGATIVE", "reason": "作者定義: last data LBA, one before the audio track start"},
+    {"id": "neg_track_mismatch", "playback_state": "PLAYING", "track": 1, "lba": 150, "expected": "NEGATIVE", "reason": "作者定義: LBA lies in track 2 but track 1 is reported"},
+    {"id": "neg_negative_lba", "playback_state": "PLAYING", "track": 1, "lba": -1, "expected": "NEGATIVE", "reason": "作者定義: negative LBA"},
+    {"id": "neg_no_such_track", "playback_state": "PLAYING", "track": 3, "lba": 100, "expected": "NEGATIVE", "reason": "作者定義: track number not on the medium"},
+    {"id": "neg_track_zero", "playback_state": "PLAYING", "track": 0, "lba": 100, "expected": "NEGATIVE", "reason": "作者定義: track number zero is not a track"},
+    {"id": "neg_bool_track", "playback_state": "PLAYING", "track": true, "lba": 100, "expected": "NEGATIVE", "reason": "作者定義: bool is not an int track (malformed)"},
+    {"id": "neg_float_lba", "playback_state": "PLAYING", "track": 2, "lba": 100.0, "expected": "NEGATIVE", "reason": "作者定義: non-integer LBA type (malformed)"},
+    {"id": "neg_string_lba", "playback_state": "PLAYING", "track": 2, "lba": "100", "expected": "NEGATIVE", "reason": "作者定義: string LBA type (malformed)"}
+  ]
+}
