@@ -21,6 +21,10 @@ Run:
 
 This checks both languages, section anchors, local assets, canonical URLs, reciprocal hreflang, Open Graph metadata, JSON-LD, sitemap entries, factual AI summary and evidence disclaimers using only Python's standard library. In addition, open both pages in a browser and inspect desktop and narrow mobile layouts, keyboard focus, contrast, reduced-motion mode and screen-reader reading order. Automated checks cannot replace a visual accessibility review.
 
+## Project link cards
+
+Both language pages contain four full-card links to the source repository, dated implementation status, roadmap and contribution guide. The links use shared CSS, not runtime OGP requests or JavaScript. `tools/check_pages.py` verifies their destinations and order in both languages. They do not claim real-time progress or firmware compatibility.
+
 ## Editorial conventions
 
 - The figures on the pages are a **dated historical snapshot**, based on PR #174 and 2026-10-17: 1 of 81 candidate API slots with a callable development-only EX_GETVER implementation, 80 remaining nonreturning stubs and 765 host tests passing as reported for that merge.

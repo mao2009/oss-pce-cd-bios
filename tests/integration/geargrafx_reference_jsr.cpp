@@ -134,6 +134,19 @@ int main(int argc, char** argv)
     if (allow_start % 0x2000 != 0 || allow_end % 0x2000 != 0)
         return 2;  // enforcement granularity is the 8 KiB MPR page
     std::string mode = argv[7];
+    // Issue #365: "stN-preblock" runs the stN path with an EXECUTE breakpoint on the
+    // ST opcode; "stN-preblock-disarmed" is the mutation (same guest, breakpoint not
+    // armed). The mode is reduced to "stN" so all ST logic below is unchanged.
+    bool st_pre = false, st_armed = true;
+    if (mode == "st0-preblock" || mode == "st1-preblock" || mode == "st2-preblock") {
+        st_pre = true;
+        mode.resize(3);
+    } else if (mode == "st0-preblock-disarmed" || mode == "st1-preblock-disarmed" ||
+               mode == "st2-preblock-disarmed") {
+        st_pre = true;
+        st_armed = false;
+        mode.resize(3);
+    }
     if (mode != "call" && mode != "neg-write" && mode != "pos-write" && mode != "tam" &&
         mode != "mmio1804" && mode != "mmio1804-preblock" && mode != "st0" && mode != "st1" &&
         mode != "st2" && mode != "irqreg")
@@ -248,6 +261,9 @@ int main(int argc, char** argv)
     // Issue #198: VDC register index selected by ST0 (0 = MAWR). Used for code
     // generation below and for the HUC6270_REGISTER breakpoint armed later.
     u8 st_reg = 0;
+    // Issue #365: CPU address of the ST opcode (ST0 at entry; ST1/ST2 after ST0 #$00;
+    // +1 when the preblock NOP prefix is present).
+    unsigned long st_pc = kGuestBase + (st_pre ? 1UL : 0UL) + (mode == "st0" ? 0UL : 2UL);
     if (mode == "st0" || mode == "st1" || mode == "st2") {
         // Issue #198 synthetic guest: ST0 #$nn / ST1 #$nn / ST2 #$nn then BRA *.
         // ST opcodes call m_huc6202->WriteFromCPU() directly: they bypass
@@ -261,6 +277,12 @@ int main(int argc, char** argv)
             code = {st_op, st_val, 0x80, 0xFE};   // ST0 #$07 at $3E00, BRA * at $3E02
         else
             code = {0x03, st_reg, st_op, st_val, 0x80, 0xFE};  // ST0 #$00, ST1/ST2 #nn, BRA * at $3E04
+        // Issue #365: the breakpoint is checked at the END of the previous instruction
+        // (huc6280_inline.h RunInstruction -> DisassembleNextOPCode), so a breakpoint on the
+        // entry PC set by this probe is never checked. The preblock variants prefix one NOP
+        // so the ST is reached through an executed instruction, as in a real guest flow.
+        if (st_pre)
+            code.insert(code.begin(), 0xEA);  // NOP
     }
     if (mode == "irqreg") {
         // Issue #199 synthetic guest: LDA #$01 / STA $1802 / BRA *.
@@ -346,6 +368,13 @@ int main(int argc, char** argv)
     if (mode == "mmio1804-preblock" &&
         !o.cpu->AddBreakpoint(HuC6280::HuC6280_BREAKPOINT_TYPE_CPU_ADDRESS,
                               (u32)kMmioStaPc, 0, /*range=*/false,
+                              /*read=*/false, /*write=*/false, /*execute=*/true))
+        return 7;
+    // Issue #365: EXECUTE breakpoint on the ST opcode itself (ST0 at $3E00, ST1/ST2
+    // at $3E02), same mechanism as the STA pre-block above.
+    if (st_pre && st_armed &&
+        !o.cpu->AddBreakpoint(HuC6280::HuC6280_BREAKPOINT_TYPE_CPU_ADDRESS,
+                              (u32)st_pc, 0, /*range=*/false,
                               /*read=*/false, /*write=*/false, /*execute=*/true))
         return 7;
     // Issue #198: arm a HUC6270_REGISTER write breakpoint on VDC register 0 (MAWR)
@@ -479,7 +508,7 @@ int main(int argc, char** argv)
             reason = "hardware_page_made_reachable";
             break;
         }
-        if (mode == "mmio1804-preblock" && o.cpu->BreakpointHit() &&
+        if ((mode == "mmio1804-preblock" || st_pre) && o.cpu->BreakpointHit() &&
             !o.cpu->MemoryBreakpointHit()) {
             // Flag raised at the boundary while PC still points at the STA: the
             // prohibited store has NOT executed; never re-enter the core for it.
@@ -535,8 +564,7 @@ int main(int argc, char** argv)
         } else {
             if (pc == kGuestBase + 5)
                 break;  // reached BRA* without a detected store
-            if ((mode == "st0" || mode == "st1" || mode == "st2") &&
-                pc == kGuestBase + (mode == "st0" ? 2UL : 4UL))
+            if ((mode == "st0" || mode == "st1" || mode == "st2") && pc == st_pc + 2UL)
                 break;  // BRA* directly follows the ST opcode: the VDC side effect has landed
         }
     }
@@ -716,10 +744,17 @@ int main(int argc, char** argv)
                           "\"vdc_ar_before\":%u,\"vdc_ar_after\":%u,"
                           "\"vdc_r_before\":%u,\"vdc_r_after\":%u",
                      mode.c_str(),
-                     (unsigned)(mode == "st0" ? kGuestBase : kGuestBase + 2),
+                     (unsigned)st_pc,
                      (unsigned)st_reg,
                      (unsigned)vdc_ar_before, (unsigned)vdc_ar_after,
                      (unsigned)vdc_r_before, (unsigned)vdc_r_after);
+    }
+    if (st_pre) {
+        // Issue #365: pre-execution breakpoint observation for the ST opcode.
+        std::fprintf(out, ",\"preblock\":true,\"armed\":%s,\"execbp_hit\":%s,"
+                          "\"execbp_addr\":%u",
+                     st_armed ? "true" : "false", execbp_hit ? "true" : "false",
+                     (unsigned)st_pc);
     }
     if (mode == "irqreg") {
         std::fprintf(out, ",\"irq1802_before\":%u,\"irq1802_after\":%u,"

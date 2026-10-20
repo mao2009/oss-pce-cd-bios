@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from tools.environment import requires_cc65
 
 from tools.build_rom import API_IMPLEMENTATION, build
 from tools.build_startup import (
@@ -11,6 +12,7 @@ from tools.build_startup import (
 )
 
 
+@requires_cc65
 class StartupBuildTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -117,9 +119,14 @@ class StartupBuildTests(unittest.TestCase):
         self.assertFalse(manifest["cd_disc_presence_read"])
         self.assertEqual(manifest["startup_symbols"], {name: 0xf000 + pos for name, pos in SYMBOL_OFFSETS.items()})
 
+
+
+class StartupContractTests(unittest.TestCase):
+    """Mode validation runs before any cc65 use, so this always runs (no built fixture)."""
     def test_bad_mode_refused(self):
-        with self.assertRaises(ValueError):
-            build_startup(self.original, self.root / "invalid-mode", "unsupported")
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ValueError):
+                build_startup(Path(directory) / "unused.pce", Path(directory) / "invalid-mode", "unsupported")
 
 
 if __name__ == "__main__":
