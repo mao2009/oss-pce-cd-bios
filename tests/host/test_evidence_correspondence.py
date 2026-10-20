@@ -23,7 +23,7 @@ from evidence_correspondence import OBSERVATION_KIND_FIELDS, adjudicate_observat
 REAL = {'gear:src/cdrom.cpp': 'EMULATOR_SOURCE'}
 CALLER = {'huc:include/hucc/pcengine.inc': 'CALLER_SOURCE'}
 EVIDENCE_ENTRY = {
-    'execution_conditions': 'cd-read probe run on the pinned Geargrafx core',
+    'execution_conditions': 'REAL-CORE cd-read probe run on the pinned Geargrafx core',
     'core_revision': 'b49ae82a012eade566d72e9d61c9d95a5caa4da3',
     'input_type': 'cd-read probe sector',
     'verification_result': 'probe observation matches the stored artifact',

@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import json
 import re
+import unicodedata
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,6 +51,17 @@ EVIDENCE_HASH_RE = re.compile(r'[0-9a-f]{64}\Z')
 EVIDENCE_TRUST_LEVEL = 'FORMAT_ONLY'
 # Synthetic fixtures and placeholders carry this marker in their text. adjudicate_claim() refuses OBSERVED for them.
 SYNTHETIC_MARKER = 'SYNTHETIC'
+# Positive provenance marker: an OBSERVED evidence entry must say in execution_conditions that it came from the real
+# core. Declaration only (no artifact content is read here); absence fails closed.
+REAL_CORE_MARKER = 'REALCORE'
+
+
+def _marker_text(text):
+    # Marker comparison form: NFKC, case-folded, all whitespace/punctuation/underscore removed, so
+    # 'S Y N T H E T I C', 'syn-thetic' and 'Synthetic' all match the marker.
+    return re.sub(r'[\W_]', '', unicodedata.normalize('NFKC', text)).casefold()
+
+
 # Source-kind semantics (Issue #209 / MEDIUM-1). A source kind classifies the
 # provenance of a *source-code reference* only. It never proves that anything was
 # executed: execution evidence is the separate `evidence` entries (Issue #208),
@@ -243,7 +255,7 @@ def resolve_evidence(entry, artifact_dir=EVIDENCE_ARTIFACT_DIR, pinned_revision=
 
 def is_synthetic_evidence(entry):
     """True when any text field of an evidence entry carries the SYNTHETIC marker (fixtures, placeholders)."""
-    return any(SYNTHETIC_MARKER in entry[field].upper() for field in EVIDENCE_FIELDS)
+    return any(_marker_text(SYNTHETIC_MARKER) in _marker_text(entry[field]) for field in EVIDENCE_FIELDS)
 
 
 def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=False,
@@ -354,11 +366,20 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
                 f'{context}: OBSERVED requires {OBSERVATION_KIND_KEY} in {sorted(OBSERVATION_KIND_FIELDS)}')
         require(field in OBSERVATION_KIND_FIELDS[kind],
                 f'{context}: observation kind {kind} does not support field {field!r}')
-        # Real-core provenance (fail closed): synthetic entries are never OBSERVED-grade, and every entry
-        # must be one that resolve_evidence() accepted. executed_callee=True is not a substitute.
+        # An executed callee can only back a callee-execution observation (declaration, not verified).
+        require(not executed_callee or kind == 'CALLEE_EXECUTION',
+                f'{context}: executed_callee=True requires observation kind CALLEE_EXECUTION, not {kind}')
+        # Real-core provenance (fail closed). executed_callee=True is never a substitute. Every text field the
+        # adjudicator sees is marker-checked, after normalization, so the marker cannot hide in value/sources/etc.
+        texts = [value, confidence, kind, *sources]
+        texts += [entry[name] for entry in evidence for name in EVIDENCE_FIELDS]
+        require(not any(_marker_text(SYNTHETIC_MARKER) in _marker_text(text) for text in texts),
+                f'{context}: OBSERVED refuses SYNTHETIC content (not real-core provenance)')
+        require(bool(resolved_evidence_hashes),
+                f'{context}: OBSERVED requires real-core evidence, but the resolved evidence set is empty')
         for entry in evidence:
-            require(not is_synthetic_evidence(entry),
-                    f'{context}: OBSERVED refuses SYNTHETIC evidence (not real-core provenance)')
+            require(_marker_text(REAL_CORE_MARKER) in _marker_text(entry['execution_conditions']),
+                    f'{context}: OBSERVED evidence lacks the {REAL_CORE_MARKER} provenance marker')
             require(entry['evidence_hash'] in resolved_evidence_hashes,
                     f'{context}: OBSERVED requires real-core evidence resolved by resolve_evidence')
     elif status == 'BLOCKED':

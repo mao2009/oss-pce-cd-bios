@@ -58,14 +58,14 @@ BLOCKED = {'status': 'BLOCKED', 'value': 'UNKNOWN', 'sources': [], 'confidence':
 # exercises that path end to end; the other positive tests pass REAL_RESOLVED directly.
 REAL_ARTIFACT_BYTES = b'real-core cd-read probe artifact (test fixture bytes)\n'
 REAL_ENTRY = {
-    'execution_conditions': 'cd-read probe run on the pinned Geargrafx core',
+    'execution_conditions': 'REAL-CORE cd-read probe run on the pinned Geargrafx core',
     'core_revision': 'b49ae82a012eade566d72e9d61c9d95a5caa4da3',
     'input_type': 'cd-read probe sector',
     'verification_result': 'probe observation matches the stored artifact',
     'evidence_hash': hashlib.sha256(REAL_ARTIFACT_BYTES).hexdigest(),
 }
 REAL_RESOLVED = frozenset({REAL_ENTRY['evidence_hash']})
-REAL_OBSERVED = dict(OBSERVED, evidence=[REAL_ENTRY])
+REAL_OBSERVED = dict(OBSERVED, value='real-core observed value', evidence=[REAL_ENTRY])
 REAL_OBSERVED_CALLEE = dict(REAL_OBSERVED, observation_kind='CALLEE_EXECUTION')
 REAL_OBSERVED_HW = dict(REAL_OBSERVED, observation_kind='HW_BUS_READBACK')
 
@@ -479,6 +479,45 @@ class LedgerAdjudicationTests(unittest.TestCase):
         for api in data['apis']:
             for field in FIELDS:
                 self.assertNotEqual(api['contract'][field]['status'], 'VERIFIED')
+
+
+class ProvenanceBypassTests(unittest.TestCase):
+    """Issue #359 MEDIUM fix: OBSERVED refuses unverified evidence. Each case must be refused (ValueError)."""
+
+    def assertRefused(self, claim, *, field='stack', executed_callee=True, resolved=REAL_RESOLVED):
+        with self.assertRaises(ValueError):
+            adjudicate_claim(claim, REAL, field=field, context=f'slot 1 {field}',
+                             executed_callee=executed_callee, resolved_evidence_hashes=resolved)
+
+    def test_synthetic_text_with_marker_removed_is_refused(self):
+        entry = dict(REAL_ENTRY, execution_conditions='test fixture; no real execution took place')
+        self.assertRefused(dict(REAL_OBSERVED_CALLEE, evidence=[entry]))
+
+    def test_spaced_synthetic_marker_is_refused(self):
+        entry = dict(REAL_ENTRY, execution_conditions='REAL-CORE S Y N T H E T I C fixture')
+        self.assertRefused(dict(REAL_OBSERVED_CALLEE, evidence=[entry]))
+
+    def test_synthetic_marker_in_claim_value_with_valid_hash_is_refused(self):
+        self.assertRefused(dict(REAL_OBSERVED_CALLEE, value='SYNTHETIC observed value'))
+
+    def test_arbitrary_hash_not_in_resolved_set_is_refused(self):
+        entry = dict(REAL_ENTRY, evidence_hash='ab' * 32)
+        self.assertRefused(dict(REAL_OBSERVED_CALLEE, evidence=[entry]))
+
+    def test_forged_executed_callee_with_hardware_kind_is_refused(self):
+        self.assertRefused(REAL_OBSERVED_HW, field='hw_bus_reset', executed_callee=True)
+
+    def test_unresolved_real_core_evidence_is_refused(self):
+        self.assertRefused(REAL_OBSERVED_CALLEE, resolved=frozenset())
+
+    def test_entry_without_real_core_marker_is_refused(self):
+        entry = dict(REAL_ENTRY, execution_conditions='cd-read probe run on the pinned core')
+        self.assertRefused(dict(REAL_OBSERVED_CALLEE, evidence=[entry]))
+
+    def test_fully_resolved_real_core_entry_still_yields_observed(self):
+        self.assertIsNone(adjudicate_claim(REAL_OBSERVED_CALLEE, REAL, field='stack',
+                                           context='slot 1 stack', executed_callee=True,
+                                           resolved_evidence_hashes=REAL_RESOLVED))
 
 
 if __name__ == '__main__':
