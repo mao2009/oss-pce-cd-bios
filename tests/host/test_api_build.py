@@ -242,17 +242,6 @@ class ApiBuildTests(unittest.TestCase):
         hashes = json.loads((self.folder/'inc-out/manifest.json').read_text())['source_sha256']
         self.assertEqual(hashes['include:src/overrides/extra.inc'], hashlib.sha256(b' nop\n').hexdigest())
 
-    def test_subdirectory_of_unrelated_repo_is_not_attributed(self):
-        outer = self.folder/'outer'; outer.mkdir()
-        subprocess.run(['git', '-C', str(outer), 'init', '-q'], check=True, capture_output=True)
-        root = self.make_root('outer/tree')
-        self.assertIsNone(source_provenance(root, {})['source_sha'])
-
-    def test_bad_override_filename(self):
-        root = self.folder/'bad-root'; (root/'src/overrides').mkdir(parents=True)
-        (root/'src/overrides/slot_51.s').write_text('')
-        with self.assertRaisesRegex(ValueError, 'Invalid override'): overrides(root)
-
     # --- verify_dev_rom trust boundary and mutation matrix ---
     #
     # verify_dev_rom_layout()   layout only (table/stubs/vectors/padding), no override byte claim
@@ -442,3 +431,16 @@ class ApiContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '81 unimplemented'): release_gate(set())
         with self.assertRaisesRegex(ValueError, '80 unimplemented'): release_gate({3})
         with self.assertRaisesRegex(ValueError, 'does not prove implementation'): release_gate(set(range(81)))
+
+    def test_subdirectory_of_unrelated_repo_is_not_attributed(self):
+        outer = self.folder/'outer'; outer.mkdir()
+        subprocess.run(['git', '-C', str(outer), 'init', '-q'], check=True, capture_output=True)
+        root = self.folder/'outer/tree'; (root/'src/overrides').mkdir(parents=True)
+        for item in ('boot.s', 'bank0.cfg'):
+            shutil.copy(ROOT / 'src' / item, root / 'src' / item)
+        self.assertIsNone(source_provenance(root, {})['source_sha'])
+
+    def test_bad_override_filename(self):
+        root = self.folder/'bad-root'; (root/'src/overrides').mkdir(parents=True)
+        (root/'src/overrides/slot_51.s').write_text('')
+        with self.assertRaisesRegex(ValueError, 'Invalid override'): overrides(root)
