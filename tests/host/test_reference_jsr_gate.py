@@ -60,6 +60,27 @@ class ReferenceJsrGateTest(unittest.TestCase):
         self.assertEqual(record["runner"], "NONE")
         self.assertNotIn("ALLOWED", json.dumps(record))
 
+    def test_permission_accepts_only_the_exact_allowed_value(self):
+        # Fail-closed: every non-exact value is refused, including case/whitespace variants.
+        for value in ("BLOCKED", "MATERIALS_COMPLETE", "", " ALLOWED", "ALLOWED ", "\tALLOWED",
+                      "ALLOWED\n", "ALLOWED\r\n", "allowed", "Allowed", "ALLOW", "PASS", "VERIFIED",
+                      "MODEL_ELIGIBLE", None, True, 1):
+            with self.subTest(value=value):
+                self.assertFalse(G.is_execution_permitted(value))
+        self.assertTrue(G.is_execution_permitted("ALLOWED"))
+
+    def test_self_declared_full_approval_is_materials_complete_never_permitted(self):
+        # A reviewer-only or fully self-declared approval cannot reach permission on any slot.
+        for approval in ({"reviewer": "x", "pr": 228}, {**APPROVAL, "reviewer": "self"}):
+            with self.subTest(approval=approval):
+                record = G.resolve(1, complete_ledger(), CONTRACTS, approval)
+                self.assertFalse(G.is_execution_permitted(record["execution"]))
+                self.assertIs(record["execution_permitted"], False)
+        record = G.resolve(1, complete_ledger(), CONTRACTS, APPROVAL)
+        self.assertEqual(record["execution"], "MATERIALS_COMPLETE")
+        self.assertIs(record["execution_permitted"], False)
+        self.assertFalse(G.is_execution_permitted(record["execution"]))
+
     def test_materials_complete_meaning_is_documented(self):
         # MATERIALS_COMPLETE is not renamed; its meaning per gate lives in docs/cd-reset-contract.md.
         doc = (ROOT / "docs" / "cd-reset-contract.md").read_text(encoding="utf-8")
@@ -181,6 +202,60 @@ class ReferenceJsrGateTest(unittest.TestCase):
                 self.assertEqual(result.returncode, G.EXIT_BLOCKED)
                 self.assertTrue(result.stdout.startswith("BLOCKED: gate ledger unusable"), result.stdout)
                 self.assertNotIn("Traceback", result.stderr)
+
+    def test_cli_blocks_with_exit_3_when_claim_ledger_lacks_verification(self):
+        # A corrupted claim ledger must not escape main() as a traceback (exit 1); it is BLOCKED.
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = Path(tmp)
+            (tree / "tools").mkdir()
+            (tree / "spec").mkdir()
+            shutil.copy(ROOT / "tools" / "reference_jsr_gate.py", tree / "tools")
+            shutil.copy(ROOT / "spec" / "reference_jsr_gate.json", tree / "spec")
+            contracts = copy.deepcopy(CONTRACTS)
+            del contracts["apis"][1]["verification"]
+            (tree / "spec" / "api_contracts.json").write_text(json.dumps(contracts), encoding="utf-8")
+            result = subprocess.run([sys.executable, str(tree / "tools" / "reference_jsr_gate.py"), "--check"],
+                                    capture_output=True, text=True)
+        self.assertEqual(result.returncode, G.EXIT_BLOCKED, result.stderr)
+        self.assertTrue(result.stdout.startswith("BLOCKED: gate ledger unusable"), result.stdout)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_cli_blocks_with_exit_3_on_wrong_shaped_claim_ledger(self):
+        # Structurally wrong claim ledgers (top level a list, or apis[1] a string) raise TypeError;
+        # they must be reported as BLOCKED with exit 3, not as a traceback with exit 1.
+        wrong_shapes = {
+            "top level is a list": [],
+            "apis[1] is a string": dict(CONTRACTS, apis=[CONTRACTS["apis"][0], "x"] + CONTRACTS["apis"][2:]),
+        }
+        for name, contracts in wrong_shapes.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                tree = Path(tmp)
+                (tree / "tools").mkdir()
+                (tree / "spec").mkdir()
+                shutil.copy(ROOT / "tools" / "reference_jsr_gate.py", tree / "tools")
+                shutil.copy(ROOT / "spec" / "reference_jsr_gate.json", tree / "spec")
+                (tree / "spec" / "api_contracts.json").write_text(json.dumps(contracts), encoding="utf-8")
+                result = subprocess.run([sys.executable, str(tree / "tools" / "reference_jsr_gate.py"), "--check"],
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, G.EXIT_BLOCKED, result.stderr)
+                self.assertTrue(result.stdout.startswith("BLOCKED: gate ledger unusable"), result.stdout)
+                self.assertNotIn("Traceback", result.stderr)
+
+    def test_cli_never_returns_zero_even_if_a_record_reports_allowed(self):
+        # Negative: the real data is all BLOCKED, so also force resolve() to report an allowed
+        # value and an unexpected one. main() must still return a nonzero code, never 0.
+        import contextlib
+        import io
+        from unittest import mock
+        real_resolve = G.resolve
+        for value in ("ALLOWED", "", None, "MATERIALS_COMPLETE"):
+            with self.subTest(value=value):
+                def forced(slot, ledger, contracts, approval=None, _value=value):
+                    return dict(real_resolve(slot, ledger, contracts, approval), execution=_value)
+                with mock.patch.object(G, "resolve", forced), contextlib.redirect_stdout(io.StringIO()):
+                    code = G.main(["--check"])
+                self.assertEqual(code, G.EXIT_BLOCKED)
+                self.assertNotEqual(code, 0)
 
     def test_cli_exits_blocked_for_all_slots(self):
         result = subprocess.run([sys.executable, str(ROOT / "tools" / "reference_jsr_gate.py"), "--check"],
