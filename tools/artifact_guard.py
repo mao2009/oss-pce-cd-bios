@@ -79,7 +79,8 @@ USES_RE = re.compile(r"""["']?uses["']?\s*:\s*["']?actions/upload-(?:pages-)?art
 # Any other publishing route (release assets, third-party upload actions, local actions and reusable workflows
 # whose upload cannot be seen from here) is refused rather than guessed.
 UPLOAD_RE = re.compile(r"""upload-(?:pages-)?artifact|\bgh\s+release\b|release-action|action-gh-release|release-asset"""
-                       r"""|create-release|["']?uses["']?\s*:\s*["']?(?:\./|[^#\s]*\.github/workflows/)""", re.IGNORECASE)
+                       r"""|create-release|uploads\.github\.com|api\.github\.com/repos/\S*/releases|\bgh\s+api\b.*\breleases\b"""
+                       r"""|["']?uses["']?\s*:\s*["']?(?:\./|[^#\s]*\.github/workflows/)""", re.IGNORECASE)
 # pathlib glob has no brace, extglob or alternation syntax: such a pattern would match nothing and hide its files.
 UNSUPPORTED_PATTERN_CHARS = "{}()|"
 # A guard-job step's own (top-level) `uses:` key and the actions/* action it names. Only these actions may be a
@@ -88,6 +89,27 @@ UNSUPPORTED_PATTERN_CHARS = "{}()|"
 USES_KEY_RE = re.compile(r"""["']?uses["']?\s*:\s*(.*)$""", re.IGNORECASE)
 ACTION_PATH_RE = re.compile(
     r"actions/(checkout|download-artifact|configure-pages|deploy-pages|upload-artifact|upload-pages-artifact)@")
+# Fail-closed allowlist (Issue #337). Every uses: key in a workflow or composite action must name one of these
+# actions with a ref; any other action (a release action, a third-party upload) is refused, because a publication
+# route the guard does not name would otherwise pass both layers. Adding an action is a reviewed change here.
+KNOWN_ACTIONS = frozenset({
+    "actions/checkout", "actions/upload-artifact", "actions/download-artifact", "actions/upload-pages-artifact",
+    "actions/configure-pages", "actions/deploy-pages", "actions/attest-build-provenance",
+})
+# A uses: key anywhere on a line: block form, quoted key, or inside a flow mapping such as {uses: x}.
+USES_ANY_RE = re.compile(r"""(?:^|[\s{,\[-])["']?uses["']?\s*:""", re.IGNORECASE)
+
+
+def _unlisted_uses(line):
+    """The uses: values on one line that do not name a KNOWN_ACTIONS entry with a ref. Empty values (a value on the
+    next line, a folded scalar indicator) are unlisted too."""
+    values = []
+    for key in USES_ANY_RE.finditer(line):
+        value = _unquote(re.split(r"\s#|[,}\]]", line[key.end():], maxsplit=1)[0].strip())
+        name, at, ref = value.partition("@")
+        if not (at and ref.strip() and name.lower() in KNOWN_ACTIONS):
+            values.append(value)
+    return values
 
 
 def _indent(line):
@@ -234,6 +256,8 @@ def upload_steps(text):
         elif UPLOAD_RE.search(line):
             # Fail closed: a mention that is not a parsed upload step may still be an upload of unknown shape.
             raise ValueError(f"unsupported upload-artifact reference (not a parsed step): {line.strip()!r}")
+        elif not line.lstrip().startswith("#") and _unlisted_uses(line):
+            raise ValueError(f"uses: action not on the allowlist (fail closed, Issue #337): {line.strip()!r}")
     return patterns
 
 
@@ -344,8 +368,12 @@ def pattern_problems(base, label, pattern, strict):
 
 
 def _workflow_files(base):
-    return sorted(f for ext in ("yml", "yaml") for f in (*(base / WORKFLOWS).glob(f"*.{ext}"),
-                                                         *(base / ACTIONS).glob(f"**/action.{ext}")))
+    """Workflow and composite-action files. Matched by name case-insensitively: Linux globs are case-sensitive, so a
+    `extra.YML` workflow would otherwise be skipped by the scan while GitHub-side tooling may still read it."""
+    workflows, actions = base / WORKFLOWS, base / ACTIONS
+    found = [p for p in workflows.iterdir() if p.is_file() and p.suffix.lower() in (".yml", ".yaml")] if workflows.is_dir() else []
+    found += [p for p in actions.rglob("*") if p.is_file() and p.name.lower() in ("action.yml", "action.yaml")] if actions.is_dir() else []
+    return sorted(found)
 
 
 def check_upload_artifacts(root=ROOT):
