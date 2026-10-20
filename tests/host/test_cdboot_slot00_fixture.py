@@ -5,6 +5,7 @@ never called. Truthful self-reports must be MODEL_CONSISTENT (never PASS); spoof
 records must be REJECTED; malformed, missing or unknown records must be BLOCKED (fail closed).
 """
 import copy
+import hashlib
 import importlib.util
 import subprocess
 import sys
@@ -104,6 +105,35 @@ class Slot00FixtureTests(unittest.TestCase):
         status, _ = M.judge(broken, truthful(CASE["valid_synthetic"]))
         self.assertEqual(status, "BLOCKED")
         self.assertTrue(M.validate_case(broken))
+
+    def test_unhashable_or_non_string_results_fail_closed_not_raise(self):
+        base = truthful(CASE["valid_synthetic"])
+        for label, value in (("list", []), ("dict", {}), ("int", 0)):
+            with self.subTest(label):
+                status, _ = M.judge(CASE["valid_synthetic"], dict(base, error_code=value))
+                self.assertEqual(status, "BLOCKED")
+
+    def test_unhashable_or_mismatched_model_classification_is_rejected_by_gate(self):
+        for kind in M.MEDIA_KINDS:
+            with self.subTest(kind=kind, label="unhashable"):
+                case = copy.deepcopy(CASE[kind])
+                case["model_classification"] = []
+                self.assertTrue(M.validate_case(case))
+        case = copy.deepcopy(CASE["malformed"])
+        case["model_classification"] = "BOOT_CANDIDATE"
+        self.assertTrue(M.validate_case(case), "classification must match its media")
+
+    def test_expectations_are_literal_not_derived_from_judge_table(self):
+        literal = {"valid_synthetic": (True, None), "absent": (False, "NO_MEDIA"), "malformed": (False, "MALFORMED")}
+        sector = (b"OSS-PCE-SYNTH-CD-BOOT\0" + b"synthetic-payload-only").ljust(2048, b"\0")
+        for kind, (boot, error) in literal.items():
+            with self.subTest(kind=kind):
+                case = CASE[kind]
+                if kind == "valid_synthetic":
+                    self.assertEqual(case["expected_media_sha256"], hashlib.sha256(sector).hexdigest())
+                record = {"schema": M.EVIDENCE_SCHEMA, "slot": "$00", "media_sha256": case["expected_media_sha256"],
+                          "boot_claimed": boot, "error_code": error, "executed_callee": False}
+                self.assertEqual(M.judge(case, record)[0], "MODEL_CONSISTENT")
 
     def test_slot_execution_is_always_blocked(self):
         status, reasons = M.execution_status()

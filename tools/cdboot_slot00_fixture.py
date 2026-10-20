@@ -71,8 +71,11 @@ def validate_case(case):
         errors.append("unknown schema or not the single slot $00 / $E000 API")
     if case["media_kind"] not in MEDIA_KINDS:
         errors.append("media_kind must be valid_synthetic, absent or malformed")
-    if case["model_classification"] not in EXPECTED:
+    cls = case["model_classification"]
+    if not isinstance(cls, str) or cls not in EXPECTED:
         errors.append("model_classification must be BOOT_CANDIDATE, NO_MEDIA or MALFORMED")
+    elif case["media_kind"] in MEDIA_KINDS and cls != classify_media(synthetic_media(case["media_kind"])):
+        errors.append("model_classification does not match its media")
     errors += [f"{field} must stay UNKNOWN (no evidence)" for field in ("boot_target", "return_path", "stack", "irq")
                if case[field] != UNKNOWN]
     if case["execution"] != "NOT_RUN":
@@ -111,7 +114,7 @@ def judge(case, evidence):
     if type(evidence["boot_claimed"]) is not bool:
         return "BLOCKED", ["boot_claimed must be a bool"]
     error = evidence["error_code"]
-    if error is not None and error not in ERROR_CODES:
+    if error is not None and (not isinstance(error, str) or error not in ERROR_CODES):
         return "BLOCKED", [f"unrecognised result {error!r}: unknown result is not a pass"]
     sha = evidence["media_sha256"]
     if sha is not None and not _is_sha(sha):
