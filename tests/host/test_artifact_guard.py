@@ -1061,5 +1061,81 @@ class JobSeparationTests(unittest.TestCase):
             '.intake/.artifact-stage/build/x.json', 'build/x.json', 1)
         self.assertNotEqual([], self.violations(text))
 
+class UnlistedRouteTests(unittest.TestCase):
+    """Issue #337: a publication route the guard does not name is refused (fail closed) by both layers."""
+    CHECKOUT = 'actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683'
+    RELEASE = 'marvinpinto/action-automatic-releases@v1'
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        (self.root / '.github' / 'workflows').mkdir(parents=True)
+        self.write_build('build/debug/x.pce', FIXTURE_PCE)
+
+    def write_build(self, relative, data):
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+    def write(self, text, name='ci.yml'):
+        (self.root / '.github' / 'workflows' / name).write_text(text, encoding='utf-8')
+
+    def assert_refused(self, text, name='ci.yml'):
+        self.write(text, name)
+        with self.assertRaises(ValueError):
+            guard.check_upload_artifacts(self.root)
+        with self.assertRaises(ValueError):
+            guard.check_guard_placement(self.root)
+
+    def test_unlisted_release_action_is_refused_in_every_spelling(self):
+        # Regression (#337 INFO-3): a release action is not an upload-artifact step and matched no keyword, so it
+        # passed both layers. Every spelling of a uses: key that names an unlisted action must be refused.
+        base = workflow(['build/debug/*.pce'])
+        spellings = {
+            'block key': f'      - name: Release\n        uses: {self.RELEASE}\n',
+            'spaced colon': f'      - name: Release\n        uses : {self.RELEASE}\n',
+            'quoted key': f'      - name: Release\n        "uses": "{self.RELEASE}"\n',
+            'flow mapping': f'      - {{name: Release, uses: {self.RELEASE}}}\n',
+            'folded scalar': f'      - name: Release\n        uses: >-\n          {self.RELEASE}\n',
+            'value on next line': f'      - name: Release\n        uses:\n          {self.RELEASE}\n',
+            'uppercase name': '      - name: Release\n        uses: Marvinpinto/Action-Automatic-Releases@v1\n',
+            'trailing comment': f'      - name: Release\n        uses: {self.RELEASE} # pinned later\n',
+            'no ref': '      - name: Release\n        uses: marvinpinto/action-automatic-releases\n',
+        }
+        for label, step in spellings.items():
+            with self.subTest(spelling=label):
+                self.assert_refused(base + step, name='rel.yaml')
+
+    def test_two_uses_keys_on_one_flow_line_are_both_checked(self):
+        text = ('jobs:\n  build:\n    steps: [{uses: ' + self.CHECKOUT + '}, {uses: ' + self.RELEASE + '}]\n'
+                '  save:\n    steps:\n      - name: Save\n        uses: ' + UPLOAD + '\n        with:\n'
+                '          path: |\n            build/debug/*.pce\n')
+        self.assert_refused(text)
+
+    def test_run_routes_to_github_releases_or_uploads_are_refused(self):
+        for line in ('run: curl -X POST https://uploads.github.com/repos/o/r/releases/1/assets --data-binary @x',
+                     'run: gh api repos/o/r/releases -f tag_name=v1',
+                     'run: curl https://api.github.com/repos/o/r/releases'):
+            with self.subTest(line=line):
+                self.assert_refused(workflow(['build/debug/*.pce']) + f'      - name: Publish\n        {line}\n')
+
+    def test_upper_case_workflow_extension_is_scanned(self):
+        # Review-style gap: glob was case-sensitive on Linux, so extra.YML was never read.
+        self.write(workflow(['build/debug/*.pce']))
+        self.write(workflow(['build/probe/*']), name='extra.YML')
+        self.write_build('build/probe/linked-probe', ELF_PROBE)
+        with self.assertRaisesRegex(ValueError, 'extra.YML'):
+            guard.check_upload_artifacts(self.root)
+
+    def test_allowlisted_build_and_pages_actions_still_pass(self):
+        text = ('jobs:\n  build:\n    steps:\n'
+                f'      - uses: {self.CHECKOUT}\n'
+                '      - uses: actions/configure-pages@v5\n'
+                f'      - name: Save\n        uses: {UPLOAD}\n        with:\n          path: |\n            build/debug/*.pce\n')
+        self.write(text)
+        guard.check_upload_artifacts(self.root)
+
+
 if __name__ == '__main__':
     unittest.main()
