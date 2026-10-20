@@ -12,7 +12,7 @@
   "gates": ["#173", "#228"],
   "provenance": "author-defined input list and observation schema only; no System Card BIOS byte, disassembly, retail data, or ./rom/ content; no reference callee is executed",
   "callee_abi": {
-    "arguments": "SOURCE_FACT: A-in only (HuC cd_playmsf caller); other inputs UNKNOWN",
+    "arguments": "UNKNOWN (#150 records HuC cd_playmsf arguments as CALLER evidence in work RAM $20F8-$20FF, not physical A; no source gives EX_BINBCD's input register)",
     "returns": "UNKNOWN",
     "registers": "UNKNOWN",
     "flags": "UNKNOWN",

@@ -59,6 +59,14 @@ class ExBinBcdMeasurementPlanTests(unittest.TestCase):
         for key in ("returns", "registers", "flags"):
             self.assertEqual(self.plan["callee_abi"][key], "UNKNOWN")
 
+    def test_callee_argument_claim_has_no_unsupported_source_fact(self):
+        # #150 (docs/research/150-cd-play-abi.md) records the cd_playmsf arguments as CALLER evidence in
+        # work RAM $20F8-$20FF, explicitly not physical A/X/Y, and says nothing about EX_BINBCD's input register.
+        self.assertTrue(self.plan["callee_abi"]["arguments"].startswith("UNKNOWN"))
+        self.assertNotIn("A-in", self.plan["callee_abi"]["arguments"])
+        text = PLAN.read_text(encoding="utf-8")
+        self.assertNotIn("SOURCE_FACT（A-in のみ）", text)
+
     def test_plan_document_states_the_same_gate_and_scope(self):
         text = PLAN.read_text(encoding="utf-8")
         for token in ("BLOCKED", "#173", "#228", "NOT_RUN", "UNKNOWN", "tests/host/test_ex_binbcd.py"):

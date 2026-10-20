@@ -9,7 +9,7 @@ ABI は未確定（`abi_status: BLOCKED_ABI`、`release_eligible: false`）。
 
 | 項目 | 状態 | 根拠 |
 |---|---|---|
-| 呼び出し側から見た入力 | SOURCE_FACT（A-in のみ） | HuC `cd_playmsf` の観察（[#150 調査](research/150-cd-play-abi.md)） |
+| 呼び出し側から見た入力 | UNKNOWN | HuC `cd_playmsf` の引数は [#150 調査](research/150-cd-play-abi.md) で CALLER 証拠として作業 RAM `$20F8-$20FF` に置かれると記録されるのみで、物理 A ではない。EX_BINBCD の入力レジスタを示す出典はない |
 | 戻り値・レジスタ保存・フラグ | UNKNOWN | 出典なし |
 | 範囲外（> 99）の挙動 | UNKNOWN | 出典なし。推測で確定しない |
 | 純正 `$E0B4` の実行 | **BLOCKED** | 未承認 JSR。#173（JSR 監視の fail-closed 境界）と #228（gate）の承認が前提 |
