@@ -29,6 +29,9 @@ REQUIRED_CATEGORIES = frozenset({"MPR", "ST", "MMIO", "IRQ", "RAM", "DEVICE", "C
 # Named paths the inventory must keep, so that a silent deletion cannot hide a bypass.
 REQUIRED_PATH_MARKERS = ("ST0", "ST1", "ST2", "$1802", "$1804", "TAM", "CLI", "TII", "$FF")
 PREVENTION_VALUES = ("YES", "PER_WRITE", "KNOWN_PC_ONLY")
+PREVENTION_VALUES_NEEDING_PRE_POINT = ("YES", "PER_WRITE")
+PRE_SIDE_EFFECT_POINTS = ("BEFORE_RUN", "BEFORE_STORE", "INSTRUCTION_BOUNDARY")
+NO_MONITOR_STATUSES = ("UNMONITORED", "PERMITTED_UNISOLATED")
 PIN_KEY = "geargrafx"
 
 
@@ -85,10 +88,6 @@ def validate(inventory, pinned_revision, root=ROOT):
             require(isinstance(item, str) and item and not Path(item).is_absolute() and ".." not in Path(item).parts,
                     f"{row_id}: evidence must be a repository-relative path")
             require((root / item).is_file(), f"{row_id}: evidence file missing: {item}")
-        # Any prevention value (YES, PER_WRITE, KNOWN_PC_ONLY) must be backed by a measurement or a static
-        # reference, never NOT_MEASURED.
-        if row["prevents_before_side_effect"] in PREVENTION_VALUES:
-            require(row["measurement"] != "NOT_MEASURED", f"{row_id}: prevention claimed without measurement")
         if row["monitor_status"].startswith(PREVENTED_PREFIX):
             require(row["prevents_before_side_effect"] in PREVENTION_VALUES,
                     f"{row_id}: prevention status with non-prevention value")
@@ -96,6 +95,14 @@ def validate(inventory, pinned_revision, root=ROOT):
         if row["monitor_status"] == "DETECTED_AFTER_SIDE_EFFECT":
             require(row["prevents_before_side_effect"] in ("NO", "KNOWN_PC_ONLY"),
                     f"{row_id}: DETECTED_AFTER_SIDE_EFFECT cannot claim prevention before side effect")
+        # A path that is unmonitored or permitted by design has no stop before the side effect.
+        if row["monitor_status"] in NO_MONITOR_STATUSES:
+            require(row["prevents_before_side_effect"] in ("NO", "UNKNOWN"),
+                    f"{row_id}: UNMONITORED or PERMITTED_UNISOLATED cannot claim prevention")
+        # A row detected after the side effect must name the after-side-effect point.
+        if row["monitor_status"] == "DETECTED_AFTER_SIDE_EFFECT":
+            require(row["detection_point"] == "AFTER_SIDE_EFFECT",
+                    f"{row_id}: DETECTED_AFTER_SIDE_EFFECT requires detection point AFTER_SIDE_EFFECT")
         # An UNKNOWN row has no recorded detection point, so it cannot claim any prevention value.
         if row["monitor_status"] == "UNKNOWN":
             require(row["prevents_before_side_effect"] in ("UNKNOWN", "NO"),
@@ -106,6 +113,15 @@ def validate(inventory, pinned_revision, root=ROOT):
                     f"{row_id}: NO prevention but a PREVENTED status")
         if row["monitor_status"] in UNRESOLVED_STATUSES:
             require(row["gate_status"] == "BLOCKED", f"{row_id}: unresolved path must remain BLOCKED")
+        # A prevention claim must name a detection point that is before the side effect.
+        if row["prevents_before_side_effect"] in PREVENTION_VALUES_NEEDING_PRE_POINT:
+            require(row["detection_point"] in PRE_SIDE_EFFECT_POINTS,
+                    f"{row_id}: prevention requires a pre-side-effect detection point")
+        # Any prevention value (YES, PER_WRITE, KNOWN_PC_ONLY) must be backed by a measurement or a static
+        # reference, never NOT_MEASURED.
+        if row["prevents_before_side_effect"] in PREVENTION_VALUES:
+            require(row["measurement"] != "NOT_MEASURED", f"{row_id}: prevention claimed without measurement")
+
         counts[row["monitor_status"]] = counts.get(row["monitor_status"], 0) + 1
         text += " " + row["path"]
 
