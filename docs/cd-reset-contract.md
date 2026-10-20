@@ -250,3 +250,13 @@ runner を作る前に実装しなければならない（未実装のままで�
 
 ホストテスト: `python3 -m unittest tests.host.test_cdreset_slot01_reference_plan -v`（合成のみ、
 エミュレータ・ROM 不使用）。
+
+## 実装判定（Issue #183）: BLOCKED・非実装
+
+- 判定: **BLOCKED（ROM 実装なし）**。CD_RESET（`$01` / `$E003`）の callee ABI は未確定であり、本 PR はコードを追加しない。
+- 根拠: 上の契約表で `returns`・`flags`・`clobbered`・`preserved`・`irq`・`errors`・`synchronization`・`timing` が UNKNOWN、`entry`・`arguments`・`stack`・`mpr`・`ram` は caller 側の HYPOTHESIS のみ。`VERIFIED` は 0 件。
+- 実装前提の充足状況（#183 引き継ぎ節の開始条件）: #1 ジャンプテーブル配線、#8 出典採否（provenance PENDING）、System Card 3.0 の戻り・無媒体・busy 動作の裁定、callee を実行できる実コア harness は、いずれも未充足。
+- 理由: 未確定の callee 契約の上に独自 ABI を作ると、ゲームや実 BIOS 呼出しと矛盾するおそれがある。推測で通すことは禁止。
+- 残る候補: `$1804` bit 1 のバスリセット観測（OBSERVED、Geargrafx b49ae82a の register fact のみ）。これを独立ルーチンにする作業は、上の前提が揃った後に別 Issue で行う。
+- 代替作業: AD_RESET（`$10` / `$E030`）の合成 fixture #293 へ切り替え（別 PR）。
+- 実行した確認: 本 PR は docs のみの変更。callee 実行、ROM ビルド、実コア実行は行っていない。
