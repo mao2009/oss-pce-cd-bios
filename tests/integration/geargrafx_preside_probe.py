@@ -15,6 +15,8 @@ Verdicts per case:
 * FAIL    - a probe run did not match its declared expectation (unexpected behaviour).
 
 Scope: this script covers V01-V08 only. An overall PASS is NOT a gate release (ゲート解放ではない).
+本スクリプトは PASS を出力しない（上限 PARTIAL）。ゲート解放の経路はない。
+Per case: V01/V02 are fixed BLOCKED, V03/V04/V07/V08 are fixed NOT_RUN, V05/V06 are at most PARTIAL.
 The slot-1e gate stays BLOCKED (spec/reference_jsr_gate.json) regardless of this script's output.
 Not covered by any V-case (listed in UNCOVERED_IDS, no cases added here): W08-W11 (IRQ register
 writes), W12 ($1804), W13 (other MMIO), W16 (allowlisted unisolated writes). W15 and W17 are only
@@ -39,9 +41,12 @@ PASS, BLOCKED, PARTIAL, NOT_RUN, FAIL = "PASS", "BLOCKED", "PARTIAL", "NOT_RUN",
 PROBE_SOURCE = "geargrafx_reference_jsr.cpp"
 # W02 targets: the three that the existing neg-write probe runs; the rest of the plan is unrun.
 V05_RUN = (0x0000, 0x1FFF, 0x4000)
-V05_PLANNED = V05_RUN + (0x6000, 0x8000, 0xA000, 0xE000)
+# Every 8 KiB page start and end ($0000..$FFFF in 8 pages); the planned set for V05.
+V05_PLANNED = tuple(sorted({p * 0x2000 for p in range(8)} | {p * 0x2000 + 0x1FFF for p in range(8)}))
 # Inventory rows (spec/write_path_inventory.json) with no V-case; reported, never run here.
-UNCOVERED_IDS = ("W08", "W09", "W10", "W11", "W12", "W13", "W16")
+# W14/W15/W17 are only NOT_RUN in V03/V04/V07. W18 is the V05 remainder (planned minus run), not an
+# inventory row; it is not in spec/write_path_inventory.json.
+UNCOVERED_IDS = ("W08", "W09", "W10", "W11", "W12", "W13", "W14", "W15", "W16", "W17", "W18")
 
 # (case id, inventory row, kind, parameters, reason when not runnable)
 CASES = (
@@ -73,7 +78,8 @@ def run_case(case, probe, bios, cue):
             for target in V05_RUN:
                 guard.check_neg(guard.run_mode(probe, bios, cue, "neg-write", target), target)
             missing = [f"${t:04X}" for t in V05_PLANNED if t not in V05_RUN]
-            return case_id, PARTIAL, f"{label}: prevented+detected at {len(V05_RUN)} targets; unrun {missing}"
+            return case_id, PARTIAL, (f"{label}: prevented+detected at {len(V05_RUN)} targets; "
+                                      f"unrun W18 remainder {', '.join(missing)}")
         if kind == "tam":
             guard.check_tam(guard.run_mode(probe, bios, cue, "tam", 0))
             return case_id, PARTIAL, (f"{label}: TAM detected before the next instruction "
