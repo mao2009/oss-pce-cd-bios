@@ -373,7 +373,7 @@ TRUSTED_CHECKOUT = ('      - name: Trusted guard (main)\n'
                     '          sparse-checkout: tools/artifact_guard.py\n          sparse-checkout-cone-mode: false\n          persist-credentials: false\n')
 PY_RESOLVE = ('      - name: Resolve python3 (trusted)\n        id: pyresolve\n'
               '        run: echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"\n')
-PLACEMENT_STEP = '      - name: Guard placement (trusted)\n        run: ' + CHECK_CALL + '\n'
+PLACEMENT_STEP = '      - name: Guard placement (trusted)\n        run: |\n          ' + CHECK_CALL + '\n'
 PR_CHECKOUT = ('      - name: Checkout workflow files only\n'
                '        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683\n'
                '        with:\n          sparse-checkout: .github/workflows\n'
@@ -817,12 +817,12 @@ class GuardPlacementTests(unittest.TestCase):
         placement = PLACEMENT_STEP
         self.assertIn(placement, GUARDED)
         placement_bad = {
-            'if false': '      - name: Guard placement (trusted)\n        if: ${{ false }}\n        run: ' + CHECK_CALL + '\n',
-            'continue-on-error': '      - name: Guard placement (trusted)\n        continue-on-error: true\n        run: ' + CHECK_CALL + '\n',
-            'env': '      - name: Guard placement (trusted)\n        env:\n          RUNNER_TEMP: /tmp/x\n        run: ' + CHECK_CALL + '\n',
-            'working-directory': '      - name: Guard placement (trusted)\n        working-directory: /tmp\n        run: ' + CHECK_CALL + '\n',
-            'shell injection': '      - name: Guard placement (trusted)\n        shell: bash -c "evil"\n        run: ' + CHECK_CALL + '\n',
-            'extra key': '      - name: Guard placement (trusted)\n        timeout-minutes: 1\n        run: ' + CHECK_CALL + '\n',
+            'if false': '      - name: Guard placement (trusted)\n        if: ${{ false }}\n        run: |\n          ' + CHECK_CALL + '\n',
+            'continue-on-error': '      - name: Guard placement (trusted)\n        continue-on-error: true\n        run: |\n          ' + CHECK_CALL + '\n',
+            'env': '      - name: Guard placement (trusted)\n        env:\n          RUNNER_TEMP: /tmp/x\n        run: |\n          ' + CHECK_CALL + '\n',
+            'working-directory': '      - name: Guard placement (trusted)\n        working-directory: /tmp\n        run: |\n          ' + CHECK_CALL + '\n',
+            'shell injection': '      - name: Guard placement (trusted)\n        shell: bash -c "evil"\n        run: |\n          ' + CHECK_CALL + '\n',
+            'extra key': '      - name: Guard placement (trusted)\n        timeout-minutes: 1\n        run: |\n          ' + CHECK_CALL + '\n',
         }
         for label, step in placement_bad.items():
             with self.subTest(step=label):

@@ -56,6 +56,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import sys
 
@@ -855,9 +856,9 @@ def signing_violations(text, label):
     not a signing right (pages.yml deploy needs it), so it is not refused by itself.
     (b) an approved signing job keeps id-token and attestations write, and keeps the job that produces its artifact in needs:.
     (c) continue-on-error is refused in an approved signing job, at job or step level, in any spelling on the line.
-    Round 5: the same signing terms are also tested on each run: value after shell normalization (_run_texts: line
-    continuation joined, quotes and backslashes removed), in any job. In a job with id-token: write that is not approved,
-    a run: with `$(`, `${`, backtick or eval that also names a signing stem (SIGN_STEM_RE) is refused.
+    Round 5 and 6: the signing terms are also tested on each run: value as YAML decodes it and _shell_text normalizes it, in
+    any job. In a job with id-token: write that is not approved, each run: must pass the command allowlist
+    (run_allowlist_violations).
     Not covered here: a signing call under a name none of these terms match is refused by the uses: allowlist, not here."""
     name = Path(label).name
     lines = text.splitlines()
@@ -897,29 +898,23 @@ def signing_violations(text, label):
         if steps != ATTEST_STEPS[(name, job)]:
             problems.append(f"{label}: signing job {job!r} must run exactly the approved steps, found {steps} "
                             "(a step that runs code would hold the OIDC token, Issue #337 round 4 (a))")
-    for i, text in _run_texts(lines):
-        if SIGNING_TERMS_RE.search(GH_VERIFY_SPAN_RE.sub("", text)):
-            problems.append(f"{label}: line {i + 1} run: calls signing or an OIDC token after shell normalization "
-                            f"({text!r}, Issue #337 round 4 (a), round 5)")
-        job = _enclosing_job(lines, i)
-        if job is not None and (name, job) not in ATTEST_NEEDS and _id_token_job(lines, job) \
-                and DYNAMIC_SHELL_RE.search(text) and SIGN_STEM_RE.search(text):
-            problems.append(f"{label}: line {i + 1} run: in job {job!r}, which holds id-token: write without being an approved "
-                            f"signing job, uses $, backtick or eval ({text!r}, Issue #337 round 4 (a), round 5)")
+    problems += run_allowlist_violations(text, label)
     return problems
 
 
-# Issue #337 round 5 (a, normalized). A run: value is read as shell text before the signing-word test: backslash-newline
-# joins two lines, quote characters and backslashes are removed, and whitespace is collapsed. Shell quoting and line
-# continuation therefore cannot split `cosign` past the test (`cos\` + `ign`, `co"sign"`, `c""osign`).
-RUN_KEY_RE = re.compile(r"""(?:^|[\s{,\-])["']?run["']?\s*:\s*(.*)$""", re.IGNORECASE)
-BLOCK_INDICATOR_RE = re.compile(r"[|>][+-]?\d*\s*(?:#.*)?$")
-# In a job with id-token: write that is not an approved signing job, a run: that substitutes or evaluates (`$(`, `${`,
-# backtick, eval) and also names a signing stem is refused: the command word could be assembled at run time. A plain $VAR
-# with no stem is not refused (the Pages deploy job uses $GITHUB_OUTPUT and $(command -v python3)). Residual: see the notes.
-DYNAMIC_SHELL_RE = re.compile(r"\$\(|\$\{|`|\beval\b")
-SIGN_STEM_RE = re.compile(r"cos|sign|sigstore|fulcio|rekor|attest|ACTIONS_ID_TOKEN_REQUEST_TOKEN", re.IGNORECASE)
-GH_VERIFY_SPAN_RE = re.compile(r"gh attestation verify\b")   # read-only verification, exempt wherever it occurs in a run:
+# Issue #337 round 6: a run: value is the YAML-decoded string (escapes such as \x63 and c are already decoded), and it is
+# normalized as shell text by _shell_text before the signing terms are tested, in every job (GH_VERIFY_SPAN_RE: read-only
+# verification is exempt wherever it occurs).
+GH_VERIFY_SPAN_RE = re.compile(r"gh attestation verify\b")
+# Round 6 allowlist. In a job with id-token: write that is not an approved signing job, every simple command of a run: value
+# must start with a word on RUN_ALLOWLIST for that job (a job not listed has no allowed command). The first word is compared
+# whole, and a word with $, a quote, a backslash or a backtick is refused. `command` is allowed only as `command -v NAME`.
+# Today only the Pages deploy job (pages.yml) holds id-token outside the approved signing jobs: echo writes GITHUB_OUTPUT,
+# command -v finds python3, and the trusted python3 path from the pyresolve step is the one GitHub expression allowed there.
+RUN_ALLOWLIST = {("pages.yml", "deploy"): frozenset({"echo", "command"})}
+RUN_EXPRESSIONS = {("pages.yml", "deploy"): frozenset({"${{ steps.pyresolve.outputs.python }}"})}
+SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "(", ")", "{", "}"})
+GH_EXPRESSION_RE = re.compile(r"\$\{\{.*?\}\}")
 
 
 def _shell_text(parts):
@@ -933,52 +928,132 @@ def _shell_text(parts):
     return " ".join(re.sub(r"[\\'\"]", "", "\n".join(joined)).split())
 
 
-def _run_texts(lines):
-    """(line index, shell text) for every run: value in the file, at any depth (job steps and composite-action steps)."""
-    found = []
-    for i, line in enumerate(lines):
-        match = RUN_KEY_RE.search(line) if _live(line) else None
-        if not match:
+def _shell_words(script):
+    """The words of one shell script. Non-POSIX shlex keeps quotes in a word, so the quote rule can see them."""
+    lexer = shlex.shlex(script, posix=False, punctuation_chars=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    return list(lexer)
+
+
+def _close_paren(text, open_index):
+    """Index of the parenthesis that closes text[open_index], or None."""
+    depth = 0
+    for j in range(open_index, len(text)):
+        depth += {"(": 1, ")": -1}.get(text[j], 0)
+        if depth == 0:
+            return j
+    return None
+
+
+def _command_problem(command, names, expressions):
+    """The problem with one simple command (its words), or None. The first word is compared whole (round 6)."""
+    word = command[0]
+    if word in {f'"{expression}"' for expression in expressions}:
+        return None
+    if any(char in word for char in "$'\""):
+        return f"command word {word!r} contains $ or a quote"
+    if word not in names:
+        return f"command word {word!r} is not on the allowlist for this job"
+    if word == "command" and (len(command) != 3 or command[1] != "-v"):
+        return "command is allowed only as `command -v NAME`"
+    return None
+
+
+def _script_problems(script, names, expressions, where):
+    """Problems in one run: script of a job that holds id-token: write and is not an approved signing job (round 6).
+    Only the allowlisted command words pass. A backslash or backtick, a parameter expansion, a process substitution, an
+    unlisted GitHub expression, or an unclosed quote is refused, because the shell and the word reader could disagree
+    on it. Each command substitution is read as a script of its own."""
+    refuse = f"{where} (Issue #337 round 4 (a), round 6)"
+    if "\\" in script or "`" in script:
+        return [f"{refuse}: run: contains a backslash or backtick"]
+    for expression in GH_EXPRESSION_RE.findall(script):
+        if expression not in expressions:
+            return [f"{refuse}: run: uses the GitHub expression {expression!r}, which is not allowed in this job"]
+    rest = script
+    for expression in expressions:
+        rest = rest.replace(expression, "")
+    if "${" in rest or "<(" in rest or ">(" in rest:
+        return [f"{refuse}: run: uses parameter expansion or process substitution"]
+    problems = []
+    start = script.find("$(")
+    while start != -1:
+        end = _close_paren(script, start + 1)
+        if end is None:
+            return [f"{refuse}: run: has an unclosed command substitution"]
+        problems += _script_problems(script[start + 2:end], names, expressions, where)
+        start = script.find("$(", end)
+    try:
+        words = _shell_words(script)
+    except ValueError:   # shlex: no closing quotation
+        return problems + [f"{refuse}: run: has an unclosed quote"]
+    command = []
+    for word in words + [";"]:
+        if word not in SHELL_SEPARATORS:
+            command.append(word)
             continue
-        col = _indent(line) + (2 if line.lstrip().startswith("- ") else 0)
-        value = match.group(1).split(" #")[0].strip()
-        body = []
-        for later in lines[i + 1:]:
-            if not _live(later):
+        problem = _command_problem(command, names, expressions) if command else None
+        if problem:
+            problems.append(f"{refuse}: {problem}")
+        command = []
+    return problems
+
+
+def run_allowlist_violations(text, label):
+    """Issue #337 round 4 (a) and round 6, for one workflow or composite action file (YAML decoded, not line-read).
+    The signing terms are tested on every run: value, in every job. In a job with id-token: write that is not an
+    approved signing job (ATTEST_NEEDS), each run: must pass _script_problems, and the job may not set defaults: or a
+    step may not set shell: (both would change how the run: is read). A composite action has no job, so only the
+    signing-term test applies to it. Residuals: docs/provenance.md."""
+    try:
+        import yaml
+    except ImportError:
+        return [f"{label}: PyYAML unavailable, run: values cannot be checked (Issue #337 round 6)"]
+    try:
+        doc = yaml.load(text, Loader=_strict_loader())
+    except (yaml.YAMLError, ValueError) as error:
+        return [f"{label}: YAML cannot be read, run: values cannot be checked ({error}; Issue #337 round 6)"]
+    if not isinstance(doc, dict):
+        return [f"{label}: the file is not a mapping (Issue #337 round 6)"]
+    name = Path(label).name
+    jobs = doc.get("jobs")
+    scopes = list(jobs.items()) if isinstance(jobs, dict) else [(None, doc.get("runs") or {})]
+    problems = []
+    for job, body in scopes:
+        if not isinstance(body, dict):
+            problems.append(f"{label}: job {job!r} is not a mapping (Issue #337 round 6)")
+            continue
+        perms = body.get("permissions", doc.get("permissions"))
+        held = perms == "write-all" or (isinstance(perms, dict) and perms.get("id-token") == "write")
+        checked = job is not None and (name, job) not in ATTEST_NEEDS and held
+        if checked and "defaults" in body:
+            problems.append(f"{label}: job {job!r} sets defaults: (a shell override is refused, Issue #337 round 4 (a), round 6)")
+        steps = body.get("steps") or []
+        if not isinstance(steps, list):
+            problems.append(f"{label}: steps of job {job!r} are not a list (Issue #337 round 6)")
+            continue
+        for step in steps:
+            if not isinstance(step, dict):
+                if checked:
+                    problems.append(f"{label}: job {job!r} has a step that is not a mapping (Issue #337 round 4 (a), round 6)")
                 continue
-            if _indent(later) <= col:
-                break
-            body.append(later.strip())
-        if "{" in line[:match.start(1)]:   # flow form: the value ends inside the braces, no continuation lines
-            parts = [value]
-        elif BLOCK_INDICATOR_RE.match(value):
-            parts = body
-        else:
-            parts = [value] + body
-        found.append((i, _shell_text(parts)))
-    return found
-
-
-def _id_token_write(line):
-    match = SIGNING_PERMISSION_RE.match(line)
-    return bool(match) and match.group(1) == "id-token" and match.group(2).strip("\"'") == "write"
-
-
-def _id_token_job(lines, job):
-    """True when the job holds id-token: write: its own permissions block, or the top-level one when it has no own block."""
-    top = False
-    for line in lines:
-        if _live(line) and line.startswith("jobs:"):
-            break
-        top = top or (_live(line) and _id_token_write(line))
-    for name, head, end in _job_blocks(lines):
-        if name != job:
-            continue
-        own = [line for line in lines[head + 1:end] if _live(line)]
-        if any(_id_token_write(line) for line in own):
-            return True
-        return top and not any(_indent(line) == 4 and line.strip().startswith("permissions:") for line in own)
-    return False
+            if checked and "shell" in step:
+                problems.append(f"{label}: job {job!r} sets shell: (refused, Issue #337 round 4 (a), round 6)")
+            run = step.get("run")
+            if run is None:
+                continue
+            if not isinstance(run, str):
+                problems.append(f"{label}: job {job!r} has a run: that is not a string (Issue #337 round 6)")
+                continue
+            if SIGNING_TERMS_RE.search(GH_VERIFY_SPAN_RE.sub("", _shell_text(run.split("\n")))):
+                problems.append(f"{label}: job {job!r} run: calls signing or an OIDC token after YAML decoding and shell "
+                                f"normalization ({run!r}, Issue #337 round 4 (a), round 5, round 6)")
+            if checked:
+                names = RUN_ALLOWLIST.get((name, job), frozenset())
+                expressions = RUN_EXPRESSIONS.get((name, job), frozenset())
+                problems += _script_problems(run, names, expressions, f"{label}: job {job!r} run: {run!r}")
+    return problems
 
 
 def _step_kind(lines, start, end):
