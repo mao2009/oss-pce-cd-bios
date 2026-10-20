@@ -326,6 +326,70 @@ def validate_caller_ledger(rows=CALLER_LEDGER, api_contracts=None) -> None:
             raise ValueError(f"{rid}: note required")
 
 
+# Issue #188: measured contract for ONE transfer mode (`_dh` = 2, destination RAM bank `_bl`) and ONE sector.
+# Real-core evidence is the READ(6) transport layer only (T1-T4 scenarios). The callee rows (R*) are never measured:
+# the callee gate (#173, #365-#367) is closed, so the genuine $E009 is not run (CALLEE_REAL_CORE_RUNS = 0). Every R
+# row stays HYPOTHESIS or UNKNOWN. A READ(6) example is never evidence for the callee ABI.
+RAM_MODE = 2
+CALLEE_REAL_CORE_RUNS = 0
+FIXTURE_SECTORS = 16  # tools/make_cd_image.py DEFAULT_SECTORS (the real-core fixture size)
+RAM_MODE_ITEMS = [
+    {"id": "R1", "item": "entry JSR $E009 with slot $03", "status": "HYPOTHESIS", "source": "HuCC pcengine.inc"},
+    {"id": "R2", "item": "block number 24-bit _cl:_ch:_dl ($20FC-$20FE)", "status": "HYPOTHESIS", "source": "HuCC callers"},
+    {"id": "R3", "item": "_dh=2 selects RAM bank _bl, _al sectors", "status": "HYPOTHESIS", "source": "HuCC + Hu-Go HLE"},
+    {"id": "R4", "item": "destination address in the bank (register pair, end address)", "status": "UNKNOWN", "source": None},
+    {"id": "R5", "item": "block base: CD_BASE-relative (#11) or absolute LBA", "status": "UNKNOWN", "source": None},
+    {"id": "R6", "item": "A=0 on success", "status": "HYPOTHESIS", "source": "HuCC TAX/BNE, Hu-Go"},
+    {"id": "R7", "item": "error codes (no disc, bad block, read error, busy)", "status": "UNKNOWN", "source": None},
+    {"id": "R8", "item": "N/Z/C/T on return", "status": "HYPOTHESIS", "source": "Hu-Go HLE only"},
+    {"id": "R9", "item": "MPR state after success and after error (bank _bl mapping)", "status": "UNKNOWN", "source": None},
+    {"id": "R10", "item": "stack: callee depth and JSR/RTS balance", "status": "UNKNOWN", "source": None},
+    {"id": "R11", "item": "X/Y and $20F8-$20FF preservation", "status": "UNKNOWN", "source": None},
+    {"id": "R12", "item": "interrupt prerequisite (CLI before call)", "status": "UNKNOWN", "source": None},
+]
+# Transport examples: `measured_by` names the real-core scenario (bus behaviour only). None = not measured, so the
+# expectation is UNKNOWN and transport_outcome must refuse the input.
+RAM_MODE_EXAMPLES = [
+    {"id": "P1", "polarity": "positive", "lba": 5, "count": 1, "expect": (1, False), "measured_by": "single_sector_lba5"},
+    {"id": "P2", "polarity": "positive", "lba": 0, "count": 1, "expect": (1, False), "measured_by": "first_sector_lba0"},
+    {"id": "P3", "polarity": "positive", "lba": 15, "count": 1, "expect": (1, False), "measured_by": "last_sector_lba15"},
+    {"id": "N1", "polarity": "negative", "lba": 16, "count": 1, "expect": (0, True), "measured_by": "invalid_sector_lba16"},
+    {"id": "N2", "polarity": "negative", "lba": LBA_LIMIT - 1, "count": 1, "expect": (0, True),
+     "measured_by": "invalid_sector_lba_max"},
+    {"id": "N3", "polarity": "negative", "lba": 5, "count": 0, "expect": None, "measured_by": None},
+    {"id": "N4", "polarity": "negative", "lba": 5, "count": 4, "expect": None, "measured_by": None},
+]
+
+
+def validate_ram_mode_contract(items=RAM_MODE_ITEMS, examples=RAM_MODE_EXAMPLES) -> None:
+    """Raise ValueError unless the #188 one-sector RAM-mode contract stays unpromoted and its examples match the model."""
+    if CALLEE_REAL_CORE_RUNS != 0:
+        raise ValueError("callee executed on the real core: gate #173 is not satisfied, update the contract first")
+    ids = [i["id"] for i in items]
+    if len(set(ids)) != len(ids):
+        raise ValueError("duplicate R id")
+    for item in items:
+        if item["status"] not in STATUSES - {"VERIFIED"}:
+            raise ValueError(f"{item['id']}: callee item promoted to {item['status']}")
+    for ex in examples:
+        if ex["polarity"] not in ("positive", "negative"):
+            raise ValueError(f"{ex['id']}: polarity must be positive or negative")
+        if ex["measured_by"] is None:
+            if ex["expect"] is not None:
+                raise ValueError(f"{ex['id']}: unmeasured example must have expect None (UNKNOWN)")
+            try:
+                transport_outcome(FIXTURE_SECTORS, ex["lba"], ex["count"])
+            except ValueError:
+                continue
+            raise ValueError(f"{ex['id']}: transport_outcome must refuse an unexecuted input")
+        kind = SCENARIO_KIND.get(ex["measured_by"])
+        want_kind = "PASS" if ex["polarity"] == "positive" else "PASS_EXPECTED_FAILURE"
+        if kind != want_kind:
+            raise ValueError(f"{ex['id']}: scenario kind {kind!r} is not {want_kind!r}")
+        if transport_outcome(FIXTURE_SECTORS, ex["lba"], ex["count"]) != ex["expect"]:
+            raise ValueError(f"{ex['id']}: expectation does not match the transport model")
+
+
 def validate(api_contracts: dict, claims=TRANSPORT_CLAIMS) -> None:
     """Raise ValueError on malformed claims, a VERIFIED claim outside the pinned emulator, or a callee ABI promotion."""
     for claim in claims:

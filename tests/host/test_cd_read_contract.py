@@ -638,5 +638,61 @@ class TrustBoundaryTests(unittest.TestCase):
         self.assertTrue(TRUST_LABEL.startswith("LOCAL_ONLY"))  # #119 artifact_policy and #116 trust both say local-only
 
 
+MODE_DOC = ROOT / "docs/cd-read-mode-contract.md"
+
+
+class RamModeContractTests(unittest.TestCase):
+    """Issue #188: one sector, one mode (RAM bank), real-core evidence limited to the transport layer."""
+
+    def test_scope_is_one_mode_and_callee_is_never_run(self):
+        self.assertEqual(cd_read_contract.RAM_MODE, 2)
+        self.assertEqual(cd_read_contract.CALLEE_REAL_CORE_RUNS, 0)
+        cd_read_contract.validate_ram_mode_contract()
+
+    def test_callee_items_cannot_be_promoted(self):
+        for status in ("VERIFIED", "BLOCKED", "EXECUTED"):
+            items = copy.deepcopy(cd_read_contract.RAM_MODE_ITEMS)
+            items[0]["status"] = status
+            with self.subTest(status=status), self.assertRaises(ValueError):
+                cd_read_contract.validate_ram_mode_contract(items=items)
+
+    def test_callee_run_is_refused(self):
+        with mock.patch.object(cd_read_contract, "CALLEE_REAL_CORE_RUNS", 1), self.assertRaises(ValueError):
+            cd_read_contract.validate_ram_mode_contract()
+
+    def test_positive_and_negative_examples_are_present_and_measured_as_transport_only(self):
+        examples = cd_read_contract.RAM_MODE_EXAMPLES
+        self.assertTrue(any(e["polarity"] == "positive" and e["measured_by"] for e in examples))
+        self.assertTrue(any(e["polarity"] == "negative" and e["measured_by"] for e in examples))
+        self.assertTrue(any(e["polarity"] == "negative" and e["measured_by"] is None for e in examples))
+        for e in examples:
+            if e["measured_by"]:
+                self.assertEqual(EXPECTED_KIND[e["measured_by"]], cd_read_contract.SCENARIO_KIND[e["measured_by"]])
+
+    def test_mutated_expectation_or_kind_is_rejected(self):
+        examples = copy.deepcopy(cd_read_contract.RAM_MODE_EXAMPLES)
+        examples[0]["expect"] = (0, True)  # P1 delivers one sector
+        with self.assertRaises(ValueError):
+            cd_read_contract.validate_ram_mode_contract(examples=examples)
+        examples = copy.deepcopy(cd_read_contract.RAM_MODE_EXAMPLES)
+        examples[3]["measured_by"] = "single_sector_lba5"  # a positive scenario used as a negative
+        with self.assertRaises(ValueError):
+            cd_read_contract.validate_ram_mode_contract(examples=examples)
+
+    def test_unmeasured_count_is_refused_by_the_transport_model(self):
+        for lba, count in ((5, 0), (5, 4)):
+            with self.assertRaises(ValueError):
+                transport_outcome(cd_read_contract.FIXTURE_SECTORS, lba, count)
+
+    def test_fixture_size_matches_the_image_builder(self):
+        self.assertEqual(cd_read_contract.FIXTURE_SECTORS, DEFAULT_SECTORS)
+
+    def test_doc_lists_every_item_and_example(self):
+        text = MODE_DOC.read_text(encoding="utf-8")
+        for row in cd_read_contract.RAM_MODE_ITEMS + cd_read_contract.RAM_MODE_EXAMPLES:
+            with self.subTest(id=row["id"]):
+                self.assertRegex(text, rf"\|\s*{row['id']}\s*\|")
+
+
 if __name__ == "__main__":
     unittest.main()
