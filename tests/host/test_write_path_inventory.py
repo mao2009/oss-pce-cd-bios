@@ -136,6 +136,62 @@ class WritePathInventoryTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown detection_point"):
             W.validate(inv, PINNED)
 
+    def test_mutation_detected_after_side_effect_cannot_claim_prevention(self):
+        inv = fresh()
+        row(inv, "W06")["prevents_before_side_effect"] = "YES"
+        with self.assertRaisesRegex(ValueError, "W06: DETECTED_AFTER_SIDE_EFFECT cannot claim prevention"):
+            W.validate(inv, PINNED)
+
+    def test_mutation_unknown_status_cannot_claim_prevention(self):
+        inv = fresh()
+        row(inv, "W11")["prevents_before_side_effect"] = "YES"
+        with self.assertRaisesRegex(ValueError, "W11: UNKNOWN status must not claim"):
+            W.validate(inv, PINNED)
+
+    def test_mutation_per_write_claim_on_unknown_block_move_is_rejected(self):
+        inv = fresh()
+        row(inv, "W15")["prevents_before_side_effect"] = "PER_WRITE"
+        with self.assertRaisesRegex(ValueError, "W15: UNKNOWN status must not claim"):
+            W.validate(inv, PINNED)
+
+    def test_mutation_prevention_value_without_measurement_is_rejected(self):
+        inv = fresh()
+        row(inv, "W02")["measurement"] = "NOT_MEASURED"
+        with self.assertRaisesRegex(ValueError, "W02: prevention claimed without measurement"):
+            W.validate(inv, PINNED)
+
+    def test_w09_w10_detection_point_is_not_recorded(self):
+        for row_id in ("W09", "W10"):
+            with self.subTest(row=row_id):
+                self.assertEqual(row(INVENTORY, row_id)["monitor_status"], "UNKNOWN")
+                self.assertEqual(row(INVENTORY, row_id)["detection_point"], "UNKNOWN")
+
+    def test_w15_block_move_is_unknown_and_claims_no_per_write_stop(self):
+        self.assertEqual(row(INVENTORY, "W15")["monitor_status"], "UNKNOWN")
+        self.assertEqual(row(INVENTORY, "W15")["prevents_before_side_effect"], "UNKNOWN")
+
+    def test_w04_measurement_matches_the_unreached_branch(self):
+        self.assertEqual(row(INVENTORY, "W04")["measurement"], "STATIC_SOURCE_REFERENCE")
+
+    def test_w02_path_is_limited_and_unmeasured_remainder_is_its_own_row(self):
+        self.assertNotIn("pages 3-7", row(INVENTORY, "W02")["path"])
+        remainder = [r for r in INVENTORY["rows"] if r["category"] == "RAM" and r["id"] != "W02"
+                     and r["monitor_status"] == "UNKNOWN"]
+        self.assertTrue(remainder, "unmeasured CPU store addresses must stay visible as UNKNOWN")
+
+    def test_w17_path_does_not_claim_vdc_dma_bypass(self):
+        path = row(INVENTORY, "W17")["path"]
+        self.assertNotIn("VDC DMA", path)
+        self.assertIn("CD/ADPCM", path)
+
+    def test_doc_status_column_matches_inventory(self):
+        doc = (ROOT / "docs" / "173-write-path-inventory.md").read_text(encoding="utf-8")
+        lines = doc.splitlines()
+        for r in INVENTORY["rows"]:
+            with self.subTest(row=r["id"]):
+                line = next(l for l in lines if l.startswith(f"| {r['id']} |"))
+                self.assertIn(r["monitor_status"], line)
+
     def test_cli_exits_zero_on_committed_inventory(self):
         self.assertEqual(W.main(["--check"]), 0)
         self.assertEqual(W.main(["--bogus"]), 2)
