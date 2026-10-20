@@ -24,7 +24,7 @@ EXPECTED = {
     'C5': 'UNKNOWN', 'C6': 'SECONDARY_SOURCE', 'C7': 'SECONDARY_SOURCE', 'C8': 'UNKNOWN',
     'C9': 'SECONDARY_SOURCE', 'C10': 'UNKNOWN', 'C11': 'UNKNOWN', 'C12': 'UNKNOWN',
     'C13': 'UNKNOWN', 'C14': 'UNKNOWN', 'C15': 'SECONDARY_SOURCE', 'C16': 'UNKNOWN',
-    'C17': 'HYPOTHESIS', 'C18': 'SECONDARY_SOURCE',
+    'C17': 'HYPOTHESIS', 'C18': 'SECONDARY_SOURCE', 'C19': 'UNKNOWN',
 }
 # Commit pins. 797845ce is a git blob (pctech.txt), not a commit, so it is cited only as a blob.
 MD_COMMIT = 'ducalex/retro-go@05e97e80'
@@ -179,7 +179,7 @@ class ClaimRowNegativeTests(unittest.TestCase):
         return '# t\n' + ''.join(rows)
 
     def test_every_id_duplicate_is_rejected_in_either_order(self):
-        for n in range(1, 19):
+        for n in range(1, 20):
             cid = f'C{n}'
             good = self.ROW.format(i=cid, st='UNKNOWN')
             bad = self.ROW.format(i=cid, st='VERIFIED')
@@ -189,14 +189,14 @@ class ClaimRowNegativeTests(unittest.TestCase):
 
     def test_real_doc_rows_each_duplicated_are_rejected(self):
         lines = [l for l in DOC.read_text(encoding='utf-8').splitlines() if l.startswith('| C')]
-        self.assertEqual(len(lines), 18)
+        self.assertEqual(len(lines), 19)
         for l in lines:
             for dup in (lines + [l], [l] + lines):
                 with self.assertRaises(ValueError, msg=l[:8]):
                     _claim_rows('\n'.join(dup))
 
     def test_wrong_column_count_is_rejected_for_every_id(self):
-        for n in range(1, 19):
+        for n in range(1, 20):
             cid = f'C{n}'
             for row in (f'| {cid} | a | b | UNKNOWN |\n', f'| {cid} | a | b | UNKNOWN | c | d |\n'):
                 with self.assertRaises(ValueError, msg=row):
