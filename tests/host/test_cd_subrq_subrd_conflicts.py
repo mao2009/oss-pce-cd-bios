@@ -26,11 +26,23 @@ EXPECTED = {
     'C13': 'UNKNOWN', 'C14': 'UNKNOWN', 'C15': 'SECONDARY_SOURCE', 'C16': 'UNKNOWN',
     'C17': 'HYPOTHESIS', 'C18': 'SECONDARY_SOURCE', 'C19': 'UNKNOWN',
 }
-# Commit pins. 797845ce is a git blob (pctech.txt), not a commit, so it is cited only as a blob.
-MD_COMMIT = 'ducalex/retro-go@05e97e80'
-MD_BLOB = 'blob `797845ce`'
-GG_COMMIT = 'drhelius/Geargrafx@3685f8cf'
+# Full 40-hex pins, resolved with `gh api` (commits) and the retro-go tree (blob).
+# 797845ce... is a git blob (pctech.txt), not a commit, so it is cited only as a blob.
+HUC_SHA = '54f5c73606c1e7142e8095c727cab2767e2b3cb3'
+RETRO_GO_SHA = '05e97e80ef0943404ed0d37671f6ab3074017d55'
+HUGO_SHA = '64ed226da2288738781743eeef228c069e8973a4'
+HUEXPRESS_SHA = 'b91fd8e30d5898c8ca9c6c749a5f5106a03e22d0'
+GEARGRAFX_SHA = '3685f8cf50070a1647dd3536942718a8581d9db5'
+PCTECH_BLOB_SHA = '797845ce11715712a740dc0272fc6ad1fa26c490'
+FULL_PINS = {HUC_SHA, RETRO_GO_SHA, HUGO_SHA, HUEXPRESS_SHA, GEARGRAFX_SHA, PCTECH_BLOB_SHA}
+MD_COMMIT = f'ducalex/retro-go@{RETRO_GO_SHA}'
+MD_BLOB = f'blob `{PCTECH_BLOB_SHA}`'
+GG_COMMIT = f'drhelius/Geargrafx@{GEARGRAFX_SHA}'
 GG_UNRESOLVED = 'drhelius/Geargrafx@1e52d13f'
+# Short token that appears in the doc only as a rejected (unresolvable) old pin.
+REJECTED_SHORT_PINS = {'1e52d13f'}
+# Any lowercase hex token of 7+ chars in the doc must be a full pin (or an explicitly rejected one).
+SHA_TOKEN = re.compile(r'(?<![0-9A-Za-z])[0-9a-f]{7,40}(?![0-9A-Za-z])')
 # Execution rule (structural, not a verb list). A line is a claim when it contains a
 # completed-action or past-tense marker AND either a reference-callee subject (BIOS, ROM,
 # callee, slot, $0D, $E0xx, CD_SUBRQ/CD_SUBRD). A line that asserts an observed result
@@ -135,6 +147,28 @@ class CdSubrqSubrdConflictLedgerTests(unittest.TestCase):
         hc = _source_row(self.text, 'HC')
         self.assertIn('692 行', hc)
         self.assertIn('481 行', hc)
+
+    def test_every_sha_token_is_a_full_40_hex_pin(self):
+        # Short SHAs (8 hex) are not allowed anywhere in the doc, including revision cells.
+        self.assertEqual(len(FULL_PINS), 6)
+        for pin in FULL_PINS:
+            self.assertEqual(len(pin), 40, pin)
+            self.assertIn(pin, self.text, pin)
+        for tok in SHA_TOKEN.findall(self.text):
+            if tok in REJECTED_SHORT_PINS:
+                continue
+            self.assertEqual(len(tok), 40, f'short SHA in doc: {tok}')
+            self.assertIn(tok, FULL_PINS, tok)
+
+    def test_claim_rows_are_in_ascending_id_order(self):
+        ids = list(self.rows)
+        self.assertEqual(ids, sorted(ids, key=lambda c: int(c[1:])))
+
+    def test_zeograd_source_records_version_and_hash_status(self):
+        z = _source_row(self.text, 'Z')
+        self.assertIn('版なし', z)
+        self.assertIn('本文ハッシュは未記録', z)
+        self.assertIn('SECONDARY_SOURCE', z)
 
     def test_no_reference_bios_execution_claimed(self):
         self.assertIn('一切していない', self.text)
