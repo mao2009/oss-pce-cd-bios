@@ -17,8 +17,9 @@ Tests that really execute cc65 (`build`, `ca65`, `ld65`, `cc65`, `da65`) are gat
 `@requires_cc65` (`tools/environment.py`). The decorator on a class gates **every** `test*` method of that
 class, not only the ones that use the fixture. So a test that needs no cc65 must live in a separate,
 ungated class beside it (for example `ApiContractTests` or `CdLoadExecContractTests`).
-`tests/host/test_cc65_gate.py` checks this for the moved cc65-independent tests in `test_cdload_exec.py`
-and `test_reset_entry.py`.
+`tests/host/test_cc65_gate.py` checks that the moved cc65-independent tests run with cc65 absent: the
+`CdLoadExecContractTests` and `ResetEntryContractTests` tests, and the `ApiContractTests` tests
+`test_subdirectory_of_unrelated_repo_is_not_attributed` and `test_bad_override_filename`.
 
 | Host / run | cc65 missing | cc65 present |
 | --- | --- | --- |

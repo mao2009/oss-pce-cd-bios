@@ -140,8 +140,30 @@ class Cc65GateContractTests(unittest.TestCase):
                         "test_api_build.ApiContractTests.test_bad_override_filename"):
             self.assertEqual(rows.get(test_id, ("absent", ""))[0], "ok", test_id)
 
+    def test_tools_dir_with_env_never_calls_getuid(self):
+        # On Windows os.getuid is absent; an explicit TOOLS_DIR must not reach it (the default is only a fallback).
+        from tools import environment
+
+        tools = str(Path(tempfile.gettempdir()) / "cc65-gate-tools")
+        with patch.dict(os.environ, {"TOOLS_DIR": tools}), \
+                patch.object(os, "getuid", side_effect=AttributeError("no getuid"), create=True):
+            self.assertEqual(environment.tools_dir().name, "cc65-gate-tools")
+
+    def test_skip_reason_names_missing_tool_not_getuid(self):
+        from tools import environment
+
+        tools = str(Path(tempfile.gettempdir()) / "cc65-gate-tools")
+        with patch.dict(os.environ, {"TOOLS_DIR": tools, "CA65": "/nonexistent/cc65-gate/ca65"}), \
+                patch.object(os, "getuid", side_effect=AttributeError("no getuid"), create=True):
+            reason = environment.cc65_skip_reason()
+        self.assertIsNotNone(reason)
+        self.assertIn("ca65", reason)
+        self.assertNotIn("AttributeError", reason)
+
     def test_makefile_test_target_is_required_and_host_test_needs_no_build(self):
         text = (ROOT / "Makefile").read_text()
+        phony_with_host_test = [line for line in text.splitlines() if line.startswith(".PHONY") and "host-test" in line]
+        self.assertEqual(len(phony_with_host_test), 1, "host-test must be declared .PHONY exactly once")
         test_rule = re.search(r"^test:[^\n]*\n((?:\t[^\n]*\n?)+)", text, re.M)
         self.assertIsNotNone(test_rule)
         self.assertIn("OSS_PCE_REQUIRE_CC65=1", test_rule.group(1))

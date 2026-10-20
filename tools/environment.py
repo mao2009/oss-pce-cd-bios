@@ -10,7 +10,7 @@ DEPENDENCIES = json.loads((ROOT / "tools/dependencies.json").read_text())
 
 
 def tools_dir():
-    path = Path(os.environ.get("TOOLS_DIR", f"/tmp/oss-pce-cd-bios-tools-{os.getuid()}"))
+    path = Path(os.environ.get("TOOLS_DIR") or f"/tmp/oss-pce-cd-bios-tools-{getattr(os, 'getuid', lambda: 0)()}")
     path = path.resolve()
     if path == ROOT or ROOT in path.parents:
         raise ValueError("TOOLS_DIR must be outside this repository (external source isolation)")

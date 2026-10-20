@@ -19,7 +19,6 @@ test: build
 
 # Local host-only run: no build, no integration. cc65-dependent tests SKIP with a reason when cc65 is absent;
 # the required gate is `make test`.
-.PHONY: host-test
 host-test:
 	$(PYTHON) -m unittest discover -s tests/host -v
 
