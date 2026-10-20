@@ -10,6 +10,7 @@ must stay gate_status=BLOCKED, and no code path here can set it to anything else
 Synthetic inputs only. It reads no emulator source, no BIOS and no ROM byte.
 """
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -21,6 +22,11 @@ GATE_LEDGER = "spec/reference_jsr_gate.json"
 ROW_KEYS = frozenset({"id", "path", "category", "monitor_status", "prevents_before_side_effect",
                       "detection_point", "measurement", "evidence", "gate_status", "notes"})
 DETECTION_POINTS = ("BEFORE_RUN", "BEFORE_STORE", "INSTRUCTION_BOUNDARY", "AFTER_SIDE_EFFECT", "NONE", "UNKNOWN")
+# Fixed in code, never derived from the inventory: the inventory must declare exactly these sets.
+MONITOR_STATUS_VALUES = ("PREVENTED_MEASURED", "PREVENTED_STATIC", "PREVENTED_BY_REACHABILITY",
+                         "DETECTED_AT_INSTRUCTION_BOUNDARY", "DETECTED_AFTER_SIDE_EFFECT", "PERMITTED_UNISOLATED",
+                         "UNMONITORED", "UNKNOWN")
+MEASUREMENT_VALUES = ("REAL_CORE_SYNTHETIC", "STATIC_SOURCE_REFERENCE", "NOT_MEASURED")
 # Statuses that claim a stop before the side effect. Such a claim needs measurement or static evidence.
 PREVENTED_PREFIX = "PREVENTED_"
 UNRESOLVED_STATUSES = frozenset({"UNMONITORED", "UNKNOWN", "DETECTED_AFTER_SIDE_EFFECT", "PERMITTED_UNISOLATED"})
@@ -31,8 +37,12 @@ REQUIRED_PATH_MARKERS = ("ST0", "ST1", "ST2", "$1802", "$1804", "TAM", "CLI", "T
 PREVENTION_VALUES = ("YES", "PER_WRITE", "KNOWN_PC_ONLY")
 # Fixed in code, never derived from the inventory: the inventory must declare exactly this set.
 PREVENTION_ENUM = PREVENTION_VALUES + ("NO", "UNKNOWN")
-# The only values a DETECTED_AFTER_SIDE_EFFECT row may record (allowlist, not denylist).
+# The only values a post-side-effect row may record (allowlist, not denylist).
 NOT_CLAIMING_VALUES = ("NO", "UNKNOWN")
+# A prevention claim needs a non-synthetic basis. REAL_CORE_SYNTHETIC (synthetic BIOS/ROM/CD) never satisfies one.
+PREVENTION_MEASUREMENTS = ("STATIC_SOURCE_REFERENCE",)
+# Content-validated evidence: a file must carry this line, naming a run id and the measurement class it recorded.
+RUN_MARKER = re.compile(r"^measurement-run-id: (RUN-[0-9A-F]{12}) ([A-Z_]+)$", re.M)
 PRE_SIDE_EFFECT_POINTS = ("BEFORE_RUN", "BEFORE_STORE", "INSTRUCTION_BOUNDARY")
 NO_MONITOR_STATUSES = ("UNMONITORED", "PERMITTED_UNISOLATED")
 PIN_KEY = "geargrafx"
@@ -57,10 +67,15 @@ def validate(inventory, pinned_revision, root=ROOT):
             "pinned_core_revision drift from tools/dependencies.json")
     require(inventory.get("gate_ledger") == GATE_LEDGER, "gate_ledger reference mismatch")
     require(inventory.get("gate_status_default") == "BLOCKED", "gate_status_default must be BLOCKED")
-    statuses = set(inventory.get("monitor_status_values", []))
-    require(set(inventory.get("prevents_before_side_effect_values", [])) == set(PREVENTION_ENUM),
-            "prevents_before_side_effect_values must equal the fixed code allowlist")
-    measurements = set(inventory.get("measurement_values", []))
+    for key, pinned, message in (
+            ("monitor_status_values", MONITOR_STATUS_VALUES, "monitor_status_values must equal the fixed code set"),
+            ("prevents_before_side_effect_values", PREVENTION_ENUM,
+             "prevents_before_side_effect_values must equal the fixed code allowlist"),
+            ("measurement_values", MEASUREMENT_VALUES, "measurement_values must equal the fixed code set")):
+        declared = inventory.get(key)
+        require(isinstance(declared, list) and sorted(declared) == sorted(pinned), message)
+    statuses = set(MONITOR_STATUS_VALUES)
+    measurements = set(MEASUREMENT_VALUES)
     categories = set(inventory.get("categories", []))
     require(categories == REQUIRED_CATEGORIES, "categories must be exactly the required set")
     rows = inventory.get("rows")
@@ -95,11 +110,11 @@ def validate(inventory, pinned_revision, root=ROOT):
         if row["monitor_status"].startswith(PREVENTED_PREFIX):
             require(row["prevents_before_side_effect"] in PREVENTION_VALUES,
                     f"{row_id}: prevention status with non-prevention value")
-        # A row detected after the side effect has landed cannot also claim a stop before it, full or partial
-        # (KNOWN_PC_ONLY included). Such a row must record NO.
-        if row["monitor_status"] == "DETECTED_AFTER_SIDE_EFFECT":
+        # A row whose side effect lands before detection cannot claim a stop before it, whatever its status name
+        # (full, partial or KNOWN_PC_ONLY). Keyed on the detection point as well as the status.
+        if row["monitor_status"] == "DETECTED_AFTER_SIDE_EFFECT" or row["detection_point"] == "AFTER_SIDE_EFFECT":
             require(row["prevents_before_side_effect"] in NOT_CLAIMING_VALUES,
-                    f"{row_id}: DETECTED_AFTER_SIDE_EFFECT cannot claim prevention before side effect")
+                    f"{row_id}: post-side-effect detection cannot claim prevention before side effect")
         # A path that is unmonitored or permitted by design has no stop before the side effect.
         if row["monitor_status"] in NO_MONITOR_STATUSES:
             require(row["prevents_before_side_effect"] in ("NO", "UNKNOWN"),
@@ -122,10 +137,14 @@ def validate(inventory, pinned_revision, root=ROOT):
         if row["prevents_before_side_effect"] in PREVENTION_VALUES:
             require(row["detection_point"] in PRE_SIDE_EFFECT_POINTS,
                     f"{row_id}: prevention requires a pre-side-effect detection point")
-        # Any prevention value (YES, PER_WRITE, KNOWN_PC_ONLY) must be backed by a measurement or a static
-        # reference, never NOT_MEASURED.
-        if row["prevents_before_side_effect"] in PREVENTION_VALUES:
-            require(row["measurement"] != "NOT_MEASURED", f"{row_id}: prevention claimed without measurement")
+            require(row["measurement"] in PREVENTION_MEASUREMENTS,
+                    f"{row_id}: prevention claimed without measurement")
+            # Existence of the evidence file is not enough: its content must carry a run id for this measurement.
+            markers = []
+            for item in evidence:
+                markers += RUN_MARKER.findall((root / item).read_text(encoding="utf-8", errors="replace"))
+            require(any(kind == row["measurement"] for _, kind in markers),
+                    f"{row_id}: prevention claimed without content-validated run evidence")
 
         counts[row["monitor_status"]] = counts.get(row["monitor_status"], 0) + 1
         text += " " + row["path"]

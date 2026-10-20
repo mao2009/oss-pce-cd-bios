@@ -8,7 +8,9 @@ can never claim it.
 """
 import copy
 import json
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -56,11 +58,37 @@ def fixture_observation():
 
 
 class WritePathInventoryTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="wpi-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def claimed(self, inventory, row_id, kind="STATIC_SOURCE_REFERENCE", marker=True):
+        """Give row_id a static prevention claim whose evidence file (in the temp root) carries a run marker."""
+        text = f"measurement-run-id: RUN-0123456789AB {kind}\n" if marker else "no run recorded here\n"
+        (self.tmp / "run.txt").write_text(text, encoding="utf-8")
+        row(inventory, row_id).update(monitor_status="PREVENTED_STATIC", prevents_before_side_effect="YES",
+                                      detection_point="BEFORE_RUN", measurement="STATIC_SOURCE_REFERENCE",
+                                      evidence=["run.txt"])
+        return inventory
+
+    def validate_in_tmp(self, inventory):
+        for r in inventory["rows"]:
+            for item in r["evidence"]:
+                if (ROOT / item).is_file() and not (self.tmp / item).exists():
+                    (self.tmp / item).parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy(ROOT / item, self.tmp / item)
+        return W.validate(inventory, PINNED, root=self.tmp)
+
     def test_committed_inventory_validates_and_stays_blocked(self):
         summary, _ = W.load()
         self.assertEqual(summary["gate_status"], "BLOCKED")
         self.assertEqual(summary["rows"], len(INVENTORY["rows"]))
         self.assertGreater(summary["unresolved"], 0)
+
+    def test_committed_inventory_claims_no_prevention_without_a_run_identifier(self):
+        for r in INVENTORY["rows"]:
+            with self.subTest(row=r["id"]):
+                self.assertIn(r["prevents_before_side_effect"], ("NO", "UNKNOWN"))
 
     def test_st_mmio_irq_paths_are_recorded_unresolved(self):
         for row_id in ("W05", "W06", "W07"):
@@ -82,10 +110,11 @@ class WritePathInventoryTest(unittest.TestCase):
             W.validate(inv, PINNED)
 
     def test_mutation_prevention_claim_without_measurement_is_rejected(self):
-        inv = fresh()
-        row(inv, "W01")["measurement"] = "NOT_MEASURED"
-        with self.assertRaisesRegex(ValueError, "prevention claimed without measurement"):
-            W.validate(inv, PINNED)
+        inv = self.claimed(fresh(), "W03")
+        self.assertEqual(self.validate_in_tmp(inv)["unresolved"], 17)
+        row(inv, "W03")["measurement"] = "NOT_MEASURED"
+        with self.assertRaisesRegex(ValueError, "W03: prevention claimed without measurement"):
+            self.validate_in_tmp(inv)
 
     def test_mutation_prevented_status_with_no_prevention_is_rejected(self):
         inv = fresh()
@@ -139,7 +168,7 @@ class WritePathInventoryTest(unittest.TestCase):
     def test_mutation_detected_after_side_effect_cannot_claim_prevention(self):
         inv = fresh()
         row(inv, "W06")["prevents_before_side_effect"] = "YES"
-        with self.assertRaisesRegex(ValueError, "W06: DETECTED_AFTER_SIDE_EFFECT cannot claim prevention"):
+        with self.assertRaisesRegex(ValueError, "W06: post-side-effect detection cannot claim prevention"):
             W.validate(inv, PINNED)
 
     def test_mutation_unknown_status_cannot_claim_prevention(self):
@@ -153,12 +182,6 @@ class WritePathInventoryTest(unittest.TestCase):
         row(inv, "W15")["prevents_before_side_effect"] = "PER_WRITE"
         row(inv, "W15")["measurement"] = "REAL_CORE_SYNTHETIC"  # isolate the status rule from the measurement rule
         with self.assertRaisesRegex(ValueError, "W15: UNKNOWN status must not claim"):
-            W.validate(inv, PINNED)
-
-    def test_mutation_prevention_value_without_measurement_is_rejected(self):
-        inv = fresh()
-        row(inv, "W02")["measurement"] = "NOT_MEASURED"
-        with self.assertRaisesRegex(ValueError, "W02: prevention claimed without measurement"):
             W.validate(inv, PINNED)
 
     def test_w09_w10_detection_point_is_not_recorded(self):
@@ -212,14 +235,10 @@ class WritePathInventoryTest(unittest.TestCase):
             W.validate(inv, PINNED)
 
     def test_mutation_prevention_needs_a_pre_side_effect_detection_point(self):
-        inv = fresh()
-        row(inv, "W03")["detection_point"] = "AFTER_SIDE_EFFECT"
+        inv = self.claimed(fresh(), "W03")
+        row(inv, "W03")["detection_point"] = "NONE"
         with self.assertRaisesRegex(ValueError, "W03: prevention requires a pre-side-effect detection point"):
-            W.validate(inv, PINNED)
-        inv = fresh()
-        row(inv, "W02")["detection_point"] = "NONE"
-        with self.assertRaisesRegex(ValueError, "W02: prevention requires a pre-side-effect detection point"):
-            W.validate(inv, PINNED)
+            self.validate_in_tmp(inv)
 
     def test_mutation_detected_after_side_effect_needs_after_detection_point(self):
         inv = fresh()
@@ -235,61 +254,119 @@ class WritePathInventoryTest(unittest.TestCase):
         # W12 as previously recorded: a partial (KNOWN_PC_ONLY) stop claimed on a row detected after the store landed.
         inv = fresh()
         row(inv, "W12")["prevents_before_side_effect"] = "KNOWN_PC_ONLY"
-        with self.assertRaisesRegex(ValueError, "W12: DETECTED_AFTER_SIDE_EFFECT cannot claim prevention"):
+        with self.assertRaisesRegex(ValueError, "W12: post-side-effect detection cannot claim prevention"):
             W.validate(inv, PINNED)
 
     def test_mutation_partial_known_pc_claim_needs_pre_side_effect_point(self):
-        inv = fresh()
-        row(inv, "W02")["prevents_before_side_effect"] = "KNOWN_PC_ONLY"
-        row(inv, "W02")["detection_point"] = "AFTER_SIDE_EFFECT"
-        with self.assertRaisesRegex(ValueError, "W02: prevention requires a pre-side-effect detection point"):
-            W.validate(inv, PINNED)
+        inv = self.claimed(fresh(), "W03")
+        row(inv, "W03")["prevents_before_side_effect"] = "KNOWN_PC_ONLY"
+        row(inv, "W03")["detection_point"] = "NONE"
+        with self.assertRaisesRegex(ValueError, "W03: prevention requires a pre-side-effect detection point"):
+            self.validate_in_tmp(inv)
 
     def test_w12_records_no_prevention_and_stays_blocked(self):
         self.assertEqual(row(INVENTORY, "W12")["prevents_before_side_effect"], "NO")
         self.assertEqual(row(INVENTORY, "W12")["monitor_status"], "DETECTED_AFTER_SIDE_EFFECT")
         self.assertEqual(row(INVENTORY, "W12")["gate_status"], "BLOCKED")
 
-    # Negative tests for the prevention allowlist (fixed in code, not taken from the inventory).
+    # Pinned allowlists: the inventory may not declare its own status, measurement or prevention vocabulary.
     def test_mutation_unapproved_prevention_value_declared_in_inventory_is_rejected(self):
         inv = fresh()
         inv["prevents_before_side_effect_values"].append("PARTIAL_PC")
         with self.assertRaisesRegex(ValueError, "must equal the fixed code allowlist"):
             W.validate(inv, PINNED)
 
-    def test_mutation_partial_pc_claim_after_side_effect_is_rejected(self):
+    def test_mutation_undeclared_post_side_effect_status_name_is_rejected(self):
+        # A new post-side-effect status name, declared in the inventory, must still be refused by the pinned set.
         inv = fresh()
-        inv["prevents_before_side_effect_values"].append("PARTIAL_PC")
-        row(inv, "W06")["prevents_before_side_effect"] = "PARTIAL_PC"
-        with self.assertRaises(ValueError):
+        inv["monitor_status_values"].append("DETECTED_AFTER_SIDE_EFFECT_PARTIAL")
+        row(inv, "W06")["monitor_status"] = "DETECTED_AFTER_SIDE_EFFECT_PARTIAL"
+        row(inv, "W06")["prevents_before_side_effect"] = "KNOWN_PC_ONLY"
+        row(inv, "W06")["detection_point"] = "BEFORE_STORE"
+        with self.assertRaisesRegex(ValueError, "monitor_status_values must equal the fixed code set"):
             W.validate(inv, PINNED)
 
-    def test_mutation_per_write_claim_after_side_effect_is_rejected(self):
+    def test_mutation_unpinned_late_detected_status_on_row_is_rejected(self):
         inv = fresh()
-        row(inv, "W08")["prevents_before_side_effect"] = "PER_WRITE"
-        with self.assertRaisesRegex(ValueError, "W08: DETECTED_AFTER_SIDE_EFFECT cannot claim prevention"):
+        row(inv, "W06")["monitor_status"] = "LATE_DETECTED"
+        row(inv, "W06")["prevents_before_side_effect"] = "KNOWN_PC_ONLY"
+        row(inv, "W06")["detection_point"] = "BEFORE_STORE"
+        with self.assertRaisesRegex(ValueError, "W06: unknown monitor_status"):
             W.validate(inv, PINNED)
 
-    def test_mutation_monitor_status_unknown_with_yes_claim_is_rejected(self):
+    def test_mutation_monitor_status_values_declared_drift_is_rejected(self):
         inv = fresh()
-        row(inv, "W11")["detection_point"] = "BEFORE_RUN"
-        row(inv, "W11")["prevents_before_side_effect"] = "YES"
-        row(inv, "W11")["measurement"] = "REAL_CORE_SYNTHETIC"
-        with self.assertRaisesRegex(ValueError, "W11: UNKNOWN status must not claim"):
+        inv["monitor_status_values"].append("LATE_DETECTED")
+        with self.assertRaisesRegex(ValueError, "monitor_status_values must equal the fixed code set"):
             W.validate(inv, PINNED)
 
-    def test_mutation_unknown_row_promoted_to_claim_without_evidence_is_rejected(self):
+    def test_mutation_measurement_values_declared_drift_is_rejected(self):
         inv = fresh()
-        row(inv, "W18")["prevents_before_side_effect"] = "KNOWN_PC_ONLY"
-        row(inv, "W18")["detection_point"] = "BEFORE_STORE"
-        with self.assertRaisesRegex(ValueError, "W18: UNKNOWN status must not claim"):
+        inv["measurement_values"].append("PLANNED")
+        with self.assertRaisesRegex(ValueError, "measurement_values must equal the fixed code set"):
             W.validate(inv, PINNED)
 
-    def test_mutation_before_side_effect_claim_without_measurement_is_rejected(self):
-        inv = fresh()
-        row(inv, "W03")["measurement"] = "NOT_MEASURED"
+    def test_mutation_undefined_measurement_cannot_satisfy_prevention(self):
+        # PLANNED is declared by the inventory and set on a claimed row: it must still not satisfy the claim.
+        inv = self.claimed(fresh(), "W03")
+        inv["measurement_values"].append("PLANNED")
+        row(inv, "W03")["measurement"] = "PLANNED"
+        with self.assertRaisesRegex(ValueError, "measurement_values must equal the fixed code set|unknown measurement"):
+            self.validate_in_tmp(inv)
+
+    def test_mutation_undefined_measurement_on_row_is_rejected(self):
+        inv = self.claimed(fresh(), "W03")
+        row(inv, "W03")["measurement"] = "PLANNED"
+        with self.assertRaisesRegex(ValueError, "W03: unknown measurement"):
+            self.validate_in_tmp(inv)
+
+    def test_valid_static_claim_with_content_validated_run_marker_is_accepted(self):
+        inv = self.claimed(fresh(), "W03")
+        self.assertEqual(self.validate_in_tmp(inv)["rows"], len(INVENTORY["rows"]))
+
+    def test_prevention_claim_with_evidence_without_run_marker_is_rejected(self):
+        inv = self.claimed(fresh(), "W03", marker=False)
+        with self.assertRaisesRegex(ValueError, "W03: prevention claimed without content-validated run evidence"):
+            self.validate_in_tmp(inv)
+
+    def test_synthetic_only_evidence_cannot_satisfy_prevention(self):
+        # A REAL_CORE_SYNTHETIC run (synthetic BIOS) with a valid marker still must not satisfy a prevention claim.
+        inv = self.claimed(fresh(), "W03", kind="REAL_CORE_SYNTHETIC")
+        row(inv, "W03")["measurement"] = "REAL_CORE_SYNTHETIC"
         with self.assertRaisesRegex(ValueError, "W03: prevention claimed without measurement"):
+            self.validate_in_tmp(inv)
+
+    def test_marker_naming_another_measurement_does_not_satisfy_claim(self):
+        inv = self.claimed(fresh(), "W03", kind="REAL_CORE_SYNTHETIC")
+        with self.assertRaisesRegex(ValueError, "W03: prevention claimed without content-validated run evidence"):
+            self.validate_in_tmp(inv)
+
+    def test_unknown_row_renamed_to_prevented_static_with_existing_evidence_is_rejected(self):
+        # W18 is UNKNOWN (no measured evidence). Renaming it to PREVENTED_STATIC on an existing evidence file is not enough.
+        inv = fresh()
+        row(inv, "W18").update(monitor_status="PREVENTED_STATIC", prevents_before_side_effect="YES",
+                               detection_point="BEFORE_STORE", measurement="STATIC_SOURCE_REFERENCE")
+        with self.assertRaisesRegex(ValueError, "W18: prevention claimed without content-validated run evidence"):
             W.validate(inv, PINNED)
+
+    def test_post_side_effect_detection_cannot_claim_in_enum_partial_value(self):
+        # Real negative on in-enum values: the rule keys on the status name and on the detection point.
+        for value in ("KNOWN_PC_ONLY", "YES"):
+            for detection in ("AFTER_SIDE_EFFECT", "BEFORE_STORE"):
+                with self.subTest(value=value, detection=detection):
+                    inv = fresh()
+                    row(inv, "W08")["prevents_before_side_effect"] = value
+                    row(inv, "W08")["detection_point"] = detection
+                    with self.assertRaisesRegex(ValueError, "W08: post-side-effect detection cannot claim prevention"):
+                        W.validate(inv, PINNED)
+
+    def test_post_side_effect_detection_point_cannot_claim_in_enum_partial_value(self):
+        # W03 is not DETECTED_AFTER_SIDE_EFFECT, but its detection point is AFTER_SIDE_EFFECT: the rule keys on both.
+        inv = self.claimed(fresh(), "W03")
+        row(inv, "W03")["prevents_before_side_effect"] = "KNOWN_PC_ONLY"
+        row(inv, "W03")["detection_point"] = "AFTER_SIDE_EFFECT"
+        with self.assertRaisesRegex(ValueError, "W03: post-side-effect detection cannot claim prevention"):
+            self.validate_in_tmp(inv)
 
     def test_mutation_gate_moving_off_blocked_is_rejected(self):
         for value in ("PARTIAL", "ALLOWED", "OPEN", "blocked"):

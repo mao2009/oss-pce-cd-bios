@@ -23,49 +23,49 @@
       "id": "W01",
       "path": "CPU store to page 0 via a physical bank shared with an allowlisted page (MPR0 == MPR1 == $F8)",
       "category": "MPR",
-      "monitor_status": "PREVENTED_STATIC",
-      "prevents_before_side_effect": "YES",
+      "monitor_status": "UNKNOWN",
+      "prevents_before_side_effect": "UNKNOWN",
       "detection_point": "BEFORE_RUN",
       "measurement": "REAL_CORE_SYNTHETIC",
       "evidence": ["tests/integration/geargrafx_reference_jsr.cpp", "tests/integration/geargrafx_reference_guard.py"],
       "gate_status": "BLOCKED",
-      "notes": "Alias configuration is refused with exit 8 before any guest instruction runs. Only the slot-1e configuration is covered; the probe fixes MPR0 to ROM bank 0 by default."
+      "notes": "No content-validated run identifier is recorded for this claim, so the prevention claim is withdrawn. Alias configuration is refused with exit 8 before any guest instruction runs. Only the slot-1e configuration is covered; the probe fixes MPR0 to ROM bank 0 by default."
     },
     {
       "id": "W02",
       "path": "CPU store to non-allowlisted CPU addresses $0000, $1FFF and $4000 (measured subset only)",
       "category": "RAM",
-      "monitor_status": "PREVENTED_MEASURED",
-      "prevents_before_side_effect": "PER_WRITE",
+      "monitor_status": "UNKNOWN",
+      "prevents_before_side_effect": "UNKNOWN",
       "detection_point": "BEFORE_STORE",
       "measurement": "REAL_CORE_SYNTHETIC",
       "evidence": ["tests/integration/geargrafx_reference_jsr.cpp", "tests/integration/geargrafx_reference_guard.py"],
       "gate_status": "BLOCKED",
-      "notes": "Measured only for CPU addresses $0000, $1FFF and $4000 (neg-write). map_write denies by physical bank; CPU-address write breakpoints cover [0,$2000) and [$4000,$FFFF]. Other addresses, banks and stores that span pages are not measured."
+      "notes": "No content-validated run identifier is recorded for this claim, so the prevention claim is withdrawn. Measured only for CPU addresses $0000, $1FFF and $4000 (neg-write). map_write denies by physical bank; CPU-address write breakpoints cover [0,$2000) and [$4000,$FFFF]. Other addresses, banks and stores that span pages are not measured."
     },
     {
       "id": "W03",
       "path": "Dynamic MPR change during execution (TAM, any MPR write)",
       "category": "MPR",
       "monitor_status": "DETECTED_AT_INSTRUCTION_BOUNDARY",
-      "prevents_before_side_effect": "YES",
+      "prevents_before_side_effect": "UNKNOWN",
       "detection_point": "INSTRUCTION_BOUNDARY",
       "measurement": "REAL_CORE_SYNTHETIC",
       "evidence": ["tests/integration/geargrafx_reference_jsr.cpp", "tests/integration/geargrafx_reference_guard.py"],
       "gate_status": "BLOCKED",
-      "notes": "The MPR change itself has no device side effect. All MPRs are compared after every stepped instruction and the next instruction is not run. Measured for TAM only. Assumes one instruction per step, which the instructions_executed=2 measurement supports but does not prove for every opcode."
+      "notes": "No content-validated run identifier is recorded for this claim, so the prevention claim is withdrawn. The MPR change itself has no device side effect. All MPRs are compared after every stepped instruction and the next instruction is not run. Measured for TAM only. Assumes one instruction per step, which the instructions_executed=2 measurement supports but does not prove for every opcode."
     },
     {
       "id": "W04",
       "path": "Hardware Page ($1800-$1BFF and other I/O) reached by mapping any MPR to $FF",
       "category": "MMIO",
-      "monitor_status": "PREVENTED_BY_REACHABILITY",
-      "prevents_before_side_effect": "YES",
+      "monitor_status": "UNKNOWN",
+      "prevents_before_side_effect": "UNKNOWN",
       "detection_point": "INSTRUCTION_BOUNDARY",
       "measurement": "STATIC_SOURCE_REFERENCE",
       "evidence": ["tests/integration/geargrafx_reference_jsr.cpp"],
       "gate_status": "BLOCKED",
-      "notes": "Reachability is a static check in the probe source (the hardware-page branch was not reached in any measurement). Slot-1e mode rejects any run where an MPR holds $FF. This denies I/O reachability through MPR only. It does not cover the ST path (W05-W07), which ignores MPR."
+      "notes": "No content-validated run identifier is recorded for this claim, so the prevention claim is withdrawn. Reachability is a static check in the probe source (the hardware-page branch was not reached in any measurement). Slot-1e mode rejects any run where an MPR holds $FF. This denies I/O reachability through MPR only. It does not cover the ST path (W05-W07), which ignores MPR."
     },
     {
       "id": "W05",
@@ -167,13 +167,13 @@
       "id": "W13",
       "path": "Other memory-mapped I/O: VDC/VCE/PSG/timer/joypad and other CD-ROM registers",
       "category": "MMIO",
-      "monitor_status": "PREVENTED_BY_REACHABILITY",
-      "prevents_before_side_effect": "YES",
+      "monitor_status": "UNKNOWN",
+      "prevents_before_side_effect": "UNKNOWN",
       "detection_point": "INSTRUCTION_BOUNDARY",
       "measurement": "STATIC_SOURCE_REFERENCE",
       "evidence": ["tests/integration/geargrafx_reference_jsr.cpp"],
       "gate_status": "BLOCKED",
-      "notes": "Unreachable through MPR in slot-1e mode while W03/W04 hold (reachability check in the probe source, not measured per register). Each register is not separately measured. VDC is also reachable through ST (W05-W07), which this row does not cover."
+      "notes": "No content-validated run identifier is recorded for this claim, so the prevention claim is withdrawn. Unreachable through MPR in slot-1e mode while W03/W04 hold (reachability check in the probe source, not measured per register). Each register is not separately measured. VDC is also reachable through ST (W05-W07), which this row does not cover."
     },
     {
       "id": "W14",

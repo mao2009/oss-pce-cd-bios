@@ -23,10 +23,10 @@ CPU/デバイス書込み経路のうち、**監視されていないもの・�
 
 | ID | 経路 | 分類 | 監視状態 | 副作用前の遮断 | 検出点 | 実測 | 根拠 |
 |----|------|------|----------|----------------|--------|------|------|
-| W01 | ページ0を許可ページと同一物理バンクにエイリアス（MPR0==MPR1） | MPR | PREVENTED_STATIC | YES | 実行前 | 実コア合成（exit 8） | probe, reference_guard.py |
-| W02 | 許可外CPUアドレスへの書込み（$0000・$1FFF・$4000 の3点のみ） | RAM | PREVENTED_MEASURED | PER_WRITE | ストア前 | 実コア合成（3点のみ） | probe, reference_guard.py |
-| W03 | 実行中のMPR変更（TAM 等） | MPR | DETECTED_AT_INSTRUCTION_BOUNDARY | YES（次命令を実行しない） | 命令境界 | 実コア合成（TAMのみ） | probe, reference_guard.py |
-| W04 | いずれかのMPRを$FFにしてハードウェアページを到達 | MMIO | PREVENTED_BY_REACHABILITY | YES | 命令境界 | 静的（到達性検査、ハードウェアページ分岐は未到達） | probe |
+| W01 | ページ0を許可ページと同一物理バンクにエイリアス（MPR0==MPR1） | MPR | UNKNOWN | UNKNOWN（主張撤回: 検証可能な実行ID未記録） | 実行前 | 実コア合成（exit 8、実行IDなし） | probe, reference_guard.py |
+| W02 | 許可外CPUアドレスへの書込み（$0000・$1FFF・$4000 の3点のみ） | RAM | UNKNOWN | UNKNOWN（主張撤回: 検証可能な実行ID未記録） | ストア前 | 実コア合成（3点のみ、実行IDなし） | probe, reference_guard.py |
+| W03 | 実行中のMPR変更（TAM 等） | MPR | DETECTED_AT_INSTRUCTION_BOUNDARY | UNKNOWN（主張撤回: 検証可能な実行ID未記録。次命令を実行しない主張はしない） | 命令境界 | 実コア合成（TAMのみ） | probe, reference_guard.py |
+| W04 | いずれかのMPRを$FFにしてハードウェアページを到達 | MMIO | UNKNOWN | UNKNOWN（主張撤回） | 命令境界 | 静的（到達性検査、ハードウェアページ分岐は未到達） | probe |
 | W05 | **ST0 ($03)**: VDC アドレスレジスタ書込み（WriteFromCPU 迂回） | ST | **UNMONITORED** | **NO** | なし | 実コア合成（検出サイトなし） | geargrafx_st_bypass.py |
 | W06 | **ST1 ($13)**: VDC データ下位書込み | ST | DETECTED_AFTER_SIDE_EFFECT | NO | 副作用後 | 実コア合成 | geargrafx_st_bypass.py |
 | W07 | **ST2 ($23)**: VDC データ上位書込み | ST | DETECTED_AFTER_SIDE_EFFECT | NO | 副作用後 | 実コア合成 | geargrafx_st_bypass.py |
@@ -35,15 +35,15 @@ CPU/デバイス書込み経路のうち、**監視されていないもの・�
 | W10 | $1403 TIQ 確認書込み | IRQ | UNKNOWN | NO（書込みの着地を観測） | UNKNOWN（未記録） | 実コア合成（bit2のみ変化） | geargrafx_irq_register.py |
 | W11 | $1400/$1401 無効な割込レジスタ書込み | IRQ | UNKNOWN | UNKNOWN | UNKNOWN | 副作用なしを $1402/$1403 でのみ実測 | probe |
 | W12 | $1804 CD リセット（SCSI RST）書込み | MMIO | DETECTED_AFTER_SIDE_EFFECT | NO | 副作用後（既知PCのみ実行ブレークで事前遮断。部分的な事前遮断は主張しない） | 実コア合成（既知コードのみ） | geargrafx_mmio1804_trap.py, _preblock.py |
-| W13 | その他の I/O（VDC/VCE/PSG/タイマ/ジョイパッド/CD レジスタ） | MMIO | PREVENTED_BY_REACHABILITY | YES（MPR経由のみ） | 命令境界 | 静的（個別未実測） | probe。VDC は ST 経由で別途到達（W05〜W07） |
+| W13 | その他の I/O（VDC/VCE/PSG/タイマ/ジョイパッド/CD レジスタ） | MMIO | UNKNOWN | UNKNOWN（主張撤回。MPR経由の到達性のみ、実行IDなし） | 命令境界 | 静的（個別未実測） | probe。VDC は ST 経由で別途到達（W05〜W07） |
 | W14 | 被呼出し側が CLI を実行し、IRQ/TIQ/タイマの割込みに入る | IRQ | **UNMONITORED** | NO | なし | 未測定 | probe（P=$04、stop_on_irq=false） |
 | W15 | ブロック転送命令（TII/TIN/TDD/TIA/TAI）の1命令内の複数書込み | CPU | UNKNOWN | UNKNOWN（命令途中停止は未実測） | UNKNOWN | 未測定 | probe。命令途中で停止するかは不明 |
 | W16 | 許可域 [$2000,$4000) 内（ZP・スタック・スタブ・被呼出し側データ） | RAM | PERMITTED_UNISOLATED | NO | なし | 実コア合成（事後の ram_diff と stub_ok のみ） | probe |
 | W17 | デバイス起点の RAM 書込み: CD/ADPCM 転送（未監査） | DEVICE | UNKNOWN | UNKNOWN | UNKNOWN | 未監査・未測定 | docs/cd-reset-contract.md |
 | W18 | 許可外CPUアドレスのうち W02 以外（ページ3〜7、ページ2の残り） | RAM | UNKNOWN | UNKNOWN | UNKNOWN | 未測定（ブレーク範囲は設定されるが、ストアは未観測） | probe |
 
-集計（`--check` の出力）: 18行、未解決 13行。
-副作用前の遮断の根拠は三種類だけで、いずれも範囲が限定される: 実測（W01・W02 の3点・W03）、到達性（W04・W13。MPR経由のみ、W04 は静的）、既知PCの実行ブレーク（W12）。
+集計（`--check` の出力）: 18行、未解決 17行。
+副作用前遮断を主張する行は 0 件。以前の実測・到達性の主張（W01〜W04・W13）は撤回した。合成BIOSの実測（REAL_CORE_SYNTHETIC）は副作用前遮断の根拠にならず、静的な到達性の主張も実行IDを含む証拠ファイルで検証されていないため。W12 の既知PCのみの実行ブレークも主張しない（副作用後検出）。
 ST0/1/2（W05〜W07）と IRQ 書込み（W08〜W10）には汎用の副作用前遮断が無く、割込みエントリ（W14）は未監視。W09・W10 は検出点が未記録（UNKNOWN）。
 
 ## 副作用前遮断の検証計画
@@ -66,7 +66,7 @@ W05 の遮断手段はコア側フックが無いと成立しない可能性が�
 
 ## ホスト側テストの結果（この worktree）
 
-- `tests/host/test_write_path_inventory.py`: 35 件（インベントリの不変条件・改変テスト、観測スキーマの正負例、ドキュメント整合）
+- `tests/host/test_write_path_inventory.py`: 59 件（インベントリの不変条件・改変テスト、観測スキーマの正負例、ドキュメント整合）
 - `tests/host/test_reference_jsr_gate.py`: 既存のゲートテストを維持（BLOCKED）
 - 全体の `python -m unittest discover -s tests/host`（UTF-8 モード）: 1225 件中、残りの失敗は Windows 固有（`os.getuid`、`fcntl`、非 Win32 バイナリ、cc65 不在）による既存のもので、この PR の変更ファイルとは無関係。`make test` は NOT_RUN（Windows では Makefile と cc65 が動かないため）。
 
