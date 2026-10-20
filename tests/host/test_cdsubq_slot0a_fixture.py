@@ -39,6 +39,26 @@ def judge(case, medium):
     return POSITIVE if t["start"] <= lba <= t["end"] else NEGATIVE
 
 
+def medium_problems(data):
+    """Return inconsistencies between the declared io_range/track types and the medium."""
+    medium, io = data["medium"], data["io_range"]
+    tracks = sorted(medium["tracks"], key=lambda t: t["start"])
+    problems = []
+    for t in tracks:
+        if t["type"] not in ("data", "audio"):
+            problems.append(f"track {t['no']}: unknown type {t['type']!r}")
+    if tracks[0]["start"] != io["lba_min"]:
+        problems.append("io_range.lba_min does not match first track start")
+    if tracks[-1]["end"] + 1 != medium["leadout_lba"] or io["lba_max"] != tracks[-1]["end"]:
+        problems.append("io_range.lba_max does not match last track end / lead-out")
+    if sorted(t["no"] for t in medium["tracks"]) != io["track_numbers"]:
+        problems.append("io_range.track_numbers does not match medium tracks")
+    for a, b in zip(tracks, tracks[1:]):
+        if a["end"] + 1 != b["start"]:
+            problems.append(f"tracks {a['no']} and {b['no']} are not contiguous")
+    return problems
+
+
 class CdSubqSlot0aFixtureTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -76,13 +96,24 @@ class CdSubqSlot0aFixtureTests(unittest.TestCase):
             self.assertIn(required, cases)
             self.assertEqual(cases[required]["expected"], NEGATIVE)
 
+    def test_medium_and_io_range_consistent(self):
+        # io_range and track types are declared data; they must agree with the medium they describe.
+        self.assertEqual(medium_problems(self.data), [])
+        bad = copy.deepcopy(self.data)
+        bad["io_range"]["lba_max"] = 200
+        self.assertTrue(medium_problems(bad), "io_range drift must be reported")
+        bad = copy.deepcopy(self.data)
+        bad["medium"]["tracks"][1]["type"] = "Audio"
+        self.assertTrue(medium_problems(bad), "unknown track type must be reported")
+
     def test_judge_rejects_mutated_expectations(self):
         # The judge must catch a flipped expectation, so a wrong fixture cannot pass silently.
         medium = self.data["medium"]
-        mutated = copy.deepcopy(self.data["cases"][0])
+        by_id = {c["id"]: c for c in self.data["cases"]}
+        mutated = copy.deepcopy(by_id["pos_track1_start"])
         mutated["expected"] = NEGATIVE
         self.assertEqual(judge(mutated, medium), POSITIVE)
-        leadout = copy.deepcopy(self.data["cases"][7])
+        leadout = copy.deepcopy(by_id["neg_leadout"])
         leadout["expected"] = POSITIVE
         self.assertEqual(judge(leadout, medium), NEGATIVE)
 
