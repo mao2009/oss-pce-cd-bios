@@ -51,6 +51,7 @@ Command line (run by the workflows from the trusted copy, with --root "$GITHUB_W
   --stage WORKFLOW STEP | --verify WORKFLOW STEP | --post-build WORKFLOW STEP | --check-placement | (no argument: static)
 """
 from pathlib import Path
+import fnmatch
 import hashlib
 import json
 import os
@@ -566,6 +567,31 @@ ATTEST_ANY_RE = re.compile(r"actions/attest", re.IGNORECASE)
 # whitespace normalization: any removal, `!=`, a different ref, `||`, or a quoted/block form is a refusal. Policy lives in
 # the workflow; this guard only enforces it. Residual risks not covered here: see the note at attest_condition_violations.
 SIGN_CONDITION = "github.event_name == 'push' && github.ref == 'refs/heads/main'"
+# Issue #337 round 4. (a) signing or OIDC-token text is refused on any live line except the approved attest uses: line,
+# a display name, and a read-only `gh attestation verify`; (b) an approved signing job keeps the job that produces its
+# artifact in needs:; (c) continue-on-error is refused in a signing job; (d) an upload pattern that can select a ROM file
+# must be on APPROVED_ROM_UPLOADS, and a staged ROM file must come from an approved pattern.
+ATTEST_NEEDS = {("api-source.yml", "attest-cdread"): {"guard-bios-dev"},
+                ("api-source.yml", "attest-cdread-verdict"): {"guard-cdread-verdict"}}
+SIGNING_TERMS_RE = re.compile(r"sigstore|cosign|fulcio|rekor|(?<![\w-])attest(?![\w-])|actions/attest|gh\s+attestation"
+                              r"|ACTIONS_ID_TOKEN_REQUEST_TOKEN", re.IGNORECASE)
+SIGNING_PERMISSION_RE = re.compile(r"""^\s*(?:-\s+)?["']?(id-token|attestations)["']?\s*:\s*(\S+)""")
+APPROVED_ATTEST_USES_RE = re.compile(r"""uses\s*:\s*actions/attest-build-provenance@[0-9a-f]{40}\s*(?:#.*)?$""")
+GH_VERIFY_RE = re.compile(r"""(?:run\s*:\s*)?gh attestation verify\b""")
+READ_ONLY_ATTEST_PERMISSION_RE = re.compile(r"""\s*(?:-\s+)?attestations\s*:\s*read\s*""")
+ROM_CANDIDATES = ("x.pce", "x.bin", "x.rom")
+ROM_SUFFIXES = (".pce", ".bin", ".rom")
+# The ROM upload patterns that exist today (staged form), per workflow file. Each is a synthetic probe ROM or the project's
+# own debug build; the guard does not inspect what a glob selects beyond the executable and archive checks.
+APPROVED_ROM_UPLOADS = frozenset(
+    {("api-source.yml", ".intake/.artifact-stage/build/debug/bios-dev/*.pce"),
+     ("api-source.yml", ".intake/.artifact-stage/build/debug/bios-dev/contract-probes/*.pce"),
+     ("api-source.yml", ".intake/.artifact-stage/build/debug/startup-probe/*.pce"),
+     ("api-source.yml", ".intake/.artifact-stage/build/debug/cdread-probe/*.pce"),
+     ("api-source.yml", ".intake/.artifact-stage/build/debug/cdload-exec/*.pce"),
+     ("api-source.yml", ".intake/.artifact-stage/build/debug/cdreset-probe/*.pce"),
+     ("ci.yml", ".intake/.artifact-stage/build/debug/*.pce"),
+     ("nightly.yml", ".intake/.artifact-stage/build/debug/*.pce")})
 
 
 def _enclosing_job(lines, index):
@@ -749,12 +775,8 @@ def attest_condition_violations(text, label):
     `if` is refused, a duplicate key anywhere in the job block is refused (strict loader), and any anchor, alias or tag
     other than str/map in the job block is refused (event stream).
 
-    Known residual risks, NOT detected here (recorded in docs/provenance.md "Attestation publication scope"):
-    - a `run:` step that calls Sigstore directly with the OIDC token (no attest action) is not seen by this guard;
-    - the job's `permissions: id-token: write` is not checked;
-    - guard-bios-dev does not inspect .pce contents, only the synthetic subject files are signed;
-    - `continue-on-error` on a signing job or its attest step is not checked;
-    - `needs:` removal or change on a signing job is not checked.
+    Round 4: a direct Sigstore or cosign call in run:, id-token permission, continue-on-error and needs: removal are checked
+    by signing_violations; ROM uploads by rom_upload_violations. Residuals of those checks are listed in their docstrings.
     """
     lines = text.splitlines()
     problems = []
@@ -787,6 +809,95 @@ def attest_condition_violations(text, label):
             problems.append(f"{label}: signing job {job!r} must have exactly one job-level if: {SIGN_CONDITION!r} "
                             f"(found {values}, effective {effective!r}, block or quoted form refused, Issue #349, #337)")
     return problems
+
+
+def _job_blocks(lines):
+    """(job id, header index, end index) of each block-form job (an indent-2 key). The end is the next top-level line."""
+    blocks = []
+    for head, line in enumerate(lines):
+        job = _job_name(line) if _live(line) and _indent(line) == 2 else None
+        if job is None:
+            continue
+        end = next((j for j in range(head + 1, len(lines)) if _live(lines[j]) and _indent(lines[j]) <= 2), len(lines))
+        blocks.append((job, head, end))
+    return blocks
+
+
+def _signing_exempt(line):
+    """A line whose signing words name no action: a display name at key level, the approved attest uses: line, or a
+    read-only `gh attestation verify` with no other signing term after it (Issue #337 round 4)."""
+    body = line.lstrip()
+    key = body[2:].lstrip() if body.startswith("- ") else body
+    if re.match(r"name\s*:", key) and _indent(line) in (4, 6, 8):
+        return True
+    if APPROVED_ATTEST_USES_RE.match(key) and _indent(line) in (6, 8):
+        return True
+    if READ_ONLY_ATTEST_PERMISSION_RE.fullmatch(line.split(" #", 1)[0]):
+        return True   # `attestations: read` (the trailing comment is not executed)
+    match = GH_VERIFY_RE.match(key)
+    return bool(match) and not SIGNING_TERMS_RE.search(key[match.end():])
+
+
+def signing_violations(text, label):
+    """Issue #337 round 4 (a)(b)(c), for one workflow file.
+    (a) signing or OIDC-token text (sigstore, cosign, attest, gh attestation, the OIDC request token) on any live line that is
+    not an exempt form, in any job; a job that holds attestations write must be an approved signing job. id-token alone is
+    not a signing right (pages.yml deploy needs it), so it is not refused by itself.
+    (b) an approved signing job keeps id-token and attestations write, and keeps the job that produces its artifact in needs:.
+    (c) continue-on-error is refused in an approved signing job, at job or step level, in any spelling on the line.
+    Not covered here: a signing call under a name none of these terms match is refused by the uses: allowlist, not here."""
+    name = Path(label).name
+    lines = text.splitlines()
+    problems = []
+    if any(_live(line) and "write-all" in line for line in lines):
+        problems.append(f"{label}: write-all permissions are refused (Issue #337 round 4)")
+    for i, line in enumerate(lines):
+        if _live(line) and SIGNING_TERMS_RE.search(line) and not _signing_exempt(line):
+            problems.append(f"{label}: line {i + 1} calls signing or an OIDC token outside the approved attest step "
+                            f"({line.strip()!r}, Issue #337 round 4 (a))")
+        if _live(line) and _indent(line) == 2 and _job_name(line) is None and re.search(r"id-token|attestations", line):
+            problems.append(f"{label}: line {i + 1} is a flow-form job with an id-token or attestations key (refused, "
+                            "Issue #337 round 4 (a))")
+    for job, head, end in _job_blocks(lines):
+        body = [line for line in lines[head + 1:end] if _live(line)]
+        perms = {}
+        for line in body:
+            match = SIGNING_PERMISSION_RE.match(line)
+            if match:
+                perms[match.group(1)] = match.group(2)
+        approved = (name, job) in ATTEST_NEEDS
+        if perms.get("attestations") not in (None, "read", "none") and not approved:
+            problems.append(f"{label}: job {job!r} holds attestations write and is not an approved signing job "
+                            "(Issue #337 round 4 (a))")
+        if not approved:
+            continue
+        if perms.get("id-token") != "write" or perms.get("attestations") != "write":
+            problems.append(f"{label}: signing job {job!r} must keep id-token: write and attestations: write "
+                            "(Issue #337 round 4)")
+        missing = ATTEST_NEEDS[(name, job)] - set(_job_needs(lines, job))
+        if missing:
+            problems.append(f"{label}: signing job {job!r} must keep needs: {sorted(missing)}, the job that produces its "
+                            "artifact (removal refused, Issue #337 round 4 (b))")
+        if any("continue-on-error" in line for line in body):
+            problems.append(f"{label}: signing job {job!r} may not use continue-on-error (Issue #337 round 4 (c))")
+    return problems
+
+
+def _rom_capable(pattern):
+    """True when an upload pattern can select a ROM file by its last path segment. A plain directory name is not judged
+    here: stage_artifacts refuses a ROM file that a directory selects unless its pattern is approved (Issue #337 round 4 (d))."""
+    last = pattern.rstrip("/").rsplit("/", 1)[-1].lower()
+    if any(fnmatch.fnmatchcase(candidate, last) for candidate in ROM_CANDIDATES):
+        return True
+    return any(c in last for c in "*?[") and "." not in last
+
+
+def rom_upload_violations(text, label):
+    """Issue #337 round 4 (d): every upload pattern that can select a ROM file must be on APPROVED_ROM_UPLOADS for this file."""
+    name = Path(label).name
+    return [f"{label}: upload path {p!r} can select a ROM file (*.pce, *.bin, *.rom) and is not on APPROVED_ROM_UPLOADS "
+            "(Issue #337 round 4 (d))"
+            for p in upload_patterns(text) if _rom_capable(p) and (name, p) not in APPROVED_ROM_UPLOADS]
 
 
 def publish_violations(text, label):
@@ -841,6 +952,8 @@ def check_guard_placement(root=ROOT):
         problems += publish_violations(text, label)
         problems += attest_input_violations(text, label)
         problems += attest_condition_violations(text, label)
+        problems += signing_violations(text, label)
+        problems += rom_upload_violations(text, label)
     if problems:
         raise ValueError("artifact guard placement: " + "; ".join(problems))
     print("PASS artifact guard placement: trusted preamble, staged paths, stage and verify before every upload")
@@ -1304,6 +1417,10 @@ def stage_artifacts(workflow, step, root=ROOT, workflows_root=None):
         for path in paths:
             for entry, reason in tree_problems(path):
                 problems.append(f"{workflow}: {_rel(entry, base)} ({reason})")
+            for entry in _entry_files(path):
+                if entry.suffix.lower() in ROM_SUFFIXES and (Path(workflow).name, pattern) not in APPROVED_ROM_UPLOADS:
+                    problems.append(f"{workflow}: {_rel(entry, base)} is a ROM file selected by {pattern!r}, which is not on "
+                                    "APPROVED_ROM_UPLOADS (Issue #337 round 4 (d))")
             copies += [(f, _staged_location(base, f)) for f in _entry_files(path)]
     if problems:
         raise ValueError("artifact guard (stage): " + "; ".join(problems))
