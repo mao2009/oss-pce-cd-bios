@@ -219,7 +219,7 @@ class PrivilegeAndTriggerTests(unittest.TestCase):
     def test_pages_write_via_write_all_in_ci_is_refused(self):
         doc = {'on': 'push', 'jobs': {'verify': {'runs-on': 'ubuntu-24.04', 'permissions': 'write-all',
                                                  'steps': [{'run': 'true'}]}}}
-        self.assertRefusedWith(doc, "job 'verify' grants pages: write", '.github/workflows/ci.yml')
+        self.assertRefusedWith(doc, "job 'verify' grants write-all", '.github/workflows/ci.yml')
 
     def test_contents_write_on_a_non_release_job_is_refused(self):
         doc = {'on': 'push', 'jobs': {'verify': {'runs-on': 'ubuntu-24.04', 'permissions': {'contents': 'write'},
@@ -239,6 +239,24 @@ class PrivilegeAndTriggerTests(unittest.TestCase):
         doc = {'on': {'workflow_run': {'workflows': ['CI'], 'types': ['completed']}}, 'permissions': {'contents': 'read'},
                'jobs': {'job': {'runs-on': 'ubuntu-24.04', 'steps': [{'run': 'true'}]}}}
         self.assertRefusedWith(doc, "triggers ['workflow_run'] refused", '.github/workflows/wr.yml')
+
+    def test_packages_write_in_a_new_job_is_refused(self):
+        doc = {'on': 'push', 'permissions': {'contents': 'read'},
+               'jobs': {'pubx': {'runs-on': 'ubuntu-24.04', 'permissions': {'packages': 'write'},
+                                 'steps': [{'run': 'true'}]}}}
+        self.assertRefusedWith(doc, "job 'pubx' grants packages: write", '.github/workflows/pubx.yml')
+
+    def test_deployments_write_in_a_new_job_is_refused(self):
+        doc = {'on': 'push', 'permissions': {'contents': 'read'},
+               'jobs': {'deploy-x': {'runs-on': 'ubuntu-24.04', 'permissions': {'deployments': 'write'},
+                                     'steps': [{'run': 'true'}]}}}
+        self.assertRefusedWith(doc, "job 'deploy-x' grants deployments: write", '.github/workflows/deploy-x.yml')
+
+    def test_schedule_is_allowed_only_in_nightly(self):
+        doc = {'on': {'schedule': [{'cron': '0 0 * * *'}]}, 'permissions': {'contents': 'read'},
+               'jobs': {'job': {'runs-on': 'ubuntu-24.04', 'steps': [{'run': 'true'}]}}}
+        self.assertEqual([], problems_of(doc, '.github/workflows/nightly.yml'))
+        self.assertRefusedWith(doc, "triggers ['schedule'] refused", '.github/workflows/ci.yml')
 
     def test_run_step_in_deploy_job_is_refused(self):
         doc = split_doc()

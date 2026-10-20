@@ -1231,7 +1231,8 @@ PAGES_FILE = "pages.yml"
 PAGES_SPLIT_JOBS = frozenset({"validate", "build", "deploy"})
 PAGES_DEPLOY_IF = "github.event_name == 'push' && github.ref == 'refs/heads/main'"   # push only: pull_request_target and workflow_run also report ref main (Issue #349 review)
 PAGES_ALLOWED_TRIGGERS = frozenset({"pull_request", "push", "workflow_dispatch"})   # main's pages.yml triggers (2026-10-20)
-WORKFLOW_ALLOWED_TRIGGERS = frozenset({"pull_request", "push", "workflow_dispatch", "schedule"})   # all triggers used on main (2026-10-20); pull_request_target and workflow_run are refused everywhere
+WORKFLOW_ALLOWED_TRIGGERS = frozenset({"pull_request", "push", "workflow_dispatch"})   # triggers used on main (2026-10-20); pull_request_target and workflow_run are refused everywhere
+SCHEDULE_WORKFLOWS = frozenset({"nightly.yml"})   # the only workflow on main that uses schedule:
 PAGES_DEPLOY_PERMISSIONS = {"pages": "write", "id-token": "write"}
 PAGES_BUILD_PERMISSIONS = {"contents": "read"}
 PAGES_LEGACY_PERMISSIONS = {"contents": "read", "actions": "read", "pages": "write", "id-token": "write"}
@@ -1304,9 +1305,23 @@ def pages_structure_violations(text, label):
     return _privilege_problems(doc, label) + _pages_structure_problems(doc, label)
 
 
-def _grants_write(perms, scope):
-    """True if a permissions value grants write to scope: `write-all`, or `scope: write`."""
-    return perms == "write-all" or (isinstance(perms, dict) and perms.get(scope) == "write")
+def _write_scopes(perms):
+    """Scopes a permissions value grants write to: `write-all` as one token, else every key whose value is `write`."""
+    if perms == "write-all":
+        return ["write-all"]
+    if isinstance(perms, dict):
+        return sorted(str(k) for k, v in perms.items() if v == "write")
+    return []
+
+
+# Issue #349 (review): every write grant is refused unless it is listed here for its exact (file, job). Keyed by file and
+# job, and each entry is the exact set of scopes allowed there. The entries are the approved Pages deploy job and the
+# approved attest jobs in api-source.yml; nothing else holds a write grant.
+WRITE_ALLOWANCES = {
+    ("pages.yml", "deploy"): {"pages", "id-token"},
+    ("api-source.yml", "attest-cdread"): {"id-token", "attestations"},
+    ("api-source.yml", "attest-cdread-verdict"): {"id-token", "attestations"},
+}
 
 
 def _privilege_problems(doc, label):
@@ -1319,17 +1334,22 @@ def _privilege_problems(doc, label):
     holders = [("workflow", doc.get("permissions"))]
     holders += [(job, body.get("permissions")) for job, body in jobs.items() if isinstance(body, dict)]
     problems = []
+    name = Path(label).name
     for holder, perms in holders:
         where = "workflow" if holder == "workflow" else f"job {holder!r}"
-        if _grants_write(perms, "contents"):
-            problems.append(f"{label}: {where} grants contents: write (refused, no release route is approved, Issue #349)")
-        if _grants_write(perms, "pages") and not (Path(label).name == PAGES_FILE and holder == "deploy"):
-            problems.append(f"{label}: {where} grants pages: write outside the deploy job of {PAGES_FILE} "
-                            "(refused, Issue #349)")
+        allowed = WRITE_ALLOWANCES.get((name, holder), set())
+        for scope in _write_scopes(perms):
+            if scope not in allowed:
+                grant = "write-all" if scope == "write-all" else f"{scope}: write"
+                problems.append(f"{label}: {where} grants {grant} (refused unless allowlisted in WRITE_ALLOWANCES, "
+                                "Issue #349)")
     # Triggers: every workflow file may use only the triggers main uses; pages.yml may use only its own set.
     on = doc.get("on", doc.get(True))   # YAML 1.1 reads a bare `on:` key as True
     names = set(on) if isinstance(on, (dict, list)) else {on} if isinstance(on, str) else set()
-    allowed = PAGES_ALLOWED_TRIGGERS if Path(label).name == PAGES_FILE else WORKFLOW_ALLOWED_TRIGGERS
+    if Path(label).name == PAGES_FILE:
+        allowed = PAGES_ALLOWED_TRIGGERS
+    else:
+        allowed = WORKFLOW_ALLOWED_TRIGGERS | ({"schedule"} if Path(label).name in SCHEDULE_WORKFLOWS else set())
     extra = sorted(str(n) for n in names - allowed)
     if not names or extra:
         problems.append(f"{label}: triggers {sorted(map(str, names))} refused; only {sorted(allowed)} are allowed "
