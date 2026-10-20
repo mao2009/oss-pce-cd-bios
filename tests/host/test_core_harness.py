@@ -114,7 +114,9 @@ class JudgeTest(unittest.TestCase):
             if row["phase"] == "harness_after":
                 row["sp"] = 0xFE
         for cycle in ("cold", "warm"):
-            self.assertIn("SP/MPR not balanced", " ".join(h.judge(rec, CASE, SYM)[2]))
+            fails = h.judge(rec, CASE, SYM)[2]
+            self.assertIn(f"{cycle}: SP not balanced across the call", fails)
+            self.assertFalse(any("MPR" in f for f in fails), fails)
 
     def test_mpr_unbalanced_is_judged_fail(self):
         # Judge-level guard: a routine that leaves MPR2 changed (1 -> 2) must never PASS.
@@ -123,7 +125,9 @@ class JudgeTest(unittest.TestCase):
             if row["phase"] == "harness_after":
                 row["mpr"] = [0xFF, 0xF8, 2, 2, 3, 4, 5, 0]
         for cycle in ("cold", "warm"):
-            self.assertIn("SP/MPR not balanced", " ".join(h.judge(rec, CASE, SYM)[2]))
+            fails = h.judge(rec, CASE, SYM)[2]
+            self.assertIn(f"{cycle}: MPR not balanced across the call", fails)
+            self.assertFalse(any("SP" in f for f in fails), fails)
 
     def test_sp_negative_case_is_declared_in_real_core_selftest(self):
         # Real-core negative for SP imbalance (the judge alone is host-only evidence).

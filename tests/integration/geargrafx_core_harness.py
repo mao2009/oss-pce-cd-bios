@@ -1,7 +1,7 @@
 """HuC6280 core verification harness on the real Geargrafx core (test-only, NOT a BIOS ABI proof).
 
 Each case JSRs one routine in bank0 with synthetic A/X/Y/P and a 32-byte zero-page seed
-($20E0-$20FF), then records A/X/Y/P/SP/MPR and the ZP window before and after, cold and warm.
+(code address $00E0-$00FF), then records A/X/Y/P/SP/MPR and the ZP window before and after, cold and warm.
 Status per cycle: RETURNED (harness_done reached after RTS), TRAPPED (IRQ/BRK vector taken) or
 TIMEOUT (step budget used up). Only RETURNED with every expectation met is PASS.
 
@@ -155,8 +155,10 @@ def judge(records, case, symbols):
             failures.append(f"{cycle}: inputs not delivered or pre-snapshot clobbered")
         if (before["p"] ^ case["p"]) & 0xCF:  # B/T bits are not inputs
             failures.append(f"{cycle}: P input not delivered")
-        if before["sp"] != 0xFF or after["sp"] != 0xFF or after["mpr"] != before["mpr"]:
-            failures.append(f"{cycle}: SP/MPR not balanced across the call")
+        if before["sp"] != 0xFF or after["sp"] != 0xFF:
+            failures.append(f"{cycle}: SP not balanced across the call")
+        if after["mpr"] != before["mpr"]:
+            failures.append(f"{cycle}: MPR not balanced across the call")
         for reg in "axy":
             if reg in expect and after[reg] != expect[reg]:
                 failures.append(f"{cycle}: {reg}={after[reg]:#04x}, expected {expect[reg]:#04x}")

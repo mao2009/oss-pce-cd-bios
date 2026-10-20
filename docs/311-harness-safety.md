@@ -38,20 +38,18 @@ cold/warm 各 2048 命令、DEV ROM（`make dev-rom MODE=debug`）。
 | サイクル数・タイミング | 取得不可 | ステップ予算（2048 命令）のみ | なし |
 
 ### 観測窓の照合（本点検で確認）
-- RAM 観測窓は ZP `$E0-$FF`（32 バイト）。`core-harness.s` のコメントと `geargrafx_core_harness.py` の docstring は
-  `CPU $20E0-$20FF` と書いているが、フィクスチャのコード上の番地は `$00E0-$00FF` であり、両者の対応は下記「番地表記」で扱う。
+- RAM 観測窓は ZP `$E0-$FF`（コード上の番地 `$00E0-$00FF`、32 バイト）。番地の扱いは下記「番地表記」を参照。
 - 番地表記（コード上の番地と物理位置を分けて記す）:
   - ZP 窓: フィクスチャのコード上の番地は `$00E0-$00FF`（`sta $E0,x` / `lda $E0,x`）。
-    コア上の物理位置は WRAM `$00E0-$00FF`（CPU `$20E0` 相当）と読めるが、この対応は CI の round-trip
-    （`neg_undeclared_ram_write` が ZP 窓の値を正しく読み戻す）で確認しただけで、コア仕様そのものは未確認。
+    ZP の往復（呼出し前に書いた値が呼出し後の写しに戻ること）は CI の `neg_undeclared_ram_write` で確認。
+    物理位置（MPR0=`$FF` の I/O 扱いを含む）は未確認。
   - スタック: コード上の番地は CPU `$0100-$01FF`（`pha` / `pla`）。プローブの `stack_01f8_hex` は WRAM オフセット
     `$01F8-$01FF` を記録するが、CPU スタックページとの対応は未確認。
   - スナップショット: `$2200`（pre）と `$2220`（post）はコード上の番地。プローブ出力の `work_ram_0200_hex` は
     WRAM オフセット `$0200-$023F`（64 バイト）。前半 32 バイトは入力シード、後半 32 バイトは呼出し後の ZP 写し。
     比較対象は ZP 窓の 32 バイトのみ。
   - 注意: フィクスチャは `tam #$01` で MPR0=`$FF` を設定する。標準的な HuC6280 のマップでは `$0000-$1FFF` が
-    I/O 領域に当たると読めるため、コード上の `$00E0` や `$0100-$01FF` の実体が WRAM のどこかは未確認。
-    現時点で言えるのは CI の round-trip 結果のみである。
+    I/O 領域に当たると読めるため、コード上の `$00E0` や `$0100-$01FF` の物理位置は未確認である。
 
 ## 観測器の検証結果（自作ルーチン）
 下表の結果列は **現行版（e536a6e）の CI 実コア記録**（run 39351203515、job 118395533079、core-harness ジョブ SUCCESS）。
@@ -86,6 +84,7 @@ cold/warm 各 2048 命令、DEV ROM（`make dev-rom MODE=debug`）。
 | 同（e536a6e 時点、RED: `neg_sp_unbalanced` 未定義・MPR 負例の XOR 未適用で 2 件 FAIL → GREEN: 18 テスト OK） | ホスト側の確認のみ。実コアは下行の CI で確認 |
 | CI 実コア確認（GitHub Actions core-harness、Linux、run 39351203515、job 118395533079、head e536a6e） | **実行済み・SUCCESS**: `PASS core harness: 10 cases behaved as declared (cold+warm)`。`neg_sp_unbalanced` と `neg_mpr_changed` は cold / warm とも FAIL / RETURNED（`SP/MPR not balanced across the call`） |
 | CI 実コア確認（head 696c125、run 39355386608、job 118408847936、core-harness SUCCESS） | **実行済み・SUCCESS**: `PASS core harness: 10 cases behaved as declared (cold+warm)`。e536a6e からの差分は `docs/311-harness-safety.md`、`docs/testing.md`、`tests/host/test_core_harness.py` のみ（ハーネス本体・フィクスチャ・DEV ROM は不変） |
+| CI 実コア確認（head e53ca7e、run 39357943090、core-harness job 118417019443 / guard-core-harness job 118417575628、ともに success） | **実行済み・SUCCESS**: `PASS core harness: 10 cases behaved as declared (cold+warm)`。e536a6e からの差分は docs と tests のみ。この run の判定文言は `SP/MPR not balanced`（SP / MPR への文言分割は本コミット以降の作業ツリーで未 CI） |
 | `make dev-rom MODE=debug`（TOOLS_DIR=既存キャッシュ） | 終了コード 0 |
 | `python3 tests/integration/geargrafx_core_harness.py --mode debug` | 終了コード 0、8 ケース宣言どおり |
 | 同、`--cases` 誤期待値の負例（検証は 9ebb708 より前の origin/main） | 終了コード 非ゼロ |

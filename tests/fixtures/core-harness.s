@@ -1,7 +1,7 @@
 ; Original HuC6280 core verification harness (test overlay only, NOT a BIOS service).
 ; The host patches harness_input (A, X, Y, P, 32-byte ZP seed) and the JSR operand at
 ; harness_call, then observes registers at harness_call/harness_after on the real core.
-; Window under test: zero page $E0-$FF (CPU $20E0-$20FF). Snapshots: $2200 pre, $2220 post.
+; Window under test: zero page $E0-$FF (code address $00E0-$00FF). Snapshots: $2200 pre, $2220 post.
 .setcpu "huc6280"
 .segment "DIAGNOSTIC"
 .export harness_entry, harness_call, harness_after, harness_done, harness_trap, harness_input
@@ -14,7 +14,7 @@ harness_entry:
     lda #$FF
     tam #$01             ; IO
     lda #$F8
-    tam #$02             ; work RAM (ZP/stack/$2200); MPR2-6 are left as found, MPR7=0
+    tam #$02             ; MPR1=$F8. ZP/stack/$2200 are code addresses; physical location unverified (MPR0=$FF is I/O). MPR2-6 left as found, MPR7=0
     ldx #$FF
     txs
     ldx #31
