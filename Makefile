@@ -1,7 +1,7 @@
 PYTHON ?= python3
 MODE ?= debug
 
-.PHONY: setup build test host-test check clean release setup-geargrafx integration
+.PHONY: setup build test host-test check clean release setup-geargrafx integration integration-test
 
 setup:
 	$(PYTHON) tools/setup.py all
@@ -16,6 +16,11 @@ build:
 test: build
 	OSS_PCE_REQUIRE_CC65=1 $(PYTHON) -m unittest discover -s tests/host -v
 	$(MAKE) integration MODE="$(MODE)"
+	$(MAKE) integration-test
+
+# Real-Geargrafx tests (fetch/build, real-core runs) live only in tests/integration (Issue #333).
+integration-test:
+	OSS_PCE_REQUIRE_CC65=1 $(PYTHON) -m unittest discover -s tests/integration -p 'test_*.py' -v
 
 # Local host-only run: no build, no integration. cc65-dependent tests SKIP with a reason when cc65 is absent;
 # the required gate is `make test`.
