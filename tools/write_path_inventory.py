@@ -8,6 +8,16 @@ claim. This module only checks the inventory's shape and invariants. It grants n
 must stay gate_status=BLOCKED, and no code path here can set it to anything else.
 
 Synthetic inputs only. It reads no emulator source, no BIOS and no ROM byte.
+
+Trust boundary: a well-formed evidence entry is NOT authentic evidence. A run marker is a text line
+that anyone who can write the repository can type, so a matching execution ID proves only its format.
+Nothing here authenticates a producer or a run (producer authentication is #124, not implemented).
+Consequently:
+- A static source reference (measurement STATIC_SOURCE_REFERENCE) may back PREVENTED_STATIC only.
+  It is a claim about source text, not a measurement.
+- PREVENTED_MEASURED asserts a real-core measurement. It is unreachable here and fails closed.
+- REAL_CORE_SYNTHETIC evidence never backs a prevention claim.
+- Passing this check never changes a gate. Every row stays BLOCKED.
 """
 import json
 import re
@@ -42,7 +52,10 @@ NOT_CLAIMING_VALUES = ("NO", "UNKNOWN")
 # A prevention claim needs a non-synthetic basis. REAL_CORE_SYNTHETIC (synthetic BIOS/ROM/CD) never satisfies one.
 PREVENTION_MEASUREMENTS = ("STATIC_SOURCE_REFERENCE",)
 # Content-validated evidence: a file must carry this line, naming a run id and the measurement class it recorded.
+# SELF-DECLARED, NOT AUTHENTICATED: this matches format only. It never shows that a run happened.
 RUN_MARKER = re.compile(r"^measurement-run-id: (RUN-[0-9A-F]{12}) ([A-Z_]+)$", re.M)
+# Unreachable by design until authenticated real-core evidence exists (#124). Rejected whatever the marker says.
+MEASURED_PREVENTED_STATUS = "PREVENTED_MEASURED"
 PRE_SIDE_EFFECT_POINTS = ("BEFORE_RUN", "BEFORE_STORE", "INSTRUCTION_BOUNDARY")
 NO_MONITOR_STATUSES = ("UNMONITORED", "PERMITTED_UNISOLATED")
 PIN_KEY = "geargrafx"
@@ -82,6 +95,7 @@ def validate(inventory, pinned_revision, root=ROOT):
     require(isinstance(rows, list) and rows, "rows must be a non-empty list")
 
     seen_ids = set()
+    claimed_runs = {}
     counts = {}
     covered_categories = set()
     text = ""
@@ -110,6 +124,8 @@ def validate(inventory, pinned_revision, root=ROOT):
         if row["monitor_status"].startswith(PREVENTED_PREFIX):
             require(row["prevents_before_side_effect"] in PREVENTION_VALUES,
                     f"{row_id}: prevention status with non-prevention value")
+        require(row["monitor_status"] != MEASURED_PREVENTED_STATUS,
+                f"{row_id}: PREVENTED_MEASURED requires authenticated real-core evidence (#124 not implemented)")
         # A row whose side effect lands before detection cannot claim a stop before it, whatever its status name
         # (full, partial or KNOWN_PC_ONLY). Keyed on the detection point as well as the status.
         if row["monitor_status"] == "DETECTED_AFTER_SIDE_EFFECT" or row["detection_point"] == "AFTER_SIDE_EFFECT":
@@ -145,6 +161,14 @@ def validate(inventory, pinned_revision, root=ROOT):
                 markers += RUN_MARKER.findall((root / item).read_text(encoding="utf-8", errors="replace"))
             require(any(kind == row["measurement"] for _, kind in markers),
                     f"{row_id}: prevention claimed without content-validated run evidence")
+            # Tampered or mixed evidence (conflicting markers or two run ids) fails closed.
+            run_ids = {run for run, _ in markers}
+            require(len(run_ids) == 1 and all(kind == row["measurement"] for _, kind in markers),
+                    f"{row_id}: conflicting run markers in evidence (tampered or mixed)")
+            (run_id,) = run_ids
+            # One run id backs one claim. Reusing another row's result for this claim is refused.
+            require(claimed_runs.setdefault(run_id, row_id) == row_id,
+                    f"{row_id}: run id {run_id} is reused from {claimed_runs.get(run_id)}")
 
         counts[row["monitor_status"]] = counts.get(row["monitor_status"], 0) + 1
         text += " " + row["path"]

@@ -341,6 +341,62 @@ class WritePathInventoryTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "W03: prevention claimed without content-validated run evidence"):
             self.validate_in_tmp(inv)
 
+    # Well-formed is not authentic. Each case below must fail closed; none may reach a measured state.
+    def test_forged_run_id_with_valid_format_cannot_reach_prevented_measured(self):
+        inv = self.claimed(fresh(), "W03")
+        row(inv, "W03")["monitor_status"] = "PREVENTED_MEASURED"
+        with self.assertRaisesRegex(ValueError, "W03: PREVENTED_MEASURED requires authenticated real-core evidence"):
+            self.validate_in_tmp(inv)
+
+    def test_prevented_measured_is_rejected_even_with_synthetic_or_static_markers(self):
+        for kind in ("STATIC_SOURCE_REFERENCE", "REAL_CORE_SYNTHETIC"):
+            with self.subTest(kind=kind):
+                inv = self.claimed(fresh(), "W03", kind=kind)
+                row(inv, "W03").update(monitor_status="PREVENTED_MEASURED", measurement=kind)
+                with self.assertRaisesRegex(ValueError, "PREVENTED_MEASURED requires authenticated"):
+                    self.validate_in_tmp(inv)
+
+    def test_malformed_forged_run_ids_are_not_content_validated(self):
+        for forged in ("RUN-0123456789ab", "RUN-012345678", "RUN-0123456789ABX", "run-0123456789AB"):
+            with self.subTest(forged=forged):
+                inv = self.claimed(fresh(), "W03")
+                (self.tmp / "run.txt").write_text(f"measurement-run-id: {forged} STATIC_SOURCE_REFERENCE\n",
+                                                  encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "W03: prevention claimed without content-validated run evidence"):
+                    self.validate_in_tmp(inv)
+
+    def test_tampered_evidence_with_trailing_text_on_marker_is_rejected(self):
+        inv = self.claimed(fresh(), "W03")
+        (self.tmp / "run.txt").write_text("measurement-run-id: RUN-0123456789AB STATIC_SOURCE_REFERENCE extra\n",
+                                          encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "W03: prevention claimed without content-validated run evidence"):
+            self.validate_in_tmp(inv)
+
+    def test_tampered_evidence_with_conflicting_markers_fails_closed(self):
+        inv = self.claimed(fresh(), "W03")
+        (self.tmp / "run.txt").write_text("measurement-run-id: RUN-0123456789AB STATIC_SOURCE_REFERENCE\n"
+                                          "measurement-run-id: RUN-0123456789AB REAL_CORE_SYNTHETIC\n",
+                                          encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "W03: conflicting run markers in evidence"):
+            self.validate_in_tmp(inv)
+
+    def test_tampered_evidence_with_two_run_ids_fails_closed(self):
+        inv = self.claimed(fresh(), "W03")
+        (self.tmp / "run.txt").write_text("measurement-run-id: RUN-0123456789AB STATIC_SOURCE_REFERENCE\n"
+                                          "measurement-run-id: RUN-BA9876543210 STATIC_SOURCE_REFERENCE\n",
+                                          encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "W03: conflicting run markers in evidence"):
+            self.validate_in_tmp(inv)
+
+    def test_reused_run_id_from_another_claim_is_rejected(self):
+        # Two rows citing the same run id: one result cannot back two claims.
+        inv = self.claimed(fresh(), "W03")
+        row(inv, "W04").update(monitor_status="PREVENTED_STATIC", prevents_before_side_effect="YES",
+                               detection_point="BEFORE_RUN", measurement="STATIC_SOURCE_REFERENCE",
+                               evidence=["run.txt"])
+        with self.assertRaisesRegex(ValueError, "W04: run id RUN-0123456789AB is reused from W03"):
+            self.validate_in_tmp(inv)
+
     def test_unknown_row_renamed_to_prevented_static_with_existing_evidence_is_rejected(self):
         # W18 is UNKNOWN (no measured evidence). Renaming it to PREVENTED_STATIC on an existing evidence file is not enough.
         inv = fresh()
