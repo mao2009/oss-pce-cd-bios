@@ -34,6 +34,10 @@ class DestinationSetTest(unittest.TestCase):
     def test_length_zero_is_worst_case(self):
         self.assertEqual(len(B.destination_set("TII", 0x2000, 0)), B.MAX_BYTES)
 
+    def test_length_65536_is_worst_case(self):
+        # 0x10000 stores: the model must cover every address, so the count saturates at MAX_BYTES.
+        self.assertEqual(len(B.destination_set("TII", 0x2000, 0x10000)), B.MAX_BYTES)
+
     def test_unknown_op_rejected(self):
         with self.assertRaises(ValueError):
             B.destination_set("TXX", 0, 1)
@@ -65,6 +69,12 @@ class AuditVerdictTest(unittest.TestCase):
     def test_rom_bank_not_in_allowed_set_refused(self):
         allowed = B.policy_from_mpr(MPR, {0x01}, WINDOW)  # bank 0x00 not allowed
         self.assertEqual(B.audit("TIN", 0x2000, 0x2000, 1, allowed)["verdict"], "REFUSED_STATIC")
+
+    def test_tia_crossing_window_end_refused(self):
+        # TIA walks dst upward (the pair is a finite superset), so a run that ends past the window is refused.
+        r = B.audit("TIA", 0x2000, 0x3FFE, 8, ALLOWED)
+        self.assertEqual(r["verdict"], "REFUSED_STATIC")
+        self.assertEqual(r["first_refused"], 0x4000)
 
     def test_gate_never_passes(self):
         for op in B.OPS:
