@@ -213,7 +213,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     code, harness = build_overlay(out)
     symbols = parse_lbl((dev / "dev.lbl").read_text()) | harness
-    user = load_cases(args.cases.read_text()) if args.cases else []
+    user = load_cases(args.cases.read_text(encoding="utf-8")) if args.cases else []
     if not isinstance(user, list):
         raise ValueError("--cases must be a JSON list")
     cases = SELFTEST + user

@@ -114,7 +114,7 @@ Linux 上のクリーンクローンで、リポジトリルートから `TOOLS_
 1. `make dev-rom MODE=debug`（DEV ROM を先にビルドする。省略するとハーネスは失敗または BLOCKED）
 2. `python3 tests/integration/geargrafx_core_harness.py --mode debug [--cases cases.json]`
 
-共有 Makefile ターゲットは PR #331 の `routine-real-core`。ハーネスは検証済み DEV ROM の
+本 PR は Makefile ターゲットを追加しない（共有ターゲット `routine-real-core` は PR #331 に属し、本ツリーには存在しない）。ハーネスは検証済み DEV ROM の
 `$E800-$EFFF` テストオーバーレイ（`tests/fixtures/core-harness.s`）から bank0 の
 ルーチンを JSR し、合成入力 A/X/Y/P とゼロページ `$20E0-$20FF` 32 バイトを与えて、
 呼出前後の A/X/Y/P/SP/MPR とゼロページを実 Geargrafx コア（ディスクなし HuCard
