@@ -4,6 +4,7 @@ import hashlib
 from pathlib import Path
 import tempfile
 import unittest
+from tools.environment import requires_cc65
 
 from tools.build_cdread import (
     BANK_BASE, DEFAULT_COUNT, DEFAULT_LBA, EXPECTED_MPR, HALT_CONFIRM_STEPS, REQUIRED_SYMBOLS, build_cdread, code_digest,
@@ -14,6 +15,7 @@ from tools.cdread_verify import check_success, describe_failure, result_block
 from tools.make_cd_image import DEFAULT_SECTORS, sector_payload
 
 
+@requires_cc65
 class CdReadBuildTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
