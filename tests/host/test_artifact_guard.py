@@ -384,6 +384,15 @@ VERIFY_STEP = '      - name: Verify\n        run: |\n          ' + VERIFY_CALL +
 GUARD_STEP = PREAMBLE + STAGE_STEP + VERIFY_STEP
 SAVE_STEP = f'      - name: Save\n        uses: {UPLOAD}\n        with:\n          path: .artifact-stage/build/x\n'
 GUARDED = 'jobs:\n  build:\n    steps:\n' + GUARD_STEP + SAVE_STEP
+# The shape of .github/workflows/pages.yml: configure-pages after the placement check, the Pages upload, then deploy.
+PAGES_UPLOAD = 'actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b'
+PAGES_GUARDED = ('jobs:\n  build:\n    steps:\n' + PREAMBLE
+                 + '      - name: Configure Pages\n'
+                 + '        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5\n'
+                 + STAGE_STEP + VERIFY_STEP
+                 + f'      - name: Save\n        uses: {PAGES_UPLOAD}\n        with:\n          path: .artifact-stage/build/x\n'
+                 + '      - name: Deploy\n        id: deployment\n'
+                 + '        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4\n')
 
 
 def guarded_with_name(name):
@@ -631,6 +640,22 @@ class GuardPlacementTests(unittest.TestCase):
                         guard.check_guard_placement(Path(tmp))
                     with self.assertRaises(ValueError):   # the content layer already refused these
                         guard.check_upload_artifacts(Path(tmp))
+
+    def test_publish_action_without_any_upload_step_is_refused(self):
+        # Review finding 1 (MEDIUM, #349): a file with no upload-artifact step skipped the placement check, so a
+        # workflow whose only publication is deploy-pages or attest-build-provenance passed it.
+        publish_only = {
+            'deploy-pages': '      - name: Deploy\n        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4\n',
+            'attest': '      - name: Attest\n        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2\n',
+        }
+        for label, step in publish_only.items():
+            with self.subTest(publish=label):
+                with tempfile.TemporaryDirectory() as tmp:
+                    Path(tmp, '.github', 'workflows').mkdir(parents=True)
+                    Path(tmp, '.github', 'workflows', 'w.yml').write_text(
+                        'jobs:\n  publish:\n    steps:\n' + step, encoding='utf-8')
+                    with self.assertRaisesRegex(ValueError, 'publish action'):
+                        guard.check_guard_placement(Path(tmp))
 
     def test_placement_passes_a_workflow_that_publishes_nothing(self):
         # A file with no upload step and no publishing route is not a publication and must not become a false positive.
@@ -1081,11 +1106,12 @@ class UnlistedRouteTests(unittest.TestCase):
     def write(self, text, name='ci.yml'):
         (self.root / '.github' / 'workflows' / name).write_text(text, encoding='utf-8')
 
-    def assert_refused(self, text, name='ci.yml'):
+    def assert_refused(self, text, reason, name='ci.yml'):
+        """Both layers refuse the text, and each refusal gives the stated reason (review finding 5, #349)."""
         self.write(text, name)
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, reason):
             guard.check_upload_artifacts(self.root)
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, reason):
             guard.check_guard_placement(self.root)
 
     def test_unlisted_release_action_is_refused_in_every_spelling(self):
@@ -1105,7 +1131,7 @@ class UnlistedRouteTests(unittest.TestCase):
         }
         for label, step in spellings.items():
             with self.subTest(spelling=label):
-                self.assert_refused(base + step, name='rel.yaml')
+                self.assert_refused(base + step, 'allowlist', name='rel.yaml')
 
     def test_complex_or_escaped_key_cannot_name_an_unlisted_action(self):
         # Review gap (#337): `? uses` and "uses" are the same YAML key, but no literal `uses:` text appears.
@@ -1115,27 +1141,55 @@ class UnlistedRouteTests(unittest.TestCase):
             'escaped double-quoted key': f'      - "\\u0075ses": {self.RELEASE}\n',
         }.items():
             with self.subTest(spelling=label):
-                self.assert_refused(base + step, name='rel.yaml')
+                self.assert_refused(base + step, 'cannot see', name='rel.yaml')
 
     def test_release_route_split_across_shell_continuation_is_refused(self):
         # Review gap (#337): `gh api` on one line and the releases path on the next was not seen as one route.
         base = workflow(['build/debug/*.pce'])
         step = ('      - name: Publish\n        run: |\n          gh api \\\n'
                 '            -X POST repos/o/r/releases -f tag_name=v1\n')
-        self.assert_refused(base + step)
+        self.assert_refused(base + step, 'unsupported upload-artifact reference')
 
     def test_two_uses_keys_on_one_flow_line_are_both_checked(self):
         text = ('jobs:\n  build:\n    steps: [{uses: ' + self.CHECKOUT + '}, {uses: ' + self.RELEASE + '}]\n'
                 '  save:\n    steps:\n      - name: Save\n        uses: ' + UPLOAD + '\n        with:\n'
                 '          path: |\n            build/debug/*.pce\n')
-        self.assert_refused(text)
+        self.assert_refused(text, 'allowlist')
 
     def test_run_routes_to_github_releases_or_uploads_are_refused(self):
         for line in ('run: curl -X POST https://uploads.github.com/repos/o/r/releases/1/assets --data-binary @x',
                      'run: gh api repos/o/r/releases -f tag_name=v1',
                      'run: curl https://api.github.com/repos/o/r/releases'):
             with self.subTest(line=line):
-                self.assert_refused(workflow(['build/debug/*.pce']) + f'      - name: Publish\n        {line}\n')
+                self.assert_refused(workflow(['build/debug/*.pce']) + f'      - name: Publish\n        {line}\n',
+                                    'unsupported upload-artifact reference')
+
+    def test_a_listed_action_ref_must_be_a_single_full_sha(self):
+        # Review finding 4 (LOW, #349): `actions/checkout@v4 acme/publisher@v1` passed, because the ref was any text.
+        base = workflow(['build/debug/*.pce'])
+        for label, value in {
+            'second value after the ref': f'actions/checkout@v4 {self.RELEASE}',
+            'tag only': 'actions/checkout@v4',
+            'short sha': 'actions/checkout@11bd719',
+        }.items():
+            with self.subTest(ref=label):
+                self.assert_refused(base + f'      - name: Fetch\n        uses: {value}\n', 'allowlist', name='rel.yaml')
+
+    def test_tagged_pages_and_upload_actions_are_refused(self):
+        # Issue #349: the allowlist accepted any ref, so a movable tag of a Pages action passed both layers.
+        base = workflow(['build/debug/*.pce'])
+        for action in ('actions/configure-pages@v5', 'actions/upload-pages-artifact@v4',
+                       'actions/deploy-pages@v4', 'actions/upload-artifact@v4'):
+            with self.subTest(action=action):
+                self.assert_refused(base + f'      - name: Pages\n        uses: {action}\n', 'allowlist', name='pages.yml')
+
+    def test_allowlisted_pages_actions_pass_both_layers(self):
+        # Item 6 (#349): the placement layer, not only the upload layer, must pass a guarded Pages workflow that
+        # carries configure-pages and deploy-pages (both pinned to full SHAs).
+        # The stage and verify calls must name the workflow path as the placement check labels it.
+        self.write(PAGES_GUARDED.replace(' w.yml ', ' .github/workflows/w.yml '), name='w.yml')
+        guard.check_upload_artifacts(self.root)
+        guard.check_guard_placement(self.root)
 
     def test_upper_case_workflow_extension_is_scanned(self):
         # Review-style gap: glob was case-sensitive on Linux, so extra.YML was never read.
@@ -1145,10 +1199,9 @@ class UnlistedRouteTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'extra.YML'):
             guard.check_upload_artifacts(self.root)
 
-    def test_allowlisted_build_and_pages_actions_still_pass(self):
+    def test_allowlisted_build_action_still_passes_the_upload_layer(self):
         text = ('jobs:\n  build:\n    steps:\n'
                 f'      - uses: {self.CHECKOUT}\n'
-                '      - uses: actions/configure-pages@v5\n'
                 f'      - name: Save\n        uses: {UPLOAD}\n        with:\n          path: |\n            build/debug/*.pce\n')
         self.write(text)
         guard.check_upload_artifacts(self.root)

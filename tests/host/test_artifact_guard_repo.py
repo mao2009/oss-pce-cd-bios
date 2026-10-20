@@ -2,6 +2,7 @@
 
 They read this repository's workflows and check that the real workflows pass the guard. They run only where the
 workflows carry the guard; the tool-level tests are in test_artifact_guard.py."""
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -41,6 +42,14 @@ class PathPolicyTests(unittest.TestCase):
 
 
 class RepositoryTests(unittest.TestCase):
+    def test_pages_workflow_actions_are_pinned_to_a_full_commit_sha(self):
+        # Issue #349: the Pages actions were pinned to movable tags, which a maintainer can re-point after review.
+        text = (ROOT / '.github' / 'workflows' / 'pages.yml').read_text(encoding='utf-8')
+        refs = dict(re.findall(r'uses:\s*actions/([\w-]+)@(\S+)', text))
+        for action in ('configure-pages', 'upload-pages-artifact', 'deploy-pages', 'checkout'):
+            self.assertIn(action, refs)
+            self.assertRegex(refs[action], r'^[0-9a-f]{40}$', action)
+
     def test_every_repository_upload_step_has_a_post_build_guard_before_it(self):
         # Owner decision: the guard runs after the build and before upload-artifact, in every upload workflow.
         for path in sorted((ROOT / guard.WORKFLOWS).glob('*.y*ml')):
