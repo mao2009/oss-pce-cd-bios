@@ -57,7 +57,8 @@ class SystemInfo(C.Structure):
                 ("block_extract", C.c_bool)]
 
 
-def execute(core_file, rom):
+def execute(core_file, rom, extra=0):
+    """extra: also seed and return that many RAM bytes after the marker (guest result area)."""
     core = C.CDLL(str(core_file))
     with tempfile.TemporaryDirectory(prefix="pce-geargrafx-profile-") as profile:
         profile_bytes = profile.encode()
@@ -118,15 +119,15 @@ def execute(core_file, rom):
                     core.retro_reset()
                 pointer = core.retro_get_memory_data(2)  # RETRO_MEMORY_SYSTEM_RAM
                 size = core.retro_get_memory_size(2)
-                if not pointer or size < 0x206:
+                if not pointer or size < 0x206 + extra:
                     raise ValueError("Geargrafx did not expose working RAM")
-                C.memset(pointer + 0x200, 0xcc, len(EXPECTED))
+                C.memset(pointer + 0x200, 0xcc, len(EXPECTED) + extra)
                 for _ in range(2):
                     core.retro_run()
-                observed = C.string_at(pointer + 0x200, len(EXPECTED))
+                observed = C.string_at(pointer + 0x200, len(EXPECTED) + extra)
                 observations.append(observed.hex())
-                if observed != EXPECTED:
-                    raise ValueError(f"actual guest marker mismatch: {observed.hex()}")
+                if observed[:len(EXPECTED)] != EXPECTED:
+                    raise ValueError(f"actual guest marker mismatch: {observed[:len(EXPECTED)].hex()}")
             return {"core_name": name, "core_version": version,
                     "cold_and_warm_reset_ram": observations, "frames_per_reset": 2}
         finally:
