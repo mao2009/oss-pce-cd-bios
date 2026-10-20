@@ -116,3 +116,13 @@ dev-cd-media-state: dev-rom
 
 dev-cd-media-state-integration: dev-cd-media-state
 	$(PYTHON) tests/integration/geargrafx_cd_media_state.py --mode "$(MODE)"
+
+.PHONY: routine-real-core
+# Opt-in (#330): Linux-pinned real-core routine tests; not a dependency of test/integration/check.
+routine-real-core:
+	@[ "$$(uname -s)" = Linux ] || { echo 'BLOCKED: real-core target requires Linux' >&2; exit 1; }
+	@[ -n "$(TOOLS_DIR)" ] || { echo 'ERROR: TOOLS_DIR is required (e.g. TOOLS_DIR=$$HOME/oss-pce-cd-bios-tools)' >&2; exit 1; }
+	$(PYTHON) tests/integration/geargrafx_ex_binbcd.py --mode debug
+	$(PYTHON) tests/integration/geargrafx_ma_mul8s.py
+	$(PYTHON) tests/integration/geargrafx_ma_mul8u.py
+	$(PYTHON) tests/integration/geargrafx_bcdbin.py
