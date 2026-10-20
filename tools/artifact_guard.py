@@ -548,6 +548,46 @@ def _guard_is_bare(command, expected, keys):
     return _shell_ok(keys) and command[0] == expected
 
 
+# Issue #349 (review, MAJOR): a publishing action may sit in any job of any file. It is refused unless its job is one of
+# these (file name, job) pairs (the owner decision: the two attestations only), or it is a Pages action in a guard job
+# that carries a final upload (pages.yml deploy: its placement is checked by guard_placement_violations).
+PUBLISH_JOB_ALLOWLIST = frozenset({("api-source.yml", "attest-cdread"), ("api-source.yml", "attest-cdread-verdict")})
+PAGES_PUBLISH_ACTIONS = ("actions/deploy-pages@", "actions/upload-pages-artifact@")
+
+
+def _enclosing_job(lines, index):
+    """The job id whose block contains lines[index] (its nearest job line above), or None."""
+    for j in range(index, -1, -1):
+        if _live(lines[j]) and _job_name(lines[j]) is not None:
+            return _job_name(lines[j])
+    return None
+
+
+def publish_violations(text, label):
+    """Problems for publishing actions (deploy-pages, upload-pages-artifact, attest-build-provenance) in one file, by job."""
+    lines = text.splitlines()
+    guard_jobs = set()
+    for i, line in enumerate(lines):
+        match = USES_RE.search(line) if _live(line) else None
+        if match:
+            name, patterns = _step_patterns(lines, i, match.start())
+            if _upload_kind(name, patterns, None) in ("final-intake", "final-workspace"):
+                guard_jobs.add(_enclosing_job(lines, i))
+    problems = []
+    for i, line in enumerate(lines):
+        match = PUBLISH_USES_RE.search(line) if _live(line) else None
+        if not match:
+            continue
+        job = _enclosing_job(lines, i)
+        if (Path(label).name, job) in PUBLISH_JOB_ALLOWLIST:
+            continue
+        if job in guard_jobs and any(match.group(0).lower() == p for p in PAGES_PUBLISH_ACTIONS):
+            continue
+        problems.append(f"{label}: publish action {match.group(0)!r} in job {job!r} is refused unless the (file, job) "
+                        "pair is allowlisted (Issue #349)")
+    return problems
+
+
 def check_guard_placement(root=ROOT):
     """Static placement layer (run by make check and by the trusted copy): the preamble and stage/verify steps must
     surround every upload step, in the same job, exactly as written here.
@@ -572,13 +612,7 @@ def check_guard_placement(root=ROOT):
             raise ValueError(f"{label}: {error}") from error
         if steps:
             problems += guard_placement_violations(text, label)
-        else:
-            # Issue #349 (finding 1): with no upload step the placement check above is skipped, so a publishing action
-            # here (deploy-pages, attest-build-provenance) would pass unseen. Refuse it outright.
-            publish = [m.group(0) for line in text.splitlines() if _live(line) for m in [PUBLISH_USES_RE.search(line)] if m]
-            if publish:
-                problems.append(f"{label}: publish action {publish[0]!r} in a file with no upload-artifact step; refused "
-                                "(the placement check cannot see what it publishes)")
+        problems += publish_violations(text, label)
     if problems:
         raise ValueError("artifact guard placement: " + "; ".join(problems))
     print("PASS artifact guard placement: trusted preamble, staged paths, stage and verify before every upload")

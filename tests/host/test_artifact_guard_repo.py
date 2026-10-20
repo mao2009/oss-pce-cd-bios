@@ -33,8 +33,23 @@ class AttestationScopeTests(unittest.TestCase):
     SCOPE = {'evidence/cdread-probe/cdread-evidence.json', 'evidence/cdread-probe/cdread-probe-not-bios.pce'}
 
     def attest_subjects(self, text):
+        """Every path named by subject-path in the attest-cdread job: an inline value or the indented block below it."""
         job = text.split('\n  attest-cdread:\n', 1)[1].split('\n  verify-cdread-attestation:', 1)[0]
-        return set(re.findall(r'^\s+(evidence/\S+)\s*$', job, re.M))
+        lines = job.splitlines()
+        paths = []
+        for i, line in enumerate(lines):
+            match = re.match(r'''^(\s*)(?:-\s+)?["']?subject-path["']?\s*:\s*(.*)$''', line)
+            if not match:
+                continue
+            indent, inline = len(match.group(1)), match.group(2).split(' #')[0].strip()
+            if inline and inline not in ('|', '|-', '|+', '>'):
+                paths += inline.strip('"\'').split()
+            for rest in lines[i + 1:]:
+                if rest.strip() and len(rest) - len(rest.lstrip()) <= indent:
+                    break
+                if rest.strip() and not rest.lstrip().startswith('#'):
+                    paths.append(rest.strip())
+        return set(paths)
 
     def test_attest_cdread_subject_path_is_exactly_the_two_synthetic_files(self):
         text = (ROOT / '.github' / 'workflows' / 'api-source.yml').read_text(encoding='utf-8')
