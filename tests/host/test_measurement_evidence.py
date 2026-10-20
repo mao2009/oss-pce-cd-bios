@@ -256,6 +256,41 @@ class MeasurementEvidenceTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'does not cover'):
             self._verify(record, path, field='hw_bus_reset', declared_kind='CALLEE_EXECUTION')
 
+    # Production-path regressions (Issue #364 / PR #359 review). Module globals are patched in place of any
+    # caller-supplied registry or revision; the production verify_record signature takes neither.
+    def test_tampered_registry_without_sha_pin_update_is_rejected_by_verifier(self):
+        from unittest import mock
+        import tools.measurement_evidence as me
+        record, path = self._record(HW_LOG, 'HW_BUS_READBACK_1804')
+        reg = self.dir / 'points_tampered.json'
+        reg.write_bytes(REGISTRY_PATH.read_bytes().replace(b'"stack"', b'"stacq"'))
+        with mock.patch.object(me, 'REGISTRY_PATH', reg):
+            with self.assertRaisesRegex(ValueError, 'sha256 differs from pin'):
+                me.verify_record(record, path, field='hw_bus_reset', binary_sha256=BINARY)
+
+    def test_core_revision_change_without_review_marker_is_rejected_by_verifier(self):
+        from unittest import mock
+        import tools.measurement_evidence as me
+        new_rev = '1' * 40
+        record, path = self._record(HW_LOG, 'HW_BUS_READBACK_1804', core_revision=new_rev)
+        with mock.patch.object(me, 'PINNED_CORE_REVISION', new_rev):
+            with self.assertRaisesRegex(ValueError, 'core_revision pin changed'):
+                me.verify_record(record, path, field='hw_bus_reset', binary_sha256=BINARY)
+
+    def test_caller_registry_or_pinned_revision_argument_is_refused(self):
+        record, path = self._record(HW_LOG, 'HW_BUS_READBACK_1804')
+        with self.assertRaises(TypeError):
+            verify_record(record, path, field='hw_bus_reset', binary_sha256=BINARY, registry=self.registry)
+        with self.assertRaises(TypeError):
+            verify_record(record, path, field='hw_bus_reset', binary_sha256=BINARY,
+                          pinned_revision=PINNED_CORE_REVISION)
+
+    def test_self_declared_real_core_stays_unknown_through_production_path(self):
+        record, path = self._record(CALLEE_LOG, 'CALLEE_EXECUTION_SLOT', provenance='REAL_CORE')
+        self.assertEqual(verify_record(record, path, field='stack', binary_sha256=BINARY,
+                                       declared_kind='CALLEE_EXECUTION'), 'UNKNOWN')
+
+
 
 if __name__ == '__main__':
     unittest.main()
