@@ -857,7 +857,7 @@ def signing_violations(text, label):
     (c) continue-on-error is refused in an approved signing job, at job or step level, in any spelling on the line.
     Round 5: the same signing terms are also tested on each run: value after shell normalization (_run_texts: line
     continuation joined, quotes and backslashes removed), in any job. In a job with id-token: write that is not approved,
-    `$`, backtick and eval in a run: are refused too.
+    a run: with `$(`, `${`, backtick or eval that also names a signing stem (SIGN_STEM_RE) is refused.
     Not covered here: a signing call under a name none of these terms match is refused by the uses: allowlist, not here."""
     name = Path(label).name
     lines = text.splitlines()
@@ -898,13 +898,12 @@ def signing_violations(text, label):
             problems.append(f"{label}: signing job {job!r} must run exactly the approved steps, found {steps} "
                             "(a step that runs code would hold the OIDC token, Issue #337 round 4 (a))")
     for i, text in _run_texts(lines):
-        if SIGNING_TERMS_RE.search(text):
-            verify = GH_VERIFY_RE.match(text)
-            if not (verify and not SIGNING_TERMS_RE.search(text[verify.end():])):
-                problems.append(f"{label}: line {i + 1} run: calls signing or an OIDC token after shell normalization "
-                                f"({text!r}, Issue #337 round 4 (a), round 5)")
+        if SIGNING_TERMS_RE.search(GH_VERIFY_SPAN_RE.sub("", text)):
+            problems.append(f"{label}: line {i + 1} run: calls signing or an OIDC token after shell normalization "
+                            f"({text!r}, Issue #337 round 4 (a), round 5)")
         job = _enclosing_job(lines, i)
-        if job is not None and (name, job) not in ATTEST_NEEDS and DYNAMIC_SHELL_RE.search(text) and _id_token_job(lines, job):
+        if job is not None and (name, job) not in ATTEST_NEEDS and _id_token_job(lines, job) \
+                and DYNAMIC_SHELL_RE.search(text) and SIGN_STEM_RE.search(text):
             problems.append(f"{label}: line {i + 1} run: in job {job!r}, which holds id-token: write without being an approved "
                             f"signing job, uses $, backtick or eval ({text!r}, Issue #337 round 4 (a), round 5)")
     return problems
@@ -915,9 +914,12 @@ def signing_violations(text, label):
 # continuation therefore cannot split `cosign` past the test (`cos\` + `ign`, `co"sign"`, `c""osign`).
 RUN_KEY_RE = re.compile(r"""(?:^|[\s{,\-])["']?run["']?\s*:\s*(.*)$""", re.IGNORECASE)
 BLOCK_INDICATOR_RE = re.compile(r"[|>][+-]?\d*\s*(?:#.*)?$")
-# In a job with id-token: write that is not an approved signing job, a run: may not expand, substitute or evaluate: the
-# command word could then be assembled at run time from parts that the text check cannot see.
-DYNAMIC_SHELL_RE = re.compile(r"\$|`|\beval\b")
+# In a job with id-token: write that is not an approved signing job, a run: that substitutes or evaluates (`$(`, `${`,
+# backtick, eval) and also names a signing stem is refused: the command word could be assembled at run time. A plain $VAR
+# with no stem is not refused (the Pages deploy job uses $GITHUB_OUTPUT and $(command -v python3)). Residual: see the notes.
+DYNAMIC_SHELL_RE = re.compile(r"\$\(|\$\{|`|\beval\b")
+SIGN_STEM_RE = re.compile(r"cos|sign|sigstore|fulcio|rekor|attest|ACTIONS_ID_TOKEN_REQUEST_TOKEN", re.IGNORECASE)
+GH_VERIFY_SPAN_RE = re.compile(r"gh attestation verify\b")   # read-only verification, exempt wherever it occurs in a run:
 
 
 def _shell_text(parts):
