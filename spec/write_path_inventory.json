@@ -156,12 +156,12 @@
       "path": "$1804 CD-ROM / SCSI RST store",
       "category": "MMIO",
       "monitor_status": "DETECTED_AFTER_SIDE_EFFECT",
-      "prevents_before_side_effect": "KNOWN_PC_ONLY",
+      "prevents_before_side_effect": "NO",
       "detection_point": "AFTER_SIDE_EFFECT",
       "measurement": "REAL_CORE_SYNTHETIC",
       "evidence": ["tests/integration/geargrafx_mmio1804_trap.py", "tests/integration/geargrafx_mmio1804_preblock.py"],
       "gate_status": "BLOCKED",
-      "notes": "A CPU-address write breakpoint fires but the store lands. Pre-block works only with an EXECUTE breakpoint on the known PC of the STA opcode (synthetic code only). Not a general MMIO interceptor."
+      "notes": "A CPU-address write breakpoint fires but the store lands. Pre-block works only with an EXECUTE breakpoint on the known PC of the STA opcode (synthetic code only). Not a general MMIO interceptor. Recorded as NO: detection is after the side effect, so the known-PC partial block is not claimed as prevention."
     },
     {
       "id": "W13",

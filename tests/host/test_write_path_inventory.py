@@ -231,6 +231,25 @@ class WritePathInventoryTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "W06: DETECTED_AFTER_SIDE_EFFECT requires detection point AFTER_SIDE_EFFECT"):
             W.validate(inv, PINNED)
 
+    def test_mutation_partial_known_pc_claim_after_side_effect_is_rejected(self):
+        # W12 as previously recorded: a partial (KNOWN_PC_ONLY) stop claimed on a row detected after the store landed.
+        inv = fresh()
+        row(inv, "W12")["prevents_before_side_effect"] = "KNOWN_PC_ONLY"
+        with self.assertRaisesRegex(ValueError, "W12: DETECTED_AFTER_SIDE_EFFECT cannot claim prevention"):
+            W.validate(inv, PINNED)
+
+    def test_mutation_partial_known_pc_claim_needs_pre_side_effect_point(self):
+        inv = fresh()
+        row(inv, "W02")["prevents_before_side_effect"] = "KNOWN_PC_ONLY"
+        row(inv, "W02")["detection_point"] = "AFTER_SIDE_EFFECT"
+        with self.assertRaisesRegex(ValueError, "W02: prevention requires a pre-side-effect detection point"):
+            W.validate(inv, PINNED)
+
+    def test_w12_records_no_prevention_and_stays_blocked(self):
+        self.assertEqual(row(INVENTORY, "W12")["prevents_before_side_effect"], "NO")
+        self.assertEqual(row(INVENTORY, "W12")["monitor_status"], "DETECTED_AFTER_SIDE_EFFECT")
+        self.assertEqual(row(INVENTORY, "W12")["gate_status"], "BLOCKED")
+
     def test_current_rows_are_accepted_by_the_new_rules(self):
         summary = W.validate(fresh(), PINNED)
         self.assertEqual(summary["rows"], len(INVENTORY["rows"]))

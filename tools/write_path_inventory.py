@@ -29,7 +29,6 @@ REQUIRED_CATEGORIES = frozenset({"MPR", "ST", "MMIO", "IRQ", "RAM", "DEVICE", "C
 # Named paths the inventory must keep, so that a silent deletion cannot hide a bypass.
 REQUIRED_PATH_MARKERS = ("ST0", "ST1", "ST2", "$1802", "$1804", "TAM", "CLI", "TII", "$FF")
 PREVENTION_VALUES = ("YES", "PER_WRITE", "KNOWN_PC_ONLY")
-PREVENTION_VALUES_NEEDING_PRE_POINT = ("YES", "PER_WRITE")
 PRE_SIDE_EFFECT_POINTS = ("BEFORE_RUN", "BEFORE_STORE", "INSTRUCTION_BOUNDARY")
 NO_MONITOR_STATUSES = ("UNMONITORED", "PERMITTED_UNISOLATED")
 PIN_KEY = "geargrafx"
@@ -91,9 +90,10 @@ def validate(inventory, pinned_revision, root=ROOT):
         if row["monitor_status"].startswith(PREVENTED_PREFIX):
             require(row["prevents_before_side_effect"] in PREVENTION_VALUES,
                     f"{row_id}: prevention status with non-prevention value")
-        # A row detected after the side effect has landed cannot also claim a stop before it.
+        # A row detected after the side effect has landed cannot also claim a stop before it, full or partial
+        # (KNOWN_PC_ONLY included). Such a row must record NO.
         if row["monitor_status"] == "DETECTED_AFTER_SIDE_EFFECT":
-            require(row["prevents_before_side_effect"] in ("NO", "KNOWN_PC_ONLY"),
+            require(row["prevents_before_side_effect"] not in PREVENTION_VALUES,
                     f"{row_id}: DETECTED_AFTER_SIDE_EFFECT cannot claim prevention before side effect")
         # A path that is unmonitored or permitted by design has no stop before the side effect.
         if row["monitor_status"] in NO_MONITOR_STATUSES:
@@ -113,8 +113,8 @@ def validate(inventory, pinned_revision, root=ROOT):
                     f"{row_id}: NO prevention but a PREVENTED status")
         if row["monitor_status"] in UNRESOLVED_STATUSES:
             require(row["gate_status"] == "BLOCKED", f"{row_id}: unresolved path must remain BLOCKED")
-        # A prevention claim must name a detection point that is before the side effect.
-        if row["prevents_before_side_effect"] in PREVENTION_VALUES_NEEDING_PRE_POINT:
+        # A prevention claim, full or partial (KNOWN_PC_ONLY included), must name a detection point before the side effect.
+        if row["prevents_before_side_effect"] in PREVENTION_VALUES:
             require(row["detection_point"] in PRE_SIDE_EFFECT_POINTS,
                     f"{row_id}: prevention requires a pre-side-effect detection point")
         # Any prevention value (YES, PER_WRITE, KNOWN_PC_ONLY) must be backed by a measurement or a static

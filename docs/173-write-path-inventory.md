@@ -34,7 +34,7 @@ CPU/デバイス書込み経路のうち、**監視されていないもの・�
 | W09 | $1402 IRQ マスク書込み | IRQ | UNKNOWN | NO（書込みの着地を観測） | UNKNOWN（未記録） | 実コア合成（マスクが変化） | geargrafx_irq_register.py |
 | W10 | $1403 TIQ 確認書込み | IRQ | UNKNOWN | NO（書込みの着地を観測） | UNKNOWN（未記録） | 実コア合成（bit2のみ変化） | geargrafx_irq_register.py |
 | W11 | $1400/$1401 無効な割込レジスタ書込み | IRQ | UNKNOWN | UNKNOWN | UNKNOWN | 副作用なしを $1402/$1403 でのみ実測 | probe |
-| W12 | $1804 CD リセット（SCSI RST）書込み | MMIO | DETECTED_AFTER_SIDE_EFFECT | KNOWN_PC_ONLY | 副作用後（既知PCのみ実行ブレークで事前） | 実コア合成（既知コードのみ） | geargrafx_mmio1804_trap.py, _preblock.py |
+| W12 | $1804 CD リセット（SCSI RST）書込み | MMIO | DETECTED_AFTER_SIDE_EFFECT | NO | 副作用後（既知PCのみ実行ブレークで事前遮断。部分的な事前遮断は主張しない） | 実コア合成（既知コードのみ） | geargrafx_mmio1804_trap.py, _preblock.py |
 | W13 | その他の I/O（VDC/VCE/PSG/タイマ/ジョイパッド/CD レジスタ） | MMIO | PREVENTED_BY_REACHABILITY | YES（MPR経由のみ） | 命令境界 | 静的（個別未実測） | probe。VDC は ST 経由で別途到達（W05〜W07） |
 | W14 | 被呼出し側が CLI を実行し、IRQ/TIQ/タイマの割込みに入る | IRQ | **UNMONITORED** | NO | なし | 未測定 | probe（P=$04、stop_on_irq=false） |
 | W15 | ブロック転送命令（TII/TIN/TDD/TIA/TAI）の1命令内の複数書込み | CPU | UNKNOWN | UNKNOWN（命令途中停止は未実測） | UNKNOWN | 未測定 | probe。命令途中で停止するかは不明 |
