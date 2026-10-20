@@ -43,6 +43,8 @@ SELFTEST = [  # validates the harness; "want" is the verdict/status the harness 
      "want": ["FAIL", "TIMEOUT"], "expect": {}},
     {"name": "neg_brk", "target": "harness_selftest_brk", "a": 0, "x": 0, "y": 0, "p": 0x04,
      "want": ["FAIL", "TRAPPED"], "expect": {}},
+    {"name": "neg_mpr_changed", "target": "harness_selftest_mpr", "a": 0, "x": 0, "y": 0, "p": 0x04,
+     "want": ["FAIL", "RETURNED"], "expect": {}},  # routine remaps MPR2: MPR balance check must catch it
     {"name": "plugin_demo_dev_rom_ex_getver", "target": "api_slot_1E", "a": 0x11, "x": 0x22, "y": 0x33, "p": 0x04,
      "want": ["PASS", "RETURNED"], "expect": {"a": 0x11, "x": 3, "y": 0}},
 ]

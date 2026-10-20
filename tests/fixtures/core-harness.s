@@ -5,7 +5,7 @@
 .setcpu "huc6280"
 .segment "DIAGNOSTIC"
 .export harness_entry, harness_call, harness_after, harness_done, harness_trap, harness_input
-.export harness_selftest, harness_selftest_hang, harness_selftest_brk
+.export harness_selftest, harness_selftest_hang, harness_selftest_brk, harness_selftest_mpr
 
 harness_entry:
     sei
@@ -65,3 +65,7 @@ harness_selftest_hang:   ; never returns: must be classified TIMEOUT
 harness_selftest_brk:    ; BRK: must be classified TRAPPED
     brk
     nop
+harness_selftest_mpr:    ; remaps MPR2 and returns: MPR must be reported as unbalanced
+    lda #$00
+    tam #$04
+    rts
