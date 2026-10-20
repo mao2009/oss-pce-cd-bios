@@ -79,7 +79,7 @@ USES_RE = re.compile(r"""["']?uses["']?\s*:\s*["']?actions/upload-(?:pages-)?art
 # Any other publishing route (release assets, third-party upload actions, local actions and reusable workflows
 # whose upload cannot be seen from here) is refused rather than guessed.
 UPLOAD_RE = re.compile(r"""upload-(?:pages-)?artifact|\bgh\s+release\b|release-action|action-gh-release|release-asset"""
-                       r"""|create-release|uploads\.github\.com|api\.github\.com/repos/\S*/releases|\bgh\s+api\b.*\breleases\b"""
+                       r"""|create-release|uploads\.github\.com|api\.github\.com/repos/\S*/releases|/releases\b|\bgh\s+api\b.*\breleases\b"""
                        r"""|["']?uses["']?\s*:\s*["']?(?:\./|[^#\s]*\.github/workflows/)""", re.IGNORECASE)
 # pathlib glob has no brace, extglob or alternation syntax: such a pattern would match nothing and hide its files.
 UNSUPPORTED_PATTERN_CHARS = "{}()|"
@@ -98,6 +98,9 @@ KNOWN_ACTIONS = frozenset({
 })
 # A uses: key anywhere on a line: block form, quoted key, or inside a flow mapping such as {uses: x}.
 USES_ANY_RE = re.compile(r"""(?:^|[\s{,\[-])["']?uses["']?\s*:""", re.IGNORECASE)
+# A key the line reader cannot see as text: a complex key (`? uses` with the value on the next line) or a double-quoted
+# key with an escape (`"uses": x` is the key uses). Refused rather than guessed.
+OPAQUE_KEY_RE = re.compile(r"""^\s*(?:-\s+)?\?(?:\s|$)|"[^"]*\\[^"]*"\s*:""")
 
 
 def _unlisted_uses(line):
@@ -256,6 +259,8 @@ def upload_steps(text):
         elif UPLOAD_RE.search(line):
             # Fail closed: a mention that is not a parsed upload step may still be an upload of unknown shape.
             raise ValueError(f"unsupported upload-artifact reference (not a parsed step): {line.strip()!r}")
+        elif not line.lstrip().startswith("#") and OPAQUE_KEY_RE.search(line):
+            raise ValueError(f"YAML key the line reader cannot see (complex or escaped key, fail closed): {line.strip()!r}")
         elif not line.lstrip().startswith("#") and _unlisted_uses(line):
             raise ValueError(f"uses: action not on the allowlist (fail closed, Issue #337): {line.strip()!r}")
     return patterns

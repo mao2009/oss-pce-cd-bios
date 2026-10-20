@@ -1107,6 +1107,23 @@ class UnlistedRouteTests(unittest.TestCase):
             with self.subTest(spelling=label):
                 self.assert_refused(base + step, name='rel.yaml')
 
+    def test_complex_or_escaped_key_cannot_name_an_unlisted_action(self):
+        # Review gap (#337): `? uses` and "uses" are the same YAML key, but no literal `uses:` text appears.
+        base = workflow(['build/debug/*.pce'])
+        for label, step in {
+            'complex key': f'      - ? uses\n        : {self.RELEASE}\n',
+            'escaped double-quoted key': f'      - "\\u0075ses": {self.RELEASE}\n',
+        }.items():
+            with self.subTest(spelling=label):
+                self.assert_refused(base + step, name='rel.yaml')
+
+    def test_release_route_split_across_shell_continuation_is_refused(self):
+        # Review gap (#337): `gh api` on one line and the releases path on the next was not seen as one route.
+        base = workflow(['build/debug/*.pce'])
+        step = ('      - name: Publish\n        run: |\n          gh api \\\n'
+                '            -X POST repos/o/r/releases -f tag_name=v1\n')
+        self.assert_refused(base + step)
+
     def test_two_uses_keys_on_one_flow_line_are_both_checked(self):
         text = ('jobs:\n  build:\n    steps: [{uses: ' + self.CHECKOUT + '}, {uses: ' + self.RELEASE + '}]\n'
                 '  save:\n    steps:\n      - name: Save\n        uses: ' + UPLOAD + '\n        with:\n'
