@@ -55,6 +55,8 @@
     {"id": "neg_bcd_int", "kind": "bcd", "value": 1, "expected": "NEGATIVE", "reason": "non-string BCD type (malformed)"},
     {"id": "neg_bcd_lower_hex", "kind": "bcd", "value": "0a", "expected": "NEGATIVE", "reason": "invalid BCD: low nibble a (lowercase hex)"},
     {"id": "neg_track_none", "kind": "track", "value": null, "expected": "NEGATIVE", "reason": "None is not a track (malformed)"},
+    {"id": "neg_bcd_nibble_hi", "kind": "bcd", "value": "A0", "expected": "NEGATIVE", "reason": "invalid BCD: high nibble A"},
+    {"id": "neg_bcd_nibble_hi_f", "kind": "bcd", "value": "F1", "expected": "NEGATIVE", "reason": "invalid BCD: high nibble F"},
     {"id": "neg_nomedium_track", "kind": "track", "value": 1, "present": false, "expected": "NEGATIVE", "reason": "no medium present"},
     {"id": "neg_nomedium_bcd", "kind": "bcd", "value": "02", "present": false, "expected": "NEGATIVE", "reason": "no medium present"},
     {"id": "neg_nomedium_lba", "kind": "lba", "value": 150, "present": false, "expected": "NEGATIVE", "reason": "no medium present"}

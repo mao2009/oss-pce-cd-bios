@@ -18,13 +18,12 @@ ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_REL = "tests/fixtures/cddinfo-slot0b-cases.json"
 FIXTURE = ROOT / FIXTURE_REL
 SELF_REL = "tests/host/test_cddinfo_slot0b_fixture.py"
-WIRING_DIRS = ("src", "tools")
-WIRING_FILES = ("Makefile",)
-WIRING_RE = re.compile(r"E021|CD_DINFO")
+WIRING_EXCLUDE_PREFIXES = ("docs/", "spec/")
+WIRING_RE = re.compile(r"E021|CD_DINFO", re.IGNORECASE)
 # Known non-wiring strings (menu/label listing in the reference scenario table), matched by (path, stripped line).
 WIRING_ALLOWLIST = {("tools/reference_bios_scenarios.py", '"CD_SUBQ", "CD_DINFO", "CD_CONTNTS", "CD_SUBRQ / CD_SUBRD",')}
 # sha256 of the canonical JSON (sort_keys, compact separators, UTF-8). Editing the fixture requires updating it here.
-FIXTURE_SHA256 = "29fff440b812811c5faba1b28e0874f04200012e26487bdda5ea0b1125ed1776"
+FIXTURE_SHA256 = "26b7e65e7e803d91803f87bff501b1427a692efc716fb7e775179bf94602cdf2"
 POSITIVE, NEGATIVE = "POSITIVE", "NEGATIVE"
 TOP_LEVEL_KEYS = {"schema", "issue", "slot", "entry_candidate", "candidate_name", "abi_status", "release_eligible",
                   "execution", "provenance", "callee_abi", "medium", "cases"}
@@ -38,7 +37,8 @@ POSITIVE_IDS = {"pos_track1", "pos_track2", "pos_bcd_01", "pos_bcd_02", "pos_lba
 NEGATIVE_IDS = {"neg_lba_past_leadout", "neg_lba_negative", "neg_lba_float", "neg_lba_true", "neg_track_zero",
                 "neg_track_no_such", "neg_track_bool", "neg_track_float", "neg_track_string", "neg_track_none",
                 "neg_bcd_nibble_a", "neg_bcd_nibble_f", "neg_bcd_zero", "neg_bcd_10_no_such", "neg_bcd_99_no_such",
-                "neg_bcd_length", "neg_bcd_nonhex", "neg_bcd_int", "neg_bcd_lower_hex", "neg_nomedium_track",
+                "neg_bcd_length", "neg_bcd_nonhex", "neg_bcd_int", "neg_bcd_lower_hex", "neg_bcd_nibble_hi",
+                "neg_bcd_nibble_hi_f", "neg_nomedium_track",
                 "neg_nomedium_bcd", "neg_nomedium_lba"}
 # Negatives that the deliberately lenient judge wrongly accepts (must be exactly these).
 LENIENT_CAUGHT_IDS = {"neg_lba_float", "neg_lba_true", "neg_track_bool", "neg_track_float", "neg_nomedium_track",
@@ -199,22 +199,24 @@ class CdDinfoSlot0bFixtureTests(unittest.TestCase):
                 if p not in (FIXTURE_REL, SELF_REL) and not p.startswith("docs/") and not p.endswith(".md")}
         self.assertEqual(sorted(hits), [], "fixture referenced outside tests/docs")
 
-    def test_candidate_is_not_referenced_by_build_or_source_files(self):
-        # Content-level wiring check over untracked files too: no JSR/JMP/table reference to $E021 or CD_DINFO
-        # in src/, tools/, tests/fixtures/*.s or Makefile. Known non-wiring strings are allow-listed by exact line.
-        scanned = []
-        for d in WIRING_DIRS:
-            scanned += [p for p in (ROOT / d).rglob("*") if p.is_file() and "__pycache__" not in p.parts]
-        scanned += list((ROOT / "tests" / "fixtures").glob("*.s"))
-        scanned += [ROOT / name for name in WIRING_FILES]
+    def test_candidate_is_not_referenced_by_any_tracked_non_doc_file(self):
+        # String-occurrence check (文字列出現の検査), case-insensitive, over every git-tracked file except
+        # docs/, spec/ and *.md. This is not a call-graph or wiring proof. The fixture and this test are exempt.
+        listed = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z"], capture_output=True, check=True)
+        rels = [r for r in listed.stdout.decode("utf-8").split("\0")
+                if r and not r.startswith(WIRING_EXCLUDE_PREFIXES) and not r.endswith(".md")
+                and r not in (FIXTURE_REL, SELF_REL)]
+        self.assertGreater(len(rels), 100)
         hits = []
-        for path in scanned:
-            rel = path.relative_to(ROOT).as_posix()
-            text = path.read_text(encoding="utf-8", errors="ignore")
+        for rel in rels:
+            path = ROOT / rel
+            if not path.is_file():
+                continue
+            text = path.read_bytes().decode("utf-8", errors="ignore")
             for lineno, line in enumerate(text.splitlines(), 1):
                 if WIRING_RE.search(line) and (rel, line.strip()) not in WIRING_ALLOWLIST:
                     hits.append(f"{rel}:{lineno}: {line.strip()}")
-        self.assertEqual(hits, [], "candidate referenced from build/source files")
+        self.assertEqual(hits, [], "candidate string referenced outside docs/spec/*.md")
 
 
 if __name__ == "__main__":
