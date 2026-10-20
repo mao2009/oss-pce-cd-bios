@@ -21,6 +21,8 @@ PLAIN_JSON = b'{"synthetic": true}\n'
 
 UPLOAD = 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02'
 HEAD = 'jobs:\n  build:\n    steps:\n      - name: Save\n'
+# Issue #349 review: a workflow needs its triggers and a permissions block to pass the privilege rules.
+WF_HEADER = 'on: push\npermissions:\n  contents: read\n'
 
 
 def workflow(paths=(), inline=None, path_first=False):
@@ -698,7 +700,7 @@ class GuardPlacementTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             Path(tmp, '.github', 'workflows').mkdir(parents=True)
             rel = '.github/workflows/api-source.yml'
-            Path(tmp, rel).write_text(GUARDED.replace(' w.yml ', f' {rel} ') + text, encoding='utf-8')
+            Path(tmp, rel).write_text(WF_HEADER + GUARDED.replace(' w.yml ', f' {rel} ') + text, encoding='utf-8')
             guard.check_guard_placement(Path(tmp))
 
     def test_flow_form_job_after_attest_is_refused(self):
@@ -738,7 +740,7 @@ class GuardPlacementTests(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as tmp:
                     Path(tmp, '.github', 'workflows').mkdir(parents=True)
                     rel = f'.github/workflows/{name}'
-                    Path(tmp, rel).write_text(GUARDED.replace(' w.yml ', f' {rel} ') + attest, encoding='utf-8')
+                    Path(tmp, rel).write_text(WF_HEADER + GUARDED.replace(' w.yml ', f' {rel} ') + attest, encoding='utf-8')
                     if expect_refused:
                         with self.assertRaisesRegex(ValueError, 'attest-cdread'):
                             guard.check_guard_placement(Path(tmp))
@@ -750,7 +752,7 @@ class GuardPlacementTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             Path(tmp, '.github', 'workflows').mkdir(parents=True)
             Path(tmp, '.github', 'workflows', 'build.yml').write_text(
-                'jobs:\n  build:\n    steps:\n      - run: make build\n', encoding='utf-8')
+                WF_HEADER + 'jobs:\n  build:\n    steps:\n      - run: make build\n', encoding='utf-8')
             guard.check_guard_placement(Path(tmp))
 
     def test_binding_name_is_the_dash_level_name_not_a_nested_one(self):
@@ -1294,6 +1296,16 @@ class UnlistedRouteTests(unittest.TestCase):
                 f'      - name: Save\n        uses: {UPLOAD}\n        with:\n          path: |\n            build/debug/*.pce\n')
         self.write(text)
         guard.check_upload_artifacts(self.root)
+
+
+class PagesWriteRefusalTests(unittest.TestCase):
+    """Issue #349 review (LOW 2): pages: write outside the deploy job of pages.yml is refused by this suite too."""
+
+    def test_pages_write_in_a_non_pages_job_is_refused(self):
+        text = ('on: push\npermissions:\n  contents: read\njobs:\n  extra:\n    runs-on: ubuntu-24.04\n'
+                '    permissions:\n      pages: write\n    steps:\n      - run: true\n')
+        problems = guard.pages_structure_violations(text, '.github/workflows/ci.yml')
+        self.assertTrue(any("job 'extra' grants pages: write" in p for p in problems), problems)
 
 
 class SignConditionTests(unittest.TestCase):

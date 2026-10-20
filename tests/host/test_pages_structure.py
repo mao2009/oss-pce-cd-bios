@@ -226,6 +226,20 @@ class PrivilegeAndTriggerTests(unittest.TestCase):
                                                  'steps': [{'run': 'true'}]}}}
         self.assertRefusedWith(doc, "job 'verify' grants contents: write", '.github/workflows/ci.yml')
 
+    def test_workflow_without_permissions_is_refused(self):
+        doc = {'on': 'push', 'jobs': {'job': {'runs-on': 'ubuntu-24.04', 'steps': [{'run': 'true'}]}}}
+        self.assertRefusedWith(doc, "job 'job' has no permissions", '.github/workflows/noperm.yml')
+
+    def test_pull_request_target_in_any_workflow_is_refused(self):
+        doc = {'on': ['pull_request_target'], 'permissions': {'contents': 'read'},
+               'jobs': {'job': {'runs-on': 'ubuntu-24.04', 'steps': [{'run': 'true'}]}}}
+        self.assertRefusedWith(doc, "triggers ['pull_request_target'] refused", '.github/workflows/prt.yml')
+
+    def test_workflow_run_in_any_workflow_is_refused(self):
+        doc = {'on': {'workflow_run': {'workflows': ['CI'], 'types': ['completed']}}, 'permissions': {'contents': 'read'},
+               'jobs': {'job': {'runs-on': 'ubuntu-24.04', 'steps': [{'run': 'true'}]}}}
+        self.assertRefusedWith(doc, "triggers ['workflow_run'] refused", '.github/workflows/wr.yml')
+
     def test_run_step_in_deploy_job_is_refused(self):
         doc = split_doc()
         doc['jobs']['deploy']['steps'][0]['run'] = 'echo x'

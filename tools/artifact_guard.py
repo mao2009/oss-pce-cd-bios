@@ -1231,6 +1231,7 @@ PAGES_FILE = "pages.yml"
 PAGES_SPLIT_JOBS = frozenset({"validate", "build", "deploy"})
 PAGES_DEPLOY_IF = "github.event_name == 'push' && github.ref == 'refs/heads/main'"   # push only: pull_request_target and workflow_run also report ref main (Issue #349 review)
 PAGES_ALLOWED_TRIGGERS = frozenset({"pull_request", "push", "workflow_dispatch"})   # main's pages.yml triggers (2026-10-20)
+WORKFLOW_ALLOWED_TRIGGERS = frozenset({"pull_request", "push", "workflow_dispatch", "schedule"})   # all triggers used on main (2026-10-20); pull_request_target and workflow_run are refused everywhere
 PAGES_DEPLOY_PERMISSIONS = {"pages": "write", "id-token": "write"}
 PAGES_BUILD_PERMISSIONS = {"contents": "read"}
 PAGES_LEGACY_PERMISSIONS = {"contents": "read", "actions": "read", "pages": "write", "id-token": "write"}
@@ -1325,13 +1326,20 @@ def _privilege_problems(doc, label):
         if _grants_write(perms, "pages") and not (Path(label).name == PAGES_FILE and holder == "deploy"):
             problems.append(f"{label}: {where} grants pages: write outside the deploy job of {PAGES_FILE} "
                             "(refused, Issue #349)")
-    if Path(label).name == PAGES_FILE:
-        on = doc.get("on", doc.get(True))   # YAML 1.1 reads a bare `on:` key as True
-        names = set(on) if isinstance(on, (dict, list)) else {on} if isinstance(on, str) else set()
-        extra = sorted(str(n) for n in names - PAGES_ALLOWED_TRIGGERS)
-        if not names or extra:
-            problems.append(f"{label}: triggers {sorted(map(str, names))} refused; {PAGES_FILE} may use only "
-                            f"{sorted(PAGES_ALLOWED_TRIGGERS)} (extra {extra}, Issue #349)")
+    # Triggers: every workflow file may use only the triggers main uses; pages.yml may use only its own set.
+    on = doc.get("on", doc.get(True))   # YAML 1.1 reads a bare `on:` key as True
+    names = set(on) if isinstance(on, (dict, list)) else {on} if isinstance(on, str) else set()
+    allowed = PAGES_ALLOWED_TRIGGERS if Path(label).name == PAGES_FILE else WORKFLOW_ALLOWED_TRIGGERS
+    extra = sorted(str(n) for n in names - allowed)
+    if not names or extra:
+        problems.append(f"{label}: triggers {sorted(map(str, names))} refused; only {sorted(allowed)} are allowed "
+                        f"(extra {extra}, Issue #349)")
+    # Permissions: without a workflow-level block, every job needs its own, or it inherits the repository default scope.
+    if "permissions" not in doc:
+        for job, body in jobs.items():
+            if isinstance(body, dict) and "permissions" not in body:
+                problems.append(f"{label}: job {job!r} has no permissions and the workflow has none (repository default "
+                                "GITHUB_TOKEN scope would apply, Issue #349)")
     return problems
 
 
