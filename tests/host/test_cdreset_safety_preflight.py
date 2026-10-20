@@ -3,8 +3,8 @@
 These tests are synthetic only: they exercise the pure decision function in
 ``tools/cdreset_safety_preflight.py`` and its ``--check`` CLI. No emulator is launched, no
 reference BIOS is read, and no reference API JSR is executed. The current posture/ABI must be
-BLOCKED; a synthetic posture that covers every hazard with a reviewed ABI must be ALLOWED, so
-the decision is falsifiable and not a tautology.
+BLOCKED; a synthetic posture that covers every hazard with a reviewed ABI must be MODEL_ELIGIBLE
+(never ALLOWED), so the decision is falsifiable and not a tautology.
 """
 import copy
 import importlib.util

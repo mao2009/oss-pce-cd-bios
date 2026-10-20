@@ -220,6 +220,27 @@ class ReferenceJsrGateTest(unittest.TestCase):
         self.assertTrue(result.stdout.startswith("BLOCKED: gate ledger unusable"), result.stdout)
         self.assertNotIn("Traceback", result.stderr)
 
+    def test_cli_blocks_with_exit_3_on_wrong_shaped_claim_ledger(self):
+        # Structurally wrong claim ledgers (top level a list, or apis[1] a string) raise TypeError;
+        # they must be reported as BLOCKED with exit 3, not as a traceback with exit 1.
+        wrong_shapes = {
+            "top level is a list": [],
+            "apis[1] is a string": dict(CONTRACTS, apis=[CONTRACTS["apis"][0], "x"] + CONTRACTS["apis"][2:]),
+        }
+        for name, contracts in wrong_shapes.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                tree = Path(tmp)
+                (tree / "tools").mkdir()
+                (tree / "spec").mkdir()
+                shutil.copy(ROOT / "tools" / "reference_jsr_gate.py", tree / "tools")
+                shutil.copy(ROOT / "spec" / "reference_jsr_gate.json", tree / "spec")
+                (tree / "spec" / "api_contracts.json").write_text(json.dumps(contracts), encoding="utf-8")
+                result = subprocess.run([sys.executable, str(tree / "tools" / "reference_jsr_gate.py"), "--check"],
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, G.EXIT_BLOCKED, result.stderr)
+                self.assertTrue(result.stdout.startswith("BLOCKED: gate ledger unusable"), result.stdout)
+                self.assertNotIn("Traceback", result.stderr)
+
     def test_cli_never_returns_zero_even_if_a_record_reports_allowed(self):
         # Negative: the real data is all BLOCKED, so also force resolve() to report an allowed
         # value and an unexpected one. main() must still return a nonzero code, never 0.

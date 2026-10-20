@@ -228,8 +228,11 @@ NOT_STARTED/NOT_RUN のまま変更しない。
 `BLOCKED`（理由を個別列挙）で exit 3。なお `EXIT_MODEL_ELIGIBLE=4` は事前安全チェック CLI（`tools/cdreset_safety_preflight.py`）専用で、その `MODEL_ELIGIBLE` のみに割り当てる。本 plan ツール（`tools/cdreset_slot01_reference_plan.py`）は `MATERIALS_COMPLETE` / `BLOCKED` のみを扱い、終了コードは常に `EXIT_BLOCKED=3` で 4 を返さない。判定を出す経路（`--check`）では、いずれの CLI も exit 0 は返さない（`-h`/`--help` のみ argparse のヘルプ表示で 0 で終了し、判定ではない）。`MODEL_ELIGIBLE`（#191）は材料 (b) の適格性であり実行
 許可ではなく、権限語（ALLOWED/PASS/VERIFIED）や270シナリオ実測を意味する表示は出力しない。
 全材料が充足した**合成**入力でのみ判定が `MATERIALS_COMPLETE` に反転する（反証可能性。実行路
-は依然として無い）。**独立レビュー（(d)）が未了のため slot `$01` の実行は禁止のままであり、
-純正 BIOS JSR は一切実行していない。** `spec/api_contracts.json` slot 1 は変更しない。
+は依然として無い）。(d) は reviewer・PR番号・ラベルの**形状のみ**を検証し、**独立性は検証していない**
+（自己申告の `{"reviewer":"self",...}` も形状が合えば (d) を形式的に満たす）。`MATERIALS_COMPLETE` は
+いかなる場合も実行許可ではなく、`ALLOWED` は本リポジトリのどのゲートからも返さない。独立性の強制は
+runner を作る前に実装しなければならない（未実装のままでは実行路を作らない）。**slot `$01` の実行は
+禁止のままであり、純正 BIOS JSR は一切実行していない。** `spec/api_contracts.json` slot 1 は変更しない。
 
 ### 状態名の対応表（実行ゲート系の語彙、Issue #228）
 

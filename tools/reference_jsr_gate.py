@@ -139,7 +139,7 @@ def main(argv=None):
     try:
         ledger, contracts = load()
         records = [resolve(slot, ledger, contracts) for slot in range(len(contracts["apis"]))]
-    except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
         print(f"BLOCKED: gate ledger unusable: {error}")
         return EXIT_BLOCKED
     # Count closed slots by the explicit permission test, not by "== BLOCKED": any value other than
