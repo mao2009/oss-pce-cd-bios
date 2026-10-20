@@ -173,6 +173,25 @@ class MeasurementEvidenceTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'missing'):
                 check_pin_review(Path(d) / 'absent.json')
 
+    def test_registry_edit_without_marker_update_fails_in_verifier(self):
+        # Registry edited and its sha pin updated, but the review marker is not: verify_record must refuse.
+        from unittest import mock
+        import tools.measurement_evidence as me
+        edited = REGISTRY_PATH.read_bytes().replace(b'"stack"', b'"stacq"')
+        edited_sha = hashlib.sha256(edited).hexdigest()
+        record, path = self._record(HW_LOG, 'HW_BUS_READBACK_1804')
+        with tempfile.TemporaryDirectory() as d:
+            reg = Path(d) / 'points.json'
+            reg.write_bytes(edited)
+            with mock.patch.object(me, 'REGISTRY_PATH', reg), mock.patch.object(me, 'REGISTRY_SHA256', edited_sha):
+                with self.assertRaisesRegex(ValueError, 'review marker'):
+                    self._verify(record, path)
+                # Same edit with the marker updated to the new pin: the gate passes again.
+                marker = Path(d) / 'review.json'
+                marker.write_bytes(REVIEW_MARKER_PATH.read_bytes().replace(REGISTRY_SHA256.encode(), edited_sha.encode()))
+                with mock.patch.object(me, 'REVIEW_MARKER_PATH', marker):
+                    self.assertEqual(self._verify(record, path), 'UNKNOWN')
+
     def test_duplicate_measurement_point_id_is_rejected(self):
         with self.assertRaisesRegex(ValueError, 'duplicate measurement_point_id'):
             parse_registry({'schema_version': 1, 'points': [HW_POINT, dict(HW_POINT, covers_fields=['irq'])]})

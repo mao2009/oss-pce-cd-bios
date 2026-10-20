@@ -95,7 +95,9 @@ def verify_record(record, log_path, *, field, binary_sha256, declared_kind=None)
         if not ok:
             raise ValueError(message)
 
-    registry = load_registry()
+    # Pin-change gate on the verifier path: a registry or core pin edited without its review marker fails here.
+    check_pin_review(REVIEW_MARKER_PATH, registry_sha256=REGISTRY_SHA256, core_revision=PINNED_CORE_REVISION)
+    registry = load_registry(REGISTRY_PATH)
     pinned_revision = PINNED_CORE_REVISION
     require(isinstance(record, dict) and set(record) == RECORD_KEYS, 'record must contain exactly the record keys')
     require(isinstance(record['provenance'], str) and record['provenance'] in PROVENANCES, 'unknown provenance')
