@@ -7,6 +7,7 @@
   "abi_status": "BLOCKED_ABI",
   "release_eligible": false,
   "execution": "NOT_RUN",
+  "slot_status": "HYPOTHESIS (C4 unresolved, docs/research/cd-pcmrd-contract.md)",
   "provenance": "synthetic: author-defined medium, state and cases only; no System Card BIOS byte, disassembly, retail data, or ./rom/ content; no reference callee is executed",
   "callee_abi": {
     "arguments": "UNKNOWN",
@@ -28,6 +29,7 @@
     {"id": "pos_first_sample", "state": {"transport": "playing", "track": 2}, "index": 0, "expected": "POSITIVE", "value": 1000, "reason": "first sample of the audio track while playing"},
     {"id": "pos_last_sample", "state": {"transport": "playing", "track": 2}, "index": 7, "expected": "POSITIVE", "value": 300, "reason": "last sample of the audio track while playing"},
     {"id": "pos_full_scale_max", "state": {"transport": "playing", "track": 2}, "index": 5, "expected": "POSITIVE", "value": 32767, "reason": "signed 16-bit maximum is returned unchanged"},
+    {"id": "pos_zero_sample", "state": {"transport": "playing", "track": 2}, "index": 4, "expected": "POSITIVE", "value": 0, "reason": "sample value 0 is a valid read and must not be treated as refused"},
     {"id": "pos_full_scale_min", "state": {"transport": "playing", "track": 2}, "index": 6, "expected": "POSITIVE", "value": -32768, "reason": "signed 16-bit minimum is returned unchanged"},
     {"id": "neg_stopped_valid_index", "state": {"transport": "stopped", "track": 2}, "index": 0, "expected": "NEGATIVE", "reason": "stopped transport: a valid index must still be refused"},
     {"id": "neg_stopped_mid", "state": {"transport": "stopped", "track": 2}, "index": 4, "expected": "NEGATIVE", "reason": "stopped transport, interior index"},

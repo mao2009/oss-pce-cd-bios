@@ -20,7 +20,7 @@ FIXTURE_REL = "tests/fixtures/cdpcmrd-slot0e-cases.json"
 TEST_REL = "tests/host/test_cdpcmrd_slot0e_fixture.py"
 FIXTURE = ROOT / FIXTURE_REL
 # Canonical sha256 (sort_keys, compact, UTF-8) of the fixture data. Edits must update this in the same change.
-FIXTURE_SHA256 = "b76e3c0397aa6e78b2121df058476e65f0d217e741d133f1c92d105f560b0054"
+FIXTURE_SHA256 = "c398865b713c273cad72c05bfc04e60f1031a94f1f2e1911183d35ab561ced44"
 SLOT_STATUS = "HYPOTHESIS (C4 unresolved, docs/research/cd-pcmrd-contract.md)"
 POSITIVE, NEGATIVE = "POSITIVE", "NEGATIVE"
 SUPPORTED_TRANSPORT = {"playing"}
@@ -34,7 +34,11 @@ ENTRY_TERM = r"CD_PCMRD|\$E02A|0xE02A"
 ENTRY_SCOPE = ["src", "tools", "tests/fixtures/*.s", "Makefile"]
 SCAN_ALLOWED_PATHS = {FIXTURE_REL, TEST_REL}
 # Exact (path, stripped line) pairs that are not wiring. Each entry needs a reason.
-ENTRY_ALLOWED_LINES = set()  # RED: allow-list not yet written
+ENTRY_ALLOWED_LINES = {
+    # Plan generator: MEDIA is a name set that classifies which candidates need synthetic media.
+    # It emits HYPOTHESIS plans; it holds no entry address and makes no call.
+    ("tools/reference_bios_scenarios.py", '"CD_PCMRD", "CD_FADE"}'),
+}
 # Not scanned: spec/api_slots.json and spec/api_contracts.json list CD_PCMRD as a registry candidate
 # (documentation, not a callable entry); they are outside ENTRY_SCOPE by design.
 
