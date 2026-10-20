@@ -35,8 +35,8 @@ def judge(case, obs):
     if not isinstance(case, dict):
         return BLOCKED  # malformed case record: fail closed without raising
     flags = [case[flag] for flag in FORBIDDEN_FLAGS if flag in case]
-    if (type(case.get("entry")) is not int or case.get("state") not in STATES
-            or any(type(v) is not bool for v in flags)):
+    if (type(case.get("entry")) is not int or type(case.get("op")) is not str
+            or case.get("state") not in STATES or any(type(v) is not bool for v in flags)):
         return BLOCKED  # wrong-typed or missing case fields
     if case.get("entry") != ENTRY_CANDIDATE or case.get("op") != "reset":
         return REJECTED  # other slots or operations are out of scope for this fixture
@@ -72,6 +72,7 @@ CASES = {
 
 
 def main():
+    print("[synthetic model, not a callee result]")
     for name, c in CASES.items():
         print(f"{name}: {judge(c, model(c))} (abi_status=BLOCKED_ABI, release_eligible=false)")
     # Always fail closed: the model is synthetic and the ABI is unresolved, so no run may exit 0.

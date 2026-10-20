@@ -13,7 +13,7 @@
 | `REJECTED` | 範囲外のスロット・操作、実行・副作用・純正 BIOS JSR の要求。 |
 | `BLOCKED` | 入力の形式不正（型違い: bool・None・float・文字列。例: `polls=True`、`execution_allowed=0`、`entry=57392.0`）、または観測記録がない。型は先に検査するため、型違いが FAIL になることはない。 |
 
-CLI は判定を出した後も常に終了コード 3 を返す。ABI が未確定のため、いかなる実行も 0 で終えない。
+CLI は出力の先頭に `[synthetic model, not a callee result]` を出し、判定を出した後も常に終了コード 3 を返す。ABI が未確定のため、いかなる実行も 0 で終えない。
 
 ## 2. 検査内容と限界
 
@@ -28,7 +28,7 @@ CLI は判定を出した後も常に終了コード 3 を返す。ABI が未確
 
 | 区分 | 状態 | 内容 |
 | --- | --- | --- |
-| 合成ホストテスト | 実施 | `python -I -m unittest discover -s tests/host -p test_adreset_fixture.py -v`（12 件） |
+| 合成ホストテスト | 実施 | `python -I -m unittest discover -s tests/host -p test_adreset_fixture.py -v`（13 件） |
 | 独立レビュー | CONDITIONAL | PR #343 のレビューで指摘（型違いの扱い、非 bool フラグ、entry の型、観測 entry の不一致）。指摘は本修正で反映済み。反映後の再レビューは別途行う。 |
 | provenance 審査 | PENDING | §2 の出典は本 PR で追加していない。`ENTRY_CANDIDATE = 0xE030` は [ad-reset-contract.md](ad-reset-contract.md) §2.1 H1（HuCC `include/hucc/pcengine.inc` 485 行の宣言）に由来する呼出側の SOURCE_FACT。出典の provenance は PENDING のままで、この事実は BIOS の振る舞いを示さない。 |
 | callee 実行 | NOT_RUN | System Card の AD_RESET を実行していない。 |

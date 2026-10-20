@@ -88,6 +88,16 @@ class AdResetFixture(unittest.TestCase):
                     c = {**base, flag: value}
                     self.assertEqual(fx.judge(c, fx.model(c)), fx.BLOCKED)
 
+    def test_missing_or_non_string_op_is_blocked(self):
+        base = fx.CASES["idle_reset"]
+        for name, c in {
+            "op_missing": {k: v for k, v in base.items() if k != "op"},
+            "op_none": {**base, "op": None},
+            "op_int": {**base, "op": 5},
+        }.items():
+            with self.subTest(name=name):
+                self.assertEqual(fx.judge(c, fx.model(c)), fx.BLOCKED)
+
     def test_out_of_scope_and_unauthorized_are_rejected(self):
         # Even with an otherwise well-formed observation, these requests must never pass.
         base = fx.CASES["idle_reset"]
@@ -131,6 +141,10 @@ class AdResetFixture(unittest.TestCase):
             code = fx.main()
         out = buf.getvalue()
         self.assertEqual(code, 3)
+        lines = out.splitlines()
+        self.assertEqual(lines[0], "[synthetic model, not a callee result]")
+        self.assertTrue(all(line.startswith(("idle", "transfer", "playing", "out_of", "unauth", "unsafe", "malformed"))
+                            for line in lines[1:]))
         self.assertNotIn("PASS", out.replace("MODEL_OK", ""))
         self.assertIn("release_eligible=false", out)
         self.assertIn("abi_status=BLOCKED_ABI", out)
