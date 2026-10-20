@@ -250,6 +250,59 @@ class WritePathInventoryTest(unittest.TestCase):
         self.assertEqual(row(INVENTORY, "W12")["monitor_status"], "DETECTED_AFTER_SIDE_EFFECT")
         self.assertEqual(row(INVENTORY, "W12")["gate_status"], "BLOCKED")
 
+    # Negative tests for the prevention allowlist (fixed in code, not taken from the inventory).
+    def test_mutation_unapproved_prevention_value_declared_in_inventory_is_rejected(self):
+        inv = fresh()
+        inv["prevents_before_side_effect_values"].append("PARTIAL_PC")
+        with self.assertRaisesRegex(ValueError, "must equal the fixed code allowlist"):
+            W.validate(inv, PINNED)
+
+    def test_mutation_partial_pc_claim_after_side_effect_is_rejected(self):
+        inv = fresh()
+        inv["prevents_before_side_effect_values"].append("PARTIAL_PC")
+        row(inv, "W06")["prevents_before_side_effect"] = "PARTIAL_PC"
+        with self.assertRaises(ValueError):
+            W.validate(inv, PINNED)
+
+    def test_mutation_per_write_claim_after_side_effect_is_rejected(self):
+        inv = fresh()
+        row(inv, "W08")["prevents_before_side_effect"] = "PER_WRITE"
+        with self.assertRaisesRegex(ValueError, "W08: DETECTED_AFTER_SIDE_EFFECT cannot claim prevention"):
+            W.validate(inv, PINNED)
+
+    def test_mutation_monitor_status_unknown_with_yes_claim_is_rejected(self):
+        inv = fresh()
+        row(inv, "W11")["detection_point"] = "BEFORE_RUN"
+        row(inv, "W11")["prevents_before_side_effect"] = "YES"
+        row(inv, "W11")["measurement"] = "REAL_CORE_SYNTHETIC"
+        with self.assertRaisesRegex(ValueError, "W11: UNKNOWN status must not claim"):
+            W.validate(inv, PINNED)
+
+    def test_mutation_unknown_row_promoted_to_claim_without_evidence_is_rejected(self):
+        inv = fresh()
+        row(inv, "W18")["prevents_before_side_effect"] = "KNOWN_PC_ONLY"
+        row(inv, "W18")["detection_point"] = "BEFORE_STORE"
+        with self.assertRaisesRegex(ValueError, "W18: UNKNOWN status must not claim"):
+            W.validate(inv, PINNED)
+
+    def test_mutation_before_side_effect_claim_without_measurement_is_rejected(self):
+        inv = fresh()
+        row(inv, "W03")["measurement"] = "NOT_MEASURED"
+        with self.assertRaisesRegex(ValueError, "W03: prevention claimed without measurement"):
+            W.validate(inv, PINNED)
+
+    def test_mutation_gate_moving_off_blocked_is_rejected(self):
+        for value in ("PARTIAL", "ALLOWED", "OPEN", "blocked"):
+            with self.subTest(gate=value):
+                inv = fresh()
+                inv["gate_status_default"] = value
+                with self.assertRaisesRegex(ValueError, "gate_status_default must be BLOCKED"):
+                    W.validate(inv, PINNED)
+                inv = fresh()
+                row(inv, "W18")["gate_status"] = value
+                with self.assertRaisesRegex(ValueError, "W18: gate_status must be BLOCKED"):
+                    W.validate(inv, PINNED)
+
     def test_current_rows_are_accepted_by_the_new_rules(self):
         summary = W.validate(fresh(), PINNED)
         self.assertEqual(summary["rows"], len(INVENTORY["rows"]))

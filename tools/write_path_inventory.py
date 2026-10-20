@@ -29,6 +29,10 @@ REQUIRED_CATEGORIES = frozenset({"MPR", "ST", "MMIO", "IRQ", "RAM", "DEVICE", "C
 # Named paths the inventory must keep, so that a silent deletion cannot hide a bypass.
 REQUIRED_PATH_MARKERS = ("ST0", "ST1", "ST2", "$1802", "$1804", "TAM", "CLI", "TII", "$FF")
 PREVENTION_VALUES = ("YES", "PER_WRITE", "KNOWN_PC_ONLY")
+# Fixed in code, never derived from the inventory: the inventory must declare exactly this set.
+PREVENTION_ENUM = PREVENTION_VALUES + ("NO", "UNKNOWN")
+# The only values a DETECTED_AFTER_SIDE_EFFECT row may record (allowlist, not denylist).
+NOT_CLAIMING_VALUES = ("NO", "UNKNOWN")
 PRE_SIDE_EFFECT_POINTS = ("BEFORE_RUN", "BEFORE_STORE", "INSTRUCTION_BOUNDARY")
 NO_MONITOR_STATUSES = ("UNMONITORED", "PERMITTED_UNISOLATED")
 PIN_KEY = "geargrafx"
@@ -54,7 +58,8 @@ def validate(inventory, pinned_revision, root=ROOT):
     require(inventory.get("gate_ledger") == GATE_LEDGER, "gate_ledger reference mismatch")
     require(inventory.get("gate_status_default") == "BLOCKED", "gate_status_default must be BLOCKED")
     statuses = set(inventory.get("monitor_status_values", []))
-    prevents = set(inventory.get("prevents_before_side_effect_values", []))
+    require(set(inventory.get("prevents_before_side_effect_values", [])) == set(PREVENTION_ENUM),
+            "prevents_before_side_effect_values must equal the fixed code allowlist")
     measurements = set(inventory.get("measurement_values", []))
     categories = set(inventory.get("categories", []))
     require(categories == REQUIRED_CATEGORIES, "categories must be exactly the required set")
@@ -74,7 +79,7 @@ def validate(inventory, pinned_revision, root=ROOT):
         require(row["category"] in categories, f"{row_id}: unknown category")
         covered_categories.add(row["category"])
         require(row["monitor_status"] in statuses, f"{row_id}: unknown monitor_status")
-        require(row["prevents_before_side_effect"] in prevents, f"{row_id}: unknown prevents value")
+        require(row["prevents_before_side_effect"] in PREVENTION_ENUM, f"{row_id}: unknown prevents value")
         require(row["detection_point"] in DETECTION_POINTS, f"{row_id}: unknown detection_point")
         require(row["measurement"] in measurements, f"{row_id}: unknown measurement")
         require(isinstance(row["path"], str) and row["path"], f"{row_id}: path empty")
@@ -93,7 +98,7 @@ def validate(inventory, pinned_revision, root=ROOT):
         # A row detected after the side effect has landed cannot also claim a stop before it, full or partial
         # (KNOWN_PC_ONLY included). Such a row must record NO.
         if row["monitor_status"] == "DETECTED_AFTER_SIDE_EFFECT":
-            require(row["prevents_before_side_effect"] not in PREVENTION_VALUES,
+            require(row["prevents_before_side_effect"] in NOT_CLAIMING_VALUES,
                     f"{row_id}: DETECTED_AFTER_SIDE_EFFECT cannot claim prevention before side effect")
         # A path that is unmonitored or permitted by design has no stop before the side effect.
         if row["monitor_status"] in NO_MONITOR_STATUSES:
