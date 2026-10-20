@@ -27,27 +27,30 @@ cold/warm 各 2048 命令、DEV ROM（`make dev-rom MODE=debug`）。
 | --- | --- | --- | --- |
 | A / X / Y（入力と復帰後） | 取得可 | trace の `harness_call` / `harness_after` | `neg_wrong_expectation`（a 不一致を FAIL） |
 | P（N/Z/C/V、マスク比較） | 取得可 | `p_mask` で比較。B(0x10)/T(0x20) は比較対象外 | `selftest_add_carry_out`（C/N/Z を確認） |
-| SP | 取得可（記録と釣り合い判定） | 呼出し前後の `sp`、期待値 `0xFF` | `neg_sp_unbalanced`（本コミットで追加。戻り時に SP が 1 ずれるルーチン。**実コア未実行**）。判定ロジックは合成レコードのホスト試験でも確認 |
-| MPR0-7 | 取得可 | 呼出し前後の `mpr[8]` を比較 | `neg_mpr_changed`（MPR2 を `tma`→`eor #$FF`→`tam` で必ず変えるルーチン。初期値に依存しない。**実コア未実行**に更新） |
+| SP | 取得可（記録と釣り合い判定） | 呼出し前後の `sp`、期待値 `0xFF` | `neg_sp_unbalanced`（戻り時に SP が 1 ずれるルーチン。CI の実コアで FAIL / RETURNED を確認。判定ロジックは合成レコードのホスト試験でも確認） |
+| MPR0-7 | 取得可 | 呼出し前後の `mpr[8]` を比較 | `neg_mpr_changed`（MPR2 を `tma`→`eor #$FF`→`tam` で必ず変えるルーチン。初期値に依存しない。CI の実コアで FAIL / RETURNED を確認） |
 | PC 復帰 | 取得可 | `harness_done` チェックポイントへの到達を `RETURNED` と判定 | `neg_hang`（TIMEOUT）、`neg_brk`（TRAPPED） |
 | RAM 差分（ZP 窓 `$20E0-$20FF`、32 バイト） | 取得可 | 呼出し前後の 32 バイトを比較 | `neg_undeclared_ram_write`（未宣言の書込みを FAIL） |
 | RAM 差分（ZP 窓の外） | **取得不可（欠落）** | スナップショットは `$2200`/`$2220` の 32 バイトのみ | なし |
-| スタックの内容（ページ 1、`$0100-$01FF`） | **取得不可（欠落）** | SP の値のみ記録し、スタック内容は読まない | なし |
+| スタックの内容（ページ 1、`$0100-$01FF`） | **記録のみ・判定に使わない（欠落）** | プローブは WRAM オフセット `$01F8-$01FF` を `stack_01f8_hex` として記録するが、判定（`judge`）では参照しない。CPU のスタックページとの対応も未検証（フィクスチャは MPR0=`$FF` を設定する。後述の番地表記を参照） | なし |
 | I/O（MMIO）書込み | **取得不可（未監視）** | 核ハーネスは I/O を観測しない。IRQ/MMIO は別プローブ（`geargrafx_irq_register.py`、`geargrafx_mmio1804_*.py`、#173 記録）の領域 | なし |
-| IRQ / BRK 受理 | **部分的（未監視）** | 呼出し時 P.I=1（`sei` 済み）。IRQ/BRK ベクタは `harness_trap` に集約され、受理されれば `TRAPPED`。IRQ 源（タイマ・VDC 等）の発生は監視しない | `neg_brk`（BRK のみ。IRQ の実コア負例はなし） |
+| IRQ / BRK 受理 | **部分的（未監視）** | 呼出し時 P.I=1（`sei` 済み）。IRQ/BRK ベクタは `harness_trap` に集約され、受理されれば `TRAPPED`。プローブは `irr` / `idr`（IRQ 関連レジスタ）を記録するが判定に使わない。IRQ 源（タイマ・VDC 等）の発生は監視しない | `neg_brk`（BRK のみ。IRQ の実コア負例はなし） |
 | サイクル数・タイミング | 取得不可 | ステップ予算（2048 命令）のみ | なし |
 
 ### 観測窓の照合（本点検で確認）
 - RAM 観測窓は ZP `$E0-$FF`（CPU `$20E0-$20FF`、32 バイト）。`core-harness.s` のコメント、
   `geargrafx_core_harness.py` の docstring、本記録は同じ範囲を指しており、食い違いはない。
-- 核ハーネスのスナップショットは work RAM `$2200-$223F`（64 バイト）で、前半 32 バイトは入力シード、
-  後半 32 バイトは呼出し後の ZP 写し（`$2220`）。比較対象は ZP 窓の 32 バイトのみ。
+- 番地表記: 本記録の `$20E0-$20FF` は **CPU 番地**。フィクスチャは `tam #$02` で MPR1=`$F8` とし、
+  CPU `$2000-$3FFF` を WRAM `$0000-$1FFF` に写す。一方、プローブ出力の `work_ram_0200_hex` と
+  `stack_01f8_hex` は **WRAM オフセット**（`GetWorkingRAM()` の添字）であり、CPU 番地ではない。
+- 核ハーネスのスナップショットは WRAM オフセット `$0200-$023F`（CPU `$2200-$223F`、64 バイト）で、前半 32 バイトは入力シード、
+  後半 32 バイトは呼出し後の ZP 写し（CPU `$2220`）。比較対象は ZP 窓の 32 バイトのみ。
 
 ## 観測器の検証結果（自作ルーチン）
-以下の実コア結果は前回（9ebb708 相当）の記録。`neg_sp_unbalanced` と `neg_mpr_changed` の
-ルーチン差し替えは **実コア未実行**（親ワーカーが実行するまで PASS とはみなさない）。
+下表の結果列は **現行版（e536a6e）の CI 実コア記録**（run 39351203515、job 118395533079、core-harness ジョブ SUCCESS）。
+ログ行は `PASS core harness: 10 cases behaved as declared (cold+warm)`。
 
-| ケース | 期待 | 結果 |
+| ケース | 期待 | 結果（現行版、CI） |
 | --- | --- | --- |
 | selftest_add（正例） | PASS / RETURNED | PASS / RETURNED |
 | selftest_add_carry_out（正例、C フラグ） | PASS / RETURNED | PASS / RETURNED |
@@ -55,7 +58,8 @@ cold/warm 各 2048 命令、DEV ROM（`make dev-rom MODE=debug`）。
 | neg_undeclared_ram_write | FAIL / RETURNED | FAIL / RETURNED |
 | neg_hang | FAIL / TIMEOUT | FAIL / TIMEOUT |
 | neg_brk | FAIL / TRAPPED | FAIL / TRAPPED |
-| neg_mpr_changed（本 PR で追加） | FAIL / RETURNED | FAIL / RETURNED（SP/MPR not balanced） |
+| neg_mpr_changed（本 PR で追加） | FAIL / RETURNED | FAIL / RETURNED（SP/MPR not balanced）。前版（MPR 初期値依存版）の結果も FAIL / RETURNED（SP/MPR not balanced） |
+| neg_sp_unbalanced（本 PR で追加） | FAIL / RETURNED | FAIL / RETURNED（SP/MPR not balanced） |
 | plugin_demo_dev_rom_ex_getver（DEV ROM 回帰、観測値） | PASS / RETURNED | PASS / RETURNED |
 
 プラグイン判定の負例として、期待値を誤らせた `plugin_neg_wrong_a`（a=17 に対し 18 を期待。**この JSON はリポジトリに追跡されておらず、再現は一時ファイルで行った記録のみ**）は
@@ -63,7 +67,7 @@ cold/warm 各 2048 命令、DEV ROM（`make dev-rom MODE=debug`）。
 
 ## 残作業（欠けている観測項目）
 1. ZP 窓の外の RAM 差分（`$2000-$21FF` 全体、またはワーク RAM 全域）を取得する。
-2. スタック内容（`$0100-$01FF`）の差分を取得する。SP 不釣り合いの実コア負例（`neg_sp_unbalanced`）は追加済みで、実コア実行が未了。
+2. スタック内容（CPU `$0100-$01FF`）の差分を取得し、判定に使う。現行の `stack_01f8_hex` は WRAM オフセットの記録のみで、CPU スタックページとの対応は未検証。SP 不釣り合いの実コア負例（`neg_sp_unbalanced`）は CI で実行済み。
 3. I/O 書込みの観測は、既存の MMIO 監視（#173 系）と結合するかを別 Issue で判断する。
 4. 上記の欠落を埋めるまで、観測された RAM 差分は「ZP 窓内に限る」と明記する。
 
@@ -71,8 +75,8 @@ cold/warm 各 2048 命令、DEV ROM（`make dev-rom MODE=debug`）。
 | コマンド | 結果 |
 | --- | --- |
 | `python3 -m unittest discover -s tests/host -p test_core_harness.py`（9ebb708 時点） | OK（15 テスト） |
-| 同（本修正、RED: `neg_sp_unbalanced` 未定義・MPR 負例の XOR 未適用で 2 件 FAIL → GREEN: 18 テスト OK） | ホスト側のみ確認。実コアの結果は未取得 |
-| 親が実行する実コア確認（クリーンクローン、Linux） | **未実行（期待値のみ）**: `make dev-rom MODE=debug` 後に `python3 tests/integration/geargrafx_core_harness.py --mode debug` が終了 0、9 ケースが宣言どおり（`neg_sp_unbalanced`: FAIL / RETURNED、failure に `SP/MPR not balanced`）。`neg_mpr_changed` も FAIL / RETURNED を期待 |
+| 同（本修正、RED: `neg_sp_unbalanced` 未定義・MPR 負例の XOR 未適用で 2 件 FAIL → GREEN: 18 テスト OK） | ホスト側の確認。実コアは下行の CI で確認 |
+| CI 実コア確認（GitHub Actions core-harness、Linux、run 39351203515、job 118395533079、head e536a6e） | **実行済み・SUCCESS**: `PASS core harness: 10 cases behaved as declared (cold+warm)`。`neg_sp_unbalanced` と `neg_mpr_changed` は cold / warm とも FAIL / RETURNED（`SP/MPR not balanced across the call`） |
 | `make dev-rom MODE=debug`（TOOLS_DIR=既存キャッシュ） | 終了コード 0 |
 | `python3 tests/integration/geargrafx_core_harness.py --mode debug` | 終了コード 0、8 ケース宣言どおり |
 | 同、`--cases` 誤期待値の負例（検証は 9ebb708 より前の origin/main） | 終了コード 非ゼロ |

@@ -123,6 +123,7 @@ Linux 上のクリーンクローンで、リポジトリルートから `TOOLS_
 ならない。ケース JSON の形式と組込み自己検証ケースは
 `tests/integration/geargrafx_core_harness.py` の docstring を参照。リファレンス
 BIOS は実行せず、BIOS ABI 互換の証拠ではない。
+未監視（判定の対象外）: IRQ 受理と IRQ 源、MMIO 書込み、スタック内容（`stack_01f8_hex` と `irr`/`idr` は記録のみ）、ZP 窓外の RAM、サイクル数・タイミング。
 
 CI 用フィクスチャ `tests/fixtures/core-harness-plugin.json` の期待値（a=17, x=3, y=0）は、
 リポジトリ内 OSS 実装 slot_1E の観測値（`docs/final-report-20261016.md` §6、`api_jsr_1E`
