@@ -87,7 +87,7 @@ schema cannot represent VERIFIED. Success values, flags and completion condition
 
 callee の戻り値・フラグ・破壊/保存レジスタ・割込み・タイミングは未観測（UNKNOWN）、エラー・完了条件は
 出典由来の HYPOTHESIS のみ。RAM 差分、MPR 変化、無媒体時動作、ready/busy 完了条件も未観測のため、**ROM の
-CD_RESET (`$01`/`$E003`) 実装は BLOCKED**。本 PR（#183 の判定）では実装しない。前提が揃った後に別 Issue で
+CD_RESET (`$01`/`$E003`) 実装は BLOCKED_ABI 相当（ROM 実装なし）**。本 PR（#183 の判定）では実装しない。前提が揃った後に別 Issue で
 実装しうる最小範囲は、#121 で計測済みの**低レベルバスリセット原始処理のみ**（独立した HuC6280 ルーチン、
 `$1804` bit 1 アサート → BUS FREE 待ち → リリース）:
 
@@ -106,7 +106,7 @@ an ABI that games may contradict. Prerequisites: #1 jump-table mapping, #8 adopt
 sources above, a reviewed answer for returns/no-disc/busy behaviour from System Card 3.0 observation,
 a real-core harness that executes `$E003` and emits the record fields `tools/cdreset_verify.py`
 requires (`REQUIRED`), and, for the safety preflight, #173 (in-core RAM/I/O enforcement; OPEN, child PRs
-#360 and #362 are Draft; child Issues #365〜#367（Research、OPEN）) plus #179（Issue CLOSED、実行時強制は未検証）
+#360 and #362 are Draft; child Issues #365〜#367（Research、OPEN）) plus #179（Issue は CLOSED だが、実行時の副作用前強制は未実装・未検証のため前提は未充足）
 for the pre-side-effect enforcement.
 
 The #5 bus-reset + bus-free sequence in `src/cd_read_probe.s` is the intended building block once that
@@ -256,9 +256,9 @@ runner を作る前に実装しなければならない（未実装のままで�
 ホストテスト: `python3 -m unittest tests.host.test_cdreset_slot01_reference_plan -v`（合成のみ、
 エミュレータ・ROM 不使用）。
 
-## 実装判定（Issue #183）: BLOCKED・非実装
+## 実装判定（Issue #183）: BLOCKED_ABI 相当・非実装
 
-- 判定: **BLOCKED（ROM 実装なし）**。CD_RESET（`$01` / `$E003`）の callee ABI は未確定であり、本 PR はコードを追加しない。
+- 判定: **BLOCKED_ABI 相当（ROM 実装なし）**。CD_RESET（`$01` / `$E003`）の callee ABI は未確定であり、本 PR はコードを追加しない。
 - 根拠: 上の契約表で `returns`・`flags`・`clobbered`・`preserved`・`irq`・`timing` が UNKNOWN、`entry`・`arguments`・`stack`・`mpr`・`ram`・`errors`・`synchronization` は caller 側または HLE 由来の HYPOTHESIS のみ。`VERIFIED` は 0 件。
 - 実装前提の充足状況（将来実装しうる最小範囲節の開始条件）: #1 ジャンプテーブル配線、#8 出典採否（provenance PENDING）、System Card 3.0 の戻り・無媒体・busy 動作の裁定、callee を実行できる実コア harness は、いずれも未充足。安全 preflight 側では、#173（API JSR 用 in-core RAM/I/O 強制監視、OPEN、子 PR #360・#362 は Draft、子 Issue #365〜#367（Research、OPEN）が未完）と、#179（Issue CLOSED、実行時強制は未検証。`$1804` 書込の副作用前捕捉・拒否）が未充足。
 - 理由: 未確定の callee 契約の上に独自 ABI を作ると、ゲームや実 BIOS 呼出しと矛盾するおそれがある。推測で通すことは禁止。
