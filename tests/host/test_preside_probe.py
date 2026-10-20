@@ -51,12 +51,34 @@ class PresideProbeTest(unittest.TestCase):
         self.assertEqual(verdict, P.NOT_RUN)
         run.assert_not_called()
 
-    def test_probe_mismatch_fails_closed(self):
-        # A probe row that does not match the expected ST behaviour must be FAIL, never BLOCKED or PASS.
+    def test_invalid_observation_is_blocked_not_fail(self):
+        # An observation that fails validation (wrong status) is no valid evidence: BLOCKED, never FAIL or PASS.
         with mock.patch.object(P.guard, "run_mode", return_value={"exit": 0, "status": "rejected"}):
             case = next(c for c in P.CASES if c[0] == "V01")
-            _, verdict, _ = P.run_case(case, None, None, None)
+            _, verdict, detail = P.run_case(case, None, None, None)
+        self.assertEqual(verdict, P.BLOCKED)
+        self.assertIn("no valid evidence", detail)
+
+    def test_valid_landed_observation_stays_fail(self):
+        # A VALID V05 observation in which the store landed (before != after) contradicts the expectation: FAIL.
+        landed = {"exit": 0, "status": "ok", "detected": True, "guard_target": 0,
+                  "guard_before": 0x11, "guard_after": 0x22}
+        case = next(c for c in P.CASES if c[0] == "V05")
+        with mock.patch.object(P.guard, "run_mode", return_value=landed):
+            _, verdict, detail = P.run_case(case, None, None, None)
         self.assertEqual(verdict, P.FAIL)
+        self.assertIn("NOT prevented", detail)
+
+    def test_v05_invalid_observation_is_blocked(self):
+        # Wrong status on V05 is an invalid observation (BLOCKED), not a landed store (FAIL).
+        case = next(c for c in P.CASES if c[0] == "V05")
+        with mock.patch.object(P.guard, "run_mode", return_value={"exit": 0, "status": "rejected"}):
+            _, verdict, _ = P.run_case(case, None, None, None)
+        self.assertEqual(verdict, P.BLOCKED)
+
+    def test_v05_run_targets_are_planned_samples(self):
+        # Every measured V05 target must be one of the planned samples.
+        self.assertTrue(set(P.V05_RUN) <= set(P.V05_PLANNED))
 
     def test_non_linux_is_blocked_not_skipped(self):
         out = io.StringIO()

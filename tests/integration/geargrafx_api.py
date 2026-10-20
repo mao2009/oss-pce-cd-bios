@@ -13,6 +13,14 @@ import sys
 import tempfile
 from pathlib import Path
 
+
+class InvalidObservation(ValueError):
+    """A probe observation that fails validation (missing, malformed, or not the expected protocol).
+
+    Judged BLOCKED (no valid evidence). A valid observation that contradicts the expectation is a plain
+    ValueError and is judged FAIL by the preside probe.
+    """
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'tools'))
 from environment import DEPENDENCIES, dependency_dir

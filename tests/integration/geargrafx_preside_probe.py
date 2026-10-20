@@ -7,18 +7,20 @@ No core code is copied and no core hook is added here.
 
 Verdicts per case:
 * PASS    - measured, every planned sub-check prevented the side effect before it landed.
-* BLOCKED - the ST side effect lands before any stop (the measured expectation for W05-W07), or the
-            evidence is missing: the probe refused to run, emitted no observation (none, or empty), or
-            timed out. Missing evidence is never a PASS.
+* BLOCKED - the ST side effect lands before any stop (the measured expectation for W05-W07), or there is
+            no valid evidence: the probe refused to run, timed out, emitted no observation (none, or empty),
+            or emitted an observation that fails validation (wrong status or mode, missing or malformed field,
+            not the expected protocol). Missing or invalid evidence is never a PASS.
 * PARTIAL - only a measured subset of the planned sub-checks ran; the rest is listed in the detail.
             V06 (TAM) is PARTIAL because TAM is a detection-only check at the instruction boundary,
             not a block: the MPR write itself is not stopped, and other MPR paths are unaudited.
             V05 measures stores that did not land and were detected; that is a measurement, not a PREVENTED
             claim (#360 W02 stays UNKNOWN: no content-validated run id is recorded).
 * NOT_RUN - no probe mode / audit exists in this PR; nothing was executed for the case.
-* FAIL    - a probe run that did run and contradicted its expectation: a V05 store that landed,
-            a V05 store not detected, a V01/V02 ST store that was prevented (#360 records W05-W07 as
-            prevents NO, so a prevention is a contradiction), or a V06 TAM not detected.
+* FAIL    - a VALID observation (it passes validation) that shows the expectation was contradicted: a V05
+            store that landed, a V05 store not detected, a V01/V02 ST store that was prevented (#360 records
+            W05-W07 as prevents NO, so a prevention is a contradiction), a V06 TAM not detected, or a V06 TAM
+            run whose prohibited STA reached RAM.
 
 Scope: this script covers V01-V08 only. An overall PASS is NOT a gate release (ゲート解放ではない).
 本スクリプトは PASS を出力しない（各 V-case の上限 PARTIAL。総合 PASS は本PRの構造上到達不能）。ゲート解放の経路はない。
@@ -43,7 +45,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import geargrafx_reference_guard as guard  # noqa: E402
 import geargrafx_st_bypass as st  # noqa: E402
-from geargrafx_api import compile_probe  # noqa: E402
+from geargrafx_api import InvalidObservation, compile_probe  # noqa: E402
 
 PASS, BLOCKED, PARTIAL, NOT_RUN, FAIL = "PASS", "BLOCKED", "PARTIAL", "NOT_RUN", "FAIL"
 PROBE_SOURCE = "geargrafx_reference_jsr.cpp"
@@ -126,6 +128,8 @@ def run_case(case, probe, bios, cue):
                                       "(検出のみ、遮断ではない); other MPR paths unaudited")
     except MissingEvidence as error:
         return case_id, BLOCKED, f"{label}: no evidence ({error})"
+    except InvalidObservation as error:
+        return case_id, BLOCKED, f"{label}: no valid evidence ({error})"
     except ValueError as error:
         return case_id, FAIL, f"{label}: {error}"
     return case_id, NOT_RUN, f"{label}: {reason}"
