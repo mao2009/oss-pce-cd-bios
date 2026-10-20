@@ -54,6 +54,10 @@ REJECT_CASES = [
     ('dest_true', req(dest=True), 'REJECT_TYPE'),
     ('dest_float', req(dest=4096.0), 'REJECT_TYPE'),
     ('dest_str', req(dest='4096'), 'REJECT_TYPE'),
+    ('media_int_0', req(media=0), 'REJECT_TYPE'),
+    ('media_str', req(media='no'), 'REJECT_TYPE'),
+    ('busy_int_0', req(busy=0), 'REJECT_TYPE'),
+    ('busy_str', req(busy='yes'), 'REJECT_TYPE'),
 ]
 
 # Boundary cases that must succeed (dest TOP is the last valid start, lba DISC-1 the last sector).

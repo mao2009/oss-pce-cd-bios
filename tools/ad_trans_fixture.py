@@ -26,6 +26,9 @@ def sector_bytes(lba):
 
 def validate(req, disc_sectors):
     """Model rules, checked in fixed order. Returns a rejection reason, or None when valid."""
+    # Exact bool only: a truthy str or 0/1 must not decide media/busy.
+    if any(type(req[k]) is not bool for k in ('media', 'busy')):
+        return 'REJECT_TYPE'
     if not req['media']:
         return 'REJECT_NO_MEDIA'
     if req['busy']:
