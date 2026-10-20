@@ -15,12 +15,13 @@ Verdicts per case:
 * FAIL    - a probe run did not match its declared expectation (unexpected behaviour).
 
 Scope: this script covers V01-V08 only. An overall PASS is NOT a gate release (ゲート解放ではない).
-本スクリプトは PASS を出力しない（上限 PARTIAL）。ゲート解放の経路はない。
+本スクリプトは PASS を出力しない（各 V-case の上限 PARTIAL。総合 PASS は本PRの構造上到達不能）。ゲート解放の経路はない。
 Per case: V01/V02 are fixed BLOCKED, V03/V04/V07/V08 are fixed NOT_RUN, V05/V06 are at most PARTIAL.
 The slot-1e gate stays BLOCKED (spec/reference_jsr_gate.json) regardless of this script's output.
-Not covered by any V-case (listed in UNCOVERED_IDS, no cases added here): W08-W11 (IRQ register
-writes), W12 ($1804), W13 (other MMIO), W16 (allowlisted unisolated writes). W15 and W17 are only
-covered as NOT_RUN in V04/V07.
+V08 is the observation schema, not a W row. W-ids are grouped in W_MAP: RUN (a run V-case),
+NOT_RUN (mapped to a V-case that is fixed NOT_RUN), RANGE (W18 = unexecuted V05 remainder, an
+identifier and not an inventory row), UNMAPPED (no V-case at all, not run here).
+Verdicts are never merged: PASS, PARTIAL, NOT_RUN, BLOCKED and FAIL are printed as separate counts.
 
 Exit status: 0 only when the overall verdict is PASS; BLOCKED and FAIL both exit 1.
 Run by the parent on Linux after ``make setup``:
@@ -43,10 +44,18 @@ PROBE_SOURCE = "geargrafx_reference_jsr.cpp"
 V05_RUN = (0x0000, 0x1FFF, 0x4000)
 # Every 8 KiB page start and end ($0000..$FFFF in 8 pages); the planned set for V05.
 V05_PLANNED = tuple(sorted({p * 0x2000 for p in range(8)} | {p * 0x2000 + 0x1FFF for p in range(8)}))
-# Inventory rows (spec/write_path_inventory.json) with no V-case; reported, never run here.
-# W14/W15/W17 are only NOT_RUN in V03/V04/V07. W18 is the V05 remainder (planned minus run), not an
-# inventory row; it is not in spec/write_path_inventory.json.
-UNCOVERED_IDS = ("W08", "W09", "W10", "W11", "W12", "W13", "W14", "W15", "W16", "W17", "W18")
+# Every inventory id W01-W18 (spec/write_path_inventory.json on #360) and its place in this plan.
+# RUN: a V-case that executes a probe. NOT_RUN: mapped to a V-case that is fixed NOT_RUN.
+# RANGE: W18 is the V05 unrun remainder (planned minus run), an identifier for a range, not a row.
+# UNMAPPED: no V-case at all; reported here, never run.
+W_MAP = {
+    "W01": ("UNMAPPED", None), "W02": ("RUN", "V05"), "W03": ("RUN", "V06"),
+    "W04": ("UNMAPPED", None), "W05": ("RUN", "V01"), "W06": ("RUN", "V02"),
+    "W07": ("RUN", "V02"), "W08": ("UNMAPPED", None), "W09": ("UNMAPPED", None),
+    "W10": ("UNMAPPED", None), "W11": ("UNMAPPED", None), "W12": ("UNMAPPED", None),
+    "W13": ("UNMAPPED", None), "W14": ("NOT_RUN", "V03"), "W15": ("NOT_RUN", "V04"),
+    "W16": ("UNMAPPED", None), "W17": ("NOT_RUN", "V07"), "W18": ("RANGE", "V05"),
+}
 
 # (case id, inventory row, kind, parameters, reason when not runnable)
 CASES = (
@@ -56,7 +65,7 @@ CASES = (
      "no probe mode runs a CLI/IRQ entry; a pre-handler hook does not exist on the pinned core"),
     ("V04", "W15 block-transfer instructions", "none", (),
      "no probe mode executes TII/TIN/TDD/TIA/TAI; mid-instruction stop behaviour unmeasured"),
-    ("V05", "W02 remaining banks and boundaries", "neg", V05_PLANNED, None),
+    ("V05", "W02 measured subset (+ W18 unrun remainder)", "neg", V05_PLANNED, None),
     ("V06", "W03 MPR changes", "tam", (), None),
     ("V07", "W17 device-origin RAM writes", "none", (),
      "core-source audit not performed in this PR (pinned source is outside the repository)"),
@@ -106,7 +115,11 @@ def main():
         results = [run_case(case, probe, bios, cue) for case in CASES]
     for case_id, verdict, detail in results:
         print(f"{case_id} {verdict}: {detail}")
-    print(f"UNCOVERED (no V-case, not run here): {', '.join(UNCOVERED_IDS)}")
+    for group in ("RUN", "NOT_RUN", "RANGE", "UNMAPPED"):
+        members = [f"{w}->{c}" if c else w for w, (g, c) in W_MAP.items() if g == group]
+        print(f"W-MAP {group}: {', '.join(members) or '-'}")
+    print("COUNTS " + " ".join(
+        f"{v}={sum(1 for _, x, _ in results if x == v)}" for v in (PASS, PARTIAL, NOT_RUN, BLOCKED, FAIL)))
     verdict = overall([v for _, v, _ in results])
     print(f"OVERALL {verdict} (release_eligible=false; V01-V08 のみ; ゲート解放ではない)")
     return 0 if verdict == PASS else 1

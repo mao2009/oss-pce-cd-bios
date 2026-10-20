@@ -92,13 +92,38 @@ class PresideProbeTest(unittest.TestCase):
         self.assertIn("ゲート解放ではない", out)
         self.assertIn("ゲート解放ではない", P.__doc__)
 
-    def test_uncovered_ids_are_documented_not_silently_dropped(self):
+    def test_w_map_covers_w01_to_w18_exactly_once(self):
+        self.assertEqual(sorted(P.W_MAP), [f"W{i:02d}" for i in range(1, 19)])
+        self.assertTrue(all(g in ("RUN", "NOT_RUN", "RANGE", "UNMAPPED") for g, _ in P.W_MAP.values()))
+
+    def test_not_run_group_points_only_at_not_run_cases(self):
+        kinds = {c[0]: c[2] for c in P.CASES}
+        not_run = {w: c for w, (g, c) in P.W_MAP.items() if g == "NOT_RUN"}
+        self.assertEqual(not_run, {"W14": "V03", "W15": "V04", "W17": "V07"})
+        for case_id in not_run.values():
+            self.assertEqual(kinds[case_id], "none")
+
+    def test_run_group_points_only_at_runnable_cases(self):
+        kinds = {c[0]: c[2] for c in P.CASES}
+        for w, (g, c) in P.W_MAP.items():
+            if g == "RUN":
+                self.assertIn(kinds[c], ("st", "neg", "tam"), w)
+
+    def test_w18_is_a_range_remainder_not_a_row(self):
+        self.assertEqual(P.W_MAP["W18"], ("RANGE", "V05"))
         rc, out, _ = self._run_main_with(P.NOT_RUN)
-        uncovered = ("W08", "W09", "W10", "W11", "W12", "W13", "W14", "W15", "W16", "W17", "W18")
-        for wid in ("W14", "W15", "W17", "W18"):
-            self.assertIn(wid, P.UNCOVERED_IDS)
-        for wid in uncovered:
-            self.assertIn(wid, out)
+        self.assertIn("W-MAP RANGE: W18->V05", out)
+
+    def test_unmapped_ids_are_printed_not_dropped(self):
+        rc, out, _ = self._run_main_with(P.NOT_RUN)
+        unmapped = [w for w, (g, _) in P.W_MAP.items() if g == "UNMAPPED"]
+        self.assertEqual(unmapped, ["W01", "W04", "W08", "W09", "W10", "W11", "W12", "W13", "W16"])
+        self.assertIn("W-MAP UNMAPPED: " + ", ".join(unmapped), out)
+        self.assertIn("W-MAP NOT_RUN: W14->V03, W15->V04, W17->V07", out)
+
+    def test_counts_keep_verdicts_distinct(self):
+        rc, out, _ = self._run_main_with(P.PARTIAL)
+        self.assertIn(f"COUNTS PASS=0 PARTIAL={len(P.CASES)} NOT_RUN=0 BLOCKED=0 FAIL=0", out)
 
     def test_v05_planned_covers_every_page_start_and_end(self):
         starts = {p * 0x2000 for p in range(8)}
