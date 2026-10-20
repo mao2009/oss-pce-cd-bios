@@ -122,6 +122,18 @@ class CdStatLedgerTest(unittest.TestCase):
         for kw, rid in REQUIRED.items():
             self.assertRegex(byid[rid]['item'], rf'(?<![A-Za-z]){re.escape(kw)}(?![A-Za-z])', kw)
 
+    def test_s6_branch_range_is_591_to_603(self):
+        # bios.c: `case CD_STAT:` at 591, `rts();` at 602, `break;` at 603.
+        self.assertIn('591–603', self.text)
+        self.assertNotIn('591–601', self.text)
+        self.assertNotIn('591–600', self.text)
+
+    def test_blkmap_wording_is_comment_based(self):
+        # blkmap.asm 367-368 only alias map_bat_x/y to _al/_ah; the claim rests on its comment.
+        byid = {r['id']: r for r in self.rows}
+        self.assertIn('コメントによれば', byid['F07']['reason'])
+        self.assertNotIn('作業パラメータを書く', byid['F07']['reason'])
+
     def test_hugo_pin_is_full(self):
         self.assertIn(HUGO_COMMIT, self.text)
         self.assertIn(HUGO_BIOS_SHA256, self.text)
