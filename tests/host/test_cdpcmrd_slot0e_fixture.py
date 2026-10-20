@@ -123,8 +123,17 @@ class CdPcmrdSlot0eFixtureTest(unittest.TestCase):
                 self.assertNotEqual(run_cases(self.data, fn), [], fn.__name__)
 
     def test_fixture_is_not_wired_into_callable_entries(self):
-        out = subprocess.run(["git", "-C", str(ROOT), "grep", "-l", "cdpcmrd-slot0e", "--", ".", ":!docs"],
-                             capture_output=True, text=True)
+        # Scope: tracked files plus untracked, non-ignored files (--untracked). Ignored paths (e.g. build/) are out of scope.
+        # Exit 0 = hits listed, 1 = no match, anything else (2+, or launch failure) = the check itself failed.
+        try:
+            out = subprocess.run(["git", "-C", str(ROOT), "grep", "-l", "--untracked", "cdpcmrd-slot0e", "--", ".", ":!docs"],
+                                 capture_output=True, text=True)
+        except OSError as e:
+            self.fail(f"git grep could not be launched: {e}")
+        if out.returncode == 1:
+            return
+        if out.returncode != 0:
+            self.fail(f"git grep failed (rc={out.returncode}): {out.stderr.strip()}")
         hits = {p for p in out.stdout.split() if p not in (FIXTURE_REL, "tests/host/test_cdpcmrd_slot0e_fixture.py")}
         self.assertEqual(sorted(hits), [], "fixture name referenced outside the fixture and this test")
 
