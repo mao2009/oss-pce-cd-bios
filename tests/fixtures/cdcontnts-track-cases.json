@@ -1,0 +1,52 @@
+{
+  "schema": "oss-pce-cd-bios/cd-contnts-track-fixture/v1",
+  "issue": 265,
+  "slot": "$0C",
+  "entry_candidate": "$E024",
+  "candidate_name": "CD_CONTNTS",
+  "abi_status": "BLOCKED_ABI",
+  "release_eligible": false,
+  "execution": "NOT_RUN",
+  "provenance": "synthetic: author-defined media and cases only; no System Card BIOS byte, disassembly, retail data, or ./rom/ content; no reference callee is executed",
+  "callee_abi": {
+    "arguments": "UNKNOWN",
+    "returns": "UNKNOWN",
+    "registers": "UNKNOWN",
+    "reference_jsr": "NOT_CALLED"
+  },
+  "query_model": {
+    "input": "track number (int) on the selected medium",
+    "output": "track attributes {type, start, end} when the track exists, otherwise a refusal"
+  },
+  "media": {
+    "mixed": {
+      "synthetic": true,
+      "leadout_lba": 300,
+      "tracks": [
+        {"no": 1, "type": "data", "start": 0, "end": 99},
+        {"no": 2, "type": "audio", "start": 100, "end": 199},
+        {"no": 3, "type": "audio", "start": 200, "end": 299}
+      ]
+    },
+    "empty": {
+      "synthetic": true,
+      "leadout_lba": 0,
+      "tracks": []
+    }
+  },
+  "cases": [
+    {"id": "pos_data_track_1", "media": "mixed", "track": 1, "expected": "POSITIVE", "attributes": {"type": "data", "start": 0, "end": 99}, "reason": "data track attributes on a mixed-mode medium"},
+    {"id": "pos_audio_track_2", "media": "mixed", "track": 2, "expected": "POSITIVE", "attributes": {"type": "audio", "start": 100, "end": 199}, "reason": "first audio track attributes"},
+    {"id": "pos_audio_track_3", "media": "mixed", "track": 3, "expected": "POSITIVE", "attributes": {"type": "audio", "start": 200, "end": 299}, "reason": "last audio track, ends one before the lead-out"},
+    {"id": "neg_track_absent_4", "media": "mixed", "track": 4, "expected": "NEGATIVE", "reason": "track number not on the medium"},
+    {"id": "neg_track_zero", "media": "mixed", "track": 0, "expected": "NEGATIVE", "reason": "track number zero is not a track"},
+    {"id": "neg_track_negative", "media": "mixed", "track": -1, "expected": "NEGATIVE", "reason": "negative track number"},
+    {"id": "neg_track_256", "media": "mixed", "track": 256, "expected": "NEGATIVE", "reason": "track number beyond the medium range"},
+    {"id": "neg_track_bool", "media": "mixed", "track": true, "expected": "NEGATIVE", "reason": "bool is not an int track (malformed)"},
+    {"id": "neg_track_string", "media": "mixed", "track": "2", "expected": "NEGATIVE", "reason": "string track number (malformed)"},
+    {"id": "neg_track_float", "media": "mixed", "track": 2.0, "expected": "NEGATIVE", "reason": "float track number (malformed)"},
+    {"id": "neg_no_medium_track_1", "media": "none", "track": 1, "expected": "NEGATIVE", "reason": "no medium loaded, refused even for a track number that exists on the mixed medium"},
+    {"id": "neg_no_medium_track_2", "media": "none", "track": 2, "expected": "NEGATIVE", "reason": "no medium loaded, audio track number"},
+    {"id": "neg_empty_medium_track_1", "media": "empty", "track": 1, "expected": "NEGATIVE", "reason": "medium present with no tracks"}
+  ]
+}
