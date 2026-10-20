@@ -153,6 +153,17 @@ class SignRound4Tests(unittest.TestCase):
                 with self.subTest(job=job, step=step[-1]):
                     self.assertRefused(self.add_step(job, step), r'round 4 \(a\)')
 
+    def test_signing_job_may_run_only_its_approved_steps(self):   # (a): a step that runs code holds the OIDC token
+        steps = [
+            ['      - run: sh evidence/cdread-probe/cdread-evidence.json'],   # a script from the downloaded artifact
+            ['      - run: printenv'],                                        # dumps the request token variables
+            ['      - name: extra', '        run: echo ok'],                  # harmless, but not an approved step
+        ]
+        for job, _ in self.PRODUCERS:
+            for step in steps:
+                with self.subTest(job=job, step=step[-1]):
+                    self.assertRefused(self.add_step(job, step), r'round 4 \(a\)')
+
     def test_signing_text_in_a_new_job_is_refused(self):   # (a)
         extra = ['  sign-extra:', '    runs-on: ubuntu-24.04', '    permissions:', '      id-token: write',
                  '    steps:', '      - run: cosign sign-blob evidence/x.json']

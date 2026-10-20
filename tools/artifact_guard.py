@@ -579,6 +579,16 @@ SIGNING_PERMISSION_RE = re.compile(r"""^\s*(?:-\s+)?["']?(id-token|attestations)
 APPROVED_ATTEST_USES_RE = re.compile(r"""uses\s*:\s*actions/attest-build-provenance@[0-9a-f]{40}\s*(?:#.*)?$""")
 GH_VERIFY_RE = re.compile(r"""(?:run\s*:\s*)?gh attestation verify\b""")
 READ_ONLY_ATTEST_PERMISSION_RE = re.compile(r"""\s*(?:-\s+)?attestations\s*:\s*read\s*""")
+# (a) An approved signing job runs exactly these steps, in order: a step that runs code (a script from the downloaded
+# artifact, `printenv`, `uses: ./local`) would hold the OIDC token without any signing word, so it is refused by shape.
+ATTEST_STEPS = {
+    ("api-source.yml", "attest-cdread"): [("uses", "actions/download-artifact"),
+                                          ("uses", "actions/attest-build-provenance")],
+    ("api-source.yml", "attest-cdread-verdict"): [
+        ("uses", "actions/download-artifact"),
+        ("run", ('test -n "$ACTIONS_ID_TOKEN_REQUEST_URL" || { echo "no id-token, verdict not signed"; exit 1; }',)),
+        ("uses", "actions/attest-build-provenance")],
+}
 ROM_CANDIDATES = ("x.pce", "x.bin", "x.rom")
 ROM_SUFFIXES = (".pce", ".bin", ".rom")
 # The ROM upload patterns that exist today (staged form), per workflow file. Each is a synthetic probe ROM or the project's
@@ -880,7 +890,25 @@ def signing_violations(text, label):
                             "artifact (removal refused, Issue #337 round 4 (b))")
         if any("continue-on-error" in line for line in body):
             problems.append(f"{label}: signing job {job!r} may not use continue-on-error (Issue #337 round 4 (c))")
+        steps = [_step_kind(lines, s, e) for s, e, j in _step_ranges(lines, 6) if j == job]
+        if steps != ATTEST_STEPS[(name, job)]:
+            problems.append(f"{label}: signing job {job!r} must run exactly the approved steps, found {steps} "
+                            "(a step that runs code would hold the OIDC token, Issue #337 round 4 (a))")
     return problems
+
+
+def _step_kind(lines, start, end):
+    """('uses', action path without @ref) for a step whose only action is a uses: key, ('run', body lines) for a run: step,
+    or ('other', ()) for anything else (both keys, no key, a flow form the line reader cannot read)."""
+    keys = _step_keys(lines, start, end, 6)
+    uses = [m.group(1).split("#")[0].strip().strip("\"'").split("@")[0]
+            for m in (USES_KEY_RE.match(k) for k in keys) if m]
+    run = _run_lines(lines, start, end, 6)
+    if len(uses) == 1 and not run:
+        return ("uses", uses[0])
+    if run and not uses:
+        return ("run", tuple(run))
+    return ("other", ())
 
 
 def _rom_capable(pattern):
