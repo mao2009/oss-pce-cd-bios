@@ -32,13 +32,18 @@ class AttestationScopeTests(unittest.TestCase):
     subject-path and the documented publication scope must both say exactly that."""
     SCOPE = {'evidence/cdread-probe/cdread-evidence.json', 'evidence/cdread-probe/cdread-probe-not-bios.pce'}
 
-    def attest_cdread_subjects(self):
-        text = (ROOT / '.github' / 'workflows' / 'api-source.yml').read_text(encoding='utf-8')
+    def attest_subjects(self, text):
         job = text.split('\n  attest-cdread:\n', 1)[1].split('\n  verify-cdread-attestation:', 1)[0]
         return set(re.findall(r'^\s+(evidence/\S+)\s*$', job, re.M))
 
     def test_attest_cdread_subject_path_is_exactly_the_two_synthetic_files(self):
-        self.assertEqual(self.SCOPE, self.attest_cdread_subjects())
+        text = (ROOT / '.github' / 'workflows' / 'api-source.yml').read_text(encoding='utf-8')
+        self.assertEqual(self.SCOPE, self.attest_subjects(text))
+
+    def test_inline_subject_path_is_read(self):
+        # Review LOW (#349): `subject-path: evidence/x` on one line was not read, so an extra subject could hide.
+        fixture = 'jobs:\n  attest-cdread:\n    steps:\n      - uses: x\n        with:\n          subject-path: evidence/x.json\n'
+        self.assertEqual({'evidence/x.json'}, self.attest_subjects(fixture))
 
     def test_publication_scope_and_residual_risk_are_documented(self):
         doc = (ROOT / 'docs' / 'provenance.md').read_text(encoding='utf-8')

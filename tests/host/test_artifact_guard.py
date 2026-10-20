@@ -660,6 +660,34 @@ class GuardPlacementTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, 'publish action'):
                         guard.check_guard_placement(Path(tmp))
 
+    def test_publish_in_a_job_without_upload_beside_guarded_uploads_is_refused(self):
+        # Review MAJOR (#349): a file with a guarded upload still let a publishing action sit in a job with no upload.
+        sneaky = ('  sneaky-publish:\n    steps:\n      - name: Deploy\n'
+                  '        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, '.github', 'workflows').mkdir(parents=True)
+            Path(tmp, '.github', 'workflows', 'w.yml').write_text(
+                GUARDED.replace(' w.yml ', ' .github/workflows/w.yml ') + sneaky, encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, "sneaky-publish"):
+                guard.check_guard_placement(Path(tmp))
+
+    def test_attest_job_is_allowed_only_in_api_source_workflow(self):
+        # Review (#349): the allowance is a (file, job) pair. attest-cdread passes in api-source.yml and nowhere else.
+        attest = ('  attest-cdread:\n    steps:\n      - name: Attest\n'
+                  '        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2\n'
+                  '        with:\n          subject-path: evidence/cdread-probe/cdread-evidence.json\n')
+        for name, expect_refused in (('api-source.yml', False), ('other.yml', True)):
+            with self.subTest(file=name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    Path(tmp, '.github', 'workflows').mkdir(parents=True)
+                    rel = f'.github/workflows/{name}'
+                    Path(tmp, rel).write_text(GUARDED.replace(' w.yml ', f' {rel} ') + attest, encoding='utf-8')
+                    if expect_refused:
+                        with self.assertRaisesRegex(ValueError, 'attest-cdread'):
+                            guard.check_guard_placement(Path(tmp))
+                    else:
+                        guard.check_guard_placement(Path(tmp))
+
     def test_placement_passes_a_workflow_that_publishes_nothing(self):
         # A file with no upload step and no publishing route is not a publication and must not become a false positive.
         with tempfile.TemporaryDirectory() as tmp:
