@@ -1,9 +1,9 @@
 """Real Geargrafx check of a synthetic ROM-to-RAM handoff (Issue #242; test-only, NOT a BIOS ABI).
 
-tests/fixtures/handoff-probe.s copies a 16-byte payload from bank0 to work RAM $2200 (MPR1 = $F8) and JMPs
+tests/fixtures/handoff-probe.s copies a 13-byte payload from bank0 to work RAM $2200 (MPR1 = $F8) and JMPs
 there; the payload writes a marker at $2220 and JMPs back to a ROM halt label. The Geargrafx probe records
 PC/SP/MPR at handoff_jump, handoff_entry and handoff_done (cold and warm) and dumps CPU $2200-$223F.
-A run is accepted only if the RAM entry contract, the copied payload bytes and the marker all match.
+A run is accepted only if the RAM entry contract, the RAM bytes and the marker all match the typed expectation.
 Two byte-mutated ROMs (MPR1 bank not work RAM, misaligned entry) must be rejected by the same judge.
 Out of scope: CD media, the loader, CD_EXEC, the callable ABI and any production BIOS behaviour.
 
@@ -27,29 +27,27 @@ from geargrafx_contracts import execute  # noqa: E402
 
 ROM_BASE, BANK_BYTES, IMAGE_BYTES = 0xE000, 0x2000, 0x40000
 RAM_WINDOW = (0x2000, 0x4000)      # CPU window of MPR1 = work RAM bank $F8
-RAM_ENTRY = 0x2200
+RAM_ENTRY = 0x2200                 # fixed by handoff-probe.s (sta $2200,x / jmp $2200)
 IO_BANK, WORK_BANK = 0xFF, 0xF8
 MARKER_OFF, MARKER = 0x20, b"\xa5\x5a"  # written at $2220-$2221
 DUMP_BYTES = 64                    # probe dumps work RAM offset $200..$23F
 PHASES = ("handoff_jump", "handoff_entry", "handoff_done")
-# Independent expectation, typed here from the source (ca65 encoding of the four payload instructions
-# before the final JMP): lda #$A5 / sta $2220 / lda #$5A / sta $2221. The JMP operand is appended from
-# the handoff_done label, so the expected bytes never come from the ROM copy they are checking.
+# Independent expectation typed from the source: ca65 encoding of lda #$A5 / sta $2220 / lda #$5A /
+# sta $2221. The JMP operand is appended from the handoff_done label, so the expected bytes never come
+# from the ROM copy they are checking.
 PAYLOAD_PREFIX = bytes.fromhex("a9a58d2022a95a8d2122")
+CFG = """MEMORY {
+    ROM0: start = $E000, size = $2000, file = %O, fill = yes, fillval = $FF;
+}
+SEGMENTS {
+    BOOT: load = ROM0, type = ro, start = $F000;
+    VECTORS: load = ROM0, type = ro, start = $FFF6;
+}
+"""
 
 
 def expected_payload(handoff_done: int) -> bytes:
     return PAYLOAD_PREFIX + b"\x4c" + handoff_done.to_bytes(2, "little")
-CFG = """MEMORY {
-    ROM0: start = $E000, size = $2000, file = %O, fill = yes, fillval = $FF;
-    WRAM: start = $2200, size = $0100, type = rw;
-}
-SEGMENTS {
-    BOOT: load = ROM0, type = ro, start = $F000;
-    RAMCODE: load = ROM0, run = WRAM, type = ro;
-    VECTORS: load = ROM0, type = ro, start = $FFF6;
-}
-"""
 
 
 def check_handoff_contract(entry, size, sp, mpr):
@@ -70,10 +68,11 @@ def parse_labels(path: Path) -> dict:
 
 
 def build_handoff(output: Path, mode: str):
+    """Assemble and link the handoff ROM; return (rom path, ROM labels, payload ROM address, payload size, trace labels)."""
     ca65, ld65 = executable("ca65"), executable("ld65")
     output.mkdir(parents=True, exist_ok=True)
     cfg = output / "handoff.cfg"
-    cfg.write_text(CFG)
+    cfg.write_text(CFG, encoding="ascii")
     obj = output / "handoff-probe.o"
     subprocess.run([ca65, str(ROOT / "tests/fixtures/handoff-probe.s"), "-o", str(obj),
                     *(["-g"] if mode == "debug" else [])], check=True)
@@ -84,22 +83,22 @@ def build_handoff(output: Path, mode: str):
     if len(data) != BANK_BYTES:
         raise ValueError("handoff bank is not 8 KiB")
     labels = parse_labels(labels_path)
-    if labels.get("handoff_entry") != RAM_ENTRY or any(name not in labels for name in PHASES):
-        raise ValueError(f"handoff symbols/placement mismatch: {labels}")
-    size = labels["handoff_payload_end"] - RAM_ENTRY
+    needed = ("handoff_bank", "handoff_jump", "handoff_done", "handoff_payload_rom", "handoff_payload_end_rom")
+    if any(name not in labels for name in needed):
+        raise ValueError(f"handoff symbols missing: {[n for n in needed if n not in labels]}")
+    load, size = labels["handoff_payload_rom"], labels["handoff_payload_end_rom"] - labels["handoff_payload_rom"]
     if size != len(expected_payload(labels["handoff_done"])):
         raise ValueError(f"payload size {size} differs from the typed expectation")
-    src_at = labels["handoff_payload_src"] - ROM_BASE
-    load = int.from_bytes(data[src_at:src_at + 2], "little")  # ROM address of the payload copy source
     if not (ROM_BASE <= load and load + size <= ROM_BASE + BANK_BYTES):
         raise ValueError(f"payload source {load:#06x} is outside bank0")
-    head = len(PAYLOAD_PREFIX)
-    if data[load - ROM_BASE:load - ROM_BASE + head + 1] != PAYLOAD_PREFIX + b"\x4c":
+    if data[load - ROM_BASE:load - ROM_BASE + len(PAYLOAD_PREFIX) + 1] != PAYLOAD_PREFIX + b"\x4c":
         raise ValueError("ROM payload source differs from the typed instructions")
     rom = output / "handoff-not-bios.pce"
     rom.write_bytes(data + b"\xff" * (IMAGE_BYTES - BANK_BYTES))
     trace_labels = output / "trace-labels.txt"
-    trace_labels.write_text("".join(f"{name} {labels[name]:04x}\n" for name in PHASES), encoding="ascii")
+    trace_labels.write_text(f"handoff_jump {labels['handoff_jump']:04x}\n"
+                            f"handoff_entry {RAM_ENTRY:04x}\n"
+                            f"handoff_done {labels['handoff_done']:04x}\n", encoding="ascii")
     return rom, labels, size, trace_labels
 
 
@@ -143,7 +142,7 @@ def judge(records, labels, payload):
         if len(dump) != DUMP_BYTES:
             raise ValueError(f"{row['phase']}: RAM dump has {len(dump)} bytes")
         if dump[:len(payload)] != payload:
-            raise ValueError(f"{row['phase']}: RAM at {RAM_ENTRY:#x} differs from the copied payload")
+            raise ValueError(f"{row['phase']}: RAM at {RAM_ENTRY:#x} differs from the typed payload")
         if dump[MARKER_OFF:MARKER_OFF + 2] != MARKER:
             raise ValueError(f"{row['phase']}: marker not reached at $2220")
         if row["pc"] != labels["handoff_done"] or row["sp"] != 0xFF:
