@@ -13,10 +13,88 @@ import sys
 import tempfile
 from pathlib import Path
 
+
+class InvalidObservation(ValueError):
+    """A probe observation that fails validation (missing, malformed, or not the expected protocol).
+
+    Judged BLOCKED (no valid evidence). A valid observation that contradicts the expectation is a plain
+    ValueError and is judged FAIL by the preside probe.
+    """
+
+
+def require_int(value, label, low, high):
+    """Raise InvalidObservation unless value is an int (bool is refused) in low..high."""
+    if type(value) is not int or not low <= value <= high:
+        raise InvalidObservation(f"{label} must be an integer in {low:#x}..{high:#x}, got {value!r}")
+    return value
+
+
+def require_byte(value, label):
+    """A byte as read from the emulated machine: an integer 0..0xFF."""
+    return require_int(value, label, 0, 0xFF)
+
+
+def require_word(value, label):
+    """A 16-bit value (CPU address, program counter, VDC data word): an integer 0..0xFFFF."""
+    return require_int(value, label, 0, 0xFFFF)
+
+
+def require_count(value, label):
+    """A non-negative counter (instructions executed). Only the type and sign are checked here."""
+    return require_int(value, label, 0, 0xFFFFFFFF)
+
+
+def require_bool(value, label):
+    if type(value) is not bool:
+        raise InvalidObservation(f"{label} must be a boolean, got {value!r}")
+    return value
+
+
+def require_section(row, key, label):
+    """The named section of an observation (e.g. "before") must be an object."""
+    section = row.get(key)
+    if type(section) is not dict:
+        raise InvalidObservation(f"{label}: section {key!r} is not an object: {section!r}")
+    return section
+
+
+def require_mpr_bytes(snapshot, label):
+    """Raise InvalidObservation unless snapshot is a list of 8 bytes. Returns the snapshot."""
+    if type(snapshot) is not list or len(snapshot) != 8:
+        raise InvalidObservation(f"{label} MPR snapshot is not a list of 8 bytes: {snapshot!r}")
+    for index, value in enumerate(snapshot):
+        require_byte(value, f"{label} MPR[{index}]")
+    return snapshot
+
+
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'tools'))
 from environment import DEPENDENCIES, dependency_dir
 from build_rom import verify_dev_rom
+
+
+class ProbeBuildError(subprocess.CalledProcessError, ValueError):
+    """A probe build command failed: judged BLOCKED (no probe was built), never an uncaught crash.
+
+    Subclasses CalledProcessError (command, return code, stderr) and ValueError, so every caller that
+    already catches either keeps working.
+    """
+
+    def __init__(self, returncode, cmd, stderr=''):
+        super().__init__(returncode, cmd, stderr=stderr)
+        self.stderr_tail = '\n'.join((stderr or '').splitlines()[-20:])
+
+    def __str__(self):
+        return f"BLOCKED: probe build failed (exit {self.returncode}): {' '.join(map(str, self.cmd))}\n{self.stderr_tail}"
+
+
+def build_command(cmd, **kwargs):
+    """Run one build command with captured output; a failure raises ProbeBuildError."""
+    try:
+        return subprocess.run(cmd, check=True, capture_output=True, text=True, **kwargs)
+    except subprocess.CalledProcessError as error:
+        raise ProbeBuildError(error.returncode, error.cmd, error.stderr) from error
 
 
 def compile_probe(output, source_name='geargrafx_api_probe.cpp', target_name='geargrafx-api-probe'):
@@ -25,19 +103,20 @@ def compile_probe(output, source_name='geargrafx_api_probe.cpp', target_name='ge
     source = dependency_dir('geargrafx').with_name(dependency_dir('geargrafx').name + '-debugger')
     make_dir = source / 'platforms/libretro'
     # Ask upstream's pinned Makefile for its object list; do not copy core code.
-    objects = subprocess.run(['make', '-s', '--no-print-directory', '-C', str(make_dir),
-                              '--eval', 'probe-objects:;@echo $(OBJECTS)', 'probe-objects'],
-                             check=True, capture_output=True, text=True).stdout.split()
+    objects = build_command(['make', '-s', '--no-print-directory', '-C', str(make_dir),
+                             '--eval', 'probe-objects:;@echo $(OBJECTS)', 'probe-objects']).stdout.split()
     objects = [(make_dir / p).resolve() for p in objects]
     if not objects or not all(p.is_file() for p in objects):
         raise ValueError('BLOCKED: official Geargrafx objects missing; run make setup')
     target = output / target_name
-    subprocess.run(['g++', '-std=c++11', '-O0', '-fno-rtti', '-D__LIBRETRO__',
+    result = build_command(['g++', '-std=c++11', '-O0', '-fno-rtti', '-D__LIBRETRO__',
                     '-DGG_DISABLE_VGMRECORDER', '-DGG_ENABLE_CDROM_CUEBIN_READAHEAD',
                     '-I' + str(source / 'src'), '-I' + str(make_dir),
                     '-I' + str(source / 'platforms/shared/dependencies/miniz'),
                     '-I' + str(source / 'platforms/shared/dependencies/json'), str(Path(__file__).with_name(source_name)),
-                    *map(str, objects), '-pthread', '-lm', '-o', str(target)], check=True)
+                    *map(str, objects), '-pthread', '-lm', '-o', str(target)])
+    if result.stderr:  # compiler warnings on success stay visible
+        sys.stderr.write(result.stderr)
     return target
 
 
