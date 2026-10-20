@@ -1,12 +1,15 @@
 """Host checks for the Issue #242 synthetic ROM-to-RAM handoff judge (no emulator; real-core runs are in the integration test)."""
 from pathlib import Path
+import subprocess
 import sys
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tests/integration"))
 sys.path.insert(0, str(ROOT / "tools"))
-from geargrafx_handoff import RAM_ENTRY, check_handoff_contract, expected_payload, judge  # noqa: E402
+from geargrafx_handoff import (  # noqa: E402
+    Blocked, HandoffRejected, RAM_ENTRY, check_handoff_contract, expected_payload, judge, run_negatives)
 
 GOOD_MPR = [0xFF, 0xF8, 1, 2, 31, 3, 4, 0]
 LABELS = {"handoff_jump": 0xF0A0, "handoff_done": 0xF0B0}
@@ -66,6 +69,86 @@ class HandoffJudgeTests(unittest.TestCase):
             judge(_records(entry_pc=RAM_ENTRY + 1), LABELS, PAYLOAD)
         with self.assertRaises(ValueError):
             judge(_records(mpr=[0xFF, 0x00] + GOOD_MPR[2:]), LABELS, PAYLOAD)
+
+
+class HandoffReasonTests(unittest.TestCase):
+    """Each negative is rejected for its own reason key; entry and MPR are checked before phase order."""
+
+    def test_mpr1_rom_bank_is_rejected_for_mpr_not_phase_order(self):
+        records = _records(mpr=[0xFF, 0x00] + GOOD_MPR[2:])
+        with self.assertRaises(HandoffRejected) as cm:
+            judge(records, LABELS, PAYLOAD)
+        self.assertEqual(cm.exception.reason, "mpr")
+
+    def test_missing_entry_is_rejected_for_entry_not_phase_order(self):
+        records = _records()
+        records["TRACE"] = [r for r in records["TRACE"] if r["phase"] != "handoff_entry"]
+        with self.assertRaises(HandoffRejected) as cm:
+            judge(records, LABELS, PAYLOAD)
+        self.assertEqual(cm.exception.reason, "entry")
+
+    def test_mpr_is_checked_before_phase_order(self):
+        records = _records(mpr=[0xFF, 0x00] + GOOD_MPR[2:])
+        records["TRACE"] = [r for r in records["TRACE"] if r["phase"] != "handoff_done"]
+        with self.assertRaises(HandoffRejected) as cm:
+            judge(records, LABELS, PAYLOAD)
+        self.assertEqual(cm.exception.reason, "mpr")
+
+
+def _mutant_rom():
+    """Synthetic 8 KiB bank holding the bytes the negatives patch: MPR1 immediate and the JMP $2200 operand."""
+    labels = {"handoff_bank": 0xE011, "handoff_jump": LABELS["handoff_jump"], "handoff_done": LABELS["handoff_done"]}
+    rom = bytearray(0x2000)
+    rom[0x11 - 1] = 0xF8
+    rom[labels["handoff_jump"] - 0xE000:labels["handoff_jump"] - 0xE000 + 3] = bytes([0x4C, 0x00, 0x22])
+    return bytes(rom), labels
+
+
+class NegativeRunnerTests(unittest.TestCase):
+    def test_probe_timeout_is_blocked_not_rejected(self):
+        rom, labels = _mutant_rom()
+
+        def run(path):
+            raise subprocess.TimeoutExpired(cmd="probe", timeout=30)
+
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(Blocked):
+            run_negatives(rom, labels, PAYLOAD, Path(tmp), run)
+
+    def test_probe_crash_is_blocked_not_rejected(self):
+        rom, labels = _mutant_rom()
+
+        def run(path):
+            raise subprocess.CalledProcessError(returncode=3, cmd="probe")
+
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(Blocked):
+            run_negatives(rom, labels, PAYLOAD, Path(tmp), run)
+
+    def test_wrong_reason_for_a_negative_fails(self):
+        rom, labels = _mutant_rom()
+
+        def run(path):
+            records = _records()  # complete handoff except the phase list: rejected for "phase", not "mpr"
+            records["TRACE"] = [r for r in records["TRACE"] if r["phase"] != "handoff_done"]
+            return records
+
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(ValueError) as cm:
+            run_negatives(rom, labels, PAYLOAD, Path(tmp), run)
+        self.assertNotIsInstance(cm.exception, Blocked)
+
+    def test_expected_reasons_are_recorded(self):
+        rom, labels = _mutant_rom()
+
+        def run(path):
+            if path.name.startswith("mpr1_rom_bank"):
+                return _records(mpr=[0xFF, 0x00] + GOOD_MPR[2:])
+            records = _records()
+            records["TRACE"] = [r for r in records["TRACE"] if r["phase"] != "handoff_entry"]
+            return records
+
+        with tempfile.TemporaryDirectory() as tmp:
+            negatives = run_negatives(rom, labels, PAYLOAD, Path(tmp), run)
+        self.assertEqual({k: v["reason"] for k, v in negatives.items()},
+                         {"mpr1_rom_bank": "mpr", "entry_misaligned": "entry"})
 
 
 if __name__ == "__main__":
