@@ -20,8 +20,18 @@ FIXTURE = ROOT / FIXTURE_REL
 SELF_REL = "tests/host/test_cddinfo_slot0b_fixture.py"
 WIRING_EXCLUDE_PREFIXES = ("docs/", "spec/")
 WIRING_RE = re.compile(r"E021|CD_DINFO", re.IGNORECASE)
-# Known non-wiring strings (menu/label listing in the reference scenario table), matched by (path, stripped line).
-WIRING_ALLOWLIST = {("tools/reference_bios_scenarios.py", '"CD_SUBQ", "CD_DINFO", "CD_CONTNTS", "CD_SUBRQ / CD_SUBRD",')}
+# Known non-wiring strings, matched by (path, stripped line). Each is a scenario-table label or a test/ledger
+# reference to the name, not a build, ROM or callable-entry use. Exact lines only: a new reference in the same file
+# still fails. test_wiring_allowlist_entries_still_exist fails when an entry goes stale.
+WIRING_ALLOWLIST = {
+    ("tools/reference_bios_scenarios.py", '"CD_SUBQ", "CD_DINFO", "CD_CONTNTS", "CD_SUBRQ / CD_SUBRD",'),
+    ("tests/host/test_cd_contnts_track_fixture.py",
+     '"tools/reference_bios_scenarios.py": {\'"CD_SUBQ", "CD_DINFO", "CD_CONTNTS", "CD_SUBRQ / CD_SUBRD",\'},'),
+    ("tests/host/test_cd_dinfo_contract.py",
+     '"""Host checks for the Issue #234 CD_DINFO ($0B, $E021) caller-contract ledger.'),
+    ("tests/host/test_cd_dinfo_contract.py", "'F01': ('name', 'SOURCE_FACT', '`$E021`'),"),
+    ("tests/host/test_cd_dinfo_contract.py", "'F29': ('name', 'SOURCE_FACT', '`cd_dinfo`（HuC）、`CD_DINFO`（当リポジトリ）、`cdr_dinfo`（elmer の内部名）'),"),
+}
 # sha256 of the canonical JSON (sort_keys, compact separators, UTF-8). Editing the fixture requires updating it here.
 FIXTURE_SHA256 = "26b7e65e7e803d91803f87bff501b1427a692efc716fb7e775179bf94602cdf2"
 POSITIVE, NEGATIVE = "POSITIVE", "NEGATIVE"
@@ -43,6 +53,16 @@ NEGATIVE_IDS = {"neg_lba_past_leadout", "neg_lba_negative", "neg_lba_float", "ne
 # Negatives that the deliberately lenient judge wrongly accepts (must be exactly these).
 LENIENT_CAUGHT_IDS = {"neg_lba_float", "neg_lba_true", "neg_track_bool", "neg_track_float", "neg_nomedium_track",
                       "neg_bcd_length", "neg_bcd_int", "neg_nomedium_bcd", "neg_nomedium_lba"}
+
+
+def wiring_hits(files):
+    """files: (rel, text) pairs. Returns 'rel:lineno: line' for each non-allowlisted candidate-name match."""
+    hits = []
+    for rel, text in files:
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if WIRING_RE.search(line) and (rel, line.strip()) not in WIRING_ALLOWLIST:
+                hits.append(f"{rel}:{lineno}: {line.strip()}")
+    return hits
 
 
 def canonical_sha256(data):
@@ -207,16 +227,26 @@ class CdDinfoSlot0bFixtureTests(unittest.TestCase):
                 if r and not r.startswith(WIRING_EXCLUDE_PREFIXES) and not r.endswith(".md")
                 and r not in (FIXTURE_REL, SELF_REL)]
         self.assertGreater(len(rels), 100)
-        hits = []
-        for rel in rels:
-            path = ROOT / rel
-            if not path.is_file():
-                continue
-            text = path.read_bytes().decode("utf-8", errors="ignore")
-            for lineno, line in enumerate(text.splitlines(), 1):
-                if WIRING_RE.search(line) and (rel, line.strip()) not in WIRING_ALLOWLIST:
-                    hits.append(f"{rel}:{lineno}: {line.strip()}")
-        self.assertEqual(hits, [], "candidate string referenced outside docs/spec/*.md")
+        files = [(rel, (ROOT / rel).read_bytes().decode("utf-8", errors="ignore"))
+                 for rel in rels if (ROOT / rel).is_file()]
+        self.assertEqual(wiring_hits(files), [], "candidate string referenced outside docs/spec/*.md")
+
+    def test_wiring_allowlist_entries_still_exist_in_their_files(self):
+        for rel, line in sorted(WIRING_ALLOWLIST):
+            text = (ROOT / rel).read_bytes().decode("utf-8", errors="ignore")
+            self.assertIn(line, [t.strip() for t in text.splitlines()], f"stale allowlist entry: {rel}")
+
+    def test_wiring_check_fails_on_new_reference_and_only_passes_exact_allowlisted_lines(self):
+        ledger = "tests/host/test_cd_dinfo_contract.py"
+        allowed = "'F01': ('name', 'SOURCE_FACT', '`$E021`'),"
+        # Negative cases: a new reference in any form must be reported.
+        self.assertEqual(len(wiring_hits([("src/new_module.c", "    jsr CD_DINFO\n")])), 1)
+        self.assertEqual(len(wiring_hits([("src/new_module.s", "    jsr $e021\n")])), 1)
+        self.assertEqual(len(wiring_hits([(ledger, "'F99': ('name', 'SOURCE_FACT', '`CD_DINFO`'),")])), 1)
+        self.assertEqual(len(wiring_hits([("tests/host/other.py", allowed)])), 1)
+        self.assertEqual(len(wiring_hits([("tools/build.py", "    call_table[11] = CD_DINFO  # wired")])), 1)
+        # Positive control: the exact allowlisted line in its own file is not reported.
+        self.assertEqual(wiring_hits([(ledger, allowed)]), [])
 
 
 if __name__ == "__main__":
