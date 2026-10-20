@@ -68,7 +68,9 @@ CLAIM_KEYS = frozenset({'status', 'value', 'sources', 'confidence', 'registers',
                         'observation_kind'})
 # Issue #225: every OBSERVED claim must declare which kind of observation its evidence is, and the
 # kind must cover the claim's field. Enforced in adjudicate_claim() (the formal path used by
-# validate_contracts) so no wrapper can skip it. The kind is a declaration, not a measurement.
+# validate_contracts) so no wrapper can skip it. The kind is a declaration, not a measurement:
+# the rule rejects a kind that does not cover the field, but it does not verify where the evidence
+# came from, so a caller can still declare CALLEE_EXECUTION for a hardware readback.
 OBSERVATION_KIND_KEY = 'observation_kind'
 OBSERVATION_KIND_FIELDS = {
     # Low-level bus/register fact only; never callee ABI (returns/flags/irq/...).
@@ -215,7 +217,7 @@ def validate_evidence(evidence, context):
 # authentication is attestation (Issue #124 / #171). Not yet wired into validate_contracts (no OBSERVED claim exists).
 EVIDENCE_ARTIFACT_DIR = ROOT / 'build' / 'evidence-artifacts'
 ARTIFACT_TRUST_LEVEL = 'ARTIFACT_HASH_RESOLVED'
-PINNED_CORE_REVISION = json.loads((ROOT / 'tools/dependencies.json').read_text())['geargrafx']['revision']
+PINNED_CORE_REVISION = json.loads((ROOT / 'tools/dependencies.json').read_text(encoding='utf-8'))['geargrafx']['revision']
 
 
 def resolve_evidence(entry, artifact_dir=EVIDENCE_ARTIFACT_DIR, pinned_revision=PINNED_CORE_REVISION):
@@ -342,9 +344,9 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
 
 
 def load_contracts(path=ROOT / 'spec/api_contracts.json'):
-    data = json.loads(Path(path).read_text())
-    validate_contracts(data, json.loads((ROOT / 'spec/api_slots.json').read_text()),
-                       (ROOT / 'docs/api-inventory.md').read_text())
+    data = json.loads(Path(path).read_text(encoding='utf-8'))
+    validate_contracts(data, json.loads((ROOT / 'spec/api_slots.json').read_text(encoding='utf-8')),
+                       (ROOT / 'docs/api-inventory.md').read_text(encoding='utf-8'))
     return data
 
 

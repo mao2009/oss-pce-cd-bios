@@ -5,6 +5,11 @@ and is not reimplemented here. adjudicate_observation() only delegates, once, so
 second validation pass. An OBSERVED claim must declare observation_kind covering its field; the
 kind is a declaration, not a measurement (evidence is FORMAT_ONLY, see contracts.EVIDENCE_TRUST_LEVEL).
 
+This is a rejection based on the declared kind. The provenance of the evidence is NOT verified: a
+caller that declares CALLEE_EXECUTION (with executed_callee=True) passes the kind rule regardless of
+what the evidence actually measured. Preventing that needs a measurement-point identifier on the
+evidence side, which is a follow-up Issue, not part of this check.
+
 Reachability: validate_contracts calls adjudicate_claim for every claim, but the shipped ledger has
 no OBSERVED claim and its verification gate forces executed_callee False, so no OBSERVED claim can
 pass the ledger today. Enforcement is in place on the formal path; the ledger does not yet exercise it.

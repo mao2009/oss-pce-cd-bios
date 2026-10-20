@@ -74,8 +74,9 @@ class PositiveCorrespondenceTests(unittest.TestCase):
 
 
 class NegativeCorrespondenceTests(unittest.TestCase):
-    def test_hardware_readback_is_rejected_for_every_callee_field(self):
-        # Issue #225 core case: $1804 evidence reused as stack/returns/flags/irq is refused.
+    def test_hw_readback_kind_is_rejected_for_every_callee_field(self):
+        # Issue #225 core case: a claim DECLARING HW_BUS_READBACK cannot support stack/returns/flags/irq.
+        # This is a declaration-based rejection; the provenance of the evidence is not verified.
         for field in CALLEE_FIELDS:
             with self.subTest(field=field):
                 with self.assertRaisesRegex(ValueError, 'does not support field'):
@@ -84,6 +85,17 @@ class NegativeCorrespondenceTests(unittest.TestCase):
     def test_callee_kind_is_rejected_for_hw_bus_reset(self):
         with self.assertRaisesRegex(ValueError, 'does not support field'):
             adjudicate(CALLEE_OBSERVED, 'hw_bus_reset', executed_callee=True)
+
+    def test_hw_readback_never_yields_verified_or_callee_claim(self):
+        # Guard against promotion: HW readback stays a hw_bus_reset fact. No callee field is accepted
+        # for it, and VERIFIED is not a representable status (adjudicate_claim returns None or raises).
+        for field in CALLEE_FIELDS:
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(ValueError, 'does not support field'):
+                    adjudicate(HW_OBSERVED, field, executed_callee=True)
+        self.assertIsNone(adjudicate(HW_OBSERVED, 'hw_bus_reset'))
+        with self.assertRaisesRegex(ValueError, 'VERIFIED is not represented'):
+            adjudicate(dict(OBSERVED, status='VERIFIED'), 'hw_bus_reset')
 
     def test_callee_field_with_callee_kind_but_unexecuted_callee_is_rejected(self):
         # Not executed means not measured: no promotion through a declared kind.
@@ -97,7 +109,9 @@ class NegativeCorrespondenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'does not support field'):
             adjudicate(HW_OBSERVED, 'returns', executed_callee=True)
 
-    def test_callee_field_with_hw_kind_and_no_callee_is_rejected(self):
+    def test_hw_kind_on_callee_field_fails_executed_callee_check_first(self):
+        # Ordering: with executed_callee=False the executed-callee rule fires before the kind rule.
+        # The kind rule itself is covered by test_hw_readback_kind_is_rejected_for_every_callee_field.
         with self.assertRaisesRegex(ValueError, 'executed callee'):
             adjudicate(HW_OBSERVED, 'returns', executed_callee=False)
 
@@ -143,7 +157,8 @@ class NegativeCorrespondenceTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'claim must be a dict'):
                     adjudicate(bad, 'stack', executed_callee=True)
 
-    def test_kind_key_cannot_smuggle_unknown_claim_keys(self):
+    def test_executed_callee_declared_inside_claim_is_rejected(self):
+        # executed_callee is a function argument, not a claim key: a claim carrying it is an unknown key.
         with self.assertRaisesRegex(ValueError, 'unknown claim keys'):
             adjudicate(dict(CALLEE_OBSERVED, executed_callee=True), 'returns', executed_callee=True)
 
