@@ -887,7 +887,7 @@ def _rom_capable(pattern):
     """True when an upload pattern can select a ROM file by its last path segment. A plain directory name is not judged
     here: stage_artifacts refuses a ROM file that a directory selects unless its pattern is approved (Issue #337 round 4 (d))."""
     last = pattern.rstrip("/").rsplit("/", 1)[-1].lower()
-    if any(fnmatch.fnmatchcase(candidate, last) for candidate in ROM_CANDIDATES):
+    if last.endswith(ROM_SUFFIXES) or any(fnmatch.fnmatchcase(candidate, last) for candidate in ROM_CANDIDATES):
         return True
     return any(c in last for c in "*?[") and "." not in last
 

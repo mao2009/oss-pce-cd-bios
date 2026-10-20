@@ -399,7 +399,9 @@ PAGES_GUARDED = ('jobs:\n  build:\n    steps:\n' + PREAMBLE
 
 
 # The approved attest-cdread job (owner decision, Issue #349): its subject-path is exactly the two synthetic files.
-ATTEST_CDREAD_JOB = ('  attest-cdread:\n    if: github.event_name == \'push\' && github.ref == \'refs/heads/main\'\n'
+ATTEST_CDREAD_JOB = ('  attest-cdread:\n    needs: guard-bios-dev\n'   # Issue #337 round 4: the real job keeps these (b)
+                     '    if: github.event_name == \'push\' && github.ref == \'refs/heads/main\'\n'
+                     '    permissions:\n      id-token: write\n      attestations: write\n'
                      '    steps:\n      - name: Attest\n'
                      '        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2\n'
                      '        with:\n          subject-path: |\n'
