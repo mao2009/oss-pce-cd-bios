@@ -45,10 +45,10 @@ Hu-Go（参照専用、GPL-2）:
 
 | ID | 出典（固定版内のパス） | 行 | ライセンス表示 | 用途・注意 |
 | --- | --- | --- | --- | --- |
-| S1 | `include/hucc/pcengine.inc` 477（`cd_stat = $00:E01B, FUNC`）、`include/huc/system.inc` 74（`cd_stat = $E01B`） | — | ファイル先頭に著作権表示なし（確認済み） | 名前と入口の宣言のみ。根拠は名前と入口に限る |
-| S2 | `include/hucc/core-kernel.asm` 500–516（`call_bios`） | 8 行目 "Copyright John Brandwood 2021-2024." | 前台帳の記録を引継ぎ（BSL-1.0、本回で条文は再確認していない） | 呼出し経路（MPR7 の退避・復元、`jsr $E000` の選択） |
-| S3 | `include/hucc/core.inc` 41–43（`system` マクロ: `ldy #<\1`、`jsr call_bios`） | 8 行目 "Copyright John Brandwood 2021-2024." | 同上 | マクロの展開（Y の設定） |
-| S4 | `include/hucc/hucc-systemcard.asm` 466–469（`_cd_status.1` マクロ: `system cd_stat`、`cly`） | 8 行目 "Copyright John Brandwood 2024."、10 行目 Boost Software License 1.0 | Boost 1.0（ヘッダに明記） | HuCC 側ラッパの入出力（mode は A で渡す、戻り後に Y を 0 にする） |
+| S1 | `include/hucc/pcengine.inc` 477（`cd_stat = $00:E01B, FUNC`）、`include/huc/system.inc` 74（`cd_stat = $E01B`） | — | `pcengine.inc`: 著作権行なし、8–10 行目に Boost 1.0 の記載。`system.inc`: 先頭 14 行に表示なし（いずれも確認済み） | 名前と入口の宣言のみ。根拠は名前と入口に限る |
+| S2 | `include/hucc/core-kernel.asm` 500–516（`call_bios`） | 8 行目 "Copyright John Brandwood 2021-2024." | 10–12 行目に Boost 1.0 を明記（展開物で確認） | 呼出し経路（MPR7 の退避・復元、`jsr $E000` の選択） |
+| S3 | `include/hucc/core.inc` 41–43（`system` マクロ: `ldy #<\1`、`jsr call_bios`） | 8 行目 "Copyright John Brandwood 2021-2024." | 10 行目 Boost 1.0 を明記（展開物で確認） | マクロの展開（Y の設定） |
+| S4 | `include/hucc/hucc-systemcard.asm` 464–469（464 行目はモードの説明コメント、466–469 は `_cd_status.1` マクロ: `system cd_stat`、`cly`） | 8 行目 "Copyright John Brandwood 2024."、10 行目 Boost Software License 1.0 | Boost 1.0（ヘッダに明記） | HuCC 側ラッパの入出力（mode は A で渡す、戻り後に Y を 0 にする） |
 | S5 | `examples/asm/elmer/cd-core-scsitest/scsitest.asm` 681–691（busy 確認 `cla`・`system cd_stat`・`cmp #$00`・`bne`、ready 確認 `lda #1`・`system cd_stat`・`cmp #$00`・`beq`）、693–695（`ldy #60`、`jsr wait_nvsync`、`bra`） | 10 行目 "Copyright John Brandwood 2024-2025."、12 行目 Boost 1.0 | Boost 1.0（ヘッダに明記） | **唯一の BIOS 呼出側の実例。** 自作の CD 試験プログラムで、CD_STAT の仕様ではない |
 | S6 | Hu-Go `bios.c`（参照専用） 39（`CD_STAT 0x09`）、172–173（名前文字列）、591–600（`CD_STAT` 分岐） | ファイル内に表示なし。リポジトリの `COPYING` は GPL v2 | GPL-2（参照専用） | HLE の挙動。**BIOS の ABI の証拠ではない。コードの転載や翻訳はしない** |
 
@@ -78,7 +78,7 @@ Hu-Go（参照専用、GPL-2）:
 | F14 | caller | 戻りフラグ N/Z（wrapper による） | SOURCE_FACT | N/Z は復元された戻り A で決まる | S2 511–514（`pha`、`lda #$00`、`tam7`、`pla`） | 戻り時の `pla` が N/Z を決める。呼出先が設定した N/Z は保たれない。 |
 | F15 | caller | 戻り Y（HuCC ラッパ） | SOURCE_FACT | ラッパは戻り後に Y を `$00` にする | S4 466–469（`cly`） | HuCC ラッパの記述。呼出先の Y の出力とは無関係。 |
 | F16 | callee | 戻りフラグ C/V/D/I | UNKNOWN | UNKNOWN | S2 500–516 | 呼出先が設定するかは不明。wrapper 命令が C/V/D/I を変えるかは命令仕様と照合していない。 |
-| F17 | callee | 戻り機構（SP と復帰） | HYPOTHESIS | 呼出先は RTS で `call_bios` へ戻る | S2 500–516（`jsr` 直後に後処理がある構造） | wrapper の構造からの推測。呼出先が残すスタックの量は UNKNOWN。 |
+| F17 | callee | 戻り機構（SP と復帰） | HYPOTHESIS | 呼出先は RTS で `call_bios` へ戻る | S2 500–516（`jsr` 直後に後処理がある構造） | wrapper の構造からの推測で、呼出先の実行では未確認。呼出先が残すスタックの量は UNKNOWN。 |
 | F18 | caller | MPR7（呼出し中の値） | SOURCE_FACT | 呼出し中 MPR7=`$00`、戻り時に呼出側の値へ復元 | S2 502–512（`tma7`、`sta`、`cla`、`tam7`、`lda`、`tam7`） | wrapper が MPR7 を退避し、bank 0 を見せてから復元する。 |
 | F19 | callee | MPR0–6（呼出し中の値） | UNKNOWN | UNKNOWN | — | 二次出典の値は本台帳に転載しない（§5）。原文照合まで値を記録しない。 |
 | F20 | callee | 作業 RAM の副作用・出力バッファ | UNKNOWN | UNKNOWN | S5（呼出側は結果バッファを読まない） | 呼出先が作業 RAM に書くかは不明。 |
@@ -87,8 +87,8 @@ Hu-Go（参照専用、GPL-2）:
 | F23 | caller | 媒体の有無・待機の扱い | SOURCE_FACT | 呼出側は reset 後に busy を待ち、ready を待つ。媒体なしを区別する分岐はない | S5 675–695 | 呼出側の記述。媒体なし時の呼出先の戻り値は F24 で UNKNOWN。 |
 | F24 | callee | 媒体なし・待機中の戻り値 | UNKNOWN | UNKNOWN | — | 出典がない。実測も未実施（NOT_RUN）。 |
 | F25 | callee | 失敗条件・エラー値（無ディスク、不正な mode、タイムアウト） | UNKNOWN | UNKNOWN | — | 出典がない。失敗時の A・フラグ・出力の有無は不明。 |
-| F26 | reference | Hu-Go の `CD_STAT` 分岐 | HYPOTHESIS | A=0 を設定して N/Z を更新し、mode 入力は読まない（HLE） | S6 591–600 | 参照専用（GPL-2）。コード内の TODO が未完成を示す。BIOS の ABI の根拠にしない。 |
-| F27 | name | 名称（綴り） | SOURCE_FACT | HuC `cd_stat`、Hu-Go `CD_STAT`、本リポジトリ `CD_STAT` | S1 477、S6 39・172–173、`docs/api-inventory.md` 34 行 | 綴りは一致。同じ `$E01B` を指すかは入口の一致で確認している。 |
+| F26 | reference | Hu-Go の `CD_STAT` 分岐 | HYPOTHESIS | A=0 を設定して N/Z を更新し、mode 入力は読まない（HLE） | S6 591–600 | 参照専用（GPL-2）。コード内の TODO が未完成を示す。BIOS 実機の挙動は未確認で、BIOS の ABI の根拠にしない。 |
+| F27 | name | 名称（綴り） | SOURCE_FACT | HuC `cd_stat`、Hu-Go `CD_STAT`、本リポジトリ `CD_STAT` | S1 477、S6 39・172–173、`docs/api-inventory.md` 34 行 | 綴りは一致。`$E01B` の入口は S1 の宣言のみで確認。Hu-Go（S6）は関数番号 `0x09` で分岐し `$E01B` を示さないため、入口の一致の根拠にしない。 |
 
 ## 4. System Card 3.0 固有の不一致と注意（明示）
 

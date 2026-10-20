@@ -64,10 +64,16 @@ def parse_rows(text):
 def problems(rows, text=''):
     """Rule violations plus pin differences. An empty list means the ledger is accepted."""
     out = []
+    defined = set(re.findall(r'^\|\s*(S\d+)\s*\|', text, re.M))  # ids in the 出典 table
     for r in rows:
         rid, side, status, src = r['id'], r['side'], r['status'], r['source']
         if side not in SIDES or status not in STATUSES:
             out.append(f'{rid}: bad side/status {side!r}/{status!r}')
+        unknown = sorted(set(re.findall(r'S\d+', src)) - defined)
+        if unknown:
+            out.append(f'{rid}: unknown source id {unknown}')
+        if status == 'HYPOTHESIS' and '未確認' not in r['reason']:
+            out.append(f'{rid}: HYPOTHESIS without 未確認 marker')
         if side == 'callee' and status == 'SOURCE_FACT':
             out.append(f'{rid}: callee fact promoted to SOURCE_FACT')
         if status == 'SOURCE_FACT':
@@ -119,11 +125,15 @@ class CdStatLedgerTest(unittest.TestCase):
 
     def test_rejects_bad_rows(self):
         base = self.rows[0]
-        self.assertTrue(any('promoted' in p for p in problems([dict(base, id='F01', side='callee')])))
-        self.assertTrue(any('without a source' in p for p in problems([dict(base, source='—')])))
-        self.assertTrue(any('reference sources' in p for p in problems([dict(base, source='S6 591–600')])))
+        self.assertTrue(any('promoted' in p for p in problems([dict(base, id='F01', side='callee')], self.text)))
+        self.assertTrue(any('without a source' in p for p in problems([dict(base, source='—')], self.text)))
+        self.assertTrue(any('reference sources' in p for p in problems([dict(base, source='S6 591–600')], self.text)))
         self.assertTrue(any('missing' in p for p in problems(self.rows[1:], self.text)))
         self.assertTrue(any('forbidden' in p for p in problems(self.rows, self.text + '\n| x | VERIFIED |\n')))
+        self.assertTrue(any('unknown source' in p for p in problems([dict(base, source='S9 1–2')], self.text)))
+        self.assertTrue(any('unknown source' in p for p in problems([dict(base, source='S1 477、S7 1')], self.text)))
+        hyp = dict(base, status='HYPOTHESIS', reason='根拠のみ')
+        self.assertTrue(any('without 未確認' in p for p in problems([hyp], self.text)))
 
 
 if __name__ == '__main__':
