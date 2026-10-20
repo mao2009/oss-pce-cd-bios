@@ -8,8 +8,9 @@ import unittest
 from pathlib import Path
 
 from tools.contracts import FIELDS
-from tools.measurement_evidence import (PINNED_CORE_REVISION, REGISTRY_PATH, load_registry,
-                                        parse_registry, verify_record)
+from tools.measurement_evidence import (PINNED_CORE_REVISION, REGISTRY_PATH, REGISTRY_SHA256,
+                                        REVIEW_MARKER_PATH, check_pin_review, load_registry, parse_registry,
+                                        verify_record)
 
 # Independent second pin: changing spec/measurement_points.json requires changing this literal too.
 PINNED_REGISTRY_SHA256 = 'b9634b90dead3dc1a7ea8c32b2a22e8951c7fd8a2f2bc08a2484eba105368819'
@@ -114,6 +115,47 @@ class MeasurementEvidenceTest(unittest.TestCase):
             tampered.write_bytes(REGISTRY_PATH.read_bytes().replace(b'"stack"', b'"stacq"'))
             with self.assertRaisesRegex(ValueError, 'pin'):
                 load_registry(tampered)
+
+    def test_caller_supplied_registry_is_validated_fail_closed(self):
+        # covers_fields given as a string would make `field in covers` a substring test ('bus' in 'hw_bus_reset').
+        bad_maps = [
+            {'HW_BUS_READBACK_1804': dict(HW_POINT, covers_fields='hw_bus_reset')},
+            {'HW_BUS_READBACK_1804': dict(HW_POINT, id='OTHER_ID')},
+            {'HW_BUS_READBACK_1804': dict(HW_POINT, kind='OTHER')},
+            {'HW_BUS_READBACK_1804': None},
+            ['HW_BUS_READBACK_1804'],
+        ]
+        record, path = self._record(HW_LOG, 'HW_BUS_READBACK_1804')
+        for bad in bad_maps:
+            with self.subTest(registry=bad), self.assertRaises(ValueError):
+                verify_record(record, path, field='bus', binary_sha256=BINARY, registry=bad)
+        with self.assertRaises(ValueError):
+            verify_record(record, path, field='bus', binary_sha256=BINARY, registry={'HW_BUS_READBACK_1804': HW_POINT})
+        with self.subTest(field='non-str'), self.assertRaises(ValueError):
+            self._verify(record, path, field=['hw_bus_reset'])
+
+    def test_pin_change_without_review_marker_fails(self):
+        # Committed marker must name the current registry and core pins.
+        self.assertIsNone(check_pin_review())
+        with tempfile.TemporaryDirectory() as d:
+            marker = Path(d) / 'review.json'
+            good = REVIEW_MARKER_PATH.read_bytes()
+            marker.write_bytes(good.replace(REGISTRY_SHA256.encode(), b'0' * 64))
+            with self.assertRaisesRegex(ValueError, 'registry pin changed'):
+                check_pin_review(marker)
+            marker.write_bytes(good.replace(PINNED_CORE_REVISION.encode(), b'0' * 40))
+            with self.assertRaisesRegex(ValueError, 'core_revision pin changed'):
+                check_pin_review(marker)
+            with self.assertRaisesRegex(ValueError, 'registry pin changed'):
+                check_pin_review(marker, registry_sha256='1' * 64)
+            marker.write_bytes(good.replace(b'"reviewed_in_pr": 371', b'"reviewed_in_pr": 0'))
+            with self.assertRaisesRegex(ValueError, 'PR number'):
+                check_pin_review(marker)
+            marker.write_bytes(good.replace(b'"reviewed_in_pr": 371', b'"reviewed_in_pr": 371, "extra": 1'))
+            with self.assertRaisesRegex(ValueError, 'malformed'):
+                check_pin_review(marker)
+            with self.assertRaisesRegex(ValueError, 'missing'):
+                check_pin_review(Path(d) / 'absent.json')
 
     def test_duplicate_measurement_point_id_is_rejected(self):
         with self.assertRaisesRegex(ValueError, 'duplicate measurement_point_id'):

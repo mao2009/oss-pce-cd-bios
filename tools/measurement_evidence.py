@@ -17,6 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_PATH = ROOT / 'spec' / 'measurement_points.json'
+REVIEW_MARKER_PATH = ROOT / 'spec' / 'measurement_points.review.json'
 # Pin of the registry file bytes (.gitattributes keeps it -text so checkouts stay byte-exact).
 # Editing the registry requires updating this pin in independent review.
 REGISTRY_SHA256 = 'b9634b90dead3dc1a7ea8c32b2a22e8951c7fd8a2f2bc08a2484eba105368819'
@@ -24,6 +25,7 @@ PINNED_CORE_REVISION = json.loads((ROOT / 'tools/dependencies.json').read_text()
 PROVENANCES = frozenset({'SYNTHETIC', 'REAL_CORE'})
 RECORD_KEYS = frozenset({'provenance', 'core_revision', 'binary_sha256', 'measurement_point_id', 'log_sha256'})
 POINT_KEYS = frozenset({'id', 'kind', 'covers_fields', 'hook'})
+REVIEW_MARKER_KEYS = frozenset({'registry_sha256', 'core_revision', 'reviewed_in_pr'})
 KINDS = frozenset({'HW_BUS_READBACK', 'CALLEE_EXECUTION'})
 POINT_ID = re.compile(r'[A-Z0-9_]+\Z')
 HEX64 = re.compile(r'[0-9a-f]{64}\Z')
@@ -58,6 +60,36 @@ def load_registry(path=REGISTRY_PATH):
     return parse_registry(json.loads(raw))
 
 
+def check_pin_review(marker_path=REVIEW_MARKER_PATH, *, registry_sha256=REGISTRY_SHA256,
+                     core_revision=PINNED_CORE_REVISION):
+    """Fail closed unless the committed review marker names the current registry and core pins.
+
+    Changing either pin without updating this marker in the same change is rejected. The marker is a
+    consistency gate for review, not authentication: the approval itself is the PR review.
+    """
+    try:
+        marker = json.loads(Path(marker_path).read_bytes())
+    except (OSError, ValueError) as exc:
+        raise ValueError('pin review marker missing or unreadable') from exc
+    if not (isinstance(marker, dict) and set(marker) == REVIEW_MARKER_KEYS):
+        raise ValueError('pin review marker malformed')
+    if marker['registry_sha256'] != registry_sha256:
+        raise ValueError('registry pin changed without updated review marker')
+    if marker['core_revision'] != core_revision:
+        raise ValueError('core_revision pin changed without updated review marker')
+    if not (isinstance(marker['reviewed_in_pr'], int) and not isinstance(marker['reviewed_in_pr'], bool)
+            and marker['reviewed_in_pr'] > 0):
+        raise ValueError('pin review marker must name the approving PR number')
+
+
+def _checked_registry_map(registry):
+    """Validate a caller-supplied {id: entry} map with the same rules as the pinned registry file."""
+    if not (isinstance(registry, dict)
+            and all(isinstance(k, str) and isinstance(v, dict) and v.get('id') == k for k, v in registry.items())):
+        raise ValueError('caller registry must map each measurement_point_id to its entry')
+    return parse_registry({'schema_version': 1, 'points': list(registry.values())})
+
+
 def verify_record(record, log_path, *, field, binary_sha256, declared_kind=None,
                   registry=None, pinned_revision=PINNED_CORE_REVISION):
     """Return the claim status for one record, or raise ValueError (fail closed).
@@ -69,7 +101,7 @@ def verify_record(record, log_path, *, field, binary_sha256, declared_kind=None,
         if not ok:
             raise ValueError(message)
 
-    registry = load_registry() if registry is None else registry
+    registry = load_registry() if registry is None else _checked_registry_map(registry)
     require(isinstance(record, dict) and set(record) == RECORD_KEYS, 'record must contain exactly the record keys')
     require(isinstance(record['provenance'], str) and record['provenance'] in PROVENANCES, 'unknown provenance')
     require(record['core_revision'] == pinned_revision, 'core_revision must equal the pin')
@@ -81,7 +113,8 @@ def verify_record(record, log_path, *, field, binary_sha256, declared_kind=None,
     point = registry[mp_id]
     require(isinstance(record['log_sha256'], str) and HEX64.fullmatch(record['log_sha256']) is not None,
             'log_sha256 must be a SHA-256 hex digest')
-    require(field in point['covers_fields'], f'measurement point does not cover field {field!r}')
+    require(isinstance(field, str) and field in point['covers_fields'],
+            f'measurement point does not cover field {field!r}')
     require(declared_kind is None or declared_kind == point['kind'],
             'declared observation_kind does not match the registry')
     require(isinstance(log_path, (str, os.PathLike)), 'log path must be a path')
