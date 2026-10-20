@@ -1,0 +1,40 @@
+{
+  "schema": "oss-pce-cd-bios/ex-binbcd-measurement-plan/v1",
+  "issue": 310,
+  "parent_issue": 70,
+  "slot": "$3C",
+  "entry_candidate": "$E0B4",
+  "candidate_name": "EX_BINBCD",
+  "abi_status": "BLOCKED_ABI",
+  "release_eligible": false,
+  "execution": "NOT_RUN",
+  "reference_jsr": "NOT_CALLED",
+  "gates": ["#173", "#228"],
+  "provenance": "author-defined input list and observation schema only; no System Card BIOS byte, disassembly, retail data, or ./rom/ content; no reference callee is executed",
+  "callee_abi": {
+    "arguments": "SOURCE_FACT: A-in only (HuC cd_playmsf caller); other inputs UNKNOWN",
+    "returns": "UNKNOWN",
+    "registers": "UNKNOWN",
+    "flags": "UNKNOWN",
+    "out_of_range": "UNKNOWN (input > 99 is not characterised by any source)"
+  },
+  "input_domain": {"type": "unsigned 8-bit", "min": 0, "max": 255},
+  "observables": ["A", "X", "Y", "P_C", "P_Z", "P_N", "P_V", "P_D", "P_I", "P_T", "SP", "MPR0-MPR7", "related_RAM", "return_PC"],
+  "expected_default": "UNKNOWN",
+  "cases": [
+    {"id": "in_zero", "input": 0, "hex": "$00", "reason": "lower bound", "status": "BLOCKED", "expected": "UNKNOWN"},
+    {"id": "in_one", "input": 1, "hex": "$01", "reason": "smallest non-zero, ones digit only", "status": "BLOCKED", "expected": "UNKNOWN"},
+    {"id": "in_nine", "input": 9, "hex": "$09", "reason": "one-digit maximum, before the first tens carry", "status": "BLOCKED", "expected": "UNKNOWN"},
+    {"id": "in_ten", "input": 10, "hex": "$0A", "reason": "first tens carry", "status": "BLOCKED", "expected": "UNKNOWN"},
+    {"id": "in_99", "input": 99, "hex": "$63", "reason": "two-digit maximum", "status": "BLOCKED", "expected": "UNKNOWN"},
+    {"id": "in_100", "input": 100, "hex": "$64", "reason": "first value above two digits (out-of-range side, not characterised)", "status": "BLOCKED", "expected": "UNKNOWN"},
+    {"id": "in_127", "input": 127, "hex": "$7F", "reason": "signed-byte positive maximum (bit 7 clear)", "status": "BLOCKED", "expected": "UNKNOWN"},
+    {"id": "in_128", "input": 128, "hex": "$80", "reason": "first value with bit 7 set", "status": "BLOCKED", "expected": "UNKNOWN"},
+    {"id": "in_255", "input": 255, "hex": "$FF", "reason": "8-bit maximum (out-of-range side, not characterised)", "status": "BLOCKED", "expected": "UNKNOWN"}
+  ],
+  "already_covered_by_own_routine": {
+    "note": "Project-own routine only (src/ex_binbcd.s). NOT evidence for the reference ABI. Do not duplicate.",
+    "host": ["tests/host/test_ex_binbcd.py (0, 9, 10, 99, 100, 255 model vectors)"],
+    "real_core_opt_in": ["tests/integration/geargrafx_ex_binbcd.py (0..255, #331 routine-real-core)"]
+  }
+}
