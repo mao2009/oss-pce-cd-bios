@@ -18,6 +18,7 @@
   "medium": {
     "synthetic": true,
     "leadout_lba": 600,
+    "leadout_model": "author-defined: last track end + 1; not measured",
     "tracks": [
       {"no": 1, "type": "data", "pregap_start": 0, "index01": 150, "end": 299},
       {"no": 2, "type": "audio", "pregap_start": 300, "index01": 450, "end": 599}
@@ -34,7 +35,7 @@
     {"id": "pos_lba_track1_end", "kind": "lba", "value": 299, "expected": "POSITIVE", "result": {"region": "INDEX01", "track": 1}, "reason": "last LBA of track 1"},
     {"id": "pos_lba_pregap2_start", "kind": "lba", "value": 300, "expected": "POSITIVE", "result": {"region": "PREGAP", "track": 2}, "reason": "first LBA of track 2 pregap"},
     {"id": "pos_lba_index01_2", "kind": "lba", "value": 450, "expected": "POSITIVE", "result": {"region": "INDEX01", "track": 2}, "reason": "INDEX 01 start of track 2"},
-    {"id": "pos_lba_leadout", "kind": "lba", "value": 600, "expected": "POSITIVE", "result": {"region": "LEAD_OUT"}, "reason": "lead-out LBA is a region, not a track"},
+    {"id": "pos_lba_leadout", "kind": "lba", "value": 600, "expected": "POSITIVE", "result": {"region": "LEAD_OUT"}, "reason": "lead-out LBA is a region, not a track; author-defined as last track end + 1, not measured"},
     {"id": "neg_lba_past_leadout", "kind": "lba", "value": 601, "expected": "NEGATIVE", "reason": "beyond the lead-out"},
     {"id": "neg_lba_negative", "kind": "lba", "value": -1, "expected": "NEGATIVE", "reason": "negative LBA"},
     {"id": "neg_lba_float", "kind": "lba", "value": 150.0, "expected": "NEGATIVE", "reason": "non-integer LBA type (malformed)"},
@@ -50,6 +51,10 @@
     {"id": "neg_bcd_99_no_such", "kind": "bcd", "value": "99", "expected": "NEGATIVE", "reason": "BCD 99 is track 99, not on the medium"},
     {"id": "neg_bcd_length", "kind": "bcd", "value": "2", "expected": "NEGATIVE", "reason": "malformed BCD: wrong length"},
     {"id": "neg_bcd_nonhex", "kind": "bcd", "value": "G1", "expected": "NEGATIVE", "reason": "malformed BCD: non-hex digit"},
+    {"id": "neg_lba_true", "kind": "lba", "value": true, "expected": "NEGATIVE", "reason": "bool is not an int LBA (malformed)"},
+    {"id": "neg_bcd_int", "kind": "bcd", "value": 1, "expected": "NEGATIVE", "reason": "non-string BCD type (malformed)"},
+    {"id": "neg_bcd_lower_hex", "kind": "bcd", "value": "0a", "expected": "NEGATIVE", "reason": "invalid BCD: low nibble a (lowercase hex)"},
+    {"id": "neg_track_none", "kind": "track", "value": null, "expected": "NEGATIVE", "reason": "None is not a track (malformed)"},
     {"id": "neg_nomedium_track", "kind": "track", "value": 1, "present": false, "expected": "NEGATIVE", "reason": "no medium present"},
     {"id": "neg_nomedium_bcd", "kind": "bcd", "value": "02", "present": false, "expected": "NEGATIVE", "reason": "no medium present"},
     {"id": "neg_nomedium_lba", "kind": "lba", "value": 150, "present": false, "expected": "NEGATIVE", "reason": "no medium present"}

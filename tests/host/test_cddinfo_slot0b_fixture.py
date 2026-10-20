@@ -3,11 +3,13 @@
 Synthetic only: the medium (data track 1 + audio track 2, pregap / INDEX 01 / lead-out) and every expected
 value are author-defined model expectations, not measured device or System Card behaviour. No emulator
 runs, no reference BIOS is read or called (reference_jsr_count = 0), and nothing under ./rom/ is touched.
-Passing these tests validates only this fixture and its judge. The fixture stays BLOCKED_ABI and
-release_eligible=false, and must not be wired into any build, ROM or callable entry.
+This is a synthetic model judgment, not a real-device PASS. Passing these tests validates only this fixture and
+its judge. The fixture stays BLOCKED_ABI and release_eligible=false, and must not be wired into any build, ROM
+or callable entry.
 """
 import hashlib
 import json
+import re
 import subprocess
 import unittest
 from pathlib import Path
@@ -16,14 +18,31 @@ ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_REL = "tests/fixtures/cddinfo-slot0b-cases.json"
 FIXTURE = ROOT / FIXTURE_REL
 SELF_REL = "tests/host/test_cddinfo_slot0b_fixture.py"
+WIRING_DIRS = ("src", "tools")
+WIRING_FILES = ("Makefile",)
+WIRING_RE = re.compile(r"E021|CD_DINFO")
+# Known non-wiring strings (menu/label listing in the reference scenario table), matched by (path, stripped line).
+WIRING_ALLOWLIST = {("tools/reference_bios_scenarios.py", '"CD_SUBQ", "CD_DINFO", "CD_CONTNTS", "CD_SUBRQ / CD_SUBRD",')}
 # sha256 of the canonical JSON (sort_keys, compact separators, UTF-8). Editing the fixture requires updating it here.
-FIXTURE_SHA256 = "b4ee7f069ea1ff1dbd37f43fa1bb1e5381f2573797012e714d4ab177b54ce140"
+FIXTURE_SHA256 = "29fff440b812811c5faba1b28e0874f04200012e26487bdda5ea0b1125ed1776"
 POSITIVE, NEGATIVE = "POSITIVE", "NEGATIVE"
 TOP_LEVEL_KEYS = {"schema", "issue", "slot", "entry_candidate", "candidate_name", "abi_status", "release_eligible",
                   "execution", "provenance", "callee_abi", "medium", "cases"}
 APPROVED_PROVENANCE = ("synthetic: author-defined medium and cases only; no System Card BIOS byte, disassembly, "
                        "retail data, or ./rom/ content; no reference callee is executed")
 HEX = "0123456789abcdefABCDEF"
+LEADOUT_MODEL = "author-defined: last track end + 1; not measured"
+POSITIVE_IDS = {"pos_track1", "pos_track2", "pos_bcd_01", "pos_bcd_02", "pos_lba_pregap1_start",
+                "pos_lba_pregap1_end", "pos_lba_index01_1", "pos_lba_track1_end", "pos_lba_pregap2_start",
+                "pos_lba_index01_2", "pos_lba_leadout"}
+NEGATIVE_IDS = {"neg_lba_past_leadout", "neg_lba_negative", "neg_lba_float", "neg_lba_true", "neg_track_zero",
+                "neg_track_no_such", "neg_track_bool", "neg_track_float", "neg_track_string", "neg_track_none",
+                "neg_bcd_nibble_a", "neg_bcd_nibble_f", "neg_bcd_zero", "neg_bcd_10_no_such", "neg_bcd_99_no_such",
+                "neg_bcd_length", "neg_bcd_nonhex", "neg_bcd_int", "neg_bcd_lower_hex", "neg_nomedium_track",
+                "neg_nomedium_bcd", "neg_nomedium_lba"}
+# Negatives that the deliberately lenient judge wrongly accepts (must be exactly these).
+LENIENT_CAUGHT_IDS = {"neg_lba_float", "neg_lba_true", "neg_track_bool", "neg_track_float", "neg_nomedium_track",
+                      "neg_bcd_length", "neg_bcd_int", "neg_nomedium_bcd", "neg_nomedium_lba"}
 
 
 def canonical_sha256(data):
@@ -126,6 +145,10 @@ class CdDinfoSlot0bFixtureTests(unittest.TestCase):
         self.assertEqual((a["pregap_start"], a["index01"], a["end"]), (300, 450, 599))
         self.assertEqual(a["pregap_start"], d["end"] + 1)
         self.assertEqual(self.medium["leadout_lba"], a["end"] + 1)
+        self.assertEqual(self.medium["leadout_model"], LEADOUT_MODEL)
+        lead = next(c for c in self.cases if c["id"] == "pos_lba_leadout")
+        self.assertIn("author-defined", lead["reason"])
+        self.assertIn("not measured", lead["reason"])
 
     def test_every_case_matches_its_expected_verdict_and_result(self):
         for case in self.cases:
@@ -141,8 +164,8 @@ class CdDinfoSlot0bFixtureTests(unittest.TestCase):
     def test_case_mix_covers_positive_negative_and_boundaries(self):
         ids = [c["id"] for c in self.cases]
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertGreaterEqual(sum(c["expected"] == POSITIVE for c in self.cases), 5)
-        self.assertGreaterEqual(sum(c["expected"] == NEGATIVE for c in self.cases), 12)
+        self.assertEqual({c["id"] for c in self.cases if c["expected"] == POSITIVE}, POSITIVE_IDS)
+        self.assertEqual({c["id"] for c in self.cases if c["expected"] == NEGATIVE}, NEGATIVE_IDS)
         kinds = {c["kind"] for c in self.cases}
         self.assertEqual(kinds, {"track", "bcd", "lba"})
         by_id = {c["id"]: c["expected"] for c in self.cases}
@@ -157,7 +180,7 @@ class CdDinfoSlot0bFixtureTests(unittest.TestCase):
         self.assertEqual(accepted, [])
         caught = [c["id"] for c in self.cases if c["expected"] == NEGATIVE
                   and lenient_judge(self.medium, c, c.get("present", True)) == POSITIVE]
-        self.assertGreaterEqual(len(caught), 4)
+        self.assertEqual(set(caught), LENIENT_CAUGHT_IDS)
 
     def test_slot_0b_contract_row_is_not_run_and_not_executed(self):
         contracts = json.loads((ROOT / "spec" / "api_contracts.json").read_text(encoding="utf-8"))
@@ -175,6 +198,23 @@ class CdDinfoSlot0bFixtureTests(unittest.TestCase):
         hits = {p for p in out.stdout.splitlines()
                 if p not in (FIXTURE_REL, SELF_REL) and not p.startswith("docs/") and not p.endswith(".md")}
         self.assertEqual(sorted(hits), [], "fixture referenced outside tests/docs")
+
+    def test_candidate_is_not_referenced_by_build_or_source_files(self):
+        # Content-level wiring check over untracked files too: no JSR/JMP/table reference to $E021 or CD_DINFO
+        # in src/, tools/, tests/fixtures/*.s or Makefile. Known non-wiring strings are allow-listed by exact line.
+        scanned = []
+        for d in WIRING_DIRS:
+            scanned += [p for p in (ROOT / d).rglob("*") if p.is_file() and "__pycache__" not in p.parts]
+        scanned += list((ROOT / "tests" / "fixtures").glob("*.s"))
+        scanned += [ROOT / name for name in WIRING_FILES]
+        hits = []
+        for path in scanned:
+            rel = path.relative_to(ROOT).as_posix()
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            for lineno, line in enumerate(text.splitlines(), 1):
+                if WIRING_RE.search(line) and (rel, line.strip()) not in WIRING_ALLOWLIST:
+                    hits.append(f"{rel}:{lineno}: {line.strip()}")
+        self.assertEqual(hits, [], "candidate referenced from build/source files")
 
 
 if __name__ == "__main__":
