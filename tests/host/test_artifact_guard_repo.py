@@ -27,6 +27,26 @@ class WorkflowRepositoryTests(unittest.TestCase):
         self.assertNotEqual([], guard.guard_placement_violations(mutated, '.github/workflows/ci.yml'))
 
 
+class AttestationScopeTests(unittest.TestCase):
+    """Owner decision (Issue #349): the only attested subjects are the two synthetic CD-read files. The workflow's
+    subject-path and the documented publication scope must both say exactly that."""
+    SCOPE = {'evidence/cdread-probe/cdread-evidence.json', 'evidence/cdread-probe/cdread-probe-not-bios.pce'}
+
+    def attest_cdread_subjects(self):
+        text = (ROOT / '.github' / 'workflows' / 'api-source.yml').read_text(encoding='utf-8')
+        job = text.split('\n  attest-cdread:\n', 1)[1].split('\n  verify-cdread-attestation:', 1)[0]
+        return set(re.findall(r'^\s+(evidence/\S+)\s*$', job, re.M))
+
+    def test_attest_cdread_subject_path_is_exactly_the_two_synthetic_files(self):
+        self.assertEqual(self.SCOPE, self.attest_cdread_subjects())
+
+    def test_publication_scope_and_residual_risk_are_documented(self):
+        doc = (ROOT / 'docs' / 'provenance.md').read_text(encoding='utf-8')
+        self.assertIn('**Attestation publication scope**', doc)
+        for path in self.SCOPE:
+            self.assertIn(path, doc)
+
+
 class PathPolicyTests(unittest.TestCase):
     """D: no repository upload uses a wildcard root pattern; a future one must be a reviewed change."""
 
