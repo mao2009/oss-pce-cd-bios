@@ -3,6 +3,7 @@
 Stdlib only: the repository has no YAML dependency, so this parses the block subset that pages.yml uses (mappings,
 block sequences, scalars and `|` block scalars). validate and build hold contents: read only; only deploy holds
 pages: write and id-token: write, and it runs nothing but actions/deploy-pages."""
+import re
 import unittest
 from pathlib import Path
 
@@ -132,6 +133,29 @@ class PagesWorkflowTests(unittest.TestCase):
     def test_only_deploy_holds_id_token(self):
         for name in ('validate', 'build'):
             self.assertNotIn('id-token', self.jobs[name].get('permissions') or {}, name)
+
+    def test_every_uses_line_is_pinned_to_a_full_commit_sha(self):
+        refs = re.findall(r'^\s*(?:-\s+)?uses:\s*(\S+)', PAGES.read_text(encoding='utf-8'), re.M)
+        self.assertTrue(refs)
+        for ref in refs:
+            self.assertRegex(ref, r'^[\w.-]+/[\w.-]+@[0-9a-f]{40}$', ref)
+
+    def test_pages_actions_are_pinned_to_resolved_shas_with_tag_comments(self):
+        expected = {
+            'actions/configure-pages': ('983d7736d9b0ae728b81ab479565c72886d7745b', 'v5'),
+            'actions/upload-pages-artifact': ('7b1f4a764d45c48632c6b24a0339c27f5614fb0b', 'v4'),
+            'actions/deploy-pages': ('d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e', 'v4'),
+        }
+        found = {}
+        for job in self.jobs.values():
+            for step in steps_of(job):
+                value = uses_of(step)
+                action, _, _ = value.partition('@')
+                if action in expected:
+                    ref, _, comment = value.partition('#')
+                    found[action] = (ref.strip().partition('@')[2], comment.strip())
+        self.assertEqual({k: v for k, (v, _) in expected.items()}, {k: v[0] for k, v in found.items()})
+        self.assertEqual({k: tag for k, (_, tag) in expected.items()}, {k: v[1] for k, v in found.items()})
 
 
 if __name__ == '__main__':
