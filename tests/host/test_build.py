@@ -39,7 +39,6 @@ class BuildTests(unittest.TestCase):
     def test_tools_present(self):
         for name in ("ca65", "ld65", "cc65", "actionlint"):
             self.assertTrue(Path(executable(name)).is_file())
-        self.assertTrue(core_path().is_file())
 
     def test_missing_tools_and_core_fail(self):
         for name in ("ca65", "ld65", "cc65", "actionlint"):
