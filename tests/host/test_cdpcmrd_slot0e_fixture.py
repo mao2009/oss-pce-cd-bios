@@ -20,9 +20,9 @@ FIXTURE_REL = "tests/fixtures/cdpcmrd-slot0e-cases.json"
 TEST_REL = "tests/host/test_cdpcmrd_slot0e_fixture.py"
 FIXTURE = ROOT / FIXTURE_REL
 # Canonical sha256 (sort_keys, compact, UTF-8) of the fixture data. Edits must update this in the same change.
-FIXTURE_SHA256 = "c398865b713c273cad72c05bfc04e60f1031a94f1f2e1911183d35ab561ced44"
+FIXTURE_SHA256 = "8da3f95103f7f3e85cfa95315c99115ba41a6ff612471a5f933f60e350efde56"
 SLOT_STATUS = "HYPOTHESIS (C4 unresolved, docs/research/cd-pcmrd-contract.md)"
-POSITIVE, NEGATIVE = "POSITIVE", "NEGATIVE"
+POSITIVE, NEGATIVE, UNKNOWN = "POSITIVE", "NEGATIVE", "UNKNOWN"
 SUPPORTED_TRANSPORT = {"playing"}
 
 # Wiring scans (git grep, case-insensitive, untracked non-ignored files included).
@@ -48,23 +48,28 @@ def load():
 
 
 def judge(medium, state, index):
-    """Local judge (self-consistency only). Returns a sample value (int) for a supported read, else None (refused).
-    Refuses: non-int/bool index, stopped or unsupported transport, data or missing track, index outside [0, count)."""
+    """Local judge (self-consistency only). Returns (outcome, value).
+
+    POSITIVE carries the sample value. NEGATIVE is a measured refusal (malformed index, stopped transport, data or
+    missing track, index outside [0, count)). UNKNOWN is an unmeasured transport state: never a refusal, never a pass.
+    """
     if type(index) is not int:
-        return None
+        return NEGATIVE, None
+    if state["transport"] == "stopped":
+        return NEGATIVE, None
     if state["transport"] not in SUPPORTED_TRANSPORT:
-        return None
+        return UNKNOWN, None
     track = next((t for t in medium["tracks"] if t["no"] == state["track"]), None)
     if track is None or track["type"] != "audio":
-        return None
+        return NEGATIVE, None
     samples = track["samples"]
     if not 0 <= index < len(samples):
-        return None
-    return samples[index]
+        return NEGATIVE, None
+    return POSITIVE, samples[index]
 
 
 def mutant_ignores_transport(medium, state, index):
-    """Wrong judge: reads stopped/paused media. The negative transport cases must catch it."""
+    """Wrong judge: reads stopped/paused media. The transport cases must catch it."""
     st = dict(state, transport="playing")
     return judge(medium, st, index)
 
@@ -73,7 +78,7 @@ def mutant_off_by_one(medium, state, index):
     """Wrong judge: accepts index == sample count. The one-past-end case must catch it."""
     track = next((t for t in medium["tracks"] if t["no"] == state["track"]), None)
     if track and type(index) is int and index == len(track["samples"]):
-        return 0
+        return POSITIVE, 0
     return judge(medium, state, index)
 
 
@@ -87,24 +92,28 @@ def mutant_accepts_bool(medium, state, index):
 def mutant_ignores_track_type(medium, state, index):
     """Wrong judge: reads the data track as if it had samples. The data-track case must catch it."""
     if state["track"] == 1 and state["transport"] in SUPPORTED_TRANSPORT:
-        return 0
+        return POSITIVE, 0
     return judge(medium, state, index)
 
 
 def mutant_falsy_zero(medium, state, index):
     """Wrong judge: falsy check turns a valid 0 sample into a refusal. The zero-sample positive case must catch it."""
-    return judge(medium, state, index) or None
+    outcome, value = judge(medium, state, index)
+    return (NEGATIVE, None) if outcome == POSITIVE and not value else (outcome, value)
+
+
+def mutant_unknown_as_negative(medium, state, index):
+    """Wrong judge: promotes unmeasured UNKNOWN to a refusal (the #277 review finding). The UNKNOWN cases must catch it."""
+    outcome, value = judge(medium, state, index)
+    return (NEGATIVE, None) if outcome == UNKNOWN else (outcome, value)
 
 
 def run_cases(data, fn):
-    """Return the case ids where fn disagrees with the fixture expectation."""
+    """Return the case ids where fn's outcome (and, for POSITIVE, its value) disagrees with the fixture."""
     bad = []
     for c in data["cases"]:
-        got = fn(data["medium"], c["state"], c["index"])
-        if c["expected"] == POSITIVE:
-            ok = got == c["value"]
-        else:
-            ok = got is None
+        outcome, value = fn(data["medium"], c["state"], c["index"])
+        ok = outcome == c["expected"] and (outcome != POSITIVE or value == c["value"])
         if not ok:
             bad.append(c["id"])
     return bad
@@ -180,10 +189,24 @@ class CdPcmrdSlot0eFixtureTest(unittest.TestCase):
         # Self-consistency only: the local judge is not an independent oracle of CD_PCMRD.
         self.assertEqual(run_cases(self.data, judge), [])
 
+    def test_unmeasured_transport_is_unknown_not_negative(self):
+        # Only a measured refusal (stopped transport, malformed or out-of-range input) may be NEGATIVE.
+        # An unmeasured transport state (paused, seeking, unknown, ...) is UNKNOWN and must never count as a refusal.
+        for c in self.data["cases"]:
+            if c["state"]["transport"] not in SUPPORTED_TRANSPORT | {"stopped"}:
+                with self.subTest(case=c["id"]):
+                    self.assertEqual(c["expected"], UNKNOWN)
+
+    def test_id_prefix_matches_expected_outcome(self):
+        prefix = {"pos_": POSITIVE, "neg_": NEGATIVE, "unk_": UNKNOWN}
+        for c in self.data["cases"]:
+            with self.subTest(case=c["id"]):
+                self.assertEqual(c["expected"], prefix[c["id"].split("_", 1)[0] + "_"])
+
     def test_negative_mutants_are_detected(self):
         # Each deliberately wrong judge must be caught by at least one case, or the case set is too weak.
         for fn in (mutant_ignores_transport, mutant_off_by_one, mutant_accepts_bool,
-                   mutant_ignores_track_type, mutant_falsy_zero):
+                   mutant_ignores_track_type, mutant_falsy_zero, mutant_unknown_as_negative):
             with self.subTest(mutant=fn.__name__):
                 self.assertNotEqual(run_cases(self.data, fn), [], fn.__name__)
 
