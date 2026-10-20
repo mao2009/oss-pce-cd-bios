@@ -21,6 +21,7 @@ class Page(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.ids, self.links, self.alternates = set(), [], {}
+        self.link_cards = []
         self.meta, self.canonicals, self.jsonld = {}, [], []
         self.mains = self.h1s = self.script_count = 0
         self.lang = None
@@ -51,6 +52,8 @@ class Page(HTMLParser):
                 if lang in self.alternates:
                     raise ValueError("duplicate hreflang: " + lang)
                 self.alternates[lang] = attrs.get("href")
+        if tag == "a" and "link-card" in attrs.get("class", "").split():
+            self.link_cards.append(attrs.get("href"))
         if tag in ("a", "link") and attrs.get("href"):
             self.links.append(attrs["href"])
         if tag == "img" and attrs.get("src"):
@@ -82,8 +85,16 @@ def validate_page(page, url, language):
     doc.close()
     if doc.lang != language or doc.mains != 1 or doc.h1s != 1 or doc.in_script:
         raise ValueError(f"{page}: invalid language, landmarks, h1 or script")
-    if not {"content", "mission", "progress", "contribute", "faq"} <= doc.ids:
+    if not {"content", "mission", "progress", "contribute", "links", "faq"} <= doc.ids:
         raise ValueError(f"{page}: a required section or skip target is missing")
+    expected_cards = [
+        REPO,
+        REPO + "/blob/main/docs/status.md",
+        REPO + "/blob/main/docs/roadmap.md",
+        REPO + "/blob/main/CONTRIBUTING.md",
+    ]
+    if doc.link_cards != expected_cards:
+        raise ValueError(f"{page}: missing, duplicated or reordered project link cards")
     if doc.canonicals != [url] or doc.alternates != LOCALES:
         raise ValueError(f"{page}: canonical or reciprocal hreflang mismatch")
     if doc.meta.get("og:url") != url or doc.meta.get("og:type") != "website":
