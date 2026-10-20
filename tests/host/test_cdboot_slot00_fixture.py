@@ -119,9 +119,23 @@ class Slot00FixtureTests(unittest.TestCase):
                 case = copy.deepcopy(CASE[kind])
                 case["model_classification"] = []
                 self.assertTrue(M.validate_case(case))
+                self.assertEqual(M.judge(case, truthful(CASE[kind]))[0], "BLOCKED")
         case = copy.deepcopy(CASE["malformed"])
         case["model_classification"] = "BOOT_CANDIDATE"
         self.assertTrue(M.validate_case(case), "classification must match its media")
+        self.assertEqual(M.judge(case, truthful(CASE["malformed"]))[0], "BLOCKED")
+
+    def test_tampered_expected_media_sha_is_rejected_by_gate(self):
+        for kind in M.MEDIA_KINDS:
+            for tampered in (None, "ab", CASE["valid_synthetic"]["expected_media_sha256"]):
+                if tampered == CASE[kind]["expected_media_sha256"]:
+                    continue
+                with self.subTest(kind=kind, tampered=tampered):
+                    case = copy.deepcopy(CASE[kind])
+                    case["expected_media_sha256"] = tampered
+                    self.assertTrue(M.validate_case(case), "expected SHA must be derived from the media")
+                    record = dict(truthful(CASE[kind]), media_sha256=tampered)
+                    self.assertEqual(M.judge(case, record)[0], "BLOCKED")
 
     def test_expectations_are_literal_not_derived_from_judge_table(self):
         literal = {"valid_synthetic": (True, None), "absent": (False, "NO_MEDIA"), "malformed": (False, "MALFORMED")}

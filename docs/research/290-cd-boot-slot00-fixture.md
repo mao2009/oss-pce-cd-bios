@@ -1,6 +1,6 @@
 # Issue #290: slot $00（CD_BOOT、候補 `$E000`）の非実行フィクスチャと起動可否モデル
 
-状態: **定義と非実行モデルのみ。純正 slot `$00` は実行しない。System Card 互換は主張しない。**
+状態: **定義と非実行モデルのみ。純正 slot `$00` は実行しない。System Card 互換性も起動成功も主張しない（起動可否は常に BLOCKED）。**
 親は #9。実装は `tools/cdboot_slot00_fixture.py`、検査は `tests/host/test_cdboot_slot00_fixture.py`。
 
 ## 1. フィクスチャ（すべて独自生成、メモリ上のみ）

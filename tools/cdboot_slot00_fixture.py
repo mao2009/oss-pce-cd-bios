@@ -76,7 +76,11 @@ def validate_case(case):
         errors.append("model_classification must be BOOT_CANDIDATE, NO_MEDIA or MALFORMED")
     elif case["media_kind"] in MEDIA_KINDS and cls != classify_media(synthetic_media(case["media_kind"])):
         errors.append("model_classification does not match its media")
-    errors += [f"{field} must stay UNKNOWN (no evidence)" for field in ("boot_target", "return_path", "stack", "irq")
+    if case["media_kind"] in MEDIA_KINDS:
+        media = synthetic_media(case["media_kind"])
+        if case["expected_media_sha256"] != (None if media is None else hashlib.sha256(media).hexdigest()):
+            errors.append("expected_media_sha256 does not match its media")
+    errors +=[f"{field} must stay UNKNOWN (no evidence)" for field in ("boot_target", "return_path", "stack", "irq")
                if case[field] != UNKNOWN]
     if case["execution"] != "NOT_RUN":
         errors.append("execution must be NOT_RUN (reference slot $00 is never executed)")
