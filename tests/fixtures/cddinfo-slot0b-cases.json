@@ -1,0 +1,57 @@
+{
+  "schema": "oss-pce-cd-bios/cddinfo-slot0b-fixture/v1",
+  "issue": 235,
+  "slot": "$0B",
+  "entry_candidate": "$E021",
+  "candidate_name": "CD_DINFO",
+  "abi_status": "BLOCKED_ABI",
+  "release_eligible": false,
+  "execution": "NOT_RUN",
+  "provenance": "synthetic: author-defined medium and cases only; no System Card BIOS byte, disassembly, retail data, or ./rom/ content; no reference callee is executed",
+  "callee_abi": {
+    "arguments": "UNKNOWN",
+    "returns": "UNKNOWN",
+    "registers": "UNKNOWN",
+    "reference_jsr": "NOT_CALLED",
+    "reference_jsr_count": 0
+  },
+  "medium": {
+    "synthetic": true,
+    "leadout_lba": 600,
+    "tracks": [
+      {"no": 1, "type": "data", "pregap_start": 0, "index01": 150, "end": 299},
+      {"no": 2, "type": "audio", "pregap_start": 300, "index01": 450, "end": 599}
+    ]
+  },
+  "cases": [
+    {"id": "pos_track1", "kind": "track", "value": 1, "expected": "POSITIVE", "result": {"type": "data", "index01": 150, "end": 299}, "reason": "data track 1 by decimal track number"},
+    {"id": "pos_track2", "kind": "track", "value": 2, "expected": "POSITIVE", "result": {"type": "audio", "index01": 450, "end": 599}, "reason": "audio track 2 by decimal track number"},
+    {"id": "pos_bcd_01", "kind": "bcd", "value": "01", "expected": "POSITIVE", "result": {"type": "data", "index01": 150, "end": 299}, "reason": "BCD 01 is track 1"},
+    {"id": "pos_bcd_02", "kind": "bcd", "value": "02", "expected": "POSITIVE", "result": {"type": "audio", "index01": 450, "end": 599}, "reason": "BCD 02 is track 2"},
+    {"id": "pos_lba_pregap1_start", "kind": "lba", "value": 0, "expected": "POSITIVE", "result": {"region": "PREGAP", "track": 1}, "reason": "first LBA of the medium (virtual pregap of track 1)"},
+    {"id": "pos_lba_pregap1_end", "kind": "lba", "value": 149, "expected": "POSITIVE", "result": {"region": "PREGAP", "track": 1}, "reason": "last pregap LBA before INDEX 01 of track 1"},
+    {"id": "pos_lba_index01_1", "kind": "lba", "value": 150, "expected": "POSITIVE", "result": {"region": "INDEX01", "track": 1}, "reason": "INDEX 01 start of track 1"},
+    {"id": "pos_lba_track1_end", "kind": "lba", "value": 299, "expected": "POSITIVE", "result": {"region": "INDEX01", "track": 1}, "reason": "last LBA of track 1"},
+    {"id": "pos_lba_pregap2_start", "kind": "lba", "value": 300, "expected": "POSITIVE", "result": {"region": "PREGAP", "track": 2}, "reason": "first LBA of track 2 pregap"},
+    {"id": "pos_lba_index01_2", "kind": "lba", "value": 450, "expected": "POSITIVE", "result": {"region": "INDEX01", "track": 2}, "reason": "INDEX 01 start of track 2"},
+    {"id": "pos_lba_leadout", "kind": "lba", "value": 600, "expected": "POSITIVE", "result": {"region": "LEAD_OUT"}, "reason": "lead-out LBA is a region, not a track"},
+    {"id": "neg_lba_past_leadout", "kind": "lba", "value": 601, "expected": "NEGATIVE", "reason": "beyond the lead-out"},
+    {"id": "neg_lba_negative", "kind": "lba", "value": -1, "expected": "NEGATIVE", "reason": "negative LBA"},
+    {"id": "neg_lba_float", "kind": "lba", "value": 150.0, "expected": "NEGATIVE", "reason": "non-integer LBA type (malformed)"},
+    {"id": "neg_track_zero", "kind": "track", "value": 0, "expected": "NEGATIVE", "reason": "track number zero is not a track"},
+    {"id": "neg_track_no_such", "kind": "track", "value": 3, "expected": "NEGATIVE", "reason": "track number not on the medium"},
+    {"id": "neg_track_bool", "kind": "track", "value": true, "expected": "NEGATIVE", "reason": "bool is not an int track (malformed)"},
+    {"id": "neg_track_float", "kind": "track", "value": 2.0, "expected": "NEGATIVE", "reason": "non-integer track type (malformed)"},
+    {"id": "neg_track_string", "kind": "track", "value": "2", "expected": "NEGATIVE", "reason": "string track type (malformed)"},
+    {"id": "neg_bcd_nibble_a", "kind": "bcd", "value": "0A", "expected": "NEGATIVE", "reason": "invalid BCD: low nibble A"},
+    {"id": "neg_bcd_nibble_f", "kind": "bcd", "value": "3F", "expected": "NEGATIVE", "reason": "invalid BCD: low nibble F"},
+    {"id": "neg_bcd_zero", "kind": "bcd", "value": "00", "expected": "NEGATIVE", "reason": "BCD 00 is track zero"},
+    {"id": "neg_bcd_10_no_such", "kind": "bcd", "value": "10", "expected": "NEGATIVE", "reason": "BCD 10 is track 10, not on the medium"},
+    {"id": "neg_bcd_99_no_such", "kind": "bcd", "value": "99", "expected": "NEGATIVE", "reason": "BCD 99 is track 99, not on the medium"},
+    {"id": "neg_bcd_length", "kind": "bcd", "value": "2", "expected": "NEGATIVE", "reason": "malformed BCD: wrong length"},
+    {"id": "neg_bcd_nonhex", "kind": "bcd", "value": "G1", "expected": "NEGATIVE", "reason": "malformed BCD: non-hex digit"},
+    {"id": "neg_nomedium_track", "kind": "track", "value": 1, "present": false, "expected": "NEGATIVE", "reason": "no medium present"},
+    {"id": "neg_nomedium_bcd", "kind": "bcd", "value": "02", "present": false, "expected": "NEGATIVE", "reason": "no medium present"},
+    {"id": "neg_nomedium_lba", "kind": "lba", "value": 150, "present": false, "expected": "NEGATIVE", "reason": "no medium present"}
+  ]
+}
