@@ -11,6 +11,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # the integration script imports this module directly
 from tools.environment import cc65_skip_reason
 
 RESULT_BYTES = 4 * 256 + 1  # A, P, X, Y tables + final SP (tests/fixtures/bcdbin_harness.s)
