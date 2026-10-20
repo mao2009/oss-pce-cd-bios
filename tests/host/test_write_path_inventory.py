@@ -324,6 +324,71 @@ class WritePathInventoryTest(unittest.TestCase):
         inv = self.claimed(fresh(), "W03")
         self.assertEqual(self.validate_in_tmp(inv)["rows"], len(INVENTORY["rows"]))
 
+    def test_prevented_static_with_complete_evidence_is_accepted_and_stays_blocked(self):
+        # Positive: status, pre-side-effect point, static measurement, a non-placeholder marker of that kind.
+        inv = self.claimed(fresh(), "W03")
+        summary = self.validate_in_tmp(inv)
+        self.assertEqual(summary["status_counts"].get("PREVENTED_STATIC"), 1)
+        self.assertEqual(summary["gate_status"], "BLOCKED")
+        self.assertEqual(row(inv, "W03")["gate_status"], "BLOCKED")
+
+    def test_prevented_static_with_empty_evidence_list_is_rejected(self):
+        inv = self.claimed(fresh(), "W03")
+        row(inv, "W03")["evidence"] = []
+        with self.assertRaisesRegex(ValueError, "W03: evidence list empty"):
+            self.validate_in_tmp(inv)
+
+    def test_prevented_static_with_missing_evidence_file_is_rejected(self):
+        inv = self.claimed(fresh(), "W03")
+        row(inv, "W03")["evidence"] = ["run-not-present.txt"]
+        with self.assertRaisesRegex(ValueError, "W03: evidence file missing"):
+            self.validate_in_tmp(inv)
+
+    def test_prevented_static_with_empty_evidence_file_is_rejected(self):
+        inv = self.claimed(fresh(), "W03")
+        (self.tmp / "run.txt").write_text("", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "W03: prevention claimed without content-validated run evidence"):
+            self.validate_in_tmp(inv)
+
+    def test_prevented_static_with_placeholder_run_id_is_rejected(self):
+        for placeholder in ("RUN-000000000000", "RUN-FFFFFFFFFFFF"):
+            with self.subTest(placeholder=placeholder):
+                inv = self.claimed(fresh(), "W03")
+                (self.tmp / "run.txt").write_text(f"measurement-run-id: {placeholder} STATIC_SOURCE_REFERENCE\n",
+                                                  encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, f"W03: placeholder run id {placeholder}"):
+                    self.validate_in_tmp(inv)
+
+    def test_prevented_static_with_template_marker_is_rejected(self):
+        # Template text is not hex, so it never matches the run-id format at all.
+        inv = self.claimed(fresh(), "W03")
+        (self.tmp / "run.txt").write_text("measurement-run-id: RUN-XXXXXXXXXXXX STATIC_SOURCE_REFERENCE\n",
+                                          encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "W03: prevention claimed without content-validated run evidence"):
+            self.validate_in_tmp(inv)
+
+    def test_prevented_static_with_indented_marker_is_rejected(self):
+        inv = self.claimed(fresh(), "W03")
+        (self.tmp / "run.txt").write_text("  measurement-run-id: RUN-0123456789AB STATIC_SOURCE_REFERENCE\n",
+                                          encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "W03: prevention claimed without content-validated run evidence"):
+            self.validate_in_tmp(inv)
+
+    def test_prevented_static_with_non_prevention_value_is_rejected(self):
+        for value in ("UNKNOWN", "NO"):
+            with self.subTest(value=value):
+                inv = self.claimed(fresh(), "W03")
+                row(inv, "W03")["prevents_before_side_effect"] = value
+                with self.assertRaisesRegex(ValueError, "W03: (prevention status with non-prevention value|NO prevention)"):
+                    self.validate_in_tmp(inv)
+
+    def test_prevented_static_with_non_static_measurement_is_rejected(self):
+        # Even a matching marker for REAL_CORE_SYNTHETIC cannot back a PREVENTED_STATIC row.
+        inv = self.claimed(fresh(), "W03", kind="REAL_CORE_SYNTHETIC")
+        row(inv, "W03")["measurement"] = "REAL_CORE_SYNTHETIC"
+        with self.assertRaisesRegex(ValueError, "W03: prevention claimed without measurement"):
+            self.validate_in_tmp(inv)
+
     def test_prevention_claim_with_evidence_without_run_marker_is_rejected(self):
         inv = self.claimed(fresh(), "W03", marker=False)
         with self.assertRaisesRegex(ValueError, "W03: prevention claimed without content-validated run evidence"):

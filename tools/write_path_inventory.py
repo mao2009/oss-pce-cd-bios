@@ -54,6 +54,8 @@ PREVENTION_MEASUREMENTS = ("STATIC_SOURCE_REFERENCE",)
 # Content-validated evidence: a file must carry this line, naming a run id and the measurement class it recorded.
 # SELF-DECLARED, NOT AUTHENTICATED: this matches format only. It never shows that a run happened.
 RUN_MARKER = re.compile(r"^measurement-run-id: (RUN-[0-9A-F]{12}) ([A-Z_]+)$", re.M)
+# Template or filler ids (RUN-000000000000, RUN-FFFFFFFFFFFF) match the format but name no run. Always refused.
+PLACEHOLDER_RUN = re.compile(r"^RUN-([0-9A-F])\1{11}$")
 # Unreachable by design until authenticated real-core evidence exists (#124). Rejected whatever the marker says.
 MEASURED_PREVENTED_STATUS = "PREVENTED_MEASURED"
 PRE_SIDE_EFFECT_POINTS = ("BEFORE_RUN", "BEFORE_STORE", "INSTRUCTION_BOUNDARY")
@@ -166,6 +168,7 @@ def validate(inventory, pinned_revision, root=ROOT):
             require(len(run_ids) == 1 and all(kind == row["measurement"] for _, kind in markers),
                     f"{row_id}: conflicting run markers in evidence (tampered or mixed)")
             (run_id,) = run_ids
+            require(not PLACEHOLDER_RUN.match(run_id), f"{row_id}: placeholder run id {run_id} is not evidence")
             # One run id backs one claim. Reusing another row's result for this claim is refused.
             require(claimed_runs.setdefault(run_id, row_id) == row_id,
                     f"{row_id}: run id {run_id} is reused from {claimed_runs.get(run_id)}")
