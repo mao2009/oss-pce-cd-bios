@@ -83,12 +83,13 @@ Hardware measurements are kept strictly separate from callee behavior:
 VERIFIED is not granted for any item: no reference-ROM (`rom/syscard3.pce`) callee execution exists, and the
 schema cannot represent VERIFIED. Success values, flags and completion conditions are not inferred.
 
-## #183 への引き継ぎ: 実装可能な最小範囲と前提条件
+## 将来実装しうる最小範囲（前提未充足・現時点で実装不可）
 
-全 CD_RESET callee 契約項目（returns, flags, clobbered, preserved, irq, errors, synchronization,
-RAM 差分, MPR 変化, 無媒体時動作, ready/busy 完了条件）が UNKNOWN のため、**ROM の CD_RESET
-(`$01`/`$E003`) 実装は BLOCKED**。#183 で実装できるのは、#121 で計測済みの**低レベルバスリセット
-原始処理のみ**（独立した HuC6280 ルーチン、`$1804` bit 1 アサート → BUS FREE 待ち → リリース）:
+callee の戻り値・フラグ・破壊/保存レジスタ・割込み・タイミングは未観測（UNKNOWN）、エラー・完了条件は
+出典由来の HYPOTHESIS のみ。RAM 差分、MPR 変化、無媒体時動作、ready/busy 完了条件も未観測のため、**ROM の
+CD_RESET (`$01`/`$E003`) 実装は BLOCKED_ABI 相当（ROM 実装なし）**。本 PR（#183 の判定）では実装しない。前提が揃った後に別 Issue で
+実装しうる最小範囲は、#121 で計測済みの**低レベルバスリセット原始処理のみ**（独立した HuC6280 ルーチン、
+`$1804` bit 1 アサート → BUS FREE 待ち → リリース）:
 
 - 開始条件: バスは既に FREE であること（BUSY からの解放リセットは未検証・範囲外）
 - 計測条件: Geargrafx b49ae82a, 合成 CD, cold/warm; `$1804` 読み戻し `$02`→`$00`, パルス後バス FREE
@@ -103,9 +104,13 @@ RAM 差分, MPR 変化, 無媒体時動作, ready/busy 完了条件）が UNKNOW
 Returns, preservation, IRQ, error and completion semantics are UNKNOWN, so any routine would invent
 an ABI that games may contradict. Prerequisites: #1 jump-table mapping, #8 adoption decision for the
 sources above, a reviewed answer for returns/no-disc/busy behaviour from System Card 3.0 observation,
-and a real-core harness that executes `$E003` and emits the record fields `tools/cdreset_verify.py`
-requires (`REQUIRED`). The #5 bus-reset + bus-free sequence in `src/cd_read_probe.s` is the intended
-building block once that review exists.
+a real-core harness that executes `$E003` and emits the record fields `tools/cdreset_verify.py`
+requires (`REQUIRED`), and, for the safety preflight, #173 (in-core RAM/I/O enforcement; OPEN, child PRs
+#360 and #362 are Draft; child Issues #365〜#367（Research、OPEN）) plus #179（Issue は CLOSED だが、実行時の副作用前強制は未実装・未検証のため前提は未充足）
+for the pre-side-effect enforcement.
+
+The #5 bus-reset + bus-free sequence in `src/cd_read_probe.s` is the intended building block once that
+review exists.
 
 ## 実コア実測と未検証（Issue #10, B2）
 
@@ -137,7 +142,7 @@ System Card CD_RESET（`$01` / `$E003`）の完全互換は証明していない
 副作用前に強制しているか / していないか」だけを区別する。
 
 pinned Geargrafx `b49ae82a` の静的コード確認（コード上の事実であり、実機実測ではない。実行時の
-捕捉・遮断は #179 で未検証）：
+捕捉・遮断は #179（Issue CLOSED、実行時強制は未検証）：
 
 - `Memory::Write` は先頭で CPU アドレス書込みフックを評価する（`src/memory_inline.h` L277-278 → `CheckMemoryHooks` L561-563 が `m_huc6280->CheckCpuAddressHooks(address, read)` を呼ぶ）。
 - `bank == 0xFF` の Hardware Page 分岐は `m_memory_map_write` の対象外で、I/O 書込みは常に発生する（同 L290-364）。
@@ -250,3 +255,13 @@ runner を作る前に実装しなければならない（未実装のままで�
 
 ホストテスト: `python3 -m unittest tests.host.test_cdreset_slot01_reference_plan -v`（合成のみ、
 エミュレータ・ROM 不使用）。
+
+## 実装判定（Issue #183）: BLOCKED_ABI 相当・非実装
+
+- 判定: **BLOCKED_ABI 相当（ROM 実装なし）**。CD_RESET（`$01` / `$E003`）の callee ABI は未確定であり、本 PR はコードを追加しない。
+- 根拠: 上の契約表で `returns`・`flags`・`clobbered`・`preserved`・`irq`・`timing` が UNKNOWN、`entry`・`arguments`・`stack`・`mpr`・`ram`・`errors`・`synchronization` は caller 側または HLE 由来の HYPOTHESIS のみ。`VERIFIED` は 0 件。
+- 実装前提の充足状況（将来実装しうる最小範囲節の開始条件）: #1 ジャンプテーブル配線、#8 出典採否（provenance PENDING）、System Card 3.0 の戻り・無媒体・busy 動作の裁定、callee を実行できる実コア harness は、いずれも未充足。安全 preflight 側では、#173（API JSR 用 in-core RAM/I/O 強制監視、OPEN、子 PR #360・#362 は Draft、子 Issue #365〜#367（Research、OPEN）が未完）と、#179（Issue CLOSED、実行時強制は未検証。`$1804` 書込の副作用前捕捉・拒否）が未充足。
+- 理由: 未確定の callee 契約の上に独自 ABI を作ると、ゲームや実 BIOS 呼出しと矛盾するおそれがある。推測で通すことは禁止。
+- 残る候補: `$1804` bit 1 のバスリセット観測（OBSERVED、Geargrafx b49ae82a の register fact のみ）。これを独立ルーチンにする作業は、上の前提が揃った後に別 Issue で行う。
+- 代替作業: AD_RESET（`$10` / `$E030`）の合成 fixture #293 へ切り替え（別 PR）。
+- 実行した確認: 本 PR は docs のみの変更。callee 実行、ROM ビルド、実コア実行は行っていない。

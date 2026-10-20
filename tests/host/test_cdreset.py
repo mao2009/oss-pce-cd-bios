@@ -105,6 +105,16 @@ class CdResetContractDocTests(unittest.TestCase):
                 self.assertEqual(rows[field], ledger["contract"][field]["status"])
         self.assertNotIn("VERIFIED", rows.values())
 
+    def test_decision_basis_lists_exactly_the_table_statuses(self):
+        text = (ROOT / "docs/cd-reset-contract.md").read_text(encoding="utf-8")
+        rows = dict(re.findall(r"^\| `(\w+)` \| (VERIFIED|HYPOTHESIS|UNKNOWN) \|", text, re.M))
+        m = re.search(r"^- 根拠: 上の契約表で (.+?) が UNKNOWN、(.+?) は caller 側または HLE 由来の HYPOTHESIS のみ",
+                      text, re.M)
+        self.assertIsNotNone(m)
+        names = lambda s: set(re.findall(r"`(\w+)`", s))
+        self.assertEqual(names(m.group(1)), {k for k, v in rows.items() if v == "UNKNOWN"})
+        self.assertEqual(names(m.group(2)), {k for k, v in rows.items() if v == "HYPOTHESIS"})
+
 
 if __name__ == "__main__":
     unittest.main()
