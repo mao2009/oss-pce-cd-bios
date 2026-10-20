@@ -56,7 +56,8 @@ def validate_case_pair(case, config):
 
 
 def execute_case(case, config, adapter):
-    """Validate a reviewed fixture, then run it through the guarded real-core adapter."""
+    """Validate a reviewed fixture, then run it through the guarded real-core adapter.
+    The execution gate is enforced inside run(), before any bios_path access."""
     validate_case_pair(case, config)
     return run(config, adapter)
 
