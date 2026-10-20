@@ -13,6 +13,8 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
+# A non-empty observation: the run produced evidence; the checker itself is mocked where used.
+OBS = {"exit": 0, "status": "ok", "mode": "stub"}
 sys.path.insert(0, str(ROOT / "tests" / "integration"))
 
 import geargrafx_preside_probe as P  # noqa: E402
@@ -35,7 +37,7 @@ class PresideProbeTest(unittest.TestCase):
 
     def test_v05_partial_lists_unrun_targets(self):
         with mock.patch.object(P.guard, "check_neg"), \
-                mock.patch.object(P.guard, "run_mode", return_value={}):
+                mock.patch.object(P.guard, "run_mode", return_value=OBS):
             case = next(c for c in P.CASES if c[0] == "V05")
             _, verdict, detail = P.run_case(case, None, None, None)
         self.assertEqual(verdict, P.PARTIAL)
@@ -129,8 +131,35 @@ class PresideProbeTest(unittest.TestCase):
             _, verdict, _ = P.run_case(case, None, None, None)
         self.assertEqual(verdict, P.BLOCKED)
 
+    def test_empty_observation_is_blocked_for_v01_v05_v06(self):
+        # exit 0 with no observation fields is missing evidence: BLOCKED, never FAIL.
+        for case_id in ("V01", "V05", "V06"):
+            case = next(c for c in P.CASES if c[0] == case_id)
+            with mock.patch.object(P.guard, "run_mode", return_value={"exit": 0}):
+                _, verdict, detail = P.run_case(case, None, None, None)
+            self.assertEqual(verdict, P.BLOCKED, case_id)
+            self.assertIn("empty observation", detail)
+
+    def test_v05_landed_store_is_fail_not_blocked(self):
+        # A store that lands (not dropped) contradicts the expectation: the run executed, so FAIL.
+        case = next(c for c in P.CASES if c[0] == "V05")
+        with mock.patch.object(P.guard, "run_mode", return_value=OBS),                 mock.patch.object(P.guard, "check_neg",
+                                  side_effect=ValueError("forbidden store $0000 was NOT prevented")):
+            _, verdict, detail = P.run_case(case, None, None, None)
+        self.assertEqual(verdict, P.FAIL)
+        self.assertIn("NOT prevented", detail)
+
+    def test_v01_prevented_st_store_is_fail_not_pass(self):
+        # #360 records W05 as prevents NO, so an ST store that does not land is a contradiction: FAIL.
+        case = next(c for c in P.CASES if c[0] == "V01")
+        with mock.patch.object(P.guard, "run_mode", return_value=OBS),                 mock.patch.object(P.st, "check_st",
+                                  side_effect=ValueError("st0: address register unchanged (side effect did not land)")):
+            _, verdict, _ = P.run_case(case, None, None, None)
+        self.assertEqual(verdict, P.FAIL)
+        self.assertNotEqual(verdict, P.PASS)
+
     def test_v05_detail_never_claims_prevention(self):
-        with mock.patch.object(P.guard, "check_neg"), mock.patch.object(P.guard, "run_mode", return_value={}):
+        with mock.patch.object(P.guard, "check_neg"), mock.patch.object(P.guard, "run_mode", return_value=OBS):
             case = next(c for c in P.CASES if c[0] == "V05")
             _, _, detail = P.run_case(case, None, None, None)
         self.assertNotIn("prevented", detail)
@@ -178,7 +207,7 @@ class PresideProbeTest(unittest.TestCase):
 
     def test_v05_partial_detail_lists_unrun_remainder(self):
         with mock.patch.object(P.guard, "check_neg"), \
-                mock.patch.object(P.guard, "run_mode", return_value={}):
+                mock.patch.object(P.guard, "run_mode", return_value=OBS):
             case = next(c for c in P.CASES if c[0] == "V05")
             _, verdict, detail = P.run_case(case, None, None, None)
         self.assertEqual(verdict, P.PARTIAL)
@@ -190,7 +219,7 @@ class PresideProbeTest(unittest.TestCase):
         self.assertNotIn("$0000", remainder)
 
     def test_no_case_can_yield_pass(self):
-        with mock.patch.object(P.guard, "run_mode", return_value={}), \
+        with mock.patch.object(P.guard, "run_mode", return_value=OBS), \
                 mock.patch.object(P.st, "check_st", return_value=st.BLOCKED_VERDICT), \
                 mock.patch.object(P.guard, "check_neg"), mock.patch.object(P.guard, "check_tam"):
             verdicts = [P.run_case(c, None, None, None)[1] for c in P.CASES]
@@ -202,7 +231,7 @@ class PresideProbeTest(unittest.TestCase):
         self.assertIn("ゲート解放の経路はない", P.__doc__)
 
     def test_v06_partial_states_detection_only_not_block(self):
-        with mock.patch.object(P.guard, "run_mode", return_value={}), mock.patch.object(P.guard, "check_tam"):
+        with mock.patch.object(P.guard, "run_mode", return_value=OBS), mock.patch.object(P.guard, "check_tam"):
             case = next(c for c in P.CASES if c[0] == "V06")
             _, verdict, detail = P.run_case(case, None, None, None)
         self.assertEqual(verdict, P.PARTIAL)

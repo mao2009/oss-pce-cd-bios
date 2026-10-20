@@ -7,15 +7,18 @@ No core code is copied and no core hook is added here.
 
 Verdicts per case:
 * PASS    - measured, every planned sub-check prevented the side effect before it landed.
-* BLOCKED - the side effect lands before any stop (measured), or the evidence is missing: the probe
-            refused to run, emitted no observation, or timed out. Missing evidence is never a PASS.
+* BLOCKED - the ST side effect lands before any stop (the measured expectation for W05-W07), or the
+            evidence is missing: the probe refused to run, emitted no observation (none, or empty), or
+            timed out. Missing evidence is never a PASS.
 * PARTIAL - only a measured subset of the planned sub-checks ran; the rest is listed in the detail.
             V06 (TAM) is PARTIAL because TAM is a detection-only check at the instruction boundary,
             not a block: the MPR write itself is not stopped, and other MPR paths are unaudited.
             V05 measures stores that were dropped and detected; that is a measurement, not a PREVENTED
             claim (#360 W02 stays UNKNOWN: no content-validated run id is recorded).
 * NOT_RUN - no probe mode / audit exists in this PR; nothing was executed for the case.
-* FAIL    - a probe run that did run and did not match its declared expectation (unexpected behaviour).
+* FAIL    - a probe run that did run and contradicted its expectation: a V05 store that landed (not dropped),
+            a V05 store not detected, a V01/V02 ST store that was prevented (#360 records W05-W07 as
+            prevents NO, so a prevention is a contradiction), or a V06 TAM not detected.
 
 Scope: this script covers V01-V08 only. An overall PASS is NOT a gate release (ゲート解放ではない).
 本スクリプトは PASS を出力しない（各 V-case の上限 PARTIAL。総合 PASS は本PRの構造上到達不能）。ゲート解放の経路はない。
@@ -95,6 +98,9 @@ def measure(probe, bios, cue, mode, target):
         raise MissingEvidence(str(error)) from error
     if row.get("exit", 0) != 0:
         raise MissingEvidence(f"{mode} ${target:04X} probe refused to run (exit {row.get('exit')})")
+    # A run that prints nothing (exit 0 and no fields) is no observation at all, not a contradiction.
+    if not {key for key in row if key != "exit"}:
+        raise MissingEvidence(f"{mode} ${target:04X} probe emitted an empty observation")
     return row
 
 
