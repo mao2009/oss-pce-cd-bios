@@ -855,6 +855,9 @@ def signing_violations(text, label):
     not a signing right (pages.yml deploy needs it), so it is not refused by itself.
     (b) an approved signing job keeps id-token and attestations write, and keeps the job that produces its artifact in needs:.
     (c) continue-on-error is refused in an approved signing job, at job or step level, in any spelling on the line.
+    Round 5: the same signing terms are also tested on each run: value after shell normalization (_run_texts: line
+    continuation joined, quotes and backslashes removed), in any job. In a job with id-token: write that is not approved,
+    `$`, backtick and eval in a run: are refused too.
     Not covered here: a signing call under a name none of these terms match is refused by the uses: allowlist, not here."""
     name = Path(label).name
     lines = text.splitlines()
@@ -894,7 +897,86 @@ def signing_violations(text, label):
         if steps != ATTEST_STEPS[(name, job)]:
             problems.append(f"{label}: signing job {job!r} must run exactly the approved steps, found {steps} "
                             "(a step that runs code would hold the OIDC token, Issue #337 round 4 (a))")
+    for i, text in _run_texts(lines):
+        if SIGNING_TERMS_RE.search(text):
+            verify = GH_VERIFY_RE.match(text)
+            if not (verify and not SIGNING_TERMS_RE.search(text[verify.end():])):
+                problems.append(f"{label}: line {i + 1} run: calls signing or an OIDC token after shell normalization "
+                                f"({text!r}, Issue #337 round 4 (a), round 5)")
+        job = _enclosing_job(lines, i)
+        if job is not None and (name, job) not in ATTEST_NEEDS and DYNAMIC_SHELL_RE.search(text) and _id_token_job(lines, job):
+            problems.append(f"{label}: line {i + 1} run: in job {job!r}, which holds id-token: write without being an approved "
+                            f"signing job, uses $, backtick or eval ({text!r}, Issue #337 round 4 (a), round 5)")
     return problems
+
+
+# Issue #337 round 5 (a, normalized). A run: value is read as shell text before the signing-word test: backslash-newline
+# joins two lines, quote characters and backslashes are removed, and whitespace is collapsed. Shell quoting and line
+# continuation therefore cannot split `cosign` past the test (`cos\` + `ign`, `co"sign"`, `c""osign`).
+RUN_KEY_RE = re.compile(r"""(?:^|[\s{,\-])["']?run["']?\s*:\s*(.*)$""", re.IGNORECASE)
+BLOCK_INDICATOR_RE = re.compile(r"[|>][+-]?\d*\s*(?:#.*)?$")
+# In a job with id-token: write that is not an approved signing job, a run: may not expand, substitute or evaluate: the
+# command word could then be assembled at run time from parts that the text check cannot see.
+DYNAMIC_SHELL_RE = re.compile(r"\$|`|\beval\b")
+
+
+def _shell_text(parts):
+    """One run: value as shell text: each backslash-newline joins its two lines, then quotes and backslashes are removed."""
+    joined = []
+    for part in parts:
+        if joined and joined[-1].endswith("\\"):
+            joined[-1] = joined[-1][:-1] + part
+        else:
+            joined.append(part)
+    return " ".join(re.sub(r"[\\'\"]", "", "\n".join(joined)).split())
+
+
+def _run_texts(lines):
+    """(line index, shell text) for every run: value in the file, at any depth (job steps and composite-action steps)."""
+    found = []
+    for i, line in enumerate(lines):
+        match = RUN_KEY_RE.search(line) if _live(line) else None
+        if not match:
+            continue
+        col = _indent(line) + (2 if line.lstrip().startswith("- ") else 0)
+        value = match.group(1).split(" #")[0].strip()
+        body = []
+        for later in lines[i + 1:]:
+            if not _live(later):
+                continue
+            if _indent(later) <= col:
+                break
+            body.append(later.strip())
+        if "{" in line[:match.start(1)]:   # flow form: the value ends inside the braces, no continuation lines
+            parts = [value]
+        elif BLOCK_INDICATOR_RE.match(value):
+            parts = body
+        else:
+            parts = [value] + body
+        found.append((i, _shell_text(parts)))
+    return found
+
+
+def _id_token_write(line):
+    match = SIGNING_PERMISSION_RE.match(line)
+    return bool(match) and match.group(1) == "id-token" and match.group(2).strip("\"'") == "write"
+
+
+def _id_token_job(lines, job):
+    """True when the job holds id-token: write: its own permissions block, or the top-level one when it has no own block."""
+    top = False
+    for line in lines:
+        if _live(line) and line.startswith("jobs:"):
+            break
+        top = top or (_live(line) and _id_token_write(line))
+    for name, head, end in _job_blocks(lines):
+        if name != job:
+            continue
+        own = [line for line in lines[head + 1:end] if _live(line)]
+        if any(_id_token_write(line) for line in own):
+            return True
+        return top and not any(_indent(line) == 4 and line.strip().startswith("permissions:") for line in own)
+    return False
 
 
 def _step_kind(lines, start, end):

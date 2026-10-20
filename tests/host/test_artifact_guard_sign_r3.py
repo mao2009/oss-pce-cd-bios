@@ -220,3 +220,39 @@ class SignRound4Tests(unittest.TestCase):
 
     def test_stage_accepts_a_rom_file_from_the_approved_pattern(self):   # (d) positive control
         self.stage('.intake/.artifact-stage/build/debug/bios-dev/*.pce', 'build/debug/bios-dev/x.pce')
+
+
+class SignNormalizedRunTests(unittest.TestCase):
+    """Issue #337 round 5 (review of round 4, MEDIUM 1): a run: text that shell line continuation or quoting splits must
+    still be refused. Each case adds a job with id-token: write that is not an approved signing job, and --check-placement
+    must refuse it. On 5b02b03 the split forms pass the placement check: that is the regression they pin."""
+
+    def new_job(self, run_block):
+        head = ['  sign-extra:', '    runs-on: ubuntu-24.04', '    permissions:', '      id-token: write', '    steps:']
+        return real() + '\n'.join(head + run_block) + '\n'
+
+    def assertRefused(self, text):
+        with self.assertRaisesRegex(ValueError, r'round 4 \(a\)'):
+            placement(text)
+
+    def test_unmutated_workflow_still_passes(self):
+        self.assertEqual([], guard.signing_violations(real(), REL))
+        placement(real())
+
+    def test_backslash_newline_split_is_refused(self):
+        self.assertRefused(self.new_job(['      - run: |', '          cos\\', '          ign sign-blob evidence/x.json']))
+        self.assertRefused(self.new_job(['      - run: cos\\', '          ign sign-blob evidence/x.json']))
+
+    def test_double_quote_split_is_refused(self):
+        self.assertRefused(self.new_job(['      - run: co"sign" sign-blob evidence/x.json']))
+
+    def test_single_quote_split_is_refused(self):
+        self.assertRefused(self.new_job(["      - run: co'sign' sign-blob evidence/x.json"]))
+
+    def test_empty_quote_split_is_refused(self):
+        self.assertRefused(self.new_job(['      - run: c""osign sign-blob evidence/x.json']))
+
+    def test_expansion_or_eval_in_id_token_job_is_refused(self):
+        for run in ['echo $(printf cos)ign', 'echo `printf cos`ign', 'eval "cos""ign" sign-blob x', 'x=cos; ${x}ign sign-blob x']:
+            with self.subTest(run=run):
+                self.assertRefused(self.new_job([f'      - run: {run}']))
