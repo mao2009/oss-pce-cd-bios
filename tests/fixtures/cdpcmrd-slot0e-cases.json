@@ -1,0 +1,45 @@
+{
+  "schema": "oss-pce-cd-bios/cdpcmrd-slot0e-fixture/v1",
+  "issue": 277,
+  "slot": "$0E",
+  "entry_candidate": "$E02A",
+  "candidate_name": "CD_PCMRD",
+  "abi_status": "BLOCKED_ABI",
+  "release_eligible": false,
+  "execution": "NOT_RUN",
+  "provenance": "synthetic: author-defined medium, state and cases only; no System Card BIOS byte, disassembly, retail data, or ./rom/ content; no reference callee is executed",
+  "callee_abi": {
+    "arguments": "UNKNOWN",
+    "returns": "UNKNOWN",
+    "registers": "UNKNOWN",
+    "reference_jsr": "NOT_CALLED"
+  },
+  "medium": {
+    "synthetic": true,
+    "sample_format": "author-defined signed 16-bit values; not a CD-DA on-disc encoding",
+    "tracks": [
+      {"no": 1, "type": "data", "start": 0, "end": 99, "samples": []},
+      {"no": 2, "type": "audio", "start": 100, "end": 199,
+       "samples": [1000, -1000, 2500, -2500, 0, 32767, -32768, 300]}
+    ]
+  },
+  "supported_transport": ["playing"],
+  "cases": [
+    {"id": "pos_first_sample", "state": {"transport": "playing", "track": 2}, "index": 0, "expected": "POSITIVE", "value": 1000, "reason": "first sample of the audio track while playing"},
+    {"id": "pos_last_sample", "state": {"transport": "playing", "track": 2}, "index": 7, "expected": "POSITIVE", "value": 300, "reason": "last sample of the audio track while playing"},
+    {"id": "pos_full_scale_max", "state": {"transport": "playing", "track": 2}, "index": 5, "expected": "POSITIVE", "value": 32767, "reason": "signed 16-bit maximum is returned unchanged"},
+    {"id": "pos_full_scale_min", "state": {"transport": "playing", "track": 2}, "index": 6, "expected": "POSITIVE", "value": -32768, "reason": "signed 16-bit minimum is returned unchanged"},
+    {"id": "neg_stopped_valid_index", "state": {"transport": "stopped", "track": 2}, "index": 0, "expected": "NEGATIVE", "reason": "stopped transport: a valid index must still be refused"},
+    {"id": "neg_stopped_mid", "state": {"transport": "stopped", "track": 2}, "index": 4, "expected": "NEGATIVE", "reason": "stopped transport, interior index"},
+    {"id": "neg_paused", "state": {"transport": "paused", "track": 2}, "index": 0, "expected": "NEGATIVE", "reason": "unsupported transport state (paused)"},
+    {"id": "neg_seeking", "state": {"transport": "seeking", "track": 2}, "index": 0, "expected": "NEGATIVE", "reason": "unsupported transport state (seeking)"},
+    {"id": "neg_unknown_transport", "state": {"transport": "unknown", "track": 2}, "index": 0, "expected": "NEGATIVE", "reason": "transport state not in the supported set"},
+    {"id": "neg_index_minus_one", "state": {"transport": "playing", "track": 2}, "index": -1, "expected": "NEGATIVE", "reason": "index one before the first sample"},
+    {"id": "neg_index_count", "state": {"transport": "playing", "track": 2}, "index": 8, "expected": "NEGATIVE", "reason": "index equal to the sample count (one past the end)"},
+    {"id": "neg_index_far", "state": {"transport": "playing", "track": 2}, "index": 4294967296, "expected": "NEGATIVE", "reason": "index beyond 32-bit range"},
+    {"id": "neg_index_float", "state": {"transport": "playing", "track": 2}, "index": 3.0, "expected": "NEGATIVE", "reason": "non-integer index type (malformed)"},
+    {"id": "neg_index_bool", "state": {"transport": "playing", "track": 2}, "index": true, "expected": "NEGATIVE", "reason": "bool is not an int index (malformed)"},
+    {"id": "neg_data_track", "state": {"transport": "playing", "track": 1}, "index": 0, "expected": "NEGATIVE", "reason": "data track has no PCM samples"},
+    {"id": "neg_no_such_track", "state": {"transport": "playing", "track": 3}, "index": 0, "expected": "NEGATIVE", "reason": "track number not on the medium"}
+  ]
+}
