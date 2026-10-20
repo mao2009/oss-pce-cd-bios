@@ -180,6 +180,12 @@ class PresideProbeTest(unittest.TestCase):
             if g == "RUN":
                 self.assertIn(kinds[c], ("st", "neg", "tam"), w)
 
+    def test_v05_is_the_neg_write_case(self):
+        # V05 is the W02 neg-write sample plan; the kind keeps it on the neg-write probe path.
+        kinds = {c[0]: c[2] for c in P.CASES}
+        self.assertEqual(kinds["V05"], "neg")
+        self.assertEqual(P.W_MAP["W02"], ("RUN", "V05"))
+
     def test_unmapped_ids_are_printed_not_dropped(self):
         rc, out, _ = self._run_main_with(P.NOT_RUN)
         unmapped = [w for w, (g, _) in P.W_MAP.items() if g == "UNMAPPED"]
