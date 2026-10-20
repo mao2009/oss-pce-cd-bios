@@ -14,9 +14,11 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 import mcp_checkpoint as m  # noqa: E402
 
-# The fake server is a "#!/usr/bin/env python3" script. Windows cannot exec it (WinError 193),
-# so every test that spawns it reports "protocol_error" there: a platform cause, not a Geargrafx one.
-# These tests SKIP on Windows and run on Linux/WSL; they never report PASS on Windows.
+# The fake server is a "#!/usr/bin/env python3" script. Windows cannot exec it (WinError 193), so a
+# test that starts it reports "protocol_error" there: a platform cause, not a Geargrafx one.
+# Scope: tests decorated with POSIX_FAKE start the fake server and SKIP on Windows (run on Linux/WSL).
+# Undecorated tests always run: those that start no fake server, and test_non_executable_spawn_failure_is_fail_not_traceback,
+# which expects that same spawn failure on every platform. A SKIP is never counted as a PASS.
 POSIX_FAKE = unittest.skipIf(os.name == "nt", "fake MCP server is a POSIX shebang script; run on Linux/WSL")
 
 FAKE = textwrap.dedent('''\
