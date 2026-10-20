@@ -8,6 +8,7 @@
   "release_eligible": false,
   "execution": "NOT_RUN",
   "provenance": "synthetic: author-defined media and cases only; no System Card BIOS byte, disassembly, retail data, or ./rom/ content; no reference callee is executed",
+  "model_origin": "AUTHOR_SYNTHETIC: CD_CONTNTS の観測ではない",
   "callee_abi": {
     "arguments": "UNKNOWN",
     "returns": "UNKNOWN",
@@ -46,6 +47,8 @@
     {"id": "neg_track_string", "media": "mixed", "track": "2", "expected": "NEGATIVE", "reason": "string track number (malformed)"},
     {"id": "neg_track_float", "media": "mixed", "track": 2.0, "expected": "NEGATIVE", "reason": "float track number (malformed)"},
     {"id": "neg_track_null", "media": "mixed", "track": null, "expected": "NEGATIVE", "reason": "null track number (malformed)"},
+    {"id": "neg_track_false", "media": "mixed", "track": false, "expected": "NEGATIVE", "reason": "bool false is not an int track (malformed)"},
+    {"id": "neg_no_medium_track_true", "media": "none", "track": true, "expected": "NEGATIVE", "reason": "bool true with no medium loaded (malformed)"},
     {"id": "neg_no_medium_track_1", "media": "none", "track": 1, "expected": "NEGATIVE", "reason": "no medium loaded, refused even for a track number that exists on the mixed medium"},
     {"id": "neg_no_medium_track_2", "media": "none", "track": 2, "expected": "NEGATIVE", "reason": "no medium loaded, audio track number"},
     {"id": "neg_empty_medium_track_1", "media": "empty", "track": 1, "expected": "NEGATIVE", "reason": "medium present with no tracks"}

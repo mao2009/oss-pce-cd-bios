@@ -7,6 +7,7 @@ Passing these tests validates only this fixture and its judge; it claims no CD_C
 """
 import hashlib
 import json
+import re
 import subprocess
 import unittest
 from pathlib import Path
@@ -16,12 +17,16 @@ FIXTURE_REL = "tests/fixtures/cdcontnts-track-cases.json"
 FIXTURE = ROOT / FIXTURE_REL
 # sha256 of the canonical JSON (sort_keys, compact separators, UTF-8). Changing the fixture requires
 # updating this value in the same change.
-FIXTURE_SHA256 = "dbad3dc14752e2db6973fe00313a632167bca5ca43e487eef7798c32cd9311a5"
+FIXTURE_SHA256 = "a53ef2c69caa30fa8a360f557720a02b6bca5fc0f9d885e1b1730a606ab1e04f"
 POSITIVE, NEGATIVE = "POSITIVE", "NEGATIVE"
 APPROVED_PROVENANCE = ("synthetic: author-defined media and cases only; no System Card BIOS byte, disassembly, "
                        "retail data, or ./rom/ content; no reference callee is executed")
+APPROVED_MODEL_ORIGIN = "AUTHOR_SYNTHETIC: CD_CONTNTS の観測ではない"
 TOP_LEVEL_KEYS = {"schema", "issue", "slot", "entry_candidate", "candidate_name", "abi_status", "release_eligible",
-                  "execution", "provenance", "callee_abi", "query_model", "media", "cases"}
+                  "execution", "provenance", "model_origin", "callee_abi", "query_model", "media", "cases"}
+# Files whose mention of CD_CONTNTS/E024 is pre-existing and not a build or callable-entry wiring.
+WIRING_ALLOWLIST = {"tools/reference_bios_scenarios.py"}
+WIRING_PATTERN = re.compile(r"E024|CD_CONTNTS|cdcontnts-track-cases")
 FORBIDDEN = ("VERIFIED", "DEV_CALLABLE", "PASS", "OBSERVED")
 
 
@@ -74,6 +79,7 @@ class CdContntsTrackFixtureTests(unittest.TestCase):
         self.assertEqual(_canonical_sha256(self.fixture), FIXTURE_SHA256)
         self.assertEqual(set(self.fixture), TOP_LEVEL_KEYS)
         self.assertEqual(self.fixture["provenance"], APPROVED_PROVENANCE)
+        self.assertEqual(self.fixture["model_origin"], APPROVED_MODEL_ORIGIN)
 
     def test_media_model_is_well_formed(self):
         for name, medium in self.media.items():
@@ -138,17 +144,24 @@ class CdContntsTrackFixtureTests(unittest.TestCase):
             self.assertNotIn(word, text)
         out = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z"], capture_output=True, check=True).stdout
         tracked = [n for n in out.decode("utf-8").split("\0") if n]
-        this_file = "tests/host/test_cd_contnts_track_fixture.py"
+
+        def in_scope(rel):  # build inputs and callable sources; spec/, docs/, *.md and tests are out of scope
+            return (rel == "Makefile" or rel.startswith(("src/", "tools/"))
+                    or (rel.startswith("tests/fixtures/") and rel.endswith(".s")))
+
         hits = []
         for rel in tracked:
-            if rel in (FIXTURE_REL, this_file) or rel.startswith("docs/") or rel.endswith(".md"):
+            if not in_scope(rel) or rel in WIRING_ALLOWLIST:
                 continue
             p = ROOT / rel
             if not p.is_file() or b"\0" in p.read_bytes()[:4096]:
                 continue
-            if "cdcontnts-track-cases" in p.read_text(encoding="utf-8", errors="ignore"):
+            if WIRING_PATTERN.search(p.read_text(encoding="utf-8", errors="ignore")):
                 hits.append(rel)
-        self.assertEqual(hits, [], "fixture referenced outside its own test")
+        self.assertEqual(hits, [], "CD_CONTNTS/E024 wired into build or callable sources")
+        for rel in WIRING_ALLOWLIST:  # stale allowlist entries must not linger
+            self.assertIn(rel, tracked)
+            self.assertRegex((ROOT / rel).read_text(encoding="utf-8", errors="ignore"), WIRING_PATTERN)
 
 
 if __name__ == "__main__":
