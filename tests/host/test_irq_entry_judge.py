@@ -48,6 +48,14 @@ class IrqEntryJudgeTest(unittest.TestCase):
         row = ij.base_row("TIQ", handler)
         row["status"] = "rejected"
         self.assertEqual(ij.judge_entry(row, "TIQ", handler)[0], ij.BLOCKED)
+        for field in ("handler_writes", "vector_addr"):
+            with self.subTest(missing=field):
+                row = ij.base_row("TIQ", handler)
+                del row[field]
+                self.assertEqual(ij.judge_entry(row, "TIQ", handler)[0], ij.BLOCKED)
+        row = ij.base_row("TIQ", handler)
+        row["vector_addr"] = 0xFFF6
+        self.assertEqual(ij.judge_entry(row, "TIQ", handler)[0], ij.BLOCKED)
 
     def test_mutation_self_check_rejects_every_falsified_row(self):
         for vector, handler in HANDLERS.items():
