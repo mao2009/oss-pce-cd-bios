@@ -13,9 +13,12 @@ suite. **Do not use a fixed count here**: new tests merge independently; the
 
 ### cc65-dependent tests: SKIP versus required
 
-Only tests that really execute cc65 (`build`, `ca65`, `ld65`, `cc65`, `da65`) are gated with
-`@requires_cc65` (`tools/environment.py`), on the method or on the classes whose fixture is built by cc65.
-Everything else always runs, including tests that merely sit beside a gated class.
+Tests that really execute cc65 (`build`, `ca65`, `ld65`, `cc65`, `da65`) are gated with
+`@requires_cc65` (`tools/environment.py`). The decorator on a class gates **every** `test*` method of that
+class, not only the ones that use the fixture. So a test that needs no cc65 must live in a separate,
+ungated class beside it (for example `ApiContractTests` or `CdLoadExecContractTests`).
+`tests/host/test_cc65_gate.py` checks this for the moved cc65-independent tests in `test_cdload_exec.py`
+and `test_reset_entry.py`.
 
 | Host / run | cc65 missing | cc65 present |
 | --- | --- | --- |

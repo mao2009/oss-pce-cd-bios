@@ -62,17 +62,21 @@ class CdLoadExecBuildTests(unittest.TestCase):
         self.assertEqual(raw[at - 16:at - 16 + 12], b"\x00" + b"\xff" * 10 + b"\x00")  # sync pattern intact
         self.assertTrue(cue.exists())
 
-    def test_payload_size_limits_are_enforced(self):
-        for code in (b"", bytes(256)):
-            with self.assertRaises(ValueError):
-                encode_sector(5, code)
-
     def test_tampered_sector_byte_changes_only_its_bytes(self):
         clean = encode_sector(5, self.code)
         damaged = bytearray(clean)
         damaged[HDR_BYTES] ^= 1
         self.assertEqual(sum(a != b for a, b in zip(clean, damaged)), 1)
         self.assertNotEqual(hashlib.sha256(clean).hexdigest(), hashlib.sha256(bytes(damaged)).hexdigest())
+
+
+class CdLoadExecContractTests(unittest.TestCase):
+    """cc65-independent checks: only encode_sector(), so these always run (no @requires_cc65 here)."""
+
+    def test_payload_size_limits_are_enforced(self):
+        for code in (b"", bytes(256)):
+            with self.assertRaises(ValueError):
+                encode_sector(5, code)
 
 
 # ---- judge negatives on synthetic records (no emulator): halt confirmation and SCSI phase sequence ----

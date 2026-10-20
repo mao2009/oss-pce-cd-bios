@@ -131,6 +131,13 @@ class Cc65GateContractTests(unittest.TestCase):
         self.assertEqual(result.skipped, [])
         self.assertEqual(len(result.failures) + len(result.errors), 1)
 
+    def test_cc65_independent_tests_in_gated_modules_always_run(self):
+        # Tests that call only pure helpers must not sit inside a @requires_cc65 class (the gate is per class).
+        rows = run_modules(["test_cdload_exec", "test_reset_entry"])
+        for test_id in ("test_cdload_exec.CdLoadExecContractTests.test_payload_size_limits_are_enforced",
+                        "test_reset_entry.ResetEntryContractTests.test_only_sourced_init_no_guessed_state"):
+            self.assertEqual(rows.get(test_id, ("absent", ""))[0], "ok", test_id)
+
     def test_makefile_test_target_is_required_and_host_test_needs_no_build(self):
         text = (ROOT / "Makefile").read_text()
         test_rule = re.search(r"^test:[^\n]*\n((?:\t[^\n]*\n?)+)", text, re.M)
