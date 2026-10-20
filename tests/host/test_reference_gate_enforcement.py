@@ -6,6 +6,7 @@ refusal must come from the gate before that path is opened, never from a FileNot
 import copy
 import sys
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
 
@@ -19,6 +20,18 @@ from reference_bios_runner import Blocked
 
 MISSING_BIOS = "rom/does-not-exist-synthetic.pce"
 SLOT_1E_REASON = "NO_REVIEWED_GATE_RECORD"  # the committed ledger has no record for slot $1E
+GATE_REFUSAL = "BLOCKED: reference JSR gate refused slot-1e"  # prefix of G.require_allowed's refusal
+
+
+class _TrackedBios:
+    """bios_path stand-in: counts any attempt to open or resolve it (os.fspath calls __fspath__)."""
+
+    def __init__(self):
+        self.opened = 0
+
+    def __fspath__(self):
+        self.opened += 1
+        raise AssertionError("bios_path was opened")
 
 
 class GateEnforcementTest(unittest.TestCase):
@@ -58,15 +71,34 @@ class GateEnforcementTest(unittest.TestCase):
             execute_case(self.case, self.cfg, self.adapter)
         self.assertIn(SLOT_1E_REASON, str(ctx.exception))
 
+    def _no_probe(self):
+        # Any reach of probe compilation or spawning fails the test with "probe reached".
+        stack = ExitStack()
+        for owner, name in ((adapter, "compile_probe"), (adapter.subprocess, "run")):
+            stack.enter_context(mock.patch.object(owner, name, side_effect=AssertionError("probe reached")))
+        return stack
+
     def test_observe_jsr_refuses_with_gate_reason(self):
-        with self.assertRaisesRegex(ValueError, SLOT_1E_REASON):
-            adapter.observe_jsr(self.jsr_cfg)
+        cfg = dict(self.jsr_cfg, bios_path=_TrackedBios())
+        with self._no_probe(), self.assertRaises(G.GateRefused) as ctx:
+            adapter.observe_jsr(cfg)
+        self.assertTrue(str(ctx.exception).startswith(GATE_REFUSAL))
+        self.assertIn(SLOT_1E_REASON, str(ctx.exception))
+        self.assertEqual(cfg["bios_path"].opened, 0)
 
     def test_caller_flags_cannot_bypass(self):
         for flag in ({"allow": True}, {"execution": "ALLOWED"}, {"gate_allowed": True}):
-            with self.subTest(flag=flag):
-                with self.assertRaisesRegex(ValueError, SLOT_1E_REASON):
+            with self.subTest(flag=flag), self._no_probe():
+                with self.assertRaisesRegex(G.GateRefused, GATE_REFUSAL):
                     adapter.observe_jsr(dict(self.jsr_cfg, **flag))
+
+    def test_observe_reset_only_refused_by_gate_before_bios_access(self):
+        cfg = {"api_id": "reference-reset-only", "max_instructions": 100,
+               "bios_path": _TrackedBios()}
+        with self._no_probe(), self.assertRaises(G.GateRefused) as ctx:
+            adapter.observe(cfg)
+        self.assertIn("GATE_TARGET_UNMAPPED", str(ctx.exception))
+        self.assertEqual(cfg["bios_path"].opened, 0)
         for call in (lambda: runner.run(self.cfg, self.adapter, allow=True),
                      lambda: execute_case(self.case, self.cfg, self.adapter, allow=True),
                      lambda: G.require_allowed("slot-1e", allow=True)):
@@ -90,11 +122,10 @@ class GateEnforcementTest(unittest.TestCase):
     def test_refusal_precedes_any_bios_path_access(self):
         # Any access to bios_path would hash or spawn the adapter; neither may be reached.
         with mock.patch.object(runner, "sha", side_effect=AssertionError("bios hashed")), \
-                mock.patch.object(adapter.subprocess, "run", side_effect=AssertionError("probe ran")), \
-                mock.patch.object(adapter, "compile_probe", side_effect=AssertionError("probe built")):
+                self._no_probe():
             with self.assertRaisesRegex(Blocked, SLOT_1E_REASON):
                 runner.run(self.cfg, self.adapter)
-            with self.assertRaisesRegex(ValueError, SLOT_1E_REASON):
+            with self.assertRaisesRegex(G.GateRefused, GATE_REFUSAL):
                 adapter.observe_jsr(self.jsr_cfg)
             with self.assertRaisesRegex(Blocked, SLOT_1E_REASON):
                 execute_case(self.case, self.cfg, self.adapter)

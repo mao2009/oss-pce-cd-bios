@@ -123,6 +123,8 @@ def observe_jsr(config):
 
 
 def observe(config):
+    # Gate every branch (slot-1e and reset-only alike) before any dispatch or bios_path access.
+    G.require_allowed(config.get("api_id"))
     if config.get("api_id") == "slot-1e":
         return observe_jsr(config)
     if config.get("api_id") != "reference-reset-only":

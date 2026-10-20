@@ -24,12 +24,13 @@ class ReferenceGeargrafxAdapterTests(unittest.TestCase):
     def test_api_execution_rejected_before_emulator(self):
         for api in ("slot-03", "psg-48-00"):
             with self.subTest(api=api):
-                with self.assertRaisesRegex(ValueError, "no reference BIOS API call wrapper"):
+                # The gate runs first on every branch, so unsupported ids are refused there.
+                with self.assertRaisesRegex(ValueError, "reference JSR gate refused|GATE_TARGET_UNMAPPED"):
                     adapter.observe({"api_id": api, "max_instructions": 100})
 
     def test_slot_1e_requires_a_single_page_aligned_allowlist(self):
         with self.assertRaisesRegex(ValueError, "one RAM allowlist page interval"):
-            adapter.observe({"api_id": "slot-1e", "max_instructions": 100})
+            adapter.validate_jsr_config({"api_id": "slot-1e", "max_instructions": 100})
 
     def test_jsr_experiment_rejects_invalid_budgets_before_emulator(self):
         for n in (0, 2, 3, 1000001, True):
@@ -68,10 +69,11 @@ class ReferenceGeargrafxAdapterTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     adapter.jsr_observation(probe_row(**mutation))
 
-    def test_reset_rejects_invalid_step_limits_before_emulator(self):
+    def test_reset_is_gated_before_step_limits_and_emulator(self):
+        # reference-reset-only is not a gated slot id, so the gate refuses it before budget checks.
         for n in (0, -1, 10000001, True):
             with self.subTest(n=n):
-                with self.assertRaisesRegex(ValueError, "invalid step budget"):
+                with self.assertRaisesRegex(ValueError, "GATE_TARGET_UNMAPPED"):
                     adapter.observe({"api_id": "reference-reset-only",
                                      "max_instructions": n})
 
