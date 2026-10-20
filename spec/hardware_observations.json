@@ -1,0 +1,32 @@
+{
+  "schema": "hardware-observation-ledger/1",
+  "release_eligible": false,
+  "callee_abi": "UNVERIFIED",
+  "entries": [
+    {
+      "field": "hw_bus_reset",
+      "status": "OBSERVED",
+      "value": "$1804 bit 1: assert -> readback $02, release -> $00; bus FREE after pulse (PHASE_MASK $F8 clear)",
+      "source": {
+        "kind": "EMULATOR_SOURCE",
+        "name": "Geargrafx src/cdrom.cpp register $04 (SCSI RST); #5/#10/#121 diagnostics",
+        "revision": "b49ae82a012eade566d72e9d61c9d95a5caa4da3",
+        "reference": "docs/cd-reset-contract.md"
+      },
+      "environment": {
+        "kind": "EMULATOR_CORE",
+        "platform": "Geargrafx libretro core (object link only; not hardware)",
+        "media": "synthetic CD (no commercial disc)",
+        "runs": ["cold", "warm"]
+      },
+      "trust_level": "EMULATOR_CORE_UNARCHIVED",
+      "not_evidence_for": [
+        "CD_RESET callee ($01 / $E003) pulsing $1804",
+        "callee returns, flags, clobbered, preserved, irq, errors",
+        "real System Card hardware behavior (#7 NOT_TESTED)",
+        "BIOS API compatibility"
+      ],
+      "notes": "Register/bus fact only. Run artifact is not stored or hash-pinned, so it is not authenticated."
+    }
+  ]
+}

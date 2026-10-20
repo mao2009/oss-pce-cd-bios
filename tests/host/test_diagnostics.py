@@ -2,12 +2,20 @@
 import json
 import tempfile
 import unittest
+from tools.environment import requires_cc65
 from pathlib import Path
 
 from tools.build_rom import API_IMPLEMENTATION, build
 from tools.diagnostics import build_probe_images, parse_labels
 
 
+class DiagnosticParserTests(unittest.TestCase):
+    """Label parsing needs no built ROM, so this always runs."""
+    def test_bad_symbol_fails(self):
+        with self.assertRaises(ValueError):parse_labels('al 00E800 .bank_probe\n')
+
+
+@requires_cc65
 class DiagnosticBuildTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -56,8 +64,7 @@ class DiagnosticBuildTests(unittest.TestCase):
         for data in (self.base[:-1],b'\xff'*len(self.base)):
             with self.assertRaises(ValueError):build_probe_images(data,self.root/'bad')
 
-    def test_bad_symbol_and_mode_fail(self):
-        with self.assertRaises(ValueError):parse_labels('al 00E800 .bank_probe\n')
+    def test_bad_mode_fails(self):
         with self.assertRaises(ValueError):build_probe_images(self.base,self.root/'bad-mode','invalid')
 
     def test_manifest_records_only_the_implemented_slot(self):

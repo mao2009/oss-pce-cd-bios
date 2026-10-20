@@ -24,13 +24,25 @@ EXPECTED = {
     'C5': 'UNKNOWN', 'C6': 'SECONDARY_SOURCE', 'C7': 'SECONDARY_SOURCE', 'C8': 'UNKNOWN',
     'C9': 'SECONDARY_SOURCE', 'C10': 'UNKNOWN', 'C11': 'UNKNOWN', 'C12': 'UNKNOWN',
     'C13': 'UNKNOWN', 'C14': 'UNKNOWN', 'C15': 'SECONDARY_SOURCE', 'C16': 'UNKNOWN',
-    'C17': 'HYPOTHESIS', 'C18': 'SECONDARY_SOURCE',
+    'C17': 'HYPOTHESIS', 'C18': 'HYPOTHESIS', 'C19': 'UNKNOWN',
 }
-# Commit pins. 797845ce is a git blob (pctech.txt), not a commit, so it is cited only as a blob.
-MD_COMMIT = 'ducalex/retro-go@05e97e80'
-MD_BLOB = 'blob `797845ce`'
-GG_COMMIT = 'drhelius/Geargrafx@3685f8cf'
+# Full 40-hex pins, resolved with `gh api` (commits) and the retro-go tree (blob).
+# 797845ce... is a git blob (pctech.txt), not a commit, so it is cited only as a blob.
+HUC_SHA = '54f5c73606c1e7142e8095c727cab2767e2b3cb3'
+RETRO_GO_SHA = '05e97e80ef0943404ed0d37671f6ab3074017d55'
+HUGO_SHA = '64ed226da2288738781743eeef228c069e8973a4'
+HUEXPRESS_SHA = 'b91fd8e30d5898c8ca9c6c749a5f5106a03e22d0'
+GEARGRAFX_SHA = '3685f8cf50070a1647dd3536942718a8581d9db5'
+PCTECH_BLOB_SHA = '797845ce11715712a740dc0272fc6ad1fa26c490'
+FULL_PINS = {HUC_SHA, RETRO_GO_SHA, HUGO_SHA, HUEXPRESS_SHA, GEARGRAFX_SHA, PCTECH_BLOB_SHA}
+MD_COMMIT = f'ducalex/retro-go@{RETRO_GO_SHA}'
+MD_BLOB = f'blob `{PCTECH_BLOB_SHA}`'
+GG_COMMIT = f'drhelius/Geargrafx@{GEARGRAFX_SHA}'
 GG_UNRESOLVED = 'drhelius/Geargrafx@1e52d13f'
+# Short token that appears in the doc only as a rejected (unresolvable) old pin.
+REJECTED_SHORT_PINS = {'1e52d13f'}
+# Any lowercase hex token of 7+ chars in the doc must be a full pin (or an explicitly rejected one).
+SHA_TOKEN = re.compile(r'(?<![0-9A-Za-z])[0-9a-f]{7,40}(?![0-9A-Za-z])')
 # Execution rule (structural, not a verb list). A line is a claim when it contains a
 # completed-action or past-tense marker AND either a reference-callee subject (BIOS, ROM,
 # callee, slot, $0D, $E0xx, CD_SUBRQ/CD_SUBRD). A line that asserts an observed result
@@ -108,7 +120,7 @@ class CdSubrqSubrdConflictLedgerTests(unittest.TestCase):
     def test_zeograd_name_leg_is_not_source_fact(self):
         # C1 is the HuC/Hu-Go/huexpress leg only; the Zeograd leg is split into C18.
         self.assertIsNone(re.search(r'(?<![A-Za-z0-9_])Z(?![A-Za-z0-9_])', ' '.join(self.rows['C1'])))
-        self.assertEqual(self.rows['C18'][3], 'SECONDARY_SOURCE')
+        self.assertEqual(self.rows['C18'][3], 'HYPOTHESIS')
         self.assertIn('conflict unresolved', self.rows['C18'][4])
 
     def test_return_and_q_conflicts_are_kept_unresolved(self):
@@ -135,6 +147,55 @@ class CdSubrqSubrdConflictLedgerTests(unittest.TestCase):
         hc = _source_row(self.text, 'HC')
         self.assertIn('692 行', hc)
         self.assertIn('481 行', hc)
+
+    def test_every_sha_token_is_a_full_40_hex_pin(self):
+        # Short SHAs (8 hex) are not allowed anywhere in the doc, including revision cells.
+        self.assertEqual(len(FULL_PINS), 6)
+        for pin in FULL_PINS:
+            self.assertEqual(len(pin), 40, pin)
+            self.assertIn(pin, self.text, pin)
+        for tok in SHA_TOKEN.findall(self.text):
+            if tok in REJECTED_SHORT_PINS:
+                continue
+            self.assertEqual(len(tok), 40, f'short SHA in doc: {tok}')
+            self.assertIn(tok, FULL_PINS, tok)
+
+    def test_c1_source_fact_is_hc_name_only(self):
+        # Review: HG and HX are HLE reimplementations, not primary sources, so they cannot back SOURCE_FACT.
+        c1 = self.rows['C1']
+        self.assertEqual(c1[3], 'SOURCE_FACT')
+        self.assertIn('HC', c1[2])
+        self.assertIn('481 行', c1[2])
+        self.assertNotIn('HG', c1[2])
+        self.assertNotIn('HX', c1[2])
+
+    def test_hg_hx_name_legs_are_hypothesis(self):
+        # Ledger SOURCE_FACT definition: reimplementation / developer claims are HYPOTHESIS.
+        c18 = self.rows['C18']
+        self.assertEqual(c18[3], 'HYPOTHESIS')
+        for src in ('Z', 'HG', 'HX'):
+            self.assertIn(src, c18[2], src)
+        self.assertIn('HLE', c18[2])
+        self.assertIn('conflict unresolved', c18[4])
+
+    def test_c19_notes_zeograd_general_description_only(self):
+        self.assertIn('Z の一般記述のみで $0D 固有の記載はない', self.rows['C19'][2])
+        self.assertNotIn('18 行目', self.rows['C19'][2])
+
+    def test_hc_zero_callers_is_local_grep_only(self):
+        hc = [l for l in self.text.splitlines() if l.startswith('| HC | cd_subrd = $00:E027')][0]
+        self.assertIn('local `git grep -i`', hc)
+        self.assertIn('独立の再確認は未実施', hc)
+
+    def test_claim_rows_are_in_ascending_id_order(self):
+        ids = list(self.rows)
+        self.assertEqual(ids, sorted(ids, key=lambda c: int(c[1:])))
+
+    def test_zeograd_source_records_version_and_hash_status(self):
+        z = _source_row(self.text, 'Z')
+        self.assertIn('版なし', z)
+        self.assertIn('本文ハッシュは未記録', z)
+        self.assertIn('SECONDARY_SOURCE', z)
 
     def test_no_reference_bios_execution_claimed(self):
         self.assertIn('一切していない', self.text)
@@ -179,7 +240,7 @@ class ClaimRowNegativeTests(unittest.TestCase):
         return '# t\n' + ''.join(rows)
 
     def test_every_id_duplicate_is_rejected_in_either_order(self):
-        for n in range(1, 19):
+        for n in range(1, 20):
             cid = f'C{n}'
             good = self.ROW.format(i=cid, st='UNKNOWN')
             bad = self.ROW.format(i=cid, st='VERIFIED')
@@ -189,14 +250,14 @@ class ClaimRowNegativeTests(unittest.TestCase):
 
     def test_real_doc_rows_each_duplicated_are_rejected(self):
         lines = [l for l in DOC.read_text(encoding='utf-8').splitlines() if l.startswith('| C')]
-        self.assertEqual(len(lines), 18)
+        self.assertEqual(len(lines), 19)
         for l in lines:
             for dup in (lines + [l], [l] + lines):
                 with self.assertRaises(ValueError, msg=l[:8]):
                     _claim_rows('\n'.join(dup))
 
     def test_wrong_column_count_is_rejected_for_every_id(self):
-        for n in range(1, 19):
+        for n in range(1, 20):
             cid = f'C{n}'
             for row in (f'| {cid} | a | b | UNKNOWN |\n', f'| {cid} | a | b | UNKNOWN | c | d |\n'):
                 with self.assertRaises(ValueError, msg=row):

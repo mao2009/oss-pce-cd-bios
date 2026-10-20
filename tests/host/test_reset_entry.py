@@ -3,11 +3,13 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from tools.environment import requires_cc65
 
 from tools.build_rom import build
 from tools.build_reset_entry import RESET_CODE, SYMBOL_OFFSETS, build_reset_entry, verify_reset_entry
 
 
+@requires_cc65
 class ResetEntryTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -27,13 +29,6 @@ class ResetEntryTests(unittest.TestCase):
         self.assertEqual(self.payload, self.release.read_bytes())
         self.assertEqual(len(self.payload), 262144)
         verify_reset_entry(self.payload, self.base)
-
-    def test_only_sourced_init_no_guessed_state(self):
-        # SEI CLD; MPR0=$FF; MPR1=$F8; LDX #$FF TXS. No CSH, no MPR2..6 writes (UNKNOWN in spec/rom-contract.json).
-        self.assertTrue(RESET_CODE.startswith(bytes.fromhex("78 d8 a9ff 5301 a9f8 5302 a2ff 9a".replace(" ", ""))))
-        self.assertNotIn(0xD4, RESET_CODE)
-        for mask in (0x04, 0x08, 0x10, 0x20, 0x40, 0x80):
-            self.assertNotIn(bytes([0x53, mask]), RESET_CODE)
 
     def test_vectors(self):
         reset = (0xF000).to_bytes(2, "little")
@@ -66,6 +61,17 @@ class ResetEntryTests(unittest.TestCase):
         self.assertFalse(m["release_eligible"])
         self.assertEqual(m["unknown"], ["mpr2_to_mpr6_layout", "csh_speed_policy", "stack_pointer_abi",
                                         "interrupt_abi", "final_system_card_layout"])
+
+
+class ResetEntryContractTests(unittest.TestCase):
+    """cc65-independent checks on the constant RESET_CODE: always run (no @requires_cc65 here)."""
+
+    def test_only_sourced_init_no_guessed_state(self):
+        # SEI CLD; MPR0=$FF; MPR1=$F8; LDX #$FF TXS. No CSH, no MPR2..6 writes (UNKNOWN in spec/rom-contract.json).
+        self.assertTrue(RESET_CODE.startswith(bytes.fromhex("78 d8 a9ff 5301 a9f8 5302 a2ff 9a".replace(" ", ""))))
+        self.assertNotIn(0xD4, RESET_CODE)
+        for mask in (0x04, 0x08, 0x10, 0x20, 0x40, 0x80):
+            self.assertNotIn(bytes([0x53, mask]), RESET_CODE)
 
 
 if __name__ == "__main__":

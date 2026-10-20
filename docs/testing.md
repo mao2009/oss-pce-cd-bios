@@ -11,6 +11,28 @@ invalid input was rejected, never evidence that the invalid ROM works.
 suite. **Do not use a fixed count here**: new tests merge independently; the
 `unittest` summary and exact CI commit identify the true current count.
 
+### cc65-dependent tests: SKIP versus required
+
+Tests that really execute cc65 (`build`, `ca65`, `ld65`, `cc65`, `da65`) are gated with
+`@requires_cc65` (`tools/environment.py`). The decorator on a class gates **every** `test*` method of that
+class, not only the ones that use the fixture. So a test that needs no cc65 must live in a separate,
+ungated class beside it (for example `ApiContractTests` or `CdLoadExecContractTests`).
+`tests/host/test_cc65_gate.py` checks that the moved cc65-independent tests run with cc65 absent: the
+`CdLoadExecContractTests` and `ResetEntryContractTests` tests, and the `ApiContractTests` tests
+`test_subdirectory_of_unrelated_repo_is_not_attributed` and `test_bad_override_filename`.
+
+| Host / run | cc65 missing | cc65 present |
+| --- | --- | --- |
+| `make host-test` (local, no build) | gated tests SKIP with reason `cc65 unavailable (<tool>: ...); run make setup`; the rest run | every test runs |
+| `make test` (required gate, sets `OSS_PCE_REQUIRE_CC65=1`) | gated tests **FAIL**, never SKIP | every test runs |
+
+`make test` also depends on `build`, so it cannot pass without cc65 anyway. The required flag makes the
+policy explicit: a SKIP is never reported as success in the required gate. Windows hosts also carry
+platform issues outside this policy (`os.getuid` in `tools/environment.py`, `cp932` text reads, no
+`make`); tests affected by those are reported as ERROR there and are not evidence either way.
+Linux CI (Ubuntu 24.04, `make setup` first) is the only required environment. WSL verification is a
+separate, clean-clone run of the same commands.
+
 - Two independent debug builds and a release build yield identical ROM bytes.
 - Headerless size, reset code, checkpoint loop, marker, vector words and all
   unused padding match the **fixture contract**. Truncation, fake 8 KiB data,
@@ -116,13 +138,14 @@ Linux 上のクリーンクローンで、リポジトリルートから `TOOLS_
 
 本 PR は Makefile ターゲットを追加しない（共有ターゲット `routine-real-core` は PR #331 に属し、本ツリーには存在しない）。ハーネスは検証済み DEV ROM の
 `$E800-$EFFF` テストオーバーレイ（`tests/fixtures/core-harness.s`）から bank0 の
-ルーチンを JSR し、合成入力 A/X/Y/P とゼロページ `$20E0-$20FF` 32 バイトを与えて、
+ルーチンを JSR し、合成入力 A/X/Y/P とゼロページ `$E0-$FF`（コード上の番地 `$00E0-$00FF`、32 バイト。番地の対応は docs/311-harness-safety.md の番地表記を参照）を与えて、
 呼出前後の A/X/Y/P/SP/MPR とゼロページを実 Geargrafx コア（ディスクなし HuCard
 ロード、cold/warm、各 2048 命令）で記録する。各サイクルは `RETURNED` / `TRAPPED`
 / `TIMEOUT` に分類し、`RETURNED` かつ全期待値一致のみ PASS。`TIMEOUT` は 1 サイクル 2048 命令の予算超過（長いルーチンを含む）と無限ループを区別しない。プラグインケースは `expect` で a/x/y/p（非ゼロ `p_mask`）/ram のいずれかを必ず照合する。未完了は PASS に
 ならない。ケース JSON の形式と組込み自己検証ケースは
 `tests/integration/geargrafx_core_harness.py` の docstring を参照。リファレンス
 BIOS は実行せず、BIOS ABI 互換の証拠ではない。
+未監視（判定の対象外）: IRQ 受理と IRQ 源、MMIO 書込み、スタック内容（`stack_01f8_hex` と `irr`/`idr` は記録のみ）、ZP 窓外の RAM、サイクル数・タイミング。
 
 CI 用フィクスチャ `tests/fixtures/core-harness-plugin.json` の期待値（a=17, x=3, y=0）は、
 リポジトリ内 OSS 実装 slot_1E の観測値（`docs/final-report-20261016.md` §6、`api_jsr_1E`

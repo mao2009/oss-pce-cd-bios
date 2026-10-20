@@ -1,7 +1,7 @@
 PYTHON ?= python3
 MODE ?= debug
 
-.PHONY: setup build test check clean release setup-geargrafx integration
+.PHONY: setup build test host-test check clean release setup-geargrafx integration integration-test
 
 setup:
 	$(PYTHON) tools/setup.py all
@@ -12,9 +12,20 @@ setup-geargrafx:
 build:
 	$(PYTHON) tools/build.py --mode "$(MODE)"
 
+# Required gate: OSS_PCE_REQUIRE_CC65=1 turns any missing cc65 into a FAILURE, never a SKIP.
 test: build
-	$(PYTHON) -m unittest discover -s tests/host -v
+	OSS_PCE_REQUIRE_CC65=1 $(PYTHON) -m unittest discover -s tests/host -v
 	$(MAKE) integration MODE="$(MODE)"
+	$(MAKE) integration-test
+
+# Real-Geargrafx tests (fetch/build, real-core runs) live only in tests/integration (Issue #333).
+integration-test:
+	OSS_PCE_REQUIRE_CC65=1 $(PYTHON) -m unittest discover -s tests/integration -p 'test_*.py' -v
+
+# Local host-only run: no build, no integration. cc65-dependent tests SKIP with a reason when cc65 is absent;
+# the required gate is `make test`.
+host-test:
+	$(PYTHON) -m unittest discover -s tests/host -v
 
 integration: build
 	$(PYTHON) tests/integration/geargrafx_smoke.py --rom "build/$(MODE)/smoke-test-not-bios.pce" --output "build/$(MODE)/geargrafx-evidence.json"
@@ -40,7 +51,7 @@ release:
 dev-rom:
 	$(PYTHON) tools/build_rom.py --mode "$(MODE)"
 dev-test: dev-rom
-	$(PYTHON) -m unittest discover -s tests/host -p 'test_api*.py' -v
+	OSS_PCE_REQUIRE_CC65=1 $(PYTHON) -m unittest discover -s tests/host -p 'test_api*.py' -v
 	$(MAKE) dev-integration MODE="$(MODE)"
 dev-integration: dev-rom
 	$(PYTHON) tests/integration/geargrafx_api.py --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
