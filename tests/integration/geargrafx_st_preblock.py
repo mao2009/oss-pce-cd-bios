@@ -13,7 +13,8 @@ Modes (probe: geargrafx_reference_jsr.cpp):
 
 * ``stN-preblock``: EXECUTE breakpoint armed on the ST opcode PC. Armed run must stop with
   PC == ST PC, the breakpoint flag raised, the VDC readback (AR / R[0]) unchanged and no guest
-  RAM store. The probe never resumes after the stop (this is the refusal).
+  RAM store. Only the stop before the known ST PC is observed: no VDC side effect at the stop.
+  The probe is not resumed, so refusal-before-resume is NOT tested.
 * ``stN-preblock-disarmed``: MUTATION of the blocking mechanism (same guest, breakpoint NOT
   armed). The side effect must land and the armed classifier must reject this run.
 * ``pos-write``: positive control, allowlisted page-1 RAM store must land unflagged.
