@@ -27,17 +27,25 @@ cold/warm 各 2048 命令、DEV ROM（`make dev-rom MODE=debug`）。
 | --- | --- | --- | --- |
 | A / X / Y（入力と復帰後） | 取得可 | trace の `harness_call` / `harness_after` | `neg_wrong_expectation`（a 不一致を FAIL） |
 | P（N/Z/C/V、マスク比較） | 取得可 | `p_mask` で比較。B(0x10)/T(0x20) は比較対象外 | `selftest_add_carry_out`（C/N/Z を確認） |
-| SP | 取得可（記録と釣り合い判定） | 呼出し前後の `sp`、期待値 `0xFF` | **実コア負例なし**（判定ロジックは合成レコードのホスト試験のみ） |
-| MPR0-7 | 取得可 | 呼出し前後の `mpr[8]` を比較 | `neg_mpr_changed`（MPR2 再マップを FAIL と判定） |
+| SP | 取得可（記録と釣り合い判定） | 呼出し前後の `sp`、期待値 `0xFF` | `neg_sp_unbalanced`（本コミットで追加。戻り時に SP が 1 ずれるルーチン。**実コア未実行**）。判定ロジックは合成レコードのホスト試験でも確認 |
+| MPR0-7 | 取得可 | 呼出し前後の `mpr[8]` を比較 | `neg_mpr_changed`（MPR2 を `tma`→`eor #$FF`→`tam` で必ず変えるルーチン。初期値に依存しない。**実コア未実行**に更新） |
 | PC 復帰 | 取得可 | `harness_done` チェックポイントへの到達を `RETURNED` と判定 | `neg_hang`（TIMEOUT）、`neg_brk`（TRAPPED） |
 | RAM 差分（ZP 窓 `$20E0-$20FF`、32 バイト） | 取得可 | 呼出し前後の 32 バイトを比較 | `neg_undeclared_ram_write`（未宣言の書込みを FAIL） |
 | RAM 差分（ZP 窓の外） | **取得不可（欠落）** | スナップショットは `$2200`/`$2220` の 32 バイトのみ | なし |
 | スタックの内容（ページ 1、`$0100-$01FF`） | **取得不可（欠落）** | SP の値のみ記録し、スタック内容は読まない | なし |
-| I/O（MMIO）書込み | **取得不可（欠落）** | 核ハーネスは I/O を観測しない。IRQ/MMIO は別プローブ（`geargrafx_irq_register.py`、`geargrafx_mmio1804_*.py`、#173 記録）の領域 | なし |
+| I/O（MMIO）書込み | **取得不可（未監視）** | 核ハーネスは I/O を観測しない。IRQ/MMIO は別プローブ（`geargrafx_irq_register.py`、`geargrafx_mmio1804_*.py`、#173 記録）の領域 | なし |
+| IRQ / BRK 受理 | **部分的（未監視）** | 呼出し時 P.I=1（`sei` 済み）。IRQ/BRK ベクタは `harness_trap` に集約され、受理されれば `TRAPPED`。IRQ 源（タイマ・VDC 等）の発生は監視しない | `neg_brk`（BRK のみ。IRQ の実コア負例はなし） |
 | サイクル数・タイミング | 取得不可 | ステップ予算（2048 命令）のみ | なし |
 
+### 観測窓の照合（本点検で確認）
+- RAM 観測窓は ZP `$E0-$FF`（CPU `$20E0-$20FF`、32 バイト）。`core-harness.s` のコメント、
+  `geargrafx_core_harness.py` の docstring、本記録は同じ範囲を指しており、食い違いはない。
+- 核ハーネスのスナップショットは work RAM `$2200-$223F`（64 バイト）で、前半 32 バイトは入力シード、
+  後半 32 バイトは呼出し後の ZP 写し（`$2220`）。比較対象は ZP 窓の 32 バイトのみ。
+
 ## 観測器の検証結果（自作ルーチン）
-pinned Geargrafx の実コア上で、次の 8 ケースすべてが宣言どおりに振る舞った（`harness_behaved`）。
+以下の実コア結果は前回（9ebb708 相当）の記録。`neg_sp_unbalanced` と `neg_mpr_changed` の
+ルーチン差し替えは **実コア未実行**（親ワーカーが実行するまで PASS とはみなさない）。
 
 | ケース | 期待 | 結果 |
 | --- | --- | --- |
@@ -50,19 +58,21 @@ pinned Geargrafx の実コア上で、次の 8 ケースすべてが宣言どお
 | neg_mpr_changed（本 PR で追加） | FAIL / RETURNED | FAIL / RETURNED（SP/MPR not balanced） |
 | plugin_demo_dev_rom_ex_getver（DEV ROM 回帰、観測値） | PASS / RETURNED | PASS / RETURNED |
 
-プラグイン判定の負例として、期待値を誤らせた `plugin_neg_wrong_a`（a=17 に対し 18 を期待）は
+プラグイン判定の負例として、期待値を誤らせた `plugin_neg_wrong_a`（a=17 に対し 18 を期待。**この JSON はリポジトリに追跡されておらず、再現は一時ファイルで行った記録のみ**）は
 `FAIL` となり、ハーネスは非ゼロで終了した（`UNEXPECTED` として扱われる）。
 
 ## 残作業（欠けている観測項目）
 1. ZP 窓の外の RAM 差分（`$2000-$21FF` 全体、またはワーク RAM 全域）を取得する。
-2. スタック内容（`$0100-$01FF`）の差分を取得する。SP 不釣り合いの実コア負例を追加する。
+2. スタック内容（`$0100-$01FF`）の差分を取得する。SP 不釣り合いの実コア負例（`neg_sp_unbalanced`）は追加済みで、実コア実行が未了。
 3. I/O 書込みの観測は、既存の MMIO 監視（#173 系）と結合するかを別 Issue で判断する。
 4. 上記の欠落を埋めるまで、観測された RAM 差分は「ZP 窓内に限る」と明記する。
 
 ## 検証コマンドと結果
 | コマンド | 結果 |
 | --- | --- |
-| `python3 -m unittest discover -s tests/host -p test_core_harness.py`（クリーンクローン、9ebb708） | OK（15 テスト） |
+| `python3 -m unittest discover -s tests/host -p test_core_harness.py`（9ebb708 時点） | OK（15 テスト） |
+| 同（本修正、RED: `neg_sp_unbalanced` 未定義・MPR 負例の XOR 未適用で 2 件 FAIL → GREEN: 18 テスト OK） | ホスト側のみ確認。実コアの結果は未取得 |
+| 親が実行する実コア確認（クリーンクローン、Linux） | **未実行（期待値のみ）**: `make dev-rom MODE=debug` 後に `python3 tests/integration/geargrafx_core_harness.py --mode debug` が終了 0、9 ケースが宣言どおり（`neg_sp_unbalanced`: FAIL / RETURNED、failure に `SP/MPR not balanced`）。`neg_mpr_changed` も FAIL / RETURNED を期待 |
 | `make dev-rom MODE=debug`（TOOLS_DIR=既存キャッシュ） | 終了コード 0 |
 | `python3 tests/integration/geargrafx_core_harness.py --mode debug` | 終了コード 0、8 ケース宣言どおり |
 | 同、`--cases` 誤期待値の負例（検証は 9ebb708 より前の origin/main） | 終了コード 非ゼロ |
@@ -73,4 +83,5 @@ pinned Geargrafx の実コア上で、次の 8 ケースすべてが宣言どお
 ## 範囲と限界
 - 観測器の検証は自作ルーチンに限る。System Card ABI 互換、実機挙動、純正 BIOS の結果を示さない。
 - 合成レコードのホスト試験は判定器の検証であり、実コア証拠ではない。
+- IRQ と MMIO は未監視。IRQ は受理された場合のみ `TRAPPED` で検出され、IRQ 源や I/O 書込みは見ない。
 - PASS は「観測器が宣言どおり判定した」ことのみを示す。ZP 窓外の書込みは検出できない（上記の欠落）。

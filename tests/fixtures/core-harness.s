@@ -5,7 +5,7 @@
 .setcpu "huc6280"
 .segment "DIAGNOSTIC"
 .export harness_entry, harness_call, harness_after, harness_done, harness_trap, harness_input
-.export harness_selftest, harness_selftest_hang, harness_selftest_brk, harness_selftest_mpr
+.export harness_selftest, harness_selftest_hang, harness_selftest_brk, harness_selftest_mpr, harness_selftest_sp
 
 harness_entry:
     sei
@@ -65,7 +65,17 @@ harness_selftest_hang:   ; never returns: must be classified TIMEOUT
 harness_selftest_brk:    ; BRK: must be classified TRAPPED
     brk
     nop
-harness_selftest_mpr:    ; remaps MPR2 and returns: MPR must be reported as unbalanced
-    lda #$00
+harness_selftest_mpr:    ; remaps MPR2 to its complement and returns: MPR must be reported as unbalanced
+    tma #$04             ; read MPR2 (its initial value is not assumed) ...
+    eor #$FF             ; ... so the value always changes
     tam #$04
     rts
+harness_selftest_sp:     ; pops its own return address and pushes it back one slot lower
+    pla                  ; ret lo
+    tax
+    pla                  ; ret hi
+    pha                  ; extra byte above the return address (never popped)
+    pha                  ; ret hi
+    txa
+    pha                  ; ret lo
+    rts                  ; returns to harness_after with SP off by one: must be reported as unbalanced

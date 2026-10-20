@@ -107,6 +107,32 @@ class JudgeTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             h.validate({**CASE, "target": "no_such_symbol"}, SYM, plugin=True)
 
+    def test_sp_unbalanced_is_judged_fail(self):
+        # Judge-level guard: a routine that returns with SP off by one must never PASS.
+        rec = records()
+        for row in rec["TRACE"]:
+            if row["phase"] == "harness_after":
+                row["sp"] = 0xFE
+        for cycle in ("cold", "warm"):
+            self.assertIn("SP/MPR not balanced", " ".join(h.judge(rec, CASE, SYM)[2]))
+
+    def test_sp_negative_case_is_declared_in_real_core_selftest(self):
+        # Real-core negative for SP imbalance (the judge alone is host-only evidence).
+        names = {c["name"]: c for c in h.SELFTEST}
+        self.assertIn("neg_sp_unbalanced", names)
+        self.assertEqual((names["neg_sp_unbalanced"]["target"], names["neg_sp_unbalanced"]["want"]),
+                         ("harness_selftest_sp", ["FAIL", "RETURNED"]))
+
+    def test_fixture_defines_sp_and_mpr_negatives(self):
+        src = (Path(__file__).resolve().parents[2] / "tests/fixtures/core-harness.s").read_text(encoding="utf-8")
+        self.assertIn("harness_selftest_sp:", src)
+        exports = [line for line in src.splitlines() if line.startswith(".export")]
+        self.assertTrue(any("harness_selftest_sp" in line for line in exports), exports)
+        # MPR2 may already hold 0 on entry; the negative must force a change, not rely on the initial value.
+        mpr = src[src.index("harness_selftest_mpr:"):]
+        self.assertIn("tma #$04", mpr)
+        self.assertIn("eor #$FF", mpr)
+
     def test_invalid_inputs_rejected(self):
         for bad in ({"p": 0x24}, {"p": 0}, {"a": 256}, {"a": True}, {"target": "nope"}, {"ram": "00"},
                     {"carry": 1}, {"expect": {"p": 1}}, {"expect": {"A": 1}}, {"expect": {"ram": {"32": 1}}},
