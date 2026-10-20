@@ -55,6 +55,13 @@ class AttestationScopeTests(unittest.TestCase):
         text = (ROOT / '.github' / 'workflows' / 'api-source.yml').read_text(encoding='utf-8')
         self.assertEqual(self.SCOPE, self.attest_subjects(text))
 
+    def test_attest_cdread_signs_only_on_push_to_main(self):
+        # Review MEDIUM (#349): a workflow_dispatch on a non-main ref must not produce a signature.
+        text = (ROOT / '.github' / 'workflows' / 'api-source.yml').read_text(encoding='utf-8')
+        job = text.split('\n  attest-cdread:\n', 1)[1].split('\n  verify-cdread-attestation:', 1)[0]
+        conditions = re.findall(r'^    if: (.*)$', job, re.M)
+        self.assertEqual(["github.event_name == 'push' && github.ref == 'refs/heads/main'"], conditions)
+
     def test_inline_subject_path_is_read(self):
         # Review LOW (#349): `subject-path: evidence/x` on one line was not read, so an extra subject could hide.
         fixture = 'jobs:\n  attest-cdread:\n    steps:\n      - uses: x\n        with:\n          subject-path: evidence/x.json\n'

@@ -398,6 +398,14 @@ PAGES_GUARDED = ('jobs:\n  build:\n    steps:\n' + PREAMBLE
                  + '        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4\n')
 
 
+# The approved attest-cdread job (owner decision, Issue #349): its subject-path is exactly the two synthetic files.
+ATTEST_CDREAD_JOB = ('  attest-cdread:\n    steps:\n      - name: Attest\n'
+                     '        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2\n'
+                     '        with:\n          subject-path: |\n'
+                     '            evidence/cdread-probe/cdread-evidence.json\n'
+                     '            evidence/cdread-probe/cdread-probe-not-bios.pce\n')
+
+
 def guarded_with_name(name):
     """A complete, well-formed job whose upload step (and its stage and verify calls) use `name`."""
     return ('jobs:\n  build:\n    steps:\n' + PREAMBLE
@@ -671,11 +679,45 @@ class GuardPlacementTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "sneaky-publish"):
                 guard.check_guard_placement(Path(tmp))
 
+    def _check_api_source(self, text):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, '.github', 'workflows').mkdir(parents=True)
+            rel = '.github/workflows/api-source.yml'
+            Path(tmp, rel).write_text(GUARDED.replace(' w.yml ', f' {rel} ') + text, encoding='utf-8')
+            guard.check_guard_placement(Path(tmp))
+
+    def test_flow_form_job_after_attest_is_refused(self):
+        # Review MEDIUM-HIGH (#349): a flow-form job line is not a block job id, so its publish use was attributed to the
+        # allowlisted attest-cdread job above it and passed.
+        flow = ('  zz: {runs-on: ubuntu-24.04, steps: [{uses: '
+                'actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8}]}\n')
+        with self.assertRaisesRegex(ValueError, 'publish action'):
+            self._check_api_source(ATTEST_CDREAD_JOB + flow)
+
+    def test_attest_inputs_are_limited_to_the_approved_subjects(self):
+        # Review MEDIUM (#349): with-keys other than subject-path (subject-checksums, subject-name, subject-digest)
+        # and any other subject than the approved one must be refused. The allowance covers the subject, not the inputs.
+        for key in ('subject-checksums', 'subject-name', 'subject-digest'):
+            with self.subTest(attest_cdread_key=key):
+                job = ATTEST_CDREAD_JOB + f'          {key}: evidence/cdread-probe/cdread-evidence.json\n'
+                with self.assertRaisesRegex(ValueError, 'attest'):
+                    self._check_api_source(job)
+        head = ('  attest-cdread-verdict:\n    steps:\n      - name: Attest\n'
+                '        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2\n')
+        for label, body in (
+                ('verdict subject-path other file', '        with:\n          subject-path: verdict/other.json\n'),
+                ('verdict extra subject-name', '        with:\n          subject-path: verdict/cdread-verdict.json\n'
+                                               '          subject-name: x\n'),
+                ('verdict extra subject-digest', '        with:\n          subject-path: verdict/cdread-verdict.json\n'
+                                                 '          subject-digest: sha256:00\n')):
+            with self.subTest(verdict=label):
+                with self.assertRaisesRegex(ValueError, 'attest'):
+                    self._check_api_source(head + body)
+        self._check_api_source(ATTEST_CDREAD_JOB)   # the approved pair still passes
+
     def test_attest_job_is_allowed_only_in_api_source_workflow(self):
         # Review (#349): the allowance is a (file, job) pair. attest-cdread passes in api-source.yml and nowhere else.
-        attest = ('  attest-cdread:\n    steps:\n      - name: Attest\n'
-                  '        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2\n'
-                  '        with:\n          subject-path: evidence/cdread-probe/cdread-evidence.json\n')
+        attest = ATTEST_CDREAD_JOB
         for name, expect_refused in (('api-source.yml', False), ('other.yml', True)):
             with self.subTest(file=name):
                 with tempfile.TemporaryDirectory() as tmp:
