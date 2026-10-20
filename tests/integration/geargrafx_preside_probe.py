@@ -130,10 +130,6 @@ def run_case(case, probe, bios, cue):
         return case_id, BLOCKED, f"{label}: no evidence ({error})"
     except InvalidObservation as error:
         return case_id, BLOCKED, f"{label}: no valid evidence ({error})"
-    except (TypeError, AttributeError) as error:
-        # A malformed observation (a non-dict section, a value that cannot be compared or formatted) is
-        # invalid evidence. It must never escape run_case.
-        return case_id, BLOCKED, f"{label}: no valid evidence (malformed observation: {error})"
     except ValueError as error:
         return case_id, FAIL, f"{label}: {error}"
     return case_id, NOT_RUN, f"{label}: {reason}"

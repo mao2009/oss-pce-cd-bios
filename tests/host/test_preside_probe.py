@@ -61,8 +61,7 @@ class PresideProbeTest(unittest.TestCase):
 
     def test_valid_landed_observation_stays_fail(self):
         # A VALID V05 observation in which the store landed (before != after) contradicts the expectation: FAIL.
-        landed = {"exit": 0, "status": "ok", "detected": True, "guard_target": 0,
-                  "guard_before": 0x11, "guard_after": 0x22}
+        landed = self._neg_row(0x0000, guard_before=0x11, guard_after=0x22)
         case = next(c for c in P.CASES if c[0] == "V05")
         with mock.patch.object(P.guard, "run_mode", return_value=landed):
             _, verdict, detail = P.run_case(case, None, None, None)
@@ -76,14 +75,86 @@ class PresideProbeTest(unittest.TestCase):
             _, verdict, _ = P.run_case(case, None, None, None)
         self.assertEqual(verdict, P.BLOCKED)
 
-    def _tam_row(self, before_mpr0=0x00, after_mpr0=0xF8, guard_after=0xA5, ram_diff=()):
+    def _tam_row(self, before_mpr0=0x00, after_mpr0=0xF8, guard_before=0xA5, guard_after=0xA5, ram_diff=()):
         # A V06 observation that passes every check except the ones a test varies.
         G = P.guard
         return {"exit": 0, "status": "rejected", "mpr_changed": True,
                 "reason": "mpr_changed_during_execution[mpr0]", "stop_pc": G.TAM_STOP_PC,
                 "instructions_executed": G.TAM_INSTRUCTIONS,
                 "before": {"mpr": [before_mpr0] + [0] * 7}, "after": {"mpr": [after_mpr0] + [0] * 7},
-                "guard_before": G.TAM_SENTINEL, "guard_after": guard_after, "ram_diff": list(ram_diff)}
+                "guard_before": guard_before, "guard_after": guard_after, "ram_diff": list(ram_diff)}
+
+    def _neg_row(self, target, guard_before=0x5A, guard_after=0x5A):
+        # A V05 observation for one target that is detected and not landed (prevented), otherwise valid.
+        return {"exit": 0, "status": "ok", "detected": True, "guard_target": target,
+                "guard_before": guard_before, "guard_after": guard_after,
+                "before": {"mpr": [0] * 8}, "after": {"mpr": [0] * 8}}
+
+    def _st0_row(self, vdc_ar_after=0x07):
+        return {"exit": 0, "status": "ok", "mode": "st0", "st_mode": "st0",
+                "before": {"mpr": [0] * 8}, "after": {"mpr": [0] * 8},
+                "stop_pc": P.st.STOP_PC["st0"], "instructions_executed": 1,
+                "detected": False, "detected_pc": 0,
+                "vdc_ar_before": 0x00, "vdc_ar_after": vdc_ar_after,
+                "vdc_r_before": 0x0000, "vdc_r_after": 0x0000}
+
+    def test_v06_guard_after_malformed_values_are_blocked(self):
+        # guard_after is validated like every other field: malformed values are BLOCKED, never FAIL.
+        case = next(c for c in P.CASES if c[0] == "V06")
+        for bad in (None, "x", 1.5, True, [1], {"a": 1}):
+            with mock.patch.object(P.guard, "run_mode", return_value=self._tam_row(guard_after=bad)):
+                _, verdict, detail = P.run_case(case, None, None, None)
+            self.assertEqual(verdict, P.BLOCKED, repr(bad))
+            self.assertIn("no valid evidence", detail, repr(bad))
+
+    def test_byte_fields_are_0_to_ff(self):
+        # guard_before 0x100 and -1 are out of byte range: BLOCKED for V05 and V06.
+        v05 = next(c for c in P.CASES if c[0] == "V05")
+        v06 = next(c for c in P.CASES if c[0] == "V06")
+        for bad in (0x100, -1):
+            with mock.patch.object(P.guard, "run_mode", side_effect=lambda *a, bad=bad: self._neg_row(a[4], guard_before=bad)):
+                _, verdict, _ = P.run_case(v05, None, None, None)
+            self.assertEqual(verdict, P.BLOCKED, f"V05 {bad}")
+            with mock.patch.object(P.guard, "run_mode", return_value=self._tam_row(guard_before=bad)):
+                _, verdict, _ = P.run_case(v06, None, None, None)
+            self.assertEqual(verdict, P.BLOCKED, f"V06 {bad}")
+
+    def test_v01_vdc_ar_after_uses_the_byte_rule(self):
+        # ST0 writes the address register from an immediate byte, so vdc_ar_* is one byte.
+        case = next(c for c in P.CASES if c[0] == "V01")
+        with mock.patch.object(P.guard, "run_mode", return_value=self._st0_row(vdc_ar_after=0x100)):
+            _, verdict, detail = P.run_case(case, None, None, None)
+        self.assertEqual(verdict, P.BLOCKED)
+        self.assertIn("no valid evidence", detail)
+        with mock.patch.object(P.guard, "run_mode", return_value=self._st0_row()):
+            _, verdict, _ = P.run_case(case, None, None, None)
+        self.assertEqual(verdict, P.BLOCKED)  # the valid landed case stays BLOCKED (side effect lands)
+
+    def test_v05_before_section_missing_or_list_is_blocked(self):
+        # V05 validates before/after sections like V01/V06: a missing or list section is BLOCKED.
+        case = next(c for c in P.CASES if c[0] == "V05")
+        for mutate in (lambda r: r.pop("before"), lambda r: r.__setitem__("before", [0] * 8)):
+            row = self._neg_row(0x0000)
+            mutate(row)
+            with mock.patch.object(P.guard, "run_mode", return_value=row):
+                _, verdict, detail = P.run_case(case, None, None, None)
+            self.assertEqual(verdict, P.BLOCKED)
+            self.assertIn("no valid evidence", detail)
+
+    def test_v05_valid_prevented_observation_stays_partial(self):
+        # A valid, prevented observation for every V05 target is still PARTIAL (the plan is not complete).
+        case = next(c for c in P.CASES if c[0] == "V05")
+        with mock.patch.object(P.guard, "run_mode", side_effect=lambda *a: self._neg_row(a[4])):
+            _, verdict, _ = P.run_case(case, None, None, None)
+        self.assertEqual(verdict, P.PARTIAL)
+
+    def test_unexpected_probe_error_propagates_not_blocked(self):
+        # A bug in the probe's own logic (not an observation problem) must be visible, never BLOCKED.
+        case = next(c for c in P.CASES if c[0] == "V01")
+        with mock.patch.object(P.guard, "run_mode", return_value=self._st0_row()), \
+                mock.patch.object(P.st, "check_st", side_effect=AttributeError("internal bug")):
+            with self.assertRaises(AttributeError):
+                P.run_case(case, None, None, None)
 
     def test_v06_malformed_mpr_value_is_blocked(self):
         # Malformed MPR values are invalid evidence (BLOCKED), never a formatting error or an escape.

@@ -38,7 +38,8 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from geargrafx_api import InvalidObservation, compile_probe, require_mpr_bytes  # noqa: E402
+from geargrafx_api import (InvalidObservation, compile_probe, require_bool, require_byte,  # noqa: E402
+                          require_count, require_mpr_bytes, require_section, require_word)
 
 BIOS_BYTES = 256 * 1024
 ALLOW = (0x2000, 0x4000)  # page 1: this core hardwires the zero page/stack there
@@ -98,20 +99,26 @@ def run_mode(probe, bios, cue, mode, target, env_alias=False, allow_start=None,
 
 
 def check_neg(row, target):
+    """Forbidden store at `target`: must be detected, and the byte must be unchanged (prevented).
+
+    Every field is validated first (InvalidObservation, judged BLOCKED). A valid observation in which the
+    store landed (guard_before != guard_after) or was not detected is a plain ValueError (judged FAIL).
+    """
     if row.get("exit", 0) != 0:
         raise InvalidObservation(f"neg-write ${target:04X} probe refused to run (exit {row.get('exit')}): {row.get('stderr','')[-300:]}")
     if row.get("status") != "ok":
         raise InvalidObservation(f"forbidden store ${target:04X} was not rejected: {row.get('reason')}")
-    if type(row.get("detected")) is not bool:
-        raise InvalidObservation(f"forbidden store ${target:04X}: detected is not a boolean")
-    if row.get("detected") is not True:
+    detected = require_bool(row.get("detected"), f"forbidden store ${target:04X} detected")
+    guard_target = require_word(row.get("guard_target"), f"forbidden store ${target:04X} guard_target")
+    guard_before = require_byte(row.get("guard_before"), f"forbidden store ${target:04X} guard_before")
+    guard_after = require_byte(row.get("guard_after"), f"forbidden store ${target:04X} guard_after")
+    require_mpr_bytes(require_section(row, "before", "neg-write").get("mpr"), "neg-write before")
+    require_mpr_bytes(require_section(row, "after", "neg-write").get("mpr"), "neg-write after")
+    if detected is not True:
         raise ValueError(f"forbidden store ${target:04X} was not detected by the in-core write breakpoint")
-    if type(row.get("guard_target")) is not int or type(row.get("guard_before")) is not int \
-            or type(row.get("guard_after")) is not int:
-        raise InvalidObservation(f"forbidden store ${target:04X}: guard fields missing or non-integer")
-    if row.get("guard_target") != target:
-        raise InvalidObservation(f"forbidden store ${target:04X}: observation targets {row.get('guard_target')!r}")
-    if row.get("guard_before") != row.get("guard_after"):
+    if guard_target != target:
+        raise InvalidObservation(f"forbidden store ${target:04X}: observation targets {guard_target:#x}")
+    if guard_before != guard_after:
         raise ValueError(f"forbidden store ${target:04X} was NOT prevented; the guard is not enforced in-core")
 
 
@@ -148,44 +155,46 @@ def check_tam(row):
       * MPR0 changed from TAM_MPR0_BEFORE (0x00) to TAM_MPR0_AFTER (0xF8)
       * Physical WRAM[0] sentinel unchanged (TAM_SENTINEL == 0xA5)
       * ram_diff empty (no prohibited store reached RAM)
+
+    Every field is validated first (InvalidObservation, judged BLOCKED). A valid observation in which the
+    MPR change was not detected, or the prohibited STA reached RAM, is a plain ValueError (judged FAIL).
     """
     if row.get("exit", 0) != 0:
         raise InvalidObservation(f"tam probe refused to run (exit {row.get('exit')}): {row.get('stderr','')[-300:]}")
     if row.get("status") != "rejected":
         raise InvalidObservation(f"tam probe was not rejected: status={row.get('status')} reason={row.get('reason')}")
-    if type(row.get("mpr_changed")) is not bool:
-        raise InvalidObservation("tam: mpr_changed is not a boolean")
-    if row.get("mpr_changed") is not True:
-        raise ValueError(f"tam MPR change was not detected: mpr_changed={row.get('mpr_changed')}")
-    reason = row.get("reason", "")
+    mpr_changed = require_bool(row.get("mpr_changed"), "tam mpr_changed")
+    before_mpr = require_mpr_bytes(require_section(row, "before", "tam").get("mpr"), "tam before")
+    after_mpr = require_mpr_bytes(require_section(row, "after", "tam").get("mpr"), "tam after")
+    stop_pc = require_word(row.get("stop_pc"), "tam stop_pc")
+    executed = require_count(row.get("instructions_executed"), "tam instructions_executed")
+    guard_before = require_byte(row.get("guard_before"), "tam guard_before")
+    guard_after = require_byte(row.get("guard_after"), "tam guard_after")
+    ram_diff = row.get("ram_diff")
+    if type(ram_diff) is not list:
+        raise InvalidObservation(f"tam: ram_diff is not a list: {ram_diff!r}")
+    if mpr_changed is not True:
+        raise ValueError(f"tam MPR change was not detected: mpr_changed={mpr_changed}")
+    reason = row.get("reason")
     if reason != "mpr_changed_during_execution[mpr0]":
         raise InvalidObservation(f"tam stop reason mismatch: expected 'mpr_changed_during_execution[mpr0]', got {reason!r}")
-    stop_pc = row.get("stop_pc")
-    if type(stop_pc) is not int or stop_pc != TAM_STOP_PC:
-        raise InvalidObservation(f"tam stop PC mismatch: expected {TAM_STOP_PC:#x} (after TAM, before STA), got {stop_pc!r}")
-    executed = row.get("instructions_executed")
+    if stop_pc != TAM_STOP_PC:
+        raise InvalidObservation(f"tam stop PC mismatch: expected {TAM_STOP_PC:#x} (after TAM, before STA), got {stop_pc:#x}")
     if executed != TAM_INSTRUCTIONS:
         raise InvalidObservation(f"tam instruction count mismatch: expected {TAM_INSTRUCTIONS} (LDA+TAM only), got {executed}")
     # MPR0 must have changed from ROM (0x00) to WRAM bank (0xF8).
-    before_mpr = row.get("before", {}).get("mpr", [])
-    after_mpr = row.get("after", {}).get("mpr", [])
-    require_mpr_bytes(before_mpr, "tam before")
-    require_mpr_bytes(after_mpr, "tam after")
     if before_mpr[0] != TAM_MPR0_BEFORE:
         raise InvalidObservation(f"tam MPR0 before mismatch: expected {TAM_MPR0_BEFORE:#x} (ROM), got {before_mpr[0]:#x}")
     if after_mpr[0] != TAM_MPR0_AFTER:
         raise InvalidObservation(f"tam MPR0 after mismatch: expected {TAM_MPR0_AFTER:#x} (WRAM), got {after_mpr[0]:#x}")
     # The prohibited STA $0000 must not execute. After TAM remaps MPR0 to WRAM,
     # CPU address $0000 maps to physical WRAM[0], which holds the sentinel.
-    if row.get("guard_before") != TAM_SENTINEL:
-        raise InvalidObservation(f"tam sentinel before mismatch: expected {TAM_SENTINEL:#x}, got {row.get('guard_before')!r}")
-    if row.get("guard_after") != TAM_SENTINEL:
-        raise ValueError(f"tam sentinel after mismatch: expected {TAM_SENTINEL:#x} (STA did not execute), got {row.get('guard_after')!r}")
-    if row.get("guard_before") != row.get("guard_after"):
+    if guard_before != TAM_SENTINEL:
+        raise InvalidObservation(f"tam sentinel before mismatch: expected {TAM_SENTINEL:#x}, got {guard_before:#x}")
+    if guard_after != TAM_SENTINEL:
+        raise ValueError(f"tam sentinel after mismatch: expected {TAM_SENTINEL:#x} (STA did not execute), got {guard_after:#x}")
+    if guard_before != guard_after:
         raise ValueError("tam: prohibited STA modified physical RAM (guard_before != guard_after)")
-    ram_diff = row.get("ram_diff")
-    if type(ram_diff) is not list:
-        raise InvalidObservation(f"tam: ram_diff is not a list: {ram_diff!r}")
     if len(ram_diff) != 0:
         raise ValueError(f"tam: unexpected ram_diff={ram_diff}")
 

@@ -46,7 +46,8 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from geargrafx_api import InvalidObservation, compile_probe, require_mpr_bytes  # noqa: E402
+from geargrafx_api import (InvalidObservation, compile_probe, require_bool, require_byte,  # noqa: E402
+                          require_count, require_mpr_bytes, require_section, require_word)
 from geargrafx_reference_guard import check_pos, run_mode, synthetic_media  # noqa: E402
 
 # Synthetic guest layout (all CPU addresses, page 1 = WRAM, MPR1 = $F8):
@@ -76,7 +77,14 @@ def expected_vdc_after(mode):
 
 
 def check_st(row, mode):
-    """Classify one measured ST path run; returns the per-path verdict."""
+    """Classify one measured ST path run; returns the per-path verdict.
+
+    Every field is validated first (InvalidObservation, judged BLOCKED). Byte fields are 0..0xFF; the VDC
+    address register (vdc_ar_*) is one byte because ST0 writes it from an immediate byte. The VDC data
+    register (vdc_r_*) is a 16-bit word, because the checks read its high and low bytes. A valid observation
+    in which the side effect did not land, or the detection flag contradicts the expectation, is a plain
+    ValueError (judged FAIL).
+    """
     if mode not in ST_MODES:
         raise InvalidObservation(f"unexpected ST mode {mode!r}")
     if row.get("exit", 0) != 0:
@@ -87,41 +95,31 @@ def check_st(row, mode):
         raise InvalidObservation(f"{mode} measured wrong mode: {row.get('mode')}")
     if row.get("st_mode") != mode:
         raise InvalidObservation(f"{mode} probe st_mode mismatch: {row.get('st_mode')}")
+    before_mpr = require_mpr_bytes(require_section(row, "before", mode).get("mpr"), f"{mode} before")
+    after_mpr = require_mpr_bytes(require_section(row, "after", mode).get("mpr"), f"{mode} after")
+    stop_pc = require_word(row.get("stop_pc"), f"{mode} stop_pc")
+    executed = require_count(row.get("instructions_executed"), f"{mode} instructions_executed")
+    detected = require_bool(row.get("detected"), f"{mode} detected")
+    detected_pc = require_word(row.get("detected_pc"), f"{mode} detected_pc")
+    vdc_ar_before = require_byte(row.get("vdc_ar_before"), f"{mode} vdc_ar_before")
+    vdc_ar_after = require_byte(row.get("vdc_ar_after"), f"{mode} vdc_ar_after")
+    vdc_r_before = require_word(row.get("vdc_r_before"), f"{mode} vdc_r_before")
+    vdc_r_after = require_word(row.get("vdc_r_after"), f"{mode} vdc_r_after")
     # The MPR0 != $FF negative case: Hardware Page unreachable for the whole run.
-    before_mpr = row.get("before", {}).get("mpr", [])
-    after_mpr = row.get("after", {}).get("mpr", [])
-    require_mpr_bytes(before_mpr, f"{mode} before")
-    require_mpr_bytes(after_mpr, f"{mode} after")
     if before_mpr[0] != MPR0_NON_FF:
         raise InvalidObservation(f"{mode} MPR0 before {before_mpr[0]:#x}, expected {MPR0_NON_FF:#x} (!= $FF)")
     if after_mpr[0] != MPR0_NON_FF:
         raise InvalidObservation(f"{mode} MPR0 after {after_mpr[0]:#x}, expected {MPR0_NON_FF:#x} (!= $FF)")
-    stop_pc = row.get("stop_pc")
-    executed = row.get("instructions_executed")
-    detected = row.get("detected")
-    detected_pc = row.get("detected_pc")
-    vdc_ar_before = row.get("vdc_ar_before")
-    vdc_ar_after = row.get("vdc_ar_after")
-    vdc_r_before = row.get("vdc_r_before")
-    vdc_r_after = row.get("vdc_r_after")
-    for name, value in (("stop_pc", stop_pc), ("instructions_executed", executed),
-                        ("detected_pc", detected_pc),
-                        ("vdc_ar_before", vdc_ar_before), ("vdc_ar_after", vdc_ar_after),
-                        ("vdc_r_before", vdc_r_before), ("vdc_r_after", vdc_r_after)):
-        if type(value) is not int:
-            raise InvalidObservation(f"{mode} observation missing/non-integer {name}: {value!r}")
-    if type(detected) is not bool:
-        raise InvalidObservation(f"{mode} observation missing/non-boolean detected: {detected!r}")
     # The ST opcode PC must be where detection (if any) is attributed.
     if detected_pc != (0 if mode == "st0" else ST_OP_PC[mode]):
         raise InvalidObservation(f"{mode} detected_pc {detected_pc:#x}, expected the ST opcode at "
-                         f"{ST_OP_PC[mode]:#x} (0 when nothing can fire)")
+                                 f"{ST_OP_PC[mode]:#x} (0 when nothing can fire)")
     if stop_pc != STOP_PC[mode]:
         raise InvalidObservation(f"{mode} stop PC {stop_pc:#x}, expected {STOP_PC[mode]:#x} (the BRA right "
-                         f"after the ST: stop only at the instruction boundary)")
+                                 f"after the ST: stop only at the instruction boundary)")
     if executed != ST_INSTRUCTIONS[mode]:
         raise InvalidObservation(f"{mode} executed {executed} instructions, expected "
-                         f"{ST_INSTRUCTIONS[mode]} (the ST itself has run)")
+                                 f"{ST_INSTRUCTIONS[mode]} (the ST itself has run)")
     # Side effect must have LANDed before the stop: real VDC state change.
     kind, expected = expected_vdc_after(mode)
     if mode == "st0":

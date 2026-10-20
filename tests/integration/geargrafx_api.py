@@ -22,15 +22,50 @@ class InvalidObservation(ValueError):
     """
 
 
-def require_mpr_bytes(snapshot, label):
-    """Raise InvalidObservation unless snapshot is a list of 8 integer bytes (0..0xFF).
+def require_int(value, label, low, high):
+    """Raise InvalidObservation unless value is an int (bool is refused) in low..high."""
+    if type(value) is not int or not low <= value <= high:
+        raise InvalidObservation(f"{label} must be an integer in {low:#x}..{high:#x}, got {value!r}")
+    return value
 
-    Checked before any MPR value is compared or formatted, so a malformed value (None, a string, a float,
-    a bool or an out-of-range number) is invalid evidence, never a formatting error.
-    """
-    if type(snapshot) is not list or len(snapshot) != 8 or any(
-            type(v) is not int or not 0 <= v <= 0xFF for v in snapshot):
-        raise InvalidObservation(f"{label} MPR snapshot is not 8 integer bytes: {snapshot!r}")
+
+def require_byte(value, label):
+    """A byte as read from the emulated machine: an integer 0..0xFF."""
+    return require_int(value, label, 0, 0xFF)
+
+
+def require_word(value, label):
+    """A 16-bit value (CPU address, program counter, VDC data word): an integer 0..0xFFFF."""
+    return require_int(value, label, 0, 0xFFFF)
+
+
+def require_count(value, label):
+    """A non-negative counter (instructions executed). Only the type and sign are checked here."""
+    return require_int(value, label, 0, 0xFFFFFFFF)
+
+
+def require_bool(value, label):
+    if type(value) is not bool:
+        raise InvalidObservation(f"{label} must be a boolean, got {value!r}")
+    return value
+
+
+def require_section(row, key, label):
+    """The named section of an observation (e.g. "before") must be an object."""
+    section = row.get(key)
+    if type(section) is not dict:
+        raise InvalidObservation(f"{label}: section {key!r} is not an object: {section!r}")
+    return section
+
+
+def require_mpr_bytes(snapshot, label):
+    """Raise InvalidObservation unless snapshot is a list of 8 bytes. Returns the snapshot."""
+    if type(snapshot) is not list or len(snapshot) != 8:
+        raise InvalidObservation(f"{label} MPR snapshot is not a list of 8 bytes: {snapshot!r}")
+    for index, value in enumerate(snapshot):
+        require_byte(value, f"{label} MPR[{index}]")
+    return snapshot
+
 
 
 ROOT = Path(__file__).resolve().parents[2]
