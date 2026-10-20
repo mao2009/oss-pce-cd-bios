@@ -27,8 +27,8 @@ def mismatches(ram):
     if ram[:4] != b"RND!":
         return [f"completion marker missing: {ram[:4].hex()}"]
     bad = []
-    if ram[4] or ram[5]:
-        bad.append(f"X not preserved on {ram[4] | (ram[5] << 8)} calls")
+    if ram[4]:  # one-byte error flag at $2204 (offset 4); $2205 holds the seed pattern
+        bad.append("X not preserved (error flag set)")
     for name, seed, offset, _ in PHASES:
         want = bytes(rnd_sequence(seed, 256))
         got = ram[offset:offset + 256]

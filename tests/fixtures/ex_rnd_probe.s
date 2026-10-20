@@ -2,7 +2,7 @@
 ; Phase 1: state zeroed explicitly, 256 outputs -> $2300+i (zero state is replaced by 1).
 ; Phase 2: ex_rnd_seed($34, $12), 256 outputs -> $2400+i.
 ; Phase 3: ex_rnd_seed($00, $00), 256 outputs -> $2500+i (seed 0 behaves as state 1).
-; Every call enters with X = $A5; a changed X increments the counter at $2204.
+; Every call enters with X = $A5; a changed X sets the error flag at $2204.
 ; "RND!" is written to $2200 last as the completion marker.
 .setcpu "huc6280"
 .import ex_rnd_seed, ex_rnd_next, ex_rnd_state
@@ -17,7 +17,8 @@ loop:
     sta base,y
     cpx #$a5
     beq ok
-    inc $2204
+    lda #1
+    sta $2204                ; sticky error flag (a counter could wrap to 0)
 ok:
     iny
     bne loop
