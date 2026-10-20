@@ -24,10 +24,10 @@ Scope: this script covers V01-V08 only. An overall PASS is NOT a gate release (�
 本スクリプトは PASS を出力しない（各 V-case の上限 PARTIAL。総合 PASS は本PRの構造上到達不能）。ゲート解放の経路はない。
 Per case: V03/V04/V07/V08 are NOT_RUN (no probe mode or audit here); V01/V02 are BLOCKED on a measured landing;
 V05/V06 are at most PARTIAL. The slot-1e gate stays BLOCKED (spec/reference_jsr_gate.json) regardless of this output.
-V08 is the observation schema, not a W row. W-ids are grouped in W_MAP: RUN (a run V-case), PARTIAL (the
-unrun remainder of a run V-case), NOT_RUN (mapped to a NOT_RUN V-case), UNMAPPED (no V-case at all, not run here).
-W18 is an inventory row on #360 (spec/write_path_inventory.json: UNKNOWN / UNKNOWN / NOT_MEASURED, gate BLOCKED);
-here it is only the unrun part of V05, and it is never reported as prevented or measured.
+V08 is the observation schema, not a W row. W-ids are grouped in W_MAP: RUN (a run V-case), NOT_RUN (mapped to a
+NOT_RUN V-case), UNMAPPED (no V-case or probe covers the row; not run here).
+W18 (pages 3-7 and the rest of page 2) is UNMAPPED: no probe here covers that range. It stays an inventory row on
+#360 (spec/write_path_inventory.json: UNKNOWN / UNKNOWN / NOT_MEASURED, gate BLOCKED) and is never reported as measured.
 Verdicts are never merged: PASS, PARTIAL, NOT_RUN, BLOCKED and FAIL are printed as separate counts.
 
 Exit status: 0 only when the overall verdict is PASS; BLOCKED and FAIL both exit 1.
@@ -57,16 +57,16 @@ V05_RUN = (0x0000, 0x1FFF, 0x4000)
 V05_PLANNED = tuple(sorted(a for a in {p * 0x2000 for p in range(8)} | {p * 0x2000 + 0x1FFF for p in range(8)}
                            if not ALLOW_START <= a < ALLOW_END))
 # Every inventory id W01-W18 (spec/write_path_inventory.json on #360) and its place in this plan.
-# RUN: a V-case that executes a probe. PARTIAL: the unrun remainder of a RUN V-case (W18 = V05 minus V05_RUN,
-# an inventory row on #360, UNKNOWN). NOT_RUN: mapped to a V-case that is fixed NOT_RUN.
-# UNMAPPED: no V-case at all; reported here, never run.
+# RUN: a V-case that executes a probe. NOT_RUN: mapped to a V-case that is fixed NOT_RUN.
+# UNMAPPED: no V-case or probe covers the row; reported here, never run. W18 is UNMAPPED: the V05 samples
+# are W02 points (non-allowlisted addresses) and do not cover W18's range.
 W_MAP = {
     "W01": ("UNMAPPED", None), "W02": ("RUN", "V05"), "W03": ("RUN", "V06"),
     "W04": ("UNMAPPED", None), "W05": ("RUN", "V01"), "W06": ("RUN", "V02"),
     "W07": ("RUN", "V02"), "W08": ("UNMAPPED", None), "W09": ("UNMAPPED", None),
     "W10": ("UNMAPPED", None), "W11": ("UNMAPPED", None), "W12": ("UNMAPPED", None),
     "W13": ("UNMAPPED", None), "W14": ("NOT_RUN", "V03"), "W15": ("NOT_RUN", "V04"),
-    "W16": ("UNMAPPED", None), "W17": ("NOT_RUN", "V07"), "W18": ("PARTIAL", "V05"),
+    "W16": ("UNMAPPED", None), "W17": ("NOT_RUN", "V07"), "W18": ("UNMAPPED", None),
 }
 
 # (case id, inventory row, kind, parameters, reason when not runnable)
@@ -77,7 +77,7 @@ CASES = (
      "no probe mode runs a CLI/IRQ entry; a pre-handler hook does not exist on the pinned core"),
     ("V04", "W15 block-transfer instructions", "none", (),
      "no probe mode executes TII/TIN/TDD/TIA/TAI; mid-instruction stop behaviour unmeasured"),
-    ("V05", "W02 measured subset (W18 remainder unrun)", "neg", V05_PLANNED, None),
+    ("V05", "W02 measured subset (planned samples, rest unrun)", "neg", V05_PLANNED, None),
     ("V06", "W03 MPR changes", "tam", (), None),
     ("V07", "W17 device-origin RAM writes", "none", (),
      "core-source audit not performed in this PR (pinned source is outside the repository)"),
@@ -119,7 +119,7 @@ def run_case(case, probe, bios, cue):
             missing = [f"${t:04X}" for t in V05_PLANNED if t not in V05_RUN]
             return case_id, PARTIAL, (f"{label}: store dropped and detected at {len(V05_RUN)} targets "
                                       "(measured only; no PREVENTED claim, #360 W02 stays UNKNOWN); "
-                                      f"unrun W18 remainder {', '.join(missing)}")
+                                      f"unrun planned samples {', '.join(missing)}")
         if kind == "tam":
             guard.check_tam(measure(probe, bios, cue, "tam", 0))
             return case_id, PARTIAL, (f"{label}: TAM detected before the next instruction "
@@ -148,7 +148,7 @@ def main():
         results = [run_case(case, probe, bios, cue) for case in CASES]
     for case_id, verdict, detail in results:
         print(f"{case_id} {verdict}: {detail}")
-    for group in ("RUN", "PARTIAL", "NOT_RUN", "UNMAPPED"):
+    for group in ("RUN", "NOT_RUN", "UNMAPPED"):
         members = [f"{w}->{c}" if c else w for w, (g, c) in W_MAP.items() if g == group]
         print(f"W-MAP {group}: {', '.join(members) or '-'}")
     print("COUNTS " + " ".join(

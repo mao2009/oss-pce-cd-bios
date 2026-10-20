@@ -97,7 +97,7 @@ class PresideProbeTest(unittest.TestCase):
 
     def test_w_map_covers_w01_to_w18_exactly_once(self):
         self.assertEqual(sorted(P.W_MAP), [f"W{i:02d}" for i in range(1, 19)])
-        self.assertTrue(all(g in ("RUN", "PARTIAL", "NOT_RUN", "UNMAPPED") for g, _ in P.W_MAP.values()))
+        self.assertTrue(all(g in ("RUN", "NOT_RUN", "UNMAPPED") for g, _ in P.W_MAP.values()))
 
     def test_w_map_ids_are_rows_of_the_360_inventory(self):
         # #360 spec/write_path_inventory.json is the contract: every W-id here must be one of its rows.
@@ -111,14 +111,14 @@ class PresideProbeTest(unittest.TestCase):
         row = next(r for r in inventory["rows"] if r["id"] == "W18")
         self.assertEqual((row["monitor_status"], row["prevents_before_side_effect"], row["measurement"],
                           row["gate_status"]), ("UNKNOWN", "UNKNOWN", "NOT_MEASURED", "BLOCKED"))
-        self.assertEqual(P.W_MAP["W18"], ("PARTIAL", "V05"))
+        # No probe covers W18's range (pages 3-7 and the rest of page 2), so no V-case or run is mapped to it.
+        self.assertEqual(P.W_MAP["W18"], ("UNMAPPED", None))
         self.assertNotIn("PREVENTED", "".join(str(v) for v in row.values()))
 
-    def test_partial_group_points_only_at_partial_cases(self):
-        kinds = {c[0]: c[2] for c in P.CASES}
-        partial = {w: c for w, (g, c) in P.W_MAP.items() if g == "PARTIAL"}
-        self.assertEqual(partial, {"W18": "V05"})
-        self.assertEqual(kinds["V05"], "neg")
+    def test_v05_samples_do_not_stand_in_for_w18(self):
+        # V05 is a W02 sample plan; its unrun points are not W18's remainder.
+        self.assertNotIn("W18", [w for w, (g, c) in P.W_MAP.items() if c == "V05"])
+        self.assertEqual({w for w, (g, c) in P.W_MAP.items() if c == "V05"}, {"W02"})
 
     def test_missing_evidence_is_blocked_not_pass_or_fail(self):
         case = next(c for c in P.CASES if c[0] == "V05")
@@ -178,14 +178,11 @@ class PresideProbeTest(unittest.TestCase):
             if g == "RUN":
                 self.assertIn(kinds[c], ("st", "neg", "tam"), w)
 
-    def test_w18_is_reported_as_partial_remainder(self):
-        rc, out, _ = self._run_main_with(P.NOT_RUN)
-        self.assertIn("W-MAP PARTIAL: W18->V05", out)
-
     def test_unmapped_ids_are_printed_not_dropped(self):
         rc, out, _ = self._run_main_with(P.NOT_RUN)
         unmapped = [w for w, (g, _) in P.W_MAP.items() if g == "UNMAPPED"]
-        self.assertEqual(unmapped, ["W01", "W04", "W08", "W09", "W10", "W11", "W12", "W13", "W16"])
+        self.assertEqual(unmapped, ["W01", "W04", "W08", "W09", "W10", "W11", "W12", "W13", "W16", "W18"])
+        self.assertNotIn("W-MAP PARTIAL", out)
         self.assertIn("W-MAP UNMAPPED: " + ", ".join(unmapped), out)
         self.assertIn("W-MAP NOT_RUN: W14->V03, W15->V04, W17->V07", out)
 
@@ -213,7 +210,8 @@ class PresideProbeTest(unittest.TestCase):
         self.assertEqual(verdict, P.PARTIAL)
         for addr in ("$C000", "$5FFF", "$FFFF"):
             self.assertIn(addr, detail)
-        remainder = detail.split("unrun W18 remainder")[-1]
+        self.assertNotIn("W18", detail)
+        remainder = detail.split("unrun planned samples")[-1]
         self.assertNotIn("$2000", remainder)
         self.assertNotIn("$3FFF", remainder)
         self.assertNotIn("$0000", remainder)
