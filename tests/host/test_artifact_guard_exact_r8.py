@@ -15,6 +15,10 @@ import artifact_guard as guard
 PAGES = '.github/workflows/pages.yml'
 PAGES_NAME = 'pages.yml'
 ARGUMENT_CASE = '"${{ steps.pyresolve.outputs.python }}" -c "print(1)"'
+# The approved run texts, written out so a failure is a behaviour failure and not a missing constant.
+PY_RESOLVE_TEXT = 'echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"'
+CHECK_TEXT = ('"${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" '
+              '--root "$GITHUB_WORKSPACE" --check-placement')
 
 
 def real(rel=PAGES):
@@ -73,18 +77,16 @@ class ExactMatchTests(unittest.TestCase):
         self.assertRefused(changed)
 
     def test_modified_copy_of_an_approved_run_is_refused(self):
-        self.assertRefused(with_run(guard.APPROVED_RUN_TEXTS[(PAGES_NAME, 'deploy', 'Guard placement (trusted)')].replace(
-            '--check-placement', '--check-placemenx')))
+        self.assertRefused(with_run(CHECK_TEXT.replace('--check-placement', '--check-placemenx')))
 
     def test_added_echo_step_is_refused(self):
         self.assertRefused(with_run('echo hi'))
 
     def test_approved_text_under_another_step_name_is_refused(self):
-        self.assertRefused(with_run(guard.APPROVED_RUN_TEXTS[(PAGES_NAME, 'deploy', 'Resolve python3 (trusted)')]))
+        self.assertRefused(with_run(PY_RESOLVE_TEXT))
 
     def test_approved_text_as_a_second_step_with_the_same_name_is_refused(self):
-        self.assertRefused(with_run(guard.APPROVED_RUN_TEXTS[(PAGES_NAME, 'deploy', 'Resolve python3 (trusted)')],
-                                    name='Resolve python3 (trusted)'))
+        self.assertRefused(with_run(PY_RESOLVE_TEXT, name='Resolve python3 (trusted)'))
 
     def test_identical_run_in_a_different_job_is_refused(self):
         other = ('  other:\n    runs-on: ubuntu-24.04\n    permissions:\n      id-token: write\n    steps:\n'
