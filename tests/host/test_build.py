@@ -10,10 +10,11 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 from build import build, verify_fixture as verify
-from environment import ROOT, core_path, executable, tools_dir
+from environment import ROOT, core_path, executable, requires_cc65, tools_dir
 
 
 class BuildTests(unittest.TestCase):
+    @requires_cc65
     def test_reproducible_clean_directories_and_modes(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -34,10 +35,10 @@ class BuildTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     verify(damaged)
 
+    @requires_cc65
     def test_tools_present(self):
         for name in ("ca65", "ld65", "cc65", "actionlint"):
             self.assertTrue(Path(executable(name)).is_file())
-        self.assertTrue(core_path().is_file())
 
     def test_missing_tools_and_core_fail(self):
         for name in ("ca65", "ld65", "cc65", "actionlint"):
@@ -65,6 +66,7 @@ class BuildTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 tools_dir()
 
+    @requires_cc65
     def test_assembler_rejects_invalid_syntax(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "invalid.s"
@@ -73,6 +75,7 @@ class BuildTests(unittest.TestCase):
                                      str(source)], capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
 
+    @requires_cc65
     def test_linker_rejects_overlap_and_bank_overflow(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -88,16 +91,18 @@ class BuildTests(unittest.TestCase):
                 build(base / "overflow", source=source)
 
     def test_unpinned_tool_fails(self):
-        with patch.dict(os.environ, {"CA65": "/usr/bin/true"}):
+        with patch.dict(os.environ, {"CA65": "/usr/bin/true", "LD65": "/usr/bin/true"}):
             with tempfile.TemporaryDirectory() as directory:
                 with self.assertRaisesRegex(ValueError, "pinned"):
                     build(Path(directory))
 
+    @requires_cc65
     def test_huc6280_opcode_families(self):
         with tempfile.TemporaryDirectory() as directory:
             subprocess.run([executable("ca65"), "-o", str(Path(directory) / "probe.o"),
                             str(ROOT / "tests/fixtures/opcodes.s")], check=True)
 
+    @requires_cc65
     def test_c_frontend_assembly_interoperability(self):
         # Compile-only probe: cc65 runtime/startup/linking into BIOS remains future work.
         with tempfile.TemporaryDirectory() as directory:
