@@ -1082,7 +1082,10 @@ def run_allowlist_violations(text, label):
                 step_name = step.get("name") if isinstance(step.get("name"), str) else None
                 key = (name, job, step_name)
                 text = run[:-1] if run.endswith("\n") else run
-                if key in used or key not in APPROVED_RUN_TEXTS or APPROVED_RUN_TEXTS[key] != text:
+                # Round 9: an approved step may carry only name, id (optional) and run. Any other key (env, if,
+                # working-directory, shell, continue-on-error, ...) changes how the run: is executed, so it is refused.
+                extra_keys = set(step) - {"name", "id", "run"}
+                if key in used or extra_keys or key not in APPROVED_RUN_TEXTS or APPROVED_RUN_TEXTS[key] != text:
                     problems.append(f"{label}: job {job!r} run: {run!r} is not the approved run text for step "
                                     f"{step_name!r} (exact match, Issue #337 round 8)")
                 used.add(key)

@@ -21,8 +21,27 @@ CHECK_TEXT = ('"${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/arti
               '--root "$GITHUB_WORKSPACE" --check-placement')
 
 
+GUARD_NAME = 'Guard placement (trusted)'   # the real approved step whose run: carries the python expression
+GUARD_ANCHOR = f'      - name: {GUARD_NAME}\n'
+GUARD_RUN = '        run: |\n          ' + CHECK_TEXT + '\n'
+
+
 def real(rel=PAGES):
     return (guard.ROOT / rel).read_text(encoding='utf-8')
+
+
+def with_guard_run(run_line):
+    """The real pages.yml with the run: of the real Guard placement step replaced by run_line (same step name)."""
+    text = real()
+    assert text.count(GUARD_RUN) == 1
+    return text.replace(GUARD_RUN, '        run: |\n          ' + run_line + '\n')
+
+
+def with_guard_keys(extra):
+    """The real pages.yml with extra key lines added to the real Guard placement step (its run: text unchanged)."""
+    text = real()
+    assert text.count(GUARD_ANCHOR) == 1
+    return text.replace(GUARD_ANCHOR, GUARD_ANCHOR + extra)
 
 
 def with_run(body, name='probe'):
@@ -67,8 +86,30 @@ class ExactMatchTests(unittest.TestCase):
             with self.subTest(step=key):
                 self.assertEqual(text, runs[key].removesuffix('\n'))
 
+    def assertExactRefused(self, text):
+        # Asserts the exact-match layer itself refuses (not only --check-placement or the round 6/7 layer).
+        problems = guard.run_allowlist_violations(text, PAGES)
+        self.assertTrue(any('exact match' in problem for problem in problems), problems)
+
     def test_critical_argument_after_expression_is_refused(self):
-        self.assertRefused(with_run(ARGUMENT_CASE))
+        # Same real step name as the approved one; only the run: text differs. The control below passes.
+        self.assertRefused(with_guard_run(ARGUMENT_CASE))
+        self.assertEqual([], guard.signing_violations(with_guard_run(CHECK_TEXT), PAGES))
+
+    def test_critical_argument_refused_by_exact_match_layer(self):
+        self.assertExactRefused(with_guard_run(ARGUMENT_CASE))
+        self.assertEqual([], guard.run_allowlist_violations(with_guard_run(CHECK_TEXT), PAGES))
+
+    def test_approved_run_with_extra_key_is_refused_by_exact_match(self):
+        # Round 9: name, id and run only. Each extra key changes how the approved text is executed.
+        for extra in ('        env:\n          PATH: /tmp/evil\n',
+                      '        if: always()\n',
+                      '        working-directory: /tmp\n',
+                      '        shell: bash\n',
+                      '        continue-on-error: true\n'):
+            with self.subTest(extra=extra):
+                self.assertExactRefused(with_guard_keys(extra))
+        self.assertEqual([], guard.run_allowlist_violations(real(), PAGES))
 
     def test_one_character_change_to_an_approved_run_is_refused(self):
         self.assertEqual(1, real().count('--check-placement\n'))
