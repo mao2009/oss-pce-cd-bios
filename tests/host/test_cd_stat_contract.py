@@ -13,16 +13,19 @@ SIDES = {'caller', 'callee', 'reference', 'name'}
 STATUSES = {'SOURCE_FACT', 'HYPOTHESIS', 'UNKNOWN', 'BLOCKED_ABI'}
 FORBIDDEN = ('VERIFIED', 'OBSERVED', 'PASS', 'DEV_CALLABLE')
 REFERENCE_ONLY = {'S6'}  # Hu-Go HLE: never a basis for SOURCE_FACT.
+# Full pins for the Hu-Go reference (S6). Short forms such as `64ed226d` are not accepted.
+HUGO_COMMIT = '64ed226da2288738781743eeef228c069e8973a4'
+HUGO_BIOS_SHA256 = 'db3f227e09a73457bc9b0f2c54a3922ab9dca1e301f1b5029690c0d210972f22'
 
 # Pinned (side, status, value) per row.
 EXPECTED = {
     'F01': ('caller', 'SOURCE_FACT', '`$1B`（JSR 先 `$E01B`）'),
     'F02': ('caller', 'SOURCE_FACT', '`$00`'),
     'F03': ('caller', 'SOURCE_FACT', '`$01`'),
-    'F04': ('callee', 'HYPOTHESIS', '`$00` を busy 確認、非 0 を ready 確認とみなす'),
+    'F04': ('callee', 'HYPOTHESIS', '`$00` と `$01` の 2 経路のみ観測。他の値は UNKNOWN'),
     'F05': ('callee', 'UNKNOWN', 'UNKNOWN'),
     'F06': ('callee', 'UNKNOWN', 'UNKNOWN'),
-    'F07': ('caller', 'SOURCE_FACT', '呼出側は書き込まない'),
+    'F07': ('caller', 'SOURCE_FACT', 'S5 681–691 の経路では書込みなし'),
     'F08': ('callee', 'UNKNOWN', 'UNKNOWN'),
     'F09': ('caller', 'SOURCE_FACT', 'A≠0 で待機を続け、A=0 で次へ進む'),
     'F10': ('caller', 'SOURCE_FACT', 'A=0 で ready へ進み、非 0 で約 1 秒待って再試行する'),
@@ -119,9 +122,16 @@ class CdStatLedgerTest(unittest.TestCase):
         for kw, rid in REQUIRED.items():
             self.assertRegex(byid[rid]['item'], rf'(?<![A-Za-z]){re.escape(kw)}(?![A-Za-z])', kw)
 
+    def test_hugo_pin_is_full(self):
+        self.assertIn(HUGO_COMMIT, self.text)
+        self.assertIn(HUGO_BIOS_SHA256, self.text)
+
     def test_release_stays_closed(self):
+        # Only the header block (before section 1) is checked, so the closed-release
+        # statement must sit at the top of the ledger, not merely appear somewhere in the body.
+        head = self.text.split('## 1.')[0]
         for phrase in ('BLOCKED_ABI', 'release_eligible=false', 'DEV_CALLABLE にしない'):
-            self.assertIn(phrase, self.text)
+            self.assertIn(phrase, head)
 
     def test_rejects_bad_rows(self):
         base = self.rows[0]
