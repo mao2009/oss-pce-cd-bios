@@ -27,12 +27,10 @@ jobs:
           python3 tests/integration/geargrafx_core_harness.py --mode debug \
             --cases tests/fixtures/core-harness-plugin.json 2>&1 | tee build/debug/core-harness/run.log
       - name: Hand off harness log and evidence as an intermediate artifact (unverified here; the guard job checks them)
-        if: always()
         run: |
           mkdir -p intermediate
           cp --parents build/debug/core-harness/run.log build/debug/core-harness/core-harness-evidence.json intermediate/
       - name: Intermediate harness log and evidence artifact (the guard job publishes it)
-        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: intermediate-core-harness-${{ github.sha }}
@@ -43,7 +41,6 @@ jobs:
     # Publishes only what the core-harness job handed over. It runs no build code: the trusted main tools, python3 resolved
     # before anything else, the workflow files for the placement check, the download, the guard and the upload.
     needs: core-harness
-    if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
