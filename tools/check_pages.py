@@ -103,7 +103,7 @@ def validate_page(page, url, language):
         raise ValueError(f"{page}: intended indexing directive missing")
     if not doc.meta.get("description") or not doc.meta.get("og:description"):
         raise ValueError(f"{page}: description metadata missing")
-    for fact in ("EX_GETVER", "765", "#174", "UNVERIFIED", "BLOCKED"):
+    for fact in ("EX_GETVER", "2026-10-20", "/pull/349", "UNVERIFIED", "BLOCKED"):
         if fact not in source:
             raise ValueError(f"{page}: missing dated evidence {fact}")
     if doc.script_count != 1 or len(doc.jsonld) != 1:
@@ -183,7 +183,7 @@ def main():
     check_links(pages)
     check_sitemap()
     llms = (SITE / "llms.txt").read_text(encoding="utf-8")
-    for fact in ("# oss-pce-cd-bios", BASE, REPO, "EX_GETVER", "UNVERIFIED", "765", "not a commercially compatible BIOS"):
+    for fact in ("# oss-pce-cd-bios", BASE, REPO, "EX_GETVER", "UNVERIFIED", "2026-10-20", "not a commercially compatible BIOS"):
         if fact not in llms:
             raise ValueError("optional AI summary missing: " + fact)
     css = (SITE / "assets" / "styles.css").read_text(encoding="utf-8")

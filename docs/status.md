@@ -1,6 +1,17 @@
-# Implementation status (2026-10-17 snapshot, after PR #174)
+# Implementation status — 2026-10-20 update with 2026-10-17 historical baseline
 
 This is the **evidence-scoped status entry point** for implemented development diagnostics, real emulator observations, caller-visible BIOS service behavior, and release eligibility. The baseline is main merge commit [`05a0ea54`](https://github.com/mao2009/oss-pce-cd-bios/commit/05a0ea54b87ae9bd09612bc9001440c6c396c830) (PR #174, 2026-10-17). This is a dated snapshot, not a live CI claim. For further limits see [testing](testing.md), [compatibility](compatibility.md), [architecture](architecture.md), and the [API contract ledger](abi-contracts.md). Recheck the current main HEAD, PR states and CI before making a newer assertion.
+
+## Main update (2026-10-20)
+
+At [main `963f3a36`](https://github.com/mao2009/oss-pce-cd-bios/commit/963f3a36ed59ab190406d815ab7d267fd21a680b), the only `src/overrides/` entry is `slot_1E.s`: **1/81 callable development-only services** (`EX_GETVER`), **80 nonreturning stubs**. The reference ABI remains **UNVERIFIED**; `release_eligible: false` and the BIOS release gate remain **BLOCKED**. This is a dated source inspection, **not** a claim of fresh CI success or a new Geargrafx run. The historical table below retains its original 2026-10-17 test scope.
+
+- **Standalone original routines, not callable firmware:** `EX_BINBCD`, `EX_BCDBIN`, `MA_MUL8S`, `MA_MUL8U` and opt-in `routine-real-core` ([#328](https://github.com/mao2009/oss-pce-cd-bios/pull/328), [#331](https://github.com/mao2009/oss-pce-cd-bios/pull/331)). [#345](https://github.com/mao2009/oss-pce-cd-bios/pull/345) separates real Geargrafx-dependent tests into `tests/integration`; `make test` invokes `make integration-test`. Older host pass totals are historical.
+- **Reference execution is still gated:** write-path inventory [#360](https://github.com/mao2009/oss-pce-cd-bios/pull/360) and pre-side-effect V01–V08 evaluations [#362](https://github.com/mao2009/oss-pce-cd-bios/pull/362) leave unmonitored and post-side-effect paths unresolved. Reference BIOS JSR remains **BLOCKED**.
+- **Evidence correspondence is stricter, not fully authenticated:** measurement-point/raw-log binding [#371](https://github.com/mao2009/oss-pce-cd-bios/pull/371), observation-kind/contract-field verification and `hw_bus_reset` downgrade to BLOCKED [#359](https://github.com/mao2009/oss-pce-cd-bios/pull/359). Producer authenticity and full ABI verification are not established.
+- **CI/Pages safeguards improved:** privilege separation [#374](https://github.com/mao2009/oss-pce-cd-bios/pull/374), fail-closed unknown artifact action detection [#349](https://github.com/mao2009/oss-pce-cd-bios/pull/349) and a CI wiring allowlist correction [#376](https://github.com/mao2009/oss-pce-cd-bios/pull/376); this is not a complete guarantee against every possible publication path.
+
+**Still absent:** callable `CD_RESET`/`CD_BASE`/`CD_READ`, a verified BIOS-mediated CD boot, retail-game boot, cross-emulator/real-hardware compatibility and releasable System Card firmware. For later changes and live run results, consult [commits](https://github.com/mao2009/oss-pce-cd-bios/commits/main/) and [Actions](https://github.com/mao2009/oss-pce-cd-bios/actions).
 
 ## Verified on main, with explicit limits
 
