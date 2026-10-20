@@ -14,6 +14,8 @@ ABI は未確定（`abi_status: BLOCKED_ABI`、`release_eligible: false`）。
 | 範囲外（> 99）の挙動 | UNKNOWN | 出典なし。推測で確定しない |
 | 純正 `$E0B4` の実行 | **BLOCKED** | 未承認 JSR。#173（JSR 監視の fail-closed 境界）と #228（gate）の承認が前提 |
 
+凡例: UNKNOWN＝期待値の出典なし、NOT_RUN＝未実行、BLOCKED＝ゲート未承認。
+
 ## 入力被覆
 
 観測対象の入力は 0, 1, 9, 10, 99, 100, 127, 128, 255 の 9 点である。
@@ -58,7 +60,7 @@ ABI は未確定（`abi_status: BLOCKED_ABI`、`release_eligible: false`）。
 - ホスト: `tests/host/test_ex_binbcd.py` が 0, 9, 10, 99, 100, 255 の自作モデル値を確認している。
 - 実コア（opt-in）: `tests/integration/geargrafx_ex_binbcd.py` が 0..255 の全入力を自作ルーチンで照合する（#331 の `routine-real-core`）。
 
-1, 127, 128 は自作ルーチンの実コア照合で通るが、これは自作ルーチンの結果にすぎない。純正側の観測は本計画で初めて対象になる。
+1, 127, 128 は実コア照合（tests/integration/geargrafx_ex_binbcd.py、0..255 走査）の対象に含まれる。本 PR では未実行。これは自作ルーチンの結果にすぎない。純正側の観測は本計画で初めて対象になる。
 
 ## 計測の前提（将来の作業）
 

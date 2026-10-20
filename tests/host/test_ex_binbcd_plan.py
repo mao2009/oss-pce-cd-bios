@@ -64,8 +64,12 @@ class ExBinBcdMeasurementPlanTests(unittest.TestCase):
         # work RAM $20F8-$20FF, explicitly not physical A/X/Y, and says nothing about EX_BINBCD's input register.
         self.assertTrue(self.plan["callee_abi"]["arguments"].startswith("UNKNOWN"))
         self.assertNotIn("A-in", self.plan["callee_abi"]["arguments"])
+        # No source supports any SOURCE_FACT claim about the callee input; forbid the label in both artifacts.
+        json_text = FIXTURE.read_text(encoding="utf-8")
         text = PLAN.read_text(encoding="utf-8")
-        self.assertNotIn("SOURCE_FACT（A-in のみ）", text)
+        self.assertNotIn("SOURCE_FACT", json_text)
+        self.assertNotIn("SOURCE_FACT", text)
+        self.assertNotIn("A-in", text)
 
     def test_plan_document_states_the_same_gate_and_scope(self):
         text = PLAN.read_text(encoding="utf-8")
