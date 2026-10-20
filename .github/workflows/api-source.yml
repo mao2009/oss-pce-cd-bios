@@ -192,6 +192,8 @@ jobs:
       - name: Attest CD-read evidence and probe ROM
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
+          # Owner decision (Issue #349): only these two synthetic files may be attested. The attestation publishes their
+          # names and sha256. Scope and residual risk: docs/provenance.md "Attestation publication scope".
           subject-path: |
             evidence/cdread-probe/cdread-evidence.json
             evidence/cdread-probe/cdread-probe-not-bios.pce
