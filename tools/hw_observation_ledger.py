@@ -8,7 +8,7 @@ HARDWARE_OBSERVATION_FIELDS from tools/contracts.py (read only, not changed here
 import json
 import re
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -45,6 +45,16 @@ def _nonempty_str(obj, key, context):
     _require(isinstance(obj.get(key), str) and obj[key].strip(), f'{context}: {key} must be a non-empty string')
 
 
+def _is_repo_file(reference):
+    """True only for a repository-relative path whose realpath (symlinks resolved) is an existing file under ROOT."""
+    if PureWindowsPath(reference).anchor or PurePosixPath(reference).is_absolute():
+        return False
+    if '..' in re.split(r'[\\/]', reference):
+        return False
+    target = (ROOT / reference).resolve()
+    return target.is_relative_to(ROOT.resolve()) and target.is_file()
+
+
 def validate_entry(entry, seen_fields):
     _exact_keys(entry, ENTRY_KEYS, 'entry')
     field = entry['field']
@@ -64,7 +74,7 @@ def validate_entry(entry, seen_fields):
     _require(isinstance(src['revision'], str) and REVISION_RE.match(src['revision']),
              f'{context}: source revision must be a full 40-hex commit')
     _nonempty_str(src, 'reference', f'{context} source')
-    _require((ROOT / src['reference']).is_file(), f'{context}: source reference is not a repository file')
+    _require(_is_repo_file(src['reference']), f'{context}: source reference is not a repository file')
 
     _exact_keys(entry['environment'], ENV_KEYS, f'{context} environment')
     env = entry['environment']

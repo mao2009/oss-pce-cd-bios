@@ -6,13 +6,17 @@ behavior, a VERIFIED result, or a release-eligible claim.
 """
 import copy
 import json
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'tools'))
 
+import hw_observation_ledger  # noqa: E402
 from contracts import FIELDS, HARDWARE_OBSERVATION_FIELDS  # noqa: E402
 from hw_observation_ledger import LEDGER_PATH, validate_ledger  # noqa: E402
 
@@ -117,6 +121,58 @@ class NegativeLedgerTests(unittest.TestCase):
         data = ledger_with()
         data['entries'].append(copy.deepcopy(data['entries'][0]))
         self.assertRejected(data, 'duplicate entry')
+
+
+class SourceReferenceConfinementTests(unittest.TestCase):
+    """source.reference must be a repository-relative path that resolves inside ROOT.
+
+    ROOT is patched to a temporary repository so that an outside file exists on disk and
+    only the confinement rule (not mere existence) can reject it.
+    """
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name)
+        self.repo = base / 'repo'
+        (self.repo / 'docs').mkdir(parents=True)
+        (self.repo / 'docs' / 'ok.md').write_text('ok', encoding='utf-8')
+        self.outside = base / 'outside.md'
+        self.outside.write_text('outside', encoding='utf-8')
+        patcher = mock.patch.object(hw_observation_ledger, 'ROOT', self.repo)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def check(self, reference):
+        data = ledger_with()
+        data['entries'][0]['source']['reference'] = reference
+        validate_ledger(data)
+
+    def assertRejected(self, reference):
+        with self.assertRaisesRegex(ValueError, 'not a repository file'):
+            self.check(reference)
+
+    def test_absolute_path_outside_repo_is_rejected(self):
+        self.assertRejected(str(self.outside))
+
+    def test_absolute_path_to_inside_file_is_rejected(self):
+        self.assertRejected(str(self.repo / 'docs' / 'ok.md'))
+
+    def test_parent_traversal_is_rejected(self):
+        self.assertRejected('../outside.md')
+
+    def test_backslash_parent_traversal_is_rejected(self):
+        self.assertRejected('docs\\..\\..\\outside.md')
+
+    def test_symlink_escape_is_rejected(self):
+        try:
+            os.symlink(self.outside, self.repo / 'docs' / 'link.md')
+        except OSError as exc:
+            self.skipTest(f'BLOCKED: cannot create symlink in this environment ({exc})')
+        self.assertRejected('docs/link.md')
+
+    def test_repo_relative_path_is_accepted(self):
+        self.check('docs/ok.md')
 
 
 if __name__ == '__main__':
