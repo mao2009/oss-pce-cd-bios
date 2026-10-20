@@ -160,6 +160,31 @@ class CdSubrqSubrdConflictLedgerTests(unittest.TestCase):
             self.assertEqual(len(tok), 40, f'short SHA in doc: {tok}')
             self.assertIn(tok, FULL_PINS, tok)
 
+    def test_c1_source_fact_is_hc_name_only(self):
+        # Review: HG and HX are HLE reimplementations, not primary sources, so they cannot back SOURCE_FACT.
+        c1 = self.rows['C1']
+        self.assertEqual(c1[3], 'SOURCE_FACT')
+        self.assertIn('HC', c1[2])
+        self.assertIn('481 行', c1[2])
+        self.assertNotIn('HG', c1[2])
+        self.assertNotIn('HX', c1[2])
+
+    def test_hg_hx_name_legs_are_secondary(self):
+        c18 = self.rows['C18']
+        self.assertEqual(c18[3], 'SECONDARY_SOURCE')
+        for src in ('Z', 'HG', 'HX'):
+            self.assertIn(src, c18[2], src)
+        self.assertIn('HLE', c18[2])
+        self.assertIn('conflict unresolved', c18[4])
+
+    def test_c19_notes_zeograd_general_description_only(self):
+        self.assertIn('Z の 18 行目は全関数の一般記述のみで $0D 固有の記載はない', self.rows['C19'][2])
+
+    def test_hc_zero_callers_is_local_grep_only(self):
+        hc = [l for l in self.text.splitlines() if l.startswith('| HC | cd_subrd = $00:E027')][0]
+        self.assertIn('local `git grep -i`', hc)
+        self.assertIn('独立の再確認は未実施', hc)
+
     def test_claim_rows_are_in_ascending_id_order(self):
         ids = list(self.rows)
         self.assertEqual(ids, sorted(ids, key=lambda c: int(c[1:])))

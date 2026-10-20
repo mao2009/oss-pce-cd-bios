@@ -4,7 +4,7 @@
 
 **結論（要約）**
 - 名称は **CD_SUBRQ と CD_SUBRD の二つが出典ごとに分かれる。同一とは断定しない。conflict unresolved。**
-- 公開 caller の実例は固定版 HuC（`pce-devel/huc@54f5c73606c1e7142e8095c727cab2767e2b3cb3`）に **0 件**（equate の一行のみ）。Hu-Go / huexpress は $0D を HLE していない。よって呼出側 ABI は根拠がない。
+- 公開 caller の実例は固定版 HuC（`pce-devel/huc@54f5c73606c1e7142e8095c727cab2767e2b3cb3`）に **0 件**（equate の一行のみ。local `git grep` の結果で、独立の再確認は未実施）。Hu-Go / huexpress は $0D を HLE していない。よって呼出側 ABI は根拠がない。
 - 戻り値は Zeograd の同一項目内で二つの説明が食い違う（A=エラー状態 と A=$1807 の複写）。**conflict unresolved。**
 - 実 System Card の実行: 未実行（NOT_RUN）。`BLOCKED_ABI` を維持、`release_eligible=false`、`DEV_CALLABLE` なし、VERIFIED・PASS の主張なし。
 
@@ -29,7 +29,7 @@
 | Z | CD_SUBRQ（Function #$0D） | 「N/A」 | A: 00 = ok、01 = error。さらに注記で「A = ($227E) = ($1807)」、キャリーは $1803 bit 4 に従う | 説明は「Q サブチャネルを読む」 | 3.0 向け、著者の逆解析の記述 |
 | ST | cd_subrd（$E027） | 記載なし | 記載なし | 記載なし | 版ごとの本体アドレスのみ（1.0: $F3B5、2.0: $F34A、2.1/3.0: $F354、TG2.0/3.0: $F36D） |
 | MD | CD_SUBRD | 記載なし | 記載なし | $1807 の値を $227E へ複写する。$1803 bit 4 を事前にセットする（著者の説明）。用途は「不明」と明記 | 機器メモ。BIOS 機能の説明 |
-| HC | cd_subrd = $00:E027, FUNC | 等号のみ | 等号のみ | 等号のみ | 固定版で呼出し 0 件（54f5c73606c1e7142e8095c727cab2767e2b3cb3 の local `git grep -i`。呼出し行なし。定義は equate のみ） |
+| HC | cd_subrd = $00:E027, FUNC | 等号のみ | 等号のみ | 等号のみ | 固定版で呼出し 0 件（54f5c73606c1e7142e8095c727cab2767e2b3cb3 の local `git grep -i` の結果。独立の再確認は未実施。呼出し行なし。定義は equate のみ） |
 | HG | CD_SUBRQ（0x0D）。switch に case なし | HLE なし | HLE なし | 未処理の関数は元の BIOS 呼出しに戻す（コメント 1092 行） | 名称定義のみ。挙動は未模擬 |
 | HX | CD_SUBRQ（0x0D） | 名称のみ | 名称のみ | 名称のみ | 名称定義のみ |
 | GG | CD_SUBRD（0xE027） | ラベルのみ | ラベルのみ | ラベルのみ | デバッガ表示名のみ |
@@ -45,7 +45,7 @@
 
 | ID | 項目 | 主張（出典） | 状態 | 裁定 |
 | --- | --- | --- | --- | --- |
-| C1 | 名称（HuC・Hu-Go・huexpress の leg） | HG、HX は $0D を CD_SUBRQ と名づける。HC は $E027 を cd_subrd とし、$0D に CD_SUBRD を当てる記載はない | SOURCE_FACT | **conflict unresolved**。同一と断定しない |
+| C1 | 名称（HuC の leg） | HC は $E027 を cd_subrd と定義する（pcengine.inc 481 行）。$0D に CD_SUBRD を当てる記載はない。他の出典の名称は C18 で扱う | SOURCE_FACT | **conflict unresolved**。同一と断定しない |
 | C2 | エントリ | $E027 に入口（HC の equate 481 行）。ST、Z の記述は裏付けとして数えない | SOURCE_FACT | 呼出し側の定義の所在のみ。BIOS 側の機能・挙動の証拠ではない |
 | C3 | 入力（IN） | 入力なし（Z の「N/A」のみ） | SECONDARY_SOURCE | 単一出典。他の出典に記載なし |
 | C4 | 戻り値 A | A = 00 ok / 01 error（Z の OUT）。ただし同項の注記は A = $1807 の複写と記す | UNKNOWN | **conflict unresolved**（Z 内部の矛盾） |
@@ -62,8 +62,8 @@
 | C15 | 版ごとの本体アドレス（ST の表） | 1.0 から 3.0 まで本体の番地が異なる | SECONDARY_SOURCE | アドレスは ABI ではない |
 | C16 | ST の「公式名」主張 | ST は 1.0 マニュアルを持ち公式名を得たと記すが、$0D の名称と出典の対応は示さない | UNKNOWN | マニュアル本文は未入手 |
 | C17 | CD_SUBRQ と CD_SUBRD は同じ機構か | C6 の機構を両名称に当てはめる仮説。出典の裏付けなし | HYPOTHESIS | **採用しない。conflict unresolved** |
-| C18 | 名称（Zeograd の leg） | Z は $0D を CD_SUBRQ と記す。二次資料のため、HG・HX と独立の裏付けにはしない | SECONDARY_SOURCE | **conflict unresolved**。同一と断定しない |
-| C19 | X・Y・P の入出力 | 記載なし。Z、ST、MD、HC、HG、HX、GG のいずれも X・Y・P の扱いを記さない（A と C5 のキャリーのみ言及） | UNKNOWN | 観測が必要 |
+| C18 | 名称（Zeograd・Hu-Go・huexpress の leg） | Z は $0D を CD_SUBRQ と記す（二次資料）。HG・HX も $0D を CD_SUBRQ と名づけるが、いずれも HLE の再実装で一次出典ではない | SECONDARY_SOURCE | **conflict unresolved**。同一と断定しない。HG・HX は独立の裏付けにはしない |
+| C19 | X・Y・P の入出力 | 記載なし。Z、ST、MD、HC、HG、HX、GG のいずれも X・Y・P の扱いを記さない（A と C5 のキャリーのみ言及）。Z の 18 行目は全関数の一般記述のみで $0D 固有の記載はない | UNKNOWN | 観測が必要 |
 
 ## 4. 観測計画（未実施。BLOCKED_ABI を維持）
 
