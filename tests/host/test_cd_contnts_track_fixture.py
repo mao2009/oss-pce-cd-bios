@@ -16,7 +16,7 @@ FIXTURE_REL = "tests/fixtures/cdcontnts-track-cases.json"
 FIXTURE = ROOT / FIXTURE_REL
 # sha256 of the canonical JSON (sort_keys, compact separators, UTF-8). Changing the fixture requires
 # updating this value in the same change.
-FIXTURE_SHA256 = "6f60c181f90def17a89ecc285c7e846aceb1ea93bbf91ab23929d51d560a93f5"
+FIXTURE_SHA256 = "dbad3dc14752e2db6973fe00313a632167bca5ca43e487eef7798c32cd9311a5"
 POSITIVE, NEGATIVE = "POSITIVE", "NEGATIVE"
 APPROVED_PROVENANCE = ("synthetic: author-defined media and cases only; no System Card BIOS byte, disassembly, "
                        "retail data, or ./rom/ content; no reference callee is executed")
@@ -121,6 +121,11 @@ class CdContntsTrackFixtureTests(unittest.TestCase):
                   if c["expected"] == NEGATIVE and lenient_judge(self._medium(c["media"]), c["track"])[0] == POSITIVE]
         self.assertGreaterEqual(len(caught), 3)
         self.assertTrue(any(i.startswith("neg_no_medium") for i in caught))
+
+    def test_every_malformed_track_type_is_covered_by_a_negative_case(self):
+        kinds = {type(c["track"]).__name__ for c in self.cases
+                 if c["expected"] == NEGATIVE and c["media"] == "mixed"}
+        self.assertTrue({"bool", "str", "float", "NoneType"} <= kinds, f"missing malformed kinds: {kinds}")
 
     def test_bool_track_is_refused_even_where_1_exists(self):
         mixed = self.media["mixed"]
