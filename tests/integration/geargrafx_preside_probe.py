@@ -13,10 +13,10 @@ Verdicts per case:
 * PARTIAL - only a measured subset of the planned sub-checks ran; the rest is listed in the detail.
             V06 (TAM) is PARTIAL because TAM is a detection-only check at the instruction boundary,
             not a block: the MPR write itself is not stopped, and other MPR paths are unaudited.
-            V05 measures stores that were dropped and detected; that is a measurement, not a PREVENTED
+            V05 measures stores that did not land and were detected; that is a measurement, not a PREVENTED
             claim (#360 W02 stays UNKNOWN: no content-validated run id is recorded).
 * NOT_RUN - no probe mode / audit exists in this PR; nothing was executed for the case.
-* FAIL    - a probe run that did run and contradicted its expectation: a V05 store that landed (not dropped),
+* FAIL    - a probe run that did run and contradicted its expectation: a V05 store that landed,
             a V05 store not detected, a V01/V02 ST store that was prevented (#360 records W05-W07 as
             prevents NO, so a prevention is a contradiction), or a V06 TAM not detected.
 
@@ -117,7 +117,7 @@ def run_case(case, probe, bios, cue):
             for target in V05_RUN:
                 guard.check_neg(measure(probe, bios, cue, "neg-write", target), target)
             missing = [f"${t:04X}" for t in V05_PLANNED if t not in V05_RUN]
-            return case_id, PARTIAL, (f"{label}: store dropped and detected at {len(V05_RUN)} targets "
+            return case_id, PARTIAL, (f"{label}: store did not land at {len(V05_RUN)} targets (detected) "
                                       "(measured only; no PREVENTED claim, #360 W02 stays UNKNOWN); "
                                       f"unrun planned samples {', '.join(missing)}")
         if kind == "tam":

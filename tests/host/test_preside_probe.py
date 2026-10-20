@@ -141,9 +141,10 @@ class PresideProbeTest(unittest.TestCase):
             self.assertIn("empty observation", detail)
 
     def test_v05_landed_store_is_fail_not_blocked(self):
-        # A store that lands (not dropped) contradicts the expectation: the run executed, so FAIL.
+        # A store that lands contradicts the expectation: the run executed, so FAIL.
         case = next(c for c in P.CASES if c[0] == "V05")
-        with mock.patch.object(P.guard, "run_mode", return_value=OBS),                 mock.patch.object(P.guard, "check_neg",
+        with mock.patch.object(P.guard, "run_mode", return_value=OBS), \
+                mock.patch.object(P.guard, "check_neg",
                                   side_effect=ValueError("forbidden store $0000 was NOT prevented")):
             _, verdict, detail = P.run_case(case, None, None, None)
         self.assertEqual(verdict, P.FAIL)
@@ -152,7 +153,8 @@ class PresideProbeTest(unittest.TestCase):
     def test_v01_prevented_st_store_is_fail_not_pass(self):
         # #360 records W05 as prevents NO, so an ST store that does not land is a contradiction: FAIL.
         case = next(c for c in P.CASES if c[0] == "V01")
-        with mock.patch.object(P.guard, "run_mode", return_value=OBS),                 mock.patch.object(P.st, "check_st",
+        with mock.patch.object(P.guard, "run_mode", return_value=OBS), \
+                mock.patch.object(P.st, "check_st",
                                   side_effect=ValueError("st0: address register unchanged (side effect did not land)")):
             _, verdict, _ = P.run_case(case, None, None, None)
         self.assertEqual(verdict, P.FAIL)
