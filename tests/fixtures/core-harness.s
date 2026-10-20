@@ -1,11 +1,11 @@
 ; Original HuC6280 core verification harness (test overlay only, NOT a BIOS service).
 ; The host patches harness_input (A, X, Y, P, 32-byte ZP seed) and the JSR operand at
 ; harness_call, then observes registers at harness_call/harness_after on the real core.
-; Window under test: zero page $E0-$FF (CPU $20E0-$20FF). Snapshots: $2200 pre, $2220 post.
+; Window under test: zero page $E0-$FF (code address $00E0-$00FF). Snapshots: $2200 pre, $2220 post.
 .setcpu "huc6280"
 .segment "DIAGNOSTIC"
 .export harness_entry, harness_call, harness_after, harness_done, harness_trap, harness_input
-.export harness_selftest, harness_selftest_hang, harness_selftest_brk
+.export harness_selftest, harness_selftest_hang, harness_selftest_brk, harness_selftest_mpr, harness_selftest_sp
 
 harness_entry:
     sei
@@ -14,7 +14,7 @@ harness_entry:
     lda #$FF
     tam #$01             ; IO
     lda #$F8
-    tam #$02             ; work RAM (ZP/stack/$2200); MPR2-6 are left as found, MPR7=0
+    tam #$02             ; MPR1=$F8. ZP/stack/$2200 are code addresses; physical location unverified (MPR0=$FF is I/O). MPR2-6 left as found, MPR7=0
     ldx #$FF
     txs
     ldx #31
@@ -65,3 +65,17 @@ harness_selftest_hang:   ; never returns: must be classified TIMEOUT
 harness_selftest_brk:    ; BRK: must be classified TRAPPED
     brk
     nop
+harness_selftest_mpr:    ; remaps MPR2 to its complement and returns: MPR must be reported as unbalanced
+    tma #$04             ; read MPR2 (its initial value is not assumed) ...
+    eor #$FF             ; ... so the value always changes
+    tam #$04
+    rts
+harness_selftest_sp:     ; pops its own return address and pushes it back one slot lower
+    pla                  ; ret lo
+    tax
+    pla                  ; ret hi
+    pha                  ; extra byte above the return address (never popped)
+    pha                  ; ret hi
+    txa
+    pha                  ; ret lo
+    rts                  ; returns to harness_after with SP off by one: must be reported as unbalanced

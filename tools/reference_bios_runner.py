@@ -13,6 +13,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+import reference_jsr_gate as G
 from reference_bios_preflight import validate
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -110,6 +111,12 @@ def run(cfg, adapter):
         raise Blocked("; ".join(errors))
     if not adapter or not Path(adapter).is_file():
         raise Blocked("local Geargrafx retail-BIOS adapter is NOT_IMPLEMENTED or missing")
+    # Execution gate: refuse unless the reference JSR gate allows this exact slot entry.
+    # Runs before any bios_path access. No caller flag can skip it.
+    try:
+        G.require_allowed(cfg["api_id"])
+    except G.GateRefused as error:
+        raise Blocked(str(error)) from error
     for kind in ("bios", "test_rom"):
         path = Path(cfg[kind + "_path"])
         if not path.is_file() or sha(path) != cfg[kind + "_sha256"]:

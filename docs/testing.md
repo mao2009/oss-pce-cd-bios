@@ -138,13 +138,14 @@ Linux 上のクリーンクローンで、リポジトリルートから `TOOLS_
 
 本 PR は Makefile ターゲットを追加しない（共有ターゲット `routine-real-core` は PR #331 に属し、本ツリーには存在しない）。ハーネスは検証済み DEV ROM の
 `$E800-$EFFF` テストオーバーレイ（`tests/fixtures/core-harness.s`）から bank0 の
-ルーチンを JSR し、合成入力 A/X/Y/P とゼロページ `$20E0-$20FF` 32 バイトを与えて、
+ルーチンを JSR し、合成入力 A/X/Y/P とゼロページ `$E0-$FF`（コード上の番地 `$00E0-$00FF`、32 バイト。番地の対応は docs/311-harness-safety.md の番地表記を参照）を与えて、
 呼出前後の A/X/Y/P/SP/MPR とゼロページを実 Geargrafx コア（ディスクなし HuCard
 ロード、cold/warm、各 2048 命令）で記録する。各サイクルは `RETURNED` / `TRAPPED`
 / `TIMEOUT` に分類し、`RETURNED` かつ全期待値一致のみ PASS。`TIMEOUT` は 1 サイクル 2048 命令の予算超過（長いルーチンを含む）と無限ループを区別しない。プラグインケースは `expect` で a/x/y/p（非ゼロ `p_mask`）/ram のいずれかを必ず照合する。未完了は PASS に
 ならない。ケース JSON の形式と組込み自己検証ケースは
 `tests/integration/geargrafx_core_harness.py` の docstring を参照。リファレンス
 BIOS は実行せず、BIOS ABI 互換の証拠ではない。
+未監視（判定の対象外）: IRQ 受理と IRQ 源、MMIO 書込み、スタック内容（`stack_01f8_hex` と `irr`/`idr` は記録のみ）、ZP 窓外の RAM、サイクル数・タイミング。
 
 CI 用フィクスチャ `tests/fixtures/core-harness-plugin.json` の期待値（a=17, x=3, y=0）は、
 リポジトリ内 OSS 実装 slot_1E の観測値（`docs/final-report-20261016.md` §6、`api_jsr_1E`
