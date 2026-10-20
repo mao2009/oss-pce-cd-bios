@@ -30,4 +30,28 @@ Geargrafx `b49ae82a012eade566d72e9d61c9d95a5caa4da3`（core sha256 `38c9af41e76a
 cc65 `71746c829e77f74c2b601a7d16821170c2610df3`、テスト ROM sha256 `13a063583cea3d600a4d2bba970b9b3f842b3ce73f5b3dcd42926aea39efa3a5`。
 実コア境界値（16 進）: `-128×-128=4000`、`-128×127=C080`、`-128×-1=0080`、`-1×-1=0001`、`-1×127=FF81`、`127×127=3F01`、`0×n=0000`。
 
+2026-10-20 再検証（Worker 04）: `origin/main` 963f3a3 の clean clone（WSL Ubuntu）で `make routine-real-core` を実行し、
+MA_MUL8S は PASS（65,536 組不一致 0、負の対照 a<0・b<0 は各 32,640 組で FAIL、期待どおり）。ROM・core・cc65 の sha は上記 2026-10-19 と同一。
+
+## 参照 BIOS ABI との差分（独自仕様の定義と分けて扱う）
+
+`spec/api_contracts.json` の MA_MUL8S 契約は arguments / returns / clobbered がすべて `UNKNOWN`、
+エントリ `0xE0C0` は `HYPOTHESIS`（名前の出所は HuCC ヘッダ等）であり、参照 ABI は未確定。
+
+| 項目 | 独自仕様（本ドキュメント） | 参照 BIOS |
+| --- | --- | --- |
+| 入力レジスタ | A, X | UNKNOWN |
+| 出力 | X:A 符号付き 16-bit | UNKNOWN（16-bit か、片側のみか不明） |
+| 出力フラグ | 返さない（P を PLP で完全復元するため N/Z は呼出前の値） | UNKNOWN |
+| 保存 | Y, P | UNKNOWN |
+| 前提メモリ | MPR1 = `$F8`、スタック `$2100` 領域 | UNKNOWN |
+| 実行時間 | 未計測（フレーム単位の確認のみ） | UNKNOWN |
+
+未確定の契約項目（すべて UNKNOWN、参照 BIOS の検証なしには埋められない）:
+- 引数・戻り値のレジスタ位置、戻り値が 8-bit か 16-bit か。
+- 参照 BIOS が返す N/Z/C/V の内容。
+- 呼出時の T フラグ（HuC6280 の T ビット）の扱い。ルーチンは `CLT` を行わず、テストも T=0 のみ。T=1 の呼出は未検証。
+- 呼出元 MPR 設定が stack 以外の変更を前提とするか。テストは MPR1 = `$F8` 固定のみ。
+- 独立エミュレータと実機は NOT_RUN。
+
 未確定: 参照 BIOS の引数・戻り値位置、フラグ/レジスタ保存、タイミングは UNVERIFIED。独立エミュレータと実機は NOT_RUN。
