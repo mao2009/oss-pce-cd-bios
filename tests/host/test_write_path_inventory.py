@@ -125,7 +125,8 @@ class WritePathInventoryTest(unittest.TestCase):
 
     def test_mutation_prevention_claim_without_measurement_is_rejected(self):
         inv = self.claimed(fresh(), "W03")
-        self.assertEqual(self.validate_in_tmp(inv)["unresolved"], 17)
+        with self.assertRaisesRegex(ValueError, "requires an authenticated run producer"):
+            self.validate_in_tmp(inv)
         row(inv, "W03")["measurement"] = "NOT_MEASURED"
         with self.assertRaisesRegex(ValueError, "W03: prevention claimed without measurement"):
             self.validate_in_tmp(inv)
@@ -334,17 +335,36 @@ class WritePathInventoryTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "W03: unknown measurement"):
             self.validate_in_tmp(inv)
 
-    def test_valid_static_claim_with_content_validated_run_marker_is_accepted(self):
+    def test_valid_static_claim_with_content_validated_run_marker_is_rejected_without_producer(self):
+        # Previously accepted. No authenticated run producer exists (#124), so even a complete record is refused.
         inv = self.claimed(fresh(), "W03")
-        self.assertEqual(self.validate_in_tmp(inv)["rows"], len(INVENTORY["rows"]))
+        with self.assertRaisesRegex(ValueError, r"W03: PREVENTED_STATIC requires an authenticated run producer \(#124\)"):
+            self.validate_in_tmp(inv)
 
-    def test_prevented_static_with_complete_evidence_is_accepted_and_stays_blocked(self):
-        # Positive: status, pre-side-effect point, static measurement, a non-placeholder marker of that kind.
+    def test_prevented_static_with_complete_evidence_is_rejected_without_producer(self):
+        # Formerly the positive case. Complete, bound, non-placeholder evidence still cannot establish a prevention.
         inv = self.claimed(fresh(), "W03")
-        summary = self.validate_in_tmp(inv)
-        self.assertEqual(summary["status_counts"].get("PREVENTED_STATIC"), 1)
-        self.assertEqual(summary["gate_status"], "BLOCKED")
-        self.assertEqual(row(inv, "W03")["gate_status"], "BLOCKED")
+        with self.assertRaisesRegex(ValueError, r"requires an authenticated run producer \(#124\); none exists"):
+            self.validate_in_tmp(inv)
+
+    def test_copied_public_record_from_w03_is_rejected(self):
+        # Reviewer repro: marker plus a record copied from the public inventory row W03 (its id, category, path,
+        # detection point and prevention) with a 20-character summary. Public data is not run evidence.
+        inv = self.claimed(fresh(), "W03")
+        copied = (
+            "measurement-run-id: RUN-0123456789AB STATIC_SOURCE_REFERENCE\n"
+            f"row-id: W03\n"
+            f"write-path-category: MPR\n"
+            f"write-path: {row(INVENTORY, 'W03')['path']}\n"
+            "detection-point: BEFORE_RUN\n"
+            "prevention: YES\n"
+            "evidence-summary: copied from public row\n")
+        (self.tmp / "run.txt").write_text(copied, encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, r"requires an authenticated run producer \(#124\)"):
+            self.validate_in_tmp(inv)
+
+    def test_no_row_is_marked_prevented_static_in_committed_inventory(self):
+        self.assertNotIn("PREVENTED_STATIC", [r["monitor_status"] for r in INVENTORY["rows"]])
 
     def test_prevented_static_with_empty_evidence_list_is_rejected(self):
         inv = self.claimed(fresh(), "W03")
@@ -550,8 +570,17 @@ class WritePathInventoryTest(unittest.TestCase):
         row(inv, "W04").update(monitor_status="PREVENTED_STATIC", prevents_before_side_effect="YES",
                                detection_point="BEFORE_RUN", measurement="STATIC_SOURCE_REFERENCE",
                                evidence=["run.txt"])
-        with self.assertRaisesRegex(ValueError, "W04: run id RUN-0123456789AB is reused from W03"):
-            self.validate_in_tmp(inv)
+        # The producer gate is closed, so open it here only to reach the reuse check on W04.
+        with mock.patch.object(W, "AUTHENTICATED_RUN_PRODUCER", True):
+            with self.assertRaisesRegex(ValueError, "W04: run id RUN-0123456789AB is reused from W03"):
+                self.validate_in_tmp(inv)
+
+    def test_complete_record_passes_format_checks_once_a_producer_is_authenticated(self):
+        # With the gate open (a future authenticated producer), the complete bound record is accepted.
+        # This shows the producer gate is the only thing refusing the claim today.
+        inv = self.claimed(fresh(), "W03")
+        with mock.patch.object(W, "AUTHENTICATED_RUN_PRODUCER", True):
+            self.assertEqual(self.validate_in_tmp(inv)["gate_status"], "BLOCKED")
 
     def test_unknown_row_renamed_to_prevented_static_with_existing_evidence_is_rejected(self):
         # W18 is UNKNOWN (no measured evidence). Renaming it to PREVENTED_STATIC on an existing evidence file is not enough.
