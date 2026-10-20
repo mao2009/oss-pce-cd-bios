@@ -35,7 +35,8 @@ EXECUTED = re.compile(rb'^EXECUTED_CALLEE 1\r?$', re.MULTILINE)
 
 def parse_registry(doc):
     """Return {id: entry} from a parsed registry document. Fails closed on any malformed or duplicate entry."""
-    if not (isinstance(doc, dict) and doc.get('schema_version') == 1 and isinstance(doc.get('points'), list)):
+    if not (isinstance(doc, dict) and type(doc.get('schema_version')) is int and doc['schema_version'] == 1
+            and isinstance(doc.get('points'), list)):
         raise ValueError('invalid measurement registry document')
     registry = {}
     for point in doc['points']:
@@ -82,26 +83,20 @@ def check_pin_review(marker_path=REVIEW_MARKER_PATH, *, registry_sha256=REGISTRY
         raise ValueError('pin review marker must name the approving PR number')
 
 
-def _checked_registry_map(registry):
-    """Validate a caller-supplied {id: entry} map with the same rules as the pinned registry file."""
-    if not (isinstance(registry, dict)
-            and all(isinstance(k, str) and isinstance(v, dict) and v.get('id') == k for k, v in registry.items())):
-        raise ValueError('caller registry must map each measurement_point_id to its entry')
-    return parse_registry({'schema_version': 1, 'points': list(registry.values())})
-
-
-def verify_record(record, log_path, *, field, binary_sha256, declared_kind=None,
-                  registry=None, pinned_revision=PINNED_CORE_REVISION):
+def verify_record(record, log_path, *, field, binary_sha256, declared_kind=None):
     """Return the claim status for one record, or raise ValueError (fail closed).
 
-    Always returns 'UNKNOWN' when every check passes. OBSERVED is unreachable until producer
-    authentication exists (#124); a caller-supplied provenance value cannot promote a record.
+    The registry always comes from the pinned file and the core revision from tools/dependencies.json;
+    neither can be overridden by the caller. Always returns 'UNKNOWN' when every check passes.
+    OBSERVED is unreachable until producer authentication exists (#124); a caller-supplied provenance
+    value cannot promote a record.
     """
     def require(ok, message):
         if not ok:
             raise ValueError(message)
 
-    registry = load_registry() if registry is None else _checked_registry_map(registry)
+    registry = load_registry()
+    pinned_revision = PINNED_CORE_REVISION
     require(isinstance(record, dict) and set(record) == RECORD_KEYS, 'record must contain exactly the record keys')
     require(isinstance(record['provenance'], str) and record['provenance'] in PROVENANCES, 'unknown provenance')
     require(record['core_revision'] == pinned_revision, 'core_revision must equal the pin')
@@ -117,8 +112,12 @@ def verify_record(record, log_path, *, field, binary_sha256, declared_kind=None,
             f'measurement point does not cover field {field!r}')
     require(declared_kind is None or declared_kind == point['kind'],
             'declared observation_kind does not match the registry')
-    require(isinstance(log_path, (str, os.PathLike)), 'log path must be a path')
-    path = Path(log_path)
+    try:
+        raw_path = os.fspath(log_path) if isinstance(log_path, (str, os.PathLike)) else None
+    except TypeError:
+        raw_path = None
+    require(isinstance(raw_path, str), 'log path must be a str path')
+    path = Path(raw_path)
     require(path.is_file() and not path.is_symlink(), 'log missing or not a regular file')
     try:
         data = path.read_bytes()
