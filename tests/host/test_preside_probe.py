@@ -5,6 +5,7 @@ the overall gate can never report PASS without every case PASS, that a probe mis
 closed, and that Windows (no pinned core) is BLOCKED rather than skipped.
 """
 import io
+import json
 import sys
 import unittest
 from contextlib import redirect_stdout
@@ -94,7 +95,46 @@ class PresideProbeTest(unittest.TestCase):
 
     def test_w_map_covers_w01_to_w18_exactly_once(self):
         self.assertEqual(sorted(P.W_MAP), [f"W{i:02d}" for i in range(1, 19)])
-        self.assertTrue(all(g in ("RUN", "NOT_RUN", "RANGE", "UNMAPPED") for g, _ in P.W_MAP.values()))
+        self.assertTrue(all(g in ("RUN", "PARTIAL", "NOT_RUN", "UNMAPPED") for g, _ in P.W_MAP.values()))
+
+    def test_w_map_ids_are_rows_of_the_360_inventory(self):
+        # #360 spec/write_path_inventory.json is the contract: every W-id here must be one of its rows.
+        inventory = json.loads((ROOT / "spec" / "write_path_inventory.json").read_text(encoding="utf-8"))
+        rows = {row["id"]: row for row in inventory["rows"]}
+        self.assertEqual(sorted(rows), sorted(P.W_MAP))
+
+    def test_w18_matches_360_contract_and_is_never_claimed(self):
+        # #360 records W18 as an inventory row: UNKNOWN status, UNKNOWN prevention, NOT_MEASURED, BLOCKED.
+        inventory = json.loads((ROOT / "spec" / "write_path_inventory.json").read_text(encoding="utf-8"))
+        row = next(r for r in inventory["rows"] if r["id"] == "W18")
+        self.assertEqual((row["monitor_status"], row["prevents_before_side_effect"], row["measurement"],
+                          row["gate_status"]), ("UNKNOWN", "UNKNOWN", "NOT_MEASURED", "BLOCKED"))
+        self.assertEqual(P.W_MAP["W18"], ("PARTIAL", "V05"))
+        self.assertNotIn("PREVENTED", "".join(str(v) for v in row.values()))
+
+    def test_partial_group_points_only_at_partial_cases(self):
+        kinds = {c[0]: c[2] for c in P.CASES}
+        partial = {w: c for w, (g, c) in P.W_MAP.items() if g == "PARTIAL"}
+        self.assertEqual(partial, {"W18": "V05"})
+        self.assertEqual(kinds["V05"], "neg")
+
+    def test_missing_evidence_is_blocked_not_pass_or_fail(self):
+        case = next(c for c in P.CASES if c[0] == "V05")
+        # A refused run (exit 8) and a run with no observation are both missing evidence.
+        with mock.patch.object(P.guard, "run_mode", return_value={"exit": 8, "stderr": "alias"}):
+            _, verdict, detail = P.run_case(case, None, None, None)
+        self.assertEqual(verdict, P.BLOCKED)
+        self.assertIn("no evidence", detail)
+        with mock.patch.object(P.guard, "run_mode", side_effect=ValueError("no JSON")):
+            _, verdict, _ = P.run_case(case, None, None, None)
+        self.assertEqual(verdict, P.BLOCKED)
+
+    def test_v05_detail_never_claims_prevention(self):
+        with mock.patch.object(P.guard, "check_neg"), mock.patch.object(P.guard, "run_mode", return_value={}):
+            case = next(c for c in P.CASES if c[0] == "V05")
+            _, _, detail = P.run_case(case, None, None, None)
+        self.assertNotIn("prevented", detail)
+        self.assertIn("no PREVENTED claim", detail)
 
     def test_not_run_group_points_only_at_not_run_cases(self):
         kinds = {c[0]: c[2] for c in P.CASES}
@@ -109,10 +149,9 @@ class PresideProbeTest(unittest.TestCase):
             if g == "RUN":
                 self.assertIn(kinds[c], ("st", "neg", "tam"), w)
 
-    def test_w18_is_a_range_remainder_not_a_row(self):
-        self.assertEqual(P.W_MAP["W18"], ("RANGE", "V05"))
+    def test_w18_is_reported_as_partial_remainder(self):
         rc, out, _ = self._run_main_with(P.NOT_RUN)
-        self.assertIn("W-MAP RANGE: W18->V05", out)
+        self.assertIn("W-MAP PARTIAL: W18->V05", out)
 
     def test_unmapped_ids_are_printed_not_dropped(self):
         rc, out, _ = self._run_main_with(P.NOT_RUN)
@@ -125,10 +164,17 @@ class PresideProbeTest(unittest.TestCase):
         rc, out, _ = self._run_main_with(P.PARTIAL)
         self.assertIn(f"COUNTS PASS=0 PARTIAL={len(P.CASES)} NOT_RUN=0 BLOCKED=0 FAIL=0", out)
 
-    def test_v05_planned_covers_every_page_start_and_end(self):
-        starts = {p * 0x2000 for p in range(8)}
-        ends = {p * 0x2000 + 0x1FFF for p in range(8)}
-        self.assertEqual(set(P.V05_PLANNED), starts | ends)
+    def test_v05_planned_is_non_allowlisted_page_boundaries(self):
+        # Page starts and ends outside the allowlisted window [$2000,$4000) (#360 W16), nothing else.
+        expected = (0x0000, 0x1FFF, 0x4000, 0x5FFF, 0x6000, 0x7FFF, 0x8000, 0x9FFF,
+                    0xA000, 0xBFFF, 0xC000, 0xDFFF, 0xE000, 0xFFFF)
+        self.assertEqual(P.V05_PLANNED, expected)
+
+    def test_v05_planned_never_targets_allowlisted_addresses(self):
+        for addr in P.V05_PLANNED:
+            self.assertFalse(0x2000 <= addr < 0x4000, f"${addr:04X} is inside the allowlist")
+        self.assertNotIn(0x2000, P.V05_PLANNED)
+        self.assertNotIn(0x3FFF, P.V05_PLANNED)
 
     def test_v05_partial_detail_lists_unrun_remainder(self):
         with mock.patch.object(P.guard, "check_neg"), \
@@ -136,9 +182,12 @@ class PresideProbeTest(unittest.TestCase):
             case = next(c for c in P.CASES if c[0] == "V05")
             _, verdict, detail = P.run_case(case, None, None, None)
         self.assertEqual(verdict, P.PARTIAL)
-        for addr in ("$C000", "$5FFF", "$FFFF", "$2000"):
+        for addr in ("$C000", "$5FFF", "$FFFF"):
             self.assertIn(addr, detail)
-        self.assertNotIn("$0000", detail.split("unrun")[-1])
+        remainder = detail.split("unrun W18 remainder")[-1]
+        self.assertNotIn("$2000", remainder)
+        self.assertNotIn("$3FFF", remainder)
+        self.assertNotIn("$0000", remainder)
 
     def test_no_case_can_yield_pass(self):
         with mock.patch.object(P.guard, "run_mode", return_value={}), \
