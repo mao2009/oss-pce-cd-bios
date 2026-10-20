@@ -26,7 +26,13 @@ def _is_int(v):
 
 
 def judge(case, medium):
-    """Local reference judge: a Q position is valid only while PLAYING, inside the medium, on the track."""
+    """Local reference judge: a Q position is valid only while PLAYING, inside the medium, on the track.
+
+    The judge does not look at track types (data/audio). Type-dependent negative cases are not written,
+    because the Q position specification for each track type is not yet decided.
+    Unknown playback_state values (e.g. PAUSED, lower-case playing) fall through to NEGATIVE; that is an
+    open decision, pinned by test_playback_state_vocabulary, not a confirmed behaviour.
+    """
     if case["playback_state"] != "PLAYING":
         return NEGATIVE
     lba, track = case["lba"], case["track"]
@@ -39,9 +45,16 @@ def judge(case, medium):
     return POSITIVE if t["start"] <= lba <= t["end"] else NEGATIVE
 
 
+def _track(data, no):
+    """Select a track by its track number (not by list position)."""
+    return next(t for t in data["medium"]["tracks"] if t["no"] == no)
+
+
 def medium_problems(data):
     """Return inconsistencies between the declared io_range/track types and the medium."""
     medium, io = data["medium"], data["io_range"]
+    if not medium["tracks"]:
+        return ["medium has no tracks"]
     tracks = sorted(medium["tracks"], key=lambda t: t["start"])
     problems = []
     for t in tracks:
@@ -103,11 +116,35 @@ class CdSubqSlot0aFixtureTests(unittest.TestCase):
         bad["io_range"]["lba_max"] = 200
         self.assertTrue(medium_problems(bad), "io_range drift must be reported")
         bad = copy.deepcopy(self.data)
-        bad["medium"]["tracks"][1]["type"] = "Audio"
+        _track(bad, 2)["type"] = "Audio"
         self.assertTrue(medium_problems(bad), "unknown track type must be reported")
+        bad = copy.deepcopy(self.data)
+        bad["io_range"]["lba_min"] = 1
+        self.assertTrue(medium_problems(bad), "io_range.lba_min drift must be reported")
+        bad = copy.deepcopy(self.data)
+        bad["io_range"]["track_numbers"] = [1, 3]
+        self.assertTrue(medium_problems(bad), "io_range.track_numbers drift must be reported")
+        bad = copy.deepcopy(self.data)
+        _track(bad, 2)["start"] = 101
+        self.assertTrue(medium_problems(bad), "gap between track 1 and track 2 must be reported")
+
+    def test_medium_problems_reports_empty_medium(self):
+        bad = copy.deepcopy(self.data)
+        bad["medium"]["tracks"] = []
+        self.assertTrue(medium_problems(bad), "a medium without tracks must be reported, not raise")
+
+    def test_playback_state_vocabulary(self):
+        # Unknown states (PAUSED, lower-case playing) are not in the vocabulary; the judge treats them as NEGATIVE.
+        self.assertEqual({c["playback_state"] for c in self.data["cases"]},
+                         {"PLAYING", "NOT_STARTED", "STOPPED"})
+        for state in ("PAUSED", "playing"):
+            with self.subTest(state=state):
+                case = {"playback_state": state, "track": 1, "lba": 0}
+                self.assertEqual(judge(case, self.data["medium"]), NEGATIVE)
 
     def test_judge_rejects_mutated_expectations(self):
-        # The judge must catch a flipped expectation, so a wrong fixture cannot pass silently.
+        """Judge does not read expected, so this only checks that a flipped expectation is not what the judge returns.
+        The actual flip detection (expected vs judge) is done by test_expected_matches_judge."""
         medium = self.data["medium"]
         by_id = {c["id"]: c for c in self.data["cases"]}
         mutated = copy.deepcopy(by_id["pos_track1_start"])
