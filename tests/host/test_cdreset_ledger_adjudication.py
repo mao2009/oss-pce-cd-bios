@@ -336,8 +336,9 @@ class AdjudicateClaimTests(unittest.TestCase):
         adjudicate_claim(HYPOTHESIS, CALLER, field='preserved', context='x')
         adjudicate_claim(dict(HYPOTHESIS, registers=['A', 'X']), CALLER, field='preserved', context='x')
         adjudicate_claim(BLOCKED, CALLER, field='flags', context='x')
-        for bad in (dict(UNKNOWN, registers=['A']), dict(BLOCKED, registers=['A'])):
-            with self.assertRaises(ValueError):
+        for bad, message in ((dict(UNKNOWN, registers=['A']), 'invalid UNKNOWN claim'),
+                             (dict(BLOCKED, registers=['A']), 'invalid BLOCKED claim')):
+            with self.assertRaisesRegex(ValueError, message):
                 adjudicate_claim(bad, CALLER, field='flags', context='x')
 
     def test_malformed_input_types_raise_valueerror(self):
@@ -369,16 +370,20 @@ class AdjudicateClaimTests(unittest.TestCase):
             adjudicate_claim({1: 'x'}, REAL, field='stack', context='x', executed_callee=True)
 
     def test_invalid_evidence_hashes_are_rejected(self):
-        for h in ('0' * 64, 'a' * 64, 'D1A2' + 'f' * 60, 'f' * 63, 'g' * 64, 12345, None):
+        for h, message in (('0' * 64, 'evidence_hash must be a 64-hex'), ('a' * 64, 'evidence_hash must be a 64-hex'),
+                           ('D1A2' + 'f' * 60, 'evidence_hash must be a 64-hex'),
+                           ('f' * 63, 'evidence_hash must be a 64-hex'), ('g' * 64, 'evidence_hash must be a 64-hex'),
+                           (12345, 'values must be non-empty strings'), (None, 'values must be non-empty strings')):
             bad = dict(OBSERVED, evidence=[dict(EVIDENCE_ENTRY, evidence_hash=h)])
-            with self.assertRaises(ValueError, msg=repr(h)):
+            with self.subTest(h=repr(h)), self.assertRaisesRegex(ValueError, message):
                 adjudicate_claim(bad, REAL, field='stack', context='slot 1 stack', executed_callee=True)
 
     def test_evidence_entry_with_unknown_or_non_string_field_is_rejected(self):
-        for entry in (dict(EVIDENCE_ENTRY, extra='x'), dict(EVIDENCE_ENTRY, core_revision=1),
-                      dict(EVIDENCE_ENTRY, input_type='')):
+        for entry, message in ((dict(EVIDENCE_ENTRY, extra='x'), 'evidence entry must contain exactly'),
+                               (dict(EVIDENCE_ENTRY, core_revision=1), 'values must be non-empty strings'),
+                               (dict(EVIDENCE_ENTRY, input_type=''), 'values must be non-empty strings')):
             bad = dict(OBSERVED, evidence=[entry])
-            with self.assertRaises(ValueError):
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 adjudicate_claim(bad, REAL, field='stack', context='slot 1 stack', executed_callee=True)
 
     def test_non_observed_claim_carrying_evidence_is_rejected(self):
@@ -444,16 +449,18 @@ class AdjudicateClaimTests(unittest.TestCase):
                 adjudicate_claim(bad, REAL, field=field, context='x', executed_callee=True)
 
     def test_malformed_types_raise_valueerror_not_typeerror(self):
-        cases = [(dict(OBSERVED, status=['OBSERVED']), 'stack', True),
-                 (OBSERVED, ['x'], True),
-                 (dict(HYPOTHESIS, evidence=0), 'arguments', False),
-                 (dict(UNKNOWN, evidence=None), 'flags', False),
-                 (OBSERVED, 'stack', 'no'),
-                 (dict(OBSERVED, registers=['Q']), 'stack', True),
-                 (dict(OBSERVED, evidence=[dict(EVIDENCE_ENTRY, core_revision='x')]), 'stack', True),
-                 (dict(OBSERVED, evidence=[dict(EVIDENCE_ENTRY, execution_conditions=' ')]), 'stack', True)]
-        for claim, field, executed in cases:
-            with self.assertRaises(ValueError, msg=repr((claim, field, executed))):
+        cases = [(dict(OBSERVED, status=['OBSERVED']), 'stack', True, 'unsupported claim status'),
+                 (OBSERVED, ['x'], True, 'claim field must be a string'),
+                 (dict(HYPOTHESIS, evidence=0), 'arguments', False, 'claim evidence must be a list'),
+                 (dict(UNKNOWN, evidence=None), 'flags', False, 'claim evidence must be a list'),
+                 (OBSERVED, 'stack', 'no', 'executed_callee must be a bool'),
+                 (dict(OBSERVED, registers=['Q']), 'stack', True, 'registers must be a list'),
+                 (dict(OBSERVED, evidence=[dict(EVIDENCE_ENTRY, core_revision='x')]), 'stack', True,
+                  'core_revision must be a 40-hex'),
+                 (dict(OBSERVED, evidence=[dict(EVIDENCE_ENTRY, execution_conditions=' ')]), 'stack', True,
+                  'values must be non-empty strings')]
+        for claim, field, executed, message in cases:
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 adjudicate_claim(claim, {**REAL, **CALLER}, field=field, context='x',
                                  executed_callee=executed)
 
@@ -467,49 +474,53 @@ class DeclarationFailClosedTests(unittest.TestCase):
     Every case here is a REAL-CORE entry, so the REALCORE and executed_callee rules are not the reason.
     """
 
-    def assertRefusedClaim(self, claim):
-        with self.assertRaises(ValueError):
+    # Each refusal is asserted against the message the intended check raises (ASCII rule or SYNTHETIC rule),
+    # so a removed or weakened check fails its own test. The REALCORE marker is present in every case here.
+    def assertRefusedClaim(self, claim, message):
+        with self.assertRaisesRegex(ValueError, message):
             adjudicate_claim(claim, REAL, field='stack', context='slot 1 stack', executed_callee=True,
                              resolved_evidence_hashes=REAL_RESOLVED)
 
-    def assertRefusedText(self, text):
+    def assertRefusedText(self, text, message):
         # Later evidence fields carry no 'i' or 'c', so fe6cb52's ordered marker check cannot complete the
         # marker from other fields: the look-alike itself is what must be refused.
         entry = dict(REAL_ENTRY, execution_conditions=text, input_type='probe', verification_result='stored')
-        self.assertRefusedClaim(dict(REAL_OBSERVED_CALLEE, evidence=[entry]))
+        self.assertRefusedClaim(dict(REAL_OBSERVED_CALLEE, evidence=[entry]), message)
 
     def test_cyrillic_shha_marker_outside_table_is_refused(self):
-        self.assertRefusedText('REALCORE SYNTҺETIC fixture')  # U+04BA (Һ)
+        self.assertRefusedText('REALCORE SYNTҺETIC fixture', 'pure ASCII')  # U+04BA (Һ)
 
     def test_cyrillic_i_marker_outside_table_is_refused(self):
-        self.assertRefusedText('REALCORE SYNTHETИC fixture')  # U+0418 (И)
+        self.assertRefusedText('REALCORE SYNTHETИC fixture', 'SYNTHETIC content')  # U+0418 (И)
 
     def test_palochka_marker_outside_table_is_refused(self):
-        self.assertRefusedText('REALCORE SYNTHETӀC fixture')  # U+04C0 (palochka)
+        self.assertRefusedText('REALCORE SYNTHETӀC fixture', 'SYNTHETIC content')  # U+04C0 (palochka)
 
     def test_cherokee_marker_outside_table_is_refused(self):
-        for text in ('REALCORE SᎩNTHETIC fixture', 'REALCORE SYNᎻᎬTIC fixture'):
+        for text, message in (('REALCORE SᎩNTHETIC fixture', 'SYNTHETIC content'),
+                              ('REALCORE SYNᎻᎬTIC fixture', 'pure ASCII')):
             with self.subTest(text=text):
-                self.assertRefusedText(text)
+                self.assertRefusedText(text, message)
 
     def test_dotless_i_marker_is_refused(self):
         for text in ('REALCORE SYNTHETıC fixture', 'REALCORE SYNTHETǀC fixture'):
             with self.subTest(text=text):
-                self.assertRefusedText(text)
+                self.assertRefusedText(text, 'SYNTHETIC content')
 
     def test_non_ascii_letter_outside_the_marker_is_refused(self):
-        self.assertRefusedText('REALCORE probe sector é')
+        self.assertRefusedText('REALCORE probe sector é', 'pure ASCII')
 
     def test_reversed_split_thetic_earlier_syn_later_is_refused(self):
         claim = dict(REAL_OBSERVED_CALLEE, evidence=[dict(REAL_ENTRY, execution_conditions='REALCORE THETIC'),
                                                      dict(REAL_ENTRY, execution_conditions='REALCORE SYN')])
-        self.assertRefusedClaim(claim)
+        self.assertRefusedClaim(claim, 'SYNTHETIC content')
 
     def test_field_containing_only_syn_with_valid_realcore_is_refused(self):
-        self.assertRefusedClaim(dict(REAL_OBSERVED_CALLEE, evidence=[dict(REAL_ENTRY, input_type='SYN')]))
+        self.assertRefusedClaim(dict(REAL_OBSERVED_CALLEE, evidence=[dict(REAL_ENTRY, input_type='SYN')]),
+                                'SYNTHETIC content')
 
     def test_fullwidth_marker_is_still_refused(self):
-        self.assertRefusedText('REALCORE ＳＹＮＴＨＥＴＩＣ fixture')
+        self.assertRefusedText('REALCORE ＳＹＮＴＨＥＴＩＣ fixture', 'SYNTHETIC content')
 
 
 class LedgerAdjudicationTests(unittest.TestCase):
@@ -546,35 +557,36 @@ class LedgerAdjudicationTests(unittest.TestCase):
 class ProvenanceBypassTests(unittest.TestCase):
     """Issue #359 MEDIUM fix: OBSERVED refuses unverified evidence. Each case must be refused (ValueError)."""
 
-    def assertRefused(self, claim, *, field='stack', executed_callee=True, resolved=REAL_RESOLVED):
-        with self.assertRaises(ValueError):
+    def assertRefused(self, claim, message, *, field='stack', executed_callee=True, resolved=REAL_RESOLVED):
+        with self.assertRaisesRegex(ValueError, message):
             adjudicate_claim(claim, REAL, field=field, context=f'slot 1 {field}',
                              executed_callee=executed_callee, resolved_evidence_hashes=resolved)
 
     def test_synthetic_text_with_marker_removed_is_refused(self):
         entry = dict(REAL_ENTRY, execution_conditions='test fixture; no real execution took place')
-        self.assertRefused(dict(REAL_OBSERVED_CALLEE, evidence=[entry]))
+        self.assertRefused(dict(REAL_OBSERVED_CALLEE, evidence=[entry]), 'lacks the REALCORE provenance marker')
 
     def test_spaced_synthetic_marker_is_refused(self):
         entry = dict(REAL_ENTRY, execution_conditions='REAL-CORE S Y N T H E T I C fixture')
-        self.assertRefused(dict(REAL_OBSERVED_CALLEE, evidence=[entry]))
+        self.assertRefused(dict(REAL_OBSERVED_CALLEE, evidence=[entry]), 'SYNTHETIC content')
 
     def test_synthetic_marker_in_claim_value_with_valid_hash_is_refused(self):
-        self.assertRefused(dict(REAL_OBSERVED_CALLEE, value='SYNTHETIC observed value'))
+        self.assertRefused(dict(REAL_OBSERVED_CALLEE, value='SYNTHETIC observed value'), 'SYNTHETIC content')
 
     def test_arbitrary_hash_not_in_resolved_set_is_refused(self):
         entry = dict(REAL_ENTRY, evidence_hash='ab' * 32)
-        self.assertRefused(dict(REAL_OBSERVED_CALLEE, evidence=[entry]))
+        self.assertRefused(dict(REAL_OBSERVED_CALLEE, evidence=[entry]), 'resolved by resolve_evidence')
 
     def test_forged_executed_callee_with_hardware_kind_is_refused(self):
-        self.assertRefused(REAL_OBSERVED_HW, field='hw_bus_reset', executed_callee=True)
+        self.assertRefused(REAL_OBSERVED_HW, 'requires observation kind CALLEE_EXECUTION',
+                           field='hw_bus_reset', executed_callee=True)
 
     def test_unresolved_real_core_evidence_is_refused(self):
-        self.assertRefused(REAL_OBSERVED_CALLEE, resolved=frozenset())
+        self.assertRefused(REAL_OBSERVED_CALLEE, 'resolved evidence set is empty', resolved=frozenset())
 
     def test_entry_without_real_core_marker_is_refused(self):
         entry = dict(REAL_ENTRY, execution_conditions='cd-read probe run on the pinned core')
-        self.assertRefused(dict(REAL_OBSERVED_CALLEE, evidence=[entry]))
+        self.assertRefused(dict(REAL_OBSERVED_CALLEE, evidence=[entry]), 'lacks the REALCORE provenance marker')
 
     # Issue #359 round 2: marker normalization must fold homoglyphs, combining marks and field splits.
     # Each case is a REAL-CORE entry (REALCORE marker present) whose SYNTHETIC marker is disguised.
