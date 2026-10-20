@@ -1308,6 +1308,48 @@ class PagesWriteRefusalTests(unittest.TestCase):
         self.assertTrue(any("job 'extra' grants pages: write" in p for p in problems), problems)
 
 
+# Issue #349 (review): the write-grant table is pinned. A change to WRITE_ALLOWANCES must change this expectation in the
+# same change, so a widened entry cannot pass unnoticed.
+PINNED_WRITE_ALLOWANCES = {
+    ('pages.yml', 'deploy'): {'pages', 'id-token'},
+    ('api-source.yml', 'attest-cdread'): {'id-token', 'attestations'},
+    ('api-source.yml', 'attest-cdread-verdict'): {'id-token', 'attestations'},
+}
+ATTEST_CONTENTS_WRITE = ('on:\n  push:\npermissions:\n  contents: read\njobs:\n  attest-cdread:\n    permissions:\n'
+                         '      id-token: write\n      attestations: write\n      contents: write\n    steps:\n      - run: true\n')
+
+
+class WriteAllowancePinTests(unittest.TestCase):
+    def test_table_matches_the_pinned_contents(self):
+        self.assertEqual(PINNED_WRITE_ALLOWANCES, {k: set(v) for k, v in guard.WRITE_ALLOWANCES.items()})
+
+    def test_stock_table_refuses_contents_write_in_the_attest_job(self):
+        problems = guard.pages_structure_violations(ATTEST_CONTENTS_WRITE, '.github/workflows/api-source.yml')
+        self.assertTrue(any("job 'attest-cdread' grants contents: write" in p for p in problems), problems)
+
+    def test_widened_table_is_detected(self):
+        widened = {k: set(v) for k, v in PINNED_WRITE_ALLOWANCES.items()}
+        widened[('api-source.yml', 'attest-cdread')].add('contents')
+        with unittest.mock.patch.dict(guard.WRITE_ALLOWANCES, widened, clear=True):
+            # The widened table would accept the contents: write grant, so only the pin can catch it.
+            self.assertEqual([], guard.pages_structure_violations(ATTEST_CONTENTS_WRITE, '.github/workflows/api-source.yml'))
+            self.assertNotEqual(PINNED_WRITE_ALLOWANCES,
+                                {k: set(v) for k, v in guard.WRITE_ALLOWANCES.items()})
+
+
+class EntryPointTests(unittest.TestCase):
+    def test_default_entry_point_runs_the_placement_checks(self):
+        # Issue #349 (review): with no argument, main runs every check --check-placement runs, not only the upload check.
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, '.github', 'workflows').mkdir(parents=True)
+            Path(tmp, '.github', 'workflows', 'noperm.yml').write_text(
+                'on: push\njobs:\n  job:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: true\n', encoding='utf-8')
+            # The upload check needs a real upload set; it is out of scope here, so it is stubbed. The placement check runs.
+            with unittest.mock.patch.object(guard, 'check_upload_artifacts', lambda root=None: None):
+                with self.assertRaisesRegex(ValueError, "has no permissions"):
+                    guard.main(['--root', tmp])
+
+
 class SignConditionTests(unittest.TestCase):
     """Issue #337 PR review (MEDIUM, fix in #349 follow-up): the signing jobs' `if:` is enforced by the guard. Editing it
     to a looser condition must fail --check-placement, not only a repository test."""

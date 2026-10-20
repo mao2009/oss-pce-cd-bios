@@ -2003,7 +2003,9 @@ def main(argv):
             workflows_root = Path(argv[1])
         argv = argv[2:]
     if not argv:
+        # Issue #349 (review): the default entry point is fail-closed. It runs every check that --check-placement runs.
         check_upload_artifacts(root)
+        check_guard_placement(root)
     elif argv[0] == "--post-build" and len(argv) == 3:
         check_post_build(argv[1], argv[2], root)
     elif argv[0] == "--stage" and len(argv) == 3:
