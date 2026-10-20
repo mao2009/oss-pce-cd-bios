@@ -14,8 +14,11 @@ This adapter is local-only: it links the private BIOS and the GPL core. It is
 never bundled, never uploaded and never run in CI.
 
 The slot-1e output of ``jsr_observation()`` is a private-BIOS run record (``reference-observation/v1``).
-It is not the V08 observation record: the schema of record for V08 is ``tools/jsr_observation.py``,
-which accepts synthetic provenance only and records IRQ as OBSERVED or UNKNOWN.
+It is not the V08 observation record: the schema of record for V08 is ``tools/jsr_observation.py``.
+That schema accepts REAL_CORE_EXECUTION (pinned core revision, synthetic BIOS) or HOST_FIXTURE provenance,
+and records IRQ as OBSERVED or UNKNOWN. The rule that UNKNOWN is not PASS is documented in
+docs/173-write-path-inventory.md (V08), not enforced in code: jsr_observation.py checks shape only and
+performs no PASS aggregation.
 """
 import argparse
 import json

@@ -46,8 +46,10 @@ PREVENTED_PREFIX = "PREVENTED_"
 UNRESOLVED_STATUSES = frozenset({"UNMONITORED", "UNKNOWN", "DETECTED_AFTER_SIDE_EFFECT", "PERMITTED_UNISOLATED"})
 # The categories every inventory must cover: MPR alias/remap, ST bypass, MMIO, IRQ, RAM, device, CPU.
 REQUIRED_CATEGORIES = frozenset({"MPR", "ST", "MMIO", "IRQ", "RAM", "DEVICE", "CPU"})
-# Named paths the inventory must keep, so that a silent deletion cannot hide a bypass.
-REQUIRED_PATH_MARKERS = ("ST0", "ST1", "ST2", "$1802", "$1804", "TAM", "CLI", "TII", "$FF")
+# Named paths the inventory must keep, each bound to its exact row id. A substring anywhere in the inventory is not
+# enough: "$FF" also appears in W08, so deleting W04 would otherwise go unnoticed.
+REQUIRED_ROW_MARKERS = {"W03": "TAM", "W04": "$FF", "W05": "ST0", "W06": "ST1", "W07": "ST2", "W08": "$1802",
+                        "W12": "$1804", "W14": "CLI", "W15": "TII"}
 PREVENTION_VALUES = ("YES", "PER_WRITE", "KNOWN_PC_ONLY")
 # Fixed in code, never derived from the inventory: the inventory must declare exactly this set.
 PREVENTION_ENUM = PREVENTION_VALUES + ("NO", "UNKNOWN")
@@ -137,7 +139,6 @@ def validate(inventory, pinned_revision, root=ROOT):
     claimed_runs = {}
     counts = {}
     covered_categories = set()
-    text = ""
     for row in rows:
         require(isinstance(row, dict) and set(row) == ROW_KEYS, f"row keys: {row.get('id') if isinstance(row, dict) else row}")
         row_id = row["id"]
@@ -227,11 +228,12 @@ def validate(inventory, pinned_revision, root=ROOT):
                     f"{row_id}: {row['monitor_status']} requires an authenticated run producer (#124); none exists")
 
         counts[row["monitor_status"]] = counts.get(row["monitor_status"], 0) + 1
-        text += " " + row["path"]
 
     require(covered_categories == REQUIRED_CATEGORIES, f"missing categories: {sorted(REQUIRED_CATEGORIES - covered_categories)}")
-    for marker in REQUIRED_PATH_MARKERS:
-        require(marker in text, f"required path marker missing from inventory: {marker}")
+    by_id = {r["id"]: r for r in rows}
+    for row_id, marker in REQUIRED_ROW_MARKERS.items():
+        require(row_id in by_id and marker in by_id[row_id]["path"],
+                f"required path marker missing from inventory: {row_id} ({marker})")
     unresolved = sum(counts.get(s, 0) for s in UNRESOLVED_STATUSES)
     return {"rows": len(rows), "unresolved": unresolved, "status_counts": dict(sorted(counts.items())),
             "gate_status": "BLOCKED"}

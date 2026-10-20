@@ -164,6 +164,20 @@ class WritePathInventoryTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing categories|required path marker missing"):
             W.validate(inv, PINNED)
 
+    # "$FF" also appears in W08, so a substring check let deleting W04 pass. Each required row is bound by its id.
+    def test_mutation_deleted_w04_hardware_page_row_is_rejected(self):
+        inv = fresh()
+        inv["rows"] = [r for r in inv["rows"] if r["id"] != "W04"]
+        self.assertIn("$FF", row(INVENTORY, "W08")["path"])
+        with self.assertRaisesRegex(ValueError, r"required path marker missing from inventory: W04 \(\$FF\)"):
+            W.validate(inv, PINNED)
+
+    def test_mutation_deleted_w08_irq_enable_row_is_rejected(self):
+        inv = fresh()
+        inv["rows"] = [r for r in inv["rows"] if r["id"] != "W08"]
+        with self.assertRaisesRegex(ValueError, r"required path marker missing from inventory: W08 \(\$1802\)"):
+            W.validate(inv, PINNED)
+
     def test_mutation_revision_drift_is_rejected(self):
         inv = fresh()
         inv["pinned_core_revision"] = "0" * 40

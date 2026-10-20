@@ -66,7 +66,7 @@ W05 の遮断手段はコア側フックが無いと成立しない可能性が�
 
 ## ホスト側テストの結果（この worktree）
 
-- `tests/host/test_write_path_inventory.py`: 59 件（インベントリの不変条件・改変テスト、観測スキーマの正負例、ドキュメント整合）
+- `tests/host/test_write_path_inventory.py`: 89 件（インベントリの不変条件・改変テスト、観測スキーマの正負例、ドキュメント整合）
 - `tests/host/test_reference_jsr_gate.py`: 既存のゲートテストを維持（BLOCKED）
 - 全体の `python -m unittest discover -s tests/host`（UTF-8 モード）: 1225 件中、残りの失敗は Windows 固有（`os.getuid`、`fcntl`、非 Win32 バイナリ、cc65 不在）による既存のもので、この PR の変更ファイルとは無関係。`make test` は NOT_RUN（Windows では Makefile と cc65 が動かないため）。
 
