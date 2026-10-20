@@ -41,8 +41,7 @@ class MeasurementEvidenceTest(unittest.TestCase):
         return record, path
 
     def _verify(self, record, path, field='hw_bus_reset', declared_kind=None, binary=BINARY):
-        return verify_record(record, path, field=field, binary_sha256=binary, declared_kind=declared_kind,
-                             registry=self.registry)
+        return verify_record(record, path, field=field, binary_sha256=binary, declared_kind=declared_kind)
 
     def test_positive_recomputed_hash_matches_and_synthetic_stays_unknown(self):
         record, path = self._record(HW_LOG, 'HW_BUS_READBACK_1804')
@@ -116,23 +115,40 @@ class MeasurementEvidenceTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'pin'):
                 load_registry(tampered)
 
-    def test_caller_supplied_registry_is_validated_fail_closed(self):
-        # covers_fields given as a string would make `field in covers` a substring test ('bus' in 'hw_bus_reset').
-        bad_maps = [
-            {'HW_BUS_READBACK_1804': dict(HW_POINT, covers_fields='hw_bus_reset')},
-            {'HW_BUS_READBACK_1804': dict(HW_POINT, id='OTHER_ID')},
-            {'HW_BUS_READBACK_1804': dict(HW_POINT, kind='OTHER')},
-            {'HW_BUS_READBACK_1804': None},
-            ['HW_BUS_READBACK_1804'],
-        ]
+    def test_registry_override_is_not_accepted(self):
+        # Repro (MEDIUM): a caller-supplied registry that claims $1804 covers 'stack' must not verify.
         record, path = self._record(HW_LOG, 'HW_BUS_READBACK_1804')
-        for bad in bad_maps:
-            with self.subTest(registry=bad), self.assertRaises(ValueError):
-                verify_record(record, path, field='bus', binary_sha256=BINARY, registry=bad)
+        forged = {'HW_BUS_READBACK_1804': dict(HW_POINT, covers_fields=['stack'])}
+        with self.assertRaises(TypeError):
+            verify_record(record, path, field='stack', binary_sha256=BINARY, registry=forged)
+        with self.assertRaisesRegex(ValueError, 'does not cover'):
+            self._verify(record, path, field='stack')
+
+    def test_pinned_revision_override_is_not_accepted(self):
+        # Repro (MEDIUM): a record bound to a forged core revision must not pass by overriding the pin.
+        record, path = self._record(HW_LOG, 'HW_BUS_READBACK_1804', core_revision='0' * 40)
+        with self.assertRaises(TypeError):
+            verify_record(record, path, field='hw_bus_reset', binary_sha256=BINARY, pinned_revision='0' * 40)
+        with self.assertRaisesRegex(ValueError, 'core_revision'):
+            self._verify(record, path)
+
+    def test_non_str_field_is_rejected(self):
+        record, path = self._record(HW_LOG, 'HW_BUS_READBACK_1804')
         with self.assertRaises(ValueError):
-            verify_record(record, path, field='bus', binary_sha256=BINARY, registry={'HW_BUS_READBACK_1804': HW_POINT})
-        with self.subTest(field='non-str'), self.assertRaises(ValueError):
             self._verify(record, path, field=['hw_bus_reset'])
+
+    def test_schema_version_bool_is_rejected(self):
+        # True == 1 in Python; the registry schema must be the integer 1 exactly.
+        with self.assertRaises(ValueError):
+            parse_registry({'schema_version': True, 'points': [HW_POINT]})
+
+    def test_pathlike_returning_bytes_is_controlled_rejection(self):
+        class BytesPath:
+            def __fspath__(self):
+                return b'/tmp/x.log'
+        record, _ = self._record(HW_LOG, 'HW_BUS_READBACK_1804')
+        with self.assertRaises(ValueError):
+            verify_record(record, BytesPath(), field='hw_bus_reset', binary_sha256=BINARY)
 
     def test_pin_change_without_review_marker_fails(self):
         # Committed marker must name the current registry and core pins.
@@ -156,6 +172,25 @@ class MeasurementEvidenceTest(unittest.TestCase):
                 check_pin_review(marker)
             with self.assertRaisesRegex(ValueError, 'missing'):
                 check_pin_review(Path(d) / 'absent.json')
+
+    def test_registry_edit_without_marker_update_fails_in_verifier(self):
+        # Registry edited and its sha pin updated, but the review marker is not: verify_record must refuse.
+        from unittest import mock
+        import tools.measurement_evidence as me
+        edited = REGISTRY_PATH.read_bytes().replace(b'"stack"', b'"stacq"')
+        edited_sha = hashlib.sha256(edited).hexdigest()
+        record, path = self._record(HW_LOG, 'HW_BUS_READBACK_1804')
+        with tempfile.TemporaryDirectory() as d:
+            reg = Path(d) / 'points.json'
+            reg.write_bytes(edited)
+            with mock.patch.object(me, 'REGISTRY_PATH', reg), mock.patch.object(me, 'REGISTRY_SHA256', edited_sha):
+                with self.assertRaisesRegex(ValueError, 'review marker'):
+                    self._verify(record, path)
+                # Same edit with the marker updated to the new pin: the gate passes again.
+                marker = Path(d) / 'review.json'
+                marker.write_bytes(REVIEW_MARKER_PATH.read_bytes().replace(REGISTRY_SHA256.encode(), edited_sha.encode()))
+                with mock.patch.object(me, 'REVIEW_MARKER_PATH', marker):
+                    self.assertEqual(self._verify(record, path), 'UNKNOWN')
 
     def test_duplicate_measurement_point_id_is_rejected(self):
         with self.assertRaisesRegex(ValueError, 'duplicate measurement_point_id'):
@@ -196,7 +231,7 @@ class MeasurementEvidenceTest(unittest.TestCase):
         record, path = self._record(HW_LOG, 'HW_BUS_READBACK_1804')
         for bad_record in [None, [], dict(record, extra=1), {k: v for k, v in record.items() if k != 'log_sha256'}]:
             with self.subTest(bad_record=bad_record), self.assertRaises(ValueError):
-                verify_record(bad_record, path, field='hw_bus_reset', binary_sha256=BINARY, registry=self.registry)
+                verify_record(bad_record, path, field='hw_bus_reset', binary_sha256=BINARY)
         for bad_binary in [None, 1, 'B' * 64, 'b' * 63]:
             with self.subTest(binary=bad_binary), self.assertRaises(ValueError):
                 self._verify(record, path, binary=bad_binary)
