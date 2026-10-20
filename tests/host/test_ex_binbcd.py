@@ -1,6 +1,7 @@
 """Host checks for the project-own EX_BINBCD packed-BCD model and probe build (Issue #70)."""
 import tempfile
 import unittest
+from tools.environment import requires_cc65
 
 from tools.ex_binbcd import binbcd_packed, build_probe
 
@@ -26,6 +27,7 @@ class ExBinBcdPackedModelTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 binbcd_packed(value)
 
+    @requires_cc65
     def test_probe_assembles_with_exported_mutation_point(self):
         with tempfile.TemporaryDirectory() as directory:
             rom, symbols = build_probe(directory)
