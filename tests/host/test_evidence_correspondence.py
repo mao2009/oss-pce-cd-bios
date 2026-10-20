@@ -86,7 +86,7 @@ class NegativeCorrespondenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'does not support field'):
             adjudicate(CALLEE_OBSERVED, 'hw_bus_reset', executed_callee=True)
 
-    def test_hw_readback_never_yields_verified_or_callee_claim(self):
+    def test_hw_readback_only_passes_when_declared_as_hw_readback(self):
         # Guard against promotion: HW readback stays a hw_bus_reset fact. No callee field is accepted
         # for it, and VERIFIED is not a representable status (adjudicate_claim returns None or raises).
         for field in CALLEE_FIELDS:
