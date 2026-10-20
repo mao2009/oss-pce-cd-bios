@@ -30,7 +30,7 @@ EXPECTED = {
     'F05': ('caller', 'SOURCE_FACT', '`2`'),
     'F06': ('caller', 'SOURCE_FACT', '`$20F8`（_al）、`$20F9`（_ah）'),
     'F07': ('callee', 'HYPOTHESIS', '下位 2 ビットのみ使用'),
-    'F08': ('caller', 'SOURCE_FACT', 'BCD（種別 0 の結果 `tnomin` を渡す）'),
+    'F08': ('caller', 'SOURCE_FACT', '種別 0 の結果 `tnomin` を渡す'),
     'F09': ('callee', 'HYPOTHESIS', 'BCD'),
     'F10': ('callee', 'UNKNOWN', 'UNKNOWN'),
     'F11': ('caller', 'UNKNOWN', 'UNKNOWN'),
@@ -173,6 +173,14 @@ class CdDinfoLedgerTest(unittest.TestCase):
         self.assertIn('BLOCKED_ABI', self.text)
         self.assertIn('release_eligible=false', self.text)
         self.assertIn('DEV_CALLABLE にしない', self.text)
+
+    def test_caller_fact_does_not_carry_callee_format(self):
+        # F08 is a caller fact (what the caller passes). The BCD format is the callee's documented output and is
+        # only a HYPOTHESIS in F09, so the caller row must not state it as SOURCE_FACT.
+        row = {r['id']: r for r in self.rows}['F08']
+        self.assertEqual(row['side'], 'caller')
+        self.assertNotIn('BCD', row['value'])
+        self.assertNotIn('BCD', row['reason'])
 
     def test_unknown_values_are_not_filled(self):
         unknown = [r for r in self.rows if r['status'] == 'UNKNOWN']
