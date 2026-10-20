@@ -1201,28 +1201,147 @@ def rom_upload_violations(text, label):
 
 
 def publish_violations(text, label):
-    """Problems for publishing actions (deploy-pages, upload-pages-artifact, attest-build-provenance) in one file, by job."""
+    """Problems for publishing actions (attest-build-provenance, deploy-pages, upload-pages-artifact) in one file, by job.
+    A signing action is allowed only in its allowlisted (file, job) pair. A Pages action is decided by
+    pages_structure_violations (Issue #349, the Pages structure of the publishing job), and only in pages.yml; a Pages
+    action in any other file is refused here."""
     lines = text.splitlines()
-    guard_jobs = set()
-    for i, line in enumerate(lines):
-        match = USES_RE.search(line) if _live(line) else None
-        if match:
-            name, patterns = _step_patterns(lines, i, match.start())
-            if _upload_kind(name, patterns, None) in ("final-intake", "final-workspace"):
-                guard_jobs.add(_enclosing_job(lines, i))
+    name = Path(label).name
     problems = []
     for i, line in enumerate(lines):
         match = PUBLISH_USES_RE.search(line) if _live(line) else None
         if not match:
             continue
         job = _enclosing_job(lines, i)
-        if (Path(label).name, job) in PUBLISH_JOB_ALLOWLIST:
-            continue
-        if job in guard_jobs and any(match.group(0).lower() == p for p in PAGES_PUBLISH_ACTIONS):
+        if match.group(0).lower() in PAGES_PUBLISH_ACTIONS:
+            if name != PAGES_FILE:
+                problems.append(f"{label}: Pages publish action {match.group(0)!r} in job {job!r} is refused outside "
+                                f"{PAGES_FILE} (Issue #349)")
+            continue   # pages.yml: pages_structure_violations decides the job
+        if (name, job) in PUBLISH_JOB_ALLOWLIST:
             continue
         problems.append(f"{label}: publish action {match.group(0)!r} in job {job!r} is refused unless the (file, job) "
                         "pair is allowlisted (Issue #349)")
     return problems
+
+
+# Issue #349 (Pages privilege split, #374). The publishing job is judged by its structure, from the decoded YAML (strict
+# loader): the split layout (validate -> build -> deploy) or the single-job layout. Any other shape is refused.
+PAGES_FILE = "pages.yml"
+PAGES_SPLIT_JOBS = frozenset({"validate", "build", "deploy"})
+PAGES_DEPLOY_IF = "github.event_name != 'pull_request' && github.ref == 'refs/heads/main'"
+PAGES_DEPLOY_PERMISSIONS = {"pages": "write", "id-token": "write"}
+PAGES_BUILD_PERMISSIONS = {"contents": "read"}
+PAGES_LEGACY_PERMISSIONS = {"contents": "read", "actions": "read", "pages": "write", "id-token": "write"}
+PAGES_JOB_KEYS = frozenset({"name", "runs-on", "needs", "if", "permissions", "environment", "timeout-minutes", "steps"})
+PAGES_BUILD_KEYS = frozenset({"name", "runs-on", "needs", "permissions", "timeout-minutes", "steps"})
+PAGES_DEPLOY_STEP_KEYS = frozenset({"name", "id", "uses"})   # a deploy step: no run, env, if, with, shell or working-directory
+PAGES_DEPLOY_USES = re.compile(r"actions/deploy-pages@[0-9a-f]{40}")
+PAGES_UPLOAD_USES = re.compile(r"actions/upload-pages-artifact@[0-9a-f]{40}")
+
+
+def _pages_uses(node):
+    """Every uses: value that names a Pages publishing action, anywhere in the decoded document."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "uses" and isinstance(value, str) and value.lower().startswith(PAGES_PUBLISH_ACTIONS):
+                yield value
+            yield from _pages_uses(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _pages_uses(item)
+
+
+def _pages_job_problems(job, body, label, needs, condition, permissions, keys):
+    """Job-level shape of a publishing job: needs:, if: and permissions: exactly, and only the allowed keys."""
+    problems = []
+    if body.get("needs") != needs:
+        problems.append(f"{label}: job {job!r} must have needs: {needs!r} (found {body.get('needs')!r}, Issue #349)")
+    if condition is not None and body.get("if") != condition:
+        problems.append(f"{label}: job {job!r} must have if: {condition!r} (found {body.get('if')!r}, Issue #349)")
+    if body.get("permissions") != permissions:
+        problems.append(f"{label}: job {job!r} must have permissions {permissions} exactly "
+                        f"(found {body.get('permissions')!r}, Issue #349)")
+    for key in sorted(set(body) - keys, key=str):
+        problems.append(f"{label}: job {job!r} sets job-level {key!r} (refused; allowed {sorted(keys)}, Issue #349)")
+    if "environment" in body and not _plain_environment(body["environment"]):
+        problems.append(f"{label}: job {job!r} environment: must be a name, or name and url only (Issue #349)")
+    return problems
+
+
+def _pages_deploy_step_problems(job, body, label):
+    """The deploy job runs exactly one step: actions/deploy-pages pinned to a full SHA, with only name, id and uses."""
+    steps = body.get("steps")
+    if not isinstance(steps, list) or len(steps) != 1 or not isinstance(steps[0], dict):
+        return [f"{label}: job {job!r} must have exactly one step, the deploy action (Issue #349)"]
+    step = steps[0]
+    problems = [f"{label}: job {job!r} step sets {key!r} (refused, Issue #349)"
+                for key in sorted(set(step) - PAGES_DEPLOY_STEP_KEYS, key=str)]
+    if not (isinstance(step.get("uses"), str) and PAGES_DEPLOY_USES.fullmatch(step["uses"])):
+        problems.append(f"{label}: job {job!r} deploy action must be actions/deploy-pages pinned to a full commit SHA "
+                        f"(found {step.get('uses')!r}, Issue #349)")
+    return problems
+
+
+def pages_structure_violations(text, label):
+    """Issue #349, for one workflow file (decoded YAML). A Pages publishing action is allowed only in a job whose structure
+    is approved here. Split layout (validate, build, deploy): actions/upload-pages-artifact in build (needs: validate,
+    permissions exactly contents: read, no id-token) and actions/deploy-pages in deploy (needs: build, the main-only if:,
+    permissions exactly pages: write and id-token: write, exactly one SHA-pinned step). Single-job layout (deploy holds
+    both the upload and the deploy): its own exact shape. Any other shape, a Pages action outside those jobs, a second deploy
+    action, or an unpinned action is refused. Residual: stage and verify placement is checked by
+    guard_placement_violations; this checks the job structure, not the commands inside the upload job."""
+    try:
+        import yaml
+    except ImportError:
+        return [f"{label}: PyYAML unavailable, Pages structure cannot be checked (Issue #349)"]
+    try:
+        doc = yaml.load(text, Loader=_strict_loader())
+    except (yaml.YAMLError, ValueError) as error:
+        return [f"{label}: YAML cannot be read, Pages structure cannot be checked ({error}; Issue #349)"]
+    found = list(_pages_uses(doc))
+    if not found:
+        return []
+    if Path(label).name != PAGES_FILE:
+        return [f"{label}: Pages publish action outside {PAGES_FILE} is refused (Issue #349)"]
+    jobs = doc.get("jobs") if isinstance(doc, dict) else None
+    if not isinstance(jobs, dict) or any(not isinstance(body, dict) for body in jobs.values()):
+        return [f"{label}: Pages publish action without a mapping of jobs is refused (Issue #349)"]
+    per_job = {job: uses for job, body in jobs.items() if (uses := list(_pages_uses(body)))}
+    if sum(len(v) for v in per_job.values()) != len(found):
+        return [f"{label}: Pages publish action outside a job step is refused (Issue #349)"]
+    if set(jobs) == PAGES_SPLIT_JOBS:
+        return _pages_split_problems(jobs, per_job, label)
+    return _pages_single_problems(jobs, per_job, label)
+
+
+def _pages_split_problems(jobs, per_job, label):
+    upload, deploy = per_job.get("build", []), per_job.get("deploy", [])
+    if per_job.get("validate") or set(per_job) - {"build", "deploy"} or len(upload) != 1 or len(deploy) != 1:
+        return [f"{label}: the split layout must hold exactly one upload in build and exactly one deploy in deploy, and no "
+                f"Pages action elsewhere (found {per_job}, Issue #349)"]
+    problems = []
+    if not PAGES_UPLOAD_USES.fullmatch(upload[0]):
+        problems.append(f"{label}: build upload-pages-artifact must be pinned to a full commit SHA (Issue #349)")
+    problems += _pages_job_problems("build", jobs["build"], label, "validate", None, PAGES_BUILD_PERMISSIONS,
+                                    PAGES_BUILD_KEYS)
+    problems += _pages_job_problems("deploy", jobs["deploy"], label, "build", PAGES_DEPLOY_IF, PAGES_DEPLOY_PERMISSIONS,
+                                    PAGES_JOB_KEYS)
+    problems += _pages_deploy_step_problems("deploy", jobs["deploy"], label)
+    return problems
+
+
+def _pages_single_problems(jobs, per_job, label):
+    uses = per_job.get("deploy", [])
+    if set(per_job) - {"deploy"} or len(uses) != 2:
+        return [f"{label}: the single-job layout must hold one upload and one deploy in job 'deploy' and no Pages action "
+                f"elsewhere (found {per_job}, Issue #349)"]
+    if sum(bool(PAGES_DEPLOY_USES.fullmatch(u)) for u in uses) != 1 or not all(
+            PAGES_DEPLOY_USES.fullmatch(u) or PAGES_UPLOAD_USES.fullmatch(u) for u in uses):
+        return [f"{label}: the single-job layout needs exactly one deploy action and one upload, both pinned to full commit "
+                "SHAs (Issue #349)"]
+    return _pages_job_problems("deploy", jobs["deploy"], label, "validate", PAGES_DEPLOY_IF, PAGES_LEGACY_PERMISSIONS,
+                               PAGES_JOB_KEYS)
 
 
 def check_guard_placement(root=ROOT):
@@ -1250,6 +1369,7 @@ def check_guard_placement(root=ROOT):
         if steps:
             problems += guard_placement_violations(text, label)
         problems += publish_violations(text, label)
+        problems += pages_structure_violations(text, label)
         problems += attest_input_violations(text, label)
         problems += attest_condition_violations(text, label)
         problems += signing_violations(text, label)

@@ -389,13 +389,22 @@ GUARDED = 'jobs:\n  build:\n    steps:\n' + GUARD_STEP + SAVE_STEP
 CFG_SHA = '983d7736d9b0ae728b81ab479565c72886d7745b'
 PINS = {'configure-pages': CFG_SHA, 'deploy-pages': 'd6db90164ac5ed86f2b6aed7e0febac5b3c0c03e'}
 PAGES_UPLOAD = 'actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b'
-PAGES_GUARDED = ('jobs:\n  build:\n    steps:\n' + PREAMBLE
-                 + '      - name: Configure Pages\n'
-                 + '        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5\n'
-                 + STAGE_STEP + VERIFY_STEP
-                 + f'      - name: Save\n        uses: {PAGES_UPLOAD}\n        with:\n          path: .artifact-stage/build/x\n'
-                 + '      - name: Deploy\n        id: deployment\n'
-                 + '        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4\n')
+# Issue #349 (#374 split layout) as pages.yml: upload in build (needs validate, contents: read), deploy-pages alone in deploy.
+PAGES_SPLIT_GUARDED = (
+    'jobs:\n  validate:\n    permissions:\n      contents: read\n    steps:\n'
+    '      - name: Checkout\n        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683\n'
+    '        with:\n          persist-credentials: false\n'
+    '  build:\n    needs: validate\n    permissions:\n      contents: read\n    steps:\n' + PREAMBLE
+    + '      - name: Configure Pages\n'
+    + '        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5\n'
+    + STAGE_STEP + VERIFY_STEP
+    + f'      - name: Save\n        uses: {PAGES_UPLOAD}\n        with:\n          path: .artifact-stage/build/x\n'
+    + '  deploy:\n    needs: build\n'
+    + "    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'\n"
+    + '    permissions:\n      pages: write\n      id-token: write\n'
+    + '    environment:\n      name: github-pages\n      url: ${{ steps.deployment.outputs.page_url }}\n'
+    + '    steps:\n      - name: Deploy from main\n        id: deployment\n'
+    + '        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4\n')
 
 
 # The approved attest-cdread job (owner decision, Issue #349): its subject-path is exactly the two synthetic files.
@@ -1263,9 +1272,10 @@ class UnlistedRouteTests(unittest.TestCase):
 
     def test_allowlisted_pages_actions_pass_both_layers(self):
         # Item 6 (#349): the placement layer, not only the upload layer, must pass a guarded Pages workflow that
-        # carries configure-pages and deploy-pages (both pinned to full SHAs).
+        # carries configure-pages and deploy-pages (both pinned to full SHAs), in the approved split layout (#374).
+        # Issue #349: the structure of that layout is checked by test_pages_structure.py.
         # The stage and verify calls must name the workflow path as the placement check labels it.
-        self.write(PAGES_GUARDED.replace(' w.yml ', ' .github/workflows/w.yml '), name='w.yml')
+        self.write(PAGES_SPLIT_GUARDED.replace(' w.yml ', ' .github/workflows/pages.yml '), name='pages.yml')
         guard.check_upload_artifacts(self.root)
         guard.check_guard_placement(self.root)
 

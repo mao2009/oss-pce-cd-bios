@@ -30,23 +30,30 @@ def real(rel=PAGES):
     return (guard.ROOT / rel).read_text(encoding='utf-8')
 
 
+LEGACY = guard.ROOT / 'tests' / 'fixtures' / 'pages-single-job.yml'   # the pre-#374 single-job layout
+
+
+def legacy():
+    return LEGACY.read_text(encoding='utf-8')
+
+
 def with_guard_run(run_line):
     """The real pages.yml with the run: of the real Guard placement step replaced by run_line (same step name)."""
-    text = real()
+    text = legacy()
     assert text.count(GUARD_RUN) == 1
     return text.replace(GUARD_RUN, '        run: |\n          ' + run_line + '\n')
 
 
 def with_guard_keys(extra):
     """The real pages.yml with extra key lines added to the real Guard placement step (its run: text unchanged)."""
-    text = real()
+    text = legacy()
     assert text.count(GUARD_ANCHOR) == 1
     return text.replace(GUARD_ANCHOR, GUARD_ANCHOR + extra)
 
 
 def with_run(body, name='probe'):
     """The real pages.yml with one more step at the end of its deploy job; body is the step's run: text (block)."""
-    return real() + f'      - name: {name}\n        run: |\n' + ''.join('          ' + line + '\n' for line in body.split('\n'))
+    return legacy() + f'      - name: {name}\n        run: |\n' + ''.join('          ' + line + '\n' for line in body.split('\n'))
 
 
 def id_token_runs(text):
@@ -78,7 +85,7 @@ class ExactMatchTests(unittest.TestCase):
 
     def test_registry_matches_the_real_id_token_runs(self):
         # Drift guard: the registry holds exactly the run texts of the real pages.yml id-token jobs, nothing more or less.
-        runs = id_token_runs(real())
+        runs = id_token_runs(legacy())
         registry = {key: text for key, text in guard.APPROVED_RUN_TEXTS.items() if key[0] == PAGES_NAME}
         self.assertEqual(sorted(registry), sorted(runs))
         self.assertEqual(4, len(registry))
@@ -109,12 +116,12 @@ class ExactMatchTests(unittest.TestCase):
                       '        continue-on-error: true\n'):
             with self.subTest(extra=extra):
                 self.assertExactRefused(with_guard_keys(extra))
-        self.assertEqual([], guard.run_allowlist_violations(real(), PAGES))
+        self.assertEqual([], guard.run_allowlist_violations(legacy(), PAGES))
 
     def test_one_character_change_to_an_approved_run_is_refused(self):
-        self.assertEqual(1, real().count('--check-placement\n'))
-        changed = real().replace('--check-placement\n', '--check-placemenx\n', 1)
-        self.assertNotEqual(real(), changed)
+        self.assertEqual(1, legacy().count('--check-placement\n'))
+        changed = legacy().replace('--check-placement\n', '--check-placemenx\n', 1)
+        self.assertNotEqual(legacy(), changed)
         self.assertRefused(changed)
 
     def test_modified_copy_of_an_approved_run_is_refused(self):
@@ -133,7 +140,7 @@ class ExactMatchTests(unittest.TestCase):
         other = ('  other:\n    runs-on: ubuntu-24.04\n    permissions:\n      id-token: write\n    steps:\n'
                  '      - name: Resolve python3 (trusted)\n'
                  '        run: echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"\n')
-        problems = guard.signing_violations(real() + other, PAGES)
+        problems = guard.signing_violations(legacy() + other, PAGES)
         self.assertTrue(any("'other'" in problem for problem in problems), problems)
 
 

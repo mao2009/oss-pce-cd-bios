@@ -21,6 +21,11 @@ def real(rel=PAGES):
     return (guard.ROOT / rel).read_text(encoding='utf-8')
 
 
+def legacy():
+    # The pre-#374 single-job layout: the upload step 'Upload static site' is held in the deploy job.
+    return (guard.ROOT / 'tests' / 'fixtures' / 'pages-single-job.yml').read_text(encoding='utf-8')
+
+
 def replace_once(text, anchor, new):
     assert text.count(anchor) == 1, anchor
     return text.replace(anchor, new)
@@ -28,17 +33,17 @@ def replace_once(text, anchor, new):
 
 def deploy_job_key(extra):
     """The real pages.yml with extra job-level lines in the deploy job, before its environment: key."""
-    return replace_once(real(), DEPLOY_ANCHOR, extra + DEPLOY_ANCHOR)
+    return replace_once(legacy(), DEPLOY_ANCHOR, extra + DEPLOY_ANCHOR)
 
 
 def top_level(block):
     """The real pages.yml with a top-level block (for example env: or defaults:) before jobs:."""
-    return replace_once(real(), TOP_ANCHOR, '\n' + block + TOP_ANCHOR)
+    return replace_once(legacy(), TOP_ANCHOR, '\n' + block + TOP_ANCHOR)
 
 
 def upload_step_key(extra):
     """The real pages.yml with an extra key on the held deploy job's uses: step Upload static site."""
-    return replace_once(real(), UPLOAD_ANCHOR, UPLOAD_ANCHOR + extra)
+    return replace_once(legacy(), UPLOAD_ANCHOR, UPLOAD_ANCHOR + extra)
 
 
 class ExecutionScopeTests(unittest.TestCase):
