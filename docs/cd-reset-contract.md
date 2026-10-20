@@ -85,10 +85,11 @@ schema cannot represent VERIFIED. Success values, flags and completion condition
 
 ## #183 への引き継ぎ: 実装可能な最小範囲と前提条件
 
-全 CD_RESET callee 契約項目（returns, flags, clobbered, preserved, irq, errors, synchronization,
-RAM 差分, MPR 変化, 無媒体時動作, ready/busy 完了条件）が UNKNOWN のため、**ROM の CD_RESET
-(`$01`/`$E003`) 実装は BLOCKED**。#183 で実装できるのは、#121 で計測済みの**低レベルバスリセット
-原始処理のみ**（独立した HuC6280 ルーチン、`$1804` bit 1 アサート → BUS FREE 待ち → リリース）:
+callee の戻り値・フラグ・破壊/保存レジスタ・割込み・タイミングは未観測（UNKNOWN）、エラー・完了条件は
+出典由来の HYPOTHESIS のみ。RAM 差分、MPR 変化、無媒体時動作、ready/busy 完了条件も未観測のため、**ROM の
+CD_RESET (`$01`/`$E003`) 実装は BLOCKED**。本 PR（#183 の判定）では実装しない。前提が揃った後に別 Issue で
+実装しうる最小範囲は、#121 で計測済みの**低レベルバスリセット原始処理のみ**（独立した HuC6280 ルーチン、
+`$1804` bit 1 アサート → BUS FREE 待ち → リリース）:
 
 - 開始条件: バスは既に FREE であること（BUSY からの解放リセットは未検証・範囲外）
 - 計測条件: Geargrafx b49ae82a, 合成 CD, cold/warm; `$1804` 読み戻し `$02`→`$00`, パルス後バス FREE
@@ -254,7 +255,7 @@ runner を作る前に実装しなければならない（未実装のままで�
 ## 実装判定（Issue #183）: BLOCKED・非実装
 
 - 判定: **BLOCKED（ROM 実装なし）**。CD_RESET（`$01` / `$E003`）の callee ABI は未確定であり、本 PR はコードを追加しない。
-- 根拠: 上の契約表で `returns`・`flags`・`clobbered`・`preserved`・`irq`・`errors`・`synchronization`・`timing` が UNKNOWN、`entry`・`arguments`・`stack`・`mpr`・`ram` は caller 側の HYPOTHESIS のみ。`VERIFIED` は 0 件。
+- 根拠: 上の契約表で `returns`・`flags`・`clobbered`・`preserved`・`irq`・`timing` が UNKNOWN、`entry`・`arguments`・`stack`・`mpr`・`ram`・`errors`・`synchronization` は caller 側または HLE 由来の HYPOTHESIS のみ。`VERIFIED` は 0 件。
 - 実装前提の充足状況（#183 引き継ぎ節の開始条件）: #1 ジャンプテーブル配線、#8 出典採否（provenance PENDING）、System Card 3.0 の戻り・無媒体・busy 動作の裁定、callee を実行できる実コア harness は、いずれも未充足。
 - 理由: 未確定の callee 契約の上に独自 ABI を作ると、ゲームや実 BIOS 呼出しと矛盾するおそれがある。推測で通すことは禁止。
 - 残る候補: `$1804` bit 1 のバスリセット観測（OBSERVED、Geargrafx b49ae82a の register fact のみ）。これを独立ルーチンにする作業は、上の前提が揃った後に別 Issue で行う。
