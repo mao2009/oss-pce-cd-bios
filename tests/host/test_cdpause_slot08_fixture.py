@@ -19,7 +19,7 @@ FIXTURE = ROOT / "tests" / "fixtures" / "cdpause-slot08-cases.json"
 FIXTURE_REL = "tests/fixtures/cdpause-slot08-cases.json"
 # sha256 of the canonical JSON (sort_keys, compact separators, UTF-8) of the fixture data. Changing the fixture
 # requires updating this value in the same change.
-FIXTURE_SHA256 = "650a09b0d446a01ccca51d91a0d6bfc8cd65849e87e2c8b269496f71cc790b43"
+FIXTURE_SHA256 = "b99c05c39abd15612a93c6c70103c2fa59322dab871549bc7733bd0ab9cfd292"
 POSITIVE, NEGATIVE, UNKNOWN = "POSITIVE", "NEGATIVE", "UNKNOWN"
 OUTCOMES = {POSITIVE, NEGATIVE, UNKNOWN}
 FORBIDDEN_WORDS = ("PASS", "VERIFIED", "OBSERVED", "DEV_CALLABLE")
@@ -41,8 +41,13 @@ def canonical_sha256(data):
 
 
 def _strict_uint(arg):
-    """Digits only (ASCII, 1-4 chars). Rejects sign, whitespace, exponent, empty and non-ASCII digits."""
-    return int(arg) if re.fullmatch(r"[0-9]{1,4}", arg) else None
+    """Canonical ASCII decimal: "0" or 1-4 digits with no leading zero.
+
+    Rationale: each value has exactly one accepted spelling, so the fixture never has to decide whether "0150"
+    means 150. Leading-zero forms are therefore malformed (NEGATIVE), like signs, whitespace, exponents, empty
+    and non-ASCII digits, rather than being silently normalised.
+    """
+    return int(arg) if re.fullmatch(r"0|[1-9][0-9]{0,3}", arg) else None
 
 
 def _audio_track(medium, lba):
@@ -60,7 +65,7 @@ def judge(ops, medium, mutant=None):
     """
     state, pos = "STOPPED", None
     for op in ops:
-        name, _, arg = op.partition(":")
+        name, sep, arg = op.partition(":")
         if name == "play":
             if state != "STOPPED":
                 return UNKNOWN, state, pos, op          # replay while playing is not modelled
@@ -71,6 +76,8 @@ def judge(ops, medium, mutant=None):
                 return NEGATIVE, state, pos, op         # data track, lead-out, or out of range
             state, pos = "PLAYING", lba
         elif name == "tick":
+            if state == "PAUSED":
+                return UNKNOWN, state, pos, op          # advance while paused: unmodelled transition
             if state != "PLAYING":
                 return NEGATIVE, state, pos, op         # no playback to advance
             n = _strict_uint(arg)
@@ -81,8 +88,8 @@ def judge(ops, medium, mutant=None):
                 return UNKNOWN, state, pos, op          # end-of-track behaviour unmodelled
             pos += n
         elif name == "pause":
-            if arg:
-                return UNKNOWN, state, pos, op          # pause with an argument is an unmodelled form
+            if sep:
+                return UNKNOWN, state, pos, op          # pause with any argument (even empty) is unmodelled
             if state == "STOPPED":
                 if mutant != "accept_stopped_pause":
                     return NEGATIVE, state, pos, op     # pause needs playback
@@ -198,7 +205,28 @@ class CdPauseArgumentValidation(unittest.TestCase):
 
     def test_abnormally_large_tick_is_rejected(self):
         self.assertEqual(judge(["play:150", "tick:999999"], self.medium)[0], NEGATIVE)
+
+    def test_tick_boundary_unknown_at_200_negative_at_201(self):
+        # 200 == leadout_lba is within the size bound, so only the track overrun (UNKNOWN) applies;
+        # 201 exceeds the bound and is a malformed step (NEGATIVE).
+        self.assertEqual(judge(["play:150", "tick:200"], self.medium)[0], UNKNOWN)
         self.assertEqual(judge(["play:150", "tick:201"], self.medium)[0], NEGATIVE)
+
+    def test_tick_while_paused_is_unknown_not_negative(self):
+        self.assertEqual(judge(["play:150", "pause", "tick:5"], self.medium)[0], UNKNOWN)
+
+    def test_play_while_paused_is_unknown(self):
+        self.assertEqual(judge(["play:150", "pause", "play:160"], self.medium)[0], UNKNOWN)
+
+    def test_pause_with_empty_argument_is_unknown(self):
+        self.assertEqual(judge(["play:150", "pause:"], self.medium)[0], UNKNOWN)
+        self.assertEqual(judge(["pause:"], self.medium)[0], UNKNOWN)
+
+    def test_leading_zero_arguments_are_rejected(self):
+        # Canonical decimal only: "0150" and "0000" are non-canonical spellings and count as malformed.
+        self.assertEqual(judge(["play:0150"], self.medium)[0], NEGATIVE)
+        self.assertEqual(judge(["play:150", "tick:0000"], self.medium)[0], NEGATIVE)
+        self.assertEqual(judge(["play:150", "tick:0010"], self.medium)[0], NEGATIVE)
 
     def test_signed_or_padded_numbers_are_rejected(self):
         for op in ("tick:+5", "tick: 5", "tick:5 ", "tick:1e3", "play:+150", "play: 150"):
@@ -225,23 +253,49 @@ class CdPauseArgumentValidation(unittest.TestCase):
         self.assertEqual(judge(["play:150", "pause:5"], self.medium)[0], UNKNOWN)
 
 
+ENTRY_TOKEN_RE = re.compile(r"\$E018|0xE018|CD_PAUSE", re.IGNORECASE)
+# Files outside docs/, spec/ and *.md that already mention CD_PAUSE in prose, comments or a scenario-name list.
+# None binds $E018/0xE018 or exposes this fixture as a callable entry. Any other hit fails the wiring check.
+ENTRY_TOKEN_ALLOWLIST = {
+    "src/cdda_probe.s": "comment: states CD_PAUSE ($08) is not what this probe is",
+    "tests/host/test_cd_pause_contract.py": "CD_PAUSE caller-ABI ledger text (Issue #254)",
+    "tests/host/test_cdda_state.py": "module docstring: CD_PAUSE is not a verified description",
+    "tests/integration/geargrafx_cdda.py": "docstring: CD_PAUSE ABI is not measured here",
+    "tools/reference_bios_scenarios.py": "scenario name list; no entry binding",
+    FIXTURE_REL: "this fixture",
+    "tests/host/test_cdpause_slot08_fixture.py": "this checker",
+}
+
+
 class CdPauseNotWired(unittest.TestCase):
-    def test_no_tracked_non_doc_file_names_the_fixture(self):
+    def _tracked_text_files(self):
         if not (ROOT / ".git").exists():
             self.skipTest("not a git work tree; wiring check needs tracked files")
         out = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z"], capture_output=True, check=True).stdout
-        hits = []
         for name in out.decode("utf-8").split("\0"):
-            if not name or name.startswith("docs/") or name.endswith(".md") or name.startswith("rom/"):
-                continue
-            if name in (FIXTURE_REL, "tests/host/test_cdpause_slot08_fixture.py"):
+            if not name or name.startswith(("docs/", "spec/", "rom/")) or name.endswith(".md"):
                 continue
             path = ROOT / name
             if not path.is_file() or b"\0" in path.read_bytes()[:4096]:
                 continue
-            if "cdpause-slot08" in path.read_text(encoding="utf-8", errors="ignore").lower():
-                hits.append(name)
+            yield name, path.read_text(encoding="utf-8", errors="ignore")
+
+    def test_no_tracked_non_doc_file_names_the_fixture(self):
+        hits = [name for name, text in self._tracked_text_files() if "cdpause-slot08" in text.lower()
+                and name not in (FIXTURE_REL, "tests/host/test_cdpause_slot08_fixture.py")]
         self.assertEqual(hits, [])
+
+    def test_entry_tokens_are_only_in_allowlisted_files(self):
+        hits = [(name, m.group(0)) for name, text in self._tracked_text_files()
+                for m in ENTRY_TOKEN_RE.finditer(text) if name not in ENTRY_TOKEN_ALLOWLIST]
+        self.assertEqual(hits, [])
+
+    def test_allowlist_entries_still_exist_and_still_match(self):
+        present = {name: text for name, text in self._tracked_text_files()}
+        for name in ENTRY_TOKEN_ALLOWLIST:
+            with self.subTest(file=name):
+                self.assertIn(name, present)
+                self.assertRegex(present[name], ENTRY_TOKEN_RE)
 
 
 if __name__ == "__main__":

@@ -34,6 +34,11 @@
     {"id": "neg_play_data_track", "ops": ["play:50", "pause"], "expected": "NEGATIVE", "reason": "play start on a data track is refused"},
     {"id": "neg_play_leadout", "ops": ["play:200"], "expected": "NEGATIVE", "reason": "play start on the lead-out LBA is refused"},
     {"id": "neg_play_malformed_lba", "ops": ["play:abc"], "expected": "NEGATIVE", "reason": "non-numeric LBA is malformed input"},
+    {"id": "neg_play_leading_zero", "ops": ["play:0150"], "expected": "NEGATIVE", "reason": "non-canonical decimal (leading zero) is malformed input"},
+    {"id": "neg_tick_leading_zero", "ops": ["play:150", "tick:0000"], "expected": "NEGATIVE", "reason": "non-canonical decimal (leading zero) is malformed input"},
+    {"id": "unk_tick_while_paused", "ops": ["play:150", "pause", "tick:5"], "expected": "UNKNOWN", "reason": "position advance while paused is an unmodelled transition; not a refusal"},
+    {"id": "unk_play_while_paused", "ops": ["play:150", "pause", "play:160"], "expected": "UNKNOWN", "reason": "replay while paused is an unmodelled transition"},
+    {"id": "unk_pause_empty_argument", "ops": ["play:150", "pause:"], "expected": "UNKNOWN", "reason": "pause with an (empty) argument is an unmodelled form"},
     {"id": "unk_double_pause", "ops": ["play:150", "pause", "pause"], "expected": "UNKNOWN", "reason": "second pause while paused is not measured or specified; must not be a positive"},
     {"id": "unk_pause_after_track_end", "ops": ["play:195", "tick:10", "pause"], "expected": "UNKNOWN", "reason": "end-of-track behaviour before pause is unmodelled"},
     {"id": "unk_unsupported_op", "ops": ["play:150", "seek:160", "pause"], "expected": "UNKNOWN", "reason": "operation outside the model"}
