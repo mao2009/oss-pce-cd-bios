@@ -48,6 +48,8 @@ EVIDENCE_HASH_RE = re.compile(r'[0-9a-f]{64}\Z')
 # checks core_revision against a pin, so a well-formed hash is NOT proof that the
 # run happened. Do not read an accepted OBSERVED claim as VERIFIED.
 EVIDENCE_TRUST_LEVEL = 'FORMAT_ONLY'
+# Synthetic fixtures and placeholders carry this marker in their text. adjudicate_claim() refuses OBSERVED for them.
+SYNTHETIC_MARKER = 'SYNTHETIC'
 # Source-kind semantics (Issue #209 / MEDIUM-1). A source kind classifies the
 # provenance of a *source-code reference* only. It never proves that anything was
 # executed: execution evidence is the separate `evidence` entries (Issue #208),
@@ -239,7 +241,13 @@ def resolve_evidence(entry, artifact_dir=EVIDENCE_ARTIFACT_DIR, pinned_revision=
     return path
 
 
-def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=False):
+def is_synthetic_evidence(entry):
+    """True when any text field of an evidence entry carries the SYNTHETIC marker (fixtures, placeholders)."""
+    return any(SYNTHETIC_MARKER in entry[field].upper() for field in EVIDENCE_FIELDS)
+
+
+def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=False,
+                     resolved_evidence_hashes=frozenset()):
     """Pure fail-closed adjudication of one contract claim's classification.
 
     Deterministic and side-effect free: synthetic claim dicts can be passed
@@ -251,6 +259,11 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
     Source-kind semantics: see SOURCE_KIND_MEANINGS (source references, not execution proof).
     An OBSERVED claim must declare observation_kind (OBSERVATION_KIND_FIELDS) covering its field;
     a non-OBSERVED claim must not declare it.
+
+    Real-core provenance: resolved_evidence_hashes is the set of evidence_hash values that
+    resolve_evidence() accepted (pinned core revision + artifact sha256). An OBSERVED claim is refused
+    unless every evidence entry is non-SYNTHETIC and its hash is in that set, so executed_callee=True
+    alone never promotes a claim.
 
     Rules:
       UNKNOWN     - value exactly 'UNKNOWN', no sources, confidence UNKNOWN, no registers
@@ -284,6 +297,9 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
             f'{context}: unknown claim field {field!r}')
     require(executed_callee is True or executed_callee is False,
             f'{context}: executed_callee must be a bool')
+    require(isinstance(resolved_evidence_hashes, (set, frozenset)) and
+            all(isinstance(h, str) for h in resolved_evidence_hashes),
+            f'{context}: resolved_evidence_hashes must be a set of strings')
     require(all(isinstance(key, str) for key in claim), f'{context}: claim keys must be strings')
     require(isinstance(claim.get('status'), str), f'{context}: unsupported claim status (must be a string)')
     require(isinstance(claim.get('evidence', []), list), f'{context}: claim evidence must be a list')
@@ -338,6 +354,13 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
                 f'{context}: OBSERVED requires {OBSERVATION_KIND_KEY} in {sorted(OBSERVATION_KIND_FIELDS)}')
         require(field in OBSERVATION_KIND_FIELDS[kind],
                 f'{context}: observation kind {kind} does not support field {field!r}')
+        # Real-core provenance (fail closed): synthetic entries are never OBSERVED-grade, and every entry
+        # must be one that resolve_evidence() accepted. executed_callee=True is not a substitute.
+        for entry in evidence:
+            require(not is_synthetic_evidence(entry),
+                    f'{context}: OBSERVED refuses SYNTHETIC evidence (not real-core provenance)')
+            require(entry['evidence_hash'] in resolved_evidence_hashes,
+                    f'{context}: OBSERVED requires real-core evidence resolved by resolve_evidence')
     elif status == 'BLOCKED':
         require(value == 'UNKNOWN' and confidence == 'UNKNOWN' and not registers,
                 f'{context}: invalid BLOCKED claim')

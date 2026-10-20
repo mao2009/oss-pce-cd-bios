@@ -1,9 +1,12 @@
 """Host tests for Issue #225: OBSERVED evidence must correspond to the claim's contract field.
 
-Pure function tests on synthetic claims. EVIDENCE_ENTRY is SYNTHETIC shape-only data, not a
-measurement, and its hash resolves to nothing. No emulator, ROM or BIOS execution is involved.
+Pure function tests on claims. The evidence entry is non-synthetic test data whose hash is passed in
+RESOLVED as if resolve_evidence() had accepted it (Issue #359: OBSERVED needs real-core provenance).
+It is not a measurement. No emulator, ROM or BIOS execution is involved; the resolve path itself is
+covered in test_cdreset_ledger_adjudication.py.
 """
 import copy
+import hashlib
 import sys
 import unittest
 from pathlib import Path
@@ -20,14 +23,15 @@ from evidence_correspondence import OBSERVATION_KIND_FIELDS, adjudicate_observat
 REAL = {'gear:src/cdrom.cpp': 'EMULATOR_SOURCE'}
 CALLER = {'huc:include/hucc/pcengine.inc': 'CALLER_SOURCE'}
 EVIDENCE_ENTRY = {
-    'execution_conditions': 'SYNTHETIC test fixture; no real execution took place',
+    'execution_conditions': 'cd-read probe run on the pinned Geargrafx core',
     'core_revision': 'b49ae82a012eade566d72e9d61c9d95a5caa4da3',
-    'input_type': 'SYNTHETIC placeholder input',
-    'verification_result': 'SYNTHETIC placeholder result',
-    'evidence_hash': 'd1a2f529224a70666ede15c4cf774da484bf1b96495a53e08d474f09f8ff5a50',
+    'input_type': 'cd-read probe sector',
+    'verification_result': 'probe observation matches the stored artifact',
+    'evidence_hash': hashlib.sha256(b'real-core cd-read probe artifact (correspondence fixture)\n').hexdigest(),
 }
+RESOLVED = frozenset({EVIDENCE_ENTRY['evidence_hash']})
 OBSERVED = {
-    'status': 'OBSERVED', 'value': 'SYNTHETIC observed value (not a measurement)',
+    'status': 'OBSERVED', 'value': 'observed value fixture',
     'sources': ['gear:src/cdrom.cpp'], 'confidence': 'SOURCE_SUPPORTED',
     'evidence': [EVIDENCE_ENTRY],
 }
@@ -44,7 +48,7 @@ CALLEE_FIELDS = ('stack', 'returns', 'flags', 'irq')
 
 def adjudicate(claim, field, executed_callee=False, kinds=REAL):
     return adjudicate_observation(claim, kinds, field=field, context=f'slot 1 {field}',
-                                  executed_callee=executed_callee)
+                                  executed_callee=executed_callee, resolved_evidence_hashes=RESOLVED)
 
 
 class PositiveCorrespondenceTests(unittest.TestCase):
@@ -169,7 +173,7 @@ class FormalPathTests(unittest.TestCase):
 
     def formal(self, claim, field, executed_callee=False, kinds=REAL):
         return adjudicate_claim(claim, kinds, field=field, context=f'slot 1 {field}',
-                                executed_callee=executed_callee)
+                                executed_callee=executed_callee, resolved_evidence_hashes=RESOLVED)
 
     def test_formal_path_rejects_observed_callee_field_without_kind(self):
         # Old formal check accepts this: any OBSERVED claim with executed callee passes.

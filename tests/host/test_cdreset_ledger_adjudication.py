@@ -11,7 +11,9 @@ requires non-empty, format-valid evidence entries (FORMAT_ONLY; not authenticate
 input type, verification result, sha256 evidence hash). `verification.executed_callee` is
 part of the evidence and is not sufficient by itself.
 """
+import hashlib
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -21,6 +23,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 from contracts import (  # noqa: E402
     CALLEE_BEHAVIOR_FIELDS, CLAIM_STATUSES, EVIDENCE_TRUST_LEVEL, FIELDS,
     HARDWARE_OBSERVATION_FIELDS, SOURCE_KIND_MEANINGS, adjudicate_claim, load_contracts,
+    resolve_evidence,
 )
 
 CALLER = {'huc:include/hucc/pcengine.inc': 'CALLER_SOURCE'}
@@ -50,6 +53,21 @@ OBSERVED = {
 OBSERVED_CALLEE = dict(OBSERVED, observation_kind='CALLEE_EXECUTION')
 OBSERVED_HW = dict(OBSERVED, observation_kind='HW_BUS_READBACK')
 BLOCKED = {'status': 'BLOCKED', 'value': 'UNKNOWN', 'sources': [], 'confidence': 'UNKNOWN'}
+# Real-core provenance fixture (Issue #359 fix): no SYNTHETIC marker, and its hash is in REAL_RESOLVED,
+# which stands for resolve_evidence() having accepted the artifact. test_real_core_artifact_resolves_and_yields_observed
+# exercises that path end to end; the other positive tests pass REAL_RESOLVED directly.
+REAL_ARTIFACT_BYTES = b'real-core cd-read probe artifact (test fixture bytes)\n'
+REAL_ENTRY = {
+    'execution_conditions': 'cd-read probe run on the pinned Geargrafx core',
+    'core_revision': 'b49ae82a012eade566d72e9d61c9d95a5caa4da3',
+    'input_type': 'cd-read probe sector',
+    'verification_result': 'probe observation matches the stored artifact',
+    'evidence_hash': hashlib.sha256(REAL_ARTIFACT_BYTES).hexdigest(),
+}
+REAL_RESOLVED = frozenset({REAL_ENTRY['evidence_hash']})
+REAL_OBSERVED = dict(OBSERVED, evidence=[REAL_ENTRY])
+REAL_OBSERVED_CALLEE = dict(REAL_OBSERVED, observation_kind='CALLEE_EXECUTION')
+REAL_OBSERVED_HW = dict(REAL_OBSERVED, observation_kind='HW_BUS_READBACK')
 
 
 class AdjudicateClaimTests(unittest.TestCase):
@@ -63,11 +81,40 @@ class AdjudicateClaimTests(unittest.TestCase):
     def test_hypothesis_claim_is_accepted(self):
         adjudicate_claim(HYPOTHESIS, CALLER, field='arguments', context='slot 1 arguments')
 
-    def test_observed_claim_with_format_valid_evidence_is_accepted(self):
-        # Issue #208 positive case: shape-valid SYNTHETIC evidence is accepted. This asserts
-        # nothing about measurement, ABI correctness or authenticity (FORMAT_ONLY).
-        adjudicate_claim(OBSERVED_CALLEE, REAL, field='stack', context='slot 1 stack',
-                         executed_callee=True)
+    def test_observed_claim_with_real_core_evidence_is_accepted(self):
+        # Issue #208 positive case, Issue #359 provenance: non-synthetic evidence whose hash was
+        # resolved. This asserts nothing about ABI correctness or authenticity (FORMAT_ONLY).
+        adjudicate_claim(REAL_OBSERVED_CALLEE, REAL, field='stack', context='slot 1 stack',
+                         executed_callee=True, resolved_evidence_hashes=REAL_RESOLVED)
+
+    def test_synthetic_evidence_with_executed_callee_is_never_observed(self):
+        # Issue #359 MAJOR: SYNTHETIC evidence + executed_callee=True must NOT yield OBSERVED, with or
+        # without a resolved set (the synthetic text is refused even if its hash were listed).
+        synthetic = dict(OBSERVED_CALLEE)
+        with self.assertRaisesRegex(ValueError, 'SYNTHETIC'):
+            adjudicate_claim(synthetic, REAL, field='stack', context='slot 1 stack', executed_callee=True)
+        with self.assertRaisesRegex(ValueError, 'SYNTHETIC'):
+            adjudicate_claim(synthetic, REAL, field='stack', context='slot 1 stack', executed_callee=True,
+                             resolved_evidence_hashes=frozenset({EVIDENCE_ENTRY['evidence_hash']}))
+        hw = dict(OBSERVED_HW, value='$1804 readback')
+        with self.assertRaisesRegex(ValueError, 'SYNTHETIC'):
+            adjudicate_claim(hw, REAL, field='hw_bus_reset', context='hw_bus_reset', executed_callee=False)
+
+    def test_unresolved_real_looking_evidence_is_refused_for_observed(self):
+        # Non-synthetic text alone is not provenance: the hash must be resolved by resolve_evidence().
+        with self.assertRaisesRegex(ValueError, 'requires real-core evidence'):
+            adjudicate_claim(REAL_OBSERVED_CALLEE, REAL, field='stack', context='slot 1 stack',
+                             executed_callee=True)
+
+    def test_real_core_artifact_resolves_and_yields_observed(self):
+        # End to end: artifact bytes on disk -> resolve_evidence (pinned revision + sha256) -> OBSERVED.
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / REAL_ENTRY['evidence_hash']).write_bytes(REAL_ARTIFACT_BYTES)
+            resolved = frozenset({REAL_ENTRY['evidence_hash']}) if resolve_evidence(
+                REAL_ENTRY, artifact_dir=tmp, pinned_revision=REAL_ENTRY['core_revision']) else frozenset()
+        self.assertEqual(resolved, REAL_RESOLVED)
+        adjudicate_claim(REAL_OBSERVED_CALLEE, REAL, field='stack', context='slot 1 stack',
+                         executed_callee=True, resolved_evidence_hashes=resolved)
 
     def test_blocked_claim_is_accepted(self):
         adjudicate_claim(BLOCKED, CALLER, field='stack', context='slot 1 stack')
@@ -196,17 +243,18 @@ class AdjudicateClaimTests(unittest.TestCase):
             adjudicate_claim(OBSERVED, REAL, field='returns', context='slot 1 returns')
 
     def test_observed_callee_field_accepted_when_callee_executed(self):
-        adjudicate_claim(OBSERVED_CALLEE, REAL, field='returns', context='slot 1 returns',
-                         executed_callee=True)
+        adjudicate_claim(REAL_OBSERVED_CALLEE, REAL, field='returns', context='slot 1 returns',
+                         executed_callee=True, resolved_evidence_hashes=REAL_RESOLVED)
 
     def test_observed_hardware_observation_accepted_without_executed_callee(self):
         # hw_bus_reset is a low-level $1804 register/bus fact (hardware observation),
-        # not callee ABI behavior: OBSERVED with an EMULATOR_SOURCE reference plus evidence must be
+        # not callee ABI behavior: OBSERVED with an EMULATOR_SOURCE reference plus real-core evidence must be
         # accepted even though no callee was executed.
-        claim = dict(OBSERVED_HW,
+        claim = dict(REAL_OBSERVED_HW,
                      value='$1804 bit 1: assert -> readback $02, release -> $00, bus FREE')
         adjudicate_claim(claim, REAL, field='hw_bus_reset',
-                         context='slot 1 hw_bus_reset', executed_callee=False)
+                         context='slot 1 hw_bus_reset', executed_callee=False,
+                         resolved_evidence_hashes=REAL_RESOLVED)
 
     def test_observed_hardware_observation_rejects_caller_only_source(self):
         # A hardware observation still needs an EMULATOR_SOURCE reference; caller/HLE
@@ -252,16 +300,17 @@ class AdjudicateClaimTests(unittest.TestCase):
     def test_evidence_trust_level_is_format_only(self):
         self.assertEqual(EVIDENCE_TRUST_LEVEL, 'FORMAT_ONLY')
 
-    def test_complete_structural_evidence_is_schema_accepted_not_authenticated(self):
-        # Accepted for shape only: nothing resolves the hash to a stored artifact.
-        adjudicate_claim(OBSERVED_CALLEE, REAL, field='stack', context='slot 1 stack', executed_callee=True)
+    def test_real_core_evidence_is_accepted_for_callee_field(self):
+        adjudicate_claim(REAL_OBSERVED_CALLEE, REAL, field='stack', context='slot 1 stack', executed_callee=True,
+                         resolved_evidence_hashes=REAL_RESOLVED)
 
     def test_format_only_acceptance_does_not_check_field_correspondence(self):
         # Documents a known limit (not a feature): the same evidence entry is accepted for
-        # unrelated fields because only its shape is checked. Semantic correspondence of
+        # unrelated fields because only its provenance and shape are checked. Semantic correspondence of
         # evidence to the claim field is NOT verified; a follow-up Issue owns that.
         for field in ('stack', 'returns', 'irq', 'flags'):
-            adjudicate_claim(OBSERVED_CALLEE, REAL, field=field, context=field, executed_callee=True)
+            adjudicate_claim(REAL_OBSERVED_CALLEE, REAL, field=field, context=field, executed_callee=True,
+                             resolved_evidence_hashes=REAL_RESOLVED)
 
     def test_observed_claim_must_not_contain_registers_key(self):
         for regs in ([], None, ['A'], ['A', 'X']):
@@ -273,7 +322,8 @@ class AdjudicateClaimTests(unittest.TestCase):
 
     def test_observed_without_registers_key_and_other_statuses_unchanged(self):
         self.assertNotIn('registers', OBSERVED)
-        adjudicate_claim(OBSERVED_CALLEE, REAL, field='preserved', context='x', executed_callee=True)
+        adjudicate_claim(REAL_OBSERVED_CALLEE, REAL, field='preserved', context='x', executed_callee=True,
+                         resolved_evidence_hashes=REAL_RESOLVED)
         # UNKNOWN / HYPOTHESIS / BLOCKED regression: registers rules unchanged.
         adjudicate_claim(UNKNOWN, CALLER, field='flags', context='x')
         adjudicate_claim(HYPOTHESIS, CALLER, field='preserved', context='x')
@@ -343,8 +393,8 @@ class AdjudicateClaimTests(unittest.TestCase):
 
     # ---- Issue #207 (MAJOR-1) x #208: callee ABI vs hardware observation.
     def test_hardware_observed_with_evidence_and_no_callee_is_conditionally_accepted(self):
-        adjudicate_claim(OBSERVED_HW, REAL, field='hw_bus_reset', context='hw_bus_reset',
-                         executed_callee=False)
+        adjudicate_claim(REAL_OBSERVED_HW, REAL, field='hw_bus_reset', context='hw_bus_reset',
+                         executed_callee=False, resolved_evidence_hashes=REAL_RESOLVED)
 
     def test_hardware_observed_without_evidence_is_rejected(self):
         for bad in (dict(OBSERVED, evidence=[]), {k: v for k, v in OBSERVED.items() if k != 'evidence'}):

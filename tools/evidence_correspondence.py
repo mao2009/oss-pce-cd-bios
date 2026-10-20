@@ -21,7 +21,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from contracts import OBSERVATION_KIND_FIELDS, adjudicate_claim  # noqa: E402,F401
 
 
-def adjudicate_observation(claim, source_kinds, *, field, context, executed_callee=False):
+def adjudicate_observation(claim, source_kinds, *, field, context, executed_callee=False,
+                          resolved_evidence_hashes=frozenset()):
     """Delegate to contracts.adjudicate_claim (the single enforcement point). Returns None or raises ValueError."""
     return adjudicate_claim(claim, source_kinds, field=field, context=context,
-                            executed_callee=executed_callee)
+                            executed_callee=executed_callee,
+                            resolved_evidence_hashes=resolved_evidence_hashes)
