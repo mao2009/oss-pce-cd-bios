@@ -402,7 +402,9 @@ PAGES_GUARDED = ('jobs:\n  build:\n    steps:\n' + PREAMBLE
 ATTEST_CDREAD_JOB = ('  attest-cdread:\n    needs: guard-bios-dev\n'   # Issue #337 round 4: the real job keeps these (b)
                      '    if: github.event_name == \'push\' && github.ref == \'refs/heads/main\'\n'
                      '    permissions:\n      id-token: write\n      attestations: write\n'
-                     '    steps:\n      - name: Attest\n'
+                     '    steps:\n      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0\n'
+                     '        with:\n          name: bios-dev-not-compatible-${{ github.sha }}\n          path: evidence\n'
+                     '      - name: Attest\n'   # the real job's approved steps: download, then attest (Issue #337 round 4 (a))
                      '        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2\n'
                      '        with:\n          subject-path: |\n'
                      '            evidence/cdread-probe/cdread-evidence.json\n'
