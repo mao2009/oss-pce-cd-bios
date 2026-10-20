@@ -3,7 +3,7 @@ import hashlib
 from pathlib import Path
 import tempfile
 import unittest
-from tools.environment import cc65_skip_reason
+from tools.environment import requires_cc65
 
 from tools.build_cdload_exec import (EXEC_ADDRESS, HDR_BYTES, SECTOR_BYTES, USER_OFFSET, build_cdload_exec,
                                      build_exec_disc, encode_sector, parse_labels)
@@ -11,9 +11,7 @@ from tools.build_rom import build
 from tools.make_cd_image import BIN_NAME, RAW_BYTES, sector_payload
 
 
-CC65_SKIP = cc65_skip_reason()
-
-@unittest.skipIf(CC65_SKIP, CC65_SKIP)
+@requires_cc65
 class CdLoadExecBuildTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

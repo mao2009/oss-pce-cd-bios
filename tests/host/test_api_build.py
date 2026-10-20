@@ -6,7 +6,7 @@ import re
 import shutil
 import tempfile
 import unittest
-from tools.environment import cc65_skip_reason
+from tools.environment import requires_cc65
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,9 +17,7 @@ from tools.build_rom import (ROOT, BANK_BYTES, IMAGE_BYTES, build, load_slots, o
                              verify_dev_rom_layout, verify_dev_rom_structure, verify_image)
 
 
-CC65_SKIP = cc65_skip_reason()
-
-@unittest.skipIf(CC65_SKIP, CC65_SKIP)
+@requires_cc65
 class ApiBuildTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -67,17 +65,6 @@ class ApiBuildTests(unittest.TestCase):
         for name, mode in [('release', 'release'), ('again', 'debug')]:
             self.assertEqual(build(self.folder / name, mode).read_bytes(), self.rom)
 
-    def test_names_match_documented_inventory(self):
-        text = (ROOT / 'docs/api-inventory.md').read_text()
-        rows = re.findall(r'^\| `\$([0-9A-F]{2})` \| `\$[0-9A-F]+` \| `([^`]+)`', text, re.M)
-        self.assertEqual([(s['id'], s['candidate_name']) for s in load_slots()],
-                         [(int(i, 16), name) for i, name in rows])
-
-    def test_psg_is_one_main_slot_with_nine_subcommands(self):
-        self.assertEqual(load_slots()[0x48]['candidate_name'], 'PSG_BIOS')
-        children = re.findall(r'^\| `48/([0-9A-F]{2})`', (ROOT/'docs/api-inventory.md').read_text(), re.M)
-        self.assertEqual(children, ['00', '01', '02', '03', '04', '0B', '0C', '10', '13'])
-
     def test_wrong_size(self):
         for data in (self.rom[:-1], self.rom+b'\xff', self.rom[:8192]):
             with self.assertRaises(ValueError): verify_dev_rom(data)
@@ -117,18 +104,6 @@ class ApiBuildTests(unittest.TestCase):
     def test_reset_success_return_rejected(self):
         data = bytearray(self.rom); data[0x1003] = 0x60
         with self.assertRaises(ValueError): verify_dev_rom(data)
-
-    def test_missing_tool(self):
-        with patch.dict(os.environ, {'CA65': '/missing/ca65'}):
-            with self.assertRaisesRegex(ValueError, 'missing tool'): build(self.folder/'missing')
-
-    def test_invalid_mode(self):
-        with self.assertRaisesRegex(ValueError, 'MODE'): build(self.folder/'invalid', 'invalid')
-
-    def test_release_gate_missing_and_all_overrides(self):
-        with self.assertRaisesRegex(ValueError, '81 unimplemented'): release_gate(set())
-        with self.assertRaisesRegex(ValueError, '80 unimplemented'): release_gate({3})
-        with self.assertRaisesRegex(ValueError, 'does not prove implementation'): release_gate(set(range(81)))
 
     def test_manifest_never_claims_release(self):
         manifest = json.loads((self.folder/'debug/manifest.json').read_text())
@@ -435,3 +410,35 @@ class ApiBuildTests(unittest.TestCase):
         verify_dev_rom(rom, root)  # genuinely built, so identity accepts it
         with self.assertRaisesRegex(ValueError, 'probe overlay'):
             build_probe_images(rom, self.folder / 'overlay-probe', root=root)
+
+class ApiContractTests(unittest.TestCase):
+    """cc65-independent API checks: no built ROM is needed, so these always run."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.folder = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_names_match_documented_inventory(self):
+        text = (ROOT / 'docs/api-inventory.md').read_text()
+        rows = re.findall(r'^\| `\$([0-9A-F]{2})` \| `\$[0-9A-F]+` \| `([^`]+)`', text, re.M)
+        self.assertEqual([(s['id'], s['candidate_name']) for s in load_slots()],
+                         [(int(i, 16), name) for i, name in rows])
+
+    def test_psg_is_one_main_slot_with_nine_subcommands(self):
+        self.assertEqual(load_slots()[0x48]['candidate_name'], 'PSG_BIOS')
+        children = re.findall(r'^\| `48/([0-9A-F]{2})`', (ROOT/'docs/api-inventory.md').read_text(), re.M)
+        self.assertEqual(children, ['00', '01', '02', '03', '04', '0B', '0C', '10', '13'])
+
+    def test_missing_tool(self):
+        with patch.dict(os.environ, {'CA65': '/missing/ca65'}):
+            with self.assertRaisesRegex(ValueError, 'missing tool'): build(self.folder/'missing')
+
+    def test_invalid_mode(self):
+        with self.assertRaisesRegex(ValueError, 'MODE'): build(self.folder/'invalid', 'invalid')
+
+    def test_release_gate_missing_and_all_overrides(self):
+        with self.assertRaisesRegex(ValueError, '81 unimplemented'): release_gate(set())
+        with self.assertRaisesRegex(ValueError, '80 unimplemented'): release_gate({3})
+        with self.assertRaisesRegex(ValueError, 'does not prove implementation'): release_gate(set(range(81)))

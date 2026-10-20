@@ -6,7 +6,7 @@ import copy
 from pathlib import Path
 import tempfile
 import unittest
-from tools.environment import cc65_skip_reason
+from tools.environment import requires_cc65
 
 from tools.build_rom import build
 from tools.build_cd_media_state import (MAGIC, NO_DATA, SIGNATURE_OK, UNRECOGNISED, build_cd_media_state,
@@ -38,9 +38,7 @@ WITH_DISC = records(SIGNATURE_OK, 2048, True, SIGNED, phases=(4,))
 NO_DISC = records(NO_DATA, 0, False)
 
 
-CC65_SKIP = cc65_skip_reason()
-
-@unittest.skipIf(CC65_SKIP, CC65_SKIP)
+@requires_cc65
 class CdMediaStateBuildTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

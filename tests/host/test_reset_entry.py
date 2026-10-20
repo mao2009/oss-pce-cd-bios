@@ -3,15 +3,13 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from tools.environment import cc65_skip_reason
+from tools.environment import requires_cc65
 
 from tools.build_rom import build
 from tools.build_reset_entry import RESET_CODE, SYMBOL_OFFSETS, build_reset_entry, verify_reset_entry
 
 
-CC65_SKIP = cc65_skip_reason()
-
-@unittest.skipIf(CC65_SKIP, CC65_SKIP)
+@requires_cc65
 class ResetEntryTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

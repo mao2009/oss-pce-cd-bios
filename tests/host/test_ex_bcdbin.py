@@ -13,7 +13,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # the integration script imports this module directly
-from tools.environment import cc65_skip_reason
+from tools.environment import requires_cc65
 
 RESULT_BYTES = 4 * 256 + 1  # A, P, X, Y tables + final SP (tests/fixtures/bcdbin_harness.s)
 
@@ -39,8 +39,6 @@ def check_ram(ram):
     if bad or ram[1024] != 0xFF:
         raise ValueError(f"guest results differ from model at {bad[:8]} (sp=${ram[1024]:02X})")
 
-
-CC65_SKIP = cc65_skip_reason()
 
 class ModelTests(unittest.TestCase):
     def test_model_matches_oracle_for_all_256_inputs(self):
@@ -100,14 +98,14 @@ class RealCoreFailurePathTests(unittest.TestCase):
         self.assert_failure({"GEARGRAFX_CORE": str(INTEGRATION), "CA65": sys.executable,
                              "LD65": "/nonexistent/ld65-issue71"}, "missing tool ld65", 3)
 
-    @unittest.skipIf(CC65_SKIP, CC65_SKIP)
+    @requires_cc65
     def test_launch_failure_exits_nonzero(self):
         with tempfile.TemporaryDirectory(prefix="issue71-bogus-core-") as directory:
             bogus = Path(directory) / "bogus_core.so"
             bogus.write_bytes(b"not a shared object\n")
             self.assert_failure({"GEARGRAFX_CORE": str(bogus)}, "Geargrafx run failed", 1)
 
-    @unittest.skipIf(CC65_SKIP, CC65_SKIP)
+    @requires_cc65
     def test_timeout_exits_nonzero(self):
         # A core whose constructor never returns: the worker hangs until run_core's 30 s timeout.
         with tempfile.TemporaryDirectory(prefix="issue71-hang-core-") as directory:
