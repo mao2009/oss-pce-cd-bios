@@ -144,14 +144,14 @@
           <div class="section-heading">
             <p class="eyebrow">02 / 進捗</p>
             <h2 id="progress-title">「動いた」の根拠を、はっきりさせる。</h2>
-            <p class="section-intro">2026年10月17日時点の統合済み <a href="https://github.com/mao2009/oss-pce-cd-bios/pull/174">PR #174</a> に基づくスナップショットです。数字は実装・テストの範囲を表し、市販ゲーム互換率ではありません。</p>
+            <p class="section-intro"><a href="https://github.com/mao2009/oss-pce-cd-bios/commit/963f3a36ed59ab190406d815ab7d267fd21a680b">2026-10-20 時点の main</a> に基づくスナップショットです。安全対策・証拠検証は進みましたが、呼び出せるBIOS APIや市販ゲーム互換性が増えたわけではありません。</p>
           </div>
           <a href="https://github.com/mao2009/oss-pce-cd-bios/blob/main/docs/status.md">詳しい進捗 ↗</a>
         </div>
         <div class="stats" aria-label="プロジェクトの実績">
           <div class="stat"><div class="stat-value"><span>1</span> / 81</div><div class="stat-label">開発用ROMで呼び出し・復帰できる候補APIスロット数</div></div>
           <div class="stat"><div class="stat-value">80</div><div class="stat-label">未実装の非復帰スタブが残るスロット数</div></div>
-          <div class="stat"><div class="stat-value">765</div><div class="stat-label">PR #174の統合報告時点でPASSしたホストテスト数（過去の実績）</div></div>
+          <div class="stat"><div class="stat-value">0</div><div class="stat-label">BIOS経由で起動を検証できたCDプログラム数（この時点）</div></div>
         </div>
         <div class="milestones" aria-label="検証段階ごとのロードマップ">
           <article class="milestone done"><div class="milestone-tag">M0 / 概ね整備済み</div><h3>検証基盤の構築</h3><p>ツールチェーン、開発用ROM、実コアでのCPU/RAM確認、合成CDのセクター転送。ROM構造やABI調査には残課題があります。</p></article>
@@ -159,7 +159,8 @@
           <article class="milestone"><div class="milestone-tag">M2 / 未達成</div><h3>自作CDプログラム起動</h3><p>合成CDからRAMへコードを読み込み実行できていますが、BIOSの起動・サービス経路を通したものではありません。</p></article>
           <article class="milestone"><div class="milestone-tag">M3 / 未検証</div><h3>市販ゲームとの互換性</h3><p>市販ゲームの起動、別エミュレータとの照合、実機での互換性はまだ確認できていません。</p></article>
         </div>
-        <p class="progress-note"><strong>重要：</strong>Geargrafxで診断処理が動くことと、純正System Cardと互換であることは別です。互換性やリリース可能性は認定しておらず、リリースゲートは閉じたままです。</p>
+        <p class="progress-note"><strong>重要：</strong>独立演算ルーチンやGeargrafx診断の成功は、呼び出せるBIOS APIの増加ではありません。純正ABIや市販ゲーム互換性は未検証、リリースはBLOCKEDです。</p>
+        <p class="progress-note"><strong>2026-10-20 の更新：</strong><a href="https://github.com/mao2009/oss-pce-cd-bios/pull/360">未監視書込み経路</a>と<a href="https://github.com/mao2009/oss-pce-cd-bios/pull/362">副作用前遮断プローブ</a>、<a href="https://github.com/mao2009/oss-pce-cd-bios/pull/371">測定点とログ</a>、<a href="https://github.com/mao2009/oss-pce-cd-bios/pull/359">契約項目と証拠の照合</a>、<a href="https://github.com/mao2009/oss-pce-cd-bios/pull/374">Pages権限分離</a>と<a href="https://github.com/mao2009/oss-pce-cd-bios/pull/349">成果物公開ガード</a>を統合。ただし参照JSRとBIOSリリースのゲートは閉じたままです。</p>
         <div class="evidence">
           <div class="evidence-item"><span class="evidence-symbol" aria-hidden="true">✓</span><div><h3>Geargrafx実コアで観測済み</h3><p>EX_GETVERのcold/warm呼び出し・復帰、合成CDのREAD(6)からRAMへの転送、独立した初期化診断など。</p></div></div>
           <div class="evidence-item"><span class="evidence-symbol pending" aria-hidden="true">!</span><div><h3>未確定・未実装の領域</h3><p>純正BIOSの完全なABI、CD_RESET/CD_BASE/CD_READの実API、自作CDのBIOS経由起動、別コア・実機の互換性。</p></div></div>

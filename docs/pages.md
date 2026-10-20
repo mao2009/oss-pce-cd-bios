@@ -27,9 +27,9 @@ Both language pages contain four full-card links to the source repository, dated
 
 ## Editorial conventions
 
-- The figures on the pages are a **dated historical snapshot**, based on PR #174 and 2026-10-17: 1 of 81 candidate API slots with a callable development-only EX_GETVER implementation, 80 remaining nonreturning stubs and 765 host tests passing as reported for that merge.
+- The page figures are a **2026-10-20 main snapshot** (baseline `963f3a36`): 1/81 callable DEV API slots, 80 nonreturning stubs, **0 verified BIOS-mediated CD program boots**. The 765 host passes at PR #174 are historical, not a current test count or retail-game compatibility percentage.
 - These are not percentages of commercial-game compatibility, current test counts, approved reference-BIOS ABI or firmware release readiness. Neither signed diagnostic evidence nor a CD sector-read experiment is a retail compatibility test.
-- When implementation changes, update both pages together with the relevant PR, date and evidence. Keep the main README and docs/status.md aligned. PR #175 is a separate documentation effort.
+- Update both languages, llms.txt, README, docs/status.md and check_pages.py together when evidence changes. The 2026-10-20 note reflects #349/#359/#360/#362/#371/#374 safety and evidence merges, not an increase in callable APIs.
 - Do not insert unverified contributor identities, private ROMs, game data, disassembly, local paths, uploaded media, or other copyrighted/proprietary source material. Use actual Issues and the existing CONTRIBUTING.md and provenance policies as the route into collaboration.
 
 ## Search and AI discoverability
