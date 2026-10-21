@@ -115,12 +115,13 @@ def main():
         cue.write_text('FILE "original.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
         for a, x in CASES:
             run_case(probe, data, folder, cue, reset, f"mul-{a:02x}-{x:02x}", entry, a, x)
+            lo, hi = expected(a, x)
+            evidence["cases"].append({"a": a, "x": x, "sp": 0xFF, "expected_a": lo, "expected_x": hi})
         # Precondition boundary: caller SP=$07 gives SP=$05 at entry (the lowest value that does not wrap the 5 pushes).
         for a, x in ((255, 255), (37, 91)):
             run_case(probe, data, folder, cue, reset, f"lowsp-{a:02x}-{x:02x}", entry, a, x, sp=0x07)
-            evidence["cases"].append({"a": a, "x": x, "sp": 0x07, "expected_a": expected(a, x)[0], "expected_x": expected(a, x)[1]})
             lo, hi = expected(a, x)
-            evidence["cases"].append({"a": a, "x": x, "expected_a": lo, "expected_x": hi})
+            evidence["cases"].append({"a": a, "x": x, "sp": 0x07, "expected_a": lo, "expected_x": hi})
         # Negative: the routine's CLD (second byte of the entry) replaced by NOP. With D=1 the ADCs then run in
         # BCD, so the real core must reject at least one case; a pass would mean the D=1 check is not effective.
         code_at = body - 0xE000
