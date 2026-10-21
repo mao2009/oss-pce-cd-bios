@@ -2,7 +2,18 @@
 
 **状態: 開発専用の自作内部契約。System Card の ABI ではない。** `release_eligible=false`。
 BIOS スロット `$11`（AD_TRANS、`$E033`）へは接続しない。#301 は BLOCKED_ABI のまま。
-実コア検証: 9b5c044 で PASS。コード検証の対象は 60b15e7 であり、60b15e7 は Coordinator の clean clone で PASS（`PASS_ADT_ROUTINE_FOUR_CALLS`、12 件の改変を拒否、`--selftest` / 実行 / `--verify` すべて終了コード 0、manifest sha256 `caf6ec58562540c17fbd4ccbe5ebd316f86dcea76732304025dd0a7c7604fe24`）。60b15e7 から 4a7ffb9 までの差分は本契約文書のみで、コードには触れない。本契約は、PR #406 の HuC6280 ゲスト DMA 経路を独立ルーチンとして切り出した自作の取り決めである。
+**用語:** 「実コア PASS」は、記載した特定の run（コミットと manifest sha256 で指す）について、`make setup` 後の実コア実行が終了コード 0 で判定 `PASS_ADT_ROUTINE_FOUR_CALLS` を返したことだけを指す。契約の解除状態は別であり、§12 の解除条件で判定する。解除条件 1（cc65 の警告 2 件）は未達のままである。「未検証」は、解除条件を満たす run がまだ無いことを指す（§12）。
+
+**実コア実行の結果（run ごと）:**
+
+- 9b5c044: PASS（`PASS_ADT_ROUTINE_FOUR_CALLS`）。manifest sha256 `04e25ba2e3399d55875d65fb697619dd690ea63b6ddc9e467bd9c69203ad7f6a`。
+- 60b15e7: clean clone で `--selftest` / 実行 / `--verify` すべて終了コード 0。`PASS_ADT_ROUTINE_FOUR_CALLS`、12 件の改変を拒否。manifest sha256 `caf6ec58562540c17fbd4ccbe5ebd316f86dcea76732304025dd0a7c7604fe24`。
+- 4a7ffb9: clean clone で終了コード 0。manifest sha256 `4c703dfce567c586b58e1b92a90c61d341eeffcae302f04fd76cc2e1fba3112a`。60b15e7 からの差分は本契約文書のみで、コードは同じ。
+- c80d310（HEAD）: driver のコメントを変えたため、manifest の driver_sha256 が HEAD のファイルと一致せず、HEAD では `--verify` が失敗する。HEAD の実コア再実行で manifest を再生成し、その結果で §12 の条件 3 を満たす。
+
+manifest sha256 は run ごとに変わる。manifest には platform、python、command が含まれ、環境と実行によって異なるためである。したがって再現の判定は sha の一致ではなく、verdict と各観測の一致で行う。
+
+本契約は、PR #406 の HuC6280 ゲスト DMA 経路を独立ルーチンとして切り出した自作の取り決めである。
 呼出元（`src/adt_dma_routine_boot.s`）と呼出先（`src/adt_dma_routine.s`）の内部契約として定義する。
 
 ## 1. 範囲
@@ -51,7 +62,7 @@ BIOS スロット `$11`（AD_TRANS、`$E033`）へは接続しない。#301 は 
 | +2 | SCSI status バイト（0 = GOOD） |
 | +3 | SCSI message バイト（0 = COMMAND COMPLETE） |
 | +4 | 戻り時の `$180B`（ADPCM_DMA） |
-| +5 | 戻り時の `$180C`（ADPCM_STAT）。A、B、C では 0（wait_adpcm_drained による）。D、E では C から引き継がれる 0（D、E はバスに触れない）。bit2 の意味は `docs/research/ad-trans-diagnostic-plan.md` の参照（§10） |
+| +5 | 戻り時の `$180C`（ADPCM_STAT）。A、B、C では 0（wait_adpcm_drained による）。D、E では C から引き継がれる 0（D、E はバスに触れない）。bit2 の意味は仮説（HYPOTHESIS）。出典は `src/ad_trans_dma_probe.s:20` のコメントのみで、実機・Geargrafx の読出し経路では未確認（§10） |
 | +6 | `1` = バス空き かつ DMA と書込みスロットが空き、`0` = いずれかが不成立、`$FF` = バスに触れていない |
 | +7 | 引数 `PB_ARM` のエコー |
 
@@ -116,9 +127,9 @@ BIOS スロット `$11`（AD_TRANS、`$E033`）へは接続しない。#301 は 
 - 判定の順序: 停止位置 → 結果記録（A は `$2320` の複写、B、C、D はスロット 8、16、24、E はスロット 0） → ADPCM RAM（`$0100` と `$1100` の 2048 バイト、それ以外ゼロ） → 書込みポインタ（`$1900`） → DMA オフ。
 - 各記録は code、stage、SCSI status / message、戻り時の `$180B`、`$180C` の bit2、bus_ok、arm を検査する。
 - `$180C` の bit2 を 0 とする根拠（呼出しごと。コードは `src/adt_dma_routine.s`）:
-  - bit2 の意味（書込みスロット空き）は、`src/ad_trans_dma_probe.s:20` と `docs/research/ad-trans-diagnostic-plan.md:32` の参照のみである。本契約では独自に定義していない。
-  - A と C: 成功経路は `wait_adpcm_drained` の成功（`:216` の呼出し）の後にだけ進み、その後は SCSI の status / message / バス空きの待ちしかなく、`$180C` への書込みも待ちもない。戻り時の bit2 = 0 はこの順序から導かれる。ただし、成功判定から戻り時の読出しまでの間にハードウェアが bit2 を立てないことは、実コアの観測に基づく仮定である。
-  - B: 失敗後の `recover` は、`wait_adpcm_drained` が成功したときだけ `bus_ok = 1` とする（`:306`）。bit2 = 0 もこの成功経路から導かれる。
+  - bit2 の意味（書込みスロット空き）は仮説（HYPOTHESIS）である。出典は `src/ad_trans_dma_probe.s:20` のコメントのみで、`docs/research/ad-trans-diagnostic-plan.md` には `$180C`、ADPCM_STAT、bit2 の記述がない。実機・Geargrafx の読出し経路では未確認。本契約では独自に定義していない。
+  - A と C: 呼出し A と C の戻り時 bit2 = 0 は、bit2 の意味が何であれ成り立つ、wait の構造から導かれる観測である。成功経路は `wait_adpcm_drained` の成功（`src/adt_dma_routine.s:216`）の後にだけ進み、その後は SCSI の status / message / バス空きの待ちしかなく、`$180C` への書込みも待ちもない。ただし、成功判定から戻り時の読出しまでの間にハードウェアが bit2 を立てないことは、実コアの観測に基づく仮定である。
+  - B: 失敗後の `recover` は、`wait_adpcm_drained` が成功したときだけ `bus_ok = 1` とする（`src/adt_dma_routine.s:306`）。戻り時の bit2 = 0 も、この wait の構造から導かれる。
   - D と E: 入力不正は `bad_request` で返り、バスにも DMA にも触れない。戻り時の `$180C` は読出しのみで、ルーチンは書かない。値は C の戻り時の状態がそのまま残ったものである。契約はこれを保証せず、実コアの観測に基づく仮定である。
 - 改変試験は 12 件。各改変は宣言した検査 id でのみ拒否されなければならない。E の改変（スロット 0 の code を 9 から 0 へ書き換える）は `slot_e_code` で拒否される。
 - テストの空白（修正せず記録する）: `verify()` は manifest の `probe_source_sha256` を照合しない。また A の記録（`$2320`）を改変する試験は無い。
@@ -129,9 +140,11 @@ BIOS スロット `$11`（AD_TRANS、`$E033`）へは接続しない。#301 は 
 | 区分 | 状態 | 根拠 |
 | --- | --- | --- |
 | 実装（ルーチン、boot） | 作成済み | `src/adt_dma_routine.s`、`src/adt_dma_routine_boot.s` |
-| 構文検査（cc65 アセンブル・リンク） | 9b5c044 で Coordinator が成功（clean clone、終了コード 0）。リンカ警告 2 件あり（`src/bank0.cfg:14` の `APITABLE` / `FALLBACK` の空セグメント。この実行では影響は観測されなかった。根拠は実コア PASS 1 回のみ）。60b15e7 は同じ clean clone で終了コード 0（manifest sha256 `caf6ec58…fe24`） | 作業者環境では cc65 を実行していない（worktree の保護） |
+| 構文検査（cc65 アセンブル・リンク） | 9b5c044 の clean clone 実行で成功。リンカ警告 2 件あり: `src/bank0.cfg:8` の `APITABLE` と `:9` の `FALLBACK` が空セグメント（この実行では影響は観測されなかった）。60b15e7 は同じ clean clone で終了コード 0（manifest sha256 `caf6ec58562540c17fbd4ccbe5ebd316f86dcea76732304025dd0a7c7604fe24`） | 9b5c044 と 60b15e7 の clean clone 実行の記録。c80d310 以降の変更はドキュメントのみで、この行は再実行していない |
 | 判定器の自己検査 | 60b15e7 で `--selftest`（host のみ） | 契約から作った観測と改変表だけ。コアの証拠ではない |
-| 実コア（pinned Geargrafx）の正例・負例・復帰・入力不正・無効スロット | 9b5c044 で PASS（`PASS_ADT_ROUTINE_FOUR_CALLS`、manifest sha256 `04e25ba2e3399d55875d65fb697619dd690ea63b6ddc9e467bd9c69203ad7f6a`、selftest / real-core / verify すべて終了コード 0）。60b15e7 は同じ clean clone で終了コード 0（manifest sha256 `caf6ec58…fe24`）。証拠の範囲: 合成ディスク（manifest の `disc: SYNTHETIC`、`tools/make_cd_image.py` の `build_image(sectors=16)`）、Geargrafx revision `b49ae82a012eade566d72e9d61c9d95a5caa4da3`（GPL-3.0、オブジェクトのリンクのみ） | 9b5c044 から ROM、probe、判定器が変わったため、9b5c044 の結果は 60b15e7 の証拠ではない。60b15e7 の結果を証拠とする |
+| 実コア（pinned Geargrafx）の正例・負例・復帰・入力不正・無効スロット | 9b5c044 で PASS（`PASS_ADT_ROUTINE_FOUR_CALLS`、manifest sha256 `04e25ba2e3399d55875d65fb697619dd690ea63b6ddc9e467bd9c69203ad7f6a`、selftest / real-core / verify すべて終了コード 0）。60b15e7 は clean clone で終了コード 0（`PASS_ADT_ROUTINE_FOUR_CALLS`、manifest sha256 `caf6ec58562540c17fbd4ccbe5ebd316f86dcea76732304025dd0a7c7604fe24`）。4a7ffb9 は clean clone で終了コード 0（manifest sha256 `4c703dfce567c586b58e1b92a90c61d341eeffcae302f04fd76cc2e1fba3112a`）。証拠の範囲: 合成ディスク（manifest の `disc: SYNTHETIC`、`tools/make_cd_image.py` の `build_image(sectors=16)`）、Geargrafx revision `b49ae82a012eade566d72e9d61c9d95a5caa4da3`（GPL-3.0、オブジェクトのリンクのみ） | 9b5c044 から ROM、probe、判定器が変わったため、9b5c044 の結果は 60b15e7 の証拠ではない。60b15e7 の結果は、その run の driver に対する証拠であり、HEAD（c80d310 以降）の driver を覆わない（下記）。 |
+
+**HEAD の扱い（c80d310 以降）:** c80d310 で driver のコメントを変えたため、manifest の driver_sha256 が HEAD のファイルと一致せず、HEAD では `--verify` が失敗する。HEAD の実コア再実行で manifest を再生成し、その結果で §12 の条件 3 を満たす。HEAD の実コア再実行の結果は、再生成した manifest の sha256 を含めて別途記録する。
 | 独立レビュー | 別コンテキストのレビュー結果を PR 本文に記す | §12 |
 | CI | PR の HEAD で確認 | PR 本文 |
 
@@ -141,5 +154,5 @@ BIOS スロット `$11`（AD_TRANS、`$E033`）へは接続しない。#301 は 
 - 解除条件:
   1. cc65（pinned）が使える環境で `src/adt_dma_routine.s` と `src/adt_dma_routine_boot.s` が警告なくアセンブルとリンクできること（`cd_entry` が `$F000`）。現状は警告 2 件（空セグメント、§11）が残るため、この文言は未達。警告を許容するか、`src/bank0.cfg` を直すかは人間が決める。
   2. `make setup` の後、`python3 tests/integration/geargrafx_ad_trans_routine.py --out build/ad-trans-routine` が終了コード 0 で、判定 `PASS_ADT_ROUTINE_FOUR_CALLS` を返すこと。
-  3. `--verify` が終了コード 0 であること。
-  4. 上記が揃うまで、本契約は「実コアで未検証」とし、`release_eligible=false` を維持する。
+  3. `--verify` が終了コード 0 であること。HEAD（c80d310 以降）では、HEAD の実コア再実行で manifest を再生成した後に満たす（§11「HEAD の扱い」）。60b15e7 の結果は HEAD の driver を覆わない。
+  4. 解除状態: 条件 1 は未達（警告 2 件）。条件 2 と 3 は、HEAD（c80d310 以降）では未確認である。HEAD の `--verify` は driver_sha256 の不一致で失敗するため、HEAD の実コア再実行で manifest を再生成した後に確認する。§11 の「実コア PASS」は特定 run の結果であり、この解除状態とは別である。上記の全条件が揃うまで、本契約は解除せず、`release_eligible=false` を維持する。
