@@ -17,7 +17,17 @@ Cases (for each of tii, tin, tia, tdd, tai; one-byte transfer):
 * ``<op>-allowed-armed`` (POSITIVE): MPR0 = $00, dest $3E90 (WRAM). The guard is consulted once and
   allows the store; the byte must land.
 
-Run manually (not wired into the Makefile integration target):
+Scope and limits (read before citing this as evidence):
+* The refusal policy (refuse a store whose destination page is mapped to $FF) is written inside the
+  probe (geargrafx_block_write_guard.cpp). It is a test policy, NOT a production gate. This test shows
+  only that the core's pre-write hook point can refuse a store before its side effect; it does not show
+  that a production gate would refuse it.
+* ``row["armed"]`` is set in this driver from the case name (``case.endswith("-armed")``), so the armed
+  checks confirm the requested configuration only and are not independent evidence. The discriminating
+  evidence is guard_calls / guard_refusals, the VDC AR and WRAM observations, and the unguarded control.
+
+Run through the Makefile (``make block-write-guard``; also part of ``make integration``, which
+``make test-real-core`` runs in CI), or directly:
     python3 tests/integration/geargrafx_block_write_guard.py
 """
 import copy
@@ -231,12 +241,13 @@ def main():
                                         "core_revision": PINNED_CORE_REVISION, "bios": "SYNTHETIC",
                                         "hook": "VERIFICATION_ONLY_PATCH", "verdict": verdict,
                                         "row": row}, sort_keys=True))
-    print("PASS issue-367 TII/TIN/TIA/TDD/TAI one-byte block-transfer pre-write refusal "
-          "(synthetic, pinned core + verification patch)")
+    print("PASS issue-367 TII/TIN/TIA/TDD/TAI: one-byte transfers only, destination pages mapped to $FF only, "
+          "pre-write refusal hook, synthetic media")
     print("LIMIT: one-byte transfers only; no mid-instruction stop measured; no device-originated write probe; "
-          "guard refuses only dest pages mapped to $FF (other banks not covered); refusal is silent and the "
-          "source read is skipped; TransferStart stack pushes (A/X/Y) are NOT guarded (probe maps stack to WRAM); "
-          "no gate change; no BIOS.")
+          "guard refuses only dest pages mapped to $FF (other banks not covered); refusal policy is defined "
+          "inside the probe, not a production gate; refusal is silent and the source read is skipped; "
+          "TransferStart stack pushes (A/X/Y) are NOT guarded (probe maps stack to WRAM); armed flag is set "
+          "from the case name; no gate change; no BIOS.")
     return 0
 
 
