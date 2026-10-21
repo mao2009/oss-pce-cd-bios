@@ -65,7 +65,8 @@ This is a verification patch with a null-by-default hook. The unguarded runs use
 patched build with the hook unset, not the stock object. Nothing here changes `BLOCKED_ABI`
 or `release_eligible`.
 
-Re-run on 2026-10-21 under WSL (Ubuntu) from a clean clone of this branch at commit `e42f67f`
+Re-run on 2026-10-21 under WSL (Ubuntu) from a clean clone of this branch at commit `638baf0`
+(probe flags = `tools/setup.py` debugger overrides, the same as the linked objects)
 (`TOOLS_DIR` set to the existing external tool cache; `python3 tools/setup.py geargrafx --debugger`
 then `python3 tests/integration/geargrafx_st_write_guard.py`). Synthetic BIOS and CD only. Output:
 
