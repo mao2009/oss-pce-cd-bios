@@ -20,7 +20,7 @@ manifest sha256 は run ごとに変わる。manifest には platform、python�
 ## 1. 範囲
 
 - 対象: 最小 1 セクター（2048 バイト）、固定転送モード（READ(6)、転送数 1 固定、宛先は ADPCM RAM の先頭からの連続書込み）。
-- 対象領域（region）: 該当なし。根拠: ルーチンと boot は BIOS entry（`$E0xx`）を呼ばない（`src/adt_dma_routine.s`、`src/adt_dma_routine_boot.s`、`src/ad_trans_dma_probe.s` を grep で確認）。実機・実 CD 媒体・実 BIOS での region 依存は未確認。合成ディスクに region の指定はない（manifest に region の記載なし）。
+- 対象領域（region）: ルーチン自体に region 分岐はない（BIOS entry を呼ばないことを `src/` の grep で確認）。region 依存の有無（実機・実 CD 媒体・実 BIOS）は未確認。合成ディスクに region の指定はない（manifest に region の記載なし）。
 - 対象環境: pinned Geargrafx `b49ae82a012eade566d72e9d61c9d95a5caa4da3` の合成ディスク（manifest の `disc: SYNTHETIC`、`build_image(sectors=16)`）。実機・実 BIOS・実 CD ドライブは対象外で、未確認。
 - 含まないもの: 複数セクター、ジャンプテーブル接続、`$E030`〜`$E03F` の BIOS API への接続、CD_BASE / CD_SEEK との順序保証。
 - 根拠の区分: 呼出側の手順は PR #406（`src/ad_trans_dma_probe.s`）で実測された SCSI / ADPCM DMA の手順を踏襲する。
@@ -132,7 +132,7 @@ manifest sha256 は run ごとに変わる。manifest には platform、python�
 - `$180C` の bit2 を 0 とする根拠（呼出しごと。コードは `src/adt_dma_routine.s`）:
   - bit2 の意味（書込みスロット空き）は仮説（HYPOTHESIS）である。初出は `src/ad_trans_dma_probe.s:20` のコメント（`docs/research/ad-trans-diagnostic-plan.md` には `$180C`、ADPCM_STAT、bit2 の記述がない）。ルーチンと判定器（`src/adt_dma_routine.s:17`、`:370`、`src/ad_trans_dma_probe.s:265`、`tests/integration/geargrafx_ad_trans_routine.py:159`）は同じ仮定を用いる。実機・Geargrafx の読出し経路での検証は未了。本契約は bit2 の意味を独自に定義せず、判定器はこの仮定に依る。
   - A と C: 呼出し A と C の戻り時 bit2 = 0 は、bit2 の意味が何であれ成り立つ、wait の構造から導かれる観測である。成功経路は `wait_adpcm_drained` の成功の後にだけ進み（呼出し `src/adt_dma_routine.s:216`、判定 `:217` の bcc）、その後は SCSI の status / message / バス空きの待ちしかなく、`$180C` への書込みも待ちもない。ただし、成功判定から戻り時の読出しまでの間にハードウェアが bit2 を立てないことは、実コアの観測に基づく仮定である。
-  - B: 失敗後の `recover` は、`wait_adpcm_drained` が成功したときだけ `bus_ok = 1` とする（呼出し `src/adt_dma_routine.s:306`、判定 `:307` の bcs、`bus_ok = 1` の設定 `:308`）。戻り時の bit2 = 0 も、この wait の構造から導かれる。
+  - B: 失敗後の `recover` は、`wait_adpcm_drained` が成功したときだけ `bus_ok = 1` とする（呼出し `src/adt_dma_routine.s:306`、判定 `:307` の bcs、`bus_ok = 1` の設定は `:308`（`lda #1`）と `:309`（`bus_ok` への格納））。戻り時の bit2 = 0 も、この wait の構造から導かれる。
   - D と E: 入力不正は `bad_request` で返り、バスにも DMA にも触れない。戻り時の `$180C` は読出しのみで、ルーチンは書かない。値は C の戻り時の状態がそのまま残ったものである。契約はこれを保証せず、実コアの観測に基づく仮定である。
 - 改変試験は 12 件。各改変は宣言した検査 id でのみ拒否されなければならない。E の改変（スロット 0 の code を 9 から 0 へ書き換える）は `slot_e_code` で拒否される。
 - テストの空白（修正せず記録する）: `verify()` は manifest の `probe_source_sha256` を照合しない。また A の記録（`$2320`）を改変する試験は無い。
@@ -147,9 +147,10 @@ manifest sha256 は run ごとに変わる。manifest には platform、python�
 | 判定器の自己検査 | 60b15e7 で `--selftest`（host のみ） | 契約から作った観測と改変表だけ。コアの証拠ではない |
 | 実コア（pinned Geargrafx）の正例・負例・復帰・入力不正・無効スロット | 9b5c044 で PASS（`PASS_ADT_ROUTINE_FOUR_CALLS`、manifest sha256 `04e25ba2e3399d55875d65fb697619dd690ea63b6ddc9e467bd9c69203ad7f6a`、selftest / real-core / verify すべて終了コード 0）。60b15e7 は clean clone で終了コード 0（`PASS_ADT_ROUTINE_FOUR_CALLS`、manifest sha256 `caf6ec58562540c17fbd4ccbe5ebd316f86dcea76732304025dd0a7c7604fe24`）。4a7ffb9 は clean clone で終了コード 0（manifest sha256 `4c703dfce567c586b58e1b92a90c61d341eeffcae302f04fd76cc2e1fba3112a`）。8d04c9f は clean clone で `--selftest`、実行、`--verify` が終了コード 0（`PASS_ADT_ROUTINE_FOUR_CALLS`、manifest sha256 `7d9428e6099add5a40d8116423c628e2ba2b8902bbc051679e328ac1a77aa9e3`）。コードは c80d310 と同一。証拠の範囲: 合成ディスク（manifest の `disc: SYNTHETIC`、`tools/make_cd_image.py` の `build_image(sectors=16)`）、Geargrafx revision `b49ae82a012eade566d72e9d61c9d95a5caa4da3`（GPL-3.0、オブジェクトのリンクのみ） | 9b5c044 から ROM、probe、判定器が変わったため、9b5c044 の結果は 60b15e7 の証拠ではない。60b15e7 の結果は、その run の driver に対する証拠であり、c80d310 以降のコードの driver を覆わない（下記）。 |
 
-**c80d310 以降のコードの扱い:** c80d310 で driver のコメントを変えたため、それ以前に生成された manifest の driver_sha256 と一致せず、c80d310 では `--verify` が失敗する。8d04c9f の clean clone での実コア実行で manifest を再生成し、`--verify` が終了コード 0 となった（上記 run 一覧の 8d04c9f）。これにより §12 の条件 3 を 8d04c9f の run で満たした。コードは c80d310 と 8d04c9f で同一である。
 | 独立レビュー | 別コンテキストのレビュー結果を PR 本文に記す | §12 |
 | CI | PR の HEAD で確認 | PR 本文 |
+
+**c80d310 以降のコードの扱い:** c80d310 で driver のコメントを変えたため、それ以前に生成された manifest の driver_sha256 と一致せず、c80d310 では `--verify` が失敗する。8d04c9f の clean clone での実コア実行で manifest を再生成し、`--verify` が終了コード 0 となった（上記 run 一覧の 8d04c9f）。これにより §12 の条件 3 を 8d04c9f の run で満たした。コードは c80d310 と 8d04c9f で同一である。
 
 ## 12. UNKNOWN と解除条件
 
