@@ -1,5 +1,6 @@
 """Host checks for the Issue #242 synthetic ROM-to-RAM handoff judge (no emulator; real-core runs are in the integration test)."""
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -9,7 +10,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tests/integration"))
 sys.path.insert(0, str(ROOT / "tools"))
 from geargrafx_handoff import (  # noqa: E402
-    Blocked, HandoffRejected, RAM_ENTRY, check_handoff_contract, expected_payload, judge, run_negatives)
+    Blocked, HandoffRejected, RAM_ENTRY, check_handoff_contract, expected_payload, expected_ram_writes, judge,
+    mutate, run_negatives)
 
 GOOD_MPR = [0xFF, 0xF8, 1, 2, 31, 3, 4, 0]
 LABELS = {"handoff_jump": 0xF0A0, "handoff_done": 0xF0B0}
@@ -20,8 +22,21 @@ def _row(cycle, phase, pc, sp=0xFF, mpr=GOOD_MPR):
     return {"cycle": cycle, "phase": phase, "pc": pc, "sp": sp, "mpr": mpr}
 
 
-def _records(entry_pc=RAM_ENTRY, marker=b"\xa5\x5a", mpr=GOOD_MPR):
+def _full_ram(marker=b"\xa5\x5a", extra=None):
+    """8 KiB work RAM image after a complete handoff; `extra` maps work RAM offsets to unexpected bytes."""
+    image = bytearray(0x2000)
+    image[0x200:0x200 + len(PAYLOAD)] = PAYLOAD
+    image[0x220:0x222] = marker
+    for offset, value in (extra or {}).items():
+        image[offset] = value
+    return bytes(image)
+
+
+def _records(entry_pc=RAM_ENTRY, marker=b"\xa5\x5a", mpr=GOOD_MPR, extra=None):
     records = {"TRACE": [], "OBS": []}
+    end = _full_ram(marker, extra)
+    records["OBS"].append({"phase": "loaded", "pc": LABELS["handoff_jump"], "sp": 0xFF,
+                           "work_ram_hex": bytes(0x2000).hex()})
     for cycle in ("cold", "warm"):
         records["TRACE"] += [_row(cycle, "handoff_jump", LABELS["handoff_jump"]),
                              _row(cycle, "handoff_entry", entry_pc, mpr=mpr),
@@ -30,7 +45,9 @@ def _records(entry_pc=RAM_ENTRY, marker=b"\xa5\x5a", mpr=GOOD_MPR):
         dump[:len(PAYLOAD)] = PAYLOAD
         dump[0x20:0x22] = marker
         records["OBS"].append({"phase": cycle, "pc": LABELS["handoff_done"], "sp": 0xFF,
-                               "work_ram_0200_hex": bytes(dump).hex()})
+                               "work_ram_0200_hex": bytes(dump).hex(), "work_ram_hex": end.hex()})
+    records["OBS"].append({"phase": "nonreturning", "pc": LABELS["handoff_done"], "sp": 0xFF,
+                           "work_ram_hex": end.hex()})
     return records
 
 
@@ -71,6 +88,55 @@ class HandoffJudgeTests(unittest.TestCase):
             judge(_records(mpr=[0xFF, 0x00] + GOOD_MPR[2:]), LABELS, PAYLOAD)
 
 
+class HandoffRamSideEffectTests(unittest.TestCase):
+    """Full work RAM (cold cycle): only the typed payload copy and marker may differ from 'loaded'."""
+
+    def _reason(self, records):
+        with self.assertRaises(HandoffRejected) as cm:
+            judge(records, LABELS, PAYLOAD)
+        return cm.exception.reason
+
+    def test_accepts_only_typed_writes(self):
+        self.assertEqual(len(expected_ram_writes(PAYLOAD)), len(PAYLOAD) + 2)
+        judge(_records(), LABELS, PAYLOAD)
+
+    def test_rejects_unexpected_write_outside_payload_and_marker(self):
+        for offset in (0x000, 0x1FF, 0x20D, 0x222, 0x1FFF):
+            with self.subTest(offset=hex(offset)):
+                self.assertEqual(self._reason(_records(extra={offset: 0x77})), "ram_side_effect")
+
+    def test_rejects_wrong_marker_byte_in_full_image(self):
+        self.assertEqual(self._reason(_records(extra={0x221: 0x00})), "ram_expected")
+
+    def test_rejects_halt_that_is_not_stable(self):
+        records = _records()
+        for row in records["OBS"]:
+            if row["phase"] == "nonreturning":
+                row["work_ram_hex"] = _full_ram(extra={0x300: 0x01}).hex()
+        self.assertEqual(self._reason(records), "ram_unstable")
+
+    def test_rejects_missing_full_image(self):
+        records = _records()
+        records["OBS"] = [r for r in records["OBS"] if r["phase"] != "loaded"]
+        self.assertEqual(self._reason(records), "obs")
+
+
+class FixtureStaticTests(unittest.TestCase):
+    # Typed allow-list of every instruction in the fixture. Any other mnemonic (VDC st0-st2, block transfers,
+    # read-modify-write, JSR/PHA) changes the write set and must be reviewed here first.
+    ALLOWED_MNEMONICS = {"sei", "cld", "lda", "tam", "txs", "ldx", "sta", "inx", "cpx", "bne", "jmp", "bra"}
+
+    def test_fixture_mnemonics_are_the_typed_allow_list(self):
+        source = (ROOT / "tests/fixtures/handoff-probe.s").read_text(encoding="ascii")
+        mnemonics = {m.lower() for m in re.findall(r"^\s*([A-Za-z][A-Za-z0-9]*)\s", source, re.M)}
+        self.assertEqual(mnemonics, self.ALLOWED_MNEMONICS)
+
+    def test_fixture_stores_only_hit_work_ram_or_payload_marker(self):
+        source = (ROOT / "tests/fixtures/handoff-probe.s").read_text(encoding="ascii")
+        stores = re.findall(r"(?mi)^\s*sta\s+(\S+)", source)
+        self.assertEqual(sorted(stores), ["$2200,x", "$2220", "$2221"])
+
+
 class HandoffReasonTests(unittest.TestCase):
     """Each negative is rejected for its own reason key; entry and MPR are checked before phase order."""
 
@@ -97,11 +163,30 @@ class HandoffReasonTests(unittest.TestCase):
 
 def _mutant_rom():
     """Synthetic 8 KiB bank holding the bytes the negatives patch: MPR1 immediate and the JMP $2200 operand."""
-    labels = {"handoff_bank": 0xE011, "handoff_jump": LABELS["handoff_jump"], "handoff_done": LABELS["handoff_done"]}
+    labels = {"handoff_bank": 0xE011, "handoff_jump": LABELS["handoff_jump"], "handoff_done": LABELS["handoff_done"],
+              "handoff_payload_end_rom": 0xE080}
     rom = bytearray(0x2000)
     rom[0x11 - 1] = 0xF8
     rom[labels["handoff_jump"] - 0xE000:labels["handoff_jump"] - 0xE000 + 3] = bytes([0x4C, 0x00, 0x22])
+    rom[0x100:0x103] = b"\xe0\x0d\xd0"  # cpx #13 / bne handoff_copy anchor for the extra-copy negative
+    rom[0x80] = 0xFF                    # fill byte after the payload (ld65 fill in the real bank)
     return bytes(rom), labels
+
+
+class NegativeMutationTests(unittest.TestCase):
+    def test_extra_copy_byte_patches_only_the_loop_bound(self):
+        rom, labels = _mutant_rom()
+        mutated = mutate(rom, labels, "extra_copy_byte")
+        changed = [i for i, (a, b) in enumerate(zip(rom, mutated)) if a != b]
+        self.assertEqual(changed, [0x101])
+        self.assertEqual(mutated[0x101], 0x0E)
+
+    def test_extra_copy_byte_refuses_a_non_fill_byte_after_the_payload(self):
+        rom, labels = _mutant_rom()
+        rom = bytearray(rom)
+        rom[0x80] = 0x00
+        with self.assertRaises(ValueError):
+            mutate(bytes(rom), labels, "extra_copy_byte")
 
 
 class NegativeRunnerTests(unittest.TestCase):
@@ -141,6 +226,8 @@ class NegativeRunnerTests(unittest.TestCase):
         def run(path):
             if path.name.startswith("mpr1_rom_bank"):
                 return _records(mpr=[0xFF, 0x00] + GOOD_MPR[2:])
+            if path.name.startswith("extra_copy_byte"):
+                return _records(extra={0x20D: 0xFF})
             records = _records()
             records["TRACE"] = [r for r in records["TRACE"] if r["phase"] != "handoff_entry"]
             return records
@@ -148,7 +235,7 @@ class NegativeRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             negatives = run_negatives(rom, labels, PAYLOAD, Path(tmp), run)
         self.assertEqual({k: v["reason"] for k, v in negatives.items()},
-                         {"mpr1_rom_bank": "mpr", "entry_misaligned": "entry"})
+                         {"mpr1_rom_bank": "mpr", "entry_misaligned": "entry", "extra_copy_byte": "ram_side_effect"})
 
 
 if __name__ == "__main__":

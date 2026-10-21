@@ -68,7 +68,15 @@ int main(int argc, char** argv) {
         for (int i=0;i<64;i++) std::printf("%02x", memory->GetWorkingRAM()[0x200+i]);
         std::printf("\",\"stack_01f8_hex\":\"");
         for (int i=0;i<8;i++) std::printf("%02x", memory->GetWorkingRAM()[0x1f8+i]);
-        std::printf("\"}\n");
+        std::printf("\"");
+        // Issue #242: full 8 KiB work RAM, only on the three end-of-run observations that the handoff judge compares.
+        const std::string name = phase;
+        if (std::string(prefix) == "OBS" && (name == "loaded" || name == "cold" || name == "nonreturning")) {
+            std::printf(",\"work_ram_hex\":\"");
+            for (int i=0;i<0x2000;i++) std::printf("%02x", memory->GetWorkingRAM()[i]);
+            std::printf("\"");
+        }
+        std::printf("}\n");
     };
     std::vector<u8> frame(1024*512*4);
     std::vector<s16> audio(65536);
@@ -110,8 +118,8 @@ int main(int argc, char** argv) {
     if (memory->Read(first_pc) != 0x78) return 5; // all execution probes begin SEI
     one_instruction();
     bool stepping = cpu->PC->GetValue() == first_pc + 1;
-    std::printf("CAP {\"instruction_step\":%s,\"pc_before\":%u,\"pc_after\":%u,\"bios_loaded\":true,\"loader\":\"%s\",\"disc_given\":%s,\"cdrom_hardware\":%s,\"cdrom_media\":%s,\"card_ram_bytes\":%d,\"scsi_phase\":%d,\"cd_irq_active\":%u}\n",
-                stepping ? "true" : "false", first_pc, cpu->PC->GetValue(),
+    std::printf("CAP {\"instruction_step\":%s,\"pc_before\":%u,\"pc_after\":%u,\"loader_used\":%s,\"loader\":\"%s\",\"disc_given\":%s,\"cdrom_hardware\":%s,\"cdrom_media\":%s,\"card_ram_bytes\":%d,\"scsi_phase\":%d,\"cd_irq_active\":%u}\n",
+                stepping ? "true" : "false", first_pc, cpu->PC->GetValue(), have_disc ? "true" : "false",
                 have_disc ? "LoadBiosFromBuffer(syscard)+LoadMedia(cue)" : "SetCDROMType(STANDARD)+LoadHuCardFromBuffer",
                 have_disc ? "true" : "false",
                 core.GetMedia()->IsCDROMHardwareEnabled() ? "true" : "false",
