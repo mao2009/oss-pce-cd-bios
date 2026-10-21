@@ -1,1 +1,2 @@
+spec/measurement_points.json -text
 tests/integration/patches/*.patch whitespace=-blank-at-eol,-blank-at-eof

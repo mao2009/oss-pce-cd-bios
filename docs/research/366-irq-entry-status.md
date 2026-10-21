@@ -76,6 +76,8 @@ pinned core（`geargrafx-b49ae82a…-debugger`、`/home/loach/oss-pce-cd-bios-to
 - 対象ベクタ: IRQ2（$FFF6）、IRQ1（$FFF8）、TIQ（$FFFA）の 3 つすべて。
 - ビルド: tools/setup.py の debugger 構成と同じ CFLAGS/CXXFLAGS を上書きで指定（上書きフラグに GG_DISABLE_DISASSEMBLER は含まれない。デバッガ機能の有効性はビルド時に検証していない。本判定はブレークポイントに依存しない）。プローブは同じ CXXFLAGS と INCLUDES でコンパイル。
 - libretro: BLOCKED（libretro の共有オブジェクトを駆動するハーネスがないため未観測。PASS ではない）。
+- 上流 Makefile: 上流 Makefile（`platforms/libretro/Makefile`）は本リポジトリに含まれない。ドライバは `tools/setup.py` が取得・検証した pinned debugger ツリーの Makefile に対して `make --eval` で `OBJECTS` と `INCLUDES` を取得し、CFLAGS/CXXFLAGS を上書きする。よって本結果は、その pinned ツリーの Makefile（revision `b49ae82a`）に依存する。
+- ライセンス: 検証パッチと `tests/integration/patches/LICENSE`（GPL-3.0）は GPL-3.0 下に置く。MIT のリポジトリ本体（ルート `LICENSE`）とは分離する。パッチ済みコアのビルドや配布は GPL-3.0 の条件（対応ソース提供など）を満たす必要があるが、その適合性は本リポジトリでは確認していない。
 
 ### 残存（本結果が証明しないこと）
 - 拒否点で観測している。ハンドラ先頭の命令数 0 は、マーカと A が不変であることによる間接判定であり、実行 breakpoint による停止ではない。
