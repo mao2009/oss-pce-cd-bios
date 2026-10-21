@@ -150,6 +150,9 @@ int main(int argc, char** argv)
     st->P->SetValue(0x04);
 
     gg_verify_st_write_guard = g_armed ? st_guard : nullptr;
+    // Armed state reported as the hook the core will actually consult (read back from the core
+    // global), not as the mode string. The driver trusts only this field.
+    const bool hook_installed = gg_verify_st_write_guard != nullptr;
 
     std::vector<u8> mpr_before(8), mpr_after(8);
     for (int i = 0; i < 8; ++i)
@@ -177,7 +180,7 @@ int main(int argc, char** argv)
     const char* status = halted ? "ok" : "budget_exhausted";
     std::fprintf(stderr, "{");
     std::fprintf(stderr, "\"mode\":\"%s\",\"status\":\"%s\",\"armed\":%s,", mode.c_str(), status,
-                 g_armed ? "true" : "false");
+                 hook_installed ? "true" : "false");
     std::fprintf(stderr, "\"st_kind\":\"%s\",\"after_tam\":%s,", st_kind.c_str(), after_tam ? "true" : "false");
     std::fprintf(stderr, "\"guard_calls\":%u,\"guard_refusals\":%u,", g_calls, g_refusals);
     std::fprintf(stderr, "\"guard_st_index\":%u,\"guard_value\":%u,", g_last_index, g_last_value);

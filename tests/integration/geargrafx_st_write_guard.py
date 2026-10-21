@@ -78,6 +78,8 @@ def _common(row, case):
         raise ValueError(f"{case} measured wrong mode: {row.get('mode')}")
     if row.get("status") != "ok":
         raise ValueError(f"{case}: guest did not reach its end (status={row.get('status')})")
+    if type(row.get("armed")) is not bool:
+        raise ValueError(f"{case}: probe did not report the armed state: {row.get('armed')!r}")
     for side in ("before", "after"):
         mpr = row.get(side, {}).get("mpr")
         if type(mpr) is not list or len(mpr) != 8:
@@ -131,6 +133,8 @@ def check_unguarded(row, case):
 
 def check_pos(row):
     _common(row, POS_CASE)
+    if row["armed"] is not True:
+        raise ValueError("positive control: probe reports the guard as not installed")
     if row["guard_calls"] != 0 or row["guard_refusals"] != 0:
         raise ValueError("positive control: a non-ST store reached the ST guard")
     if row.get("ram_before") == 0x5A or row.get("ram_after") != 0x5A:
@@ -143,6 +147,7 @@ def mutation_test_armed(row, case):
     """Falsified armed observations must be rejected by check_armed (proves the classifier can fail)."""
     kind = _kind(case)
     mutations = [
+        ("probe_reports_unarmed", {"armed": False}),
         ("side_effect_landed", {"vdc_ar_after": 0x07} if kind == "st0" else
          {"vdc_r_after": 0x5A} if kind == "st1" else {"vdc_r_after": 0xA500}),
         ("no_guard_call", {"guard_calls": 0, "guard_refusals": 0}),
@@ -161,6 +166,18 @@ def mutation_test_armed(row, case):
         except ValueError:
             continue
         raise ValueError(f"mutation test FAILED: {case} {name} accepted by the armed classifier")
+
+
+def mutation_test_unguarded(row, case):
+    """A run that reports armed=true (or a missing armed field) must be rejected by check_unguarded."""
+    for name, overwrite in (("probe_reports_armed", {"armed": True}), ("armed_missing", {"armed": None})):
+        broken = copy.deepcopy(row)
+        broken.update(overwrite)
+        try:
+            check_unguarded(broken, case)
+        except ValueError:
+            continue
+        raise ValueError(f"mutation test FAILED: {case} {name} accepted by the unguarded classifier")
 
 
 def build_probes(directory):
@@ -211,8 +228,7 @@ def run_case(probe, bios, cue, case):
     if type(row) is not dict:
         raise ValueError(f"{case}: observation is not an object")
     row["exit"] = 0
-    # Set from the case name only: "-armed" cases expect a refusal, the rest expect the store to land.
-    row["armed"] = case.endswith("-armed")
+    # "armed" is NOT set here: it is the probe's own report of the guard it installed (see the .cpp).
     return row
 
 
@@ -231,6 +247,7 @@ def main():
         for case in UNGUARDED_CASES:
             row = run_case(probe, bios, cue, case)
             verdicts[case] = check_unguarded(row, case)
+            mutation_test_unguarded(row, case)
             evidence.append((case, verdicts[case], row))
         row = run_case(probe, bios, cue, POS_CASE)
         verdicts[POS_CASE] = check_pos(row)
