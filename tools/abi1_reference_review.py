@@ -2,17 +2,34 @@
 """Validator for the Phase ABI-1 reference review ledger.
 
 ``spec/abi1_reference_review.json`` records what the **static** audit of the
-private reference System Card BIOS established, what it did not establish and
-why no reference execution was performed. This module keeps that ledger
-honest:
+private reference System Card BIOS established, what it did not establish, and
+why no reference execution was performed.
 
-* the file must match a strict schema (exact key sets, closed vocabularies);
-* every candidate entry must still agree with ``spec/api_contracts.json``;
-* ``VERIFIED`` may never appear: this ledger records static review, not a
-  verified ABI, and the reference ABI axis refuses ``VERIFIED`` today
-  (Issue #171);
-* the published text may not contain a decoded instruction or an internal BIOS
-  address, so the ledger can be committed without shipping reference code.
+Two axes are kept apart, because conflating them is what would over-claim:
+
+* the **static review** axis. A static profile of the reference callee is an
+  observation *of the private image*, not of a call. It can say "this callee
+  performs no store that the guarded probe could not contain". It can never
+  say "this call may be executed".
+* the **verification** axis. ``OBSERVED`` and ``PARTIAL`` describe a
+  *reproducible* real core observation, and ``VERIFIED`` describes a promoted,
+  owner approved one. A static review never reaches either state, and a prior
+  local only observation never reaches them either.
+
+The validator therefore refuses a ledger that:
+
+* claims ``VERIFIED`` (the reference ABI axis does not represent it, #171);
+* claims ``OBSERVED`` or ``PARTIAL`` without a reproducible real core
+  observation, or keeps a reproducible observation while the state says
+  ``NOT_RUN``;
+* counts a prior local only observation as a reproducible one;
+* records an API outside the Phase ABI-1 scope, or counts one API twice;
+* records an aggregate that does not match the ledger it summarises;
+* records an execution permission other than ``BLOCKED``, so that a static
+  ``EXECUTION_SAFE`` verdict can never be read as a permission to call the
+  reference BIOS;
+* drifts against ``spec/api_contracts.json``;
+* publishes a decoded instruction or a non public address.
 
 The validator is host only. It never opens a BIOS, an emulator or a ROM.
 """
@@ -25,45 +42,66 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 REVIEW_PATH = ROOT / "spec" / "abi1_reference_review.json"
 CONTRACTS_PATH = ROOT / "spec" / "api_contracts.json"
+DEV_LEDGER_PATH = ROOT / "spec" / "dev_implementations.json"
 
 SCHEMA = "oss-pce-cd-bios/abi1-reference-review/v1"
 TOP_KEYS = {"schema", "phase", "release_eligible", "trust", "target", "method",
-            "jump_table", "apis"}
+            "scope", "summary", "jump_table", "apis"}
 TARGET_KEYS = {"product", "image", "image_sha256", "image_bytes", "header_bytes",
                "body_bytes", "bank_bytes", "bank_count"}
 METHOD_KEYS = {"static_audit_tool", "decoder", "core_revision", "execution",
-               "execution_blockers", "evidence_classes"}
+               "execution_blockers", "evidence_classes", "verification_states",
+               "independent_approval_procedure"}
+SCOPE_KEYS = {"priority_api_ids", "note"}
+SUMMARY_KEYS = {"static_review_apis", "prior_local_only_observations",
+                "reproducible_real_core_observations", "reference_abi_verified",
+                "dev_rom_implemented_apis", "owner_approved_dev_callable"}
 JUMP_TABLE_KEYS = {"first_entry_cpu", "entry_count", "entry_stride_bytes",
                    "all_entries_are_jmp_abs", "all_targets_distinct", "status", "note"}
 API_KEYS = {"api_id", "slot", "name", "candidate_entry", "entry_evidence", "static",
-            "static_items", "safety", "execution", "abi_state"}
+            "static_items", "safety", "observation", "abi_state"}
 STATIC_KEYS = {"status", "callee_instructions", "return_kinds", "max_stack_bytes",
                "hazard_counts", "store_target_classes", "zero_page_operand_stores",
                "register_swap_ops", "non_returning_states", "unresolved",
                "budget_exhausted"}
-SAFETY_KEYS = {"verdict", "basis", "residual_risks"}
-EXECUTION_KEYS = {"verdict", "observation_status", "prior_evidence", "note"}
+SAFETY_KEYS = {"static_verdict", "scope", "basis", "residual_risks",
+               "execution_permission", "execution_permission_basis",
+               "approval_requirement"}
+OBSERVATION_KEYS = {"reproducible_real_core", "prior_local_only", "prior_evidence",
+                    "note"}
 ITEM_KEYS = {"entry_address_and_basis", "caller_supplied_registers",
              "caller_preconditions", "expected_return_value",
              "possibly_changed_registers", "cpu_flag_handling", "stack_usage",
              "mpr_change", "ram_io_vdc_cd_side_effects",
              "interrupt_or_timing_dependence",
              "executable_conditions_and_blocked_conditions"}
+
+# The static evidence classes. ``OBSERVED_STATIC`` is an observation of the
+# private image, not of a call.
 ITEM_STATUSES = {"OBSERVED_STATIC", "SOURCE_FACT", "HYPOTHESIS", "UNKNOWN"}
+# The verification axis. NOT_RUN and BLOCKED are the only states a static
+# review can reach.
 ABI_STATES = {"NOT_RUN", "BLOCKED", "OBSERVED", "PARTIAL", "VERIFIED"}
-SAFETY_VERDICTS = {"EXECUTION_SAFE", "EXECUTION_SAFE_WITH_OBSERVABLE_ZERO_PAGE_WRITE",
-                    "EXECUTION_BLOCKED", "EXECUTION_SAFE_WITH_OBSERVABLE_RAM_WRITE"}
-EXECUTION_VERDICTS = {"BLOCKED_REFERENCE_JSR_GATE", "BLOCKED_MPR_CHANGE_AND_REFERENCE_JSR_GATE",
-                      "NOT_RUN", "OBSERVED_LOCAL_ONLY_PRIOR"}
-# "OBSERVED_LOCAL_ONLY" (a fresh execution) is deliberately absent: the phase
-# ran no execution, so a slot may only carry the "prior" form, and that form
-# has to name where the earlier observation came from.
-OBSERVATION_STATUSES = {"NOT_RUN", "OBSERVED_LOCAL_ONLY_PRIOR"}
+# A static verdict about the callee's side effect profile. It is not a
+# permission: the only permission this ledger can express is BLOCKED.
+STATIC_VERDICTS = {"EXECUTION_SAFE", "EXECUTION_SAFE_WITH_OBSERVABLE_ZERO_PAGE_WRITE",
+                   "EXECUTION_BLOCKED"}
+EXECUTION_PERMISSIONS = {"BLOCKED"}
+STATIC_SCOPE = "STATIC_PROFILE_ONLY"
+APPROVAL_REQUIREMENT = "A_SEPARATE_INDEPENDENT_SAFETY_APPROVAL_PROCEDURE_IS_REQUIRED_AND_IS_NOT_IMPLEMENTED"
+REPRODUCIBLE_OBSERVATION = {"NOT_RUN", "OBSERVED"}
+PRIOR_LOCAL_ONLY = {"ABSENT", "PRESENT"}
 HAZARD_NAMES = {"BLOCK_TRANSFER", "VDC_DIRECT_WRITE", "MPR_WRITE", "MPR_READ",
                 "IRQ_ENABLE", "IRQ_DISABLE", "ZERO_PAGE_STORE", "PAGE1_STORE",
                 "OTHER_STORE", "DATA_DEPENDENT_STORE", "CROSS_PAGE_CALL",
                 "INDIRECT_CONTROL_FLOW", "UNRESOLVED_TARGET", "NO_RETURN"}
 ENTRY_EVIDENCE = {"JUMP_TABLE_3BYTE_JMP"}
+
+# The Phase ABI-1 scope: the seven priority slots of the phase. A ledger that
+# registers a different set of APIs is refused, so a static review cannot grow
+# into a larger "reviewed" claim by accident.
+PRIORITY_API_IDS = ("slot-1e", "slot-3c", "slot-3d", "slot-3f", "slot-40", "slot-41",
+                    "slot-42")
 
 # Every mnemonic of the HuC6280 instruction set that can carry an operand.
 # The list is compared against the pinned cc65 opcode table by a host test, so
@@ -123,7 +161,29 @@ def _public_text(node):
                               f"${match.group(1).upper()}")
 
 
-def validate(document, contracts):
+def compute_metrics(document, contracts, dev_ledger):
+    """Derive the Phase ABI-1 aggregates from the ledger and the source ledgers.
+
+    Nothing here is a hand written constant: the static review count and the
+    observation counts come from the per API records, and the DEV counts come
+    from ``spec/dev_implementations.json``.
+    """
+    apis = document["apis"]
+    return {
+        "static_review_apis": sum(1 for api in apis if api["static"]["status"] == "OBSERVED_STATIC"),
+        "prior_local_only_observations": sum(
+            1 for api in apis if api["observation"]["prior_local_only"] == "PRESENT"),
+        "reproducible_real_core_observations": sum(
+            1 for api in apis if api["observation"]["reproducible_real_core"] == "OBSERVED"),
+        "reference_abi_verified": sum(1 for api in apis if api["abi_state"] == "VERIFIED"),
+        "dev_rom_implemented_apis": sum(
+            1 for slot in dev_ledger["slots"] if slot.get("implementation") is not None),
+        "owner_approved_dev_callable": sum(
+            1 for slot in dev_ledger["slots"] if slot.get("state") == "DEV_CALLABLE"),
+    }
+
+
+def validate(document, contracts, dev_ledger):
     """Raise Invalid for any ledger that must not be accepted; return the ledger."""
     _require(isinstance(document, dict), "review must be an object")
     _require(set(document) == TOP_KEYS, "review keys")
@@ -144,6 +204,23 @@ def validate(document, contracts):
     _require(isinstance(document["method"]["evidence_classes"], dict)
              and set(document["method"]["evidence_classes"]) == ITEM_STATUSES,
              "method evidence_classes")
+    _require(isinstance(document["method"]["verification_states"], dict)
+             and set(document["method"]["verification_states"]) == ABI_STATES,
+             "method verification_states")
+    _require(document["method"]["independent_approval_procedure"] == APPROVAL_REQUIREMENT,
+             "method independent_approval_procedure")
+
+    # --- the scope of the phase ------------------------------------------------
+    scope = document["scope"]
+    _require(isinstance(scope, dict) and set(scope) == SCOPE_KEYS, "scope keys")
+    _require(isinstance(scope["priority_api_ids"], list), "scope priority_api_ids")
+    _require(tuple(scope["priority_api_ids"]) == PRIORITY_API_IDS,
+             "scope priority_api_ids differs from the Phase ABI-1 scope")
+
+    # --- the aggregates --------------------------------------------------------
+    _require(isinstance(document["summary"], dict) and set(document["summary"]) == SUMMARY_KEYS,
+             "summary keys")
+
     table = document["jump_table"]
     _require(isinstance(table, dict) and set(table) == JUMP_TABLE_KEYS, "jump_table keys")
     _require(table["first_entry_cpu"] == "0xE000", "jump_table first entry")
@@ -152,16 +229,19 @@ def validate(document, contracts):
     _require(table["all_entries_are_jmp_abs"] is True, "jump_table entries must be JMP abs")
     _require(table["all_targets_distinct"] is True, "jump_table targets must be distinct")
     _require(table["status"] == "OBSERVED_STATIC", "jump_table status")
+
     apis = document["apis"]
     _require(isinstance(apis, list) and apis, "apis must be a non empty list")
-    seen = set()
+    seen = []
     for api in apis:
         _require(isinstance(api, dict) and set(api) == API_KEYS, "api keys")
         api_id = api["api_id"]
         _require(isinstance(api_id, str) and re.fullmatch(r"slot-[0-9a-f]{2}", api_id),
                  f"api_id {api_id!r} is malformed")
         _require(api_id not in seen, f"duplicate api_id {api_id}")
-        seen.add(api_id)
+        seen.append(api_id)
+        _require(api_id in PRIORITY_API_IDS,
+                 f"{api_id} is outside the Phase ABI-1 scope")
         slot = api["slot"]
         _require(type(slot) is int and 0 <= slot < len(contracts["apis"]), f"{api_id}: slot range")
         _require(api_id == f"slot-{slot:02x}", f"{api_id}: api_id does not match the slot")
@@ -170,6 +250,8 @@ def validate(document, contracts):
         _require(api["candidate_entry"] == claim["candidate_entry"] == f"0x{0xE000 + 3 * slot:04X}",
                  f"{api_id}: candidate entry differs from the claim ledger")
         _require(api["entry_evidence"] in ENTRY_EVIDENCE, f"{api_id}: entry evidence vocabulary")
+
+        # --- the static review axis --------------------------------------------
         static = api["static"]
         _require(isinstance(static, dict) and set(static) == STATIC_KEYS, f"{api_id}: static keys")
         _require(static["status"] == "OBSERVED_STATIC", f"{api_id}: static status")
@@ -183,8 +265,7 @@ def validate(document, contracts):
         _require(isinstance(static["store_target_classes"], dict), f"{api_id}: store classes")
         _require(static["budget_exhausted"] is False, f"{api_id}: budget must not be exhausted")
         _require(type(static["non_returning_states"]) is int
-                 and static["non_returning_states"] >= 0,
-                 f"{api_id}: non returning states")
+                 and static["non_returning_states"] >= 0, f"{api_id}: non returning states")
         _require(isinstance(static["unresolved"], list), f"{api_id}: unresolved")
         items = api["static_items"]
         _require(isinstance(items, dict) and set(items) == ITEM_KEYS, f"{api_id}: static item keys")
@@ -194,35 +275,24 @@ def validate(document, contracts):
             _require(item["status"] in ITEM_STATUSES, f"{api_id}: static item {key} status")
             _require(isinstance(item["value"], str) and item["value"].strip(),
                      f"{api_id}: static item {key} value")
+
+        # --- the static safety axis, and the permission axis --------------------
         safety = api["safety"]
         _require(isinstance(safety, dict) and set(safety) == SAFETY_KEYS, f"{api_id}: safety keys")
-        _require(safety["verdict"] in SAFETY_VERDICTS, f"{api_id}: safety verdict vocabulary")
+        _require(safety["static_verdict"] in STATIC_VERDICTS, f"{api_id}: static verdict vocabulary")
+        _require(safety["scope"] == STATIC_SCOPE,
+                 f"{api_id}: a static verdict may only carry the static scope")
         _require(isinstance(safety["basis"], list) and safety["basis"], f"{api_id}: safety basis")
         _require(isinstance(safety["residual_risks"], list) and safety["residual_risks"],
                  f"{api_id}: safety residual risks")
-        execution = api["execution"]
-        _require(isinstance(execution, dict) and set(execution) == EXECUTION_KEYS,
-                 f"{api_id}: execution keys")
-        _require(execution["verdict"] in EXECUTION_VERDICTS, f"{api_id}: execution verdict vocabulary")
-        _require(execution["observation_status"] in OBSERVATION_STATUSES,
-                 f"{api_id}: observation status vocabulary")
-        _require(isinstance(execution["note"], str) and execution["note"].strip(),
-                 f"{api_id}: execution note")
-        prior = execution["prior_evidence"]
-        _require(isinstance(prior, str) and prior.strip(), f"{api_id}: prior evidence")
-        if execution["observation_status"] == "NOT_RUN":
-            _require(prior.strip().upper() == "NONE",
-                     f"{api_id}: a slot without an observation must not cite prior evidence")
-        else:
-            _require(prior.strip().upper() != "NONE",
-                     f"{api_id}: a prior observation has to name its source")
-            source = (ROOT / prior.strip()).resolve()
-            _require(source.is_file() and source.is_relative_to(ROOT.resolve()),
-                     f"{api_id}: the prior observation source is not a repository file")
-        # The safety verdict has to agree with the static profile. A profile
-        # that is not a clean upper bound cannot carry a safe verdict, and a
-        # profile with a side effect the probe cannot contain cannot either.
-        if safety["verdict"] != "EXECUTION_BLOCKED":
+        _require(safety["execution_permission"] in EXECUTION_PERMISSIONS,
+                 f"{api_id}: the execution permission of a static review is always BLOCKED")
+        _require(isinstance(safety["execution_permission_basis"], str)
+                 and safety["execution_permission_basis"].strip(),
+                 f"{api_id}: execution permission basis")
+        _require(safety["approval_requirement"] == APPROVAL_REQUIREMENT,
+                 f"{api_id}: approval requirement")
+        if safety["static_verdict"] != "EXECUTION_BLOCKED":
             _require(not static["unresolved"],
                      f"{api_id}: an unresolved static profile cannot be EXECUTION_SAFE")
             _require(static["non_returning_states"] == 0,
@@ -230,39 +300,75 @@ def validate(document, contracts):
         for hazard in ("MPR_WRITE", "VDC_DIRECT_WRITE", "BLOCK_TRANSFER", "IRQ_ENABLE",
                        "DATA_DEPENDENT_STORE", "OTHER_STORE"):
             if static["hazard_counts"][hazard]:
-                _require(safety["verdict"] == "EXECUTION_BLOCKED",
+                _require(safety["static_verdict"] == "EXECUTION_BLOCKED",
                          f"{api_id}: {hazard} forces EXECUTION_BLOCKED")
+
+        # --- the verification axis ---------------------------------------------
+        observation = api["observation"]
+        _require(isinstance(observation, dict) and set(observation) == OBSERVATION_KEYS,
+                 f"{api_id}: observation keys")
+        _require(observation["reproducible_real_core"] in REPRODUCIBLE_OBSERVATION,
+                 f"{api_id}: reproducible observation vocabulary")
+        _require(observation["prior_local_only"] in PRIOR_LOCAL_ONLY,
+                 f"{api_id}: prior local only vocabulary")
+        _require(isinstance(observation["note"], str) and observation["note"].strip(),
+                 f"{api_id}: observation note")
+        prior = observation["prior_evidence"]
+        _require(isinstance(prior, str) and prior.strip(), f"{api_id}: prior evidence")
+        if observation["prior_local_only"] == "PRESENT":
+            _require(prior.strip().upper() != "NONE",
+                     f"{api_id}: a prior observation has to name its source")
+            source = (ROOT / prior.strip()).resolve()
+            _require(source.is_file() and source.is_relative_to(ROOT.resolve()),
+                     f"{api_id}: the prior observation source is not a repository file")
+        else:
+            _require(prior.strip().upper() == "NONE",
+                     f"{api_id}: a slot without a prior observation must not cite prior evidence")
         _require(api["abi_state"] in ABI_STATES, f"{api_id}: abi state vocabulary")
         _require(api["abi_state"] != "VERIFIED",
                  f"{api_id}: VERIFIED is not reachable from a static review")
-        if api["abi_state"] == "OBSERVED":
-            _require(execution["observation_status"] != "NOT_RUN",
-                     f"{api_id}: OBSERVED needs a recorded observation")
-        if execution["observation_status"] == "NOT_RUN":
-            _require(api["abi_state"] in ("NOT_RUN", "BLOCKED", "PARTIAL"),
-                     f"{api_id}: a slot without an observation may not claim OBSERVED")
-        if api["abi_state"] == "PARTIAL":
-            _require(execution["observation_status"] != "OBSERVED_LOCAL_ONLY",
-                     f"{api_id}: PARTIAL may not carry a full observation")
+        reproducible = observation["reproducible_real_core"] == "OBSERVED"
+        if api["abi_state"] in ("OBSERVED", "PARTIAL"):
+            _require(reproducible,
+                     f"{api_id}: {api['abi_state']} needs a reproducible real core observation")
+        else:
+            _require(not reproducible,
+                     f"{api_id}: a reproducible observation cannot stay in {api['abi_state']}")
+        if observation["prior_local_only"] == "PRESENT" and not reproducible:
+            _require(api["abi_state"] in ("NOT_RUN", "BLOCKED"),
+                     f"{api_id}: a prior local only observation is not a verification")
+
+    _require(tuple(seen) == PRIORITY_API_IDS,
+             "the reviewed APIs are not exactly the Phase ABI-1 scope")
+    # The recorded aggregates are cross-checked against the ledger they
+    # summarise, so a hand written or stale number cannot survive.
+    metrics = compute_metrics(document, contracts, dev_ledger)
+    for key, value in metrics.items():
+        _require(document["summary"][key] == value,
+                 f"summary.{key} is {document['summary'][key]}, the ledger says {value}")
     _public_text(document)
     return document
 
 
-def load(review_path=REVIEW_PATH, contracts_path=CONTRACTS_PATH):
+def load(review_path=REVIEW_PATH, contracts_path=CONTRACTS_PATH,
+         dev_ledger_path=DEV_LEDGER_PATH):
     review = json.loads(Path(review_path).read_text(encoding="utf-8"))
     contracts = json.loads(Path(contracts_path).read_text(encoding="utf-8"))
-    return validate(review, contracts)
+    dev_ledger = json.loads(Path(dev_ledger_path).read_text(encoding="utf-8"))
+    validate(review, contracts, dev_ledger)
+    return review, contracts, dev_ledger
 
 
-def summary(document):
-    counts = {}
-    for api in document["apis"]:
-        counts[api["abi_state"]] = counts.get(api["abi_state"], 0) + 1
+def summary(document, contracts, dev_ledger):
+    metrics = compute_metrics(document, contracts, dev_ledger)
     return {
         "schema": document["schema"],
+        "phase": document["phase"],
         "reviewed_apis": len(document["apis"]),
-        "abi_states": dict(sorted(counts.items())),
+        "metrics": metrics,
+        "static_review_scope": "STATIC_PROFILE_ONLY",
         "execution": document["method"]["execution"],
+        "execution_permission": "BLOCKED",
         "release_eligible": document["release_eligible"],
         "trust": document["trust"],
     }
@@ -275,11 +381,11 @@ def main(argv=None):
     if not arguments.check:
         parser.error("--check is required")
     try:
-        document = load()
+        document, contracts, dev_ledger = load()
     except (Invalid, OSError, ValueError, KeyError, TypeError) as error:
         print(f"BLOCKED: {error}")
         return 2
-    print(json.dumps(summary(document), indent=2, sort_keys=True))
+    print(json.dumps(summary(document, contracts, dev_ledger), indent=2, sort_keys=True))
     return 0
 
 

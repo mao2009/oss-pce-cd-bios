@@ -26,6 +26,12 @@ emits ROM bytes, disassembly text, internal routine addresses or extracted code.
 The projection is the only artefact that may be committed; the raw decode stays
 in the local process.
 
+The projection is a *static profile*. It says what the reachable code of an
+entry does, not whether the entry may be called: it carries no permission
+field, and the repository's reference JSR execution gate does not read it. A
+permission to execute a reference BIOS needs a separate, independent safety
+approval procedure, which does not exist yet.
+
 What it is not
 --------------
 It is **not** a compatibility claim, not an execution and not an ABI
@@ -670,6 +676,11 @@ def audit_image(path, slots, *, synthetic=False):
         apis.append(record)
     return {
         "schema": SCHEMA,
+        # The projection is a static profile of the private image. It is not a
+        # permission to call the reference BIOS, and it carries no field that
+        # the reference JSR execution gate could read as one.
+        "scope": "STATIC_PROFILE_ONLY",
+        "execution_permission": "NOT_PRODUCED_BY_THIS_TOOL",
         "provenance": {
             "image_bytes": len(body) + header,
             "header_bytes": header,

@@ -151,6 +151,16 @@ class SyntheticImageTests(unittest.TestCase):
         self.assertEqual(profile["instructions_decoded"], 5)
         self.assertEqual(profile["unresolved"], [])
 
+    def test_the_projection_declares_that_it_is_not_a_permission(self):
+        result = audit.audit_image(self.image, [0x1E], synthetic=True)
+        self.assertEqual(result["scope"], "STATIC_PROFILE_ONLY")
+        self.assertEqual(result["execution_permission"], "NOT_PRODUCED_BY_THIS_TOOL")
+
+    def test_the_projection_never_carries_a_permission(self):
+        result = audit.audit_image(self.image, [0x1E], synthetic=True)
+        for path, value in audit_strings(result):
+            self.assertNotIn("ALLOWED", value.upper(), f"{path} carries a permission")
+
     def test_the_projection_never_carries_bytes_or_addresses(self):
         result = audit.audit_image(self.image, [0x1E], synthetic=True)
         text = repr(result)

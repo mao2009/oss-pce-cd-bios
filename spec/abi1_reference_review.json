@@ -1,29 +1,33 @@
 {
   "apis": [
     {
-      "abi_state": "OBSERVED",
+      "abi_state": "NOT_RUN",
       "api_id": "slot-1e",
       "candidate_entry": "0xE05A",
       "entry_evidence": "JUMP_TABLE_3BYTE_JMP",
-      "execution": {
-        "note": "A local real-core measurement of this slot is recorded in docs/reference-bios-test-plan.md (X=3, Y=0, A preserved, P=$06, SP balanced, 8 instructions, RAM difference limited to the JSR push). It is not reproducible through the committed runner, because tools/reference_jsr_gate.py refuses every slot by design, and it is local only evidence.",
-        "observation_status": "OBSERVED_LOCAL_ONLY_PRIOR",
-        "prior_evidence": "docs/reference-bios-test-plan.md",
-        "verdict": "BLOCKED_REFERENCE_JSR_GATE"
-      },
       "name": "EX_GETVER",
+      "observation": {
+        "note": "A local real-core measurement of this slot is recorded in docs/reference-bios-test-plan.md (X=3, Y=0, A preserved, P=$06, SP balanced, 8 instructions, RAM difference limited to the JSR push). It is not reproducible through the committed runner, because tools/reference_jsr_gate.py refuses every slot by design, and it is local only evidence.",
+        "prior_evidence": "docs/reference-bios-test-plan.md",
+        "prior_local_only": "PRESENT",
+        "reproducible_real_core": "NOT_RUN"
+      },
       "safety": {
+        "approval_requirement": "A_SEPARATE_INDEPENDENT_SAFETY_APPROVAL_PROCEDURE_IS_REQUIRED_AND_IS_NOT_IMPLEMENTED",
         "basis": [
           "static callee profile contains no store, no MPR write, no VDC direct write, no block transfer and no interrupt enable",
           "the callee returns to the caller with RTS, so the instruction budget is a backstop and not the only termination",
           "the two reads stay inside the API bank window, so the memory mapped I/O page is unreachable"
         ],
+        "execution_permission": "BLOCKED",
+        "execution_permission_basis": "The static verdict above is not a permission. The repository's reference JSR execution gate is closed for every slot, so the committed runner cannot execute a reference JSR, and the gate does not read this ledger. A separate, independent safety approval procedure would be required first, and it is not implemented.",
         "residual_risks": [
           "the safety verdict is a static upper bound over the reachable code, not a runtime observation",
           "the returned version bytes depend on the private image, so the observed X and Y are not reproducible without it",
           "the verdict has not been exercised at runtime because the execution gate is closed"
         ],
-        "verdict": "EXECUTION_SAFE"
+        "scope": "STATIC_PROFILE_ONLY",
+        "static_verdict": "EXECUTION_SAFE"
       },
       "slot": 30,
       "static": {
@@ -104,29 +108,33 @@
       }
     },
     {
-      "abi_state": "PARTIAL",
+      "abi_state": "NOT_RUN",
       "api_id": "slot-3c",
       "candidate_entry": "0xE0B4",
       "entry_evidence": "JUMP_TABLE_3BYTE_JMP",
-      "execution": {
-        "note": "No reference measurement exists for this slot. The static analysis establishes the entry mapping and the side effect profile only.",
-        "observation_status": "NOT_RUN",
-        "prior_evidence": "NONE",
-        "verdict": "BLOCKED_REFERENCE_JSR_GATE"
-      },
       "name": "EX_BINBCD",
+      "observation": {
+        "note": "No reference measurement exists for this slot. The static analysis establishes the entry mapping and the side effect profile only.",
+        "prior_evidence": "NONE",
+        "prior_local_only": "ABSENT",
+        "reproducible_real_core": "NOT_RUN"
+      },
       "safety": {
+        "approval_requirement": "A_SEPARATE_INDEPENDENT_SAFETY_APPROVAL_PROCEDURE_IS_REQUIRED_AND_IS_NOT_IMPLEMENTED",
         "basis": [
           "the only store targets a zero page byte, which the HuC6280 places at $2000 and which is inside the probe's page 1 allowlist",
           "no MPR write, no VDC direct write, no block transfer and no interrupt enable",
           "the callee returns to the caller with RTS"
         ],
+        "execution_permission": "BLOCKED",
+        "execution_permission_basis": "The static verdict above is not a permission. The repository's reference JSR execution gate is closed for every slot, so the committed runner cannot execute a reference JSR, and the gate does not read this ledger. A separate, independent safety approval procedure would be required first, and it is not implemented.",
         "residual_risks": [
           "the zero page write is a real side effect: it clobbers the System Card zero page area and will appear in the RAM difference",
           "the static profile is an upper bound over the reachable code, not a runtime observation",
           "execution is blocked by the reference JSR execution gate"
         ],
-        "verdict": "EXECUTION_SAFE_WITH_OBSERVABLE_ZERO_PAGE_WRITE"
+        "scope": "STATIC_PROFILE_ONLY",
+        "static_verdict": "EXECUTION_SAFE_WITH_OBSERVABLE_ZERO_PAGE_WRITE"
       },
       "slot": 60,
       "static": {
@@ -209,29 +217,33 @@
       }
     },
     {
-      "abi_state": "PARTIAL",
+      "abi_state": "NOT_RUN",
       "api_id": "slot-3d",
       "candidate_entry": "0xE0B7",
       "entry_evidence": "JUMP_TABLE_3BYTE_JMP",
-      "execution": {
-        "note": "No reference measurement exists for this slot. The static analysis establishes the entry mapping and the side effect profile only.",
-        "observation_status": "NOT_RUN",
-        "prior_evidence": "NONE",
-        "verdict": "BLOCKED_REFERENCE_JSR_GATE"
-      },
       "name": "EX_BCDBIN",
+      "observation": {
+        "note": "No reference measurement exists for this slot. The static analysis establishes the entry mapping and the side effect profile only.",
+        "prior_evidence": "NONE",
+        "prior_local_only": "ABSENT",
+        "reproducible_real_core": "NOT_RUN"
+      },
       "safety": {
+        "approval_requirement": "A_SEPARATE_INDEPENDENT_SAFETY_APPROVAL_PROCEDURE_IS_REQUIRED_AND_IS_NOT_IMPLEMENTED",
         "basis": [
           "both stores target zero page bytes, which the HuC6280 places at $2000 and which are inside the probe's page 1 allowlist",
           "no MPR write, no VDC direct write, no block transfer and no interrupt enable",
           "the callee returns to the caller with RTS"
         ],
+        "execution_permission": "BLOCKED",
+        "execution_permission_basis": "The static verdict above is not a permission. The repository's reference JSR execution gate is closed for every slot, so the committed runner cannot execute a reference JSR, and the gate does not read this ledger. A separate, independent safety approval procedure would be required first, and it is not implemented.",
         "residual_risks": [
           "the zero page writes are real side effects and will appear in the RAM difference",
           "the static profile is an upper bound over the reachable code, not a runtime observation",
           "execution is blocked by the reference JSR execution gate"
         ],
-        "verdict": "EXECUTION_SAFE_WITH_OBSERVABLE_ZERO_PAGE_WRITE"
+        "scope": "STATIC_PROFILE_ONLY",
+        "static_verdict": "EXECUTION_SAFE_WITH_OBSERVABLE_ZERO_PAGE_WRITE"
       },
       "slot": 61,
       "static": {
@@ -314,29 +326,33 @@
       }
     },
     {
-      "abi_state": "PARTIAL",
+      "abi_state": "NOT_RUN",
       "api_id": "slot-3f",
       "candidate_entry": "0xE0BD",
       "entry_evidence": "JUMP_TABLE_3BYTE_JMP",
-      "execution": {
-        "note": "No reference measurement exists for this slot. The static analysis establishes the entry mapping and the side effect profile only.",
-        "observation_status": "NOT_RUN",
-        "prior_evidence": "NONE",
-        "verdict": "BLOCKED_MPR_CHANGE_AND_REFERENCE_JSR_GATE"
-      },
       "name": "MA_MUL8U",
+      "observation": {
+        "note": "No reference measurement exists for this slot. The static analysis establishes the entry mapping and the side effect profile only.",
+        "prior_evidence": "NONE",
+        "prior_local_only": "ABSENT",
+        "reproducible_real_core": "NOT_RUN"
+      },
       "safety": {
+        "approval_requirement": "A_SEPARATE_INDEPENDENT_SAFETY_APPROVAL_PROCEDURE_IS_REQUIRED_AND_IS_NOT_IMPLEMENTED",
         "basis": [
           "The reachable code of this slot performs four page 1 stores.",
           "the dispatcher performs a runtime MPR switch, which the guarded probe refuses before the next instruction runs",
           "no VDC direct write, no block transfer and no interrupt enable was found in the reachable code"
         ],
+        "execution_permission": "BLOCKED",
+        "execution_permission_basis": "The static profile is blocked on its own: the callee switches a page bank register at run time, which the guarded probe refuses. The repository's reference JSR execution gate is closed for every slot as well, and it does not read this ledger.",
         "residual_risks": [
           "the reachable code of the operation itself is not fully resolved: the static walk follows the dispatcher's bank switch, but data dependent targets inside the operation are not enumerated",
           "the static profile is an upper bound over the reachable code, not a runtime observation",
           "execution is blocked by the reference JSR execution gate as well"
         ],
-        "verdict": "EXECUTION_BLOCKED"
+        "scope": "STATIC_PROFILE_ONLY",
+        "static_verdict": "EXECUTION_BLOCKED"
       },
       "slot": 63,
       "static": {
@@ -420,29 +436,33 @@
       }
     },
     {
-      "abi_state": "PARTIAL",
+      "abi_state": "NOT_RUN",
       "api_id": "slot-40",
       "candidate_entry": "0xE0C0",
       "entry_evidence": "JUMP_TABLE_3BYTE_JMP",
-      "execution": {
-        "note": "No reference measurement exists for this slot. The static analysis establishes the entry mapping and the side effect profile only.",
-        "observation_status": "NOT_RUN",
-        "prior_evidence": "NONE",
-        "verdict": "BLOCKED_MPR_CHANGE_AND_REFERENCE_JSR_GATE"
-      },
       "name": "MA_MUL8S",
+      "observation": {
+        "note": "No reference measurement exists for this slot. The static analysis establishes the entry mapping and the side effect profile only.",
+        "prior_evidence": "NONE",
+        "prior_local_only": "ABSENT",
+        "reproducible_real_core": "NOT_RUN"
+      },
       "safety": {
+        "approval_requirement": "A_SEPARATE_INDEPENDENT_SAFETY_APPROVAL_PROCEDURE_IS_REQUIRED_AND_IS_NOT_IMPLEMENTED",
         "basis": [
           "The reachable code of this slot performs seven page 1 stores and four register swaps.",
           "the dispatcher performs a runtime MPR switch, which the guarded probe refuses before the next instruction runs",
           "no VDC direct write, no block transfer and no interrupt enable was found in the reachable code"
         ],
+        "execution_permission": "BLOCKED",
+        "execution_permission_basis": "The static profile is blocked on its own: the callee switches a page bank register at run time, which the guarded probe refuses. The repository's reference JSR execution gate is closed for every slot as well, and it does not read this ledger.",
         "residual_risks": [
           "the reachable code of the operation itself is not fully resolved: the static walk follows the dispatcher's bank switch, but data dependent targets inside the operation are not enumerated",
           "the static profile is an upper bound over the reachable code, not a runtime observation",
           "execution is blocked by the reference JSR execution gate as well"
         ],
-        "verdict": "EXECUTION_BLOCKED"
+        "scope": "STATIC_PROFILE_ONLY",
+        "static_verdict": "EXECUTION_BLOCKED"
       },
       "slot": 64,
       "static": {
@@ -526,29 +546,33 @@
       }
     },
     {
-      "abi_state": "PARTIAL",
+      "abi_state": "NOT_RUN",
       "api_id": "slot-41",
       "candidate_entry": "0xE0C3",
       "entry_evidence": "JUMP_TABLE_3BYTE_JMP",
-      "execution": {
-        "note": "No reference measurement exists for this slot. The static analysis establishes the entry mapping and the side effect profile only.",
-        "observation_status": "NOT_RUN",
-        "prior_evidence": "NONE",
-        "verdict": "BLOCKED_MPR_CHANGE_AND_REFERENCE_JSR_GATE"
-      },
       "name": "MA_MUL16U",
+      "observation": {
+        "note": "No reference measurement exists for this slot. The static analysis establishes the entry mapping and the side effect profile only.",
+        "prior_evidence": "NONE",
+        "prior_local_only": "ABSENT",
+        "reproducible_real_core": "NOT_RUN"
+      },
       "safety": {
+        "approval_requirement": "A_SEPARATE_INDEPENDENT_SAFETY_APPROVAL_PROCEDURE_IS_REQUIRED_AND_IS_NOT_IMPLEMENTED",
         "basis": [
           "The reachable code of this slot performs sixteen page 1 stores.",
           "the dispatcher performs a runtime MPR switch, which the guarded probe refuses before the next instruction runs",
           "no VDC direct write, no block transfer and no interrupt enable was found in the reachable code"
         ],
+        "execution_permission": "BLOCKED",
+        "execution_permission_basis": "The static profile is blocked on its own: the callee switches a page bank register at run time, which the guarded probe refuses. The repository's reference JSR execution gate is closed for every slot as well, and it does not read this ledger.",
         "residual_risks": [
           "the reachable code of the operation itself is not fully resolved: the static walk follows the dispatcher's bank switch, but data dependent targets inside the operation are not enumerated",
           "the static profile is an upper bound over the reachable code, not a runtime observation",
           "execution is blocked by the reference JSR execution gate as well"
         ],
-        "verdict": "EXECUTION_BLOCKED"
+        "scope": "STATIC_PROFILE_ONLY",
+        "static_verdict": "EXECUTION_BLOCKED"
       },
       "slot": 65,
       "static": {
@@ -632,29 +656,33 @@
       }
     },
     {
-      "abi_state": "PARTIAL",
+      "abi_state": "NOT_RUN",
       "api_id": "slot-42",
       "candidate_entry": "0xE0C6",
       "entry_evidence": "JUMP_TABLE_3BYTE_JMP",
-      "execution": {
-        "note": "No reference measurement exists for this slot. The static analysis establishes the entry mapping and the side effect profile only.",
-        "observation_status": "NOT_RUN",
-        "prior_evidence": "NONE",
-        "verdict": "BLOCKED_MPR_CHANGE_AND_REFERENCE_JSR_GATE"
-      },
       "name": "MA_DIV16S",
+      "observation": {
+        "note": "No reference measurement exists for this slot. The static analysis establishes the entry mapping and the side effect profile only.",
+        "prior_evidence": "NONE",
+        "prior_local_only": "ABSENT",
+        "reproducible_real_core": "NOT_RUN"
+      },
       "safety": {
+        "approval_requirement": "A_SEPARATE_INDEPENDENT_SAFETY_APPROVAL_PROCEDURE_IS_REQUIRED_AND_IS_NOT_IMPLEMENTED",
         "basis": [
           "The reachable code of this slot performs twenty four page 1 stores.",
           "the dispatcher performs a runtime MPR switch, which the guarded probe refuses before the next instruction runs",
           "no VDC direct write, no block transfer and no interrupt enable was found in the reachable code"
         ],
+        "execution_permission": "BLOCKED",
+        "execution_permission_basis": "The static profile is blocked on its own: the callee switches a page bank register at run time, which the guarded probe refuses. The repository's reference JSR execution gate is closed for every slot as well, and it does not read this ledger.",
         "residual_risks": [
           "the reachable code of the operation itself is not fully resolved: the static walk follows the dispatcher's bank switch, but data dependent targets inside the operation are not enumerated",
           "the static profile is an upper bound over the reachable code, not a runtime observation",
           "execution is blocked by the reference JSR execution gate as well"
         ],
-        "verdict": "EXECUTION_BLOCKED"
+        "scope": "STATIC_PROFILE_ONLY",
+        "static_verdict": "EXECUTION_BLOCKED"
       },
       "slot": 66,
       "static": {
@@ -752,7 +780,7 @@
     "decoder": "pinned cc65 da65, HuC6280 CPU description",
     "evidence_classes": {
       "HYPOTHESIS": "plausible but not established",
-      "OBSERVED_STATIC": "read out of the private image by the local static audit",
+      "OBSERVED_STATIC": "read out of the private image by the local static audit; an observation of the image, not of a call",
       "SOURCE_FACT": "taken from a public caller or emulator source",
       "UNKNOWN": "not established; deliberately left unset"
     },
@@ -761,11 +789,39 @@
       "tools/reference_jsr_gate.py refuses every slot by design, so the committed runner cannot execute a reference JSR",
       "Issue #173 keeps the parent in-core safety boundary open"
     ],
-    "static_audit_tool": "tools/reference_rom_static_audit.py"
+    "independent_approval_procedure": "A_SEPARATE_INDEPENDENT_SAFETY_APPROVAL_PROCEDURE_IS_REQUIRED_AND_IS_NOT_IMPLEMENTED",
+    "static_audit_tool": "tools/reference_rom_static_audit.py",
+    "verification_states": {
+      "BLOCKED": "the callee was not executed because an execution gate or a safety condition blocks it",
+      "NOT_RUN": "no reference callee was executed for this slot",
+      "OBSERVED": "a reproducible real core observation exists for the slot",
+      "PARTIAL": "a reproducible real core observation exists, but it covers only part of the contract",
+      "VERIFIED": "an owner approved promotion of a reproducible observation; not representable today"
+    }
   },
   "phase": "ABI-1",
   "release_eligible": false,
   "schema": "oss-pce-cd-bios/abi1-reference-review/v1",
+  "scope": {
+    "note": "The seven priority slots of Phase ABI-1. A static review of these slots is not a verification of them: the static axis and the verification axis are counted apart.",
+    "priority_api_ids": [
+      "slot-1e",
+      "slot-3c",
+      "slot-3d",
+      "slot-3f",
+      "slot-40",
+      "slot-41",
+      "slot-42"
+    ]
+  },
+  "summary": {
+    "dev_rom_implemented_apis": 7,
+    "owner_approved_dev_callable": 0,
+    "prior_local_only_observations": 1,
+    "reference_abi_verified": 0,
+    "reproducible_real_core_observations": 0,
+    "static_review_apis": 7
+  },
   "target": {
     "bank_bytes": 8192,
     "bank_count": 32,

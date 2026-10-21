@@ -18,14 +18,40 @@ committed, never uploaded and never printed.
 
 ---
 
-## 1. Evidence classes
+## 1. Evidence classes: two axes, counted apart
+
+The review keeps a **static review** axis and a **verification** axis apart.
+Conflating them is what would over-claim, so the ledger stores them in
+different fields and the validator refuses a ledger that mixes them.
+
+### 1.1 The static review axis (evidence classes of the eleven items)
 
 | class | meaning |
 | --- | --- |
-| `OBSERVED_STATIC` | read out of the private image by the local static audit; reproducible by the owner who holds the image |
+| `OBSERVED_STATIC` | read out of the private image by the local static audit; reproducible by the owner who holds the image. It is an observation **of the image**, not of a call |
 | `SOURCE_FACT` | taken from a public caller or emulator source, with the source named |
 | `HYPOTHESIS` | plausible, not established; must not be used as an expectation |
 | `UNKNOWN` | not established; deliberately left unset |
+
+### 1.2 The verification axis (the ABI state of a slot)
+
+| state | meaning | reachable in this phase |
+| --- | --- | --- |
+| `NOT_RUN` | no reference callee was executed for this slot | yes, for all seven |
+| `BLOCKED` | the callee was not executed because an execution gate or a safety condition blocks it | yes |
+| `OBSERVED` | a **reproducible** real core observation exists for the slot | no |
+| `PARTIAL` | a **reproducible** real core observation exists, but it covers only part of the contract | no |
+| `VERIFIED` | an owner approved promotion of a reproducible observation | no, and not representable today |
+
+Two rules follow, and the validator enforces both:
+
+* a static review never reaches `OBSERVED`, `PARTIAL` or `VERIFIED`. The seven
+  reviewed slots are a **static review of seven APIs**, not a partial
+  verification of seven APIs;
+* a **prior local only** observation (a measurement that exists but cannot be
+  reproduced through the committed tooling) is recorded on its own field and
+  never counts as a reproducible observation. Slot `$1E` is the only slot with
+  such an observation.
 
 An item with no evidence stays `UNKNOWN`. A static audit is an **upper bound** over
 the hazard opcodes of the reachable code: a clean profile is necessary for a safe
@@ -234,6 +260,35 @@ Two structural facts matter for the rest of the phase:
 The verdict is about the *reference* callee, under the existing guarded probe
 (`tests/integration/geargrafx_reference_jsr.cpp`) and the pinned core.
 
+### 5.0 A static verdict is not an execution permission
+
+`EXECUTION_SAFE` means **the static analysis found no dangerous path**. It does
+not mean that the call may be made. The two are separate fields, and the
+validator keeps them separate:
+
+| field | values | meaning |
+| --- | --- | --- |
+| `safety.static_verdict` | `EXECUTION_SAFE`, `EXECUTION_SAFE_WITH_OBSERVABLE_ZERO_PAGE_WRITE`, `EXECUTION_BLOCKED` | what the static profile of the callee shows |
+| `safety.scope` | `STATIC_PROFILE_ONLY` | the verdict is about a static profile and nothing else |
+| `safety.execution_permission` | `BLOCKED` (the only representable value) | whether a reference JSR may be executed |
+| `safety.approval_requirement` | a fixed marker | a separate, independent safety approval procedure is required first, and it is not implemented |
+
+So every one of the seven records is a static `EXECUTION_SAFE` (or
+`EXECUTION_BLOCKED`) **and** an execution permission of `BLOCKED`. The static
+auditor's own output carries the same two markers (`scope` and
+`execution_permission: NOT_PRODUCED_BY_THIS_TOOL`), so its projection cannot be
+fed into the execution gate as a permission either.
+
+The repository's reference JSR execution gate
+(`tools/reference_jsr_gate.py`) is a **separate** mechanism. It reads
+`spec/reference_jsr_gate.json` and `spec/api_contracts.json`, it does not read
+this ledger, and it refuses all 81 slots. The host test suite checks that
+refusal, and that the gate source does not mention the Phase ABI-1 fields.
+
+A permission to execute a reference BIOS therefore needs a **separate,
+independent safety approval procedure**, which does not exist yet. This phase
+does not implement it, and it does not weaken the existing gate.
+
 | slot | safety verdict | why |
 | --- | --- | --- |
 | `$1E` | `EXECUTION_SAFE` | the callee has no store, no MPR write, no VDC direct write, no block transfer and no interrupt enable, and it returns with `RTS`; its two reads stay inside the API bank window, so the memory mapped I/O page is unreachable |
@@ -308,8 +363,10 @@ still lacks:
 * the negative and mutation coverage that a `VERIFIED` claim would need is
   missing.
 
-Consequently `$1E` is recorded as `OBSERVED` with
-`observation_status: OBSERVED_LOCAL_ONLY_PRIOR`, and **not** as `VERIFIED`.
+Consequently `$1E` records `observation.prior_local_only: PRESENT` with the
+source document, and its ABI state stays `NOT_RUN` on the verification axis:
+a past local only observation is not a reproducible measurement and does not
+promote the slot. The slot is **not** `OBSERVED` and **not** `VERIFIED`.
 
 ### 6.2 What a `VERIFIED` claim would require
 
@@ -391,15 +448,23 @@ observation must never be used as the expected value of a reference observation
 
 ## 9. Metrics
 
-| metric | value |
-| --- | --- |
-| main DEV ROM implemented APIs | 7/81 |
-| development branch DEV ROM implemented APIs | 7/81 (unchanged by this phase) |
-| owner approved `DEV_CALLABLE` | 0/81 |
-| reference ABI `VERIFIED` | **0/81** |
-| reference ABI `PARTIAL`/`OBSERVED` | **7/81** (1 `OBSERVED`, 6 `PARTIAL`, all LOCAL_ONLY) |
-| reference ABI `BLOCKED` for execution | **7/81** |
-| reference ABI `NOT_RUN` for the remaining slots | 74/81 |
+Every number below is **derived from the ledger** by
+`tools/abi1_reference_review.py::compute_metrics()`, and the ledger stores the
+same numbers in its `summary` block, which the validator recomputes and
+compares. A hand written or stale aggregate fails the validation.
+
+| metric | value | where it comes from |
+| --- | --- | --- |
+| reference ROM static review done | **7** | the seven per API records with a static profile |
+| reference ROM real core observation (past, local only) | **1** | slot `$1E`, `observation.prior_local_only` |
+| reproducible reference ROM real core observation in this phase | **0** | `observation.reproducible_real_core` |
+| reference ABI `VERIFIED` | **0** | the ABI state axis |
+| reference ABI `PARTIAL`/`OBSERVED` (reproducible) | **0** | the ABI state axis |
+| reference ABI `NOT_RUN` | **7** of the seven reviewed, 74 of the remaining | the ABI state axis |
+| DEV ROM implemented APIs | **7** | `spec/dev_implementations.json` |
+| owner approved `DEV_CALLABLE` | **0** | `spec/dev_implementations.json` |
+| reference JSR execution permission | **BLOCKED** for all seven | `safety.execution_permission` |
+| `release_eligible` | **false** | the ledger and the source ledgers |
 
 ---
 
@@ -407,6 +472,11 @@ observation must never be used as the expected value of a reference observation
 
 ### 10.1 To lift the execution block for `$1E`
 
+0. a **separate, independent safety approval procedure** is implemented and
+   carried out. It does not exist yet, this phase does not implement it, and
+   the static review in this ledger is not such a procedure: the static
+   `EXECUTION_SAFE` verdict of §5 is a statement about the callee's side
+   effect profile and nothing else.
 1. the owner records a reviewed gate entry for slot `$1E` in
    `spec/reference_jsr_gate.json`, and the gate module is changed so that a
    reviewed state can actually be expressed (today `resolve()` cannot return
@@ -489,7 +559,40 @@ did not cover a data dependent or a non page 1 store. The mnemonic list is now
 compared against the pinned cc65 opcode table by a host test, so the claim
 "every operand carrying opcode" is machine checked rather than asserted.
 
-## 12. Sources
+## 12. Verification of the two review fixes
+
+The two findings of the conditional review are separated mechanically, and the
+separation is checked by the host suite. The RED -> GREEN record below runs
+the **pre-fix** validator and the **post-fix** validator against the same
+defect; the pre-fix side is the reviewed commit `2f1c703`.
+
+| defect | old (`2f1c703`) | new |
+| --- | --- | --- |
+| seven static reviews carried as `PARTIAL`/`OBSERVED` | ACCEPTED | REJECTED |
+| the prior local only observation carried as a dynamic `OBSERVED` | ACCEPTED | REJECTED |
+| the execution permission may say `NOT_RUN` instead of `BLOCKED` | ACCEPTED | REJECTED |
+| an API outside the phase scope | ACCEPTED | REJECTED |
+| the aggregate is derived from the ledger | NOT DERIVED | DERIVED |
+| `release_eligible` turned on | REJECTED | REJECTED |
+| the prior evidence pointing outside the repository | REJECTED | REJECTED |
+| the static profile declares that it is not a permission | NO MARKER | MARKED |
+
+The reference JSR gate refusal is verified by the host suite as well:
+
+```
+$ python3 tools/reference_jsr_gate.py --check
+BLOCKED: reference JSR execution gate closed for 81/81 slots; jsr_count=0
+$ echo $?
+3
+```
+
+The gate reads `spec/reference_jsr_gate.json` and `spec/api_contracts.json`
+only. It does not read `spec/abi1_reference_review.json`, and a host test
+asserts that the gate source mentions neither the Phase ABI-1 ledger nor its
+`static_verdict` and `execution_permission` fields, so the new safety field
+cannot become a gate input.
+
+## 13. Sources
 
 | source | use | licence / conditions |
 | --- | --- | --- |
