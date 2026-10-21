@@ -9,8 +9,12 @@ stays UNVERIFIED. Every 16-bit pair is a valid input, so there is no invalid-inp
 checked cases are edge values, carry-heavy values and a few mixed values, at two caller SP values (the boundary
 $0A, i.e. entry SP $04, and $FF, i.e. entry SP $F9).
 Precondition: caller T (P bit 5) = 0 at entry. T=1 has no defined behaviour for the routine (src/overrides/slot_41.s
-header), and no case runs the routine with T=1. P is compared with mask $EF: C,Z,I,D,V,N must match and bit 5 (T) must
-be 0 on return; bit 4 (B) is ignored because PHP pushes it as 1 and PLP does not store it.
+header), and no case runs the routine with T=1. The premise cannot be violated through a JSR on the pinned core: the
+core latches P.T into its memory-to-memory flag and clears P.T at the start of every instruction, so a SET before the
+JSR is swallowed by the JSR, and the routine's first instruction (PHP) is not one of the T-sensitive opcodes
+(ADC/AND/EOR/ORA). The routine's ADC therefore always runs in register mode. P is compared with mask $EF: C,Z,I,D,V,N
+must match and bit 5 (T) must be 0 on return; bit 4 (B) is ignored because PHP pushes it as 1 and PLP does not store
+it. The T=0 on return is a constant of the pinned core (PHP pushes T=0), not a copy of the caller's T.
 Two JSR T-latch checks (SET before the JSR) test only the pinned core's JSR: the JSR consumes the SET, so the routine is
 entered with T=0. They assert that the product is correct, the halt is reached and the returned P has bit 5 = 0. They
 do NOT test MA_MUL16U behaviour with T=1.
