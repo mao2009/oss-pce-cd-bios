@@ -18,6 +18,11 @@ it. The T=0 on return is a constant of the pinned core (PHP pushes T=0), not a c
 Two JSR T-latch checks (SET before the JSR) test only the pinned core's JSR: the JSR consumes the SET, so the routine is
 entered with T=0. They assert that the product is correct, the halt is reached and the returned P has bit 5 = 0. They
 do NOT test MA_MUL16U behaviour with T=1.
+Mutants: five one-instruction edits of the DEV ROM body (CLD->NOP, PHP->PHA, PLP->PLA, ADC->SBC, ROR->ROL). Every
+mutant keeps the instruction length and the stack effect, so the guest still reaches its halt loop and the rejection is
+a value mismatch, not a harness error. Each rejection records which field differed (product/P/Y/SP) and the mutant must
+name the field it is expected to break: the two arithmetic mutants must break the product, the two flag mutants the
+returned P.
 Not checked: A and X (declared clobbered), MPR0 and MPR2-6 (MPR1 and MPR7 only), other RAM.
 The 65,536-multiplier, 12-multiplicand host model lives in tests/host/test_ma_mul16u_dev.py.
 Run: python3 tests/integration/geargrafx_dev_mul16u.py --rom build/debug/bios-dev/dev-only-not-compatible-syscard3.pce
@@ -76,7 +81,12 @@ def guest(reset, entry, m, q, sp, t_set=False):
 
 
 class Mismatch(ValueError):
-    """The guest ran to its halt loop but returned a value that differs from the spec."""
+    """The guest ran to its halt loop but returned a value that differs from the spec.
+
+    `fields` names the compared items that differ (product/P/Y/SP). It is a plain list of str so the
+    evidence JSON stays serializable; subclasses that do not compare those items keep it empty.
+    """
+    fields = ()
 
 
 def expected_p(q):
@@ -98,7 +108,10 @@ def check(label, rows, halt, m, q, sp):
     observed = (int.from_bytes(s[0:4], "little"), s[4] & 0xEF, s[5], s[6])
     want = (product, expected_p(q), Y_PRESET, sp)
     if observed != want:
-        raise Mismatch(f"{label}: product/P/Y/SP observed {observed}, expected {want}")
+        names = ("product", "P", "Y", "SP")
+        error = Mismatch(f"{label}: product/P/Y/SP observed {observed}, expected {want}")
+        error.fields = [n for n, a, b in zip(names, observed, want) if a != b]  # which field the mutant changed
+        raise error
 
 
 def run_case(probe, base, folder, cue, reset, label, entry, m, q, sp=0xFF):
@@ -155,18 +168,37 @@ def main():
             for m, q in CASES if sp == 0xFF else ((0xFFFF, 0xFFFF), (0x1234, 0x5678), (0, 0xFFFF)):
                 run_case(probe, data, folder, cue, reset, f"mul-{m:04x}-{q:04x}-sp{sp:02x}", entry, m, q, sp)
                 evidence["cases"].append({"m": m, "q": q, "sp": sp, "expected_product": m * q})
-        # Negative 1: the routine's CLD replaced by NOP. With D=1 the ADCs run in BCD, so every mutant case must
-        # differ from the binary product (a value mismatch is a rejection).
+        # Negative mutants: exactly one instruction changed, same byte length and same stack effect, so the
+        # routine's stack offsets ($2100+X+n) do not move. A NOP for PHP/PLP would shift SP by one byte and the guest
+        # would never reach its halt loop (a harness error, not a value mismatch), so PHP/PLP become PHA/PLA instead.
         code_at = body - 0xE000
-        if data[code_at] != 0x08 or data[code_at + 1] != 0xD8:
+        if data[code_at:code_at + 2] != b"\x08\xD8":
             raise ValueError("slot $41 body does not start with PHP; CLD")
-        mutants = {"41_without_CLD_D1": [(code_at + 1, 0xEA)]}
-        # Negative 2: PHP and the PLP before RTS replaced by NOP. The caller's P is then not restored (D stays 0).
         plp_at = data.find(b"\x28\x60", code_at, code_at + 120)  # file offset of PLP; RTS
         if plp_at < 0:
             raise ValueError("slot $41 body has no PLP; RTS")
-        mutants["41_without_PHP_PLP"] = [(code_at, 0xEA), (plp_at, 0xEA)]
-        for name, patches in mutants.items():
+        def one(pattern, name):
+            """The file offset of `pattern` inside the routine body; exactly one occurrence is required."""
+            hits = [i for i in range(code_at, code_at + 120 - len(pattern) + 1) if data[i:i + len(pattern)] == pattern]
+            if len(hits) != 1:
+                raise ValueError(f"{name}: pattern {pattern.hex()} found {len(hits)} times in the slot $41 body, want 1")
+            return hits[0]
+
+        mutants = {
+            # name: (byte patches, the field the rejection must name)
+            "41_without_CLD_D1": ([(code_at + 1, 0xEA)], "product"),  # D stays 1: ADC runs in BCD, the product differs
+            "41_PHP_as_PHA": ([(code_at, 0x48)], "P"),                # the P save slot gets A; product/Y/SP unchanged, P differs
+            "41_PLP_as_PLA": ([(plp_at, 0x68)], "P"),                 # the caller's P is not restored (D=0 on exit), SP unchanged
+            # Arithmetic mutants: they break the multiply itself, so the product check is exercised and not only the
+            # flag save/restore. Both keep the instruction length and the stack effect.
+            "41_ADC_as_SBC": ([(one(bytes.fromhex("7D0A21"), "41_ADC_as_SBC"), 0xFD)], "product"),  # adc $210A,x -> sbc $210A,x
+            "41_ROR_as_ROL": ([(one(bytes.fromhex("7E0821"), "41_ROR_as_ROL"), 0x3E)], "product"),  # ror $2108,x -> rol $2108,x
+        }
+        seen_mutants = set()
+        for name, (patches, required) in mutants.items():
+            if name in seen_mutants:
+                raise ValueError(f"{name}: the mutant is listed twice; its evidence would be added twice")
+            seen_mutants.add(name)
             mutant = bytearray(data)
             for offset, value in patches:
                 mutant[offset] = value
@@ -175,10 +207,23 @@ def main():
                 try:
                     run_case(probe, bytes(mutant), folder, cue, reset, f"{name}-{m:04x}-{q:04x}", entry, m, q)
                 except Mismatch as error:  # only a value mismatch counts; infrastructure errors must propagate
-                    rejected.append(str(error))
+                    rejected.append(error)
             if len(rejected) != 3:
                 raise ValueError(f"{name}: mutant matched the spec in at least one case (expected 3 mismatches)")
-            evidence["negative_cases"].append({"case": name, "rejected": len(rejected), "first": rejected[0]})
+            fields = sorted({f for error in rejected for f in error.fields})
+            if required not in fields:
+                raise ValueError(f"{name}: the rejection does not name {required} (fields: {fields})")
+            # The evidence is JSON: every value must be a plain type. `first` is the text of the first
+            # rejection and `fields` the JSON-compatible list of the differing items.
+            evidence["negative_cases"].append({"case": name, "rejected": len(rejected), "fields": fields,
+                                               "required_field": required,
+                                               "inputs": [[0xFFFF, 0xFFFF], [0x1234, 0x5678], [0x00FF, 0x0101]],
+                                               "rejections": [{"input": [m, q], "fields": list(error.fields),
+                                                               "first": str(error)}
+                                                              for (m, q), error in zip(
+                                                                  ((0xFFFF, 0xFFFF), (0x1234, 0x5678),
+                                                                   (0x00FF, 0x0101)), rejected)],
+                                               "first": str(rejected[0])})
         # JSR T-latch check: SET before the JSR is consumed by the JSR (not a test of the routine with T=1).
         latch = [jsr_t_latch_check(probe, data, folder, cue, reset, entry, m, q) for m, q in ((0x1234, 0x5678), (0xFFFF, 0xFFFF))]
         evidence["jsr_t_latch_checks"] = latch
@@ -186,10 +231,11 @@ def main():
               f"{len(latch)} cases (product correct, halt reached, returned P bit 5 = 0)")
     (args.rom.parent / "geargrafx-dev-mul16u-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
     total = len(CASES) + 2 * 3  # full table at SP=$FF, plus 3 cases at each of SP=$0A and $40
+    rejections = sum(c["rejected"] for c in evidence["negative_cases"])
     print(f"PASS real Geargrafx DEV ROM: MA_MUL16U slot $41 {total} cases (SP=$FF full table; SP=$0A boundary "
           f"and SP=$40 mid-range); entry SP $04..$F9 precondition; caller T=0; 32-bit product, Y, P (C,Z,I,D,V,N "
-          f"with B ignored and T=0 on return), SP, MPR1/MPR7 checked; mutant rejections: "
-          f"{sum(c['rejected'] for c in evidence['negative_cases'])}/6 (no-CLD and no-PHP/PLP, 3 cases each)")
+          f"with B ignored and T=0 on return), SP, MPR1/MPR7 checked; mutant rejections: {rejections}/{3 * len(mutants)} "
+          f"(CLD->NOP, PHP->PHA, PLP->PLA, ADC->SBC, ROR->ROL; 3 inputs each; the reason of each rejection is recorded)")
 
 
 if __name__ == "__main__":
