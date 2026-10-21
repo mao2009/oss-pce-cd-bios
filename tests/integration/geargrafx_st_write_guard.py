@@ -22,8 +22,8 @@ Cases:
 
 Run manually (not wired into the Makefile integration target):
     python3 tests/integration/geargrafx_st_write_guard.py
-The "armed" field is the hook state the probe read back from the core global after installing it, not the
-case name. Clean-clone runs are recorded in the PR #430 thread, not here.
+The "armed" field is true only when the core's ST path actually called the installed guard hook (observed
+inside the probe's hook), not the case name. Clean-clone runs are recorded in the PR #430 thread, not here.
 """
 import copy
 import json
@@ -134,8 +134,9 @@ def check_unguarded(row, case):
 
 def check_pos(row):
     _common(row, POS_CASE)
-    if row["armed"] is not True:
-        raise ValueError("positive control: probe reports the guard as not installed")
+    # No ST runs, so the installed hook is never consulted: the core-observed armed flag must be false.
+    if row["armed"] is not False:
+        raise ValueError("positive control: probe reports the hook consulted although no ST executed")
     if row["guard_calls"] != 0 or row["guard_refusals"] != 0:
         raise ValueError("positive control: a non-ST store reached the ST guard")
     if row.get("ram_before") == 0x5A or row.get("ram_after") != 0x5A:
