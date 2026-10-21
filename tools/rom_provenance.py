@@ -30,7 +30,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -111,25 +110,12 @@ def _claim(directory: Path) -> None:
     (directory / OWNER_MARKER).write_text(MARKER_TEXT, encoding="utf-8")
 
 
-def _remove_owned(directory: Path) -> None:
-    """Delete a tool-owned directory. Re-checks ownership, and refuses if a link is inside (never followed)."""
-    if not _owned(directory):
-        raise ToolError(f"refusing to delete {directory}: not owned by this tool")
-    for dirpath, dirnames, filenames in os.walk(directory, followlinks=False):
-        for name in dirnames + filenames:
-            entry = Path(dirpath) / name
-            if _is_link(entry):
-                raise ToolError(f"refusing to delete {directory}: contains a link or reparse point {entry}")
-    # ponytail: check-then-rmtree leaves a TOCTOU window; fd-relative deletion would close it if this ever matters
-    shutil.rmtree(directory)
-
-
 def reproduce(build_once, work: Path) -> tuple[Path, Path]:
-    """Run build_once(out_dir) -> rom_path twice into directories a and b under work; return both ROM paths.
+    """Run build_once(out_dir) -> rom_path twice into new directories a and b under work; return both ROM paths.
 
-    build_once is injected so tests can use a fake builder. Deletion is limited to a and b that carry this tool's
-    marker (a repeat run). Refused: a link or reparse point at work or a/b, a non-empty work without the marker,
-    and a/b that this tool did not create. User files in work are never touched.
+    build_once is injected so tests can use a fake builder. Nothing is deleted. Refused (ToolError): a link or
+    junction at work, a/ or b/; a non-empty work without the marker; an existing a/ or b/ (even one with the
+    marker, since a marker can be copied, so a repeat run needs a new --work).
     """
     root = ROOT.resolve()
     if _is_link(work) or work.resolve() in (root, *root.parents):
@@ -146,11 +132,14 @@ def reproduce(build_once, work: Path) -> tuple[Path, Path]:
         _claim(work)
     for name in ("a", "b"):
         target = work / name
+        if _is_link(target):
+            raise ToolError(f"refusing {target}: a symlink or junction")
         if os.path.lexists(target):
-            if not _owned(target):
-                raise ToolError(f"refusing to overwrite existing {target}: not created by this tool; pass a new --work")
-            _remove_owned(target)
-        _claim(target)
+            raise ToolError(f"refusing to overwrite existing {target}; remove it or pass a new --work")
+        try:
+            _claim(target)
+        except FileExistsError as error:  # created between the check and os.mkdir
+            raise ToolError(f"refusing to overwrite existing {target}") from error
     first = build_once(work / "a")
     second = build_once(work / "b")
     return Path(first), Path(second)

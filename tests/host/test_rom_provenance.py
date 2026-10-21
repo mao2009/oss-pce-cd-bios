@@ -137,17 +137,19 @@ class ReproducibilityTests(unittest.TestCase):
             self.assertEqual(ROM, first.read_bytes())
             self.assertEqual(ROM, second.read_bytes())
 
-    def test_reproduce_keeps_existing_user_data(self):
+    def test_copied_marker_in_existing_a_is_refused_and_user_data_survives(self):
         def fake(out):
             raise AssertionError("builder must not run over existing data")
 
         with tempfile.TemporaryDirectory() as directory:
-            rp.reproduce(rom_builder, Path(directory))  # tool-owned work with marker
-            keep = Path(directory) / "a" / "notes.txt"
-            (Path(directory) / "a" / rp.OWNER_MARKER).unlink()  # a/ is now foreign: marker gone
+            work = Path(directory)
+            (work / rp.OWNER_MARKER).write_text(rp.MARKER_TEXT, encoding="utf-8")  # work is marked
+            (work / "a").mkdir()
+            keep = work / "a" / "notes.txt"
             keep.write_text("user data", encoding="utf-8")
-            with self.assertRaises(rp.ToolError):
-                rp.reproduce(fake, Path(directory))
+            (work / "a" / rp.OWNER_MARKER).write_text(rp.MARKER_TEXT, encoding="utf-8")  # copied marker
+            with self.assertRaisesRegex(rp.ToolError, "refusing to overwrite existing"):
+                rp.reproduce(fake, work)
             self.assertEqual("user data", keep.read_text(encoding="utf-8"))
 
     def test_reproduce_refuses_nonempty_work_without_marker(self):
@@ -161,38 +163,40 @@ class ReproducibilityTests(unittest.TestCase):
                 rp.reproduce(fake, Path(directory))
             self.assertEqual("user data", keep.read_text(encoding="utf-8"))
 
-    def test_reproduce_repeat_run_on_owned_dirs_succeeds(self):
-        build = rom_builder
+    def test_repeat_run_into_same_work_is_refused_and_outputs_survive(self):
         with tempfile.TemporaryDirectory() as directory:
-            rp.reproduce(build, Path(directory))
-            first, second = rp.reproduce(build, Path(directory))  # a/ and b/ carry the marker: rebuilt, not refused
-            self.assertEqual(ROM, first.read_bytes())
-            self.assertEqual(ROM, second.read_bytes())
-
-    def test_reproduce_does_not_follow_link_inside_owned_dir(self):
-        def fake(out):
-            raise AssertionError("builder must not run when a link is inside a tool-owned directory")
-
-        with tempfile.TemporaryDirectory() as outside, tempfile.TemporaryDirectory() as directory:
-            keep = Path(outside) / "keep.txt"
-            keep.write_text("outside", encoding="utf-8")
             rp.reproduce(rom_builder, Path(directory))
-            make_link(Path(directory) / "a" / "inner", Path(outside))
-            with self.assertRaises(rp.ToolError):
-                rp.reproduce(fake, Path(directory))
-            self.assertEqual("outside", keep.read_text(encoding="utf-8"))
+            kept = Path(directory) / "a" / rp.BUILDERS["smoke"][1]
+            with self.assertRaisesRegex(rp.ToolError, "refusing to overwrite existing"):
+                rp.reproduce(rom_builder, Path(directory))  # a new --work is required for a repeat run
+            self.assertEqual(ROM, kept.read_bytes())
 
-    def test_reproduce_refuses_junction_or_symlink_as_work_entry(self):
+    def test_junction_or_symlink_as_a_is_refused_for_the_link_not_the_contents(self):
         def fake(out):
             raise AssertionError("builder must not write through a junction or symlink")
 
         with tempfile.TemporaryDirectory() as outside, tempfile.TemporaryDirectory() as directory:
             keep = Path(outside) / "keep.txt"
             keep.write_text("outside", encoding="utf-8")
-            (Path(directory) / rp.OWNER_MARKER).write_text("owned", encoding="utf-8")  # so only the link is at issue
+            (Path(outside) / rp.OWNER_MARKER).write_text(rp.MARKER_TEXT, encoding="utf-8")  # copied marker too
+            (Path(directory) / rp.OWNER_MARKER).write_text(rp.MARKER_TEXT, encoding="utf-8")
             make_link(Path(directory) / "a", Path(outside))
-            with self.assertRaises(rp.ToolError):
+            # Matches the link message only: without the reparse-point check this reports "refusing to overwrite existing".
+            with self.assertRaisesRegex(rp.ToolError, "symlink or junction"):
                 rp.reproduce(fake, Path(directory))
+            self.assertEqual("outside", keep.read_text(encoding="utf-8"))
+
+    def test_junction_as_work_itself_is_refused_and_target_survives(self):
+        def fake(out):
+            raise AssertionError("builder must not run in a junction")
+
+        with tempfile.TemporaryDirectory() as outside, tempfile.TemporaryDirectory() as parent:
+            keep = Path(outside) / "keep.txt"
+            keep.write_text("outside", encoding="utf-8")
+            work = Path(parent) / "work"
+            make_link(work, Path(outside))
+            with self.assertRaisesRegex(rp.ToolError, "symlink or junction"):
+                rp.reproduce(fake, work)
             self.assertEqual("outside", keep.read_text(encoding="utf-8"))
 
     def test_reproduce_refuses_symlink_out_of_work(self):
