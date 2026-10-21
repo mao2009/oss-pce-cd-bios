@@ -63,7 +63,7 @@
 | 停止条件 | UNKNOWN | DEV ROM の stub は PROJECT_DEV_FACT（参照の証拠ではない） | callee の停止・待機・ループは不明 |
 | エラー規約 | UNKNOWN | — | 失敗の定義と戻し方は不明 |
 | callable・非復帰（参照） | UNKNOWN | 台帳で `callable: UNKNOWN` | BLOCKED_ABI を維持 |
-| DEV ROM の slot 0 | PROJECT_DEV_FACT | REPO_TESTING_DOC: 80 個の非復帰 stub の一つ | 参照 System Card の挙動とは無関係 |
+| DEV ROM の slot 0 | PROJECT_DEV_FACT | REPO_TESTING_DOC: 75 個の非復帰 stub の一つ（slot 0 は DEV override 6 件に含まれない） | 参照 System Card の挙動とは無関係 |
 
 ## 5. リセット起動と slot 呼出しの違い
 
