@@ -39,6 +39,7 @@ LBA, SECTOR, RAM_SIZE = 5, 2048, 0x10000
 MAX_STEPS = 120_000_000
 # Boot first: cd_entry must land at $F000 (the BOOT segment starts with it), the routine follows.
 GUEST_SOURCES = ("src/adt_dma_routine_boot.s", "src/adt_dma_routine.s")
+LINKER_CFG = "tests/fixtures/ad_trans_routine_guest.cfg"
 PROBE_SOURCE = "geargrafx_ad_trans_routine_probe.cpp"  # #406 probe with a 40-byte dump at $2300 (see its header)
 PROBE_TARGET = "ad-trans-routine-probe"
 JUDGE_NAME = "ad-trans-routine-judge-v1"
@@ -83,7 +84,7 @@ def build_guest(directory: Path):
         subprocess.run([ca65, str(ROOT / source), "-o", str(obj)], check=True)
         objects.append(str(obj))
     bank, labels = directory / "bank0.bin", directory / "guest.lbl"
-    subprocess.run([ld65, "-C", str(ROOT / "tests/fixtures/ad_trans_routine_guest.cfg"), "-o", str(bank), "-Ln", str(labels),
+    subprocess.run([ld65, "-C", str(ROOT / LINKER_CFG), "-o", str(bank), "-Ln", str(labels),
                     "-m", str(directory / "guest.map"), *objects], check=True)
     body = bank.read_bytes()
     if len(body) != BANK_BYTES:
@@ -305,6 +306,7 @@ def run(out: Path, argv: list) -> int:
         "probe_binary_sha256": hashlib.sha256(probe.read_bytes()).hexdigest(),
         "probe_source_sha256": sha256_hex((ROOT / "tests/integration" / PROBE_SOURCE).read_bytes()),
         "guest_sources_sha256": {src: sha256_hex((ROOT / src).read_bytes()) for src in GUEST_SOURCES},
+        "linker_cfg_sha256": sha256_hex((ROOT / LINKER_CFG).read_bytes()),
         "driver_sha256": sha256_hex(Path(__file__).read_bytes()),
         "cc65": cc65_version, "disc_recipe": DISC_RECIPE, "disc_bin_sha256": disc["bin_sha256"],
         "max_steps": MAX_STEPS,
@@ -332,6 +334,10 @@ def verify(out: Path) -> int:
     for src, digest in manifest["guest_sources_sha256"].items():
         if digest != sha256_hex((ROOT / src).read_bytes()):
             raise ValueError(f"{src} differs from the recorded source")
+    if manifest["linker_cfg_sha256"] != sha256_hex((ROOT / LINKER_CFG).read_bytes()):
+        raise ValueError("linker cfg differs from the recorded one")
+    if manifest["probe_source_sha256"] != sha256_hex((ROOT / "tests/integration" / PROBE_SOURCE).read_bytes()):
+        raise ValueError("probe source differs from the recorded source")
     if sha256_hex((out / manifest["rom_file"]).read_bytes()) != manifest["rom_sha256"]:
         raise ValueError("ROM does not match its recorded sha256")
     if sha256_hex((out / "probe" / PROBE_TARGET).read_bytes()) != manifest["probe_binary_sha256"]:
