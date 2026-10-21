@@ -56,11 +56,35 @@ class CdStatObservationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not bounded by the step budget"):
             judge_observation(over, NO_DISC, BUDGET)
 
+    def test_step_at_budget_boundary_is_observed(self):
+        edge = copy.deepcopy(WITH_DISC)
+        edge["RUN"][0]["step"] = BUDGET
+        self.assertEqual(judge_observation(edge, NO_DISC, BUDGET)["status"], "OBSERVED")
+
     def test_missing_ram_field_is_blocked(self):
         partial = copy.deepcopy(WITH_DISC)
         del partial["RUN"][0]["buffer_hex"]
         with self.assertRaisesRegex(ValueError, "BLOCKED: .*buffer_hex"):
             judge_observation(partial, NO_DISC, BUDGET)
+
+    def test_missing_step_is_blocked_before_budget_check(self):
+        partial = copy.deepcopy(WITH_DISC)
+        del partial["RUN"][0]["step"]
+        with self.assertRaisesRegex(ValueError, "BLOCKED: .*step"):
+            judge_observation(partial, NO_DISC, BUDGET)
+
+    def test_short_ram_buffer_is_blocked(self):
+        short = copy.deepcopy(WITH_DISC)
+        short["RUN"][0]["buffer_hex"] = (MAGIC).hex()
+        with self.assertRaisesRegex(ValueError, "BLOCKED: .*too short"):
+            judge_observation(short, NO_DISC, BUDGET)
+
+    def test_negative_or_boolean_step_is_rejected(self):
+        for bad in (-5, True):
+            neg = copy.deepcopy(WITH_DISC)
+            neg["RUN"][0]["step"] = bad
+            with self.assertRaisesRegex(ValueError, "not bounded by the step budget"):
+                judge_observation(neg, NO_DISC, BUDGET)
 
     def test_non_positive_budget_is_blocked(self):
         with self.assertRaisesRegex(ValueError, "BLOCKED: step budget"):

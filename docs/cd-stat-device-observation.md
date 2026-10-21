@@ -27,7 +27,7 @@ CD_STAT（`$09`、候補 `$E01B`）の呼出先 ABI は未確定であり、本�
 
 | 検証 | コマンド | 結果 |
 | --- | --- | --- |
-| 新規ホスト単体（正例・負例・timeout・欠落フィールド） | `python -m unittest tests.host.test_cd_stat_observation -v` | 7 件 OK（合成レコード、実コアではない） |
+| 新規ホスト単体（正例・負例・timeout 境界・欠落・短いバッファ） | `python -m unittest tests.host.test_cd_stat_observation -v` | 11 件 OK（合成レコード、実コアではない） |
 | 既存の CD 関連ホスト試験 | `python -m unittest discover -s tests/host -p 'test_cd_*.py'` | 318 件、OK（skipped=4、cc65 等の環境依存） |
 | 全体ホスト試験 | `python -m unittest discover -s tests/host` | 1971 件中、失敗 59・エラー 6 はすべて `test_artifact_guard*`（Windows 環境で本回確認。本 PR の変更ファイルは参照しない。main での再確認は未実施） |
 | 実コア（固定版 Geargrafx + ca65） | `make dev-cd-media-state-integration`、#231 用の観測 runner | **NOT_RUN**（下記 §4） |
