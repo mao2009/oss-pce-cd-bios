@@ -12,6 +12,11 @@ sudo apt-get update
 sudo apt-get install build-essential python3 curl git
 ```
 
+Host tests (`python3 -m unittest discover -s tests/host`) also need PyYAML (`pip install pyyaml`, or `python3-yaml` on
+Debian/Ubuntu). Without it the artifact-guard checks report `PyYAML unavailable` and the YAML-based tests fail with an
+explicit import message; they are not skipped. `tools/setup.py` is POSIX-only (it uses `fcntl`), so run it on Linux or WSL.
+On Windows, `make` and cc65 are not present, so the cc65 and `make release` tests are NOT_RUN.
+
 ## Commands
 
 ```sh
