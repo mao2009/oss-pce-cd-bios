@@ -1,0 +1,766 @@
+{
+  "apis": [
+    {
+      "abi_state": "OBSERVED",
+      "api_id": "slot-1e",
+      "candidate_entry": "0xE05A",
+      "entry_evidence": "JUMP_TABLE_3BYTE_JMP",
+      "execution": {
+        "note": "A local real-core measurement of this slot is recorded in docs/reference-bios-test-plan.md (X=3, Y=0, A preserved, P=$06, SP balanced, 8 instructions, RAM difference limited to the JSR push). It is not reproducible through the committed runner, because tools/reference_jsr_gate.py refuses every slot by design, and it is local only evidence.",
+        "observation_status": "OBSERVED_LOCAL_ONLY_PRIOR",
+        "verdict": "BLOCKED_REFERENCE_JSR_GATE"
+      },
+      "name": "EX_GETVER",
+      "safety": {
+        "basis": [
+          "static callee profile contains no store, no MPR write, no VDC direct write, no block transfer and no interrupt enable",
+          "the callee returns to the caller with RTS, so the instruction budget is a backstop and not the only termination",
+          "the two reads stay inside the API bank window, so the memory mapped I/O page is unreachable"
+        ],
+        "residual_risks": [
+          "the safety verdict is a static upper bound over the reachable code, not a runtime observation",
+          "the returned version bytes depend on the private image, so the observed X and Y are not reproducible without it",
+          "the verdict has not been exercised at runtime because the execution gate is closed"
+        ],
+        "verdict": "EXECUTION_SAFE"
+      },
+      "slot": 30,
+      "static": {
+        "budget_exhausted": false,
+        "callee_instructions": 3,
+        "hazard_counts": {
+          "BLOCK_TRANSFER": 0,
+          "CROSS_PAGE_CALL": 0,
+          "DATA_DEPENDENT_STORE": 0,
+          "INDIRECT_CONTROL_FLOW": 0,
+          "IRQ_DISABLE": 0,
+          "IRQ_ENABLE": 0,
+          "MPR_READ": 0,
+          "MPR_WRITE": 0,
+          "NO_RETURN": 0,
+          "OTHER_STORE": 0,
+          "PAGE1_STORE": 0,
+          "UNRESOLVED_TARGET": 0,
+          "VDC_DIRECT_WRITE": 0,
+          "ZERO_PAGE_STORE": 0
+        },
+        "max_stack_bytes": 0,
+        "register_swap_ops": 0,
+        "return_kinds": [
+          "rts"
+        ],
+        "status": "OBSERVED_STATIC",
+        "store_target_classes": {},
+        "unresolved": [],
+        "zero_page_operand_stores": 0
+      },
+      "static_items": {
+        "caller_preconditions": {
+          "status": "OBSERVED_STATIC",
+          "value": "None beyond a reachable entry: no stack alignment, no memory map and no register input is required."
+        },
+        "caller_supplied_registers": {
+          "status": "OBSERVED_STATIC",
+          "value": "The callee reads no register. It loads two bytes from the BIOS image's own version area."
+        },
+        "cpu_flag_handling": {
+          "status": "OBSERVED_STATIC",
+          "value": "The two loads set N and Z from the loaded bytes. No compare or add is executed, so C and V are not written by the callee. I, D and T are not touched."
+        },
+        "entry_address_and_basis": {
+          "status": "OBSERVED_STATIC",
+          "value": "The reference image carries an 81 entry jump table at $E000 with 3 byte JMP entries. Slot $1E is at $E05A and jumps to a distinct internal routine in the same 8 KiB bank window."
+        },
+        "executable_conditions_and_blocked_conditions": {
+          "status": "OBSERVED_STATIC",
+          "value": "Safe under the existing guarded probe: the callee has no side effect that the probe cannot contain. Execution is nevertheless blocked by the repository's reference JSR execution gate, which is closed for all 81 slots."
+        },
+        "expected_return_value": {
+          "status": "OBSERVED_STATIC",
+          "value": "X and Y carry the major and minor version bytes read from the image, so the value is a property of the private image and not a constant. A is left untouched."
+        },
+        "interrupt_or_timing_dependence": {
+          "status": "OBSERVED_STATIC",
+          "value": "The callee does not clear the interrupt disable flag and does not enable interrupts, so a maskable interrupt cannot be taken while it runs. The pinned core implements no NMI source, so no non maskable interrupt can be taken either."
+        },
+        "mpr_change": {
+          "status": "OBSERVED_STATIC",
+          "value": "No MPR is read or written."
+        },
+        "possibly_changed_registers": {
+          "status": "OBSERVED_STATIC",
+          "value": "X and Y only. A is not written by the callee."
+        },
+        "ram_io_vdc_cd_side_effects": {
+          "status": "OBSERVED_STATIC",
+          "value": "No store of any kind, no VDC access, no CD access and no I/O page access. The only reads are two bytes inside the API bank window."
+        },
+        "stack_usage": {
+          "status": "OBSERVED_STATIC",
+          "value": "The callee pushes nothing. The caller's JSR occupies two stack bytes and the callee's RTS releases them, so the stack is balanced."
+        }
+      }
+    },
+    {
+      "abi_state": "PARTIAL",
+      "api_id": "slot-3c",
+      "candidate_entry": "0xE0B4",
+      "entry_evidence": "JUMP_TABLE_3BYTE_JMP",
+      "execution": {
+        "note": "No reference measurement exists for this slot. The static analysis establishes the entry mapping and the side effect profile only.",
+        "observation_status": "NOT_RUN",
+        "verdict": "BLOCKED_REFERENCE_JSR_GATE"
+      },
+      "name": "EX_BINBCD",
+      "safety": {
+        "basis": [
+          "the only store targets a zero page byte, which the HuC6280 places at $2000 and which is inside the probe's page 1 allowlist",
+          "no MPR write, no VDC direct write, no block transfer and no interrupt enable",
+          "the callee returns to the caller with RTS"
+        ],
+        "residual_risks": [
+          "the zero page write is a real side effect: it clobbers the System Card zero page area and will appear in the RAM difference",
+          "the static profile is an upper bound over the reachable code, not a runtime observation",
+          "execution is blocked by the reference JSR execution gate"
+        ],
+        "verdict": "EXECUTION_SAFE_WITH_OBSERVABLE_ZERO_PAGE_WRITE"
+      },
+      "slot": 60,
+      "static": {
+        "budget_exhausted": false,
+        "callee_instructions": 19,
+        "hazard_counts": {
+          "BLOCK_TRANSFER": 0,
+          "CROSS_PAGE_CALL": 0,
+          "DATA_DEPENDENT_STORE": 0,
+          "INDIRECT_CONTROL_FLOW": 0,
+          "IRQ_DISABLE": 0,
+          "IRQ_ENABLE": 0,
+          "MPR_READ": 0,
+          "MPR_WRITE": 0,
+          "NO_RETURN": 0,
+          "OTHER_STORE": 0,
+          "PAGE1_STORE": 1,
+          "UNRESOLVED_TARGET": 0,
+          "VDC_DIRECT_WRITE": 0,
+          "ZERO_PAGE_STORE": 0
+        },
+        "max_stack_bytes": 1,
+        "register_swap_ops": 1,
+        "return_kinds": [
+          "rts"
+        ],
+        "status": "OBSERVED_STATIC",
+        "store_target_classes": {
+          "PAGE1_ZERO_PAGE": 1
+        },
+        "unresolved": [],
+        "zero_page_operand_stores": 1
+      },
+      "static_items": {
+        "caller_preconditions": {
+          "status": "OBSERVED_STATIC",
+          "value": "A is expected to be 0..99. The routine compares against 100 and returns immediately for larger values, so the out of range behaviour is observable rather than undefined."
+        },
+        "caller_supplied_registers": {
+          "status": "OBSERVED_STATIC",
+          "value": "The callee reads A as the binary input and compares it against 100. X and Y are used as scratch."
+        },
+        "cpu_flag_handling": {
+          "status": "OBSERVED_STATIC",
+          "value": "A compare against 100 precedes the conversion, so C carries the comparison result on the early return path. The conversion itself ends with a carry clear. The remaining flags are not established."
+        },
+        "entry_address_and_basis": {
+          "status": "OBSERVED_STATIC",
+          "value": "Slot $3C is at $E0B4 in the confirmed 3 byte JMP jump table and jumps to a distinct internal routine in the API bank window."
+        },
+        "executable_conditions_and_blocked_conditions": {
+          "status": "OBSERVED_STATIC",
+          "value": "The single store lands in page 1 and therefore inside the RAM write allowlist of the existing guarded probe, so the probe would contain it. The store does clobber the System Card zero page area, so a caller must not keep live data there across the call. Execution is blocked by the reference JSR execution gate."
+        },
+        "expected_return_value": {
+          "status": "UNKNOWN",
+          "value": "The packed BCD result and the out of range signalling are not established. The static analysis shows a compare against 100, a decimal conversion loop and a return, but it does not establish the returned value or the flag contract."
+        },
+        "interrupt_or_timing_dependence": {
+          "status": "OBSERVED_STATIC",
+          "value": "The callee does not clear the interrupt disable flag, so a maskable interrupt cannot be taken while it runs, and the pinned core implements no NMI source."
+        },
+        "mpr_change": {
+          "status": "OBSERVED_STATIC",
+          "value": "No MPR is read or written."
+        },
+        "possibly_changed_registers": {
+          "status": "OBSERVED_STATIC",
+          "value": "A and X are written. Y is not written by the callee."
+        },
+        "ram_io_vdc_cd_side_effects": {
+          "status": "OBSERVED_STATIC",
+          "value": "Exactly one store, to a zero page byte. The HuC6280 zero page is at $2000, so under the pinned core and on hardware alike the store lands in page 1, not in the memory mapped I/O page. No VDC, CD or I/O access occurs."
+        },
+        "stack_usage": {
+          "status": "OBSERVED_STATIC",
+          "value": "One byte is pushed and released by the callee; the caller's JSR occupies two more. The stack is balanced."
+        }
+      }
+    },
+    {
+      "abi_state": "PARTIAL",
+      "api_id": "slot-3d",
+      "candidate_entry": "0xE0B7",
+      "entry_evidence": "JUMP_TABLE_3BYTE_JMP",
+      "execution": {
+        "note": "No reference measurement exists for this slot. The static analysis establishes the entry mapping and the side effect profile only.",
+        "observation_status": "NOT_RUN",
+        "verdict": "BLOCKED_REFERENCE_JSR_GATE"
+      },
+      "name": "EX_BCDBIN",
+      "safety": {
+        "basis": [
+          "both stores target zero page bytes, which the HuC6280 places at $2000 and which are inside the probe's page 1 allowlist",
+          "no MPR write, no VDC direct write, no block transfer and no interrupt enable",
+          "the callee returns to the caller with RTS"
+        ],
+        "residual_risks": [
+          "the zero page writes are real side effects and will appear in the RAM difference",
+          "the static profile is an upper bound over the reachable code, not a runtime observation",
+          "execution is blocked by the reference JSR execution gate"
+        ],
+        "verdict": "EXECUTION_SAFE_WITH_OBSERVABLE_ZERO_PAGE_WRITE"
+      },
+      "slot": 61,
+      "static": {
+        "budget_exhausted": false,
+        "callee_instructions": 23,
+        "hazard_counts": {
+          "BLOCK_TRANSFER": 0,
+          "CROSS_PAGE_CALL": 0,
+          "DATA_DEPENDENT_STORE": 0,
+          "INDIRECT_CONTROL_FLOW": 0,
+          "IRQ_DISABLE": 0,
+          "IRQ_ENABLE": 0,
+          "MPR_READ": 0,
+          "MPR_WRITE": 0,
+          "NO_RETURN": 0,
+          "OTHER_STORE": 0,
+          "PAGE1_STORE": 2,
+          "UNRESOLVED_TARGET": 0,
+          "VDC_DIRECT_WRITE": 0,
+          "ZERO_PAGE_STORE": 0
+        },
+        "max_stack_bytes": 1,
+        "register_swap_ops": 0,
+        "return_kinds": [
+          "rts"
+        ],
+        "status": "OBSERVED_STATIC",
+        "store_target_classes": {
+          "PAGE1_ZERO_PAGE": 2
+        },
+        "unresolved": [],
+        "zero_page_operand_stores": 2
+      },
+      "static_items": {
+        "caller_preconditions": {
+          "status": "OBSERVED_STATIC",
+          "value": "A is expected to be a two digit packed BCD byte. The routine tests both nibbles against 10, so an invalid digit is detectable and the out of range behaviour is observable rather than undefined."
+        },
+        "caller_supplied_registers": {
+          "status": "OBSERVED_STATIC",
+          "value": "The callee reads A as the packed BCD input and masks it into two nibbles, which it then tests against 10."
+        },
+        "cpu_flag_handling": {
+          "status": "OBSERVED_STATIC",
+          "value": "Two compares against 10 precede the conversion, so C carries the digit test result on the early return path. The remaining flags are not established."
+        },
+        "entry_address_and_basis": {
+          "status": "OBSERVED_STATIC",
+          "value": "Slot $3D is at $E0B7 in the confirmed 3 byte JMP jump table and jumps to a distinct internal routine in the API bank window."
+        },
+        "executable_conditions_and_blocked_conditions": {
+          "status": "OBSERVED_STATIC",
+          "value": "Both stores land in page 1 and are therefore inside the probe's RAM write allowlist, but they clobber the System Card zero page area. Execution is blocked by the reference JSR execution gate."
+        },
+        "expected_return_value": {
+          "status": "UNKNOWN",
+          "value": "The binary result and the invalid digit signalling are not established. The static analysis shows the nibble tests and a return, but not the returned value or the flag contract."
+        },
+        "interrupt_or_timing_dependence": {
+          "status": "OBSERVED_STATIC",
+          "value": "The callee does not clear the interrupt disable flag, so a maskable interrupt cannot be taken while it runs, and the pinned core implements no NMI source."
+        },
+        "mpr_change": {
+          "status": "OBSERVED_STATIC",
+          "value": "No MPR is read or written."
+        },
+        "possibly_changed_registers": {
+          "status": "OBSERVED_STATIC",
+          "value": "A and X are written. Y is not written by the callee."
+        },
+        "ram_io_vdc_cd_side_effects": {
+          "status": "OBSERVED_STATIC",
+          "value": "Exactly two stores, both to zero page bytes, so both land in page 1 on the HuC6280. No VDC, CD or I/O access occurs."
+        },
+        "stack_usage": {
+          "status": "OBSERVED_STATIC",
+          "value": "One byte is pushed and released by the callee; the caller's JSR occupies two more. The stack is balanced."
+        }
+      }
+    },
+    {
+      "abi_state": "PARTIAL",
+      "api_id": "slot-3f",
+      "candidate_entry": "0xE0BD",
+      "entry_evidence": "JUMP_TABLE_3BYTE_JMP",
+      "execution": {
+        "note": "No reference measurement exists for this slot. The static analysis establishes the entry mapping and the side effect profile only.",
+        "observation_status": "NOT_RUN",
+        "verdict": "BLOCKED_MPR_CHANGE_AND_REFERENCE_JSR_GATE"
+      },
+      "name": "MA_MUL8U",
+      "safety": {
+        "basis": [
+          "The reachable code of this slot performs four page 1 stores.",
+          "the dispatcher performs a runtime MPR switch, which the guarded probe refuses before the next instruction runs",
+          "no VDC direct write, no block transfer and no interrupt enable was found in the reachable code"
+        ],
+        "residual_risks": [
+          "the reachable code of the operation itself is not fully resolved: the static walk follows the dispatcher's bank switch, but data dependent targets inside the operation are not enumerated",
+          "the static profile is an upper bound over the reachable code, not a runtime observation",
+          "execution is blocked by the reference JSR execution gate as well"
+        ],
+        "verdict": "EXECUTION_BLOCKED"
+      },
+      "slot": 63,
+      "static": {
+        "budget_exhausted": false,
+        "callee_instructions": 36,
+        "hazard_counts": {
+          "BLOCK_TRANSFER": 0,
+          "CROSS_PAGE_CALL": 1,
+          "DATA_DEPENDENT_STORE": 0,
+          "INDIRECT_CONTROL_FLOW": 0,
+          "IRQ_DISABLE": 0,
+          "IRQ_ENABLE": 0,
+          "MPR_READ": 1,
+          "MPR_WRITE": 2,
+          "NO_RETURN": 0,
+          "OTHER_STORE": 0,
+          "PAGE1_STORE": 4,
+          "UNRESOLVED_TARGET": 0,
+          "VDC_DIRECT_WRITE": 0,
+          "ZERO_PAGE_STORE": 0
+        },
+        "max_stack_bytes": 2,
+        "register_swap_ops": 2,
+        "return_kinds": [
+          "rts"
+        ],
+        "status": "OBSERVED_STATIC",
+        "store_target_classes": {
+          "PAGE1": 1,
+          "PAGE1_ZERO_PAGE": 3
+        },
+        "unresolved": [],
+        "zero_page_operand_stores": 3
+      },
+      "static_items": {
+        "caller_preconditions": {
+          "status": "UNKNOWN",
+          "value": "The dispatcher saves and restores the switched bank register, so the caller's memory map must permit the switch; the exact precondition on the caller's registers is not established."
+        },
+        "caller_supplied_registers": {
+          "status": "UNKNOWN",
+          "value": "The dispatcher switches to a second BIOS bank before the operation, so the argument registers of the operation itself are not established by the static analysis."
+        },
+        "cpu_flag_handling": {
+          "status": "UNKNOWN",
+          "value": "The dispatcher's own flag effects are not established beyond the carry clear it executes on the return path."
+        },
+        "entry_address_and_basis": {
+          "status": "OBSERVED_STATIC",
+          "value": "Slot 0x3F is at 0xE0BD in the confirmed 3 byte JMP jump table and jumps to a distinct internal dispatcher in the API bank window."
+        },
+        "executable_conditions_and_blocked_conditions": {
+          "status": "OBSERVED_STATIC",
+          "value": "Blocked twice over. The runtime MPR switch is refused by the guarded probe's dynamic MPR detection, so the call would be rejected before the operation could be measured, and the repository's reference JSR execution gate is closed for every slot."
+        },
+        "expected_return_value": {
+          "status": "UNKNOWN",
+          "value": "The result registers of the operation are not established. The dispatcher itself returns through RTS."
+        },
+        "interrupt_or_timing_dependence": {
+          "status": "OBSERVED_STATIC",
+          "value": "No interrupt enable was found in the reachable code, so a maskable interrupt cannot be taken while it runs, and the pinned core implements no NMI source."
+        },
+        "mpr_change": {
+          "status": "OBSERVED_STATIC",
+          "value": "The dispatcher reads the bank register of the target page, switches it to a fixed BIOS bank and restores the saved value before returning. The switch therefore is visible to a runtime monitor."
+        },
+        "possibly_changed_registers": {
+          "status": "OBSERVED_STATIC",
+          "value": "The dispatcher uses A and the stack; the operation's own register effects are not established."
+        },
+        "ram_io_vdc_cd_side_effects": {
+          "status": "OBSERVED_STATIC",
+          "value": "The operation writes only to page 1, that is to the work RAM page that holds the zero page and the stack. No VDC direct write, no memory mapped I/O access and no CD access was found in the reachable code."
+        },
+        "stack_usage": {
+          "status": "OBSERVED_STATIC",
+          "value": "The dispatcher pushes a return address and the saved bank register, so the stack depth of the whole call is at least two bytes for the caller's JSR plus the dispatcher's own use."
+        }
+      }
+    },
+    {
+      "abi_state": "PARTIAL",
+      "api_id": "slot-40",
+      "candidate_entry": "0xE0C0",
+      "entry_evidence": "JUMP_TABLE_3BYTE_JMP",
+      "execution": {
+        "note": "No reference measurement exists for this slot. The static analysis establishes the entry mapping and the side effect profile only.",
+        "observation_status": "NOT_RUN",
+        "verdict": "BLOCKED_MPR_CHANGE_AND_REFERENCE_JSR_GATE"
+      },
+      "name": "MA_MUL8S",
+      "safety": {
+        "basis": [
+          "The reachable code of this slot performs seven page 1 stores and four register swaps.",
+          "the dispatcher performs a runtime MPR switch, which the guarded probe refuses before the next instruction runs",
+          "no VDC direct write, no block transfer and no interrupt enable was found in the reachable code"
+        ],
+        "residual_risks": [
+          "the reachable code of the operation itself is not fully resolved: the static walk follows the dispatcher's bank switch, but data dependent targets inside the operation are not enumerated",
+          "the static profile is an upper bound over the reachable code, not a runtime observation",
+          "execution is blocked by the reference JSR execution gate as well"
+        ],
+        "verdict": "EXECUTION_BLOCKED"
+      },
+      "slot": 64,
+      "static": {
+        "budget_exhausted": false,
+        "callee_instructions": 62,
+        "hazard_counts": {
+          "BLOCK_TRANSFER": 0,
+          "CROSS_PAGE_CALL": 1,
+          "DATA_DEPENDENT_STORE": 0,
+          "INDIRECT_CONTROL_FLOW": 0,
+          "IRQ_DISABLE": 0,
+          "IRQ_ENABLE": 0,
+          "MPR_READ": 1,
+          "MPR_WRITE": 2,
+          "NO_RETURN": 0,
+          "OTHER_STORE": 0,
+          "PAGE1_STORE": 6,
+          "UNRESOLVED_TARGET": 0,
+          "VDC_DIRECT_WRITE": 0,
+          "ZERO_PAGE_STORE": 0
+        },
+        "max_stack_bytes": 2,
+        "register_swap_ops": 3,
+        "return_kinds": [
+          "rts"
+        ],
+        "status": "OBSERVED_STATIC",
+        "store_target_classes": {
+          "PAGE1": 1,
+          "PAGE1_ZERO_PAGE": 5
+        },
+        "unresolved": [],
+        "zero_page_operand_stores": 5
+      },
+      "static_items": {
+        "caller_preconditions": {
+          "status": "UNKNOWN",
+          "value": "The dispatcher saves and restores the switched bank register, so the caller's memory map must permit the switch; the exact precondition on the caller's registers is not established."
+        },
+        "caller_supplied_registers": {
+          "status": "UNKNOWN",
+          "value": "The dispatcher switches to a second BIOS bank before the operation, so the argument registers of the operation itself are not established by the static analysis."
+        },
+        "cpu_flag_handling": {
+          "status": "UNKNOWN",
+          "value": "The dispatcher's own flag effects are not established beyond the carry clear it executes on the return path."
+        },
+        "entry_address_and_basis": {
+          "status": "OBSERVED_STATIC",
+          "value": "Slot 0x40 is at 0xE0C0 in the confirmed 3 byte JMP jump table and jumps to a distinct internal dispatcher in the API bank window."
+        },
+        "executable_conditions_and_blocked_conditions": {
+          "status": "OBSERVED_STATIC",
+          "value": "Blocked twice over. The runtime MPR switch is refused by the guarded probe's dynamic MPR detection, so the call would be rejected before the operation could be measured, and the repository's reference JSR execution gate is closed for every slot."
+        },
+        "expected_return_value": {
+          "status": "UNKNOWN",
+          "value": "The result registers of the operation are not established. The dispatcher itself returns through RTS."
+        },
+        "interrupt_or_timing_dependence": {
+          "status": "OBSERVED_STATIC",
+          "value": "No interrupt enable was found in the reachable code, so a maskable interrupt cannot be taken while it runs, and the pinned core implements no NMI source."
+        },
+        "mpr_change": {
+          "status": "OBSERVED_STATIC",
+          "value": "The dispatcher reads the bank register of the target page, switches it to a fixed BIOS bank and restores the saved value before returning. The switch therefore is visible to a runtime monitor."
+        },
+        "possibly_changed_registers": {
+          "status": "OBSERVED_STATIC",
+          "value": "The dispatcher uses A and the stack; the operation's own register effects are not established."
+        },
+        "ram_io_vdc_cd_side_effects": {
+          "status": "OBSERVED_STATIC",
+          "value": "The operation writes only to page 1, that is to the work RAM page that holds the zero page and the stack. No VDC direct write, no memory mapped I/O access and no CD access was found in the reachable code."
+        },
+        "stack_usage": {
+          "status": "OBSERVED_STATIC",
+          "value": "The dispatcher pushes a return address and the saved bank register, so the stack depth of the whole call is at least two bytes for the caller's JSR plus the dispatcher's own use."
+        }
+      }
+    },
+    {
+      "abi_state": "PARTIAL",
+      "api_id": "slot-41",
+      "candidate_entry": "0xE0C3",
+      "entry_evidence": "JUMP_TABLE_3BYTE_JMP",
+      "execution": {
+        "note": "No reference measurement exists for this slot. The static analysis establishes the entry mapping and the side effect profile only.",
+        "observation_status": "NOT_RUN",
+        "verdict": "BLOCKED_MPR_CHANGE_AND_REFERENCE_JSR_GATE"
+      },
+      "name": "MA_MUL16U",
+      "safety": {
+        "basis": [
+          "The reachable code of this slot performs sixteen page 1 stores.",
+          "the dispatcher performs a runtime MPR switch, which the guarded probe refuses before the next instruction runs",
+          "no VDC direct write, no block transfer and no interrupt enable was found in the reachable code"
+        ],
+        "residual_risks": [
+          "the reachable code of the operation itself is not fully resolved: the static walk follows the dispatcher's bank switch, but data dependent targets inside the operation are not enumerated",
+          "the static profile is an upper bound over the reachable code, not a runtime observation",
+          "execution is blocked by the reference JSR execution gate as well"
+        ],
+        "verdict": "EXECUTION_BLOCKED"
+      },
+      "slot": 65,
+      "static": {
+        "budget_exhausted": false,
+        "callee_instructions": 43,
+        "hazard_counts": {
+          "BLOCK_TRANSFER": 0,
+          "CROSS_PAGE_CALL": 1,
+          "DATA_DEPENDENT_STORE": 0,
+          "INDIRECT_CONTROL_FLOW": 0,
+          "IRQ_DISABLE": 0,
+          "IRQ_ENABLE": 0,
+          "MPR_READ": 1,
+          "MPR_WRITE": 2,
+          "NO_RETURN": 0,
+          "OTHER_STORE": 0,
+          "PAGE1_STORE": 15,
+          "UNRESOLVED_TARGET": 0,
+          "VDC_DIRECT_WRITE": 0,
+          "ZERO_PAGE_STORE": 0
+        },
+        "max_stack_bytes": 2,
+        "register_swap_ops": 0,
+        "return_kinds": [
+          "rts"
+        ],
+        "status": "OBSERVED_STATIC",
+        "store_target_classes": {
+          "PAGE1": 1,
+          "PAGE1_ZERO_PAGE": 14
+        },
+        "unresolved": [],
+        "zero_page_operand_stores": 14
+      },
+      "static_items": {
+        "caller_preconditions": {
+          "status": "UNKNOWN",
+          "value": "The dispatcher saves and restores the switched bank register, so the caller's memory map must permit the switch; the exact precondition on the caller's registers is not established."
+        },
+        "caller_supplied_registers": {
+          "status": "UNKNOWN",
+          "value": "The dispatcher switches to a second BIOS bank before the operation, so the argument registers of the operation itself are not established by the static analysis."
+        },
+        "cpu_flag_handling": {
+          "status": "UNKNOWN",
+          "value": "The dispatcher's own flag effects are not established beyond the carry clear it executes on the return path."
+        },
+        "entry_address_and_basis": {
+          "status": "OBSERVED_STATIC",
+          "value": "Slot 0x41 is at 0xE0C3 in the confirmed 3 byte JMP jump table and jumps to a distinct internal dispatcher in the API bank window."
+        },
+        "executable_conditions_and_blocked_conditions": {
+          "status": "OBSERVED_STATIC",
+          "value": "Blocked twice over. The runtime MPR switch is refused by the guarded probe's dynamic MPR detection, so the call would be rejected before the operation could be measured, and the repository's reference JSR execution gate is closed for every slot."
+        },
+        "expected_return_value": {
+          "status": "UNKNOWN",
+          "value": "The result registers of the operation are not established. The dispatcher itself returns through RTS."
+        },
+        "interrupt_or_timing_dependence": {
+          "status": "OBSERVED_STATIC",
+          "value": "No interrupt enable was found in the reachable code, so a maskable interrupt cannot be taken while it runs, and the pinned core implements no NMI source."
+        },
+        "mpr_change": {
+          "status": "OBSERVED_STATIC",
+          "value": "The dispatcher reads the bank register of the target page, switches it to a fixed BIOS bank and restores the saved value before returning. The switch therefore is visible to a runtime monitor."
+        },
+        "possibly_changed_registers": {
+          "status": "OBSERVED_STATIC",
+          "value": "The dispatcher uses A and the stack; the operation's own register effects are not established."
+        },
+        "ram_io_vdc_cd_side_effects": {
+          "status": "OBSERVED_STATIC",
+          "value": "The operation writes only to page 1, that is to the work RAM page that holds the zero page and the stack. No VDC direct write, no memory mapped I/O access and no CD access was found in the reachable code."
+        },
+        "stack_usage": {
+          "status": "OBSERVED_STATIC",
+          "value": "The dispatcher pushes a return address and the saved bank register, so the stack depth of the whole call is at least two bytes for the caller's JSR plus the dispatcher's own use."
+        }
+      }
+    },
+    {
+      "abi_state": "PARTIAL",
+      "api_id": "slot-42",
+      "candidate_entry": "0xE0C6",
+      "entry_evidence": "JUMP_TABLE_3BYTE_JMP",
+      "execution": {
+        "note": "No reference measurement exists for this slot. The static analysis establishes the entry mapping and the side effect profile only.",
+        "observation_status": "NOT_RUN",
+        "verdict": "BLOCKED_MPR_CHANGE_AND_REFERENCE_JSR_GATE"
+      },
+      "name": "MA_DIV16S",
+      "safety": {
+        "basis": [
+          "The reachable code of this slot performs twenty four page 1 stores.",
+          "the dispatcher performs a runtime MPR switch, which the guarded probe refuses before the next instruction runs",
+          "no VDC direct write, no block transfer and no interrupt enable was found in the reachable code"
+        ],
+        "residual_risks": [
+          "the reachable code of the operation itself is not fully resolved: the static walk follows the dispatcher's bank switch, but data dependent targets inside the operation are not enumerated",
+          "the static profile is an upper bound over the reachable code, not a runtime observation",
+          "execution is blocked by the reference JSR execution gate as well"
+        ],
+        "verdict": "EXECUTION_BLOCKED"
+      },
+      "slot": 66,
+      "static": {
+        "budget_exhausted": false,
+        "callee_instructions": 89,
+        "hazard_counts": {
+          "BLOCK_TRANSFER": 0,
+          "CROSS_PAGE_CALL": 1,
+          "DATA_DEPENDENT_STORE": 0,
+          "INDIRECT_CONTROL_FLOW": 0,
+          "IRQ_DISABLE": 0,
+          "IRQ_ENABLE": 0,
+          "MPR_READ": 1,
+          "MPR_WRITE": 2,
+          "NO_RETURN": 0,
+          "OTHER_STORE": 0,
+          "PAGE1_STORE": 23,
+          "UNRESOLVED_TARGET": 0,
+          "VDC_DIRECT_WRITE": 0,
+          "ZERO_PAGE_STORE": 0
+        },
+        "max_stack_bytes": 2,
+        "register_swap_ops": 0,
+        "return_kinds": [
+          "rts"
+        ],
+        "status": "OBSERVED_STATIC",
+        "store_target_classes": {
+          "PAGE1": 1,
+          "PAGE1_ZERO_PAGE": 22
+        },
+        "unresolved": [],
+        "zero_page_operand_stores": 22
+      },
+      "static_items": {
+        "caller_preconditions": {
+          "status": "UNKNOWN",
+          "value": "The dispatcher saves and restores the switched bank register, so the caller's memory map must permit the switch; the exact precondition on the caller's registers is not established."
+        },
+        "caller_supplied_registers": {
+          "status": "UNKNOWN",
+          "value": "The dispatcher switches to a second BIOS bank before the operation, so the argument registers of the operation itself are not established by the static analysis."
+        },
+        "cpu_flag_handling": {
+          "status": "UNKNOWN",
+          "value": "The dispatcher's own flag effects are not established beyond the carry clear it executes on the return path."
+        },
+        "entry_address_and_basis": {
+          "status": "OBSERVED_STATIC",
+          "value": "Slot 0x42 is at 0xE0C6 in the confirmed 3 byte JMP jump table and jumps to a distinct internal dispatcher in the API bank window."
+        },
+        "executable_conditions_and_blocked_conditions": {
+          "status": "OBSERVED_STATIC",
+          "value": "Blocked twice over. The runtime MPR switch is refused by the guarded probe's dynamic MPR detection, so the call would be rejected before the operation could be measured, and the repository's reference JSR execution gate is closed for every slot."
+        },
+        "expected_return_value": {
+          "status": "UNKNOWN",
+          "value": "The result registers of the operation are not established. The dispatcher itself returns through RTS."
+        },
+        "interrupt_or_timing_dependence": {
+          "status": "OBSERVED_STATIC",
+          "value": "No interrupt enable was found in the reachable code, so a maskable interrupt cannot be taken while it runs, and the pinned core implements no NMI source."
+        },
+        "mpr_change": {
+          "status": "OBSERVED_STATIC",
+          "value": "The dispatcher reads the bank register of the target page, switches it to a fixed BIOS bank and restores the saved value before returning. The switch therefore is visible to a runtime monitor."
+        },
+        "possibly_changed_registers": {
+          "status": "OBSERVED_STATIC",
+          "value": "The dispatcher uses A and the stack; the operation's own register effects are not established."
+        },
+        "ram_io_vdc_cd_side_effects": {
+          "status": "OBSERVED_STATIC",
+          "value": "The operation writes only to page 1, that is to the work RAM page that holds the zero page and the stack. No VDC direct write, no memory mapped I/O access and no CD access was found in the reachable code."
+        },
+        "stack_usage": {
+          "status": "OBSERVED_STATIC",
+          "value": "The dispatcher pushes a return address and the saved bank register, so the stack depth of the whole call is at least two bytes for the caller's JSR plus the dispatcher's own use."
+        }
+      }
+    }
+  ],
+  "jump_table": {
+    "all_entries_are_jmp_abs": true,
+    "all_targets_distinct": true,
+    "entry_count": 81,
+    "entry_stride_bytes": 3,
+    "first_entry_cpu": "0xE000",
+    "note": "The 3 byte JMP layout at $E000 is confirmed against the private image, so the candidate entry addresses of spec/api_contracts.json are no longer only a header hypothesis for this image.",
+    "status": "OBSERVED_STATIC"
+  },
+  "method": {
+    "core_revision": "b49ae82a012eade566d72e9d61c9d95a5caa4da3",
+    "decoder": "pinned cc65 da65, HuC6280 CPU description",
+    "evidence_classes": {
+      "HYPOTHESIS": "plausible but not established",
+      "OBSERVED_STATIC": "read out of the private image by the local static audit",
+      "SOURCE_FACT": "taken from a public caller or emulator source",
+      "UNKNOWN": "not established; deliberately left unset"
+    },
+    "execution": "NOT_RUN",
+    "execution_blockers": [
+      "tools/reference_jsr_gate.py refuses every slot by design, so the committed runner cannot execute a reference JSR",
+      "Issue #173 keeps the parent in-core safety boundary open"
+    ],
+    "static_audit_tool": "tools/reference_rom_static_audit.py"
+  },
+  "phase": "ABI-1",
+  "release_eligible": false,
+  "schema": "oss-pce-cd-bios/abi1-reference-review/v1",
+  "target": {
+    "bank_bytes": 8192,
+    "bank_count": 32,
+    "body_bytes": 262144,
+    "header_bytes": 512,
+    "image": "private reference BIOS image, local input only, never committed",
+    "image_bytes": 262656,
+    "image_sha256": "df4f75feebb95e53dfef72dea0787df743e3474ba046ff5a4cb88e34dda93ff1",
+    "product": "Super System Card 3.0"
+  },
+  "trust": "LOCAL_ONLY_NOT_VERIFIED"
+}

@@ -178,13 +178,16 @@ python3 tests/integration/geargrafx_reference_guard.py
 #     allowed work-RAM store landed
 ```
 
-**Core quirk found while enabling this path (實測):** in the non-`GG_TESTING`
-build the core defines `ZERO_PAGE_ADDR = 0x2000` and `STACK_ADDR = 0x2100`
-(`huc6280.h`), i.e. the zero page and the 8-bit stack live in **page 1**, not
-page 0. The write allowlist therefore has to cover `0x2000..0x4000`; a
-page-0-only allowlist wrongly rejects the legitimate `JSR` stack push. Real
-hardware keeps the stack in page 0, so this is a core deviation to keep in
-mind — the OSS BIOS must work under this core as it exists.
+**Core mapping checked against the HuC6280 manual (2026-10-21, Phase ABI-1):** in
+the non-`GG_TESTING` build the core defines `ZERO_PAGE_ADDR = 0x2000` and
+`STACK_ADDR = 0x2100` (`huc6280.h`), i.e. the zero page and the 8-bit stack
+live in **page 1**, not page 0. The write allowlist therefore has to cover
+`0x2000..0x4000`; a page-0-only allowlist wrongly rejects the legitimate `JSR`
+stack push. This is **not** a core deviation: the HuC6280 manual places the
+zero page at `$2000` (the high order byte of a zero page address always contains
+the logical address `$20`) and the stack at `$2100`, and that placement does not
+depend on the MPRs. The pinned core therefore matches the hardware here, and a
+zero page operand of the BIOS behaves the same on the core and on hardware.
 
 **Measured EX_GETVER contract (實測, private reference BIOS, real core,
 deterministic across runs):**
