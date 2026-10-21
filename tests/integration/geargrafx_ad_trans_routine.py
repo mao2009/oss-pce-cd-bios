@@ -83,7 +83,7 @@ def build_guest(directory: Path):
         subprocess.run([ca65, str(ROOT / source), "-o", str(obj)], check=True)
         objects.append(str(obj))
     bank, labels = directory / "bank0.bin", directory / "guest.lbl"
-    subprocess.run([ld65, "-C", str(ROOT / "src/bank0.cfg"), "-o", str(bank), "-Ln", str(labels),
+    subprocess.run([ld65, "-C", str(ROOT / "tests/fixtures/ad_trans_routine_guest.cfg"), "-o", str(bank), "-Ln", str(labels),
                     "-m", str(directory / "guest.map"), *objects], check=True)
     body = bank.read_bytes()
     if len(body) != BANK_BYTES:
