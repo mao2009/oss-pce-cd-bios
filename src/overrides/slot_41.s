@@ -8,7 +8,12 @@
 ;          16-23 in the third, 24-31 in the fourth. The caller pops them (4 x PLA). A and X are clobbered.
 ;   precondition: SP at entry (after the JSR push) in $04..$F9, so the indexed $21xx,X accesses stay
 ;          in the stack page (the real-core test checks the boundary caller SP=$0A and SP=$FF)
-;   kept: Y and P (D is cleared inside for binary ADC; PLP restores the caller's flags)
+;   precondition: caller T (P bit 5) must be 0 at entry. T=1 is OUT OF CONTRACT: this routine defines no
+;          behaviour for it. The HuC6280 T flag changes ADC/AND/EOR/ORA (memory-to-memory mode), and the
+;          routine's ADC is one of them. The pinned core consumes T at the JSR itself, so the T=1 test is a
+;          characterisation only (tests/integration/geargrafx_dev_mul16u.py); it asserts no PASS for T=1.
+;   kept: Y. P is restored by PLP from the value pushed at entry (C,Z,I,D,V,N as the caller left them;
+;          the test checks bit 5 is 0 on return, bit 4 is ignored); D is cleared inside for binary ADC.
 ;   uses: stack page $2100-$21FF only (4 bytes pushed inside plus the 2 return bytes). No I/O, no MPR, I is never changed.
 ; ABI remains UNVERIFIED and this ROM stays DEV ONLY (release_eligible: false).
 ;
