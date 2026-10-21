@@ -1,8 +1,6 @@
-; Condition harness for src/ex_bcdbin.s (Issue #416). OSS-only project routine; NOT the reference BIOS EX_BCDBIN.
-; For each of 8 controlled cases (input C, X, Y, SP) it calls ex_bcdbin with 16 representative inputs and records
-; A / X / Y / P(C bit) / SP-right-after-return at work RAM $2300 / $2380 / $2400 / $2480 / $2500 (index = case*16+k).
-; The config tables (c_tab, x_tab, y_tab, sp_tab, in_tab) are in ROM and mirror the driver's CASES / INPUTS.
-; The smoke marker "PCE!",$F8,$5A at $2200 is written only after all 128 calls.
+; Condition harness for src/ex_bcdbin.s (Issue #416). OSS-only; NOT the reference BIOS EX_BCDBIN.
+; 8 cases (input C, X, Y, SP) x 16 inputs. Records A/X/Y/C/SP-after-return at $2300/$2380/$2400/$2480/$2500
+; (index = case*16+k). Tables mirror CASES / INPUTS in geargrafx_bcdbin_conditions.py. Marker "PCE!" at $2200 last.
 .setcpu "huc6280"
 .import ex_bcdbin
 .segment "RESET"
@@ -22,10 +20,10 @@ reset:
     ldx $2001
     lda sp_tab,x
     tax
-    txs                          ; SP for this case (stack page $01xx)
+    txs                          ; SP for this case
     ldx $2001
     lda c_tab,x
-    sta $2005                    ; input carry (bit 0)
+    sta $2005
     lda x_tab,x
     sta $2003
     lda y_tab,x
@@ -33,7 +31,7 @@ reset:
     stz $2002                    ; input index
 @input:
     lda $2005
-    lsr                          ; C = input carry; A is overwritten below
+    lsr                          ; C = input carry
     ldx $2002
     lda in_tab,x
     ldx $2003
@@ -42,11 +40,11 @@ reset:
     sta $2010
     stx $2011
     sty $2012
-    tsx                          ; SP right after return, before any push
+    tsx                          ; SP right after return
     stx $2014
     php
     pla
-    and #$01                     ; keep C only: N/Z/V are undefined in the spec (V is not set on tens=0 inputs)
+    and #$01                     ; C only: N/Z/V are undefined in the spec
     sta $2013
     ldx $2000
     lda $2010

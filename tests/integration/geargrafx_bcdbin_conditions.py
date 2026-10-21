@@ -1,12 +1,9 @@
 """Condition matrix for the project-own src/ex_bcdbin.s on the real Geargrafx core (Issue #416).
 
-OSS-ONLY: checks this project's spec (docs/ex-bcdbin.md). NOT the reference BIOS EX_BCDBIN, NOT a BIOS ABI check.
-Expected values come from the independent spec model in tests/host/test_ex_bcdbin.py (model + oracle), never from
-core output. The hand-computed cases below are checked against the model before any core run.
-
+OSS-ONLY: this project's spec (docs/ex-bcdbin.md). NOT the reference BIOS EX_BCDBIN; NOT a BIOS ABI check.
+Expected values: independent spec model in tests/host/test_ex_bcdbin.py (model + oracle), never core output.
 Run: python3 tests/integration/geargrafx_bcdbin_conditions.py [--output evidence.json] [--inject expect-value|expect-sp]
-Exit: 0 PASS; 1 FAIL (includes --inject, which deliberately uses a wrong expectation); 3 BLOCKED (not Linux, or the
-pinned cc65 / Geargrafx core is missing). Negative controls are run inside every PASS run and must be refused.
+Exit: 0 PASS (all negative controls refused); 1 FAIL (includes --inject); 3 BLOCKED (not Linux, or pinned tools/core missing).
 """
 from pathlib import Path
 import argparse
@@ -17,8 +14,7 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "tools"))
-sys.path.insert(0, str(ROOT / "tests/host"))
+sys.path[:0] = [str(ROOT / "tools"), str(ROOT / "tests/host")]
 from environment import DEPENDENCIES, core_path, executable  # noqa: E402
 from test_ex_bcdbin import model, oracle  # noqa: E402
 
@@ -26,19 +22,29 @@ ROUTINE = ROOT / "src/ex_bcdbin.s"
 HARNESS = ROOT / "tests/fixtures/bcdbin_cond_harness.s"
 CFG = ROOT / "tests/fixtures/bcdbin.cfg"
 BLOCKED_EXIT = 3
-# (input C, X, Y, SP): mirrors the ROM tables c_tab / x_tab / y_tab / sp_tab in bcdbin_cond_harness.s
+# (input C, X, Y, SP): mirrors c_tab / x_tab / y_tab / sp_tab in the harness
 CASES = ((0, 0x5A, 0xA5, 0xFF), (1, 0x5A, 0xA5, 0xFF), (0, 0x00, 0x00, 0xFF), (1, 0xFF, 0xFF, 0xFF),
          (0, 0x12, 0x34, 0x80), (1, 0xAB, 0xCD, 0x80), (0, 0x5A, 0xA5, 0x80), (1, 0x00, 0xFF, 0xC0))
-# mirrors in_tab in the harness; 16 inputs per case
 INPUTS = (0x00, 0x01, 0x09, 0x10, 0x19, 0x20, 0x42, 0x59, 0x90, 0x99, 0x0A, 0x0F, 0x9A, 0xA0, 0xC5, 0xFF)
-# hand-computed from the spec: packed BCD -> (A, C); C=1 returns the input unchanged
 HAND = {0x00: (0, 0), 0x42: (42, 0), 0x99: (99, 0), 0x0A: (0x0A, 1), 0x9A: (0x9A, 1), 0xC5: (0xC5, 1)}
-BASE = 0x2200  # smoke marker address; RAM dump index = address - BASE
+BASE = 0x2200  # smoke marker; dump index = address - BASE
 ARRAYS = {"a": 0x2300, "x": 0x2380, "y": 0x2400, "p": 0x2480, "sp": 0x2500}  # 128 records each
 EXTRA = 0x2580 - BASE
-# ROM mutants (byte pattern, replacement, must occur exactly once): a stack imbalance and a wrong SP table entry
-ROM_MUTANTS = (("stack-imbalance: phx/phy -> nop nop", "da 5a", "ea ea"),
-               ("sp-table: case 4 SP $80 -> $81", "ff ff ff ff 80 80 80 c0", "ff ff ff ff 81 80 80 c0"))
+# Negative controls: (name, old bytes, new bytes); each old pattern must occur exactly once in the built ROM.
+ROM_MUTANTS = (
+    ("derail: phx/phy -> nop nop (stack imbalance, returns to garbage)", "da 5a", "ea ea"),
+    ("loop: phx/phy -> bra -2 (infinite loop inside the frame)", "da 5a", "80 fe"),
+    ("sp-table: case 4 SP $80 -> $81 (routine unchanged)", "ff ff ff ff 80 80 80 c0", "ff ff ff ff 81 80 80 c0"),
+    ("observed-sp: harness tsx -> nop (routine returns normally, SP not observed)", "ba 8e 14 20",
+     "ea 8e 14 20"),
+)
+WORKER = ("import json, sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); from geargrafx_smoke import execute\n"
+          "try: print(json.dumps(execute(Path(sys.argv[2]), Path(sys.argv[3]), int(sys.argv[4]))))\n"
+          "except ValueError as error: print(json.dumps({'error': str(error)}))")
+
+
+class Derailed(Exception):
+    """The guest did not finish: a refusal recorded as a run outcome, not a crash."""
 
 
 def expect(i, inject=None):
@@ -46,7 +52,7 @@ def expect(i, inject=None):
     case, k = divmod(i, len(INPUTS))
     _, x, y, sp = CASES[case]
     a, carry = model(INPUTS[k])
-    if inject == "expect-value" and i == 6:  # deliberately wrong: $42 expected as 43
+    if inject == "expect-value" and i == 6:  # deliberately wrong: $42 expected as $43
         a ^= 1
     if inject == "expect-sp":  # deliberately wrong SP expectation for every record
         sp -= 1
@@ -54,14 +60,13 @@ def expect(i, inject=None):
 
 
 def mismatches(dumps, inject=None):
-    """dumps: [cold RAM dump, warm RAM dump], each starting at $2200. Returns (run, record, diff) tuples."""
+    """dumps: [cold, warm] RAM dumps starting at $2200. Returns (run, record, diff) tuples."""
     bad = []
     for run, ram in zip(("cold", "warm"), dumps):
         col = {name: ram[addr - BASE:addr - BASE + 128] for name, addr in ARRAYS.items()}
         for i in range(128):
             want = expect(i, inject)
-            got = {"a": col["a"][i], "c": col["p"][i] & 1, "x": col["x"][i], "y": col["y"][i],
-                   "sp": col["sp"][i]}
+            got = {"a": col["a"][i], "c": col["p"][i] & 1, "x": col["x"][i], "y": col["y"][i], "sp": col["sp"][i]}
             diff = {f: [got[f], want[f]] for f in want if got[f] != want[f]}
             if diff:
                 bad.append((run, i, diff))
@@ -72,8 +77,7 @@ def describe(bad):
     if not bad:
         return None
     run, i, diff = bad[0]
-    case, k = divmod(i, len(INPUTS))
-    return f"mismatch ({len(bad)} records): {run} case {case} input ${INPUTS[k]:02X} got/want {diff}"
+    return f"mismatch ({len(bad)} records): {run} case {i // 16} input ${INPUTS[i % 16]:02X} got/want {diff}"
 
 
 def assemble(out):
@@ -88,14 +92,19 @@ def assemble(out):
 
 
 def run_core(core, rom):
-    code = ("import json, sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); "
-            "from geargrafx_smoke import execute; "
-            "print(json.dumps(execute(Path(sys.argv[2]), Path(sys.argv[3]), int(sys.argv[4]))))")
-    result = subprocess.run([sys.executable, "-c", code, str(ROOT / "tests/integration"), str(core), str(rom),
-                             str(EXTRA)], capture_output=True, text=True, timeout=60)
+    """Returns (core version, [cold dump, warm dump]). Raises Derailed when the guest hangs or never writes the marker."""
+    try:
+        result = subprocess.run([sys.executable, "-c", WORKER, str(ROOT / "tests/integration"), str(core), str(rom),
+                                 str(EXTRA)], capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        raise Derailed("guest hung: retro_run did not return within 60 s") from None
     if result.returncode:
-        raise RuntimeError(f"Geargrafx run failed: {result.stderr[-2000:]}")
+        raise RuntimeError(f"Geargrafx worker failed: {result.stderr[-2000:]}")
     data = json.loads(result.stdout)
+    if "error" in data:
+        if data["error"].startswith("actual guest marker mismatch"):
+            raise Derailed("guest did not reach the end marker (control flow derailed)")
+        raise RuntimeError(data["error"])
     if data["core_version"] != DEPENDENCIES["geargrafx"]["revision"]:
         raise RuntimeError("core does not report the pinned revision")
     return data["core_version"], [bytes.fromhex(item) for item in data["cold_and_warm_reset_ram"]]
@@ -126,14 +135,13 @@ def main():
         out = Path(tmp)
         rom = assemble(out)
         data = rom.read_bytes()
-        version, dumps = run_core(core, rom)
+        version, dumps = run_core(core, rom)  # unmutated ROM (positive control)
         positive = mismatches(dumps, args.inject)
-        # Negative controls: a wrong expectation on clean core output, and two mutated ROMs. Each must be refused
-        # by the comparator (not by a launch failure), otherwise the run FAILS.
-        negatives, mutant_sha = {}, {}
-        for name, want in (("wrong expected value (core output)", "expect-value"),
-                           ("wrong expected SP (core output)", "expect-sp")):
-            negatives[name] = describe(mismatches(dumps, want))
+        negatives = {
+            "wrong expected value (core output)": describe(mismatches(dumps, "expect-value")),
+            "wrong expected SP (core output)": describe(mismatches(dumps, "expect-sp")),
+        }
+        mutant_sha = {}
         for name, old, new in ROM_MUTANTS:
             if data.count(bytes.fromhex(old)) != 1:
                 raise RuntimeError(f"mutant pattern not unique: {name}")
@@ -141,19 +149,16 @@ def main():
             mutant.write_bytes(data.replace(bytes.fromhex(old), bytes.fromhex(new)))
             mutant_sha[name] = sha(mutant.read_bytes())
             try:
-                _, mutant_dumps = run_core(core, mutant)
-                negatives[name] = describe(mismatches(mutant_dumps))
-            except RuntimeError as error:  # control flow derailed: the guest never writes the marker
-                if "actual guest marker mismatch" not in str(error):
-                    raise
-                negatives[name] = f"guest did not reach the end marker (control flow derailed): {name}"
+                negatives[name] = describe(mismatches(run_core(core, mutant)[1]))
+            except Derailed as error:
+                negatives[name] = f"refused by run: {error}"
     refused = {name: text is not None for name, text in negatives.items()}
     status = "PASS" if not positive and all(refused.values()) else "FAIL"
     matrix = []
     for c, (cin, x, y, sp) in enumerate(CASES):
         bad = sum(1 for _, i, _ in positive if i // len(INPUTS) == c)
-        matrix.append({"case": c, "input_c": cin, "x": x, "y": y, "sp": sp, "records": 2 * len(INPUTS),
-                       "passed": 2 * len(INPUTS) - bad})
+        matrix.append({"case": c, "input_c": cin, "x": x, "y": y, "sp": sp,
+                       "records": 2 * len(INPUTS), "passed": 2 * len(INPUTS) - bad})
     evidence = {
         "schema_version": 1, "issue": 416, "status": status, "exit_code": 0 if status == "PASS" else 1,
         "scope": "OSS-only project routine src/ex_bcdbin.s; NOT the reference BIOS EX_BCDBIN; not a BIOS ABI check",
@@ -165,8 +170,6 @@ def main():
         "matrix": matrix, "positive_mismatches": len(positive), "first_positive_mismatch": describe(positive),
         "negative_controls": {name: {"refused": refused[name], "reason": negatives[name]} for name in negatives},
         "negative_controls_refused": sum(refused.values()), "mutant_sha256": mutant_sha,
-        "runs": {"cold_and_warm": ["cold", "warm"], "frames_per_reset": 2},
-        "not_tested": ["reference BIOS EX_BCDBIN", "D=1 input", "SP values other than the 4 listed"],
     }
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
