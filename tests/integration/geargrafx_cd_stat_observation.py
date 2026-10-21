@@ -124,9 +124,11 @@ def main():
         if stuck[at:at + 3] != bytes((0x8D, 0x00, 0x18)):
             raise ValueError("ms_select is not STA $1800")
         stuck[at + 1] = 0x05
+        # The paired control must be the same modified ROM, otherwise the judge rejects the pair for the wrong reason.
         stuck_records = paired(good / CUE_NAME, image=bytes(stuck))
+        stuck_without = paired("-", image=bytes(stuck))
         results["selection_timeout"] = rejected(
-            "selection_timeout", lambda: judge_observation(stuck_records, without, BUDGET), ERRORS[0x82])
+            "selection_timeout", lambda: judge_observation(stuck_records, stuck_without, BUDGET), ERRORS[0x82])
 
         # Negative: step budget exhausted in the real core (reason "budget"), and steps beyond a smaller judge bound.
         short_with = paired(good / CUE_NAME, budget=1000)
