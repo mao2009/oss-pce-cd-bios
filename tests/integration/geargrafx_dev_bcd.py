@@ -1,8 +1,10 @@
-"""Real Geargrafx run of EX_BINBCD (slot $3C) through the DEV ROM entry (Issue #70, DEV integration #427).
+"""Real Geargrafx run of EX_BINBCD (slot $3C, #70) and EX_BCDBIN (slot $3D, #71) through the DEV ROM entries.
+
+DEV integration: $3C is Issue #427, $3D is Issue #428.
 
 A guest program replaces the reset code of the built DEV ROM. It sets MPR1 to work RAM, preloads X/Y, JSRs the
 candidate entry with one input in A, stores A/P/X/Y at $2200-$2203 and halts. The expectations are this project's
-own spec (docs/ex-binbcd-internal.md), NOT the reference System Card ABI, which stays UNVERIFIED.
+own spec (docs/ex-bcdbin.md), NOT the reference System Card ABI, which stays UNVERIFIED.
 Run: python3 tests/integration/geargrafx_dev_bcd.py --rom build/debug/bios-dev/dev-only-not-compatible-syscard3.pce
 Needs the pinned cc65 and Geargrafx core (make setup, TOOLS_DIR on Linux). Missing tools exit 3 (BLOCKED).
 """
@@ -23,7 +25,7 @@ import geargrafx_api as api  # noqa: E402
 BLOCKED_EXIT = 3
 CALL_TIMEOUT_STEPS = 400  # the guest plus the routine take well under this many instructions
 STORE = 0x2200  # guest writes A, P, X, Y here; the probe dumps work RAM from $2200
-SLOT_EX_BINBCD = 0x3C
+SLOT_EX_BCDBIN, SLOT_EX_BINBCD = 0x3D, 0x3C
 
 
 def entry_address(slot):
@@ -47,6 +49,14 @@ def guest(reset, entry, value, x=0x5A, y=0xA5):
                   0x8C, (STORE + 3) & 0xFF, (STORE + 3) >> 8])  # STY $2203
     halt = reset + len(code)
     return code + bytes([0x80, 0xFE]), halt  # BRA -2
+
+
+def expected_bcdbin(value):
+    """docs/ex-bcdbin.md: packed BCD -> (A, C). Invalid (either nibble > 9): A unchanged, C=1."""
+    tens, ones = value >> 4, value & 0x0F
+    if tens > 9 or ones > 9:
+        return value, 1
+    return tens * 10 + ones, 0
 
 
 def expected_binbcd(value):
@@ -111,7 +121,7 @@ def main():
     verify_dev_rom(data, manifest=args.rom.parent / "manifest.json")
     reset = int.from_bytes(data[0x1FFE:0x2000], "little")
     probe = api.compile_probe(args.rom.parent)
-    evidence = {"scope": "DEV ROM real-core run of project-own EX_BINBCD, NOT System Card ABI compatibility",
+    evidence = {"scope": "DEV ROM real-core run of project-own EX_BCDBIN, NOT System Card ABI compatibility",
                 "rom_sha256": hashlib.sha256(data).hexdigest(), "cases": [], "negative_cases": []}
     with tempfile.TemporaryDirectory(prefix="pce-dev-bcd-") as tmp:
         folder = Path(tmp)
@@ -125,14 +135,24 @@ def main():
             run_case(probe, data, folder, cue, reset, f"binbcd-{value:02x}", binbcd_entry, value,
                      (a, c, 0x5A, 0xA5))
             evidence["cases"].append({"slot": "3C", "input": value, "expected_a": a, "expected_c": c})
-        # Negative: the 3C entry called with 0x42 must not match the packed-BCD-decode result 42 (C=0) that
-        # belongs to the other DEV routine; the 3C packed result for binary 66 is 0x66.
-        wrong = run_case_expect_fail(probe, data, folder, cue, reset, "wrong-decode", binbcd_entry, 0x42,
-                                     (42, 0, 0x5A, 0xA5))
-        evidence["negative_cases"].append({"case": "3C_entry_with_BCDBIN_decode_expectation", "observed": wrong})
+        # Per-API negative (3C): the 3C entry with 0x42 must not match the 3D decode result 42 (C=0); 3C gives 0x66.
+        wrong_3c = run_case_expect_fail(probe, data, folder, cue, reset, "wrong-decode", binbcd_entry, 0x42,
+                                        (42, 0, 0x5A, 0xA5))
+        evidence["negative_cases"].append({"case": "3C_entry_with_BCDBIN_decode_expectation", "observed": wrong_3c})
+        bcdbin_entry = entry_address(SLOT_EX_BCDBIN)
+        bcdbin_inputs = [0x00, 0x09, 0x10, 0x19, 0x90, 0x99, 0x0A, 0x0F, 0x1A, 0x9A, 0xA0, 0xFF]
+        for value in bcdbin_inputs:
+            a, c = expected_bcdbin(value)
+            run_case(probe, data, folder, cue, reset, f"bcdbin-{value:02x}", bcdbin_entry, value,
+                     (a, c, 0x5A, 0xA5))
+            evidence["cases"].append({"slot": "3D", "input": value, "expected_a": a, "expected_c": c})
+        # Per-API negative (3D): the 3D entry with 0x42 must not match the encode result 0x66 (binary 66 -> BCD).
+        wrong = run_case_expect_fail(probe, data, folder, cue, reset, "wrong-encode", bcdbin_entry, 0x42,
+                                     (0x66, 0, 0x5A, 0xA5))
+        evidence["negative_cases"].append({"case": "3D_entry_with_BINBCD_encode_expectation", "observed": wrong})
     (args.rom.parent / "geargrafx-dev-bcd-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
-    print(f"PASS real Geargrafx DEV ROM: EX_BINBCD slot $3C {len(binbcd_inputs)} inputs; A/C/X/Y, SP, MPR checked; "
-          f"1 wrong-decode negative detected")
+    print(f"PASS real Geargrafx DEV ROM: EX_BINBCD slot $3C {len(binbcd_inputs)} inputs; EX_BCDBIN slot $3D "
+          f"{len(bcdbin_inputs)} inputs; A/C/X/Y, SP, MPR checked; 2 per-API wrong-entry negatives detected")
 
 
 if __name__ == "__main__":
