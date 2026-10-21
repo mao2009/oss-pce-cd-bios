@@ -7,6 +7,7 @@ records must be REJECTED; malformed, missing or unknown records must be BLOCKED 
 import copy
 import hashlib
 import importlib.util
+import itertools
 import subprocess
 import sys
 import unittest
@@ -174,6 +175,121 @@ class Slot00FixtureTests(unittest.TestCase):
         self.assertTrue(lines[0].startswith("NOT_RUN: "), result.stdout)
         self.assertTrue(lines[1].startswith("BLOCKED: "), result.stdout)
         self.assertNotIn("PASS", result.stdout)
+
+
+def boundary_variants():
+    """Media edge cases around the one valid sector: (name, raw bytes or None, literal model class)."""
+    sector = M.synthetic_media("valid_synthetic")
+    return [
+        ("absent", None, "NO_MEDIA"),
+        ("empty_file", b"", "MALFORMED"),
+        ("magic_only", M.MAGIC, "MALFORMED"),
+        ("short_by_one", sector[:-1], "MALFORMED"),
+        ("long_by_one", sector + b"\0", "MALFORMED"),
+        ("magic_offset_one", b"\0" + sector[:-1], "MALFORMED"),
+        ("exact_sector", sector, "BOOT_CANDIDATE"),
+        ("last_byte_changed", sector[:-1] + b"\x01", "BOOT_CANDIDATE"),
+    ]
+
+
+def sha_or_none(media):
+    return None if media is None else hashlib.sha256(media).hexdigest()
+
+
+UNKNOWN_FIELDS = ("boot_target", "return_path", "stack", "irq")
+
+
+class Slot00MediaBoundaryTests(unittest.TestCase):
+    def test_classification_at_sector_edges(self):
+        for name, media, expected in boundary_variants():
+            with self.subTest(name):
+                self.assertEqual(M.classify_media(media), expected)
+
+    def test_absent_and_empty_media_are_distinct(self):
+        self.assertEqual(M.classify_media(None), "NO_MEDIA")
+        self.assertEqual(M.classify_media(b""), "MALFORMED")
+        self.assertNotEqual(sha_or_none(b""), CASE["absent"]["expected_media_sha256"])
+        # An empty file is not "no medium": a NO_MEDIA claim backed by its hash must be rejected.
+        record = dict(truthful(CASE["absent"]), media_sha256=sha_or_none(b""))
+        self.assertEqual(M.judge(CASE["absent"], record)[0], "REJECTED")
+        # Absent media reported for the malformed case contradicts its identity.
+        record = {"schema": M.EVIDENCE_SCHEMA, "slot": M.SLOT, "media_sha256": None,
+                  "boot_claimed": False, "error_code": "NO_MEDIA", "executed_callee": False}
+        self.assertEqual(M.judge(CASE["malformed"], record)[0], "REJECTED")
+
+    def test_only_the_exact_valid_sector_is_boot_consistent(self):
+        valid = CASE["valid_synthetic"]
+        for name, media, _ in boundary_variants():
+            with self.subTest(name):
+                status, _ = M.judge(valid, dict(truthful(valid), media_sha256=sha_or_none(media)))
+                self.assertEqual(status, "MODEL_CONSISTENT" if name == "exact_sector" else "REJECTED")
+
+    def test_neighbouring_media_hashes_are_distinct(self):
+        hashes = [sha_or_none(media) for _, media, _ in boundary_variants() if media is not None]
+        self.assertEqual(len(hashes), len(set(hashes)))
+
+
+class Slot00UnknownVsBlockedTests(unittest.TestCase):
+    def test_unmeasured_fields_stay_unknown_and_valid(self):
+        for kind, case in CASE.items():
+            with self.subTest(kind=kind):
+                for field in UNKNOWN_FIELDS:
+                    self.assertEqual(case[field], M.UNKNOWN)
+                self.assertEqual(M.validate_case(case), [])
+
+    def test_measured_value_in_an_unknown_field_blocks_the_judge(self):
+        for field in UNKNOWN_FIELDS:
+            for value in ("$4000", None, 0, ""):
+                with self.subTest(field=field, value=value):
+                    case = copy.deepcopy(CASE["valid_synthetic"])
+                    case[field] = value
+                    self.assertTrue(M.validate_case(case))
+                    self.assertEqual(M.judge(case, truthful(CASE["valid_synthetic"]))[0], "BLOCKED")
+
+    def test_unknown_result_is_blocked_while_a_wrong_value_is_rejected(self):
+        absent = CASE["absent"]
+        self.assertEqual(M.judge(absent, dict(truthful(absent), error_code=M.UNKNOWN))[0], "BLOCKED")
+        self.assertEqual(M.judge(absent, dict(truthful(absent), error_code="MALFORMED"))[0], "REJECTED")
+        self.assertEqual(M.judge(absent, dict(truthful(absent), boot_claimed=True))[0], "REJECTED")
+        self.assertEqual(M.judge(absent, truthful(absent))[0], "MODEL_CONSISTENT")
+
+    def test_missing_or_empty_evidence_is_blocked_for_every_kind(self):
+        for kind, case in CASE.items():
+            with self.subTest(kind=kind):
+                self.assertEqual(M.judge(case, None)[0], "BLOCKED")
+                self.assertEqual(M.judge(case, {})[0], "BLOCKED")
+
+    def test_unknown_result_is_blocked_for_every_kind(self):
+        for kind, case in CASE.items():
+            with self.subTest(kind=kind):
+                self.assertEqual(M.judge(case, dict(truthful(case), error_code=M.UNKNOWN))[0], "BLOCKED")
+
+
+class Slot00NeverReportsSuccessTests(unittest.TestCase):
+    def test_exhaustive_grid_only_exact_truth_is_model_consistent(self):
+        sha_values = (None, "ab", sha_or_none(b"unrelated"), "0" * 64, "A" * 64, "__expected__")
+        boot_values = (True, False, "yes", None)
+        error_values = (None, "NO_MEDIA", "MALFORMED", M.UNKNOWN, "PASS", [])
+        executed_values = (False, True, 0)
+        seen = set()
+        for kind, case in CASE.items():
+            base = truthful(case)
+            for sha, boot, error, executed in itertools.product(sha_values, boot_values, error_values,
+                                                                executed_values):
+                sha = case["expected_media_sha256"] if sha == "__expected__" else sha
+                record = dict(base, media_sha256=sha, boot_claimed=boot, error_code=error, executed_callee=executed)
+                status, _ = M.judge(case, record)
+                seen.add(status)
+                if status == "MODEL_CONSISTENT":
+                    self.assertEqual(record, base, f"{kind}: non-truthful record reported consistent")
+        self.assertEqual(seen, {"BLOCKED", "REJECTED", "MODEL_CONSISTENT"})
+
+    def test_boot_claim_without_valid_media_is_never_consistent(self):
+        for kind in ("absent", "malformed"):
+            for error in (None, "NO_MEDIA", "MALFORMED"):
+                with self.subTest(kind=kind, error=error):
+                    record = dict(truthful(CASE[kind]), boot_claimed=True, error_code=error)
+                    self.assertNotEqual(M.judge(CASE[kind], record)[0], "MODEL_CONSISTENT")
 
 
 if __name__ == "__main__":

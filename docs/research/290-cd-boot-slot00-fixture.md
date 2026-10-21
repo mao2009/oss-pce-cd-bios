@@ -31,3 +31,15 @@
 - 自己申告は LOCAL_ONLY。`MODEL_CONSISTENT` を実コアの観測や System Card 互換の証拠として扱わない。
 - 実コアでの slot `$00` 実行、媒体の実読取り、BIOS 経由のブートは未実施（NOT RUN）。
 - `rom/` の私的入力は読まない。公開テストは合成データのみで動く。
+
+## 4. 境界・UNKNOWN と BLOCKED の区別・成功非報告（追加検査）
+
+`tests/host/test_cdboot_slot00_fixture.py` に、次の 3 群（計 11 件）を追加した。モジュールの挙動は変えていない。
+
+- 媒体の境界（`Slot00MediaBoundaryTests`）: 無媒体（None）と空ファイル（`b""`）は別物で、空ファイルは MALFORMED。1 バイト短い・長い・マジックのみ・マジックが 1 バイトずれた媒体は MALFORMED。完全な 1 セクタのみが BOOT_CANDIDATE。末尾 1 バイトを変えた媒体は、分類は BOOT_CANDIDATE のままだが、SHA が一致しないため judge は REJECTED。
+- UNKNOWN と BLOCKED（`Slot00UnknownVsBlockedTests`）: 未計測項目（`boot_target` など）は UNKNOWN のまま有効。具体値を入れると BLOCKED。結果が UNKNOWN の自己申告は BLOCKED、値の矛盾は REJECTED。証拠が無い場合は全ケースで BLOCKED。
+- 成功非報告（`Slot00NeverReportsSuccessTests`）: 全組合せ（媒体 SHA・boot・error_code・executed_callee）を総当たりし、MODEL_CONSISTENT になるのは真の自己申告と完全一致する場合だけであることを確認。absent・malformed で boot を主張する記録は MODEL_CONSISTENT にならない。
+
+負例（変異検査、一時コピーで実施）: 長さ検査の削除、UNKNOWN 結果の扱いの変更、同一性不一致の REJECTED 化、未計測項目の検査の削除、証拠なしの MODEL_CONSISTENT 化の 5 件を入れると、いずれも追加テストが失敗した。
+
+限界: 境界の追加検査も合成バイトのみで、実媒体・実コア・純正 slot `$00` の実行は行っていない（NOT RUN）。`MODEL_CONSISTENT` は実行の証拠ではない。
