@@ -26,9 +26,16 @@ Refs #302 / 親 #34 / 関連 #303（合成FORMAT安全モデル）/ #304（診�
 | --- | --- | --- | --- |
 | `huc:include/hucc/pcengine.inc` | CALLER（宣言） | 一致（完全値 `b6a25d33…728a9`、api_contracts.json:12） | `bm_format = $00:E048, FUNC`（L494）、`bm_free`=`$E04B`（L495）、`IFU_BRAM_LOCK/UNLOCK`（L204-205）、`_ax`/`_al`（L329-330） |
 | `huc:include/hucc/hucc-systemcard.asm` | CALLER（ラッパー） | 一致（完全値 `4258b7c3…ea9`、api_contracts.json:21） | `_bm_format`（L675-698）、`_bm_free`（L713-722）、BM 定数（L54-61）、`_bm_check`（L615-）|
-| `huc:include/hucc/hucc-systemcard.h` | CALLER（C 宣言） | 一致（完全値 `f2477642f867c3daeff00938534f3f8ef970d1a9403f44bd09e90894220b8a3b`、api_contracts.json:30） | BM 定数（L31-38）と `bm_format` 宣言（L111）のみ参照。本台帳の根拠としては未使用 |
+| `huc:include/hucc/hucc-systemcard.h` | CALLER（C 宣言） | 一致（完全値 `f2477642f867c3daeff00938534f3f8ef970d1a9403f44bd09e90894220b8a3b`、api_contracts.json:30） | BM 定数（L31-38）と `bm_format` 宣言（L111）を根拠として引用する。ラッパー本体の根拠は asm 行のみ。引用行は下記 |
 | `hugo:bios.c` | HLE | 本書の対象外 | HLE の selector であり原本ではない（`api_contracts.json` slot 24 の注記どおり） |
 | 第三者の BIOS offset 表 | 第三者 | 未取得 | `$E048` の入口番地の二次確認は未実施（UNKNOWN） |
+
+`hucc-systemcard.h` の引用箇所（sha256 は上表のとおり一致を確認済み、ref 54f5c73 の L37, L38, L111 を読んで確認）:
+
+* L38 `BM_NOT_FORMATTED 0xFF`: 行 C6 の補足（同値）。
+* L31-38 BM 定数: §2.1 の境界説明。
+* L37 `BM_NOT_FORMATED 0xFF`（綴り誤り）: §5 の不整合。
+* L111 `bm_format` 宣言: 参照のみ。台帳の状態判定には使わない。
 
 ## 2. 呼出側使用台帳
 
@@ -48,8 +55,10 @@ Refs #302 / 親 #34 / 関連 #303（合成FORMAT安全モデル）/ #304（診�
 | C5b | BIOS の実返値 | 成功時に BIOS が返す A/X の値。呼出側は A==0 のみ見る | asm:687-690 | UNKNOWN |
 | C6 | 異常時の返値（呼出側） | `bm_format` の A が非 0 なら X=`$FF`（BM_NOT_FORMATTED）に置換して返す。BIOS の実コードは X に残らない | asm:692-694 / 定義 asm:61（同値が hucc-systemcard.h:38） | CONFIRMED-by-source |
 | C7 | 返値の記録（呼出側） | `__bm_error` は asm:688 で BIOS の A を保存するが、asm:694 の `stx` で X（`$FF` または 0）に上書きされる。BIOS の実コードは `__bm_error` にも残らない。`.ds 1` は asm:65、戻りは `leave` で X→A（asm:696） | asm:65, 688, 694-696 | CONFIRMED-by-source |
-| C8 | MPR | ラッパーは MPR を変更しない。`.password` のアドレスは `lda.l/.h #` で得るのみ。ポインタが BIOS から見える MPR 配置は UNKNOWN（`api_contracts` は HYPOTHESIS 扱い） | asm:682-685 | UNKNOWN |
-| C9 | 退避レジスタ | ラッパーは A/X/Y を破壊し、P/スタックは退避しない（`leave` で戻る）。BIOS 側の退避は UNKNOWN（B2 参照） | asm:675-698 | CONFIRMED-by-source |
+| C8a | MPR（呼出側） | ラッパーは MPR を変更しない（tma/tam 命令なし）。`.password` のアドレスは `lda.l/.h #` で得るのみ | asm:675-698 / asm:682-685 | CONFIRMED-by-source |
+| C8b | MPR（BIOS 側） | ポインタが BIOS から見える MPR 配置。未観測 | — | UNKNOWN |
+| C9a | 退避レジスタ（呼出側） | ラッパーは A/X/Y を書き換え、P を退避せず（php/plp なし）、スタックも退避しない（`leave` で戻る） | asm:675-698 | CONFIRMED-by-source |
+| C9b | 退避レジスタ（BIOS 側） | BIOS が A/X/Y/P を退避するか（B2 参照） | — | UNKNOWN |
 | C10a | 解除シーケンス（呼出側） | ラッパー本文に `IFU_BRAM_UNLOCK`（`$FF:1807`）への書込みはない。解除シーケンスは `_bm_check` 側にある | asm:675-698 / pcengine.inc:205 / asm:625-630 | CONFIRMED-by-source |
 | C10b | BIOS の MMIO 解除 | BIOS が内部で `$1807` 書込みによる解除、`$1803` による施錠を行うか | — | UNKNOWN |
 | C11 | 容量要件 | 呼出側は長さを渡さず、容量の前提も記載しない。最小容量 64 バイトは #395 の内部値であり根拠にしない | asm:667-673 | UNKNOWN |
@@ -100,14 +109,14 @@ Refs #302 / 親 #34 / 関連 #303（合成FORMAT安全モデル）/ #304（診�
 
 ## 7. 状態集計
 
-台帳行は C1a-C12（呼出側、分割後 18 行）と B1-B7（BIOS 側 7 行）の計 25 行。各行の状態は 1 つ。
+台帳行は C1a-C12（呼出側、分割後 20 行）と B1-B7（BIOS 側 7 行）の計 27 行。各行の状態は 1 つ。
 
 | 状態 | 行数 | 行 |
 | --- | --- | --- |
-| CONFIRMED-by-source | 10 | C1a, C1b, C2, C3a, C4a, C5a, C6, C7, C9, C10a |
+| CONFIRMED-by-source | 11 | C1a, C1b, C2, C3a, C4a, C5a, C6, C7, C8a, C9a, C10a |
 | HYPOTHESIS | 2 | C1c, C4b |
-| UNKNOWN | 13 | C3b, C5b, C8, C10b, C11, C12, B1-B7 |
-| 合計 | 25 | |
+| UNKNOWN | 14 | C3b, C5b, C8b, C9b, C10b, C11, C12, B1-B7 |
+| 合計 | 27 | |
 
 * §4 の #304 判定（BLOCKED_ABI）は台帳行ではなく別判定として 1 件。
 * VERIFIED は 0。release_eligible=false。
