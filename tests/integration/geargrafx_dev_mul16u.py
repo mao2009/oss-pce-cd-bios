@@ -10,8 +10,8 @@ checked cases are edge values, carry-heavy values and a few mixed values, at two
 $0A, i.e. entry SP $04, and $FF, i.e. entry SP $F9).
 Precondition: caller T (P bit 5) = 0 at entry. T=1 is out of contract (src/overrides/slot_41.s header). Every
 checked case runs with T=0. P is compared with mask $EF: C,Z,I,D,V,N must match and bit 5 (T) must be 0 on
-return; bit 4 (B) is ignored because PHP pushes it as 1 and PLP does not store it. One T=1 characterisation
-run (SET before the JSR) records what the pinned core returns and asserts no PASS, because T=1 is out of contract.
+return; bit 4 (B) is ignored because PHP pushes it as 1 and PLP does not store it. Two T=1 characterisation
+runs (SET before the JSR) record what the pinned core returns and assert no PASS, because T=1 is out of contract.
 Not checked: A and X (declared clobbered), MPR0 and MPR2-6 (MPR1 and MPR7 only), other RAM.
 The 65,536-multiplier, 12-multiplicand host model lives in tests/host/test_ma_mul16u_dev.py.
 Run: python3 tests/integration/geargrafx_dev_mul16u.py --rom build/debug/bios-dev/dev-only-not-compatible-syscard3.pce
