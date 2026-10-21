@@ -140,7 +140,7 @@ manifest sha256 は run ごとに変わる。manifest には platform、python�
 - `--selftest` は契約から作った観測で判定器と改変表だけを検査する。コア実行の証拠ではない。
 
 - 来歴の限界（a8f924e）: `--verify` は作業ツリーの sha と manifest の整合を確認する。manifest と成果物を同時に書き換えれば通るため、これは整合性の確認であり、来歴（どの実行が生成したか）の証明ではない。
-- 時刻シードの範囲（a8f924e）: probe は `time()` を定数に固定する。Geargrafx の乱数シードは `time(NULL)` 由来のため、固定により SCSI 初期遅延の経路は 1 通りしか検査されない（30 シードの掃引は別記録）。判定は steps を読まないため、判定結果はこの固定の影響を受けない。
+- 時刻シードの範囲（a8f924e）: probe は `time()` を定数に固定する。Geargrafx の乱数シードは `time(NULL)` 由来のため、固定により SCSI 初期遅延の経路は 1 通りしか検査されない（シード掃引の結果は本リポジトリに記録していない）。判定は steps を読まないため、判定結果はこの固定の影響を受けない。
 
 ## 11. 証拠の区分
 
@@ -162,4 +162,4 @@ manifest sha256 は run ごとに変わる。manifest には platform、python�
   1. cc65（pinned）が使える環境で `src/adt_dma_routine.s` と `src/adt_dma_routine_boot.s` が警告なくアセンブルとリンクできること（`cd_entry` が `$F000`）。本 PR では、テスト専用の `tests/fixtures/ad_trans_routine_guest.cfg` でリンクし、`src/bank0.cfg` は変更しない。BOOT（$F000）と VECTORS（$FFF6）の配置は `src/bank0.cfg` と同一で、この経路の警告は 0 である。`make dev-rom` は a8f924e で終了コード 0・ld65 警告 0 件（`build_rom.py` が生成する api_table.s が APITABLE/FALLBACK を定義する）。
   2. `make setup` の後、`python3 tests/integration/geargrafx_ad_trans_routine.py --out build/ad-trans-routine` が終了コード 0 で、判定 `PASS_ADT_ROUTINE_FOUR_CALLS` を返すこと。
   3. `--verify` が終了コード 0 であること。c80d310 以降のコードでは、8d04c9f の clean clone での実コア実行で満たした（§11「c80d310 以降のコードの扱い」）。60b15e7 の結果は c80d310 以降の driver を覆わない。8d04c9f の生成と検証は同じ run 内で行った（同一 run で生成した manifest に対する検査）。driver の同一性は、その run の manifest の driver_sha256 で示される。
-  4. 解除状態: 条件 1 は本 PR のテスト専用 cfg で充足（a8f924e。§11 の run 一覧を参照）。条件 2 は未確認（`make setup` の実施を記録していない）。8d04c9f の clean clone での実行は判定 `PASS_ADT_ROUTINE_FOUR_CALLS`、終了コード 0 であったが、`make setup` の実施が記録されていないため、この実行を条件 2 の充足とはみなさない。条件 3 は 8d04c9f の run で満たした。§11 の「実コア PASS」は特定 run の結果であり、この解除状態とは別である。条件 2 が未確認のため、本契約は解除せず、`release_eligible=false` を維持する。
+  4. 解除状態: 条件 1 は本 PR のテスト専用 cfg で充足（a8f924e。冒頭の run 一覧を参照）。条件 2 は未確認（`make setup` の実施を記録していない）。8d04c9f の clean clone での実行は判定 `PASS_ADT_ROUTINE_FOUR_CALLS`、終了コード 0 であったが、`make setup` の実施が記録されていないため、この実行を条件 2 の充足とはみなさない。条件 3 は 8d04c9f の run で満たした。§11 の「実コア PASS」は特定 run の結果であり、この解除状態とは別である。条件 2 が未確認のため、本契約は解除せず、`release_eligible=false` を維持する。
