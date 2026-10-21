@@ -1,0 +1,16 @@
+# Issue #367 recorded source sites (pinned Geargrafx b49ae82a). Locations and verdicts only, no source text.
+# Columns: id	file	line	role	target	verdict
+DEV-01	adpcm_inline.h	173	device_store	ADPCM_RAM	NOT_MAIN_RAM
+DEV-02	huc6270.cpp	630	device_store	VRAM	NOT_MAIN_RAM
+DEV-03	huc6270.cpp	607	device_store	VDC_SAT	NOT_MAIN_RAM
+DEV-04	memory.cpp	123	reset_store	WRAM	RESET_ONLY
+DEV-05	memory.cpp	125	reset_store	WRAM	RESET_ONLY
+DEV-06	memory.cpp	151	reset_store	CDROM_RAM	RESET_ONLY
+DEV-07	memory.cpp	153	reset_store	CDROM_RAM	RESET_ONLY
+UNK-01	mb128.cpp	141	unknown_store	BACKUP_RAM	UNKNOWN
+UNK-02	mb128.cpp	143	unknown_store	BACKUP_RAM	UNKNOWN
+BLK-01	huc6280_opcodes_inline.h	528	cpu_block_store	ANY_MAPPED	PER_BYTE_STEP
+BLK-02	huc6280_opcodes_inline.h	559	cpu_block_store	ANY_MAPPED	PER_BYTE_STEP
+BLK-03	huc6280_opcodes_inline.h	589	cpu_block_store	ANY_MAPPED	PER_BYTE_STEP
+BLK-04	huc6280_opcodes_inline.h	620	cpu_block_store	ANY_MAPPED	PER_BYTE_STEP
+BLK-05	huc6280_opcodes_inline.h	650	cpu_block_store	ANY_MAPPED	PER_BYTE_STEP
