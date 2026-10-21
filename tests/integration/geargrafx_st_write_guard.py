@@ -35,8 +35,10 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import shlex  # noqa: E402
 from geargrafx_api import build_command  # noqa: E402  (also puts tools/ on sys.path)
-from environment import dependency_dir  # noqa: E402
+from environment import DEPENDENCIES, dependency_dir  # noqa: E402
+from setup import debugger_overrides  # noqa: E402  (tools/setup.py: the flags that built the linked objects)
 from geargrafx_reference_guard import synthetic_media  # noqa: E402
 
 PINNED_CORE_REVISION = "b49ae82a012eade566d72e9d61c9d95a5caa4da3"
@@ -177,16 +179,20 @@ def build_probes(directory):
     shutil.copy2(source / "src/huc6280_opcodes.cpp", staged / "src/huc6280_opcodes.cpp")
     # ValueError (not CalledProcessError) so the caller reports BLOCKED/FAIL instead of a traceback.
     build_command(["patch", "-p1", "--batch", "--forward", "-d", str(staged), "-i", str(PATCH)])
-    flags = ["-std=c++11", "-O0", "-fno-rtti", "-D__LIBRETRO__", "-DGG_DISABLE_VGMRECORDER",
-             "-DGG_ENABLE_CDROM_CUEBIN_READAHEAD", "-I" + str(source / "src"), "-I" + str(make_dir),
-             "-I" + str(source / "platforms/shared/dependencies/miniz"),
-             "-I" + str(source / "platforms/shared/dependencies/json")]
+    # Compile flags come from make itself, under the same overrides that built the stock objects.
+    # Hand-copied flags drift (the debugger build has no -DGG_DISABLE_DISASSEMBLER and uses -O2, not -O0).
+    overrides = debugger_overrides(make_dir)
+    revision = DEPENDENCIES["geargrafx"]["revision"]
+    flags_text = build_command(["make", "-s", "--no-print-directory", "-C", str(make_dir),
+                                f"GIT_VERSION={revision}", *overrides,
+                                "--eval", "print-cxx:;@echo $(CPPFLAGS) $(CXXFLAGS)", "print-cxx"]).stdout
+    flags = shlex.split(flags_text)
     patched_obj = directory / "huc6280_opcodes_st_guard.o"
-    build_command(["g++", *flags, "-I" + str(staged / "src"), "-c", str(staged / "src/huc6280_opcodes.cpp"),
-                   "-o", str(patched_obj)])
+    build_command(["g++", *flags, "-std=c++11", "-I" + str(staged / "src"), "-c",
+                   str(staged / "src/huc6280_opcodes.cpp"), "-o", str(patched_obj)])
     link = [patched_obj if p == stock[0] else p for p in objects]
     probe = directory / "st-write-guard-probe"
-    build_command(["g++", *flags, str(Path(__file__).with_name(PROBE_SOURCE)), *map(str, link),
+    build_command(["g++", *flags, "-std=c++11", str(Path(__file__).with_name(PROBE_SOURCE)), *map(str, link),
                    "-pthread", "-lm", "-o", str(probe)])
     return probe
 
