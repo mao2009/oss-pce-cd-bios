@@ -13,7 +13,7 @@ modified. The GPL-3.0 core is linked locally and never distributed. Synthetic BI
 reference BIOS or ROM is read. Nothing here changes BLOCKED_ABI or release_eligible.
 
 Cases (vector in irq2 / irq1 / tiq):
-* ``<v>-armed``: hook refuses every entry. Required: the hook was called once with the vector, the entry
+* ``<v>-armed``: hook refuses every entry. Required: the hook was called at least once with the vector, the entry
   stack bytes were zero at the call and after the frame, the PC stayed at the guest loop, the handler marker
   and A were not written.
 * ``<v>-unguarded`` (positive control): null hook; the entry lands (stack holds PC hi, PC lo, P with I and B
@@ -30,6 +30,7 @@ Evidence: the PASS lines printed by a run; the measured table is in docs/researc
 import copy
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -207,21 +208,25 @@ def build_probes(directory):
         raise ValueError("BLOCKED: no core objects listed; run make setup")
     for obj in staged.rglob("*.o"):
         obj.unlink()  # never reuse stock objects: every object is rebuilt from the patched tree
+    # Debugger-build flags, exactly as tools/setup.py build_geargrafx(debugger=True) passes them. These
+    # command-line overrides REPLACE the Makefile's CFLAGS/CXXFLAGS, so GG_DISABLE_DISASSEMBLER is absent
+    # here (the debugger tree keeps the disassembler and breakpoints). The probe uses the same flags.
+    includes = build_command(["make", "-s", "--no-print-directory", "-C", str(make_dir),
+                              "--eval", "print-includes:;@echo $(INCLUDES)", "print-includes"]).stdout.strip()
+    flags = ("-O2 -fPIC -fno-exceptions -D__LIBRETRO__ -DZ7_ST -DZSTD_DISABLE_ASM "
+             "-DGG_DISABLE_VGMRECORDER -DGG_ENABLE_CDROM_CUEBIN_READAHEAD -pthread " + includes)
+    cflags, cxxflags = flags, flags + " -fno-rtti"
+    if "GG_DISABLE_DISASSEMBLER" in cxxflags:
+        raise ValueError("BLOCKED: debugger flags unexpectedly disable the disassembler")
     # ValueError (not CalledProcessError) so the caller reports BLOCKED/FAIL instead of a traceback.
-    build_command(["make", "-s", "-C", str(make_dir), "-j", str(os.cpu_count() or 2), *objects])
+    build_command(["make", "-s", "-C", str(make_dir), "-j", str(os.cpu_count() or 2),
+                   f"CFLAGS={cflags}", f"CXXFLAGS={cxxflags}", *objects])
     objs = [(make_dir / p).resolve() for p in objects]
     if not all(p.is_file() for p in objs):
         raise ValueError("BLOCKED: patched core objects missing after rebuild")
     probe = directory / "irq-entry-guard-probe"
-    # The pinned Makefile compiles every object with GG_DISABLE_DISASSEMBLER (and ZSTD/Z7 flags); the probe
-    # must match, or HuC6280 member layout differs between the probe TU and the core objects (segfault).
-    # Probe compile flags are the pinned Makefile's own CXXFLAGS (platforms/libretro/Makefile:378), so the
-    # probe TU and the core objects agree on every macro and layout. Relative -I paths need cwd = make_dir.
-    flags = build_command(["make", "-s", "--no-print-directory", "-C", str(make_dir),
-                           "--eval", "print-cxxflags:;@echo $(CXXFLAGS)", "print-cxxflags"]).stdout.split()
-    if "-DGG_DISABLE_DISASSEMBLER" not in flags:
-        raise ValueError("BLOCKED: pinned CXXFLAGS no longer define GG_DISABLE_DISASSEMBLER; probe layout unverified")
-    build_command(["g++", *flags, "-c", str(Path(__file__).with_name(PROBE_SOURCE)), "-o",
+    # Probe TU compiled with the same CXXFLAGS string as the objects; relative -I paths need cwd = make_dir.
+    build_command(["g++", *shlex.split(cxxflags), "-c", str(Path(__file__).with_name(PROBE_SOURCE)), "-o",
                    str(directory / "probe.o")], cwd=str(make_dir))
     build_command(["g++", str(directory / "probe.o"), *map(str, objs), "-pthread", "-lm", "-o", str(probe)])
     return probe

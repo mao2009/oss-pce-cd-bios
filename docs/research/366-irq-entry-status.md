@@ -1,8 +1,8 @@
 # Issue #366: 割込み入口（IRQ2 / IRQ1 / TIQ）の副作用前遮断 実測ステータス
 
 - 対象 Issue: #366（親: #173、計画: #361 V03）
-- 状態: 判定器は main 済み（#380, d95ae8c）。実コアでの入口停止の実測は **BLOCKED**（未計測）。
-- 本書の位置づけ: #366 の受入条件を、既存の判定器・テスト・実コア観測の成果に照らして棚卸しした記録。新たな実コア値は含まない。
+- 状態: 判定器は main 済み（#380, d95ae8c）。実コアでの入口拒否は、下部の「実コア実測」節で PASS（PR #444）。ただし受入条件 1〜3 の「ハンドラ先頭での停止」は未実測（拒否点での観測）。
+- 本書の位置づけ: 受入条件の棚卸し（下表は PR #415 時点の記録）と、PR #444 による実コア実測の記録。
 - 純正 BIOS の JSR・割込みハンドラは一切実行していない。`BLOCKED_ABI` と `release_eligible=false` を維持する。
 
 ## 既存成果（main）
@@ -74,6 +74,7 @@ pinned core（`geargrafx-b49ae82a…-debugger`、`/home/loach/oss-pce-cd-bios-to
 | `outregion`（ページ1外ハンドラ、負例） | PASS | 本プローブのフック方針（ページ1外を拒否）が HandleIRQ の戻り値として効くことの確認。ガード方針そのものの妥当性は検証していない。スタック不変、ハンドラ未実行 |
 
 - 対象ベクタ: IRQ2（$FFF6）、IRQ1（$FFF8）、TIQ（$FFFA）の 3 つすべて。
+- ビルド: tools/setup.py の debugger 構成と同じ CFLAGS/CXXFLAGS を上書きで指定（GG_DISABLE_DISASSEMBLER なし）。プローブは同じ CXXFLAGS と INCLUDES でコンパイル。
 - libretro: BLOCKED（libretro の共有オブジェクトを駆動するハーネスがないため未観測。PASS ではない）。
 
 ### 残存（本結果が証明しないこと）
