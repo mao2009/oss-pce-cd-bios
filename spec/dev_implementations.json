@@ -1086,16 +1086,25 @@
       "candidate_name": "MA_MUL16U",
       "state": "NOT_READY",
       "abi_contract": {
-        "status": "UNKNOWN",
-        "note": "reference System Card contract not verified; DEV-only project spec"
+        "status": "PROJECT_SPEC_ONLY",
+        "note": "reference System Card contract not verified; DEV-only project spec (stack-based ABI, Issue #448)"
       },
-      "implementation": null,
-      "host_evidence": [],
-      "real_core_evidence": [],
+      "implementation": {
+        "source": "src/overrides/slot_41.s",
+        "license": "MIT (repository LICENSE)",
+        "provenance": "project-own spec, Issue #448 (shift-add on the 32-bit register, operands and product on the stack)"
+      },
+      "host_evidence": [
+        "tests/host/test_ma_mul16u_dev.py"
+      ],
+      "real_core_evidence": [
+        "tests/integration/geargrafx_dev_mul16u.py"
+      ],
       "approval": {
         "approved_by": null,
         "review_ref": null
-      }
+      },
+      "note": "DEV ROM implemented and real-core tested; NOT_READY until owner approval is recorded"
     },
     {
       "id": 66,
