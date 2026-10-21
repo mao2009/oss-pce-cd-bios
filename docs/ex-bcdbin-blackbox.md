@@ -59,7 +59,7 @@ Geargrafx の出力を純正 BIOS の期待値として扱うことはしない�
 | R-06 | D フラグ = 1 時の挙動 | BLOCKED | UNKNOWN | UNK | 未実行 |
 | R-07 | 候補エントリ `$E0B7` の実在（jump table 経由の到達） | BLOCKED | UNKNOWN | HYPOTHESIS のみ（`pcengine.inc` のソース一致、実行証明なし） | 未実行 |
 
-R-01〜R-07 の BLOCKED の根拠：純正 `$E0B7` への JSR は、安全性の前提である #173（JSR 監視の fail-closed 境界）と #228（実行 gate）の承認が前提である（`docs/ex-binbcd-measurement-plan.md` 15 行・52 行、`docs/ex-binbcd-blackbox-cases.md` 73 行と同じ gate）。
+R-01〜R-07 の BLOCKED の根拠：純正 `$E0B7` への JSR は、安全性の前提である #173（JSR 監視の fail-closed 境界）と #228（実行 gate）の承認が前提である（`docs/ex-binbcd-measurement-plan.md` 15 行・52 行、`docs/ex-binbcd-blackbox-cases.md` 73 行と同種の gate。いずれも `$E0B4`（EX_BINBCD）向けの計画であり、`$E0B7` に直接適用される文書ではない）。
 ABI の確定（呼出規約・戻り値・破壊レジスタ）には、オーナー判断 #324（ABI 証拠の 3 軸分離と DEV 専用実装台帳の導入可否、OPEN）が必要である。
 本 PR では承認が与えられていないため、R-01〜R-07 は実行しない。
 
@@ -79,10 +79,10 @@ ABI の確定（呼出規約・戻り値・破壊レジスタ）には、オー�
 | E-01 | 一の位のみ不正（十の位 0〜9） | 60 件（十 0〜9 × 一 A〜F） | REAL_CORE_OSS + HOST_FIXTURE | C=1、A 不変（SPEC） | 実行済み（全256） |
 | E-02 | 十の位のみ不正（一の位 0〜9） | 60 件（十 A〜F × 一 0〜9） | REAL_CORE_OSS + HOST_FIXTURE | C=1、A 不変（SPEC） | 実行済み（全256） |
 | E-03 | 両方不正 | 36 件（十 A〜F × 一 A〜F） | REAL_CORE_OSS + HOST_FIXTURE | C=1、A 不変（SPEC） | 実行済み（全256） |
-| I-01 | 入力 C の影響（入力 C = 0 / 1 で同じ出力） | 条件マトリクスの入力 C = 0 と 1 | REAL_CORE_OSS（制御あり） | 出力は入力 C に依存しない（SPEC の入力条件に含まれない） | 実行済み（#416、各条件 16 入力、cold/warm） |
-| I-02 | X / Y の保存（呼出前後の値） | 条件マトリクスの 6 組（`CASES` 参照。例：`$5A`/`$A5`、`$00`/`$00`、`$FF`/`$FF`、`$12`/`$34`、`$AB`/`$CD`、`$00`/`$FF`） | REAL_CORE_OSS（制御あり） | X、Y 不変（SPEC） | 実行済み（#416、列挙した 6 組のみ。任意の X/Y 値は未確認） |
+| I-01 | 入力 C の影響（入力 C = 0 / 1 で同じ出力） | 条件マトリクスの入力 C = 0 と 1 | REAL_CORE_OSS（制御あり） | 出力は入力 C に依存しない（SPEC の入力条件に含まれない） | 実行済み（#416、各条件 16 入力、cold/warm。手動実行で CI・Makefile 対象外） |
+| I-02 | X / Y の保存（呼出前後の値） | 条件マトリクスの 6 組（`CASES` 参照。例：`$5A`/`$A5`、`$00`/`$00`、`$FF`/`$FF`、`$12`/`$34`、`$AB`/`$CD`、`$00`/`$FF`） | REAL_CORE_OSS（制御あり） | X、Y 不変（SPEC） | 実行済み（#416、列挙した 6 組のみ。手動実行で CI 対象外。任意の X/Y 値は未確認） |
 | I-03 | スタックの均衡と SP の復元 | 256 回の反復後 SP=`$FF` | REAL_CORE_OSS | SP 不変、スタック以外に書かない（SPEC） | 実行済み |
-| I-04 | 呼出時の SP | SP=`$FF`、`$80`、`$C0`（条件マトリクス） | REAL_CORE_OSS（制御あり） | 各呼出の直後に SP 不変（SPEC） | 実行済み（#416、列挙した 3 値のみ） |
+| I-04 | 呼出時の SP | SP=`$FF`、`$80`、`$C0`（条件マトリクス） | REAL_CORE_OSS（制御あり） | 各呼出の直後に SP 不変（SPEC） | 実行済み（#416、列挙した 3 値のみ。手動実行で CI 対象外） |
 | U-01 | D フラグ = 1 | 任意 | BLOCKED | 仕様上未定義（SPEC） | 未実行（期待値なし） |
 | U-02 | N / Z / V フラグ | 任意 | BLOCKED | 仕様上未定義（SPEC） | 未実行（期待値なし） |
 
