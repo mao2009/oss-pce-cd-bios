@@ -77,15 +77,16 @@ manifest の `source_sha256` の 2 ファイル値も上の SHA-256 と一致す
 | --- | --- |
 | スクリプト | `tests/integration/dev_bcdbin_full_sweep.py`（SHA-256 `1e578f2861a4c34ad017a12d2d9ace6a16a4d6f5645056e0aace2571bf2c406c`） |
 | 起動方法 | `make dev-bcdbin-sweep`（または `python3 tests/integration/dev_bcdbin_full_sweep.py [ROM パス]`） |
-| CI | `make dev-integration` の末尾から呼ばれるため、CI の `bios-dev` ジョブでも実行される |
+| CI | `make dev-integration` から呼ばれるため、CI の `bios-dev` ジョブでも実行される（CI の実測: `bios-dev` ジョブ success、7 分 35 秒） |
 | 移植性 | リポジトリルートはスクリプト自身の位置から求める。特定の作業ディレクトリ（初版の `/home/loach/dev3d-evidence/`）への依存はない |
 | 並列 | 既定で `min(8, CPU 数)` 個のプロセスで実行する（`--jobs` で変更可）。プローブは 1 実行 1 プロセスなので並列化の影響は互いに独立。各ワーカースレッドは自分専用の ROM ファイルを使う（スレッド ID でファイル名を分ける。案件番号でファイルを選ぶと、2 つのスレッドが同じファイルを書き換え、プローブが書き込み途中の画像を読むことがある）|
 | 出力 | 集計 JSON は `build/debug/bios-dev/dev-bcdbin-full-sweep.json`（ビルド成果物のため git には含めない） |
 
 ### 3.2 再確認（本 PR で実行、2026-10-21）
 
-- 実行場所: 本 PR の作業ツリー（ブランチ `docs/evidence/dev-callable-3d`、HEAD `5281fc9`、main `0c2fa41` マージ済み）
+- 実行場所: 本 PR の作業ツリー（ブランチ `docs/evidence/dev-callable-3d`、main `0c2fa41` マージ済み）
 - 手順: `make dev-bcdbin-sweep`（`make dev-rom` でビルド → `tests/integration/dev_bcdbin_full_sweep.py`）
+- 実行の再現: 初版の記録（マージコミット `5281fc9` のツリー）と、スレッドごとの ROM ファイル割り当てに修正した後の `7e94fc6` のツリーで**それぞれ 4608 実行が失敗 0**。修正は並列実行のファイル競合の排除だけで、判定項目・判定基準・条件は同一である。
 - 結果行: `PASS DEV ROM EX_BCDBIN $3D full domain: 4608 runs (18 conditions x 256 inputs), 0 failures`
 - 集計: 入力 256、条件 18、実行 4608、有効 1800、不正 2808、失敗 0、失敗ラベルなし
 - 各実行で cold と warm の両方を観測した（A/C/X/Y、復帰 PC、SP 均衡、MPR1=$F8、MPR7=0）
