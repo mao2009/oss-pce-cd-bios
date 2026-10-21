@@ -36,13 +36,17 @@ MARKER_OFF, MARKER = 0x20, b"\xa5\x5a"  # written at $2220-$2221
 DUMP_BYTES = 64                    # probe dumps work RAM offset $200..$23F
 PHASES = ("handoff_jump", "handoff_entry", "handoff_done")
 # Judge reasons that a negative must produce. Entry and MPR are checked before the phase order.
-EXPECTED_REJECTIONS = {"mpr1_rom_bank": "mpr", "entry_misaligned": "entry"}
+EXPECTED_REJECTIONS = {"mpr1_rom_bank": "mpr", "entry_misaligned": "entry", "extra_copy_byte": "ram_side_effect"}
 # Independent expectation typed from the source: ca65 encoding of lda #$A5 / sta $2220 / lda #$5A /
 # sta $2221. The JMP operand is appended from the handoff_done label, so the expected bytes never come
 # from the ROM copy they are checking.
 PAYLOAD_PREFIX = bytes.fromhex("a9a58d2022a95a8d2122")
+WORK_BASE, WORK_RAM_BYTES = 0x2000, 0x2000
+STEPS = 512                        # bounded run: cold observation after 512 instructions
+POST_HALT_STEPS = 32               # 'nonreturning' observation: the BRA loop at handoff_done must be stable
 LIMITATIONS = [
-    "RAM side effects: only work RAM $2200-$223F (64 bytes) is observed; other RAM, MMIO, VDC/VCE/PSG and timer state are NOT_RUN",
+    "RAM side effects: the cold cycle compares the full work RAM $2000-$3FFF (loaded -> cold -> nonreturning) with the typed image; warm cycle observes only $2200-$223F",
+    "MMIO side effects (VDC/VCE/PSG/timer/ADPCM/CD I/O) are NOT_RUN: the probe has no write trace; the fixture stores are only checked statically",
     "interrupts: the fixture keeps SEI from reset and never CLIs, and the probe injects nothing; IRQ behaviour during the payload is unverified",
     "registers and flags: A/X/Y/P are not asserted at handoff_entry or handoff_done",
     "MPR: handoff_jump checks MPR0/MPR1, handoff_entry checks MPR0/MPR1/MPR7, handoff_done checks MPR7 only; MPR2-6 are unverified",
@@ -75,6 +79,38 @@ class HandoffRejected(ValueError):
 
 def expected_payload(handoff_done: int) -> bytes:
     return PAYLOAD_PREFIX + b"\x4c" + handoff_done.to_bytes(2, "little")
+
+
+def expected_ram_writes(payload: bytes) -> dict:
+    """Work RAM offset -> byte the handoff must leave there: the copied payload and the marker it writes."""
+    writes = {RAM_ENTRY - WORK_BASE + i: byte for i, byte in enumerate(payload)}
+    writes[RAM_ENTRY - WORK_BASE + MARKER_OFF] = MARKER[0]
+    writes[RAM_ENTRY - WORK_BASE + MARKER_OFF + 1] = MARKER[1]
+    return writes
+
+
+def check_ram_side_effects(records, payload):
+    """Cold cycle only: every byte outside the typed writes is unchanged from 'loaded', and the image is stable."""
+    rows = {r["phase"]: r for r in records["OBS"]}
+    images = {}
+    for phase in ("loaded", "cold", "nonreturning"):
+        if phase not in rows or "work_ram_hex" not in rows[phase]:
+            raise HandoffRejected("obs", f"full work RAM observation '{phase}' missing")
+        images[phase] = bytes.fromhex(rows[phase]["work_ram_hex"])
+        if len(images[phase]) != WORK_RAM_BYTES:
+            raise HandoffRejected("obs", f"'{phase}' work RAM has {len(images[phase])} bytes")
+    if images["cold"] != images["nonreturning"]:
+        offset = next(i for i in range(WORK_RAM_BYTES) if images["cold"][i] != images["nonreturning"][i])
+        raise HandoffRejected("ram_unstable", f"work RAM changed after the halt at offset {offset:#x}")
+    expected = expected_ram_writes(payload)
+    for offset in range(WORK_RAM_BYTES):
+        end = images["cold"][offset]
+        if offset in expected:
+            if end != expected[offset]:
+                raise HandoffRejected("ram_expected", f"work RAM {WORK_BASE + offset:#06x} = {end:#04x}, "
+                                                      f"expected {expected[offset]:#04x}")
+        elif end != images["loaded"][offset]:
+            raise HandoffRejected("ram_side_effect", f"unexpected write at {WORK_BASE + offset:#06x}")
 
 
 def check_handoff_contract(entry, size, sp, mpr):
@@ -141,6 +177,12 @@ def mutate(rom: bytes, labels: dict, kind: str) -> bytes:
         if bytes(data[off - 1:off + 2]) != b"\x4c\x00\x22":
             raise ValueError("mutation anchor mismatch (JMP operand)")
         data[off] = 0x01
+    elif kind == "extra_copy_byte":      # cpx #13 -> cpx #14: one unlisted byte ($220D) is also written to RAM
+        bank = bytes(data[:BANK_BYTES])
+        anchor = bank.find(b"\xe0\x0d\xd0")  # cpx #13 / bne handoff_copy
+        if anchor < 0 or bank.count(b"\xe0\x0d\xd0") != 1:
+            raise ValueError("mutation anchor mismatch (copy loop bound)")
+        data[anchor + 1] = 0x0E
     else:
         raise ValueError(f"unknown mutation {kind}")
     return bytes(data)
@@ -186,6 +228,7 @@ def judge(records, labels, payload):
             raise HandoffRejected("marker", f"{row['phase']}: marker not reached at $2220")
         if row["pc"] != labels["handoff_done"] or row["sp"] != 0xFF:
             raise HandoffRejected("end", f"{row['phase']}: end PC/SP mismatch")
+    check_ram_side_effects(records, payload)
 
 
 def guarded(run, path):
@@ -232,7 +275,7 @@ def main():
         cue.write_text('FILE "d.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
 
         def run(path):
-            return execute(probe, path, cue, trace_labels)
+            return execute(probe, path, cue, trace_labels, steps=STEPS)
 
         records = guarded(run, rom_path)
         judge(records, labels, payload)
@@ -242,7 +285,11 @@ def main():
                  "CD = empty dummy image via LoadMedia (zero-filled, no CD content); "
                  "not CD boot, not CD_EXEC, not loader acceptance, not BIOS ABI",
         "rom_sha256": hashlib.sha256(rom).hexdigest(), "payload_bytes": size,
+        "guest_source_sha256": hashlib.sha256((ROOT / "tests/fixtures/handoff-probe.s").read_bytes()).hexdigest(),
+        "probe_source_sha256": hashlib.sha256(Path(__file__).with_name("geargrafx_api_probe.cpp").read_bytes()).hexdigest(),
         "geargrafx_revision": DEPENDENCIES["geargrafx"]["revision"],
+        "bounded_run": {"steps": STEPS, "post_halt_steps": POST_HALT_STEPS,
+                        "stop": f"pc at handoff_done after {STEPS} instructions; stable for {POST_HALT_STEPS} more"},
         "status": "PASS", "limitations": LIMITATIONS,
         "observations": records, "negatives": negatives,
     }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
