@@ -4,11 +4,14 @@ Fail-closed gate that runs before any .pce is handed over for publication. It do
 (tools/artifact_guard.py, signatures and staging) or the provenance guard (tools/provenance_guard.py, denylist); it
 adds two checks those do not make:
 
-  1. Record check: the ROM's own manifest.json (written by tools/build.py or tools/build_rom.py) must describe this
-     exact file: sha256 and size match, the source commit is a clean, expected commit, the tree was not dirty, the
-     assembler is the pinned cc65 revision, and no release/compatibility claim is set.
-  2. Same-input reproducibility: the same tool is run twice on the same checkout into two fresh directories, and the
-     two ROM files must be byte-identical.
+  1. Record check (--rom/--manifest): the manifest.json beside a ROM (written by tools/build.py or
+     tools/build_rom.py) must agree with the bytes: sha256 and size match, the source commit is the expected one, the
+     tree was not dirty, the assembler is the pinned cc65 revision, and no release claim is set. This is internal
+     consistency only. The manifest is unsigned, so a tamperer who rewrites both files passes; origin is not proven.
+  2. Same-input reproducibility (--reproduce): the same tool is run twice on the same checkout into two fresh
+     directories, the two ROM files must be byte-identical, and the rebuilt manifest must pass the record check.
+     The CI verify job also byte-compares the file it hands off with the rebuilt ROM, so the published bytes are the
+     checked bytes.
 
 A mismatch in either check exits 1 (FAIL) and must stop the workflow before the upload-artifact handoff.
 
@@ -67,11 +70,9 @@ def check_record(rom: bytes, manifest: dict, expected_commit: str) -> list[str]:
         problems.append(f"source_sha {source} is not the expected commit {expected_commit}")
     if manifest.get("working_tree_dirty") is not False:
         problems.append("working_tree_dirty is not false (built from an unclean tree)")
-    if manifest.get("source_root_is_git_repo", True) is not True:
-        problems.append("source_root_is_git_repo is not true")
     if manifest.get("cc65_revision") != DEPENDENCIES["cc65"]["revision"]:
         problems.append("cc65_revision is not the pinned revision")
-    if manifest.get("release_eligible", False) is not False:
+    if manifest.get("release_eligible") not in (None, False):
         problems.append("release_eligible is set (a release claim is not provable here)")
     return problems
 

@@ -127,11 +127,11 @@
 `tools/rom_provenance.py` は、公開候補の `.pce` を、出所と再現性の面から fail-closed で確かめる。署名検査（`artifact_guard.py`）と denylist（`provenance_guard.py`）は変えず、その上に次の 2 点を加える。
 
 - **記録の検査（`--rom`、`--manifest`）。** ROM の隣の `manifest.json`（`build.py` と `build_rom.py` が書く）が、そのファイルを正確に記述していることを確かめる。SHA-256 とサイズが一致し、`source_sha` が期待するコミット（既定は現在の HEAD）と一致し、`working_tree_dirty` が `false` で、`cc65_revision` が `tools/dependencies.json` の固定版であり、`release_eligible` が立っていないこと。
-- **同一入力の再ビルド（`--reproduce smoke|dev`）。** 同じツールを同じチェックアウトから 2 回、別々の空ディレクトリに実行し、2 つの ROM がバイト単位で一致することを確かめる。CI の `verify` ジョブは、`cmp` による debug と release の比較のあとに `--reproduce smoke` を実行する。失敗すると中間成果物を作る前に止まるため、公開ジョブには渡らない。
+- **同一入力の再ビルド（`--reproduce smoke|dev`）。** 同じツールを同じチェックアウトから 2 回、別々の空ディレクトリに実行し、2 つの ROM がバイト単位で一致することを確かめる。CI の `verify` ジョブは、`cmp` による debug と release の比較のあとに `--reproduce smoke` を実行し、公開候補の ROM が再ビルドのバイト列と一致すること（`cmp`）と、その `manifest.json` が ROM と整合することを確かめる。失敗すると中間成果物を作る前に止まるため、公開ジョブには渡らない。
 
 終了コードは 0（PASS）、1（FAIL: 記録または再ビルドが矛盾）、2（ERROR: ツールまたはビルドの失敗）である。ERROR を PASS として扱わない。
 
 - 試験: `python3 -B -m unittest discover -s tests/host -p 'test_rom_provenance.py' -v`。cc65 を使わない合成試験で、改ざん ROM、偽造マニフェスト、不一致の再ビルド、dirty ツリー、未固定の cc65、リリース主張の各負例を含む。
 - 実行: `make rom-provenance`（`MODE=release` も指定可）。
 
-**制限。** 一致は、記録されたコミットから固定の cc65 で生成され、再現できることを示すにすぎない。GPL 由来のコードがないこと、BIOS 相当の内容がないこと、配布の権利があることは示さない。これらは人のレビュー事項であり、Issue #105 と #335 で追跡する。`api-source.yml` の BIOS DEV 成果物（`dev-only-not-compatible-syscard3.pce` と診断 ROM）は `--reproduce dev` で検査できるが、ワークフローへの組み込みは未了である。
+**制限。** `--rom` の記録検査は内部の整合性だけを確かめる。`manifest.json` は署名されておらず、ROM と一緒に書き換えられると通ってしまう。出所は証明されない。`--reproduce` の一致は、同じチェックアウトと同じ環境での決定性を示すにすぎず、記録されたコミットからの生成や、別の環境での再現は示さない。GPL 由来のコードがないこと、BIOS 相当の内容がないこと、配布の権利があることは示さない。これらは人のレビュー事項であり、Issue #105 と #335 で追跡する。`api-source.yml` の BIOS DEV 成果物（`dev-only-not-compatible-syscard3.pce` と診断 ROM）は `--reproduce dev` で検査できるが、ワークフローへの組み込みは未了である。

@@ -70,9 +70,10 @@ class RecordTests(unittest.TestCase):
         del manifest["working_tree_dirty"]
         self.assertTrue(rp.check_record(ROM, manifest, COMMIT))
 
-    def test_source_not_git_repo_fails(self):
-        problems = rp.check_record(ROM, record(source_root_is_git_repo=False), COMMIT)
-        self.assertTrue(any("source_root_is_git_repo" in p for p in problems))
+    def test_source_not_git_repo_fails_via_source_sha(self):
+        # A non-git build has no source_sha (null), which the source_sha check rejects.
+        problems = rp.check_record(ROM, record(source_sha=None), COMMIT)
+        self.assertTrue(any("source_sha" in p for p in problems))
 
     def test_unpinned_cc65_fails(self):
         problems = rp.check_record(ROM, record(cc65_revision="0" * 40), COMMIT)
@@ -172,13 +173,26 @@ class CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             self.assertEqual(rp.EXIT_PASS, self.run_reproduce(self.fake_builder(lambda out: ROM), Path(directory)))
 
-    def test_reproduce_divergent_builds_fail(self):
-        with tempfile.TemporaryDirectory() as directory:
-            # Builds differ by directory: the second build writes different bytes.
-            def data(out):
-                return ROM if out.name == "a" else ROM[:-1] + b"\x01"
-            build = self.fake_builder(data, manifest=record())
-            self.assertEqual(rp.EXIT_FAIL, self.run_reproduce(build, Path(directory)))
+    def test_reproduce_divergent_builds_fail_on_reproducibility_alone(self):
+        # Each build's manifest matches its own bytes, so only the byte comparison can fail this run.
+        def data(out):
+            return ROM if out.name == "a" else ROM[:-1] + b"\x01"
+
+        def manifest_for(out):
+            return record(rom=data(out))
+
+        def build_once(out):
+            out.mkdir(parents=True, exist_ok=True)
+            rom_name = rp.BUILDERS["smoke"][1]
+            (out / rom_name).write_bytes(data(out))
+            (out / "manifest.json").write_text(json.dumps(manifest_for(out)), encoding="utf-8")
+            return out / rom_name
+
+        with tempfile.TemporaryDirectory() as directory, patch("sys.stderr") as stderr:
+            self.assertEqual(rp.EXIT_FAIL, self.run_reproduce(build_once, Path(directory)))
+            text = "".join(call.args[0] for call in stderr.write.call_args_list)
+            self.assertIn("two builds from the same input differ", text)
+            self.assertNotIn("rom_sha256", text)
 
     def test_reproduce_build_failure_is_error(self):
         def broken(out):
@@ -195,9 +209,14 @@ class CliTests(unittest.TestCase):
 class WiringTests(unittest.TestCase):
     def test_ci_runs_reproducibility_before_handoff(self):
         text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-        check = text.index("rom_provenance.py --reproduce smoke")
+        reproduce = text.index("rom_provenance.py --reproduce smoke")
+        compare = text.index("cmp build/debug/smoke-test-not-bios.pce build/rom-provenance/a/smoke-test-not-bios.pce")
+        record = text.index("rom_provenance.py --rom build/debug/smoke-test-not-bios.pce")
         handoff = text.index("Hand off the test fixture")
-        self.assertLess(check, handoff)
+        self.assertLess(reproduce, compare)
+        self.assertLess(compare, record)
+        self.assertLess(record, handoff)
+        self.assertNotIn("continue-on-error", text[reproduce:handoff])
 
 
 if __name__ == "__main__":

@@ -39,7 +39,10 @@ jobs:
           cmp build/debug/smoke-test-not-bios.pce build/release/smoke-test-not-bios.pce
           python3 tools/build.py --verify build/debug/smoke-test-not-bios.pce
       - name: Same-input rebuild and provenance record (Issue #335; fail-closed, stops before the handoff)
-        run: python3 tools/rom_provenance.py --reproduce smoke --mode debug
+        run: |
+          python3 tools/rom_provenance.py --reproduce smoke --mode debug
+          cmp build/debug/smoke-test-not-bios.pce build/rom-provenance/a/smoke-test-not-bios.pce
+          python3 tools/rom_provenance.py --rom build/debug/smoke-test-not-bios.pce --manifest build/debug/manifest.json
       - name: Hand off the test fixture and evidence as an intermediate artifact (unverified here; the guard job checks them)
         run: |
           mkdir -p intermediate
