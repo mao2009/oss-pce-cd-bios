@@ -22,8 +22,9 @@ Cases:
 
 Run manually (not wired into the Makefile integration target):
     python3 tests/integration/geargrafx_st_write_guard.py
-Status: PASS on the pinned core under WSL, recorded in commit 8046ecf (PR #430). Not re-run in the
-authoring worktree (WSL refused by the harness there).
+Status: PASS on the pinned core under WSL was recorded at commit 8046ecf (PR #430). That run predates
+the compile-flag and cwd changes in fc1d3fe and 638baf0, so it does not cover the head. The head run
+is pending (not run in the authoring worktree, where WSL is refused).
 """
 import copy
 import json
@@ -210,6 +211,7 @@ def run_case(probe, bios, cue, case):
     if type(row) is not dict:
         raise ValueError(f"{case}: observation is not an object")
     row["exit"] = 0
+    # Set from the case name only: "-armed" cases expect a refusal, the rest expect the store to land.
     row["armed"] = case.endswith("-armed")
     return row
 

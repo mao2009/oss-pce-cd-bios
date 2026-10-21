@@ -23,6 +23,9 @@ Upstream: https://github.com/drhelius/Geargrafx, pinned commit
 - Distribution conditions: whoever distributes this patch, or a binary built from the patched
   core, must license it under GPL-3.0, keep the upstream notices, and provide the corresponding
   source (the upstream commit above plus this patch). The patch adds no other third-party code.
+- `geargrafx_st_write_guard.cpp` and `geargrafx_st_write_guard.py` contain no copied upstream
+  source. The probe `#include`s upstream headers from the fetched core at build time. Neither the
+  probe nor the driver is distributed as a binary, and no object built from them is tracked.
 - The patch is **not vendored** in the MIT sources. The repository keeps only this diff. The core
   is fetched by `scripts/setup-geargrafx.sh` (`tools/setup.py`) into `TOOLS_DIR`, which must lie
   outside the repository (`tools/environment.py` refuses otherwise).
@@ -53,7 +56,10 @@ patch -p1 --dry-run -i tests/integration/patches/geargrafx-b49ae82-st-write-guar
 
 ## Status
 
-PASS on the pinned core under WSL, as recorded in commit `8046ecf` (PR #430):
+PASS on the pinned core under WSL was recorded at commit `8046ecf` (PR #430). That run used
+earlier compile flags and working directory. Later commits `fc1d3fe` and `638baf0` changed both,
+so **8046ecf does not cover the head driver**. The PASS for head `21e8b38` is pending (not run in
+the authoring worktree, where WSL is refused). The cases recorded at 8046ecf were:
 
 - Armed (refused inside the core before the side effect, 4 cases): `st0-armed`, `st1-armed`,
   `st2-armed`, `st0-after-tam-armed` (MPR0 changed to $FF by TAM first).
@@ -65,15 +71,7 @@ This is a verification patch with a null-by-default hook. The unguarded runs use
 patched build with the hook unset, not the stock object. Nothing here changes `BLOCKED_ABI`
 or `release_eligible`.
 
-Re-run on 2026-10-21 under WSL (Ubuntu) from a clean clone of this branch at commit `638baf0`
-(probe flags = `tools/setup.py` debugger overrides, the same as the linked objects)
-(`TOOLS_DIR` set to the existing external tool cache; `python3 tools/setup.py geargrafx --debugger`
-then `python3 tests/integration/geargrafx_st_write_guard.py`). Synthetic BIOS and CD only. Output:
-
-```
-PASS issue-365/173 ST0/ST1/ST2 free-running pre-write refusal (synthetic, pinned core + verification patch)
-  armed: 4 cases refused inside the core before side effect
-  unguarded mutation: 4 cases land without the hook
-```
+No WSL run is recorded for `638baf0` or `21e8b38`. The head run and its EVIDENCE rows are
+pending; this file will cite them only after they are run and committed.
 
 The nine `EVIDENCE` rows (4 armed, 4 unguarded, 1 positive control) carry `"bios": "SYNTHETIC"`.
