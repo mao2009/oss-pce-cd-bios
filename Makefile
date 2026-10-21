@@ -1,7 +1,7 @@
 PYTHON ?= python3
 MODE ?= debug
 
-.PHONY: setup build test host-test check clean release setup-geargrafx integration integration-test
+.PHONY: setup build test test-real-core host-test check clean release setup-geargrafx integration integration-test
 
 setup:
 	$(PYTHON) tools/setup.py all
@@ -12,9 +12,14 @@ setup-geargrafx:
 build:
 	$(PYTHON) tools/build.py --mode "$(MODE)"
 
-# Required gate: OSS_PCE_REQUIRE_CC65=1 turns any missing cc65 into a FAILURE, never a SKIP.
+# Required host gate (no Geargrafx needed): OSS_PCE_REQUIRE_CC65=1 turns any missing cc65 into a FAILURE, never a SKIP.
+# Real-core checks are NOT run here; they are the required separate gate `test-real-core` (CI runs both).
 test: build
 	OSS_PCE_REQUIRE_CC65=1 $(PYTHON) -m unittest discover -s tests/host -v
+	@echo 'INFO: real Geargrafx checks are not part of make test; run make test-real-core (informational only)'
+
+# Required real-core gate (Issue #398): needs the pinned Geargrafx core. Fail-closed: a missing core is FAIL, never PASS.
+test-real-core: build
 	$(MAKE) integration MODE="$(MODE)"
 	$(MAKE) integration-test
 

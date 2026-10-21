@@ -21,7 +21,7 @@ API の既存スタブは従来どおりである。
 ホスト：`python3 -m unittest tests.host.test_ex_bcdbin -v`（実コア負例 5 件を含む。`make test` の host discover で実行される）
 実コア：`python3 tests/integration/geargrafx_bcdbin.py`。次の 2 経路で実行される。
 - 専用ワークフロー `.github/workflows/core-bcdbin.yml`（ubuntu-24.04、`make setup` 後に実行）。終了コードがそのままジョブ結果になり、ログは artifact `bcdbin-core-log-<sha>` に保存する。実コアの 2 tests（全256入力、変異3種）の主な証拠はこの run である。
-- `make integration` 経由（`make test`、既定 CI の `ci.yml` に含まれる）。
+- `make test-real-core` 経由（`make test` には含まれない。`ci.yml` と `nightly.yml` が必須ステップとして実行する）。
 - ホスト参照モデル：全 256 入力を独立な判定式と照合し、0 / 9 / 10 / 99 や `$0A` / `$9A` / `$A0` / `$FF`
   などの境界値も確認する。BIN→BCD→BIN の往復はモデル内の符号化で確認しており、EX_BINBCD（#70）が
   できたら差し替える予定である。

@@ -1,6 +1,6 @@
 # Tests and limits of evidence
 
-Run `make setup`, then `make test` and `make check`. These exit nonzero on a
+Run `make setup`, then `make test` (host-only), `make test-real-core` (real Geargrafx gate) and `make check`. These exit nonzero on a
 missing tool, invalid setting, failed assertion, invalid assembler input,
 timeout, or core crash. Expected negative failures are assertions that the
 invalid input was rejected, never evidence that the invalid ROM works.
@@ -24,9 +24,9 @@ ungated class beside it (for example `ApiContractTests` or `CdLoadExecContractTe
 | Host / run | cc65 missing | cc65 present |
 | --- | --- | --- |
 | `make host-test` (local, no build) | gated tests SKIP with reason `cc65 unavailable (<tool>: ...); run make setup`; the rest run | every test runs |
-| `make test` (required gate, sets `OSS_PCE_REQUIRE_CC65=1`) | gated tests **FAIL**, never SKIP | every test runs |
+| `make test` (required host gate, sets `OSS_PCE_REQUIRE_CC65=1`, no Geargrafx) | gated tests **FAIL**, never SKIP | every test runs |
 
-`make test` also depends on `build`, so it cannot pass without cc65 anyway. The required flag makes the
+`make test` also depends on `build`, so it cannot pass without cc65 anyway. Real-core checks are not part of `make test`; they run in `make test-real-core`. The required flag makes the
 policy explicit: a SKIP is never reported as success in the required gate. Windows hosts also carry
 platform issues outside this policy (`os.getuid` in `tools/environment.py`, `cp932` text reads, no
 `make`); tests affected by those are reported as ERROR there and are not evidence either way.
@@ -82,7 +82,7 @@ committed; these checks are whitespace validation, not semantic review.
 
 ## Real Geargrafx integration
 
-`make integration` runs `tests/integration/geargrafx_smoke.py` against the official
+`make test-real-core` (which runs `make integration` and `make integration-test`) runs `tests/integration/geargrafx_smoke.py` against the official
 source-built Geargrafx libretro core, with a minimal original Python/ctypes
 frontend. It provides video/audio/input callbacks without a GUI, uses a fresh
 temporary system/save directory per process, and never substitutes CPU behavior.
@@ -185,8 +185,9 @@ Nightly's live schedule/skip behavior is separate from host recovery tests; [nig
 
 ## Separate System Card/CD diagnostics and CI
 
-`make test` runs the host suite **and original HuCARD Geargrafx smoke**,
-not every standalone System Card diagnostic. After `make setup`:
+`make test` runs the host suite only (no Geargrafx). The original HuCARD Geargrafx smoke and
+the other real-core checks run in `make test-real-core` (Issue #398), which CI runs as a required
+step. Not every standalone System Card diagnostic is included. After `make setup`:
 
 ```sh
 make dev-test                   # 81 candidate slots, host API tests and real-core DEV checks

@@ -1,6 +1,6 @@
 """Real-core run of src/ex_bcdbin.s (Issue #71).
 
-Executed by `make integration` (hence `make test` and the default CI job) and by the dedicated
+Executed by `make integration` (hence `make test-real-core` and the required CI real-core gate) and by the dedicated
 workflow .github/workflows/core-bcdbin.yml, which is the main CI evidence for this run.
 
 Run: python3 tests/integration/geargrafx_bcdbin.py   (pinned cc65 + Geargrafx core via make setup)
