@@ -121,3 +121,17 @@
 - **Pages アクションの固定（Issue #349）。** `pages.yml` は、`configure-pages`、`upload-pages-artifact`、`deploy-pages` を、`gh api repos/actions/<name>/commits/<tag>` で 2026-10-20 に解決したコミット SHA に固定する。更新には新しい解決と審査が必要である。SHA はタグに対して再検査しない。
 - **ワークフローの変更は必ず審査する。** `.github/workflows/` の変更は、何が実行されるかを変える。保守者のレビューが必要である。ガードは、自身のステップを削除するワークフローの編集を検出できない。それには、所有者が設定するブランチ保護が必要である。
 - 試験: `python3 -B -m unittest discover -s tests/host -p 'test_artifact_guard.py' -v`。round 6 の試験は `python3 -B -m unittest discover -s tests/host -p 'test_artifact_guard_sign_r6.py' -v`。
+
+## PCE 出所と再現性の検査（Issue #335）
+
+`tools/rom_provenance.py` は、公開候補の `.pce` を、出所と再現性の面から fail-closed で確かめる。署名検査（`artifact_guard.py`）と denylist（`provenance_guard.py`）は変えず、その上に次の 2 点を加える。
+
+- **記録の検査（`--rom`、`--manifest`）。** ROM の隣の `manifest.json`（`build.py` と `build_rom.py` が書く）が、そのファイルを正確に記述していることを確かめる。SHA-256 とサイズが一致し、`source_sha` が期待するコミット（既定は現在の HEAD）と一致し、`working_tree_dirty` が `false` で、`cc65_revision` が `tools/dependencies.json` の固定版であり、`release_eligible` が立っていないこと。
+- **同一入力の再ビルド（`--reproduce smoke|dev`）。** 同じツールを同じチェックアウトから 2 回、`--work` 配下の新しい `a` と `b` に実行し、2 つの ROM がバイト単位で一致することを確かめる。このツールは何も削除しない。次の場合は `ERROR`（終了コード 2）で止まる。`--work` または `a`、`b` がシンボリックリンクかジャンクションである場合。`--work` が空でなく、`.rom-provenance-owner` の印がない場合。`a` または `b` が既に存在する場合。印は書き写せるため、印があっても既存の `a` と `b` は使わない。したがって同じ `--work` での再実行は拒否される。再実行には新しい `--work` を指定する。CI の `verify` ジョブは、`cmp` による debug と release の比較のあとに `--reproduce smoke` を実行し、公開候補の ROM が再ビルドのバイト列と一致すること（`cmp`）と、その `manifest.json` が ROM と整合することを確かめる。失敗すると中間成果物を作る前に止まるため、公開ジョブには渡らない。
+
+終了コードは 0（PASS）、1（FAIL: 記録または再ビルドが矛盾）、2（ERROR: ツールまたはビルドの失敗）である。ERROR を PASS として扱わない。
+
+- 試験: `python3 -B -m unittest discover -s tests/host -p 'test_rom_provenance.py' -v`。cc65 を使わない合成試験で、改ざん ROM、偽造マニフェスト、不一致の再ビルド、dirty ツリー、未固定の cc65、リリース主張の各負例を含む。
+- 実行: `make rom-provenance`（`MODE=release` も指定可）。出力先の `a/`・`b/` は削除しない。既に存在すると ERROR（exit 2）で止まるため、再実行の前に `build/rom-provenance/` を消すか、`--work` を新しいディレクトリにする。
+
+**制限。** `--rom` の記録検査は内部の整合性だけを確かめる。`manifest.json` は署名されておらず、ROM と一緒に書き換えられると通ってしまう。出所は証明されない。`--reproduce` の一致は、同じチェックアウトと同じ環境での決定性を示すにすぎず、記録されたコミットからの生成や、別の環境での再現は示さない。GPL 由来のコードがないこと、BIOS 相当の内容がないこと、配布の権利があることは示さない。これらは人のレビュー事項であり、Issue #105 と #335 で追跡する。`api-source.yml` の BIOS DEV 成果物（`dev-only-not-compatible-syscard3.pce` と診断 ROM）は `--reproduce dev` で検査できるが、ワークフローへの組み込みは未了である。
