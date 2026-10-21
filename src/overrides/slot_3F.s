@@ -22,7 +22,9 @@ api_slot_3F:
     lda #0
     pha                  ; hi (product high byte)
     tsx                  ; X = S: hi $0101,x  lo $0102,x  m $0103,x
-    lsr $0102,x          ; C = multiplier bit 0; each ROR lo below leaves the next bit in C
+    lda $0102,x          ; C = multiplier bit 0; each ROR lo below leaves the next bit in C
+    lsr a
+    sta $0102,x
     ldy #8               ; round counter (Y was saved above and is restored below)
 @round:
     bcc @skip
@@ -31,8 +33,12 @@ api_slot_3F:
     adc $0103,x          ; hi += m; C = carry out
     sta $0101,x
 @skip:
-    ror $0101,x          ; hi: carry enters bit 7
-    ror $0102,x          ; lo: hi bit 0 enters bit 7, lo bit 0 becomes the next C
+    lda $0101,x          ; hi: carry enters bit 7, bit 0 becomes C
+    ror a
+    sta $0101,x
+    lda $0102,x          ; lo: hi bit 0 enters bit 7, lo bit 0 becomes the next C
+    ror a
+    sta $0102,x
     dey                  ; N/Z only, C is kept
     bne @round
     plx                  ; X = product high
