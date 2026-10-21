@@ -10,6 +10,7 @@ BIOS スロット `$11`（AD_TRANS、`$E033`）へは接続しない。#301 は 
 - 60b15e7: clean clone で `--selftest` / 実行 / `--verify` すべて終了コード 0。`PASS_ADT_ROUTINE_FOUR_CALLS`、12 件の改変を拒否。manifest sha256 `caf6ec58562540c17fbd4ccbe5ebd316f86dcea76732304025dd0a7c7604fe24`。
 - 4a7ffb9: clean clone で終了コード 0。manifest sha256 `4c703dfce567c586b58e1b92a90c61d341eeffcae302f04fd76cc2e1fba3112a`。60b15e7 からの差分は本契約文書のみで、コードは同じ。
 - c80d310: driver のコメントを変えたため、それ以前に生成された manifest の driver_sha256 と一致せず、c80d310 では `--verify` が失敗する。
+- a8f924e（本 PR）: 修正後の実コア実行は終了コード 0、ld65 警告 0 件、raw_sha256 `38e0db5b…`、steps 7783467、判定 `PASS_ADT_ROUTINE_FOUR_CALLS`。`--verify` は終了コード 0。cfg に 1 行を追加すると `--verify` は終了コード 1（linker cfg differs）で失敗し、元に戻すと成功する。
 - 8d04c9f（c80d310 以降のコード。コードは c80d310 と同一、差分は文書のみ）: clean clone で `--selftest`、実行、`--verify` すべて終了コード 0。`PASS_ADT_ROUTINE_FOUR_CALLS`、12 件の改変を拒否。manifest sha256 `7d9428e6099add5a40d8116423c628e2ba2b8902bbc051679e328ac1a77aa9e3`。cc65 のリンカ警告 2 件（APITABLE、FALLBACK）は再び出た。この run で manifest を再生成し、§12 の条件 3（`--verify` 終了コード 0）を満たした。
 
 manifest sha256 は run ごとに変わる。manifest には platform、python、command が含まれ、環境と実行によって異なるためである。したがって再現の判定は sha の一致ではなく、verdict と各観測の一致で行う。
@@ -138,6 +139,9 @@ manifest sha256 は run ごとに変わる。manifest には platform、python�
 - テストの空白（本 PR で修正）: 修正前の `verify()` は manifest の `probe_source_sha256` を照合しなかった。本 PR で `probe_source_sha256` と `linker_cfg_sha256`（テスト専用 cfg）を照合するよう修正した。また A の記録（`$2320`）を改変する試験は無い。
 - `--selftest` は契約から作った観測で判定器と改変表だけを検査する。コア実行の証拠ではない。
 
+- 来歴の限界（a8f924e）: `--verify` は作業ツリーの sha と manifest の整合を確認する。manifest と成果物を同時に書き換えれば通るため、これは整合性の確認であり、来歴（どの実行が生成したか）の証明ではない。
+- 時刻シードの範囲（a8f924e）: probe は `time()` を定数に固定する。Geargrafx の乱数シードは `time(NULL)` 由来のため、固定により SCSI 初期遅延の経路は 1 通りしか検査されない（30 シードの掃引は別記録）。判定は steps を読まないため、判定結果はこの固定の影響を受けない。
+
 ## 11. 証拠の区分
 
 | 区分 | 状態 | 根拠 |
@@ -155,7 +159,7 @@ manifest sha256 は run ごとに変わる。manifest には platform、python�
 
 - UNKNOWN（推測で埋めない）: 実機・実 BIOS での意味、AD_TRANS（`$E033`）の入力意味（C1〜C16）、SCSI バスリセットが Geargrafx の負例後の状態をどこまで戻すか（HYPOTHESIS: リセットで戻る）。
 - 解除条件:
-  1. cc65（pinned）が使える環境で `src/adt_dma_routine.s` と `src/adt_dma_routine_boot.s` が警告なくアセンブルとリンクできること（`cd_entry` が `$F000`）。本 PR では、テスト専用の `tests/fixtures/ad_trans_routine_guest.cfg` でリンクし、`src/bank0.cfg` は変更しない。BOOT（$F000）と VECTORS（$FFF6）の配置は `src/bank0.cfg` と同一で、この経路の警告は 0 である。`src/bank0.cfg` を使う `build_rom.py` は APITABLE/FALLBACK を含むオブジェクトと共にリンクするため、この警告は出ない。
+  1. cc65（pinned）が使える環境で `src/adt_dma_routine.s` と `src/adt_dma_routine_boot.s` が警告なくアセンブルとリンクできること（`cd_entry` が `$F000`）。本 PR では、テスト専用の `tests/fixtures/ad_trans_routine_guest.cfg` でリンクし、`src/bank0.cfg` は変更しない。BOOT（$F000）と VECTORS（$FFF6）の配置は `src/bank0.cfg` と同一で、この経路の警告は 0 である。`make dev-rom` は a8f924e で終了コード 0・ld65 警告 0 件（`build_rom.py` が生成する api_table.s が APITABLE/FALLBACK を定義する）。
   2. `make setup` の後、`python3 tests/integration/geargrafx_ad_trans_routine.py --out build/ad-trans-routine` が終了コード 0 で、判定 `PASS_ADT_ROUTINE_FOUR_CALLS` を返すこと。
   3. `--verify` が終了コード 0 であること。c80d310 以降のコードでは、8d04c9f の clean clone での実コア実行で満たした（§11「c80d310 以降のコードの扱い」）。60b15e7 の結果は c80d310 以降の driver を覆わない。8d04c9f の生成と検証は同じ run 内で行った（同一 run で生成した manifest に対する検査）。driver の同一性は、その run の manifest の driver_sha256 で示される。
-  4. 解除状態: 条件 1 は本 PR のテスト専用 cfg で充足（§11「本 PR」の run を参照）。条件 2 は未確認（`make setup` の実施を記録していない）。8d04c9f の clean clone での実行は判定 `PASS_ADT_ROUTINE_FOUR_CALLS`、終了コード 0 であったが、`make setup` の実施が記録されていないため、この実行を条件 2 の充足とはみなさない。条件 3 は 8d04c9f の run で満たした。§11 の「実コア PASS」は特定 run の結果であり、この解除状態とは別である。条件 2 が未確認のため、本契約は解除せず、`release_eligible=false` を維持する。
+  4. 解除状態: 条件 1 は本 PR のテスト専用 cfg で充足（a8f924e。§11 の run 一覧を参照）。条件 2 は未確認（`make setup` の実施を記録していない）。8d04c9f の clean clone での実行は判定 `PASS_ADT_ROUTINE_FOUR_CALLS`、終了コード 0 であったが、`make setup` の実施が記録されていないため、この実行を条件 2 の充足とはみなさない。条件 3 は 8d04c9f の run で満たした。§11 の「実コア PASS」は特定 run の結果であり、この解除状態とは別である。条件 2 が未確認のため、本契約は解除せず、`release_eligible=false` を維持する。
