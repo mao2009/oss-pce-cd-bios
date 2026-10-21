@@ -8,10 +8,15 @@
 // with no debugger stepping.
 //
 // argv: bios cue mode frames
-// Modes: <op>-forbidden-armed | <op>-forbidden-unguarded | <op>-allowed-armed
+// Modes: <op>-<variant>-<armed|unguarded>
 //   op = tii | tin | tia | tdd | tai (one-byte block transfer, guest code at $3E00)
 //   forbidden: MPR0 = $FF (hardware page); dest $0000 = VDC AR register; source byte 0x13
 //   allowed:   MPR0 = $00; dest $3E90 = WRAM; source byte 0x5A
+//   stackff:   (Issue #459) MPR1 = $FF, so the TransferStart stack pushes ($2100|S) hit the hardware
+//              page. Guest moves to $1E00 (MPR0 = WRAM). S=$04, Y=$07, A=$12, X=$34: the pushes go to
+//              $0104 (Y), $0103 (A), $0102 (X). Y=$07 sets VDC AR=7; the A and X pushes then write
+//              R[7] MSB and LSB, so R[7] = $1234 if they land. Stack bytes are read from WRAM only.
+//   stackwram: (positive control) same layout with MPR1 = WRAM; the pushes land in WRAM.
 // The armed guard refuses exactly the stores whose dest page is mapped to the hardware page.
 // Exit 0 with one JSON observation on stderr; 2 = usage; 3..6 = load failures.
 #include "geargrafx_core.h"
@@ -28,6 +33,7 @@
 
 // Symbols defined only by the VERIFICATION-ONLY core patch (see patches/).
 extern bool (*gg_verify_block_write_guard)(void* context, unsigned block_op, unsigned dest);
+extern bool (*gg_verify_transfer_start_guard)(void* context, unsigned stack_pointer);
 
 namespace {
 
@@ -43,6 +49,19 @@ unsigned g_calls = 0, g_refusals = 0;
 unsigned g_last_op = 0, g_last_dest = 0;
 unsigned g_ar_at_call = 0, g_r0_at_call = 0;
 HuC6270::HuC6270_State* g_vdc = nullptr;
+unsigned g_stack_calls = 0, g_stack_refusals = 0, g_stack_sp = 0;
+
+// Refuse the TransferStart A/X/Y pushes when the stack page (page 1: $2100|S) is mapped to $FF.
+bool transfer_start_guard(void*, unsigned stack_pointer)
+{
+    ++g_stack_calls;
+    g_stack_sp = stack_pointer;
+    if (g_armed && g_memory->GetMpr((0x2100 >> 13) & 7) == 0xFF) {
+        ++g_stack_refusals;
+        return false;
+    }
+    return true;
+}
 
 // Refuse a store whose destination page is mapped to the hardware page at call time.
 bool block_guard(void*, unsigned block_op, unsigned dest)
@@ -86,7 +105,10 @@ int main(int argc, char** argv)
     else
         return 2;
     bool forbidden = variant == "forbidden";
-    if (!forbidden && variant != "allowed")
+    bool stack_ff = variant == "stackff";
+    bool stack_wram = variant == "stackwram";
+    bool stack = stack_ff || stack_wram;
+    if (!forbidden && variant != "allowed" && !stack)
         return 2;
 
     u8 opcode = 0, block_index = 0;
@@ -122,41 +144,58 @@ int main(int argc, char** argv)
     std::vector<u8> frame(1024 * 512 * 4, 0);
     std::vector<s16> audio(65536, 0);
 
-    // Page 1 -> WRAM (guest and source); page 2 -> WRAM (stack at $21xx); page 0 by variant.
+    // Stack variants: guest, source and destination live in page 0 (WRAM) so MPR1 can be $FF.
+    const unsigned long guest_base = stack ? 0x1E00 : kGuestBase;
+    const unsigned long src_addr = stack ? 0x1E80 : kSrcAddr;
+    const unsigned long allowed_dst = stack ? 0x1E90 : kAllowedDst;
+
+    // Page 1 -> WRAM (guest and source); page 2 -> WRAM. The stack ($21xx) is in page 1 (MPR1), see the stack variants.
     memory->SetMpr(1, 0xF8);
     memory->SetMpr(2, 0xF8);
     memory->SetMpr(7, 0x00);
     for (int i = 3; i <= 6; ++i)
         memory->SetMpr(i, 0x00);
     memory->SetMpr(0, forbidden ? 0xFF : 0x00);
+    if (stack) {
+        memory->SetMpr(0, 0xF8);
+        memory->SetMpr(1, stack_ff ? 0xFF : 0xF8);  // stack page: $2100|S lives in MPR1 (page 1)
+    }
 
-    u16 dst = forbidden ? (u16)kForbiddenDst : (u16)kAllowedDst;
+    u16 dst = forbidden ? (u16)kForbiddenDst : (u16)allowed_dst;
     u8 src_value = forbidden ? 0x13 : 0x5A;
-    std::vector<u8> code = {opcode, (u8)(kSrcAddr & 0xFF), (u8)(kSrcAddr >> 8),
+    std::vector<u8> code = {opcode, (u8)(src_addr & 0xFF), (u8)(src_addr >> 8),
                             (u8)(dst & 0xFF), (u8)(dst >> 8), 0x01, 0x00,  // length = 1 byte
                             0x80, 0xFE};  // BRA *  (end of guest)
-    unsigned long end_pc = kGuestBase + code.size() - 2;
+    unsigned long end_pc = guest_base + code.size() - 2;
     u8* wram = memory->GetWorkingRAM();
     for (size_t i = 0; i < code.size(); ++i)
         wram[kStubIndex + i] = code[i];
-    wram[kSrcAddr - 0x2000] = src_value;
-    wram[kAllowedDst - 0x2000] = 0x00;
+    wram[src_addr & 0x1FFF] = src_value;  // WRAM index = in-page offset (MPR -> WRAM bank)
+    wram[allowed_dst & 0x1FFF] = 0x00;
+    // Stack bytes $2102..$2104 map to WRAM index $0102..$0104 when MPR1 is WRAM. Cleared before the run.
+    wram[0x0102] = 0;
+    wram[0x0103] = 0;
+    wram[0x0104] = 0;
 
-    st->PC->SetValue((u16)kGuestBase);
-    st->S->SetValue(0xFF);
-    st->A->SetValue(0);
-    st->X->SetValue(0);
-    st->Y->SetValue(0);
+    st->PC->SetValue((u16)guest_base);
+    st->S->SetValue(stack ? 0x04 : 0xFF);
+    st->A->SetValue(stack ? 0x12 : 0);
+    st->X->SetValue(stack ? 0x34 : 0);
+    st->Y->SetValue(stack ? 0x07 : 0);
     st->P->SetValue(0x04);
 
     gg_verify_block_write_guard = g_armed ? block_guard : nullptr;
+    gg_verify_transfer_start_guard = g_armed ? transfer_start_guard : nullptr;
 
     std::vector<u8> mpr_before(8), mpr_after(8);
     for (int i = 0; i < 8; ++i)
         mpr_before[i] = memory->GetMpr(i);
     unsigned vdc_ar_before = (u8)*vs->AR;
     unsigned vdc_r_before = vs->R[0];
-    unsigned dst_before = memory->Read((u16)kAllowedDst);
+    unsigned vdc_r7_before = vs->R[7];
+    unsigned dst_before = memory->Read((u16)allowed_dst);
+    unsigned sp_before = st->S->GetValue();
+    unsigned stack_before[3] = {wram[0x0102], wram[0x0103], wram[0x0104]};
 
     bool halted = false;
     unsigned frames_run = 0;
@@ -172,8 +211,10 @@ int main(int argc, char** argv)
         mpr_after[i] = memory->GetMpr(i);
     unsigned vdc_ar_after = (u8)*vs->AR;
     unsigned vdc_r_after = vs->R[0];
-    unsigned dst_after = memory->Read((u16)kAllowedDst);
-    unsigned src_after = memory->Read((u16)kSrcAddr);
+    unsigned vdc_r7_after = vs->R[7];
+    unsigned dst_after = memory->Read((u16)allowed_dst);
+    unsigned src_after = memory->Read((u16)src_addr);
+    unsigned stack_after[3] = {wram[0x0102], wram[0x0103], wram[0x0104]};
 
     const char* status = halted ? "ok" : "budget_exhausted";
     std::fprintf(stderr, "{");
@@ -184,6 +225,8 @@ int main(int argc, char** argv)
     std::fprintf(stderr, "\"guard_calls\":%u,\"guard_refusals\":%u,", g_calls, g_refusals);
     std::fprintf(stderr, "\"guard_block_op\":%u,\"guard_dest\":%u,", g_last_op, g_last_dest);
     std::fprintf(stderr, "\"guard_ar_at_call\":%u,\"guard_r0_at_call\":%u,", g_ar_at_call, g_r0_at_call);
+    std::fprintf(stderr, "\"stack_guard_calls\":%u,\"stack_guard_refusals\":%u,\"stack_guard_sp\":%u,",
+                 g_stack_calls, g_stack_refusals, g_stack_sp);
     std::fprintf(stderr, "\"expected_end_pc\":%lu,\"stop_pc\":%u,", end_pc, (unsigned)st->PC->GetValue());
     std::fprintf(stderr, "\"frames_run\":%u,\"frame_budget\":%lu,", frames_run, frames);
     std::fprintf(stderr, "\"before\":{\"mpr\":[%u,%u,%u,%u,%u,%u,%u,%u]},",
@@ -194,9 +237,15 @@ int main(int argc, char** argv)
                  mpr_after[4], mpr_after[5], mpr_after[6], mpr_after[7]);
     std::fprintf(stderr, "\"vdc_ar_before\":%u,\"vdc_ar_after\":%u,", vdc_ar_before, vdc_ar_after);
     std::fprintf(stderr, "\"vdc_r_before\":%u,\"vdc_r_after\":%u,", vdc_r_before, vdc_r_after);
+    std::fprintf(stderr, "\"vdc_r7_before\":%u,\"vdc_r7_after\":%u,", vdc_r7_before, vdc_r7_after);
+    std::fprintf(stderr, "\"sp_before\":%u,\"sp_after\":%u,", sp_before, (unsigned)st->S->GetValue());
+    std::fprintf(stderr, "\"stack_wram_before\":[%u,%u,%u],\"stack_wram_after\":[%u,%u,%u],",
+                 stack_before[0], stack_before[1], stack_before[2],
+                 stack_after[0], stack_after[1], stack_after[2]);
     std::fprintf(stderr, "\"dst_before\":%u,\"dst_after\":%u,\"src_after\":%u", dst_before, dst_after, src_after);
     std::fprintf(stderr, "}");
     std::fflush(stderr);
     gg_verify_block_write_guard = nullptr;
+    gg_verify_transfer_start_guard = nullptr;
     return 0;
 }

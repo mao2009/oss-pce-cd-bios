@@ -8,9 +8,10 @@
 ## 結論（要約）
 
 - 5 命令はいずれも **1 命令内で length 回のバイト書込みを行う**（複数書込み）。静的な範囲検査では、書込み先が許可域外に届くかを命令実行前に判定できる（`tools/block_xfer_audit.py`）。
-- **実コアでの書込み前遮断は実測対象になった（旧記述の NOT_RUN は置き換え）。** `tests/integration/geargrafx_block_write_guard.py`（`make block-write-guard`、`make integration` に含まれる）が pinned Geargrafx（b49ae82）と検証専用パッチ付きの実コアで、TII/TIN/TIA/TDD/TAI の 1 バイト転送を合成メディアで実行する。期待 PASS は 15 ケース（各命令 3 種: 拒否・フックなし対照・許可）。
+- **実コアでの書込み前遮断は実測対象になった（旧記述の NOT_RUN は置き換え）。** `tests/integration/geargrafx_block_write_guard.py`（`make block-write-guard`、`make integration` に含まれる）が pinned Geargrafx（b49ae82）と検証専用パッチ付きの実コアで、TII/TIN/TIA/TDD/TAI の 1 バイト転送を合成メディアで実行する。期待 PASS は 30 ケース（各命令 6 種: 拒否・フックなし対照・許可 の 3 種に、#459 のスタック push 用の 3 種を加えたもの）。
 - **命令途中で停止できるかは未実測（UNMEASURED）のまま。** driver は書込み前の拒否のみを測る。
 - 試験の拒否方針（書込み先が $FF ページの場合に拒否）は probe の中に書かれており、本番ゲートの証拠ではない。driver は「コアのフック点が書込み前に拒否できる」ことだけを示す。
+- **#459（TransferStart の A/X/Y push）:** 旧状態では、スタックページ（MPR1）を $FF にマップすると A/X/Y の push が VDC に着地した（実測: AR 0→7、R[7] 0→564）。検証専用パッチに TransferStart 用の書込み前フックを追加し、スタックページが $FF のとき push だけを拒否する。拒否した場合、push は書かれず S は 3 だけ動く（TransferEnd の pop と釣り合う）。**適用範囲は TransferStart の push のみ。** PHA/PHP/JSR/IRQ などの他の push、TransferEnd の pop（$FF ページからの読出し。ガード対象外）、その他の書込みは対象外。拒否方針は probe 内に書かれたテスト方針で、本番ゲートの証拠ではない。
 - 静的検査の結果は PASS ではない。`gate` は常に BLOCKED。
 - デバイス起点 RAM 書込みの監査は未実施（W17 は UNKNOWN のまま）。
 
@@ -44,6 +45,8 @@
 | 5 命令の命令途中停止の実測 | **未実施（UNMEASURED）**。driver は命令内の書込み前拒否のみを測り、途中停止は測らない | `geargrafx_block_write_guard.py` の LIMIT 行 |
 | 書込み先が $FF ページの 1 バイト転送が書込み前に拒否される（負例） | **実コアの driver で検証対象**（`*-forbidden-armed` 5 件 + 対照 `*-forbidden-unguarded` 5 件）。拒否は VDC AR 不変で確認 | `tests/integration/geargrafx_block_write_guard.py` |
 | 許可域（WRAM）への 1 バイト転送が届く（正例） | **実コアの driver で検証対象**（`*-allowed-armed` 5 件） | 同上 |
+| TransferStart の A/X/Y push がスタックページ $FF で書込み前に拒否される（#459、負例） | **実コアの driver で検証対象**（`*-stackff-armed` 5 件 + 対照 `*-stackff-unguarded` 5 件）。拒否は VDC AR / R[7] 不変で確認。適用範囲は push のみ | `tests/integration/geargrafx_block_write_guard.py`（`PASS issue-459` 行） |
+| TransferStart の push がスタックページ WRAM で届く（#459、正例） | **実コアの driver で検証対象**（`*-stackwram-armed` 5 件） | 同上 |
 | 複数バイト・他バンク・TIA/TAI の交互順序 | **静的のみ**（host モデル。実コアでは未検証） | `tests/host/test_block_xfer_audit.py` |
 | デバイス起点 RAM 書込みの監査列挙 | **未実施**（W17 は UNKNOWN） | 下記 |
 | 変異テストで偽 PASS が出ないこと | host 変異テスト 3 件（静的のみ）に加え、実コア driver が armed 判定に変異検査を適用する | `MutationTest` 3 件、driver の `mutation_test` |

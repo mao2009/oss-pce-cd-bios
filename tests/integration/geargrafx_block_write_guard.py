@@ -16,6 +16,14 @@ Cases (for each of tii, tin, tia, tdd, tai; one-byte transfer):
 * ``<op>-forbidden-unguarded`` (MUTATION): same guest, no hook. The VDC AR write must land.
 * ``<op>-allowed-armed`` (POSITIVE): MPR0 = $00, dest $3E90 (WRAM). The guard is consulted once and
   allows the store; the byte must land.
+* ``<op>-stackff-armed`` (Issue #459): MPR1 = $FF, so the TransferStart A/X/Y pushes ($2100|S) hit the
+  hardware page. The TransferStart guard refuses the pushes before the side effect: exactly one stack
+  guard call and one refusal, VDC AR and R[7] unchanged, S balanced. The block store (dest $1E90, WRAM)
+  must still land.
+* ``<op>-stackff-unguarded`` (MUTATION, #459): same layout, no hook. The pushes must land on the VDC:
+  AR 0 -> 7 and R[7] 0 -> 564 (the A/X bytes $12/$34 masked to BXR's 10 bits).
+* ``<op>-stackwram-armed`` (POSITIVE, #459): MPR1 = WRAM. The stack guard is consulted once, allows
+  the pushes, and the stack bytes X=$34, A=$12, Y=$07 land at WRAM $0102..$0104.
 
 Scope and limits (read before citing this as evidence):
 * The refusal policy (refuse a store whose destination page is mapped to $FF) is written inside the
@@ -54,6 +62,13 @@ ALLOWED_DST = 0x3E90
 OPS = {"tii": (0, 0x73), "tin": (1, 0xD3), "tia": (2, 0xE3), "tdd": (3, 0xC3), "tai": (4, 0xF3)}
 FORBIDDEN_VALUE = 0x13  # written to VDC AR (register index, no masking issue)
 ALLOWED_VALUE = 0x5A
+# Issue #459 stack-page layout: S=$04, Y=$07 (-> AR 7), A=$12, X=$34 pushed to $0104/$0103/$0102.
+# If the pushes land on the VDC, R[7] (BXR, 10 bits) = (A<<8|X) & 0x3FF = $234 = 564.
+STACK_AR_LANDED = 7
+STACK_R7_LANDED = 0x1234 & 0x3FF
+STACK_WRAM_LANDED = [0x34, 0x12, 0x07]  # WRAM $0102, $0103, $0104 = X, A, Y
+STACK_SP = 0x04
+ALLOWED_STACK_DST = 0x1E90  # block store dest in the stack layout (page 0 = WRAM)
 # Exactly the flags tools/setup.py build_geargrafx(debugger=True) passes as CFLAGS/CXXFLAGS overrides
 # (the debugger tree's objects are built with these, not with the stock Makefile defaults). Note the
 # debugger build does NOT define GG_DISABLE_DISASSEMBLER; adding it would change object layout.
@@ -67,6 +82,9 @@ def _cases():
         yield f"{op}-forbidden-armed"
         yield f"{op}-forbidden-unguarded"
         yield f"{op}-allowed-armed"
+        yield f"{op}-stackff-armed"
+        yield f"{op}-stackff-unguarded"
+        yield f"{op}-stackwram-armed"
 
 
 def _common(row, case):
@@ -87,13 +105,28 @@ def _common(row, case):
     if row["stop_pc"] != row["expected_end_pc"]:
         raise ValueError(f"{case}: guest stopped at {row['stop_pc']:#x}, expected {row['expected_end_pc']:#x}")
     op, variant = case.split("-")[0], case.split("-")[1]
-    mpr0_before, mpr0_after = row["before"]["mpr"][0], row["after"]["mpr"][0]
-    want_mpr0 = 0xFF if variant == "forbidden" else 0x00
-    if mpr0_before != want_mpr0 or mpr0_after != want_mpr0:
-        raise ValueError(f"{case}: MPR0 configuration {mpr0_before:#x}->{mpr0_after:#x}, want {want_mpr0:#x}")
+    want_mpr0, want_mpr1 = _expected_mpr(variant)
+    for side in ("before", "after"):
+        mpr = row[side]["mpr"]
+        if mpr[0] != want_mpr0 or mpr[1] != want_mpr1:
+            raise ValueError(f"{case}: {side} MPR0/MPR1 {mpr[0]:#x}/{mpr[1]:#x}, "
+                             f"want {want_mpr0:#x}/{want_mpr1:#x}")
     if row["src_value"] != (FORBIDDEN_VALUE if variant == "forbidden" else ALLOWED_VALUE):
         raise ValueError(f"{case}: source byte mismatch {row['src_value']:#x}")
     return op, variant
+
+
+def _expected_mpr(variant):
+    """(MPR0, MPR1) the probe configures before and after the run, per variant."""
+    if variant == "forbidden":
+        return 0xFF, 0xF8
+    if variant == "allowed":
+        return 0x00, 0xF8
+    if variant == "stackff":
+        return 0xF8, 0xFF
+    if variant == "stackwram":
+        return 0xF8, 0xF8
+    raise ValueError(f"unknown variant {variant}")
 
 
 def check_forbidden_armed(row, case):
@@ -143,10 +176,84 @@ def check_allowed_armed(row, case):
     return "allowed_store_landed"
 
 
+def _stack_block_ok(row, case):
+    """Shared stack-layout checks: the guest finished and the block store to WRAM $1E90 landed."""
+    if row["guard_block_op"] != OPS[case.split("-")[0]][0] or row["guard_dest"] != ALLOWED_STACK_DST:
+        raise ValueError(f"{case}: block guard saw op {row['guard_block_op']} dest {row['guard_dest']:#x}")
+    if row["guard_calls"] != 1 or row["guard_refusals"] != 0:
+        raise ValueError(f"{case}: block guard calls/refusals {row['guard_calls']}/{row['guard_refusals']}")
+    if row["dst_after"] != ALLOWED_VALUE:
+        raise ValueError(f"{case}: block store did not land ({row['dst_after']})")
+    if row["sp_before"] != STACK_SP:
+        raise ValueError(f"{case}: S before the run is {row['sp_before']:#x}, want {STACK_SP:#x}")
+
+
+def check_stackff_armed(row, case):
+    """Issue #459: the TransferStart pushes are refused before the side effect when the stack page is $FF."""
+    _common(row, case)
+    if row.get("armed") is not True:
+        raise ValueError(f"{case}: run is not armed")
+    if row["stack_guard_calls"] != 1 or row["stack_guard_refusals"] != 1:
+        raise ValueError(f"{case}: stack guard calls/refusals {row['stack_guard_calls']}/"
+                         f"{row['stack_guard_refusals']}, want 1/1")
+    if row["stack_guard_sp"] != STACK_SP:
+        raise ValueError(f"{case}: stack guard saw S {row['stack_guard_sp']:#x}")
+    if row["vdc_ar_before"] == STACK_AR_LANDED or row["vdc_r7_before"] == STACK_R7_LANDED:
+        raise ValueError(f"{case}: initial VDC state already equals the landed value; not discriminating")
+    if row["vdc_ar_after"] != row["vdc_ar_before"] or row["vdc_r7_after"] != row["vdc_r7_before"]:
+        raise ValueError(f"{case}: push side effect landed although refused (AR {row['vdc_ar_after']}, "
+                         f"R7 {row['vdc_r7_after']:#x})")
+    if row["sp_after"] != row["sp_before"]:
+        raise ValueError(f"{case}: S not balanced ({row['sp_before']:#x}->{row['sp_after']:#x})")
+    _stack_block_ok(row, case)
+    return "stack_push_refused_inside_core_before_side_effect"
+
+
+def check_stackff_unguarded(row, case):
+    """Control (null hook): the pushes must land on the VDC (AR and R[7] change)."""
+    _common(row, case)
+    if row.get("armed") is not False or row["stack_guard_calls"] != 0:
+        raise ValueError(f"{case}: unguarded run consulted the stack guard")
+    if row["vdc_ar_after"] != STACK_AR_LANDED or row["vdc_r7_after"] != STACK_R7_LANDED:
+        raise ValueError(f"{case}: push side effect did not land without the hook "
+                         f"(AR {row['vdc_ar_after']}, R7 {row['vdc_r7_after']:#x})")
+    return "push_side_effect_landed_without_hook"
+
+
+def check_stackwram_armed(row, case):
+    """Positive: the stack guard is consulted once, allows the pushes, and the bytes land in WRAM."""
+    _common(row, case)
+    if row.get("armed") is not True:
+        raise ValueError(f"{case}: run is not armed")
+    if row["stack_guard_calls"] != 1 or row["stack_guard_refusals"] != 0:
+        raise ValueError(f"{case}: stack guard calls/refusals {row['stack_guard_calls']}/"
+                         f"{row['stack_guard_refusals']}, want 1/0")
+    if row["stack_wram_before"] != [0, 0, 0] or row["stack_wram_after"] != STACK_WRAM_LANDED:
+        raise ValueError(f"{case}: stack bytes did not land ({row['stack_wram_before']} -> "
+                         f"{row['stack_wram_after']})")
+    _stack_block_ok(row, case)
+    return "stack_push_allowed_bytes_landed"
+
+
 def mutation_test(row, case):
     """Falsified armed observations must be rejected (proves the classifier can fail)."""
     variant = case.split("-")[1]
-    if variant == "forbidden":
+    if variant == "stackff":
+        mutations = [
+            ("pushes_landed", {"vdc_ar_after": STACK_AR_LANDED, "vdc_r7_after": STACK_R7_LANDED}),
+            ("no_stack_guard_call", {"stack_guard_calls": 0, "stack_guard_refusals": 0}),
+            ("stack_accepted_not_refused", {"stack_guard_refusals": 0}),
+            ("stack_wrong_sp", {"stack_guard_sp": STACK_SP + 1}),
+            ("sp_unbalanced", {"sp_after": STACK_SP - 3}),
+        ]
+        check = check_stackff_armed
+    elif variant == "stackwram":
+        mutations = [
+            ("stack_bytes_not_landed", {"stack_wram_after": [0, 0, 0]}),
+            ("stack_refused_although_allowed", {"stack_guard_refusals": 1}),
+        ]
+        check = check_stackwram_armed
+    elif variant == "forbidden":
         mutations = [
             ("side_effect_landed", {"vdc_ar_after": FORBIDDEN_VALUE}),
             ("no_guard_call", {"guard_calls": 0, "guard_refusals": 0}),
@@ -231,8 +338,16 @@ def main():
                 mutation_test(row, case)
             elif variant == "forbidden":
                 verdict = check_forbidden_unguarded(row, case)
-            else:
+            elif variant == "allowed":
                 verdict = check_allowed_armed(row, case)
+                mutation_test(row, case)
+            elif variant == "stackff" and case.endswith("-armed"):
+                verdict = check_stackff_armed(row, case)
+                mutation_test(row, case)
+            elif variant == "stackff":
+                verdict = check_stackff_unguarded(row, case)
+            else:
+                verdict = check_stackwram_armed(row, case)
                 mutation_test(row, case)
             evidence.append((case, verdict, row))
             print(f"PASS {case}: {verdict}")
@@ -243,11 +358,15 @@ def main():
                                         "row": row}, sort_keys=True))
     print("PASS issue-367 TII/TIN/TIA/TDD/TAI: one-byte transfers only, destination pages mapped to $FF only, "
           "pre-write refusal hook, synthetic media")
+    print("PASS issue-459 TransferStart A/X/Y pushes: refused before the side effect only when the stack page "
+          "(MPR1) is mapped to $FF; pushes only, TransferStart only, synthetic media")
     print("LIMIT: one-byte transfers only; no mid-instruction stop measured; no device-originated write probe; "
-          "guard refuses only dest pages mapped to $FF (other banks not covered); refusal policy is defined "
+          "block guard refuses only dest pages mapped to $FF (other banks not covered); refusal policy is defined "
           "inside the probe, not a production gate; refusal is silent and the source read is skipped; "
-          "TransferStart stack pushes (A/X/Y) are NOT guarded (probe maps stack to WRAM); armed flag is set "
-          "from the case name; no gate change; no BIOS.")
+          "#459 scope: the TransferStart A/X/Y pushes only. Other pushes (PHA/PHP/JSR/IRQ), TransferEnd pops "
+          "(reads from the $FF stack page, unguarded) and all other writes are NOT guarded; the TransferStart "
+          "guard only applies to the stack page; a refused push still moves S; armed flag is set from the case "
+          "name; no gate change; no BIOS.")
     return 0
 
 
