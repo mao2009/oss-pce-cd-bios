@@ -1070,16 +1070,25 @@
       "candidate_name": "MA_MUL8S",
       "state": "NOT_READY",
       "abi_contract": {
-        "status": "UNKNOWN",
+        "status": "PROJECT_SPEC_ONLY",
         "note": "reference System Card contract not verified; DEV-only project spec"
       },
-      "implementation": null,
-      "host_evidence": [],
-      "real_core_evidence": [],
+      "implementation": {
+        "source": "src/overrides/slot_40.s",
+        "license": "MIT (repository LICENSE)",
+        "provenance": "project-own spec, Issue #461 (same shift-add as src/math/ma_mul8s.s, MATHLIB segment replaced by OVERRIDES, contract in docs/ma-mul8s.md)"
+      },
+      "host_evidence": [
+        "tests/host/test_ma_mul8s.py"
+      ],
+      "real_core_evidence": [
+        "tests/integration/geargrafx_dev_mul8s.py"
+      ],
       "approval": {
         "approved_by": null,
         "review_ref": null
-      }
+      },
+      "note": "DEV ROM implemented and real-core tested; NOT_READY until owner approval is recorded"
     },
     {
       "id": 65,
