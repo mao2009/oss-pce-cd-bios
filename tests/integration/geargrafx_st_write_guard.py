@@ -22,7 +22,8 @@ Cases:
 
 Run manually (not wired into the Makefile integration target):
     python3 tests/integration/geargrafx_st_write_guard.py
-NOT_RUN in this worktree: the core build/run requires the Linux toolchain (WSL), see the PR body.
+Status: PASS on the pinned core under WSL, recorded in commit 8046ecf (PR #430). Not re-run in the
+authoring worktree (WSL refused by the harness there).
 """
 import copy
 import json
@@ -116,7 +117,7 @@ def check_armed(row, case):
 
 
 def check_unguarded(row, case):
-    """Mutation (no hook, upstream behaviour): the ST must not be consulted and its VDC effect must land."""
+    """Mutation (patched build, null hook): the ST must not be consulted and its VDC effect must land."""
     _common(row, case)
     if row.get("armed") is not False or row["guard_calls"] != 0:
         raise ValueError(f"{case}: unguarded run consulted a guard")

@@ -12,7 +12,7 @@
 // argv: bios cue mode frames
 // Modes (ST = ST0 $03 / ST1 $13 / ST2 $23):
 //   stN-armed                guard installed and refusing; ST is the entry instruction
-//   stN-unguarded            MUTATION: guard hook not installed (upstream behaviour); ST lands
+//   stN-unguarded            MUTATION: patched build, null hook (guard not installed); ST lands
 //   stN-after-tam-armed      LDA #$FF; TAM #$01 (MPR0 = $FF, dynamic change), then ST
 //   stN-after-tam-unguarded  same, guard not installed
 //   pos-write-armed          positive control: guard installed, STA $3E50 (RAM) is not a ST and lands

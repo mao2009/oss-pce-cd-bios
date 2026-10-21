@@ -33,6 +33,17 @@ byte-for-byte when applied to the pristine upstream copy.
 
 ## Status
 
-NOT_RUN. The core build and the real-core probe need the Linux toolchain (see
-`docs/emulator-geargrafx.md`). The patch and probe were syntax-checked only (MinGW
-`g++ -fsyntax-only`). Nothing here changes `BLOCKED_ABI` or `release_eligible`.
+PASS on the pinned core under WSL, as recorded in commit `8046ecf` (PR #430):
+
+- Armed (refused inside the core before the side effect, 4 cases): `st0-armed`, `st1-armed`,
+  `st2-armed`, `st0-after-tam-armed` (MPR0 changed to $FF by TAM first).
+- Unguarded (patched build, null hook; the store lands, 4 cases): `st0-unguarded`,
+  `st1-unguarded`, `st2-unguarded`, `st0-after-tam-unguarded`.
+- Positive control: `pos-write-armed` (allowlisted RAM store lands).
+
+This is a verification patch with a null-by-default hook. The unguarded runs use the same
+patched build with the hook unset, not the stock object. Nothing here changes `BLOCKED_ABI`
+or `release_eligible`.
+
+The authoring worktree could not re-run the driver (WSL execution refused by the harness),
+so the PASS line above is taken from commit `8046ecf`, not re-printed here.
