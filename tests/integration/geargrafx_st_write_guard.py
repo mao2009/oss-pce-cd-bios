@@ -188,12 +188,13 @@ def build_probes(directory):
                                 "--eval", "print-cxx:;@echo $(CPPFLAGS) $(CXXFLAGS)", "print-cxx"]).stdout
     flags = shlex.split(flags_text)
     patched_obj = directory / "huc6280_opcodes_st_guard.o"
+    # make prints INCLUDES relative to the platform directory, so compile from there.
     build_command(["g++", *flags, "-std=c++11", "-I" + str(staged / "src"), "-c",
-                   str(staged / "src/huc6280_opcodes.cpp"), "-o", str(patched_obj)])
+                   str(staged / "src/huc6280_opcodes.cpp"), "-o", str(patched_obj)], cwd=make_dir)
     link = [patched_obj if p == stock[0] else p for p in objects]
     probe = directory / "st-write-guard-probe"
     build_command(["g++", *flags, "-std=c++11", str(Path(__file__).with_name(PROBE_SOURCE)), *map(str, link),
-                   "-pthread", "-lm", "-o", str(probe)])
+                   "-pthread", "-lm", "-o", str(probe)], cwd=make_dir)
     return probe
 
 
