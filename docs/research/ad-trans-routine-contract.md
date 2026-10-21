@@ -2,7 +2,7 @@
 
 **状態: 開発専用の自作内部契約。System Card の ABI ではない。** `release_eligible=false`。
 BIOS スロット `$11`（AD_TRANS、`$E033`）へは接続しない。#301 は BLOCKED_ABI のまま。
-実コア検証: 9b5c044 で PASS、現 HEAD は `<<REAL_CORE_RESULT>>`（§11）。本契約は、PR #406 の HuC6280 ゲスト DMA 経路を独立ルーチンとして切り出した自作の取り決めである。
+実コア検証: 9b5c044 で PASS、現 HEAD（60b15e7）は Coordinator の clean clone で PASS（`PASS_ADT_ROUTINE_FOUR_CALLS`、12 件の改変を拒否、`--selftest` / 実行 / `--verify` すべて終了コード 0、manifest sha256 `caf6ec58562540c17fbd4ccbe5ebd316f86dcea76732304025dd0a7c7604fe24`）。本契約は、PR #406 の HuC6280 ゲスト DMA 経路を独立ルーチンとして切り出した自作の取り決めである。
 呼出元（`src/adt_dma_routine_boot.s`）と呼出先（`src/adt_dma_routine.s`）の内部契約として定義する。
 
 ## 1. 範囲
@@ -123,9 +123,9 @@ BIOS スロット `$11`（AD_TRANS、`$E033`）へは接続しない。#301 は 
 | 区分 | 状態 | 根拠 |
 | --- | --- | --- |
 | 実装（ルーチン、boot） | 作成済み | `src/adt_dma_routine.s`、`src/adt_dma_routine_boot.s` |
-| 構文検査（cc65 アセンブル・リンク） | 9b5c044 で Coordinator が成功（clean clone、終了コード 0）。リンカ警告 2 件あり（`src/bank0.cfg:14` の `APITABLE` / `FALLBACK` の空セグメント。実行には影響しないことを確認済み）。現 HEAD は `<<REAL_CORE_RESULT>>` | 作業者環境では cc65 を実行していない（worktree の保護） |
+| 構文検査（cc65 アセンブル・リンク） | 9b5c044 で Coordinator が成功（clean clone、終了コード 0）。リンカ警告 2 件あり（`src/bank0.cfg:14` の `APITABLE` / `FALLBACK` の空セグメント。実行には影響しないことを確認済み）。現 HEAD（60b15e7）は同じ clean clone で終了コード 0（manifest sha256 `caf6ec58…fe24`） | 作業者環境では cc65 を実行していない（worktree の保護） |
 | 判定器の自己検査 | 現 HEAD で `--selftest`（host のみ） | 契約から作った観測と改変表だけ。コアの証拠ではない |
-| 実コア（pinned Geargrafx）の正例・負例・復帰・入力不正・無効スロット | 9b5c044 で PASS（`PASS_ADT_ROUTINE_FOUR_CALLS`、manifest sha256 `04e25ba2e3399d55875d65fb697619dd690ea63b6ddc9e467bd9c69203ad7f6a`、selftest / real-core / verify すべて終了コード 0）。現 HEAD は `<<REAL_CORE_RESULT>>` | 本コミットで ROM、probe、判定器が変わったため 9b5c044 の結果は現 HEAD の証拠ではない。Coordinator が再実行する |
+| 実コア（pinned Geargrafx）の正例・負例・復帰・入力不正・無効スロット | 9b5c044 で PASS（`PASS_ADT_ROUTINE_FOUR_CALLS`、manifest sha256 `04e25ba2e3399d55875d65fb697619dd690ea63b6ddc9e467bd9c69203ad7f6a`、selftest / real-core / verify すべて終了コード 0）。現 HEAD（60b15e7）は同じ clean clone で終了コード 0（manifest sha256 `caf6ec58…fe24`） | 9b5c044 から ROM、probe、判定器が変わったため、9b5c044 の結果は 60b15e7 の証拠ではない。60b15e7 の結果を証拠とする |
 | 独立レビュー | 別コンテキストのレビュー結果を PR 本文に記す | §12 |
 | CI | PR の HEAD で確認 | PR 本文 |
 
