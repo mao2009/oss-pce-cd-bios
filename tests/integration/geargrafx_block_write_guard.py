@@ -203,6 +203,8 @@ def check_stackff_armed(row, case):
     if row["vdc_ar_after"] != row["vdc_ar_before"] or row["vdc_r7_after"] != row["vdc_r7_before"]:
         raise ValueError(f"{case}: push side effect landed although refused (AR {row['vdc_ar_after']}, "
                          f"R7 {row['vdc_r7_after']:#x})")
+    if row["stack_wram_after"] != [0, 0, 0]:
+        raise ValueError(f"{case}: refused push wrote the WRAM stack image ({row['stack_wram_after']})")
     if row["sp_after"] != row["sp_before"]:
         raise ValueError(f"{case}: S not balanced ({row['sp_before']:#x}->{row['sp_after']:#x})")
     _stack_block_ok(row, case)
