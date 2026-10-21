@@ -320,6 +320,10 @@ def verify(out: Path) -> int:
     for src, digest in manifest["guest_sources_sha256"].items():
         if digest != sha256_hex((ROOT / src).read_bytes()):
             raise ValueError(f"{src} differs from the recorded source")
+    if sha256_hex((out / manifest["rom_file"]).read_bytes()) != manifest["rom_sha256"]:
+        raise ValueError("ROM does not match its recorded sha256")
+    if sha256_hex((out / "probe" / PROBE_TARGET).read_bytes()) != manifest["probe_binary_sha256"]:
+        raise ValueError("probe binary does not match its recorded sha256")
     raw = (out / manifest["raw_file"]).read_bytes()
     if sha256_hex(raw) != manifest["raw_sha256"]:
         raise ValueError("raw observation does not match its recorded sha256 (modified?)")

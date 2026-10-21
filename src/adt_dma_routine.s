@@ -9,7 +9,7 @@
 
 CD_STATUS     = $1800    ; read: SCSI bus flags (mask $F8)
 CD_DATA       = $1801
-CD_ACK        = $1802    ; bit 7 = ACK (manual handshake for command/status/message bytes)
+CD_ACK        = $1802    ; bit 7 = ACK (manual handshake, used for command, status and message bytes)
 CD_RESET      = $1804    ; bit 1 = SCSI bus reset
 ADPCM_ADDR_LO = $1808
 ADPCM_ADDR_HI = $1809
@@ -63,9 +63,16 @@ adt_dma_sector:
     sta smsg
     lda #$FF
     sta bus_ok
-    lda #<RES_BASE           ; rp = RES_BASE + PB_SLOT
+    lda PB_SLOT              ; a slot other than 0/8/16/24 is refused (code 9) and written to slot 0
+    and #$E7
+    beq @slot_ok
+    lda #0
+    bra @slot_set
+@slot_ok:
+    lda PB_SLOT
+@slot_set:
     clc
-    adc PB_SLOT
+    adc #<RES_BASE           ; rp = RES_BASE + slot offset
     sta rp
     lda #>RES_BASE
     adc #0
@@ -77,7 +84,12 @@ adt_dma_sector:
     dey
     bpl @clr
 
-    lda PB_LBA_HI            ; validate: 21-bit LBA, arm in {0,1}, destination fits in 64 KiB
+    lda PB_SLOT              ; validate: slot, 21-bit LBA, arm in {0,1}, destination fits in 64 KiB
+    and #$E7
+    beq @slot_valid
+    jmp bad_request
+@slot_valid:
+    lda PB_LBA_HI
     cmp #$20
     bcc @lba_ok
     jmp bad_request
@@ -255,6 +267,8 @@ adt_dma_sector:
     lda #6                   ; non-GOOD status or non-COMPLETE message
     jmp fail
 @good:
+    lda #0
+    sta code                 ; success must not inherit an earlier call's code
     lda #9
     sta stg
     lda #1
