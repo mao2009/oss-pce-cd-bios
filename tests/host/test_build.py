@@ -1,6 +1,7 @@
 """Host assertions execute pinned tools; missing setup is an error, not SKIP."""
 import os
 from pathlib import Path
+import shutil
 import struct
 import subprocess
 import sys
@@ -10,7 +11,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 from build import build, verify_fixture as verify
-from environment import ROOT, core_path, executable, requires_cc65, tools_dir
+from environment import ROOT, cc65_required, core_path, executable, requires_cc65, tools_dir
 
 
 class BuildTests(unittest.TestCase):
@@ -91,7 +92,8 @@ class BuildTests(unittest.TestCase):
                 build(base / "overflow", source=source)
 
     def test_unpinned_tool_fails(self):
-        with patch.dict(os.environ, {"CA65": "/usr/bin/true", "LD65": "/usr/bin/true"}):
+        # Any runnable binary without the pinned build ID; /usr/bin/true does not exist on Windows.
+        with patch.dict(os.environ, {"CA65": sys.executable, "LD65": sys.executable}):
             with tempfile.TemporaryDirectory() as directory:
                 with self.assertRaisesRegex(ValueError, "pinned"):
                     build(Path(directory))
@@ -116,6 +118,10 @@ class BuildTests(unittest.TestCase):
             self.assertIn('_twice', (base / "probe.s").read_text())
 
     def test_release_gate(self):
+        if shutil.which("make") is None:
+            if cc65_required():
+                self.fail("make is required in required mode (OSS_PCE_REQUIRE_CC65=1) but is not on PATH")
+            self.skipTest("make not on PATH; NOT_RUN on hosts without GNU make (Windows)")
         result = subprocess.run(["make", "release"], cwd=ROOT, capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("BLOCKED", result.stderr)

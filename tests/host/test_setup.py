@@ -1,5 +1,4 @@
 """Exercise cache reuse/recovery using small original archives, not network mocks."""
-import fcntl
 import hashlib
 import io
 import json
@@ -15,6 +14,21 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'tools'))
 import setup as bootstrap
 from environment import dependency_dir
+
+try:
+    import fcntl
+except ImportError:  # Windows: the flock test below is POSIX-only (setup.py refuses to run there)
+    fcntl = None
+
+
+def _can_symlink():
+    """Windows creates symlinks only with Developer Mode or elevation (WinError 1314 otherwise)."""
+    with tempfile.TemporaryDirectory() as directory:
+        try:
+            os.symlink(__file__, Path(directory) / 'probe')
+            return True
+        except OSError:
+            return False
 
 
 class CacheTests(unittest.TestCase):
@@ -68,20 +82,24 @@ class CacheTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'integrity mismatch'):
                     bootstrap.fetch('cc65')
 
+    @unittest.skipIf(os.name == 'nt', 'POSIX exec bits: Windows has no executable mode to change (NOT_RUN)')
     def test_changed_executable_permission_is_rejected(self):
         source = bootstrap.fetch('cc65')
         (source / 'src/test.c').chmod(0o755)
         with self.assertRaisesRegex(ValueError, 'integrity mismatch'):
             bootstrap.fetch('cc65')
 
-    def test_extra_source_and_symlink_are_rejected(self):
+    def test_extra_source_is_rejected(self):
         source = bootstrap.fetch('cc65')
         extra = source / 'src/extra.c'
         extra.write_text('unreviewed source')
         with self.assertRaisesRegex(ValueError, 'unexpected source'):
             bootstrap.fetch('cc65')
-        extra.unlink()
-        extra.symlink_to(source / 'src/test.c')
+
+    @unittest.skipUnless(_can_symlink(), 'symlink creation needs a privilege this host lacks (Windows: NOT_RUN)')
+    def test_symlink_in_cache_is_rejected(self):
+        source = bootstrap.fetch('cc65')
+        (source / 'src/extra.c').symlink_to(source / 'src/test.c')
         with self.assertRaisesRegex(ValueError, 'symlink'):
             bootstrap.fetch('cc65')
 
@@ -143,6 +161,7 @@ class CacheTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'unverified existing'):
             bootstrap.fetch('cc65')
 
+    @unittest.skipIf(fcntl is None, "POSIX flock semantics; tools/setup.py is POSIX-only (Windows: NOT_RUN)")
     def test_parallel_setup_waits_for_exclusive_lock(self):
         # Verify the main entrypoint actually blocks on the lock before fetching.
         code = ('import sys; sys.path.insert(0, sys.argv[1]); import setup; '
