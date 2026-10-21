@@ -7,6 +7,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -20,6 +21,26 @@ from environment import DEPENDENCIES  # noqa: E402
 COMMIT = "a" * 40
 OTHER = "b" * 40
 ROM = bytes(range(256)) * 4
+
+
+def rom_builder(out: Path) -> Path:
+    """A fake builder that writes the ROM and a matching manifest into out (no cc65)."""
+    out.mkdir(parents=True, exist_ok=True)
+    rom_path = out / rp.BUILDERS["smoke"][1]
+    rom_path.write_bytes(ROM)
+    (out / "manifest.json").write_text(json.dumps(record()), encoding="utf-8")
+    return rom_path
+
+
+def make_link(link: Path, target: Path) -> None:
+    """Create a Windows junction (no admin needed) or a symlink; skip the test if neither can be made."""
+    if os.name == "nt" and subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                                          capture_output=True).returncode == 0:
+        return
+    try:
+        os.symlink(target, link, target_is_directory=True)
+    except OSError as error:
+        raise unittest.SkipTest(f"junction and symlink unavailable on this OS/account: {error}")
 
 
 def record(rom=ROM, **overrides):
@@ -121,12 +142,58 @@ class ReproducibilityTests(unittest.TestCase):
             raise AssertionError("builder must not run over existing data")
 
         with tempfile.TemporaryDirectory() as directory:
+            rp.reproduce(rom_builder, Path(directory))  # tool-owned work with marker
             keep = Path(directory) / "a" / "notes.txt"
-            keep.parent.mkdir()
+            (Path(directory) / "a" / rp.OWNER_MARKER).unlink()  # a/ is now foreign: marker gone
             keep.write_text("user data", encoding="utf-8")
             with self.assertRaises(rp.ToolError):
                 rp.reproduce(fake, Path(directory))
             self.assertEqual("user data", keep.read_text(encoding="utf-8"))
+
+    def test_reproduce_refuses_nonempty_work_without_marker(self):
+        def fake(out):
+            raise AssertionError("builder must not run in a foreign work directory")
+
+        with tempfile.TemporaryDirectory() as directory:
+            keep = Path(directory) / "notes.txt"
+            keep.write_text("user data", encoding="utf-8")
+            with self.assertRaises(rp.ToolError):
+                rp.reproduce(fake, Path(directory))
+            self.assertEqual("user data", keep.read_text(encoding="utf-8"))
+
+    def test_reproduce_repeat_run_on_owned_dirs_succeeds(self):
+        build = rom_builder
+        with tempfile.TemporaryDirectory() as directory:
+            rp.reproduce(build, Path(directory))
+            first, second = rp.reproduce(build, Path(directory))  # a/ and b/ carry the marker: rebuilt, not refused
+            self.assertEqual(ROM, first.read_bytes())
+            self.assertEqual(ROM, second.read_bytes())
+
+    def test_reproduce_does_not_follow_link_inside_owned_dir(self):
+        def fake(out):
+            raise AssertionError("builder must not run when a link is inside a tool-owned directory")
+
+        with tempfile.TemporaryDirectory() as outside, tempfile.TemporaryDirectory() as directory:
+            keep = Path(outside) / "keep.txt"
+            keep.write_text("outside", encoding="utf-8")
+            rp.reproduce(rom_builder, Path(directory))
+            make_link(Path(directory) / "a" / "inner", Path(outside))
+            with self.assertRaises(rp.ToolError):
+                rp.reproduce(fake, Path(directory))
+            self.assertEqual("outside", keep.read_text(encoding="utf-8"))
+
+    def test_reproduce_refuses_junction_or_symlink_as_work_entry(self):
+        def fake(out):
+            raise AssertionError("builder must not write through a junction or symlink")
+
+        with tempfile.TemporaryDirectory() as outside, tempfile.TemporaryDirectory() as directory:
+            keep = Path(outside) / "keep.txt"
+            keep.write_text("outside", encoding="utf-8")
+            (Path(directory) / rp.OWNER_MARKER).write_text("owned", encoding="utf-8")  # so only the link is at issue
+            make_link(Path(directory) / "a", Path(outside))
+            with self.assertRaises(rp.ToolError):
+                rp.reproduce(fake, Path(directory))
+            self.assertEqual("outside", keep.read_text(encoding="utf-8"))
 
     def test_reproduce_refuses_symlink_out_of_work(self):
         def fake(out):
@@ -215,7 +282,7 @@ class CliTests(unittest.TestCase):
 
     def test_reproduce_identical_builds_pass(self):
         with tempfile.TemporaryDirectory() as directory:
-            self.assertEqual(rp.EXIT_PASS, self.run_reproduce(self.fake_builder(lambda out: ROM), Path(directory)))
+            self.assertEqual(rp.EXIT_PASS, self.run_reproduce(rom_builder, Path(directory)))
 
     def test_reproduce_divergent_builds_fail_on_reproducibility_alone(self):
         # Each build's manifest matches its own bytes, so only the byte comparison can fail this run.

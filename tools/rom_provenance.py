@@ -30,6 +30,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -84,19 +85,72 @@ def check_reproducible(first: bytes, second: bytes) -> list[str]:
     return [f"two builds from the same input differ: {sha256(first)} != {sha256(second)}"]
 
 
-def reproduce(build_once, work: Path) -> tuple[Path, Path]:
-    """Run build_once(out_dir) -> rom_path twice into fresh directories a and b under work; return both ROM paths.
+OWNER_MARKER = ".rom-provenance-owner"  # written by this tool into every directory it creates under --work
+MARKER_TEXT = "created by tools/rom_provenance.py (Issue #335)\n"
+FILE_ATTRIBUTE_REPARSE_POINT = 0x400  # Windows junctions and other reparse points (os.lstat st_file_attributes)
 
-    build_once is injected so tests can use a fake builder. Nothing is deleted: an existing a or b (a symlink
-    included) is refused, so no build writes through a link or over earlier output. Fail-closed on a symlinked
-    or over-broad work directory.
+
+def _is_link(path: Path) -> bool:
+    """True for a symlink or a Windows reparse point (junction). A missing path is not a link."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    return os.path.islink(path) or bool(getattr(st, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _owned(directory: Path) -> bool:
+    """True only for a real directory holding a real (non-link) ownership marker written by this tool."""
+    marker = directory / OWNER_MARKER
+    return not _is_link(directory) and directory.is_dir() and not _is_link(marker) and marker.is_file()
+
+
+def _claim(directory: Path) -> None:
+    """Create a directory this tool owns. os.mkdir fails if the path exists, so nothing is reused silently."""
+    os.mkdir(directory)
+    (directory / OWNER_MARKER).write_text(MARKER_TEXT, encoding="utf-8")
+
+
+def _remove_owned(directory: Path) -> None:
+    """Delete a tool-owned directory. Re-checks ownership, and refuses if a link is inside (never followed)."""
+    if not _owned(directory):
+        raise ToolError(f"refusing to delete {directory}: not owned by this tool")
+    for dirpath, dirnames, filenames in os.walk(directory, followlinks=False):
+        for name in dirnames + filenames:
+            entry = Path(dirpath) / name
+            if _is_link(entry):
+                raise ToolError(f"refusing to delete {directory}: contains a link or reparse point {entry}")
+    # ponytail: check-then-rmtree leaves a TOCTOU window; fd-relative deletion would close it if this ever matters
+    shutil.rmtree(directory)
+
+
+def reproduce(build_once, work: Path) -> tuple[Path, Path]:
+    """Run build_once(out_dir) -> rom_path twice into directories a and b under work; return both ROM paths.
+
+    build_once is injected so tests can use a fake builder. Deletion is limited to a and b that carry this tool's
+    marker (a repeat run). Refused: a link or reparse point at work or a/b, a non-empty work without the marker,
+    and a/b that this tool did not create. User files in work are never touched.
     """
     root = ROOT.resolve()
-    if work.is_symlink() or work.resolve() in (root, *root.parents):
-        raise ToolError(f"refusing --work {work}: a symlink, or the repository root or above")
+    if _is_link(work) or work.resolve() in (root, *root.parents):
+        raise ToolError(f"refusing --work {work}: a symlink or junction, or the repository root or above")
+    if os.path.lexists(work):
+        if not work.is_dir():
+            raise ToolError(f"refusing --work {work}: not a directory")
+        if any(work.iterdir()) and not _owned(work):
+            raise ToolError(f"refusing --work {work}: not empty and not created by this tool; pass a new --work")
+        if not _owned(work):  # an empty directory we may claim: stamp it so the next run recognises it
+            (work / OWNER_MARKER).write_text(MARKER_TEXT, encoding="utf-8")
+    else:
+        work.parent.mkdir(parents=True, exist_ok=True)
+        _claim(work)
     for name in ("a", "b"):
-        if os.path.lexists(work / name):
-            raise ToolError(f"refusing to overwrite existing {work / name}; remove it or pass a new --work")
+        target = work / name
+        if os.path.lexists(target):
+            if not _owned(target):
+                raise ToolError(f"refusing to overwrite existing {target}: not created by this tool; pass a new --work")
+            _remove_owned(target)
+        _claim(target)
     first = build_once(work / "a")
     second = build_once(work / "b")
     return Path(first), Path(second)
