@@ -1,6 +1,6 @@
 # CD_STAT 相当のデバイス層観測（Issue #231、親 #18）
 
-**状態: 判定器・host テスト・実コア runner を追加。実コア（c719ee4、終了コード 0）で媒体あり/なしの対照、選択タイムアウト、空白データ盤の拒否を確認。§4.2 の負例も同じ runner で実コア実行し、期待する拒否理由を確認（§4.1、§4.2）。**
+**状態: 判定器・host テスト・実コア runner を追加。実コア（c719ee4、終了コード 0）で媒体あり/なしの対照、選択タイムアウト、空白データ盤の拒否を確認。§4.2 の負例も同じ runner で確認（0 バイト BIN は probe の終了コードを確認、それ以外は期待する拒否理由を照合）（§4.1、§4.2）。**
 spec=HYPOTHESIS、implementation=DEV_OBSERVATION_ONLY、verification=HOST_ONLY（合成レコード）と実コア（§4.1、§4.2 の範囲のみ）、real_hardware=NOT_RUN、second_emulator=NOT_RUN、bios_abi=UNKNOWN。
 CD_STAT（`$09`、候補 `$E01B`）の呼出先 ABI は未確定であり、本件では呼ばない。BIOS 互換は主張しない。純正 BIOS・商用ゲーム・`./rom/` は読まず、使わない。
 
@@ -27,11 +27,11 @@ CD_STAT（`$09`、候補 `$E01B`）の呼出先 ABI は未確定であり、本�
 
 | 検証 | コマンド | 結果 |
 | --- | --- | --- |
-| 新規ホスト単体（正例・負例・timeout 境界・欠落・短いバッファ・予算入力の検証） | `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.host.test_cd_stat_observation` | 11 件 OK（合成レコード、実コアではない） |
+| 新規ホスト単体（正例・負例・timeout 境界・欠落・短いバッファ・予算 0 の拒否） | `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.host.test_cd_stat_observation` | 11 件 OK（合成レコード、実コアではない） |
 | runner の構文 | `python3 -B -m py_compile tests/integration/geargrafx_cd_stat_observation.py` | OK |
 | 既存の CD 関連ホスト試験 | `python -m unittest discover -s tests/host -p 'test_cd_*.py'` | 322 件、OK（skipped=4、cc65 等の環境依存） |
 | 全体ホスト試験 | `python -m unittest discover -s tests/host` | 1971 件中、失敗 59・エラー 6 はすべて `test_artifact_guard*`（Windows 環境で確認。本 PR の変更ファイルは参照しない。main での再確認は未実施） |
-| 実コア（固定版 Geargrafx + ca65、clean clone） | `make dev-cd-stat-observation-integration` | c719ee4 で終了コード 0（§4.1）。§4.2 の負例も同じ実行で拒否を確認 |
+| 実コア（固定版 Geargrafx + ca65、clean clone） | `make dev-cd-stat-observation-integration` | c719ee4 で終了コード 0（§4.1）。§4.2 の負例も同じ実行で確認 |
 
 ## 4. 実コアの観測
 
@@ -49,14 +49,14 @@ evidence の SHA-256: `45862da4ec88df4d2109bdc49cc5c9480ec34ba3fa0e90fb7b0e52982
 
 ### 4.2 負例の実コア実行（c719ee4、同じ runner、終了コード 0）
 
-同じ runner は以下の負例も実コア（同一 ROM・同一ローダー）で実行し、各負例について runner の `rejected()` で期待する拒否理由（部分一致）を確認している。
+同じ runner は以下の負例も同一 ROM・同一ローダーで実行する。確認方法は負例ごとに異なる。0 バイト BIN 以外は runner の `rejected()` で期待する拒否理由（部分一致）を照合する。0 バイト BIN は `rejected()` を通らず、probe の終了コード 4 を確認する（拒否理由の照合ではない）。`step_over_judge_bound` と `budget_*` は、取得済みの実コア記録に対する判定器の呼出しであり、新たな実コア実行ではない。
 
 - `no_media_as_disc_side`: 盤面側が無媒体の対照を拒否（理由: `not exactly one-sided`）
 - `swapped_pair`: 盤あり/なしを入れ替えた対照を拒否（理由: `not exactly one-sided`）
-- `zero_byte_bin`: 0 バイト BIN は実コアの読込前に拒否（probe 終了コード 4）
+- `zero_byte_bin`: 0 バイト BIN は実コアの読込前に拒否される。確認は probe の終了コード 4 のみ（`rejected()` を通らない。拒否理由の照合ではない）
 - `step_budget_exhausted`: 予算 1000 で打ち切った実コア記録（`reason=budget`）を judge が拒否（理由: `not bounded by the step budget`）
 - `step_over_judge_bound`: 実コアの記録に対し judge の step 上限を 1 として拒否（理由: `not bounded by the step budget`）。上限値は judge への入力であり、実コアへの入力ではない
-- `budget_zero` / `budget_negative` / `budget_boolean` / `budget_string`: judge の予算入力の型・範囲の検証（理由: `BLOCKED: step budget`）。これは判定器（`tools/cd_stat_observation.py`）の入力検証であり、実コアへの入力ではない。単体の確認は §3 の host 試験による
+- `budget_zero` / `budget_negative` / `budget_boolean` / `budget_string`: judge の予算入力の型・範囲の検証（理由: `BLOCKED: step budget`）。出典は runner の judge 入力検証（`tests/integration/geargrafx_cd_stat_observation.py` の `rejected()` 呼出し）で、取得済みの実コア記録に対する判定器（`tools/cd_stat_observation.py`）の呼出しであり、新たな実コア実行ではない。host 試験（§3）が確認しているのは予算 0 のみ（`test_non_positive_budget_is_blocked`）
 
 ### 4.3 未了と注意
 
