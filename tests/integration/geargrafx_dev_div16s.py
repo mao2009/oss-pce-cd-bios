@@ -14,9 +14,11 @@ mode flag and clears P.T at the start of every instruction, and PHP always pushe
 therefore swallowed by the JSR, so the routine's own instructions never run with T=1 and P.T is 0 wherever the guest
 can observe it. The contract cases never set T; one SET-before-JSR run is a characterisation: it prints what the core
 observed and asserts nothing about the routine.
-Scope: 22 real-core cases (20 at caller SP=$FF, 2 at the boundary) plus the no-CLD mutant. P is compared exactly on
-every bit except B (bit 4): C, Z, I, D, V, N, and T (bit 5), which must be 0 because the caller T=0 and the routine
-restores P with PLP. B is not a stored flag: PHP always pushes B=1, so it is ignored.
+Scope: 22 real-core cases (20 at caller SP=$FF, 2 at the boundary), the no-CLD mutant, and seven arithmetic mutants
+(ARITH_MUTANTS, Issue #458: each is one same-length instruction edit in the DEV ROM body, and at least one case must
+reject it). P is compared exactly on every bit except B (bit 4): C, Z, I, D, V, N, and T (bit 5), which must be 0
+because the caller T=0 and the routine restores P with PLP. B is not a stored flag: PHP always pushes B=1, so it is
+ignored. Every mutant rejection records which field differed (quotient, remainder, P bit, Y or SP).
 This is NOT an exhaustive test of the assembled routine; the host model is tests/host/test_ma_div16s.py.
 Run: python3 tests/integration/geargrafx_dev_div16s.py --rom build/debug/bios-dev/dev-only-not-compatible-syscard3.pce
 Needs the pinned cc65 and Geargrafx core (make setup, TOOLS_DIR on Linux). Missing tools exit 3 (BLOCKED).
@@ -52,13 +54,47 @@ CASES = [  # (dividend, divisor) as unsigned 16-bit encodings
 ]
 # Inputs whose BCD interpretation differs from binary (checked on the real core: each mutant case mismatches).
 MUTANT_CASES = [(0xFF9C, 0xFFF9), (0xFFFF, 0xFFFF), (0x9999, 0x0001)]
+# Arithmetic mutants (Issue #458). Each pattern is the machine code of the instruction(s) in src/overrides/slot_42.s
+# (the comment names the source lines). The pattern must occur exactly once in the ROM; the listed byte is replaced by a
+# same-length value (a branch opcode or an immediate), so the body layout does not change.
+ARITH_MUTANTS = [  # (name, pattern, index of the byte to change in the pattern, new byte)
+    ("a_restoring_bcc_to_bcs", bytes.fromhex("BD0221DD0A2190"), 6, 0xB0),   # lda $2102,x; cmp $210A,x; bcc @no_sub
+    ("b_quotient_negate_skipped", bytes.fromhex("BD04212902F0"), 5, 0x80),  # lda $2104,x; and #$02; beq @qpos
+    ("c_remainder_negate_skipped", bytes.fromhex("BD04212904F0"), 5, 0x80),  # lda $2104,x; and #$04; beq @rpos
+    ("d_dividend_sign_skipped", bytes.fromhex("BD052110"), 3, 0x80),        # lda $2105,x; bpl @dividend_pos
+    ("e_overflow_flag_removed", bytes.fromhex("BD042109409D0421"), 4, 0x00),  # lda $2104,x; ora #$40 -> ora #$00
+    # Divide-by-zero mutants (the contract: divisor 0 -> quotient 0, remainder = dividend, C = 1).
+    ("f_divide_by_zero_branch_inverted", bytes.fromhex("BD0A211D0B21D0"), 6, 0xF0),  # bne @divide -> beq @divide
+    ("g_divide_by_zero_c_flag_cleared", bytes.fromhex("BD042109019D0421"), 4, 0x00),  # ora #$01 -> ora #$00
+]
+# What a divide-by-zero mutant must show, so that the divide-by-zero handling is really observed: the required fields
+# (all of them) and a group of which at least one must appear.
+DIVZERO_MUTANTS = {
+    # The inverted branch sends a zero divisor into the normal division and every other divisor into the
+    # divide-by-zero path, so a divide-by-zero case loses the quotient, the remainder and the C flag.
+    "f_divide_by_zero_branch_inverted": ({"P.C"}, {"quotient_lo", "quotient_hi"}),
+    # The cleared C flag changes nothing but the C bit of the returned P.
+    "g_divide_by_zero_c_flag_cleared": ({"P.C"}, set()),
+}
 Y_PRESET = 0xA5
 CALLER_SP = 0xFF
 BOUNDARY_SP = 0x0B  # caller SP such that entry S = $0B - 4 = $07 (2 divisor pushes, then JSR pushes 2)
 
 
 class Mismatch(ValueError):
-    """The guest ran to its halt loop but returned a value that differs from the spec."""
+    """The guest ran to its halt loop but returned a value that differs from the spec.
+
+    ``fields`` names the observed differences (quotient, remainder, P bits, Y, SP) so that a mutant rejection can be
+    recorded with its reason instead of only a label.
+    """
+
+    def __init__(self, message, fields=None):
+        super().__init__(message)
+        self.fields = list(fields or [])
+
+
+# The compared P bits. B (bit 4) is masked out on both sides (PHP always pushes it set), so it never differs.
+P_BITS = (("N", 0x80), ("V", 0x40), ("T", 0x20), ("D", 0x08), ("I", 0x04), ("Z", 0x02), ("C", 0x01))
 
 
 def guest(reset, entry, dividend, divisor, sp=CALLER_SP, t_entry=False):
@@ -111,7 +147,20 @@ def check(label, rows, halt, dividend, divisor, sp=CALLER_SP):
     observed = (s[0], s[1], s[2] & 0xEF, s[3], s[4], s[5], s[6])  # P: every bit but B (bit 4), T (bit 5) included
     want = (q16 & 0xFF, q16 >> 8, expected_p(q16, c, v) & 0xEF, Y_PRESET, r16 >> 8, r16 & 0xFF, sp)
     if observed != want:
-        raise Mismatch(f"{label}: A/X/P/Y/remHI/remLO/SP observed {observed}, expected {want}")
+        names = ("quotient_lo", "quotient_hi", "P", "Y", "remainder_hi", "remainder_lo", "SP")
+        fields = [n for n, got, want_value in zip(names, observed, want) if got != want_value]
+        if "P" in fields:
+            fields.remove("P")
+            fields += [f"P.{n}" for n, bit in P_BITS if (observed[2] & bit) != (want[2] & bit)]
+        raise Mismatch(f"{label}: A/X/P/Y/remHI/remLO/SP observed {observed}, expected {want}", fields)
+
+
+def find_one(data, pattern, label):
+    """Offset of the single occurrence of `pattern` in the ROM. Zero or several occurrences are a failure."""
+    hits = [i for i in range(len(data) - len(pattern) + 1) if data[i:i + len(pattern)] == pattern]
+    if len(hits) != 1:
+        raise ValueError(f"{label}: mutant pattern found {len(hits)} times in the DEV ROM, want exactly 1")
+    return hits[0]
 
 
 def run_case(probe, base, folder, cue, reset, label, entry, dividend, divisor, sp=CALLER_SP):
@@ -167,55 +216,55 @@ def main():
                 run_case(probe, bytes(mutant), folder, cue, reset, f"nocld-{dividend:04x}-{divisor:04x}", entry,
                          dividend, divisor)
             except Mismatch as error:  # only a value mismatch counts; infrastructure errors must propagate
-                rejected.append(str(error))
+                rejected.append(error)
         if len(rejected) != len(MUTANT_CASES):
             raise ValueError("mutant without CLD matched the spec in at least one case "
                              f"(expected {len(MUTANT_CASES)} mismatches)")
         evidence["negative_cases"].append({"case": "42_without_CLD_D1", "rejected": len(rejected),
-                                           "first": rejected[0]})
-        # Characterisation, OUT OF CONTRACT: a SET before the JSR raises T=1. The pinned core consumes the T flag in
-        # the instruction that follows the SET (here the JSR), so the routine must behave exactly as in the contract
-        # cases. The run records what the core observed and asserts nothing about the routine's arithmetic; a guest
-        # that does not reach its halt loop is a hard failure, because the comparison would then be meaningless.
-        t1_dividend, t1_divisor = 0x0064, 0x0007
-        code, halt = guest(reset, entry, t1_dividend, t1_divisor, t_entry=True)
-        variant = bytearray(data)
-        variant[reset - 0xE000:reset - 0xE000 + len(code)] = code
-        t1_rom = folder / "t1-characterisation.pce"
-        t1_rom.write_bytes(variant)
-        t1_cold = next(r for r in dev.run_probe(probe, t1_rom.resolve(), cue, count=CALL_STEPS)
-                       if r["phase"] == "cold")
-        t1_s = bytes.fromhex(t1_cold["work_ram_0200_hex"])[:7]
-        t1_q16, t1_r16, t1_c, t1_v, _t1_n, _t1_z = model(t1_dividend, t1_divisor)
-        t1_want = (t1_q16 & 0xFF, t1_q16 >> 8, expected_p(t1_q16, t1_c, t1_v) & 0xEF, Y_PRESET,
-                   t1_r16 >> 8, t1_r16 & 0xFF, CALLER_SP)
-        t1_got = (t1_s[0], t1_s[1], t1_s[2] & 0xEF, t1_s[3], t1_s[4], t1_s[5], t1_s[6])
-        characterisation = {"contract": "OUT OF CONTRACT: caller SET before the JSR (T=1). Not a claim about the routine.",
-                            "dividend": t1_dividend, "divisor": t1_divisor, "halt_reached": t1_cold["pc"] == halt,
-                            "pc": t1_cold["pc"], "sp_after": t1_cold["sp"], "quotient_lo": t1_s[0],
-                            "quotient_hi": t1_s[1], "p_after_bytes_hex": f"{t1_s[2]:02X}", "y_after": t1_s[3],
-                            "rem_hi": t1_s[4], "rem_lo": t1_s[5], "sp_after_bytes": t1_s[6],
-                            "t_bit_in_restored_p": (t1_s[2] >> 5) & 1,
-                            "same_as_contract_expectation": t1_got == t1_want,
-                            "contract_expectation": list(t1_want)}
-        if not characterisation["halt_reached"]:
-            raise ValueError("T=1 characterisation: the guest did not reach its halt loop")
-        # The characterisation pins the core's T semantics, not the routine's arithmetic: the core consumes the T flag
-        # in the instruction that follows the SET (here the JSR), so the run must reproduce the contract result. If
-        # this ever fails, the core's T handling changed and the T=0 contract note in src/overrides/slot_42.s has to be
-        # rewritten before the result may be used.
-        if not characterisation["same_as_contract_expectation"]:
-            raise ValueError("T=1 characterisation: the SET-before-JSR run differs from the contract result "
-                             f"{t1_got}, expected {t1_want}; the core's T-flag semantics changed")
-        evidence["characterisation_t1"] = characterisation
-        print(f"CHARACTERISATION (out of contract, caller SET before the JSR): {json.dumps(characterisation)}")
+                                           "fields": sorted({f for error in rejected for f in error.fields}),
+                                           "first": str(rejected[0])})
+        # Issue #458: every arithmetic mutant must be rejected by at least one real-core case (value mismatch only),
+        # and the rejection reason (which field differed) is recorded for every case.
+        for name, pattern, index, new in ARITH_MUTANTS:
+            mutant = bytearray(data)
+            mutant[find_one(data, pattern, name) + index] = new
+            catching = []
+            for dividend, divisor in CASES:
+                try:
+                    run_case(probe, bytes(mutant), folder, cue, reset, f"{name}-{dividend:04x}-{divisor:04x}", entry,
+                             dividend, divisor)
+                except Mismatch as error:  # only a value mismatch counts; infrastructure errors must propagate
+                    catching.append({"case": f"{dividend:04X}/{divisor:04X}", "dividend": dividend, "divisor": divisor,
+                                     "fields": error.fields, "detail": str(error)})
+            if not catching:
+                raise ValueError(f"{name}: no test case rejects the mutant")
+            fields = sorted({f for entry in catching for f in entry["fields"]})
+            record = {"mutant": name, "rejected": len(catching), "fields": fields,
+                      "rejected_by": [entry["case"] for entry in catching], "first": catching[0]["detail"]}
+            if name in DIVZERO_MUTANTS:
+                # The divide-by-zero mutants must be caught by a divide-by-zero case and the rejection must name the
+                # C flag (and, for the inverted branch, a quotient field). This is what proves the divide-by-zero
+                # handling (quotient 0, remainder = dividend, C=1) is actually observed.
+                required, group = DIVZERO_MUTANTS[name]
+                divzero = [entry for entry in catching if entry["divisor"] == 0]
+                if not divzero:
+                    raise ValueError(f"{name}: no divide-by-zero case rejects the mutant")
+                seen = set(divzero[0]["fields"])
+                if not required <= seen:
+                    raise ValueError(f"{name}: the divide-by-zero rejection does not name {sorted(required - seen)}")
+                if group and not group & seen:
+                    raise ValueError(f"{name}: the divide-by-zero rejection does not name any of {sorted(group)}")
+                record["divide_by_zero_rejection"] = {"case": divzero[0]["case"], "fields": divzero[0]["fields"]}
+            evidence.setdefault("arithmetic_mutants", []).append(record)
     (args.rom.parent / "geargrafx-dev-div16s-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
     total = len(CASES) + 2  # two boundary cases at caller SP=$0B (entry S=$07)
     print(f"PASS real Geargrafx DEV ROM: MA_DIV16S slot $42 {total} cases ({len(CASES)} at caller SP=$FF, 2 at caller "
           f"SP=$0B boundary; preconditions S>=$07 and T=0 at entry); quotient, remainder, P (C/Z/I/D/V/N and T=0 exact; "
           f"B ignored), Y, SP, MPR1/MPR7 checked; a SET before the JSR is characterised only (out of contract: the core "
           f"consumes T in the JSR, so the routine is unchanged); "
-          f"no-CLD mutant rejected {len(rejected)}/{len(MUTANT_CASES)}")
+          f"no-CLD mutant rejected {len(rejected)}/{len(MUTANT_CASES)}; "
+          f"arithmetic mutants rejected {len(evidence['arithmetic_mutants'])}/{len(ARITH_MUTANTS)} "
+          f"(including 2 divide-by-zero mutants)")
 
 
 if __name__ == "__main__":
