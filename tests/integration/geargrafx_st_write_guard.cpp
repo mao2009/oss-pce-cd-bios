@@ -72,7 +72,7 @@ int main(int argc, char** argv)
 
     std::string st_kind;  // "st0", "st1", "st2" or "" (positive control)
     bool after_tam = false;
-    if (mode.size() >= 10 && mode.compare(mode.size() - 6, 6, "-armed") == 0) {
+    if (mode.size() >= 7 && mode.compare(mode.size() - 6, 6, "-armed") == 0) {
         g_armed = true;
     } else if (mode.size() >= 12 && mode.compare(mode.size() - 10, 10, "-unguarded") == 0) {
         g_armed = false;
