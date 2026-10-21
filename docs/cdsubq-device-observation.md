@@ -1,6 +1,6 @@
 # CD_SUBQ デバイス層観測診断 (#261)
 
-状態: **診断のみ。実コア結果は NOT_RUN。** System Card の CD_SUBQ ABI（引数・戻り値・Q バッファ配置）は UNKNOWN。
+状態: **実コア結果は PASS（トラック 2・LBA 66 の PLAYING / PAUSED / STOPPED の 3 状態）。** 範囲は後述。System Card の CD_SUBQ ABI（引数・戻り値・Q バッファ配置）は UNKNOWN。
 本診断の PASS は、固定版 Geargrafx の SCSI/CD 層が既知の媒体位置で返した `$DD`（READ SUBCODE-Q）応答の観測であり、
 BIOS 互換性・callee ABI の証明ではない。親 Issue #19、呼出側の根拠は [cd-subq-contract.md](research/cd-subq-contract.md)。
 
@@ -15,8 +15,8 @@ BIOS 互換性・callee ABI の証明ではない。親 Issue #19、呼出側の
 | 実コア | `tests/integration/geargrafx_cdsubq.py`（フロントエンドは #15 の `geargrafx_cdda_probe.cpp` を再利用） |
 
 応答のレイアウトは #15 の `tools/cdda_verify.py::check_subq` が前提とするもの（先頭 1 バイトが状態、続いて
-ADR/コントロール、トラック、インデックス、相対 MSF、絶対 MSF。MSF は BCD）。固定版ソースでのこのレイアウトの再確認は
-**未実施**で、実コアの実行で確かめる必要がある。
+ADR/コントロール、トラック、インデックス、相対 MSF、絶対 MSF。MSF は BCD）。上流 `scsi_controller.cpp`（b49ae82a）の
+CommandReadSubcodeQ との照合は要約取得による確認のみで、バイト単位の機械照合は未実施。実コアの 3 応答は、このレイアウトで復号され一致した。
 
 ## 判定規則
 
@@ -44,26 +44,35 @@ LBA 15（音声の手前）、負の LBA、存在しないトラック 3、IDLE 
 
 ## 実コアの結果
 
-**NOT_RUN.** 本セッションでは実コアを実行していない。理由:
-
-- 実コアには WSL 上の cc65 と固定版 Geargrafx（`make setup`）が必要。Windows 側には cc65 も Geargrafx もない。
-- WSL の呼出しは worktree ガードにより拒否された（`wsl.exe` は git を実行しうるため、隔離 worktree からは実行できない）。
-- 規約どおり、実装と静的検証までを行い、実コア検証を NOT_RUN として記録する。
-
-実行手順（Linux/WSL、`make setup` 済みの環境）:
+**PASS。** 実行コマンドと終了コードは次のとおり。
 
 ```sh
-make dev-cdsubq-integration MODE=debug
+make dev-cdsubq-integration MODE=debug   # 終了コード 0
 ```
 
-成功時は `build/debug/cdda-probe/cdsubq-evidence.json` を出力する。実行結果のコマンドと終了コードは、
-実行者が本節を更新して記録すること（未実行の結果を PASS と書かない）。
+- 実行環境: WSL の clean clone（HEAD を `8ee22407da1459fbee7276fa62bab04c81d9fcd3` に固定）。
+- ツール版: Geargrafx `b49ae82a012eade566d72e9d61c9d95a5caa4da3`（pinned）。
+- 証拠: `build/debug/cdda-probe/cdsubq-evidence.json`（status PASS、sha256 `fc1bf82d5450e2aed77b5668d5eaa1716002095427433446a9c4e1015bf429e8`）。`build/` は追跡しない。
+
+観測した 3 つのチェックポイント（いずれもトラック 2、LBA 66、窓の外の LBA 64 と 67 は NEGATIVE）:
+
+| チェックポイント | 状態 | トラック | LBA | `$DD` 応答（16 進） |
+|---|---|---|---|---|
+| スロット 2 | 0（PLAYING） | 2 | 66 | `00 01 02 01 00 00 50 00 02 66` |
+| スロット 4 | 2（PAUSED） | 2 | 66 | `02 01 02 01 00 00 50 00 02 66` |
+| スロット 6 | 3（STOPPED） | 2 | 66 | `03 01 02 01 00 00 50 00 02 66` |
+
+実コアで**未確認**（NOT_RUN）の項目: LBA 16・50・79 の正例、トラック 1 の境界、LBA 80 の終端。
+これらはホストの合成ベクタでのみ確認している（後述）。
 
 ## 観測の範囲と限界
 
 - 対象は固定版 Geargrafx の SCSI/CD 層。実機・第 2 エミュレータの結果ではない。
 - 媒体は自作（作者定義）。LBA 0–15 のデータトラックでの `$DD` 応答は本診断の正例にしていない（再生対象にしていないため、仕様未決）。
-- 「未再生」の応答（`$D8` の前）は観測点がない。本診断は NOT_RUN とし、負例として扱わない。
+- 「未再生」の応答（`$D8` の前）は観測点がない。本診断の負例には含めない。
+- 境界負例の確認経路: 実コアでは窓の外の LBA 64 と 67 を NEGATIVE として確認した。
+  ホストでは、開始端（窓の `lo` = LBA 16、`lo-1` = LBA 15）は `observe_run` 経由で確認（`test_edge_window_boundary_is_compared_by_fields`）。
+  終端（窓の `hi+1` = LBA 80）は判定器の単体テスト（`leadout_lba80`）のみで確認しており、`observe_run` 経由の終端テストはない。
 - 判定の期待値は `canonical_fields`（トラック開始からの相対 LBA と LBA+150 の絶対フレーム）から計算する。この式そのものは判定器と同じコードであり、独立の確認は手計算のベクトル（ホストテスト）による。
 
 ## #262 の依存判定
@@ -73,10 +82,11 @@ make dev-cdsubq-integration MODE=debug
 
 判定: **BLOCKED**。理由:
 
-1. 本 Issue（#261）の実コア観測が NOT_RUN で、Q 応答の実証がない。
+1. 実コアの観測は取得済み（トラック 2・LBA 66 で PLAYING・PAUSED・STOPPED）。ただし観測は LBA 66 の 1 位置に限られ、
+   LBA 16・50・79 の正例、トラック 1 の境界、LBA 80 の終端は実コアで未確認。この範囲だけでは、#262 が前提とする
+   Q 応答の実証は満たさないと判断する。
 2. 同親の CD_SUBQ callee ABI は BLOCKED_ABI（#259 / #260）。引数・戻り値・Q バッファ配置が未確定。
-3. 本 PR は未マージ（Draft）。
+3. 本 PR は未マージ（Draft）で、main に統合されていない。
 
-解除条件: (a) Linux/WSL で `make dev-cdsubq-integration` が exit 0 となり、evidence が保存される、
-(b) 本 PR が main に統合される、(c) 検証済みの 1 種別について callee の引数・戻り値の根拠が別途確定する。
-(c) は本 Issue の範囲外であり、#262 の実装は今回のスコープ外。
+解除条件: (a) 本 PR が main に統合される、(b) 検証済みの 1 種別について callee の引数・戻り値の根拠が別途確定する、
+(c) 必要と判断した範囲の実コア観測が追加で取得される。(b) は本 Issue の範囲外であり、#262 の実装は今回のスコープ外。
