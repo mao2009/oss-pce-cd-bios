@@ -16,7 +16,7 @@ from build_rom import overrides  # noqa: E402
 def dev_mul8u(a, x):
     """A = multiplicand, X = multiplier -> (A = product low, X = product high), as slot_3F.s."""
     stack = {"hi": 0, "lo": x >> 1, "m": a}
-    carry = x & 1  # lsr $0102,x before the rounds: C = multiplier bit 0
+    carry = x & 1  # lda $2102,x / lsr a / sta $2102,x before the rounds: C = multiplier bit 0
     for _ in range(8):
         if carry:  # bcc not taken: clc; lda hi; adc m
             total = stack["hi"] + stack["m"]

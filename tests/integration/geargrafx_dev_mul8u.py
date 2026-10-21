@@ -32,11 +32,11 @@ CASES = [(0, 0), (0, 255), (255, 0), (1, 1), (1, 255), (255, 1), (255, 255), (2,
 Y_PRESET = 0xA5
 
 
-def guest(reset, entry, a, x):
+def guest(reset, entry, a, x, sp=0xFF):
     """Reset-replacement code at CPU address `reset`. Returns (code, halt CPU address)."""
     code = bytes([0x78,                   # SEI
                   0xA9, 0xF8, 0x53, 0x02,  # LDA #$F8; TAM #$02 -> MPR1 = work RAM ($2000-$3FFF)
-                  0xA2, 0xFF, 0x9A,        # LDX #$FF; TXS
+                  0xA2, sp, 0x9A,          # LDX #sp; TXS (caller SP; the JSR then pushes 2 bytes)
                   0xF8, 0x38, 0xB8,        # SED (caller D=1 on purpose), SEC (caller C=1), CLV (V=0)
                   0xA2, x,                 # LDX #x (multiplier)
                   0xA0, Y_PRESET,          # LDY #$A5
@@ -83,8 +83,8 @@ def check(label, rows, halt, a, x):
         raise Mismatch(f"{label}: A/X/P/Y/SP observed {observed}, expected {want}")
 
 
-def run_case(probe, base, folder, cue, reset, label, entry, a, x):
-    code, halt = guest(reset, entry, a, x)
+def run_case(probe, base, folder, cue, reset, label, entry, a, x, sp=0xFF):
+    code, halt = guest(reset, entry, a, x, sp)
     variant = bytearray(base)
     variant[reset - 0xE000:reset - 0xE000 + len(code)] = code
     rom = folder / f"{label}.pce"
@@ -115,6 +115,10 @@ def main():
         cue.write_text('FILE "original.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
         for a, x in CASES:
             run_case(probe, data, folder, cue, reset, f"mul-{a:02x}-{x:02x}", entry, a, x)
+        # Precondition boundary: caller SP=$07 gives SP=$05 at entry (the lowest value that does not wrap the 5 pushes).
+        for a, x in ((255, 255), (37, 91)):
+            run_case(probe, data, folder, cue, reset, f"lowsp-{a:02x}-{x:02x}", entry, a, x, sp=0x07)
+            evidence["cases"].append({"a": a, "x": x, "sp": 0x07, "expected_a": expected(a, x)[0], "expected_x": expected(a, x)[1]})
             lo, hi = expected(a, x)
             evidence["cases"].append({"a": a, "x": x, "expected_a": lo, "expected_x": hi})
         # Negative: the routine's CLD (second byte of the entry) replaced by NOP. With D=1 the ADCs then run in
@@ -130,7 +134,7 @@ def main():
                 run_case(probe, bytes(mutant), folder, cue, reset, f"nocld-{a:02x}-{x:02x}", entry, a, x)
             except Mismatch as error:  # only a value mismatch counts; infrastructure errors must propagate
                 rejected.append(str(error))
-        if not rejected:
+        if len(rejected) != 3:  # every mutant case must be a value mismatch, not a silent pass or an infrastructure error
             raise ValueError("mutant without CLD passed every D=1 case on the real core")
         evidence["negative_cases"].append({"case": "3F_without_CLD_D1", "rejected": len(rejected),
                                            "first": rejected[0]})

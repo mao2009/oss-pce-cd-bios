@@ -4,11 +4,13 @@
 ; Same shift-add algorithm as src/math/ma_mul8u.s, but the state lives on the stack instead of
 ; zero page, so the DEV ROM needs no ZP/BSS segment:
 ;   in : A = multiplicand, X = multiplier (unsigned 8-bit; every pair is valid)
+;   precondition: S (stack pointer) at entry >= $05, so the 5 pushes do not wrap the stack page;
+;         the indexed $21xx,X addressing below assumes this (the real-core test checks S=$05 at entry)
 ;   out: A = product bits 0-7, X = product bits 8-15
 ;   kept: Y and P (D is cleared inside for binary ADC; PLP restores the caller's flags)
 ;   uses: stack page $2100-$21FF only (7 bytes including the JSR return; Y is a round counter and
-;         is restored). The stack page must be RAM, as for any JSR. Not checked: other RAM untouched (the real-core test
-;         checks MPR, SP and result bytes only). No I/O; I is never changed
+;         is restored). The stack page must be RAM, as for any JSR. Not checked: other RAM untouched
+;         (the real-core test checks MPR, SP and result bytes only). No I/O; I is never changed
 ; ABI remains UNVERIFIED and this ROM stays DEV ONLY (release_eligible: false).
 .setcpu "huc6280"
 .segment "OVERRIDES"
