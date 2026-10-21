@@ -132,6 +132,6 @@
 終了コードは 0（PASS）、1（FAIL: 記録または再ビルドが矛盾）、2（ERROR: ツールまたはビルドの失敗）である。ERROR を PASS として扱わない。
 
 - 試験: `python3 -B -m unittest discover -s tests/host -p 'test_rom_provenance.py' -v`。cc65 を使わない合成試験で、改ざん ROM、偽造マニフェスト、不一致の再ビルド、dirty ツリー、未固定の cc65、リリース主張の各負例を含む。
-- 実行: `make rom-provenance`（`MODE=release` も指定可）。
+- 実行: `make rom-provenance`（`MODE=release` も指定可）。出力先の `a/`・`b/` は削除しない。既に存在すると ERROR（exit 2）で止まるため、再実行の前に `build/rom-provenance/` を消すか、`--work` を新しいディレクトリにする。
 
 **制限。** `--rom` の記録検査は内部の整合性だけを確かめる。`manifest.json` は署名されておらず、ROM と一緒に書き換えられると通ってしまう。出所は証明されない。`--reproduce` の一致は、同じチェックアウトと同じ環境での決定性を示すにすぎず、記録されたコミットからの生成や、別の環境での再現は示さない。GPL 由来のコードがないこと、BIOS 相当の内容がないこと、配布の権利があることは示さない。これらは人のレビュー事項であり、Issue #105 と #335 で追跡する。`api-source.yml` の BIOS DEV 成果物（`dev-only-not-compatible-syscard3.pce` と診断 ROM）は `--reproduce dev` で検査できるが、ワークフローへの組み込みは未了である。

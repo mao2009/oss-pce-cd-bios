@@ -147,6 +147,9 @@ class ReproducibilityTests(unittest.TestCase):
         def fake(out):
             raise AssertionError("builder must not run for a refused work directory")
 
+        for broad in (rp.ROOT, rp.ROOT.parent):
+            with self.subTest(work=broad), self.assertRaises(rp.ToolError):
+                rp.reproduce(fake, broad)
         with tempfile.TemporaryDirectory() as target, tempfile.TemporaryDirectory() as parent:
             link = Path(parent) / "work"
             try:
@@ -155,8 +158,6 @@ class ReproducibilityTests(unittest.TestCase):
                 self.skipTest(f"symlinks unavailable: {error}")
             with self.assertRaises(rp.ToolError):
                 rp.reproduce(fake, link)
-        with self.assertRaises(rp.ToolError):
-            rp.reproduce(fake, rp.ROOT)
 
 
 class CliTests(unittest.TestCase):
