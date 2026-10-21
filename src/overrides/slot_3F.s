@@ -7,7 +7,8 @@
 ;   out: A = product bits 0-7, X = product bits 8-15
 ;   kept: Y and P (D is cleared inside for binary ADC; PLP restores the caller's flags)
 ;   uses: stack page $2100-$21FF only (7 bytes including the JSR return; Y is a round counter and
-;         is restored). The stack page must be RAM, as for any JSR; no other RAM, no I/O, I is never changed
+;         is restored). The stack page must be RAM, as for any JSR. Not checked: other RAM untouched (the real-core test
+;         checks MPR, SP and result bytes only). No I/O; I is never changed
 ; ABI remains UNVERIFIED and this ROM stays DEV ONLY (release_eligible: false).
 .setcpu "huc6280"
 .segment "OVERRIDES"

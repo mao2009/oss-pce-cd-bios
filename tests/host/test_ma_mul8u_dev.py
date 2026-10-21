@@ -1,7 +1,7 @@
 """Host model of the DEV MA_MUL8U override (slot $3F, Issue #436), checked for all 65,536 pairs.
 
 The model mirrors src/overrides/slot_3F.s step by step: hi/lo/m live in stack bytes at X+1/X+2/X+3, and each of
-one LSR lo runs first, then each of the 8 rounds is ADC m on carry, ROR hi, ROR lo. This is not the System Card MA_MUL8U ABI; it only checks
+one LSR of lo runs first, then each of the 8 rounds is ADC m on carry, ROR hi, ROR lo. This is not the System Card MA_MUL8U ABI; it only checks
 that the emitted algorithm multiplies. The real-core run is tests/integration/geargrafx_dev_mul8u.py.
 """
 import sys

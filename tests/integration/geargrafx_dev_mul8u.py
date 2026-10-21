@@ -51,6 +51,10 @@ def guest(reset, entry, a, x):
     return code + bytes([0x80, 0xFE]), halt  # BRA -2
 
 
+class Mismatch(ValueError):
+    """The guest ran to its halt loop but returned a value that differs from the spec."""
+
+
 def expected(a, x):
     product = a * x
     return product & 0xFF, product >> 8
@@ -76,7 +80,7 @@ def check(label, rows, halt, a, x):
     observed = (s[0], s[1], p_after & 0xCF, y, sp_after)
     want = (lo, hi, expected_p(a), Y_PRESET, 0xFF)
     if observed != want:
-        raise ValueError(f"{label}: A/X/P/Y/SP observed {observed}, expected {want}")
+        raise Mismatch(f"{label}: A/X/P/Y/SP observed {observed}, expected {want}")
 
 
 def run_case(probe, base, folder, cue, reset, label, entry, a, x):
@@ -124,7 +128,7 @@ def main():
         for a, x in ((255, 255), (99, 99), (170, 85)):
             try:
                 run_case(probe, bytes(mutant), folder, cue, reset, f"nocld-{a:02x}-{x:02x}", entry, a, x)
-            except ValueError as error:
+            except Mismatch as error:  # only a value mismatch counts; infrastructure errors must propagate
                 rejected.append(str(error))
         if not rejected:
             raise ValueError("mutant without CLD passed every D=1 case on the real core")
