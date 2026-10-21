@@ -1,0 +1,38 @@
+--- a/src/huc6280.cpp
++++ b/src/huc6280.cpp
+@@ -24,6 +24,10 @@
+ #include <assert.h>
+ #include "huc6280.h"
+ #include "memory.h"
++
++// VERIFICATION-ONLY (Issue #366 / #173): null-by-default IRQ entry guard. NOT upstream code.
++bool (*gg_verify_irq_entry_guard)(void* context, unsigned short vector, unsigned short pc, unsigned char p) = nullptr;
++void* gg_verify_irq_entry_context = nullptr;
+ #include "random.h"
+ #include "trace_logger.h"
+ #include "profiler.h"
+--- a/src/huc6280_inline.h
++++ b/src/huc6280_inline.h
+@@ -95,6 +95,10 @@
+     return (m_cycles * k_huc6280_speed_divisor[m_speed]) + m_extra_master_cycles;
+ }
+ 
++// VERIFICATION-ONLY hook (Issue #366): null-by-default, defined in huc6280.cpp.
++extern bool (*gg_verify_irq_entry_guard)(void* context, unsigned short vector, unsigned short pc, unsigned char p);
++extern void* gg_verify_irq_entry_context;
++
+ inline void HuC6280::HandleIRQ()
+ {
+     u16 vector = 0;
+@@ -111,6 +115,11 @@
+     else
+         return;
+ 
++    // VERIFICATION-ONLY pre-entry guard (Issue #366 / #173). NOT upstream code.
++    // A refusal returns before any stack write or PC change. See tests/integration/geargrafx_irq_entry_guard.py.
++    if (gg_verify_irq_entry_guard && !gg_verify_irq_entry_guard(gg_verify_irq_entry_context, vector, m_PC.GetValue(), m_P.GetValue()))
++        return;
++
+     u16 pc = m_PC.GetValue();
+     StackPush16(pc);
+     StackPush8(m_P.GetValue() & ~FLAG_BREAK);
