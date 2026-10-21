@@ -66,11 +66,17 @@ int main(int argc, char** argv) {
         for (int i=0;i<8;i++) std::printf("%s%u", i ? "," : "", memory->GetMpr(i));
         std::printf("],\"physical_pc\":%u,\"work_ram_0200_hex\":\"", memory->GetPhysicalAddress(cpu->PC->GetValue()));
         for (int i=0;i<64;i++) std::printf("%02x", memory->GetWorkingRAM()[0x200+i]);
-        std::printf("\",\"work_ram_hex\":\"");  // full 8 KiB work RAM (Issue #242 side-effect check)
-        for (int i=0;i<0x2000;i++) std::printf("%02x", memory->GetWorkingRAM()[i]);
         std::printf("\",\"stack_01f8_hex\":\"");
         for (int i=0;i<8;i++) std::printf("%02x", memory->GetWorkingRAM()[0x1f8+i]);
-        std::printf("\"}\n");
+        std::printf("\"");
+        // Issue #242: full 8 KiB work RAM, only on the three end-of-run observations that the handoff judge compares.
+        const std::string name = phase;
+        if (std::string(prefix) == "OBS" && (name == "loaded" || name == "cold" || name == "nonreturning")) {
+            std::printf(",\"work_ram_hex\":\"");
+            for (int i=0;i<0x2000;i++) std::printf("%02x", memory->GetWorkingRAM()[i]);
+            std::printf("\"");
+        }
+        std::printf("}\n");
     };
     std::vector<u8> frame(1024*512*4);
     std::vector<s16> audio(65536);

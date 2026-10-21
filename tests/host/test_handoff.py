@@ -11,7 +11,7 @@ sys.path.insert(0, str(ROOT / "tests/integration"))
 sys.path.insert(0, str(ROOT / "tools"))
 from geargrafx_handoff import (  # noqa: E402
     Blocked, HandoffRejected, RAM_ENTRY, check_handoff_contract, expected_payload, expected_ram_writes, judge,
-    run_negatives)
+    mutate, run_negatives)
 
 GOOD_MPR = [0xFF, 0xF8, 1, 2, 31, 3, 4, 0]
 LABELS = {"handoff_jump": 0xF0A0, "handoff_done": 0xF0B0}
@@ -122,11 +122,19 @@ class HandoffRamSideEffectTests(unittest.TestCase):
 
 
 class FixtureStaticTests(unittest.TestCase):
+    # Typed allow-list of every instruction in the fixture. Any other mnemonic (VDC st0-st2, block transfers,
+    # read-modify-write, JSR/PHA) changes the write set and must be reviewed here first.
+    ALLOWED_MNEMONICS = {"sei", "cld", "lda", "tam", "txs", "ldx", "sta", "inx", "cpx", "bne", "jmp", "bra"}
+
+    def test_fixture_mnemonics_are_the_typed_allow_list(self):
+        source = (ROOT / "tests/fixtures/handoff-probe.s").read_text(encoding="ascii")
+        mnemonics = {m.lower() for m in re.findall(r"^\s*([A-Za-z][A-Za-z0-9]*)\s", source, re.M)}
+        self.assertEqual(mnemonics, self.ALLOWED_MNEMONICS)
+
     def test_fixture_stores_only_hit_work_ram_or_payload_marker(self):
         source = (ROOT / "tests/fixtures/handoff-probe.s").read_text(encoding="ascii")
-        stores = re.findall(r"^\s*(?:sta|stx|sty|stz)\s+(\S+)", source, re.M)
+        stores = re.findall(r"(?mi)^\s*sta\s+(\S+)", source)
         self.assertEqual(sorted(stores), ["$2200,x", "$2220", "$2221"])
-        self.assertNotRegex(source, r"(?m)^\s*(?:jsr|pha|php)\b", "stack or subroutine writes are not in the contract")
 
 
 class HandoffReasonTests(unittest.TestCase):
@@ -155,12 +163,30 @@ class HandoffReasonTests(unittest.TestCase):
 
 def _mutant_rom():
     """Synthetic 8 KiB bank holding the bytes the negatives patch: MPR1 immediate and the JMP $2200 operand."""
-    labels = {"handoff_bank": 0xE011, "handoff_jump": LABELS["handoff_jump"], "handoff_done": LABELS["handoff_done"]}
+    labels = {"handoff_bank": 0xE011, "handoff_jump": LABELS["handoff_jump"], "handoff_done": LABELS["handoff_done"],
+              "handoff_payload_end_rom": 0xE080}
     rom = bytearray(0x2000)
     rom[0x11 - 1] = 0xF8
     rom[labels["handoff_jump"] - 0xE000:labels["handoff_jump"] - 0xE000 + 3] = bytes([0x4C, 0x00, 0x22])
     rom[0x100:0x103] = b"\xe0\x0d\xd0"  # cpx #13 / bne handoff_copy anchor for the extra-copy negative
+    rom[0x80] = 0xFF                    # fill byte after the payload (ld65 fill in the real bank)
     return bytes(rom), labels
+
+
+class NegativeMutationTests(unittest.TestCase):
+    def test_extra_copy_byte_patches_only_the_loop_bound(self):
+        rom, labels = _mutant_rom()
+        mutated = mutate(rom, labels, "extra_copy_byte")
+        changed = [i for i, (a, b) in enumerate(zip(rom, mutated)) if a != b]
+        self.assertEqual(changed, [0x101])
+        self.assertEqual(mutated[0x101], 0x0E)
+
+    def test_extra_copy_byte_refuses_a_non_fill_byte_after_the_payload(self):
+        rom, labels = _mutant_rom()
+        rom = bytearray(rom)
+        rom[0x80] = 0x00
+        with self.assertRaises(ValueError):
+            mutate(bytes(rom), labels, "extra_copy_byte")
 
 
 class NegativeRunnerTests(unittest.TestCase):

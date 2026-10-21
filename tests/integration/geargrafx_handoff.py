@@ -4,7 +4,8 @@ tests/fixtures/handoff-probe.s copies a 13-byte payload from bank0 to work RAM $
 there; the payload writes a marker at $2220 and JMPs back to a ROM halt label. The probe loads the ROM with the
 System Card loader (LoadBiosFromBuffer) and an empty dummy CD image (LoadMedia, 32 zero-filled MODE1/2352 sectors,
 no CD content). It records the first arrival per cycle (cold and warm) at handoff_jump, handoff_entry and
-handoff_done, and dumps work RAM offsets $200-$23F (CPU $2200-$223F).
+handoff_done, and dumps work RAM offsets $200-$23F (CPU $2200-$223F). The cold cycle also compares the full
+work RAM ($2000-$3FFF) between the 'loaded', 'cold' and 'nonreturning' observations.
 A run is accepted only if the entry contract, the phase order, the RAM bytes and the marker all match the typed
 expectation. Two byte-mutated ROMs (MPR1 bank not work RAM, misaligned entry) must be rejected by the same judge,
 each for its own reason key.
@@ -42,6 +43,16 @@ EXPECTED_REJECTIONS = {"mpr1_rom_bank": "mpr", "entry_misaligned": "entry", "ext
 # from the ROM copy they are checking.
 PAYLOAD_PREFIX = bytes.fromhex("a9a58d2022a95a8d2122")
 WORK_BASE, WORK_RAM_BYTES = 0x2000, 0x2000
+# Structured status per check: PASS only where this run judged it; NOT_RUN is printed and recorded, never folded into PASS.
+CHECKS = {
+    "entry_mpr_sp_phase_order_cold_warm": "PASS",
+    "marker_and_payload_64_bytes_cold_warm": "PASS",
+    "ram_side_effects_full_cold": "PASS",
+    "ram_full_warm": "NOT_RUN",
+    "mmio_side_effects": "NOT_RUN",
+    "cd_read_and_cd_exec": "NOT_RUN",
+    "bios_callable_abi": "NOT_RUN",
+}
 STEPS = 512                        # bounded run: cold observation after 512 instructions
 POST_HALT_STEPS = 32               # 'nonreturning' observation: the BRA loop at handoff_done must be stable
 LIMITATIONS = [
@@ -182,6 +193,9 @@ def mutate(rom: bytes, labels: dict, kind: str) -> bytes:
         anchor = bank.find(b"\xe0\x0d\xd0")  # cpx #13 / bne handoff_copy
         if anchor < 0 or bank.count(b"\xe0\x0d\xd0") != 1:
             raise ValueError("mutation anchor mismatch (copy loop bound)")
+        end_off = labels["handoff_payload_end_rom"] - ROM_BASE  # the byte the 14th copy reads
+        if data[end_off] != 0xFF:  # ld65 fill: the extra write must be an unlisted RAM change, not a no-op
+            raise ValueError("mutation anchor mismatch (byte after the payload is not fill)")
         data[anchor + 1] = 0x0E
     else:
         raise ValueError(f"unknown mutation {kind}")
@@ -280,6 +294,8 @@ def main():
         records = guarded(run, rom_path)
         judge(records, labels, payload)
         negatives = run_negatives(rom, labels, payload, folder, run)
+    obs = {row["phase"]: row for row in records["OBS"]}
+    cold_obs, later_obs = obs["cold"], obs["nonreturning"]
     (out / "handoff-evidence.json").write_text(json.dumps({
         "scope": "synthetic ROM-to-RAM handoff only; loader = System Card ROM via LoadBiosFromBuffer; "
                  "CD = empty dummy image via LoadMedia (zero-filled, no CD content); "
@@ -288,12 +304,17 @@ def main():
         "guest_source_sha256": hashlib.sha256((ROOT / "tests/fixtures/handoff-probe.s").read_bytes()).hexdigest(),
         "probe_source_sha256": hashlib.sha256(Path(__file__).with_name("geargrafx_api_probe.cpp").read_bytes()).hexdigest(),
         "geargrafx_revision": DEPENDENCIES["geargrafx"]["revision"],
-        "bounded_run": {"steps": STEPS, "post_halt_steps": POST_HALT_STEPS,
-                        "stop": f"pc at handoff_done after {STEPS} instructions; stable for {POST_HALT_STEPS} more"},
-        "status": "PASS", "limitations": LIMITATIONS,
+        "bounded_run": {"fixed_instruction_budget": STEPS, "post_halt_steps": POST_HALT_STEPS,
+                        "note": "the probe runs a fixed budget and does not stop early; PC/SP below are measured",
+                        "pc_cold": hex(cold_obs["pc"]), "sp_cold": cold_obs["sp"],
+                        "pc_nonreturning": hex(later_obs["pc"]), "sp_nonreturning": later_obs["sp"]},
+        "checks": CHECKS,
+        "status": "PASS_FOR_LISTED_CHECKS", "limitations": LIMITATIONS,
         "observations": records, "negatives": negatives,
     }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(f"PASS real Geargrafx handoff to synthetic RAM payload (cold/warm); negatives rejected: {sorted(negatives)}")
+    not_run = sorted(name for name, state in CHECKS.items() if state == "NOT_RUN")
+    print(f"PASS real Geargrafx handoff to synthetic RAM payload (cold/warm); negatives rejected: {sorted(negatives)}; "
+          f"NOT_RUN: {not_run}")
 
 
 if __name__ == "__main__":
