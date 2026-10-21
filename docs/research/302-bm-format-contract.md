@@ -7,62 +7,75 @@ Refs #302 / 親 #34 / 関連 #303（合成FORMAT安全モデル）/ #304（診�
 
 * 対象は BM_FORMAT（候補 `$18` / `$00:E048`）。BM_FREE は前提確認のみ（§2 C4）。
 * 状態語彙: `CONFIRMED-by-source`（固定リビジョンの公開ソース行で確認した**呼出側の記述・コード**の事実。callee の挙動は含まない）、`HYPOTHESIS`（名前・コメントからの推定）、`UNKNOWN`（公開ソースに記載なし）、`BLOCKED_ABI`（診断に必要な事実が欠ける）。
-* 本書の値は公開 HuCC ソース（OSS、MIT 系の SDK）の呼出側ラッパーに由来する。System Card 本体（純正 BIOS）の実装は参照していない。純正 BIOS のバイト列・逆アセンブルは扱わない。
+* 各表の行は状態を 1 つだけ持つ。複数の事実を含む項目は行を分けた（a/b/c の接尾辞）。
+* 本書の値は公開 HuCC ソース（`pce-devel/huc` @ `54f5c73`）の呼出側ラッパーに由来する。HuCC のソースはファイルごとにライセンスが異なり、一括して「MIT 系」とは言えない。固定リビジョンで確認した事実:
+  * `include/hucc/pcengine.inc`: ヘッダ 8-10 行「Distributed under the Boost Software License, Version 1.0.」。
+  * `include/hucc/hucc-systemcard.asm`: ヘッダ 10-12 行に同じ Boost 1.0 の文言。著作権表示「Copyright John Brandwood 2024」。
+  * `include/hucc/hucc-systemcard.h`: ヘッダ 13-15 行に同じ Boost 1.0 の文言。
+  * リポジトリ直下 `LICENSE`（45 行）: 単一のライセンスではない。冒頭で「コンパイラとアセンブラの法的地位について正確な記述は困難」と述べる。MagicKit アセンブラは「freeware」と記述。`tgemu/src/license` は GPL バージョン 2 の全文。テストケースは GCC 由来として GPL と記述。Ulrich Hecht による変更部分は Simplified BSD と記述。
+  * コンパイラ本体 `src/huc/code.c`: ライセンスヘッダなし。GPL と判定できる記述を確認できないため、ライセンスは **UNKNOWN**。
 * 合成 image の署名 `SYNBM` と最小容量 64 バイトは `tools/bm_format_model.py`（#395）のプロジェクト内部値であり、System Card の値ではない。本書では根拠に使わない。
+* System Card 本体（純正 BIOS）の実装は参照していない。純正 BIOS のバイト列・逆アセンブルは扱わない。
 
 ## 1. 出典（固定リビジョン・sha256 照合済み）
 
 固定リビジョン: HuCC `pce-devel/huc@54f5c73606c1e7142e8095c727cab2767e2b3cb3`。
-取得後にローカルで sha256 を計算し、`spec/api_contracts.json` と `docs/research/148-cd-read-abi.md` の記録値と一致することを確認した。
+取得後にローカルで sha256 の完全値を計算し、`spec/api_contracts.json` の記録値（完全値）と一致することを確認した。表の略記は先頭 8 桁と末尾の数桁。
 
 | 出典 (key) | 種別 | sha256 照合 | 用途 |
 | --- | --- | --- | --- |
-| `huc:include/hucc/pcengine.inc` | CALLER（宣言） | 一致 `b6a25d33…728a9` | `bm_format = $00:E048, FUNC`（L494）、`bm_free`=`$E04B`（L495）、`IFU_BRAM_LOCK/UNLOCK`（L204-205）、`_ax`/`_al`（L329-330） |
-| `huc:include/hucc/hucc-systemcard.asm` | CALLER（ラッパー） | 一致 `4258b7c3…ea9` | `_bm_format`（L675-698）、`_bm_free`（L713-722）、BM 定数（L54-61）、`_bm_check`（L615-）|
-| `huc:include/hucc/hucc-systemcard.h` | CALLER（C 宣言） | 未取得 | 本台帳では未使用（NOT_RUN） |
+| `huc:include/hucc/pcengine.inc` | CALLER（宣言） | 一致（完全値 `b6a25d33…728a9`、api_contracts.json:12） | `bm_format = $00:E048, FUNC`（L494）、`bm_free`=`$E04B`（L495）、`IFU_BRAM_LOCK/UNLOCK`（L204-205）、`_ax`/`_al`（L329-330） |
+| `huc:include/hucc/hucc-systemcard.asm` | CALLER（ラッパー） | 一致（完全値 `4258b7c3…ea9`、api_contracts.json:21） | `_bm_format`（L675-698）、`_bm_free`（L713-722）、BM 定数（L54-61）、`_bm_check`（L615-）|
+| `huc:include/hucc/hucc-systemcard.h` | CALLER（C 宣言） | 一致（完全値 `f2477642f867c3daeff00938534f3f8ef970d1a9403f44bd09e90894220b8a3b`、api_contracts.json:30） | BM 定数（L31-38）と `bm_format` 宣言（L111）のみ参照。本台帳の根拠としては未使用 |
 | `hugo:bios.c` | HLE | 本書の対象外 | HLE の selector であり原本ではない（`api_contracts.json` slot 24 の注記どおり） |
 | 第三者の BIOS offset 表 | 第三者 | 未取得 | `$E048` の入口番地の二次確認は未実施（UNKNOWN） |
 
 ## 2. 呼出側使用台帳
 
-各行は呼出側ラッパーの行番号（`hucc-systemcard.asm`）を指す。BIOS 側の挙動は別表（§3）。
+各行の行番号は、特記しない限り `hucc-systemcard.asm` を指す。BIOS 側の挙動は別表（§3）。
 
 | id | 項目 | 呼出側の事実（引用の言い換え） | 行 | 状態 |
 | --- | --- | --- | --- | --- |
-| C1 | 入口 | `bm_format = $00:E048, FUNC` と宣言。ラッパーは `system bm_format` マクロで呼ぶ | pcengine.inc:494 / asm:687 | CONFIRMED-by-source（呼出側宣言）。BIOS 実入口との一致は HYPOTHESIS |
-| C2 | 引数レジスタ | 引数は `_ax`（`$F8:20F8` の 2 バイト、低位先）にパスワードへのポインタを置く。A/X/Y の直接入力はない | asm:682-685 / pcengine.inc:329 | CONFIRMED-by-source（呼出側の書込み） |
-| C3 | 破壊的操作の確認文字列 | 確認文字列は `"!BM FORMAT!"`（11 バイト、`db`、NUL 終端なし）。BIOS がこの文字列を比較するか、比較長、不一致時の返値は未確認 | asm:698 | 文字列の存在は CONFIRMED-by-source。BIOS 側の検証は UNKNOWN |
-| C4 | 事前確認 | ラッパーは先に `system bm_free` を呼ぶ。A（`bm_free` の返値）が 0 なら**フォーマットせず** BM_OK で返す。非 0 の場合のみ `bm_format` を呼ぶ | asm:677-680 | CONFIRMED-by-source（呼出側の分岐）。「0=フォーマット済み」の意味は HYPOTHESIS |
-| C5 | 成功時返値 | `bm_format` の A が 0 なら X=0（BM_OK）で返す | asm:687-691 | CONFIRMED-by-source（ラッパーの扱い）。BIOS の実返値は UNKNOWN |
-| C6 | 異常時返値 | `bm_format` の返値が非 0 なら X=`$FF`（BM_NOT_FORMATTED）に置換して返す。BIOS が返した実コードは捨てられる | asm:692-694 / pcengine.inc:61 | CONFIRMED-by-source |
-| C7 | 返値の二重記録 | `__bm_error` に返値を保存（`.ds 1`、asm:65）。戻り値は `leave` で X→A | asm:65, 694-696 | CONFIRMED-by-source |
-| C8 | MPR | ラッパーは MPR を変更しない。`.password` のアドレスは `lda.l/.h #` で得るのみ。ポインタが BIOS から見える MPR 配置は UNKNOWN（`api_contracts` は HYPOTHESIS 扱い） | asm:682-685 | UNKNOWN（BIOS 側の読み取り経路） |
-| C9 | 退避レジスタ | ラッパーは A/X/Y を破壊し、P/スタックは退避しない（`leave` で戻る）。BIOS 側の退避は UNKNOWN | asm:675-698 | CONFIRMED-by-source（ラッパーのみ） |
-| C10 | 事前ロック解除 | `bm_format` 経路には `IFU_BRAM_UNLOCK`（`$FF:1807`）書込みがない。解除シーケンスは `_bm_check`（asm:615-660）側にある。BIOS が内部で解除するかは UNKNOWN | pcengine.inc:204-205, asm:626-630 | CONFIRMED-by-source（呼出側の不在）。BIOS 側は UNKNOWN |
-| C11 | 容量要件 | 呼出側には容量の前提がない（`bm_format` は長さを渡さない）。最小容量の記載なし | asm:667-673 | UNKNOWN（64 バイトは #395 の内部値であり、根拠にしない） |
-| C12 | 破壊範囲 | 呼出側コメントは「フォーマット済みなら OK、そうでなければフォーマット」とのみ書く。何が消えるか（ディレクトリのみか、全領域か）は記載なし | asm:669 | UNKNOWN |
+| C1a | 入口の宣言 | `bm_format = $00:E048, FUNC` と宣言する | pcengine.inc:494 | CONFIRMED-by-source |
+| C1b | 呼出し経路 | ラッパーは `system bm_format` マクロで呼ぶ | asm:687 | CONFIRMED-by-source |
+| C1c | BIOS 実入口との一致 | `$E048` が System Card の実入口と一致するか。第三者の番地表は未取得 | — | HYPOTHESIS |
+| C2 | 引数レジスタ | 引数は `_ax`（`$F8:20F8` の 2 バイト、低位先）にパスワードへのポインタを置く。A/X/Y の直接入力はない | asm:682-685 / pcengine.inc:329 | CONFIRMED-by-source |
+| C3a | 確認文字列の存在 | 確認文字列は `"!BM FORMAT!"`（11 バイト、`db` で定義、NUL 終端の指定なし） | asm:698 | CONFIRMED-by-source |
+| C3b | BIOS 側の検証 | BIOS がこの文字列を比較するか、比較長、不一致時の返値。呼出側に情報なし | — | UNKNOWN |
+| C4a | 事前確認の分岐 | `system bm_free` の結果 A を `tax` で X に写し、0 なら `.done` へ進み、bm_format を呼ばず X=0 で返す。非 0 の場合のみ `bm_format` を呼ぶ | asm:677-680 | CONFIRMED-by-source |
+| C4b | 「0」の意味 | 0 を「フォーマット済み」とする解釈。呼出側の別箇所（`_bm_free` マクロ）は A≠0 を error として扱うため、0 の意味は呼出側だけでは一意に決まらない | asm:677-680 / asm:714-718 | HYPOTHESIS |
+| C5a | 成功時の返値（呼出側） | `bm_format` の A が 0 なら X=0（BM_OK）で返す | asm:687-691 | CONFIRMED-by-source |
+| C5b | BIOS の実返値 | 成功時に BIOS が返す A/X の値。呼出側は A==0 のみ見る | asm:687-690 | UNKNOWN |
+| C6 | 異常時の返値（呼出側） | `bm_format` の A が非 0 なら X=`$FF`（BM_NOT_FORMATTED）に置換して返す。BIOS の実コードは X に残らない | asm:692-694 / 定義 asm:61（同値が hucc-systemcard.h:38） | CONFIRMED-by-source |
+| C7 | 返値の記録（呼出側） | `__bm_error` は asm:688 で BIOS の A を保存するが、asm:694 の `stx` で X（`$FF` または 0）に上書きされる。BIOS の実コードは `__bm_error` にも残らない。`.ds 1` は asm:65、戻りは `leave` で X→A（asm:696） | asm:65, 688, 694-696 | CONFIRMED-by-source |
+| C8 | MPR | ラッパーは MPR を変更しない。`.password` のアドレスは `lda.l/.h #` で得るのみ。ポインタが BIOS から見える MPR 配置は UNKNOWN（`api_contracts` は HYPOTHESIS 扱い） | asm:682-685 | UNKNOWN |
+| C9 | 退避レジスタ | ラッパーは A/X/Y を破壊し、P/スタックは退避しない（`leave` で戻る）。BIOS 側の退避は UNKNOWN（B2 参照） | asm:675-698 | CONFIRMED-by-source |
+| C10a | 解除シーケンス（呼出側） | ラッパー本文に `IFU_BRAM_UNLOCK`（`$FF:1807`）への書込みはない。解除シーケンスは `_bm_check` 側にある | asm:675-698 / pcengine.inc:205 / asm:625-630 | CONFIRMED-by-source |
+| C10b | BIOS の MMIO 解除 | BIOS が内部で `$1807` 書込みによる解除、`$1803` による施錠を行うか | — | UNKNOWN |
+| C11 | 容量要件 | 呼出側は長さを渡さず、容量の前提も記載しない。最小容量 64 バイトは #395 の内部値であり根拠にしない | asm:667-673 | UNKNOWN |
+| C12 | 破壊範囲 | 呼出側コメントは「フォーマット済みなら OK、そうでなければフォーマット」とのみ書く。何が消えるかは記載なし | asm:669 | UNKNOWN |
 
 ### 2.1 呼出側ロジックから読み取れる境界（HYPOTHESIS）
 
-* 呼出側の唯一の二段防御は「`bm_free` が非 0 のときだけ `bm_format` を呼ぶ」（C4）と「確認文字列をポインタで渡す」（C2、C3）。
-* `bm_free` の非 0 はすべてフォーマット対象として扱われる。`__bm_error` の定数（pcengine.inc:54-61）には `BM_BAD_CHECKSUM=2`、`BM_DIR_CORRUPTED=3` などもあるため、**破損しているが利用者データが残るメディアでも、呼出側ラッパーは非 0 を見てフォーマットへ進む**。これは HYPOTHESIS（BIOS が破損時にどの値を返すかが UNKNOWN のため）。
-* したがって「破壊的操作の確認」は呼出側では bm_free の 0/非 0 判定のみ。BIOS 側が確認文字列を検証するかどうかが、直接 JSR した場合の境界を決める（UNKNOWN）。
+* 呼出側の唯一の二段防御は「`bm_free` が非 0 のときだけ `bm_format` を呼ぶ」（C4a）と「確認文字列をポインタで渡す」（C2、C3a）。
+* `bm_free` の非 0 はすべて `bm_format` 呼出しへ進む（C4a）。`BM_*` 定数（hucc-systemcard.asm:54-61、hucc-systemcard.h:31-38 にも同値）には `BM_BAD_CHECKSUM=2`、`BM_DIR_CORRUPTED=3` などもあるため、**破損しているが利用者データが残るメディアでも、呼出側ラッパーは非 0 を見てフォーマットへ進む**。これは HYPOTHESIS（BIOS が破損時にどの値を返すかが UNKNOWN のため）。
+* したがって「破壊的操作の確認」は呼出側では `bm_free` の 0/非 0 判定のみ。BIOS 側が確認文字列を検証するかどうかが、直接 JSR した場合の境界を決める（UNKNOWN）。
 
 ## 3. BIOS 側（callee）の状態
 
 | id | 項目 | 状態 | 理由 |
 | --- | --- | --- | --- |
 | B1 | 実行可能な System Card 上での呼出観測 | UNKNOWN | 固定 Geargrafx 実コアでの BM_FORMAT 実行証拠はゼロ |
-| B2 | 成功時の A/X/Y/P | UNKNOWN | 呼出側は A==0 のみ見る |
-| B3 | 異常時の返値の種類（確認不一致、未フォーマット、容量不足など） | UNKNOWN | 呼出側ヘッダは BM_NOT_FOUND を返すと書くが、コードは返さない（C6）。BIOS の実値は未観測 |
-| B4 | 確認文字列の比較長と不一致時の挙動 | UNKNOWN | 呼出側の文字列のみ |
-| B5 | 書換え範囲（何バイトを消すか、既存ファイルの扱い） | UNKNOWN | 呼出側に記載なし |
-| B6 | MMIO 副作用（`$1803-$1807` の解除・施錠） | UNKNOWN | C10 参照。`docs/173` のゲートでは MMIO 書込みを事前阻止できない |
+| B2 | 成功時の A/X/Y/P | UNKNOWN | 呼出側は A==0 のみ見る（C5b） |
+| B3 | 異常時の返値の種類（確認不一致、未フォーマット、容量不足など） | UNKNOWN | 呼出側ラッパーのコメント（asm:671）は BM_NOT_FOUND を返すと書くが、コードは BM_NOT_FOUND を返さず `$FF` に置換する（C6）。BIOS の実値は未観測 |
+| B4 | 確認文字列の比較長と不一致時の挙動 | UNKNOWN | 呼出側の文字列のみ（C3b） |
+| B5 | 書換え範囲（何バイトを消すか、既存ファイルの扱い） | UNKNOWN | 呼出側に記載なし（C12） |
+| B6 | MMIO 副作用（`$1803-$1807` の解除・施錠） | UNKNOWN | C10b 参照。`docs/173` のゲートでは MMIO 書込みを事前阻止できない |
 | B7 | 割込み・完了条件・所要時間 | UNKNOWN | 記載なし |
 
 ## 4. 実コア診断に対する判定（#304）
 
-**判定: BLOCKED_ABI（診断は NOT_RUN。ログなし）。**
+**判定: BLOCKED_ABI（診断は NOT_RUN。ログなし）。** 本判定は台帳の行数には含めない。
 
 理由:
 
@@ -77,23 +90,24 @@ Refs #302 / 親 #34 / 関連 #303（合成FORMAT安全モデル）/ #304（診�
 ## 5. 発見した不整合
 
 * `hucc-systemcard.asm:671` のコメントは「BM_OK, BM_NOT_FOUND」を返すと書くが、コードは `BM_NOT_FORMATTED`（$FF）を返す（asm:692）。呼出側ドキュメントの誤記の可能性（HYPOTHESIS）。
-* `pcengine.inc:60` の `BM_NOT_FORMATED` は綴り誤り（HuC 側、asm:60 のコメントに明記）。定数は `$FF` で同値。
+* `BM_NOT_FORMATED` は綴り誤り（HuC 側。`hucc-systemcard.asm:60` の定義と、その行のコメント「HuC incorrect spelling.」に明記）。同じ定義が `hucc-systemcard.h:37` にもある。定数は `$FF` で `BM_NOT_FORMATTED`（asm:61）と同値。
 
 ## 6. 次のステップ
 
 * BIOS 側の事実（B2-B5）は、ライセンス確認済みの私的 System Card を使う別 Issue（maintainer 許可のもの）でのみ観測可能。公開リポジトリ内では観測しない。
 * #304 は、B2-B5 が観測で埋まるまで BLOCKED_ABI のまま。`api_contracts.json` の slot 24 は、本 PR では変更しない（ledger 変更禁止）。
-* 呼出側だけで既に決まっている事実（C1-C12）は、`api_contracts.json` の更新案として別途提案する（本 PR の範囲外）。
+* 呼出側だけで既に決まっている事実（C1a-C12）は、`api_contracts.json` の更新案として別途提案する（本 PR の範囲外）。
 
 ## 7. 状態集計
 
-台帳行は C1-C12（呼出側 12 行）と B1-B7（BIOS 側 7 行）の計 19 行。
+台帳行は C1a-C12（呼出側、分割後 18 行）と B1-B7（BIOS 側 7 行）の計 25 行。各行の状態は 1 つ。
 
-| 状態 | 行数 | 内訳 |
+| 状態 | 行数 | 行 |
 | --- | --- | --- |
-| CONFIRMED-by-source | 9 | C1, C2, C3*, C4, C5, C6, C7, C9, C10*（* は呼出側部分のみ。BIOS 側は UNKNOWN） |
-| UNKNOWN | 10 | C8, C11, C12, B1-B7 |
-| HYPOTHESIS（行内の注記） | 3 | C1 の BIOS 入口一致、C4 の「0=フォーマット済み」、§2.1 の破損時分岐 |
-| BLOCKED_ABI（診断） | 1 | #304 の実コア診断 |
+| CONFIRMED-by-source | 10 | C1a, C1b, C2, C3a, C4a, C5a, C6, C7, C9, C10a |
+| HYPOTHESIS | 2 | C1c, C4b |
+| UNKNOWN | 13 | C3b, C5b, C8, C10b, C11, C12, B1-B7 |
+| 合計 | 25 | |
 
-VERIFIED は 0。release_eligible=false。
+* §4 の #304 判定（BLOCKED_ABI）は台帳行ではなく別判定として 1 件。
+* VERIFIED は 0。release_eligible=false。
