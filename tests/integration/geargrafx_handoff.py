@@ -1,8 +1,8 @@
 """Real Geargrafx check of a synthetic ROM-to-RAM handoff (Issue #242; test-only, NOT a BIOS ABI).
 
 tests/fixtures/handoff-probe.s copies a 13-byte payload from bank0 to work RAM $2200 (MPR1 = $F8) and JMPs
-there; the payload writes a marker at $2220 and JMPs back to a ROM halt label. The probe loads the ROM with the
-System Card loader (LoadBiosFromBuffer) and an empty dummy CD image (LoadMedia, 32 zero-filled MODE1/2352 sectors,
+there; the payload writes a marker at $2220 and JMPs back to a ROM halt label. The probe loads the synthetic ROM
+via LoadBiosFromBuffer(syscard), not a System Card image, and an empty dummy CD image (LoadMedia, 32 zero-filled MODE1/2352 sectors,
 no CD content). It records the first arrival per cycle (cold and warm) at handoff_jump, handoff_entry and
 handoff_done, and dumps work RAM offsets $200-$23F (CPU $2200-$223F). The cold cycle also compares the full
 work RAM ($2000-$3FFF) between the 'loaded', 'cold' and 'nonreturning' observations.
