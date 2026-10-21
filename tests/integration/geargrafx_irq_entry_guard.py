@@ -94,7 +94,7 @@ def check_armed(row, case):
     if row.get("vector_at_call") != vector or row.get("handler_at_call") != HANDLER:
         raise ValueError(f"{case}: hook saw vector {row.get('vector_at_call')} handler {row.get('handler_at_call')}")
     if row.get("pc_at_call") != GUEST_LOOP_PC:
-        raise ValueError(f"{case}: PC at the hook call was {row.get('pc_at_call'):#x}, want guest loop")
+        raise ValueError(f"{case}: PC at the hook call was {row.get('pc_at_call')!r}, want guest loop {GUEST_LOOP_PC:#x}")
     if row["stack_at_call"] != [0, 0, 0] or row["stack_after"] != [0, 0, 0]:
         raise ValueError(f"{case}: stack written although refused ({row['stack_at_call']} -> {row['stack_after']})")
     if row["stop_pc"] != GUEST_LOOP_PC:
@@ -216,8 +216,6 @@ def build_probes(directory):
     flags = ("-O2 -fPIC -fno-exceptions -D__LIBRETRO__ -DZ7_ST -DZSTD_DISABLE_ASM "
              "-DGG_DISABLE_VGMRECORDER -DGG_ENABLE_CDROM_CUEBIN_READAHEAD -pthread " + includes)
     cflags, cxxflags = flags, flags + " -fno-rtti"
-    if "GG_DISABLE_DISASSEMBLER" in cxxflags:
-        raise ValueError("BLOCKED: debugger flags unexpectedly disable the disassembler")
     # ValueError (not CalledProcessError) so the caller reports BLOCKED/FAIL instead of a traceback.
     build_command(["make", "-s", "-C", str(make_dir), "-j", str(os.cpu_count() or 2),
                    f"CFLAGS={cflags}", f"CXXFLAGS={cxxflags}", *objects])

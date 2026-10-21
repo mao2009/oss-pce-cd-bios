@@ -26,7 +26,7 @@
 | 4 | debugger ビルドでのみ成立と明記し、libretro は BLOCKED | **充足（判定器レベル）** | libretro は常に BLOCKED。理由は GG_DISABLE_DISASSEMBLER による実行 breakpoint と PC API の欠如。 |
 | 5 | 変異テストで停止判定を外すと検出される | **充足（判定器レベル）** | 13 変異の拒否、および「停止判定を `if False` に置換すると偽の PASS になる」ことを確認するテスト。実コアに対する変異は未実施。 |
 
-## 実コアで必要な観測（未実装の probe の仕様）
+## 実コアで必要な観測（PR #415 時点の仕様。入口拒否は PR #444 で実測済み、停止点の実測は未了）
 
 pinned core（`geargrafx-b49ae82a…-debugger`、`/home/loach/oss-pce-cd-bios-tools/` 配下に存在）で、次の 1 行観測を取る必要がある。
 
@@ -53,7 +53,7 @@ pinned core（`geargrafx-b49ae82a…-debugger`、`/home/loach/oss-pce-cd-bios-to
 - `docs/geargrafx-contract-evidence.md` の IRQ 記述（SP `$FF→$FC→$FF`、積まれる P/PC、IRR ビット）は、pinned core の既存 contracts ハーネスによる観測と文書値である。本 Issue の「ハンドラ命令 0 個で停止」の観測とは別物であり、代用しない。
 - 参照 BIOS の割込み契約（戻り・フラグ・レジスタ）は未確認であり、`BLOCKED_ABI` のままとする。
 
-## 次の作業（依存解消後）
+## 次の作業（PR #415 時点の計画。停止点の実測を除き、下記は未着手）
 
 1. #367 / #365 の駆動ループの interface を確定させる。
 2. IRQ 版の probe（`tests/integration/geargrafx_irq_entry.cpp` 相当）を新規ファイルとして追加し、合成 ROM で 3 ベクタを実測する。
@@ -74,7 +74,7 @@ pinned core（`geargrafx-b49ae82a…-debugger`、`/home/loach/oss-pce-cd-bios-to
 | `outregion`（ページ1外ハンドラ、負例） | PASS | 本プローブのフック方針（ページ1外を拒否）が HandleIRQ の戻り値として効くことの確認。ガード方針そのものの妥当性は検証していない。スタック不変、ハンドラ未実行 |
 
 - 対象ベクタ: IRQ2（$FFF6）、IRQ1（$FFF8）、TIQ（$FFFA）の 3 つすべて。
-- ビルド: tools/setup.py の debugger 構成と同じ CFLAGS/CXXFLAGS を上書きで指定（GG_DISABLE_DISASSEMBLER なし）。プローブは同じ CXXFLAGS と INCLUDES でコンパイル。
+- ビルド: tools/setup.py の debugger 構成と同じ CFLAGS/CXXFLAGS を上書きで指定（上書きフラグに GG_DISABLE_DISASSEMBLER は含まれない。デバッガ機能の有効性はビルド時に検証していない。本判定はブレークポイントに依存しない）。プローブは同じ CXXFLAGS と INCLUDES でコンパイル。
 - libretro: BLOCKED（libretro の共有オブジェクトを駆動するハーネスがないため未観測。PASS ではない）。
 
 ### 残存（本結果が証明しないこと）
