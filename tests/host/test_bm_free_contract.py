@@ -5,6 +5,7 @@ keeps the #307 device probe BLOCKED_ABI, and that the claim ledger (spec/api_con
 promoted without this ledger being updated.
 """
 import json
+import os
 import re
 import unittest
 from pathlib import Path
@@ -46,9 +47,13 @@ class BmFreeContractLedger(unittest.TestCase):
         self.assertNotIn('VERIFIED', self.text.replace('UNVERIFIED', ''))
 
     def test_probe_stays_blocked_abi(self):
-        self.assertIn('BLOCKED_ABI', self.text)
+        self.assertIn('**判定: BLOCKED_ABI。プローブは作成・実行しない（NOT_RUN）。**', self.text)
         self.assertIn('release_eligible=false', self.text)
-        self.assertIn('NOT_RUN', self.text)
+        probes = []
+        for dirpath, dirnames, filenames in os.walk(ROOT):
+            dirnames[:] = [d for d in dirnames if d not in ('.git', '.claude')]
+            probes += [f for f in filenames if re.search(r'(bm|buram)[_-]?free.*probe|probe.*(bm|buram)[_-]?free', f, re.I)]
+        self.assertEqual(probes, [], 'a BM_FREE probe file exists; #307 must stay NOT_RUN')
 
     def test_claim_ledger_not_promoted(self):
         data = json.loads(CONTRACTS.read_text(encoding='utf-8'))
@@ -57,8 +62,8 @@ class BmFreeContractLedger(unittest.TestCase):
         contract = slots[0]['contract']
         self.assertEqual(slots[0]['mapping_status'], 'HYPOTHESIS')
         for field in ('arguments', 'returns', 'clobbered', 'preserved', 'stack', 'mpr', 'ram', 'flags', 'irq', 'errors'):
-            if field in contract:
-                self.assertEqual(contract[field]['status'], 'UNKNOWN', field)
+            self.assertIn(field, contract, f'{field} column missing from BM_FREE contract')
+            self.assertEqual(contract[field]['status'], 'UNKNOWN', field)
 
 
 if __name__ == '__main__':
