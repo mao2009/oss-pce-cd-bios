@@ -8,7 +8,9 @@
 ;   out: X:A = quotient (truncated toward zero); the two divisor stack bytes become the remainder
 ;        (the top byte, pulled first, is the remainder high; the byte below it is the remainder low)
 ;        C=1 divide by zero (quotient 0, remainder = dividend); V=1 overflow (X:A = $8000)
-;        N/Z reflect the quotient; I, D, T preserved
+;        N/Z reflect the quotient; I and D are kept from the caller's P (PLP at exit); B is not a stored flag
+;   precondition: caller T=0 at entry. T=1 changes the routine's own instructions (memory-to-memory mode), so
+;        T=1 is OUT OF CONTRACT. The real-core test records one T=1 run as characterisation only.
 ;   precondition: S at routine entry >= $07 (7 bytes pushed by the routine), MPR1 maps the stack page
 ;        (RAM, as for any JSR). The real-core test checks the boundary at entry S=$07.
 ; ABI remains UNVERIFIED and this ROM stays DEV ONLY (release_eligible: false).

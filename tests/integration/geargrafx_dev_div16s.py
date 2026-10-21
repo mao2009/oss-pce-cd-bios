@@ -6,10 +6,13 @@ X:A, P, Y and the remainder bytes (popped from the divisor slots) and SP at $220
 The expectation is this project's own spec (src/overrides/slot_42.s and tools/ma_div16s_model.py), NOT the reference
 BIOS MA_DIV16S ABI, which stays UNVERIFIED. Every 16-bit pair is a valid input; the divide-by-zero and -32768/-1 cases are
 defined by the project contract and are checked as such.
-Precondition under test: S at routine entry >= $07. The two boundary cases run last at caller SP=$0B (entry S=$07).
-Scope: 22 real-core cases (20 at caller SP=$FF, 2 at the boundary) plus the no-CLD mutant. Checked: I and D (set by the
-guest), C, V, N, Z. NOT checked: T and B. T cannot be set safely before the call, because the T flag changes the
-routine's own instructions; the routine restores the caller's P with PLP, but the test does not exercise that.
+Preconditions under test: (1) S at routine entry >= $07. The two boundary cases run last at caller SP=$0B (entry S=$07).
+(2) Caller T=0 at entry. T=1 changes the routine's own instructions (memory-to-memory mode), so it is OUT OF CONTRACT;
+the guest never sets T in the contract cases. One T=1 run is a characterisation: it prints what the core observed and
+asserts nothing about it.
+Scope: 22 real-core cases (20 at caller SP=$FF, 2 at the boundary) plus the no-CLD mutant. P is compared exactly on
+every bit except B (bit 4): C, Z, I, D, V, N, and T (bit 5), which must be 0 because the caller T=0 and the routine
+restores P with PLP. B is not a stored flag: PHP always pushes B=1, so it is ignored.
 This is NOT an exhaustive test of the assembled routine; the host model is tests/host/test_ma_div16s.py.
 Run: python3 tests/integration/geargrafx_dev_div16s.py --rom build/debug/bios-dev/dev-only-not-compatible-syscard3.pce
 Needs the pinned cc65 and Geargrafx core (make setup, TOOLS_DIR on Linux). Missing tools exit 3 (BLOCKED).
@@ -54,10 +57,21 @@ class Mismatch(ValueError):
     """The guest ran to its halt loop but returned a value that differs from the spec."""
 
 
-def guest(reset, entry, dividend, divisor, sp=CALLER_SP):
-    """Reset-replacement code at CPU address `reset`. Returns (code, halt CPU address)."""
+def guest(reset, entry, dividend, divisor, sp=CALLER_SP, t_entry=False):
+    """Reset-replacement code at CPU address `reset`. Returns (code, halt CPU address).
+    t_entry=True is the out-of-contract characterisation: SET before the JSR. Its PHP runs before CLT, so the P it stores
+    is the one the routine restored (T included); the stack order is the same as in the contract variant."""
     lo_a, hi_x = dividend & 0xFF, dividend >> 8
     d_lo, d_hi = divisor & 0xFF, divisor >> 8
+    store_q = [0x8D, STORE & 0xFF, STORE >> 8,              # STA $2200 (quotient low)
+               0x8E, (STORE + 1) & 0xFF, (STORE + 1) >> 8]  # STX $2201 (quotient high)
+    store_p = [0x8D, (STORE + 2) & 0xFF, (STORE + 2) >> 8]  # STA $2202 (P after, pulled by PLA)
+    if t_entry:
+        head = [0xF4]                       # SET: T=1 at entry (characterisation only)
+        tail = [0x08, 0x62] + store_q + [0x68] + store_p  # PHP; CLT; STA; STX; PLA; STA $2202
+    else:
+        head = []
+        tail = store_q + [0x08, 0x68] + store_p           # STA; STX; PHP; PLA; STA $2202
     code = bytes([0x78,                   # SEI
                   0xA9, 0xF8, 0x53, 0x02,  # LDA #$F8; TAM #$02 -> MPR1 = work RAM ($2000-$3FFF)
                   0xA2, sp, 0x9A,          # LDX #sp; TXS (caller SP; divisor pushes and the JSR follow)
@@ -66,11 +80,8 @@ def guest(reset, entry, dividend, divisor, sp=CALLER_SP):
                   0xA9, d_hi, 0x48,        # LDA #divisor high; PHA (high on top, as the contract requires)
                   0xA0, Y_PRESET,          # LDY #$A5
                   0xA9, lo_a,              # LDA #dividend low
-                  0xA2, hi_x,              # LDX #dividend high
-                  0x20, entry & 0xFF, entry >> 8,  # JSR entry
-                  0x8D, STORE & 0xFF, STORE >> 8,              # STA $2200 (quotient low)
-                  0x8E, (STORE + 1) & 0xFF, (STORE + 1) >> 8,  # STX $2201 (quotient high)
-                  0x08, 0x68, 0x8D, (STORE + 2) & 0xFF, (STORE + 2) >> 8,  # PHP; PLA; STA $2202 (P after)
+                  0xA2, hi_x] + head + [   # LDX #dividend high
+                  0x20, entry & 0xFF, entry >> 8] + tail + [  # JSR entry
                   0x8C, (STORE + 3) & 0xFF, (STORE + 3) >> 8,  # STY $2203
                   0x68, 0x8D, (STORE + 4) & 0xFF, (STORE + 4) >> 8,  # PLA (remainder high); STA $2204
                   0x68, 0x8D, (STORE + 5) & 0xFF, (STORE + 5) >> 8,  # PLA (remainder low); STA $2205
@@ -80,7 +91,8 @@ def guest(reset, entry, dividend, divisor, sp=CALLER_SP):
 
 
 def expected_p(q16, c, v):
-    """P after the call: I=1 and D=1 kept from the caller (SEI, SED); C, V, N, Z from the contract."""
+    """P after the call under the contract (caller T=0): I=1 and D=1 kept from the caller (SEI, SED); T=0 kept;
+    C, V, N, Z from the contract. B (bit 4) is not compared: PHP always pushes it set."""
     return 0x04 | 0x08 | c | (v << 6) | (q16 >> 15) << 7 | (0x02 if q16 == 0 else 0)
 
 
@@ -94,14 +106,14 @@ def check(label, rows, halt, dividend, divisor, sp=CALLER_SP):
         raise ValueError(f"{label}: MPR changed (mpr={cold['mpr']})")
     s = bytes.fromhex(cold["work_ram_0200_hex"])[:7]
     q16, r16, c, v, n, z = model(dividend, divisor)
-    observed = (s[0], s[1], s[2] & 0xCF, s[3], s[4], s[5], s[6])
-    want = (q16 & 0xFF, q16 >> 8, expected_p(q16, c, v) & 0xCF, Y_PRESET, r16 >> 8, r16 & 0xFF, sp)
+    observed = (s[0], s[1], s[2] & 0xEF, s[3], s[4], s[5], s[6])  # P: every bit but B (bit 4), T (bit 5) included
+    want = (q16 & 0xFF, q16 >> 8, expected_p(q16, c, v) & 0xEF, Y_PRESET, r16 >> 8, r16 & 0xFF, sp)
     if observed != want:
         raise Mismatch(f"{label}: A/X/P/Y/remHI/remLO/SP observed {observed}, expected {want}")
 
 
 def run_case(probe, base, folder, cue, reset, label, entry, dividend, divisor, sp=CALLER_SP):
-    code, halt = guest(reset, entry, dividend, divisor, sp)
+    code, halt = guest(reset, entry, dividend, divisor, sp)  # contract variant: caller T=0
     variant = bytearray(base)
     variant[reset - 0xE000:reset - 0xE000 + len(code)] = code
     rom = folder / f"{label}.pce"
@@ -159,11 +171,29 @@ def main():
                              f"(expected {len(MUTANT_CASES)} mismatches)")
         evidence["negative_cases"].append({"case": "42_without_CLD_D1", "rejected": len(rejected),
                                            "first": rejected[0]})
+        # Characterisation, OUT OF CONTRACT: caller T=1 at entry. Records what the core observed; asserts nothing about it
+        # (only a missing cold row or a read error can fail this run).
+        t1_dividend, t1_divisor = 0x0064, 0x0007
+        code, halt = guest(reset, entry, t1_dividend, t1_divisor, t_entry=True)
+        variant = bytearray(data)
+        variant[reset - 0xE000:reset - 0xE000 + len(code)] = code
+        t1_rom = folder / "t1-characterisation.pce"
+        t1_rom.write_bytes(variant)
+        t1_cold = next(r for r in dev.run_probe(probe, t1_rom.resolve(), cue, count=CALL_STEPS)
+                       if r["phase"] == "cold")
+        t1_s = bytes.fromhex(t1_cold["work_ram_0200_hex"])[:7]
+        characterisation = {"contract": "OUT OF CONTRACT: caller T=1 at entry (not a claim about the routine)",
+                            "dividend": t1_dividend, "divisor": t1_divisor, "halt_reached": t1_cold["pc"] == halt,
+                            "pc": t1_cold["pc"], "sp_after": t1_cold["sp"], "quotient_lo": t1_s[0],
+                            "quotient_hi": t1_s[1], "p_after_bytes_hex": f"{t1_s[2]:02X}", "y_after": t1_s[3],
+                            "rem_hi": t1_s[4], "rem_lo": t1_s[5], "sp_after_bytes": t1_s[6]}
+        evidence["characterisation_t1"] = characterisation
+        print(f"CHARACTERISATION (out of contract, caller T=1 at entry): {json.dumps(characterisation)}")
     (args.rom.parent / "geargrafx-dev-div16s-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
     total = len(CASES) + 2  # two boundary cases at caller SP=$0B (entry S=$07)
     print(f"PASS real Geargrafx DEV ROM: MA_DIV16S slot $42 {total} cases ({len(CASES)} at caller SP=$FF, 2 at caller "
-          f"SP=$0B boundary; precondition S>=$07 at entry); quotient, remainder, P (C/V/N/Z; I/D kept; T/B not tested), "
-          f"Y, SP, MPR1/MPR7 checked; "
+          f"SP=$0B boundary; preconditions S>=$07 and T=0 at entry); quotient, remainder, P (C/Z/I/D/V/N and T=0 exact; "
+          f"B ignored), Y, SP, MPR1/MPR7 checked; T=1 characterised only (out of contract); "
           f"no-CLD mutant rejected {len(rejected)}/{len(MUTANT_CASES)}")
 
 
