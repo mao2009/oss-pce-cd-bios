@@ -7,9 +7,13 @@ The expectation is this project's own spec (src/overrides/slot_42.s and tools/ma
 BIOS MA_DIV16S ABI, which stays UNVERIFIED. Every 16-bit pair is a valid input; the divide-by-zero and -32768/-1 cases are
 defined by the project contract and are checked as such.
 Preconditions under test: (1) S at routine entry >= $07. The two boundary cases run last at caller SP=$0B (entry S=$07).
-(2) Caller T=0 at entry. T=1 changes the routine's own instructions (memory-to-memory mode), so it is OUT OF CONTRACT;
-the guest never sets T in the contract cases. One T=1 run is a characterisation: it prints what the core observed and
-asserts nothing about it.
+(2) Caller T=0 at entry. The routine copies the caller's T bit into the restored P (the $2C mask at @finish), so a
+caller that could raise T would get T=1 back; T=1 is therefore OUT OF CONTRACT. On the pinned core (Geargrafx
+b49ae82) the T flag is consumed by the instruction that follows SET: the core samples P.T into its memory-to-memory
+mode flag and clears P.T at the start of every instruction, and PHP always pushes T=0. A caller's SET before the JSR is
+therefore swallowed by the JSR, so the routine's own instructions never run with T=1 and P.T is 0 wherever the guest
+can observe it. The contract cases never set T; one SET-before-JSR run is a characterisation: it prints what the core
+observed and asserts nothing about the routine.
 Scope: 22 real-core cases (20 at caller SP=$FF, 2 at the boundary) plus the no-CLD mutant. P is compared exactly on
 every bit except B (bit 4): C, Z, I, D, V, N, and T (bit 5), which must be 0 because the caller T=0 and the routine
 restores P with PLP. B is not a stored flag: PHP always pushes B=1, so it is ignored.
@@ -59,19 +63,17 @@ class Mismatch(ValueError):
 
 def guest(reset, entry, dividend, divisor, sp=CALLER_SP, t_entry=False):
     """Reset-replacement code at CPU address `reset`. Returns (code, halt CPU address).
-    t_entry=True is the out-of-contract characterisation: SET before the JSR. Its PHP runs before CLT, so the P it stores
-    is the one the routine restored (T included); the stack order is the same as in the contract variant."""
+    t_entry=True is the out-of-contract characterisation: SET before the JSR. The HuC6280 has no clear-T opcode
+    (SET is $F4 and $62 is CLA, not CLT), and the pinned core consumes and clears P.T at the start of every
+    instruction, so the SET is swallowed by the JSR that follows it. The rest of the guest is byte-identical to the
+    contract variant, so the two runs can be compared directly."""
     lo_a, hi_x = dividend & 0xFF, dividend >> 8
     d_lo, d_hi = divisor & 0xFF, divisor >> 8
     store_q = [0x8D, STORE & 0xFF, STORE >> 8,              # STA $2200 (quotient low)
                0x8E, (STORE + 1) & 0xFF, (STORE + 1) >> 8]  # STX $2201 (quotient high)
     store_p = [0x8D, (STORE + 2) & 0xFF, (STORE + 2) >> 8]  # STA $2202 (P after, pulled by PLA)
-    if t_entry:
-        head = [0xF4]                       # SET: T=1 at entry (characterisation only)
-        tail = [0x08, 0x62] + store_q + [0x68] + store_p  # PHP; CLT; STA; STX; PLA; STA $2202
-    else:
-        head = []
-        tail = store_q + [0x08, 0x68] + store_p           # STA; STX; PHP; PLA; STA $2202
+    head = [0xF4] if t_entry else []   # SET: T=1 (characterisation only)
+    tail = store_q + [0x08, 0x68] + store_p   # STA; STX; PHP; PLA; STA $2202
     code = bytes([0x78,                   # SEI
                   0xA9, 0xF8, 0x53, 0x02,  # LDA #$F8; TAM #$02 -> MPR1 = work RAM ($2000-$3FFF)
                   0xA2, sp, 0x9A,          # LDX #sp; TXS (caller SP; divisor pushes and the JSR follow)
@@ -171,8 +173,10 @@ def main():
                              f"(expected {len(MUTANT_CASES)} mismatches)")
         evidence["negative_cases"].append({"case": "42_without_CLD_D1", "rejected": len(rejected),
                                            "first": rejected[0]})
-        # Characterisation, OUT OF CONTRACT: caller T=1 at entry. Records what the core observed; asserts nothing about it
-        # (only a missing cold row or a read error can fail this run).
+        # Characterisation, OUT OF CONTRACT: a SET before the JSR raises T=1. The pinned core consumes the T flag in
+        # the instruction that follows the SET (here the JSR), so the routine must behave exactly as in the contract
+        # cases. The run records what the core observed and asserts nothing about the routine's arithmetic; a guest
+        # that does not reach its halt loop is a hard failure, because the comparison would then be meaningless.
         t1_dividend, t1_divisor = 0x0064, 0x0007
         code, halt = guest(reset, entry, t1_dividend, t1_divisor, t_entry=True)
         variant = bytearray(data)
@@ -182,18 +186,35 @@ def main():
         t1_cold = next(r for r in dev.run_probe(probe, t1_rom.resolve(), cue, count=CALL_STEPS)
                        if r["phase"] == "cold")
         t1_s = bytes.fromhex(t1_cold["work_ram_0200_hex"])[:7]
-        characterisation = {"contract": "OUT OF CONTRACT: caller T=1 at entry (not a claim about the routine)",
+        t1_q16, t1_r16, t1_c, t1_v, _t1_n, _t1_z = model(t1_dividend, t1_divisor)
+        t1_want = (t1_q16 & 0xFF, t1_q16 >> 8, expected_p(t1_q16, t1_c, t1_v) & 0xEF, Y_PRESET,
+                   t1_r16 >> 8, t1_r16 & 0xFF, CALLER_SP)
+        t1_got = (t1_s[0], t1_s[1], t1_s[2] & 0xEF, t1_s[3], t1_s[4], t1_s[5], t1_s[6])
+        characterisation = {"contract": "OUT OF CONTRACT: caller SET before the JSR (T=1). Not a claim about the routine.",
                             "dividend": t1_dividend, "divisor": t1_divisor, "halt_reached": t1_cold["pc"] == halt,
                             "pc": t1_cold["pc"], "sp_after": t1_cold["sp"], "quotient_lo": t1_s[0],
                             "quotient_hi": t1_s[1], "p_after_bytes_hex": f"{t1_s[2]:02X}", "y_after": t1_s[3],
-                            "rem_hi": t1_s[4], "rem_lo": t1_s[5], "sp_after_bytes": t1_s[6]}
+                            "rem_hi": t1_s[4], "rem_lo": t1_s[5], "sp_after_bytes": t1_s[6],
+                            "t_bit_in_restored_p": (t1_s[2] >> 5) & 1,
+                            "same_as_contract_expectation": t1_got == t1_want,
+                            "contract_expectation": list(t1_want)}
+        if not characterisation["halt_reached"]:
+            raise ValueError("T=1 characterisation: the guest did not reach its halt loop")
+        # The characterisation pins the core's T semantics, not the routine's arithmetic: the core consumes the T flag
+        # in the instruction that follows the SET (here the JSR), so the run must reproduce the contract result. If
+        # this ever fails, the core's T handling changed and the T=0 contract note in src/overrides/slot_42.s has to be
+        # rewritten before the result may be used.
+        if not characterisation["same_as_contract_expectation"]:
+            raise ValueError("T=1 characterisation: the SET-before-JSR run differs from the contract result "
+                             f"{t1_got}, expected {t1_want}; the core's T-flag semantics changed")
         evidence["characterisation_t1"] = characterisation
-        print(f"CHARACTERISATION (out of contract, caller T=1 at entry): {json.dumps(characterisation)}")
+        print(f"CHARACTERISATION (out of contract, caller SET before the JSR): {json.dumps(characterisation)}")
     (args.rom.parent / "geargrafx-dev-div16s-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
     total = len(CASES) + 2  # two boundary cases at caller SP=$0B (entry S=$07)
     print(f"PASS real Geargrafx DEV ROM: MA_DIV16S slot $42 {total} cases ({len(CASES)} at caller SP=$FF, 2 at caller "
           f"SP=$0B boundary; preconditions S>=$07 and T=0 at entry); quotient, remainder, P (C/Z/I/D/V/N and T=0 exact; "
-          f"B ignored), Y, SP, MPR1/MPR7 checked; T=1 characterised only (out of contract); "
+          f"B ignored), Y, SP, MPR1/MPR7 checked; a SET before the JSR is characterised only (out of contract: the core "
+          f"consumes T in the JSR, so the routine is unchanged); "
           f"no-CLD mutant rejected {len(rejected)}/{len(MUTANT_CASES)}")
 
 
