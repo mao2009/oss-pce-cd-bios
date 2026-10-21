@@ -6,9 +6,11 @@ X:A, P, Y and the remainder bytes (popped from the divisor slots) and SP at $220
 The expectation is this project's own spec (src/overrides/slot_42.s and tools/ma_div16s_model.py), NOT the reference
 BIOS MA_DIV16S ABI, which stays UNVERIFIED. Every 16-bit pair is a valid input; the divide-by-zero and -32768/-1 cases are
 defined by the project contract and are checked as such.
-Precondition under test: S at routine entry >= $07. The caller SP is set so that entry S is $07 at the lowest case.
-Scope: 20 real-core cases plus the no-CLD mutant. This is NOT an exhaustive test of the assembled routine; the
-host model is tests/host/test_ma_div16s.py.
+Precondition under test: S at routine entry >= $07. The two boundary cases run last at caller SP=$0B (entry S=$07).
+Scope: 22 real-core cases (20 at caller SP=$FF, 2 at the boundary) plus the no-CLD mutant. Checked: I and D (set by the
+guest), C, V, N, Z. NOT checked: T and B. T cannot be set safely before the call, because the T flag changes the
+routine's own instructions; the routine restores the caller's P with PLP, but the test does not exercise that.
+This is NOT an exhaustive test of the assembled routine; the host model is tests/host/test_ma_div16s.py.
 Run: python3 tests/integration/geargrafx_dev_div16s.py --rom build/debug/bios-dev/dev-only-not-compatible-syscard3.pce
 Needs the pinned cc65 and Geargrafx core (make setup, TOOLS_DIR on Linux). Missing tools exit 3 (BLOCKED).
 """
@@ -31,8 +33,8 @@ from ma_div16s_model import expected as model  # noqa: E402
 BLOCKED_EXIT = 3
 SLOT_MA_DIV16S = 0x42
 # The shared DEV runner defaults to 400 instruction steps, which the 16-iteration restoring division does not fit in.
-# The API probe accepts at most 2048 steps. The guest halts in a BRA loop after the call, so a larger budget only
-# observes the same halted state.
+# The API probe accepts at most 2048 steps (tests/integration/geargrafx_api_probe.cpp, the count check). The guest
+# halts in a BRA loop after the call, so a larger budget only observes the same halted state.
 CALL_STEPS = 2000
 STORE = 0x2200  # $2200 quotient lo, $2201 quotient hi, $2202 P after, $2203 Y, $2204 rem hi, $2205 rem lo, $2206 SP after
 CASES = [  # (dividend, divisor) as unsigned 16-bit encodings
@@ -160,7 +162,8 @@ def main():
     (args.rom.parent / "geargrafx-dev-div16s-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
     total = len(CASES) + 2  # two boundary cases at caller SP=$0B (entry S=$07)
     print(f"PASS real Geargrafx DEV ROM: MA_DIV16S slot $42 {total} cases ({len(CASES)} at caller SP=$FF, 2 at caller "
-          f"SP=$0B boundary; precondition S>=$07 at entry); quotient, remainder, P (C/V/N/Z), Y, SP, MPR1/MPR7 checked; "
+          f"SP=$0B boundary; precondition S>=$07 at entry); quotient, remainder, P (C/V/N/Z; I/D kept; T/B not tested), "
+          f"Y, SP, MPR1/MPR7 checked; "
           f"no-CLD mutant rejected {len(rejected)}/{len(MUTANT_CASES)}")
 
 
