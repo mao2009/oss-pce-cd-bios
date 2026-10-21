@@ -162,7 +162,7 @@ def main():
         # cd_stat_called is derived from src/cd_media_state.s (no $E01B reference), not measured in the core.
         "declared": {"real_hardware": "NOT_RUN", "second_emulator": "NOT_RUN", "cd_stat_called": False,
                      "bios_abi": "UNKNOWN"},
-        # Derived from the judge output; the negative checks above raise on any mismatch before this point.
+        # judge_observation returns OBSERVED for the paired control or raises; every rejection above raises before this point.
         "status": "PASS" if observed["status"] == "OBSERVED" else "FAIL",
     }
     target = ROOT / "build" / mode / "cd-stat-observation"
