@@ -14,7 +14,7 @@ mode flag and clears P.T at the start of every instruction, and PHP always pushe
 therefore swallowed by the JSR, so the routine's own instructions never run with T=1 and P.T is 0 wherever the guest
 can observe it. The contract cases never set T; one SET-before-JSR run is a characterisation: it prints what the core
 observed and asserts nothing about the routine.
-Scope: 22 real-core cases (20 at caller SP=$FF, 2 at the boundary), the no-CLD mutant, and six arithmetic mutants
+Scope: 22 real-core cases (20 at caller SP=$FF, 2 at the boundary), the no-CLD mutant, and seven arithmetic mutants
 (ARITH_MUTANTS, Issue #458: each is one same-length instruction edit in the DEV ROM body, and at least one case must
 reject it). P is compared exactly on every bit except B (bit 4): C, Z, I, D, V, N, and T (bit 5), which must be 0
 because the caller T=0 and the routine restores P with PLP. B is not a stored flag: PHP always pushes B=1, so it is
@@ -64,8 +64,8 @@ ARITH_MUTANTS = [  # (name, pattern, index of the byte to change in the pattern,
     ("d_dividend_sign_skipped", bytes.fromhex("BD052110"), 3, 0x80),        # lda $2105,x; bpl @dividend_pos
     ("e_overflow_flag_removed", bytes.fromhex("BD042109409D0421"), 4, 0x00),  # lda $2104,x; ora #$40 -> ora #$00
     # Divide-by-zero mutants (the contract: divisor 0 -> quotient 0, remainder = dividend, C = 1).
-    ("f_divide_by_zero_branch_inverted", bytes.fromhex("BD0A21DD0B21D0"), 6, 0xF0),  # bne @divide -> beq @divide
-    ("g_divide_by_zero_c_flag_cleared", bytes.fromhex("BD042109018D0421"), 4, 0x00),  # ora #$01 -> ora #$00
+    ("f_divide_by_zero_branch_inverted", bytes.fromhex("BD0A211D0B21D0"), 6, 0xF0),  # bne @divide -> beq @divide
+    ("g_divide_by_zero_c_flag_cleared", bytes.fromhex("BD042109019D0421"), 4, 0x00),  # ora #$01 -> ora #$00
 ]
 # What a divide-by-zero mutant must show, so that the divide-by-zero handling is really observed: the required fields
 # (all of them) and a group of which at least one must appear.
