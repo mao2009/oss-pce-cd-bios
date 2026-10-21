@@ -18,11 +18,14 @@ Three real-core stages (each a separate probe run):
   3. full fixture (tests/fixtures/ad_reset_guest.s): pos case (guest A=0/C=0 and register/stack/MPR
      regression) and neg case (play bit kept: C=1, A has the play bit, internal PLAYING still 1).
 
-Mutation gate (all on the full fixture, each must be rejected by the judge): success-on-fail (sec->clc),
-forged reset-success (A=0, C=0 while PLAYING stays 1), X/Y restore order swapped, PHX or PHY dropped
-(S leak), PLX or PLY dropped (saved-register destruction, X or Y left at its unsaved value), MPR6 corrupted.
-Not gated: wrong poll count and uninitialized X. On the pinned core both give the same bus-visible results
-(busy stays busy), so the judge cannot see them; they are not claimed as covered.
+Mutation gate (all on the full fixture, each must be rejected by the judge; main() prints the rejecting check):
+success-on-fail (sec->clc: neg C check), forged-reset-success (busy path A=0 C=0 with PLAYING 1: neg C check
+first, neg play-bit A check also fails), xy-order-swap (X/Y check), s-leak-phx-dropped (PHX dropped: X/Y check,
+X receives the return-address byte), saved-x-destroyed and saved-y-destroyed (X/Y check), mpr6-corrupted (MPR
+check). No mutant changes only S: any net S change moves the RTS return address, so the S check has no
+isolated mutant and is not claimed as separately exercised.
+Not gated: wrong poll count and uninitialized X. Whether these give the same bus-visible results as the gated
+routine on the pinned core is UNVERIFIED (not checked); they are not claimed as covered.
 """
 import hashlib
 import json
@@ -228,12 +231,14 @@ def main():
             else:
                 raise ValueError(f"mutation FAILED: {name} was accepted by the judge")
         digest = hashlib.sha256(guest.read_bytes()).hexdigest()
-        for case, verdict in (("pos-reset", verdicts["pos-reset"]), ("pos-reset-device", POS_DEVICE_VERDICT),
-                              ("neg-reset-playing", verdicts["neg-reset-playing"])):
+        pos_digest = hashlib.sha256(pos_bin.read_bytes()).hexdigest()
+        for case, verdict, sha in (("pos-reset", verdicts["pos-reset"], digest),
+                                   ("pos-reset-device", POS_DEVICE_VERDICT, pos_digest),
+                                   ("neg-reset-playing", verdicts["neg-reset-playing"], digest)):
             print("EVIDENCE " + json.dumps({
                 "case": case, "observation_kind": "REAL_CORE_GUEST_CPU", "bios": "SYNTHETIC",
                 "geargrafx_revision": DEPENDENCIES["geargrafx"]["revision"],
-                "guest_sha256": digest, "verdict": verdict}, sort_keys=True))
+                "guest_sha256": sha, "verdict": verdict}, sort_keys=True))
         print(f"pos-reset: A={result[0]:#x} C={result[1]} -> {verdicts['pos-reset']}")
         print(f"pos-reset device (host, internal): PLAYING=0 ADDRESS=0 -> {POS_DEVICE_VERDICT}")
         print(f"neg-reset-playing: A={result[RECORD]:#x} C={result[RECORD + 1]} -> {verdicts['neg-reset-playing']}")
