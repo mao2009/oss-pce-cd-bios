@@ -92,7 +92,7 @@
       "name_candidate": "CD_BOOT",
       "callable": "UNKNOWN",
       "returns_to_caller": "UNKNOWN",
-      "dev_rom_status": "PROJECT_DEV_FACT: one of 77 nonreturning stubs (docs/testing.md; slot 0 is not among the 4 DEV overrides); not reference behaviour"
+      "dev_rom_status": "PROJECT_DEV_FACT: one of 75 nonreturning stubs (docs/testing.md; slot 0 is not among the 6 DEV overrides); not reference behaviour"
     }
   ],
   "fields": [

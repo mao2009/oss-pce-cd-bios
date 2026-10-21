@@ -2,11 +2,11 @@
 
 A redistributable **PC Engine / TurboGrafx-CD System Card BIOS replacement** built from original and properly licensed reusable OSS code.
 
-> **Status: development-only firmware, not a compatible BIOS.** Main builds an original HuCARD fixture and a separate 256 KiB System Card DEV ROM with 81 candidate jump-table entries: **four DEV-only OSS implementations** (`EX_GETVER` at slot `$1E`, entry `$E05A`; `EX_BINBCD` at `$3C`; `EX_BCDBIN` at `$3D`; `MA_MUL8U` at `$3F`) and **77 nonreturning stubs**. None is approved or ABI-verified. Pinned Geargrafx real-core tests observe `EX_GETVER` caller return on cold/warm runs, alongside separate startup and synthetic-CD READ(6) → RAM diagnostics. **Full reference-BIOS ABI compatibility, callable CD services, BIOS-mediated disc boot, retail-game compatibility and release eligibility are not established.** See the [dated implementation status](docs/status.md).
+> **Status: development-only firmware, not a compatible BIOS.** Main builds an original HuCARD fixture and a separate 256 KiB System Card DEV ROM with 81 candidate jump-table entries: **six DEV-only OSS implementations** (`EX_GETVER` at slot `$1E`, entry `$E05A`; `EX_BINBCD` at `$3C`; `EX_BCDBIN` at `$3D`; `MA_MUL8U` at `$3F`; `MA_MUL16U` at `$41`; `MA_DIV16S` at `$42`) and **75 nonreturning stubs**. None is approved or ABI-verified. Pinned Geargrafx real-core tests observe `EX_GETVER` caller return on cold/warm runs, alongside separate startup and synthetic-CD READ(6) → RAM diagnostics. **Full reference-BIOS ABI compatibility, callable CD services, BIOS-mediated disc boot, retail-game compatibility and release eligibility are not established.** See the [dated implementation status](docs/status.md).
 
-## Latest merged progress (measured 2026-10-21, main `2bae6ba`)
+## Latest merged progress (measured 2026-10-21, main `2b1d1db`)
 
-**DEV ROM implementations: 4 / 81 (`EX_GETVER` `$1E`, `EX_BINBCD` `$3C`, `EX_BCDBIN` `$3D`, `MA_MUL8U` `$3F`), DEV-only and UNVERIFIED; 0 approved (DEV_CALLABLE); 0 ABI VERIFIED.** The other **77 entries are nonreturning stubs**. `CD_RESET`, `CD_BASE`, `CD_READ`, BIOS-mediated homebrew boot, retail-game compatibility and releasable firmware remain unimplemented or unverified.
+**DEV ROM implementations: 6 / 81 (`EX_GETVER` `$1E`, `EX_BINBCD` `$3C`, `EX_BCDBIN` `$3D`, `MA_MUL8U` `$3F`, `MA_MUL16U` `$41`, `MA_DIV16S` `$42`), DEV-only and UNVERIFIED; 0 approved (DEV_CALLABLE); 0 ABI VERIFIED.** The other **75 entries are nonreturning stubs**. `CD_RESET`, `CD_BASE`, `CD_READ`, BIOS-mediated homebrew boot, retail-game compatibility and releasable firmware remain unimplemented or unverified.
 
 What improved since the October 17 status report:
 
@@ -93,7 +93,7 @@ to publish a BIOS because most APIs and System Card boot remain unimplemented.
 On **main** the additional, development-only targets are:
 
 ```sh
-make dev-rom                    # 256 KiB; 4 DEV overrides ($1E, $3C, $3D, $3F) + 77 nonreturning stubs
+make dev-rom                    # 256 KiB; 6 DEV overrides ($1E, $3C, $3D, $3F, $41, $42) + 75 nonreturning stubs
 make dev-test                   # host API tests plus DEV ROM real-core integration
 make dev-integration            # EX_GETVER cold/warm caller/return observations
 make dev-startup-integration    # separate reset/MPR/stack checkpoint
