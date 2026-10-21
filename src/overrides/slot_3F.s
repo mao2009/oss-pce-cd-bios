@@ -6,7 +6,8 @@
 ;   in : A = multiplicand, X = multiplier (unsigned 8-bit; every pair is valid)
 ;   out: A = product bits 0-7, X = product bits 8-15
 ;   kept: Y and P (D is cleared inside for binary ADC; PLP restores the caller's flags)
-;   uses: stack only (7 bytes including the JSR return); no RAM, no I/O, I is never changed
+;   uses: stack only (7 bytes including the JSR return; Y is a round counter and is restored);
+;         no RAM, no I/O, I is never changed
 ; ABI remains UNVERIFIED and this ROM stays DEV ONLY (release_eligible: false).
 .setcpu "huc6280"
 .segment "OVERRIDES"
@@ -22,15 +23,18 @@ api_slot_3F:
     pha                  ; hi (product high byte)
     tsx                  ; X = S: hi $0101,x  lo $0102,x  m $0103,x
     lsr $0102,x          ; C = multiplier bit 0; each ROR lo below leaves the next bit in C
-    .repeat 8
-    bcc :+
+    ldy #8               ; round counter (Y was saved above and is restored below)
+@round:
+    bcc @skip
     clc
     lda $0101,x
     adc $0103,x          ; hi += m; C = carry out
     sta $0101,x
-:   ror $0101,x          ; hi: carry enters bit 7
+@skip:
+    ror $0101,x          ; hi: carry enters bit 7
     ror $0102,x          ; lo: hi bit 0 enters bit 7, lo bit 0 becomes the next C
-    .endrepeat
+    dey                  ; N/Z only, C is kept
+    bne @round
     plx                  ; X = product high
     pla                  ; A = product low
     ply                  ; discard m
