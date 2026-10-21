@@ -100,10 +100,12 @@ def build_guest(directory: Path):
     return body + b"\xff" * (IMAGE_BYTES - BANK_BYTES), symbols, version_line
 
 
-def run_probe(probe: Path, rom: Path, cue: Path, labels: Path) -> bytes:
-    """Run the probe once and return its complete stdout bytes (the raw observation)."""
-    result = subprocess.run([str(probe), str(rom), str(cue), str(labels), str(MAX_STEPS)],
-                            capture_output=True, timeout=3600)
+def run_probe(probe: Path, rom: Path, cue: Path, labels: Path, cwd: Path) -> bytes:
+    """Run the probe once and return its complete stdout bytes (the raw observation).
+    The core echoes the paths it loads into stdout, so they are passed relative to cwd (the artifact directory):
+    absolute paths would make the raw bytes, and raw_sha256, depend on where the artifacts were written."""
+    args = [str(p.relative_to(cwd)) for p in (rom, cue, labels)]
+    result = subprocess.run([str(probe), *args, str(MAX_STEPS)], cwd=cwd, capture_output=True, timeout=3600)
     if result.returncode != 0:
         raise ValueError(f"probe exit {result.returncode}: {result.stderr[-300:].decode('utf-8', 'replace')}")
     return result.stdout
@@ -286,7 +288,7 @@ def run(out: Path, argv: list) -> int:
     probe = compile_probe(out / "probe", source_name=PROBE_SOURCE, target_name=PROBE_TARGET)
     labels = out / "guest" / "trace-labels.txt"  # name hex pairs, as the probe reads them
     (rom_dir / "routine.pce").write_bytes(rom)
-    raw = run_probe(probe, rom_dir / "routine.pce", cue, labels)
+    raw = run_probe(probe, rom_dir / "routine.pce", cue, labels, cwd=out)
     raw_path = raw_dir / "routine.stdout"
     raw_path.write_bytes(raw)
     obs = parse_observation(raw)

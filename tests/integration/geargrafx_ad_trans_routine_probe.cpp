@@ -14,6 +14,7 @@
 #include "adpcm.h"
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <fstream>
 #include <iterator>
 #include <map>
@@ -22,6 +23,17 @@
 
 static const unsigned kResultOffset = 0x300;  // work RAM offset of CPU $2300
 static const long kHaltConfirmSteps = 64;
+
+// GeargrafxCore::Init seeds its Random from time(NULL) (1 s resolution, and the seed is private). The seed picks the
+// SCSI initial read-phase delay, so the step count and the raw bytes varied between runs (Issue #410 variance).
+// Pin time() for this executable, which links the core's objects statically, so the run is reproducible.
+static const time_t kPinnedSeed = 1700000000;
+extern "C" time_t time(time_t* out) noexcept
+{
+    if (out)
+        *out = kPinnedSeed;
+    return kPinnedSeed;
+}
 
 int main(int argc, char** argv)
 {
