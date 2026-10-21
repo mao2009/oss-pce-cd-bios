@@ -64,6 +64,8 @@ def judge_free(image):
         return INVALID_HEADER, None, "magic mismatch"
     if data[4] != VERSION:
         return INVALID_HEADER, None, f"version {data[4]}, expected {VERSION}"
+    if any(data[5:15]):
+        return INVALID_HEADER, None, "reserved bytes [5:15] not zero"
     if data[15] != _checksum(data):
         return INVALID_HEADER, None, "checksum mismatch"
     table = data[TABLE:TABLE + NDATA]

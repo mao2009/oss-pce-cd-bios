@@ -14,6 +14,10 @@ sys.path.insert(0, str(ROOT / 'tools'))
 import buram_free_judge as bj  # noqa: E402
 
 
+FORBIDDEN_MODULES = {'os', 'io', 'pathlib', 'shutil', 'tempfile', 'subprocess', 'socket', 'importlib', 'builtins'}
+FORBIDDEN_ATTRS = {'read_bytes', 'write_bytes', 'read_text', 'write_text'}
+
+
 def _patched(image, index, value):
     data = bytearray(image)
     data[index] = value
@@ -92,19 +96,33 @@ class BuramFreeJudgeTest(unittest.TestCase):
     def test_every_single_bit_flip_is_rejected(self):
         self.assertEqual(bj.mutation_self_check(bj.make_image(used={1, 7})), (bj.TABLE + bj.NDATA) * 8)
 
+    def test_reserved_nonzero_byte_with_valid_checksum_is_invalid_header(self):
+        # Reserved bytes [5:15] must be zero; a recomputed checksum must not let a non-zero reserved byte through.
+        data = bytearray(bj.make_image())
+        data[9] = 0x01
+        data[15] = bj._checksum(data)
+        self.assertEqual(bj.judge_free(bytes(data))[:2], (bj.INVALID_HEADER, None))
+
+    @unittest.expectedFailure
     def test_unchecked_byte_outside_model_is_documented_gap(self):
-        # Byte 31 lies outside the checksummed table in this model; a flip there is not rejected.
+        # KNOWN GAP (documented, not a feature): byte 31 lies outside the checksummed table in this model, so a flip
+        # there is still accepted as OK. This test asserts the CORRECT behaviour (rejection) and is marked
+        # expectedFailure, so the suite passes today. If a future fix rejects it, this becomes an UNEXPECTED SUCCESS,
+        # which fails the run on purpose: the gap is closed, so remove the expectedFailure decorator and update this
+        # test (and the model docs) instead of leaving it as a known-gap pin.
         image = bj.make_image()
-        self.assertEqual(bj.judge_free(_patched(image, 31, 0xAA))[0], bj.OK)
+        self.assertNotEqual(bj.judge_free(_patched(image, 31, 0xAA))[0], bj.OK)
 
     # isolation: the judge does no file I/O and imports no file-access modules
     def test_module_has_no_file_io(self):
         tree = ast.parse((ROOT / 'tools' / 'buram_free_judge.py').read_text(encoding='utf-8'))
         imported = {a.name.split('.')[0] for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
         imported |= {n.module.split('.')[0] for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module}
-        self.assertFalse(imported & {'os', 'io', 'pathlib', 'shutil', 'tempfile', 'subprocess'}, imported)
+        self.assertFalse(imported & FORBIDDEN_MODULES, imported)
         calls = {n.func.id for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
         self.assertNotIn('open', calls)
+        attrs = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+        self.assertFalse(attrs & FORBIDDEN_ATTRS, attrs & FORBIDDEN_ATTRS)
 
 
 if __name__ == '__main__':
