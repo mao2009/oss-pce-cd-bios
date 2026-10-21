@@ -6,9 +6,9 @@
 ;   out: valid   -> C=0, A = binary 0-99
 ;        invalid (either nibble > 9) -> C=1, A = the input byte unchanged
 ;        X, Y preserved; no memory other than the stack is touched; N/Z/V undefined
-; DEV ROM: included by src/overrides/slot_3D.s, which selects the OVERRIDES segment. No .segment here, so the
-; standalone harness keeps the default CODE segment.
+; Not connected to the API jump table; the existing API stubs are unchanged.
 .setcpu "huc6280"
+.segment "CODE"
 .export ex_bcdbin
 ex_bcdbin:
     phx
