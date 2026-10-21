@@ -29,6 +29,7 @@ TOP_LEVEL_KEYS = {"schema", "issue", "slot", "entry_candidate", "candidate_name"
 WIRING_ALLOWLIST = {
     "tools/reference_bios_scenarios.py": {'"CD_SUBQ", "CD_DINFO", "CD_CONTNTS", "CD_SUBRQ / CD_SUBRD",'},
     "spec/api_slots.json": {'"candidate_name": "CD_CONTNTS"'},
+    "spec/dev_implementations.json": {'"candidate_name": "CD_CONTNTS",'},  # NOT_READY registry line, not wiring
     "spec/api_contracts.json": {'"candidate_name": "CD_CONTNTS",', '"candidate_entry": "0xE024",',
                                 '"name": "CD_CONTNTS",', '"entry": "0xE024",'},
 }

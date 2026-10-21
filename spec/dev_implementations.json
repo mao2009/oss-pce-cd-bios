@@ -1,0 +1,1324 @@
+{
+  "schema_version": 1,
+  "release_eligible": false,
+  "scope": "DEV ROM implementation ledger; separate from the reference BIOS ABI axis (VERIFIED is never set here)",
+  "slots": [
+    {
+      "id": 0,
+      "candidate_name": "CD_BOOT",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 1,
+      "candidate_name": "CD_RESET",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 2,
+      "candidate_name": "CD_BASE",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 3,
+      "candidate_name": "CD_READ",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 4,
+      "candidate_name": "CD_SEEK",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 5,
+      "candidate_name": "CD_EXEC",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 6,
+      "candidate_name": "CD_PLAY",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 7,
+      "candidate_name": "CD_SEARCH",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 8,
+      "candidate_name": "CD_PAUSE",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 9,
+      "candidate_name": "CD_STAT",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 10,
+      "candidate_name": "CD_SUBQ",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 11,
+      "candidate_name": "CD_DINFO",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 12,
+      "candidate_name": "CD_CONTNTS",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 13,
+      "candidate_name": "CD_SUBRQ / CD_SUBRD",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 14,
+      "candidate_name": "CD_PCMRD",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 15,
+      "candidate_name": "CD_FADE",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 16,
+      "candidate_name": "AD_RESET",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 17,
+      "candidate_name": "AD_TRANS",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 18,
+      "candidate_name": "AD_READ",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 19,
+      "candidate_name": "AD_WRITE",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 20,
+      "candidate_name": "AD_PLAY",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 21,
+      "candidate_name": "AD_CPLAY",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 22,
+      "candidate_name": "AD_STOP",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 23,
+      "candidate_name": "AD_STAT",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 24,
+      "candidate_name": "BM_FORMAT",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 25,
+      "candidate_name": "BM_FREE",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 26,
+      "candidate_name": "BM_READ",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 27,
+      "candidate_name": "BM_WRITE",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 28,
+      "candidate_name": "BM_DELETE",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 29,
+      "candidate_name": "BM_FILES",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 30,
+      "candidate_name": "EX_GETVER",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "PROJECT_SPEC_ONLY",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": {
+        "source": "src/overrides/slot_1E.s",
+        "license": "MIT (repository LICENSE)",
+        "provenance": "project-own measured contract (Issue #40); reference contract measured on pinned core"
+      },
+      "host_evidence": [
+        "tests/host/test_api_build.py"
+      ],
+      "real_core_evidence": [
+        "tests/integration/geargrafx_api.py"
+      ],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      },
+      "note": "DEV ROM implemented and real-core tested; NOT_READY until owner approval is recorded"
+    },
+    {
+      "id": 31,
+      "candidate_name": "EX_SETVEC",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 32,
+      "candidate_name": "EX_GETFNT",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 33,
+      "candidate_name": "EX_JOYSNS",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 34,
+      "candidate_name": "EX_JOYREP",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 35,
+      "candidate_name": "EX_SCRSIZ",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 36,
+      "candidate_name": "EX_DOTMOD",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 37,
+      "candidate_name": "EX_SCRMOD",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 38,
+      "candidate_name": "EX_IMODE",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 39,
+      "candidate_name": "EX_VMODE",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 40,
+      "candidate_name": "EX_HMODE",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 41,
+      "candidate_name": "EX_VSYNC",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 42,
+      "candidate_name": "EX_RCRON",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 43,
+      "candidate_name": "EX_RCROFF",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 44,
+      "candidate_name": "EX_IRQON",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 45,
+      "candidate_name": "EX_IRQOFF",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 46,
+      "candidate_name": "EX_BGON",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 47,
+      "candidate_name": "EX_BGOFF",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 48,
+      "candidate_name": "EX_SPRON",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 49,
+      "candidate_name": "EX_SPROFF",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 50,
+      "candidate_name": "EX_DSPON",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 51,
+      "candidate_name": "EX_DSPOFF",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 52,
+      "candidate_name": "EX_DMAMOD",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 53,
+      "candidate_name": "EX_SPRDMA",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 54,
+      "candidate_name": "EX_SATCLR",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 55,
+      "candidate_name": "EX_SPRPUT",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 56,
+      "candidate_name": "EX_SETRCR",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 57,
+      "candidate_name": "EX_SETRED",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 58,
+      "candidate_name": "EX_SETWRT",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 59,
+      "candidate_name": "EX_SETDMA",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 60,
+      "candidate_name": "EX_BINBCD",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "PROJECT_SPEC_ONLY",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [
+        "tests/host/test_ex_binbcd.py"
+      ],
+      "real_core_evidence": [
+        "tests/integration/geargrafx_ex_binbcd.py",
+        "tests/integration/geargrafx_dev_bcd.py"
+      ],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      },
+      "note": "DEV ROM override is not connected on the ledger-only PR; connection is in a separate Draft PR (#427 for 3C, #428 for 3D). NOT_READY until owner approval is recorded"
+    },
+    {
+      "id": 61,
+      "candidate_name": "EX_BCDBIN",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "PROJECT_SPEC_ONLY",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [
+        "tests/host/test_ex_bcdbin.py"
+      ],
+      "real_core_evidence": [
+        "tests/integration/geargrafx_bcdbin.py",
+        "tests/integration/geargrafx_dev_bcd.py"
+      ],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      },
+      "note": "DEV ROM override is not connected on the ledger-only PR; connection is in a separate Draft PR (#427 for 3C, #428 for 3D). NOT_READY until owner approval is recorded"
+    },
+    {
+      "id": 62,
+      "candidate_name": "EX_RND",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 63,
+      "candidate_name": "MA_MUL8U",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 64,
+      "candidate_name": "MA_MUL8S",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 65,
+      "candidate_name": "MA_MUL16U",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 66,
+      "candidate_name": "MA_DIV16S",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 67,
+      "candidate_name": "MA_DIV16U",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 68,
+      "candidate_name": "MA_SQRT",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 69,
+      "candidate_name": "MA_SIN",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 70,
+      "candidate_name": "MA_COS",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 71,
+      "candidate_name": "MA_ATNI",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 72,
+      "candidate_name": "PSG_BIOS",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 73,
+      "candidate_name": "GRP_BIOS",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 74,
+      "candidate_name": "KEY_BIOS / EX_MEMOPEN",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 75,
+      "candidate_name": "PSG_DRIVE / PSG_DRIVER",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 76,
+      "candidate_name": "EX_COLORC / EX_COLORCMD",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 77,
+      "candidate_name": "AD_STREAM_START",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 78,
+      "candidate_name": "AD_STREAM_POLL",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 79,
+      "candidate_name": "MA_MUL16S",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    },
+    {
+      "id": 80,
+      "candidate_name": "MA_DIV8U / MA_CBASIS",
+      "state": "NOT_READY",
+      "abi_contract": {
+        "status": "UNKNOWN",
+        "note": "reference System Card contract not verified; DEV-only project spec"
+      },
+      "implementation": null,
+      "host_evidence": [],
+      "real_core_evidence": [],
+      "approval": {
+        "approved_by": null,
+        "review_ref": null
+      }
+    }
+  ]
+}
