@@ -117,6 +117,11 @@ dev-cdda-integration: dev-cdda
 dev-cdda-scenarios-integration: dev-cdda
 	$(PYTHON) tests/integration/geargrafx_cdda_scenarios.py --mode "$(MODE)"
 
+.PHONY: dev-cdsubq-integration
+# Opt-in Issue #261 $DD Q-subchannel device observation on the #15 CD-DA probe (not the System Card CD_SUBQ ABI).
+dev-cdsubq-integration: dev-cdda
+	$(PYTHON) tests/integration/geargrafx_cdsubq.py --mode "$(MODE)"
+
 .PHONY: dev-reset-entry dev-reset-entry-integration
 # Opt-in Issue #143 minimal reset entry; separate from the default DEV ROM and other diagnostics.
 dev-reset-entry: dev-rom
