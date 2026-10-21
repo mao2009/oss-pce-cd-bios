@@ -16,7 +16,7 @@
 | `DO_NOT_USE_UNTIL_LEGAL_REVIEW` | ライセンスまたは権利状態を確定できない、またはコピーが本プロジェクトの方針と両立するか確認できない。人間の法務レビューまで採用・翻訳・コピーを行わない。 |
 | `UNKNOWN` | 候補はあるが契約が未確定、または有効な候補コードが無い。 |
 
-`REUSE_OK` にしない理由: pce-devel/huc の HuCC 系ファイルは Boost-1.0 の表示を持つが、同リポジトリのルート LICENSE は「多くの作者が利用条件を明示していないため、一部の法的地位を正確に述べることは不可能に近い」と記す（今回確認、冒頭 1–12 行）。ファイル表示だけでは確定できない。
+`REUSE_OK` にしない理由: pce-devel/huc の HuCC 系ファイルは Boost-1.0 の表示を持つが、同リポジトリのルート LICENSE は、多くの作者が利用条件を明示していないと述べ、英語原文で "It is therefore next to impossible to make an exact statement on the legal status of much of this collection of software"（訳: 本コレクションの多くの部分について法的地位を正確に述べることはほぼ不可能）と記す（今回確認、7–10 行）。ファイル表示だけでは確定できない。
 
 ## 2. API 別の総合判定
 
