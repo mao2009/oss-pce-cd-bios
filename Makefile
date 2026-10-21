@@ -133,6 +133,11 @@ dev-cd-media-state: dev-rom
 dev-cd-media-state-integration: dev-cd-media-state
 	$(PYTHON) tests/integration/geargrafx_cd_media_state.py --mode "$(MODE)"
 
+.PHONY: dev-cd-stat-observation-integration
+# Opt-in Issue #231 device-layer observation (real Geargrafx, synthetic discs); reuses the #144 media-state ROM.
+dev-cd-stat-observation-integration: dev-cd-media-state
+	$(PYTHON) tests/integration/geargrafx_cd_stat_observation.py --mode "$(MODE)"
+
 .PHONY: routine-real-core
 # Opt-in (#330): Linux-pinned real-core routine tests; not a dependency of test/integration/check.
 routine-real-core:
