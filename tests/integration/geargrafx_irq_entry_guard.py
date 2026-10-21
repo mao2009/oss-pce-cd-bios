@@ -215,13 +215,15 @@ def build_probes(directory):
     probe = directory / "irq-entry-guard-probe"
     # The pinned Makefile compiles every object with GG_DISABLE_DISASSEMBLER (and ZSTD/Z7 flags); the probe
     # must match, or HuC6280 member layout differs between the probe TU and the core objects (segfault).
-    flags = ["-std=c++11", "-O0", "-fno-rtti", "-D__LIBRETRO__", "-DGG_DISABLE_DISASSEMBLER",
-             "-DZ7_ST", "-DZSTD_DISABLE_ASM", "-DGG_DISABLE_VGMRECORDER",
-             "-DGG_ENABLE_CDROM_CUEBIN_READAHEAD", "-I" + str(staged / "src"), "-I" + str(make_dir),
-             "-I" + str(staged / "platforms/shared/dependencies/miniz"),
-             "-I" + str(staged / "platforms/shared/dependencies/json")]
-    build_command(["g++", *flags, str(Path(__file__).with_name(PROBE_SOURCE)), *map(str, objs),
-                   "-pthread", "-lm", "-o", str(probe)])
+    # Probe compile flags are the pinned Makefile's own CXXFLAGS (platforms/libretro/Makefile:378), so the
+    # probe TU and the core objects agree on every macro and layout. Relative -I paths need cwd = make_dir.
+    flags = build_command(["make", "-s", "--no-print-directory", "-C", str(make_dir),
+                           "--eval", "print-cxxflags:;@echo $(CXXFLAGS)", "print-cxxflags"]).stdout.split()
+    if "-DGG_DISABLE_DISASSEMBLER" not in flags:
+        raise ValueError("BLOCKED: pinned CXXFLAGS no longer define GG_DISABLE_DISASSEMBLER; probe layout unverified")
+    build_command(["g++", *flags, "-c", str(Path(__file__).with_name(PROBE_SOURCE)), "-o",
+                   str(directory / "probe.o")], cwd=str(make_dir))
+    build_command(["g++", str(directory / "probe.o"), *map(str, objs), "-pthread", "-lm", "-o", str(probe)])
     return probe
 
 
