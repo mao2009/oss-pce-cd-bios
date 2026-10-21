@@ -27,7 +27,7 @@ Both language pages contain four full-card links to the source repository, dated
 
 ## Editorial conventions
 
-- The page figures are a **2026-10-20 main snapshot** (baseline `963f3a36`): 1/81 callable DEV API slots, 80 nonreturning stubs, **0 verified BIOS-mediated CD program boots**. The 765 host passes at PR #174 are historical, not a current test count or retail-game compatibility percentage.
+- The page figures are a **2026-10-21 main measurement** (baseline `2bae6ba`): 4/81 DEV ROM implementations (0 approved, 0 ABI VERIFIED), 77 nonreturning stubs, **0 verified BIOS-mediated CD program boots**. The 765 host passes at PR #174 are historical, not a current test count or retail-game compatibility percentage.
 - These are not percentages of commercial-game compatibility, current test counts, approved reference-BIOS ABI or firmware release readiness. Neither signed diagnostic evidence nor a CD sector-read experiment is a retail compatibility test.
 - Update both languages, llms.txt, README, docs/status.md and check_pages.py together when evidence changes. The 2026-10-20 note reflects #349/#359/#360/#362/#371/#374 safety and evidence merges, not an increase in callable APIs.
 - Do not insert unverified contributor identities, private ROMs, game data, disassembly, local paths, uploaded media, or other copyrighted/proprietary source material. Use actual Issues and the existing CONTRIBUTING.md and provenance policies as the route into collaboration.
