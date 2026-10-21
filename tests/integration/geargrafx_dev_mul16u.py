@@ -44,6 +44,9 @@ BLOCKED_EXIT = 3
 SLOT_MA_MUL16U = 0x41
 STORE = 0x2200  # $2200-$2203 product LE, $2204 P after, $2205 Y after, $2206 SP after
 SENTINEL = 0xC3  # caller stack data above SP, written by the guest before the pushes
+# The sentinel loop (up to 245 iterations of 4 instructions at SP=$0A) plus the routine needs more steps than the
+# dev_bcd default of 400; 2048 is the probe's maximum (geargrafx_api_probe.cpp rejects larger counts).
+MAX_PROBE_STEPS = 2048
 WRAM_BASE = 0x2000  # work RAM index i = CPU address $2000 + i (MPR1 = $F8)
 CASES = [(0, 0), (0, 0xFFFF), (0xFFFF, 0), (1, 1), (1, 0xFFFF), (0xFFFF, 1), (0xFFFF, 0xFFFF),
          (0x8000, 2), (2, 0x8000), (0x0100, 0x0100), (0x00FF, 0x0101), (0xAAAA, 0x5555),
@@ -140,7 +143,7 @@ def run_case(probe, base, folder, cue, reset, label, entry, m, q, sp=0xFF, extra
     variant[reset - 0xE000:reset - 0xE000 + len(code)] = code
     rom = folder / f"{label}.pce"
     rom.write_bytes(variant)
-    rows = dev.run_probe(probe, rom.resolve(), cue)
+    rows = dev.run_probe(probe, rom.resolve(), cue, MAX_PROBE_STEPS)
     check(label, rows, halt, m, q, sp)
 
 
