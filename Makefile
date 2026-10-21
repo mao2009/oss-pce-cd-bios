@@ -46,6 +46,10 @@ check:
 	$(PYTHON) tools/contracts.py
 	$(PYTHON) tools/check.py
 
+# Issue #335: same-input rebuild must be byte-identical and its manifest must describe the ROM (fail-closed).
+rom-provenance:
+	$(PYTHON) tools/rom_provenance.py --reproduce smoke --mode "$(MODE)"
+
 clean:
 	$(PYTHON) -c 'from pathlib import Path; import shutil; p = Path("build"); shutil.rmtree(p) if p.exists() else None'
 
@@ -61,6 +65,7 @@ dev-test: dev-rom
 	$(MAKE) dev-integration MODE="$(MODE)"
 dev-integration: dev-rom
 	$(PYTHON) tests/integration/geargrafx_api.py --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
+	$(PYTHON) tests/integration/geargrafx_dev_bcd.py --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
 dev-release-gate:
 	$(PYTHON) tools/build_rom.py --release-gate
 
