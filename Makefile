@@ -41,6 +41,12 @@ integration: build
 	$(PYTHON) tests/integration/geargrafx_irq_register.py
 	$(PYTHON) tests/integration/geargrafx_st_bypass.py
 	$(PYTHON) tests/integration/geargrafx_bcdbin.py
+	$(MAKE) block-write-guard
+
+# Issue #367: free-running pre-write refusal via a verification-only core patch (synthetic media). Runs in `integration`.
+.PHONY: block-write-guard
+block-write-guard:
+	$(PYTHON) tests/integration/geargrafx_block_write_guard.py
 
 check:
 	$(PYTHON) tools/contracts.py
