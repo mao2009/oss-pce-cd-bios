@@ -94,9 +94,10 @@ def main():
     verify_dev_rom(data, manifest=args.rom.parent / "manifest.json")
     reset = int.from_bytes(data[0x1FFE:0x2000], "little")
     entry = dev.entry_address(SLOT_MA_MUL8U)
-    table = 3 * SLOT_MA_MUL8U  # the DEV API table is 3-byte JMPs from $E000
-    if data[table] != 0x4C or data[table + 1] | data[table + 2] << 8 != entry:
-        raise ValueError("slot $3F is not a JMP to $E0BD in the DEV ROM table")
+    table = 3 * SLOT_MA_MUL8U  # the DEV API table is 3-byte JMPs from $E000; $E0BD is this JMP
+    body = data[table + 1] | data[table + 2] << 8  # its target is the override body (api_slot_3F)
+    if data[table] != 0x4C or not 0xE000 <= body < 0xFFF6:
+        raise ValueError("slot $3F table entry is not a JMP into the DEV ROM body")
     probe = api.compile_probe(args.rom.parent)
     evidence = {"scope": "DEV ROM real-core run of project-own MA_MUL8U, NOT System Card ABI compatibility",
                 "rom_sha256": hashlib.sha256(data).hexdigest(), "cases": [], "negative_cases": []}
@@ -111,9 +112,9 @@ def main():
             evidence["cases"].append({"a": a, "x": x, "expected_a": lo, "expected_x": hi})
         # Negative: the routine's CLD (second byte of the entry) replaced by NOP. With D=1 the ADCs then run in
         # BCD, so the real core must reject at least one case; a pass would mean the D=1 check is not effective.
-        code_at = entry - 0xE000
+        code_at = body - 0xE000
         if data[code_at] != 0x08 or data[code_at + 1] != 0xD8:
-            raise ValueError("slot $3F does not start with PHP; CLD")
+            raise ValueError("slot $3F body does not start with PHP; CLD")
         mutant = bytearray(data)
         mutant[code_at + 1] = 0xEA
         rejected = []
