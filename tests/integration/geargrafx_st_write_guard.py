@@ -22,9 +22,8 @@ Cases:
 
 Run manually (not wired into the Makefile integration target):
     python3 tests/integration/geargrafx_st_write_guard.py
-Status: PASS on the pinned core under WSL was recorded at commit 8046ecf (PR #430). That run predates
-the compile-flag and cwd changes in fc1d3fe and 638baf0, so it does not cover the head. The head run
-is pending (not run in the authoring worktree, where WSL is refused).
+The "armed" field is the hook state the probe read back from the core global after installing it, not the
+case name. Clean-clone runs are recorded in the PR #430 thread, not here.
 """
 import copy
 import json
@@ -124,7 +123,9 @@ def check_armed(row, case):
 def check_unguarded(row, case):
     """Mutation (patched build, null hook): the ST must not be consulted and its VDC effect must land."""
     _common(row, case)
-    if row.get("armed") is not False or row["guard_calls"] != 0:
+    if row.get("armed") is not False:
+        raise ValueError(f"{case}: probe reports armed={row.get('armed')!r}, want False")
+    if row["guard_calls"] != 0:
         raise ValueError(f"{case}: unguarded run consulted a guard")
     if not _landed(row, _kind(case)):
         raise ValueError(f"{case}: VDC side effect did not land without the hook")
