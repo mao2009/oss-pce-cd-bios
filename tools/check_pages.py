@@ -8,8 +8,11 @@ from urllib.parse import unquote, urlsplit
 from xml.etree import ElementTree
 
 SITE = (Path(__file__).resolve().parents[1] / "site").resolve()
+ROOT = Path(__file__).resolve().parents[1]
 BASE = "https://mao2009.github.io/oss-pce-cd-bios/"
 REPO = "https://github.com/mao2009/oss-pce-cd-bios"
+ENGLISH_NUMBERS = {0: "zero", 1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven",
+                    8: "eight", 9: "nine", 10: "ten", 11: "eleven", 12: "twelve"}
 URLS = {
     (SITE / "index.html").resolve(): (BASE, "en"),
     (SITE / "ja" / "index.html").resolve(): (BASE + "ja/", "ja"),
@@ -178,10 +181,51 @@ def check_sitemap():
         raise ValueError("sitemap loc URLs do not match canonicals")
 
 
+def check_dev_rom_counts():
+    """The pages' DEV ROM counts must match the implementation ledger, so the two cannot drift apart.
+
+    The ledger (spec/dev_implementations.json) is the source of truth for how many candidate slots
+    hold a DEV ROM implementation; everything else on the site is a rendering of that number.
+    """
+    ledger = json.loads((ROOT / "spec" / "dev_implementations.json").read_text(encoding="utf-8"))
+    slots = ledger["slots"]
+    implemented = sorted(slot["candidate_name"] for slot in slots if slot.get("implementation"))
+    count, total = len(implemented), len(slots)
+    stubs = total - count
+    word = ENGLISH_NUMBERS.get(count)
+    if word is None:
+        raise ValueError(f"no English number word for the DEV ROM count {count}")
+    english = (SITE / "index.html").read_text(encoding="utf-8")
+    japanese = (SITE / "ja" / "index.html").read_text(encoding="utf-8")
+    llms = (SITE / "llms.txt").read_text(encoding="utf-8")
+    for page, source in (("site/index.html", english), ("site/ja/index.html", japanese)):
+        for name in implemented:
+            if name not in source:
+                raise ValueError(f"{page}: missing the implemented API {name}")
+        if f'<span>{count}</span> / {total}' not in source:
+            raise ValueError(f"{page}: DEV ROM count does not match the ledger ({count}/{total})")
+        if f'<div class="stat-value">{stubs}</div>' not in source:
+            raise ValueError(f"{page}: stub count does not match the ledger ({stubs})")
+        if f"{word.capitalize()} DEV-only implemented slots" not in source:
+            raise ValueError(f"{page}: implemented-slot description does not match the ledger")
+    if f"開発専用の実装が{count}件" not in japanese:
+        raise ValueError("site/ja/index.html: DEV ROM count does not match the ledger")
+    if f"残り{stubs}スロット" not in japanese:
+        raise ValueError("site/ja/index.html: stub count does not match the ledger")
+    for name in implemented:
+        if name not in llms:
+            raise ValueError(f"site/llms.txt: missing the implemented API {name}")
+    if f"{word.capitalize()} slots (" not in llms:
+        raise ValueError("site/llms.txt: implemented-slot description does not match the ledger")
+    if f"{stubs} other slots are nonreturning stubs" not in llms:
+        raise ValueError(f"site/llms.txt: stub count does not match the ledger ({stubs})")
+
+
 def main():
     pages = {page: validate_page(page, *values) for page, values in URLS.items()}
     check_links(pages)
     check_sitemap()
+    check_dev_rom_counts()
     llms = (SITE / "llms.txt").read_text(encoding="utf-8")
     for fact in ("# oss-pce-cd-bios", BASE, REPO, "EX_GETVER", "UNVERIFIED", "2026-10-20", "not a commercially compatible BIOS"):
         if fact not in llms:
