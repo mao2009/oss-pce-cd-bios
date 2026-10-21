@@ -81,7 +81,12 @@ def guest(reset, entry, m, q, sp, t_set=False):
 
 
 class Mismatch(ValueError):
-    """The guest ran to its halt loop but returned a value that differs from the spec."""
+    """The guest ran to its halt loop but returned a value that differs from the spec.
+
+    `fields` names the compared items that differ (product/P/Y/SP). It is a plain list of str so the
+    evidence JSON stays serializable; subclasses that do not compare those items keep it empty.
+    """
+    fields = ()
 
 
 def expected_p(q):
@@ -189,7 +194,11 @@ def main():
             "41_ADC_as_SBC": ([(one(bytes.fromhex("7D0A21"), "41_ADC_as_SBC"), 0xFD)], "product"),  # adc $210A,x -> sbc $210A,x
             "41_ROR_as_ROL": ([(one(bytes.fromhex("7E0821"), "41_ROR_as_ROL"), 0x3E)], "product"),  # ror $2108,x -> rol $2108,x
         }
+        seen_mutants = set()
         for name, (patches, required) in mutants.items():
+            if name in seen_mutants:
+                raise ValueError(f"{name}: the mutant is listed twice; its evidence would be added twice")
+            seen_mutants.add(name)
             mutant = bytearray(data)
             for offset, value in patches:
                 mutant[offset] = value
@@ -204,9 +213,16 @@ def main():
             fields = sorted({f for error in rejected for f in error.fields})
             if required not in fields:
                 raise ValueError(f"{name}: the rejection does not name {required} (fields: {fields})")
+            # The evidence is JSON: every value must be a plain type. `first` is the text of the first
+            # rejection and `fields` the JSON-compatible list of the differing items.
             evidence["negative_cases"].append({"case": name, "rejected": len(rejected), "fields": fields,
                                                "required_field": required,
                                                "inputs": [[0xFFFF, 0xFFFF], [0x1234, 0x5678], [0x00FF, 0x0101]],
+                                               "rejections": [{"input": [m, q], "fields": list(error.fields),
+                                                               "first": str(error)}
+                                                              for (m, q), error in zip(
+                                                                  ((0xFFFF, 0xFFFF), (0x1234, 0x5678),
+                                                                   (0x00FF, 0x0101)), rejected)],
                                                "first": str(rejected[0])})
         # JSR T-latch check: SET before the JSR is consumed by the JSR (not a test of the routine with T=1).
         latch = [jsr_t_latch_check(probe, data, folder, cue, reset, entry, m, q) for m, q in ((0x1234, 0x5678), (0xFFFF, 0xFFFF))]
