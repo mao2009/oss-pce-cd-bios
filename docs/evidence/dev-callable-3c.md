@@ -2,19 +2,19 @@
 
 - 対象: スロット $3C（ledger id 60）EX_BINBCD、DEV 入口 `$E0B4`
 - 関連: #324（DEV_CALLABLE 承認の親 Issue）、#434（本証拠の Issue）、#427（$3C DEV 接続）、PR #431（main に取り込み済み）
-- 基準: 本証拠書の初版は main = `c906728609c61945ef72ae020ddeb43db5eb5e4e`（2026-10-21 時点）で作成された。再確認（3.5 節）は main `0c2fa412995a448052ce7fdedd96fcc1285b5ad1` と本 PR のブランチ `feat/dev-callable-3c-evidence`（HEAD `a2a958efc2f161c1a40a5fde5b787f1826677c92`、main `0c2fa41` をマージ済み）で行った。
+- 基準: 本証拠書の初版は main = `c906728609c61945ef72ae020ddeb43db5eb5e4e`（2026-10-21 時点）で作成された。再確認（3.4 節）は main `0c2fa412995a448052ce7fdedd96fcc1285b5ad1` と本 PR のブランチ `feat/dev-callable-3c-evidence`（HEAD `a2a958efc2f161c1a40a5fde5b787f1826677c92`、main `0c2fa41` をマージ済み）で行った。最新 main 取り込み後の再確認（3.7 節）は main `77e0c70be4b3e113b6710ab04b22af42e68440a3` と本 PR のブランチ `feat/dev-callable-3c-evidence`（HEAD `f2dafe28377f68cc208dd03447f693a4590e9a83`、main `77e0c70` をマージ済み）で行った。
 - 本書は証拠の整理であり、承認ではない。承認フィールド（`spec/dev_implementations.json`、slot id 60 の `approval`）は未変更で、`approved_by: null`、`review_ref: null` のまま。承認はオーナーの判断が必要。
 
 ## 1. 結論（現時点）
 
 | 項目 | 状態 |
 |---|---|
-| DEV ROM 入口経由で全入力（0..255）を実コアで実行 | **実施済み**（調整者が WSL で実行、3.4 節／本 PR で再実行、3.5 節）: 256 入力、失敗 0 |
-| 既存の DEV 入口テストの実行 | **実施済み**（調整者が `make dev-integration` を実行、rc=0、3.4 節／本 PR で `make dev-sweep` を再実行、3.5 節） |
+| DEV ROM 入口経由で全入力（0..255）を実コアで実行 | **実施済み**（調整者が WSL で実行、3.4 節／本 PR で再実行、3.5 節／最新 main 取り込み後に再実行、3.7 節）: 256 入力、失敗 0 |
+| 既存の DEV 入口テストの実行 | **実施済み**（調整者が `make dev-integration` を実行、rc=0、3.4 節／本 PR で `make dev-sweep` を再実行、3.5 節／最新 main 取り込み後に `make dev-integration` と `make dev-sweep` を再実行、3.7 節） |
 | 負例（範囲外、誤入口）の実コア確認 | **実施済み**（範囲外は全 156 入力に含む。誤入口の負例は検出済み） |
 
 注記: 初版の実行（3.4 節）は本書の作成者ではなく調整者が行い、その結果を転記したもの。作成者は再実行していない。
-本 PR で本書のブランチ上で実際に再実行した（3.5 節）。
+本 PR で本書のブランチ上で実際に再実行した（3.5 節、3.7 節）。
 | 独立レビュー | 第 6 節に記載（結果待ち時点の記録） |
 
 現状の証拠は「ソース・契約・既存テストの定義」の確認に限られる。実コア全入力の PASS は、以下の手順を実行するまで主張しない。
@@ -106,30 +106,59 @@ python3 tests/integration/dev_bcd_full_sweep.py build/debug/bios-dev/dev-only-no
 - このスイープは DEV ROM 入口（独自仕様）に対するもので、参照 System Card の `$3C`/`$E0B4` ABI とは無関係である。
   参照側の契約は `spec/api_contracts.json` で全項目 UNKNOWN のままである。
 - N/Z/V は DEV 契約が未規定なので検査していない（値のみ記録している）。
-- D=1 で呼ばれた場合,D=0 を前提とする DEV 契約のため対象外である（3.4/3.5 節のスイープも D=0）。
+- D=1 で呼ばれた場合,D=0 を前提とする DEV 契約のため対象外である（3.4/3.5/3.7 節のスイープも D=0）。
 - スイープは入力を 1 つずつ プローブ実行するため実時間は入力数に比例する（CI の `make dev-integration` にも組み込んだ）。
+
+### 3.7 再確認（最新 main 取り込み後、2026-10-21）
+
+main が `0c2fa41` から `77e0c70` へ進み、main の `dev-integration` に MA_MUL8S
+（`tests/integration/geargrafx_dev_mul8s.py`）の DEV 実コア試験が追加されたため、Makefile に競合が発生した。
+競合は「main の `geargrafx_dev_mul8s.py` 行」と「本 PR の `dev-sweep` 呼び出し・`dev-sweep` ターゲット」を
+**両方**残す形で解消した（`dev-integration` 末尾で `$(MAKE) dev-sweep` を呼ぶ構成は維持）。
+この状態で、main 取り込み後のブランチでスイープを再実行した。
+
+- 実行場所: 本 PR の作業ツリー（main `77e0c70` をマージしたブランチ `feat/dev-callable-3c-evidence`、HEAD `f2dafe2`）
+- 手順: `make dev-sweep`（`make dev-rom` でビルド → `tests/integration/dev_bcd_full_sweep.py`）
+- 結果行: `PASS DEV ROM EX_BINBCD $3C full domain: 256 inputs, 0 failures`
+- 内訳: 入力 256（有効 0..99 が 100 件、範囲外 100..255 が 156 件）、失敗入力は空（`failed_inputs = []`）
+- 負例: 誤入口は検出された（`wrong-decode: A/C/X/Y observed (102, 0, 90, 165), expected (42, 0, 90, 165)`）
+- DEV ROM sha256: `31913676dd4ce548f9da66d170a2fca35d9c8b3fcdccfa05acbfdaf2dc385ec7`
+  （`build/debug/bios-dev/manifest.json` の `rom_sha256` と一致）
+- `build/debug/bios-dev/manifest.json` の sha256: `e03ef091a73a646b7bc22704cd48e1b85a59d778e3402c84d417485543acd697`
+- `make dev-integration` も rc=0 で、main 側の検査（EX_GETVER 96 ケース、EX_BINBCD 9 入力、EX_BCDBIN 12 入力、
+  MA_MUL8U 18 ケース、MA_MUL16U 24 ケース、MA_DIV16S 22 ケース、MA_MUL8S 18 ケース）に加えて本スイープ
+  256 入力が走っている（本 PR のMakefileは `dev-sweep` だけを追加し、main の検査は弱めていない）。
+
+3.5 節と 3.7 節で判定項目・判定基準・入力集合は同一である（256 入力、0 失敗）。違うのは main の progressed分
+と DEV ROM のバイト列（main の内容が異なるため ROM バイトも異なる）だけである。
 
 ## 4. ハッシュと版の記録
 
 | 項目 | 値 | 取得状況 |
 |---|---|---|
-| main | 初版 `c906728609c61945ef72ae020ddeb43db5eb5e4e`／再確認時 `0c2fa412995a448052ce7fdedd96fcc1285b5ad1` | どちらも確認済み（origin/main と一致） |
+| main | 初版 `c906728609c61945ef72ae020ddeb43db5eb5e4e`／再確認時 `0c2fa412995a448052ce7fdedd96fcc1285b5ad1`／最新再確認時 `77e0c70be4b3e113b6710ab04b22af42e68440a3` | どちらも確認済み（origin/main と一致） |
 | 対象ソース `src/ex_binbcd.s` | 初版 `6446e629f9465f7d7fa34341f1390f63809d6771f7b4ee85432a8acd6e2aa72b`／再確認時 `6c232ca0e5c5a4f18d58064263af47184927f8907e0e3df39b20e16cff392e68` | sha256 確認済み（再確認時は `build/debug/bios-dev/manifest.json` の `include:src/ex_binbcd.s` と一致） |
 | 対象ソース `src/overrides/slot_3C.s` | 初版 `15f35162574abdac75584b1c75493a679bde528015aa842a7c1e9bd79d89803a`／再確認時 `7cb66d38e7c27a868259821dff030f7610add2a058765c467868ea2018cad027` | sha256 確認済み（再確認時は manifest の `src/overrides/slot_3C.s` と一致） |
 | `tests/integration/geargrafx_dev_bcd.py` | 初版 `9ed631c8210aea7b69cfabbf0046aaf616a6b0ec7bd832a2341e50afc179ef31`／再確認時 `366ce6b62e4a177d243e286c762f9bca272beef2511758f62d579f88067c85d1` | sha256 確認済み |
-| `spec/dev_implementations.json` | 初版 `d94ac5ff5ffb3fd0cbd487425b82bdad780548bb79b4455ae47ba580b4361638`／再確認時 `81c6a02f4742462020198260d8d46fd767c1bc068bcaba0023dd775d04ec64cb` | sha256 確認済み |
+| `tests/integration/dev_bcd_full_sweep.py` | 最新再確認時 `6e7ac5133269ec9b156027646cedc13852bbddd4b3b4bf5ed28201d97b16fbc9` | sha256 確認済み（main 取り込み後も未変更） |
+| `spec/dev_implementations.json` | 初版 `d94ac5ff5ffb3fd0cbd487425b82bdad780548bb79b4455ae47ba580b4361638`／再確認時 `81c6a02f4742462020198260d8d46fd767c1bc068bcaba0023dd775d04ec64cb`／最新再確認時 `90de453ae685262b720b388ad42076b10c041086d99a5467c29f044c62c6bbb0` | sha256 確認済み（承認欄は未変更） |
 | Geargrafx 固定 revision | `b49ae82a012eade566d72e9d61c9d95a5caa4da3` | `tools/dependencies.json` より |
 | cc65 固定 revision | `71746c829e77f74c2b601a7d16821170c2610df3` | `tools/dependencies.json` より |
-| DEV ROM sha256 | 初版 `d669c03f46b5e73b913776c50e2620a7d73584e42a5115febcc3fc5fb65f8e65`／再確認時 `5c6aaf0a789787f8749843d7b3d11c3bd868e1437a3e1422afce214095480f8e` | 初期版は調整者が WSL でビルドして計測（W01 と一致）。再確認時は本 PR のブランチでビルド（main `0c2fa41` の内容が違うため ROM バイトも異なる） |
-| manifest.json の rom_sha256 | 再確認時 `6dc20286824f9b398026f02a048281b240eefb62cf40c9befdeda8e31d830ea9` | 再確認時に本 PR のブランチでビルドして計測（初版分は未記録） |
+| DEV ROM sha256 | 初版 `d669c03f46b5e73b913776c50e2620a7d73584e42a5115febcc3fc5fb65f8e65`／再確認時 `5c6aaf0a789787f8749843d7b3d11c3bd868e1437a3e1422afce214095480f8e`／最新再確認時 `31913676dd4ce548f9da66d170a2fca35d9c8b3fcdccfa05acbfdaf2dc385ec7` | 初期版は調整者が WSL でビルドして計測（W01 と一致）。再確認時は本 PR のブランチでビルド（main の内容が変わるため ROM バイトも異なる） |
+| manifest.json の rom_sha256 | 再確認時 `6dc20286824f9b398026f02a048281b240eefb62cf40c9befdeda8e31d830ea9`／最新再確認時 `e03ef091a73a646b7bc22704cd48e1b85a59d778e3402c84d417485543acd697` | 再確認時に本 PR のブランチでビルドして計測（初版分は未記録） |
 
-## 5. 実行できなかった理由
+## 5. 実行できなかった理由（初版作成時、3.4 節の記録）
 
 本作業は worktree 隔離のエージェントとして動作しており、`wsl.exe` の実行が環境のガードにより拒否された（「worktree 隔離のエージェントの git 操作は自 worktree に限る」）。Geargrafx コアと cc65 は WSL 上でしか動かないため、DEV ROM のビルドも実コア実行もできなかった。ガードを回避する手段は取っていない。
 
+（これは初版作成時（3.4 節）の記録である。3.5 節と 3.7 節の実行は Linux 上で本 PR のブランチを直接ビルド・実行して
+記録した。）
+
 DEV ROM のビルドは `src/` と生成テーブルのみを入力とし、`rom/` は読まない（`tools/build_rom.py`）。`rom/` の内容は本作業で一切開いていない。
 
-## 6. CI 状況（main、2026-10-21 時点のスナップショット）
+## 6. CI 状況
+
+### 6.1 main（初版作成時、2026-10-21 時点のスナップショット）
 
 `gh run list --branch main` の結果:
 
@@ -141,6 +170,12 @@ DEV ROM のビルドは `src/` と生成テーブルのみを入力とし、`rom
 | #411 | success | success |
 
 c906728 の BIOS DEV diagnostics は完了していない。完了後の結果を確認してから承認判断に使うこと。
+
+### 6.2 本 PR の HEAD
+
+CI の正否は GitHub の PR ページで最終 HEAD に紐づく run を確認すること。本 PR の `bios-dev` ジョブは
+`make dev-integration` を実行するため、main 側の DEV 実コア試験に加えて本 PR の全入力スイープ
+（256 入力）も CI 上で走る。CI が成功しても DEV_CALLABLE の承認を意味しない（承認欄は未変更）。
 
 ## 7. 独立レビュー
 
@@ -160,7 +195,13 @@ c906728 の BIOS DEV diagnostics は完了していない。完了後の結果�
 8. `spec/dev_implementations.json` の注記「DEV ROM implemented and real-core tested」は、DEV 入口の 9 入力実行に比べて強すぎる。
 9. 参照 ABI の項目（UNKNOWN / HYPOTHESIS）、`approval` の null、System Card 互換の表現なし、はいずれも正しい。
 
-本 PR は文書のみのため、上記 6〜8 の修正は行わない（台帳・契約文書の変更は別 PR でオーナー判断）。
+本 PR は独立レビューの指摘 6〜8 の修正を含まない（台帳・契約文書の変更は別 PR でオーナー判断）。指摘 4 は
+本 PR で解消した（DEV 入口 `$E0B4` の 256 入力を実行する `dev_bcd_full_sweep.py` を登録し、`make dev-sweep` で
+再現できるようにした。3.5 節と 3.7 節の実測記録を参照）。
+
+なお main 取り込み（main `77e0c70`）で Makefile に競合が生じたが、main 側の DEV 実コア試験
+（`geargrafx_dev_mul8s.py` を含む）を弱める形で解消していない。`dev-integration` は main の検査をすべて実行した
+うえで末尾で `$(MAKE) dev-sweep` を呼ぶ（3.7 節）。
 
 ## 8. 未解決の論点（オーナーへの質問）
 
