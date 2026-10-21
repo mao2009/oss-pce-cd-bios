@@ -99,10 +99,13 @@ def main():
             raw[lba * 2352 + 16:lba * 2352 + 16 + SECTOR] = bytes(SECTOR)
         (blank / BIN_NAME).write_bytes(raw)
         blank_records = paired(blank / CUE_NAME)
+        blank_state = judge(blank_records)
+        if blank_state != "MEDIA_UNRECOGNISED":
+            raise ValueError(f"blank data disc: state {blank_state}, expected MEDIA_UNRECOGNISED")
         results["blank_data_disc"] = {
-            "status": "OBSERVED", "state": judge(blank_records),
+            "state": blank_state,
             "rejected_as_disc": rejected("blank_data_disc", lambda: judge_observation(blank_records, without, BUDGET),
-                                         "paired judgment did not follow the disc")}
+                                         "('MEDIA_UNRECOGNISED', 'NO_DATA')")}
 
         # Negative: zero-byte BIN, refused by the emulator before the guest runs (probe exit 4).
         empty = folder / "empty"
@@ -155,8 +158,12 @@ def main():
         "disc": {key: manifest[key] for key in ("format", "sectors", "bin_sha256", "cue_sha256")},
         "budget": BUDGET,
         "results": results,
-        "real_hardware": "NOT_RUN", "second_emulator": "NOT_RUN", "cd_stat_called": False, "bios_abi": "UNKNOWN",
-        "status": "PASS",
+        # Declared, not observed: fixed by the scope above and the ROM source. Not checked at runtime.
+        # cd_stat_called is derived from src/cd_media_state.s (no $E01B reference), not measured in the core.
+        "declared": {"real_hardware": "NOT_RUN", "second_emulator": "NOT_RUN", "cd_stat_called": False,
+                     "bios_abi": "UNKNOWN"},
+        # Derived from the judge output; the negative checks above raise on any mismatch before this point.
+        "status": "PASS" if observed["status"] == "OBSERVED" else "FAIL",
     }
     target = ROOT / "build" / mode / "cd-stat-observation"
     target.mkdir(parents=True, exist_ok=True)

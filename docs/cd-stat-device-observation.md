@@ -1,15 +1,15 @@
 # CD_STAT 相当のデバイス層観測（Issue #231、親 #18）
 
-**状態: 判定器・host テスト・実コア runner を追加。実コア実行は NOT_RUN（WSL 実行が worktree ガードで拒否、§4）。**
-spec=HYPOTHESIS、implementation=DEV_OBSERVATION_ONLY、verification=HOST_ONLY（合成レコード）、real_hardware=NOT_RUN、real_core=NOT_RUN。
-CD_STAT（`$09`、候補 `$E01B`）の呼出先 ABI は未確定であり、本件では呼ばない。純正 BIOS・商用ゲーム・`./rom/` は読まず、使わない。
+**状態: 判定器・host テスト・実コア runner を追加。実コアで媒体あり/なしの対照、選択タイムアウト、空白データ盤を確認（939dcb0、§4.1）。最終コミットでの実コア再実行は未了（§4.3）。**
+spec=HYPOTHESIS、implementation=DEV_OBSERVATION_ONLY、verification=HOST_ONLY（合成レコード）と実コア（§4.1 の範囲のみ）、real_hardware=NOT_RUN、second_emulator=NOT_RUN、bios_abi=UNKNOWN。
+CD_STAT（`$09`、候補 `$E01B`）の呼出先 ABI は未確定であり、本件では呼ばない。BIOS 互換は主張しない。純正 BIOS・商用ゲーム・`./rom/` は読まず、使わない。
 
 ## 1. 範囲と非範囲
 
 | 項目 | 扱い |
 | --- | --- |
 | 合成媒体あり / 媒体なし の正負対照をデバイス層（HuC6280 のデバイス操作経路）で観測 | 対象。実装の本体は #144 の `src/cd_media_state.s`（再利用、再実装しない） |
-| 状態・phase・PC・SP/P/MPR・step・RAM（結果ブロックと 2048 バイトのバッファ）の記録 | 判定器が必須項目として要求する。実コア runner `tests/integration/geargrafx_cd_stat_observation.py`（`make dev-cd-stat-observation-integration`）で収集する。未実行 |
+| 状態・phase・PC・SP/P/MPR・step・RAM（結果ブロックと 2048 バイトのバッファ）の記録 | 判定器が必須項目として要求する。実コア runner `tests/integration/geargrafx_cd_stat_observation.py`（`make dev-cd-stat-observation-integration`）で収集する |
 | bounded timeout | 判定器が step 予算を要求し、予算超過・`reason=budget` を拒否する |
 | 純正 CD_STAT の呼出し（`JSR $E01B`）、ABI の断定、slot 配線 | 対象外。0 回 |
 | #232（CD_STAT ROM-Primitive） | 実装しない。開始条件の評価のみ（§5） |
@@ -21,44 +21,58 @@ CD_STAT（`$09`、候補 `$E01B`）の呼出先 ABI は未確定であり、本�
 - 本 PR で追加するのは `tools/cd_stat_observation.py` の `judge_observation` だけで、次の 2 点を加える。
   1. 各 RUN が `reason != budget` かつ `step <= budget`（bounded timeout の負例を含む）。
   2. `pc`, `sp`, `p`, `mpr`, `step`, `reason`, `result_hex`, `buffer_hex` の欠落を BLOCKED として拒否。
-- #144 の実コア結果（`tests/integration/geargrafx_cd_media_state.py`）を #231 の実コア PASS として扱わない。#231 の実コア観測は別途の実行記録が必要。
+- #144 の実コア結果（`tests/integration/geargrafx_cd_media_state.py`）を #231 の実コア結果として扱わない。
 
-## 3. 本回の検証
+## 3. 検証
 
 | 検証 | コマンド | 結果 |
 | --- | --- | --- |
-| 新規ホスト単体（正例・負例・timeout 境界・欠落・短いバッファ） | `python -m unittest tests.host.test_cd_stat_observation -v` | 11 件 OK（合成レコード、実コアではない） |
+| 新規ホスト単体（正例・負例・timeout 境界・欠落・短いバッファ） | `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.host.test_cd_stat_observation` | 11 件 OK（合成レコード、実コアではない） |
+| runner の構文 | `python3 -B -m py_compile tests/integration/geargrafx_cd_stat_observation.py` | OK |
 | 既存の CD 関連ホスト試験 | `python -m unittest discover -s tests/host -p 'test_cd_*.py'` | 322 件、OK（skipped=4、cc65 等の環境依存） |
-| 全体ホスト試験 | `python -m unittest discover -s tests/host` | 1971 件中、失敗 59・エラー 6 はすべて `test_artifact_guard*`（Windows 環境で本回確認。本 PR の変更ファイルは参照しない。main での再確認は未実施） |
-| 実コア（固定版 Geargrafx + ca65、WSL clean clone） | `make dev-cd-stat-observation-integration`（#231 runner、コミット `f17b428`） | **NOT_RUN**（下記 §4）。終了コード・evidence の SHA-256 は取得していない |
+| 全体ホスト試験 | `python -m unittest discover -s tests/host` | 1971 件中、失敗 59・エラー 6 はすべて `test_artifact_guard*`（Windows 環境で確認。本 PR の変更ファイルは参照しない。main での再確認は未実施） |
+| 実コア（固定版 Geargrafx + ca65、clean clone） | `make dev-cd-stat-observation-integration` | 939dcb0 で終了コード 0（§4.1）。最終コミットでの再実行は未了（§4.3） |
 
-## 4. 実コアが NOT_RUN の理由
+## 4. 実コアの観測
 
-1. **WSL 実行が worktree ガードで拒否された（BLOCKED、迂回せず停止）。** 対象コミット `f17b428bc37a800d73f9eab9a51ec3ae764be0a2` を `wave5/06-231` へ push 後、WSL 側に clean clone（`/home/loach/w5-b3-409`）を作る `wsl.exe -d Ubuntu -u loach -- bash <script>` が「worktree 隔離エージェントの git 操作は worktree 内に限る」として拒否された。`MSYS_NO_PATHCONV=1` の付与のみを行い、ガードの回避・PowerShell 経由の迂回は行っていない。
-2. したがって、WSL clone の HEAD・`git status`、固定版 Geargrafx（b49ae82a）の版・SHA、ROM SHA、合成 CD SHA、実コア上の各コマンドの終了コード、正例・負例・timeout の判定は、いずれも**記録できない**。evidence の SHA-256 も存在しない。
-3. 実コアの runner（§1）は実装済みで、`geargrafx_cd_stat_observation.py` のホスト側の構文確認（`py_compile`）のみ済み。実行は未確認。
+### 4.1 観測済みの範囲（939dcb0、clean clone、終了コード 0）
 
-### 実行対象と負例（runner の内容、未実行）
+ログ: `OBSERVED real Geargrafx device layer: disc -> MEDIA_SIGNATURE_OK, no disc -> NO_DATA; 12 records written`
 
-| 区分 | 内容 |
+| 観測 | 結果 |
 | --- | --- |
-| 正例 | 合成 CUE/BIN（`card:<cue>`）と無媒体（`card:-`）の paired control。`judge_observation` で `MEDIA_SIGNATURE_OK` / `NO_DATA` |
-| 負例（判定で拒否） | 無媒体の盤面側、盤面と無媒体の入替、空白データ盤（`MEDIA_UNRECOGNISED` が盤面側に来る）、選択 timeout（`$1805` 誘導で `SELECT_TIMEOUT`） |
-| 負例（実行で拒否） | 0 バイト BIN（probe 終了コード 4 を期待）、step 予算 1000 での `reason=budget` |
-| 範囲外の入力 | judge の step 上限 1、budget 0 / -1 / True / 文字列（すべて `BLOCKED: step budget`） |
-| 記録 | PC・SP・P・MPR・step・reason・結果状態・SCSI phase・RAM 2048 バイトの SHA-256（盤面バイトは記録しない） |
+| 媒体あり / なしの paired control（同一 ROM・同一ローダー、盤の有無のみ変更） | 盤あり → `MEDIA_SIGNATURE_OK`、盤なし → `NO_DATA` |
+| 選択タイムアウト（`ms_select` を `$1805` へ向けた ROM） | 判定器が拒否（firmware エラー 0x82 = `SELECT_TIMEOUT`） |
+| 空白データ盤（MODE1 ヘッダあり、ユーザデータ 0） | 状態 `MEDIA_UNRECOGNISED`、拒否理由 `('MEDIA_UNRECOGNISED', 'NO_DATA')` |
 
-### 次の実行（WSL の clean clone で実施する場合）
+evidence（939dcb0 時点、変更前のフィールド構成）の SHA-256: `ca6f14d0a515b5a5a80021db8283a3fc08366e6d552c254f1dab50e362a545c1`。固定版 Geargrafx の版は `b49ae82a012eade566d72e9d61c9d95a5caa4da3`。ROM と合成 CD の SHA-256 は evidence の `rom_sha256` / `disc` を参照する。
+
+### 4.2 ホスト合成テストのみで確認した負例（実コアでは未確認）
+
+runner には以下の実行も含まれるが、本記録では実コアの観測として扱わない。判定器の挙動は合成レコードの試験（§3）でのみ確認した。
+
+- 無媒体の盤面側（`no_media_as_disc_side`）、盤面と無媒体の入替（`swapped_pair`）
+- 0 バイト BIN（`zero_byte_bin`、probe 終了コード 4 を期待）
+- step 予算 1000 での `reason=budget`（`step_budget_exhausted`）、judge の step 上限 1（`step_over_judge_bound`）
+- 範囲外の judge 入力: budget 0 / -1 / True / 文字列（すべて `BLOCKED: step budget`）
+
+### 4.3 未了
+
+- **最終コミット（本ドキュメントを含むコミット）での実コア再実行。** evidence のフィールド名を変更したため、939dcb0 の evidence の SHA-256 は最終コミットの値と一致しない。最終コミットの終了コード・evidence の SHA-256 は PR 本文に記録する。
+- §4.2 の負例の実コア記録。
+
+### 4.4 再実行手順
 
 ```sh
-git clone https://github.com/mao2009/oss-pce-cd-bios /home/loach/w5-b3-409 && cd /home/loach/w5-b3-409
-git checkout --detach f17b428bc37a800d73f9eab9a51ec3ae764be0a2 && test -z "$(git status --porcelain)"
-export TOOLS_DIR=/home/loach/oss-pce-cd-bios-tools
+git clone <リポジトリの URL> <空のディレクトリ> && cd <空のディレクトリ>
+git checkout --detach <対象コミット> && test -z "$(git status --porcelain)"
+export TOOLS_DIR=<ツールの配置先>
 make dev-cd-stat-observation-integration; echo "exit=$?"    # build/debug/cd-stat-observation/cd-stat-observation-evidence.json
+sha256sum build/debug/cd-stat-observation/cd-stat-observation-evidence.json
 ```
 
 `make dev-cd-stat-observation-integration` は `dev-cd-media-state`（#144 の ROM ビルド）に依存する。
-#231 を実コア PASS とするには、終了コード 0、evidence の SHA-256、固定版 Geargrafx の版・SHA、ROM SHA を PR 本文に記録すること。
+#231 の実コア結果として記録するには、終了コード 0、evidence の SHA-256、固定版 Geargrafx の版・SHA、ROM SHA を PR 本文に記録すること。
 
 ## 5. #232 の実装開始条件の評価
 
@@ -72,15 +86,14 @@ make dev-cd-stat-observation-integration; echo "exit=$?"    # build/debug/cd-sta
 | 失敗条件・エラー値 | **未充足** | F25 UNKNOWN |
 | 作業 RAM・X/Y・フラグ | **未充足** | F05–F08、F13、F16 UNKNOWN |
 | #144 再利用 | 充足（設計上） | `src/cd_media_state.s` |
-| 実コアの正例・負例 | **未充足（本回 NOT_RUN）** | §4 |
+| 実コアの正例・負例 | **一部充足** | §4.1（媒体あり/なし、選択タイムアウト、空白盤）。最終コミットの再実行と §4.2 の負例は未了 |
 
 **判定: #232 は BLOCKED。着手しない。** 解除条件は次のとおり。
 1. callee の ABI（A の入力、戻り A と X/Y、保存レジスタ）を公開根拠で確定するか、公開可能な実行可能 callee で実測する（`cd-stat-contract.md` §6）。
 2. 媒体なし・busy・不正 mode の実測で F24・F25 を埋める。
-3. §4 の実コア記録（正例・負例・timeout）を取得する。
+3. 最終コミットの実コア再実行（§4.3）と、§4.2 の負例の実コア記録を取得する。
 
 ## 6. 残課題
 
-- 実コア実測（WSL clean clone での `make dev-cd-stat-observation-integration`、worktree ガード解除後に実施）。
-- 実機・第 2 エミュレータでの確認。
+- 最終コミットでの実コア再実行（§4.3）と、§4.2 の負例の実コア記録。
 - 実機・第 2 エミュレータ: NOT_RUN。
