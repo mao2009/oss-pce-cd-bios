@@ -1,0 +1,351 @@
+{
+ "bios": "SYNTHETIC",
+ "cases": [
+  {
+   "case": "st0-entry",
+   "row": {
+    "after": {
+     "mpr": [
+      0,
+      248,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ]
+    },
+    "armed": true,
+    "before": {
+     "mpr": [
+      0,
+      248,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ]
+    },
+    "boundary_check": true,
+    "budget": 100,
+    "detected": false,
+    "detected_pc": 0,
+    "executed_after_resume": 0,
+    "executed_at_refusal": 0,
+    "exit": 0,
+    "expected_st_pc": 15872,
+    "guard_after": 0,
+    "guard_before": 0,
+    "guard_target": 0,
+    "instructions_executed": 0,
+    "mode": "st0-entry",
+    "reason": "st_opcode_at_instruction_boundary",
+    "refused": true,
+    "refused_opcode": 3,
+    "refused_pc": 15872,
+    "resume_attempts": 3,
+    "resume_refused": 3,
+    "st_mode": "st0",
+    "status": "refused",
+    "stop_pc": 15872,
+    "vdc_ar_after": 0,
+    "vdc_ar_before": 0,
+    "vdc_r_after": 0,
+    "vdc_r_before": 0
+   },
+   "verdict": "refused_at_instruction_boundary_before_side_effect"
+  },
+  {
+   "case": "st0-unguarded",
+   "row": {
+    "after": {
+     "mpr": [
+      0,
+      248,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ]
+    },
+    "armed": false,
+    "before": {
+     "mpr": [
+      0,
+      248,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ]
+    },
+    "boundary_check": false,
+    "budget": 100,
+    "detected": false,
+    "detected_pc": 0,
+    "executed_after_resume": 0,
+    "executed_at_refusal": 0,
+    "exit": 0,
+    "expected_st_pc": 15872,
+    "guard_after": 0,
+    "guard_before": 0,
+    "guard_target": 0,
+    "instructions_executed": 2,
+    "mode": "st0-unguarded",
+    "reason": "",
+    "refused": false,
+    "refused_opcode": 0,
+    "refused_pc": 0,
+    "resume_attempts": 0,
+    "resume_refused": 0,
+    "st_mode": "st0",
+    "status": "ok",
+    "stop_pc": 15874,
+    "vdc_ar_after": 7,
+    "vdc_ar_before": 0,
+    "vdc_r_after": 0,
+    "vdc_r_before": 0
+   },
+   "verdict": "side_effect_landed_monitor_disabled"
+  },
+  {
+   "case": "st1-unknown",
+   "row": {
+    "after": {
+     "mpr": [
+      0,
+      248,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ]
+    },
+    "armed": true,
+    "before": {
+     "mpr": [
+      0,
+      248,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ]
+    },
+    "boundary_check": true,
+    "budget": 100,
+    "detected": false,
+    "detected_pc": 0,
+    "executed_after_resume": 1,
+    "executed_at_refusal": 1,
+    "exit": 0,
+    "expected_st_pc": 15888,
+    "guard_after": 0,
+    "guard_before": 0,
+    "guard_target": 0,
+    "instructions_executed": 1,
+    "mode": "st1-unknown",
+    "reason": "st_opcode_at_instruction_boundary",
+    "refused": true,
+    "refused_opcode": 19,
+    "refused_pc": 15888,
+    "resume_attempts": 3,
+    "resume_refused": 3,
+    "st_mode": "st1",
+    "status": "refused",
+    "stop_pc": 15888,
+    "vdc_ar_after": 0,
+    "vdc_ar_before": 0,
+    "vdc_r_after": 0,
+    "vdc_r_before": 0
+   },
+   "verdict": "refused_at_instruction_boundary_before_side_effect"
+  },
+  {
+   "case": "st1-unguarded",
+   "row": {
+    "after": {
+     "mpr": [
+      0,
+      248,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ]
+    },
+    "armed": false,
+    "before": {
+     "mpr": [
+      0,
+      248,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ]
+    },
+    "boundary_check": false,
+    "budget": 100,
+    "detected": false,
+    "detected_pc": 0,
+    "executed_after_resume": 0,
+    "executed_at_refusal": 0,
+    "exit": 0,
+    "expected_st_pc": 15888,
+    "guard_after": 0,
+    "guard_before": 0,
+    "guard_target": 0,
+    "instructions_executed": 3,
+    "mode": "st1-unguarded",
+    "reason": "",
+    "refused": false,
+    "refused_opcode": 0,
+    "refused_pc": 0,
+    "resume_attempts": 0,
+    "resume_refused": 0,
+    "st_mode": "st1",
+    "status": "ok",
+    "stop_pc": 15890,
+    "vdc_ar_after": 0,
+    "vdc_ar_before": 0,
+    "vdc_r_after": 90,
+    "vdc_r_before": 0
+   },
+   "verdict": "side_effect_landed_monitor_disabled"
+  },
+  {
+   "case": "st2-unknown",
+   "row": {
+    "after": {
+     "mpr": [
+      0,
+      248,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ]
+    },
+    "armed": true,
+    "before": {
+     "mpr": [
+      0,
+      248,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ]
+    },
+    "boundary_check": true,
+    "budget": 100,
+    "detected": false,
+    "detected_pc": 0,
+    "executed_after_resume": 1,
+    "executed_at_refusal": 1,
+    "exit": 0,
+    "expected_st_pc": 15888,
+    "guard_after": 0,
+    "guard_before": 0,
+    "guard_target": 0,
+    "instructions_executed": 1,
+    "mode": "st2-unknown",
+    "reason": "st_opcode_at_instruction_boundary",
+    "refused": true,
+    "refused_opcode": 35,
+    "refused_pc": 15888,
+    "resume_attempts": 3,
+    "resume_refused": 3,
+    "st_mode": "st2",
+    "status": "refused",
+    "stop_pc": 15888,
+    "vdc_ar_after": 0,
+    "vdc_ar_before": 0,
+    "vdc_r_after": 0,
+    "vdc_r_before": 0
+   },
+   "verdict": "refused_at_instruction_boundary_before_side_effect"
+  },
+  {
+   "case": "st2-unguarded",
+   "row": {
+    "after": {
+     "mpr": [
+      0,
+      248,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ]
+    },
+    "armed": false,
+    "before": {
+     "mpr": [
+      0,
+      248,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ]
+    },
+    "boundary_check": false,
+    "budget": 100,
+    "detected": false,
+    "detected_pc": 0,
+    "executed_after_resume": 0,
+    "executed_at_refusal": 0,
+    "exit": 0,
+    "expected_st_pc": 15888,
+    "guard_after": 0,
+    "guard_before": 0,
+    "guard_target": 0,
+    "instructions_executed": 3,
+    "mode": "st2-unguarded",
+    "reason": "",
+    "refused": false,
+    "refused_opcode": 0,
+    "refused_pc": 0,
+    "resume_attempts": 0,
+    "resume_refused": 0,
+    "st_mode": "st2",
+    "status": "ok",
+    "stop_pc": 15890,
+    "vdc_ar_after": 0,
+    "vdc_ar_before": 0,
+    "vdc_r_after": 42240,
+    "vdc_r_before": 0
+   },
+   "verdict": "side_effect_landed_monitor_disabled"
+  }
+ ],
+ "core_revision": "b49ae82a012eade566d72e9d61c9d95a5caa4da3",
+ "issue": 365,
+ "observation_kind": "REAL_CORE_EXECUTION",
+ "source": "python3 tests/integration/geargrafx_st_boundary.py (PR #383 probe, run unchanged on main 1cd5582 in WSL)"
+}
