@@ -6,6 +6,10 @@ Y=$A5, JSRs $E0BD with A=multiplicand, then stores A, X, P, Y and SP at $2200-$2
 The expectation is this project's own spec (src/overrides/slot_3F.s), NOT the reference System Card ABI, which
 stays UNVERIFIED. Every 8-bit pair is a valid input, so there is no invalid-input error path to test; the cases
 are edge values, carry-heavy values and a few mixed values.
+Scope: 18 real-core cases (16 at caller SP=$FF, 2 at caller SP=$07). This is NOT an exhaustive test of the assembled
+routine; the 65,536-pair check is a Python reference model (tests/host/test_ma_mul8u_dev.py). MPR: only MPR1 (set to
+work RAM) and MPR7 are checked; MPR0 and MPR2-6 are not. The recorded "sp" is the caller SP before the JSR; the entry
+SP is that value minus 2 (caller $07 -> entry $05).
 Run: python3 tests/integration/geargrafx_dev_mul8u.py --rom build/debug/bios-dev/dev-only-not-compatible-syscard3.pce
 Needs the pinned cc65 and Geargrafx core (make setup, TOOLS_DIR on Linux). Missing tools exit 3 (BLOCKED).
 """
@@ -107,6 +111,8 @@ def main():
         raise ValueError("slot $3F table entry is not a JMP into the DEV ROM body")
     probe = api.compile_probe(args.rom.parent)
     evidence = {"scope": "DEV ROM real-core run of project-own MA_MUL8U, NOT System Card ABI compatibility",
+                "sp_meaning": "caller SP before JSR; entry SP = caller SP - 2",
+                "mpr_checked": "MPR1 and MPR7 only",
                 "rom_sha256": hashlib.sha256(data).hexdigest(), "cases": [], "negative_cases": []}
     with tempfile.TemporaryDirectory(prefix="pce-dev-mul8u-") as tmp:
         folder = Path(tmp)
@@ -123,7 +129,7 @@ def main():
             lo, hi = expected(a, x)
             evidence["cases"].append({"a": a, "x": x, "sp": 0x07, "expected_a": lo, "expected_x": hi})
         # Negative: the routine's CLD (second byte of the entry) replaced by NOP. With D=1 the ADCs then run in
-        # BCD, so the real core must reject at least one case; a pass would mean the D=1 check is not effective.
+        # BCD, so every one of the 3 mutant cases must differ from the binary product (a mismatch is a rejection).
         code_at = body - 0xE000
         if data[code_at] != 0x08 or data[code_at + 1] != 0xD8:
             raise ValueError("slot $3F body does not start with PHP; CLD")
@@ -135,14 +141,14 @@ def main():
                 run_case(probe, bytes(mutant), folder, cue, reset, f"nocld-{a:02x}-{x:02x}", entry, a, x)
             except Mismatch as error:  # only a value mismatch counts; infrastructure errors must propagate
                 rejected.append(str(error))
-        if len(rejected) != 3:  # every mutant case must be a value mismatch, not a silent pass or an infrastructure error
-            raise ValueError("mutant without CLD passed every D=1 case on the real core")
+        if len(rejected) != 3:  # all 3 must be mismatches; a case matching the binary product means the D=1 check is weak
+            raise ValueError("mutant without CLD matched the binary product in at least one case (expected 3 mismatches)")
         evidence["negative_cases"].append({"case": "3F_without_CLD_D1", "rejected": len(rejected),
                                            "first": rejected[0]})
     (args.rom.parent / "geargrafx-dev-mul8u-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
     total = len(CASES) + 2  # the two low-SP boundary cases (caller SP=$07, entry SP=$05)
     print(f"PASS real Geargrafx DEV ROM: MA_MUL8U slot $3F {total} cases ({len(CASES)} at SP=$FF, 2 at SP=$07 "
-          f"boundary; precondition S>=$05 at entry); A/X product, Y, P kept (D=1,C=1 entry), SP, MPR checked; "
+          f"boundary; precondition S>=$05 at entry); A/X product, Y, P kept (D=1,C=1 entry), SP, MPR1/MPR7 checked; "
           f"no-CLD mutant rejected {len(rejected)}/3")
 
 
