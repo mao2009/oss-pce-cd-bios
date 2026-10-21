@@ -30,7 +30,7 @@ class LedgerTests(unittest.TestCase):
 
     def test_counts_separate_dev_rom_from_approval(self):
         summary = dev.summary(base(), OVERRIDES)
-        self.assertEqual(3, summary["dev_rom_callable"])
+        self.assertEqual(4, summary["dev_rom_callable"])
         self.assertEqual(0, summary["dev_callable_approved"])
         self.assertEqual(0, summary["abi_verified"])
         self.assertIs(False, summary["release_eligible"])
