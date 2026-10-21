@@ -130,7 +130,7 @@ class ApiBuildTests(unittest.TestCase):
         data = build(self.folder/'override-output', root=root).read_bytes()
         dbg = parse_dbg((self.folder/'override-output/dev.dbg').read_text())
         verify_image(data, {3}, dbg)
-        self.assertEqual(int.from_bytes(data[10:12], 'little'), 0xe600)
+        self.assertEqual(int.from_bytes(data[10:12], 'little'), 0xe300)
         # Valid structure is a mechanism test, not an implemented API or approval.
         with self.assertRaises(ValueError): release_gate({3})
         manifest = json.loads((self.folder/'override-output/manifest.json').read_text())
@@ -338,7 +338,7 @@ class ApiBuildTests(unittest.TestCase):
         data = bytearray(rom)
         at = 0x1E * 3
         self.assertEqual(data[at], 0x4C)
-        self.assertEqual(int.from_bytes(data[at+1:at+3], 'little'), 0xE600)
+        self.assertEqual(int.from_bytes(data[at+1:at+3], 'little'), 0xE300)
         data[at+1:at+3] = (0xE700).to_bytes(2, 'little')  # within $E100-$FFF6, so layout passes
         tampered = bytes(data)
         dbg = parse_dbg((self.folder / 'slot1e-table-change' / 'dev.dbg').read_text())
@@ -390,7 +390,7 @@ class ApiBuildTests(unittest.TestCase):
         (root / 'src' / 'boot.s').write_bytes((ROOT / 'src' / 'boot.s').read_bytes())
         # Same bank0 geometry, but OVERRIDES starts at $E900 (inside the probe overlay window).
         (root / 'src' / 'bank0.cfg').write_text(
-            (ROOT / 'src' / 'bank0.cfg').read_text().replace('start = $E600', 'start = $E900'))
+            (ROOT / 'src' / 'bank0.cfg').read_text().replace('start = $E300', 'start = $E900'))
         (root / 'src/overrides' / 'slot_1E.s').write_text(
             '.setcpu "huc6280"\n.segment "OVERRIDES"\n.export api_slot_1E\napi_slot_1E:\n'
             ' ldx #$03\n ldy #$00\n rts\n')
