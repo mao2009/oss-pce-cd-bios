@@ -6,8 +6,9 @@ Y=$A5, JSRs $E0C0 with A=multiplicand, then stores A, X, P, Y and SP at $2200-$2
 The expectation is this project's own contract (docs/ma-mul8s.md, src/overrides/slot_40.s), NOT the reference
 System Card ABI, which stays UNVERIFIED. Every 8-bit pair is a valid signed input.
 Scope: 18 real-core cases (16 at caller SP=$FF, 2 at caller SP=$07). This is NOT an exhaustive test of the assembled
-routine; the 65,536-pair check is the standalone real-core test tests/integration/geargrafx_ma_mul8s.py plus the
-Python reference model (tests/host/test_ma_mul8s.py). MPR: only MPR1 (set to work RAM) and MPR7 are checked.
+routine. The 65,536-pair real-core check (tests/integration/geargrafx_ma_mul8s.py) exercises the src/math copy, NOT
+this DEV slot_40 body; the DEV body is covered only by these 18 cases and the no-CLD mutant. MPR: only MPR1 (set to
+work RAM) and MPR7 are checked.
 The recorded "sp" is the caller SP before the JSR; the entry SP is that value minus 2 (caller $07 -> entry $05).
 Run: python3 tests/integration/geargrafx_dev_mul8s.py --rom build/debug/bios-dev/dev-only-not-compatible-syscard3.pce
 Needs the pinned cc65 and Geargrafx core (make setup, TOOLS_DIR on Linux). Missing tools exit 3 (BLOCKED).
