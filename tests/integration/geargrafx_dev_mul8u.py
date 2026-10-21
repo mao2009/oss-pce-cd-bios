@@ -2,7 +2,7 @@
 
 A guest program replaces the reset code of the built DEV ROM. It sets MPR1 to work RAM, SP=$FF, sets D=1 and C=1
 on purpose (the routine must still multiply in binary and restore the caller's flags), preloads X=multiplier and
-Y=$A5, saves P, JSRs $E0BD with A=multiplicand, then stores A, X, P, Y, P-before and SP at $2200-$2205 and halts.
+Y=$A5, JSRs $E0BD with A=multiplicand, then stores A, X, P, Y and SP at $2200-$2205 and halts.
 The expectation is this project's own spec (src/overrides/slot_3F.s), NOT the reference System Card ABI, which
 stays UNVERIFIED. Every 8-bit pair is a valid input, so there is no invalid-input error path to test; the cases
 are edge values, carry-heavy values and a few mixed values.
@@ -26,7 +26,7 @@ import geargrafx_dev_bcd as dev  # noqa: E402  (entry_address, run_probe: the sh
 
 BLOCKED_EXIT = 3
 SLOT_MA_MUL8U = 0x3F
-STORE = 0x2200  # $2200 A, $2201 X, $2202 P after, $2203 Y, $2204 P before, $2205 SP after
+STORE = 0x2200  # $2200 A, $2201 X, $2202 P after, $2203 Y, $2205 SP after ($2204 unused)
 CASES = [(0, 0), (0, 255), (255, 0), (1, 1), (1, 255), (255, 1), (255, 255), (2, 128), (128, 2),
          (16, 16), (15, 17), (170, 85), (7, 9), (100, 100), (200, 3), (37, 91)]
 Y_PRESET = 0xA5
@@ -37,11 +37,10 @@ def guest(reset, entry, a, x):
     code = bytes([0x78,                   # SEI
                   0xA9, 0xF8, 0x53, 0x02,  # LDA #$F8; TAM #$02 -> MPR1 = work RAM ($2000-$3FFF)
                   0xA2, 0xFF, 0x9A,        # LDX #$FF; TXS
-                  0xF8, 0x38,              # SED (caller D=1 on purpose), SEC (caller C=1)
+                  0xF8, 0x38, 0xB8,        # SED (caller D=1 on purpose), SEC (caller C=1), CLV (V=0)
                   0xA2, x,                 # LDX #x (multiplier)
                   0xA0, Y_PRESET,          # LDY #$A5
-                  0x08, 0x68, 0x8D, STORE + 4 & 0xFF, (STORE + 4) >> 8,  # PHP; PLA; STA $2204 (P before)
-                  0xA9, a,                 # LDA #a (multiplicand)
+                  0xA9, a,                 # LDA #a (multiplicand); this LDA sets N/Z at entry
                   0x20, entry & 0xFF, entry >> 8,  # JSR entry
                   0x8D, STORE & 0xFF, STORE >> 8,              # STA $2200
                   0x8E, (STORE + 1) & 0xFF, (STORE + 1) >> 8,  # STX $2201
@@ -57,6 +56,11 @@ def expected(a, x):
     return product & 0xFF, product >> 8
 
 
+def expected_p(a):
+    """P at JSR entry: I=1 (SEI), D=1 (SED), C=1 (SEC), V=0 (CLV), N/Z from LDA #a. Restored by the routine."""
+    return 0x04 | 0x08 | 0x01 | (0x80 if a & 0x80 else 0) | (0x02 if a == 0 else 0)
+
+
 def check(label, rows, halt, a, x):
     cold = next(r for r in rows if r["phase"] == "cold")
     if cold["pc"] != halt:
@@ -66,14 +70,13 @@ def check(label, rows, halt, a, x):
     if cold["mpr"][1] != 0xF8 or cold["mpr"][7] != 0:
         raise ValueError(f"{label}: MPR changed (mpr={cold['mpr']})")
     s = bytes.fromhex(cold["work_ram_0200_hex"])[:6]
-    p_after, y, p_before, sp_after = s[2], s[3], s[4], s[5]
+    p_after, y, sp_after = s[2], s[3], s[5]
     lo, hi = expected(a, x)
-    observed = (s[0], s[1], p_after == p_before, y, sp_after)
-    want = (lo, hi, True, Y_PRESET, 0xFF)
+    # P at entry is fixed by the guest: SEI, SED, SEC, CLV, then LDA #a sets N/Z. T/B (bits 4-5) are masked.
+    observed = (s[0], s[1], p_after & 0xCF, y, sp_after)
+    want = (lo, hi, expected_p(a), Y_PRESET, 0xFF)
     if observed != want:
-        raise ValueError(f"{label}: A/X/P-kept/Y/SP observed {observed}, expected {want}")
-    if p_before & 0x09 != 0x09:
-        raise ValueError(f"{label}: guest did not enter with D=1 and C=1 (P ${p_before:02X})")
+        raise ValueError(f"{label}: A/X/P/Y/SP observed {observed}, expected {want}")
 
 
 def run_case(probe, base, folder, cue, reset, label, entry, a, x):
