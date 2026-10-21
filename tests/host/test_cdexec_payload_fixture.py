@@ -24,6 +24,10 @@ class PayloadFixturePositiveTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(fx.PAYLOAD_CODE).hexdigest(), fx.EXPECTED_CODE_SHA256)
         self.assertEqual(hashlib.sha256(good_sector()).hexdigest(), fx.EXPECTED_SECTOR_SHA256)
 
+    def test_code_bytes_are_pinned_literally(self):
+        # ハッシュは同じバイト列から導出されるため、符号化の誤りを捕まえるにはリテラル比較が必要
+        self.assertEqual(fx.PAYLOAD_CODE, bytes.fromhex("a9a58d003fa95a8d013f60"))
+
     def test_listing_is_consistent_and_writes_only_marker(self):
         self.assertEqual(len(fx.PAYLOAD_CODE), 11)
         self.assertEqual(fx.PAYLOAD_CODE[-1], 0x60)  # RTS
@@ -90,12 +94,17 @@ class PayloadFixtureNegativeTests(unittest.TestCase):
         self.assertReason("BAD_ENTRY", fx.load_payload, raw_sector(len(fx.PAYLOAD_CODE), len(fx.PAYLOAD_CODE)))
         self.assertReason("BAD_ENTRY", fx.load_payload, raw_sector(len(fx.PAYLOAD_CODE), 0xFFFF))
 
-    def test_destination_outside_region(self):
-        cases = {"below_base": 0x2FFF, "entry_shift": 0x3001, "overlaps_marker": 0x3F00,
-                 "far_outside": 0xFFF0}
+    def test_destination_entry_mismatch(self):
+        # entry = dest + entry_off が expected entry と一致しない場合（entry 検査で拒否）
+        cases = {"entry_shift": 0x3001, "overlaps_marker": 0x3F00, "far_outside": 0xFFF0}
         for name, dest in cases.items():
             with self.subTest(case=name):
                 self.assertReason("BAD_DEST", fx.load_payload, good_sector(), dest)
+
+    def test_destination_below_region_reached_by_region_check(self):
+        # entry_off=1 なら dest=$2FFF で entry が $3000 に一致するため、領域検査（下限）で拒否される
+        s = fx.build_sector(fx.PAYLOAD_CODE, 1)
+        self.assertReason("BAD_DEST", fx.plan_load, s, 0x2FFF)
 
     def test_max_payload_at_base_stays_below_marker(self):
         code = bytes(fx.MAX_PAYLOAD)

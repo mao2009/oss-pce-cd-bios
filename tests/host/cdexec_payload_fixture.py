@@ -78,6 +78,7 @@ def plan_load(sector, dest=PLACE_BASE):
         raise PayloadError("BAD_ENTRY", str(entry_off))
     if dest + entry_off != EXPECTED_ENTRY:
         raise PayloadError("BAD_DEST", f"entry {dest + entry_off:#06x} != {EXPECTED_ENTRY:#06x}")
+    # 防御的検査: 現在の entry 不変条件では dest > PLACE_BASE かつ末尾超過は到達しない
     if dest < PLACE_BASE or dest + length > MARKER_ADDR:
         raise PayloadError("BAD_DEST", f"[{dest:#06x}, {dest + length:#06x}) outside region")
     code = bytes(sector[HDR_BYTES:HDR_BYTES + length])
