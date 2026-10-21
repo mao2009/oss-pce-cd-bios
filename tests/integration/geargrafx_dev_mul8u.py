@@ -139,8 +139,10 @@ def main():
         evidence["negative_cases"].append({"case": "3F_without_CLD_D1", "rejected": len(rejected),
                                            "first": rejected[0]})
     (args.rom.parent / "geargrafx-dev-mul8u-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
-    print(f"PASS real Geargrafx DEV ROM: MA_MUL8U slot $3F {len(CASES)} pairs; A/X product, Y, P kept (D=1,C=1 "
-          f"entry), SP=$FF, MPR checked; no-CLD mutant rejected {len(rejected)}/3")
+    total = len(CASES) + 2  # the two low-SP boundary cases (caller SP=$07, entry SP=$05)
+    print(f"PASS real Geargrafx DEV ROM: MA_MUL8U slot $3F {total} cases ({len(CASES)} at SP=$FF, 2 at SP=$07 "
+          f"boundary; precondition S>=$05 at entry); A/X product, Y, P kept (D=1,C=1 entry), SP, MPR checked; "
+          f"no-CLD mutant rejected {len(rejected)}/3")
 
 
 if __name__ == "__main__":
