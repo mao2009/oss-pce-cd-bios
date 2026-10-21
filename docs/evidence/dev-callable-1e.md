@@ -1,7 +1,7 @@
 # DEV_CALLABLE 承認証拠: slot $1E EX_GETVER
 
 - 対象 Issue: #433（証拠収集）、#324（オーナー判断）
-- 基準コミット: `c906728609c61945ef72ae020ddeb43db5eb5e4e`（main）
+- 基準コミット: 初版は main `c906728609c61945ef72ae020ddeb43db5eb5e4e`。本 PR のブランチ `docs/dev-callable-1e-evidence` は main `0c2fa412995a448052ce7fdedd96fcc1285b5ad1` をマージ済み（マージコミット `cf49557`）。以降の記録はこのブランチでの実測値。
 - 承認フィールド: `spec/dev_implementations.json` の slot 30 `approval`（`approved_by: null`, `review_ref: null`）は **本文書では変更していない**。承認はオーナーのみが行う。
 
 ## 1. 範囲と前提
@@ -9,17 +9,19 @@
 - 本文書の「DEV_CALLABLE」は、#324 の標準ルールどおり「DEV ROM の入口を通じて、DEV 専用・自己定義 ABI で呼び出せること」のみを指す。
 - System Card 互換、Reference BIOS ABI VERIFIED、実機動作は **主張しない**。
 - `spec/api_contracts.json` の EX_GETVER 契約は大半が HYPOTHESIS / UNKNOWN のままである。
-- DEV ROM 画像・マニフェストのハッシュは **ローカルでは未生成**（後述）。
+- DEV ROM 画像・マニフェストのハッシュは本 PR で **生成済み**（E14 / E15）。初版は Windows ホストに cc65 がなく未生成（NOT_RUN）だった。
 - rom/ 配下（独自 BIOS）は本作業で読み取り・公開・実行していない。
 
 ## 2. 対象コード
 
-`src/overrides/slot_1E.s`（sha256 `8be2efe63c547eb62833cf00e69e3f66860b67363a082daa912159eb7b707176`）:
+`src/overrides/slot_1E.s`（sha256 `d5d6e9dda8cacca57dd4963cf59f50cc93f16b6dc47386129e627e9a572b0f43`）:
+
+> 初版は sha256 を `8be2efe63c547eb62833cf00e69e3f66860b67363a082daa912159eb7b707176` と記載していたが誤りで、main `c906728` と現在の main のいずれでも実ファイルは `d5d6e9dd…` である（`git show c906728:src/overrides/slot_1E.s` の sha256 と一致する）。ファイルは初版コミット `1de62ad` 以降変更されていない。
 
 ```
 api_slot_1E:
-    ldx #major_version   ; 3
-    ldy #minor_version   ; 0
+    ldx #major_version   ; reported System Card major version
+    ldy #minor_version   ; reported System Card minor version
     rts
 ```
 
@@ -43,16 +45,18 @@ api_slot_1E:
 | E10 | 不正入力・改ざん | 本体の 1 バイト改ざん、テーブル JMP の同長再ターゲット、マニフェスト単独改ざんを host で拒否 | `test_identity_accepts_untampered_slot_1e` 系、`test_table_target_change_evades_layout_but_not_identity`、`test_manifest_alone_cannot_make_a_rom_trusted` 等（CI verify/bios-dev で PASS） | PASS |
 | E11 | 負例（実コア） | `geargrafx_api.py` の wrong slot target / wrong guest MPR7 負例 | E3 の PASS 行に含まれる | PASS |
 | E12 | 実コアの NMI | 契約上 `NOT_TESTED` | — | NOT_TESTED |
-| E13 | CI（main, c906728） | `CI`（verify, guard-verify）success。`BIOS DEV diagnostics`（bios-dev）success。CDREAD attestation は本文書作成時点で queued | 上記 | PASS（一部 queued） |
-| E14 | DEV ROM 画像のハッシュ | `make dev-rom` でのローカル生成は、Windows ホストに cc65 がないため未実施 | — | NOT_RUN |
-| E15 | マニフェストのハッシュ | E14 と同じ理由 | — | NOT_RUN |
+| E13 | CI | `CI`（verify, guard-verify）と `BIOS DEV diagnostics`（bios-dev, guard-bios-dev）、`core-harness`、`bcdbin-core` と各 guard が success。CDREAD attestation 系は本 PR の差分に触れないため SKIPPED | 4.1 節の run 番号参照 | PASS |
+| E14 | DEV ROM 画像のハッシュ | `make dev-rom`（本 PR のブランチ、Linux、pinned cc65）で生成 | SHA-256 `5c6aaf0a789787f8749843d7b3d11c3bd868e1437a3e1422afce214095480f8e`（262144 バイト）。`build/debug/bios-dev/manifest.json` の `rom_sha256` と一致 | PASS |
+| E15 | マニフェストのハッシュ | 同上のビルドで生成 | `build/debug/bios-dev/manifest.json` の sha256 `f24e5115b587c83be751e653dae714666f569e3de24fb907edb1a9ec91c9d935`（ビルド時のブランチ HEAD `cf49557`）。manifest はビルドしたコミットを `source_sha` に埋め込むため、**コミットが変わると manifest 全体の sha256 も変わる**。再現性地比較できる値は manifest 内の `source_sha256`（ファイル別 sha256）である | PASS |
 | E16 | Geargrafx 固定 SHA | `tools/dependencies.json`: revision `b49ae82a012eade566d72e9d61c9d95a5caa4da3`、archive sha256 `a80a3eae26a8efcd994350e84bbe73c975e406ced41f8f2404c88b00d4217f68` | 記録のみ | INFO |
 | E17 | 承認フィールド不変 | `spec/dev_implementations.json` slot 30 の `approval` は null のまま | 本 PR は当該ファイルを変更しない | PASS |
+| E18 | 多入力の実コア確認（独立レビュー指摘 3 への対応） | `tests/integration/dev_getver_multi_input.py`（`make dev-integration` から実行、CI でも再現）。DEV ROM エントリ `$E05A`（slot $1E のテーブル JMP 先は `$E300`）を、A 入力 8 値（`$00` `$01` `$11` `$42` `$7F` `$80` `$AA` `$FF`）× 呼出時 C 2 値 × 呼出時 (X,Y) 2 組 × 呼出時 SP 3 値 の 96 条件で呼び、cold と warm の両方で A 保持・X=3・Y=0・P（C/Z/I/D/N）・SP 均衡・MPR1/MPR7 を検査 | `PASS real Geargrafx DEV ROM: EX_GETVER slot $1E entry $E05A 96 cases (8 A values x 2 carry x 2 X/Y x 3 SP; cold and warm); A preserved, X=3, Y=0, P (C/Z/I/D/N), SP, MPR1/MPR7 checked` | PASS |
 
 ### 3.1 注記
 
 - E3 の PASS 行は、CI の bios-dev ジョブログ（run 39551289760、job 119060840729）から取得した。個別の A/X/Y/P 値は PASS 行に要約されているのみで、生の観測 JSON（`geargrafx-api-evidence.json`）は CI アーティファクトに含まれていない。
-- E14 / E15 は本作業では生成していない。DEV ROM のハッシュは、オーナーが必要とする場合に CI の再現ビルドで取得する必要がある。
+- E14 / E15 は本 PR で Linux 上の実ビルドにより取得した（initially NOT_RUN だった項目）。再ビルドでも DEV ROM の sha256（`5c6aaf0a…`）は一致する（ソース 内容が決定的）。manifest.json の sha256 だけは埋め込まれた `source_sha`（ビルドしたコミット）のためにコミットごとに変わるので、比較には `source_sha256` を使うこと。
+- E18 の `PASS` 行は本 PR で実コアを実行して得た（`build/debug/bios-dev/geargrafx-dev-getver-evidence.json` に観測値を記録する）。期待値を X=4 に改変した版では FAIL することも確認済み（テストが空振りしないことの確認）。
 - `make dev-integration` は DEV ROM を読み込むが、参照 BIOS（rom/）は読み込まない。
 
 ## 4. 独立レビュー
@@ -72,13 +76,20 @@ api_slot_1E:
 
 - CI `BIOS DEV diagnostics`（run 39551289760、bios-dev job 119060840729）: 全ジョブ success。`Ran 68 tests` / `OK`、`PASS real Geargrafx System Card diagnostic: ... slot 1E EX_GETVER returned its measured contract; ...` を確認。
 
+### 4.2 本 PR のブランチでの再確認（2026-10-21）
+
+- ブランチ: `docs/dev-callable-1e-evidence`、main `0c2fa41` をマージ済み。
+- ローカル実測: `make dev-rom` で DEV ROM を生成し、E14 / E15 のハッシュを取得（3 節）。
+- ローカル実測: `python3 tests/integration/dev_getver_multi_input.py --rom build/debug/bios-dev/dev-only-not-compatible-syscard3.pce` で 96 ケース PASS（E18）。`make dev-integration` にも組み込んだため CI の `bios-dev` ジョブが同じ検査を実行する。
+- CI の run 番号は各コミット時点の記録である。最新 head の結果は PR のチェック一覧で確認すること。
+
 ## 5. オーナーが判断する前に不足しているもの
 
-1. DEV ROM 画像とマニフェストの SHA-256（CI 再現ビルドから取得）。本作業では未取得（NOT_RUN）。
+1. DEV ROM 画像とマニフェストの SHA-256 → **本 PR で取得済み**（E14 / E15）。manifest の sha256 はビルドしたコミットに依存するため、比較は `source_sha256` で行う。
 2. 私有 BIOS 測定の記録（生ログと測定条件の所在）。ヘッダコメントの来歴記述を、自己定義 ABI の主張とどう整合させるか。
-3. 観測値の多入力テスト（A 以外の入力、X/Y の入力依存性の確認）。現状は単一ベクタ。
+3. 観測値の多入力テスト → **A 保持については本 PR で対応済み**（E18: A 入力 8 値 × C 2 値 × (X,Y) 2 組 × SP 3 値 = 96 条件、cold と warm）。未了なのは「X/Y の入力依存性」の観点で、$1E は X=3・Y=0 を固定出力する契約のため入力依存性は存在しない（呼出側の X/Y は出力に影響しないことを E18 で確認している）。
 4. P レジスタの扱いの統一（参照試験計画 `P = $06` と、契約ハーネスの「絶対値を固定しない」の整理）。
-5. 個別の観測値を示す生 JSON（CI アーティファクトには含まれていない）。
+5. 個別の観測値を示す生 JSON → E18 の分（`geargrafx-dev-getver-evidence.json`）は本 PR のドライバがローカルに書き出す（ビルド成果物のため git には含めない）。CI アーティファクトには含まれないという点は変わらない。
 6. クリーンルーム・ライセンス判断（Issue #40 のクローズ）。
 7. 実機での検証は未実施（実機動作と ABI 承認は PENDING）。
 
