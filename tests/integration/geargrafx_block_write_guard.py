@@ -19,17 +19,28 @@ Cases (for each of tii, tin, tia, tdd, tai; one-byte transfer):
 * ``<op>-stackff-armed`` (Issue #459): MPR1 = $FF, so the TransferStart A/X/Y pushes ($2100|S) hit the
   hardware page. The TransferStart guard refuses the pushes before the side effect: exactly one stack
   guard call and one refusal, VDC AR and R[7] unchanged, S balanced. The block store (dest $1E90, WRAM)
-  must still land.
+  must still land. The refusal is NOT a safe termination: TransferEnd still pops three never-stored stack
+  slots, so the core reads $2102/$2103/$2104 (VDC data read buffer LSB/MSB and the VDC status register),
+  overwrites A/X/Y with the values read and clears the VDC status register. Those facts are measured and
+  pinned (see the #459 BLOCKED line printed at the end).
 * ``<op>-stackff-unguarded`` (MUTATION, #459): same layout, no hook. The pushes must land on the VDC:
-  AR 0 -> 7 and R[7] 0 -> 564 (the A/X bytes $12/$34 masked to BXR's 10 bits).
+  AR 0 -> 7 and R[7] 0 -> 564 (the A/X bytes $12/$34 masked to BXR's 10 bits). The TransferEnd pops read
+  the same VDC registers as in the refused case, which shows the I/O reads come from the core's
+  unconditional TransferEnd and not from the guard.
 * ``<op>-stackwram-armed`` (POSITIVE, #459): MPR1 = WRAM. The stack guard is consulted once, allows
-  the pushes, and the stack bytes X=$34, A=$12, Y=$07 land at WRAM $0102..$0104.
+  the pushes, and the stack bytes X=$34, A=$12, Y=$07 land at WRAM $0102..$0104. This is the differential
+  control: A/X/Y survive the TransferEnd pops and the VDC status register is never read.
 
 Scope and limits (read before citing this as evidence):
 * The refusal policy (refuse a store whose destination page is mapped to $FF) is written inside the
   probe (geargrafx_block_write_guard.cpp). It is a test policy, NOT a production gate. This test shows
   only that the core's pre-write hook point can refuse a store before its side effect; it does not show
   that a production gate would refuse it.
+* The TransferStart push guard is the same kind of test policy. It shows the core has a hook point that
+  can refuse the push before the VDC AR/R[7] write happens. It does NOT make the refusal safe: the core
+  still pops three never-stored stack slots on TransferEnd, which on a $FF stack page are VDC registers.
+  A production safety mechanism (never map the stack page to $FF, or a gate that also covers the pops)
+  is required and is NOT implemented or verified here. The gate therefore stays BLOCKED.
 * ``row["armed"]`` is set in this driver from the case name (``case.endswith("-armed")``), so the armed
   checks confirm the requested configuration only and are not independent evidence. The discriminating
   evidence is guard_calls / guard_refusals, the VDC AR and WRAM observations, and the unguarded control.
@@ -69,6 +80,18 @@ STACK_R7_LANDED = 0x1234 & 0x3FF
 STACK_WRAM_LANDED = [0x34, 0x12, 0x07]  # WRAM $0102, $0103, $0104 = X, A, Y
 STACK_SP = 0x04
 ALLOWED_STACK_DST = 0x1E90  # block store dest in the stack layout (page 0 = WRAM)
+# Issue #459 follow-up: markers pre-loaded into the VDC before the run so that the TransferEnd pops can be
+# attributed to a specific hardware register read. $2102 returns the VDC data read buffer LSB, $2103 the
+# MSB and $2104 the status register (reading the status register CLEARS it and de-asserts IRQ1).
+STACK_READ_BUFFER_PRESET = 0xBEEF
+STACK_STATUS_PRESET = 0x05  # bits the VDC cannot raise on its own at reset (every event-driven bit is gated)
+STACK_IO_POP_X = STACK_READ_BUFFER_PRESET & 0xFF        # 0xEF: $2102 = data read buffer LSB
+STACK_IO_POP_A = (STACK_READ_BUFFER_PRESET >> 8) & 0xFF  # 0xBE: $2103 = data read buffer MSB
+STACK_IO_POP_Y = STACK_STATUS_PRESET & 0x3F              # 0x05: $2104 = status register
+STACK_IO_STATUS_CLEARED = 0x00  # the status register read clears the register
+STACK_RESTORED_X = 0x34  # X restored from the WRAM stack in the positive control
+STACK_RESTORED_A = 0x12
+STACK_RESTORED_Y = 0x07
 # Exactly the flags tools/setup.py build_geargrafx(debugger=True) passes as CFLAGS/CXXFLAGS overrides
 # (the debugger tree's objects are built with these, not with the stock Makefile defaults). Note the
 # debugger build does NOT define GG_DISABLE_DISASSEMBLER; adding it would change object layout.
@@ -95,7 +118,9 @@ def _common(row, case):
     if row.get("status") != "ok":
         raise ValueError(f"{case}: guest did not reach its end (status={row.get('status')})")
     for name in ("vdc_ar_before", "vdc_ar_after", "vdc_r_before", "vdc_r_after", "stop_pc", "guard_calls",
-                 "guard_refusals", "dst_before", "dst_after", "guard_block_op", "guard_dest"):
+                 "guard_refusals", "dst_before", "dst_after", "guard_block_op", "guard_dest",
+                 "sp_before", "sp_after", "p_before", "p_after", "a_after", "x_after", "y_after",
+                 "vdc_sr_before", "vdc_sr_after", "vdc_read_buffer_before", "vdc_read_buffer_after"):
         if type(row.get(name)) is not int:
             raise ValueError(f"{case} missing/non-integer {name}: {row.get(name)!r}")
     for side in ("before", "after"):
@@ -113,7 +138,20 @@ def _common(row, case):
                              f"want {want_mpr0:#x}/{want_mpr1:#x}")
     if row["src_value"] != (FORBIDDEN_VALUE if variant == "forbidden" else ALLOWED_VALUE):
         raise ValueError(f"{case}: source byte mismatch {row['src_value']:#x}")
+    if row["before"]["mpr"] != row["after"]["mpr"]:
+        raise ValueError(f"{case}: MPR changed during the run "
+                         f"({row['before']['mpr']} -> {row['after']['mpr']})")
     return op, variant
+
+
+def _final_state_ok(row, case):
+    """Final register state after the guest finished: S balanced, PC at the end, P unchanged."""
+    if row["sp_after"] != row["sp_before"]:
+        raise ValueError(f"{case}: S not balanced ({row['sp_before']:#x}->{row['sp_after']:#x})")
+    if row["stop_pc"] != row["expected_end_pc"]:
+        raise ValueError(f"{case}: PC ended at {row['stop_pc']:#x}, want {row['expected_end_pc']:#x}")
+    if row["p_after"] != row["p_before"]:
+        raise ValueError(f"{case}: P changed ({row['p_before']:#x}->{row['p_after']:#x})")
 
 
 def _expected_mpr(variant):
@@ -189,7 +227,13 @@ def _stack_block_ok(row, case):
 
 
 def check_stackff_armed(row, case):
-    """Issue #459: the TransferStart pushes are refused before the side effect when the stack page is $FF."""
+    """Issue #459: the TransferStart pushes are refused before the side effect when the stack page is $FF.
+
+    The refusal is NOT a safe termination: TransferEnd always pops three bytes, and because the push was
+    refused those three stack slots were never written. With MPR1 = $FF they are VDC registers, so the core
+    reads $2102 (data LSB), $2103 (data MSB) and $2104 (status register) and overwrites X/A/Y with the
+    values read. Reading $2104 also clears the VDC status register. The measured facts are pinned here.
+    """
     _common(row, case)
     if row.get("armed") is not True:
         raise ValueError(f"{case}: run is not armed")
@@ -205,25 +249,49 @@ def check_stackff_armed(row, case):
                          f"R7 {row['vdc_r7_after']:#x})")
     if row["stack_wram_after"] != [0, 0, 0]:
         raise ValueError(f"{case}: refused push wrote the WRAM stack image ({row['stack_wram_after']})")
-    if row["sp_after"] != row["sp_before"]:
-        raise ValueError(f"{case}: S not balanced ({row['sp_before']:#x}->{row['sp_after']:#x})")
+    # Issue #459 follow-up: the refused push leaves three never-stored stack slots. TransferEnd pops them.
+    if row["vdc_read_buffer_before"] != STACK_READ_BUFFER_PRESET or row["vdc_sr_before"] != STACK_STATUS_PRESET:
+        raise ValueError(f"{case}: VDC markers not in place (read buffer {row['vdc_read_buffer_before']:#x}, "
+                         f"status {row['vdc_sr_before']:#x})")
+    if row["x_after"] != STACK_IO_POP_X or row["a_after"] != STACK_IO_POP_A or row["y_after"] != STACK_IO_POP_Y:
+        raise ValueError(f"{case}: final A/X/Y {row['a_after']:#x}/{row['x_after']:#x}/{row['y_after']:#x} do not "
+                         f"match the VDC values read by the TransferEnd pops "
+                         f"({STACK_IO_POP_A:#x}/{STACK_IO_POP_X:#x}/{STACK_IO_POP_Y:#x})")
+    if row["vdc_sr_after"] != STACK_IO_STATUS_CLEARED:
+        raise ValueError(f"{case}: VDC status register was not cleared by the $2104 read "
+                         f"({row['vdc_sr_before']:#x}->{row['vdc_sr_after']:#x})")
+    _final_state_ok(row, case)
     _stack_block_ok(row, case)
-    return "stack_push_refused_inside_core_before_side_effect"
+    return "stack_push_refused_but_transferend_pops_read_io_registers"
 
 
 def check_stackff_unguarded(row, case):
-    """Control (null hook): the pushes must land on the VDC (AR and R[7] change)."""
+    """Control (null hook): the pushes must land on the VDC (AR and R[7] change).
+
+    The TransferEnd pops read the same VDC registers as in the refused case, so the control also shows that
+    the I/O reads come from the core's unconditional TransferEnd, not from the guard.
+    """
     _common(row, case)
     if row.get("armed") is not False or row["stack_guard_calls"] != 0:
         raise ValueError(f"{case}: unguarded run consulted the stack guard")
     if row["vdc_ar_after"] != STACK_AR_LANDED or row["vdc_r7_after"] != STACK_R7_LANDED:
         raise ValueError(f"{case}: push side effect did not land without the hook "
                          f"(AR {row['vdc_ar_after']}, R7 {row['vdc_r7_after']:#x})")
+    if row["x_after"] != STACK_IO_POP_X or row["a_after"] != STACK_IO_POP_A or row["y_after"] != STACK_IO_POP_Y:
+        raise ValueError(f"{case}: final A/X/Y {row['a_after']:#x}/{row['x_after']:#x}/{row['y_after']:#x} do not "
+                         f"match the VDC values read by the TransferEnd pops")
+    if row["vdc_sr_after"] != STACK_IO_STATUS_CLEARED:
+        raise ValueError(f"{case}: VDC status register was not cleared by the $2104 read")
+    _final_state_ok(row, case)
     return "push_side_effect_landed_without_hook"
 
 
 def check_stackwram_armed(row, case):
-    """Positive: the stack guard is consulted once, allows the pushes, and the bytes land in WRAM."""
+    """Positive: the stack guard is consulted once, allows the pushes, and the bytes land in WRAM.
+
+    This is the differential control for the $FF stack page: with a WRAM stack the TransferEnd pops read
+    back the pushed bytes, so A/X/Y survive and the VDC status register is never read.
+    """
     _common(row, case)
     if row.get("armed") is not True:
         raise ValueError(f"{case}: run is not armed")
@@ -233,6 +301,15 @@ def check_stackwram_armed(row, case):
     if row["stack_wram_before"] != [0, 0, 0] or row["stack_wram_after"] != STACK_WRAM_LANDED:
         raise ValueError(f"{case}: stack bytes did not land ({row['stack_wram_before']} -> "
                          f"{row['stack_wram_after']})")
+    if row["x_after"] != STACK_RESTORED_X or row["a_after"] != STACK_RESTORED_A \
+            or row["y_after"] != STACK_RESTORED_Y:
+        raise ValueError(f"{case}: A/X/Y not restored from the WRAM stack "
+                         f"({row['a_after']:#x}/{row['x_after']:#x}/{row['y_after']:#x}, "
+                         f"want {STACK_RESTORED_A:#x}/{STACK_RESTORED_X:#x}/{STACK_RESTORED_Y:#x})")
+    if row["vdc_sr_after"] != row["vdc_sr_before"]:
+        raise ValueError(f"{case}: VDC status register changed although the stack page is WRAM "
+                         f"({row['vdc_sr_before']:#x}->{row['vdc_sr_after']:#x})")
+    _final_state_ok(row, case)
     _stack_block_ok(row, case)
     return "stack_push_allowed_bytes_landed"
 
@@ -247,12 +324,24 @@ def mutation_test(row, case):
             ("stack_accepted_not_refused", {"stack_guard_refusals": 0}),
             ("stack_wrong_sp", {"stack_guard_sp": STACK_SP + 1}),
             ("sp_unbalanced", {"sp_after": STACK_SP - 3}),
+            # Issue #459 follow-up: the classifier must pin the traced post-refusal state.
+            ("registers_restored_instead_of_io_pops",
+             {"x_after": STACK_RESTORED_X, "a_after": STACK_RESTORED_A, "y_after": STACK_RESTORED_Y}),
+            ("io_pop_values_wrong", {"x_after": 0x00, "a_after": 0x00, "y_after": 0x00}),
+            ("status_register_not_cleared", {"vdc_sr_after": STACK_STATUS_PRESET}),
+            ("p_changed", {"p_after": row["p_before"] ^ 0x01}),
+            ("pc_wrong", {"stop_pc": GUEST_BASE}),
+            ("mpr_changed", {"after": {"mpr": [0] * 8}}),
         ]
         check = check_stackff_armed
     elif variant == "stackwram":
         mutations = [
             ("stack_bytes_not_landed", {"stack_wram_after": [0, 0, 0]}),
             ("stack_refused_although_allowed", {"stack_guard_refusals": 1}),
+            ("registers_not_restored",
+             {"x_after": STACK_IO_POP_X, "a_after": STACK_IO_POP_A, "y_after": STACK_IO_POP_Y}),
+            ("status_register_cleared", {"vdc_sr_after": STACK_IO_STATUS_CLEARED}),
+            ("sp_unbalanced", {"sp_after": STACK_SP - 3}),
         ]
         check = check_stackwram_armed
     elif variant == "forbidden":
@@ -360,15 +449,26 @@ def main():
                                         "row": row}, sort_keys=True))
     print("PASS issue-367 TII/TIN/TIA/TDD/TAI: one-byte transfers only, destination pages mapped to $FF only, "
           "pre-write refusal hook, synthetic media")
-    print("PASS issue-459 TransferStart A/X/Y pushes: refused before the side effect only when the stack page "
-          "(MPR1) is mapped to $FF; pushes only, TransferStart only, synthetic media")
+    print("PASS issue-459 TransferStart A/X/Y pushes: the WRITE side effect is refused before it happens only "
+          "when the stack page (MPR1) is mapped to $FF; pushes only, TransferStart only, synthetic media")
+    print("BLOCKED issue-459: the refusal path is NOT a safe termination. TransferEnd unconditionally pops "
+          "three stack slots, and a refused push leaves those three slots never written, so on a $FF stack "
+          "page the core READS $2102/$2103/$2104 (VDC data read buffer LSB/MSB and the VDC status register), "
+          "overwrites A/X/Y with the values read and clears the VDC status register (IRQ1 de-asserted). "
+          "Measured on the real core: A/X/Y = $BE/$EF/$05 (original $12/$34/$07 lost), VDC status $05 -> $00, "
+          "S balanced at $04, P unchanged, PC and MPR unchanged. The block transfer itself also still runs "
+          "(destination byte $5A lands), so the refusal cannot stop the instruction either. A production "
+          "mechanism is required (do not map the stack page to $FF, or a gate that also covers the TransferEnd "
+          "pops); the VERIFICATION-ONLY patch used here is not a production mechanism and the gate stays "
+          "BLOCKED. Nothing here changes BLOCKED_ABI or release_eligible.")
     print("LIMIT: one-byte transfers only; no mid-instruction stop measured; no device-originated write probe; "
           "block guard refuses only dest pages mapped to $FF (other banks not covered); refusal policy is defined "
           "inside the probe, not a production gate; refusal is silent and the source read is skipped; "
           "#459 scope: the TransferStart A/X/Y pushes only. Other pushes (PHA/PHP/JSR/IRQ), TransferEnd pops "
           "(reads from the $FF stack page, unguarded) and all other writes are NOT guarded; the TransferStart "
-          "guard only applies to the stack page; a refused push still moves S; armed flag is set from the case "
-          "name; no gate change; no BIOS.")
+          "guard only applies to the stack page; a refused push still moves S and the following TransferEnd "
+          "still pops the never-stored slots (measured above, see the #459 BLOCKED line); armed flag is set "
+          "from the case name; no gate change; no BIOS.")
     return 0
 
 

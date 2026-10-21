@@ -34,6 +34,13 @@ Upstream: https://github.com/drhelius/Geargrafx, pinned commit
   directory, compiles only the patched `huc6280_opcodes` object, and links it into a local probe.
   Probe executables, objects and the patched copy are never committed, uploaded or published.
 - The hook is for verification only. It must not be carried into a release build.
+- The block-write-guard patch's TransferStart hook (#459) is **not** a production safety
+  mechanism. A refused push leaves three never-written stack slots, and the core's unconditional
+  TransferEnd pops read them: with the stack page mapped to $FF those reads hit VDC registers
+  ($2102 = data read buffer LSB, $2103 = MSB, $2104 = status register, which the read clears),
+  so A/X/Y are overwritten with the values read and the VDC status register is cleared. This was
+  measured on the real core; see `docs/367-block-transfer-audit.md`. The hook prevents the VDC
+  **write** side effect only and does not stop the instruction.
 
 ## How this stays out of MIT artifacts
 

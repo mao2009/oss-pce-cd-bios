@@ -17,6 +17,14 @@
 //              $0104 (Y), $0103 (A), $0102 (X). Y=$07 sets VDC AR=7; the A and X pushes then write
 //              R[7] MSB and LSB, so R[7] = $1234 if they land. Stack bytes are read from WRAM only.
 //   stackwram: (positive control) same layout with MPR1 = WRAM; the pushes land in WRAM.
+//
+// Issue #459 follow-up (this probe): the refusal path is traced past TransferStart. TransferEnd always
+// pops three bytes, so a refused push leaves the core reading three NEVER-STORED stack slots. With the
+// stack page mapped to $FF those slots are VDC registers: $2102 = data LSB, $2103 = data MSB, $2104 =
+// status register (reading it CLEARS it and de-asserts IRQ1). The probe therefore pre-loads the VDC data
+// read buffer and status register with known markers, so the popped values identify exactly which
+// hardware registers were read. This is an OBSERVATION of the upstream core behaviour; it is not a
+// production safety mechanism and it does not make the refusal path safe.
 // The armed guard refuses exactly the stores whose dest page is mapped to the hardware page.
 // Exit 0 with one JSON observation on stderr; 2 = usage; 3..6 = load failures.
 #include "geargrafx_core.h"
@@ -42,6 +50,13 @@ const unsigned long kStubIndex = 0x1E00;  // WRAM index of the guest program
 const unsigned long kSrcAddr = 0x3E80;    // WRAM source byte
 const unsigned long kAllowedDst = 0x3E90; // WRAM destination (allowed)
 const unsigned long kForbiddenDst = 0x0000;  // hardware page: VDC AR register
+
+// Issue #459: markers pre-loaded into the VDC so the TransferEnd pops can be attributed to a specific
+// hardware register read. $2102 returns the data read buffer LSB, $2103 the MSB, $2104 the status
+// register (and clears it). The markers are only set bits the VDC cannot raise on its own at reset
+// (every event-driven status bit is gated by a CR control bit that is clear here).
+const unsigned kStackReadBufferPreset = 0xBEEF;
+const unsigned kStackStatusPreset = 0x05;
 
 bool g_armed = false;
 Memory* g_memory = nullptr;
@@ -184,6 +199,12 @@ int main(int argc, char** argv)
     st->Y->SetValue(stack ? 0x07 : 0);
     st->P->SetValue(0x04);
 
+    // Issue #459: mark the VDC registers the TransferEnd pops would read on a $FF stack page.
+    if (stack) {
+        *vs->READ_BUFFER = (u16)kStackReadBufferPreset;
+        *vs->SR = (u16)kStackStatusPreset;
+    }
+
     gg_verify_block_write_guard = g_armed ? block_guard : nullptr;
     gg_verify_transfer_start_guard = g_armed ? transfer_start_guard : nullptr;
 
@@ -193,8 +214,11 @@ int main(int argc, char** argv)
     unsigned vdc_ar_before = (u8)*vs->AR;
     unsigned vdc_r_before = vs->R[0];
     unsigned vdc_r7_before = vs->R[7];
+    unsigned vdc_sr_before = *vs->SR;
+    unsigned vdc_read_buffer_before = *vs->READ_BUFFER;
     unsigned dst_before = memory->Read((u16)allowed_dst);
     unsigned sp_before = st->S->GetValue();
+    unsigned p_before = st->P->GetValue();
     unsigned stack_before[3] = {wram[0x0102], wram[0x0103], wram[0x0104]};
 
     bool halted = false;
@@ -212,9 +236,17 @@ int main(int argc, char** argv)
     unsigned vdc_ar_after = (u8)*vs->AR;
     unsigned vdc_r_after = vs->R[0];
     unsigned vdc_r7_after = vs->R[7];
+    unsigned vdc_sr_after = *vs->SR;
+    unsigned vdc_read_buffer_after = *vs->READ_BUFFER;
     unsigned dst_after = memory->Read((u16)allowed_dst);
     unsigned src_after = memory->Read((u16)src_addr);
     unsigned stack_after[3] = {wram[0x0102], wram[0x0103], wram[0x0104]};
+    // Final register state after TransferEnd (the pops overwrite A/X/Y with whatever was read).
+    unsigned a_after = st->A->GetValue();
+    unsigned x_after = st->X->GetValue();
+    unsigned y_after = st->Y->GetValue();
+    unsigned sp_after = st->S->GetValue();
+    unsigned p_after = st->P->GetValue();
 
     const char* status = halted ? "ok" : "budget_exhausted";
     std::fprintf(stderr, "{");
@@ -238,7 +270,12 @@ int main(int argc, char** argv)
     std::fprintf(stderr, "\"vdc_ar_before\":%u,\"vdc_ar_after\":%u,", vdc_ar_before, vdc_ar_after);
     std::fprintf(stderr, "\"vdc_r_before\":%u,\"vdc_r_after\":%u,", vdc_r_before, vdc_r_after);
     std::fprintf(stderr, "\"vdc_r7_before\":%u,\"vdc_r7_after\":%u,", vdc_r7_before, vdc_r7_after);
-    std::fprintf(stderr, "\"sp_before\":%u,\"sp_after\":%u,", sp_before, (unsigned)st->S->GetValue());
+    std::fprintf(stderr, "\"sp_before\":%u,\"sp_after\":%u,", sp_before, sp_after);
+    std::fprintf(stderr, "\"p_before\":%u,\"p_after\":%u,", p_before, p_after);
+    std::fprintf(stderr, "\"a_after\":%u,\"x_after\":%u,\"y_after\":%u,", a_after, x_after, y_after);
+    std::fprintf(stderr, "\"vdc_sr_before\":%u,\"vdc_sr_after\":%u,", vdc_sr_before, vdc_sr_after);
+    std::fprintf(stderr, "\"vdc_read_buffer_before\":%u,\"vdc_read_buffer_after\":%u,",
+                 vdc_read_buffer_before, vdc_read_buffer_after);
     std::fprintf(stderr, "\"stack_wram_before\":[%u,%u,%u],\"stack_wram_after\":[%u,%u,%u],",
                  stack_before[0], stack_before[1], stack_before[2],
                  stack_after[0], stack_after[1], stack_after[2]);

@@ -90,14 +90,19 @@
          m_transfer_source++;
          m_transfer_length--;
  
-@@ -669,9 +693,19 @@
+@@ -669,9 +693,24 @@
  {
      m_transfer_state = 2;
  
 -    StackPush8(m_Y.GetValue());
 -    StackPush8(m_A.GetValue());
 -    StackPush8(m_X.GetValue());
-+    // VERIFICATION-ONLY: a refused push writes nothing but still moves S, so TransferEnd pops stay balanced.
++    // VERIFICATION-ONLY (Issue #459): a refused push writes nothing but still moves S. The three
++    // stack slots are then NEVER written, so the unconditional TransferEnd pops read three
++    // never-stored bytes. With the stack page mapped to $FF those bytes are VDC registers: $2102
++    // (data read buffer LSB), $2103 (MSB) and $2104 (status register, cleared by the read). The
++    // refusal therefore prevents the WRITE side effect only; it does not preserve A/X/Y and it is
++    // not a safe termination. This hook is a measurement aid, NOT a production safety mechanism.
 +    if (GG_VerifyTransferStart_Allowed(m_S.GetValue()))
 +    {
 +        StackPush8(m_Y.GetValue());
