@@ -6,11 +6,11 @@ Project home (English): https://mao2009.github.io/oss-pce-cd-bios/
 Project home (Japanese): https://mao2009.github.io/oss-pce-cd-bios/ja/
 Source repository: https://github.com/mao2009/oss-pce-cd-bios
 
-## Scope and verified progress (2026-10-20, main 963f3a36)
+## Scope and verified progress (measured 2026-10-21, main 2b1d1db)
 
 - Target: replace the software System Card BIOS, not the PC Engine CD hardware.
 - 256 KiB development-only ROM with 81 candidate System Card API slots.
-- Exactly one slot ($1E, EX_GETVER) has a callable original OSS development implementation; 80 other slots are nonreturning stubs.
+- Six slots ($1E EX_GETVER, $3C EX_BINBCD, $3D EX_BCDBIN, $3F MA_MUL8U, $41 MA_MUL16U, $42 MA_DIV16S) have original OSS development-only implementations in the DEV ROM; none is approved or ABI-verified. 75 other slots are nonreturning stubs.
 - Pinned Geargrafx emulator-core cold/warm tests observed EX_GETVER returning to its caller with X=3, Y=0, and A preserved.
 - Synthetic SCSI READ(6) sector-to-RAM and payload execution experiments are diagnostics, NOT callable CD_READ firmware or BIOS-mediated disc boot.
 - No BIOS-mediated CD program boot has been verified as of 2026-10-20; 765 host passes at PR #174 is only a historical count, not a current total.
@@ -26,7 +26,7 @@ Source repository: https://github.com/mao2009/oss-pce-cd-bios
 - Actual implementation status (dated snapshots): https://github.com/mao2009/oss-pce-cd-bios/blob/main/docs/status.md
 - Roadmap: https://github.com/mao2009/oss-pce-cd-bios/blob/main/docs/roadmap.md
 - EX_GETVER implementation and checks: https://github.com/mao2009/oss-pce-cd-bios/pull/174
-- Current snapshot commit: https://github.com/mao2009/oss-pce-cd-bios/commit/963f3a36ed59ab190406d815ab7d267fd21a680b
+- Current snapshot commit: https://github.com/mao2009/oss-pce-cd-bios/commit/2b1d1dba13df68d87f5148f37bfbef090be47764
 - API inventory and evidence: https://github.com/mao2009/oss-pce-cd-bios/blob/main/docs/abi-contracts.md
 - Issues: https://github.com/mao2009/oss-pce-cd-bios/issues
 - Contribution guidelines: https://github.com/mao2009/oss-pce-cd-bios/blob/main/CONTRIBUTING.md
