@@ -79,16 +79,21 @@ class HostIsolationTests(unittest.TestCase):
                 offenders.append(f"{path.name}:{number}")
         self.assertEqual(offenders, [], "real Geargrafx fetch/build/need/run found in tests/host")
 
-    def test_make_test_runs_integration_test_target(self):
+    def test_make_test_is_host_only_and_real_core_gate_is_separate(self):
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
         recipe = re.search(r"^test:[^\n]*\n((?:\t[^\n]*\n)+)", makefile, re.M)
         self.assertIsNotNone(recipe, "Makefile test target not found")
-        self.assertIn("$(MAKE) integration-test", recipe.group(1))
+        self.assertNotIn("integration", recipe.group(1), "make test must not need Geargrafx")
+        real = re.search(r"^test-real-core:[^\n]*\n((?:\t[^\n]*\n)+)", makefile, re.M)
+        self.assertIsNotNone(real, "Makefile test-real-core target not found")
+        self.assertIn("$(MAKE) integration-test", real.group(1))
+        self.assertIn("$(MAKE) integration ", real.group(1))
         self.assertRegex(makefile, r"(?m)^integration-test:\n\t[^\n]*discover -s tests/integration")
 
-    def test_ci_required_job_runs_make_test(self):
+    def test_ci_required_job_runs_host_and_real_core_gates(self):
         ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        self.assertIn("run: make test", ci)
+        self.assertRegex(ci, r"run: make test\n")
+        self.assertRegex(ci, r"run: make test-real-core\n")
 
 
 if __name__ == "__main__":

@@ -82,7 +82,7 @@ committed; these checks are whitespace validation, not semantic review.
 
 ## Real Geargrafx integration
 
-`make integration` runs `tests/integration/geargrafx_smoke.py` against the official
+`make test-real-core` (which runs `make integration`) runs `tests/integration/geargrafx_smoke.py` against the official
 source-built Geargrafx libretro core, with a minimal original Python/ctypes
 frontend. It provides video/audio/input callbacks without a GUI, uses a fresh
 temporary system/save directory per process, and never substitutes CPU behavior.
@@ -185,8 +185,9 @@ Nightly's live schedule/skip behavior is separate from host recovery tests; [nig
 
 ## Separate System Card/CD diagnostics and CI
 
-`make test` runs the host suite **and original HuCARD Geargrafx smoke**,
-not every standalone System Card diagnostic. After `make setup`:
+`make test` runs the host suite only (no Geargrafx). The original HuCARD Geargrafx smoke and
+the other real-core checks run in `make test-real-core` (Issue #398), which CI runs as a required
+step. Not every standalone System Card diagnostic is included. After `make setup`:
 
 ```sh
 make dev-test                   # 81 candidate slots, host API tests and real-core DEV checks

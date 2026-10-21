@@ -44,8 +44,10 @@ jobs:
         run: make setup
       - name: Build original HuCARD fixture
         run: make build
-      - name: Host and real Geargrafx tests
+      - name: Host tests (no Geargrafx needed)
         run: make test
+      - name: Real Geargrafx tests (required, fail-closed; Issue #398)
+        run: make test-real-core
       - name: Static checks including Actions validation
         run: make check
       - name: Verify release-mode fixture

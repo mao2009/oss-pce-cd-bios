@@ -78,7 +78,8 @@ On Linux x86_64 with Python 3.10+, GNU Make, GCC/G++, binutils and curl:
 ```sh
 make setup     # checksum-verified, pinned source builds; no sudo
 make build     # build/debug/smoke-test-not-bios.pce (8192 bytes)
-make test      # host tests AND real Geargrafx cold/warm/negative checks
+make test      # host tests (no Geargrafx needed)
+make test-real-core  # real Geargrafx cold/warm/negative checks (required in CI; needs make setup)
 make check     # source, assembler and GitHub Actions static checks
 make clean
 make build MODE=release

@@ -17,7 +17,8 @@ sudo apt-get install build-essential python3 curl git
 ```sh
 make setup
 make build
-make test
+make test              # host tests only; Geargrafx NOT required
+make test-real-core    # required real-core gate; needs Geargrafx (make setup)
 make check
 make clean
 make build
@@ -90,8 +91,8 @@ Read the first nonzero tool error; `make build` never silently runs setup or
 falls back to an unrelated PATH assembler. Download DNS/network failures require
 network access to GitHub/codeload; checksum mismatches require inspecting/removing
 the corrupt archive before retry. `make check` requires actionlint installed by
-setup. `make test` requires the real Geargrafx core; absence is BLOCKED/FAIL, not
-a passing integration test. Desktop/MCP requirements are separate in
+setup. `make test-real-core` requires the real Geargrafx core; absence is FAIL, never a
+passing integration test. `make test` does not need Geargrafx. Desktop/MCP requirements are separate in
 [Geargrafx setup](emulator-geargrafx.md).
 
 ## Separate BIOS DEV diagnostics
@@ -118,16 +119,26 @@ make dev-release-gate-blocked # must refuse incomplete firmware
 The CD diagnostic writes `build/<mode>/cdread-probe/cdread-evidence.json`
 with RAM/phase/halt evidence. This is **not** BIOS `CD_READ`, nor disc boot.
 The CD→RAM payload experiment (#122) is merged on main as of 2026-10-16 (`c20ac06`) as a diagnostic only.
-`make test` covers host/HuCARD; the separate BIOS DEV CI covers these.
+`make test` covers host tests only; the required real-core checks are in `make test-real-core`
+(CI `ci.yml` and `nightly.yml` run it as a step after `make test`). The separate BIOS DEV CI covers the DEV ROMs.
 [Status](status.md).
 
-### ルーチン実コアテスト（opt-in, #330）
+### 実コア検証の依存関係（Issue #398）
 
-`make routine-real-core` は EX_BINBCD / MA_MUL8S / MA_MUL8U / EX_BCDBIN の実コア（Geargrafx）テストを順に実行する。
+| 実行 | 中身 | Geargrafx | CI |
+| --- | --- | --- | --- |
+| `make test` | ホスト試験 (`tests/host`) + `build`（cc65 必須） | 不要 | `ci.yml` / `nightly.yml` の `make test` ステップ |
+| `make test-real-core` | `make integration`（`geargrafx_*.py` 7本）+ `make integration-test`（`tests/integration`） | 必須、無ければ FAIL | 同じ required ジョブ内の `make test-real-core` ステップ |
+| `make routine-real-core` (opt-in, #330) | ルーチン実コア 7本: EX_BINBCD / MA_MUL8S / MA_MUL8U / MA_MUL16U / MA_DIV16U / MA_DIV16S / EX_BCDBIN | 必須、`TOOLS_DIR` 必須 | CI には含まれない（ローカル/手動） |
+| `make host-test` | ホスト試験のみ、cc65 不在時は SKIP（理由付き） | 不要 | なし（ローカル用） |
+
+`make test-real-core` は Geargrafx が無ければ `FAIL/BLOCKED` で終了する。SKIP を PASS として記録しない。
+
+`make routine-real-core` の補足:
 
 - Linux 専用。Linux 以外は `BLOCKED: real-core target requires Linux` を stderr に出して失敗する。
 - 失敗時の終了コードは **make が返す 2**（レシピ内の `exit 1` は `make: *** ... Error 1` と表示されるだけ）。`TOOLS_DIR` 未指定（空を含む）は `ERROR: TOOLS_DIR is required ...`、スクリプト欠落は python の `can't open file` を出して、いずれも終了コード 2 で止まる。
-- `make test` / `make integration` / `make check` / CI には含まれない。
+- `make test` / `make test-real-core` / `make check` / CI には含まれない（PR #331 の opt-in 方針を維持）。
 - 前提: Geargrafx セットアップ済みで `TOOLS_DIR` を指定、各ルーチンのテストスクリプトが main にマージ済みであること（未マージだと欠落で失敗する。fail-closed）。
 - 実行: `TOOLS_DIR=$HOME/oss-pce-cd-bios-tools make routine-real-core`
 
