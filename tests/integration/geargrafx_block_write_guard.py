@@ -44,8 +44,12 @@ ALLOWED_DST = 0x3E90
 OPS = {"tii": (0, 0x73), "tin": (1, 0xD3), "tia": (2, 0xE3), "tdd": (3, 0xC3), "tai": (4, 0xF3)}
 FORBIDDEN_VALUE = 0x13  # written to VDC AR (register index, no masking issue)
 ALLOWED_VALUE = 0x5A
-PROBE_FLAGS = ["-std=c++11", "-O0", "-fno-rtti", "-D__LIBRETRO__", "-DGG_DISABLE_VGMRECORDER",
-               "-DGG_ENABLE_CDROM_CUEBIN_READAHEAD"]
+# Exactly the flags tools/setup.py build_geargrafx(debugger=True) passes as CFLAGS/CXXFLAGS overrides
+# (the debugger tree's objects are built with these, not with the stock Makefile defaults). Note the
+# debugger build does NOT define GG_DISABLE_DISASSEMBLER; adding it would change object layout.
+DEBUGGER_BUILD_FLAGS = ("-O2 -fPIC -fno-exceptions -D__LIBRETRO__ -DZ7_ST -DZSTD_DISABLE_ASM "
+                        "-DGG_DISABLE_VGMRECORDER -DGG_ENABLE_CDROM_CUEBIN_READAHEAD -pthread").split()
+CXX_EXTRA = ["-std=c++11", "-fno-rtti"]  # CXXFLAGS adds -fno-rtti; the Makefile rule adds -std=c++11
 
 
 def _cases():
@@ -173,15 +177,17 @@ def build_probes(directory):
     shutil.copytree(source / "src", staged / "src")
     # ValueError (not CalledProcessError) so the caller reports BLOCKED/FAIL instead of a traceback.
     build_command(["patch", "-p1", "--batch", "--forward", "-d", str(staged), "-i", str(PATCH)])
-    flags = [*PROBE_FLAGS, "-I" + str(staged / "src"), "-I" + str(source / "src"), "-I" + str(make_dir),
-             "-I" + str(source / "platforms/shared/dependencies/miniz"),
-             "-I" + str(source / "platforms/shared/dependencies/json")]
+    # Upstream's own INCLUDES (relative to the libretro dir, so run g++ from there); staged src first.
+    includes = build_command(["make", "-s", "--no-print-directory", "-C", str(make_dir),
+                              "--eval", "print-includes:;@echo $(INCLUDES)", "print-includes"]).stdout.split()
+    flags = [*CXX_EXTRA, *DEBUGGER_BUILD_FLAGS, "-I" + str(staged / "src"), *includes]
     patched_obj = directory / "huc6280_opcodes_block_guard.o"
-    build_command(["g++", *flags, "-c", str(staged / "src/huc6280_opcodes.cpp"), "-o", str(patched_obj)])
+    build_command(["g++", *flags, "-c", str(staged / "src/huc6280_opcodes.cpp"), "-o", str(patched_obj)],
+                  cwd=str(make_dir))
     link = [patched_obj if p == stock[0] else p for p in objects]
     probe = directory / "block-write-guard-probe"
     build_command(["g++", *flags, str(Path(__file__).with_name(PROBE_SOURCE)), *map(str, link),
-                   "-pthread", "-lm", "-o", str(probe)])
+                   "-lm", "-o", str(probe)], cwd=str(make_dir))
     return probe
 
 
