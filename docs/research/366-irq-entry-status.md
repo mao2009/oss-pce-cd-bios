@@ -59,3 +59,25 @@ pinned core（`geargrafx-b49ae82a…-debugger`、`/home/loach/oss-pce-cd-bios-to
 2. IRQ 版の probe（`tests/integration/geargrafx_irq_entry.cpp` 相当）を新規ファイルとして追加し、合成 ROM で 3 ベクタを実測する。
 3. 実測行を判定器に通し、変異（停止判定の除去、ハンドラ命令の混入）を実コアで確認する。
 4. 結果を本書の表に反映する。実測前の値は UNKNOWN のままとする。
+
+## 実コア実測（自由実行の入口拒否、判定 PASS）
+
+- 検証専用パッチ `tests/integration/patches/geargrafx-b49ae82-irq-entry-guard.patch`（`HandleIRQ` のベクタ選択後、スタック push と PC 変更の前に null 既定のフックを呼ぶ）。ドライバ `tests/integration/geargrafx_irq_entry_guard.py`、プローブ `tests/integration/geargrafx_irq_entry_guard.cpp`。
+- 合成 BIOS / 合成 CD のみ。RunToVBlank による自由実行（デバッガのステップなし）。割込みは IRR に注入し、ゲストは `CLI; BRA *`。
+
+| 変種 | 判定 | 観測の要点 |
+|---|---|---|
+| `armed`（全拒否） | PASS | フック呼出し時と終了後のスタックが 0、PC はゲストループ `$3E01` のまま、ハンドラのマーカ未書込み |
+| `unguarded`（null フック、正例） | PASS | スタックに `$3E,$01,P`（I=0, B=0）、PC はハンドラ末尾 `$3F85`、マーカ `$77` |
+| `masked`（IDR で遮断） | PASS | フック未呼出し、スタック不変 |
+| `region-allow`（ページ1内ハンドラ、正例） | PASS | 許可されて入口成立、ハンドラ実行 |
+| `outregion`（ページ1外ハンドラ、負例） | PASS | フック拒否、スタック不変、ハンドラ未実行 |
+
+- 対象ベクタ: IRQ2（$FFF6）、IRQ1（$FFF8）、TIQ（$FFFA）の 3 つすべて。
+- libretro: BLOCKED（libretro の共有オブジェクトを駆動するハーネスがないため未観測。PASS ではない）。
+
+### 残存（本結果が証明しないこと）
+- 拒否点で観測している。ハンドラ先頭の命令数 0 は、マーカと A が不変であることによる間接判定であり、実行 breakpoint による停止ではない。
+- 割込みは IRR への直接注入。実機の割込み源（タイマ、VDC、CD）の発生経路は検証していない。
+- ST0/ST1/ST2 とブロック転送は対象外（#365 / #367）。#173 は解除しない。
+- `tools/irq_entry_judge.py`（#380）は停止点観測の行形式を前提とするため、本ドライバの行には適用していない。
