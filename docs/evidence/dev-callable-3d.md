@@ -75,11 +75,11 @@ manifest の `source_sha256` の 2 ファイル値も上の SHA-256 と一致す
 
 | 項目 | 値 |
 | --- | --- |
-| スクリプト | `tests/integration/dev_bcdbin_full_sweep.py`（SHA-256 `30f9f3aa12b0df3f8f82e6568fa00bd72ffaf2761bde8a61b6d23b89db6c41a9`） |
+| スクリプト | `tests/integration/dev_bcdbin_full_sweep.py`（SHA-256 `1e578f2861a4c34ad017a12d2d9ace6a16a4d6f5645056e0aace2571bf2c406c`） |
 | 起動方法 | `make dev-bcdbin-sweep`（または `python3 tests/integration/dev_bcdbin_full_sweep.py [ROM パス]`） |
 | CI | `make dev-integration` の末尾から呼ばれるため、CI の `bios-dev` ジョブでも実行される |
 | 移植性 | リポジトリルートはスクリプト自身の位置から求める。特定の作業ディレクトリ（初版の `/home/loach/dev3d-evidence/`）への依存はない |
-| 並列 | 既定で `min(8, CPU 数)` 個のプロセスで実行する（`--jobs` で変更可）。プローブは 1 実行 1 プロセスなので並列化の影響は互いに独立 |
+| 並列 | 既定で `min(8, CPU 数)` 個のプロセスで実行する（`--jobs` で変更可）。プローブは 1 実行 1 プロセスなので並列化の影響は互いに独立。各ワーカースレッドは自分専用の ROM ファイルを使う（スレッド ID でファイル名を分ける。案件番号でファイルを選ぶと、2 つのスレッドが同じファイルを書き換え、プローブが書き込み途中の画像を読むことがある）|
 | 出力 | 集計 JSON は `build/debug/bios-dev/dev-bcdbin-full-sweep.json`（ビルド成果物のため git には含めない） |
 
 ### 3.2 再確認（本 PR で実行、2026-10-21）

@@ -28,6 +28,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -137,14 +138,20 @@ def main():
         (folder / "original.bin").write_bytes(bytes(2352 * 32))
         cue = folder / "original.cue"
         cue.write_text('FILE "original.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
-        case_roms = [folder / f"case-{index}.pce" for index in range(args.jobs)]
+        # one ROM file per worker thread: the pool hands cases to whichever thread is free, so a
+        # case index cannot be used to pin a file to a thread (two threads would write the same
+        # file and the probe could read a half-written image).
+        local = threading.local()
 
-        def worker(index_case):
-            index, case = index_case
-            return run_case(data, reset, entry, cue, probe, case_roms[index % args.jobs], *case)
+        def worker(case):
+            case_rom = getattr(local, "rom", None)
+            if case_rom is None:
+                case_rom = folder / f"case-{threading.get_ident()}.pce"
+                local.rom = case_rom
+            return run_case(data, reset, entry, cue, probe, case_rom, *case)
 
         with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-            for result, error in pool.map(worker, enumerate(cases())):
+            for result, error in pool.map(worker, cases()):
                 (failures if error else results).append(error or result)
     results.sort(key=lambda r: r["label"])
     failures.sort()
