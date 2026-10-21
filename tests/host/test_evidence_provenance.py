@@ -153,8 +153,21 @@ class EvidenceProvenanceTests(unittest.TestCase):
             self.assertResult(check(encode(artifact)), ep.FAIL, 'unexpected scenarios')
 
     def test_deep_or_huge_json_does_not_raise(self):
-        for data in (b'[' * 100000 + b']' * 100000, b'{"rom_sha256": ' + b'9' * 5000 + b'}'):
-            self.assertResult(check(data), ep.FAIL, 'not JSON')
+        # Parsing failure and valid non-object JSON are both safely rejected.
+        deeply_nested = b'[' * 100000 + b']' * 100000
+        outcome = check(deeply_nested)
+        self.assertEqual(outcome['result'], ep.FAIL)
+        self.assertTrue(
+            any('not JSON' in reason or 'not a JSON object' in reason
+                for reason in outcome['reasons']), outcome,
+        )
+        malformed = b'{"rom_sha256": ' + b'9' * 5000 + b'}'
+        self.assertResult(check(malformed), ep.FAIL, 'not JSON')
+
+    def test_valid_nonobject_json_is_rejected(self):
+        for data in (b'[]', b'null', b'"text"', b'42', b'true'):
+            with self.subTest(data=data):
+                self.assertResult(check(data), ep.FAIL, 'not a JSON object')
 
     def test_primary_run_must_be_one_cold_and_one_warm_halt(self):
         bad_runs = ([{'cycle': 'cold', 'reason': 'cd_halt_ok'}] * 2,
