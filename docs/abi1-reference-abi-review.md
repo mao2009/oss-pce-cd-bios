@@ -29,7 +29,12 @@ committed, never uploaded and never printed.
 
 An item with no evidence stays `UNKNOWN`. A static audit is an **upper bound** over
 the hazard opcodes of the reachable code: a clean profile is necessary for a safe
-execution, never sufficient on its own.
+execution, never sufficient on its own. The bound holds only when the walk
+resolved every path; when it could not (an unknown page bank, an undecodable
+byte, an exhausted budget) the profile is a *lower* bound instead, and the
+ledger records that in `unresolved` and `budget_exhausted`. The validator
+refuses a safe verdict for such a profile, so the seven records below cannot
+hide a truncation.
 
 ---
 
@@ -179,11 +184,11 @@ The full table for every slot is in the ledger (`static_items`). The summary:
 | caller preconditions | OBSERVED (none) | OBSERVED (A ≤ 99) | OBSERVED (two BCD digits) | UNKNOWN | UNKNOWN | UNKNOWN | UNKNOWN |
 | expected return value | OBSERVED (X, Y = image version bytes) | UNKNOWN | UNKNOWN | UNKNOWN | UNKNOWN | UNKNOWN | UNKNOWN |
 | possibly changed registers | OBSERVED (X, Y) | OBSERVED (A, X) | OBSERVED (A, X) | UNKNOWN | UNKNOWN | UNKNOWN | UNKNOWN |
-| CPU flag handling | OBSERVED (N, Z) | UNKNOWN | UNKNOWN | UNKNOWN | UNKNOWN | UNKNOWN | UNKNOWN |
+| CPU flag handling | OBSERVED (N, Z) | OBSERVED (C carries the compare) | OBSERVED (C carries the digit test) | UNKNOWN | UNKNOWN | UNKNOWN | UNKNOWN |
 | stack usage | OBSERVED (balanced, 2 byte JSR) | OBSERVED (balanced) | OBSERVED (balanced) | OBSERVED (≥ 2 byte JSR) | OBSERVED | OBSERVED | OBSERVED |
 | MPR change | OBSERVED (none) | OBSERVED (none) | OBSERVED (none) | OBSERVED (switch + restore) | OBSERVED | OBSERVED | OBSERVED |
 | RAM / I/O / VDC / CD side effects | OBSERVED (none) | OBSERVED (1 zero page store) | OBSERVED (2 zero page stores) | OBSERVED (page 1 only) | OBSERVED (page 1 only) | OBSERVED (page 1 only) | OBSERVED (page 1 only) |
-| interrupt or timing dependence | OBSERVED (none) | OBSERVED (none) | OBSERVED (none) | OBSERVED (none) | OBSERVED | OBSERVED | OBSERVED |
+| interrupt or timing dependence | OBSERVED (the callee does not change the interrupt state) | OBSERVED (same) | OBSERVED (same) | OBSERVED (same) | OBSERVED (same) | OBSERVED (same) | OBSERVED (same) |
 | executable / BLOCKED conditions | OBSERVED | OBSERVED | OBSERVED | OBSERVED | OBSERVED | OBSERVED | OBSERVED |
 
 `UNKNOWN` is not a gap in the review; it is the result. The value contract of
@@ -197,10 +202,10 @@ not pretend otherwise.
 | `$1E` | `EX_GETVER` | 3 | `RTS` | none |
 | `$3C` | `EX_BINBCD` | 19 | `RTS` | 1 store to the zero page |
 | `$3D` | `EX_BCDBIN` | 23 | `RTS` | 2 stores to the zero page |
-| `$3F` | `MA_MUL8U` | 36 | `RTS` | 1 cross page call, 1 MPR read, 2 MPR writes, 4 page 1 stores |
-| `$40` | `MA_MUL8S` | 62 | `RTS` | 1 cross page call, 1 MPR read, 2 MPR writes, 5 page 1 stores |
-| `$41` | `MA_MUL16U` | 43 | `RTS` | 1 cross page call, 1 MPR read, 2 MPR writes, 14 page 1 stores |
-| `$42` | `MA_DIV16S` | 89 | `RTS` | 1 cross page call, 1 MPR read, 2 MPR writes, 22 page 1 stores |
+| `$3F` | `MA_MUL8U` | 36 | `RTS` | 1 cross page call, 1 MPR read, 2 MPR writes, 4 page 1 stores (3 of them zero page) |
+| `$40` | `MA_MUL8S` | 62 | `RTS` | 1 cross page call, 1 MPR read, 2 MPR writes, 6 page 1 stores (5 of them zero page) |
+| `$41` | `MA_MUL16U` | 43 | `RTS` | 1 cross page call, 1 MPR read, 2 MPR writes, 15 page 1 stores (14 of them zero page) |
+| `$42` | `MA_DIV16S` | 89 | `RTS` | 1 cross page call, 1 MPR read, 2 MPR writes, 23 page 1 stores (22 of them zero page) |
 
 Not found in any of the seven: a block transfer, a VDC direct write (`ST0`,
 `ST1`, `ST2`), an interrupt enable, an indirect jump, an unresolved branch
@@ -432,7 +437,11 @@ Everything from §10.2, plus:
   read only BIOS bank and its restoration, and still rejects a switch to a
   writable bank;
 * the switch is proved safe against the `#470` refusal path, which is a
-  separate open item.
+  separate open item;
+* the ledger validator is amended in the same change: as it stands, any
+  callee that writes an MPR at run time is forced to `EXECUTION_BLOCKED`, so
+  the rule and the probe have to be lifted together, and the lift has to be
+  reviewed on its own.
 
 ### 10.4 The next APIs to review
 
@@ -466,6 +475,19 @@ not change the interrupt disable state (the behaviour is the caller's) instead
 of claiming that no interrupt can be taken, and the block move classification
 now follows the pinned core, where all five block moves write their
 destination.
+
+A **second** independent pass reviewed the fixes themselves. It confirmed that
+all six findings are closed, that the committed ledger reproduces a fresh audit
+field for field, and that the new accumulator model is neither unsound nor
+over-conservative. It found four further defects, which are fixed here as
+well: the published store counts of `$40`, `$41` and `$42` had been edited to
+the wrong values (they are the hazard counts 6, 15 and 23; the zero page
+counts 5, 14 and 22 are a subset), the published-text guard still missed the
+`ADC`, `RMB*`, `SMB*`, `BBR*` and `BBS*` opcodes, the `prior_evidence` check
+accepted a path outside the repository, and the forcing list of the validator
+did not cover a data dependent or a non page 1 store. The mnemonic list is now
+compared against the pinned cc65 opcode table by a host test, so the claim
+"every operand carrying opcode" is machine checked rather than asserted.
 
 ## 12. Sources
 

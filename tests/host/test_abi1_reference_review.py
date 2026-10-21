@@ -8,6 +8,7 @@ committed without shipping reference code.
 """
 import copy
 import json
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -16,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import abi1_reference_review as review  # noqa: E402
+from environment import dependency_dir  # noqa: E402
 
 
 CONTRACTS = json.loads((ROOT / "spec" / "api_contracts.json").read_text(encoding="utf-8"))
@@ -57,6 +59,36 @@ class CommittedLedgerTests(unittest.TestCase):
                 self.assertTrue(api["execution"]["verdict"].startswith("BLOCKED")
                                 or api["execution"]["verdict"] == "NOT_RUN",
                                 api["api_id"])
+
+
+class OpcodeTableTests(unittest.TestCase):
+    """The published-text guard must cover every operand carrying opcode.
+
+    The list is compared against the pinned cc65 HuC6280 opcode table, so the
+    claim in the code comment and in the report is machine checked instead of
+    asserted. The table lives in the pinned cc65 source tree, which is outside
+    the repository; the test is skipped when that tree is not present.
+    """
+
+    def test_every_operand_carrying_opcode_is_guarded(self):
+        table = dependency_dir("cc65") / "src" / "da65" / "opchuc6280.c"
+        if not table.is_file():
+            self.skipTest(f"pinned cc65 opcode table not available: {table}")
+        rows = re.findall(r'\{\s*"([^"]*)"\s*,\s*(\d+)\s*,', table.read_text(encoding="utf-8"))
+        self.assertGreater(len(rows), 200)
+        # An operand carrying opcode is one the table gives two or more bytes to
+        # and that is not a relative branch, whose operand is a label.
+        relative = {"bra", "bcc", "bcs", "beq", "bne", "bmi", "bpl", "bvc", "bvs",
+                    "bsr", "bbr0", "bbr1", "bbr2", "bbr3", "bbr4", "bbr5", "bbr6",
+                    "bbr7", "bbs0", "bbs1", "bbs2", "bbs3", "bbs4", "bbs5", "bbs6",
+                    "bbs7"}
+        for mnemonic, size in rows:
+            if not mnemonic or mnemonic in relative:
+                continue
+            if int(size) < 2:
+                continue
+            self.assertIn(mnemonic.upper(), review.FORBIDDEN_MNEMONICS,
+                          f"{mnemonic} can carry an operand but is not guarded")
 
 
 class NegativeTests(unittest.TestCase):
@@ -192,6 +224,38 @@ class NegativeTests(unittest.TestCase):
         document["apis"][1]["execution"]["observation_status"] = "OBSERVED_LOCAL_ONLY"
         document["apis"][1]["execution"]["verdict"] = "OBSERVED_LOCAL_ONLY"
         self.assertRejected(document, "execution verdict vocabulary")
+
+    def test_a_fresh_execution_claim_is_rejected_on_its_own(self):
+        # The observation status alone has to be refused, so that re-adding the
+        # form to the status vocabulary alone cannot slip through.
+        document = copy.deepcopy(self.document)
+        document["apis"][1]["execution"]["observation_status"] = "OBSERVED_LOCAL_ONLY"
+        self.assertRejected(document, "observation status vocabulary")
+
+    def test_a_data_dependent_store_forces_the_blocked_verdict(self):
+        document = copy.deepcopy(self.document)
+        document["apis"][0]["static"]["hazard_counts"]["DATA_DEPENDENT_STORE"] = 1
+        self.assertRejected(document, "forces EXECUTION_BLOCKED")
+
+    def test_a_store_outside_page_one_forces_the_blocked_verdict(self):
+        document = copy.deepcopy(self.document)
+        document["apis"][0]["static"]["hazard_counts"]["OTHER_STORE"] = 1
+        self.assertRejected(document, "forces EXECUTION_BLOCKED")
+
+    def test_a_prior_evidence_source_outside_the_repository_is_rejected(self):
+        document = copy.deepcopy(self.document)
+        document["apis"][0]["execution"]["prior_evidence"] = "/etc/passwd"
+        self.assertRejected(document, "not a repository file")
+
+    def test_a_prior_evidence_source_outside_the_repository_by_traversal(self):
+        document = copy.deepcopy(self.document)
+        document["apis"][0]["execution"]["prior_evidence"] = "../../../../etc/passwd"
+        self.assertRejected(document, "not a repository file")
+
+    def test_a_decoded_bit_opcode_in_published_text_is_rejected(self):
+        document = copy.deepcopy(self.document)
+        document["apis"][0]["static_items"]["expected_return_value"]["value"] = "smb0 $42"
+        self.assertRejected(document, "decoded instruction")
 
     def test_a_prior_observation_has_to_name_its_source(self):
         document = copy.deepcopy(self.document)

@@ -65,16 +65,24 @@ HAZARD_NAMES = {"BLOCK_TRANSFER", "VDC_DIRECT_WRITE", "MPR_WRITE", "MPR_READ",
                 "INDIRECT_CONTROL_FLOW", "UNRESOLVED_TARGET", "NO_RETURN"}
 ENTRY_EVIDENCE = {"JUMP_TABLE_3BYTE_JMP"}
 
-# A decoded instruction with an operand, e.g. "LDA $FEC2" or "JSR $CD10".
-# The list covers every mnemonic of the HuC6280 table that can carry an
-# operand, and the match is case insensitive, so neither a lower case copy nor
-# a memory writing opcode slips through.
+# Every mnemonic of the HuC6280 instruction set that can carry an operand.
+# The list is compared against the pinned cc65 opcode table by a host test, so
+# a new opcode cannot slip through silently. A decoded instruction in the
+# published text would be reference code, and the ledger may not carry any.
+FORBIDDEN_MNEMONICS = (
+    "ADC", "AND", "ASL", "BCC", "BCS", "BEQ", "BMI", "BNE", "BPL", "BRA", "BRK",
+    "BVC", "BVS", "BIT", "CLC", "CLD", "CLI", "CLV", "CLA", "CLX", "CLY", "CMP",
+    "CPX", "CPY", "CSH", "CSL", "DEC", "DEY", "DEX", "EOR", "INC", "INX", "INY",
+    "JMP", "JSR", "LDA", "LDX", "LDY", "LSR", "NOP", "ORA", "PHA", "PHP", "PHX",
+    "PHY", "PLA", "PLP", "PLX", "PLY", "ROL", "ROR", "RTI", "RTS", "SBC", "SEC",
+    "SED", "SEI", "SET", "SAX", "SAY", "SXY", "ST0", "ST1", "ST2", "STA", "STX",
+    "STY", "STZ", "TAM", "TMA", "TAX", "TAY", "TDD", "TIA", "TAI", "TII", "TIN",
+    "TRB", "TSB", "TST", "TSX", "TXA", "TXS", "TYA",
+) + tuple(f"RMB{index}" for index in range(8)) + tuple(f"SMB{index}" for index in range(8)) \
+  + tuple(f"BBR{index}" for index in range(8)) + tuple(f"BBS{index}" for index in range(8))
 FORBIDDEN_INSTRUCTION = re.compile(
-    r"\b(?:LDA|LDX|LDY|STA|STX|STY|STZ|SAX|SAY|SXY|JSR|JMP|RTS|RTI|INC|DEC|AND|ORA"
-    r"|EOR|CMP|CPX|CPY|SBC|ASL|LSR|ROL|ROR|TAX|TAY|TXA|TYA|TSX|TXS|PHA|PLA|PHP|PLP"
-    r"|PLX|PLY|SEI|CLI|CLD|SED|CLV|CLC|SEC|SET|CSL|CSH|CLA|CLX|CLY|TAM|TMA|TII|TDD"
-    r"|TIA|TAI|TIN|ST0|ST1|ST2|BSR|BRA|BNE|BEQ|BCC|BCS|BPL|BMI|BVC|BVS|NOP|BRK"
-    r"|BIT|TSB|TRB|TST)\s+(?:\$|#|\()", re.IGNORECASE)
+    r"\b(?:" + "|".join(sorted(FORBIDDEN_MNEMONICS)) + r")\s+(?:\$|#|\()",
+    re.IGNORECASE)
 # Any four digit address in the published text must be a public one: a jump
 # table entry address, or a documented CPU/hardware constant.
 ADDRESS = re.compile(r"(?:\$|0x)([0-9A-Fa-f]{4})(?![0-9A-Fa-f])")
@@ -208,7 +216,8 @@ def validate(document, contracts):
         else:
             _require(prior.strip().upper() != "NONE",
                      f"{api_id}: a prior observation has to name its source")
-            _require((ROOT / prior.strip()).is_file(),
+            source = (ROOT / prior.strip()).resolve()
+            _require(source.is_file() and source.is_relative_to(ROOT.resolve()),
                      f"{api_id}: the prior observation source is not a repository file")
         # The safety verdict has to agree with the static profile. A profile
         # that is not a clean upper bound cannot carry a safe verdict, and a
@@ -218,7 +227,8 @@ def validate(document, contracts):
                      f"{api_id}: an unresolved static profile cannot be EXECUTION_SAFE")
             _require(static["non_returning_states"] == 0,
                      f"{api_id}: a non returning path cannot be EXECUTION_SAFE")
-        for hazard in ("MPR_WRITE", "VDC_DIRECT_WRITE", "BLOCK_TRANSFER", "IRQ_ENABLE"):
+        for hazard in ("MPR_WRITE", "VDC_DIRECT_WRITE", "BLOCK_TRANSFER", "IRQ_ENABLE",
+                       "DATA_DEPENDENT_STORE", "OTHER_STORE"):
             if static["hazard_counts"][hazard]:
                 _require(safety["verdict"] == "EXECUTION_BLOCKED",
                          f"{api_id}: {hazard} forces EXECUTION_BLOCKED")

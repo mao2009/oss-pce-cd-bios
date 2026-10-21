@@ -317,9 +317,9 @@ class SlotAudit:
         self.cross_page_pages = set()
         self.unresolved = []
         self.budget_exhausted = False
-        self.saw_return = False
         self.zero_page_stores = 0
         self.register_swaps = 0
+        self.non_returning_states = 0
 
     def profile(self):
         return {
@@ -476,7 +476,6 @@ class Auditor:
                 emit((target, mpr, acc, ret_stack))
             elif mnemonic in RETURNS:
                 audit.return_kinds.add(mnemonic)
-                audit.saw_return = True
                 if ret_stack:
                     emit((ret_stack[-1], mpr, acc, ret_stack[:-1]))
                 else:
