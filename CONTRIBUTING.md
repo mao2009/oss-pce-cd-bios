@@ -60,7 +60,7 @@ Reference material: [architecture](docs/architecture.md), [spec inventory](docs/
 ## Local development and pull requests
 
 Create a feature branch from current `main`; preserve other contributors' changes.
-Run `make setup`, `make build`, `make test`, `make check`, `make clean`, then
+Run `make setup`, `make build`, `make test` (host-only, no Geargrafx), `make test-real-core` (required real-core gate, pinned Geargrafx from `make setup`), `make check`, `make clean`, then
 `make build`. Also compare `make build MODE=release` with the debug ROM for fixture
 changes. Generated `build/` contents must remain untracked. External source trees
 and their licenses live in the tool cache, never in BIOS source or artifacts.

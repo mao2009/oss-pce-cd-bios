@@ -1,7 +1,8 @@
 """Issue #333 acceptance: host tests never fetch, build, need or run the real Geargrafx.
 
-Real-Geargrafx tests live in tests/integration and run through `make integration-test`,
-which `make test` depends on (and ci.yml runs `make test` in its required verify job).
+Real-Geargrafx tests live in tests/integration and run through `make test-real-core`
+(`make integration` + `make integration-test`). `make test` is host-only and does not depend on them;
+ci.yml and nightly.yml run `make test` and `make test-real-core` as separate required steps.
 """
 import ast
 import re
@@ -39,6 +40,14 @@ def offenders_in(source):
         if REAL_LINE.search(line) and "read_text" not in line:
             found.append(number)
     return sorted(found)
+
+
+def real_core_step(workflow_text):
+    """Text of the workflow step whose run: line is `make test-real-core` (None if absent)."""
+    for block in re.split(r"(?m)^(?=\s*- name:)", workflow_text):
+        if re.search(r"(?m)^\s*run: make test-real-core\s*$", block):
+            return block
+    return None
 
 
 class DetectorTests(unittest.TestCase):
@@ -91,9 +100,16 @@ class HostIsolationTests(unittest.TestCase):
         self.assertRegex(makefile, r"(?m)^integration-test:\n\t[^\n]*discover -s tests/integration")
 
     def test_ci_required_job_runs_host_and_real_core_gates(self):
-        ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        self.assertRegex(ci, r"run: make test\n")
-        self.assertRegex(ci, r"run: make test-real-core\n")
+        for workflow in (".github/workflows/ci.yml", ".github/workflows/nightly.yml"):
+            with self.subTest(workflow=workflow):
+                text = (ROOT / workflow).read_text(encoding="utf-8")
+                self.assertRegex(text, r"run: make test\n")
+                self.assertRegex(text, r"run: make test-real-core\n")
+                step = real_core_step(text)
+                self.assertIsNotNone(step, f"{workflow}: no step runs make test-real-core")
+                # The real-core gate must be required: no continue-on-error, no if: guard on its step.
+                self.assertNotRegex(step, r"(?m)^\s*(?:-\s+)?continue-on-error:", f"{workflow}: real-core step is optional")
+                self.assertNotRegex(step, r"(?m)^\s*(?:-\s+)?if:", f"{workflow}: real-core step is guarded by if:")
 
 
 if __name__ == "__main__":

@@ -51,7 +51,7 @@ def cc65_skip_reason():
 
 
 def cc65_required():
-    """True in required CI (`make test` sets it): a missing cc65 is a FAILURE, never a SKIP."""
+    """True in required CI (`make test` and `make test-real-core` set it): a missing cc65 is a FAILURE, never a SKIP."""
     return os.environ.get(REQUIRE_CC65_ENV) == "1"
 
 
