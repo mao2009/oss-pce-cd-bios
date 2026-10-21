@@ -2,15 +2,15 @@
 
 A redistributable **PC Engine / TurboGrafx-CD System Card BIOS replacement** built from original and properly licensed reusable OSS code.
 
-> **Status: development-only firmware, not a compatible BIOS.** Main builds an original HuCARD fixture and a separate 256 KiB System Card DEV ROM with 81 candidate jump-table entries: **six DEV-only OSS implementations** (`EX_GETVER` at slot `$1E`, entry `$E05A`; `EX_BINBCD` at `$3C`; `EX_BCDBIN` at `$3D`; `MA_MUL8U` at `$3F`; `MA_MUL16U` at `$41`; `MA_DIV16S` at `$42`) and **75 nonreturning stubs**. None is approved or ABI-verified. Pinned Geargrafx real-core tests observe `EX_GETVER` caller return on cold/warm runs, alongside separate startup and synthetic-CD READ(6) → RAM diagnostics. **Full reference-BIOS ABI compatibility, callable CD services, BIOS-mediated disc boot, retail-game compatibility and release eligibility are not established.** See the [dated implementation status](docs/status.md).
+> **Status: development-only firmware, not a compatible BIOS.** Main builds an original HuCARD fixture and a separate 256 KiB System Card DEV ROM with 81 candidate jump-table entries: **seven DEV-only OSS implementations** (`EX_GETVER` at slot `$1E`, entry `$E05A`; `EX_BINBCD` at `$3C`; `EX_BCDBIN` at `$3D`; `MA_MUL8U` at `$3F`; `MA_MUL8S` at `$40`, entry `$E0C0`; `MA_MUL16U` at `$41`; `MA_DIV16S` at `$42`) and **74 nonreturning stubs**. None is approved or ABI-verified. Pinned Geargrafx real-core tests observe `EX_GETVER` caller return on cold/warm runs, alongside separate startup and synthetic-CD READ(6) → RAM diagnostics. **Full reference-BIOS ABI compatibility, callable CD services, BIOS-mediated disc boot, retail-game compatibility and release eligibility are not established.** See the [dated implementation status](docs/status.md).
 
 ## Latest merged progress (measured 2026-10-21, main `2b1d1db`)
 
-**DEV ROM implementations: 6 / 81 (`EX_GETVER` `$1E`, `EX_BINBCD` `$3C`, `EX_BCDBIN` `$3D`, `MA_MUL8U` `$3F`, `MA_MUL16U` `$41`, `MA_DIV16S` `$42`), DEV-only and UNVERIFIED; 0 approved (DEV_CALLABLE); 0 ABI VERIFIED.** The other **75 entries are nonreturning stubs**. `CD_RESET`, `CD_BASE`, `CD_READ`, BIOS-mediated homebrew boot, retail-game compatibility and releasable firmware remain unimplemented or unverified.
+**DEV ROM implementations: 7 / 81 (`EX_GETVER` `$1E`, `EX_BINBCD` `$3C`, `EX_BCDBIN` `$3D`, `MA_MUL8U` `$3F`, `MA_MUL8S` `$40`, `MA_MUL16U` `$41`, `MA_DIV16S` `$42`), DEV-only and UNVERIFIED; 0 approved (DEV_CALLABLE); 0 ABI VERIFIED.** The other **74 entries are nonreturning stubs**. `CD_RESET`, `CD_BASE`, `CD_READ`, BIOS-mediated homebrew boot, retail-game compatibility and releasable firmware remain unimplemented or unverified.
 
 What improved since the October 17 status report:
 
-- **Standalone HuC6280 routines**, including `MA_MUL8S`, are tested independently ([#328](https://github.com/mao2009/oss-pce-cd-bios/pull/328), [#331](https://github.com/mao2009/oss-pce-cd-bios/pull/331)). `EX_BINBCD` (`$3C`), `EX_BCDBIN` (`$3D`) and `MA_MUL8U` (`$3F`) are DEV ROM overrides only; they are **not** a verified BIOS jump-table entry.
+- **Standalone HuC6280 routines**, including `MA_MUL8S`, are tested independently ([#328](https://github.com/mao2009/oss-pce-cd-bios/pull/328), [#331](https://github.com/mao2009/oss-pce-cd-bios/pull/331)). `EX_BINBCD` (`$3C`), `EX_BCDBIN` (`$3D`), `MA_MUL8U` (`$3F`) and `MA_MUL8S` (`$40`) are DEV ROM overrides only; they are **not** a verified BIOS jump-table entry.
 - **Reference BIOS execution safeguards:** write-path inventory ([#360](https://github.com/mao2009/oss-pce-cd-bios/pull/360)) and pre-side-effect probe evaluation ([#362](https://github.com/mao2009/oss-pce-cd-bios/pull/362)). Unresolved paths keep reference-JSR execution **BLOCKED**.
 - **Evidence gates:** measurement-point/log binding ([#371](https://github.com/mao2009/oss-pce-cd-bios/pull/371)) and observation-kind/claim-field validation ([#359](https://github.com/mao2009/oss-pce-cd-bios/pull/359)). These checks do **not** independently authenticate a producer or certify reference ABI compatibility.
 - **Publication safeguards:** Pages validation/build/deploy privilege separation ([#374](https://github.com/mao2009/oss-pce-cd-bios/pull/374)) and fail-closed artifact-action checks ([#349](https://github.com/mao2009/oss-pce-cd-bios/pull/349)), each within its documented coverage.
@@ -93,7 +93,7 @@ to publish a BIOS because most APIs and System Card boot remain unimplemented.
 On **main** the additional, development-only targets are:
 
 ```sh
-make dev-rom                    # 256 KiB; 6 DEV overrides ($1E, $3C, $3D, $3F, $41, $42) + 75 nonreturning stubs
+make dev-rom                    # 256 KiB; 7 DEV overrides ($1E, $3C, $3D, $3F, $40, $41, $42) + 74 nonreturning stubs
 make dev-test                   # host API tests plus DEV ROM real-core integration
 make dev-integration            # EX_GETVER cold/warm caller/return observations
 make dev-startup-integration    # separate reset/MPR/stack checkpoint
