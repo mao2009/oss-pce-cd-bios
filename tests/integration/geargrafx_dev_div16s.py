@@ -7,7 +7,9 @@ The expectation is this project's own spec (src/overrides/slot_42.s and tools/ma
 BIOS MA_DIV16S ABI, which stays UNVERIFIED. Every 16-bit pair is a valid input; the divide-by-zero and -32768/-1 cases are
 defined by the project contract and are checked as such.
 Precondition under test: S at routine entry >= $07. The two boundary cases run last at caller SP=$0B (entry S=$07).
-Scope: 22 real-core cases (20 at caller SP=$FF, 2 at the boundary) plus the no-CLD mutant. Checked: I and D (set by the
+Scope: 22 real-core cases (20 at caller SP=$FF, 2 at the boundary), the no-CLD mutant, and five arithmetic mutants
+(ARITH_MUTANTS, Issue #458: each is one same-length instruction edit in the DEV ROM body, and at least one case must
+reject it). Checked: I and D (set by the
 guest), C, V, N, Z. NOT checked: T and B. T cannot be set safely before the call, because the T flag changes the
 routine's own instructions; the routine restores the caller's P with PLP, but the test does not exercise that.
 This is NOT an exhaustive test of the assembled routine; the host model is tests/host/test_ma_div16s.py.
@@ -45,6 +47,16 @@ CASES = [  # (dividend, divisor) as unsigned 16-bit encodings
 ]
 # Inputs whose BCD interpretation differs from binary (checked on the real core: each mutant case mismatches).
 MUTANT_CASES = [(0xFF9C, 0xFFF9), (0xFFFF, 0xFFFF), (0x9999, 0x0001)]
+# Arithmetic mutants (Issue #458). Each pattern is the machine code of the instruction(s) in src/overrides/slot_42.s
+# (the comment names the source lines). The pattern must occur exactly once in the ROM; the listed byte is replaced by a
+# same-length value (a branch opcode or an immediate), so the body layout does not change.
+ARITH_MUTANTS = [  # (name, pattern, index of the byte to change in the pattern, new byte)
+    ("a_restoring_bcc_to_bcs", bytes.fromhex("BD0221DD0A2190"), 6, 0xB0),   # lda $2102,x; cmp $210A,x; bcc @no_sub
+    ("b_quotient_negate_skipped", bytes.fromhex("BD04212902F0"), 5, 0x80),  # lda $2104,x; and #$02; beq @qpos
+    ("c_remainder_negate_skipped", bytes.fromhex("BD04212904F0"), 5, 0x80),  # lda $2104,x; and #$04; beq @rpos
+    ("d_dividend_sign_skipped", bytes.fromhex("BD052110"), 3, 0x80),        # lda $2105,x; bpl @dividend_pos
+    ("e_overflow_flag_removed", bytes.fromhex("BD042109409D0421"), 4, 0x00),  # lda $2104,x; ora #$40 -> ora #$00
+]
 Y_PRESET = 0xA5
 CALLER_SP = 0xFF
 BOUNDARY_SP = 0x0B  # caller SP such that entry S = $0B - 4 = $07 (2 divisor pushes, then JSR pushes 2)
@@ -98,6 +110,14 @@ def check(label, rows, halt, dividend, divisor, sp=CALLER_SP):
     want = (q16 & 0xFF, q16 >> 8, expected_p(q16, c, v) & 0xCF, Y_PRESET, r16 >> 8, r16 & 0xFF, sp)
     if observed != want:
         raise Mismatch(f"{label}: A/X/P/Y/remHI/remLO/SP observed {observed}, expected {want}")
+
+
+def find_one(data, pattern, label):
+    """Offset of the single occurrence of `pattern` in the ROM. Zero or several occurrences are a failure."""
+    hits = [i for i in range(len(data) - len(pattern) + 1) if data[i:i + len(pattern)] == pattern]
+    if len(hits) != 1:
+        raise ValueError(f"{label}: mutant pattern found {len(hits)} times in the DEV ROM, want exactly 1")
+    return hits[0]
 
 
 def run_case(probe, base, folder, cue, reset, label, entry, dividend, divisor, sp=CALLER_SP):
@@ -159,12 +179,27 @@ def main():
                              f"(expected {len(MUTANT_CASES)} mismatches)")
         evidence["negative_cases"].append({"case": "42_without_CLD_D1", "rejected": len(rejected),
                                            "first": rejected[0]})
+        # Issue #458: every arithmetic mutant must be rejected by at least one real-core case (value mismatch only).
+        for name, pattern, index, new in ARITH_MUTANTS:
+            mutant = bytearray(data)
+            mutant[find_one(data, pattern, name) + index] = new
+            catching = []
+            for dividend, divisor in CASES:
+                try:
+                    run_case(probe, bytes(mutant), folder, cue, reset, f"{name}-{dividend:04x}-{divisor:04x}", entry,
+                             dividend, divisor)
+                except Mismatch:
+                    catching.append(f"{dividend:04X}/{divisor:04X}")
+            if not catching:
+                raise ValueError(f"{name}: no test case rejects the mutant")
+            evidence.setdefault("arithmetic_mutants", []).append({"mutant": name, "rejected_by": catching})
     (args.rom.parent / "geargrafx-dev-div16s-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
     total = len(CASES) + 2  # two boundary cases at caller SP=$0B (entry S=$07)
     print(f"PASS real Geargrafx DEV ROM: MA_DIV16S slot $42 {total} cases ({len(CASES)} at caller SP=$FF, 2 at caller "
           f"SP=$0B boundary; precondition S>=$07 at entry); quotient, remainder, P (C/V/N/Z; I/D kept; T/B not tested), "
           f"Y, SP, MPR1/MPR7 checked; "
-          f"no-CLD mutant rejected {len(rejected)}/{len(MUTANT_CASES)}")
+          f"no-CLD mutant rejected {len(rejected)}/{len(MUTANT_CASES)}; "
+          f"arithmetic mutants rejected {len(evidence['arithmetic_mutants'])}/{len(ARITH_MUTANTS)}")
 
 
 if __name__ == "__main__":
