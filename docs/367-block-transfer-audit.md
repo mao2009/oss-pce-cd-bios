@@ -19,7 +19,7 @@
 | ファイル | 内容 |
 |----------|------|
 | `tools/block_xfer_audit.py` | 5 命令の書込み先集合（過大近似）、MPR から許可述語を作る関数、静的判定。出力は REFUSED_STATIC / PERMITTED_STATIC_ONLY と gate=BLOCKED のみ |
-| `tests/host/test_block_xfer_audit.py` | 正例・負例（窓外、ハードウェアページ、ROM バンク、TDD 下方向、16bit ラップ）・変異例（ハードウェア判定の欠落、窓の欠落、TDD 方向）。16 件 |
+| `tests/host/test_block_xfer_audit.py` | 正例・負例（窓外、ハードウェアページ、ROM バンク、TDD 下方向、16bit ラップ）・変異例（ハードウェア判定の欠落、窓の欠落、TDD 方向）。19 件 |
 | `docs/367-block-transfer-audit.md` | 本書 |
 
 既存の実コアプローブ（`tests/integration/`）、`spec/`、共有フック（#365）、DEV ROM ジャンプテーブルには一切触れていない。どのルーチンも DEV ROM に配線していない（配線数 0）。DEV_CALLABLE も主張しない。
