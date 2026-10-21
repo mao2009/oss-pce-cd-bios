@@ -271,25 +271,21 @@ class Slot00NeverReportsSuccessTests(unittest.TestCase):
         boot_values = (True, False, "yes", None)
         error_values = (None, "NO_MEDIA", "MALFORMED", M.UNKNOWN, "PASS", [])
         executed_values = (False, True, 0)
+        schema_values = (M.EVIDENCE_SCHEMA, "oss-pce-cd-bios/other/v9")
+        slot_values = (M.SLOT, "$01")
         seen = set()
         for kind, case in CASE.items():
             base = truthful(case)
-            for sha, boot, error, executed in itertools.product(sha_values, boot_values, error_values,
-                                                                executed_values):
+            for sha, boot, error, executed, schema, slot in itertools.product(
+                    sha_values, boot_values, error_values, executed_values, schema_values, slot_values):
                 sha = case["expected_media_sha256"] if sha == "__expected__" else sha
-                record = dict(base, media_sha256=sha, boot_claimed=boot, error_code=error, executed_callee=executed)
+                record = dict(base, media_sha256=sha, boot_claimed=boot, error_code=error,
+                              executed_callee=executed, schema=schema, slot=slot)
                 status, _ = M.judge(case, record)
                 seen.add(status)
                 if status == "MODEL_CONSISTENT":
                     self.assertEqual(record, base, f"{kind}: non-truthful record reported consistent")
         self.assertEqual(seen, {"BLOCKED", "REJECTED", "MODEL_CONSISTENT"})
-
-    def test_boot_claim_without_valid_media_is_never_consistent(self):
-        for kind in ("absent", "malformed"):
-            for error in (None, "NO_MEDIA", "MALFORMED"):
-                with self.subTest(kind=kind, error=error):
-                    record = dict(truthful(CASE[kind]), boot_claimed=True, error_code=error)
-                    self.assertNotEqual(M.judge(CASE[kind], record)[0], "MODEL_CONSISTENT")
 
 
 if __name__ == "__main__":
