@@ -1045,16 +1045,25 @@
       "candidate_name": "MA_MUL8U",
       "state": "NOT_READY",
       "abi_contract": {
-        "status": "UNKNOWN",
+        "status": "PROJECT_SPEC_ONLY",
         "note": "reference System Card contract not verified; DEV-only project spec"
       },
-      "implementation": null,
-      "host_evidence": [],
-      "real_core_evidence": [],
+      "implementation": {
+        "source": "src/overrides/slot_3F.s",
+        "license": "MIT (repository LICENSE)",
+        "provenance": "project-own spec, Issue #436 (same shift-add as src/math/ma_mul8u.s, state on stack)"
+      },
+      "host_evidence": [
+        "tests/host/test_ma_mul8u_dev.py"
+      ],
+      "real_core_evidence": [
+        "tests/integration/geargrafx_dev_mul8u.py"
+      ],
       "approval": {
         "approved_by": null,
         "review_ref": null
-      }
+      },
+      "note": "DEV ROM implemented and real-core tested; NOT_READY until owner approval is recorded"
     },
     {
       "id": 64,
@@ -1093,16 +1102,25 @@
       "candidate_name": "MA_DIV16S",
       "state": "NOT_READY",
       "abi_contract": {
-        "status": "UNKNOWN",
+        "status": "PROJECT_SPEC_ONLY",
         "note": "reference System Card contract not verified; DEV-only project spec"
       },
-      "implementation": null,
-      "host_evidence": [],
-      "real_core_evidence": [],
+      "implementation": {
+        "source": "src/overrides/slot_42.s",
+        "license": "MIT (repository LICENSE)",
+        "provenance": "project-own spec, Issue #447 (same restoring division as src/math/ma_div16s.s, MATHLIB segment replaced by OVERRIDES)"
+      },
+      "host_evidence": [
+        "tests/host/test_ma_div16s.py"
+      ],
+      "real_core_evidence": [
+        "tests/integration/geargrafx_dev_div16s.py"
+      ],
       "approval": {
         "approved_by": null,
         "review_ref": null
-      }
+      },
+      "note": "DEV ROM implemented and real-core tested; NOT_READY until owner approval is recorded"
     },
     {
       "id": 67,

@@ -30,7 +30,7 @@ class LedgerTests(unittest.TestCase):
 
     def test_counts_separate_dev_rom_from_approval(self):
         summary = dev.summary(base(), OVERRIDES)
-        self.assertEqual(3, summary["dev_rom_callable"])
+        self.assertEqual(5, summary["dev_rom_callable"])
         self.assertEqual(0, summary["dev_callable_approved"])
         self.assertEqual(0, summary["abi_verified"])
         self.assertIs(False, summary["release_eligible"])
@@ -183,6 +183,38 @@ class LedgerTests3C(unittest.TestCase):
         ledger = base()
         entry(ledger, 0x3C)["implementation"]["source"] = "src/ex_bcdbin.s"
         self.assertTrue(any("implementation source" in p for p in dev.validate(ledger, SLOTS, OVERRIDES)))
+
+
+class AbiVerifiedDerivedTests(unittest.TestCase):
+    """abi_verified is computed from ledger rows, not hardcoded. A VERIFIED mutant must be rejected even with evidence."""
+
+    def _evidenced_verified_mutant(self):
+        ledger = base()
+        slot = entry(ledger, 0x3D)
+        slot["abi_contract"]["status"] = "VERIFIED"
+        slot["state"] = "DEV_CALLABLE"
+        slot["approval"] = {"approved_by": "owner", "review_ref": "issue-439"}
+        slot["host_evidence"] = ["tests/host/test_dev_implementations.py"]
+        slot["real_core_evidence"] = ["tests/host/test_dev_implementations.py"]
+        return ledger
+
+    def test_mutant_verified_row_with_evidence_is_rejected(self):
+        ledger = self._evidenced_verified_mutant()
+        problems = dev.validate(ledger, SLOTS, OVERRIDES)
+        self.assertTrue(any("VERIFIED" in p and "slot 61" in p for p in problems), problems)
+
+    def test_mutant_verified_row_is_counted_by_summary(self):
+        ledger = self._evidenced_verified_mutant()
+        self.assertEqual(1, dev.summary(ledger, OVERRIDES)["abi_verified"])
+
+    def test_mutant_verified_row_without_evidence_is_rejected(self):
+        ledger = base()
+        entry(ledger, 0x3C)["abi_contract"]["status"] = "VERIFIED"
+        self.assertTrue(any("VERIFIED" in p for p in dev.validate(ledger, SLOTS, OVERRIDES)))
+        self.assertEqual(1, dev.summary(ledger, OVERRIDES)["abi_verified"])
+
+    def test_real_ledger_has_zero_verified_rows(self):
+        self.assertEqual(0, dev.summary(base(), OVERRIDES)["abi_verified"])
 
 
 if __name__ == "__main__":
