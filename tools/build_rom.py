@@ -32,8 +32,10 @@ EXIT_OK, EXIT_ERROR, EXIT_BLOCKED = 0, 2, 3  # BLOCKED = expected release refusa
 # What the DEV images (bios-dev and the diagnostic probes) actually implement. They link
 # src/overrides/*.s through assemble_api_objects(), so "NONE" would be false. This is one
 # diagnostic slot, not ABI compatibility; the ROM stays abi: UNVERIFIED / release_eligible: false.
-API_IMPLEMENTATION = ('slot_1E EX_GETVER, slot_3C EX_BINBCD, slot_3D EX_BCDBIN and slot_3F MA_MUL8U '
-                      '(project-own, DEV only); 77 slots unimplemented')
+_DEV_OVERRIDE_SLOTS = [int(p.stem.removeprefix('slot_'), 16) for p in (ROOT / 'src' / 'overrides').glob('slot_*.s')]
+API_IMPLEMENTATION = ('slot_1E EX_GETVER, slot_3C EX_BINBCD, slot_3D EX_BCDBIN, slot_3F MA_MUL8U, '
+                      'slot_41 MA_MUL16U and slot_42 MA_DIV16S (project-own, DEV only); '
+                      f'{81 - len(set(_DEV_OVERRIDE_SLOTS))} slots unimplemented')
 
 
 class ReleaseBlocked(ValueError):

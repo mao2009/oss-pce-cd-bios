@@ -1,8 +1,8 @@
 # Issue #366: 割込み入口（IRQ2 / IRQ1 / TIQ）の副作用前遮断 実測ステータス
 
 - 対象 Issue: #366（親: #173、計画: #361 V03）
-- 状態: 判定器は main 済み（#380, d95ae8c）。実コアでの入口停止の実測は **BLOCKED**（未計測）。
-- 本書の位置づけ: #366 の受入条件を、既存の判定器・テスト・実コア観測の成果に照らして棚卸しした記録。新たな実コア値は含まない。
+- 状態: 判定器は main 済み（#380, d95ae8c）。実コアでの入口拒否は、下部の「実コア実測」節で PASS（PR #444）。ただし受入条件 1〜3 の「ハンドラ先頭での停止」は未実測（拒否点での観測）。
+- 本書の位置づけ: 受入条件の棚卸し（下表は PR #415 時点の記録）と、PR #444 による実コア実測の記録。
 - 純正 BIOS の JSR・割込みハンドラは一切実行していない。`BLOCKED_ABI` と `release_eligible=false` を維持する。
 
 ## 既存成果（main）
@@ -26,7 +26,7 @@
 | 4 | debugger ビルドでのみ成立と明記し、libretro は BLOCKED | **充足（判定器レベル）** | libretro は常に BLOCKED。理由は GG_DISABLE_DISASSEMBLER による実行 breakpoint と PC API の欠如。 |
 | 5 | 変異テストで停止判定を外すと検出される | **充足（判定器レベル）** | 13 変異の拒否、および「停止判定を `if False` に置換すると偽の PASS になる」ことを確認するテスト。実コアに対する変異は未実施。 |
 
-## 実コアで必要な観測（未実装の probe の仕様）
+## 実コアで必要な観測（PR #415 時点の仕様。入口拒否は PR #444 で実測済み、停止点の実測は未了）
 
 pinned core（`geargrafx-b49ae82a…-debugger`、`/home/loach/oss-pce-cd-bios-tools/` 配下に存在）で、次の 1 行観測を取る必要がある。
 
@@ -53,9 +53,34 @@ pinned core（`geargrafx-b49ae82a…-debugger`、`/home/loach/oss-pce-cd-bios-to
 - `docs/geargrafx-contract-evidence.md` の IRQ 記述（SP `$FF→$FC→$FF`、積まれる P/PC、IRR ビット）は、pinned core の既存 contracts ハーネスによる観測と文書値である。本 Issue の「ハンドラ命令 0 個で停止」の観測とは別物であり、代用しない。
 - 参照 BIOS の割込み契約（戻り・フラグ・レジスタ）は未確認であり、`BLOCKED_ABI` のままとする。
 
-## 次の作業（依存解消後）
+## 次の作業（PR #415 時点の計画。停止点の実測を除き、下記は未着手）
 
 1. #367 / #365 の駆動ループの interface を確定させる。
 2. IRQ 版の probe（`tests/integration/geargrafx_irq_entry.cpp` 相当）を新規ファイルとして追加し、合成 ROM で 3 ベクタを実測する。
 3. 実測行を判定器に通し、変異（停止判定の除去、ハンドラ命令の混入）を実コアで確認する。
 4. 結果を本書の表に反映する。実測前の値は UNKNOWN のままとする。
+
+## 実コア実測（自由実行の入口拒否、判定 PASS）
+
+- 検証専用パッチ `tests/integration/patches/geargrafx-b49ae82-irq-entry-guard.patch`（`HandleIRQ` のベクタ選択後、スタック push と PC 変更の前に null 既定のフックを呼ぶ）。ドライバ `tests/integration/geargrafx_irq_entry_guard.py`、プローブ `tests/integration/geargrafx_irq_entry_guard.cpp`。
+- 合成 BIOS / 合成 CD のみ。RunToVBlank による自由実行（デバッガのステップなし）。割込みは IRR に注入し、ゲストは `CLI; BRA *`。
+
+| 変種 | 判定 | 観測の要点 |
+|---|---|---|
+| `armed`（全拒否） | PASS | フック呼出し時と終了後のスタックが 0、PC はゲストループ `$3E01` のまま、ハンドラのマーカ未書込み |
+| `unguarded`（null フック、正例） | PASS | スタックに `$3E,$01,P`（I=0, B=0）、PC はハンドラ末尾 `$3F85`、マーカ `$77` |
+| `masked`（IDR で遮断） | PASS | フック未呼出し、スタック不変 |
+| `region-allow`（ページ1内ハンドラ、正例） | PASS | 許可されて入口成立、ハンドラ実行 |
+| `outregion`（ページ1外ハンドラ、負例） | PASS | 本プローブのフック方針（ページ1外を拒否）が HandleIRQ の戻り値として効くことの確認。ガード方針そのものの妥当性は検証していない。スタック不変、ハンドラ未実行 |
+
+- 対象ベクタ: IRQ2（$FFF6）、IRQ1（$FFF8）、TIQ（$FFFA）の 3 つすべて。
+- ビルド: tools/setup.py の debugger 構成と同じ CFLAGS/CXXFLAGS を上書きで指定（上書きフラグに GG_DISABLE_DISASSEMBLER は含まれない。デバッガ機能の有効性はビルド時に検証していない。本判定はブレークポイントに依存しない）。プローブは同じ CXXFLAGS と INCLUDES でコンパイル。
+- libretro: BLOCKED（libretro の共有オブジェクトを駆動するハーネスがないため未観測。PASS ではない）。
+- 上流 Makefile: 上流 Makefile（`platforms/libretro/Makefile`）は本リポジトリに含まれない。ドライバは `tools/setup.py` が取得・検証した pinned debugger ツリーの Makefile に対して `make --eval` で `OBJECTS` と `INCLUDES` を取得し、CFLAGS/CXXFLAGS を上書きする。よって本結果は、その pinned ツリーの Makefile（revision `b49ae82a`）に依存する。
+- ライセンス: 検証パッチと `tests/integration/patches/LICENSE`（GPL-3.0）は GPL-3.0 下に置く。MIT のリポジトリ本体（ルート `LICENSE`）とは分離する。パッチ済みコアのビルドや配布は GPL-3.0 の条件（対応ソース提供など）を満たす必要があるが、その適合性は本リポジトリでは確認していない。
+
+### 残存（本結果が証明しないこと）
+- 拒否点で観測している。ハンドラ先頭の命令数 0 は、マーカと A が不変であることによる間接判定であり、実行 breakpoint による停止ではない。
+- 割込みは IRR への直接注入。実機の割込み源（タイマ、VDC、CD）の発生経路は検証していない。
+- ST0/ST1/ST2 とブロック転送は対象外（#365 / #367）。#173 は解除しない。
+- `tools/irq_entry_judge.py`（#380）は停止点観測の行形式を前提とするため、本ドライバの行には適用していない。

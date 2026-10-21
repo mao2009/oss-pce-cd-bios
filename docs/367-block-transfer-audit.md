@@ -8,7 +8,9 @@
 ## 結論（要約）
 
 - 5 命令はいずれも **1 命令内で length 回のバイト書込みを行う**（複数書込み）。静的な範囲検査では、書込み先が許可域外に届くかを命令実行前に判定できる（`tools/block_xfer_audit.py`）。
-- **命令途中で停止できるかは未実測（UNMEASURED）。** 実コア（pinned Geargrafx）での実測は本ワーカーでは未実施。WSL は worktree 隔離エージェントから拒否された（NOT_RUN）。
+- **実コアでの書込み前遮断は実測対象になった（旧記述の NOT_RUN は置き換え）。** `tests/integration/geargrafx_block_write_guard.py`（`make block-write-guard`、`make integration` に含まれる）が pinned Geargrafx（b49ae82）と検証専用パッチ付きの実コアで、TII/TIN/TIA/TDD/TAI の 1 バイト転送を合成メディアで実行する。期待 PASS は 15 ケース（各命令 3 種: 拒否・フックなし対照・許可）。
+- **命令途中で停止できるかは未実測（UNMEASURED）のまま。** driver は書込み前の拒否のみを測る。
+- 試験の拒否方針（書込み先が $FF ページの場合に拒否）は probe の中に書かれており、本番ゲートの証拠ではない。driver は「コアのフック点が書込み前に拒否できる」ことだけを示す。
 - 静的検査の結果は PASS ではない。`gate` は常に BLOCKED。
 - デバイス起点 RAM 書込みの監査は未実施（W17 は UNKNOWN のまま）。
 
@@ -39,10 +41,12 @@
 
 | 受入条件 | 状況 | 根拠 |
 |----------|------|------|
-| 5 命令の命令途中停止の実測 | **NOT_RUN / BLOCKED**（未測定。probe に TII 等の実行モードがない） | `tests/integration/geargrafx_preside_probe.py` の V04 は NOT_RUN |
-| 各バイト書込みが許可外（ハードウェアページ・ROM バンク）に届かない（負例） | **静的のみ**（host モデル。実コアでは未検証） | `tests/host/test_block_xfer_audit.py` |
+| 5 命令の命令途中停止の実測 | **未実施（UNMEASURED）**。driver は命令内の書込み前拒否のみを測り、途中停止は測らない | `geargrafx_block_write_guard.py` の LIMIT 行 |
+| 書込み先が $FF ページの 1 バイト転送が書込み前に拒否される（負例） | **実コアの driver で検証対象**（`*-forbidden-armed` 5 件 + 対照 `*-forbidden-unguarded` 5 件）。拒否は VDC AR 不変で確認 | `tests/integration/geargrafx_block_write_guard.py` |
+| 許可域（WRAM）への 1 バイト転送が届く（正例） | **実コアの driver で検証対象**（`*-allowed-armed` 5 件） | 同上 |
+| 複数バイト・他バンク・TIA/TAI の交互順序 | **静的のみ**（host モデル。実コアでは未検証） | `tests/host/test_block_xfer_audit.py` |
 | デバイス起点 RAM 書込みの監査列挙 | **未実施**（W17 は UNKNOWN） | 下記 |
-| 変異テストで偽 PASS が出ないこと | **host 変異テスト 3 件が成功（静的のみ、実コア証拠ではない）** | `MutationTest` 3 件 |
+| 変異テストで偽 PASS が出ないこと | host 変異テスト 3 件（静的のみ）に加え、実コア driver が armed 判定に変異検査を適用する | `MutationTest` 3 件、driver の `mutation_test` |
 
 ## デバイス起点 RAM 書込み（W17）
 
@@ -52,12 +56,12 @@ CD/ADPCM 転送の書込み経路は **未監査（UNKNOWN）**。遮断可否�
 ## 残課題と BLOCKED 理由
 
 BLOCKED 理由:
-1. 命令途中で停止するかが未実測（実コア実測は WSL 拒否のため NOT_RUN）。
+1. 命令途中で停止するかが未実測。書込み前拒否は実コア driver で測定対象になった（上記）。
 2. 実行時オペランドの復号（src/dst/length）が未配線。静的検査は入力が既知のときのみ使える。
 3. デバイス起点書込みが未監査。
 
 解除条件:
-- 実コアで 5 命令それぞれに対し、許可外書込みが各バイトで着地しないこと、および命令途中の停止有無を WSL 実行で記録する（`tools/jsr_observation.py` のスキーマ）。
+- 実コアで 5 命令それぞれについて、複数バイト・他バンクを含めて許可外書込みが着地しないことを記録する。命令途中の停止有無も WSL 実行で記録する（`tools/jsr_observation.py` のスキーマ）。
 - TIA の交互順序・長さ 0 の規則を実コアで確認し、過大近似を正確な集合に置き換える。
 - デバイス起点の RAM 書込み経路を列挙し、各経路の遮断可否を判定する（別 Issue）。
 
