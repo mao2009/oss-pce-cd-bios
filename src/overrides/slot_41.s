@@ -9,7 +9,7 @@
 ;   precondition: SP at entry (after the JSR push) in $04..$F9, so the indexed $21xx,X accesses stay
 ;          in the stack page (the real-core test checks the boundary caller SP=$0A and SP=$FF)
 ;   kept: Y and P (D is cleared inside for binary ADC; PLP restores the caller's flags)
-;   uses: stack page $2100-$21FF only (6 bytes pushed inside plus the 2 return bytes). No I/O, no MPR, I is never changed.
+;   uses: stack page $2100-$21FF only (4 bytes pushed inside plus the 2 return bytes). No I/O, no MPR, I is never changed.
 ; ABI remains UNVERIFIED and this ROM stays DEV ONLY (release_eligible: false).
 ;
 ; Stack layout (X = SP after the 4 inside pushes; offsets are $2100 + X + n):
