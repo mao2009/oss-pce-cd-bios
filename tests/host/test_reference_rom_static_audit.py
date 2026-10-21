@@ -56,7 +56,7 @@ class SyntheticImageTests(unittest.TestCase):
         self.image.write_bytes(synthetic_image())
 
     def test_jump_table_is_parsed_as_three_byte_jump_entries(self):
-        result = audit.audit_image(self.image, [0x1E])
+        result = audit.audit_image(self.image, [0x1E], synthetic=True)
         table = result["jump_table"]
         self.assertEqual(table["entry_count"], 81)
         self.assertEqual(table["entry_stride_bytes"], 3)
@@ -65,7 +65,7 @@ class SyntheticImageTests(unittest.TestCase):
         self.assertEqual(result["apis"][0]["candidate_entry"], "0xE05A")
 
     def test_a_side_effect_free_callee_reports_no_hazard(self):
-        result = audit.audit_image(self.image, [0x1E])
+        result = audit.audit_image(self.image, [0x1E], synthetic=True)
         profile = result["apis"][0]["callee"]
         self.assertEqual(profile["returns_observed"], ["rts"])
         self.assertEqual(profile["instructions_decoded"], 3)
@@ -77,7 +77,7 @@ class SyntheticImageTests(unittest.TestCase):
         image = self.directory / "block.pce"
         # TII $204D,$205F,$0003 followed by RTS: a block transfer in the callee.
         image.write_bytes(synthetic_image(b"\x73\x4d\x20\x5f\x20\x03\x00\x60"))
-        result = audit.audit_image(image, [0x1E])
+        result = audit.audit_image(image, [0x1E], synthetic=True)
         profile = result["apis"][0]["callee"]
         self.assertEqual(profile["hazard_counts"]["BLOCK_TRANSFER"], 1)
         self.assertEqual(profile["hazard_counts"]["OTHER_STORE"], 1)
@@ -86,7 +86,7 @@ class SyntheticImageTests(unittest.TestCase):
         image = self.directory / "zp.pce"
         # STX $EC then RTS: the HuC6280 zero page lives at $2000.
         image.write_bytes(synthetic_image(b"\x86\xec\x60"))
-        result = audit.audit_image(image, [0x1E])
+        result = audit.audit_image(image, [0x1E], synthetic=True)
         profile = result["apis"][0]["callee"]
         self.assertEqual(profile["hazard_counts"]["PAGE1_STORE"], 1)
         self.assertEqual(profile["store_target_classes"], {"PAGE1_ZERO_PAGE": 1})
@@ -95,14 +95,14 @@ class SyntheticImageTests(unittest.TestCase):
     def test_an_interrupt_enable_is_reported(self):
         image = self.directory / "cli.pce"
         image.write_bytes(synthetic_image(b"\x58\x60"))
-        result = audit.audit_image(image, [0x1E])
+        result = audit.audit_image(image, [0x1E], synthetic=True)
         self.assertEqual(result["apis"][0]["callee"]["hazard_counts"]["IRQ_ENABLE"], 1)
 
     def test_a_mpr_switch_is_reported(self):
         image = self.directory / "tam.pce"
         # LDA #$03 / TAM #$40 (MPR6) then RTS.
         image.write_bytes(synthetic_image(b"\xa9\x03\x53\x40\x60"))
-        result = audit.audit_image(image, [0x1E])
+        result = audit.audit_image(image, [0x1E], synthetic=True)
         profile = result["apis"][0]["callee"]
         self.assertEqual(profile["hazard_counts"]["MPR_WRITE"], 1)
 
@@ -115,7 +115,7 @@ class SyntheticImageTests(unittest.TestCase):
             # LDA #$05 / <clobber> / TAM #$40 / JSR $CF00 / RTS
             image.write_bytes(synthetic_image(b"\xa9\x05" + clobber
                                               + b"\x53\x40\x20\x00\xcf\x60"))
-            result = audit.audit_image(image, [0x1E])
+            result = audit.audit_image(image, [0x1E], synthetic=True)
             profile = result["apis"][0]["callee"]
             self.assertEqual(profile["unresolved"], ["page_bank_unknown"],
                              f"opcode {clobber.hex()} left a stale accumulator value")
@@ -126,7 +126,7 @@ class SyntheticImageTests(unittest.TestCase):
         # clean just because some path returned.
         image = self.directory / "loop.pce"
         image.write_bytes(synthetic_image(b"\xc9\x00\xf0\x01\x60\x80\xfe"))
-        result = audit.audit_image(image, [0x1E])
+        result = audit.audit_image(image, [0x1E], synthetic=True)
         profile = result["apis"][0]["callee"]
         self.assertEqual(profile["returns_observed"], ["rts"])
         self.assertEqual(profile["non_returning_states"], 1)
@@ -143,7 +143,7 @@ class SyntheticImageTests(unittest.TestCase):
         body[3 * audit.BANK_BYTES + 0x0F00:3 * audit.BANK_BYTES + 0x0F02] = b"\x60\x60"
         body[0x0F00:0x0F02] = b"\xa9\x01"
         image.write_bytes(bytes(body))
-        result = audit.audit_image(image, [0x1E])
+        result = audit.audit_image(image, [0x1E], synthetic=True)
         profile = result["apis"][0]["callee"]
         # Bank 3 holds two RTS, bank 0 an LDA: the instruction count tells
         # which bank the walk followed. With the wrong mask mapping the page
@@ -152,7 +152,7 @@ class SyntheticImageTests(unittest.TestCase):
         self.assertEqual(profile["unresolved"], [])
 
     def test_the_projection_never_carries_bytes_or_addresses(self):
-        result = audit.audit_image(self.image, [0x1E])
+        result = audit.audit_image(self.image, [0x1E], synthetic=True)
         text = repr(result)
         self.assertNotIn("0x4c", text.lower())
         self.assertNotIn("synthetic", text.lower())
@@ -190,6 +190,8 @@ class GuardTests(unittest.TestCase):
         self.assertFalse(output.exists())
 
     def test_the_library_entry_point_also_refuses_to_run_in_ci(self):
+        # Without the synthetic declaration the library entry point refuses in
+        # CI exactly like the CLI does.
         directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
         image = directory / "synthetic.pce"
         image.write_bytes(synthetic_image())
@@ -197,20 +199,25 @@ class GuardTests(unittest.TestCase):
             with self.assertRaises(audit.AuditError):
                 audit.audit_image(image, [0x1E])
 
+    def test_an_image_inside_the_repository_is_never_a_synthetic_fixture(self):
+        with mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}):
+            with self.assertRaises(audit.AuditError):
+                audit.audit_image(ROOT / "spec" / "api_contracts.json", [0x1E], synthetic=True)
+
 
     def test_a_partial_bank_image_is_refused(self):
         directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
         image = directory / "short.pce"
         image.write_bytes(b"\x00" * 1234)
         with self.assertRaises(audit.AuditError):
-            audit.audit_image(image, [0x1E])
+            audit.audit_image(image, [0x1E], synthetic=True)
 
     def test_a_slot_outside_the_table_is_refused(self):
         directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
         image = directory / "synthetic.pce"
         image.write_bytes(synthetic_image())
         with self.assertRaises(audit.AuditError):
-            audit.audit_image(image, [0x99])
+            audit.audit_image(image, [0x99], synthetic=True)
 
 
 if __name__ == "__main__":

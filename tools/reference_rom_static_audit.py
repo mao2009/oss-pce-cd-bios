@@ -141,23 +141,36 @@ class AuditError(Exception):
 
 
 # --- image loading ----------------------------------------------------------
-def assert_local_only():
+def assert_local_only(path, synthetic):
     """Refuse to read a private image inside CI.
 
     The guard lives here and not only in ``main()`` so that a future tool that
     imports this module cannot read a private BIOS in CI either.
+
+    A caller that owns the image may declare it a *synthetic* fixture, which is
+    what the host tests do with an image they build themselves. The
+    declaration is checked against the repository: an image inside the
+    repository is never accepted as synthetic.
     """
-    if os.environ.get("GITHUB_ACTIONS") == "true":
-        raise AuditError("a private BIOS image is never read in CI")
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    if synthetic:
+        if Path(path).resolve().is_relative_to(ROOT.resolve()):
+            raise AuditError("an image inside the repository is never a synthetic fixture")
+        return
+    raise AuditError("a private BIOS image is never read in CI")
 
 
-def load_image(path):
-    """Return (body, header_bytes, bank_bytes, bank_count) for a private BIOS image.
+def load_image(path, *, synthetic=False):
+    """Return (body, header_bytes, bank_bytes, bank_count) for a BIOS image.
 
     A .pce image is a 512 byte header followed by the ROM banks. A headerless
     image is accepted as well, because the private input may be either form.
+
+    ``synthetic`` declares that the caller owns the image and built it itself
+    (the host tests do); a private image is never read in CI.
     """
-    assert_local_only()
+    assert_local_only(path, synthetic)
     data = Path(path).read_bytes()
     if len(data) % BANK_BYTES == 0:
         header = 0
@@ -628,8 +641,8 @@ def parse_jump_table(body):
     }
 
 
-def audit_image(path, slots):
-    body, header, bank_bytes, banks = load_image(path)
+def audit_image(path, slots, *, synthetic=False):
+    body, header, bank_bytes, banks = load_image(path, synthetic=synthetic)
     table = parse_jump_table(body)
     auditor = Auditor(body)
     apis = []
