@@ -1002,7 +1002,11 @@
         "status": "PROJECT_SPEC_ONLY",
         "note": "reference System Card contract not verified; DEV-only project spec"
       },
-      "implementation": null,
+      "implementation": {
+        "source": "src/overrides/slot_3D.s",
+        "license": "MIT (repository LICENSE)",
+        "provenance": "project-own spec docs/ex-bcdbin.md (Issue #71)"
+      },
       "host_evidence": [
         "tests/host/test_ex_bcdbin.py"
       ],
@@ -1014,7 +1018,7 @@
         "approved_by": null,
         "review_ref": null
       },
-      "note": "DEV ROM override is not connected on the ledger-only PR; connection is in a separate Draft PR (#427 for 3C, #428 for 3D). NOT_READY until owner approval is recorded"
+      "note": "DEV ROM implemented and real-core tested; NOT_READY until owner approval is recorded"
     },
     {
       "id": 62,
