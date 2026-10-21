@@ -82,7 +82,10 @@ def check(label, rows, halt, m, q, sp):
     observed = (int.from_bytes(s[0:4], "little"), s[4] & 0xCF, s[5], s[6])
     want = (product, expected_p(q), Y_PRESET, sp)
     if observed != want:
-        raise Mismatch(f"{label}: product/P/Y/SP observed {observed}, expected {want}")
+        names = ("product", "P", "Y", "SP")
+        error = Mismatch(f"{label}: product/P/Y/SP observed {observed}, expected {want}")
+        error.fields = [n for n, a, b in zip(names, observed, want) if a != b]  # which field the mutant changed
+        raise error
 
 
 def run_case(probe, base, folder, cue, reset, label, entry, m, q, sp=0xFF):
@@ -121,17 +124,20 @@ def main():
             for m, q in CASES if sp == 0xFF else ((0xFFFF, 0xFFFF), (0x1234, 0x5678), (0, 0xFFFF)):
                 run_case(probe, data, folder, cue, reset, f"mul-{m:04x}-{q:04x}-sp{sp:02x}", entry, m, q, sp)
                 evidence["cases"].append({"m": m, "q": q, "sp": sp, "expected_product": m * q})
-        # Negative 1: the routine's CLD replaced by NOP. With D=1 the ADCs run in BCD, so every mutant case must
-        # differ from the binary product (a value mismatch is a rejection).
+        # Negative mutants: exactly one instruction changed, same byte length and same stack effect, so the
+        # routine's stack offsets ($2100+X+n) do not move. A NOP for PHP/PLP would shift SP by one byte and the guest
+        # would never reach its halt loop (a harness error, not a value mismatch), so PHP/PLP become PHA/PLA instead.
         code_at = body - 0xE000
-        if data[code_at] != 0x08 or data[code_at + 1] != 0xD8:
+        if data[code_at:code_at + 2] != b"\x08\xD8":
             raise ValueError("slot $41 body does not start with PHP; CLD")
-        mutants = {"41_without_CLD_D1": [(code_at + 1, 0xEA)]}
-        # Negative 2: PHP and the PLP before RTS replaced by NOP. The caller's P is then not restored (D stays 0).
         plp_at = data.find(b"\x28\x60", code_at, code_at + 120)  # file offset of PLP; RTS
         if plp_at < 0:
             raise ValueError("slot $41 body has no PLP; RTS")
-        mutants["41_without_PHP_PLP"] = [(code_at, 0xEA), (plp_at, 0xEA)]
+        mutants = {
+            "41_without_CLD_D1": [(code_at + 1, 0xEA)],  # D stays 1: ADC runs in BCD, the product differs
+            "41_PHP_as_PHA": [(code_at, 0x48)],          # the P save slot gets A; product/Y/SP unchanged, P differs
+            "41_PLP_as_PLA": [(plp_at, 0x68)],           # the caller's P is not restored (D=0 on exit), SP unchanged
+        }
         for name, patches in mutants.items():
             mutant = bytearray(data)
             for offset, value in patches:
@@ -141,16 +147,20 @@ def main():
                 try:
                     run_case(probe, bytes(mutant), folder, cue, reset, f"{name}-{m:04x}-{q:04x}", entry, m, q)
                 except Mismatch as error:  # only a value mismatch counts; infrastructure errors must propagate
-                    rejected.append(str(error))
+                    rejected.append(error)
             if len(rejected) != 3:
                 raise ValueError(f"{name}: mutant matched the spec in at least one case (expected 3 mismatches)")
-            evidence["negative_cases"].append({"case": name, "rejected": len(rejected), "first": rejected[0]})
+            fields = sorted({f for error in rejected for f in error.fields})
+            evidence["negative_cases"].append({"case": name, "rejected": len(rejected), "fields": fields,
+                                               "inputs": [[0xFFFF, 0xFFFF], [0x1234, 0x5678], [0x00FF, 0x0101]],
+                                               "first": str(rejected[0])})
     (args.rom.parent / "geargrafx-dev-mul16u-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
     total = len(CASES) + 2 * 3  # full table at SP=$FF, plus 3 cases at each of SP=$0A and $40
+    rejections = sum(c["rejected"] for c in evidence["negative_cases"])
     print(f"PASS real Geargrafx DEV ROM: MA_MUL16U slot $41 {total} cases (SP=$FF full table; SP=$0A boundary "
           f"and SP=$40 mid-range); entry SP $04..$F9 precondition; 32-bit product, Y, P (D=1,C=1 entry), SP, "
-          f"MPR1/MPR7 checked; mutant rejections: {sum(c['rejected'] for c in evidence['negative_cases'])}/6 "
-          f"(no-CLD and no-PHP/PLP, 3 cases each)")
+          f"MPR1/MPR7 checked; mutant rejections: {rejections}/{3 * len(mutants)} "
+          f"(CLD->NOP, PHP->PHA, PLP->PLA; 3 inputs each)")
 
 
 if __name__ == "__main__":
