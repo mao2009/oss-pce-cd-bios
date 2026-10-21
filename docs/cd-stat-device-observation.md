@@ -1,7 +1,7 @@
 # CD_STAT 相当のデバイス層観測（Issue #231、親 #18）
 
-**状態: 判定器と host テストのみ。実コア観測は NOT_RUN。**
-spec=HYPOTHESIS、implementation=DEV_OBSERVATION_ONLY、verification=HOST_ONLY（合成レコード）、real_hardware=NOT_RUN。
+**状態: 判定器・host テスト・実コア runner を追加。実コア実行は NOT_RUN（WSL 実行が worktree ガードで拒否、§4）。**
+spec=HYPOTHESIS、implementation=DEV_OBSERVATION_ONLY、verification=HOST_ONLY（合成レコード）、real_hardware=NOT_RUN、real_core=NOT_RUN。
 CD_STAT（`$09`、候補 `$E01B`）の呼出先 ABI は未確定であり、本件では呼ばない。純正 BIOS・商用ゲーム・`./rom/` は読まず、使わない。
 
 ## 1. 範囲と非範囲
@@ -9,7 +9,7 @@ CD_STAT（`$09`、候補 `$E01B`）の呼出先 ABI は未確定であり、本�
 | 項目 | 扱い |
 | --- | --- |
 | 合成媒体あり / 媒体なし の正負対照をデバイス層（HuC6280 のデバイス操作経路）で観測 | 対象。実装の本体は #144 の `src/cd_media_state.s`（再利用、再実装しない） |
-| 状態・phase・PC・SP/P/MPR・step・RAM（結果ブロックと 2048 バイトのバッファ）の記録 | 判定器が必須項目として要求する。収集器（実コア runner）は本 PR に含めない |
+| 状態・phase・PC・SP/P/MPR・step・RAM（結果ブロックと 2048 バイトのバッファ）の記録 | 判定器が必須項目として要求する。実コア runner `tests/integration/geargrafx_cd_stat_observation.py`（`make dev-cd-stat-observation-integration`）で収集する。未実行 |
 | bounded timeout | 判定器が step 予算を要求し、予算超過・`reason=budget` を拒否する |
 | 純正 CD_STAT の呼出し（`JSR $E01B`）、ABI の断定、slot 配線 | 対象外。0 回 |
 | #232（CD_STAT ROM-Primitive） | 実装しない。開始条件の評価のみ（§5） |
@@ -28,26 +28,37 @@ CD_STAT（`$09`、候補 `$E01B`）の呼出先 ABI は未確定であり、本�
 | 検証 | コマンド | 結果 |
 | --- | --- | --- |
 | 新規ホスト単体（正例・負例・timeout 境界・欠落・短いバッファ） | `python -m unittest tests.host.test_cd_stat_observation -v` | 11 件 OK（合成レコード、実コアではない） |
-| 既存の CD 関連ホスト試験 | `python -m unittest discover -s tests/host -p 'test_cd_*.py'` | 318 件、OK（skipped=4、cc65 等の環境依存） |
+| 既存の CD 関連ホスト試験 | `python -m unittest discover -s tests/host -p 'test_cd_*.py'` | 322 件、OK（skipped=4、cc65 等の環境依存） |
 | 全体ホスト試験 | `python -m unittest discover -s tests/host` | 1971 件中、失敗 59・エラー 6 はすべて `test_artifact_guard*`（Windows 環境で本回確認。本 PR の変更ファイルは参照しない。main での再確認は未実施） |
-| 実コア（固定版 Geargrafx + ca65） | `make dev-cd-media-state-integration`、#231 用の観測 runner | **NOT_RUN**（下記 §4） |
+| 実コア（固定版 Geargrafx + ca65、WSL clean clone） | `make dev-cd-stat-observation-integration`（#231 runner、コミット `f17b428`） | **NOT_RUN**（下記 §4）。終了コード・evidence の SHA-256 は取得していない |
 
 ## 4. 実コアが NOT_RUN の理由
 
-1. **WSL 実行が実行ガードで拒否された。** 本 worktree 専用エージェントから `wsl.exe` を呼ぶコマンドは、`MSYS_NO_PATHCONV=1` 付きでも、worktree 内の `cd` 付きでも拒否された。ガードは迂回していない。
-2. **Windows ホストに ca65 / ld65 / make がない。** 自作 ROM の再ビルドはできない（`docs/cdseek-device-observation.md` と同じ状況）。
-3. したがって、固定版 Geargrafx の版・SHA、ROM SHA、合成 CD SHA、観測コマンドの終了コード、実コア上の正例・負例・timeout の結果は、いずれも**記録できない**。
+1. **WSL 実行が worktree ガードで拒否された（BLOCKED、迂回せず停止）。** 対象コミット `f17b428bc37a800d73f9eab9a51ec3ae764be0a2` を `wave5/06-231` へ push 後、WSL 側に clean clone（`/home/loach/w5-b3-409`）を作る `wsl.exe -d Ubuntu -u loach -- bash <script>` が「worktree 隔離エージェントの git 操作は worktree 内に限る」として拒否された。`MSYS_NO_PATHCONV=1` の付与のみを行い、ガードの回避・PowerShell 経由の迂回は行っていない。
+2. したがって、WSL clone の HEAD・`git status`、固定版 Geargrafx（b49ae82a）の版・SHA、ROM SHA、合成 CD SHA、実コア上の各コマンドの終了コード、正例・負例・timeout の判定は、いずれも**記録できない**。evidence の SHA-256 も存在しない。
+3. 実コアの runner（§1）は実装済みで、`geargrafx_cd_stat_observation.py` のホスト側の構文確認（`py_compile`）のみ済み。実行は未確認。
 
-### 次の実行（オーナーまたは WSL 環境で実施する場合）
+### 実行対象と負例（runner の内容、未実行）
+
+| 区分 | 内容 |
+| --- | --- |
+| 正例 | 合成 CUE/BIN（`card:<cue>`）と無媒体（`card:-`）の paired control。`judge_observation` で `MEDIA_SIGNATURE_OK` / `NO_DATA` |
+| 負例（判定で拒否） | 無媒体の盤面側、盤面と無媒体の入替、空白データ盤（`MEDIA_UNRECOGNISED` が盤面側に来る）、選択 timeout（`$1805` 誘導で `SELECT_TIMEOUT`） |
+| 負例（実行で拒否） | 0 バイト BIN（probe 終了コード 4 を期待）、step 予算 1000 での `reason=budget` |
+| 範囲外の入力 | judge の step 上限 1、budget 0 / -1 / True / 文字列（すべて `BLOCKED: step budget`） |
+| 記録 | PC・SP・P・MPR・step・reason・結果状態・SCSI phase・RAM 2048 バイトの SHA-256（盤面バイトは記録しない） |
+
+### 次の実行（WSL の clean clone で実施する場合）
 
 ```sh
-make setup
-make dev-cd-media-state                       # build/<mode>/cd-media-state を生成（#144 の既存手順）
-make dev-cd-media-state-integration           # 固定版 Geargrafx、媒体あり/なしの対照（#144 の既存結果の再確認）
+git clone https://github.com/mao2009/oss-pce-cd-bios /home/loach/w5-b3-409 && cd /home/loach/w5-b3-409
+git checkout --detach f17b428bc37a800d73f9eab9a51ec3ae764be0a2 && test -z "$(git status --porcelain)"
+export TOOLS_DIR=/home/loach/oss-pce-cd-bios-tools
+make dev-cd-stat-observation-integration; echo "exit=$?"    # build/debug/cd-stat-observation/cd-stat-observation-evidence.json
 ```
 
-#231 固有の観測 runner（PC・RAM・phase・step の収集）は未実装で、上記は #144 の既存結果の再確認にすぎない。
-#231 を実コア PASS とするには、runner が §2 の必須項目を出力し、`judge_observation` を通すこと、ならびに固定版 Geargrafx の版・SHA・ROM SHA・終了コードを記録することが必要。
+`make dev-cd-stat-observation-integration` は `dev-cd-media-state`（#144 の ROM ビルド）に依存する。
+#231 を実コア PASS とするには、終了コード 0、evidence の SHA-256、固定版 Geargrafx の版・SHA、ROM SHA を PR 本文に記録すること。
 
 ## 5. #232 の実装開始条件の評価
 
@@ -70,6 +81,6 @@ make dev-cd-media-state-integration           # 固定版 Geargrafx、媒体あ�
 
 ## 6. 残課題
 
-- #231 固有の観測 runner（PC・RAM・phase の収集）の実装。
-- 実コア実測（WSL 環境での実行）。
+- 実コア実測（WSL clean clone での `make dev-cd-stat-observation-integration`、worktree ガード解除後に実施）。
+- 実機・第 2 エミュレータでの確認。
 - 実機・第 2 エミュレータ: NOT_RUN。
