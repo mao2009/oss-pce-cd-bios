@@ -8,6 +8,21 @@ The expectation is this project's own spec (src/overrides/slot_41.s), NOT the re
 stays UNVERIFIED. Every 16-bit pair is a valid input, so there is no invalid-input error path to test. The
 checked cases are edge values, carry-heavy values and a few mixed values, at two caller SP values (the boundary
 $0A, i.e. entry SP $04, and $FF, i.e. entry SP $F9).
+Precondition: caller T (P bit 5) = 0 at entry. T=1 has no defined behaviour for the routine (src/overrides/slot_41.s
+header), and no case runs the routine with T=1. The premise cannot be violated through a JSR on the pinned core: the
+core latches P.T into its memory-to-memory flag and clears P.T at the start of every instruction, so a SET before the
+JSR is swallowed by the JSR, and the routine's first instruction (PHP) is not one of the T-sensitive opcodes
+(ADC/AND/EOR/ORA). The routine's ADC therefore always runs in register mode. P is compared with mask $EF: C,Z,I,D,V,N
+must match and bit 5 (T) must be 0 on return; bit 4 (B) is ignored because PHP pushes it as 1 and PLP does not store
+it. The T=0 on return is a constant of the pinned core (PHP pushes T=0), not a copy of the caller's T.
+Two JSR T-latch checks (SET before the JSR) test only the pinned core's JSR: the JSR consumes the SET, so the routine is
+entered with T=0. They assert that the product is correct, the halt is reached and the returned P has bit 5 = 0. They
+do NOT test MA_MUL16U behaviour with T=1.
+Mutants: five one-instruction edits of the DEV ROM body (CLD->NOP, PHP->PHA, PLP->PLA, ADC->SBC, ROR->ROL). Every
+mutant keeps the instruction length and the stack effect, so the guest still reaches its halt loop and the rejection is
+a value mismatch, not a harness error. Each rejection records which field differed (product/P/Y/SP) and the mutant must
+name the field it is expected to break: the two arithmetic mutants must break the product, the two flag mutants the
+returned P.
 Not checked: A and X (declared clobbered), MPR0 and MPR2-6 (MPR1 and MPR7 only), other RAM.
 The 65,536-multiplier, 12-multiplicand host model lives in tests/host/test_ma_mul16u_dev.py.
 Run: python3 tests/integration/geargrafx_dev_mul16u.py --rom build/debug/bios-dev/dev-only-not-compatible-syscard3.pce
@@ -38,8 +53,12 @@ Y_PRESET = 0xA5
 SP_CASES = [0x0A, 0x40, 0xFF]  # caller SP before the 4 pushes; entry SP = caller SP - 6 (must be in $04..$F9)
 
 
-def guest(reset, entry, m, q, sp):
-    """Reset-replacement code at CPU address `reset`. Returns (code, halt CPU address)."""
+def guest(reset, entry, m, q, sp, t_set=False):
+    """Reset-replacement code at CPU address `reset`. Returns (code, halt CPU address).
+
+    t_set=True (JSR T-latch check only): SET (opcode $F4) right before the JSR. The pinned core has no CLT opcode;
+    it latches T into the next instruction and clears P.T there (src/huc6280_inline.h RunInstruction), so the JSR
+    consumes the SET and the routine starts with T=0 in P."""
     push = lambda v: [0xA9, v, 0x48]  # LDA #v; PHA
     code = bytes([0x78,                      # SEI
                   0xA9, 0xF8, 0x53, 0x02,    # LDA #$F8; TAM #$02 -> MPR1 = work RAM ($2000-$3FFF)
@@ -48,6 +67,7 @@ def guest(reset, entry, m, q, sp):
                   0xA0, Y_PRESET]            # LDY #$A5
                  + push(m & 0xFF) + push(m >> 8) + push(q & 0xFF)
                  + [0xA9, q >> 8, 0x48]      # multiplier hi last (LDA sets the N/Z that P must show at entry)
+                 + ([0xF4] if t_set else [])  # SET (JSR T-latch check only; the JSR consumes it)
                  + [0x20, entry & 0xFF, entry >> 8]  # JSR entry
                  + [0x08, 0x68, 0x8D, (STORE + 4) & 0xFF, (STORE + 4) >> 8]  # PHP; PLA; STA $2204 (P after)
                  + [0x8C, (STORE + 5) & 0xFF, (STORE + 5) >> 8]              # STY $2205
@@ -79,7 +99,8 @@ def check(label, rows, halt, m, q, sp):
         raise ValueError(f"{label}: MPR changed (mpr={cold['mpr']})")
     s = bytes.fromhex(cold["work_ram_0200_hex"])[:7]
     product = m * q
-    observed = (int.from_bytes(s[0:4], "little"), s[4] & 0xCF, s[5], s[6])
+    # Mask $EF: bit 4 (B) ignored, every other bit compared. expected_p has bit 5 (T) = 0, so T=0 is checked.
+    observed = (int.from_bytes(s[0:4], "little"), s[4] & 0xEF, s[5], s[6])
     want = (product, expected_p(q), Y_PRESET, sp)
     if observed != want:
         names = ("product", "P", "Y", "SP")
@@ -96,6 +117,24 @@ def run_case(probe, base, folder, cue, reset, label, entry, m, q, sp=0xFF):
     rom.write_bytes(variant)
     rows = dev.run_probe(probe, rom.resolve(), cue)
     check(label, rows, halt, m, q, sp)
+
+
+def jsr_t_latch_check(probe, base, folder, cue, reset, entry, m, q, sp=0xFF):
+    """JSR T-latch check: SET before the JSR must be consumed by the JSR. Asserts the product, the halt, the stack
+    balance and that the returned P has bit 5 (T) = 0. Does not exercise the routine with T=1."""
+    code, halt = guest(reset, entry, m, q, sp, t_set=True)
+    variant = bytearray(base)
+    variant[reset - 0xE000:reset - 0xE000 + len(code)] = code
+    rom = folder / f"tlatch-{m:04x}-{q:04x}-sp{sp:02x}.pce"
+    rom.write_bytes(variant)
+    rows = dev.run_probe(probe, rom.resolve(), cue)
+    check(f"jsr-t-latch-{m:04x}-{q:04x}", rows, halt, m, q, sp)
+    cold = next(r for r in rows if r["phase"] == "cold")
+    s = bytes.fromhex(cold["work_ram_0200_hex"])[:7]
+    if s[4] & 0x20:
+        raise ValueError(f"JSR T-latch check: returned P has T set (P=${s[4]:02X}); the JSR did not consume the SET")
+    return {"m": m, "q": q, "sp": sp, "halt_cpu_address": f"${halt:04X}", "product_expected": m * q,
+            "product_observed": int.from_bytes(s[0:4], "little"), "p_after_raw": f"${s[4]:02X}", "t_clear": True}
 
 
 def main():
@@ -133,12 +172,24 @@ def main():
         plp_at = data.find(b"\x28\x60", code_at, code_at + 120)  # file offset of PLP; RTS
         if plp_at < 0:
             raise ValueError("slot $41 body has no PLP; RTS")
+        def one(pattern, name):
+            """The file offset of `pattern` inside the routine body; exactly one occurrence is required."""
+            hits = [i for i in range(code_at, code_at + 120 - len(pattern) + 1) if data[i:i + len(pattern)] == pattern]
+            if len(hits) != 1:
+                raise ValueError(f"{name}: pattern {pattern.hex()} found {len(hits)} times in the slot $41 body, want 1")
+            return hits[0]
+
         mutants = {
-            "41_without_CLD_D1": [(code_at + 1, 0xEA)],  # D stays 1: ADC runs in BCD, the product differs
-            "41_PHP_as_PHA": [(code_at, 0x48)],          # the P save slot gets A; product/Y/SP unchanged, P differs
-            "41_PLP_as_PLA": [(plp_at, 0x68)],           # the caller's P is not restored (D=0 on exit), SP unchanged
+            # name: (byte patches, the field the rejection must name)
+            "41_without_CLD_D1": ([(code_at + 1, 0xEA)], "product"),  # D stays 1: ADC runs in BCD, the product differs
+            "41_PHP_as_PHA": ([(code_at, 0x48)], "P"),                # the P save slot gets A; product/Y/SP unchanged, P differs
+            "41_PLP_as_PLA": ([(plp_at, 0x68)], "P"),                 # the caller's P is not restored (D=0 on exit), SP unchanged
+            # Arithmetic mutants: they break the multiply itself, so the product check is exercised and not only the
+            # flag save/restore. Both keep the instruction length and the stack effect.
+            "41_ADC_as_SBC": ([(one(bytes.fromhex("7D0A21"), "41_ADC_as_SBC"), 0xFD)], "product"),  # adc $210A,x -> sbc $210A,x
+            "41_ROR_as_ROL": ([(one(bytes.fromhex("7E0821"), "41_ROR_as_ROL"), 0x3E)], "product"),  # ror $2108,x -> rol $2108,x
         }
-        for name, patches in mutants.items():
+        for name, (patches, required) in mutants.items():
             mutant = bytearray(data)
             for offset, value in patches:
                 mutant[offset] = value
@@ -151,16 +202,24 @@ def main():
             if len(rejected) != 3:
                 raise ValueError(f"{name}: mutant matched the spec in at least one case (expected 3 mismatches)")
             fields = sorted({f for error in rejected for f in error.fields})
+            if required not in fields:
+                raise ValueError(f"{name}: the rejection does not name {required} (fields: {fields})")
             evidence["negative_cases"].append({"case": name, "rejected": len(rejected), "fields": fields,
+                                               "required_field": required,
                                                "inputs": [[0xFFFF, 0xFFFF], [0x1234, 0x5678], [0x00FF, 0x0101]],
                                                "first": str(rejected[0])})
+        # JSR T-latch check: SET before the JSR is consumed by the JSR (not a test of the routine with T=1).
+        latch = [jsr_t_latch_check(probe, data, folder, cue, reset, entry, m, q) for m, q in ((0x1234, 0x5678), (0xFFFF, 0xFFFF))]
+        evidence["jsr_t_latch_checks"] = latch
+        print("PASS JSR T-latch check: SET before JSR is consumed; routine entered with T=0; "
+              f"{len(latch)} cases (product correct, halt reached, returned P bit 5 = 0)")
     (args.rom.parent / "geargrafx-dev-mul16u-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
     total = len(CASES) + 2 * 3  # full table at SP=$FF, plus 3 cases at each of SP=$0A and $40
     rejections = sum(c["rejected"] for c in evidence["negative_cases"])
     print(f"PASS real Geargrafx DEV ROM: MA_MUL16U slot $41 {total} cases (SP=$FF full table; SP=$0A boundary "
-          f"and SP=$40 mid-range); entry SP $04..$F9 precondition; 32-bit product, Y, P (D=1,C=1 entry), SP, "
-          f"MPR1/MPR7 checked; mutant rejections: {rejections}/{3 * len(mutants)} "
-          f"(CLD->NOP, PHP->PHA, PLP->PLA; 3 inputs each)")
+          f"and SP=$40 mid-range); entry SP $04..$F9 precondition; caller T=0; 32-bit product, Y, P (C,Z,I,D,V,N "
+          f"with B ignored and T=0 on return), SP, MPR1/MPR7 checked; mutant rejections: {rejections}/{3 * len(mutants)} "
+          f"(CLD->NOP, PHP->PHA, PLP->PLA, ADC->SBC, ROR->ROL; 3 inputs each; the reason of each rejection is recorded)")
 
 
 if __name__ == "__main__":
