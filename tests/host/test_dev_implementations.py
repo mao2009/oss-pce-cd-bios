@@ -52,17 +52,17 @@ class LedgerTests(unittest.TestCase):
 
     def test_wrong_candidate_name_fails(self):
         ledger = base()
-        entry(ledger, 0x1E)["candidate_name"] = "EX_BINBCD"
+        entry(ledger, 0x3C)["candidate_name"] = "EX_BCDBIN"
         self.assertTrue(any("candidate_name" in p for p in dev.validate(ledger, SLOTS, OVERRIDES)))
 
     def test_unknown_state_fails(self):
         ledger = base()
-        entry(ledger, 0x1E)["state"] = "PASS"
+        entry(ledger, 0x3C)["state"] = "PASS"
         self.assertTrue(any("unknown state" in p for p in dev.validate(ledger, SLOTS, OVERRIDES)))
 
     def test_override_without_ledger_entry_fails(self):
         ledger = base()
-        entry(ledger, 0x1E)["implementation"] = None
+        entry(ledger, 0x3C)["implementation"] = None
         self.assertTrue(any("lacks an implementation" in p for p in dev.validate(ledger, SLOTS, OVERRIDES)))
 
     def test_ledger_implementation_without_override_fails(self):
@@ -72,25 +72,25 @@ class LedgerTests(unittest.TestCase):
 
     def test_verified_abi_is_refused(self):
         ledger = base()
-        entry(ledger, 0x1E)["abi_contract"]["status"] = "VERIFIED"
+        entry(ledger, 0x3C)["abi_contract"]["status"] = "VERIFIED"
         self.assertTrue(any("VERIFIED" in p for p in dev.validate(ledger, SLOTS, OVERRIDES)))
 
     def test_dev_callable_without_approval_fails(self):
         ledger = base()
-        entry(ledger, 0x1E)["state"] = "DEV_CALLABLE"
+        entry(ledger, 0x3C)["state"] = "DEV_CALLABLE"
         problems = dev.validate(ledger, SLOTS, OVERRIDES)
         self.assertTrue(any("approved_by" in p for p in problems))
 
     def test_dev_callable_with_approval_and_evidence_passes(self):
         ledger = base()
-        slot = entry(ledger, 0x1E)
+        slot = entry(ledger, 0x3C)
         slot["state"] = "DEV_CALLABLE"
         slot["approval"] = {"approved_by": "owner", "review_ref": "issue-324"}
         self.assertEqual([], dev.validate(ledger, SLOTS, OVERRIDES))
 
     def test_dev_callable_with_missing_evidence_file_fails(self):
         ledger = base()
-        slot = entry(ledger, 0x1E)
+        slot = entry(ledger, 0x3C)
         slot["state"] = "DEV_CALLABLE"
         slot["approval"] = {"approved_by": "owner", "review_ref": "issue-324"}
         slot["real_core_evidence"] = ["tests/integration/does_not_exist.py"]
@@ -98,7 +98,7 @@ class LedgerTests(unittest.TestCase):
 
     def test_dev_callable_without_real_core_evidence_fails(self):
         ledger = base()
-        slot = entry(ledger, 0x1E)
+        slot = entry(ledger, 0x3C)
         slot["state"] = "DEV_CALLABLE"
         slot["approval"] = {"approved_by": "owner", "review_ref": "issue-324"}
         slot["real_core_evidence"] = []
@@ -106,14 +106,14 @@ class LedgerTests(unittest.TestCase):
 
     def test_blocked_with_implementation_fails(self):
         ledger = base()
-        slot = entry(ledger, 0x1E)
+        slot = entry(ledger, 0x3C)
         slot["state"] = "BLOCKED"
         slot["reason"] = "test"
         self.assertTrue(any("BLOCKED slot must not" in p for p in dev.validate(ledger, SLOTS, OVERRIDES)))
 
     def test_wrong_implementation_source_fails(self):
         ledger = base()
-        entry(ledger, 0x1E)["implementation"]["source"] = "src/ex_bcdbin.s"
+        entry(ledger, 0x3C)["implementation"]["source"] = "src/ex_bcdbin.s"
         self.assertTrue(any("implementation source" in p for p in dev.validate(ledger, SLOTS, OVERRIDES)))
 
 
