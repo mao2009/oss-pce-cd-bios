@@ -28,8 +28,8 @@ Exit codes: 0 PASS, 1 FAIL (a check contradicts the record or the rebuild), 2 ER
 import argparse
 import hashlib
 import json
+import os
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -85,13 +85,18 @@ def check_reproducible(first: bytes, second: bytes) -> list[str]:
 
 
 def reproduce(build_once, work: Path) -> tuple[Path, Path]:
-    """Run build_once(out_dir) -> rom_path twice into fresh directories; return both ROM paths.
+    """Run build_once(out_dir) -> rom_path twice into fresh directories a and b under work; return both ROM paths.
 
-    build_once is injected so tests can use a fake builder. The work directory is cleared first, and only
-    its own subdirectories a and b are removed.
+    build_once is injected so tests can use a fake builder. Nothing is deleted: an existing a or b (a symlink
+    included) is refused, so no build writes through a link or over earlier output. Fail-closed on a symlinked
+    or over-broad work directory.
     """
+    root = ROOT.resolve()
+    if work.is_symlink() or work.resolve() in (root, *root.parents):
+        raise ToolError(f"refusing --work {work}: a symlink, or the repository root or above")
     for name in ("a", "b"):
-        shutil.rmtree(work / name, ignore_errors=True)
+        if os.path.lexists(work / name):
+            raise ToolError(f"refusing to overwrite existing {work / name}; remove it or pass a new --work")
     first = build_once(work / "a")
     second = build_once(work / "b")
     return Path(first), Path(second)

@@ -5,6 +5,7 @@ Each positive case has a negative counterpart, and each negative case is a tampe
 """
 import copy
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -114,6 +115,48 @@ class ReproducibilityTests(unittest.TestCase):
             self.assertEqual(["a", "b"], calls)
             self.assertEqual(ROM, first.read_bytes())
             self.assertEqual(ROM, second.read_bytes())
+
+    def test_reproduce_keeps_existing_user_data(self):
+        def fake(out):
+            raise AssertionError("builder must not run over existing data")
+
+        with tempfile.TemporaryDirectory() as directory:
+            keep = Path(directory) / "a" / "notes.txt"
+            keep.parent.mkdir()
+            keep.write_text("user data", encoding="utf-8")
+            with self.assertRaises(rp.ToolError):
+                rp.reproduce(fake, Path(directory))
+            self.assertEqual("user data", keep.read_text(encoding="utf-8"))
+
+    def test_reproduce_refuses_symlink_out_of_work(self):
+        def fake(out):
+            raise AssertionError("builder must not write through a link")
+
+        with tempfile.TemporaryDirectory() as outside, tempfile.TemporaryDirectory() as directory:
+            keep = Path(outside) / "keep.txt"
+            keep.write_text("outside", encoding="utf-8")
+            try:
+                os.symlink(outside, Path(directory) / "a", target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"symlinks unavailable: {error}")
+            with self.assertRaises(rp.ToolError):
+                rp.reproduce(fake, Path(directory))
+            self.assertEqual("outside", keep.read_text(encoding="utf-8"))
+
+    def test_reproduce_refuses_symlinked_or_broad_work(self):
+        def fake(out):
+            raise AssertionError("builder must not run for a refused work directory")
+
+        with tempfile.TemporaryDirectory() as target, tempfile.TemporaryDirectory() as parent:
+            link = Path(parent) / "work"
+            try:
+                os.symlink(target, link, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"symlinks unavailable: {error}")
+            with self.assertRaises(rp.ToolError):
+                rp.reproduce(fake, link)
+        with self.assertRaises(rp.ToolError):
+            rp.reproduce(fake, rp.ROOT)
 
 
 class CliTests(unittest.TestCase):
