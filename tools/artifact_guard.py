@@ -737,12 +737,15 @@ def attest_download_violations(text, label, partial_fixtures=False):
 
     A pinned job missing from the file is refused. Only a caller that passes partial_fixtures=True (a test fixture that holds
     part of the workflow) skips a missing job. The real workflow is checked with partial_fixtures=False."""
-    import yaml
     name = Path(label).name
     pins = {job: (pin, True) for (file, job), pin in ATTEST_DOWNLOADS.items() if file == name}
     pins.update({job: (pin, False) for (file, job), pin in GUARD_DOWNLOADS.items() if file == name})
     if not pins:
         return []
+    try:
+        import yaml
+    except ImportError:  # fail closed with a finding, like the other checks; never a crash
+        return [f"{label}: PyYAML unavailable, download pins cannot be checked (Issue #337 round 11)"]
     try:
         doc = yaml.load(text, Loader=_strict_loader())
     except (yaml.YAMLError, ValueError) as error:
@@ -784,7 +787,10 @@ def yaml_integrity_violations(text, label):
     """Issue #337 round 11, for every workflow and composite action file. A mapping with a duplicate key is refused (PyYAML
     keeps the last value silently) and so is any YAML anchor or alias, which can repeat or hide a value. Applies to the whole
     file, so it covers jobs outside the signing set too."""
-    import yaml
+    try:
+        import yaml
+    except ImportError:  # fail closed with a finding, like the other checks; never a crash
+        return [f"{label}: PyYAML unavailable, YAML integrity cannot be checked (Issue #337 round 11)"]
     try:
         yaml.load(text, Loader=_strict_loader())
         events = list(yaml.parse(text, Loader=yaml.SafeLoader))

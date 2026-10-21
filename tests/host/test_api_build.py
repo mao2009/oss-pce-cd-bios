@@ -410,14 +410,14 @@ class ApiContractTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_names_match_documented_inventory(self):
-        text = (ROOT / 'docs/api-inventory.md').read_text()
+        text = (ROOT / 'docs/api-inventory.md').read_text(encoding='utf-8')
         rows = re.findall(r'^\| `\$([0-9A-F]{2})` \| `\$[0-9A-F]+` \| `([^`]+)`', text, re.M)
         self.assertEqual([(s['id'], s['candidate_name']) for s in load_slots()],
                          [(int(i, 16), name) for i, name in rows])
 
     def test_psg_is_one_main_slot_with_nine_subcommands(self):
         self.assertEqual(load_slots()[0x48]['candidate_name'], 'PSG_BIOS')
-        children = re.findall(r'^\| `48/([0-9A-F]{2})`', (ROOT/'docs/api-inventory.md').read_text(), re.M)
+        children = re.findall(r'^\| `48/([0-9A-F]{2})`', (ROOT/'docs/api-inventory.md').read_text(encoding='utf-8'), re.M)
         self.assertEqual(children, ['00', '01', '02', '03', '04', '0B', '0C', '10', '13'])
 
     def test_missing_tool(self):

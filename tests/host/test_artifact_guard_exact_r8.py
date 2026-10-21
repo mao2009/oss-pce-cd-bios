@@ -7,7 +7,10 @@ from pathlib import Path
 import sys
 import unittest
 
-import yaml
+try:
+    import yaml
+except ImportError as error:  # host-test dependency: these checks cannot run without it
+    raise ImportError("PyYAML is required for this host test: pip install pyyaml") from error
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'tools'))
 import artifact_guard as guard
