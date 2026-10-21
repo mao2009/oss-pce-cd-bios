@@ -1,7 +1,7 @@
 """Host model of the DEV MA_MUL8U override (slot $3F, Issue #436), checked for all 65,536 pairs.
 
-The model mirrors src/overrides/slot_3F.s step by step: hi/lo/m live in stack bytes at X+1/X+2/X+3, and each of
-one LSR of lo runs first, then each of the 8 rounds is ADC m on carry, ROR hi, ROR lo.
+The model mirrors src/overrides/slot_3F.s step by step: hi/lo/m live in stack bytes at $2101,x / $2102,x / $2103,x.
+One LSR of lo runs first, then each of the 8 rounds does ADC m on carry, ROR hi, ROR lo.
 
 This is a Python reference-model check of the algorithm. It does NOT test the assembled bytes exhaustively; the
 assembled routine is exercised only by the real-core run (18 cases) in tests/integration/geargrafx_dev_mul8u.py.
@@ -24,9 +24,9 @@ def dev_mul8u(a, x):
         if carry:  # bcc not taken: clc; lda hi; adc m
             total = stack["hi"] + stack["m"]
             stack["hi"], carry = total & 0xFF, total >> 8
-        bit0 = stack["hi"] & 1  # ror $0101,x: carry in, bit 0 out
+        bit0 = stack["hi"] & 1  # ror $2101,x: carry in, bit 0 out
         stack["hi"] = (carry << 7) | (stack["hi"] >> 1)
-        carry = stack["lo"] & 1  # ror $0102,x: C leaves as the next multiplier bit
+        carry = stack["lo"] & 1  # ror $2102,x: C leaves as the next multiplier bit
         stack["lo"] = (bit0 << 7) | (stack["lo"] >> 1)  # hi bit 0 enters bit 7
     return stack["lo"], stack["hi"]
 
