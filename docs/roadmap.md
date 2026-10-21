@@ -10,7 +10,7 @@ OSS routine, is not proof of a **fully reference-compatible BIOS API** or releas
 ## M0 — Foundation and diagnostics
 
 - [x] Reproducible original HuCARD fixture, pinned tools, host tests and real Geargrafx CI
-- [x] Original 256 KiB System Card **development-only** ROM with 81 candidate entries: one callable `EX_GETVER` override and 80 fail-closed nonreturning stubs ([#174](https://github.com/mao2009/oss-pce-cd-bios/pull/174))
+- [x] Original 256 KiB System Card **development-only** ROM with 81 candidate entries: one callable `EX_GETVER` override and 80 fail-closed nonreturning stubs as merged in [#174](https://github.com/mao2009/oss-pce-cd-bios/pull/174) (historical; current main has 4 DEV overrides, see [status](status.md))
 - [x] Real-core System Card loader/reset, slot, RAM/MPR/stack/IRQ observations and isolated startup checkpoint with non-zero CD-state marker ([#127](https://github.com/mao2009/oss-pce-cd-bios/pull/127))
 - [x] Real-core guest READ(6) on synthetic discs, 1–3 2048-byte sectors, full RAM/phase/negative checks
 - [x] Isolated real-core Geargrafx trace harness, CD status classifier and host-only CD_BASE model (not BIOS services)

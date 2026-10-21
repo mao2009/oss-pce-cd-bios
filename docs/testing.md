@@ -107,8 +107,8 @@ version observations are compared; arbitrary power-on RAM is not deterministic.
 ## DEV ROM verification layers
 
 Since merged [PR #174](https://github.com/mao2009/oss-pce-cd-bios/pull/174), the
-256 KiB development ROM has **81 candidate slots: one original callable OSS
-`EX_GETVER`, `EX_BINBCD`, `EX_BCDBIN` and `MA_MUL8U` overrides at slots `$1E`, `$3C`, `$3D`, `$3F` (DEV-only, UNVERIFIED) and 77 nonreturning
+256 KiB development ROM has **81 candidate slots: four DEV-only OSS overrides
+`EX_GETVER`, `EX_BINBCD`, `EX_BCDBIN` and `MA_MUL8U` at slots `$1E`, `$3C`, `$3D`, `$3F` (DEV-only, UNVERIFIED) and 77 nonreturning
 stubs**. This is development-only functionality, not a verified reference BIOS
 ABI or release-eligible firmware. The on-disk
 `build/debug/bios-dev/dev-only-not-compatible-syscard3.pce` image is checked in
@@ -191,7 +191,7 @@ step. Not every standalone System Card diagnostic is included. After `make setup
 
 ```sh
 make dev-test                   # 81 candidate slots, host API tests and real-core DEV checks
-make dev-integration            # EX_GETVER DEV-only caller return; other 77 slots are stubs
+make dev-integration            # EX_GETVER DEV-only caller return; the 77 remaining slots are stubs
 make dev-startup-integration    # separate reset/MPR/stack marker
 make dev-cdread-integration     # guest READ(6), full RAM and SCSI checks
 make dev-trace-integration      # isolated pinned real-core trace and negative checks
