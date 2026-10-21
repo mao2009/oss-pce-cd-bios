@@ -28,6 +28,22 @@ Issue [#440](https://github.com/mao2009/oss-pce-cd-bios/issues/440)。対象は 
 - `guard-nightly` と `nightly.yml` は schedule 専用である。
 - `pages.yml` は PR で動く。必須にするかどうかは別途判断する（本案の対象外）。
 
+## 再確認（2026-10-21）
+
+同じ読取専用コマンドで再読し、上の「現状」と一致することを確認した。値は変わっていない。
+
+```sh
+gh api repos/mao2009/oss-pce-cd-bios/rulesets/25220357
+```
+
+- `required_status_checks` は `bios-dev` と `verify` の 2 件のみ。
+- `bypass_actors` は `[]`。
+- `pull_request` ルールは `required_approving_review_count: 0`、`require_extra_approval_for_unattributed_changes: true`。
+- `enforcement` は `active`、`target` は `branch`、`conditions.ref_name.include` は `["refs/heads/main"]`。
+- ruleset の `updated_at` は `2026-10-16T15:03:28+09:00` のままであり、2026-10-16 以降この ruleset は更新されていない。
+
+この確認は読み取りのみであり、ruleset への書き込み（PUT）は行っていない。jobs 名の確認もworkflow 定義を読み直して同じ結果だった（`api-source.yml`: `bios-dev`, `guard-bios-dev`, `attest-cdread`, `verify-cdread-attestation`, `guard-cdread-verdict`, `attest-cdread-verdict`, `verify-cdread-verdict` / `ci.yml`: `verify`, `guard-verify` / `core-bcdbin.yml`: `bcdbin-core`, `guard-bcdbin-core` / `core-harness.yml`: `core-harness`, `guard-core-harness`）。
+
 ## 提案する変更
 
 必須チェックに、`core-harness`、`bcdbin-core`、`guard-bios-dev`、`guard-verify`、`guard-core-harness`、`guard-bcdbin-core` の 6 件を追加する。`pull_request` ルール、`bypass_actors`、`conditions` などは変えない。
