@@ -16,7 +16,7 @@ build:
 # Real-core checks are NOT run here; they are the required separate gate `test-real-core` (CI runs both).
 test: build
 	OSS_PCE_REQUIRE_CC65=1 $(PYTHON) -m unittest discover -s tests/host -v
-	@echo 'NOT_RUN: real Geargrafx checks (run make test-real-core; CI requires it)'
+	@echo 'INFO: real Geargrafx checks are not part of make test; run make test-real-core (informational only)'
 
 # Required real-core gate (Issue #398): needs the pinned Geargrafx core. Fail-closed: a missing core is FAIL, never PASS.
 test-real-core: build

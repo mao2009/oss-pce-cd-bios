@@ -75,7 +75,8 @@ hashes of `boot.s`, `bank0.cfg`, `api_slots.json`, each override source and ever
 make setup
 make build                 # unchanged 8 KiB HuCARD smoke fixture
 make dev-rom               # build/debug/bios-dev/ diagnostic image + map/labels/manifest
-make test                  # all host tests + existing HuCARD real-core tests
+make test                  # all host tests (host-only; no Geargrafx)
+make test-real-core        # existing HuCARD real-core tests (required CI gate)
 make dev-test              # API host tests + diagnostic real-core tests
 make dev-rom MODE=release
 cmp build/debug/bios-dev/dev-only-not-compatible-syscard3.pce build/release/bios-dev/dev-only-not-compatible-syscard3.pce

@@ -50,7 +50,33 @@ def real_core_step(workflow_text):
     return None
 
 
+def real_core_jobs(workflow_text):
+    """Text of each job (under `jobs:`) that has a step running `make test-real-core`."""
+    jobs = re.split(r"(?m)^jobs:[ \t]*$", workflow_text)[-1]
+    blocks = re.split(r"(?m)^(?=  [A-Za-z0-9_-]+:[ \t]*$)", jobs)
+    return [block for block in blocks if re.search(r"(?m)^\s*run: make test-real-core\s*$", block)]
+
+
+# Job-level keys sit at exactly 4 spaces under a job id; step keys are indented deeper.
+JOB_LEVEL_CONTINUE_ON_ERROR = re.compile(r"(?m)^    continue-on-error:")
+JOB_LEVEL_IF = re.compile(r"(?m)^    if:[ \t]*(.*?)[ \t]*$")
+# Job-level if: expressions allowed on the real-core job, pinned exactly. nightly.yml's build job is skipped when
+# main's SHA is unchanged (change-aware plan); no other workflow may guard the real-core job.
+ALLOWED_JOB_IF = {".github/workflows/nightly.yml": {"needs.plan.outputs.build == 'true'"}}
+
+
 class DetectorTests(unittest.TestCase):
+    def test_detects_job_level_guards_on_real_core_job(self):
+        text = "jobs:\n  verify:\n    continue-on-error: true\n    steps:\n      - name: x\n        run: make test-real-core\n"
+        jobs = real_core_jobs(text)
+        self.assertEqual(len(jobs), 1)
+        self.assertTrue(JOB_LEVEL_CONTINUE_ON_ERROR.search(jobs[0]))
+        guarded = text.replace("    steps:", "    if: github.event_name == 'push'\n    steps:")
+        self.assertEqual(JOB_LEVEL_IF.findall(real_core_jobs(guarded)[0]), ["github.event_name == 'push'"])
+        clean = text.replace("    continue-on-error: true\n", "")
+        self.assertEqual(JOB_LEVEL_CONTINUE_ON_ERROR.findall(real_core_jobs(clean)[0]), [])
+        self.assertEqual(JOB_LEVEL_IF.findall(real_core_jobs(clean)[0]), [])
+
     def test_detects_direct_launch_of_geargrafx_integration_script(self):
         cases = [
             'subprocess.run([sys.executable, str(ROOT / "tests/integration/geargrafx_bcdbin.py")])\n',
@@ -110,6 +136,14 @@ class HostIsolationTests(unittest.TestCase):
                 # The real-core gate must be required: no continue-on-error, no if: guard on its step.
                 self.assertNotRegex(step, r"(?m)^\s*(?:-\s+)?continue-on-error:", f"{workflow}: real-core step is optional")
                 self.assertNotRegex(step, r"(?m)^\s*(?:-\s+)?if:", f"{workflow}: real-core step is guarded by if:")
+                # A job-level continue-on-error or if: on the job that holds the step makes the gate optional too.
+                jobs = real_core_jobs(text)
+                self.assertTrue(jobs, f"{workflow}: no job runs make test-real-core")
+                for job in jobs:
+                    self.assertEqual(JOB_LEVEL_CONTINUE_ON_ERROR.findall(job), [],
+                                     f"{workflow}: job running make test-real-core is optional")
+                    self.assertLessEqual(set(JOB_LEVEL_IF.findall(job)), ALLOWED_JOB_IF.get(workflow, set()),
+                                         f"{workflow}: job running make test-real-core is guarded by if:")
 
 
 if __name__ == "__main__":
