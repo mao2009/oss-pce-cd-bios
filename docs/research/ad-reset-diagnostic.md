@@ -26,7 +26,10 @@
 | `pos-reset`（正） | アイドル、ADDRESS=`$1234`、CONTROL=`$80` | playing 0、ADDRESS `$1234` | CONTROL `$80`、playing 0、status `$00`、ADDRESS/READ/WRITE/LENGTH 0、END/HALF IRQ 0、SR `$0F` と DMA 不変 | `PASS_IDLE_AFTER_RESET_FROM_IDLE` |
 | `neg-reset-playing`（負） | CONTROL=`$20` で再生開始（1 フレームで PLAYING=1）、その後 CONTROL=`$A0` | control `$20`、playing 1、status `$08`、LENGTH 130805 | CONTROL `$A0`、playing **1**、status `$08`、ADDRESS 0、LENGTH 0 | `NOT_IDLE_RESET_WITH_PLAY_BIT_SET` |
 
-- 2 回連続で同じ観測（`b65270c` の WSL クリーン clone、ログ: `C:\Users\Hobart\AppData\Local\Temp\claude\C--Users-Hobart-Documents-Projects-oss-pce-cd-bios\88427502-ac7d-49df-83df-ba3558684b0b\scratchpad\w06-294-real-core.log`）。
+- 再実行の記録（コミット `99e93e0` を WSL の clean clone で 2 回実行。`git status` は clean、`HEAD` は一致、`mkdir -p /home/loach/locks && flock` で直列化）。両回とも終了コード 0、`PASS issue-294 ADPCM reset device-layer diagnostic`。
+  - run1 ログ: `C:\Users\Hobart\AppData\Local\Temp\claude\C--Users-Hobart-Documents-Projects-oss-pce-cd-bios\88427502-ac7d-49df-83df-ba3558684b0b\scratchpad\w06-294-real-core-rerun-1.log`（SHA-256 `80b5527af6e3a6077f4b5f2267b33fc91456014849ac2c7be0736ecea676d3de`）
+  - run2 ログ: 同ディレクトリの `w06-294-real-core-rerun-2.log`（SHA-256 `80b5527af6e3a6077f4b5f2267b33fc91456014849ac2c7be0736ecea676d3de`、run1 と同一）
+  - 以前の単発ログ `w06-294-real-core.log` は、この再実行の根拠としては使わない。
 - mutation: 偽造した観測（負例で playing=0、正例で playing=1、正例で ADDRESS 残存）はすべて拒否された。アイドル判定は正例を受理し、負例を拒否した。
 
 ## 4. #295 への実装条件（ROM-Primitive）
