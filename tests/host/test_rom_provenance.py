@@ -1,0 +1,204 @@
+"""Issue #335: PCE ROM provenance record and same-input reproducibility checks.
+
+Host-only: no cc65 and no real build. Builders are injected fakes, so these tests run without private inputs.
+Each positive case has a negative counterpart, and each negative case is a tampered copy of a passing record.
+"""
+import copy
+import json
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
+import rom_provenance as rp  # noqa: E402
+from environment import DEPENDENCIES  # noqa: E402
+
+COMMIT = "a" * 40
+OTHER = "b" * 40
+ROM = bytes(range(256)) * 4
+
+
+def record(rom=ROM, **overrides):
+    manifest = {"schema_version": 1, "status": "development-diagnostic-not-compatible-bios",
+                "source_sha": COMMIT, "working_tree_dirty": False, "source_root_is_git_repo": True,
+                "rom_bytes": len(rom), "rom_sha256": rp.sha256(rom),
+                "cc65_revision": DEPENDENCIES["cc65"]["revision"], "release_eligible": False}
+    manifest.update(overrides)
+    return manifest
+
+
+class RecordTests(unittest.TestCase):
+    def test_matching_record_passes(self):
+        self.assertEqual([], rp.check_record(ROM, record(), COMMIT))
+
+    def test_tampered_rom_byte_fails(self):
+        tampered = bytearray(ROM)
+        tampered[17] ^= 0x01
+        problems = rp.check_record(bytes(tampered), record(), COMMIT)
+        self.assertTrue(any("rom_sha256" in p for p in problems))
+
+    def test_manifest_hash_edited_to_match_other_rom_fails(self):
+        tampered = bytearray(ROM)
+        tampered[0] ^= 0xFF
+        forged = record(rom=bytes(tampered))  # a manifest written for the tampered bytes
+        problems = rp.check_record(ROM, forged, COMMIT)
+        self.assertTrue(any("rom_sha256" in p for p in problems))
+
+    def test_size_mismatch_fails(self):
+        problems = rp.check_record(ROM + b"\xff", record(), COMMIT)
+        self.assertTrue(any("rom_bytes" in p for p in problems))
+
+    def test_wrong_source_commit_fails(self):
+        problems = rp.check_record(ROM, record(source_sha=OTHER), COMMIT)
+        self.assertTrue(any("expected commit" in p for p in problems))
+
+    def test_missing_or_short_source_sha_fails(self):
+        for value in (None, "abc123", "A" * 40):
+            with self.subTest(value=value):
+                problems = rp.check_record(ROM, record(source_sha=value), COMMIT)
+                self.assertTrue(any("source_sha" in p for p in problems))
+
+    def test_dirty_tree_fails(self):
+        problems = rp.check_record(ROM, record(working_tree_dirty=True), COMMIT)
+        self.assertTrue(any("dirty" in p for p in problems))
+
+    def test_unknown_dirty_state_fails(self):
+        manifest = record()
+        del manifest["working_tree_dirty"]
+        self.assertTrue(rp.check_record(ROM, manifest, COMMIT))
+
+    def test_source_not_git_repo_fails(self):
+        problems = rp.check_record(ROM, record(source_root_is_git_repo=False), COMMIT)
+        self.assertTrue(any("source_root_is_git_repo" in p for p in problems))
+
+    def test_unpinned_cc65_fails(self):
+        problems = rp.check_record(ROM, record(cc65_revision="0" * 40), COMMIT)
+        self.assertTrue(any("cc65" in p for p in problems))
+
+    def test_release_claim_fails(self):
+        problems = rp.check_record(ROM, record(release_eligible=True), COMMIT)
+        self.assertTrue(any("release_eligible" in p for p in problems))
+
+    def test_non_object_manifest_fails(self):
+        self.assertEqual(["manifest is not a JSON object"], rp.check_record(ROM, ["x"], COMMIT))
+
+    def test_record_is_not_mutated_by_check(self):
+        manifest = record()
+        before = copy.deepcopy(manifest)
+        rp.check_record(ROM, manifest, COMMIT)
+        self.assertEqual(before, manifest)
+
+
+class ReproducibilityTests(unittest.TestCase):
+    def test_identical_builds_pass(self):
+        self.assertEqual([], rp.check_reproducible(ROM, bytes(ROM)))
+
+    def test_differing_builds_fail(self):
+        self.assertTrue(rp.check_reproducible(ROM, ROM[:-1] + b"\x00"))
+
+    def test_reproduce_runs_two_fresh_builds(self):
+        calls = []
+
+        def fake(out):
+            calls.append(out.name)
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "x.pce").write_bytes(ROM)
+            return out / "x.pce"
+
+        with tempfile.TemporaryDirectory() as directory:
+            first, second = rp.reproduce(fake, Path(directory))
+            self.assertEqual(["a", "b"], calls)
+            self.assertEqual(ROM, first.read_bytes())
+            self.assertEqual(ROM, second.read_bytes())
+
+
+class CliTests(unittest.TestCase):
+    def write_pair(self, directory, rom=ROM, manifest=None):
+        rom_path = Path(directory) / "x.pce"
+        manifest_path = Path(directory) / "manifest.json"
+        rom_path.write_bytes(rom)
+        manifest_path.write_text(json.dumps(manifest if manifest is not None else record()), encoding="utf-8")
+        return rom_path, manifest_path
+
+    def test_rom_pass_exit_zero(self):
+        with tempfile.TemporaryDirectory() as directory:
+            rom, manifest = self.write_pair(directory)
+            self.assertEqual(rp.EXIT_PASS, rp.main(["--rom", str(rom), "--manifest", str(manifest), "--commit", COMMIT]))
+
+    def test_tampered_rom_exit_one(self):
+        with tempfile.TemporaryDirectory() as directory:
+            rom, manifest = self.write_pair(directory)
+            rom.write_bytes(ROM[:-1] + b"\x00")
+            self.assertEqual(rp.EXIT_FAIL, rp.main(["--rom", str(rom), "--manifest", str(manifest), "--commit", COMMIT]))
+
+    def test_missing_manifest_is_error_not_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            rom, _ = self.write_pair(directory)
+            missing = Path(directory) / "nope.json"
+            self.assertEqual(rp.EXIT_ERROR, rp.main(["--rom", str(rom), "--manifest", str(missing), "--commit", COMMIT]))
+
+    def test_unreadable_manifest_is_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            rom, manifest = self.write_pair(directory)
+            manifest.write_text("{not json", encoding="utf-8")
+            self.assertEqual(rp.EXIT_ERROR, rp.main(["--rom", str(rom), "--manifest", str(manifest), "--commit", COMMIT]))
+
+    def test_rom_and_reproduce_together_is_usage_error(self):
+        with self.assertRaises(SystemExit):
+            rp.main(["--rom", "x.pce", "--manifest", "m.json", "--reproduce", "smoke"])
+
+    def test_short_commit_is_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            rom, manifest = self.write_pair(directory)
+            self.assertEqual(rp.EXIT_ERROR, rp.main(["--rom", str(rom), "--manifest", str(manifest), "--commit", "abc"]))
+
+    def run_reproduce(self, build_once, work):
+        with patch.object(rp, "_subprocess_builder", return_value=build_once):
+            return rp.main(["--reproduce", "smoke", "--work", str(work), "--commit", COMMIT])
+
+    def fake_builder(self, data_for, manifest=None):
+        def build_once(out):
+            out.mkdir(parents=True, exist_ok=True)
+            rom_name = rp.BUILDERS["smoke"][1]
+            (out / rom_name).write_bytes(data_for(out))
+            (out / "manifest.json").write_text(json.dumps(manifest or record(rom=data_for(out))), encoding="utf-8")
+            return out / rom_name
+        return build_once
+
+    def test_reproduce_identical_builds_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(rp.EXIT_PASS, self.run_reproduce(self.fake_builder(lambda out: ROM), Path(directory)))
+
+    def test_reproduce_divergent_builds_fail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            # Builds differ by directory: the second build writes different bytes.
+            def data(out):
+                return ROM if out.name == "a" else ROM[:-1] + b"\x01"
+            build = self.fake_builder(data, manifest=record())
+            self.assertEqual(rp.EXIT_FAIL, self.run_reproduce(build, Path(directory)))
+
+    def test_reproduce_build_failure_is_error(self):
+        def broken(out):
+            raise rp.ToolError("build.py failed (exit 1)")
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(rp.EXIT_ERROR, self.run_reproduce(broken, Path(directory)))
+
+    def test_reproduce_dirty_manifest_fails_even_when_identical(self):
+        with tempfile.TemporaryDirectory() as directory:
+            build = self.fake_builder(lambda out: ROM, manifest=record(working_tree_dirty=True))
+            self.assertEqual(rp.EXIT_FAIL, self.run_reproduce(build, Path(directory)))
+
+
+class WiringTests(unittest.TestCase):
+    def test_ci_runs_reproducibility_before_handoff(self):
+        text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        check = text.index("rom_provenance.py --reproduce smoke")
+        handoff = text.index("Hand off the test fixture")
+        self.assertLess(check, handoff)
+
+
+if __name__ == "__main__":
+    unittest.main()
