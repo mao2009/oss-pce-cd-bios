@@ -1,7 +1,9 @@
 """Full 0..255 real-core sweep of EX_BINBCD through the DEV ROM entry $E0B4 (slot $3C).
 
-Run from a clean clone under /home/loach (never from the Windows worktree):
-  python3 dev_bcd_full_sweep.py <clean-clone-root> <path-to-dev-rom.pce>
+Run: make dev-sweep
+  or: python3 tests/integration/dev_bcd_full_sweep.py [path-to-dev-rom.pce]
+The repository root is taken from this file's own location, so the script runs from any checkout
+(it is not tied to a particular working directory).
 Reuses guest()/entry_address()/run_probe()/expected_binbcd() from tests/integration/geargrafx_dev_bcd.py.
 Checks per input: A, C, X, Y, P.D==0, P.I==1 (set by the guest's SEI), return PC, SP==$FF, MPR1/MPR7.
 N/Z/V are recorded but NOT checked (unspecified by the DEV contract).
@@ -13,8 +15,9 @@ import sys
 import tempfile
 from pathlib import Path
 
-REPO = Path(sys.argv[1]).resolve()
-ROM = Path(sys.argv[2]).resolve()
+REPO = Path(__file__).resolve().parents[2]
+ROM = Path(sys.argv[1] if len(sys.argv) > 1
+           else REPO / "build" / "debug" / "bios-dev" / "dev-only-not-compatible-syscard3.pce").resolve()
 sys.path.insert(0, str(REPO / "tools"))
 sys.path.insert(0, str(REPO / "tests" / "integration"))
 import geargrafx_dev_bcd as t  # noqa: E402
