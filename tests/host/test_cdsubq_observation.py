@@ -134,14 +134,24 @@ class ObserveRunTests(unittest.TestCase):
     def test_reply_outside_window_is_rejected(self):
         bad = dict(self.GOOD)
         bad[0x80] = "00 01 02 01 00 00 15 00 02 31"   # PLAYING LBA 31: one past the window 20..30
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, r"matches \[\] in LBA 20\.\.30"):
             observe_run(_run(bad), _points())
 
     def test_malformed_run_reply_raises(self):
         bad = dict(self.GOOD)
-        bad[0xA0] = "03 01 02 01 00 00 14 00 02 3A"   # non-BCD abs frame
-        with self.assertRaises(ValueError):
+        bad[0xA0] = "03 01 02 01 00 00 14 00 02 3A"   # non-BCD abs frame: no LBA may match
+        with self.assertRaisesRegex(ValueError, r"matches \[\] in LBA 30\.\.30"):
             observe_run(_run(bad), _points())
+
+    def test_edge_window_boundary_is_compared_by_fields(self):
+        # Window starts at LBA 16 (track start): LBA 15 is off-track, so its rejection must come from the fields.
+        points = _points()
+        points[1] = (points[1][0], _hit(PLAYING, 16, "cdda_wait_done"))
+        edge = dict(self.GOOD)
+        edge[0x80] = "00 01 02 01 00 00 00 00 02 16"   # PLAYING LBA 16
+        observed = observe_run(_run(edge), points)
+        self.assertEqual(observed[2]["lba"], 16)
+        self.assertIn("rel_frames 0 != -1", observed[2]["boundary_before"]["reason"])
 
 
 if __name__ == "__main__":

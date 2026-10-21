@@ -55,6 +55,17 @@ def on_track(track: int, lba: int) -> bool:
     return start_end is not None and start_end[0] <= lba <= start_end[1]
 
 
+def canonical_fields(state: int, track: int, lba: int) -> dict:
+    """Expected decoded fields for a medium position. No range gate, so boundary LBAs can be compared too."""
+    return {"state": state, "adr_control": 0x01, "track": track, "index": 1,
+            "rel_frames": lba - TRACKS[track][0], "abs_frames": lba + PREGAP_FRAMES}
+
+
+def _field_diff(observed: dict, state: int, track: int, lba: int) -> str:
+    wanted = canonical_fields(state, track, lba)
+    return ", ".join(f"{key} {observed[key]!r} != {wanted[key]!r}" for key in wanted if observed[key] != wanted[key])
+
+
 def encode_reply(state: int, track: int, lba: int) -> bytes:
     """Canonical reply for a medium position: state, ADR/control 01, track, index 01, rel MSF, abs MSF."""
     return bytes((state, 0x01, bcd(track), 0x01)) + msf_bytes(lba - TRACKS[track][0]) + msf_bytes(lba + PREGAP_FRAMES)
@@ -83,10 +94,9 @@ def judge(reply: bytes, state: int, track: int, lba: int) -> tuple:
         observed = decode_reply(reply)
     except ValueError as error:
         return NEGATIVE, f"malformed reply: {error}"
-    wanted = decode_reply(encode_reply(state, track, lba))
-    differ = [f"{key} {observed[key]!r} != {wanted[key]!r}" for key in wanted if observed[key] != wanted[key]]
+    differ = _field_diff(observed, state, track, lba)
     if differ:
-        return NEGATIVE, "fields differ: " + ", ".join(differ)
+        return NEGATIVE, "fields differ: " + differ
     return POSITIVE, "all fields match the canonical reply for the medium position"
 
 
@@ -108,15 +118,15 @@ def observe_run(run: dict, points: dict) -> dict:
         matched = [lba for lba in range(low, high + 1) if judge(reply, state, 2, lba)[0] == POSITIVE]
         if len(matched) != 1:
             raise ValueError(f"$DD reply {reply.hex()} (state {state}) matches {matched} in LBA {low}..{high}; expected 1")
-        before_verdict, before_reason = judge(reply, state, 2, low - 1)
-        after_verdict, after_reason = judge(reply, state, 2, high + 1)
-        if before_verdict != NEGATIVE or after_verdict != NEGATIVE:
-            raise ValueError(f"$DD reply {reply.hex()}: a window boundary was accepted "
-                             f"(before {before_verdict}, after {after_verdict})")
         fields = decode_reply(reply)
+        # Field-level comparison at the neighbours, so an edge window is not rejected merely for being off-track.
+        before_reason, after_reason = _field_diff(fields, state, 2, low - 1), _field_diff(fields, state, 2, high + 1)
+        if not before_reason or not after_reason:
+            raise ValueError(f"$DD reply {reply.hex()}: a window boundary matches its neighbour LBA "
+                             f"(before {bool(before_reason)}, after {bool(after_reason)})")
         out[index] = {"reply_hex": reply.hex(), "state": fields["state"], "track": 2, "index": fields["index"],
                       "rel_frames": fields["rel_frames"], "abs_frames": fields["abs_frames"],
                       "lba": matched[0], "window": [low, high],
-                      "boundary_before": {"lba": low - 1, "verdict": before_verdict, "reason": before_reason},
-                      "boundary_after": {"lba": high + 1, "verdict": after_verdict, "reason": after_reason}}
+                      "boundary_before": {"lba": low - 1, "verdict": NEGATIVE, "reason": before_reason},
+                      "boundary_after": {"lba": high + 1, "verdict": NEGATIVE, "reason": after_reason}}
     return out
