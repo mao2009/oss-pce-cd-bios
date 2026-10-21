@@ -24,7 +24,7 @@ Issue [#440](https://github.com/mao2009/oss-pce-cd-bios/issues/440)。対象は 
 `guard-*` は上流ジョブに `needs` で依存する。上流が失敗すると `skipped` になり、skipped は必須チェックで成功扱いになる。そのため、guard を必須にするだけでは不十分で、上流ジョブ（`core-harness`、`bcdbin-core`、`bios-dev`、`verify`）も必須にする必要がある。
 
 以下は必須に含めない。
-- `attest-*`、`verify-cdread-*`、`guard-cdread-verdict`、`attest-cdread-verdict`、`verify-cdread-verdict`（`api-source.yml`）は `push` かつ main のときだけ動き、PR では skipped になる。
+- `attest-*`、`verify-cdread-*`、`attest-cdread-verdict`、`verify-cdread-verdict`（`api-source.yml`）は `push` かつ main のときだけ動き、PR では skipped になる。`guard-cdread-verdict` は `if` を持たず、`verify-cdread-attestation` 経由で PR では skipped になる。どちらも必須にしない。
 - `guard-nightly` と `nightly.yml` は schedule 専用である。
 - `pages.yml` は PR で動く。必須にするかどうかは別途判断する（本案の対象外）。
 
