@@ -195,7 +195,7 @@ adt_dma_sector:
     sta ADPCM_ADDR_LO
     lda PB_DST_HI
     sta ADPCM_ADDR_HI
-    lda #$03                 ; bit1 0->1: write address = ADDRESS
+    lda #$03                 ; bits 0 and 1 set; bit1 0->1 latches write address = ADDRESS
     sta ADPCM_CTRL
     lda PB_ARM
     beq @no_arm              ; arm = 0: DMA never enabled, the data phase cannot drain
