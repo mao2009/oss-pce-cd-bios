@@ -128,10 +128,10 @@ def main():
             raise ValueError("slot $41 body does not start with PHP; CLD")
         mutants = {"41_without_CLD_D1": [(code_at + 1, 0xEA)]}
         # Negative 2: PHP and the PLP before RTS replaced by NOP. The caller's P is then not restored (D stays 0).
-        plp_at = data.find(b"\x28\x60", body, body + 120)
+        plp_at = data.find(b"\x28\x60", code_at, code_at + 120)  # file offset of PLP; RTS
         if plp_at < 0:
             raise ValueError("slot $41 body has no PLP; RTS")
-        mutants["41_without_PHP_PLP"] = [(code_at, 0xEA), (plp_at - 0xE000, 0xEA)]
+        mutants["41_without_PHP_PLP"] = [(code_at, 0xEA), (plp_at, 0xEA)]
         for name, patches in mutants.items():
             mutant = bytearray(data)
             for offset, value in patches:
