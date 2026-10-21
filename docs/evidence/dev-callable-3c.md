@@ -9,9 +9,11 @@
 
 | 項目 | 状態 |
 |---|---|
-| DEV ROM 入口経由で全入力（0..255）を実コアで実行 | **未実施**（下記 3 参照） |
-| 既存の DEV 入口テストの実行 | **未実施**（本作業では実行できなかった） |
-| 負例（範囲外、誤入口）の実コア確認 | **未実施** |
+| DEV ROM 入口経由で全入力（0..255）を実コアで実行 | **実施済み**（調整者が WSL で実行、3.4 節）: 256 入力、失敗 0 |
+| 既存の DEV 入口テストの実行 | **実施済み**（調整者が `make dev-integration` を実行、rc=0、3.4 節） |
+| 負例（範囲外、誤入口）の実コア確認 | **実施済み**（範囲外は全 156 入力に含む。誤入口の負例は検出済み） |
+
+注記: 上記の実行は本書の作成者ではなく調整者が行い、その結果を転記したもの。作成者は再実行していない。
 | 独立レビュー | 第 6 節に記載（結果待ち時点の記録） |
 
 現状の証拠は「ソース・契約・既存テストの定義」の確認に限られる。実コア全入力の PASS は、以下の手順を実行するまで主張しない。
@@ -50,7 +52,18 @@
 
 範囲内 100 件（0..99）、範囲外 156 件（100..255、拒否動作）。誤入口の負例（`$E0B4` に 0x42 を入れて 42 を期待すると失敗すること）も含む。
 
-**実行結果: 未実施。** 理由は第 5 節。
+**実行結果: 実施済み**（3.4 節。当初は作業環境の制約で未実施だった）。
+
+### 3.4 実行結果（調整者による WSL 実行の転記）
+
+- 実行場所: WSL 上の清浄クローン `/home/loach/ph-main`（main `c906728`）
+- スクリプト: `tests/integration/dev_bcd_full_sweep.py`（本 PR で追加。WSL 清浄クローン上で実行）
+- 結果行: `PASS DEV ROM EX_BINBCD $3C full domain: 256 inputs, 0 failures`
+- 内訳: 有効 0..99 が 100 件、範囲外 100..255 が 156 件、失敗入力は空（`failed_inputs = []`）
+- 負例: 誤入口（`$E0B4` に 0x42 を入れ 42 を期待）は検出された（wrong-decode negative detected）
+- `make dev-integration` は rc=0。3C と 3D の PASS 行を確認。
+- DEV ROM sha256: `d669c03f46b5e73b913776c50e2620a7d73584e42a5115febcc3fc5fb65f8e65`（W01 と一致）
+- manifest.json の hash: 調整者からの報告に含まれないため未記録。
 
 ### 3.3 必要な実行コマンド（オーナーまたは WSL 環境で実行）
 
@@ -75,8 +88,8 @@ python3 <スクリプト> /home/loach/<作業名> build/debug/bios-dev/dev-only-
 | `spec/dev_implementations.json` | `d94ac5ff5ffb3fd0cbd487425b82bdad780548bb79b4455ae47ba580b4361638` | sha256 確認済み |
 | Geargrafx 固定 revision | `b49ae82a012eade566d72e9d61c9d95a5caa4da3` | `tools/dependencies.json` より |
 | cc65 固定 revision | `71746c829e77f74c2b601a7d16821170c2610df3` | `tools/dependencies.json` より |
-| DEV ROM sha256 | 未計測 | DEV ROM 未ビルド（第 5 節） |
-| manifest.json の rom_sha256 | 未計測 | 同上 |
+| DEV ROM sha256 | `d669c03f46b5e73b913776c50e2620a7d73584e42a5115febcc3fc5fb65f8e65` | 調整者が WSL でビルドして計測（W01 と一致） |
+| manifest.json の rom_sha256 | 未記録 | 調整者の報告に含まれない |
 
 ## 5. 実行できなかった理由
 
@@ -124,6 +137,10 @@ c906728 の BIOS DEV diagnostics は完了していない。完了後の結果�
 3. N/Z/V を未規定のままにしてよいか。
 4. 範囲外（100..255）の動作（A 不変、C=1）を DEV 契約の一部として承認するか。
 5. 既存の `docs/ex-binbcd-internal.md` の「PASS」記述、3 行目の古い接続記述、台帳の「real-core tested」注記を、承認前に修正するか（別 PR）。
+6. 残課題（調整者の指定）: 9 入力テスト（`geargrafx_dev_bcd.py`）の P レジスタ検査が C ビットのみである点。全入力スイープでは D/I を検査済みだが、既存テストの検査範囲は未修正。
+7. 残課題（調整者の指定）: clean-room（Issue #40）。本作業では内容を確認しておらず、結論にも使っていない。
+8. 全入力スイープ（`tests/integration/dev_bcd_full_sweep.py`）は WSL の清浄クローン（`/home/loach` 配下）から実行する。ROM バイトを含まない。
+9. 承認フィールドは変更していない。承認はオーナーのみが行う。
 
 ## 9. 承認の状態
 
