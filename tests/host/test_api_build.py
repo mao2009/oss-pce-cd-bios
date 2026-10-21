@@ -154,7 +154,7 @@ class ApiBuildTests(unittest.TestCase):
             'entry is data': ('.byte $60\n', 'not the address of an instruction|contains no code'),
             'jumps to padding': (' jmp $E900\n', r'jumps to \$E900'),
             'jumps into table gap': (' jmp $E0F5\n', r'jumps to \$E0F5'),
-            'jumps mid-instruction': (' ldx #$03\n jmp api_slot_03+1\n', r'jumps to \$E601'),
+            'jumps mid-instruction': (' ldx #$03\n jmp api_slot_03+1\n', r'jumps to \$E301'),
             'jumps to boot body': (' jsr $F002\n rts\n', r'jumps to \$F002'),
             'branches to data': (' bra data\n rts\ndata: .byte $EA\n', 'jumps to'),
         }
@@ -181,7 +181,7 @@ class ApiBuildTests(unittest.TestCase):
         data = bytearray(build(self.folder/name, root=root).read_bytes())
         dbg = parse_dbg((self.folder/name/'dev.dbg').read_text())
         verify_image(bytes(data), {3}, dbg)  # untampered baseline must pass
-        data[0x600 + offset] = value
+        data[0x300 + offset] = value
         return bytes(data), dbg
 
     def test_opcode_length_mismatch_is_rejected(self):
@@ -209,7 +209,7 @@ class ApiBuildTests(unittest.TestCase):
         root = self.make_root('tamper-root', slot_03=self.GOOD)
         data = bytearray(build(self.folder/'tamper', root=root).read_bytes())
         dbg = parse_dbg((self.folder/'tamper/dev.dbg').read_text())
-        at = 0x600 + data[0x600:0x620].index(0x4C)          # the override's JMP api_slot_00
+        at = 0x300 + data[0x300:0x320].index(0x4C)          # the override's JMP api_slot_00
         data[at+1:at+3] = bytes((0x00, 0xE9))               # ...retargeted into padding
         with self.assertRaisesRegex(ValueError, r'jumps to \$E900'): verify_image(bytes(data), {3}, dbg)
         data = bytearray(build(self.folder/'tamper2', root=root).read_bytes())
