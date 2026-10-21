@@ -10,8 +10,9 @@
 ;          in the stack page (the real-core test checks the boundary caller SP=$0A and SP=$FF)
 ;   precondition: caller T (P bit 5) must be 0 at entry. T=1 is OUT OF CONTRACT: this routine defines no
 ;          behaviour for it. The HuC6280 T flag changes ADC/AND/EOR/ORA (memory-to-memory mode), and the
-;          routine's ADC is one of them. The pinned core consumes T at the JSR itself, so the T=1 test is a
-;          characterisation only (tests/integration/geargrafx_dev_mul16u.py); it asserts no PASS for T=1.
+;          routine's ADC is one of them. The pinned core's JSR consumes a SET before it (the routine is entered
+;          with T=0); tests/integration/geargrafx_dev_mul16u.py checks that JSR behaviour. No test runs the routine
+;          with T=1.
 ;   kept: Y. P is restored by PLP from the value pushed at entry (C,Z,I,D,V,N as the caller left them;
 ;          the test checks bit 5 is 0 on return, bit 4 is ignored); D is cleared inside for binary ADC.
 ;   uses: stack page $2100-$21FF only (4 bytes pushed inside plus the 2 return bytes). No I/O, no MPR, I is never changed.

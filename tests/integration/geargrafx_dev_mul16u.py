@@ -8,10 +8,12 @@ The expectation is this project's own spec (src/overrides/slot_41.s), NOT the re
 stays UNVERIFIED. Every 16-bit pair is a valid input, so there is no invalid-input error path to test. The
 checked cases are edge values, carry-heavy values and a few mixed values, at two caller SP values (the boundary
 $0A, i.e. entry SP $04, and $FF, i.e. entry SP $F9).
-Precondition: caller T (P bit 5) = 0 at entry. T=1 is out of contract (src/overrides/slot_41.s header). Every
-checked case runs with T=0. P is compared with mask $EF: C,Z,I,D,V,N must match and bit 5 (T) must be 0 on
-return; bit 4 (B) is ignored because PHP pushes it as 1 and PLP does not store it. Two T=1 characterisation
-runs (SET before the JSR) record what the pinned core returns and assert no PASS, because T=1 is out of contract.
+Precondition: caller T (P bit 5) = 0 at entry. T=1 has no defined behaviour for the routine (src/overrides/slot_41.s
+header), and no case runs the routine with T=1. P is compared with mask $EF: C,Z,I,D,V,N must match and bit 5 (T) must
+be 0 on return; bit 4 (B) is ignored because PHP pushes it as 1 and PLP does not store it.
+Two JSR T-latch checks (SET before the JSR) test only the pinned core's JSR: the JSR consumes the SET, so the routine is
+entered with T=0. They assert that the product is correct, the halt is reached and the returned P has bit 5 = 0. They
+do NOT test MA_MUL16U behaviour with T=1.
 Not checked: A and X (declared clobbered), MPR0 and MPR2-6 (MPR1 and MPR7 only), other RAM.
 The 65,536-multiplier, 12-multiplicand host model lives in tests/host/test_ma_mul16u_dev.py.
 Run: python3 tests/integration/geargrafx_dev_mul16u.py --rom build/debug/bios-dev/dev-only-not-compatible-syscard3.pce
@@ -45,7 +47,7 @@ SP_CASES = [0x0A, 0x40, 0xFF]  # caller SP before the 4 pushes; entry SP = calle
 def guest(reset, entry, m, q, sp, t_set=False):
     """Reset-replacement code at CPU address `reset`. Returns (code, halt CPU address).
 
-    t_set=True (characterisation only): SET (opcode $F4) right before the JSR. The pinned core has no CLT opcode;
+    t_set=True (JSR T-latch check only): SET (opcode $F4) right before the JSR. The pinned core has no CLT opcode;
     it latches T into the next instruction and clears P.T there (src/huc6280_inline.h RunInstruction), so the JSR
     consumes the SET and the routine starts with T=0 in P."""
     push = lambda v: [0xA9, v, 0x48]  # LDA #v; PHA
@@ -56,7 +58,7 @@ def guest(reset, entry, m, q, sp, t_set=False):
                   0xA0, Y_PRESET]            # LDY #$A5
                  + push(m & 0xFF) + push(m >> 8) + push(q & 0xFF)
                  + [0xA9, q >> 8, 0x48]      # multiplier hi last (LDA sets the N/Z that P must show at entry)
-                 + ([0xF4] if t_set else [])  # SET (T=1 requested; characterisation only)
+                 + ([0xF4] if t_set else [])  # SET (JSR T-latch check only; the JSR consumes it)
                  + [0x20, entry & 0xFF, entry >> 8]  # JSR entry
                  + [0x08, 0x68, 0x8D, (STORE + 4) & 0xFF, (STORE + 4) >> 8]  # PHP; PLA; STA $2204 (P after)
                  + [0x8C, (STORE + 5) & 0xFF, (STORE + 5) >> 8]              # STY $2205
@@ -105,19 +107,22 @@ def run_case(probe, base, folder, cue, reset, label, entry, m, q, sp=0xFF):
     check(label, rows, halt, m, q, sp)
 
 
-def characterise_t1(probe, base, folder, cue, reset, entry, m, q, sp=0xFF):
-    """T=1 characterisation (out of contract). Records the observed values and asserts NOTHING about PASS."""
+def jsr_t_latch_check(probe, base, folder, cue, reset, entry, m, q, sp=0xFF):
+    """JSR T-latch check: SET before the JSR must be consumed by the JSR. Asserts the product, the halt, the stack
+    balance and that the returned P has bit 5 (T) = 0. Does not exercise the routine with T=1."""
     code, halt = guest(reset, entry, m, q, sp, t_set=True)
     variant = bytearray(base)
     variant[reset - 0xE000:reset - 0xE000 + len(code)] = code
-    rom = folder / f"t1-{m:04x}-{q:04x}-sp{sp:02x}.pce"
+    rom = folder / f"tlatch-{m:04x}-{q:04x}-sp{sp:02x}.pce"
     rom.write_bytes(variant)
-    cold = next(r for r in dev.run_probe(probe, rom.resolve(), cue) if r["phase"] == "cold")
+    rows = dev.run_probe(probe, rom.resolve(), cue)
+    check(f"jsr-t-latch-{m:04x}-{q:04x}", rows, halt, m, q, sp)
+    cold = next(r for r in rows if r["phase"] == "cold")
     s = bytes.fromhex(cold["work_ram_0200_hex"])[:7]
-    return {"m": m, "q": q, "sp": sp, "halt_cpu_address": f"${halt:04X}", "pc_observed": f"${cold['pc']:04X}",
-            "halt_reached": cold["pc"] == halt, "sp_after": cold["sp"],
-            "product_observed": int.from_bytes(s[0:4], "little"), "product_expected": m * q,
-            "p_after_raw": f"${s[4]:02X}", "y_after": f"${s[5]:02X}", "sp_stored": s[6]}
+    if s[4] & 0x20:
+        raise ValueError(f"JSR T-latch check: returned P has T set (P=${s[4]:02X}); the JSR did not consume the SET")
+    return {"m": m, "q": q, "sp": sp, "halt_cpu_address": f"${halt:04X}", "product_expected": m * q,
+            "product_observed": int.from_bytes(s[0:4], "little"), "p_after_raw": f"${s[4]:02X}", "t_clear": True}
 
 
 def main():
@@ -170,11 +175,11 @@ def main():
             if len(rejected) != 3:
                 raise ValueError(f"{name}: mutant matched the spec in at least one case (expected 3 mismatches)")
             evidence["negative_cases"].append({"case": name, "rejected": len(rejected), "first": rejected[0]})
-        # T=1 characterisation (out of contract): recorded only, no assertion on the values.
-        t1 = [characterise_t1(probe, data, folder, cue, reset, entry, m, q) for m, q in ((0x1234, 0x5678), (0xFFFF, 0xFFFF))]
-        evidence["t1_characterisation_out_of_contract"] = t1
-        for row in t1:
-            print("CHARACTERISATION T=1 (out of contract, no PASS asserted): " + json.dumps(row, sort_keys=True))
+        # JSR T-latch check: SET before the JSR is consumed by the JSR (not a test of the routine with T=1).
+        latch = [jsr_t_latch_check(probe, data, folder, cue, reset, entry, m, q) for m, q in ((0x1234, 0x5678), (0xFFFF, 0xFFFF))]
+        evidence["jsr_t_latch_checks"] = latch
+        print("PASS JSR T-latch check: SET before JSR is consumed; routine entered with T=0; "
+              f"{len(latch)} cases (product correct, halt reached, returned P bit 5 = 0)")
     (args.rom.parent / "geargrafx-dev-mul16u-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
     total = len(CASES) + 2 * 3  # full table at SP=$FF, plus 3 cases at each of SP=$0A and $40
     print(f"PASS real Geargrafx DEV ROM: MA_MUL16U slot $41 {total} cases (SP=$FF full table; SP=$0A boundary "
