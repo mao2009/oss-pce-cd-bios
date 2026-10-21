@@ -1,5 +1,5 @@
 ; Issue #70: original internal EX_BINBCD routine (PROJECT-OWN spec, NOT the System Card ABI).
-; Not wired to the ROM jump table; the reference $3C/$E0B4 contract remains UNCONFIRMED.
+; DEV ROM only: included by src/overrides/slot_3C.s. The reference $3C/$E0B4 contract remains UNCONFIRMED.
 ; Contract (this project only, see docs/ex-binbcd-internal.md):
 ;   in : A = unsigned binary 0..99
 ;   out: A = PACKED BCD, one byte: tens digit in bits 7-4, ones digit in bits 3-0; C=0
@@ -9,7 +9,6 @@
 ; Unpacked BCD (one digit per byte) is NOT provided by this routine.
 .setcpu "huc6280"
 .export ex_binbcd_packed, ex_binbcd_tens_step
-.segment "CODE"
 ex_binbcd_packed:
     cmp #100
     bcs binbcd_done           ; out of range: C=1, A/X/Y untouched
