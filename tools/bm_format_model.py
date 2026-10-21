@@ -5,7 +5,8 @@ never calls a BIOS routine. The signature below is a project-internal synthetic 
 NOT the System Card backup-RAM format. The BM_FORMAT ABI (entry, arguments, confirm string,
 return codes) is unconfirmed (#302), so the API stays BLOCKED_ABI and release_eligible=false.
 
-Fail-closed order of checks in format_image():
+Order of checks in format_image():
+  0. non-bytes input                    -> TypeError (programming error, before any decision)
   1. no explicit destructive permission -> REFUSED_UNCONFIRMED (image unchanged)
   2. image shorter than min_capacity    -> INSUFFICIENT_CAPACITY (image unchanged)
   3. valid signature present            -> ALREADY_FORMATTED (double initialization refused)

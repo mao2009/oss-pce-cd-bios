@@ -15,6 +15,11 @@ import bm_format_model as bm  # noqa: E402
 
 MODEL_PATH = Path(__file__).resolve().parents[2] / "tools" / "bm_format_model.py"
 
+# The model currently imports nothing. Extend deliberately if that ever changes.
+ALLOWED_IMPORTS = frozenset()
+BANNED_NAMES = {"__import__", "importlib", "open", "os", "io", "pathlib", "tempfile",
+                "subprocess", "socket"}
+
 
 def formatted(size=bm.MIN_CAPACITY):
     image = bytearray(size)
@@ -71,6 +76,30 @@ class NegativeTest(unittest.TestCase):
         self.assertEqual(status, bm.ALREADY_FORMATTED)
         self.assertEqual(out, image)
 
+    def test_unconfirmed_on_well_formed_image_refuses(self):
+        image = formatted()
+        status, out = bm.format_image(image)
+        self.assertEqual(status, bm.REFUSED_UNCONFIRMED)
+        self.assertEqual(out, image)
+
+    def test_unconfirmed_on_short_image_refuses_not_capacity(self):
+        image = blank(bm.MIN_CAPACITY - 1)
+        status, out = bm.format_image(image, allow_destructive=False)
+        self.assertEqual(status, bm.REFUSED_UNCONFIRMED)
+        self.assertEqual(out, image)
+
+    def test_confirmed_on_formatted_image_is_double_init_not_capacity(self):
+        image = formatted()
+        status, out = bm.format_image(image, allow_destructive=True)
+        self.assertEqual(status, bm.ALREADY_FORMATTED)
+        self.assertEqual(out, image)
+
+    def test_short_formatted_image_is_capacity_not_double_init(self):
+        image = formatted(bm.MIN_CAPACITY - 1)
+        status, out = bm.format_image(image, allow_destructive=True)
+        self.assertEqual(status, bm.INSUFFICIENT_CAPACITY)
+        self.assertEqual(out, image)
+
     def test_insufficient_capacity_keeps_image(self):
         image = blank(bm.MIN_CAPACITY - 1)
         status, out = bm.format_image(image, allow_destructive=True)
@@ -121,20 +150,25 @@ class TempFileTest(unittest.TestCase):
             self.assertEqual(again, bm.ALREADY_FORMATTED)
             self.assertEqual(unchanged, out)
 
-    def test_model_has_no_io_or_process_imports(self):
+    def test_model_imports_are_allowlisted(self):
         tree = ast.parse(MODEL_PATH.read_text(encoding="utf-8"))
-        banned = {"os", "subprocess", "socket", "shutil", "pathlib", "ctypes", "io"}
         imported = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 imported |= {alias.name.split(".")[0] for alias in node.names}
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                imported.add(node.module.split(".")[0])
-        self.assertFalse(imported & banned, imported & banned)
-        calls = {node.func.id for node in ast.walk(tree)
-                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
-        self.assertNotIn("open", calls)
+            elif isinstance(node, ast.ImportFrom):
+                imported.add("." * node.level + (node.module or "").split(".")[0])
+        self.assertLessEqual(imported, ALLOWED_IMPORTS, imported - ALLOWED_IMPORTS)
 
+    def test_model_has_no_io_or_process_names(self):
+        tree = ast.parse(MODEL_PATH.read_text(encoding="utf-8"))
+        used = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name):
+                used.add(node.id)
+            elif isinstance(node, ast.Attribute):
+                used.add(node.attr)
+        self.assertFalse(used & BANNED_NAMES, used & BANNED_NAMES)
 
 if __name__ == "__main__":
     unittest.main()
