@@ -2,7 +2,7 @@
 
 **状態: 開発専用の自作内部契約。System Card の ABI ではない。** `release_eligible=false`。
 BIOS スロット `$11`（AD_TRANS、`$E033`）へは接続しない。#301 は BLOCKED_ABI のまま。
-実コア検証: 9b5c044 で PASS、現 HEAD（60b15e7）は Coordinator の clean clone で PASS（`PASS_ADT_ROUTINE_FOUR_CALLS`、12 件の改変を拒否、`--selftest` / 実行 / `--verify` すべて終了コード 0、manifest sha256 `caf6ec58562540c17fbd4ccbe5ebd316f86dcea76732304025dd0a7c7604fe24`）。本契約は、PR #406 の HuC6280 ゲスト DMA 経路を独立ルーチンとして切り出した自作の取り決めである。
+実コア検証: 9b5c044 で PASS。コード検証の対象は 60b15e7 であり、60b15e7 は Coordinator の clean clone で PASS（`PASS_ADT_ROUTINE_FOUR_CALLS`、12 件の改変を拒否、`--selftest` / 実行 / `--verify` すべて終了コード 0、manifest sha256 `caf6ec58562540c17fbd4ccbe5ebd316f86dcea76732304025dd0a7c7604fe24`）。60b15e7 から 4a7ffb9 までの差分は本契約文書のみで、コードには触れない。本契約は、PR #406 の HuC6280 ゲスト DMA 経路を独立ルーチンとして切り出した自作の取り決めである。
 呼出元（`src/adt_dma_routine_boot.s`）と呼出先（`src/adt_dma_routine.s`）の内部契約として定義する。
 
 ## 1. 範囲
@@ -51,7 +51,7 @@ BIOS スロット `$11`（AD_TRANS、`$E033`）へは接続しない。#301 は 
 | +2 | SCSI status バイト（0 = GOOD） |
 | +3 | SCSI message バイト（0 = COMMAND COMPLETE） |
 | +4 | 戻り時の `$180B`（ADPCM_DMA） |
-| +5 | 戻り時の `$180C`（ADPCM_STAT） |
+| +5 | 戻り時の `$180C`（ADPCM_STAT）。A、B、C では 0（wait_adpcm_drained による）。D、E では C から引き継がれる 0（D、E はバスに触れない）。bit2 の意味は `docs/research/ad-trans-diagnostic-plan.md` の参照（§10） |
 | +6 | `1` = バス空き かつ DMA と書込みスロットが空き、`0` = いずれかが不成立、`$FF` = バスに触れていない |
 | +7 | 引数 `PB_ARM` のエコー |
 
@@ -114,8 +114,14 @@ BIOS スロット `$11`（AD_TRANS、`$E033`）へは接続しない。#301 は 
 
 - 期待値は契約（§5）から判定器が再計算する。ゲストが報告する理由文は判定に使わない。
 - 判定の順序: 停止位置 → 結果記録（A は `$2320` の複写、B、C、D はスロット 8、16、24、E はスロット 0） → ADPCM RAM（`$0100` と `$1100` の 2048 バイト、それ以外ゼロ） → 書込みポインタ（`$1900`） → DMA オフ。
-- 各記録は code、stage、SCSI status / message、戻り時の `$180B`、`$180C` の bit2（書込みスロット空きは 0）、bus_ok、arm を検査する。
-- 改変試験は 12 件。各改変は宣言した検査 id でのみ拒否されなければならない。E の改変（スロット 0 に A の成功記録が残る場合）は `slot_e_code` で拒否される。
+- 各記録は code、stage、SCSI status / message、戻り時の `$180B`、`$180C` の bit2、bus_ok、arm を検査する。
+- `$180C` の bit2 を 0 とする根拠（呼出しごと。コードは `src/adt_dma_routine.s`）:
+  - bit2 の意味（書込みスロット空き）は、`src/ad_trans_dma_probe.s:20` と `docs/research/ad-trans-diagnostic-plan.md:32` の参照のみである。本契約では独自に定義していない。
+  - A と C: 成功経路は `wait_adpcm_drained` の成功（`:216` の呼出し）の後にだけ進み、その後は SCSI の status / message / バス空きの待ちしかなく、`$180C` への書込みも待ちもない。戻り時の bit2 = 0 はこの順序から導かれる。ただし、成功判定から戻り時の読出しまでの間にハードウェアが bit2 を立てないことは、実コアの観測に基づく仮定である。
+  - B: 失敗後の `recover` は、`wait_adpcm_drained` が成功したときだけ `bus_ok = 1` とする（`:306`）。bit2 = 0 もこの成功経路から導かれる。
+  - D と E: 入力不正は `bad_request` で返り、バスにも DMA にも触れない。戻り時の `$180C` は読出しのみで、ルーチンは書かない。値は C の戻り時の状態がそのまま残ったものである。契約はこれを保証せず、実コアの観測に基づく仮定である。
+- 改変試験は 12 件。各改変は宣言した検査 id でのみ拒否されなければならない。E の改変（スロット 0 の code を 9 から 0 へ書き換える）は `slot_e_code` で拒否される。
+- テストの空白（修正せず記録する）: `verify()` は manifest の `probe_source_sha256` を照合しない。また A の記録（`$2320`）を改変する試験は無い。
 - `--selftest` は契約から作った観測で判定器と改変表だけを検査する。コア実行の証拠ではない。
 
 ## 11. 証拠の区分
@@ -123,9 +129,9 @@ BIOS スロット `$11`（AD_TRANS、`$E033`）へは接続しない。#301 は 
 | 区分 | 状態 | 根拠 |
 | --- | --- | --- |
 | 実装（ルーチン、boot） | 作成済み | `src/adt_dma_routine.s`、`src/adt_dma_routine_boot.s` |
-| 構文検査（cc65 アセンブル・リンク） | 9b5c044 で Coordinator が成功（clean clone、終了コード 0）。リンカ警告 2 件あり（`src/bank0.cfg:14` の `APITABLE` / `FALLBACK` の空セグメント。実行には影響しないことを確認済み）。現 HEAD（60b15e7）は同じ clean clone で終了コード 0（manifest sha256 `caf6ec58…fe24`） | 作業者環境では cc65 を実行していない（worktree の保護） |
-| 判定器の自己検査 | 現 HEAD で `--selftest`（host のみ） | 契約から作った観測と改変表だけ。コアの証拠ではない |
-| 実コア（pinned Geargrafx）の正例・負例・復帰・入力不正・無効スロット | 9b5c044 で PASS（`PASS_ADT_ROUTINE_FOUR_CALLS`、manifest sha256 `04e25ba2e3399d55875d65fb697619dd690ea63b6ddc9e467bd9c69203ad7f6a`、selftest / real-core / verify すべて終了コード 0）。現 HEAD（60b15e7）は同じ clean clone で終了コード 0（manifest sha256 `caf6ec58…fe24`） | 9b5c044 から ROM、probe、判定器が変わったため、9b5c044 の結果は 60b15e7 の証拠ではない。60b15e7 の結果を証拠とする |
+| 構文検査（cc65 アセンブル・リンク） | 9b5c044 で Coordinator が成功（clean clone、終了コード 0）。リンカ警告 2 件あり（`src/bank0.cfg:14` の `APITABLE` / `FALLBACK` の空セグメント。この実行では影響は観測されなかった。根拠は実コア PASS 1 回のみ）。60b15e7 は同じ clean clone で終了コード 0（manifest sha256 `caf6ec58…fe24`） | 作業者環境では cc65 を実行していない（worktree の保護） |
+| 判定器の自己検査 | 60b15e7 で `--selftest`（host のみ） | 契約から作った観測と改変表だけ。コアの証拠ではない |
+| 実コア（pinned Geargrafx）の正例・負例・復帰・入力不正・無効スロット | 9b5c044 で PASS（`PASS_ADT_ROUTINE_FOUR_CALLS`、manifest sha256 `04e25ba2e3399d55875d65fb697619dd690ea63b6ddc9e467bd9c69203ad7f6a`、selftest / real-core / verify すべて終了コード 0）。60b15e7 は同じ clean clone で終了コード 0（manifest sha256 `caf6ec58…fe24`）。証拠の範囲: 合成ディスク（manifest の `disc: SYNTHETIC`、`tools/make_cd_image.py` の `build_image(sectors=16)`）、Geargrafx revision `b49ae82a012eade566d72e9d61c9d95a5caa4da3`（GPL-3.0、オブジェクトのリンクのみ） | 9b5c044 から ROM、probe、判定器が変わったため、9b5c044 の結果は 60b15e7 の証拠ではない。60b15e7 の結果を証拠とする |
 | 独立レビュー | 別コンテキストのレビュー結果を PR 本文に記す | §12 |
 | CI | PR の HEAD で確認 | PR 本文 |
 

@@ -53,7 +53,7 @@ DISC_RECIPE = "tools/make_cd_image.py build_image(sectors=16); guest reads LBA 5
 # Slot 0 is where call E's record lands, so A is read from the snapshot.
 SLOTS = {"A": 32, "B": 8, "C": 16, "D": 24, "E": 0}
 BUS_UNTOUCHED = 0xFF
-STAT_WRITE_SLOT_BUSY = 0x04  # ADPCM_STAT bit2: must be clear at every return (the routine waits for it)
+STAT_WRITE_SLOT_BUSY = 0x04  # ADPCM_STAT bit2: must be clear at every return (A, B, C: waited for; D, E: inherited from C; contract §10)
 EXPECTED = {
     #      code  stage  sst msg dma  bus_ok           arm
     "A": (0, 9, 0, 0, 0, 1, 1),
@@ -220,7 +220,7 @@ MUTATIONS = (
     ("slot-d-code-forged-ok", _patch_slot(SLOTS["D"] + 0, 0), "slot_d_code"),
     ("slot-b-dma-forged-on", _patch_slot(SLOTS["B"] + 4, 1), "slot_b_dma"),
     ("slot-c-stat-forged-busy", _patch_slot(SLOTS["C"] + 5, STAT_WRITE_SLOT_BUSY), "slot_c_stat"),
-    ("slot-e-code-forged-ok", _patch_slot(SLOTS["E"] + 0, 0), "slot_e_code"),  # A's record left in slot 0
+    ("slot-e-code-forged-ok", _patch_slot(SLOTS["E"] + 0, 0), "slot_e_code"),  # E's code forged from 9 to 0 (a success record in slot 0)
     ("write-address-forged", _set_field("write_address", DEST_C), "adpcm_write_address"),
     ("halt-forged-budget", _set_reason("budget"), "halt_ok"),
 )
