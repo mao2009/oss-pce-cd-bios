@@ -65,5 +65,14 @@ This is a verification patch with a null-by-default hook. The unguarded runs use
 patched build with the hook unset, not the stock object. Nothing here changes `BLOCKED_ABI`
 or `release_eligible`.
 
-The authoring worktree could not re-run the driver (WSL execution refused by the harness),
-so the PASS line above is taken from commit `8046ecf`, not re-printed here.
+Re-run on 2026-10-21 under WSL (Ubuntu) from a clean clone of this branch at commit `e42f67f`
+(`TOOLS_DIR` set to the existing external tool cache; `python3 tools/setup.py geargrafx --debugger`
+then `python3 tests/integration/geargrafx_st_write_guard.py`). Synthetic BIOS and CD only. Output:
+
+```
+PASS issue-365/173 ST0/ST1/ST2 free-running pre-write refusal (synthetic, pinned core + verification patch)
+  armed: 4 cases refused inside the core before side effect
+  unguarded mutation: 4 cases land without the hook
+```
+
+The nine `EVIDENCE` rows (4 armed, 4 unguarded, 1 positive control) carry `"bios": "SYNTHETIC"`.
