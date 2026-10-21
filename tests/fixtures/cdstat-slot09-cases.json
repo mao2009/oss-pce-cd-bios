@@ -1,0 +1,37 @@
+{
+  "schema": "cdstat-slot09-cases/1",
+  "issue": 230,
+  "slot": 9,
+  "entry_candidate": "0xE01B",
+  "candidate_name": "CD_STAT",
+  "abi_status": "BLOCKED_ABI",
+  "release_eligible": false,
+  "execution": "NOT_RUN",
+  "reference_jsr_count": 0,
+  "reference_rom_opened": false,
+  "provenance": "synthetic: author-defined case list only; no System Card BIOS byte, disassembly, retail data, or ./rom/ content; no reference callee is executed",
+  "callee_abi": {
+    "mode_input": "UNKNOWN",
+    "return_a": "UNKNOWN",
+    "return_xy": "UNKNOWN",
+    "flags": "UNKNOWN",
+    "stack_and_sp": "UNKNOWN",
+    "mpr": "UNKNOWN",
+    "irq": "UNKNOWN",
+    "work_ram": "UNKNOWN",
+    "no_media": "UNKNOWN",
+    "busy": "UNKNOWN",
+    "invalid_mode": "UNKNOWN"
+  },
+  "declaration": {
+    "entry": "0xE01B",
+    "rom_sha256": null,
+    "approval": null
+  },
+  "cases": [
+    {"id": "caller_busy_path", "mode_a": "0x00", "medium": "synthetic-audio-track", "expected": "UNKNOWN", "basis": "caller SOURCE_FACT F02 only; callee meaning UNKNOWN"},
+    {"id": "caller_ready_path", "mode_a": "0x01", "medium": "synthetic-audio-track", "expected": "UNKNOWN", "basis": "caller SOURCE_FACT F03 only; callee meaning UNKNOWN"},
+    {"id": "no_media", "mode_a": "0x01", "medium": "none", "expected": "UNKNOWN", "basis": "F24 UNKNOWN: no source for no-media return"},
+    {"id": "invalid_mode", "mode_a": "0x02", "medium": "synthetic-audio-track", "expected": "UNKNOWN", "basis": "F25 UNKNOWN: no source for invalid mode"}
+  ]
+}

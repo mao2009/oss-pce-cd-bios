@@ -137,6 +137,17 @@ def fetch(name, desktop=False, debugger=False):
     return destination
 
 
+def debugger_overrides(platform_dir):
+    """Make variable overrides for the instruction-debugger build (single source for build and probe flags)."""
+    includes = subprocess.run(["make", "-s", "--no-print-directory", "-C", str(platform_dir),
+                               "--eval", "print-includes:;@echo $(INCLUDES)", "print-includes"],
+                              capture_output=True, text=True, check=True).stdout.strip()
+    # Overrides replace the Makefile's own CFLAGS/CXXFLAGS, so -DGG_DISABLE_DISASSEMBLER is deliberately absent.
+    flags = ("-O2 -fPIC -fno-exceptions -D__LIBRETRO__ -DZ7_ST -DZSTD_DISABLE_ASM "
+             "-DGG_DISABLE_VGMRECORDER -DGG_ENABLE_CDROM_CUEBIN_READAHEAD -pthread " + includes)
+    return ["CFLAGS=" + flags, "CXXFLAGS=" + flags + " -fno-rtti"]
+
+
 def build_geargrafx(source, jobs, debugger=False, desktop=False):
     platform_dir = source / ("platforms/linux" if desktop else "platforms/libretro")
     command = ["make", "-C", str(platform_dir), f"-j{jobs}",
@@ -144,12 +155,7 @@ def build_geargrafx(source, jobs, debugger=False, desktop=False):
     if debugger:
         # Upstream's libretro default disables its debugger even with DEBUG=1.
         # Override supported compiler variables, leaving every source byte intact.
-        includes = subprocess.run(["make", "-s", "--no-print-directory", "-C", str(platform_dir),
-                                   "--eval", "print-includes:;@echo $(INCLUDES)", "print-includes"],
-                                  capture_output=True, text=True, check=True).stdout.strip()
-        flags = ("-O2 -fPIC -fno-exceptions -D__LIBRETRO__ -DZ7_ST -DZSTD_DISABLE_ASM "
-                 "-DGG_DISABLE_VGMRECORDER -DGG_ENABLE_CDROM_CUEBIN_READAHEAD -pthread " + includes)
-        command += ["CFLAGS=" + flags, "CXXFLAGS=" + flags + " -fno-rtti"]
+        command += debugger_overrides(platform_dir)
     subprocess.run(command, check=True)
 
 

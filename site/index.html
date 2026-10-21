@@ -42,7 +42,7 @@
       "url": "https://github.com/mao2009/oss-pce-cd-bios",
       "codeRepository": "https://github.com/mao2009/oss-pce-cd-bios",
       "license": "https://github.com/mao2009/oss-pce-cd-bios/blob/main/LICENSE",
-      "description": "Development-only open-source replacement for the PC Engine / TurboGrafx-CD Super System Card 3.0 BIOS. One callable DEV EX_GETVER slot; 80 nonreturning stub slots; full ABI and commercial compatibility unverified.",
+      "description": "Development-only open-source replacement for the PC Engine / TurboGrafx-CD Super System Card 3.0 BIOS. Six DEV-only implemented slots (EX_GETVER, EX_BINBCD, EX_BCDBIN, MA_MUL8U, MA_MUL16U, MA_DIV16S; none approved or ABI-verified); 75 nonreturning stub slots; full ABI and commercial compatibility unverified.",
       "programmingLanguage": "Assembly",
       "keywords": [
         "PC Engine",
@@ -115,7 +115,7 @@
             <div class="chip-lines">
               <div><b>0x1E</b> EX_GETVER → X=3 / Y=0</div>
               <div><b>CORE</b> Geargrafx / cold + warm</div>
-              <div><b>80</b> remaining stub slots</div>
+              <div><b>75</b> remaining stub slots</div>
             </div>
             <div class="terminal-foot"><span>ABI: UNVERIFIED</span><strong>RELEASE: BLOCKED</strong></div>
           </div>
@@ -144,13 +144,13 @@
           <div class="section-heading">
             <p class="eyebrow">02 / Progress</p>
             <h2 id="progress-title">Evidence before green checkmarks.</h2>
-            <p class="section-intro">Snapshot checked against <a href="https://github.com/mao2009/oss-pce-cd-bios/commit/963f3a36ed59ab190406d815ab7d267fd21a680b">2026-10-20 main</a>. Recent merges improve safety and evidence review, not callable BIOS APIs or game compatibility.</p>
+            <p class="section-intro">Snapshot checked against <a href="https://github.com/mao2009/oss-pce-cd-bios/commit/2b1d1dba13df68d87f5148f37bfbef090be47764">2026-10-21 main (2b1d1db)</a>; the 2026-10-20 reading was 1/81. Recent merges improve safety and evidence review, not callable BIOS APIs or game compatibility.</p>
           </div>
           <a href="https://github.com/mao2009/oss-pce-cd-bios/blob/main/docs/status.md">Detailed status ↗</a>
         </div>
         <div class="stats" aria-label="Project snapshot">
-          <div class="stat"><div class="stat-value"><span>1</span> / 81</div><div class="stat-label">Candidate BIOS slots with a callable DEV implementation</div></div>
-          <div class="stat"><div class="stat-value">80</div><div class="stat-label">Other API slots remain nonreturning stubs</div></div>
+          <div class="stat"><div class="stat-value"><span>6</span> / 81</div><div class="stat-label">DEV implemented slots (not approved, not ABI-verified)</div></div>
+          <div class="stat"><div class="stat-value">75</div><div class="stat-label">Other API slots remain nonreturning stubs</div></div>
           <div class="stat"><div class="stat-value">0</div><div class="stat-label">Verified BIOS-mediated CD program boots at this snapshot</div></div>
         </div>
         <div class="milestones" aria-label="Evidence-graded roadmap">
@@ -238,7 +238,7 @@
           <p class="section-intro">A short, source-linked summary for developers, researchers and anyone discovering this open-source PC Engine CD BIOS effort.</p>
         </div>
         <div class="card-grid">
-          <article class="card"><span class="number">01 / SCOPE</span><h3>Is it a usable System Card BIOS?</h3><p>Not yet. The 256 KiB development ROM has one callable EX_GETVER API, while 80 other slots remain stubs. No retail-game compatibility or firmware release is established.</p></article>
+          <article class="card"><span class="number">01 / SCOPE</span><h3>Is it a usable System Card BIOS?</h3><p>Not yet. The 256 KiB development ROM has six DEV-only implemented APIs (EX_GETVER, EX_BINBCD, EX_BCDBIN, MA_MUL8U, MA_MUL16U, MA_DIV16S; none approved or ABI-verified), while 75 other slots remain stubs. No retail-game compatibility or firmware release is established.</p></article>
           <article class="card"><span class="number">02 / EVIDENCE</span><h3>What has been tested?</h3><p>Geargrafx real-core tests have observed EX_GETVER return and independent synthetic CD sector reads. These diagnostics do not certify full reference-BIOS ABI compatibility or game boot. See <a href="https://github.com/mao2009/oss-pce-cd-bios/pull/174">PR #174</a>.</p></article>
           <article class="card"><span class="number">03 / CONTRIBUTE</span><h3>How can I help?</h3><p>Start with a focused <a href="https://github.com/mao2009/oss-pce-cd-bios/issues">GitHub Issue</a> covering API research, reproducible testing or original firmware code. Follow the <a href="https://github.com/mao2009/oss-pce-cd-bios/blob/main/CONTRIBUTING.md">contribution policy</a> and do not upload private BIOS images.</p></article>
         </div>

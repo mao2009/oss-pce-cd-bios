@@ -59,7 +59,10 @@ def validate(ledger: dict, slots: list[dict], override_slots: set[int], root: Pa
         if entry.get('abi_contract', {}).get('status') not in ABI_STATUSES:
             problems.append(f'{label}: unknown abi_contract status')
         if entry.get('abi_contract', {}).get('status') == 'VERIFIED':
-            problems.append(f'{label}: VERIFIED is the reference-BIOS axis and must not be set in this ledger')
+            # Fail closed: this ledger has no evidence schema for the reference-BIOS axis, so VERIFIED is refused
+            # even when host_evidence / real_core_evidence / approval are filled in.
+            problems.append(f'{label}: VERIFIED is the reference-BIOS axis and must not be set in this ledger '
+                            f'(refused even with evidence; expected 0 VERIFIED rows)')
         implementation = entry.get('implementation')
         implemented = slot in override_slots
         if implemented != (implementation is not None):
@@ -100,11 +103,12 @@ def _approved_problems(label, entry, implemented, root):
 
 def summary(ledger: dict, override_slots: set[int]) -> dict:
     states = [e.get('state') for e in ledger.get('slots', [])]
+    verified = [e for e in ledger.get('slots', []) if e.get('abi_contract', {}).get('status') == 'VERIFIED']
     return {'dev_rom_callable': len(override_slots),
             'dev_callable_approved': states.count('DEV_CALLABLE'),
             'not_ready': states.count('NOT_READY'),
             'blocked': states.count('BLOCKED'),
-            'abi_verified': 0,
+            'abi_verified': len(verified),  # computed from the rows; validate() refuses any VERIFIED row
             'release_eligible': ledger.get('release_eligible')}
 
 

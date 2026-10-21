@@ -107,8 +107,8 @@ version observations are compared; arbitrary power-on RAM is not deterministic.
 ## DEV ROM verification layers
 
 Since merged [PR #174](https://github.com/mao2009/oss-pce-cd-bios/pull/174), the
-256 KiB development ROM has **81 candidate slots: one original callable OSS
-`EX_GETVER` override at slot `$1E` (candidate entry `$E05A`) and 80 nonreturning
+256 KiB development ROM has **81 candidate slots: six DEV-only OSS overrides
+`EX_GETVER`, `EX_BINBCD`, `EX_BCDBIN`, `MA_MUL8U`, `MA_MUL16U` and `MA_DIV16S` at slots `$1E`, `$3C`, `$3D`, `$3F`, `$41`, `$42` (DEV-only, UNVERIFIED) and 75 nonreturning
 stubs**. This is development-only functionality, not a verified reference BIOS
 ABI or release-eligible firmware. The on-disk
 `build/debug/bios-dev/dev-only-not-compatible-syscard3.pce` image is checked in
@@ -170,7 +170,7 @@ host unittest には含まれない（`tests/host/test_core_harness.py` は合�
 | Guest synthetic CD READ(6)→RAM | Real-core diagnostic `dev-cdread-integration`; not BIOS `CD_READ` |
 | Synthetic CD→RAM code execution/return | `dev-cdload-exec-integration` (merged #122); not BIOS service, not CD boot |
 | Production System Card initialization and BIOS-mediated CD boot | NOT_IMPLEMENTED/NOT_TESTED; #1/#3/#4; synthetic CD→RAM execution is not BIOS-mediated boot |
-| Remaining 80 candidate BIOS API slots and CD services | 80 nonreturning stubs; callable `CD_RESET`/`CD_BASE`/`CD_READ` NOT_IMPLEMENTED despite separate transport/host diagnostics |
+| Remaining 75 candidate BIOS API slots and CD services | 75 nonreturning stubs; callable `CD_RESET`/`CD_BASE`/`CD_READ` NOT_IMPLEMENTED despite separate transport/host diagnostics |
 | Reference-BIOS caller ABI (including full `EX_GETVER` contract) | UNVERIFIED/PENDING independent comparison; the DEV-only return observation does not certify production ABI or IRQ/NMI/hardware behavior |
 | Independent emulator or real hardware | NOT_TESTED; #7 |
 | Commercial games | NOT_TESTED; no inputs required or distributed |
@@ -191,7 +191,7 @@ step. Not every standalone System Card diagnostic is included. After `make setup
 
 ```sh
 make dev-test                   # 81 candidate slots, host API tests and real-core DEV checks
-make dev-integration            # EX_GETVER DEV-only caller return; other 80 slots are stubs
+make dev-integration            # EX_GETVER DEV-only caller return; the 75 remaining slots are stubs
 make dev-startup-integration    # separate reset/MPR/stack marker
 make dev-cdread-integration     # guest READ(6), full RAM and SCSI checks
 make dev-trace-integration      # isolated pinned real-core trace and negative checks
