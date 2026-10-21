@@ -13,9 +13,11 @@ Modes (run manually, not wired into the Makefile; TOOLS_DIR must point at the pi
   python3 tests/integration/geargrafx_ad_trans_dma.py --out build/ad-trans-dma
       Build, run both cases, save the raw probe stdout per case, write manifest.json.
   python3 tests/integration/geargrafx_ad_trans_dma.py --out build/ad-trans-dma --verify
-      Recompute and compare every recorded hash (driver, guest and probe sources, probe binary, pinned
-      core, disc image, both ROMs, cd_dma_enable input byte, raw stdout), re-judge the saved raw
-      observations and re-run the mutation tests. Makes no call to the core.
+      Rebuild both ROMs from src/ad_trans_dma_probe.s (pinned cc65, same recipe as the build) and the probe
+      binary (compile_probe), and compare their SHA-256 with manifest.json. Re-derive the cd_dma_enable address
+      from the rebuilt guest.lbl. Compare the recorded driver, source, disc, cc65, max_steps and disc_recipe
+      values, the saved ROMs and raw stdouts; re-judge the raw observations and re-run the mutation tests.
+      Makes no call to the core.
 The raw stdout and the core build are GPL-linked execution outputs: keep them under build/ and never publish them.
 """
 import argparse
@@ -51,6 +53,7 @@ CASES = (("pos-dma-sector", "pos.pce"), ("neg-dma-not-armed", "neg.pce"))
 PROBE_SOURCE = "geargrafx_ad_trans_dma_probe.cpp"
 PROBE_TARGET = "ad-trans-dma-probe"
 GUEST_SOURCE = "src/ad_trans_dma_probe.s"
+DISC_RECIPE = "tools/make_cd_image.py build_image(sectors=16); guest reads LBA 5 = sector_payload(5)"
 
 
 def sha256_hex(data: bytes) -> str:
@@ -304,7 +307,7 @@ def run(out: Path, argv: list) -> int:
         "guest_source_sha256": sha256_hex((ROOT / GUEST_SOURCE).read_bytes()),
         "driver_sha256": sha256_hex(Path(__file__).read_bytes()),
         "cc65": cc65_version,
-        "disc_recipe": "tools/make_cd_image.py build_image(sectors=16); guest reads LBA 5 = sector_payload(5)",
+        "disc_recipe": DISC_RECIPE,
         "disc_bin_sha256": disc["bin_sha256"],
         "cd_dma_enable_address": dma_enable_offset(symbols) + BANK_BASE,
         "cd_dma_enable_patch": {"symbol": "cd_dma_enable", "pos": 1, "neg": 0},
@@ -353,12 +356,29 @@ def verify(out: Path) -> int:
     _expect("guest_source_sha256", manifest["guest_source_sha256"], sha256_hex((ROOT / GUEST_SOURCE).read_bytes()))
     _expect("probe_source_sha256", manifest["probe_source_sha256"],
             sha256_hex((ROOT / "tests/integration" / PROBE_SOURCE).read_bytes()))
-    _expect("probe_binary_sha256", manifest["probe_binary_sha256"],
+    _expect("probe_binary_sha256 (on disk)", manifest["probe_binary_sha256"],
             sha256_hex((out / "probe" / PROBE_TARGET).read_bytes()))
     _expect("geargrafx_revision", manifest["geargrafx_revision"], DEPENDENCIES["geargrafx"]["revision"])
     _expect("geargrafx_source_sha256", manifest["geargrafx_source_sha256"], DEPENDENCIES["geargrafx"]["sha256"])
     _expect("mutations", manifest["mutations"], len(MUTATIONS))
     _expect("mutation_checks", manifest["mutation_checks"], {name: check for name, _, _, check in MUTATIONS})
+    _expect("max_steps", manifest["max_steps"], MAX_STEPS)
+    _expect("disc_recipe", manifest["disc_recipe"], DISC_RECIPE)
+    # Rebuild from source with the same recipe as run(): guest ROMs (cc65), probe binary (compile_probe).
+    # The cd_dma_enable address is re-derived from the rebuilt guest.lbl, not read from the manifest.
+    with tempfile.TemporaryDirectory() as scratch:
+        scratch = Path(scratch)
+        rebuilt_pos, rebuilt_symbols, cc65_version = build_guest(scratch / "guest")
+        rebuilt_roms = {"pos-dma-sector": rebuilt_pos,
+                        "neg-dma-not-armed": with_dma_enable(rebuilt_pos, rebuilt_symbols, 0)}
+        (scratch / "probe").mkdir()
+        rebuilt_probe_sha = sha256_hex(compile_probe(scratch / "probe", source_name=PROBE_SOURCE,
+                                                     target_name=PROBE_TARGET).read_bytes())
+    _expect("cc65", manifest["cc65"], cc65_version)
+    _expect("probe_binary_sha256 (rebuilt)", manifest["probe_binary_sha256"], rebuilt_probe_sha)
+    _expect("cd_dma_enable_address (rebuilt guest.lbl)", manifest["cd_dma_enable_address"],
+            rebuilt_symbols["cd_dma_enable"])
+    offset = dma_enable_offset(rebuilt_symbols)
     # Disc: regenerate the image from the recipe in a scratch directory and compare with the on-disk BIN.
     with tempfile.TemporaryDirectory() as scratch:
         regenerated = build_image(Path(scratch), sectors=16)["bin_sha256"]
@@ -368,7 +388,6 @@ def verify(out: Path) -> int:
     # cd_dma_enable: the recorded input byte must be 1 in the positive ROM and 0 in the negative ROM,
     # and it must be the only byte that differs between them.
     patch = manifest["cd_dma_enable_patch"]
-    offset = manifest["cd_dma_enable_address"] - BANK_BASE
     if patch != {"symbol": "cd_dma_enable", "pos": 1, "neg": 0}:
         raise ValueError("cd_dma_enable_patch differs from the driver's recorded input")
     base, roms = {}, {}
@@ -377,6 +396,7 @@ def verify(out: Path) -> int:
         rom = (out / "rom" / rom_name).read_bytes()
         if sha256_hex(rom) != entry["rom_sha256"]:
             raise ValueError(f"{case}: ROM does not match its recorded sha256")
+        _expect(f"{case} rom_sha256 (rebuilt from source)", entry["rom_sha256"], sha256_hex(rebuilt_roms[case]))
         roms[case] = rom
         obs, verdict = check_raw(case, out / "raw" / f"{case}.stdout", entry["raw_sha256"])
         if verdict != entry["verdict"] or json_line_sha256((out / "raw" / f"{case}.stdout").read_bytes()) \
@@ -391,9 +411,9 @@ def verify(out: Path) -> int:
         raise ValueError(f"positive and negative ROMs must differ only at cd_dma_enable (offset {offset:#x}), "
                          f"found {diffs[:4]}")
     mutation_test(base)
-    print(f"VERIFY PASS {out / 'manifest.json'}: driver, sources, probe, core pin, disc recipe, "
-          f"{len(CASES)} ROMs, cd_dma_enable input and {len(CASES)} raw observations re-judged, "
-          f"{len(MUTATIONS)} forgeries refused by their declared checks")
+    print(f"VERIFY PASS {out / 'manifest.json'}: driver, guest/probe sources, guest ROMs and probe binary rebuilt "
+          f"and matched (cc65, cd_dma_enable from guest.lbl), disc, core pin, max_steps, disc_recipe, "
+          f"{len(CASES)} raw observations re-judged, {len(MUTATIONS)} forgeries refused by their declared checks")
     return 0
 
 
