@@ -39,7 +39,8 @@ class DevMul8uModelTests(unittest.TestCase):
         self.assertIn(0x3F, overrides())
         source = (ROOT / "src" / "overrides" / "slot_3F.s").read_text(encoding="utf-8")
         self.assertIn("api_slot_3F:", source)
-        self.assertIn(".repeat 8", source)  # the 8 rounds are unrolled with .repeat 8
+        self.assertIn("ldy #8", source)  # the 8 rounds: Y counter, BNE back to @round
+        self.assertIn("bne @round", source)
 
 
 if __name__ == "__main__":
