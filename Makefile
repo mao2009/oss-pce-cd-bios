@@ -63,7 +63,7 @@ release:
 	@echo 'BLOCKED: BIOS APIs and System Card boot are unimplemented; no BIOS release is available.' >&2
 	@exit 1
 
-.PHONY: dev-rom dev-test dev-integration dev-release-gate dev-release-gate-blocked
+.PHONY: dev-rom dev-test dev-integration dev-bcdbin-sweep dev-release-gate dev-release-gate-blocked
 dev-rom:
 	$(PYTHON) tools/build_rom.py --mode "$(MODE)"
 dev-test: dev-rom
@@ -72,9 +72,13 @@ dev-test: dev-rom
 dev-integration: dev-rom
 	$(PYTHON) tests/integration/geargrafx_api.py --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
 	$(PYTHON) tests/integration/geargrafx_dev_bcd.py --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
+	$(MAKE) dev-bcdbin-sweep MODE="$(MODE)"
 	$(PYTHON) tests/integration/geargrafx_dev_mul8u.py --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
 	$(PYTHON) tests/integration/geargrafx_dev_mul16u.py --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
 	$(PYTHON) tests/integration/geargrafx_dev_div16s.py --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
+# Issue #442: full 0..255 x 18-condition real-core sweep of the DEV ROM EX_BCDBIN entry (slot $3D).
+dev-bcdbin-sweep: dev-rom
+	$(PYTHON) tests/integration/dev_bcdbin_full_sweep.py "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
 dev-release-gate:
 	$(PYTHON) tools/build_rom.py --release-gate
 

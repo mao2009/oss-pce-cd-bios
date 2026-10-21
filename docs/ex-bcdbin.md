@@ -18,7 +18,8 @@ API の既存スタブは従来どおりである。
 
 ## 検証
 
-ホスト：`python3 -m unittest tests.host.test_ex_bcdbin -v`（実コア負例 5 件を含む。`make test` の host discover で実行される）
+ホスト：`python3 -m unittest tests.host.test_ex_bcdbin -v`（モデル照合 3 件。`make test` の host discover で実行される）。
+実コアの負例 5 件（core 不在 / ca65 不在 / ld65 不在 / 起動失敗 / タイムアウト）は host ではなく `tests/integration/test_ex_bcdbin_real_core.py`（`RealCoreFailurePathTests`）にあり、`make integration-test` で実行される（Issue #333 で host から分離済み）。
 実コア：`python3 tests/integration/geargrafx_bcdbin.py`。次の 2 経路で実行される。
 - 専用ワークフロー `.github/workflows/core-bcdbin.yml`（ubuntu-24.04、`make setup` 後に実行）。終了コードがそのままジョブ結果になり、ログは artifact `bcdbin-core-log-<sha>` に保存する。実コアの 2 tests（全256入力、変異3種）の主な証拠はこの run である。
 - `make test-real-core` 経由（`make test` には含まれない。`ci.yml` と `nightly.yml` が必須ステップとして実行する）。
@@ -40,7 +41,8 @@ API の既存スタブは従来どおりである。
 
 | 項目 | 状態 | 根拠 |
 | --- | --- | --- |
-| 独自仕様：入力、正常・不正の戻り値、C、X/Y 保存、スタック均衡、メモリ非書込 | 確定（独自仕様として実コア検証済み） | 実コア全256入力・cold/warm、変異3種 |
+| 独自仕様：入力、正常・不正の戻り値、C、X/Y 保存、スタック均衡 | 確定（独自仕様として実コア検証済み） | 実コア全256入力・cold/warm、変異3種 |
+| 独自仕様：メモリ非書込 | コード読みによる確定（実コアでの直接検証ではない） | `src/ex_bcdbin.s` の読解。実コアで観測したのは結果領域・SP・MPR のみで、スタック以外のメモリを全域比較してはいない |
 | 独自仕様：D = 0 前提 | 前提として記述のみ。D = 1 は未検証（仕様上未定義） | ハーネスは `cld` で起動 |
 | 独自仕様：入力時の C | 入力 C = 0 / 1 の実コア検証あり（条件マトリクス、#416）。出力 C は CMP の結果で決まり、入力 C に依存しない | 実コア 8 条件 × 16 入力 × cold/warm。純正 BIOS の検証ではない |
 | 独自仕様：X/Y の任意初期値、呼出時 SP（`$FF` 以外） | 実コア検証あり（#416）。SP は `$80` / `$C0` を含む | 条件マトリクス |
