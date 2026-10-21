@@ -1,6 +1,5 @@
 """Download checksum-verified external tools and build without sudo."""
 import argparse
-import fcntl
 import hashlib
 import json
 import os
@@ -9,6 +8,11 @@ import platform
 import shutil
 import subprocess
 import tarfile
+
+try:
+    import fcntl
+except ImportError:  # Windows: no flock; main() refuses with a clear message instead of an import crash
+    fcntl = None
 
 from environment import DEPENDENCIES, dependency_dir, tools_dir
 
@@ -22,7 +26,7 @@ def source_manifest(archive, name):
                 path = Path(member.name)
                 if path.is_absolute() or ".." in path.parts:
                     raise ValueError(f"unsafe archive path: {member.name}")
-                relative = str(path if name == "actionlint" else Path(*path.parts[1:]))
+                relative = (path if name == "actionlint" else Path(*path.parts[1:])).as_posix()
                 files[relative] = {"bytes": member.size,
                                    "sha256": hashlib.sha256(tar.extractfile(member).read()).hexdigest(),
                                    "executable": bool(member.mode & 0o111)}
@@ -44,7 +48,7 @@ def generated_file(name, path):
 def verify_sources(destination, name, manifest):
     metadata = {".verified-archive-sha256", ".source-integrity.json", ".source-integrity.json.tmp"}
     for path in destination.rglob("*"):
-        relative = str(path.relative_to(destination))
+        relative = path.relative_to(destination).as_posix()  # manifest keys are POSIX paths on every host
         if path.is_symlink():
             raise ValueError(f"unexpected cache symlink: {path}")
         if (path.is_file() and relative not in manifest["files"] and relative not in metadata
@@ -173,6 +177,8 @@ def main():
     if not 1 <= jobs <= 64:
         raise ValueError("JOBS must be between 1 and 64")
     cache = tools_dir()
+    if fcntl is None:
+        raise ValueError("setup needs POSIX file locks (fcntl); run it on Linux or WSL, see docs/building.md")
     cache.mkdir(parents=True, exist_ok=True)
     with (cache / ".setup.lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)

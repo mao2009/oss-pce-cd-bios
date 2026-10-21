@@ -9,7 +9,7 @@ class ContractsTests(unittest.TestCase):
     def setUp(self):
         self.data = copy.deepcopy(load_contracts())
         self.inventory = json.loads((ROOT / 'spec/api_slots.json').read_text())
-        self.markdown = (ROOT / 'docs/api-inventory.md').read_text()
+        self.markdown = (ROOT / 'docs/api-inventory.md').read_text(encoding='utf-8')
 
     def check(self):
         validate_contracts(self.data, self.inventory, self.markdown)
