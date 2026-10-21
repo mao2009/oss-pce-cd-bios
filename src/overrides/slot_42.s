@@ -8,7 +8,15 @@
 ;   out: X:A = quotient (truncated toward zero); the two divisor stack bytes become the remainder
 ;        (the top byte, pulled first, is the remainder high; the byte below it is the remainder low)
 ;        C=1 divide by zero (quotient 0, remainder = dividend); V=1 overflow (X:A = $8000)
-;        N/Z reflect the quotient; I, D, T preserved
+;        N/Z reflect the quotient; I, D and T are taken from the caller's saved P (the $2C mask at @finish, PLP at
+;        exit); B is not a stored flag (PHP pushes B=1, PLP drops it)
+;   precondition: caller T=0 at entry. The routine copies the caller's T bit into the restored P, so a caller that
+;        could raise T would get T=1 back; T=1 is therefore OUT OF CONTRACT. On the pinned core (Geargrafx
+;        b49ae82) the T flag is consumed by the instruction that follows SET: the core samples P.T into its
+;        memory-to-memory mode flag and clears P.T at the start of every instruction, and PHP always pushes T=0.
+;        A caller's SET before the JSR is therefore swallowed by the JSR, so the routine's own instructions never
+;        run with T=1 and P.T is 0 wherever the guest can observe it. The contract still requires T=0 (the routine
+;        copies the bit), so the real-core test records one SET-before-JSR run as characterisation only.
 ;   precondition: S at routine entry >= $07 (7 bytes pushed by the routine), MPR1 maps the stack page
 ;        (RAM, as for any JSR). The real-core test checks the boundary at entry S=$07.
 ; ABI remains UNVERIFIED and this ROM stays DEV ONLY (release_eligible: false).
