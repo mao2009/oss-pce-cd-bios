@@ -12,7 +12,7 @@
 - **命令途中で停止できるかは未実測（UNMEASURED）のまま。** driver は書込み前の拒否のみを測る。
 - 試験の拒否方針（書込み先が $FF ページの場合に拒否）は probe の中に書かれており、本番ゲートの証拠ではない。driver は「コアのフック点が書込み前に拒否できる」ことだけを示す。
 - 静的検査の結果は PASS ではない。`gate` は常に BLOCKED。
-- デバイス起点 RAM 書込み（W17）はソース列挙済み（#419、`docs/research/367-device-write-audit.md`、`tests/fixtures/367_device_write_sites.tsv`）。検索範囲では CPU 以外が実行時に WRAM へ書く経路は見つからなかった。UNK-01/02 の起動元は未確定、判定は未了、実コアでのデバイス起点書込みの実測はない（UNMEASURED）。
+- デバイス起点 RAM 書込み（W17）はソース列挙済み（#419、`docs/research/367-device-write-audit.md`、`tests/fixtures/367_device_write_sites.tsv`）。検索範囲では CPU 以外が実行時に WRAM へ書く経路は見つからなかった。9 行のうち 7 行（DEV-01〜07）は判定済み、UNK-01/02 の 2 行は UNKNOWN で判定未了。実コアでのデバイス起点書込みの実測はない（UNMEASURED）。
 
 ## 実装したもの（スタンドアロン）
 
@@ -52,12 +52,12 @@
 
 #419 で pinned Geargrafx（b49ae82）のソースを読み取り、検索語による範囲で列挙した（実行なし。詳細は `docs/research/367-device-write-audit.md`）。記録は 9 行:
 
-- デバイス起点（DEV-01〜03）: ADPCM RAM、VRAM、VDC 内部 SAT。いずれも WRAM には届かない（NOT_MAIN_RAM）。
-- リセット時の初期化のみ（DEV-04〜07）: WRAM と CDROM RAM（RESET_ONLY）。
+- デバイス起点（DEV-01〜03）: ADPCM RAM、VRAM、VDC 内部 SAT。検索範囲では いずれも WRAM には届かない（NOT_MAIN_RAM）。
+- 検索範囲では リセット時の初期化のみ（DEV-04〜07）: WRAM と CDROM RAM（RESET_ONLY）。
 - 起動元未確定（UNK-01/02）: 外部バックアップ RAM（`mb128.cpp`）。Arcade Card の書込み起動経路も未トレース（UNKNOWN）。
 
 限界: 検索語で見つけた箇所に限られ、全ファイルは精読していない。間接書込みは除外できていない。
-判定の状態は「列挙済み・判定未了」であり、遮断可否は判定していない。デバイス起点書込みを実コアでプローブした記録はない（`geargrafx_block_write_guard.py` の LIMIT も「device-originated write probe なし」と記す）。
+判定の状態は「列挙済み・判定未了」であり、遮断可否は判定していない。デバイス起点書込みを実コアでプローブした記録はない（`geargrafx_block_write_guard.py` の LIMIT 行も、デバイス起点書込みのプローブがないことを記す。本文の表現は原文の言い換え）。
 
 ## 残課題と BLOCKED 理由
 
