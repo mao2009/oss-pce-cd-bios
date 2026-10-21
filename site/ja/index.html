@@ -42,7 +42,7 @@
       "url": "https://github.com/mao2009/oss-pce-cd-bios",
       "codeRepository": "https://github.com/mao2009/oss-pce-cd-bios",
       "license": "https://github.com/mao2009/oss-pce-cd-bios/blob/main/LICENSE",
-      "description": "Development-only open-source replacement for the PC Engine / TurboGrafx-CD Super System Card 3.0 BIOS. Six DEV-only implemented slots (EX_GETVER, EX_BINBCD, EX_BCDBIN, MA_MUL8U, MA_MUL16U, MA_DIV16S; none approved or ABI-verified); 75 nonreturning stub slots; full ABI and commercial compatibility unverified.",
+      "description": "Development-only open-source replacement for the PC Engine / TurboGrafx-CD Super System Card 3.0 BIOS. Seven DEV-only implemented slots (EX_GETVER, EX_BINBCD, EX_BCDBIN, MA_MUL8U, MA_MUL8S, MA_MUL16U, MA_DIV16S; none approved or ABI-verified); 74 nonreturning stub slots; full ABI and commercial compatibility unverified.",
       "programmingLanguage": "Assembly",
       "keywords": [
         "PC Engine",
@@ -115,7 +115,7 @@
             <div class="chip-lines">
               <div><b>0x1E</b> EX_GETVER → X=3 / Y=0</div>
               <div><b>CORE</b> Geargrafx / cold + warm</div>
-              <div><b>75</b> remaining stub slots</div>
+              <div><b>74</b> remaining stub slots</div>
             </div>
             <div class="terminal-foot"><span>ABI: UNVERIFIED</span><strong>RELEASE: BLOCKED</strong></div>
           </div>
@@ -149,8 +149,8 @@
           <a href="https://github.com/mao2009/oss-pce-cd-bios/blob/main/docs/status.md">詳しい進捗 ↗</a>
         </div>
         <div class="stats" aria-label="プロジェクトの実績">
-          <div class="stat"><div class="stat-value"><span>6</span> / 81</div><div class="stat-label">DEV実装済みスロット数（承認なし・ABI未検証）</div></div>
-          <div class="stat"><div class="stat-value">75</div><div class="stat-label">未実装の非復帰スタブが残るスロット数</div></div>
+          <div class="stat"><div class="stat-value"><span>7</span> / 81</div><div class="stat-label">DEV実装済みスロット数（承認なし・ABI未検証）</div></div>
+          <div class="stat"><div class="stat-value">74</div><div class="stat-label">未実装の非復帰スタブが残るスロット数</div></div>
           <div class="stat"><div class="stat-value">0</div><div class="stat-label">BIOS経由で起動を検証できたCDプログラム数（この時点）</div></div>
         </div>
         <div class="milestones" aria-label="検証段階ごとのロードマップ">
@@ -238,7 +238,7 @@
           <p class="section-intro">検索やAIによる案内でも誤解が起きないよう、実装済みの機能と未検証の範囲を分けて説明します。</p>
         </div>
         <div class="card-grid">
-          <article class="card"><span class="number">01 / 対応状況</span><h3>実際のゲームで使えるBIOS？</h3><p>まだ使えません。256KiBの開発用ROMには開発専用の実装が6件（EX_GETVER、EX_BINBCD、EX_BCDBIN、MA_MUL8U、MA_MUL16U、MA_DIV16S。いずれも承認・ABI検証は未了）あり、残り75スロットは未実装です。市販ゲームの互換性や配布可能な製品版は未達成です。</p></article>
+          <article class="card"><span class="number">01 / 対応状況</span><h3>実際のゲームで使えるBIOS？</h3><p>まだ使えません。256KiBの開発用ROMには開発専用の実装が7件（EX_GETVER、EX_BINBCD、EX_BCDBIN、MA_MUL8U、MA_MUL8S、MA_MUL16U、MA_DIV16S。いずれも承認・ABI検証は未了）あり、残り74スロットは未実装です。市販ゲームの互換性や配布可能な製品版は未達成です。</p></article>
           <article class="card"><span class="number">02 / 検証</span><h3>どこまで動作確認した？</h3><p>Geargrafxの実コアでEX_GETVERの復帰と合成CDセクター読み込みを確認しています。ただし純正BIOSの完全なABI互換性やゲーム起動の証明ではありません。<a href="https://github.com/mao2009/oss-pce-cd-bios/pull/174">PR #174</a> を参照してください。</p></article>
           <article class="card"><span class="number">03 / 参加</span><h3>開発に参加するには？</h3><p><a href="https://github.com/mao2009/oss-pce-cd-bios/issues">GitHub Issues</a>から仕様調査、テスト、独自実装に取り組めます。<a href="https://github.com/mao2009/oss-pce-cd-bios/blob/main/CONTRIBUTING.md">参加方針</a>を確認し、純正BIOSデータをアップロードしないでください。</p></article>
         </div>
