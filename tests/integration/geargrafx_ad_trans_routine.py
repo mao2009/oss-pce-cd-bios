@@ -3,7 +3,8 @@
 
 src/adt_dma_routine.s (routine) and src/adt_dma_routine_boot.s (boot and four calls) are project-owned HuC6280
 code. One routine, four calls: A positive (LBA 5 -> ADPCM $0100), B negative (DMA never armed, code 11, bus
-recovered), C recovery positive (LBA 5 -> $1100 after B), D bad input (LBA $200000, code 9, no bus activity).
+recovered), C recovery positive (LBA 5 -> $1100 after B), D bad input (LBA $200000, code 9, no bus activity),
+E invalid slot (PB_SLOT 4, code 9 written to slot 0 and therefore overwriting A's record; A is kept in a snapshot).
 Not BIOS, not AD_TRANS ($11), not a System Card compatibility claim; release_eligible=false.
 The internal contract is docs/research/ad-trans-routine-contract.md.
 
@@ -38,7 +39,7 @@ LBA, SECTOR, RAM_SIZE = 5, 2048, 0x10000
 MAX_STEPS = 120_000_000
 # Boot first: cd_entry must land at $F000 (the BOOT segment starts with it), the routine follows.
 GUEST_SOURCES = ("src/adt_dma_routine_boot.s", "src/adt_dma_routine.s")
-PROBE_SOURCE = "geargrafx_ad_trans_dma_probe.cpp"  # reused unchanged from PR #406 (halt labels, result dump at $2300)
+PROBE_SOURCE = "geargrafx_ad_trans_routine_probe.cpp"  # #406 probe with a 40-byte dump at $2300 (see its header)
 PROBE_TARGET = "ad-trans-routine-probe"
 JUDGE_NAME = "ad-trans-routine-judge-v1"
 SCHEMA = "ad-trans-routine-manifest-v1"
@@ -47,16 +48,21 @@ DEST_A, DEST_B, DEST_C, DEST_D = 0x0100, 0x0900, 0x1100, 0x1500
 ERR_DMA_NOT_DRAINED, ERR_BAD_REQUEST = 11, 9
 DISC_RECIPE = "tools/make_cd_image.py build_image(sectors=16); guest reads LBA 5 = sector_payload(5)"
 
-# Result slots: 8 bytes each at $2300 + offset. Fields: code, stage, scsi status, scsi msg, dma, stat, bus_ok, arm.
-SLOTS = {"A": 0, "B": 8, "C": 16, "D": 24}
+# Observation block (40 bytes at $2300): slots 0-31 are 8-byte result records (code, stage, scsi status, scsi msg,
+# dma, stat, bus_ok, arm); $2320-$2327 (offset 32) is a copy of call A's record taken before call E ran.
+# Slot 0 is where call E's record lands, so A is read from the snapshot.
+SLOTS = {"A": 32, "B": 8, "C": 16, "D": 24, "E": 0}
 BUS_UNTOUCHED = 0xFF
+STAT_WRITE_SLOT_BUSY = 0x04  # ADPCM_STAT bit2: must be clear at every return (the routine waits for it)
 EXPECTED = {
     #      code  stage  sst msg dma  bus_ok           arm
     "A": (0, 9, 0, 0, 0, 1, 1),
     "B": (ERR_DMA_NOT_DRAINED, 7, 0, 0, 0, 1, 0),
     "C": (0, 9, 0, 0, 0, 1, 1),
     "D": (ERR_BAD_REQUEST, 0, 0, 0, 0, BUS_UNTOUCHED, 1),
+    "E": (ERR_BAD_REQUEST, 0, 0, 0, 0, BUS_UNTOUCHED, 1),
 }
+OBSERVATION_BYTES = 40
 WRITE_ADDRESS_END = DEST_C + SECTOR
 
 
@@ -131,7 +137,7 @@ def judge(obs: dict) -> str:
     result = bytes.fromhex(obs["result_hex"])
     ram = bytes.fromhex(obs["ram_hex"])
     adpcm = obs["adpcm"]
-    _require(len(result) == 32 and len(ram) == RAM_SIZE, "block_size", "wrong block sizes")
+    _require(len(result) == OBSERVATION_BYTES and len(ram) == RAM_SIZE, "block_size", "wrong block sizes")
     _require(obs["ram_pre_nonzero"] == 0, "ram_pre_zero", "ADPCM RAM was not zero before the guest ran")
     _require(obs["reason"] == "cd_halt_ok" and obs["halt_confirmed"], "halt_ok",
              f"guest did not reach cd_halt_ok ({obs['reason']})")
@@ -149,6 +155,8 @@ def judge(obs: dict) -> str:
                  f"call {name}: bus_ok {slot[6]} != {EXPECTED[name][5]}")
         _require(slot[7] == EXPECTED[name][6], f"slot_{name.lower()}_arm",
                  f"call {name}: arm echo {slot[7]} != {EXPECTED[name][6]}")
+        _require((slot[5] & STAT_WRITE_SLOT_BUSY) == 0, f"slot_{name.lower()}_stat",
+                 f"call {name}: ADPCM_STAT at return is {slot[5]:#04x} (write slot busy)")
     sector = sector_payload(LBA)
     _require(ram[DEST_A:DEST_A + SECTOR] == sector, "ram_sector_a",
              "call A: ADPCM RAM at $0100 differs from the sector image")
@@ -211,6 +219,8 @@ MUTATIONS = (
     ("slot-d-bus-forged-free", _patch_slot(SLOTS["D"] + 6, 1), "slot_d_bus_ok"),
     ("slot-d-code-forged-ok", _patch_slot(SLOTS["D"] + 0, 0), "slot_d_code"),
     ("slot-b-dma-forged-on", _patch_slot(SLOTS["B"] + 4, 1), "slot_b_dma"),
+    ("slot-c-stat-forged-busy", _patch_slot(SLOTS["C"] + 5, STAT_WRITE_SLOT_BUSY), "slot_c_stat"),
+    ("slot-e-code-forged-ok", _patch_slot(SLOTS["E"] + 0, 0), "slot_e_code"),  # A's record left in slot 0
     ("write-address-forged", _set_field("write_address", DEST_C), "adpcm_write_address"),
     ("halt-forged-budget", _set_reason("budget"), "halt_ok"),
 )
@@ -242,7 +252,7 @@ def mutation_test(base: dict) -> dict:
 def contract_observation() -> dict:
     """Observation built from the contract, for --selftest only. It is not core output."""
     sector = sector_payload(LBA)
-    result = bytearray(32)
+    result = bytearray(OBSERVATION_BYTES)
     for name, offset in SLOTS.items():
         code, stage, sst, msg, dma, bus_ok, arm = EXPECTED[name]
         result[offset:offset + 8] = bytes([code, stage, sst, msg, dma, 0, bus_ok, arm])

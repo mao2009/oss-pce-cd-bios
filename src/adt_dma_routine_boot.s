@@ -1,7 +1,9 @@
 ; DEVELOPMENT-ONLY boot and driver for the reusable adt_dma_sector routine (Issue #300).
 ; Project-owned HuC6280 code. NOT BIOS, NOT AD_TRANS ($11), NOT a System Card ABI, release_eligible=false.
-; Runs four calls of the same routine: positive, negative (DMA never armed), recovery positive, bad input.
-; Result slots: 0 = call A, 8 = call B, 16 = call C, 24 = call D (see docs/research/ad-trans-routine-contract.md).
+; Runs four calls of the same routine: positive, negative (DMA never armed), recovery positive, bad input,
+; then call E (invalid slot 4, after the others): the routine must write code 9 to slot 0, overwriting A.
+; Result slots: 0 = call E (after E), 8 = call B, 16 = call C, 24 = call D (see docs/research/ad-trans-routine-contract.md).
+; Call A's 8-byte record is copied to $2320 right after A succeeds, so A stays observable after E.
 .setcpu "huc6280"
 .import adt_dma_sector
 .export cd_entry, cd_halt_ok, cd_halt_fail, cd_unexpected_interrupt
@@ -71,12 +73,20 @@ cd_entry:
     bcc @a_ok
     jmp cd_halt_fail
 @a_ok:
+    ldx #7                   ; snapshot A's record (slot 0) to $2320, outside the routine's slots
+@snap:
+    lda RES,x
+    sta RES+$20,x
+    dex
+    bpl @snap
     ; B: negative. LBA 5, ADPCM RAM $0900, DMA never armed. Expect code 11, bus recovered.
     ADT_CALL 0, 0, 5, $00, $09, 0, 8
     ; C: recovery. Same as A at $1100 after B. Expect success: the bus is usable again.
     ADT_CALL 0, 0, 5, $00, $11, 1, 16
     ; D: bad input. LBA $200000 is outside the 21-bit READ(6) range. Expect code 9, no bus activity.
     ADT_CALL $20, 0, 5, $00, $15, 1, 24
+    ; E: invalid slot 4 (not 0/8/16/24), otherwise valid. Expect code 9 in slot 0 (A's record is gone from slot 0).
+    ADT_CALL 0, 0, 5, $00, $15, 1, 4
 cd_halt_ok:
     bra cd_halt_ok
 

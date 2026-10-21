@@ -2,7 +2,7 @@
 
 **状態: 開発専用の自作内部契約。System Card の ABI ではない。** `release_eligible=false`。
 BIOS スロット `$11`（AD_TRANS、`$E033`）へは接続しない。#301 は BLOCKED_ABI のまま。
-実コア検証: NOT_RUN（§6）。本契約は、PR #406 の HuC6280 ゲスト DMA 経路を独立ルーチンとして切り出した自作の取り決めである。
+実コア検証: 9b5c044 で PASS、現 HEAD は `<<REAL_CORE_RESULT>>`（§11）。本契約は、PR #406 の HuC6280 ゲスト DMA 経路を独立ルーチンとして切り出した自作の取り決めである。
 呼出元（`src/adt_dma_routine_boot.s`）と呼出先（`src/adt_dma_routine.s`）の内部契約として定義する。
 
 ## 1. 範囲
@@ -10,7 +10,7 @@ BIOS スロット `$11`（AD_TRANS、`$E033`）へは接続しない。#301 は 
 - 対象: 最小 1 セクター（2048 バイト）、固定転送モード（READ(6)、転送数 1 固定、宛先は ADPCM RAM の先頭からの連続書込み）。
 - 含まないもの: 複数セクター、ジャンプテーブル接続、`$E030`〜`$E03F` の BIOS API への接続、CD_BASE / CD_SEEK との順序保証。
 - 根拠の区分: 呼出側の手順は PR #406（`src/ad_trans_dma_probe.s`）で実測された SCSI / ADPCM DMA の手順を踏襲する。
-  ただし #406 の実測は本 Issue の新ルーチンでは未確認である（§6）。
+  ただし #406 の実測は本 Issue の新ルーチンでは未確認である（§11）。
 
 ## 2. ファイル構成
 
@@ -86,7 +86,8 @@ BIOS スロット `$11`（AD_TRANS、`$E033`）へは接続しない。#301 は 
 ## 7. 有界 timeout
 
 - 待ちは `wait_phase`、`wait_adpcm_drained` の 2 種類で、どちらも `TMO_HI = 8` による 8 × 65536 ポールを上限にする（`tick` は 3 バイトのカウンタ）。
-- 1 回の呼出しに含まれる待ちは定数個（成功経路で約 21 回、復帰で最大 3 回）。
+- 1 回の呼出しに含まれる待ちは定数個。成功経路の待ちは 22 回（`wait_phase` 21、`wait_adpcm_drained` 1）。
+  失敗経路は失敗位置までの待ちに、復帰の 2 回（`wait_phase` 1、`wait_adpcm_drained` 1）を加える。
   全体の上限は「待ち回数 × 524288 ポール」で、コードから算出した上界であり、実測はしていない（§11）。
 - `delay` は定数時間（外側 `$20` × 内側 256）。
 
@@ -104,14 +105,17 @@ BIOS スロット `$11`（AD_TRANS、`$E033`）へは接続しない。#301 は 
 ## 9. 呼出側の規則（boot）
 
 - 4 回の呼出しを同一ルーチンで行う: A 正例（`$0100`、arm 1）、B 負例（`$0900`、arm 0）、C 復帰正例（`$1100`、arm 1）、D 入力不正（LBA `$200005`、上位バイト `$20` が範囲外、`$1500`、arm 1）。
+- A が成功した直後、A の 8 バイトの記録（スロット 0）を `$2320`〜`$2327` へ複写する（E がスロット 0 を上書きするため）。
+- E は D の後に行う: 無効スロット `4`（LBA 5、`$1500`、arm 1）。コード 9 がスロット 0 に書かれ、A の記録は消える（§3 の規則どおり）。E はバスに触れず、DMA を武装しない。
 - A が失敗したら `cd_halt_fail` へ抜ける（正例が成立しないと他の判定が無意味なため）。
 - 全呼出し後は `cd_halt_ok` で停止する。結果の正否は判定器が結果スロットを読んで決める（ゲストの停止位置では決めない）。
 
 ## 10. 判定器（`geargrafx_ad_trans_routine.py`）
 
 - 期待値は契約（§5）から判定器が再計算する。ゲストが報告する理由文は判定に使わない。
-- 判定の順序: 停止位置 → 結果スロット（A、B、C、D の順） → ADPCM RAM（`$0100` と `$1100` の 2048 バイト、それ以外ゼロ） → 書込みポインタ（`$1900`） → DMA オフ。
-- 改変試験は 10 件。各改変は宣言した検査 id でのみ拒否されなければならない。
+- 判定の順序: 停止位置 → 結果記録（A は `$2320` の複写、B、C、D はスロット 8、16、24、E はスロット 0） → ADPCM RAM（`$0100` と `$1100` の 2048 バイト、それ以外ゼロ） → 書込みポインタ（`$1900`） → DMA オフ。
+- 各記録は code、stage、SCSI status / message、戻り時の `$180B`、`$180C` の bit2（書込みスロット空きは 0）、bus_ok、arm を検査する。
+- 改変試験は 12 件。各改変は宣言した検査 id でのみ拒否されなければならない。E の改変（スロット 0 に A の成功記録が残る場合）は `slot_e_code` で拒否される。
 - `--selftest` は契約から作った観測で判定器と改変表だけを検査する。コア実行の証拠ではない。
 
 ## 11. 証拠の区分
@@ -119,9 +123,9 @@ BIOS スロット `$11`（AD_TRANS、`$E033`）へは接続しない。#301 は 
 | 区分 | 状態 | 根拠 |
 | --- | --- | --- |
 | 実装（ルーチン、boot） | 作成済み | `src/adt_dma_routine.s`、`src/adt_dma_routine_boot.s` |
-| 構文検査（cc65 アセンブル） | NOT_RUN | Windows 環境に cc65 がなく、WSL 実行は worktree の保護で拒否された |
-| 判定器の自己検査 | PASS（`--selftest`） | 契約から作った観測と改変表だけ。コアの証拠ではない |
-| 実コア（pinned Geargrafx）の正例・負例・復帰・入力不正 | NOT_RUN | 同上。`make setup` と WSL が必要。コマンドと終了コードは未取得 |
+| 構文検査（cc65 アセンブル・リンク） | 9b5c044 で Coordinator が成功（clean clone、終了コード 0）。リンカ警告 2 件あり（`src/bank0.cfg:14` の `APITABLE` / `FALLBACK` の空セグメント。実行には影響しないことを確認済み）。現 HEAD は `<<REAL_CORE_RESULT>>` | 作業者環境では cc65 を実行していない（worktree の保護） |
+| 判定器の自己検査 | 現 HEAD で `--selftest`（host のみ） | 契約から作った観測と改変表だけ。コアの証拠ではない |
+| 実コア（pinned Geargrafx）の正例・負例・復帰・入力不正・無効スロット | 9b5c044 で PASS（`PASS_ADT_ROUTINE_FOUR_CALLS`、manifest sha256 `04e25ba2e3399d55875d65fb697619dd690ea63b6ddc9e467bd9c69203ad7f6a`、selftest / real-core / verify すべて終了コード 0）。現 HEAD は `<<REAL_CORE_RESULT>>` | 本コミットで ROM、probe、判定器が変わったため 9b5c044 の結果は現 HEAD の証拠ではない。Coordinator が再実行する |
 | 独立レビュー | 別コンテキストのレビュー結果を PR 本文に記す | §12 |
 | CI | PR の HEAD で確認 | PR 本文 |
 
@@ -129,7 +133,7 @@ BIOS スロット `$11`（AD_TRANS、`$E033`）へは接続しない。#301 は 
 
 - UNKNOWN（推測で埋めない）: 実機・実 BIOS での意味、AD_TRANS（`$E033`）の入力意味（C1〜C16）、SCSI バスリセットが Geargrafx の負例後の状態をどこまで戻すか（HYPOTHESIS: リセットで戻る）。
 - 解除条件:
-  1. cc65（pinned）が使える環境で `src/adt_dma_routine.s` と `src/adt_dma_routine_boot.s` が警告なくアセンブルとリンクできること（`cd_entry` が `$F000`）。
+  1. cc65（pinned）が使える環境で `src/adt_dma_routine.s` と `src/adt_dma_routine_boot.s` が警告なくアセンブルとリンクできること（`cd_entry` が `$F000`）。現状は警告 2 件（空セグメント、§11）が残るため、この文言は未達。警告を許容するか、`src/bank0.cfg` を直すかは人間が決める。
   2. `make setup` の後、`python3 tests/integration/geargrafx_ad_trans_routine.py --out build/ad-trans-routine` が終了コード 0 で、判定 `PASS_ADT_ROUTINE_FOUR_CALLS` を返すこと。
   3. `--verify` が終了コード 0 であること。
   4. 上記が揃うまで、本契約は「実コアで未検証」とし、`release_eligible=false` を維持する。
