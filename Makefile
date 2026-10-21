@@ -35,6 +35,7 @@ host-test:
 integration: build
 	$(PYTHON) tests/integration/geargrafx_smoke.py --rom "build/$(MODE)/smoke-test-not-bios.pce" --output "build/$(MODE)/geargrafx-evidence.json"
 	$(PYTHON) tests/integration/geargrafx_reference_guard.py
+	$(PYTHON) tests/integration/geargrafx_reference_guard_issue173.py
 	$(PYTHON) tests/integration/geargrafx_mmio1804_trap.py
 	$(PYTHON) tests/integration/geargrafx_mmio1804_preblock.py
 	$(PYTHON) tests/integration/geargrafx_irq_register.py
@@ -44,6 +45,10 @@ integration: build
 check:
 	$(PYTHON) tools/contracts.py
 	$(PYTHON) tools/check.py
+
+# Issue #335: same-input rebuild must be byte-identical and its manifest must describe the ROM (fail-closed).
+rom-provenance:
+	$(PYTHON) tools/rom_provenance.py --reproduce smoke --mode "$(MODE)"
 
 clean:
 	$(PYTHON) -c 'from pathlib import Path; import shutil; p = Path("build"); shutil.rmtree(p) if p.exists() else None'
@@ -60,6 +65,7 @@ dev-test: dev-rom
 	$(MAKE) dev-integration MODE="$(MODE)"
 dev-integration: dev-rom
 	$(PYTHON) tests/integration/geargrafx_api.py --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
+	$(PYTHON) tests/integration/geargrafx_dev_bcd.py --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
 dev-release-gate:
 	$(PYTHON) tools/build_rom.py --release-gate
 

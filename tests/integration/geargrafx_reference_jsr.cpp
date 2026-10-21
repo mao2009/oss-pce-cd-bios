@@ -149,14 +149,15 @@ int main(int argc, char** argv)
     }
     if (mode != "call" && mode != "neg-write" && mode != "pos-write" && mode != "tam" &&
         mode != "mmio1804" && mode != "mmio1804-preblock" && mode != "st0" && mode != "st1" &&
-        mode != "st2" && mode != "irqreg")
+        mode != "st2" && mode != "irqreg" && mode != "tam-mmio" && mode != "irq-entry" &&
+        mode != "irq-entry-masked")
         return 2;
     unsigned long neg_addr = std::strtoul(argv[8], &end, 0);
     if (!end || *end || neg_addr > 65535UL)
         return 2;
     // Issue #179 measures exactly one path: a guest store to the CD-ROM reset
     // register at CPU address $1804 through the Hardware Page (MPR0 == $FF).
-    if ((mode == "mmio1804" || mode == "mmio1804-preblock") && neg_addr != 0x1804)
+    if ((mode == "mmio1804" || mode == "mmio1804-preblock" || mode == "tam-mmio") && neg_addr != 0x1804)
         return 2;
     // Issue #199: irqreg probes the $1802/$1804/$1402/$1403 register set through
     // direct Hardware-Page accesses; neg_addr is only a label, not a target.
@@ -171,10 +172,18 @@ int main(int argc, char** argv)
     if (allow_start != 0x2000UL || allow_end != 0x4000UL)
         return 9;  // BLOCKED: slot-1e allowlist must be exactly [0x2000, 0x4000)
 
+    // Issue #173 negatives: tam-mmio = dynamic TAM onto the Hardware Page then STA $1804;
+    // irq-entry = timer IRQ taken while the guard is armed; irq-entry-masked = same without CLI.
+    const bool irq_mode = (mode == "irq-entry" || mode == "irq-entry-masked");
     std::ifstream file(argv[1], std::ios::binary);
     if (!file)
         return 3;
     std::vector<u8> bios((std::istreambuf_iterator<char>(file)), {});
+    // TIQ vector $FFFA (huc6280_inline.h HandleIRQ bit2) -> WRAM handler $3F80 (bank 0 = bios[0..8K), mapped at $E000-$FFFF).
+    if (irq_mode && bios.size() >= 0x2000) {
+        bios[0x1FFA] = 0x80;
+        bios[0x1FFB] = 0x3F;
+    }
 
     Observer o;
     o.budget = budget;
@@ -215,6 +224,15 @@ int main(int argc, char** argv)
     o.memory->SetMpr(7, 0x00);  // API jump table at $E000 -> ROM bank 0
     for (int i = 2; i <= 6; ++i)
         o.memory->SetMpr(i, 0x00);
+    if (irq_mode) {
+        // Host setup (not guest code): arm the timer (reload 1, start) and enable all IRQs
+        // ($1402 = 0) through the Hardware Page, then restore the guard MPR map.
+        o.memory->SetMpr(0, 0xFF);
+        o.memory->Write(0x0C00, 0x01);
+        o.memory->Write(0x0C01, 0x01);
+        o.memory->Write(0x1402, 0x00);
+        o.memory->SetMpr(0, 0x00);
+    }
     if (mode == "mmio1804" || mode == "mmio1804-preblock" || mode == "irqreg")
         o.memory->SetMpr(0, 0xFF);  // page 0 -> Hardware Page, $1802/$1804/$1402/$1403 reachable
     else if (std::getenv("PCE_REF_TEST_ALIAS"))
@@ -290,12 +308,26 @@ int main(int argc, char** argv)
         // the compound ($1802 enable + $1804 bit1) IRQ2 behaviour can be observed.
         code = {0xA9, 0x01, 0x8D, 0x02, 0x18, 0x80, 0xFE};
     }
+    if (mode == "tam-mmio")
+        code = {0xA9, 0xFF,                                     // LDA #$FF
+                0x53, 0x01,                                     // TAM #$01 (MPR0 = $FF)
+                0x8D, (u8)(neg_addr & 0xFF), (u8)(neg_addr >> 8),  // STA $1804
+                0x80, 0xFE};                                    // BRA *
+    if (irq_mode)
+        code = {(u8)(mode == "irq-entry" ? 0x58 : 0xEA),       // CLI (or NOP when masked)
+                0x80, 0xFE};                                    // BRA *
     const unsigned long kReturnAddr = kGuestBase + jsr_offset + 3;
     if (kStubIndex + code.size() > 0x2000)
         return 2;
     u8* wram = o.memory->GetWorkingRAM();
     for (size_t i = 0; i < code.size(); ++i)
         wram[kStubIndex + i] = code[i];
+    if (irq_mode) {
+        // IRQ handler at $3F80 (WRAM physical $1F80): LDA #$77 / STA $0000.
+        const u8 handler[] = {0xA9, 0x77, 0x8D, 0x00, 0x00};
+        for (size_t i = 0; i < sizeof(handler); ++i)
+            wram[0x1F80 + i] = handler[i];
+    }
     // Sentinel at the physical WRAM byte that STA $0000 would target after TAM
     // remaps MPR0 to the WRAM bank. CPU address $0000 initially maps to ROM
     // (MPR0 = 0x00), but after TAM sets MPR0 = 0xF8 it maps to physical WRAM[0].
@@ -449,6 +481,12 @@ int main(int argc, char** argv)
     // Issue #198: VDC readback (core public API).
     u16 vdc_ar_before = 0, vdc_ar_after = 0;
     u16 vdc_r_before = 0, vdc_r_after = 0;
+    if (mode == "tam-mmio") {
+        // Pre-run device readback needs the Hardware Page; restore the guard map after.
+        o.memory->SetMpr(0, 0xFF);
+        mmio_rst_before = o.memory->Read((u16)neg_addr);
+        o.memory->SetMpr(0, 0x00);
+    }
     if (mode == "mmio1804" || mode == "mmio1804-preblock") {
         mmio_rst_before = o.memory->Read((u16)neg_addr);
         mmio_irq2_before = o.memory->Read(0x1403);
@@ -550,6 +588,15 @@ int main(int argc, char** argv)
             }
             if (pc == kReturnAddr) {
                 returned = true;
+                break;
+            }
+        } else if (irq_mode) {
+            // IRQ entry: the guest PC leaves the guest region only when an IRQ vector was
+            // taken. The step that took it stopped at the handler entry, so no handler
+            // instruction (and no store) has executed. Refuse before re-entering the core.
+            if (pc < kGuestBase || pc >= kGuestBase + code.size()) {
+                ok = false;
+                reason = "irq_entry_refused_at_handler";
                 break;
             }
         } else if (mode == "tam") {
@@ -690,6 +737,21 @@ int main(int argc, char** argv)
         }
     }
 
+    if (mode == "tam-mmio") {
+        mmio_rst_after = o.memory->Read(0x1804);  // MPR0 is $FF here if TAM ran
+        if (!mpr_changed) {
+            ok = false;
+            reason = "tam_mmio_mpr_change_not_detected";
+        } else if (mmio_rst_after != mmio_rst_before) {
+            ok = false;
+            reason = "side_effect_landed_before_stop";
+        }
+    }
+    if (irq_mode && ok) {
+        ok = false;
+        reason = "irq_not_taken_within_budget";
+    }
+
     FILE* out = stderr;
     std::fprintf(out, "{");
     std::fprintf(out, "\"mode\":\"%s\",", mode.c_str());
@@ -774,6 +836,12 @@ int main(int argc, char** argv)
                      (unsigned)d1400_after, (unsigned)d1401_after,
                      (unsigned)d_ram_before, (unsigned)d_ram_after);
     }
+    if (mode == "tam-mmio")
+        std::fprintf(out, ",\"mmio1804_addr\":%u,\"mmio_rst_before\":%u,\"mmio_rst_after\":%u",
+                     (unsigned)neg_addr, (unsigned)mmio_rst_before, (unsigned)mmio_rst_after);
+    if (irq_mode)
+        std::fprintf(out, ",\"irq_vector\":%u",
+                     (unsigned)(o.memory->Read(0xFFFA) | (o.memory->Read(0xFFFB) << 8)));
     std::fprintf(out, "}");
     std::fflush(out);
     if (trace)

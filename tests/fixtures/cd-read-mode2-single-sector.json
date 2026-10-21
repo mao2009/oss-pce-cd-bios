@@ -1,0 +1,46 @@
+{
+  "schema": "oss-pce-cd-bios/cd-read-mode2-fixture/v1",
+  "issue": 188,
+  "parents": ["#11", "#12"],
+  "status": "NON_EXECUTING_FIXTURE",
+  "executes_reference_bios": false,
+  "callee_real_core_runs": 0,
+  "mode": {"dh": 2, "destination_bank_register": "_bl", "sectors_per_request": 1},
+  "fixture_sectors": 16,
+  "unknown": "UNKNOWN",
+  "contract_source": "tools/cd_read_contract.py RAM_MODE_ITEMS / RAM_MODE_EXAMPLES; docs/cd-read-mode-contract.md",
+  "gate": {
+    "slot": 3,
+    "candidate_entry": "0xE009",
+    "expected_execution": "BLOCKED",
+    "expected_reason": "NO_REVIEWED_GATE_RECORD"
+  },
+  "expected_state_template": {
+    "a_return": {"item": "R6", "value": "UNKNOWN"},
+    "nzct_flags": {"item": "R8", "value": "UNKNOWN"},
+    "mpr_after": {"item": "R9", "value": "UNKNOWN"},
+    "destination_address": {"item": "R4", "value": "UNKNOWN"},
+    "destination_bytes": {"item": "R4", "value": "UNKNOWN"},
+    "stack_balance": {"item": "R10", "value": "UNKNOWN"},
+    "x_y_20f8_preserved": {"item": "R11", "value": "UNKNOWN"},
+    "cli_prerequisite": {"item": "R12", "value": "UNKNOWN"},
+    "media_state": {"item": "T7", "value": "UNKNOWN"}
+  },
+  "cases": [
+    {"id": "P1", "polarity": "positive", "lba": 5, "count": 1, "ram_mode_example": "P1", "transport_expect": "measured", "callee_expect": "UNKNOWN"},
+    {"id": "P2", "polarity": "positive", "lba": 0, "count": 1, "ram_mode_example": "P2", "transport_expect": "measured", "callee_expect": "UNKNOWN"},
+    {"id": "P3", "polarity": "positive", "lba": 15, "count": 1, "ram_mode_example": "P3", "transport_expect": "measured", "callee_expect": "UNKNOWN"},
+    {"id": "N1", "polarity": "negative", "lba": 16, "count": 1, "ram_mode_example": "N1", "transport_expect": "measured", "callee_expect": "UNKNOWN"},
+    {"id": "N2", "polarity": "negative", "lba": 2097151, "count": 1, "ram_mode_example": "N2", "transport_expect": "measured", "callee_expect": "UNKNOWN"},
+    {"id": "N3", "polarity": "negative", "lba": 5, "count": 0, "ram_mode_example": "N3", "transport_expect": "UNKNOWN", "callee_expect": "UNKNOWN"},
+    {"id": "N4", "polarity": "negative", "lba": 5, "count": 4, "ram_mode_example": "N4", "transport_expect": "UNKNOWN", "callee_expect": "UNKNOWN"}
+  ],
+  "count_boundaries": [
+    {"count": 0, "status": "UNKNOWN", "reason": "T8: count 0 never executed (SCSI meaning of 0 is not confirmed)"},
+    {"count": 1, "status": "IN_SCOPE", "reason": "the only count of this mode; transport measured (T2), callee UNKNOWN"},
+    {"count": 2, "status": "UNKNOWN", "reason": "counts 2..3 for this mode are a separate Issue"},
+    {"count": 3, "status": "UNKNOWN", "reason": "counts 2..3 for this mode are a separate Issue"},
+    {"count": 4, "status": "UNKNOWN", "reason": "outside counts 1..3 executed on the real core (T8)"},
+    {"count": 256, "status": "UNKNOWN", "reason": "T8: no measurement of the upper count range"}
+  ]
+}

@@ -31,3 +31,26 @@
 - 自己申告は LOCAL_ONLY。`MODEL_CONSISTENT` を実コアの観測や System Card 互換の証拠として扱わない。
 - 実コアでの slot `$00` 実行、媒体の実読取り、BIOS 経由のブートは未実施（NOT RUN）。
 - `rom/` の私的入力は読まない。公開テストは合成データのみで動く。
+
+## 4. 境界・UNKNOWN と BLOCKED の区別・成功非報告（追加検査）
+
+`tests/host/test_cdboot_slot00_fixture.py` に、次の 3 群（計 10 件）を追加した。モジュールの挙動は変えていない。
+
+- 媒体の境界（`Slot00MediaBoundaryTests`、4 件）: 無媒体（None）と空ファイル（`b""`）は別物で、空ファイルは MALFORMED。1 バイト短い・長い・マジックのみ・マジックが 1 バイトずれた媒体は MALFORMED。完全な 1 セクタのみが BOOT_CANDIDATE。末尾 1 バイトを変えた媒体は、分類は BOOT_CANDIDATE のままだが、SHA が一致しないため judge は REJECTED。
+- UNKNOWN と BLOCKED（`Slot00UnknownVsBlockedTests`、5 件）: 未計測項目（`boot_target` など）は UNKNOWN のまま有効。具体値を入れると BLOCKED。結果が UNKNOWN の自己申告は BLOCKED、値の矛盾は REJECTED。証拠が無い場合は全ケースで BLOCKED。
+- 成功非報告（`Slot00NeverReportsSuccessTests`、1 件）: 媒体 SHA・boot・error_code・executed_callee・schema・slot の全組合せを総当たりし、MODEL_CONSISTENT になるのは真の自己申告と完全一致する場合だけであることを確認。
+
+負例（変異検査、一時コピーで実施、`unittest` の failures 数。サブテスト単位）:
+
+| 変異 | 変異の内容（置換前 → 置換後） | 失敗数 | 失敗したテストメソッド数 |
+| --- | --- | --- | --- |
+| M1 | `if len(media) == SECTOR and media.startswith(MAGIC):` → `if media.startswith(MAGIC):` | 3 | 1 |
+| M2 | `if error is not None and (not isinstance(error, str) or error not in ERROR_CODES):` → `if error is not None and not isinstance(error, str):` | 6 | 3 |
+| M3 | `return "REJECTED", ["media identity mismatch: ..."]` → `return "MODEL_CONSISTENT", ["media identity mismatch: ..."]` | 11 | 4 |
+| M4 | `for field in ("boot_target", "return_path", "stack", "irq")` → `for field in ()`（未計測項目の検査を外す） | 16 | 1 |
+| M5 | `if evidence is None:` の BLOCKED 返却 → `return "MODEL_CONSISTENT", ["missing"]` | 4 | 2 |
+| M6 | `if evidence["schema"] != EVIDENCE_SCHEMA or evidence["slot"] != SLOT:` → `if False:` | 3 | 2 |
+
+M2 の失敗 6 件の内訳は、#344 の既存テスト（`test_malformed_missing_or_unknown_evidence_is_blocked`）が 2 件、新規テストが 4 件である。M6 は、新規の総当たりと既存テストの両方で検出された。
+
+限界: 境界の追加検査も合成バイトのみで、実媒体・実コア・純正 slot `$00` の実行は行っていない（NOT RUN）。`MODEL_CONSISTENT` は実行の証拠ではない。
