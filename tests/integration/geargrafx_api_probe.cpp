@@ -118,8 +118,8 @@ int main(int argc, char** argv) {
     if (memory->Read(first_pc) != 0x78) return 5; // all execution probes begin SEI
     one_instruction();
     bool stepping = cpu->PC->GetValue() == first_pc + 1;
-    std::printf("CAP {\"instruction_step\":%s,\"pc_before\":%u,\"pc_after\":%u,\"bios_loaded\":true,\"loader\":\"%s\",\"disc_given\":%s,\"cdrom_hardware\":%s,\"cdrom_media\":%s,\"card_ram_bytes\":%d,\"scsi_phase\":%d,\"cd_irq_active\":%u}\n",
-                stepping ? "true" : "false", first_pc, cpu->PC->GetValue(),
+    std::printf("CAP {\"instruction_step\":%s,\"pc_before\":%u,\"pc_after\":%u,\"loader_used\":%s,\"loader\":\"%s\",\"disc_given\":%s,\"cdrom_hardware\":%s,\"cdrom_media\":%s,\"card_ram_bytes\":%d,\"scsi_phase\":%d,\"cd_irq_active\":%u}\n",
+                stepping ? "true" : "false", first_pc, cpu->PC->GetValue(), have_disc ? "true" : "false",
                 have_disc ? "LoadBiosFromBuffer(syscard)+LoadMedia(cue)" : "SetCDROMType(STANDARD)+LoadHuCardFromBuffer",
                 have_disc ? "true" : "false",
                 core.GetMedia()->IsCDROMHardwareEnabled() ? "true" : "false",

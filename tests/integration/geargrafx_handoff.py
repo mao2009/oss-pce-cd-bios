@@ -297,7 +297,7 @@ def main():
     obs = {row["phase"]: row for row in records["OBS"]}
     cold_obs, later_obs = obs["cold"], obs["nonreturning"]
     (out / "handoff-evidence.json").write_text(json.dumps({
-        "scope": "synthetic ROM-to-RAM handoff only; loader = System Card ROM via LoadBiosFromBuffer; "
+        "scope": "synthetic ROM-to-RAM handoff only; LoadBiosFromBuffer(syscard) fed a synthetic ROM, not a System Card image; "
                  "CD = empty dummy image via LoadMedia (zero-filled, no CD content); "
                  "not CD boot, not CD_EXEC, not loader acceptance, not BIOS ABI",
         "rom_sha256": hashlib.sha256(rom).hexdigest(), "payload_bytes": size,
