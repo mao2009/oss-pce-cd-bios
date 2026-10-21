@@ -25,7 +25,7 @@ Cases (vector in irq2 / irq1 / tiq):
 
 Run manually (not wired into the Makefile integration target):
     python3 tests/integration/geargrafx_irq_entry_guard.py
-Status: see the PR description. Not PASS on any build until the run below prints PASS lines.
+Evidence: the PASS lines printed by a run; the measured table is in docs/research/366-irq-entry-status.md.
 """
 import copy
 import json
@@ -50,6 +50,8 @@ HANDLER_LOOP_PC = 0x3F85      # BRA * at the end of the handler (LDA/STA/BRA)
 HANDLER = 0x3F80
 OUT_HANDLER = 0x4010
 VECTORS = {"irq2": 0xFFF6, "irq1": 0xFFF8, "tiq": 0xFFFA}
+IRR_BIT = {"irq2": 0x01, "irq1": 0x02, "tiq": 0x04}
+BLOCKED_EXIT = 3  # distinct from 0 (all PASS) and 1 (FAIL); the libretro line is BLOCKED, never success
 VARIANTS = ("armed", "unguarded", "masked", "region-allow", "outregion")
 CASES = tuple(f"{v}-{w}" for v in VECTORS for w in VARIANTS)
 PASS, FAIL = "PASS", "FAIL"
@@ -75,9 +77,12 @@ def _common(row, case):
 
 
 def _entered(row):
-    """Stack holds PC hi, PC lo (return = guest loop PC) and P with I and B clear."""
+    """Stack holds PC hi, PC lo (return = guest loop PC) and P = $00 (I cleared by CLI, B masked on push).
+
+    The guest starts with P = $14 (B set), so a missing B mask on the push shows up as $10.
+    """
     hi, lo, p = row["stack_after"]
-    return (hi << 8 | lo) == GUEST_LOOP_PC and (p & 0x14) == 0
+    return (hi << 8 | lo) == GUEST_LOOP_PC and p == 0x00
 
 
 def check_armed(row, case):
@@ -95,6 +100,10 @@ def check_armed(row, case):
         raise ValueError(f"{case}: PC left the guest loop ({row['stop_pc']:#x})")
     if row["marker_after"] != 0 or row["a_after"] != 0:
         raise ValueError(f"{case}: handler instruction executed (marker={row['marker_after']}, A={row['a_after']})")
+    if row.get("p_at_call") != 0x10:
+        raise ValueError(f"{case}: P at the hook call was {row.get('p_at_call')}, want $10 (I cleared by CLI)")
+    if row.get("irr_after") != IRR_BIT[case.split("-")[0]]:
+        raise ValueError(f"{case}: IRR bit lost ({row.get('irr_after')}): refusal not distinguishable from no request")
     return "refused_before_stack_write_and_pc_change"
 
 
@@ -117,6 +126,8 @@ def check_masked(row, case):
         raise ValueError(f"{case}: masked vector was taken (stack {row['stack_after']}, PC {row['stop_pc']:#x})")
     if row["marker_after"] != 0 or row["a_after"] != 0:
         raise ValueError(f"{case}: handler ran for a masked vector")
+    if row.get("irr_after") != IRR_BIT[case.split("-")[0]]:
+        raise ValueError(f"{case}: request not latched (IRR {row.get('irr_after')}), so the mask is not what was tested")
     return "mask_respected_no_entry"
 
 
@@ -152,6 +163,8 @@ def mutation_test(row, case):
     """Falsified observations must be rejected by the classifier (proves it can fail)."""
     if case.endswith("-armed"):
         mutations = [
+            ("irr_lost", {"irr_after": 0}),
+            ("p_at_call_b_unmasked", {"p_at_call": 0x00}),
             ("stack_landed", {"stack_after": [0x3E, 0x01, 0x00]}),
             ("no_call", {"guard_calls": 0, "guard_refusals": 0}),
             ("accepted", {"guard_refusals": 0, "guard_allows": 1}),
@@ -163,9 +176,11 @@ def mutation_test(row, case):
                      ("stack_landed", {"stack_after": [0x3E, 0x01, 0x00]})]
     elif case.endswith("-masked"):
         mutations = [("hook_consulted", {"guard_calls": 1}),
+                     ("irr_lost", {"irr_after": 0}),
                      ("stack_landed", {"stack_after": [0x3E, 0x01, 0x00]})]
     elif case.endswith("-unguarded"):
         mutations = [("no_entry", {"stack_after": [0, 0, 0]}),
+                     ("pushed_B_not_masked", {"stack_after": [0x3E, 0x01, 0x10]}),
                      ("handler_missing", {"marker_after": 0})]
     else:
         mutations = [("refused_instead", {"guard_refusals": 1, "guard_allows": 0, "stack_after": [0, 0, 0]})]
@@ -244,7 +259,7 @@ def main():
           "is not run here); libretro is not observed and is not PASS.")
     print("LIMIT: entry refusal only; ST0/1/2 and block transfers are out of scope; the IRQ is injected via IRR; "
           "no gate change; no BIOS.")
-    return 0
+    return BLOCKED_EXIT
 
 
 if __name__ == "__main__":

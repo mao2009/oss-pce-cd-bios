@@ -148,7 +148,7 @@ int main(int argc, char** argv)
     st->A->SetValue(0);
     st->X->SetValue(0);
     st->Y->SetValue(0);
-    st->P->SetValue(0x04);  // I=1 until the guest CLI
+    st->P->SetValue(0x14);  // I=1 until the guest CLI; B=1 so a missing B mask on the push is visible
 
     *st->IRR = (u8)irr_bit;                       // inject the vector request
     *st->IDR = masked ? (u8)irr_bit : (u8)0x00;   // mask only in the masked variant

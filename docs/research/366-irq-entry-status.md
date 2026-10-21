@@ -71,7 +71,7 @@ pinned core（`geargrafx-b49ae82a…-debugger`、`/home/loach/oss-pce-cd-bios-to
 | `unguarded`（null フック、正例） | PASS | スタックに `$3E,$01,P`（I=0, B=0）、PC はハンドラ末尾 `$3F85`、マーカ `$77` |
 | `masked`（IDR で遮断） | PASS | フック未呼出し、スタック不変 |
 | `region-allow`（ページ1内ハンドラ、正例） | PASS | 許可されて入口成立、ハンドラ実行 |
-| `outregion`（ページ1外ハンドラ、負例） | PASS | フック拒否、スタック不変、ハンドラ未実行 |
+| `outregion`（ページ1外ハンドラ、負例） | PASS | 本プローブのフック方針（ページ1外を拒否）が HandleIRQ の戻り値として効くことの確認。ガード方針そのものの妥当性は検証していない。スタック不変、ハンドラ未実行 |
 
 - 対象ベクタ: IRQ2（$FFF6）、IRQ1（$FFF8）、TIQ（$FFFA）の 3 つすべて。
 - libretro: BLOCKED（libretro の共有オブジェクトを駆動するハーネスがないため未観測。PASS ではない）。
