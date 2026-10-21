@@ -10,6 +10,7 @@
   - 「未計算」: 本 PR で対象ファイルを取得・計算していない項目。推測で埋めていない。
   - 「UNKNOWN」: 確認できなかった項目。推測で埋めていない。
   - 確定欄の表記: `PENDING` は未確定。「提案: …」は人間判定前の提案。「—」は対象外。APPROVED / RESTRICTED の確定値は本書に無い。
+- 優先 CD API 別の決定表（Issue #309）: [cd-reuse-decision-309.md](cd-reuse-decision-309.md)。本台帳の disposition は変更しない。
 - `reuse_mode`（参照と採用の分離）: `DIRECT` / `ADAPTED` / `REFERENCE_ONLY` / `REJECTED`。`REFERENCE_ONLY` は仕様・挙動の参照に限り、コードを写さない。
 
 ## 0. 採用状況（source reference と code adoption の分離）
