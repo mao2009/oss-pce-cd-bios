@@ -24,11 +24,13 @@ import sys
 import tempfile
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(ROOT / "tools"))
+from environment import DEPENDENCIES  # noqa: E402
 from geargrafx_api import compile_probe  # noqa: E402
 from geargrafx_reference_guard import synthetic_media  # noqa: E402
 
-PINNED_CORE_REVISION = "b49ae82a012eade566d72e9d61c9d95a5caa4da3"
 PRESET_ADDRESS = 0x1234
 SAMPLE_RATE_DEFAULT = 0x0F
 BUSY_IRQ_PLAY_MASK = 0x8D  # status: play 0x08, end IRQ 0x01, read busy 0x80, write busy 0x04
@@ -154,7 +156,9 @@ def main():
         mutation_test(pos_row, neg_row)
         for case, row in (("pos-reset", pos_row), ("neg-reset-playing", neg_row)):
             print("EVIDENCE " + json.dumps({"case": case, "observation_kind": "REAL_CORE_DEVICE_LAYER",
-                                            "core_revision": PINNED_CORE_REVISION, "bios": "SYNTHETIC",
+                                            "geargrafx_revision": DEPENDENCIES["geargrafx"]["revision"],
+                                            "source_archive_sha256": DEPENDENCIES["geargrafx"]["sha256"],
+                                            "bios": "SYNTHETIC",
                                             "verdict": verdicts[case], "row": row}, sort_keys=True))
             print(f"{case}: frames_to_playing={row['frames_to_playing']} post_control={row['post']['control']:#x} "
                   f"post_playing={row['post']['playing']} post_status={row['post']['status']:#x} "
