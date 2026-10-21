@@ -40,6 +40,24 @@ DEV ROM の manifest は `source_sha256` で `src/overrides/slot_3D.s` と `incl
 再確認時の DEV ROM の SHA-256 は `build/debug/bios-dev/manifest.json` の `rom_sha256` と一致し、
 manifest の `source_sha256` の 2 ファイル値も上の SHA-256 と一致する。
 
+### 1.2 再確認（最新 main 取り込み後、2026-10-21）
+
+main はさらに `77e0c70` へ進んだ。本 PR のブランチ（`docs/evidence/dev-callable-3d`、main `77e0c70` を
+マージ済み）に再ビルドし、3.4 節に連続 2 回の実行結果を記録した。Makefile の競合（main の MA_MUL8S 試験、
+先行 PR #435 の `dev-sweep`、本 PR の `dev-bcdbin-sweep`）は三者とも残す形で解消した。
+
+| 項目 | 初版（main `c906728`） | 再確認（main `0c2fa41`） | 最新再確認（main `77e0c70`） |
+| --- | --- | --- | --- |
+| DEV ROM SHA-256 | `d669c03f46b5e73b913776c50e2620a7d73584e42a5115febcc3fc5fb65f8e65` | `5c6aaf0a789787f8749843d7b3d11c3bd868e1437a3e1422afce214095480f8e` | `31913676dd4ce548f9da66d170a2fca35d9c8b3fcdccfa05acbfdaf2dc385ec7` |
+| manifest SHA-256 | `791beb1b1275a54ae40c8ffe17ee7cf9ab07eb468c3c6c8ff14fdfa034fb88c3` | `83d40fc948d8124268d23bfe9f55dd8e96269e7e03400406fe8e17363ce8124e` | `a925479ac6c259a4b9e1e0f419b059a165bcd6dc43a15fb32a80c638d722d85f` |
+| `src/ex_bcdbin.s` | `b38a14aa873a8552288062cb5dd1a23f71e95211cadc4c5b048c0d1b3005f858` | 同じ（main で変更されていない） | 同じ（main で変更されていない） |
+| `src/overrides/slot_3D.s` | `94c79485ae2f6b9b3d393241a7df095fdc15ecc3dc2f8deb2a9e9eff893446da` | 同じ（main で変更されていない） | 同じ（main で変更されていない） |
+| `spec/dev_implementations.json` | `6f6b3a4c7d5b47123c2b764c5af53bf807bb513c2acd6f30806a96a901c9362e` | `81c6a02f4742462020198260d8d46fd767c1bc068bcaba0023dd775d04ec64cb`（main の更新分。承認欄は未変更） | `90de453ae685262b720b388ad42076b10c041086d99a5467c29f044c62c6bbb0`（main の更新分。承認欄は未変更） |
+| `spec/api_contracts.json` | `b2fb8da1da1cc3d5827a2025bb34591966a324bc57117162f0d7596309b12f28` | 同じ | 同じ |
+| `tests/integration/dev_bcdbin_full_sweep.py` | `1e578f2861a4c34ad017a12d2d9ace6a16a4d6f5645056e0aace2571bf2c406c`（3.1 節の記録） | 同じ | `4c16a04491931609e3644a61208a3194a9478a7282db0b9164fb484070970c72`（3.4 節の記録後。N/V/T/Z の記録を phase ごとに分けた変更。判定ロジックは未変更） |
+
+最新再確認時の DEV ROM の SHA-256 も `build/debug/bios-dev/manifest.json` の `rom_sha256` と一致する。
+
 ## 2. 契約（DEV 専用、docs/ex-bcdbin.md）
 
 - 入力: A = packed BCD 1 バイト（上位ニブル = 十の位、下位 = 一の位、`$00`〜`$99`）。
@@ -75,7 +93,7 @@ manifest の `source_sha256` の 2 ファイル値も上の SHA-256 と一致す
 
 | 項目 | 値 |
 | --- | --- |
-| スクリプト | `tests/integration/dev_bcdbin_full_sweep.py`（SHA-256 `1e578f2861a4c34ad017a12d2d9ace6a16a4d6f5645056e0aace2571bf2c406c`） |
+| スクリプト | `tests/integration/dev_bcdbin_full_sweep.py`（SHA-256 `1e578f2861a4c34ad017a12d2d9ace6a16a4d6f5645056e0aace2571bf2c406c`。最新再確認後は 1.2 節の値） |
 | 起動方法 | `make dev-bcdbin-sweep`（または `python3 tests/integration/dev_bcdbin_full_sweep.py [ROM パス]`） |
 | CI | `make dev-integration` から呼ばれるため、CI の `bios-dev` ジョブでも実行される（CI の実測: `bios-dev` ジョブ success、7 分 35 秒） |
 | 移植性 | リポジトリルートはスクリプト自身の位置から求める。特定の作業ディレクトリ（初版の `/home/loach/dev3d-evidence/`）への依存はない |
@@ -105,6 +123,43 @@ manifest の `source_sha256` の 2 ファイル値も上の SHA-256 と一致す
   - 条件の全組み合わせ（X/Y は 65536 × 65536 の組に対し 3 組、SP は 3 値のみ）。X/Y と SP は代表値のみである。
 - 入力 C の全値（0/1）、X/Y と SP の代表値は実行している。
 
+### 3.4 連続 2 回実行と再現性（最新 main 取り込み後、2026-10-21）
+
+main が `0c2fa41` から `77e0c70` へ進み、main の `dev-integration` に MA_MUL8S
+（`tests/integration/geargrafx_dev_mul8s.py`）の DEV 実コア試験が追加されたため、Makefile に競合が発生した。
+競合は「main の `geargrafx_dev_mul8s.py` 行」と「本 PR の `dev-bcdbin-sweep` ターゲット/呼び出し」、
+および先行 PR #435 の「`dev-sweep` ターゲット/呼び出し」を**三者とも残す**形で解消した
+（`dev-integration` は main の検査をすべて実行したうえで `dev-bcdbin-sweep` と `dev-sweep` を呼ぶ）。
+この状態でスイープを**連続 2 回**実行し、再現性を確認した。
+
+| 項目 | 1 回目の実行 | 2 回目の実行 |
+| --- | --- | --- |
+| 手順 | `make dev-bcdbin-sweep` | 同じ（連続実行） |
+| 結果行 | `PASS DEV ROM EX_BCDBIN $3D full domain: 4608 runs (18 conditions x 256 inputs), 0 failures` | 同じ |
+| 実行数 / 失敗 | 4608 / 0 | 4608 / 0 |
+| 有効 / 不正 | 1800 / 2808 | 1800 / 2808 |
+| 所要時間 | 約 66 秒（8 並列） | 約 68 秒（8 並列） |
+| DEV ROM SHA-256 | `31913676dd4ce548f9da66d170a2fca35d9c8b3fcdccfa05acbfdaf2dc385ec7` | 同じ |
+
+**判定は再現する。** 2 回とも 4608 実行・失敗 0 で、集計サマリは完全一致し、**判定対象の全項目**
+（入力、入力 C、X、Y、SP、期待 A、期待 C、valid/refusal 区分）は 4608 件すべてでバイト一致した。
+
+**ただし、記録のみ・非判定の N/V/T/Z（保存された P のフラグビット）はバイト一致しない。**
+1 回目の実行で cold 記録が 1667/4608、warm 記録が 2559/4608 件で 2 回目の実行と異なった。
+
+- 原因: 記録しているビットは DEV 契約が未規定（N/Z/V 未定義）のため判定対象外の `NZV_unchecked` 相当の値である。
+  pinned コアの非同期状態（合成 CD メディアの TOC 読み込みの完了可否。`core.ResetMedia(true)` は
+  `m_media->IsReady()` が真のときだけ CPU をリセットする）と、その再実行経路が V ビット（bit 6）の値を決める。
+  同じ 1 ケースを 40 回連続実行して 2 通りの観測（CPU P = `$04` と `$44`）が交互に現れることを確認した。
+- 影響: **判定項目には影響しない。** 判定は A・出力 C・X・Y・復帰 PC・SP・MPR1/MPR7 を cold と warm の
+  両方で確認しており、これらは 2 回の実行で完全に一致する。観測の途中（割込み経路など）で N/V/T/Z だけが
+  変わり、DEV 契約が定めていない値である。
+- 対処: 記録を phase ごとに `nzv_unchecked_cold` / `nzv_unchecked_warm` に分けて、どの観測の値かを
+  evidence 上で明示できるようにした。判定は従来どおり行っており、**検査の削除・弱体化は行っていない**。
+
+このため本証拠の主張は「4608 実行が 2 回とも失敗 0 で、判定項目は再現する」であり、
+「記録 JSON 全体がバイト一致する」ではない。
+
 ## 4. 負例
 
 | 負例 | 結果 | 根拠 |
@@ -131,11 +186,15 @@ manifest の `source_sha256` の 2 ファイル値も上の SHA-256 と一致す
 
 ## 6. CI 状況
 
-- 次の run 番号は初版（2026-10-21、main `c906728` 時点）の記録であり、main はその後 `0c2fa41` に進んでいる。最新の状態は PR 側の run を確認すること。
+- 次の run 番号は初版（2026-10-21、main `c906728` 時点）の記録であり、main はその後 `0c2fa41`、`77e0c70` に
+  進んでいる。最新の状態は PR 側の run を確認すること。
 - main `c906728` の push 実行: `CI (original fixture, not BIOS compatibility)` = success（run 39551289738）、`BIOS DEV diagnostics (not compatible firmware)` = success（run 39551289760）。
 - PR #432 の検査（マージ前の head）: `bcdbin-core` pass（run 39550711937）、`bios-dev` pass（run 39550711920）、`core-harness` pass（run 39550711915）、`verify` pass（run 39550711924）、`guard-*` pass。CodeRabbit は手動レビュー要求のためスキップ。
 - `core-bcdbin.yml` は `pull_request` と `workflow_dispatch` のみで動くため、main への push では実行されない。main 上の実コア ex_bcdbin 実行は PR #432 の検査で確認した。
 - 本 PR で 3.1 節の全件スイープを `make dev-integration` に組み込んだため、CI の `bios-dev` ジョブ（`api-source.yml`）が PR ごとに 4608 実行を再現する。
+- 最新 main 取り込み後（3.4 節）の本 PR の HEAD に対する CI は、GitHub の PR ページで確認すること。
+  `bios-dev` ジョブは `make dev-integration` を実行するため、本 PR の 4608 実行に加えて先行 PR #435 の
+  EX_BINBCD 256 入力スイープと main の各 DEV 実コア試験も走る。**CI の成功は DEV_CALLABLE の承認を意味しない。**
 
 ## 7. 独立レビュー
 
@@ -152,6 +211,9 @@ manifest の `source_sha256` の 2 ファイル値も上の SHA-256 と一致す
 - 駆動スクリプトは**本 PR でリポジトリに登録した**（`tests/integration/dev_bcdbin_full_sweep.py`、3.1 節）。初版のスクリプトは WSL の `/home/loach/dev3d-evidence/` に置かれており（SHA-256 `97074FB617B02CDB95051F9CEC3E347AD9EB1CA2BAE042C0E86D50299DBD2E79`）、その Regeneration ではなく登録版を正とする。判定項目・条件・期待値は初版と同じで、並列化と移植性（リポジトリルートの自動解決）のみが変わっている。
 - 全件の結果 JSON は登録スクリプトが `build/debug/bios-dev/dev-bcdbin-full-sweep.json` に出力する（ビルド成果物のため git には含めない）。初版のローカル JSON の SHA-256 は `4ce7b3e0bff30a4ef15177555b03bc6d29080e7e0553954c569d30e4d3f1fd45`。
 - 3.2 節の再実行は CI 上でも再現される（`make dev-integration` 経由）。初版の実行は CI ではなくローカル WSL のみであった。
+- 3.4 節で記録したとおり、**判定項目（4608 実行の判定と集計サマリ）は 2 回とも再現するが、記録のみ・非判定の
+  N/V/T/Z ビットはバイト一致しない**。原因（コアの非同期状態と `ResetMedia` の CPU リセット条件）と
+  観測記録を 3.4 節に書いた。判定の弱体化は行っていない。
 - Windows では DEV ROM の実コア試験は動かない（Linux 限定）。
 - 純正 BIOS の EX_BCDBIN の呼出し・戻り値・破壊レジスタは未確定（api_contracts.json の slot 61 は UNKNOWN）。本証拠はこれを補わない。
 - 初版が指摘していた文書の不正確さ 2 点は**本 PR で修正済み**（`docs/ex-bcdbin.md`）：①実コア負例 5 件の所在（`tests/integration/test_ex_bcdbin_real_core.py`、`make integration-test` で実行）、②「メモリ非書込」を実コア検証済みとしない記述。いずれも本 PR の差分に含まれる。

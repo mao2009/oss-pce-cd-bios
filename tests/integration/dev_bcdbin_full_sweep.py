@@ -16,7 +16,13 @@ Every one of the 256 input values is executed under all 18 conditions: 256 x 18 
 
 Checked per run: A and the output carry (P bit 0) against the contract, X and Y preserved, the return PC,
 the stack pointer balanced (equal to the caller's SP), MPR1 = $F8 and MPR7 = 0.
-N/Z/V are unspecified by the DEV contract (docs/ex-bcdbin.md) and are recorded but NOT checked.
+N/Z/V are unspecified by the DEV contract (docs/ex-bcdbin.md) and are recorded but NOT checked. They are
+recorded per phase ("nzv_unchecked_cold" and "nzv_unchecked_warm") because the probe's "warm" phase is
+preceded by core.ResetMedia(true), which resets the CPU only when the synthetic CD media already reports
+IsReady(). That readiness comes from an asynchronous TOC read, so it is host-timing dependent: the warm
+phase either re-runs the guest (CPU reset) or merely continues (no reset). Every CHECKED item is the same
+in both cases; only these uncontracted flag bits can differ between the phases and between two runs of the
+sweep. The "cold" record is stable across runs.
 
 The expectation is this project's own DEV-only contract, NOT the reference System Card ABI, which stays
 UNVERIFIED. Missing tools exit 3 (BLOCKED).
@@ -70,8 +76,18 @@ def guest(reset, entry, value, x, y, sp, carry):
 
 
 def check(label, rows, halt, expected_a, expected_c, expected_x, expected_y, sp):
-    """Check the guest's result in both the cold and the warm phase (the probe runs both)."""
-    nzv = None
+    """Check the guest's result in both the cold and the warm phase (the probe runs both).
+
+    Returns the N/V/T/Z bits of the stored P, per phase. They are RECORDED, NOT CHECKED: the DEV
+    contract leaves N/Z/V undefined (docs/ex-bcdbin.md). The two phases are kept apart on purpose:
+    the probe's "warm" phase is preceded by core.ResetMedia(true), which only resets the CPU when the
+    CD media already reports IsReady(). Whether that happens depends on the asynchronous TOC read of
+    the synthetic media, so the warm phase may either re-run the guest (the CPU was reset) or simply
+    continue (the CPU was not reset). The checked items (A, C, X, Y, return PC, SP, MPR) are identical
+    in both cases; only these uncontracted flag bits can differ between the two phases and between two
+    runs of the sweep.
+    """
+    nzv = {}
     for phase in ("cold", "warm"):
         row = next((r for r in rows if r["phase"] == phase), None)
         if row is None:
@@ -88,7 +104,7 @@ def check(label, rows, halt, expected_a, expected_c, expected_x, expected_y, sp)
         if observed != (expected_a, expected_c, expected_x, expected_y):
             raise ValueError(f"{label}: {phase} A/C/X/Y observed {observed}, expected "
                              f"{(expected_a, expected_c, expected_x, expected_y)}")
-        nzv = stored[1] & 0xE2  # N/Z/V: recorded, not checked (unspecified by the DEV contract)
+        nzv[phase] = stored[1] & 0xE2  # N/V/T/Z: recorded, not checked (unspecified by the DEV contract)
     return nzv
 
 
@@ -115,7 +131,8 @@ def run_case(data, reset, entry, cue, probe, case_rom, value, carry, x, y, sp):
     except (ValueError, OSError, subprocess.SubprocessError) as error:
         return None, f"{label}: {error}"
     return {"label": label, "input": value, "carry_in": carry, "x": x, "y": y, "sp": sp,
-            "expected_a": want_a, "expected_c": want_c, "NZV_unchecked": nzv,
+            "expected_a": want_a, "expected_c": want_c,
+            "nzv_unchecked_cold": nzv["cold"], "nzv_unchecked_warm": nzv["warm"],
             "range": "valid" if want_c == 0 else "refusal"}, None
 
 
@@ -163,6 +180,13 @@ def main():
         "valid_runs": sum(r["range"] == "valid" for r in results),
         "refusal_runs": sum(r["range"] == "refusal" for r in results),
         "failures": len(failures), "failed_labels": failures,
+        "checked_items": "A, output carry (P bit 0), X, Y, return PC, SP, MPR1, MPR7 (cold and warm phases)",
+        "unchecked_recorded_items": "nzv_unchecked_cold / nzv_unchecked_warm: the N/V/T/Z bits of the stored P",
+        "unchecked_items_note": "N/Z/V are undefined by the DEV contract and are NOT checked. The recorded bits are "
+                                "not byte-stable between two runs of the sweep: the pinned core's asynchronous state "
+                                "(synthetic CD media TOC readiness, and the CPU reset that core.ResetMedia(true) only "
+                                "performs when the media reports IsReady()) decides whether the guest re-runs, and the "
+                                "V bit follows that path. Every CHECKED item above is identical between runs.",
     }
     (rom.parent / "dev-bcdbin-full-sweep.json").write_text(
         json.dumps({"summary": summary, "results": results, "failures": failures}, indent=2) + "\n")
