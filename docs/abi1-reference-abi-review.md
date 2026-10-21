@@ -45,7 +45,7 @@ execution, never sufficient on its own.
 | pinned decoder | cc65 `71746c829e77f74c2b601a7d16821170c2610df3` `da65`, HuC6280 CPU description (zlib) |
 | claim ledger | `spec/api_contracts.json`, 81 slots, all `verification: NOT_RUN` |
 | DEV ledger | `spec/dev_implementations.json`, 7 implemented slots, 0 `DEV_CALLABLE`, 0 `VERIFIED` |
-| reference JSR execution gate | `tools/reference_jsr_gate.py`, closed for **81/81** slots |
+| reference JSR execution gate | `tools/reference_jsr_gate.py`, closed for **81/81** slots (the tool's own count: the ledger holds one row and the other 80 slots have no record at all) |
 
 The image hash is recorded because it was actually measured locally. The image
 itself, its bytes and any derived code stay on the owner's machine.
@@ -131,7 +131,11 @@ prioritisation follows the reference-side evidence, not the DEV side.
 3. For each requested slot, the entry target is followed with a worklist walk
    over `(pc, MPR map, A value, return stack)` states. The MPR map is modelled
    concretely: a `TAM` whose source value is known updates the affected page,
-   every other `TAM` marks the affected page unknown.
+   every other `TAM` marks the affected page unknown. The accumulator value is
+   modelled the same way: only an immediate load into `A` makes it known, and
+   every other opcode that could write `A` makes it unknown. A stale value
+   would make a later `TAM` resolve a cross page callee in the wrong bank, so
+   the model errs towards "unknown" everywhere.
 4. Instructions are decoded with the **pinned cc65 `da65`** (HuC6280 CPU
    description) — the same disassembler the repository already uses for the DEV
    ROM — so no hand written opcode table can become a verification blind spot.
@@ -143,6 +147,13 @@ The tool is [`tools/reference_rom_static_audit.py`](../tools/reference_rom_stati
 its host tests build a synthetic image and never touch a private input
 ([`tests/host/test_reference_rom_static_audit.py`](../tests/host/test_reference_rom_static_audit.py)).
 
+Two local hygiene notes. `da65` needs a file, so the auditor writes a sixteen
+byte window of the private image into a temporary directory for every decode;
+those bytes never reach the repository, but an aborted run can leave them in the
+system temporary directory. And the CI refusal lives in the library entry point
+as well as in the CLI, so a future tool that imports the module cannot read a
+private image in CI either.
+
 ### 4.2 The jump table is confirmed against the image
 
 | property | result |
@@ -150,7 +161,7 @@ its host tests build a synthetic image and never touch a private input
 | first entry | `$E000` |
 | entry count | 81 |
 | entry stride | 3 bytes, every entry a `JMP abs` |
-| targets | 81 distinct internal routines |
+| targets | 81 distinct target addresses |
 | conclusion | for this image the candidate entry addresses in `spec/api_contracts.json` are no longer only a public-header hypothesis |
 
 The internal target addresses are deliberately **not** published, and the
@@ -187,13 +198,17 @@ not pretend otherwise.
 | `$3C` | `EX_BINBCD` | 19 | `RTS` | 1 store to the zero page |
 | `$3D` | `EX_BCDBIN` | 23 | `RTS` | 2 stores to the zero page |
 | `$3F` | `MA_MUL8U` | 36 | `RTS` | 1 cross page call, 1 MPR read, 2 MPR writes, 4 page 1 stores |
-| `$40` | `MA_MUL8S` | 62 | `RTS` | 1 cross page call, 1 MPR read, 2 MPR writes, 6 page 1 stores |
-| `$41` | `MA_MUL16U` | 43 | `RTS` | 1 cross page call, 1 MPR read, 2 MPR writes, 15 page 1 stores |
-| `$42` | `MA_DIV16S` | 89 | `RTS` | 1 cross page call, 1 MPR read, 2 MPR writes, 23 page 1 stores |
+| `$40` | `MA_MUL8S` | 62 | `RTS` | 1 cross page call, 1 MPR read, 2 MPR writes, 5 page 1 stores |
+| `$41` | `MA_MUL16U` | 43 | `RTS` | 1 cross page call, 1 MPR read, 2 MPR writes, 14 page 1 stores |
+| `$42` | `MA_DIV16S` | 89 | `RTS` | 1 cross page call, 1 MPR read, 2 MPR writes, 22 page 1 stores |
 
 Not found in any of the seven: a block transfer, a VDC direct write (`ST0`,
 `ST1`, `ST2`), an interrupt enable, an indirect jump, an unresolved branch
-target, a budget exhaustion, or a path that fails to return.
+target, a budget exhaustion, or a **non returning path**. The last one is a
+property the auditor can establish: it keeps the successor graph and computes,
+for every reachable state, whether a return is still reachable, so a callee
+with a self loop is reported instead of looking clean because some other path
+returned (`non_returning_states` is 0 for all seven).
 
 Two structural facts matter for the rest of the phase:
 
@@ -236,6 +251,13 @@ The verdict is about the *reference* callee, under the existing guarded probe
 * The pinned core implements **no** NMI source, so a non maskable interrupt
   cannot be taken during a call in this environment. That is a property of the
   measurement environment, not of the hardware.
+* None of the seven callees changes the interrupt disable state, so the
+  interrupt behaviour during a call is the caller's. The guarantee "no
+  maskable interrupt is taken" only holds for a caller that enters with the
+  interrupt disable flag set, which is how the guarded probe enters the
+  callee. A caller that enters with interrupts enabled does not get it, and
+  the ledger records that as a caller precondition rather than as a property
+  of the callee.
 
 ### 5.2 What the probe can and cannot contain
 
@@ -421,7 +443,31 @@ measurement effort can be spent on the slots whose static profile is clean.
 
 ---
 
-## 11. Sources
+## 11. Independent review
+
+An independent review (a separate read-only session, ChatGPT) examined this
+change against the six hard constraints. It confirmed the ledger reproduces the
+auditor's projection and that no path leaks a byte, a disassembly line or an
+internal address, and it found six substantive defects. All of them are fixed
+in this pull request:
+
+| finding | fix |
+| --- | --- |
+| the accumulator model missed two opcodes that write `A`, so a stale value could make a later `TAM` resolve a cross page callee in the wrong bank | the accumulator model was rewritten: only an immediate load into `A` makes the value known, everything else makes it unknown, and a regression test with a synthetic callee pins the behaviour |
+| the "no return" hazard only recorded that *some* path returned, so a callee with a self loop looked clean | the auditor now keeps the successor graph and computes, for every reachable state, whether a return is still reachable; the ledger records `non_returning_states` and the validator refuses a safe verdict when it is not 0 |
+| the validator accepted a ledger whose static profile was not a clean upper bound | `unresolved` must be empty and `non_returning_states` must be 0 for any verdict other than `EXECUTION_BLOCKED`, and a runtime MPR switch, a block transfer, a VDC direct write or an interrupt enable now force `EXECUTION_BLOCKED` |
+| the validator accepted a ledger that claimed a fresh execution | the plain `OBSERVED_LOCAL_ONLY` form was removed from the vocabularies; only the `..._PRIOR` form is allowed, and it has to name a repository file that holds the earlier observation |
+| the CI refusal and the `TAM` mask mapping, the two properties the code calls critical, were untested | both now have a test; the mask test distinguishes the two candidate banks, and the CI refusal is checked in the CLI *and* in the library entry point |
+| the published-text guard missed the memory writing opcodes, was case sensitive, and its test was satisfied by the address rule instead | the mnemonic list now covers every operand carrying opcode of the HuC6280 table, the match is case insensitive, and the test uses a payload that only the instruction rule can catch |
+
+The review also corrected wording: "81 distinct internal routines" became "81
+distinct target addresses", the interrupt item now states that the callee does
+not change the interrupt disable state (the behaviour is the caller's) instead
+of claiming that no interrupt can be taken, and the block move classification
+now follows the pinned core, where all five block moves write their
+destination.
+
+## 12. Sources
 
 | source | use | licence / conditions |
 | --- | --- | --- |

@@ -8,6 +8,7 @@
       "execution": {
         "note": "A local real-core measurement of this slot is recorded in docs/reference-bios-test-plan.md (X=3, Y=0, A preserved, P=$06, SP balanced, 8 instructions, RAM difference limited to the JSR push). It is not reproducible through the committed runner, because tools/reference_jsr_gate.py refuses every slot by design, and it is local only evidence.",
         "observation_status": "OBSERVED_LOCAL_ONLY_PRIOR",
+        "prior_evidence": "docs/reference-bios-test-plan.md",
         "verdict": "BLOCKED_REFERENCE_JSR_GATE"
       },
       "name": "EX_GETVER",
@@ -45,6 +46,7 @@
           "ZERO_PAGE_STORE": 0
         },
         "max_stack_bytes": 0,
+        "non_returning_states": 0,
         "register_swap_ops": 0,
         "return_kinds": [
           "rts"
@@ -81,7 +83,7 @@
         },
         "interrupt_or_timing_dependence": {
           "status": "OBSERVED_STATIC",
-          "value": "The callee does not clear the interrupt disable flag and does not enable interrupts, so a maskable interrupt cannot be taken while it runs. The pinned core implements no NMI source, so no non maskable interrupt can be taken either."
+          "value": "The callee does not change the interrupt disable state, so the interrupt behaviour during the call is the caller's. With the interrupt disable flag set, which is how the guarded probe enters the callee, the core takes no maskable interrupt; the pinned core implements no NMI source either. A caller that enters with interrupts enabled would not get that guarantee."
         },
         "mpr_change": {
           "status": "OBSERVED_STATIC",
@@ -109,6 +111,7 @@
       "execution": {
         "note": "No reference measurement exists for this slot. The static analysis establishes the entry mapping and the side effect profile only.",
         "observation_status": "NOT_RUN",
+        "prior_evidence": "NONE",
         "verdict": "BLOCKED_REFERENCE_JSR_GATE"
       },
       "name": "EX_BINBCD",
@@ -146,6 +149,7 @@
           "ZERO_PAGE_STORE": 0
         },
         "max_stack_bytes": 1,
+        "non_returning_states": 0,
         "register_swap_ops": 1,
         "return_kinds": [
           "rts"
@@ -160,11 +164,11 @@
       "static_items": {
         "caller_preconditions": {
           "status": "OBSERVED_STATIC",
-          "value": "A is expected to be 0..99. The routine compares against 100 and returns immediately for larger values, so the out of range behaviour is observable rather than undefined."
+          "value": "A is expected to be 0..99. The routine compares A against 100 and returns immediately when A is 100 or larger, so the out of range behaviour is observable rather than undefined."
         },
         "caller_supplied_registers": {
           "status": "OBSERVED_STATIC",
-          "value": "The callee reads A as the binary input and compares it against 100. X and Y are used as scratch."
+          "value": "The callee reads A as the binary input and compares it against 100. X is used as a scratch counter. Y is not read and not written by the callee."
         },
         "cpu_flag_handling": {
           "status": "OBSERVED_STATIC",
@@ -184,7 +188,7 @@
         },
         "interrupt_or_timing_dependence": {
           "status": "OBSERVED_STATIC",
-          "value": "The callee does not clear the interrupt disable flag, so a maskable interrupt cannot be taken while it runs, and the pinned core implements no NMI source."
+          "value": "The callee does not change the interrupt disable state, so the interrupt behaviour during the call is the caller's. With the interrupt disable flag set, which is how the guarded probe enters the callee, the core takes no maskable interrupt; the pinned core implements no NMI source either. A caller that enters with interrupts enabled would not get that guarantee."
         },
         "mpr_change": {
           "status": "OBSERVED_STATIC",
@@ -212,6 +216,7 @@
       "execution": {
         "note": "No reference measurement exists for this slot. The static analysis establishes the entry mapping and the side effect profile only.",
         "observation_status": "NOT_RUN",
+        "prior_evidence": "NONE",
         "verdict": "BLOCKED_REFERENCE_JSR_GATE"
       },
       "name": "EX_BCDBIN",
@@ -249,6 +254,7 @@
           "ZERO_PAGE_STORE": 0
         },
         "max_stack_bytes": 1,
+        "non_returning_states": 0,
         "register_swap_ops": 0,
         "return_kinds": [
           "rts"
@@ -263,7 +269,7 @@
       "static_items": {
         "caller_preconditions": {
           "status": "OBSERVED_STATIC",
-          "value": "A is expected to be a two digit packed BCD byte. The routine tests both nibbles against 10, so an invalid digit is detectable and the out of range behaviour is observable rather than undefined."
+          "value": "A is expected to be a two digit packed BCD byte. The routine masks A into two nibbles and tests them, so an invalid digit is detectable and the out of range behaviour is observable rather than undefined."
         },
         "caller_supplied_registers": {
           "status": "OBSERVED_STATIC",
@@ -271,7 +277,7 @@
         },
         "cpu_flag_handling": {
           "status": "OBSERVED_STATIC",
-          "value": "Two compares against 10 precede the conversion, so C carries the digit test result on the early return path. The remaining flags are not established."
+          "value": "A compare against $A0 tests the high nibble and a compare against 10 tests the low nibble, so C carries the digit test result on the early return path. The remaining flags are not established."
         },
         "entry_address_and_basis": {
           "status": "OBSERVED_STATIC",
@@ -287,7 +293,7 @@
         },
         "interrupt_or_timing_dependence": {
           "status": "OBSERVED_STATIC",
-          "value": "The callee does not clear the interrupt disable flag, so a maskable interrupt cannot be taken while it runs, and the pinned core implements no NMI source."
+          "value": "The callee does not change the interrupt disable state, so the interrupt behaviour during the call is the caller's. With the interrupt disable flag set, which is how the guarded probe enters the callee, the core takes no maskable interrupt; the pinned core implements no NMI source either. A caller that enters with interrupts enabled would not get that guarantee."
         },
         "mpr_change": {
           "status": "OBSERVED_STATIC",
@@ -315,6 +321,7 @@
       "execution": {
         "note": "No reference measurement exists for this slot. The static analysis establishes the entry mapping and the side effect profile only.",
         "observation_status": "NOT_RUN",
+        "prior_evidence": "NONE",
         "verdict": "BLOCKED_MPR_CHANGE_AND_REFERENCE_JSR_GATE"
       },
       "name": "MA_MUL8U",
@@ -352,6 +359,7 @@
           "ZERO_PAGE_STORE": 0
         },
         "max_stack_bytes": 2,
+        "non_returning_states": 0,
         "register_swap_ops": 2,
         "return_kinds": [
           "rts"
@@ -391,7 +399,7 @@
         },
         "interrupt_or_timing_dependence": {
           "status": "OBSERVED_STATIC",
-          "value": "No interrupt enable was found in the reachable code, so a maskable interrupt cannot be taken while it runs, and the pinned core implements no NMI source."
+          "value": "No interrupt enable was found in the reachable code, so the callee does not change the interrupt disable state and the interrupt behaviour during the call is the caller's. With the interrupt disable flag set, which is how the guarded probe enters the callee, the core takes no maskable interrupt; the pinned core implements no NMI source either. A caller that enters with interrupts enabled would not get that guarantee."
         },
         "mpr_change": {
           "status": "OBSERVED_STATIC",
@@ -419,6 +427,7 @@
       "execution": {
         "note": "No reference measurement exists for this slot. The static analysis establishes the entry mapping and the side effect profile only.",
         "observation_status": "NOT_RUN",
+        "prior_evidence": "NONE",
         "verdict": "BLOCKED_MPR_CHANGE_AND_REFERENCE_JSR_GATE"
       },
       "name": "MA_MUL8S",
@@ -456,6 +465,7 @@
           "ZERO_PAGE_STORE": 0
         },
         "max_stack_bytes": 2,
+        "non_returning_states": 0,
         "register_swap_ops": 3,
         "return_kinds": [
           "rts"
@@ -495,7 +505,7 @@
         },
         "interrupt_or_timing_dependence": {
           "status": "OBSERVED_STATIC",
-          "value": "No interrupt enable was found in the reachable code, so a maskable interrupt cannot be taken while it runs, and the pinned core implements no NMI source."
+          "value": "No interrupt enable was found in the reachable code, so the callee does not change the interrupt disable state and the interrupt behaviour during the call is the caller's. With the interrupt disable flag set, which is how the guarded probe enters the callee, the core takes no maskable interrupt; the pinned core implements no NMI source either. A caller that enters with interrupts enabled would not get that guarantee."
         },
         "mpr_change": {
           "status": "OBSERVED_STATIC",
@@ -523,6 +533,7 @@
       "execution": {
         "note": "No reference measurement exists for this slot. The static analysis establishes the entry mapping and the side effect profile only.",
         "observation_status": "NOT_RUN",
+        "prior_evidence": "NONE",
         "verdict": "BLOCKED_MPR_CHANGE_AND_REFERENCE_JSR_GATE"
       },
       "name": "MA_MUL16U",
@@ -560,6 +571,7 @@
           "ZERO_PAGE_STORE": 0
         },
         "max_stack_bytes": 2,
+        "non_returning_states": 0,
         "register_swap_ops": 0,
         "return_kinds": [
           "rts"
@@ -599,7 +611,7 @@
         },
         "interrupt_or_timing_dependence": {
           "status": "OBSERVED_STATIC",
-          "value": "No interrupt enable was found in the reachable code, so a maskable interrupt cannot be taken while it runs, and the pinned core implements no NMI source."
+          "value": "No interrupt enable was found in the reachable code, so the callee does not change the interrupt disable state and the interrupt behaviour during the call is the caller's. With the interrupt disable flag set, which is how the guarded probe enters the callee, the core takes no maskable interrupt; the pinned core implements no NMI source either. A caller that enters with interrupts enabled would not get that guarantee."
         },
         "mpr_change": {
           "status": "OBSERVED_STATIC",
@@ -627,6 +639,7 @@
       "execution": {
         "note": "No reference measurement exists for this slot. The static analysis establishes the entry mapping and the side effect profile only.",
         "observation_status": "NOT_RUN",
+        "prior_evidence": "NONE",
         "verdict": "BLOCKED_MPR_CHANGE_AND_REFERENCE_JSR_GATE"
       },
       "name": "MA_DIV16S",
@@ -664,6 +677,7 @@
           "ZERO_PAGE_STORE": 0
         },
         "max_stack_bytes": 2,
+        "non_returning_states": 0,
         "register_swap_ops": 0,
         "return_kinds": [
           "rts"
@@ -703,7 +717,7 @@
         },
         "interrupt_or_timing_dependence": {
           "status": "OBSERVED_STATIC",
-          "value": "No interrupt enable was found in the reachable code, so a maskable interrupt cannot be taken while it runs, and the pinned core implements no NMI source."
+          "value": "No interrupt enable was found in the reachable code, so the callee does not change the interrupt disable state and the interrupt behaviour during the call is the caller's. With the interrupt disable flag set, which is how the guarded probe enters the callee, the core takes no maskable interrupt; the pinned core implements no NMI source either. A caller that enters with interrupts enabled would not get that guarantee."
         },
         "mpr_change": {
           "status": "OBSERVED_STATIC",

@@ -39,9 +39,10 @@ API_KEYS = {"api_id", "slot", "name", "candidate_entry", "entry_evidence", "stat
             "static_items", "safety", "execution", "abi_state"}
 STATIC_KEYS = {"status", "callee_instructions", "return_kinds", "max_stack_bytes",
                "hazard_counts", "store_target_classes", "zero_page_operand_stores",
-               "register_swap_ops", "unresolved", "budget_exhausted"}
+               "register_swap_ops", "non_returning_states", "unresolved",
+               "budget_exhausted"}
 SAFETY_KEYS = {"verdict", "basis", "residual_risks"}
-EXECUTION_KEYS = {"verdict", "observation_status", "note"}
+EXECUTION_KEYS = {"verdict", "observation_status", "prior_evidence", "note"}
 ITEM_KEYS = {"entry_address_and_basis", "caller_supplied_registers",
              "caller_preconditions", "expected_return_value",
              "possibly_changed_registers", "cpu_flag_handling", "stack_usage",
@@ -53,8 +54,11 @@ ABI_STATES = {"NOT_RUN", "BLOCKED", "OBSERVED", "PARTIAL", "VERIFIED"}
 SAFETY_VERDICTS = {"EXECUTION_SAFE", "EXECUTION_SAFE_WITH_OBSERVABLE_ZERO_PAGE_WRITE",
                     "EXECUTION_BLOCKED", "EXECUTION_SAFE_WITH_OBSERVABLE_RAM_WRITE"}
 EXECUTION_VERDICTS = {"BLOCKED_REFERENCE_JSR_GATE", "BLOCKED_MPR_CHANGE_AND_REFERENCE_JSR_GATE",
-                      "NOT_RUN", "OBSERVED_LOCAL_ONLY"}
-OBSERVATION_STATUSES = {"NOT_RUN", "OBSERVED_LOCAL_ONLY_PRIOR", "OBSERVED_LOCAL_ONLY"}
+                      "NOT_RUN", "OBSERVED_LOCAL_ONLY_PRIOR"}
+# "OBSERVED_LOCAL_ONLY" (a fresh execution) is deliberately absent: the phase
+# ran no execution, so a slot may only carry the "prior" form, and that form
+# has to name where the earlier observation came from.
+OBSERVATION_STATUSES = {"NOT_RUN", "OBSERVED_LOCAL_ONLY_PRIOR"}
 HAZARD_NAMES = {"BLOCK_TRANSFER", "VDC_DIRECT_WRITE", "MPR_WRITE", "MPR_READ",
                 "IRQ_ENABLE", "IRQ_DISABLE", "ZERO_PAGE_STORE", "PAGE1_STORE",
                 "OTHER_STORE", "DATA_DEPENDENT_STORE", "CROSS_PAGE_CALL",
@@ -62,10 +66,15 @@ HAZARD_NAMES = {"BLOCK_TRANSFER", "VDC_DIRECT_WRITE", "MPR_WRITE", "MPR_READ",
 ENTRY_EVIDENCE = {"JUMP_TABLE_3BYTE_JMP"}
 
 # A decoded instruction with an operand, e.g. "LDA $FEC2" or "JSR $CD10".
+# The list covers every mnemonic of the HuC6280 table that can carry an
+# operand, and the match is case insensitive, so neither a lower case copy nor
+# a memory writing opcode slips through.
 FORBIDDEN_INSTRUCTION = re.compile(
-    r"\b(?:LDA|LDX|LDY|STA|STX|STY|JSR|JMP|RTS|RTI|INC|DEC|AND|ORA|EOR|CMP|SBC|ASL|LSR"
-    r"|ROL|ROR|TAX|TAY|TXA|TYA|PHA|PLA|PHP|PLP|SEI|CLI|TAM|TMA|TII|TDD|TIA|TAI|TIN|SAX"
-    r"|SAY|SXY|ST0|ST1|ST2|BSR|BRA|BNE|BEQ|BCC|BCS)\s+(?:\$|#|\()")
+    r"\b(?:LDA|LDX|LDY|STA|STX|STY|STZ|SAX|SAY|SXY|JSR|JMP|RTS|RTI|INC|DEC|AND|ORA"
+    r"|EOR|CMP|CPX|CPY|SBC|ASL|LSR|ROL|ROR|TAX|TAY|TXA|TYA|TSX|TXS|PHA|PLA|PHP|PLP"
+    r"|PLX|PLY|SEI|CLI|CLD|SED|CLV|CLC|SEC|SET|CSL|CSH|CLA|CLX|CLY|TAM|TMA|TII|TDD"
+    r"|TIA|TAI|TIN|ST0|ST1|ST2|BSR|BRA|BNE|BEQ|BCC|BCS|BPL|BMI|BVC|BVS|NOP|BRK"
+    r"|BIT|TSB|TRB|TST)\s+(?:\$|#|\()", re.IGNORECASE)
 # Any four digit address in the published text must be a public one: a jump
 # table entry address, or a documented CPU/hardware constant.
 ADDRESS = re.compile(r"(?:\$|0x)([0-9A-Fa-f]{4})(?![0-9A-Fa-f])")
@@ -165,6 +174,10 @@ def validate(document, contracts):
                  f"{api_id}: hazard counts")
         _require(isinstance(static["store_target_classes"], dict), f"{api_id}: store classes")
         _require(static["budget_exhausted"] is False, f"{api_id}: budget must not be exhausted")
+        _require(type(static["non_returning_states"]) is int
+                 and static["non_returning_states"] >= 0,
+                 f"{api_id}: non returning states")
+        _require(isinstance(static["unresolved"], list), f"{api_id}: unresolved")
         items = api["static_items"]
         _require(isinstance(items, dict) and set(items) == ITEM_KEYS, f"{api_id}: static item keys")
         for key, item in items.items():
@@ -187,6 +200,28 @@ def validate(document, contracts):
                  f"{api_id}: observation status vocabulary")
         _require(isinstance(execution["note"], str) and execution["note"].strip(),
                  f"{api_id}: execution note")
+        prior = execution["prior_evidence"]
+        _require(isinstance(prior, str) and prior.strip(), f"{api_id}: prior evidence")
+        if execution["observation_status"] == "NOT_RUN":
+            _require(prior.strip().upper() == "NONE",
+                     f"{api_id}: a slot without an observation must not cite prior evidence")
+        else:
+            _require(prior.strip().upper() != "NONE",
+                     f"{api_id}: a prior observation has to name its source")
+            _require((ROOT / prior.strip()).is_file(),
+                     f"{api_id}: the prior observation source is not a repository file")
+        # The safety verdict has to agree with the static profile. A profile
+        # that is not a clean upper bound cannot carry a safe verdict, and a
+        # profile with a side effect the probe cannot contain cannot either.
+        if safety["verdict"] != "EXECUTION_BLOCKED":
+            _require(not static["unresolved"],
+                     f"{api_id}: an unresolved static profile cannot be EXECUTION_SAFE")
+            _require(static["non_returning_states"] == 0,
+                     f"{api_id}: a non returning path cannot be EXECUTION_SAFE")
+        for hazard in ("MPR_WRITE", "VDC_DIRECT_WRITE", "BLOCK_TRANSFER", "IRQ_ENABLE"):
+            if static["hazard_counts"][hazard]:
+                _require(safety["verdict"] == "EXECUTION_BLOCKED",
+                         f"{api_id}: {hazard} forces EXECUTION_BLOCKED")
         _require(api["abi_state"] in ABI_STATES, f"{api_id}: abi state vocabulary")
         _require(api["abi_state"] != "VERIFIED",
                  f"{api_id}: VERIFIED is not reachable from a static review")

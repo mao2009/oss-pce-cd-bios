@@ -101,15 +101,27 @@ UNCONDITIONAL_BRANCH = {"bra"}
 CALLS = {"jsr", "bsr"}
 RETURNS = {"rts", "rti"}
 BLOCK_MOVES = {"tii", "tin", "tia", "tdd", "tai"}
-BLOCK_MOVE_WRITES = {"tii", "tdd", "tai"}
+# In the pinned core all five block moves write the destination through
+# Memory::Write() (OPCodes_TII/TDD/TIA/TAI/TIN), so all five are memory writes
+# here as well. The core also pushes Y, A and X in TransferStart and pops them
+# in TransferEnd, so a block move costs three stack bytes that the BIOS code
+# itself never shows.
+BLOCK_MOVE_WRITES = {"tii", "tdd", "tia", "tai", "tin"}
+BLOCK_MOVE_STACK_BYTES = 3
 # Only an immediate load into A makes the accumulator value known. Every other
 # A modifier leaves it unknown: assuming "and #$0A" means "A = $0A" would make a
-# later TAM resolve to the wrong bank and the profile unsound.
-IMMEDIATE_LOAD = {"lda"}
-A_MODIFIERS = {"lda", "ldx", "ldy", "tax", "tay", "txa", "tya", "tsx", "txs",
-               "sbc", "adc", "and", "ora", "eor", "asl", "lsr", "rol", "ror",
-               "inc", "dec", "tma", "inx", "dex", "iny", "dey", "sxy", "bit",
-               "cmp", "cpx", "cpy"}
+# later TAM resolve to the wrong bank and the profile unsound. A mnemonic that
+# is in neither list also leaves it unknown, so an opcode this table does not
+# know about can only make the profile less specific, never more.
+A_WRITES = {"lda", "pla", "tax", "tay", "txa", "tya", "sax", "say", "tma"}
+A_PRESERVES = {
+    "ldx", "ldy", "tsx", "txs", "inx", "dex", "iny", "dey", "pha", "php", "plx",
+    "ply", "cmp", "cpx", "cpy", "bit", "stx", "sty", "stz", "st0", "st1", "st2",
+    "tsb", "trb", "tam", "sxy", "sei", "cli", "clc", "sec", "clv", "sed", "cld",
+    "nop", "brk", "jmp", "jsr", "bsr",
+    "tii", "tdd", "tia", "tai", "tin",  # the core restores A from the stack
+} | {f"rmb{index}" for index in range(8)} | {f"smb{index}" for index in range(8)}
+RMW_MEMORY = {"asl", "lsr", "rol", "ror", "inc", "dec"}
 WRITES_MEMORY = {"sta", "stx", "sty", "stz", "inc", "dec", "asl",
                  "lsr", "rol", "ror", "rmb0", "rmb1", "rmb2", "rmb3", "rmb4",
                  "rmb5", "rmb6", "rmb7", "smb0", "smb1", "smb2", "smb3", "smb4",
@@ -129,12 +141,23 @@ class AuditError(Exception):
 
 
 # --- image loading ----------------------------------------------------------
+def assert_local_only():
+    """Refuse to read a private image inside CI.
+
+    The guard lives here and not only in ``main()`` so that a future tool that
+    imports this module cannot read a private BIOS in CI either.
+    """
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        raise AuditError("a private BIOS image is never read in CI")
+
+
 def load_image(path):
     """Return (body, header_bytes, bank_bytes, bank_count) for a private BIOS image.
 
     A .pce image is a 512 byte header followed by the ROM banks. A headerless
     image is accepted as well, because the private input may be either form.
     """
+    assert_local_only()
     data = Path(path).read_bytes()
     if len(data) % BANK_BYTES == 0:
         header = 0
@@ -160,10 +183,17 @@ def bank_offset(body, bank, cpu_address):
 class Decoder:
     """Instruction decoder built on the pinned cc65 da65 (HuC6280 CPU description).
 
-    ``da65`` prints an address as a generated label when the target is not a
-    plain immediate, so the label table of the same listing is parsed and used
-    to resolve operands back to addresses. The instruction bytes are taken from
-    the listing comment, so relative branch targets are computed exactly.
+    ``da65`` prints a referenced address as a generated label when the target
+    is not a plain immediate, so the label table of the same listing is parsed
+    and used to resolve operands back to addresses. The instruction bytes are
+    taken from the listing comment, so relative branch targets are computed
+    exactly.
+
+    ``da65`` prints a label either as a definition (``LXXXX := $XXXX``) or
+    inline at column 0 (``LXXXX:  inx``). Only the definition form ends up in
+    the label table, so an operand printed as an inline label stays
+    unresolvable: that fails closed as an unresolved target instead of
+    silently resolving to the wrong address.
     """
 
     def __init__(self):
@@ -301,6 +331,7 @@ class SlotAudit:
             "store_target_classes": dict(sorted(self.store_classes.items())),
             "zero_page_operand_stores": self.zero_page_stores,
             "register_swap_ops": self.register_swaps,
+            "non_returning_states": self.non_returning_states,
             "cross_page_count": len(self.cross_page_pages),
             "unresolved": sorted(set(self.unresolved)),
             "budget_exhausted": self.budget_exhausted,
@@ -350,14 +381,20 @@ class Auditor:
 
         The walk is a worklist over (pc, mpr, acc, return stack) states. The
         return stack carries the caller's continuation, so a callee's MPR change
-        is visible to its caller and a routine that never returns is detected
-        instead of being silently treated as a fall-through.
+        is visible to its caller.
+
+        The successor graph is kept so that the walk can afterwards answer a
+        stronger question than "did some path return": **can every reachable
+        state reach a return**. A callee with a self loop therefore reports a
+        non returning path instead of a clean profile.
         """
         audit = SlotAudit()
         mpr = tuple([API_BANK if index == 7 else None for index in range(PAGES)])
         start = (target_cpu, mpr, None, ())
         worklist = [start]
         visited = set()
+        successors = {}
+        terminal_returns = set()
         while worklist:
             if audit.states >= self.MAX_STATES:
                 audit.budget_exhausted = True
@@ -367,17 +404,25 @@ class Auditor:
             if state in visited:
                 continue
             visited.add(state)
+            pending = []
+
+            def emit(successor):
+                pending.append(successor)
+
             if len(ret_stack) > self.MAX_DEPTH:
                 audit.hazards[UNRESOLVED_TARGET] += 1
                 audit.unresolved.append("call_depth_exceeded")
+                successors[state] = []
                 continue
             bank = mpr[self._page(pc)]
             if bank is None:
                 audit.unresolved.append("page_bank_unknown")
+                successors[state] = []
                 continue
             decoded = self.decoder.decode(self.body, bank, pc)
             if decoded is None:
                 audit.unresolved.append("undecodable_instruction")
+                successors[state] = []
                 continue
             length, mnemonic, operand, raw, labels = decoded
             audit.instructions += 1
@@ -389,55 +434,84 @@ class Auditor:
                 if target is None:
                     audit.hazards[UNRESOLVED_TARGET] += 1
                     audit.unresolved.append("call_target_unresolved")
+                    successors[state] = []
                     continue
                 if self._page(target) != self._page(pc):
                     audit.hazards[CROSS_PAGE_CALL] += 1
                     audit.cross_page_pages.add(self._page(target))
                 audit.max_stack_bytes = max(audit.max_stack_bytes, 2)
-                worklist.append((target, mpr, acc, ret_stack + (next_pc,)))
-                continue
-            if mnemonic in BRANCHES_REL:
+                emit((target, mpr, acc, ret_stack + (next_pc,)))
+            elif mnemonic in BRANCHES_REL:
                 target = self._target(pc, length, mnemonic, operand, raw, labels)
                 if target is None:
                     audit.hazards[UNRESOLVED_TARGET] += 1
                     audit.unresolved.append("branch_target_unresolved")
+                    successors[state] = []
                     continue
                 if mnemonic == "bsr":
                     if self._page(target) != self._page(pc):
                         audit.hazards[CROSS_PAGE_CALL] += 1
                         audit.cross_page_pages.add(self._page(target))
                     audit.max_stack_bytes = max(audit.max_stack_bytes, 2)
-                    worklist.append((target, mpr, acc, ret_stack + (next_pc,)))
-                    continue
-                worklist.append((target, mpr, acc, ret_stack))
-                if mnemonic not in UNCONDITIONAL_BRANCH:
-                    worklist.append((next_pc, mpr, acc, ret_stack))
-                continue
-            if mnemonic == "jmp":
+                    emit((target, mpr, acc, ret_stack + (next_pc,)))
+                else:
+                    emit((target, mpr, acc, ret_stack))
+                    if mnemonic not in UNCONDITIONAL_BRANCH:
+                        emit((next_pc, mpr, acc, ret_stack))
+            elif mnemonic == "jmp":
                 if is_data_dependent(operand):
                     audit.hazards[INDIRECT_CONTROL_FLOW] += 1
                     audit.unresolved.append("indirect_jump")
+                    successors[state] = []
                     continue
                 target = self._target(pc, length, mnemonic, operand, raw, labels)
                 if target is None:
                     audit.hazards[UNRESOLVED_TARGET] += 1
                     audit.unresolved.append("jump_target_unresolved")
+                    successors[state] = []
                     continue
                 if self._page(target) != self._page(pc):
                     audit.hazards[CROSS_PAGE_CALL] += 1
                     audit.cross_page_pages.add(self._page(target))
-                worklist.append((target, mpr, acc, ret_stack))
-                continue
-            if mnemonic in RETURNS:
+                emit((target, mpr, acc, ret_stack))
+            elif mnemonic in RETURNS:
                 audit.return_kinds.add(mnemonic)
                 audit.saw_return = True
                 if ret_stack:
-                    worklist.append((ret_stack[-1], mpr, acc, ret_stack[:-1]))
-                continue
-            worklist.append((next_pc, mpr, acc, ret_stack))
-        if not audit.saw_return:
+                    emit((ret_stack[-1], mpr, acc, ret_stack[:-1]))
+                else:
+                    terminal_returns.add(state)
+            else:
+                emit((next_pc, mpr, acc, ret_stack))
+            successors[state] = pending
+            for successor in pending:
+                worklist.append(successor)
+        audit.non_returning_states = self._states_without_return(visited, successors,
+                                                                 terminal_returns)
+        if audit.non_returning_states:
             audit.hazards[NO_RETURN] += 1
         return audit
+
+    @staticmethod
+    def _states_without_return(visited, successors, terminal_returns):
+        """Count the reachable states from which no return can be reached.
+
+        A state is safe when it can reach a terminal return; the fixpoint is
+        computed backwards over the successor graph. A callee with a self loop
+        therefore reports a non returning state, instead of looking clean
+        because some other path happened to return.
+        """
+        good = set(terminal_returns)
+        changed = True
+        while changed:
+            changed = False
+            for source, targets in successors.items():
+                if source in good:
+                    continue
+                if any(target in good for target in targets):
+                    good.add(source)
+                    changed = True
+        return len(visited) - len(good & visited)
 
     def _target(self, pc, length, mnemonic, operand, raw, labels):
         """Resolve a branch/call target address, or None when it cannot be resolved."""
@@ -483,14 +557,23 @@ class Auditor:
             audit.register_swaps += 1
         if mnemonic in WRITES_MEMORY:
             self._record_store(audit, mnemonic, operand, length, labels)
-        if mnemonic in IMMEDIATE_LOAD:
+        if mnemonic in BLOCK_MOVES:
+            audit.max_stack_bytes = max(audit.max_stack_bytes, BLOCK_MOVE_STACK_BYTES)
+        if mnemonic == "lda":
             match = IMMEDIATE_VALUE.search(operand)
             if match:
                 return mpr, int(match.group(1), 16)
             return mpr, None
-        if mnemonic in A_MODIFIERS:
+        if mnemonic in RMW_MEMORY:
+            # The accumulator form ("asl a") writes A; the memory form does not.
+            if operand.strip().lower() == "a":
+                return mpr, None
+            return mpr, acc
+        if mnemonic in A_WRITES:
             return mpr, None
-        return mpr, acc
+        if mnemonic in A_PRESERVES:
+            return mpr, acc
+        return mpr, None
 
     def _record_store(self, audit, mnemonic, operand, length, labels):
         if operand.strip().lower() == "a":
@@ -599,6 +682,7 @@ def main(argv=None):
     if os.environ.get("GITHUB_ACTIONS") == "true":
         print("BLOCKED: a private BIOS image is never read in CI", file=sys.stderr)
         return 3
+
     if not arguments.rom:
         print("BLOCKED: --rom is required (a private image path, never committed)", file=sys.stderr)
         return 3

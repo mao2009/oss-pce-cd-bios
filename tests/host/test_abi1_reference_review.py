@@ -134,7 +134,7 @@ class NegativeTests(unittest.TestCase):
     def test_unobserved_slot_may_not_claim_observed(self):
         document = copy.deepcopy(self.document)
         document["apis"][0]["execution"]["observation_status"] = "NOT_RUN"
-        self.assertRejected(document, "OBSERVED needs a recorded observation")
+        self.assertRejected(document, "must not cite prior evidence")
 
     def test_budget_exhaustion_is_rejected(self):
         document = copy.deepcopy(self.document)
@@ -148,7 +148,12 @@ class NegativeTests(unittest.TestCase):
 
     def test_decoded_instruction_in_published_text_is_rejected(self):
         document = copy.deepcopy(self.document)
-        document["apis"][0]["static_items"]["expected_return_value"]["value"] = "LDA $FEC2"
+        document["apis"][0]["static_items"]["expected_return_value"]["value"] = "stz $42"
+        self.assertRejected(document, "decoded instruction")
+
+    def test_a_lower_case_decoded_instruction_is_rejected(self):
+        document = copy.deepcopy(self.document)
+        document["apis"][0]["static_items"]["expected_return_value"]["value"] = "lda #$0a"
         self.assertRejected(document, "decoded instruction")
 
     def test_internal_address_in_published_text_is_rejected(self):
@@ -160,6 +165,48 @@ class NegativeTests(unittest.TestCase):
         document = copy.deepcopy(self.document)
         document["method"]["execution_blockers"] = []
         self.assertRejected(document, "execution_blockers")
+
+    def test_an_unresolved_profile_may_not_be_safe(self):
+        document = copy.deepcopy(self.document)
+        document["apis"][0]["static"]["unresolved"] = ["page_bank_unknown"]
+        self.assertRejected(document, "cannot be EXECUTION_SAFE")
+
+    def test_a_non_returning_path_may_not_be_safe(self):
+        document = copy.deepcopy(self.document)
+        document["apis"][0]["static"]["non_returning_states"] = 1
+        self.assertRejected(document, "cannot be EXECUTION_SAFE")
+
+    def test_a_runtime_mpr_switch_forces_the_blocked_verdict(self):
+        document = copy.deepcopy(self.document)
+        document["apis"][0]["static"]["hazard_counts"]["MPR_WRITE"] = 1
+        self.assertRejected(document, "forces EXECUTION_BLOCKED")
+
+    def test_a_block_transfer_forces_the_blocked_verdict(self):
+        document = copy.deepcopy(self.document)
+        document["apis"][0]["static"]["hazard_counts"]["BLOCK_TRANSFER"] = 1
+        self.assertRejected(document, "forces EXECUTION_BLOCKED")
+
+    def test_a_fresh_execution_claim_is_rejected(self):
+        document = copy.deepcopy(self.document)
+        document["apis"][1]["abi_state"] = "OBSERVED"
+        document["apis"][1]["execution"]["observation_status"] = "OBSERVED_LOCAL_ONLY"
+        document["apis"][1]["execution"]["verdict"] = "OBSERVED_LOCAL_ONLY"
+        self.assertRejected(document, "execution verdict vocabulary")
+
+    def test_a_prior_observation_has_to_name_its_source(self):
+        document = copy.deepcopy(self.document)
+        document["apis"][0]["execution"]["prior_evidence"] = "NONE"
+        self.assertRejected(document, "has to name its source")
+
+    def test_a_prior_observation_source_has_to_exist(self):
+        document = copy.deepcopy(self.document)
+        document["apis"][0]["execution"]["prior_evidence"] = "docs/not-a-real-file.md"
+        self.assertRejected(document, "not a repository file")
+
+    def test_a_slot_without_an_observation_may_not_cite_prior_evidence(self):
+        document = copy.deepcopy(self.document)
+        document["apis"][1]["execution"]["prior_evidence"] = "docs/reference-bios-test-plan.md"
+        self.assertRejected(document, "must not cite prior evidence")
 
     def test_unknown_top_level_key_is_rejected(self):
         document = copy.deepcopy(self.document)
