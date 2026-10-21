@@ -10,6 +10,13 @@ routine. The 65,536-pair real-core check (tests/integration/geargrafx_ma_mul8s.p
 this DEV slot_40 body; the DEV body is covered only by these 18 cases and the no-CLD mutant. MPR: only MPR1 (set to
 work RAM) and MPR7 are checked.
 The recorded "sp" is the caller SP before the JSR; the entry SP is that value minus 2 (caller $07 -> entry $05).
+Precondition: caller T (P bit 5) = 0 at entry. T=1 has no defined behaviour for the routine (src/overrides/slot_40.s
+header), and no case runs the routine with T=1. The premise cannot be violated through a JSR on the pinned core: the
+core latches P.T into its memory-to-memory flag and clears P.T at the start of every instruction, so a SET before the
+JSR is swallowed by the JSR, and the routine's first instruction (PHP) is not one of the T-sensitive opcodes
+(ADC/AND/EOR/ORA). The routine's ADC therefore always runs in register mode. P is compared with mask $EF: C,Z,I,D,V,N
+must match and bit 5 (T) must be 0 on return; bit 4 (B) is ignored because PHP pushes it as 1 and PLP does not store
+it. The T=0 on return is a constant of the pinned core (PHP pushes T=0), not a copy of the caller's T.
 Run: python3 tests/integration/geargrafx_dev_mul8s.py --rom build/debug/bios-dev/dev-only-not-compatible-syscard3.pce
 Needs the pinned cc65 and Geargrafx core (make setup, TOOLS_DIR on Linux). Missing tools exit 3 (BLOCKED).
 """
@@ -85,8 +92,9 @@ def check(label, rows, halt, a, x, sp=0xFF):
     s = bytes.fromhex(cold["work_ram_0200_hex"])[:6]
     p_after, y, sp_after = s[2], s[3], s[5]
     lo, hi = expected(a, x)
-    # P at entry is fixed by the guest: SEI, SED, SEC, CLV, then LDA #a sets N/Z. T/B (bits 4-5) are masked.
-    observed = (s[0], s[1], p_after & 0xCF, y, sp_after)
+    # P at entry is fixed by the guest: SEI, SED, SEC, CLV, then LDA #a sets N/Z. Mask $EF: bit 4 (B) is ignored
+    # (PHP pushes it as 1 and PLP does not store it), every other bit is compared, so T (bit 5) must be 0.
+    observed = (s[0], s[1], p_after & 0xEF, y, sp_after)
     want = (lo, hi, expected_p(a), Y_PRESET, sp)
     if observed != want:
         raise Mismatch(f"{label}: A/X/P/Y/SP observed {observed}, expected {want}")
@@ -153,8 +161,8 @@ def main():
     (args.rom.parent / "geargrafx-dev-mul8s-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
     total = len(CASES) + 2  # the two low-SP boundary cases (caller SP=$07, entry SP=$05)
     print(f"PASS real Geargrafx DEV ROM: MA_MUL8S slot $40 {total} cases ({len(CASES)} at SP=$FF, 2 at SP=$07 "
-          f"boundary; precondition S>=$05 at entry); A/X product, Y, P kept (D=1,C=1 entry), SP, MPR1/MPR7 checked; "
-          f"no-CLD mutant rejected {len(rejected)}/3")
+          f"boundary; preconditions S>=$05 and T=0 at entry); A/X product, Y, P kept (C/Z/I/D/V/N exact with B "
+          f"ignored and T=0 on return), SP, MPR1/MPR7 checked; no-CLD mutant rejected {len(rejected)}/3")
 
 
 if __name__ == "__main__":
