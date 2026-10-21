@@ -65,12 +65,12 @@ def expected_p(a):
     return 0x04 | 0x08 | 0x01 | (0x80 if a & 0x80 else 0) | (0x02 if a == 0 else 0)
 
 
-def check(label, rows, halt, a, x):
+def check(label, rows, halt, a, x, sp=0xFF):
     cold = next(r for r in rows if r["phase"] == "cold")
     if cold["pc"] != halt:
         raise ValueError(f"{label}: guest did not reach its halt loop (pc ${cold['pc']:04X}, want ${halt:04X})")
-    if cold["sp"] != 0xFF:
-        raise ValueError(f"{label}: stack not balanced (SP ${cold['sp']:02X})")
+    if cold["sp"] != sp:
+        raise ValueError(f"{label}: stack not balanced (SP ${cold['sp']:02X}, want ${sp:02X})")
     if cold["mpr"][1] != 0xF8 or cold["mpr"][7] != 0:
         raise ValueError(f"{label}: MPR changed (mpr={cold['mpr']})")
     s = bytes.fromhex(cold["work_ram_0200_hex"])[:6]
@@ -78,7 +78,7 @@ def check(label, rows, halt, a, x):
     lo, hi = expected(a, x)
     # P at entry is fixed by the guest: SEI, SED, SEC, CLV, then LDA #a sets N/Z. T/B (bits 4-5) are masked.
     observed = (s[0], s[1], p_after & 0xCF, y, sp_after)
-    want = (lo, hi, expected_p(a), Y_PRESET, 0xFF)
+    want = (lo, hi, expected_p(a), Y_PRESET, sp)
     if observed != want:
         raise Mismatch(f"{label}: A/X/P/Y/SP observed {observed}, expected {want}")
 
@@ -90,7 +90,7 @@ def run_case(probe, base, folder, cue, reset, label, entry, a, x, sp=0xFF):
     rom = folder / f"{label}.pce"
     rom.write_bytes(variant)
     rows = dev.run_probe(probe, rom.resolve(), cue)
-    check(label, rows, halt, a, x)
+    check(label, rows, halt, a, x, sp)
 
 
 def main():
