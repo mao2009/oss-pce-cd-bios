@@ -154,7 +154,7 @@ def from_core_evidence(evidence, *, rom_sha256, entry, harness_revision, step_bu
                 "core": {"name": "geargrafx", "revision": evidence["geargrafx_revision"]},
                 "harness": {"name": "geargrafx_core_harness", "revision": harness_revision},
                 "case": case["name"], "temperature": cycle, "status": "RETURNED",
-                "inputs": {"a": case["a"], "x": case["x"], "y": case["y"], "p": case["p"]},
+                "inputs": {r: before[r] for r in "axyp"},  # delivered inputs as the harness observed them
                 "before": before, "after": after,
                 "io": {"observation": NOT_MEASURED, "accesses": []},
                 "steps_used": NOT_MEASURED, "step_budget": step_budget,

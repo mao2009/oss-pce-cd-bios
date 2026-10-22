@@ -143,7 +143,7 @@ class SchemaTests(unittest.TestCase):
 class ConverterTests(unittest.TestCase):
     def evidence(self, cold_status="RETURNED", extra_cases=()):
         observed = {"before": state(), "after": state()}
-        case = {"name": "plugin_ex_getver", "target": "api_slot_1E", "a": 0x11, "x": 0x22, "y": 0x33, "p": 4,
+        case = {"name": "plugin_ex_getver", "target": "api_slot_1E",
                 "status": {"cold": cold_status, "warm": "RETURNED"},
                 "observed": {"cold": observed, "warm": observed}}
         selftest = {"name": "selftest_add", "target": "harness_selftest", "a": 1, "x": 2, "y": 3, "p": 4,
