@@ -12,7 +12,13 @@ import re
 # Every sentence-level unit of the doc (split at newline, table cell, 。 ； ;) that contains an approval word
 # must be an exact GUARD_ALLOWED entry after normalisation. Anything else fails, negated or not.
 # Negation is never scored: "not approved" / "approved but not B" are both simply unlisted sentences.
-_APPROVAL_WORD = re.compile(r"(?i)approv|grant|sign-?\s?off|signed off|authori[sz]|endors|go-?ahead|承認|承諾|了承|認可|\bOK\b|ＯＫ")
+# Bare nouns that are common technical terms (許可バンク, 未決定) are matched only in claim forms (許可した, 決定する).
+_APPROVAL_WORD = re.compile(
+    r"(?i)approv|grant|sign-?\s?off|signed off|authori[sz]|endors|go-?\s?ahead|green-?lit|accept|agree|consent"
+    r"|承認|承諾|了承|認可|同意|合意|容認|賛成|認め"
+    r"|許可(?:した|する|され|を得|を与|を受|して)|採用(?:した|する|され|を得|を与|を受)|決定(?:した|する|され|を得|を与|を受)"
+    r"|\bOK\b|ＯＫ"
+)
 _UNIT_SPLIT = re.compile(r"[\n。；;]")
 GUARD_ALLOWED = [
     "承認の範囲は、2026-10-22 のオーナー判断 S0 による検証方針 9 項目のみである（第 12.1 節・第 12.6 節）",
@@ -22,11 +28,13 @@ GUARD_ALLOWED = [
     "S0 は検証方針であり、安全機構の方式の正式承認の記録はない",
     "「オーナーからチャットで明示的な同意を得た対象は『今後の設計・実コア検証を進める方針』であり、安全機構の完成・本番適用・リリースの承認ではない",
     "本番の安全機構の正式承認ではない",
-    "12.6 承認済み項目",
+    "12.6 承認の記録（検証方針のみ）",
     "承認の記録は、2026-10-22 の S0 による検証方針のみである（12.1）",
     "承認の対象：12.9 の推奨 9 項目を、今後の設計と実コア検証を進める方針として扱うこと",
     "承認の対象外：安全機構の完成、本番適用、リリース、#459 / #367 のゲート解除、VERIFIED / DEV_CALLABLE は付与しない",
     "12.7 未承認項目（すべて未決定）",
+    "「A を採用する",
+    "「オーナー判断：呼出し側で、有効な RAM スタックを保証する契約を採用する",
     "2026-10-22 の S0 により、この 9 項目について検証方針の承認が記録されている",
     "検証方針として承認（S0）",
 ]
@@ -109,6 +117,22 @@ GUARD_MUST_FAIL = [
     "Owner approval was never given.",
     "オーナー承認はない。",
     "承認は得られていない。",
+    # Re-review (MEDIUM-1): synonyms of approval, in claim forms.
+    "オーナーは方式 A に同意した。",
+    "The owner accepted A.",
+    "The owner agreed to A.",
+    "The owner consented to A.",
+    "The owner go ahead for A.",
+    "The owner has green-lit A.",
+    "オーナーは方式 A を許可した。",
+    "オーナーは方式 A を採用した。",
+    "方式 A を採用する。",
+    "オーナーは方式 A に賛成した。",
+    "オーナーと方式 A について合意した。",
+    "オーナーは方式 A を容認した。",
+    "オーナーは方式 A を認めた。",
+    "オーナーは方式 A を決定した。",
+    "The owner did not accept A.",
     # Re-review: the release condition is exempt only as the exact quote (see the PASS list), never bare.
     "オーナーが明示的に承認する。",
     # Re-review (MEDIUM-2): synonyms and conjugations.
@@ -272,7 +296,7 @@ class Structure(unittest.TestCase):
         self.assertIn("UNMEASURED", section("9. 方式 C の条件"))
 
     def test_owner_decision_structure(self):
-        for h in ["12.1", "12.2 推奨案", "12.3 理由", "12.4 代替案", "12.5 未測定", "12.6 承認済み項目",
+        for h in ["12.1", "12.2 推奨案", "12.3 理由", "12.4 代替案", "12.5 未測定", "12.6 承認の記録（検証方針のみ）",
                   "12.7 未承認項目", "12.8 次に必要な Issue", "12.9 本資料の 9 項目"]:
             self.assertNotEqual(section(h), "", h)
         rows = [l for l in section("12.9").splitlines() if l.startswith("| ") and l.split("|")[1].strip().isdigit()]
