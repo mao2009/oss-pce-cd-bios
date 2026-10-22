@@ -8,7 +8,9 @@ Python integer division), NOT the reference BIOS MA_DIV16U ABI, which stays UNVE
 Preconditions under test: (1) S at routine entry >= $07 (boundary cases at caller SP=$0B). (2) Caller T=0 at entry;
 T=1 is OUT OF CONTRACT (see the header of slot_43.s). Contract cases never set T.
 Scope: CASES (divide by zero, the 17-bit remainder boundary, maximum values), the no-CLD mutant and the arithmetic
-mutants (ARITH_MUTANTS). P is compared on every bit except B (bit 4): C, Z, I, D, V, N, T.
+mutants (ARITH_MUTANTS). P is compared on every bit except B (bit 4): C, Z, I, D, V, N, T. The full 8 KiB work RAM
+is diffed before and after each case: only the call's stack frame $21(SP-10)..$21(SP) and $2200-$2206 may change.
+Each arithmetic mutant must be rejected with the fields in EXPECTED_REJECTIONS, not by any mismatch.
 This is NOT an exhaustive test; the independent oracle is tools/ma_div16u_model.py.
 Run: python3 tests/integration/geargrafx_dev_div16u.py --rom build/debug/bios-dev/dev-only-not-compatible-syscard3.pce
 Needs the pinned cc65 and Geargrafx core (make setup, TOOLS_DIR on Linux). Missing tools exit 3 (BLOCKED).
@@ -52,10 +54,17 @@ ARITH_MUTANTS = [  # (name, pattern, index of the byte to change in the pattern,
     ("b_divide_by_zero_quotient_hi_not_ff", bytes.fromhex("A9FF9D0521"), 1, 0x00),  # lda #$FF; sta $2105,x
     ("c_carry_flag_not_restored", bytes.fromhex("BD042129011D0721"), 4, 0x00),  # lda $2104,x; and #$01; ora $2107,x
 ]
-# Divide-by-zero mutants must be caught by a divide-by-zero case and the rejection must name the fields below.
-DIVZERO_MUTANTS = {
-    "b_divide_by_zero_quotient_hi_not_ff": (set(), {"quotient_hi"}),
-    "c_carry_flag_not_restored": ({"P.C"}, set()),
+# The rejection each arithmetic mutant must show, checked against the observed fields (not only "some mismatch"):
+# (fields that must all differ, at least one of these must differ, every rejecting case must be a zero divisor)
+EXPECTED_REJECTIONS = {
+    # The 17th-bit forced subtraction. Without it the remainder is wrong once it exceeds 16 bits, so the quotient or
+    # the remainder must differ, and a rejecting case must use a divisor of $8000 or more (the only case where the
+    # remainder can reach 17 bits).
+    "a_seventeenth_bit_branch_inverted": (set(), {"quotient_lo", "quotient_hi", "remainder_lo", "remainder_hi"}, False),
+    # Divide by zero: the quotient $FFFF is replaced by $00FF in the high byte.
+    "b_divide_by_zero_quotient_hi_not_ff": ({"quotient_hi"}, set(), True),
+    # Divide by zero: C is cleared, so the returned P.C differs.
+    "c_carry_flag_not_restored": ({"P.C"}, set(), True),
 }
 Y_PRESET = 0xA5
 CALLER_SP = 0xFF
@@ -123,8 +132,30 @@ def expected_p(q16, c, v):
     return 0x04 | 0x08 | c | (v << 6) | (q16 >> 15) << 7 | (0x02 if q16 == 0 else 0)
 
 
+class OutOfSet(ValueError):
+    """A work-RAM byte outside the allowed set changed. A side effect, not a value mismatch."""
+
+
+def check_work_ram(label, pre, post, sp):
+    """Full 8 KiB diff: pre = 'loaded' (before the guest runs), post = 'cold' (halt loop).
+
+    Allowed writes: the stack frame of the call, $21(sp-10)..$21(sp), where the caller's divisor pushes, the JSR return
+    address, and the routine's seven pushes lie (entry S=$07 at caller SP=$0B: the lowest byte written is $01), plus the
+    guest's result bytes $2200-$2206. Any other byte that changes is a side effect outside the contract.
+    """
+    if len(pre) != 0x2000 or len(post) != 0x2000:
+        raise ValueError(f"{label}: work RAM observation is not 8 KiB (pre {len(pre)}, post {len(post)})")
+    allowed = set(range(0x100 + sp - 10, 0x100 + sp + 1)) | set(range(0x200, 0x207))
+    changed = [i for i in range(0x2000) if pre[i] != post[i]]
+    outside = [i for i in changed if i not in allowed]
+    if outside:
+        shown = ", ".join(f"${0x2000 + i:04X}" for i in outside[:8])
+        raise OutOfSet(f"{label}: work RAM bytes changed outside the expected set: {shown} ({len(outside)} total)")
+
+
 def check(label, rows, halt, dividend, divisor, sp=CALLER_SP):
     cold = next(r for r in rows if r["phase"] == "cold")
+    loaded = next(r for r in rows if r["phase"] == "loaded")
     if cold["pc"] != halt:
         raise ValueError(f"{label}: guest did not reach its halt loop (pc ${cold['pc']:04X}, want ${halt:04X})")
     if cold["sp"] != sp:
@@ -142,6 +173,8 @@ def check(label, rows, halt, dividend, divisor, sp=CALLER_SP):
             fields.remove("P")
             fields += [f"P.{n}" for n, bit in P_BITS if (observed[2] & bit) != (want[2] & bit)]
         raise Mismatch(f"{label}: A/X/P/Y/remHI/remLO/SP observed {observed}, expected {want}", fields)
+    # The value check comes first, so a value mutant is rejected by the value comparison and not by this check.
+    check_work_ram(label, bytes.fromhex(loaded["work_ram_hex"]), bytes.fromhex(cold["work_ram_hex"]), sp)
 
 
 def find_one(data, pattern, label, span):
@@ -235,20 +268,18 @@ def main():
             fields = sorted({f for entry in catching for f in entry["fields"]})
             record = {"mutant": name, "rejected": len(catching), "fields": fields,
                       "rejected_by": [entry["case"] for entry in catching], "first": catching[0]["detail"]}
-            if name in DIVZERO_MUTANTS:
-                # The divide-by-zero mutants must be caught by a divide-by-zero case and the rejection must name the
-                # C flag (and, for the inverted branch, a quotient field). This is what proves the divide-by-zero
-                # handling (quotient 0, remainder = dividend, C=1) is actually observed.
-                required, group = DIVZERO_MUTANTS[name]
-                divzero = [entry for entry in catching if entry["divisor"] == 0]
-                if not divzero:
-                    raise ValueError(f"{name}: no divide-by-zero case rejects the mutant")
-                seen = set(divzero[0]["fields"])
-                if not required <= seen:
-                    raise ValueError(f"{name}: the divide-by-zero rejection does not name {sorted(required - seen)}")
-                if group and not group & seen:
-                    raise ValueError(f"{name}: the divide-by-zero rejection does not name any of {sorted(group)}")
-                record["divide_by_zero_rejection"] = {"case": divzero[0]["case"], "fields": divzero[0]["fields"]}
+            required, any_of, zero_only = EXPECTED_REJECTIONS[name]
+            seen = set(fields)
+            if not required <= seen:
+                raise ValueError(f"{name}: the rejection does not name {sorted(required - seen)}")
+            if any_of and not any_of & seen:
+                raise ValueError(f"{name}: the rejection names none of {sorted(any_of)} (saw {sorted(seen)})")
+            if zero_only and any(entry["divisor"] != 0 for entry in catching):
+                raise ValueError(f"{name}: a non-zero divisor rejects the mutant, the mutant is not divide-by-zero only")
+            if not zero_only and not any(entry["divisor"] >= 0x8000 for entry in catching):
+                raise ValueError(f"{name}: no rejecting case uses a divisor of $8000 or more (17-bit path not exercised)")
+            record["expected_rejection"] = {"required": sorted(required), "any_of": sorted(any_of),
+                                            "zero_divisor_only": zero_only}
             evidence.setdefault("arithmetic_mutants", []).append(record)
     (args.rom.parent / "geargrafx-dev-div16u-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
     total = len(CASES) + 2  # two boundary cases at caller SP=$0B (entry S=$07)
@@ -258,7 +289,7 @@ def main():
           f"consumes T in the JSR, so the routine is unchanged); "
           f"no-CLD mutant rejected {len(rejected)}/{len(MUTANT_CASES)}; "
           f"arithmetic mutants rejected {len(evidence['arithmetic_mutants'])}/{len(ARITH_MUTANTS)} "
-          f"(including 2 divide-by-zero mutants)")
+          f"(each rejection checked against its expected fields and cause)")
 
 
 if __name__ == "__main__":
