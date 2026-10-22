@@ -1,7 +1,8 @@
 """Core-free host oracle of the project-internal MA_MUL16S DEV contract (Issue #479; docs/ma-mul16s.md).
 
-Design only: no assembly exists yet. Two independent computations are provided so a future implementation is judged
-against both: expected() uses Python integer multiplication, shift_add() mirrors the planned algorithm at 16-bit-word level (byte carries are NOT modeled; the real-core sweep covers them).
+Two independent computations: expected() uses Python integer multiplication and is the oracle the real-core test
+(tests/integration/geargrafx_dev_mul16s.py, Issue #494) compares the assembled src/overrides/slot_4F.s against;
+shift_add() mirrors the algorithm at 16-bit-word level (byte carries are modeled by tests/host/test_ma_mul16s_dev.py).
 Not the reference System Card MA_MUL16S ABI (UNVERIFIED).
 """
 
