@@ -7,9 +7,11 @@ builds, so the decoder, the jump table parser and the hazard classifier are
 covered without any private input.
 """
 import os
+import random
 import re
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -225,6 +227,116 @@ class SyntheticImageTests(unittest.TestCase):
             for match in re.finditer(r"(?:0x|\$)([0-9A-Fa-f]{4})", value):
                 self.assertIn(match.group(1).upper(), {"E000", "E05A"},
                               f"{path} carries an address that is not a public entry")
+
+
+def old_guaranteed_return(visited, successors, terminal_returns):
+    """Reference copy of the former O(V^2) fixpoint (#485); tests only."""
+    good = set(terminal_returns)
+    changed = True
+    while changed:
+        changed = False
+        for source, targets in successors.items():
+            if source in good or not targets:
+                continue
+            if all(target in good for target in targets):
+                good.add(source)
+                changed = True
+    return len(visited - good)
+
+
+def chain(count):
+    """Straight line 0 -> 1 -> ... -> count-1 (RTS); sources inserted first-to-last."""
+    successors = {i: [i + 1] for i in range(count - 1)}
+    successors[count - 1] = []
+    return set(range(count)), successors, {count - 1}
+
+
+class GuaranteedReturnGraphTests(unittest.TestCase):
+    def check(self, visited, successors, terminals, expected):
+        new = audit.Auditor._states_without_guaranteed_return(visited, successors, terminals)
+        self.assertEqual(new, old_guaranteed_return(visited, successors, terminals))
+        self.assertEqual(new, expected)
+
+    def test_simple_rts(self):
+        self.check({"a"}, {"a": []}, {"a"}, 0)
+
+    def test_straight_line(self):
+        self.check({"a", "b", "c"}, {"a": ["b"], "b": ["c"], "c": []}, {"c"}, 0)
+
+    def test_diamond(self):
+        succ = {"a": ["b", "c"], "b": ["d"], "c": ["d"], "d": []}
+        self.check(set(succ), succ, {"d"}, 0)
+
+    def test_self_loop(self):
+        self.check({"a"}, {"a": ["a"]}, set(), 1)
+
+    def test_multi_state_cycle(self):
+        succ = {"a": ["b"], "b": ["c"], "c": ["a"]}
+        self.check(set(succ), succ, set(), 3)
+
+    def test_returning_branch_plus_infinite_loop_branch(self):
+        succ = {"a": ["b", "c"], "b": [], "c": ["c"]}
+        self.check(set(succ), succ, {"b"}, 2)
+
+    def test_unresolved_successor(self):
+        succ = {"a": ["b", "c"], "b": [], "c": []}  # c: dead end
+        self.check(set(succ), succ, {"b"}, 2)
+
+    def test_unexplored_successor_is_never_guaranteed(self):
+        succ = {"a": ["b", "x"], "b": []}  # x cut off by the budget
+        self.check({"a", "b"}, succ, {"b"}, 1)
+
+    def test_search_limit_state_without_successors(self):
+        succ = {"a": ["b"], "b": []}  # b was never expanded and is not a return
+        self.check({"a", "b"}, succ, set(), 2)
+
+    def test_multiple_terminal_returns(self):
+        succ = {"a": ["b", "c"], "b": [], "c": []}
+        self.check(set(succ), succ, {"b", "c"}, 0)
+
+    def test_duplicate_edges(self):
+        succ = {"a": ["b", "b"], "b": ["c", "c"], "c": []}
+        self.check(set(succ), succ, {"c"}, 0)
+        succ = {"a": ["b", "b", "c"], "b": [], "c": ["c"]}
+        self.check(set(succ), succ, {"b"}, 2)
+
+    def test_random_graphs_match_old_implementation(self):
+        rng = random.Random(485)
+        for _ in range(300):
+            n = rng.randint(1, 30)
+            nodes = list(range(n))
+            succ = {}
+            for node in nodes:
+                if rng.random() < 0.9:  # else unexpanded (not in successors)
+                    succ[node] = [rng.choice(nodes + [n + 5])  # n+5: unexplored
+                                  for _ in range(rng.randint(0, 3))]
+            terminals = {x for x in nodes if rng.random() < 0.2}
+            for t in terminals:
+                succ[t] = []
+            visited = set(nodes)
+            self.assertEqual(
+                audit.Auditor._states_without_guaranteed_return(visited, succ, terminals),
+                old_guaranteed_return(visited, succ, terminals))
+
+    def test_large_straight_line_is_linear(self):
+        # Old O(V^2) needs ~V passes over V states; 50k states took minutes.
+        visited, succ, terminals = chain(50000)
+        start = time.perf_counter()
+        result = audit.Auditor._states_without_guaranteed_return(visited, succ, terminals)
+        elapsed = time.perf_counter() - start
+        self.assertEqual(result, 0)
+        self.assertLess(elapsed, 5.0)
+        # Cut the return: nothing is guaranteed.
+        succ[49999] = [49999]
+        self.assertEqual(
+            audit.Auditor._states_without_guaranteed_return(visited, succ, set()), 50000)
+
+    def test_large_graph_matches_old_on_reduced_size(self):
+        visited, succ, terminals = chain(20000)
+        self.assertEqual(
+            audit.Auditor._states_without_guaranteed_return(visited, succ, terminals), 0)
+        visited, succ, terminals = chain(1500)
+        self.assertEqual(old_guaranteed_return(visited, succ, terminals), 0)
 
 
 def audit_strings(node, path=""):

@@ -528,16 +528,26 @@ class Auditor:
         static graph property only: it ignores data-dependent branch outcomes
         (both edges are assumed possible), so it is a conservative bound.
         """
+        # O(V+E): count distinct unresolved successors per state and propagate
+        # backwards from the terminal returns (duplicate edges must not skew it).
         good = set(terminal_returns)
-        changed = True
-        while changed:
-            changed = False
-            for source, targets in successors.items():
-                if source in good or not targets:
-                    continue
-                if all(target in good for target in targets):
+        predecessors = {}
+        pending = {}
+        for source, targets in successors.items():
+            distinct = set(targets)
+            if not distinct:
+                continue
+            pending[source] = len(distinct)
+            for target in distinct:
+                predecessors.setdefault(target, []).append(source)
+        worklist = list(good)
+        while worklist:
+            state = worklist.pop()
+            for source in predecessors.get(state, ()):
+                pending[source] -= 1
+                if pending[source] == 0 and source not in good:
                     good.add(source)
-                    changed = True
+                    worklist.append(source)
         return len(visited - good)
 
     @staticmethod
