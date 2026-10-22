@@ -29,11 +29,11 @@
 | --- | --- | --- | --- |
 | `_dh = 3` | [C] HuCC `_cd_loadbank.4`（`hucc-systemcard.asm` L425-457）。L440-441 で `_dh=3`。件数は L436-438 で `_al` へ複写 | count がセクター単位で、1セクター指定が自然 | **採用（候補）** |
 | `_dh = 0` | [C] HuCC L384 `stz`。count は `_ax` のバイト数 | 1セクター = 2048 バイト = `$0800`。count 単位が別軸 | 別モード（対象外） |
-| `_dh = 2` | [C] 確認範囲（`include/hucc/` の2ファイル）の `cd_read` 呼出側に使用箇所なし（後述 D1） | 既存文書 [cd-read-mode-contract.md](cd-read-mode-contract.md) / [188-cd-read-mode-safety.md](188-cd-read-mode-safety.md) の対象。既存文書間の出典表記が食い違う（cd-read-mode-contract.md R3 は HuCC を挙げるが HuCC 側に `_dh=2` が無い） | 既存契約との不一致として未決（D1） |
+| `_dh = 2` | [C] 確認範囲（`include/hucc/` の2ファイル）の `cd_read` 呼出側に使用箇所なし（後述 D1） | 既存文書 [cd-read-mode-contract.md](cd-read-mode-contract.md) / [188-cd-read-mode-safety.md](188-cd-read-mode-safety.md) の対象。既存文書間の出典表記が食い違っていた（訂正前の cd-read-mode-contract.md R3 は HuCC を挙げていた。本 PR で訂正した。HuCC 側に `_dh=2` が無いことは確認済み） | 既存契約の不一致は本 PR で訂正済み（D1） |
 | `$FE` / `$FF` | [C] VRAM 転送（L322 / L294） | VRAM 系 | 対象外 |
 | `6` | [C] 上書きローダ（`core-kernel.asm` L593-594） | MPR6 系 | 対象外 |
 
-**D1（決定・オーナー承認）**: 優先観測候補は `_dh = 3` とする（冒頭「優先観測候補」参照）。`_dh = 2` について既存文書間で出典表記が食い違っていた。[cd-read-mode-contract.md](cd-read-mode-contract.md):30（R3）は「HuCC, Hu-Go HLE」としていたが、HuCC が `_dh=2` を書かないことを確認したため訂正した（§4）。[cd-read-contract.md](cd-read-contract.md):137（「HuCC + Hu-Go HLE」）と [abi-contracts.md](abi-contracts.md):136（「Hu-Go model; HuCC overlay loader also uses 6」）は、食い違いを含めて事実として残し、本書では変更しない。`cd_read` の HuCC 呼出側（`include/hucc/` の2ファイル、ledger C06-C10、[research/148-cd-read-abi.md](research/148-cd-read-abi.md) §2.1）で確認できる `_dh` の値は `0 / 3 / $FE / $FF / 6` のみ。`include/huc/` は未検査。
+**D1（決定・オーナー承認）**: 優先観測候補は `_dh = 3` とする（冒頭「優先観測候補」参照）。`_dh = 2` について既存文書間で出典表記が食い違っていた。[cd-read-mode-contract.md](cd-read-mode-contract.md):31（R3。訂正前は :30）は「HuCC, Hu-Go HLE」としていたが、HuCC が `_dh=2` を書かないことを確認したため訂正した（§4）。[cd-read-contract.md](cd-read-contract.md):137（「HuCC + Hu-Go HLE」）と [abi-contracts.md](abi-contracts.md):136（「Hu-Go model; HuCC overlay loader also uses 6」）は、食い違いを含めて事実として残し、本書では変更しない。`cd_read` の HuCC 呼出側（`include/hucc/` の2ファイル、ledger C06-C10、[research/148-cd-read-abi.md](research/148-cd-read-abi.md) §2.1）で確認できる `_dh` の値は `0 / 3 / $FE / $FF / 6` のみ。`include/huc/` は未検査。
 
 ## 2. 1モード・1セクターの契約表（`_dh = 3`）
 

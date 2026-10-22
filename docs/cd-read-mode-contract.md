@@ -2,9 +2,9 @@
 
 Status: **callee contract not measured. CD_READ NOT_IMPLEMENTED. BLOCKED for the genuine callee.**
 Scope: one sector, transfer mode `_dh = 2` (destination RAM bank `_bl`), count 1. Other modes, counts 2..3
-注記（2026-10-22 オーナー判断）: 優先観測候補は `_dh = 3`（[188-cd-read-transfer-mode-contract.md](188-cd-read-transfer-mode-contract.md) の D1）。本書の `_dh = 2` 記述は既存の対象として残す。
 for this mode, and CD_BASE are separate Issues. Machine copy: `RAM_MODE_ITEMS` and `RAM_MODE_EXAMPLES` in
 `tools/cd_read_contract.py`; checked by `tests/host/test_cd_read_contract.py::RamModeContractTests`.
+注記（2026-10-22 オーナー判断）: 優先観測候補は `_dh = 3`（[188-cd-read-transfer-mode-contract.md](188-cd-read-transfer-mode-contract.md) の D1）。本書の `_dh = 2` 記述は既存の対象として残す。
 
 ## Evidence classes
 
