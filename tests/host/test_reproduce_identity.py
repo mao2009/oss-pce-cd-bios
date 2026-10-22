@@ -39,8 +39,7 @@ class DescribeImage(unittest.TestCase):
                 run.assert_not_called()
                 good = hashlib.sha256(ok.read_bytes()).hexdigest()
                 run.return_value = mock.Mock(returncode=7, stderr="")
-                for v in (good, good.upper(), " " + good + "
-"):
+                for v in (good, good.upper(), " " + good + chr(10)):
                     run.reset_mock()
                     main(["--rom", str(ok), "--expect-sha256", v])
                     run.assert_called_once()  # hash gate passed; auditor reached
