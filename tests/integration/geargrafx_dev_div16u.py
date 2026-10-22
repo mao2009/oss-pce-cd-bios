@@ -51,7 +51,7 @@ MUTANT_CASES = [(0xABCD, 0x1234), (0xFEDC, 0x0F0F), (0xDCBA, 0x00FF)]
 # DEV ROM (slot $42 shares several sequences with this routine, so each pattern includes a DIV16U-only instruction).
 ARITH_MUTANTS = [  # (name, pattern, index of the byte to change in the pattern, new byte)
     ("a_overflow_branch_inverted", bytes.fromhex("3E0221B0"), 3, 0x90),  # rol $2102,x; bcs @sub -> bcc
-    ("b_divide_by_zero_quotient_hi_not_ff", bytes.fromhex("A9FF9D0521"), 1, 0x00),  # lda #$FF; sta $2105,x
+    ("b_divide_by_zero_quotient_hi_not_ff", bytes.fromhex("A9FF9D0521"), 1, 0x00),  # lda #$FF; sta $2105,x (A feeds $2106 too)
     ("c_carry_flag_not_restored", bytes.fromhex("BD042129011D0721"), 4, 0x00),  # lda $2104,x; and #$01; ora $2107,x
 ]
 # The rejection each arithmetic mutant must show, checked against the observed fields (not only "some mismatch"):
@@ -61,7 +61,8 @@ EXPECTED_REJECTIONS = {
     # the remainder differ. The carry-out itself never happens for 16-bit operands (see slot_43.s), so the branch is
     # never taken; the mutant only changes the path that is taken.
     "a_overflow_branch_inverted": (set(), {"quotient_lo", "quotient_hi", "remainder_lo", "remainder_hi"}, False),
-    # Divide by zero: the quotient $FFFF is replaced by $00FF in the high byte.
+    # Divide by zero: the quotient is loaded with $00 instead of $FFFF (the same A feeds both stores), so the quotient
+    # fields differ; the required field is the high byte.
     "b_divide_by_zero_quotient_hi_not_ff": ({"quotient_hi"}, set(), True),
     # Divide by zero: C is cleared, so the returned P.C differs.
     "c_carry_flag_not_restored": ({"P.C"}, set(), True),
