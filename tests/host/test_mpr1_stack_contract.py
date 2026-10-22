@@ -383,6 +383,14 @@ class DocConsistencyTest(unittest.TestCase):
         self.assertIn("型違い", text)
         self.assertIn("範囲外", text)
 
+    def test_doc_does_not_claim_the_reference_doc_is_missing(self):
+        # docs/473-stack-safety-mechanism-comparison.md exists on main (PR #491); the doc must not
+        # claim that it is missing.
+        text = (ROOT / "docs" / "497-mpr1-stack-contract.md").read_text(encoding="utf-8")
+        self.assertNotIn("は存在しない", text)
+        self.assertIn("docs/473-stack-safety-mechanism-comparison.md", text)
+        self.assertIn("docs/473-caller-stack-experiment.md", text)
+
 
 class DocIrqTableTest(unittest.TestCase):
     """The IRQ decision table in the doc must match the code row by row."""

@@ -5,7 +5,7 @@
 - #473 S0（オーナー承認の検証方針）に基づく S1 の契約表。**本番の安全機構ではない**。
 - 合成 ROM と pinned Geargrafx の検証ハーネス専用の契約である。純正 BIOS・商用データは扱わない。
 - #459 / #367 のゲートは解除しない。`release_eligible=false` は変えない。純正 ABI は VERIFIED 0/81、参照 JSR 許可は 0/81 のまま。
-- 実装上の根拠の既存文書は `docs/473-caller-stack-experiment.md`（合成観測）と `docs/173-safety-monitor-limits.md`（監視限界）。
+- 実装上の根拠の既存文書は `docs/473-stack-safety-mechanism-comparison.md`（#473 の方式比較と S0 承認事項）、`docs/473-caller-stack-experiment.md`（合成観測）、`docs/173-safety-monitor-limits.md`（監視限界）。
 - 本契約の機械可読な表は `tools/mpr1_stack_contract.py`、検査は `tests/host/test_mpr1_stack_contract.py`。
 - #498〜#500 は本契約の確定を待つ。本書の値を変えるには新しい契約版が必要。
 
@@ -41,7 +41,7 @@
 | ROM バンク（`$00`〜 等） | 未検証。拒否（許可表に無い） | 本リポジトリでスタック用途を観測していない |
 | CD RAM | 未検証。拒否（許可表に無い） | 本リポジトリでスタック用途を観測していない |
 
-- 参照先の `docs/473-stack-safety-mechanism-comparison.md` は存在しない。代替として `docs/473-caller-stack-experiment.md` を使った。
+- 参照先は `docs/473-stack-safety-mechanism-comparison.md`（#473 の方式比較。**PR #491 で main に統合済み**）と `docs/473-caller-stack-experiment.md`（合成観測）の 2 文書。方式比較の文書は main 側に存在する（統合コミット `f243e38`）。本 PR のブランチ起点は統合前（`89ee26e`）だが、マージ後は main の文書が使われる。
 
 - 許可は `$F8` のみ。拡大には新しい契約版と独立レビューが必要。
 - 許可外のバンクへの push（スタックが許可外バンクへ向く状態）は、検証ハーネスで拒否する。
@@ -181,7 +181,7 @@ IRQ の状態は **観測結果** としてだけ扱う。3 値表現:
 
 - `BLOCKED`（証拠が無い）と `UNMEASURED`（既知の穴）は区別する。前者は「判定に必要な情報が無い」、後者は「情報は揃っているが命令境界の比較では見えない」ときに使う。
 - `NOT_APPLICABLE` は判定値ではなく注記である。NMI について「pinned コアに実行経路が無い」ため使う（§4）。実機の NMI は `UNKNOWN`（未確認）。
-- 参照: #470 / #481 の観測について、`docs/` に `470` / `481` で始まる文書は無い。本書は #470 / #481 を参照していない。実装上の根拠は `docs/173-safety-monitor-limits.md` と `docs/473-caller-stack-experiment.md` のみ。
+- 参照: #470 / #481 の観測について、`docs/` に `470` / `481` で始まる文書は無い。本書は #470 / #481 の観測そのものを引用しない（#470 / #481 は `docs/473-stack-safety-mechanism-comparison.md` が整理している）。実装上の根拠は `docs/473-stack-safety-mechanism-comparison.md`、`docs/173-safety-monitor-limits.md`、`docs/473-caller-stack-experiment.md`。
 
 ## 7. 未検証（UNMEASURED / 未確認）
 
