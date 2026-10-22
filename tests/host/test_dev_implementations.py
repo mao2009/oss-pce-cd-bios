@@ -239,11 +239,31 @@ class FailClosedTests(unittest.TestCase):
             lambda l: l["slots"][0x3D].update(state="DEV_CALLABLE", approval="owner"),
             lambda l: l.update(slots={}),
             lambda l: l.pop("schema_version"),
+            lambda l: l.update(schema_version=True),
+            lambda l: l["slots"][0x3D].update(implementation="x"),
+            lambda l: l["slots"][0x3D].update(implementation=["x"]),
+            lambda l: l["slots"][0x3D].update(state="DEV_CALLABLE", approval={"approved_by": "o", "review_ref": "r"},
+                                              host_evidence=5),
+            lambda l: l["slots"][0x3D].update(state="DEV_CALLABLE", approval={"approved_by": "o", "review_ref": "r"},
+                                              host_evidence=[None]),
+            lambda l: l["slots"][0x3D].update(state="DEV_CALLABLE", approval={"approved_by": "o", "review_ref": "r"},
+                                              host_evidence=["../../../etc/hostname"]),
+            lambda l: l["slots"][3].update(id=[1]),
+            lambda l: l["slots"][3].update(id=True),
+            lambda l: l["slots"][3].update(state=[1]),
+            lambda l: l["slots"][3].update(abi_contract={"status": [1]}),
+            lambda l: l["slots"][0x3D]["implementation"].update(license=1),
+            lambda l: l["slots"][3].update(state="BLOCKED", reason=[1]),
         ):
             ledger = base()
             mutate(ledger)
             self.assertTrue(dev.validate(ledger, SLOTS, OVERRIDES))
         self.assertTrue(dev.validate([], SLOTS, OVERRIDES))
+        self.assertTrue(dev.validate(base(), SLOTS, {1, "a"}))
+
+    def test_summary_never_raises_on_malformed_ledger(self):
+        for bad in ([], {"slots": 5}, {"slots": [None, 1, {"state": [1], "abi_contract": 3}]}):
+            self.assertEqual(0, dev.summary(bad, OVERRIDES)["abi_verified"])
 
 
 if __name__ == "__main__":
