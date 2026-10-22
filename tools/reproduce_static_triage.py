@@ -24,7 +24,7 @@ def describe_image(data):
     """Identity facts of a local image. Evidence levels differ: SHA-256 binds bytes, CRC32 is only a database label."""
     header = len(data) % 8192
     return {"image_bytes": len(data), "header_bytes": header,
-            "header_kind": "headerless" if header == 0 else "headered" if header == 512 else "UNSUPPORTED_SIZE",
+            "header_kind": "UNSUPPORTED_SIZE" if len(data) not in (262144, 262656) else "headerless" if header == 0 else "headered",
             "sha256_whole_file": hashlib.sha256(data).hexdigest(),
             "sha256_payload": hashlib.sha256(data[header:]).hexdigest(),
             "crc32_payload": f"{zlib.crc32(data[header:]) & 0xFFFFFFFF:08X}"}
@@ -43,7 +43,7 @@ def main(argv=None):
     if ident["header_kind"] == "UNSUPPORTED_SIZE":
         print("BLOCKED: image size is neither 262144 nor 262656 bytes", file=sys.stderr)
         return 2
-    if args.expect_sha256 and args.expect_sha256.lower() != ident["sha256_whole_file"]:
+    if args.expect_sha256 and args.expect_sha256.strip().lower() != ident["sha256_whole_file"]:
         print("FAIL: whole-file SHA-256 differs from --expect-sha256", file=sys.stderr)
         return 1
     if not args.expect_sha256:

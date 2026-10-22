@@ -1,10 +1,12 @@
 """describe_image separates headered/headerless images and SHA-256 from CRC32 (Issue #476). Synthetic bytes only."""
+import hashlib
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
-from reproduce_static_triage import describe_image  # noqa: E402
+from reproduce_static_triage import describe_image, main  # noqa: E402
 
 
 class DescribeImage(unittest.TestCase):
@@ -19,6 +21,20 @@ class DescribeImage(unittest.TestCase):
 
     def test_odd_size_unsupported(self):
         self.assertEqual(describe_image(b"x" * 100)["header_kind"], "UNSUPPORTED_SIZE")
+
+    def test_exact_size_gate(self):
+        for n in (0, 8192, 524288):
+            self.assertEqual(describe_image(b"x" * n)["header_kind"], "UNSUPPORTED_SIZE")
+
+    def test_cli_exit_codes(self):
+        with tempfile.TemporaryDirectory() as t:
+            bad = Path(t) / "bad.bin"
+            bad.write_bytes(b"x" * 8192)
+            self.assertEqual(main(["--rom", str(bad)]), 2)
+            ok = Path(t) / "ok.bin"
+            ok.write_bytes(b"" * 262144)
+            self.assertEqual(main(["--rom", str(ok), "--expect-sha256", "0" * 64]), 1)
+            self.assertEqual(main(["--rom", str(Path(t) / "none")]), 2)
 
 
 if __name__ == "__main__":
