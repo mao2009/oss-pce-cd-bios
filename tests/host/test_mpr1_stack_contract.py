@@ -222,6 +222,138 @@ class NonAllowedValuesFailTest(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertNotEqual(c.check_stack_bank(value)[0], c.PASS)
 
+    def test_every_byte_value_is_judged_by_the_allow_table(self):
+        # The same table through the TAM path: only $F8 may pass.
+        for value in range(256):
+            with self.subTest(value=value):
+                verdict, _ = c.check_mpr1_write(c.PATH_TAM, value, 5)
+                self.assertEqual(verdict, c.PASS if value == 0xF8 else c.FAIL)
+
+
+class InvalidInputTest(unittest.TestCase):
+    """Invalid input must fail closed with a structured verdict: never an exception, never PASS.
+
+    The policy (docs/497-mpr1-stack-contract.md §2.1): a wrong type (str, bool, None, list, ...) is
+    BLOCKED because the evidence cannot be read; a readable number that breaks the contract (out of the
+    0..255 byte range, not $F8, not instruction index 0, a negative index) is FAIL.
+    """
+
+    WRONG_TYPES = (None, "F8", "", True, False, 1.0, [], {}, b"\xF8", object())
+    OUT_OF_RANGE = (-1, 0x100, 0x1FF)
+
+    def assert_verdict(self, call, expected, *args):
+        """Call a judge function; it must return a verdict and never raise."""
+        try:
+            verdict, detail = call(*args)
+        except Exception as error:   # the contract returns a verdict, it never raises
+            self.fail("%s%r raised %r" % (getattr(call, "__name__", call), args, error))
+        self.assertIn(verdict, (c.PASS, c.FAIL, c.BLOCKED, c.UNMEASURED))
+        self.assertEqual(verdict, expected)
+        return detail
+
+    def test_stack_bank_rejects_wrong_types(self):
+        for bad in self.WRONG_TYPES:
+            with self.subTest(value=bad):
+                self.assert_verdict(c.check_stack_bank, c.BLOCKED, bad)
+
+    def test_stack_bank_rejects_out_of_range_numbers(self):
+        for bad in self.OUT_OF_RANGE:
+            with self.subTest(value=bad):
+                self.assert_verdict(c.check_stack_bank, c.FAIL, bad)
+
+    def test_stack_bank_keeps_the_meaningful_pass(self):
+        self.assert_verdict(c.check_stack_bank, c.PASS, 0xF8)
+        self.assert_verdict(c.check_stack_bank, c.FAIL, 0xFF)
+        self.assert_verdict(c.check_stack_bank, c.FAIL, 0x00)
+
+    def test_initial_state_rejects_wrong_types(self):
+        for bad in self.WRONG_TYPES:
+            with self.subTest(value=bad):
+                self.assert_verdict(c.check_initial_state, c.BLOCKED, None, bad, 0)
+                self.assert_verdict(c.check_initial_state, c.BLOCKED, None, 0xF8, bad)
+
+    def test_initial_state_rejects_out_of_range_numbers(self):
+        for bad in self.OUT_OF_RANGE:
+            with self.subTest(value=bad):
+                self.assert_verdict(c.check_initial_state, c.FAIL, None, bad, 0)
+        self.assert_verdict(c.check_initial_state, c.FAIL, None, 0xF8, -1)
+
+    def test_initial_state_keeps_the_meaningful_pass(self):
+        self.assert_verdict(c.check_initial_state, c.PASS, None, 0xF8, 0)
+        self.assert_verdict(c.check_initial_state, c.PASS, 0xF8, 0xF8, 0)
+        self.assert_verdict(c.check_initial_state, c.PASS, 0x00, 0xF8, 0)
+
+    def test_measured_reset_is_informational_only(self):
+        # The reset value is not a contract input: an unreadable one never changes the verdict.
+        for reset in self.WRONG_TYPES + (0x100, -1):
+            with self.subTest(reset=reset):
+                self.assert_verdict(c.check_initial_state, c.PASS, reset, 0xF8, 0)
+        # A missing recorded init stays BLOCKED whatever the reset value is.
+        for reset in self.WRONG_TYPES + (0xF8,):
+            with self.subTest(reset=reset):
+                self.assert_verdict(c.check_initial_state, c.BLOCKED, reset, None, 0)
+
+    def test_stack_address_rejects_wrong_types_and_out_of_range(self):
+        for bad in self.WRONG_TYPES:
+            with self.subTest(value=bad):
+                self.assert_verdict(c.check_stack_address, c.BLOCKED, bad)
+        for bad in (-1, 0x1FF, 0x2200, 0x10000):
+            with self.subTest(value=bad):
+                self.assert_verdict(c.check_stack_address, c.FAIL, bad)
+
+    def test_stack_address_keeps_the_meaningful_pass(self):
+        self.assert_verdict(c.check_stack_address, c.PASS, 0x2100)
+        self.assert_verdict(c.check_stack_address, c.PASS, 0x21FF)
+        self.assert_verdict(c.check_stack_address, c.FAIL, 0x0100)
+        self.assert_verdict(c.check_stack_address, c.FAIL, 0x01FF)
+
+    def test_mpr1_write_rejects_wrong_types(self):
+        for bad in self.WRONG_TYPES:
+            with self.subTest(value=bad):
+                self.assert_verdict(c.check_mpr1_write, c.BLOCKED, c.PATH_TAM, bad, 5)
+                self.assert_verdict(c.check_mpr1_write, c.BLOCKED, c.PATH_DIRECT_SETMPR, bad, 0)
+                self.assert_verdict(c.check_mpr1_write, c.BLOCKED, c.PATH_TAM, 0xF8, bad)
+                self.assert_verdict(c.check_mpr1_write, c.BLOCKED, c.PATH_DIRECT_SETMPR, 0xF8, bad)
+
+    def test_mpr1_write_rejects_out_of_range_numbers(self):
+        for bad in self.OUT_OF_RANGE:
+            with self.subTest(value=bad):
+                self.assert_verdict(c.check_mpr1_write, c.FAIL, c.PATH_TAM, bad, 5)
+                self.assert_verdict(c.check_mpr1_write, c.FAIL, c.PATH_DIRECT_SETMPR, bad, 0)
+        self.assert_verdict(c.check_mpr1_write, c.FAIL, c.PATH_TAM, 0xF8, -1)
+
+    def test_bool_index_is_not_a_valid_instruction_index(self):
+        # False == 0 in Python: a bool index must never be read as instruction number 0.
+        for index in (False, True):
+            with self.subTest(index=index):
+                verdict, _ = c.check_mpr1_write(c.PATH_DIRECT_SETMPR, 0xF8, index)
+                self.assertNotEqual(verdict, c.PASS)
+                self.assertEqual(verdict, c.BLOCKED)
+                verdict, _ = c.check_initial_state(None, 0xF8, index)
+                self.assertNotEqual(verdict, c.PASS)
+
+    def test_mpr1_write_keeps_the_meaningful_passes(self):
+        self.assert_verdict(c.check_mpr1_write, c.PASS, c.PATH_TAM, 0xF8, 5)
+        self.assert_verdict(c.check_mpr1_write, c.PASS, c.PATH_DIRECT_SETMPR, 0xF8, 0)
+
+    def test_no_invalid_input_raises_and_none_is_pass(self):
+        for value in self.WRONG_TYPES + self.OUT_OF_RANGE:
+            with self.subTest(value=value):
+                calls = (
+                    (c.check_stack_bank, (value,)),
+                    (c.check_initial_state, (value, value, value)),
+                    (c.check_stack_address, (value,)),
+                    (c.check_mpr1_write, (c.PATH_TAM, value, value)),
+                    (c.check_mpr1_write, (c.PATH_DIRECT_SETMPR, value, value)),
+                    (c.check_mpr1_write, (c.PATH_RESET, value, value)),
+                )
+                for call, args in calls:
+                    try:
+                        verdict, _ = call(*args)
+                    except Exception as error:   # the contract returns a verdict, it never raises
+                        self.fail("%s%r raised %r" % (getattr(call, "__name__", call), args, error))
+                    self.assertNotEqual(verdict, c.PASS)
+
 
 class DocConsistencyTest(unittest.TestCase):
     def test_contract_doc_states_the_same_allow_and_hole(self):
@@ -242,6 +374,14 @@ class DocConsistencyTest(unittest.TestCase):
         self.assertIn("3 値", text)
         self.assertIn("BLOCKED", text)
         self.assertIn("UNMEASURED", text)
+
+    def test_doc_states_the_input_type_policy(self):
+        text = (ROOT / "docs" / "497-mpr1-stack-contract.md").read_text(encoding="utf-8")
+        self.assertIn("fail-closed", text)
+        self.assertIn("bool", text)
+        self.assertIn("0..255", text)
+        self.assertIn("型違い", text)
+        self.assertIn("範囲外", text)
 
 
 class DocIrqTableTest(unittest.TestCase):

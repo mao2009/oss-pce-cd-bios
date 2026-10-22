@@ -13,6 +13,14 @@ Contract (see docs/497-mpr1-stack-contract.md):
   and it never becomes PASS.
 
 Verdicts: PASS, FAIL, BLOCKED (no evidence), UNMEASURED (known hole). Synthetic inputs only.
+
+Input policy (fail-closed; the same policy is written in docs/497-mpr1-stack-contract.md):
+* A byte field (an MPR1 value) must be a real int in 0..255. bool is not a byte value.
+* An instruction index must be a real int >= 0. bool is not an index.
+* A wrong type (str, bool, None, list, float, ...) is BLOCKED: the evidence cannot be read.
+* A readable number that contradicts the contract (out of the byte range, not $F8, not index 0) is FAIL.
+* The measured reset value is informational only: it never changes a verdict, and an unreadable reset
+  value does not turn a valid recorded init into a failure.
 """
 
 PASS, FAIL, BLOCKED, UNMEASURED = "PASS", "FAIL", "BLOCKED", "UNMEASURED"
@@ -28,6 +36,10 @@ IRQ_SAME_INSTRUCTION_STATUS = UNMEASURED
 # the harness did not observe the IRQ state, so there is no evidence either way. It is never
 # interchangeable with False, and it never yields PASS.
 IRQ_UNKNOWN = None
+
+# MPR1 is a one-byte register. An index is a non-negative instruction number.
+MPR1_MIN, MPR1_MAX = 0x00, 0xFF
+INDEX_MIN = 0
 
 # Stack address notation. Two different things; never mix them.
 #   CPU_STACK_PAGE: the address the 65C02-style S register points into on the CPU bus ($2100-$21FF via the
@@ -48,6 +60,30 @@ _IRQ_UNKNOWN_STATE = "UNKNOWN"   # not observed
 _IRQ_INVALID = "INVALID"         # not an observation at all (wrong type)
 
 
+def _is_byte(value):
+    """True only for a real int in 0..255. bool is rejected on purpose: bool is not a byte value."""
+    return type(value) is int and MPR1_MIN <= value <= MPR1_MAX
+
+
+def _is_index(value):
+    """True only for a real non-negative int. bool is rejected on purpose: bool is not an index."""
+    return type(value) is int and value >= INDEX_MIN
+
+
+def _byte_text(value):
+    """Format a value for a detail message without ever raising (a str/None must not break a verdict)."""
+    if type(value) is int:
+        return "%02X" % value if MPR1_MIN <= value <= MPR1_MAX else str(value)
+    return repr(value)
+
+
+def _addr_text(value):
+    """Format an address for a detail message without ever raising."""
+    if type(value) is int and value >= 0:
+        return "%04X" % value
+    return str(value)
+
+
 def _irq_state(value):
     """Classify one IRQ observation: TRUE / FALSE / UNKNOWN (not observed) / INVALID (unreadable type)."""
     if value is IRQ_UNKNOWN:
@@ -58,9 +94,16 @@ def _irq_state(value):
 
 
 def check_stack_bank(mpr1):
-    """Verdict for a value of MPR1 used as the stack bank. Only $F8 passes."""
+    """Verdict for a value of MPR1 used as the stack bank. Only $F8 passes.
+
+    A wrong type (str, bool, None, ...) is BLOCKED: the value cannot be read as MPR1 evidence.
+    A readable int outside 0..255 is FAIL: it cannot be a legal MPR1 byte, so it is denied.
+    """
     if type(mpr1) is not int:
-        return BLOCKED, "no MPR1 evidence"
+        return BLOCKED, "no MPR1 evidence: %s is not an MPR1 byte value" % (repr(mpr1),)
+    if not MPR1_MIN <= mpr1 <= MPR1_MAX:
+        return FAIL, "MPR1=%s is outside the byte range $%02X-$%02X" % (
+            _byte_text(mpr1), MPR1_MIN, MPR1_MAX)
     if mpr1 in ALLOWED_STACK_MPR1:
         return PASS, "WRAM $F8 allowed as stack bank"
     return FAIL, "MPR1=%02X denied: %s" % (mpr1, KNOWN_DENIED_MPR1.get(mpr1, "not in allow table"))
@@ -69,39 +112,67 @@ def check_stack_bank(mpr1):
 def check_initial_state(measured_reset, recorded_init_value, instruction_index):
     """Initial state before the first guest instruction.
 
-    The measured reset value is informational only. PASS requires the harness-recorded init write
-    of $F8 made at instruction index 0 (before any guest instruction). Same rule as DIRECT_SETMPR.
+    The measured reset value is informational only: it never changes the verdict. A reset value that
+    cannot be read (wrong type) does not turn a valid recorded init into a failure, because the reset
+    value is not trusted in the first place.
+
+    PASS requires the harness-recorded init write of $F8 made at instruction index 0 (before any guest
+    instruction). Same rule as DIRECT_SETMPR.
+
+    Verdicts: no recorded init -> BLOCKED; an unreadable init value or index -> BLOCKED; a readable
+    number that breaks the contract (index other than 0, a value other than $F8) -> FAIL.
     """
     if recorded_init_value is None:
         return BLOCKED, "harness init write not recorded"
+    if type(recorded_init_value) is not int:
+        return BLOCKED, "harness init write is not an MPR1 byte value: %s" % (repr(recorded_init_value),)
+    if type(instruction_index) is not int:
+        return BLOCKED, "instruction index is not a number: %s" % (repr(instruction_index),)
     if instruction_index != 0:
-        return FAIL, "harness init recorded at instruction index %s, allowed only at index 0" % instruction_index
+        return FAIL, "harness init recorded at instruction index %s, allowed only at index 0" % (
+            instruction_index,)
+    if not MPR1_MIN <= recorded_init_value <= MPR1_MAX:
+        return FAIL, "harness init MPR1=%s is outside the byte range $%02X-$%02X" % (
+            _byte_text(recorded_init_value), MPR1_MIN, MPR1_MAX)
     if recorded_init_value != HARNESS_INIT_MPR1:
         return FAIL, "harness init MPR1=%02X, contract requires $F8" % recorded_init_value
     if measured_reset == HARNESS_INIT_MPR1:
         return PASS, "reset value already $F8, init still recorded"
     return PASS, "reset value not trusted (measured %s), overwritten by recorded init" % (
-        "unknown" if measured_reset is None else "%02X" % measured_reset)
+        "unknown" if measured_reset is None else _byte_text(measured_reset))
 
 
 def check_stack_address(cpu_address):
     """Verdict for a CPU stack address. Only $2100-$21FF is the CPU stack page; $0100-$01FF is a test label."""
     if type(cpu_address) is not int:
-        return BLOCKED, "no stack address evidence"
+        return BLOCKED, "no stack address evidence: %s is not an address" % (repr(cpu_address),)
     if CPU_STACK_PAGE[0] <= cpu_address <= CPU_STACK_PAGE[1]:
         return PASS, "CPU stack page $2100-$21FF"
     if TEST_LABEL_PAGE[0] <= cpu_address <= TEST_LABEL_PAGE[1]:
-        return FAIL, "%04X is the test label page $0100-$01FF, not the CPU stack page $2100-$21FF" % cpu_address
-    return FAIL, "%04X outside the CPU stack page $2100-$21FF" % cpu_address
+        return FAIL, "%s is the test label page $0100-$01FF, not the CPU stack page $2100-$21FF" % (
+            _addr_text(cpu_address),)
+    return FAIL, "%s outside the CPU stack page $2100-$21FF" % (_addr_text(cpu_address),)
 
 
 def check_mpr1_write(path, value, instruction_index):
-    """Verdict for one write to MPR1 by a given path at a given instruction index."""
+    """Verdict for one write to MPR1 by a given path at a given instruction index.
+
+    An unreadable value or index is BLOCKED; a readable number that breaks the contract is FAIL.
+    """
     if path not in PATHS:
         return BLOCKED, "unknown path"
     if path == PATH_RESET:
         return BLOCKED, "reset value is not a contract input; harness must set MPR1 first"
+    if type(instruction_index) is not int:
+        return BLOCKED, "instruction index is not a number: %s" % (repr(instruction_index),)
+    if instruction_index < INDEX_MIN:
+        return FAIL, "instruction index %d is invalid: it must be a non-negative integer" % instruction_index
     if path == PATH_DIRECT_SETMPR:
+        if type(value) is not int:
+            return BLOCKED, "direct SetMpr value is not an MPR1 byte value: %s" % (repr(value),)
+        if not MPR1_MIN <= value <= MPR1_MAX:
+            return FAIL, "direct SetMpr value %s is outside the byte range $%02X-$%02X" % (
+                _byte_text(value), MPR1_MIN, MPR1_MAX)
         if instruction_index == 0 and value == HARNESS_INIT_MPR1:
             return PASS, "harness init before first guest instruction"
         return FAIL, "direct SetMpr allowed only as init $F8 at index 0"
