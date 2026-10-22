@@ -9,16 +9,21 @@ from pathlib import Path
 import re
 
 # ---- approval-claim guard (clause level). Keep the GUARD_* lists below in sync with GuardSelfTest. ----
+# A clause is a claim when it carries an approval word in a claim form. A negation anywhere in the same
+# clause (before or after the word) makes it a denial. A bare Japanese noun "承認" followed by "（" or
+# other non-terminal text is a recorded scope, not a claim.
 _CLAUSE_SPLIT = re.compile(r"[.;:!?\n|、。；：]")
-_EN_WORD = re.compile(r"(?i)\b(approv\w*|grant\w*|sign-?off|authori[sz]\w*)")
-_EN_NEG = re.compile(r"(?i)\b(not|no|never|without|cannot)\b|n't\b")
-_EN_NO_LONGER = re.compile(r"(?i)\bno\s+longer\b")
-# Noun-form claims ("正式承認", "本番承認" ...) count too: a bare "承認" noun is allowed (a recorded scope),
-# but a formal/production/release approval must be negated in the same clause.
-_JA_WORD = re.compile(
-    r"承認(?:済|した|され|を得|を受|いただ|する|OK)|正式承認|本番承認|製品承認|リリース承認|承認を記録|承諾|了承|認可|\bOK\b|ＯＫ"
+_EN_WORD = re.compile(
+    r"(?i)\b(approv\w*|grant\w*|sign-?\s?off|signed\s+off|sign\s+off|authori[sz]\w*)\b"
 )
-_JA_NEG = re.compile(r"ない|なし|無い|ません|ではな|未承認|不承認|見つからな")
+_EN_NEG = re.compile(r"(?i)\b(not|no|never|without|cannot|nor)\b|n't\b")
+_EN_NO_LONGER = re.compile(r"(?i)\bno\s+longer\b")
+_JA_WORD = re.compile(
+    r"承認(?:済|した|しま|され|を得|を受|いただ|する|OK|あり|を確認)"  # verb / predicate forms
+    r"|承認(?=[。、；：)）]|$)"  # bare 承認 ending the clause ("オーナーは方式 A を承認。")
+    r"|正式承認|本番承認|製品承認|リリース承認|承認を記録|承諾|了承|認可|\bOK\b|ＯＫ"
+)
+_JA_NEG = re.compile(r"ない|なし|無い|ません|ではな|未承認|不承認|非承認|見つからな")
 # Explicit allowed phrases (removed from a clause before the Japanese scan).
 JA_ALLOWED = [
     "正式承認ではない",
@@ -35,21 +40,17 @@ def clauses(text):
 
 
 def approval_violations(text):
-    """Return the clauses that claim approval without a negation in the same clause."""
+    """Return the clauses that claim approval without a negation anywhere in the same clause."""
     bad = []
     for c in clauses(text):
-        # English: the negation must precede the approval word inside the same clause; 'no longer' is not a negation.
-        c_en = _EN_NO_LONGER.sub("", c)
-        for m in _EN_WORD.finditer(c_en):
-            if not _EN_NEG.search(c_en[:m.start()]):
-                bad.append(c)
-                break
-        else:
-            c_ja = c
-            for a in JA_ALLOWED:
-                c_ja = c_ja.replace(a, "")
-            if _JA_WORD.search(c_ja) and not _JA_NEG.search(c_ja):
-                bad.append(c)
+        c_en = _EN_NO_LONGER.sub("", c)  # 'no longer approved' stays a claim
+        c_ja = c
+        for a in JA_ALLOWED:
+            c_ja = c_ja.replace(a, "")
+        claim = _EN_WORD.search(c_en) or _JA_WORD.search(c_ja)
+        negated = _EN_NEG.search(c_en) or _JA_NEG.search(c_ja)
+        if claim and not negated:
+            bad.append(c)
     return bad
 
 
@@ -76,6 +77,19 @@ GUARD_MUST_FAIL = [
     "検証方針を承認した。",
     "正式承認。",
     "The owner approved the verification policy.",
+    # Coordinator review (MEDIUM): verb/predicate forms and word-order variants that used to slip through.
+    "オーナーは方式 A を承認。",
+    "オーナー承認あり",
+    "オーナーが方式 A を承認しました",
+    "The owner has signed off on A.",
+    "The owner approve A.",
+    "Owner approval exists for A.",
+    "Approval was granted for A.",
+    "The owner approves A and B.",
+    "The owner did approve A.",
+    "Owner approval for the safety mechanism is granted.",
+    "方式 A の承認あり。",
+    "オーナーが安全機構を承認済みとした。",
 ]
 GUARD_MUST_PASS = [
     "Method A is not approved.",
@@ -96,6 +110,15 @@ GUARD_MUST_PASS = [
     "製品の正式承認は行っていない。",
     "安全機構の本番承認はない。",
     "検証方針の承認として記録する（正式承認ではない）。",
+    # Coordinator review (MEDIUM): negation after the approval word inside the same clause is a denial.
+    "Owner approval is not granted for the safety mechanism.",
+    "The owner has not signed off on A.",
+    "Approval has not been granted.",
+    "The owner did not approve A.",
+    "オーナーは方式 A を承認していない。",
+    "方式 A の承認は得られていない。",
+    "オーナー承認は未了。",
+    "オーナー承認はない。",
 ]
 
 DOCS = Path(__file__).resolve().parents[2] / "docs"
