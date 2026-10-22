@@ -193,8 +193,10 @@ def check(label, rows, halt, dividend, divisor, sp=CALLER_SP, i_set=True, d_set=
     # The caller precondition, observed before the JSR: I and D as the guest set them, C=1 (SEC), T=0.
     before_mask = 0x04 | 0x08 | 0x01 | 0x20
     before_want = (0x04 if i_set else 0) | (0x08 if d_set else 0) | 0x01
-    if s[P_BEFORE - 0x200] & before_mask != before_want:
-        raise ValueError(f"{label}: caller P before the JSR is {s[P_BEFORE - 0x200]:#04x}, the guest set "
+    # The 0200 dump is 64 bytes; $2207 is in the full 8 KiB work RAM (index = CPU address - $2000).
+    p_before = bytes.fromhex(cold["work_ram_hex"])[P_BEFORE - 0x2000]
+    if p_before & before_mask != before_want:
+        raise ValueError(f"{label}: caller P before the JSR is {p_before:#04x}, the guest set "
                          f"I={int(i_set)} D={int(d_set)} C=1 T=0 (guest precondition not met)")
     s = s[:7]
     q16, r16, c, v, n, z = model(dividend, divisor)
