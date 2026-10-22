@@ -43,20 +43,19 @@ CASES = [  # (dividend, divisor), unsigned 16-bit
     (0xFFFF, 0x8001), (0x8001, 0x8000), (0x0001, 0xFFFF), (0xFFFF, 0x0100), (0xABCD, 0x1234),
 ]
 # Inputs where a decimal (D=1) SBC gives a different result, so the no-CLD mutant must mismatch on each of them.
-MUTANT_CASES = [(0x9999, 0x0001), (0xFF9C, 0xFFF9), (0xFFFF, 0xFFFF)]
+MUTANT_CASES = [(0xABCD, 0x1234), (0xFEDC, 0x0F0F), (0xDCBA, 0x00FF)]
 # Arithmetic mutants. Each pattern is the machine code of the instructions in src/overrides/slot_43.s; the listed byte
-# is replaced by a same-length value, so the body layout does not change. The pattern must occur exactly once.
+# is replaced by a same-length value, so the body layout does not change. The pattern must occur exactly once in the
+# DEV ROM (slot $42 shares several sequences with this routine, so each pattern includes a DIV16U-only instruction).
 ARITH_MUTANTS = [  # (name, pattern, index of the byte to change in the pattern, new byte)
-    ("a_restoring_bcc_to_bcs", bytes.fromhex("BD0221DD0A2190"), 6, 0xB0),   # lda $2102,x; cmp $210A,x; bcc @no_sub
-    ("b_seventeenth_bit_branch_inverted", bytes.fromhex("3E0221B0"), 3, 0x90),  # rol $2102,x; bcs @sub -> bcc
-    ("c_divide_by_zero_branch_inverted", bytes.fromhex("BD0A211D0B21D0"), 6, 0xF0),  # bne @divide -> beq @divide
-    ("d_divide_by_zero_c_flag_cleared", bytes.fromhex("BD042109019D0421"), 4, 0x00),  # ora #$01 -> ora #$00 (C)
-    ("e_quotient_bit_not_set", bytes.fromhex("BD06210901"), 4, 0x00),  # lda $2106,x; ora #$01 -> ora #$00
+    ("a_seventeenth_bit_branch_inverted", bytes.fromhex("3E0221B0"), 3, 0x90),  # rol $2102,x; bcs @sub -> bcc
+    ("b_divide_by_zero_quotient_hi_not_ff", bytes.fromhex("A9FF9D0521"), 1, 0x00),  # lda #$FF; sta $2105,x
+    ("c_carry_flag_not_restored", bytes.fromhex("BD042129011D0721"), 4, 0x00),  # lda $2104,x; and #$01; ora $2107,x
 ]
 # Divide-by-zero mutants must be caught by a divide-by-zero case and the rejection must name the fields below.
 DIVZERO_MUTANTS = {
-    "c_divide_by_zero_branch_inverted": ({"P.C"}, {"quotient_lo", "quotient_hi"}),
-    "d_divide_by_zero_c_flag_cleared": ({"P.C"}, set()),
+    "b_divide_by_zero_quotient_hi_not_ff": (set(), {"quotient_hi"}),
+    "c_carry_flag_not_restored": ({"P.C"}, set()),
 }
 Y_PRESET = 0xA5
 CALLER_SP = 0xFF
