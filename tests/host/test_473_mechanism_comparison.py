@@ -6,6 +6,85 @@ observations (#470 / #481) or lost a required section. It is NOT evidence about 
 import unittest
 from pathlib import Path
 
+import re
+
+# ---- approval-claim guard (clause level). Keep the GUARD_* lists below in sync with GuardSelfTest. ----
+_CLAUSE_SPLIT = re.compile(r"[.;:!?\n|、。；：]")
+_EN_WORD = re.compile(r"(?i)\b(approv\w*|grant\w*|sign-?off|authori[sz]\w*)")
+_EN_NEG = re.compile(r"(?i)\b(not|no|never|without|cannot)\b|n't\b")
+_EN_NO_LONGER = re.compile(r"(?i)\bno\s+longer\b")
+_JA_WORD = re.compile(r"承認(?:済|した|され|を得|を受|いただ|する|OK)|承諾|了承|認可|\bOK\b|ＯＫ")
+_JA_NEG = re.compile(r"ない|なし|無い|ません|ではな|未承認|不承認|見つからな")
+# Explicit allowed phrases (removed from a clause before the Japanese scan).
+JA_ALLOWED = [
+    "正式承認ではない",
+    "承認済みの項目はなし",
+    "承認済みの項目はない",
+    "承認済み項目",  # heading of 12.6
+    "未承認項目",
+    "オーナーが明示的に承認する",  # verbatim quote of the #473 release condition 1 (a condition, not a claim)
+]
+
+
+def clauses(text):
+    return [c.strip() for c in _CLAUSE_SPLIT.split(text) if c.strip()]
+
+
+def approval_violations(text):
+    """Return the clauses that claim approval without a negation in the same clause."""
+    bad = []
+    for c in clauses(text):
+        # English: the negation must precede the approval word inside the same clause; 'no longer' is not a negation.
+        c_en = _EN_NO_LONGER.sub("", c)
+        for m in _EN_WORD.finditer(c_en):
+            if not _EN_NEG.search(c_en[:m.start()]):
+                bad.append(c)
+                break
+        else:
+            c_ja = c
+            for a in JA_ALLOWED:
+                c_ja = c_ja.replace(a, "")
+            if _JA_WORD.search(c_ja) and not _JA_NEG.search(c_ja):
+                bad.append(c)
+    return bad
+
+
+GUARD_MUST_FAIL = [
+    "owner approval was granted",
+    "the owner granted approval",
+    "The owner approves method A.",
+    "Owner sign-off received for A.",
+    "This is not final. The owner has approved method A.",
+    "Method A is not approved; owner has approved B.",
+    "Method A is no longer approved.",
+    "Approved by the owner.",
+    "This was approved by the owner.",
+    "The change was authorised by the owner.",
+    "オーナーは方式 A を承認した。",
+    "方式 A は承認されている。",
+    "承認済み。ただし実装は終わっていない",
+    "承認済みの項目が多く、実装は終わっていない",
+    "オーナーの承認を得た。",
+    "方式 A はオーナーが了承した。",
+    "| 方式 A | 承認済み |",
+]
+GUARD_MUST_PASS = [
+    "Method A is not approved.",
+    "This is not approved.",
+    "There is no owner approval.",
+    "Not yet approved.",
+    "The method is unapproved.",
+    "never approved by the owner",
+    "正式承認ではない",
+    "承認済みの項目はなし",
+    "承認済みの項目はない。",
+    "### 12.6 承認済み項目",
+    "未承認項目",
+    "オーナーが承認した記録は見つからない",
+    "オーナーが承認した記録はない。",
+    "方式の承認は行われていない",
+]
+
 DOCS = Path(__file__).resolve().parents[2] / "docs"
 CMP = (DOCS / "473-stack-safety-mechanism-comparison.md").read_text(encoding="utf-8")
 
@@ -83,16 +162,8 @@ class Structure(unittest.TestCase):
     def test_proposal_is_not_owner_approval(self):
         head = CMP.split("## 1.")[0]
         self.assertIn("開発側の提案であり、オーナーの承認ではない", head)
-        # English approval wording is only allowed in a negated form; Japanese approval claims are checked line by line below.
-        import re
-        for m in re.finditer(r"(?i)\b(approved by|owner[- ]approved|approval granted|approved)\b", CMP):
-            window = CMP[max(0, m.start() - 40):m.start()].lower()
-            self.assertTrue(re.search(r"\b(not|no|never|without)\b", window), CMP[max(0, m.start() - 40):m.end() + 20])
-        for line in CMP.splitlines():
-            if re.search(r"オーナー(が|は|の)?承認(した|され|を得)", line) and not line.startswith("#"):
-                self.assertTrue(any(k in line for k in ["見つからない", "ない", "未", "条件", "ではない"]), line)
-            self.assertNotIn("承認された", line)
-            self.assertNotIn("承認を得た", line)
+        # Clause-level guard (see approval_violations): no approval claim without a same-clause negation.
+        self.assertEqual(approval_violations(CMP), [])
         s121 = section("12.1")
         self.assertIn("区別できない", s121)
         self.assertIn("本人かは未確認", s121)
@@ -186,6 +257,25 @@ class Structure(unittest.TestCase):
             self.assertNotIn(bad, CMP)
         self.assertIn("参照 JSR ゲートも変更しない", CMP)
         self.assertIn("本書の範囲外で、行わない", section("12.7"))
+
+
+class GuardSelfTest(unittest.TestCase):
+    """The approval guard itself must not silently weaken."""
+
+    def test_must_fail(self):
+        for s in GUARD_MUST_FAIL:
+            self.assertTrue(approval_violations(s), s)
+
+    def test_must_pass(self):
+        for s in GUARD_MUST_PASS:
+            self.assertEqual(approval_violations(s), [], s)
+
+    def test_mutation_against_doc(self):
+        # Appending any forbidden sentence to the real document must make the guard fire; the doc itself is clean.
+        self.assertEqual(approval_violations(CMP), [])
+        for s in GUARD_MUST_FAIL:
+            self.assertTrue(approval_violations(CMP + chr(10) + s), s)
+            self.assertTrue(approval_violations(CMP + " " + s), s)
 
 
 if __name__ == "__main__":
