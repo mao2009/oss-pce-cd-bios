@@ -193,8 +193,10 @@ def from_core_evidence(evidence, *, case_name, rom_sha256, entry, harness_revisi
             raise Refused("ENTRY_MISMATCH", f"case {case_name!r} does not target api_slot_1E")
         for cycle in TEMPERATURES:
             observed = case["observed"].get(cycle)
-            if observed is None or case["status"].get(cycle) != "RETURNED":
+            if case["status"].get(cycle) != "RETURNED":
                 continue
+            if observed is None:  # status says RETURNED but there is no observation: inconsistent, not skippable
+                raise Refused("FIELDS", f"{cycle} cycle is RETURNED without an observation")
             before, after = observed["before"], observed["after"]
             item = seal({
                 "schema": SCHEMA, "slot": SLOT, "entry": entry,

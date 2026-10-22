@@ -262,6 +262,13 @@ class ConverterTests(unittest.TestCase):
             g.from_core_evidence(evidence, case_name="plugin_ex_getver", rom_sha256=ROM, entry=ENTRY,
                                  harness_revision=HARNESS, step_budget=BUDGET)
 
+    def test_returned_cycle_without_observation_is_refused(self):
+        evidence = self.evidence()
+        del evidence["cases"][1]["observed"]["cold"]  # status still says RETURNED for cold
+        with self.assertRaisesRegex(g.Refused, "FIELDS"):
+            g.from_core_evidence(evidence, case_name="plugin_ex_getver", rom_sha256=ROM, entry=ENTRY,
+                                 harness_revision=HARNESS, step_budget=BUDGET)
+
     def test_missing_case_name_is_refused(self):
         with self.assertRaisesRegex(g.Refused, "CASE"):
             g.from_core_evidence(self.evidence(), case_name="no_such_case", rom_sha256=ROM, entry=ENTRY,
