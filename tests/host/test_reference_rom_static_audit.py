@@ -134,7 +134,8 @@ class SyntheticImageTests(unittest.TestCase):
 
     def test_a_loop_with_a_returning_exit_is_not_a_proof_that_every_path_returns(self):
         # BNE to itself, or fall through to RTS: some path returns, another spins forever.
-        # The existence check reports 0 here by design; this pins that limitation.
+        # The existence check reports 0 here by design. This is a limitation pin,
+        # to be inverted when the all-paths check lands (#485).
         image = self.directory / "mixed_loop.pce"
         image.write_bytes(synthetic_image(b"\xd0\xfe\x60"))
         result = audit.audit_image(image, [0x1E], synthetic=True)

@@ -301,8 +301,8 @@ does not implement it, and it does not weaken the existing gate.
 
 ### 5.1 Residual risks that apply to every verdict
 
-* A static profile is an upper bound over the reachable code, not a runtime
-  observation. The bound is computed with a bounded walk (20 000 states, 24 call
+* A static profile reports the findings over the explored code, not a runtime
+  observation; it is not an upper bound on hazards. The bound is computed with a bounded walk (20 000 states, 24 call
   levels); none of the seven walks hit the bound, and no walk ended in an
   unresolved target.
 * The arithmetic dispatchers switch to a bank that the static model resolves
@@ -534,7 +534,7 @@ in this pull request:
 | --- | --- |
 | the accumulator model missed two opcodes that write `A`, so a stale value could make a later `TAM` resolve a cross page callee in the wrong bank | the accumulator model was rewritten: only an immediate load into `A` makes the value known, everything else makes it unknown, and a regression test with a synthetic callee pins the behaviour |
 | the "no return" hazard only recorded that *some* path returned, so a callee with a self loop looked clean | the auditor now keeps the successor graph and computes, for every reachable state, whether a return is still reachable; the ledger records `non_returning_states` and the validator refuses a safe verdict when it is not 0 |
-| the validator accepted a ledger whose static profile was not a clean upper bound | `unresolved` must be empty and `non_returning_states` must be 0 for any verdict other than `EXECUTION_BLOCKED`, and a runtime MPR switch, a block transfer, a VDC direct write or an interrupt enable now force `EXECUTION_BLOCKED` |
+| the validator accepted a ledger whose static profile was not clean over the explored code | `unresolved` must be empty and `non_returning_states` must be 0 for any verdict other than `EXECUTION_BLOCKED`, and a runtime MPR switch, a block transfer, a VDC direct write or an interrupt enable now force `EXECUTION_BLOCKED` |
 | the validator accepted a ledger that claimed a fresh execution | the plain `OBSERVED_LOCAL_ONLY` form was removed from the vocabularies; only the `..._PRIOR` form is allowed, and it has to name a repository file that holds the earlier observation |
 | the CI refusal and the `TAM` mask mapping, the two properties the code calls critical, were untested | both now have a test; the mask test distinguishes the two candidate banks, and the CI refusal is checked in the CLI *and* in the library entry point |
 | the published-text guard missed the memory writing opcodes, was case sensitive, and its test was satisfied by the address rule instead | the mnemonic list now covers every operand carrying opcode of the HuC6280 table, the match is case insensitive, and the test uses a payload that only the instruction rule can catch |

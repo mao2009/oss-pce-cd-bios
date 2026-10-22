@@ -25,7 +25,7 @@
 
 ## 解析の条件
 
-- ツール：`tools/reference_rom_static_audit.py`（origin/main `2af7b42` 時点、ファイル SHA-256 `5f8872dd862a0d6217ab500b972a25f641df9493935c415d8a81d2cfde29814c`）
+- ツール：`tools/reference_rom_static_audit.py`（origin/main `2af7b42` 時点、ファイル SHA-256 `8b2ca20cf3a02fac9e558f7ee15e0dc479be920b9646b821bfaea419b264178a`。以前に記載していた `5f8872…` は再計算で一致せず、撤回する）
 - 逆アセンブラ：pinned cc65 `da65`（`71746c829e77f74c2b601a7d16821170c2610df3`）、HuC6280 記述
 - 入力：ヘッダなしのペイロード 262,144 バイト（`provenance.header_bytes = 0`）
 - 出力：`docs/evidence/reference-static-triage-81.json`（計数と真偽値の投影のみ。ROM バイト列・逆アセンブル全文は含まない）

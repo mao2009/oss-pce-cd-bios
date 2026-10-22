@@ -402,10 +402,9 @@ class Auditor:
         return stack carries the caller's continuation, so a callee's MPR change
         is visible to its caller.
 
-        The successor graph is kept so that the walk can afterwards answer a
-        stronger question than "did some path return": **can every reachable
-        state reach a return**. A callee with a self loop therefore reports a
-        non returning path instead of a clean profile.
+        The successor graph is kept so that the walk can afterwards ask whether each
+        reachable state can reach a return (an existence check, see
+        _states_without_return). It does not show that every path returns.
         """
         audit = SlotAudit()
         mpr = tuple([API_BANK if index == 7 else None for index in range(PAGES)])
