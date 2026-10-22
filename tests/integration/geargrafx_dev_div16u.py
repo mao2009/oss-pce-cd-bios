@@ -1,15 +1,22 @@
 """Real Geargrafx run of MA_DIV16U (slot $43, Issue #478) through the DEV ROM entry $E0C9.
 
-A guest program replaces the reset code of the built DEV ROM. It sets MPR1 to work RAM, sets the caller SP, pushes the
-divisor (low, then high), sets D=1 and C=1 on purpose, preloads Y=$A5, JSRs $E0C9 with X:A = dividend, then stores
-X:A, P, Y and the remainder bytes (popped from the divisor slots) and SP at $2200-$2206 and halts.
+A guest program replaces the reset code of the built DEV ROM. It sets MPR1 to work RAM, sets the caller SP, sets the
+caller I and D (see below), sets C=1, stores the caller P before the JSR at $2207, pushes the divisor (low, then high),
+preloads Y=$A5, JSRs $E0C9 with X:A = dividend, then stores X:A, P, Y and the remainder bytes (popped from the divisor
+slots) and SP at $2200-$2206 and halts.
+Caller (I, D): every case runs for all four combinations (I=1 D=1 by SEI/SED, I=0 D=0 by CLI/CLD, I=0 D=1, I=1 D=0).
+With I=0 an IRQ could be taken by a line that is asserted. No test drives an IRQ line and the timer is disabled by the
+core reset, so the routine is not interrupted in these runs; this is a property of the configuration, not an observed
+absence of IRQ entries.
 The expectation is this project's own spec (src/overrides/slot_43.s and tools/ma_div16u_model.py, whose oracle is
 Python integer division), NOT the reference BIOS MA_DIV16U ABI, which stays UNVERIFIED.
 Preconditions under test: (1) S at routine entry >= $07 (boundary cases at caller SP=$0B). (2) Caller T=0 at entry;
 T=1 is OUT OF CONTRACT (see the header of slot_43.s). Contract cases never set T.
 Scope: CASES (divide by zero, the largest divisors, maximum values), the no-CLD mutant and the arithmetic
-mutants (ARITH_MUTANTS). P is compared on every bit except B (bit 4): C, Z, I, D, V, N, T. The full 8 KiB work RAM
-is diffed before and after each case: only the call's stack frame $21(SP-10)..$21(SP) and $2200-$2206 may change.
+mutants (ARITH_MUTANTS, including the I/D-fixing mutants). P is compared on every bit except B (bit 4): C, Z, I, D, V, N,
+T. The caller P before the JSR is checked (I, D and C as set, T=0). The full 8 KiB work RAM is diffed before and after each
+case: only the call's stack frame $21(SP-10)..$21(SP), $2200-$2207 may change. That diff is of the final state only; see
+check_work_ram for what it cannot detect.
 Each arithmetic mutant must be rejected with the fields in EXPECTED_REJECTIONS, not by any mismatch.
 This is NOT an exhaustive test; the independent oracle is tools/ma_div16u_model.py.
 Run: python3 tests/integration/geargrafx_dev_div16u.py --rom build/debug/bios-dev/dev-only-not-compatible-syscard3.pce
@@ -36,6 +43,7 @@ SLOT_MA_DIV16U = 0x43
 # The shared DEV runner defaults to 400 instruction steps; the 16-iteration restoring division needs more.
 # The API probe accepts at most 2048 steps (tests/integration/geargrafx_api_probe.cpp). The guest halts in a BRA loop.
 CALL_STEPS = 2000
+P_BEFORE = 0x2207  # caller P before the JSR (I, D, C, T as set by the guest)
 STORE = 0x2200  # $2200 quotient lo, $2201 quotient hi, $2202 P after, $2203 Y, $2204 rem hi, $2205 rem lo, $2206 SP after
 CASES = [  # (dividend, divisor), unsigned 16-bit
     (0x0000, 0x0001), (0x0064, 0x0007), (0xFF9C, 0x0007), (0x0064, 0xFFF9), (0xFF9C, 0xFFF9),
@@ -107,7 +115,7 @@ class Mismatch(ValueError):
 P_BITS = (("N", 0x80), ("V", 0x40), ("T", 0x20), ("D", 0x08), ("I", 0x04), ("Z", 0x02), ("C", 0x01))
 
 
-def guest(reset, entry, dividend, divisor, sp=CALLER_SP, t_entry=False):
+def guest(reset, entry, dividend, divisor, sp=CALLER_SP, t_entry=False, i_set=True, d_set=True):
     """Reset-replacement code at CPU address `reset`. Returns (code, halt CPU address).
     t_entry=True is the out-of-contract characterisation: SET before the JSR. The HuC6280 has no clear-T opcode
     (SET is $F4 and $62 is CLA, not CLT), and the pinned core consumes and clears P.T at the start of every
@@ -119,11 +127,13 @@ def guest(reset, entry, dividend, divisor, sp=CALLER_SP, t_entry=False):
                0x8E, (STORE + 1) & 0xFF, (STORE + 1) >> 8]  # STX $2201 (quotient high)
     store_p = [0x8D, (STORE + 2) & 0xFF, (STORE + 2) >> 8]  # STA $2202 (P after, pulled by PLA)
     head = [0xF4] if t_entry else []   # SET: T=1 (characterisation only)
+    p_before = [0x08, 0x68, 0x8D, P_BEFORE & 0xFF, P_BEFORE >> 8]  # PHP; PLA; STA $2207 (caller P before the JSR)
     tail = store_q + [0x08, 0x68] + store_p   # STA; STX; PHP; PLA; STA $2202
-    code = bytes([0x78,                   # SEI
+    code = bytes([0x78 if i_set else 0x58,  # SEI (caller I=1) or CLI (caller I=0; no IRQ line is driven)
                   0xA9, 0xF8, 0x53, 0x02,  # LDA #$F8; TAM #$02 -> MPR1 = work RAM ($2000-$3FFF)
                   0xA2, sp, 0x9A,          # LDX #sp; TXS (caller SP; divisor pushes and the JSR follow)
-                  0xF8, 0x38,              # SED (caller D=1 on purpose), SEC (caller C=1)
+                  0xF8 if d_set else 0xD8, 0x38,  # SED or CLD (caller D), SEC (caller C=1)
+                  ] + p_before + [
                   0xA9, d_lo, 0x48,        # LDA #divisor low; PHA
                   0xA9, d_hi, 0x48,        # LDA #divisor high; PHA (high on top, as the contract requires)
                   0xA0, Y_PRESET,          # LDY #$A5
@@ -138,10 +148,10 @@ def guest(reset, entry, dividend, divisor, sp=CALLER_SP, t_entry=False):
     return code + bytes([0x80, 0xFE]), halt  # BRA -2
 
 
-def expected_p(q16, c, v):
-    """P after the call under the contract (caller T=0): I=1 and D=1 kept from the caller (SEI, SED); T=0 kept;
-    C, V, N, Z from the contract. B (bit 4) is not compared: PHP always pushes it set."""
-    return 0x04 | 0x08 | c | (v << 6) | (q16 >> 15) << 7 | (0x02 if q16 == 0 else 0)
+def expected_p(q16, c, v, i_set=True, d_set=True):
+    """P after the call under the contract (caller T=0): I and D kept from the caller; T=0 kept; C, V, N, Z from the
+    contract (V is always 0 in this routine). B (bit 4) is not compared: PHP always pushes it set."""
+    return (0x04 if i_set else 0) | (0x08 if d_set else 0) | c | (v << 6) | (q16 >> 15) << 7 | (0x02 if q16 == 0 else 0)
 
 
 class OutOfSet(ValueError):
@@ -153,11 +163,16 @@ def check_work_ram(label, pre, post, sp):
 
     Allowed writes: the stack frame of the call, $21(sp-10)..$21(sp), where the caller's divisor pushes, the JSR return
     address, and the routine's seven pushes lie (entry S=$07 at caller SP=$0B: the lowest byte written is $01), plus the
-    guest's result bytes $2200-$2206. Any other byte that changes is a side effect outside the contract.
+    guest's result bytes $2200-$2206 and the caller P store $2207. Any other byte that changes is a side effect outside
+    the contract.
+
+    Limit (review LOW): this is a diff of the FINAL state (before the guest runs versus at the halt loop), not a trace of
+    write events. A write that stores the value already in the byte, or a write that is undone before the halt, is NOT
+    visible here. The check is evidence of the final state only; it is not evidence of which bytes were written.
     """
     if len(pre) != 0x2000 or len(post) != 0x2000:
         raise ValueError(f"{label}: work RAM observation is not 8 KiB (pre {len(pre)}, post {len(post)})")
-    allowed = set(range(0x100 + sp - 10, 0x100 + sp + 1)) | set(range(0x200, 0x207))
+    allowed = set(range(0x100 + sp - 10, 0x100 + sp + 1)) | set(range(0x200, 0x208))
     changed = [i for i in range(0x2000) if pre[i] != post[i]]
     outside = [i for i in changed if i not in allowed]
     if outside:
@@ -165,7 +180,7 @@ def check_work_ram(label, pre, post, sp):
         raise OutOfSet(f"{label}: work RAM bytes changed outside the expected set: {shown} ({len(outside)} total)")
 
 
-def check(label, rows, halt, dividend, divisor, sp=CALLER_SP):
+def check(label, rows, halt, dividend, divisor, sp=CALLER_SP, i_set=True, d_set=True):
     cold = next(r for r in rows if r["phase"] == "cold")
     loaded = next(r for r in rows if r["phase"] == "loaded")
     if cold["pc"] != halt:
@@ -174,10 +189,17 @@ def check(label, rows, halt, dividend, divisor, sp=CALLER_SP):
         raise ValueError(f"{label}: stack not balanced (SP ${cold['sp']:02X}, want ${sp:02X})")
     if cold["mpr"][1] != 0xF8 or cold["mpr"][7] != 0:
         raise ValueError(f"{label}: MPR changed (mpr={cold['mpr']})")
-    s = bytes.fromhex(cold["work_ram_0200_hex"])[:7]
+    s = bytes.fromhex(cold["work_ram_0200_hex"])
+    # The caller precondition, observed before the JSR: I and D as the guest set them, C=1 (SEC), T=0.
+    before_mask = 0x04 | 0x08 | 0x01 | 0x20
+    before_want = (0x04 if i_set else 0) | (0x08 if d_set else 0) | 0x01
+    if s[P_BEFORE - 0x200] & before_mask != before_want:
+        raise ValueError(f"{label}: caller P before the JSR is {s[P_BEFORE - 0x200]:#04x}, the guest set "
+                         f"I={int(i_set)} D={int(d_set)} C=1 T=0 (guest precondition not met)")
+    s = s[:7]
     q16, r16, c, v, n, z = model(dividend, divisor)
     observed = (s[0], s[1], s[2] & 0xEF, s[3], s[4], s[5], s[6])  # P: every bit but B (bit 4), T (bit 5) included
-    want = (q16 & 0xFF, q16 >> 8, expected_p(q16, c, v) & 0xEF, Y_PRESET, r16 >> 8, r16 & 0xFF, sp)
+    want = (q16 & 0xFF, q16 >> 8, expected_p(q16, c, v, i_set, d_set) & 0xEF, Y_PRESET, r16 >> 8, r16 & 0xFF, sp)
     if observed != want:
         names = ("quotient_lo", "quotient_hi", "P", "Y", "remainder_hi", "remainder_lo", "SP")
         fields = [n for n, got, want_value in zip(names, observed, want) if got != want_value]
@@ -202,14 +224,19 @@ def find_one(data, pattern, label, span):
     return hits[0]
 
 
-def run_case(probe, base, folder, cue, reset, label, entry, dividend, divisor, sp=CALLER_SP):
-    code, halt = guest(reset, entry, dividend, divisor, sp)  # contract variant: caller T=0
+def run_case(probe, base, folder, cue, reset, label, entry, dividend, divisor, sp=CALLER_SP, i_set=True, d_set=True):
+    code, halt = guest(reset, entry, dividend, divisor, sp, i_set=i_set, d_set=d_set)  # contract variant: caller T=0
     variant = bytearray(base)
     variant[reset - 0xE000:reset - 0xE000 + len(code)] = code
     rom = folder / f"{label}.pce"
     rom.write_bytes(variant)
     rows = dev.run_probe(probe, rom.resolve(), cue, count=CALL_STEPS)
-    check(label, rows, halt, dividend, divisor, sp)
+    check(label, rows, halt, dividend, divisor, sp, i_set, d_set)
+
+
+# The four caller (I, D) combinations. The default run is (I=1, D=1): SEI and SED, as before.
+ALL_FLAG_COMBOS = [(True, True), (False, False), (False, True), (True, False)]
+FLAG_MUTANTS = {"i_forced_to_0", "d_forced_to_0", "i_forced_to_1", "d_forced_to_1"}
 
 
 def main():
@@ -236,7 +263,15 @@ def main():
         cue.write_text('FILE "original.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
         for dividend, divisor in CASES:
             run_case(probe, data, folder, cue, reset, f"div-{dividend:04x}-{divisor:04x}", entry, dividend, divisor)
-            evidence["cases"].append({"dividend": dividend, "divisor": divisor, "caller_sp": CALLER_SP})
+            evidence["cases"].append({"dividend": dividend, "divisor": divisor, "caller_sp": CALLER_SP,
+                                      "caller_i": 1, "caller_d": 1})
+        # The other three caller (I, D) combinations, over every case: the routine must keep I and D as the caller set.
+        for i_set, d_set in ALL_FLAG_COMBOS[1:]:
+            for dividend, divisor in CASES:
+                label = f"flags-i{int(i_set)}d{int(d_set)}-{dividend:04x}-{divisor:04x}"
+                run_case(probe, data, folder, cue, reset, label, entry, dividend, divisor, i_set=i_set, d_set=d_set)
+                evidence["cases"].append({"dividend": dividend, "divisor": divisor, "caller_sp": CALLER_SP,
+                                          "caller_i": int(i_set), "caller_d": int(d_set)})
         # Precondition boundary: caller SP=$0B gives entry S=$07, the lowest value that does not wrap the 7 pushes.
         for dividend, divisor in ((0xFF9C, 0x0007), (0x8000, 0xFFFF)):
             run_case(probe, data, folder, cue, reset, f"lowsp-{dividend:04x}-{divisor:04x}", entry, dividend, divisor,
@@ -273,13 +308,21 @@ def main():
             for index, new in edits:
                 mutant[found + index] = new
             catching = []
-            for dividend, divisor in CASES:
+            # A flag mutant must be seen with the caller holding the other value, so it runs over all four (I, D)
+            # combinations on the first six cases. The other mutants run with the default caller (I=1, D=1).
+            if name in FLAG_MUTANTS:
+                runs = [(i_set, d_set, dv, dd) for i_set, d_set in ALL_FLAG_COMBOS for dv, dd in CASES[:6]]
+            else:
+                runs = [(True, True, dv, dd) for dv, dd in CASES]
+            for i_set, d_set, dividend, divisor in runs:
                 try:
-                    run_case(probe, bytes(mutant), folder, cue, reset, f"{name}-{dividend:04x}-{divisor:04x}", entry,
-                             dividend, divisor)
+                    run_case(probe, bytes(mutant), folder, cue, reset,
+                             f"{name}-i{int(i_set)}d{int(d_set)}-{dividend:04x}-{divisor:04x}", entry,
+                             dividend, divisor, i_set=i_set, d_set=d_set)
                 except Mismatch as error:  # only a value mismatch counts; infrastructure errors must propagate
-                    catching.append({"case": f"{dividend:04X}/{divisor:04X}", "dividend": dividend, "divisor": divisor,
-                                     "fields": error.fields, "detail": str(error)})
+                    catching.append({"case": f"I{int(i_set)}D{int(d_set)} {dividend:04X}/{divisor:04X}",
+                                     "dividend": dividend, "divisor": divisor, "fields": error.fields,
+                                     "detail": str(error)})
             if not catching:
                 raise ValueError(f"{name}: no test case rejects the mutant")
             fields = sorted({f for entry in catching for f in entry["fields"]})
