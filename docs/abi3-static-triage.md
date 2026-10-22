@@ -82,9 +82,10 @@
 
 - `python3 tools/reproduce_static_triage.py --rom <ローカル画像> [--expect-sha256 <オーナー確認済み全体SHA-256>]`（WSL、`TOOLS_DIR` に pinned da65）。画像が存在する場合、auditor 実行前に上表の値（サイズ、ヘッダ種別、各ハッシュ）を標準出力へ出す。`--expect-sha256` が無い間は同一性は UNVERIFIED と表示する。
 - サイズが 262,144 でも 262,656 でもない画像は BLOCKED（終了コード 2）。`--expect-sha256` 不一致は FAIL（終了コード 1。auditor 失敗・投影差分も 1）。画像が無い場合も BLOCKED（2）。一致しても「オーナー提示の値とファイルが同じ」ことだけを意味し、VERIFIED ではない。
-- TOCTOU 対策: 画像は 1 回だけ読み、そのバイト列でハッシュ・サイズ判定を行い、同じバイト列を非公開の一時ディレクトリ（権限 0700／ファイル 0600、リポジトリ外）へスナップショットとして書き、auditor にはスナップショットのパスだけを渡す。比較完了後に必ず削除する（try/finally）。元ファイルが検査後に変更されても結果に影響しない。
+- TOCTOU 対策: 画像は 1 回だけ読み、そのバイト列でハッシュ・サイズ判定を行い、同じバイト列を非公開の一時ディレクトリ（リポジトリ外。権限 0700／ファイル 0600 は POSIX のみで、Windows では強制されない）へスナップショットとして書き、auditor にはスナップショットのパスだけを渡す。比較完了後に必ず削除する（try/finally）。削除に失敗しディレクトリが残った場合は stderr に `SNAPSHOT NOT DELETED: <path>` を出し、終了コードを 1 にする。画像のサイズは読み込み前に stat で判定する。元ファイルが検査後に変更されても結果に影響しない。
 - `--expect-sha256` は厳格: 未指定は UNVERIFIED、64 桁 16 進（大文字小文字不問）なら比較、空文字・空白のみ・桁数違い・非 16 進・不一致は FAIL（1）。
-- 投影の比較: 既存フィールドは値・構造とも厳密一致。解析器が後から追加した指標は名前付き許可リスト `ADDED_CALLEE_FIELDS`（現在 `states_without_guaranteed_return`、#485／PR #490）のみ、コミット済み証拠に無い場合に限り、型（int、bool 不可）・範囲（0 以上 `states_visited` 以下、`non_returning_states` 以上）・位置（`apis[*].callee`）を検証したうえで比較から除外し、`UNBASELINED` と表示する。UNBASELINED は検証済み証拠ではない。許可リスト外の追加キー・その他の差分は FAIL。
+- 終了コード: 0 = 全フィールド一致（PASS）、1 = FAIL（スナップショット削除失敗を含む）、2 = BLOCKED、3 = UNBASELINED（既存フィールドは一致、新指標は未検証）。リポジトリ内に本ツールの終了コードを使う Makefile／CI は無い。
+- 投影の比較: 既存フィールドは値・構造・型とも厳密一致（JSON テキストで比較するため true と 1、4.0 と 4 は不一致）。解析器が後から追加した指標は名前付き許可リスト `ADDED_CALLEE_FIELDS`（現在 `states_without_guaranteed_return`、#485／PR #490）のみ、コミット済み証拠に無い場合に限り、型（int、bool 不可）・範囲（0 以上 `states_visited` 以下、`non_returning_states` 以上）・位置（`apis[*].callee`）を検証したうえで比較から除外し、`UNBASELINED` を stderr に表示して終了コード 3 にする（PASS 行は出さない）。UNBASELINED は検証済み証拠ではない。許可リスト外の追加キー・その他の差分は FAIL。
 - 正本の全体 SHA-256 が確定するまで、この手順の PASS は「ローカル画像から投影が再現した」ことのみを意味する。
 
 ## 制限

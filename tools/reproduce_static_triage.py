@@ -38,16 +38,17 @@ def describe_image(data):
 # Named allowlist: only these keys may be absent from the committed evidence. Anything else must match exactly.
 ADDED_CALLEE_FIELDS = ("states_without_guaranteed_return",)
 UNBASELINED = "UNBASELINED"
+EXIT_UNBASELINED = 3  # 0 PASS, 1 FAIL, 2 BLOCKED, 3 UNBASELINED (existing fields match, new metric unverified)
 SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
 
 
 def _valid_added_field(callee, key):
     """Type, range and scope check of an allowlisted added metric (callee-level count)."""
-    v = callee[key]
-    if type(v) is not int or not 0 <= v <= callee.get("states_visited", -1):
+    v, visited, floor = callee[key], callee.get("states_visited"), callee.get("non_returning_states", 0)
+    if any(type(x) is not int for x in (v, visited, floor)):  # fail closed, never TypeError
         return False
     # states with no existence-path to a return are a subset of states with no guaranteed return
-    return v >= callee.get("non_returning_states", 0)
+    return floor <= v <= visited
 
 
 def compare_projection(fresh, committed):
@@ -73,7 +74,8 @@ def compare_projection(fresh, committed):
             if key not in cc:
                 del fc[key]
                 unbaselined.add(key)
-    if fresh != committed:
+    # type-strict: json text distinguishes true/1 and 4.0/4, which Python == does not
+    if json.dumps(fresh, sort_keys=True) != json.dumps(committed, sort_keys=True):
         return False, "regenerated projection differs from docs/evidence/reference-static-triage-81.json", []
     return True, "", sorted(unbaselined)
 
@@ -85,6 +87,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if not args.rom.is_file():
         print(f"BLOCKED: reference image not found: {args.rom}", file=sys.stderr)
+        return 2
+    if args.rom.stat().st_size not in (262144, 262656):  # size gate before reading the content
+        print("BLOCKED: image size is neither 262144 nor 262656 bytes", file=sys.stderr)
         return 2
     data = args.rom.read_bytes()  # the ONLY read of the original; everything below uses these bytes
     ident = describe_image(data)
@@ -104,33 +109,51 @@ def main(argv=None):
         print("SHA-256 matches --expect-sha256 (owner-provided value; not canonical identity)")
     else:
         print("NOTE: no --expect-sha256; identity is UNVERIFIED (CRC32 is a database label, not provenance)")
-    tmp = tempfile.mkdtemp(prefix="abi3-triage-")  # private (0700) dir, outside the repo
+    tmp = tempfile.mkdtemp(prefix="abi3-triage-")  # outside the repo; 0700 on POSIX, no ACL hardening on Windows
     try:
-        snap = Path(tmp) / "snapshot.bin"
-        fd = os.open(snap, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-        if hashlib.sha256(snap.read_bytes()).hexdigest() != ident["sha256_whole_file"]:
-            print("FAIL: snapshot differs from the hashed bytes", file=sys.stderr)
-            return 1
-        out = Path(tmp) / "projection.json"
-        completed = subprocess.run([sys.executable, str(AUDITOR), "--rom", str(snap), "--slots", SLOTS,
-                                    "--output", str(out)], capture_output=True, text=True)
-        if completed.returncode != 0 or not out.is_file():
-            print(f"FAIL: auditor exited {completed.returncode}\n{completed.stderr}", file=sys.stderr)
-            return 1
-        fresh = json.loads(out.read_text(encoding="utf-8"))
-        committed = json.loads(COMMITTED.read_text(encoding="utf-8"))
-        ok, msg, unbaselined = compare_projection(fresh, committed)
+        rc = _analyze(tmp, data, ident)
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        left = _remove(tmp)
+    return 1 if left and rc in (0, EXIT_UNBASELINED) else rc
+
+
+def _remove(tmp):
+    """Delete the snapshot dir; report loudly (stderr) if it is still there. Returns True when left behind."""
+    try:
+        shutil.rmtree(tmp)
+    except OSError:
+        pass
+    if Path(tmp).exists():
+        print(f"SNAPSHOT NOT DELETED: {tmp}", file=sys.stderr)
+        return True
+    return False
+
+
+def _analyze(tmp, data, ident):
+    snap = Path(tmp) / "snapshot.bin"
+    fd = os.open(snap, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    if hashlib.sha256(snap.read_bytes()).hexdigest() != ident["sha256_whole_file"]:
+        print("FAIL: snapshot differs from the hashed bytes", file=sys.stderr)
+        return 1
+    out = Path(tmp) / "projection.json"
+    completed = subprocess.run([sys.executable, str(AUDITOR), "--rom", str(snap), "--slots", SLOTS,
+                                "--output", str(out)], capture_output=True, text=True)
+    if completed.returncode != 0 or not out.is_file():
+        print(f"FAIL: auditor exited {completed.returncode}\n{(completed.stderr or '')[-500:]}", file=sys.stderr)
+        return 1
+    fresh = json.loads(out.read_text(encoding="utf-8"))
+    committed = json.loads(COMMITTED.read_text(encoding="utf-8"))
+    ok, msg, unbaselined = compare_projection(fresh, committed)
     if not ok:
         print("FAIL: " + msg, file=sys.stderr)
         return 1
     if unbaselined:
         print(f"{UNBASELINED}: {', '.join(unbaselined)} present in the analyzer but not in the committed evidence; "
-              "not verified evidence")
-    print("PASS: existing fields of the regenerated projection match the committed file (81 slots); "
+              "existing fields match, new metric NOT verified (exit 3, not a PASS)", file=sys.stderr)
+        return EXIT_UNBASELINED
+    print("PASS: all fields of the regenerated projection match the committed file (81 slots); "
           "this is not canonical ROM identity")
     return 0
 

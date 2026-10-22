@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -164,14 +165,55 @@ class Harness(unittest.TestCase):
     def test_only_new_metric_added_is_unbaselined_not_verified(self):
         old = projection(callee(), callee())
         new = projection(callee(states_without_guaranteed_return=4), callee(states_without_guaranteed_return=10))
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            self.assertEqual(self.run_main(new, old), 0)
-        self.assertIn("UNBASELINED: states_without_guaranteed_return", out.getvalue())
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            self.assertEqual(self.run_main(new, old), 3)
+        self.assertIn("UNBASELINED: states_without_guaranteed_return", err.getvalue())
+        self.assertNotIn("PASS", out.getvalue())
         self.assertEqual(compare_projection(new, old), (True, "", ["states_without_guaranteed_return"]))
 
 
+    def test_snapshot_not_deleted_is_loud_and_nonzero(self):
+        pr = projection(callee())
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err),                 mock.patch("reproduce_static_triage.shutil.rmtree", side_effect=PermissionError("locked")):
+            rc = self.run_main(pr, pr)
+        self.assertEqual(rc, 1)
+        self.assertIn("SNAPSHOT NOT DELETED: " + str(self.seen["snap"].parent), err.getvalue())
+        shutil.rmtree(self.seen["snap"].parent)
+
+    def test_size_checked_before_read(self):
+        self.rom.write_bytes(b"x" * 1000)
+        with mock.patch.object(Path, "read_bytes", side_effect=AssertionError("read")),                 contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(main(["--rom", str(self.rom)]), 2)
+
+    def test_auditor_stderr_truncated(self):
+        com = self.dir / "c.json"
+        com.write_text("{}")
+        err = io.StringIO()
+        with mock.patch.object(reproduce_static_triage, "COMMITTED", com),                 mock.patch("reproduce_static_triage.subprocess.run",
+                           return_value=mock.Mock(returncode=7, stderr="z" * 5000)),                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            self.assertEqual(main(["--rom", str(self.rom)]), 1)
+        self.assertLess(len(err.getvalue()), 700)
+
+
 class CompareProjection(unittest.TestCase):
+    def test_type_strict_equality(self):
+        for committed, fresh in ((True, 1), (1, True), (4.0, 4), (4, 4.0), (0, False)):
+            with self.subTest(c=committed, f=fresh):
+                self.assertFalse(compare_projection(projection(callee(flag=fresh)),
+                                                    projection(callee(flag=committed)))[0])
+        self.assertTrue(compare_projection(projection(callee(flag=4.0)), projection(callee(flag=4.0)))[0])
+
+    def test_non_int_floor_fails_closed(self):
+        old = projection(callee())
+        for bad in ("2", None, 2.0):
+            new = projection(callee(non_returning_states=bad, states_without_guaranteed_return=4))
+            self.assertFalse(compare_projection(new, old)[0])
+        new = projection(callee(states_without_guaranteed_return=4))
+        new["apis"][0]["callee"]["states_visited"] = "10"
+        self.assertFalse(compare_projection(new, old)[0])
+
     def test_new_metric_present_in_both_is_compared_strictly(self):
         a = projection(callee(states_without_guaranteed_return=4))
         b = projection(callee(states_without_guaranteed_return=5))
