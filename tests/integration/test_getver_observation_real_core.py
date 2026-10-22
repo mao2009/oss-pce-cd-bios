@@ -30,6 +30,7 @@ FIXTURE_CASE = "plugin_ex_getver_expect_a_x"  # the case in FIXTURE; the harness
 HARNESS_FILES = (ROOT / "tests" / "integration" / "geargrafx_core_harness.py",
                  ROOT / "tests" / "fixtures" / "core-harness.s")
 RECORDS = BUILD / "getver-observation" / "records.jsonl"
+PINNED_CORE_REVISION = json.loads((ROOT / "tools" / "dependencies.json").read_text(encoding="utf-8"))["geargrafx"]["revision"]
 
 
 def _sha256(path):
@@ -50,11 +51,11 @@ class RealCoreObservationTests(unittest.TestCase):
         evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
         entry = parse_lbl(DEV_LABELS.read_text(encoding="utf-8"))["api_slot_1E"]
         cls.kwargs = dict(rom_sha256=_sha256(DEV_ROM), entry=entry,
-                          core_revision=evidence["geargrafx_revision"],
+                          core_revision=PINNED_CORE_REVISION,
                           harness_revision=hashlib.sha256(b"".join(p.read_bytes() for p in HARNESS_FILES)).hexdigest(),
                           step_budget=evidence["steps_per_cycle"])
         cls.records = g.from_core_evidence(evidence, case_name=FIXTURE_CASE, rom_sha256=cls.kwargs["rom_sha256"], entry=entry,
-                                           harness_revision=cls.kwargs["harness_revision"],
+                                           core_revision=cls.kwargs["core_revision"], harness_revision=cls.kwargs["harness_revision"],
                                            step_budget=cls.kwargs["step_budget"])
         RECORDS.parent.mkdir(parents=True, exist_ok=True)
         RECORDS.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in cls.records),

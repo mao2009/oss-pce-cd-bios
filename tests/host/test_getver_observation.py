@@ -243,7 +243,7 @@ class ConverterTests(unittest.TestCase):
 
     def test_converts_only_the_api_slot_case_for_each_returned_temperature(self):
         records = g.from_core_evidence(self.evidence(), case_name="plugin_ex_getver", rom_sha256=ROM, entry=ENTRY,
-                                       harness_revision=HARNESS, step_budget=BUDGET)
+                                       core_revision=CORE, harness_revision=HARNESS, step_budget=BUDGET)
         self.assertEqual([r["temperature"] for r in records], ["cold", "warm"])
         for item in records:
             self.assertEqual(g.validate(item, **SYNTHETIC), "OBSERVED_SYNTHETIC")
@@ -252,7 +252,7 @@ class ConverterTests(unittest.TestCase):
 
     def test_a_cycle_that_did_not_return_produces_no_record(self):
         records = g.from_core_evidence(self.evidence(cold_status="TIMEOUT"), case_name="plugin_ex_getver", rom_sha256=ROM, entry=ENTRY,
-                                       harness_revision=HARNESS, step_budget=BUDGET)
+                                       core_revision=CORE, harness_revision=HARNESS, step_budget=BUDGET)
         self.assertEqual([r["temperature"] for r in records], ["warm"])
 
     def test_run_that_breaks_the_contract_is_refused_not_counted(self):
@@ -260,39 +260,46 @@ class ConverterTests(unittest.TestCase):
         evidence["cases"][1]["observed"]["warm"]["after"]["sp"] = 0xFE  # stack corrupted: validate() refuses it
         with self.assertRaisesRegex(g.Refused, "STACK"):
             g.from_core_evidence(evidence, case_name="plugin_ex_getver", rom_sha256=ROM, entry=ENTRY,
-                                 harness_revision=HARNESS, step_budget=BUDGET)
+                                 core_revision=CORE, harness_revision=HARNESS, step_budget=BUDGET)
 
     def test_returned_cycle_without_observation_is_refused(self):
         evidence = self.evidence()
         del evidence["cases"][1]["observed"]["cold"]  # status still says RETURNED for cold
         with self.assertRaisesRegex(g.Refused, "FIELDS"):
             g.from_core_evidence(evidence, case_name="plugin_ex_getver", rom_sha256=ROM, entry=ENTRY,
-                                 harness_revision=HARNESS, step_budget=BUDGET)
+                                 core_revision=CORE, harness_revision=HARNESS, step_budget=BUDGET)
+
+    def test_evidence_from_another_core_revision_is_refused(self):
+        evidence = self.evidence()
+        evidence["geargrafx_revision"] = "d" * 40  # self-consistent evidence, but not the pinned core
+        with self.assertRaisesRegex(g.Refused, "CORE_MISMATCH"):
+            g.from_core_evidence(evidence, case_name="plugin_ex_getver", rom_sha256=ROM, entry=ENTRY,
+                                 core_revision=CORE, harness_revision=HARNESS, step_budget=BUDGET)
 
     def test_missing_case_name_is_refused(self):
         with self.assertRaisesRegex(g.Refused, "CASE"):
             g.from_core_evidence(self.evidence(), case_name="no_such_case", rom_sha256=ROM, entry=ENTRY,
-                                 harness_revision=HARNESS, step_budget=BUDGET)
+                                 core_revision=CORE, harness_revision=HARNESS, step_budget=BUDGET)
 
     def test_duplicate_case_name_is_refused(self):
         dup = self.evidence()["cases"][1]
         with self.assertRaisesRegex(g.Refused, "CASE"):
             g.from_core_evidence(self.evidence(extra_cases=[dup]), case_name="plugin_ex_getver", rom_sha256=ROM,
-                                 entry=ENTRY, harness_revision=HARNESS, step_budget=BUDGET)
+                                 entry=ENTRY, core_revision=CORE, harness_revision=HARNESS, step_budget=BUDGET)
 
     def test_case_not_targeting_api_slot_is_refused(self):
         evidence = self.evidence()
         evidence["cases"][1]["target"] = "harness_selftest"
         with self.assertRaisesRegex(g.Refused, "ENTRY_MISMATCH"):
             g.from_core_evidence(evidence, case_name="plugin_ex_getver", rom_sha256=ROM, entry=ENTRY,
-                                 harness_revision=HARNESS, step_budget=BUDGET)
+                                 core_revision=CORE, harness_revision=HARNESS, step_budget=BUDGET)
 
     def test_nan_in_core_evidence_is_refused_not_raised(self):
         evidence = self.evidence()
         evidence["cases"][1]["observed"]["warm"]["before"]["a"] = float("nan")
         with self.assertRaisesRegex(g.Refused, "FIELDS"):
             g.from_core_evidence(evidence, case_name="plugin_ex_getver", rom_sha256=ROM, entry=ENTRY,
-                                 harness_revision=HARNESS, step_budget=BUDGET)
+                                 core_revision=CORE, harness_revision=HARNESS, step_budget=BUDGET)
 
 
 class SourceAndCaseSchemaTests(unittest.TestCase):
@@ -434,11 +441,11 @@ class ExceptionSafetyTests(unittest.TestCase):
         for label, case in bad_cases.items():
             with self.subTest(case=label), self.assertRaisesRegex(g.Refused, "FIELDS"):
                 g.from_core_evidence(evidence(case), case_name="plugin_ex_getver", rom_sha256=ROM, entry=ENTRY,
-                                     harness_revision=HARNESS, step_budget=BUDGET)
+                                     core_revision=CORE, harness_revision=HARNESS, step_budget=BUDGET)
         for label, bad in (("no evidence", None), ("no cases key", {"geargrafx_revision": CORE})):
             with self.subTest(evidence=label), self.assertRaisesRegex(g.Refused, "FIELDS"):
                 g.from_core_evidence(bad, case_name="plugin_ex_getver", rom_sha256=ROM, entry=ENTRY,
-                                     harness_revision=HARNESS, step_budget=BUDGET)
+                                     core_revision=CORE, harness_revision=HARNESS, step_budget=BUDGET)
 
 
 if __name__ == "__main__":

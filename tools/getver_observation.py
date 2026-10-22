@@ -177,7 +177,7 @@ def validate(record, *, rom_sha256, entry, core_revision, harness_revision, step
     return "OBSERVED_SYNTHETIC"
 
 
-def from_core_evidence(evidence, *, case_name, rom_sha256, entry, harness_revision, step_budget):
+def from_core_evidence(evidence, *, case_name, rom_sha256, entry, core_revision, harness_revision, step_budget):
     """Convert the named core harness case (which must target api_slot_1E) into sealed records.
 
     The core harness does not measure I/O or step counts; both are recorded as NOT_MEASURED rather
@@ -185,6 +185,8 @@ def from_core_evidence(evidence, *, case_name, rom_sha256, entry, harness_revisi
     """
     records = []
     try:
+        if evidence["geargrafx_revision"] != core_revision:  # compare with the pin, never with the evidence itself
+            raise Refused("CORE_MISMATCH", "evidence was produced by a core other than the pinned revision")
         named = [case for case in evidence["cases"] if case["name"] == case_name]
         if len(named) != 1:  # a missing or duplicated case name is ambiguous evidence, not an empty result
             raise Refused("CASE", f"{len(named)} cases named {case_name!r}; exactly one is required")
@@ -201,7 +203,7 @@ def from_core_evidence(evidence, *, case_name, rom_sha256, entry, harness_revisi
             item = seal({
                 "schema": SCHEMA, "slot": SLOT, "entry": entry,
                 "source": {"kind": "SYNTHETIC_DEV_ROM", "rom_sha256": rom_sha256},
-                "core": {"name": "geargrafx", "revision": evidence["geargrafx_revision"]},
+                "core": {"name": "geargrafx", "revision": core_revision},
                 "harness": {"name": "geargrafx_core_harness", "revision": harness_revision},
                 "case": case["name"], "temperature": cycle, "status": "RETURNED",
                 "inputs": {r: before[r] for r in "axyp"},  # delivered inputs as the harness observed them
@@ -211,7 +213,7 @@ def from_core_evidence(evidence, *, case_name, rom_sha256, entry, harness_revisi
                 "abi_claim": "OBSERVED_SYNTHETIC",
             })
             # Only records the validator accepts leave the converter; a refused run stops the conversion.
-            validate(item, rom_sha256=rom_sha256, entry=entry, core_revision=evidence["geargrafx_revision"],
+            validate(item, rom_sha256=rom_sha256, entry=entry, core_revision=core_revision,
                      harness_revision=harness_revision, step_budget=step_budget)
             records.append(item)
     except Refused:
