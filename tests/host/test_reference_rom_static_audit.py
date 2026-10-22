@@ -11,7 +11,6 @@ import random
 import re
 import sys
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -319,17 +318,34 @@ class GuaranteedReturnGraphTests(unittest.TestCase):
                 old_guaranteed_return(visited, succ, terminals))
 
     def test_large_straight_line_is_linear(self):
-        # Old O(V^2) needs ~V passes over V states; 50k states took minutes.
-        visited, succ, terminals = chain(50000)
-        start = time.perf_counter()
+        # Deterministic work bound (no wall clock): the old fixpoint re-iterates
+        # target lists on every pass (~V^2/2 iterations on this graph); the new
+        # one iterates each state's target list once.
+        class CountingList(list):
+            iterations = 0
+
+            def __iter__(self):
+                CountingList.iterations += 1
+                return super().__iter__()
+
+        count = 50000
+        visited, succ, terminals = chain(count)
+        succ = {k: CountingList(v) for k, v in succ.items()}
         result = audit.Auditor._states_without_guaranteed_return(visited, succ, terminals)
-        elapsed = time.perf_counter() - start
         self.assertEqual(result, 0)
-        self.assertLess(elapsed, 5.0)
+        self.assertLessEqual(CountingList.iterations, 2 * count)
         # Cut the return: nothing is guaranteed.
-        succ[49999] = [49999]
+        succ[count - 1] = [count - 1]
         self.assertEqual(
-            audit.Auditor._states_without_guaranteed_return(visited, succ, set()), 50000)
+            audit.Auditor._states_without_guaranteed_return(visited, succ, set()), count)
+
+    def test_states_left_on_the_worklist_are_not_counted(self):
+        # Pin: a successor not in visited (search budget stopped the walk before
+        # expanding it) is not counted, so the value is only a lower bound when
+        # budget_exhausted is true.
+        succ = {"a": ["b"]}
+        self.assertEqual(
+            audit.Auditor._states_without_guaranteed_return({"a"}, succ, set()), 1)
 
     def test_large_graph_matches_old_on_reduced_size(self):
         visited, succ, terminals = chain(20000)

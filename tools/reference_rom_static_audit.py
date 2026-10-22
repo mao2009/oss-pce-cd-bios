@@ -527,6 +527,11 @@ class Auditor:
         set either. So everything unknown counts as not guaranteed. This is a
         static graph property only: it ignores data-dependent branch outcomes
         (both edges are assumed possible), so it is a conservative bound.
+
+        Only meaningful when budget_exhausted is false: states still on the
+        worklist when the budget stops the walk are not in ``visited``, so they
+        are not counted here (the count undercounts) and the value is a lower
+        bound only.
         """
         # O(V+E): count distinct unresolved successors per state and propagate
         # backwards from the terminal returns (duplicate edges must not skew it).
