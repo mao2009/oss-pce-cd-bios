@@ -2,6 +2,7 @@
 import hashlib
 import sys
 import tempfile
+from unittest import mock
 import unittest
 from pathlib import Path
 
@@ -33,7 +34,16 @@ class DescribeImage(unittest.TestCase):
             self.assertEqual(main(["--rom", str(bad)]), 2)
             ok = Path(t) / "ok.bin"
             ok.write_bytes(b"" * 262144)
-            self.assertEqual(main(["--rom", str(ok), "--expect-sha256", "0" * 64]), 1)
+            with mock.patch("reproduce_static_triage.subprocess.run") as run:
+                self.assertEqual(main(["--rom", str(ok), "--expect-sha256", "0" * 64]), 1)
+                run.assert_not_called()
+                good = hashlib.sha256(ok.read_bytes()).hexdigest()
+                run.return_value = mock.Mock(returncode=7, stderr="")
+                for v in (good, good.upper(), " " + good + "
+"):
+                    run.reset_mock()
+                    main(["--rom", str(ok), "--expect-sha256", v])
+                    run.assert_called_once()  # hash gate passed; auditor reached
             self.assertEqual(main(["--rom", str(Path(t) / "none")]), 2)
 
 

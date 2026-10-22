@@ -80,8 +80,8 @@
 | ペイロード SHA-256 | 先頭 512 バイトを除いた 262,144 バイト | ヘッダ付き・なしの比較に使える。記録上の値は全体 SHA-256 のみで、ペイロード値との照合は未実施 |
 | ペイロード CRC32 | Geargrafx DB のラベル | 識別ラベルにすぎず、出所の証明ではない |
 
-- `python3 tools/reproduce_static_triage.py --rom <ローカル画像> [--expect-sha256 <オーナー確認済み全体SHA-256>]`（WSL、`TOOLS_DIR` に pinned da65）。実行前に上表の値（サイズ、ヘッダ種別、各ハッシュ）を標準出力へ出す。`--expect-sha256` が無い間は同一性は UNVERIFIED と表示する。
-- サイズが 262,144 でも 262,656 でもない画像は BLOCKED（終了コード 2）。`--expect-sha256` 不一致は FAIL（終了コード 1）。一致しても「オーナー提示の値とファイルが同じ」ことだけを意味し、VERIFIED ではない。
+- `python3 tools/reproduce_static_triage.py --rom <ローカル画像> [--expect-sha256 <オーナー確認済み全体SHA-256>]`（WSL、`TOOLS_DIR` に pinned da65）。画像が存在する場合、auditor 実行前に上表の値（サイズ、ヘッダ種別、各ハッシュ）を標準出力へ出す。`--expect-sha256` が無い間は同一性は UNVERIFIED と表示する。
+- サイズが 262,144 でも 262,656 でもない画像は BLOCKED（終了コード 2）。`--expect-sha256` 不一致は FAIL（終了コード 1。auditor 失敗・投影差分も 1）。画像が無い場合も BLOCKED（2）。一致しても「オーナー提示の値とファイルが同じ」ことだけを意味し、VERIFIED ではない。
 - 正本の全体 SHA-256 が確定するまで、この手順の PASS は「ローカル画像から投影が再現した」ことのみを意味する。
 
 ## 制限
