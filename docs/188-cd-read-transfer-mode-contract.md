@@ -29,12 +29,12 @@
 | 候補 | 公開 caller での使用 | 1セクター観測の扱い | 判断 |
 | --- | --- | --- | --- |
 | `_dh = 3` | [C] HuCC `_cd_loadbank.4`（`hucc-systemcard.asm` L425-457）。L440-441 で `_dh=3`。L436-438 で `_dh` の値を非0のときだけ `_al` へ複写（コードの事実） | [HYPOTHESIS] count の単位がセクターであることは宣言 `sectors<_al>`（L425）とコメント（L436）に基づく仮説であって、コードの事実ではない（A4）。「1セクター指定が自然」という判断はこの仮説に依る | **採用（候補）** |
-| `_dh = 0` | [C] HuCC L384 `stz`（`_dh = 0`）。L381-382 が `_ax` に読出し長（最大 `$2000`）を入れる（コードの事実）。単位が「バイト」なのはコメント（L381「Set read length in bytes.」/ L384「Signal bytes, not sectors.」）由来 | 1セクター = 2048 バイト = `$0800`。count 単位が別軸（[HYPOTHESIS]、コメント/宣言由来） | 別モード（対象外） |
+| `_dh = 0` | [C] HuCC L384 `stz`（`_dh = 0`）。L381-382 が `_ax` に読出し長を入れる（コードの事実。1回の読み出し長は最大 `$2000`: L369 `cmp.h #$2000` / L372 `sbc.h #$2000` / L375 `lda.h #$2000`）。単位が「バイト」なのはコメント（L381「Set read length in bytes.」/ L384「Signal bytes, not sectors.」）由来 | 1セクター = 2048 バイト = `$0800`。count 単位が別軸（[HYPOTHESIS]、コメント/宣言由来） | 別モード（対象外） |
 | `_dh = 2` | [C] 確認範囲（`include/hucc/` の2ファイル）の `cd_read` 呼出側に使用箇所なし（後述 D1） | 既存文書 [cd-read-mode-contract.md](cd-read-mode-contract.md) / [188-cd-read-mode-safety.md](188-cd-read-mode-safety.md) の対象。既存文書間の出典表記が食い違っていた（訂正前の cd-read-mode-contract.md R3 は HuCC を挙げていた。本 PR で訂正した。HuCC 側に `_dh=2` が無いことは確認済み） | 既存契約の不一致は本 PR で訂正済み（D1） |
 | `$FE` / `$FF` | [C] L294 `lda #$FF` / L322 `lda #$FE` を `_dh` に書く（コメントは「Signal a VRAM load.」） | VRAM 系 | 対象外 |
 | `6` | [C] 上書きローダ（`core-kernel.asm` L593-594） | MPR6 系 | 対象外 |
 
-**D1（決定・オーナー承認）**: 優先観測候補は `_dh = 3` とする（冒頭「優先観測候補」参照）。`_dh = 2` について既存文書間で出典表記が食い違っていた。[cd-read-mode-contract.md](cd-read-mode-contract.md):31（R3。訂正前は :30）は「HuCC, Hu-Go HLE」としていたが、HuCC が `_dh=2` を書かないことを確認したため訂正した（§4）。[cd-read-contract.md](cd-read-contract.md):137（「HuCC + Hu-Go HLE」）と [abi-contracts.md](abi-contracts.md):136（「Hu-Go model; HuCC overlay loader also uses 6」）は、食い違いを含めて事実として残し、本書では変更しない。`cd_read` の HuCC 呼出側（`include/hucc/` の2ファイル、ledger C06-C10、[research/148-cd-read-abi.md](research/148-cd-read-abi.md) §2.1）で確認できる `_dh` の値は `0 / 3 / $FE / $FF / 6` のみ。`include/huc/` は未検査。
+**D1（決定・オーナー承認）**: 優先観測候補は `_dh = 3` とする（冒頭「優先観測候補」参照）。`_dh = 2` について既存文書間で出典表記が食い違っていた。[cd-read-mode-contract.md](cd-read-mode-contract.md):31（R3。訂正前は :30）は「HuCC, Hu-Go HLE」としていたが、HuCC が `_dh=2` を書かないことを確認したため訂正した（§4）。[cd-read-contract.md](cd-read-contract.md):137 は**主張（Destination mode 行）は変更せず、出典欄 出所に訂正注記のみ追記**した（§4 D1）。[abi-contracts.md](abi-contracts.md):136（「Hu-Go model; HuCC overlay loader also uses 6」）は本 PR の差分対象外で、食い違いを含めて事実として残す。`cd_read` の HuCC 呼出側（`include/hucc/` の2ファイル、ledger C06-C10、[research/148-cd-read-abi.md](research/148-cd-read-abi.md) §2.1）で確認できる `_dh` の値は `0 / 3 / $FE / $FF / 6` のみ。`include/huc/` は未検査。
 
 ## 2. 1モード・1セクターの契約表（`_dh = 3`）
 
@@ -44,13 +44,13 @@
 
 | # | 項目 | 呼出側で確定していること | 根拠 | 状態（呼出側） | callee 側の解釈 |
 | --- | --- | --- | --- | --- | --- |
-| A1 | 転送先の種類 | `_dh = 3` を書く（L440-441）。コメントは「MPR3 を使う」 | [C] | 確定（入力値） | UNKNOWN（callee が 3 を RAM bank 転送と解釈するかは未観測） |
-| A2 | 転送先の基準 | `_bl` に bank を入れる（呼出元の入力）。`_bx` は本ラッパ内で書かれない（L425-457 に `_bx` の書込みなし） | [C] | 確定（`_bx` 未設定） | MPR3 窓内のオフセットを callee が既定値（0 等）で扱うか: UNKNOWN |
+| A1 | 転送先の種類 | `_dh = 3` を書く（L440-441）。コメントは「Use MPR3.」（L440） | [C] | 確定（入力値） | UNKNOWN（callee が 3 を RAM bank 転送と解釈するかは未観測） |
+| A2 | 転送先の基準 | `_bl` と `_bx` は本ラッパ内で書かれない（L425-457 に `_bl` / `_bx` の書込みなし。呼出時の値をそのまま保持する） | [C] | 確定（`_bx` 未設定）。**「bank」の語は宣言 L425 `unsigned char bank<_bl>` に基づく HYPOTHESIS（コメント/宣言由来）**。コードの事実ではない | MPR3 窓内のオフセットを callee が既定値（0 等）で扱うか: UNKNOWN |
 | A3 | 宛先のアドレス単位（byte / sector） | 記述なし | [C] | UNKNOWN | UNKNOWN |
 | A4 | count の単位 | コードの事実: L436-438 は `_dh` の値を読み、**非0のときだけ** `_al` へ 1バイト値を複写する。導出できるのは「呼出側が AL に 1バイト値を入れる」ことまで。count の単位はコードから導けない | [C]（コードの事実のみ） | 単位: UNKNOWN（「セクター」は宣言 `sectors<_al>`（L425）とコメント「Get #sectors (0=whole file).」（L436）に基づく **HYPOTHESIS（コメント/宣言由来）**。コードの事実ではない。D2 参照） | `_al` をセクター数として解釈するか: UNKNOWN（[D] `abi-contracts.md` の表は HYPOTHESIS の扱い） |
 | A5 | 転送層の1セクター（count 1） | READ(6) で LBA 0 / 5 / 15 の1セクターを受信し、バイトが一致する | [M] `single_sector_lba5`、`first_sector_lba0`、`last_sector_lba15`（[cd-read-contract.md](cd-read-contract.md) §2 T1） | 転送層のみ（[M]、Geargrafx のみ） | callee の `_al = 1` 解釈: UNKNOWN |
 | A6 | 「1セクター」の呼出側の使用 | 確認範囲の2ファイルに、`_dh = 3` の呼出で count 1 を渡す箇所はない。件数の計算元を示すコードも確認範囲にない（根拠なし） | 根拠なし | UNKNOWN（count 1 の caller 使用例なし）。count の数値がセクター単位と確定できるか否かは、A4 のとおり HYPOTHESIS（コメント/宣言由来）のまま | UNKNOWN |
-| A7 | VRAM 転送の有無 | なし。VRAM 転送は `$FE` / `$FF` で信号する | [C]（L294 `$FF`、L322 `$FE` と本ラッパの `_dh=3` の対比） | 確定（呼出側は VRAM を指定しない） | UNKNOWN（3 が VRAM に書かないかは未観測） |
+| A7 | VRAM 転送の有無 | なし。VRAM 転送は `$FE` / `$FF` で信号する（命令は L294 `lda #$FF` / L322 `lda #$FE` と `sta <_dh`。**「VRAM」の語はコメント（L294/L322「Signal a VRAM load.」）由来**） | [C]（L294 `$FF`、L322 `$FE` と本ラッパの `_dh=3` の対比。VRAM である根拠はコメント/宣言由来で HYPOTHESIS） | 確定（呼出側は `$FE`/`$FF` を指定しない） | UNKNOWN（3 が VRAM に書かないかは未観測） |
 | A8 | 基点（block number）の作り方 | `_cl:_ch:_dl` は呼出側で作る（`get_file_info` / `_add_sectors`、[D] `research/148-cd-read-abi.md` C15-C16）。絶対 LBA とみなすか CD_BASE 相対か | [C][D] | 確定（呼出側の計算） | UNKNOWN（#11 CD_BASE と未解決の矛盾、[D] `research/148-cd-read-abi.md` §6） |
 
 ### 2.2 呼出側が読む・保存する状態
@@ -72,7 +72,7 @@
 | 入力 | 呼出側の根拠: コードの事実 [C] | 呼出側の根拠: コメント/宣言由来（HYPOTHESIS） | 転送層の既存計測 [M]（callee の確定ではない） | callee の結果 | 状態 |
 | --- | --- | --- | --- | --- | --- |
 | count 1、LBA 0 / 5 / 15 | count 1 を渡す caller 使用例はない（A6）。コードの事実として言えるのは L436-438 の条件付きコピー（`_dh` が非0のときだけ `_al` に 1バイト値を入れる）まで | 単位がセクターであること（A4）。count 1 が「1セクター」に相当するかはこの仮説の下でも未検証 | T1: 1セクターを受信（`first_sector_lba0`、`single_sector_lba5`、`last_sector_lba15`） | UNKNOWN | 転送層のみ正例。callee は未観測 |
-| count 0 | `_dh` が 0 のときは `_al` を書かない分岐（L437-438 の `beq`）。この場合 BIOS は呼出前の `_al` の値を受け取る | 「0 = whole file」は呼出側コメント（L436）の記述であり、コードの事実ではない | T8 相当（count 0 は未計測） | UNKNOWN | 未確定（呼出側の分岐の結果が BIOS に届く値は UNKNOWN） |
+| count 0 | 呼出側は `_al` を書かない分岐（L437 `beq` → L438 の `sta <_al` を飛ばす）。呼出前の `_al` の値をそのまま保持する | 「0 = whole file」は呼出側コメント（L436）の記述であり、コードの事実ではない | T8 相当（count 0 は未計測） | UNKNOWN | 未確定（呼出側の分岐の結果が BIOS に届く値は UNKNOWN） |
 | count 2 / 3 | 呼出側に例なし（A6） | 単位がセクターであること（A4 の仮説のまま） | T2: 3 セクター連続受信（`three_sectors_lba5`）。ただし `_dh = 3` の経路ではない | UNKNOWN | 対象外（別 Issue） |
 | count 4 以上 | 呼出側に例なし | 単位がセクターであること（A4 の仮説のまま） | T8: 未計測 | UNKNOWN | UNKNOWN |
 | LBA 16 以上（媒体の範囲外） | 対象外（#189） | - | T3: STATUS のみ、0 バイト、宛先は未変更（`invalid_sector_lba16`、`invalid_sector_lba_max`） | UNKNOWN | #189 |
@@ -90,7 +90,7 @@
 
 ## 4. 既存文書との整合（参照のみ）
 
-* **D1**: 訂正済み。[cd-read-mode-contract.md](cd-read-mode-contract.md) R3 の出典から HuCC を外し、「HuCC が `_dh=2` を書かないことを確認。`_dh=2` の出典は Hu-Go! HLE のみ（ライセンス未確定、根拠に使わない）」と記した。状態は HYPOTHESIS のまま変えていない。[cd-read-contract.md](cd-read-contract.md):137 と [abi-contracts.md](abi-contracts.md):136 は事実として残した。
+* **D1**: 訂正済み。[cd-read-mode-contract.md](cd-read-mode-contract.md) R3 の出典から HuCC を外し、「HuCC が `_dh=2` を書かないことを確認。`_dh=2` の出典は Hu-Go! HLE のみ（ライセンス未確定、根拠に使わない）」と記した。状態は HYPOTHESIS のまま変えていない。[cd-read-contract.md](cd-read-contract.md):137 は**主張（Destination mode 行）は書き換えず、出典欄 出所に訂正注記のみ追記**した（出典「HuCC + Hu-Go HLE」→ 「訂正: HuCC は `_dh=2` を書かないことを include/hucc/ の範囲で確認。…」。主張行は変更なし）。[abi-contracts.md](abi-contracts.md):136 は**変更していない**（本 PR の差分対象外。食い違いを含めて事実として残す）。
 * **D2**: HuCC `_cd_loadbank.4` の宣言（L425）は `unsigned int sectors<_al>` と書いているが、本体（L436-438）は `_dh` を読むだけで、**非0のときだけ** `_al` へ 1バイト値を複写する。宣言・コメント（`sectors` / 「Get #sectors (0=whole file).」）は count の単位を規定するコードではなく、コードから確定できるのは「呼出側が AL に 1バイト値を入れる」ことまでである。したがって callee が count として読むレジスタは UNKNOWN のままで、count の単位も導出できない（「セクター」であることは HYPOTHESIS（コメント/宣言由来）、A4）。本 D2 は A4 の区分と矛盾しない。
 * **D3**: 基点（CD_BASE 相対か絶対か）の矛盾は [research/148-cd-read-abi.md](research/148-cd-read-abi.md) §6 の通り未解決。#11 の測定まで UNKNOWN。
 * **D4**: 既存の [188-cd-read-mode-safety.md](188-cd-read-mode-safety.md) の判定 BLOCKED は本書でも変わらない。本書は判定を変更しない。
