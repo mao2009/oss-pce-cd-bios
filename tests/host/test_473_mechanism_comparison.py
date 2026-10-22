@@ -8,82 +8,49 @@ from pathlib import Path
 
 import re
 
-# ---- approval-claim guard (clause level). Keep the GUARD_* lists below in sync with GuardSelfTest. ----
-# Rules:
-# - A clause ends at sentence/clause punctuation, including parentheses and commas, so a parenthetical or
-#   a second clause is judged on its own.
-# - A clause is a claim when it holds an approval word (English token or Japanese 承認 in a claim form).
-# - Each approval word is denied only by a negation word in its own window (2 tokens / 6 chars before,
-#   1 token / 12 chars after). A negation elsewhere in the clause does not deny it.
-# - A clause is denied when any of its approval words is denied ("Owner approval is not granted").
-# - The verbatim release-condition quote from #473 is removed before scanning; nothing else is exempt.
-_CLAUSE_SPLIT = re.compile(r"[.;:!?\n|、,，。；：()（）]")
-_EN_TOKEN = re.compile(r"[A-Za-z][A-Za-z'\-]*")
-_EN_APPROVAL = re.compile(r"approv\w*|grant\w*|endors\w*|authori[sz]\w*|go-ahead|green-?light\w*|sign-?off", re.I)
-_EN_NEG_WORDS = {"not", "no", "never", "cannot", "nor"}
-_EN_NO_LONGER = re.compile(r"(?i)\bno\s+longer\b")
-_JA_CLAIM = re.compile(
-    r"承認(?:済|した|しま|され|を得|を受|を与|を取|が得|をいただ|いただ|する|OK|あり|を確認)"  # verb / predicate forms
-    r"|(?<=[をはが])承認$"  # bare 承認 as the object of the clause ("オーナーは方式 A を承認。")
-    r"|正式承認|本番承認|製品承認|リリース承認|承認を記録|承諾|了承|認可|\bOK\b|ＯＫ"
-)
-_JA_CONTRAST = re.compile(r"が|ただし|一方|また|かつ|および|及び")
-_JA_NEG = re.compile(r"ない|なし|無い|ません|ではな|未承認|不承認|非承認|見つからな")
-# Explicit allowed phrases (removed from a clause before the Japanese scan). Only exact scope titles, no free claims.
-JA_ALLOWED = [
-    "正式承認ではない",
-    "承認済みの項目はなし",
-    "承認済みの項目はない",
-    "承認済み項目",  # heading of 12.6
-    "未承認項目",  # heading of 12.7
+# ---- approval guard: allowlist of sentence units, not negation scoring. Keep GUARD_ALLOWED in sync with the doc. ----
+# Every sentence-level unit of the doc (split at newline, table cell, 。 ； ;) that contains an approval word
+# must be an exact GUARD_ALLOWED entry after normalisation. Anything else fails, negated or not.
+# Negation is never scored: "not approved" / "approved but not B" are both simply unlisted sentences.
+_APPROVAL_WORD = re.compile(r"(?i)approv|grant|sign-?\s?off|signed off|authori[sz]|endors|go-?ahead|承認|承諾|了承|認可|\bOK\b|ＯＫ")
+_UNIT_SPLIT = re.compile(r"[\n。；;]")
+GUARD_ALLOWED = [
+    "承認の範囲は、2026-10-22 のオーナー判断 S0 による検証方針 9 項目のみである（第 12.1 節・第 12.6 節）",
+    "正式承認なし",
+    "同コメントは本番の安全機構の正式承認ではないと明記している",
+    "「方式 A/B/C のいずれかについて、オーナーが明示的に承認する",
+    "S0 は検証方針であり、安全機構の方式の正式承認の記録はない",
+    "「オーナーからチャットで明示的な同意を得た対象は『今後の設計・実コア検証を進める方針』であり、安全機構の完成・本番適用・リリースの承認ではない",
+    "本番の安全機構の正式承認ではない",
+    "12.6 承認済み項目",
+    "承認の記録は、2026-10-22 の S0 による検証方針のみである（12.1）",
+    "承認の対象：12.9 の推奨 9 項目を、今後の設計と実コア検証を進める方針として扱うこと",
+    "承認の対象外：安全機構の完成、本番適用、リリース、#459 / #367 のゲート解除、VERIFIED / DEV_CALLABLE は付与しない",
+    "12.7 未承認項目（すべて未決定）",
+    "2026-10-22 の S0 により、この 9 項目について検証方針の承認が記録されている",
+    "検証方針として承認（S0）",
 ]
-# Verbatim quote of the #473 release condition 1, as quoted in the doc. Only this exact quoted form is exempt.
-RELEASE_QUOTE = "「方式 A/B/C のいずれかについて、オーナーが明示的に承認する。」"
 
 
-def clauses(text):
-    return [c.strip() for c in _CLAUSE_SPLIT.split(text) if c.strip()]
+def _normalise(unit):
+    unit = re.sub(r"[*`]", "", unit).strip()
+    return re.sub(r"^[#\-\s]+", "", unit).strip()
 
 
-def _en_denied(words, hits):
-    for i in hits:
-        window = words[max(0, i - 2):i] + words[i + 1:i + 2]
-        if any(w.lower() in _EN_NEG_WORDS or w.lower().endswith("n't") for w in window):
-            return True
-    return False
-
-
-def _ja_denied(text, matches):
-    for m in matches:
-        before = text[max(0, m.start() - 6):m.start()]
-        # Japanese negation sits at the predicate end, so the window runs to the next contrast particle.
-        after = _JA_CONTRAST.split(text[m.end():])[0]
-        if _JA_NEG.search(before) or _JA_NEG.search(after):
-            return True
-    return False
+def units(text):
+    out = []
+    for line in text.split("\n"):
+        for cell in line.split("|"):
+            for part in _UNIT_SPLIT.split(cell):
+                n = _normalise(part)
+                if n:
+                    out.append(n)
+    return out
 
 
 def approval_violations(text):
-    """Return the clauses that claim approval and are not denied by a negation in the claim's own window."""
-    text = text.replace(RELEASE_QUOTE, "")
-    bad = []
-    for c in clauses(text):
-        c_en = _EN_NO_LONGER.sub("", c)  # 'no longer approved' stays a claim
-        words = [m.group() for m in _EN_TOKEN.finditer(c_en)]
-        en_hits = []
-        for i, w in enumerate(words):
-            nxt = words[i + 1].lower() if i + 1 < len(words) else ""
-            if _EN_APPROVAL.fullmatch(w) or (w.lower() in ("signed", "sign") and nxt == "off"):
-                en_hits.append(i)
-        c_ja = c
-        for a in JA_ALLOWED:
-            c_ja = c_ja.replace(a, "")
-        ja_matches = list(_JA_CLAIM.finditer(c_ja))
-        if not en_hits and not ja_matches:
-            continue
-        if not (_en_denied(words, en_hits) or _ja_denied(c_ja, ja_matches)):
-            bad.append(c)
-    return bad
+    """Return the approval-bearing units of text that are not exact GUARD_ALLOWED entries."""
+    return [u for u in units(text) if _APPROVAL_WORD.search(u) and u not in GUARD_ALLOWED]
 
 
 GUARD_MUST_FAIL = [
@@ -133,6 +100,15 @@ GUARD_MUST_FAIL = [
     "オーナーは方式 A を承認した（安全機構は未承認）。",
     "オーナーは方式 A を承認した（安全性は確認されていない）。",
     "オーナー承認あり（正式承認なし）",
+    "The owner did not approve A but approved B.",
+    "The owner approved A but did not approve B.",
+    "方式 A は正式承認されていないがオーナーが承認した。",
+    "Owner approval is not granted for the safety mechanism.",
+    "No owner has approved A.",
+    "Nobody has approved A.",
+    "Owner approval was never given.",
+    "オーナー承認はない。",
+    "承認は得られていない。",
     # Re-review: the release condition is exempt only as the exact quote (see the PASS list), never bare.
     "オーナーが明示的に承認する。",
     # Re-review (MEDIUM-2): synonyms and conjugations.
@@ -144,46 +120,6 @@ GUARD_MUST_FAIL = [
     "The owner gave the go-ahead for A.",
     "The owner endorsed A.",
 ]
-GUARD_MUST_PASS = [
-    "Method A is not approved.",
-    "This is not approved.",
-    "There is no owner approval.",
-    "Not yet approved.",
-    "The method is unapproved.",
-    "never approved by the owner",
-    "正式承認ではない",
-    "承認済みの項目はなし",
-    "承認済みの項目はない。",
-    "### 12.6 承認済み項目",
-    "未承認項目",
-    "オーナーが承認した記録は見つからない",
-    "オーナーが承認した記録はない。",
-    "方式の承認は行われていない",
-    "検証方針の承認が記録された。",
-    "製品の正式承認は行っていない。",
-    "安全機構の本番承認はない。",
-    "検証方針の承認として記録する（正式承認ではない）。",
-    # Coordinator review (MEDIUM): negation after the approval word inside the same clause is a denial.
-    "Owner approval is not granted for the safety mechanism.",
-    "The owner has not signed off on A.",
-    "Approval has not been granted.",
-    "The owner did not approve A.",
-    "オーナーは方式 A を承認していない。",
-    "方式 A の承認は得られていない。",
-    "オーナー承認は未了。",
-    "オーナー承認はない。",
-    # Re-review (MEDIUM-1): denials that sit in the same clause as the approval word.
-    "The owner did not approve A, nor B.",
-    "The owner has not endorsed A.",
-    "The owner gave no go-ahead for A.",
-    "オーナー承認はない（正式承認なし）。",
-    "オーナーは方式 A を承認していない（安全機構は未承認）。",
-    "方式 A の承認が得られていない。",
-    "方式 A の承認を得ていない。",
-    # LOW-2: the release condition is exempt only as this exact quoted form (the #473 quote in 12.1).
-    "「方式 A/B/C のいずれかについて、オーナーが明示的に承認する。」",
-]
-
 DOCS = Path(__file__).resolve().parents[2] / "docs"
 CMP = (DOCS / "473-stack-safety-mechanism-comparison.md").read_text(encoding="utf-8")
 
@@ -261,8 +197,8 @@ class Structure(unittest.TestCase):
     def test_proposal_is_not_owner_approval(self):
         head = CMP.split("## 1.")[0]
         self.assertIn("開発側の提案である", head)
-        self.assertIn("検証方針の承認", head)
-        self.assertIn("方式の正式承認", head)
+        self.assertIn("検証方針 9 項目のみ", head)
+        self.assertIn("正式承認なし", head)
         # Clause-level guard (see approval_violations): no approval claim without a same-clause negation.
         self.assertEqual(approval_violations(CMP), [])
         s121 = section("12.1")
@@ -360,7 +296,7 @@ class Structure(unittest.TestCase):
         self.assertIn("コメントなし", s)
         # S0 record (2026-10-22): scope is the verification policy, never the formal safety-mechanism approval.
         self.assertIn("S0", s)
-        self.assertIn("検証方針の承認として記録する", s)
+        self.assertIn("検証方針として記録する", s)
         self.assertIn("安全機構の完成・本番適用・リリースの承認ではない", s)
         self.assertIn("投稿者の区別もできない", s)
 
@@ -372,22 +308,28 @@ class Structure(unittest.TestCase):
 
 
 class GuardSelfTest(unittest.TestCase):
-    """The approval guard itself must not silently weaken."""
+    """The allowlist guard itself must not silently weaken."""
 
     def test_must_fail(self):
+        # Not on the allowlist, so they fail whether or not they contain a negation.
         for s in GUARD_MUST_FAIL:
             self.assertTrue(approval_violations(s), s)
 
-    def test_must_pass(self):
-        for s in GUARD_MUST_PASS:
+    def test_allowlisted_units_pass(self):
+        for s in GUARD_ALLOWED:
             self.assertEqual(approval_violations(s), [], s)
 
+    def test_allowlist_has_no_stale_entries(self):
+        # Every allowlisted sentence must occur verbatim (normalised) in the doc, so the list cannot drift.
+        doc_units = units(CMP)
+        for s in GUARD_ALLOWED:
+            self.assertIn(s, doc_units, s)
+
     def test_mutation_against_doc(self):
-        # Appending any forbidden sentence to the real document must make the guard fire; the doc itself is clean.
+        # Appending any sentence outside the allowlist must make the guard fire; the doc itself is clean.
         self.assertEqual(approval_violations(CMP), [])
         for s in GUARD_MUST_FAIL:
             self.assertTrue(approval_violations(CMP + chr(10) + s), s)
-            self.assertTrue(approval_violations(CMP + " " + s), s)
 
 
 if __name__ == "__main__":
