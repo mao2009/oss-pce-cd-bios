@@ -35,7 +35,8 @@ def _abi_status(entry):
 
 def _owner_approved(entry):
     approval = entry.get('approval') if isinstance(entry, dict) else None
-    return isinstance(approval, dict) and bool(approval.get('approved_by')) and bool(approval.get('review_ref'))
+    return (isinstance(approval, dict)
+            and all(isinstance(approval.get(k), str) and approval[k].strip() for k in ('approved_by', 'review_ref')))
 
 
 def validate(ledger: dict, slots: list[dict], override_slots: set[int], root: Path = ROOT) -> list[str]:
@@ -102,7 +103,7 @@ def _validate(ledger, slots, override_slots, root):
             expected = f'src/overrides/slot_{slot:02X}.s'
             if implementation.get('source') != expected or not (root / expected).is_file():
                 problems.append(f'{label}: implementation source must be an existing {expected}')
-            if not isinstance(implementation.get('license'), str) or not implementation['license']:
+            if not isinstance(implementation.get('license'), str) or not implementation['license'].strip():
                 problems.append(f'{label}: implementation license is missing')
         if state == 'BLOCKED':
             if implemented:
@@ -149,10 +150,18 @@ def summary(ledger: dict, override_slots: set[int]) -> dict:
 
 
 def main() -> int:
+    try:
+        return _main()
+    except Exception as exc:  # noqa: BLE001  fail closed: any crash is a failure, never a pass
+        print(f'FAIL ledger: {type(exc).__name__}: {exc}', file=sys.stderr)
+        return 1
+
+
+def _main() -> int:
     chosen = set(overrides())
     try:
         ledger = load_ledger()
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:
         print(f'FAIL ledger: cannot load {LEDGER_FILE}: {exc}', file=sys.stderr)
         return 1
     slots = load_slots(SLOTS_FILE)

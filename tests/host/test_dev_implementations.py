@@ -5,6 +5,7 @@ Host-only. Each negative case is a mutated copy of the real ledger that must pro
 import copy
 import sys
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -254,12 +255,22 @@ class FailClosedTests(unittest.TestCase):
             lambda l: l["slots"][3].update(abi_contract={"status": [1]}),
             lambda l: l["slots"][0x3D]["implementation"].update(license=1),
             lambda l: l["slots"][3].update(state="BLOCKED", reason=[1]),
+            lambda l: l["slots"][0x3D].update(state="DEV_CALLABLE", approval={"approved_by": 1, "review_ref": 2}),
+            lambda l: l["slots"][0x3D]["implementation"].update(license=" "),
         ):
             ledger = base()
             mutate(ledger)
             self.assertTrue(dev.validate(ledger, SLOTS, OVERRIDES))
         self.assertTrue(dev.validate([], SLOTS, OVERRIDES))
         self.assertTrue(dev.validate(base(), SLOTS, {1, "a"}))
+
+    def test_main_returns_1_when_ledger_unloadable(self):
+        import io
+        from contextlib import redirect_stderr
+        with unittest.mock.patch.object(dev, "load_ledger", side_effect=RecursionError), redirect_stderr(io.StringIO()):
+            self.assertEqual(1, dev.main())
+        with unittest.mock.patch.object(dev, "validate", side_effect=RuntimeError), redirect_stderr(io.StringIO()):
+            self.assertEqual(1, dev.main())
 
     def test_summary_never_raises_on_malformed_ledger(self):
         for bad in ([], {"slots": 5}, {"slots": [None, 1, {"state": [1], "abi_contract": 3}]}):
