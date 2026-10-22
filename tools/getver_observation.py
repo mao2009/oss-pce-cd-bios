@@ -133,16 +133,18 @@ def validate(record, *, rom_sha256, entry, core_revision, harness_revision, step
     return "OBSERVED_SYNTHETIC"
 
 
-def from_core_evidence(evidence, *, rom_sha256, entry, harness_revision, step_budget):
-    """Convert the core harness evidence of the plug-in case targeting api_slot_1E into sealed records.
+def from_core_evidence(evidence, *, case_name, rom_sha256, entry, harness_revision, step_budget):
+    """Convert the named core harness case (which must target api_slot_1E) into sealed records.
 
     The core harness does not measure I/O or step counts; both are recorded as NOT_MEASURED rather
     than assumed clean. A cycle that did not RETURN produces no record, so it can never be accepted.
     """
     records = []
     for case in evidence["cases"]:
-        if case["target"] != "api_slot_1E" or case["name"].startswith("selftest"):
+        if case["name"] != case_name:
             continue
+        if case["target"] != "api_slot_1E":
+            raise Refused("ENTRY_MISMATCH", f"case {case_name!r} does not target api_slot_1E")
         for cycle in TEMPERATURES:
             observed = case["observed"].get(cycle)
             if observed is None or case["status"].get(cycle) != "RETURNED":

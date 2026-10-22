@@ -151,7 +151,7 @@ class ConverterTests(unittest.TestCase):
         return {"geargrafx_revision": CORE, "cases": [selftest, case, *extra_cases]}
 
     def test_converts_only_the_api_slot_case_for_each_returned_temperature(self):
-        records = g.from_core_evidence(self.evidence(), rom_sha256=ROM, entry=ENTRY,
+        records = g.from_core_evidence(self.evidence(), case_name="plugin_ex_getver", rom_sha256=ROM, entry=ENTRY,
                                        harness_revision=HARNESS, step_budget=BUDGET)
         self.assertEqual([r["temperature"] for r in records], ["cold", "warm"])
         for item in records:
@@ -160,7 +160,7 @@ class ConverterTests(unittest.TestCase):
             self.assertEqual(item["steps_used"], g.NOT_MEASURED)
 
     def test_a_cycle_that_did_not_return_produces_no_record(self):
-        records = g.from_core_evidence(self.evidence(cold_status="TIMEOUT"), rom_sha256=ROM, entry=ENTRY,
+        records = g.from_core_evidence(self.evidence(cold_status="TIMEOUT"), case_name="plugin_ex_getver", rom_sha256=ROM, entry=ENTRY,
                                        harness_revision=HARNESS, step_budget=BUDGET)
         self.assertEqual([r["temperature"] for r in records], ["warm"])
 

@@ -26,6 +26,7 @@ DEV_ROM = BUILD / "bios-dev" / "dev-only-not-compatible-syscard3.pce"
 DEV_LABELS = BUILD / "bios-dev" / "dev.lbl"
 EVIDENCE = BUILD / "core-harness" / "core-harness-evidence.json"
 FIXTURE = ROOT / "tests" / "fixtures" / "core-harness-plugin.json"
+FIXTURE_CASE = "plugin_ex_getver_expect_a_x"  # the case in FIXTURE; the harness also runs its own api_slot_1E self-case
 HARNESS_FILES = (ROOT / "tests" / "integration" / "geargrafx_core_harness.py",
                  ROOT / "tests" / "fixtures" / "core-harness.s")
 RECORDS = BUILD / "getver-observation" / "records.jsonl"
@@ -52,7 +53,7 @@ class RealCoreObservationTests(unittest.TestCase):
                           core_revision=evidence["geargrafx_revision"],
                           harness_revision=hashlib.sha256(b"".join(p.read_bytes() for p in HARNESS_FILES)).hexdigest(),
                           step_budget=evidence["steps_per_cycle"])
-        cls.records = g.from_core_evidence(evidence, rom_sha256=cls.kwargs["rom_sha256"], entry=entry,
+        cls.records = g.from_core_evidence(evidence, case_name=FIXTURE_CASE, rom_sha256=cls.kwargs["rom_sha256"], entry=entry,
                                            harness_revision=cls.kwargs["harness_revision"],
                                            step_budget=cls.kwargs["step_budget"])
         RECORDS.parent.mkdir(parents=True, exist_ok=True)
