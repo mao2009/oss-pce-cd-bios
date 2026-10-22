@@ -1,0 +1,96 @@
+"""Fail-closed verdict gate for the synthetic BM_FORMAT model (Issue #303).
+
+In-memory only: no file, device, or BIOS I/O. Synthetic results are NOT BIOS compatibility.
+The BM_FORMAT ABI is UNKNOWN (#302; reference ABI VERIFIED 0/81), so the overall verdict is
+never PASS: it is BLOCKED_ABI when every run case passed, FAIL on any failing case, and
+NOT_RUN when no case ran. release_eligible is always False.
+"""
+import bm_format_model as bm
+
+PASS, FAIL, NOT_RUN, BLOCKED_ABI = "PASS", "FAIL", "NOT_RUN", "BLOCKED_ABI"
+REJECTED_INVALID_SIGNATURE = "REJECTED_INVALID_SIGNATURE"
+ABI_STATUS = "UNKNOWN"
+RELEASE_ELIGIBLE = False
+
+
+def guarded_format(image, *, allow_destructive=False):
+    """Fail-closed wrapper over bm.format_image.
+
+    A confirmed request on a full-size image with a non-zero invalid signature is refused and
+    the bytes are kept, because corrupt data may still be user save data. Blank (all-zero)
+    images and every other path follow bm.format_image unchanged.
+    """
+    if (allow_destructive is True and isinstance(image, (bytes, bytearray))
+            and len(image) >= bm.MIN_CAPACITY and bm.classify(image) == bm.INVALID
+            and any(image)):
+        return REJECTED_INVALID_SIGNATURE, bytes(image)
+    return bm.format_image(image, allow_destructive=allow_destructive)
+
+
+def judge(expected, status, image, out):
+    """Per-case verdict. Missing, unexpected, or non-conforming results are FAIL (fail-closed)."""
+    if expected is None:
+        return NOT_RUN
+    if status is None or out is None or status != expected:
+        return FAIL
+    if status != bm.OK and bytes(out) != bytes(image):
+        return FAIL  # refused paths must return the input bytes unchanged
+    if status == bm.OK and len(out) != len(image):
+        return FAIL  # the formatted image keeps its capacity
+    return PASS
+
+
+def _formatted(size=bm.MIN_CAPACITY):
+    image = bytearray(size)
+    image[:len(bm.SIGNATURE)] = bm.SIGNATURE
+    return bytes(image)
+
+
+def _corrupt():
+    image = bytearray(_formatted())
+    image[0] ^= 0xFF
+    return bytes(image)
+
+
+# (name, input image, allow_destructive, expected status)
+CASES = [
+    ("normal_blank_64", bytes(bm.MIN_CAPACITY), True, bm.OK),
+    ("normal_blank_256", bytes(256), True, bm.OK),
+    ("normal_bytearray_input_kept", bytearray(bm.MIN_CAPACITY), True, bm.OK),
+    ("invalid_sig_one_bit_rejected", _corrupt(), True, REJECTED_INVALID_SIGNATURE),
+    ("invalid_sig_dirty_rejected", b"\xAA" * bm.MIN_CAPACITY, True, REJECTED_INVALID_SIGNATURE),
+    ("capacity_one_below_min", bytes(bm.MIN_CAPACITY - 1), True, bm.INSUFFICIENT_CAPACITY),
+    ("capacity_empty", b"", True, bm.INSUFFICIENT_CAPACITY),
+    ("double_init_refused", _formatted(), True, bm.ALREADY_FORMATTED),
+    ("unconfirmed_refused", bytes(bm.MIN_CAPACITY), False, bm.REFUSED_UNCONFIRMED),
+]
+
+
+def run_case(name, image, allow, expected):
+    snapshot = bytes(image)
+    try:
+        status, out = guarded_format(image, allow_destructive=allow)
+    except Exception:  # fail-closed: any exception is a FAIL, never a PASS
+        status, out = None, None
+    # The input buffer must never be written, whatever the verdict.
+    if isinstance(image, bytearray) and bytes(image) != snapshot:
+        return {"case": name, "verdict": FAIL, "status": status}
+    return {"case": name, "verdict": judge(expected, status, snapshot, out), "status": status}
+
+
+def run_all(cases=CASES):
+    results = [run_case(*case) for case in cases]
+    ran = [r for r in results if r["verdict"] != NOT_RUN]
+    if any(r["verdict"] == FAIL for r in results):
+        overall = FAIL
+    elif not ran:
+        overall = NOT_RUN
+    else:
+        overall = BLOCKED_ABI  # synthetic passes cannot promote while the ABI is UNKNOWN
+    return {"overall": overall, "abi": ABI_STATUS,
+            "release_eligible": RELEASE_ELIGIBLE, "cases": results}
+
+
+if __name__ == "__main__":
+    import json
+    print(json.dumps(run_all(), ensure_ascii=False, indent=2))
