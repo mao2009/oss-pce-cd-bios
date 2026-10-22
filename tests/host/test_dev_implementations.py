@@ -217,5 +217,34 @@ class AbiVerifiedDerivedTests(unittest.TestCase):
         self.assertEqual(0, dev.summary(base(), OVERRIDES)["abi_verified"])
 
 
+class FailClosedTests(unittest.TestCase):
+    """Malformed ledgers must yield problems (never an exception, never an empty list)."""
+
+    def test_counts_are_separate_and_current(self):
+        s = dev.summary(base(), OVERRIDES)
+        self.assertEqual((8, 73, 0), (s["dev_rom_callable"], s["dev_rom_unimplemented"], s["owner_approved"]))
+
+    def test_owner_approval_is_counted_apart_from_implementation(self):
+        ledger = base()
+        entry(ledger, 0x10)["approval"] = {"approved_by": "owner", "review_ref": "x"}
+        s = dev.summary(ledger, OVERRIDES)
+        self.assertEqual((8, 1, 0), (s["dev_rom_callable"], s["owner_approved"], s["dev_callable_approved"]))
+
+    def test_malformed_ledgers_are_rejected(self):
+        for mutate in (
+            lambda l: l.update(slots=[None] + l["slots"][1:]),
+            lambda l: l["slots"][3].update(abi_contract=None),
+            lambda l: l["slots"][3].update(abi_contract="VERIFIED"),
+            lambda l: l["slots"][3].update(abi_contract={}),
+            lambda l: l["slots"][0x3D].update(state="DEV_CALLABLE", approval="owner"),
+            lambda l: l.update(slots={}),
+            lambda l: l.pop("schema_version"),
+        ):
+            ledger = base()
+            mutate(ledger)
+            self.assertTrue(dev.validate(ledger, SLOTS, OVERRIDES))
+        self.assertTrue(dev.validate([], SLOTS, OVERRIDES))
+
+
 if __name__ == "__main__":
     unittest.main()

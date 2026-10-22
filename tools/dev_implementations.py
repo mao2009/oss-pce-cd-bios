@@ -28,9 +28,21 @@ def load_ledger(path: Path = LEDGER_FILE) -> dict:
     return json.loads(path.read_text(encoding='utf-8'))
 
 
+def _abi_status(entry):
+    abi = entry.get('abi_contract') if isinstance(entry, dict) else None
+    return abi.get('status') if isinstance(abi, dict) else None
+
+
+def _owner_approved(entry):
+    approval = entry.get('approval') if isinstance(entry, dict) else None
+    return isinstance(approval, dict) and bool(approval.get('approved_by')) and bool(approval.get('review_ref'))
+
+
 def validate(ledger: dict, slots: list[dict], override_slots: set[int], root: Path = ROOT) -> list[str]:
     """Return every consistency problem. An empty list means the ledger matches the repository."""
     problems = []
+    if not isinstance(ledger, dict):
+        return ['ledger must be a JSON object']
     if ledger.get('schema_version') != 1:
         problems.append('schema_version must be 1')
     if ledger.get('release_eligible') is not False:
@@ -38,6 +50,8 @@ def validate(ledger: dict, slots: list[dict], override_slots: set[int], root: Pa
     entries = ledger.get('slots')
     if not isinstance(entries, list):
         return problems + ['slots must be a list']
+    if not all(isinstance(e, dict) for e in entries):
+        return problems + ['every slots entry must be an object']
     ids = [e.get('id') for e in entries]
     if len(ids) != len(set(ids)):
         problems.append('duplicate slot id in ledger')
@@ -56,9 +70,9 @@ def validate(ledger: dict, slots: list[dict], override_slots: set[int], root: Pa
         if state not in STATES:
             problems.append(f'{label}: unknown state {state!r}')
             continue
-        if entry.get('abi_contract', {}).get('status') not in ABI_STATUSES:
+        if _abi_status(entry) not in ABI_STATUSES:
             problems.append(f'{label}: unknown abi_contract status')
-        if entry.get('abi_contract', {}).get('status') == 'VERIFIED':
+        if _abi_status(entry) == 'VERIFIED':
             # Fail closed: this ledger has no evidence schema for the reference-BIOS axis, so VERIFIED is refused
             # even when host_evidence / real_core_evidence / approval are filled in.
             problems.append(f'{label}: VERIFIED is the reference-BIOS axis and must not be set in this ledger '
@@ -95,20 +109,21 @@ def _approved_problems(label, entry, implemented, root):
         for path in paths:
             if not (root / path).is_file():
                 problems.append(f'{label}: {kind} file missing: {path}')
-    approval = entry.get('approval') or {}
-    if not approval.get('approved_by') or not approval.get('review_ref'):
+    if not _owner_approved(entry):
         problems.append(f'{label}: DEV_CALLABLE needs approval.approved_by and approval.review_ref')
     return problems
 
 
 def summary(ledger: dict, override_slots: set[int]) -> dict:
-    states = [e.get('state') for e in ledger.get('slots', [])]
-    verified = [e for e in ledger.get('slots', []) if e.get('abi_contract', {}).get('status') == 'VERIFIED']
-    return {'dev_rom_callable': len(override_slots),
+    entries = [e for e in ledger.get('slots', []) if isinstance(e, dict)]
+    states = [e.get('state') for e in entries]
+    return {'dev_rom_callable': len(override_slots),  # DEV ROM implementations (not owner approval)
+            'dev_rom_unimplemented': LAST_SLOT + 1 - len(override_slots),
+            'owner_approved': sum(_owner_approved(e) for e in entries),  # approval recorded, separate from implementation
             'dev_callable_approved': states.count('DEV_CALLABLE'),
             'not_ready': states.count('NOT_READY'),
             'blocked': states.count('BLOCKED'),
-            'abi_verified': len(verified),  # computed from the rows; validate() refuses any VERIFIED row
+            'abi_verified': sum(_abi_status(e) == 'VERIFIED' for e in entries),  # counted from rows; validate() refuses any
             'release_eligible': ledger.get('release_eligible')}
 
 
