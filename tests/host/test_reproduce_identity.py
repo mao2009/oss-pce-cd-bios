@@ -205,14 +205,17 @@ class CompareProjection(unittest.TestCase):
                                                     projection(callee(flag=committed)))[0])
         self.assertTrue(compare_projection(projection(callee(flag=4.0)), projection(callee(flag=4.0)))[0])
 
+    def test_value_above_states_visited_accepted(self):
+        # slot-29 shape from real data: dead ends are counted but never visited
+        old = projection(callee(states_visited=16, non_returning_states=16))
+        new = projection(callee(states_visited=16, non_returning_states=16, states_without_guaranteed_return=17))
+        self.assertEqual(compare_projection(new, old), (True, "", ["states_without_guaranteed_return"]))
+
     def test_non_int_floor_fails_closed(self):
         old = projection(callee())
         for bad in ("2", None, 2.0):
             new = projection(callee(non_returning_states=bad, states_without_guaranteed_return=4))
             self.assertFalse(compare_projection(new, old)[0])
-        new = projection(callee(states_without_guaranteed_return=4))
-        new["apis"][0]["callee"]["states_visited"] = "10"
-        self.assertFalse(compare_projection(new, old)[0])
 
     def test_new_metric_present_in_both_is_compared_strictly(self):
         a = projection(callee(states_without_guaranteed_return=4))
@@ -234,7 +237,7 @@ class CompareProjection(unittest.TestCase):
 
     def test_new_metric_invalid_fails(self):
         old = projection(callee())
-        for v in (-1, 11, 1, True, "4", 4.0, None):  # 1 < non_returning_states (2)
+        for v in (-1, 1, True, "4", 4.0, None):  # 1 < non_returning_states (2)
             with self.subTest(v=v):
                 new = projection(callee(states_without_guaranteed_return=v))
                 self.assertFalse(compare_projection(new, old)[0])

@@ -44,11 +44,12 @@ SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
 
 def _valid_added_field(callee, key):
     """Type, range and scope check of an allowlisted added metric (callee-level count)."""
-    v, visited, floor = callee[key], callee.get("states_visited"), callee.get("non_returning_states", 0)
-    if any(type(x) is not int for x in (v, visited, floor)):  # fail closed, never TypeError
+    v, floor = callee[key], callee.get("non_returning_states", 0)
+    if type(v) is not int or type(floor) is not int:  # fail closed, never TypeError
         return False
-    # states with no existence-path to a return are a subset of states with no guaranteed return
-    return floor <= v <= visited
+    # No states_visited upper bound: #490 also counts dead ends (unknown bank, depth, undecodable) that are never
+    # in states_visited (real data: value 17 vs states_visited 16). Lower bound: non-returning is a subset.
+    return v >= max(0, floor)
 
 
 def compare_projection(fresh, committed):
