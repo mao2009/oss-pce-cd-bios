@@ -134,14 +134,47 @@ class SyntheticImageTests(unittest.TestCase):
 
     def test_a_loop_with_a_returning_exit_is_not_a_proof_that_every_path_returns(self):
         # BNE to itself, or fall through to RTS: some path returns, another spins forever.
-        # The existence check reports 0 here by design. This is a limitation pin,
-        # to be inverted when the all-paths check lands (#485).
+        # The existence check reports 0 here by design (limitation pin). The
+        # separate all-paths measure (#485) must flag the spinning state.
         image = self.directory / "mixed_loop.pce"
         image.write_bytes(synthetic_image(b"\xd0\xfe\x60"))
         result = audit.audit_image(image, [0x1E], synthetic=True)
         profile = result["apis"][0]["callee"]
         self.assertEqual(profile["returns_observed"], ["rts"])
         self.assertEqual(profile["non_returning_states"], 0)
+        self.assertEqual(profile["states_without_guaranteed_return"], 1)
+
+    def test_all_paths_measure_is_zero_only_when_every_path_returns(self):
+        cases = {
+            "plain": (b"\xa2\x03\x60", 0),                      # LDX / RTS
+            "diamond": (b"\xc9\x00\xf0\x01\xea\x60", 0),        # CMP/BEQ/NOP/RTS
+            "spin_arm": (b"\xc9\x00\xf0\x01\x60\x80\xfe", 3),   # CMP, BEQ, spin
+            "bare_spin": (b"\x80\xfe", 1),
+            "unresolved_jump": (b"\x6c\x00\x20", 1),            # JMP ($2000)
+        }
+        for name, (code, expected) in cases.items():
+            image = self.directory / f"{name}.pce"
+            image.write_bytes(synthetic_image(code))
+            profile = audit.audit_image(image, [0x1E], synthetic=True)["apis"][0]["callee"]
+            self.assertEqual(profile["states_without_guaranteed_return"], expected, name)
+
+    def test_unknown_bank_is_not_treated_as_a_guaranteed_return(self):
+        # LDA #$05 / CLA / TAM #$40 / JSR $CF00 (bank unknown) / RTS
+        image = self.directory / "unknown_bank.pce"
+        image.write_bytes(synthetic_image(b"\xa9\x05\x62\x53\x40\x20\x00\xcf\x60"))
+        profile = audit.audit_image(image, [0x1E], synthetic=True)["apis"][0]["callee"]
+        self.assertEqual(profile["unresolved"], ["page_bank_unknown"])
+        self.assertGreater(profile["states_without_guaranteed_return"], 0)
+
+    def test_any_successor_rule_is_distinguished_from_all_successors(self):
+        # Mutation guard: weakening "all successors" to "any successor" turns
+        # 2 into 1 here, because arm c spins forever while arm b returns.
+        successors = {"a": ["b", "c"], "b": [], "c": ["c"]}
+        visited = {"a", "b", "c"}
+        self.assertEqual(
+            audit.Auditor._states_without_guaranteed_return(visited, successors, {"b"}), 2)
+        self.assertEqual(
+            audit.Auditor._states_without_return(visited, successors, {"b"}), 1)
 
     def test_the_tam_mask_selects_the_page_the_core_selects(self):
         # Memory::SetMprTAM maps mask bit i to MPR[i], so "tam #$40" is MPR6 and

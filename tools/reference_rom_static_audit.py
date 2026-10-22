@@ -339,6 +339,7 @@ class SlotAudit:
         self.zero_page_stores = 0
         self.register_swaps = 0
         self.non_returning_states = 0
+        self.states_without_guaranteed_return = 0
 
     def profile(self):
         return {
@@ -351,6 +352,7 @@ class SlotAudit:
             "zero_page_operand_stores": self.zero_page_stores,
             "register_swap_ops": self.register_swaps,
             "non_returning_states": self.non_returning_states,
+            "states_without_guaranteed_return": self.states_without_guaranteed_return,
             "cross_page_count": len(self.cross_page_pages),
             "unresolved": sorted(set(self.unresolved)),
             "budget_exhausted": self.budget_exhausted,
@@ -507,7 +509,36 @@ class Auditor:
                                                                  terminal_returns)
         if audit.non_returning_states:
             audit.hazards[NO_RETURN] += 1
+        # Separate all-paths measure; it is not a hazard and never feeds NO_RETURN.
+        audit.states_without_guaranteed_return = self._states_without_guaranteed_return(
+            visited, successors, terminal_returns)
         return audit
+
+    @staticmethod
+    def _states_without_guaranteed_return(visited, successors, terminal_returns):
+        """Count the reachable states from which a return is not guaranteed.
+
+        Least fixpoint of "must return": a state is guaranteed when it is a
+        terminal return, or when it has successors and **all** of them are
+        guaranteed. A cycle is never guaranteed (it enters the set only through
+        a base case), a dead end (unresolved jump or call, unknown bank,
+        undecodable bytes, call depth) has no successors and is never
+        guaranteed, and a successor cut off by the state budget is not in the
+        set either. So everything unknown counts as not guaranteed. This is a
+        static graph property only: it ignores data-dependent branch outcomes
+        (both edges are assumed possible), so it is a conservative bound.
+        """
+        good = set(terminal_returns)
+        changed = True
+        while changed:
+            changed = False
+            for source, targets in successors.items():
+                if source in good or not targets:
+                    continue
+                if all(target in good for target in targets):
+                    good.add(source)
+                    changed = True
+        return len(visited - good)
 
     @staticmethod
     def _states_without_return(visited, successors, terminal_returns):
@@ -516,8 +547,8 @@ class Auditor:
         This is an existence check: a state is good when **some** successor
         leads to a return. It does not prove that **every** path returns. A
         loop whose branch can exit to a return counts as good, so 0 here does
-        not rule out a path that spins forever. The all-paths check is tracked
-        in #485.
+        not rule out a path that spins forever. The all-paths check is
+        _states_without_guaranteed_return (#485).
         """
         good = set(terminal_returns)
         changed = True
