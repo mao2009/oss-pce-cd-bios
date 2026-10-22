@@ -78,6 +78,7 @@ dev-integration: dev-rom
 	$(PYTHON) tests/integration/geargrafx_dev_mul16u.py --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
 	$(PYTHON) tests/integration/geargrafx_dev_div16s.py --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
 	$(PYTHON) tests/integration/geargrafx_dev_mul8s.py --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
+	$(PYTHON) tests/integration/geargrafx_dev_div16u.py --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
 	$(MAKE) dev-sweep MODE="$(MODE)"
 # Issue #442: full 0..255 x 18-condition real-core sweep of the DEV ROM EX_BCDBIN entry (slot $3D).
 dev-bcdbin-sweep: dev-rom
