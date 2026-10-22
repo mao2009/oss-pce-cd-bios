@@ -56,5 +56,39 @@ class OracleTest(unittest.TestCase):
         self.assertEqual(len(div.check_case(9, 4, (good[0] ^ 1,) + good[1:6])), 1)
 
 
+def carry_out_events(dividend, divisor):
+    """Replay the routine's 16 restoring iterations and count the carry-outs of the remainder shift (bcs @sub)."""
+    remainder, bits, events = 0, dividend, 0
+    for _ in range(16):
+        top = (bits >> 15) & 1
+        bits = (bits << 1) & 0xFFFF
+        shifted = (remainder << 1) | top
+        if shifted >= 0x10000:
+            events += 1
+        remainder = shifted & 0xFFFF
+        if shifted >= 0x10000 or remainder >= divisor:
+            remainder = (shifted - divisor) & 0xFFFF
+            bits |= 1
+    return events
+
+
+class UnreachableCarryTest(unittest.TestCase):
+    """The 17th bit never appears for 16-bit operands (see the header of src/overrides/slot_43.s). This is a
+    sampled check of the argument, not an exhaustive proof: the argument itself is the proof."""
+
+    def test_no_carry_out_on_edges(self):
+        edges = (0x0000, 0x0001, 0x7FFF, 0x8000, 0x8001, 0xFFFE, 0xFFFF)
+        for n in edges:
+            for d in edges:
+                if d:
+                    self.assertEqual(carry_out_events(n, d), 0, (n, d))
+
+    def test_no_carry_out_on_random_pairs_with_large_divisors(self):
+        rng = random.Random(478)
+        for _ in range(20000):
+            n, d = rng.randrange(0x10000), rng.randrange(0x8000, 0x10000)
+            self.assertEqual(carry_out_events(n, d), 0, (n, d))
+
+
 if __name__ == "__main__":
     unittest.main()

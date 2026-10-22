@@ -1,9 +1,13 @@
 ; MA_DIV16U — slot $43, candidate entry $E0C9. DEV ROM only (Issue #478).
 ;
 ; Project-own routine, NOT the reference BIOS MA_DIV16U ABI (remains UNVERIFIED). Same restoring-division layout as
-; src/overrides/slot_42.s (MA_DIV16S), but unsigned: the divisor is a full 16-bit value, so the remainder can reach 17
-; bits after a shift. The 17th bit (carry out of the remainder high byte) forces the subtraction, as in
-; src/math/ma_div16u.s. The routine uses the stack only: no zero page, no BSS, no I/O, no MPR access.
+; src/overrides/slot_42.s (MA_DIV16S), but unsigned. The routine uses the stack only: no zero page, no BSS, no I/O,
+; no MPR access.
+; The carry-out branch after the remainder shift (bcs @sub) is kept for parity with src/math/ma_div16u.s and is
+; UNREACHABLE for 16-bit operands. Before each shift the remainder is below $8000: for a divisor below $8000 it is below
+; the divisor; for a divisor of $8000 or more the first 15 iterations subtract nothing, so the remainder is the 15-bit
+; prefix of the dividend. Shifting a value below $8000 never reaches $10000, so the 17th bit never appears.
+; tests/host/test_ma_div16u_dev.py checks this by simulation.
 ;   in : X:A = dividend (unsigned 16-bit; X high, A low)
 ;        caller pushes the divisor before JSR: divisor low first, then divisor high (high on top)
 ;   out: X:A = quotient (unsigned); the two divisor stack bytes become the remainder
@@ -56,7 +60,7 @@ api_slot_43:
     rol $2105,x          ; C = msb of the dividend, shifted out
     rol $2101,x
     rol $2102,x          ; C = remainder bit 16 (the shifted remainder no longer fits 16 bits)
-    bcs @sub             ; then the remainder is larger than the divisor
+    bcs @sub             ; unreachable for 16-bit operands (see header); kept for parity with ma_div16u.s
     lda $2102,x
     cmp $210A,x
     bcc @no_sub
