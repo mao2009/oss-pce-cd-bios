@@ -83,7 +83,19 @@ class Structure(unittest.TestCase):
     def test_proposal_is_not_owner_approval(self):
         head = CMP.split("## 1.")[0]
         self.assertIn("開発側の提案であり、オーナーの承認ではない", head)
-        self.assertNotIn("approved", CMP.lower())
+        # English approval wording is only allowed in a negated form; Japanese approval claims are checked line by line below.
+        import re
+        for m in re.finditer(r"(?i)(approved|approval granted|owner[- ]approved)", CMP):
+            self.assertIn("not", CMP[max(0, m.start() - 20):m.start()].lower())
+        for line in CMP.splitlines():
+            if re.search(r"オーナー(が|は|の)?承認(した|され|を得)", line) and not line.startswith("#"):
+                self.assertTrue(any(k in line for k in ["見つからない", "ない", "未", "条件", "ではない"]), line)
+            self.assertNotIn("承認された", line)
+            self.assertNotIn("承認を得た", line)
+        s121 = section("12.1")
+        self.assertIn("区別できない", s121)
+        self.assertIn("額面どおり", s121)
+        self.assertIn("開発側の分析として扱う", s121)
         # An 'approved' item may only appear to say that there is none.
         for line in CMP.splitlines():
             if "承認済み" in line and not line.startswith("#"):
@@ -140,7 +152,7 @@ class Structure(unittest.TestCase):
 
     def test_owner_decision_structure(self):
         for h in ["12.1", "12.2 推奨案", "12.3 理由", "12.4 代替案", "12.5 未測定", "12.6 承認済み項目",
-                  "12.7 未承認項目", "12.8 次に必要な Issue", "12.9 既存の 9 項目"]:
+                  "12.7 未承認項目", "12.8 次に必要な Issue", "12.9 本資料の 9 項目"]:
             self.assertNotEqual(section(h), "", h)
         rows = [l for l in section("12.9").splitlines() if l.startswith("| ") and l.split("|")[1].strip().isdigit()]
         self.assertEqual(len(rows), 9)
