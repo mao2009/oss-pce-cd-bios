@@ -49,10 +49,15 @@ MUTANT_CASES = [(0xABCD, 0x1234), (0xFEDC, 0x0F0F), (0xDCBA, 0x00FF)]
 # Arithmetic mutants. Each pattern is the machine code of the instructions in src/overrides/slot_43.s; the listed byte
 # is replaced by a same-length value, so the body layout does not change. The pattern must occur exactly once in the
 # DEV ROM (slot $42 shares several sequences with this routine, so each pattern includes a DIV16U-only instruction).
-ARITH_MUTANTS = [  # (name, pattern, index of the byte to change in the pattern, new byte)
-    ("a_overflow_branch_inverted", bytes.fromhex("3E0221B0"), 3, 0x90),  # rol $2102,x; bcs @sub -> bcc
-    ("b_divide_by_zero_quotient_hi_not_ff", bytes.fromhex("A9FF9D0521"), 1, 0x00),  # lda #$FF; sta $2105,x (A feeds $2106 too)
-    ("c_carry_flag_not_restored", bytes.fromhex("BD042129011D0721"), 4, 0x00),  # lda $2104,x; and #$01; ora $2107,x
+ARITH_MUTANTS = [  # (name, pattern, edits): each edit is (index in the pattern, new byte), same length
+    ("a_overflow_branch_inverted", bytes.fromhex("3E0221B0"), [(3, 0x90)]),  # rol $2102,x; bcs @sub -> bcc
+    ("b_divide_by_zero_quotient_hi_not_ff", bytes.fromhex("A9FF9D0521"), [(1, 0x00)]),  # lda #$FF; sta $2105,x
+    ("c_carry_flag_not_restored", bytes.fromhex("BD042129011D0721"), [(4, 0x00)]),  # lda $2104,x; and #$01; ora $2107,x
+    # The P assembly "lda $2107,x; and #$2C; sta $2107,x": the mask keeps I (bit 2), D (bit 3) and T (bit 5).
+    ("i_forced_to_0", bytes.fromhex("BD0721292C9D0721"), [(4, 0x28)]),  # mask without I
+    ("d_forced_to_0", bytes.fromhex("BD0721292C9D0721"), [(4, 0x24)]),  # mask without D
+    ("i_forced_to_1", bytes.fromhex("BD0721292C9D0721"), [(3, 0x09), (4, 0x04)]),  # ora #$04: I always set
+    ("d_forced_to_1", bytes.fromhex("BD0721292C9D0721"), [(3, 0x09), (4, 0x08)]),  # ora #$08: D always set
 ]
 # The rejection each arithmetic mutant must show, checked against the observed fields (not only "some mismatch"):
 # (fields that must all differ, at least one of these must differ, every rejecting case must be a zero divisor)
@@ -66,6 +71,12 @@ EXPECTED_REJECTIONS = {
     "b_divide_by_zero_quotient_hi_not_ff": ({"quotient_hi"}, set(), True),
     # Divide by zero: C is cleared, so the returned P.C differs.
     "c_carry_flag_not_restored": ({"P.C"}, set(), True),
+    # The P mask and its ORA variants. A flag fixed to a value must show as that flag's mismatch when the caller holds
+    # the other value (I=0 or D=0), which the default caller (SEI, SED) cannot show.
+    "i_forced_to_0": ({"P.I"}, set(), False),
+    "d_forced_to_0": ({"P.D"}, set(), False),
+    "i_forced_to_1": ({"P.I"}, set(), False),
+    "d_forced_to_1": ({"P.D"}, set(), False),
 }
 Y_PRESET = 0xA5
 CALLER_SP = 0xFF
@@ -256,9 +267,11 @@ def main():
                                            "first": str(rejected[0])})
         # Issue #458: every arithmetic mutant must be rejected by at least one real-core case (value mismatch only),
         # and the rejection reason (which field differed) is recorded for every case.
-        for name, pattern, index, new in ARITH_MUTANTS:
+        for name, pattern, edits in ARITH_MUTANTS:
             mutant = bytearray(data)
-            mutant[find_one(data, pattern, name, body_span(data, SLOT_MA_DIV16U)) + index] = new
+            found = find_one(data, pattern, name, body_span(data, SLOT_MA_DIV16U))
+            for index, new in edits:
+                mutant[found + index] = new
             catching = []
             for dividend, divisor in CASES:
                 try:
