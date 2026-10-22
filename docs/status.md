@@ -6,8 +6,8 @@ This is an evidence-scoped, **dated snapshot**, not a real-time compatibility re
 
 | Metric | Confirmed on main | Meaning / limits |
 | --- | ---: | --- |
-| A. DEV ROM implemented entry points | **8/81** | OSS/project-defined code installed at eight candidate slots; not approved/compatible firmware |
-| B. DEV ROM nonreturning stubs | **73/81** | Remaining candidate entries do not implement callable firmware |
+| A. DEV ROM implemented entry points | **9/81** (main: 8/81 until Issue #494 merges) | OSS/project-defined code installed at nine candidate slots; not approved/compatible firmware |
+| B. DEV ROM nonreturning stubs | **72/81** (main: 73/81 until Issue #494 merges) | Remaining candidate entries do not implement callable firmware |
 | C. Recorded reference ROM static ABI-1 review | **7** | Static facts only; reference compatibility not independently proven |
 | D. Reference BIOS ABI VERIFIED | **0/81** | No API promoted to VERIFIED |
 | E. Owner-approved DEV_CALLABLE | **0** | Implementation count is not owner approval; all 81 ledger states remain NOT_READY |
@@ -26,8 +26,9 @@ Other results: **0 verified BIOS-mediated CD program boots; 0 retail game compat
 | $40 | MA_MUL8S | Project-own DEV math routine; not the proven System Card ABI |
 | $41 | MA_MUL16U | Project-own DEV math routine; not the proven System Card ABI |
 | $42 | MA_DIV16S | Project-own stack-based DEV math contract |
-| $43 | MA_DIV16U | New in [#480](https://github.com/mao2009/oss-pce-cd-bios/pull/480): project-own unsigned division, caller I/D flag combinations, stack and WRAM final-state checks, real-core mutants |
 
+| $4F | MA_MUL16S | New in Issue #494 (not yet in main): project-own signed 16x16 to 32-bit multiplication; caller P/Y/S, MPR, ZP/BSS/I/O and frame-external stack checked on pinned Geargrafx, including a write/read trace of the routine's own instructions; real-core and host mutants. Manual `make dev-mul16s-sweep` covers 1,572,864 calls. Not the proven System Card ABI |
+| $43 | MA_DIV16U | New in [#480](https://github.com/mao2009/oss-pce-cd-bios/pull/480): project-own unsigned division, caller I/D flag combinations, stack and WRAM final-state checks, real-core mutants |
 Main contains `src/overrides/slot_1E.s`, `slot_3C.s`, `slot_3D.s`, `slot_3F.s`, `slot_40.s`, `slot_41.s`, `slot_42.s`, `slot_43.s`. The 256 KiB DEV ROM is not a replacement for a commercial System Card. `spec/dev_implementations.json` remains the status ledger with approval and reference-ABI axes separate. Note that a full-RAM before/after diff **cannot** observe same-value writes or writes later undone.
 
 ## Recent merged evidence and safety limitations
@@ -48,8 +49,8 @@ Main contains `src/overrides/slot_1E.s`, `slot_3C.s`, `slot_3D.s`, `slot_3F.s`, 
 | Command / artifact | What it means |
 | --- | --- |
 | `make setup`, `make build`, `make test`, `make test-real-core`, `make check` | Original 8 KiB synthetic HuCARD and host/real-core diagnostics, not a compatibility ROM |
-| `make dev-rom` | Development-only 256 KiB image, eight project-owned overrides + 73 nonreturning stubs |
-| `make dev-integration`, `make dev-test` | Project-owned DEV ABI and synthetic Geargrafx tests, including MA_DIV16U, not reference-BIOS verification |
+| `make dev-rom` | Development-only 256 KiB image, nine project-owned overrides + 72 nonreturning stubs |
+| `make dev-integration`, `make dev-test` | Project-owned DEV ABI and synthetic Geargrafx tests, including MA_DIV16U and MA_MUL16S, not reference-BIOS verification |
 | `make dev-cdread-integration`, `make dev-cdload-exec-integration` | Guest CD transport and RAM payload experiments, not BIOS-mediated boot |
 | `make release`, `make dev-release-gate-blocked` | Intentionally refuses incompatible firmware release |
 

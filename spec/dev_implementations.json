@@ -1346,16 +1346,26 @@
       "candidate_name": "MA_MUL16S",
       "state": "NOT_READY",
       "abi_contract": {
-        "status": "UNKNOWN",
-        "note": "reference System Card contract not verified; DEV-only project spec"
+        "status": "PROJECT_SPEC_ONLY",
+        "note": "reference System Card contract not verified; DEV-only project spec (stack-based ABI, docs/ma-mul16s.md, Issue #479/#494)"
       },
-      "implementation": null,
-      "host_evidence": [],
-      "real_core_evidence": [],
+      "implementation": {
+        "source": "src/overrides/slot_4F.s",
+        "license": "MIT (repository LICENSE)",
+        "provenance": "project-own spec, Issue #494 (unsigned shift-add as MA_MUL16U, then a mod 2^16 sign correction of the high word; operands and product on the stack)"
+      },
+      "host_evidence": [
+        "tests/host/test_ma_mul16s_model.py",
+        "tests/host/test_ma_mul16s_dev.py"
+      ],
+      "real_core_evidence": [
+        "tests/integration/geargrafx_dev_mul16s.py"
+      ],
       "approval": {
         "approved_by": null,
         "review_ref": null
-      }
+      },
+      "note": "DEV ROM implemented and real-core tested; NOT_READY until owner approval is recorded"
     },
     {
       "id": 80,

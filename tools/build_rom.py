@@ -34,7 +34,7 @@ EXIT_OK, EXIT_ERROR, EXIT_BLOCKED = 0, 2, 3  # BLOCKED = expected release refusa
 # diagnostic slot, not ABI compatibility; the ROM stays abi: UNVERIFIED / release_eligible: false.
 _DEV_OVERRIDE_SLOTS = [int(p.stem.removeprefix('slot_'), 16) for p in (ROOT / 'src' / 'overrides').glob('slot_*.s')]
 API_IMPLEMENTATION = ('slot_1E EX_GETVER, slot_3C EX_BINBCD, slot_3D EX_BCDBIN, slot_3F MA_MUL8U, '
-                      'slot_40 MA_MUL8S, slot_41 MA_MUL16U, slot_42 MA_DIV16S and slot_43 MA_DIV16U (project-own, DEV only); '
+                      'slot_40 MA_MUL8S, slot_41 MA_MUL16U, slot_42 MA_DIV16S, slot_43 MA_DIV16U and slot_4F MA_MUL16S (project-own, DEV only); '
                       f'{81 - len(set(_DEV_OVERRIDE_SLOTS))} slots unimplemented')
 
 

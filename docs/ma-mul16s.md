@@ -1,7 +1,8 @@
-# MA_MUL16S DEV 契約設計（Issue #479、設計のみ）
+# MA_MUL16S DEV 契約（設計 Issue #479、実装 Issue #494）
 
-DEV API 候補 MA_MUL16S（slot `$4F`、候補エントリ `0xE0ED` = HYPOTHESIS）の**プロジェクト独自契約**の設計。
-asm 実装・slot 接続・`spec/*.json` の変更は本 Issue の範囲外（未実装、`implementation: null` のまま）。
+DEV API 候補 MA_MUL16S（slot `$4F`、候補エントリ `0xE0ED` = HYPOTHESIS）の**プロジェクト独自契約**。
+設計は Issue #479、実装は Issue #494（`src/overrides/slot_4F.s`、実コア試験 `tests/integration/geargrafx_dev_mul16s.py`）。
+実装の結果と設計との差は文末「実装結果（Issue #494）」に記録する。
 参照 System Card の MA_MUL16S 呼出規約は **UNKNOWN**（`spec/api_contracts.json` の arguments / returns / clobbered 全て UNKNOWN）。
 下表は DEV ROM 専用の定義にすぎず、VERIFIED / DEV_CALLABLE を主張しない。兄弟ルーチン MA_MUL16U（slot `$41`、`src/overrides/slot_41.s`）の
 スタック渡し規約を踏襲する。
@@ -65,5 +66,15 @@ host の結果は実装の正しさを示さない（アセンブルされたバ
 
 ## 結論と残件
 
-- 本書は設計。実装・slot `$4F` 接続・`spec/dev_implementations.json` 更新・Makefile / CI 接続は未実施（次 Wave の実装 Issue で行う）。
 - 参照 BIOS の引数/戻り値/フラグ/タイミングは UNKNOWN のまま。独自契約を参照 ABI と同一視しない。
+- slot `$4F` は DEV ROM にだけ接続した。`state` は NOT_READY、`abi_contract` は PROJECT_SPEC_ONLY のまま。VERIFIED / DEV_CALLABLE は付与していない。
+
+## 実装結果（Issue #494）
+
+- 設計どおり: スタック渡し、被乗数 hi / 乗数 hi の符号で上位ワードを補正（mod 2^16 恒等式）、Y・S・P（B 除く、T=0 前提）保存、ゼロページ・BSS・I/O・MPR に触れない。
+- 設計との差（矛盾ではなく詳細化）: スタック消費は P・Y・乗数コピー 2・上位ワード 2 の **6 バイト**（予算 8 以内）。入口 S の下限は設計どおり `$08`（実際の最低書込は S-5 = `$03`）、上限は `$F9`（`$210C,X` が `$21FF`）。
+  フレーム各バイトの位置は X を 6 push 後の S として X+9 乗数 hi / X+10 乗数 lo / X+11 被乗数 hi / X+12 被乗数 lo、乗数コピーは X+3(lo)・X+4(hi)。
+- `CLT` は追加していない（設計の任意項目。T=1 は契約外のまま、実機の T 挙動は UNKNOWN / NOT_RUN）。
+- 実コア試験の「SP」は呼出側 SP（4 回の PHA の前）。入口 S = 呼出側 SP - 6 なので、入口 S `$08` / `$F9` は呼出側 SP `$0E` / `$FF`。
+- 副作用の検証は最終 RAM 差分に加え、コアの CPU アドレスブレークポイントでルーチン自身の命令（PC 窓）による書込み・読出しを命令単位で監視する（同値書込み・書いて戻す操作も検出）。許可: 自身の push 6 バイト（呼出側 SP-11..SP-6）とフレーム 4 バイト（SP-3..SP）のみ書込可。JSR 戻り番地 2 バイトを含むそれ以外のスタック・ZP・BSS・I/O・ROM への書込み、ZP・BSS・I/O・自フレーム外スタックの読出しは違反。MPR0〜7 は全命令後に比較。
+- 手動の大規模試験: `make dev-mul16s-sweep`（乗数 65,536 値 × 被乗数 6 値、被乗数 65,536 値 × 乗数 6 値、呼出側 SP `$FF` と `$0E`、計 1,572,864 呼出）。CI の `make dev-integration` には境界値・EDGES・符号組合せ・P フラグ全 64 組・固定シード乱数・変異試験を組み込む。
