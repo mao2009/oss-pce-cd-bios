@@ -13,7 +13,11 @@ _CLAUSE_SPLIT = re.compile(r"[.;:!?\n|、。；：]")
 _EN_WORD = re.compile(r"(?i)\b(approv\w*|grant\w*|sign-?off|authori[sz]\w*)")
 _EN_NEG = re.compile(r"(?i)\b(not|no|never|without|cannot)\b|n't\b")
 _EN_NO_LONGER = re.compile(r"(?i)\bno\s+longer\b")
-_JA_WORD = re.compile(r"承認(?:済|した|され|を得|を受|いただ|する|OK)|承諾|了承|認可|\bOK\b|ＯＫ")
+# Noun-form claims ("正式承認", "本番承認" ...) count too: a bare "承認" noun is allowed (a recorded scope),
+# but a formal/production/release approval must be negated in the same clause.
+_JA_WORD = re.compile(
+    r"承認(?:済|した|され|を得|を受|いただ|する|OK)|正式承認|本番承認|製品承認|リリース承認|承認を記録|承諾|了承|認可|\bOK\b|ＯＫ"
+)
 _JA_NEG = re.compile(r"ない|なし|無い|ません|ではな|未承認|不承認|見つからな")
 # Explicit allowed phrases (removed from a clause before the Japanese scan).
 JA_ALLOWED = [
@@ -67,6 +71,11 @@ GUARD_MUST_FAIL = [
     "オーナーの承認を得た。",
     "方式 A はオーナーが了承した。",
     "| 方式 A | 承認済み |",
+    "安全機構の正式承認を得ている。",
+    "本番承認が完了した。",
+    "検証方針を承認した。",
+    "正式承認。",
+    "The owner approved the verification policy.",
 ]
 GUARD_MUST_PASS = [
     "Method A is not approved.",
@@ -83,6 +92,10 @@ GUARD_MUST_PASS = [
     "オーナーが承認した記録は見つからない",
     "オーナーが承認した記録はない。",
     "方式の承認は行われていない",
+    "検証方針の承認が記録された。",
+    "製品の正式承認は行っていない。",
+    "安全機構の本番承認はない。",
+    "検証方針の承認として記録する（正式承認ではない）。",
 ]
 
 DOCS = Path(__file__).resolve().parents[2] / "docs"
@@ -161,7 +174,9 @@ class Structure(unittest.TestCase):
 
     def test_proposal_is_not_owner_approval(self):
         head = CMP.split("## 1.")[0]
-        self.assertIn("開発側の提案であり、オーナーの承認ではない", head)
+        self.assertIn("開発側の提案である", head)
+        self.assertIn("検証方針の承認", head)
+        self.assertIn("方式の正式承認", head)
         # Clause-level guard (see approval_violations): no approval claim without a same-clause negation.
         self.assertEqual(approval_violations(CMP), [])
         s121 = section("12.1")
@@ -171,6 +186,10 @@ class Structure(unittest.TestCase):
         self.assertNotIn("確認できた明示的なオーナー判断", CMP)
         self.assertIn("本人かは未確認", section("12.6"))
         self.assertIn("対象外とする案（未決定）", section("12.2"))
+        s6 = section("12.6")
+        self.assertIn("検証方針のみ", s6)
+        self.assertIn("正式承認ではない", s6)
+        self.assertIn("VERIFIED / DEV_CALLABLE は付与しない", s6)
         r8 = [l for l in section("12.9").splitlines() if l.startswith("| 8 |")]
         self.assertEqual(len(r8), 1)
         self.assertIn("維持", r8[0])
@@ -183,7 +202,6 @@ class Structure(unittest.TestCase):
                 self.assertTrue(any(k in line for k in ["なし", "ない"]), line)
             if "オーナーが承認した" in line:
                 self.assertIn("見つからない", line)
-        self.assertIn("承認済みの項目はなし", section("12.6"))
 
     def test_verification_order_a_then_c_then_both(self):
         s = section("3. 方式の定義")
@@ -239,7 +257,10 @@ class Structure(unittest.TestCase):
         self.assertEqual(len(rows), 9)
         for r in rows:
             if r.split("|")[1].strip() != "8":
-                self.assertIn("未決定", r)
+                # S0 approved these 9 items as a verification policy only; formal decisions stay open.
+                self.assertIn("検証方針として承認（S0）", r)
+            else:
+                self.assertIn("維持", r)
         rec = section("12.2")
         for k in ["方式 A を先に", "WRAM $F8 のみ", "ゲストの実行を打ち切る", "検証コアのパッチと製品実装は分ける",
                   "NMI", "BLOCKED を維持"]:
@@ -251,6 +272,11 @@ class Structure(unittest.TestCase):
         self.assertIn("本番の安全機構の正式承認ではない", s)
         self.assertIn("暫定候補", s)
         self.assertIn("コメントなし", s)
+        # S0 record (2026-10-22): scope is the verification policy, never the formal safety-mechanism approval.
+        self.assertIn("S0", s)
+        self.assertIn("検証方針の承認として記録する", s)
+        self.assertIn("安全機構の完成・本番適用・リリースの承認ではない", s)
+        self.assertIn("投稿者の区別もできない", s)
 
     def test_forbidden_claims_absent(self):
         for bad in ["参照 JSR ゲートを解除", "release_eligible=true", "VERIFIED を付与する", "安全が実証", "実証された"]:
