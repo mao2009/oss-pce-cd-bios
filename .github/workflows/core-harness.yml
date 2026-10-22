@@ -86,3 +86,23 @@ jobs:
             .intake/.artifact-stage/build/debug/core-harness/core-harness-evidence.json
           if-no-files-found: error
           retention-days: 14
+  # Issue #505 (follow-up of #501): DEV-ONLY internal boot path regression, run on every PR. Additive job: it has no needs
+  # and changes no existing job. NOT compatible, NOT a BIOS, NOT DEV_CALLABLE: synthetic media only, no retail or reference BIOS.
+  dev-boot-internal-integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read        # runs repository code only: no secrets, no id-token, no attestations
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare existing pinned source toolchain and Geargrafx
+        run: make setup
+      - name: DEV-only internal boot path, real Geargrafx, cold and warm (Issue #501; not a BIOS path)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/debug/dev-boot-internal
+          make dev-boot-internal-integration 2>&1 | tee build/debug/dev-boot-internal/run.log
