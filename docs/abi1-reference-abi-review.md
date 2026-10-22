@@ -302,8 +302,8 @@ does not implement it, and it does not weaken the existing gate.
 ### 5.1 Residual risks that apply to every verdict
 
 * A static profile reports the findings over the explored code, not a runtime
-  observation; it is not an upper bound on hazards. The bound is computed with a bounded walk (20 000 states, 24 call
-  levels); none of the seven walks hit the bound, and no walk ended in an
+  observation; it is not an upper bound on hazards. The walk is limited to 20 000 states and 24 call
+  levels; none of the seven walks hit that limit, and no walk ended in an
   unresolved target.
 * The arithmetic dispatchers switch to a bank that the static model resolves
   from the `TAM` operand. The reachable code *inside* that bank is followed,
