@@ -81,6 +81,14 @@ CALLER_SP = 0xFF
 BOUNDARY_SP = 0x0B  # caller SP such that entry S = $0B - 4 = $07 (2 divisor pushes, then JSR pushes 2)
 
 
+def body_span(data, slot):
+    """ROM offsets [start, end) of the routine body for `slot`: its table JMP target up to the next table target."""
+    targets = sorted({data[3 * i + 1] | data[3 * i + 2] << 8 for i in range(81) if data[3 * i] == 0x4C})
+    start = data[3 * slot + 1] | data[3 * slot + 2] << 8
+    end = next((t for t in targets if t > start), 0xFFF6)
+    return start - 0xE000, end - 0xE000
+
+
 class Mismatch(ValueError):
     """The guest ran to its halt loop but returned a value that differs from the spec.
 
@@ -155,9 +163,14 @@ def check(label, rows, halt, dividend, divisor, sp=CALLER_SP):
         raise Mismatch(f"{label}: A/X/P/Y/remHI/remLO/SP observed {observed}, expected {want}", fields)
 
 
-def find_one(data, pattern, label):
-    """Offset of the single occurrence of `pattern` in the ROM. Zero or several occurrences are a failure."""
-    hits = [i for i in range(len(data) - len(pattern) + 1) if data[i:i + len(pattern)] == pattern]
+def find_one(data, pattern, label, span):
+    """Offset of the single occurrence of `pattern` inside `span` (the routine body). Zero or several are a failure.
+
+    The search is limited to the routine's own body because the DEV ROM holds several routines that share instruction
+    sequences (for example the restoring-division compare in slot $42 and slot $43).
+    """
+    lo, hi = span
+    hits = [i for i in range(lo, min(hi, len(data) - len(pattern) + 1)) if data[i:i + len(pattern)] == pattern]
     if len(hits) != 1:
         raise ValueError(f"{label}: mutant pattern found {len(hits)} times in the DEV ROM, want exactly 1")
     return hits[0]
@@ -227,7 +240,7 @@ def main():
         # and the rejection reason (which field differed) is recorded for every case.
         for name, pattern, index, new in ARITH_MUTANTS:
             mutant = bytearray(data)
-            mutant[find_one(data, pattern, name) + index] = new
+            mutant[find_one(data, pattern, name, body_span(data, SLOT_MA_DIV16S)) + index] = new
             catching = []
             for dividend, divisor in CASES:
                 try:
