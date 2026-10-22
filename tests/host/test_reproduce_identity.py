@@ -171,7 +171,22 @@ class Harness(unittest.TestCase):
         self.assertIn("UNBASELINED: states_without_guaranteed_return", err.getvalue())
         self.assertNotIn("PASS", out.getvalue())
         self.assertEqual(compare_projection(new, old), (True, "", ["states_without_guaranteed_return"]))
+        at = projection(callee(states_visited=16, non_returning_states=16, states_without_guaranteed_return=49))
+        over = projection(callee(states_visited=16, non_returning_states=16, states_without_guaranteed_return=50))
+        base = projection(callee(states_visited=16, non_returning_states=16))
+        self.assertTrue(compare_projection(at, base)[0])  # 3*16+1
+        self.assertFalse(compare_projection(over, base)[0])
+        huge = projection(callee(states_without_guaranteed_return=10**9))
+        self.assertFalse(compare_projection(huge, projection(callee()))[0])
 
+
+    def test_budget_exhausted_slots_listed(self):
+        old = projection(callee(budget_exhausted=True))
+        new = projection(callee(budget_exhausted=True, states_without_guaranteed_return=4))
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            self.assertEqual(self.run_main(new, old), 3)
+        self.assertIn("lower bound): slot-00", err.getvalue())
 
     def test_snapshot_not_deleted_is_loud_and_nonzero(self):
         pr = projection(callee())
@@ -205,8 +220,9 @@ class CompareProjection(unittest.TestCase):
                                                     projection(callee(flag=committed)))[0])
         self.assertTrue(compare_projection(projection(callee(flag=4.0)), projection(callee(flag=4.0)))[0])
 
-    def test_value_above_states_visited_accepted(self):
-        # slot-29 shape from real data: dead ends are counted but never visited
+    def test_value_above_states_visited_accepted_and_bound(self):
+        # Synthetic shape modelled on a local, unrecorded private-ROM observation (value 17 vs states_visited 16);
+        # no ROM content. Dead ends are counted but never in states_visited.
         old = projection(callee(states_visited=16, non_returning_states=16))
         new = projection(callee(states_visited=16, non_returning_states=16, states_without_guaranteed_return=17))
         self.assertEqual(compare_projection(new, old), (True, "", ["states_without_guaranteed_return"]))

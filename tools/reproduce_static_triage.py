@@ -36,6 +36,7 @@ def describe_image(data):
 
 # Callee metrics added to the analyzer after the committed evidence was captured (#485, PR #490).
 # Named allowlist: only these keys may be absent from the committed evidence. Anything else must match exactly.
+# Remove an entry here once the committed evidence JSON is regenerated with it (then it is compared strictly).
 ADDED_CALLEE_FIELDS = ("states_without_guaranteed_return",)
 UNBASELINED = "UNBASELINED"
 EXIT_UNBASELINED = 3  # 0 PASS, 1 FAIL, 2 BLOCKED, 3 UNBASELINED (existing fields match, new metric unverified)
@@ -47,9 +48,13 @@ def _valid_added_field(callee, key):
     v, floor = callee[key], callee.get("non_returning_states", 0)
     if type(v) is not int or type(floor) is not int:  # fail closed, never TypeError
         return False
-    # No states_visited upper bound: #490 also counts dead ends (unknown bank, depth, undecodable) that are never
-    # in states_visited (real data: value 17 vs states_visited 16). Lower bound: non-returning is a subset.
-    return v >= max(0, floor)
+    # Lower bound: states with no path to a return also have no guaranteed return (subset).
+    # Upper bound (derived from #490 tools/reference_rom_static_audit.py, audit()): the value is at most len(visited).
+    # Decoded states = states_visited (S). Every other visited state is a dead end (depth/unknown bank/undecodable)
+    # that was emitted as a successor of a decoded state; a decoded state emits at most 2 successors, so there are at
+    # most 2*S of them, plus the entry state itself when it is a dead end. Hence v <= 3*S + 1. It can exceed S.
+    visited = callee.get("states_visited")
+    return type(visited) is int and max(0, floor) <= v <= 3 * visited + 1
 
 
 def compare_projection(fresh, committed):
@@ -151,8 +156,11 @@ def _analyze(tmp, data, ident):
         print("FAIL: " + msg, file=sys.stderr)
         return 1
     if unbaselined:
+        cut = [a.get("api_id") for a in fresh.get("apis", []) if a.get("callee", {}).get("budget_exhausted") is True]
         print(f"{UNBASELINED}: {', '.join(unbaselined)} present in the analyzer but not in the committed evidence; "
-              "existing fields match, new metric NOT verified (exit 3, not a PASS)", file=sys.stderr)
+              "existing fields match, new metric NOT verified (exit 3, not a PASS)"
+              + (f"; budget_exhausted (value is only a lower bound): {', '.join(map(str, cut))}" if cut else ""),
+              file=sys.stderr)
         return EXIT_UNBASELINED
     print("PASS: all fields of the regenerated projection match the committed file (81 slots); "
           "this is not canonical ROM identity")
