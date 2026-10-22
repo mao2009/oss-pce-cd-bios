@@ -132,6 +132,16 @@ class SyntheticImageTests(unittest.TestCase):
         self.assertEqual(profile["non_returning_states"], 1)
         self.assertEqual(profile["hazard_counts"]["NO_RETURN"], 1)
 
+    def test_a_loop_with_a_returning_exit_is_not_a_proof_that_every_path_returns(self):
+        # BNE to itself, or fall through to RTS: some path returns, another spins forever.
+        # The existence check reports 0 here by design; this pins that limitation.
+        image = self.directory / "mixed_loop.pce"
+        image.write_bytes(synthetic_image(b"\xd0\xfe\x60"))
+        result = audit.audit_image(image, [0x1E], synthetic=True)
+        profile = result["apis"][0]["callee"]
+        self.assertEqual(profile["returns_observed"], ["rts"])
+        self.assertEqual(profile["non_returning_states"], 0)
+
     def test_the_tam_mask_selects_the_page_the_core_selects(self):
         # Memory::SetMprTAM maps mask bit i to MPR[i], so "tam #$40" is MPR6 and
         # the call target in $C000-$DFFF must be read from bank 3.
