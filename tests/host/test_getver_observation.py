@@ -256,5 +256,103 @@ class ConverterTests(unittest.TestCase):
         self.assertEqual([r["temperature"] for r in records], ["warm"])
 
 
+class ExceptionSafetyTests(unittest.TestCase):
+    """Malformed input of any shape must come back as Refused, never as a Python exception."""
+
+    def test_deep_nesting_in_jsonl_is_refused(self):
+        deep = "[" * 100000 + "]" * 100000  # json raises RecursionError here, which is not a ValueError
+        with self.assertRaisesRegex(g.Refused, "FIELDS"):
+            g.load_jsonl(deep)
+
+    def test_deep_nesting_in_record_field_is_refused(self):
+        item = record()
+        nested = []
+        tail = nested
+        for _ in range(100000):
+            tail.append([])
+            tail = tail[0]
+        item["case"] = nested
+        item["record_digest"] = "0" * 64  # unsealed on purpose: sealing itself would recurse
+        with self.assertRaisesRegex(g.Refused, "FIELDS"):
+            g.validate(item, **SYNTHETIC)
+
+    def test_non_text_input_to_load_jsonl_is_refused(self):
+        for bad in (None, b'{"a": 1}', 1, ["{}"]):
+            with self.subTest(input=bad), self.assertRaisesRegex(g.Refused, "FIELDS"):
+                g.load_jsonl(bad)
+
+    def test_non_dict_records_are_refused(self):
+        for bad in ([1], (1,), None, "record", 1.5, float("nan"), object()):
+            with self.subTest(record=bad), self.assertRaisesRegex(g.Refused, "FIELDS"):
+                g.validate(bad, **SYNTHETIC)
+
+    def test_nan_and_infinity_in_a_record_are_refused(self):
+        for literal in ("NaN", "Infinity", "-Infinity"):
+            with self.subTest(literal=literal):
+                text = json.dumps(record()).replace('"synthetic_case"', literal)  # reaches validate via the JSON path
+                (item,) = g.load_jsonl(text)
+                with self.assertRaisesRegex(g.Refused, "FIELDS"):
+                    g.validate(item, **SYNTHETIC)
+
+    def test_nan_in_a_byte_field_is_refused(self):
+        for bad in (float("nan"), float("inf")):
+            with self.subTest(value=bad):
+                item = record()
+                item["before"]["a"] = bad
+                item["record_digest"] = "0" * 64  # unsealed: seal() itself refuses NaN/inf
+                with self.assertRaisesRegex(g.Refused, "FIELDS"):
+                    g.validate(item, **SYNTHETIC)
+        # -0.0 serialises fine, so it is sealed and reaches the byte check
+        with self.assertRaisesRegex(g.Refused, "FIELDS"):
+            g.validate(mutate(lambda r: r["before"].update(a=-0.0)), **SYNTHETIC)
+
+    def test_huge_integer_in_a_byte_field_is_refused(self):
+        with self.assertRaisesRegex(g.Refused, "FIELDS"):
+            g.validate(mutate(lambda r: r["before"].update(a=2**64)), **SYNTHETIC)
+        with self.assertRaisesRegex(g.Refused, "BUDGET"):
+            g.validate(mutate(lambda r: r.update(steps_used=2**70)), **SYNTHETIC)
+
+    def test_non_string_key_in_a_nested_object_is_refused(self):
+        item = record()
+        item["case"] = {1: "int key", "b": 2}  # sort_keys cannot order mixed key types
+        item["record_digest"] = "0" * 64
+        with self.assertRaisesRegex(g.Refused, "FIELDS"):
+            g.validate(item, **SYNTHETIC)
+
+    def test_non_string_top_level_key_is_refused(self):
+        item = record()
+        item[1] = 2
+        with self.assertRaisesRegex(g.Refused, "FIELDS"):
+            g.validate(item, **SYNTHETIC)
+
+    def test_duplicate_key_in_nested_object_is_refused(self):
+        text = json.dumps(record()).replace('"io": {', '"io": {"observation": "NOT_MEASURED", "observation": "NOT_MEASURED", ', 1)
+        with self.assertRaisesRegex(g.Refused, "FIELDS"):
+            g.load_jsonl(text)
+
+    def test_malformed_core_evidence_is_refused(self):
+        def evidence(case):
+            return {"geargrafx_revision": CORE, "cases": [case]}
+
+        observed = {"before": state(), "after": state()}
+        bad_cases = {
+            "not an object": "plugin_ex_getver",
+            "missing target": {"name": "plugin_ex_getver", "status": {}, "observed": {}},
+            "missing status": {"name": "plugin_ex_getver", "target": "api_slot_1E", "observed": {"warm": observed}},
+            "observed not an object": {"name": "plugin_ex_getver", "target": "api_slot_1E",
+                                       "status": {"warm": "RETURNED"}, "observed": ["warm"]},
+            "missing after state": {"name": "plugin_ex_getver", "target": "api_slot_1E",
+                                    "status": {"warm": "RETURNED"}, "observed": {"warm": {"before": state()}}},
+        }
+        for label, case in bad_cases.items():
+            with self.subTest(case=label), self.assertRaisesRegex(g.Refused, "FIELDS"):
+                g.from_core_evidence(evidence(case), case_name="plugin_ex_getver", rom_sha256=ROM, entry=ENTRY,
+                                     harness_revision=HARNESS, step_budget=BUDGET)
+        for label, bad in (("no evidence", None), ("no cases key", {"geargrafx_revision": CORE})):
+            with self.subTest(evidence=label), self.assertRaisesRegex(g.Refused, "FIELDS"):
+                g.from_core_evidence(bad, case_name="plugin_ex_getver", rom_sha256=ROM, entry=ENTRY,
+                                     harness_revision=HARNESS, step_budget=BUDGET)
+
+
 if __name__ == "__main__":
     unittest.main()

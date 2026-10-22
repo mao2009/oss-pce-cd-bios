@@ -46,7 +46,7 @@ class Refused(ValueError):
 
 def _canonical(record):
     body = {key: value for key, value in record.items() if key != "record_digest"}
-    return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return json.dumps(body, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
 
 
 def digest(record):
@@ -68,13 +68,15 @@ def _no_duplicate_keys(pairs):
 
 def load_jsonl(text):
     """Parse observation records one per line. Duplicate keys and blank-line tricks are refused."""
+    if not isinstance(text, str):
+        raise Refused("FIELDS", f"input must be text, got {type(text).__name__}")
     records = []
     for number, line in enumerate(text.splitlines(), 1):
         if not line.strip():
             continue
         try:
             records.append(json.loads(line, object_pairs_hook=_no_duplicate_keys))
-        except (ValueError, TypeError) as error:
+        except (ValueError, TypeError, RecursionError) as error:  # deep nesting raises RecursionError
             raise Refused("FIELDS", f"line {number}: {error}") from error
     return records
 
@@ -129,7 +131,7 @@ def validate(record, *, rom_sha256, entry, core_revision, harness_revision, step
         raise Refused("SCHEMA", f"unknown schema {record['schema']!r}")
     try:
         recomputed = digest(record)
-    except (TypeError, ValueError) as error:  # a non-JSON value is a malformed record, not a crash
+    except (TypeError, ValueError, RecursionError) as error:  # non-JSON, NaN or too deep is malformed, not a crash
         raise Refused("FIELDS", f"record body is not canonical JSON: {error}") from error
     if record["record_digest"] != recomputed:  # integrity only; a match is not provenance
         raise Refused("TAMPERED", "record_digest does not match the record body")
@@ -179,28 +181,31 @@ def from_core_evidence(evidence, *, case_name, rom_sha256, entry, harness_revisi
     than assumed clean. A cycle that did not RETURN produces no record, so it can never be accepted.
     """
     records = []
-    for case in evidence["cases"]:
-        if case["name"] != case_name:
-            continue
-        if case["target"] != "api_slot_1E":
-            raise Refused("ENTRY_MISMATCH", f"case {case_name!r} does not target api_slot_1E")
-        for cycle in TEMPERATURES:
-            observed = case["observed"].get(cycle)
-            if observed is None or case["status"].get(cycle) != "RETURNED":
+    try:
+        for case in evidence["cases"]:
+            if case["name"] != case_name:
                 continue
-            before, after = observed["before"], observed["after"]
-            records.append(seal({
-                "schema": SCHEMA, "slot": SLOT, "entry": entry,
-                "source": {"kind": "SYNTHETIC_DEV_ROM", "rom_sha256": rom_sha256},
-                "core": {"name": "geargrafx", "revision": evidence["geargrafx_revision"]},
-                "harness": {"name": "geargrafx_core_harness", "revision": harness_revision},
-                "case": case["name"], "temperature": cycle, "status": "RETURNED",
-                "inputs": {r: before[r] for r in "axyp"},  # delivered inputs as the harness observed them
-                "before": before, "after": after,
-                "io": {"observation": NOT_MEASURED, "accesses": []},
-                "steps_used": NOT_MEASURED, "step_budget": step_budget,
-                "abi_claim": "OBSERVED_SYNTHETIC",
-            }))
+            if case["target"] != "api_slot_1E":
+                raise Refused("ENTRY_MISMATCH", f"case {case_name!r} does not target api_slot_1E")
+            for cycle in TEMPERATURES:
+                observed = case["observed"].get(cycle)
+                if observed is None or case["status"].get(cycle) != "RETURNED":
+                    continue
+                before, after = observed["before"], observed["after"]
+                records.append(seal({
+                    "schema": SCHEMA, "slot": SLOT, "entry": entry,
+                    "source": {"kind": "SYNTHETIC_DEV_ROM", "rom_sha256": rom_sha256},
+                    "core": {"name": "geargrafx", "revision": evidence["geargrafx_revision"]},
+                    "harness": {"name": "geargrafx_core_harness", "revision": harness_revision},
+                    "case": case["name"], "temperature": cycle, "status": "RETURNED",
+                    "inputs": {r: before[r] for r in "axyp"},  # delivered inputs as the harness observed them
+                    "before": before, "after": after,
+                    "io": {"observation": NOT_MEASURED, "accesses": []},
+                    "steps_used": NOT_MEASURED, "step_budget": step_budget,
+                    "abi_claim": "OBSERVED_SYNTHETIC",
+                }))
+    except (KeyError, TypeError, AttributeError) as error:  # malformed evidence is refused, not a crash
+        raise Refused("FIELDS", f"malformed core evidence: {error!r}") from error
     return records
 
 
