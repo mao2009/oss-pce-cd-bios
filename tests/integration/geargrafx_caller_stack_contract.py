@@ -142,13 +142,13 @@ def judge_io(records):
           {"flag_0210": wram_bytes(records)[FLAG_INDEX], "guard_rts_hits": records["HITS"][0].get("guard_rts")})
     vdw = [v for v in records.get("VDW", []) if pre["step"] <= v["step"] <= rts["step"]]
     wrw = [w for w in records.get("WRW", []) if pre["step"] <= w["step"] <= rts["step"]]
-    # VDW records register VALUE changes (not a bus write trace). Each expected change is matched by its step, its
+    # VDW records register VALUE changes (not a bus write trace). Each expected change is matched by its step, its PC,
     # register and its value: the JSR pushes PC+2 (the last byte of the 3-byte JSR), and the guard's PHA pushes A.
     api_guard = trace(records, "api_guard")
     r0 = [v for v in vdw if v["step"] == pre["step"] and v["reg"] == "R0"]
     check(results, "jsr_return_to_vdc_r0",
-          len(r0) == 1 and r0[0]["old"] == 0 and r0[0]["new"] == pre["pc"] + 2,
-          {"want": {"step": pre["step"], "reg": "R0", "old": 0, "new": pre["pc"] + 2}, "vdw_at_step": r0})
+          len(r0) == 1 and r0[0]["pc"] == pre["pc"] and r0[0]["old"] == 0 and r0[0]["new"] == pre["pc"] + 2,
+          {"want": {"step": pre["step"], "pc": pre["pc"], "reg": "R0", "old": 0, "new": pre["pc"] + 2}, "vdw_at_step": r0})
     if api_guard is None:
         check(results, "pha_value_to_vdc_ar", False, "api_guard not reached")
     else:
@@ -241,6 +241,12 @@ def selftest():
     unrelated = [{"step": 25, "pc": 0, "reg": "R17", "old": 0, "new": 2}]
     wrong_r0 = [{"step": 14, "pc": 0xE017, "reg": "R0", "old": 0, "new": 0x1234},
                 {"step": 16, "pc": 0xE026, "reg": "AR", "old": 0, "new": 0x11}]
+    wrong_pc = [dict(good_vdw[0], pc=0xE099), good_vdw[1]]
+    if "jsr_return_to_vdc_r0" not in failing(judge_io(_io_records(wrong_pc))):
+        raise ValueError("selftest: an R0 record with a different PC satisfies the JSR return check")
+    wrong_ar_pc = [good_vdw[0], dict(good_vdw[1], pc=0xE099)]
+    if "pha_value_to_vdc_ar" not in failing(judge_io(_io_records(wrong_ar_pc))):
+        raise ValueError("selftest: an AR record with a different PC satisfies the PHA check")
     if failing(judge_io(_io_records(good_vdw))):
         raise ValueError("selftest: the correct JSR return and PHA values were rejected")
     if not {"jsr_return_to_vdc_r0", "pha_value_to_vdc_ar"} <= failing(judge_io(_io_records(unrelated))):
