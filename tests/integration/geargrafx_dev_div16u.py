@@ -51,20 +51,22 @@ MUTANT_CASES = [(0xABCD, 0x1234), (0xFEDC, 0x0F0F), (0xDCBA, 0x00FF)]
 # DEV ROM (slot $42 shares several sequences with this routine, so each pattern includes a DIV16U-only instruction).
 ARITH_MUTANTS = [  # (name, pattern, index of the byte to change in the pattern, new byte)
     ("a_seventeenth_bit_branch_inverted", bytes.fromhex("3E0221B0"), 3, 0x90),  # rol $2102,x; bcs @sub -> bcc
+    ("a2_seventeenth_bit_path_removed", bytes.fromhex("3E0221B0"), 4, 0x00),  # bcs @sub offset 0: no forced subtraction
     ("b_divide_by_zero_quotient_hi_not_ff", bytes.fromhex("A9FF9D0521"), 1, 0x00),  # lda #$FF; sta $2105,x
     ("c_carry_flag_not_restored", bytes.fromhex("BD042129011D0721"), 4, 0x00),  # lda $2104,x; and #$01; ora $2107,x
 ]
 # The rejection each arithmetic mutant must show, checked against the observed fields (not only "some mismatch"):
 # (fields that must all differ, at least one of these must differ, every rejecting case must be a zero divisor)
 EXPECTED_REJECTIONS = {
-    # The 17th-bit forced subtraction. Without it the remainder is wrong once it exceeds 16 bits, so the quotient or
-    # the remainder must differ, and a rejecting case must use a divisor of $8000 or more (the only case where the
-    # remainder can reach 17 bits).
-    "a_seventeenth_bit_branch_inverted": (set(), {"quotient_lo", "quotient_hi", "remainder_lo", "remainder_hi"}, False),
+    # The broad inversion (bcs -> bcc): the forced subtraction also happens without a 17th bit, so most cases fail.
+    "a_seventeenth_bit_branch_inverted": (set(), {"quotient_lo", "quotient_hi", "remainder_lo", "remainder_hi"}, False, False),
+    # The narrow mutant: only the forced subtraction of the 17th bit is removed (the bcs offset is 0). It must be
+    # rejected by some case, but not by every case, and a rejecting case must use a divisor of $8000 or more.
+    "a2_seventeenth_bit_path_removed": (set(), {"quotient_lo", "quotient_hi", "remainder_lo", "remainder_hi"}, False, True),
     # Divide by zero: the quotient $FFFF is replaced by $00FF in the high byte.
-    "b_divide_by_zero_quotient_hi_not_ff": ({"quotient_hi"}, set(), True),
+    "b_divide_by_zero_quotient_hi_not_ff": ({"quotient_hi"}, set(), True, False),
     # Divide by zero: C is cleared, so the returned P.C differs.
-    "c_carry_flag_not_restored": ({"P.C"}, set(), True),
+    "c_carry_flag_not_restored": ({"P.C"}, set(), True, False),
 }
 Y_PRESET = 0xA5
 CALLER_SP = 0xFF
@@ -247,7 +249,10 @@ def main():
         if len(rejected) != len(MUTANT_CASES):
             raise ValueError("mutant without CLD matched the spec in at least one case "
                              f"(expected {len(MUTANT_CASES)} mismatches)")
-        evidence["negative_cases"].append({"case": "42_without_CLD_D1", "rejected": len(rejected),
+        nocld_fields = {f for error in rejected for f in error.fields}
+        if not nocld_fields & {"quotient_lo", "quotient_hi", "remainder_lo", "remainder_hi"}:
+            raise ValueError(f"no-CLD mutant rejected without a quotient or remainder mismatch: {sorted(nocld_fields)}")
+        evidence["negative_cases"].append({"case": "43_without_CLD_D1", "rejected": len(rejected),
                                            "fields": sorted({f for error in rejected for f in error.fields}),
                                            "first": str(rejected[0])})
         # Issue #458: every arithmetic mutant must be rejected by at least one real-core case (value mismatch only),
@@ -268,7 +273,7 @@ def main():
             fields = sorted({f for entry in catching for f in entry["fields"]})
             record = {"mutant": name, "rejected": len(catching), "fields": fields,
                       "rejected_by": [entry["case"] for entry in catching], "first": catching[0]["detail"]}
-            required, any_of, zero_only = EXPECTED_REJECTIONS[name]
+            required, any_of, zero_only, selective = EXPECTED_REJECTIONS[name]
             seen = set(fields)
             if not required <= seen:
                 raise ValueError(f"{name}: the rejection does not name {sorted(required - seen)}")
@@ -278,8 +283,10 @@ def main():
                 raise ValueError(f"{name}: a non-zero divisor rejects the mutant, the mutant is not divide-by-zero only")
             if not zero_only and not any(entry["divisor"] >= 0x8000 for entry in catching):
                 raise ValueError(f"{name}: no rejecting case uses a divisor of $8000 or more (17-bit path not exercised)")
+            if selective and len(catching) >= len(CASES):
+                raise ValueError(f"{name}: rejected by every case, so it is not limited to the 17-bit path")
             record["expected_rejection"] = {"required": sorted(required), "any_of": sorted(any_of),
-                                            "zero_divisor_only": zero_only}
+                                            "zero_divisor_only": zero_only, "selective": selective}
             evidence.setdefault("arithmetic_mutants", []).append(record)
     (args.rom.parent / "geargrafx-dev-div16u-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
     total = len(CASES) + 2  # two boundary cases at caller SP=$0B (entry S=$07)
