@@ -159,11 +159,20 @@ class SyntheticImageTests(unittest.TestCase):
             self.assertEqual(profile["states_without_guaranteed_return"], expected, name)
 
     def test_unknown_bank_is_not_treated_as_a_guaranteed_return(self):
-        # LDA #$05 / CLA / TAM #$40 / JSR $CF00 (bank unknown) / RTS
+        # LDA #$05 / CLA (A becomes unknown) / TAM #$40 (MPR6 unmapped) /
+        # JSR $CF00 (bank unknown) / RTS
         image = self.directory / "unknown_bank.pce"
         image.write_bytes(synthetic_image(b"\xa9\x05\x62\x53\x40\x20\x00\xcf\x60"))
         profile = audit.audit_image(image, [0x1E], synthetic=True)["apis"][0]["callee"]
         self.assertEqual(profile["unresolved"], ["page_bank_unknown"])
+        self.assertGreater(profile["states_without_guaranteed_return"], 0)
+
+    def test_a_budget_cut_never_looks_guaranteed(self):
+        # The default callee (LDX / LDY / RTS) returns, but a 2 state budget
+        # cuts the walk before the RTS: the cut tail must not count as safe.
+        with mock.patch.object(audit.Auditor, "MAX_STATES", 2):
+            profile = audit.audit_image(self.image, [0x1E], synthetic=True)["apis"][0]["callee"]
+        self.assertTrue(profile["budget_exhausted"])
         self.assertGreater(profile["states_without_guaranteed_return"], 0)
 
     def test_any_successor_rule_is_distinguished_from_all_successors(self):
