@@ -27,7 +27,7 @@ Every row is HYPOTHESIS or UNKNOWN. None is VERIFIED.
 | --- | --- | --- | --- |
 | R1 | entry JSR `$E009` with slot `$03` | HYPOTHESIS | HuCC `pcengine.inc` |
 | R2 | block number 24-bit `_cl:_ch:_dl` (`$20FC-$20FE`) | HYPOTHESIS | HuCC callers |
-| R3 | `_dh = 2` selects RAM bank `_bl`, `_al` sectors | HYPOTHESIS | HuCC, Hu-Go HLE |
+| R3 | `_dh = 2` selects RAM bank `_bl`, `_al` sectors | HYPOTHESIS | 訂正: HuCC が `_dh=2` を書かないことを確認（`include/hucc/` の2ファイルの範囲）。`_dh=2` の出典は Hu-Go! HLE のみ（ライセンス未確定。根拠に使わない） |
 | R4 | destination address in the bank (register pair, end address) | UNKNOWN | none |
 | R5 | block base: CD_BASE-relative (#11) or absolute LBA | UNKNOWN | none |
 | R6 | A = 0 on success | HYPOTHESIS | HuCC TAX/BNE, Hu-Go |

@@ -336,7 +336,7 @@ FIXTURE_SECTORS = 16  # tools/make_cd_image.py DEFAULT_SECTORS (the real-core fi
 RAM_MODE_ITEMS = [
     {"id": "R1", "item": "entry JSR $E009 with slot $03", "status": "HYPOTHESIS", "source": "HuCC pcengine.inc"},
     {"id": "R2", "item": "block number 24-bit _cl:_ch:_dl ($20FC-$20FE)", "status": "HYPOTHESIS", "source": "HuCC callers"},
-    {"id": "R3", "item": "_dh=2 selects RAM bank _bl, _al sectors", "status": "HYPOTHESIS", "source": "HuCC + Hu-Go HLE"},
+    {"id": "R3", "item": "_dh=2 selects RAM bank _bl, _al sectors", "status": "HYPOTHESIS", "source": "Hu-Go HLE only (license unconfirmed, not a basis; HuCC include/hucc/ does not write _dh=2)"},
     {"id": "R4", "item": "destination address in the bank (register pair, end address)", "status": "UNKNOWN", "source": None},
     {"id": "R5", "item": "block base: CD_BASE-relative (#11) or absolute LBA", "status": "UNKNOWN", "source": None},
     {"id": "R6", "item": "A=0 on success", "status": "HYPOTHESIS", "source": "HuCC TAX/BNE, Hu-Go"},
