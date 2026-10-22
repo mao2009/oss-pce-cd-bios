@@ -55,6 +55,8 @@ int main(int argc, char** argv) {
     // Halt labels: the #5 diagnostic's three, or the #143 reset entry's two (#144 observation point).
     std::vector<std::string> halts = {"cd_halt_ok", "cd_halt_fail", "cd_unexpected_interrupt"};
     if (labels.count("reset_ready")) halts = {"reset_ready", "reset_unexpected_interrupt"};
+    // Issue #501: the DEV-only internal path's media-check halt (absent from every other label file).
+    if (labels.count("dev_media_halt")) halts.push_back("dev_media_halt");
     for (const auto& needed : halts)
         if (!labels.count(needed)) return 2;
 

@@ -35,9 +35,32 @@ MARK_OFF = 0x3F00 - BUFFER_BASE
 MS_RES = 0x3F40             # cd_media_state result block for this path (src/dev_boot_internal.s)
 MS_OFF = MS_RES - BUFFER_BASE
 MS_STATE_OK, MS_UNRECOGNISED, MS_STAGE_DONE = 0x01, 0x02, 6
-ORDER = ("cd_media_state", "ms_done", "cd_buffer_ready", "cd_data_done", "payload_entry", "payload_done",
+ORDER = ("dev_boot_entry", "cd_media_state", "ms_done", "cd_buffer_ready", "cd_data_done", "payload_entry", "payload_done",
          "cd_payload_return", "cd_halt_ok")
 MARKER = (0xA5, 0x5A, 0xF8, 0xFF, 0x3C)  # payload writes: MARK[0], MARK[1], MARK[4], MARK[5], MARK[6]
+
+
+def unrecognised_mutations(records, symbols):
+    """The unrecognised-disc judge must reject the same run halted at any other PC or with any other reason."""
+    mutants = {}
+    other_pcs = {"cd_halt_ok": symbols["cd_halt_ok"], "cd_halt_fail": symbols["cd_halt_fail"],
+                 "ms_done": symbols["ms_done"]}
+    for name, pc in other_pcs.items():
+        twin = copy.deepcopy(records)
+        for run in twin["RUN"]:
+            run["pc"] = pc
+        mutants[f"halted_at_{name}"] = twin
+    twin = copy.deepcopy(records)
+    for run in twin["RUN"]:
+        run["reason"] = "budget"
+    mutants["reason_budget"] = twin
+    for name, twin in mutants.items():
+        try:
+            judge_unrecognised(twin, symbols)
+        except ValueError:
+            continue
+        raise ValueError(f"unrecognised judge accepted mutated observation: {name}")
+    return sorted(mutants)
 
 
 def check_reads(records, cycle, lba):
@@ -96,7 +119,8 @@ def judge_success(records, code, symbols, lba):
         by_name = {h["name"]: h for h in hits}
         if bytes.fromhex(by_name["cd_buffer_ready"]["buffer_head_hex"]) != bytes([0x5A]) * 32:
             raise ValueError(f"{cycle}: destination was not the sentinel before the transfer")
-        expected_pc = {"cd_media_state": symbols["cd_media_state"], "ms_done": symbols["ms_done"],
+        expected_pc = {"dev_boot_entry": symbols["dev_boot_entry"], "cd_media_state": symbols["cd_media_state"],
+                       "ms_done": symbols["ms_done"],
                        "payload_entry": EXEC_ADDRESS, "payload_done": symbols["payload_done"],
                        "cd_payload_return": symbols["cd_payload_return"], "cd_halt_ok": symbols["cd_halt_ok"]}
         for name, pc in expected_pc.items():
@@ -131,13 +155,16 @@ def judge_failure(records, code, stage, transferred, after_payload=False):
 
 
 def judge_unrecognised(records, symbols):
-    """Media check did not accept the disc: no READ(6) of the payload sector, no payload, no success halt."""
+    """Media check did not accept the disc: the run must stop at dev_media_halt (not anywhere else), with no
+    READ(6) of the payload sector, no payload and no success halt."""
     if [run["cycle"] for run in records["RUN"]] != ["cold", "warm"]:
         raise ValueError("missing cold/warm runs")
     for run in records["RUN"]:
         cycle = run["cycle"]
-        if run["reason"] == "cd_halt_ok":
-            raise ValueError(f"{cycle}: success halt on an unrecognised disc")
+        if run["reason"] != "dev_media_halt" or run["pc"] != symbols["dev_media_halt"]:
+            raise ValueError(f"{cycle}: stopped with {run['reason']} at PC {run['pc']:#x}, "
+                             f"expected dev_media_halt at {symbols['dev_media_halt']:#x}")
+        check_halt_confirmation(run)
         ms = bytes.fromhex(run["buffer_hex"])[MS_OFF:MS_OFF + 7]
         if ms[0] != MS_UNRECOGNISED:
             raise ValueError(f"{cycle}: media check state {ms[0]:#x}, expected MEDIA_UNRECOGNISED")
@@ -193,7 +220,9 @@ class Suite:
     def failure(self, name, rom, cue, code, stage, transferred, after_payload=False, **info):
         records = self.run(rom, cue)
         judge_failure(records, code, stage, transferred, after_payload)
-        self.expect_reject(name, records, DEFAULT_LBA, self.code, guest_error=ERROR_NAMES.get(code, code), **info)
+        self.expect_reject(name, records, DEFAULT_LBA, self.code,
+                           guest_error=f"{ERROR_NAMES.get(code, code)} (code {code}) at stage {stage}, "
+                                       f"{transferred} bytes", **info)
 
 
 def mutation_tests(suite, records):
@@ -293,8 +322,11 @@ def main():
         build_exec_disc(bad_media, 0, code)
         records = suite.run(rom_bytes, bad_media / CUE_NAME, budget=STEP_BUDGET)
         judge_unrecognised(records, symbols)
-        suite.results["disc_unrecognised_at_media_check"] = {"status": "PASS_EXPECTED_FAILURE",
-                                                             "note": "LBA 0 without the synthetic magic; no LBA 5 read"}
+        suite.results["unrecognised_judge_mutations"] = {"status": "PASS_EXPECTED_FAILURE",
+                                                         "mutants": unrecognised_mutations(records, symbols)}
+        suite.results["disc_unrecognised_at_media_check"] = {
+            "status": "PASS", "stopped_at": "dev_media_halt", "media_state": "MEDIA_UNRECOGNISED (0x02)",
+            "note": "LBA 0 without the synthetic magic; halted at dev_media_halt; no LBA 5 read"}
         # (c) a payload whose marker byte is wrong: the ROM's own marker check after the return rejects it
         #     (PAYLOAD_MARKER_MISMATCH = 30 at stage 15); the success judge must also reject the observation
         wrong = bytearray(code)

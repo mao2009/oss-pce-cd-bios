@@ -23,7 +23,7 @@ else:
 
 MS_RES = 0x3F40                      # cd_media_state result block (see src/dev_boot_internal.s allocation table)
 ROM_NAME = "dev-only-not-compatible-dev-boot-internal.pce"
-REQUIRED = ("dev_boot_entry", "dev_media_halt", "cd_entry", "cd_buffer_ready", "cd_data_done", "cd_halt_ok",
+REQUIRED = ("dev_boot_reset", "dev_boot_entry", "dev_media_halt", "cd_entry", "cd_buffer_ready", "cd_data_done", "cd_halt_ok",
             "cd_halt_fail", "cd_unexpected_interrupt", "cd_cdb", "cd_payload_return", "cd_media_state", "ms_done")
 PAYLOAD_LABELS = ("payload_entry", "payload_done")
 
@@ -80,8 +80,10 @@ def build_dev_boot_internal(original_path: Path, output: Path, mode="debug") -> 
     if data[:0x1000] != original[:0x1000] or data[BANK_BYTES:] != b"\xff" * (IMAGE_BYTES - BANK_BYTES):
         raise ValueError("internal boot changed the API table or the unused banks")
     reset_vector = int.from_bytes(data[0x1FFE:0x2000], "little")  # $FFFE inside bank0 ($E000-$FFFF)
-    if reset_vector != rom_symbols["dev_boot_entry"]:
-        raise ValueError(f"reset vector {reset_vector:#x} is not dev_boot_entry")
+    if reset_vector != rom_symbols["dev_boot_reset"] or rom_symbols["dev_boot_entry"] != reset_vector + 1:
+        raise ValueError(f"reset vector {reset_vector:#x} is not dev_boot_reset followed by dev_boot_entry")
+    if data[reset_vector & 0x1FFF] != 0x78:  # SEI
+        raise ValueError("dev_boot_reset must be a single SEI")
 
     payload_obj = output / "cd_load_exec_payload.o"
     subprocess.run([ca65, str(ROOT / "src/cd_load_exec_payload.s"), "-o", str(payload_obj), *debug_flags], check=True)

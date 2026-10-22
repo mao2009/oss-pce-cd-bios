@@ -17,11 +17,14 @@
 ; cd_media_state.s. tools/build_dev_boot_internal.py performs that build.
 .setcpu "huc6280"
 .segment "BOOT"
-.export dev_boot_entry, dev_media_halt
+.export dev_boot_reset, dev_boot_entry, dev_media_halt
 .import cd_entry, cd_media_state
 
-dev_boot_entry:
+; The reset vector targets this one-byte SEI. The probe executes the reset instruction before its first label
+; check, so dev_boot_entry (the next address) is the first labelled checkpoint in both cold and warm runs.
+dev_boot_reset:
     sei
+dev_boot_entry:
     cld
     lda #$FF
     tam #$01                 ; MPR0 = hardware IO bank ($1800 CD-ROM2)
