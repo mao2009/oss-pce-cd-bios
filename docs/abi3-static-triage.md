@@ -24,7 +24,7 @@
 - ツール：`tools/reference_rom_static_audit.py`（origin/main `2af7b42` 時点、ファイル SHA-256 `5f8872dd862a0d6217ab500b972a25f641df9493935c415d8a81d2cfde29814c`）
 - 逆アセンブラ：pinned cc65 `da65`（`71746c829e77f74c2b601a7d16821170c2610df3`）、HuC6280 記述
 - 入力：ヘッダなしのペイロード 262,144 バイト（`provenance.header_bytes = 0`）
-- 出力：`spec/reference_static_triage_81.json`（計数と真偽値の投影のみ。ROM バイト列・逆アセンブル全文は含まない）
+- 出力：`docs/evidence/reference-static-triage-81.json`（計数と真偽値の投影のみ。ROM バイト列・逆アセンブル全文は含まない）
 - 再生成：`tools/reproduce_static_triage.py --rom <ローカル画像>`（ローカルのみ。CI は私的画像を持たない）
 
 ## 結果（81 スロット）

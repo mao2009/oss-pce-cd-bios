@@ -11,7 +11,7 @@ import re
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-PROJECTION = ROOT / "spec" / "reference_static_triage_81.json"
+PROJECTION = ROOT / "docs" / "evidence" / "reference-static-triage-81.json"
 ABI1 = ROOT / "spec" / "abi1_reference_review.json"
 TRACKED_SLOTS = (0x1E, 0x3C, 0x3D, 0x3F, 0x40, 0x41, 0x42)
 

@@ -14,7 +14,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 AUDITOR = ROOT / "tools" / "reference_rom_static_audit.py"
-COMMITTED = ROOT / "spec" / "reference_static_triage_81.json"
+COMMITTED = ROOT / "docs" / "evidence" / "reference-static-triage-81.json"
 SLOTS = ",".join(hex(i) for i in range(81))
 
 
@@ -35,7 +35,7 @@ def main(argv=None):
         fresh = json.loads(out.read_text(encoding="utf-8"))
     committed = json.loads(COMMITTED.read_text(encoding="utf-8"))
     if fresh != committed:
-        print("FAIL: regenerated projection differs from spec/reference_static_triage_81.json", file=sys.stderr)
+        print("FAIL: regenerated projection differs from docs/evidence/reference-static-triage-81.json", file=sys.stderr)
         return 1
     print("PASS: regenerated projection matches the committed file (81 slots)")
     return 0
