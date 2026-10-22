@@ -1,0 +1,74 @@
+# Phase ABI-3：純正 System Card BIOS 81 スロットの静的トリアージ（Issue #476）
+
+## 位置づけ
+
+- 純正 ROM の 81 スロットを、既存の静的解析ツールで再解析した**静的プロファイル**である。
+- **静的調査済みは ABI VERIFIED ではない。** 本台帳の全スロットで ABI 状態は `NOT_RUN` のままである。
+- 純正 BIOS は実行していない。JSR 実行許可は 0/81（`tools/reference_jsr_gate.py --check` が 81/81 BLOCKED）。
+- 静的プロファイルは到達可能なコードの上界であり、呼出しの許可ではない。
+
+## 画像の同一性（#476 Phase A）
+
+| 項目 | 値 | 判定 |
+|---|---|---|
+| 記録上の参照画像 | 262,656 バイト（512 バイトヘッダ付き）、SHA-256 `df4f75feebb95e53dfef72dea0787df743e3474ba046ff5a4cb88e34dda93ff1` | ローカルに無く、検証不能 |
+| ローカル画像 `rom/syscard3.pce` | 262,144 バイト（ヘッダなし）、SHA-256 `e11527b3b96ce112a037138988ca72fd117a6b0779c2480d9e03eaebece3d9ce` | 記録の SHA-256 とは別物 |
+| ペイロード CRC32 | `6D9A73EF` | Geargrafx DB の「Super CD-ROM System [3.0] (J)」と一致（`src/game_db.h`） |
+| 既存 7 件との内容一致 | 7 API すべて（入口、命令数、ハザード数、ストア分類、return 種別、未解決）が ABI-1 の台帳と一致 | 一致 |
+| ヘッダの扱い | ローダは `header_content_checked: false`。解析は 512 バイトを除いたバンクを読む | ヘッダは解析結果に影響しない |
+
+**判定：ペイロードの同一性は、DB の CRC32 と既存 7 件の内容一致により確認した。** 記録上の 262,656 バイト画像の SHA-256 とは照合できていない（ヘッダ 512 バイトが手元に無い）。CRC32 は暗号学的な同一性証明ではない。正式な参照 SHA-256 の確定はオーナーの判断として残る。
+
+## 解析の条件
+
+- ツール：`tools/reference_rom_static_audit.py`（origin/main `2af7b42` 時点、ファイル SHA-256 `5f8872dd862a0d6217ab500b972a25f641df9493935c415d8a81d2cfde29814c`）
+- 逆アセンブラ：pinned cc65 `da65`（`71746c829e77f74c2b601a7d16821170c2610df3`）、HuC6280 記述
+- 入力：ヘッダなしのペイロード 262,144 バイト（`provenance.header_bytes = 0`）
+- 出力：`spec/reference_static_triage_81.json`（計数と真偽値の投影のみ。ROM バイト列・逆アセンブル全文は含まない）
+- 再生成：`tools/reproduce_static_triage.py --rom <ローカル画像>`（ローカルのみ。CI は私的画像を持たない）
+
+## 結果（81 スロット）
+
+- 入口：81 件すべて `JMP_ABS`、ターゲットは重複なし。
+- 解析は 81 件とも予算内で完了（`budget_exhausted` は 0 件）。
+- ハザードを含むスロット数：
+
+| ハザード | スロット数 | 備考 |
+|---|---|---|
+| PAGE1_STORE | 71 | |
+| NO_RETURN | 33 | |
+| OTHER_STORE | 32 | |
+| MPR_WRITE | 23 | |
+| DATA_DEPENDENT_STORE | 22 | |
+| MPR_READ | 22 | |
+| ZERO_PAGE_STORE | 22 | |
+| CROSS_PAGE_CALL | 18 | |
+| UNRESOLVED_TARGET | 20 | |
+| IRQ_DISABLE | 8 | |
+| BLOCK_TRANSFER | 2 | スロット $00、$4C |
+| INDIRECT_CONTROL_FLOW | 2 | スロット $21、$4B |
+| VDC_DIRECT_WRITE | 2 | スロット $25、$36 |
+| IRQ_ENABLE | 1 | スロット $29 |
+
+- 未解決ターゲットを含むスロット：33 件（$00、$02〜$0C、$11〜$13、$15、$18〜$1D、$20、$21、$25、$29、$44、$48、$49、$4B、$4C、$4E、$4F）。
+- ハザードが 1 件も無いスロット：$17、$1E、$22、$4A。
+
+## 台帳の区分
+
+| 区分 | 件数 | 内容 |
+|---|---|---|
+| 既存の静的調査（ABI-1） | 7 | $1E、$3C、$3D、$3F、$40、$41、$42。再解析で内容が一致（テストで固定） |
+| 新規の静的プロファイル（ABI-3） | 74 | 本 PR で初めて台帳化。ABI 状態は NOT_RUN |
+| ABI VERIFIED | 0 | |
+| JSR 実行許可 | 0 | |
+
+## 制限
+
+- 静的プロファイルは上界であり、安全性の判定ではない。
+- 未解決ターゲットを含む 33 スロットは、呼出し先の完全な解析が未了である。
+- 参照画像の正式な SHA-256 は未確定（上記）。
+
+## 検証
+
+- `tests/host/test_abi3_static_triage.py`：投影の形状、JMP テーブル、ABI-1 既存 7 件の一致、ROM バイトが無いこと、ABI 状態が NOT_RUN であること。
+- `tools/reproduce_static_triage.py`：ローカル画像から再生成し、コミット済みの投影と完全一致することを確認する（ローカルのみ）。
