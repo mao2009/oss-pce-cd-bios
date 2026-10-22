@@ -27,7 +27,7 @@ Other results: **0 verified BIOS-mediated CD program boots; 0 retail game compat
 | $41 | MA_MUL16U | Project-own DEV math routine; not the proven System Card ABI |
 | $42 | MA_DIV16S | Project-own stack-based DEV math contract |
 
-| $4F | MA_MUL16S | New in Issue #494 (not yet in main): project-own signed 16x16 to 32-bit multiplication; caller P/Y/S, MPR, ZP/BSS/I/O and frame-external stack checked on pinned Geargrafx, including a write/read trace of the routine's own instructions; real-core and host mutants. Manual `make dev-mul16s-sweep` covers 1,572,864 calls. Not the proven System Card ABI |
+| $4F | MA_MUL16S | New in Issue #494 (not yet in main): project-own signed 16x16 to 32-bit multiplication; caller P/Y/S, MPR, ZP/BSS/I/O and frame-external stack checked on pinned Geargrafx, including a write/read trace of the routine's own instructions; real-core mutants of the assembled routine. Manual `make dev-mul16s-sweep` covers 1,572,864 calls. Not the proven System Card ABI |
 | $43 | MA_DIV16U | New in [#480](https://github.com/mao2009/oss-pce-cd-bios/pull/480): project-own unsigned division, caller I/D flag combinations, stack and WRAM final-state checks, real-core mutants |
 Main contains `src/overrides/slot_1E.s`, `slot_3C.s`, `slot_3D.s`, `slot_3F.s`, `slot_40.s`, `slot_41.s`, `slot_42.s`, `slot_43.s`. The 256 KiB DEV ROM is not a replacement for a commercial System Card. `spec/dev_implementations.json` remains the status ledger with approval and reference-ABI axes separate. Note that a full-RAM before/after diff **cannot** observe same-value writes or writes later undone.
 

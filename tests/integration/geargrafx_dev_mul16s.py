@@ -431,6 +431,8 @@ def mutants(data, window):
     f = lambda pat, name: find_unique(data, bytes.fromhex(pat), window, name)
     nop_block = lambda head, name: (lambda at: [(at + 5, b"\xEA" * data[at + 4])])(f(head, name))  # BPL n -> n NOPs
     body_end = window[1] - 0xE000 - 1
+    if not window[1] < TRAMPOLINE < window[1] + 0x100 - 8:
+        raise ValueError("trampoline is outside the extended PC window")
     jmp = lambda code: [(body_end, bytes([0x4C, TRAMPOLINE & 0xFF, TRAMPOLINE >> 8])), (TRAMPOLINE - 0xE000, code)]
     return {
         "M1_multiplicand_correction_NOP": (nop_block("BD0B2110", "M1"), {"product"}, 0, 0xFF),
@@ -452,6 +454,8 @@ def mutants(data, window):
         "T6_same_value_below_lowest_push": (jmp(bytes.fromhex("08" "AD3421" "8D3421" "28" "60")), {"trace"}, 0x100, 0x40),
         "T7_same_value_jsr_return_byte": (jmp(bytes.fromhex("08" "AD3C21" "8D3C21" "28" "60")), {"trace"}, 0x100, 0x40),
         "T8_same_value_above_frame": (jmp(bytes.fromhex("08" "AD4121" "8D4121" "28" "60")), {"trace"}, 0x100, 0x40),
+        "T9_same_value_jsr_return_low_byte": (jmp(bytes.fromhex("08" "AD3B21" "8D3B21" "28" "60")), {"trace"}, 0x100, 0x40),
+        "T10_bss_read": (jmp(bytes.fromhex("08" "AD0022" "28" "60")), {"trace"}, 0x100, 0x40),
         "T5_mpr_change": (jmp(bytes.fromhex("08" "A9F8" "5304" "28" "60")), {"mpr"}, 0x100, 0x40),
     }
 
