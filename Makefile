@@ -120,6 +120,14 @@ dev-cdload-exec: dev-rom
 
 dev-cdload-exec-integration: dev-cdload-exec
 	$(PYTHON) tests/integration/geargrafx_cdload_exec.py --mode "$(MODE)"
+.PHONY: dev-boot-internal dev-boot-internal-integration
+# Issue #501: DEV-ONLY internal boot path (reset -> synthetic CD media check -> READ(6) -> RAM -> jump). NOT compatible,
+# NOT a BIOS, NOT DEV_CALLABLE. Separate from the default DEV ROM and from the Issue #14/#5 cdload-exec experiment.
+dev-boot-internal: dev-rom
+	$(PYTHON) tools/build_dev_boot_internal.py --mode "$(MODE)"
+
+dev-boot-internal-integration: dev-boot-internal
+	$(PYTHON) tests/integration/geargrafx_dev_boot_internal.py --mode "$(MODE)"
 .PHONY: dev-cdreset dev-cdreset-integration
 # Opt-in Issue #10 CD_RESET bus-reset diagnostic (original ROM, not the System Card API); separate from the #5 read ROM.
 dev-cdreset: dev-rom
