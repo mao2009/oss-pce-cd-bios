@@ -1145,16 +1145,25 @@
       "candidate_name": "MA_DIV16U",
       "state": "NOT_READY",
       "abi_contract": {
-        "status": "UNKNOWN",
+        "status": "PROJECT_SPEC_ONLY",
         "note": "reference System Card contract not verified; DEV-only project spec"
       },
-      "implementation": null,
-      "host_evidence": [],
-      "real_core_evidence": [],
+      "implementation": {
+        "source": "src/overrides/slot_43.s",
+        "license": "MIT (repository LICENSE)",
+        "provenance": "project-own spec, Issue #478 (same restoring division layout as src/overrides/slot_42.s, unsigned, with the 17th-bit forced subtraction of src/math/ma_div16u.s)"
+      },
+      "host_evidence": [
+        "tests/host/test_ma_div16u_dev.py"
+      ],
+      "real_core_evidence": [
+        "tests/integration/geargrafx_dev_div16u.py"
+      ],
       "approval": {
         "approved_by": null,
         "review_ref": null
-      }
+      },
+      "note": "DEV ROM implemented and real-core tested; NOT_READY until owner approval is recorded"
     },
     {
       "id": 68,
