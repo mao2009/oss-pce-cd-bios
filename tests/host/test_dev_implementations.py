@@ -5,6 +5,7 @@ Host-only. Each negative case is a mutated copy of the real ledger that must pro
 import copy
 import sys
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -215,6 +216,65 @@ class AbiVerifiedDerivedTests(unittest.TestCase):
 
     def test_real_ledger_has_zero_verified_rows(self):
         self.assertEqual(0, dev.summary(base(), OVERRIDES)["abi_verified"])
+
+
+class FailClosedTests(unittest.TestCase):
+    """Malformed ledgers must yield problems (never an exception, never an empty list)."""
+
+    def test_counts_are_separate_and_current(self):
+        s = dev.summary(base(), OVERRIDES)
+        self.assertEqual((8, 73, 0), (s["dev_rom_callable"], s["dev_rom_unimplemented"], s["owner_approved"]))
+
+    def test_owner_approval_is_counted_apart_from_implementation(self):
+        ledger = base()
+        entry(ledger, 0x10)["approval"] = {"approved_by": "owner", "review_ref": "x"}
+        s = dev.summary(ledger, OVERRIDES)
+        self.assertEqual((8, 1, 0), (s["dev_rom_callable"], s["owner_approved"], s["dev_callable_approved"]))
+
+    def test_malformed_ledgers_are_rejected(self):
+        for mutate in (
+            lambda l: l.update(slots=[None] + l["slots"][1:]),
+            lambda l: l["slots"][3].update(abi_contract=None),
+            lambda l: l["slots"][3].update(abi_contract="VERIFIED"),
+            lambda l: l["slots"][3].update(abi_contract={}),
+            lambda l: l["slots"][0x3D].update(state="DEV_CALLABLE", approval="owner"),
+            lambda l: l.update(slots={}),
+            lambda l: l.pop("schema_version"),
+            lambda l: l.update(schema_version=True),
+            lambda l: l["slots"][0x3D].update(implementation="x"),
+            lambda l: l["slots"][0x3D].update(implementation=["x"]),
+            lambda l: l["slots"][0x3D].update(state="DEV_CALLABLE", approval={"approved_by": "o", "review_ref": "r"},
+                                              host_evidence=5),
+            lambda l: l["slots"][0x3D].update(state="DEV_CALLABLE", approval={"approved_by": "o", "review_ref": "r"},
+                                              host_evidence=[None]),
+            lambda l: l["slots"][0x3D].update(state="DEV_CALLABLE", approval={"approved_by": "o", "review_ref": "r"},
+                                              host_evidence=["../../../etc/hostname"]),
+            lambda l: l["slots"][3].update(id=[1]),
+            lambda l: l["slots"][3].update(id=True),
+            lambda l: l["slots"][3].update(state=[1]),
+            lambda l: l["slots"][3].update(abi_contract={"status": [1]}),
+            lambda l: l["slots"][0x3D]["implementation"].update(license=1),
+            lambda l: l["slots"][3].update(state="BLOCKED", reason=[1]),
+            lambda l: l["slots"][0x3D].update(state="DEV_CALLABLE", approval={"approved_by": 1, "review_ref": 2}),
+            lambda l: l["slots"][0x3D]["implementation"].update(license=" "),
+        ):
+            ledger = base()
+            mutate(ledger)
+            self.assertTrue(dev.validate(ledger, SLOTS, OVERRIDES))
+        self.assertTrue(dev.validate([], SLOTS, OVERRIDES))
+        self.assertTrue(dev.validate(base(), SLOTS, {1, "a"}))
+
+    def test_main_returns_1_when_ledger_unloadable(self):
+        import io
+        from contextlib import redirect_stderr
+        with unittest.mock.patch.object(dev, "load_ledger", side_effect=RecursionError), redirect_stderr(io.StringIO()):
+            self.assertEqual(1, dev.main())
+        with unittest.mock.patch.object(dev, "validate", side_effect=RuntimeError), redirect_stderr(io.StringIO()):
+            self.assertEqual(1, dev.main())
+
+    def test_summary_never_raises_on_malformed_ledger(self):
+        for bad in ([], {"slots": 5}, {"slots": [None, 1, {"state": [1], "abi_contract": 3}]}):
+            self.assertEqual(0, dev.summary(bad, OVERRIDES)["abi_verified"])
 
 
 if __name__ == "__main__":
