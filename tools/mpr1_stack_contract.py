@@ -101,7 +101,7 @@ def check_stack_bank(mpr1):
     """
     if type(mpr1) is not int:
         return BLOCKED, "no MPR1 evidence: %s is not an MPR1 byte value" % (repr(mpr1),)
-    if not MPR1_MIN <= mpr1 <= MPR1_MAX:
+    if not _is_byte(mpr1):
         return FAIL, "MPR1=%s is outside the byte range $%02X-$%02X" % (
             _byte_text(mpr1), MPR1_MIN, MPR1_MAX)
     if mpr1 in ALLOWED_STACK_MPR1:
@@ -131,7 +131,7 @@ def check_initial_state(measured_reset, recorded_init_value, instruction_index):
     if instruction_index != 0:
         return FAIL, "harness init recorded at instruction index %s, allowed only at index 0" % (
             instruction_index,)
-    if not MPR1_MIN <= recorded_init_value <= MPR1_MAX:
+    if not _is_byte(recorded_init_value):
         return FAIL, "harness init MPR1=%s is outside the byte range $%02X-$%02X" % (
             _byte_text(recorded_init_value), MPR1_MIN, MPR1_MAX)
     if recorded_init_value != HARNESS_INIT_MPR1:
@@ -165,12 +165,12 @@ def check_mpr1_write(path, value, instruction_index):
         return BLOCKED, "reset value is not a contract input; harness must set MPR1 first"
     if type(instruction_index) is not int:
         return BLOCKED, "instruction index is not a number: %s" % (repr(instruction_index),)
-    if instruction_index < INDEX_MIN:
+    if not _is_index(instruction_index):
         return FAIL, "instruction index %d is invalid: it must be a non-negative integer" % instruction_index
     if path == PATH_DIRECT_SETMPR:
         if type(value) is not int:
             return BLOCKED, "direct SetMpr value is not an MPR1 byte value: %s" % (repr(value),)
-        if not MPR1_MIN <= value <= MPR1_MAX:
+        if not _is_byte(value):
             return FAIL, "direct SetMpr value %s is outside the byte range $%02X-$%02X" % (
                 _byte_text(value), MPR1_MIN, MPR1_MAX)
         if instruction_index == 0 and value == HARNESS_INIT_MPR1:
