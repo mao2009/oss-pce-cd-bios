@@ -48,6 +48,8 @@ class OracleTest(unittest.TestCase):
         for key, val in (("y_out", 0), ("s_out", 0xF8), ("p_out", 0x0A), ("p_out", 0x29), ("p_in", 0x29)):
             bad = dict(good, **{key: val})
             self.assertEqual(len(m.check_case(0x8000, 0xFFFF, **bad)), 1, key)
+        for bit in (0x01, 0x02, 0x04, 0x08, 0x40, 0x80):  # C, Z, I, D, V, N each detected
+            self.assertEqual(len(m.check_case(0x8000, 0xFFFF, **dict(good, p_out=0x09 ^ bit))), 1, bit)
         for i in range(4):
             f = list(good["got_frame"])
             f[i] ^= 1
