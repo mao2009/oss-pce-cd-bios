@@ -213,16 +213,19 @@ class Suite:
         try:
             judge_success(records, code, self.symbols, lba)
         except ValueError as error:
-            self.results[name] = {"status": "PASS_EXPECTED_FAILURE", "rejected_because": str(error), **info}
+            # rejected_because: the specific reason. A caller that knows the real guest error passes it in info.
+            reason = info.pop("rejected_because", None) or str(error)
+            self.results[name] = {"status": "PASS_EXPECTED_FAILURE", "rejected_because": reason,
+                                  "success_judge_message": str(error), **info}
         else:
             raise ValueError(f"{name}: success judge ACCEPTED a failing observation")
 
     def failure(self, name, rom, cue, code, stage, transferred, after_payload=False, **info):
         records = self.run(rom, cue)
         judge_failure(records, code, stage, transferred, after_payload)
-        self.expect_reject(name, records, DEFAULT_LBA, self.code,
-                           guest_error=f"{ERROR_NAMES.get(code, code)} (code {code}) at stage {stage}, "
-                                       f"{transferred} bytes", **info)
+        guest_error = f"{ERROR_NAMES.get(code, code)} ({code}) at stage {stage}, {transferred} bytes"
+        self.expect_reject(name, records, DEFAULT_LBA, self.code, rejected_because=f"guest error {guest_error}",
+                           guest_error=guest_error, **info)
 
 
 def mutation_tests(suite, records):

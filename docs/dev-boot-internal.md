@@ -1,6 +1,8 @@
 # DEV専用 内部起動経路（Issue #501）
 
 **状態: DEV専用・非互換。** 本番互換、純正 System Card ABI、DEV_CALLABLE 承認、ABI VERIFIED のいずれも主張しない。
+
+**位置づけ:** 本経路は DEV 専用の内部起動経路の実コア検証である。純正 CD_READ($03) / CD_EXEC / CD_BOOT の互換実装ではなく、BIOS 経由の商用ゲーム起動成功を示すものでもない。
 ホストは guest RAM へ直接データを注入しない。転送はすべて ROM 内 HuC6280 コードが READ(6) を発行して行う。
 
 ## 経路
@@ -28,7 +30,7 @@ LBA 5 を READ(6) で 2048 バイト `$2800` へ転送、`PCEX` ヘッダ検証�
 
 ## ビルドと検証
 
-- ビルド: `make dev-boot-internal`（tools/build_dev_boot_internal.py）。リセットベクタ `$FFFE` が `dev_boot_entry` を指すことを ROM バイトで検査する。
+- ビルド: `make dev-boot-internal`（tools/build_dev_boot_internal.py）。リセットベクタ `$FFFE` が `dev_boot_reset` を指し、`dev_boot_entry` == `dev_boot_reset`+1 で、`dev_boot_reset` の先頭バイトが SEI（`$78`）であることを ROM バイトで検査する。
 - 統合試験: `make dev-boot-internal-integration`（tests/integration/geargrafx_dev_boot_internal.py）。実 Geargrafx コア（pinned）で cold と warm の両方を実行する。
 - 位置づけ: opt-in ターゲット。CI（必須ジョブ）には組み込んでいない。`make test` / `make check` には含まれない。
 - 停止位置: 媒体確認が失敗した場合、判定は `dev_media_halt` での停止（PC と理由 `dev_media_halt` の両方）を要求する。別 PC や budget 停止は拒否される。
