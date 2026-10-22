@@ -1,5 +1,5 @@
 ; Synthetic caller-stack contract fixture (Issue #473). Test-only HuCARD, NOT a BIOS, no reference material.
-; One build per case (ca65 -D):
+; One build per case (ca65 -D). CASE_RAM_INJECT is CASE_RAM plus one write to $0100 (negative case):
 ;   CASE_RAM  contract honoured: MPR1 = WRAM ($F8) when the caller JSRs api_guard.
 ;   CASE_IO   contract violated:  the caller sets MPR1 = $FF (hardware page) before the JSR.
 ;   CASE_IRQ  block transfer: TII (8 bytes) from ROM to WRAM $0220; the host asserts IRQ1 mid-transfer.
@@ -59,6 +59,10 @@ guard_check:
     lda #$00
 @store:
     sta $0210
+.ifdef CASE_RAM_INJECT
+    lda #$AA
+    sta $0100            ; negative case: an injected write outside the allowed stack frame
+.endif
     pla
     plp
 guard_rts:

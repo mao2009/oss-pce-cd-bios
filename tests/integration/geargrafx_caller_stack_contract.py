@@ -40,6 +40,7 @@ P_CALLER = 0x0D  # I=1 (SEI), D=1 (SED), C=1 (SEC) must be set in the caller bef
 RAM_MPR = 0xF8
 IO_MPR = 0xFF
 FLAG_INDEX = 0x10  # WRAM $0210 (the dump starts at $0200)
+ALLOWED_RAM_WRITES = {0x1FC, 0x1FD, 0x1FE, 0x1FF, 0x210}  # the guard frame ($01FC-$01FF) and the flag ($0210) only
 TII_INDEX = 0x20  # WRAM $0220 (the dump starts at $0200)
 TII_ABS = 0x220  # the same bytes as WRAM indices in WRW records
 TII_SOURCE = bytes(range(0xA1, 0xA9))
@@ -47,6 +48,9 @@ CASES = [
     {"name": "ram_contract", "define": "CASE_RAM", "steps": 80, "irq": "none"},
     {"name": "io_violation", "define": "CASE_IO", "steps": 80, "irq": "none"},
     {"name": "tii_irq1", "define": "CASE_IRQ", "steps": 160, "irq": "tii-irq1"},
+    # Negative: an injected write to $0100 (outside the allowed frame). The RAM judge must reject it.
+    {"name": "ram_inject_negative", "define": "CASE_RAM_INJECT", "steps": 80, "irq": "none",
+     "expect_fail": "stack_writes_in_wram"},
 ]
 
 
@@ -102,6 +106,7 @@ def judge_ram(records):
         return results
     check(results, "caller_precondition", pre["mpr"][1] == RAM_MPR and pre["p"] & P_CALLER == P_CALLER,
           {"mpr1": pre["mpr"][1], "p": pre["p"]})
+    check(results, "caller_precondition_sp", pre["sp"] == 0xFF, {"caller_sp": pre["sp"], "want": 0xFF})
     check(results, "guard_saw_ram", guard["a"] == RAM_MPR, {"a_at_guard_check": guard["a"]})
     check(results, "guard_flag_allowed", wram_bytes(records)[FLAG_INDEX] == 1,
           {"flag_0210": wram_bytes(records)[FLAG_INDEX]})
@@ -116,8 +121,10 @@ def judge_ram(records):
     vdc_after = [v for v in records.get("VDW", []) if v["step"] > pre["step"]]
     check(results, "no_vdc_write", not vdc_after, {"vdw_after_call": vdc_after})
     wram_after = sorted({w["wram"] for w in records.get("WRW", []) if w["step"] >= pre["step"]})
-    check(results, "stack_writes_in_wram", all(0x100 <= a <= 0x1FF or a == 0x210 for a in wram_after),
-          {"wram_indices_written": [hex(a) for a in wram_after]})
+    outside = [a for a in wram_after if a not in ALLOWED_RAM_WRITES]
+    check(results, "stack_writes_in_wram", not outside,
+          {"wram_indices_written": [hex(a) for a in wram_after], "outside_allowed": [hex(a) for a in outside],
+           "allowed": sorted(hex(a) for a in ALLOWED_RAM_WRITES)})
     return results
 
 
@@ -135,7 +142,21 @@ def judge_io(records):
           {"flag_0210": wram_bytes(records)[FLAG_INDEX], "guard_rts_hits": records["HITS"][0].get("guard_rts")})
     vdw = [v for v in records.get("VDW", []) if pre["step"] <= v["step"] <= rts["step"]]
     wrw = [w for w in records.get("WRW", []) if pre["step"] <= w["step"] <= rts["step"]]
-    check(results, "io_writes_observed", len(vdw) >= 1, {"vdw_in_guard_window": vdw})
+    # VDW records register VALUE changes (not a bus write trace). Each expected change is matched by its step, its
+    # register and its value: the JSR pushes PC+2 (the last byte of the 3-byte JSR), and the guard's PHA pushes A.
+    api_guard = trace(records, "api_guard")
+    r0 = [v for v in vdw if v["step"] == pre["step"] and v["reg"] == "R0"]
+    check(results, "jsr_return_to_vdc_r0",
+          len(r0) == 1 and r0[0]["old"] == 0 and r0[0]["new"] == pre["pc"] + 2,
+          {"want": {"step": pre["step"], "reg": "R0", "old": 0, "new": pre["pc"] + 2}, "vdw_at_step": r0})
+    if api_guard is None:
+        check(results, "pha_value_to_vdc_ar", False, "api_guard not reached")
+    else:
+        ar = [v for v in vdw if v["step"] == api_guard["step"] + 1 and v["reg"] == "AR"]
+        check(results, "pha_value_to_vdc_ar",
+              len(ar) == 1 and ar[0]["pc"] == api_guard["pc"] + 1 and ar[0]["old"] == 0 and ar[0]["new"] == api_guard["a"],
+              {"want": {"step": api_guard["step"] + 1, "pc": api_guard["pc"] + 1, "reg": "AR", "old": 0,
+                        "new": api_guard["a"]}, "vdw_at_step": ar})
     check(results, "no_stack_write_in_wram", not any(0x100 <= w["wram"] <= 0x1FF for w in wrw),
           {"wram_writes_in_guard_window": wrw})
     # Observation only (informational, not a pass criterion). Two facts are kept apart: whether the label post_return
@@ -177,13 +198,73 @@ def judge_irq(records):
     return results
 
 
-JUDGES = {"ram_contract": judge_ram, "io_violation": judge_io, "tii_irq1": judge_irq}
+def _trace(name, step, pc, a, sp, mpr1=RAM_MPR, p=0x0D):
+    return {"name": name, "step": step, "pc": pc, "a": a, "x": 0x22, "y": 0x33, "p": p, "sp": sp,
+            "mpr": [RAM_MPR, mpr1, 0x58, 0x31, 0x26, 0x3E, 0x63, 0x00]}
+
+
+def _ram_records(extra_wrw=(), sp=0xFF):
+    """Synthetic CASE_RAM records (same shape as the probe output). The labels and steps follow the real trace."""
+    flag = bytearray(256)
+    flag[FLAG_INDEX] = 1
+    return {"TRACE": [_trace("pre_jsr", 12, 0xE013, 0x11, sp), _trace("api_guard", 13, 0xE019, 0x11, sp - 2),
+                      _trace("guard_check", 16, 0xE01D, RAM_MPR, sp - 4), _trace("guard_rts", 23, 0xE02C, 0x11, sp - 2),
+                      _trace("post_return", 24, 0xE013 + 3, 0x11, sp)],
+            "WRW": [{"step": 12, "pc": 0xE013, "wram": 0x1FE, "old": 0, "new": 0x15},
+                    {"step": 12, "pc": 0xE013, "wram": 0x1FF, "old": 0, "new": 0xE0},
+                    {"step": 13, "pc": 0xE019, "wram": 0x1FD, "old": 0, "new": 0x4D},
+                    {"step": 14, "pc": 0xE01A, "wram": 0x1FC, "old": 0, "new": 0x11},
+                    {"step": 20, "pc": 0xE02A, "wram": 0x210, "old": 0, "new": 1}, *extra_wrw],
+            "VDW": [], "HITS": [{"post_return": 1, "guard_rts": 1}],
+            "END": [{"wram_0200_hex": bytes(flag).hex()}]}
+
+
+def _io_records(vdw):
+    """Synthetic CASE_IO records: MPR1 = $FF, the guard reads $FF and stores 0. vdw is the VDC change list."""
+    return {"TRACE": [_trace("pre_jsr", 14, 0xE017, 0x11, 0xFF, mpr1=IO_MPR), _trace("api_guard", 15, 0xE025, 0x11, 0xFD,
+                      mpr1=IO_MPR), _trace("guard_check", 18, 0xE029, IO_MPR, 0xFB, mpr1=IO_MPR),
+                      _trace("guard_rts", 24, 0xE038, 0, 0xFD, mpr1=IO_MPR, p=0)],
+            "WRW": [], "VDW": vdw, "HITS": [{"guard_rts": 1}], "END": [{"wram_0200_hex": "00" * 256}]}
+
+
+def selftest():
+    """Negative cases for the judges, run before the real core (a judge that accepts these is wrong).
+
+    The unrelated VDC change must not satisfy the VDC checks, and a write to $0100 (outside the allowed stack frame) must
+    fail the RAM judge. Each rule is checked both ways: the correct record passes, the wrong one fails.
+    """
+    def failing(results):
+        return {item["check"] for item in results if not item["ok"]}
+
+    good_vdw = [{"step": 14, "pc": 0xE017, "reg": "R0", "old": 0, "new": 0xE019},
+                {"step": 16, "pc": 0xE026, "reg": "AR", "old": 0, "new": 0x11}]
+    unrelated = [{"step": 25, "pc": 0, "reg": "R17", "old": 0, "new": 2}]
+    wrong_r0 = [{"step": 14, "pc": 0xE017, "reg": "R0", "old": 0, "new": 0x1234},
+                {"step": 16, "pc": 0xE026, "reg": "AR", "old": 0, "new": 0x11}]
+    if failing(judge_io(_io_records(good_vdw))):
+        raise ValueError("selftest: the correct JSR return and PHA values were rejected")
+    if not {"jsr_return_to_vdc_r0", "pha_value_to_vdc_ar"} <= failing(judge_io(_io_records(unrelated))):
+        raise ValueError("selftest: an unrelated VDC change satisfies the VDC checks")
+    if "jsr_return_to_vdc_r0" not in failing(judge_io(_io_records(wrong_r0))):
+        raise ValueError("selftest: a wrong R0 value satisfies the JSR return check")
+    if failing(judge_ram(_ram_records())):
+        raise ValueError("selftest: the contract-honoured records were rejected")
+    if "stack_writes_in_wram" not in failing(judge_ram(_ram_records(extra_wrw=[
+            {"step": 14, "pc": 0xE01A, "wram": 0x100, "old": 0, "new": 0xAA}]))):
+        raise ValueError("selftest: a write to $0100 outside the allowed stack frame passed the RAM judge")
+    if "caller_precondition_sp" not in failing(judge_ram(_ram_records(sp=0xFE))):
+        raise ValueError("selftest: a caller SP other than $FF passed the RAM judge")
+
+
+JUDGES = {"ram_contract": judge_ram, "io_violation": judge_io, "tii_irq1": judge_irq,
+          "ram_inject_negative": judge_ram}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out", type=Path, help="evidence directory (default: a temporary one)")
     args = parser.parse_args()
+    selftest()  # judge negatives first: a judge that accepts a wrong record is not evidence
     if sys.platform != "linux":  # the pinned core is a Linux build; never skip silently
         raise ValueError(f"caller-stack experiment is Linux-pinned (platform {sys.platform}); BLOCKED, not PASS")
     out = args.out or Path(tempfile.mkdtemp(prefix="pce-caller-stack-"))
@@ -200,6 +281,9 @@ def main():
             records = run_probe(probe, rom, labels, case["steps"], case["irq"], folder)
             judged = JUDGES[case["name"]](records)
             ok = bool(judged) and all(item["ok"] for item in judged)
+            if "expect_fail" in case:  # a negative case passes only when the judge rejects it on the expected check
+                rejected = {item["check"] for item in judged if not item["ok"]}
+                ok = case["expect_fail"] in rejected
             evidence["cases"][case["name"]] = {"rom_sha256": hashlib.sha256(rom.read_bytes()).hexdigest(),
                                                "checks": judged, "records": records,
                                                "status": "PASS" if ok else "FAIL"}
