@@ -18,6 +18,11 @@ class Comparison(unittest.TestCase):
             self.assertIn(s, AUDIT)
         for s in ["`$12/$34/$07`", "`$BE/$EF/$05`", "`0xBEEF`", "$5A"]:
             self.assertIn(s, CMP)
+        for s in ["AR 0→7", "R[7] 0→564"]:
+            self.assertIn(s, CMP)
+            self.assertIn(s, AUDIT)
+        self.assertIn("30 ケース", CMP)
+        self.assertIn("30 ケース", AUDIT)
         for s in ["$E019", "80 ステップ"]:
             self.assertIn(s, CMP)
             self.assertIn(s, EXP)
@@ -25,11 +30,15 @@ class Comparison(unittest.TestCase):
     def test_required_sections_and_negative_kept(self):
         for s in ["オーナー判断事項", "Issue 分割案", "MPR1=$FF", "S0", "S7", "A / B / C"]:
             self.assertIn(s, CMP)
-        for s in ["PC", "A / X / Y", "MPR0〜7", "VDC"]:
-            self.assertIn(s, CMP)
+        # Each verification condition must be its own table row (a bare "PC" elsewhere is not enough).
+        rows = [l.split("|")[1].strip() for l in CMP.splitlines() if l.startswith("| ")]
+        for r in ["PC", "A / X / Y", "S", "P", "MPR0〜7", "VDC", "宛先バイト", "WRAM のスタック画像"]:
+            self.assertIn(r, rows)
 
     def test_gates_stay_blocked_and_no_new_claims(self):
         self.assertIn("BLOCKED のまま", CMP)
+        for bad in ["ゲートを解除する", "解除済み", "MERGE_RECOMMENDED"]:
+            self.assertNotIn(bad, CMP)
         self.assertIn("release_eligible=false", CMP)
         self.assertIn("本番用安全ガードは有効化しない", CMP)
         # The only mention allowed is the statement that they are not granted.
