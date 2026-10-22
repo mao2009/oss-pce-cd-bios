@@ -202,11 +202,20 @@ class DocCodeNumbersTest(unittest.TestCase):
         cells = [cell.strip() for cell in rows[0].strip().strip("|").split("|")]
         self.assertEqual(cells[1], "`$%04X`〜`$%04X`" % (low, high))
 
-    def test_doc_init_index_zero_matches_code(self):
-        # The exact §2 rule sentence; checked by phrase, not by the bare words "命令番号 0".
-        self.assertIn("命令番号 0 で記録された `$F8`", self.text)
-        self.assertEqual(c.check_initial_state(None, c.HARNESS_INIT_MPR1, 0)[0], c.PASS)
-        self.assertNotEqual(c.check_initial_state(None, c.HARNESS_INIT_MPR1, 1)[0], c.PASS)
+    def test_doc_init_index_matches_code_rule(self):
+        # Read the number from the §2 rule sentence and compare it with the indices the code passes.
+        matches = re.findall(r"命令番号 (\d+) で記録された `\$F8`", self.text)
+        self.assertEqual(len(matches), 1)
+        code_pass_indices = {i for i in range(8) if c.check_initial_state(None, c.HARNESS_INIT_MPR1, i)[0] == c.PASS}
+        self.assertEqual({int(matches[0])}, code_pass_indices)
+
+    def test_doc_other_values_row_is_fail(self):
+        # The "その他の全値" row must say FAIL; a PASS there would widen the allow set without a table row.
+        rows = [line for line in self.text.splitlines() if line.startswith("| その他の全値 |")]
+        self.assertEqual(len(rows), 1)
+        cells = [cell.strip() for cell in rows[0].strip().strip("|").split("|")]
+        self.assertIn("FAIL", cells[2])
+        self.assertNotIn("PASS", cells[2])
 
 
 if __name__ == "__main__":
