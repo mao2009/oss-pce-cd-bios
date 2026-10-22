@@ -23,6 +23,9 @@ class Comparison(unittest.TestCase):
             self.assertIn(s, AUDIT)
         self.assertIn("30 ケース", CMP)
         self.assertIn("30 ケース", AUDIT)
+        self.assertNotIn("検出する前に、ガードが", CMP)  # O6 once had a self-contradicting sentence
+        self.assertIn("UNMEASURED", CMP)
+        self.assertIn("`$05`→`$00`", CMP)
         for s in ["$E019", "80 ステップ"]:
             self.assertIn(s, CMP)
             self.assertIn(s, EXP)
@@ -32,12 +35,12 @@ class Comparison(unittest.TestCase):
             self.assertIn(s, CMP)
         # Each verification condition must be its own table row (a bare "PC" elsewhere is not enough).
         rows = [l.split("|")[1].strip() for l in CMP.splitlines() if l.startswith("| ")]
-        for r in ["PC", "A / X / Y", "S", "P", "MPR0〜7", "VDC", "宛先バイト", "WRAM のスタック画像"]:
+        for r in ["PC", "A / X / Y", "S", "P", "IRQ 線・保留状態", "MPR0〜7", "VDC", "宛先バイト", "WRAM のスタック画像"]:
             self.assertIn(r, rows)
 
     def test_gates_stay_blocked_and_no_new_claims(self):
         self.assertIn("BLOCKED のまま", CMP)
-        for bad in ["ゲートを解除する", "解除済み", "MERGE_RECOMMENDED"]:
+        for bad in ["ゲートを解除する", "解除済み", "解除可能", "MERGE_RECOMMENDED"]:
             self.assertNotIn(bad, CMP)
         self.assertIn("release_eligible=false", CMP)
         self.assertIn("本番用安全ガードは有効化しない", CMP)
