@@ -1,7 +1,7 @@
 """Core-free host oracle of the project-internal MA_MUL16S DEV contract (Issue #479; docs/ma-mul16s.md).
 
 Design only: no assembly exists yet. Two independent computations are provided so a future implementation is judged
-against both: expected() uses Python integer multiplication, shift_add() mirrors the planned byte-wise algorithm.
+against both: expected() uses Python integer multiplication, shift_add() mirrors the planned algorithm at 16-bit-word level (byte carries are NOT modeled; the real-core sweep covers them).
 Not the reference System Card MA_MUL16S ABI (UNVERIFIED).
 """
 
