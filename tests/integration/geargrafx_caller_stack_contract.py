@@ -138,9 +138,12 @@ def judge_io(records):
     check(results, "io_writes_observed", len(vdw) >= 1, {"vdw_in_guard_window": vdw})
     check(results, "no_stack_write_in_wram", not any(0x100 <= w["wram"] <= 0x1FF for w in wrw),
           {"wram_writes_in_guard_window": wrw})
-    # Observation only (not a pass criterion): whether the RTS went back to the caller.
-    check(results, "observed_returned_to_caller", True,
-          {"post_return_reached": post is not None, "note": "informational, a violation is not asserted to return"})
+    # Observation only (informational, not a pass criterion). Two facts are kept apart: whether the label post_return
+    # was reached, and where the guard RTS went. The RTS target is the value popped from the stack page, which reads
+    # through I/O and is not traced, so only the reached labels are recorded.
+    check(results, "info_post_return_reached_after_violation", True,
+          {"post_return_reached": post is not None, "guard_rts_reached": rts is not None,
+           "rts_target": "not observed (popped from the I/O stack page, not traced)"})
     return results
 
 
