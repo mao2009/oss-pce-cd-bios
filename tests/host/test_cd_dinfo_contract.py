@@ -53,16 +53,20 @@ EXPECTED = {
     'F28': ('callee', 'UNKNOWN', 'UNKNOWN'),
     'F29': ('name', 'SOURCE_FACT', '`cd_dinfo`（HuC）、`CD_DINFO`（当リポジトリ）、`cdr_dinfo`（elmer の内部名）'),
     'F30': ('reference', 'UNKNOWN', 'UNKNOWN'),
+    'F31': ('callee', 'UNKNOWN', 'UNKNOWN'),
+    'F32': ('callee', 'UNKNOWN', 'UNKNOWN'),
+    'F33': ('callee', 'UNKNOWN', 'UNKNOWN'),
 }
 
 # Status counts as the rows stand. Enforced exactly by test_status_counts.
-EXPECTED_COUNTS = {'SOURCE_FACT': 10, 'HYPOTHESIS': 6, 'UNKNOWN': 14}
+EXPECTED_COUNTS = {'SOURCE_FACT': 10, 'HYPOTHESIS': 6, 'UNKNOWN': 17}
 
 # Field coverage required by the Issue #234 acceptance list. Each keyword must appear in the item cell of
 # the named row (token match, not a substring of the whole table).
 REQUIRED_FIELD_ROWS = {
     'A': 'F19', 'X': 'F22', 'Y': 'F18', 'P': 'F23', '$20F8': 'F10', 'フラグ': 'F23', 'SP': 'F24',
     'MPR': 'F25', '副作用': 'F26', 'IRQ': 'F27', '失敗': 'F21', 'エラー': 'F20', '戻り': 'F18',
+    '媒体なし': 'F31', '範囲外トラック': 'F32', '未対応の照会種別': 'F33',
 }
 
 
