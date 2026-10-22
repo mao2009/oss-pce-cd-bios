@@ -2,9 +2,12 @@
 
 No emulator, no ROM, no reference BIOS. Checks that the contract cannot silently widen (only $F8 allowed),
 that the reset value is never trusted, that TAM and direct SetMpr are judged on separate paths, and that the
-same-instruction IRQ hole stays UNMEASURED. The mutation check fails if a permissive judge is substituted.
+same-instruction IRQ hole stays UNMEASURED. The suite does not swap the judge functions; a permissive judge is
+caught by the full-value assertions (every value 0..255 and every CPU address), which were checked by hand in a
+temporary copy (see the PR report).
 """
 import importlib.util
+import re
 import unittest
 from pathlib import Path
 
@@ -136,8 +139,8 @@ class StackAddressNotationTest(unittest.TestCase):
         self.assertEqual(c.check_stack_address(None)[0], c.BLOCKED)
 
 
-class MutationCheckTest(unittest.TestCase):
-    """A permissive bank table (allowing any value) must be caught by the table tests above."""
+class NonAllowedValuesFailTest(unittest.TestCase):
+    """Every value other than $F8 must be FAIL. A bank table that allows any extra value breaks this."""
 
     def test_every_non_f8_value_is_a_fail_not_a_pass(self):
         for value in range(256):
@@ -159,6 +162,51 @@ class DocConsistencyTest(unittest.TestCase):
         self.assertIn("$21FF", text)
         self.assertIn("テストラベル", text)
         self.assertIn("pending", text)
+
+
+def doc_bank_verdicts(text):
+    """Map each bank value in the doc's section 1 table (rows like | `$F8` | ... | verdict |) to PASS/FAIL."""
+    verdicts = {}
+    for line in text.splitlines():
+        if not line.startswith("| `$"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        match = re.fullmatch(r"`\$([0-9A-F]{2})`", cells[0])
+        if match and len(cells) >= 3:
+            verdicts[int(match.group(1), 16)] = "PASS" if "PASS" in cells[2] else "FAIL"
+    return verdicts
+
+
+class DocCodeNumbersTest(unittest.TestCase):
+    """The numbers the doc states must match the code: allowed bank, denied banks, CPU stack range, init index."""
+
+    def setUp(self):
+        self.text = (ROOT / "docs" / "497-mpr1-stack-contract.md").read_text(encoding="utf-8")
+
+    def test_doc_pass_bank_is_the_code_allow_set(self):
+        verdicts = doc_bank_verdicts(self.text)
+        doc_allowed = {value for value, verdict in verdicts.items() if verdict == "PASS"}
+        self.assertEqual(doc_allowed, set(c.ALLOWED_STACK_MPR1))
+
+    def test_doc_denied_banks_are_denied_in_code(self):
+        verdicts = doc_bank_verdicts(self.text)
+        for value, verdict in verdicts.items():
+            with self.subTest(value=hex(value)):
+                self.assertEqual(c.check_stack_bank(value)[0] == c.PASS, verdict == "PASS")
+
+    def test_doc_cpu_stack_range_matches_code(self):
+        # Checked on the notation table row itself, not on any occurrence of the range elsewhere in the doc.
+        low, high = c.CPU_STACK_PAGE
+        rows = [line for line in self.text.splitlines() if line.startswith("| CPU スタックページ |")]
+        self.assertEqual(len(rows), 1)
+        cells = [cell.strip() for cell in rows[0].strip().strip("|").split("|")]
+        self.assertEqual(cells[1], "`$%04X`〜`$%04X`" % (low, high))
+
+    def test_doc_init_index_zero_matches_code(self):
+        # The exact §2 rule sentence; checked by phrase, not by the bare words "命令番号 0".
+        self.assertIn("命令番号 0 で記録された `$F8`", self.text)
+        self.assertEqual(c.check_initial_state(None, c.HARNESS_INIT_MPR1, 0)[0], c.PASS)
+        self.assertNotEqual(c.check_initial_state(None, c.HARNESS_INIT_MPR1, 1)[0], c.PASS)
 
 
 if __name__ == "__main__":
