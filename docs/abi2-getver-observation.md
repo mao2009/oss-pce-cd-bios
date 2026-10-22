@@ -26,20 +26,31 @@
 - `source`（`kind` = `SYNTHETIC_DEV_ROM`、`rom_sha256`）
 - `core`（Geargrafx の固定 revision）、`harness`（ハーネス名と、ハーネスファイルの sha256）
 - `case`、`temperature`（`cold` / `warm`）、`status`（`RETURNED` のみ受理）
-- `inputs`、`before` / `after`（A/X/Y/P/SP/MPR0〜7/ZP32 バイト）
-- `io`（`observation` と `accesses`）、`steps_used`、`step_budget`
-- `abi_claim`、`record_digest`（本体の sha256。改ざん検知）
+- `inputs`（A/X/Y/P の 4 キーのみ。各値は 0〜255 の整数で、bool・負数・256 以上・文字列・浮動小数点・null は拒否。`before` の A/X/Y/P と一致しなければ拒否）
+- `before` / `after`（A/X/Y/P/SP/MPR0〜7/ZP32 バイト）
+- `io`（キーは `observation` と `accesses` のみ。`accesses` はリスト）、`steps_used`、`step_budget`
+- `abi_claim`、`record_digest`（本体の sha256。**整合性検査であり、真正性の証明ではない**。下記）
+
+### `record_digest` の意味（整合性のみ）
+
+- 偶発的な破損と、ハッシュを再計算しない改変を検出する。
+- 改ざんした本文に対して SHA-256 を再計算すれば一致してしまう。よって**一致は作成者・実行・出所を証明しない**。
+- 一致しても `abi_claim` は `VERIFIED` に昇格しない。純正 JSR の実行許可も生まれない（`decide_execution` は常に BLOCKED）。
+- 実測の出所を独立に証明する仕組み（署名、独立レビューされた証拠経路）は本モジュールの責務外。BiosDevKit 側の将来の証拠認証とは分離し、#473 で扱う。
 
 ## 検証の順序（fail-closed）
 
-1. キー集合・スキーマ・`record_digest`（改ざん）
+1. キー集合・スキーマ・`record_digest`（整合性。JSON 化できない値は `FIELDS`）
 2. スロットと入口
 3. 証拠の出所（参照 ROM は `REFERENCE_UNAPPROVED`、未知の種類は拒否）
 4. ROM・コア・ハーネスの識別
 5. 状態（`RETURNED` 以外は拒否、予算超過は `BUDGET`）
-6. MPR 不変、SP 不変
-7. I/O アクセス（計測されて非空なら拒否）
-8. ABI 主張（`VERIFIED` は拒否）
+6. 状態の構造、`inputs` の構造と `before` との一致
+7. MPR 不変、SP 不変
+8. I/O の構造と値（`NOT_MEASURED` のまま、`accesses` は空。`MEASURED_NO_ACCESS` は計測器の証明がないため拒否）
+9. ABI 主張（`VERIFIED` は拒否）
+
+不正な構造は例外ではなく `Refused` で拒否する。`Refused` 以外の例外が出ることは `MalformedStructureTests` で確認する。
 
 ## 未計測の項目（正直な記録）
 
@@ -54,6 +65,17 @@
 ## 負例（ホストテスト）
 
 ROM 不一致、入口不一致、未承認の参照実行、不正な MPR 変更、予期しない I/O、スタック破壊、予算超過、改ざん、静的判定のみの許可、根拠のない VERIFIED、スキーマ違反、重複キー、ZP 長不正。各負例はその 1 性質だけを壊した正常レコードから作る。
+
+追加の負例（#475 指摘 2）:
+
+- `inputs`：余分なキー、欠落キー、配列・null・文字列、bool・負数・256 以上・浮動小数点・null、`before` との不一致
+- `io`：配列・null・文字列、キーの欠落・余分、`accesses` がリスト以外、未計測なのに `accesses` あり、未計測なのに `MEASURED_NO_ACCESS` と主張
+- 整合性：本文だけ変更（拒否）、本文とハッシュを両方変更（整合性は通過するが、真正性は主張せず `OBSERVED_SYNTHETIC` のまま昇格しない）、`VERIFIED` 主張の再封印（拒否）
+- 任意の構造の型違い：拒否のみで例外は出さない
+
+## 合成 ROM の I/O 計測について
+
+`MEASURED_NO_ACCESS` を受理するには、計測器自身の出所を証明する仕組みが必要になる。現行の core harness にはそれがないため、本検証器はこの値を全レコードで拒否する。
 
 ## 残課題
 

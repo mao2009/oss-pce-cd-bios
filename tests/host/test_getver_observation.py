@@ -35,7 +35,7 @@ def record(**changes):
         "core": {"name": "geargrafx", "revision": CORE},
         "harness": {"name": "geargrafx_core_harness", "revision": HARNESS},
         "case": "synthetic_case", "temperature": "warm", "status": "RETURNED",
-        "inputs": {"a": 0x11, "x": 0x22, "y": 0x33, "p": 0x04},
+        "inputs": {"a": 0x11, "x": 0x03, "y": 0x00, "p": 0x04},  # must equal before's A/X/Y/P
         "before": state(), "after": state(),
         "io": {"observation": g.NOT_MEASURED, "accesses": []},
         "steps_used": g.NOT_MEASURED, "step_budget": BUDGET, "abi_claim": "OBSERVED_SYNTHETIC",
@@ -90,8 +90,7 @@ class NegativeListTests(unittest.TestCase):
         self.assert_refused(item, "MPR")
 
     def test_5_unexpected_io_access(self):
-        item = mutate(lambda r: r["io"].update(observation=g.IO_MEASURED_NONE,
-                                               accesses=[{"addr": 0x2000, "kind": "write"}]))
+        item = mutate(lambda r: r["io"].update(accesses=[{"addr": 0x2000, "kind": "write"}]))
         self.assert_refused(item, "IO")
 
     def test_6_stack_corruption(self):
@@ -121,6 +120,98 @@ class NegativeListTests(unittest.TestCase):
         self.assertEqual(counts["reference_abi_verified"], 0)
         self.assertEqual(counts["reproducible_reference_observations"], 0)
         self.assertEqual(counts["synthetic_observations"], 1)
+
+
+class DigestScopeTests(unittest.TestCase):
+    """record_digest is an integrity check. These tests pin down what a matching digest does and does not prove."""
+
+    def test_body_change_without_reseal_is_refused(self):
+        item = record()
+        item["after"]["a"] = 0x99  # digest left stale on purpose
+        with self.assertRaisesRegex(g.Refused, "TAMPERED"):
+            g.validate(item, **SYNTHETIC)
+
+    def test_body_and_digest_changed_together_pass_integrity_but_prove_nothing(self):
+        altered = mutate(lambda r: r["after"].update(a=0x99))  # a forger reseals the altered body
+        self.assertEqual(g.validate(altered, **SYNTHETIC), "OBSERVED_SYNTHETIC")  # integrity only, no provenance
+        self.assertEqual(g.decide_execution({"verdict": "SAFE"}, [altered])["execution"], "BLOCKED")
+
+    def test_matching_digest_cannot_promote_a_claim_to_verified(self):
+        forged = mutate(lambda r: r.update(abi_claim="VERIFIED"))  # resealed, so the digest matches
+        with self.assertRaisesRegex(g.Refused, "ABI_CLAIM"):
+            g.validate(forged, **SYNTHETIC)
+
+
+class InputSchemaTests(unittest.TestCase):
+    def assert_inputs_refused(self, inputs, code="FIELDS"):
+        item = mutate(lambda r: r.update(inputs=inputs))
+        with self.assertRaisesRegex(g.Refused, code):
+            g.validate(item, **SYNTHETIC)
+
+    def test_1_extra_key_refused(self):
+        self.assert_inputs_refused({"a": 0x11, "x": 0x03, "y": 0x00, "p": 0x04, "s": 0x00})
+
+    def test_2_missing_key_refused(self):
+        self.assert_inputs_refused({"a": 0x11, "x": 0x03, "y": 0x00})
+
+    def test_3_inputs_not_an_object_refused(self):
+        for bad in ([0x11, 0x03, 0x00, 0x04], None, "a=11"):
+            with self.subTest(inputs=bad):
+                self.assert_inputs_refused(bad)
+
+    def test_4_bool_value_refused(self):
+        self.assert_inputs_refused({"a": True, "x": 0x03, "y": 0x00, "p": 0x04})
+
+    def test_5_value_out_of_byte_range_refused(self):
+        for bad in (256, -1, "17", 1.0, None):
+            with self.subTest(value=bad):
+                self.assert_inputs_refused({"a": bad, "x": 0x03, "y": 0x00, "p": 0x04})
+
+    def test_6_inputs_differing_from_before_refused(self):
+        self.assert_inputs_refused({"a": 0x11, "x": 0x22, "y": 0x00, "p": 0x04}, code="INPUTS")
+
+    def test_positive_control_inputs_match_before(self):
+        self.assertEqual(g.validate(record(), **SYNTHETIC), "OBSERVED_SYNTHETIC")
+
+
+class IoSchemaTests(unittest.TestCase):
+    def assert_io_refused(self, io):
+        item = mutate(lambda r: r.update(io=io))
+        with self.assertRaisesRegex(g.Refused, "IO"):
+            g.validate(item, **SYNTHETIC)
+
+    def test_7_io_not_an_object_refused(self):
+        for bad in ([], None, "NOT_MEASURED"):
+            with self.subTest(io=bad):
+                self.assert_io_refused(bad)
+
+    def test_8_io_missing_or_extra_key_refused(self):
+        self.assert_io_refused({"observation": g.NOT_MEASURED})
+        self.assert_io_refused({"observation": g.NOT_MEASURED, "accesses": [], "note": "clean"})
+
+    def test_9_accesses_not_a_list_refused(self):
+        for bad in ({}, None, "none", 0):
+            with self.subTest(accesses=bad):
+                self.assert_io_refused({"observation": g.NOT_MEASURED, "accesses": bad})
+
+    def test_10_claiming_no_access_without_measurement_refused(self):
+        self.assert_io_refused({"observation": g.IO_MEASURED_NONE, "accesses": []})
+
+    def test_unmeasured_io_with_recorded_accesses_refused(self):
+        self.assert_io_refused({"observation": g.NOT_MEASURED, "accesses": [{"addr": 0x2000, "kind": "read"}]})
+
+
+class MalformedStructureTests(unittest.TestCase):
+    """Malformed structure must surface as Refused, never as a Python exception from the validator."""
+
+    def test_any_wrong_shape_in_a_field_is_refused_not_raised(self):
+        bad_values = (None, [], "x", -1, True, {}, [0] * 8)
+        for field in ("source", "core", "harness", "before", "after", "io", "inputs", "steps_used", "abi_claim"):
+            for bad in bad_values:
+                with self.subTest(field=field, value=bad):
+                    item = mutate(lambda r: r.update({field: bad}))
+                    with self.assertRaises(g.Refused):
+                        g.validate(item, **SYNTHETIC)
 
 
 class SchemaTests(unittest.TestCase):

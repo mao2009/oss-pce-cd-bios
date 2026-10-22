@@ -10,6 +10,12 @@ because no owner-approved, independently reviewed channel exists (Issues #459, #
 The contract keeps four ideas apart: a static review (tools/abi1_reference_review.py), a local-only
 observation, a reproducible real-core observation, and an ABI VERIFIED claim. Only the first two
 can be produced here, and neither one grants execution.
+
+record_digest is an integrity check only: it detects accidental corruption and edits that were not
+resealed. It is not authentication. Anyone who edits a record can recompute the digest, so a matching
+digest proves nothing about who produced the measurement or whether the run really happened. Only a
+separate provenance mechanism (for example a signed, independently reviewed evidence channel, which
+is outside this module and is tracked with #473) could establish that.
 """
 import hashlib
 import json
@@ -26,6 +32,8 @@ RECORD_KEYS = frozenset({"schema", "slot", "entry", "source", "core", "harness",
                          "status", "inputs", "before", "after", "io", "steps_used", "step_budget",
                          "abi_claim", "record_digest"})
 STATE_KEYS = frozenset({"a", "x", "y", "p", "sp", "mpr", "zp"})
+INPUT_KEYS = frozenset({"a", "x", "y", "p"})
+IO_KEYS = frozenset({"observation", "accesses"})
 
 
 class Refused(ValueError):
@@ -71,16 +79,46 @@ def load_jsonl(text):
     return records
 
 
+def _is_byte(value):
+    # bool is a subclass of int in Python, so True must be rejected explicitly.
+    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 255
+
+
 def _state_ok(state):
     if not isinstance(state, dict) or set(state) != STATE_KEYS:
         return False
-    for reg in ("a", "x", "y", "p", "sp"):
-        if not (isinstance(state[reg], int) and not isinstance(state[reg], bool) and 0 <= state[reg] <= 255):
-            return False
+    if not all(_is_byte(state[reg]) for reg in ("a", "x", "y", "p", "sp")):
+        return False
     mpr = state["mpr"]
-    if not (isinstance(mpr, list) and len(mpr) == 8 and all(isinstance(v, int) and 0 <= v <= 255 for v in mpr)):
+    if not (isinstance(mpr, list) and len(mpr) == 8 and all(_is_byte(v) for v in mpr)):
         return False
     return isinstance(state["zp"], str) and re.fullmatch(r"[0-9a-f]{64}", state["zp"]) is not None
+
+
+def _inputs_ok(inputs, before):
+    """Inputs must be exactly the A/X/Y/P bytes the harness observed before the routine ran."""
+    if not isinstance(inputs, dict) or set(inputs) != INPUT_KEYS:
+        raise Refused("FIELDS", f"inputs must have exactly the keys {sorted(INPUT_KEYS)}")
+    if not all(_is_byte(inputs[reg]) for reg in INPUT_KEYS):
+        raise Refused("FIELDS", f"inputs values must be integers 0..255, got {inputs!r}")
+    if any(inputs[reg] != before[reg] for reg in INPUT_KEYS):
+        raise Refused("INPUTS", f"inputs {inputs} differ from the observed before state")
+
+
+def _io_ok(io):
+    """Unmeasured I/O is recorded as NOT_MEASURED and never read as 'no access'."""
+    if not isinstance(io, dict) or set(io) != IO_KEYS:
+        raise Refused("IO", "io must be an object with exactly the keys observation and accesses")
+    if not isinstance(io["accesses"], list):
+        raise Refused("IO", "io.accesses must be a list")
+    if io["observation"] == NOT_MEASURED:
+        if io["accesses"]:
+            raise Refused("IO", f"accesses recorded although I/O was not measured: {io['accesses']}")
+        return
+    if io["observation"] == IO_MEASURED_NONE:
+        # No I/O meter exists in the pinned core harness, so no record can prove 'no access' yet.
+        raise Refused("IO", "MEASURED_NO_ACCESS needs an I/O meter with its own provenance; none is accepted")
+    raise Refused("IO", f"io.observation {io['observation']!r} is not a known value")
 
 
 def validate(record, *, rom_sha256, entry, core_revision, harness_revision, step_budget):
@@ -89,7 +127,11 @@ def validate(record, *, rom_sha256, entry, core_revision, harness_revision, step
         raise Refused("FIELDS", "record keys do not match the v1 contract")
     if record["schema"] != SCHEMA:
         raise Refused("SCHEMA", f"unknown schema {record['schema']!r}")
-    if record["record_digest"] != digest(record):
+    try:
+        recomputed = digest(record)
+    except (TypeError, ValueError) as error:  # a non-JSON value is a malformed record, not a crash
+        raise Refused("FIELDS", f"record body is not canonical JSON: {error}") from error
+    if record["record_digest"] != recomputed:  # integrity only; a match is not provenance
         raise Refused("TAMPERED", "record_digest does not match the record body")
     if record["slot"] != SLOT or record["entry"] != entry:
         raise Refused("ENTRY_MISMATCH", f"slot {record['slot']!r} entry {record['entry']!r}, expected {entry!r}")
@@ -115,19 +157,16 @@ def validate(record, *, rom_sha256, entry, core_revision, harness_revision, step
     if record["step_budget"] != step_budget:
         raise Refused("BUDGET", "step_budget differs from the harness budget")
     steps = record["steps_used"]
-    if steps != NOT_MEASURED and not (isinstance(steps, int) and 0 <= steps <= step_budget):
+    if steps != NOT_MEASURED and not (isinstance(steps, int) and not isinstance(steps, bool) and 0 <= steps <= step_budget):
         raise Refused("BUDGET", f"steps_used {steps!r} is outside 0..{step_budget}")
     if not (_state_ok(record["before"]) and _state_ok(record["after"])):
         raise Refused("FIELDS", "before/after state is malformed")
+    _inputs_ok(record["inputs"], record["before"])
     if record["after"]["mpr"] != record["before"]["mpr"]:
         raise Refused("MPR", f"MPR changed {record['before']['mpr']} -> {record['after']['mpr']}")
     if record["after"]["sp"] != record["before"]["sp"]:
         raise Refused("STACK", f"SP changed {record['before']['sp']:#04x} -> {record['after']['sp']:#04x}")
-    io = record["io"]
-    if io.get("observation") not in (NOT_MEASURED, IO_MEASURED_NONE) or not isinstance(io.get("accesses"), list):
-        raise Refused("IO", "io block is malformed")
-    if io["accesses"]:
-        raise Refused("IO", f"unexpected I/O accesses: {io['accesses']}")
+    _io_ok(record["io"])
     if record["abi_claim"] not in ABI_CLAIMS:
         raise Refused("ABI_CLAIM", f"abi_claim {record['abi_claim']!r} is not permitted by this contract")
     return "OBSERVED_SYNTHETIC"

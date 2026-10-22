@@ -91,6 +91,8 @@ class RealCoreObservationTests(unittest.TestCase):
                                                     accesses=[{"addr": 0x0000, "kind": "read"}])),
             "BUDGET": resealed(lambda r: r.update(status="TIMEOUT")),
             "ABI_CLAIM": resealed(lambda r: r.update(abi_claim="VERIFIED")),
+            "INPUTS": resealed(lambda r: r["inputs"].update(x=(r["inputs"]["x"] + 1) & 0xFF)),
+            "FIELDS": resealed(lambda r: r["inputs"].update(a=True)),
             "TAMPERED": dict(base, after=dict(base["after"], a=(base["after"]["a"] + 1) & 0xFF)),
         }
         for code, item in cases.items():
