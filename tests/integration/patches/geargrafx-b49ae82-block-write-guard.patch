@@ -1,11 +1,12 @@
 --- a/src/huc6280_opcodes.cpp
 +++ b/src/huc6280_opcodes.cpp
-@@ -20,6 +20,10 @@
+@@ -20,6 +20,11 @@
  #include "huc6280.h"
  #include "memory.h"
  
 +// VERIFICATION-ONLY pre-write guard definitions (Issue #367 / #173). See huc6280_opcodes_inline.h.
 +bool (*gg_verify_block_write_guard)(void* context, unsigned block_op, unsigned dest) = nullptr;
++bool (*gg_verify_transfer_start_guard)(void* context, unsigned stack_pointer) = nullptr;
 +void* gg_verify_block_write_context = nullptr;
 +
  void HuC6280::OPCode0x00()
@@ -13,7 +14,7 @@
      // BRK
 --- a/src/huc6280_opcodes_inline.h
 +++ b/src/huc6280_opcodes_inline.h
-@@ -25,6 +25,17 @@
+@@ -25,6 +25,25 @@
  #include "memory.h"
  #include "huc6280_names.h"
  
@@ -21,7 +22,15 @@
 +// NOT upstream code. Null hook = upstream behaviour. block_op: 0=TII 1=TIN 2=TIA 3=TDD 4=TAI.
 +// Defined in huc6280_opcodes.cpp. The guard runs BEFORE the byte read and Memory::Write.
 +extern bool (*gg_verify_block_write_guard)(void* context, unsigned block_op, unsigned dest);
++extern bool (*gg_verify_transfer_start_guard)(void* context, unsigned stack_pointer);
 +extern void* gg_verify_block_write_context;
++
++// VERIFICATION-ONLY pre-push guard for TransferStart A/X/Y stack pushes (Issue #459 / #367 / #173).
++// Null hook = upstream behaviour. stack_pointer = S before the three pushes (page 1 holds $2100|S).
++INLINE bool GG_VerifyTransferStart_Allowed(unsigned stack_pointer)
++{
++    return !gg_verify_transfer_start_guard || gg_verify_transfer_start_guard(gg_verify_block_write_context, stack_pointer);
++}
 +
 +INLINE bool GG_VerifyBlockWrite_Allowed(unsigned block_op, unsigned dest)
 +{
@@ -31,7 +40,7 @@
  INLINE void HuC6280::OPCodes_ADC(u8 value)
  {
      u8 a;
-@@ -525,7 +536,8 @@
+@@ -525,7 +544,8 @@
      if (m_transfer_state == 2)
      {
          m_cycles += 6;
@@ -41,7 +50,7 @@
          m_transfer_source += (m_transfer_count & 1) ? -1 : 1;
          m_transfer_dest++;
          m_transfer_count++;
-@@ -556,7 +568,8 @@
+@@ -556,7 +576,8 @@
      if (m_transfer_state == 2)
      {
          m_cycles += 6;
@@ -51,7 +60,7 @@
          m_transfer_source--;
          m_transfer_dest--;
          m_transfer_length--;
-@@ -586,7 +599,8 @@
+@@ -586,7 +607,8 @@
      if (m_transfer_state == 2)
      {
          m_cycles += 6;
@@ -61,7 +70,7 @@
          m_transfer_source++;
          m_transfer_dest += (m_transfer_count & 1) ? -1 : 1;
          m_transfer_count++;
-@@ -617,7 +631,8 @@
+@@ -617,7 +639,8 @@
      if (m_transfer_state == 2)
      {
          m_cycles += 6;
@@ -71,7 +80,7 @@
          m_transfer_source++;
          m_transfer_dest++;
          m_transfer_length--;
-@@ -647,7 +662,8 @@
+@@ -647,7 +670,8 @@
      if (m_transfer_state == 2)
      {
          m_cycles += 6;
@@ -81,3 +90,31 @@
          m_transfer_source++;
          m_transfer_length--;
  
+@@ -669,9 +693,24 @@
+ {
+     m_transfer_state = 2;
+ 
+-    StackPush8(m_Y.GetValue());
+-    StackPush8(m_A.GetValue());
+-    StackPush8(m_X.GetValue());
++    // VERIFICATION-ONLY (Issue #459): a refused push writes nothing but still moves S. The three
++    // stack slots are then NEVER written, so the unconditional TransferEnd pops read three
++    // never-stored bytes. With the stack page mapped to $FF those bytes are VDC registers: $2102
++    // (data read buffer LSB), $2103 (MSB) and $2104 (status register, cleared by the read). The
++    // refusal therefore prevents the WRITE side effect only; it does not preserve A/X/Y and it is
++    // not a safe termination. This hook is a measurement aid, NOT a production safety mechanism.
++    if (GG_VerifyTransferStart_Allowed(m_S.GetValue()))
++    {
++        StackPush8(m_Y.GetValue());
++        StackPush8(m_A.GetValue());
++        StackPush8(m_X.GetValue());
++    }
++    else
++    {
++        m_S.Decrement();
++        m_S.Decrement();
++        m_S.Decrement();
++    }
+ 
+     m_transfer_source = Fetch16();
+     m_transfer_dest = Fetch16();

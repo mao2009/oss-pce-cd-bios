@@ -9,11 +9,12 @@ Upstream: https://github.com/drhelius/Geargrafx, pinned commit
 | File | Purpose | Issue |
 | --- | --- | --- |
 | `geargrafx-b49ae82-st-write-guard.patch` | Unified diff against `src/huc6280_opcodes.cpp` only. Adds a null-by-default guard hook that the ST0 ($03), ST1 ($13) and ST2 ($23) handlers call before `WriteFromCPU`. | #365 (parent #173) |
+| `geargrafx-b49ae82-block-write-guard.patch` | Diff against `src/huc6280_opcodes.cpp` and `src/huc6280_opcodes_inline.h`. Adds null-by-default hooks: a pre-write guard for the TII/TIN/TIA/TDD/TAI byte stores, and a pre-push guard for the TransferStart A/X/Y stack pushes (pushes only). | #367 (parent #173), #459 |
 
 ## License and distribution
 
-- **This directory is GPL-3.0, not MIT.** The patch is a modification of one GPL-3.0 source
-  file, so the patch and any build of the patched core are GPL-3.0. The full GPL-3.0 text is in
+- **This directory is GPL-3.0, not MIT.** The patches modify GPL-3.0 source
+  files (`src/huc6280_opcodes.cpp`, and `src/huc6280_opcodes_inline.h` for the block-write-guard patch), so the patch and any build of the patched core are GPL-3.0. The full GPL-3.0 text is in
   `LICENSE` in this directory (copied verbatim from the upstream tree, sha256
   `3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986`). The repository root
   `LICENSE` (MIT) does not cover this directory or the patched core.
@@ -33,6 +34,13 @@ Upstream: https://github.com/drhelius/Geargrafx, pinned commit
   directory, compiles only the patched `huc6280_opcodes` object, and links it into a local probe.
   Probe executables, objects and the patched copy are never committed, uploaded or published.
 - The hook is for verification only. It must not be carried into a release build.
+- The block-write-guard patch's TransferStart hook (#459) is **not** a production safety
+  mechanism. A refused push leaves three never-written stack slots, and the core's unconditional
+  TransferEnd pops read them: with the stack page mapped to $FF those reads hit VDC registers
+  ($2102 = data read buffer LSB, $2103 = MSB, $2104 = status register, which the read clears),
+  so A/X/Y are overwritten with the values read and the VDC status register is cleared. This was
+  measured on the real core; see `docs/367-block-transfer-audit.md`. The hook prevents the VDC
+  **write** side effect only and does not stop the instruction.
 
 ## How this stays out of MIT artifacts
 
