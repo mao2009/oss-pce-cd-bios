@@ -9,47 +9,79 @@ from pathlib import Path
 import re
 
 # ---- approval-claim guard (clause level). Keep the GUARD_* lists below in sync with GuardSelfTest. ----
-# A clause is a claim when it carries an approval word in a claim form. A negation anywhere in the same
-# clause (before or after the word) makes it a denial. A bare Japanese noun "承認" followed by "（" or
-# other non-terminal text is a recorded scope, not a claim.
-_CLAUSE_SPLIT = re.compile(r"[.;:!?\n|、。；：]")
-_EN_WORD = re.compile(
-    r"(?i)\b(approv\w*|grant\w*|sign-?\s?off|signed\s+off|sign\s+off|authori[sz]\w*)\b"
-)
-_EN_NEG = re.compile(r"(?i)\b(not|no|never|without|cannot|nor)\b|n't\b")
+# Rules:
+# - A clause ends at sentence/clause punctuation, including parentheses and commas, so a parenthetical or
+#   a second clause is judged on its own.
+# - A clause is a claim when it holds an approval word (English token or Japanese 承認 in a claim form).
+# - Each approval word is denied only by a negation word in its own window (2 tokens / 6 chars before,
+#   1 token / 12 chars after). A negation elsewhere in the clause does not deny it.
+# - A clause is denied when any of its approval words is denied ("Owner approval is not granted").
+# - The verbatim release-condition quote from #473 is removed before scanning; nothing else is exempt.
+_CLAUSE_SPLIT = re.compile(r"[.;:!?\n|、,，。；：()（）]")
+_EN_TOKEN = re.compile(r"[A-Za-z][A-Za-z'\-]*")
+_EN_APPROVAL = re.compile(r"approv\w*|grant\w*|endors\w*|authori[sz]\w*|go-ahead|green-?light\w*|sign-?off", re.I)
+_EN_NEG_WORDS = {"not", "no", "never", "cannot", "nor"}
 _EN_NO_LONGER = re.compile(r"(?i)\bno\s+longer\b")
-_JA_WORD = re.compile(
-    r"承認(?:済|した|しま|され|を得|を受|いただ|する|OK|あり|を確認)"  # verb / predicate forms
-    r"|承認(?=[。、；：)）]|$)"  # bare 承認 ending the clause ("オーナーは方式 A を承認。")
+_JA_CLAIM = re.compile(
+    r"承認(?:済|した|しま|され|を得|を受|を与|を取|が得|をいただ|いただ|する|OK|あり|を確認)"  # verb / predicate forms
+    r"|(?<=[をはが])承認$"  # bare 承認 as the object of the clause ("オーナーは方式 A を承認。")
     r"|正式承認|本番承認|製品承認|リリース承認|承認を記録|承諾|了承|認可|\bOK\b|ＯＫ"
 )
+_JA_CONTRAST = re.compile(r"が|ただし|一方|また|かつ|および|及び")
 _JA_NEG = re.compile(r"ない|なし|無い|ません|ではな|未承認|不承認|非承認|見つからな")
-# Explicit allowed phrases (removed from a clause before the Japanese scan).
+# Explicit allowed phrases (removed from a clause before the Japanese scan). Only exact scope titles, no free claims.
 JA_ALLOWED = [
     "正式承認ではない",
     "承認済みの項目はなし",
     "承認済みの項目はない",
     "承認済み項目",  # heading of 12.6
-    "未承認項目",
-    "オーナーが明示的に承認する",  # verbatim quote of the #473 release condition 1 (a condition, not a claim)
+    "未承認項目",  # heading of 12.7
 ]
+# Verbatim quote of the #473 release condition 1, as quoted in the doc. Only this exact quoted form is exempt.
+RELEASE_QUOTE = "「方式 A/B/C のいずれかについて、オーナーが明示的に承認する。」"
 
 
 def clauses(text):
     return [c.strip() for c in _CLAUSE_SPLIT.split(text) if c.strip()]
 
 
+def _en_denied(words, hits):
+    for i in hits:
+        window = words[max(0, i - 2):i] + words[i + 1:i + 2]
+        if any(w.lower() in _EN_NEG_WORDS or w.lower().endswith("n't") for w in window):
+            return True
+    return False
+
+
+def _ja_denied(text, matches):
+    for m in matches:
+        before = text[max(0, m.start() - 6):m.start()]
+        # Japanese negation sits at the predicate end, so the window runs to the next contrast particle.
+        after = _JA_CONTRAST.split(text[m.end():])[0]
+        if _JA_NEG.search(before) or _JA_NEG.search(after):
+            return True
+    return False
+
+
 def approval_violations(text):
-    """Return the clauses that claim approval without a negation anywhere in the same clause."""
+    """Return the clauses that claim approval and are not denied by a negation in the claim's own window."""
+    text = text.replace(RELEASE_QUOTE, "")
     bad = []
     for c in clauses(text):
         c_en = _EN_NO_LONGER.sub("", c)  # 'no longer approved' stays a claim
+        words = [m.group() for m in _EN_TOKEN.finditer(c_en)]
+        en_hits = []
+        for i, w in enumerate(words):
+            nxt = words[i + 1].lower() if i + 1 < len(words) else ""
+            if _EN_APPROVAL.fullmatch(w) or (w.lower() in ("signed", "sign") and nxt == "off"):
+                en_hits.append(i)
         c_ja = c
         for a in JA_ALLOWED:
             c_ja = c_ja.replace(a, "")
-        claim = _EN_WORD.search(c_en) or _JA_WORD.search(c_ja)
-        negated = _EN_NEG.search(c_en) or _JA_NEG.search(c_ja)
-        if claim and not negated:
+        ja_matches = list(_JA_CLAIM.finditer(c_ja))
+        if not en_hits and not ja_matches:
+            continue
+        if not (_en_denied(words, en_hits) or _ja_denied(c_ja, ja_matches)):
             bad.append(c)
     return bad
 
@@ -90,6 +122,27 @@ GUARD_MUST_FAIL = [
     "Owner approval for the safety mechanism is granted.",
     "方式 A の承認あり。",
     "オーナーが安全機構を承認済みとした。",
+    # Re-review (MEDIUM-1): a negation that is not in the claim's own window must not deny it.
+    "The owner approved A, not B.",
+    "The owner approved A without conditions.",
+    "Owner approval was granted with no conditions.",
+    "The owner signed off on A; no safety mechanism is approved.",
+    "The owner signed off on A; the safety mechanism is still open, and no safety mechanism is approved.",
+    # The parenthetical "安全機構は未承認" denies the safety mechanism, not the owner approval; the approval
+    # clause is judged on its own, so these must still fail.
+    "オーナーは方式 A を承認した（安全機構は未承認）。",
+    "オーナーは方式 A を承認した（安全性は確認されていない）。",
+    "オーナー承認あり（正式承認なし）",
+    # Re-review: the release condition is exempt only as the exact quote (see the PASS list), never bare.
+    "オーナーが明示的に承認する。",
+    # Re-review (MEDIUM-2): synonyms and conjugations.
+    "方式 A の承認が得られた。",
+    "方式 A の承認を与えた。",
+    "方式 A の承認を取得した。",
+    "方式 A の承認をいただいた。",
+    "オーナーは方式 A を承認（S0 判断）した。",
+    "The owner gave the go-ahead for A.",
+    "The owner endorsed A.",
 ]
 GUARD_MUST_PASS = [
     "Method A is not approved.",
@@ -119,6 +172,16 @@ GUARD_MUST_PASS = [
     "方式 A の承認は得られていない。",
     "オーナー承認は未了。",
     "オーナー承認はない。",
+    # Re-review (MEDIUM-1): denials that sit in the same clause as the approval word.
+    "The owner did not approve A, nor B.",
+    "The owner has not endorsed A.",
+    "The owner gave no go-ahead for A.",
+    "オーナー承認はない（正式承認なし）。",
+    "オーナーは方式 A を承認していない（安全機構は未承認）。",
+    "方式 A の承認が得られていない。",
+    "方式 A の承認を得ていない。",
+    # LOW-2: the release condition is exempt only as this exact quoted form (the #473 quote in 12.1).
+    "「方式 A/B/C のいずれかについて、オーナーが明示的に承認する。」",
 ]
 
 DOCS = Path(__file__).resolve().parents[2] / "docs"
@@ -207,8 +270,8 @@ class Structure(unittest.TestCase):
         self.assertIn("本人かは未確認", s121)
         self.assertNotIn("額面どおり", CMP)
         self.assertNotIn("確認できた明示的なオーナー判断", CMP)
-        self.assertIn("本人かは未確認", section("12.6"))
-        self.assertIn("対象外とする案（未決定）", section("12.2"))
+        self.assertIn("本人かは未確認", section("12.1"))
+        self.assertIn("NOT_APPLICABLE", section("12.2"))
         s6 = section("12.6")
         self.assertIn("検証方針のみ", s6)
         self.assertIn("正式承認ではない", s6)
