@@ -53,8 +53,8 @@ Two rules follow, and the validator enforces both:
   never counts as a reproducible observation. Slot `$1E` is the only slot with
   such an observation.
 
-An item with no evidence stays `UNKNOWN`. A static audit is an **upper bound** over
-the hazard opcodes of the reachable code: a clean profile is necessary for a safe
+An item with no evidence stays `UNKNOWN`. A static audit reports the hazard opcodes found over
+the explored code, which is not an upper bound: a clean profile is necessary for a safe
 execution, never sufficient on its own. The bound holds only when the walk
 resolved every path; when it could not (an unknown page bank, an undecodable
 byte, an exhausted budget) the profile is a *lower* bound instead, and the
@@ -262,7 +262,7 @@ The verdict is about the *reference* callee, under the existing guarded probe
 
 ### 5.0 A static verdict is not an execution permission
 
-`EXECUTION_SAFE` means **the static analysis found no dangerous path**. It does
+`EXECUTION_SAFE` means **the static analysis found no dangerous path in the explored code**. It does
 not mean that the call may be made. The two are separate fields, and the
 validator keeps them separate:
 
