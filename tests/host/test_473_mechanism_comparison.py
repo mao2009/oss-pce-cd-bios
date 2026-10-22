@@ -85,8 +85,9 @@ class Structure(unittest.TestCase):
         self.assertIn("開発側の提案であり、オーナーの承認ではない", head)
         # English approval wording is only allowed in a negated form; Japanese approval claims are checked line by line below.
         import re
-        for m in re.finditer(r"(?i)(approved|approval granted|owner[- ]approved)", CMP):
-            self.assertIn("not", CMP[max(0, m.start() - 20):m.start()].lower())
+        for m in re.finditer(r"(?i)\b(approved by|owner[- ]approved|approval granted|approved)\b", CMP):
+            window = CMP[max(0, m.start() - 40):m.start()].lower()
+            self.assertTrue(re.search(r"\b(not|no|never|without)\b", window), CMP[max(0, m.start() - 40):m.end() + 20])
         for line in CMP.splitlines():
             if re.search(r"オーナー(が|は|の)?承認(した|され|を得)", line) and not line.startswith("#"):
                 self.assertTrue(any(k in line for k in ["見つからない", "ない", "未", "条件", "ではない"]), line)
@@ -94,7 +95,16 @@ class Structure(unittest.TestCase):
             self.assertNotIn("承認を得た", line)
         s121 = section("12.1")
         self.assertIn("区別できない", s121)
-        self.assertIn("額面どおり", s121)
+        self.assertIn("本人かは未確認", s121)
+        self.assertNotIn("額面どおり", CMP)
+        self.assertNotIn("確認できた明示的なオーナー判断", CMP)
+        self.assertIn("本人かは未確認", section("12.6"))
+        self.assertIn("対象外とする案（未決定）", section("12.2"))
+        r8 = [l for l in section("12.9").splitlines() if l.startswith("| 8 |")]
+        self.assertEqual(len(r8), 1)
+        self.assertIn("維持", r8[0])
+        self.assertIn("BLOCKED", r8[0])
+        self.assertNotIn("NMI は、pinned コアに受理経路が無い（第 2.3 節、ソース読み）ので対象外とする。", CMP)
         self.assertIn("開発側の分析として扱う", s121)
         # An 'approved' item may only appear to say that there is none.
         for line in CMP.splitlines():
