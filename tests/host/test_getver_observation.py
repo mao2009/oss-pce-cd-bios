@@ -255,6 +255,50 @@ class ConverterTests(unittest.TestCase):
                                        harness_revision=HARNESS, step_budget=BUDGET)
         self.assertEqual([r["temperature"] for r in records], ["warm"])
 
+    def test_missing_case_name_is_refused(self):
+        with self.assertRaisesRegex(g.Refused, "CASE"):
+            g.from_core_evidence(self.evidence(), case_name="no_such_case", rom_sha256=ROM, entry=ENTRY,
+                                 harness_revision=HARNESS, step_budget=BUDGET)
+
+    def test_duplicate_case_name_is_refused(self):
+        dup = self.evidence()["cases"][1]
+        with self.assertRaisesRegex(g.Refused, "CASE"):
+            g.from_core_evidence(self.evidence(extra_cases=[dup]), case_name="plugin_ex_getver", rom_sha256=ROM,
+                                 entry=ENTRY, harness_revision=HARNESS, step_budget=BUDGET)
+
+    def test_case_not_targeting_api_slot_is_refused(self):
+        evidence = self.evidence()
+        evidence["cases"][1]["target"] = "harness_selftest"
+        with self.assertRaisesRegex(g.Refused, "ENTRY_MISMATCH"):
+            g.from_core_evidence(evidence, case_name="plugin_ex_getver", rom_sha256=ROM, entry=ENTRY,
+                                 harness_revision=HARNESS, step_budget=BUDGET)
+
+    def test_nan_in_core_evidence_is_refused_not_raised(self):
+        evidence = self.evidence()
+        evidence["cases"][1]["observed"]["warm"]["before"]["a"] = float("nan")
+        with self.assertRaisesRegex(g.Refused, "FIELDS"):
+            g.from_core_evidence(evidence, case_name="plugin_ex_getver", rom_sha256=ROM, entry=ENTRY,
+                                 harness_revision=HARNESS, step_budget=BUDGET)
+
+
+class SourceAndCaseSchemaTests(unittest.TestCase):
+    def test_source_with_extra_key_is_refused(self):
+        item = mutate(lambda r: r.update(source={"kind": "SYNTHETIC_DEV_ROM", "rom_sha256": ROM, "note": "x"}))
+        with self.assertRaisesRegex(g.Refused, "SOURCE"):
+            g.validate(item, **SYNTHETIC)
+
+    def test_source_missing_key_is_refused(self):
+        item = mutate(lambda r: r.update(source={"kind": "SYNTHETIC_DEV_ROM"}))
+        with self.assertRaisesRegex(g.Refused, "SOURCE"):
+            g.validate(item, **SYNTHETIC)
+
+    def test_empty_or_non_string_case_is_refused(self):
+        for bad in ("", 1, None, ["case"]):
+            with self.subTest(case=bad):
+                item = mutate(lambda r: r.update(case=bad))
+                with self.assertRaisesRegex(g.Refused, "FIELDS"):
+                    g.validate(item, **SYNTHETIC)
+
 
 class ExceptionSafetyTests(unittest.TestCase):
     """Malformed input of any shape must come back as Refused, never as a Python exception."""

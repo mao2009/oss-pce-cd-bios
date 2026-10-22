@@ -34,6 +34,7 @@ RECORD_KEYS = frozenset({"schema", "slot", "entry", "source", "core", "harness",
 STATE_KEYS = frozenset({"a", "x", "y", "p", "sp", "mpr", "zp"})
 INPUT_KEYS = frozenset({"a", "x", "y", "p"})
 IO_KEYS = frozenset({"observation", "accesses"})
+SOURCE_KEYS = frozenset({"kind", "rom_sha256"})
 
 
 class Refused(ValueError):
@@ -138,8 +139,8 @@ def validate(record, *, rom_sha256, entry, core_revision, harness_revision, step
     if record["slot"] != SLOT or record["entry"] != entry:
         raise Refused("ENTRY_MISMATCH", f"slot {record['slot']!r} entry {record['entry']!r}, expected {entry!r}")
     source = record["source"]
-    if not isinstance(source, dict):
-        raise Refused("SOURCE", "source must be an object")
+    if not isinstance(source, dict) or set(source) != SOURCE_KEYS:
+        raise Refused("SOURCE", f"source must have exactly the keys {sorted(SOURCE_KEYS)}")
     if source.get("kind") == "REFERENCE_ROM":
         raise Refused("REFERENCE_UNAPPROVED", "reference BIOS observation has no approved channel (#473)")
     if source.get("kind") not in SOURCE_KINDS:
@@ -150,6 +151,8 @@ def validate(record, *, rom_sha256, entry, core_revision, harness_revision, step
         raise Refused("ROM_MISMATCH", "core identity differs from the pinned revision")
     if record["harness"] != {"name": "geargrafx_core_harness", "revision": harness_revision}:
         raise Refused("ROM_MISMATCH", "harness identity differs from the committed harness")
+    if not isinstance(record["case"], str) or not record["case"]:
+        raise Refused("FIELDS", "case must be a non-empty string")
     if record["temperature"] not in TEMPERATURES:
         raise Refused("FIELDS", f"temperature {record['temperature']!r}")
     if record["status"] == "TIMEOUT":
@@ -182,29 +185,32 @@ def from_core_evidence(evidence, *, case_name, rom_sha256, entry, harness_revisi
     """
     records = []
     try:
-        for case in evidence["cases"]:
-            if case["name"] != case_name:
+        named = [case for case in evidence["cases"] if case["name"] == case_name]
+        if len(named) != 1:  # a missing or duplicated case name is ambiguous evidence, not an empty result
+            raise Refused("CASE", f"{len(named)} cases named {case_name!r}; exactly one is required")
+        case = named[0]
+        if case["target"] != "api_slot_1E":
+            raise Refused("ENTRY_MISMATCH", f"case {case_name!r} does not target api_slot_1E")
+        for cycle in TEMPERATURES:
+            observed = case["observed"].get(cycle)
+            if observed is None or case["status"].get(cycle) != "RETURNED":
                 continue
-            if case["target"] != "api_slot_1E":
-                raise Refused("ENTRY_MISMATCH", f"case {case_name!r} does not target api_slot_1E")
-            for cycle in TEMPERATURES:
-                observed = case["observed"].get(cycle)
-                if observed is None or case["status"].get(cycle) != "RETURNED":
-                    continue
-                before, after = observed["before"], observed["after"]
-                records.append(seal({
-                    "schema": SCHEMA, "slot": SLOT, "entry": entry,
-                    "source": {"kind": "SYNTHETIC_DEV_ROM", "rom_sha256": rom_sha256},
-                    "core": {"name": "geargrafx", "revision": evidence["geargrafx_revision"]},
-                    "harness": {"name": "geargrafx_core_harness", "revision": harness_revision},
-                    "case": case["name"], "temperature": cycle, "status": "RETURNED",
-                    "inputs": {r: before[r] for r in "axyp"},  # delivered inputs as the harness observed them
-                    "before": before, "after": after,
-                    "io": {"observation": NOT_MEASURED, "accesses": []},
-                    "steps_used": NOT_MEASURED, "step_budget": step_budget,
-                    "abi_claim": "OBSERVED_SYNTHETIC",
-                }))
-    except (KeyError, TypeError, AttributeError) as error:  # malformed evidence is refused, not a crash
+            before, after = observed["before"], observed["after"]
+            records.append(seal({
+                "schema": SCHEMA, "slot": SLOT, "entry": entry,
+                "source": {"kind": "SYNTHETIC_DEV_ROM", "rom_sha256": rom_sha256},
+                "core": {"name": "geargrafx", "revision": evidence["geargrafx_revision"]},
+                "harness": {"name": "geargrafx_core_harness", "revision": harness_revision},
+                "case": case["name"], "temperature": cycle, "status": "RETURNED",
+                "inputs": {r: before[r] for r in "axyp"},  # delivered inputs as the harness observed them
+                "before": before, "after": after,
+                "io": {"observation": NOT_MEASURED, "accesses": []},
+                "steps_used": NOT_MEASURED, "step_budget": step_budget,
+                "abi_claim": "OBSERVED_SYNTHETIC",
+            }))
+    except Refused:
+        raise
+    except (KeyError, TypeError, AttributeError, ValueError, RecursionError) as error:  # malformed evidence is refused, not a crash
         raise Refused("FIELDS", f"malformed core evidence: {error!r}") from error
     return records
 
