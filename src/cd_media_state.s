@@ -35,7 +35,12 @@ wmask  = $08
 want   = $09
 last   = $0A
 alt    = $0B
-RES    = $2300
+; Result block address. Default $2300 (reset_entry path, #144). Issue #501 passes -D MS_RES=$3F40 so the
+; DEV-only internal boot result never shares $2300 with the cd_load_exec result block.
+.ifndef MS_RES
+MS_RES = $2300
+.endif
+RES    = MS_RES
 BUF    = $2800
 BUF_PAGES = 8
 

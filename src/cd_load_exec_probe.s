@@ -446,4 +446,9 @@ cd_cdb:
     .word cd_unexpected_interrupt ; IRQ1
     .word cd_unexpected_interrupt ; Timer
     .word cd_unexpected_interrupt ; NMI
+.ifdef DEV_BOOT_INTERNAL
+.import dev_boot_reset
+    .word dev_boot_reset          ; Issue #501 DEV-only internal path (not compatible); default build keeps cd_entry
+.else
     .word cd_entry                ; Reset
+.endif
