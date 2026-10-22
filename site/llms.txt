@@ -1,39 +1,38 @@
 # oss-pce-cd-bios
 
-> Open-source PC Engine / TurboGrafx-CD Super System Card 3.0 BIOS replacement project. This is development-only firmware, not a commercially compatible BIOS or a distributable replacement release.
+> Open-source PC Engine / TurboGrafx-CD Super System Card 3.0 BIOS replacement project. Development-only firmware, not a commercially compatible BIOS or a distributable replacement release.
 
 Project home (English): https://mao2009.github.io/oss-pce-cd-bios/
 Project home (Japanese): https://mao2009.github.io/oss-pce-cd-bios/ja/
 Source repository: https://github.com/mao2009/oss-pce-cd-bios
 
-## Scope and verified progress (measured 2026-10-21, main 2b1d1db; DEV ROM count updated by PR #467)
+## Evidence-scoped progress (2026-10-22 main 86172e2)
 
-- Target: replace the software System Card BIOS, not the PC Engine CD hardware.
-- 256 KiB development-only ROM with 81 candidate System Card API slots.
-- Seven slots ($1E EX_GETVER, $3C EX_BINBCD, $3D EX_BCDBIN, $3F MA_MUL8U, $40 MA_MUL8S, $41 MA_MUL16U, $42 MA_DIV16S) have original OSS development-only implementations in the DEV ROM; none is approved or ABI-verified. 74 other slots are nonreturning stubs.
-- Pinned Geargrafx emulator-core cold/warm tests observed EX_GETVER returning to its caller with X=3, Y=0, and A preserved.
-- Synthetic SCSI READ(6) sector-to-RAM and payload execution experiments are diagnostics, NOT callable CD_READ firmware or BIOS-mediated disc boot.
-- No BIOS-mediated CD program boot has been verified as of 2026-10-20; 765 host passes at PR #174 is only a historical count, not a current total.
-- The standalone EX_BINBCD, EX_BCDBIN, MA_MUL8U and MA_MUL8S routines (#328/#331) are project-own code that the DEV ROM places at candidate slots ($3C, $3D, $3F, $40); they say nothing about the reference System Card's jump-table behaviour, which stays UNVERIFIED. #345 separates real-core from host tests.
-- #360/#362 catalogue unsafe write paths and pre-side-effect probes; reference JSR remains BLOCKED.
-- #371/#359 validate measurement/log and claim correspondence, not authenticated producer evidence or reference ABI compatibility.
-- #374/#349 strengthen Pages privilege isolation and fail-closed artifact publishing checks within limited scope.
-- The reference BIOS ABI remains UNVERIFIED and release_eligible is false.
-- No verified commercial game boot, physical hardware compatibility, or independent emulator cross-check has been established. CD_RESET, CD_BASE and CD_READ callable firmware services remain unimplemented.
+- Main commit: https://github.com/mao2009/oss-pce-cd-bios/commit/86172e2c8a65f1759b83c6b61b5a42b6bc2af295
+- The 256 KiB DEV-only ROM provides 81 candidate System Card entry slots.
+- Eight slots ($1E EX_GETVER, $3C EX_BINBCD, $3D EX_BCDBIN, $3F MA_MUL8U, $40 MA_MUL8S, $41 MA_MUL16U, $42 MA_DIV16S, $43 MA_DIV16U) hold project-owned DEV implementations; none is owner-approved or reference-ABI-verified. 73 other slots are nonreturning stubs.
+- Separate metrics: DEV implemented = 8/81; owner-approved DEV_CALLABLE = 0; reference ABI VERIFIED = 0/81; reference JSR execution permission = 0/81; all slot readiness states NOT_READY; release_eligible = false.
+- PR #480 merged MA_DIV16U ($43) with project-defined unsigned-division checks and pinned Geargrafx real-core tests, not reference BIOS equivalence.
+- PR #481 merged a SYNTHETIC caller-stack contract experiment: an I/O-mapped stack (MPR1=$FF) changes VDC register values during the JSR/guard pushes before any refusal. This is not a production safety guard. #473, #459 and #367 remain unresolved/BLOCKED.
+- PR #475 (EX_GETVER synthetic observation schema) and PR #477 (local ROM 81-slot static profile) are Draft, not merged to main. Only seven earlier reference API static records are tracked on main. Local CRC32 matching does not authenticate the headered private reference ROM; SHA-256 identity is unresolved (#476).
+- Pinned Geargrafx tests also observe EX_GETVER DEV return, synthetic SCSI READ(6) into RAM and isolated CD-to-RAM payload execution. None proves BIOS-mediated disc boot, callable CD_RESET/CD_BASE/CD_READ, or retail compatibility.
+- No retail game boot has been demonstrated. A lawful local PC Engine CD copy of Shin Megami Tensei is a planned boot-path/blocking-API test, strictly subject to existing safety gates.
+- Reference ABI remains UNVERIFIED; reference ROM execution is BLOCKED and firmware release is blocked. The dated 2026-10-20 and 2026-10-21 counts are historical, not the current main count.
+- 2026-10-20 safety/evidence foundations: #349, #359, #360, #362, #371 and #374 improved validation, test and publication controls within limited scopes.
 
-## Primary sources and contribution entry points
+## Sources
 
-- Actual implementation status (dated snapshots): https://github.com/mao2009/oss-pce-cd-bios/blob/main/docs/status.md
+- Dated main status: https://github.com/mao2009/oss-pce-cd-bios/blob/main/docs/status.md
 - Roadmap: https://github.com/mao2009/oss-pce-cd-bios/blob/main/docs/roadmap.md
-- EX_GETVER implementation and checks: https://github.com/mao2009/oss-pce-cd-bios/pull/174
-- Current snapshot commit: https://github.com/mao2009/oss-pce-cd-bios/commit/2b1d1dba13df68d87f5148f37bfbef090be47764
-- API inventory and evidence: https://github.com/mao2009/oss-pce-cd-bios/blob/main/docs/abi-contracts.md
+- API implementation ledger: https://github.com/mao2009/oss-pce-cd-bios/blob/main/spec/dev_implementations.json
+- Merged MA_DIV16U: https://github.com/mao2009/oss-pce-cd-bios/pull/480
+- Merged synthetic safety experiment: https://github.com/mao2009/oss-pce-cd-bios/pull/481
+- Reference ROM identity issue: https://github.com/mao2009/oss-pce-cd-bios/issues/476
+- Safety architecture issue: https://github.com/mao2009/oss-pce-cd-bios/issues/473
 - Issues: https://github.com/mao2009/oss-pce-cd-bios/issues
 - Contribution guidelines: https://github.com/mao2009/oss-pce-cd-bios/blob/main/CONTRIBUTING.md
-- OSS licensing and provenance: https://github.com/mao2009/oss-pce-cd-bios/blob/main/docs/provenance.md
+- Provenance and legal reuse: https://github.com/mao2009/oss-pce-cd-bios/blob/main/docs/provenance.md
 
-## Interpretation rules
+## Boundaries
 
-Use source-linked, dated claims. Keep real-core emulator observations separate from verified reference-BIOS ABI and retail compatibility. Do not claim the project is ready for end users, that all candidate APIs are implemented, or that diagnostic successes prove actual game boot. Do not ingest or redistribute private proprietary BIOS ROMs, game media, or protected data from local reference experiments. Source files are MIT-licensed only to the extent covered by this project's license; imported third-party OSS remains under its own terms.
-
-This optional text index supplements crawlable HTML. It is not a required AI-search protocol, not a robots.txt directive, and not a promise that any AI service will index or cite the site.
+This is a dated community information page, not a download link or an executable compatibility certificate. ROM fingerprints, local static analyses, synthetic tests, code review and CI signatures are distinct evidence levels; do not infer ABI VERIFIED, commercial compatibility, licensing rights to proprietary ROMs or physical-hardware behavior. Source/ROM/media distribution and reuse must follow the repository provenance policy.

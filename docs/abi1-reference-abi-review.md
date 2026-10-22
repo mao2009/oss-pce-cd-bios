@@ -461,7 +461,7 @@ compares. A hand written or stale aggregate fails the validation.
 | reference ABI `VERIFIED` | **0** | the ABI state axis |
 | reference ABI `PARTIAL`/`OBSERVED` (reproducible) | **0** | the ABI state axis |
 | reference ABI `NOT_RUN` | **7** of the seven reviewed, 74 of the remaining | the ABI state axis |
-| DEV ROM implemented APIs | **7** | `spec/dev_implementations.json` |
+| DEV ROM implemented APIs | **8** | `spec/dev_implementations.json` |
 | owner approved `DEV_CALLABLE` | **0** | `spec/dev_implementations.json` |
 | reference JSR execution permission | **BLOCKED** for all seven | `safety.execution_permission` |
 | `release_eligible` | **false** | the ledger and the source ledgers |

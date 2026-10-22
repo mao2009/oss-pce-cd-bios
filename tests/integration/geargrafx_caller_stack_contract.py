@@ -1,0 +1,304 @@
+"""Caller-stack contract experiment on the pinned Geargrafx core (Issue #473). Synthetic, test-only HuCARD.
+
+Owner decision (Phase B): the CALLER must guarantee a RAM stack (MPR1 maps WRAM, stack page $2100-$21FF) when it
+JSRs an API. This script only observes what the unmodified core does; it approves no production gate.
+Three cases, each a separate build of tests/fixtures/caller_stack_contract.s on the real core:
+  ram_contract  contract honoured: the guard reads MPR1 = $F8 (RAM), flags it, and A/X/Y/P/S/MPR0-7 are unchanged
+                after the RTS. The VDC must see no write, and the stack writes must land in WRAM.
+  io_violation  contract violated: the caller sets MPR1 = $FF before the JSR. The guard reads $FF and flags it. The
+                side effects are recorded as observed (WRW/VDW events up to the guard's RTS); they are not asserted
+                to be harmless. The stack must NOT land in WRAM.
+  tii_irq1      IRQ1 is asserted during an 8-byte TII. The IRQ entry must come after the TII has ended
+                (huc6280_inline.h:90, HandleIRQ only when m_transfer_state == 0).
+Missing tools or core: FAIL (exit 1), never skip. Run on Linux with TOOLS_DIR set (make setup):
+  python3 tests/integration/geargrafx_caller_stack_contract.py [--out DIR]
+"""
+import argparse
+import hashlib
+import json
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from environment import DEPENDENCIES, executable  # noqa: E402
+import geargrafx_api as api  # noqa: E402
+
+FIXTURE = ROOT / "tests/fixtures/caller_stack_contract.s"
+CFG = ROOT / "tests/fixtures/caller_stack_contract.cfg"
+PROBE_SOURCE = "geargrafx_caller_stack_probe.cpp"
+PROBE_TARGET = "geargrafx-caller-stack-probe"
+RECORDS = ("CAP", "TRACE", "WRW", "VDW", "IRQ", "XFER", "HITS", "END")
+LABEL_LINE = re.compile(r"^al ([0-9A-Fa-f]{6}) \.(\w+)$", re.M)
+LABELS = ("pre_jsr", "post_return", "api_guard", "guard_check", "guard_rts", "tii_start", "tii_after", "irq1_entry")
+P_MASK = 0xEF  # B (bit 4) is not a stored flag: PHP always pushes it set
+P_CALLER = 0x0D  # I=1 (SEI), D=1 (SED), C=1 (SEC) must be set in the caller before the JSR (precondition)
+RAM_MPR = 0xF8
+IO_MPR = 0xFF
+FLAG_INDEX = 0x10  # WRAM $0210 (the dump starts at $0200)
+ALLOWED_RAM_WRITES = {0x1FC, 0x1FD, 0x1FE, 0x1FF, 0x210}  # the guard frame ($01FC-$01FF) and the flag ($0210) only
+TII_INDEX = 0x20  # WRAM $0220 (the dump starts at $0200)
+TII_ABS = 0x220  # the same bytes as WRAM indices in WRW records
+TII_SOURCE = bytes(range(0xA1, 0xA9))
+CASES = [
+    {"name": "ram_contract", "define": "CASE_RAM", "steps": 80, "irq": "none"},
+    {"name": "io_violation", "define": "CASE_IO", "steps": 80, "irq": "none"},
+    {"name": "tii_irq1", "define": "CASE_IRQ", "steps": 160, "irq": "tii-irq1"},
+    # Negative: an injected write to $0100 (outside the allowed frame). The RAM judge must reject it.
+    {"name": "ram_inject_negative", "define": "CASE_RAM_INJECT", "steps": 80, "irq": "none",
+     "expect_fail": "stack_writes_in_wram"},
+]
+
+
+def build_case(define, folder):
+    obj, rom, ld_labels = folder / f"{define}.o", folder / f"{define}.pce", folder / f"{define}.ldlbl"
+    subprocess.run([str(executable("ca65")), "-D", define, str(FIXTURE), "-o", str(obj)], check=True,
+                   capture_output=True, text=True)
+    subprocess.run([str(executable("ld65")), "-C", str(CFG), "-Ln", str(ld_labels), "-o", str(rom), str(obj)],
+                   check=True, capture_output=True, text=True)
+    labels = {name: int(address, 16) for address, name in LABEL_LINE.findall(ld_labels.read_text())}
+    missing = [name for name in LABELS if name not in labels]
+    if missing or rom.stat().st_size != 8192:
+        raise ValueError(f"{define}: fixture missing labels {missing} or size {rom.stat().st_size} != 8192")
+    return rom, labels
+
+
+def run_probe(probe, rom, labels, steps, irq, folder):
+    label_file = folder / f"{rom.stem}.labels"
+    label_file.write_text("".join(f"{name} {address:x}\n" for name, address in labels.items()))
+    result = subprocess.run([str(probe), str(rom), str(label_file), str(steps), irq],
+                            check=True, capture_output=True, text=True, timeout=120)
+    records = {}
+    for line in result.stdout.splitlines():  # the core also prints banner lines; only tagged JSON records count
+        prefix, _, payload = line.partition(" ")
+        if prefix in RECORDS:
+            records.setdefault(prefix, []).append(json.loads(payload))
+    cap = records.get("CAP", [])
+    if len(cap) != 1 or cap[0].get("instruction_step") is not True:
+        raise ValueError("instruction stepping capability missing on the pinned core")
+    if "END" not in records or "HITS" not in records:
+        raise ValueError("probe produced no END/HITS record")
+    return records
+
+
+def trace(records, name):
+    rows = [r for r in records.get("TRACE", []) if r["name"] == name]
+    return rows[0] if len(rows) == 1 else None
+
+
+def wram_bytes(records):
+    return bytes.fromhex(records["END"][0]["wram_0200_hex"])
+
+
+def check(results, name, ok, detail):
+    results.append({"check": name, "ok": bool(ok), "detail": detail})
+
+
+def judge_ram(records):
+    results = []
+    pre, post, guard, rts = (trace(records, n) for n in ("pre_jsr", "post_return", "guard_check", "guard_rts"))
+    if None in (pre, post, guard, rts):
+        check(results, "labels_reached", False, "pre_jsr/post_return/guard_check/guard_rts not all reached once")
+        return results
+    check(results, "caller_precondition", pre["mpr"][1] == RAM_MPR and pre["p"] & P_CALLER == P_CALLER,
+          {"mpr1": pre["mpr"][1], "p": pre["p"]})
+    check(results, "caller_precondition_sp", pre["sp"] == 0xFF, {"caller_sp": pre["sp"], "want": 0xFF})
+    check(results, "guard_saw_ram", guard["a"] == RAM_MPR, {"a_at_guard_check": guard["a"]})
+    check(results, "guard_flag_allowed", wram_bytes(records)[FLAG_INDEX] == 1,
+          {"flag_0210": wram_bytes(records)[FLAG_INDEX]})
+    check(results, "return_to_post_return", post["step"] == rts["step"] + 1,
+          {"rts_step": rts["step"], "post_return_step": post["step"]})
+    check(results, "a_x_y_unchanged", (pre["a"], pre["x"], pre["y"]) == (post["a"], post["x"], post["y"]),
+          {"pre": [pre["a"], pre["x"], pre["y"]], "post": [post["a"], post["x"], post["y"]]})
+    check(results, "p_unchanged", (pre["p"] ^ post["p"]) & P_MASK == 0,
+          {"pre": pre["p"], "post": post["p"], "mask": P_MASK})
+    check(results, "s_unchanged", pre["sp"] == post["sp"], {"pre": pre["sp"], "post": post["sp"]})
+    check(results, "mpr_unchanged", pre["mpr"] == post["mpr"], {"pre": pre["mpr"], "post": post["mpr"]})
+    vdc_after = [v for v in records.get("VDW", []) if v["step"] > pre["step"]]
+    check(results, "no_vdc_write", not vdc_after, {"vdw_after_call": vdc_after})
+    wram_after = sorted({w["wram"] for w in records.get("WRW", []) if w["step"] >= pre["step"]})
+    outside = [a for a in wram_after if a not in ALLOWED_RAM_WRITES]
+    check(results, "stack_writes_in_wram", not outside,
+          {"wram_indices_written": [hex(a) for a in wram_after], "outside_allowed": [hex(a) for a in outside],
+           "allowed": sorted(hex(a) for a in ALLOWED_RAM_WRITES)})
+    return results
+
+
+def judge_io(records):
+    results = []
+    pre, guard, rts = (trace(records, n) for n in ("pre_jsr", "guard_check", "guard_rts"))
+    post = trace(records, "post_return")
+    if None in (pre, guard, rts):
+        check(results, "labels_reached", False, "pre_jsr/guard_check/guard_rts not all reached once")
+        return results
+    check(results, "guard_saw_io", guard["a"] == IO_MPR, {"a_at_guard_check": guard["a"]})
+    # The flag is 0 both when the guard stored 0 and when it never ran; the HITS count shows the guard reached its RTS
+    # (the store to $0210 sits before the RTS and is not a stack access).
+    check(results, "guard_flag_violation", wram_bytes(records)[FLAG_INDEX] == 0 and records["HITS"][0].get("guard_rts") == 1,
+          {"flag_0210": wram_bytes(records)[FLAG_INDEX], "guard_rts_hits": records["HITS"][0].get("guard_rts")})
+    vdw = [v for v in records.get("VDW", []) if pre["step"] <= v["step"] <= rts["step"]]
+    wrw = [w for w in records.get("WRW", []) if pre["step"] <= w["step"] <= rts["step"]]
+    # VDW records register VALUE changes (not a bus write trace). Each expected change is matched by its step, its
+    # register and its value: the JSR pushes PC+2 (the last byte of the 3-byte JSR), and the guard's PHA pushes A.
+    api_guard = trace(records, "api_guard")
+    r0 = [v for v in vdw if v["step"] == pre["step"] and v["reg"] == "R0"]
+    check(results, "jsr_return_to_vdc_r0",
+          len(r0) == 1 and r0[0]["old"] == 0 and r0[0]["new"] == pre["pc"] + 2,
+          {"want": {"step": pre["step"], "reg": "R0", "old": 0, "new": pre["pc"] + 2}, "vdw_at_step": r0})
+    if api_guard is None:
+        check(results, "pha_value_to_vdc_ar", False, "api_guard not reached")
+    else:
+        ar = [v for v in vdw if v["step"] == api_guard["step"] + 1 and v["reg"] == "AR"]
+        check(results, "pha_value_to_vdc_ar",
+              len(ar) == 1 and ar[0]["pc"] == api_guard["pc"] + 1 and ar[0]["old"] == 0 and ar[0]["new"] == api_guard["a"],
+              {"want": {"step": api_guard["step"] + 1, "pc": api_guard["pc"] + 1, "reg": "AR", "old": 0,
+                        "new": api_guard["a"]}, "vdw_at_step": ar})
+    check(results, "no_stack_write_in_wram", not any(0x100 <= w["wram"] <= 0x1FF for w in wrw),
+          {"wram_writes_in_guard_window": wrw})
+    # Observation only (informational, not a pass criterion). Two facts are kept apart: whether the label post_return
+    # was reached, and where the guard RTS went. The RTS target is the value popped from the stack page, which reads
+    # through I/O and is not traced, so only the reached labels are recorded.
+    check(results, "info_post_return_reached_after_violation", True,
+          {"post_return_reached": post is not None, "guard_rts_reached": rts is not None,
+           "rts_target": "not observed (popped from the I/O stack page, not traced)"})
+    return results
+
+
+def judge_irq(records):
+    results = []
+    xfer = records.get("XFER", [])
+    asserted = [e for e in records.get("IRQ", []) if e["event"] == "asserted"]
+    irq_entry = trace(records, "irq1_entry")
+    partial = [x for x in xfer if not x["completed"]]
+    done = [x for x in xfer if x["completed"]]
+    check(results, "tii_multi_step", len(partial) >= 8, {"partial_steps_at_tii": len(partial), "xfer_steps": len(xfer)})
+    mid = [x for x in partial if asserted and x["step"] == asserted[0]["step"]]
+    check(results, "irq_asserted_mid_transfer", len(asserted) == 1 and len(mid) == 1,
+          {"asserted": asserted, "assert_step_was_partial_transfer_step": bool(mid)})
+    check(results, "no_dispatch_while_transfer_running",
+          all(x["pc_after"] == x["pc_before"] for x in partial) and irq_entry is not None
+          and irq_entry["step"] > (partial[-1]["step"] if partial else 1 << 30),
+          {"partial_pc_after_values": sorted({x["pc_after"] for x in partial}),
+           "irq1_entry_step": irq_entry and irq_entry["step"]})
+    check(results, "irq_taken_at_transfer_end",
+          len(done) == 1 and irq_entry is not None and irq_entry["step"] == done[0]["step"] + 1
+          and irq_entry["pc"] == done[0]["pc_after"],
+          {"completed_step": done and done[0], "irq1_entry": irq_entry})
+    dest = wram_bytes(records)[TII_INDEX:TII_INDEX + 8]
+    check(results, "tii_destination_correct", dest == TII_SOURCE, {"dest_hex": dest.hex(), "want": TII_SOURCE.hex()})
+    dest_writes = [w for w in records.get("WRW", []) if TII_ABS <= w["wram"] < TII_ABS + 8]
+    check(results, "tii_bytes_one_per_step",
+          len(dest_writes) == 8 and len({w["step"] for w in dest_writes}) == 8
+          and all(w["step"] < done[0]["step"] for w in dest_writes) if done else False,
+          {"dest_write_steps": [w["step"] for w in dest_writes]})
+    return results
+
+
+def _trace(name, step, pc, a, sp, mpr1=RAM_MPR, p=0x0D):
+    return {"name": name, "step": step, "pc": pc, "a": a, "x": 0x22, "y": 0x33, "p": p, "sp": sp,
+            "mpr": [RAM_MPR, mpr1, 0x58, 0x31, 0x26, 0x3E, 0x63, 0x00]}
+
+
+def _ram_records(extra_wrw=(), sp=0xFF):
+    """Synthetic CASE_RAM records (same shape as the probe output). The labels and steps follow the real trace."""
+    flag = bytearray(256)
+    flag[FLAG_INDEX] = 1
+    return {"TRACE": [_trace("pre_jsr", 12, 0xE013, 0x11, sp), _trace("api_guard", 13, 0xE019, 0x11, sp - 2),
+                      _trace("guard_check", 16, 0xE01D, RAM_MPR, sp - 4), _trace("guard_rts", 23, 0xE02C, 0x11, sp - 2),
+                      _trace("post_return", 24, 0xE013 + 3, 0x11, sp)],
+            "WRW": [{"step": 12, "pc": 0xE013, "wram": 0x1FE, "old": 0, "new": 0x15},
+                    {"step": 12, "pc": 0xE013, "wram": 0x1FF, "old": 0, "new": 0xE0},
+                    {"step": 13, "pc": 0xE019, "wram": 0x1FD, "old": 0, "new": 0x4D},
+                    {"step": 14, "pc": 0xE01A, "wram": 0x1FC, "old": 0, "new": 0x11},
+                    {"step": 20, "pc": 0xE02A, "wram": 0x210, "old": 0, "new": 1}, *extra_wrw],
+            "VDW": [], "HITS": [{"post_return": 1, "guard_rts": 1}],
+            "END": [{"wram_0200_hex": bytes(flag).hex()}]}
+
+
+def _io_records(vdw):
+    """Synthetic CASE_IO records: MPR1 = $FF, the guard reads $FF and stores 0. vdw is the VDC change list."""
+    return {"TRACE": [_trace("pre_jsr", 14, 0xE017, 0x11, 0xFF, mpr1=IO_MPR), _trace("api_guard", 15, 0xE025, 0x11, 0xFD,
+                      mpr1=IO_MPR), _trace("guard_check", 18, 0xE029, IO_MPR, 0xFB, mpr1=IO_MPR),
+                      _trace("guard_rts", 24, 0xE038, 0, 0xFD, mpr1=IO_MPR, p=0)],
+            "WRW": [], "VDW": vdw, "HITS": [{"guard_rts": 1}], "END": [{"wram_0200_hex": "00" * 256}]}
+
+
+def selftest():
+    """Negative cases for the judges, run before the real core (a judge that accepts these is wrong).
+
+    The unrelated VDC change must not satisfy the VDC checks, and a write to $0100 (outside the allowed stack frame) must
+    fail the RAM judge. Each rule is checked both ways: the correct record passes, the wrong one fails.
+    """
+    def failing(results):
+        return {item["check"] for item in results if not item["ok"]}
+
+    good_vdw = [{"step": 14, "pc": 0xE017, "reg": "R0", "old": 0, "new": 0xE019},
+                {"step": 16, "pc": 0xE026, "reg": "AR", "old": 0, "new": 0x11}]
+    unrelated = [{"step": 25, "pc": 0, "reg": "R17", "old": 0, "new": 2}]
+    wrong_r0 = [{"step": 14, "pc": 0xE017, "reg": "R0", "old": 0, "new": 0x1234},
+                {"step": 16, "pc": 0xE026, "reg": "AR", "old": 0, "new": 0x11}]
+    if failing(judge_io(_io_records(good_vdw))):
+        raise ValueError("selftest: the correct JSR return and PHA values were rejected")
+    if not {"jsr_return_to_vdc_r0", "pha_value_to_vdc_ar"} <= failing(judge_io(_io_records(unrelated))):
+        raise ValueError("selftest: an unrelated VDC change satisfies the VDC checks")
+    if "jsr_return_to_vdc_r0" not in failing(judge_io(_io_records(wrong_r0))):
+        raise ValueError("selftest: a wrong R0 value satisfies the JSR return check")
+    if failing(judge_ram(_ram_records())):
+        raise ValueError("selftest: the contract-honoured records were rejected")
+    if "stack_writes_in_wram" not in failing(judge_ram(_ram_records(extra_wrw=[
+            {"step": 14, "pc": 0xE01A, "wram": 0x100, "old": 0, "new": 0xAA}]))):
+        raise ValueError("selftest: a write to $0100 outside the allowed stack frame passed the RAM judge")
+    if "caller_precondition_sp" not in failing(judge_ram(_ram_records(sp=0xFE))):
+        raise ValueError("selftest: a caller SP other than $FF passed the RAM judge")
+
+
+JUDGES = {"ram_contract": judge_ram, "io_violation": judge_io, "tii_irq1": judge_irq,
+          "ram_inject_negative": judge_ram}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--out", type=Path, help="evidence directory (default: a temporary one)")
+    args = parser.parse_args()
+    selftest()  # judge negatives first: a judge that accepts a wrong record is not evidence
+    if sys.platform != "linux":  # the pinned core is a Linux build; never skip silently
+        raise ValueError(f"caller-stack experiment is Linux-pinned (platform {sys.platform}); BLOCKED, not PASS")
+    out = args.out or Path(tempfile.mkdtemp(prefix="pce-caller-stack-"))
+    out.mkdir(parents=True, exist_ok=True)
+    probe = api.compile_probe(out, source_name=PROBE_SOURCE, target_name=PROBE_TARGET)
+    evidence = {"scope": "synthetic test-only HuCARD on the unmodified pinned core; NOT a BIOS ABI, NOT a gate",
+                "geargrafx_revision": DEPENDENCIES["geargrafx"]["revision"],
+                "fixture_sha256": hashlib.sha256(FIXTURE.read_bytes()).hexdigest(), "cases": {}}
+    failed = []
+    with tempfile.TemporaryDirectory(prefix="pce-caller-stack-") as tmp:
+        folder = Path(tmp)
+        for case in CASES:
+            rom, labels = build_case(case["define"], folder)
+            records = run_probe(probe, rom, labels, case["steps"], case["irq"], folder)
+            judged = JUDGES[case["name"]](records)
+            ok = bool(judged) and all(item["ok"] for item in judged)
+            if "expect_fail" in case:  # a negative case passes only when the judge rejects it on the expected check
+                rejected = {item["check"] for item in judged if not item["ok"]}
+                ok = case["expect_fail"] in rejected
+            evidence["cases"][case["name"]] = {"rom_sha256": hashlib.sha256(rom.read_bytes()).hexdigest(),
+                                               "checks": judged, "records": records,
+                                               "status": "PASS" if ok else "FAIL"}
+            for item in judged:
+                print(f"  {'PASS' if item['ok'] else 'FAIL'} {case['name']}.{item['check']}: {item['detail']}")
+            if not ok:
+                failed.append(case["name"])
+    (out / "caller-stack-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
+    if failed:
+        raise ValueError(f"caller stack contract cases failed: {failed}")
+    print(f"PASS caller stack contract: {len(CASES)} real-core cases (evidence {out / 'caller-stack-evidence.json'})")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError, subprocess.SubprocessError, KeyError) as error:
+        raise SystemExit(f"FAIL caller stack contract (missing core, tool, or check): {error}") from error
