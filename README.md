@@ -2,20 +2,18 @@
 
 A redistributable **PC Engine / TurboGrafx-CD System Card BIOS replacement** built from original and properly licensed reusable OSS code.
 
-> **Status: development-only firmware, not a compatible BIOS.** Main builds an original HuCARD fixture and a separate 256 KiB System Card DEV ROM with 81 candidate jump-table entries: **seven DEV-only OSS implementations** (`EX_GETVER` at slot `$1E`, entry `$E05A`; `EX_BINBCD` at `$3C`; `EX_BCDBIN` at `$3D`; `MA_MUL8U` at `$3F`; `MA_MUL8S` at `$40`, entry `$E0C0`; `MA_MUL16U` at `$41`; `MA_DIV16S` at `$42`) and **74 nonreturning stubs**. None is approved or ABI-verified. Pinned Geargrafx real-core tests observe `EX_GETVER` caller return on cold/warm runs, alongside separate startup and synthetic-CD READ(6) → RAM diagnostics. **Full reference-BIOS ABI compatibility, callable CD services, BIOS-mediated disc boot, retail-game compatibility and release eligibility are not established.** See the [dated implementation status](docs/status.md).
+> **Status as of 2026-10-22 (main `86172e2`): development-only firmware, not a compatible System Card BIOS.** The 256 KiB DEV ROM has 81 candidate entries: **8 project-owned DEV implementations** (EX_GETVER ($1E), EX_BINBCD ($3C), EX_BCDBIN ($3D), MA_MUL8U ($3F), MA_MUL8S ($40), MA_MUL16U ($41), MA_DIV16S ($42), MA_DIV16U ($43)) and **73 nonreturning stubs**. These counts describe installed DEV routines, **not** owner-approved DEV_CALLABLE (0) or independently verified reference BIOS ABI (0/81). All slot readiness states remain NOT_READY and `release_eligible: false`. A lawful commercial CD game boot, BIOS-mediated disc boot, callable CD_RESET/CD_BASE/CD_READ and releasable firmware are not established. See [dated implementation status](docs/status.md).
 
-## Latest merged progress (measured 2026-10-21, main `2b1d1db`)
+## Latest merged progress (2026-10-22, main `86172e2`)
 
-**DEV ROM implementations: 7 / 81 (`EX_GETVER` `$1E`, `EX_BINBCD` `$3C`, `EX_BCDBIN` `$3D`, `MA_MUL8U` `$3F`, `MA_MUL8S` `$40`, `MA_MUL16U` `$41`, `MA_DIV16S` `$42`), DEV-only and UNVERIFIED; 0 approved (DEV_CALLABLE); 0 ABI VERIFIED.** The other **74 entries are nonreturning stubs**. `CD_RESET`, `CD_BASE`, `CD_READ`, BIOS-mediated homebrew boot, retail-game compatibility and releasable firmware remain unimplemented or unverified.
+**DEV implementation count: 8/81 (9.9%).** The 8th routine, [MA_DIV16U ($43), PR #480](https://github.com/mao2009/oss-pce-cd-bios/pull/480), is a **project-defined unsigned-division DEV contract** (quotient, remainder, flags and stack tested on pinned Geargrafx), **not** a proven match to the proprietary reference System Card. The remaining **73** candidate slots are nonreturning stubs.
 
-What improved since the October 17 status report:
+- **Safety experiment merged:** [PR #481](https://github.com/mao2009/oss-pce-cd-bios/pull/481) records a synthetic HuCARD caller-stack experiment. RAM-mapped JSR was observed returning normally; when MPR1 mapped the stack to I/O, a guard detected the violation **after** JSR/guard pushes had already changed VDC state. The guard is **not** production-safe; [#473](https://github.com/mao2009/oss-pce-cd-bios/issues/473), [#459](https://github.com/mao2009/oss-pce-cd-bios/issues/459) and [#367](https://github.com/mao2009/oss-pce-cd-bios/issues/367) remain gated or unresolved. IRQ timing observations are pinned-core-only, not hardware guarantees.
+- **Separate evidence work remains Draft:** [PR #475](https://github.com/mao2009/oss-pce-cd-bios/pull/475) (EX_GETVER synthetic observation contract) and [PR #477](https://github.com/mao2009/oss-pce-cd-bios/pull/477) (81-slot static profile) are not part of the measured main branch. The reference ROM's original headered SHA-256 identity remains unresolved in [#476](https://github.com/mao2009/oss-pce-cd-bios/issues/476); a matching CRC32 or a local-only static analysis is not reference ABI VERIFIED.
+- **Evidence remains divided:** main DEV implementations **8**, owner-approved DEV_CALLABLE **0**, reference ABI VERIFIED **0/81**, reference JSR execution permitted **0/81**, BIOS-mediated CD boots **0**. Synthetic guest READ(6) and CD-to-RAM execution are diagnostics, not BIOS CD_READ/CD_BOOT.
+- **Next engineering milestone:** after safe evidence and execution prerequisites, instrument Geargrafx boot of a lawfully obtained PC Engine CD copy of *Shin Megami Tensei* to locate **the first blocking API**. This is a **planned experiment, not an executed compatibility claim**. Keep the current reference-JSR gate closed. Historical earlier snapshots are archived in [status](docs/status.md) and Git history.
 
-- **Standalone HuC6280 routines**, including `MA_MUL8S`, are tested independently ([#328](https://github.com/mao2009/oss-pce-cd-bios/pull/328), [#331](https://github.com/mao2009/oss-pce-cd-bios/pull/331)). `EX_BINBCD` (`$3C`), `EX_BCDBIN` (`$3D`), `MA_MUL8U` (`$3F`) and `MA_MUL8S` (`$40`) are DEV ROM overrides only; they are **not** a verified BIOS jump-table entry.
-- **Reference BIOS execution safeguards:** write-path inventory ([#360](https://github.com/mao2009/oss-pce-cd-bios/pull/360)) and pre-side-effect probe evaluation ([#362](https://github.com/mao2009/oss-pce-cd-bios/pull/362)). Unresolved paths keep reference-JSR execution **BLOCKED**.
-- **Evidence gates:** measurement-point/log binding ([#371](https://github.com/mao2009/oss-pce-cd-bios/pull/371)) and observation-kind/claim-field validation ([#359](https://github.com/mao2009/oss-pce-cd-bios/pull/359)). These checks do **not** independently authenticate a producer or certify reference ABI compatibility.
-- **Publication safeguards:** Pages validation/build/deploy privilege separation ([#374](https://github.com/mao2009/oss-pce-cd-bios/pull/374)) and fail-closed artifact-action checks ([#349](https://github.com/mao2009/oss-pce-cd-bios/pull/349)), each within its documented coverage.
 
-**Next milestone:** caller-safe minimal CD firmware services and a self-authored disc boot **through the BIOS**. See the [dated status](docs/status.md) for evidence limits, not a game compatibility percentage.
 
 ## Objectives
 
@@ -93,16 +91,16 @@ to publish a BIOS because most APIs and System Card boot remain unimplemented.
 On **main** the additional, development-only targets are:
 
 ```sh
-make dev-rom                    # 256 KiB; 7 DEV overrides ($1E, $3C, $3D, $3F, $40, $41, $42) + 74 nonreturning stubs
+make dev-rom                    # 256 KiB; 8 DEV overrides ($1E, $3C, $3D, $3F, $40, $41, $42, $43) + 73 nonreturning stubs
 make dev-test                   # host API tests plus DEV ROM real-core integration
-make dev-integration            # EX_GETVER cold/warm caller/return observations
+make dev-integration            # DEV-only API integration (including MA_DIV16U); reference ABI still unverified
 make dev-startup-integration    # separate reset/MPR/stack checkpoint
 make dev-cdread-integration     # guest READ(6), full-byte RAM/phase checks
 make dev-trace-integration      # real-core isolated trace and negative checks
 make dev-release-gate-blocked   # expected refusal; NOT a firmware release
 ```
 
-**`EX_GETVER` is the first callable, development-only BIOS API** ([#174](https://github.com/mao2009/oss-pce-cd-bios/pull/174)): the OSS implementation returns X=3/Y=0 and preserves A in the tested caller contract. The full reference ABI and behavior on other emulators or physical hardware are **not verified**; Issue [#40](https://github.com/mao2009/oss-pce-cd-bios/issues/40) remains open. The DEV ROM manifest keeps `abi: UNVERIFIED` and `release_eligible: false`.
+**`EX_GETVER` was the first tested development-only BIOS API** ([#174](https://github.com/mao2009/oss-pce-cd-bios/pull/174)): the OSS implementation returns X=3/Y=0 and preserves A in the tested caller contract. The full reference ABI and behavior on other emulators or physical hardware are **not verified**; Issue [#40](https://github.com/mao2009/oss-pce-cd-bios/issues/40) remains open. The DEV ROM manifest keeps `abi: UNVERIFIED` and `release_eligible: false`.
 
 The low-level **CD sector read diagnostic works**, but callable `CD_RESET`, `CD_BASE` and **`CD_READ` are not implemented**. The self-authored CD→RAM execution experiment ([#122](https://github.com/mao2009/oss-pce-cd-bios/pull/122)) is a diagnostic, **not** BIOS-mediated CD boot. ROM byte-identity checks protect the DEV image against unintended modifications; they do not prove BIOS compatibility.
 CI tests original HuCARD and separate DEV diagnostics; Nightly is HuCARD-only.
