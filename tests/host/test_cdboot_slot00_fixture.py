@@ -99,6 +99,15 @@ class Slot00FixtureTests(unittest.TestCase):
                 status, _ = M.judge(CASE["valid_synthetic"], record)
                 self.assertEqual(status, "BLOCKED")
 
+    def test_case_outside_the_single_slot00_api_is_blocked(self):
+        # 許可外アドレス・別 slot・未承認 schema の case は構造検査で拒否され、judge は BLOCKED になる。
+        for field, value in (("entry_candidate", "$E100"), ("entry_candidate", "$E003"), ("slot", "$01"),
+                             ("schema", "oss-pce-cd-bios/cdboot-slot00-case/v2")):
+            with self.subTest(field=field, value=value):
+                case = dict(copy.deepcopy(CASE["valid_synthetic"]), **{field: value})
+                self.assertTrue(M.validate_case(case))
+                self.assertEqual(M.judge(case, truthful(CASE["valid_synthetic"]))[0], "BLOCKED")
+
     def test_malformed_case_fails_closed(self):
         broken = copy.deepcopy(CASE["valid_synthetic"])
         broken["execution"] = "PASS"

@@ -28,17 +28,45 @@ def load_ledger(path: Path = LEDGER_FILE) -> dict:
     return json.loads(path.read_text(encoding='utf-8'))
 
 
+def _abi_status(entry):
+    abi = entry.get('abi_contract') if isinstance(entry, dict) else None
+    return abi.get('status') if isinstance(abi, dict) else None
+
+
+def _owner_approved(entry):
+    approval = entry.get('approval') if isinstance(entry, dict) else None
+    return (isinstance(approval, dict)
+            and all(isinstance(approval.get(k), str) and approval[k].strip() for k in ('approved_by', 'review_ref')))
+
+
 def validate(ledger: dict, slots: list[dict], override_slots: set[int], root: Path = ROOT) -> list[str]:
-    """Return every consistency problem. An empty list means the ledger matches the repository."""
+    """Return every consistency problem. An empty list means the ledger matches the repository.
+
+    Fail closed: any malformed shape that escapes the explicit checks is reported, never raised or passed."""
+    try:
+        return _validate(ledger, slots, override_slots, root)
+    except Exception as exc:  # noqa: BLE001
+        return [f'malformed ledger: {type(exc).__name__}: {exc}']
+
+
+def _validate(ledger, slots, override_slots, root):
     problems = []
-    if ledger.get('schema_version') != 1:
+    if not isinstance(ledger, dict):
+        return ['ledger must be a JSON object']
+    if type(ledger.get('schema_version')) is not int or ledger.get('schema_version') != 1:
         problems.append('schema_version must be 1')
     if ledger.get('release_eligible') is not False:
         problems.append('release_eligible must be false')
     entries = ledger.get('slots')
     if not isinstance(entries, list):
         return problems + ['slots must be a list']
+    if not all(isinstance(e, dict) for e in entries):
+        return problems + ['every slots entry must be an object']
     ids = [e.get('id') for e in entries]
+    if not all(type(i) is int for i in ids):
+        return problems + ['every slot id must be an integer']
+    if not all(type(i) is int for i in override_slots):
+        return problems + ['override slots must be integers']
     if len(ids) != len(set(ids)):
         problems.append('duplicate slot id in ledger')
     if sorted(i for i in ids if isinstance(i, int)) != list(range(LAST_SLOT + 1)):
@@ -53,17 +81,20 @@ def validate(ledger: dict, slots: list[dict], override_slots: set[int], root: Pa
         if entry.get('candidate_name') != names[slot]:
             problems.append(f'{label}: candidate_name {entry.get("candidate_name")!r} != {names[slot]!r}')
         state = entry.get('state')
-        if state not in STATES:
+        if not isinstance(state, str) or state not in STATES:
             problems.append(f'{label}: unknown state {state!r}')
             continue
-        if entry.get('abi_contract', {}).get('status') not in ABI_STATUSES:
+        if not isinstance(_abi_status(entry), str) or _abi_status(entry) not in ABI_STATUSES:
             problems.append(f'{label}: unknown abi_contract status')
-        if entry.get('abi_contract', {}).get('status') == 'VERIFIED':
+        if _abi_status(entry) == 'VERIFIED':
             # Fail closed: this ledger has no evidence schema for the reference-BIOS axis, so VERIFIED is refused
             # even when host_evidence / real_core_evidence / approval are filled in.
             problems.append(f'{label}: VERIFIED is the reference-BIOS axis and must not be set in this ledger '
                             f'(refused even with evidence; expected 0 VERIFIED rows)')
         implementation = entry.get('implementation')
+        if implementation is not None and not isinstance(implementation, dict):
+            problems.append(f'{label}: implementation must be an object or null')
+            continue
         implemented = slot in override_slots
         if implemented != (implementation is not None):
             problems.append(f'{label}: DEV ROM override is {"present" if implemented else "absent"} but the ledger '
@@ -72,12 +103,12 @@ def validate(ledger: dict, slots: list[dict], override_slots: set[int], root: Pa
             expected = f'src/overrides/slot_{slot:02X}.s'
             if implementation.get('source') != expected or not (root / expected).is_file():
                 problems.append(f'{label}: implementation source must be an existing {expected}')
-            if not implementation.get('license'):
+            if not isinstance(implementation.get('license'), str) or not implementation['license'].strip():
                 problems.append(f'{label}: implementation license is missing')
         if state == 'BLOCKED':
             if implemented:
                 problems.append(f'{label}: BLOCKED slot must not have an implementation')
-            if not entry.get('reason'):
+            if not isinstance(entry.get('reason'), str) or not entry['reason']:
                 problems.append(f'{label}: BLOCKED requires a reason')
         if state == 'DEV_CALLABLE':
             problems += _approved_problems(label, entry, implemented, root)
@@ -90,32 +121,50 @@ def _approved_problems(label, entry, implemented, root):
         problems.append(f'{label}: DEV_CALLABLE needs a DEV ROM implementation')
     for kind in ('host_evidence', 'real_core_evidence'):
         paths = entry.get(kind) or []
+        if not isinstance(paths, list) or not all(isinstance(x, str) for x in paths):
+            problems.append(f'{label}: {kind} must be a list of repo-relative paths')
+            continue
         if not paths:
             problems.append(f'{label}: DEV_CALLABLE needs {kind}')
         for path in paths:
-            if not (root / path).is_file():
+            target = (root / path).resolve()
+            if not target.is_relative_to(root.resolve()) or not target.is_file():
                 problems.append(f'{label}: {kind} file missing: {path}')
-    approval = entry.get('approval') or {}
-    if not approval.get('approved_by') or not approval.get('review_ref'):
+    if not _owner_approved(entry):
         problems.append(f'{label}: DEV_CALLABLE needs approval.approved_by and approval.review_ref')
     return problems
 
 
 def summary(ledger: dict, override_slots: set[int]) -> dict:
-    states = [e.get('state') for e in ledger.get('slots', [])]
-    verified = [e for e in ledger.get('slots', []) if e.get('abi_contract', {}).get('status') == 'VERIFIED']
-    return {'dev_rom_callable': len(override_slots),
+    raw = ledger.get('slots') if isinstance(ledger, dict) else None
+    entries = [e for e in raw if isinstance(e, dict)] if isinstance(raw, list) else []
+    states = [e.get('state') for e in entries if isinstance(e.get('state'), str)]
+    return {'dev_rom_callable': len(override_slots),  # DEV ROM implementations (not owner approval)
+            'dev_rom_unimplemented': LAST_SLOT + 1 - len(override_slots),
+            'owner_approved': sum(_owner_approved(e) for e in entries),  # approval recorded, separate from implementation
             'dev_callable_approved': states.count('DEV_CALLABLE'),
             'not_ready': states.count('NOT_READY'),
             'blocked': states.count('BLOCKED'),
-            'abi_verified': len(verified),  # computed from the rows; validate() refuses any VERIFIED row
-            'release_eligible': ledger.get('release_eligible')}
+            'abi_verified': sum(_abi_status(e) == 'VERIFIED' for e in entries),  # counted from rows; validate() refuses any
+            'release_eligible': ledger.get('release_eligible') if isinstance(ledger, dict) else None}
 
 
 def main() -> int:
-    ledger = load_ledger()
-    slots = load_slots(SLOTS_FILE)
+    try:
+        return _main()
+    except Exception as exc:  # noqa: BLE001  fail closed: any crash is a failure, never a pass
+        print(f'FAIL ledger: {type(exc).__name__}: {exc}', file=sys.stderr)
+        return 1
+
+
+def _main() -> int:
     chosen = set(overrides())
+    try:
+        ledger = load_ledger()
+    except (OSError, ValueError, RecursionError) as exc:
+        print(f'FAIL ledger: cannot load {LEDGER_FILE}: {exc}', file=sys.stderr)
+        return 1
+    slots = load_slots(SLOTS_FILE)
     problems = validate(ledger, slots, chosen)
     for problem in problems:
         print(f'FAIL ledger: {problem}', file=sys.stderr)
