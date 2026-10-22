@@ -55,10 +55,10 @@ Two rules follow, and the validator enforces both:
 
 An item with no evidence stays `UNKNOWN`. A static audit reports the hazard opcodes found over
 the explored code, which is not an upper bound: a clean profile is necessary for a safe
-execution, never sufficient on its own. The bound holds only when the walk
-resolved every path; when it could not (an unknown page bank, an undecodable
-byte, an exhausted budget) the profile is a *lower* bound instead, and the
-ledger records that in `unresolved` and `budget_exhausted`. The validator
+execution, never sufficient on its own. The findings are complete for the
+explored code only when the walk resolved every path; when it could not (an
+unknown page bank, an undecodable byte, an exhausted budget) the findings are
+partial, and the ledger records that in `unresolved` and `budget_exhausted`. The validator
 refuses a safe verdict for such a profile, so the seven records below cannot
 hide a truncation.
 
