@@ -109,7 +109,7 @@ class ApiBuildTests(unittest.TestCase):
         manifest = json.loads((self.folder/'debug/manifest.json').read_text())
         self.assertFalse(manifest['release_eligible'])
         self.assertEqual(manifest["overridden_slots"], [0x1E, 0x3C, 0x3D, 0x3F, 0x40, 0x41, 0x42, 0x43])
-        self.assertEqual(len(manifest["unimplemented_slots"]), 74)
+        self.assertEqual(len(manifest["unimplemented_slots"]), 73)
         self.assertEqual(manifest['abi'], 'UNVERIFIED')
 
     def make_root(self, name, **slots):
