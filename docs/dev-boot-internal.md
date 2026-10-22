@@ -32,7 +32,7 @@ LBA 5 を READ(6) で 2048 バイト `$2800` へ転送、`PCEX` ヘッダ検証�
 
 - ビルド: `make dev-boot-internal`（tools/build_dev_boot_internal.py）。リセットベクタ `$FFFE` が `dev_boot_reset` を指し、`dev_boot_entry` == `dev_boot_reset`+1 で、`dev_boot_reset` の先頭バイトが SEI（`$78`）であることを ROM バイトで検査する。
 - 統合試験: `make dev-boot-internal-integration`（tests/integration/geargrafx_dev_boot_internal.py）。実 Geargrafx コア（pinned）で cold と warm の両方を実行する。
-- 位置づけ: opt-in ターゲット。CI（必須ジョブ）には組み込んでいない。`make test` / `make check` には含まれない。
+- 位置づけ: DEV専用。Issue #505 により `core-harness.yml` の追加ジョブ `dev-boot-internal-integration` が PR ごとに `make dev-boot-internal-integration` を実行する（回帰検出）。既存ジョブの条件・needs・required check は変更していない。`make test` / `make check` / `make test-real-core` には含まれない。この CI 結果は DEV 内部起動経路の回帰検出であり、純正互換や BIOS 経由の商用起動の成功を意味しない。
 - 停止位置: 媒体確認が失敗した場合、判定は `dev_media_halt` での停止（PC と理由 `dev_media_halt` の両方）を要求する。別 PC や budget 停止は拒否される。
 - 正例の判定: `dev_boot_entry` の到達、2 回の READ(6)（LBA 0 と LBA 5、SCSI 位相トレース）、RAM 2048 バイトの全バイト比較、ペイロード全体、マーカー、PC 順序、媒体確認結果 `$01`。
 - 負例（実コアで拒否されること）: セクタ数 2 を要求する ROM（ゲストが `INVALID_REQUEST` = 9 で停止）、LBA 0 にペイロードを置いた媒体（媒体確認で `MEDIA_UNRECOGNISED`）、マーカー誤り（ゲストが `PAYLOAD_MARKER_MISMATCH` で停止）、転送バイトの改ざん（判定側が差分を検出）、ヘッダのマジック不一致、観測の改変（判定側のミューテーション）。
