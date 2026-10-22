@@ -2,9 +2,11 @@
 
 No emulator, no ROM, no reference BIOS. Checks that the contract cannot silently widen (only $F8 allowed),
 that the reset value is never trusted, that TAM and direct SetMpr are judged on separate paths, and that the
-same-instruction IRQ hole stays UNMEASURED. The suite does not swap the judge functions; a permissive judge is
-caught by the full-value assertions (every value 0..255 and every CPU address), which were checked by hand in a
-temporary copy (see the PR report).
+same-instruction IRQ hole stays UNMEASURED. The IRQ input is three-valued: an unobserved IRQ state
+(IRQ_UNKNOWN) is missing evidence and must never become PASS. The suite does not swap the judge functions;
+a permissive judge is caught by the full-value assertions (every value 0..255 and every CPU address), by the
+IRQ decision table (every documented row is re-checked against the code), and by the invalid-input cases,
+which were checked by hand in a temporary copy (see the PR report).
 """
 import importlib.util
 import re
@@ -90,13 +92,84 @@ class PathDistinctionTest(unittest.TestCase):
 
 
 class IrqWindowTest(unittest.TestCase):
+    """Three-valued IRQ input: True / False are observations, IRQ_UNKNOWN means "not observed"."""
+
     def test_same_instruction_overlap_is_unmeasured_never_pass(self):
-        self.assertEqual(c.judge_irq_window(True, True)[0], c.UNMEASURED)
+        self.assertEqual(c.judge_irq_window(True, True, False)[0], c.UNMEASURED)
         self.assertEqual(c.IRQ_SAME_INSTRUCTION_STATUS, c.UNMEASURED)
 
     def test_no_overlap_passes(self):
-        self.assertEqual(c.judge_irq_window(False, True)[0], c.PASS)
-        self.assertEqual(c.judge_irq_window(True, False)[0], c.PASS)
+        self.assertEqual(c.judge_irq_window(False, True, False)[0], c.PASS)
+        self.assertEqual(c.judge_irq_window(True, False, False)[0], c.PASS)
+
+
+class IrqUnknownStateTest(unittest.TestCase):
+    """A missing IRQ observation is missing evidence, never a negative observation (never PASS)."""
+
+    def test_unknown_constant_is_the_explicit_not_observed_value(self):
+        self.assertIsNone(c.IRQ_UNKNOWN)
+
+    def test_mpr1_change_with_unknown_irq_state_is_not_pass(self):
+        for asserted, pending in ((c.IRQ_UNKNOWN, False), (False, c.IRQ_UNKNOWN),
+                                   (c.IRQ_UNKNOWN, c.IRQ_UNKNOWN)):
+            with self.subTest(asserted=asserted, pending=pending):
+                verdict, detail = c.judge_irq_window(True, asserted, pending)
+                self.assertNotEqual(verdict, c.PASS)
+                self.assertEqual(verdict, c.BLOCKED)
+                self.assertIn("not observed", detail)
+
+    def test_mpr1_change_with_observed_negatives_passes(self):
+        self.assertEqual(c.judge_irq_window(True, False, False)[0], c.PASS)
+
+    def test_mpr1_change_with_observed_irq_overlap_is_unmeasured(self):
+        self.assertEqual(c.judge_irq_window(True, True, False)[0], c.UNMEASURED)
+        self.assertEqual(c.judge_irq_window(True, False, True)[0], c.UNMEASURED)
+
+    def test_observed_overlap_dominates_an_unobserved_side(self):
+        # The hole is confirmed by the observation, so the missing side does not change the verdict.
+        self.assertEqual(c.judge_irq_window(True, True, c.IRQ_UNKNOWN)[0], c.UNMEASURED)
+        self.assertEqual(c.judge_irq_window(True, c.IRQ_UNKNOWN, True)[0], c.UNMEASURED)
+
+    def test_no_mpr1_change_keeps_the_meaningful_pass(self):
+        self.assertEqual(c.judge_irq_window(False, False, False)[0], c.PASS)
+        self.assertEqual(c.judge_irq_window(False, True, False)[0], c.PASS)
+        self.assertEqual(c.judge_irq_window(False, False, True)[0], c.PASS)
+        self.assertEqual(c.judge_irq_window(False, True, True)[0], c.PASS)
+
+    def test_unknown_state_is_not_promoted_to_pass_even_without_an_mpr1_change(self):
+        for asserted, pending in ((c.IRQ_UNKNOWN, False), (False, c.IRQ_UNKNOWN),
+                                   (c.IRQ_UNKNOWN, c.IRQ_UNKNOWN)):
+            with self.subTest(asserted=asserted, pending=pending):
+                self.assertNotEqual(c.judge_irq_window(False, asserted, pending)[0], c.PASS)
+
+    def test_omitted_pending_argument_is_unknown_not_false(self):
+        # The default means "not observed": it must never be read as "no pending IRQ".
+        verdict, _ = c.judge_irq_window(True, False)
+        self.assertNotEqual(verdict, c.PASS)
+        self.assertEqual(verdict, c.BLOCKED)
+        verdict, _ = c.judge_irq_window(False, False)
+        self.assertNotEqual(verdict, c.PASS)
+
+    def test_invalid_irq_types_are_blocked_not_raised(self):
+        for bad in ("yes", "", 1, 0, 2, -1, 0.0, 1.0, [], [True], {}, b"1", object()):
+            with self.subTest(value=bad):
+                for args in ((True, bad, False), (True, False, bad), (False, bad, bad)):
+                    with self.subTest(args=args):
+                        try:
+                            verdict, detail = c.judge_irq_window(*args)
+                        except Exception as error:   # the contract must return a verdict, never raise
+                            self.fail("judge_irq_window%r raised %r" % (args, error))
+                        self.assertEqual(verdict, c.BLOCKED)
+                        self.assertNotEqual(verdict, c.PASS)
+
+    def test_invalid_mpr1_changed_flag_is_blocked_not_raised(self):
+        for bad in ("yes", 1, 0, None, [], object()):
+            with self.subTest(value=bad):
+                try:
+                    verdict, _ = c.judge_irq_window(bad, False, False)
+                except Exception as error:   # the contract must return a verdict, never raise
+                    self.fail("judge_irq_window raised %r" % (error,))
+                self.assertEqual(verdict, c.BLOCKED)
 
 
 class PendingIrqTest(unittest.TestCase):
@@ -162,6 +235,48 @@ class DocConsistencyTest(unittest.TestCase):
         self.assertIn("$21FF", text)
         self.assertIn("テストラベル", text)
         self.assertIn("pending", text)
+
+    def test_doc_states_the_three_valued_irq_and_the_missing_evidence_rule(self):
+        text = (ROOT / "docs" / "497-mpr1-stack-contract.md").read_text(encoding="utf-8")
+        self.assertIn("IRQ_UNKNOWN", text)
+        self.assertIn("3 値", text)
+        self.assertIn("BLOCKED", text)
+        self.assertIn("UNMEASURED", text)
+
+
+class DocIrqTableTest(unittest.TestCase):
+    """The IRQ decision table in the doc must match the code row by row."""
+
+    def setUp(self):
+        self.text = (ROOT / "docs" / "497-mpr1-stack-contract.md").read_text(encoding="utf-8")
+
+    @staticmethod
+    def _irq_value(cell):
+        if cell == "IRQ_UNKNOWN":
+            return c.IRQ_UNKNOWN
+        if cell.startswith("観測 "):
+            return cell[len("観測 "):] == "True"
+        raise AssertionError("unknown IRQ cell %r" % (cell,))
+
+    def test_doc_irq_table_matches_the_code(self):
+        rows = [line for line in self.text.splitlines()
+                if line.startswith("| あり |") or line.startswith("| なし |")]
+        self.assertGreaterEqual(len(rows), 12)
+        for row in rows:
+            cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
+            self.assertEqual(len(cells), 4, row)
+            changed = {"あり": True, "なし": False}[cells[0]]
+            asserted = self._irq_value(cells[1])
+            pending = self._irq_value(cells[2])
+            with self.subTest(row=row):
+                self.assertEqual(c.judge_irq_window(changed, asserted, pending)[0], cells[3])
+
+    def test_doc_irq_table_keeps_the_unknown_rows(self):
+        for fragment in ("| あり | IRQ_UNKNOWN | 観測 False | BLOCKED |",
+                         "| あり | 観測 False | IRQ_UNKNOWN | BLOCKED |",
+                         "| あり | IRQ_UNKNOWN | IRQ_UNKNOWN | BLOCKED |",
+                         "| なし | IRQ_UNKNOWN | 観測 False | BLOCKED |"):
+            self.assertIn(fragment, self.text)
 
 
 def doc_bank_verdicts(text):

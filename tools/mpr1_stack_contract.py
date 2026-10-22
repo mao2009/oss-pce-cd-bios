@@ -8,6 +8,9 @@ Contract (see docs/497-mpr1-stack-contract.md):
 * TAM (guest instruction) and direct SetMpr (host side) are distinct paths. A direct SetMpr mid-run is DENY.
 * An IRQ assert inside the same RunInstruction as an MPR1 change is UNMEASURED: the per-instruction MPR
   comparison cannot see it, so it is kept as a hole, never PASS.
+* IRQ state is three-valued: True (observed asserted), False (observed not asserted) and IRQ_UNKNOWN
+  (not observed / missing). An unobserved IRQ state is missing evidence; it is never read as "no IRQ"
+  and it never becomes PASS.
 
 Verdicts: PASS, FAIL, BLOCKED (no evidence), UNMEASURED (known hole). Synthetic inputs only.
 """
@@ -21,6 +24,11 @@ RESET_MPR1 = None                        # UNDETERMINED: reset value is not part
 HARNESS_INIT_MPR1 = 0xF8
 IRQ_SAME_INSTRUCTION_STATUS = UNMEASURED
 
+# Three-valued IRQ observation. IRQ_UNKNOWN is the explicit "not observed" value (None):
+# the harness did not observe the IRQ state, so there is no evidence either way. It is never
+# interchangeable with False, and it never yields PASS.
+IRQ_UNKNOWN = None
+
 # Stack address notation. Two different things; never mix them.
 #   CPU_STACK_PAGE: the address the 65C02-style S register points into on the CPU bus ($2100-$21FF via the
 #                   hardware page; the pinned core's real stack).
@@ -32,6 +40,21 @@ PATH_RESET = "RESET"
 PATH_TAM = "TAM"
 PATH_DIRECT_SETMPR = "DIRECT_SETMPR"
 PATHS = (PATH_RESET, PATH_TAM, PATH_DIRECT_SETMPR)
+
+# Internal classification of one IRQ observation.
+_IRQ_TRUE = "TRUE"
+_IRQ_FALSE = "FALSE"
+_IRQ_UNKNOWN_STATE = "UNKNOWN"   # not observed
+_IRQ_INVALID = "INVALID"         # not an observation at all (wrong type)
+
+
+def _irq_state(value):
+    """Classify one IRQ observation: TRUE / FALSE / UNKNOWN (not observed) / INVALID (unreadable type)."""
+    if value is IRQ_UNKNOWN:
+        return _IRQ_UNKNOWN_STATE
+    if type(value) is bool:
+        return _IRQ_TRUE if value else _IRQ_FALSE
+    return _IRQ_INVALID
 
 
 def check_stack_bank(mpr1):
@@ -87,12 +110,49 @@ def check_mpr1_write(path, value, instruction_index):
     return verdict, "TAM: " + detail
 
 
-def judge_irq_window(mpr1_changed_in_instruction, irq_asserted_in_instruction, irq_pending_at_start=False):
-    """IRQ condition. An MPR1 change in an instruction while an IRQ is asserted or already pending is the hole.
+def judge_irq_window(mpr1_changed_in_instruction, irq_asserted_in_instruction,
+                     irq_pending_at_start=IRQ_UNKNOWN):
+    """IRQ condition for one instruction window. An MPR1 change in an instruction while an IRQ is
+    asserted or already pending is the hole.
+
+    Three-valued IRQ input. True = observed asserted, False = observed not asserted,
+    IRQ_UNKNOWN (None) = not observed (missing evidence). Both IRQ arguments default to IRQ_UNKNOWN,
+    so an unobserved state can never be silently read as "no IRQ": it is judged BLOCKED, never PASS.
 
     irq_pending_at_start covers an IRQ that was pending at the instruction boundary before the TAM: the
     HandleIRQ after the TAM can push to $21xx under the new MPR1, which the boundary comparison cannot see.
+
+    Verdicts:
+    * UNMEASURED - an IRQ overlap was observed (asserted or pending) together with an MPR1 change:
+      known hole, the per-instruction MPR comparison cannot see the push.
+    * BLOCKED - the IRQ state was not observed, or an input was not readable: no evidence.
+    * PASS - the MPR1 did not change in this instruction (the push target stays the MPR1 that was
+      judged at the instruction boundary), or the MPR1 changed with both IRQ observations explicitly
+      negative (no new assert and no pending IRQ).
     """
-    if mpr1_changed_in_instruction and (irq_asserted_in_instruction or irq_pending_at_start):
+    if type(mpr1_changed_in_instruction) is not bool:
+        return BLOCKED, "mpr1-changed flag is not an observation: %s" % (repr(mpr1_changed_in_instruction),)
+    asserted = _irq_state(irq_asserted_in_instruction)
+    pending = _irq_state(irq_pending_at_start)
+    if asserted == _IRQ_INVALID:
+        return BLOCKED, "IRQ asserted state is not an observation: %s" % (repr(irq_asserted_in_instruction),)
+    if pending == _IRQ_INVALID:
+        return BLOCKED, "IRQ pending state is not an observation: %s" % (repr(irq_pending_at_start),)
+    if not mpr1_changed_in_instruction:
+        if asserted == _IRQ_UNKNOWN_STATE or pending == _IRQ_UNKNOWN_STATE:
+            # No MPR1 change in this instruction, but the IRQ state was not observed: the missing
+            # observation is not a negative observation, so this window is not certified safe.
+            return BLOCKED, ("IRQ state not observed (asserted=%s, pending=%s): missing evidence, "
+                             "not a negative observation" % (
+                                 "UNKNOWN" if asserted == _IRQ_UNKNOWN_STATE else "observed",
+                                 "UNKNOWN" if pending == _IRQ_UNKNOWN_STATE else "observed"))
+        return PASS, ("no MPR1 change in this instruction; the push target stays the MPR1 judged at "
+                      "the instruction boundary")
+    if asserted == _IRQ_TRUE or pending == _IRQ_TRUE:
         return UNMEASURED, "IRQ push (asserted or pending at instruction start) after an MPR1 change is not observed"
-    return PASS, "no MPR1 change overlapping an IRQ"
+    if asserted == _IRQ_UNKNOWN_STATE or pending == _IRQ_UNKNOWN_STATE:
+        return BLOCKED, ("IRQ state not observed (asserted=%s, pending=%s): missing evidence, "
+                         "not a negative observation" % (
+                             "UNKNOWN" if asserted == _IRQ_UNKNOWN_STATE else "observed",
+                             "UNKNOWN" if pending == _IRQ_UNKNOWN_STATE else "observed"))
+    return PASS, "MPR1 change observed with no IRQ assert and no pending IRQ at the instruction start"

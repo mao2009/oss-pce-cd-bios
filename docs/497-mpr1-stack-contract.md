@@ -71,15 +71,50 @@
 
 ## 4. IRQ 条件（同一命令内の穴）
 
+### 4.1 穴そのもの
+
 - 命令境界での MPR1 比較だけでは、**同じ `RunInstruction` の中で TAM による MPR1 変更と IRQ の push が起きた場合を防げない**。
 - 次の 2 つの場合を、いずれも穴として扱う:
   1. **新規 assert**: 同じ `RunInstruction` 内で IRQ が新たに assert され、かつ MPR1 が変わる。
   2. **pending**: 命令開始前から IRQ が pending（命令境界で保留中）で、TAM が MPR1 を変え、その後の HandleIRQ が `$21xx` へ push しうる。
 - 判定: MPR1 の変更と（新規 assert または pending）が重なる → **UNMEASURED**（PASS にしない。穴として保持する）。
-- MPR1 の変更が無い場合、または IRQ が無い場合は PASS（命令境界の比較で足りる範囲）。
-- pending で MPR1 が変わらない場合は PASS（push 先は命令境界で判定済みの MPR1 のまま）。
+- MPR1 の変更が無い場合は PASS（命令境界の比較で足りる範囲）。pending で MPR1 が変わらない場合も PASS（push 先は命令境界で判定済みの MPR1 のまま）。
 - 出典の限定: 473 実験の結果 3 は、8 バイト TII の 1 例の単一観測である。転送の途中（TII 中）では IRQ は受理されず、最後の転送ステップの中でベクタ分岐が起きた。この挙動はソース `huc6280_inline.h:90` の予測と一致したが、一般化はしない。合成コアのもので、実機は未確認。
 - NMI: pinned コアに実行経路が無いため NOT_APPLICABLE。実機の NMI は UNKNOWN（#473 受入 7 のまま、オーナー確認が必要）。
+
+### 4.2 IRQ 状態は 3 値（観測あり / 観測なし）
+
+IRQ の状態は **観測結果** としてだけ扱う。3 値表現:
+
+| 値 | 意味 |
+|---|---|
+| `True` | assert されたことを**観測した** |
+| `False` | assert されていないことを**観測した** |
+| `IRQ_UNKNOWN`（`None`） | **観測していない**（状態を取得できなかった、または値が渡されなかった） |
+
+- `IRQ_UNKNOWN`（None）を「assert が無い」「pending が無い」と同一視しない。**観測が無いことは安全の確認にならない。**
+- `tools/mpr1_stack_contract.py` の `judge_irq_window` の IRQ 引数の既定値は `IRQ_UNKNOWN`。既定値の省略は「安全」の意味ではなく「観測が無い」の意味であり、BLOCKED（証拠が無い）に倒す。
+- `IRQ_UNKNOWN` を含む判定は **PASS にしない**（MPR1 変更の有無によらない）。判定は **BLOCKED** とする。
+- 一方で **観測済みの `True`**（assert または pending）が 1 つでもあれば、穴が確定するので **UNMEASURED**（もう片側の未観測は判定を左右しない）。
+- 判定表（`tests/host/test_mpr1_stack_contract.py` が文書とコードの一致を検査する）:
+
+| MPR1 変更 | assert | pending | 判定 |
+|---|---|---|---|
+| あり | 観測 False | 観測 False | PASS |
+| あり | 観測 True | 観測 False | UNMEASURED |
+| あり | 観測 False | 観測 True | UNMEASURED |
+| あり | 観測 True | 観測 True | UNMEASURED |
+| あり | 観測 True | IRQ_UNKNOWN | UNMEASURED |
+| あり | IRQ_UNKNOWN | 観測 False | BLOCKED |
+| あり | 観測 False | IRQ_UNKNOWN | BLOCKED |
+| あり | IRQ_UNKNOWN | IRQ_UNKNOWN | BLOCKED |
+| なし | 観測 False | 観測 False | PASS |
+| なし | 観測 True | 観測 True | PASS |
+| なし | IRQ_UNKNOWN | 観測 False | BLOCKED |
+| なし | 観測 False | IRQ_UNKNOWN | BLOCKED |
+
+- 「MPR1 変更なし」で**観測済み**の IRQ 状態が如何であれ PASS するのは、push 先が命令境界で判定済みの MPR1 のままであるため（4.1）。ただし IRQ の**観測自体**が無い場合は観測欠落なので BLOCKED とする。
+- 上の `IRQ_UNKNOWN` は「IRQ 状態が読めなかった」場合の判定値であり、4.1 末尾の NMI の `UNKNOWN`（実機 NMI は未確認）とは別物である。NMI の `UNKNOWN` は注記で、判定値ではない。
 
 ## 5. 検査基準（S2 以降が共有する入力）
 
@@ -121,12 +156,23 @@
 ### 判定値の列挙
 
 - `PASS` / `FAIL` / `BLOCKED` / `UNMEASURED`（コード `tools/mpr1_stack_contract.py` の判定値）。
+- 判定の意味（本契約で一貫して使う）:
+
+| 判定 | 意味 | 使う条件 |
+|---|---|---|
+| `PASS` | 契約どおりで、安全の確認が取れている | 許可表の値（`$F8`）、正しい初期化位置（命令番号 0）、CPU スタックページ内、IRQ の必要項目が観測済みで陰（negative） |
+| `FAIL` | 証拠は**読める**が契約違反 | 許可表に無い値、0..255 の範囲外、`$F8` 以外、命令番号 0 以外、テストラベルページ（`$0100`〜`$01FF`） |
+| `BLOCKED` | 証拠が**無い / 読めない** | 型違い（str・bool・None 等）、記録が無い、IRQ 状態が未観測（`IRQ_UNKNOWN`） |
+| `UNMEASURED` | **既知の穴** | 同じ命令内で IRQ が**観測され**、MPR1 変更と重なった（命令境界の比較では push が見えない） |
+
+- `BLOCKED`（証拠が無い）と `UNMEASURED`（既知の穴）は区別する。前者は「判定に必要な情報が無い」、後者は「情報は揃っているが命令境界の比較では見えない」ときに使う。
 - `NOT_APPLICABLE` は判定値ではなく注記である。NMI について「pinned コアに実行経路が無い」ため使う（§4）。実機の NMI は `UNKNOWN`（未確認）。
 - 参照: #470 / #481 の観測について、`docs/` に `470` / `481` で始まる文書は無い。本書は #470 / #481 を参照していない。実装上の根拠は `docs/173-safety-monitor-limits.md` と `docs/473-caller-stack-experiment.md` のみ。
 
 ## 7. 未検証（UNMEASURED / 未確認）
 
 - 同一命令内の TAM と IRQ push の重なり（§4）。
+- IRQ 状態の実コアでの観測手段（§4.2）。`judge_irq_window` は Host 試験からのみ呼ばれ、実コアの IRQ 観測は S2 以降の作業（§5 の未接続の判定関数）。
 - 実機のリセット直後の MPR1 の値（判定に使わないため、測る必要は無い）。
 - 許可外バンク（`$F7` を含む）の実際の振る舞い。
 - 実機の NMI。
