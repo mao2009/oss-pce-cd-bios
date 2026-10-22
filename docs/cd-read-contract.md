@@ -134,7 +134,7 @@ HuCC `pce-devel/huc@54f5c73606c1e7142e8095c727cab2767e2b3cb3` (`hucc-systemcard.
 | Entry | slot `$03`, CPU `$E009` (`$E000 + 3*slot`); MPR7 = bank 0 at call | HYPOTHESIS | HuCC `pcengine.inc`, `core-kernel.asm` |
 | Block number | 24-bit `_cl:_ch:_dl` (high:mid:low) at `$20FC/$20FD/$20FE` | HYPOTHESIS | HuCC callers, `get_file_lba` |
 | Block base | relative to a base set by CD_BASE (#11) vs absolute LBA | UNKNOWN | - |
-| Destination mode | `_dh`: 0 local bytes `_ax`; 1 local sectors (Hu-Go only); 2..6 RAM bank `_bl`, `_al` sectors; `$FE` VRAM `_bx` bytes `_ax`; `$FF` VRAM `_bx` sectors `_al` | HYPOTHESIS | HuCC + Hu-Go HLE |
+| Destination mode | `_dh`: 0 local bytes `_ax`; 1 local sectors (Hu-Go only); 2..6 RAM bank `_bl`, `_al` sectors; `$FE` VRAM `_bx` bytes `_ax`; `$FF` VRAM `_bx` sectors `_al` | HYPOTHESIS | 訂正: HuCC は `_dh=2` を書かないことを include/hucc/ の範囲で確認。`_dh=2` の出典は Hu-Go! HLE のみ（ライセンス未確定。根拠に使わない） |
 | Mode list complete / invalid mode result | - | UNKNOWN | - |
 | Count 0, bank wrap, odd VRAM byte count, upper bounds | Hu-Go reports A=`$22` for `$FF` count 0 (HLE only) | HYPOTHESIS / UNKNOWN | Hu-Go `bios.c` |
 | Return | A=0 success, nonzero error | HYPOTHESIS | HuCC TAX/BNE, Hu-Go |

@@ -4,6 +4,7 @@ Status: **callee contract not measured. CD_READ NOT_IMPLEMENTED. BLOCKED for the
 Scope: one sector, transfer mode `_dh = 2` (destination RAM bank `_bl`), count 1. Other modes, counts 2..3
 for this mode, and CD_BASE are separate Issues. Machine copy: `RAM_MODE_ITEMS` and `RAM_MODE_EXAMPLES` in
 `tools/cd_read_contract.py`; checked by `tests/host/test_cd_read_contract.py::RamModeContractTests`.
+注記（2026-10-22 オーナー判断）: 優先観測候補は `_dh = 3`（[188-cd-read-transfer-mode-contract.md](188-cd-read-transfer-mode-contract.md) の D1）。本書の `_dh = 2` 記述は既存の対象として残す。
 
 ## Evidence classes
 
@@ -27,12 +28,12 @@ Every row is HYPOTHESIS or UNKNOWN. None is VERIFIED.
 | --- | --- | --- | --- |
 | R1 | entry JSR `$E009` with slot `$03` | HYPOTHESIS | HuCC `pcengine.inc` |
 | R2 | block number 24-bit `_cl:_ch:_dl` (`$20FC-$20FE`) | HYPOTHESIS | HuCC callers |
-| R3 | `_dh = 2` selects RAM bank `_bl`, `_al` sectors | HYPOTHESIS | HuCC, Hu-Go HLE |
+| R3 | `_dh = 2` selects RAM bank `_bl`, `_al` sectors | HYPOTHESIS | 訂正: HuCC が `_dh=2` を書かないことを確認（`include/hucc/` の2ファイルの範囲）。`_dh=2` の出典は Hu-Go! HLE のみ（ライセンス未確定。根拠に使わない） |
 | R4 | destination address in the bank (register pair, end address) | UNKNOWN | none |
 | R5 | block base: CD_BASE-relative (#11) or absolute LBA | UNKNOWN | none |
-| R6 | A = 0 on success | HYPOTHESIS | HuCC TAX/BNE, Hu-Go |
+| R6 | A = 0 on success | HYPOTHESIS | HuCC TAX/BNE, Hu-Go。Hu-Go は根拠に使わない（ライセンス未確定）。TAX/BNE は別関数の慣習で、成功値の根拠ではない |
 | R7 | error codes (no disc, bad block, read error, busy) | UNKNOWN | none |
-| R8 | N/Z/C/T on return | HYPOTHESIS | Hu-Go HLE only |
+| R8 | N/Z/C/T on return | HYPOTHESIS | Hu-Go HLE only。Hu-Go は根拠に使わない（ライセンス未確定） |
 | R9 | MPR state after success and after error (bank `_bl` mapping) | UNKNOWN | none (HuCC: CD_READ may corrupt MPR on error, unmeasured) |
 | R10 | stack: callee depth and JSR/RTS balance | UNKNOWN | none |
 | R11 | X/Y and `$20F8-$20FF` preservation | UNKNOWN | none |

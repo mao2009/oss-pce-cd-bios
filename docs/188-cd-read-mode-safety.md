@@ -22,6 +22,7 @@
 ## 2. 非実行フィクスチャ
 
 `tests/fixtures/cd-read-mode2-single-sector.json`。1 セクター、`_dh = 2`、count 1 を中心とする。
+注記（2026-10-22 オーナー判断）: 優先観測候補は `_dh = 3`（[188-cd-read-transfer-mode-contract.md](188-cd-read-transfer-mode-contract.md) の D1）。本節の `_dh = 2` フィクスチャは既存の記録として残す。
 
 - 期待値テンプレート（`expected_state_template`）: A、N/Z/C/T、MPR、宛先アドレス、宛先バイト、スタック、X/Y/`$20F8-$20FF`、CLI 前提、媒体状態。全て `UNKNOWN`。
 - ケース表は `RAM_MODE_EXAMPLES` の ID（P1-P3、N1-N4）と一致する。転送層の期待値（送達セクター数、早期 STATUS）は READ(6) の実コア計測（T1-T4）に由来し、callee の値ではない。callee 期待値は全て `UNKNOWN`。
