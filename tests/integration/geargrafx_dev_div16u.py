@@ -327,7 +327,7 @@ def main():
                 except Mismatch as error:  # only a value mismatch counts; infrastructure errors must propagate
                     catching.append({"case": f"I{int(i_set)}D{int(d_set)} {dividend:04X}/{divisor:04X}",
                                      "dividend": dividend, "divisor": divisor, "fields": error.fields,
-                                     "detail": str(error)})
+                                     "i": int(i_set), "d": int(d_set), "detail": str(error)})
             if not catching:
                 raise ValueError(f"{name}: no test case rejects the mutant")
             fields = sorted({f for entry in catching for f in entry["fields"]})
@@ -341,6 +341,14 @@ def main():
                 raise ValueError(f"{name}: the rejection names none of {sorted(any_of)} (saw {sorted(seen)})")
             if zero_only and any(entry["divisor"] != 0 for entry in catching):
                 raise ValueError(f"{name}: a non-zero divisor rejects the mutant, the mutant is not divide-by-zero only")
+            if name in FLAG_MUTANTS:
+                # A fixed flag shows only with the caller holding the other value: the mismatch of that flag must appear
+                # in those runs (the runs with the same value cannot show it).
+                flag = "I" if name.startswith("i_") else "D"
+                forced = 1 if "forced_to_1" in name else 0
+                opposite = [e for e in catching if e[flag.lower()] != forced]
+                if not opposite or not any(f"P.{flag}" in e["fields"] for e in opposite):
+                    raise ValueError(f"{name}: no run with the caller holding the other {flag} names P.{flag}")
             record["expected_rejection"] = {"required": sorted(required), "any_of": sorted(any_of),
                                             "zero_divisor_only": zero_only}
             evidence.setdefault("arithmetic_mutants", []).append(record)
