@@ -129,9 +129,12 @@ def guest(reset, entry, dividend, divisor, sp=CALLER_SP, t_entry=False, i_set=Tr
     head = [0xF4] if t_entry else []   # SET: T=1 (characterisation only)
     p_before = [0x08, 0x68, 0x8D, P_BEFORE & 0xFF, P_BEFORE >> 8]  # PHP; PLA; STA $2207 (caller P before the JSR)
     tail = store_q + [0x08, 0x68] + store_p   # STA; STX; PHP; PLA; STA $2202
-    code = bytes([0x78 if i_set else 0x58,  # SEI (caller I=1) or CLI (caller I=0; no IRQ line is driven)
+    # The probe requires the first guest instruction to be SEI (all execution probes begin SEI). The caller I=0 is set
+    # later by CLI, just before the caller flags are set.
+    code = bytes([0x78,                   # SEI (first instruction, required by the probe)
                   0xA9, 0xF8, 0x53, 0x02,  # LDA #$F8; TAM #$02 -> MPR1 = work RAM ($2000-$3FFF)
                   0xA2, sp, 0x9A,          # LDX #sp; TXS (caller SP; divisor pushes and the JSR follow)
+                  ] + ([] if i_set else [0x58]) + [     # CLI: caller I=0 (no IRQ line is driven)
                   0xF8 if d_set else 0xD8, 0x38,  # SED or CLD (caller D), SEC (caller C=1)
                   ] + p_before + [
                   0xA9, d_lo, 0x48,        # LDA #divisor low; PHA
