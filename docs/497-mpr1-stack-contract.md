@@ -142,7 +142,7 @@ IRQ の状態は **観測結果** としてだけ扱う。3 値表現:
 | PC | 検査点の PC（ラベル到達時） |
 | MPR0〜MPR7 | 命令ごとに比較。MPR1 は §1 の許可表で判定 |
 | VDC / WRAM | 書込みの宛先と値の変化（変化のみの記録は、値が変わらない書込みを見ない） |
-| IRQ | assert と deassert、ベクタ分岐の時点。§4 の穴は UNMEASURED |
+| IRQ | assert と deassert、ベクタ分岐の時点。§4 の穴は UNMEASURED。状態が取得できない場合は IRQ_UNKNOWN（BLOCKED） |
 | 宛先 | スタック push の宛先が許可バンク（`$F8`）内か |
 
 ### 5.1 スタックアドレスの表記（取り違え防止）
