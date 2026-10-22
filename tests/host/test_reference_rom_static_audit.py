@@ -7,6 +7,7 @@ builds, so the decoder, the jump table parser and the hazard classifier are
 covered without any private input.
 """
 import os
+import random
 import re
 import sys
 import tempfile
@@ -134,14 +135,56 @@ class SyntheticImageTests(unittest.TestCase):
 
     def test_a_loop_with_a_returning_exit_is_not_a_proof_that_every_path_returns(self):
         # BNE to itself, or fall through to RTS: some path returns, another spins forever.
-        # The existence check reports 0 here by design. This is a limitation pin,
-        # to be inverted when the all-paths check lands (#485).
+        # The existence check reports 0 here by design (limitation pin). The
+        # separate all-paths measure (#485) must flag the spinning state.
         image = self.directory / "mixed_loop.pce"
         image.write_bytes(synthetic_image(b"\xd0\xfe\x60"))
         result = audit.audit_image(image, [0x1E], synthetic=True)
         profile = result["apis"][0]["callee"]
         self.assertEqual(profile["returns_observed"], ["rts"])
         self.assertEqual(profile["non_returning_states"], 0)
+        self.assertEqual(profile["states_without_guaranteed_return"], 1)
+
+    def test_all_paths_measure_is_zero_only_when_every_path_returns(self):
+        cases = {
+            "plain": (b"\xa2\x03\x60", 0),                      # LDX / RTS
+            "diamond": (b"\xc9\x00\xf0\x01\xea\x60", 0),        # CMP/BEQ/NOP/RTS
+            "spin_arm": (b"\xc9\x00\xf0\x01\x60\x80\xfe", 3),   # CMP, BEQ, spin
+            "bare_spin": (b"\x80\xfe", 1),
+            "unresolved_jump": (b"\x6c\x00\x20", 1),            # JMP ($2000)
+        }
+        for name, (code, expected) in cases.items():
+            image = self.directory / f"{name}.pce"
+            image.write_bytes(synthetic_image(code))
+            profile = audit.audit_image(image, [0x1E], synthetic=True)["apis"][0]["callee"]
+            self.assertEqual(profile["states_without_guaranteed_return"], expected, name)
+
+    def test_unknown_bank_is_not_treated_as_a_guaranteed_return(self):
+        # LDA #$05 / CLA (A becomes unknown) / TAM #$40 (MPR6 unmapped) /
+        # JSR $CF00 (bank unknown) / RTS
+        image = self.directory / "unknown_bank.pce"
+        image.write_bytes(synthetic_image(b"\xa9\x05\x62\x53\x40\x20\x00\xcf\x60"))
+        profile = audit.audit_image(image, [0x1E], synthetic=True)["apis"][0]["callee"]
+        self.assertEqual(profile["unresolved"], ["page_bank_unknown"])
+        self.assertGreater(profile["states_without_guaranteed_return"], 0)
+
+    def test_a_budget_cut_never_looks_guaranteed(self):
+        # The default callee (LDX / LDY / RTS) returns, but a 2 state budget
+        # cuts the walk before the RTS: the cut tail must not count as safe.
+        with mock.patch.object(audit.Auditor, "MAX_STATES", 2):
+            profile = audit.audit_image(self.image, [0x1E], synthetic=True)["apis"][0]["callee"]
+        self.assertTrue(profile["budget_exhausted"])
+        self.assertGreater(profile["states_without_guaranteed_return"], 0)
+
+    def test_any_successor_rule_is_distinguished_from_all_successors(self):
+        # Mutation guard: weakening "all successors" to "any successor" turns
+        # 2 into 1 here, because arm c spins forever while arm b returns.
+        successors = {"a": ["b", "c"], "b": [], "c": ["c"]}
+        visited = {"a", "b", "c"}
+        self.assertEqual(
+            audit.Auditor._states_without_guaranteed_return(visited, successors, {"b"}), 2)
+        self.assertEqual(
+            audit.Auditor._states_without_return(visited, successors, {"b"}), 1)
 
     def test_the_tam_mask_selects_the_page_the_core_selects(self):
         # Memory::SetMprTAM maps mask bit i to MPR[i], so "tam #$40" is MPR6 and
@@ -183,6 +226,133 @@ class SyntheticImageTests(unittest.TestCase):
             for match in re.finditer(r"(?:0x|\$)([0-9A-Fa-f]{4})", value):
                 self.assertIn(match.group(1).upper(), {"E000", "E05A"},
                               f"{path} carries an address that is not a public entry")
+
+
+def old_guaranteed_return(visited, successors, terminal_returns):
+    """Reference copy of the former O(V^2) fixpoint (#485); tests only."""
+    good = set(terminal_returns)
+    changed = True
+    while changed:
+        changed = False
+        for source, targets in successors.items():
+            if source in good or not targets:
+                continue
+            if all(target in good for target in targets):
+                good.add(source)
+                changed = True
+    return len(visited - good)
+
+
+def chain(count):
+    """Straight line 0 -> 1 -> ... -> count-1 (RTS); sources inserted first-to-last."""
+    successors = {i: [i + 1] for i in range(count - 1)}
+    successors[count - 1] = []
+    return set(range(count)), successors, {count - 1}
+
+
+class GuaranteedReturnGraphTests(unittest.TestCase):
+    def check(self, visited, successors, terminals, expected):
+        new = audit.Auditor._states_without_guaranteed_return(visited, successors, terminals)
+        self.assertEqual(new, old_guaranteed_return(visited, successors, terminals))
+        self.assertEqual(new, expected)
+
+    def test_simple_rts(self):
+        self.check({"a"}, {"a": []}, {"a"}, 0)
+
+    def test_straight_line(self):
+        self.check({"a", "b", "c"}, {"a": ["b"], "b": ["c"], "c": []}, {"c"}, 0)
+
+    def test_diamond(self):
+        succ = {"a": ["b", "c"], "b": ["d"], "c": ["d"], "d": []}
+        self.check(set(succ), succ, {"d"}, 0)
+
+    def test_self_loop(self):
+        self.check({"a"}, {"a": ["a"]}, set(), 1)
+
+    def test_multi_state_cycle(self):
+        succ = {"a": ["b"], "b": ["c"], "c": ["a"]}
+        self.check(set(succ), succ, set(), 3)
+
+    def test_returning_branch_plus_infinite_loop_branch(self):
+        succ = {"a": ["b", "c"], "b": [], "c": ["c"]}
+        self.check(set(succ), succ, {"b"}, 2)
+
+    def test_unresolved_successor(self):
+        succ = {"a": ["b", "c"], "b": [], "c": []}  # c: dead end
+        self.check(set(succ), succ, {"b"}, 2)
+
+    def test_unexplored_successor_is_never_guaranteed(self):
+        succ = {"a": ["b", "x"], "b": []}  # x cut off by the budget
+        self.check({"a", "b"}, succ, {"b"}, 1)
+
+    def test_search_limit_state_without_successors(self):
+        succ = {"a": ["b"], "b": []}  # b was never expanded and is not a return
+        self.check({"a", "b"}, succ, set(), 2)
+
+    def test_multiple_terminal_returns(self):
+        succ = {"a": ["b", "c"], "b": [], "c": []}
+        self.check(set(succ), succ, {"b", "c"}, 0)
+
+    def test_duplicate_edges(self):
+        succ = {"a": ["b", "b"], "b": ["c", "c"], "c": []}
+        self.check(set(succ), succ, {"c"}, 0)
+        succ = {"a": ["b", "b", "c"], "b": [], "c": ["c"]}
+        self.check(set(succ), succ, {"b"}, 2)
+
+    def test_random_graphs_match_old_implementation(self):
+        rng = random.Random(485)
+        for _ in range(300):
+            n = rng.randint(1, 30)
+            nodes = list(range(n))
+            succ = {}
+            for node in nodes:
+                if rng.random() < 0.9:  # else unexpanded (not in successors)
+                    succ[node] = [rng.choice(nodes + [n + 5])  # n+5: unexplored
+                                  for _ in range(rng.randint(0, 3))]
+            terminals = {x for x in nodes if rng.random() < 0.2}
+            for t in terminals:
+                succ[t] = []
+            visited = set(nodes)
+            self.assertEqual(
+                audit.Auditor._states_without_guaranteed_return(visited, succ, terminals),
+                old_guaranteed_return(visited, succ, terminals))
+
+    def test_large_straight_line_is_linear(self):
+        # Deterministic work bound (no wall clock): the old fixpoint re-iterates
+        # target lists on every pass (~V^2/2 iterations on this graph); the new
+        # one iterates each state's target list once.
+        class CountingList(list):
+            iterations = 0
+
+            def __iter__(self):
+                CountingList.iterations += 1
+                return super().__iter__()
+
+        count = 50000
+        visited, succ, terminals = chain(count)
+        succ = {k: CountingList(v) for k, v in succ.items()}
+        result = audit.Auditor._states_without_guaranteed_return(visited, succ, terminals)
+        self.assertEqual(result, 0)
+        self.assertLessEqual(CountingList.iterations, 2 * count)
+        # Cut the return: nothing is guaranteed.
+        succ[count - 1] = [count - 1]
+        self.assertEqual(
+            audit.Auditor._states_without_guaranteed_return(visited, succ, set()), count)
+
+    def test_states_left_on_the_worklist_are_not_counted(self):
+        # Pin: a successor not in visited (search budget stopped the walk before
+        # expanding it) is not counted, so the value is only a lower bound when
+        # budget_exhausted is true.
+        succ = {"a": ["b"]}
+        self.assertEqual(
+            audit.Auditor._states_without_guaranteed_return({"a"}, succ, set()), 1)
+
+    def test_large_graph_matches_old_on_reduced_size(self):
+        visited, succ, terminals = chain(20000)
+        self.assertEqual(
+            audit.Auditor._states_without_guaranteed_return(visited, succ, terminals), 0)
+        visited, succ, terminals = chain(1500)
+        self.assertEqual(old_guaranteed_return(visited, succ, terminals), 0)
 
 
 def audit_strings(node, path=""):
