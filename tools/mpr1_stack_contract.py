@@ -21,6 +21,13 @@ RESET_MPR1 = None                        # UNDETERMINED: reset value is not part
 HARNESS_INIT_MPR1 = 0xF8
 IRQ_SAME_INSTRUCTION_STATUS = UNMEASURED
 
+# Stack address notation. Two different things; never mix them.
+#   CPU_STACK_PAGE: the address the 65C02-style S register points into on the CPU bus ($2100-$21FF via the
+#                   hardware page; the pinned core's real stack).
+#   TEST_LABEL_PAGE: the $0100-$01FF label used in the synthetic test ROM / WRAM-offset records. Not a CPU address.
+CPU_STACK_PAGE = (0x2100, 0x21FF)
+TEST_LABEL_PAGE = (0x0100, 0x01FF)
+
 PATH_RESET = "RESET"
 PATH_TAM = "TAM"
 PATH_DIRECT_SETMPR = "DIRECT_SETMPR"
@@ -54,6 +61,17 @@ def check_initial_state(measured_reset, recorded_init_value, instruction_index):
         "unknown" if measured_reset is None else "%02X" % measured_reset)
 
 
+def check_stack_address(cpu_address):
+    """Verdict for a CPU stack address. Only $2100-$21FF is the CPU stack page; $0100-$01FF is a test label."""
+    if type(cpu_address) is not int:
+        return BLOCKED, "no stack address evidence"
+    if CPU_STACK_PAGE[0] <= cpu_address <= CPU_STACK_PAGE[1]:
+        return PASS, "CPU stack page $2100-$21FF"
+    if TEST_LABEL_PAGE[0] <= cpu_address <= TEST_LABEL_PAGE[1]:
+        return FAIL, "%04X is the test label page $0100-$01FF, not the CPU stack page $2100-$21FF" % cpu_address
+    return FAIL, "%04X outside the CPU stack page $2100-$21FF" % cpu_address
+
+
 def check_mpr1_write(path, value, instruction_index):
     """Verdict for one write to MPR1 by a given path at a given instruction index."""
     if path not in PATHS:
@@ -69,8 +87,12 @@ def check_mpr1_write(path, value, instruction_index):
     return verdict, "TAM: " + detail
 
 
-def judge_irq_window(mpr1_changed_in_instruction, irq_asserted_in_instruction):
-    """IRQ condition. A same-instruction MPR1 change plus IRQ assert is the known hole."""
-    if mpr1_changed_in_instruction and irq_asserted_in_instruction:
-        return UNMEASURED, "IRQ push in the same RunInstruction as an MPR1 change is not observed"
-    return PASS, "no same-instruction MPR1/IRQ overlap"
+def judge_irq_window(mpr1_changed_in_instruction, irq_asserted_in_instruction, irq_pending_at_start=False):
+    """IRQ condition. An MPR1 change in an instruction while an IRQ is asserted or already pending is the hole.
+
+    irq_pending_at_start covers an IRQ that was pending at the instruction boundary before the TAM: the
+    HandleIRQ after the TAM can push to $21xx under the new MPR1, which the boundary comparison cannot see.
+    """
+    if mpr1_changed_in_instruction and (irq_asserted_in_instruction or irq_pending_at_start):
+        return UNMEASURED, "IRQ push (asserted or pending at instruction start) after an MPR1 change is not observed"
+    return PASS, "no MPR1 change overlapping an IRQ"

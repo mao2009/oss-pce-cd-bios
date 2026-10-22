@@ -96,6 +96,46 @@ class IrqWindowTest(unittest.TestCase):
         self.assertEqual(c.judge_irq_window(True, False)[0], c.PASS)
 
 
+class PendingIrqTest(unittest.TestCase):
+    """IRQ already pending at the instruction boundary, then a TAM, then HandleIRQ pushes to $21xx."""
+
+    def test_pending_at_start_with_tam_change_is_unmeasured_not_pass(self):
+        verdict, _ = c.judge_irq_window(True, False, irq_pending_at_start=True)
+        self.assertEqual(verdict, c.UNMEASURED)
+
+    def test_pending_and_newly_asserted_with_change_is_unmeasured(self):
+        verdict, _ = c.judge_irq_window(True, True, irq_pending_at_start=True)
+        self.assertEqual(verdict, c.UNMEASURED)
+
+    def test_pending_without_mpr1_change_passes(self):
+        self.assertEqual(c.judge_irq_window(False, False, irq_pending_at_start=True)[0], c.PASS)
+
+    def test_no_irq_at_all_passes(self):
+        self.assertEqual(c.judge_irq_window(True, False, irq_pending_at_start=False)[0], c.PASS)
+
+
+class StackAddressNotationTest(unittest.TestCase):
+    def test_only_2100_21ff_is_cpu_stack_page(self):
+        for address in range(0x10000):
+            with self.subTest(address=hex(address)):
+                verdict, _ = c.check_stack_address(address)
+                self.assertEqual(verdict, c.PASS if 0x2100 <= address <= 0x21FF else c.FAIL)
+
+    def test_test_label_0100_is_not_a_pass_for_cpu_stack(self):
+        for address in (0x0100, 0x01FC, 0x01FF):
+            with self.subTest(address=hex(address)):
+                verdict, detail = c.check_stack_address(address)
+                self.assertEqual(verdict, c.FAIL)
+                self.assertIn("test label", detail)
+
+    def test_2100_judged_on_its_own_not_by_the_0100_label(self):
+        self.assertEqual(c.check_stack_address(0x21FC)[0], c.PASS)
+        self.assertEqual(c.check_stack_address(0x01FC)[0], c.FAIL)
+
+    def test_missing_address_is_blocked(self):
+        self.assertEqual(c.check_stack_address(None)[0], c.BLOCKED)
+
+
 class MutationCheckTest(unittest.TestCase):
     """A permissive bank table (allowing any value) must be caught by the table tests above."""
 
@@ -112,6 +152,13 @@ class DocConsistencyTest(unittest.TestCase):
         text = (ROOT / "docs" / "497-mpr1-stack-contract.md").read_text(encoding="utf-8")
         self.assertIn("$F8", text)
         self.assertIn("UNMEASURED", text)
+
+    def test_doc_names_both_stack_notations_and_the_pending_case(self):
+        text = (ROOT / "docs" / "497-mpr1-stack-contract.md").read_text(encoding="utf-8")
+        self.assertIn("$2100", text)
+        self.assertIn("$21FF", text)
+        self.assertIn("テストラベル", text)
+        self.assertIn("pending", text)
 
 
 if __name__ == "__main__":
