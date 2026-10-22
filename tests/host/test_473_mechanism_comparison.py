@@ -74,6 +74,16 @@ class Comparison(unittest.TestCase):
         self.assertIn("本番用安全機構ではない", AUDIT)
 
 
+def approval_items():
+    """Map item number -> its line in the approval section (the nine S0 items)."""
+    items = {}
+    for line in section("承認事項").splitlines():
+        for n in range(1, 10):
+            if line.startswith(f"{n}. "):
+                items[n] = line
+    return items
+
+
 class Structure(unittest.TestCase):
     """Doc-only structure checks (#473). A failure means a required part was lost."""
 
@@ -93,9 +103,39 @@ class Structure(unittest.TestCase):
         s = section("承認事項")
         self.assertIn("検証方針として承認済み", s)
         self.assertIn("9 項目のみ", s)
-        items = [l for l in s.splitlines() if l[:2] in [f"{n}." for n in range(1, 10)]]
-        self.assertEqual(len(items), 9)
-        self.assertIn("S0 の原文には無い本書の補足", s)
+        self.assertEqual(sorted(approval_items()), list(range(1, 10)))
+
+    def test_approval_items_match_s0_content(self):
+        # Each item must keep its S0 constraint. Editing a key phrase (e.g. unblocking #459 / #367,
+        # allowing B alone, or release_eligible=true) makes the matching check fail.
+        it = approval_items()
+        must = {
+            1: ["を先に実コアで検証", "C（各 stack push/pop の副作用直前停止）を補完候補", "B 単独は不採用"],
+            2: ["WRAM `MPR1=$F8` のみ", "製品の恒久許可仕様は実証後に別途判断"],
+            3: ["ゲストの実行を打ち切る", "pop や命令の一部を抑止して危険な状態で続行する案は採らない"],
+            4: ["未測定の「完全保存」や命令巻戻しは保証しない", "副作用が先に発生するケースは FAIL/BLOCKED"],
+            5: ["TAM と同一 RunInstruction 内の保留 IRQ を必須の負例", "A 単独の取りこぼしを C 側でも評価"],
+            6: ["検証専用パッチ", "検証コードを配布向け製品・本番 BIOS へ流入させない"],
+            7: ["NOT_APPLICABLE", "実機 NMI の安全性は未検証のまま残す"],
+            8: ["#459 / #367 は BLOCKED 維持", "参照 JSR 0/81 許可", "DEV_CALLABLE 承認 0", "release_eligible=false を変更しない",
+                "ゲート解除は別の独立レビューと新たなオーナー判断が必要"],
+            9: ["S1（許可バンク・リセット初期値）", "1 Issue = 1 Draft PR"],
+        }
+        for n, keys in must.items():
+            for k in keys:
+                self.assertIn(k, it[n], f"item {n}: {k}")
+        for n, line in it.items():
+            self.assertNotIn("解除する", line, f"item {n}")
+            self.assertNotIn("採用可", line, f"item {n}")
+
+    def test_supplement_is_outside_approval(self):
+        sup = section("本書の補足")
+        self.assertIn("## 本書の補足（S0 原文外・承認対象外・制約強化方向）", CMP)
+        for k in ["S0 の原文には無い", "承認の対象ではなく", "ステップ実行ハーネス", "GPL-3.0"]:
+            self.assertIn(k, sup)
+        approval = section("承認事項")
+        self.assertNotIn("ステップ実行ハーネスを必須", approval)
+        self.assertNotIn("GPL-3.0", approval)
 
     def test_approval_section_not_approved_items(self):
         s = section("承認されていないもの")
@@ -188,7 +228,7 @@ class Structure(unittest.TestCase):
                 self.assertIn("維持", r)
         for r in rows:
             if r.split("|")[1].strip() in ("5", "6"):
-                self.assertIn("S0 の原文外の制約（制約強化方向）", r)
+                self.assertIn("本書の補足節（承認対象外）", r)
         rec = section("12.2")
         for k in ["方式 A を先に", "WRAM $F8 のみ", "ゲストの実行を打ち切る", "検証コアのパッチと製品実装は分ける",
                   "NMI", "BLOCKED を維持"]:
@@ -206,7 +246,8 @@ class Structure(unittest.TestCase):
         self.assertIn("投稿者の区別もできない", s)
 
     def test_forbidden_claims_absent(self):
-        for bad in ["参照 JSR ゲートを解除", "release_eligible=true", "VERIFIED を付与する", "安全が実証", "実証された"]:
+        for bad in ["参照 JSR ゲートを解除", "release_eligible=true", "release_eligible: true", "#459 / #367 は解除する",
+                    "VERIFIED を付与する", "安全が実証", "実証された"]:
             self.assertNotIn(bad, CMP)
         self.assertIn("参照 JSR ゲートも変更しない", CMP)
         self.assertIn("本書の範囲外で、行わない", section("12.7"))
