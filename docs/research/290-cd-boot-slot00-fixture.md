@@ -54,3 +54,5 @@
 M2 の失敗 6 件の内訳は、#344 の既存テスト（`test_malformed_missing_or_unknown_evidence_is_blocked`）が 2 件、新規テストが 4 件である。M6 は、新規の総当たりと既存テストの両方で検出された。
 
 限界: 境界の追加検査も合成バイトのみで、実媒体・実コア・純正 slot `$00` の実行は行っていない（NOT RUN）。`MODEL_CONSISTENT` は実行の証拠ではない。
+
+追補（Wave 2026-10-22）: 許可外アドレス（`entry_candidate` が `$E000` 以外）・別 slot・未承認 schema の case を `validate_case` が拒否し `judge` が BLOCKED にすることを `test_case_outside_the_single_slot00_api_is_blocked`（4 サブテスト）で検査した。変異 M7（`validate_case` の schema/slot/entry_candidate 検査を `if False:` に置換）は追加前は全テスト通過（未検出）、追加後は失敗数 4 で検出される。モジュールの挙動は変えていない。
