@@ -136,7 +136,7 @@ def validate(record, *, rom_sha256, entry, core_revision, harness_revision, step
         raise Refused("FIELDS", f"record body is not canonical JSON: {error}") from error
     if record["record_digest"] != recomputed:  # integrity only; a match is not provenance
         raise Refused("TAMPERED", "record_digest does not match the record body")
-    if record["slot"] != SLOT or record["entry"] != entry:
+    if type(record["slot"]) is not int or type(record["entry"]) is not int or record["slot"] != SLOT or record["entry"] != entry:  # 30.0 == 30 must not pass
         raise Refused("ENTRY_MISMATCH", f"slot {record['slot']!r} entry {record['entry']!r}, expected {entry!r}")
     source = record["source"]
     if not isinstance(source, dict) or set(source) != SOURCE_KEYS:
@@ -159,7 +159,7 @@ def validate(record, *, rom_sha256, entry, core_revision, harness_revision, step
         raise Refused("BUDGET", "routine did not return within the step budget")
     if record["status"] != "RETURNED":
         raise Refused("STATUS", f"status {record['status']!r} is not RETURNED")
-    if record["step_budget"] != step_budget:
+    if type(record["step_budget"]) is not int or record["step_budget"] != step_budget:
         raise Refused("BUDGET", "step_budget differs from the harness budget")
     steps = record["steps_used"]
     if steps != NOT_MEASURED and not (isinstance(steps, int) and not isinstance(steps, bool) and 0 <= steps <= step_budget):
@@ -196,7 +196,7 @@ def from_core_evidence(evidence, *, case_name, rom_sha256, entry, harness_revisi
             if observed is None or case["status"].get(cycle) != "RETURNED":
                 continue
             before, after = observed["before"], observed["after"]
-            records.append(seal({
+            item = seal({
                 "schema": SCHEMA, "slot": SLOT, "entry": entry,
                 "source": {"kind": "SYNTHETIC_DEV_ROM", "rom_sha256": rom_sha256},
                 "core": {"name": "geargrafx", "revision": evidence["geargrafx_revision"]},
@@ -207,7 +207,11 @@ def from_core_evidence(evidence, *, case_name, rom_sha256, entry, harness_revisi
                 "io": {"observation": NOT_MEASURED, "accesses": []},
                 "steps_used": NOT_MEASURED, "step_budget": step_budget,
                 "abi_claim": "OBSERVED_SYNTHETIC",
-            }))
+            })
+            # Only records the validator accepts leave the converter; a refused run stops the conversion.
+            validate(item, rom_sha256=rom_sha256, entry=entry, core_revision=evidence["geargrafx_revision"],
+                     harness_revision=harness_revision, step_budget=step_budget)
+            records.append(item)
     except Refused:
         raise
     except (KeyError, TypeError, AttributeError, ValueError, RecursionError) as error:  # malformed evidence is refused, not a crash

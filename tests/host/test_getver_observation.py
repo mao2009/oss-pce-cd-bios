@@ -255,6 +255,13 @@ class ConverterTests(unittest.TestCase):
                                        harness_revision=HARNESS, step_budget=BUDGET)
         self.assertEqual([r["temperature"] for r in records], ["warm"])
 
+    def test_run_that_breaks_the_contract_is_refused_not_counted(self):
+        evidence = self.evidence()
+        evidence["cases"][1]["observed"]["warm"]["after"]["sp"] = 0xFE  # stack corrupted: validate() refuses it
+        with self.assertRaisesRegex(g.Refused, "STACK"):
+            g.from_core_evidence(evidence, case_name="plugin_ex_getver", rom_sha256=ROM, entry=ENTRY,
+                                 harness_revision=HARNESS, step_budget=BUDGET)
+
     def test_missing_case_name_is_refused(self):
         with self.assertRaisesRegex(g.Refused, "CASE"):
             g.from_core_evidence(self.evidence(), case_name="no_such_case", rom_sha256=ROM, entry=ENTRY,
@@ -291,6 +298,35 @@ class SourceAndCaseSchemaTests(unittest.TestCase):
         item = mutate(lambda r: r.update(source={"kind": "SYNTHETIC_DEV_ROM"}))
         with self.assertRaisesRegex(g.Refused, "SOURCE"):
             g.validate(item, **SYNTHETIC)
+
+    def test_unknown_source_kind_is_refused(self):
+        item = mutate(lambda r: r.update(source={"kind": "LIVE_ROM", "rom_sha256": ROM}))
+        with self.assertRaisesRegex(g.Refused, "SOURCE"):
+            g.validate(item, **SYNTHETIC)
+
+    def test_core_or_harness_identity_mismatch_is_refused(self):
+        with self.assertRaisesRegex(g.Refused, "ROM_MISMATCH"):
+            g.validate(record(), **(SYNTHETIC | {"core_revision": "d" * 40}))
+        with self.assertRaisesRegex(g.Refused, "ROM_MISMATCH"):
+            g.validate(record(), **(SYNTHETIC | {"harness_revision": "d" * 64}))
+
+    def test_bad_temperature_is_refused(self):
+        item = mutate(lambda r: r.update(temperature="hot"))
+        with self.assertRaisesRegex(g.Refused, "FIELDS"):
+            g.validate(item, **SYNTHETIC)
+
+    def test_status_other_than_returned_is_refused(self):
+        item = mutate(lambda r: r.update(status="ERROR"))
+        with self.assertRaisesRegex(g.Refused, "STATUS"):
+            g.validate(item, **SYNTHETIC)
+
+    def test_float_slot_entry_or_budget_is_refused(self):
+        with self.assertRaisesRegex(g.Refused, "ENTRY_MISMATCH"):
+            g.validate(mutate(lambda r: r.update(slot=float(g.SLOT))), **SYNTHETIC)
+        with self.assertRaisesRegex(g.Refused, "ENTRY_MISMATCH"):
+            g.validate(mutate(lambda r: r.update(entry=float(ENTRY))), **SYNTHETIC)
+        with self.assertRaisesRegex(g.Refused, "BUDGET"):
+            g.validate(mutate(lambda r: r.update(step_budget=float(BUDGET))), **SYNTHETIC)
 
     def test_empty_or_non_string_case_is_refused(self):
         for bad in ("", 1, None, ["case"]):
