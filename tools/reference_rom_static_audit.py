@@ -35,10 +35,10 @@ approval procedure, which does not exist yet.
 What it is not
 --------------
 It is **not** a compatibility claim, not an execution and not an ABI
-verification. A static profile is an *upper bound* on the hazard opcodes of the
-reachable code; a clean profile is necessary but not sufficient for a safe
-execution, and the safety verdict itself is recorded separately in
-``spec/abi1_reference_review.json``.
+verification. A static profile reports the hazard opcodes found in the explored range only.
+Unresolved targets are not followed, so unexplored paths may hold hazards the
+profile does not show. Zero hazards does not guarantee a safe execution; the
+safety verdict itself is recorded separately in ``spec/abi1_reference_review.json``.
 
 Usage
 -----
@@ -402,10 +402,9 @@ class Auditor:
         return stack carries the caller's continuation, so a callee's MPR change
         is visible to its caller.
 
-        The successor graph is kept so that the walk can afterwards answer a
-        stronger question than "did some path return": **can every reachable
-        state reach a return**. A callee with a self loop therefore reports a
-        non returning path instead of a clean profile.
+        The successor graph is kept so that the walk can afterwards ask whether each
+        reachable state can reach a return (an existence check, see
+        _states_without_return). It does not show that every path returns.
         """
         audit = SlotAudit()
         mpr = tuple([API_BANK if index == 7 else None for index in range(PAGES)])
@@ -514,10 +513,11 @@ class Auditor:
     def _states_without_return(visited, successors, terminal_returns):
         """Count the reachable states from which no return can be reached.
 
-        A state is safe when it can reach a terminal return; the fixpoint is
-        computed backwards over the successor graph. A callee with a self loop
-        therefore reports a non returning state, instead of looking clean
-        because some other path happened to return.
+        This is an existence check: a state is good when **some** successor
+        leads to a return. It does not prove that **every** path returns. A
+        loop whose branch can exit to a return counts as good, so 0 here does
+        not rule out a path that spins forever. The all-paths check is tracked
+        in #485.
         """
         good = set(terminal_returns)
         changed = True
