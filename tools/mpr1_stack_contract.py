@@ -4,6 +4,7 @@ Contract (see docs/497-mpr1-stack-contract.md):
 * Only MPR1 = $F8 (WRAM) is an allowed stack bank. Every other value is DENY (fail-closed).
 * The reset value of MPR1 is UNDETERMINED and never trusted; the harness must set MPR1 = $F8 itself
   (a recorded direct SetMpr at instruction index 0, before the first guest instruction) and check it.
+  Any recorded init at instruction index other than 0 is FAIL.
 * TAM (guest instruction) and direct SetMpr (host side) are distinct paths. A direct SetMpr mid-run is DENY.
 * An IRQ assert inside the same RunInstruction as an MPR1 change is UNMEASURED: the per-instruction MPR
   comparison cannot see it, so it is kept as a hole, never PASS.
@@ -14,7 +15,8 @@ Verdicts: PASS, FAIL, BLOCKED (no evidence), UNMEASURED (known hole). Synthetic 
 PASS, FAIL, BLOCKED, UNMEASURED = "PASS", "FAIL", "BLOCKED", "UNMEASURED"
 
 ALLOWED_STACK_MPR1 = frozenset({0xF8})   # WRAM bank only. Do not widen without a new contract.
-KNOWN_DENIED_MPR1 = {0xFF: "I/O page (denied)", 0xF7: "backup RAM (not verified, denied)"}
+# $F7 is listed as denied by fail-closed default only; its real behaviour is not verified in this repo.
+KNOWN_DENIED_MPR1 = {0xFF: "I/O page (denied)", 0xF7: "not in allow table (bank type unverified here)"}
 RESET_MPR1 = None                        # UNDETERMINED: reset value is not part of the contract.
 HARNESS_INIT_MPR1 = 0xF8
 IRQ_SAME_INSTRUCTION_STATUS = UNMEASURED
@@ -34,14 +36,16 @@ def check_stack_bank(mpr1):
     return FAIL, "MPR1=%02X denied: %s" % (mpr1, KNOWN_DENIED_MPR1.get(mpr1, "not in allow table"))
 
 
-def check_initial_state(measured_reset, recorded_init_value):
+def check_initial_state(measured_reset, recorded_init_value, instruction_index):
     """Initial state before the first guest instruction.
 
     The measured reset value is informational only. PASS requires the harness-recorded init write
-    of $F8 and no guest instruction executed yet (index 0).
+    of $F8 made at instruction index 0 (before any guest instruction). Same rule as DIRECT_SETMPR.
     """
     if recorded_init_value is None:
         return BLOCKED, "harness init write not recorded"
+    if instruction_index != 0:
+        return FAIL, "harness init recorded at instruction index %s, allowed only at index 0" % instruction_index
     if recorded_init_value != HARNESS_INIT_MPR1:
         return FAIL, "harness init MPR1=%02X, contract requires $F8" % recorded_init_value
     if measured_reset == HARNESS_INIT_MPR1:

@@ -44,16 +44,25 @@ class InitialStateTest(unittest.TestCase):
         self.assertIsNone(c.RESET_MPR1)
 
     def test_no_recorded_init_is_blocked_even_if_reset_is_f8(self):
-        self.assertEqual(c.check_initial_state(0xF8, None)[0], c.BLOCKED)
-        self.assertEqual(c.check_initial_state(None, None)[0], c.BLOCKED)
+        self.assertEqual(c.check_initial_state(0xF8, None, 0)[0], c.BLOCKED)
+        self.assertEqual(c.check_initial_state(None, None, 0)[0], c.BLOCKED)
 
     def test_recorded_init_of_f8_passes_regardless_of_reset(self):
         for reset in (None, 0x00, 0xFF, 0xF8):
             with self.subTest(reset=reset):
-                self.assertEqual(c.check_initial_state(reset, 0xF8)[0], c.PASS)
+                self.assertEqual(c.check_initial_state(reset, 0xF8, 0)[0], c.PASS)
 
     def test_recorded_init_other_than_f8_fails(self):
-        self.assertEqual(c.check_initial_state(0xF8, 0xFF)[0], c.FAIL)
+        self.assertEqual(c.check_initial_state(0xF8, 0xFF, 0)[0], c.FAIL)
+
+    def test_init_at_index_zero_passes_and_index_seven_fails(self):
+        self.assertEqual(c.check_initial_state(None, 0xF8, 0)[0], c.PASS)
+        self.assertEqual(c.check_initial_state(None, 0xF8, 7)[0], c.FAIL)
+
+    def test_init_recorded_after_guest_instruction_is_not_pass(self):
+        for index in range(1, 8):
+            with self.subTest(index=index):
+                self.assertNotEqual(c.check_initial_state(None, 0xF8, index)[0], c.PASS)
 
 
 class PathDistinctionTest(unittest.TestCase):
