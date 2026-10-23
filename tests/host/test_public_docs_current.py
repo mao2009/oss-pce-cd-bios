@@ -181,22 +181,35 @@ def stale_hits(text, expected=EXPECTED):
         # Limit state checks to the clause/segment that mentions each merged PR
         for m in MERGED_PR_RE.finditer(line):
             pr_start = m.start()
-            # look back to sentence/semicolon/comma boundary
+            # Clause boundaries: punctuation and multi-word connectors ("and", "および").
+            # Each merged PR's state is judged only within its own clause.
             before = line[:pr_start]
-            clause_start = max(before.rfind(';'), before.rfind(','), before.rfind('。'), before.rfind('；'), before.rfind('，')) + 1
-            # look forward to sentence/semicolon/comma boundary
+            clause_start = _clause_start_before(before)
             after = line[pr_start:]
-            clause_end = pr_start + min(
-                after.find(';') if ';' in after else len(after),
-                after.find(',') if ',' in after else len(after),
-                after.find('。') if '。' in after else len(after),
-                after.find('；') if '；' in after else len(after),
-                after.find('，') if '，' in after else len(after),
-            )
+            clause_end = pr_start + _clause_end_after(after)
             clause = line[clause_start:clause_end]
             if OPEN_WORDING_RE.search(clause):
                 hits.append((number, "merged PR or closed issue described as open/unmerged/Draft"))
     return hits
+
+
+def _clause_start_before(text):
+    """Find the clause start boundary just before a PR mention in `text`."""
+    single = [text.rfind(c) for c in (';', ',', '.', '。', '；', '？', '！', '，')]
+    multi = [text.rfind(s) for s in (' and ', ' および ')]
+    return max(single + multi) + 1
+
+
+def _clause_end_after(text):
+    """Find the clause end boundary just after a PR mention in `text`."""
+    ends = []
+    for c in (';', ',', '.', '。', '；', '？', '！', '，'):
+        i = text.find(c)
+        ends.append(i if i >= 0 else len(text))
+    for s in (' and ', ' および '):
+        i = text.find(s)
+        ends.append(i if i >= 0 else len(text))
+    return min(ends)
 
 
 def missing_claims(text, expected=EXPECTED):
@@ -302,6 +315,30 @@ class PublicDocsTest(unittest.TestCase):
         self.assertEqual(stale_hits("- [#495] MA_MUL16S is MERGED (2026-10-22); #494 CLOSED."), [])
         self.assertEqual(stale_hits("Issue #476 remains OPEN, BLOCKED."), [])
         self.assertEqual(stale_hits("- [#508] and [#516] are MERGED test-only PRs; #494 CLOSED."), [])
+
+    def test_multi_pr_merged_and_open_in_same_line(self):
+        # Separate PRs with separate states: each clause judged independently → PASS.
+        self.assertEqual(stale_hits("PR #495 merged; PR #512 remains open Draft."), [])
+        self.assertEqual(stale_hits("PR #495 merged. PR #512 remains open Draft."), [])
+        self.assertEqual(stale_hits("PR #495 merged and PR #512 remains open Draft."), [])
+        self.assertEqual(stale_hits("PR #495 merged および PR #512 remains open Draft."), [])
+
+    def test_multi_pr_merged_mislabelled_as_open(self):
+        # A merged PR described as open/unmerged/Draft in its own clause → FAIL.
+        self.assertTrue(stale_hits("PR #495 remains open Draft."))
+        self.assertTrue(stale_hits("PR #495 is unmerged."))
+        self.assertTrue(stale_hits("PR #495 は未マージです。"))
+        # Mixed: #495 open is FAIL even though #512 open Draft is correct (not merged).
+        self.assertTrue(stale_hits("PR #495 remains open Draft; PR #512 remains open Draft."))
+
+    def test_multi_pr_markdown_and_html_links(self):
+        # Markdown links around PR numbers must not break clause separation.
+        self.assertEqual(stale_hits("[#495](https://github.com/mao2009/oss-pce-cd-bios/pull/495) merged; "
+                                    "[#512](https://github.com/mao2009/oss-pce-cd-bios/pull/512) remains open Draft."), [])
+        self.assertEqual(stale_hits("[#495](pull/495) merged and [#512](pull/512) remains open Draft."), [])
+        # HTML anchor links.
+        self.assertEqual(stale_hits('<a href="pull/495">#495</a> merged; '
+                                    '<a href="pull/512">#512</a> remains open Draft.'), [])
 
 
 class PublicDocsMutationTest(unittest.TestCase):
