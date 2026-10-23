@@ -60,6 +60,7 @@ REFUSED = [
     'FOO=1 cp /tmp/evil $DEST',
     'case $X in a) cp /tmp/evil $DEST ;; esac',
     'N=cmd1\necho x >> "$RUNNER_TEMP/_runner_\\\nfile_commands/$N"',
+    'echo a\\\\\ncp /tmp/evil $DEST',
 ]
 
 ALLOWED = [
@@ -106,6 +107,7 @@ class PatternCostIsLinear(unittest.TestCase):
         import time
         started = time.monotonic()
         self.assertIsNone(guard._run_write_problem('sudo ' + '-a ' * 300 + 'echo x'))
+        self.assertIsNone(guard._run_write_problem('sudo ' + '-a X=1 ' * 60 + 'echo x'))
         self.assertLess(time.monotonic() - started, 2.0, 'FILE_WRITER_RE backtracks exponentially on wrapper options')
 
 

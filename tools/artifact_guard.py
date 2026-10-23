@@ -1816,7 +1816,7 @@ GLOB_RE = re.compile(r"[*?\[]")
 # take an option and one argument (sudo -u root, nice -n 5) but not a writer name; the (?!-) keeps this from backtracking.
 FILE_WRITER_RE = re.compile(r"(?:(?:^|[;&|({!)\n])\s*(?:\w+=\S+\s+)*"
                             r"|\b(?:then|do|else|if|elif|while|until|exec|command|xargs|env|time|nice|nohup|sudo)\b"
-                            r"(?:\s+-\S+(?:\s+(?!-)(?!(?:cp|mv|install|dd|tee)\b)\S+)?|\s+\w+=\S+)*\s+)"
+                            r"(?:\s+-\S+(?:\s+(?!-)(?!(?:cp|mv|install|dd|tee)\b)[^\s=]+)?|\s+\w+=\S+)*\s+)"
                             r"(?:[\w./-]*/)?(cp|mv|install|dd|tee)\b([^;&|\n()<>]*)")
 TARGET_OK_RE = re.compile(r"\$GITHUB_OUTPUT|\$GITHUB_STEP_SUMMARY|\$RUNNER_TEMP/[^$`*?\[{]*")  # the only variable targets allowed
 _GH_TOKEN = "GH_TOKEN: the gh CLI reads its token from this variable; it selects no program, path or shell"
@@ -1885,7 +1885,9 @@ def _run_write_problem(run):
     - LD_PRELOAD, PYTHONPATH and other loader or interpreter-path exports that change what runs without touching PATH;
     - a file-copy command behind a wrapper not listed in FILE_WRITER_RE (timeout 5 cp, busybox cp, a command in a variable);
     - other writers that take a destination: curl -o, wget -O, ln, sed -i, tar -C, and any program that writes its own file."""
-    run = run.replace("\\\n", "")  # bash joins a backslash-newline into one word: "_runner_\<newline>file" is one path
+    # bash joins a backslash-newline into one word ("_runner_\<newline>file"). An escaped backslash (\\) before a newline is
+    # not a continuation, and its newline still ends the command.
+    run = re.sub(r"(?<!\\)((?:\\\\)*)\\\n", r"\1", run)
     plain = re.sub(r"[\"'\\]", "", run)
     if RUN_PATH_CHANGE_RE.search(plain):
         return "writes GITHUB_PATH, GITHUB_ENV, BASH_ENV, PATH or a runner file command"
