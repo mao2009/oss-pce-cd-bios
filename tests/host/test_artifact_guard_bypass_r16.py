@@ -56,6 +56,10 @@ REFUSED = [
     'nice -n 5 cp /tmp/evil $DEST',
     'sudo -u root cp /tmp/evil $DEST',
     'cp /tmp/evil build/*',
+    'echo X=1 >&$F',
+    'FOO=1 cp /tmp/evil $DEST',
+    'case $X in a) cp /tmp/evil $DEST ;; esac',
+    'N=cmd1\necho x >> "$RUNNER_TEMP/_runner_\\\nfile_commands/$N"',
 ]
 
 ALLOWED = [
@@ -68,6 +72,8 @@ ALLOWED = [
     'mkdir -p intermediate\ncp --parents build/debug/*.pce build/debug/*.json intermediate/',
     'cp --parents build/debug/*.pce build/debug/*.json intermediate/',
     'mv build/*.log logs/',
+    'make test 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"',
+    'FOO=1 make test',
 ]
 
 NOT_GUARANTEED = [
@@ -93,6 +99,14 @@ class FileCopyAllowed(unittest.TestCase):
         for run in ALLOWED:
             with self.subTest(run=run):
                 self.assertIsNone(guard._run_write_problem(run), f'must pass: {run}')
+
+
+class PatternCostIsLinear(unittest.TestCase):
+    def test_repeated_wrapper_options_do_not_backtrack(self):
+        import time
+        started = time.monotonic()
+        self.assertIsNone(guard._run_write_problem('sudo ' + '-a ' * 300 + 'echo x'))
+        self.assertLess(time.monotonic() - started, 2.0, 'FILE_WRITER_RE backtracks exponentially on wrapper options')
 
 
 class NotGuaranteed(unittest.TestCase):

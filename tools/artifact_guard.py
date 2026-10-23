@@ -1805,16 +1805,18 @@ RUN_PATH_CHANGE_RE = re.compile(r"GITHUB_PATH|GITHUB_ENV|BASH_ENV|_runner_file|s
 # Issue #337 round 15. Matched on run: text with quotes and backslashes removed, so "GITHUB""_ENV" and G\ITHUB_ENV are read as GITHUB_ENV.
 INDIRECT_RE = re.compile(r"\$\{!|\b(?:declare|typeset|local)\b[^;&|\n]*\s-\w*n")          # ${!X} indirection, nameref flags
 DYNAMIC_GLOB_RE = re.compile(r"\$[^\s;&|]*[*?\[]|[*?\[][^\s;&|]*\$")                      # a glob beside a variable: a runner path found by pattern
-WRITE_TARGET_RE = re.compile(r"(?:&?>>?\|?|\btee\b(?:\s+-\w+)*)\s*([^\s;&|()<>]+)")         # the word after a redirection or tee
+WRITE_TARGET_RE = re.compile(r"(?:&?>>?\|?&?|\btee\b(?:\s+-\w+)*)\s*([^\s;&|()<>]+)")       # the word after a redirection (>&F too) or tee
 TARGET_DYNAMIC_RE = re.compile(r"[$`*?\[{]")
 EXPANSION_RE = re.compile(r"[$`{]")     # run-time expansion; a glob alone is only a name pattern
 GLOB_RE = re.compile(r"[*?\[]")
 # Issue #337 round 16. A file-copying command in command position (cp, mv, install, dd, tee); its arguments are checked
 # token by token, so a destination assembled at run time (cp a $D, tee --append $F, dd of=$D) is refused.
 # Command position: start of text, after ; & | ( { ! or a newline, after a keyword (if, then, do, sudo...), with an optional
-# path prefix (/bin/cp). A wrapper may take an option and one argument (sudo -u root, nice -n 5) but not a writer name.
-FILE_WRITER_RE = re.compile(r"(?:^|[;&|({!\n]\s*|\b(?:then|do|else|if|elif|while|until|exec|command|xargs|env|time|nice|nohup|sudo)\b"
-                            r"(?:\s+-\S+(?:\s+(?!(?:cp|mv|install|dd|tee)\b)\S+)?|\s+\w+=\S+)*\s+)"
+# path prefix (/bin/cp). Leading NAME=value assignments are skipped (FOO=1 cp), and so is the ) of a case arm. A wrapper may
+# take an option and one argument (sudo -u root, nice -n 5) but not a writer name; the (?!-) keeps this from backtracking.
+FILE_WRITER_RE = re.compile(r"(?:(?:^|[;&|({!)\n])\s*(?:\w+=\S+\s+)*"
+                            r"|\b(?:then|do|else|if|elif|while|until|exec|command|xargs|env|time|nice|nohup|sudo)\b"
+                            r"(?:\s+-\S+(?:\s+(?!-)(?!(?:cp|mv|install|dd|tee)\b)\S+)?|\s+\w+=\S+)*\s+)"
                             r"(?:[\w./-]*/)?(cp|mv|install|dd|tee)\b([^;&|\n()<>]*)")
 TARGET_OK_RE = re.compile(r"\$GITHUB_OUTPUT|\$GITHUB_STEP_SUMMARY|\$RUNNER_TEMP/[^$`*?\[{]*")  # the only variable targets allowed
 _GH_TOKEN = "GH_TOKEN: the gh CLI reads its token from this variable; it selects no program, path or shell"
@@ -1850,7 +1852,7 @@ def _step_problems(workflow, where, step):
             continue
         value = step[key]
         if key == "env" and isinstance(value, dict):
-            refused = [str(n) for n in value if (workflow, where, name, "env", str(n)) not in STEP_EXCEPTIONS]
+            refused = [str(n) for n in value if (workflow, where, str(name), "env", str(n)) not in STEP_EXCEPTIONS]
             if refused:
                 problems.append(f"{workflow}: {where} step {name!r} sets env {refused} (refused; it can change PATH, "
                                 "BASH_ENV or similar; add an exception with a reason to STEP_EXCEPTIONS, Issue #337 round 14)")
@@ -1881,7 +1883,9 @@ def _run_write_problem(run):
     - source or . of a file, and in-repo scripts and make targets (their own run text is not read);
     - values set by read or printf -v that are later run as a command or passed to eval (values are not traced);
     - LD_PRELOAD, PYTHONPATH and other loader or interpreter-path exports that change what runs without touching PATH;
-    - a file-copy command behind a wrapper not listed in FILE_WRITER_RE (timeout 5 cp, busybox cp, a command in a variable)."""
+    - a file-copy command behind a wrapper not listed in FILE_WRITER_RE (timeout 5 cp, busybox cp, a command in a variable);
+    - other writers that take a destination: curl -o, wget -O, ln, sed -i, tar -C, and any program that writes its own file."""
+    run = run.replace("\\\n", "")  # bash joins a backslash-newline into one word: "_runner_\<newline>file" is one path
     plain = re.sub(r"[\"'\\]", "", run)
     if RUN_PATH_CHANGE_RE.search(plain):
         return "writes GITHUB_PATH, GITHUB_ENV, BASH_ENV, PATH or a runner file command"
@@ -1897,7 +1901,8 @@ def _run_write_problem(run):
         if command in ("cp", "mv", "install"):
             # Options may come after operands (GNU), so any run-time expansion in any word is refused. A glob is refused only
             # in a destination: the last word, or a -t/--t... option and the word or attached text after it. A glob in a
-            # source (cp --parents build/*.pce intermediate/) only reads, and mv or install -d are not given one here.
+            # source (cp --parents build/*.pce intermediate/) only reads. mv deletes its sources, so a glob there removes
+            # matching files in the repo, not a GITHUB_ENV path; that is accepted and not checked here.
             targets = set(words[-1:])
             for i, word in enumerate(words):
                 if word.startswith("--t") or (word.startswith("-") and not word.startswith("--") and "t" in word):
