@@ -1,4 +1,7 @@
-"""MA_DIV16S (Issue #76): host model and judge checks, core-free. Model: tools/ma_div16s_model.py."""
+"""MA_DIV16S (Issue #76): host model and judge checks, core-free. Model: tools/ma_div16s_model.py.
+
+This file does NOT execute the assembled slot $42 bytes (src/overrides/slot_42.s). The assembly is verified only by the
+real-core test tests/integration/geargrafx_dev_div16s.py (including its arithmetic mutants, Issue #458)."""
 from pathlib import Path
 import random
 import sys
