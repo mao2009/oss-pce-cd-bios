@@ -27,6 +27,18 @@ REFUSED = [
     'echo X=1 | tee --output-error=warn $F',
     'cp a b; cp /tmp/evil $DEST',
     'sudo cp /tmp/evil $DEST',
+    'echo before\ncp /tmp/evil $DEST',
+    'echo before\n  cp /tmp/evil $DEST',
+    'echo before\nmv /tmp/evil "$DEST"',
+    'echo before\ninstall -m 644 /tmp/evil $DEST',
+    'echo before\ndd if=/tmp/evil of=$DEST',
+    'echo before\n\ncp /tmp/evil "${DEST}"',
+    'sudo -E cp /tmp/evil $DEST',
+    'echo x | sudo -n tee --append $F',
+    'env FOO=1 cp /tmp/evil $DEST',
+    'time cp /tmp/evil $DEST',
+    'echo before\ncp -t $DEST /tmp/evil',
+    'cp --target-directory=$DEST /tmp/evil',
 ]
 
 ALLOWED = [
@@ -36,6 +48,7 @@ ALLOWED = [
     'echo "x=1" | tee -a "$GITHUB_OUTPUT"',
     'dd if=build/out.bin of=build/copy.bin bs=4096',
     'python3 -m pip install -r requirements.txt',
+    'mkdir -p intermediate\ncp --parents build/debug/*.pce build/debug/*.json intermediate/',
 ]
 
 NOT_GUARANTEED = [

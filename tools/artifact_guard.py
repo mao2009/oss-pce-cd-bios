@@ -1809,7 +1809,8 @@ WRITE_TARGET_RE = re.compile(r"(?:&?>>?\|?|\btee\b(?:\s+-\w+)*)\s*([^\s;&|()<>]+
 TARGET_DYNAMIC_RE = re.compile(r"[$`*?\[{]")
 # Issue #337 round 16. A file-copying command in command position (cp, mv, install, dd, tee); its arguments are checked
 # token by token, so a destination assembled at run time (cp a $D, tee --append $F, dd of=$D) is refused.
-FILE_WRITER_RE = re.compile(r"(?:^|[;&|(]\s*|\b(?:then|do|else|sudo|exec|command|xargs)\s+)(?:cp|mv|install|dd|tee)\b([^;&|\n()<>]*)")
+# A newline also starts a command (multi-line run:, indented or after a block scalar line); a wrapper may take options (sudo -E).
+FILE_WRITER_RE = re.compile(r"(?:^|[;&|(\n]\s*|\b(?:then|do|else|exec|command|xargs|env|time|nice|nohup|sudo)\b(?:\s+-\S+|\s+\w+=\S+)*\s+)(cp|mv|install|dd|tee)\b([^;&|\n()<>]*)")
 TARGET_OK_RE = re.compile(r"\$GITHUB_OUTPUT|\$GITHUB_STEP_SUMMARY|\$RUNNER_TEMP/[^$`*?\[{]*")  # the only variable targets allowed
 _GH_TOKEN = "GH_TOKEN: the gh CLI reads its token from this variable; it selects no program, path or shell"
 STEP_SHELL_ALLOWED = {
@@ -1872,7 +1873,8 @@ def _run_write_problem(run):
     - eval, bash -c, and $(...) or backticks that build a command at run time;
     - source or . of a file, and in-repo scripts and make targets (their own run text is not read);
     - values set by read or printf -v that are later run as a command or passed to eval (values are not traced);
-    - LD_PRELOAD, PYTHONPATH and other loader or interpreter-path exports that change what runs without touching PATH."""
+    - LD_PRELOAD, PYTHONPATH and other loader or interpreter-path exports that change what runs without touching PATH;
+    - a file-copy command behind a wrapper not listed in FILE_WRITER_RE (timeout 5 cp, busybox cp, a command in a variable)."""
     plain = re.sub(r"[\"'\\]", "", run)
     if RUN_PATH_CHANGE_RE.search(plain):
         return "writes GITHUB_PATH, GITHUB_ENV, BASH_ENV, PATH or a runner file command"
@@ -1883,8 +1885,14 @@ def _run_write_problem(run):
     for target in WRITE_TARGET_RE.findall(plain):
         if TARGET_DYNAMIC_RE.search(target) and not TARGET_OK_RE.fullmatch(target):
             return f"writes to a target assembled at run time ({target!r})"
-    for args in FILE_WRITER_RE.findall(plain):
-        for word in args.split():
+    for command, args in FILE_WRITER_RE.findall(plain):
+        words = args.split()
+        if command in ("cp", "mv", "install"):
+            # Only the destination is written: the last word, and the word after -t (or -tDIR, --target-directory=DIR).
+            # Sources are read, so a glob in them (cp --parents build/*.pce intermediate/) is not refused.
+            words = [w for i, w in enumerate(words) if i == len(words) - 1 or words[i - 1] in ("-t", "--target-directory")
+                     or w.startswith(("-t", "--target-directory="))]
+        for word in words:
             if TARGET_DYNAMIC_RE.search(word) and not TARGET_OK_RE.fullmatch(word):
                 return f"copies or writes to an argument assembled at run time ({word!r}), which can name GITHUB_ENV"
     return None
