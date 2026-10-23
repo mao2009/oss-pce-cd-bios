@@ -9,7 +9,8 @@ distinct so that a missing answer is never read as a refusal:
 - BLOCKED: the answer would need the callee's own ABI (arguments, returns, registers) or a reference
   JSR. No callee is executable, so this is BLOCKED_ABI and never POSITIVE or NEGATIVE.
 
-No ROM, emulator or reference BIOS is read. A passing judge validates only this local model, not CD_CONTNTS.
+No ROM, emulator or reference BIOS is read. A passing judge validates only this local model, not the
+callee ABI of the synthetic-track query.
 """
 import hashlib
 import json
