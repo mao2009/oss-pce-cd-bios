@@ -66,7 +66,7 @@ fixture の既知値（テストの期待値の出どころ）: MPR0=$F8（`lda 
 
 - `n_irq_tam` の IRR は TAM 前に $02（IRQ1 保留）、IDR は $00。TAM の命令の末尾で IRQ1 の入口（ベクタ分岐）に入った。
 - `n_irq_tam` の push 先は**推定**である。WRAM ($01FD-$01FF) は変化しなかった（実測）。観測できたのは VDC R0 の値変化 1 件（新値 $E014）だけで、新値は戻り先 `after_tam` と一致する。3 バイトの push が VDC の書込みとして現れたことは推定であり、書込み先アドレス、書込み順は未測定（bank $FF の I/O 書込みは探針が記録しない）。
-- 測定の区別: `f8_irq` の push 先（WRAM $01FD-$01FF）は**実測**。`n_irq_tam` の push 先は**推定**。WRAM の HALTMEM（$01FD-$01FF の 0）は `n_irq_tam` の実際の push 先ではない（push は WRAM に入っていない）。
+- 測定の区別: `f8_irq` の push 先（WRAM $01FD-$01FF）は**実測**。`n_irq_tam` の push 先は**推定**。WRAM の HALTMEM（$01FD-$01FF の 0）は `n_irq_tam` の実際の push 先ではない（TAM 命令内で WRAM への書込みは観測されなかった。WRAM が push 先でないことの証拠ではない）。
 - `n_irq_tam` は RTI が `after_tam` に戻らなかった（RET なし）。戻りの読出しは観測していない。VDC 読出しは観測しないため、読まれた値も記録されない。
 - `f8_irq` の push は WRAM（スタック $01FD〜$01FF）に入った。押された値は、戻り先 `after_tam`（$E014）と TAM 前の P（$80）に一致する。RTI 後は PC、A、X、Y、P、S、MPR0-7 が TAM 前と一致した（MPR1 は変化なし）。
 - `ff_no_irq`、`ff_irq_masked` は TAM 直後の状態が TAM 前と一致した（MPR1 の変化だけを除く）。

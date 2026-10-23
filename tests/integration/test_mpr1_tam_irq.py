@@ -257,7 +257,7 @@ class Mpr1TamIrqRealCoreTests(unittest.TestCase):
         self.assertEqual(n["s"], FIXTURE_S - 3)  # measured: S dropped by 3 at the IRQ1 entry
         self.assertTrue(n["p"] & I_FLAG)  # the IRQ1 entry sets I
         self.assertEqual(n["mpr"][1], 0xFF)
-        # Measured: only one VDC R0 value change is observed; WRAM $1FD-$1FF is unchanged (HALTMEM = 0, not the push
+        # Measured: only one VDC R0 value change is observed; WRAM $1FD-$1FF is unchanged (HALTMEM = 0; not evidence of the push
         # target). The push target (bank $FF, I/O write) is an ESTIMATE that matches this R0 change, not a measurement.
         self.assertEqual(self.results["n_irq_tam"]["side_regs"], ["R0"])
 
@@ -275,7 +275,11 @@ class Mpr1TamIrqRealCoreTests(unittest.TestCase):
         for case in CASES:
             with self.subTest(case=case["name"]):
                 m, s = self.runs[case["name"]]["measure"], self.runs[case["name"]]["safety"]
-                self.assertEqual(m["STEP"], s["STEP"])
+                # MPR2-6 are power-on values the fixture never sets; they differ between probe processes (seen in
+                # 1 of 8 runs). Only the fixture-controlled MPR0/MPR1 and the reset-defined MPR7 are compared.
+                def fixed(step):
+                    return {**step, "mpr": [v for i, v in enumerate(step["mpr"]) if i in (0, 1, 7)]}
+                self.assertEqual([fixed(x) for x in m["STEP"]], [fixed(x) for x in s["STEP"]])
                 tam_m = [x for x in m.get("WRW", []) + m.get("VDW", []) if x["step"] == m["STEP"][0]["step"]]
                 tam_s = [x for x in s.get("WRW", []) + s.get("VDW", []) if x["step"] == s["STEP"][0]["step"]]
                 self.assertEqual(tam_m, tam_s)
