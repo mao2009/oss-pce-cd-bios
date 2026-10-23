@@ -1,6 +1,6 @@
 # Roadmap — evidence-graded milestones (no date promises)
 
-Use the [dated implementation status](status.md) (main `f90c16b`, committed 2026-10-22, state verified 2026-10-23: 9/81 DEV implementations, 72 stubs; 0/81 reference ABI VERIFIED) to distinguish merged **main** code,
+Use the [dated implementation status](status.md) (main `f90c16b`, committed 2026-10-22, state verified 2026-10-23: 9/81 DEV implementations, 72 stubs; owner-approved DEV_CALLABLE 0; 0/81 reference ABI VERIFIED; 0/81 reference JSR permitted) to distinguish merged **main** code,
 real Geargrafx observations and unmerged work. Baseline: [PR #174](https://github.com/mao2009/oss-pce-cd-bios/pull/174)
 merged as `05a0ea54` on 2026-10-17; later [#175](https://github.com/mao2009/oss-pce-cd-bios/pull/175)
 updated public status wording and [#176](https://github.com/mao2009/oss-pce-cd-bios/pull/176)
@@ -10,7 +10,7 @@ OSS routine, is not proof of a **fully reference-compatible BIOS API** or releas
 ## M0 — Foundation and diagnostics
 
 - [x] Reproducible original HuCARD fixture, pinned tools, host tests and real Geargrafx CI
-- [x] Original 256 KiB System Card **development-only** ROM with 81 candidate entries: one callable `EX_GETVER` override and 80 fail-closed nonreturning stubs as merged in [#174](https://github.com/mao2009/oss-pce-cd-bios/pull/174) (historical; the 2026-10-22 snapshot had 8 DEV overrides and 73 stubs, see [status](status.md))
+- [x] Original 256 KiB System Card **development-only** ROM with 81 candidate entries: one callable `EX_GETVER` override and 80 fail-closed nonreturning stubs as merged in [#174](https://github.com/mao2009/oss-pce-cd-bios/pull/174) (historical as merged; current counts and dated snapshots are in [status](status.md))
 - [x] Real-core System Card loader/reset, slot, RAM/MPR/stack/IRQ observations and isolated startup checkpoint with non-zero CD-state marker ([#127](https://github.com/mao2009/oss-pce-cd-bios/pull/127))
 - [x] Real-core guest READ(6) on synthetic discs, 1–3 2048-byte sectors, full RAM/phase/negative checks
 - [x] Isolated real-core Geargrafx trace harness, CD status classifier and host-only CD_BASE model (not BIOS services)
