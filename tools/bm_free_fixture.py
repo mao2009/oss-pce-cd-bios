@@ -8,6 +8,12 @@ the BM_FREE call ABI is UNKNOWN (docs/305-bm-free-contract.md), so the API stays
 """
 import buram_free_judge as bj
 
+# Literal frames, not built by bj.make_image or bj._checksum. Header sum 0x53+0x42+0x52+0x31 = 0x118, so a version-1
+# frame with an empty table has checksum 0x19; each used block adds 1, each table value 0x02 adds 2.
+# A checksum change in the judge therefore flips these scenarios to a non-OK verdict.
+def _frame(checksum, table=bytes(15), version=1):
+    return b'SBR1' + bytes([version]) + bytes(10) + bytes([checksum]) + bytes(table) + bytes(2017)  # 2048 - 31 header and table bytes
+
 
 class ReadOnlyImage:
     """Immutable snapshot of a synthetic image. The caller's buffer is copied, never aliased."""
@@ -42,21 +48,18 @@ class ReadOnlyImage:
 
 def scenarios():
     """Name -> (fixture, expected_verdict). Positive, negative (uninitialized, invalid) and boundary images."""
-    fresh = bj.make_image()
-    table_two = bytearray(fresh)
-    table_two[bj.TABLE] = 0x02
-    table_two[15] = bj._checksum(table_two)          # checksum fixed up so only the table check can reject it
-    version_two = bytearray(fresh)
-    version_two[4] = 2
-    version_two[15] = bj._checksum(version_two)
+    fresh = _frame(0x19)
+    used_0_7 = _frame(0x1B, bytes([1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]))
+    table_two = _frame(0x1B, bytes([2]) + bytes(14))
+    version_two = _frame(0x1A, version=2)
     return {
         'positive: normal header, all free': (ReadOnlyImage(fresh), bj.OK),
-        'positive: normal header, some used': (ReadOnlyImage(bj.make_image(used={0, 7})), bj.OK),
+        'positive: normal header, some used': (ReadOnlyImage(used_0_7), bj.OK),
         'negative: uninitialized (erased FF)': (ReadOnlyImage(bj.ERASED), bj.UNFORMATTED),
         'negative: uninitialized (blank 00)': (ReadOnlyImage(bj.BLANK), bj.UNFORMATTED),
         'negative: invalid magic': (ReadOnlyImage(b'XXXX' + fresh[4:]), bj.INVALID_HEADER),
-        'negative: invalid version': (ReadOnlyImage(bytes(version_two)), bj.INVALID_HEADER),
-        'negative: table value 0x02': (ReadOnlyImage(bytes(table_two)), bj.INVALID_HEADER),
+        'negative: invalid version': (ReadOnlyImage(version_two), bj.INVALID_HEADER),
+        'negative: table value 0x02': (ReadOnlyImage(table_two), bj.INVALID_HEADER),
         'negative: wrong size 2047': (ReadOnlyImage(fresh[:-1]), bj.BAD_SIZE),
     }
 

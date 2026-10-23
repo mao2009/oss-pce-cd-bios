@@ -1,7 +1,8 @@
 """Issue #306: read-only BM_FREE fixture and judge checks (tools/bm_free_fixture.py). Synthetic images only.
 
-Expected values are hand-computed and written as literal bytes. No test calls the module's image builder or its
-checksum helper, so changing the checksum formula or the layout in tools/buram_free_judge.py fails these tests.
+Expected values are hand-computed and written as literal bytes. Neither this file nor tools/bm_free_fixture.py
+derives an expected value or a frame from bj._checksum; only test_block_index_outside_capacity_is_refused_by_the_builder
+calls bj.make_image, and only for its range check. A checksum change therefore fails the fixture-based cases too.
 
 Synthetic layout (copied as literals from the #396 model docstring, not imported):
   [0:4] b"SBR1", [4] version 1, [5:15] reserved zero, [15] checksum, [16:31] table (15 blocks, 0x00 free / 0x01 used),
@@ -27,6 +28,8 @@ import bm_free_fixture as bf  # noqa: E402
 import buram_free_judge as bj  # noqa: E402
 
 FORBIDDEN_MODULES = {'os', 'io', 'pathlib', 'shutil', 'tempfile', 'subprocess', 'socket', 'importlib', 'builtins'}
+# Exact top-level import allowlist per host module. The judge imports nothing; the fixture imports only the judge.
+ALLOWED_IMPORTS = {'bm_free_fixture': {'buram_free_judge'}, 'buram_free_judge': set()}
 
 SIZE, TABLE, NDATA, BLOCK = 2048, 16, 15, 128
 
@@ -113,10 +116,11 @@ class BmFreeFixtureTest(unittest.TestCase):
     # false positives
     def test_no_single_bit_flip_in_header_or_table_is_accepted(self):
         self.assertEqual(bj.judge_free(bytearray(USED_1_2_14))[0], bj.OK)
-        self.assertEqual(bj.mutation_self_check(USED_1_2_14), (TABLE + NDATA) * 8)
+        self.assertEqual(bj.mutation_self_check(USED_1_2_14), 248)  # 31 checksummed bytes x 8 bits, hand-counted
 
     def test_bytes_and_bytearray_views_agree(self):
         self.assertEqual(bj.judge_free(ALL_FREE), bj.judge_free(bytearray(ALL_FREE)))
+        self.assertEqual(bj.judge_free(bytearray(ALL_FREE))[:2], (bj.OK, 15))
 
     # negative: typed input and out-of-range reads are refused
     def test_judge_refuses_str_and_fixture_objects(self):
@@ -180,15 +184,18 @@ class BmFreeFixtureTest(unittest.TestCase):
         self.assertEqual(attempts, [])
         self.assertEqual(raws, before)
 
-    def test_fixture_module_has_no_io_imports(self):
-        tree = ast.parse((ROOT / 'tools' / 'bm_free_fixture.py').read_text(encoding='utf-8'))
-        imported = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                imported.update(alias.name.split('.')[0] for alias in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                imported.add(node.module.split('.')[0])
-        self.assertEqual(imported & FORBIDDEN_MODULES, set())
+    def test_fixture_and_judge_have_no_forbidden_imports_and_match_allowlist(self):
+        for name, allowed in ALLOWED_IMPORTS.items():
+            with self.subTest(module=name):
+                tree = ast.parse((ROOT / 'tools' / f'{name}.py').read_text(encoding='utf-8'))
+                imported = set()
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Import):
+                        imported.update(alias.name.split('.')[0] for alias in node.names)
+                    elif isinstance(node, ast.ImportFrom) and node.module:
+                        imported.add(node.module.split('.')[0])
+                self.assertEqual(imported & FORBIDDEN_MODULES, set())
+                self.assertEqual(imported, allowed)
 
 
 if __name__ == '__main__':
