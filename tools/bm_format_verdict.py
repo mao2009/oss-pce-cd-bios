@@ -101,8 +101,8 @@ def run_case(name, image, allow, expected):
         return {"case": name, "verdict": FAIL, "status": None}
     try:
         status, out = guarded_format(image, allow_destructive=allow)
-    except Exception:  # fail-closed: any exception is a FAIL, never a PASS
-        status, out = None, None
+    except Exception:  # fail-closed: any exception is a FAIL, even when the expectation is None (NOT_RUN otherwise)
+        return {"case": name, "verdict": FAIL, "status": None}
     # The input buffer must never be written, whatever the verdict.
     if isinstance(image, bytearray) and bytes(image) != snapshot:
         return {"case": name, "verdict": FAIL, "status": status}
