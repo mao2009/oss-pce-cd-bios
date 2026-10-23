@@ -133,21 +133,42 @@ Refs #302 / 親 #34 / 関連 #303（合成FORMAT安全モデル）/ #304（診�
 | 合成（モデル専用） | 不正署名の拒否 `REJECTED_INVALID_SIGNATURE`、OK 時の「署名あり・残りゼロ埋め・容量維持」 | `tools/bm_format_verdict.py`（#509） | synthetic。契約からの根拠はない |
 | BIOS ABI | 入口、確認文字列の比較、返値、容量要件、破壊範囲、MMIO 副作用 | 本台帳 C3b, C5b, C11, C12, B1-B7 | UNKNOWN |
 
-判定層のすべての期待値は上段の合成値のみで定義する。下段の BIOS ABI を根拠にした PASS は存在しない。総合判定は `BLOCKED_ABI` で、`release_eligible` は常に `false`。
+判定層のすべての期待値は上段の合成値のみで定義する。期待値は作者の合成モデル由来であり、BIOS ABI 由来ではない。下段の BIOS ABI を根拠にした PASS は存在しない。総合判定は `BLOCKED_ABI` で、`release_eligible` は常に `false`。
 
-### 8.2 #395 との矛盾（owner 決定は未了）
+### 8.2 入口の比較（#395 `bm.format_image` と PR #509 `guarded_format`）
 
-* #395 の `format_image` は、非ゼロの不正署名を**回復**する（OK、署名を書き、ゼロ埋め）。`test_invalid_signature_is_recovered_by_format` がこの挙動を固定している。
-* #509 の `guarded_format` は、確認付き・非ゼロ・不正署名の 64 バイト以上のイメージを**拒否**し、バイトを保持する（`REJECTED_INVALID_SIGNATURE`）。
-* 本 PR の拒否は**暫定の安全側の方針**であり、owner の承認ではない。回復と拒否のどちらを正とするかは owner 決定として未了（open）。
-* #395 のモデルとテストは変更しない（スコープ外）。
+| 項目 | #395 `bm.format_image`（回復） | PR #509 `guarded_format`（拒否） |
+| --- | --- | --- |
+| 入口 | `bm.format_image(image, allow_destructive=...)` | `bm_format_verdict.guarded_format(image, allow_destructive=...)`。委譲先は `bm.format_image` |
+| 保証 | 非 bytes は TypeError。未確認は `REFUSED_UNCONFIRMED`、64 バイト未満は `INSUFFICIENT_CAPACITY`、有効署名は `ALREADY_FORMATTED`、それ以外は `OK`（署名を書き残りゼロ埋め） | 上記に加え、確認付き・64 バイト以上・署名が不正・非ゼロのとき `REJECTED_INVALID_SIGNATURE`（拒否） |
+| 保証しないこと | 不正署名のイメージが利用者データかどうかの判断。BIOS の挙動 | この層を経由しない呼出し（直接呼出し）の拒否。BIOS の挙動。回復と拒否のどちらが正しいか |
+| 返値 | `(status, bytes)`。OK 以外は入力と同じ bytes | `(status, bytes)`。拒否と委譲先の非 OK は入力と同じ bytes |
+| 入力変更 | なし（`bytes(image)` の複製に対して処理。bytearray も書き換えない） | なし（拒否パスは複製を返す。委譲先は上段と同じ） |
+| I/O | なし（メモリ内のみ） | なし（メモリ内のみ） |
+| 非ゼロ・不正署名（確認付き、64 バイト以上） | OK（回復） | `REJECTED_INVALID_SIGNATURE`（拒否） |
+| 全ゼロ（blank）のイメージ | OK | OK（委譲のため同じ） |
+| 状態 | #395 で固定（`test_invalid_signature_is_recovered_by_format`） | 暫定（owner 決定 A は OPEN） |
+| BIOS ABI | UNKNOWN（#302） | UNKNOWN（#302） |
 
-### 8.3 迂回（ゲートは全呼出しを縛らない）
+### 8.3 入口ごとの保証と迂回
 
-* `bm.format_image` を直接呼ぶと、非ゼロの不正署名は回復される（OK）。ゲートは `guarded_format` 経由の呼出しにしか効かない。
-* したがって本ゲートは「完全な安全境界」ではない。安全境界とするには、呼出側を `guarded_format` に限定する別の措置（または #395 側の扱いの決定）が必要で、これは本 PR の範囲外。
+| 呼出し経路 | 保証 | 迂回（バイパス） |
+| --- | --- | --- |
+| `guarded_format` | 確認付き・64 バイト以上・非ゼロの不正署名を拒否し、バイトを保持する | なし（この経路の内側）。ただし呼出側が直接 `bm.format_image` を使えばゲートを通らない |
+| `bm.format_image` 直接 | 有効署名・容量不足・未確認の拒否は #395 どおり | **迂回あり**: 非ゼロの不正署名を OK で回復し、署名を書く |
 
-### 8.4 #303 完了条件の証拠台帳
+* ゲートは `guarded_format` 経由の呼出しにしか効かない。したがって本ゲートは「完全な安全境界」ではない。安全境界とするには、呼出側を `guarded_format` に限定する別の措置（または #395 側の扱いの決定）が必要で、これは本 PR の範囲外。
+
+### 8.4 owner 決定 A（未決定。承認ではない）
+
+番号付きの OPEN 項目。owner が決めるまで、PR #509 の拒否は**暫定の保守的方針**であり、owner の承認ではない。承認の記録はない。
+
+* **A（OPEN）** 確認付き・非ゼロ・不正署名・64 バイト以上のイメージを、どちらの振る舞いとするか。
+  * **A1 拒否（PR の現方針、暫定）**: `REJECTED_INVALID_SIGNATURE`、バイト保持。帰結: #395 の `test_invalid_signature_is_recovered_by_format` は現挙動（回復）を固定しており、A1 を正とすると矛盾する。#395 のテストは本 PR で変更しない（スコープ外）ため、A1 採用時は別 Issue で #395 側の扱い（回復テストの書換え、または回復の撤回と呼出側のゲート必須化）を決める必要がある。
+  * **A2 回復**: `OK`（署名を書き、残りをゼロ埋め）。帰結: 本 PR の `guarded_format` の拒否分岐を外し、#509 の拒否テスト（`test_nonzero_invalid_signature_is_rejected_and_kept`、`invalid_sig_*` の `CASES`）を回復の期待値に書き換える。#395 のモデルとテストは変更不要。判定層のその他の部分は変更なし。
+* 判定が出るまでの現状: 拒否は**暫定**。どちらの判定でも BIOS ABI は UNKNOWN のまま（`BLOCKED_ABI`、`release_eligible=false`）。
+
+### 8.5 #303 完了条件の証拠台帳
 
 | # | 対象 | 根拠（source） | 種別 | 判定 |
 | --- | --- | --- | --- | --- |

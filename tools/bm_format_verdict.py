@@ -5,13 +5,17 @@ The BM_FORMAT ABI is UNKNOWN (#302; reference ABI VERIFIED 0/81), so the overall
 never PASS: it is BLOCKED_ABI when every run case passed, FAIL on any failing case, and
 NOT_RUN when no case ran. release_eligible is always False.
 
-Scope limits (not a complete safety gate):
-- Bypass: bm.format_image() can still be called directly, and it RECOVERS a non-zero invalid
-  signature (#395, pinned by test_invalid_signature_is_recovered_by_format). Only callers that
-  go through guarded_format() are refused. Nothing here forces that routing.
+Scope limits (not a complete safety gate). Entry-point comparison: docs/research/302 section 8.
+- Entry points: guarded_format() REFUSES a confirmed non-zero invalid signature (bytes kept).
+  bm.format_image() RECOVERS the same input (OK, signature written, body zero-filled).
+- BYPASS (guarantee does not hold for every caller): a direct bm.format_image() call skips
+  this gate and recovers the image (#395, pinned by test_invalid_signature_is_recovered_by_format).
+  Only callers that go through guarded_format() are refused. Nothing here forces that routing.
 - Contradiction with #395: this gate refuses the case #395 recovers. Which behavior is correct
-  is an owner decision (open); the refusal is a provisional safety stance, not an approval.
-- Expectations are synthetic model-only values; the real BM_FORMAT ABI is UNKNOWN (#302).
+  is owner decision A (OPEN, not decided). The refusal is a PROVISIONAL conservative stance,
+  not an owner approval.
+- Expectations are the author's synthetic model values (#395 constants and this module's own
+  REJECTED_INVALID_SIGNATURE). They are not derived from the BM_FORMAT ABI, which is UNKNOWN (#302).
 """
 import bm_format_model as bm
 
@@ -22,11 +26,13 @@ RELEASE_ELIGIBLE = False
 
 
 def guarded_format(image, *, allow_destructive=False):
-    """Fail-closed wrapper over bm.format_image.
+    """Fail-closed wrapper over bm.format_image (PROVISIONAL; owner decision A is OPEN).
 
     A confirmed request on a full-size image with a non-zero invalid signature is refused and
-    the bytes are kept, because corrupt data may still be user save data. Blank (all-zero)
-    images and every other path follow bm.format_image unchanged.
+    the bytes are kept, because corrupt data may still be user save data. This refusal is a
+    provisional conservative stance, not an approval; #395 recovers the same input.
+    Blank (all-zero) images and every other path follow bm.format_image unchanged.
+    BYPASS: a direct bm.format_image() call does not pass through this refusal.
     """
     if (allow_destructive is True and isinstance(image, (bytes, bytearray))
             and len(image) >= bm.MIN_CAPACITY and bm.classify(image) == bm.INVALID
