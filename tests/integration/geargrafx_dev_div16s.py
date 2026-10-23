@@ -14,9 +14,9 @@ mode flag and clears P.T at the start of every instruction, and PHP always pushe
 therefore swallowed by the JSR, so the routine's own instructions never run with T=1 and P.T is 0 wherever the guest
 can observe it. The contract cases never set T; one SET-before-JSR run is a characterisation: it prints what the core
 observed and asserts nothing about the routine.
-Scope: 22 real-core cases (20 at caller SP=$FF, 2 at the boundary), the no-CLD mutant, and seven arithmetic mutants
+Scope: 22 real-core cases (20 at caller SP=$FF, 2 at the boundary), the no-CLD mutant, and eleven arithmetic mutants
 (ARITH_MUTANTS, Issue #458: each is one same-length instruction edit in the DEV ROM body, and at least one case must
-reject it). P is compared exactly on every bit except B (bit 4): C, Z, I, D, V, N, and T (bit 5), which must be 0
+reject it; the sign, V, remainder and divide-by-zero paths each have a mutant). P is compared exactly on every bit except B (bit 4): C, Z, I, D, V, N, and T (bit 5), which must be 0
 because the caller T=0 and the routine restores P with PLP. B is not a stored flag: PHP always pushes B=1, so it is
 ignored. Every mutant rejection records which field differed (quotient, remainder, P bit, Y or SP).
 This is NOT an exhaustive test of the assembled routine; the host model is tests/host/test_ma_div16s.py.
@@ -63,9 +63,13 @@ ARITH_MUTANTS = [  # (name, pattern, index of the byte to change in the pattern,
     ("c_remainder_negate_skipped", bytes.fromhex("BD04212904F0"), 5, 0x80),  # lda $2104,x; and #$04; beq @rpos
     ("d_dividend_sign_skipped", bytes.fromhex("BD052110"), 3, 0x80),        # lda $2105,x; bpl @dividend_pos
     ("e_overflow_flag_removed", bytes.fromhex("BD042109409D0421"), 4, 0x00),  # lda $2104,x; ora #$40 -> ora #$00
+    ("h_divisor_sign_skipped", bytes.fromhex("BD0A2110"), 3, 0x80),  # lda $210A,x; bpl @divisor_pos -> bra (no negate)
+    ("i_divisor_sign_not_in_quotient", bytes.fromhex("BD042149029D0421"), 4, 0x00),  # lda $2104,x; eor #$02 -> eor #$00
+    ("j_overflow_check_wrong_value", bytes.fromhex("BD0521C980"), 4, 0x00),  # lda $2105,x; cmp #$80 -> cmp #$00
     # Divide-by-zero mutants (the contract: divisor 0 -> quotient 0, remainder = dividend, C = 1).
     ("f_divide_by_zero_branch_inverted", bytes.fromhex("BD0A211D0B21D0"), 6, 0xF0),  # bne @divide -> beq @divide
     ("g_divide_by_zero_c_flag_cleared", bytes.fromhex("BD042109019D0421"), 4, 0x00),  # ora #$01 -> ora #$00
+    ("k_divide_by_zero_remainder_hi_wrong", bytes.fromhex("BD05219D0A21"), 1, 0x06),  # lda $2105,x -> lda $2106,x
 ]
 # What a divide-by-zero mutant must show, so that the divide-by-zero handling is really observed: the required fields
 # (all of them) and a group of which at least one must appear.
@@ -75,6 +79,8 @@ DIVZERO_MUTANTS = {
     "f_divide_by_zero_branch_inverted": ({"P.C"}, {"quotient_lo", "quotient_hi"}),
     # The cleared C flag changes nothing but the C bit of the returned P.
     "g_divide_by_zero_c_flag_cleared": ({"P.C"}, set()),
+    # The remainder high is loaded from the dividend low: a divide-by-zero case with a nonzero dividend shows it.
+    "k_divide_by_zero_remainder_hi_wrong": ({"remainder_hi"}, set()),
 }
 Y_PRESET = 0xA5
 CALLER_SP = 0xFF
@@ -277,7 +283,7 @@ def main():
           f"consumes T in the JSR, so the routine is unchanged); "
           f"no-CLD mutant rejected {len(rejected)}/{len(MUTANT_CASES)}; "
           f"arithmetic mutants rejected {len(evidence['arithmetic_mutants'])}/{len(ARITH_MUTANTS)} "
-          f"(including 2 divide-by-zero mutants)")
+          f"(including 3 divide-by-zero mutants)")
 
 
 if __name__ == "__main__":
