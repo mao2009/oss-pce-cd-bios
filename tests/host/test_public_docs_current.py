@@ -3,14 +3,16 @@
 Fails when a README, status/roadmap/pages doc, Pages page or llms.txt keeps a stale count,
 an old snapshot commit, or a PR state that has since changed.
 
-Only CURRENT statements are checked for staleness. The single exemption is a dated record:
-a Markdown bullet that starts with an ISO date (e.g. "- 2026-10-22 snapshot: 8/81 DEV.") inside a
-heading whose title contains "History" or "履歴". A date or the word "historical" on an ordinary
-line never exempts it. Merged-PR state is checked against a fixed list, not the live GitHub API.
+Only CURRENT statements are checked for staleness. Two exemptions exist:
+- a Markdown bullet that starts with an ISO date (e.g. "- 2026-10-22 snapshot: 8/81 DEV.") inside a
+  heading whose title contains "History" or "履歴". A date or the word "historical" on an ordinary line never exempts it.
+- a labelled count that equals the value a named PR had when it merged, on a line that says "historical"
+  and cites that PR (HISTORICAL_CLAIMS).
 
-Counts are derived from spec/dev_implementations.json. Every current "N/81" or "N stub" must equal
-a derived value, and each public doc must state the DEV, stub, approval, ABI and JSR claims on a
-labelled line. A bare "9/81" on its own does not satisfy the check.
+Counts are paired with their label, never matched by presence: "reference ABI VERIFIED: 9/81" is a claim
+that ABI is 9, not a DEV count. Each claim is checked against a value derived from the ledger
+(spec/dev_implementations.json) and the JSR gate (spec/reference_jsr_gate.json). Merged-PR state is checked
+against a fixed list, not the live GitHub API.
 """
 import json
 import re
@@ -24,7 +26,10 @@ PUBLIC_DOCS = [
     "site/index.html", "site/ja/index.html", "site/llms.txt",
 ]
 # Known-merged PRs and closed issues as of 2026-10-23 (checked with `gh pr view`). Fixed list: tests stay offline.
-MERGED_PRS = (475, 477, 494, 495, 502, 506)
+MERGED_PRS = (475, 477, 494, 495, 502, 506, 508, 516)
+# Counts a PR or commit recorded when it was current. Exempt only on a historical line that cites that PR/commit
+# with the same value. A date alone never qualifies.
+HISTORICAL_CLAIMS = {"#174": {"stub": 80}, "86172e2": {"dev": 8}, "8a136ad": {"dev": 8}}
 STALE_PATTERNS = [
     r"\b8/81\b",  # any current 8/81 (the 2026-10-22 snapshot figure) is stale
     r"8/81 DEV on main", r"main alone is 8/81", r"main:? 73/81",
@@ -34,30 +39,82 @@ MERGED_PR_RE = re.compile(r"(?:#|pull/)(?:%s)\b" % "|".join(str(n) for n in MERG
 OPEN_WORDING_RE = re.compile(r"unmerged|未マージ|\bDraft\b|\bopen\b", re.IGNORECASE)
 DATED_BULLET_RE = re.compile(r"^\s*[-*]\s+\**\s*20\d\d-\d\d-\d\d\b")
 HISTORY_HEADING_RE = re.compile(r"^\s*#{1,6}\s.*(history|履歴)", re.IGNORECASE)
-COUNT_RE = re.compile(r"\b(\d+)/81\b")
-STUB_COUNT_RE = re.compile(r"\b(\d+)\s*(?:remaining\s+|other\s+|nonreturning\s+)?(?:stubs?|スタブ)", re.IGNORECASE)
+HISTORICAL_WORD_RE = re.compile(r"historical|superseded|履歴", re.IGNORECASE)
+# A number that is not part of a date, URL, PR/issue reference, hex id or identifier like $4F / MA_MUL16S.
+VALUE_RE = re.compile(r"(?<![A-Za-z0-9_/.#$-])(\d+)(?!\d)(?!-|\.\d)(?!\s*(?:KiB|KB|MiB|MB))(\s*/\s*81(?!\d))?")
+# Text allowed between a label and its number: short, and no sentence or clause punctuation.
+GAP_RE = re.compile(r"[^.;,()\[\]<>。、；，（）]{0,30}")
+# Each claim label and the claim key it asserts. Matched case-insensitively.
+LABELS = [
+    ("dev", re.compile(r"DEV[\s-]*(?:only\s+|ROM\s+)?(?:count|implement\w*)|DEV実装|DEV 実装", re.I)),
+    ("stub", re.compile(r"stubs?\b|スタブ", re.I)),
+    ("approval", re.compile(r"DEV_CALLABLE|owner[\s-]*approv\w*", re.I)),
+    ("abi", re.compile(r"ABI(?![-\d]|[A-Za-z])", re.I)),  # ABI-1 is a review name, not the ABI count
+    ("jsr", re.compile(r"(?<![A-Za-z_])JSR(?![A-Za-z_])", re.I)),
+]
+NAMES = {
+    "dev": "DEV implementations", "stub": "stubs", "approval": "DEV_CALLABLE approval",
+    "abi": "reference ABI VERIFIED", "jsr": "reference JSR permitted",
+}
 
 
-def expected_counts(slots):
-    """Current public counts, derived from the implementation ledger rather than typed in."""
+def expected_counts(slots, gate_slots):
+    """Current public counts, derived from the ledger and the JSR gate rather than typed in."""
     implemented = sum(1 for slot in slots if slot.get("implementation"))
     return {
         "dev": implemented,
         "stub": len(slots) - implemented,
-        "approved": sum(1 for slot in slots if slot["approval"]["approved_by"]),
+        "approval": sum(1 for slot in slots if slot["approval"]["approved_by"]),
         "abi": sum(1 for slot in slots if slot["abi_contract"].get("status") == "VERIFIED"),
-        "jsr": 0,  # the ledger has no per-slot JSR field; reference_jsr_gate stays fail-closed (0/81)
+        "jsr": sum(1 for entry in gate_slots.values() if entry["execution"] == "ALLOWED"),
     }
 
 
 LEDGER = json.loads((ROOT / "spec" / "dev_implementations.json").read_text(encoding="utf-8"))
-EXPECTED = expected_counts(LEDGER["slots"])
+JSR_GATE = json.loads((ROOT / "spec" / "reference_jsr_gate.json").read_text(encoding="utf-8"))
+EXPECTED = expected_counts(LEDGER["slots"], JSR_GATE["slots"])
 
 
 def normalized_lines(text):
     """Strip HTML tags and join 'N / 81' into 'N/81' so Pages markup is read like Markdown."""
     flat = re.sub(r"<[^>]+>", "", text)
     return [re.sub(r"\s*/\s*81\b", "/81", line) for line in flat.splitlines()]
+
+
+def claims_in_line(line):
+    """Return (key, value, has_denominator) for each number paired with a label on the line.
+
+    A number takes the nearest label before it in its clause (text after the last ';' or ','). If there is
+    none, it takes the first label after it in its clause. A label already used by the previous number is
+    not reused. Numbers with no label are not returned.
+    """
+    matches = list(VALUE_RE.finditer(line))
+    claims, consumed = [], 0
+    for index, match in enumerate(matches):
+        start = max(matches[index - 1].end() if index else 0, consumed)
+        before = line[start:match.start()]
+        clause_start = start + max(before.rfind(";"), before.rfind(","), -1) + 1
+        before_labels = [(m.end(), key) for key, rx in LABELS for m in rx.finditer(line, clause_start, match.start())]
+        before_labels = [(end, key) for end, key in before_labels if GAP_RE.fullmatch(line[end:match.start()])]
+        if before_labels:
+            key = max(before_labels)[1]
+        else:
+            nxt = matches[index + 1].start() if index + 1 < len(matches) else len(line)
+            clause = re.split(r"[;,]", line[match.end():nxt], maxsplit=1)[0]
+            after = [(m.start(), m.end(), key) for key, rx in LABELS for m in rx.finditer(clause)]
+            after = [(s, e, key) for s, e, key in after if GAP_RE.fullmatch(line[match.end():match.end() + s])]
+            if not after:
+                continue
+            _, end, key = min(after)
+            consumed = match.end() + end
+        claims.append((key, int(match.group(1)), bool(match.group(2))))
+    return claims
+
+
+def historical_exempt(line, key, value):
+    if not HISTORICAL_WORD_RE.search(line):
+        return False
+    return any(cite in line and HISTORICAL_CLAIMS[cite].get(key) == value for cite in HISTORICAL_CLAIMS)
 
 
 def stale_hits(text, expected=EXPECTED):
@@ -73,12 +130,12 @@ def stale_hits(text, expected=EXPECTED):
         for pattern in STALE_PATTERNS:
             if re.search(pattern, line):
                 hits.append((number, pattern))
-        for match in COUNT_RE.finditer(line):
-            if int(match.group(1)) not in allowed:
-                hits.append((number, f"count {match.group(0)} is not derived from the ledger"))
-        for match in STUB_COUNT_RE.finditer(line):
-            if int(match.group(1)) != expected["stub"]:
-                hits.append((number, f"stub count {match.group(1)} != ledger {expected['stub']}"))
+        for key, value, _ in claims_in_line(line):
+            if value != expected[key] and not historical_exempt(line, key, value):
+                hits.append((number, f"{NAMES[key]} {value} != ledger {expected[key]}"))
+        for match in VALUE_RE.finditer(line):
+            if match.group(2) and int(match.group(1)) not in allowed:
+                hits.append((number, f"count {match.group(0).strip()} is not derived from the ledger"))
         if MERGED_PR_RE.search(line) and OPEN_WORDING_RE.search(line):
             hits.append((number, "merged PR or closed issue described as open/unmerged/Draft"))
     return hits
@@ -86,19 +143,9 @@ def stale_hits(text, expected=EXPECTED):
 
 def missing_claims(text, expected=EXPECTED):
     """Return the labelled claims a public doc fails to state with the ledger-derived value."""
-    lines = normalized_lines(text)
-    claims = {
-        "DEV implementations": (r"DEV|実装", rf"(?<!\d){expected['dev']}/81\b"),
-        "stubs": (r"stub|スタブ", rf"(?<!\d){expected['stub']}(?![\d/])"),
-        "DEV_CALLABLE approval": (r"DEV_CALLABLE|承認", rf"(?<![\d/]){expected['approved']}(?![\d/])"),
-        "reference ABI VERIFIED": (r"ABI", rf"(?<!\d){expected['abi']}/81\b"),
-        "reference JSR permitted": (r"JSR", rf"(?<!\d){expected['jsr']}/81\b"),
-    }
-    missing = []
-    for name, (label, value) in claims.items():
-        if not any(re.search(label, line, re.IGNORECASE) and re.search(value, line) for line in lines):
-            missing.append(name)
-    return missing
+    found = {key for line in normalized_lines(text) for key, value, _ in claims_in_line(line)
+             if value == expected[key]}
+    return [NAMES[key] for key in NAMES if key not in found]
 
 
 class PublicDocsTest(unittest.TestCase):
@@ -117,6 +164,9 @@ class PublicDocsTest(unittest.TestCase):
         self.assertEqual(source, implemented, "src/overrides must match the implemented ledger slots")
         self.assertEqual(sum(1 for slot in slots if slot["approval"]["approved_by"]), 0)
         self.assertIs(self.ledger["release_eligible"], False)
+
+    def test_jsr_gate_allows_nothing(self):
+        self.assertEqual(EXPECTED["jsr"], 0)
 
     def test_every_public_doc_states_ledger_claims_and_snapshot(self):
         for name, text in self.docs.items():
@@ -138,6 +188,8 @@ class PublicDocsTest(unittest.TestCase):
         self.assertTrue(stale_hits("PR #506 (未マージ) wires CI."))
         self.assertTrue(stale_hits("Issue #494 is unmerged and still open."))
         self.assertTrue(stale_hits("#494 は未マージです。"))
+        self.assertTrue(stale_hits("PR #508 is unmerged and still a Draft."))
+        self.assertTrue(stale_hits("PR #516 is open Draft work."))
 
     def test_date_or_historical_word_on_same_line_does_not_exempt(self):
         self.assertTrue(stale_hits("2026-10-22 historical note: DEV count is 8/81."))
@@ -150,9 +202,17 @@ class PublicDocsTest(unittest.TestCase):
         self.assertEqual(stale_hits(text), [])
         self.assertTrue(stale_hits("## Status\n\n- 2026-10-22 snapshot: 8/81 DEV (historical).\n"))
 
+    def test_historical_pr_claim_is_exempt_only_with_its_value(self):
+        roadmap = ("- [x] one callable EX_GETVER override and 80 fail-closed nonreturning stubs "
+                   "as merged in [#174] (historical as merged)")
+        self.assertEqual(stale_hits(roadmap), [])
+        self.assertTrue(stale_hits(roadmap.replace("80 fail-closed", "73 fail-closed")))
+        self.assertTrue(stale_hits(roadmap.replace("(historical as merged)", "(as merged)")))
+
     def test_current_merged_wording_is_allowed(self):
         self.assertEqual(stale_hits("- [#495] MA_MUL16S is MERGED (2026-10-22); #494 CLOSED."), [])
         self.assertEqual(stale_hits("Issue #476 remains OPEN, BLOCKED."), [])
+        self.assertEqual(stale_hits("- [#508] and [#516] are MERGED test-only PRs; #494 CLOSED."), [])
 
 
 class PublicDocsMutationTest(unittest.TestCase):
@@ -176,10 +236,26 @@ class PublicDocsMutationTest(unittest.TestCase):
     def test_current_dev_count_label_with_wrong_value_is_flagged(self):
         self.assertTrue(stale_hits("Current DEV count: 10/81."))
 
+    def test_dev_implementations_label_with_zero_is_flagged(self):
+        self.assertTrue(stale_hits("DEV implementations: 0/81"))
+        self.assertIn("DEV implementations", missing_claims("DEV implementations: 0/81"))
+
+    def test_reference_abi_verified_with_dev_count_is_flagged(self):
+        mutant = self.CLEAN.replace("reference ABI VERIFIED: 0/81", "reference ABI VERIFIED: 9/81")
+        self.assertTrue(stale_hits(mutant))
+        self.assertIn("reference ABI VERIFIED", missing_claims(mutant))
+
+    def test_one_correct_claim_does_not_excuse_a_wrong_one(self):
+        mutant = self.CLEAN + "DEV implementations 9/81; reference ABI VERIFIED 9/81.\n"
+        self.assertTrue(stale_hits(mutant))
+
     def test_wrong_stub_count_is_flagged(self):
         self.assertTrue(stale_hits("Status: 73 stubs remain."))
+        self.assertTrue(stale_hits("Stubs: 73 remain"))
         self.assertTrue(stale_hits("Status: 71 remaining stub slots."))
+        self.assertTrue(stale_hits("80 fail-closed nonreturning stubs"))
         self.assertEqual(stale_hits("72 remaining stub slots"), [])
+        self.assertEqual(stale_hits("Stubs: 72 remain"), [])
 
     def test_bare_9_81_does_not_satisfy_claims(self):
         self.assertEqual(stale_hits("9/81"), [])
@@ -189,6 +265,11 @@ class PublicDocsMutationTest(unittest.TestCase):
              "reference JSR permitted"},
         )
 
+    def test_approval_must_be_the_value_of_its_label(self):
+        self.assertTrue(stale_hits("owner-approved DEV_CALLABLE: 1"))
+        self.assertTrue(stale_hits("DEV_CALLABLE approved count: 2"))
+        self.assertIn("DEV_CALLABLE approval", missing_claims("DEV_CALLABLE pending (0 of 81 probes)"))
+
     def test_removing_abi_claim_is_flagged(self):
         mutant = self.CLEAN.replace("reference ABI VERIFIED: 0/81; ", "")
         self.assertEqual(missing_claims(mutant), ["reference ABI VERIFIED"])
@@ -196,6 +277,13 @@ class PublicDocsMutationTest(unittest.TestCase):
     def test_removing_jsr_claim_is_flagged(self):
         mutant = self.CLEAN.replace("; reference JSR permitted: 0/81", "")
         self.assertEqual(missing_claims(mutant), ["reference JSR permitted"])
+
+    def test_jsr_allowed_count_follows_the_gate(self):
+        gate = json.loads(json.dumps(JSR_GATE["slots"]))
+        gate["1"]["execution"] = "ALLOWED"
+        expected = expected_counts(LEDGER["slots"], gate)
+        self.assertEqual(expected["jsr"], 1)
+        self.assertTrue(stale_hits(self.CLEAN, expected))
 
     def test_html_wrapped_count_is_read(self):
         html = "<div><span>9</span> / 81</div> DEV implemented slots <span>0</span>/81 ABI VERIFIED"
@@ -205,7 +293,7 @@ class PublicDocsMutationTest(unittest.TestCase):
     def test_expected_counts_follow_the_ledger_not_a_typed_constant(self):
         slots = json.loads(json.dumps(LEDGER["slots"]))
         slots[1]["implementation"] = {"source": "src/overrides/slot_XX.s"}
-        expected = expected_counts(slots)
+        expected = expected_counts(slots, JSR_GATE["slots"])
         self.assertEqual(expected["dev"], 10)
         self.assertEqual(expected["stub"], 71)
         self.assertTrue(stale_hits(self.CLEAN, expected))
@@ -214,8 +302,8 @@ class PublicDocsMutationTest(unittest.TestCase):
         slots = json.loads(json.dumps(LEDGER["slots"]))
         slots[0]["approval"]["approved_by"] = "owner"
         slots[2]["abi_contract"]["status"] = "VERIFIED"
-        expected = expected_counts(slots)
-        self.assertEqual(expected["approved"], 1)
+        expected = expected_counts(slots, JSR_GATE["slots"])
+        self.assertEqual(expected["approval"], 1)
         self.assertEqual(expected["abi"], 1)
         self.assertEqual(set(missing_claims(self.CLEAN, expected)), {"DEV_CALLABLE approval", "reference ABI VERIFIED"})
 
