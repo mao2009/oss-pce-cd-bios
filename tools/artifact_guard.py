@@ -1884,7 +1884,8 @@ def _run_write_problem(run):
     - values set by read or printf -v that are later run as a command or passed to eval (values are not traced);
     - LD_PRELOAD, PYTHONPATH and other loader or interpreter-path exports that change what runs without touching PATH;
     - a file-copy command behind a wrapper not listed in FILE_WRITER_RE (timeout 5 cp, busybox cp, a command in a variable);
-    - other writers that take a destination: curl -o, wget -O, ln, sed -i, tar -C, and any program that writes its own file."""
+    - other writers that take a destination: curl -o, wget -O, ln, sed -i, tar -C, and any program that writes its own file;
+    - a quoted assignment value with a space before the command (FOO="x y" cp ...), because quotes are removed first."""
     # bash joins a backslash-newline into one word ("_runner_\<newline>file"). An escaped backslash (\\) before a newline is
     # not a continuation, and its newline still ends the command.
     run = re.sub(r"(?<!\\)((?:\\\\)*)\\\n", r"\1", run)
