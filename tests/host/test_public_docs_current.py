@@ -117,6 +117,17 @@ def claims_in_line(line):
 
 # A parenthesised or bracketed note, allowing one level of nesting for a Markdown link inside it.
 HISTORICAL_SPAN_RE = re.compile(r"\((?:[^()]|\([^()]*\))*\)|\[[^\[\]]*\]")
+# A cite is a whole PR number (#174, not #1740 or #17) or a whole 7-hex commit ID (not a longer SHA).
+CITE_RE = re.compile(r"#\d+(?!\d)|(?<![0-9A-Za-z])[0-9a-f]{7}(?![0-9A-Za-z])")
+
+
+def cites(text):
+    return set(CITE_RE.findall(text))
+
+
+def blank_cites(text):
+    """Blank cite tokens so the hex digits or PR digits of a citation are never read as a count."""
+    return CITE_RE.sub(lambda match: " " * len(match.group(0)), text)
 
 
 def historical_split(line):
@@ -129,16 +140,17 @@ def historical_split(line):
 
     def take(match):
         body = match.group(0)[1:-1]
-        if HISTORICAL_WORD_RE.search(body) and any(cite in body for cite in HISTORICAL_CLAIMS):
+        if HISTORICAL_WORD_RE.search(body) and cites(body) & set(HISTORICAL_CLAIMS):
             notes.append(body)
             return " " * len(match.group(0))
         return match.group(0)
 
-    return HISTORICAL_SPAN_RE.sub(take, line), notes
+    return blank_cites(HISTORICAL_SPAN_RE.sub(take, line)), notes
 
 
 def historical_value_ok(note, key, value):
-    return any(cite in note and HISTORICAL_CLAIMS[cite].get(key) == value for cite in HISTORICAL_CLAIMS)
+    cited = cites(note)
+    return any(cite in cited and HISTORICAL_CLAIMS[cite].get(key) == value for cite in HISTORICAL_CLAIMS)
 
 
 def stale_hits(text, expected=EXPECTED):
@@ -159,7 +171,7 @@ def stale_hits(text, expected=EXPECTED):
             if value != expected[key]:
                 hits.append((number, f"{NAMES[key]} {value} != ledger {expected[key]}"))
         for note in notes:
-            for key, value, _ in claims_in_line(note):
+            for key, value, _ in claims_in_line(blank_cites(note)):
                 if not historical_value_ok(note, key, value):
                     hits.append((number, f"historical {NAMES[key]} {value} does not match the cited PR"))
         for match in VALUE_RE.finditer(current):
@@ -246,6 +258,23 @@ class PublicDocsTest(unittest.TestCase):
         self.assertTrue(stale_hits("Current stubs: 72 (historical #174: 73 stubs)"))
         self.assertTrue(stale_hits("Current DEV implementations: 8/81 (historical #174: 80 stubs)"))
         self.assertTrue(stale_hits("Current stubs: 72; historical #174: 80 stubs"))
+
+    def test_history_pr_cite_must_be_the_whole_number(self):
+        # #1740 is not #174: a note citing #1740 must not borrow #174's historical value.
+        self.assertTrue(stale_hits("Current stubs: 72 (historical #1740: 80 stubs)"))
+        self.assertTrue(stale_hits("Current stubs: 72 (historical #17: 80 stubs)"))
+        self.assertEqual(stale_hits("Current stubs: 72 (historical #174: 80 stubs)"), [])
+
+    def test_history_commit_cite_must_be_the_whole_id(self):
+        # 8a136ad0 is not 8a136ad (and 86172e25 is not 86172e2): a longer SHA must not borrow the prefix's value.
+        self.assertTrue(stale_hits("Current DEV implementations: 9/81 (historical 8a136ad0: 8 DEV implementations)"))
+        self.assertTrue(stale_hits("Current DEV implementations: 9/81 (historical 86172e25: 8 DEV implementations)"))
+
+    def test_history_commit_id_is_exempt_as_a_full_token(self):
+        # The hex digits of a cited commit ID are not a count of the note.
+        self.assertEqual(
+            stale_hits("Current DEV implementations: 9/81 (historical 86172e2: 8 DEV implementations)"), [])
+        self.assertTrue(stale_hits("Current DEV implementations: 8/81 (historical 86172e2: 8 DEV implementations)"))
 
     def test_current_merged_wording_is_allowed(self):
         self.assertEqual(stale_hits("- [#495] MA_MUL16S is MERGED (2026-10-22); #494 CLOSED."), [])
