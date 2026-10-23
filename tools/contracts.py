@@ -162,8 +162,9 @@ CLAIM_KEYS = frozenset({'status', 'value', 'sources', 'confidence', 'registers',
 # Issue #225: every OBSERVED claim must declare which kind of observation its evidence is, and the
 # kind must cover the claim's field. Enforced in adjudicate_claim() (the formal path used by
 # validate_contracts) so no wrapper can skip it. The kind is a declaration, not a measurement:
-# the rule rejects a kind that does not cover the field, but it does not verify where the evidence
-# came from, so a caller can still declare CALLEE_EXECUTION for a hardware readback.
+# the rule rejects a kind that does not cover the field. Issue #364 adds the check that the kind matches the
+# measurement point named by each evidence entry (observation_point_for_entry), so a hardware readback cannot
+# be declared CALLEE_EXECUTION.
 OBSERVATION_KIND_KEY = 'observation_kind'
 OBSERVATION_KIND_FIELDS = {
     # Low-level bus/register fact only; never callee ABI (returns/flags/irq/...).
@@ -171,6 +172,39 @@ OBSERVATION_KIND_FIELDS = {
     # Behavior of an executed callee; still needs executed_callee=True in adjudicate_claim.
     'CALLEE_EXECUTION': CALLEE_BEHAVIOR_FIELDS,
 }
+# Issue #364: an OBSERVED evidence entry names the measurement point it was taken at (an id in
+# spec/measurement_points.json). The registry kind and covered fields of that point are authoritative;
+# the claim's self-declared observation_kind must agree with them, so HW_BUS_READBACK evidence cannot be
+# relabelled CALLEE_EXECUTION. This key is NOT in the ledger evidence schema (EVIDENCE_FIELDS; owner decision
+# #324): it is stripped before the shape check and read only by observation_point_for_entry(). Storing it
+# in spec/api_contracts.json needs the #324 decision. Authenticity of the point id is #124 / #171.
+MEASUREMENT_POINT_KEY = 'measurement_point_id'
+
+
+def _shape_entry(entry):
+    """Evidence entry without MEASUREMENT_POINT_KEY, for the EVIDENCE_FIELDS shape check (ledger schema unchanged)."""
+    if not isinstance(entry, dict):
+        raise ValueError('evidence entry must be a dict')
+    return {key: value for key, value in entry.items() if key != MEASUREMENT_POINT_KEY}
+
+
+def observation_point_for_entry(entry, field, declared_kind, context):
+    """Return the registry measurement point an evidence entry names, or raise ValueError (fail closed).
+
+    Refused: a missing or unregistered point id, a point whose registry kind differs from the claim's
+    declared observation_kind (spoofed kind), and a point that does not cover the claim field.
+    """
+    point_id = entry.get(MEASUREMENT_POINT_KEY)
+    registry = load_registry()
+    if not (isinstance(point_id, str) and point_id in registry):
+        raise ValueError(f'{context}: unknown measurement point {point_id!r} (not in spec/measurement_points.json)')
+    point = registry[point_id]
+    if point['kind'] != declared_kind:
+        raise ValueError(f'{context}: spoofed observation kind: evidence point {point_id} is {point["kind"]}, '
+                         f'not {declared_kind}')
+    if field not in point['covers_fields']:
+        raise ValueError(f'{context}: measurement point {point_id} does not cover field {field!r}')
+    return point
 
 
 def validate_contracts(data, inventory, inventory_text):
@@ -321,7 +355,7 @@ def resolve_evidence(entry, artifact_dir=EVIDENCE_ARTIFACT_DIR, pinned_revision=
     or substituted file). core_revision is checked as the declared string against the pin only; the artifact
     does not carry a revision. Acceptance means hash-and-pin consistency only, not authenticity.
     """
-    validate_evidence([entry], 'evidence')
+    validate_evidence([_shape_entry(entry)], 'evidence')
     if entry['core_revision'] != pinned_revision:
         raise ValueError(f"core_revision {entry['core_revision']} differs from pinned {pinned_revision}")
     path = Path(artifact_dir) / entry['evidence_hash']
@@ -369,6 +403,8 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
                     require executed_callee; hardware observations
                     (HARDWARE_OBSERVATION_FIELDS, e.g. hw_bus_reset) do not;
                     any other field name is rejected;
+                    each evidence entry names a registry measurement point (Issue #364) whose kind
+                    equals observation_kind and which covers field (unknown or spoofed points are refused);
                     and non-empty, format-valid evidence entries are required for
                     both (execution conditions, core revision, input type, verification
                     result, sha256 evidence hash). Trust level is FORMAT_ONLY: shape
@@ -444,7 +480,7 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
         evidence = claim.get('evidence', [])
         require(isinstance(evidence, list) and bool(evidence),
                 f'{context}: OBSERVED requires non-empty evidence entries (format-checked only)')
-        validate_evidence(evidence, context)
+        validate_evidence([_shape_entry(entry) for entry in evidence], context)
         kind = claim.get(OBSERVATION_KIND_KEY)
         require(isinstance(kind, str) and kind in OBSERVATION_KIND_FIELDS,
                 f'{context}: OBSERVED requires {OBSERVATION_KIND_KEY} in {sorted(OBSERVATION_KIND_FIELDS)}')
@@ -474,6 +510,8 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
                     f'{context}: OBSERVED evidence lacks the {REAL_CORE_MARKER} provenance marker')
             require(entry['evidence_hash'] in resolved_evidence_hashes,
                     f'{context}: OBSERVED requires real-core evidence resolved by resolve_evidence')
+            # Issue #364: the named measurement point (not the declared kind alone) must back this kind and field.
+            observation_point_for_entry(entry, field, kind, context)
         # Producer authentication (Issue #124 / #171): nothing in this repository authenticates the principal
         # that executed the callee, so every OBSERVED claim is refused here (fail closed). The checks above are
         # necessary, never sufficient. A self-declared REALCORE string, executed_callee=True, a caller-supplied

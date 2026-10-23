@@ -21,9 +21,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 from contracts import (  # noqa: E402
-    CALLEE_BEHAVIOR_FIELDS, CLAIM_STATUSES, EVIDENCE_TRUST_LEVEL, FIELDS,
-    HARDWARE_OBSERVATION_FIELDS, SOURCE_KIND_MEANINGS, adjudicate_claim, load_contracts,
-    resolve_evidence,
+    CALLEE_BEHAVIOR_FIELDS, CLAIM_STATUSES, EVIDENCE_FIELDS, EVIDENCE_TRUST_LEVEL, FIELDS,
+    HARDWARE_OBSERVATION_FIELDS, MEASUREMENT_POINT_KEY, SOURCE_KIND_MEANINGS, adjudicate_claim,
+    load_contracts, observation_point_for_entry, resolve_evidence, validate_evidence,
 )
 
 CALLER = {'huc:include/hucc/pcengine.inc': 'CALLER_SOURCE'}
@@ -63,11 +63,17 @@ REAL_ENTRY = {
     'input_type': 'cd-read probe sector',
     'verification_result': 'probe observation matches the stored artifact',
     'evidence_hash': hashlib.sha256(REAL_ARTIFACT_BYTES).hexdigest(),
+    # Issue #364: the measurement point the entry was taken at (spec/measurement_points.json).
+    'measurement_point_id': 'CALLEE_EXECUTION_SLOT',
 }
 REAL_RESOLVED = frozenset({REAL_ENTRY['evidence_hash']})
+# Issue #364 mapping, from spec/measurement_points.json: point -> the only observation kind it may back.
+#   HW_BUS_READBACK_1804 -> HW_BUS_READBACK    (covers hw_bus_reset only)
+#   CALLEE_EXECUTION_SLOT -> CALLEE_EXECUTION  (covers the callee ABI fields)
+REAL_HW_ENTRY = dict(REAL_ENTRY, measurement_point_id='HW_BUS_READBACK_1804')
 REAL_OBSERVED = dict(OBSERVED, value='real-core observed value', evidence=[REAL_ENTRY])
 REAL_OBSERVED_CALLEE = dict(REAL_OBSERVED, observation_kind='CALLEE_EXECUTION')
-REAL_OBSERVED_HW = dict(REAL_OBSERVED, observation_kind='HW_BUS_READBACK')
+REAL_OBSERVED_HW = dict(REAL_OBSERVED, observation_kind='HW_BUS_READBACK', evidence=[REAL_HW_ENTRY])
 
 
 class AdjudicateClaimTests(unittest.TestCase):
@@ -649,6 +655,56 @@ class ProvenanceBypassTests(unittest.TestCase):
             adjudicate_claim(dict(REAL_OBSERVED_HW, observation_kind='CALLEE_EXECUTION'), REAL,
                              field='hw_bus_reset', context='slot 1 hw_bus_reset', executed_callee=True,
                              resolved_evidence_hashes=REAL_RESOLVED)
+
+
+# ---- Issue #364: observation kind must follow the measurement point named by the evidence, not the declaration.
+# Synthetic negative cases only: the fixtures are REALCORE-looking and hash-resolved, so every refusal below is
+# caused by the point check (or by the authentication refusal that follows it), never by a SYNTHETIC marker.
+class MeasurementPointBindingTests(unittest.TestCase):
+    def assertRefusedPoint(self, claim, message, *, field='stack', executed_callee=True):
+        with self.assertRaisesRegex(ValueError, message):
+            adjudicate_claim(claim, REAL, field=field, context=f'slot 1 {field}',
+                             executed_callee=executed_callee, resolved_evidence_hashes=REAL_RESOLVED)
+
+    def test_hw_readback_spoofed_as_callee_execution_is_rejected_for_every_callee_field(self):
+        # The #364 hole: HW_BUS_READBACK evidence + observation_kind CALLEE_EXECUTION + executed_callee=True.
+        for field in sorted(CALLEE_BEHAVIOR_FIELDS):
+            with self.subTest(field=field):
+                claim = dict(REAL_OBSERVED_CALLEE, evidence=[REAL_HW_ENTRY])
+                self.assertRefusedPoint(claim, 'spoofed observation kind', field=field)
+
+    def test_callee_point_relabelled_as_hardware_readback_is_rejected(self):
+        claim = dict(REAL_OBSERVED_HW, evidence=[REAL_ENTRY])
+        self.assertRefusedPoint(claim, 'spoofed observation kind', field='hw_bus_reset', executed_callee=False)
+
+    def test_unregistered_measurement_point_fails_closed(self):
+        for point in ('NOT_A_POINT', '', 'hw_bus_readback_1804', None, ['CALLEE_EXECUTION_SLOT']):
+            with self.subTest(point=point):
+                entry = dict(REAL_ENTRY, measurement_point_id=point)
+                self.assertRefusedPoint(dict(REAL_OBSERVED_CALLEE, evidence=[entry]), 'unknown measurement point')
+
+    def test_missing_measurement_point_fails_closed(self):
+        entry = {key: value for key, value in REAL_ENTRY.items() if key != 'measurement_point_id'}
+        self.assertRefusedPoint(dict(REAL_OBSERVED_CALLEE, evidence=[entry]), 'unknown measurement point')
+
+    def test_hw_point_backs_hardware_observation_and_callee_point_backs_callee_fields(self):
+        self.assertEqual(observation_point_for_entry(REAL_HW_ENTRY, 'hw_bus_reset', 'HW_BUS_READBACK', 'x')['kind'],
+                         'HW_BUS_READBACK')
+        self.assertEqual(observation_point_for_entry(REAL_ENTRY, 'returns', 'CALLEE_EXECUTION', 'x')['kind'],
+                         'CALLEE_EXECUTION')
+
+    def test_point_key_is_not_in_ledger_evidence_schema(self):
+        # #324 boundary: the point id is read by adjudicate_claim only; the ledger evidence schema is unchanged.
+        self.assertNotIn(MEASUREMENT_POINT_KEY, EVIDENCE_FIELDS)
+        self.assertEqual(MEASUREMENT_POINT_KEY, 'measurement_point_id')
+        with self.assertRaisesRegex(ValueError, 'exactly'):
+            validate_evidence([REAL_ENTRY], 'evidence')
+
+    def test_hw_readback_with_matching_point_still_reaches_authentication_refusal(self):
+        # Positive mapping: a correctly bound readback passes the point check and is refused only for authentication.
+        with self.assertRaisesRegex(ValueError, 'not authenticated'):
+            adjudicate_claim(REAL_OBSERVED_HW, REAL, field='hw_bus_reset', context='slot 1 hw_bus_reset',
+                             executed_callee=False, resolved_evidence_hashes=REAL_RESOLVED)
 
 
 if __name__ == '__main__':
