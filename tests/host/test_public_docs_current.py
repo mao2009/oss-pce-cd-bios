@@ -117,8 +117,9 @@ def claims_in_line(line):
 
 # A parenthesised or bracketed note, allowing one level of nesting for a Markdown link inside it.
 HISTORICAL_SPAN_RE = re.compile(r"\((?:[^()]|\([^()]*\))*\)|\[[^\[\]]*\]")
-# A cite is a whole PR number (#174, not #1740 or #17) or a whole 7-hex commit ID (not a longer SHA).
-CITE_RE = re.compile(r"#\d+(?!\d)|(?<![0-9A-Za-z])[0-9a-f]{7}(?![0-9A-Za-z])")
+# A cite is a whole PR number (#174, not #1740 or #17) or a whole 7-hex commit ID (not a longer SHA). A commit ID must
+# contain a letter, so a 7-digit count such as 0000073 is never blanked and stays checked.
+CITE_RE = re.compile(r"#\d+(?!\d)|(?<![0-9A-Za-z])(?=[0-9a-f]*[a-f])[0-9a-f]{7}(?![0-9A-Za-z])")
 
 
 def cites(text):
@@ -275,6 +276,11 @@ class PublicDocsTest(unittest.TestCase):
         self.assertEqual(
             stale_hits("Current DEV implementations: 9/81 (historical 86172e2: 8 DEV implementations)"), [])
         self.assertTrue(stale_hits("Current DEV implementations: 8/81 (historical 86172e2: 8 DEV implementations)"))
+
+    def test_seven_digit_count_is_not_a_commit_cite(self):
+        # A 7-digit count is not a commit ID: it must still be checked as a current count.
+        self.assertTrue(stale_hits("Stubs: 0000073 remain"))
+        self.assertTrue(stale_hits("Stubs: 1234567"))
 
     def test_current_merged_wording_is_allowed(self):
         self.assertEqual(stale_hits("- [#495] MA_MUL16S is MERGED (2026-10-22); #494 CLOSED."), [])
