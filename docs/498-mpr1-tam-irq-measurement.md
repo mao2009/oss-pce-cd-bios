@@ -28,12 +28,13 @@
 
 | ケース | MPR1 前→後 | PC 前→後 | S 前→後 | P 前→後 | 命令内の副作用 | IRQ 受理 | 状態差分 |
 |---|---|---|---|---|---|---|---|
-| n_irq_tam | $F8→$FF | $E00E→$E012 | $FF→$FC | $81→$85 | VDC R0 の変化 1 件（push 3 バイト分の VDC 書込み） | あり（IRQ1 の入口） | pc, p, s, mpr |
-| ff_no_irq | $F8→$FF | $E00E→$E010 | $FF→$FF | $81→$81 | なし | なし | pc, mpr |
-| ff_irq_masked | $F8→$FF | $E00D→$E00F | $FF→$FF | $85→$85 | なし | なし（I=1） | pc, mpr |
-| f8_irq | $F8→$F8 | $E00E→$E012 | $FF→$FC | $81→$85 | WRAM $01FD〜$01FF の 3 件（push） | あり | pc, p, s |
+| n_irq_tam | $F8→$FF | $E010→$E014 | $FF→$FC | $80→$84 | VDC R0 の変化 1 件（push 3 バイト分の VDC 書込み） | あり（IRQ1 の入口） | pc, p, s, mpr |
+| ff_no_irq | $F8→$FF | $E010→$E012 | $FF→$FF | $80→$80 | なし | なし | pc, mpr |
+| ff_irq_masked | $F8→$FF | $E00F→$E011 | $FF→$FF | $84→$84 | なし | なし（I=1） | pc, mpr |
+| f8_irq | $F8→$F8 | $E010→$E014 | $FF→$FC | $80→$84 | WRAM $01FD〜$01FF の 3 件（push） | あり | pc, p, s |
 
 - `n_irq_tam` の IRR は TAM 前に $02（IRQ1 保留）、IDR は $00。TAM の命令の末尾で IRQ1 の入口（ベクタ分岐）に入った。
+- 測定前の P は `clc`/`clv` で $80 に固定した（固定前は同じケースで $81 と $C0 が観測され、再現性が無かった）。P の値は判定に使っていない。
 - `f8_irq` の push は WRAM（スタック $01FD〜$01FF）に入った。MPR1 は変わらないため、命令境界の判定と整合する。
 - 差分はすべて報告した。`n_irq_tam` で想定外の差分（A、X、Y、WRAM の別箇所）は無い。MPR0-7 は MPR1 だけが変わった。
 
