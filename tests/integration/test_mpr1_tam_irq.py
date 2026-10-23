@@ -224,7 +224,9 @@ class Mpr1TamIrqRealCoreTests(unittest.TestCase):
         self.assertEqual(n["side_regs"], ["R0"])  # only the VDC R0 value change is observed (see the doc for the rest)
         self.assertEqual(n["contract_irq"][0], contract.UNMEASURED)  # the #497 contract keeps this window open
 
-    def test_rejection_happens_before_any_side_effect(self):
+    def test_rejected_cases_have_no_observed_wram_vdc_changes(self):
+        # Rejected cases show no WRAM/VDC value change at the TAM step: the measurement is limited to observed
+        # WRAM and VDC register changes, not the full guest state or the IRQ push target.
         for name in ("ff_no_irq", "ff_irq_masked"):
             with self.subTest(case=name):
                 self.assertEqual(self.results[name]["side_effects"], 0)
