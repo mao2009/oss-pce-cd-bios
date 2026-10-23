@@ -49,7 +49,7 @@ For local, **optional** diagnostics, contributors can put their own lawfully obt
 
 ## Documentation
 
-- [Actual implementation status (main vs Draft PR)](docs/status.md)
+- [Actual implementation status (main vs open Draft PR, if any)](docs/status.md)
 - [Architecture](docs/architecture.md)
 - [Building and setup](docs/building.md)
 - [Tests and evidence scope](docs/testing.md)
