@@ -92,6 +92,25 @@ class StepEnvironmentRefused(unittest.TestCase):
     def test_run_exports_path_refused(self):
         self.assert_refused(workflow(steps='      - run: export PATH=/tmp/evil:$PATH; python3 x.py\n'), 'PATH')
 
+    def test_run_appends_path_refused(self):
+        self.assert_refused(workflow(steps='      - run: PATH+=:/tmp/evil; python3 x.py\n'), 'PATH')
+
+    def test_run_exports_path_append_refused(self):
+        self.assert_refused(workflow(steps='      - run: export PATH+=:/tmp/evil; python3 x.py\n'), 'PATH')
+
+    def test_run_declares_path_append_refused(self):
+        self.assert_refused(workflow(steps='      - run: declare -x PATH+=:/tmp/evil; python3 x.py\n'), 'PATH')
+
+    def test_run_exports_quoted_path_refused(self):
+        self.assert_refused(workflow(steps='      - run: export "PATH=/tmp/evil:$PATH"; python3 x.py\n'), 'PATH')
+
+    def test_run_exports_single_quoted_path_refused(self):
+        self.assert_refused(workflow(steps="      - run: export 'PATH=/tmp/evil:$PATH'; python3 x.py\n"), 'PATH')
+
+    def test_run_names_that_contain_path_are_not_refused(self):
+        for run in ('MY_PATH=/x make', 'PYTHONPATH=/x make', 'GOPATH=/x go build', 'echo PATHS=1'):
+            self.assertIsNone(placement_refuses(CI, workflow(steps=f'      - run: {run}\n')), run)
+
     def test_composite_action_step_env_refused(self):
         text = ('name: x\ndescription: x\nruns:\n  using: composite\n  steps:\n'
                 '    - run: echo hi\n      env:\n        PATH: /tmp/evil\n')

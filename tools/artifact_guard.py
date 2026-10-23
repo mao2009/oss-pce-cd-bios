@@ -1801,7 +1801,7 @@ def _allowed_guard_run(run, finals, workflow):
 # exact step name as YAML parses it, "env", variable name). shell: is allowed per value: STEP_SHELL_ALLOWED. working-directory:
 # has no exception. The reasons are for review; the guard checks only that an entry exists.
 STEP_ENV_KEYS = frozenset({"env", "shell", "working-directory"})
-RUN_PATH_CHANGE_RE = re.compile(r"GITHUB_PATH|GITHUB_ENV|BASH_ENV|(?:^|[\s;&|(])(?:export\s+)?PATH=")
+RUN_PATH_CHANGE_RE = re.compile(r"GITHUB_PATH|GITHUB_ENV|BASH_ENV|(?:^|[\s;&|(\"'])(?:export\s+)?PATH\+?=")
 _GH_TOKEN = "GH_TOKEN: the gh CLI reads its token from this variable; it selects no program, path or shell"
 STEP_SHELL_ALLOWED = {
     "bash": "shell: bash resolves bash on PATH, as the runner's default shell does, and adds pipefail; PATH and "
