@@ -18,6 +18,7 @@ reset:
     tam #$02             ; MPR1 = WRAM (the stack page $2100-$21FF lives in MPR1)
     ldx #$FF
     txs                  ; S = $FF
+    ldy #$00             ; Y = 0 (Y was not set and differed between runs of the same case: fixed for a reproducible record)
 .ifndef CASE_TAM_MASKED
     cli                  ; I = 0: a pending IRQ1 is latched at the start of the next instruction
 .endif

@@ -10,10 +10,17 @@
 //   WRW    a WRAM byte changed in a step (offset, old, new)
 //   VDW    a VDC register changed in a step (AR, SR, R0-R31; VDC reads are not observed; a same-value write is invisible)
 //   HITS   how many steps began at each label
-//   END    final PC and MPR0-7
-// The probe CONTINUES execution after the TAM for the whole STEPS budget (the guest loops on after_tam). It does
-// not stop the guest at a denied bank; the method-A verdict is derived from the recorded state, not from a stop.
-// argv: rom labels steps irq (none | at-tam). Exit: 0 run, 2 usage, 3 ROM load, 4 label file, 5 stepping refused.
+//   HALT   (safety mode only) the first boundary where MPR1 is not the allowed bank: step, PC, A/X/Y/P/S, MPR0-7,
+//          IRR/IDR at the halt. The probe runs NO guest instruction after this record.
+//   HALTMEM (safety mode only) WRAM stack bytes $1FD-$1FF and VDC R0 at the halt
+//   END    budget, executed (loop RunInstruction calls, excluding the SEI), halted (bool), final PC and MPR0-7
+// Two modes, one binary:
+//   measure  runs the whole STEPS budget after the TAM (the guest loops on after_tam) and records everything.
+//   safety   HALTS at the first boundary where MPR1 != allowed_mpr1: no further RunInstruction. END repeats the halt
+//            state, so the stop can be checked. The halt is a host-side stop of the emulated guest, not a guest-side
+//            mechanism: this shows how the judge stops the guest, it does not add a runtime guard.
+// argv: rom labels steps irq (none | at-tam) mode (measure | safety) allowed_mpr1 (decimal 0-255).
+// Exit: 0 run, 2 usage, 3 ROM load, 4 label file, 5 stepping refused.
 #include "geargrafx_core.h"
 #include "huc6270.h"
 #include "huc6280.h"
@@ -46,7 +53,7 @@ VdcSnap snap_vdc(HuC6270::HuC6270_State* vs) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc != 5)
+    if (argc != 7)
         return 2;
     std::ifstream input(argv[1], std::ios::binary);
     if (!input)
@@ -72,6 +79,14 @@ int main(int argc, char** argv) {
         return 2;
     std::string irq = argv[4];
     if (irq != "none" && irq != "at-tam")
+        return 2;
+    std::string mode = argv[5];
+    if (mode != "measure" && mode != "safety")
+        return 2;
+    const bool safety = mode == "safety";
+    char* end_allowed = nullptr;
+    long allowed = std::strtol(argv[6], &end_allowed, 10);
+    if (!end_allowed || *end_allowed || allowed < 0 || allowed > 255)
         return 2;
 
     GeargrafxCore core;
@@ -114,12 +129,16 @@ int main(int argc, char** argv) {
     VdcSnap vdc_prev = snap_vdc(vs);
     std::map<std::string, long> hits;
     bool irq_armed = irq == "at-tam", irq_line = false, ret_done = false;
+    bool halted = false, armed = false;  // armed: the guest reached tam_site (the fixture's own reset-time MPR1 setup is not judged)
+    long executed = 0;
     const unsigned tam_site = labels["tam_site"], after_tam = labels["after_tam"], irq1_entry = labels["irq1_entry"];
 
     for (long i = 1; i < steps; ++i) {
         unsigned pc = cpu->PC->GetValue();
-        if (pc == tam_site)
+        if (pc == tam_site) {
             hits["tam_site"] += 1;
+            armed = true;
+        }
         if (pc == after_tam) {
             hits["after_tam"] += 1;
             if (!ret_done) {  // the first arrival after the TAM step (directly, or after the IRQ1 RTI)
@@ -145,6 +164,7 @@ int main(int argc, char** argv) {
             print_state("STEP", "before", i, pc);
         bool completed = false;
         processor->RunInstruction(&completed);
+        executed = i;
         if (at_tam)
             print_state("STEP", "after", i, cpu->PC->GetValue());  // the PC after the step (IRQ vector if taken)
         std::vector<u8> wram(memory->GetWorkingRAM(), memory->GetWorkingRAM() + 0x2000);
@@ -163,11 +183,20 @@ int main(int argc, char** argv) {
                 std::printf("VDW {\"step\":%ld,\"pc\":%u,\"reg\":\"R%d\",\"old\":%u,\"new\":%u}\n", i, pc,
                             r, vdc_prev.r[r], vdc.r[r]);
         vdc_prev = vdc;
+        if (safety && armed && memory->GetMpr(1) != (unsigned)allowed) {  // denied boundary: halt before the next instruction
+            halted = true;
+            print_state("HALT", "halt", i, cpu->PC->GetValue());
+            std::printf("HALTMEM {\"stack\":[%u,%u,%u],\"vdc_r0\":%u}\n", wram[0x1FD], wram[0x1FE], wram[0x1FF],
+                        vs->R[0]);
+            break;
+        }
     }
 
     std::printf("HITS {\"tam_site\":%ld,\"after_tam\":%ld,\"irq1_entry\":%ld}\n", hits["tam_site"], hits["after_tam"],
                 hits["irq1_entry"]);
-    std::printf("END {\"steps\":%ld,\"pc\":%u,\"mpr\":[", steps, cpu->PC->GetValue());
+    // budget and executed count the loop RunInstruction calls; the SEI before the loop is not counted
+    std::printf("END {\"budget\":%ld,\"executed\":%ld,\"halted\":%s,\"pc\":%u,\"mpr\":[", steps - 1, executed,
+                halted ? "true" : "false", cpu->PC->GetValue());
     for (int i = 0; i < 8; ++i)
         std::printf("%s%u", i ? "," : "", memory->GetMpr(i));
     std::printf("]}\n");
