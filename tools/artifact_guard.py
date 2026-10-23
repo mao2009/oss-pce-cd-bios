@@ -1796,31 +1796,125 @@ def _allowed_guard_run(run, finals, workflow):
                        [_guard_text(u["kind"], workflow, u["name"], "verify")]) for u in finals)
 
 
+# Issue #337 round 14. A step key that changes the environment or shell a step runs in is refused in every workflow and
+# composite action, unless listed here. env: is allowed per variable: STEP_EXCEPTIONS, keyed by (file, job id or 'runs',
+# exact step name as YAML parses it, "env", variable name). shell: is allowed per value: STEP_SHELL_ALLOWED. working-directory:
+# has no exception. The reasons are for review; the guard checks only that an entry exists.
+STEP_ENV_KEYS = frozenset({"env", "shell", "working-directory"})
+RUN_PATH_CHANGE_RE = re.compile(r"GITHUB_PATH|GITHUB_ENV|BASH_ENV|(?:^|[\s;&|(])(?:export\s+)?PATH=")
+_GH_TOKEN = "GH_TOKEN: the gh CLI reads its token from this variable; it selects no program, path or shell"
+STEP_SHELL_ALLOWED = {
+    "bash": "shell: bash resolves bash on PATH, as the runner's default shell does, and adds pipefail; PATH and "
+            "BASH_ENV cannot be set by any allowed step (env: and run: are checked)",
+}
+_SRC = ".github/workflows/"
+STEP_EXCEPTIONS = {
+    (_SRC + "api-source.yml", "verify-cdread-attestation",
+     "Verify CD-read attestation against main (gh + tools/evidence_provenance.py)", "env", "GH_TOKEN"): _GH_TOKEN,
+    (_SRC + "api-source.yml", "verify-cdread-attestation",
+     "Produce CD_READ verdict (Issue", "env", "GH_TOKEN"): _GH_TOKEN,   # YAML ends the name at " #"
+    (_SRC + "api-source.yml", "verify-cdread-verdict", "Verify verdict attestation against main",
+     "env", "GH_TOKEN"): _GH_TOKEN,
+    (_SRC + "ci.yml", "verify",
+     "Provenance guard on changed content (list edits need a verified maintainer approval)", "env", "GH_TOKEN"): _GH_TOKEN,
+    (_SRC + "nightly.yml", "plan", "Compare exact main SHA against last successful built artifact",
+     "env", "GH_TOKEN"): _GH_TOKEN,
+    (_SRC + "nightly.yml", "build", "Record candidate success state", "env", "SOURCE_SHA"):
+        "SOURCE_SHA is a job output (needs.plan.outputs.source_sha) passed to a python script; it names no program",
+}
+
+
+def _step_problems(workflow, where, step):
+    """Refusals for one step: a step env:, shell: or working-directory: key without an exception, and a run: text that
+    changes the PATH of later steps (GITHUB_PATH, GITHUB_ENV) or sets BASH_ENV or PATH. Issue #337 round 14."""
+    if not isinstance(step, dict):
+        return [f"{workflow}: {where} has a step that is not a mapping (Issue #337 round 14)"]
+    name, problems = step.get("name"), []
+    for key in step:
+        if str(key).lower() not in STEP_ENV_KEYS:
+            continue
+        value = step[key]
+        if key == "env" and isinstance(value, dict):
+            refused = [str(n) for n in value if (workflow, where, name, "env", str(n)) not in STEP_EXCEPTIONS]
+            if refused:
+                problems.append(f"{workflow}: {where} step {name!r} sets env {refused} (refused; it can change PATH, "
+                                "BASH_ENV or similar; add an exception with a reason to STEP_EXCEPTIONS, Issue #337 round 14)")
+        elif key == "shell" and isinstance(value, str) and value in STEP_SHELL_ALLOWED:
+            continue
+        else:
+            problems.append(f"{workflow}: {where} step {name!r} sets {key!r} (refused; it can change the program or the "
+                            "directory a step runs in, Issue #337 round 14)")
+    run = step.get("run")
+    if isinstance(run, str) and RUN_PATH_CHANGE_RE.search(run):
+        problems.append(f"{workflow}: {where} step {name!r} run: writes GITHUB_PATH, GITHUB_ENV, BASH_ENV or PATH "
+                        "(refused; it changes the PATH of later steps, Issue #337 round 14)")
+    return problems
+
+
+def _yaml_unreadable(text):
+    """True when PyYAML cannot read text. Without PyYAML this is False, and scope_key_violations then refuses the file."""
+    try:
+        import yaml
+    except ImportError:
+        return False
+    try:
+        yaml.load(text, Loader=_strict_loader())
+    except (yaml.YAMLError, ValueError):
+        return True
+    return False
+
+
 def scope_key_violations(text, workflow):
-    """Issue #337 round 10/12/13: top-level keys and jobs[*] keys env, defaults, container or services are refused. They
-    can change the PATH, RUNNER_TEMP or shell of a step. Decided on the parsed YAML, so indentation, quoting, flow style
-    and key order do not matter. Applies to every workflow and composite action file, with or without an upload step.
-    A file that cannot be parsed has no keys to read here; yaml_integrity_violations refuses it in check_guard_placement."""
+    """Issue #337 round 10/12/13/14. Refused, decided on the parsed YAML (indentation, quoting, flow style, key case and
+    order do not matter; keys are compared case-insensitively):
+    - top-level env, defaults, container, services (they can change the PATH, RUNNER_TEMP or shell of a step);
+    - job-level env, defaults, container, services in every job;
+    - in every step of every job (or of runs.steps in a composite action), an env, shell or working-directory key, unless
+      STEP_EXCEPTIONS names it, or a shell: value other than STEP_SHELL_ALLOWED; and a run: text that writes GITHUB_PATH,
+      GITHUB_ENV, BASH_ENV or PATH;
+    - a workflow whose jobs: is not a mapping, a job that is not a mapping, and a steps: that is not a list (fail closed).
+    Applies to every workflow and composite action file, with or without an upload step. A file that cannot be parsed is
+    refused here too (round 14), not only by yaml_integrity_violations."""
     try:
         import yaml
     except ImportError:
         return [f"{workflow}: PyYAML unavailable, scope keys cannot be checked (Issue #337 round 13)"]
     try:
         doc = yaml.load(text, Loader=_strict_loader())
-    except (yaml.YAMLError, ValueError):
-        return []
+    except (yaml.YAMLError, ValueError) as error:
+        return [f"{workflow}: YAML cannot be read, scope keys cannot be checked ({error}; Issue #337 round 14)"]
     if not isinstance(doc, dict):
-        return []   # execution_scope_violations refuses a file that is not a mapping
-    problems = []
-    for key in sorted(k for k in doc if k in SCOPE_KEYS_REFUSED):
-        problems.append(f"{workflow}: top-level {key} is refused (can change the guard's PATH or RUNNER_TEMP)")
-    jobs = doc.get("jobs")
-    for job, body in (jobs.items() if isinstance(jobs, dict) else []):
-        if not isinstance(body, dict):
-            continue   # run_allowlist_violations refuses a job that is not a mapping
-        for key in sorted(k for k in body if k in SCOPE_KEYS_REFUSED):
-            problems.append(f"{workflow}: job-level {key} in job {job!r} is refused "
-                            "(can change the guard's PATH or RUNNER_TEMP)")
+        return [f"{workflow}: the file is not a mapping, scope keys cannot be checked (Issue #337 round 14)"]
+    problems = [f"{workflow}: top-level {key} is refused (can change the guard's PATH or RUNNER_TEMP)"
+                for key in sorted(doc, key=str) if str(key).lower() in SCOPE_KEYS_REFUSED]
+    if workflow.startswith(ACTIONS + "/"):
+        runs = doc.get("runs")
+        if not isinstance(runs, dict):
+            return problems + [f"{workflow}: runs: must be a mapping, scope keys cannot be checked (Issue #337 round 14)"]
+        scopes = [("runs", runs.get("steps"))]
+    else:
+        jobs = doc.get("jobs")
+        if not isinstance(jobs, dict):
+            return problems + [f"{workflow}: jobs: must be a mapping, found {type(jobs).__name__}; scope keys cannot be "
+                               "checked (Issue #337 round 14)"]
+        scopes = []
+        for job, body in jobs.items():
+            if not isinstance(body, dict):
+                problems.append(f"{workflow}: job {job!r} must be a mapping (Issue #337 round 14)")
+                continue
+            for key in sorted(body, key=str):
+                if str(key).lower() in SCOPE_KEYS_REFUSED:
+                    problems.append(f"{workflow}: job-level {key} in job {job!r} is refused "
+                                    "(can change the guard's PATH or RUNNER_TEMP)")
+            scopes.append((job, body.get("steps")))
+    for where, steps in scopes:
+        if steps is None:
+            continue
+        if not isinstance(steps, list):
+            problems.append(f"{workflow}: {where} steps: must be a list (Issue #337 round 14)")
+            continue
+        for step in steps:
+            problems += _step_problems(workflow, where, step)
     return problems
 
 
@@ -1842,7 +1936,9 @@ def guard_placement_violations(text, workflow):
     if dup is not None:
         raise ValueError(f"{workflow}: duplicate job name {dup!r}")
     has_jobs = any(_live(l) and l.startswith("jobs:") for l in lines)
-    problems = scope_key_violations(text, workflow)
+    # An unreadable file gets no scope check here: check_guard_placement refuses it in yaml_integrity_violations, and
+    # scope_key_violations itself refuses it too (Issue #337 round 14). Only parsed structure is read.
+    problems = [] if _yaml_unreadable(text) else scope_key_violations(text, workflow)
     names = [name for name, _ in upload_steps(text)]
     for name in sorted({n for n in names if names.count(n) > 1}):
         problems.append(f"{workflow}: upload step name {name!r} is used more than once (the binding check would see one)")
