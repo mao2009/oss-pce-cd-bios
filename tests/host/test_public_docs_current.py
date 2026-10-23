@@ -6,8 +6,9 @@ an old snapshot commit, or a PR state that has since changed.
 Only CURRENT statements are checked for staleness. Two exemptions exist:
 - a Markdown bullet that starts with an ISO date (e.g. "- 2026-10-22 snapshot: 8/81 DEV.") inside a
   heading whose title contains "History" or "履歴". A date or the word "historical" on an ordinary line never exempts it.
-- a labelled count that equals the value a named PR had when it merged, on a line that says "historical"
-  and cites that PR (HISTORICAL_CLAIMS).
+- a labelled count that equals the value a named PR had when it merged, inside a parenthesised or bracketed
+  note that says "historical" and cites that PR (HISTORICAL_CLAIMS). Only the note's own count is exempt;
+  a current count on the same line is still checked.
 
 Counts are paired with their label, never matched by presence: "reference ABI VERIFIED: 9/81" is a claim
 that ABI is 9, not a DEV count. Each claim is checked against a value derived from the ledger
@@ -20,6 +21,9 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+# SNAPSHOT is the fixed 2026-10-22 main snapshot cited by every public doc. EXPECTED below is derived from the
+# ledger of the checked-out commit, so it describes that snapshot, not live main. Live main may have moved on;
+# its state is re-verified with `gh` before a doc is updated, never inferred from this test.
 SNAPSHOT = "f90c16b"  # current main snapshot cited by every public doc; update all of them together
 PUBLIC_DOCS = [
     "README.md", "docs/status.md", "docs/roadmap.md", "docs/pages.md",
@@ -111,10 +115,30 @@ def claims_in_line(line):
     return claims
 
 
-def historical_exempt(line, key, value):
-    if not HISTORICAL_WORD_RE.search(line):
-        return False
-    return any(cite in line and HISTORICAL_CLAIMS[cite].get(key) == value for cite in HISTORICAL_CLAIMS)
+# A parenthesised or bracketed note, allowing one level of nesting for a Markdown link inside it.
+HISTORICAL_SPAN_RE = re.compile(r"\((?:[^()]|\([^()]*\))*\)|\[[^\[\]]*\]")
+
+
+def historical_split(line):
+    """Return (current_text, historical_notes). A note is historical only if it says historical and cites a PR/commit.
+
+    Each note is blanked out of current_text, so its numbers are checked against HISTORICAL_CLAIMS and never
+    against the current expected counts.
+    """
+    notes = []
+
+    def take(match):
+        body = match.group(0)[1:-1]
+        if HISTORICAL_WORD_RE.search(body) and any(cite in body for cite in HISTORICAL_CLAIMS):
+            notes.append(body)
+            return " " * len(match.group(0))
+        return match.group(0)
+
+    return HISTORICAL_SPAN_RE.sub(take, line), notes
+
+
+def historical_value_ok(note, key, value):
+    return any(cite in note and HISTORICAL_CLAIMS[cite].get(key) == value for cite in HISTORICAL_CLAIMS)
 
 
 def stale_hits(text, expected=EXPECTED):
@@ -130,10 +154,15 @@ def stale_hits(text, expected=EXPECTED):
         for pattern in STALE_PATTERNS:
             if re.search(pattern, line):
                 hits.append((number, pattern))
-        for key, value, _ in claims_in_line(line):
-            if value != expected[key] and not historical_exempt(line, key, value):
+        current, notes = historical_split(line)
+        for key, value, _ in claims_in_line(current):
+            if value != expected[key]:
                 hits.append((number, f"{NAMES[key]} {value} != ledger {expected[key]}"))
-        for match in VALUE_RE.finditer(line):
+        for note in notes:
+            for key, value, _ in claims_in_line(note):
+                if not historical_value_ok(note, key, value):
+                    hits.append((number, f"historical {NAMES[key]} {value} does not match the cited PR"))
+        for match in VALUE_RE.finditer(current):
             if match.group(2) and int(match.group(1)) not in allowed:
                 hits.append((number, f"count {match.group(0).strip()} is not derived from the ledger"))
         if MERGED_PR_RE.search(line) and OPEN_WORDING_RE.search(line):
@@ -203,11 +232,20 @@ class PublicDocsTest(unittest.TestCase):
         self.assertTrue(stale_hits("## Status\n\n- 2026-10-22 snapshot: 8/81 DEV (historical).\n"))
 
     def test_historical_pr_claim_is_exempt_only_with_its_value(self):
-        roadmap = ("- [x] one callable EX_GETVER override and 80 fail-closed nonreturning stubs "
-                   "as merged in [#174] (historical as merged)")
+        roadmap = ("- [x] one callable EX_GETVER override and stub slots (historical [#174]"
+                   "(https://github.com/x/pull/174): 80 fail-closed nonreturning stubs as merged)")
         self.assertEqual(stale_hits(roadmap), [])
         self.assertTrue(stale_hits(roadmap.replace("80 fail-closed", "73 fail-closed")))
-        self.assertTrue(stale_hits(roadmap.replace("(historical as merged)", "(as merged)")))
+        self.assertTrue(stale_hits(roadmap.replace("(historical [#174]", "(as merged [#174]")))
+
+    def test_historical_note_exempts_only_its_own_count(self):
+        self.assertEqual(stale_hits("Current stubs: 72 (historical #174: 80 stubs)"), [])
+        self.assertEqual(stale_hits("Current DEV implementations: 9/81 (historical 8a136ad: 8 DEV implementations)"), [])
+        self.assertTrue(stale_hits("Current stubs: 80 (historical #174)"))
+        self.assertTrue(stale_hits("Current stubs: 80 (historical #174: 80 stubs)"))
+        self.assertTrue(stale_hits("Current stubs: 72 (historical #174: 73 stubs)"))
+        self.assertTrue(stale_hits("Current DEV implementations: 8/81 (historical #174: 80 stubs)"))
+        self.assertTrue(stale_hits("Current stubs: 72; historical #174: 80 stubs"))
 
     def test_current_merged_wording_is_allowed(self):
         self.assertEqual(stale_hits("- [#495] MA_MUL16S is MERGED (2026-10-22); #494 CLOSED."), [])

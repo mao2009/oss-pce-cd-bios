@@ -1,6 +1,6 @@
 # Implementation status — 2026-10-22 main snapshot (`f90c16b`, state verified 2026-10-23)
 
-This is an evidence-scoped, **dated snapshot**, not a real-time compatibility report. Source tree: [main at `f90c16b`](https://github.com/mao2009/oss-pce-cd-bios/commit/f90c16b6ca7b3cd6f0ee66935aa08d43c329628d), after #475, #477, #495 (MA_MUL16S), #502 and #506 merged. Recheck main and [Actions](https://github.com/mao2009/oss-pce-cd-bios/actions) for later changes. Historical progress is available in [git history](https://github.com/mao2009/oss-pce-cd-bios/commits/main/docs/status.md). Earlier snapshots (2026-10-20, 2026-10-21 and the 2026-10-22 `86172e2` / `8a136ad` figures of 8 DEV implementations) are superseded, not retroactively changed.
+This is an evidence-scoped, **dated snapshot**, not a real-time compatibility report. Source tree: [main at `f90c16b`](https://github.com/mao2009/oss-pce-cd-bios/commit/f90c16b6ca7b3cd6f0ee66935aa08d43c329628d), after #475, #477, #495 (MA_MUL16S), #502 and #506 merged. Recheck main and [Actions](https://github.com/mao2009/oss-pce-cd-bios/actions) for later changes. Historical progress is available in [git history](https://github.com/mao2009/oss-pce-cd-bios/commits/main/docs/status.md). Earlier snapshots (2026-10-20, 2026-10-21 and 2026-10-22; historical `86172e2` / `8a136ad`: 8 DEV implementations) are superseded, not retroactively changed.
 
 ## Six separate metrics
 
