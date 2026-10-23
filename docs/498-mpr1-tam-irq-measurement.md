@@ -65,7 +65,8 @@ fixture の既知値（テストの期待値の出どころ）: MPR0=$F8（`lda 
 | f8_irq | $F8→$F8 | $E012→$E016 | $FF→$FC | $80→$84 | WRAM $01FD=$80、$01FE=$14、$01FF=$E0 の 3 件（push） | あり | pc, p, s | pc=$E014、P=$80、S=$FF（RTI 後） |
 
 - `n_irq_tam` の IRR は TAM 前に $02（IRQ1 保留）、IDR は $00。TAM の命令の末尾で IRQ1 の入口（ベクタ分岐）に入った。
-- `n_irq_tam` の push は bank $FF 側に入り、WRAM ($01FD-$01FF) は変化しなかった。観測上は VDC R0 の値変化 1 件だけが見え、新値 $E014 は戻り先 `after_tam` と一致した（どの書込みが R0 に当たったかは推定。3 バイト分の書込み順は未確定）。
+- `n_irq_tam` の push 先は**推定**である。WRAM ($01FD-$01FF) は変化しなかった（実測）。観測できたのは VDC R0 の値変化 1 件（新値 $E014）だけで、新値は戻り先 `after_tam` と一致する。3 バイトの push が VDC の書込みとして現れたことは推定であり、書込み先アドレス、書込み順は未測定（bank $FF の I/O 書込みは探針が記録しない）。
+- 測定の区別: `f8_irq` の push 先（WRAM $01FD-$01FF）は**実測**。`n_irq_tam` の push 先は**推定**。WRAM の HALTMEM（$01FD-$01FF の 0）は `n_irq_tam` の実際の push 先ではない（push は WRAM に入っていない）。
 - `n_irq_tam` は RTI が `after_tam` に戻らなかった（RET なし）。戻りの読出しは観測していない。VDC 読出しは観測しないため、読まれた値も記録されない。
 - `f8_irq` の push は WRAM（スタック $01FD〜$01FF）に入った。押された値は、戻り先 `after_tam`（$E014）と TAM 前の P（$80）に一致する。RTI 後は PC、A、X、Y、P、S、MPR0-7 が TAM 前と一致した（MPR1 は変化なし）。
 - `ff_no_irq`、`ff_irq_masked` は TAM 直後の状態が TAM 前と一致した（MPR1 の変化だけを除く）。
@@ -90,15 +91,15 @@ fixture の既知値（テストの期待値の出どころ）: MPR0=$F8（`lda 
 | ケース | 方式 A（次の境界で MPR1 を判定） | #497 IRQ 窓（`judge_irq_window`） | 実測の分類 | 停止（safety） | 期待 | 結果 |
 |---|---|---|---|---|---|---|
 | n_irq_tam | FAIL（$FF） | UNMEASURED | **UNSAFE_AFTER_SIDE_EFFECT**（副作用が TAM の命令内で観測され、境界判定より前） | 停止を確認（IRQ 入口の前） | UNSAFE | 一致（既知の穴の再現。合格ではない） |
-| ff_no_irq | FAIL（$FF） | PASS（IRQ なし） | **REJECTED_NO_OBSERVED_SIDE_EFFECT_BEFORE_HALT**（TAM の命令内で観測された副作用なし、停止を確認） | 停止を確認 | 拒否 | 一致 |
-| ff_irq_masked | FAIL（$FF） | UNMEASURED（保守的。実際は受理なし） | **REJECTED_NO_OBSERVED_SIDE_EFFECT_BEFORE_HALT**（I=1 で受理なし、副作用なし、停止を確認） | 停止を確認 | 拒否 | 一致 |
+| ff_no_irq | FAIL（$FF） | PASS（IRQ なし） | **REJECTED_NO_WRAM_VDC_CHANGE_HALTED**（TAM の命令内で観測された副作用なし、停止を確認） | 停止を確認 | 拒否 | 一致 |
+| ff_irq_masked | FAIL（$FF） | UNMEASURED（保守的。実際は受理なし） | **REJECTED_NO_WRAM_VDC_CHANGE_HALTED**（I=1 で受理なし、副作用なし、停止を確認） | 停止を確認 | 拒否 | 一致 |
 | f8_irq | PASS（$F8） | PASS（MPR1 変化なし） | **PASS**（push は WRAM） | 停止なし | PASS | 一致 |
 
 分類の定義:
 
 - **UNSAFE_AFTER_SIDE_EFFECT**: MPR1 が拒否バンクに変わり、同じ命令内で副作用（WRAM/VDC の値変化）と IRQ 受理が観測された。方式 A の境界判定と停止は、この副作用より後にしか効かない。**方式 A 単独では、この副作用を防げない。**
-- **REJECTED_NO_OBSERVED_SIDE_EFFECT_BEFORE_HALT**: MPR1 が拒否バンクに変わり、TAM の命令内に観測された副作用（WRAM/VDC の値変化）と IRQ 受理が無く、safety モードで停止した（停止後の実行命令 0）。名称が示すのは「観測された副作用が無い」「停止を測定した」の 2 点だけである。同値の書込み、VDC 読出し、bank $FF のその他の I/O は観測できないため、「副作用が無い」ことの証明ではない。
-- **REJECTED_NO_OBSERVED_SIDE_EFFECT_HALT_NOT_MEASURED**: 上と同じ観測だが、停止が測定されなかった場合の名称。合格ではない。本測定では使われない（判定コードには残す）。
+- **REJECTED_NO_WRAM_VDC_CHANGE_HALTED**: MPR1 が拒否バンクに変わり、TAM の命令内に観測された副作用（WRAM/VDC の値変化）と IRQ 受理が無く、safety モードで停止した（停止後の実行命令 0）。名称が示すのは「探針が観測する範囲（WRAM の値変化と VDC レジスタの値変化）で変化が無い」「停止を測定した」の 2 点だけである。同値の書込み、VDC 読出し、bank $FF のその他の I/O（PSG、タイマ、IRQ 制御）は観測できないため、副作用が無いことの証明ではない。
+- **REJECTED_NO_WRAM_VDC_CHANGE_HALT_NOT_MEASURED**: 上と同じ観測だが、停止が測定されなかった場合の名称。合格ではない。本測定では使われない（判定コードには残す）。
 - **PASS**: MPR1 が変わらず、境界判定が PASS。
 
 ## 限界と未実施（NOT_RUN / UNMEASURED / NOT_APPLICABLE）
@@ -128,7 +129,7 @@ fixture の既知値（テストの期待値の出どころ）: MPR0=$F8（`lda 
 | 4 | IRQ-in-TAM 負例 | DONE | `n_irq_tam` を UNSAFE に固定、対照は `ff_no_irq` |
 | 5 | PC/SP/P/MPR/VDC/WRAM の比較と差分報告 | PARTIAL | PC/A/X/Y/P/S/MPR/IRR/IDR は前後比較、WRAM は毎ステップ比較、VDC は値変化のみ。VDC 読出し値（status、buffer、R7）は比較なし |
 | 6 | 副作用が拒否の前か後かの区別 | PARTIAL | TAM 経路で DONE（UNSAFE と REJECTED の分類）。他の経路は NOT_RUN |
-| 7 | 拒否後にゲストを止める（停止の実測） | DONE（ハーネス、TAM 経路） | safety モードで停止し、停止後の実行 0 と END の一致を assert（`test_safety_mode_halts_at_first_denied_boundary`、`test_halt_state_is_fixture_derived`）。ゲスト側の強制機構は本 PR の対象外（#499 / S3 の議論） |
+| 7 | 拒否後にゲストを止める（停止の実測） | DONE（探針の停止、TAM 経路）／オーナー判断待ち | safety モードで停止し、停止後の実行 0 と END の一致を assert（`test_safety_mode_halts_at_first_denied_boundary`、`test_halt_state_is_fixture_derived`）。ただし停止は探針（ホスト側）が行うもので、実 BIOS・本番経路の停止機構ではない。「ホスト側停止で #498 の拒否後停止条件を満たすか」はオーナー未決定。ゲスト側の強制機構は本 PR の対象外（#499 / S3 の議論） |
 | 8 | 退行テスト | PARTIAL | 本 PR の変更ごとに新規テスト（下の RED/GREEN 節）。既存の #470 / #481 の退行は既存スイートで間接的に通る |
 | 9 | 期待値の独立性（probe の自己比較ではなく fixture 定数） | PARTIAL | A/X/Y/S/P/MPR0 と停止時の S は fixture 定数で assert。MPR2-7 のみ pre-TAM 記録と比較（fixture が設定しない） |
 | 10 | 停止時の PC/SP/メモリ/副作用の記録 | DONE（TAM 経路） | `HALT`、`HALTMEM`、`END` を記録し、表（停止時の記録節）に転記 |

@@ -47,12 +47,12 @@ PUSH_BYTES = (0x1FD, 0x1FE, 0x1FF)  # WRAM offsets of the P / PCL / PCH stack pu
 # Verdict names (what was measured, nothing more).
 #   UNSAFE_AFTER_SIDE_EFFECT: a side effect and an IRQ acceptance happened inside the TAM step. The halt at the next
 #     boundary comes after that side effect, so method A cannot have prevented it.
-#   REJECTED_NO_OBSERVED_SIDE_EFFECT_BEFORE_HALT: MPR1 became a denied bank, no state change was observed in the TAM
+#   REJECTED_NO_WRAM_VDC_CHANGE_HALTED: MPR1 became a denied bank, no state change was observed in the TAM
 #     step (WRAM/VDC value changes only), and the safety run halted with no guest instruction executed after it.
-#   REJECTED_NO_OBSERVED_SIDE_EFFECT_HALT_NOT_MEASURED: same observation, but no halt was measured. Not a pass.
+#   REJECTED_NO_WRAM_VDC_CHANGE_HALT_NOT_MEASURED: same observation, but no halt was measured. Not a pass.
 UNSAFE = "UNSAFE_AFTER_SIDE_EFFECT"
-REJECTED = "REJECTED_NO_OBSERVED_SIDE_EFFECT_BEFORE_HALT"
-REJECTED_NO_HALT = "REJECTED_NO_OBSERVED_SIDE_EFFECT_HALT_NOT_MEASURED"
+REJECTED = "REJECTED_NO_WRAM_VDC_CHANGE_HALTED"
+REJECTED_NO_HALT = "REJECTED_NO_WRAM_VDC_CHANGE_HALT_NOT_MEASURED"
 PASS = "PASS"
 # Fixture-derived constants (tests/fixtures/mpr1_tam_irq.s): A is loaded with $FF (or $F8 in CASE_TAM_F8) before the
 # TAM; X=$FF and S=$FF are set by ldx/txs; Y=0 by ldy; P after the TAM is N (from the lda) with I=0 (cli) or I=1 (sei kept).
