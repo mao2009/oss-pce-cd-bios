@@ -1807,10 +1807,15 @@ INDIRECT_RE = re.compile(r"\$\{!|\b(?:declare|typeset|local)\b[^;&|\n]*\s-\w*n")
 DYNAMIC_GLOB_RE = re.compile(r"\$[^\s;&|]*[*?\[]|[*?\[][^\s;&|]*\$")                      # a glob beside a variable: a runner path found by pattern
 WRITE_TARGET_RE = re.compile(r"(?:&?>>?\|?|\btee\b(?:\s+-\w+)*)\s*([^\s;&|()<>]+)")         # the word after a redirection or tee
 TARGET_DYNAMIC_RE = re.compile(r"[$`*?\[{]")
+EXPANSION_RE = re.compile(r"[$`{]")     # run-time expansion; a glob alone is only a name pattern
+GLOB_RE = re.compile(r"[*?\[]")
 # Issue #337 round 16. A file-copying command in command position (cp, mv, install, dd, tee); its arguments are checked
 # token by token, so a destination assembled at run time (cp a $D, tee --append $F, dd of=$D) is refused.
-# A newline also starts a command (multi-line run:, indented or after a block scalar line); a wrapper may take options (sudo -E).
-FILE_WRITER_RE = re.compile(r"(?:^|[;&|(\n]\s*|\b(?:then|do|else|exec|command|xargs|env|time|nice|nohup|sudo)\b(?:\s+-\S+|\s+\w+=\S+)*\s+)(cp|mv|install|dd|tee)\b([^;&|\n()<>]*)")
+# Command position: start of text, after ; & | ( { ! or a newline, after a keyword (if, then, do, sudo...), with an optional
+# path prefix (/bin/cp). A wrapper may take an option and one argument (sudo -u root, nice -n 5) but not a writer name.
+FILE_WRITER_RE = re.compile(r"(?:^|[;&|({!\n]\s*|\b(?:then|do|else|if|elif|while|until|exec|command|xargs|env|time|nice|nohup|sudo)\b"
+                            r"(?:\s+-\S+(?:\s+(?!(?:cp|mv|install|dd|tee)\b)\S+)?|\s+\w+=\S+)*\s+)"
+                            r"(?:[\w./-]*/)?(cp|mv|install|dd|tee)\b([^;&|\n()<>]*)")
 TARGET_OK_RE = re.compile(r"\$GITHUB_OUTPUT|\$GITHUB_STEP_SUMMARY|\$RUNNER_TEMP/[^$`*?\[{]*")  # the only variable targets allowed
 _GH_TOKEN = "GH_TOKEN: the gh CLI reads its token from this variable; it selects no program, path or shell"
 STEP_SHELL_ALLOWED = {
@@ -1855,7 +1860,9 @@ def _step_problems(workflow, where, step):
             problems.append(f"{workflow}: {where} step {name!r} sets {key!r} (refused; it can change the program or the "
                             "directory a step runs in, Issue #337 round 14)")
     run = step.get("run")
-    if isinstance(run, str):
+    if run is not None and not isinstance(run, str):
+        problems.append(f"{workflow}: {where} step {name!r} has a run: that is not a string (refused: it cannot be read)")
+    elif isinstance(run, str):
         reason = _run_write_problem(run)
         if reason:
             problems.append(f"{workflow}: {where} step {name!r} run: {reason} "
@@ -1888,10 +1895,22 @@ def _run_write_problem(run):
     for command, args in FILE_WRITER_RE.findall(plain):
         words = args.split()
         if command in ("cp", "mv", "install"):
-            # Only the destination is written: the last word, and the word after -t (or -tDIR, --target-directory=DIR).
-            # Sources are read, so a glob in them (cp --parents build/*.pce intermediate/) is not refused.
-            words = [w for i, w in enumerate(words) if i == len(words) - 1 or words[i - 1] in ("-t", "--target-directory")
-                     or w.startswith(("-t", "--target-directory="))]
+            # Options may come after operands (GNU), so any run-time expansion in any word is refused. A glob is refused only
+            # in a destination: the last word, or a -t/--t... option and the word or attached text after it. A glob in a
+            # source (cp --parents build/*.pce intermediate/) only reads, and mv or install -d are not given one here.
+            targets = set(words[-1:])
+            for i, word in enumerate(words):
+                if word.startswith("--t") or (word.startswith("-") and not word.startswith("--") and "t" in word):
+                    targets.add(word)
+                    if i + 1 < len(words):
+                        targets.add(words[i + 1])
+            for word in words:
+                if EXPANSION_RE.search(word) and not TARGET_OK_RE.fullmatch(word):
+                    return f"copies or writes to an argument assembled at run time ({word!r}), which can name GITHUB_ENV"
+            for word in targets:
+                if GLOB_RE.search(word) and not TARGET_OK_RE.fullmatch(word):
+                    return f"writes to a destination given by a glob ({word!r})"
+            continue
         for word in words:
             if TARGET_DYNAMIC_RE.search(word) and not TARGET_OK_RE.fullmatch(word):
                 return f"copies or writes to an argument assembled at run time ({word!r}), which can name GITHUB_ENV"

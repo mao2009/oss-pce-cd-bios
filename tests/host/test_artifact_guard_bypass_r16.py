@@ -39,6 +39,23 @@ REFUSED = [
     'time cp /tmp/evil $DEST',
     'echo before\ncp -t $DEST /tmp/evil',
     'cp --target-directory=$DEST /tmp/evil',
+    'cp /tmp/evil $DEST -v',
+    'cp /tmp/evil $DEST --preserve=mode',
+    'install -m 644 /tmp/evil $DEST -v',
+    'install -Dm644 /tmp/evil $DEST -v',
+    'cp -rt $DEST /tmp/evil',
+    'cp -at $DEST /tmp/evil',
+    'install -Dt $DEST /tmp/evil',
+    'cp --target-dir=$DEST /tmp/evil',
+    'cp --targ $DEST /tmp/evil',
+    'cp -t build/* /tmp/evil',
+    'if cp /tmp/evil $DEST; then :; fi',
+    'if ! cp /tmp/evil $DEST; then :; fi',
+    'true && { cp /tmp/evil $DEST; }',
+    '/bin/cp /tmp/evil $DEST',
+    'nice -n 5 cp /tmp/evil $DEST',
+    'sudo -u root cp /tmp/evil $DEST',
+    'cp /tmp/evil build/*',
 ]
 
 ALLOWED = [
@@ -49,6 +66,8 @@ ALLOWED = [
     'dd if=build/out.bin of=build/copy.bin bs=4096',
     'python3 -m pip install -r requirements.txt',
     'mkdir -p intermediate\ncp --parents build/debug/*.pce build/debug/*.json intermediate/',
+    'cp --parents build/debug/*.pce build/debug/*.json intermediate/',
+    'mv build/*.log logs/',
 ]
 
 NOT_GUARANTEED = [
