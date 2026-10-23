@@ -189,6 +189,15 @@ MEASUREMENT_POINT_KEY = 'measurement_point_id'
 def _shape_entry(entry):
     """Evidence entry without MEASUREMENT_POINT_KEY, for the EVIDENCE_FIELDS shape check (ledger schema unchanged).
 
+    TEMPORARY INPUT EXTENSION pending Issue #324 owner approval:
+    - `measurement_point_id` is accepted as an extension key and stripped here; its value is later
+      checked by _check_declared_point() (resolve_evidence) and observation_point_for_entry()
+      (adjudicate_claim).
+    - Any OTHER key outside EVIDENCE_FIELDS is rejected by validate_evidence()'s strict
+      `set(entry) == set(EVIDENCE_FIELDS)` check.
+    - This is not an approval to add measurement_point_id to EVIDENCE_FIELDS or to spec/api_contracts.json;
+      those changes require Issue #324 owner approval.
+
     Only strips the key so the shape check sees EVIDENCE_FIELDS alone. It validates nothing about the key;
     that is _check_declared_point() (resolve_evidence) and observation_point_for_entry() (adjudicate_claim).
     """
