@@ -713,6 +713,14 @@ class MeasurementPointBindingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'exactly'):
             validate_evidence([REAL_ENTRY], 'evidence')
 
+    def test_fully_valid_observed_entry_is_still_refused(self):
+        # Regression (#364 / #124): correct point id, matching kind, covered field, executed_callee=True and resolved
+        # evidence. Every registry check passes, so the unconditional refusal (not authenticated) must still apply.
+        for field in sorted(CALLEE_BEHAVIOR_FIELDS):
+            with self.subTest(field=field):
+                self.assertRefusedPoint(REAL_OBSERVED_CALLEE, 'not authenticated', field=field)
+        self.assertRefusedPoint(REAL_OBSERVED_HW, 'not authenticated', field='hw_bus_reset', executed_callee=False)
+
     def test_hw_readback_with_matching_point_still_reaches_authentication_refusal(self):
         # Positive mapping: a correctly bound readback passes the point check and is refused only for authentication.
         with self.assertRaisesRegex(ValueError, 'not authenticated'):
