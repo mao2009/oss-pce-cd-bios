@@ -1801,7 +1801,13 @@ def _allowed_guard_run(run, finals, workflow):
 # exact step name as YAML parses it, "env", variable name). shell: is allowed per value: STEP_SHELL_ALLOWED. working-directory:
 # has no exception. The reasons are for review; the guard checks only that an entry exists.
 STEP_ENV_KEYS = frozenset({"env", "shell", "working-directory"})
-RUN_PATH_CHANGE_RE = re.compile(r"GITHUB_PATH|GITHUB_ENV|BASH_ENV|(?:^|[\s;&|(\"'])(?:export\s+)?PATH\+?=")
+RUN_PATH_CHANGE_RE = re.compile(r"GITHUB_PATH|GITHUB_ENV|BASH_ENV|_runner_file|set_env|add_path|(?:^|[\s;&|(])(?:export\s+)?PATH\+?=")
+# Issue #337 round 15. Matched on run: text with quotes and backslashes removed, so "GITHUB""_ENV" and G\ITHUB_ENV are read as GITHUB_ENV.
+INDIRECT_RE = re.compile(r"\$\{!|\b(?:declare|typeset|local)\b[^;&|\n]*\s-\w*n")          # ${!X} indirection, nameref flags
+DYNAMIC_GLOB_RE = re.compile(r"\$[^\s;&|]*[*?\[]|[*?\[][^\s;&|]*\$")                      # a glob beside a variable: a runner path found by pattern
+WRITE_TARGET_RE = re.compile(r"(?:&?>>?\|?|\btee\b(?:\s+-\w+)*)\s*([^\s;&|()<>]+)")         # the word after a redirection or tee
+TARGET_DYNAMIC_RE = re.compile(r"[$`*?\[{]")
+TARGET_OK_RE = re.compile(r"\$GITHUB_OUTPUT|\$GITHUB_STEP_SUMMARY|\$RUNNER_TEMP/[^$`*?\[{]*")  # the only variable targets allowed
 _GH_TOKEN = "GH_TOKEN: the gh CLI reads its token from this variable; it selects no program, path or shell"
 STEP_SHELL_ALLOWED = {
     "bash": "shell: bash resolves bash on PATH, as the runner's default shell does, and adds pipefail; PATH and "
@@ -1845,10 +1851,31 @@ def _step_problems(workflow, where, step):
             problems.append(f"{workflow}: {where} step {name!r} sets {key!r} (refused; it can change the program or the "
                             "directory a step runs in, Issue #337 round 14)")
     run = step.get("run")
-    if isinstance(run, str) and RUN_PATH_CHANGE_RE.search(run):
-        problems.append(f"{workflow}: {where} step {name!r} run: writes GITHUB_PATH, GITHUB_ENV, BASH_ENV or PATH "
-                        "(refused; it changes the PATH of later steps, Issue #337 round 14)")
+    if isinstance(run, str):
+        reason = _run_write_problem(run)
+        if reason:
+            problems.append(f"{workflow}: {where} step {name!r} run: {reason} "
+                            "(refused; it changes the PATH of later steps, Issue #337 round 14, 15)")
     return problems
+
+
+def _run_write_problem(run):
+    """Issue #337 round 15. The reason a run: text may write GITHUB_ENV, GITHUB_PATH, BASH_ENV, PATH or a runner file
+    command, or None. Refused: those names (also split by quotes or backslashes); an indirect expansion ${!X} or a nameref;
+    a glob beside a variable; and a redirection or tee target with a $, glob, backtick or GitHub expression unless it is
+    $GITHUB_OUTPUT, $GITHUB_STEP_SUMMARY or a $RUNNER_TEMP/ path without further expansion. This is a pattern check, not
+    a parser: dynamic code (eval, bash -c, a sourced or executed file) is not covered."""
+    plain = re.sub(r"[\"'\\]", "", run)
+    if RUN_PATH_CHANGE_RE.search(plain):
+        return "writes GITHUB_PATH, GITHUB_ENV, BASH_ENV, PATH or a runner file command"
+    if INDIRECT_RE.search(plain):
+        return "uses an indirect expansion (${!X}) or a nameref, which can name GITHUB_ENV at run time"
+    if DYNAMIC_GLOB_RE.search(plain):
+        return "uses a glob beside a variable, which can name a runner file at run time"
+    for target in WRITE_TARGET_RE.findall(plain):
+        if TARGET_DYNAMIC_RE.search(target) and not TARGET_OK_RE.fullmatch(target):
+            return f"writes to a target assembled at run time ({target!r})"
+    return None
 
 
 def _yaml_unreadable(text):
