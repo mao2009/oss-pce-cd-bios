@@ -1567,6 +1567,8 @@ def check_guard_placement(root=ROOT, partial_fixtures=False):
             raise ValueError(f"{label}: {error}") from error
         if steps:
             problems += guard_placement_violations(text, label)
+        else:
+            problems += scope_key_violations(text, label)   # a file with an upload step gets it in guard_placement_violations
         problems += publish_violations(text, label)
         problems += pages_structure_violations(text, label)
         problems += yaml_integrity_violations(text, label)
@@ -1794,6 +1796,22 @@ def _allowed_guard_run(run, finals, workflow):
                        [_guard_text(u["kind"], workflow, u["name"], "verify")]) for u in finals)
 
 
+def scope_key_violations(text, workflow):
+    """Issue #337 round 10/12: top-level or job-level env, defaults, container or services are refused. They can change
+    the PATH, RUNNER_TEMP or shell of a step. Applied to every workflow file, not only files with an upload step (a file
+    without one was not checked here before, so job-level services and defaults passed)."""
+    scope_re = re.compile(r"""["']?(%s)["']?\s*:""" % "|".join(sorted(SCOPE_KEYS_REFUSED)))
+    problems = []
+    for l in text.splitlines():
+        if not _live(l):
+            continue
+        m = scope_re.match(l.strip())
+        if m and _indent(l) in (0, 4):
+            where = "top-level" if _indent(l) == 0 else "job-level"
+            problems.append(f"{workflow}: {where} {m.group(1)} is refused (can change the guard's PATH or RUNNER_TEMP)")
+    return problems
+
+
 def guard_placement_violations(text, workflow):
     """Two kinds of job. A build job uploads only intermediate/ artifacts and runs no guard. A guard job publishes
     only staged paths: it needs the build job that produced its intermediate artifact, and its steps are the trusted
@@ -1812,15 +1830,7 @@ def guard_placement_violations(text, workflow):
     if dup is not None:
         raise ValueError(f"{workflow}: duplicate job name {dup!r}")
     has_jobs = any(_live(l) and l.startswith("jobs:") for l in lines)
-    problems = []
-    scope_re = re.compile(r"""["']?(%s)["']?\s*:""" % "|".join(sorted(SCOPE_KEYS_REFUSED)))
-    for l in lines:
-        if not _live(l):
-            continue
-        m = scope_re.match(l.strip())
-        if m and _indent(l) in (0, 4):
-            where = "top-level" if _indent(l) == 0 else "job-level"
-            problems.append(f"{workflow}: {where} {m.group(1)} is refused (can change the guard's PATH or RUNNER_TEMP)")
+    problems = scope_key_violations(text, workflow)
     names = [name for name, _ in upload_steps(text)]
     for name in sorted({n for n in names if names.count(n) > 1}):
         problems.append(f"{workflow}: upload step name {name!r} is used more than once (the binding check would see one)")
