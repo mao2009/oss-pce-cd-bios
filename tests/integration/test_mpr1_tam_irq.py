@@ -32,10 +32,11 @@ PROBE_SOURCE = "geargrafx_mpr1_tam_irq_probe.cpp"
 PROBE_TARGET = "geargrafx-mpr1-tam-irq-probe"
 LABEL_LINE = re.compile(r"^al ([0-9A-Fa-f]{6}) \.(\w+)$", re.M)
 LABELS = ("tam_site", "after_tam", "irq1_entry")
-RECORDS = ("CAP", "IRQ", "STEP", "WRW", "VDW", "HITS", "END")
+RECORDS = ("CAP", "IRQ", "STEP", "RET", "WRW", "VDW", "HITS", "END")
 STEPS = 40
 IRQ1_BIT = 0x02
 I_FLAG = 0x04
+PUSH_BYTES = (0x1FD, 0x1FE, 0x1FF)  # WRAM offsets of the P / PCL / PCH stack pushes at S=$FF (page $21xx)
 # Verdict names. UNSAFE_AFTER_SIDE_EFFECT: a side effect happened inside the TAM step and method A (a check at the
 # next boundary) could not stop it. REJECTED_BEFORE_SIDE_EFFECT: MPR1 became a denied bank, but nothing was written
 # before the boundary check, so that check stops the guest before any later side effect.
@@ -43,10 +44,10 @@ UNSAFE = "UNSAFE_AFTER_SIDE_EFFECT"
 REJECTED = "REJECTED_BEFORE_SIDE_EFFECT"
 PASS = "PASS"
 CASES = [
-    {"name": "n_irq_tam", "define": "CASE_TAM_IRQ", "irq": "at-tam", "expect": UNSAFE},
-    {"name": "ff_no_irq", "define": "CASE_TAM_NOIRQ", "irq": "none", "expect": REJECTED},
-    {"name": "ff_irq_masked", "define": "CASE_TAM_MASKED", "irq": "at-tam", "expect": REJECTED},
-    {"name": "f8_irq", "define": "CASE_TAM_F8", "irq": "at-tam", "expect": PASS},
+    {"name": "n_irq_tam", "define": "CASE_TAM_IRQ", "irq": "at-tam", "i_flag": 0, "expect": UNSAFE},
+    {"name": "ff_no_irq", "define": "CASE_TAM_NOIRQ", "irq": "none", "i_flag": 0, "expect": REJECTED},
+    {"name": "ff_irq_masked", "define": "CASE_TAM_MASKED", "irq": "at-tam", "i_flag": 1, "expect": REJECTED},
+    {"name": "f8_irq", "define": "CASE_TAM_F8", "irq": "at-tam", "i_flag": 0, "expect": PASS},
 ]
 
 
@@ -102,10 +103,14 @@ def judge(records, labels):
     else:
         measured = "UNEXPECTED"
     diffs = [key for key in ("pc", "a", "x", "y", "p", "s", "mpr", "irr", "idr") if before[key] != after[key]]
+    # The first arrival at after_tam (None if the guest never got back there in the step budget).
+    ret = records.get("RET", [None])[0]
+    wram_new = {item["wram"]: item["new"] for item in side if "wram" in item}
     return {"measured": measured, "boundary": boundary, "boundary_detail": boundary_detail,
             "contract_irq": contract_irq, "mpr1": (mpr1_before, mpr1_after), "irq_asserted": irq_asserted,
             "irq_pending": irq_pending, "irq_taken": irq_taken, "side_effects": len(side),
             "side_regs": sorted({f"{item['reg']}" if "reg" in item else f"WRAM{item['wram']:04X}" for item in side}),
+            "wram_new": wram_new, "ret": ret,
             "state_diffs": diffs, "before": before, "after": after}
 
 
@@ -116,20 +121,26 @@ class Mpr1TamIrqRealCoreTests(unittest.TestCase):
         folder = Path(cls._tmp.name)
         probe = api.compile_probe(folder, source_name=PROBE_SOURCE, target_name=PROBE_TARGET)
         cls.results = {}
+        cls.labels = {}
         for case in CASES:
             rom, labels = build_case(case["define"], folder)
             records = run_probe(probe, rom, labels, case["irq"], folder)
-            cls.results[case["name"]] = judge(records, labels)
-            cls.results[case["name"]]["rom_sha256"] = hashlib.sha256(rom.read_bytes()).hexdigest()
-            print(f"MEASURE {case['name']}: measured={cls.results[case['name']]['measured']} "
-                  f"boundary={cls.results[case['name']]['boundary']} "
-                  f"contract_irq={cls.results[case['name']]['contract_irq']} "
-                  f"mpr1={cls.results[case['name']]['mpr1']} side_effects={cls.results[case['name']]['side_effects']} "
-                  f"regs={cls.results[case['name']]['side_regs']} diffs={cls.results[case['name']]['state_diffs']} "
-                  f"pc={cls.results[case['name']]['before']['pc']:04X}->{cls.results[case['name']]['after']['pc']:04X} "
-                  f"s={cls.results[case['name']]['before']['s']:02X}->{cls.results[case['name']]['after']['s']:02X} "
-                  f"p={cls.results[case['name']]['before']['p']:02X}->{cls.results[case['name']]['after']['p']:02X} "
-                  f"irr={cls.results[case['name']]['before']['irr']:02X} idr={cls.results[case['name']]['before']['idr']:02X}")
+            r = cls.results[case["name"]] = judge(records, labels)
+            r["rom_sha256"] = hashlib.sha256(rom.read_bytes()).hexdigest()
+            cls.labels[case["name"]] = labels
+            ret = r["ret"]
+            ret_text = "none" if ret is None else f"pc={ret['pc']:04X} p={ret['p']:02X} s={ret['s']:02X}"
+            print(f"MEASURE {case['name']}: measured={r['measured']} "
+                  f"boundary={r['boundary']} "
+                  f"contract_irq={r['contract_irq']} "
+                  f"mpr1={r['mpr1']} side_effects={r['side_effects']} "
+                  f"regs={r['side_regs']} diffs={r['state_diffs']} "
+                  f"pc={r['before']['pc']:04X}->{r['after']['pc']:04X} "
+                  f"s={r['before']['s']:02X}->{r['after']['s']:02X} "
+                  f"p={r['before']['p']:02X}->{r['after']['p']:02X} "
+                  f"irr={r['before']['irr']:02X} idr={r['before']['idr']:02X} "
+                  f"wram_new={ {hex(k): hex(v) for k, v in sorted(r['wram_new'].items())} } "
+                  f"ret={ret_text}")
 
     @classmethod
     def tearDownClass(cls):
@@ -140,11 +151,26 @@ class Mpr1TamIrqRealCoreTests(unittest.TestCase):
             with self.subTest(case=case["name"]):
                 self.assertEqual(self.results[case["name"]]["measured"], case["expect"])
 
-    def test_n_irq_tam_is_a_known_hole_not_a_pass(self):
+    def test_tam_start_pending_state_is_asserted(self):
+        # The precondition of each case, asserted from the "before" record (IRR/IDR/P read after the host's assert).
+        for case in CASES:
+            with self.subTest(case=case["name"]):
+                before = self.results[case["name"]]["before"]
+                pending_expected = case["irq"] == "at-tam"
+                self.assertEqual(bool(before["irr"] & IRQ1_BIT), pending_expected)  # IRQ1 request latched
+                self.assertEqual(bool(before["p"] & I_FLAG), bool(case["i_flag"]))  # I flag as the fixture sets it
+                self.assertEqual(before["idr"] & IRQ1_BIT, 0)  # IRQ1 not disabled by IDR
+                self.assertEqual(self.results[case["name"]]["irq_pending"], pending_expected and not case["i_flag"])
+                self.assertEqual(before["mpr"][1], 0xF8)  # MPR1 = WRAM before the TAM in every case
+
+    def test_n_irq_tam_pins_known_hole_as_unsafe(self):
+        # A pinned UNSAFE verdict (the hole is real on the pinned core). It is NOT a pass and does not unblock a gate.
         n = self.results["n_irq_tam"]
+        self.assertEqual(n["measured"], UNSAFE)
         self.assertEqual(n["mpr1"], (0xF8, 0xFF))
         self.assertTrue(n["irq_taken"])
         self.assertGreater(n["side_effects"], 0)
+        self.assertEqual(n["side_regs"], ["R0"])  # only the VDC R0 value change is observed (see the doc for the rest)
         self.assertEqual(n["contract_irq"][0], contract.UNMEASURED)  # the #497 contract keeps this window open
 
     def test_rejection_happens_before_any_side_effect(self):
@@ -160,6 +186,28 @@ class Mpr1TamIrqRealCoreTests(unittest.TestCase):
         self.assertEqual(f8["boundary"], contract.PASS)
         self.assertTrue(f8["irq_taken"])
         self.assertEqual(f8["side_regs"], ["WRAM01FD", "WRAM01FE", "WRAM01FF"])  # the push lands in WRAM only
+
+    def test_normal_push_values_and_return_address(self):
+        # The pushed bytes are the P (at 1FD), PCL (1FE) and PCH (1FF) of the return address = after_tam.
+        f8 = self.results["f8_irq"]
+        after_tam = self.labels["f8_irq"]["after_tam"]
+        self.assertEqual(f8["wram_new"], {PUSH_BYTES[0]: f8["before"]["p"], PUSH_BYTES[1]: after_tam & 0xFF,
+                                          PUSH_BYTES[2]: after_tam >> 8})
+        self.assertEqual(f8["ret"]["pc"], after_tam)  # RTI returned to the pushed address
+
+    def test_return_state_preserved_after_rti_or_tam(self):
+        # Return PC and A/X/Y/P/S/MPR restored to the pre-TAM values. Only the MPR1 change is expected (the TAM).
+        for name in ("ff_no_irq", "ff_irq_masked", "f8_irq"):
+            with self.subTest(case=name):
+                r = self.results[name]
+                self.assertIsNotNone(r["ret"], "the guest did not return to after_tam within the step budget")
+                ret, before = r["ret"], r["before"]
+                self.assertEqual(ret["pc"], self.labels[name]["after_tam"])
+                for key in ("a", "x", "y", "p", "s"):
+                    self.assertEqual(ret[key], before[key], key)
+                expected_mpr = list(before["mpr"])
+                expected_mpr[1] = r["mpr1"][1]  # the TAM is the only change allowed to MPR
+                self.assertEqual(ret["mpr"], expected_mpr)
 
     def test_classifier_rejects_wrong_records(self):
         # Synthetic negative: an IRQ taken without any MPR1 change and without a boundary failure must not be UNSAFE.

@@ -6,10 +6,13 @@
 //   IRQ    IRQ1 asserted by the host before the tam_site step, or released at the IRQ1 entry
 //   STEP   state before (phase "before") and after (phase "after") the RunInstruction that starts at tam_site:
 //          PC, A, X, Y, P, S, MPR0-7, IRR and IDR (the IRQ request and disable registers)
-//   WRW    a WRAM byte changed in a step
-//   VDW    a VDC register changed in a step (AR, SR, R0-R31; VDC reads are not observed)
+//   RET    state at the FIRST arrival at after_tam: the step after the TAM (no IRQ) or after the IRQ1 RTI
+//   WRW    a WRAM byte changed in a step (offset, old, new)
+//   VDW    a VDC register changed in a step (AR, SR, R0-R31; VDC reads are not observed; a same-value write is invisible)
 //   HITS   how many steps began at each label
 //   END    final PC and MPR0-7
+// The probe CONTINUES execution after the TAM for the whole STEPS budget (the guest loops on after_tam). It does
+// not stop the guest at a denied bank; the method-A verdict is derived from the recorded state, not from a stop.
 // argv: rom labels steps irq (none | at-tam). Exit: 0 run, 2 usage, 3 ROM load, 4 label file, 5 stepping refused.
 #include "geargrafx_core.h"
 #include "huc6270.h"
@@ -98,10 +101,10 @@ int main(int argc, char** argv) {
     if (!stepping)
         return 5;
 
-    auto print_state = [&](const char* phase, long step, unsigned pc) {
-        std::printf("STEP {\"phase\":\"%s\",\"step\":%ld,\"pc\":%u,\"a\":%u,\"x\":%u,\"y\":%u,\"p\":%u,\"s\":%u,\"mpr\":[",
-                    phase, step, pc, cpu->A->GetValue(), cpu->X->GetValue(), cpu->Y->GetValue(), cpu->P->GetValue(),
-                    cpu->S->GetValue());
+    auto print_state = [&](const char* tag, const char* phase, long step, unsigned pc) {
+        std::printf("%s {\"phase\":\"%s\",\"step\":%ld,\"pc\":%u,\"a\":%u,\"x\":%u,\"y\":%u,\"p\":%u,\"s\":%u,\"mpr\":[",
+                    tag, phase, step, pc, cpu->A->GetValue(), cpu->X->GetValue(), cpu->Y->GetValue(),
+                    cpu->P->GetValue(), cpu->S->GetValue());
         for (int i = 0; i < 8; ++i)
             std::printf("%s%u", i ? "," : "", memory->GetMpr(i));
         std::printf("],\"irr\":%u,\"idr\":%u}\n", *cpu->IRR, *cpu->IDR);
@@ -110,15 +113,20 @@ int main(int argc, char** argv) {
     std::vector<u8> wram_prev(memory->GetWorkingRAM(), memory->GetWorkingRAM() + 0x2000);
     VdcSnap vdc_prev = snap_vdc(vs);
     std::map<std::string, long> hits;
-    bool irq_armed = irq == "at-tam", irq_line = false;
+    bool irq_armed = irq == "at-tam", irq_line = false, ret_done = false;
     const unsigned tam_site = labels["tam_site"], after_tam = labels["after_tam"], irq1_entry = labels["irq1_entry"];
 
     for (long i = 1; i < steps; ++i) {
         unsigned pc = cpu->PC->GetValue();
         if (pc == tam_site)
             hits["tam_site"] += 1;
-        if (pc == after_tam)
+        if (pc == after_tam) {
             hits["after_tam"] += 1;
+            if (!ret_done) {  // the first arrival after the TAM step (directly, or after the IRQ1 RTI)
+                ret_done = true;
+                print_state("RET", "after_return", i, pc);
+            }
+        }
         if (pc == irq1_entry)
             hits["irq1_entry"] += 1;
         if (irq_line && pc == irq1_entry) {  // IRQ1 entry: release the line, as the other probes do
@@ -134,11 +142,11 @@ int main(int argc, char** argv) {
             std::printf("IRQ {\"event\":\"asserted_before_step\",\"step\":%ld,\"pc\":%u}\n", i, pc);
         }
         if (at_tam)
-            print_state("before", i, pc);
+            print_state("STEP", "before", i, pc);
         bool completed = false;
         processor->RunInstruction(&completed);
         if (at_tam)
-            print_state("after", i, cpu->PC->GetValue());  // the PC after the step (the IRQ vector if one was taken)
+            print_state("STEP", "after", i, cpu->PC->GetValue());  // the PC after the step (IRQ vector if taken)
         std::vector<u8> wram(memory->GetWorkingRAM(), memory->GetWorkingRAM() + 0x2000);
         for (unsigned a = 0; a < 0x2000; ++a)
             if (wram[a] != wram_prev[a])
