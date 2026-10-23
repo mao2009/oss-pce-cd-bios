@@ -115,5 +115,70 @@ class RegressionPins(unittest.TestCase):
                             workflow(steps=f'      - <<: &a {{uses: actions/checkout@{SHA}}}\n'))
 
 
+FLOW_JOB = 'name: t\non: [push]\npermissions:\n  contents: read\njobs:\n  build: {runs-on: ubuntu-latest, container: alpine, steps: [{run: echo hi}]}\n'
+
+
+def indented_job(indent, extra):
+    """A build job whose body sits at `indent` spaces, with an extra key line (for example container) at the same depth."""
+    pad = ' ' * indent
+    return (f'name: t\non: [push]\npermissions:\n  contents: read\njobs:\n  build:\n{pad}runs-on: ubuntu-latest\n'
+            f'{pad}{extra}\n{pad}steps:\n{pad}  - run: echo hi\n')
+
+
+class ScopeByStructure(unittest.TestCase):
+    """Issue #337 round 12 (review of PR 512): the scope rule reads the parsed YAML (top-level keys and jobs[*] keys), not
+    line indentation. Each case below bypassed the earlier line-based check and must now be refused."""
+
+    def assert_refused(self, text, key):
+        reason = placement_refuses('.github/workflows/ci.yml', text)
+        self.assertIsNotNone(reason, f'{key} must be refused')
+        self.assertIn(key, reason)
+
+    def test_job_container_indent_5_refused(self):
+        self.assert_refused(indented_job(5, 'container: alpine'), 'container')
+
+    def test_job_container_indent_6_refused(self):
+        self.assert_refused(indented_job(6, 'container: alpine'), 'container')
+
+    def test_job_container_indent_8_refused(self):
+        self.assert_refused(indented_job(8, 'container: alpine'), 'container')
+
+    def test_whole_file_indent_4_container_refused(self):
+        text = workflow(job='      container: alpine\n')
+        text = '\n'.join(('    ' + line) if line else line for line in text.split('\n'))
+        self.assert_refused(text, 'container')
+
+    def test_flow_style_job_container_refused(self):
+        self.assert_refused(FLOW_JOB, 'container')
+
+    def test_quoted_job_container_indent_6_refused(self):
+        self.assert_refused(indented_job(6, '"container": alpine'), 'container')
+
+    def test_job_services_indent_6_refused(self):
+        self.assert_refused(indented_job(6, 'services: {s: {image: alpine}}'), 'services')
+
+    def test_job_defaults_indent_6_refused(self):
+        self.assert_refused(indented_job(6, 'defaults: {run: {shell: bash}}'), 'defaults')
+
+    def test_top_level_defaults_refused(self):
+        self.assert_refused(workflow(top='on: [push]\ndefaults:\n  run:\n    shell: bash\n'), 'defaults')
+
+    def test_yaml_anchor_alias_in_job_refused(self):
+        text = indented_job(6, 'container: &c alpine').replace('steps:', 'x: *c\n      steps:')
+        self.assert_refused(text, 'alias')
+
+    def test_second_document_job_container_indent_6_refused(self):
+        text = workflow() + '---\nname: t2\njobs:\n  k:\n      runs-on: x\n      container: alpine\n      steps:\n' \
+                            '        - run: echo hi\n'
+        self.assert_refused(text, 'container')
+
+
+class RealWorkflowsPass(unittest.TestCase):
+    """Positive control: the six real workflows must still pass the placement check (no false refusal)."""
+
+    def test_real_repo_placement_passes(self):
+        guard.check_guard_placement(guard.ROOT)
+
+
 if __name__ == '__main__':
     unittest.main()

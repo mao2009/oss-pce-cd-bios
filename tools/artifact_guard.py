@@ -1797,18 +1797,30 @@ def _allowed_guard_run(run, finals, workflow):
 
 
 def scope_key_violations(text, workflow):
-    """Issue #337 round 10/12: top-level or job-level env, defaults, container or services are refused. They can change
-    the PATH, RUNNER_TEMP or shell of a step. Applied to every workflow file, not only files with an upload step (a file
-    without one was not checked here before, so job-level services and defaults passed)."""
-    scope_re = re.compile(r"""["']?(%s)["']?\s*:""" % "|".join(sorted(SCOPE_KEYS_REFUSED)))
+    """Issue #337 round 10/12/13: top-level keys and jobs[*] keys env, defaults, container or services are refused. They
+    can change the PATH, RUNNER_TEMP or shell of a step. Decided on the parsed YAML, so indentation, quoting, flow style
+    and key order do not matter. Applies to every workflow and composite action file, with or without an upload step.
+    A file that cannot be parsed is refused here too (the same rule as execution_scope_violations)."""
+    try:
+        import yaml
+    except ImportError:
+        return [f"{workflow}: PyYAML unavailable, scope keys cannot be checked (Issue #337 round 13)"]
+    try:
+        doc = yaml.load(text, Loader=_strict_loader())
+    except (yaml.YAMLError, ValueError) as error:
+        return [f"{workflow}: YAML cannot be read, scope keys cannot be checked ({error}; Issue #337 round 13)"]
+    if not isinstance(doc, dict):
+        return []   # execution_scope_violations refuses a file that is not a mapping
     problems = []
-    for l in text.splitlines():
-        if not _live(l):
-            continue
-        m = scope_re.match(l.strip())
-        if m and _indent(l) in (0, 4):
-            where = "top-level" if _indent(l) == 0 else "job-level"
-            problems.append(f"{workflow}: {where} {m.group(1)} is refused (can change the guard's PATH or RUNNER_TEMP)")
+    for key in sorted(k for k in doc if k in SCOPE_KEYS_REFUSED):
+        problems.append(f"{workflow}: top-level {key} is refused (can change the guard's PATH or RUNNER_TEMP)")
+    jobs = doc.get("jobs")
+    for job, body in (jobs.items() if isinstance(jobs, dict) else []):
+        if not isinstance(body, dict):
+            continue   # run_allowlist_violations refuses a job that is not a mapping
+        for key in sorted(k for k in body if k in SCOPE_KEYS_REFUSED):
+            problems.append(f"{workflow}: job-level {key} in job {job!r} is refused "
+                            "(can change the guard's PATH or RUNNER_TEMP)")
     return problems
 
 
