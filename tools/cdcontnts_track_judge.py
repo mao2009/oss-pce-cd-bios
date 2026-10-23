@@ -11,6 +11,22 @@ distinct so that a missing answer is never read as a refusal:
 
 No ROM, emulator or reference BIOS is read. A passing judge validates only this local model, not the
 callee ABI of the synthetic-track query.
+
+Precedence (first matching rule decides; later rules are not consulted):
+1. needs_callee=True                              -> BLOCKED (BLOCKED_ABI, whatever the medium or track).
+2. medium is None (no disc loaded)                -> NEGATIVE.
+3. medium not well-formed                         -> UNKNOWN. Well-formed means: a dict with synthetic is True,
+   a plain-int leadout_lba, a list of tracks, each a dict with type in TRACK_TYPES, a plain-int no, plain-int
+   start and end, and no two tracks sharing a no. Duplicate track numbers therefore make the medium UNKNOWN.
+4. track is not a plain int (bool, str, float, None) -> NEGATIVE (malformed query), even if the track exists.
+5. track number not on the medium                 -> NEGATIVE.
+6. otherwise                                      -> POSITIVE with {type, start, end}.
+
+"Plain int" means type(x) is int, so bool (a subclass of int) is never accepted as a number.
+
+Duplication: tests/host/test_cd_contnts_track_fixture.py (#347) keeps its own copy of a judge with the
+rule-4/5/6 logic and no well-formedness check. It is not delegated to here (#347 is not refactored); the two
+copies can diverge on malformed media. Converge after #347 lands.
 """
 import hashlib
 import json
@@ -31,9 +47,14 @@ def _well_formed(medium):
     if not isinstance(medium, dict) or medium.get("synthetic") is not True:
         return False
     tracks = medium.get("tracks")
-    if not isinstance(tracks, list) or not isinstance(medium.get("leadout_lba"), int):
+    if not isinstance(tracks, list) or type(medium.get("leadout_lba")) is not int:
         return False
-    return all(isinstance(t, dict) and t.get("type") in TRACK_TYPES and type(t.get("no")) is int for t in tracks)
+    for t in tracks:
+        if not isinstance(t, dict) or t.get("type") not in TRACK_TYPES:
+            return False
+        if any(type(t.get(key)) is not int for key in ("no", "start", "end")):
+            return False
+    return len({t["no"] for t in tracks}) == len(tracks)  # duplicate track numbers are outside the model
 
 
 def judge(medium, track, needs_callee=False):
