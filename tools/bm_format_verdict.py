@@ -23,6 +23,9 @@ PASS, FAIL, NOT_RUN, BLOCKED_ABI = "PASS", "FAIL", "NOT_RUN", "BLOCKED_ABI"
 REJECTED_INVALID_SIGNATURE = "REJECTED_INVALID_SIGNATURE"
 ABI_STATUS = "UNKNOWN"
 RELEASE_ELIGIBLE = False
+# Only these statuses may be expected or observed; anything else (even a matching bogus value) is FAIL.
+ALLOWED_STATUSES = frozenset({bm.OK, bm.REFUSED_UNCONFIRMED, bm.INSUFFICIENT_CAPACITY,
+                              bm.ALREADY_FORMATTED, REJECTED_INVALID_SIGNATURE})
 
 
 def guarded_format(image, *, allow_destructive=False):
@@ -50,7 +53,9 @@ def judge(expected, status, image, out):
     if expected is None:
         return NOT_RUN
     try:
-        if status is None or status != expected or not isinstance(out, (bytes, bytearray)):
+        if expected not in ALLOWED_STATUSES or status != expected:
+            return FAIL
+        if not isinstance(out, (bytes, bytearray)):
             return FAIL
         if status != bm.OK:
             return PASS if bytes(out) == bytes(image) else FAIL
@@ -90,7 +95,10 @@ CASES = [
 
 
 def run_case(name, image, allow, expected):
-    snapshot = bytes(image)
+    try:
+        snapshot = bytes(image)
+    except Exception:  # fail-closed: an image that cannot be snapshotted is a FAIL
+        return {"case": name, "verdict": FAIL, "status": None}
     try:
         status, out = guarded_format(image, allow_destructive=allow)
     except Exception:  # fail-closed: any exception is a FAIL, never a PASS
