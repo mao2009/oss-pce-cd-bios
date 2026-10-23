@@ -4,7 +4,8 @@ Each case is a separate build of tests/fixtures/mpr1_tam_irq.s, run on the UNMOD
 geargrafx_mpr1_tam_irq_probe.cpp in two modes:
   measure  the full STEPS budget is run; records every state, WRAM and VDC change (no stop).
   safety   the probe HALTS at the first instruction boundary where MPR1 is not the allowed stack bank: it runs no
-           further guest instruction. The HALT / HALTMEM / END records show the state at the halt.
+           further guest instruction. This is a host-side stop of the emulated guest (the probe stops calling
+           RunInstruction). It is NOT a guest-side safety mechanism. The HALT / HALTMEM / END records show the halt.
 The guest executes TAM #$02 (MPR1 = A) at tam_site; the host asserts IRQ1 before that step where the case says so.
 Method A only checks MPR1 at instruction boundaries, so the question is whether an IRQ push can happen inside the
 TAM's own RunInstruction, before the boundary check sees MPR1 = $FF. Scheme A alone cannot stop that push.
@@ -253,10 +254,12 @@ class Mpr1TamIrqRealCoreTests(unittest.TestCase):
         self.assertEqual(self.results["ff_no_irq"]["side_effects"], 0)
         n = self.results["n_irq_tam"]["halt"]
         self.assertEqual(n["pc"], self.labels["n_irq_tam"]["irq1_entry"])  # halted before the RTI of the IRQ1 handler
-        self.assertEqual(n["s"], FIXTURE_S - 3)  # the IRQ1 entry pushes 3 bytes (PCH, PCL, P) into bank $FF
+        self.assertEqual(n["s"], FIXTURE_S - 3)  # measured: S dropped by 3 at the IRQ1 entry
         self.assertTrue(n["p"] & I_FLAG)  # the IRQ1 entry sets I
         self.assertEqual(n["mpr"][1], 0xFF)
-        self.assertEqual(self.results["n_irq_tam"]["side_regs"], ["R0"])  # the push is only seen as the VDC R0 change
+        # Measured: only one VDC R0 value change is observed; WRAM $1FD-$1FF is unchanged (HALTMEM = 0, not the push
+        # target). The push target (bank $FF, I/O write) is an ESTIMATE that matches this R0 change, not a measurement.
+        self.assertEqual(self.results["n_irq_tam"]["side_regs"], ["R0"])
 
     def test_measure_mode_keeps_full_step_budget_and_no_halt(self):
         for case in CASES:
