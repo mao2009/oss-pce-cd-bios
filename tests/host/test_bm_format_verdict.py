@@ -197,7 +197,6 @@ class FailClosedNegativeTest(unittest.TestCase):
 
         self.assertEqual(v.judge(RaisingEq(), bm.OK, bytes(64), v._formatted()), v.FAIL)
 
-    @unittest.expectedFailure  # GAP on head: equality-only membership lets an always-equal proxy pass.
     def test_expected_always_equal_proxy_is_fail(self):
         class AlwaysEqual:
             def __hash__(self):
@@ -268,7 +267,6 @@ class FailClosedNegativeTest(unittest.TestCase):
                 report = v.run_all([("a", bytes(64), True, bm.OK)])
                 self.assertNotEqual(report["overall"], v.PASS)
 
-    @unittest.expectedFailure  # GAP on head: run_case counts a None verdict as a ran case, not FAIL.
     def test_invalid_judge_return_is_fail_per_case(self):
         with mock.patch.object(v, "judge", return_value=None):
             report = v.run_all([("a", bytes(64), True, bm.OK)])

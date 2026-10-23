@@ -53,7 +53,12 @@ def judge(expected, status, image, out):
     if expected is None:
         return NOT_RUN
     try:
-        if expected not in ALLOWED_STATUSES or status != expected:
+        # Strict type + allowlist validation to prevent Python type/coercion tricks
+        if type(expected) is not str or type(status) is not str:
+            return FAIL
+        if expected not in ALLOWED_STATUSES or status not in ALLOWED_STATUSES:
+            return FAIL
+        if status != expected:
             return FAIL
         if not isinstance(out, (bytes, bytearray)):
             return FAIL
@@ -106,7 +111,10 @@ def run_case(name, image, allow, expected):
     # The input buffer must never be written, whatever the verdict.
     if isinstance(image, bytearray) and bytes(image) != snapshot:
         return {"case": name, "verdict": FAIL, "status": status}
-    return {"case": name, "verdict": judge(expected, status, snapshot, out), "status": status}
+    verdict = judge(expected, status, snapshot, out)
+    if verdict not in (PASS, FAIL, NOT_RUN):
+        verdict = FAIL
+    return {"case": name, "verdict": verdict, "status": status}
 
 
 def run_all(cases=CASES):
