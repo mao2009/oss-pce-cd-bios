@@ -279,5 +279,70 @@ class FailClosedNegativeTest(unittest.TestCase):
         self.assertEqual(report["cases"][0]["verdict"], v.FAIL)
 
 
+class VerdictTypeGuardTest(unittest.TestCase):
+    """run_case() must reject non-str verdicts without propagating exceptions."""
+
+    def setUp(self):
+        self.img = bytes(64)
+
+    def test_always_equal_verdict_is_fail(self):
+        class AlwaysEqual:
+            def __eq__(self, other):
+                return True
+
+        with mock.patch.object(v, "judge", return_value=AlwaysEqual()):
+            report = v.run_all([("a", self.img, True, bm.OK)])
+        self.assertEqual(report["cases"][0]["verdict"], v.FAIL)
+
+    def test_comparison_raising_verdict_is_fail(self):
+        class RaisingEq:
+            def __eq__(self, other):
+                raise RuntimeError("boom")
+
+        with mock.patch.object(v, "judge", return_value=RaisingEq()):
+            report = v.run_all([("a", self.img, True, bm.OK)])
+        self.assertEqual(report["cases"][0]["verdict"], v.FAIL)
+
+    def test_none_verdict_is_fail(self):
+        with mock.patch.object(v, "judge", return_value=None):
+            report = v.run_all([("a", self.img, True, bm.OK)])
+        self.assertEqual(report["cases"][0]["verdict"], v.FAIL)
+
+    def test_true_verdict_is_fail(self):
+        with mock.patch.object(v, "judge", return_value=True):
+            report = v.run_all([("a", self.img, True, bm.OK)])
+        self.assertEqual(report["cases"][0]["verdict"], v.FAIL)
+
+    def test_int_one_verdict_is_fail(self):
+        with mock.patch.object(v, "judge", return_value=1):
+            report = v.run_all([("a", self.img, True, bm.OK)])
+        self.assertEqual(report["cases"][0]["verdict"], v.FAIL)
+
+    def test_float_one_verdict_is_fail(self):
+        with mock.patch.object(v, "judge", return_value=1.0):
+            report = v.run_all([("a", self.img, True, bm.OK)])
+        self.assertEqual(report["cases"][0]["verdict"], v.FAIL)
+
+    def test_unknown_string_verdict_is_fail(self):
+        with mock.patch.object(v, "judge", return_value="BOGUS"):
+            report = v.run_all([("a", self.img, True, bm.OK)])
+        self.assertEqual(report["cases"][0]["verdict"], v.FAIL)
+
+    def test_pass_verdict_stays_pass(self):
+        with mock.patch.object(v, "judge", return_value=v.PASS):
+            report = v.run_all([("a", self.img, True, bm.OK)])
+        self.assertEqual(report["cases"][0]["verdict"], v.PASS)
+
+    def test_fail_verdict_stays_fail(self):
+        with mock.patch.object(v, "judge", return_value=v.FAIL):
+            report = v.run_all([("a", self.img, True, bm.OK)])
+        self.assertEqual(report["cases"][0]["verdict"], v.FAIL)
+
+    def test_not_run_verdict_stays_not_run(self):
+        with mock.patch.object(v, "judge", return_value=v.NOT_RUN):
+            report = v.run_all([("a", self.img, True, bm.OK)])
+        self.assertEqual(report["cases"][0]["verdict"], v.NOT_RUN)
+
+
 if __name__ == "__main__":
     unittest.main()

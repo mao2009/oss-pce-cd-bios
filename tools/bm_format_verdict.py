@@ -112,7 +112,7 @@ def run_case(name, image, allow, expected):
     if isinstance(image, bytearray) and bytes(image) != snapshot:
         return {"case": name, "verdict": FAIL, "status": status}
     verdict = judge(expected, status, snapshot, out)
-    if verdict not in (PASS, FAIL, NOT_RUN):
+    if type(verdict) is not str or verdict not in (PASS, FAIL, NOT_RUN):
         verdict = FAIL
     return {"case": name, "verdict": verdict, "status": status}
 
