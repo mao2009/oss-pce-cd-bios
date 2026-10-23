@@ -67,11 +67,11 @@ Host tests: `python3 -m unittest tests.host.test_cdreset -v` (records are synthe
 
 ### 観測点 ID の照合（Issue #364）: 登録簿整合のみ・真正性は未実装
 
-- 実装済み（登録簿整合）: OBSERVED 証拠の `measurement_point_id` を `spec/measurement_points.json` と照合し、観測点の kind と覆う字段を宣言 `observation_kind` / 字段と突き合わせる。`HW_BUS_READBACK` の証拠を `CALLEE_EXECUTION` と偽装することは拒否する。未登録・欠落は fail closed。
-- 自己宣言: 観測点 ID は呼び出し側の自己宣言である。登録簿を読める呼び出し側は、欲しい kind の有効な観測点 ID を宣言できる。証拠ハッシュ・ログ・成果物への束縛は `tools/contracts.py` では行わない（`measurement_evidence.verify_record` はログ照合のみ）。
-- 未実装（真正性）: 証拠の真正性（実行主体の認証、producer authentication）は実装していない。追跡先は #124 / #171。
-- OBSERVED は認証なしのため、観測点の照合が通っても最後の refuse で必ず拒否される。この拒否は緩めていない。
-- 台帳スキーマは変更しない。`measurement_point_id` は `EVIDENCE_FIELDS` に入らず、台帳 OBSERVED 証拠では形状検査の前に黙って除かれる。スキーマ化の判断は owner 判断の #324 に残し、本変更では承認していない。
+- (a) 登録簿整合（実装済み）: OBSERVED 証拠の `measurement_point_id` を `spec/measurement_points.json` と照合し、観測点の kind が宣言 `observation_kind` と一致し、観測点が宣言字段を覆うことを確認する。`HW_BUS_READBACK` の証拠を `CALLEE_EXECUTION` と偽装することは拒否する。未登録・欠落は fail closed。
+- (b) 証拠の真正性（未実装）: 証拠のハッシュ・ログ・成果物が実測から来たことの確認、および実行主体の認証（producer authentication）は実装していない。追跡先は #124 / #171。
+- (c) 自己宣言: 観測点 ID は呼び出し側の自己宣言である。登録簿を読める呼び出し側は、欲しい kind の有効な観測点 ID を宣言できる。ID はハッシュ・ログ・成果物に束縛されない（`measurement_evidence.verify_record` はログ照合のみで、本経路では行わない）。したがって (a) は「宣言の整合」であり、認証や真正性の代わりにはならない。
+- OBSERVED は (b) が未実装のため、(a) の照合が通っても最後の refuse で必ず拒否される。この拒否は緩めていない（回帰試験 `test_fully_valid_observed_entry_is_still_refused`）。
+- 台帳スキーマの境界（#324）: `measurement_point_id` は `EVIDENCE_FIELDS` に入れていない。`_shape_entry`（`tools/contracts.py`）は形状検査（`validate_evidence`）の前に当該キーを黙って取り除く。したがって台帳の OBSERVED 証拠に載ったこのキーは形状検査で無視され、キーの保存場所（`spec/api_contracts.json` への追加）と `EVIDENCE_FIELDS` への追加は owner 判断の #324 に残す。本変更ではスキーマを変えず、#324 も承認していない。
 
 Caller side vs callee: every `HYPOTHESIS` row above is a caller-side HuCC SDK claim or a Hu-Go HLE model
 (pcengine.inc / hucc-systemcard.asm / core-*.asm @54f5c736; bios.c @64ed226da). It documents what callers
