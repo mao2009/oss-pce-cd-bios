@@ -31,9 +31,17 @@ def _valid(item, value):
     return _byte(value)
 
 
+def _known_expectation_valid(item, expected):
+    return expected == UNKNOWN or _valid(item, expected)
+
+
 def judge(case, obs):
-    """Return (overall, per_item). obs keys: monitor_ok, reached, gate, and ITEMS (missing = not observed)."""
-    if not case.get('executable'):
+    """Return (overall, per_item). obs keys: monitor_ok, reached, gate, and ITEMS (missing = not observed).
+
+    Anything that cannot be evaluated (case not executable, malformed or missing expectations, malformed
+    observations) is BLOCKED; it never raises and never yields PASS.
+    """
+    if case.get('executable') is not True:
         return BLOCKED, {'reason': case.get('reason', 'not executable')}
     if not isinstance(obs, dict) or obs.get('monitor_ok') is not True:
         return BLOCKED, {'reason': 'monitor failed or evidence unreadable'}
@@ -41,9 +49,15 @@ def judge(case, obs):
         return BLOCKED, {'reason': 'not reached'}
     if obs.get('gate') != 'ALLOWED':
         return BLOCKED, {'reason': 'JSR gate not ALLOWED'}
+    expectations = case.get('expected')
+    if not isinstance(expectations, dict):
+        return BLOCKED, {'reason': 'expectation table missing'}
     items = {}
     for item in ITEMS:
-        expected = case['expected'][item]
+        if item not in expectations or not _known_expectation_valid(item, expectations[item]):
+            items[item] = BLOCKED
+            continue
+        expected = expectations[item]
         if item not in obs:
             items[item] = UNKNOWN if expected == UNKNOWN else BLOCKED
         elif not _valid(item, obs[item]):

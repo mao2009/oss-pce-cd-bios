@@ -13,9 +13,9 @@
 
 | ID | 条件 | 選定理由 | 既存の証跡 |
 | --- | --- | --- | --- |
-| C1 | 範囲外 LBA（LBA 16、合成16セクター媒体の外） | 転送層で STATUS のみ・宛先未変更が計測済み | [M] T3（`invalid_sector_lba16`）。callee は未観測 |
+| C1 | 範囲外 LBA（LBA 16、合成16セクター媒体の外） | 転送層で STATUS のみ・宛先未変更が計測済み | [M] T3（`invalid_sector_lba16`）。callee は未観測。**範囲判定は Q7（LBA の基点）に依存するため暫定** |
 | C2 | count 0 | 呼出側の分岐（HuCC L436-438）は確認済み。BIOS の戻りは未計測 | [C] A4、[M] なし |
-| C3 | 無媒体 | 実行不能。静的 BLOCKED として残す | [M] T7（Geargrafx では実行不能） |
+| C3 | 無媒体 | 実行不能。静的 BLOCKED として残す | [U] [cd-read-contract.md](cd-read-contract.md) の T7（「no disc / zero-sector image」、UNKNOWN、計測なし。Geargrafx は媒体なしで実行できない） |
 
 対象外: 末尾跨ぎ（T4 のみ計測、#189 残件として §5 に残す）、timeout / busy、他の転送モード、CD_EXEC。
 
@@ -33,18 +33,21 @@
 
 | 判定 | 条件 |
 | --- | --- |
-| BLOCKED | 実行不能ケース、監視失敗・評価不能な入力、未到達、gate が ALLOWED でない、不正値（型・範囲・長さ）、既知の期待値に対する観測の欠落 |
+| BLOCKED | `executable` が厳密に `True` でないケース、監視失敗・評価不能な入力、未到達、gate が ALLOWED でない、不正値（型・範囲・長さ）、既知の期待値に対する観測の欠落、期待値の欠落・不正な型（`bool` を `int` として扱わない）。例外を投げず、PASS にはならない |
 | FAIL | 既知の期待値と観測が不一致（現行の表は全て UNKNOWN のため、合成期待値でのみ起こる） |
 | UNKNOWN | 期待値が UNKNOWN の項目。観測があっても正常値へ変換しない |
 | PASS | 全項目が既知の期待値と一致。現行の表からは出ない |
 
-全体の判定は FAIL > BLOCKED > UNKNOWN > PASS の最大値とする。
+全体の判定は FAIL > BLOCKED > UNKNOWN > PASS の最大値とする。`tests/host/test_cd_read_error_verdict.py` は FAIL・BLOCKED・UNKNOWN・PASS が混在する実ケースを `judge()` に通し、この順序を検証する。
+
+現行の 3 ケースはいずれも期待値が全て UNKNOWN のため、どの観測を与えても PASS にならない（テストで確認）。C1 の範囲判定は Q7 に依存するため暫定。
 
 ## 4. 既存の呼出側・既存文書との整合
 
 * 呼出側の事実: HuCC の cd_read 呼出側は戻り値が 0 のとき成功、非0をエラーとして扱う（[cd-base-abi-ledger.md](cd-base-abi-ledger.md) (6)、HYPOTHESIS の期待）。これは **呼出側の期待** であり、BIOS の戻り値の証拠ではない。
 * 既存の `cd-read-contract.md` の失敗値（no disc / bad block / read error / busy）の値は未確定（[abi-contracts.md](abi-contracts.md) CD_READ 節）。
 * 本 PR は既存文書を書き換えない。
+* Q1〜Q9 はすべて未解決のまま残す。本 PR は解決したと主張しない。
 
 ## 5. 未解決事項
 
