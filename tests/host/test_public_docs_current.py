@@ -3,9 +3,10 @@
 Fails when a README, status/roadmap/pages doc, Pages page or llms.txt keeps a stale count,
 an old snapshot commit, or a PR state that has since changed.
 
-Only CURRENT statements are checked for staleness. A line that carries an ISO date and an explicit
-historical marker (e.g. "2026-10-22 ... historical", "superseded", "dated history") is a dated record
-and is exempt. Merged-PR state is checked against a fixed list, not the live GitHub API.
+Only CURRENT statements are checked for staleness. The single exemption is a dated record:
+a Markdown bullet that starts with an ISO date (e.g. "- 2026-10-22 snapshot: 8/81 DEV.") inside a
+heading whose title contains "History" or "履歴". A date or the word "historical" on an ordinary
+line never exempts it. Merged-PR state is checked against a fixed list, not the live GitHub API.
 """
 import json
 import re
@@ -18,8 +19,8 @@ PUBLIC_DOCS = [
     "README.md", "docs/status.md", "docs/roadmap.md", "docs/pages.md",
     "site/index.html", "site/ja/index.html", "site/llms.txt",
 ]
-# Known-merged PRs as of 2026-10-23 (checked with `gh pr view`). Fixed list on purpose: tests stay offline.
-MERGED_PRS = (475, 477, 495, 502, 506)
+# Known-merged PRs and closed issues as of 2026-10-23 (checked with `gh pr view`). Fixed list: tests stay offline.
+MERGED_PRS = (475, 477, 494, 495, 502, 506)
 STALE_PATTERNS = [
     r"\b8/81\b",  # any current 8/81 (the 2026-10-22 snapshot figure) is stale
     r"8/81 DEV on main", r"main alone is 8/81", r"main:? 73/81",
@@ -27,25 +28,24 @@ STALE_PATTERNS = [
 ]
 MERGED_PR_RE = re.compile(r"(?:#|pull/)(?:%s)\b" % "|".join(str(n) for n in MERGED_PRS))
 OPEN_WORDING_RE = re.compile(r"unmerged|未マージ|\bDraft\b|\bopen\b", re.IGNORECASE)
-DATE_RE = re.compile(r"\b20\d\d-\d\d-\d\d\b")
-HISTORICAL_RE = re.compile(r"historical|superseded|dated history|earlier snapshot", re.IGNORECASE)
-
-
-def is_historical(line):
-    return bool(DATE_RE.search(line) and HISTORICAL_RE.search(line))
+DATED_BULLET_RE = re.compile(r"^\s*[-*]\s+\**\s*20\d\d-\d\d-\d\d\b")
+HISTORY_HEADING_RE = re.compile(r"^\s*#{1,6}\s.*(history|履歴)", re.IGNORECASE)
 
 
 def stale_hits(text):
-    """Return (line_no, reason) for every current (non-historical) line that carries a stale claim."""
+    """Return (line_no, reason) for every current line that carries a stale claim."""
     hits = []
+    in_history = False
     for number, line in enumerate(text.splitlines(), 1):
-        if is_historical(line):
-            continue
+        if re.match(r"^\s*#{1,6}\s", line):
+            in_history = bool(HISTORY_HEADING_RE.match(line))
+        if in_history and DATED_BULLET_RE.match(line):
+            continue  # dated record under a History heading: exempt
         for pattern in STALE_PATTERNS:
             if re.search(pattern, line):
                 hits.append((number, pattern))
         if MERGED_PR_RE.search(line) and OPEN_WORDING_RE.search(line):
-            hits.append((number, "merged PR described as open/unmerged/Draft"))
+            hits.append((number, "merged PR or closed issue described as open/unmerged/Draft"))
     return hits
 
 
@@ -79,16 +79,28 @@ class PublicDocsTest(unittest.TestCase):
             with self.subTest(doc=name):
                 self.assertEqual(stale_hits(text), [], f"stale claim in {name}")
 
-    def test_detector_flags_reintroduced_8_81_and_unmerged_wording(self):
+    def test_detector_flags_current_8_81_and_unmerged_wording(self):
         self.assertTrue(stale_hits("Current main: 8/81 DEV implementations."))
         self.assertTrue(stale_hits("- DEV count 8/81"))
+        self.assertTrue(stale_hits("Current DEV count: 8/81."))
         self.assertTrue(stale_hits("PR #475 is unmerged and still a Draft."))
         self.assertTrue(stale_hits("[#495](https://github.com/x/pull/495) is open Draft work."))
         self.assertTrue(stale_hits("PR #506 (未マージ) wires CI."))
+        self.assertTrue(stale_hits("Issue #494 is unmerged and still open."))
+        self.assertTrue(stale_hits("#494 は未マージです。"))
 
-    def test_detector_allows_dated_history_and_current_merged_wording(self):
-        self.assertEqual(stale_hits("2026-10-22 historical snapshot: 8/81 DEV."), [])
-        self.assertEqual(stale_hits("Earlier 6/81, 7/81 and the 2026-10-22 8/81 reports are dated history."), [])
+    def test_date_or_historical_word_on_same_line_does_not_exempt(self):
+        self.assertTrue(stale_hits("2026-10-22 historical note: DEV count is 8/81."))
+        self.assertTrue(stale_hits("2026-10-22 historical snapshot: 8/81 DEV."))
+        self.assertTrue(stale_hits("Earlier 6/81 and the 2026-10-22 8/81 report are dated history."))
+        self.assertTrue(stale_hits("- 2026-10-22 historical note: DEV count is 8/81. (9/81 now)\n## History"))
+
+    def test_dated_bullet_under_history_heading_is_exempt(self):
+        text = "## Status\n\n- Current: 9/81.\n\n## History\n\n- 2026-10-22 snapshot: 8/81 DEV (historical).\n"
+        self.assertEqual(stale_hits(text), [])
+        self.assertTrue(stale_hits("## Status\n\n- 2026-10-22 snapshot: 8/81 DEV (historical).\n"))
+
+    def test_current_merged_wording_is_allowed(self):
         self.assertEqual(stale_hits("- [#495] MA_MUL16S is MERGED (2026-10-22); #494 CLOSED."), [])
         self.assertEqual(stale_hits("Issue #476 remains OPEN, BLOCKED."), [])
 

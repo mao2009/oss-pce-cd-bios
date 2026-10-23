@@ -27,7 +27,7 @@ Both language pages contain four full-card links to the source repository, dated
 
 ## Editorial conventions
 
-- The visible figures are a **2026-10-23 main snapshot** at [`f90c16b`](https://github.com/mao2009/oss-pce-cd-bios/commit/f90c16b6ca7b3cd6f0ee66935aa08d43c329628d) (MA_MUL16S merged via [#495](https://github.com/mao2009/oss-pce-cd-bios/pull/495)): **9/81** DEV ROM implementations, **72** nonreturning stubs, **0** owner-approved DEV_CALLABLE, **0/81** reference ABI VERIFIED and **0** verified BIOS-mediated CD program boots. Earlier 6/81, 7/81 and the 2026-10-22 8/81 reports are dated history, not current main. Historical host test counts are not a retail-game compatibility percentage.
+- The visible figures are a **2026-10-22 main snapshot** (state verified 2026-10-23) at [`f90c16b`](https://github.com/mao2009/oss-pce-cd-bios/commit/f90c16b6ca7b3cd6f0ee66935aa08d43c329628d) (MA_MUL16S merged via [#495](https://github.com/mao2009/oss-pce-cd-bios/pull/495)): **9/81** DEV ROM implementations, **72** nonreturning stubs, **0** owner-approved DEV_CALLABLE, **0/81** reference ABI VERIFIED and **0** verified BIOS-mediated CD program boots. Historical host test counts are not a retail-game compatibility percentage.
 - These are not percentages of commercial-game compatibility, current test counts, approved reference-BIOS ABI or firmware release readiness. Neither signed diagnostic evidence nor a CD sector-read experiment is a retail compatibility test.
 - Update both languages, llms.txt, README, docs/status.md and check_pages.py together when evidence changes. The 2026-10-20 note records earlier safety/evidence changes. The 2026-10-22 note records #480 DEV-only MA_DIV16U and #481 synthetic stack experiment; it is **not** approval of a production safety guard. #475/#477 are merged as evidence only, #502/#506 are merged as a DEV-only internal path, and the reference ROM SHA-256 identity (#476) remains unresolved. `tests/host/test_public_docs_current.py` fails when these public figures or PR states drift.
 - Do not insert unverified contributor identities, private ROMs, game data, disassembly, local paths, uploaded media, or other copyrighted/proprietary source material. Use actual Issues and the existing CONTRIBUTING.md and provenance policies as the route into collaboration.
@@ -45,3 +45,7 @@ Both language pages contain four full-card links to the source repository, dated
 - Search ranking, search indexing, AI retrieval, answer citations and when they happen cannot be guaranteed by SEO markup. Measure real visibility only after deployment and verified Search Console access.
 
 Primary guidance: [Google Search Central — AI features and your website](https://developers.google.com/search/docs/appearance/ai-features), [multilingual pages](https://developers.google.com/search/docs/specialty/international/localized-versions), [canonicalization](https://developers.google.com/search/docs/crawling-indexing/consolidate-duplicate-urls).
+
+## History
+
+- 2026-10-22 report: 8/81 DEV implementations. Earlier 6/81 and 7/81 reports likewise. Dated history, not current main.

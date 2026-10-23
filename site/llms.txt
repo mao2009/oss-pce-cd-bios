@@ -6,7 +6,7 @@ Project home (English): https://mao2009.github.io/oss-pce-cd-bios/
 Project home (Japanese): https://mao2009.github.io/oss-pce-cd-bios/ja/
 Source repository: https://github.com/mao2009/oss-pce-cd-bios
 
-## Evidence-scoped progress (2026-10-23 main f90c16b)
+## Evidence-scoped progress (2026-10-22 main f90c16b; verified 2026-10-23)
 
 - Main commit: https://github.com/mao2009/oss-pce-cd-bios/commit/f90c16b6ca7b3cd6f0ee66935aa08d43c329628d
 - The 256 KiB DEV-only ROM provides 81 candidate System Card entry slots.

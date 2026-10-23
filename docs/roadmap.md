@@ -1,6 +1,6 @@
 # Roadmap — evidence-graded milestones (no date promises)
 
-Use the [dated implementation status](status.md) (2026-10-23 main `f90c16b`: 9/81 DEV implementations, 72 stubs; 0/81 reference ABI VERIFIED) to distinguish merged **main** code,
+Use the [dated implementation status](status.md) (main `f90c16b`, committed 2026-10-22, state verified 2026-10-23: 9/81 DEV implementations, 72 stubs; 0/81 reference ABI VERIFIED) to distinguish merged **main** code,
 real Geargrafx observations and unmerged work. Baseline: [PR #174](https://github.com/mao2009/oss-pce-cd-bios/pull/174)
 merged as `05a0ea54` on 2026-10-17; later [#175](https://github.com/mao2009/oss-pce-cd-bios/pull/175)
 updated public status wording and [#176](https://github.com/mao2009/oss-pce-cd-bios/pull/176)

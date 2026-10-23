@@ -1,4 +1,4 @@
-# Implementation status — 2026-10-23 main snapshot (`f90c16b`)
+# Implementation status — 2026-10-22 main snapshot (`f90c16b`, state verified 2026-10-23)
 
 This is an evidence-scoped, **dated snapshot**, not a real-time compatibility report. Source tree: [main at `f90c16b`](https://github.com/mao2009/oss-pce-cd-bios/commit/f90c16b6ca7b3cd6f0ee66935aa08d43c329628d), after #475, #477, #495 (MA_MUL16S), #502 and #506 merged. Recheck main and [Actions](https://github.com/mao2009/oss-pce-cd-bios/actions) for later changes. Historical progress is available in [git history](https://github.com/mao2009/oss-pce-cd-bios/commits/main/docs/status.md). Earlier snapshots (2026-10-20, 2026-10-21 and the 2026-10-22 `86172e2` / `8a136ad` figures of 8 DEV implementations) are superseded, not retroactively changed.
 
@@ -62,7 +62,6 @@ These nine entries are **DEV implementations**. They are separate from reference
 | #473, #459, #367 safety gates | OPEN, BLOCKED | Unresolved |
 | #324 ABI evidence-axis policy | OPEN | Not approved |
 | #40 EX_GETVER API issue | OPEN | Reference ABI not verified |
-| #483 / PR #484 (8/81 snapshot) | CLOSED / MERGED | Historical 2026-10-22 snapshot only |
 
 ## Build/test distinctions
 
@@ -85,3 +84,7 @@ The current summary derives from merged source and reported tests. Each CI resul
 4. Cross-check against a separate emulator and physical hardware where appropriate, and only assert retail compatibility after a named tested scenario.
 
 See [roadmap](roadmap.md), [compatibility](compatibility.md), [testing](testing.md), [Pages editorial conventions](pages.md) and the [contributor rules](../CONTRIBUTING.md).
+
+## History
+
+- 2026-10-22 snapshot: 8/81 DEV implementations (#483 / PR #484, CLOSED / MERGED). Historical only, not current main.
