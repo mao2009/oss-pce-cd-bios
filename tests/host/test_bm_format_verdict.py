@@ -78,6 +78,10 @@ class JudgeTest(unittest.TestCase):
     def test_non_bytes_out_fails_without_raising(self):
         self.assertEqual(v.judge(bm.OK, bm.OK, bytes(64), 5), v.FAIL)
         self.assertEqual(v.judge(bm.OK, bm.OK, bytes(64), "OK"), v.FAIL)
+        self.assertEqual(v.judge(bm.OK, bm.OK, bytes(64), list(v._formatted())), v.FAIL)
+
+    def test_output_that_drops_or_grows_the_capacity_is_fail(self):
+        self.assertEqual(v.judge(bm.OK, bm.OK, bytes(64), v._formatted(128)), v.FAIL)
 
     def test_bogus_status_matching_expectation_is_fail(self):
         # BOGUS_STATUS == BOGUS_STATUS must not reach the refused-path PASS branch.
@@ -113,6 +117,13 @@ class RunAllTest(unittest.TestCase):
     def test_exception_in_model_is_fail_not_pass(self):
         with mock.patch.object(bm, "format_image", side_effect=RuntimeError("boom")):
             report = v.run_all([("x", bytes(64), True, bm.OK)])
+        self.assertEqual(report["cases"][0]["verdict"], v.FAIL)
+        self.assertEqual(report["overall"], v.FAIL)
+
+    def test_exception_in_model_with_none_expectation_is_fail_not_not_run(self):
+        # A model exception is FAIL even when the case has no expectation; NOT_RUN would hide it.
+        with mock.patch.object(bm, "format_image", side_effect=RuntimeError("boom")):
+            report = v.run_all([("x", bytes(64), True, None)])
         self.assertEqual(report["cases"][0]["verdict"], v.FAIL)
         self.assertEqual(report["overall"], v.FAIL)
 
@@ -263,7 +274,6 @@ class FailClosedNegativeTest(unittest.TestCase):
             report = v.run_all([("a", bytes(64), True, bm.OK)])
         self.assertEqual(report["cases"][0]["verdict"], v.FAIL)
 
-    @unittest.expectedFailure  # GAP on head: run_case returns judge()'s verdict even after a model exception.
     def test_model_exception_cannot_be_overridden_by_judge_return(self):
         with mock.patch.object(bm, "format_image", side_effect=RuntimeError("boom")), \
                 mock.patch.object(v, "judge", return_value=v.PASS):

@@ -165,7 +165,7 @@ Refs #302 / 親 #34 / 関連 #303（合成FORMAT安全モデル）/ #304（診�
 
 * **A（OPEN）** 確認付き・非ゼロ・不正署名・64 バイト以上のイメージを、どちらの振る舞いとするか。
   * **A1 拒否（PR の現方針、暫定）**: `REJECTED_INVALID_SIGNATURE`、バイト保持。帰結: #395 の `test_invalid_signature_is_recovered_by_format` は現挙動（回復）を固定しており、A1 を正とすると矛盾する。#395 のテストは本 PR で変更しない（スコープ外）ため、A1 採用時は別 Issue で #395 側の扱い（回復テストの書換え、または回復の撤回と呼出側のゲート必須化）を決める必要がある。
-  * **A2 回復**: `OK`（署名を書き、残りをゼロ埋め）。帰結: 本 PR の `guarded_format` の拒否分岐を外し、#509 の拒否テスト（`test_nonzero_invalid_signature_is_rejected_and_kept`、`invalid_sig_*` の `CASES`）を回復の期待値に書き換える。#395 のモデルとテストは変更不要。判定層のその他の部分は変更なし。
+  * **A2 回復**: `OK`（署名を書き、残りをゼロ埋め）。帰結: 本 PR の `guarded_format` の拒否分岐を外し、拒否を期待する判定層のテストを回復の期待値に書き換える。対象は `test_nonzero_invalid_signature_is_rejected_and_kept`、`test_guarded_bytearray_invalid_signature_is_rejected_and_kept`、`test_allowed_refused_status_with_unchanged_bytes_passes`（`REJECTED_INVALID_SIGNATURE` を許可ステータスとして使用）、`invalid_sig_*` の `CASES`、`ALLOWED_STATUSES` の `REJECTED_INVALID_SIGNATURE` と定数そのものの扱い。#395 のモデルとテストは変更不要。
 * 判定が出るまでの現状: 拒否は**暫定**。どちらの判定でも BIOS ABI は UNKNOWN のまま（`BLOCKED_ABI`、`release_eligible=false`）。
 
 ### 8.5 #303 完了条件の証拠台帳
