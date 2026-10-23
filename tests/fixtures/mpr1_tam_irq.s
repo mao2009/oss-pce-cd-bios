@@ -11,6 +11,8 @@
 reset:
     sei
     cld
+    clc                  ; C and V differed between runs (P = $81 / $C0 in the same case): fixed for a reproducible P record
+    clv
     lda #$F8
     tam #$01             ; MPR0 = WRAM
     tam #$02             ; MPR1 = WRAM (the stack page $2100-$21FF lives in MPR1)
