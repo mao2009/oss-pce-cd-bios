@@ -16,6 +16,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'tools'))
@@ -686,6 +687,18 @@ class MeasurementPointBindingTests(unittest.TestCase):
     def test_missing_measurement_point_fails_closed(self):
         entry = {key: value for key, value in REAL_ENTRY.items() if key != 'measurement_point_id'}
         self.assertRefusedPoint(dict(REAL_OBSERVED_CALLEE, evidence=[entry]), 'unknown measurement point')
+
+    def test_point_that_does_not_cover_field_is_rejected(self):
+        # The real 2-point registry cannot reach this branch (kind field sets match covers_fields), so a synthetic
+        # registry is patched in for this one check. Nothing on disk changes.
+        synthetic = {'SYNTH_POINT': {'id': 'SYNTH_POINT', 'kind': 'CALLEE_EXECUTION',
+                                     'covers_fields': ['returns'], 'hook': 'synthetic'}}
+        entry = dict(REAL_ENTRY, measurement_point_id='SYNTH_POINT')
+        with mock.patch('contracts.load_registry', return_value=synthetic):
+            with self.assertRaisesRegex(ValueError, "does not cover field 'stack'"):
+                observation_point_for_entry(entry, 'stack', 'CALLEE_EXECUTION', 'x')
+            self.assertEqual(observation_point_for_entry(entry, 'returns', 'CALLEE_EXECUTION', 'x')['id'],
+                             'SYNTH_POINT')
 
     def test_hw_point_backs_hardware_observation_and_callee_point_backs_callee_fields(self):
         self.assertEqual(observation_point_for_entry(REAL_HW_ENTRY, 'hw_bus_reset', 'HW_BUS_READBACK', 'x')['kind'],
