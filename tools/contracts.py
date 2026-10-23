@@ -172,17 +172,24 @@ OBSERVATION_KIND_FIELDS = {
     # Behavior of an executed callee; still needs executed_callee=True in adjudicate_claim.
     'CALLEE_EXECUTION': CALLEE_BEHAVIOR_FIELDS,
 }
-# Issue #364: an OBSERVED evidence entry names the measurement point it was taken at (an id in
-# spec/measurement_points.json). The registry kind and covered fields of that point are authoritative;
-# the claim's self-declared observation_kind must agree with them, so HW_BUS_READBACK evidence cannot be
-# relabelled CALLEE_EXECUTION. This key is NOT in the ledger evidence schema (EVIDENCE_FIELDS; owner decision
-# #324): it is stripped before the shape check and read only by observation_point_for_entry(). Storing it
-# in spec/api_contracts.json needs the #324 decision. Authenticity of the point id is #124 / #171.
+# Issue #364, two separate things. (1) REGISTRY CONSISTENCY (implemented): an OBSERVED evidence entry names the
+# measurement point it was taken at (an id in spec/measurement_points.json). The point's registry kind and covered
+# fields must agree with the claim's declared observation_kind and field, so HW_BUS_READBACK evidence cannot be
+# relabelled CALLEE_EXECUTION. (2) EVIDENCE AUTHENTICITY (NOT implemented; #124 / #171): nothing here binds the
+# point id to the evidence hash, log or artifact (measurement_evidence.verify_record does the log binding for its
+# own records), and nothing authenticates the principal that ran the callee. The point id is a SELF-DECLARATION:
+# any caller who can read the registry can declare a valid point id for a kind it wants.
+# This key is NOT in the ledger evidence schema (EVIDENCE_FIELDS; owner decision #324): it is stripped before the
+# shape check and read only by observation_point_for_entry(). Storing it in spec/api_contracts.json needs the
+# #324 decision; until then ledger OBSERVED entries silently lose it. No schema change is made here.
 MEASUREMENT_POINT_KEY = 'measurement_point_id'
 
 
 def _shape_entry(entry):
-    """Evidence entry without MEASUREMENT_POINT_KEY, for the EVIDENCE_FIELDS shape check (ledger schema unchanged)."""
+    """Evidence entry without MEASUREMENT_POINT_KEY, for the EVIDENCE_FIELDS shape check (ledger schema unchanged).
+
+    The key is dropped silently on purpose (schema decision belongs to #324). It is not a validation step.
+    """
     if not isinstance(entry, dict):
         raise ValueError('evidence entry must be a dict')
     return {key: value for key, value in entry.items() if key != MEASUREMENT_POINT_KEY}
@@ -486,8 +493,10 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
                 f'{context}: OBSERVED requires {OBSERVATION_KIND_KEY} in {sorted(OBSERVATION_KIND_FIELDS)}')
         require(field in OBSERVATION_KIND_FIELDS[kind],
                 f'{context}: observation kind {kind} does not support field {field!r}')
-        # Issue #364 rule (same as measurement_evidence.verify_record): the declared kind must equal the kind of a
-        # registry measurement point that covers this field, and the registry pin must have its review marker.
+        # Issue #364 registry consistency only (not evidence authenticity; see the note above MEASUREMENT_POINT_KEY):
+        # the declared kind must equal the kind of a registry measurement point that covers this field, and the
+        # registry pin must have its review marker. Unlike measurement_evidence.verify_record, this does not match
+        # the point id against any log or evidence hash.
         check_pin_review()
         require(any(point['kind'] == kind and field in point['covers_fields']
                     for point in load_registry().values()),
