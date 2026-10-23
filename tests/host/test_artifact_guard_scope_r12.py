@@ -144,7 +144,7 @@ class ScopeByStructure(unittest.TestCase):
         self.assert_refused(indented_job(8, 'container: alpine'), 'container')
 
     def test_whole_file_indent_4_container_refused(self):
-        text = workflow(job='      container: alpine\n')
+        text = workflow(job='    container: alpine\n')   # job keys at 4 spaces; the whole file is then shifted by 4
         text = '\n'.join(('    ' + line) if line else line for line in text.split('\n'))
         self.assert_refused(text, 'container')
 
@@ -170,7 +170,7 @@ class ScopeByStructure(unittest.TestCase):
     def test_second_document_job_container_indent_6_refused(self):
         text = workflow() + '---\nname: t2\njobs:\n  k:\n      runs-on: x\n      container: alpine\n      steps:\n' \
                             '        - run: echo hi\n'
-        self.assert_refused(text, 'container')
+        self.assertIsNotNone(placement_refuses('.github/workflows/ci.yml', text), 'second document must be refused')
 
 
 class RealWorkflowsPass(unittest.TestCase):

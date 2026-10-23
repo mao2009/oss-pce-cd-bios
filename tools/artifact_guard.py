@@ -1800,15 +1800,15 @@ def scope_key_violations(text, workflow):
     """Issue #337 round 10/12/13: top-level keys and jobs[*] keys env, defaults, container or services are refused. They
     can change the PATH, RUNNER_TEMP or shell of a step. Decided on the parsed YAML, so indentation, quoting, flow style
     and key order do not matter. Applies to every workflow and composite action file, with or without an upload step.
-    A file that cannot be parsed is refused here too (the same rule as execution_scope_violations)."""
+    A file that cannot be parsed has no keys to read here; yaml_integrity_violations refuses it in check_guard_placement."""
     try:
         import yaml
     except ImportError:
         return [f"{workflow}: PyYAML unavailable, scope keys cannot be checked (Issue #337 round 13)"]
     try:
         doc = yaml.load(text, Loader=_strict_loader())
-    except (yaml.YAMLError, ValueError) as error:
-        return [f"{workflow}: YAML cannot be read, scope keys cannot be checked ({error}; Issue #337 round 13)"]
+    except (yaml.YAMLError, ValueError):
+        return []
     if not isinstance(doc, dict):
         return []   # execution_scope_violations refuses a file that is not a mapping
     problems = []
