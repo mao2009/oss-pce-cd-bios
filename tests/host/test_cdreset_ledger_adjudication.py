@@ -708,6 +708,9 @@ class MeasurementPointBindingTests(unittest.TestCase):
 
     def test_point_key_is_not_in_ledger_evidence_schema(self):
         # #324 boundary: the point id is read by adjudicate_claim only; the ledger evidence schema is unchanged.
+        # Definition-level invariant: EVIDENCE_FIELDS itself is pinned, so any schema change fails this test.
+        self.assertEqual(EVIDENCE_FIELDS, ('execution_conditions', 'core_revision', 'input_type',
+                                           'verification_result', 'evidence_hash'))
         self.assertNotIn(MEASUREMENT_POINT_KEY, EVIDENCE_FIELDS)
         self.assertEqual(MEASUREMENT_POINT_KEY, 'measurement_point_id')
         with self.assertRaisesRegex(ValueError, 'exactly'):
