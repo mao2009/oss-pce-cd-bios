@@ -12,12 +12,18 @@ distinct so that a missing answer is never read as a refusal:
 No ROM, emulator or reference BIOS is read. A passing judge validates only this local model, not the
 callee ABI of the synthetic-track query.
 
+Limit of the synthetic flag: `synthetic is True` is the caller's own declaration. The judge does not verify that
+the medium is authored data rather than a real observation. POSITIVE therefore means "the author-defined model
+says so", never "a disc showed this". Real-medium input must not be fed in with the flag set.
+
 Precedence (first matching rule decides; later rules are not consulted):
 1. needs_callee=True                              -> BLOCKED (BLOCKED_ABI, whatever the medium or track).
 2. medium is None (no disc loaded)                -> NEGATIVE.
 3. medium not well-formed                         -> UNKNOWN. Well-formed means: a dict with synthetic is True,
-   a plain-int leadout_lba, a list of tracks, each a dict with type in TRACK_TYPES, a plain-int no, plain-int
-   start and end, and no two tracks sharing a no. Duplicate track numbers therefore make the medium UNKNOWN.
+   a plain-int leadout_lba >= 0, a list of tracks, each a dict with type in TRACK_TYPES, plain-int no >= 1,
+   plain-int start and end with 0 <= start <= end < leadout_lba, and the tracks ordered along the list with
+   strictly ascending no and each start after the previous end (no overlap). Duplicate, out-of-order,
+   overlapping, zero or negative track numbers, and LBAs outside the lead-out range all make the medium UNKNOWN.
 4. track is not a plain int (bool, str, float, None) -> NEGATIVE (malformed query), even if the track exists.
 5. track number not on the medium                 -> NEGATIVE.
 6. otherwise                                      -> POSITIVE with {type, start, end}.
@@ -46,15 +52,22 @@ def fixture_sha256(fixture):
 def _well_formed(medium):
     if not isinstance(medium, dict) or medium.get("synthetic") is not True:
         return False
-    tracks = medium.get("tracks")
-    if not isinstance(tracks, list) or type(medium.get("leadout_lba")) is not int:
+    tracks, leadout = medium.get("tracks"), medium.get("leadout_lba")
+    if not isinstance(tracks, list) or type(leadout) is not int or leadout < 0:
         return False
+    prev_no, prev_end = 0, -1
     for t in tracks:
         if not isinstance(t, dict) or t.get("type") not in TRACK_TYPES:
             return False
-        if any(type(t.get(key)) is not int for key in ("no", "start", "end")):
+        no, start, end = t.get("no"), t.get("start"), t.get("end")
+        if any(type(v) is not int for v in (no, start, end)):
             return False
-    return len({t["no"] for t in tracks}) == len(tracks)  # duplicate track numbers are outside the model
+        if no < 1 or not (0 <= start <= end < leadout):
+            return False
+        if no <= prev_no or start <= prev_end:  # ascending no (also rejects duplicates) and no overlap
+            return False
+        prev_no, prev_end = no, end
+    return True
 
 
 def judge(medium, track, needs_callee=False):

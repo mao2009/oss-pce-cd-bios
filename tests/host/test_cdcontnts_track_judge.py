@@ -141,6 +141,56 @@ class JudgeTests(unittest.TestCase):
         # Rule 1 (BLOCKED) is first: a malformed medium does not turn a callee-dependent query into UNKNOWN.
         self.assertEqual(judge_mod.judge({}, 1, needs_callee=True)[0], judge_mod.BLOCKED)
 
+    # Physical-geometry negatives (Issue #265 review LOW, rules: start>=0, start<=end, end<leadout_lba, no>=1,
+    # tracks ordered by no and non-overlapping). Each expected value is hand-derived here from those rules:
+    # a medium that breaks one rule is outside the model -> UNKNOWN, and UNKNOWN must never become POSITIVE.
+
+    def test_start_after_end_is_unknown_not_positive(self):
+        # Hand-derived: track 1 has start 50 and end 10, so the track runs backwards. Impossible -> UNKNOWN.
+        medium = {**MIXED_OK, "tracks": [{"no": 1, "type": "data", "start": 50, "end": 10}]}
+        self.assertEqual(judge_mod.judge(medium, 1)[0], judge_mod.UNKNOWN)
+
+    def test_negative_start_is_unknown_not_positive(self):
+        # Hand-derived: an LBA cannot be negative. start -1 -> UNKNOWN.
+        medium = {**MIXED_OK, "tracks": [{"no": 1, "type": "data", "start": -1, "end": 99}]}
+        self.assertEqual(judge_mod.judge(medium, 1)[0], judge_mod.UNKNOWN)
+
+    def test_track_end_at_or_past_leadout_is_unknown_not_positive(self):
+        # Hand-derived: leadout_lba is 300, so a track must end before 300 (the fixture's last track ends at 299).
+        # end 300 (equal) and end 350 (past) are both outside the model -> UNKNOWN.
+        for end in (300, 350):
+            medium = {"synthetic": True, "leadout_lba": 300,
+                      "tracks": [{"no": 1, "type": "data", "start": 0, "end": end}]}
+            with self.subTest(end=end):
+                self.assertEqual(judge_mod.judge(medium, 1)[0], judge_mod.UNKNOWN)
+
+    def test_track_number_zero_or_negative_on_medium_is_unknown_not_positive(self):
+        # Hand-derived: track numbers start at 1 (the fixture says "track number zero is not a track").
+        # A medium that lists track 0 or -1 is outside the model -> UNKNOWN for every query, including the 0/-1 query.
+        for no in (0, -1):
+            medium = {"synthetic": True, "leadout_lba": 300,
+                      "tracks": [{"no": no, "type": "data", "start": 0, "end": 99}]}
+            with self.subTest(no=no):
+                self.assertEqual(judge_mod.judge(medium, no)[0], judge_mod.UNKNOWN)
+                self.assertEqual(judge_mod.judge(medium, 1)[0], judge_mod.UNKNOWN)
+
+    def test_overlapping_tracks_are_unknown_not_positive(self):
+        # Hand-derived: track 1 covers LBA 0..150 and track 2 starts at 100, inside track 1 -> they overlap -> UNKNOWN.
+        medium = {"synthetic": True, "leadout_lba": 300, "tracks": [
+            {"no": 1, "type": "data", "start": 0, "end": 150},
+            {"no": 2, "type": "audio", "start": 100, "end": 199}]}
+        self.assertEqual(judge_mod.judge(medium, 1)[0], judge_mod.UNKNOWN)
+        self.assertEqual(judge_mod.judge(medium, 2)[0], judge_mod.UNKNOWN)
+
+    def test_out_of_order_tracks_are_unknown_not_positive(self):
+        # Hand-derived: the list has track 2 (LBA 100..199) before track 1 (LBA 0..99). Track numbers and LBAs
+        # must both ascend along the list, so this order is outside the model -> UNKNOWN.
+        medium = {"synthetic": True, "leadout_lba": 300, "tracks": [
+            {"no": 2, "type": "audio", "start": 100, "end": 199},
+            {"no": 1, "type": "data", "start": 0, "end": 99}]}
+        self.assertEqual(judge_mod.judge(medium, 1)[0], judge_mod.UNKNOWN)
+        self.assertEqual(judge_mod.judge(medium, 2)[0], judge_mod.UNKNOWN)
+
     def test_cli_prints_pinned_hash_and_agreeing_case_lines(self):
         out = subprocess.run([sys.executable, str(ROOT / "tools" / "cdcontnts_track_judge.py"), str(FIXTURE)],
                              capture_output=True, text=True, check=True).stdout.splitlines()
