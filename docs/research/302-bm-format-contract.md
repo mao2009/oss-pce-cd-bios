@@ -176,7 +176,7 @@ Refs #302 / 親 #34 / 関連 #303（合成FORMAT安全モデル）/ #304（診�
 | E2 | 正常系（blank 64 / 256、bytearray 入力、入力非改変） | `tests/host/test_bm_format_verdict.py`、`CASES` | 合成 | PASS（合成） |
 | E3 | 不正署名（非ゼロ）の負例 | 同上。ゲートの拒否（`REJECTED_INVALID_SIGNATURE`）。#395 の回復と矛盾 | 合成 | ゲートの挙動は PASS（合成）。方針は owner 決定 OPEN |
 | E4 | 容量境界（63 バイトの無署名・有効署名、空、64 バイト空白） | 同上 | 合成 | PASS（合成） |
-| E5 | fail-closed 判定（OK は署名必須、結果欠落、型不一致、例外、入力変更） | `judge`、`run_case`、テスト群。改修前は OK 署名なしを PASS にしていた（RED を確認） | 合成 | PASS（合成） |
+| E5 | fail-closed 判定（OK は署名必須、結果欠落、型不一致、許可外ステータス（一致していても FAIL）、例外、スナップショット失敗、入力変更） | `judge`、`run_case`、テスト群。改修前は OK 署名なしと、一致する許可外ステータス（`BOGUS_STATUS`）を PASS にしていた（RED を確認） | 合成 | PASS（合成） |
 | E6 | 根拠 URL / revision / line | `docs/research/302-bm-format-contract.md` §1（HuCC `54f5c73`）、§2 の行番号 | 出典（静的） | UNKNOWN 項目を含む（§3） |
 | E7 | BIOS 上の実挙動（返値、確認、破壊範囲、MMIO） | 観測なし（B1 ほか） | 実測なし | NOT_RUN / BLOCKED_ABI |
 | E8 | 実 FORMAT の実行、実 save への書込み | 方針により実施しない | 実測なし | NOT_RUN（対象外） |

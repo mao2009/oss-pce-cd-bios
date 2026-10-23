@@ -79,6 +79,28 @@ class JudgeTest(unittest.TestCase):
         self.assertEqual(v.judge(bm.OK, bm.OK, bytes(64), 5), v.FAIL)
         self.assertEqual(v.judge(bm.OK, bm.OK, bytes(64), "OK"), v.FAIL)
 
+    def test_bogus_status_matching_expectation_is_fail(self):
+        # BOGUS_STATUS == BOGUS_STATUS must not reach the refused-path PASS branch.
+        img = bytes(64)
+        self.assertEqual(v.judge("BOGUS_STATUS", "BOGUS_STATUS", img, img), v.FAIL)
+        self.assertEqual(v.judge("", "", img, img), v.FAIL)
+
+    def test_allowed_refused_status_with_unchanged_bytes_passes(self):
+        img = bytes(64)
+        self.assertEqual(v.judge(bm.REFUSED_UNCONFIRMED, bm.REFUSED_UNCONFIRMED, img, img), v.PASS)
+        self.assertEqual(v.judge(v.REJECTED_INVALID_SIGNATURE, v.REJECTED_INVALID_SIGNATURE,
+                                 img, img), v.PASS)
+
+    def test_unhashable_expectation_fails_without_raising(self):
+        self.assertEqual(v.judge(["OK"], ["OK"], bytes(64), bytes(64)), v.FAIL)
+
+    def test_exception_while_judging_output_is_fail(self):
+        class Explodes(bytearray):
+            def __len__(self):
+                raise RuntimeError("boom")
+
+        self.assertEqual(v.judge(bm.OK, bm.OK, bytes(64), Explodes(64)), v.FAIL)
+
 
 class RunAllTest(unittest.TestCase):
     def test_all_cases_pass_but_overall_is_blocked_abi(self):
@@ -97,6 +119,16 @@ class RunAllTest(unittest.TestCase):
     def test_empty_or_all_not_run_is_not_run(self):
         self.assertEqual(v.run_all([])["overall"], v.NOT_RUN)
         self.assertEqual(v.run_all([("n", bytes(64), True, None)])["overall"], v.NOT_RUN)
+
+    def test_snapshot_failure_is_fail_not_exception(self):
+        # bytes(object()) raises before the model is called; run_case must return FAIL.
+        result = v.run_case("unsnapshottable", object(), True, bm.OK)
+        self.assertEqual(result["verdict"], v.FAIL)
+
+    def test_bogus_expectation_with_model_bogus_status_is_fail(self):
+        with mock.patch.object(v, "guarded_format", return_value=("BOGUS_STATUS", bytes(64))):
+            result = v.run_case("bogus", bytes(64), True, "BOGUS_STATUS")
+        self.assertEqual(result["verdict"], v.FAIL)
 
     def test_mutant_model_ok_without_signature_is_fail(self):
         # Mutation: the model reports OK and returns a same-length image with no signature written.
