@@ -120,3 +120,45 @@ Refs #302 / 親 #34 / 関連 #303（合成FORMAT安全モデル）/ #304（診�
 
 * §4 の #304 判定（BLOCKED_ABI）は台帳行ではなく別判定として 1 件。
 * VERIFIED は 0。release_eligible=false。
+
+## 8. #303 合成判定ゲートとの関係（PR #509）
+
+本節は #303 の合成判定層（`tools/bm_format_verdict.py`）と本台帳の関係を記録する。合成結果は BIOS 互換性の証拠ではない。
+
+### 8.1 合成期待値と BIOS ABI の分離
+
+| 区分 | 項目 | 出所 | 状態 |
+| --- | --- | --- | --- |
+| 合成（モデル専用） | 署名 `SYNBM\x01\x00\x00`、最小容量 64、ステータス名（OK など） | `tools/bm_format_model.py`（#395） | synthetic。BIOS の値ではない（§0） |
+| 合成（モデル専用） | 不正署名の拒否 `REJECTED_INVALID_SIGNATURE`、OK 時の「署名あり・残りゼロ埋め・容量維持」 | `tools/bm_format_verdict.py`（#509） | synthetic。契約からの根拠はない |
+| BIOS ABI | 入口、確認文字列の比較、返値、容量要件、破壊範囲、MMIO 副作用 | 本台帳 C3b, C5b, C11, C12, B1-B7 | UNKNOWN |
+
+判定層のすべての期待値は上段の合成値のみで定義する。下段の BIOS ABI を根拠にした PASS は存在しない。総合判定は `BLOCKED_ABI` で、`release_eligible` は常に `false`。
+
+### 8.2 #395 との矛盾（owner 決定は未了）
+
+* #395 の `format_image` は、非ゼロの不正署名を**回復**する（OK、署名を書き、ゼロ埋め）。`test_invalid_signature_is_recovered_by_format` がこの挙動を固定している。
+* #509 の `guarded_format` は、確認付き・非ゼロ・不正署名の 64 バイト以上のイメージを**拒否**し、バイトを保持する（`REJECTED_INVALID_SIGNATURE`）。
+* 本 PR の拒否は**暫定の安全側の方針**であり、owner の承認ではない。回復と拒否のどちらを正とするかは owner 決定として未了（open）。
+* #395 のモデルとテストは変更しない（スコープ外）。
+
+### 8.3 迂回（ゲートは全呼出しを縛らない）
+
+* `bm.format_image` を直接呼ぶと、非ゼロの不正署名は回復される（OK）。ゲートは `guarded_format` 経由の呼出しにしか効かない。
+* したがって本ゲートは「完全な安全境界」ではない。安全境界とするには、呼出側を `guarded_format` に限定する別の措置（または #395 側の扱いの決定）が必要で、これは本 PR の範囲外。
+
+### 8.4 #303 完了条件の証拠台帳
+
+| # | 対象 | 根拠（source） | 種別 | 判定 |
+| --- | --- | --- | --- | --- |
+| E1 | 実 save/RAM への非書込み（モデルは in-memory のみ） | `tools/bm_format_model.py` の I/O 禁止と import 許可リストのテスト（#395、#509 の `test_verdict_module_imports_only_the_model`） | 合成（静的・単体テスト） | PASS（合成） |
+| E2 | 正常系（blank 64 / 256、bytearray 入力、入力非改変） | `tests/host/test_bm_format_verdict.py`、`CASES` | 合成 | PASS（合成） |
+| E3 | 不正署名（非ゼロ）の負例 | 同上。ゲートの拒否（`REJECTED_INVALID_SIGNATURE`）。#395 の回復と矛盾 | 合成 | ゲートの挙動は PASS（合成）。方針は owner 決定 OPEN |
+| E4 | 容量境界（63 バイトの無署名・有効署名、空、64 バイト空白） | 同上 | 合成 | PASS（合成） |
+| E5 | fail-closed 判定（OK は署名必須、結果欠落、型不一致、例外、入力変更） | `judge`、`run_case`、テスト群。改修前は OK 署名なしを PASS にしていた（RED を確認） | 合成 | PASS（合成） |
+| E6 | 根拠 URL / revision / line | `docs/research/302-bm-format-contract.md` §1（HuCC `54f5c73`）、§2 の行番号 | 出典（静的） | UNKNOWN 項目を含む（§3） |
+| E7 | BIOS 上の実挙動（返値、確認、破壊範囲、MMIO） | 観測なし（B1 ほか） | 実測なし | NOT_RUN / BLOCKED_ABI |
+| E8 | 実 FORMAT の実行、実 save への書込み | 方針により実施しない | 実測なし | NOT_RUN（対象外） |
+| E9 | 総合判定 | `run_all()`（全ケース PASS でも総合は BLOCKED_ABI） | 合成 | BLOCKED_ABI、`release_eligible=false` |
+
+PASS は合成データに対してのみ。BIOS 互換性の PASS は一つもない。

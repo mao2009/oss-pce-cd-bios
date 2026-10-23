@@ -4,6 +4,14 @@ In-memory only: no file, device, or BIOS I/O. Synthetic results are NOT BIOS com
 The BM_FORMAT ABI is UNKNOWN (#302; reference ABI VERIFIED 0/81), so the overall verdict is
 never PASS: it is BLOCKED_ABI when every run case passed, FAIL on any failing case, and
 NOT_RUN when no case ran. release_eligible is always False.
+
+Scope limits (not a complete safety gate):
+- Bypass: bm.format_image() can still be called directly, and it RECOVERS a non-zero invalid
+  signature (#395, pinned by test_invalid_signature_is_recovered_by_format). Only callers that
+  go through guarded_format() are refused. Nothing here forces that routing.
+- Contradiction with #395: this gate refuses the case #395 recovers. Which behavior is correct
+  is an owner decision (open); the refusal is a provisional safety stance, not an approval.
+- Expectations are synthetic model-only values; the real BM_FORMAT ABI is UNKNOWN (#302).
 """
 import bm_format_model as bm
 
@@ -28,16 +36,23 @@ def guarded_format(image, *, allow_destructive=False):
 
 
 def judge(expected, status, image, out):
-    """Per-case verdict. Missing, unexpected, or non-conforming results are FAIL (fail-closed)."""
+    """Per-case verdict. Never raises: missing, unexpected, or non-conforming results are FAIL.
+
+    OK must write the signature (classify == VALID) and zero-fill the body after it, and keep
+    the capacity. Refused paths must return the input bytes unchanged.
+    """
     if expected is None:
         return NOT_RUN
-    if status is None or out is None or status != expected:
+    try:
+        if status is None or status != expected or not isinstance(out, (bytes, bytearray)):
+            return FAIL
+        if status != bm.OK:
+            return PASS if bytes(out) == bytes(image) else FAIL
+        if len(out) != len(image) or bm.classify(out) != bm.VALID or any(out[len(bm.SIGNATURE):]):
+            return FAIL
+        return PASS
+    except Exception:  # fail-closed: a judging error is a FAIL, never a PASS
         return FAIL
-    if status != bm.OK and bytes(out) != bytes(image):
-        return FAIL  # refused paths must return the input bytes unchanged
-    if status == bm.OK and len(out) != len(image):
-        return FAIL  # the formatted image keeps its capacity
-    return PASS
 
 
 def _formatted(size=bm.MIN_CAPACITY):
@@ -61,6 +76,8 @@ CASES = [
     ("invalid_sig_dirty_rejected", b"\xAA" * bm.MIN_CAPACITY, True, REJECTED_INVALID_SIGNATURE),
     ("capacity_one_below_min", bytes(bm.MIN_CAPACITY - 1), True, bm.INSUFFICIENT_CAPACITY),
     ("capacity_empty", b"", True, bm.INSUFFICIENT_CAPACITY),
+    ("capacity_one_below_min_valid_sig", _formatted(bm.MIN_CAPACITY - 1), True,
+     bm.INSUFFICIENT_CAPACITY),
     ("double_init_refused", _formatted(), True, bm.ALREADY_FORMATTED),
     ("unconfirmed_refused", bytes(bm.MIN_CAPACITY), False, bm.REFUSED_UNCONFIRMED),
 ]
