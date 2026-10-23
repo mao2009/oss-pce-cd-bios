@@ -1,6 +1,6 @@
 # Roadmap — evidence-graded milestones (no date promises)
 
-Use the [dated implementation status](status.md) (2026-10-22: 8/81 DEV on main, 9/81 with MA_MUL16S #494 once merged; 0/81 reference ABI VERIFIED) to distinguish merged **main** code,
+Use the [dated implementation status](status.md) (2026-10-23 main `f90c16b`: 9/81 DEV implementations, 72 stubs; 0/81 reference ABI VERIFIED) to distinguish merged **main** code,
 real Geargrafx observations and unmerged work. Baseline: [PR #174](https://github.com/mao2009/oss-pce-cd-bios/pull/174)
 merged as `05a0ea54` on 2026-10-17; later [#175](https://github.com/mao2009/oss-pce-cd-bios/pull/175)
 updated public status wording and [#176](https://github.com/mao2009/oss-pce-cd-bios/pull/176)
@@ -10,7 +10,7 @@ OSS routine, is not proof of a **fully reference-compatible BIOS API** or releas
 ## M0 — Foundation and diagnostics
 
 - [x] Reproducible original HuCARD fixture, pinned tools, host tests and real Geargrafx CI
-- [x] Original 256 KiB System Card **development-only** ROM with 81 candidate entries: one callable `EX_GETVER` override and 80 fail-closed nonreturning stubs as merged in [#174](https://github.com/mao2009/oss-pce-cd-bios/pull/174) (historical; 2026-10-22 main has 8 DEV overrides and 73 stubs, see [status](status.md))
+- [x] Original 256 KiB System Card **development-only** ROM with 81 candidate entries: one callable `EX_GETVER` override and 80 fail-closed nonreturning stubs as merged in [#174](https://github.com/mao2009/oss-pce-cd-bios/pull/174) (historical; the 2026-10-22 snapshot had 8 DEV overrides and 73 stubs, see [status](status.md))
 - [x] Real-core System Card loader/reset, slot, RAM/MPR/stack/IRQ observations and isolated startup checkpoint with non-zero CD-state marker ([#127](https://github.com/mao2009/oss-pce-cd-bios/pull/127))
 - [x] Real-core guest READ(6) on synthetic discs, 1–3 2048-byte sectors, full RAM/phase/negative checks
 - [x] Isolated real-core Geargrafx trace harness, CD status classifier and host-only CD_BASE model (not BIOS services)
@@ -23,6 +23,8 @@ OSS routine, is not proof of a **fully reference-compatible BIOS API** or releas
 - [x] Implement the first **development-only callable OSS** service: `EX_GETVER` at slot `$1E` (candidate entry `$E05A`), returning X=3, Y=0 and preserving A in the tested setup ([#174](https://github.com/mao2009/oss-pce-cd-bios/pull/174))
 - [x] Observe DEV `EX_GETVER` caller → callee → RTS return and balanced SP in pinned real Geargrafx cold/warm runs; retain independent-rebuild ROM byte-identity checks and blocked release gate
 - [x] Merge the **8th DEV-only API**: MA_DIV16U at $43 with independent model, real-core tests, flag-combination and mutation checks ([#480](https://github.com/mao2009/oss-pce-cd-bios/pull/480)); DEV-only and not approved/ABI VERIFIED
+- [x] Merge the **9th DEV-only API**: MA_MUL16S at $4F ([#495](https://github.com/mao2009/oss-pce-cd-bios/pull/495), Issue #494); DEV-only and not approved/ABI VERIFIED
+- [x] Merge the **DEV-only internal boot path** ([#502](https://github.com/mao2009/oss-pce-cd-bios/pull/502)) and its CI wiring ([#506](https://github.com/mao2009/oss-pce-cd-bios/pull/506)); synthetic CD → RAM → jump is not BIOS CD_BOOT
 - [x] Record **synthetic caller-stack safety experiment** ([#481](https://github.com/mao2009/oss-pce-cd-bios/pull/481)); MPR1=$FF violates the stack contract and causes VDC side effects before the guard can refuse; production gate remains BLOCKED (#473/#459/#367)
 - [ ] Independently validate the **full reference-BIOS `EX_GETVER` ABI** (including relevant flags/interrupts/conditions, provenance and cross-emulator evidence); [Issue #40](https://github.com/mao2009/oss-pce-cd-bios/issues/40) remains open; `abi: UNVERIFIED`
 - [ ] Implement actual System Card initialization instead of the development reset checkpoint (#4)
@@ -60,4 +62,4 @@ milestones**. Geargrafx is not physical hardware proof. The guarded reference-RO
 does not mean those tests have been run, and optional private reference firmware
 is never a distributed or CI input. `make release` remains BLOCKED;
 `release_eligible: false` until compatibility, provenance and independent
-verification gates are satisfied. The 81-slot reference static profile ([#477](https://github.com/mao2009/oss-pce-cd-bios/pull/477)) and EX_GETVER observation schema ([#475](https://github.com/mao2009/oss-pce-cd-bios/pull/475)) remain Draft, not evidence merged on main; historical headered ROM SHA identity remains unresolved in [#476](https://github.com/mao2009/oss-pce-cd-bios/issues/476).
+verification gates are satisfied. The 81-entry reference static profile ([#477](https://github.com/mao2009/oss-pce-cd-bios/pull/477)) and EX_GETVER observation schema ([#475](https://github.com/mao2009/oss-pce-cd-bios/pull/475)) are merged on main as evidence only, not reference ABI VERIFIED; historical headered ROM SHA identity remains unresolved in [#476](https://github.com/mao2009/oss-pce-cd-bios/issues/476).

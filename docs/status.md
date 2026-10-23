@@ -1,13 +1,15 @@
-# Implementation status — 2026-10-22 main snapshot
+# Implementation status — 2026-10-23 main snapshot (`f90c16b`)
 
-This is an evidence-scoped, **dated snapshot**, not a real-time compatibility report. Source tree: [main at `86172e2`](https://github.com/mao2009/oss-pce-cd-bios/commit/86172e2c8a65f1759b83c6b61b5a42b6bc2af295), after [#480](https://github.com/mao2009/oss-pce-cd-bios/pull/480) and [#481](https://github.com/mao2009/oss-pce-cd-bios/pull/481) merged. Recheck main and [Actions](https://github.com/mao2009/oss-pce-cd-bios/actions) for later changes. Historical progress is available in [git history](https://github.com/mao2009/oss-pce-cd-bios/commits/main/docs/status.md). Previous 2026-10-20 and 2026-10-21 figures are superseded, not retroactively changed.
+This is an evidence-scoped, **dated snapshot**, not a real-time compatibility report. Source tree: [main at `f90c16b`](https://github.com/mao2009/oss-pce-cd-bios/commit/f90c16b6ca7b3cd6f0ee66935aa08d43c329628d), after #475, #477, #495 (MA_MUL16S), #502 and #506 merged. Recheck main and [Actions](https://github.com/mao2009/oss-pce-cd-bios/actions) for later changes. Historical progress is available in [git history](https://github.com/mao2009/oss-pce-cd-bios/commits/main/docs/status.md). Earlier snapshots (2026-10-20, 2026-10-21 and the 2026-10-22 `86172e2` / `8a136ad` figures of 8 DEV implementations) are superseded, not retroactively changed.
 
 ## Six separate metrics
 
+Measured on `f90c16b`: `src/overrides/slot_*.s` contains **9** files; `spec/dev_implementations.json` has **81** slots, **9** with a non-null `implementation`, and **0** owner approvals. The 72 stubs are the remaining 81 − 9 entries.
+
 | Metric | Confirmed on main | Meaning / limits |
 | --- | ---: | --- |
-| A. DEV ROM implemented entry points | **9/81** (main: 8/81 until Issue #494 merges) | OSS/project-defined code installed at nine candidate slots; not approved/compatible firmware |
-| B. DEV ROM nonreturning stubs | **72/81** (main: 73/81 until Issue #494 merges) | Remaining candidate entries do not implement callable firmware |
+| A. DEV ROM implemented entry points | **9/81** | OSS/project-defined code installed at nine candidate slots; not approved/compatible firmware |
+| B. DEV ROM nonreturning stubs | **72/81** | Remaining candidate entries do not implement callable firmware |
 | C. Recorded reference ROM static ABI-1 review | **7** | Static facts only; reference compatibility not independently proven |
 | D. Reference BIOS ABI VERIFIED | **0/81** | No API promoted to VERIFIED |
 | E. Owner-approved DEV_CALLABLE | **0** | Implementation count is not owner approval; all 81 ledger states remain NOT_READY |
@@ -16,6 +18,8 @@ This is an evidence-scoped, **dated snapshot**, not a real-time compatibility re
 Other results: **0 verified BIOS-mediated CD program boots; 0 retail game compatibility results; release_eligible = false**. Do not collapse DEV implementation, static review, synthetic real-core observation, reference ABI VERIFIED, owner approval, or executable production firmware into one progress percentage.
 
 ## Implemented DEV ROM entries
+
+These nine entries are **DEV implementations**. They are separate from reference ABI VERIFIED (0/81).
 
 | Slot | API | Current scope |
 | --- | --- | --- |
@@ -26,23 +30,39 @@ Other results: **0 verified BIOS-mediated CD program boots; 0 retail game compat
 | $40 | MA_MUL8S | Project-own DEV math routine; not the proven System Card ABI |
 | $41 | MA_MUL16U | Project-own DEV math routine; not the proven System Card ABI |
 | $42 | MA_DIV16S | Project-own stack-based DEV math contract |
+| $43 | MA_DIV16U | [#480](https://github.com/mao2009/oss-pce-cd-bios/pull/480): project-own unsigned division, caller I/D flag combinations, stack and WRAM final-state checks, real-core mutants |
+| $4F | MA_MUL16S | [#495](https://github.com/mao2009/oss-pce-cd-bios/pull/495) (Issue #494): project-own signed 16x16 to 32-bit multiplication; caller P/Y/S, MPR, ZP/BSS/I/O and frame-external stack checked on pinned Geargrafx, including a write/read trace of the routine's own instructions; real-core mutants of the assembled routine. Manual `make dev-mul16s-sweep` covers 1,572,864 calls. Not the proven System Card ABI |
 
-| $4F | MA_MUL16S | New in Issue #494 (not yet in main): project-own signed 16x16 to 32-bit multiplication; caller P/Y/S, MPR, ZP/BSS/I/O and frame-external stack checked on pinned Geargrafx, including a write/read trace of the routine's own instructions; real-core mutants of the assembled routine. Manual `make dev-mul16s-sweep` covers 1,572,864 calls. Not the proven System Card ABI |
-| $43 | MA_DIV16U | New in [#480](https://github.com/mao2009/oss-pce-cd-bios/pull/480): project-own unsigned division, caller I/D flag combinations, stack and WRAM final-state checks, real-core mutants |
-Main contains `src/overrides/slot_1E.s`, `slot_3C.s`, `slot_3D.s`, `slot_3F.s`, `slot_40.s`, `slot_41.s`, `slot_42.s`, `slot_43.s`. The 256 KiB DEV ROM is not a replacement for a commercial System Card. `spec/dev_implementations.json` remains the status ledger with approval and reference-ABI axes separate. Note that a full-RAM before/after diff **cannot** observe same-value writes or writes later undone.
+`src/overrides/` contains `slot_1E.s`, `slot_3C.s`, `slot_3D.s`, `slot_3F.s`, `slot_40.s`, `slot_41.s`, `slot_42.s`, `slot_43.s` and `slot_4F.s`. The 256 KiB DEV ROM is not a replacement for a commercial System Card. `spec/dev_implementations.json` remains the status ledger with approval and reference-ABI axes separate. Note that a full-RAM before/after diff **cannot** observe same-value writes or writes later undone.
 
 ## Recent merged evidence and safety limitations
 
 - [#480](https://github.com/mao2009/oss-pce-cd-bios/pull/480) integrates MA_DIV16U ($43). Independent review recommended the code; the PR's pinned-core positive tests cover 25 values across all four I/D combinations plus two low-SP boundary runs (**102 total positive executions**); divide-by-zero and mutation negatives are separate. This is **DEV spec correctness**, not reference System Card ABI parity.
 - [#481](https://github.com/mao2009/oss-pce-cd-bios/pull/481) adds a **synthetic HuCARD** stack-contract experiment. With MPR1=$F8 WRAM, the fixed caller preserved A/X/Y/P/S/MPR and returned; with MPR1=$FF I/O, the JSR and guard's pushes changed VDC state before the guard detected a violation. VDC observations are value changes, **not** a complete I/O bus trace; the I/O-popped RTS target, real-hardware IRQ/TMA and NMI behavior remain unverified. A pinned-core IRQ1 probe observed dispatch on the final TII completion step. This is **not** a working production safety mechanism.
+- [#502](https://github.com/mao2009/oss-pce-cd-bios/pull/502) adds a **DEV-only internal boot path** (synthetic CD, READ(6), RAM, jump, marker). [#506](https://github.com/mao2009/oss-pce-cd-bios/pull/506) wires its regression into the `core-harness.yml` CI job. It is a DEV path, **not** the BIOS CD_BOOT / CD_READ / CD_EXEC service and not a commercial-game boot.
 - [#473](https://github.com/mao2009/oss-pce-cd-bios/issues/473) still requires production-safe block-transfer/stack handling. [#459](https://github.com/mao2009/oss-pce-cd-bios/issues/459) and [#367](https://github.com/mao2009/oss-pce-cd-bios/issues/367) remain BLOCKED. [#482](https://github.com/mao2009/oss-pce-cd-bios/issues/482) tracks an optional LOW strengthening of synthetic VDC record PC correlation.
 - Geargrafx guest SCSI READ(6) to RAM and self-authored CD-to-RAM execution have been observed in isolated diagnostics; they do **not** implement callable CD_RESET/CD_BASE/CD_READ, System Card startup/boot, or establish retail-game support. BIOS software release remains deliberately refused.
 
-## Draft PRs and source identity (not in main)
+## Merged evidence PRs and source identity
 
-- [#475](https://github.com/mao2009/oss-pce-cd-bios/pull/475): EX_GETVER synthetic observation schema/validation. A record digest is an **integrity check, not producer authentication**. It does not promote reference ABI status or grant reference ROM execution.
-- [#477](https://github.com/mao2009/oss-pce-cd-bios/pull/477): local reference payload static 81-slot profile, drafted separately from tracked ABI-1 facts. **Do not claim 81 reference ABI VERIFIED or that the Draft evidence has merged.**
-- [#476](https://github.com/mao2009/oss-pce-cd-bios/issues/476): private local headerless 262,144-byte reference payload (CRC32 6D9A73EF) matched the pinned Geargrafx database label and reproduced seven earlier static facts, but the historical headered 262,656-byte SHA-256 has **not** been independently reconciled. CRC32 equivalence is not cryptographic provenance and not proof of full ROM identity.
+- [#475](https://github.com/mao2009/oss-pce-cd-bios/pull/475) (merged 2026-10-22): EX_GETVER synthetic observation schema/validation. A record digest is an **integrity check, not producer authentication**. It does not promote reference ABI status or grant reference ROM execution.
+- [#477](https://github.com/mao2009/oss-pce-cd-bios/pull/477) (merged 2026-10-22): `docs/evidence/reference-static-triage-81.json`, a static 81-entry jump-table profile (`scope: STATIC_PROFILE_ONLY`; all 81 entries are `JMP_ABS`; `execution_permission: NOT_PRODUCED_BY_THIS_TOOL`). It is **static triage**, **not** reference ABI VERIFIED and not execution permission.
+- [#476](https://github.com/mao2009/oss-pce-cd-bios/issues/476) (OPEN, BLOCKED): private local headerless 262,144-byte reference payload (CRC32 6D9A73EF) matched the pinned Geargrafx database label and reproduced seven earlier static facts, but the historical headered 262,656-byte SHA-256 has **not** been independently reconciled. CRC32 equivalence is not cryptographic provenance and not proof of full ROM identity.
+
+## PR and issue state reconciliation (2026-10-23)
+
+| Item | State on 2026-10-23 | Public-doc wording |
+| --- | --- | --- |
+| #475 EX_GETVER observation schema | MERGED (2026-10-22) | Merged evidence, not ABI status |
+| #477 81-entry static profile | MERGED (2026-10-22) | Static triage only; not VERIFIED |
+| #495 MA_MUL16S ($4F), Issue #494 | MERGED (2026-10-22); #494 CLOSED | Counted in 9/81 |
+| #502 DEV-only internal boot path, Issue #501 | MERGED (2026-10-22); #501 CLOSED | DEV path, not BIOS boot |
+| #506 CI wiring, Issue #505 | MERGED (2026-10-22); #505 CLOSED | Wired in `core-harness.yml` |
+| #476 reference ROM identity | OPEN, BLOCKED | Unresolved |
+| #473, #459, #367 safety gates | OPEN, BLOCKED | Unresolved |
+| #324 ABI evidence-axis policy | OPEN | Not approved |
+| #40 EX_GETVER API issue | OPEN | Reference ABI not verified |
+| #483 / PR #484 (8/81 snapshot) | CLOSED / MERGED | Historical 2026-10-22 snapshot only |
 
 ## Build/test distinctions
 
@@ -52,9 +72,10 @@ Main contains `src/overrides/slot_1E.s`, `slot_3C.s`, `slot_3D.s`, `slot_3F.s`, 
 | `make dev-rom` | Development-only 256 KiB image, nine project-owned overrides + 72 nonreturning stubs |
 | `make dev-integration`, `make dev-test` | Project-owned DEV ABI and synthetic Geargrafx tests, including MA_DIV16U and MA_MUL16S, not reference-BIOS verification |
 | `make dev-cdread-integration`, `make dev-cdload-exec-integration` | Guest CD transport and RAM payload experiments, not BIOS-mediated boot |
+| `make dev-boot-internal-integration` | DEV-only internal boot path regression (#502), wired into CI by #506 |
 | `make release`, `make dev-release-gate-blocked` | Intentionally refuses incompatible firmware release |
 
-The current summary derives from merged source and reported tests. Each CI result is tied to the respective commit; the new documentation PR needs its **own CI** before publication. `rom/` is local and Git-ignored; never commit reference BIOS images, copyrighted commercial CD data, copied proprietary code, or private evidence.
+The current summary derives from merged source and reported tests. Each CI result is tied to the respective commit. Public-doc consistency is checked by `tests/host/test_public_docs_current.py` as part of `make test`. `rom/` is local and Git-ignored; never commit reference BIOS images, copyrighted commercial CD data, copied proprietary code, or private evidence.
 
 ## Next milestones (not yet achieved)
 
