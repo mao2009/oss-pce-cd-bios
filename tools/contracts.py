@@ -49,8 +49,9 @@ EVIDENCE_FIELDS = ('execution_conditions', 'core_revision', 'input_type',
                    'verification_result', 'evidence_hash')
 EVIDENCE_HASH_RE = re.compile(r'[0-9a-f]{64}\Z')
 # Trust level of evidence entries: FORMAT_ONLY. validate_evidence checks shape
-# only. Nothing here resolves evidence_hash to a stored artifact or
-# checks core_revision against a pin, so a well-formed hash is NOT proof that the
+# only: it does not resolve evidence_hash to a stored artifact or check core_revision
+# against a pin (resolve_evidence() does both as a separate step), and nothing here
+# authenticates the producer. A well-formed or resolved hash is NOT proof that the
 # run happened. Do not read an accepted OBSERVED claim as VERIFIED.
 EVIDENCE_TRUST_LEVEL = 'FORMAT_ONLY'
 # Synthetic fixtures and placeholders carry this marker in their text. adjudicate_claim() refuses OBSERVED for them.
@@ -179,20 +180,34 @@ OBSERVATION_KIND_FIELDS = {
 # point id to the evidence hash, log or artifact (measurement_evidence.verify_record does the log binding for its
 # own records), and nothing authenticates the principal that ran the callee. The point id is a SELF-DECLARATION:
 # any caller who can read the registry can declare a valid point id for a kind it wants.
-# This key is NOT in the ledger evidence schema (EVIDENCE_FIELDS; owner decision #324): it is stripped before the
-# shape check and read only by observation_point_for_entry(). Storing it in spec/api_contracts.json needs the
-# #324 decision; until then ledger OBSERVED entries silently lose it. No schema change is made here.
+# This key is NOT in the ledger evidence schema (EVIDENCE_FIELDS; owner decision #324). The shape check
+# (_shape_entry) ignores it, and it is read by observation_point_for_entry() in adjudicate_claim. Storing it in
+# spec/api_contracts.json needs the #324 decision. No schema change is made here.
 MEASUREMENT_POINT_KEY = 'measurement_point_id'
 
 
 def _shape_entry(entry):
     """Evidence entry without MEASUREMENT_POINT_KEY, for the EVIDENCE_FIELDS shape check (ledger schema unchanged).
 
-    The key is dropped silently on purpose (schema decision belongs to #324). It is not a validation step.
+    Only strips the key so the shape check sees EVIDENCE_FIELDS alone. It validates nothing about the key;
+    that is _check_declared_point() (resolve_evidence) and observation_point_for_entry() (adjudicate_claim).
     """
     if not isinstance(entry, dict):
         raise ValueError('evidence entry must be a dict')
     return {key: value for key, value in entry.items() if key != MEASUREMENT_POINT_KEY}
+
+
+def _check_declared_point(entry, context):
+    """If an entry declares a measurement point, it must be a registered id; otherwise fail closed.
+
+    Registry consistency only: a registered id is accepted here, which proves nothing about authenticity. The key
+    stays optional (artifact resolution does not need a point); the kind/field binding is done in adjudicate_claim.
+    """
+    if MEASUREMENT_POINT_KEY not in entry:
+        return
+    point_id = entry[MEASUREMENT_POINT_KEY]
+    if not (isinstance(point_id, str) and point_id in load_registry()):
+        raise ValueError(f'{context}: unknown measurement point {point_id!r} (not in spec/measurement_points.json)')
 
 
 def observation_point_for_entry(entry, field, declared_kind, context):
@@ -348,7 +363,8 @@ def validate_evidence(evidence, context):
 # recomputed and must equal that name. core_revision is the ledger-declared string and is only compared with the
 # pinned Geargrafx revision; the artifact file carries no revision, so nothing here shows which revision produced the
 # bytes. This proves the bytes match the recorded hash, not what they are or who produced them: producer
-# authentication is attestation (Issue #124 / #171). Not yet wired into validate_contracts (no OBSERVED claim exists).
+# authentication is attestation (Issue #124 / #171). Not wired into validate_contracts: adjudicate_claim refuses every
+# OBSERVED claim, so no resolved evidence can promote one.
 EVIDENCE_ARTIFACT_DIR = ROOT / 'build' / 'evidence-artifacts'
 ARTIFACT_TRUST_LEVEL = 'ARTIFACT_HASH_RESOLVED'
 PINNED_CORE_REVISION = json.loads((ROOT / 'tools/dependencies.json').read_text(encoding='utf-8'))['geargrafx']['revision']
@@ -363,6 +379,7 @@ def resolve_evidence(entry, artifact_dir=EVIDENCE_ARTIFACT_DIR, pinned_revision=
     does not carry a revision. Acceptance means hash-and-pin consistency only, not authenticity.
     """
     validate_evidence([_shape_entry(entry)], 'evidence')
+    _check_declared_point(entry, 'evidence')
     if entry['core_revision'] != pinned_revision:
         raise ValueError(f"core_revision {entry['core_revision']} differs from pinned {pinned_revision}")
     path = Path(artifact_dir) / entry['evidence_hash']
