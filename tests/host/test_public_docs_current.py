@@ -164,10 +164,10 @@ def stale_hits(text, expected=EXPECTED):
             in_history = bool(HISTORY_HEADING_RE.match(line))
         if in_history and DATED_BULLET_RE.match(line):
             continue  # dated record under a History heading: exempt
-        for pattern in STALE_PATTERNS:
-            if re.search(pattern, line):
-                hits.append((number, pattern))
         current, notes = historical_split(line)
+        for pattern in STALE_PATTERNS:
+            if re.search(pattern, current):
+                hits.append((number, pattern))
         for key, value, _ in claims_in_line(current):
             if value != expected[key]:
                 hits.append((number, f"{NAMES[key]} {value} != ledger {expected[key]}"))
@@ -178,8 +178,24 @@ def stale_hits(text, expected=EXPECTED):
         for match in VALUE_RE.finditer(current):
             if match.group(2) and int(match.group(1)) not in allowed:
                 hits.append((number, f"count {match.group(0).strip()} is not derived from the ledger"))
-        if MERGED_PR_RE.search(line) and OPEN_WORDING_RE.search(line):
-            hits.append((number, "merged PR or closed issue described as open/unmerged/Draft"))
+        # Limit state checks to the clause/segment that mentions each merged PR
+        for m in MERGED_PR_RE.finditer(line):
+            pr_start = m.start()
+            # look back to sentence/semicolon/comma boundary
+            before = line[:pr_start]
+            clause_start = max(before.rfind(';'), before.rfind(','), before.rfind('。'), before.rfind('；'), before.rfind('，')) + 1
+            # look forward to sentence/semicolon/comma boundary
+            after = line[pr_start:]
+            clause_end = pr_start + min(
+                after.find(';') if ';' in after else len(after),
+                after.find(',') if ',' in after else len(after),
+                after.find('。') if '。' in after else len(after),
+                after.find('；') if '；' in after else len(after),
+                after.find('，') if '，' in after else len(after),
+            )
+            clause = line[clause_start:clause_end]
+            if OPEN_WORDING_RE.search(clause):
+                hits.append((number, "merged PR or closed issue described as open/unmerged/Draft"))
     return hits
 
 
