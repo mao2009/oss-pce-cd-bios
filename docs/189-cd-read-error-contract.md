@@ -4,7 +4,9 @@
 
 ## 0. 判定
 
-* **実観測: 未実施。** 純正 BIOS の実行 0 件、`$E009` の呼出 0 件、Geargrafx・実機・第二エミュレータの観測 0 件。
+* **実 CD_READ 失敗契約の実観測件数: 0。** 純正 BIOS の実行 0 件、`$E009` の呼出 0 件、Geargrafx・実機・第二エミュレータの観測 0 件。
+* **#189 は完了していない。Issue #189 は OPEN のまま。本 PR は `Refs #189` のみで、Close しない。**
+* **実観測: 未実施。**
 * 判定は **BLOCKED**。理由: #173 の子 #365 / #366 / #367 が OPEN、slot 3 の reviewed gate 記録と独立承認がない（[188-cd-read-mode-safety.md](188-cd-read-mode-safety.md) G1-G2）。
 * 本 PR は契約の整理と、合成入力だけを判定する `tools/cd_read_error_verdict.py` を追加する。合成 PASS / FAIL は純正 ABI の証拠ではない。
 * `release_eligible = false`、VERIFIED は付与しない。#459 / #367 は BLOCKED のまま。
@@ -16,6 +18,20 @@
 | C1 | 範囲外 LBA（LBA 16、合成16セクター媒体の外） | 転送層で STATUS のみ・宛先未変更が計測済み | [M] T3（`invalid_sector_lba16`）。callee は未観測。**範囲判定は Q7（LBA の基点）に依存するため暫定** |
 | C2 | count 0 | 呼出側の分岐（HuCC L436-438）は確認済み。BIOS の戻りは未計測 | [C] A4、[M] なし |
 | C3 | 無媒体 | 実行不能。静的 BLOCKED として残す | [U] [cd-read-contract.md](cd-read-contract.md) の T7（「no disc / zero-sector image」、UNKNOWN、計測なし。Geargrafx は媒体なしで実行できない） |
+
+証跡ラベルと判定語の凡例（本文の [C] [M] [U] と、判定器の U / F / B / P）:
+
+| 記号 | 種別 | 意味（証跡として） |
+| --- | --- | --- |
+| [C] | 呼出側ソース | 命令がそう書いていることだけを示す。コメント由来は含まない（188 文書の [C] 定義に従う） |
+| [M] | 実測（既存証跡のみ） | 転送層の計測。callee の実測ではない |
+| [U] | 証跡なし | UNKNOWN。計測も確定もない。正常値へ変換しない |
+| U | UNKNOWN（判定） | 期待値が UNKNOWN の項目。観測があっても PASS にならない。証跡として「未実測」 |
+| F | FAIL（判定） | 既知の期待値と観測が不一致。合成入力だけで起こり、純正 ABI の証拠ではない |
+| B | BLOCKED（判定） | 判定不能。未到達・不正値・監視失敗・gate 不許可・不正な入力。証跡として「実施できない」 |
+| P | PASS（判定） | 既知の期待値と全項目が一致。合成のみで、現行の表からは出ない。純正 ABI の証拠ではない |
+
+本 PR の判定器は合成入力だけを判定する。F / P は「判定器が正しく動いた」ことの証拠に過ぎず、CD_READ の実挙動の証拠にはならない。
 
 対象外: 末尾跨ぎ（T4 のみ計測、#189 残件として §5 に残す）、timeout / busy、他の転送モード、CD_EXEC。
 
@@ -33,12 +49,27 @@
 
 | 判定 | 条件 |
 | --- | --- |
-| BLOCKED | `executable` が厳密に `True` でないケース、監視失敗・評価不能な入力、未到達、gate が ALLOWED でない、不正値（型・範囲・長さ）、既知の期待値に対する観測の欠落、期待値の欠落・不正な型（`bool` を `int` として扱わない）。例外を投げず、PASS にはならない |
+| BLOCKED | ケースが dict でない、`executable` が厳密に `True` でない、監視失敗（`monitor_ok` が `True` でない）、観測が dict でない、未到達（`reached` が `True` でない）、gate が ALLOWED でない、期待値表が dict でない、既知の期待値に対する観測の欠落、観測・期待値の型・範囲・長さの不正（`bool` を `int` として扱わない）、期待値の欠落。例外を投げず、PASS にはならない |
 | FAIL | 既知の期待値と観測が不一致（現行の表は全て UNKNOWN のため、合成期待値でのみ起こる） |
 | UNKNOWN | 期待値が UNKNOWN の項目。観測があっても正常値へ変換しない |
 | PASS | 全項目が既知の期待値と一致。現行の表からは出ない |
 
-全体の判定は FAIL > BLOCKED > UNKNOWN > PASS の最大値とする。`tests/host/test_cd_read_error_verdict.py` は FAIL・BLOCKED・UNKNOWN・PASS が混在する実ケースを `judge()` に通し、この順序を検証する。
+**観測キーの欠落の規則（正式）:** `monitor_ok` / `reached` / `gate` が全て通過した状態で、項目キー（`a` … `ram_outside_dest`）が観測に無い場合:
+
+* 期待値が UNKNOWN の項目 → **UNKNOWN**（未観測＝未実測。BLOCKED にしない）。
+* 期待値が既知の項目 → **BLOCKED**。
+* どちらの場合も PASS にはならない。
+
+UNKNOWN とした根拠: #189 の完了条件は「監視失敗は FAIL/BLOCKED」「mock のみの場合は未実測」と書く。`monitor_ok=False` は監視失敗に当たり BLOCKED。キーの欠落は監視が成功したうえでの未観測であり、「未実測」に当たる。UNKNOWN 期待の項目は元々正常値へ変換しないため、判定の結果は UNKNOWN（非 PASS）になる。欠落を BLOCKED に変える案は、現行 3 ケースの全項目 UNKNOWN の判定を BLOCKED に変えるため、本 PR では採らない。
+
+**優先順位（コードの実際の順序）:** 判定は 2 段階で行う。
+
+1. **全体を止める早期 BLOCKED**（項目を判定せず BLOCKED を返す）: `executable` 不許可、ケースが dict でない、観測が dict でない、`monitor_ok` 不通過、`reached` 不通過、`gate` 不許可、期待値表が dict でない。この段階の BLOCKED は、項目に FAIL があっても FAIL より優先する。
+2. **項目ごとの判定**: 各項目は FAIL / BLOCKED / UNKNOWN / PASS のいずれか。全体は `max` で FAIL > BLOCKED > UNKNOWN > PASS の順に決まる。
+
+例: C1 に `a = 1`（既知の期待値、観測は 0 で FAIL）を与え、`reached = False` とすると、全体は **FAIL ではなく BLOCKED**（段階 1）。同じ期待値で `reached = True` とすると FAIL（段階 2）。
+
+`tests/host/test_cd_read_error_verdict.py` は段階 2 の FAIL・BLOCKED・UNKNOWN・PASS が混在する実ケースを `judge()` に通して順序を検証し、段階 1 の早期 BLOCKED が FAIL より優先することも検証する。
 
 現行の 3 ケースはいずれも期待値が全て UNKNOWN のため、どの観測を与えても PASS にならない（テストで確認）。C1 の範囲判定は Q7 に依存するため暫定。
 

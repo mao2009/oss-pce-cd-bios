@@ -133,6 +133,54 @@ class Precedence(unittest.TestCase):
         self.assertEqual((items['a'], items['ram_outside_dest']), (v.BLOCKED, v.FAIL))
         self.assertEqual(overall, v.FAIL)
 
+    def test_early_gate_blocked_beats_item_fail(self):
+        # Code order: monitor / reached / gate return BLOCKED before any item is judged, so a known FAIL is hidden.
+        case = synthetic(C1, a=0x01)                     # a would be FAIL (observed 0x00)
+        self.assertEqual(v.judge(case, {**VALID, 'reached': False})[0], v.BLOCKED)
+        self.assertEqual(v.judge(case, {**VALID, 'gate': 'NONE'})[0], v.BLOCKED)
+        self.assertEqual(v.judge(case, {**VALID, 'monitor_ok': False})[0], v.BLOCKED)
+        self.assertEqual(v.judge(case, VALID)[0], v.FAIL)
+
+
+class MissingObservation(unittest.TestCase):
+    """Rule (doc section 3): a key missing while monitor_ok/reached/gate pass is 'not observed'.
+    UNKNOWN expectation -> UNKNOWN (not BLOCKED). Known expectation -> BLOCKED. Never PASS."""
+
+    def test_missing_unknown_item_with_monitor_ok_is_unknown_not_blocked(self):
+        overall, items = v.judge(C1, without(VALID, 'a'))
+        self.assertEqual(items['a'], v.UNKNOWN)
+        self.assertEqual(overall, v.UNKNOWN)
+
+    def test_all_keys_missing_with_monitor_ok_is_unknown(self):
+        obs = {'monitor_ok': True, 'reached': True, 'gate': 'ALLOWED'}
+        overall, items = v.judge(C2, obs)
+        self.assertEqual(set(items.values()), {v.UNKNOWN})
+        self.assertEqual(overall, v.UNKNOWN)
+
+
+class InputSafety(unittest.TestCase):
+    """Any non-conforming input yields BLOCKED: no exception, never PASS."""
+
+    def test_case_not_a_dict_is_blocked(self):
+        # RED on the pre-fix code: judge(None, ...) raised AttributeError on case.get().
+        for bad in (None, [], 'C1', 1, True, ('executable',)):
+            self.assertEqual(v.judge(bad, VALID)[0], v.BLOCKED, repr(bad))
+
+    def test_non_dict_observation_is_blocked(self):
+        for bad in (None, [], 'x', 1, True):
+            self.assertEqual(v.judge(C1, bad)[0], v.BLOCKED, repr(bad))
+
+    def test_non_conforming_expectation_values_are_blocked(self):
+        for bad in ({'a': 256}, {'a': True}, {'a': '0'}, {'a': 'unknown'}, {'mpr': [0] * 7},
+                    {'mpr': (0,) * 8}, {'ram_outside_dest': -1}, {'a': None}, {'a': [0]}):
+            overall, _ = v.judge(synthetic(C2, **bad), VALID)
+            self.assertEqual(overall, v.BLOCKED, bad)
+
+    def test_non_conforming_observation_values_never_pass(self):
+        known = synthetic(C2, **{item: VALID[item] for item in v.ITEMS})
+        for bad in ({'a': '0'}, {'a': 0.0}, {'mpr': 'x'}, {'ram_outside_dest': '0'}, {'stack': None}):
+            self.assertEqual(v.judge(known, {**VALID, **bad})[0], v.BLOCKED, bad)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -38,9 +38,13 @@ def _known_expectation_valid(item, expected):
 def judge(case, obs):
     """Return (overall, per_item). obs keys: monitor_ok, reached, gate, and ITEMS (missing = not observed).
 
-    Anything that cannot be evaluated (case not executable, malformed or missing expectations, malformed
-    observations) is BLOCKED; it never raises and never yields PASS.
+    Anything that cannot be evaluated (case not a dict or not executable, malformed or missing expectations,
+    malformed observations) is BLOCKED; it never raises and never yields PASS.
+    A missing observation key with monitor_ok/reached/gate passing is UNKNOWN for an UNKNOWN expectation
+    and BLOCKED for a known expectation (doc/189-cd-read-error-contract.md section 3).
     """
+    if not isinstance(case, dict):
+        return BLOCKED, {'reason': 'case is not a dict'}
     if case.get('executable') is not True:
         return BLOCKED, {'reason': case.get('reason', 'not executable')}
     if not isinstance(obs, dict) or obs.get('monitor_ok') is not True:
