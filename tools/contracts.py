@@ -180,23 +180,23 @@ OBSERVATION_KIND_FIELDS = {
 # point id to the evidence hash, log or artifact (measurement_evidence.verify_record does the log binding for its
 # own records), and nothing authenticates the principal that ran the callee. The point id is a SELF-DECLARATION:
 # any caller who can read the registry can declare a valid point id for a kind it wants.
-# This key is NOT in the ledger evidence schema (EVIDENCE_FIELDS; owner decision #324). The shape check
+# This key is NOT in the ledger evidence schema (EVIDENCE_FIELDS; #324 owner A decision, 2026-10-24). The shape check
 # (_shape_entry) ignores it, and it is read by observation_point_for_entry() in adjudicate_claim. Storing it in
-# spec/api_contracts.json needs the #324 decision. No schema change is made here.
+# spec/api_contracts.json requires a SEPARATE schema approval; #324 A only permits temporary input. No schema change.
 MEASUREMENT_POINT_KEY = 'measurement_point_id'
 
 
 def _shape_entry(entry):
     """Evidence entry without MEASUREMENT_POINT_KEY, for the EVIDENCE_FIELDS shape check (ledger schema unchanged).
 
-    TEMPORARY INPUT EXTENSION pending Issue #324 owner approval:
+    TEMPORARY INPUT EXTENSION approved as option A (Issue #324, 2026-10-24):
     - `measurement_point_id` is accepted as an extension key and stripped here; its value is later
       checked by _check_declared_point() (resolve_evidence) and observation_point_for_entry()
       (adjudicate_claim).
     - Any OTHER key outside EVIDENCE_FIELDS is rejected by validate_evidence()'s strict
       `set(entry) == set(EVIDENCE_FIELDS)` check.
-    - This is not an approval to add measurement_point_id to EVIDENCE_FIELDS or to spec/api_contracts.json;
-      those changes require Issue #324 owner approval.
+    - The owner approved ONLY this input extension. Adding the key to EVIDENCE_FIELDS
+      or spec/api_contracts.json is NOT approved and requires a separate decision.
 
     Only strips the key so the shape check sees EVIDENCE_FIELDS alone. It validates nothing about the key;
     that is _check_declared_point() (resolve_evidence) and observation_point_for_entry() (adjudicate_claim).
