@@ -19,7 +19,7 @@
 ;   precondition: caller SP (before JSR) >= $06, so that at routine entry
 ;                 (after the JSR push of 2 return bytes) S >= $04. The routine
 ;                 then pushes php (P, 1 byte) and phy (Y, 1 byte), so the
-;                 minimum SP during the routine is entry_SP - 4 = caller_SP - 6.
+;                 minimum SP during the routine is entry_SP - 2 = caller_SP - 4.
 ;   ABI remains UNVERIFIED and this ROM stays DEV ONLY (release_eligible: false).
 ;
 ; Zero-page layout:
@@ -33,10 +33,10 @@
 ;   $FF  n_lo       input low byte
 ;
 ; Stack usage (from caller's perspective):
-;   JSR pushes 2 return-address bytes (caller_SP -> caller_SP - 2).
+;   JSR pushes 2 return-address bytes (caller_SP -> caller_SP - 2 = entry_SP).
 ;   Routine pushes php (P) and phy (Y), then pops them before rts.
 ;   RTS pops the JSR return address. SP is balanced back to caller_SP.
-;   Maximum stack depth during the routine is caller_SP - 6.
+;   Maximum stack depth during the routine is caller_SP - 4 = entry_SP - 2.
 ;
 ; 16-bit overflow safety:
 ;   trial = 4*root + 1 <= 509 (root <= 127), fits in 9 bits.

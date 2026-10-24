@@ -60,10 +60,12 @@ EDGES = (0x0000, 0x0001, 0xFFFF, 0x0002, 0xFFFE, 0x7FFF, 0x8001, 0x8000, 0x00FF,
          0x5555, 0xAAAA, 0x1234, 0xEDCC)
 SWEEP_FIXED = (0x8000, 0x7FFF, 0xFFFF, 0x0001, 0x0000, 0x1234)
 FLAG_BITS = (0x01, 0x02, 0x04, 0x08, 0x40, 0x80)  # C Z I D V N; B (0x10) and T (0x20) are 0 on input
-CALLER_SPS = (0x0E, 0x40, 0xFF)  # caller SP before the 4 pushes; entry SP = caller SP - 6 (must be $08..$F9)
+CALLER_SPS = (0x0E, 0x40, 0xFF)  # caller SP before the pushes; entry SP = caller SP - 2 (JSR return) - 2 (php+phy)
 RANDOM_PAIRS = 3000  # per default run; the host model checks 20,000 more
 RANDOM_SEED = 494
-TRAMPOLINE = 0xE700  # free ROM after the override (fill $FF): trace mutants jump here from the routine's RTS
+# TRAMPOLINE is computed dynamically from the OVERRIDES segment end (see find_trampoline_address).
+# It must not be hardcoded: adding/removing override sources changes the ROM layout, and a fixed
+# address like $E700 can land inside another override's code.
 SIGNED_BOUNDARY = ((-32768, -32768), (-32768, 32767), (32767, -32768), (32767, 32767), (-1, -1), (-1, 1), (1, -1),
                    (-1, 32767), (32767, -1), (-32768, -1), (-1, -32768), (-32768, 1), (1, -32768), (0, 0),
                    (0, -32768), (-32768, 0), (1, 1), (0x00FF, 0x0101), (0x0101, 0x00FF), (255, 256), (0x7FFF, 2))
@@ -287,6 +289,29 @@ def routine_window(data, rom_dir):
     return body, body + size
 
 
+def find_trampoline_address(rom_dir):
+    """Return a safe trampoline address right after the OVERRIDES segment end.
+
+    The OVERRIDES segment holds all slot_*.o override bodies. Placing the trampoline
+    immediately after the segment end guarantees it never overlaps any override code,
+    no matter how the ROM layout changes when sources are added or removed.
+    The address is rounded up to a 2-byte boundary for JMP absolute targeting.
+    """
+    text = (rom_dir / "dev.map").read_text()
+    for line in text.splitlines():
+        parts = line.split()
+        # Segment summary line: "OVERRIDES  00E300  00E719  00041A  00001"
+        # Per-object line:       "    OVERRIDES         Offs=000000  Size=000005  ..."
+        if (len(parts) >= 4 and parts[0] == "OVERRIDES"
+                and all(c in "0123456789ABCDEFabcdef" for c in parts[1])):
+            end = int(parts[2], 16)  # segment end address (exclusive, last byte + 1)
+            # Place trampoline at least one byte past segment end, aligned to 2 bytes.
+            addr = end + 2
+            addr = (addr + 1) & ~1  # round up to next even address
+            return addr
+    raise ValueError("OVERRIDES segment not found in dev.map")
+
+
 def trace_config(c, window, extra=0):
     """Window + breakpoints for caller SP c. Routine-allowed writes: its six pushes c-11..c-6 and the frame c-3..c.
     Allowed reads: c-11..c (its own bytes and the JSR return it pops)."""
@@ -425,15 +450,15 @@ def find_unique(data, pattern, window, name):
     return hits[0]
 
 
-def mutants(data, window):
+def mutants(data, window, trampoline_addr):
     """name -> (patches [(file offset, bytes)], required error kinds, window extra, c). One edit each; the length and
     stack effect are kept except M5 (a lost PLA), which must be caught as a failed return."""
     f = lambda pat, name: find_unique(data, bytes.fromhex(pat), window, name)
     nop_block = lambda head, name: (lambda at: [(at + 5, b"\xEA" * data[at + 4])])(f(head, name))  # BPL n -> n NOPs
     body_end = window[1] - 0xE000 - 1
-    if not window[1] < TRAMPOLINE < window[1] + 0x100 - 8:
+    if not window[1] < trampoline_addr < window[1] + 0x100 - 8:
         raise ValueError("trampoline is outside the extended PC window")
-    jmp = lambda code: [(body_end, bytes([0x4C, TRAMPOLINE & 0xFF, TRAMPOLINE >> 8])), (TRAMPOLINE - 0xE000, code)]
+    jmp = lambda code: [(body_end, bytes([0x4C, trampoline_addr & 0xFF, trampoline_addr >> 8])), (trampoline_addr - 0xE000, code)]
     return {
         "M1_multiplicand_correction_NOP": (nop_block("BD0B2110", "M1"), {"product"}, 0, 0xFF),
         "M2_multiplier_correction_NOP": (nop_block("BD042110", "M2"), {"product"}, 0, 0xFF),
@@ -498,6 +523,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix="pce-dev-mul16s-") as tmp:
         rig = Rig(data, args.rom.parent, Path(tmp))
         evidence["window"] = [f"${rig.window[0]:04X}", f"${rig.window[1]:04X}"]
+        trampoline_addr = find_trampoline_address(args.rom.parent)
+        evidence["trampoline"] = f"${trampoline_addr:04X}"
         jobs = jobs_for_default()
         calls = 0
 
@@ -524,7 +551,7 @@ def main():
         control, control_halt = rig.run_table(reduced, 0x40)
         if check("control", control, reduced, 0x40, control_halt):
             raise ValueError("unmutated control run failed")
-        plan = mutants(data, rig.window)
+        plan = mutants(data, rig.window, trampoline_addr)
 
         def do_mutant(item):
             name, (patches, required, extra, c) = item
