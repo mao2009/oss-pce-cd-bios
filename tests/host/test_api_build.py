@@ -61,6 +61,23 @@ class ApiBuildTests(unittest.TestCase):
         entry = int.from_bytes(self.rom[at+1:at+3], 'little')
         self.assertEqual(self.rom[entry-0xe000:entry-0xe000+5], bytes.fromhex('a2 03 a0 00 60'))
 
+    def test_api_implementation_list_matches_overrides(self):
+        """The API_IMPLEMENTATION string in build_rom.py must list every override slot exactly once."""
+        import tools.build_rom as br
+        ov = br.overrides()
+        impl = br._API_IMPLEMENTATION
+        for slot in sorted(ov):
+            self.assertIn(f"slot_{slot:02X}", impl,
+                          f"API_IMPLEMENTATION missing slot_{slot:02X}")
+        # Count of slots in the string must match the override count
+        slot_count = impl.count("slot_")
+        self.assertEqual(slot_count, len(ov),
+                         f"API_IMPLEMENTATION has {slot_count} slot references, expected {len(ov)}")
+        # Unimplemented count must match
+        unimplemented = 81 - len(ov)
+        self.assertIn(f"{unimplemented} slots unimplemented", impl,
+                      f"API_IMPLEMENTATION should say {unimplemented} slots unimplemented")
+
     def test_debug_release_and_rebuild_match(self):
         for name, mode in [('release', 'release'), ('again', 'debug')]:
             self.assertEqual(build(self.folder / name, mode).read_bytes(), self.rom)

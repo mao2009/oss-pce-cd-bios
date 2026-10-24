@@ -4,12 +4,12 @@ This is an evidence-scoped, **dated snapshot**, not a real-time compatibility re
 
 ## Six separate metrics
 
-Measured on `f90c16b`: `src/overrides/slot_*.s` contains **10** files; `spec/dev_implementations.json` has **81** slots, **10** with a non-null `implementation`, and **0** owner approvals. The 71 stubs are the remaining 81 − 10 entries.
+Measured on `f90c16b`: `src/overrides/slot_*.s` contains **9** files; `spec/dev_implementations.json` has **81** slots, **9** with a non-null `implementation`, and **0** owner approvals. The 72 stubs are the remaining 81 − 9 entries.
 
 | Metric | Confirmed on main | Meaning / limits |
 | --- | ---: | --- |
-| A. DEV ROM implemented entry points | **10/81** | OSS/project-defined code installed at ten candidate slots; not approved/compatible firmware |
-| B. DEV ROM nonreturning stubs | **71/81** | Remaining candidate entries do not implement callable firmware |
+| A. DEV ROM implemented entry points | **9/81** | OSS/project-defined code installed at nine candidate slots on main f90c16b; not approved/compatible firmware |
+| B. DEV ROM nonreturning stubs | **72/81** | Remaining candidate entries do not implement callable firmware |
 | C. Recorded reference ROM static ABI-1 review | **7** | Static facts only; reference compatibility not independently proven |
 | D. Reference BIOS ABI VERIFIED | **0/81** | No API promoted to VERIFIED |
 | E. Owner-approved DEV_CALLABLE | **0** | Implementation count is not owner approval; all 81 ledger states remain NOT_READY |
@@ -19,7 +19,7 @@ Other results: **0 verified BIOS-mediated CD program boots; 0 retail game compat
 
 ## Implemented DEV ROM entries
 
-These ten entries are **DEV implementations**. They are separate from reference ABI VERIFIED (0/81).
+These nine entries are **DEV implementations** on main f90c16b. They are separate from reference ABI VERIFIED (0/81).
 
 | Slot | API | Current scope |
 | --- | --- | --- |
@@ -31,10 +31,9 @@ These ten entries are **DEV implementations**. They are separate from reference 
 | $41 | MA_MUL16U | Project-own DEV math routine; not the proven System Card ABI |
 | $42 | MA_DIV16S | Project-own stack-based DEV math contract |
 | $43 | MA_DIV16U | [#480](https://github.com/mao2009/oss-pce-cd-bios/pull/480): project-own unsigned division, caller I/D flag combinations, stack and WRAM final-state checks, real-core mutants |
-| $44 | MA_SQRT | [#78](https://github.com/mao2009/oss-pce-cd-bios/issues/78): project-own integer square root DEV contract (bit-by-bit restoring, trial = 4*root + 1), host-exhaustive 65,536-input check and real-core boundary/mutant tests on pinned Geargrafx. Not the proven System Card ABI |
 | $4F | MA_MUL16S | [#495](https://github.com/mao2009/oss-pce-cd-bios/pull/495) (Issue #494): project-own signed 16x16 to 32-bit multiplication; caller P/Y/S, MPR, ZP/BSS/I/O and frame-external stack checked on pinned Geargrafx, including a write/read trace of the routine's own instructions; real-core mutants of the assembled routine. Manual `make dev-mul16s-sweep` covers 1,572,864 calls. Not the proven System Card ABI |
 
-`src/overrides/` contains `slot_1E.s`, `slot_3C.s`, `slot_3D.s`, `slot_3F.s`, `slot_40.s`, `slot_41.s`, `slot_42.s`, `slot_43.s`, `slot_44.s` and `slot_4F.s`. The 256 KiB DEV ROM is not a replacement for a commercial System Card. `spec/dev_implementations.json` remains the status ledger with approval and reference-ABI axes separate. Note that a full-RAM before/after diff **cannot** observe same-value writes or writes later undone.
+On the Issue #78 PR branch, MA_SQRT ($44) is added as a tenth DEV implementation: project-own integer square root DEV contract (bit-by-bit restoring, trial = 4*root + 1), host-exhaustive 65,536-input check and real-core boundary/mutant tests on pinned Geargrafx. Not the proven System Card ABI.
 
 ## Recent merged evidence and safety limitations
 
@@ -56,7 +55,7 @@ These ten entries are **DEV implementations**. They are separate from reference 
 | --- | --- | --- |
 | #475 EX_GETVER observation schema | MERGED (2026-10-22) | Merged evidence, not ABI status |
 | #477 81-entry static profile | MERGED (2026-10-22) | Static triage only; not VERIFIED |
-| #495 MA_MUL16S ($4F), Issue #494 | MERGED (2026-10-22); #494 CLOSED | Counted in 10/81 |
+| #495 MA_MUL16S ($4F), Issue #494 | MERGED (2026-10-22); #494 CLOSED | Counted in 9/81 |
 | #502 DEV-only internal boot path, Issue #501 | MERGED (2026-10-22); #501 CLOSED | DEV path, not BIOS boot |
 | #506 CI wiring, Issue #505 | MERGED (2026-10-22); #505 CLOSED | Wired in `core-harness.yml` |
 | #476 reference ROM identity | OPEN, BLOCKED | Unresolved |
@@ -69,7 +68,7 @@ These ten entries are **DEV implementations**. They are separate from reference 
 | Command / artifact | What it means |
 | --- | --- |
 | `make setup`, `make build`, `make test`, `make test-real-core`, `make check` | Original 8 KiB synthetic HuCARD and host/real-core diagnostics, not a compatibility ROM |
-| `make dev-rom` | Development-only 256 KiB image, ten project-owned overrides + 71 nonreturning stubs |
+| `make dev-rom` | Development-only 256 KiB image, nine project-owned overrides + 72 nonreturning stubs on main f90c16b; ten project-owned overrides ($1E, $3C, $3D, $3F, $40, $41, $42, $43, $44, $4F) + 71 nonreturning stubs on Issue #78 PR branch |
 | `make dev-integration`, `make dev-test` | Project-owned DEV ABI and synthetic Geargrafx tests, including MA_DIV16U and MA_MUL16S, not reference-BIOS verification |
 | `make dev-cdread-integration`, `make dev-cdload-exec-integration` | Guest CD transport and RAM payload experiments, not BIOS-mediated boot |
 | `make dev-boot-internal-integration` | DEV-only internal boot path regression (#502), wired into CI by #506 |

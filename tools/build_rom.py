@@ -33,9 +33,9 @@ EXIT_OK, EXIT_ERROR, EXIT_BLOCKED = 0, 2, 3  # BLOCKED = expected release refusa
 # src/overrides/*.s through assemble_api_objects(), so "NONE" would be false. This is one
 # diagnostic slot, not ABI compatibility; the ROM stays abi: UNVERIFIED / release_eligible: false.
 _DEV_OVERRIDE_SLOTS = [int(p.stem.removeprefix('slot_'), 16) for p in (ROOT / 'src' / 'overrides').glob('slot_*.s')]
-API_IMPLEMENTATION = ('slot_1E EX_GETVER, slot_3C EX_BINBCD, slot_3D EX_BCDBIN, slot_3F MA_MUL8U, '
-                      'slot_40 MA_MUL8S, slot_41 MA_MUL16U, slot_42 MA_DIV16S, slot_43 MA_DIV16U and slot_4F MA_MUL16S (project-own, DEV only); '
-                      f'{81 - len(set(_DEV_OVERRIDE_SLOTS))} slots unimplemented')
+
+
+
 
 
 class ReleaseBlocked(ValueError):
@@ -69,6 +69,26 @@ def overrides(root: Path = ROOT) -> dict[int, Path]:
             raise ValueError(f'Duplicate override {num:02X}')
         result[num] = path
     return result
+def _dev_override_list() -> str:
+    """Human-readable list of implemented DEV override slots, sorted by slot number."""
+    ov = overrides()
+    names = {
+        0x1E: "EX_GETVER", 0x3C: "EX_BINBCD", 0x3D: "EX_BCDBIN",
+        0x3F: "MA_MUL8U", 0x40: "MA_MUL8S", 0x41: "MA_MUL16U",
+        0x42: "MA_DIV16S", 0x43: "MA_DIV16U", 0x44: "MA_SQRT",
+        0x4F: "MA_MUL16S",
+    }
+    parts = []
+    for slot in sorted(ov):
+        name = names.get(slot, f"slot_{slot:02X}")
+        parts.append(f"slot_{slot:02X} {name}")
+    return ", ".join(parts) + " (project-own, DEV only)"
+_API_IMPLEMENTATION = f'{_dev_override_list()}; '                       f'{81 - len(set(_DEV_OVERRIDE_SLOTS))} slots unimplemented'
+
+# Public alias for backwards compatibility with diagnostics.py
+API_IMPLEMENTATION = _API_IMPLEMENTATION
+
+
 
 
 def assemble_api_objects(output: Path, mode: str = 'debug', root: Path = ROOT) -> list[Path]:

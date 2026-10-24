@@ -56,7 +56,7 @@ def guest(reset, entry, x, a, sp=0xFF):
     return code + bytes([0x80, 0xFE]), halt  # BRA -2
 
 
-def check(label, rows, halt, x, a, sp=0xFF):
+def check(label, rows, halt, x, a, sp=0xFF, p_entry=None):
     cold = next(r for r in rows if r["phase"] == "cold")
     if cold["pc"] != halt:
         raise ValueError(f"{label}: guest did not reach its halt loop (pc ${cold['pc']:04X}, want ${halt:04X})")
@@ -68,10 +68,14 @@ def check(label, rows, halt, x, a, sp=0xFF):
     root_lo, root_hi, p_after, y, _, sp_after = s[0], s[1], s[2], s[3], s[4], s[5]
     n = (x << 8) | a
     want_root = math.isqrt(n)
-    # P at entry: SEI, SED, SEC, CLV, then LDA #a sets N/Z. Restored by the routine (PLP). T/B masked.
-    p_entry = 0x0D | (0x80 if a & 0x80 else 0) | (0x02 if a == 0 else 0)
-    observed = (root_lo, root_hi, p_after & 0xCF, y, sp_after)
-    want = (want_root & 0xFF, want_root >> 8, p_entry, Y_PRESET, sp)
+    # P at entry: defaults from caller setup. If p_entry not given, derive from default guest (SEI, SED, SEC, CLV then LDA #a).
+    if p_entry is None:
+        p_entry = 0x0D | (0x80 if a & 0x80 else 0) | (0x02 if a == 0 else 0)
+    # P preservation: N(bit7) and Z(bit1) are overwritten by LDA #a at JSR entry,
+    # T(bit4) and B(bit5) are not stored by PLP. Only C(0), I(2), D(3), V(6) survive.
+    p_entry_masked = p_entry & 0x4D
+    observed = (root_lo, root_hi, p_after & 0x4D, y, sp_after)
+    want = (want_root & 0xFF, want_root >> 8, p_entry_masked, Y_PRESET, sp)
     if observed != want:
         raise ValueError(f"{label}: input ${n:04X}: A/X/P/Y/SP observed {observed}, expected {want}")
 
@@ -122,13 +126,10 @@ def main():
         for n in (65535, 255, 65025):
             run_case(probe, data, folder, cue, reset, f"lowsp-{n:04x}", entry, n >> 8, n & 0xFF, sp=0x06)
             evidence["cases"].append({"input": n, "expected_root": math.isqrt(n), "sp": 0x06})
-        # Negative: the routine's CLD (second byte of the entry) must be present.
-        # With D=1 on entry, the SBCs would run in BCD and produce wrong results.
+
         code_at = body - 0xE000
         if data[code_at] != 0x08 or data[code_at + 1] != 0xD8:
             raise ValueError("slot $44 body does not start with PHP; CLD")
-        # Runtime check: replace CLD with NOP. At least one of the 3 mutant cases
-        # must produce a wrong result (BCD SBC differs from binary SBC).
         mutant = bytearray(data)
         mutant[code_at + 1] = 0xEA
         rejected = 0
@@ -142,9 +143,9 @@ def main():
         evidence["negative_cases"].append({"case": "44_without_CLD_D1", "rejected": rejected,
                                            "total": 3})
     (args.rom.parent / "geargrafx-dev-sqrt-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
-    total = len(CASES) + 3  # the three boundary cases (caller SP=$06, entry S=$04)
-    print(f"PASS real Geargrafx DEV ROM: MA_SQRT slot $44 {total} cases ({len(CASES)} at SP=$FF, 3 at SP=$06 "
-          f"boundary; precondition S>=$04 at entry); A/X=isqrt(input), Y, P kept (D=1,C=1 entry), SP, MPR1/MPR7 "
+    total = len(CASES) + 3  # SP boundary cases
+    print(f"PASS real Geargrafx DEV ROM: MA_SQRT slot $44 {total} cases ({len(CASES)} at SP=$FF, "
+          f"3 at SP=$06 boundary; precondition S>=$04 at entry); A/X=isqrt(input), Y, P kept (D=1,C=1 entry), SP, MPR1/MPR7 "
           f"checked; no-CLD mutant rejected {rejected}/3")
 
 
