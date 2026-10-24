@@ -119,6 +119,15 @@ class ResolveEvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'missing or not a regular file'):
             resolve_evidence(entry(), artifact_dir=artdir)
 
+    def test_declared_measurement_point_must_be_registered(self):
+        # resolve_evidence accepts an optional point id, but a present one must be registered (fail closed).
+        # Registry consistency only: a registered id resolves here and proves nothing about authenticity.
+        self.assertEqual(self.resolve(entry(measurement_point_id='CALLEE_EXECUTION_SLOT')), self.dir / DIGEST)
+        for bad in ('BOGUS', '', 42, None, ['CALLEE_EXECUTION_SLOT']):
+            with self.subTest(bad=bad):
+                with self.assertRaisesRegex(ValueError, 'unknown measurement point'):
+                    self.resolve(entry(measurement_point_id=bad))
+
     def test_artifact_directory_is_not_consulted_for_unrelated_names(self):
         # Only <dir>/<evidence_hash> is read; a sibling file with another name never satisfies the lookup.
         (self.dir / 'other.bin').write_bytes(ARTIFACT)
