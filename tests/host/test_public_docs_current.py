@@ -41,6 +41,9 @@ STALE_PATTERNS = [
 ]
 MERGED_PR_RE = re.compile(r"(?:#|pull/)(?:%s)\b" % "|".join(str(n) for n in MERGED_PRS))
 OPEN_WORDING_RE = re.compile(r"unmerged|未マージ|\bDraft\b|\bopen\b", re.IGNORECASE)
+# A PR reference anywhere in the text, including Markdown ([#495](url)) and HTML (<a>#495</a>) link forms.
+# Used to decide whether a conjunction separates two distinct PR clauses rather than one PR's state description.
+PR_REF_RE = re.compile(r"(?:#|pull/)\d+(?!\d)")
 DATED_BULLET_RE = re.compile(r"^\s*[-*]\s+\**\s*20\d\d-\d\d-\d\d\b")
 HISTORY_HEADING_RE = re.compile(r"^\s*#{1,6}\s.*(history|履歴)", re.IGNORECASE)
 HISTORICAL_WORD_RE = re.compile(r"historical|superseded|履歴", re.IGNORECASE)
@@ -194,21 +197,42 @@ def stale_hits(text, expected=EXPECTED):
 
 
 def _clause_start_before(text):
-    """Find the clause start boundary just before a PR mention in `text`."""
+    """Find the clause start boundary just before a PR mention in `text`.
+
+    Punctuation always ends a clause. " and " / " および " end a clause only when
+    the text before them mentions another PR; otherwise the state description
+    continues to apply to the same PR (so a following "remains a Draft" is still
+    inspected for that PR).
+    """
     single = [text.rfind(c) for c in (';', ',', '.', '。', '；', '？', '！', '，')]
-    multi = [text.rfind(s) for s in (' and ', ' および ')]
+    multi = []
+    for s in (' and ', ' および '):
+        i = text.rfind(s)
+        if i >= 0 and PR_REF_RE.search(text[:i]):
+            multi.append(i)
     return max(single + multi) + 1
 
 
 def _clause_end_after(text):
-    """Find the clause end boundary just after a PR mention in `text`."""
+    """Find the clause end boundary just after a PR mention in `text`.
+
+    Punctuation ends a clause. A trailing period only ends a clause when it is
+    followed by whitespace or the end of the text, so periods inside URLs
+    (e.g. github.com) never mis-split a clause. " and " / " および " end a
+    clause only when followed by another PR reference; otherwise the same PR's
+    state description continues past the conjunction.
+    """
     ends = []
-    for c in (';', ',', '.', '。', '；', '？', '！', '，'):
+    for c in (';', ',', '。', '；', '？', '！', '，'):
         i = text.find(c)
         ends.append(i if i >= 0 else len(text))
+    # '.' is a boundary only at a sentence end (whitespace or EOF follows).
+    for m in re.finditer(r"\.(?:\s|$)", text):
+        ends.append(m.start())
     for s in (' and ', ' および '):
         i = text.find(s)
-        ends.append(i if i >= 0 else len(text))
+        if i >= 0 and PR_REF_RE.search(text[i + len(s):]):
+            ends.append(i)
     return min(ends)
 
 
@@ -339,6 +363,21 @@ class PublicDocsTest(unittest.TestCase):
         # HTML anchor links.
         self.assertEqual(stale_hits('<a href="pull/495">#495</a> merged; '
                                     '<a href="pull/512">#512</a> remains open Draft.'), [])
+
+    def test_and_conjunction_does_not_hide_same_pr_state(self):
+        # "and" / "および" must not hide a merged PR's own contradictory state.
+        # A conjunction followed by the same PR's state description is not a
+        # clause boundary, so "remains a Draft" after "and" is still inspected.
+        self.assertTrue(stale_hits("PR #495 merged and remains a Draft."))
+        self.assertTrue(stale_hits("PR #495 merged and is still open."))
+        self.assertTrue(stale_hits("PR #495 merged および Draft のままです。"))
+        # Mixed PRs: #495's open Draft is FAIL even though #512 is correctly open.
+        self.assertTrue(stale_hits("PR #495 remains open Draft and PR #512 remains open Draft."))
+        # A period inside a URL must not split the clause and hide the state.
+        self.assertTrue(stale_hits("[#495](https://example.com/pull/495) merged and remains a Draft."))
+        # Separate PRs with separate states remain PASS.
+        self.assertEqual(stale_hits("PR #495 merged and PR #512 remains open Draft."), [])
+        self.assertEqual(stale_hits("PR #495 merged および PR #512 remains open Draft."), [])
 
 
 class PublicDocsMutationTest(unittest.TestCase):
