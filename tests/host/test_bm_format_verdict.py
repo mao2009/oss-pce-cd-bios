@@ -16,11 +16,21 @@ class GateTest(unittest.TestCase):
     def test_blank_image_passes_through_to_model(self):
         self.assertEqual(v.guarded_format(bytes(64), allow_destructive=True)[0], bm.OK)
 
-    def test_nonzero_invalid_signature_is_rejected_and_kept(self):
+    def test_nonzero_invalid_signature_is_recovered_without_mutating_input(self):
         image = v._corrupt()
         status, out = v.guarded_format(image, allow_destructive=True)
-        self.assertEqual(status, v.REJECTED_INVALID_SIGNATURE)
-        self.assertEqual(out, image)
+        self.assertEqual(status, bm.OK)
+        self.assertEqual(out, v._formatted())
+        self.assertNotEqual(out, image)
+        self.assertEqual(image, v._corrupt())
+
+    def test_dirty_invalid_signature_recovery_zero_fills_and_keeps_input(self):
+        image = bytearray(b"\\xAA" * bm.MIN_CAPACITY)
+        before = bytes(image)
+        status, out = v.guarded_format(image, allow_destructive=True)
+        self.assertEqual(status, bm.OK)
+        self.assertEqual(out, v._formatted())
+        self.assertEqual(bytes(image), before)
 
     def test_unconfirmed_invalid_signature_is_refused_by_model_first(self):
         status, _ = v.guarded_format(v._corrupt(), allow_destructive=False)
@@ -92,8 +102,9 @@ class JudgeTest(unittest.TestCase):
     def test_allowed_refused_status_with_unchanged_bytes_passes(self):
         img = bytes(64)
         self.assertEqual(v.judge(bm.REFUSED_UNCONFIRMED, bm.REFUSED_UNCONFIRMED, img, img), v.PASS)
-        self.assertEqual(v.judge(v.REJECTED_INVALID_SIGNATURE, v.REJECTED_INVALID_SIGNATURE,
-                                 img, img), v.PASS)
+        # The provisional refusal status was removed by owner decision A2.
+        self.assertEqual(v.judge("REJECTED_INVALID_SIGNATURE", "REJECTED_INVALID_SIGNATURE",
+                                 img, img), v.FAIL)
 
     def test_unhashable_expectation_fails_without_raising(self):
         self.assertEqual(v.judge(["OK"], ["OK"], bytes(64), bytes(64)), v.FAIL)
@@ -211,12 +222,14 @@ class FailClosedNegativeTest(unittest.TestCase):
         img = bytes(64)
         self.assertEqual(v.judge(AlwaysEqual(), bm.REFUSED_UNCONFIRMED, img, img), v.FAIL)
 
-    def test_guarded_bytearray_invalid_signature_is_rejected_and_kept(self):
+    def test_guarded_bytearray_invalid_signature_is_recovered_without_mutation(self):
         image = bytearray(v._corrupt())
+        snapshot = bytes(image)
         status, out = v.guarded_format(image, allow_destructive=True)
-        self.assertEqual(status, v.REJECTED_INVALID_SIGNATURE)
+        self.assertEqual(status, bm.OK)
         self.assertIsInstance(out, bytes)
-        self.assertEqual(out, bytes(image))
+        self.assertEqual(out, v._formatted())
+        self.assertEqual(bytes(image), snapshot)
 
     def test_guarded_truthy_non_true_flag_never_formats_invalid_signature(self):
         for flag in (1, "yes", b"x", [1]):
