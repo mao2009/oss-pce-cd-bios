@@ -25,7 +25,7 @@ class GateTest(unittest.TestCase):
         self.assertEqual(image, v._corrupt())
 
     def test_dirty_invalid_signature_recovery_zero_fills_and_keeps_input(self):
-        image = bytearray(b"\\xAA" * bm.MIN_CAPACITY)
+        image = bytearray(b"\xAA" * bm.MIN_CAPACITY)
         before = bytes(image)
         status, out = v.guarded_format(image, allow_destructive=True)
         self.assertEqual(status, bm.OK)
