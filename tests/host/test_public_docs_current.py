@@ -48,8 +48,9 @@ HISTORICAL_WORD_RE = re.compile(r"historical|superseded|履歴", re.IGNORECASE)
 VALUE_RE = re.compile(r"(?<![A-Za-z0-9_/.#$-])(\d+)(?!\d)(?!-|\.\d)(?!\s*(?:KiB|KB|MiB|MB))(\s*/\s*81(?!\d))?")
 
 # Any PR reference (any number, not just merged ones). Used to decide whether another PR
-# mention falls between a merged PR and its open/unmerged/Draft wording.
-_ANY_PR_RE = re.compile(r"(?:#|pull/)\d+(?!\d)")
+# mention falls between a merged PR and its open/unmerged/Draft wording. Only matches "#NNNN"
+# form; "pull/NNNN" inside URLs (e.g. https://.../pull/495) must not count as a separator.
+_ANY_PR_RE = re.compile(r"#\d+(?!\d)")
 # Text allowed between a label and its number: short, and no sentence or clause punctuation.
 GAP_RE = re.compile(r"[^.;,()\[\]<>。、；，（）]{0,30}")
 # Each claim label and the claim key it asserts. Matched case-insensitively.
