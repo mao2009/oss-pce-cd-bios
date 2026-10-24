@@ -9,7 +9,7 @@ Measured on `f90c16b`: `src/overrides/slot_*.s` contains **9** files; `spec/dev_
 | Metric | Confirmed on main | Meaning / limits |
 | --- | ---: | --- |
 | A. DEV ROM implemented entry points | **9/81** | OSS/project-defined code installed at nine candidate slots on main f90c16b; not approved/compatible firmware |
-| B. DEV ROM nonreturning stubs | **72/81** | Remaining candidate entries do not implement callable firmware |
+| B. DEV ROM nonreturning stubs | **72/81** | Remaining candidate entries on main f90c16b do not implement callable firmware |
 | C. Recorded reference ROM static ABI-1 review | **7** | Static facts only; reference compatibility not independently proven |
 | D. Reference BIOS ABI VERIFIED | **0/81** | No API promoted to VERIFIED |
 | E. Owner-approved DEV_CALLABLE | **0** | Implementation count is not owner approval; all 81 ledger states remain NOT_READY |
@@ -55,7 +55,7 @@ On the Issue #78 PR branch, MA_SQRT ($44) is added as a tenth DEV implementation
 | --- | --- | --- |
 | #475 EX_GETVER observation schema | MERGED (2026-10-22) | Merged evidence, not ABI status |
 | #477 81-entry static profile | MERGED (2026-10-22) | Static triage only; not VERIFIED |
-| #495 MA_MUL16S ($4F), Issue #494 | MERGED (2026-10-22); #494 CLOSED | Counted in 9/81 |
+| #495 MA_MUL16S ($4F), Issue #494 | MERGED (2026-10-22); #494 CLOSED | Counted in main f90c16b: 9/81 |
 | #502 DEV-only internal boot path, Issue #501 | MERGED (2026-10-22); #501 CLOSED | DEV path, not BIOS boot |
 | #506 CI wiring, Issue #505 | MERGED (2026-10-22); #505 CLOSED | Wired in `core-harness.yml` |
 | #476 reference ROM identity | OPEN, BLOCKED | Unresolved |

@@ -289,27 +289,100 @@ def routine_window(data, rom_dir):
     return body, body + size
 
 
-def find_trampoline_address(rom_dir):
+def find_trampoline_address(rom_dir, rom_path=None):
     """Return a safe trampoline address right after the OVERRIDES segment end.
 
     The OVERRIDES segment holds all slot_*.o override bodies. Placing the trampoline
     immediately after the segment end guarantees it never overlaps any override code,
     no matter how the ROM layout changes when sources are added or removed.
     The address is rounded up to a 2-byte boundary for JMP absolute targeting.
+
+    Safety checks:
+    - OVERRIDES segment end must be found in dev.map
+    - Trampoline must not overlap OVERRIDES or BOOT segments
+    - Trampoline must not exceed $F000
+    - Trampoline code (5 bytes for JMP absolute) must fit in unused ROM ($FF bytes)
     """
     text = (rom_dir / "dev.map").read_text()
+
+    overrides_end = None
+    boot_start = None
+    boot_end = None
+
     for line in text.splitlines():
         parts = line.split()
-        # Segment summary line: "OVERRIDES  00E300  00E719  00041A  00001"
-        # Per-object line:       "    OVERRIDES         Offs=000000  Size=000005  ..."
-        if (len(parts) >= 4 and parts[0] == "OVERRIDES"
-                and all(c in "0123456789ABCDEFabcdef" for c in parts[1])):
-            end = int(parts[2], 16)  # segment end address (exclusive, last byte + 1)
-            # Place trampoline at least one byte past segment end, aligned to 2 bytes.
-            addr = end + 2
-            addr = (addr + 1) & ~1  # round up to next even address
-            return addr
-    raise ValueError("OVERRIDES segment not found in dev.map")
+        if len(parts) >= 4 and parts[0] == "OVERRIDES" and all(c in "0123456789ABCDEFabcdef" for c in parts[1]):
+            overrides_end = int(parts[2], 16)  # segment end address (exclusive, last byte + 1)
+        elif len(parts) >= 4 and parts[0] == "BOOT" and all(c in "0123456789ABCDEFabcdef" for c in parts[1]):
+            boot_start = int(parts[1], 16)
+            boot_end = int(parts[2], 16)
+
+    if overrides_end is None:
+        raise ValueError("OVERRIDES segment not found in dev.map")
+
+    # Place trampoline at least one byte past OVERRIDES end, aligned to 2 bytes
+    addr = overrides_end + 1
+    addr = (addr + 1) & ~1  # round up to next even address
+
+    # Check trampoline doesn't exceed $F000
+    if addr >= 0xF000:
+        raise ValueError(f"trampoline address ${addr:04X} exceeds $F000 boundary")
+
+    # Check trampoline doesn't overlap BOOT segment
+    if boot_start is not None and boot_end is not None:
+        if addr < boot_end and addr + 5 > boot_start:
+            raise ValueError(
+                f"trampoline ${addr:04X}-${addr+4:04X} overlaps BOOT ${boot_start:04X}-${boot_end:04X}")
+
+    # Check trampoline code (5 bytes: JMP absolute = 3 bytes + safety margin) fits in unused ROM ($FF bytes)
+    if rom_path is not None and rom_path.exists():
+        rom_data = rom_path.read_bytes()
+        for i in range(5):
+            rom_addr = addr + i - 0xE000
+            if rom_addr < 0 or rom_addr >= len(rom_data) or rom_data[rom_addr] != 0xFF:
+                raise ValueError(f"trampoline byte at ${addr+i:04X} is not unused ROM ($FF)")
+
+    return addr
+
+
+def validate_trampoline_address(dev_map_text, rom_data=None):
+    """Standalone validation of trampoline address from dev.map text.
+
+    Returns the address if valid, raises ValueError with descriptive message if invalid.
+    Used for negative test cases.
+    """
+    overrides_end = None
+    boot_start = None
+    boot_end = None
+
+    for line in dev_map_text.splitlines():
+        parts = line.split()
+        if len(parts) >= 4 and parts[0] == "OVERRIDES" and all(c in "0123456789ABCDEFabcdef" for c in parts[1]):
+            overrides_end = int(parts[2], 16)
+        elif len(parts) >= 4 and parts[0] == "BOOT" and all(c in "0123456789ABCDEFabcdef" for c in parts[1]):
+            boot_start = int(parts[1], 16)
+            boot_end = int(parts[2], 16)
+
+    if overrides_end is None:
+        raise ValueError("OVERRIDES segment not found in dev.map")
+
+    addr = overrides_end + 1
+    addr = (addr + 1) & ~1
+
+    if addr >= 0xF000:
+        raise ValueError(f"trampoline address ${addr:04X} exceeds $F000 boundary")
+
+    if boot_start is not None and boot_end is not None:
+        if addr < boot_end and addr + 5 > boot_start:
+            raise ValueError(f"trampoline ${addr:04X}-${addr+4:04X} overlaps BOOT ${boot_start:04X}-${boot_end:04X}")
+
+    if rom_data is not None:
+        for i in range(5):
+            rom_addr = addr + i - 0xE000
+            if rom_addr < 0 or rom_addr >= len(rom_data) or rom_data[rom_addr] != 0xFF:
+                raise ValueError(f"trampoline byte at ${addr+i:04X} is not unused ROM ($FF)")
+
+    return addr
 
 
 def trace_config(c, window, extra=0):
@@ -523,7 +596,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="pce-dev-mul16s-") as tmp:
         rig = Rig(data, args.rom.parent, Path(tmp))
         evidence["window"] = [f"${rig.window[0]:04X}", f"${rig.window[1]:04X}"]
-        trampoline_addr = find_trampoline_address(args.rom.parent)
+        trampoline_addr = find_trampoline_address(args.rom.parent, args.rom)
         evidence["trampoline"] = f"${trampoline_addr:04X}"
         jobs = jobs_for_default()
         calls = 0

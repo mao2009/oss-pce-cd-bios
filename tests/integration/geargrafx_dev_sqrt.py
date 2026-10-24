@@ -37,23 +37,31 @@ CASES = [0, 1, 2, 3, 4, 15, 16, 17, 254, 255, 256, 257, 1023, 1024, 1025,
 Y_PRESET = 0xA5
 
 
-def guest(reset, entry, x, a, sp=0xFF):
-    """Reset-replacement code at CPU address `reset`. Returns (code, halt CPU address)."""
-    code = bytes([0x78,                   # SEI (caller I=1)
-                  0xA9, 0xF8, 0x53, 0x02,  # LDA #$F8; TAM #$02 -> MPR1 = work RAM ($2000-$3FFF)
-                  0xA2, sp, 0x9A,          # LDX #sp; TXS (caller SP; JSR then pushes 2 bytes)
-                  0xF8, 0x38, 0xB8,        # SED (caller D=1 on purpose), SEC (caller C=1), CLV (V=0)
-                  0xA2, x,                 # LDX #x (input high)
-                  0xA0, Y_PRESET,          # LDY #$A5
-                  0xA9, a,                 # LDA #a (input low; sets N/Z at entry)
-                  0x20, entry & 0xFF, entry >> 8,  # JSR entry
-                  0x8D, STORE & 0xFF, STORE >> 8,              # STA $2200 (A = root lo)
-                  0x8E, (STORE + 1) & 0xFF, (STORE + 1) >> 8,  # STX $2201 (X = root hi)
-                  0x08, 0x68, 0x8D, (STORE + 2) & 0xFF, (STORE + 2) >> 8,  # PHP; PLA; STA $2202 (P after)
-                  0x8C, (STORE + 3) & 0xFF, (STORE + 3) >> 8,  # STY $2203 (Y)
-                  0xBA, 0x8E, (STORE + 5) & 0xFF, (STORE + 5) >> 8])  # TSX; STX $2205 (SP after)
+def guest(reset, entry, x, a, sp=0xFF, p_entry=None):
+    """Reset-replacement code at CPU address `reset`. Returns (code, halt CPU address).
+
+    If p_entry is given, sets P to that value via LDA #p_entry; PHA; PLP before JSR.
+    N and Z from P are overwritten by LDA #a at JSR entry, so only C,I,D,V survive.
+    """
+    code = [0x78]  # SEI (probe requires first instruction SEI)
+    if p_entry is not None:
+        code.extend([0xA9, p_entry & 0xFF, 0x48, 0x28])  # LDA #p_entry; PHA; PLP -> P = p_entry
+    else:
+        code.extend([0xF8, 0x38, 0xB8])  # SED (caller D=1), SEC (caller C=1), CLV (V=0)
+    code.extend([
+        0xA9, 0xF8, 0x53, 0x02,  # LDA #$F8; TAM #$02 -> MPR1 = work RAM ($2000-$3FFF)
+        0xA2, sp, 0x9A,          # LDX #sp; TXS (caller SP; JSR then pushes 2 bytes)
+        0xA2, x,                 # LDX #x (input high)
+        0xA0, Y_PRESET,          # LDY #$A5
+        0xA9, a,                 # LDA #a (input low; sets N/Z at entry)
+        0x20, entry & 0xFF, entry >> 8,  # JSR entry
+        0x8D, STORE & 0xFF, STORE >> 8,              # STA $2200 (A = root lo)
+        0x8E, (STORE + 1) & 0xFF, (STORE + 1) >> 8,  # STX $2201 (X = root hi)
+        0x08, 0x68, 0x8D, (STORE + 2) & 0xFF, (STORE + 2) >> 8,  # PHP; PLA; STA $2202 (P after)
+        0x8C, (STORE + 3) & 0xFF, (STORE + 3) >> 8,  # STY $2203 (Y)
+        0xBA, 0x8E, (STORE + 5) & 0xFF, (STORE + 5) >> 8])  # TSX; STX $2205 (SP after)
     halt = reset + len(code)
-    return code + bytes([0x80, 0xFE]), halt  # BRA -2
+    return bytes(code) + bytes([0x80, 0xFE]), halt  # BRA -2
 
 
 def check(label, rows, halt, x, a, sp=0xFF, p_entry=None):
@@ -80,14 +88,14 @@ def check(label, rows, halt, x, a, sp=0xFF, p_entry=None):
         raise ValueError(f"{label}: input ${n:04X}: A/X/P/Y/SP observed {observed}, expected {want}")
 
 
-def run_case(probe, base, folder, cue, reset, label, entry, x, a, sp=0xFF, count=2048):
-    code, halt = guest(reset, entry, x, a, sp)
+def run_case(probe, base, folder, cue, reset, label, entry, x, a, sp=0xFF, count=2048, p_entry=None):
+    code, halt = guest(reset, entry, x, a, sp, p_entry)
     variant = bytearray(base)
     variant[reset - 0xE000:reset - 0xE000 + len(code)] = code
     rom = folder / f"{label}.pce"
     rom.write_bytes(variant)
     rows = dev.run_probe(probe, rom.resolve(), cue, count=count)
-    check(label, rows, halt, x, a, sp)
+    check(label, rows, halt, x, a, sp, p_entry)
 
 
 def main():
@@ -127,6 +135,29 @@ def main():
             run_case(probe, data, folder, cue, reset, f"lowsp-{n:04x}", entry, n >> 8, n & 0xFF, sp=0x06)
             evidence["cases"].append({"input": n, "expected_root": math.isqrt(n), "sp": 0x06})
 
+        # P flag preservation: various P flag combinations at entry.
+        # N(bit7) and Z(bit1) are overwritten by LDA #a at JSR entry;
+        # T(bit4) and B(bit5) are not stored by PLP. Only C(0), I(2), D(3), V(6) survive.
+        P_FLAG_CASES = [
+            0x00,  # C=0 Z=0 I=0 D=0 V=0 N=0
+            0x01,  # C=1
+            0x04,  # I=1
+            0x08,  # D=1
+            0x40,  # V=1
+            0x80,  # N=1 (overwritten by LDA #a at JSR entry)
+            0x0D,  # C=1 I=1 D=1 (default caller setup)
+            0x05,  # C=1 I=1
+            0x0C,  # I=1 D=1
+            0x41,  # C=1 V=1
+            0x81,  # C=1 N=1 (N overwritten by LDA #a)
+            0x4D,  # C=1 I=1 D=1 V=1 (all meaningful flags set)
+        ]
+        for p_entry in P_FLAG_CASES:
+            run_case(probe, data, folder, cue, reset, f"pflag-{p_entry:02x}",
+                     entry, 0x00, 0x01, sp=0xFF, p_entry=p_entry)
+            evidence["cases"].append({"input": 1, "expected_root": 1, "sp": 0xFF,
+                                      "p_entry": p_entry})
+
         code_at = body - 0xE000
         if data[code_at] != 0x08 or data[code_at + 1] != 0xD8:
             raise ValueError("slot $44 body does not start with PHP; CLD")
@@ -143,9 +174,10 @@ def main():
         evidence["negative_cases"].append({"case": "44_without_CLD_D1", "rejected": rejected,
                                            "total": 3})
     (args.rom.parent / "geargrafx-dev-sqrt-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
-    total = len(CASES) + 3  # SP boundary cases
+    total = len(CASES) + 3 + len(P_FLAG_CASES)  # SP boundary + P flag cases
     print(f"PASS real Geargrafx DEV ROM: MA_SQRT slot $44 {total} cases ({len(CASES)} at SP=$FF, "
-          f"3 at SP=$06 boundary; precondition S>=$04 at entry); A/X=isqrt(input), Y, P kept (D=1,C=1 entry), SP, MPR1/MPR7 "
+          f"3 at SP=$06 boundary, {len(P_FLAG_CASES)} P-flag combinations; "
+          f"precondition S>=$04 at entry); A/X=isqrt(input), Y, P kept (D=1,C=1 entry), SP, MPR1/MPR7 "
           f"checked; no-CLD mutant rejected {rejected}/3")
 
 

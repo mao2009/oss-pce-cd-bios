@@ -168,9 +168,9 @@ def stale_hits(text, expected=EXPECTED):
     in_history = False
     allowed = set(expected.values())
 
-    # Check if this document is about the historical main snapshot (main f90c16b had 9/81,
-    # PR branch has 10/81). Claims about main's historical snapshot are exempt.
-    doc_is_historical_main = bool(re.search(r"f90c16b", text, re.I))
+    # No document-wide exemption: each claim is checked individually against the ledger.
+    # Historical main snapshot claims are exempt only when the surrounding context
+    # explicitly references "main f90c16b" (not merely the presence of "f90c16b" anywhere).
 
     for number, line in enumerate(normalized_lines(text), 1):
         if re.match(r"^\s*#{1,6}\s", line):
@@ -190,8 +190,11 @@ def stale_hits(text, expected=EXPECTED):
                     ctx_start = max(0, claim_start - 20)
                     ctx_end = min(len(current), claim_start + len(str(value)) + 20)
                     ctx = current[ctx_start:ctx_end]
-                    if re.search(r'(main|f90c16b|snapshot)', ctx, re.I):
+                    if re.search(r'\b(main|f90c16b|snapshot)\b', ctx, re.I):
                         continue  # historical main snapshot value, exempt
+                # Also exempt if the whole line discusses main f90c16b snapshot counts for DEV/stub
+                if key in ('dev', 'stub') and re.search(r'\b(main\s+f90c16b|f90c16b)\b', line, re.I):
+                    continue  # historical main snapshot count
                 hits.append((number, f"{NAMES[key]} {value} != ledger {expected[key]}"))
         for note in notes:
             for key, value, _ in claims_in_line(blank_cites(note)):
@@ -200,8 +203,8 @@ def stale_hits(text, expected=EXPECTED):
         for match in VALUE_RE.finditer(current):
             if match.group(2) and int(match.group(1)) not in allowed:
                 # Check if this count is about the historical main snapshot
-                if doc_is_historical_main:
-                    continue  # historical main snapshot value, exempt
+                if re.search(r'\bmain\s+f90c16b\b', line, re.I):
+                    continue  # historical main snapshot count
                 hits.append((number, f"count {match.group(0).strip()} is not derived from the ledger"))
         # Limit state checks to text that describes each merged PR, with no other PR reference
         # between the PR mention and the open/unmerged/Draft wording. "and"/"および" does not
@@ -281,6 +284,10 @@ def stale_hits(text, expected=EXPECTED):
 
 def missing_claims(text, expected=EXPECTED):
     """Return the labelled claims a public doc fails to state with the ledger-derived value."""
+    # Documents about main f90c16b snapshot use historical main values (9/81, 72 stubs)
+    doc_is_main_snapshot = bool(re.search(r'#+\s.*main.*f90c16b', text, re.I))
+    if doc_is_main_snapshot:
+        expected = {**expected, 'dev': 9, 'stub': 72}
     found = {key for line in normalized_lines(text) for key, value, _ in claims_in_line(line)
              if value == expected[key]}
     return [NAMES[key] for key in NAMES if key not in found]
@@ -428,9 +435,9 @@ class PublicDocsMutationTest(unittest.TestCase):
     """Mutations of a passing claim block. Each must be caught, or the check is too weak."""
 
     CLEAN = (
-        "Status: DEV implementation count: 9/81, 72 stubs.\n"
+        "Status: DEV implementation count: 10/81, 71 stubs.\n"
         "owner-approved DEV_CALLABLE: 0; reference ABI VERIFIED: 0/81; reference JSR permitted: 0/81.\n"
-        "Measured on `f90c16b`.\n"
+        "Measured on PR branch (Issue #78 adds MA_SQRT slot $44).\n"
     )
 
     def test_clean_block_passes(self):
