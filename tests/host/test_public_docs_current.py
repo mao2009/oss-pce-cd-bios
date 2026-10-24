@@ -46,6 +46,10 @@ HISTORY_HEADING_RE = re.compile(r"^\s*#{1,6}\s.*(history|履歴)", re.IGNORECASE
 HISTORICAL_WORD_RE = re.compile(r"historical|superseded|履歴", re.IGNORECASE)
 # A number that is not part of a date, URL, PR/issue reference, hex id or identifier like $4F / MA_MUL16S.
 VALUE_RE = re.compile(r"(?<![A-Za-z0-9_/.#$-])(\d+)(?!\d)(?!-|\.\d)(?!\s*(?:KiB|KB|MiB|MB))(\s*/\s*81(?!\d))?")
+
+# Any PR reference (any number, not just merged ones). Used to decide whether another PR
+# mention falls between a merged PR and its open/unmerged/Draft wording.
+_ANY_PR_RE = re.compile(r"(?:#|pull/)\d+(?!\d)")
 # Text allowed between a label and its number: short, and no sentence or clause punctuation.
 GAP_RE = re.compile(r"[^.;,()\[\]<>。、；，（）]{0,30}")
 # Each claim label and the claim key it asserts. Matched case-insensitively.
@@ -178,38 +182,44 @@ def stale_hits(text, expected=EXPECTED):
         for match in VALUE_RE.finditer(current):
             if match.group(2) and int(match.group(1)) not in allowed:
                 hits.append((number, f"count {match.group(0).strip()} is not derived from the ledger"))
-        # Limit state checks to the clause/segment that mentions each merged PR
-        for m in MERGED_PR_RE.finditer(line):
+        # Limit state checks to text that describes each merged PR, with no other PR reference
+        # between the PR mention and the open/unmerged/Draft wording. "and"/"および" does not
+        # split the check: if another PR follows the conjunction, its wording is attributed to
+        # that PR, not to the earlier one.
+        all_pr_positions = [pm.start() for pm in _ANY_PR_RE.finditer(line)]
+        all_pr_matches = list(MERGED_PR_RE.finditer(line))
+        for m in all_pr_matches:
             pr_start = m.start()
-            # Clause boundaries: punctuation and multi-word connectors ("and", "および").
-            # Each merged PR's state is judged only within its own clause.
-            before = line[:pr_start]
-            clause_start = _clause_start_before(before)
-            after = line[pr_start:]
-            clause_end = pr_start + _clause_end_after(after)
-            clause = line[clause_start:clause_end]
-            if OPEN_WORDING_RE.search(clause):
+            pr_end = m.end()
+            found = False
+            # Forward: open wording after this PR with no other PR mention in between.
+            search_pos = pr_end
+            while not found:
+                ow_match = OPEN_WORDING_RE.search(line, search_pos)
+                if not ow_match:
+                    break
+                between = any(
+                    pr_end < pos < ow_match.start()
+                    for pos in all_pr_positions if pos != pr_start
+                )
+                if not between:
+                    found = True
+                    break
+                search_pos = ow_match.end()
+            # Backward: open wording before this PR with no other PR mention in between.
+            if not found:
+                ow_matches_before = list(OPEN_WORDING_RE.finditer(line[:pr_start]))
+                for ow_match in reversed(ow_matches_before):
+                    between = any(
+                        ow_match.end() < pos < pr_start
+                        for pos in all_pr_positions if pos != pr_start
+                    )
+                    if not between:
+                        found = True
+                        break
+            if found:
                 hits.append((number, "merged PR or closed issue described as open/unmerged/Draft"))
     return hits
-
-
-def _clause_start_before(text):
-    """Find the clause start boundary just before a PR mention in `text`."""
-    single = [text.rfind(c) for c in (';', ',', '.', '。', '；', '？', '！', '，')]
-    multi = [text.rfind(s) for s in (' and ', ' および ')]
-    return max(single + multi) + 1
-
-
-def _clause_end_after(text):
-    """Find the clause end boundary just after a PR mention in `text`."""
-    ends = []
-    for c in (';', ',', '.', '。', '；', '？', '！', '，'):
-        i = text.find(c)
-        ends.append(i if i >= 0 else len(text))
-    for s in (' and ', ' および '):
-        i = text.find(s)
-        ends.append(i if i >= 0 else len(text))
-    return min(ends)
 
 
 def missing_claims(text, expected=EXPECTED):
@@ -328,8 +338,15 @@ class PublicDocsTest(unittest.TestCase):
         self.assertTrue(stale_hits("PR #495 remains open Draft."))
         self.assertTrue(stale_hits("PR #495 is unmerged."))
         self.assertTrue(stale_hits("PR #495 は未マージです。"))
+        # "and"/"および" does not hide open wording for the same PR.
+        self.assertTrue(stale_hits("PR #495 merged and remains a Draft."))
+        self.assertTrue(stale_hits("PR #495 merged and is still open."))
+        self.assertTrue(stale_hits("PR #495 merged および Draft のままです。"))
         # Mixed: #495 open is FAIL even though #512 open Draft is correct (not merged).
         self.assertTrue(stale_hits("PR #495 remains open Draft; PR #512 remains open Draft."))
+        # Markdown/HTML link with "and" hiding open wording → FAIL.
+        self.assertTrue(stale_hits("[#495](https://github.com/x/pull/495) merged and remains a Draft."))
+        self.assertTrue(stale_hits("<a href=\"pull/495\">#495</a> merged and remains a Draft."))
 
     def test_multi_pr_markdown_and_html_links(self):
         # Markdown links around PR numbers must not break clause separation.
