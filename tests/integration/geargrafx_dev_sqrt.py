@@ -142,7 +142,7 @@ def main():
         evidence["negative_cases"].append({"case": "44_without_CLD_D1", "rejected": rejected,
                                            "total": 3})
     (args.rom.parent / "geargrafx-dev-sqrt-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
-    total = len(CASES) + 3  # the three boundary cases (caller SP=$0C, entry S=$0A)
+    total = len(CASES) + 3  # the three boundary cases (caller SP=$06, entry S=$04)
     print(f"PASS real Geargrafx DEV ROM: MA_SQRT slot $44 {total} cases ({len(CASES)} at SP=$FF, 3 at SP=$06 "
           f"boundary; precondition S>=$04 at entry); A/X=isqrt(input), Y, P kept (D=1,C=1 entry), SP, MPR1/MPR7 "
           f"checked; no-CLD mutant rejected {rejected}/3")

@@ -16,8 +16,10 @@
 ;   kept: Y and P (caller's flags restored by PLP; B is not a stored flag)
 ;   clobbered: A and X (the result)
 ;   uses: zero page $F7-$FF only. No I/O, no MPR access, I is never changed.
-;   precondition: S at routine entry >= $04 (JSR pushes 2 return bytes; php+phy
-;                 push 2 more; minimum SP during routine is entry_SP - 4).
+;   precondition: caller SP (before JSR) >= $06, so that at routine entry
+;                 (after the JSR push of 2 return bytes) S >= $04. The routine
+;                 then pushes php (P, 1 byte) and phy (Y, 1 byte), so the
+;                 minimum SP during the routine is entry_SP - 4 = caller_SP - 6.
 ;   ABI remains UNVERIFIED and this ROM stays DEV ONLY (release_eligible: false).
 ;
 ; Zero-page layout:
@@ -30,11 +32,11 @@
 ;   $FE  n_hi       input high byte
 ;   $FF  n_lo       input low byte
 ;
-; Stack usage:
-;   php pushes P (1 byte), phy pushes Y (1 byte). These are popped by plp/ply
-;   before rts. No other stack operations. JSR return address (2 bytes) is pushed
-;   by the caller and popped by rts. Maximum stack depth during routine is
-;   entry_SP - 4.
+; Stack usage (from caller's perspective):
+;   JSR pushes 2 return-address bytes (caller_SP -> caller_SP - 2).
+;   Routine pushes php (P) and phy (Y), then pops them before rts.
+;   RTS pops the JSR return address. SP is balanced back to caller_SP.
+;   Maximum stack depth during the routine is caller_SP - 6.
 ;
 ; 16-bit overflow safety:
 ;   trial = 4*root + 1 <= 509 (root <= 127), fits in 9 bits.
