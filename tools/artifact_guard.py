@@ -1567,6 +1567,8 @@ def check_guard_placement(root=ROOT, partial_fixtures=False):
             raise ValueError(f"{label}: {error}") from error
         if steps:
             problems += guard_placement_violations(text, label)
+        else:
+            problems += scope_key_violations(text, label)   # a file with an upload step gets it in guard_placement_violations
         problems += publish_violations(text, label)
         problems += pages_structure_violations(text, label)
         problems += yaml_integrity_violations(text, label)
@@ -1794,6 +1796,202 @@ def _allowed_guard_run(run, finals, workflow):
                        [_guard_text(u["kind"], workflow, u["name"], "verify")]) for u in finals)
 
 
+# Issue #337 round 14. A step key that changes the environment or shell a step runs in is refused in every workflow and
+# composite action, unless listed here. env: is allowed per variable: STEP_EXCEPTIONS, keyed by (file, job id or 'runs',
+# exact step name as YAML parses it, "env", variable name). shell: is allowed per value: STEP_SHELL_ALLOWED. working-directory:
+# has no exception. The reasons are for review; the guard checks only that an entry exists.
+STEP_ENV_KEYS = frozenset({"env", "shell", "working-directory"})
+RUN_PATH_CHANGE_RE = re.compile(r"GITHUB_PATH|GITHUB_ENV|BASH_ENV|_runner_file|set_env|add_path|(?:^|[\s;&|(])(?:export\s+)?PATH\+?=")
+# Issue #337 round 15. Matched on run: text with quotes and backslashes removed, so "GITHUB""_ENV" and G\ITHUB_ENV are read as GITHUB_ENV.
+INDIRECT_RE = re.compile(r"\$\{!|\b(?:declare|typeset|local)\b[^;&|\n]*\s-\w*n")          # ${!X} indirection, nameref flags
+DYNAMIC_GLOB_RE = re.compile(r"\$[^\s;&|]*[*?\[]|[*?\[][^\s;&|]*\$")                      # a glob beside a variable: a runner path found by pattern
+WRITE_TARGET_RE = re.compile(r"(?:&?>>?\|?&?|\btee\b(?:\s+-\w+)*)\s*([^\s;&|()<>]+)")       # the word after a redirection (>&F too) or tee
+TARGET_DYNAMIC_RE = re.compile(r"[$`*?\[{]")
+EXPANSION_RE = re.compile(r"[$`{]")     # run-time expansion; a glob alone is only a name pattern
+GLOB_RE = re.compile(r"[*?\[]")
+# Issue #337 round 16. A file-copying command in command position (cp, mv, install, dd, tee); its arguments are checked
+# token by token, so a destination assembled at run time (cp a $D, tee --append $F, dd of=$D) is refused.
+# Command position: start of text, after ; & | ( { ! or a newline, after a keyword (if, then, do, sudo...), with an optional
+# path prefix (/bin/cp). Leading NAME=value assignments are skipped (FOO=1 cp), and so is the ) of a case arm. A wrapper may
+# take an option and one argument (sudo -u root, nice -n 5) but not a writer name; the (?!-) keeps this from backtracking.
+FILE_WRITER_RE = re.compile(r"(?:(?:^|[;&|({!)\n])\s*(?:\w+=\S+\s+)*"
+                            r"|\b(?:then|do|else|if|elif|while|until|exec|command|xargs|env|time|nice|nohup|sudo)\b"
+                            r"(?:\s+-\S+(?:\s+(?!-)(?!(?:cp|mv|install|dd|tee)\b)[^\s=]+)?|\s+\w+=\S+)*\s+)"
+                            r"(?:[\w./-]*/)?(cp|mv|install|dd|tee)\b([^;&|\n()<>]*)")
+TARGET_OK_RE = re.compile(r"\$GITHUB_OUTPUT|\$GITHUB_STEP_SUMMARY|\$RUNNER_TEMP/[^$`*?\[{]*")  # the only variable targets allowed
+_GH_TOKEN = "GH_TOKEN: the gh CLI reads its token from this variable; it selects no program, path or shell"
+STEP_SHELL_ALLOWED = {
+    "bash": "shell: bash resolves bash on PATH, as the runner's default shell does, and adds pipefail; PATH and "
+            "BASH_ENV cannot be set by any allowed step (env: and run: are checked)",
+}
+_SRC = ".github/workflows/"
+STEP_EXCEPTIONS = {
+    (_SRC + "api-source.yml", "verify-cdread-attestation",
+     "Verify CD-read attestation against main (gh + tools/evidence_provenance.py)", "env", "GH_TOKEN"): _GH_TOKEN,
+    (_SRC + "api-source.yml", "verify-cdread-attestation",
+     "Produce CD_READ verdict (Issue", "env", "GH_TOKEN"): _GH_TOKEN,   # YAML ends the name at " #"
+    (_SRC + "api-source.yml", "verify-cdread-verdict", "Verify verdict attestation against main",
+     "env", "GH_TOKEN"): _GH_TOKEN,
+    (_SRC + "ci.yml", "verify",
+     "Provenance guard on changed content (list edits need a verified maintainer approval)", "env", "GH_TOKEN"): _GH_TOKEN,
+    (_SRC + "nightly.yml", "plan", "Compare exact main SHA against last successful built artifact",
+     "env", "GH_TOKEN"): _GH_TOKEN,
+    (_SRC + "nightly.yml", "build", "Record candidate success state", "env", "SOURCE_SHA"):
+        "SOURCE_SHA is a job output (needs.plan.outputs.source_sha) passed to a python script; it names no program",
+}
+
+
+def _step_problems(workflow, where, step):
+    """Refusals for one step: a step env:, shell: or working-directory: key without an exception, and a run: text that
+    changes the PATH of later steps (GITHUB_PATH, GITHUB_ENV) or sets BASH_ENV or PATH. Issue #337 round 14."""
+    if not isinstance(step, dict):
+        return [f"{workflow}: {where} has a step that is not a mapping (Issue #337 round 14)"]
+    name, problems = step.get("name"), []
+    for key in step:
+        if str(key).lower() not in STEP_ENV_KEYS:
+            continue
+        value = step[key]
+        if key == "env" and isinstance(value, dict):
+            refused = [str(n) for n in value if (workflow, where, str(name), "env", str(n)) not in STEP_EXCEPTIONS]
+            if refused:
+                problems.append(f"{workflow}: {where} step {name!r} sets env {refused} (refused; it can change PATH, "
+                                "BASH_ENV or similar; add an exception with a reason to STEP_EXCEPTIONS, Issue #337 round 14)")
+        elif key == "shell" and isinstance(value, str) and value in STEP_SHELL_ALLOWED:
+            continue
+        else:
+            problems.append(f"{workflow}: {where} step {name!r} sets {key!r} (refused; it can change the program or the "
+                            "directory a step runs in, Issue #337 round 14)")
+    run = step.get("run")
+    if run is not None and not isinstance(run, str):
+        problems.append(f"{workflow}: {where} step {name!r} has a run: that is not a string (refused: it cannot be read)")
+    elif isinstance(run, str):
+        reason = _run_write_problem(run)
+        if reason:
+            problems.append(f"{workflow}: {where} step {name!r} run: {reason} "
+                            "(refused; it changes the PATH of later steps, Issue #337 round 14, 15)")
+    return problems
+
+
+def _run_write_problem(run):
+    """Issue #337 round 15. The reason a run: text may write GITHUB_ENV, GITHUB_PATH, BASH_ENV, PATH or a runner file
+    command, or None. Refused: those names (also split by quotes or backslashes); an indirect expansion ${!X} or a nameref;
+    a glob beside a variable; and a redirection or tee target with a $, glob, backtick or GitHub expression unless it is
+    $GITHUB_OUTPUT, $GITHUB_STEP_SUMMARY or a $RUNNER_TEMP/ path without further expansion; and any argument of cp, mv,
+    install, dd or tee that has a $, glob, backtick or brace unless it is one of those allowed forms (Issue #337 round 16).
+    This is a pattern check, not a parser. NOT GUARANTEED (not refused, not claimed safe):
+    - eval, bash -c, and $(...) or backticks that build a command at run time;
+    - source or . of a file, and in-repo scripts and make targets (their own run text is not read);
+    - values set by read or printf -v that are later run as a command or passed to eval (values are not traced);
+    - LD_PRELOAD, PYTHONPATH and other loader or interpreter-path exports that change what runs without touching PATH;
+    - a file-copy command behind a wrapper not listed in FILE_WRITER_RE (timeout 5 cp, busybox cp, a command in a variable);
+    - other writers that take a destination: curl -o, wget -O, ln, sed -i, tar -C, and any program that writes its own file;
+    - a quoted assignment value with a space before the command (FOO="x y" cp ...), because quotes are removed first."""
+    # bash joins a backslash-newline into one word ("_runner_\<newline>file"). An escaped backslash (\\) before a newline is
+    # not a continuation, and its newline still ends the command.
+    run = re.sub(r"(?<!\\)((?:\\\\)*)\\\n", r"\1", run)
+    plain = re.sub(r"[\"'\\]", "", run)
+    if RUN_PATH_CHANGE_RE.search(plain):
+        return "writes GITHUB_PATH, GITHUB_ENV, BASH_ENV, PATH or a runner file command"
+    if INDIRECT_RE.search(plain):
+        return "uses an indirect expansion (${!X}) or a nameref, which can name GITHUB_ENV at run time"
+    if DYNAMIC_GLOB_RE.search(plain):
+        return "uses a glob beside a variable, which can name a runner file at run time"
+    for target in WRITE_TARGET_RE.findall(plain):
+        if TARGET_DYNAMIC_RE.search(target) and not TARGET_OK_RE.fullmatch(target):
+            return f"writes to a target assembled at run time ({target!r})"
+    for command, args in FILE_WRITER_RE.findall(plain):
+        words = args.split()
+        if command in ("cp", "mv", "install"):
+            # Options may come after operands (GNU), so any run-time expansion in any word is refused. A glob is refused only
+            # in a destination: the last word, or a -t/--t... option and the word or attached text after it. A glob in a
+            # source (cp --parents build/*.pce intermediate/) only reads. mv deletes its sources, so a glob there removes
+            # matching files in the repo, not a GITHUB_ENV path; that is accepted and not checked here.
+            targets = set(words[-1:])
+            for i, word in enumerate(words):
+                if word.startswith("--t") or (word.startswith("-") and not word.startswith("--") and "t" in word):
+                    targets.add(word)
+                    if i + 1 < len(words):
+                        targets.add(words[i + 1])
+            for word in words:
+                if EXPANSION_RE.search(word) and not TARGET_OK_RE.fullmatch(word):
+                    return f"copies or writes to an argument assembled at run time ({word!r}), which can name GITHUB_ENV"
+            for word in targets:
+                if GLOB_RE.search(word) and not TARGET_OK_RE.fullmatch(word):
+                    return f"writes to a destination given by a glob ({word!r})"
+            continue
+        for word in words:
+            if TARGET_DYNAMIC_RE.search(word) and not TARGET_OK_RE.fullmatch(word):
+                return f"copies or writes to an argument assembled at run time ({word!r}), which can name GITHUB_ENV"
+    return None
+
+
+def _yaml_unreadable(text):
+    """True when PyYAML cannot read text. Without PyYAML this is False, and scope_key_violations then refuses the file."""
+    try:
+        import yaml
+    except ImportError:
+        return False
+    try:
+        yaml.load(text, Loader=_strict_loader())
+    except (yaml.YAMLError, ValueError):
+        return True
+    return False
+
+
+def scope_key_violations(text, workflow):
+    """Issue #337 round 10/12/13/14. Refused, decided on the parsed YAML (indentation, quoting, flow style, key case and
+    order do not matter; keys are compared case-insensitively):
+    - top-level env, defaults, container, services (they can change the PATH, RUNNER_TEMP or shell of a step);
+    - job-level env, defaults, container, services in every job;
+    - in every step of every job (or of runs.steps in a composite action), an env, shell or working-directory key, unless
+      STEP_EXCEPTIONS names it, or a shell: value other than STEP_SHELL_ALLOWED; and a run: text that writes GITHUB_PATH,
+      GITHUB_ENV, BASH_ENV or PATH;
+    - a workflow whose jobs: is not a mapping, a job that is not a mapping, and a steps: that is not a list (fail closed).
+    Applies to every workflow and composite action file, with or without an upload step. A file that cannot be parsed is
+    refused here too (round 14), not only by yaml_integrity_violations."""
+    try:
+        import yaml
+    except ImportError:
+        return [f"{workflow}: PyYAML unavailable, scope keys cannot be checked (Issue #337 round 13)"]
+    try:
+        doc = yaml.load(text, Loader=_strict_loader())
+    except (yaml.YAMLError, ValueError) as error:
+        return [f"{workflow}: YAML cannot be read, scope keys cannot be checked ({error}; Issue #337 round 14)"]
+    if not isinstance(doc, dict):
+        return [f"{workflow}: the file is not a mapping, scope keys cannot be checked (Issue #337 round 14)"]
+    problems = [f"{workflow}: top-level {key} is refused (can change the guard's PATH or RUNNER_TEMP)"
+                for key in sorted(doc, key=str) if str(key).lower() in SCOPE_KEYS_REFUSED]
+    if workflow.startswith(ACTIONS + "/"):
+        runs = doc.get("runs")
+        if not isinstance(runs, dict):
+            return problems + [f"{workflow}: runs: must be a mapping, scope keys cannot be checked (Issue #337 round 14)"]
+        scopes = [("runs", runs.get("steps"))]
+    else:
+        jobs = doc.get("jobs")
+        if not isinstance(jobs, dict):
+            return problems + [f"{workflow}: jobs: must be a mapping, found {type(jobs).__name__}; scope keys cannot be "
+                               "checked (Issue #337 round 14)"]
+        scopes = []
+        for job, body in jobs.items():
+            if not isinstance(body, dict):
+                problems.append(f"{workflow}: job {job!r} must be a mapping (Issue #337 round 14)")
+                continue
+            for key in sorted(body, key=str):
+                if str(key).lower() in SCOPE_KEYS_REFUSED:
+                    problems.append(f"{workflow}: job-level {key} in job {job!r} is refused "
+                                    "(can change the guard's PATH or RUNNER_TEMP)")
+            scopes.append((job, body.get("steps")))
+    for where, steps in scopes:
+        if steps is None:
+            continue
+        if not isinstance(steps, list):
+            problems.append(f"{workflow}: {where} steps: must be a list (Issue #337 round 14)")
+            continue
+        for step in steps:
+            problems += _step_problems(workflow, where, step)
+    return problems
+
+
 def guard_placement_violations(text, workflow):
     """Two kinds of job. A build job uploads only intermediate/ artifacts and runs no guard. A guard job publishes
     only staged paths: it needs the build job that produced its intermediate artifact, and its steps are the trusted
@@ -1812,15 +2010,9 @@ def guard_placement_violations(text, workflow):
     if dup is not None:
         raise ValueError(f"{workflow}: duplicate job name {dup!r}")
     has_jobs = any(_live(l) and l.startswith("jobs:") for l in lines)
-    problems = []
-    scope_re = re.compile(r"""["']?(%s)["']?\s*:""" % "|".join(sorted(SCOPE_KEYS_REFUSED)))
-    for l in lines:
-        if not _live(l):
-            continue
-        m = scope_re.match(l.strip())
-        if m and _indent(l) in (0, 4):
-            where = "top-level" if _indent(l) == 0 else "job-level"
-            problems.append(f"{workflow}: {where} {m.group(1)} is refused (can change the guard's PATH or RUNNER_TEMP)")
+    # An unreadable file gets no scope check here: check_guard_placement refuses it in yaml_integrity_violations, and
+    # scope_key_violations itself refuses it too (Issue #337 round 14). Only parsed structure is read.
+    problems = [] if _yaml_unreadable(text) else scope_key_violations(text, workflow)
     names = [name for name, _ in upload_steps(text)]
     for name in sorted({n for n in names if names.count(n) > 1}):
         problems.append(f"{workflow}: upload step name {name!r} is used more than once (the binding check would see one)")
