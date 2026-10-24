@@ -7,9 +7,10 @@ stores A, X, P, Y and SP at $2200-$2205 and halts.
 The expectation is this project's own spec (src/overrides/slot_44.s), NOT the reference
 System Card ABI, which stays UNVERIFIED. Every input 0..65535 is valid; there is no
 invalid-input error path.
-Scope: real-core cases at caller SP=$FF plus SP=$0C boundary (entry S=$0A, the lowest that
-fits the 10 pushes without wrap). This is NOT an exhaustive test of the assembled routine;
-the 65,536-input check is the Python model (tests/host/test_ma_sqrt_dev.py).
+Scope: real-core cases at caller SP=$FF plus SP=$06 boundary (entry S=$04, the lowest
+that fits JSR return + php + phy without wrap). This is NOT an exhaustive test of the
+assembled routine; the 65,536-input check is the Python model
+(tests/host/test_ma_sqrt_dev.py).
 Run: python3 tests/integration/geargrafx_dev_sqrt.py --rom build/debug/bios-dev/dev-only-not-compatible-syscard3.pce
 Needs the pinned cc65 and Geargrafx core (make setup, TOOLS_DIR on Linux). Missing tools exit 3 (BLOCKED).
 """
@@ -100,7 +101,7 @@ def main():
     probe = api.compile_probe(args.rom.parent)
     evidence = {"scope": "DEV ROM real-core run of project-own MA_SQRT, NOT System Card ABI compatibility",
                 "sp_meaning": "caller SP before JSR; entry SP = caller SP - 2",
-                "precondition": "S at routine entry >= $0A (10 bytes pushed by the routine)",
+                "precondition": "S at routine entry >= $04 (caller SP >= $06; JSR return + php + phy = 4 bytes)",
                 "mpr_checked": "MPR1 and MPR7 only",
                 "rom_sha256": hashlib.sha256(data).hexdigest(), "geargrafx_revision": None,
                 "cases": [], "negative_cases": []}
@@ -116,10 +117,11 @@ def main():
         for n in CASES:
             run_case(probe, data, folder, cue, reset, f"sqrt-{n:04x}", entry, n >> 8, n & 0xFF)
             evidence["cases"].append({"input": n, "expected_root": math.isqrt(n), "sp": 0xFF})
-        # Precondition boundary: caller SP=$0C gives entry S=$0A (the lowest that fits the 10 pushes without wrap).
+        # Precondition boundary: caller SP=$06 gives entry S=$04 (the lowest that fits JSR
+        # return + php + phy without wrap).
         for n in (65535, 255, 65025):
-            run_case(probe, data, folder, cue, reset, f"lowsp-{n:04x}", entry, n >> 8, n & 0xFF, sp=0x0C)
-            evidence["cases"].append({"input": n, "expected_root": math.isqrt(n), "sp": 0x0C})
+            run_case(probe, data, folder, cue, reset, f"lowsp-{n:04x}", entry, n >> 8, n & 0xFF, sp=0x06)
+            evidence["cases"].append({"input": n, "expected_root": math.isqrt(n), "sp": 0x06})
         # Negative: the routine's CLD (second byte of the entry) must be present.
         # With D=1 on entry, the SBCs would run in BCD and produce wrong results.
         code_at = body - 0xE000
@@ -141,8 +143,8 @@ def main():
                                            "total": 3})
     (args.rom.parent / "geargrafx-dev-sqrt-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
     total = len(CASES) + 3  # the three boundary cases (caller SP=$0C, entry S=$0A)
-    print(f"PASS real Geargrafx DEV ROM: MA_SQRT slot $44 {total} cases ({len(CASES)} at SP=$FF, 3 at SP=$0C "
-          f"boundary; precondition S>=$0A at entry); A/X=isqrt(input), Y, P kept (D=1,C=1 entry), SP, MPR1/MPR7 "
+    print(f"PASS real Geargrafx DEV ROM: MA_SQRT slot $44 {total} cases ({len(CASES)} at SP=$FF, 3 at SP=$06 "
+          f"boundary; precondition S>=$04 at entry); A/X=isqrt(input), Y, P kept (D=1,C=1 entry), SP, MPR1/MPR7 "
           f"checked; no-CLD mutant rejected {rejected}/3")
 
 

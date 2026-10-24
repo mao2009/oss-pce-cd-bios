@@ -280,8 +280,8 @@ class PublicDocsTest(unittest.TestCase):
         implemented = {slot["id"] for slot in slots if slot.get("implementation")}
         source = {int(path.stem.split("_", 1)[1], 16) for path in (ROOT / "src" / "overrides").glob("slot_*.s")}
         self.assertEqual(len(slots), 81)
-        self.assertEqual(len(implemented), 9)
-        self.assertEqual(len(slots) - len(implemented), 72)
+        self.assertEqual(len(implemented), 10)
+        self.assertEqual(len(slots) - len(implemented), 71)
         self.assertEqual(source, implemented, "src/overrides must match the implemented ledger slots")
         self.assertEqual(sum(1 for slot in slots if slot["approval"]["approved_by"]), 0)
         self.assertIs(self.ledger["release_eligible"], False)
@@ -319,9 +319,9 @@ class PublicDocsTest(unittest.TestCase):
         self.assertTrue(stale_hits("- 2026-10-22 historical note: DEV count is 8/81. (9/81 now)\n## History"))
 
     def test_dated_bullet_under_history_heading_is_exempt(self):
-        text = "## Status\n\n- Current: 9/81.\n\n## History\n\n- 2026-10-22 snapshot: 8/81 DEV (historical).\n"
+        text = "## Status\n\n- Current: 10/81.\n\n## History\n\n- 2026-10-22 snapshot: 9/81 DEV (historical).\n"
         self.assertEqual(stale_hits(text), [])
-        self.assertTrue(stale_hits("## Status\n\n- 2026-10-22 snapshot: 8/81 DEV (historical).\n"))
+        self.assertTrue(stale_hits("## Status\n\n- 2026-10-22 snapshot: 9/81 DEV (historical).\n"))
 
     def test_historical_pr_claim_is_exempt_only_with_its_value(self):
         roadmap = ("- [x] one callable EX_GETVER override and stub slots (historical [#174]"
@@ -331,30 +331,30 @@ class PublicDocsTest(unittest.TestCase):
         self.assertTrue(stale_hits(roadmap.replace("(historical [#174]", "(as merged [#174]")))
 
     def test_historical_note_exempts_only_its_own_count(self):
-        self.assertEqual(stale_hits("Current stubs: 72 (historical #174: 80 stubs)"), [])
-        self.assertEqual(stale_hits("Current DEV implementations: 9/81 (historical 8a136ad: 8 DEV implementations)"), [])
+        self.assertEqual(stale_hits("Current stubs: 71 (historical #174: 80 stubs)"), [])
+        self.assertEqual(stale_hits("Current DEV implementations: 10/81 (historical 8a136ad: 8 DEV implementations)"), [])
         self.assertTrue(stale_hits("Current stubs: 80 (historical #174)"))
         self.assertTrue(stale_hits("Current stubs: 80 (historical #174: 80 stubs)"))
-        self.assertTrue(stale_hits("Current stubs: 72 (historical #174: 73 stubs)"))
-        self.assertTrue(stale_hits("Current DEV implementations: 8/81 (historical #174: 80 stubs)"))
-        self.assertTrue(stale_hits("Current stubs: 72; historical #174: 80 stubs"))
+        self.assertTrue(stale_hits("Current stubs: 71 (historical #174: 73 stubs)"))
+        self.assertTrue(stale_hits("Current DEV implementations: 9/81 (historical #174: 80 stubs)"))
+        self.assertTrue(stale_hits("Current stubs: 71; historical #174: 80 stubs"))
 
     def test_history_pr_cite_must_be_the_whole_number(self):
         # #1740 is not #174: a note citing #1740 must not borrow #174's historical value.
-        self.assertTrue(stale_hits("Current stubs: 72 (historical #1740: 80 stubs)"))
-        self.assertTrue(stale_hits("Current stubs: 72 (historical #17: 80 stubs)"))
-        self.assertEqual(stale_hits("Current stubs: 72 (historical #174: 80 stubs)"), [])
+        self.assertTrue(stale_hits("Current stubs: 71 (historical #1740: 80 stubs)"))
+        self.assertTrue(stale_hits("Current stubs: 71 (historical #17: 80 stubs)"))
+        self.assertEqual(stale_hits("Current stubs: 71 (historical #174: 80 stubs)"), [])
 
     def test_history_commit_cite_must_be_the_whole_id(self):
         # 8a136ad0 is not 8a136ad (and 86172e25 is not 86172e2): a longer SHA must not borrow the prefix's value.
-        self.assertTrue(stale_hits("Current DEV implementations: 9/81 (historical 8a136ad0: 8 DEV implementations)"))
-        self.assertTrue(stale_hits("Current DEV implementations: 9/81 (historical 86172e25: 8 DEV implementations)"))
+        self.assertTrue(stale_hits("Current DEV implementations: 10/81 (historical 8a136ad0: 8 DEV implementations)"))
+        self.assertTrue(stale_hits("Current DEV implementations: 10/81 (historical 86172e25: 8 DEV implementations)"))
 
     def test_history_commit_id_is_exempt_as_a_full_token(self):
         # The hex digits of a cited commit ID are not a count of the note.
         self.assertEqual(
-            stale_hits("Current DEV implementations: 9/81 (historical 86172e2: 8 DEV implementations)"), [])
-        self.assertTrue(stale_hits("Current DEV implementations: 8/81 (historical 86172e2: 8 DEV implementations)"))
+            stale_hits("Current DEV implementations: 10/81 (historical 86172e2: 8 DEV implementations)"), [])
+        self.assertTrue(stale_hits("Current DEV implementations: 9/81 (historical 86172e2: 8 DEV implementations)"))
 
     def test_seven_digit_count_is_not_a_commit_cite(self):
         # A 7-digit count is not a commit ID: it must still be checked as a current count.
@@ -411,7 +411,7 @@ class PublicDocsMutationTest(unittest.TestCase):
     """Mutations of a passing claim block. Each must be caught, or the check is too weak."""
 
     CLEAN = (
-        "Status: DEV implementation count: 9/81, 72 stubs.\n"
+        "Status: DEV implementation count: 10/81, 71 stubs.\n"
         "owner-approved DEV_CALLABLE: 0; reference ABI VERIFIED: 0/81; reference JSR permitted: 0/81.\n"
         "Measured on `f90c16b`.\n"
     )
@@ -421,12 +421,12 @@ class PublicDocsMutationTest(unittest.TestCase):
         self.assertEqual(missing_claims(self.CLEAN), [])
 
     def test_wrong_current_dev_count_is_flagged(self):
-        mutant = self.CLEAN.replace("9/81", "10/81")
+        mutant = self.CLEAN.replace("10/81", "11/81")
         self.assertTrue(stale_hits(mutant))
         self.assertIn("DEV implementations", missing_claims(mutant))
 
     def test_current_dev_count_label_with_wrong_value_is_flagged(self):
-        self.assertTrue(stale_hits("Current DEV count: 10/81."))
+        self.assertTrue(stale_hits("Current DEV count: 11/81."))
 
     def test_dev_implementations_label_with_zero_is_flagged(self):
         self.assertTrue(stale_hits("DEV implementations: 0/81"))
@@ -438,21 +438,21 @@ class PublicDocsMutationTest(unittest.TestCase):
         self.assertIn("reference ABI VERIFIED", missing_claims(mutant))
 
     def test_one_correct_claim_does_not_excuse_a_wrong_one(self):
-        mutant = self.CLEAN + "DEV implementations 9/81; reference ABI VERIFIED 9/81.\n"
+        mutant = self.CLEAN + "DEV implementations 11/81; reference ABI VERIFIED 9/81.\n"
         self.assertTrue(stale_hits(mutant))
 
     def test_wrong_stub_count_is_flagged(self):
         self.assertTrue(stale_hits("Status: 73 stubs remain."))
         self.assertTrue(stale_hits("Stubs: 73 remain"))
-        self.assertTrue(stale_hits("Status: 71 remaining stub slots."))
+        self.assertTrue(stale_hits("Status: 70 remaining stub slots."))
         self.assertTrue(stale_hits("80 fail-closed nonreturning stubs"))
-        self.assertEqual(stale_hits("72 remaining stub slots"), [])
-        self.assertEqual(stale_hits("Stubs: 72 remain"), [])
+        self.assertTrue(stale_hits("72 remaining stub slots"))
+        self.assertTrue(stale_hits("Stubs: 72 remain"))
 
     def test_bare_9_81_does_not_satisfy_claims(self):
-        self.assertEqual(stale_hits("9/81"), [])
+        self.assertEqual(stale_hits("10/81"), [])
         self.assertEqual(
-            set(missing_claims("9/81")),
+            set(missing_claims("10/81")),
             {"DEV implementations", "stubs", "DEV_CALLABLE approval", "reference ABI VERIFIED",
              "reference JSR permitted"},
         )
@@ -478,16 +478,16 @@ class PublicDocsMutationTest(unittest.TestCase):
         self.assertTrue(stale_hits(self.CLEAN, expected))
 
     def test_html_wrapped_count_is_read(self):
-        html = "<div><span>9</span> / 81</div> DEV implemented slots <span>0</span>/81 ABI VERIFIED"
+        html = "<div><span>10</span> / 81</div> DEV implemented slots <span>0</span>/81 ABI VERIFIED"
         self.assertNotIn("DEV implementations", missing_claims(html))
-        self.assertTrue(stale_hits("<span>10</span> / 81 DEV implemented"))
+        self.assertTrue(stale_hits("<span>11</span> / 81 DEV implemented"))
 
     def test_expected_counts_follow_the_ledger_not_a_typed_constant(self):
         slots = json.loads(json.dumps(LEDGER["slots"]))
         slots[1]["implementation"] = {"source": "src/overrides/slot_XX.s"}
         expected = expected_counts(slots, JSR_GATE["slots"])
-        self.assertEqual(expected["dev"], 10)
-        self.assertEqual(expected["stub"], 71)
+        self.assertEqual(expected["dev"], 11)
+        self.assertEqual(expected["stub"], 70)
         self.assertTrue(stale_hits(self.CLEAN, expected))
 
     def test_approval_and_abi_status_are_read_from_ledger(self):

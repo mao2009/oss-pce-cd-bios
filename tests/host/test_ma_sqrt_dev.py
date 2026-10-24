@@ -1,8 +1,12 @@
 """Host model of the DEV MA_SQRT override (slot $44, Issue #78). Exhaustive over all 65,536 inputs.
 
-The model mirrors src/overrides/slot_44.s step by step: a 16-bit running square, an
-8-bit root candidate, and a 16-bit trial value (2r + 1). Each round compares the
-running square against the input, updates the best root, then advances r and trial.
+The model mirrors src/overrides/slot_44.s step by step: the bit-by-bit restoring
+square-root algorithm. Each of 8 iterations:
+  pair   = top two bits of n; n <<= 2
+  rem    = (rem << 2) | pair              (16-bit, bounded < 65536)
+  trial  = (root << 2) | 1                (9-bit: trial_hi:trial_lo)
+  if rem >= trial: rem -= trial; root = (root << 1) | 1
+  else:            root = root << 1
 Every input 0..65535 is checked against math.isqrt (the independent oracle).
 
 This does NOT test the assembled bytes; the assembled routine is exercised only by
@@ -10,7 +14,6 @@ the real-core run in tests/integration/geargrafx_dev_sqrt.py. This is not the
 System Card MA_SQRT ABI.
 """
 import math
-import random
 import sys
 import unittest
 from pathlib import Path
@@ -21,30 +24,29 @@ from build_rom import overrides  # noqa: E402
 
 
 def dev_sqrt(n):
-    """floor(sqrt(n)) computed as slot_44.s does, for n in 0..65535.
+    """floor(sqrt(n)) computed as slot_44.s does (bit-by-bit restoring), for n in 0..65535.
 
-    State: r (8-bit root candidate), sq (16-bit running square), trial (16-bit, 2r+1).
-    Each round:
-      if sq > n: stop, return best
-      best = r
-      sq = sq + trial        (16-bit wrap)
-      r = r + 1              (8-bit wrap)
-      if r == 0: stop, return best   (wrapped past 255)
-      trial = trial + 2      (16-bit wrap)
+    State: rem (16-bit), root (8-bit). Each of 8 iterations:
+      pair   = top 2 bits of n; n <<= 2
+      rem    = (rem << 2) | pair          (16-bit)
+      trial  = (root << 2) | 1            (9-bit)
+      if rem >= trial: rem -= trial; root = (root << 1) | 1
+      else:            root = root << 1
+    Returns root in 0..255.
     """
-    r = 0
-    sq = 0
-    trial = 1
-    best = 0
-    while True:
-        if sq > n:
-            return best
-        best = r
-        sq = (sq + trial) & 0xFFFF
-        r = (r + 1) & 0xFF
-        if r == 0:
-            return best
-        trial = (trial + 2) & 0xFFFF
+    rem = 0
+    root = 0
+    for _ in range(8):
+        pair = (n >> 14) & 0x03   # top two bits of current n
+        n = (n << 2) & 0xFFFF
+        rem = ((rem << 2) | pair) & 0xFFFF
+        trial = (root << 2) | 1   # 9-bit value (trial_hi is root bit 6)
+        if rem >= trial:
+            rem = (rem - trial) & 0xFFFF
+            root = (root << 1) | 1
+        else:
+            root = root << 1
+    return root  # 0..255
 
 
 class DevSqrtModelTests(unittest.TestCase):
@@ -74,13 +76,24 @@ class DevSqrtModelTests(unittest.TestCase):
             self.assertTrue(0 <= r <= 255, n)
             self.assertEqual(r, math.isqrt(n), n)
 
-    def test_overflow_at_max_root(self):
-        """r=255: sq=65025, trial=511, sq+trial=65536 overflows; r wraps to 0;
-        best=255 is correctly returned for n in [65025, 65535]."""
-        for n in range(65025, 65536):
-            self.assertEqual(255, dev_sqrt(n), n)
-        # Just below the range: floor(sqrt(65024)) = 254
-        self.assertEqual(254, dev_sqrt(65024))
+    def test_trial_9bit_range(self):
+        """trial = 4*root + 1 never exceeds 509 (9-bit). Verify via model trace."""
+        for n in range(65536):
+            rem = 0
+            root = 0
+            for _ in range(8):
+                pair = (n >> 14) & 0x03
+                n = (n << 2) & 0xFFFF
+                rem = ((rem << 2) | pair) & 0xFFFF
+                trial = (root << 2) | 1
+                self.assertTrue(1 <= trial <= 509, f"trial={trial} at n={n}")
+                if rem >= trial:
+                    rem = (rem - trial) & 0xFFFF
+                    root = (root << 1) | 1
+                else:
+                    root = root << 1
+                self.assertTrue(0 <= rem <= 0xFFFF, f"rem={rem} out of 16-bit range")
+                self.assertTrue(0 <= root <= 255, f"root={root} out of 8-bit range")
 
     def test_slot_44_is_a_dev_override(self):
         self.assertIn(0x44, overrides())
@@ -88,7 +101,7 @@ class DevSqrtModelTests(unittest.TestCase):
         self.assertIn("api_slot_44:", source)
         self.assertIn("MA_SQRT", source)
         self.assertIn("Issue #78", source)
-        # Uses zero page $F8-$FF (not stack page, not ZP $00-$07).
+        # Uses zero page $F7-$FF (not stack page, not ZP $00-$07).
         self.assertIn("$F7", source)
         self.assertIn("$F8", source)
         self.assertIn("$FF", source)

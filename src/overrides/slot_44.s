@@ -15,7 +15,9 @@
 ;   out: X:A = floor(sqrt(input)) (unsigned; X = 0, A = root 0..255)
 ;   kept: Y and P (caller's flags restored by PLP; B is not a stored flag)
 ;   clobbered: A and X (the result)
-;   uses: zero page $F8-$FF only. No I/O, no MPR access, I is never changed.
+;   uses: zero page $F7-$FF only. No I/O, no MPR access, I is never changed.
+;   precondition: S at routine entry >= $04 (JSR pushes 2 return bytes; php+phy
+;                 push 2 more; minimum SP during routine is entry_SP - 4).
 ;   ABI remains UNVERIFIED and this ROM stays DEV ONLY (release_eligible: false).
 ;
 ; Zero-page layout:
@@ -28,12 +30,18 @@
 ;   $FE  n_hi       input high byte
 ;   $FF  n_lo       input low byte
 ;
+; Stack usage:
+;   php pushes P (1 byte), phy pushes Y (1 byte). These are popped by plp/ply
+;   before rts. No other stack operations. JSR return address (2 bytes) is pushed
+;   by the caller and popped by rts. Maximum stack depth during routine is
+;   entry_SP - 4.
+;
 ; 16-bit overflow safety:
 ;   trial = 4*root + 1 <= 509 (root <= 127), fits in 9 bits.
 ;   rem < 4^8 = 65536 always, fits in 16 bits.
 ;
 ;   Zero Page $00-$07 is deliberately NOT used: adt_dma_routine.s clobbers
-;   ZP $00-$0B. $F8-$FF is used instead.
+;   ZP $00-$0B. $F7-$FF is used instead.
 ;
 .setcpu "huc6280"
 .segment "OVERRIDES"

@@ -1176,7 +1176,7 @@
       "implementation": {
         "source": "src/overrides/slot_44.s",
         "license": "MIT (repository LICENSE)",
-        "provenance": "project-own iterative comparison algorithm (Issue #78)"
+        "provenance": "project-own bit-by-bit restoring algorithm (Issue #78)"
       },
       "host_evidence": [
         "tests/host/test_ma_sqrt_dev.py"
