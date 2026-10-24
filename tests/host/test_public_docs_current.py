@@ -47,10 +47,13 @@ HISTORICAL_WORD_RE = re.compile(r"historical|superseded|履歴", re.IGNORECASE)
 # A number that is not part of a date, URL, PR/issue reference, hex id or identifier like $4F / MA_MUL16S.
 VALUE_RE = re.compile(r"(?<![A-Za-z0-9_/.#$-])(\d+)(?!\d)(?!-|\.\d)(?!\s*(?:KiB|KB|MiB|MB))(\s*/\s*81(?!\d))?")
 
-# Any PR reference (any number, not just merged ones). Used to decide whether another PR
+# PR reference (any number, not just merged ones). Used to decide whether another PR
 # mention falls between a merged PR and its open/unmerged/Draft wording. Only matches "#NNNN"
 # form; "pull/NNNN" inside URLs (e.g. https://.../pull/495) must not count as a separator.
+# Issue references (#NNNN that appear as "Issue #NNNN") are NOT PR references for the purpose of
+# separating PR state clauses.
 _ANY_PR_RE = re.compile(r"#\d+(?!\d)")
+_ISSUE_REF_RE = re.compile(r"(?:Issue|issue|課題)\s+#\d+|#\d+\s+\([^)]+\)", re.IGNORECASE)
 # Text allowed between a label and its number: short, and no sentence or clause punctuation.
 GAP_RE = re.compile(r"[^.;,()\[\]<>。、；，（）]{0,30}")
 # Each claim label and the claim key it asserts. Matched case-insensitively.
@@ -187,37 +190,73 @@ def stale_hits(text, expected=EXPECTED):
         # between the PR mention and the open/unmerged/Draft wording. "and"/"および" does not
         # split the check: if another PR follows the conjunction, its wording is attributed to
         # that PR, not to the earlier one.
-        all_pr_positions = [pm.start() for pm in _ANY_PR_RE.finditer(line)]
+        # Issue references (#NNNN after "Issue"/"issue"/"課題", or in parens as context) do not
+        # count as separating PR references.
+        all_pr_positions = []
+        for pm in _ANY_PR_RE.finditer(line):
+            pos = pm.start()
+            # Check if this is an issue reference
+            before = line[max(0, pos - 25):pos]
+            if re.search(r"(?:Issue|issue|課題)\s+$", before, re.IGNORECASE):
+                continue
+            if re.search(r"\(\s*$", before):
+                continue
+            # Check if in parens as context like "PR #495 (#303)"
+            if re.search(r"\([^)]*$", line[:pos]):
+                continue
+            all_pr_positions.append(pos)
         all_pr_matches = list(MERGED_PR_RE.finditer(line))
+        sentence_boundaries = ['.', ';', ':', '。', '；', '：', '\n']
         for m in all_pr_matches:
             pr_start = m.start()
             pr_end = m.end()
             found = False
-            # Forward: open wording after this PR with no other PR mention in between.
-            search_pos = pr_end
-            while not found:
-                ow_match = OPEN_WORDING_RE.search(line, search_pos)
-                if not ow_match:
-                    break
-                between = any(
-                    pr_end < pos < ow_match.start()
-                    for pos in all_pr_positions if pos != pr_start
-                )
-                if not between:
-                    found = True
-                    break
-                search_pos = ow_match.end()
-            # Backward: open wording before this PR with no other PR mention in between.
-            if not found:
-                ow_matches_before = list(OPEN_WORDING_RE.finditer(line[:pr_start]))
-                for ow_match in reversed(ow_matches_before):
-                    between = any(
-                        ow_match.end() < pos < pr_start
-                        for pos in all_pr_positions if pos != pr_start
+            # Find sentence/segment boundaries for this PR
+            # A sentence boundary is a real separator (., ;, :, etc.)
+            # Find last boundary before pr_start
+            last_boundary_before = -1
+            for b in sentence_boundaries:
+                idx = line.rfind(b, 0, pr_start)
+                if idx > last_boundary_before:
+                    last_boundary_before = idx
+            # Find first boundary after pr_end
+            first_boundary_after = len(line)
+            for b in sentence_boundaries:
+                idx = line.find(b, pr_end)
+                if idx >= 0 and idx < first_boundary_after:
+                    first_boundary_after = idx
+            segment = line[last_boundary_before + 1:first_boundary_after]
+            # Check if any other PR is in this segment
+            other_pr_in_segment = any(
+                last_boundary_before < p < first_boundary_after and p != pr_start
+                for p in all_pr_positions
+            )
+            # Check open wording within this segment, not attributed to other PR
+            if OPEN_WORDING_RE.search(segment):
+                # Check if open wording is before/after another PR in same segment
+                for ow_match in OPEN_WORDING_RE.finditer(segment):
+                    ow_pos = last_boundary_before + 1 + ow_match.start()
+                    # Check if there's another PR between this PR and the open wording
+                    between_pr = any(
+                        min(pr_end, ow_pos) < p < max(pr_start, ow_pos)
+                        for p in all_pr_positions if p != pr_start
                     )
-                    if not between:
-                        found = True
-                        break
+                    if not between_pr:
+                        # Check if this open wording is in the part of segment attributed to this PR
+                        # If another PR is in segment after this PR, open wording after it belongs to that PR
+                        if other_pr_in_segment:
+                            # Find next PR in segment
+                            next_pr_in_segment = min([p for p in all_pr_positions if p > pr_start and p < first_boundary_after], default=None)
+                            if next_pr_in_segment is not None and ow_pos > next_pr_in_segment:
+                                continue  # belongs to next PR
+                            if next_pr_in_segment is not None and pr_end < next_pr_in_segment < ow_pos:
+                                continue  # belongs to next PR
+                            if ow_pos > pr_end and (next_pr_in_segment is None or ow_pos < next_pr_in_segment):
+                                found = True
+                                break
+                        else:
+                            found = True
+                            break
             if found:
                 hits.append((number, "merged PR or closed issue described as open/unmerged/Draft"))
     return hits
@@ -333,6 +372,12 @@ class PublicDocsTest(unittest.TestCase):
         self.assertEqual(stale_hits("PR #495 merged. PR #512 remains open Draft."), [])
         self.assertEqual(stale_hits("PR #495 merged and PR #512 remains open Draft."), [])
         self.assertEqual(stale_hits("PR #495 merged および PR #512 remains open Draft."), [])
+        # Sentence boundaries must not leak state across PRs
+        self.assertEqual(stale_hits("PR #512 is open; PR #495 merged."), [])
+        self.assertEqual(stale_hits("PR #512 is a Draft. PR #495 merged."), [])
+        self.assertEqual(stale_hits("PR #495 merged. Open issues are welcome."), [])
+        self.assertEqual(stale_hits("Open issues are welcome. PR #495 merged."), [])
+        self.assertEqual(stale_hits("PR #495 merged; Issue #303 is open."), [])
 
     def test_multi_pr_merged_mislabelled_as_open(self):
         # A merged PR described as open/unmerged/Draft in its own clause → FAIL.
@@ -348,6 +393,9 @@ class PublicDocsTest(unittest.TestCase):
         # Markdown/HTML link with "and" hiding open wording → FAIL.
         self.assertTrue(stale_hits("[#495](https://github.com/x/pull/495) merged and remains a Draft."))
         self.assertTrue(stale_hits("<a href=\"pull/495\">#495</a> merged and remains a Draft."))
+        # Issue reference should not hide PR state for the same PR
+        self.assertTrue(stale_hits("PR #495 (#303) remains open Draft."))
+        self.assertTrue(stale_hits("PR #495 references Issue #303 and remains open Draft."))
 
     def test_multi_pr_markdown_and_html_links(self):
         # Markdown links around PR numbers must not break clause separation.
