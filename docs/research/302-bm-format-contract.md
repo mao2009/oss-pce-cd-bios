@@ -129,44 +129,38 @@ Refs #302 / 親 #34 / 関連 #303（合成FORMAT安全モデル）/ #304（診�
 
 | 区分 | 項目 | 出所 | 状態 |
 | --- | --- | --- | --- |
-| 合成（モデル専用） | 署名 `SYNBM\x01\x00\x00`、最小容量 64、ステータス名（OK など） | `tools/bm_format_model.py`（#395） | synthetic。BIOS の値ではない（§0） |
-| 合成（モデル専用） | 不正署名の拒否 `REJECTED_INVALID_SIGNATURE`、OK 時の「署名あり・残りゼロ埋め・容量維持」 | `tools/bm_format_verdict.py`（#509） | synthetic。契約からの根拠はない |
-| BIOS ABI | 入口、確認文字列の比較、返値、容量要件、破壊範囲、MMIO 副作用 | 本台帳 C3b, C5b, C11, C12, B1-B7 | UNKNOWN |
+| 合成（モデル専用） | 署名 `SYNBM\\x01\\x00\\x00`、最小容量64、`OK`・各拒否ステータス | `tools/bm_format_model.py`（#395） | synthetic。BIOS の値ではない |
+| 合成（判定層） | `OK` 時の「署名あり・残部ゼロ埋め・容量維持」、拒否時の元バイト保持、未知ステータスの拒否 | `tools/bm_format_verdict.py`（#509） | synthetic。BIOS ABI は根拠にしない |
+| BIOS ABI | 入口、確認文字列、返値、容量、破壊範囲、MMIO 副作用 | 本台帳 C3b, C5b, C11, C12, B1-B7 | UNKNOWN |
 
-判定層のすべての期待値は上段の合成値のみで定義する。期待値は作者の合成モデル由来であり、BIOS ABI 由来ではない。下段の BIOS ABI を根拠にした PASS は存在しない。総合判定は `BLOCKED_ABI` で、`release_eligible` は常に `false`。
+すべての合成テストが PASS でも総合判定は `BLOCKED_ABI`、`release_eligible=false`。参照 ABI VERIFIED への昇格は行わない。
 
-### 8.2 入口の比較（#395 `bm.format_image` と PR #509 `guarded_format`）
+### 8.2 オーナー裁定 A2（2026-10-24、Issue #303）
 
-| 項目 | #395 `bm.format_image`（回復） | PR #509 `guarded_format`（拒否） |
+**A2（既存の合成モデルの回復動作を維持）を採用した。** A1（不正署名の追加拒否）は採用しない。PR #509 の `guarded_format()` は `bm.format_image()` に委譲して、**合成イメージに限り**挙動を一致させる。従来の `REJECTED_INVALID_SIGNATURE` は判定層の許可ステータスから削除する。
+
+| 入力・条件 | `bm.format_image` | `guarded_format`（A2） |
 | --- | --- | --- |
-| 入口 | `bm.format_image(image, allow_destructive=...)` | `bm_format_verdict.guarded_format(image, allow_destructive=...)`。委譲先は `bm.format_image` |
-| 保証 | 非 bytes は TypeError。未確認は `REFUSED_UNCONFIRMED`、64 バイト未満は `INSUFFICIENT_CAPACITY`、有効署名は `ALREADY_FORMATTED`、それ以外は `OK`（署名を書き残りゼロ埋め） | 上記に加え、確認付き・64 バイト以上・署名が不正・非ゼロのとき `REJECTED_INVALID_SIGNATURE`（拒否） |
-| 保証しないこと | 不正署名のイメージが利用者データかどうかの判断。BIOS の挙動 | この層を経由しない呼出し（直接呼出し）の拒否。BIOS の挙動。回復と拒否のどちらが正しいか |
-| 返値 | `(status, bytes)`。OK 以外は入力と同じ bytes | `(status, bytes)`。拒否と委譲先の非 OK は入力と同じ bytes |
-| 入力変更 | なし（`bytes(image)` の複製に対して処理。bytearray も書き換えない） | なし（拒否パスは複製を返す。委譲先は上段と同じ） |
-| I/O | なし（メモリ内のみ） | なし（メモリ内のみ） |
-| 非ゼロ・不正署名（確認付き、64 バイト以上） | OK（回復） | `REJECTED_INVALID_SIGNATURE`（拒否） |
-| 全ゼロ（blank）のイメージ | OK | OK（委譲のため同じ） |
-| 状態 | #395 で固定（`test_invalid_signature_is_recovered_by_format`） | 暫定（owner 決定 A は OPEN） |
-| BIOS ABI | UNKNOWN（#302） | UNKNOWN（#302） |
+| 非 bytes / bytearray | TypeError | 同左 |
+| `allow_destructive is not True` | `REFUSED_UNCONFIRMED`（保持） | 同左 |
+| 確認付き・64バイト未満 | `INSUFFICIENT_CAPACITY`（保持） | 同左 |
+| 確認付き・有効署名 | `ALREADY_FORMATTED`（保持） | 同左 |
+| 確認付き・64バイト以上・全ゼロ | `OK`（合成署名・残部ゼロ埋め） | 同左 |
+| 確認付き・64バイト以上・非ゼロ不正署名 | `OK`（合成署名・残部ゼロ埋め） | 同左 |
 
-### 8.3 入口ごとの保証と迂回
+返値は `(status, bytes)`。入力 `bytearray` も変更せず、コピーした新規結果を返す。元のイメージが利用者データかどうかは判別しないため、**この裁定を実ユーザーの save / RAM / デバイスへ適用しない**。実FORMAT処理や実 BIOS 呼出しは行わない。元の System Card の振る舞いを証明・承認するものでもない（#302）。
 
-| 呼出し経路 | 保証 | 迂回（バイパス） |
-| --- | --- | --- |
-| `guarded_format` | 確認付き・64 バイト以上・非ゼロの不正署名を拒否し、バイトを保持する | なし（この経路の内側）。ただし呼出側が直接 `bm.format_image` を使えばゲートを通らない |
-| `bm.format_image` 直接 | 有効署名・容量不足・未確認の拒否は #395 どおり | **迂回あり**: 非ゼロの不正署名を OK で回復し、署名を書く |
+### 8.3 判定器の fail-closed と安全境界
 
-* ゲートは `guarded_format` 経由の呼出しにしか効かない。したがって本ゲートは「完全な安全境界」ではない。安全境界とするには、呼出側を `guarded_format` に限定する別の措置（または #395 側の扱いの決定）が必要で、これは本 PR の範囲外。
+`guarded_format` の追加拒否は A2 により削除されたが、`judge`・`run_case`・`run_all` の判定は fail-closed のままとする。未知ステータス（旧 `REJECTED_INVALID_SIGNATURE` を含む）、型不一致、結果欠落、モデル例外、入力バッファ変異、署名未書込みやゼロ埋め失敗は `FAIL`。全ケース PASS の総合判定は `BLOCKED_ABI` であり `PASS` にしない。
 
-### 8.4 owner 決定 A（未決定。承認ではない）
+**呼出し経路の限定により実データを守る実行時境界は存在しない。** `guarded_format` と `bm.format_image` は双方ともメモリ内の合成 Fixture 用。回復モデルの結果を実メモリ書換えやリリース許可に転用しない。実ユーザーデータの保護や参照 BIOS ABI の調査は別タスクとする。
 
-番号付きの OPEN 項目。owner が決めるまで、PR #509 の拒否は**暫定の保守的方針**であり、owner の承認ではない。承認の記録はない。
+### 8.4 変更範囲・裁定履歴
 
-* **A（OPEN）** 確認付き・非ゼロ・不正署名・64 バイト以上のイメージを、どちらの振る舞いとするか。
-  * **A1 拒否（PR の現方針、暫定）**: `REJECTED_INVALID_SIGNATURE`、バイト保持。帰結: #395 の `test_invalid_signature_is_recovered_by_format` は現挙動（回復）を固定しており、A1 を正とすると矛盾する。#395 のテストは本 PR で変更しない（スコープ外）ため、A1 採用時は別 Issue で #395 側の扱い（回復テストの書換え、または回復の撤回と呼出側のゲート必須化）を決める必要がある。
-  * **A2 回復**: `OK`（署名を書き、残りをゼロ埋め）。帰結: 本 PR の `guarded_format` の拒否分岐を外し、拒否を期待する判定層のテストを回復の期待値に書き換える。対象は `test_nonzero_invalid_signature_is_rejected_and_kept`、`test_guarded_bytearray_invalid_signature_is_rejected_and_kept`、`test_allowed_refused_status_with_unchanged_bytes_passes`（`REJECTED_INVALID_SIGNATURE` を許可ステータスとして使用）、`invalid_sig_*` の `CASES`、`ALLOWED_STATUSES` の `REJECTED_INVALID_SIGNATURE` と定数そのものの扱い。#395 のモデルとテストは変更不要。
-* 判定が出るまでの現状: 拒否は**暫定**。どちらの判定でも BIOS ABI は UNKNOWN のまま（`BLOCKED_ABI`、`release_eligible=false`）。
+- オーナー判断: Issue #303（2026-10-24）、A2 を採用。A1 の暫定拒否と矛盾していた #395 の回復テストは書き換えずに維持する。
+- PR #509: `guarded_format` の非ゼロ不正署名拒否を削除、`CASES` と判定層テストを回復期待に更新。旧拒否ステータスの一致による偽 PASS を許容しない。
+- 非対象: `tools/bm_format_model.py` / #395 のテスト、実 save・RAM・MMIO、System Card ABI、参照 JSR ゲート、正式な実装完了判定。
 
 ### 8.5 #303 完了条件の証拠台帳
 
@@ -174,7 +168,7 @@ Refs #302 / 親 #34 / 関連 #303（合成FORMAT安全モデル）/ #304（診�
 | --- | --- | --- | --- | --- |
 | E1 | 実 save/RAM への非書込み（モデルは in-memory のみ） | `tools/bm_format_model.py` の I/O 禁止と import 許可リストのテスト（#395、#509 の `test_verdict_module_imports_only_the_model`） | 合成（静的・単体テスト） | PASS（合成） |
 | E2 | 正常系（blank 64 / 256、bytearray 入力、入力非改変） | `tests/host/test_bm_format_verdict.py`、`CASES` | 合成 | PASS（合成） |
-| E3 | 不正署名（非ゼロ）の負例 | 同上。ゲートの拒否（`REJECTED_INVALID_SIGNATURE`）。#395 の回復と矛盾 | 合成 | ゲートの挙動は PASS（合成）。方針は owner 決定 OPEN |
+| E3 | 不正署名（非ゼロ）の回復ケースと未確認の拒否 | 同上。A2 により #395 の合成回復と一致。入力非改変、確認フラグ厳格性をテスト | 合成 | PASS（合成）。実 save への適用不可 |
 | E4 | 容量境界（63 バイトの無署名・有効署名、空、64 バイト空白） | 同上 | 合成 | PASS（合成） |
 | E5 | fail-closed 判定（OK は署名必須、結果欠落、型不一致、許可外ステータス（一致していても FAIL）、例外、スナップショット失敗、入力変更） | `judge`、`run_case`、テスト群。改修前は OK 署名なしと、一致する許可外ステータス（`BOGUS_STATUS`）を PASS にしていた（RED を確認） | 合成 | PASS（合成） |
 | E6 | 根拠 URL / revision / line | `docs/research/302-bm-format-contract.md` §1（HuCC `54f5c73`）、§2 の行番号 | 出典（静的） | UNKNOWN 項目を含む（§3） |
