@@ -4,7 +4,7 @@ This is an evidence-scoped, **dated snapshot**, not a real-time compatibility re
 
 ## Six separate metrics
 
-Measured on `f90c16b`: `src/overrides/slot_*.s` contains **9** files; `spec/dev_implementations.json` has **81** slots, **9** with a non-null `implementation`, and **0** owner approvals. The 72 stubs are the remaining 81 − 9 entries.
+Measured on main f90c16b: `src/overrides/slot_*.s` contains **9** files, `spec/dev_implementations.json` has **81** slots, **9** with a non-null `implementation`, and **0** owner approvals, and the 72 stubs are the remaining 81 − 9 entries.
 
 | Metric | Confirmed on main | Meaning / limits |
 | --- | ---: | --- |
@@ -68,7 +68,7 @@ On the Issue #78 PR branch, MA_SQRT ($44) is added as a tenth DEV implementation
 | Command / artifact | What it means |
 | --- | --- |
 | `make setup`, `make build`, `make test`, `make test-real-core`, `make check` | Original 8 KiB synthetic HuCARD and host/real-core diagnostics, not a compatibility ROM |
-| `make dev-rom` | Development-only 256 KiB image, nine project-owned overrides + 72 nonreturning stubs on main f90c16b; ten project-owned overrides ($1E, $3C, $3D, $3F, $40, $41, $42, $43, $44, $4F) + 71 nonreturning stubs on Issue #78 PR branch |
+| `make dev-rom` | Development-only 256 KiB image, nine project-owned overrides + 72 nonreturning stubs on main f90c16b; 10/81 DEV implementations ($1E, $3C, $3D, $3F, $40, $41, $42, $43, $44, $4F) + 71 nonreturning stubs on Issue #78 PR branch |
 | `make dev-integration`, `make dev-test` | Project-owned DEV ABI and synthetic Geargrafx tests, including MA_DIV16U and MA_MUL16S, not reference-BIOS verification |
 | `make dev-cdread-integration`, `make dev-cdload-exec-integration` | Guest CD transport and RAM payload experiments, not BIOS-mediated boot |
 | `make dev-boot-internal-integration` | DEV-only internal boot path regression (#502), wired into CI by #506 |
