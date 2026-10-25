@@ -56,10 +56,27 @@ class ApiBuildTests(unittest.TestCase):
         Z=1/N=0/I=1 with carry preserved) is verified on the real Geargrafx core in
         tests/integration/geargrafx_contracts.py; the absolute P byte is not fixed.
         """
-        self.assertEqual(set(overrides()), {0x1E, 0x3C, 0x3D, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x4F})  # 1E measured; 3C/3D/3F/40/41/42/43/4F project-own DEV routines
+        self.assertEqual(set(overrides()), {0x1E, 0x3C, 0x3D, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x4F})  # 1E measured; 3C/3D/3F/40/41/42/43/44/4F project-own DEV routines
         at = 0x1E * 3
         entry = int.from_bytes(self.rom[at+1:at+3], 'little')
         self.assertEqual(self.rom[entry-0xe000:entry-0xe000+5], bytes.fromhex('a2 03 a0 00 60'))
+
+    def test_api_implementation_list_matches_overrides(self):
+        """The API_IMPLEMENTATION string in build_rom.py must list every override slot exactly once."""
+        import tools.build_rom as br
+        ov = br.overrides()
+        impl = br._API_IMPLEMENTATION
+        for slot in sorted(ov):
+            self.assertIn(f"slot_{slot:02X}", impl,
+                          f"API_IMPLEMENTATION missing slot_{slot:02X}")
+        # Count of slots in the string must match the override count
+        slot_count = impl.count("slot_")
+        self.assertEqual(slot_count, len(ov),
+                         f"API_IMPLEMENTATION has {slot_count} slot references, expected {len(ov)}")
+        # Unimplemented count must match
+        unimplemented = 81 - len(ov)
+        self.assertIn(f"{unimplemented} slots unimplemented", impl,
+                      f"API_IMPLEMENTATION should say {unimplemented} slots unimplemented")
 
     def test_debug_release_and_rebuild_match(self):
         for name, mode in [('release', 'release'), ('again', 'debug')]:
@@ -108,8 +125,8 @@ class ApiBuildTests(unittest.TestCase):
     def test_manifest_never_claims_release(self):
         manifest = json.loads((self.folder/'debug/manifest.json').read_text())
         self.assertFalse(manifest['release_eligible'])
-        self.assertEqual(manifest["overridden_slots"], [0x1E, 0x3C, 0x3D, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x4F])
-        self.assertEqual(len(manifest["unimplemented_slots"]), 72)
+        self.assertEqual(manifest["overridden_slots"], [0x1E, 0x3C, 0x3D, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x4F])
+        self.assertEqual(len(manifest["unimplemented_slots"]), 71)
         self.assertEqual(manifest['abi'], 'UNVERIFIED')
 
     def make_root(self, name, **slots):

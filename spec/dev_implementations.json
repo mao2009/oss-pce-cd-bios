@@ -1173,9 +1173,17 @@
         "status": "UNKNOWN",
         "note": "reference System Card contract not verified; DEV-only project spec"
       },
-      "implementation": null,
-      "host_evidence": [],
-      "real_core_evidence": [],
+      "implementation": {
+        "source": "src/overrides/slot_44.s",
+        "license": "MIT (repository LICENSE)",
+        "provenance": "project-own bit-by-bit restoring algorithm (Issue #78)"
+      },
+      "host_evidence": [
+        "tests/host/test_ma_sqrt_dev.py"
+      ],
+      "real_core_evidence": [
+        "tests/integration/geargrafx_dev_sqrt.py"
+      ],
       "approval": {
         "approved_by": null,
         "review_ref": null

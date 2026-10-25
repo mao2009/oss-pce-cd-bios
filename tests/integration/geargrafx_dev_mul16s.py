@@ -60,13 +60,130 @@ EDGES = (0x0000, 0x0001, 0xFFFF, 0x0002, 0xFFFE, 0x7FFF, 0x8001, 0x8000, 0x00FF,
          0x5555, 0xAAAA, 0x1234, 0xEDCC)
 SWEEP_FIXED = (0x8000, 0x7FFF, 0xFFFF, 0x0001, 0x0000, 0x1234)
 FLAG_BITS = (0x01, 0x02, 0x04, 0x08, 0x40, 0x80)  # C Z I D V N; B (0x10) and T (0x20) are 0 on input
-CALLER_SPS = (0x0E, 0x40, 0xFF)  # caller SP before the 4 pushes; entry SP = caller SP - 6 (must be $08..$F9)
+CALLER_SPS = (0x0E, 0x40, 0xFF)  # caller SP before the pushes; entry SP = caller SP - 2 (JSR return) - 2 (php+phy)
 RANDOM_PAIRS = 3000  # per default run; the host model checks 20,000 more
 RANDOM_SEED = 494
-TRAMPOLINE = 0xE700  # free ROM after the override (fill $FF): trace mutants jump here from the routine's RTS
+# TRAMPOLINE is computed dynamically from the OVERRIDES segment end (see find_trampoline_address).
+# It must not be hardcoded: adding/removing override sources changes the ROM layout, and a fixed
+# address like $E700 can land inside another override's code.
 SIGNED_BOUNDARY = ((-32768, -32768), (-32768, 32767), (32767, -32768), (32767, 32767), (-1, -1), (-1, 1), (1, -1),
                    (-1, 32767), (32767, -1), (-32768, -1), (-1, -32768), (-32768, 1), (1, -32768), (0, 0),
                    (0, -32768), (-32768, 0), (1, 1), (0x00FF, 0x0101), (0x0101, 0x00FF), (255, 256), (0x7FFF, 2))
+# Trampoline payload codes used by the T-mutants. Each is entered at the trampoline address and ends with RTS ($60).
+# The longest payload determines how many consecutive unused-ROM bytes must be verified.
+TRAMPOLINE_PAYLOADS = (
+    bytes.fromhex("08A50085002860"),   # T1: same-value zero-page write          (7 bytes)
+    bytes.fromhex("08EE0023CE00232860"), # T2: write-and-restore BSS             (9 bytes)
+    bytes.fromhex("08AD03142860"),     # T3: I/O read                            (6 bytes)
+    bytes.fromhex("08AD00218D00212860"), # T4: same-value stack below frame      (9 bytes)
+    bytes.fromhex("08A9F853042860"),   # T5: MPR change                          (8 bytes)
+    bytes.fromhex("08AD34218D34212860"), # T6: same-value below lowest push      (9 bytes)
+    bytes.fromhex("08AD3C218D3C212860"), # T7: same-value JSR return byte        (9 bytes)
+    bytes.fromhex("08AD41218D41212860"), # T8: same-value above frame            (9 bytes)
+    bytes.fromhex("08AD3B218D3B212860"), # T9: same-value JSR return low byte    (9 bytes)
+    bytes.fromhex("08AD00222860"),     # T10: BSS read                           (6 bytes)
+)
+MAX_TRAMPOLINE_PAYLOAD = max(len(p) for p in TRAMPOLINE_PAYLOADS)  # 9 bytes
+
+
+def parse_dev_map_segments(dev_map_text):
+    """Parse the ld65 dev.map Segment list.
+
+    Returns {name: {"start": int, "end": int, "size": int}}. The map's End column is the
+    inclusive last byte address of the segment (Size == End - Start + 1), so the first
+    unused byte after a segment is End + 1.
+    """
+    segments = {}
+    for line in dev_map_text.splitlines():
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+        hex_fields = parts[1:5]
+        if not all(f and all(c in "0123456789ABCDEFabcdef" for c in f) for f in hex_fields):
+            continue
+        try:
+            start, end, size, _align = (int(f, 16) for f in hex_fields)
+        except ValueError:
+            continue
+        if size != end - start + 1:
+            continue  # not a genuine segment row (defensive: ld65 maps Size = End - Start + 1)
+        segments[parts[0]] = {"start": start, "end": end, "size": size}
+    return segments
+
+
+def check_trampoline_region(segments, addr, payload_len, rom_data=None):
+    """Common safety validation shared by find_trampoline_address() and
+    validate_trampoline_address(). Raises ValueError if the region is unsafe."""
+    end_addr = addr + payload_len - 1  # inclusive last byte of the trampoline payload
+
+    # $F000 boundary: the whole payload region (start AND end) must stay below $F000.
+    if addr >= 0xF000 or end_addr >= 0xF000:
+        raise ValueError(
+            f"trampoline region ${addr:04X}-${end_addr:04X} crosses the $F000 boundary")
+
+    # Never overlap any defined segment (OVERRIDES, BOOT, APITABLE, FALLBACK, VECTORS, ...).
+    for name, seg in segments.items():
+        if seg["start"] <= end_addr and addr <= seg["end"]:
+            raise ValueError(
+                f"trampoline ${addr:04X}-${end_addr:04X} overlaps {name} segment "
+                f"${seg['start']:04X}-${seg['end']:04X}")
+
+    # The entire payload region must be unused ROM ($FF).
+    if rom_data is not None:
+        for i in range(payload_len):
+            rom_addr = addr + i - 0xE000
+            if rom_addr < 0 or rom_addr >= len(rom_data) or rom_data[rom_addr] != 0xFF:
+                raise ValueError(f"trampoline byte at ${addr+i:04X} is not unused ROM ($FF)")
+
+    return addr
+
+
+def find_trampoline_address(rom_dir, rom_path=None, payload_len=MAX_TRAMPOLINE_PAYLOAD):
+    """Return a safe trampoline address right after the OVERRIDES segment end.
+
+    The trampoline payload (up to `payload_len` bytes; the T-mutants need up to 9) is placed
+    immediately after the OVERRIDES segment end so it never overlaps override code no matter how
+    the ROM layout changes.
+
+    Safety checks (the common check_trampoline_region):
+    - OVERRIDES segment end must be found in dev.map (End is inclusive: first free byte = End + 1).
+    - Address rounded up to a 2-byte boundary for JMP absolute targeting.
+    - Region start AND end must stay below the $F000 boundary.
+    - Region must not overlap OVERRIDES, BOOT or any other defined segment.
+    - Every payload byte must be unused ROM ($FF); a missing/unreadable ROM or bad map fails safe.
+    """
+    text = (rom_dir / "dev.map").read_text()  # unreadable map -> fail safe
+    segments = parse_dev_map_segments(text)
+    if "OVERRIDES" not in segments:
+        raise ValueError("OVERRIDES segment not found in dev.map")
+
+    ov = segments["OVERRIDES"]
+    # End is inclusive (last byte address): first free byte is End + 1.
+    addr = ov["end"] + 1
+    addr = (addr + 1) & ~1  # round up to next even address
+
+    if rom_path is not None:
+        if not rom_path.exists():
+            raise ValueError(f"ROM not found: {rom_path}")
+        rom_data = rom_path.read_bytes()  # unreadable ROM -> fail safe
+    else:
+        rom_data = None
+
+    return check_trampoline_region(segments, addr, payload_len, rom_data)
+
+
+def validate_trampoline_address(dev_map_text, rom_data=None, payload_len=MAX_TRAMPOLINE_PAYLOAD):
+    """Standalone validation used by negative test cases.
+
+    Reconstructs the trampoline address from dev.map and runs the same common safety
+    check as find_trampoline_address (no duplicated logic).
+    """
+    segments = parse_dev_map_segments(dev_map_text)
+    if "OVERRIDES" not in segments:
+        raise ValueError("OVERRIDES segment not found in dev.map")
+    ov = segments["OVERRIDES"]
+    addr = (ov["end"] + 1 + 1) & ~1  # End inclusive -> first free byte, rounded up
+    return check_trampoline_region(segments, addr, payload_len, rom_data)
 
 
 def guest_source(kind, sp, entry, sweep=None):
@@ -425,15 +542,21 @@ def find_unique(data, pattern, window, name):
     return hits[0]
 
 
-def mutants(data, window):
+def mutants(data, window, trampoline_addr):
     """name -> (patches [(file offset, bytes)], required error kinds, window extra, c). One edit each; the length and
     stack effect are kept except M5 (a lost PLA), which must be caught as a failed return."""
     f = lambda pat, name: find_unique(data, bytes.fromhex(pat), window, name)
     nop_block = lambda head, name: (lambda at: [(at + 5, b"\xEA" * data[at + 4])])(f(head, name))  # BPL n -> n NOPs
-    body_end = window[1] - 0xE000 - 1
-    if not window[1] < TRAMPOLINE < window[1] + 0x100 - 8:
-        raise ValueError("trampoline is outside the extended PC window")
-    jmp = lambda code: [(body_end, bytes([0x4C, TRAMPOLINE & 0xFF, TRAMPOLINE >> 8])), (TRAMPOLINE - 0xE000, code)]
+    # Place the JMP to the trampoline inside the routine body (just past its entry) so the
+    # trampoline (right after the OVERRIDES segment end) does not overlap the JMP's 3 bytes, and
+    # so the trampoline's RTS returns to the instruction after the JMP and the body can still
+    # reach its own RTS for a clean halt. body_end here is the JMP write offset inside the body.
+    body_end = window[0] - 0xE000 + 3
+    # The trampoline sits right after the OVERRIDES segment end; for the last override it equals
+    # window[1] (the first byte past the body), which is still inside the extended trace window.
+    if not window[0] <= trampoline_addr <= window[1]:
+        raise ValueError("trampoline is outside the routine's PC window")
+    jmp = lambda code: [(body_end, bytes([0x4C, trampoline_addr & 0xFF, trampoline_addr >> 8])), (trampoline_addr - 0xE000, code)]
     return {
         "M1_multiplicand_correction_NOP": (nop_block("BD0B2110", "M1"), {"product"}, 0, 0xFF),
         "M2_multiplier_correction_NOP": (nop_block("BD042110", "M2"), {"product"}, 0, 0xFF),
@@ -446,17 +569,17 @@ def mutants(data, window):
         "M9_correction_SBC_as_ADC": ([(f("FD0321", "M9"), b"\x7D")], {"product"}, 0, 0xFF),
         "M10_ROR_as_ROL": ([(f("7E0A21", "M10"), b"\x3E")], {"product"}, 0, 0xFF),
         # Value-neutral side effects the final RAM diff cannot see: the product, Y, P (PHP/PLP around the probe) and S stay correct.
-        "T1_same_value_zero_page_write": (jmp(bytes.fromhex("08" "A500" "8500" "28" "60")), {"trace"}, 0x100, 0x40),
-        "T2_write_and_restore_bss": (jmp(bytes.fromhex("08" "EE0023" "CE0023" "28" "60")), {"trace"}, 0x100, 0x40),
-        "T3_io_read": (jmp(bytes.fromhex("08" "AD0314" "28" "60")), {"trace"}, 0x100, 0x40),
-        "T4_same_value_stack_below_frame": (jmp(bytes.fromhex("08" "AD0021" "8D0021" "28" "60")), {"trace"}, 0x100, 0x40),
+        "T1_same_value_zero_page_write": (jmp(TRAMPOLINE_PAYLOADS[0]), {"trace"}, 0x100, 0x40),
+        "T2_write_and_restore_bss": (jmp(TRAMPOLINE_PAYLOADS[1]), {"trace"}, 0x100, 0x40),
+        "T3_io_read": (jmp(TRAMPOLINE_PAYLOADS[2]), {"trace"}, 0x100, 0x40),
+        "T4_same_value_stack_below_frame": (jmp(TRAMPOLINE_PAYLOADS[3]), {"trace"}, 0x100, 0x40),
         # c = $40: $2134 is the byte just below the routine's lowest push, $213C a JSR return byte, $2141 the first byte above the frame.
-        "T6_same_value_below_lowest_push": (jmp(bytes.fromhex("08" "AD3421" "8D3421" "28" "60")), {"trace"}, 0x100, 0x40),
-        "T7_same_value_jsr_return_byte": (jmp(bytes.fromhex("08" "AD3C21" "8D3C21" "28" "60")), {"trace"}, 0x100, 0x40),
-        "T8_same_value_above_frame": (jmp(bytes.fromhex("08" "AD4121" "8D4121" "28" "60")), {"trace"}, 0x100, 0x40),
-        "T9_same_value_jsr_return_low_byte": (jmp(bytes.fromhex("08" "AD3B21" "8D3B21" "28" "60")), {"trace"}, 0x100, 0x40),
-        "T10_bss_read": (jmp(bytes.fromhex("08" "AD0022" "28" "60")), {"trace"}, 0x100, 0x40),
-        "T5_mpr_change": (jmp(bytes.fromhex("08" "A9F8" "5304" "28" "60")), {"mpr"}, 0x100, 0x40),
+        "T6_same_value_below_lowest_push": (jmp(TRAMPOLINE_PAYLOADS[5]), {"trace"}, 0x100, 0x40),
+        "T7_same_value_jsr_return_byte": (jmp(TRAMPOLINE_PAYLOADS[6]), {"trace"}, 0x100, 0x40),
+        "T8_same_value_above_frame": (jmp(TRAMPOLINE_PAYLOADS[7]), {"trace"}, 0x100, 0x40),
+        "T9_same_value_jsr_return_low_byte": (jmp(TRAMPOLINE_PAYLOADS[8]), {"trace"}, 0x100, 0x40),
+        "T10_bss_read": (jmp(TRAMPOLINE_PAYLOADS[9]), {"trace"}, 0x100, 0x40),
+        "T5_mpr_change": (jmp(TRAMPOLINE_PAYLOADS[4]), {"mpr"}, 0x100, 0x40),
     }
 
 
@@ -498,6 +621,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix="pce-dev-mul16s-") as tmp:
         rig = Rig(data, args.rom.parent, Path(tmp))
         evidence["window"] = [f"${rig.window[0]:04X}", f"${rig.window[1]:04X}"]
+        trampoline_addr = find_trampoline_address(args.rom.parent, args.rom, payload_len=MAX_TRAMPOLINE_PAYLOAD)
+        evidence["trampoline"] = f"${trampoline_addr:04X}"
         jobs = jobs_for_default()
         calls = 0
 
@@ -524,7 +649,7 @@ def main():
         control, control_halt = rig.run_table(reduced, 0x40)
         if check("control", control, reduced, 0x40, control_halt):
             raise ValueError("unmutated control run failed")
-        plan = mutants(data, rig.window)
+        plan = mutants(data, rig.window, trampoline_addr)
 
         def do_mutant(item):
             name, (patches, required, extra, c) = item
@@ -535,8 +660,14 @@ def main():
             for name, required, run, errs in pool.map(do_mutant, plan.items()):
                 if not errs or not (set(errs) & required):
                     raise ValueError(f"mutant {name} was NOT rejected as {sorted(required)} (seen: {sorted(errs)})")
-                if name.startswith("T") and name != "T5_mpr_change" and set(errs) != {"trace"}:
-                    raise ValueError(f"{name}: a value-neutral side effect must be seen only by the trace, got {sorted(errs)}")
+                if name.startswith("T") and name != "T5_mpr_change":
+                    # A trace mutant is detected by the write/read trace; "halt" may accompany it
+                    # because the probe stops at the first trace violation before the guest reaches
+                    # its halt loop. Any other error kind (product/Y/P/S/mpr/ram) means the mutant
+                    # changed visible state beyond the trace, which is not value-neutral.
+                    trace_only = set(errs) - {"halt"}
+                    if trace_only != {"trace"}:
+                        raise ValueError(f"{name}: a value-neutral side effect must be seen only by the trace, got {sorted(errs)}")
                 evidence["mutants"].append({"mutant": name, "kinds": sorted(errs), "required": sorted(required),
                                             "first": next(iter(errs.values()))[0]})
         print(f"PASS mutants rejected {len(evidence['mutants'])}/{len(plan)}: "
