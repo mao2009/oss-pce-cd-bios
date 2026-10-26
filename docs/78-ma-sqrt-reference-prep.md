@@ -8,7 +8,7 @@
 
 | 区分 | 内容 | 根拠 |
 |---|---|---|
-| DEV 実装（確認済み） | `src/overrides/slot_44.s` は 16bit 符号なし入力に対し `floor(sqrt(n))` を返す独自ルーチン。入力 0..65535 の全数について、`slot_44.s` と同じ手順を書いた Python mirror を `math.isqrt` と照合済み（`slot_44.s` 自体の全数実行ではない）。実 ROM の確認は `tests/integration/geargrafx_dev_sqrt.py` によるサンプル検査（全数ではない） | `tests/host/test_ma_sqrt_dev.py`、`tests/integration/geargrafx_dev_sqrt.py`（PR #519） |
+| DEV 実装（全数は Python mirror のみ照合。実 ROM はサンプル検査のみ） | `src/overrides/slot_44.s` は 16bit 符号なし入力に対し `floor(sqrt(n))` を返す独自ルーチン。入力 0..65535 の全数について、`slot_44.s` と同じ手順を書いた Python mirror を `math.isqrt` と照合済み（`slot_44.s` 自体の全数実行ではない）。実 ROM の確認は `tests/integration/geargrafx_dev_sqrt.py` によるサンプル検査（全数ではない） | `tests/host/test_ma_sqrt_dev.py`、`tests/integration/geargrafx_dev_sqrt.py`（PR #519） |
 | 参照契約（未確認） | System Card の MA_SQRT の引数形式、丸め、戻り値配置、副作用は本リポジトリで確定していない | `spec/api_contracts.json` の slot 68 は `HYPOTHESIS` / 全 contract 項目 `UNKNOWN` / `NOT_RUN` |
 
 ホスト model が `isqrt` と一致しても証明するのは DEV 実装の正しさだけである。参照 ABI の仕様を証明するものではない。
@@ -24,7 +24,7 @@
 | 完全平方数 | 4, 16, 65025 などで正確な平方根を返す（明示テスト済み。全数検査は Python mirror 経由） | 参照側の完全平方数の扱いは未確認 |
 | 最大入力 | 65535 で 255 を返す（テスト済み）。trial は 9bit 以内 | 参照側で受け付ける最大値、範囲外入力の挙動は未確認 |
 | 出力配置 | A = 結果（0..255）、X = 0（ソース命令順序で確認。実行による確認ではない） | 参照側の結果配置（A のみ、X:A、メモリ格納の有無）は未確認 |
-| 副作用 | Y と P を保存して戻す。A と X は結果で上書き。ZP `$F7-$FF` のみ使用。I、MPR、I/O は触らない。スタックは呼び出し側 SP から 4 バイト以内 | 参照側の clobber、preserved、stack、MPR、RAM、IRQ への影響は未確認 |
+| 副作用 | Y と P を保存して戻す。A と X は結果で上書き。ZP `$F7-$FF` のみ使用。I、MPR、I/O は触らない。呼び出し側 SP が `$06` 以上の場合、スタックは呼び出し側 SP から 4 バイト以内（前提: 呼び出し側 SP >= `$06`） | 参照側の clobber、preserved、stack、MPR、RAM、IRQ への影響は未確認 |
 
 ## 3. UNKNOWN（参照側で未確定の事項）
 

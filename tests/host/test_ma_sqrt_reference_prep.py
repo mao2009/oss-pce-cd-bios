@@ -70,7 +70,8 @@ class MaSqrtReferencePrepTests(unittest.TestCase):
         # Whole-word match: "UNVERIFIED" must not count as VERIFIED.
         self.assertIsNone(re.search(r"\bVERIFIED\b", json.dumps(entry)))
 
-    def test_dev_output_placement_and_y_restore_ordering(self):
+    def test_dev_instruction_order_only(self):
+        """Source instruction order only (not execution, not A/X values)."""
         lines = SOURCE.read_text(encoding="utf-8").splitlines()
 
         def only(pattern):
