@@ -489,6 +489,16 @@ class EvidenceVerifierTests(unittest.TestCase):
     def test_duplicate_warm_record_is_refused(self):
         self.assert_refused(self.pair() + [record(temperature="warm", case=self.CASE)], "PAIR")
 
+    def test_duplicate_cold_record_is_refused(self):
+        self.assert_refused(self.pair() + [record(temperature="cold", case=self.CASE)], "PAIR")
+
+    def test_mixed_cases_one_missing_its_warm_record_is_refused(self):
+        self.assert_refused(self.pair() + [record(temperature="cold", case="other")], "PAIR")
+
+    def test_generator_input_is_refused_not_raised(self):
+        with self.assertRaisesRegex(g.Refused, "FIELDS"):
+            g.verify_evidence((item for item in self.pair()), **SYNTHETIC)
+
     def test_cold_and_warm_from_different_cases_are_not_a_pair(self):
         self.assert_refused([record(temperature="cold", case="a"), record(temperature="warm", case="b")], "PAIR")
 
@@ -507,7 +517,10 @@ class EvidenceVerifierTests(unittest.TestCase):
     def test_y_output_other_than_dev_version_is_refused(self):
         self.assert_refused(self.pair(warm_changes={"after": regs(state(), y=0x01)}), "OUTPUT")
 
-    def test_boundary_x_255_is_refused_not_raised(self):
+    def test_x_neighbour_of_dev_version_is_refused(self):
+        self.assert_refused(self.pair(warm_changes={"after": regs(state(), x=0x02)}), "OUTPUT")
+
+    def test_x_at_byte_maximum_is_refused_not_raised(self):
         self.assert_refused(self.pair(warm_changes={"after": regs(state(), x=0xFF)}), "OUTPUT")
 
     def test_a_not_preserved_is_refused(self):
@@ -532,7 +545,7 @@ class EvidenceVerifierTests(unittest.TestCase):
         self.assertEqual(version["system_card_comparison"], "BLOCKED")
         self.assertEqual(version["dev_x_y"], [3, 0])
 
-    def test_caller_source_facts_each_name_a_pinned_locator_and_no_callee_claim(self):
+    def test_caller_source_facts_have_well_formed_locators_and_no_callee_claim(self):
         facts = g.verify_evidence(self.pair(), **SYNTHETIC)["checklist"]["caller_source_facts"]
         self.assertEqual({f["id"] for f in facts}, {f["id"] for f in g.CALLER_SOURCE_FACTS})
         for fact in facts:

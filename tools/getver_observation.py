@@ -263,6 +263,8 @@ def verify_evidence(records, *, rom_sha256, entry, core_revision, harness_revisi
     vector, and an exact cold/warm after-state comparison. P is recorded, not asserted. Nothing here
     raises the ABI state above OBSERVED_SYNTHETIC or lifts the execution block.
     """
+    if not isinstance(records, list):  # a generator would be consumed by the loop and then fail later
+        raise Refused("FIELDS", f"records must be a list, got {type(records).__name__}")
     kwargs = dict(rom_sha256=rom_sha256, entry=entry, core_revision=core_revision,
                   harness_revision=harness_revision, step_budget=step_budget)
     cases = {}
