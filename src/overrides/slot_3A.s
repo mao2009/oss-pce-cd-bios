@@ -12,7 +12,7 @@
 ; from mapped code during the window. Ceiling: assumes no NMI can occur (PCE has none in use); add a
 ; guard if one is ever enabled.
 ; Stack: 5 bytes below the JMP target (P, Y, X, A, saved MPR1). No VBlank wait (timing not constrained).
-; N/Z after return are unspecified.
+; ok path: N/Z/V restored to entry values by PLP. ng path: N/Z from CPX (not a contract).
 .setcpu "huc6280"
 .segment "OVERRIDES"
 .export api_slot_3A
