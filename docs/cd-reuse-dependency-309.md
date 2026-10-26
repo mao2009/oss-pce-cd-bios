@@ -25,6 +25,7 @@
 | CD_EXEC（`$05`） | #14、#239 | UNKNOWN | 実行可能な callee 候補が無い。固定版で呼出側が見つからなかった（[ledger](cd-exec-contract-ledger.md) A1）。検索の網羅性は未検証。HuC `include/huc/cdrom.asm` の `_cd_execoverlay` はライセンス表示が無く、対象外（awaiting relicensing） |
 | CD_STAT（`$09`） | #18、#229 | spec-reference only | busy/ready 判定の呼出側形のみ（HuC `scsitest.asm`、Boost-1.0）。A=0 の判定は HYPOTHESIS、他の戻り値の意味は UNKNOWN（[cd-stat-contract](research/cd-stat-contract.md)） |
 | CD_BASE（`$02`） | #11 | spec-reference only | 外部候補に実装なし。座標系は UNKNOWN（[cd-base-abi-ledger](cd-base-abi-ledger.md)） |
+| CD_RESET（`$01`） | #10 | **未分類（UNKNOWN）** | 候補の調査は本 Issue で未実施。§3 の依存矢印の端点としてのみ参照 |
 | CD_SEEK、CD_PLAY、CD_SEARCH、CD_PAUSE、CD_SUBQ、CD_DINFO、CD_CONTNTS、CD_SUBRQ/CD_SUBRD、CD_PCMRD、CD_FADE | #13、#15〜#24 | **未分類（UNKNOWN）** | OSS 候補の調査は本 Issue で未実施。候補を #308 台帳に追加してから分類する |
 
 ### 2.1 候補ごとの分類
@@ -43,8 +44,8 @@
 | NeoCD-Libretro `src/hlebios.cpp` 他（`b1e04c73`） | 先頭に権利表示なし。ルート LICENSE.md は LGPL-3.0（既存記録） | awaiting relicensing | ファイル単位の権利者が不明。NEO-GEO の HLE で PCE の参照価値も低い |
 | STUM 2025 の番地表（二次資料） | CC BY-NC-SA 4.0（既存記録） | rejected（NC）。番地は未照合のため参照しない | NC 条件。本体番地は未照合 |
 | Geargrafx（`b49ae82a`、テスト用の外部実行系） | GPL-3.0（既存記録） | rejected（コード）／外部実行のみ | ROM・リポジトリへ取り込まない。外部プロセスとして検証に使うのみ |
-| MAME `pce_cd.cpp`（既存記録 BSD-3、ファイル単位） | 全体は GPL。ファイル単位のライセンスは **未検証**（commit・hash は未計算、[L-19](oss-candidate-ledger.md)） | UNKNOWN（未検証のため保留） | 検証前は分類を確定しない。参照するなら仕様の事実のみ |
-| cc65 runtime `udiv.s` 等（zlib 系、#308 L-16） | zlib 系（既存記録） | 対象外（CD API ではない） | ビルド依存の話。CD API の portable 候補にはしない |
+| MAME `pce_cd.cpp`（既存記録 BSD-3、ファイル単位） | 全体は GPL。ファイル単位のライセンスは **未検証**（commit・hash は未計算、[L-19](oss-candidate-ledger.md)） | rejected（コード）／spec-reference only（事実のみ） | [L-19](oss-candidate-ledger.md) と同じ扱い。全体が GPL のため、コードは取り込まない。ファイル単位のライセンスは未検証のため、仕様の事実の参照に限る |
+| cc65 runtime `udiv.s` 等（zlib 系、#308 L-16） | zlib 系（既存記録） | 本表の分類外（CD API ではない） | ビルド依存の話。CD API の portable 候補にはしない |
 
 portable に分類された候補は **0 件**。permissive なライセンス（ISC、MIT、Boost）のものも、ABI 未確定または技術的な不適合により採用しない。
 
