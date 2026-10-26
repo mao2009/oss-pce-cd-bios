@@ -552,10 +552,9 @@ def mutants(data, window, trampoline_addr):
     # so the trampoline's RTS returns to the instruction after the JMP and the body can still
     # reach its own RTS for a clean halt. body_end here is the JMP write offset inside the body.
     body_end = window[0] - 0xE000 + 3
-    # The trampoline sits right after the OVERRIDES segment end, rounded up to even, so it can be one
-    # byte past the body end. Only the T-mutants jump there, and they trace with extra window 0x100.
-    # Require the whole payload to fall inside that traced range.
-    if not (window[0] <= trampoline_addr and trampoline_addr + MAX_TRAMPOLINE_PAYLOAD <= window[1] + 0x100):
+    # The trampoline sits right after the OVERRIDES segment end; for the last override it equals
+    # window[1] (the first byte past the body), which is still inside the extended trace window.
+    if not window[0] <= trampoline_addr <= window[1]:
         raise ValueError("trampoline is outside the routine's PC window")
     jmp = lambda code: [(body_end, bytes([0x4C, trampoline_addr & 0xFF, trampoline_addr >> 8])), (trampoline_addr - 0xE000, code)]
     return {
