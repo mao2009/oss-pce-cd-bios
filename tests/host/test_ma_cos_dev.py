@@ -137,5 +137,62 @@ class DevCosModelTests(unittest.TestCase):
         self.assertNotIn("sta $01", source)
 
 
+# --- Cross-identity with the MA_SIN contract (Issue #79, PR #522) -----------------------------
+# A copy of the MA_SIN DEV reference (scale 127, truncation, quarter-wave table T[q]), kept here
+# because #522 is a separate PR. It is NOT imported from that branch.
+#   SIN127(a) = trunc(127 * sin(2*pi*a/256)), T[q] = trunc(127*sin(pi/2*q/64)), q = 0..64.
+SIN_T = [int(127 * math.sin(math.pi / 2 * q / 64)) for q in range(65)]
+
+
+def sin127_ref(k):
+    """Copy of the MA_SIN reference: quadrant folding of the truncated 127-scale table."""
+    r = k & 63
+    q = k >> 6
+    return (SIN_T[r], SIN_T[64 - r], -SIN_T[r], -SIN_T[64 - r])[q]
+
+
+def sin_q15(k):
+    """MA_SIN value re-expressed on the MA_COS Q15 scale with MA_COS's rounding (round half up)."""
+    return math.floor(32767 * math.sin(2 * math.pi * k / 256) + 0.5)
+
+
+def sign(v):
+    return (v > 0) - (v < 0)
+
+
+class CrossIdentityTests(unittest.TestCase):
+    def test_sin_copy_matches_its_own_definition(self):
+        """The SIN copy equals trunc(127*sin(2*pi*a/256)) for all 256 angles (oracle, no table)."""
+        for a in range(256):
+            self.assertEqual(sin127_ref(a), int(127 * math.sin(2 * math.pi * a / 256)), a)
+
+    def test_identity_points(self):
+        """COS(a) == SIN(a+64) at 0, 64, 128, 192 (Q15 scale, same rounding)."""
+        for a in (0, 64, 128, 192):
+            self.assertEqual(dev_cos(a), sin_q15((a + 64) % 256), a)
+        self.assertEqual([dev_cos(a) for a in (0, 64, 128, 192)], [32767, 0, -32767, 0])
+
+    def test_identity_all_256(self):
+        """COS(a) == SIN((a+64) mod 256) for every angle, on the Q15 scale with the same rounding."""
+        bad = [a for a in range(256) if dev_cos(a) != sin_q15((a + 64) % 256)]
+        self.assertEqual(bad, [])
+
+    def test_sign_rule_matches_sin(self):
+        """Sign of COS(a) equals sign of the SIN copy at (a+64) mod 256, for all 256 angles."""
+        for a in range(256):
+            self.assertEqual(sign(dev_cos(a)), sign(sin127_ref((a + 64) % 256)), a)
+
+    def test_rounding_divergence_is_recorded(self):
+        """KNOWN MISMATCH (reported, not changed): MA_SIN truncates at scale 127, MA_COS rounds at Q15.
+        At scale 127, trunc(127*cos) agrees with the SIN copy at all 256 angles, while round(127*cos)
+        disagrees at 144 angles. The count is pinned so a change in either rounding rule is caught."""
+        trunc_mismatch = [a for a in range(256)
+                          if int(127 * math.cos(2 * math.pi * a / 256)) != sin127_ref((a + 64) % 256)]
+        round_mismatch = [a for a in range(256)
+                          if math.floor(127 * math.cos(2 * math.pi * a / 256) + 0.5) != sin127_ref((a + 64) % 256)]
+        self.assertEqual(trunc_mismatch, [])
+        self.assertEqual(len(round_mismatch), 144)
+
+
 if __name__ == "__main__":
     unittest.main()
