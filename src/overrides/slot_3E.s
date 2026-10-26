@@ -13,8 +13,9 @@
 ; Preserved: X and Y in both operations. Output flags: N/Z reflect A after next; C is
 ;   modified by the shifts (unspecified); D and I are not changed.
 ; Stack: next pushes X (1 byte) plus the JSR return; seed uses no stack.
-; Uses: work RAM $2000-$2001 only (MPR1 must map work RAM $F8, as for the stack). No I/O.
-;   The routine does not check that MPR1 maps RAM. The real-core test sets MPR1 = $F8.
+; Uses: work RAM $2000-$2001 plus the stack page (next pushes X). No I/O.
+;   MPR1 must map work RAM ($F8); the routine does not check this. No real-core test exists yet.
+;   Until one is recorded, the assembled bytes are UNTESTED; the host test models the contract only.
 ; ABI remains UNVERIFIED and this ROM stays DEV ONLY (release_eligible: false).
 .setcpu "huc6280"
 .segment "OVERRIDES"

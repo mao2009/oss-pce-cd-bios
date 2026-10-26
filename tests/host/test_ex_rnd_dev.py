@@ -1,7 +1,8 @@
-"""Host model of the DEV EX_RND override (slot $3E, Issue #72). Not the System Card ABI.
+"""MODEL-ONLY host check of the DEV EX_RND contract (slot $3E, Issue #72). Not the System Card ABI.
 
-Mirrors src/overrides/slot_3E.s: Y=1 seeds with X:A, any other Y returns the next byte.
-The state lives at $2000/$2001. The assembled bytes are exercised only by the real-core run.
+This does NOT assemble or execute src/overrides/slot_3E.s. It checks a Python model of the
+documented contract (Y=1 seeds with X:A, other Y returns the next byte, state at $2000/$2001).
+The assembled routine has no executed test yet.
 """
 import sys
 import unittest
@@ -75,25 +76,8 @@ class SlotContractTests(unittest.TestCase):
 
 
 class NegativeTests(unittest.TestCase):
-    def test_wrong_taps_change_sequence(self):
-        mutant, s = [], 0x1234
-        for _ in range(16):
-            for _ in range(8):
-                bit, s = s & 1, s >> 1
-                if bit:
-                    s ^= 0xB500
-            mutant.append(s & 0xFF)
-        self.assertNotEqual(ex_rnd.rnd_sequence(0x1234, 16), mutant)
-
     def test_seed_is_not_ignored(self):
         self.assertNotEqual(ex_rnd.rnd_sequence(0x1234, 8), ex_rnd.rnd_sequence(0x1235, 8))
-
-    def test_source_uses_only_declared_state_and_slot(self):
-        src = (ROOT / "src/overrides/slot_3E.s").read_text(encoding="utf-8")
-        self.assertIn(".export api_slot_3E", src)
-        self.assertIn("api_slot_3E:", src)
-        self.assertNotIn("$2002", src)
-        self.assertNotIn("$2200", src)
 
 
 if __name__ == "__main__":

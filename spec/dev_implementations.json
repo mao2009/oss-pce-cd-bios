@@ -1045,7 +1045,7 @@
         "approved_by": null,
         "review_ref": null
       },
-      "note": "DEV ROM implemented; real-core run NOT_RUN until recorded; NOT_READY until owner approval is recorded"
+      "note": "host_evidence is a Python model of the contract only; the assembled slot_3E.s is NOT executed by any test yet (real-core NOT_RUN/BLOCKED: no cc65 here). NOT_READY until owner approval is recorded"
     },
     {
       "id": 63,
