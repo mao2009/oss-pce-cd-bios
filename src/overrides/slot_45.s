@@ -1,68 +1,97 @@
 ; MA_SIN — slot $45, candidate entry $E0CF. DEV ROM only (Issue #79).
 ;
 ; Project-own routine, NOT the reference System Card MA_SIN ABI (remains UNVERIFIED).
-; DEV-only contract:
-;   angle unit : binary angle, 256 units per full turn (1 unit = 360/256 degrees).
-;                Every 8-bit value 0..255 is valid; the angle is taken modulo 256.
-;   in         : A = angle. X and Y are not inputs.
-;   out        : A = sin(angle) as signed 8-bit fixed point, scale 127:
-;                value = trunc(127 * sin(2*pi*angle/256)), range -127..+127.
-;                Angles 0..127 give 0..+127 (positive half-turn), 128..255 give
-;                0..-127 (negative half-turn). -128 is never produced.
-;   kept       : X, Y and P (caller's values restored: X by PLX, P by PLP).
-;   clobbered  : A (the result).
-;   uses       : zero page $F7-$F8 only. No I/O, no MPR access, I is never changed.
-;   stack      : JSR pushes 2 bytes, then php and phx push 2 more: the lowest
-;                write is caller_SP - 3. Precondition: caller SP (before JSR) >= $04,
-;                so no stack write wraps below $0100. Balanced on return.
+; Sine by a 65-entry quarter-wave table of Q15 values, with quadrant folding.
+;
+;   in : A = angle (unsigned 8-bit binary angle; 256 steps = one full turn,
+;        step = 360/256 degrees). X is not read. Every value 0..255 is valid.
+;   out: X:A = sin(2*pi*A/256) as signed 16-bit Q15, value = round(32767 * sin(...)),
+;        range -32767..+32767. X = high byte, A = low byte. No -32768 is produced.
+;        Rounding: floor(x + 0.5), the same rule as MA_COS (slot $46, Issue #80).
+;   kept: Y and P (restored by PLY and PLP)
+;   clobbered: A and X (the result)
+;   uses: zero page $F7, $F9, $FA only. No I/O, no MPR access, I is never changed.
+;   precondition: caller SP (before JSR) >= $06 (same as slot $44 and $46): the routine
+;                 pushes php and phy, so the minimum SP is caller_SP - 4.
 ;   ABI remains UNVERIFIED and this ROM stays DEV ONLY (release_eligible: false).
 ;
-; Method: quarter-wave table T[q] = trunc(127 * sin(pi/2 * q / 64)), q = 0..64.
-;   quadrant = angle >> 6 (bits 7-6), r = angle & 63
-;   quadrant 0: +T[r]      quadrant 1: +T[64 - r]
-;   quadrant 2: -T[r]      quadrant 3: -T[64 - r]
-;   (T[64 - r] = cos(pi/2 * r / 64), so the odd quadrants are the mirror of the even ones.)
+; Quadrant folding (a = A, r = a & 63, quadrant q = a >> 6):
+;   q=0: sin =  T[r]          q=1: sin =  T[64-r]
+;   q=2: sin = -T[r]          q=3: sin = -T[64-r]
+;   T[i] = round(32767 * sin(pi/2 * i / 64)), i = 0..64 (T[0]=0, T[64]=32767).
+;   Negative for q=2,3 (bit 7 of a). Boundaries: a=0 -> 0, a=64 -> 32767,
+;   a=128 -> 0, a=192 -> -32767.
+;   Identity: sin(a) = cos((a - 64) mod 256), checked by tests/host/test_ma_sin_dev.py.
 ;
 ; Zero-page layout:
-;   $F7  angle    (input, kept for the sign test)
-;   $F8  r        (angle & 63)
+;   $F7  a        input angle (kept for the sign test)
+;   $F9  r        a & 63; after the table index is chosen, reused as the high byte
+;                 of the negated value (scratch)
+;   $FA  lo       low byte of the negated value (scratch)
+;
+; Stack usage: JSR pushes 2 return bytes; the routine pushes php and phy and pops them
+; before rts. Maximum stack depth is caller_SP - 4.
 ;
 .setcpu "huc6280"
 .segment "OVERRIDES"
 .export api_slot_45
 api_slot_45:
     php                 ; save caller's P
-    cld                 ; binary mode (table lookup and negation are plain binary)
-    phx                 ; save caller's X
-    sta $F7             ; angle
-    and #$3F            ; A = r = angle & 63
-    sta $F8             ; r
+    cld                 ; binary arithmetic (negation uses SBC)
+    phy                 ; save caller's Y
+    sta $F7             ; a = A
+    and #$3F
+    sta $F9             ; r = a & 63
     lda $F7
-    and #$40            ; odd quadrant (1 or 3) when bit 6 is set
-    beq use_r
-    lda #64
+    and #$40            ; quadrant bit 6 (odd quadrant when set)
+    beq idx_even
+    lda #64             ; odd quadrant: index = 64 - r
     sec
-    sbc $F8             ; A = 64 - r  (1..64)
-    bra have_index
-use_r:
-    lda $F8             ; A = r  (0..63)
-have_index:
-    tax
-    lda sin_quarter,x   ; A = T[index], 0..127
-    bit $F7             ; N = angle bit 7 (negative half-turn)
+    sbc $F9
+    bra idx_done
+idx_even:
+    lda $F9             ; even quadrant: index = r
+idx_done:
+    tay                 ; Y = table index 0..64
+    lda sin_lo,y
+    ldx sin_hi,y        ; X:A = T[index] (non-negative)
+    bit $F7             ; N = bit 7 of a (negative half-turn)
     bpl done
-    eor #$FF            ; two's complement negation: A = -T[index]
-    inc a
+    sta $FA             ; negate X:A: 0 - (X:A) with borrow
+    stx $F9
+    sec
+    lda #0
+    sbc $FA
+    sta $FA
+    lda #0
+    sbc $F9
+    sta $F9
+    lda $FA
+    ldx $F9
 done:
-    plx                 ; restore caller's X
-    plp                 ; restore caller's P
-    rts
+    ply                 ; Y = caller's Y
+    plp                 ; P = caller's P
+    rts                 ; RTS pops JSR return address; SP balanced to caller
 
-; T[q] = trunc(127 * sin(pi/2 * q / 64)), q = 0..64 (65 bytes, generated and checked by
-; tests/host/test_ma_sin_dev.py against an independent math.sin oracle).
-sin_quarter:
-    .byte   0,  3,  6,  9, 12, 15, 18, 21, 24, 27, 30, 33, 36
-    .byte  39, 42, 45, 48, 51, 54, 57, 59, 62, 65, 67, 70, 73
-    .byte  75, 78, 80, 82, 85, 87, 89, 91, 94, 96, 98,100,102
-    .byte 103,105,107,108,110,112,113,114,116,117,118,119,120
-    .byte 121,122,123,123,124,125,125,126,126,126,126,126,127
+; Q15 quarter-wave table, T[i] for i = 0..64: low bytes (sin_lo), then high bytes (sin_hi).
+; Generated from floor(32767*sin(pi/2*i/64)+0.5) and checked by tests/host/test_ma_sin_dev.py.
+sin_lo:
+    .byte $00, $24, $48, $6A, $8C, $AB, $C8, $E2
+    .byte $F9, $0B, $1A, $23, $28, $26, $1F, $11
+    .byte $FB, $DF, $BA, $8C, $56, $17, $CE, $7A
+    .byte $1C, $B4, $3F, $BF, $33, $9B, $F5, $42
+    .byte $82, $B3, $D7, $EB, $F1, $E8, $CF, $A6
+    .byte $6D, $23, $C9, $5E, $E2, $54, $B5, $04
+    .byte $41, $6B, $84, $89, $7C, $5C, $29, $E3
+    .byte $89, $1D, $9C, $09, $61, $A6, $D8, $F5
+    .byte $FF
+sin_hi:
+    .byte $00, $03, $06, $09, $0C, $0F, $12, $15
+    .byte $18, $1C, $1F, $22, $25, $28, $2B, $2E
+    .byte $30, $33, $36, $39, $3C, $3F, $41, $44
+    .byte $47, $49, $4C, $4E, $51, $53, $55, $58
+    .byte $5A, $5C, $5E, $60, $62, $64, $66, $68
+    .byte $6A, $6C, $6D, $6F, $70, $72, $73, $75
+    .byte $76, $77, $78, $79, $7A, $7B, $7C, $7C
+    .byte $7D, $7E, $7E, $7F, $7F, $7F, $7F, $7F
+    .byte $7F
