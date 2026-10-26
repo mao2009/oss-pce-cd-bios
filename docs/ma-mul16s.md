@@ -78,3 +78,43 @@ host の結果は実装の正しさを示さない（アセンブルされたバ
 - 実コア試験の「SP」は呼出側 SP（4 回の PHA の前）。入口 S = 呼出側 SP - 6 なので、入口 S `$08` / `$F9` は呼出側 SP `$0E` / `$FF`。
 - 副作用の検証は最終 RAM 差分に加え、コアの CPU アドレスブレークポイントでルーチン自身の命令（PC 窓）による書込み・読出しを命令単位で監視する（同値書込み・書いて戻す操作も検出）。許可: 自身の push 6 バイト（呼出側 SP-11..SP-6）とフレーム 4 バイト（SP-3..SP）のみ書込可。JSR 戻り番地 2 バイトを含むそれ以外のスタック・ZP・BSS・I/O・ROM への書込み、ZP・BSS・I/O・自フレーム外スタックの読出しは違反。MPR0〜7 は全命令後に比較。
 - 手動の大規模試験: `make dev-mul16s-sweep`（乗数 65,536 値 × 被乗数 6 値、被乗数 65,536 値 × 乗数 6 値、呼出側 SP `$FF` と `$0E`、計 1,572,864 呼出）。CI の `make dev-integration` には境界値・EDGES・符号組合せ・P フラグ全 64 組・固定シード乱数・変異試験を組み込む。
+
+## ABI-VERIFIED 準備（Issue #89、準備のみ）
+
+- 基準: main `ec496e9`。本節は準備の記録であり、参照 BIOS の callee は実行していない（JSR なし）。VERIFIED は 0/81 のまま。`spec/api_contracts.json`、`spec/dev_implementations.json`、`release_eligible`、`VERIFIED_PATH_ENABLED`、JSR ゲート、承認欄は変更しない。
+- DEV ROM の出力は参照契約ではない。
+
+### System Card 版の対応（明確ではない）
+
+| 根拠 | 観測 | 扱い |
+| --- | --- | --- |
+| HuCC `include/hucc/pcengine.inc`（`54f5c736`） | equates は `$4C` まで。`$4D–$50` の equate なし | `$4F` 名の裏付けなし |
+| Hu-Go `bios.c` selector 定義 | `$4F` に MA_MUL16S | HLE モデル。実行アドレスの証明ではない |
+| `spec/api_contracts.json` slot 79 | arguments / returns / clobbered / flags などすべて UNKNOWN、entry `$E0ED` は HYPOTHESIS | 参照契約は未確定 |
+| Issue #89 | 「Candidate System Card 3.0 ABI」、provenance PENDING | 版の特定は未完了。`$50` の名称衝突も未解決 |
+
+結論: 版対応は明確ではない。VERIFIED 昇格の BLOCKED 条件に含める。
+
+### host 側の準備（この PR）
+
+- 符号付き 16×16 → 32-bit の境界値は `tests/host/test_ma_mul16s_model.py` の既存表を使う。
+- `tests/host/test_ma_mul16s_dev.py` の `DevMul16sSensitivityTests`:
+  - 変異感度: `dev_mul16s(a, b, mut=...)` が 1 か所だけ誤らせる 8 変異を、EDGES 組合せ 256 組と seed 89 の乱数 2000 組で評価する。
+  - 適用確認: 各変異は原型と異なる出力を少なくとも 1 組で出すことを検査する。
+  - 等価変異の除外: 当初の `ror_first_no_carry_in`（ループ先頭の上位 ROR の C 入力を 0 にする）は、先頭反復の C が常に 0 のため適用不能（等価）。除外し、低位ワード ROR の C 入力 0 化（`ror_lo_no_carry_in`）に置き換えた。
+  - 静的ガード: `src/overrides/slot_4F.s` の全メモリオペランド（`#imm` と `A` を除く）が `$2101..$210C,X` の内側にあり、ZP・BSS・I/O・MPR・フレーム外スタックを触れないことを検査する。
+- 結果（2256 組）: 原型の不一致 0。変異 7 種はすべて適用され、差が出た組はすべて検出された（`no_a_fix` 1091、`no_b_fix` 1133、`hi_sbc_ignores_borrow` 1019、`lo_sbc_no_carry` 1683、`adc_hi_no_carry` 1815、`ror_lo_no_carry_in` 2183、`fix_uses_final_multiplier` 1096、`rounds_15` 2232）。未検出の感度ギャップはなし。
+- 手順: 先に新テストを書き、変異フックのない状態で RED（`TypeError: unexpected keyword 'mut'`）を確認した。その後フックを入れて GREEN（`tests.host.test_ma_mul16s_dev` 8 件 OK）。原型一致と静的ガードは既存コードへの回帰ガードのため、RED を経ずに最初から GREEN になった。
+
+### UNKNOWN（未確定、本 PR では検証しない）
+
+- 参照 BIOS の引数、戻り値、フラグ、RAM 副作用、MPR、IRQ、エラー: UNKNOWN（参照 callee を実行していないため）。
+- T=1 での挙動、PHP の T push、PLP による T の設定: UNKNOWN / NOT_RUN（契約外）。
+- 実コアでの変異試験（`tests/integration/geargrafx_dev_mul16s.py` の変異群）: NOT_RUN（この PR では Geargrafx を実行していない）。
+- 版対応（上表）: UNKNOWN。
+
+### BLOCKED 条件
+
+- System Card の版と `$4F` 名について、承認済みの一次根拠（HuCC、Zeograd、Stum などの証拠と人間の承認）が得られない。
+- 参照 BIOS の実行に必要な承認、ROM の SHA-256 固定、独立エミュレータ検証のいずれかが欠ける。
+- 上記のいずれかが満たされるまで、slot `$4F` を VERIFIED または DEV_CALLABLE にしない。
