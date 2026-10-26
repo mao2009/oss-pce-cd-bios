@@ -20,11 +20,11 @@
 
 | API（slot） | Issue | 分類 | 主な根拠 |
 | --- | --- | --- | --- |
-| CD_BOOT（`$00`） | #9、#289 | spec-reference only | callee 実装候補なし。宣言名のみ（HuC `pcengine.inc`、Boost-1.0 表示）。入口の意味は UNKNOWN、戻りは HYPOTHESIS（呼出側由来）（[cd-boot-contract](research/cd-boot-contract.md)） |
+| CD_BOOT（`$00`） | #9、#289 | UNKNOWN | callee 実装候補なし。宣言名のみ（HuC `pcengine.inc`、Boost-1.0 表示）。入口の意味は UNKNOWN、戻りは HYPOTHESIS（呼出側由来）（[cd-boot-contract](research/cd-boot-contract.md)） |
 | CD_READ（`$03`） | #12、#148、#188、#189 | spec-reference only（転送層は awaiting relicensing） | 呼出側ラッパ（HuCC `hucc-systemcard.asm`）は参照のみ。SCSI 層（HuC elmer `cdrom.asm`）は派生元 Hudson の権利が不明 → awaiting relicensing |
 | CD_EXEC（`$05`） | #14、#239 | UNKNOWN | 実行可能な callee 候補が無い。固定版で呼出側が見つからなかった（[ledger](cd-exec-contract-ledger.md) A1）。検索の網羅性は未検証。HuC `include/huc/cdrom.asm` の `_cd_execoverlay` はライセンス表示が無く、対象外（awaiting relicensing） |
 | CD_STAT（`$09`） | #18、#229 | spec-reference only | busy/ready 判定の呼出側形のみ（HuC `scsitest.asm`、Boost-1.0）。A=0 の判定は HYPOTHESIS、他の戻り値の意味は UNKNOWN（[cd-stat-contract](research/cd-stat-contract.md)） |
-| CD_BASE（`$02`） | #11 | spec-reference only | 外部候補に実装なし。座標系は UNKNOWN（[cd-base-abi-ledger](cd-base-abi-ledger.md)） |
+| CD_BASE（`$02`） | #11 | UNKNOWN | 外部候補に実装なし。座標系は UNKNOWN（[cd-base-abi-ledger](cd-base-abi-ledger.md)） |
 | CD_RESET（`$01`） | #10 | **未分類（UNKNOWN）** | 候補の調査は本 Issue で未実施。§3 の依存矢印の端点としてのみ参照 |
 | CD_SEEK、CD_PLAY、CD_SEARCH、CD_PAUSE、CD_SUBQ、CD_DINFO、CD_CONTNTS、CD_SUBRQ/CD_SUBRD、CD_PCMRD、CD_FADE | #13、#15〜#24 | **未分類（UNKNOWN）** | OSS 候補の調査は本 Issue で未実施。候補を #308 台帳に追加してから分類する |
 
@@ -44,7 +44,7 @@
 | NeoCD-Libretro `src/hlebios.cpp` 他（`b1e04c73`） | 先頭に権利表示なし。ルート LICENSE.md は LGPL-3.0（既存記録） | awaiting relicensing | ファイル単位の権利者が不明。NEO-GEO の HLE で PCE の参照価値も低い |
 | STUM 2025 の番地表（二次資料） | CC BY-NC-SA 4.0（既存記録） | rejected（NC）。番地は未照合のため参照しない | NC 条件。本体番地は未照合 |
 | Geargrafx（`b49ae82a`、テスト用の外部実行系） | GPL-3.0（既存記録） | rejected（コード）／外部実行のみ | ROM・リポジトリへ取り込まない。外部プロセスとして検証に使うのみ |
-| MAME `pce_cd.cpp`（既存記録 BSD-3、ファイル単位） | 全体は GPL。ファイル単位のライセンスは **未検証**（commit・hash は未計算、[L-19](oss-candidate-ledger.md)） | rejected（コード）／spec-reference only（事実のみ） | [L-19](oss-candidate-ledger.md) と同じ扱い。全体が GPL のため、コードは取り込まない。ファイル単位のライセンスは未検証のため、仕様の事実の参照に限る |
+| MAME `pce_cd.cpp`（既存記録 BSD-3、ファイル単位） | 全体は GPL。ファイル単位のライセンスは **未検証**（commit・hash は未計算、[L-19](oss-candidate-ledger.md)） | rejected（コード）。仕様の事実のみの参照は REFERENCE_ONLY（disposition PENDING） | 出典: [L-19](oss-candidate-ledger.md)、r3、cd-oss-survey の既存記録。全体が GPL のためコードは取り込まない。ファイル単位のライセンスは未検証であり、参照は事実に限り、人間の確定を待つ |
 | cc65 runtime `udiv.s` 等（zlib 系、#308 L-16） | zlib 系（既存記録） | 本表の分類外（CD API ではない） | ビルド依存の話。CD API の portable 候補にはしない |
 
 portable に分類された候補は **0 件**。permissive なライセンス（ISC、MIT、Boost）のものも、ABI 未確定または技術的な不適合により採用しない。
@@ -121,6 +121,7 @@ E8b について、[cd-media-state](cd-media-state.md) の対照実験（Geargra
 | --- | --- | --- |
 | 今回再取得（pinned SHA、`gh api`） | PASS | HuC `LICENSE` の冒頭（「much of this collection」の全文）、elmer `cdrom.asm` 冒頭 8・14・16 行、Hu-Go! `COPYING` の `EXCEPTED` 文言 |
 | 既存記録の引用（pcecd.c、nugget、NeoCD、ares、MAME、STUM） | NOT_RUN（再取得なし） | #308 台帳・#422 の記録を引用。本書では再取得していない |
+| 再取得の記録（修正版で再実施、pinned SHA、`gh api`） | PASS | HuC `LICENSE`（`54f5c736`）: 「therefore next to impossible to make an exact statement on the legal status of much of this collection of software」。elmer `cdrom.asm`（`54f5c736`）: 8 行「derived from Hudson's original fast CD code」、14 行「Modifications copyright John Brandwood 2022.」、16 行「Distributed under the Boost Software License, Version 1.0.」。Hu-Go! `COPYING`（`64ed226d`）: 4 行「EXCEPTED」、6 行「content of the file pcecd.c」 |
 | Issue の状態（#173、#188、#189、#365〜#367） | PASS | 2026-10-26 に `gh issue view` で確認。すべて OPEN |
 | 依存マップの矢印 | 出典あり／HYPOTHESIS を §3 に明記 | 出典ありの矢印のみ引用先の文言と照合 |
 | 相対リンク解決（外部 URL を除く） | PASS | 2026-10-26 に grep と存在確認で実施 |
