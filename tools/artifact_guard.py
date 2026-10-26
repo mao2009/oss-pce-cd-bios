@@ -1861,8 +1861,10 @@ def _key_parts(workflow, where, step, runs_on):
     return (workflow, where, None if name is None else str(name), None if shell is None else str(shell), runs_on)
 
 
-def _run_digest(run):
-    return hashlib.sha256(run.encode("utf-8")).hexdigest()
+def _step_digest(step):
+    """The approval digest of a whole step: run text AND every other key (if, continue-on-error, timeout-minutes, env...).
+    A step whose run is approved but whose other keys changed is therefore not approved."""
+    return hashlib.sha256(json.dumps(step, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")).hexdigest()
 
 
 def load_run_allowlist(root):
@@ -1896,12 +1898,12 @@ def build_run_allowlist(root):
                 if isinstance(step, dict) and isinstance(step.get("run"), str):
                     workflow_, job, name, shell, runs = _key_parts(label, where, step, runs_on)
                     entries.append({"workflow": workflow_, "job": job, "step": name, "shell": shell, "runs_on": runs,
-                                    "sha256": _run_digest(step["run"])})
+                                    "sha256": _step_digest(step)})
     return sorted(entries, key=lambda entry: json.dumps(entry, sort_keys=True))
 
 
-def _run_approved(workflow, where, step, runs_on, run):
-    return _run_digest(run) in _RUN_ALLOWLIST.get(_key_parts(workflow, where, step, runs_on), set())
+def _run_approved(workflow, where, step, runs_on):
+    return _step_digest(step) in _RUN_ALLOWLIST.get(_key_parts(workflow, where, step, runs_on), set())
 
 
 def policy_violations(root, trusted_root):
@@ -1964,7 +1966,7 @@ def _step_problems(workflow, where, step, runs_on=""):
         if windows and isinstance(run, str) and step.get("shell") != "bash":
             problems.append(f"{workflow}: {where} step {name!r} run: has no shell: bash in a job that may run on Windows "
                             "(the default there is PowerShell; refused, Issue #511)")
-        if _RUN_ALLOWLIST is not None and isinstance(run, str) and not _run_approved(workflow, where, step, runs_on, run):
+        if _RUN_ALLOWLIST is not None and isinstance(run, str) and not _run_approved(workflow, where, step, runs_on):
             problems.append(f"{workflow}: {where} step {name!r} run: text is not an approved exact match for this workflow, "
                             "job, step, shell and runs-on (refused; unregistered or changed, Issue #511)")
     return problems
@@ -2047,6 +2049,8 @@ def scope_key_violations(text, workflow):
     - a workflow whose jobs: is not a mapping, a job that is not a mapping, and a steps: that is not a list (fail closed).
     Applies to every workflow and composite action file, with or without an upload step. A file that cannot be parsed is
     refused here too (round 14), not only by yaml_integrity_violations."""
+    if re.search(r"""^\s*(?:-\s+)?["']?<<["']?\s*:""", text, re.M):   # Issue #511: a merge key can hide a run: from the approval
+        return [f"{workflow}: a YAML merge key (<<:) is refused; it can hide a run: the approval does not see (Issue #511)"]
     try:
         import yaml
     except ImportError:

