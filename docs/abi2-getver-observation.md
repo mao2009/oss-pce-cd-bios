@@ -95,6 +95,7 @@ ROM 不一致、入口不一致、未承認の参照実行、不正な MPR 変�
 - 証拠が 0 件なら `pairs = NOT_RUN` とし、合格とは扱わない。
 - 戻り値は `checklist`、`abi_status`（`reference_abi_verified` は常に 0）、`execution`（常に `BLOCKED`）。
 - 呼び出し元の SOURCE_FACT は `CALLER_SOURCE_FACTS` に、取得元の所在（`huc:include/hucc/...` の行番号）付きで置く。呼び出し側の記述であり、BIOS の挙動ではない。
+- 行番号は `spec/api_contracts.json` の記載に従う。このチェックアウトでは huc の本文を確認していないため、実在と内容は未検証である（検証器は形式のみを検査する）。
 - `CALLER_MAJOR_IN_X`：呼び出し側は X を 3 と比較する（`core-stage1.asm` 94-99 行）。
 - `CALLER_TXA_SAY`：呼び出し側は X:A を TXA/SAY で Y:A に変換する（`hucc-systemcard.asm` 72-79 行）。
 
