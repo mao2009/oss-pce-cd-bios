@@ -149,6 +149,7 @@ class DevSinModelTests(unittest.TestCase):
         body = source.split("api_slot_45:", 1)[1].split("; T[q] = trunc", 1)[0]
         self.assertTrue(body.lstrip().startswith("php"))
         self.assertIn("plx", body)
+        self.assertIn("plp", body)
         self.assertTrue(body.rstrip().endswith("rts"))
 
 
