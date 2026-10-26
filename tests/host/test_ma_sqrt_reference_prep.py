@@ -53,9 +53,11 @@ class MaSqrtReferencePrepTests(unittest.TestCase):
     def test_doc_reports_exhaustive_check_as_python_mirror(self):
         text = DOC.read_text(encoding="utf-8")
         self.assertIn("Python mirror", text)
-        for line in text.splitlines():
-            if "65,536" in line:
-                self.assertIn("mirror", line, "exhaustive check must be attributed to the Python mirror")
+        # The exhaustive-range line must exist (non-vacuous) and name the mirror.
+        exhaustive = [line for line in text.splitlines() if "0..65535" in line and "全数" in line]
+        self.assertEqual(len(exhaustive), 1, "exhaustive-range statement missing or duplicated")
+        self.assertIn("Python mirror", exhaustive[0])
+        self.assertIn("slot_44.s` 自体の全数実行ではない", exhaustive[0])
 
     def test_reference_contract_stays_unverified(self):
         entry = _ma_sqrt_entry()
