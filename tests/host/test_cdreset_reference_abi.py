@@ -4,7 +4,6 @@ Synthetic records only. No emulator, no reference BIOS, no JSR. The JSR gate is 
 real-source record must be NOT_RUN + BLOCKED; the open-gate branch is exercised with a patched gate
 to prove the classification logic (falsifiability), never as evidence.
 """
-import copy
 import unittest
 from unittest import mock
 
@@ -52,6 +51,21 @@ class ContractTests(unittest.TestCase):
 
 
 class GateAndSourceTests(unittest.TestCase):
+    def test_gate_closed_reason_reports_refusal_and_none_when_open(self):
+        self.assertTrue(M.gate_closed_reason().startswith("BLOCKED"))
+        with mock.patch.object(M, "require_allowed", side_effect=M.GateRefused("refused-x")):
+            self.assertEqual(M.gate_closed_reason(), "refused-x")
+        with OPEN_GATE:
+            self.assertIsNone(M.gate_closed_reason())
+
+    def test_unknown_top_level_key_is_rejected(self):
+        with self.assertRaises(ValueError):
+            M.validate(record(extra_field=1))
+
+    def test_classify_is_private_so_no_public_path_skips_the_gate(self):
+        self.assertFalse(hasattr(M, "classify"))
+        self.assertTrue(hasattr(M, "_classify"))
+
     def test_real_record_is_not_run_and_blocked_while_gate_is_closed(self):
         for media in M.MEDIA:
             with self.subTest(media=media):
@@ -73,12 +87,12 @@ class ClassificationTests(unittest.TestCase):
         with OPEN_GATE:
             for media in M.MEDIA:
                 with self.subTest(media=media):
-                    self.assertEqual(M.judge(record(media=media)), ("RUN", "OBSERVED", "returned"))
+                    self.assertEqual(M.judge(record(media=media)), ("EVALUATED", "OBSERVED", "returned"))
 
     def test_bounded_timeout_is_observed_as_timeout(self):
         with OPEN_GATE:
             self.assertEqual(M.judge(record(media="absent", returned=False, polls=100)),
-                             ("RUN", "OBSERVED", "timeout"))
+                             ("EVALUATED", "OBSERVED", "timeout"))
             self.assertEqual(M.judge(record(returned=False, polls=40))[2], "not_returned")
 
     def test_budget_overrun_and_wrong_entry_fail(self):

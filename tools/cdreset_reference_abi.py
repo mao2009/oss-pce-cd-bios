@@ -67,6 +67,9 @@ def validate(record: dict) -> None:
     missing = [key for key in REQUIRED if key not in record]
     if missing:
         raise ValueError(f"reference record missing {missing}")
+    unknown = sorted(set(record) - set(REQUIRED))
+    if unknown:
+        raise ValueError(f"reference record has unknown keys {unknown}")
     for key in ("source", "core_revision", "slot", "media"):
         if not isinstance(record[key], str):
             raise ValueError(f"{key} must be a string")
@@ -101,8 +104,8 @@ def state_changes(record: dict) -> dict:
             "ram": changed_ram}
 
 
-def classify(record: dict) -> tuple[str, str]:
-    """Return (verdict, reason) for a validated record, assuming the gate has been checked open.
+def _classify(record: dict) -> tuple[str, str]:
+    """Return (verdict, reason) for a validated record. Private: callers must go through judge(), which checks the gate.
 
     Verdicts: OBSERVED (outcome recorded, no pass defined), FAIL (structural), SKIP, BLOCKED.
     """
@@ -138,5 +141,6 @@ def judge(record: dict) -> tuple[str, str, str]:
         return "NOT_RUN", "SKIP", "non_real_source"
     if gate_closed_reason() is not None:
         return "NOT_RUN", "BLOCKED", "gate_closed"
-    verdict, reason = classify(record)
-    return "RUN", verdict, reason
+    # "EVALUATED" = classification only; it does not mean the callee ran (execution is NOT_RUN while the gate is closed).
+    verdict, reason = _classify(record)
+    return "EVALUATED", verdict, reason
