@@ -139,23 +139,44 @@ class DevMul16sSensitivityTests(unittest.TestCase):
         # Static guard on slot_4F.s: every memory operand (not #imm, not A) is $21xx,X inside the 6-push frame
         # ($2101..$210C), so no zero page, BSS, I/O, MPR or out-of-frame stack byte is touched.
         body = (ROOT / "src" / "overrides" / "slot_4F.s").read_text(encoding="utf-8").split(".export api_slot_4F")[1]
-        operands = []
-        for line in body.splitlines():
-            code = line.split(";")[0].strip()
-            parts = code.split(None, 1)
-            if len(parts) == 2 and parts[0] not in ("tsx", "php", "phy", "pha", "plp", "ply", "pla", "rts", "cld"):
-                operands.append((parts[0], parts[1].strip()))
-        self.assertTrue(operands)
-        touched = set()
-        for mnem, op in operands:
-            if op.startswith("#") or op == "a" or mnem.startswith("b"):
-                continue
-            m = re.fullmatch(r"\$(21[0-9A-F]{2}),x", op)
-            self.assertIsNotNone(m, f"{mnem} {op} is outside the stack frame form $21xx,X")
-            addr = int(m.group(1), 16)
-            self.assertTrue(0x2101 <= addr <= 0x210C, f"{mnem} {op} outside $2101..$210C")
-            touched.add(addr)
+        violations, touched = frame_violations(body)
+        self.assertEqual([], violations)
+        self.assertTrue(touched)
         self.assertTrue(touched <= set(range(0x2101, 0x210D)), touched)
+
+    def test_guard_rejects_a_zero_page_bit_operand(self):
+        # Negative control: BIT with a memory operand (not a branch) must be caught by the guard.
+        violations, _ = frame_violations("api_slot_4F:\n    bit $2000\n    rts\n")
+        self.assertTrue(any("bit $2000" in v for v in violations), violations)
+
+    def test_guard_rejects_an_out_of_frame_stack_store(self):
+        violations, _ = frame_violations("    sta $2100,x\n")
+        self.assertTrue(violations)
+
+
+BRANCH_MNEMONICS = frozenset({"bcc", "bcs", "beq", "bmi", "bne", "bpl", "bra", "bvc", "bvs"})
+NO_OPERAND_OR_STACK = frozenset({"tsx", "php", "phy", "pha", "plp", "ply", "pla", "rts", "cld", "clc", "sec", "dey"})
+
+
+def frame_violations(body):
+    """Memory operands outside $2101..$210C,X, and the set of frame addresses touched (not #imm, not A, not a branch)."""
+    violations, touched = [], set()
+    for line in body.splitlines():
+        parts = line.split(";")[0].strip().split(None, 1)
+        if len(parts) != 2 or parts[0] in NO_OPERAND_OR_STACK or parts[0] in BRANCH_MNEMONICS:
+            continue
+        mnem, op = parts[0], parts[1].strip()
+        if op.startswith("#") or op == "a":
+            continue
+        m = re.fullmatch(r"\$(21[0-9A-F]{2}),x", op)
+        if m is None:
+            violations.append(f"{mnem} {op} is outside the stack frame form $21xx,X")
+            continue
+        addr = int(m.group(1), 16)
+        if not 0x2101 <= addr <= 0x210C:
+            violations.append(f"{mnem} {op} outside $2101..$210C")
+        touched.add(addr)
+    return violations, touched
 
 
 if __name__ == "__main__":
