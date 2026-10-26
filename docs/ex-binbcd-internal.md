@@ -20,6 +20,7 @@ unpacked BCD（1 桁 1 バイト。例: 10 → `01 00`）は提供しない。pa
 - ホストテスト（`make test` の対象）: `tests/host/test_ex_binbcd.py`。確認するのは次の 3 点だけで、**アセンブルしたルーチンは実行しない**。
   - Python モデル `tools/ex_binbcd.py` の `binbcd_packed` が 0, 9, 10, 99, 100, 255 で期待値を返すこと、0..99 全値の桁妥当性、packed（10 → 1 バイト `$10`）と unpacked（`01 00`）の区別、バイト範囲外入力の拒否。
   - プローブ ROM のバイト固定: `CMP #100`（`C9 64`）、`ADC #$10`（`69 10`）、リセットベクタ。ルーチンのアセンブルが通り、これらのバイトが期待位置にあることだけを見る。
+- V06 ホストテスト: `tests/host/test_ex_binbcd_v06.py`（フィクスチャ `tests/fixtures/ex-binbcd-v06-vectors.json`）。0..255 全入力の A/X/Y/C を十進文字列の独立オラクルと照合し、I/T/D の保持を確認する。メモリ・SP の副作用は実行していないため検証していない。ソースの静的検査は命令テキストの確認のみ。
 - 既知の限界: ループ論理を変えても `ADC #$10` と `CMP #100` のバイトが変わらなければ `make test` は通る。これを検出できるのは下記の実コア照合のみ。
 - 振る舞いの検証（実コア、opt-in）: `tests/integration/geargrafx_ex_binbcd.py`（Linux、環境変数 `TOOLS_DIR` が必須）。`make test` には含まれない。共有ターゲット `routine-real-core`（PR #331）が実行する。#331 は本 PR の**後**にマージする。HuCARD プローブ `tests/fixtures/ex_binbcd_probe.s` が 0..255 全入力で A/P/X を RAM に記録し、ホストモデルと照合する。`ADC #$10` を `ADC #$20` に変えた変異 ROM が不一致になることも確認する。Geargrafx の結果は実機の挙動を証明しない。**本 PR 自体は実コア PASS を主張しない**（実コア結果は #331 側で実行・記録する）。
 - 履歴の注記: 本ブランチの commit `03c8485` はホストテストファイルを空にした壊れた中間 commit で、`5b0ed2c` が復元する。73f8fe2 との正味差分はテスト 2 行のみ。履歴は書き換えない。

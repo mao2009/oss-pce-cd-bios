@@ -22,13 +22,14 @@ def binbcd_packed(value):
     return (value // 10) << 4 | value % 10, 0
 
 
-def binbcd_call(a, x, y, p, sp, memory=None):
-    """Return (A, X, Y, P, SP) after the project contract; X/Y/SP/memory are never changed.
+def binbcd_call(a, x, y, p):
+    """Return (A, X, Y, P) after the project contract; X and Y are never changed.
 
-    C is set from the range check; N/Z/V are unspecified and kept as entered. No memory is written.
+    C is set from the range check; N/Z/V are unspecified and kept as entered.
+    Memory and SP are not modelled here: they are checked only by the static source test.
     """
     packed, carry = binbcd_packed(a)
-    return packed, x, y, (p & ~0x01) | carry, sp
+    return packed, x, y, (p & ~0x01) | carry
 
 
 def build_probe(output):
