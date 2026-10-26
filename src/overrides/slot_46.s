@@ -7,7 +7,7 @@
 ;        step = 360/256 degrees). X is not read. Every value 0..255 is valid.
 ;   out: X:A = cos(2*pi*A/256) as signed 16-bit Q15, value = round(32767 * cos(...)),
 ;        range -32767..+32767 (X high byte, A low byte). No -32768 is produced.
-;   kept: Y and P (PHY/PLY and PHP/PLP; B is not a stored flag)
+;   kept: Y and P (restored by PLY and PLP)
 ;   clobbered: A and X (the result)
 ;   uses: zero page $F7-$FA only. No I/O, no MPR access, I is never changed.
 ;   precondition: caller SP (before JSR) >= $06 (same as MA_SQRT slot $44): the routine
@@ -24,9 +24,9 @@
 ; Zero-page layout:
 ;   $F7  k      input angle index
 ;   $F8  sign   bit 7 set = negate the table value
-;   $F9  r      k & 63
+;   $F9  r      k & 63; after the table index is chosen, reused as the high byte
+;                of the negated value (scratch)
 ;   $FA  lo     low byte of the negated value (scratch)
-;   $FB  hi     high byte of the negated value (scratch)
 ;
 ; Stack usage: JSR pushes 2 return bytes; the routine pushes php and phy and pops them
 ; before rts. Maximum stack depth is caller_SP - 4.
@@ -61,16 +61,16 @@ idx_done:
     bit $F8             ; N = sign flag
     bpl done
     sta $FA             ; negate X:A: 0 - (X:A) with borrow
-    stx $FB
+    stx $F9
     sec
     lda #0
     sbc $FA
     sta $FA
     lda #0
-    sbc $FB
-    sta $FB
+    sbc $F9
+    sta $F9
     lda $FA
-    ldx $FB
+    ldx $F9
 done:
     ply                 ; Y = caller's Y
     plp                 ; P = caller's P

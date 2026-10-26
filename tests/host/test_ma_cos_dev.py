@@ -125,7 +125,14 @@ class DevCosModelTests(unittest.TestCase):
         self.assertIn("api_slot_46:", source)
         self.assertIn("MA_COS", source)
         self.assertIn("Issue #80", source)
-        self.assertIn("$F7", source)
+        # Every zero-page operand in an instruction must be in $F7-$FA (immediates excluded).
+        code_lines = [line.split(";", 1)[0] for line in source.splitlines()
+                      if line.split(";", 1)[0].startswith("    ")
+                      and not line.split(";", 1)[0].strip().startswith(".")]
+        operands = set()
+        for line in code_lines:
+            operands.update(re.findall(r"(?<![#\w])\$([0-9A-Fa-f]{2})\b", line))
+        self.assertTrue(operands <= {"F7", "F8", "F9", "FA"}, operands)
         self.assertNotIn("sta $00", source)
         self.assertNotIn("sta $01", source)
 
