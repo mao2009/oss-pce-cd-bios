@@ -108,7 +108,7 @@ class StepEnvironmentRefused(unittest.TestCase):
         self.assert_refused(workflow(steps="      - run: export 'PATH=/tmp/evil:$PATH'; python3 x.py\n"), 'PATH')
 
     def test_run_names_that_contain_path_are_not_refused(self):
-        for run in ('MY_PATH=/x make', 'PYTHONPATH=/x make', 'GOPATH=/x go build', 'echo PATHS=1'):
+        for run in ('MY_PATH=/x make', 'PYTHONPATH=/x make', 'GOPATH=/x make','echo PATHS=1'):
             self.assertIsNone(placement_refuses(CI, workflow(steps=f'      - run: {run}\n')), run)
 
     def test_composite_action_step_env_refused(self):

