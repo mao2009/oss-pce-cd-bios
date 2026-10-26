@@ -130,7 +130,7 @@ def source_problems(text):
     bad = [s for s in stores if s.upper() not in allowed]
     if bad:
         problems.append(f"stores outside zero page $F7/$F9/$FA: {bad}")
-    if re.search(r"\b(stz|inc|dec)\s+\S+", body, re.I):
+    if re.search(r"\b(stz|inc|dec)\s+\S+", code_text, re.I):
         problems.append("read-modify-write to memory in the body")
     return problems
 
@@ -197,7 +197,7 @@ class DevSinModelTests(unittest.TestCase):
         """Half-turn antisymmetry sin(a+128) == -sin(a); odd symmetry sin(-a) == -sin(a)."""
         for a in range(256):
             self.assertEqual(dev_sin((a + 128) & 0xFF), -dev_sin(a), a)
-            self.assertEqual(dev_sin((256 - a) & 0xFF), -dev_sin(a) if a not in (0, 128) else dev_sin(a), a)
+            self.assertEqual(dev_sin((256 - a) & 0xFF), -dev_sin(a), a)  # odd symmetry, incl. a=0 and a=128
         for a in range(128, 256):
             self.assertLessEqual(dev_sin(a), 0, a)
         for a in range(0, 129):
@@ -207,7 +207,7 @@ class DevSinModelTests(unittest.TestCase):
         """One period is 256 units: the 8-bit input wraps (a and a+256 give the same output)."""
         for a in range(256):
             self.assertEqual(dev_sin(a), dev_sin(a & 0xFF), a)
-            self.assertEqual(dev_sin(a), oracle_sin(a % 256), a)
+            self.assertEqual(oracle_sin(a + 256), dev_sin(a), a)  # the oracle itself has period 256
 
     def test_identity_sin_equals_cos_shifted(self):
         """SIN(a) == COS((a - 64) mod 256), with COS from a copy of the PR #527 reference."""

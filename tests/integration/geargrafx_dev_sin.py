@@ -147,6 +147,8 @@ def main():
         try:
             check("sin-table-mutant", cold_m, halt_m, work_m)
         except ValueError as error:
+            if "angles wrong" not in str(error):
+                raise ValueError(f"table mutant failed for an unrelated reason: {error}") from error
             evidence["negative_cases"].append({"case": "sin_lo[10] flipped", "rejected": True, "reason": str(error)})
         else:
             raise ValueError("table mutant (sin_lo[10] flipped) passed the real-core check")
