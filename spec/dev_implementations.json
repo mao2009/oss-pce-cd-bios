@@ -1040,12 +1040,14 @@
       "host_evidence": [
         "tests/host/test_ex_rnd_dev.py"
       ],
-      "real_core_evidence": [],
+      "real_core_evidence": [
+        "tests/integration/geargrafx_dev_ex_rnd.py"
+      ],
       "approval": {
         "approved_by": null,
         "review_ref": null
       },
-      "note": "host_evidence is a Python model of the contract only; the assembled slot_3E.s is NOT executed by any test yet (real-core NOT_RUN/BLOCKED: no cc65 here). NOT_READY until owner approval is recorded"
+      "note": "real-core PASS on pinned Geargrafx b49ae82 (debug DEV ROM, sha256 3504cd01...): zero-RAM, seed $0000/$1234/$A5C3 runs, X/Y preservation, SP=$06 boundary, state RAM; DEV-only, NOT_READY until owner approval is recorded"
     },
     {
       "id": 63,
