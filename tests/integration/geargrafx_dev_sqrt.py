@@ -207,12 +207,16 @@ def main():
         # P flag preservation negative: break the `plp` that restores the caller's P
         # (the `plp; rts` at the end of the slot $44 body). Without PLP, P after the call
         # reflects post-ply flags rather than the entry P, so C/I/D/V/N/Z preservation fails.
+        # The body ends with `ply; plp; rts` (7A 28 60). Take the FIRST match after the body start:
+        # the next override (slot $46 MA_COS) also ends in plp; rts, so a last-match search would
+        # mutate the wrong routine (Issue #80 CI regression).
         plp_rts = None
-        for i in range(code_at, min(code_at + 0x100, len(data) - 1)):
-            if data[i] == 0x28 and data[i + 1] == 0x60:
-                plp_rts = i
+        for i in range(code_at, min(code_at + 0x100, len(data) - 2)):
+            if data[i] == 0x7A and data[i + 1] == 0x28 and data[i + 2] == 0x60:
+                plp_rts = i + 1
+                break
         if plp_rts is None:
-            raise ValueError("slot $44 body end (plp; rts) not found")
+            raise ValueError("slot $44 body end (ply; plp; rts) not found")
         pmutant = bytearray(data)
         pmutant[plp_rts] = 0xEA  # plp -> nop: P not restored
         prejected = 0
