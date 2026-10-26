@@ -12,7 +12,7 @@
 | 候補名 | MA_MUL16U |
 | スロット | `$41`（候補エントリ `0xE0C3` は HYPOTHESIS） |
 | DEV 実装 | `src/overrides/slot_41.s` |
-| ホストモデル | `tools/ma_mul16u_abi_model.py`（DEV のシフト加算とは別経路の部分積和） |
+| ホストモデル | `tools/ma_mul16u_abi_model.py`（DEV のシフト加算と別の累積経路。部分積の和に繰り上がりを明示。同じ分解に基づく） |
 | ホスト試験 | `tests/host/test_ma_mul16u_abi_prep.py` |
 
 ## DEV 契約（プロジェクト独自、参照ではない）
@@ -27,12 +27,12 @@
 
 ## 検証内容
 
-| 観点 | 手段 | 結果 |
+| 観点 | 手段 | 対応テスト |
 | --- | --- | --- |
-| 32-bit 形式とバイト順 | 最大積、小さい積のバイト列を固定値で照合 | RED の後 GREEN |
-| 繰り上がり境界 | `$8000*2`、`$00FF*$0101`、`$0100*$0100` | RED の後 GREEN |
-| 独立経路との一致 | 境界値 11 種の全組合せを `m*q` と照合 | RED の後 GREEN |
-| 書き込み範囲 | `slot_41.s` の絶対書き込み先が `$2100-$21FF` 内であることを静的確認 | RED の後 GREEN |
+| 32-bit 形式とバイト順 | 最大積、小さい積のバイト列を固定値で照合 | `test_max_product_is_fffe0001_little_endian`、`test_byte_order_of_small_product` |
+| 繰り上がり境界 | `$8000*2`、`$00FF*$0101`、`$0100*$0100` | `test_carry_into_high_word` |
+| 境界値との一致 | 境界値 11 種の全組合せを `m*q` と照合（モデル純粋関数のみ） | `test_model_matches_plain_product_on_sampled_pairs` |
+| 書き込み範囲 | `slot_41.s` の書き込みニーモニックの基底オペランドが `$2100-$21FF` 内であることを静的確認。実効アドレス（`+X`）と SP 前提 `$04..$F9` は未検証 | `test_routine_writes_only_stack_page` |
 
 既存の `tests/host/test_ma_mul16u_dev.py`（全 multiplier を 12 被乗数で走査）は DEV 実装の並列モデルであり、本書の検証はそれを補うもので置き換えない。
 
@@ -52,5 +52,5 @@
 
 ## 結論
 
-DEV 契約の 32-bit 形式、バイト順、繰り上がり、最大積、clobber 範囲は独立ホストモデルで固定した。
+DEV 契約の 32-bit 形式、バイト順、繰り上がり、最大積は、ホストモデルの純粋関数として固定した。書き込み先は基底オペランドで静的に確認した。A/X の clobber、Y/P の保持、スタック使用の実動作は、ホストモデルの範囲外であり、実コア試験（本準備では未実行）でのみ確認できる。このため本準備では実動作の保持と clobber を主張しない。
 参照 ABI は UNKNOWN のままで、VERIFIED や DEV_CALLABLE の主張は行わない。マージ推奨は、ホスト試験の GREEN と独立レビューの承認が揃った時点で、ドラフトのまま判断を仰ぐ。

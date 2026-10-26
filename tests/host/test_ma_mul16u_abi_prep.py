@@ -59,7 +59,10 @@ class Mul16uAbiModelTests(unittest.TestCase):
         """メモリ破壊の範囲: 絶対書き込み先は $21xx（スタック）のみで、ZP（$00-$FF）へ書かない。"""
         source = SLOT_41.read_text(encoding="utf-8")
         code = [line.split(";", 1)[0] for line in source.splitlines()]
-        writes = re.compile(r"^\s*(sta|stz|ror|rol|inc|dec|asl|lsr|adc|sbc|ora|and|eor|trb|tsb)\s+(\$[0-9A-Fa-f]+)")
+        writes = re.compile(
+            r"^\s*(sta|stx|sty|stz|st0|st1|st2|ror|rol|inc|dec|asl|lsr|adc|sbc|ora|and|eor|trb|tsb|smb\d|rmb\d|tia|tii|tdd|tin|tai)\s+(\$[0-9A-Fa-f]+)",
+            re.IGNORECASE,
+        )
         operands = []
         for line in code:
             m = writes.match(line)
@@ -71,7 +74,8 @@ class Mul16uAbiModelTests(unittest.TestCase):
             self.assertGreaterEqual(addr, 0x2100, op)
             self.assertLessEqual(addr, 0x21FF, op)
 
-    def test_routine_does_not_touch_zero_page_or_fixed_ram_by_name(self):
+    def test_source_declares_no_zero_page_storage(self):
+        """弱い確認: ZP 宣言の不在のみ。実際の ZP 書き込みは test_routine_writes_only_stack_page が見る。"""
         source = SLOT_41.read_text(encoding="utf-8")
         self.assertNotIn(".zeropage", source)
         self.assertNotIn("ma_mul16u_zp", source)
