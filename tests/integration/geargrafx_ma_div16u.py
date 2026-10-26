@@ -26,11 +26,8 @@ sys.path.insert(0, str(ROOT / "tools"))
 from environment import DEPENDENCIES, core_path, executable  # noqa: E402
 from geargrafx_smoke import GameInfo, SystemInfo  # noqa: E402
 
-# (n, d) in the same order as the harness edge tables
-EDGES = [(0x0000, 0x0001), (0x0001, 0x0001), (0x0000, 0x0000), (0x0001, 0x0000), (0xFFFF, 0x0000),
-         (0xFFFF, 0x0001), (0xFFFF, 0xFFFF), (0xFFFE, 0xFFFF), (0xFFFF, 0xFFFE), (0x8000, 0x0002),
-         (0x7FFF, 0x0002), (0x1000, 0x0003), (0x1234, 0x0100), (0xFFFF, 0x0100), (0x0100, 0xFFFF),
-         (0x00FF, 0x0100), (0xFFFF, 0x8001), (0x8000, 0x8000), (0xFF01, 0xFFFF), (0xABCD, 0x1234)]
+# (n, d) in the same order as the harness edge tables; the table is shared with the core-free oracle tests
+from ma_div16u_model import EDGE_PAIRS as EDGES  # noqa: E402
 RANDOM_PAIRS = 65536
 
 
