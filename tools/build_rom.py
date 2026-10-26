@@ -75,7 +75,7 @@ def _dev_override_list() -> str:
     names = {
         0x1E: "EX_GETVER", 0x3C: "EX_BINBCD", 0x3D: "EX_BCDBIN",
         0x3F: "MA_MUL8U", 0x40: "MA_MUL8S", 0x41: "MA_MUL16U",
-        0x42: "MA_DIV16S", 0x43: "MA_DIV16U", 0x44: "MA_SQRT",
+        0x42: "MA_DIV16S", 0x43: "MA_DIV16U", 0x44: "MA_SQRT", 0x45: "MA_SIN",
         0x4F: "MA_MUL16S",
     }
     parts = []

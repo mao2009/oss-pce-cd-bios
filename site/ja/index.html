@@ -42,7 +42,7 @@
       "url": "https://github.com/mao2009/oss-pce-cd-bios",
       "codeRepository": "https://github.com/mao2009/oss-pce-cd-bios",
       "license": "https://github.com/mao2009/oss-pce-cd-bios/blob/main/LICENSE",
-      "description": "Development-only open-source replacement for the PC Engine / TurboGrafx-CD Super System Card 3.0 BIOS. Ten DEV-only implemented slots (EX_GETVER, EX_BINBCD, EX_BCDBIN, MA_MUL8U, MA_MUL8S, MA_MUL16U, MA_DIV16S, MA_DIV16U, MA_SQRT, MA_MUL16S; none approved or ABI-verified); 71 nonreturning stub slots; full ABI and commercial compatibility unverified.",
+      "description": "Development-only open-source replacement for the PC Engine / TurboGrafx-CD Super System Card 3.0 BIOS. Eleven DEV-only implemented slots (EX_GETVER, EX_BINBCD, EX_BCDBIN, MA_MUL8U, MA_MUL8S, MA_MUL16U, MA_DIV16S, MA_DIV16U, MA_SQRT, MA_SIN, MA_MUL16S; none approved or ABI-verified); 70 nonreturning stub slots; full ABI and commercial compatibility unverified.",
       "programmingLanguage": "Assembly",
       "keywords": [
         "PC Engine",
@@ -116,7 +116,7 @@
               <div><b>0x1E</b> EX_GETVER → X=3 / Y=0</div>
               <div><b>0x43</b> MA_DIV16U / DEV only</div>
               <div><b>CORE</b> Geargrafx / cold + warm</div>
-              <div><b>71</b> remaining stub slots</div>
+              <div><b>70</b> remaining stub slots</div>
             </div>
             <div class="terminal-foot"><span>ABI: UNVERIFIED</span><strong>RELEASE: BLOCKED</strong></div>
           </div>
@@ -145,13 +145,13 @@
           <div class="section-heading">
             <p class="eyebrow">02 / 進捗</p>
             <h2 id="progress-title">「動いた」の根拠を、はっきりさせる。</h2>
-            <p class="section-intro"><a href="https://github.com/mao2009/oss-pce-cd-bios/commit/f90c16b6ca7b3cd6f0ee66935aa08d43c329628d">2026-10-22 main（f90c16b）</a> のスナップショットです。MA_MUL16S DEV実装は <a href="https://github.com/mao2009/oss-pce-cd-bios/pull/495">#495</a>（Issue <a href="https://github.com/mao2009/oss-pce-cd-bios/issues/494">#494</a>）でマージ済みです。このPRブランチではDEV実装済みスロットが10件（mainのスナップショット時は9件）。いずれも純正ABIの検証済みではなく、オーナー承認もありません。市販ゲームの起動実績はまだありません。</p>
+            <p class="section-intro"><a href="https://github.com/mao2009/oss-pce-cd-bios/commit/f90c16b6ca7b3cd6f0ee66935aa08d43c329628d">2026-10-22 main（f90c16b）</a> のスナップショットです。MA_MUL16S DEV実装は <a href="https://github.com/mao2009/oss-pce-cd-bios/pull/495">#495</a>（Issue <a href="https://github.com/mao2009/oss-pce-cd-bios/issues/494">#494</a>）でマージ済みです。このPRブランチ（Issue #79、PR #522）ではDEV実装済みスロットが11件（mainのスナップショット時は9件）。いずれも純正ABIの検証済みではなく、オーナー承認もありません。市販ゲームの起動実績はまだありません。</p>
           </div>
           <a href="https://github.com/mao2009/oss-pce-cd-bios/blob/main/docs/status.md">詳しい進捗 ↗</a>
         </div>
         <div class="stats" aria-label="プロジェクトの実績">
-          <div class="stat"><div class="stat-value"><span>10</span> / 81</div><div class="stat-label">DEV実装済みスロット数（承認なし・ABI未検証）</div></div>
-          <div class="stat"><div class="stat-value">71</div><div class="stat-label">未実装の非復帰スタブが残るスロット数</div></div>
+          <div class="stat"><div class="stat-value"><span>11</span> / 81</div><div class="stat-label">DEV実装済みスロット数（承認なし・ABI未検証）</div></div>
+          <div class="stat"><div class="stat-value">70</div><div class="stat-label">未実装の非復帰スタブが残るスロット数</div></div>
           <div class="stat"><div class="stat-value">0</div><div class="stat-label">BIOS経由で起動を検証できたCDプログラム数（この時点）</div></div>
         </div>
         <div class="milestones" aria-label="検証段階ごとのロードマップ">
@@ -160,7 +160,7 @@
           <article class="milestone"><div class="milestone-tag">M2 / 未達成</div><h3>自作CDプログラム起動</h3><p>合成CDからRAMへコードを読み込み実行できていますが、BIOSの起動・サービス経路を通したものではありません。</p></article>
           <article class="milestone"><div class="milestone-tag">M3 / 未検証</div><h3>市販ゲームとの互換性</h3><p>市販ゲームの起動、別エミュレータとの照合、実機での互換性はまだ確認できていません。</p></article>
         </div>
-        <p class="progress-note"><strong>重要：</strong>DEV実装9/81（main f90c16b）、10/81（Issue #78 PRブランチ）、オーナー承認DEV_CALLABLE 0、純正ABI VERIFIED 0/81、純正JSR許可0/81。全81件の準備状態はNOT_READYで、互換BIOSリリースもBLOCKEDです。</p>
+        <p class="progress-note"><strong>重要：</strong>DEV実装9/81（main f90c16b）、11/81（Issue #79 PRブランチ、PR #522）、オーナー承認DEV_CALLABLE 0、純正ABI VERIFIED 0/81、純正JSR許可0/81。全81件の準備状態はNOT_READYで、互換BIOSリリースもBLOCKEDです。</p>
         <p class="progress-note"><strong>2026-10-22にマージ：</strong><a href="https://github.com/mao2009/oss-pce-cd-bios/pull/480">MA_DIV16U DEV実装</a>、<a href="https://github.com/mao2009/oss-pce-cd-bios/pull/481">合成スタック実験</a>、<a href="https://github.com/mao2009/oss-pce-cd-bios/pull/475">#475</a>（EX_GETVER観測スキーマ）、<a href="https://github.com/mao2009/oss-pce-cd-bios/pull/477">#477</a>（81件の静的トリアージ台帳。ABI検証ではありません）。<a href="https://github.com/mao2009/oss-pce-cd-bios/pull/502">#502</a>はDEV専用の内部起動経路で、CIへの配線は<a href="https://github.com/mao2009/oss-pce-cd-bios/pull/506">#506</a>です。ただしBIOSの起動サービスではありません。MPR1=$FFの違反を入口ガードで検出しても、JSRのpush等で先にVDCへ副作用が出るため、<a href="https://github.com/mao2009/oss-pce-cd-bios/issues/473">#473</a>・#459・#367は未解除です。参照ROMのSHA同一性（<a href="https://github.com/mao2009/oss-pce-cd-bios/issues/476">#476</a>）も未確定。<em>真・女神転生</em>は今後のGeargrafx検証対象であり、起動済みではありません。</p>
         <p class="progress-note"><strong>2026-10-20 の更新：</strong><a href="https://github.com/mao2009/oss-pce-cd-bios/pull/360">未監視書込み経路</a>と<a href="https://github.com/mao2009/oss-pce-cd-bios/pull/362">副作用前遮断プローブ</a>、<a href="https://github.com/mao2009/oss-pce-cd-bios/pull/371">測定点とログ</a>、<a href="https://github.com/mao2009/oss-pce-cd-bios/pull/359">契約項目と証拠の照合</a>、<a href="https://github.com/mao2009/oss-pce-cd-bios/pull/374">Pages権限分離</a>と<a href="https://github.com/mao2009/oss-pce-cd-bios/pull/349">成果物公開ガード</a>を統合。ただし参照JSRとBIOSリリースのゲートは閉じたままです。</p>
         <div class="evidence">

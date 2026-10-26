@@ -56,7 +56,7 @@ class ApiBuildTests(unittest.TestCase):
         Z=1/N=0/I=1 with carry preserved) is verified on the real Geargrafx core in
         tests/integration/geargrafx_contracts.py; the absolute P byte is not fixed.
         """
-        self.assertEqual(set(overrides()), {0x1E, 0x3C, 0x3D, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x4F})  # 1E measured; 3C/3D/3F/40/41/42/43/44/4F project-own DEV routines
+        self.assertEqual(set(overrides()), {0x1E, 0x3C, 0x3D, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x4F})  # 1E measured; 3C/3D/3F/40/41/42/43/44/45/4F project-own DEV routines
         at = 0x1E * 3
         entry = int.from_bytes(self.rom[at+1:at+3], 'little')
         self.assertEqual(self.rom[entry-0xe000:entry-0xe000+5], bytes.fromhex('a2 03 a0 00 60'))
@@ -125,8 +125,8 @@ class ApiBuildTests(unittest.TestCase):
     def test_manifest_never_claims_release(self):
         manifest = json.loads((self.folder/'debug/manifest.json').read_text())
         self.assertFalse(manifest['release_eligible'])
-        self.assertEqual(manifest["overridden_slots"], [0x1E, 0x3C, 0x3D, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x4F])
-        self.assertEqual(len(manifest["unimplemented_slots"]), 71)
+        self.assertEqual(manifest["overridden_slots"], [0x1E, 0x3C, 0x3D, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x4F])
+        self.assertEqual(len(manifest["unimplemented_slots"]), 70)
         self.assertEqual(manifest['abi'], 'UNVERIFIED')
 
     def make_root(self, name, **slots):
