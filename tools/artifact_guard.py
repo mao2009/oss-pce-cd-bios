@@ -1869,6 +1869,10 @@ def _step_problems(workflow, where, step):
         if reason:
             problems.append(f"{workflow}: {where} step {name!r} run: {reason} "
                             "(refused; it changes the PATH of later steps, Issue #337 round 14, 15)")
+        send = _send_problem(run)
+        if send:
+            problems.append(f"{workflow}: {where} step {name!r} run: {send} "
+                            "(refused; a send command is a publish path, Issue #511)")
     return problems
 
 
@@ -1923,6 +1927,179 @@ def _run_write_problem(run):
             if TARGET_DYNAMIC_RE.search(word) and not TARGET_OK_RE.fullmatch(word):
                 return f"copies or writes to an argument assembled at run time ({word!r}), which can name GITHUB_ENV"
     return None
+
+
+# Issue #511. A run: that sends data out of the runner is a publish path: the upload guard sees only upload steps, so a
+# curl -F, git push or gh gist create would leave the repo unseen. Refused in every workflow and composite action (from
+# _step_problems). Decided by command word after wrappers (sudo, env, timeout...), $( ), backticks, quoted words, leading
+# NAME=value words and an absolute path. Fetch-only use of the same tools stays allowed (curl without -d/-F/-T/-K/-X POST,
+# wget without --post-*/--body-*, git fetch, gh api GET). NOT GUARANTEED (not refused, not claimed safe): a script or make
+# target in the repo (its text is not read); a command word from a variable (refused only where it is a command word);
+# a git alias set outside the run; a program not on the lists below.
+SEND_WRAPPERS = frozenset({"sudo", "env", "exec", "command", "builtin", "busybox", "xargs", "time", "nice", "nohup",
+                           "timeout", "stdbuf", "coproc", "function", "if", "then", "else", "elif", "do", "while", "until", "!"})
+INTERPRETER_WORD_RE = re.compile(r"\b(?:python[\d.]*|node|perl|ruby|php|deno|bun|pwsh|powershell|lua)\b")
+SHELLS = frozenset({"sh", "bash", "dash", "zsh", "ksh"})
+SEND_PROGRAMS = frozenset({"nc", "ncat", "netcat", "socat", "telnet", "ssh", "scp", "sftp", "ftp", "lftp", "rsync", "aws",
+                           "azcopy", "gsutil", "az", "rclone", "s3cmd", "sendmail", "msmtp", "mail", "mutt"})
+SEND_VERBS = {"git": {"push", "send-pack"}, "docker": {"push"}, "helm": {"push"}, "oras": {"push"}, "npm": {"publish"},
+              "pnpm": {"publish"}, "twine": {"upload"}}
+GH_WRITE_VERBS = frozenset({"create", "upload", "edit", "delete", "comment", "review", "merge", "close", "reopen", "set",
+                            "publish", "transfer", "fork", "run"})
+CURL_VALUE_SHORT = "AbcCDeEHmoPQrtuUwxyYz"   # curl short options that take a value; a d, F, T, K or X before them is a send
+INTERPRETERS = re.compile(r"python[\d.]*|py|node|nodejs|perl|ruby|php|deno|bun|pwsh|powershell|lua")
+NET_CODE_RE = re.compile(r"\b(urllib|http\.client|requests|httpx|aiohttp|socket|ftplib|smtplib|paramiko|urlopen|subprocess"
+                         r"|os\.system|os\.popen|Net::HTTP|IO::Socket|LWP|fetch|XMLHttpRequest|net\.connect|https?\.request)\b")
+ASSIGN_RE = re.compile(r"[A-Za-z_]\w*=")
+PY_EXPRESSION = "${{ steps.pyresolve.outputs.python }}"   # the trusted python resolve (RUN_EXPRESSIONS); runs as python3
+
+
+def _send_commands(script):
+    """The simple commands of one shell text, each a list of words. Quotes and escapes are removed as the shell removes
+    them ("cu"rl and c\\url are curl), so a quoted word holds its spaces and its substitutions as text (read again)."""
+    lexer = shlex.shlex(re.sub(r"[\r\n]+", " ; ", script), posix=True, punctuation_chars=SHELL_PUNCTUATION)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    commands, command = [], []
+    for token in lexer:
+        if SHELL_OPERATOR_RE.fullmatch(token) and SHELL_SEPARATOR_RE.search(token) and not REDIRECTION_RE.fullmatch(token):
+            if command:
+                commands.append(command)
+            command = []
+        else:
+            command.append(token)
+    if command:
+        commands.append(command)
+    return commands
+
+
+def _value(args, i, word, prefix):
+    """The value of one option: after '=' (long form), attached to the option, or the next word."""
+    if "=" in word:
+        return word.split("=", 1)[1]
+    if len(word) > len(prefix):
+        return word[len(prefix):]
+    return args[i + 1] if i + 1 < len(args) else ""
+
+
+def _curl_problem(args):
+    for i, word in enumerate(args):
+        if word.startswith("--"):
+            name = word.split("=", 1)[0]
+            if name.startswith(("--data", "--form", "--upload-file", "--json", "--config")):
+                return f"curl {name} sends a body or reads a config file"
+            if name == "--request" and _value(args, i, word, "--request").upper() != "GET":
+                return "curl with a method other than GET"
+        elif word.startswith("-") and len(word) > 1:
+            for j in range(1, len(word)):
+                if word[j] in "dFTK":
+                    return f"curl -{word[j]} sends a body or reads a config file"
+                if word[j] == "X":
+                    if (word[j + 1:] or (args[i + 1] if i + 1 < len(args) else "")).upper() != "GET":
+                        return "curl with a method other than GET"
+                    break
+                if word[j] in CURL_VALUE_SHORT:
+                    break
+    return None
+
+
+def _wget_problem(args):
+    for i, word in enumerate(args):
+        name = word.split("=", 1)[0]
+        if name.startswith(("--post-", "--body-")):
+            return f"wget {name} sends a body"
+        if name == "--method" and _value(args, i, word, "--method").upper() != "GET":
+            return "wget with a method other than GET"
+    return None
+
+
+def _gh_api_problem(args):
+    for i, word in enumerate(args):
+        if word == "graphql":
+            return "gh api graphql is a POST and can mutate"
+        if word in ("-X", "--method") or word.startswith(("-X", "--method=")):
+            prefix = "-X" if word.startswith("-X") else "--method"
+            if _value(args, i, word, prefix).upper() != "GET":
+                return "gh api with a method other than GET"
+        if word.startswith(("-f", "-F", "--field", "--raw-field", "--input")):
+            return f"gh api {word} sends a body or fields (POST)"
+    return None
+
+
+def _send_command(base, args, depth):
+    """The send problem of one command, by its base name and its plain arguments, or None."""
+    if base in SEND_PROGRAMS:
+        return f"{base} sends data out of the runner"
+    if base in SHELLS:   # a shell's arguments are command text of its own (bash -c, sh -c)
+        for word in args:
+            reason = _send_in(word, depth + 1)
+            if reason:
+                return reason
+        return None
+    if base == "curl":
+        return _curl_problem(args)
+    if base == "wget":
+        return _wget_problem(args)
+    if base == "gh":   # the group may follow -R repo, so api is found anywhere; verbs are read after the group word
+        if "api" in args:
+            return _gh_api_problem(args[args.index("api") + 1:])
+        if any(word in GH_WRITE_VERBS for word in args[1:]):
+            return "gh writes to GitHub (create, upload, edit, comment, run, ...)"
+        return None
+    if base in SEND_VERBS and any(word in SEND_VERBS[base] for word in args):
+        return f"{base} {sorted(SEND_VERBS[base])[0]} sends or publishes"
+    if base == "git" and any(word.startswith("alias.") for word in args):
+        return "git alias.* can name push"
+    if INTERPRETERS.fullmatch(base) and NET_CODE_RE.search(" ".join(args)):
+        return f"{base} runs network or process code inline"
+    return None
+
+
+def _send_in(script, depth):
+    """The send problem in one shell text, or None. Each command, each substitution and each shell -c text is read."""
+    if depth > 3:
+        return "nests command substitutions or shells too deeply to read"
+    try:
+        commands = _send_commands(script.replace("`", " ; "))
+    except ValueError:   # shlex: no closing quotation
+        return "has an unclosed quote"
+    for words in commands:
+        for word in words:   # a quoted word can still hold a substitution, a command list or a command (env -S "curl ...")
+            if any(mark in word for mark in "(; \t"):
+                reason = _send_in(word, depth + 1)
+                if reason:
+                    return reason
+        start = 0
+        while start < len(words) and ASSIGN_RE.match(words[start]):
+            start += 1
+        if start >= len(words):
+            continue
+        # After an assignment or a wrapper the program is a later word, so every later word is read as a command start.
+        positions = range(start, len(words)) if start > 0 or words[start] in SEND_WRAPPERS else [start]
+        for k in positions:
+            prog = words[k]
+            if ASSIGN_RE.match(prog) or prog == "$":   # a lone "$" starts $( ), whose command is read on its own
+                continue
+            if prog == PY_EXPRESSION:
+                prog = "python3"
+            if "$" in prog:
+                return f"runs a command word assembled at run time ({prog!r})"
+            if prog == "eval":
+                return "eval builds a command at run time"
+            reason = _send_command(prog.rsplit("/", 1)[-1], words[k + 1:], depth)
+            if reason:
+                return reason
+    return None
+
+
+def _send_problem(run):
+    """Issue #511. The reason a run: text sends data out of the runner (a publish path), or None."""
+    run = re.sub(r"(?<!\\)((?:\\\\)*)\\\r?\n", r"\1", run)   # bash joins a backslash-newline into one word
+    if "/dev/tcp/" in run or "/dev/udp/" in run:   # a bash redirection that opens a network socket
+        return "opens a network socket through /dev/tcp or /dev/udp"
+    if INTERPRETER_WORD_RE.search(run) and NET_CODE_RE.search(run):   # a heredoc or here-string can hold the code
+        return "runs an interpreter with network or process code (in the run text, a heredoc or stdin)"
+    return _send_in(run, 0)
 
 
 def _yaml_unreadable(text):
