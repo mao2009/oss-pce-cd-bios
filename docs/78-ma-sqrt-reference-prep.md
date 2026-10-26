@@ -8,7 +8,7 @@
 
 | 区分 | 内容 | 根拠 |
 |---|---|---|
-| DEV 実装（確認済み） | `src/overrides/slot_44.s` は 16bit 符号なし入力に対し `floor(sqrt(n))` を返す独自ルーチン。入力は全 65,536 通りを `math.isqrt` と照合済み | `tests/host/test_ma_sqrt_dev.py`、`tests/integration/geargrafx_dev_sqrt.py`（PR #519） |
+| DEV 実装（確認済み） | `src/overrides/slot_44.s` は 16bit 符号なし入力に対し `floor(sqrt(n))` を返す独自ルーチン。入力 0..65535 の全数について、`slot_44.s` と同じ手順を書いた Python mirror を `math.isqrt` と照合済み（`slot_44.s` 自体の全数実行ではない） | `tests/host/test_ma_sqrt_dev.py`、`tests/integration/geargrafx_dev_sqrt.py`（PR #519） |
 | 参照契約（未確認） | System Card の MA_SQRT の引数形式、丸め、戻り値配置、副作用は本リポジトリで確定していない | `spec/api_contracts.json` の slot 68 は `HYPOTHESIS` / 全 contract 項目 `UNKNOWN` / `NOT_RUN` |
 
 ホスト model が `isqrt` と一致しても証明するのは DEV 実装の正しさだけである。参照 ABI の仕様を証明するものではない。
@@ -46,7 +46,7 @@
 
 ## 5. テスト（RED から GREEN）
 
-- RED: `tests/host/test_ma_sqrt_reference_prep.py` を先に追加し、本ドキュメント不在で `test_doc_covers_every_scope_item` が失敗することを確認した。
+- RED: `tests/host/test_ma_sqrt_reference_prep.py` を先に追加し、本ドキュメント不在で `test_doc_scope_rows_exact_and_ordered` と `test_doc_reports_exhaustive_check_as_python_mirror` の失敗を確認した（後者は本文の Python mirror 表記の修正前に失敗）。
 - GREEN: 本ドキュメント追加後、同テストが通ること。加えて次を確認する。
   - MA_SQRT の contract 項目が全て `UNKNOWN`、`verification.status` が `NOT_RUN`、`executed_callee` が `false` のまま。
   - DEV の境界値（0, 1, 完全平方数, 65535）が `isqrt` と一致。

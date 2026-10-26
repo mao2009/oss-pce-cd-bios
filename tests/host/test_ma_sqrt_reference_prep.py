@@ -10,31 +10,20 @@ Checks only what the repository can prove without running reference callees:
   reference spec.
 """
 import json
-import math
+import re
 import sys
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tests" / "host"))
-from test_ma_sqrt_dev import dev_sqrt  # noqa: E402
-
 DOC = ROOT / "docs" / "78-ma-sqrt-reference-prep.md"
 CONTRACTS = ROOT / "spec" / "api_contracts.json"
+SOURCE = ROOT / "src" / "overrides" / "slot_44.s"
 
-SCOPE_ITEMS = [
-    "入力形式",
-    "丸め",
-    "0",
-    "1",
-    "完全平方数",
-    "最大入力",
-    "出力配置",
-    "副作用",
-    "UNKNOWN",
-    "BLOCKED",
-    "DEV",
-]
+# Scope table rows in section 2 of the doc, in required order (exact first-column labels).
+SCOPE_LABELS = ["入力形式", "丸め", "0", "1", "完全平方数", "最大入力", "出力配置", "副作用"]
+ROW_RE = re.compile(r"^\| (入力形式|丸め|0|1|完全平方数|最大入力|出力配置|副作用) \|", re.M)
 
 
 def _ma_sqrt_entry():
@@ -55,13 +44,18 @@ def _walk(obj):
 
 
 class MaSqrtReferencePrepTests(unittest.TestCase):
-    def test_doc_covers_every_scope_item(self):
+    def test_doc_scope_rows_exact_and_ordered(self):
         self.assertTrue(DOC.is_file(), "docs/78-ma-sqrt-reference-prep.md is missing")
         text = DOC.read_text(encoding="utf-8")
-        for item in SCOPE_ITEMS:
-            self.assertIn(item, text, f"scope item not covered: {item}")
-        self.assertIn("Issue", text)
-        self.assertIn("#78", text)
+        labels = [m.group(1) for m in ROW_RE.finditer(text)]
+        self.assertEqual(labels, SCOPE_LABELS)
+
+    def test_doc_reports_exhaustive_check_as_python_mirror(self):
+        text = DOC.read_text(encoding="utf-8")
+        self.assertIn("Python mirror", text)
+        for line in text.splitlines():
+            if "65,536" in line:
+                self.assertIn("mirror", line, "exhaustive check must be attributed to the Python mirror")
 
     def test_reference_contract_stays_unverified(self):
         entry = _ma_sqrt_entry()
@@ -71,22 +65,28 @@ class MaSqrtReferencePrepTests(unittest.TestCase):
         self.assertFalse(entry["verification"]["executed_callee"])
         for field, obj in entry["contract"].items():
             self.assertEqual(obj["status"], "UNKNOWN", f"contract.{field} must stay UNKNOWN")
-        self.assertNotIn("VERIFIED", json.dumps(entry))
+        # Whole-word match: "UNVERIFIED" must not count as VERIFIED.
+        self.assertIsNone(re.search(r"\bVERIFIED\b", json.dumps(entry)))
 
-    def test_dev_model_edge_values_match_isqrt(self):
-        """DEV correctness only: 0, 1, perfect squares, non-squares, max input 65535."""
-        edges = [0, 1, 2, 3, 4, 8, 9, 15, 16, 17, 255, 256, 257, 1024, 4095, 65024, 65025, 65535]
-        for n in edges:
-            self.assertEqual(dev_sqrt(n), math.isqrt(n), n)
-        self.assertEqual(dev_sqrt(65535), 255)
-        self.assertEqual(dev_sqrt(0), 0)
-        self.assertEqual(dev_sqrt(1), 1)
+    def test_dev_output_placement_and_y_restore_ordering(self):
+        lines = SOURCE.read_text(encoding="utf-8").splitlines()
 
-    def test_dev_output_placement_is_a_and_x_zero(self):
-        source = (ROOT / "src" / "overrides" / "slot_44.s").read_text(encoding="utf-8")
-        self.assertIn("lda $FB             ; A = root", source)
-        self.assertIn("ldx #0", source)
-        self.assertIn("plp", source)
+        def only(pattern):
+            hits = [i for i, line in enumerate(lines) if re.match(pattern, line)]
+            self.assertEqual(len(hits), 1, f"expected exactly one instruction line: {pattern}")
+            return hits[0]
+
+        phy = only(r"^\s*phy\b")
+        root_to_a = only(r"^\s*lda \$FB\s+; A = root \(floor\(sqrt\(n\)\)\)")
+        x_zero = only(r"^\s*ldx #0\b")
+        ply = only(r"^\s*ply\b")
+        plp = only(r"^\s*plp\b")
+        rts = only(r"^\s*rts\b")
+        self.assertLess(phy, ply)            # Y saved on entry, restored before return
+        self.assertLess(root_to_a, x_zero)   # A = root is set before X = 0
+        self.assertLess(x_zero, ply)
+        self.assertLess(ply, plp)
+        self.assertLess(plp, rts)
 
 
 if __name__ == "__main__":
