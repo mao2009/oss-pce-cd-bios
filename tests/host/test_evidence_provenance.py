@@ -381,7 +381,7 @@ class EvidenceProvenanceTests(unittest.TestCase):
                        check(encode(make_artifact(status='FAIL')), attestation=None)):
             with self.subTest(result=result['result']):
                 self.assertEqual(result['compatibility'], ep.NOT_PROMOTED)
-                self.assertNotIn('VERIFIED', json.dumps(result))
+                self.assertNotIn('verified', json.dumps(result).lower())
 
 
 if __name__ == '__main__':
