@@ -20,7 +20,7 @@
 
 | API（slot） | Issue | 分類 | 主な根拠 |
 | --- | --- | --- | --- |
-| CD_BOOT（`$00`） | #9、#289 | spec-reference only | callee 実装候補なし。宣言名のみ（HuC `pcengine.inc`、Boost-1.0 表示）。callee 規約は UNKNOWN。入口と戻りは HYPOTHESIS（[cd-boot-contract](research/cd-boot-contract.md)） |
+| CD_BOOT（`$00`） | #9、#289 | spec-reference only | callee 実装候補なし。宣言名のみ（HuC `pcengine.inc`、Boost-1.0 表示）。入口の意味は UNKNOWN、戻りは HYPOTHESIS（呼出側由来）（[cd-boot-contract](research/cd-boot-contract.md)） |
 | CD_READ（`$03`） | #12、#148、#188、#189 | spec-reference only（転送層は awaiting relicensing） | 呼出側ラッパ（HuCC `hucc-systemcard.asm`）は参照のみ。SCSI 層（HuC elmer `cdrom.asm`）は派生元 Hudson の権利が不明 → awaiting relicensing |
 | CD_EXEC（`$05`） | #14、#239 | UNKNOWN | 実行可能な callee 候補が無い。固定版で呼出側が見つからなかった（[ledger](cd-exec-contract-ledger.md) A1）。検索の網羅性は未検証。HuC `include/huc/cdrom.asm` の `_cd_execoverlay` はライセンス表示が無く、対象外（awaiting relicensing） |
 | CD_STAT（`$09`） | #18、#229 | spec-reference only | busy/ready 判定の呼出側形のみ（HuC `scsitest.asm`、Boost-1.0）。A=0 の判定は HYPOTHESIS、他の戻り値の意味は UNKNOWN（[cd-stat-contract](research/cd-stat-contract.md)） |
@@ -36,14 +36,14 @@
 | HuCC `hucc-systemcard.asm`、`pcengine.inc`、`core-kernel.asm`、`scsitest.asm`（`54f5c736`） | Boost-1.0 表示（既存記録と一致） | spec-reference only | 呼出側・宣言・試験。上記ルート LICENSE の不明瞭さが残るため複写しない |
 | HuC `include/huc/cdrom.asm`（`_cd_execoverlay`、`54f5c736`） | ファイル冒頭にライセンス文言なし（既存記録、#422 の再取得） | awaiting relicensing | 表示が無いため許諾の有無を確認できない |
 | Hu-Go! `pcecd.c`（`64ed226d`） | 3条項 BSD 系の本文、著作権者の行なし。`COPYING` は `LICENSE.bsd-modified` を参照するがツリーに無い（既存記録、#422 の再取得） | awaiting relicensing | 著作権者不明、参照先の全文も無い |
-| Hu-Go! `bios.c`、`cd.c`（`64ed226d`） | `COPYING` により GPL-2.0 既定。`EXCEPTED` は `pcecd.c` のみ（今回再取得で確認） | rejected | GPL-2.0 と MIT の ROM 方針は両立しない（[ledger L-10、L-11](oss-candidate-ledger.md)） |
+| Hu-Go! `bios.c`、`cd.c`（`64ed226d`） | `COPYING` により GPL-2.0 既定。`EXCEPTED` は `pcecd.c` のみ（今回再取得で確認） | rejected | ledger の ROM 方針により組込み不可（提案 RESTRICTED、人間の確定待ち）（[ledger L-10、L-11](oss-candidate-ledger.md)） |
 | Hu-Go! の CD_STAT 分岐（HLE） | GPL-2.0 | rejected | ライセンスに加え、HLE の挙動は実機の証拠にならない（[cd-stat-contract](research/cd-stat-contract.md)） |
-| nugget `openbios/cdrom/cdrom.c`（`c950e18a`） | MIT、PCSX-Redux authors（既存記録） | spec-reference only | ライセンスは許容的だが PSX の ABI。PCE へ移植できない。複写する場合は MIT 表示が必要 |
+| nugget `openbios/cdrom/cdrom.c`（`c950e18a`） | MIT、PCSX-Redux authors（既存記録） | spec-reference only | ライセンスは許容的だが PSX の ABI。PCE へ移植できない |
 | ares `pce/pcd/io.cpp`、`scsi.cpp`（`9408cb43`） | ルート LICENSE は ISC（既存記録。本書では再取得していない） | spec-reference only | ISC は複写を許すが、C++ エミュレータ内部で firmware に不適合。既存方針 `REFERENCE_ONLY` を維持 |
 | NeoCD-Libretro `src/hlebios.cpp` 他（`b1e04c73`） | 先頭に権利表示なし。ルート LICENSE.md は LGPL-3.0（既存記録） | awaiting relicensing | ファイル単位の権利者が不明。NEO-GEO の HLE で PCE の参照価値も低い |
-| STUM 2025 の番地表（二次資料） | CC BY-NC-SA 4.0（既存記録） | rejected（番地は HYPOTHESIS としてのみ参照） | NC 条件。本体番地は未照合 |
+| STUM 2025 の番地表（二次資料） | CC BY-NC-SA 4.0（既存記録） | rejected（NC）。番地は未照合のため参照しない | NC 条件。本体番地は未照合 |
 | Geargrafx（`b49ae82a`、テスト用の外部実行系） | GPL-3.0（既存記録） | rejected（コード）／外部実行のみ | ROM・リポジトリへ取り込まない。外部プロセスとして検証に使うのみ |
-| MAME `pce_cd.cpp`（既存記録 BSD-3、ファイル単位） | 全体は GPL。ファイル単位のライセンスは **未検証**（commit・hash は未計算、[L-19](oss-candidate-ledger.md)） | 保留（UNVERIFIED） | 検証前は分類を確定しない。参照するなら仕様の事実のみ |
+| MAME `pce_cd.cpp`（既存記録 BSD-3、ファイル単位） | 全体は GPL。ファイル単位のライセンスは **未検証**（commit・hash は未計算、[L-19](oss-candidate-ledger.md)） | UNKNOWN（未検証のため保留） | 検証前は分類を確定しない。参照するなら仕様の事実のみ |
 | cc65 runtime `udiv.s` 等（zlib 系、#308 L-16） | zlib 系（既存記録） | 対象外（CD API ではない） | ビルド依存の話。CD API の portable 候補にはしない |
 
 portable に分類された候補は **0 件**。permissive なライセンス（ISC、MIT、Boost）のものも、ABI 未確定または技術的な不適合により採用しない。
@@ -54,21 +54,21 @@ portable に分類された候補は **0 件**。permissive なライセンス�
 
 ```
 CD_BASE ($02, #11) ──> CD_READ ($03, #12) ──> 転送層 (#190)  [出典あり]
-CD_STAT ($09, #18) ──> CD_READ                                 [出典あり: busy/timeout の待ち方]
-CD_RESET ($01, #10) ──> CD_STAT                                 [HYPOTHESIS]
+CD_STAT ($09, #18) ──> CD_READ                                 [出典あり: 呼出側の待ち方（F10、F23）]
+CD_RESET ($01, #10) ──> CD_STAT                                 [出典あり: 呼出側は reset 後に busy を待つ（F23）]
 CD_STAT ──> CD_SEEK ($04, #13)                                  [HYPOTHESIS]
-CD_READ ──> CD_EXEC ($05, #14)                                  [出典あり: 読込後の移譲の契約が UNKNOWN]
+CD_READ ──> CD_EXEC ($05, #14)                                  [HYPOTHESIS: 呼出側の根拠なし（A1）]
 CD_READ / CD_EXEC ──> CD_BOOT ($00, #9)                         [HYPOTHESIS]
 ```
 
 | 依存 | 分類 | 現状 | 根拠 |
 | --- | --- | --- | --- |
 | CD_READ ← CD_BASE | 出典あり | ブロック番号の基点（絶対 LBA か CD_BASE 相対か）が UNKNOWN | [188 A8](188-cd-read-transfer-mode-contract.md) |
-| CD_READ ← CD_STAT | 出典あり | busy/timeout の戻り値が UNKNOWN。待ち方が未確定 | [cd-read-contract §2 T8](cd-read-contract.md) |
+| CD_READ ← CD_STAT | 出典あり（呼出側の事実） | 呼出側は CD_STAT の A=0 で ready へ進み、非 0 で再試行する（F10）。reset 後は busy を待つ（F23）。callee の busy/timeout の戻り値は UNKNOWN（[cd-read-contract §2 T8](cd-read-contract.md)） | [cd-stat-contract](research/cd-stat-contract.md) F10、F23 |
 | CD_READ ← メディア状態 | 出典あり | 無媒体の callee 戻りが UNKNOWN（T7）。デバイス層の観測は §4 の E8 を参照 | [cd-read-contract §2](cd-read-contract.md)、[cd-media-state](cd-media-state.md) |
 | CD_READ ← MPR3 | 出典あり | 呼出側が退避・復元する。callee 内の MPR 状態は UNKNOWN | [188 B3](188-cd-read-transfer-mode-contract.md) |
-| CD_EXEC ← CD_READ | 出典あり | 読込後の制御移譲の契約が UNKNOWN。ledger は実行可能な callee を未取得 | [cd-exec ledger](cd-exec-contract-ledger.md) C2 |
-| CD_BOOT ← CD_RESET | HYPOTHESIS | リセット起動と slot 呼出しは「別の経路」と記されており（[cd-boot-contract](research/cd-boot-contract.md) §1）、依存とは言えない | 出典なし |
+| CD_EXEC ← CD_READ | HYPOTHESIS | 固定版の HuC overlay loader は `cd_read` を直接呼ぶ（[ledger A3](cd-exec-contract-ledger.md)）が、CD_EXEC callee が CD_READ を使うかは UNKNOWN（呼出側なし、A1、D2） | [cd-exec ledger](cd-exec-contract-ledger.md) |
+| CD_BOOT ← CD_RESET | 削除 | リセット起動と slot 呼出しは「別の経路」と記されており（[cd-boot-contract](research/cd-boot-contract.md) §1）、依存とは言えない | — |
 
 ## 4. #190（CD_READ 転送層）の解除に必要な証拠
 
@@ -92,7 +92,7 @@ P1 と P2 が成立するまで、E6 と E8 の実観測は行わない。
 | E3 | 基点（CD_BASE 相対か絶対 LBA か） | UNKNOWN（A8、#11） | 呼出側の計算のみ |
 | E4 | 成功時の A/X/Y、失敗時のエラー種別（無媒体、範囲外、busy） | UNKNOWN（B1–B2、#189） | 合成 fixture（callee 未実行） |
 | E5 | 戻り時の MPR0–7、スタック深さ、I フラグ前提 | UNKNOWN（B3–B8、R12） | HuCC のコメント |
-| E6 | 上記 E1–E5 を純正 callee で実行して測った結果（pinned Geargrafx、自己所有 BIOS をローカルのみで使用、バイトは非公開） | 未実施（`CALLEE_REAL_CORE_RUNS = 0`）。P1、P2 が前提 | #5 の23シナリオ（デバイス層の READ(6) 診断。callee の証拠ではない。[#190 の 2026-10-21 判断](https://github.com/mao2009/oss-pce-cd-bios/issues/190)） |
+| E6 | 上記 E1–E5 を純正 callee で実行して測った結果（pinned Geargrafx、自己所有 BIOS をローカルのみで使用、バイトは非公開） | 未実施（`CALLEE_REAL_CORE_RUNS = 0`）。P1、P2 が前提 | #5 の23シナリオ（デバイス層の READ(6) 診断。callee の証拠ではない。[#190 のコメント（2026-10-21）](https://github.com/mao2009/oss-pce-cd-bios/issues/190)） |
 | E7 | 転送ルーチンの出自の確認：独立に実装し、HuC elmer `cdrom.asm` の文言・構造を複写していないこと | 未実施。elmer は awaiting relicensing | 派生元を複写したコード |
 | E8a | 範囲外 LBA（LBA 16 以上）の安全な失敗 | callee 側は UNKNOWN（T3、#189）。デバイス層の STATUS のみ観測（[188](188-cd-read-transfer-mode-contract.md)） | — |
 | E8b | 無媒体の callee 戻り | UNKNOWN（T7、#189）。デバイス層では `NO_DATA` を観測済み（後述） | — |
@@ -122,8 +122,8 @@ E8b について、[cd-media-state](cd-media-state.md) の対照実験（Geargra
 | 既存記録の引用（pcecd.c、nugget、NeoCD、ares、MAME、STUM） | NOT_RUN（再取得なし） | #308 台帳・#422 の記録を引用。本書では再取得していない |
 | Issue の状態（#173、#188、#189、#365〜#367） | PASS | 2026-10-26 に `gh issue view` で確認。すべて OPEN |
 | 依存マップの矢印 | 出典あり／HYPOTHESIS を §3 に明記 | 出典ありの矢印のみ引用先の文言と照合 |
-| 相対リンク解決（外部 URL を除く） | 実施予定（改訂後に再確認） | |
-| `git diff --check` | 実施予定（改訂後に再確認） | docs のみ |
+| 相対リンク解決（外部 URL を除く） | PASS | 2026-10-26 に grep と存在確認で実施 |
+| `git diff --check` | PASS | docs のみ |
 | 実コア・純正 BIOS | NOT_RUN | 調査のみ |
 
 ## 7. 範囲と限界
