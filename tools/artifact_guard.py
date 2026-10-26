@@ -1955,10 +1955,13 @@ SHELL_KEYWORDS = frozenset({"if", "then", "else", "elif", "fi", "do", "done", "w
 # still read (before this check), and the commands after its ; or ) separators are read as their own commands.
 WHOLE_COMMAND_DATA = frozenset({"for", "select", "case", "esac", "in", "[[", "]]"})
 # Environment names that change how an allowed program runs (loader, shell start-up, git's hooks and config, interpreter paths).
-DANGEROUS_ENV_RE = re.compile(r"(?:GIT_|BASH_|LD_|DYLD_|PYTHON|NODE_|PERL|RUBY|IFS=|ENV=|HOME=|SHELL=|PATH=)")
+DANGEROUS_ENV_RE = re.compile(r"(?:GIT_|BASH_|LD_|DYLD_|PYTHON|NODE_|PERL|RUBY|IFS=|ENV=|HOME=|SHELL=|PATH=|CURL_|WGETRC|XDG_|GH_CONFIG)")
 WRITE_REDIRECT_RE = re.compile(r"(?:>>?|&>)\s*([^\s;&|()<>]+)")   # a redirection target, as text
-OUTPUT_OPTION_RE = re.compile(r"(?:^|\s)(?:-o|-O|--output)\s+([^\s;&|()<>]+)")   # curl and wget write-file options
-SCRIPT_RUN_RE = re.compile(r"(?:^|[;&|(\s])(?:bash|sh|python[\d.]*|make)\s+(?:-\S+\s+)*([^\s;&|()<>]+)")   # what a shell or make runs
+# Write-file options of curl, wget and sort (short clusters such as -sSLo, and -O, --output, -o). Not bash -o.
+OUTPUT_OPTION_RE = re.compile(r"\b(?:curl|wget|sort)\b[^;&|\n]*?\s(?:--output|--output-document|-[A-Za-z]*[oO])(?:\s+|=)([^\s;&|()<>]+)")
+# A program whose operands are written files: cp, mv, install (the last operand), tee (every operand).
+WRITE_OPERANDS_RE = re.compile(r"(?:^|[;&|(\s])(cp|mv|install|tee|ln|touch)\s+([^;&|()\n]*)")
+EXEC_PROGRAM_RE = re.compile(r"(?:^|[;&|(\s])(?:bash|sh|dash|zsh|ksh|source|python[\d.]*|make|pwsh|node|perl|ruby)(?=\s|$)")
 # Issue #511 allowlist (owner decision). A run: command that is not listed here is refused, including every wrapper
 # (sudo, env, timeout, xargs, taskset, ...). Listing a command does NOT make what it runs safe: a script, a make target or a
 # python file is outside the guaranteed scope (static analysis cannot prove a script sends nothing). The purpose rules
@@ -2110,13 +2113,15 @@ def _specific_problem(base, args, depth):
             return f"{base} runs inline or stdin script text, which cannot be read (fails closed)"
         return None
     if base in ("curl", "wget"):
-        if any("$" in word or "{{" in word for word in args):   # a URL or header built at run time can carry a secret
+        if any("$" in word or "{{" in word or "`" in word for word in args):   # a URL or header built at run time can carry a secret
             return f"{base} with an expanded argument (a URL or header built at run time) is refused (fails closed)"
-        if any(word.startswith("--expand") for word in args) or any(
-                "@" in nxt for word, nxt in zip(args, args[1:]) if word in ("-H", "--header")):
+        if any(word.startswith("--expand") or re.match(r"(?:-[A-Za-z]*[Hb]|--header=|--cookie=)@", word) for word in args) or any(
+                "@" in nxt for word, nxt in zip(args, args[1:]) if word in ("-H", "--header", "-b", "--cookie")):
             return f"{base} reads an argument or header from a file or expansion (fails closed)"
         return _curl_problem(args) if base == "curl" else _wget_problem(args)
     if base == "gh":   # the group may follow -R repo, so api is found anywhere; verbs are read after the group word
+        if any("`" in word for word in args):
+            return "gh with a backtick substitution in an argument (built at run time) is refused (fails closed)"
         if any(word in GH_WRITE_VERBS for word in args[1:]):   # checked before api: gh issue create -t api is a write
             return "gh writes to GitHub (create, upload, edit, comment, run, ...)"
         if "api" in args:
@@ -2132,7 +2137,7 @@ def _specific_problem(base, args, depth):
     if base == "git":
         if any(word.startswith("alias.") for word in args):
             return "git alias.* can name push"
-        if any(word == "-c" or word.startswith("--config-env") for word in args):
+        if any(word.startswith(("--upload-pack", "--receive-pack", "--exec", "--config-env")) or word == "-c" for word in args):
             return "git -c or --config-env sets a config value, which can name a program (fails closed)"
         if any("$" in word or "`" in word for word in args):
             return "git with an expanded argument (a URL or ref built at run time) is refused (fails closed)"
@@ -2148,9 +2153,7 @@ def _specific_problem(base, args, depth):
         return "http with a body method (POST, PUT, PATCH, DELETE) sends data"
     if base == "command":   # command -v NAME only looks a program up; it does not run it
         return None if args[:1] == ["-v"] and len(args) == 2 else "command runs its arguments (only command -v NAME is allowed)"
-    if re.fullmatch(r"python[\d.]*", base):
-        if _code_problem(" ".join(args)):
-            return f"{base} runs network or process code inline"
+    if re.fullmatch(r"python[\d.]*", base):   # a script file's text is outside the guaranteed scope; only inline code is judged
         if "-" in args or "-c" in args or "-e" in args:
             return f"{base} runs inline or stdin code, which cannot be read (fails closed)"
         if "-m" not in args and _script_file(args) is None:
@@ -2172,6 +2175,19 @@ def _send_command(base, args, depth):
     if base not in SEND_ALLOWED_COMMANDS:
         return f"{base} is not on the run: allowlist (fails closed)"
     return None
+
+
+def _strip_redirects(words):
+    """The words a command takes as arguments: a redirection operator and its target are not arguments (command -v gh >/dev/null)."""
+    out, skip = [], False
+    for word in words:
+        if skip:
+            skip = False
+        elif re.fullmatch(r"\d*(?:>>?|<|&>|>&|<&)", word):
+            skip = True
+        else:
+            out.append(word)
+    return out
 
 
 def _substitution_bodies(word):
@@ -2244,7 +2260,7 @@ def _send_in(script, depth):
             if prog == "eval":
                 return "eval builds a command at run time"
             base = prog.rsplit("/", 1)[-1].lower()   # Windows names: CURL.EXE is curl
-            reason = _send_command(base[:-4] if base.endswith(".exe") else base, words[k + 1:], depth)
+            reason = _send_command(base[:-4] if base.endswith(".exe") else base, _strip_redirects(words[k + 1:]), depth)
             if reason:
                 return reason
     return None
@@ -2297,6 +2313,12 @@ def _shell_view(run):
     return _cut_comments(run), None
 
 
+def _is_code_path(path):
+    """A path a shell or interpreter could run as code: a script extension, or no extension (Makefile, a bare name)."""
+    base = path.rsplit("/", 1)[-1]
+    return "." not in base or base.rsplit(".", 1)[-1].lower() in ("sh", "bash", "py", "pl", "rb", "js", "mjs", "ps1")
+
+
 def _send_problem(run):
     """Issue #511. The reason a run: text sends data out of the runner (a publish path), or None. Fails closed: text that
     cannot be read gives a reason, never a pass."""
@@ -2307,7 +2329,7 @@ def _send_problem(run):
 
 
 def _send_problem_checked(run):
-    if INTERPRETER_WORD_RE.search(run) and _code_problem(run):   # a heredoc or here-string can hold the code
+    if "<<" in run and INTERPRETER_WORD_RE.search(run) and _code_problem(run):   # a heredoc or here-string can hold the code
         return "runs an interpreter with network or process code (in the run text, a heredoc or stdin)"
     shell, problem = _shell_view(run)   # comments are cut before a backslash-newline joins two lines (bash ends a comment at the newline)
     if problem:
@@ -2318,15 +2340,23 @@ def _send_problem_checked(run):
     if COMMAND_START_SUBST_RE.search(shell):
         return "starts a command with a command substitution or backticks, which builds the program at run time"
     plain = re.sub(r"[\"'\\]", "", shell)   # what the shell sees once quotes and escapes are gone
+    if "`" in shell and re.search(r"\b(?:curl|wget|gh|git)\b", plain):   # a backtick output can become a URL or header
+        return "uses backticks with a network-capable command, whose argument is built at run time (fails closed)"
     if re.search(r"/dev/[^\s]*[$`]|[$`][^\s]*/(?:tcp|udp)", plain):
         return "builds a /dev/tcp or /dev/udp path at run time (fails closed)"
     written = {target.strip() for target in WRITE_REDIRECT_RE.findall(plain) + OUTPUT_OPTION_RE.findall(plain)}
-    if any(".git/" in target or target.lower().rsplit("/", 1)[-1].startswith(("makefile", "gnumakefile"))
-           for target in written):
-        return "writes to .git/ or a Makefile, which later commands read and run (fails closed)"
-    for target in SCRIPT_RUN_RE.findall(plain):   # a script written in this run and then run is not judged safe
-        if target in written:
-            return f"runs {target}, which this run writes (fails closed)"
+    for name, operands in WRITE_OPERANDS_RE.findall(plain):   # cp, mv, install, ln, touch: the last operand; tee: all
+        words = [word for word in operands.split() if not word.startswith("-")]
+        written.update(words if name == "tee" else words[-1:])
+    if any(".git" in target or target.lower().rsplit("/", 1)[-1].startswith(("makefile", "gnumakefile"))
+           for target in written) or re.search(r"\bcd\s+[^;&|\n]*\.git\b", plain):
+        return "writes to .git or a Makefile, which later commands read and run (fails closed)"
+    code_written = {t for t in written if _is_code_path(t)}   # data files (.json, .pce) are read, not run
+    stems = {t.rsplit("/", 1)[-1].rsplit(".", 1)[0] for t in code_written}
+    for match in EXEC_PROGRAM_RE.finditer(plain):   # a script or module this run writes, then runs, is not judged safe
+        for word in re.split(r"[;&|()\n]", plain[match.end():], 1)[0].split():
+            if word in code_written or word.rsplit("/", 1)[-1] in stems or word in stems:
+                return f"runs {word}, which this run writes (fails closed)"
     if "/dev/tcp/" in plain or "/dev/udp/" in plain:   # a bash redirection that opens a network socket
         return "opens a network socket through /dev/tcp or /dev/udp"
     if POWERSHELL_NET_RE.search(plain):

