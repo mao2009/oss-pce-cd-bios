@@ -63,7 +63,7 @@ release:
 	@echo 'BLOCKED: BIOS APIs and System Card boot are unimplemented; no BIOS release is available.' >&2
 	@exit 1
 
-.PHONY: dev-rom dev-test dev-integration dev-sweep dev-bcdbin-sweep dev-mul16s-sweep dev-release-gate dev-release-gate-blocked
+.PHONY: dev-rom dev-test dev-integration dev-sweep dev-bcdbin-sweep dev-mul16s-sweep dev-cos-sweep dev-release-gate dev-release-gate-blocked
 dev-rom:
 	$(PYTHON) tools/build_rom.py --mode "$(MODE)"
 dev-test: dev-rom

@@ -401,14 +401,14 @@ class PublicDocsTest(unittest.TestCase):
         self.assertEqual(stale_hits("Current DEV implementations: 11/81 (historical 8a136ad: 8 DEV implementations)"), [])
         self.assertTrue(stale_hits("Current stubs: 80 (historical #174)"))
         self.assertTrue(stale_hits("Current stubs: 80 (historical #174: 80 stubs)"))
-        self.assertTrue(stale_hits("Current stubs: 71 (historical #174: 73 stubs)"))
+        self.assertTrue(stale_hits("Current stubs: 70 (historical #174: 73 stubs)"))
         self.assertTrue(stale_hits("Current DEV implementations: 9/81 (historical #174: 80 stubs)"))
-        self.assertTrue(stale_hits("Current stubs: 71; historical #174: 80 stubs"))
+        self.assertTrue(stale_hits("Current stubs: 70; historical #174: 80 stubs"))
 
     def test_history_pr_cite_must_be_the_whole_number(self):
         # #1740 is not #174: a note citing #1740 must not borrow #174's historical value.
-        self.assertTrue(stale_hits("Current stubs: 71 (historical #1740: 80 stubs)"))
-        self.assertTrue(stale_hits("Current stubs: 71 (historical #17: 80 stubs)"))
+        self.assertTrue(stale_hits("Current stubs: 70 (historical #1740: 80 stubs)"))
+        self.assertTrue(stale_hits("Current stubs: 70 (historical #17: 80 stubs)"))
         self.assertEqual(stale_hits("Current stubs: 70 (historical #174: 80 stubs)"), [])
 
     def test_history_commit_cite_must_be_the_whole_id(self):

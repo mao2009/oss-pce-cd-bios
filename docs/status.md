@@ -33,7 +33,7 @@ These nine entries are **DEV implementations** on main f90c16b. They are separat
 | $43 | MA_DIV16U | [#480](https://github.com/mao2009/oss-pce-cd-bios/pull/480): project-own unsigned division, caller I/D flag combinations, stack and WRAM final-state checks, real-core mutants |
 | $4F | MA_MUL16S | [#495](https://github.com/mao2009/oss-pce-cd-bios/pull/495) (Issue #494): project-own signed 16x16 to 32-bit multiplication; caller P/Y/S, MPR, ZP/BSS/I/O and frame-external stack checked on pinned Geargrafx, including a write/read trace of the routine's own instructions; real-core mutants of the assembled routine. Manual `make dev-mul16s-sweep` covers 1,572,864 calls. Not the proven System Card ABI |
 
-On the Issue #78 PR branch, MA_SQRT ($44) is added as a tenth DEV implementation: project-own integer square root DEV contract (bit-by-bit restoring, trial = 4*root + 1), host-exhaustive 65,536-input check and real-core boundary/mutant tests on pinned Geargrafx. Not the proven System Card ABI.
+On the Issue #78 PR branch, MA_SQRT ($44) is added as a tenth DEV implementation; on the Issue #80 PR branch, MA_COS ($46) is added as the eleventh: project-own integer square root DEV contract (bit-by-bit restoring, trial = 4*root + 1), host-exhaustive 65,536-input check and real-core boundary/mutant tests on pinned Geargrafx. Not the proven System Card ABI.
 
 ## Recent merged evidence and safety limitations
 
