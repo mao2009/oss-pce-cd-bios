@@ -38,13 +38,14 @@ DEV API 候補 MA_DIV16S（slot `$42`、候補エントリ `0xE0C6` = HYPOTHESIS
 
 host 判定器は 6 フィールド（商・余り・C・V・N・Z）を比較する。
 `tests/host/test_ma_div16s.py::test_judge_rejects_plausible_mutants` は、床除算・余りの符号誤り・V 欠落・C 欠落・Z 欠落を
-判定器が拒否することを確認する。RED 確認: V を常に 0 にしたモデルの写しに対して本テストが 3 件失敗することを確認済み
-（作業ディレクトリ外の一時コピー。コミットしていない）。GREEN: 実モデルで 7 件すべて成功。
+判定器が拒否することを確認する。RED 確認: V を常に 0 にしたモデルの写しに対して、ModelTest 全体（7 件）のうち 3 件が失敗した
+（新試験 `test_judge_rejects_plausible_mutants` を含む。作業ディレクトリ外の一時コピーで実施し、コミットしていない）。
+GREEN: 実モデルで 7 件すべて成功。
 
 ## 公開ソースの名称衝突（オープン問題）
 
-`docs/abi-contracts.md` の名称表で既に記録している。`$42/$43` について、HuCC の `pcengine.inc` は
-`$42 = MA_DIV16S`（`0xE0C6`）、`$43 = MA_DIV16U`（`0xE0C9`）とし、Hu-Go の `bios.c` の selector 定義は
+`docs/abi-contracts.md` の名称表で既に記録している。`$42/$43` について、HuCC の `pcengine.inc` の equate 名は
+`$42 = MA_DIV16S`、`$43 = MA_DIV16U` とし（候補エントリ `0xE0C6` / `0xE0C9` は本プロジェクトの `spec/api_contracts.json` の記録）、Hu-Go の `bios.c` の selector 定義は
 `MA_DIV16U / MA_DIV16S` の順に並べる。Hu-Go の観測はエントリを証明しない（HLE selector）。
 したがって**符号付き／符号なしと `$42`／`$43` の対応は未確定**であり、本 DEV 実装の割当（`$42` = 符号付き）を
 参照 ABI の事実として扱わない。解決には参照 BIOS の実測が必要で、本 Issue では実施しない。
