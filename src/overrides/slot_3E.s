@@ -43,6 +43,7 @@ api_slot_3E:
     dex
     bne @step
     plx                      ; PLX sets N/Z from X, so the output load comes after it
+    nop                      ; layout parity: makes the OVERRIDES end odd so the even-rounded trampoline == body end (MUL16S window)
     lda $2000                ; A = output byte; N/Z from A
     rts
 @seed:

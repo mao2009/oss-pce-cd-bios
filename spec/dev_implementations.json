@@ -1047,7 +1047,7 @@
         "approved_by": null,
         "review_ref": null
       },
-      "note": "real-core PASS on pinned Geargrafx b49ae82 (debug DEV ROM, sha256 3504cd01...): zero-RAM, seed $0000/$1234/$A5C3 runs, X/Y preservation, SP=$06 boundary, state RAM; DEV-only, NOT_READY until owner approval is recorded"
+      "note": "real-core PASS on pinned Geargrafx b49ae82 (debug DEV ROM, sha256 08214d17...): zero-RAM, seed $0000/$1234/$A5C3 runs, X/Y preservation, SP=$06 boundary, state RAM; DEV-only, NOT_READY until owner approval is recorded"
     },
     {
       "id": 63,
