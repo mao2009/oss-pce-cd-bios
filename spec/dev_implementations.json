@@ -945,12 +945,19 @@
       "candidate_name": "EX_SETWRT",
       "state": "NOT_READY",
       "abi_contract": {
-        "status": "UNKNOWN",
+        "status": "PROJECT_SPEC_ONLY",
         "note": "reference System Card contract not verified; DEV-only project spec"
       },
-      "implementation": null,
-      "host_evidence": [],
+      "implementation": {
+        "source": "src/overrides/slot_3A.s",
+        "license": "MIT (repository LICENSE)",
+        "provenance": "project-own contract in slot_3A.s header (Issue #68)"
+      },
+      "host_evidence": [
+        "tests/host/test_ex_setwrt.py"
+      ],
       "real_core_evidence": [],
+      "note": "DEV ROM implementation added; real-core run NOT_RUN in this environment (no cc65/Geargrafx core); NOT_READY until owner approval is recorded",
       "approval": {
         "approved_by": null,
         "review_ref": null
