@@ -31,7 +31,7 @@ class LedgerTests(unittest.TestCase):
 
     def test_counts_separate_dev_rom_from_approval(self):
         summary = dev.summary(base(), OVERRIDES)
-        self.assertEqual(10, summary["dev_rom_callable"])
+        self.assertEqual(11, summary["dev_rom_callable"])
         self.assertEqual(0, summary["dev_callable_approved"])
         self.assertEqual(0, summary["abi_verified"])
         self.assertIs(False, summary["release_eligible"])
@@ -223,13 +223,13 @@ class FailClosedTests(unittest.TestCase):
 
     def test_counts_are_separate_and_current(self):
         s = dev.summary(base(), OVERRIDES)
-        self.assertEqual((10, 71, 0), (s["dev_rom_callable"], s["dev_rom_unimplemented"], s["owner_approved"]))
+        self.assertEqual((11, 70, 0), (s["dev_rom_callable"], s["dev_rom_unimplemented"], s["owner_approved"]))
 
     def test_owner_approval_is_counted_apart_from_implementation(self):
         ledger = base()
         entry(ledger, 0x10)["approval"] = {"approved_by": "owner", "review_ref": "x"}
         s = dev.summary(ledger, OVERRIDES)
-        self.assertEqual((10, 1, 0), (s["dev_rom_callable"], s["owner_approved"], s["dev_callable_approved"]))
+        self.assertEqual((11, 1, 0), (s["dev_rom_callable"], s["owner_approved"], s["dev_callable_approved"]))
 
     def test_malformed_ledgers_are_rejected(self):
         for mutate in (

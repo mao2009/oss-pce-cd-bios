@@ -1,6 +1,6 @@
 # EX_RND 内部乱数ルーチン（本プロジェクト独自仕様）
 
-Issue #72。`src/ex_rnd.s` の `ex_rnd_next` / `ex_rnd_seed` は本プロジェクトが独自に定めた契約で動く HuC6280 ルーチンである。**System Card の slot `$3E` / 候補 `$E0BA` の ABI ではない**。純正 EX_RND の契約（seed、状態保持、更新規則、戻り値）は未確認（Spec=HYPOTHESIS）のままで、本ルーチンの検証結果はその根拠にならない。ROM ジャンプテーブルには接続していない。
+Issue #72。`src/ex_rnd.s` の `ex_rnd_next` / `ex_rnd_seed` は本プロジェクトが独自に定めた契約で動く HuC6280 ルーチンである。**System Card の slot `$3E` / 候補 `$E0BA` の ABI ではない**。純正 EX_RND の契約（seed、状態保持、更新規則、戻り値）は未確認（Spec=HYPOTHESIS）のままで、本ルーチンの検証結果はその根拠にならない。ROM ジャンプテーブルには接続していない。なお DEV ROM の slot `$3E`（`src/overrides/slot_3E.s`、候補 `$E0BA`）には、Y=1 で seed、それ以外の Y で next を行う別の DEV 契約（状態 `$2000/$2001`）を接続している。こちらも独自仕様で、純正 EX_RND の ABI ではない。
 
 ## 契約（独自）
 
