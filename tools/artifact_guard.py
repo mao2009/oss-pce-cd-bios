@@ -1937,19 +1937,28 @@ def _run_write_problem(run):
 # target in the repo (its text is not read); a command word from a variable (refused only where it is a command word);
 # a git alias set outside the run; a program not on the lists below.
 SEND_WRAPPERS = frozenset({"sudo", "env", "exec", "command", "builtin", "busybox", "xargs", "time", "nice", "nohup",
-                           "timeout", "stdbuf", "coproc", "function", "if", "then", "else", "elif", "do", "while", "until", "!"})
+                           "timeout", "stdbuf", "coproc", "function", "if", "then", "else", "elif", "do", "while", "until", "!",
+                           "find", "setsid", "sshpass", "strace", "unbuffer", "ionice", "flock", "watch", "parallel", "doas", "su"})
 INTERPRETER_WORD_RE = re.compile(r"\b(?:python[\d.]*|node|perl|ruby|php|deno|bun|pwsh|powershell|lua)\b")
 SHELLS = frozenset({"sh", "bash", "dash", "zsh", "ksh"})
 SEND_PROGRAMS = frozenset({"nc", "ncat", "netcat", "socat", "telnet", "ssh", "scp", "sftp", "ftp", "lftp", "rsync", "aws",
-                           "azcopy", "gsutil", "az", "rclone", "s3cmd", "sendmail", "msmtp", "mail", "mutt"})
-SEND_VERBS = {"git": {"push", "send-pack"}, "docker": {"push"}, "helm": {"push"}, "oras": {"push"}, "npm": {"publish"},
-              "pnpm": {"publish"}, "twine": {"upload"}}
+                           "azcopy", "gsutil", "az", "rclone", "s3cmd", "sendmail", "msmtp", "mail", "mutt", "tftp"})
+SEND_VERBS = {"git": {"push", "send-pack", "send-email"}, "docker": {"push", "--push"}, "helm": {"push"}, "oras": {"push"},
+              "npm": {"publish"}, "pnpm": {"publish"}, "yarn": {"publish"}, "cargo": {"publish"}, "uv": {"publish"},
+              "twine": {"upload"}}
+# PowerShell and Windows send tools (a windows-latest job runs pwsh by default, so these are matched on the whole run text)
+POWERSHELL_NET_RE = re.compile(r"Invoke-(?:WebRequest|RestMethod)|\b(?:iwr|irm)\b|Send-MailMessage|Start-BitsTransfer"
+                               r"|WebClient|UploadFile|UploadString|HttpClient|\bcurl\.exe\b|\bwget\.exe\b|\bscp\.exe\b", re.IGNORECASE)
+GLUED_SUBSTITUTION_RE = re.compile(r"\$\([^()]*\)[^\s;&|<>()]|`[^`]*`[^\s;&|<>()]")   # $(echo c)url: one word built at run time
 GH_WRITE_VERBS = frozenset({"create", "upload", "edit", "delete", "comment", "review", "merge", "close", "reopen", "set",
                             "publish", "transfer", "fork", "run"})
 CURL_VALUE_SHORT = "AbcCDeEHmoPQrtuUwxyYz"   # curl short options that take a value; a d, F, T, K or X before them is a send
 INTERPRETERS = re.compile(r"python[\d.]*|py|node|nodejs|perl|ruby|php|deno|bun|pwsh|powershell|lua")
 NET_CODE_RE = re.compile(r"\b(urllib|http\.client|requests|httpx|aiohttp|socket|ftplib|smtplib|paramiko|urlopen|subprocess"
                          r"|os\.system|os\.popen|Net::HTTP|IO::Socket|LWP|fetch|XMLHttpRequest|net\.connect|https?\.request)\b")
+# Code that starts another program or decodes hidden code. Matched as a call (exec(, os.execvp(, eval() or as a word
+# (base64, twine); a bare word such as "executable" in a step name does not match.
+CODE_EXEC_RE = re.compile(r"\b(?:exec\w*|eval|spawn\w*)\s*\(|\b__import__\b|\bbase64\b|\btwine\b")
 ASSIGN_RE = re.compile(r"[A-Za-z_]\w*=")
 PY_EXPRESSION = "${{ steps.pyresolve.outputs.python }}"   # the trusted python resolve (RUN_EXPRESSIONS); runs as python3
 
@@ -2026,6 +2035,11 @@ def _gh_api_problem(args):
     return None
 
 
+def _code_problem(text):
+    """True when interpreter code can reach the network, start a program or decode hidden code."""
+    return bool(NET_CODE_RE.search(text) or CODE_EXEC_RE.search(text))
+
+
 def _send_command(base, args, depth):
     """The send problem of one command, by its base name and its plain arguments, or None."""
     if base in SEND_PROGRAMS:
@@ -2050,7 +2064,7 @@ def _send_command(base, args, depth):
         return f"{base} {sorted(SEND_VERBS[base])[0]} sends or publishes"
     if base == "git" and any(word.startswith("alias.") for word in args):
         return "git alias.* can name push"
-    if INTERPRETERS.fullmatch(base) and NET_CODE_RE.search(" ".join(args)):
+    if INTERPRETERS.fullmatch(base) and _code_problem(" ".join(args)):
         return f"{base} runs network or process code inline"
     return None
 
@@ -2082,7 +2096,7 @@ def _send_in(script, depth):
                 continue
             if prog == PY_EXPRESSION:
                 prog = "python3"
-            if "$" in prog:
+            if "$" in prog or (k == start and any(mark in prog for mark in "*?[`")):   # a glob or $ picks the program at run time
                 return f"runs a command word assembled at run time ({prog!r})"
             if prog == "eval":
                 return "eval builds a command at run time"
@@ -2095,9 +2109,14 @@ def _send_in(script, depth):
 def _send_problem(run):
     """Issue #511. The reason a run: text sends data out of the runner (a publish path), or None."""
     run = re.sub(r"(?<!\\)((?:\\\\)*)\\\r?\n", r"\1", run)   # bash joins a backslash-newline into one word
-    if "/dev/tcp/" in run or "/dev/udp/" in run:   # a bash redirection that opens a network socket
+    plain = re.sub(r"[\"'\\]", "", run)   # what the shell sees once quotes and escapes are gone
+    if "/dev/tcp/" in plain or "/dev/udp/" in plain:   # a bash redirection that opens a network socket
         return "opens a network socket through /dev/tcp or /dev/udp"
-    if INTERPRETER_WORD_RE.search(run) and NET_CODE_RE.search(run):   # a heredoc or here-string can hold the code
+    if POWERSHELL_NET_RE.search(plain):
+        return "uses a PowerShell or Windows network command (windows runners default to pwsh)"
+    if GLUED_SUBSTITUTION_RE.search(plain):
+        return "glues a command substitution to a word, which builds a command at run time"
+    if INTERPRETER_WORD_RE.search(run) and _code_problem(run):   # a heredoc or here-string can hold the code
         return "runs an interpreter with network or process code (in the run text, a heredoc or stdin)"
     return _send_in(run, 0)
 
