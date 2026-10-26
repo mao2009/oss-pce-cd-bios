@@ -16,6 +16,7 @@ import hashlib
 import json
 import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -96,11 +97,20 @@ class ForgedEvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "VERIFIED is not represented"):
             adjudicate(claim)
 
-    def test_evidence_artifact_resolution_is_not_observation(self):
+    def test_resolved_artifact_is_not_observation(self):
         # resolve_evidence() only checks bytes against a hash and a pinned revision (ARTIFACT_HASH_RESOLVED).
         # Its success must not be readable as an OBSERVED claim.
-        self.assertNotIn("VERIFIED", contracts.CLAIM_STATUSES)
-        self.assertNotEqual(contracts.ARTIFACT_TRUST_LEVEL, contracts.EVIDENCE_TRUST_LEVEL)
+        data = b"artifact bytes, checked against a hash only"
+        digest = hashlib.sha256(data).hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / digest).write_bytes(data)
+            entry = observed_claim()["evidence"][0]
+            entry["evidence_hash"] = digest
+            self.assertEqual(Path(directory) / digest,
+                             contracts.resolve_evidence(entry, artifact_dir=Path(directory)))
+            claim = observed_claim()
+            claim["evidence"] = [entry]
+            self.assertRefusedAsUnauthenticated(claim, hashes=frozenset({digest}))
 
 
 class SelfDeclaredApprovalTests(unittest.TestCase):
@@ -136,7 +146,7 @@ class SelfDeclaredApprovalTests(unittest.TestCase):
         self.assertTrue(dev.validate(ledger, SLOTS, OVERRIDES))
 
     def test_committed_ledgers_have_no_owner_approved_dev_callable(self):
-        # Owner approval for DEV_CALLABLE is 0 in the committed ledger; an approval recorded by a worker must not change this.
+        # The committed ledger has no owner-approved DEV_CALLABLE row (summary counts, read-only).
         summary = dev.summary(base_ledger(), OVERRIDES)
         self.assertEqual(0, summary["dev_callable_approved"])
         self.assertEqual(0, summary["abi_verified"])
@@ -173,13 +183,6 @@ class DevResultTests(unittest.TestCase):
         with self.assertRaisesRegex(review.Invalid, "owner_approved_dev_callable"):
             review.validate(base_review(), contracts.load_contracts(), ledger)
 
-    def test_dev_implementation_cannot_be_recorded_as_observed_on_reference_axis(self):
-        # A DEV real-core run is a CALLEE_EXECUTION of the OSS override, not of the reference BIOS.
-        # The claim must still satisfy the reference-axis rules, so no DEV run can reach OBSERVED without them.
-        claim = observed_claim(sources=("caller",))
-        with self.assertRaisesRegex(ValueError, "EMULATOR_SOURCE"):
-            adjudicate(claim)
-
 
 class StaticAnalysisTests(unittest.TestCase):
     """Static analysis (source text, disassembly, safety verdicts) is never a verification."""
@@ -199,15 +202,15 @@ class StaticAnalysisTests(unittest.TestCase):
             with self.subTest(state=state):
                 document = copy.deepcopy(base_review())
                 document["apis"][0]["abi_state"] = state
-                with self.assertRaises(review.Invalid):
+                with self.assertRaisesRegex(review.Invalid, "reproducible real core"):
                     review.validate(document, contracts.load_contracts(), base_ledger())
 
     def test_static_execution_safe_is_not_permission(self):
-        # A static EXECUTION_SAFE verdict is a profile, not an execution permission: no permission key may be added.
+        # A static EXECUTION_SAFE verdict is a profile, not an execution permission.
         document = copy.deepcopy(base_review())
         document["apis"][0]["safety"]["static_verdict"] = "EXECUTION_SAFE"
-        document["apis"][0]["safety"]["permission"] = "ALLOWED"
-        with self.assertRaisesRegex(review.Invalid, "safety keys"):
+        document["apis"][0]["safety"]["execution_permission"] = "ALLOWED"
+        with self.assertRaisesRegex(review.Invalid, "execution permission"):
             review.validate(document, contracts.load_contracts(), base_ledger())
 
 

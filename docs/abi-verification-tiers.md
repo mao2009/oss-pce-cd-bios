@@ -33,7 +33,7 @@
 
 - 問い: 固定版の公開ソース（caller 側 SDK、HLE エミュレータ、実コアのソース）が、その項目について何を書いているか。
 - 値: `UNKNOWN`（根拠なし）、`HYPOTHESIS`（ソースに記述がある。`confidence: SOURCE_SUPPORTED`）、
-  `SOURCE_FACT`（caller 側の一次ソース本文の事実に限る。文書上のラベル）。
+  `SOURCE_FACT` は静的レビュー（`tools/abi1_reference_review.py` の `ITEM_STATUSES`）の語で、台帳 claim の値ではない。caller 側の一次ソース本文の事実に限る文書上のラベル。
 - 上限: ソース記述だけで `OBSERVED` や `VERIFIED` にはならない。
 - 既存の対応: `spec/api_contracts.json` の `sources` と `confidence`、`tools/contracts.py` の `SOURCE_KIND_MEANINGS`。
 - 判断者: 調査者。誤りはレビューで直す。
@@ -42,7 +42,7 @@
 
 - 問い: そのソースやコードを、コピー、改変、ROM への組み込み、配布に使ってよいか。
 - 値: `PENDING` / `APPROVED` / `RESTRICTED`。利用形態は `DIRECT` / `ADAPTED` / `REFERENCE_ONLY` / `REJECTED`（`docs/provenance.md`）。
-- 現状: `provenance/approvers.txt` の bootstrap は `BLOCKED`。承認者が存在しない。
+- 現状: `provenance/` ディレクトリがリポジトリになく、承認者の一覧（`provenance/approvers.txt`）も存在しない。一覧がないため fail closed。
 - 判断者: 人間の承認者だけ。CI、スキャナ、エージェントは承認できない。
 - 注意: `APPROVED` は法的な再利用許可であり、挙動が正しいことの根拠にはならない。
 
@@ -50,7 +50,7 @@
 
 - 問い: 参照 BIOS の callee を実コアで実行し、入出力、フラグ、MPR、スタック、RAM 差分を測ったか。
 - 値: §3 の状態語。
-- 実行記録（ROM ハッシュ、コア revision、入力、結果）が必要。現状は全 slot `NOT_RUN`。
+- 実行記録（`evidence_hash`、コア revision、入力、検証結果）が必要。現状は全 slot `NOT_RUN`。
 - 注意: 実測の事実と、その事実を公開してよいかは別問題（オーナー判断 §6 の項目 5）。
 
 ### 2.4 DEV_IMPLEMENTATION（OSS の DEV ROM 実装）
@@ -66,13 +66,13 @@
 
 | 軸 | 到達できる最上位 | 到達できないもの |
 | --- | --- | --- |
-| SOURCE_EVIDENCE | `HYPOTHESIS` / `SOURCE_FACT` | `OBSERVED`、`VERIFIED`、provenance 承認、DEV_CALLABLE |
+| SOURCE_EVIDENCE | `HYPOTHESIS`（`SOURCE_FACT` は静的レビューの語） | `OBSERVED`、`VERIFIED`、provenance 承認、DEV_CALLABLE |
 | PROVENANCE_APPROVAL | `APPROVED`（人間の承認者が記録） | 挙動の正しさ、callee 実測、互換性 |
-| CALLEE_VERIFICATION | `OBSERVED`（認証前は拒否。§3） | `VERIFIED`（現スキーマでは表せない。#171） |
+| CALLEE_VERIFICATION | 到達できる状態はない（`OBSERVED` は認証前に拒否。§3） | `VERIFIED`（現スキーマでは表せない。#171） |
 | DEV_IMPLEMENTATION | `DEV_CALLABLE`（DEV ROM に限る） | 参照 BIOS の `VERIFIED`、release 判定、互換性 |
 
 どの軸の値が揃っても、`release_eligible: true` にはならない。release gate は別の人間承認を要し、
-現在は常に `BLOCKED`。
+`tools/build_rom.py` の `release_gate()` は現在常に BLOCKED を返す。
 
 ## 3. フィールドごとの状態の意味
 
@@ -83,7 +83,7 @@
 | 状態 | 意味 | 必要条件 | 現在到達できるか | 現在の件数 |
 | --- | --- | --- | --- | --- |
 | `UNKNOWN` | 根拠がない、または判定できない。既定値。 | なし。`value` は `UNKNOWN`、`confidence` は `UNKNOWN`。 | はい | 全フィールド |
-| `OBSERVED` | 記録された実コアの実行で、そのフィールドの挙動が観測された。 | 再現可能な実コア実行、実行の記録（ROM ハッシュ、コア revision、入力、結果）、producer 認証（#124）、`observation_kind` がフィールドを覆う。 | いいえ。認証前は `adjudicate_claim()` が拒否（`#124`）。静的レビューの `OBSERVED_STATIC` は別物 | 0 |
+| `OBSERVED` | 記録された実コアの実行で、そのフィールドの挙動が観測された。 | 再現可能な実コア実行、実行の記録（`evidence_hash`、コア revision、入力、検証結果）、EMULATOR_SOURCE の参照、`REALCORE` の表示、callee 挙動のフィールドでは `executed_callee=True`、`observation_kind` がフィールドを覆う、producer 認証（#124）。 | いいえ。認証前は `adjudicate_claim()` が拒否（`#124`）。静的レビューの `OBSERVED_STATIC` は別物 | 0 |
 | `PARTIAL` | 観測したのは入力領域の一部（ケース、フラグ、条件）。 | `OBSERVED` の条件に加え、覆った範囲と覆っていない範囲を明記すること。 | いいえ（abi1 の語彙にあるが、再現可能な観測がない） | 0 |
 | `VERIFIED-equivalent` | 参照 BIOS の全入力領域が実コアで観測され、認証され、独立レビューされ、オーナーが承認した状態。 | `OBSERVED` の条件に加え、全入力領域、独立レビュー、オーナー承認、#171 の trusted VERIFIED 経路。 | いいえ。`VERIFIED` は `CLAIM_STATUSES` と `adjudicate_claim()` で拒否される。abi1 は静的経路からの `VERIFIED` を拒否する | 0 |
 
@@ -128,7 +128,7 @@
 
 2026-10-21 の決定で項目 1（台帳導入）と項目 2（DEV_CALLABLE の定義）は承認済み。以下は未決。
 
-1. **項目 3: `ORIGINAL` の OSS 実装の `provenance_approval` を誰が承認するか。** 承認者 bootstrap は `BLOCKED`。
+1. **項目 3: `ORIGINAL` の OSS 実装の `provenance_approval` を誰が承認するか。** 承認者の一覧がリポジトリにない（fail closed）。
 2. **項目 4: 台帳に 3 軸のキー（`source_evidence` / `provenance_approval` / `callee_verification`）を追加するか。**
    スキーマ変更なので、本書は提案しない。
 3. **項目 5: `CALLEE_VERIFICATION` で実測した事実のうち、公開してよい範囲。**
