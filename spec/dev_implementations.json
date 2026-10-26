@@ -1197,8 +1197,14 @@
         "status": "UNKNOWN",
         "note": "reference System Card contract not verified; DEV-only project spec"
       },
-      "implementation": null,
-      "host_evidence": [],
+      "implementation": {
+        "source": "src/overrides/slot_45.s",
+        "license": "MIT (repository LICENSE)",
+        "provenance": "project-own quarter-wave table with quadrant folding (Issue #79); DEV contract: binary angle in A, signed scale-127 sine in A"
+      },
+      "host_evidence": [
+        "tests/host/test_ma_sin_dev.py"
+      ],
       "real_core_evidence": [],
       "approval": {
         "approved_by": null,
