@@ -1,7 +1,7 @@
 """Host checks for the project-own EX_SETWRT (slot $3A) VDC MAWR contract (Issue #68, DEV only).
 
-Scope: a Python model of the documented contract plus static checks of src/overrides/slot_3A.s.
-No HuC6280 execution happens here; real-core evidence is NOT_RUN (see the PR body).
+Scope: a Python model of the documented contract (not the assembly) plus an exact instruction-sequence
+check of src/overrides/slot_3A.s. No HuC6280 execution happens here; real-core evidence is NOT_RUN.
 """
 import re
 import unittest
@@ -10,9 +10,19 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "src" / "overrides" / "slot_3A.s"
 
+# Exact instruction sequence (comments and directives stripped). Any change must update this on purpose.
+EXPECTED = [
+    "cpx #$80", "bcs setwrt_reject",
+    "php", "sei", "phy", "phx", "pha",
+    "tma #$02", "pha", "lda #$FF", "tam #$02",
+    "stz $2000", "pla", "tay", "pla", "sta $2002", "plx", "stx $2003",
+    "pha", "tya", "tam #$02", "pla", "ply", "plp", "clc", "rts",
+    "sec", "rts",
+]
+
 
 def setwrt_model(a, x, mawr=None):
-    """Return (ok, mawr_after, a_after, x_after). Out-of-range X leaves everything unchanged."""
+    """Model of the contract: return (ok, mawr_after, a_after, x_after). X >= $80 changes nothing."""
     if not (0 <= a <= 255 and 0 <= x <= 255):
         raise ValueError("A and X must be bytes")
     if x >= 0x80:
@@ -39,38 +49,27 @@ class SetwrtModelTests(unittest.TestCase):
 class SetwrtSourceTests(unittest.TestCase):
     def setUp(self):
         self.text = SOURCE.read_text(encoding="utf-8")
-        self.code = [line.split(";", 1)[0].strip() for line in self.text.splitlines()]
-        self.code = [line for line in self.code if line and not line.startswith(".") and not line.endswith(":")]
+        code = [line.split(";", 1)[0].strip() for line in self.text.splitlines()]
+        self.code = [line for line in code if line and not line.startswith(".") and not line.endswith(":")]
 
     def test_entry_and_segment(self):
-        self.assertIn(".segment \"OVERRIDES\"", self.text)
+        self.assertIn('.segment "OVERRIDES"', self.text)
         self.assertIn(".export api_slot_3A", self.text)
         self.assertIn("api_slot_3A:", self.text)
 
-    def test_range_check_precedes_any_io(self):
-        first_io = next(i for i, line in enumerate(self.code) if line.startswith(("stz", "sta $0", "tam")))
-        self.assertEqual(self.code[0], "cpx #$80")
-        self.assertTrue(self.code[1].startswith("bcs"))
-        self.assertLess(1, first_io)
-        self.assertIn("setwrt_reject:", self.text)
+    def test_instruction_sequence_is_exact(self):
+        self.assertEqual(self.code, EXPECTED)
 
-    def test_mawr_write_sequence(self):
-        seq = [line for line in self.code if line.startswith(("stz $0000", "sta $0002", "sta $0003"))]
-        self.assertEqual(seq, ["stz $0000", "sta $0002", "sta $0003"])
-
-    def test_stack_pushes_and_pulls_balance(self):
-        def count(prefix):
-            return sum(1 for line in self.code if line.split()[0] == prefix)
-        self.assertEqual(count("php") + count("phy") + count("phx") + count("pha"),
-                         count("plp") + count("ply") + count("plx") + count("pla"))
-        self.assertEqual(count("tma"), 1)
-        self.assertEqual(count("tam"), 2)
-
-    def test_no_zero_page_or_wram_access(self):
-        # Only the VDC ports $0000-$0003 may be addressed in $0000-$00FF; other absolute operands must be >= $0100.
+    def test_only_allowed_absolute_operands(self):
+        # Only the VDC ports at $2000-$2003 (MPR1 window) may be addressed by absolute operands.
         for line in self.code:
             for hexaddr in re.findall(r"\$([0-9A-Fa-f]{4})\b", line):
-                self.assertTrue(int(hexaddr, 16) >= 0x0100 or int(hexaddr, 16) <= 0x0003, line)
+                self.assertIn(hexaddr.upper(), {"2000", "2002", "2003", "0080", "00FF"}, line)
+
+    def test_push_pull_balance(self):
+        pushes = sum(1 for line in self.code if line.split()[0] in ("php", "phy", "phx", "pha"))
+        pulls = sum(1 for line in self.code if line.split()[0] in ("plp", "ply", "plx", "pla"))
+        self.assertEqual(pushes, pulls)
 
 
 if __name__ == "__main__":
