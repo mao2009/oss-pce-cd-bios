@@ -87,6 +87,7 @@ def run_case(probe, base, folder, cue, reset, label, entry, a, sp=0xFF, count=20
 def main():
     parser = __import__("argparse").ArgumentParser(description=__doc__)
     parser.add_argument("--rom", type=Path, required=True)
+    parser.add_argument("--full", action="store_true", help="all 256 angle indices at SP=$FF (manual sweep)")
     args = parser.parse_args()
     data = args.rom.read_bytes()
     verify_dev_rom(data, manifest=args.rom.parent / "manifest.json")
@@ -109,7 +110,8 @@ def main():
         (folder / "original.bin").write_bytes(bytes(2352 * 32))
         cue = folder / "original.cue"
         cue.write_text('FILE "original.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
-        for a in CASES:
+        angles = list(range(256)) if args.full else CASES
+        for a in angles:
             run_case(probe, data, folder, cue, reset, f"cos-{a:02x}", entry, a)
             evidence["cases"].append({"angle": a, "expected_q15": q15(a), "sp": 0xFF})
         # Precondition boundary: caller SP=$06 gives entry S=$04.
@@ -117,8 +119,8 @@ def main():
             run_case(probe, data, folder, cue, reset, f"lowsp-{a:02x}", entry, a, sp=0x06)
             evidence["cases"].append({"angle": a, "expected_q15": q15(a), "sp": 0x06})
     (args.rom.parent / "geargrafx-dev-cos-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
-    total = len(CASES) + 3
-    print(f"PASS real Geargrafx DEV ROM: MA_COS slot $46 {total} cases ({len(CASES)} at SP=$FF, "
+    total = len(angles) + 3
+    print(f"PASS real Geargrafx DEV ROM: MA_COS slot $46 {total} cases ({len(angles)} at SP=$FF, "
           f"3 at SP=$06 boundary); X:A=Q15 cosine of A, Y and SP checked; MPR1/MPR7 checked")
 
 

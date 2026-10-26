@@ -82,10 +82,14 @@ dev-integration: dev-rom
 	$(PYTHON) tests/integration/geargrafx_dev_div16u.py --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
 	$(PYTHON) tests/integration/geargrafx_dev_mul16s.py --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
 	$(PYTHON) tests/integration/geargrafx_dev_sqrt.py --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
+	$(PYTHON) tests/integration/geargrafx_dev_cos.py --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
 	$(MAKE) dev-sweep MODE="$(MODE)"
 # Issue #494: manual large real-core sweep of the DEV ROM MA_MUL16S entry (slot 0x4F): every 65,536 multiplier x 6 multiplicands and every 65,536 multiplicand x 6 multipliers, at two caller SPs. Not run by CI.
 dev-mul16s-sweep: dev-rom
 	$(PYTHON) tests/integration/geargrafx_dev_mul16s.py --full --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
+# Issue #80: manual full 0..255 real-core sweep of the DEV ROM MA_COS entry (slot $46). Not run by CI.
+dev-cos-sweep: dev-rom
+	$(PYTHON) tests/integration/geargrafx_dev_cos.py --full --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
 # Issue #442: full 0..255 x 18-condition real-core sweep of the DEV ROM EX_BCDBIN entry (slot $3D).
 dev-bcdbin-sweep: dev-rom
 	$(PYTHON) tests/integration/dev_bcdbin_full_sweep.py "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
