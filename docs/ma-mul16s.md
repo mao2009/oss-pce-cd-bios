@@ -99,11 +99,12 @@ host の結果は実装の正しさを示さない（アセンブルされたバ
 
 - 符号付き 16×16 → 32-bit の境界値は `tests/host/test_ma_mul16s_model.py` の既存表を使う。
 - `tests/host/test_ma_mul16s_dev.py` の `DevMul16sSensitivityTests`:
-  - 変異感度: `dev_mul16s(a, b, mut=...)` が 1 か所だけ誤らせる 8 変異を、EDGES 組合せ 256 組と seed 89 の乱数 2000 組で評価する。
+  - 変異感度: `dev_mul16s(a, b, mut=...)` に 1 種の単一誤りを入れた 8 変異を（`lo_sbc_no_carry` と `hi_sbc_ignores_borrow` は補正 2 箇所に同時に入る）、EDGES 組合せ 256 組と seed 89 の乱数 2000 組で評価する。
   - 適用確認: 各変異は原型と異なる出力を少なくとも 1 組で出すことを検査する。
   - 等価変異の除外: 当初の `ror_first_no_carry_in`（ループ先頭の上位 ROR の C 入力を 0 にする）は、先頭反復の C が常に 0 のため適用不能（等価）。除外し、低位ワード ROR の C 入力 0 化（`ror_lo_no_carry_in`）に置き換えた。
   - 静的ガード: `src/overrides/slot_4F.s` の全メモリオペランド（`#imm` と `A` を除く）が `$2101..$210C,X` の内側にあり、ZP・BSS・I/O・MPR・フレーム外スタックを触れないことを検査する。
-- 結果（2256 組）: 原型の不一致 0。変異 7 種はすべて適用され、差が出た組はすべて検出された（`no_a_fix` 1091、`no_b_fix` 1133、`hi_sbc_ignores_borrow` 1019、`lo_sbc_no_carry` 1683、`adc_hi_no_carry` 1815、`ror_lo_no_carry_in` 2183、`fix_uses_final_multiplier` 1096、`rounds_15` 2232）。未検出の感度ギャップはなし。
+- 結果（2256 組）: 原型の不一致 0。変異 8 種（等価変異の除外後の 8 種）はすべて適用され、差が出た組はすべて検出された（`no_a_fix` 1091、`no_b_fix` 1133、`hi_sbc_ignores_borrow` 1019、`lo_sbc_no_carry` 1683、`adc_hi_no_carry` 1815、`ror_lo_no_carry_in` 2183、`fix_uses_final_multiplier` 1096、`rounds_15` 2232）。未検出の感度ギャップはなし。
+- 範囲の注記: 変異は Python の byte モデル（`dev_mul16s`）にだけ適用する。感度の結果はモデルの性質であり、アセンブル済みの `slot_4F.s` の性質ではない。オペランドのオフセット誤り（例: `$2101` を `$2102` と書く）はホスト試験では検出されず、静的ガードは番地の範囲しか見ない。アセンブル済みバイトの変異は実コア試験（`tests/integration/geargrafx_dev_mul16s.py`）の担当で、本 PR では NOT_RUN。
 - 手順: 先に新テストを書き、変異フックのない状態で RED（`TypeError: unexpected keyword 'mut'`）を確認した。その後フックを入れて GREEN（`tests.host.test_ma_mul16s_dev` 8 件 OK）。原型一致と静的ガードは既存コードへの回帰ガードのため、RED を経ずに最初から GREEN になった。
 
 ### UNKNOWN（未確定、本 PR では検証しない）

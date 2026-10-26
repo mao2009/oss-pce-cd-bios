@@ -127,7 +127,7 @@ class DevMul16sSensitivityTests(unittest.TestCase):
             diffs = [(a, b) for a, b in pairs if dev_mul16s(a, b, mut=mut) != dev_mul16s(a, b)]
             self.assertTrue(diffs, f"mutant {mut} is not applied on the domain")  # applied
             detected = [(a, b) for a, b in pairs if dev_mul16s(a, b, mut=mut) != model.expected(a, b)]
-            if not detected:
+            if detected != diffs:  # every pair where the mutant differs must be a mismatch against the model
                 gaps.append(mut)
         self.assertEqual([], gaps, "sensitivity gap: undetected mutants")
 
