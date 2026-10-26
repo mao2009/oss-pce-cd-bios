@@ -6,7 +6,8 @@ Two evidence kinds are kept apart:
   and requires gate ALLOWED. Never synthetic evidence.
 
 The 2048-byte sector comparison (compare_sector) is a full byte-for-byte comparison; it never samples.
-Shipped expectations are synthetic and carry no BIOS claim; no shipped case can yield PASS overall.
+Shipped expectations are synthetic and carry no BIOS claim. Per-item PASS can occur for synthetic input;
+judge_synthetic never returns overall PASS for shipped cases (effects are always UNKNOWN).
 """
 from cd_read_error_verdict import judge as _callee_judge
 
@@ -17,7 +18,7 @@ SECTOR_BYTES = 2048
 LBA_LIMIT = 1 << 21          # 21-bit LBA field (cd-read-contract.md T1)
 DEST_MODE = 3                # _dh = 3 only (188 D1); other modes are out of scope
 DEST_WINDOW = 0x2000         # MPR3 window, 8 KiB
-IN_SCOPE_COUNTS = (1,)       # count 0, 2, 3, 4, 256 stay UNKNOWN (188 section 2.3)
+IN_SCOPE_COUNTS = (1,)       # count 0, 2, 3, 4, 256 stay UNKNOWN (188 section 2.3). Unit of count: HYPOTHESIS A4.
 IN_WINDOW, CROSSES = 'IN_WINDOW', 'CROSSES_WINDOW'
 
 SYNTHETIC_CASES = {
@@ -86,6 +87,7 @@ def judge_synthetic(case, obs):
         return BLOCKED, {'reason': 'lba or media size invalid'}
     if case.get('dest_mode') != DEST_MODE:
         return BLOCKED, {'reason': 'destination mode out of scope'}
+    # bool is an int subclass: the type check rejects True/False before the scope check.
     if type(count) is not int or count < 0:
         return BLOCKED, {'reason': 'count invalid'}
     if count not in IN_SCOPE_COUNTS:

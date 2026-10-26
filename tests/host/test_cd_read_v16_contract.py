@@ -32,9 +32,9 @@ def synth(case_name, **over):
 
 
 class Reference(unittest.TestCase):
-    def test_reference_sector_is_2048_bytes_and_deterministic(self):
+    def test_reference_sector_is_2048_bytes_and_has_known_prefix(self):
         self.assertEqual(len(REF5), SEC)
-        self.assertEqual(REF5, v.reference_sector(5))
+        self.assertEqual(v.reference_sector(0)[:4], bytes([0, 7, 14, 21]))
 
     def test_reference_sectors_differ_between_lbas(self):
         self.assertNotEqual(v.reference_sector(5), v.reference_sector(6))
@@ -90,7 +90,8 @@ class InRangeSynthetic(unittest.TestCase):
         self.assertEqual(items['delivered'], v.FAIL)
 
     def test_no_overall_pass_is_possible_for_synthetic(self):
-        self.assertNotEqual(v.judge_synthetic(CASE, synth('S1_LBA15_IN_RANGE'))[0], v.PASS)
+        for name, case in v.SYNTHETIC_CASES.items():
+            self.assertNotEqual(v.judge_synthetic(case, synth(name))[0], v.PASS, name)
 
 
 class OutOfRangeSynthetic(unittest.TestCase):
@@ -155,7 +156,7 @@ class EvidenceSeparation(unittest.TestCase):
     def test_synthetic_observation_cannot_be_callee_evidence(self):
         self.assertEqual(v.judge_callee(ev.CASES['C1_OUT_OF_RANGE_LBA'], synth('S1_LBA15_IN_RANGE'))[0], v.BLOCKED)
 
-    def test_synthetic_observation_with_callee_fields_is_blocked_by_callee_judge(self):
+    def test_synthetic_observation_with_callee_fields_is_blocked_by_kind_check(self):
         obs = {**synth('S1_LBA15_IN_RANGE'), 'reached': True, 'gate': 'ALLOWED', 'a': 0, 'x': 0, 'y': 0,
                'p': 0x24, 'ram_outside_dest': 0}
         self.assertEqual(v.judge_callee(ev.CASES['C2_COUNT_0'], obs)[0], v.BLOCKED)

@@ -8,7 +8,7 @@
 
 * **参照 ABI の実観測: 未実施。** 純正 BIOS の実行 0 件、`$E009` の JSR 0 件、Geargrafx 実行 0 件（本 PR は重い実コア実行を含まない）。
 * JSR gate は閉じたまま（`spec/reference_jsr_gate.json` の slot 3 記録なし、`NO_REVIEWED_GATE_RECORD`）。#188 と #189 の参照観測は **BLOCKED**。
-* 本 PR の判定器が返す PASS は合成入力に対するものだけで、純正 CD_READ の ABI 証拠ではない。CD_READ 転送層の判定は System Card callee の VERIFIED ではない。
+* 本 PR の判定器が返す項目別の PASS は合成入力に対するものだけで、純正 CD_READ の ABI 証拠ではない。全体（overall）の PASS は shipped 範囲では発生しない。CD_READ 転送層の判定は System Card callee の VERIFIED ではない。
 * `release_eligible`、`VERIFIED_PATH_ENABLED`、JSR gate、承認欄、`api_contracts.json` の schema と status は変更していない。Reference VERIFIED は 0/81 のまま。
 
 ## 1. 証拠の種別を分ける
@@ -24,10 +24,10 @@
 
 | 項目 | 契約（合成判定器の規則） | 状態 |
 | --- | --- | --- |
-| 転送先モード | `_dh = 3` のみ（188 D1）。他のモードは BLOCKED | 合成の範囲で確定 |
-| count | 1 のみ IN_SCOPE。0、2、3、4、256 は UNKNOWN（PASS にならない） | count 境界は callee 未観測のため UNKNOWN |
+| 転送先モード | `_dh = 3` のみ（188 D1）。他のモードは BLOCKED。`_dh=3` は公開 caller 由来の観測候補であり、ABI として確定したものではない | 合成判定器の範囲のみ。callee 側は UNKNOWN |
+| count | 1 のみ IN_SCOPE。0、2、3、4、256 は UNKNOWN（PASS にならない）。count の単位がセクターであることは [HYPOTHESIS A4]（コメント/宣言由来）で、コードの事実ではない | count 境界は callee 未観測のため UNKNOWN |
 | 宛先の幾何 | MPR3 窓 8 KiB 内に `count * 2048` バイトが収まるとき IN_WINDOW。窓を跨ぐと UNKNOWN、窓外の offset は BLOCKED | 合成の幾何のみ |
-| LBA 範囲 | 21 ビット（T1）。媒体サイズ未満が範囲内。範囲外（LBA = 媒体サイズ を含む）は配送 0、宛先不変を期待 | 合成媒体のみ |
+| LBA 範囲 | 21 ビット（[D] `cd-read-contract.md` T1 の記録）。媒体サイズ未満が範囲内。範囲外（LBA = 媒体サイズ を含む）は配送 0、宛先不変を期待。LBA の基点（絶対か CD_BASE 相対か）は #11 で未解決 | 合成媒体のみ |
 | 1セクターの内容 | 範囲内は `reference_sector(lba)` の 2048 バイトを**全バイト比較**。サンプリングしない | 合成の内容のみ |
 | 宛先外書込み | 0 でなければ FAIL | 合成の監視 |
 | A / X / Y / P、MPR、stack、IRQ | 合成観測として記録し、形式が不正なら BLOCKED。判定は UNKNOWN（callee の期待値は未確定） | UNKNOWN |
