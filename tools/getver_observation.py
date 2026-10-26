@@ -239,3 +239,66 @@ def abi_status(records):
         "reference_abi_verified": 0,
         "owner_approved_for_observation": 0,
     }
+
+
+# DEV ROM version bytes from src/overrides/slot_1E.s. They describe this project's own routine only and
+# are never the expected value of a reference observation (docs/abi1-reference-abi-review.md section 8).
+DEV_OUTPUT = {"x": 3, "y": 0}
+
+# Caller-side SOURCE_FACT only (docs/abi-contracts.md, "Focused caller contracts"). Nothing here describes
+# callee or BIOS behaviour; the reference return value stays UNKNOWN.
+CALLER_SOURCE_FACTS = (
+    {"id": "CALLER_MAJOR_IN_X", "statement": "caller compares X with 3 for the System Card version check",
+     "locator": "huc:include/hucc/core-stage1.asm lines 94-99"},
+    {"id": "CALLER_TXA_SAY", "statement": "caller adapts the presumed X:A result to Y:A with TXA and SAY",
+     "locator": "huc:include/hucc/hucc-systemcard.asm lines 72-79"},
+)
+
+
+def verify_evidence(records, *, rom_sha256, entry, core_revision, harness_revision, step_budget):
+    """Fail-closed check over synthetic observation records, returning a checklist.
+
+    Every record goes through ``validate`` first. Then this adds the DEV output rules (X/Y are the DEV
+    version bytes, A is saved, zero page is unchanged), cold/warm pairing per case with the same input
+    vector, and an exact cold/warm after-state comparison. P is recorded, not asserted. Nothing here
+    raises the ABI state above OBSERVED_SYNTHETIC or lifts the execution block.
+    """
+    kwargs = dict(rom_sha256=rom_sha256, entry=entry, core_revision=core_revision,
+                  harness_revision=harness_revision, step_budget=step_budget)
+    cases = {}
+    for item in records:
+        validate(item, **kwargs)
+        before, after = item["before"], item["after"]
+        if (after["x"], after["y"]) != (DEV_OUTPUT["x"], DEV_OUTPUT["y"]):
+            raise Refused("OUTPUT", f"X/Y = {after['x']},{after['y']} differ from the DEV version bytes")
+        if after["a"] != before["a"]:
+            raise Refused("OUTPUT", f"A not saved: {before['a']:#04x} -> {after['a']:#04x}")
+        if after["zp"] != before["zp"]:
+            raise Refused("RAM", "zero page changed; the DEV routine is expected to write no zero page")
+        cases.setdefault(item["case"], {}).setdefault(item["temperature"], []).append(item)
+
+    pairs = {}
+    for name, by_temp in cases.items():
+        if sorted(by_temp) != sorted(TEMPERATURES) or any(len(v) != 1 for v in by_temp.values()):
+            raise Refused("PAIR", f"case {name!r} needs exactly one cold and one warm record")
+        cold, warm = by_temp["cold"][0], by_temp["warm"][0]
+        if cold["inputs"] != warm["inputs"]:
+            raise Refused("PAIR", f"case {name!r}: cold and warm input vectors differ")
+        if cold["after"] != warm["after"]:
+            raise Refused("COLD_WARM", f"case {name!r}: after-state differs between cold and warm")
+        pairs[name] = "COMPLETE_SAME_AFTER_STATE"
+
+    run = bool(records)
+    return {
+        "checklist": {
+            "pairs": pairs if run else "NOT_RUN",
+            "version_format": {"dev_x_y": [DEV_OUTPUT["x"], DEV_OUTPUT["y"]], "reference": "UNKNOWN",
+                               "system_card_comparison": "BLOCKED"},
+            "saved_registers": {"a": "SAVED" if run else "NOT_RUN", "p": "RECORDED_NOT_ASSERTED",
+                                "sp": "BALANCED" if run else "NOT_RUN", "mpr": "UNCHANGED" if run else "NOT_RUN"},
+            "ram": {"zero_page_32": "UNCHANGED" if run else "NOT_RUN", "beyond_zero_page": NOT_MEASURED},
+            "caller_source_facts": [dict(fact, status="SOURCE_FACT") for fact in CALLER_SOURCE_FACTS],
+        },
+        "abi_status": abi_status(records),
+        "execution": decide_execution(False, records),
+    }

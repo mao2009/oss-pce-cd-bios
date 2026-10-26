@@ -448,5 +448,103 @@ class ExceptionSafetyTests(unittest.TestCase):
                                      core_revision=CORE, harness_revision=HARNESS, step_budget=BUDGET)
 
 
+def regs(base, **changes):
+    """A copy of a state dict with some registers replaced. The record is resealed by the caller."""
+    out = deepcopy(base)
+    out.update(changes)
+    return out
+
+
+class EvidenceVerifierTests(unittest.TestCase):
+    """Cold/warm pairing, DEV output rules, and the caller checklist (verify_evidence). Synthetic only."""
+
+    CASE = "getver_case"
+
+    def pair(self, cold_changes=None, warm_changes=None):
+        cold = record(temperature="cold", case=self.CASE, **(cold_changes or {}))
+        warm = record(temperature="warm", case=self.CASE, **(warm_changes or {}))
+        return [cold, warm]
+
+    def assert_refused(self, records, code):
+        with self.assertRaises(g.Refused) as caught:
+            g.verify_evidence(records, **SYNTHETIC)
+        self.assertEqual(caught.exception.code, code, str(caught.exception))
+
+    def test_positive_control_cold_and_warm_pair_is_accepted(self):
+        report = g.verify_evidence(self.pair(), **SYNTHETIC)
+        self.assertEqual(report["abi_status"]["reference_abi_verified"], 0)
+        self.assertEqual(report["abi_status"]["synthetic_observations"], 2)
+        self.assertEqual(report["execution"]["execution"], "BLOCKED")
+        self.assertEqual(report["checklist"]["pairs"], {self.CASE: "COMPLETE_SAME_AFTER_STATE"})
+
+    def test_no_evidence_is_reported_as_not_run_not_as_a_pass(self):
+        report = g.verify_evidence([], **SYNTHETIC)
+        self.assertEqual(report["checklist"]["pairs"], "NOT_RUN")
+        self.assertEqual(report["abi_status"]["synthetic_observations"], 0)
+        self.assertEqual(report["execution"]["execution"], "BLOCKED")
+
+    def test_missing_cold_record_is_refused(self):
+        self.assert_refused([record(temperature="warm", case=self.CASE)], "PAIR")
+
+    def test_duplicate_warm_record_is_refused(self):
+        self.assert_refused(self.pair() + [record(temperature="warm", case=self.CASE)], "PAIR")
+
+    def test_cold_and_warm_from_different_cases_are_not_a_pair(self):
+        self.assert_refused([record(temperature="cold", case="a"), record(temperature="warm", case="b")], "PAIR")
+
+    def test_cold_and_warm_with_different_input_vectors_are_refused(self):
+        other = {"a": 0x12, "x": 0x03, "y": 0x00, "p": 0x04}
+        self.assert_refused(self.pair(cold_changes={"inputs": other, "before": state() | {"a": 0x12},
+                                                    "after": state() | {"a": 0x12}}), "PAIR")
+
+    def test_cold_and_warm_after_state_difference_is_refused(self):
+        # P is a DEV-valid output that differs only in the warm run: exact after-state equality still refuses.
+        self.assert_refused(self.pair(warm_changes={"after": regs(state(), p=0x06)}), "COLD_WARM")
+
+    def test_x_output_other_than_dev_version_is_refused(self):
+        self.assert_refused(self.pair(warm_changes={"after": regs(state(), x=0x04)}), "OUTPUT")
+
+    def test_y_output_other_than_dev_version_is_refused(self):
+        self.assert_refused(self.pair(warm_changes={"after": regs(state(), y=0x01)}), "OUTPUT")
+
+    def test_boundary_x_255_is_refused_not_raised(self):
+        self.assert_refused(self.pair(warm_changes={"after": regs(state(), x=0xFF)}), "OUTPUT")
+
+    def test_a_not_preserved_is_refused(self):
+        self.assert_refused(self.pair(warm_changes={"after": regs(state(), a=0x12)}), "OUTPUT")
+
+    def test_zero_page_side_effect_is_refused(self):
+        self.assert_refused(self.pair(warm_changes={"after": regs(state(), zp="01" + "00" * 31)}), "RAM")
+
+    def test_p_change_is_recorded_not_asserted(self):
+        # P is recorded as observed; it is not a saved-register claim, so a changed P is still accepted.
+        p_after = {"after": regs(state(), p=0x06)}
+        report = g.verify_evidence(self.pair(cold_changes=p_after, warm_changes=p_after), **SYNTHETIC)
+        self.assertEqual(report["checklist"]["saved_registers"]["p"], "RECORDED_NOT_ASSERTED")
+
+    def test_reference_source_never_enters_the_verifier(self):
+        ref = record(temperature="cold", case=self.CASE, source={"kind": "REFERENCE_ROM", "rom_sha256": ROM})
+        self.assert_refused([ref, record(temperature="warm", case=self.CASE)], "REFERENCE_UNAPPROVED")
+
+    def test_checklist_marks_reference_version_unknown_and_comparison_blocked(self):
+        version = g.verify_evidence(self.pair(), **SYNTHETIC)["checklist"]["version_format"]
+        self.assertEqual(version["reference"], "UNKNOWN")
+        self.assertEqual(version["system_card_comparison"], "BLOCKED")
+        self.assertEqual(version["dev_x_y"], [3, 0])
+
+    def test_caller_source_facts_each_name_a_pinned_locator_and_no_callee_claim(self):
+        facts = g.verify_evidence(self.pair(), **SYNTHETIC)["checklist"]["caller_source_facts"]
+        self.assertEqual({f["id"] for f in facts}, {f["id"] for f in g.CALLER_SOURCE_FACTS})
+        for fact in facts:
+            self.assertEqual(fact["status"], "SOURCE_FACT")
+            self.assertRegex(fact["locator"], r"^huc:include/hucc/.+ lines \d+-\d+$")
+            self.assertNotIn("BIOS", fact["statement"])
+
+    def test_verifier_never_lifts_verified_even_with_a_full_pair(self):
+        report = g.verify_evidence(self.pair(), **SYNTHETIC)
+        self.assertEqual(report["abi_status"]["reference_abi_verified"], 0)
+        self.assertEqual(report["abi_status"]["reproducible_reference_observations"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
