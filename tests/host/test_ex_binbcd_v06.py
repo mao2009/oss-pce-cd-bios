@@ -2,8 +2,9 @@
 
 Contract under test is docs/ex-binbcd-internal.md (project-own, NOT the System Card $3C ABI).
 The reference $3C/$E0B4 contract stays UNKNOWN; nothing here is reference evidence.
-The routine is never executed here: A/X/Y/P are checked against a host model, and
-memory/SP side effects are checked only statically on the source (not verified on a core).
+The routine is never executed here: A/X/Y/P are checked against a host model. Memory and SP
+side effects are NOT verified: the static check covers store/mode mnemonics and raw .byte/.macro
+only, a known ceiling (a raw-byte or macro-expanded store outside those patterns would pass).
 """
 import json
 import re
@@ -40,11 +41,12 @@ class ExBinBcdV06Tests(unittest.TestCase):
                 self.assertEqual((x_out, y_out), (x, y), (value, x, y, p))
 
     def test_flags_other_than_c_are_kept(self):
-        # I, T, D pass through; N/Z/V are unspecified and not asserted.
+        # I and T pass through. D is not checked: every entry state has D clear, so it would be vacuous.
+        # N/Z/V are unspecified and not asserted.
         for value in range(256):
             for x, y, p in ENTRY_STATES:
                 p_out = binbcd_call(value, x, y, p)[3]
-                for flag in (D_FLAG, I_FLAG, T_FLAG):
+                for flag in (I_FLAG, T_FLAG):
                     self.assertEqual(p_out & flag, p & flag, (value, p, flag))
 
     def test_static_source_has_no_memory_write_or_mode_change_instructions(self):
@@ -52,7 +54,7 @@ class ExBinBcdV06Tests(unittest.TestCase):
         code = re.sub(r";[^\n]*", "", SOURCE.read_text())
         mnemonics = ("sta", "stx", "sty", "stz", "tsb", "trb", "tia", "tai", "tii", "tdd",
                      "st0", "st1", "st2", "sed", "cld", "tam", "tma", "cli", "sei", "tst",
-                     "csh", "csl", "rmb[0-7]", "smb[0-7]")
+                     "csh", "csl", "rmb[0-7]", "smb[0-7]", r"\.byte", r"\.macro")
         for mnemonic in mnemonics:
             self.assertIsNone(re.search(rf"(?:^|:)\s*{mnemonic}\b", code, re.M | re.I), mnemonic)
 

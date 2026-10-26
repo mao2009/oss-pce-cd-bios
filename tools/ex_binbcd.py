@@ -26,7 +26,7 @@ def binbcd_call(a, x, y, p):
     """Return (A, X, Y, P) after the project contract; X and Y are never changed.
 
     C is set from the range check; N/Z/V are unspecified and kept as entered.
-    Memory and SP are not modelled here: they are checked only by the static source test.
+    Memory and SP are not modelled and not verified; no test checks them at runtime.
     """
     packed, carry = binbcd_packed(a)
     return packed, x, y, (p & ~0x01) | carry
