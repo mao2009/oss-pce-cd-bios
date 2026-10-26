@@ -15,8 +15,8 @@ PASS, FAIL, BLOCKED, UNKNOWN = 'PASS', 'FAIL', 'BLOCKED', 'UNKNOWN'
 ORDER = {FAIL: 3, BLOCKED: 2, UNKNOWN: 1, PASS: 0}
 SYNTHETIC, CALLEE = 'synthetic_scsi', 'reference_callee'
 SECTOR_BYTES = 2048
-LBA_LIMIT = 1 << 21          # 21-bit LBA field (cd-read-contract.md T1)
-DEST_MODE = 3                # _dh = 3 only (188 D1); other modes are out of scope
+LBA_LIMIT = 1 << 21          # 21-bit LBA field (cd-read-contract.md T1). LBA base (absolute or CD_BASE-relative): UNKNOWN, #11
+DEST_MODE = 3                # _dh = 3: observation candidate from public caller (188 D1), not settled ABI
 DEST_WINDOW = 0x2000         # MPR3 window, 8 KiB
 IN_SCOPE_COUNTS = (1,)       # count 0, 2, 3, 4, 256 stay UNKNOWN (188 section 2.3). Unit of count: HYPOTHESIS A4.
 IN_WINDOW, CROSSES = 'IN_WINDOW', 'CROSSES_WINDOW'

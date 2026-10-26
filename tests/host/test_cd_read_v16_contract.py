@@ -32,8 +32,9 @@ def synth(case_name, **over):
 
 
 class Reference(unittest.TestCase):
-    def test_reference_sector_is_2048_bytes_and_has_known_prefix(self):
+    def test_reference_sector_is_2048_bytes_deterministic_with_known_prefix(self):
         self.assertEqual(len(REF5), SEC)
+        self.assertEqual(REF5, v.reference_sector(5))
         self.assertEqual(v.reference_sector(0)[:4], bytes([0, 7, 14, 21]))
 
     def test_reference_sectors_differ_between_lbas(self):
