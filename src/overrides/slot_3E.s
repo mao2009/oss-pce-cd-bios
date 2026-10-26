@@ -14,8 +14,9 @@
 ;   modified by the shifts (unspecified); D and I are not changed.
 ; Stack: next pushes X (1 byte) plus the JSR return; seed uses no stack.
 ; Uses: work RAM $2000-$2001 plus the stack page (next pushes X). No I/O.
-;   MPR1 must map work RAM ($F8); the routine does not check this. No real-core test exists yet.
-;   Until one is recorded, the assembled bytes are UNTESTED; the host test models the contract only.
+;   MPR1 must map work RAM ($F8); the routine does not check this.
+; Real-core evidence: tests/integration/geargrafx_dev_ex_rnd.py (pinned Geargrafx, DEV ROM).
+; The host model tests/host/test_ex_rnd_dev.py checks the contract only, not these bytes.
 ; ABI remains UNVERIFIED and this ROM stays DEV ONLY (release_eligible: false).
 .setcpu "huc6280"
 .segment "OVERRIDES"

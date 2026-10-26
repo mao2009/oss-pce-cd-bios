@@ -4,7 +4,7 @@ Each run replaces the reset code of the built DEV ROM with a guest program that:
   1. sets MPR1 = work RAM ($F8) and clears the fail counter ($2703),
   2. either zeroes the state ($2000/$2001, "zero" run) or seeds with X:A, Y=1 ("seed" run),
   3. calls next COUNT times, storing each A at $2400+i, and checks X=$5A and Y=0 are preserved,
-  4. sets SP=$06 (caller) and calls next once more (stack boundary), storing SP and A after.
+  4. sets SP=$06 (caller SP) and calls next once more, storing SP and A after.
 The probe caps one run at 2048 instructions, so coverage is split into several short runs.
 Expectation: this project's own contract (src/overrides/slot_3E.s, docs/ex-rnd-internal.md)
 and the host model tools/ex_rnd.py, NOT the reference System Card EX_RND. ABI stays UNVERIFIED.
@@ -175,6 +175,8 @@ def main():
             try:
                 run(probe, bytes(mutant), folder, cue, reset, entry, f"mut-{name}", 0x1234)
             except ValueError as error:
+                if "sequence mismatch" not in str(error) and "state RAM" not in str(error):
+                    raise  # only the data mismatch counts as a rejection (a crash is not a detection)
                 evidence["negative_cases"].append({"case": name, "rejected_by": str(error)})
             else:
                 raise ValueError(f"mutant {name} passed all checks (not detected)")
