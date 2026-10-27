@@ -352,6 +352,37 @@ class EvidenceProvenanceTests(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     ep.main(base + ['--signer-workflow', '.github/workflows/evil.yml'])
 
+    def test_reused_commit_evidence_fails_even_with_a_forged_run_record(self):
+        # Attestation and run record both forged to the other commit: the checkout commit still differs.
+        attestation = make_attestation(self.data, commit=OTHER_COMMIT)
+        run = make_run(head_sha=OTHER_COMMIT)
+        result = check(self.data, attestation=attestation, run=run)
+        self.assertResult(result, ep.FAIL, 'attested commit SHA differs')
+        self.assertNotEqual(result['result'], ep.PASS)
+
+    def test_self_declared_approvals_never_count_as_approval(self):
+        # The artifact may claim approvals, reviewers, or branch rules. This verifier never reads them as approval.
+        claims = {'approval': {'approved': True, 'approved_by': 'v'}, 'approvals': 1,
+                  'human_review': {'reviewer': 'agent', 'status': 'APPROVED'},
+                  'main_rules': {'required_approving_review_count': 1}}
+        data = encode(make_artifact(**claims))
+        plain = check(self.data)
+        claimed = check(data, attestation=make_attestation(data))
+        self.assertResult(claimed, ep.PASS)
+        self.assertEqual(claimed['reasons'], plain['reasons'])
+        self.assertEqual(claimed['trust'], plain['trust'])
+        self.assertNotIn('approv', json.dumps(claimed).lower())
+        self.assertResult(check(data, attestation=None), ep.LOCAL_ONLY)  # no attestation: the claims are still not evidence
+        self.assertResult(check(data, attestation=make_attestation(self.data)), ep.FAIL, 'no verified attestation')
+
+    def test_transport_pass_is_never_api_compatibility_proof(self):
+        # A PASS is emulator transport evidence only: the compatibility field is fixed and never says VERIFIED.
+        for result in (check(self.data), check(self.data, rom=None), check(self.data, attestation=None),
+                       check(encode(make_artifact(status='FAIL')), attestation=None)):
+            with self.subTest(result=result['result']):
+                self.assertEqual(result['compatibility'], ep.NOT_PROMOTED)
+                self.assertNotIn('verified', json.dumps(result).lower())
+
 
 if __name__ == '__main__':
     unittest.main()

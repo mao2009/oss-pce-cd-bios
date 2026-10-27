@@ -173,6 +173,15 @@ class MeasurementEvidenceTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'missing'):
                 check_pin_review(Path(d) / 'absent.json')
 
+    def test_review_marker_pr_number_is_self_declared_not_approval(self):
+        # Audit (#515): reviewed_in_pr is a self-declared number. The gate checks its shape only, so the refusal
+        # text must not present it as a verified approval.
+        with tempfile.TemporaryDirectory() as d:
+            marker = Path(d) / 'review.json'
+            marker.write_bytes(REVIEW_MARKER_PATH.read_bytes().replace(b'"reviewed_in_pr": 371', b'"reviewed_in_pr": 0'))
+            with self.assertRaisesRegex(ValueError, 'self-declared, not verified as an approval'):
+                check_pin_review(marker)
+
     def test_registry_edit_without_marker_update_fails_in_verifier(self):
         # Registry edited and its sha pin updated, but the review marker is not: verify_record must refuse.
         from unittest import mock
