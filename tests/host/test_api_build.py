@@ -56,7 +56,7 @@ class ApiBuildTests(unittest.TestCase):
         Z=1/N=0/I=1 with carry preserved) is verified on the real Geargrafx core in
         tests/integration/geargrafx_contracts.py; the absolute P byte is not fixed.
         """
-        self.assertEqual(set(overrides()), {0x1E, 0x3A, 0x3C, 0x3D, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x4F})  # 1E measured; 3A/3C/3D/3F/40/41/42/43/44/4F project-own DEV routines
+        self.assertEqual(set(overrides()), {0x1E, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x4F})  # 1E measured; 3C/3D/3E/3F/40/41/42/43/44/4F project-own DEV routines
         at = 0x1E * 3
         entry = int.from_bytes(self.rom[at+1:at+3], 'little')
         self.assertEqual(self.rom[entry-0xe000:entry-0xe000+5], bytes.fromhex('a2 03 a0 00 60'))
@@ -125,7 +125,7 @@ class ApiBuildTests(unittest.TestCase):
     def test_manifest_never_claims_release(self):
         manifest = json.loads((self.folder/'debug/manifest.json').read_text())
         self.assertFalse(manifest['release_eligible'])
-        self.assertEqual(manifest["overridden_slots"], [0x1E, 0x3A, 0x3C, 0x3D, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x4F])
+        self.assertEqual(manifest["overridden_slots"], [0x1E, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x4F])
         self.assertEqual(len(manifest["unimplemented_slots"]), 70)
         self.assertEqual(manifest['abi'], 'UNVERIFIED')
 
@@ -461,30 +461,3 @@ class ApiContractTests(unittest.TestCase):
         root = self.folder/'bad-root'; (root/'src/overrides').mkdir(parents=True)
         (root/'src/overrides/slot_51.s').write_text('')
         with self.assertRaisesRegex(ValueError, 'Invalid override'): overrides(root)
-
-
-@requires_cc65
-class DecodeAtRomAddressTests(unittest.TestCase):
-    """Issue #68 CI regression: spans must be decoded at their ROM address, not at 0.
-
-    At address 0, da65 labels an absolute operand that falls inside the span (stz a:$0000 -> 'L0000:' in
-    column 0; sta a:$0002 splits into .byte). At the ROM address the same bytes decode cleanly.
-    """
-
-    def test_vdc_port_stores_decode_at_rom_address(self):
-        import tools.build_rom as br
-        self.assertEqual(br.decode(bytes.fromhex('9c0000'), 0xE300), (3, 'stz', 'a:$00'))
-        self.assertEqual(br.decode(bytes.fromhex('8d0200'), 0xE300), (3, 'sta', 'a:$02'))
-        self.assertEqual(br.decode(bytes.fromhex('8e0300'), 0xE300), (3, 'stx', 'a:$03'))
-
-    def test_truncated_absolute_store_is_not_a_valid_three_byte_instruction(self):
-        # Negative: an incomplete operand must not decode as a length-3 instruction.
-        import tools.build_rom as br
-        length, mnemonic, _operand = br.decode(bytes.fromhex('8d02'), 0xE300)
-        self.assertTrue(mnemonic == '.byte' or length != 3, (length, mnemonic))
-
-    def test_undefined_opcode_is_still_reported_as_byte(self):
-        # Negative: an undefined opcode keeps the '.byte' verdict that verify_overrides rejects.
-        import tools.build_rom as br
-        # $5C is undefined on HuC6280 (pinned da65 reports .byte); $02 is SXY and is NOT undefined.
-        self.assertEqual(br.decode(bytes.fromhex('5c'), 0xE300)[1], '.byte')

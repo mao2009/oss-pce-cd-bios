@@ -956,8 +956,10 @@
       "host_evidence": [
         "tests/host/test_ex_setwrt.py"
       ],
-      "real_core_evidence": [],
-      "note": "DEV ROM implementation added; real-core run NOT_RUN in this environment (no cc65/Geargrafx core); NOT_READY until owner approval is recorded",
+      "real_core_evidence": [
+        "tests/integration/geargrafx_dev_ex_setwrt.py (pinned Geargrafx; executable run is required by make dev-integration)"
+      ],
+      "note": "DEV ROM implementation; the Geargrafx E2E probe observes A/X/Y/P, SP, MPR, RAM and HuC6270 MAWR. This is project-contract evidence only; NOT_READY until owner approval is recorded",
       "approval": {
         "approved_by": null,
         "review_ref": null
@@ -1036,16 +1038,25 @@
       "candidate_name": "EX_RND",
       "state": "NOT_READY",
       "abi_contract": {
-        "status": "UNKNOWN",
-        "note": "reference System Card contract not verified; DEV-only project spec"
+        "status": "PROJECT_SPEC_ONLY",
+        "note": "reference System Card contract not verified; DEV-only project spec (Y=1 seed with X:A, other Y next -> A; state $2500/$2501)"
       },
-      "implementation": null,
-      "host_evidence": [],
-      "real_core_evidence": [],
+      "implementation": {
+        "source": "src/overrides/slot_3E.s",
+        "license": "MIT (repository LICENSE)",
+        "provenance": "project-own spec, Issue #72 (16-bit Galois LFSR, taps $B400; not the System Card EX_RND)"
+      },
+      "host_evidence": [
+        "tests/host/test_ex_rnd_dev.py"
+      ],
+      "real_core_evidence": [
+        "tests/integration/geargrafx_dev_ex_rnd.py"
+      ],
       "approval": {
         "approved_by": null,
         "review_ref": null
-      }
+      },
+      "note": "real-core PASS on pinned Geargrafx b49ae82 (debug DEV ROM, sha256 08214d17...): zero-RAM, seed $0000/$1234/$A5C3 runs, X/Y preservation, SP=$06 boundary, state RAM; DEV-only, NOT_READY until owner approval is recorded"
     },
     {
       "id": 63,

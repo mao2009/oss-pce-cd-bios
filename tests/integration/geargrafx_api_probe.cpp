@@ -1,6 +1,7 @@
 // Original test frontend. External Geargrafx GPL-linked executable stays local.
 #include "geargrafx_core.h"
 #include "huc6280.h"
+#include "huc6270.h"
 #include "memory.h"
 #include "media.h"
 #include "cdrom.h"
@@ -58,13 +59,15 @@ int main(int argc, char** argv) {
     };
     auto cpu = processor->GetState();
     auto memory = core.GetMemory();
+    auto vdc = core.GetHuC6270_1()->GetState();
     const char* cycle = "cold";
     auto observe = [&](const char* prefix, const char* phase) {
         std::printf("%s {\"phase\":\"%s\",\"cycle\":\"%s\",\"pc\":%u,\"a\":%u,\"x\":%u,\"y\":%u,\"p\":%u,\"sp\":%u,\"irr\":%u,\"idr\":%u,\"mpr\":[",
                     prefix, phase, cycle, cpu->PC->GetValue(), cpu->A->GetValue(), cpu->X->GetValue(),
                     cpu->Y->GetValue(), cpu->P->GetValue(), cpu->S->GetValue(), *cpu->IRR, *cpu->IDR);
         for (int i=0;i<8;i++) std::printf("%s%u", i ? "," : "", memory->GetMpr(i));
-        std::printf("],\"physical_pc\":%u,\"work_ram_0200_hex\":\"", memory->GetPhysicalAddress(cpu->PC->GetValue()));
+        std::printf("],\"vdc_ar\":%u,\"vdc_r0\":%u,\"physical_pc\":%u,\"work_ram_0200_hex\":\"",
+                    (unsigned)(u8)*vdc->AR, (unsigned)vdc->R[0], memory->GetPhysicalAddress(cpu->PC->GetValue()));
         for (int i=0;i<64;i++) std::printf("%02x", memory->GetWorkingRAM()[0x200+i]);
         std::printf("\",\"stack_01f8_hex\":\"");
         for (int i=0;i<8;i++) std::printf("%02x", memory->GetWorkingRAM()[0x1f8+i]);
