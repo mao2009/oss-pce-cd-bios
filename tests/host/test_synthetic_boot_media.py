@@ -182,10 +182,41 @@ class OracleTests(unittest.TestCase):
             img = gen.build_case_image("NONE", layout)
             with self.subTest(layout=layout, pregap=pregap):
                 self.assertEqual(oracle.judge(img.cue, img.bin, {"lba_offset": 0, "abort_in_data": False}), "OK")
-                # one sector early, one late, and INDEX 00 (first pregap frame, V2 only) all hold no header
+                # Offsets inside the MODE1 track are readable but have no PCEX magic.
+                # V1 offset -1 is in AUDIO, outside the selected track: fail closed.
                 for offset in (-1, 1) + ((-gap,) if gap else ()):
-                    self.assertEqual(oracle.judge(img.cue, img.bin, {"lba_offset": offset, "abort_in_data": False}), "BAD_MAGIC",
+                    want = "PREMATURE_STATUS" if index01 + offset < 16 else "BAD_MAGIC"
+                    self.assertEqual(oracle.judge(img.cue, img.bin, {"lba_offset": offset, "abort_in_data": False}), want,
                                      msg="offset %d" % offset)
+
+    def test_audio_decoy_headers_outside_selected_data_track_are_rejected(self):
+        # A full, valid PCEX header in AUDIO must never produce OK, even when its
+        # LBA lies inside the total BIN length. Test both sides of the data track.
+        decoy = MAGIC + bytes([0, len(CODE), sum(CODE) & 0xFF, 0]) + CODE
+        for layout, _ in LAYOUTS:
+            with self.subTest(layout=layout):
+                img = gen.build_case_image("NONE", layout)
+                index01 = oracle.parse_tracks(img.cue)[1]["index01"]
+                audio_before = 15  # TRACK 01 AUDIO ends immediately before MODE1 at LBA 16
+                data = bytearray(img.bin)
+                pos = audio_before * RAW + USER_OFFSET
+                data[pos:pos + len(decoy)] = decoy
+                self.assertEqual(
+                    oracle.judge(img.cue, bytes(data), {
+                        "lba_offset": audio_before - index01, "abort_in_data": False
+                    }), "PREMATURE_STATUS",
+                )
+
+                audio_after = len(img.bin) // RAW
+                cue = (img.cue + "  TRACK 03 AUDIO\n    INDEX 01 "
+                       + _spec_msf(audio_after) + "\n")
+                last_audio = bytearray(RAW)
+                last_audio[USER_OFFSET:USER_OFFSET + len(decoy)] = decoy
+                self.assertEqual(
+                    oracle.judge(cue, bytes(data) + bytes(last_audio), {
+                        "lba_offset": audio_after - index01, "abort_in_data": False
+                    }), "PREMATURE_STATUS",
+                )
 
     def test_abnormal_pcex_headers_are_refused(self):
         cue, _ = spec_image(None)

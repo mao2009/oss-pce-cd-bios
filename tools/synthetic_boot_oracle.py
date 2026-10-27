@@ -6,7 +6,7 @@ It parses the CUE text and the raw BIN bytes itself and applies the DEV loader's
 It does not import the generator, so a generator bug cannot make the oracle agree with it.
 Outcome names follow docs/cd-load-exec-probe.md.
 Layout reference: docs/cd-boot-loader-spec.md S3/S5 (V1, V2 = 225-frame pregap, single FILE; V2M multi-FILE) exists on
-PR #552 (wave26-boot/w04-spec, head b2db158), not on main. Re-check this reference after #552 merges.
+now exists on main (PR #552 merged, with CUE layout corrections in PR #554).
 
 judge(cue_text, bin_bytes, read_plan) -> "OK" | "NO_TRACK" | "DATA_TIMEOUT" | "PREMATURE_STATUS"
                                          | "BAD_MAGIC" | "BAD_LENGTH" | "BAD_ENTRY_OFFSET" | "BAD_CHECKSUM"
@@ -14,7 +14,8 @@ judge(cue_text, bin_bytes, read_plan) -> "OK" | "NO_TRACK" | "DATA_TIMEOUT" | "P
                                            "NO_FILE", "UNSUPPORTED_MULTI_FILE", "BAD_CUE", "BAD_BIN_SIZE",
                                            "BAD_READ_PLAN", "BAD_SECTOR_HEADER"
 read_plan: {"lba_offset": int, "abort_in_data": bool}, both keys required; the read starts at the data track's
-INDEX 01 + lba_offset. cue_text must be str (else BAD_CUE), bin_bytes bytes/bytearray (else BAD_BIN_SIZE).
+INDEX 01 + lba_offset. Reads outside the selected MODE1 track return PREMATURE_STATUS.
+cue_text must be str (else BAD_CUE), bin_bytes bytes/bytearray (else BAD_BIN_SIZE).
 CUE: ASCII digits only, TRACK numbers sequential from 01, PREGAP/POSTGAP rejected (BAD_CUE).
 Single FILE only (INDEX values are then absolute LBAs, no virtual PREGAP). A multi-FILE CUE (V2M) returns
 "UNSUPPORTED_MULTI_FILE": it is not evaluated and never reported as OK.
@@ -123,7 +124,9 @@ def _judge(cue_text: str, bin_bytes: bytes, read_plan) -> str:
     if abort:
         return "DATA_TIMEOUT"
     lba = data["index"][1] + offset
-    if not 0 <= lba < total:
+    # Only sectors in the selected MODE1 track may be interpreted as boot headers.
+    # An AUDIO sector before or after it can contain a convincing PCEX decoy.
+    if not data["start"] <= lba < end:
         return "PREMATURE_STATUS"
     start = lba * RAW + USER_OFFSET
     user = bin_bytes[start:start + USER_BYTES]
