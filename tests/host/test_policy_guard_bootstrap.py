@@ -258,6 +258,13 @@ class Hardening(unittest.TestCase):
     def test_yaml_directive_is_refused(self):
         self.assert_refused('%YAML 1.2\n---\n' + GOOD)
 
+    # 1715448 review: CR-only line break before a directive; bare github context in the top-level name
+    def test_directive_after_cr_only_line_break_is_refused(self):
+        self.assert_refused(('# c\r%YAML 1.2\r---\r' + GOOD).replace('\n', '\r'))
+
+    def test_bare_github_context_in_top_level_name_is_refused(self):
+        self.assert_refused(GOOD.replace('name: Policy guard', 'name: ${{ github }}', 1))
+
     def test_quoted_on_key_with_same_trigger_passes(self):
         self.assertEqual(problems(GOOD.replace('on:\n', '"on":\n', 1)), [])
 

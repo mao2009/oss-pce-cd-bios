@@ -1478,7 +1478,7 @@ def _policy_structure_problems(workflow, text):
     problems = []
     if re.search(r"(?:^|[\s\[{,:\-])!", text):
         problems.append(f"{workflow}: an explicit YAML tag is refused in the policy workflow (Issue #544)")
-    if re.search(r"^\s*%", text, re.M):   # a YAML directive (%YAML 1.2) can change the schema the parser reads with
+    if re.search(r"(?:^|[\r\n])\s*%", text):   # a YAML directive (%YAML 1.2) can change the schema; CR-only breaks count too
         problems.append(f"{workflow}: a YAML directive is refused in the policy workflow (Issue #544)")
     if re.search(r"(?:^|[\s\[{,:\-])[&*][\w-]", text):
         problems.append(f"{workflow}: a YAML anchor or alias is refused in the policy workflow (Issue #544)")
@@ -1581,6 +1581,8 @@ def _policy_guard_problems(label, doc):
                         "(Issue #544)")
     if _no_secret_reference(doc):
         problems.append(f"{label}: the policy workflow names a secret, an id-token or the GITHUB_TOKEN (refused; Issue #544)")
+    if "${{" in str(doc.get("name", "")):   # the workflow name is static text: no expression of any kind (github included)
+        problems.append(f"{label}: the policy workflow name must be static text (no expression; Issue #544)")
     return problems
 
 
