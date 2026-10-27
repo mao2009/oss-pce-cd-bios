@@ -164,6 +164,13 @@ class ApprovedTextTests(unittest.TestCase):
         changed = workflow('echo hi').replace('      - run:', '      - continue-on-error: yes\n        run:')
         self.assertIsNotNone(self.check(changed, approve_text=approved))
 
+    def test_bool_word_on_next_line_and_in_flow_refused(self):
+        approved = workflow('echo hi').replace('      - run:', '      - if: true\n        run:')
+        next_line = workflow('echo hi').replace('      - run:', '      - if:\n          yes\n        run:')
+        flow = workflow('echo hi').replace('      - run:', '      - {if: yes, run: echo hi}\n        run:')
+        self.assertIsNotNone(self.check(next_line, approve_text=approved))
+        self.assertIsNotNone(self.check(flow, approve_text=approved))
+
     def test_unapprovable_job_is_never_approved(self):
         # a job whose value has no canonical form (a date) gets digest "", which never approves a step
         text = workflow('echo hi').replace('    runs-on:', '    timeout-minutes: 2020-01-01\n    runs-on:')

@@ -2081,6 +2081,28 @@ def _run_write_problem(run):
     return None
 
 
+def _bool_word_problems(workflow, text):
+    """Issue #511. A value (not a key) whose YAML 1.1 bool tag is set by a word other than true or false (yes, no, on, off,
+    any case, on the same line, the next line or in a flow mapping). Such a word digests as the same value as true or false.
+    Reads the node tree, so the form of the line does not matter. An unreadable file gives no problem here: the other
+    checks refuse it."""
+    try:
+        import yaml
+        root_node = yaml.compose(text, Loader=yaml.SafeLoader)
+    except Exception:
+        return []
+    problems, stack = [], [root_node]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, yaml.MappingNode):
+            stack.extend(value for _, value in node.value)   # keys are skipped: on: is a key, not a value
+        elif isinstance(node, yaml.SequenceNode):
+            stack.extend(node.value)
+        elif isinstance(node, yaml.ScalarNode) and node.tag == "tag:yaml.org,2002:bool" and node.value.lower() not in ("true", "false"):
+            problems.append(f"{workflow}: the bool word {node.value!r} is refused; YAML 1.1 reads it as true or false (Issue #511)")
+    return problems
+
+
 def _yaml_unreadable(text):
     """True when PyYAML cannot read text. Without PyYAML this is False, and scope_key_violations then refuses the file."""
     try:
@@ -2107,10 +2129,9 @@ def scope_key_violations(text, workflow):
     refused here too (round 14), not only by yaml_integrity_violations."""
     if re.search(r"""^\s*(?:-\s+)?["']?<<["']?\s*:""", text, re.M):   # Issue #511: a merge key can hide a run: from the approval
         return [f"{workflow}: a YAML merge key (<<:) is refused; it can hide a run: the approval does not see (Issue #511)"]
-    # Issue #511: a YAML 1.1 bool word (yes, no, on, off) is read as True or False, the same value as true or false, so it
-    # would digest the same as the approved text. A plain value of that form is refused (keys such as on: are not values).
-    if re.search(r"""(?:(?<=:)|^\s*-)[ \t]+(?:yes|no|on|off|y|n)[ \t]*(?:#.*)?$""", text, re.M | re.I):
-        return [f"{workflow}: a YAML 1.1 bool word (yes, no, on, off) is refused; it reads as true or false (Issue #511)"]
+    bool_words = _bool_word_problems(workflow, text)   # Issue #511: yes/no/on/off read as bools, digest as true/false
+    if bool_words:
+        return bool_words
     try:
         import yaml
     except ImportError:
