@@ -172,6 +172,21 @@ class Hardening(unittest.TestCase):
     def test_on_key_twice_is_refused(self):
         self.assert_refused(GOOD.replace('on:\n', '"on":\n  pull_request_target:\n    types: [opened]\non:\n', 1))
 
+    def test_case_variant_duplicate_on_key_is_refused(self):
+        # YAML 1.1 reads ON as True: the duplicate is caught by counting top-level on keys in the text (scope check)
+        text = GOOD.replace('on:\n', 'ON:\n  push: {}\non:\n', 1)
+        self.assertTrue(guard.scope_key_violations(text, POLICY))
+
+    def test_good_shape_passes_the_on_count(self):
+        self.assertEqual(guard.scope_key_violations(GOOD, POLICY), [])
+
+    def test_step_name_with_github_context_is_refused(self):
+        self.assert_refused(GOOD.replace('      - name: Checkout pull request head as data only',
+                                         '      - name: ${{ toJSON(github) }}', 1))
+
+    def test_step_name_with_bracket_token_is_refused(self):
+        self.assert_refused(GOOD.replace('      - name: Policy check', "      - name: ${{ github['token'] }}", 1))
+
     def test_quoted_on_key_with_same_trigger_passes(self):
         self.assertEqual(problems(GOOD.replace('on:\n', '"on":\n', 1)), [])
 

@@ -1520,6 +1520,8 @@ def _policy_guard_problems(label, doc):
                     and steps[1].get("with") == {"ref": "${{ github.event.pull_request.head.sha }}", "path": ".candidate",
                                                  "persist-credentials": False}
                     and set(steps[2]) == {"name", "run"} and steps[2].get("run") == POLICY_GUARD_RUN)
+    if shape_ok and any("${{" in str(step.get("name", "")) for step in steps):   # a step name is text, not a context read
+        shape_ok = False
     if not shape_ok:
         problems.append(f"{label}: the policy-guard steps must be exactly: checkout the base SHA to .trusted, checkout the head "
                         "to .candidate (both persist-credentials false, one audited checkout pin), then the one trusted run "
@@ -2031,6 +2033,9 @@ def scope_key_violations(text, workflow):
     - a workflow whose jobs: is not a mapping, a job that is not a mapping, and a steps: that is not a list (fail closed).
     Applies to every workflow and composite action file, with or without an upload step. A file that cannot be parsed is
     refused here too (round 14), not only by yaml_integrity_violations."""
+    on_keys = re.findall(r"""^["']?on["']?\s*:""", text, re.M | re.I)   # Issue #544: YAML 1.1 reads ON, On and on as True
+    if len(on_keys) > 1:   # a duplicate trigger key (ON and on) is ambiguous; a missing one is not a grant
+        return [f"{workflow}: the top-level trigger key on: appears {len(on_keys)} times; it may appear once (Issue #544)"]
     try:
         import yaml
     except ImportError:
