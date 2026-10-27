@@ -179,6 +179,7 @@ class OracleTests(unittest.TestCase):
     def test_wrong_lba_is_detected_for_every_layout(self):
         for layout, pregap in LAYOUTS:
             gap = 0 if pregap is None else pregap
+            index01 = 16 + gap
             img = gen.build_case_image("NONE", layout)
             with self.subTest(layout=layout, pregap=pregap):
                 self.assertEqual(oracle.judge(img.cue, img.bin, {"lba_offset": 0, "abort_in_data": False}), "OK")
