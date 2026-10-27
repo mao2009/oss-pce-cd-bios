@@ -68,6 +68,8 @@ not original firmware or independent hardware measurement.
 | `$4F` | absent | MA_MUL16S | Candidate observation only |
 | `$50` | absent | MA_CBASIS | Does not resolve MA_DIV8U/MA_CBASIS conflict |
 
+The `$42/$43` row remains OPEN: the signed/unsigned assignment is not resolved by public sources, and the DEV-only contract is recorded in `docs/ma-div16s.md` (Issue #76).
+
 Hu-Go observations are from [bios.c selector definitions](https://github.com/mckayemu/hugo/blob/64ed226da2288738781743eeef228c069e8973a4/bios.c#L30-L133).
 Existing article-derived inventory labels retain their pending lineage; this
 research does not adopt or expand those articles' reverse-engineering claims.
