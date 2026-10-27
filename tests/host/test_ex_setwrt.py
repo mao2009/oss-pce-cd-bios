@@ -16,7 +16,7 @@ EXPECTED = [
     "cpx #$80", "bcs setwrt_reject",
     "php", "sei", "phy", "phx", "pha",
     "tma #$01", "pha", "lda #$FF", "tam #$01",
-    "stz $0000", "pla", "tay", "pla", "sta $0002", "plx", "stx $0003",
+    "stz a:$0000", "pla", "tay", "pla", "sta a:$0002", "plx", "stx a:$0003",
     "pha", "tya", "tam #$01", "pla", "ply", "plp", "clc", "rts",
     "sec", "rts",
 ]
@@ -66,6 +66,28 @@ class SetwrtSourceTests(unittest.TestCase):
         for line in self.code:
             for hexaddr in re.findall(r"\$([0-9A-Fa-f]{4})\b", line):
                 self.assertIn(hexaddr.upper(), {"0000", "0002", "0003"}, line)
+
+    def test_no_zero_page_addressing(self):
+        # (b) Zero page is $2000 on the pinned core, but a bare 1-2 digit operand (no #) is encoded as zero-page
+        # by ca65 and would hit $20xx. Every VDC access must use the a: (absolute) prefix.
+        for line in self.code:
+            if re.search(r"(?<![#\w])\$[0-9A-Fa-f]{1,2}\b", line) and not line.split()[0].startswith("b"):
+                self.assertTrue(line.split()[0] in ("stz", "sta", "stx") and " a:$" in line, line)
+        for prefix in ("stz a:$0000", "sta a:$0002", "stx a:$0003"):
+            self.assertIn(prefix, self.code)
+
+    def test_no_access_to_the_stack_or_zero_page_window(self):
+        # (c) The stack ($2100-$21FF) and zero page ($2000) stay in MPR1. No operand may name them.
+        for line in self.code:
+            for hexaddr in re.findall(r"\$([0-9A-Fa-f]{4})\b", line):
+                self.assertFalse(0x2000 <= int(hexaddr, 16) <= 0x21FF, line)
+
+    def test_routine_is_linked_in_overrides_mpr7(self):
+        # (a) The routine is linked into OVERRIDES, which bank0.cfg places at $E300 (MPR7, not the I/O window).
+        cfg = (ROOT / "src" / "bank0.cfg").read_text(encoding="utf-8")
+        self.assertRegex(cfg, r"OVERRIDES:\s*load\s*=\s*ROM0,.*start\s*=\s*\$E[0-9A-Fa-f]{3}")
+        start = int(re.search(r"OVERRIDES:.*start\s*=\s*\$([0-9A-Fa-f]{4})", cfg).group(1), 16)
+        self.assertGreaterEqual(start, 0xE000)
 
     def test_window_is_mpr0_not_the_stack_page(self):
         # RED on the MPR1 window: tam #$02 maps $2000-$3FFF, which holds the stack ($2100-$21FF).

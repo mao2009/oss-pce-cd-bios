@@ -8,9 +8,11 @@
 ; VDC side effects (ok path only): ST0 selects register 0 (MAWR), ST1 = low byte, ST2 = high byte.
 ; VRAM and the VDC data port are NOT written. MPR1 (the stack page $2100-$21FF) is never remapped.
 ; Window: MPR0 is set to $FF so the VDC ports appear at $0000-$0003 for a few instructions, with IRQs masked (SEI).
-; The window covers logical $0000-$1FFF. It does not cover the stack ($2100-$21FF, MPR1) or the zero page at $2000
-; (the pinned core uses ZERO_PAGE_ADDR = $2000; see docs/497-mpr1-stack-contract.md). Stack instructions inside the
-; window are therefore safe. This routine runs from OVERRIDES (MPR7), so instruction fetch is unaffected.
+; The window covers logical $0000-$1FFF. Evidence (src/huc6280.h of the pinned Geargrafx, non-GG_TESTING build):
+; ZERO_PAGE_ADDR = $2000 and STACK_ADDR = $2100, both in MPR1, so zero page and stack are outside the window.
+; The routine uses NO zero-page addressing: the three VDC accesses are written with a: (absolute) so ca65 does not
+; choose the zero-page form, which would address $2000-$2003 instead of $0000-$0003. The routine is linked into
+; OVERRIDES at $E300 (src/bank0.cfg), in MPR7, so instruction fetch is not affected by MPR0.
 ; Ceiling: NMI is assumed not to occur (PCE has no NMI source in use). Not observed on a real core.
 ; Stack: 5 bytes below the JMP target (P, Y, X, A, saved MPR0). No VBlank wait (timing not constrained).
 ; ok path: N/Z/V restored to entry values by PLP. ng path: N/Z from CPX (not a contract).
@@ -29,13 +31,13 @@ api_slot_3A:
     pha
     lda #$FF
     tam #$01                  ; MPR0 = $FF: VDC ports at $0000-$0003 (stack in MPR1 is unaffected)
-    stz $0000                 ; ST0: select VDC register 0 (MAWR)
+    stz a:$0000               ; ST0: select VDC register 0 (MAWR); a: forces absolute (not zero-page) form
     pla
     tay                       ; Y = caller MPR0
     pla                       ; A = caller A (low byte)
-    sta $0002                 ; ST1: MAWR low
+    sta a:$0002               ; ST1: MAWR low (absolute form; zero-page form would hit $20xx)
     plx                       ; X = caller X (high byte)
-    stx $0003                 ; ST2: MAWR high
+    stx a:$0003               ; ST2: MAWR high (absolute form)
     pha                       ; keep A (low) while restoring MPR0
     tya
     tam #$01                  ; restore MPR0
