@@ -351,6 +351,19 @@ class SpecTextTests(unittest.TestCase):
                 self.assertIn("誤り", line)
 
 
+# The LOCAL game facts the spec records (S1). Derivations start from these; GameCueTests checks them against the
+# real CUE when OSS_PCE_GAME_CUE is set.
+GAME_CUE = {
+    "tracks": 16,
+    "t01": ("00:00:00", "00:00:00"),          # track 01 has only INDEX 01; [1] is INDEX 01
+    "t02": ("00:00:00", "00:03:00"),          # (INDEX 00, INDEX 01)
+    "t03": ("00:00:00", "00:02:00"),
+    "t01_bin": 3311616,
+    "t02_bin": 18630192,
+    "t02_index01_msf": "00:23:58",            # header MSF of the INDEX 01 sector (LOCAL)
+}
+
+
 def _num(text):
     return int(text.replace(",", ""))
 
@@ -371,8 +384,8 @@ class NumericClaimsTests(unittest.TestCase):
     (LOCAL) and 2352 bytes per raw frame. Everything else (225, 1,633, 1,408, 529,200 ...) must follow from them.
     """
 
-    PREGAP = msf_frames("00:03:00") - msf_frames("00:00:00")       # 225
-    INDEX01_LBA = msf_frames("00:23:58") - LEAD_IN_FRAMES          # 1633
+    PREGAP = msf_frames(GAME_CUE["t02"][1]) - msf_frames(GAME_CUE["t02"][0])    # 225
+    INDEX01_LBA = msf_frames(GAME_CUE["t02_index01_msf"]) - LEAD_IN_FRAMES       # 1633
     INDEX00_LBA = INDEX01_LBA - PREGAP                             # 1408
 
     def setUp(self):
@@ -452,6 +465,55 @@ class NumericClaimsTests(unittest.TestCase):
         self.assertEqual(matched[0][1], "299")
         self.assertEqual(zero[0], "74")
         self.assertEqual(re.findall(r"例外 (\d+)", i00), ["0"])
+
+    def test_cue_rows_equal_the_derivation_inputs(self):
+        # The spec's CUE facts must equal the constants the derivation uses (GAME_CUE), not only be self-consistent.
+        g = GAME_CUE
+        self.assertEqual(self.facts["トラック数"][1], str(g["tracks"]))
+        self.assertEqual(self.facts["トラック 01"][1], "`AUDIO`、`INDEX 01 %s`" % g["t01"][1])
+        index_row = self.facts["トラック 02 の INDEX"][1]
+        self.assertTrue(index_row.startswith("`INDEX 00 %s`、`INDEX 01 %s`（" % g["t02"]), index_row)
+        self.assertEqual(self.facts["トラック 03"][1], "`AUDIO`、`INDEX 00 %s`、`INDEX 01 %s`" % g["t03"])
+        # Direction of the 150/225 sentence: the rejected value is 150, the stated pregap is 225.
+        self.assertEqual(re.findall(r"(\d+) ではない", index_row), [str(msf_frames(g["t03"][1]))])
+        self.assertNotEqual(msf_frames(g["t03"][1]), self.PREGAP)
+        # Track 03: CUE row, S1.1 row and 150 frames agree.
+        t03 = self.arith["トラック 03 の INDEX 00→01"][1]
+        self.assertEqual(t03, "%s = %d フレーム" % (g["t03"][1], msf_frames(g["t03"][1]) - msf_frames(g["t03"][0])))
+        self.assertEqual(msf_frames(g["t03"][1]), 150)
+        # Track 01 BIN: bytes = 2352 x 1,408 = INDEX 00 LBA (contiguity), in S1, S1.1 and the range row.
+        t01_sectors = g["t01_bin"] // SECTOR_BYTES
+        self.assertEqual(g["t01_bin"] % SECTOR_BYTES, 0)
+        self.assertEqual(t01_sectors, self.INDEX00_LBA)
+        self.assertEqual(self.facts["トラック 01 の BIN サイズ"][1], "{:,} バイト = 2352 × {:,} セクタ".format(g["t01_bin"], t01_sectors))
+        self.assertEqual(self.arith["トラック 01 の BIN"][1], "{:,} ÷ 2,352".format(g["t01_bin"]))
+        self.assertTrue(self.facts["トラック 01 の範囲"][1].startswith("{:,} セクタ。".format(t01_sectors)))
+        t02_sectors = g["t02_bin"] // SECTOR_BYTES
+        self.assertEqual(self.facts["トラック 02 の BIN サイズ"][1], "{:,} バイト = 2352 × {:,} セクタ（割り切れる）".format(g["t02_bin"], t02_sectors))
+        self.assertEqual(self.arith["トラック 02 の BIN"][1], "{:,} ÷ 2,352".format(g["t02_bin"]))
+        self.assertIn("ヘッダ MSF は %s（絶対）" % g["t02_index01_msf"], self.facts["トラック 02 の INDEX 01 の絶対 LBA"][1])
+
+    def test_msf_is_lba_plus_150_everywhere(self):
+        relation = re.findall(r"LBA \+ (\d+)", self.text)
+        self.assertGreaterEqual(len(relation), 2)   # S1 note and S5 sector header rule
+        self.assertEqual(set(relation), {str(LEAD_IN_FRAMES)})
+
+    def test_v2m_inline_index_values_give_225_frames(self):
+        v2m = next(cells(r) for b in markdown_table_blocks(self.text) if b[0].startswith("| 変種 |")
+                   for r in b[2:] if cells(r)[0] == "V2M（追加条件）")[1]
+        values = dict(re.findall(r"`INDEX 0([01]) (\d\d:\d\d:\d\d)`", v2m))
+        self.assertEqual(values, {"0": GAME_CUE["t02"][0], "1": GAME_CUE["t02"][1]})
+        self.assertEqual(msf_frames(values["1"]) - msf_frames(values["0"]), self.PREGAP)
+        self.assertEqual(re.findall(r"FILE 先頭から (\d+) フレーム", v2m), [str(self.PREGAP)])
+
+    def test_read_unit_is_the_dev_loader_sector_size(self):
+        loader = (ROOT / "src" / "cd_load_exec_probe.s").read_text(encoding="utf-8")
+        size = int(re.search(r"(?m)^SECTOR_BYTES\s*=\s*(\d+)", loader).group(1))
+        self.assertEqual(size, 2048)
+        contract = {cells(r)[0]: cells(r) for b in markdown_table_blocks(self.text)
+                    if b[0].startswith("| 項目 | v0 契約") for r in b[2:]}
+        self.assertEqual(re.findall(r"1 セクタ（(\d+) バイト）を READ\(6\) で読む", contract["読出し単位・方法"][1]), [str(size)])
+        self.assertIn("2040（= %d − 8）" % size, contract["長さ"][1])
 
     def test_every_confidence_label_used_is_defined(self):
         defined = {m.group(1): m.group(2) for m in (re.match(r"- `([^`]+)`: (.+)", l) for l in self.lines) if m}
@@ -534,6 +596,16 @@ class GameCueTests(unittest.TestCase):
         first_file = self.files[0]["file"]
         self.assertEqual(self.sectors[first_file], 1408)
         self.assertEqual(self.sectors[self.files[1]["file"]], 7921)
+
+    def test_game_cue_equals_the_recorded_facts(self):
+        # GAME_CUE (the derivation inputs) must match the real CUE and BIN sizes.
+        tracks = [t for f in self.files for t in f["tracks"]]
+        self.assertEqual(len(tracks), GAME_CUE["tracks"])
+        for no, key in ((2, "t02"), (3, "t03")):
+            self.assertEqual(self.track(no)["index"], {0: msf_frames(GAME_CUE[key][0]), 1: msf_frames(GAME_CUE[key][1])})
+        self.assertEqual(self.track(1)["index"], {1: msf_frames(GAME_CUE["t01"][1])})
+        self.assertEqual(self.sectors[self.files[0]["file"]] * SECTOR_BYTES, GAME_CUE["t01_bin"])
+        self.assertEqual(self.sectors[self.files[1]["file"]] * SECTOR_BYTES, GAME_CUE["t02_bin"])
 
     def test_index01_absolute_lba_is_1633_under_contiguity(self):
         lbas = contiguous_index_lbas(self.files, self.sectors)
