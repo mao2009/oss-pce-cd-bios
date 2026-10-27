@@ -1988,7 +1988,9 @@ def _step_problems(workflow, where, step, runs_on="", job_digest="", step_digest
     changes the PATH of later steps (GITHUB_PATH, GITHUB_ENV) or sets BASH_ENV or PATH. Issue #337 round 14.
     A job that may run on Windows (runs-on names windows, or is a ${{ }} expression) needs shell: bash for its run: steps
     (Issue #511, the default shell there is pwsh). Under enforced_check, a run: text that is not approved is refused."""
-    windows = "windows" in runs_on.lower() or "${{" in runs_on
+    # Fail closed: any runs-on that is not a hosted ubuntu-* or macos-* label (a self-hosted label, a windows label, an
+    # expression) may be a Windows runner, whose default shell is PowerShell. A composite action has no runs-on: "" here.
+    windows = bool(runs_on) and not re.fullmatch(r"(?:ubuntu|macos)-[\w.]+", runs_on.strip())
     if not isinstance(step, dict):
         return [f"{workflow}: {where} has a step that is not a mapping (Issue #337 round 14)"]
     name, problems = step.get("name"), []

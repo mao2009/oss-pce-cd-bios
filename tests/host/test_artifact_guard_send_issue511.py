@@ -87,6 +87,10 @@ class ApprovedTextTests(unittest.TestCase):
         text = workflow('echo hi', runs_on='windows-latest', shell='bash')
         self.assertIsNone(self.check(text, approve_text=text))
 
+    def test_self_hosted_windows_label_without_shell_refused_even_if_approved(self):
+        text = workflow('echo hi', runs_on='[self-hosted, win]')
+        self.assertIsNotNone(self.check(text, approve_text=text))
+
     def test_matrix_runs_on_without_shell_refused_even_if_approved(self):
         text = workflow('echo hi', runs_on='${{ matrix.os }}')
         self.assertIsNotNone(self.check(text, approve_text=text))
@@ -127,9 +131,10 @@ class ApprovedTextTests(unittest.TestCase):
         self.assertIsNotNone(self.check(changed, approve_text=approved))
 
     def test_list_runs_on_approved_and_changed_refused(self):
-        listed = workflow('echo hi', runs_on='[ubuntu-24.04]')
+        listed = workflow('echo hi', runs_on='[ubuntu-24.04]', shell='bash')   # a list is not a hosted label: shell: bash needed
         self.assertIsNone(self.check(listed, approve_text=listed))
-        self.assertIsNotNone(self.check(workflow('echo bye', runs_on='[ubuntu-24.04]'), approve_text=listed))
+        self.assertIsNotNone(self.check(workflow('echo bye', runs_on='[ubuntu-24.04]', shell='bash'), approve_text=listed))
+        self.assertIsNotNone(self.check(workflow('echo hi', runs_on='[ubuntu-24.04]'), approve_text=workflow('echo hi', runs_on='[ubuntu-24.04]')))
 
     def test_job_level_environment_change_refused(self):
         # the step is approved, but the job's environment (which the signing identity binds to) changed
