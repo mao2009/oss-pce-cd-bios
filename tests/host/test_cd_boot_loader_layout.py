@@ -89,9 +89,20 @@ class SpecTextTests(unittest.TestCase):
     def test_spec_states_225_and_not_the_stale_150(self):
         self.assertIn("225", self.text)
         self.assertIn("00:03:00", self.text)
-        self.assertNotIn("プリギャップ 150 セクタ", self.text)
+        self.assertNotIn("プリギャップ 150", self.text)
         self.assertNotIn("INDEX 01 = 150", self.text)
         self.assertNotIn("INDEX 01 が 150", self.text)
+
+    def test_spec_header_is_8_byte_pcex_matching_the_dev_loader(self):
+        # The DEV loader source (not tools/) defines the header size; the spec must agree with it.
+        loader = (ROOT / "src" / "cd_load_exec_probe.s").read_text(encoding="utf-8")
+        self.assertRegex(loader, r"(?m)^HDR_BYTES\s*=\s*8\b")
+        self.assertIn("8 バイト", self.text)
+        self.assertIn("PCEX", self.text)
+        # The 16-byte OSSBOOT1 form may appear only as a separately labelled, incompatible version.
+        for line in self.text.splitlines():
+            if re.search(r"(?<![\d,])16 バイト", line):   # not the 3,311,616 バイト BIN size
+                self.assertIn("非互換", line)
 
     def test_spec_labels_1633_and_1408_with_their_status(self):
         for needle in ("1,633", "1,408", "ASSUMPTION", "LOCAL"):
