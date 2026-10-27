@@ -8,7 +8,7 @@ from tools.contracts import ROOT, load_contracts, validate_contracts
 class ContractsTests(unittest.TestCase):
     def setUp(self):
         self.data = copy.deepcopy(load_contracts())
-        self.inventory = json.loads((ROOT / 'spec/api_slots.json').read_text())
+        self.inventory = json.loads((ROOT / 'spec/api_slots.json').read_text(encoding='utf-8'))
         self.markdown = (ROOT / 'docs/api-inventory.md').read_text(encoding='utf-8')
 
     def check(self):
