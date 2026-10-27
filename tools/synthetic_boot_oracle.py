@@ -4,14 +4,18 @@
 It parses the CUE text and the raw BIN bytes itself and applies the DEV loader's header contract
 (src/cd_load_exec_probe.s load_check: magic, then length 1..255, entry < length, checksum; 8-byte PCEX header).
 It does not import the generator, so a generator bug cannot make the oracle agree with it.
-Outcome names follow docs/cd-load-exec-probe.md. (docs/cd-boot-loader-spec.md does not exist on this branch.)
+Outcome names follow docs/cd-load-exec-probe.md.
+Layout reference: docs/cd-boot-loader-spec.md S3/S5 (V1, V2 = 225-frame pregap, single FILE; V2M multi-FILE) exists on
+PR #552 (wave26-boot/w04-spec, head b2db158), not on main. Re-check this reference after #552 merges.
 
 judge(cue_text, bin_bytes, read_plan) -> "OK" | "NO_TRACK" | "DATA_TIMEOUT" | "PREMATURE_STATUS"
                                          | "BAD_MAGIC" | "BAD_LENGTH" | "BAD_ENTRY_OFFSET" | "BAD_CHECKSUM"
                                          | fail-closed media/input statuses (never OK):
                                            "NO_FILE", "UNSUPPORTED_MULTI_FILE", "BAD_CUE", "BAD_BIN_SIZE",
                                            "BAD_READ_PLAN", "BAD_SECTOR_HEADER"
-read_plan: {"lba_offset": int, "abort_in_data": bool}; the read starts at the data track's INDEX 01 + lba_offset.
+read_plan: {"lba_offset": int, "abort_in_data": bool}, both keys required; the read starts at the data track's
+INDEX 01 + lba_offset. cue_text must be str (else BAD_CUE), bin_bytes bytes/bytearray (else BAD_BIN_SIZE).
+CUE: ASCII digits only, TRACK numbers sequential from 01, PREGAP/POSTGAP rejected (BAD_CUE).
 Single FILE only (INDEX values are then absolute LBAs, no virtual PREGAP). A multi-FILE CUE (V2M) returns
 "UNSUPPORTED_MULTI_FILE": it is not evaluated and never reported as OK.
 Every frame of the data track (pregap included) must carry sync, BCD MSF = LBA + 150 and mode byte 1,
@@ -26,7 +30,8 @@ HEADER_BYTES = 8
 MAGIC = b"PCEX"
 DATA_MODE = "MODE1/2352"
 SYNC = b"\x00" + b"\xff" * 10 + b"\x00"
-_MSF = re.compile(r"^(\d{2}):(\d{2}):(\d{2})$")
+_MSF = re.compile(r"^(\d{2}):(\d{2}):(\d{2})$", re.ASCII)
+_TRACK_NO = re.compile(r"^\d{2}$", re.ASCII)
 
 
 class _Reject(Exception):
@@ -59,15 +64,15 @@ def _parse(cue_text: str) -> list:
         words = raw.split()
         keyword = words[0].upper() if words else ""
         if keyword == "TRACK":
-            if len(words) != 3 or not words[1].isdigit():
+            if len(words) != 3 or not _TRACK_NO.match(words[1]) or int(words[1]) != len(tracks) + 1:
                 raise _Reject("BAD_CUE")
             tracks.append({"type": words[2].upper(), "index": {}})
         elif keyword == "INDEX":
             if not tracks or len(words) != 3 or words[1] not in ("00", "01") or int(words[1]) in tracks[-1]["index"]:
                 raise _Reject("BAD_CUE")
             tracks[-1]["index"][int(words[1])] = _frames(words[2])
-        elif keyword == "PREGAP":
-            raise _Reject("BAD_CUE")   # virtual pregap would break "INDEX value == LBA"
+        elif keyword in ("PREGAP", "POSTGAP"):
+            raise _Reject("BAD_CUE")   # virtual gaps (not stored in the BIN) would break "INDEX value == LBA"
     starts = []
     for track in tracks:
         if 1 not in track["index"] or track["index"].get(0, 0) > track["index"][1]:
@@ -94,13 +99,17 @@ def _check_sector_headers(bin_bytes: bytes, first: int, end: int) -> None:
 
 
 def _judge(cue_text: str, bin_bytes: bytes, read_plan) -> str:
+    if not isinstance(cue_text, str):
+        raise _Reject("BAD_CUE")
     tracks = _parse(cue_text)
-    if len(bin_bytes) % RAW:
+    if not isinstance(bin_bytes, (bytes, bytearray)) or len(bin_bytes) % RAW:
         raise _Reject("BAD_BIN_SIZE")
     total = len(bin_bytes) // RAW
     if not isinstance(read_plan, dict):
         raise _Reject("BAD_READ_PLAN")
-    offset, abort = read_plan.get("lba_offset"), read_plan.get("abort_in_data", False)
+    if "lba_offset" not in read_plan or "abort_in_data" not in read_plan:
+        raise _Reject("BAD_READ_PLAN")
+    offset, abort = read_plan["lba_offset"], read_plan["abort_in_data"]
     if type(offset) is not int or type(abort) is not bool:
         raise _Reject("BAD_READ_PLAN")
     position = next((n for n, track in enumerate(tracks) if track["type"] == DATA_MODE), None)

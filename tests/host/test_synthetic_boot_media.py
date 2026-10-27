@@ -181,10 +181,10 @@ class OracleTests(unittest.TestCase):
             gap = 0 if pregap is None else pregap
             img = gen.build_case_image("NONE", layout)
             with self.subTest(layout=layout, pregap=pregap):
-                self.assertEqual(oracle.judge(img.cue, img.bin, {"lba_offset": 0}), "OK")
+                self.assertEqual(oracle.judge(img.cue, img.bin, {"lba_offset": 0, "abort_in_data": False}), "OK")
                 # one sector early, one late, and INDEX 00 (first pregap frame, V2 only) all hold no header
                 for offset in (-1, 1) + ((-gap,) if gap else ()):
-                    self.assertEqual(oracle.judge(img.cue, img.bin, {"lba_offset": offset}), "BAD_MAGIC",
+                    self.assertEqual(oracle.judge(img.cue, img.bin, {"lba_offset": offset, "abort_in_data": False}), "BAD_MAGIC",
                                      msg="offset %d" % offset)
 
     def test_abnormal_pcex_headers_are_refused(self):
@@ -204,7 +204,7 @@ class OracleTests(unittest.TestCase):
         for name, user in cases.items():
             with self.subTest(case=name):
                 bin_bytes = audio_and_frame(user)
-                self.assertEqual(oracle.judge(cue, bin_bytes, {"lba_offset": 0}), want[name])
+                self.assertEqual(oracle.judge(cue, bin_bytes, {"lba_offset": 0, "abort_in_data": False}), want[name])
 
 
 class MultiFileTests(unittest.TestCase):
@@ -214,12 +214,12 @@ class MultiFileTests(unittest.TestCase):
         _, data = spec_image(None)
         cue = ('FILE "a.bin" BINARY\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n'
                'FILE "b.bin" BINARY\n  TRACK 02 MODE1/2352\n    INDEX 00 00:00:00\n    INDEX 01 00:03:00\n')
-        self.assertEqual(oracle.judge(cue, data, {"lba_offset": 0}), "UNSUPPORTED_MULTI_FILE")
+        self.assertEqual(oracle.judge(cue, data, {"lba_offset": 0, "abort_in_data": False}), "UNSUPPORTED_MULTI_FILE")
 
     def test_cue_without_file_has_its_own_status(self):
         cue, data = spec_image(None)
         no_file = "\n".join(line for line in cue.splitlines() if not line.startswith("FILE")) + "\n"
-        self.assertEqual(oracle.judge(no_file, data, {"lba_offset": 0}), "NO_FILE")
+        self.assertEqual(oracle.judge(no_file, data, {"lba_offset": 0, "abort_in_data": False}), "NO_FILE")
 
 
 class SectorHeaderTests(unittest.TestCase):
@@ -229,12 +229,12 @@ class SectorHeaderTests(unittest.TestCase):
         cue, data = spec_image(225)
         data = bytearray(data)
         data[frame * RAW + byte] = value
-        return oracle.judge(cue, bytes(data), {"lba_offset": 0})
+        return oracle.judge(cue, bytes(data), {"lba_offset": 0, "abort_in_data": False})
 
     def test_untampered_v1_and_v2_are_ok(self):
         for pregap in (None, 225):
             cue, data = spec_image(pregap)
-            self.assertEqual(oracle.judge(cue, data, {"lba_offset": 0}), "OK")
+            self.assertEqual(oracle.judge(cue, data, {"lba_offset": 0, "abort_in_data": False}), "OK")
 
     def test_tampered_msf_mode_or_sync_is_rejected(self):
         # frame 241 = V2 INDEX 01 (header sector), 16 = first pregap frame (INDEX 00), 244 = last data frame
@@ -254,7 +254,7 @@ class FailClosedInputTests(unittest.TestCase):
 
     def setUp(self):
         self.cue, self.data = spec_image(225)
-        self.plan = {"lba_offset": 0}
+        self.plan = {"lba_offset": 0, "abort_in_data": False}
 
     def judge(self, cue=None, data=None, plan="default"):
         return oracle.judge(self.cue if cue is None else cue, self.data if data is None else data,
@@ -286,6 +286,34 @@ class FailClosedInputTests(unittest.TestCase):
             with self.subTest(line=bad):
                 self.assertEqual(self.judge(cue=self.cue + bad), "BAD_CUE")
         self.assertEqual(self.judge(cue="    INDEX 01 00:00:00\n" + self.cue), "BAD_CUE")   # INDEX before TRACK
+
+    def test_non_ascii_digits_are_rejected(self):
+        # "١" is ARABIC-INDIC DIGIT ONE, "²" is SUPERSCRIPT TWO: \d without re.ASCII / isdigit() accept them.
+        self.assertEqual(self.judge(cue=self.cue.replace("INDEX 01 00:03:16", "INDEX 01 00:03:١6")), "BAD_CUE")
+        self.assertEqual(self.judge(cue=self.cue.replace("TRACK 02", "TRACK 0²")), "BAD_CUE")
+
+    def test_track_numbers_must_be_sequential_from_01(self):
+        self.assertEqual(self.judge(cue=self.cue.replace("TRACK 02", "TRACK 03")), "BAD_CUE")
+        self.assertEqual(self.judge(cue=self.cue.replace("TRACK 01", "TRACK 00")), "BAD_CUE")
+
+    def test_postgap_is_rejected_like_pregap(self):
+        self.assertEqual(self.judge(cue=self.cue + "  POSTGAP 00:02:00\n"), "BAD_CUE")
+
+    def test_read_plan_must_name_abort_in_data(self):
+        self.assertEqual(self.judge(plan={"lba_offset": 0}), "BAD_READ_PLAN")
+        self.assertEqual(self.judge(plan={"lba_offset": 0, "abort_in_data": False}), "OK")
+
+    def test_wrong_input_types_return_a_status_not_an_exception(self):
+        for cue in (None, 0, self.cue.encode("ascii")):
+            with self.subTest(cue=type(cue).__name__):
+                self.assertEqual(oracle.judge(cue, self.data, self.plan), "BAD_CUE")
+        for data in (0, "x" * RAW, [0] * RAW):
+            with self.subTest(bin=type(data).__name__):
+                self.assertEqual(oracle.judge(self.cue, data, self.plan), "BAD_BIN_SIZE")
+        self.assertEqual(oracle.judge(self.cue, None, self.plan), "BAD_BIN_SIZE")
+        for plan in (0, "plan", [("lba_offset", 0)]):
+            with self.subTest(plan=type(plan).__name__):
+                self.assertEqual(oracle.judge(self.cue, self.data, plan), "BAD_READ_PLAN")
 
     def test_read_plan_must_carry_an_integer_lba_offset(self):
         for plan in ({}, {"lba_offset": None}, {"lba_offset": "0"}, {"lba_offset": True}, None,

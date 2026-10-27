@@ -5,6 +5,8 @@ Layout (single MODE1/2352 data track after one AUDIO track, one FILE, INDEX valu
   V1: TRACK 01 AUDIO (16 frames), TRACK 02 MODE1/2352 INDEX 01 at frame 16 (disc LBA 16).
   V2: as V1, but TRACK 02 has INDEX 00 at frame 16 and INDEX 01 at frame 16 + 225 (pregap stored in the BIN).
       225 = the game CUE's INDEX 00 00:00:00 -> INDEX 01 00:03:00 (3 s x 75 frames), docs/cd-boot-loader-spec.md S5.
+      docs/cd-boot-loader-spec.md S3/S5 exists on PR #552 (wave26-boot/w04-spec, head b2db158), not on main;
+      re-check this reference after #552 merges.
   Single FILE is the M4/M5 baseline. Multi-FILE (V2M) is a separate condition and is not generated here.
 Every data-track frame (pregap included) carries sync, BCD MSF = LBA + 150 and mode byte 1 (tools/cue_analysis.py).
 Data track = 4 frames: header sector at INDEX 01, then 3 filler sectors.
