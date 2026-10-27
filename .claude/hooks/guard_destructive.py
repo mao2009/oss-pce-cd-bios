@@ -15,6 +15,8 @@ import sys
 import threading
 
 HOOK_TIMEOUT = 5.0
+# ponytail: hard size cap bounds the work; the thread timeout cannot stop C-level code.
+MAX_CMD_BYTES = 64 * 1024
 MAX_DEPTH = 8
 ALLOW, DENY = "ALLOW", "DENY"
 SHELL_TOOLS = ("Bash", "PowerShell")
@@ -172,9 +174,89 @@ def _matched(text, start):
     raise Deny("parse", "unbalanced command substitution")
 
 
+def _unescape(word):
+    """Drop quotes and unquoted backslash escapes: .cl\\aude and ".claude" both give .claude."""
+    out, q, i, n = [], None, 0, len(word)
+    while i < n:
+        c = word[i]
+        if q == "'":
+            if c == "'":
+                q = None
+            else:
+                out.append(c)
+        elif c == "\\" and i + 1 < n:
+            out.append(word[i + 1])
+            i += 2
+            continue
+        elif q == '"':
+            if c == '"':
+                q = None
+            else:
+                out.append(c)
+        elif c in "'\"":
+            q = c
+        else:
+            out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _redir_target(text, j):
+    """Raw word after a '>' whose '>' ends at j-1. "" for fd duplication (>&1) or no word.
+
+    Linear: the word stops at unquoted whitespace or an operator character.
+    """
+    n = len(text)
+    if j < n and text[j] in "|>":
+        j += 1
+    if j < n and text[j] == "&":
+        if j + 1 < n and (text[j + 1].isdigit() or text[j + 1] == "-"):
+            return ""
+        j += 1
+    while j < n and text[j] in " \t":
+        j += 1
+    start, q = j, None
+    while j < n:
+        c = text[j]
+        if q:
+            if c == q:
+                q = None
+            elif c == "\\" and q == '"':
+                j += 1
+        elif c == "\\":
+            j += 1
+        elif c in "'\"":
+            q = c
+        elif c in " \t\n;&|()<>":
+            break
+        j += 1
+    return text[start:min(j, n)]
+
+
+def check_redirect(raw):
+    """Deny a redirect target that names .claude/ or cannot be known statically."""
+    if not raw:
+        return
+    if any(ch in raw for ch in "$`") or SUBST in raw:
+        raise Deny("unexpanded", "redirect target with a variable or substitution is not inspected")
+    if any(ch in raw for ch in "*?[]{}"):
+        raise Deny("glob", "redirect target with a glob or brace is not statically known")
+    target = _unescape(raw)
+    if not target:
+        raise Deny("path", "empty redirect target")
+    # Check the raw spelling (Windows C:\...\.claude) and the unescaped one (.cl\aude).
+    for v in (raw, target):
+        if ".claude" in v.replace("\\", "/").casefold():
+            raise Deny("claude-write", "redirect into .claude/ is denied")
+
+
 def split_segments(text, ps=False):
-    """Split on unquoted ; & | ( ) and newlines. Returns (segments, substitution bodies)."""
-    segs, subs, cur = [], [], []
+    """Split on unquoted ; & | ( ) and newlines.
+
+    Returns (segments, substitution bodies, redirect targets per segment). A redirect
+    target is the raw word after each unquoted '>' ("" when there is none).
+    """
+    segs, subs, cur, redirs, rd = [], [], [], [], []
     quote, i, n = None, 0, len(text)
     while i < n:
         c = text[i]
@@ -225,6 +307,11 @@ def split_segments(text, ps=False):
             cur.append(c)
             i += 1
             continue
+        if c == ">":
+            rd.append(_redir_target(text, i + 1))
+            cur.append(c)
+            i += 1
+            continue
         if ps and c == "&" and quote is None:
             # PowerShell call operator (& "x", & $cmd); && is a chain, not a call.
             prev = text[i - 1] if i else ""
@@ -237,7 +324,8 @@ def split_segments(text, ps=False):
                     raise Deny("powershell", "call operator with a string or variable is not inspected")
         if c in ";&|()\n":
             segs.append("".join(cur))
-            cur = []
+            redirs.append(rd)
+            cur, rd = [], []
             i += 1
             continue
         cur.append(c)
@@ -245,7 +333,8 @@ def split_segments(text, ps=False):
     if quote:
         raise Deny("parse", "unterminated quote")
     segs.append("".join(cur))
-    return segs, subs
+    redirs.append(rd)
+    return segs, subs, redirs
 
 
 def short_has(arg, letters):
@@ -413,8 +502,10 @@ def check_assign(word):
 
 
 def claude_mention(args):
-    """True if an argument names .claude/ (or carries a substitution placeholder)."""
-    return any(".claude" in a.replace("\\", "/").casefold() or SUBST in a for a in args)
+    """True if an argument names .claude/ (raw or unescaped) or carries a substitution."""
+    return any(".claude" in a.replace("\\", "/").casefold()
+               or ".claude" in _unescape(a).replace("\\", "/").casefold()
+               or SUBST in a for a in args)
 
 
 def unwrap(name, args):
@@ -467,6 +558,9 @@ def analyze_argv(words, ctx, ps, depth):
         raise Deny("substitution", "command substitution passed to a shell, eval or source is not inspected")
     if name in WRITE_NAMES or (name == "sed" and any(
             short_has(a, "i") or a.startswith("--in-place") for a in args)):
+        # Target not statically known (variable or backtick): fail closed.
+        if any("$" in a or "`" in a for a in args):
+            raise Deny("unexpanded", "write with an unexpanded variable or backtick is not inspected")
         if claude_mention(args) or inside_claude(ctx.cwd, ctx):
             raise Deny("claude-write", "write to .claude/ (guard, registry, settings) is denied")
     elif PY_NAME.match(name) or name in INTERP:
@@ -499,14 +593,14 @@ def analyze_argv(words, ctx, ps, depth):
 def analyze_text(text, ctx, ps, depth):
     if depth > MAX_DEPTH:
         raise Deny("depth", "command nesting too deep")
-    segs, subs = split_segments(text, ps)
+    segs, subs, redirs = split_segments(text, ps)
     for body in subs:
         analyze_text(body, ctx.copy(), ps, depth + 1)
-    for seg in segs:
-        # Redirect (> >>) whose target names .claude/ or is a substitution.
-        if re.search(r">[^;&|\n]*(\.claude|\x00)", seg.replace("\\", "/"), re.I) or (
-                ">" in seg and inside_claude(ctx.cwd, ctx)):
-            raise Deny("claude-write", "redirect into .claude/ (or to a substitution) is denied")
+    for seg, ops in zip(segs, redirs):
+        if ops and inside_claude(ctx.cwd, ctx):
+            raise Deny("claude-write", "redirect while cwd is inside .claude/ is denied")
+        for target in ops:
+            check_redirect(target)
         analyze_argv(words_of(seg, ps), ctx, ps, depth)
 
 
@@ -548,6 +642,8 @@ def _decide(raw, repo_root):
         raise Deny("input", "missing command")
     if not cmd.strip():
         raise Deny("input", "empty command")
+    if len(cmd.encode("utf-8", "replace")) > MAX_CMD_BYTES:
+        raise Deny("size", "too large to inspect")
     # NUL and other control characters (CR, BEL...) are not inspectable as shell text.
     if any((ord(ch) < 32 and ch not in "\t\n") or ch == "\x7f" for ch in cmd):
         raise Deny("input", "NUL or control character in command")
