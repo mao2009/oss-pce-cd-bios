@@ -1455,60 +1455,77 @@ WRITE_ALLOWANCES = {
 POLICY_GUARD_FILE = "policy-guard.yml"
 POLICY_GUARD_TRIGGERS = frozenset({"pull_request_target"})
 POLICY_GUARD_TYPES = frozenset({"opened", "synchronize", "reopened", "ready_for_review"})
+POLICY_GUARD_JOB = "policy-guard"
 POLICY_GUARD_RUN = "python3 .trusted/tools/policy_guard.py --candidate .candidate --trusted .trusted"
-POLICY_CHECKOUT_RE = re.compile(r"actions/checkout@[0-9a-f]{40}")
+# The one audited full pin of actions/checkout (the same pin ci.yml uses). Any other SHA, or a tag, is refused.
+POLICY_CHECKOUT_USES = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"
+POLICY_TOP_KEYS = frozenset({"name", "on", "permissions", "jobs"})
 
 
 def _no_secret_reference(value):
-    """True when any string in value names a secret or an id-token (a run under pull_request_target must hold neither)."""
+    """True when any string in value names a secret, an id-token or the GITHUB_TOKEN (a run under pull_request_target must
+    hold none of them)."""
     if isinstance(value, dict):
         return any(_no_secret_reference(key) or _no_secret_reference(inner) for key, inner in value.items())
     if isinstance(value, list):
         return any(_no_secret_reference(inner) for inner in value)
-    return isinstance(value, str) and bool(re.search(r"secrets\.|id-token|github\.token", value))
+    return isinstance(value, str) and bool(re.search(r"secrets\b|id-token|github\.token|GITHUB_TOKEN", value, re.I))
 
 
 def _policy_guard_problems(label, doc):
-    """Issue #544 bootstrap (owner decision): the exact shape of policy-guard.yml. pull_request_target runs this file from the
-    base branch, so the job may only (1) check out the base SHA as the trusted copy, (2) check out the pull request head as
-    DATA (persist-credentials false, never executed), and (3) run the trusted policy_guard.py. No secrets, no id-token, no
-    grants beyond contents: read, no other job, no if, needs, environment, container or other step."""
+    """Issue #544 bootstrap (owner decision), P0 hardening of #547. The exact shape of policy-guard.yml. pull_request_target
+    runs this file from the base branch, so the job may only (1) check out the base SHA as the trusted copy, (2) check out the
+    pull request head as DATA (persist-credentials false, never executed), and (3) run the trusted policy_guard.py. Exact
+    top-level keys (name, on, permissions, jobs); exact trigger types, each once; exact job name policy-guard; exact keys on the
+    job and on every step (no if, defaults, env, shell, working-directory, needs or environment); one audited checkout pin;
+    contents: read only; no secrets, id-token, GITHUB_TOKEN or write grant."""
     problems = []
-    on = doc.get("on", doc.get(True))
+    if any(key is True for key in doc) and "on" in doc:   # YAML: a bare on: is True, a quoted "on" is text; both is ambiguous
+        problems.append(f"{label}: the policy workflow has both on: and a bare on: (ambiguous trigger; refused, Issue #544)")
+    on = doc["on"] if "on" in doc else doc.get(True)
+    top = {"on" if key is True else str(key) for key in doc}
+    if sorted(top - POLICY_TOP_KEYS):
+        problems.append(f"{label}: top-level keys {sorted(top - POLICY_TOP_KEYS)} are not allowed in the policy workflow "
+                        "(refused; Issue #544)")
     if not isinstance(on, dict) or set(on) != POLICY_GUARD_TRIGGERS:
         problems.append(f"{label}: the policy workflow must have exactly the pull_request_target trigger (Issue #544)")
     else:
-        types = (on.get("pull_request_target") or {}).get("types", [])
-        if not isinstance(types, list) or not set(types) <= POLICY_GUARD_TYPES:
-            problems.append(f"{label}: the policy workflow's pull_request_target types may only be {sorted(POLICY_GUARD_TYPES)}")
+        spec = on.get("pull_request_target")
+        types = spec.get("types") if isinstance(spec, dict) and set(spec) == {"types"} else None
+        exact = (isinstance(types, list) and all(isinstance(t, str) for t in types) and len(types) == len(set(types))
+                 and set(types) == POLICY_GUARD_TYPES)
+        if not exact:
+            problems.append(f"{label}: pull_request_target types must be exactly {sorted(POLICY_GUARD_TYPES)}, each once "
+                            "(refused; Issue #544)")
     if doc.get("permissions") != {"contents": "read"}:
         problems.append(f"{label}: the policy workflow permissions must be exactly contents: read (Issue #544)")
     jobs = doc.get("jobs")
-    if not isinstance(jobs, dict) or set(jobs) != {"policy-guard"}:
-        problems.append(f"{label}: the policy workflow must have exactly one job, policy-guard (Issue #544)")
+    if not isinstance(jobs, dict) or set(jobs) != {POLICY_GUARD_JOB}:
+        problems.append(f"{label}: the policy workflow must have exactly one job, {POLICY_GUARD_JOB} (Issue #544)")
         return problems
-    job = jobs["policy-guard"]
-    if not isinstance(job, dict) or set(job) - {"name", "runs-on", "steps"} or job.get("runs-on") != "ubuntu-24.04":
-        problems.append(f"{label}: the policy-guard job may have only name, runs-on: ubuntu-24.04 and steps (Issue #544)")
+    job = jobs[POLICY_GUARD_JOB]
+    if (not isinstance(job, dict) or set(job) != {"name", "runs-on", "steps"} or job.get("name") != POLICY_GUARD_JOB
+            or job.get("runs-on") != "ubuntu-24.04"):
+        problems.append(f"{label}: the policy-guard job must have exactly name: {POLICY_GUARD_JOB}, runs-on: ubuntu-24.04 and "
+                        "steps (no if, needs, env, defaults, permissions, environment or container; Issue #544)")
         return problems
     steps = job.get("steps")
-    expected = [
-        ({"name", "uses", "with"}, {"ref": "${{ github.event.pull_request.base.sha }}", "path": ".trusted",
-                                    "persist-credentials": False}),
-        ({"name", "uses", "with"}, {"ref": "${{ github.event.pull_request.head.sha }}", "path": ".candidate",
-                                    "persist-credentials": False}),
-    ]
+    checkout_base = {"name", "uses", "with"}
     shape_ok = isinstance(steps, list) and len(steps) == 3 and all(isinstance(step, dict) for step in steps)
     if shape_ok:
-        for step, (keys, with_expected) in zip(steps[:2], expected):
-            shape_ok = shape_ok and set(step) == keys and isinstance(step.get("uses"), str) \
-                and POLICY_CHECKOUT_RE.fullmatch(step["uses"]) is not None and step.get("with") == with_expected
-        shape_ok = shape_ok and set(steps[2]) == {"name", "run"} and steps[2].get("run") == POLICY_GUARD_RUN
+        shape_ok = (set(steps[0]) == checkout_base and steps[0].get("uses") == POLICY_CHECKOUT_USES
+                    and steps[0].get("with") == {"ref": "${{ github.event.pull_request.base.sha }}", "path": ".trusted",
+                                                 "persist-credentials": False}
+                    and set(steps[1]) == checkout_base and steps[1].get("uses") == POLICY_CHECKOUT_USES
+                    and steps[1].get("with") == {"ref": "${{ github.event.pull_request.head.sha }}", "path": ".candidate",
+                                                 "persist-credentials": False}
+                    and set(steps[2]) == {"name", "run"} and steps[2].get("run") == POLICY_GUARD_RUN)
     if not shape_ok:
-        problems.append(f"{label}: the policy-guard steps must be exactly: checkout base SHA to .trusted, checkout head to "
-                        ".candidate (both persist-credentials false, pinned checkout), then the one trusted run (Issue #544)")
+        problems.append(f"{label}: the policy-guard steps must be exactly: checkout the base SHA to .trusted, checkout the head "
+                        "to .candidate (both persist-credentials false, one audited checkout pin), then the one trusted run "
+                        "(Issue #544)")
     if _no_secret_reference(doc):
-        problems.append(f"{label}: the policy workflow names a secret, an id-token or github.token (refused; Issue #544)")
+        problems.append(f"{label}: the policy workflow names a secret, an id-token or the GITHUB_TOKEN (refused; Issue #544)")
     return problems
 
 

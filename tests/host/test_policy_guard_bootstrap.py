@@ -100,5 +100,81 @@ class Variants(unittest.TestCase):
         self.assert_refused(GOOD.replace('types: [opened, synchronize, reopened, ready_for_review]', 'types: [closed]'))
 
 
+PIN = '11bd71901bbe5b1630ceea73d27597364c9af683'
+OTHER_SHA = 'a' * 40
+
+
+class Hardening(unittest.TestCase):
+    """P0 review of #547: each variant must be refused (RED before the fix, GREEN after)."""
+
+    def assert_refused(self, text):
+        self.assertTrue(problems(text), text[:200])
+
+    # (1) pull_request_target.types: exactly the four expected events, no empty, missing, duplicate or extra one
+    def test_types_missing_is_refused(self):
+        self.assert_refused(GOOD.replace('    types: [opened, synchronize, reopened, ready_for_review]\n', ''))
+
+    def test_types_null_is_refused(self):
+        self.assert_refused(GOOD.replace('pull_request_target:\n    types: [opened, synchronize, reopened, ready_for_review]',
+                                         'pull_request_target:'))
+
+    def test_types_empty_is_refused(self):
+        self.assert_refused(GOOD.replace('types: [opened, synchronize, reopened, ready_for_review]', 'types: []'))
+
+    def test_types_duplicate_is_refused(self):
+        self.assert_refused(GOOD.replace('types: [opened, synchronize, reopened, ready_for_review]',
+                                         'types: [opened, opened, synchronize, reopened, ready_for_review]'))
+
+    def test_types_missing_one_expected_event_is_refused(self):
+        self.assert_refused(GOOD.replace('types: [opened, synchronize, reopened, ready_for_review]',
+                                         'types: [opened, synchronize, reopened]'))
+
+    def test_types_extra_event_is_refused(self):
+        self.assert_refused(GOOD.replace('types: [opened, synchronize, reopened, ready_for_review]',
+                                         'types: [opened, synchronize, reopened, ready_for_review, closed]'))
+
+    # (2) actions/checkout pinned to one audited full SHA, not any 40-hex SHA
+    def test_checkout_other_full_sha_is_refused(self):
+        self.assert_refused(GOOD.replace(f'actions/checkout@{PIN}', f'actions/checkout@{OTHER_SHA}', 1))
+
+    # (3) job name and display name exact
+    def test_job_display_name_mismatch_is_refused(self):
+        self.assert_refused(GOOD.replace('    name: policy-guard', '    name: policy-guard-x', 1))
+
+    def test_job_display_name_missing_is_refused(self):
+        self.assert_refused(GOOD.replace('    name: policy-guard\n', '', 1))
+
+    # (4) no extra top-level keys (defaults, env, concurrency, run-name ...)
+    def test_top_level_env_is_refused(self):
+        self.assert_refused(GOOD.replace('permissions:\n', 'env:\n  A: b\npermissions:\n', 1))
+
+    def test_top_level_defaults_is_refused(self):
+        self.assert_refused(GOOD.replace('permissions:\n', 'defaults:\n  run:\n    shell: bash\npermissions:\n', 1))
+
+    def test_top_level_concurrency_is_refused(self):
+        self.assert_refused(GOOD.replace('permissions:\n', 'concurrency: x\npermissions:\n', 1))
+
+    def test_top_level_run_name_is_refused(self):
+        self.assert_refused(GOOD.replace('name: Policy guard\n', 'name: Policy guard\nrun-name: x\n', 1))
+
+    # (5) checkout: exact keys and values
+    def test_checkout_fetch_depth_is_refused(self):
+        self.assert_refused(GOOD.replace('persist-credentials: false\n      - name: Checkout pull',
+                                         'persist-credentials: false\n          fetch-depth: 0\n      - name: Checkout pull', 1))
+
+    def test_checkout_token_key_is_refused(self):
+        self.assert_refused(GOOD.replace('path: .trusted', 'path: .trusted\n          token: x', 1))
+
+    def test_run_step_shell_key_is_refused(self):
+        self.assert_refused(GOOD.replace('        run: python3', '        shell: bash\n        run: python3', 1))
+
+    # (7) YAML on: key: a bare on: (True) and a quoted "on" are the same trigger; both at once is ambiguous
+    def test_on_key_twice_is_refused(self):
+        self.assert_refused(GOOD.replace('on:\n', '"on":\n  pull_request_target:\n    types: [opened]\non:\n', 1))
+
+    def test_quoted_on_key_with_same_trigger_passes(self):
+        self.assertEqual(problems(GOOD.replace('on:\n', '"on":\n', 1)), [])
+
+
 if __name__ == '__main__':
     unittest.main()
