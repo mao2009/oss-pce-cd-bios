@@ -28,7 +28,8 @@ import geargrafx_dev_bcd as dev  # noqa: E402  (entry_address, run_probe: the sh
 
 BLOCKED_EXIT = 3
 SLOT_MA_COS = 0x46
-STORE = 0x2200  # $2200 A(result lo), $2201 X(result hi), $2202 P after, $2203 Y, $2205 SP after
+STORE = 0x2200  # $2200 A(result lo), $2201 X(result hi), $2202 P after JSR, $2203 Y, $2205 SP after
+P_PRE_OUT = 0x2400  # P before JSR (captured before SED/SEC? actually after)
 # Angle indices covering each quadrant, quadrant boundaries and the wrap point.
 CASES = [0, 1, 31, 32, 33, 63, 64, 65, 96, 127, 128, 129, 160, 191, 192, 193, 224, 254, 255]
 Y_PRESET = 0xA5
@@ -47,10 +48,15 @@ def guest(reset, entry, a, sp=0xFF):
                   0xA2, X_PRESET,             # LDX #$5A (input X is ignored by MA_COS)
                   0xA0, Y_PRESET,             # LDY #$A5
                   0xA9, a,                    # LDA #a (angle index)
+                  0x48,                       # PHA (save angle)
+                  0x08,                       # PHP (P before JSR, D=1,C=1)
+                  0x68,                       # PLA
+                  0x8D, P_PRE_OUT & 0xFF, P_PRE_OUT >> 8,  # STA $2400 (P before JSR)
+                  0x68,                       # PLA (restore angle)
                   0x20, entry & 0xFF, entry >> 8,  # JSR entry
-                  0x8D, STORE & 0xFF, STORE >> 8,              # STA $2200 (result lo)
+                  0x8D, STORE & 0xFF, STORE >> 8,              # STA $2200 (result lo; no P effect)
+                  0x08, 0x68, 0x8D, (STORE + 2) & 0xFF, (STORE + 2) >> 8,  # PHP;PLA;STA $2202 (P after JSR)
                   0x8E, (STORE + 1) & 0xFF, (STORE + 1) >> 8,  # STX $2201 (result hi)
-                  0x08, 0x68, 0x8D, (STORE + 2) & 0xFF, (STORE + 2) >> 8,  # PHP; PLA; STA $2202
                   0x8C, (STORE + 3) & 0xFF, (STORE + 3) >> 8,  # STY $2203
                   0xBA, 0x8E, (STORE + 5) & 0xFF, (STORE + 5) >> 8])  # TSX; STX $2205 (SP after)
     halt = reset + len(code)
@@ -66,12 +72,20 @@ def check(label, rows, halt, a, sp=0xFF):
     if cold["mpr"][1] != 0xF8 or cold["mpr"][7] != 0:
         raise ValueError(f"{label}: MPR changed (mpr={cold['mpr']})")
     s = bytes.fromhex(cold["work_ram_0200_hex"])[:6]
-    lo, hi, _, y, _, sp_after = s[0], s[1], s[2], s[3], s[4], s[5]
+    lo, hi, p_post, y, _, sp_after = s[0], s[1], s[2], s[3], s[4], s[5]
+    wram_hex = cold.get("work_ram_hex")
+    if not wram_hex:
+        raise ValueError(f"{label}: missing full work RAM dump")
+    p_pre = bytes.fromhex(wram_hex)[P_PRE_OUT - 0x2000]
     want = q15(a) & 0xFFFF
     observed = (lo | (hi << 8), y, sp_after)
     if observed != (want, Y_PRESET, sp):
         raise ValueError(f"{label}: angle ${a:02X}: X:A/Y/SP observed {observed}, "
                          f"expected {(want, Y_PRESET, sp)}")
+    # P preservation: effective bits only (mask 0xCF); T/B core-specific.
+    P_MASK = 0xCF
+    if (p_pre & P_MASK) != (p_post & P_MASK):
+        raise ValueError(f"{label}: P not preserved (pre ${p_pre:02X}, post ${p_post:02X}, mask ${P_MASK:02X})")
 
 
 def run_case(probe, base, folder, cue, reset, label, entry, a, sp=0xFF, count=2048):

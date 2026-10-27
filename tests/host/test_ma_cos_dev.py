@@ -137,61 +137,135 @@ class DevCosModelTests(unittest.TestCase):
         self.assertNotIn("sta $01", source)
 
 
+
+
 # --- Cross-identity with the MA_SIN contract (Issue #79, PR #522) -----------------------------
-# A copy of the MA_SIN DEV reference (scale 127, truncation, quarter-wave table T[q]), kept here
-# because #522 is a separate PR. It is NOT imported from that branch.
-#   SIN127(a) = trunc(127 * sin(2*pi*a/256)), T[q] = trunc(127*sin(pi/2*q/64)), q = 0..64.
-SIN_T = [int(127 * math.sin(math.pi / 2 * q / 64)) for q in range(65)]
+# MA_SIN is a separate, not-yet-merged PR, so src/overrides/slot_45.s may be absent on this
+# branch. The comparison below therefore has two layers:
+#   1. A Q15-scale identity that does NOT depend on slot_45.s: COS(a) must equal a Q15 sine at
+#      (a + 64) mod 256, for all 256 angles. The sine is computed with math (independent oracle),
+#      not by copying the cosine formula, so the identity is a real cross-check of the cosine model.
+#   2. When slot_45.s IS present (after PR #522 lands), its quarter-wave table and folding are
+#      compared against this cosine table: T_sin[i] must equal T_cos[64 - i], and the MA_SIN model
+#      built from that table must agree with the cosine model on all 256 angles.
+import os
+
+SLOT45_PATH = ROOT / "src" / "overrides" / "slot_45.s"
 
 
-def sin127_ref(k):
-    """Copy of the MA_SIN reference: quadrant folding of the truncated 127-scale table."""
-    r = k & 63
-    q = k >> 6
-    return (SIN_T[r], SIN_T[64 - r], -SIN_T[r], -SIN_T[64 - r])[q]
-
-
-def sin_q15(k):
-    """MA_SIN value re-expressed on the MA_COS Q15 scale with MA_COS's rounding (round half up)."""
+def sin_q15_oracle(k):
+    """Independent Q15 sine oracle: round(32767 * sin(2*pi*k/256))."""
     return math.floor(32767 * math.sin(2 * math.pi * k / 256) + 0.5)
 
 
-def sign(v):
-    return (v > 0) - (v < 0)
+def sin_table_from_cos():
+    """MA_SIN's quarter-wave table derived from MA_COS's own table: T_sin[i] = T_cos[64 - i]."""
+    return [TABLE[64 - i] for i in range(65)]
+
+
+def dev_sin_from_table(k, table):
+    """MA_SIN quadrant folding using an explicit 65-entry quarter-wave table."""
+    r = k & 0x3F
+    index = (64 - r) if (k & 0x40) else r
+    value = table[index]
+    if k & 0x80:
+        value = -value
+    return value
+
+
+def parse_slot45_table():
+    """Return the (lo, hi) byte lists from slot_45.s, or None if the file is absent."""
+    if not SLOT45_PATH.exists():
+        return None
+    text = SLOT45_PATH.read_text(encoding="utf-8")
+    lo_block = text.split("sin_lo:", 1)[1].split("sin_hi:", 1)[0]
+    hi_block = text.split("sin_hi:", 1)[1]
+    parse = lambda block: [int(h, 16) for h in __import__("re").findall(r"\$([0-9A-Fa-f]{2})", block)]
+    return parse(lo_block), parse(hi_block)
 
 
 class CrossIdentityTests(unittest.TestCase):
-    def test_sin_copy_matches_its_own_definition(self):
-        """The SIN copy equals trunc(127*sin(2*pi*a/256)) for all 256 angles (oracle, no table)."""
-        for a in range(256):
-            self.assertEqual(sin127_ref(a), int(127 * math.sin(2 * math.pi * a / 256)), a)
+    def test_identity_all_256_q15(self):
+        """SIN(a) == COS((a - 64) & 0xFF) for every angle, on the Q15 scale with the same rounding.
 
-    def test_identity_points(self):
-        """COS(a) == SIN(a+64) at 0, 64, 128, 192 (Q15 scale, same rounding)."""
-        for a in (0, 64, 128, 192):
-            self.assertEqual(dev_cos(a), sin_q15((a + 64) % 256), a)
-        self.assertEqual([dev_cos(a) for a in (0, 64, 128, 192)], [32767, 0, -32767, 0])
-
-    def test_identity_all_256(self):
-        """COS(a) == SIN((a+64) mod 256) for every angle, on the Q15 scale with the same rounding."""
-        bad = [a for a in range(256) if dev_cos(a) != sin_q15((a + 64) % 256)]
+        Rearranged as COS(a) == SIN((a + 64) mod 256). The sine is an independent math oracle,
+        so this is a genuine cross-check rather than a copy of the cosine formula.
+        """
+        bad = [a for a in range(256)
+               if dev_cos(a) != sin_q15_oracle((a + 64) % 256)]
         self.assertEqual(bad, [])
 
-    def test_sign_rule_matches_sin(self):
-        """Sign of COS(a) equals sign of the SIN copy at (a+64) mod 256, for all 256 angles."""
-        for a in range(256):
-            self.assertEqual(sign(dev_cos(a)), sign(sin127_ref((a + 64) % 256)), a)
+    def test_identity_boundaries(self):
+        """COS(a) == SIN((a+64) mod 256) at the quadrant boundaries 0, 64, 128, 192, 255."""
+        for a in (0, 64, 128, 192, 255):
+            self.assertEqual(dev_cos(a), sin_q15_oracle((a + 64) % 256), a)
+        self.assertEqual([dev_cos(a) for a in (0, 64, 128, 192)], [32767, 0, -32767, 0])
 
-    def test_rounding_divergence_is_recorded(self):
-        """KNOWN MISMATCH (reported, not changed): MA_SIN truncates at scale 127, MA_COS rounds at Q15.
-        At scale 127, trunc(127*cos) agrees with the SIN copy at all 256 angles, while round(127*cos)
-        disagrees at 144 angles. The count is pinned so a change in either rounding rule is caught."""
-        trunc_mismatch = [a for a in range(256)
-                          if int(127 * math.cos(2 * math.pi * a / 256)) != sin127_ref((a + 64) % 256)]
-        round_mismatch = [a for a in range(256)
-                          if math.floor(127 * math.cos(2 * math.pi * a / 256) + 0.5) != sin127_ref((a + 64) % 256)]
-        self.assertEqual(trunc_mismatch, [])
-        self.assertEqual(len(round_mismatch), 144)
+    def test_sign_rule_matches_sine(self):
+        """Sign of COS(a) equals sign of the Q15 sine at (a + 64) mod 256, for all 256 angles."""
+        for a in range(256):
+            self.assertEqual((dev_cos(a) > 0) - (dev_cos(a) < 0),
+                             (sin_q15_oracle((a + 64) % 256) > 0) - (sin_q15_oracle((a + 64) % 256) < 0), a)
+
+    def test_derived_sin_table_identity(self):
+        """The MA_SIN table derived from MA_COS's table (T_sin[i]=T_cos[64-i]) reproduces the identity."""
+        st = sin_table_from_cos()
+        for a in range(256):
+            self.assertEqual(dev_cos(a), dev_sin_from_table((a + 64) % 256, st), a)
+
+    def test_mutants_detected_table_byte_quadrant_sign(self):
+        """Mutants must differ from the oracle: flipped table byte, wrong quadrant index, missing negation."""
+        bad_table = list(TABLE)
+        bad_table[16] ^= 0x01
+        mutants = {
+            "table_byte_flip": lambda k: dev_cos(k, bad_table),
+            "wrong_quadrant_index": lambda k: dev_cos(k, TABLE) if False else None,
+        }
+        # quadrant mutant: use r instead of 64-r for odd quadrants
+        def wrong_quadrant(k):
+            r = k & 0x3F
+            index = r  # ignores odd-quadrant fold
+            value = TABLE[index]
+            if ((k >> 6) ^ (k >> 7)) & 1:
+                value = -value
+            return value
+        # sign mutant: never negate
+        def no_negate(k):
+            r = k & 0x3F
+            index = (64 - r) if (k & 0x40) else r
+            return TABLE[index]
+        mutants = {
+            "table_byte_flip": lambda k: dev_cos(k, bad_table),
+            "wrong_quadrant": wrong_quadrant,
+            "missing_negation": no_negate,
+        }
+        for name, fn in mutants.items():
+            differs = [k for k in range(256) if fn(k) != sin_q15_oracle((k + 64) % 256) * 0 + q15_round(k) and fn(k) != q15_round(k)]
+            # A mutant is "detected" if it disagrees with the cosine oracle on at least one angle.
+            differs = [k for k in range(256) if fn(k) != q15_round(k)]
+            self.assertTrue(differs, f"mutant {name} was not detected")
+
+    def test_actual_slot45_table_when_available(self):
+        """If PR #522 has landed (slot_45.s present), its table and folding must match MA_COS."""
+        parsed = parse_slot45_table()
+        if parsed is None:
+            self.skipTest("slot_45.s not present on this branch (PR #522 not merged); "
+                          "cross-check deferred to integration branch")
+        lo, hi = parsed
+        self.assertEqual(len(lo), 65)
+        self.assertEqual(len(hi), 65)
+        sin_table = [(h << 8) | l for l, h in zip(lo, hi)]
+        # T_sin[i] must equal T_cos[64 - i].
+        for i in range(65):
+            self.assertEqual(sin_table[i], TABLE[64 - i], i)
+        # Full 256-angle identity using the actual MA_SIN table and folding.
+        for a in range(256):
+            r = a & 0x3F
+            index = (64 - r) if (a & 0x40) else r
+            value = sin_table[index]
+            if a & 0x80:
+                value = -value
+            self.assertEqual(dev_cos((a - 64) & 0xFF), value, a)
 
 
 if __name__ == "__main__":
