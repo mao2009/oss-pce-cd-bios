@@ -1941,12 +1941,16 @@ def build_run_allowlist(root):
             for step in steps:
                 if isinstance(step, dict) and isinstance(step.get("run"), str):
                     workflow_, job, name, shell, runs = _key_parts(label, where, step, runs_on)
+                    if not job_sha:
+                        raise ValueError(f"{label}: job {where!r} has a value with no approvable form; it cannot be approved")
                     entries.append({"workflow": workflow_, "job": job, "step": name, "shell": shell, "runs_on": runs,
                                     "sha256": _step_digest(step), "job_sha256": job_sha})
     return sorted(entries, key=lambda entry: json.dumps(entry, sort_keys=True))
 
 
 def _run_approved(workflow, where, step, runs_on, job_digest):
+    if not job_digest:   # a job with no approvable form (an empty digest) is never approved; it must not match an empty entry
+        return False
     try:
         digests = (_step_digest(step), job_digest)
     except TypeError:   # a value with no canonical JSON form cannot be approved
@@ -2103,6 +2107,10 @@ def scope_key_violations(text, workflow):
     refused here too (round 14), not only by yaml_integrity_violations."""
     if re.search(r"""^\s*(?:-\s+)?["']?<<["']?\s*:""", text, re.M):   # Issue #511: a merge key can hide a run: from the approval
         return [f"{workflow}: a YAML merge key (<<:) is refused; it can hide a run: the approval does not see (Issue #511)"]
+    # Issue #511: a YAML 1.1 bool word (yes, no, on, off) is read as True or False, the same value as true or false, so it
+    # would digest the same as the approved text. A plain value of that form is refused (keys such as on: are not values).
+    if re.search(r"""(?:(?<=:)|^\s*-)[ \t]+(?:yes|no|on|off|y|n)[ \t]*(?:#.*)?$""", text, re.M | re.I):
+        return [f"{workflow}: a YAML 1.1 bool word (yes, no, on, off) is refused; it reads as true or false (Issue #511)"]
     try:
         import yaml
     except ImportError:

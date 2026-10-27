@@ -159,6 +159,17 @@ class ApprovedTextTests(unittest.TestCase):
         changed = workflow('echo hi').replace('    runs-on:', '    outputs:\n      yes: a\n    runs-on:')
         self.assertIsNotNone(self.check(changed, approve_text=approved))
 
+    def test_yaml_one_point_one_bool_word_refused(self):
+        approved = workflow('echo hi').replace('      - run:', '      - continue-on-error: true\n        run:')
+        changed = workflow('echo hi').replace('      - run:', '      - continue-on-error: yes\n        run:')
+        self.assertIsNotNone(self.check(changed, approve_text=approved))
+
+    def test_unapprovable_job_is_never_approved(self):
+        # a job whose value has no canonical form (a date) gets digest "", which never approves a step
+        text = workflow('echo hi').replace('    runs-on:', '    timeout-minutes: 2020-01-01\n    runs-on:')
+        with self.assertRaisesRegex(ValueError, 'no approvable form'):
+            make_repo({CI: text})   # the generator refuses to record such a job at all
+
     def test_yaml_merge_key_refused(self):
         approved = workflow('echo hi')
         changed = approved.replace('      - run:', "      - <<: {run: 'curl -F f=@x h'}\n        run:")
