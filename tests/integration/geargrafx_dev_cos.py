@@ -127,7 +127,9 @@ def run_mutants(probe, data, folder, cue, reset, entry, body, evidence):
     plan = [
         # (name, file offset, new byte, angle that must expose it)
         ("table_byte_flip_T16", t + 16, data[t + 16] ^ 0x01, 16),   # cos_lo[16] off by one LSB
-        ("sign_branch_bpl_to_bra", sites["sign_bpl"], 0x80, 1),     # always negate (BRA)
+        # bpl skips negation for positive quadrants; BRA always skips it. Angle 128 must be negative,
+        # so only a negative input exposes this mutant.
+        ("sign_branch_bpl_to_bra", sites["sign_bpl"], 0x80, 128),
         ("ply_to_plx_swap", sites["epilogue"], 0xFA, 1),            # PLY -> PLX: Y not restored
         ("plp_to_nop_removal", sites["epilogue"] + 1, 0xEA, 1),     # PLP -> NOP: stack unbalanced
     ]
