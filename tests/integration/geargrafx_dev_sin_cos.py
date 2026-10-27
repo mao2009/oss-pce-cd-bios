@@ -38,10 +38,10 @@ def guest(reset, sin_entry, cos_entry, angle, sp):
         0xA9, 0xF8, 0x53, 0x02,                    # MPR1 = work RAM
         0xA2, sp, 0x9A,                            # caller SP
         0xA9, sin_angle, 0x20, sin_entry & 0xFF, sin_entry >> 8,
-        0x8D, OUT, 0x22, 0x8E, OUT + 1, 0x22,      # SIN A, X
+        0x8D, OUT & 0xFF, OUT >> 8, 0x8E, (OUT + 1) & 0xFF, (OUT + 1) >> 8,      # SIN A, X
         0xA9, angle, 0x20, cos_entry & 0xFF, cos_entry >> 8,
-        0x8D, OUT + 2, 0x22, 0x8E, OUT + 3, 0x22,  # COS A, X
-        0xBA, 0x8E, OUT + 4, 0x22,                 # final SP
+        0x8D, (OUT + 2) & 0xFF, (OUT + 2) >> 8, 0x8E, (OUT + 3) & 0xFF, (OUT + 3) >> 8,  # COS A, X
+        0xBA, 0x8E, (OUT + 4) & 0xFF, (OUT + 4) >> 8,                 # final SP
     ])
     halt = reset + len(code)
     return code + bytes([0x80, 0xFE]), halt
