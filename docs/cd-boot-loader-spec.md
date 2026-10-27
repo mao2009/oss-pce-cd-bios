@@ -224,5 +224,6 @@ INDEX の値は FILE 先頭からのフレーム数である。単一 FILE で�
 - 合成メディア生成スクリプトの作成・実行（本 PR は仕様のみ）
 - トラック 02 の INDEX 00 = LBA 1,408 の TOC による照合（ASSUMPTION のまま）
 - 参照 BIOS の実行（ゲート CLOSED）
-- 本書の内容を検査する試験（本 PR は文書のみ。`make check`、`make test` は既存の試験に対して実行し、結果は PR 本文に記録する）
 - 一次資料の照合（C9 は未取得）
+
+実施済み: 本書の数値・表は `tests/host/test_cd_boot_loader_layout.py` が検査する（§5 の V1・V2・V2M を合成して `tools/cue_analysis.py` と照合する試験を含む）。`make check`、`make test` は PR の HEAD で実行し、結果は PR 本文に記録する。

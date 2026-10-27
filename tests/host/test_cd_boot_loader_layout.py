@@ -1,13 +1,15 @@
 """Layout checks: docs/cd-boot-loader-spec.md numbers against a CUE sheet (#554).
 
-Independent of tools/: the CUE parser and MSF arithmetic live in this file.
-- Synthetic tests always run (CRLF, multi-FILE, same-FILE).
+The CUE parser and MSF arithmetic live in this file (not tools/). CueAnalysisConventionTests is the one
+cross-check against tools/cue_analysis.py, using media written here.
+- Synthetic tests always run (CRLF, multi-FILE, same-FILE, V1/V2/V2M media).
 - Game tests read the real CUE only when OSS_PCE_GAME_CUE is set to its path
   (local, non-published data). Otherwise they skip with a reason.
 """
 import os
 import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -81,6 +83,78 @@ class SyntheticLayoutTests(unittest.TestCase):
         self.assertEqual(files[0]["tracks"][1]["index"][1], 150)
         self.assertEqual(len(files), 1)
 
+    def test_single_file_cue_index_values_equal_the_multi_file_contiguous_lbas(self):
+        # Single FILE without a virtual PREGAP: INDEX values are absolute and match the multi-FILE CUE above.
+        cue = ('FILE "s.bin" BINARY\r\n  TRACK 01 AUDIO\r\n    INDEX 01 00:00:00\r\n'
+               '  TRACK 02 MODE1/2352\r\n    INDEX 00 00:18:58\r\n    INDEX 01 00:21:58\r\n')
+        index = parse_cue(cue)[0]["tracks"][1]["index"]
+        self.assertEqual(index, {0: 1408, 1: 1633})
+        self.assertEqual(index[1] - index[0], 225)
+
+
+def _bcd(value):
+    return (value // 10) << 4 | value % 10
+
+
+def _mode1_frame(lba):
+    """Raw MODE1/2352 frame: sync, BCD MSF of LBA + 150, mode 1, zero user data (written here, not in tools/)."""
+    msf = lba + LEAD_IN_FRAMES
+    head = bytes([_bcd(msf // 4500), _bcd(msf // FPS % 60), _bcd(msf % FPS), 1])
+    return b"\x00" + b"\xff" * 10 + b"\x00" + head + bytes(SECTOR_BYTES - 16)
+
+
+AUDIO_N = 1408      # same track 01 length as the game, so the expected LBAs are the spec's 1,408 / 1,633
+PREGAP = 225
+DATA_N = 4
+
+
+def write_layout(folder, variant):
+    """Write V1, V2 or V2M (docs/cd-boot-loader-spec.md S5) into `folder`; return the CUE path."""
+    audio = bytes(SECTOR_BYTES) * AUDIO_N          # silence, no MODE sync inside AUDIO
+    gap = 0 if variant == "V1" else PREGAP
+    data = b"".join(_mode1_frame(AUDIO_N + i) for i in range(gap + DATA_N))
+    msf = lambda f: "%02d:%02d:%02d" % (f // 4500, f // FPS % 60, f % FPS)
+    if variant == "V2M":
+        (folder / "a.bin").write_bytes(audio)
+        (folder / "b.bin").write_bytes(data)
+        cue = ('FILE "a.bin" BINARY\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n'
+               'FILE "b.bin" BINARY\n  TRACK 02 MODE1/2352\n    INDEX 00 00:00:00\n    INDEX 01 00:03:00\n')
+    else:
+        (folder / "s.bin").write_bytes(audio + data)
+        cue = 'FILE "s.bin" BINARY\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n  TRACK 02 MODE1/2352\n'
+        if gap:
+            cue += "    INDEX 00 %s\n" % msf(AUDIO_N)
+        cue += "    INDEX 01 %s\n" % msf(AUDIO_N + gap)
+    (folder / "layout.cue").write_text(cue, encoding="ascii")
+    return folder / "layout.cue"
+
+
+class CueAnalysisConventionTests(unittest.TestCase):
+    """The spec says it follows tools/cue_analysis.py; check the S5 layouts against that tool (one report per variant)."""
+
+    def analyze(self, variant):
+        sys.path.insert(0, str(ROOT))
+        from tools import cue_analysis
+        with tempfile.TemporaryDirectory() as tmp:
+            report = cue_analysis.analyze(write_layout(Path(tmp), variant))
+        self.assertEqual(report["findings"], [], variant)
+        self.assertTrue(report["structurally_valid"], variant)
+        return report["tracks"][1]
+
+    def test_v1_index01_is_lba_1408(self):
+        track = self.analyze("V1")
+        self.assertEqual((track["pregap_start_lba"], track["start_lba"], track["pregap_frames"]), (1408, 1408, 0))
+
+    def test_v2_index00_1408_index01_1633_pregap_225(self):
+        track = self.analyze("V2")
+        self.assertEqual((track["pregap_start_lba"], track["start_lba"], track["pregap_frames"]), (1408, 1633, 225))
+
+    def test_v2m_additional_condition_index00_1408_index01_1633_pregap_225(self):
+        # Separate condition (V2M); a failure here does not change the V1/V2 results above.
+        track = self.analyze("V2M")
+        self.assertEqual((track["pregap_start_lba"], track["start_lba"], track["pregap_frames"]), (1408, 1633, 225))
+        self.assertEqual(track["index01_frame"], 225)   # FILE-relative, not absolute
+
 
 class SpecTextTests(unittest.TestCase):
     def setUp(self):
@@ -93,24 +167,69 @@ class SpecTextTests(unittest.TestCase):
         self.assertNotIn("INDEX 01 = 150", self.text)
         self.assertNotIn("INDEX 01 が 150", self.text)
 
+    def table(self, header_prefix):
+        block = next(b for b in markdown_table_blocks(self.text) if b[0].startswith(header_prefix))
+        return {cells(row)[0]: cells(row) for row in block[2:]}
+
     def test_single_file_is_the_baseline_and_multi_file_is_separate(self):
         # Owner policy: V1/V2 are single-FILE (M4/M5 baseline); multi-FILE is V2M, reported separately.
-        layout = next(b for b in markdown_table_blocks(self.text) if b[0].startswith("| 変種 |"))
-        rows = {row.split("|")[1].strip(): row for row in layout[2:]}
-        self.assertIn("単一 FILE", rows["V1（対照）"])
-        self.assertIn("単一 FILE", rows["V2（ゲームと同形）"])
-        self.assertIn("225", rows["V2（ゲームと同形）"])
-        self.assertIn("多 FILE", rows["V2M（追加条件）"])
-        self.assertIn("合格扱いにしない", rows["V2M（追加条件）"])
+        rows = self.table("| 変種 |")
+        self.assertEqual(set(rows), {"V1（対照）", "V2（ゲームと同形）", "V2M（追加条件）"})
+        self.assertTrue(rows["V1（対照）"][1].startswith("単一 FILE"))
+        self.assertTrue(rows["V2（ゲームと同形）"][1].startswith("単一 FILE"))
+        self.assertTrue(rows["V2M（追加条件）"][1].startswith("多 FILE"))
         self.assertNotIn("同一 FILE の変種は作らない", self.text)
+        baseline = [line for line in self.text.splitlines() if line.startswith("基準（M4/M5）は")]
+        self.assertEqual(len(baseline), 1)
+        self.assertTrue(baseline[0].startswith("基準（M4/M5）は単一 FILE の V1・V2 とする。"), baseline[0])
 
-    def test_single_and_multi_file_give_the_same_absolute_lba(self):
-        # Single FILE: INDEX values are absolute. Same disc as the multi-FILE CUE in the test above.
-        cue = ('FILE "s.bin" BINARY\r\n  TRACK 01 AUDIO\r\n    INDEX 01 00:00:00\r\n'
-               '  TRACK 02 MODE1/2352\r\n    INDEX 00 00:18:58\r\n    INDEX 01 00:21:58\r\n')
-        index = parse_cue(cue)[0]["tracks"][1]["index"]
-        self.assertEqual(index, {0: 1408, 1: 1633})
-        self.assertEqual(index[1] - index[0], 225)
+    def test_v2_row_puts_index01_225_frames_after_index00(self):
+        v2 = self.table("| 変種 |")["V2（ゲームと同形）"][1]
+        n00 = re.search(r"`INDEX 00` = フレーム N(?![ +\d])", v2)
+        n01 = re.findall(r"`INDEX 01` = フレーム N \+ (\d+)", v2)
+        self.assertIsNotNone(n00, v2)
+        self.assertEqual(n01, [str(msf_frames("00:03:00"))])
+        self.assertEqual(re.findall(r"プリギャップ (\d+) フレーム", v2), ["225"])
+        v1 = self.table("| 変種 |")["V1（対照）"][1]
+        self.assertRegex(v1, r"`INDEX 01` = フレーム N（プリギャップなし）")
+
+    def test_v2m_is_never_reported_as_passing(self):
+        expected = self.table("| ケース | 期待 |")
+        v2m_rows = [self.table("| 変種 |")["V2M（追加条件）"]] + [r for k, r in expected.items() if "V2M" in k]
+        self.assertEqual(len(v2m_rows), 2)
+        for row in v2m_rows:
+            text = " ".join(row).replace("合格扱いにしない", "").replace("合格にしない", "")
+            self.assertNotIn("合格", text)
+            self.assertNotIn("PASS", text.upper())
+            self.assertIn("別に報告", " ".join(row))
+        for key in expected:   # V2M may not be folded into a baseline row such as "V1、V2 の正常ヘッダ"
+            if not key.startswith("V2M"):
+                self.assertNotIn("V2M", key)
+        self.assertIn("V1、V2 の正常ヘッダ", expected)
+
+    def test_layout_rows_keep_their_confidence_labels(self):
+        facts = self.table("| 項目 | CUE から読んだ内容 | 確度 |")
+        self.assertTrue(facts["トラック 02 の INDEX 01 の絶対 LBA"][2].startswith("LOCAL"))
+        self.assertIn("1,633", facts["トラック 02 の INDEX 01 の絶対 LBA"][1])
+        self.assertTrue(facts["トラック 02 の INDEX 00 の絶対 LBA"][2].startswith("ASSUMPTION"))
+        self.assertIn("1,408", facts["トラック 02 の INDEX 00 の絶対 LBA"][1])
+        self.assertTrue(facts["トラック 01 の範囲"][2].startswith("ASSUMPTION"))
+        arith = self.table("| 項目 | 計算 | 結果 | 確度 |")
+        self.assertTrue(arith["絶対 00:23:58 の LBA"][3].startswith("LOCAL"))
+        # VERIFIED is Geargrafx-measured only (definition at the top): never on CUE, file-size or arithmetic rows.
+        for row in list(facts.values()) + list(arith.values()):
+            self.assertNotIn("VERIFIED", row[-1], row)
+        summary = self.table("| 項目 | 状態 |")["ゲームのレイアウト算術"][1]
+        self.assertRegex(summary, r"1,633: LOCAL")
+        self.assertRegex(summary, r"1,408: ASSUMPTION")
+
+    def test_code_length_is_1_to_255(self):
+        contract = self.table("| 項目 | v0 契約（合成メディア） |")
+        self.assertIn("[5] 長さ（1〜255）", contract["ヘッダ"][1])
+        self.assertIn("1〜255", contract["長さ"][1])
+        self.assertIn("判定順", contract)
+        self.assertTrue(contract["判定順"][1].startswith("magic → 長さ（1〜255）→ エントリ（< 長さ）→ チェックサム"))
+        self.assertNotRegex(self.text, r"1\s*[〜~-]\s*2,?040")
 
     def test_spec_header_is_8_byte_pcex_matching_the_dev_loader(self):
         # The DEV loader source (not tools/) defines the header size; the spec must agree with it.
@@ -118,10 +237,9 @@ class SpecTextTests(unittest.TestCase):
         self.assertRegex(loader, r"(?m)^HDR_BYTES\s*=\s*8\b")
         self.assertIn("8 バイト", self.text)
         self.assertIn("PCEX", self.text)
-        # The 16-byte OSSBOOT1 form may appear only as a separately labelled, incompatible version.
-        for line in self.text.splitlines():
-            if re.search(r"(?<![\d,])16 バイト", line):   # not the 3,311,616 バイト BIN size
-                self.assertIn("非互換", line)
+        # No 16-byte header anywhere (the old form has no source in the repo and was removed).
+        self.assertNotRegex(self.text, r"(?<![\d,])16 バイト")   # not the 3,311,616 バイト BIN size
+        self.assertNotIn("OSSBOOT1", self.text)
 
     def test_spec_labels_1633_and_1408_with_their_status(self):
         for needle in ("1,633", "1,408", "ASSUMPTION", "LOCAL"):
@@ -144,6 +262,10 @@ def markdown_table_blocks(text):
     if current:
         blocks.append(current)
     return blocks
+
+
+def cells(row):
+    return [c.strip() for c in row.strip().strip("|").split("|")]
 
 
 def cell_count(row):
