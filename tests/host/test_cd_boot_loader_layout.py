@@ -88,6 +88,11 @@ class SyntheticLayoutTests(unittest.TestCase):
         cue = ('FILE "s.bin" BINARY\r\n  TRACK 01 AUDIO\r\n    INDEX 01 00:00:00\r\n'
                '  TRACK 02 MODE1/2352\r\n    INDEX 00 00:18:58\r\n    INDEX 01 00:21:58\r\n')
         index = parse_cue(cue)[0]["tracks"][1]["index"]
+        multi = parse_cue('FILE "a.bin" BINARY\r\n  TRACK 01 AUDIO\r\n    INDEX 01 00:00:00\r\n'
+                          'FILE "b.bin" BINARY\r\n  TRACK 02 MODE1/2352\r\n'
+                          '    INDEX 00 00:00:00\r\n    INDEX 01 00:03:00\r\n')
+        lbas = contiguous_index_lbas(multi, {"a.bin": 1408, "b.bin": 7921})
+        self.assertEqual(index, {0: lbas[(2, 0)], 1: lbas[(2, 1)]})
         self.assertEqual(index, {0: 1408, 1: 1633})
         self.assertEqual(index[1] - index[0], 225)
 
@@ -180,8 +185,23 @@ class SpecTextTests(unittest.TestCase):
         self.assertTrue(rows["V2M（追加条件）"][1].startswith("多 FILE"))
         self.assertNotIn("同一 FILE の変種は作らない", self.text)
         baseline = [line for line in self.text.splitlines() if line.startswith("基準（M4/M5）は")]
-        self.assertEqual(len(baseline), 1)
-        self.assertTrue(baseline[0].startswith("基準（M4/M5）は単一 FILE の V1・V2 とする。"), baseline[0])
+        self.assertEqual(baseline, ["基準（M4/M5）は単一 FILE の V1・V2 とする。"
+                                    "多 FILE の V2M は追加条件であり、その結果で V1・V2 の合否を置き換えない。"])
+        # Every sentence that names the M4/M5 baseline lists V1・V2 and never V2M.
+        mentions = [m for m in re.findall(r"基準（M4/M5）[^。]*", self.text)]
+        self.assertGreaterEqual(len(mentions), 2)
+        for sentence in mentions:
+            self.assertIn("V1・V2", sentence)
+            self.assertNotIn("V2M", sentence)
+        rule_b = [line for line in self.text.splitlines() if line.startswith("- 規則 B")]
+        self.assertEqual(len(rule_b), 1)
+        self.assertIn("仮想 PREGAP（CUE の `PREGAP`）がない場合に限り FILE 先頭が LBA 0", rule_b[0])
+
+    def test_pass_wording_appears_only_as_a_negation(self):
+        # V2M must never be reported as passing anywhere (tables, rules, body text).
+        text = self.text.replace("合格扱いにしない", "").replace("合格にしない", "")
+        self.assertNotIn("合格", text)
+        self.assertNotIn("PASS", text.upper())
 
     def test_v2_row_puts_index01_225_frames_after_index00(self):
         v2 = self.table("| 変種 |")["V2（ゲームと同形）"][1]
@@ -219,9 +239,36 @@ class SpecTextTests(unittest.TestCase):
         # VERIFIED is Geargrafx-measured only (definition at the top): never on CUE, file-size or arithmetic rows.
         for row in list(facts.values()) + list(arith.values()):
             self.assertNotIn("VERIFIED", row[-1], row)
-        summary = self.table("| 項目 | 状態 |")["ゲームのレイアウト算術"][1]
-        self.assertRegex(summary, r"1,633: LOCAL")
-        self.assertRegex(summary, r"1,408: ASSUMPTION")
+        self.assertEqual(facts["トラック 01 の BIN サイズ"][2], "LOCAL（ファイルサイズ）。セクタ数は 算術")
+        self.assertEqual(facts["トラック 02 の BIN サイズ"][2], "LOCAL（ファイルサイズ）。セクタ数は 算術")
+        self.assertEqual(arith["トラック 01 の BIN"][3], "LOCAL（ファイルサイズ）、算術")
+        summary = self.table("| 項目 | 状態 |")
+        self.assertEqual(summary["ゲームのレイアウト算術"][1],
+                         "225 フレーム: 算術（CUE は LOCAL）／ BIN 1,408 セクタ: LOCAL（ファイルサイズ）／ "
+                         "INDEX 01 の絶対 LBA 1,633: LOCAL（ヘッダ実測）／ "
+                         "INDEX 00 の絶対 LBA 1,408: ASSUMPTION（TOC 照合まで事実ではない）")
+        self.assertEqual(summary["ゲームのトラック構成（CUE）"][1], "LOCAL（メタデータ）")
+        b6 = next(line for line in self.text.splitlines() if line.startswith("| B6 |"))
+        self.assertIn("1,633 は LOCAL（ヘッダ実測）、INDEX 00 の 1,408 は ASSUMPTION", b6)
+        self.assertIn("- トラック 02 の INDEX 00 = LBA 1,408 の TOC による照合（ASSUMPTION のまま）",
+                      self.text.splitlines())
+
+    def test_verified_appears_only_where_the_definition_allows(self):
+        # VERIFIED = Geargrafx-measured DEV image only. Any other line carrying it (a relabelled LOCAL,
+        # ASSUMPTION, 算術 or HYPOTHESIS value in any section) is a regression.
+        allowed = ("参照 JSR ゲートは CLOSED のまま。", "- `VERIFIED`: ", "| C14 |", "| C15 |", "**合否の扱い**")
+        for line in self.text.splitlines():
+            if "VERIFIED" in line:
+                self.assertTrue(line.startswith(allowed), line)
+        for line in self.text.splitlines():
+            if line.startswith("**合否の扱い**"):
+                self.assertIn("VERIFIED は付けない", line)
+
+    def test_scope_statement_matches_the_header_measurement(self):
+        scope = next(line for line in self.text.splitlines() if line.startswith("1. ゲーム固有の事実"))
+        self.assertIn("ヘッダ MSF", scope)
+        self.assertIn("ユーザデータ", scope)
+        self.assertNotIn("セクタ内容は読んでいない", self.text)
 
     def test_code_length_is_1_to_255(self):
         contract = self.table("| 項目 | v0 契約（合成メディア） |")
@@ -290,9 +337,12 @@ class SpecTableTests(unittest.TestCase):
     def test_failure_state_table_contains_budget_and_retry_rows(self):
         failure = next(b for b in self.blocks if b[0].startswith("| 状態 | 条件"))
         names = [row.split("|")[1].strip().strip("`") for row in failure[2:]]
-        for name in ("NO_TRACK", "DATA_TIMEOUT", "PREMATURE_STATUS", "BAD_MAGIC",
-                     "BAD_LENGTH", "BAD_ENTRY_OFFSET", "BAD_CHECKSUM", "BUDGET", "RETRY_EXHAUSTED"):
-            self.assertIn(name, names)
+        # Exact order: the header checks follow load_check (magic, length, entry, checksum).
+        self.assertEqual(names, ["NO_TRACK", "DATA_TIMEOUT", "PREMATURE_STATUS", "BAD_MAGIC",
+                                 "BAD_LENGTH", "BAD_ENTRY_OFFSET", "BAD_CHECKSUM", "BUDGET", "RETRY_EXHAUSTED"])
+        codes = {row.split("|")[1].strip().strip("`"): row.split("|")[3].strip() for row in failure[2:]}
+        self.assertEqual([codes[n] for n in ("BAD_MAGIC", "BAD_LENGTH", "BAD_ENTRY_OFFSET", "BAD_CHECKSUM")],
+                         ["20", "22", "21", "23"])
 
 
 @unittest.skipUnless(os.environ.get("OSS_PCE_GAME_CUE"), "set OSS_PCE_GAME_CUE to the local game CUE path")
