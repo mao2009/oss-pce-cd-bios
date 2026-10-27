@@ -15,6 +15,8 @@
 
 - `VERIFIED`: 本リポジトリの開発用イメージを固定版 Geargrafx (`b49ae82a`) で実測した事実のみ。実機・別エミュレータでは未確認。
 - `HYPOTHESIS`: 公開資料の記述、または資料からの推測。一次資料・実行で未確認。
+- `LOCAL`: 手元のゲームデータ（リポジトリ外・非公開）を読んで確認した事実。本書には値と読取方法だけを書き、データ自体は含めない。他環境では再現できない。
+- `算術`: 本書に書いた値からの計算。計算の正しさだけを示し、元の値の確度は元の値の表記に従う。
 - `UNKNOWN`: 出典がない、または出典が取得できなかった。値は埋めない。
 
 ---
@@ -25,13 +27,13 @@
 
 | 項目 | CUE から読んだ内容 | 確度 |
 | --- | --- | --- |
-| トラック数 | 16 | VERIFIED（CUE の記述どおり） |
-| データトラック | `TRACK 02 MODE1/2352` の 1 本のみ。他は `AUDIO` | VERIFIED（CUE の記述どおり） |
-| トラック 02 の INDEX | `INDEX 00 00:00:00`、`INDEX 01 00:03:00`（プリギャップ 225 セクタ = 3 秒 × 75 フレーム。150 ではない） | VERIFIED（CUE の記述どおり） |
-| トラック 01 | `AUDIO`、`INDEX 01 00:00:00` | VERIFIED（CUE の記述どおり） |
-| トラック 03 | `AUDIO`、`INDEX 00 00:00:00`、`INDEX 01 00:02:00` | VERIFIED（CUE の記述どおり） |
-| トラック 02 の BIN サイズ | 18,630,192 バイト = 2352 × 7,921 セクタ（割り切れる） | VERIFIED（ファイルサイズの算術） |
-| トラック 01 の BIN サイズ | 3,311,616 バイト = 2352 × 1,408 セクタ | VERIFIED（ファイルサイズの算術） |
+| トラック数 | 16 | LOCAL（CUE の記述どおり） |
+| データトラック | `TRACK 02 MODE1/2352` の 1 本のみ。他は `AUDIO` | LOCAL（CUE の記述どおり） |
+| トラック 02 の INDEX | `INDEX 00 00:00:00`、`INDEX 01 00:03:00`（プリギャップ 225 セクタ = 3 秒 × 75 フレーム。150 ではない） | LOCAL（CUE の記述どおり）。225 は 算術 |
+| トラック 01 | `AUDIO`、`INDEX 01 00:00:00` | LOCAL（CUE の記述どおり） |
+| トラック 03 | `AUDIO`、`INDEX 00 00:00:00`、`INDEX 01 00:02:00` | LOCAL（CUE の記述どおり） |
+| トラック 02 の BIN サイズ | 18,630,192 バイト = 2352 × 7,921 セクタ（割り切れる） | LOCAL（ファイルサイズ）。セクタ数は 算術 |
+| トラック 01 の BIN サイズ | 3,311,616 バイト = 2352 × 1,408 セクタ | LOCAL（ファイルサイズ）。セクタ数は 算術 |
 | トラック 02 の絶対 LBA | トラック 01 の BIN（1,408 セクタ）と連続配置の仮定から、INDEX 00 = LBA 1408、INDEX 01 = LBA 1633（1408 + 225） | HYPOTHESIS（TOC は未確認。連続配置は CUE からは示されない） |
 | 起動に使うセクタ | 未確認 | UNKNOWN |
 | トラック 02 が起動データを持つか | 未確認。データトラックが 1 本しかない点は、2 本目を使う経路（後述 §2 C7）を試す必要があることを示す | UNKNOWN |
@@ -44,7 +46,7 @@
 
 | # | 主張 | 出典 | 確度 | 備考 |
 | --- | --- | --- | --- | --- |
-| C1 | HuC SDK は `cd_boot = $00:E000` を宣言する | `pce-devel/huc` `54f5c736` の `include/hucc/pcengine.inc` 467–468 行（`docs/research/cd-boot-contract.md` の台帳経由。本セッションでは再取得していない） | VERIFIED（宣言の存在のみ） | 関数の意味・戻り・入力は含まない |
+| C1 | HuC SDK は `cd_boot = $00:E000` を宣言する | `pce-devel/huc` `54f5c736` の `include/hucc/pcengine.inc` 467–468 行（`docs/research/cd-boot-contract.md` の台帳経由。本セッションでは再取得していない） | HYPOTHESIS（宣言の存在。台帳経由で、本書では再取得していない） | 関数の意味・戻り・入力は含まない |
 | C2 | `$E000` が JMP テーブルの入口である | 二次資料 STUM（版別表）のみ | HYPOTHESIS | 一次資料で未照合 |
 | C3 | 起動は「最初のデータトラック」を選ぶ（通常 Track 2） | <https://www.stum.de/2026/pc-engine-second-data-track/>（2026-05-01、本セッションで取得して照合） | HYPOTHESIS | 二次資料。BIOS のバイナリ・一次資料では未確認 |
 | C4 | BIOS は各トラックに対し `cd_contnts`、`cd_dinfo` を順に呼び、データトラックを見つける | 同上 | HYPOTHESIS | 関数名は二次資料の記述 |
@@ -74,9 +76,10 @@
 | トラック選択 | TOC（CUE）上の最初の `MODE1/2352` トラックを使う | HYPOTHESIS（C3、最初のデータトラック） |
 | 読出し LBA の基準 | ヘッダ位置は「データトラック INDEX 01 からの相対セクタ番号」で表し、絶対 LBA = INDEX 01 の LBA + 相対値 | UNKNOWN（絶対 LBA か相対かは未決。`docs/cd-base-contract.md`） |
 | 読出し単位・方法 | 1 セクタ（2048 バイト）を READ(6) で読む。ヘッダ 1 セクタのみ | UNKNOWN（IPL の 2 セクタ、セクタ長は未確認。C5） |
-| ヘッダ | 16 バイト。magic、エントリオフセット、長さ、チェックサム、予約。形式は `docs/cd-load-exec-probe.md` の開発用形式を流用 | UNKNOWN（実形式は未確認） |
+| ヘッダ | 8 バイト（開発用ローダ `src/cd_load_exec_probe.s` の `HDR_BYTES = 8`、生成器 `tools/build_cdload_exec.py` の `HDR_BYTES = 8`）。[0:4] magic `PCEX`、[4] エントリオフセット、[5] 長さ（1〜255）、[6] チェックサム（コード部の和の下位 8 ビット）、[7] 予約（0）。コードは [8:] から長さ分 | 開発用形式のみ（ソース照合）。実 SUPER CD-ROM2 の形式は UNKNOWN（C6） |
+| 判定順 | magic → 長さ（1〜255）→ エントリ（< 長さ）→ チェックサム。最初の失敗で停止し、以降は見ない | 開発用ローダ `load_check` のソース |
 | 転送先 RAM | 論理 `$3000`（MPR1 = `$F8` の作業 RAM）。`$2800` を経由して転送してよい（開発用実績） | UNKNOWN |
-| 長さ | 1 セクタ内に収まる。上限 = 2048 − ヘッダ長、かつ長さ ≥ 1 | UNKNOWN |
+| 長さ | 1 セクタ内に収まる。ヘッダ（8 バイト）の後のコード長は 1〜255（1 バイトフィールド）。実効上限は 255 で、セクタに収まる 2040（= 2048 − 8）には達しない | UNKNOWN（実ローダの上限は未確認） |
 | エントリ | 転送先 + エントリオフセット。オフセットは長さ未満 | UNKNOWN（C2 の `$E000` は BIOS 側の入口の仮説で、IPL のエントリとは別） |
 | BIOS の初期化要求 | 開発用: MPR0 = `$FF`、MPR1 = `$F8`、I フラグはセットのままポーリング、SP は BIOS が設定 | UNKNOWN（C12） |
 | 戻り | 合成 payload は開発用マーカーで戻る（試験専用）。ブート経路の戻りは契約に含めない | UNKNOWN（C13） |
@@ -92,11 +95,13 @@
 | `DATA_TIMEOUT` | DATA-IN 途中で中断 | 4 |
 | `PREMATURE_STATUS` | 範囲外 LBA、または読出し中のステータス早期到達 | 5 |
 | `BAD_MAGIC` | magic 不一致（LBA 0 を読んでも同じ） | 20 |
+| `BAD_LENGTH` | 長さ 0（1 バイトなので 255 超はない） | 22 |
 | `BAD_ENTRY_OFFSET` | エントリ ≥ 長さ | 21 |
-| `BAD_LENGTH` | 長さ 0 または上限超過 | 22 |
 | `BAD_CHECKSUM` | チェックサム不一致 | 23 |
 | `BUDGET` | ステップ上限超過 | 既存 |
 | `RETRY_EXHAUSTED` | 実機の再試行は UNKNOWN（C7）。v0 は再試行しない | 予約 |
+
+上の表は、判定順（magic → 長さ → エントリ → チェックサム）に並べた行の後に、`BUDGET` と `RETRY_EXHAUSTED` を続けている。
 
 ---
 
@@ -104,14 +109,14 @@
 
 | 項目 | 状態 |
 | --- | --- |
-| BIOS 入口 `$E000` の存在 | VERIFIED（宣言のみ） |
+| BIOS 入口 `$E000` の存在 | HYPOTHESIS（宣言の存在。C1） |
 | BIOS 入口の意味・戻り・入力 | UNKNOWN |
 | 最初のデータトラックを使う | HYPOTHESIS |
 | IPL は 2 セクタ | HYPOTHESIS |
 | IPL の読込先・エントリ・ヘッダ | UNKNOWN |
 | 再試行 16 回と `recbase1` | HYPOTHESIS |
 | 合成メディアの契約 v0 | 本書で定義（実装は未着手） |
-| ゲームのトラック構成（CUE） | VERIFIED（メタデータ） |
+| ゲームのトラック構成（CUE） | LOCAL（メタデータ） |
 | ゲームの起動セクタ | UNKNOWN |
 
 ---
@@ -132,12 +137,13 @@
 
 基準（M4/M5）は単一 FILE の V1・V2 とする。多 FILE の V2M は追加条件であり、その結果で V1・V2 の合否を置き換えない。
 V2 はゲームの INDEX 構造だけを写す。ゲームのセクタ内容は含まない。
-INDEX の値は FILE 先頭からのフレーム数である。単一 FILE では FILE 先頭が LBA 0 なので INDEX 値がそのまま絶対 LBA になる。多 FILE では、絶対 LBA = 先行 FILE のフレーム数の合計 + INDEX 値（連続配置の仮定。`tools/cue_analysis.py` と同じ規約）。
+INDEX の値は FILE 先頭からのフレーム数である。単一 FILE では、トラック 01 の前に仮想 PREGAP（CUE の `PREGAP`、BIN に格納されない）がない場合に限り FILE 先頭が LBA 0 になり、INDEX 値がそのまま絶対 LBA になる（`tools/cue_analysis.py` の `analyze` の説明。`PREGAP 00:02:00` があると FILE 先頭は LBA 150）。V1・V2 は仮想 PREGAP を使わない。多 FILE では、絶対 LBA = 先行 FILE のフレーム数の合計 + INDEX 値（連続配置の仮定。`tools/cue_analysis.py` と同じ規約）。
 
 **セクタ内容**
 
-- INDEX 01 のセクタ: 16 バイトのヘッダ + 固定のテストパターン（`payload` は §3 の開発用 payload を流用してよい）。
-- LBA 0（トラック 01 の先頭）: 試験用のデコイ。`BAD_MAGIC` を含む内容にする。ローダが sector 0 を実行していないことを、デコイが制御されないことで示す。
+- INDEX 01 のセクタ: 8 バイトの PCEX ヘッダ（§3）+ コード + 固定のテストパターン（`payload` は §3 の開発用 payload を流用してよい）。
+- LBA 0（トラック 01 AUDIO の先頭）: オーディオのまま置き、MODE の sync もヘッダも入れない（`tools/cue_analysis.py` は AUDIO トラック内の MODE sync を異常として報告する）。ローダは TOC で最初の `MODE1/2352` トラックを選び、AUDIO の LBA 0 は読み飛ばす。sector 0 を実行しないことは、LBA 0 に PCEX の magic がないため、LBA 0 を読む実装が `BAD_MAGIC` になることで示す。
+- 開発用経路との関係: 開発用経路の媒体確認 `cd_media_state` は READ(6) LBA 0 で本プロジェクトの合成ディスクの magic を確認する（`docs/dev-cd-boot-init-design.md`、`docs/cd-media-state.md`）。V1・V2 は LBA 0 が AUDIO なので、この媒体確認は成功しない。v0 のブートローダ契約はこの媒体確認に依存しない。V1・V2 を開発用経路で実行するかどうかは未決（UNKNOWN）。
 
 **期待結果**
 
@@ -149,7 +155,7 @@ INDEX の値は FILE 先頭からのフレーム数である。単一 FILE で�
 | エントリ = 長さ | `BAD_ENTRY_OFFSET` |
 | 長さ 0 | `BAD_LENGTH` |
 | データトラックを除去（オーディオのみ） | `NO_TRACK` |
-| LBA 0 だけにヘッダを置き、データトラックには置かない | `BAD_MAGIC`（sector 0 を実行しないことの確認） |
+| 読出し LBA を 0（トラック 01 AUDIO の先頭）にする実装 | ホスト判定器では `BAD_MAGIC`（sector 0 を実行しないことの確認）。実ドライブが AUDIO セクタへの READ(6) に何を返すかは UNKNOWN |
 | DATA-IN 途中で中断 | `DATA_TIMEOUT` |
 | V2 で絶対 LBA と INDEX 01 相対を取り違える実装 | 別の読出し LBA になり、判定器が `BAD_MAGIC` で拒否 |
 | V2M（多 FILE、追加条件） | V1・V2 と別に報告する。判定器が多 FILE に対応していなければ未評価とし、合格にしない |
@@ -158,7 +164,7 @@ INDEX の値は FILE 先頭からのフレーム数である。単一 FILE で�
 
 **判定器**: `docs/cd-load-exec-probe.md` と同じく、PC の順序（buffer_ready → data_done → payload_entry → payload_done → return → halt）を検査する独立の判定器。判定器は合成メディアの期待値をホスト側で計算する。
 
-**合否の扱い**: 結果は開発用の LOCAL 証拠。VERIFIED は付けない（`docs/cd-read-contract.md` の方針どおり）。
+**合否の扱い**: 結果は合成メディアに対するホスト判定器（または開発用経路）の結果であり、実コアでの観測とは分けて記録する。VERIFIED は付けない（`docs/cd-read-contract.md` の方針どおり）。
 
 ---
 
@@ -190,5 +196,5 @@ INDEX の値は FILE 先頭からのフレーム数である。単一 FILE で�
 
 - 合成メディア生成スクリプトの作成・実行（本 PR は仕様のみ）
 - 参照 BIOS の実行（ゲート CLOSED）
-- `make check`、`make test` の実行（コード変更がないため未実施）
+- 本書の内容を検査する試験（本 PR は文書のみ。`make check`、`make test` は既存の試験に対して実行し、結果は PR 本文に記録する）
 - 一次資料の照合（C9 は未取得）
