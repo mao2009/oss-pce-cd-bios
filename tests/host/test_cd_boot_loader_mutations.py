@@ -2,7 +2,8 @@
 
 Each mutation is applied to a copy of the spec in a temporary directory (the repo file is never written), and the
 spec-reading test classes of test_cd_boot_loader_layout.py are run against that copy in-process.
-IDs: O03..O13 and R06..R32 are the reviewers' IDs (only the ones reported to this PR); W01.. are this PR's own.
+IDs: O.., R01..R32 and N01..N32 are the reviewers' IDs (R06/R10/R11/R15/R16/R21/R25/R26/R28/R31/R32 were
+written here from the round-6 report; the other R and N entries copy r6/mut6.py); W01..W49 are this PR's own.
 """
 import importlib.util
 import io
@@ -106,7 +107,66 @@ MUTATIONS = [
     ("W47", "このゲームでは INDEX 01 が INDEX 00 の 225 フレーム後", "このゲームでは INDEX 01 が INDEX 00 の 150 フレーム後"),
     ("W48", "LBA = 絶対フレーム − 150 で 1,633", "LBA = 絶対フレーム − 150 で 1,634"),
     ("W49", "フレーム 75〜299 のヘッダ MSF", "フレーム 76〜299 のヘッダ MSF"),
+    # Reviewer set (round 6/7, r6/mut6.py), IDs not already above. Same old/new strings as the reviewer's script.
+    ("O06a", "フレーム 0〜299 のセクタヘッダ", "フレーム 0〜99 のセクタヘッダ"),
+    ("O06b", "フレーム 75〜299 のヘッダ MSF", "フレーム 75〜99 のヘッダ MSF"),
+    ("R01", "1,408（= 1,633 − 225", "１,４０９（= 1,633 − 225"),
+    ("R02", "| 1,633 | LOCAL（ヘッダ実測と一致）", "| １,６３４ | LOCAL（ヘッダ実測と一致）"),
+    ("R03", "(23 × 75 + 58) − 150", "(23 × 75 + 59) − 150"),
+    ("R04", "INDEX 01 の絶対 LBA 1,633: LOCAL", "INDEX 01 の絶対 LBA 1,634: LOCAL"),
+    ("R05", "BIN 1,408 セクタ: LOCAL", "BIN 1,409 セクタ: LOCAL"),
+    ("R07", "2040（= 2048 − 8）", "2041（= 2048 − 8）"),
+    ("R08", "2040（= 2048 − 8）", "2041（=2048−8）"),
+    ("R09", "FILE 先頭は LBA 150）", "FILE 先頭は LBA 225）"),
+    ("R12", "18,630,192 バイト = 2352 × 7,921", "18,630,192 バイト = 2048 × 7,921"),
+    ("R13", "3 秒 × 75 フレーム", "3 秒 × 74 フレーム"),
+    ("R14", "INDEX 01 が INDEX 00 の 225 フレーム後（FILE", "INDEX 01 が INDEX 00 より 150 フレーム後（FILE"),
+    ("R17", "| 1,408 + 150 |", "| 1,408 + 225 |"),
+    ("R18", "INDEX 01 の絶対 LBA 1,633 は LOCAL（ヘッダ実測）、INDEX 00", "INDEX 01 の絶対 LBA 1,634 は LOCAL（ヘッダ実測）、INDEX 00"),
+    ("R19", "INDEX 00 = LBA 1,408 の TOC", "INDEX 00 = LBA 1,409 の TOC"),
+    ("R20", "FILE 先頭が LBA 0 になり、INDEX 値がそのまま絶対 LBA になる（§5）", "FILE 先頭が LBA 150 になり、INDEX 値がそのまま絶対 LBA になる（§5）"),
+    ("R22", "225 フレーム = 529,200 バイト", "150 フレーム = 352,800 バイト"),
+    ("R23", "例外 0", "例外 **3**"),
+    ("R24", "各フレームの 2048 バイトの本体", "各フレームの 2352 バイトの本体"),
+    ("R27", "− 150 | 0 | 算術", "− 150 | **1** | 算術"),
+    ("R29", "フレーム 0〜74 はヘッダ MSF の 3 バイトが 00 00 00 で位置を示さない。LOCAL、MSF 以外は読んでいない）。フレーム 75〜299",
+     "フレーム 0〜75 はヘッダ MSF の 3 バイトが 00 00 00 で位置を示さない。LOCAL、MSF 以外は読んでいない）。フレーム 76〜299"),
+    ("R30", "00:23:58（絶対）。LBA = 絶対フレーム − 150 で 1,633", "00:23:59（絶対）。LBA = 絶対フレーム − 150 で 1,634"),
+    ("N01", "（基準 2 変種と追加条件 1 変種）", "（基準 3 変種と追加条件 1 変種）"),
+    ("N02", "| 18,630,192 ÷ 2,352 | 7,921 セクタ |", "| 18,630,192 ÷ 2,352 | 7,920 セクタ |"),
+    ("N03", "(0 × 60 + 2) × 75 + 0 − 150", "(0 × 60 + 2) × 75 + 1 − 150"),
+    ("N04", "`INDEX 00 00:00:00` → `INDEX 01 00:03:00` の差", "`INDEX 00 00:00:00` → `INDEX 01 00:02:00` の差"),
+    ("N05", "`PREGAP 00:02:00` があると", "`PREGAP 00:03:00` があると"),
+    ("N06", "フレーム 0〜299 のセクタヘッダ", "フレーム 0〜300 のセクタヘッダ"),
+    ("N07", "フレーム 75〜299 のヘッダ MSF", "フレーム 75〜300 のヘッダ MSF"),
+    ("N08", "FILE 先頭から 225 フレーム = 529,200", "FILE 先頭から 150 フレーム = 529,200"),
+    ("N09", "225 は INDEX 00 と INDEX 01 の差（プリギャップ長）であり、150 の換算と混同しない",
+     "150 は INDEX 00 と INDEX 01 の差（プリギャップ長）であり、225 の換算と混同しない"),
+    ("N10", "絶対 MSF は LBA + 150 で表す", "絶対 LBA は MSF + 150 で表す"),
+    ("N11", "LBA = 絶対フレーム − 150", "MSF = 絶対フレーム − 150"),
+    ("N12", "絶対 LBA = 先行 FILE のフレーム数の合計 + INDEX 値", "絶対 MSF = 先行 FILE のフレーム数の合計 + INDEX 値"),
+    ("N13", "= 529,200 バイト", "= 530,000 バイト"),
+    ("N14", "2352 × 1,408 セクタ | LOCAL（ファイルサイズ）。セクタ数は 算術", "2352 × 1,408 セクタ | VERIFIED（ファイルサイズ）。セクタ数は 算術"),
+    ("N15", "| 1,408 セクタ | LOCAL（ファイルサイズ）、算術 |", "| 1,408 セクタ | VERIFIED（ファイルサイズ）、算術 |"),
+    ("N16", "。225 は 算術 |", "。225 は LOCAL |"),
+    ("N17", "| 0 | 算術（`docs/cd-read-diagnostic.md` の定義） |", "| 0 | VERIFIED（`docs/cd-read-diagnostic.md` の定義） |"),
+    ("N18", "INDEX 00 の 1,408 は ASSUMPTION", "INDEX 00 の 1,409 は ASSUMPTION"),
+    ("N19", "| ASSUMPTION（トラック 02 の絶対位置とは独立に", "| LOCAL（トラック 02 の絶対位置とは独立に"),
+    ("N20", "225 セクタ = 3 秒", "225 セクタ = 2 秒"),
+    ("N21", "リードイン 2 秒", "リードイン 3 秒"),
+    ("N22", "225 フレームは BIN に格納されている", "150 フレームは BIN に格納されている"),
+    ("N23", "プリギャップ 225 フレームを", "プリギャップ 150 フレームを"),
+    ("N24", "旧記述の 1,558", "旧記述の 1,559"),
+    ("N25", "| 00:03:00 のフレーム数 |", "| 00:02:00 のフレーム数 |"),
+    ("N26", "| 絶対 00:23:58 の LBA |", "| 絶対 00:23:59 の LBA |"),
+    ("N27", "`AUDIO`、`INDEX 01 00:00:00`", "`AUDIO`、`INDEX 01 00:00:02`"),
+    ("N28", "LBA 0 が 2048 バイトを返す", "LBA 0 が 2352 バイトを返す"),
+    ("N29", "実効上限は 255", "実効上限は 256"),
+    ("N30", "モードバイトは 1 とする", "モードバイトは 2 とする"),
+    ("N31", "ユーザデータ（各フレームの 2048 バイトの本体）は読んでいない）\n2.", "ユーザデータ（各フレームの 2352 バイトの本体）は読んでいない）\n2."),
+    ("N32", "| 絶対 00:23:58 の LBA | (23 × 75 + 58) − 150 | 1,633 |", "| 絶対 00:23:59 の LBA | (23 × 75 + 59) − 150 | 1,634 |"),
 ]
+EXPECTED_COUNT = 126   # 71 (round 6) + O06a/O06b + 21 reviewer R IDs + N01..N32
 
 
 def _spec_tests_pass(spec_path):
@@ -131,7 +191,7 @@ class SpecMutationTests(unittest.TestCase):
     def test_ids_are_unique(self):
         ids = [m[0] for m in MUTATIONS]
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(len(ids), 71)
+        self.assertEqual(len(ids), EXPECTED_COUNT)
 
     def test_unmutated_copy_passes(self):
         self.path.write_text(self.original, encoding="utf-8")

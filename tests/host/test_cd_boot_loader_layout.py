@@ -515,6 +515,38 @@ class NumericClaimsTests(unittest.TestCase):
         self.assertEqual(re.findall(r"1 セクタ（(\d+) バイト）を READ\(6\) で読む", contract["読出し単位・方法"][1]), [str(size)])
         self.assertIn("2040（= %d − 8）" % size, contract["長さ"][1])
 
+    def test_prose_numbers_follow_the_derivation(self):
+        t = self.text
+        # Every "INDEX 00 X → INDEX 01 Y" in prose is the game's track 02 pair (225 frames apart).
+        pairs = re.findall(r"`INDEX 00 (\d\d:\d\d:\d\d)` → `INDEX 01 (\d\d:\d\d:\d\d)`", t)
+        self.assertGreaterEqual(len(pairs), 1)
+        for pair in pairs:
+            self.assertEqual(pair, GAME_CUE["t02"])
+            self.assertEqual(msf_frames(pair[1]) - msf_frames(pair[0]), self.PREGAP)
+        # Every "プリギャップ N" and "N フレームは BIN に格納" names the 225-frame pregap.
+        gaps = re.findall(r"プリギャップ (\d+)", t)
+        self.assertGreaterEqual(len(gaps), 2)   # S1 INDEX row and S5 V2 row
+        self.assertEqual(set(gaps), {str(self.PREGAP)})
+        stored = re.findall(r"(\d+) フレームは BIN に格納", t)
+        self.assertEqual(stored, [str(self.PREGAP)])
+        # Direction of the S1 note: the pregap is 225 and 150 is the lead-in conversion, never the reverse.
+        note = re.findall(r"(\d+) は INDEX 00 と INDEX 01 の差（プリギャップ長）であり、(\d+) の換算と混同しない", t)
+        self.assertEqual(note, [(str(self.PREGAP), str(LEAD_IN_FRAMES))])
+        lead_in = re.findall(r"リードイン (\d+) 秒", t)
+        self.assertEqual([int(s) * FPS for s in lead_in], [LEAD_IN_FRAMES])
+        # Label of the derived 225 in the S1 INDEX row is 算術 (the CUE text itself is LOCAL).
+        self.assertEqual(self.facts["トラック 02 の INDEX"][2], "LOCAL（CUE の記述どおり）。225 は 算術")
+        # Variant count in the S5 caption equals the rows of the layout table.
+        rows = [cells(r)[0] for b in markdown_table_blocks(t) if b[0].startswith("| 変種 |") for r in b[2:]]
+        caption = re.findall(r"基準 (\d+) 変種と追加条件 (\d+) 変種", t)
+        self.assertEqual(caption, [(str(sum("V2M" not in r for r in rows)), str(sum("V2M" in r for r in rows)))])
+        # C14 user-data size, the effective length limit, and the MODE1 mode byte.
+        loader = (ROOT / "src" / "cd_load_exec_probe.s").read_text(encoding="utf-8")
+        size = re.search(r"(?m)^SECTOR_BYTES\s*=\s*(\d+)", loader).group(1)
+        self.assertEqual(re.findall(r"LBA 0 が (\d+) バイトを返す", t), [size])
+        self.assertEqual(re.findall(r"実効上限は (\d+)", t), re.findall(r"\[5\] 長さ（1〜(\d+)）", t))
+        self.assertEqual(re.findall(r"モードバイトは (\d+)", t), ["1"])   # MODE1/2352 sectors carry mode 1
+
     def test_every_confidence_label_used_is_defined(self):
         defined = {m.group(1): m.group(2) for m in (re.match(r"- `([^`]+)`: (.+)", l) for l in self.lines) if m}
         for label in ("VERIFIED", "HYPOTHESIS", "LOCAL", "ASSUMPTION", "算術", "UNKNOWN"):
