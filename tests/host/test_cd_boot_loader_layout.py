@@ -113,6 +113,47 @@ class SpecTextTests(unittest.TestCase):
                 self.assertIn("誤り", line)
 
 
+def markdown_table_blocks(text):
+    """Group consecutive lines that start with '|' into blocks (each block is one table)."""
+    blocks, current = [], []
+    for line in text.splitlines():
+        if line.lstrip().startswith("|"):
+            current.append(line.strip())
+        elif current:
+            blocks.append(current)
+            current = []
+    if current:
+        blocks.append(current)
+    return blocks
+
+
+def cell_count(row):
+    return len(row.strip().strip("|").split("|"))
+
+
+class SpecTableTests(unittest.TestCase):
+    """Every table row in the spec must belong to a table whose header and separator agree."""
+
+    def setUp(self):
+        self.blocks = markdown_table_blocks(SPEC.read_text(encoding="utf-8"))
+
+    def test_every_table_block_has_header_separator_and_matching_column_counts(self):
+        self.assertTrue(self.blocks)
+        for block in self.blocks:
+            header = block[0]
+            self.assertRegex(block[1], r"^\|(\s*-+\s*\|)+$", f"no separator under: {header}")
+            width = cell_count(header)
+            for row in block:
+                self.assertEqual(cell_count(row), width, f"column count mismatch: {row}")
+
+    def test_failure_state_table_contains_budget_and_retry_rows(self):
+        failure = next(b for b in self.blocks if b[0].startswith("| 状態 | 条件"))
+        names = [row.split("|")[1].strip().strip("`") for row in failure[2:]]
+        for name in ("NO_TRACK", "DATA_TIMEOUT", "PREMATURE_STATUS", "BAD_MAGIC",
+                     "BAD_LENGTH", "BAD_ENTRY_OFFSET", "BAD_CHECKSUM", "BUDGET", "RETRY_EXHAUSTED"):
+            self.assertIn(name, names)
+
+
 @unittest.skipUnless(os.environ.get("OSS_PCE_GAME_CUE"), "set OSS_PCE_GAME_CUE to the local game CUE path")
 class GameCueTests(unittest.TestCase):
     def setUp(self):
