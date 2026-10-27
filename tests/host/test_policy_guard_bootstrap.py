@@ -292,6 +292,18 @@ class Hardening(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'lone CR'):
                 guard.check_guard_placement(Path(tmp))
 
+    def test_symbolic_link_workflow_is_refused(self):
+        # a link is untrusted input (its target is not the file the reviewer read). Windows cannot create the link here,
+        # so the link state is patched: the check must refuse a workflow that is a symbolic link.
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / '.github' / 'workflows' / 'ci.yml'
+            path.parent.mkdir(parents=True)
+            path.write_text(GOOD, encoding='utf-8')
+            with mock.patch('pathlib.Path.is_symlink', return_value=True):
+                with self.assertRaisesRegex(ValueError, 'symbolic link'):
+                    guard.check_guard_placement(Path(tmp))
+
     def test_quoted_on_key_with_same_trigger_passes(self):
         self.assertEqual(problems(GOOD.replace('on:\n', '"on":\n', 1)), [])
 
