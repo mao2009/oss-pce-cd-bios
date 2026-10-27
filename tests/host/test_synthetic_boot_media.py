@@ -6,14 +6,17 @@ the same contract and does NOT import the generator; the oracle (tools/synthetic
 """
 import ast
 import hashlib
+import tempfile
 import unittest
 from pathlib import Path
 
+from tools import cue_analysis
 from tools import synthetic_boot_media as gen
 from tools import synthetic_boot_oracle as oracle
 
-# (layout, pregap frames). The pregap convention is UNKNOWN, so both 150 and 225 are exercised.
-LAYOUTS = (("V1", None), ("V2", 150), ("V2", 225))
+# (layout, pregap frames). Single FILE baseline (M4/M5). V2 pregap = 225 = INDEX 01 00:03:00 - INDEX 00 00:00:00
+# of the game CUE (docs/cd-boot-loader-spec.md S5). Multi-FILE (V2M) is a separate condition, see MultiFileTests.
+LAYOUTS = (("V1", None), ("V2", 225))
 
 # Hand-written expected outcome per mutation (docs/cd-load-exec-probe.md, loader check order).
 EXPECTED = {
@@ -31,11 +34,9 @@ EXPECTED = {
 # sha256 of the spec reconstruction (spec_image below), not of generator output.
 PINNED = {
     ("V1", None): {"cue": "6047765ac7021dec12105a9bcdddb1aaf69f45a4b62db15e54f4749560a4b53b",
-                   "bin": "973bdb9f317fdd1818a48862a1b35d9efc25510148a71cf2eee9e2357f04a1cd"},
-    ("V2", 150): {"cue": "f0af29630e6c88b83796681c6c3218b8d075a21555cc8326e525aff339798314",
-                  "bin": "10506681cf35b1ca7346b96f981c76d27fac8233bab641342b7de9b107988811"},
+                   "bin": "48ec100686bbd8d12e4f126053a60106394a62cdaa27903db74975b520a57aa8"},
     ("V2", 225): {"cue": "e03109af8148056fcb93e14687494ef9ae40fb0e50f5469a3bd80f940643d381",
-                  "bin": "05fca0381d5ab00c528885a04b757073f4e417377e00ca8a1ebde99b09f69225"},
+                  "bin": "3b3e8c447aa5382ea2e90b9f842ee4b3e69e1f83ce5f7fdb014cc683f60ba51a"},
 }
 
 RAW = 2352
@@ -60,9 +61,11 @@ def _spec_filler(tag, lba):
     return out[:USER_BYTES]
 
 
-def _spec_frame(user):
-    # 16-byte raw header (sync 00 FF*10 00, 4 header bytes zero), 2048 user bytes, zero tail
-    return b"\x00" + b"\xff" * 10 + b"\x00" + bytes(4) + user + bytes(RAW - USER_OFFSET - USER_BYTES)
+def _spec_frame(user, lba):
+    # 16-byte raw header (sync 00 FF*10 00, BCD MSF of LBA + 150, mode 1), 2048 user bytes, zero tail
+    m, s, f = (int(x) for x in _spec_msf(lba + 150).split(":"))
+    head = bytes(int(str(v), 16) for v in (m, s, f)) + b"\x01"   # decimal digits read as hex = BCD
+    return b"\x00" + b"\xff" * 10 + b"\x00" + head + user + bytes(RAW - USER_OFFSET - USER_BYTES)
 
 
 def spec_image(pregap, header_user=None):
@@ -71,12 +74,12 @@ def spec_image(pregap, header_user=None):
     index00 = 16
     index01 = 16 + gap
     frames = [(hashlib.sha256(b"synthetic-audio" + i.to_bytes(4, "little")).digest() * 74)[:RAW] for i in range(16)]
-    frames += [_spec_frame(bytes(USER_BYTES)) for _ in range(gap)]
+    frames += [_spec_frame(bytes(USER_BYTES), index00 + i) for i in range(gap)]
     if header_user is None:
         header_user = MAGIC + bytes([0, len(CODE), sum(CODE) & 0xFF, 0]) + CODE
         header_user += _spec_filler(b"synthetic-data", index01)[len(header_user):]
-    frames.append(_spec_frame(header_user))
-    frames += [_spec_frame(_spec_filler(b"synthetic-data", index01 + i)) for i in range(1, 4)]
+    frames.append(_spec_frame(header_user, index01))
+    frames += [_spec_frame(_spec_filler(b"synthetic-data", index01 + i), index01 + i) for i in range(1, 4)]
     lines = ['FILE "synthetic-boot.bin" BINARY', "  TRACK 01 AUDIO", "    INDEX 01 00:00:00", "  TRACK 02 MODE1/2352"]
     if pregap is not None:
         lines.append("    INDEX 00 " + _spec_msf(index00))
@@ -90,7 +93,7 @@ class SpecReconstructionTests(unittest.TestCase):
     def test_generator_bytes_equal_spec_reconstruction(self):
         for layout, pregap in LAYOUTS:
             with self.subTest(layout=layout, pregap=pregap):
-                img = gen.build_case_image("NONE", layout, pregap)
+                img = gen.build_case_image("NONE", layout)
                 cue, data = spec_image(None if layout == "V1" else pregap)
                 self.assertEqual(img.cue, cue)
                 self.assertEqual(img.bin, data)
@@ -117,15 +120,14 @@ class LayoutTests(unittest.TestCase):
                                   '  TRACK 02 MODE1/2352\n    INDEX 01 00:00:16\n')
         self.assertEqual(len(img.bin), 20 * RAW)
 
-    def test_v2_pregap_150_and_225_frame_positions(self):
-        for pregap, index01, total in ((150, 166, 170), (225, 241, 245)):
-            img = gen.build_case_image("NONE", "V2", pregap)
-            self.assertIn("INDEX 00 00:00:16", img.cue)
-            self.assertIn("INDEX 01 " + _spec_msf(index01), img.cue)
-            self.assertEqual(len(img.bin), total * RAW)
+    def test_v2_225_frame_positions(self):
+        img = gen.build_case_image("NONE", "V2")
+        self.assertIn("INDEX 00 00:00:16", img.cue)
+        self.assertIn("INDEX 01 00:03:16", img.cue)   # 16 + 225 = 241 frames
+        self.assertEqual(len(img.bin), 245 * RAW)
 
     def test_v2_225_pregap_is_225_frames_from_index00_to_index01(self):
-        cue = gen.build_case_image("NONE", "V2", 225).cue
+        cue = gen.build_case_image("NONE", "V2").cue
         frames = {}
         for line in cue.splitlines():
             words = line.split()
@@ -134,14 +136,24 @@ class LayoutTests(unittest.TestCase):
                 frames[words[1]] = (m * 60 + s) * 75 + f
         self.assertEqual(frames["01"] - frames["00"], 225)
 
-    def test_v2_default_pregap_is_unknown_and_refused(self):
-        self.assertIsNone(gen.DEFAULT_V2_PREGAP_FRAMES)
-        with self.assertRaises(ValueError):
-            gen.build_case_image("NONE", "V2")
+    def test_v2_pregap_is_225_not_150(self):
+        self.assertEqual(gen.V2_PREGAP_FRAMES, 225)
+
+    def test_cue_analysis_agrees_on_lba_and_sector_headers(self):
+        # tools/cue_analysis.py (main, not written for this generator) checks sync, BCD MSF = LBA + 150 and mode.
+        for layout, index00, index01 in (("V1", 16, 16), ("V2", 16, 241)):
+            with self.subTest(layout=layout), tempfile.TemporaryDirectory() as tmp:
+                gen.write_case(Path(tmp), "NONE", layout)
+                report = cue_analysis.analyze(Path(tmp) / gen.CUE_NAME)
+                self.assertEqual(report["findings"], [])
+                self.assertTrue(report["structurally_valid"])
+                track = report["tracks"][1]
+                self.assertEqual((track["pregap_start_lba"], track["start_lba"]), (index00, index01))
+                self.assertEqual(track["pregap_frames"], index01 - index00)
 
     def test_header_sector_sits_at_index01_and_pregap_holds_no_header(self):
         for layout, pregap in LAYOUTS:
-            img = gen.build_case_image("NONE", layout, pregap)
+            img = gen.build_case_image("NONE", layout)
             index01 = 16 if layout == "V1" else 16 + pregap
             user = img.bin[index01 * RAW + USER_OFFSET:][:USER_BYTES]
             self.assertEqual(user[:4], MAGIC)
@@ -150,7 +162,7 @@ class LayoutTests(unittest.TestCase):
 
     def test_lba0_decoy_is_not_a_header(self):
         for layout, pregap in LAYOUTS:
-            img = gen.build_case_image("NONE", layout, pregap)
+            img = gen.build_case_image("NONE", layout)
             self.assertNotEqual(img.bin[USER_OFFSET:][:4], MAGIC)
 
 
@@ -159,13 +171,13 @@ class OracleTests(unittest.TestCase):
         for layout, pregap in LAYOUTS:
             for mutation, want in EXPECTED.items():
                 with self.subTest(layout=layout, pregap=pregap, mutation=mutation):
-                    img = gen.build_case_image(mutation, layout, pregap)
+                    img = gen.build_case_image(mutation, layout)
                     self.assertEqual(oracle.judge(img.cue, img.bin, img.read_plan), want)
 
     def test_wrong_lba_is_detected_for_every_layout(self):
         for layout, pregap in LAYOUTS:
             gap = 0 if pregap is None else pregap
-            img = gen.build_case_image("NONE", layout, pregap)
+            img = gen.build_case_image("NONE", layout)
             with self.subTest(layout=layout, pregap=pregap):
                 self.assertEqual(oracle.judge(img.cue, img.bin, {"lba_offset": 0}), "OK")
                 # one sector early, one late, and INDEX 00 (first pregap frame, V2 only) all hold no header
@@ -193,6 +205,16 @@ class OracleTests(unittest.TestCase):
                 self.assertEqual(oracle.judge(cue, bin_bytes, {"lba_offset": 0}), want[name])
 
 
+class MultiFileTests(unittest.TestCase):
+    """V2M (multi-FILE) is a separate condition: the oracle does not evaluate it, so it must never come back OK."""
+
+    def test_multi_file_cue_is_not_evaluated(self):
+        _, data = spec_image(None)
+        cue = ('FILE "a.bin" BINARY\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n'
+               'FILE "b.bin" BINARY\n  TRACK 02 MODE1/2352\n    INDEX 00 00:00:00\n    INDEX 01 00:03:00\n')
+        self.assertEqual(oracle.judge(cue, data, {"lba_offset": 0}), "UNSUPPORTED_MULTI_FILE")
+
+
 class LoaderHeaderTests(unittest.TestCase):
     """PCEX bytes against the DEV loader source, read as text. No generator import, no build_cdload_exec import."""
 
@@ -208,7 +230,7 @@ class LoaderHeaderTests(unittest.TestCase):
     def test_generated_header_bytes_match_the_loader_layout(self):
         for layout, pregap in LAYOUTS:
             with self.subTest(layout=layout, pregap=pregap):
-                img = gen.build_case_image("NONE", layout, pregap)
+                img = gen.build_case_image("NONE", layout)
                 lba = oracle.parse_tracks(img.cue)[1]["index01"]   # data track INDEX 01, read by the oracle's parser
                 user = img.bin[lba * RAW + USER_OFFSET:][:USER_BYTES]
                 self.assertEqual(user[0:4], MAGIC)              # magic

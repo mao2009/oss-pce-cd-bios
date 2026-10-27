@@ -3,9 +3,10 @@
 
 Layout (single MODE1/2352 data track after one AUDIO track, one FILE, INDEX values are file-relative):
   V1: TRACK 01 AUDIO (16 frames), TRACK 02 MODE1/2352 INDEX 01 at frame 16 (disc LBA 16).
-  V2: as V1, but TRACK 02 has INDEX 00 at frame 16 and INDEX 01 at frame 16 + P (pregap P frames stored in the BIN).
-      P is the UNKNOWN convention: 150 (00:02:00) or 225 (00:03:00). DEFAULT_V2_PREGAP_FRAMES is None (UNKNOWN),
-      so a V2 image must name P explicitly.
+  V2: as V1, but TRACK 02 has INDEX 00 at frame 16 and INDEX 01 at frame 16 + 225 (pregap stored in the BIN).
+      225 = the game CUE's INDEX 00 00:00:00 -> INDEX 01 00:03:00 (3 s x 75 frames), docs/cd-boot-loader-spec.md S5.
+  Single FILE is the M4/M5 baseline. Multi-FILE (V2M) is a separate condition and is not generated here.
+Every data-track frame (pregap included) carries sync, BCD MSF = LBA + 150 and mode byte 1 (tools/cue_analysis.py).
 Data track = 4 frames: header sector at INDEX 01, then 3 filler sectors.
 
 Header (8 bytes at the start of the user data, USER_OFFSET 16 of a raw frame), the DEV loader's PCEX form
@@ -31,7 +32,7 @@ MAGIC = b"PCEX"
 CODE = bytes([0xEA] * 31 + [0x60])   # 32 bytes, not executed by the host; NOP padding + RTS
 AUDIO_FRAMES = 16
 DATA_FRAMES = 4
-DEFAULT_V2_PREGAP_FRAMES = None      # UNKNOWN: 150 or 225 must be passed explicitly
+V2_PREGAP_FRAMES = 225               # 00:03:00, INDEX 00 -> INDEX 01 (docs/cd-boot-loader-spec.md S5)
 MUTATIONS = ("NONE", "BAD_MAGIC", "BAD_CHECKSUM", "BAD_LENGTH", "BAD_ENTRY_OFFSET", "NO_TRACK",
              "DATA_TIMEOUT", "PREMATURE_STATUS", "WRONG_LBA")
 BIN_NAME = "synthetic-boot.bin"
@@ -59,9 +60,15 @@ def _filler(tag: bytes, lba: int) -> bytes:
     return out[:USER_BYTES]
 
 
-def _raw_data_frame(user: bytes) -> bytes:
+def _bcd(value: int) -> int:
+    return (value // 10) << 4 | value % 10
+
+
+def _raw_data_frame(user: bytes, lba: int) -> bytes:
     assert len(user) == USER_BYTES
-    return b"\x00" + b"\xff" * 10 + b"\x00" + bytes(4) + user + bytes(RAW - USER_OFFSET - USER_BYTES)
+    msf = lba + 150
+    head = bytes([_bcd(msf // 4500), _bcd(msf // 75 % 60), _bcd(msf % 75), 1])
+    return b"\x00" + b"\xff" * 10 + b"\x00" + head + user + bytes(RAW - USER_OFFSET - USER_BYTES)
 
 
 def _audio_frame(index: int) -> bytes:
@@ -74,15 +81,13 @@ def _header_user(entry: int, length: int, checksum: int, code: bytes, lba: int) 
     return body + _filler(b"synthetic-data", lba)[len(body):]
 
 
-def build_case_image(mutation: str, layout: str, pregap_frames=DEFAULT_V2_PREGAP_FRAMES) -> Image:
+def build_case_image(mutation: str, layout: str) -> Image:
     if mutation not in MUTATIONS:
         raise ValueError("unknown mutation: %s" % mutation)
     if layout == "V1":
         pregap = 0
     elif layout == "V2":
-        if pregap_frames not in (150, 225):
-            raise ValueError("V2 pregap convention is UNKNOWN: pass 150 or 225 explicitly")
-        pregap = pregap_frames
+        pregap = V2_PREGAP_FRAMES
     else:
         raise ValueError("unknown layout: %s" % layout)
 
@@ -103,12 +108,12 @@ def build_case_image(mutation: str, layout: str, pregap_frames=DEFAULT_V2_PREGAP
     if mutation == "BAD_CHECKSUM":
         user[HEADER] ^= 0x01                  # flip the first code byte; the stored checksum no longer matches
     frames = [_audio_frame(i) for i in range(AUDIO_FRAMES)]
-    frames += [_raw_data_frame(bytes(USER_BYTES)) for _ in range(pregap)]
+    frames += [_raw_data_frame(bytes(USER_BYTES), AUDIO_FRAMES + i) for i in range(pregap)]
     if mutation == "NO_TRACK":
         frames += [_audio_frame(AUDIO_FRAMES + pregap + i) for i in range(DATA_FRAMES)]
     else:
-        frames.append(_raw_data_frame(bytes(user)))
-        frames += [_raw_data_frame(_filler(b"synthetic-data", index01 + i)) for i in range(1, DATA_FRAMES)]
+        frames.append(_raw_data_frame(bytes(user), index01))
+        frames += [_raw_data_frame(_filler(b"synthetic-data", index01 + i), index01 + i) for i in range(1, DATA_FRAMES)]
 
     lines = ['FILE "%s" BINARY' % BIN_NAME, "  TRACK 01 AUDIO", "    INDEX 01 00:00:00"]
     kind = "AUDIO" if mutation == "NO_TRACK" else "MODE1/2352"
@@ -128,14 +133,14 @@ def build_case_image(mutation: str, layout: str, pregap_frames=DEFAULT_V2_PREGAP
     return Image(cue=cue, bin=b"".join(frames), read_plan=read_plan)
 
 
-def write_case(directory: Path, mutation: str, layout: str, pregap_frames=None) -> dict:
+def write_case(directory: Path, mutation: str, layout: str) -> dict:
     """Write CUE/BIN for one case into `directory` (caller owns the directory) and return a manifest."""
-    img = build_case_image(mutation, layout, pregap_frames)
+    img = build_case_image(mutation, layout)
     directory.mkdir(parents=True, exist_ok=True)
     (directory / BIN_NAME).write_bytes(img.bin)
     (directory / CUE_NAME).write_text(img.cue, encoding="ascii")
     manifest = {
-        "mutation": mutation, "layout": layout, "pregap_frames": pregap_frames,
+        "mutation": mutation, "layout": layout, "pregap_frames": V2_PREGAP_FRAMES if layout == "V2" else 0,
         "read_plan": img.read_plan, "bin_bytes": len(img.bin),
         "cue_sha256": hashlib.sha256(img.cue.encode("ascii")).hexdigest(),
         "bin_sha256": hashlib.sha256(img.bin).hexdigest(), "third_party_content": "NONE",
@@ -149,9 +154,8 @@ def main() -> None:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--mutation", choices=MUTATIONS, default="NONE")
     parser.add_argument("--layout", choices=("V1", "V2"), default="V1")
-    parser.add_argument("--pregap", type=int, choices=(150, 225), default=None)
     args = parser.parse_args()
-    print(json.dumps(write_case(args.out, args.mutation, args.layout, args.pregap), indent=2, sort_keys=True))
+    print(json.dumps(write_case(args.out, args.mutation, args.layout), indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":

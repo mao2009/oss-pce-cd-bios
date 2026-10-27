@@ -9,6 +9,8 @@ Outcome names follow docs/cd-load-exec-probe.md. (docs/cd-boot-loader-spec.md do
 judge(cue_text, bin_bytes, read_plan) -> "OK" | "NO_TRACK" | "DATA_TIMEOUT" | "PREMATURE_STATUS"
                                          | "BAD_MAGIC" | "BAD_LENGTH" | "BAD_ENTRY_OFFSET" | "BAD_CHECKSUM"
 read_plan: {"lba_offset": int, "abort_in_data": bool}; the read starts at the data track's INDEX 01 + lba_offset.
+Single FILE only (INDEX values are then absolute LBAs). A multi-FILE CUE (V2M) returns "UNSUPPORTED_MULTI_FILE":
+it is not evaluated and never reported as OK.
 """
 RAW = 2352
 USER_OFFSET = 16
@@ -35,6 +37,8 @@ def parse_tracks(cue_text: str) -> list:
 
 
 def judge(cue_text: str, bin_bytes: bytes, read_plan: dict) -> str:
+    if sum(1 for raw in cue_text.splitlines() if raw.split()[:1] == ["FILE"]) != 1:
+        return "UNSUPPORTED_MULTI_FILE"
     data = [track for track in parse_tracks(cue_text) if track["type"] == DATA_MODE]
     if not data or data[0]["index01"] is None:
         return "NO_TRACK"
