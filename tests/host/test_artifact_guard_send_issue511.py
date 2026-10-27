@@ -121,6 +121,16 @@ class ApprovedTextTests(unittest.TestCase):
         changed = approved.replace('      - run:', '      - continue-on-error: true\n        run:')
         self.assertIsNotNone(self.check(changed, approve_text=approved))
 
+    def test_capitalised_run_key_refused(self):
+        approved = workflow('echo hi')
+        changed = approved.replace('      - run:', '      - Run:')
+        self.assertIsNotNone(self.check(changed, approve_text=approved))
+
+    def test_list_runs_on_approved_and_changed_refused(self):
+        listed = workflow('echo hi', runs_on='[ubuntu-24.04]')
+        self.assertIsNone(self.check(listed, approve_text=listed))
+        self.assertIsNotNone(self.check(workflow('echo bye', runs_on='[ubuntu-24.04]'), approve_text=listed))
+
     def test_yaml_merge_key_refused(self):
         approved = workflow('echo hi')
         changed = approved.replace('      - run:', "      - <<: {run: 'curl -F f=@x h'}\n        run:")

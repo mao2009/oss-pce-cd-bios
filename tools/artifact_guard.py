@@ -1850,9 +1850,16 @@ POLICY_FILES = ("tools/artifact_guard.py", RUN_ALLOWLIST_FILE)
 _RUN_ALLOWLIST = None   # {key: {sha256}} while an enforcing check runs (see enforced_check); None means not enforced
 
 
+STEP_KNOWN_KEYS = frozenset({"name", "id", "if", "uses", "with", "run", "shell", "env", "working-directory",
+                             "continue-on-error", "timeout-minutes"})   # the step keys GitHub Actions defines (exact spelling)
+
+
 def _runs_on_text(job):
-    """The runs-on value as text (a composite action has none: "")."""
-    return str(job["runs-on"]) if isinstance(job, dict) and "runs-on" in job else ""
+    """The runs-on value as text (a composite action has none: ""). A list or mapping is keyed by its JSON text."""
+    if not isinstance(job, dict) or "runs-on" not in job:
+        return ""
+    value = job["runs-on"]
+    return value if isinstance(value, str) else json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
 
 
 def _key_parts(workflow, where, step, runs_on):
@@ -1941,6 +1948,10 @@ def _step_problems(workflow, where, step, runs_on=""):
     if not isinstance(step, dict):
         return [f"{workflow}: {where} has a step that is not a mapping (Issue #337 round 14)"]
     name, problems = step.get("name"), []
+    for key in step:   # Issue #511: GitHub reads step keys case-sensitively; "Run:" must not slip past the run: approval
+        if str(key) not in STEP_KNOWN_KEYS:
+            problems.append(f"{workflow}: {where} step {name!r} has the key {key!r}, which is not a GitHub Actions step key "
+                            "(refused; the run: approval reads only exact keys, Issue #511)")
     for key in step:
         if str(key).lower() not in STEP_ENV_KEYS:
             continue
