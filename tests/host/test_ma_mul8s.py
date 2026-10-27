@@ -33,6 +33,31 @@ class ModelTest(unittest.TestCase):
             bad[offset] ^= 0x01
             self.assertEqual(len(mul.check_row(0x80, bytes(bad))), 1, hex(offset))
 
+    def test_output_register_format(self):
+        # X = high byte, A = low byte of the two's-complement 16-bit product (docs/ma-mul8s.md)
+        cases = {(0x80, 0x80): (0x40, 0x00), (0x80, 0x7F): (0xC0, 0x80), (0x80, 0xFF): (0x00, 0x80),
+                 (0xFF, 0xFF): (0x00, 0x01), (0x7F, 0x7F): (0x3F, 0x01), (0xFF, 0x7F): (0xFF, 0x81),
+                 (0x00, 0x80): (0x00, 0x00)}
+        for (a, b), (x, acc) in cases.items():
+            self.assertEqual(mul.expected_xa(a, b), (x, acc), (a, b))
+
+    def test_sign_combinations_match_signed_product(self):
+        # -128, -1, 0, 1, 127 cover every sign class and both extremes of the 8-bit range
+        for a in (-128, -1, 0, 1, 127):
+            for b in (-128, -1, 0, 1, 127):
+                hi, lo = mul.expected_xa(a & 0xFF, b & 0xFF)
+                self.assertEqual((hi << 8) | lo, (a * b) & 0xFFFF, (a, b))
+
+    def test_judge_rejects_flag_corruption(self):
+        good = bytearray(mul.expected_row(0x7F) + bytes(512))
+        for b in range(256):
+            good[0x400 + b] = good[0x500 + b] = (b & 1) | (b & 2) << 2 | 0x04
+        self.assertEqual(mul.check_row(0x7F, bytes(good)), [])
+        for bit in (0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01):  # N V T B D I Z C
+            bad = bytearray(good)
+            bad[0x500] ^= bit
+            self.assertTrue(mul.check_row(0x7F, bytes(bad)), hex(bit))
+
 
 if __name__ == "__main__":
     unittest.main()

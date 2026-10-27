@@ -50,6 +50,20 @@ class OracleTest(unittest.TestCase):
             self.assertEqual(q * d + r, n, (n, d))
             self.assertLess(r, d, (n, d))
 
+    def test_shared_edge_table_covers_required_cases_and_matches_oracle(self):
+        # The real-core judge (tests/integration/geargrafx_ma_div16u.py) imports this table, so the
+        # expectations it checks are pinned here without a core.
+        pairs = div.EDGE_PAIRS
+        self.assertEqual(len(set(pairs)), len(pairs))
+        for required in ((0x0000, 0x0000), (0xFFFF, 0x0000), (0x0001, 0x0000),
+                         (0xFFFF, 0x0001), (0xFFFF, 0xFFFF), (0x0000, 0x0001)):
+            self.assertIn(required, pairs)
+        for n, d in pairs:
+            self.assertEqual(div.check_case(n, d, div.expected(n, d)), [], (n, d))
+        self.assertEqual(div.expected(0x0000, 0x0000)[:2], (0xFFFF, 0x0000))
+        self.assertEqual(div.expected(0xFFFF, 0x0001)[:2], (0xFFFF, 0x0000))
+        self.assertEqual(div.expected(0xFFFF, 0xFFFF)[:2], (0x0001, 0x0000))
+
     def test_check_case_names_each_differing_field(self):
         good = div.expected(9, 4)
         self.assertEqual(div.check_case(9, 4, good[:6]), [])

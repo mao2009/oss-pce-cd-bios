@@ -6,12 +6,14 @@ and by .github/workflows/core-bcdbin.yml. Its negative-path tests (which launch 
 tests/integration/test_ex_bcdbin_real_core.py, not here (Issue #333: host tests never run real Geargrafx).
 """
 from pathlib import Path
+import json
 import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # the integration script imports this module directly
 
 RESULT_BYTES = 4 * 256 + 1  # A, P, X, Y tables + final SP (tests/fixtures/bcdbin_harness.s)
+FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "bcdbin-classification-1byte.json"
 
 
 def model(a):
@@ -53,6 +55,42 @@ class ModelTests(unittest.TestCase):
         # Later integration target: replace this encoder with EX_BINBCD (#70) once it exists.
         for n in range(100):
             self.assertEqual(model((n // 10) << 4 | n % 10), (n, 0))
+
+
+class ClassificationFixtureTests(unittest.TestCase):
+    """Candidate 1-byte classification fixture. Basis: docs/ex-bcdbin.md (project spec), not the reference BIOS."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.doc = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        cls.cases = cls.doc["cases"]
+
+    def test_declares_candidate_status_and_spec_basis(self):
+        self.assertEqual(self.doc["status"], "CANDIDATE")
+        self.assertEqual(self.doc["basis"], "docs/ex-bcdbin.md")
+        self.assertEqual(self.doc["counts"], {"valid": 100, "invalid": 156})
+
+    def test_covers_all_256_inputs_in_order(self):
+        self.assertEqual([int(c["input"], 16) for c in self.cases], list(range(256)))
+
+    def test_each_case_matches_model(self):
+        for c in self.cases:
+            n = int(c["input"], 16)
+            self.assertEqual((c["a"], c["c"]), model(n), c["input"])
+            self.assertEqual(c["valid"], c["c"] == 0, c["input"])
+
+    def test_counts_and_invalid_keeps_input(self):
+        self.assertEqual(sum(c["valid"] for c in self.cases), 100)
+        self.assertEqual(sum(not c["valid"] for c in self.cases), 156)
+        for c in self.cases:
+            if not c["valid"]:
+                self.assertEqual(c["a"], int(c["input"], 16), c["input"])
+
+    def test_digit_order_high_nibble_is_tens(self):
+        by_input = {c["input"]: c for c in self.cases}
+        self.assertEqual(by_input["0x10"]["a"], 10)
+        self.assertEqual(by_input["0x01"]["a"], 1)
+        self.assertEqual(by_input["0x90"]["a"], 90)
 
 
 if __name__ == "__main__":
