@@ -461,3 +461,30 @@ class ApiContractTests(unittest.TestCase):
         root = self.folder/'bad-root'; (root/'src/overrides').mkdir(parents=True)
         (root/'src/overrides/slot_51.s').write_text('')
         with self.assertRaisesRegex(ValueError, 'Invalid override'): overrides(root)
+
+
+@requires_cc65
+class DecodeAtRomAddressTests(unittest.TestCase):
+    """Issue #68 CI regression: spans must be decoded at their ROM address, not at 0.
+
+    At address 0, da65 labels an absolute operand that falls inside the span (stz a:$0000 -> 'L0000:' in
+    column 0; sta a:$0002 splits into .byte). At the ROM address the same bytes decode cleanly.
+    """
+
+    def test_vdc_port_stores_decode_at_rom_address(self):
+        import tools.build_rom as br
+        self.assertEqual(br.decode(bytes.fromhex('9c0000'), 0xE300), (3, 'stz', 'a:$00'))
+        self.assertEqual(br.decode(bytes.fromhex('8d0200'), 0xE300), (3, 'sta', 'a:$02'))
+        self.assertEqual(br.decode(bytes.fromhex('8e0300'), 0xE300), (3, 'stx', 'a:$03'))
+
+    def test_truncated_absolute_store_is_not_a_valid_three_byte_instruction(self):
+        # Negative: an incomplete operand must not decode as a length-3 instruction.
+        import tools.build_rom as br
+        length, mnemonic, _operand = br.decode(bytes.fromhex('8d02'), 0xE300)
+        self.assertTrue(mnemonic == '.byte' or length != 3, (length, mnemonic))
+
+    def test_undefined_opcode_is_still_reported_as_byte(self):
+        # Negative: an undefined opcode keeps the '.byte' verdict that verify_overrides rejects.
+        import tools.build_rom as br
+        # $5C is undefined on HuC6280 (pinned da65 reports .byte); $02 is SXY and is NOT undefined.
+        self.assertEqual(br.decode(bytes.fromhex('5c'), 0xE300)[1], '.byte')

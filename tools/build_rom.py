@@ -149,18 +149,20 @@ def parse_dbg(text: str) -> dict[str, list[dict[str, str]]]:
 
 
 @functools.lru_cache(maxsize=None)
-def decode(raw: bytes) -> tuple[int, str, str]:
+def decode(raw: bytes, address: int = 0) -> tuple[int, str, str]:
     """First instruction of `raw` per cc65's own da65 HuC6280 table: (length, mnemonic, operand).
 
     Reusing da65 (same pinned cc65 revision as ca65) avoids a hand-written length table that could
-    become a verification blind spot. Undefined/truncated opcodes decode as '.byte'. Decoded at
-    address 0 on purpose: da65 splits instructions at labels, so only a branch into its own operand
-    bytes can make a valid instruction look short, and that is rejected anyway.
+    become a verification blind spot. Undefined/truncated opcodes decode as '.byte'. The span is decoded
+    at its own ROM address `address`. Decoding at 0 made da65 invent a label for any absolute operand
+    inside the span (e.g. `stz $0000` became `L0000:` at column 0, and `sta $0002` split into `.byte`),
+    so a valid instruction was reported as missing or short. A branch into its own operand bytes still
+    splits the instruction and is rejected as before.
     """
     with tempfile.TemporaryDirectory() as tmp:
         binary = Path(tmp) / 'code.bin'
         binary.write_bytes(raw)
-        text = subprocess.run([executable('da65'), '--cpu', 'huc6280', '--comments', '4', '--start-addr', '0',
+        text = subprocess.run([executable('da65'), '--cpu', 'huc6280', '--comments', '4', '--start-addr', str(address),
                                str(binary)], capture_output=True, text=True, check=True).stdout
     for m in map(DA65_LINE.match, text.splitlines()):
         if m:
@@ -222,7 +224,7 @@ def verify_overrides(bank: bytes, overridden: set[int], dbg: dict) -> None:
                 raise ValueError(f'Override ${slot:02X} code ${address:04X} outside bank0 body')
         for address, size in spans:
             raw = bytes(bank[address - FIRST_ENTRY:address - FIRST_ENTRY + size])
-            length, mnemonic, operand = decode(raw)
+            length, mnemonic, operand = decode(raw, address)
             # Debug info says where instructions are; the ROM bytes must decode to exactly that length.
             if mnemonic == '.byte':
                 raise ValueError(f'Override ${slot:02X} ${address:04X}: undefined opcode ${raw[0]:02X} '
