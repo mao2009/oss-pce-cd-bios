@@ -1705,6 +1705,9 @@ def check_guard_placement(root=ROOT, partial_fixtures=False):
     for workflow in files:
         label = workflow.relative_to(base).as_posix()
         text = workflow.read_text(encoding="utf-8")
+        # Issue #544: read_text turns CR into LF, so the policy workflow's raw bytes are checked for a lone CR here
+        if label.endswith("/" + POLICY_GUARD_FILE) and re.search(r"\r(?!\n)", workflow.read_bytes().decode("utf-8")):
+            problems.append(f"{label}: a lone CR line break is refused in the policy workflow (Issue #544)")
         try:
             steps = upload_steps(text)
         except ValueError as error:   # an unsupported publishing route or an unparseable upload step

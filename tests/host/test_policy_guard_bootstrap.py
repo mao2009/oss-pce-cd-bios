@@ -6,6 +6,7 @@ shape then fails), and against this branch's guard to see the new one.
 """
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 
 import yaml
@@ -281,6 +282,15 @@ class Hardening(unittest.TestCase):
     # 9f6b95a review: a lone CR line break is read differently by parsers (YAML 1.2 CR is a break; a line reader is not)
     def test_lone_cr_line_break_is_refused(self):
         self.assert_refused(GOOD.replace('\n', '\r'))
+
+    def test_lone_cr_is_refused_on_the_placement_read_path(self):
+        # f31a38e review: read_text turns CR into LF, so only the raw bytes show the lone CR to the placement check
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / '.github' / 'workflows' / 'policy-guard.yml'
+            path.parent.mkdir(parents=True)
+            path.write_bytes((GOOD + '# x\r# y\n').encode('utf-8'))
+            with self.assertRaisesRegex(ValueError, 'lone CR'):
+                guard.check_guard_placement(Path(tmp))
 
     def test_quoted_on_key_with_same_trigger_passes(self):
         self.assertEqual(problems(GOOD.replace('on:\n', '"on":\n', 1)), [])
