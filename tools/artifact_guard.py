@@ -1462,6 +1462,55 @@ POLICY_CHECKOUT_USES = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af68
 POLICY_TOP_KEYS = frozenset({"name", "on", "permissions", "jobs"})
 
 
+def _same_scalars(actual, expected):
+    """Exact equality with the TYPE checked too: 0 is not False, '1' is not 1, and a bool is only the bool with that value.
+    Python's == would pass 0 == False (Issue #544, owner decision on the #547 low items)."""
+    return (isinstance(actual, dict) and set(actual) == set(expected)
+            and all(type(actual[key]) is type(value) and actual[key] == value for key, value in expected.items()))
+
+
+def _policy_structure_problems(workflow, text):
+    """Issue #544 (owner decision on #547): the policy workflow's text and node tree, checked before any value is read.
+    Refused: explicit YAML tags (!!bool yes: converts a key), anchors and aliases, merge keys (<<:), duplicate keys in one
+    mapping (a later duplicate silently replaces an earlier one in a dict parse), and any key that is not a plain string
+    except the trigger key on:. A parser disagreement cannot change the verdict: these forms are refused in the text."""
+    import yaml
+    problems = []
+    if re.search(r"(?:^|[\s\[{,:\-])!", text):
+        problems.append(f"{workflow}: an explicit YAML tag is refused in the policy workflow (Issue #544)")
+    if re.search(r"(?:^|[\s\[{,:\-])[&*][\w-]", text):
+        problems.append(f"{workflow}: a YAML anchor or alias is refused in the policy workflow (Issue #544)")
+    try:
+        root = yaml.compose(text, Loader=yaml.SafeLoader)
+    except Exception as error:
+        return problems + [f"{workflow}: the policy workflow cannot be read as YAML ({error}; Issue #544)"]
+    stack, seen = [(root, True)], set()
+    while stack:
+        node, top = stack.pop()
+        if isinstance(node, yaml.MappingNode):
+            key_texts = []
+            for key, value in node.value:
+                if not isinstance(key, yaml.ScalarNode):
+                    problems.append(f"{workflow}: a non-scalar mapping key is refused (Issue #544)")
+                    continue
+                key_texts.append(key.value)
+                if key.tag == "tag:yaml.org,2002:merge" or key.value == "<<":
+                    problems.append(f"{workflow}: a merge key (<<:) is refused; it can carry a setting the check does not see "
+                                    "(Issue #544)")
+                is_trigger = top and key.value == "on" and key.tag == "tag:yaml.org,2002:bool"
+                if key.tag != "tag:yaml.org,2002:str" and not is_trigger:
+                    problems.append(f"{workflow}: the key {key.value!r} converts by its YAML tag ({key.tag}); keys must be "
+                                    "plain strings (Issue #544)")
+                stack.append((value, False))
+            duplicates = sorted({text_ for text_ in key_texts if key_texts.count(text_) > 1})
+            if duplicates:
+                problems.append(f"{workflow}: duplicate keys {duplicates} in one mapping are refused (Issue #544)")
+        elif isinstance(node, yaml.SequenceNode):
+            stack.extend((item, False) for item in node.value)
+        seen.add(id(node))
+    return problems
+
+
 def _no_secret_reference(value):
     """True when any string in value names a secret, an id-token or the GITHUB_TOKEN (a run under pull_request_target must
     hold none of them)."""
@@ -1514,11 +1563,11 @@ def _policy_guard_problems(label, doc):
     shape_ok = isinstance(steps, list) and len(steps) == 3 and all(isinstance(step, dict) for step in steps)
     if shape_ok:
         shape_ok = (set(steps[0]) == checkout_base and steps[0].get("uses") == POLICY_CHECKOUT_USES
-                    and steps[0].get("with") == {"ref": "${{ github.event.pull_request.base.sha }}", "path": ".trusted",
-                                                 "persist-credentials": False}
+                    and _same_scalars(steps[0].get("with"), {"ref": "${{ github.event.pull_request.base.sha }}",
+                                                             "path": ".trusted", "persist-credentials": False})
                     and set(steps[1]) == checkout_base and steps[1].get("uses") == POLICY_CHECKOUT_USES
-                    and steps[1].get("with") == {"ref": "${{ github.event.pull_request.head.sha }}", "path": ".candidate",
-                                                 "persist-credentials": False}
+                    and _same_scalars(steps[1].get("with"), {"ref": "${{ github.event.pull_request.head.sha }}",
+                                                             "path": ".candidate", "persist-credentials": False})
                     and set(steps[2]) == {"name", "run"} and steps[2].get("run") == POLICY_GUARD_RUN)
     if shape_ok and any("${{" in str(step.get("name", "")) for step in steps):   # a step name is text, not a context read
         shape_ok = False
@@ -2066,6 +2115,10 @@ def scope_key_violations(text, workflow):
     - a workflow whose jobs: is not a mapping, a job that is not a mapping, and a steps: that is not a list (fail closed).
     Applies to every workflow and composite action file, with or without an upload step. A file that cannot be parsed is
     refused here too (round 14), not only by yaml_integrity_violations."""
+    if Path(workflow).name == POLICY_GUARD_FILE:
+        structure_problems = _policy_structure_problems(workflow, text)   # Issue #544: text and node tree, before any value
+        if structure_problems:
+            return structure_problems
     trigger_problems = _trigger_key_problems(workflow, text)   # Issue #544: read the node tree, not the lines (flow, ?, ON)
     if trigger_problems:
         return trigger_problems

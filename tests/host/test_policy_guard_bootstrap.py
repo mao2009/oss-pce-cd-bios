@@ -58,7 +58,9 @@ class ExactShape(unittest.TestCase):
 
 class Variants(unittest.TestCase):
     def assert_refused(self, text):
-        self.assertTrue(problems(text), text[:200])
+        # placement runs both: the value checks (_privilege_problems) and the text and node checks (scope_key_violations)
+        refused = problems(text) or guard.scope_key_violations(text, POLICY)
+        self.assertTrue(refused, text[:200])
 
     def test_extra_trigger_is_refused(self):
         self.assert_refused(GOOD.replace('on:\n', 'on:\n  push: {}\n', 1))
@@ -108,7 +110,8 @@ class Hardening(unittest.TestCase):
     """P0 review of #547: each variant must be refused (RED before the fix, GREEN after)."""
 
     def assert_refused(self, text):
-        self.assertTrue(problems(text), text[:200])
+        # placement runs both the value checks and the text and node checks (scope_key_violations)
+        self.assertTrue(problems(text) or guard.scope_key_violations(text, POLICY), text[:200])
 
     # (1) pull_request_target.types: exactly the four expected events, no empty, missing, duplicate or extra one
     def test_types_missing_is_refused(self):
@@ -206,6 +209,39 @@ class Hardening(unittest.TestCase):
     def test_head_checkout_extra_key_is_refused(self):
         self.assert_refused(GOOD.replace('path: .candidate\n          persist-credentials: false',
                                          'path: .candidate\n          persist-credentials: false\n          submodules: true', 1))
+
+    # 20f0930 review: three low items, fixed as owner decisions (no risk acceptance)
+    def test_persist_credentials_zero_is_refused(self):
+        # Python: 0 == False, so a value compare passes 0; the policy needs the boolean False
+        self.assert_refused(GOOD.replace('persist-credentials: false', 'persist-credentials: 0', 1))
+
+    def test_persist_credentials_zero_on_head_checkout_is_refused(self):
+        self.assert_refused(GOOD.replace('persist-credentials: false\n      - name: Policy check',
+                                         'persist-credentials: 0\n      - name: Policy check', 1))
+
+    def test_explicit_bool_tag_on_a_key_is_refused(self):
+        # !!bool yes: is an explicit tag on a key (the bool value of yes); it must not become a key by conversion
+        self.assert_refused(GOOD.replace('permissions:\n', '!!bool yes: x\npermissions:\n', 1))
+
+    def test_explicit_str_tag_on_trigger_key_is_refused(self):
+        self.assert_refused(GOOD.replace('on:\n', '!!str on:\n', 1))
+
+    def test_merge_key_in_checkout_with_is_refused(self):
+        self.assert_refused(GOOD.replace('          path: .trusted\n',
+                                         '          <<: {persist-credentials: false}\n          path: .trusted\n', 1))
+
+    def test_duplicate_key_that_overwrites_path_is_refused(self):
+        # the later duplicate wins in a dict parse, so the dict looks exact while the text sets two paths
+        self.assert_refused(GOOD.replace('          path: .trusted\n',
+                                         '          path: .evil\n          path: .trusted\n', 1))
+
+    def test_anchor_is_refused(self):
+        self.assert_refused(GOOD.replace('      - name: Policy check', '      - name: &n Policy check', 1))
+
+    def test_alias_is_refused(self):
+        # a valid anchor and alias: the alias copies the first step's name into the policy step (both text, both exact)
+        text = GOOD.replace('      - name: Checkout trusted main (base SHA)', '      - name: &n Checkout trusted main (base SHA)', 1)
+        self.assert_refused(text.replace('      - name: Policy check', '      - name: *n', 1))
 
     def test_quoted_on_key_with_same_trigger_passes(self):
         self.assertEqual(problems(GOOD.replace('on:\n', '"on":\n', 1)), [])
