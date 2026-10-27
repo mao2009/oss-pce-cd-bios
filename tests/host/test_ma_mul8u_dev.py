@@ -45,6 +45,52 @@ class DevMul8uModelTests(unittest.TestCase):
         self.assertIn("ldy #8", source)  # the 8 rounds: Y counter, BNE back to @round
         self.assertIn("bne @round", source)
 
+    def test_all_pairs_match_repeated_addition(self):
+        # Independent of a*x and of the shift-add model: X additions of A, 16-bit accumulator.
+        for a in range(256):
+            acc = 0
+            for x in range(256):
+                self.assertEqual((acc & 0xFF, acc >> 8), dev_mul8u(a, x), (a, x))
+                acc += a
+
+    def test_named_edge_values(self):
+        cases = {  # (A, X): (low, high); 255 * 255 = 65025 = $FE01 is the maximum product
+            (0, 0): (0x00, 0x00), (0, 255): (0x00, 0x00), (255, 0): (0x00, 0x00),
+            (1, 1): (0x01, 0x00), (1, 255): (0xFF, 0x00), (255, 1): (0xFF, 0x00),
+            (128, 2): (0x00, 0x01), (16, 16): (0x00, 0x01), (255, 255): (0x01, 0xFE),
+        }
+        for (a, x), want in cases.items():
+            self.assertEqual(want, dev_mul8u(a, x), (a, x))
+
+    def _slot_code(self):
+        """Instruction mnemonics + operands of the slot body, comments and labels removed, in order."""
+        source = (ROOT / "src" / "overrides" / "slot_3F.s").read_text(encoding="utf-8")
+        body = source.split("api_slot_3F:", 1)[1]
+        return [line.split(";", 1)[0].strip() for line in body.splitlines() if line.split(";", 1)[0].strip()]
+
+    def test_flags_and_y_are_saved_first_and_restored_last(self):
+        code = self._slot_code()
+        self.assertEqual(["php", "cld"], code[:2])  # P saved before D is cleared for binary ADC
+        self.assertIn("phy", code[:3])
+        self.assertEqual(["plp", "rts"], code[-2:])  # caller's P restored last
+        self.assertEqual(["ply", "ply"], code[-4:-2])  # discard m, then restore caller's Y
+
+    def test_stack_pushes_and_pulls_balance(self):
+        code = self._slot_code()
+        pushes = sum(1 for op in code if op.split()[0] in ("php", "phy", "pha"))
+        pulls = sum(1 for op in code if op.split()[0] in ("plp", "ply", "pla", "plx"))
+        self.assertEqual(5, pushes)  # 5 bytes: P, Y, m, lo, hi
+        self.assertEqual(pushes, pulls)
+
+    def test_stack_offsets_stay_in_the_pushed_bytes(self):
+        # After 5 pushes X = S-5, so hi/lo/m sit at X+1..X+3 (= S-4..S-2), inside the pushed region.
+        # The routine needs S >= $05 on entry; the offsets below must never leave that 5-byte window.
+        import re
+        source = (ROOT / "src" / "overrides" / "slot_3F.s").read_text(encoding="utf-8")
+        offsets = {int(off, 16) for off in re.findall(r"\$21([0-9A-Fa-f]{2}),x", source)}
+        self.assertEqual({0x01, 0x02, 0x03}, offsets)
+        self.assertEqual(5, len(re.findall(r"^\s*(?:php|phy|pha)\b", source, re.M)))
+
 
 if __name__ == "__main__":
     unittest.main()

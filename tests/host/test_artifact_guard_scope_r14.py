@@ -108,6 +108,9 @@ class StepEnvironmentRefused(unittest.TestCase):
         self.assert_refused(workflow(steps="      - run: export 'PATH=/tmp/evil:$PATH'; python3 x.py\n"), 'PATH')
 
     def test_run_names_that_contain_path_are_not_refused(self):
+        # Issue #511 replaced 'PYTHONPATH=/x make' and 'GOPATH=/x make' with 'MY_PATH=/x' and 'make MY_PATH=1' when the run text
+        # moved to exact-match approval: the old shell heuristic that judged an assignment in front of a program is gone, and
+        # this test now checks only that a variable NAME containing PATH is not refused as an environment write by itself.
         for run in ('MY_PATH=/x', 'make MY_PATH=1', 'echo PATHS=1'):
             self.assertIsNone(placement_refuses(CI, workflow(steps=f'      - run: {run}\n')), run)
 

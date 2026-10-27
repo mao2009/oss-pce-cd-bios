@@ -4,7 +4,8 @@
 ;   in : A = unsigned binary 0..99
 ;   out: A = PACKED BCD, one byte: tens digit in bits 7-4, ones digit in bits 3-0; C=0
 ;   out of range (A = 100..255): A unchanged, C=1
-;   X/Y preserved, D never set, no RAM/IO access, stack use 3 bytes (JSR + PHX).
+;   X/Y preserved, D never set, no memory or IO writes; the only memory touched is the stack
+;   (PHX/PLX), stack use 3 bytes (JSR + PHX).
 ;   N/Z/V on return are unspecified.
 ; Unpacked BCD (one digit per byte) is NOT provided by this routine.
 .setcpu "huc6280"

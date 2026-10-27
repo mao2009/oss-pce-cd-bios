@@ -77,6 +77,37 @@ ROM 不一致、入口不一致、未承認の参照実行、不正な MPR 変�
 
 `MEASURED_NO_ACCESS` を受理するには、計測器自身の出所を証明する仕組みが必要になる。現行の core harness にはそれがないため、本検証器はこの値を全レコードで拒否する。
 
+## 証拠検証器（verify_evidence）と確認チェックリスト
+
+`verify_evidence(records, ...)` は合成観測レコードだけを対象とし、各レコードを `validate` に通したうえで次を検査する。
+
+| 項目 | 検査 | 拒否コード |
+|---|---|---|
+| 返り値の版（DEV） | X=3、Y=0（`src/overrides/slot_1E.s`）。DEV 専用で、参照 BIOS の期待値ではない | `OUTPUT` |
+| A の保存 | `after.a == before.a` | `OUTPUT` |
+| P | 記録のみ。保存レジスタとして主張しない（変化しても受理） | なし |
+| SP / MPR | `validate` で不変を検査 | `STACK` / `MPR` |
+| RAM（ZP32） | `after.zp == before.zp`。ZP32 の外は `NOT_MEASURED` | `RAM` |
+| cold / warm の対 | ケースごとに cold と warm が各 1 件、入力ベクタが同一 | `PAIR` |
+| cold / warm の後状態 | A/X/Y/P/SP/MPR/ZP が完全一致 | `COLD_WARM` |
+| 参照の版 | `UNKNOWN`。DEV の X/Y と比較しない（比較は `BLOCKED`） | — |
+
+- 証拠が 0 件なら `pairs = NOT_RUN` とし、合格とは扱わない。
+- 戻り値は `checklist`、`abi_status`（`reference_abi_verified` は常に 0）、`execution`（常に `BLOCKED`）。
+- 呼び出し元の SOURCE_FACT は `CALLER_SOURCE_FACTS` に、取得元の所在（`huc:include/hucc/...` の行番号）付きで置く。呼び出し側の記述であり、BIOS の挙動ではない。
+- 行番号は `spec/api_contracts.json` の記載に従う。このチェックアウトでは huc の本文を確認していないため、実在と内容は未検証である（検証器は形式のみを検査する）。
+- `CALLER_MAJOR_IN_X`：呼び出し側は X を 3 と比較する（`core-stage1.asm` 94-99 行）。
+- `CALLER_TXA_SAY`：呼び出し側は X:A を TXA/SAY で Y:A に変換する（`hucc-systemcard.asm` 72-79 行）。
+
+### 確認チェックリスト（cold / warm・版の差）
+
+| 確認項目 | DEV 合成 | 参照 BIOS |
+|---|---|---|
+| cold と warm の入力・後状態が一致 | 検証器で判定（対がなければ NOT_RUN） | 未実行（BLOCKED） |
+| 返り値の版バイト | X=3、Y=0（ハードコード） | UNKNOWN（イメージ依存） |
+| System Card の版の比較 | 対象外 | BLOCKED |
+| A の保存、ZP32 の不変 | 検証器で判定 | UNKNOWN |
+
 ## 残課題
 
 - 参照 BIOS の観測には、オーナー承認・独立レビュー・安全機構（#473）が前提。本 PR では経路を追加しない。
