@@ -7,6 +7,7 @@ shape then fails), and against this branch's guard to see the new one.
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import unittest
 
 import yaml
@@ -348,6 +349,30 @@ class Hardening(unittest.TestCase):
 
     def test_quoted_on_key_with_same_trigger_passes(self):
         self.assertEqual(problems(GOOD.replace('on:\n', '"on":\n', 1)), [])
+
+
+class CyclicAlias(unittest.TestCase):
+    """Issue #547 P0: a self-referencing alias made the node walk loop forever. Each check must now return within the
+    timeout, and refuse the text (RED before the fix: the walk never returned)."""
+
+    TIMEOUT = 10
+
+    def run_with_timeout(self, call):
+        result = {}
+        worker = threading.Thread(target=lambda: result.update(value=call()), daemon=True)
+        worker.start()
+        worker.join(self.TIMEOUT)
+        self.assertFalse(worker.is_alive(), f'the check did not return within {self.TIMEOUT}s (cyclic alias walk)')
+        return result['value']
+
+    def test_self_referencing_alias_is_refused_without_hanging(self):
+        text = GOOD.replace('      - name: Policy check', '      - name: Policy check\n        with: &x [*x]', 1)
+        result = self.run_with_timeout(lambda: guard._policy_structure_problems(POLICY, text))
+        self.assertTrue(result, 'a cyclic alias must produce a refusal')
+
+    def test_cyclic_alias_is_refused_on_the_placement_path(self):
+        text = 'name: Policy guard\non:\n  pull_request_target:\n    types: [opened]\nfoo: &x [*x]\n'
+        self.assertTrue(self.run_with_timeout(lambda: guard.scope_key_violations(text, POLICY)), text)
 
 
 if __name__ == '__main__':

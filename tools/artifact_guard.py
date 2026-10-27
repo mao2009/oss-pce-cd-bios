@@ -1494,6 +1494,10 @@ def _policy_structure_problems(workflow, text):
     stack, seen = [(root, True)], set()
     while stack:
         node, top = stack.pop()
+        if id(node) in seen:   # reached twice: an alias or a cycle (foo: &x [*x]). Refused, and never walked again (Issue #544)
+            problems.append(f"{workflow}: a repeated YAML node (alias or cycle) is refused in the policy workflow (Issue #544)")
+            continue
+        seen.add(id(node))
         if isinstance(node, yaml.MappingNode):
             key_texts = []
             for key, value in node.value:
@@ -1514,7 +1518,6 @@ def _policy_structure_problems(workflow, text):
                 problems.append(f"{workflow}: duplicate keys {duplicates} in one mapping are refused (Issue #544)")
         elif isinstance(node, yaml.SequenceNode):
             stack.extend((item, False) for item in node.value)
-        seen.add(id(node))
     return problems
 
 
