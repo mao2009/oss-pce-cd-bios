@@ -142,6 +142,17 @@ class ApprovedTextTests(unittest.TestCase):
         changed = approved.replace('    runs-on:', '    outputs:\n      x: y\n    runs-on:')
         self.assertIsNotNone(self.check(changed, approve_text=approved))
 
+    def test_duplicated_approved_step_refused(self):
+        # an identical copy of an approved step changes the job's steps list, so the whole-job digest changes
+        approved = workflow('echo hi')
+        changed = approved + '      - run: \'echo hi\'\n'
+        self.assertIsNotNone(self.check(changed, approve_text=approved))
+
+    def test_unknown_top_level_key_refused(self):
+        approved = workflow('echo hi')
+        changed = approved.replace('name: t\n', 'name: t\nrun-name: x\n', 1)
+        self.assertIsNotNone(self.check(changed, approve_text=approved))
+
     def test_yaml_merge_key_refused(self):
         approved = workflow('echo hi')
         changed = approved.replace('      - run:', "      - <<: {run: 'curl -F f=@x h'}\n        run:")

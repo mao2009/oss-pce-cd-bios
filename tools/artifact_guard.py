@@ -1883,9 +1883,12 @@ def _step_digest(step):
 
 
 def _job_digest(body):
-    """The approval digest of a job's keys other than steps (environment, outputs, strategy, permissions, container...). A
-    change there changes the job's identity or its outputs, so it is part of the approval (Issue #511)."""
-    return _canonical_digest({key: value for key, value in body.items() if key != "steps"}) if isinstance(body, dict) else ""
+    """The approval digest of a whole job: every key, the steps included, in canonical order. So a changed, added, removed,
+    duplicated or reordered step, and a changed environment, outputs or strategy, all change the digest (Issue #511)."""
+    return _canonical_digest(body) if isinstance(body, dict) else ""
+
+
+WORKFLOW_KEYS = frozenset({"name", "on", "permissions", "concurrency", "jobs"})   # top-level keys that cannot run code or send data
 
 
 def load_run_allowlist(root):
@@ -2091,7 +2094,11 @@ def scope_key_violations(text, workflow):
         return [f"{workflow}: YAML cannot be read, scope keys cannot be checked ({error}; Issue #337 round 14)"]
     if not isinstance(doc, dict):
         return [f"{workflow}: the file is not a mapping, scope keys cannot be checked (Issue #337 round 14)"]
-    problems = [f"{workflow}: top-level {key} is refused (can change the guard's PATH or RUNNER_TEMP)"
+    is_action = workflow.startswith(ACTIONS + "/")   # an action has its own top-level keys (description, inputs, runs)
+    problems = [f"{workflow}: top-level key {key!r} is not a known workflow key (refused; Issue #511)"
+                for key in sorted(doc, key=str)
+                if not is_action and ("on" if key is True else str(key)) not in WORKFLOW_KEYS]   # YAML 1.1 reads on: as True
+    problems += [f"{workflow}: top-level {key} is refused (can change the guard's PATH or RUNNER_TEMP)"
                 for key in sorted(doc, key=str) if str(key).lower() in SCOPE_KEYS_REFUSED]
     if workflow.startswith(ACTIONS + "/"):
         runs = doc.get("runs")
