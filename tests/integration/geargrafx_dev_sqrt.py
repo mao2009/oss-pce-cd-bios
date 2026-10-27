@@ -212,7 +212,11 @@ def main():
         # into the next override (slot $45 ends in ply; plp; rts too), which mutated the wrong routine.
         map_text = (args.rom.parent / "dev.map").read_text()
         sizes = dict(re.findall(r"(slot_\w+)\.o:\s+OVERRIDES\s+Offs=\w+\s+Size=(\w+)", map_text))
+        if "slot_44" not in sizes:
+            raise ValueError("slot_44 OVERRIDES size not found in dev.map")
         body_size = int(sizes["slot_44"], 16)
+        if data[code_at + body_size - 1] != 0x60:
+            raise ValueError("slot $44 body (per dev.map size) does not end with RTS")
         plp_rts = None
         for i in range(code_at, min(code_at + body_size, len(data) - 1)):
             if data[i] == 0x28 and data[i + 1] == 0x60:

@@ -204,10 +204,10 @@ class DevSinModelTests(unittest.TestCase):
             self.assertGreaterEqual(dev_sin(a), 0, a)
 
     def test_period_256(self):
-        """One period is 256 units: the 8-bit input wraps (a and a+256 give the same output)."""
+        """One period is 256 units. dev_sin rejects a+256 by design (test_out_of_range_inputs_rejected),
+        so this checks only that the oracle has period 256: oracle(a+256) == model(a) for every a."""
         for a in range(256):
-            self.assertEqual(dev_sin(a), dev_sin(a & 0xFF), a)
-            self.assertEqual(oracle_sin(a + 256), dev_sin(a), a)  # the oracle itself has period 256
+            self.assertEqual(oracle_sin(a + 256), dev_sin(a), a)
 
     def test_identity_sin_equals_cos_shifted(self):
         """SIN(a) == COS((a - 64) mod 256), with COS from a copy of the PR #527 reference."""
