@@ -243,6 +243,21 @@ class Hardening(unittest.TestCase):
         text = GOOD.replace('      - name: Checkout trusted main (base SHA)', '      - name: &n Checkout trusted main (base SHA)', 1)
         self.assert_refused(text.replace('      - name: Policy check', '      - name: *n', 1))
 
+    # dc1fab9 review: three more items, fixed (owner decision: no risk acceptance)
+    def test_duplicate_persist_credentials_in_with_is_refused(self):
+        self.assert_refused(GOOD.replace('persist-credentials: false\n      - name: Checkout pull',
+                                         'persist-credentials: false\n          persist-credentials: false\n'
+                                         '      - name: Checkout pull', 1))
+
+    def test_top_level_name_reading_the_token_is_refused(self):
+        self.assert_refused(GOOD.replace('name: Policy guard', "name: ${{ github['token'] }}", 1))
+
+    def test_toJSON_github_context_is_refused(self):
+        self.assert_refused(GOOD.replace('      - name: Policy check', '      - name: ${{ toJSON(github) }}', 1))
+
+    def test_yaml_directive_is_refused(self):
+        self.assert_refused('%YAML 1.2\n---\n' + GOOD)
+
     def test_quoted_on_key_with_same_trigger_passes(self):
         self.assertEqual(problems(GOOD.replace('on:\n', '"on":\n', 1)), [])
 

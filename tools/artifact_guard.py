@@ -1478,6 +1478,8 @@ def _policy_structure_problems(workflow, text):
     problems = []
     if re.search(r"(?:^|[\s\[{,:\-])!", text):
         problems.append(f"{workflow}: an explicit YAML tag is refused in the policy workflow (Issue #544)")
+    if re.search(r"^\s*%", text, re.M):   # a YAML directive (%YAML 1.2) can change the schema the parser reads with
+        problems.append(f"{workflow}: a YAML directive is refused in the policy workflow (Issue #544)")
     if re.search(r"(?:^|[\s\[{,:\-])[&*][\w-]", text):
         problems.append(f"{workflow}: a YAML anchor or alias is refused in the policy workflow (Issue #544)")
     try:
@@ -1518,7 +1520,9 @@ def _no_secret_reference(value):
         return any(_no_secret_reference(key) or _no_secret_reference(inner) for key, inner in value.items())
     if isinstance(value, list):
         return any(_no_secret_reference(inner) for inner in value)
-    return isinstance(value, str) and bool(re.search(r"secrets\b|id-token|github\.token|GITHUB_TOKEN", value, re.I))
+    # secrets, id-token, the GITHUB_TOKEN, the github context read as a whole (toJSON(github)) or by key (github['token'])
+    return isinstance(value, str) and bool(re.search(
+        r"secrets\b|id-token|GITHUB_TOKEN|github\s*\.\s*token|github\s*\[|toJSON\s*\(\s*github", value, re.I))
 
 
 def _policy_guard_problems(label, doc):
