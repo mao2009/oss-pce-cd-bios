@@ -1452,6 +1452,66 @@ WRITE_ALLOWANCES = {
 }
 
 
+POLICY_GUARD_FILE = "policy-guard.yml"
+POLICY_GUARD_TRIGGERS = frozenset({"pull_request_target"})
+POLICY_GUARD_TYPES = frozenset({"opened", "synchronize", "reopened", "ready_for_review"})
+POLICY_GUARD_RUN = "python3 .trusted/tools/policy_guard.py --candidate .candidate --trusted .trusted"
+POLICY_CHECKOUT_RE = re.compile(r"actions/checkout@[0-9a-f]{40}")
+
+
+def _no_secret_reference(value):
+    """True when any string in value names a secret or an id-token (a run under pull_request_target must hold neither)."""
+    if isinstance(value, dict):
+        return any(_no_secret_reference(key) or _no_secret_reference(inner) for key, inner in value.items())
+    if isinstance(value, list):
+        return any(_no_secret_reference(inner) for inner in value)
+    return isinstance(value, str) and bool(re.search(r"secrets\.|id-token|github\.token", value))
+
+
+def _policy_guard_problems(label, doc):
+    """Issue #544 bootstrap (owner decision): the exact shape of policy-guard.yml. pull_request_target runs this file from the
+    base branch, so the job may only (1) check out the base SHA as the trusted copy, (2) check out the pull request head as
+    DATA (persist-credentials false, never executed), and (3) run the trusted policy_guard.py. No secrets, no id-token, no
+    grants beyond contents: read, no other job, no if, needs, environment, container or other step."""
+    problems = []
+    on = doc.get("on", doc.get(True))
+    if not isinstance(on, dict) or set(on) != POLICY_GUARD_TRIGGERS:
+        problems.append(f"{label}: the policy workflow must have exactly the pull_request_target trigger (Issue #544)")
+    else:
+        types = (on.get("pull_request_target") or {}).get("types", [])
+        if not isinstance(types, list) or not set(types) <= POLICY_GUARD_TYPES:
+            problems.append(f"{label}: the policy workflow's pull_request_target types may only be {sorted(POLICY_GUARD_TYPES)}")
+    if doc.get("permissions") != {"contents": "read"}:
+        problems.append(f"{label}: the policy workflow permissions must be exactly contents: read (Issue #544)")
+    jobs = doc.get("jobs")
+    if not isinstance(jobs, dict) or set(jobs) != {"policy-guard"}:
+        problems.append(f"{label}: the policy workflow must have exactly one job, policy-guard (Issue #544)")
+        return problems
+    job = jobs["policy-guard"]
+    if not isinstance(job, dict) or set(job) - {"name", "runs-on", "steps"} or job.get("runs-on") != "ubuntu-24.04":
+        problems.append(f"{label}: the policy-guard job may have only name, runs-on: ubuntu-24.04 and steps (Issue #544)")
+        return problems
+    steps = job.get("steps")
+    expected = [
+        ({"name", "uses", "with"}, {"ref": "${{ github.event.pull_request.base.sha }}", "path": ".trusted",
+                                    "persist-credentials": False}),
+        ({"name", "uses", "with"}, {"ref": "${{ github.event.pull_request.head.sha }}", "path": ".candidate",
+                                    "persist-credentials": False}),
+    ]
+    shape_ok = isinstance(steps, list) and len(steps) == 3 and all(isinstance(step, dict) for step in steps)
+    if shape_ok:
+        for step, (keys, with_expected) in zip(steps[:2], expected):
+            shape_ok = shape_ok and set(step) == keys and isinstance(step.get("uses"), str) \
+                and POLICY_CHECKOUT_RE.fullmatch(step["uses"]) is not None and step.get("with") == with_expected
+        shape_ok = shape_ok and set(steps[2]) == {"name", "run"} and steps[2].get("run") == POLICY_GUARD_RUN
+    if not shape_ok:
+        problems.append(f"{label}: the policy-guard steps must be exactly: checkout base SHA to .trusted, checkout head to "
+                        ".candidate (both persist-credentials false, pinned checkout), then the one trusted run (Issue #544)")
+    if _no_secret_reference(doc):
+        problems.append(f"{label}: the policy workflow names a secret, an id-token or github.token (refused; Issue #544)")
+    return problems
+
+
 def _privilege_problems(doc, label):
     """Issue #349 (review): pages: write is held only by the deploy job of pages.yml, contents: write by no job in any file
     (no release route is approved), and pages.yml takes only the triggers main has. Checked for every workflow file, at
@@ -1476,6 +1536,11 @@ def _privilege_problems(doc, label):
     names = set(on) if isinstance(on, (dict, list)) else {on} if isinstance(on, str) else set()
     if Path(label).name == PAGES_FILE:
         allowed = PAGES_ALLOWED_TRIGGERS
+    elif Path(label).name == POLICY_GUARD_FILE:
+        # Issue #544 bootstrap: the one workflow that may use pull_request_target. Its exact shape is checked below; any other
+        # shape (another trigger, grants, secrets, another job, a changed step) is refused as the rest of the rule refuses it.
+        allowed = POLICY_GUARD_TRIGGERS
+        problems += _policy_guard_problems(label, doc)
     else:
         allowed = WORKFLOW_ALLOWED_TRIGGERS | ({"schedule"} if Path(label).name in SCHEDULE_WORKFLOWS else set())
     extra = sorted(str(n) for n in names - allowed)
