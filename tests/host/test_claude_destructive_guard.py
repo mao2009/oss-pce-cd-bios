@@ -140,6 +140,16 @@ DENY_COMMANDS = [
     "git push --prune origin",
     "git push origin --delete x",
     "git push -d origin x",
+    # M5a: backslash-escaped .claude (\X quotes X, so .cl\aude is .claude)
+    "echo x > .cl\\aude/f",
+    "echo x > .clau\\de/f",
+    "echo x >| .claude/worktree-owners.json",
+    "cp x .cl\\aude/f",
+    # M5b: write target not statically known (unexpanded variable or glob)
+    "X=.claude; echo x > $X/f",
+    "echo x > docs/$NAME.md",
+    "X=.claude; touch $X/f",
+    "echo x > ${HOME}/f",
 ]
 
 POWERSHELL_DENY_COMMANDS = [
@@ -178,6 +188,9 @@ ALLOW_COMMANDS = [
     "git -c color.ui=false status",
     "git push origin HEAD:refs/heads/x",
     "cp README.md README.bak",
+    "echo $X",
+    "echo x > docs/f.md",
+    "echo x 2>&1",
 ]
 
 POWERSHELL_ALLOW_COMMANDS = [
@@ -189,6 +202,9 @@ POWERSHELL_ALLOW_COMMANDS = [
     "echo \"rm -rf dir\"",
     "cd docs; ls",
     "git status && git diff",
+    "echo x > docs/f.md",
+    "echo x >/dev/null 2>&1",
+    "make test 2>&1",
 ]
 
 INVALID_INPUTS = [
@@ -349,6 +365,52 @@ class OwnershipTests(unittest.TestCase):
         # MAJOR 5: the registry cannot be forged with a shell write.
         cmd = "echo {} > " + self.registry
         self.assertEqual(verdict(cmd, repo_root=self.root), "DENY")
+
+
+CHILD = r"""
+import importlib.util, json, sys, time
+spec = importlib.util.spec_from_file_location("g", sys.argv[1])
+g = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g)
+raw = sys.stdin.read()
+t0 = time.perf_counter()
+v = g.decide(raw, repo_root=sys.argv[2])
+print(json.dumps({"verdict": v[0], "reason": v[1], "secs": time.perf_counter() - t0}))
+"""
+
+# (name, command, expected verdict). Inputs over 64 KB are denied by the size cap.
+PERF_CASES = [
+    ("gt-heavy-200k", "a>" * 100000, "DENY"),
+    ("a-200k", "a" * 200000, "DENY"),
+    ("semi-200k", "a;" * 100000, "DENY"),
+    ("paren-200k", "(" * 200000, "DENY"),
+    ("gt-heavy-60k", "a>" * 30000, "ALLOW"),
+]
+
+
+class PerfTests(unittest.TestCase):
+    def timed_decide(self, cmd):
+        """Run decide() in a child process so a slow C-level regex cannot hang the suite."""
+        try:
+            p = subprocess.run([sys.executable, "-c", CHILD, HOOK, REPO],
+                               input=payload(cmd), capture_output=True, text=True,
+                               timeout=10)
+        except subprocess.TimeoutExpired:
+            return None
+        return json.loads(p.stdout)
+
+    def test_oversize_command_denied(self):
+        # TIMEOUT: a hard size cap bounds the work, so no timeout is relied on.
+        self.assertEqual(verdict("echo " + "a" * 70000), "DENY")
+        self.assertIn("too large to inspect", guard.decide(payload("echo " + "a" * 70000), repo_root=REPO)[1])
+
+    def test_inputs_decide_within_two_seconds(self):
+        for name, cmd, expected in PERF_CASES:
+            with self.subTest(case=name):
+                res = self.timed_decide(cmd)
+                self.assertIsNotNone(res, "decide() did not finish within 10 s")
+                self.assertLess(res["secs"], 2.0)
+                self.assertEqual(res["verdict"], expected)
 
 
 class StaticTests(unittest.TestCase):
