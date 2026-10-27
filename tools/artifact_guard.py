@@ -1753,6 +1753,11 @@ def check_guard_placement(root=ROOT, partial_fixtures=False):
         # Issue #544: read_text turns CR into LF, so the policy workflow's raw bytes are checked for a lone CR here
         if label.endswith("/" + POLICY_GUARD_FILE) and re.search(r"\r(?!\n)", workflow.read_bytes().decode("utf-8")):
             problems.append(f"{label}: a lone CR line break is refused in the policy workflow (Issue #544)")
+        # Do this before any node walk. A YAML alias can form a cycle, so later structural checks must not inspect it.
+        integrity = yaml_integrity_violations(text, label)
+        if integrity and any("YAML alias" in problem or "YAML anchor" in problem for problem in integrity):
+            problems += integrity
+            continue
         try:
             steps = upload_steps(text)
         except ValueError as error:   # an unsupported publishing route or an unparseable upload step
@@ -1763,7 +1768,6 @@ def check_guard_placement(root=ROOT, partial_fixtures=False):
             problems += scope_key_violations(text, label)   # a file with an upload step gets it in guard_placement_violations
         problems += publish_violations(text, label)
         problems += pages_structure_violations(text, label)
-        problems += yaml_integrity_violations(text, label)
         problems += attest_input_violations(text, label)
         problems += attest_download_violations(text, label, partial_fixtures)
         problems += attest_condition_violations(text, label)
@@ -2356,13 +2360,13 @@ def scope_key_violations(text, workflow):
     refused here too (round 14), not only by yaml_integrity_violations."""
     if re.search(r"""^\s*(?:-\s+)?["']?<<["']?\s*:""", text, re.M):   # Issue #511: a merge key can hide a run: from the approval
         return [f"{workflow}: a YAML merge key (<<:) is refused; it can hide a run: the approval does not see (Issue #511)"]
-    bool_words = _bool_word_problems(workflow, text)   # Issue #511: yes/no/on/off read as bools, digest as true/false
-    if bool_words:
-        return bool_words
     if Path(workflow).name == POLICY_GUARD_FILE:
         structure_problems = _policy_structure_problems(workflow, text)   # Issue #544: text and node tree, before any value
         if structure_problems:
             return structure_problems
+    bool_words = _bool_word_problems(workflow, text)   # Issue #511: yes/no/on/off read as bools, digest as true/false
+    if bool_words:
+        return bool_words
     trigger_problems = _trigger_key_problems(workflow, text)   # Issue #544: read the node tree, not the lines (flow, ?, ON)
     if trigger_problems:
         return trigger_problems
