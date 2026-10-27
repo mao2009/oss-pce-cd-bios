@@ -9,6 +9,7 @@ The 2048-byte sector comparison (compare_sector) is a full byte-for-byte compari
 Shipped expectations are synthetic and carry no BIOS claim. Per-item PASS can occur for synthetic input;
 judge_synthetic never returns overall PASS for shipped cases (effects are always UNKNOWN).
 """
+import reference_jsr_gate as _gate
 from cd_read_error_verdict import judge as _callee_judge
 
 PASS, FAIL, BLOCKED, UNKNOWN = 'PASS', 'FAIL', 'BLOCKED', 'UNKNOWN'
@@ -123,8 +124,30 @@ def judge_synthetic(case, obs):
     return overall, items
 
 
+CALLEE_API_ID = 'slot-03'    # CD_READ slot $03 (spec/reference_jsr_gate.json, trusted gate key)
+PROVENANCE_KEYS = ('origin', 'rom_sha256', 'core', 'head', 'evidence')
+
+
+def _provenance_ok(obs):
+    sha, head = obs.get('rom_sha256'), obs.get('head')
+    return (all(isinstance(obs.get(k), str) and obs.get(k) for k in PROVENANCE_KEYS)
+            and isinstance(sha, str) and len(sha) == 64 and all(c in '0123456789abcdef' for c in sha)
+            and isinstance(head, str) and len(head) == 40 and all(c in '0123456789abcdef' for c in head))
+
+
 def judge_callee(case, obs):
-    """Reference BIOS callee evidence only. Synthetic observations are BLOCKED here."""
+    """Reference BIOS callee evidence only. obs['gate'] never grants permission.
+
+    Permission comes solely from the trusted reference_jsr_gate.require_allowed(CALLEE_API_ID), which reads the
+    committed ledger. Any refusal (gate closed, unreadable ledger, unmapped target) is BLOCKED, and so is a
+    missing or malformed provenance record. Synthetic records are rejected by kind before the gate is consulted.
+    """
     if not isinstance(obs, dict) or obs.get('kind') != CALLEE:
         return BLOCKED, {'reason': 'not reference callee evidence'}
-    return _callee_judge(case, obs)
+    try:
+        _gate.require_allowed(CALLEE_API_ID)
+    except Exception as error:  # fail closed: any gate failure is a refusal
+        return BLOCKED, {'reason': 'trusted JSR gate refused', 'detail': type(error).__name__}
+    if not _provenance_ok(obs):
+        return BLOCKED, {'reason': 'provenance record missing or malformed'}
+    return _callee_judge(case, {**obs, 'gate': 'ALLOWED'})

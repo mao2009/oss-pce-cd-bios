@@ -16,7 +16,9 @@
 | 種別 | `kind` | 判定関数 | できること | できないこと |
 | --- | --- | --- | --- | --- |
 | 合成 SCSI 転送 | `synthetic_scsi` | `judge_synthetic()` | 自作媒体での転送長、宛先バイト、宛先外書込みの判定 | 純正 callee の戻り値・副作用の証拠 |
-| 純正 callee | `reference_callee` | `judge_callee()`（`cd_read_error_verdict.judge` に委譲） | gate `ALLOWED` の下での callee 項目の判定 | 合成結果の代用 |
+| 純正 callee | `reference_callee` | `judge_callee()` | 信頼された `reference_jsr_gate.require_allowed('slot-03')` の結果だけで許可する。`obs['gate']` は許可を与えない。provenance（`origin` / `rom_sha256` / `core` / `head` / `evidence`）が必須。通過後のみ `cd_read_error_verdict.judge` に委譲 | 合成結果の代用、ゲートを開いたモックの結果を承認とみなすこと |
+
+**モックの扱い:** テストでゲートを `ALLOWED` にモックするものは「配線の確認」であり、承認ではない。実ゲートは現在 CLOSED（`NO_REVIEWED_GATE_RECORD`、`NO_INDEPENDENT_APPROVAL`）で、そのため実 callee 記録は BLOCKED になる。
 
 両者は相互に受け付けない。合成観測を callee 判定に渡すと BLOCKED、callee 観測を合成判定に渡すと BLOCKED になる（テストで確認）。
 
@@ -48,12 +50,13 @@
 ## 5. テスト（RED → GREEN）
 
 * RED: `tests/host/test_cd_read_v16_contract.py` を先に作成し、`tools/cd_read_v16_contract.py` が無い状態で実行 → `ModuleNotFoundError`。
-* GREEN: 判定器を追加後、37 件すべて OK。`tests/host/test_cd_read_error_verdict.py` も OK（既存の判定器に変更なし）。
+* RED（ゲート修正の前）: 新規テストは 44 件中 1 件の失敗と 6 件のエラー（`_gate` / `CALLEE_API_ID` 未定義を含む）。
+* GREEN（ゲート修正の後）: 45 件すべて OK。実ゲートは CLOSED のまま読まれる。`tests/host/test_cd_read_error_verdict.py` も OK（既存の判定器に変更なし）。
 * 実行コマンド: `python -I tests/host/test_cd_read_v16_contract.py`（`-I` で環境の PYTHONPATH を無視）。
 
 ### 5.1 変異テスト（mutation）
 
-15 個の変異を `tempfile.TemporaryDirectory()` 内の複製に適用し、各変異が**正確に 1 箇所に適用されたこと**を確認してから、テストを実行した。
+18 個の変異（M1-M15 と、ゲート関連の M16-M18）を `tempfile.TemporaryDirectory()` 内の複製に適用し、各変異が**正確に 1 箇所に適用されたこと**を確認してから、テストを実行した。
 
 | 変異 | 結果 |
 | --- | --- |
@@ -73,7 +76,7 @@
 | M14 callee 判定の委譲をバイパス | 検出 |
 | M15 同長なら常に PASS | 検出 |
 
-最終結果: 15 件中 14 件検出。M13 は判定結果を変えない等価変異として扱い、感度の欠落とはみなさない。
+最終結果: 18 件中 17 件検出（M16 信頼ゲートを呼ばない、M17 provenance 未検査、M18 ゲート例外の握り潰し はいずれも検出）。M13 は判定結果を変えない等価変異として扱い、感度の欠落とはみなさない。
 
 ## 6. 未実施と UNKNOWN
 

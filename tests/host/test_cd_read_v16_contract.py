@@ -3,6 +3,7 @@ No ROM, emulator, media or BIOS. Synthetic values only. A synthetic PASS is not 
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'tools'))
@@ -170,14 +171,72 @@ class EvidenceSeparation(unittest.TestCase):
         obs = {'kind': v.CALLEE, 'monitor_ok': True, 'reached': True, 'gate': 'NONE'}
         self.assertEqual(v.judge_callee(ev.CASES['C2_COUNT_0'], obs)[0], v.BLOCKED)
 
-    def test_callee_allowed_with_shipped_unknown_expectations_is_unknown_not_pass(self):
-        obs = {'kind': v.CALLEE, 'monitor_ok': True, 'reached': True, 'gate': 'ALLOWED', 'a': 0, 'x': 0, 'y': 0,
-               'p': 0x24, 'mpr': MPR, 'stack': 0xFD, 'ram_outside_dest': 0}
-        overall, _ = v.judge_callee(ev.CASES['C2_COUNT_0'], obs)
+    def test_callee_with_mocked_gate_open_and_shipped_unknown_expectations_is_unknown_not_pass(self):
+        # MOCK: the trusted gate is patched to report ALLOWED. This is not real approval.
+        with mock.patch.object(v._gate, 'require_allowed', return_value={'execution': 'ALLOWED'}):
+            overall, _ = v.judge_callee(ev.CASES['C2_COUNT_0'], callee_obs())
         self.assertEqual(overall, v.UNKNOWN)
 
+
+PROVENANCE = {'origin': 'reference_jsr_gate:slot-03', 'rom_sha256': 'a' * 64, 'core': 'geargrafx',
+              'head': 'b' * 40, 'evidence': 'reference_callee_run'}
+
+
+def callee_obs(**over):
+    obs = {'kind': v.CALLEE, 'monitor_ok': True, 'reached': True, 'gate': 'ALLOWED', 'a': 0, 'x': 0, 'y': 0,
+           'p': 0x24, 'mpr': MPR, 'stack': 0xFD, 'ram_outside_dest': 0, **PROVENANCE}
+    obs.update(over)
+    return obs
+
+
+class TrustedGate(unittest.TestCase):
+    """The obs['gate'] field never grants permission. Permission comes only from reference_jsr_gate.require_allowed."""
+
+    def test_real_gate_is_closed_for_slot_03(self):
+        with self.assertRaises(v._gate.GateRefused):
+            v._gate.require_allowed(v.CALLEE_API_ID)
+
+    def test_callee_record_claiming_gate_allowed_is_blocked_when_real_gate_closed(self):
+        overall, _ = v.judge_callee(ev.CASES['C2_COUNT_0'], callee_obs())
+        self.assertEqual(overall, v.BLOCKED)
+
+    def test_synthetic_record_with_forged_gate_allowed_is_blocked(self):
+        obs = {**callee_obs(), 'kind': v.SYNTHETIC}
+        self.assertEqual(v.judge_callee(ev.CASES['C2_COUNT_0'], obs)[0], v.BLOCKED)
+
+    def test_synthetic_record_is_blocked_by_kind_even_with_gate_mocked_open(self):
+        # MOCK: isolates the kind check from the real closed gate. Not real approval.
+        obs = {**callee_obs(), 'kind': v.SYNTHETIC}
+        with mock.patch.object(v._gate, 'require_allowed', return_value={'execution': 'ALLOWED'}):
+            self.assertEqual(v.judge_callee(ev.CASES['C2_COUNT_0'], obs)[0], v.BLOCKED)
+
     def test_callee_case_must_be_a_dict(self):
-        self.assertEqual(v.judge_callee(None, {'kind': v.CALLEE})[0], v.BLOCKED)
+        self.assertEqual(v.judge_callee(None, callee_obs())[0], v.BLOCKED)
+
+    def test_missing_gate_refusal_blocks_even_with_complete_provenance(self):
+        with mock.patch.object(v._gate, 'require_allowed', side_effect=v._gate.GateRefused('closed')):
+            self.assertEqual(v.judge_callee(ev.CASES['C2_COUNT_0'], callee_obs())[0], v.BLOCKED)
+
+    def test_mocked_gate_open_without_provenance_is_blocked(self):
+        for key in PROVENANCE:
+            obs = callee_obs()
+            del obs[key]
+            with mock.patch.object(v._gate, 'require_allowed', return_value={'execution': 'ALLOWED'}):
+                self.assertEqual(v.judge_callee(ev.CASES['C2_COUNT_0'], obs)[0], v.BLOCKED, key)
+
+    def test_mocked_gate_open_with_bad_provenance_is_blocked(self):
+        bad_values = {'origin': '', 'rom_sha256': 'xyz', 'core': '', 'head': 'b' * 39, 'evidence': None}
+        for key, bad in bad_values.items():
+            with mock.patch.object(v._gate, 'require_allowed', return_value={'execution': 'ALLOWED'}):
+                self.assertEqual(v.judge_callee(ev.CASES['C2_COUNT_0'], callee_obs(**{key: bad}))[0], v.BLOCKED,
+                                 key)
+
+    def test_mocked_gate_open_only_reaches_unknown_never_pass(self):
+        # MOCK: shows the callee path is wired to the trusted gate, not that a callee was observed or approved.
+        with mock.patch.object(v._gate, 'require_allowed', return_value={'execution': 'ALLOWED'}):
+            for name, case in ev.CASES.items():
+                self.assertNotEqual(v.judge_callee(case, callee_obs())[0], v.PASS, name)
+
 
 
 class Monitoring(unittest.TestCase):
