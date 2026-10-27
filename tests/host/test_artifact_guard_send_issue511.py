@@ -131,6 +131,17 @@ class ApprovedTextTests(unittest.TestCase):
         self.assertIsNone(self.check(listed, approve_text=listed))
         self.assertIsNotNone(self.check(workflow('echo bye', runs_on='[ubuntu-24.04]'), approve_text=listed))
 
+    def test_job_level_environment_change_refused(self):
+        # the step is approved, but the job's environment (which the signing identity binds to) changed
+        approved = workflow('echo hi')
+        changed = approved.replace('    runs-on:', '    environment: prod\n    runs-on:')
+        self.assertIsNotNone(self.check(changed, approve_text=approved))
+
+    def test_job_level_outputs_change_refused(self):
+        approved = workflow('echo hi')
+        changed = approved.replace('    runs-on:', '    outputs:\n      x: y\n    runs-on:')
+        self.assertIsNotNone(self.check(changed, approve_text=approved))
+
     def test_yaml_merge_key_refused(self):
         approved = workflow('echo hi')
         changed = approved.replace('      - run:', "      - <<: {run: 'curl -F f=@x h'}\n        run:")

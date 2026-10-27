@@ -1868,10 +1868,24 @@ def _key_parts(workflow, where, step, runs_on):
     return (workflow, where, None if name is None else str(name), None if shell is None else str(shell), runs_on)
 
 
+def _strict_json(value):
+    raise TypeError(f"{type(value).__name__} has no canonical JSON form (refused for approval)")
+
+
+def _canonical_digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, default=_strict_json).encode("utf-8")).hexdigest()
+
+
 def _step_digest(step):
     """The approval digest of a whole step: run text AND every other key (if, continue-on-error, timeout-minutes, env...).
-    A step whose run is approved but whose other keys changed is therefore not approved."""
-    return hashlib.sha256(json.dumps(step, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")).hexdigest()
+    Types must be plain JSON (a date or a bytes value raises TypeError: refused, not approved)."""
+    return _canonical_digest(step)
+
+
+def _job_digest(body):
+    """The approval digest of a job's keys other than steps (environment, outputs, strategy, permissions, container...). A
+    change there changes the job's identity or its outputs, so it is part of the approval (Issue #511)."""
+    return _canonical_digest({key: value for key, value in body.items() if key != "steps"}) if isinstance(body, dict) else ""
 
 
 def load_run_allowlist(root):
@@ -1882,7 +1896,7 @@ def load_run_allowlist(root):
         table = {}
         for entry in entries:
             key = (entry["workflow"], entry["job"], entry["step"], entry["shell"], entry["runs_on"])
-            table.setdefault(key, set()).add(entry["sha256"])
+            table.setdefault(key, set()).add((entry["sha256"], entry["job_sha256"]))
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise ValueError(f"{RUN_ALLOWLIST_FILE} cannot be read, so no run: text can be approved ({error}; fails closed)")
     return table
@@ -1896,21 +1910,26 @@ def build_run_allowlist(root):
         label = path.relative_to(base).as_posix()
         doc = yaml.load(path.read_text(encoding="utf-8"), Loader=_strict_loader())
         if label.startswith(ACTIONS + "/"):
-            groups = [("runs", ((doc.get("runs") or {}).get("steps") or []), "")]
+            composite = doc.get("runs") or {}
+            groups = [("runs", composite.get("steps") or [], "", _job_digest(composite))]
         else:
-            groups = [(job, body.get("steps") or [], _runs_on_text(body)) for job, body in (doc.get("jobs") or {}).items()
-                      if isinstance(body, dict)]
-        for where, steps, runs_on in groups:
+            groups = [(job, body.get("steps") or [], _runs_on_text(body), _job_digest(body))
+                      for job, body in (doc.get("jobs") or {}).items() if isinstance(body, dict)]
+        for where, steps, runs_on, job_sha in groups:
             for step in steps:
                 if isinstance(step, dict) and isinstance(step.get("run"), str):
                     workflow_, job, name, shell, runs = _key_parts(label, where, step, runs_on)
                     entries.append({"workflow": workflow_, "job": job, "step": name, "shell": shell, "runs_on": runs,
-                                    "sha256": _step_digest(step)})
+                                    "sha256": _step_digest(step), "job_sha256": job_sha})
     return sorted(entries, key=lambda entry: json.dumps(entry, sort_keys=True))
 
 
-def _run_approved(workflow, where, step, runs_on):
-    return _step_digest(step) in _RUN_ALLOWLIST.get(_key_parts(workflow, where, step, runs_on), set())
+def _run_approved(workflow, where, step, runs_on, job_digest):
+    try:
+        digests = (_step_digest(step), job_digest)
+    except TypeError:   # a value with no canonical JSON form cannot be approved
+        return False
+    return digests in _RUN_ALLOWLIST.get(_key_parts(workflow, where, step, runs_on), set())
 
 
 def policy_violations(root, trusted_root):
@@ -1939,7 +1958,7 @@ def enforced_check(root, check):
         _RUN_ALLOWLIST = None
 
 
-def _step_problems(workflow, where, step, runs_on=""):
+def _step_problems(workflow, where, step, runs_on="", job_digest=""):
     """Refusals for one step: a step env:, shell: or working-directory: key without an exception, and a run: text that
     changes the PATH of later steps (GITHUB_PATH, GITHUB_ENV) or sets BASH_ENV or PATH. Issue #337 round 14.
     A job that may run on Windows (runs-on names windows, or is a ${{ }} expression) needs shell: bash for its run: steps
@@ -1977,7 +1996,7 @@ def _step_problems(workflow, where, step, runs_on=""):
         if windows and isinstance(run, str) and step.get("shell") != "bash":
             problems.append(f"{workflow}: {where} step {name!r} run: has no shell: bash in a job that may run on Windows "
                             "(the default there is PowerShell; refused, Issue #511)")
-        if _RUN_ALLOWLIST is not None and isinstance(run, str) and not _run_approved(workflow, where, step, runs_on):
+        if _RUN_ALLOWLIST is not None and isinstance(run, str) and not _run_approved(workflow, where, step, runs_on, job_digest):
             problems.append(f"{workflow}: {where} step {name!r} run: text is not an approved exact match for this workflow, "
                             "job, step, shell and runs-on (refused; unregistered or changed, Issue #511)")
     return problems
@@ -2078,7 +2097,7 @@ def scope_key_violations(text, workflow):
         runs = doc.get("runs")
         if not isinstance(runs, dict):
             return problems + [f"{workflow}: runs: must be a mapping, scope keys cannot be checked (Issue #337 round 14)"]
-        scopes = [("runs", runs.get("steps"), "")]
+        scopes = [("runs", runs.get("steps"), "", _job_digest(runs))]
     else:
         jobs = doc.get("jobs")
         if not isinstance(jobs, dict):
@@ -2093,15 +2112,15 @@ def scope_key_violations(text, workflow):
                 if str(key).lower() in SCOPE_KEYS_REFUSED:
                     problems.append(f"{workflow}: job-level {key} in job {job!r} is refused "
                                     "(can change the guard's PATH or RUNNER_TEMP)")
-            scopes.append((job, body.get("steps"), _runs_on_text(body)))
-    for where, steps, runs_on in scopes:
+            scopes.append((job, body.get("steps"), _runs_on_text(body), _job_digest(body)))
+    for where, steps, runs_on, job_digest in scopes:
         if steps is None:
             continue
         if not isinstance(steps, list):
             problems.append(f"{workflow}: {where} steps: must be a list (Issue #337 round 14)")
             continue
         for step in steps:
-            problems += _step_problems(workflow, where, step, runs_on)
+            problems += _step_problems(workflow, where, step, runs_on, job_digest)
     return problems
 
 
@@ -2464,5 +2483,5 @@ def main(argv):
 if __name__ == "__main__":
     try:
         main(sys.argv[1:])
-    except (ValueError, OSError) as error:
+    except (ValueError, OSError, TypeError) as error:
         raise SystemExit(f"artifact_guard: {error}") from error
