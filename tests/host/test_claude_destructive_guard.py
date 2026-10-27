@@ -76,6 +76,8 @@ DENY_COMMANDS = [
     "eval 'rm -rf dir'",
     "$RM -rf dir",
     "rm ../outside.txt",
+    "rm .claude/hooks/guard_destructive.py",
+    "rm .claude/settings.json",
     "rm $HOME/x",
     "rm \"$TARGET\"",
     "rm README.md ../x",
