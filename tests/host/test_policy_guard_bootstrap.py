@@ -187,6 +187,26 @@ class Hardening(unittest.TestCase):
     def test_step_name_with_bracket_token_is_refused(self):
         self.assert_refused(GOOD.replace('      - name: Policy check', "      - name: ${{ github['token'] }}", 1))
 
+    def test_flow_form_on_and_upper_on_both_refused_by_scope(self):
+        flow = ('name: t\n{on: {pull_request_target: {types: [opened]}}, ON: {push: {}}, '
+                'permissions: {contents: read}, jobs: {}}\n')
+        self.assertTrue(guard.scope_key_violations(flow, POLICY))
+
+    def test_on_key_must_be_spelled_on(self):
+        self.assertTrue(guard.scope_key_violations(GOOD.replace('on:\n', 'ON:\n', 1), POLICY))
+
+    def test_persist_credentials_no_is_refused_by_scope(self):
+        # YAML 1.1 reads no as False: the policy file accepts only the literal false
+        self.assertTrue(guard.scope_key_violations(GOOD.replace('persist-credentials: false', 'persist-credentials: no', 1),
+                                                   POLICY))
+
+    def test_permissions_read_all_is_refused(self):
+        self.assert_refused(GOOD.replace('permissions:\n  contents: read', 'permissions: read-all', 1))
+
+    def test_head_checkout_extra_key_is_refused(self):
+        self.assert_refused(GOOD.replace('path: .candidate\n          persist-credentials: false',
+                                         'path: .candidate\n          persist-credentials: false\n          submodules: true', 1))
+
     def test_quoted_on_key_with_same_trigger_passes(self):
         self.assertEqual(problems(GOOD.replace('on:\n', '"on":\n', 1)), [])
 

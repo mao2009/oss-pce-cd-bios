@@ -2022,6 +2022,39 @@ def _yaml_unreadable(text):
     return False
 
 
+def _trigger_key_problems(workflow, text):
+    """Issue #544 (review of #547). Read the YAML node tree. The top level may hold one key whose text lowercases to on, and
+    it must be spelled exactly on (YAML 1.1 reads ON, On and on all as True, so the parsed dict cannot tell them apart). In the
+    policy workflow every boolean must be the literal true or false (YAML 1.1 reads no, off, yes as booleans too)."""
+    import yaml
+    try:
+        root = yaml.compose(text, Loader=yaml.SafeLoader)
+    except Exception:
+        return []   # an unreadable file is refused by the parse checks, not here
+    if not isinstance(root, yaml.MappingNode):
+        return []
+    triggers = [key.value for key, _ in root.value if isinstance(key, yaml.ScalarNode) and key.value.lower() == "on"]
+    if len(triggers) > 1:
+        return [f"{workflow}: the top-level trigger key appears {len(triggers)} times as on, ON or On; it may appear once "
+                "(Issue #544)"]
+    if triggers and triggers[0] != "on":
+        return [f"{workflow}: the trigger key must be spelled exactly on (found {triggers[0]!r}; Issue #544)"]
+    if Path(workflow).name == POLICY_GUARD_FILE:
+        stack, bad = [root], []
+        while stack:
+            node = stack.pop()
+            if isinstance(node, yaml.MappingNode):
+                stack.extend(value for _, value in node.value)
+            elif isinstance(node, yaml.SequenceNode):
+                stack.extend(node.value)
+            elif isinstance(node, yaml.ScalarNode) and node.tag == "tag:yaml.org,2002:bool" and node.value not in ("true", "false"):
+                bad.append(node.value)
+        if bad:
+            return [f"{workflow}: the policy workflow may use only the literal true or false as booleans; found {bad} "
+                    "(YAML 1.1 reads no, off, yes as booleans; Issue #544)"]
+    return []
+
+
 def scope_key_violations(text, workflow):
     """Issue #337 round 10/12/13/14. Refused, decided on the parsed YAML (indentation, quoting, flow style, key case and
     order do not matter; keys are compared case-insensitively):
@@ -2033,9 +2066,9 @@ def scope_key_violations(text, workflow):
     - a workflow whose jobs: is not a mapping, a job that is not a mapping, and a steps: that is not a list (fail closed).
     Applies to every workflow and composite action file, with or without an upload step. A file that cannot be parsed is
     refused here too (round 14), not only by yaml_integrity_violations."""
-    on_keys = re.findall(r"""^["']?on["']?\s*:""", text, re.M | re.I)   # Issue #544: YAML 1.1 reads ON, On and on as True
-    if len(on_keys) > 1:   # a duplicate trigger key (ON and on) is ambiguous; a missing one is not a grant
-        return [f"{workflow}: the top-level trigger key on: appears {len(on_keys)} times; it may appear once (Issue #544)"]
+    trigger_problems = _trigger_key_problems(workflow, text)   # Issue #544: read the node tree, not the lines (flow, ?, ON)
+    if trigger_problems:
+        return trigger_problems
     try:
         import yaml
     except ImportError:
