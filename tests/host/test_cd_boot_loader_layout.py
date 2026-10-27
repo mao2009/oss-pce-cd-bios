@@ -228,7 +228,7 @@ class SpecTextTests(unittest.TestCase):
         self.assertIn("V1、V2 の正常ヘッダ", expected)
 
     def test_layout_rows_keep_their_confidence_labels(self):
-        facts = self.table("| 項目 | CUE から読んだ内容 | 確度 |")
+        facts = self.table("| 項目 | 読んだ内容（CUE、ファイルサイズ、ヘッダ MSF） | 確度 |")
         self.assertTrue(facts["トラック 02 の INDEX 01 の絶対 LBA"][2].startswith("LOCAL"))
         self.assertIn("1,633", facts["トラック 02 の INDEX 01 の絶対 LBA"][1])
         self.assertTrue(facts["トラック 02 の INDEX 00 の絶対 LBA"][2].startswith("ASSUMPTION"))
@@ -265,10 +265,64 @@ class SpecTextTests(unittest.TestCase):
                 self.assertIn("VERIFIED は付けない", line)
 
     def test_scope_statement_matches_the_header_measurement(self):
-        scope = next(line for line in self.text.splitlines() if line.startswith("1. ゲーム固有の事実"))
-        self.assertIn("ヘッダ MSF", scope)
-        self.assertIn("ユーザデータ", scope)
+        # Every scope statement (opening list, S1 heading, target line) must state the same read range:
+        # CUE, file sizes, and only the 3 MSF bytes of track 02 frames 0-299; no user data.
+        lines = self.text.splitlines()
+        opening = [l for l in lines if l.startswith("1. ゲーム固有の事実")]
+        heading = [l for l in lines if l.startswith("## 1. ")]
+        target = [l for l in lines if l.startswith("対象: ")]
+        self.assertEqual(opening, ["1. ゲーム固有の事実（CUE のメタデータ、BIN のファイルサイズ、トラック 02 の BIN の"
+                                   "一部セクタのヘッダ MSF のみ。ユーザデータ（各フレームの 2048 バイトの本体）は読んでいない）"])
+        self.assertEqual(heading, ["## 1. ゲーム固有の事実（CUE のメタデータ、ファイルサイズ、セクタヘッダ MSF）"])
+        self.assertEqual(len(target), 1)
+        self.assertTrue(target[0].endswith(
+            "読んだのは CUE の本文、各 BIN のファイルサイズ、トラック 02 の BIN のフレーム 0〜299 のセクタヘッダ"
+            "（各フレームの同期・ヘッダ部のうち MSF の 3 バイト）だけで、ユーザデータは読んでいない。"), target[0])
         self.assertNotIn("セクタ内容は読んでいない", self.text)
+        self.assertNotIn("ゼロ埋め", self.text)   # would claim more than the MSF bytes that were read
+        # Measurement rows may not cite frames outside the stated 0-299 range.
+        for frames in re.findall(r"フレーム (\d+)〜(\d+)", self.text.split("## 2.")[0]):
+            self.assertLessEqual(int(frames[1]), 299, frames)
+
+    def test_header_range_agrees_with_the_failure_table_and_expected_results(self):
+        contract = self.table("| 項目 | v0 契約（合成メディア） |")
+        self.assertEqual(contract["ヘッダ"][1],
+                         "8 バイト（開発用ローダ `src/cd_load_exec_probe.s` の `HDR_BYTES = 8`、生成器 "
+                         "`tools/build_cdload_exec.py` の `HDR_BYTES = 8`）。[0:4] magic `PCEX`、[4] エントリオフセット、"
+                         "[5] 長さ（1〜255）、[6] チェックサム（コード部の和の下位 8 ビット）、[7] 予約（0）。"
+                         "コードは [8:] から長さ分")
+        self.assertEqual(contract["判定順"][1],
+                         "magic → 長さ（1〜255）→ エントリ（< 長さ）→ チェックサム。最初の失敗で停止し、以降は見ない")
+        low, high = re.search(r"\[5\] 長さ（(\d+)〜(\d+)）", contract["ヘッダ"][1]).groups()
+        failure = {cells(r)[0].strip("`"): cells(r) for r in next(
+            b for b in markdown_table_blocks(self.text) if b[0].startswith("| 状態 | 条件"))[2:]}
+        self.assertEqual(failure["BAD_LENGTH"][1], "長さ 0（1 バイトなので 255 超はない）")
+        self.assertEqual((low, high), ("1", "255"))
+        self.assertIn(high, failure["BAD_LENGTH"][1])
+        self.assertEqual(failure["BAD_ENTRY_OFFSET"][1], "エントリ ≥ 長さ")
+        self.assertEqual(failure["BAD_CHECKSUM"][1], "チェックサム不一致")
+        self.assertEqual(failure["BAD_MAGIC"][1], "magic 不一致（LBA 0 を読んでも同じ）")
+        self.assertIn("上の表は、判定順（magic → 長さ → エントリ → チェックサム）に並べた行の後に、"
+                      "`BUDGET` と `RETRY_EXHAUSTED` を続けている。", self.text.splitlines())
+        expected = {k: v[1] for k, v in self.table("| ケース | 期待 |").items()}
+        self.assertEqual(expected["データトラックのヘッダ magic を壊す"], "`BAD_MAGIC`")
+        self.assertEqual(expected["チェックサムを壊す"], "`BAD_CHECKSUM`")
+        self.assertEqual(expected["エントリ = 長さ"], "`BAD_ENTRY_OFFSET`")
+        self.assertEqual(expected["長さ 0"], "`BAD_LENGTH`")
+        self.assertEqual(expected["データトラックを除去（オーディオのみ）"], "`NO_TRACK`")
+        self.assertEqual(expected["DATA-IN 途中で中断"], "`DATA_TIMEOUT`")
+        self.assertEqual(expected["V2 で絶対 LBA と INDEX 01 相対を取り違える実装"],
+                         "別の読出し LBA になり、判定器が `BAD_MAGIC` で拒否")
+        self.assertTrue(expected["読出し LBA を 0（トラック 01 AUDIO の先頭）にする実装"].startswith(
+            "ホスト判定器では `BAD_MAGIC`"))
+
+    def test_section5_states_the_no_virtual_pregap_condition(self):
+        self.assertIn("INDEX の値は FILE 先頭からのフレーム数である。単一 FILE では、トラック 01 の前に仮想 PREGAP"
+                      "（CUE の `PREGAP`、BIN に格納されない）がない場合に限り FILE 先頭が LBA 0 になり、"
+                      "INDEX 値がそのまま絶対 LBA になる（`tools/cue_analysis.py` の `analyze` の説明。"
+                      "`PREGAP 00:02:00` があると FILE 先頭は LBA 150）。V1・V2 は仮想 PREGAP を使わない。"
+                      "多 FILE では、絶対 LBA = 先行 FILE のフレーム数の合計 + INDEX 値（連続配置の仮定。"
+                      "`tools/cue_analysis.py` と同じ規約）。", self.text.splitlines())
 
     def test_code_length_is_1_to_255(self):
         contract = self.table("| 項目 | v0 契約（合成メディア） |")
