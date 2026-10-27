@@ -43,6 +43,7 @@ USER_OFFSET = 16
 USER_BYTES = 2048
 MAGIC = b"PCEX"
 CODE = bytes([0xEA] * 31 + [0x60])   # the 32 bytes the spec places after the header
+LOADER_SRC = Path(__file__).resolve().parents[2] / "src" / "cd_load_exec_probe.s"
 
 
 # ---- Spec reconstruction (independent of tools/synthetic_boot_media.py) ----------------------------------------
@@ -190,6 +191,32 @@ class OracleTests(unittest.TestCase):
             with self.subTest(case=name):
                 bin_bytes = audio_and_frame(user)
                 self.assertEqual(oracle.judge(cue, bin_bytes, {"lba_offset": 0}), want[name])
+
+
+class LoaderHeaderTests(unittest.TestCase):
+    """PCEX bytes against the DEV loader source, read as text. No generator import, no build_cdload_exec import."""
+
+    def setUp(self):
+        self.src = LOADER_SRC.read_text(encoding="ascii")
+
+    def test_loader_declares_8_byte_pcex_header_with_fixed_field_offsets(self):
+        self.assertRegex(self.src, r"(?m)^HDR_BYTES\s*=\s*8\b")
+        self.assertRegex(self.src, r'(?m)^magic:\n\s*\.byte "PCEX"\s*$')
+        for offset in ("BUF+4", "BUF+5", "BUF+6"):   # entry, length, checksum
+            self.assertIn(offset, self.src)
+
+    def test_generated_header_bytes_match_the_loader_layout(self):
+        for layout, pregap in LAYOUTS:
+            with self.subTest(layout=layout, pregap=pregap):
+                img = gen.build_case_image("NONE", layout, pregap)
+                lba = oracle.parse_tracks(img.cue)[1]["index01"]   # data track INDEX 01, read by the oracle's parser
+                user = img.bin[lba * RAW + USER_OFFSET:][:USER_BYTES]
+                self.assertEqual(user[0:4], MAGIC)              # magic
+                self.assertEqual(user[4], 0)                    # entry offset
+                self.assertEqual(user[5], len(CODE))            # length, 1..255
+                self.assertEqual(user[6], sum(CODE) & 0xFF)     # checksum over the code bytes
+                self.assertEqual(user[7], 0)                    # reserved
+                self.assertEqual(user[8:8 + len(CODE)], CODE)   # code starts at offset 8
 
 
 if __name__ == "__main__":
