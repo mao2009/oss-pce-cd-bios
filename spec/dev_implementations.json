@@ -1030,7 +1030,7 @@
       "state": "NOT_READY",
       "abi_contract": {
         "status": "PROJECT_SPEC_ONLY",
-        "note": "reference System Card contract not verified; DEV-only project spec (Y=1 seed with X:A, other Y next -> A; state $2000/$2001)"
+        "note": "reference System Card contract not verified; DEV-only project spec (Y=1 seed with X:A, other Y next -> A; state $2500/$2501)"
       },
       "implementation": {
         "source": "src/overrides/slot_3E.s",

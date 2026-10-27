@@ -1,9 +1,14 @@
 """MODEL-ONLY host check of the DEV EX_RND contract (slot $3E, Issue #72). Not the System Card ABI.
 
-This does NOT assemble or execute src/overrides/slot_3E.s. It checks a Python model of the
-documented contract (Y=1 seeds with X:A, other Y returns the next byte, state at $2500/$2501).
-The assembled routine has no executed test yet.
+This host test checks a Python model of the documented contract (Y=1 seeds with X:A,
+other Y returns the next byte, state at $2500/$2501) and static checks on the assembly
+source. It does NOT assemble or execute src/overrides/slot_3E.s by itself.
+
+The assembled slot_3E.s IS executed by the real-core integration test
+tests/integration/geargrafx_dev_ex_rnd.py (pinned cc65 + Geargrafx), which is registered in
+the `dev-integration` target. Keep host model checks and real-core checks distinct.
 """
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -102,6 +107,35 @@ class AssemblyZeroPageTests(unittest.TestCase):
     def test_state_is_at_2500_2501(self):
         self.assertTrue(any(v == 0x2500 for v in self._code_operands()))
         self.assertTrue(any(v == 0x2501 for v in self._code_operands()))
+
+
+
+
+class SpecContractConsistencyTests(unittest.TestCase):
+    """Regression: spec/dev_implementations.json must agree with the implementation state address.
+
+    Catches a stale ledger entry ($2000/$2001) that disagrees with src/overrides/slot_3E.s ($2500/$2501).
+    """
+    SPEC = ROOT / "spec" / "dev_implementations.json"
+    SRC = ROOT / "src" / "overrides" / "slot_3E.s"
+
+    def test_spec_note_uses_2500_2501_not_2000_2001(self):
+        data = json.loads(self.SPEC.read_text(encoding="utf-8"))
+        slot = next(s for s in data["slots"] if s.get("candidate_name") == "EX_RND")
+        note = slot["abi_contract"]["note"]
+        self.assertIn("$2500/$2501", note)
+        self.assertNotIn("$2000/$2001", note)
+        self.assertEqual("PROJECT_SPEC_ONLY", slot["abi_contract"]["status"])
+
+    def test_spec_state_address_matches_slot_source(self):
+        ops = []
+        import re
+        for line in self.SRC.read_text(encoding="utf-8").splitlines():
+            code = line.split(";", 1)[0]
+            ops += [int(m, 16) for m in re.findall(r"\$([0-9A-Fa-f]{4})", code)]
+        self.assertTrue(any(v == 0x2500 for v in ops))
+        self.assertTrue(any(v == 0x2501 for v in ops))
+        self.assertFalse(any(0x2000 <= v <= 0x20FF for v in ops))
 
 
 if __name__ == "__main__":
