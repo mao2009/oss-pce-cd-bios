@@ -1685,9 +1685,15 @@ def _pages_single_problems(jobs, per_job, label):
 
 
 def _is_junction(path):
-    """True for a Windows directory junction (Python 3.12+ has Path.is_junction; older versions report False)."""
+    """True for a Windows reparse point (a directory junction or a link). Python 3.12+ has Path.is_junction; older versions
+    read the reparse-point attribute from lstat (FILE_ATTRIBUTE_REPARSE_POINT = 0x400). Other systems: False."""
     is_junction = getattr(path, "is_junction", None)
-    return bool(is_junction()) if callable(is_junction) else False
+    if callable(is_junction):
+        return bool(is_junction())
+    try:
+        return bool(getattr(os.lstat(path), "st_file_attributes", 0) & 0x400)
+    except OSError:
+        return False
 
 
 def check_guard_placement(root=ROOT, partial_fixtures=False):
@@ -1708,15 +1714,22 @@ def check_guard_placement(root=ROOT, partial_fixtures=False):
     # checks read without following links, and refuse any link or junction found on the way, directories included.
     for tree in (".github", "tools"):
         top = base / tree
+        if not os.path.lexists(top):   # nothing to walk (a fixture or a repository without this tree)
+            continue
         if top.is_symlink() or _is_junction(top):
             problems.append(f"{tree}: a symbolic link or junction is refused (untrusted input; Issue #544)")
             continue
-        for dirpath, dirnames, filenames in os.walk(top, followlinks=False):
+        unreadable = []   # a directory that cannot be listed is refused, never skipped
+        for dirpath, dirnames, filenames in os.walk(top, followlinks=False, onerror=unreadable.append):
+            if unreadable:
+                break
             for name in dirnames + filenames:
                 entry = os.path.join(dirpath, name)
                 if os.path.islink(entry) or _is_junction(Path(entry)):
                     problems.append(f"{Path(entry).relative_to(base).as_posix()}: a symbolic link or junction is refused "
                                     "(untrusted input; Issue #544)")
+        if unreadable:
+            problems.append(f"{tree}: a directory cannot be read ({unreadable[0]}); refused, not skipped (Issue #544)")
     files = _workflow_files(base)
     if not files:
         raise ValueError(f"no workflow or action files under {WORKFLOWS}/ or {ACTIONS}/ to check; "

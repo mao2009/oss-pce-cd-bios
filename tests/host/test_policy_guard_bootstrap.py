@@ -318,6 +318,34 @@ class Hardening(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'symbolic link'):
                     guard.check_guard_placement(Path(tmp))
 
+    def test_link_to_a_file_under_tools_is_refused(self):
+        # 204d4cf review: a link inside tools/ (the trusted run reads tools/policy_guard.py) is refused by the walk
+        from unittest import mock
+        import os as _os
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / 'tools').mkdir()
+            (Path(tmp) / 'tools' / 'lnk.py').write_text('x = 1\n', encoding='utf-8')
+            (Path(tmp) / '.github' / 'workflows').mkdir(parents=True)
+            (Path(tmp) / '.github' / 'workflows' / 'ci.yml').write_text(GOOD, encoding='utf-8')
+            real_islink = _os.path.islink
+            target = str(Path(tmp) / 'tools' / 'lnk.py')
+            with mock.patch('os.path.islink', side_effect=lambda p: str(p) == target or real_islink(p)):
+                with self.assertRaisesRegex(ValueError, 'symbolic link'):
+                    guard.check_guard_placement(Path(tmp))
+
+    def test_link_under_github_actions_is_refused(self):
+        from unittest import mock
+        import os as _os
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / '.github' / 'actions' / 'x').mkdir(parents=True)
+            (Path(tmp) / '.github' / 'workflows').mkdir(parents=True)
+            (Path(tmp) / '.github' / 'workflows' / 'ci.yml').write_text(GOOD, encoding='utf-8')
+            real_islink = _os.path.islink
+            target = str(Path(tmp) / '.github' / 'actions' / 'x')
+            with mock.patch('os.path.islink', side_effect=lambda p: str(p) == target or real_islink(p)):
+                with self.assertRaisesRegex(ValueError, 'symbolic link'):
+                    guard.check_guard_placement(Path(tmp))
+
     def test_quoted_on_key_with_same_trigger_passes(self):
         self.assertEqual(problems(GOOD.replace('on:\n', '"on":\n', 1)), [])
 
