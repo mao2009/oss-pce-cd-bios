@@ -1872,7 +1872,21 @@ def _strict_json(value):
     raise TypeError(f"{type(value).__name__} has no canonical JSON form (refused for approval)")
 
 
+def _require_text_keys(value):
+    """Raise TypeError for any mapping with a non-text key. JSON writes True and 'true' alike, so a bare yes: (read as True)
+    would otherwise digest as the same text as 'yes' (Issue #511)."""
+    if isinstance(value, dict):
+        for key, inner in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"a mapping key of type {type(key).__name__} has no text form (refused for approval)")
+            _require_text_keys(inner)
+    elif isinstance(value, list):
+        for inner in value:
+            _require_text_keys(inner)
+
+
 def _canonical_digest(value):
+    _require_text_keys(value)
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, default=_strict_json).encode("utf-8")).hexdigest()
 
 
@@ -1885,7 +1899,12 @@ def _step_digest(step):
 def _job_digest(body):
     """The approval digest of a whole job: every key, the steps included, in canonical order. So a changed, added, removed,
     duplicated or reordered step, and a changed environment, outputs or strategy, all change the digest (Issue #511)."""
-    return _canonical_digest(body) if isinstance(body, dict) else ""
+    if not isinstance(body, dict):
+        return ""
+    try:
+        return _canonical_digest(body)
+    except TypeError:   # a value with no approvable form: "" is never in the allowlist, so the job's steps are refused
+        return ""
 
 
 WORKFLOW_KEYS = frozenset({"name", "on", "permissions", "concurrency", "jobs"})   # top-level keys that cannot run code or send data
