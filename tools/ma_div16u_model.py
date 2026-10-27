@@ -5,6 +5,12 @@ Contract (project definition, not a reference-BIOS ABI; see src/overrides/slot_4
 N and Z come from the quotient. The independent oracle is Python integer division (n // d, n % d).
 """
 
+# (dividend, divisor) edge pairs shared with the real-core judge: divide-by-zero, max value, exact, non-exact.
+EDGE_PAIRS = [(0x0000, 0x0001), (0x0001, 0x0001), (0x0000, 0x0000), (0x0001, 0x0000), (0xFFFF, 0x0000),
+              (0xFFFF, 0x0001), (0xFFFF, 0xFFFF), (0xFFFE, 0xFFFF), (0xFFFF, 0xFFFE), (0x8000, 0x0002),
+              (0x7FFF, 0x0002), (0x1000, 0x0003), (0x1234, 0x0100), (0xFFFF, 0x0100), (0x0100, 0xFFFF),
+              (0x00FF, 0x0100), (0xFFFF, 0x8001), (0x8000, 0x8000), (0xFF01, 0xFFFF), (0xABCD, 0x1234)]
+
 
 def expected(dividend, divisor):
     """Return (quotient, remainder, C, V, N, Z) as 16-bit values/flags for unsigned 16-bit inputs."""

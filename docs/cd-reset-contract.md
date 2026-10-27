@@ -266,3 +266,12 @@ runner を作る前に実装しなければならない（未実装のままで�
 - 残る候補: `$1804` bit 1 のバスリセット観測（BLOCKED。検証可能な証拠がなく、Geargrafx b49ae82a の記録は未認証の register fact のみ）。これを独立ルーチンにする作業は、上の前提が揃った後に別 Issue で行う。
 - 代替作業: AD_RESET（`$10` / `$E030`）の合成 fixture #293 へ切り替え（別 PR）。
 - 実行した確認: 本 PR は docs のみの変更。callee 実行、ROM ビルド、実コア実行は行っていない。
+
+## 最小参照 ABI レコードと判定（Issue #10 準備、tools/cdreset_reference_abi.py）
+
+参照 `$01` / `$E003` の観測レコードの形（caller 入力、戻り時の A/X/Y/P/SP/戻り PC、MPR・IRQ・RAM の before/after、媒体あり/なし、有界 poll budget）を固定する。純正 BIOS は実行しない。
+
+- JSR gate は `reference_jsr_gate.require_allowed("slot-01")` で読むのみ。閉じている間は実ソースのレコードを `NOT_RUN` + `BLOCKED`（理由 `gate_closed`）とする。
+- 判定は `OBSERVED` / `FAIL` / `SKIP` / `BLOCKED` のみ。`PASS` や `VERIFIED` は返さない。
+- 契約の全項目は `UNKNOWN` または `HYPOTHESIS` のまま（`CONTRACT`）。
+- ホストテストは `tests/host/test_cdreset_reference_abi.py`（合成レコードのみ、ゲートは閉じたまま。開いた分岐はモックで検証）。
