@@ -1,0 +1,31 @@
+name: Policy guard (trusted main, Issue #544)
+
+# pull_request_target runs THIS file as it is on the base branch, so a pull request cannot edit it to skip the check.
+# The trusted copy (.trusted) is the base SHA; the pull request head (.candidate) is only read as data, never executed.
+# No secrets, no id-token, read-only contents. Required status check name: policy-guard (see the child issue for the ruleset).
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  policy-guard:
+    name: policy-guard
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout trusted main (base SHA)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: .trusted
+          persist-credentials: false
+      - name: Checkout pull request head as data only
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: .candidate
+          persist-credentials: false
+      - name: Policy check (trusted copy runs; candidate is read only)
+        run: python3 .trusted/tools/policy_guard.py --candidate .candidate --trusted .trusted

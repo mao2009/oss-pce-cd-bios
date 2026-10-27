@@ -585,6 +585,15 @@
     "job_sha256": "3eb8111bcbc1f03e44469dab304ffa0f5ef1b41dbef39e32c283a7089e8fb175"
   },
   {
+    "workflow": ".github/workflows/policy-guard.yml",
+    "job": "policy-guard",
+    "step": "Policy check (trusted copy runs; candidate is read only)",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "6593535d2b8c42fb041b740d36e7f77c3029bd5cf11f8320ddcdab7adeb76f7a",
+    "job_sha256": "890ba9df39beac3face65e45e32562aba6bbb74ab7e2fd2ec4212b524ba47db5"
+  },
+  {
     "workflow": ".github/workflows/pages.yml",
     "job": "validate",
     "step": "Validate pages",
