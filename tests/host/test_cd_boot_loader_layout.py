@@ -93,6 +93,25 @@ class SpecTextTests(unittest.TestCase):
         self.assertNotIn("INDEX 01 = 150", self.text)
         self.assertNotIn("INDEX 01 が 150", self.text)
 
+    def test_single_file_is_the_baseline_and_multi_file_is_separate(self):
+        # Owner policy: V1/V2 are single-FILE (M4/M5 baseline); multi-FILE is V2M, reported separately.
+        layout = next(b for b in markdown_table_blocks(self.text) if b[0].startswith("| 変種 |"))
+        rows = {row.split("|")[1].strip(): row for row in layout[2:]}
+        self.assertIn("単一 FILE", rows["V1（対照）"])
+        self.assertIn("単一 FILE", rows["V2（ゲームと同形）"])
+        self.assertIn("225", rows["V2（ゲームと同形）"])
+        self.assertIn("多 FILE", rows["V2M（追加条件）"])
+        self.assertIn("合格扱いにしない", rows["V2M（追加条件）"])
+        self.assertNotIn("同一 FILE の変種は作らない", self.text)
+
+    def test_single_and_multi_file_give_the_same_absolute_lba(self):
+        # Single FILE: INDEX values are absolute. Same disc as the multi-FILE CUE in the test above.
+        cue = ('FILE "s.bin" BINARY\r\n  TRACK 01 AUDIO\r\n    INDEX 01 00:00:00\r\n'
+               '  TRACK 02 MODE1/2352\r\n    INDEX 00 00:18:58\r\n    INDEX 01 00:21:58\r\n')
+        index = parse_cue(cue)[0]["tracks"][1]["index"]
+        self.assertEqual(index, {0: 1408, 1: 1633})
+        self.assertEqual(index[1] - index[0], 225)
+
     def test_spec_header_is_8_byte_pcex_matching_the_dev_loader(self):
         # The DEV loader source (not tools/) defines the header size; the spec must agree with it.
         loader = (ROOT / "src" / "cd_load_exec_probe.s").read_text(encoding="utf-8")
