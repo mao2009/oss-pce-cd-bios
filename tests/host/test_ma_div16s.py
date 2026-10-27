@@ -58,6 +58,18 @@ class ModelTest(unittest.TestCase):
                 self.assertLess(abs(rs), abs(b))
                 self.assertTrue(rs == 0 or (rs < 0) == (a < 0), (a, b))
 
+    def test_judge_rejects_plausible_mutants(self):
+        # Each entry: (dividend, divisor, mutant observed tuple, number of fields that must mismatch).
+        mutants = {
+            "floor quotient": (u(-7), u(2), (u(-4), 1, 0, 0, 1, 0), 2),
+            "remainder follows divisor sign": (u(-7), u(2), (u(-3), 1, 0, 0, 1, 0), 1),
+            "no V on -32768 / -1": (u(-32768), u(-1), (0x8000, 0, 0, 0, 1, 0), 1),
+            "no C on divide by zero": (u(5), 0, (0, 5, 0, 0, 0, 1), 1),
+            "Z clear on zero quotient": (u(1), u(2), (0, 1, 0, 0, 0, 0), 1),
+        }
+        for name, (a, b, observed, count) in mutants.items():
+            self.assertEqual(len(div.check_case(a, b, observed)), count, name)
+
     def test_judge_rejects_each_field(self):
         good = div.expected(u(-100), u(7))
         self.assertEqual(div.check_case(u(-100), u(7), good), [])
