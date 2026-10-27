@@ -4,7 +4,9 @@ Contract (DEV-only, project's own spec; NOT the System Card MA_SIN ABI, which st
   in : A = binary angle 0..255 (256 steps = one full turn). X is not read.
   out: X:A = signed 16-bit Q15, value = floor(32767 * sin(2*pi*a/256) + 0.5), range -32767..+32767.
        X = high byte, A = low byte. -32768 is never produced.
-  rounding: floor(x + 0.5), the same rule as MA_COS (slot $46, PR #527).
+  rounding: the routine computes sign-magnitude (round-half-up of |32767 sin|, then negated). That
+  equals floor(x + 0.5) for all 256 inputs because no input is an exact half-integer (checked
+  exhaustively below). Same rule as MA_COS (slot $46, PR #527).
 
 The model mirrors src/overrides/slot_45.s (quarter-wave table, quadrant folding, sign). The independent
 oracle is floor(32767*sin(2*pi*a/256)+0.5) computed directly with math.sin (no table, no folding).

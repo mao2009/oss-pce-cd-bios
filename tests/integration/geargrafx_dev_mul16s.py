@@ -553,11 +553,10 @@ def mutants(data, window, trampoline_addr):
     # reach its own RTS for a clean halt. body_end here is the JMP write offset inside the body.
     body_end = window[0] - 0xE000 + 3
     # The trampoline sits right after the OVERRIDES segment end, rounded up to an even address
-    # (find_trampoline_address). For the last override it equals window[1] (the first byte past the
-    # body); when that byte is odd it is window[1] + 1, the single alignment pad byte. The pad is
-    # never written or executed (the payload region is checked by check_trampoline_region), and the
-    # trampoline lies inside the extended trace window (window[1] + 0x100). Any larger gap is rejected.
-    if not window[0] <= trampoline_addr <= window[1] + 1:
+    # (find_trampoline_address). For the last override (slot $4F) it equals window[1], the first byte
+    # past the body, when the OVERRIDES end is odd. The layout keeps it that way with a single nop in
+    # slot_45.s (the same parity fix as PR #526); no tolerance is allowed here.
+    if not window[0] <= trampoline_addr <= window[1]:
         raise ValueError("trampoline is outside the routine's PC window")
     jmp = lambda code: [(body_end, bytes([0x4C, trampoline_addr & 0xFF, trampoline_addr >> 8])), (trampoline_addr - 0xE000, code)]
     return {

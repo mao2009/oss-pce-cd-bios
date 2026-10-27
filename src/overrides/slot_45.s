@@ -7,7 +7,10 @@
 ;        step = 360/256 degrees). X is not read. Every value 0..255 is valid.
 ;   out: X:A = sin(2*pi*A/256) as signed 16-bit Q15, value = round(32767 * sin(...)),
 ;        range -32767..+32767. X = high byte, A = low byte. No -32768 is produced.
-;        Rounding: floor(x + 0.5), the same rule as MA_COS (slot $46, Issue #80).
+;        Rounding: the routine computes the sign-magnitude form (table value = round-half-up
+;        of |32767 sin|, negated for negative half-turns). That equals floor(x + 0.5) for all
+;        256 inputs, because no input is an exact half-integer (tests/host/test_ma_sin_dev.py
+;        checks all 256). Same rule as MA_COS (slot $46, Issue #80).
 ;   kept: Y and P (restored by PLY and PLP)
 ;   clobbered: A and X (the result)
 ;   uses: zero page $F7, $F9, $FA only. No I/O, no MPR access, I is never changed.
@@ -53,6 +56,7 @@ idx_even:
     lda $F9             ; even quadrant: index = r
 idx_done:
     tay                 ; Y = table index 0..64
+    nop                 ; layout parity: makes the OVERRIDES end odd so the even-rounded trampoline == body end (MUL16S window, as PR #526)
     lda sin_lo,y
     ldx sin_hi,y        ; X:A = T[index] (non-negative)
     bit $F7             ; N = bit 7 of a (negative half-turn)
