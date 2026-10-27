@@ -841,6 +841,14 @@ def _strict_loader():
                 if dups:
                     raise ValueError(f"duplicate mapping key(s) {dups}")
             return super().construct_mapping(node, deep)
+
+        def compose_node(self, parent, index):
+            # Issue #547 (review of e81b2bb): an alias can close a cycle (foo: &x [*x]), and every walker after the parse
+            # loops or recurses on it. No guarded workflow uses an alias, so refuse it at the parse, for every walker.
+            if self.check_event(yaml.AliasEvent):
+                raise ValueError("a YAML alias is refused in guarded workflows (a cycle or shared node cannot be walked; "
+                                 "Issue #547)")
+            return super().compose_node(parent, index)
     return StrictLoader
 
 
@@ -2571,5 +2579,5 @@ def main(argv):
 if __name__ == "__main__":
     try:
         main(sys.argv[1:])
-    except (ValueError, OSError) as error:
+    except (ValueError, OSError, RecursionError) as error:   # a too-deep document is a refusal, not a traceback (Issue #547)
         raise SystemExit(f"artifact_guard: {error}") from error

@@ -359,10 +359,19 @@ class CyclicAlias(unittest.TestCase):
 
     def run_with_timeout(self, call):
         result = {}
-        worker = threading.Thread(target=lambda: result.update(value=call()), daemon=True)
+
+        def target():
+            try:
+                result['value'] = call()
+            except BaseException as error:   # re-raised below, in the test's own thread
+                result['error'] = error
+
+        worker = threading.Thread(target=target, daemon=True)
         worker.start()
         worker.join(self.TIMEOUT)
         self.assertFalse(worker.is_alive(), f'the check did not return within {self.TIMEOUT}s (cyclic alias walk)')
+        if 'error' in result:
+            raise result['error']
         return result['value']
 
     def test_self_referencing_alias_is_refused_without_hanging(self):
@@ -373,6 +382,15 @@ class CyclicAlias(unittest.TestCase):
     def test_cyclic_alias_is_refused_on_the_placement_path(self):
         text = 'name: Policy guard\non:\n  pull_request_target:\n    types: [opened]\nfoo: &x [*x]\n'
         self.assertTrue(self.run_with_timeout(lambda: guard.scope_key_violations(text, POLICY)), text)
+
+    def test_cyclic_workflow_file_is_a_clean_refusal_from_check_placement(self):
+        # review of e81b2bb: the real --check-placement entry must refuse, not die with RecursionError or hang
+        with tempfile.TemporaryDirectory() as root:
+            workflows = Path(root) / '.github' / 'workflows'
+            workflows.mkdir(parents=True)
+            (workflows / 'pages.yml').write_text('jobs:\n  a: &x {steps: [*x]}\n', encoding='utf-8')
+            with self.assertRaises((ValueError, SystemExit)):
+                self.run_with_timeout(lambda: guard.check_guard_placement(Path(root)))
 
 
 if __name__ == '__main__':
