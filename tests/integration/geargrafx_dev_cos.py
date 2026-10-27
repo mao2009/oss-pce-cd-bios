@@ -84,6 +84,72 @@ def run_case(probe, base, folder, cue, reset, label, entry, a, sp=0xFF, count=20
     check(label, rows, halt, a, sp)
 
 
+REJECT_MARKERS = ("observed", "not balanced", "MPR changed", "did not reach")
+
+
+def mutant_sites(data, body):
+    """Byte offsets (file offsets) of the mutation targets in the assembled slot $46 routine.
+
+    The table is located by its exact Q15 bytes (cos_lo then cos_hi, 65 bytes each), so the offsets
+    come from the built ROM, not from the source. Each pattern must be unique, otherwise we fail."""
+    lo = bytes((q15(i) & 0xFF) for i in range(65))
+    hi = bytes(((q15(i) >> 8) & 0xFF) for i in range(65))
+    table = data.find(lo)
+    if table < 0 or data[table + 65:table + 130] != hi or data.find(lo, table + 1) >= 0:
+        raise ValueError("MA_COS Q15 table not located uniquely in the built ROM")
+    start = body - 0xE000
+    def unique(pattern):
+        hits = [i for i in range(start, table) if data[i:i + len(pattern)] == pattern]
+        if len(hits) != 1:
+            raise ValueError(f"pattern {pattern.hex()} found {len(hits)} times in slot $46 body")
+        return hits[0]
+    return {
+        "table": table,
+        "sign_bpl": unique(bytes([0x24, 0xF8, 0x10])) + 2,   # bit $F8 ; bpl done -> operand
+        "epilogue": unique(bytes([0x7A, 0x28, 0x60])),       # ply ; plp ; rts
+    }
+
+
+def apply_mutant(data, offset, new):
+    """Return a copy of the ROM with exactly one byte changed; assert the change is applied."""
+    variant = bytearray(data)
+    old = variant[offset]
+    variant[offset] = new
+    diffs = [i for i in range(len(data)) if variant[i] != data[i]]
+    if diffs != [offset] or old == new:
+        raise ValueError(f"mutant at ${offset:05X} not applied as one byte change")
+    return bytes(variant)
+
+
+def run_mutants(probe, data, folder, cue, reset, entry, body, evidence):
+    sites = mutant_sites(data, body)
+    t = sites["table"]
+    plan = [
+        # (name, file offset, new byte, angle that must expose it)
+        ("table_byte_flip_T16", t + 16, data[t + 16] ^ 0x01, 16),   # cos_lo[16] off by one LSB
+        ("sign_branch_bpl_to_bra", sites["sign_bpl"], 0x80, 1),     # always negate (BRA)
+        ("ply_to_plx_swap", sites["epilogue"], 0xFA, 1),            # PLY -> PLX: Y not restored
+        ("plp_to_nop_removal", sites["epilogue"] + 1, 0xEA, 1),     # PLP -> NOP: stack unbalanced
+    ]
+    results = []
+    for name, offset, new, angle in plan:
+        mutant = apply_mutant(data, offset, new)
+        label = f"mut-{name}"
+        try:
+            run_case(probe, mutant, folder, cue, reset, label, entry, angle)
+        except ValueError as error:
+            message = str(error)
+            if not any(marker in message for marker in REJECT_MARKERS):
+                raise ValueError(f"{name}: rejected for an unexpected reason: {message}") from error
+            results.append({"mutant": name, "offset": offset, "angle": angle, "applied": True,
+                            "rejected": True, "reason": message})
+            print(f"MUTANT {name}: applied at ${offset:05X}, REJECTED ({message})")
+        else:
+            raise ValueError(f"mutant {name} was NOT rejected (real-core check too weak)")
+    evidence["negative_cases"] = results
+    return len(results)
+
+
 def main():
     parser = __import__("argparse").ArgumentParser(description=__doc__)
     parser.add_argument("--rom", type=Path, required=True)
@@ -118,10 +184,14 @@ def main():
         for a in (0, 64, 255):
             run_case(probe, data, folder, cue, reset, f"lowsp-{a:02x}", entry, a, sp=0x06)
             evidence["cases"].append({"angle": a, "expected_q15": q15(a), "sp": 0x06})
+        # Mutant detection: each mutant is applied to the assembled ROM (exactly one byte, confirmed
+        # before running) and must be rejected by the real-core checks above.
+        mutants = run_mutants(probe, data, folder, cue, reset, entry, body, evidence)
     (args.rom.parent / "geargrafx-dev-cos-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
     total = len(angles) + 3
     print(f"PASS real Geargrafx DEV ROM: MA_COS slot $46 {total} cases ({len(angles)} at SP=$FF, "
-          f"3 at SP=$06 boundary); X:A=Q15 cosine of A, Y and SP checked; MPR1/MPR7 checked")
+          f"3 at SP=$06 boundary); X:A=Q15 cosine of A, Y and SP checked; MPR1/MPR7 checked; "
+          f"mutants rejected {mutants}/4 (table byte, sign branch, ply->plx, plp->nop)")
 
 
 if __name__ == "__main__":
