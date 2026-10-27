@@ -49,8 +49,9 @@ EVIDENCE_FIELDS = ('execution_conditions', 'core_revision', 'input_type',
                    'verification_result', 'evidence_hash')
 EVIDENCE_HASH_RE = re.compile(r'[0-9a-f]{64}\Z')
 # Trust level of evidence entries: FORMAT_ONLY. validate_evidence checks shape
-# only. Nothing here resolves evidence_hash to a stored artifact or
-# checks core_revision against a pin, so a well-formed hash is NOT proof that the
+# only: it does not resolve evidence_hash to a stored artifact or check core_revision
+# against a pin (resolve_evidence() does both as a separate step), and nothing here
+# authenticates the producer. A well-formed or resolved hash is NOT proof that the
 # run happened. Do not read an accepted OBSERVED claim as VERIFIED.
 EVIDENCE_TRUST_LEVEL = 'FORMAT_ONLY'
 # Synthetic fixtures and placeholders carry this marker in their text. adjudicate_claim() refuses OBSERVED for them.
@@ -162,8 +163,9 @@ CLAIM_KEYS = frozenset({'status', 'value', 'sources', 'confidence', 'registers',
 # Issue #225: every OBSERVED claim must declare which kind of observation its evidence is, and the
 # kind must cover the claim's field. Enforced in adjudicate_claim() (the formal path used by
 # validate_contracts) so no wrapper can skip it. The kind is a declaration, not a measurement:
-# the rule rejects a kind that does not cover the field, but it does not verify where the evidence
-# came from, so a caller can still declare CALLEE_EXECUTION for a hardware readback.
+# the rule rejects a kind that does not cover the field. Issue #364 adds the check that the kind matches the
+# measurement point named by each evidence entry (observation_point_for_entry), so a hardware readback cannot
+# be declared CALLEE_EXECUTION.
 OBSERVATION_KIND_KEY = 'observation_kind'
 OBSERVATION_KIND_FIELDS = {
     # Low-level bus/register fact only; never callee ABI (returns/flags/irq/...).
@@ -171,6 +173,72 @@ OBSERVATION_KIND_FIELDS = {
     # Behavior of an executed callee; still needs executed_callee=True in adjudicate_claim.
     'CALLEE_EXECUTION': CALLEE_BEHAVIOR_FIELDS,
 }
+# Issue #364, two separate things. (1) REGISTRY CONSISTENCY (implemented): an OBSERVED evidence entry names the
+# measurement point it was taken at (an id in spec/measurement_points.json). The point's registry kind and covered
+# fields must agree with the claim's declared observation_kind and field, so HW_BUS_READBACK evidence cannot be
+# relabelled CALLEE_EXECUTION. (2) EVIDENCE AUTHENTICITY (NOT implemented; #124 / #171): nothing here binds the
+# point id to the evidence hash, log or artifact (measurement_evidence.verify_record does the log binding for its
+# own records), and nothing authenticates the principal that ran the callee. The point id is a SELF-DECLARATION:
+# any caller who can read the registry can declare a valid point id for a kind it wants.
+# This key is NOT in the ledger evidence schema (EVIDENCE_FIELDS; #324 owner A decision, 2026-10-24). The shape check
+# (_shape_entry) ignores it, and it is read by observation_point_for_entry() in adjudicate_claim. Storing it in
+# spec/api_contracts.json requires a SEPARATE schema approval; #324 A only permits temporary input. No schema change.
+MEASUREMENT_POINT_KEY = 'measurement_point_id'
+
+
+def _shape_entry(entry):
+    """Evidence entry without MEASUREMENT_POINT_KEY, for the EVIDENCE_FIELDS shape check (ledger schema unchanged).
+
+    TEMPORARY INPUT EXTENSION approved as option A (Issue #324, 2026-10-24):
+    - `measurement_point_id` is accepted as an extension key and stripped here; its value is later
+      checked by _check_declared_point() (resolve_evidence) and observation_point_for_entry()
+      (adjudicate_claim).
+    - Any OTHER key outside EVIDENCE_FIELDS is rejected by validate_evidence()'s strict
+      `set(entry) == set(EVIDENCE_FIELDS)` check.
+    - The owner approved ONLY this input extension. Adding the key to EVIDENCE_FIELDS
+      or spec/api_contracts.json is NOT approved and requires a separate decision.
+
+    Only strips the key so the shape check sees EVIDENCE_FIELDS alone. It validates nothing about the key;
+    that is _check_declared_point() (resolve_evidence) and observation_point_for_entry() (adjudicate_claim).
+    """
+    if not isinstance(entry, dict):
+        raise ValueError('evidence entry must be a dict')
+    return {key: value for key, value in entry.items() if key != MEASUREMENT_POINT_KEY}
+
+
+def _check_declared_point(entry, context):
+    """If an entry declares a measurement point, it must be a registered id; otherwise fail closed.
+
+    Registry consistency only: a registered id is accepted here, which proves nothing about authenticity. The key
+    stays optional (artifact resolution does not need a point); the kind/field binding is done in adjudicate_claim.
+    """
+    if MEASUREMENT_POINT_KEY not in entry:
+        return
+    point_id = entry[MEASUREMENT_POINT_KEY]
+    if not (isinstance(point_id, str) and point_id in load_registry()):
+        raise ValueError(f'{context}: unknown measurement point {point_id!r} (not in spec/measurement_points.json)')
+
+
+def observation_point_for_entry(entry, field, declared_kind, context):
+    """Return the registry measurement point an evidence entry names, or raise ValueError (fail closed).
+
+    Refused: a missing or unregistered point id, a point whose registry kind differs from the claim's
+    declared observation_kind (spoofed kind), and a point that does not cover the claim field.
+    """
+    if MEASUREMENT_POINT_KEY not in entry:
+        raise ValueError(f'{context}: unknown measurement point (missing measurement_point_id; '
+                         'OBSERVED evidence must name a point in spec/measurement_points.json)')
+    point_id = entry[MEASUREMENT_POINT_KEY]
+    registry = load_registry()
+    if not (isinstance(point_id, str) and point_id in registry):
+        raise ValueError(f'{context}: unknown measurement point {point_id!r} (not in spec/measurement_points.json)')
+    point = registry[point_id]
+    if point['kind'] != declared_kind:
+        raise ValueError(f'{context}: spoofed observation kind: evidence point {point_id} is {point["kind"]}, '
+                         f'not {declared_kind}')
+    if field not in point['covers_fields']:
+        raise ValueError(f'{context}: measurement point {point_id} does not cover field {field!r}')
+    return point
 
 
 def validate_contracts(data, inventory, inventory_text):
@@ -307,7 +375,8 @@ def validate_evidence(evidence, context):
 # recomputed and must equal that name. core_revision is the ledger-declared string and is only compared with the
 # pinned Geargrafx revision; the artifact file carries no revision, so nothing here shows which revision produced the
 # bytes. This proves the bytes match the recorded hash, not what they are or who produced them: producer
-# authentication is attestation (Issue #124 / #171). Not yet wired into validate_contracts (no OBSERVED claim exists).
+# authentication is attestation (Issue #124 / #171). Not wired into validate_contracts: adjudicate_claim refuses every
+# OBSERVED claim, so no resolved evidence can promote one.
 EVIDENCE_ARTIFACT_DIR = ROOT / 'build' / 'evidence-artifacts'
 ARTIFACT_TRUST_LEVEL = 'ARTIFACT_HASH_RESOLVED'
 PINNED_CORE_REVISION = json.loads((ROOT / 'tools/dependencies.json').read_text(encoding='utf-8'))['geargrafx']['revision']
@@ -321,7 +390,8 @@ def resolve_evidence(entry, artifact_dir=EVIDENCE_ARTIFACT_DIR, pinned_revision=
     or substituted file). core_revision is checked as the declared string against the pin only; the artifact
     does not carry a revision. Acceptance means hash-and-pin consistency only, not authenticity.
     """
-    validate_evidence([entry], 'evidence')
+    validate_evidence([_shape_entry(entry)], 'evidence')
+    _check_declared_point(entry, 'evidence')
     if entry['core_revision'] != pinned_revision:
         raise ValueError(f"core_revision {entry['core_revision']} differs from pinned {pinned_revision}")
     path = Path(artifact_dir) / entry['evidence_hash']
@@ -369,10 +439,13 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
                     require executed_callee; hardware observations
                     (HARDWARE_OBSERVATION_FIELDS, e.g. hw_bus_reset) do not;
                     any other field name is rejected;
+                    each evidence entry names a registry measurement point (Issue #364) whose kind
+                    equals observation_kind and which covers field (unknown or spoofed points are refused);
                     and non-empty, format-valid evidence entries are required for
                     both (execution conditions, core revision, input type, verification
                     result, sha256 evidence hash). Trust level is FORMAT_ONLY: shape
-                    is checked, authenticity and field correspondence are not.
+                    is checked; kind/field and point correspondence is checked against the registry
+                    (registry consistency only); authenticity is not checked.
       BLOCKED     - value exactly 'UNKNOWN', confidence UNKNOWN, no registers;
                     sources may cite the blocking evidence
     """
@@ -444,14 +517,16 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
         evidence = claim.get('evidence', [])
         require(isinstance(evidence, list) and bool(evidence),
                 f'{context}: OBSERVED requires non-empty evidence entries (format-checked only)')
-        validate_evidence(evidence, context)
+        validate_evidence([_shape_entry(entry) for entry in evidence], context)
         kind = claim.get(OBSERVATION_KIND_KEY)
         require(isinstance(kind, str) and kind in OBSERVATION_KIND_FIELDS,
                 f'{context}: OBSERVED requires {OBSERVATION_KIND_KEY} in {sorted(OBSERVATION_KIND_FIELDS)}')
         require(field in OBSERVATION_KIND_FIELDS[kind],
                 f'{context}: observation kind {kind} does not support field {field!r}')
-        # Issue #364 rule (same as measurement_evidence.verify_record): the declared kind must equal the kind of a
-        # registry measurement point that covers this field, and the registry pin must have its review marker.
+        # Issue #364 registry consistency only (not evidence authenticity; see the note above MEASUREMENT_POINT_KEY):
+        # the declared kind must equal the kind of a registry measurement point that covers this field, and the
+        # registry pin must have its review marker. Unlike measurement_evidence.verify_record, this does not match
+        # the point id against any log or evidence hash.
         check_pin_review()
         require(any(point['kind'] == kind and field in point['covers_fields']
                     for point in load_registry().values()),
@@ -474,6 +549,8 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
                     f'{context}: OBSERVED evidence lacks the {REAL_CORE_MARKER} provenance marker')
             require(entry['evidence_hash'] in resolved_evidence_hashes,
                     f'{context}: OBSERVED requires real-core evidence resolved by resolve_evidence')
+            # Issue #364: the named measurement point (not the declared kind alone) must back this kind and field.
+            observation_point_for_entry(entry, field, kind, context)
         # Producer authentication (Issue #124 / #171): nothing in this repository authenticates the principal
         # that executed the callee, so every OBSERVED claim is refused here (fail closed). The checks above are
         # necessary, never sufficient. A self-declared REALCORE string, executed_callee=True, a caller-supplied
