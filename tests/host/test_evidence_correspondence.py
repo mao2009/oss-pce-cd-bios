@@ -36,8 +36,11 @@ OBSERVED = {
     'sources': ['gear:src/cdrom.cpp'], 'confidence': 'SOURCE_SUPPORTED',
     'evidence': [EVIDENCE_ENTRY],
 }
-HW_OBSERVED = dict(OBSERVED, observation_kind='HW_BUS_READBACK')
-CALLEE_OBSERVED = dict(OBSERVED, observation_kind='CALLEE_EXECUTION')
+# Issue #364: each kind's evidence names the registry point that backs it (HW_BUS_READBACK_1804 / CALLEE_EXECUTION_SLOT).
+HW_OBSERVED = dict(OBSERVED, observation_kind='HW_BUS_READBACK',
+                   evidence=[dict(EVIDENCE_ENTRY, measurement_point_id='HW_BUS_READBACK_1804')])
+CALLEE_OBSERVED = dict(OBSERVED, observation_kind='CALLEE_EXECUTION',
+                       evidence=[dict(EVIDENCE_ENTRY, measurement_point_id='CALLEE_EXECUTION_SLOT')])
 HYPOTHESIS = {
     'status': 'HYPOTHESIS', 'value': 'HuCC caller-side expectation only',
     'sources': ['huc:include/hucc/pcengine.inc'], 'confidence': 'SOURCE_SUPPORTED',

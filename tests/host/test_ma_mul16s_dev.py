@@ -39,27 +39,30 @@ def ror(v, c):
     return (c << 7) | (v >> 1), v & 1
 
 
-def dev_mul16s(a, b):
-    """(a = multiplicand, b = multiplier), 16-bit patterns -> 32-bit product pattern, as slot_4F.s computes it."""
+def dev_mul16s(a, b, mut=None):
+    """(a = multiplicand, b = multiplier), 16-bit patterns -> 32-bit product pattern, as slot_4F.s computes it.
+    mut (Issue #89 sensitivity only) names one single-slip mutant of this model; None is the original."""
     m_lo, m_hi, q_lo, q_hi = a & 0xFF, a >> 8, b & 0xFF, b >> 8  # X+12, X+11, X+10, X+9
     cp_lo, cp_hi = q_lo, q_hi  # X+3, X+4: the multiplier copy pushed before the shift destroys it
     h_lo = h_hi = 0  # X+2, X+1
-    for _ in range(16):
+    for i in range(15 if mut == "rounds_15" else 16):
         if q_lo & 1:  # lda X+10; lsr a; bcc skips the add when bit 0 is 0
             h_lo, c = adc(h_lo, m_lo, 0)  # clc; adc
-            h_hi, carry = adc(h_hi, m_hi, c)
+            h_hi, carry = adc(h_hi, m_hi, 0 if mut == "adc_hi_no_carry" else c)
         else:
             carry = 0  # the lsr left C=0
         h_hi, carry = ror(h_hi, carry)
-        h_lo, carry = ror(h_lo, carry)
+        h_lo, carry = ror(h_lo, 0 if mut == "ror_lo_no_carry_in" else carry)
         q_hi, carry = ror(q_hi, carry)
         q_lo, carry = ror(q_lo, carry)
-    if m_hi & 0x80:  # lda X+11; bpl skipped when positive
-        h_lo, c = sbc(h_lo, cp_lo, 1)
-        h_hi, _ = sbc(h_hi, cp_hi, c)
-    if cp_hi & 0x80:
-        h_lo, c = sbc(h_lo, m_lo, 1)
-        h_hi, _ = sbc(h_hi, m_hi, c)
+    lo_c = 0 if mut == "lo_sbc_no_carry" else 1
+    if m_hi & 0x80 and mut != "no_a_fix":  # lda X+11; bpl skipped when positive
+        h_lo, c = sbc(h_lo, cp_lo, lo_c)
+        h_hi, _ = sbc(h_hi, cp_hi, 1 if mut == "hi_sbc_ignores_borrow" else c)
+    sign_b = (q_hi if mut == "fix_uses_final_multiplier" else cp_hi) & 0x80
+    if sign_b and mut != "no_b_fix":
+        h_lo, c = sbc(h_lo, m_lo, lo_c)
+        h_hi, _ = sbc(h_hi, m_hi, 1 if mut == "hi_sbc_ignores_borrow" else c)
     return q_lo | q_hi << 8 | h_lo << 16 | h_hi << 24
 
 
@@ -102,6 +105,78 @@ class DevMul16sModelTests(unittest.TestCase):
         self.assertEqual(6, pops)
         for forbidden in ("tam", "tma", "tai", "tia", "tii", "tin", "tdd", "set", "stz", "$20", "$1"):
             self.assertNotRegex(source.split(".segment")[1], rf"^\s+{re.escape(forbidden)}\b", forbidden)
+
+
+# Issue #89 prep: sensitivity of the reduced-domain check. Each mutant is one plausible slip in slot_4F.s, applied to
+# the byte model only. A mutant must differ from the original somewhere (applied), and the check must reject it.
+MUTANTS = ("no_a_fix", "no_b_fix", "hi_sbc_ignores_borrow", "lo_sbc_no_carry", "adc_hi_no_carry",
+           "ror_lo_no_carry_in", "fix_uses_final_multiplier", "rounds_15")
+SENSITIVITY_RANDOM = 2000
+
+
+class DevMul16sSensitivityTests(unittest.TestCase):
+    def sensitivity_pairs(self):
+        rng = random.Random(89)
+        return [(a, b) for a in EDGES for b in EDGES] + [(rng.randrange(65536), rng.randrange(65536))
+                                                         for _ in range(SENSITIVITY_RANDOM)]
+
+    def test_each_mutant_is_applied_and_detected(self):
+        pairs = self.sensitivity_pairs()
+        gaps = []
+        for mut in MUTANTS:
+            diffs = [(a, b) for a, b in pairs if dev_mul16s(a, b, mut=mut) != dev_mul16s(a, b)]
+            self.assertTrue(diffs, f"mutant {mut} is not applied on the domain")  # applied
+            detected = [(a, b) for a, b in pairs if dev_mul16s(a, b, mut=mut) != model.expected(a, b)]
+            if detected != diffs:  # every pair where the mutant differs must be a mismatch against the model
+                gaps.append(mut)
+        self.assertEqual([], gaps, "sensitivity gap: undetected mutants")
+
+    def test_original_matches_model_on_sensitivity_pairs(self):
+        for a, b in self.sensitivity_pairs():
+            self.assertEqual(model.expected(a, b), dev_mul16s(a, b), (a, b))
+
+    def test_routine_writes_and_reads_only_its_frame(self):
+        # Static guard on slot_4F.s: every memory operand (not #imm, not A) is $21xx,X inside the 6-push frame
+        # ($2101..$210C), so no zero page, BSS, I/O, MPR or out-of-frame stack byte is touched.
+        body = (ROOT / "src" / "overrides" / "slot_4F.s").read_text(encoding="utf-8").split(".export api_slot_4F")[1]
+        violations, touched = frame_violations(body)
+        self.assertEqual([], violations)
+        self.assertTrue(touched)
+        self.assertTrue(touched <= set(range(0x2101, 0x210D)), touched)
+
+    def test_guard_rejects_a_zero_page_bit_operand(self):
+        # Negative control: BIT with a memory operand (not a branch) must be caught by the guard.
+        violations, _ = frame_violations("api_slot_4F:\n    bit $2000\n    rts\n")
+        self.assertTrue(any("bit $2000" in v for v in violations), violations)
+
+    def test_guard_rejects_an_out_of_frame_stack_store(self):
+        violations, _ = frame_violations("    sta $2100,x\n")
+        self.assertTrue(violations)
+
+
+BRANCH_MNEMONICS = frozenset({"bcc", "bcs", "beq", "bmi", "bne", "bpl", "bra", "bvc", "bvs"})
+NO_OPERAND_OR_STACK = frozenset({"tsx", "php", "phy", "pha", "plp", "ply", "pla", "rts", "cld", "clc", "sec", "dey"})
+
+
+def frame_violations(body):
+    """Memory operands outside $2101..$210C,X, and the set of frame addresses touched (not #imm, not A, not a branch)."""
+    violations, touched = [], set()
+    for line in body.splitlines():
+        parts = line.split(";")[0].strip().split(None, 1)
+        if len(parts) != 2 or parts[0] in NO_OPERAND_OR_STACK or parts[0] in BRANCH_MNEMONICS:
+            continue
+        mnem, op = parts[0], parts[1].strip()
+        if op.startswith("#") or op == "a":
+            continue
+        m = re.fullmatch(r"\$(21[0-9A-F]{2}),x", op)
+        if m is None:
+            violations.append(f"{mnem} {op} is outside the stack frame form $21xx,X")
+            continue
+        addr = int(m.group(1), 16)
+        if not 0x2101 <= addr <= 0x210C:
+            violations.append(f"{mnem} {op} outside $2101..$210C")
+        touched.add(addr)
+    return violations, touched
 
 
 if __name__ == "__main__":
