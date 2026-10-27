@@ -154,7 +154,7 @@
 
 ### 8.1 項目 3: `provenance_approval` の承認者
 
-- **現状:** `provenance/` ディレクトリも承認者の一覧（`provenance/approvers.txt`）もリポジトリにない。承認者がいないので、`ORIGINAL` の承認は付かない（fail closed）。
+- **現状:** `provenance/` ディレクトリも承認者の一覧（`provenance/approvers.txt`）もリポジトリにない。承認者がいないので、`ORIGINAL` の承認は付かない（fail closed）。`tools/provenance_guard.py` は既に契約を定めている。承認者一覧の編集には、PR の base にある一覧に載った maintainer の承認が要り、PR 作成者は承認できず、一覧が空または無い base は閉じる。ブートストラップ時は、PR が追加する一覧を作成者以外の admin に限って使う。
 - **選択肢:**
   - A. オーナーが名指しした承認者の一覧をリポジトリに置く（オーナーが作る人間のコミット）。
   - B. 複数のメンテナのグループに委ねる。
@@ -180,7 +180,7 @@
 
 ### 8.3 項目 5: `CALLEE_VERIFICATION` の公開範囲
 
-- **現状:** 参照 BIOS の実測は公開していない。`docs/provenance.md` は callee の内部実装の詳細を公開しないとしている。全 81 slot は `NOT_RUN`。
+- **現状:** 参照 BIOS の実測は公開していない。`docs/provenance.md` は、逆アセンブル一覧と抽出・翻訳されたファームウェアコードのコミットと配布を禁じている。全 81 slot は `NOT_RUN`。
 - **選択肢:**
   - A. caller から見える ABI（引数、戻り値、破壊レジスタ）だけを公開する。
   - B. 内部挙動も含めて公開する。
@@ -215,7 +215,7 @@
 - **互換性:** A は影響なし。B は `CLAIM_STATUSES` の変更とスキーマ変更を伴う。
 - **セキュリティ:** `VERIFIED-equivalent` を保存された値にすると、それ自体が検証済みのように読まれる。保存しないことが安全上の要点である。
 - **必要な人間の承認:** A はオーナーが定義を受け入れる。B はスキーマ変更の承認。
-- **判断前に進めてよいこと:** 負例テスト。`PARTIAL` と `VERIFIED-equivalent` の claim 状態を `adjudicate_claim()` が拒否することを確かめる。
+- **判断前に進めてよいこと:** `PARTIAL` と `VERIFIED-equivalent` の claim 状態を `adjudicate_claim()` が拒否する負例テスト（本 PR で追加済み）を維持すること。
 
 ### 8.6 新規: `docs/abi-evidence-classification.md` §2 の置き換え
 

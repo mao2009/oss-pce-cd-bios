@@ -234,10 +234,12 @@ class DesignDocumentTests(unittest.TestCase):
         self.assertIn("release_eligible", self.text)
 
     def test_document_lists_all_six_owner_undecided_items(self):
-        for number in range(1, 7):
-            self.assertIn(f"### 8.{number} ", self.text)
-        for label in ("推奨", "互換性", "セキュリティ", "必要な人間の承認", "判断前に進めてよいこと"):
-            self.assertGreaterEqual(self.text.count(label), 6, label)
+        sections = self.text.split("\n### 8.")[1:]
+        self.assertEqual(6, len(sections))
+        for number, section in enumerate(sections, start=1):
+            self.assertTrue(section.startswith(f"{number} "), number)
+            for label in ("現状", "推奨", "互換性", "セキュリティ", "必要な人間の承認", "判断前に進めてよいこと"):
+                self.assertIn(f"**{label}", section, (number, label))
 
 
 class OwnerUndecidedStateTests(unittest.TestCase):
