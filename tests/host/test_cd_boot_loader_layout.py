@@ -351,6 +351,118 @@ class SpecTextTests(unittest.TestCase):
                 self.assertIn("誤り", line)
 
 
+def _num(text):
+    return int(text.replace(",", ""))
+
+
+def _eval_formula(text):
+    """Evaluate a spec formula such as '(23 × 75 + 58) − 150' or '3,311,616 ÷ 2,352' (integers only)."""
+    expr = text.replace(",", "").replace("×", "*").replace("−", "-").replace("÷", "/")
+    if not re.fullmatch(r"[0-9 ()+\-*/]+", expr, re.ASCII):
+        return None
+    value = eval(expr, {"__builtins__": {}})   # digits and operators only (checked above)
+    return int(value) if value == int(value) else value
+
+
+class NumericClaimsTests(unittest.TestCase):
+    """Every number in the layout claims is re-derived here, row by row, from first principles.
+
+    Inputs: the CUE INDEX values (00:00:00, 00:03:00), the measured header MSF 00:23:58 (LOCAL), the BIN sizes
+    (LOCAL) and 2352 bytes per raw frame. Everything else (225, 1,633, 1,408, 529,200 ...) must follow from them.
+    """
+
+    PREGAP = msf_frames("00:03:00") - msf_frames("00:00:00")       # 225
+    INDEX01_LBA = msf_frames("00:23:58") - LEAD_IN_FRAMES          # 1633
+    INDEX00_LBA = INDEX01_LBA - PREGAP                             # 1408
+
+    def setUp(self):
+        self.text = SPEC.read_text(encoding="utf-8")
+        self.lines = self.text.splitlines()
+        blocks = markdown_table_blocks(self.text)
+        self.facts = {cells(r)[0]: cells(r) for r in next(b for b in blocks if b[0].startswith("| 項目 | 読んだ内容"))[2:]}
+        self.arith = {cells(r)[0]: cells(r) for r in next(b for b in blocks if b[0].startswith("| 項目 | 計算 |"))[2:]}
+
+    def test_derived_constants(self):
+        self.assertEqual((self.PREGAP, self.INDEX01_LBA, self.INDEX00_LBA), (225, 1633, 1408))
+
+    def test_every_inline_difference_or_sum_is_correct(self):
+        # Class check: any "A（= B − C" or "A（= B + C" anywhere in the spec must hold.
+        claims = re.findall(r"([\d,]+)（= ([\d,]+) ([+−]) ([\d,]+)", self.text)
+        self.assertGreaterEqual(len(claims), 2)
+        for a, b, op, c in claims:
+            self.assertEqual(_num(a), _num(b) - _num(c) if op == "−" else _num(b) + _num(c), (a, b, op, c))
+
+    def test_every_frames_to_bytes_and_seconds_claim_is_correct(self):
+        products = re.findall(r"([\d,]+) バイト = 2352 × ([\d,]+) セクタ", self.text)
+        self.assertEqual(len(products), 2)
+        for size, sectors in products:
+            self.assertEqual(_num(size), 2352 * _num(sectors))
+        byte_claims = re.findall(r"(\d+) フレーム = ([\d,]+) バイト", self.text)
+        self.assertGreaterEqual(len(byte_claims), 1)
+        for frames, size in byte_claims:
+            self.assertEqual((int(frames), _num(size)), (self.PREGAP, self.PREGAP * SECTOR_BYTES))
+        seconds = re.findall(r"([\d,]+) セクタ = (\d+) 秒 × 75 フレーム", self.text)
+        self.assertEqual(len(seconds), 1)
+        for sectors, secs in seconds:
+            self.assertEqual(_num(sectors), int(secs) * FPS)
+            self.assertEqual(_num(sectors), self.PREGAP)
+
+    def test_every_pregap_distance_is_225(self):
+        # Class check: "INDEX 00 の N フレーム後" (S1 note, B6) and rule A's frame positions.
+        after = re.findall(r"INDEX 00 の (\d+) フレーム後", self.text)
+        self.assertGreaterEqual(len(after), 2)
+        self.assertEqual(set(after), {str(self.PREGAP)})
+        rule_a = re.findall(r"INDEX 00 は FILE の (\d+) フレーム目、INDEX 01 は (\d+) フレーム目", self.text)
+        self.assertEqual(rule_a, [("0", str(self.PREGAP))])
+        index_row = self.facts["トラック 02 の INDEX"][1]
+        i00, i01 = re.findall(r"`INDEX 0([01]) (\d\d:\d\d:\d\d)`", index_row)
+        gap = re.findall(r"プリギャップ (\d+) セクタ", index_row)
+        self.assertEqual(gap, [str(msf_frames(i01[1]) - msf_frames(i00[1]))])
+
+    def test_arithmetic_table_formulas_and_results(self):
+        want = {"00:03:00 のフレーム数": self.PREGAP, "00:02:00 の絶対 LBA": 0,
+                "絶対 00:23:58 の LBA": self.INDEX01_LBA, "トラック 01 の BIN": self.INDEX00_LBA, "トラック 02 の BIN": 7921}
+        for key, value in want.items():
+            calc, result = self.arith[key][1], self.arith[key][2]
+            with self.subTest(row=key):
+                self.assertEqual(_eval_formula(calc), value, calc)
+                self.assertEqual(_num(re.match(r"[\d,]+", result).group()), value, result)
+        old = next(k for k in self.arith if k.startswith("旧記述の"))
+        self.assertEqual(_num(re.search(r"([\d,]+)", old).group(1)), _eval_formula(self.arith[old][1]))
+        self.assertEqual(_eval_formula(self.arith[old][1]), self.INDEX00_LBA + LEAD_IN_FRAMES)   # the 150 confusion
+        track3 = self.arith["トラック 03 の INDEX 00→01"][1]
+        m = re.fullmatch(r"(\d\d:\d\d:\d\d) = (\d+) フレーム", track3)
+        self.assertEqual(msf_frames(m.group(1)), int(m.group(2)))
+
+    def test_track02_lba_rows(self):
+        i01 = self.facts["トラック 02 の INDEX 01 の絶対 LBA"][1]
+        m = re.search(r"ヘッダ MSF は (\d\d:\d\d:\d\d)（絶対）。LBA = 絶対フレーム − 150 で ([\d,]+)", i01)
+        self.assertEqual(msf_frames(m.group(1)) - LEAD_IN_FRAMES, _num(m.group(2)))
+        self.assertEqual(_num(m.group(2)), self.INDEX01_LBA)
+        i00 = self.facts["トラック 02 の INDEX 00 の絶対 LBA"][1]
+        head = re.match(r"([\d,]+)（= ([\d,]+) − ([\d,]+)、算術）", i00)
+        self.assertEqual(tuple(_num(g) for g in head.groups()), (self.INDEX00_LBA, self.INDEX01_LBA, self.PREGAP))
+        self.assertEqual([_num(x) for x in re.findall(r"LBA ([\d,]+) \+ k", i00)], [self.INDEX00_LBA])
+        # The zero-MSF range and the matched range partition the stated read range 0-299 (S1 target line).
+        zero = re.findall(r"フレーム 0〜(\d+) はヘッダ MSF", i00)
+        matched = re.findall(r"フレーム (\d+)〜(\d+) のヘッダ MSF", i00)
+        self.assertEqual(len(zero), 1)
+        self.assertEqual(len(matched), 1)
+        self.assertEqual(int(matched[0][0]), int(zero[0]) + 1)
+        self.assertEqual(matched[0][1], "299")
+        self.assertEqual(zero[0], "74")
+        self.assertEqual(re.findall(r"例外 (\d+)", i00), ["0"])
+
+    def test_every_confidence_label_used_is_defined(self):
+        defined = {m.group(1): m.group(2) for m in (re.match(r"- `([^`]+)`: (.+)", l) for l in self.lines) if m}
+        for label in ("VERIFIED", "HYPOTHESIS", "LOCAL", "ASSUMPTION", "算術", "UNKNOWN"):
+            used = sum(label in cell for b in markdown_table_blocks(self.text) for r in b[2:] for cell in cells(r))
+            with self.subTest(label=label):
+                self.assertGreater(used, 0)
+                self.assertIn(label, defined)
+                self.assertGreater(len(defined[label]), 10)
+
+
 def markdown_table_blocks(text):
     """Group consecutive lines that start with '|' into blocks (each block is one table)."""
     blocks, current = [], []
