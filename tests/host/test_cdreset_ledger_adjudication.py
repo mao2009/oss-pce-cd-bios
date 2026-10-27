@@ -688,6 +688,11 @@ class MeasurementPointBindingTests(unittest.TestCase):
         entry = {key: value for key, value in REAL_ENTRY.items() if key != 'measurement_point_id'}
         self.assertRefusedPoint(dict(REAL_OBSERVED_CALLEE, evidence=[entry]), 'unknown measurement point')
 
+    def test_missing_measurement_point_is_named_explicitly(self):
+        # Audit (#515): a missing id must be refused with its own reason, not reported as the unknown value 'None'.
+        entry = {key: value for key, value in REAL_ENTRY.items() if key != 'measurement_point_id'}
+        self.assertRefusedPoint(dict(REAL_OBSERVED_CALLEE, evidence=[entry]), 'missing measurement_point_id')
+
     def test_point_that_does_not_cover_field_is_rejected(self):
         # The real 2-point registry cannot reach this branch (kind field sets match covers_fields), so a synthetic
         # registry is patched in for this one check. Nothing on disk changes.

@@ -225,7 +225,10 @@ def observation_point_for_entry(entry, field, declared_kind, context):
     Refused: a missing or unregistered point id, a point whose registry kind differs from the claim's
     declared observation_kind (spoofed kind), and a point that does not cover the claim field.
     """
-    point_id = entry.get(MEASUREMENT_POINT_KEY)
+    if MEASUREMENT_POINT_KEY not in entry:
+        raise ValueError(f'{context}: unknown measurement point (missing measurement_point_id; '
+                         'OBSERVED evidence must name a point in spec/measurement_points.json)')
+    point_id = entry[MEASUREMENT_POINT_KEY]
     registry = load_registry()
     if not (isinstance(point_id, str) and point_id in registry):
         raise ValueError(f'{context}: unknown measurement point {point_id!r} (not in spec/measurement_points.json)')
@@ -441,7 +444,8 @@ def adjudicate_claim(claim, source_kinds, *, field, context, executed_callee=Fal
                     and non-empty, format-valid evidence entries are required for
                     both (execution conditions, core revision, input type, verification
                     result, sha256 evidence hash). Trust level is FORMAT_ONLY: shape
-                    is checked, authenticity and field correspondence are not.
+                    is checked; kind/field and point correspondence is checked against the registry
+                    (registry consistency only); authenticity is not checked.
       BLOCKED     - value exactly 'UNKNOWN', confidence UNKNOWN, no registers;
                     sources may cite the blocking evidence
     """
