@@ -33,7 +33,7 @@ These nine entries are **DEV implementations** on main f90c16b. They are separat
 | $43 | MA_DIV16U | [#480](https://github.com/mao2009/oss-pce-cd-bios/pull/480): project-own unsigned division, caller I/D flag combinations, stack and WRAM final-state checks, real-core mutants |
 | $4F | MA_MUL16S | [#495](https://github.com/mao2009/oss-pce-cd-bios/pull/495) (Issue #494): project-own signed 16x16 to 32-bit multiplication; caller P/Y/S, MPR, ZP/BSS/I/O and frame-external stack checked on pinned Geargrafx, including a write/read trace of the routine's own instructions; real-core mutants of the assembled routine. Manual `make dev-mul16s-sweep` covers 1,572,864 calls. Not the proven System Card ABI |
 
-On the Issue #78 PR branch, MA_SQRT ($44) is added as a tenth DEV implementation; on the Issue #80 PR branch, MA_COS ($46) is added as the eleventh: project-own integer square root DEV contract (bit-by-bit restoring, trial = 4*root + 1), host-exhaustive 65,536-input check and real-core boundary/mutant tests on pinned Geargrafx. Not the proven System Card ABI.
+On the Issue #78 PR branch, MA_SQRT ($44) is added as a tenth DEV implementation: project-own integer square root DEV contract (bit-by-bit restoring, trial = 4*root + 1), host-exhaustive 65,536-input check and real-core boundary/mutant tests on pinned Geargrafx. Not the proven System Card ABI.
 
 ## Recent merged evidence and safety limitations
 
@@ -68,7 +68,8 @@ On the Issue #78 PR branch, MA_SQRT ($44) is added as a tenth DEV implementation
 | Command / artifact | What it means |
 | --- | --- |
 | `make setup`, `make build`, `make test`, `make test-real-core`, `make check` | Original 8 KiB synthetic HuCARD and host/real-core diagnostics, not a compatibility ROM |
-| `make dev-rom` | Development-only 256 KiB image, nine project-owned overrides + 72 nonreturning stubs on main f90c16b; 11/81 DEV implementations ($1E, $3C, $3D, $3F, $40, $41, $42, $43, $44, $46, $4F) + 70 nonreturning stubs on Issue #80 PR branch |
+| `make dev-rom` | Development-only 256 KiB image, nine project-owned overrides + 72 nonreturning stubs on main f90c16b; 12/81 DEV implementations ($1E, $3C, $3D, $3E, $3F, $40, $41, $42, $43, $44, $46, $4F) + 69 nonreturning stubs on Issue #80 PR branch |
+| `make dev-sin-cos-integration` | Opt-in project-owned MA_SIN/MA_COS real-core shift-identity check. It requires the separate PR #522 MA_SIN ($45) work; this branch remains 12/81, while the combined branch would have 13 slots. It is not System Card ABI verification. |
 | `make dev-integration`, `make dev-test` | Project-owned DEV ABI and synthetic Geargrafx tests, including MA_DIV16U and MA_MUL16S, not reference-BIOS verification |
 | `make dev-cdread-integration`, `make dev-cdload-exec-integration` | Guest CD transport and RAM payload experiments, not BIOS-mediated boot |
 | `make dev-boot-internal-integration` | DEV-only internal boot path regression (#502), wired into CI by #506 |

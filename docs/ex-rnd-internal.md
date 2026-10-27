@@ -1,6 +1,13 @@
 # EX_RND 内部乱数ルーチン（本プロジェクト独自仕様）
 
-Issue #72。`src/ex_rnd.s` の `ex_rnd_next` / `ex_rnd_seed` は本プロジェクトが独自に定めた契約で動く HuC6280 ルーチンである。**System Card の slot `$3E` / 候補 `$E0BA` の ABI ではない**。純正 EX_RND の契約（seed、状態保持、更新規則、戻り値）は未確認（Spec=HYPOTHESIS）のままで、本ルーチンの検証結果はその根拠にならない。ROM ジャンプテーブルには接続していない。
+Issue #72。`src/ex_rnd.s` の `ex_rnd_next` / `ex_rnd_seed` は本プロジェクトが独自に定めた契約で動く HuC6280 ルーチンである。**System Card の slot `$3E` / 候補 `$E0BA` の ABI ではない**。純正 EX_RND の契約（seed、状態保持、更新規則、戻り値）は未確認（Spec=HYPOTHESIS）のままで、本ルーチンの検証結果はその根拠にならない。src/ex_rnd.s は ROM ジャンプテーブルには接続していない。なお DEV ROM の slot `$3E`（`src/overrides/slot_3E.s`、候補 `$E0BA`）には、Y=1 で seed、それ以外の Y で next を行う別の DEV 契約（状態 `$2500/$2501`）を接続している。こちらも独自仕様で、純正 EX_RND の ABI ではない。
+
+## 二つの実装の関係
+
+- `src/ex_rnd.s`：独立した HuCARD プローブ用ルーチン。BSS の `ex_rnd_state`（2 バイト）に状態を保持し、`ex_rnd_seed` / `ex_rnd_next` をエクスポートする。ROM ジャンプテーブルには接続しない。`tests/fixtures/ex_rnd_probe.s` と組み合わせてプローブ ROM を構成し、`tests/integration/geargrafx_ex_rnd.py` で実コア検証する。
+- `src/overrides/slot_3E.s`：DEV ROM の slot `$3E` に接続するオーバーライド実装。Y=1 で seed、それ以外の Y で next を行う DEV 契約で、状態は work RAM `$2500/$2501` に保持する。`make dev-integration` の `geargrafx_dev_ex_rnd.py` で実コア検証する。
+
+両者は同じ LFSR（taps `$B400`、8 ステップ/呼び出し、零状態を 1 に置換）を使うが、状態の格納場所と呼び出し規約が異なるため、一方の検証結果を他方の ABI 証拠としては扱わない。
 
 ## 契約（独自）
 
@@ -27,5 +34,6 @@ Issue #72。`src/ex_rnd.s` の `ex_rnd_next` / `ex_rnd_seed` は本プロジェ�
 
 - ホストテスト（`make test` の対象）: `tests/host/test_ex_rnd.py`。Python モデル `tools/ex_rnd.py` の周期 65535、零 seed の扱い、同 seed 再現性を確認する。プローブ ROM のバイト固定（`EOR #$B4` の位置、リセットベクタ）も確認するが、アセンブルしたルーチンは実行しない。
 - 振る舞いの検証（実コア、opt-in）: `tests/integration/geargrafx_ex_rnd.py`。HuCARD プローブ `tests/fixtures/ex_rnd_probe.s` が 3 フェーズ（零状態、seed `$1234`、seed 0）で各 256 回の出力を RAM に記録し、ホストモデルと照合する。X の保存も各呼び出しで確認する。`EOR #$B4` を `EOR #$B5` に変えた変異 ROM が不一致になることも確認する。Geargrafx の結果は実機の挙動を証明しない。
-- 本 PR は実コア PASS の結果を PR 本文に記録するが、DEV ROM への接続や `DEV_CALLABLE` の主張はしない。
-- 共有の `make integration-test` / `Makefile` / `spec/api_slots.json` は変更しない。実コアスクリプトの実行は親が統合時に行う。
+- `src/ex_rnd.s` は独立したプローブ用ルーチンであり、ROM ジャンプテーブルには接続しない。`src/overrides/slot_3E.s` は同じ LFSR 契約を DEV ROM の slot `$3E`（候補 `$E0BA`）へ接続するオーバーライド実装である。両者はアルゴリズムを共有するが、配置・呼び出し規約・状態アドレス（`src/ex_rnd.s` は BSS `ex_rnd_state`、slot `$3E` は work RAM `$2500/$2501`）が異なる。
+- slot `$3E` の実行証拠は `tests/integration/geargrafx_dev_ex_rnd.py`（pinned Geargrafx、DEV ROM）で取得する。`make dev-integration` に登録済み。
+- ABI は UNVERIFIED のままであり、ROM は DEV ONLY（`release_eligible: false`）。

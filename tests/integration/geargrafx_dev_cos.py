@@ -34,16 +34,24 @@ P_PRE_OUT = 0x2400  # P before JSR (captured before SED/SEC? actually after)
 CASES = [0, 1, 31, 32, 33, 63, 64, 65, 96, 127, 128, 129, 160, 191, 192, 193, 224, 254, 255]
 Y_PRESET = 0xA5
 X_PRESET = 0x5A
+# Same usable effective-P vector scheme as MA_SIN: N/Z at entry come from LDA #angle;
+# C/I/D/V are installed with PLP. T/B (bits 5/4) are core-specific and not asserted.
+P_FLAG_CASES = [0x00, 0x01, 0x04, 0x08, 0x40, 0x80, 0x0D, 0x05, 0x0C, 0x41, 0x81, 0x4D]
+NZ_CASES = [(0x00, 0x0D), (0x80, 0x0D), (0x01, 0x0D), (0x80, 0x4D), (0x00, 0x41)]
 
 
 def q15(k):
     return math.floor(32767 * math.cos(2 * math.pi * k / 256) + 0.5)
 
 
-def guest(reset, entry, a, sp=0xFF):
+def guest(reset, entry, a, sp=0xFF, p_entry=None):
     """Reset-replacement code at CPU address `reset`. Returns (code, halt CPU address)."""
-    code = bytes([0x78, 0xF8, 0x38,           # SEI; SED (caller D=1); SEC (caller C=1)
-                  0xA9, 0xF8, 0x53, 0x02,     # LDA #$F8; TAM #$02 -> MPR1 = work RAM ($2000-$3FFF)
+    code = bytearray([0x78])                  # SEI (probe requires first instruction SEI)
+    if p_entry is None:
+        code.extend([0xF8, 0x38, 0xB8])       # SED; SEC; CLV
+    else:
+        code.extend([0xA9, p_entry & 0xFF, 0x48, 0x28])  # LDA #P; PHA; PLP
+    code.extend([0xA9, 0xF8, 0x53, 0x02,       # LDA #$F8; TAM #$02 -> MPR1 = work RAM ($2000-$3FFF)
                   0xA2, sp, 0x9A,             # LDX #sp; TXS (caller SP; JSR then pushes 2 bytes)
                   0xA2, X_PRESET,             # LDX #$5A (input X is ignored by MA_COS)
                   0xA0, Y_PRESET,             # LDY #$A5
@@ -63,7 +71,7 @@ def guest(reset, entry, a, sp=0xFF):
     return code + bytes([0x80, 0xFE]), halt  # BRA -2
 
 
-def check(label, rows, halt, a, sp=0xFF):
+def check(label, rows, halt, a, sp=0xFF, p_entry=None):
     cold = next(r for r in rows if r["phase"] == "cold")
     if cold["pc"] != halt:
         raise ValueError(f"{label}: guest did not reach its halt loop (pc ${cold['pc']:04X}, want ${halt:04X})")
@@ -88,14 +96,14 @@ def check(label, rows, halt, a, sp=0xFF):
         raise ValueError(f"{label}: P not preserved (pre ${p_pre:02X}, post ${p_post:02X}, mask ${P_MASK:02X})")
 
 
-def run_case(probe, base, folder, cue, reset, label, entry, a, sp=0xFF, count=2048):
-    code, halt = guest(reset, entry, a, sp)
+def run_case(probe, base, folder, cue, reset, label, entry, a, sp=0xFF, count=2048, p_entry=None):
+    code, halt = guest(reset, entry, a, sp, p_entry)
     variant = bytearray(base)
     variant[reset - 0xE000:reset - 0xE000 + len(code)] = code
     rom = folder / f"{label}.pce"
     rom.write_bytes(variant)
     rows = dev.run_probe(probe, rom.resolve(), cue, count=count)
-    check(label, rows, halt, a, sp)
+    check(label, rows, halt, a, sp, p_entry)
 
 
 REJECT_MARKERS = ("observed", "not balanced", "MPR changed", "did not reach")
@@ -200,13 +208,26 @@ def main():
         for a in (0, 64, 255):
             run_case(probe, data, folder, cue, reset, f"lowsp-{a:02x}", entry, a, sp=0x06)
             evidence["cases"].append({"angle": a, "expected_q15": q15(a), "sp": 0x06})
+        # P vectors use the same caller-visible convention as MA_SIN.  The original 22
+        # arithmetic/stack cases above remain unchanged; these add effective-P coverage.
+        for p_entry in P_FLAG_CASES:
+            run_case(probe, data, folder, cue, reset, f"pflag-{p_entry:02x}", entry, 1,
+                     p_entry=p_entry)
+            evidence["cases"].append({"angle": 1, "expected_q15": q15(1), "sp": 0xFF,
+                                      "p_entry": p_entry})
+        for a, p_entry in NZ_CASES:
+            run_case(probe, data, folder, cue, reset, f"nz-a{a:02x}-p{p_entry:02x}", entry, a,
+                     p_entry=p_entry)
+            evidence["cases"].append({"angle": a, "expected_q15": q15(a), "sp": 0xFF,
+                                      "p_entry": p_entry, "nz_check": True})
         # Mutant detection: each mutant is applied to the assembled ROM (exactly one byte, confirmed
         # before running) and must be rejected by the real-core checks above.
         mutants = run_mutants(probe, data, folder, cue, reset, entry, body, evidence)
     (args.rom.parent / "geargrafx-dev-cos-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
-    total = len(angles) + 3
+    total = len(angles) + 3 + len(P_FLAG_CASES) + len(NZ_CASES)
     print(f"PASS real Geargrafx DEV ROM: MA_COS slot $46 {total} cases ({len(angles)} at SP=$FF, "
-          f"3 at SP=$06 boundary); X:A=Q15 cosine of A, Y and SP checked; MPR1/MPR7 checked; "
+          f"3 at SP=$06 boundary, {len(P_FLAG_CASES)} P vectors, {len(NZ_CASES)} N/Z vectors); "
+          f"the original 22 arithmetic/stack cases are retained; X:A=Q15 cosine of A, Y and SP checked; MPR1/MPR7 checked; "
           f"mutants rejected {mutants}/4 (table byte, sign branch, ply->plx, plp->nop)")
 
 

@@ -7,8 +7,8 @@ The model mirrors src/overrides/slot_46.s: quadrant folding of a 65-entry Q15 qu
 The oracle is math.cos directly (not the table), so the table and the folding are both checked.
 
 This does NOT run the assembled bytes; the real-core run is tests/integration/geargrafx_dev_cos.py.
-This is not the System Card MA_COS ABI (UNVERIFIED). The SIN contract is not on main, so no
-sin/cos cross-check is made here.
+This is not the System Card MA_COS ABI (UNVERIFIED). MA_SIN-specific checks are deliberately
+separate: they are enabled only with REQUIRE_MA_SIN=1, after PR #522 supplies slot_45.s.
 """
 import math
 import re
@@ -148,8 +148,6 @@ class DevCosModelTests(unittest.TestCase):
 #   2. When slot_45.s IS present (after PR #522 lands), its quarter-wave table and folding are
 #      compared against this cosine table: T_sin[i] must equal T_cos[64 - i], and the MA_SIN model
 #      built from that table must agree with the cosine model on all 256 angles.
-import os
-
 SLOT45_PATH = ROOT / "src" / "overrides" / "slot_45.s"
 
 
@@ -174,9 +172,7 @@ def dev_sin_from_table(k, table):
 
 
 def parse_slot45_table():
-    """Return the (lo, hi) byte lists from slot_45.s, or None if the file is absent."""
-    if not SLOT45_PATH.exists():
-        return None
+    """Return the (lo, hi) byte lists from slot_45.s."""
     text = SLOT45_PATH.read_text(encoding="utf-8")
     lo_block = text.split("sin_lo:", 1)[1].split("sin_hi:", 1)[0]
     hi_block = text.split("sin_hi:", 1)[1]
@@ -184,7 +180,8 @@ def parse_slot45_table():
     return parse(lo_block), parse(hi_block)
 
 
-class CrossIdentityTests(unittest.TestCase):
+class StandaloneCosIdentityTests(unittest.TestCase):
+    """COS-only tests: these must remain runnable before MA_SIN is integrated."""
     def test_identity_all_256_q15(self):
         """SIN(a) == COS((a - 64) & 0xFF) for every angle, on the Q15 scale with the same rounding.
 
@@ -207,8 +204,8 @@ class CrossIdentityTests(unittest.TestCase):
             self.assertEqual((dev_cos(a) > 0) - (dev_cos(a) < 0),
                              (sin_q15_oracle((a + 64) % 256) > 0) - (sin_q15_oracle((a + 64) % 256) < 0), a)
 
-    def test_derived_sin_table_identity(self):
-        """The MA_SIN table derived from MA_COS's table (T_sin[i]=T_cos[64-i]) reproduces the identity."""
+    def test_derived_sine_table_identity(self):
+        """A derived sine table proves the Q15 shift identity without requiring slot $45."""
         st = sin_table_from_cos()
         for a in range(256):
             self.assertEqual(dev_cos(a), dev_sin_from_table((a + 64) % 256, st), a)
@@ -217,10 +214,6 @@ class CrossIdentityTests(unittest.TestCase):
         """Mutants must differ from the oracle: flipped table byte, wrong quadrant index, missing negation."""
         bad_table = list(TABLE)
         bad_table[16] ^= 0x01
-        mutants = {
-            "table_byte_flip": lambda k: dev_cos(k, bad_table),
-            "wrong_quadrant_index": lambda k: dev_cos(k, TABLE) if False else None,
-        }
         # quadrant mutant: use r instead of 64-r for odd quadrants
         def wrong_quadrant(k):
             r = k & 0x3F
@@ -240,24 +233,29 @@ class CrossIdentityTests(unittest.TestCase):
             "missing_negation": no_negate,
         }
         for name, fn in mutants.items():
-            differs = [k for k in range(256) if fn(k) != sin_q15_oracle((k + 64) % 256) * 0 + q15_round(k) and fn(k) != q15_round(k)]
-            # A mutant is "detected" if it disagrees with the cosine oracle on at least one angle.
             differs = [k for k in range(256) if fn(k) != q15_round(k)]
             self.assertTrue(differs, f"mutant {name} was not detected")
 
-    def test_actual_slot45_table_when_available(self):
-        """If PR #522 has landed (slot_45.s present), its table and folding must match MA_COS."""
-        parsed = parse_slot45_table()
-        if parsed is None:
-            self.skipTest("slot_45.s not present on this branch (PR #522 not merged); "
-                          "cross-check deferred to integration branch")
-        lo, hi = parsed
+
+@unittest.skipUnless(
+    __import__("os").environ.get("REQUIRE_MA_SIN") == "1",
+    "MA_SIN integration is not required on the standalone MA_COS branch",
+)
+class RequiredMaSinIntegrationTests(unittest.TestCase):
+    """Cross-PR checks. REQUIRE_MA_SIN=1 makes a missing or malformed slot $45 a failure."""
+
+    def test_actual_slot45_table_and_model_match_cosine_shift(self):
+        if not SLOT45_PATH.exists():
+            self.fail("REQUIRE_MA_SIN=1 but PR #522 slot_45.s is absent")
+        lo, hi = parse_slot45_table()
         self.assertEqual(len(lo), 65)
         self.assertEqual(len(hi), 65)
         sin_table = [(h << 8) | l for l, h in zip(lo, hi)]
         # T_sin[i] must equal T_cos[64 - i].
         for i in range(65):
             self.assertEqual(sin_table[i], TABLE[64 - i], i)
+        for a in range(256):
+            self.assertEqual(dev_sin_from_table(a, sin_table), dev_cos((a - 64) & 0xFF), a)
         # Full 256-angle identity using the actual MA_SIN table and folding.
         for a in range(256):
             r = a & 0x3F
