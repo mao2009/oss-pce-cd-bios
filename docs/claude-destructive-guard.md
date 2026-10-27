@@ -20,12 +20,17 @@
 - `git worktree remove`: 所有者が `.claude/worktree-owners.json` に記録されている場合のみ、`--force` なしで許可。レジストリがない・壊れている場合は全て拒否
 - `find -delete`、`find -exec` 内の拒否対象コマンド
 - `xargs`、`sudo`、`env`、`command`、`nohup`、`time`、`timeout`、`nice` などのラッパーを剥がして再判定
-- `bash -c`、`sh -c`、`zsh -c` などの文字列を再帰的に検査。`-c` を伴わないシェルの起動、`cmd`、`eval`（引数を再検査）、`powershell -EncodedCommand`、`-File` は検査できないため拒否
+- `bash -c`、`sh -c`、`zsh -c` などの文字列、`eval`・`source`・`.` の引数を再帰的に検査する。ただし、これらに渡すコマンド置換・プロセス置換（`$(...)`、バッククォート、`<(...)`、`>(...)`）は中身を知れないため拒否する。`-c` を伴わないシェルの起動、`cmd`、`powershell -EncodedCommand`、`-File` も拒否
+- PowerShell の `iex`、`Invoke-Expression`、文字列または変数を対象とする `&` 呼び出し演算子（`& "x"`、`& $cmd`）は中身を検査できないため拒否。`pwsh -c "$(...)"` も拒否
+- `git -c alias.*` と、環境変数（`GIT_CONFIG_*` など）による alias 設定を拒否。`git -C dir` や `--git-dir` の後に続く破壊的なサブコマンドは通常どおり拒否
+- `.claude/` への書き込みを拒否: `>` `>>` の先が `.claude` を含む場合、`cd .claude` の後の書き込み、`tee`・`cp`・`mv`・`install`・`rsync`・`touch`・`mkdir`・`ln`・`chmod`・`curl`・`wget`・`tar`・`sed -i`・`dd of=` などの引数に `.claude` を含む場合、`python`・`perl`・`node` 等の引数に `.claude` を含む場合。読み取り（`cat`、`ls`、`git status`）は許可
+- `git push` の refspec 削除（`:branch`、`+:branch`）と `--prune` を拒否
 - `python -c` で削除・プロセス起動・書き込みに該当する語（`rmtree`、`remove`、`unlink`、`subprocess`、`open(` など）を含むもの
 - PowerShell の `Remove-Item`/`ri`/`del`/`erase` で `-Recurse`/`-Force` の略記（`-r`、`-fo` など）を含むもの（単一ファイルの場合は rm と同じ規則）
 - `unlink`、`shred`、`rmdir`、`rd`、`dd`、`mkfs`、`truncate`、`cmd`
-- コマンド置換 `$(...)` とバッククォートの中身も同じ規則で検査し、一つでも拒否なら全体を拒否
-- 解析できない入力（不正な JSON、`tool_input` や `command` の欠落、空文字列、未閉じの引用符、`$'...'` など）はすべて拒否
+- コマンド置換 `$(...)` とバッククォートの中身も同じ規則で検査し、一つでも拒否なら全体を拒否。コマンド位置に置換がある場合も拒否
+- 空の引用符の組（`r""m`）は除去してから判定する
+- 解析できない入力（不正な JSON、`tool_input` や `command` の欠落、空文字列、未閉じの引用符、`$'...'`、NUL や CR などの制御文字、UTF-8 として復号できない標準入力など）はすべて拒否
 
 ## fail-closed の動作
 
@@ -35,8 +40,11 @@
 
 ## 残存リスク（必ず読むこと）
 
-- 文字列ベースの PreToolUse フックは任意のコード実行を止められない。`python3 script.py`、`node -e`、`perl -e`、Make ターゲット（`make clean`）、リダイレクト `>` による上書き、`cp`/`mv` による上書きは検査しない
+- 文字列ベースの PreToolUse フックは任意のコード実行を止められない。iex と Invoke-Expression は拒否するが、任意のインタプリタ（`python3 script.py`、`node -e`、`perl -e`、`ruby`、`busybox` などの多機能バイナリ）の実行は許可される
+- Make ターゲット（`make clean`）、`source file` や `. file` による通常ファイルの実行、`awk` の `system()`、`.git/config` に定義された alias（`-c` 以外）は検査しない
+- `.claude/` への書き込み拒否は文字列による判定である。`.claude` への symlink やジャンクション、変数や未知のコマンドを経由した書き込みは検出できない
 - `python -c` の検査は語の一致による近似であり、回避できる書き方がある
+- `.claude/worktree-owners.json` は暗号や署名で守られていない。書き込みの拒否規則だけで守られており、この規則を回避する書き方があれば所有者の記録は改ざんされうる
 - `.claude/` 配下は同じリポジトリ内のエージェントが編集できる。フック定義そのものを変更されると保護は外れる。そのため、ユーザー側の設定（`~/.claude/settings.json`）で同じフックを有効化するのは、リポジトリ所有者が行うこと
 - 追加の対策として、OS レベルの保護を推奨する: 読み取り専用マウント、別の OS アカウントでの実行、コンテナ内での実行
 - Windows では shell 形式のフックに Git Bash が必要。見つからない場合は `onFailure` により拒否される
