@@ -33,6 +33,14 @@ cc65 `71746c829e77f74c2b601a7d16821170c2610df3`、テスト ROM sha256 `13a06358
 2026-10-20 再検証（Worker 04）: `origin/main` 963f3a3 の clean clone（WSL Ubuntu）で `make routine-real-core` を実行し、
 MA_MUL8S は PASS（65,536 組不一致 0、負の対照 a<0・b<0 は各 32,640 組で FAIL、期待どおり）。ROM・core・cc65 の sha は上記 2026-10-19 と同一。
 
+## フラグ（D / T）と P の扱い
+
+- **D**: ルーチン先頭の `cld` で 2 進演算に固定する。呼出側 D=1 でも結果は同じ（テストは D=1 の呼出を含む）。
+- **T**: ルーチンは `clt` を行わない。`PHP` で受けた呼出側 P は `PLP` で完全復元されるため、出口の T は呼出前の値に戻る。
+  ただし呼出時に T=1 だと、先頭付近の `adc`/`sbc`（絶対,X）が HuC6280 のメモリ間演算になり得る（UNVERIFIED、実機・参照未確認）。T=1 呼出は未検証であり、対策（`clt` の追加）は未実装。
+- **P の完全保存**: 出口で N V T B D I Z C のすべてを呼出前の値に戻す（`tools/ma_mul8s_model.py` の判定器が全 8 ビットを照合）。
+- DEV 実装の出力は参照 BIOS の契約ではない。本節の記述も参照 BIOS の挙動を示さない。
+
 ## 参照 BIOS ABI との差分（独自仕様の定義と分けて扱う）
 
 `spec/api_contracts.json` の MA_MUL8S 契約は arguments / returns / clobbered がすべて `UNKNOWN`、
