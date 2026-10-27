@@ -40,6 +40,16 @@ CD_NAMES = {"cd", "chdir", "set-location", "sl"}
 ALWAYS_DENY = {"unlink", "shred", "rmdir", "rd", "dd", "mkfs", "truncate", "wipefs",
                "srm", "cmd", "cmd.exe"}
 PY_NAME = re.compile(r"^python(3(\.\d+)?)?$|^py$")
+# Placeholder for a $(...), `...`, <(...) or >(...) body. NUL is rejected on input,
+# so the placeholder can never collide with user text.
+SUBST = "\x00SUBST\x00"
+EVAL_LIKE = SHELLS | PS_HOSTS | {"eval", "source", "."}
+INTERP = {"perl", "node", "ruby", "php", "awk", "gawk", "lua"}
+# Commands that write to their arguments: a .claude/ target is denied for these.
+WRITE_NAMES = {"tee", "cp", "mv", "install", "rsync", "touch", "mkdir", "ln", "chmod",
+               "chown", "scp", "curl", "wget", "tar", "unzip", "zip", "patch",
+               "copy", "move", "copy-item", "move-item", "rename-item", "set-content",
+               "add-content", "out-file", "new-item", "cpi", "mi", "ni", "sc", "ac"}
 DANGER_PY = re.compile(r"rmtree|remove|unlink|rmdir|removedirs|system|subprocess|popen|"
                        r"shutil|spawn|exec|eval|__import__|open\s*\(|write|truncate|"
                        r"ctypes|socket", re.I)
@@ -162,7 +172,7 @@ def _matched(text, start):
     raise Deny("parse", "unbalanced command substitution")
 
 
-def split_segments(text):
+def split_segments(text, ps=False):
     """Split on unquoted ; & | ( ) and newlines. Returns (segments, substitution bodies)."""
     segs, subs, cur = [], [], []
     quote, i, n = None, 0, len(text)
@@ -184,14 +194,19 @@ def split_segments(text):
         if c == "$" and i + 1 < n and text[i + 1] == "(":
             body, i = _matched(text, i + 2)
             subs.append(body)
-            cur.append(" SUBST ")
+            cur.append(SUBST)
+            continue
+        if c in "<>" and quote is None and i + 1 < n and text[i + 1] == "(":
+            body, i = _matched(text, i + 2)  # process substitution
+            subs.append(body)
+            cur.append(SUBST)
             continue
         if c == "`":
             j = text.find("`", i + 1)
             if j < 0:
                 raise Deny("parse", "unterminated backtick")
             subs.append(text[i + 1:j])
-            cur.append(" SUBST ")
+            cur.append(SUBST)
             i = j + 1
             continue
         if c == "$" and quote is None and i + 1 < n and text[i + 1] in "'\"":
@@ -203,10 +218,23 @@ def split_segments(text):
             i += 1
             continue
         if c in "'\"":
+            if quote is None and i + 1 < n and text[i + 1] == c:
+                i += 2                       # empty pair: r""m is rm
+                continue
             quote = c
             cur.append(c)
             i += 1
             continue
+        if ps and c == "&" and quote is None:
+            # PowerShell call operator (& "x", & $cmd); && is a chain, not a call.
+            prev = text[i - 1] if i else ""
+            nxt = text[i + 1] if i + 1 < n else ""
+            if prev != "&" and nxt != "&":
+                k = i + 1
+                while k < n and text[k] in " \t":
+                    k += 1
+                if k < n and text[k] in "\"'$":
+                    raise Deny("powershell", "call operator with a string or variable is not inspected")
         if c in ";&|()\n":
             segs.append("".join(cur))
             cur = []
@@ -223,6 +251,13 @@ def split_segments(text):
 def short_has(arg, letters):
     return arg.startswith("-") and not arg.startswith("--") and any(
         ch in arg[1:] for ch in letters)
+
+
+def inside_claude(path, ctx):
+    """True if canonical path (case-folded or not) is .claude/ or below it."""
+    k = key(path)
+    claude_dir = ctx.root.rstrip("/") + "/.claude"
+    return k == claude_dir or inside(k, claude_dir)
 
 
 def rm_rule(args, ps, ctx):
@@ -292,6 +327,9 @@ def git_rule(args, ctx):
             i += 2
         else:
             i += 1
+    # Aliases are not resolved: an alias set on the command line could hide a subcommand.
+    if any("alias." in a.casefold() for a in args[:i]):
+        raise Deny("git-alias", "git alias set on the command line is denied")
     if i >= len(args):
         return
     sub, rest = args[i], args[i + 1:]
@@ -312,8 +350,8 @@ def git_rule(args, ctx):
     if sub == "stash" and rest[:1] in (["clear"], ["drop"]):
         raise Deny("git-stash", "stash clear/drop is denied")
     if sub == "push" and any(
-            a in ("--force", "--force-with-lease", "--mirror", "--delete")
-            or a.startswith(("--force-with-lease=", "+")) or short_has(a, "fd")
+            a in ("--force", "--force-with-lease", "--mirror", "--delete", "--prune")
+            or a.startswith(("--force-with-lease=", "+", ":")) or short_has(a, "fd")
             for a in rest):
         raise Deny("git-push", "force or delete push is denied")
     if sub == "worktree" and rest:
@@ -368,6 +406,17 @@ def pwsh_rule(args, ctx, depth):
             return
 
 
+def check_assign(word):
+    # GIT_CONFIG_* variables can define an alias just like "git -c alias.x=..."
+    if "alias." in word.casefold():
+        raise Deny("git-alias", "git alias set through an environment variable is denied")
+
+
+def claude_mention(args):
+    """True if an argument names .claude/ (or carries a substitution placeholder)."""
+    return any(".claude" in a.replace("\\", "/").casefold() or SUBST in a for a in args)
+
+
 def unwrap(name, args):
     withargs = WRAPPER_ARGS.get(name, set())
     i = 0
@@ -377,6 +426,7 @@ def unwrap(name, args):
             i += 1
             break
         if name == "env" and ASSIGN.match(a):
+            check_assign(a)
             i += 1
         elif a.startswith("-") and len(a) > 1:
             i += 2 if a in withargs else 1
@@ -392,12 +442,17 @@ def analyze_argv(words, ctx, ps, depth):
         raise Deny("depth", "command nesting too deep")
     while True:
         while words and (words[0] in KEYWORDS or ASSIGN.match(words[0])):
+            check_assign(words[0])
             words = words[1:]
         if not words:
             return
         w0 = words[0]
+        if SUBST in w0:
+            raise Deny("command-word", "command substitution in command position")
         if w0 not in ("[", "[[") and any(ch in w0 for ch in "$*?[]{}`~"):
             raise Deny("command-word", "unexpanded word in command position")
+        # A backslash before a plain character only quotes it: \rm is rm.
+        w0 = re.sub(r"^\\+(?=[^\\/])", "", w0)
         if "\\" in w0 and not re.match(r"^(?:[A-Za-z]:)?[\\/]", w0):
             raise Deny("command-word", "backslash in command name")
         name = posixpath.basename(w0.replace("\\", "/")).lower()
@@ -408,6 +463,17 @@ def analyze_argv(words, ctx, ps, depth):
             continue
         break
     args = words[1:]
+    if name in EVAL_LIKE and any(SUBST in a for a in args):
+        raise Deny("substitution", "command substitution passed to a shell, eval or source is not inspected")
+    if name in WRITE_NAMES or (name == "sed" and any(
+            short_has(a, "i") or a.startswith("--in-place") for a in args)):
+        if claude_mention(args) or inside_claude(ctx.cwd, ctx):
+            raise Deny("claude-write", "write to .claude/ (guard, registry, settings) is denied")
+    elif PY_NAME.match(name) or name in INTERP:
+        if claude_mention(args):
+            raise Deny("claude-write", "interpreter with .claude/ target is denied")
+    if name in ("iex", "invoke-expression"):
+        raise Deny("powershell", "Invoke-Expression is not inspected")
     if name == "eval":
         analyze_text(" ".join(args), ctx.copy(), ps, depth + 1)
     elif name in SHELLS:
@@ -433,10 +499,14 @@ def analyze_argv(words, ctx, ps, depth):
 def analyze_text(text, ctx, ps, depth):
     if depth > MAX_DEPTH:
         raise Deny("depth", "command nesting too deep")
-    segs, subs = split_segments(text)
+    segs, subs = split_segments(text, ps)
     for body in subs:
         analyze_text(body, ctx.copy(), ps, depth + 1)
     for seg in segs:
+        # Redirect (> >>) whose target names .claude/ or is a substitution.
+        if re.search(r">[^;&|\n]*(\.claude|\x00)", seg.replace("\\", "/"), re.I) or (
+                ">" in seg and inside_claude(ctx.cwd, ctx)):
+            raise Deny("claude-write", "redirect into .claude/ (or to a substitution) is denied")
         analyze_argv(words_of(seg, ps), ctx, ps, depth)
 
 
@@ -478,6 +548,9 @@ def _decide(raw, repo_root):
         raise Deny("input", "missing command")
     if not cmd.strip():
         raise Deny("input", "empty command")
+    # NUL and other control characters (CR, BEL...) are not inspectable as shell text.
+    if any((ord(ch) < 32 and ch not in "\t\n") or ch == "\x7f" for ch in cmd):
+        raise Deny("input", "NUL or control character in command")
     root = os.path.realpath(repo_root or os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "..", ".."))
     cwd = payload.get("cwd")
@@ -533,8 +606,10 @@ def run_hook(raw, timeout=HOOK_TIMEOUT):
 
 
 def main():
+    # Read bytes and decode UTF-8 ourselves: the locale codec (cp932 on Windows) must not
+    # decide. A decode error yields "" which json rejects, so it is denied.
     try:
-        raw = sys.stdin.read()
+        raw = sys.stdin.buffer.read().decode("utf-8")
     except Exception:
         raw = ""
     out = run_hook(raw)
