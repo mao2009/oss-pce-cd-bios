@@ -15,8 +15,6 @@ real user data. Fail-closed verdict validation remains separate from this model 
 import bm_format_model as bm
 
 PASS, FAIL, NOT_RUN, BLOCKED_ABI = "PASS", "FAIL", "NOT_RUN", "BLOCKED_ABI"
-ABI_STATUS = "UNKNOWN"
-RELEASE_ELIGIBLE = False
 # Only these statuses may be expected or observed; anything else (even a matching bogus value) is FAIL.
 ALLOWED_STATUSES = frozenset({bm.OK, bm.REFUSED_UNCONFIRMED, bm.INSUFFICIENT_CAPACITY,
                               bm.ALREADY_FORMATTED})
@@ -37,20 +35,24 @@ def judge(expected, status, image, out):
     OK must write the signature (classify == VALID) and zero-fill the body after it, and keep
     the capacity. Refused paths must return the input bytes unchanged.
     """
-    if expected is None:
-        return NOT_RUN
     try:
         # Strict type + allowlist validation to prevent Python type/coercion tricks
-        if type(expected) is not str or type(status) is not str:
+        if type(status) is not str or status not in ALLOWED_STATUSES:
             return FAIL
-        if expected not in ALLOWED_STATUSES or status not in ALLOWED_STATUSES:
+        # Output must be exactly bytes/bytearray: subclasses may override slicing and hide bytes.
+        if type(out) not in (bytes, bytearray):
+            return FAIL
+        if expected is None:
+            return NOT_RUN
+        if type(expected) is not str or expected not in ALLOWED_STATUSES:
             return FAIL
         if status != expected:
             return FAIL
-        if not isinstance(out, (bytes, bytearray)):
-            return FAIL
         if status != bm.OK:
             return PASS if bytes(out) == bytes(image) else FAIL
+        # OK is only valid for an invalid-signature image: never overwrite a valid (possibly user) image.
+        if bm.classify(bytes(image)) != bm.INVALID:
+            return FAIL
         if len(out) != len(image) or bm.classify(out) != bm.VALID or any(out[len(bm.SIGNATURE):]):
             return FAIL
         return PASS
@@ -92,11 +94,18 @@ def run_case(name, image, allow, expected):
     except Exception:  # fail-closed: an image that cannot be snapshotted is a FAIL
         return {"case": name, "verdict": FAIL, "status": None}
     try:
-        status, out = guarded_format(image, allow_destructive=allow)
+        result = guarded_format(image, allow_destructive=allow)
+        if type(result) is not tuple or len(result) != 2:  # invalid return shape is never a success
+            return {"case": name, "verdict": FAIL, "status": None}
+        status, out = result
     except Exception:  # fail-closed: any exception is a FAIL, even when the expectation is None (NOT_RUN otherwise)
         return {"case": name, "verdict": FAIL, "status": None}
-    # The input buffer must never be written, whatever the verdict.
-    if isinstance(image, bytearray) and bytes(image) != snapshot:
+    # The input buffer must never be written, whatever the verdict (any writable buffer type).
+    try:
+        mutated = bytes(image) != snapshot
+    except Exception:
+        mutated = True
+    if mutated:
         return {"case": name, "verdict": FAIL, "status": status}
     verdict = judge(expected, status, snapshot, out)
     if type(verdict) is not str or verdict not in (PASS, FAIL, NOT_RUN):
@@ -113,8 +122,9 @@ def run_all(cases=CASES):
         overall = NOT_RUN
     else:
         overall = BLOCKED_ABI  # synthetic passes cannot promote while the ABI is UNKNOWN
-    return {"overall": overall, "abi": ABI_STATUS,
-            "release_eligible": RELEASE_ELIGIBLE, "cases": results}
+    # Literals, not module globals: no mutable flag can turn a report into an approval.
+    return {"overall": overall, "abi": "UNKNOWN",
+            "release_eligible": False, "cases": results}
 
 
 if __name__ == "__main__":

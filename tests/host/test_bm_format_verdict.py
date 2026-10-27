@@ -410,7 +410,9 @@ class AuditGapTest(unittest.TestCase):
 
     def test_report_is_not_driven_by_mutable_module_globals(self):
         # Gap: release_eligible / abi were read from module globals, a self-declared approval surface.
-        with mock.patch.object(v, "RELEASE_ELIGIBLE", True), mock.patch.object(v, "ABI_STATUS", "VERIFIED"):
+        # create=True: a re-introduced global must not be able to drive the report.
+        with mock.patch.object(v, "RELEASE_ELIGIBLE", True, create=True), \
+                mock.patch.object(v, "ABI_STATUS", "VERIFIED", create=True):
             report = v.run_all()
         self.assertFalse(report["release_eligible"])
         self.assertEqual(report["abi"], "UNKNOWN")
