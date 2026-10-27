@@ -278,6 +278,10 @@ class Hardening(unittest.TestCase):
     def test_zero_width_character_in_run_is_refused(self):
         self.assert_refused(GOOD.replace('python3 .trusted', 'python3​ .trusted', 1))
 
+    # 9f6b95a review: a lone CR line break is read differently by parsers (YAML 1.2 CR is a break; a line reader is not)
+    def test_lone_cr_line_break_is_refused(self):
+        self.assert_refused(GOOD.replace('\n', '\r'))
+
     def test_quoted_on_key_with_same_trigger_passes(self):
         self.assertEqual(problems(GOOD.replace('on:\n', '"on":\n', 1)), [])
 
