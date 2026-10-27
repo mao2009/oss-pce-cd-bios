@@ -3,6 +3,8 @@
 No game data, no emulator. Expected outcomes are hand-written from the DEV loader contract
 (src/cd_load_exec_probe.s load_check, docs/cd-load-exec-probe.md). The spec reconstruction below is written from
 the same contract and does NOT import the generator; the oracle (tools/synthetic_boot_oracle.py) parses CUE and BIN itself.
+Independence is partial: spec_image and the pinned digests re-derive the same formulas as the generator (same author).
+The independent layout check is tools/cue_analysis.py (from main, not written for this generator).
 """
 import ast
 import hashlib
@@ -213,6 +215,83 @@ class MultiFileTests(unittest.TestCase):
         cue = ('FILE "a.bin" BINARY\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n'
                'FILE "b.bin" BINARY\n  TRACK 02 MODE1/2352\n    INDEX 00 00:00:00\n    INDEX 01 00:03:00\n')
         self.assertEqual(oracle.judge(cue, data, {"lba_offset": 0}), "UNSUPPORTED_MULTI_FILE")
+
+    def test_cue_without_file_has_its_own_status(self):
+        cue, data = spec_image(None)
+        no_file = "\n".join(line for line in cue.splitlines() if not line.startswith("FILE")) + "\n"
+        self.assertEqual(oracle.judge(no_file, data, {"lba_offset": 0}), "NO_FILE")
+
+
+class SectorHeaderTests(unittest.TestCase):
+    """The oracle alone must reject a data sector whose raw header is wrong (sync, BCD MSF = LBA + 150, mode 1)."""
+
+    def tampered(self, frame, byte, value):
+        cue, data = spec_image(225)
+        data = bytearray(data)
+        data[frame * RAW + byte] = value
+        return oracle.judge(cue, bytes(data), {"lba_offset": 0})
+
+    def test_untampered_v1_and_v2_are_ok(self):
+        for pregap in (None, 225):
+            cue, data = spec_image(pregap)
+            self.assertEqual(oracle.judge(cue, data, {"lba_offset": 0}), "OK")
+
+    def test_tampered_msf_mode_or_sync_is_rejected(self):
+        # frame 241 = V2 INDEX 01 (header sector), 16 = first pregap frame (INDEX 00), 244 = last data frame
+        for frame in (16, 120, 241, 244):
+            for name, byte, value in (("sync", 0, 0x01), ("sync", 11, 0xFF), ("minute", 12, 0x01),
+                                      ("second", 13, 0x00), ("frame", 14, 0x00), ("bcd", 14, 0x1A),
+                                      ("mode", 15, 0x02), ("mode", 15, 0x00)):
+                with self.subTest(frame=frame, field=name, byte=byte):
+                    self.assertEqual(self.tampered(frame, byte, value), "BAD_SECTOR_HEADER")
+
+    def test_audio_frames_are_not_header_checked(self):
+        self.assertEqual(self.tampered(0, 12, 0x99), "OK")
+
+
+class FailClosedInputTests(unittest.TestCase):
+    """CUE/BIN inconsistencies and malformed input return a non-OK status; judge() never raises."""
+
+    def setUp(self):
+        self.cue, self.data = spec_image(225)
+        self.plan = {"lba_offset": 0}
+
+    def judge(self, cue=None, data=None, plan="default"):
+        return oracle.judge(self.cue if cue is None else cue, self.data if data is None else data,
+                            self.plan if plan == "default" else plan)
+
+    def test_file_type_must_be_binary(self):
+        self.assertEqual(self.judge(cue=self.cue.replace(" BINARY", " WAVE")), "BAD_CUE")
+        self.assertEqual(self.judge(cue=self.cue.replace(" BINARY", "")), "BAD_CUE")
+
+    def test_bin_length_must_be_a_multiple_of_2352(self):
+        self.assertEqual(self.judge(data=self.data + b"\x00"), "BAD_BIN_SIZE")
+        self.assertEqual(self.judge(data=self.data[:-1]), "BAD_BIN_SIZE")
+
+    def test_bin_shorter_than_the_cue_is_rejected(self):
+        self.assertEqual(self.judge(data=self.data[:240 * RAW]), "BAD_CUE")   # ends before INDEX 01 (241)
+
+    def test_index00_after_index01_is_rejected(self):
+        cue = self.cue.replace("INDEX 00 00:00:16", "INDEX 00 00:03:20")
+        self.assertEqual(self.judge(cue=cue), "BAD_CUE")
+
+    def test_out_of_range_or_malformed_msf_is_rejected(self):
+        for msf in ("00:60:00", "00:03:75", "-0:03:16", "00:03", "0:03:16", "00:03:1x"):
+            with self.subTest(msf=msf):
+                self.assertEqual(self.judge(cue=self.cue.replace("INDEX 01 00:03:16", "INDEX 01 " + msf)), "BAD_CUE")
+
+    def test_malformed_lines_return_bad_cue_not_an_exception(self):
+        for bad in ("  TRACK\n", "  TRACK xx MODE1/2352\n", "    INDEX 01\n", "    INDEX 02 00:00:00\n",
+                    "    INDEX 01 00:03:16\n", "  PREGAP 00:02:00\n"):
+            with self.subTest(line=bad):
+                self.assertEqual(self.judge(cue=self.cue + bad), "BAD_CUE")
+        self.assertEqual(self.judge(cue="    INDEX 01 00:00:00\n" + self.cue), "BAD_CUE")   # INDEX before TRACK
+
+    def test_read_plan_must_carry_an_integer_lba_offset(self):
+        for plan in ({}, {"lba_offset": None}, {"lba_offset": "0"}, {"lba_offset": True}, None,
+                     {"lba_offset": 0, "abort_in_data": "no"}):
+            with self.subTest(plan=plan):
+                self.assertEqual(self.judge(plan=plan), "BAD_READ_PLAN")
 
 
 class LoaderHeaderTests(unittest.TestCase):

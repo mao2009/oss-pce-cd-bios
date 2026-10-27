@@ -8,6 +8,8 @@ Layout (single MODE1/2352 data track after one AUDIO track, one FILE, INDEX valu
   Single FILE is the M4/M5 baseline. Multi-FILE (V2M) is a separate condition and is not generated here.
 Every data-track frame (pregap included) carries sync, BCD MSF = LBA + 150 and mode byte 1 (tools/cue_analysis.py).
 Data track = 4 frames: header sector at INDEX 01, then 3 filler sectors.
+TRACK 01 AUDIO is 16 frames, below the Red Book minimum track length (4 s = 300 frames). This only keeps the host
+fixture small; a drive or emulator may reject such a disc, so do not read real-core results from these images as is.
 
 Header (8 bytes at the start of the user data, USER_OFFSET 16 of a raw frame), the DEV loader's PCEX form
 (src/cd_load_exec_probe.s: HDR_BYTES 8, BUF+4 entry, BUF+5 length, BUF+6 checksum):
