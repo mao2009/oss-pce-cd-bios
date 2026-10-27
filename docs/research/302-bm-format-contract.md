@@ -120,3 +120,60 @@ Refs #302 / 親 #34 / 関連 #303（合成FORMAT安全モデル）/ #304（診�
 
 * §4 の #304 判定（BLOCKED_ABI）は台帳行ではなく別判定として 1 件。
 * VERIFIED は 0。release_eligible=false。
+
+## 8. #303 合成判定ゲートとの関係（PR #509）
+
+本節は #303 の合成判定層（`tools/bm_format_verdict.py`）と本台帳の関係を記録する。合成結果は BIOS 互換性の証拠ではない。
+
+### 8.1 合成期待値と BIOS ABI の分離
+
+| 区分 | 項目 | 出所 | 状態 |
+| --- | --- | --- | --- |
+| 合成（モデル専用） | 署名 `SYNBM\\x01\\x00\\x00`、最小容量64、`OK`・各拒否ステータス | `tools/bm_format_model.py`（#395） | synthetic。BIOS の値ではない |
+| 合成（判定層） | `OK` 時の「署名あり・残部ゼロ埋め・容量維持」、拒否時の元バイト保持、未知ステータスの拒否 | `tools/bm_format_verdict.py`（#509） | synthetic。BIOS ABI は根拠にしない |
+| BIOS ABI | 入口、確認文字列、返値、容量、破壊範囲、MMIO 副作用 | 本台帳 C3b, C5b, C11, C12, B1-B7 | UNKNOWN |
+
+すべての合成テストが PASS でも総合判定は `BLOCKED_ABI`、`release_eligible=false`。参照 ABI VERIFIED への昇格は行わない。
+
+### 8.2 オーナー裁定 A2（2026-10-24、Issue #303）
+
+**A2（既存の合成モデルの回復動作を維持）を採用した。** A1（不正署名の追加拒否）は採用しない。PR #509 の `guarded_format()` は `bm.format_image()` に委譲して、**合成イメージに限り**挙動を一致させる。従来の `REJECTED_INVALID_SIGNATURE` は判定層の許可ステータスから削除する。
+
+| 入力・条件 | `bm.format_image` | `guarded_format`（A2） |
+| --- | --- | --- |
+| 非 bytes / bytearray | TypeError | 同左 |
+| `allow_destructive is not True` | `REFUSED_UNCONFIRMED`（保持） | 同左 |
+| 確認付き・64バイト未満 | `INSUFFICIENT_CAPACITY`（保持） | 同左 |
+| 確認付き・有効署名 | `ALREADY_FORMATTED`（保持） | 同左 |
+| 確認付き・64バイト以上・全ゼロ | `OK`（合成署名・残部ゼロ埋め） | 同左 |
+| 確認付き・64バイト以上・非ゼロ不正署名 | `OK`（合成署名・残部ゼロ埋め） | 同左 |
+
+返値は `(status, bytes)`。入力 `bytearray` も変更せず、コピーした新規結果を返す。元のイメージが利用者データかどうかは判別しないため、**この裁定を実ユーザーの save / RAM / デバイスへ適用しない**。実FORMAT処理や実 BIOS 呼出しは行わない。元の System Card の振る舞いを証明・承認するものでもない（#302）。
+
+### 8.3 判定器の fail-closed と安全境界
+
+`guarded_format` の追加拒否は A2 により削除されたが、`judge`・`run_case`・`run_all` の判定は fail-closed のままとする。未知ステータス（旧 `REJECTED_INVALID_SIGNATURE` を含む）、型不一致、結果欠落、モデル例外、入力バッファ変異、署名未書込みやゼロ埋め失敗は `FAIL`。全ケース PASS の総合判定は `BLOCKED_ABI` であり `PASS` にしない。
+
+**呼出し経路の限定により実データを守る実行時境界は存在しない。** `guarded_format` と `bm.format_image` は双方ともメモリ内の合成 Fixture 用。回復モデルの結果を実メモリ書換えやリリース許可に転用しない。実ユーザーデータの保護や参照 BIOS ABI の調査は別タスクとする。
+
+### 8.4 変更範囲・裁定履歴
+
+- オーナー判断: Issue #303（2026-10-24）、A2 を採用。A1 の暫定拒否と矛盾していた #395 の回復テストは書き換えずに維持する。
+- PR #509: `guarded_format` の非ゼロ不正署名拒否を削除、`CASES` と判定層テストを回復期待に更新。旧拒否ステータスの一致による偽 PASS を許容しない。
+- 非対象: `tools/bm_format_model.py` / #395 のテスト、実 save・RAM・MMIO、System Card ABI、参照 JSR ゲート、正式な実装完了判定。
+
+### 8.5 #303 完了条件の証拠台帳
+
+| # | 対象 | 根拠（source） | 種別 | 判定 |
+| --- | --- | --- | --- | --- |
+| E1 | 実 save/RAM への非書込み（モデルは in-memory のみ） | `tools/bm_format_model.py` の I/O 禁止と import 許可リストのテスト（#395、#509 の `test_verdict_module_imports_only_the_model`） | 合成（静的・単体テスト） | PASS（合成） |
+| E2 | 正常系（blank 64 / 256、bytearray 入力、入力非改変） | `tests/host/test_bm_format_verdict.py`、`CASES` | 合成 | PASS（合成） |
+| E3 | 不正署名（非ゼロ）の回復ケースと未確認の拒否 | 同上。A2 により #395 の合成回復と一致。入力非改変、確認フラグ厳格性をテスト | 合成 | PASS（合成）。実 save への適用不可 |
+| E4 | 容量境界（63 バイトの無署名・有効署名、空、64 バイト空白） | 同上 | 合成 | PASS（合成） |
+| E5 | fail-closed 判定（OK は署名必須、結果欠落、型不一致、許可外ステータス（一致していても FAIL）、例外、スナップショット失敗、入力変更） | `judge`、`run_case`、テスト群。改修前は OK 署名なしと、一致する許可外ステータス（`BOGUS_STATUS`）を PASS にしていた（RED を確認） | 合成 | PASS（合成） |
+| E6 | 根拠 URL / revision / line | `docs/research/302-bm-format-contract.md` §1（HuCC `54f5c73`）、§2 の行番号 | 出典（静的） | UNKNOWN 項目を含む（§3） |
+| E7 | BIOS 上の実挙動（返値、確認、破壊範囲、MMIO） | 観測なし（B1 ほか） | 実測なし | NOT_RUN / BLOCKED_ABI |
+| E8 | 実 FORMAT の実行、実 save への書込み | 方針により実施しない | 実測なし | NOT_RUN（対象外） |
+| E9 | 総合判定 | `run_all()`（全ケース PASS でも総合は BLOCKED_ABI） | 合成 | BLOCKED_ABI、`release_eligible=false` |
+
+PASS は合成データに対してのみ。BIOS 互換性の PASS は一つもない。
