@@ -1205,7 +1205,9 @@
       "host_evidence": [
         "tests/host/test_ma_sin_dev.py"
       ],
-      "real_core_evidence": [],
+      "real_core_evidence": [
+        "tests/integration/geargrafx_dev_sin.py"
+      ],
       "approval": {
         "approved_by": null,
         "review_ref": null

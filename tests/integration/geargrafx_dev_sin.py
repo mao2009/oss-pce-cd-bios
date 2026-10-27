@@ -40,7 +40,7 @@ BLOCKED_EXIT = 3
 SLOT_MA_SIN = 0x45
 BATCH = 16                        # angles per run; 16 batches cover 0..255
 OUT_LO, OUT_HI = 0x2200, 0x2300   # work RAM: low bytes at $2200+i, high bytes at $2300+i (i = 0..15)
-SP_OUT, P_OUT = 0x2401, 0x2402
+P_PRE_OUT, SP_OUT, P_POST_OUT = 0x2400, 0x2401, 0x2402
 STEPS = 2048                      # the probe's maximum per-phase count
 TABLE_PROBE = bytes([0x00, 0x24, 0x48, 0x6A])  # first four low bytes of T[0..3] in sin_lo (unique in ROM)
 MUTANT_ANGLE = 10                 # sin_lo[10] is used by angles 10 and 138; batch 0 contains 10
@@ -68,9 +68,17 @@ def guest(reset, entry, base):
         0x69, base & 0xFF,                                 # ADC #base  (A = angle, D=0 here)
         0xF8,                                              # SED  (caller D=1 before the call)
         0x38,                                              # SEC  (caller C=1 before the call)
+        0x48,                                              # PHA (save angle)
+        0x08,                                              # PHP  (P before JSR)
+        0x68,                                              # PLA
+        0x8D, P_PRE_OUT & 0xFF, P_PRE_OUT >> 8,            # STA $2400 (P before JSR)
+        0x68,                                              # PLA (restore angle)
         0x20, entry & 0xFF, entry >> 8,                    # JSR entry (X:A = result)
+        0x99, OUT_LO & 0xFF, OUT_LO >> 8,                  # STA $2200,Y (low byte; no P effect)
+        0x08,                                              # PHP  (P immediately after JSR, before CLD)
+        0x68,                                              # PLA
+        0x8D, P_POST_OUT & 0xFF, P_POST_OUT >> 8,          # STA $2402 (P after JSR)
         0xD8,                                              # CLD
-        0x99, OUT_LO & 0xFF, OUT_LO >> 8,                  # STA $2200,Y (low byte)
         0x8A,                                              # TXA
         0x99, OUT_HI & 0xFF, OUT_HI >> 8,                  # STA $2300,Y (high byte)
         0xC8,                                              # INY
@@ -81,8 +89,6 @@ def guest(reset, entry, base):
     code += bytes([
         0xBA,                                              # TSX
         0x8E, SP_OUT & 0xFF, SP_OUT >> 8,                  # STX $2401 (SP after the loop)
-        0x08, 0x68,                                        # PHP; PLA
-        0x8D, P_OUT & 0xFF, P_OUT >> 8,                    # STA $2402 (P after the loop)
     ])
     halt = reset + len(code)
     code += bytes([0x80, 0xFE])                            # BRA -2
@@ -108,7 +114,15 @@ def check(label, observation, halt, work_ram, base):
         angle, got, want = bad[0]
         raise ValueError(f"{label}: {len(bad)} of {BATCH} angles wrong; first angle ${angle:02X}: "
                          f"X:A ${got:04X}, want ${want:04X}")
-    return work_ram[P_OUT - 0x2000]
+    # P preservation: effective bits C(0x01) Z(0x02) I(0x04) D(0x08) V(0x40) N(0x80) must match.
+    # T(bit5) and B(bit4) are core-specific and are not asserted.
+    P_MASK = 0xCF
+    p_pre = work_ram[P_PRE_OUT - 0x2000]
+    p_post = work_ram[P_POST_OUT - 0x2000]
+    if (p_pre & P_MASK) != (p_post & P_MASK):
+        raise ValueError(f"{label}: P not preserved (pre ${p_pre:02X}, post ${p_post:02X}, "
+                         f"mask ${P_MASK:02X})")
+    return p_pre, p_post
 
 
 def run_batch(probe, rom_bytes, folder, cue, reset, entry, base, label):
@@ -149,8 +163,8 @@ def main():
         for base in range(0, 256, BATCH):
             label = f"sin-{base:02x}"
             cold, halt, work_ram = run_batch(probe, data, folder, cue, reset, entry, base, label)
-            p_after = check(label, cold, halt, work_ram, base)
-            evidence["batches"].append({"base": base, "angles": BATCH, "p_after_recorded": p_after})
+            p_pre, p_post = check(label, cold, halt, work_ram, base)
+            evidence["batches"].append({"base": base, "angles": BATCH, "p_pre": p_pre, "p_post": p_post})
             evidence["angles_checked"] += BATCH
         if evidence["angles_checked"] != 256:
             raise ValueError("internal: not all 256 angles were checked")
@@ -171,9 +185,30 @@ def main():
         else:
             raise ValueError("table mutant (sin_lo[10] flipped) passed the real-core check")
 
+        # Negative: break the PLP that restores the caller's P in slot $45.
+        plp_rts = None
+        for i in range(body - 0xE000, min(body - 0xE000 + 0x80, len(data) - 1)):
+            if data[i] == 0x28 and data[i + 1] == 0x60:
+                plp_rts = i
+                break
+        if plp_rts is None:
+            raise ValueError("slot $45 PLP;RTS not found")
+        pmutant = bytearray(data)
+        pmutant[plp_rts] = 0xEA  # plp -> nop
+        cold_p, halt_p, work_p = run_batch(probe, bytes(pmutant), folder, cue, reset, entry, 0, "sin-plp-mutant")
+        try:
+            check("sin-plp-mutant", cold_p, halt_p, work_p, 0)
+        except ValueError as error:
+            if "P not preserved" not in str(error) and "did not reach its halt loop" not in str(error):
+                raise ValueError(f"PLP mutant failed for an unrelated reason: {error}") from error
+            evidence["negative_cases"].append({"case": "slot_45_without_PLP", "rejected": True, "reason": str(error)})
+        else:
+            raise ValueError("PLP mutant (slot $45) passed the real-core check")
+
     (args.rom.parent / "geargrafx-dev-sin-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
     print(f"PASS real Geargrafx DEV ROM: MA_SIN slot $45, all 256 angles in {len(evidence['batches'])} batches of "
-          f"{BATCH}; X:A = Q15 sine, SP and MPR1/MPR7 checked each batch; table mutant rejected")
+          f"{BATCH}; X:A = Q15 sine, SP and MPR1/MPR7 checked each batch; P (mask 0xCF) preserved; "
+          f"table and PLP mutants rejected")
 
 
 if __name__ == "__main__":
