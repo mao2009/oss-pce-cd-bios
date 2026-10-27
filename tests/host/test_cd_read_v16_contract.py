@@ -214,10 +214,12 @@ class TrustedGate(unittest.TestCase):
         self.assertEqual(v.judge_callee(None, callee_obs())[0], v.BLOCKED)
 
     def test_missing_gate_refusal_blocks_even_with_complete_provenance(self):
+        # MOCK: the trusted gate is patched to refuse. Checks the refusal path only.
         with mock.patch.object(v._gate, 'require_allowed', side_effect=v._gate.GateRefused('closed')):
             self.assertEqual(v.judge_callee(ev.CASES['C2_COUNT_0'], callee_obs())[0], v.BLOCKED)
 
     def test_mocked_gate_open_without_provenance_is_blocked(self):
+        # MOCK: gate patched to ALLOWED. Checks the provenance requirement only, not approval.
         for key in PROVENANCE:
             obs = callee_obs()
             del obs[key]
@@ -225,6 +227,7 @@ class TrustedGate(unittest.TestCase):
                 self.assertEqual(v.judge_callee(ev.CASES['C2_COUNT_0'], obs)[0], v.BLOCKED, key)
 
     def test_mocked_gate_open_with_bad_provenance_is_blocked(self):
+        # MOCK: gate patched to ALLOWED. Checks the provenance format rules only, not approval.
         bad_values = {'origin': '', 'rom_sha256': 'xyz', 'core': '', 'head': 'b' * 39, 'evidence': None}
         for key, bad in bad_values.items():
             with mock.patch.object(v._gate, 'require_allowed', return_value={'execution': 'ALLOWED'}):
