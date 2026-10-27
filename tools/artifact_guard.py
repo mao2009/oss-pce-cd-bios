@@ -2579,5 +2579,7 @@ def main(argv):
 if __name__ == "__main__":
     try:
         main(sys.argv[1:])
-    except (ValueError, OSError, RecursionError) as error:   # a too-deep document is a refusal, not a traceback (Issue #547)
+    except (ValueError, OSError) as error:
         raise SystemExit(f"artifact_guard: {error}") from error
+    except RecursionError as error:   # a too-deep document is a refusal, not a traceback; named so it is not read as a bug (Issue #547)
+        raise SystemExit(f"artifact_guard: refused, a YAML document is nested too deeply to check ({error}; Issue #547)") from error
