@@ -62,6 +62,9 @@ DENY_COMMANDS = [
     "r\\m -rf dir",
     "/bin/rm -rf dir",
     "\\rm -rf dir",
+    "\\rm -r -f dir",
+    "\\\\rm -rf dir",
+    "\\rm README.md \\rm",
     "true; rm -rf dir",
     "git status && rm -rf dir",
     "git status\nrm -rf dir",
@@ -85,6 +88,71 @@ DENY_COMMANDS = [
     "rm -- README.md ../x",
     "rm -r README.md",
     "git status; \\\n rm -rf dir",
+    # CRITICAL 1: CR (JSON \r) is whitespace to shlex, so "\rm" became "m"
+    "\rm -rf dir",
+    "\rm README.md",
+    "git status\rrm -rf dir",
+    # MAJOR 2: command substitution whose content cannot be inspected
+    "sh -c \"$(echo cm0gLXJmIHg= | base64 -d)\"",
+    "bash -c \"$(cat f)\"",
+    "zsh -c `cat f`",
+    "eval \"$(cat f)\"",
+    "sh -c \"echo $(date)\"",
+    "source <(cat f)",
+    "$(echo rm) -rf dir",
+    "echo x | sh -c \"$(cat f)\"",
+    # MAJOR 4: git aliases defined on the command line
+    "git -c alias.x=clean x",
+    "git -c alias.x=\"clean -fdx\" x",
+    "git -c Alias.X=clean x",
+    "git -C dir clean -fd",
+    "git --git-dir=.git clean -fd",
+    "git --git-dir .git clean -fd",
+    # MAJOR 5: writes whose target is inside .claude/
+    "echo x > .claude/worktree-owners.json",
+    "echo x >> .claude/worktree-owners.json",
+    "echo x > \".claude/worktree-owners.json\"",
+    "echo x >.claude/worktree-owners.json",
+    "echo x > $(echo .claude/worktree-owners.json)",
+    "tee .claude/worktree-owners.json",
+    "sed -i s/a/b/ .claude/settings.json",
+    "cp x .claude/worktree-owners.json",
+    "mv .claude/worktree-owners.json y",
+    "install x .claude/y",
+    "touch .claude/x",
+    "rsync x .claude/",
+    "dd of=.claude/x if=/dev/zero",
+    "cd .claude && echo x > worktree-owners.json",
+    "cd .claude && cp x worktree-owners.json",
+    "python3 -c \"open('.claude/worktree-owners.json', 'w')\"",
+    "python3 .claude/hooks/helper.py",
+    "perl -i -pe s/a/b/ .claude/settings.json",
+    # M1: NUL byte and other control characters fail closed
+    "rm\x00 -rf dir",
+    # M2: empty quote pairs inside a command name
+    "r\"\"m -r -fo dir",
+    "r\"\"m -rf dir",
+    "r''m -rf dir",
+    # M3: git push refspec deletion
+    "git push origin :branch",
+    "git push origin +:branch",
+    "git push origin :refs/heads/x",
+    "git push --prune origin",
+    "git push origin --delete x",
+    "git push -d origin x",
+]
+
+POWERSHELL_DENY_COMMANDS = [
+    # MAJOR 3: content of an expression or call operand is not known
+    "iex \"Remove-Item -Recurse -Force dir\"",
+    "iex $x",
+    "Invoke-Expression \"x\"",
+    "invoke-expression 'x'",
+    "& \"git\" clean -fdx",
+    "& 'rm' -rf dir",
+    "& $cmd",
+    "&\"x\"",
+    "pwsh -c \"$(Get-Content f)\"",
 ]
 
 ALLOW_COMMANDS = [
@@ -96,12 +164,31 @@ ALLOW_COMMANDS = [
     "python3 -m unittest",
     "ls -la",
     "cat README.md",
+    "cat .claude/settings.json",
+    "ls .claude",
     "rm README.md",
     "git restore --staged README.md",
     "echo \"rm -rf dir\"",
     "git status; ls -la",
     "python3 -c 'print(1)'",
     "cd docs && ls",
+    "echo $(date)",
+    "echo `date`",
+    "git -C dir status",
+    "git -c color.ui=false status",
+    "git push origin HEAD:refs/heads/x",
+    "cp README.md README.bak",
+]
+
+POWERSHELL_ALLOW_COMMANDS = [
+    "Get-ChildItem",
+    "git status",
+    "git -C dir status",
+    "git push origin HEAD:refs/heads/x",
+    "cat .claude/settings.json",
+    "echo \"rm -rf dir\"",
+    "cd docs; ls",
+    "git status && git diff",
 ]
 
 INVALID_INPUTS = [
@@ -113,6 +200,10 @@ INVALID_INPUTS = [
     '{"tool_name":"Bash","tool_input":{"command":"   "}}',
     '{"tool_name":"Bash","tool_input":{"command":5}}',
     '{"tool_input":{"command":"git status"}}',
+    # M1: NUL and other control characters
+    '{"tool_name":"Bash","tool_input":{"command":"git status\\u0000"}}',
+    '{"tool_name":"Bash","tool_input":{"command":"git\\rstatus"}}',
+    '{"tool_name":"Bash","tool_input":{"command":"git\\u0007status"}}',
 ]
 
 
@@ -136,6 +227,13 @@ def run_hook(text):
     return p.returncode, p.stdout
 
 
+def run_hook_bytes(data):
+    """Feed raw bytes on stdin (the hook must decode them itself)."""
+    p = subprocess.run([sys.executable, HOOK], input=data, capture_output=True,
+                       timeout=60)
+    return p.returncode, p.stdout.decode("ascii", errors="replace")
+
+
 def stdout_verdict(stdout):
     if not stdout.strip():
         return "allow"
@@ -150,6 +248,11 @@ class DenyTests(unittest.TestCase):
 
     def test_destructive_commands_denied_powershell(self):
         for cmd in DENY_COMMANDS:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, "PowerShell"), "DENY")
+
+    def test_powershell_only_denied_powershell(self):
+        for cmd in POWERSHELL_DENY_COMMANDS:
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd, "PowerShell"), "DENY")
 
@@ -181,12 +284,31 @@ class DenyTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(stdout_verdict(out), "deny")
 
+    def test_non_utf8_stdin_denied(self):
+        # cp932 bytes are not valid UTF-8: must deny, not crash open.
+        data = b'{"tool_name":"Bash","tool_input":{"command":"echo \x82\xa0"}}'
+        rc, out = run_hook_bytes(data)
+        self.assertEqual(rc, 0)
+        self.assertEqual(stdout_verdict(out), "deny")
+
+    def test_utf8_stdin_decoded(self):
+        data = json.dumps({"tool_name": "Bash", "tool_input": {"command": "echo 日本語"}},
+                          ensure_ascii=False).encode("utf-8")
+        rc, out = run_hook_bytes(data)
+        self.assertEqual(rc, 0)
+        self.assertEqual(stdout_verdict(out), "allow")
+
 
 class AllowTests(unittest.TestCase):
     def test_benign_commands_allowed(self):
         for cmd in ALLOW_COMMANDS:
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd, "Bash"), "ALLOW")
+
+    def test_benign_powershell_commands_allowed(self):
+        for cmd in POWERSHELL_ALLOW_COMMANDS:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, "PowerShell"), "ALLOW")
 
     def test_end_to_end_subprocess_allow(self):
         rc, out = run_hook(payload("git status"))
@@ -221,6 +343,11 @@ class OwnershipTests(unittest.TestCase):
         with open(self.registry, "w", encoding="utf-8") as f:
             f.write("{broken")
         cmd = "git worktree remove " + self.owned
+        self.assertEqual(verdict(cmd, repo_root=self.root), "DENY")
+
+    def test_forged_registry_write_denied(self):
+        # MAJOR 5: the registry cannot be forged with a shell write.
+        cmd = "echo {} > " + self.registry
         self.assertEqual(verdict(cmd, repo_root=self.root), "DENY")
 
 
