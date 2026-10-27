@@ -8,9 +8,10 @@ Layout (single MODE1/2352 data track after one AUDIO track, one FILE, INDEX valu
       so a V2 image must name P explicitly.
 Data track = 4 frames: header sector at INDEX 01, then 3 filler sectors.
 
-Header (16 bytes at the start of the user data, USER_OFFSET 16 of a raw frame):
-  [0:8] magic b"OSSBOOT1", [8:10] entry offset u16 LE, [10:12] length u16 LE,
-  [12] checksum (sum of code mod 256), [13:16] reserved zero. Code (length bytes) follows the header.
+Header (8 bytes at the start of the user data, USER_OFFSET 16 of a raw frame), the DEV loader's PCEX form
+(src/cd_load_exec_probe.s: HDR_BYTES 8, BUF+4 entry, BUF+5 length, BUF+6 checksum):
+  [0:4] magic b"PCEX", [4] entry offset u8, [5] length u8 (1..255), [6] checksum (sum of code mod 256),
+  [7] reserved zero. Code (length bytes) follows the header at [8:].
 
 Mutations (applied to the header sector, or to the read plan): NONE, BAD_MAGIC, BAD_CHECKSUM, BAD_LENGTH,
 BAD_ENTRY_OFFSET, NO_TRACK (data track replaced by AUDIO), DATA_TIMEOUT, PREMATURE_STATUS, WRONG_LBA.
@@ -25,8 +26,8 @@ from pathlib import Path
 RAW = 2352
 USER_OFFSET = 16
 USER_BYTES = 2048
-HEADER = 16
-MAGIC = b"OSSBOOT1"
+HEADER = 8
+MAGIC = b"PCEX"
 CODE = bytes([0xEA] * 31 + [0x60])   # 32 bytes, not executed by the host; NOP padding + RTS
 AUDIO_FRAMES = 16
 DATA_FRAMES = 4
@@ -68,7 +69,7 @@ def _audio_frame(index: int) -> bytes:
 
 
 def _header_user(entry: int, length: int, checksum: int, code: bytes, lba: int) -> bytes:
-    head = MAGIC + entry.to_bytes(2, "little") + length.to_bytes(2, "little") + bytes([checksum]) + bytes(3)
+    head = MAGIC + bytes([entry, length, checksum, 0])
     body = head + code
     return body + _filler(b"synthetic-data", lba)[len(body):]
 
@@ -101,7 +102,6 @@ def build_case_image(mutation: str, layout: str, pregap_frames=DEFAULT_V2_PREGAP
         user[0] ^= 0xFF
     if mutation == "BAD_CHECKSUM":
         user[HEADER] ^= 0x01                  # flip the first code byte; the stored checksum no longer matches
-
     frames = [_audio_frame(i) for i in range(AUDIO_FRAMES)]
     frames += [_raw_data_frame(bytes(USER_BYTES)) for _ in range(pregap)]
     if mutation == "NO_TRACK":
