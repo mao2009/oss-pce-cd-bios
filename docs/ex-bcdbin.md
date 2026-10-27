@@ -19,6 +19,7 @@ API の既存スタブは従来どおりである。
 ## 検証
 
 ホスト：`python3 -m unittest tests.host.test_ex_bcdbin -v`（モデル照合 3 件。`make test` の host discover で実行される）。
+分類の候補フィクスチャ：`tests/fixtures/bcdbin-classification-1byte.json`（全 256 入力、有効 100・不正 156）。`status` は `CANDIDATE`、根拠は本書の独自仕様（`basis`）のみである。純正 BIOS の期待値ではなく、契約としては扱わない。整合性は `ClassificationFixtureTests`（同じ試験ファイル内）で確認する。
 実コアの負例 5 件（core 不在 / ca65 不在 / ld65 不在 / 起動失敗 / タイムアウト）は host ではなく `tests/integration/test_ex_bcdbin_real_core.py`（`RealCoreFailurePathTests`）にあり、`make integration-test` で実行される（Issue #333 で host から分離済み）。
 実コア：`python3 tests/integration/geargrafx_bcdbin.py`。次の 2 経路で実行される。
 - 専用ワークフロー `.github/workflows/core-bcdbin.yml`（ubuntu-24.04、`make setup` 後に実行）。終了コードがそのままジョブ結果になり、ログは artifact `bcdbin-core-log-<sha>` に保存する。実コアの 2 tests（全256入力、変異3種）の主な証拠はこの run である。

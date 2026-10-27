@@ -192,7 +192,9 @@ def main():
         for name in names:
             source = fetch(name, args.desktop, args.debugger)
             if name == "cc65":
-                subprocess.run(["make", "-C", str(source), f"-j{jobs}",
+                # cc65's Makefile does not order ld65 after the common.a archive under -j,
+                # so a parallel build can link against a half-written archive (CI: "file format not recognized").
+                subprocess.run(["make", "-C", str(source), "-j1",
                                 f"BUILD_ID=Git {DEPENDENCIES[name]['revision'][:9]}",
                                 "ca65", "ld65", "da65", "cc65"], check=True)
             elif name == "geargrafx":

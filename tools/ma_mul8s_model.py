@@ -10,6 +10,12 @@ def expected(a, b):
     return (signed(a) * signed(b)) & 0xFFFF
 
 
+def expected_xa(a, b):
+    """(X, A) = (high, low) bytes of expected(a, b)."""
+    product = expected(a, b)
+    return product >> 8, product & 0xFF
+
+
 def expected_row(a):
     """Bytes the driver must leave at $2200-$27FF for request a (P pages are checked separately)."""
     products = [expected(a, b) for b in range(256)]

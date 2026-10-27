@@ -841,6 +841,14 @@ def _strict_loader():
                 if dups:
                     raise ValueError(f"duplicate mapping key(s) {dups}")
             return super().construct_mapping(node, deep)
+
+        def compose_node(self, parent, index):
+            # Issue #547 (review of e81b2bb): an alias can close a cycle (foo: &x [*x]), and every walker after the parse
+            # loops or recurses on it. No guarded workflow uses an alias, so refuse it at the parse, for every walker.
+            if self.check_event(yaml.AliasEvent):
+                raise ValueError("a YAML alias is refused in guarded workflows (a cycle or shared node cannot be walked; "
+                                 "Issue #547)")
+            return super().compose_node(parent, index)
     return StrictLoader
 
 
@@ -1452,6 +1460,148 @@ WRITE_ALLOWANCES = {
 }
 
 
+POLICY_GUARD_FILE = "policy-guard.yml"
+POLICY_GUARD_TRIGGERS = frozenset({"pull_request_target"})
+POLICY_GUARD_TYPES = frozenset({"opened", "synchronize", "reopened", "ready_for_review"})
+POLICY_GUARD_JOB = "policy-guard"
+POLICY_GUARD_RUN = "python3 .trusted/tools/policy_guard.py --candidate .candidate --trusted .trusted"
+# The one audited full pin of actions/checkout (the same pin ci.yml uses). Any other SHA, or a tag, is refused.
+POLICY_CHECKOUT_USES = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"
+POLICY_TOP_KEYS = frozenset({"name", "on", "permissions", "jobs"})
+
+
+def _same_scalars(actual, expected):
+    """Exact equality with the TYPE checked too: 0 is not False, '1' is not 1, and a bool is only the bool with that value.
+    Python's == would pass 0 == False (Issue #544, owner decision on the #547 low items)."""
+    return (isinstance(actual, dict) and set(actual) == set(expected)
+            and all(type(actual[key]) is type(value) and actual[key] == value for key, value in expected.items()))
+
+
+def _policy_structure_problems(workflow, text):
+    """Issue #544 (owner decision on #547): the policy workflow's text and node tree, checked before any value is read.
+    Refused: explicit YAML tags (!!bool yes: converts a key), anchors and aliases, merge keys (<<:), duplicate keys in one
+    mapping (a later duplicate silently replaces an earlier one in a dict parse), and any key that is not a plain string
+    except the trigger key on:. A parser disagreement cannot change the verdict: these forms are refused in the text."""
+    import yaml
+    problems = []
+    if re.search(r"(?:^|[\s\[{,:\-])!", text):
+        problems.append(f"{workflow}: an explicit YAML tag is refused in the policy workflow (Issue #544)")
+    if re.search(r"\r(?!\n)", text):   # a lone CR is a line break to some parsers and not to a line reader: refused
+        problems.append(f"{workflow}: a lone CR line break is refused in the policy workflow (Issue #544)")
+    if re.search(r"[^\x09\x0a\x0d\x20-\x7e]", text):   # printable ASCII only: a BOM, NEL, U+2028/2029, NBSP or zero-width
+        problems.append(f"{workflow}: a non-ASCII or control character is refused in the policy workflow; parsers disagree on "
+                        "line breaks and spaces outside ASCII (Issue #544)")
+    if re.search(r"(?:^|[\r\n])\s*%", text):   # a YAML directive (%YAML 1.2) can change the schema; CR-only breaks count too
+        problems.append(f"{workflow}: a YAML directive is refused in the policy workflow (Issue #544)")
+    if re.search(r"(?:^|[\s\[{,:\-])[&*][\w-]", text):
+        problems.append(f"{workflow}: a YAML anchor or alias is refused in the policy workflow (Issue #544)")
+    try:
+        root = yaml.compose(text, Loader=yaml.SafeLoader)
+    except Exception as error:
+        return problems + [f"{workflow}: the policy workflow cannot be read as YAML ({error}; Issue #544)"]
+    stack, seen = [(root, True)], set()
+    while stack:
+        node, top = stack.pop()
+        if id(node) in seen:   # reached twice: an alias or a cycle (foo: &x [*x]). Refused, and never walked again (Issue #544)
+            problems.append(f"{workflow}: a repeated YAML node (alias or cycle) is refused in the policy workflow (Issue #544)")
+            continue
+        seen.add(id(node))
+        if isinstance(node, yaml.MappingNode):
+            key_texts = []
+            for key, value in node.value:
+                if not isinstance(key, yaml.ScalarNode):
+                    problems.append(f"{workflow}: a non-scalar mapping key is refused (Issue #544)")
+                    continue
+                key_texts.append(key.value)
+                if key.tag == "tag:yaml.org,2002:merge" or key.value == "<<":
+                    problems.append(f"{workflow}: a merge key (<<:) is refused; it can carry a setting the check does not see "
+                                    "(Issue #544)")
+                is_trigger = top and key.value == "on" and key.tag == "tag:yaml.org,2002:bool"
+                if key.tag != "tag:yaml.org,2002:str" and not is_trigger:
+                    problems.append(f"{workflow}: the key {key.value!r} converts by its YAML tag ({key.tag}); keys must be "
+                                    "plain strings (Issue #544)")
+                stack.append((value, False))
+            duplicates = sorted({text_ for text_ in key_texts if key_texts.count(text_) > 1})
+            if duplicates:
+                problems.append(f"{workflow}: duplicate keys {duplicates} in one mapping are refused (Issue #544)")
+        elif isinstance(node, yaml.SequenceNode):
+            stack.extend((item, False) for item in node.value)
+    return problems
+
+
+def _no_secret_reference(value):
+    """True when any string in value names a secret, an id-token or the GITHUB_TOKEN (a run under pull_request_target must
+    hold none of them)."""
+    if isinstance(value, dict):
+        return any(_no_secret_reference(key) or _no_secret_reference(inner) for key, inner in value.items())
+    if isinstance(value, list):
+        return any(_no_secret_reference(inner) for inner in value)
+    # secrets, id-token, the GITHUB_TOKEN, the github context read as a whole (toJSON(github)) or by key (github['token'])
+    return isinstance(value, str) and bool(re.search(
+        r"secrets\b|id-token|GITHUB_TOKEN|github\s*\.\s*token|github\s*\[|toJSON\s*\(\s*github", value, re.I))
+
+
+def _policy_guard_problems(label, doc):
+    """Issue #544 bootstrap (owner decision), P0 hardening of #547. The exact shape of policy-guard.yml. pull_request_target
+    runs this file from the base branch, so the job may only (1) check out the base SHA as the trusted copy, (2) check out the
+    pull request head as DATA (persist-credentials false, never executed), and (3) run the trusted policy_guard.py. Exact
+    top-level keys (name, on, permissions, jobs); exact trigger types, each once; exact job name policy-guard; exact keys on the
+    job and on every step (no if, defaults, env, shell, working-directory, needs or environment); one audited checkout pin;
+    contents: read only; no secrets, id-token, GITHUB_TOKEN or write grant."""
+    problems = []
+    if any(key is True for key in doc) and "on" in doc:   # YAML: a bare on: is True, a quoted "on" is text; both is ambiguous
+        problems.append(f"{label}: the policy workflow has both on: and a bare on: (ambiguous trigger; refused, Issue #544)")
+    on = doc["on"] if "on" in doc else doc.get(True)
+    top = {"on" if key is True else str(key) for key in doc}
+    if sorted(top - POLICY_TOP_KEYS):
+        problems.append(f"{label}: top-level keys {sorted(top - POLICY_TOP_KEYS)} are not allowed in the policy workflow "
+                        "(refused; Issue #544)")
+    if not isinstance(on, dict) or set(on) != POLICY_GUARD_TRIGGERS:
+        problems.append(f"{label}: the policy workflow must have exactly the pull_request_target trigger (Issue #544)")
+    else:
+        spec = on.get("pull_request_target")
+        types = spec.get("types") if isinstance(spec, dict) and set(spec) == {"types"} else None
+        exact = (isinstance(types, list) and all(isinstance(t, str) for t in types) and len(types) == len(set(types))
+                 and set(types) == POLICY_GUARD_TYPES)
+        if not exact:
+            problems.append(f"{label}: pull_request_target types must be exactly {sorted(POLICY_GUARD_TYPES)}, each once "
+                            "(refused; Issue #544)")
+    if doc.get("permissions") != {"contents": "read"}:
+        problems.append(f"{label}: the policy workflow permissions must be exactly contents: read (Issue #544)")
+    jobs = doc.get("jobs")
+    if not isinstance(jobs, dict) or set(jobs) != {POLICY_GUARD_JOB}:
+        problems.append(f"{label}: the policy workflow must have exactly one job, {POLICY_GUARD_JOB} (Issue #544)")
+        return problems
+    job = jobs[POLICY_GUARD_JOB]
+    if (not isinstance(job, dict) or set(job) != {"name", "runs-on", "steps"} or job.get("name") != POLICY_GUARD_JOB
+            or job.get("runs-on") != "ubuntu-24.04"):
+        problems.append(f"{label}: the policy-guard job must have exactly name: {POLICY_GUARD_JOB}, runs-on: ubuntu-24.04 and "
+                        "steps (no if, needs, env, defaults, permissions, environment or container; Issue #544)")
+        return problems
+    steps = job.get("steps")
+    checkout_base = {"name", "uses", "with"}
+    shape_ok = isinstance(steps, list) and len(steps) == 3 and all(isinstance(step, dict) for step in steps)
+    if shape_ok:
+        shape_ok = (set(steps[0]) == checkout_base and steps[0].get("uses") == POLICY_CHECKOUT_USES
+                    and _same_scalars(steps[0].get("with"), {"ref": "${{ github.event.pull_request.base.sha }}",
+                                                             "path": ".trusted", "persist-credentials": False})
+                    and set(steps[1]) == checkout_base and steps[1].get("uses") == POLICY_CHECKOUT_USES
+                    and _same_scalars(steps[1].get("with"), {"ref": "${{ github.event.pull_request.head.sha }}",
+                                                             "path": ".candidate", "persist-credentials": False})
+                    and set(steps[2]) == {"name", "run"} and steps[2].get("run") == POLICY_GUARD_RUN)
+    if shape_ok and any("${{" in str(step.get("name", "")) for step in steps):   # a step name is text, not a context read
+        shape_ok = False
+    if not shape_ok:
+        problems.append(f"{label}: the policy-guard steps must be exactly: checkout the base SHA to .trusted, checkout the head "
+                        "to .candidate (both persist-credentials false, one audited checkout pin), then the one trusted run "
+                        "(Issue #544)")
+    if _no_secret_reference(doc):
+        problems.append(f"{label}: the policy workflow names a secret, an id-token or the GITHUB_TOKEN (refused; Issue #544)")
+    if "${{" in str(doc.get("name", "")):   # the workflow name is static text: no expression of any kind (github included)
+        problems.append(f"{label}: the policy workflow name must be static text (no expression; Issue #544)")
+    return problems
+
+
 def _privilege_problems(doc, label):
     """Issue #349 (review): pages: write is held only by the deploy job of pages.yml, contents: write by no job in any file
     (no release route is approved), and pages.yml takes only the triggers main has. Checked for every workflow file, at
@@ -1476,6 +1626,11 @@ def _privilege_problems(doc, label):
     names = set(on) if isinstance(on, (dict, list)) else {on} if isinstance(on, str) else set()
     if Path(label).name == PAGES_FILE:
         allowed = PAGES_ALLOWED_TRIGGERS
+    elif Path(label).name == POLICY_GUARD_FILE:
+        # Issue #544 bootstrap: the one workflow that may use pull_request_target. Its exact shape is checked below; any other
+        # shape (another trigger, grants, secrets, another job, a changed step) is refused as the rest of the rule refuses it.
+        allowed = POLICY_GUARD_TRIGGERS
+        problems += _policy_guard_problems(label, doc)
     else:
         allowed = WORKFLOW_ALLOWED_TRIGGERS | ({"schedule"} if Path(label).name in SCHEDULE_WORKFLOWS else set())
     extra = sorted(str(n) for n in names - allowed)
@@ -1540,6 +1695,18 @@ def _pages_single_problems(jobs, per_job, label):
                                PAGES_JOB_KEYS)
 
 
+def _is_junction(path):
+    """True for a Windows reparse point (a directory junction or a link). Python 3.12+ has Path.is_junction; older versions
+    read the reparse-point attribute from lstat (FILE_ATTRIBUTE_REPARSE_POINT = 0x400). Other systems: False."""
+    is_junction = getattr(path, "is_junction", None)
+    if callable(is_junction):
+        return bool(is_junction())
+    try:
+        return bool(getattr(os.lstat(path), "st_file_attributes", 0) & 0x400)
+    except OSError:
+        return False
+
+
 def check_guard_placement(root=ROOT, partial_fixtures=False):
     """Static placement layer (run by make check and by the trusted copy): the preamble and stage/verify steps must
     surround every upload step, in the same job, exactly as written here.
@@ -1554,6 +1721,26 @@ def check_guard_placement(root=ROOT, partial_fixtures=False):
     """
     base = Path(root)
     problems = []
+    # Issue #544 (39b6de2 review): a link on a directory (or a Windows junction) is untrusted input too. Walk the trees the
+    # checks read without following links, and refuse any link or junction found on the way, directories included.
+    for tree in (".github", "tools"):
+        top = base / tree
+        if not os.path.lexists(top):   # nothing to walk (a fixture or a repository without this tree)
+            continue
+        if top.is_symlink() or _is_junction(top):
+            problems.append(f"{tree}: a symbolic link or junction is refused (untrusted input; Issue #544)")
+            continue
+        unreadable = []   # a directory that cannot be listed is refused, never skipped
+        for dirpath, dirnames, filenames in os.walk(top, followlinks=False, onerror=unreadable.append):
+            if unreadable:
+                break
+            for name in dirnames + filenames:
+                entry = os.path.join(dirpath, name)
+                if os.path.islink(entry) or _is_junction(Path(entry)):
+                    problems.append(f"{Path(entry).relative_to(base).as_posix()}: a symbolic link or junction is refused "
+                                    "(untrusted input; Issue #544)")
+        if unreadable:
+            problems.append(f"{tree}: a directory cannot be read ({unreadable[0]}); refused, not skipped (Issue #544)")
     files = _workflow_files(base)
     if not files:
         raise ValueError(f"no workflow or action files under {WORKFLOWS}/ or {ACTIONS}/ to check; "
@@ -1561,6 +1748,11 @@ def check_guard_placement(root=ROOT, partial_fixtures=False):
     for workflow in files:
         label = workflow.relative_to(base).as_posix()
         text = workflow.read_text(encoding="utf-8")
+        if workflow.is_symlink():   # Issue #544: a link is untrusted input; its target is not the file that was reviewed
+            problems.append(f"{label}: a symbolic link is refused as a workflow (untrusted input; Issue #544)")
+        # Issue #544: read_text turns CR into LF, so the policy workflow's raw bytes are checked for a lone CR here
+        if label.endswith("/" + POLICY_GUARD_FILE) and re.search(r"\r(?!\n)", workflow.read_bytes().decode("utf-8")):
+            problems.append(f"{label}: a lone CR line break is refused in the policy workflow (Issue #544)")
         try:
             steps = upload_steps(text)
         except ValueError as error:   # an unsupported publishing route or an unparseable upload step
@@ -2118,6 +2310,39 @@ def _yaml_unreadable(text):
     return False
 
 
+def _trigger_key_problems(workflow, text):
+    """Issue #544 (review of #547). Read the YAML node tree. The top level may hold one key whose text lowercases to on, and
+    it must be spelled exactly on (YAML 1.1 reads ON, On and on all as True, so the parsed dict cannot tell them apart). In the
+    policy workflow every boolean must be the literal true or false (YAML 1.1 reads no, off, yes as booleans too)."""
+    import yaml
+    try:
+        root = yaml.compose(text, Loader=yaml.SafeLoader)
+    except Exception:
+        return []   # an unreadable file is refused by the parse checks, not here
+    if not isinstance(root, yaml.MappingNode):
+        return []
+    triggers = [key.value for key, _ in root.value if isinstance(key, yaml.ScalarNode) and key.value.lower() == "on"]
+    if len(triggers) > 1:
+        return [f"{workflow}: the top-level trigger key appears {len(triggers)} times as on, ON or On; it may appear once "
+                "(Issue #544)"]
+    if triggers and triggers[0] != "on":
+        return [f"{workflow}: the trigger key must be spelled exactly on (found {triggers[0]!r}; Issue #544)"]
+    if Path(workflow).name == POLICY_GUARD_FILE:
+        stack, bad = [root], []
+        while stack:
+            node = stack.pop()
+            if isinstance(node, yaml.MappingNode):
+                stack.extend(value for _, value in node.value)
+            elif isinstance(node, yaml.SequenceNode):
+                stack.extend(node.value)
+            elif isinstance(node, yaml.ScalarNode) and node.tag == "tag:yaml.org,2002:bool" and node.value not in ("true", "false"):
+                bad.append(node.value)
+        if bad:
+            return [f"{workflow}: the policy workflow may use only the literal true or false as booleans; found {bad} "
+                    "(YAML 1.1 reads no, off, yes as booleans; Issue #544)"]
+    return []
+
+
 def scope_key_violations(text, workflow):
     """Issue #337 round 10/12/13/14. Refused, decided on the parsed YAML (indentation, quoting, flow style, key case and
     order do not matter; keys are compared case-insensitively):
@@ -2134,6 +2359,13 @@ def scope_key_violations(text, workflow):
     bool_words = _bool_word_problems(workflow, text)   # Issue #511: yes/no/on/off read as bools, digest as true/false
     if bool_words:
         return bool_words
+    if Path(workflow).name == POLICY_GUARD_FILE:
+        structure_problems = _policy_structure_problems(workflow, text)   # Issue #544: text and node tree, before any value
+        if structure_problems:
+            return structure_problems
+    trigger_problems = _trigger_key_problems(workflow, text)   # Issue #544: read the node tree, not the lines (flow, ?, ON)
+    if trigger_problems:
+        return trigger_problems
     try:
         import yaml
     except ImportError:
@@ -2548,3 +2780,5 @@ if __name__ == "__main__":
         main(sys.argv[1:])
     except (ValueError, OSError, TypeError) as error:
         raise SystemExit(f"artifact_guard: {error}") from error
+    except RecursionError as error:   # a too-deep document is a refusal, not a traceback; named so it is not read as a bug (Issue #547)
+        raise SystemExit(f"artifact_guard: refused, a YAML document is nested too deeply to check ({error}; Issue #547)") from error
