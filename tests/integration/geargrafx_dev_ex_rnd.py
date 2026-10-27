@@ -2,7 +2,7 @@
 
 Each run replaces the reset code of the built DEV ROM with a guest program that:
   1. sets MPR1 = work RAM ($F8) and clears the fail counter ($2703),
-  2. either zeroes the state ($2000/$2001, "zero" run) or seeds with X:A, Y=1 ("seed" run),
+  2. either zeroes the state ($2500/$2501, "zero" run) or seeds with X:A, Y=1 ("seed" run),
   3. calls next COUNT times, storing each A at $2400+i, and checks X=$5A and Y=0 are preserved,
   4. sets SP=$06 (caller SP) and calls next once more, storing SP and A after.
 The probe caps one run at 2048 instructions, so coverage is split into several short runs.
@@ -10,7 +10,7 @@ Expectation: this project's own contract (src/overrides/slot_3E.s, docs/ex-rnd-i
 and the host model tools/ex_rnd.py, NOT the reference System Card EX_RND. ABI stays UNVERIFIED.
 
 Mutants that must be rejected by the same checks: taps $B4 -> $B5 and the seed high-byte
-store (STX $2001) replaced by NOPs.
+store (STX $2501) replaced by NOPs.
 Run: python3 tests/integration/geargrafx_dev_ex_rnd.py --rom build/<mode>/bios-dev/dev-only-not-compatible-syscard3.pce
 Needs the pinned cc65 and Geargrafx core (TOOLS_DIR). Missing tools exit 3 (BLOCKED).
 """
@@ -69,7 +69,7 @@ def guest(reset, entry, seed=None):
                       0xA9, 0xF8, 0x53, 0x02,    # LDA #$F8; TAM #$02 -> MPR1 = work RAM ($2000-$3FFF)
                       0x9C, 0x03, 0x27])         # STZ $2703 (fail counter)
     if seed is None:
-        code += bytes([0x9C, 0x00, 0x20, 0x9C, 0x01, 0x20])   # STZ $2000; STZ $2001 (zero state)
+        code += bytes([0x9C, 0x00, 0x25, 0x9C, 0x01, 0x25])   # STZ $2500; STZ $2501 (zero state)
     else:
         code += seed_block(entry, seed >> 8, seed & 0xFF)
     code += loop_block(entry)
@@ -115,9 +115,9 @@ def check(label, rows, halt, seed):
         raise ValueError(f"{label}: stack not balanced (SP after ${at(STACK_SP):02X}, halt ${cold['sp']:02X})")
     if at(STACK_A) != want_stack:
         raise ValueError(f"{label}: SP=$06 call output ${at(STACK_A):02X}, want ${want_stack:02X}")
-    got_state = at(0x2000) | at(0x2001) << 8
+    got_state = at(0x2500) | at(0x2501) << 8
     if got_state != want_state:
-        raise ValueError(f"{label}: state RAM $2001/$2000 = ${at(0x2001):02X}{at(0x2000):02X}, "
+        raise ValueError(f"{label}: state RAM $2501/$2500 = ${at(0x2501):02X}{at(0x2500):02X}, "
                          f"want ${want_state:04X}")
     return {"seed": seed, "sequence": got_seq, "stack_out": at(STACK_A), "sp_after": at(STACK_SP),
             "state_final": f"{got_state:04X}", "fail_counter": at(FAILS)}
@@ -163,7 +163,7 @@ def main():
             evidence["runs"].append(run(probe, data, folder, cue, reset, entry, f"exrnd-{name}", seed,
                                         model_seed))
         # Mutants inside the slot body: each must fail the seed-1234 run's checks.
-        taps, seed_hi = bytes([0x49, 0xB4]), bytes([0x8E, 0x01, 0x20])  # EOR #$B4; STX $2001
+        taps, seed_hi = bytes([0x49, 0xB4]), bytes([0x8E, 0x01, 0x25])  # EOR #$B4; STX $2501
         for name, pattern, patch in (("taps_B4_to_B5", taps, bytes([0x49, 0xB5])),
                                      ("seed_hi_store_nopped", seed_hi, bytes([0xEA, 0xEA, 0xEA]))):
             code_at = body - 0xE000  # CPU $E000 is file offset 0 of bank 0 (as in the MA_SQRT harness)
@@ -183,7 +183,7 @@ def main():
     (args.rom.parent / "geargrafx-dev-ex-rnd-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
     print(f"PASS real Geargrafx DEV ROM: EX_RND slot $3E: {len(runs)} runs x {COUNT} next calls match the "
           f"host model (zero RAM, seed $0000, $1234, $A5C3); X/Y preserved on every call; SP=$06 boundary "
-          f"balanced; state RAM $2000/$2001 matches; {len(evidence['negative_cases'])} mutants rejected")
+          f"balanced; state RAM $2500/$2501 matches; {len(evidence['negative_cases'])} mutants rejected")
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 """MODEL-ONLY host check of the DEV EX_RND contract (slot $3E, Issue #72). Not the System Card ABI.
 
 This does NOT assemble or execute src/overrides/slot_3E.s. It checks a Python model of the
-documented contract (Y=1 seeds with X:A, other Y returns the next byte, state at $2000/$2001).
+documented contract (Y=1 seeds with X:A, other Y returns the next byte, state at $2500/$2501).
 The assembled routine has no executed test yet.
 """
 import sys
@@ -14,7 +14,7 @@ import ex_rnd  # noqa: E402
 
 
 class DevRndModel:
-    """Model of the slot: a state word (work RAM $2000/$2001) plus the seed/next selector in Y."""
+    """Model of the slot: a state word (work RAM $2500/$2501) plus the seed/next selector in Y."""
 
     def __init__(self, state=0):
         self.state = state & 0xFFFF
@@ -78,6 +78,30 @@ class SlotContractTests(unittest.TestCase):
 class NegativeTests(unittest.TestCase):
     def test_seed_is_not_ignored(self):
         self.assertNotEqual(ex_rnd.rnd_sequence(0x1234, 8), ex_rnd.rnd_sequence(0x1235, 8))
+
+
+class AssemblyZeroPageTests(unittest.TestCase):
+    """Regression: the state must not live in HuC6280 zero page ($2000-$20FF, shared with adt_dma_routine.s).
+
+    Reads the assembly source (not the model). Fails on the earlier revision that used $2000/$2001.
+    """
+    SRC = ROOT / "src" / "overrides" / "slot_3E.s"
+
+    def _code_operands(self):
+        import re
+        ops = []
+        for line in self.SRC.read_text(encoding="utf-8").splitlines():
+            code = line.split(";", 1)[0]
+            ops += [int(m, 16) for m in re.findall(r"\$([0-9A-Fa-f]{4})", code)]
+        return ops
+
+    def test_no_absolute_operand_in_zero_page_window(self):
+        bad = [hex(v) for v in self._code_operands() if 0x2000 <= v <= 0x20FF]
+        self.assertEqual([], bad)
+
+    def test_state_is_at_2500_2501(self):
+        self.assertTrue(any(v == 0x2500 for v in self._code_operands()))
+        self.assertTrue(any(v == 0x2501 for v in self._code_operands()))
 
 
 if __name__ == "__main__":
