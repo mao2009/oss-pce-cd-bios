@@ -1868,43 +1868,42 @@ def _key_parts(workflow, where, step, runs_on):
     return (workflow, where, None if name is None else str(name), None if shell is None else str(shell), runs_on)
 
 
-def _strict_json(value):
-    raise TypeError(f"{type(value).__name__} has no canonical JSON form (refused for approval)")
+def _node_canonical(node):
+    """The approval form of a YAML node: its tag and its written text, per scalar, so 1_000 and 1000, yes and true, and
+    !!bool tRuE and true, are different values here (Issue #511). Mappings are sorted by key; sequences keep their order."""
+    import yaml
+    if isinstance(node, yaml.MappingNode):
+        pairs = [[_node_canonical(key), _node_canonical(value)] for key, value in node.value]
+        return {"map": sorted(pairs, key=lambda pair: json.dumps(pair, sort_keys=True))}
+    if isinstance(node, yaml.SequenceNode):
+        return {"seq": [_node_canonical(item) for item in node.value]}
+    return {"tag": node.tag, "text": node.value}
 
 
-def _require_text_keys(value):
-    """Raise TypeError for any mapping with a non-text key. JSON writes True and 'true' alike, so a bare yes: (read as True)
-    would otherwise digest as the same text as 'yes' (Issue #511)."""
-    if isinstance(value, dict):
-        for key, inner in value.items():
-            if not isinstance(key, str):
-                raise TypeError(f"a mapping key of type {type(key).__name__} has no text form (refused for approval)")
-            _require_text_keys(inner)
-    elif isinstance(value, list):
-        for inner in value:
-            _require_text_keys(inner)
+def _node_digest(node):
+    return hashlib.sha256(json.dumps(_node_canonical(node), sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
-def _canonical_digest(value):
-    _require_text_keys(value)
-    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, default=_strict_json).encode("utf-8")).hexdigest()
-
-
-def _step_digest(step):
-    """The approval digest of a whole step: run text AND every other key (if, continue-on-error, timeout-minutes, env...).
-    Types must be plain JSON (a date or a bytes value raises TypeError: refused, not approved)."""
-    return _canonical_digest(step)
-
-
-def _job_digest(body):
-    """The approval digest of a whole job: every key, the steps included, in canonical order. So a changed, added, removed,
-    duplicated or reordered step, and a changed environment, outputs or strategy, all change the digest (Issue #511)."""
-    if not isinstance(body, dict):
-        return ""
-    try:
-        return _canonical_digest(body)
-    except TypeError:   # a value with no approvable form: "" is never in the allowlist, so the job's steps are refused
-        return ""
+def _node_digests(text, is_action):
+    """{where: (job digest, [step digests in order])} from the YAML node tree of one file. where is the job id, or "runs" for
+    a composite action. The job digest covers every key of the job, steps included, and an empty digest never approves."""
+    import yaml
+    root = yaml.compose(text, Loader=yaml.SafeLoader)
+    if not isinstance(root, yaml.MappingNode):
+        return {}
+    def pairs_of(node):
+        return [(key.value, value) for key, value in node.value] if isinstance(node, yaml.MappingNode) else []
+    top = dict(pairs_of(root))
+    if is_action:
+        groups = [("runs", top["runs"])] if "runs" in top else []
+    else:
+        groups = list(pairs_of(top["jobs"])) if "jobs" in top else []
+    digests = {}
+    for where, body in groups:
+        steps = dict(pairs_of(body)).get("steps")
+        step_nodes = steps.value if isinstance(steps, yaml.SequenceNode) else []
+        digests[where] = (_node_digest(body), [_node_digest(step) for step in step_nodes])
+    return digests
 
 
 WORKFLOW_KEYS = frozenset({"name", "on", "permissions", "concurrency", "jobs"})   # top-level keys that cannot run code or send data
@@ -1930,32 +1929,32 @@ def build_run_allowlist(root):
     base, entries = Path(root), []
     for path in _workflow_files(base):
         label = path.relative_to(base).as_posix()
-        doc = yaml.load(path.read_text(encoding="utf-8"), Loader=_strict_loader())
-        if label.startswith(ACTIONS + "/"):
+        text = path.read_text(encoding="utf-8")
+        doc = yaml.load(text, Loader=_strict_loader())
+        is_action = label.startswith(ACTIONS + "/")
+        digests = _node_digests(text, is_action)
+        if is_action:
             composite = doc.get("runs") or {}
-            groups = [("runs", composite.get("steps") or [], "", _job_digest(composite))]
+            groups = [("runs", composite.get("steps") or [], "")]
         else:
-            groups = [(job, body.get("steps") or [], _runs_on_text(body), _job_digest(body))
-                      for job, body in (doc.get("jobs") or {}).items() if isinstance(body, dict)]
-        for where, steps, runs_on, job_sha in groups:
-            for step in steps:
+            groups = [(job, body.get("steps") or [], _runs_on_text(body)) for job, body in (doc.get("jobs") or {}).items()
+                      if isinstance(body, dict)]
+        for where, steps, runs_on in groups:
+            job_sha, step_shas = digests.get(where, ("", []))
+            for index, step in enumerate(steps):
                 if isinstance(step, dict) and isinstance(step.get("run"), str):
                     workflow_, job, name, shell, runs = _key_parts(label, where, step, runs_on)
                     if not job_sha:
                         raise ValueError(f"{label}: job {where!r} has a value with no approvable form; it cannot be approved")
                     entries.append({"workflow": workflow_, "job": job, "step": name, "shell": shell, "runs_on": runs,
-                                    "sha256": _step_digest(step), "job_sha256": job_sha})
+                                    "sha256": step_shas[index], "job_sha256": job_sha})
     return sorted(entries, key=lambda entry: json.dumps(entry, sort_keys=True))
 
 
-def _run_approved(workflow, where, step, runs_on, job_digest):
+def _run_approved(workflow, where, step, runs_on, job_digest, step_digest):
     if not job_digest:   # a job with no approvable form (an empty digest) is never approved; it must not match an empty entry
         return False
-    try:
-        digests = (_step_digest(step), job_digest)
-    except TypeError:   # a value with no canonical JSON form cannot be approved
-        return False
-    return digests in _RUN_ALLOWLIST.get(_key_parts(workflow, where, step, runs_on), set())
+    return (step_digest, job_digest) in _RUN_ALLOWLIST.get(_key_parts(workflow, where, step, runs_on), set())
 
 
 def policy_violations(root, trusted_root):
@@ -1984,7 +1983,7 @@ def enforced_check(root, check):
         _RUN_ALLOWLIST = None
 
 
-def _step_problems(workflow, where, step, runs_on="", job_digest=""):
+def _step_problems(workflow, where, step, runs_on="", job_digest="", step_digest=""):
     """Refusals for one step: a step env:, shell: or working-directory: key without an exception, and a run: text that
     changes the PATH of later steps (GITHUB_PATH, GITHUB_ENV) or sets BASH_ENV or PATH. Issue #337 round 14.
     A job that may run on Windows (runs-on names windows, or is a ${{ }} expression) needs shell: bash for its run: steps
@@ -2022,7 +2021,8 @@ def _step_problems(workflow, where, step, runs_on="", job_digest=""):
         if windows and isinstance(run, str) and step.get("shell") != "bash":
             problems.append(f"{workflow}: {where} step {name!r} run: has no shell: bash in a job that may run on Windows "
                             "(the default there is PowerShell; refused, Issue #511)")
-        if _RUN_ALLOWLIST is not None and isinstance(run, str) and not _run_approved(workflow, where, step, runs_on, job_digest):
+        if _RUN_ALLOWLIST is not None and isinstance(run, str) and not _run_approved(workflow, where, step, runs_on, job_digest,
+                                                                                    step_digest):
             problems.append(f"{workflow}: {where} step {name!r} run: text is not an approved exact match for this workflow, "
                             "job, step, shell and runs-on (refused; unregistered or changed, Issue #511)")
     return problems
@@ -2098,7 +2098,7 @@ def _bool_word_problems(workflow, text):
             stack.extend(value for _, value in node.value)   # keys are skipped: on: is a key, not a value
         elif isinstance(node, yaml.SequenceNode):
             stack.extend(node.value)
-        elif isinstance(node, yaml.ScalarNode) and node.tag == "tag:yaml.org,2002:bool" and node.value.lower() not in ("true", "false"):
+        elif isinstance(node, yaml.ScalarNode) and node.tag == "tag:yaml.org,2002:bool" and node.value not in ("true", "false"):
             problems.append(f"{workflow}: the bool word {node.value!r} is refused; YAML 1.1 reads it as true or false (Issue #511)")
     return problems
 
@@ -2148,11 +2148,15 @@ def scope_key_violations(text, workflow):
                 if not is_action and ("on" if key is True else str(key)) not in WORKFLOW_KEYS]   # YAML 1.1 reads on: as True
     problems += [f"{workflow}: top-level {key} is refused (can change the guard's PATH or RUNNER_TEMP)"
                 for key in sorted(doc, key=str) if str(key).lower() in SCOPE_KEYS_REFUSED]
+    try:
+        digests = _node_digests(text, is_action)
+    except Exception:   # a file the node reader cannot take gets no digests, so none of its steps can be approved
+        digests = {}
     if workflow.startswith(ACTIONS + "/"):
         runs = doc.get("runs")
         if not isinstance(runs, dict):
             return problems + [f"{workflow}: runs: must be a mapping, scope keys cannot be checked (Issue #337 round 14)"]
-        scopes = [("runs", runs.get("steps"), "", _job_digest(runs))]
+        scopes = [("runs", runs.get("steps"), "")]
     else:
         jobs = doc.get("jobs")
         if not isinstance(jobs, dict):
@@ -2167,15 +2171,17 @@ def scope_key_violations(text, workflow):
                 if str(key).lower() in SCOPE_KEYS_REFUSED:
                     problems.append(f"{workflow}: job-level {key} in job {job!r} is refused "
                                     "(can change the guard's PATH or RUNNER_TEMP)")
-            scopes.append((job, body.get("steps"), _runs_on_text(body), _job_digest(body)))
-    for where, steps, runs_on, job_digest in scopes:
+            scopes.append((job, body.get("steps"), _runs_on_text(body)))
+    for where, steps, runs_on in scopes:
         if steps is None:
             continue
         if not isinstance(steps, list):
             problems.append(f"{workflow}: {where} steps: must be a list (Issue #337 round 14)")
             continue
-        for step in steps:
-            problems += _step_problems(workflow, where, step, runs_on, job_digest)
+        job_digest, step_digests = digests.get(where, ("", []))
+        for index, step in enumerate(steps):
+            step_digest = step_digests[index] if index < len(step_digests) else ""
+            problems += _step_problems(workflow, where, step, runs_on, job_digest, step_digest)
     return problems
 
 

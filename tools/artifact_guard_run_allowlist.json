@@ -5,17 +5,8 @@
     "step": "Refuse to sign without an OIDC token",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "474d984454de27269e28cd190d2ddc77f9b03d5642d7e57685f8ac07b2f0290f",
-    "job_sha256": "ef51a92af216dd741f8dfe2d12102d0b7301b2c02e5c92274c0a3c479c5ff4e7"
-  },
-  {
-    "workflow": ".github/workflows/core-bcdbin.yml",
-    "job": "bcdbin-core",
-    "step": "Prepare pinned cc65 and Geargrafx from source",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "2ef8990ff42e3944c89c439cc56f9981bc11e8c46747d899a9f23d0e7eddae7f",
-    "job_sha256": "599d8344e97e09a6bebea03fe7aadb8c6c31a3d966535d6ede5332d9bca55c3d"
+    "sha256": "4060f4103785b894a5312aac1fd47d5c93df1308ea5ea3bf775d9cb89361fa61",
+    "job_sha256": "f237b75ac7dd66a25b253e324e14973d24161a749e12344c8c6621c4e964f3ef"
   },
   {
     "workflow": ".github/workflows/core-bcdbin.yml",
@@ -23,8 +14,8 @@
     "step": "Hand off the real-core ex_bcdbin log as an intermediate artifact (the guard job publishes it)",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "b22712da7c9bab869080f25157be99dd6953b3f85f018aab71aec611e911407f",
-    "job_sha256": "599d8344e97e09a6bebea03fe7aadb8c6c31a3d966535d6ede5332d9bca55c3d"
+    "sha256": "813f861b473165d401bf4841ddb0b426fd23b6cd378c7b6c142d347aea4f9d6b",
+    "job_sha256": "e20debfa6bc18d085d97b5cf9895decf5ae7fffbcd1a789a7b633cbf6b94aee3"
   },
   {
     "workflow": ".github/workflows/core-bcdbin.yml",
@@ -32,44 +23,17 @@
     "step": "Real-core ex_bcdbin run (exit code is the job result; BLOCKED=3, failure=1)",
     "shell": "bash",
     "runs_on": "ubuntu-24.04",
-    "sha256": "c6fe5b4cd3e9aee0ff8e9ff853a6dc8d07c28394a3a2c7aa29d71670044b8ce2",
-    "job_sha256": "599d8344e97e09a6bebea03fe7aadb8c6c31a3d966535d6ede5332d9bca55c3d"
+    "sha256": "b769dafd4ba51c83ae0ab2154f34081cc388930fac6a2a64ac72e02ccba3d9a2",
+    "job_sha256": "e20debfa6bc18d085d97b5cf9895decf5ae7fffbcd1a789a7b633cbf6b94aee3"
   },
   {
-    "workflow": ".github/workflows/api-source.yml",
-    "job": "bios-dev",
-    "step": "Independent cold/warm System Card startup checkpoint (not BIOS boot)",
+    "workflow": ".github/workflows/core-bcdbin.yml",
+    "job": "bcdbin-core",
+    "step": "Prepare pinned cc65 and Geargrafx from source",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "08b1b036f208548be0387d5a3a6f97c19275b57c0748629f41bc63867d24ae00",
-    "job_sha256": "27f4bf6093cb904dee496c460f3692c521f9beed6e0fbce8f7de88d141cfb768"
-  },
-  {
-    "workflow": ".github/workflows/api-source.yml",
-    "job": "bios-dev",
-    "step": "Source inventory and diagnostic binary checks",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "0cefd6834148aedcd2ce5b3d8c27c3e556586bce6e8689457589208e47f25da8",
-    "job_sha256": "27f4bf6093cb904dee496c460f3692c521f9beed6e0fbce8f7de88d141cfb768"
-  },
-  {
-    "workflow": ".github/workflows/api-source.yml",
-    "job": "bios-dev",
-    "step": "Real-core CD-DA observation via raw SCSI $D8/$DA/$D9/$DD (diagnostic, not the System Card CD_PLAY API)",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "1eb958633461609ee81cedd5b0f4fddd842f52b951a66b98512e5a5bfc2a1ba5",
-    "job_sha256": "27f4bf6093cb904dee496c460f3692c521f9beed6e0fbce8f7de88d141cfb768"
-  },
-  {
-    "workflow": ".github/workflows/api-source.yml",
-    "job": "bios-dev",
-    "step": "CD media-state observation point, paired disc/no-disc control (Issue",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "31e785a1bf595c89d3a416e6c65551959742dabc61e12b8711e02428b5276b3e",
-    "job_sha256": "27f4bf6093cb904dee496c460f3692c521f9beed6e0fbce8f7de88d141cfb768"
+    "sha256": "cbfcc16b97100077eccbf90f9e7af91d310bfb632ae14c129710ab84b6ca5944",
+    "job_sha256": "e20debfa6bc18d085d97b5cf9895decf5ae7fffbcd1a789a7b633cbf6b94aee3"
   },
   {
     "workflow": ".github/workflows/api-source.yml",
@@ -77,8 +41,17 @@
     "step": "Real-core CD_RESET bus-reset observation (diagnostic, not the System Card CD_RESET API)",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "34c712e90926a9086a8c80397a0c0676373a9c6ca93a97f236896aea1fbf4f46",
-    "job_sha256": "27f4bf6093cb904dee496c460f3692c521f9beed6e0fbce8f7de88d141cfb768"
+    "sha256": "15cef973cac43ae120303ce3a8da9f2e1020577fb9f3fcf5b40d61c2c7270175",
+    "job_sha256": "e1dd3ad50361c07be5c0d66cebdbfc2541909e46ae9f295e8aae1458f6855c67"
+  },
+  {
+    "workflow": ".github/workflows/api-source.yml",
+    "job": "bios-dev",
+    "step": "Source inventory and diagnostic binary checks",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "171be0fc9102b8f0701e4c96b7e483e8ee1d9086184303966ac6dfd05502247a",
+    "job_sha256": "e1dd3ad50361c07be5c0d66cebdbfc2541909e46ae9f295e8aae1458f6855c67"
   },
   {
     "workflow": ".github/workflows/api-source.yml",
@@ -86,62 +59,17 @@
     "step": "Prepare existing pinned source toolchain and Geargrafx",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "6c611f8ec7b8de7cdcea95c5ef9d6731a82e0092f6471136a76e7f30155b3dbe",
-    "job_sha256": "27f4bf6093cb904dee496c460f3692c521f9beed6e0fbce8f7de88d141cfb768"
+    "sha256": "18ede97fd42e3645198af8a9fe0e3c8e44ee5c16b6bdf214052c34a988ec6ed6",
+    "job_sha256": "e1dd3ad50361c07be5c0d66cebdbfc2541909e46ae9f295e8aae1458f6855c67"
   },
   {
     "workflow": ".github/workflows/api-source.yml",
     "job": "bios-dev",
-    "step": "Independent CD sector load-and-execute by guest HuC6280 (diagnostic, not BIOS / not CD_READ)",
+    "step": "CD media-state observation point, paired disc/no-disc control (Issue",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "762a0a1054afb53274327efc05327b29a5104e7a79ad06248d8b36c6dd55122c",
-    "job_sha256": "27f4bf6093cb904dee496c460f3692c521f9beed6e0fbce8f7de88d141cfb768"
-  },
-  {
-    "workflow": ".github/workflows/api-source.yml",
-    "job": "bios-dev",
-    "step": "Independent CD-ROM2 sector read by guest HuC6280 (diagnostic, not CD_READ / not BIOS)",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "977bb34a1ec9da7b31282335c93a54dc2012e50494bb272cf16b9ac306f2064b",
-    "job_sha256": "27f4bf6093cb904dee496c460f3692c521f9beed6e0fbce8f7de88d141cfb768"
-  },
-  {
-    "workflow": ".github/workflows/api-source.yml",
-    "job": "bios-dev",
-    "step": "Hand off bios-dev outputs as an intermediate artifact (unverified here; the guard job checks them)",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "c05f8f3b20625c3c7b232d713c2b5f3d911155042956511db8fbb65b56c2ea30",
-    "job_sha256": "27f4bf6093cb904dee496c460f3692c521f9beed6e0fbce8f7de88d141cfb768"
-  },
-  {
-    "workflow": ".github/workflows/api-source.yml",
-    "job": "bios-dev",
-    "step": "Debug and release diagnostic bytes match",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "cf1e9ce8af2e1a16af5a878840b8fdf6427459f9f2aa48127852957ba3f712c8",
-    "job_sha256": "27f4bf6093cb904dee496c460f3692c521f9beed6e0fbce8f7de88d141cfb768"
-  },
-  {
-    "workflow": ".github/workflows/api-source.yml",
-    "job": "bios-dev",
-    "step": "Incomplete firmware must be refused by the release gate (exit 3 + BLOCKED only)",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "e00db55161e3a8b0b8754602e4645512de487e72950f73d6eac0909bf0975c74",
-    "job_sha256": "27f4bf6093cb904dee496c460f3692c521f9beed6e0fbce8f7de88d141cfb768"
-  },
-  {
-    "workflow": ".github/workflows/api-source.yml",
-    "job": "bios-dev",
-    "step": "Minimal reset entry MPR0/MPR1/stack (Issue",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "e00e1e1caf9210ef8557ecbeaac34f2814071410037302e60019b92760093ace",
-    "job_sha256": "27f4bf6093cb904dee496c460f3692c521f9beed6e0fbce8f7de88d141cfb768"
+    "sha256": "20d719752c60cb6298b1dd209c0a776c5c5d9502c35e260c17367e97558656dc",
+    "job_sha256": "e1dd3ad50361c07be5c0d66cebdbfc2541909e46ae9f295e8aae1458f6855c67"
   },
   {
     "workflow": ".github/workflows/api-source.yml",
@@ -149,8 +77,26 @@
     "step": "Real Geargrafx System Card diagnostic execution",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "e3fc0a5baeec85950e5300648e291d99fc36b11983851ed404933368884b1a17",
-    "job_sha256": "27f4bf6093cb904dee496c460f3692c521f9beed6e0fbce8f7de88d141cfb768"
+    "sha256": "401add0af3a0ee9c0c3c076089349896b878c63c4f23f6c4ccf1b257c787491e",
+    "job_sha256": "e1dd3ad50361c07be5c0d66cebdbfc2541909e46ae9f295e8aae1458f6855c67"
+  },
+  {
+    "workflow": ".github/workflows/api-source.yml",
+    "job": "bios-dev",
+    "step": "Debug and release diagnostic bytes match",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "460904ebeeb188b3ec4f8fe68f4dab0e8d73a636e1ae238d2b3b61cb0ef352b9",
+    "job_sha256": "e1dd3ad50361c07be5c0d66cebdbfc2541909e46ae9f295e8aae1458f6855c67"
+  },
+  {
+    "workflow": ".github/workflows/api-source.yml",
+    "job": "bios-dev",
+    "step": "Hand off bios-dev outputs as an intermediate artifact (unverified here; the guard job checks them)",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "6c647bb16b3cbd78356df102bae90a55c886f66dcb51387fe2b01ab3e1788fe2",
+    "job_sha256": "e1dd3ad50361c07be5c0d66cebdbfc2541909e46ae9f295e8aae1458f6855c67"
   },
   {
     "workflow": ".github/workflows/api-source.yml",
@@ -158,17 +104,8 @@
     "step": "Verify CD load-and-execute evidence before archiving",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "ebdd10da4153d5277057f958559e05c18a41a64120d81e7488f7624fbcbdef3e",
-    "job_sha256": "27f4bf6093cb904dee496c460f3692c521f9beed6e0fbce8f7de88d141cfb768"
-  },
-  {
-    "workflow": ".github/workflows/api-source.yml",
-    "job": "bios-dev",
-    "step": "Isolated Geargrafx trace harness (Issue",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "ecd8c4d2982fe19596b00875dbe4c3ab55bc8ccfac85f007783c257e5d2e3260",
-    "job_sha256": "27f4bf6093cb904dee496c460f3692c521f9beed6e0fbce8f7de88d141cfb768"
+    "sha256": "7e5b9fcd447fe4d7277df15b9674930c9760c8a1a1167096b7e02755af9d6c8c",
+    "job_sha256": "e1dd3ad50361c07be5c0d66cebdbfc2541909e46ae9f295e8aae1458f6855c67"
   },
   {
     "workflow": ".github/workflows/api-source.yml",
@@ -176,89 +113,71 @@
     "step": "Static checks with pinned actionlint",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "ff29bf2921ef8b10e63f7a2a8d8c22a115e0c0b4fd3f3c893cf418e2b150a8dd",
-    "job_sha256": "27f4bf6093cb904dee496c460f3692c521f9beed6e0fbce8f7de88d141cfb768"
+    "sha256": "9024a34d5180955da47e785ea8b4322377e3283ce51fa4e3ab8a469d27b52412",
+    "job_sha256": "e1dd3ad50361c07be5c0d66cebdbfc2541909e46ae9f295e8aae1458f6855c67"
   },
   {
-    "workflow": ".github/workflows/nightly.yml",
-    "job": "build",
-    "step": "Real Geargrafx tests (required, fail-closed; Issue",
+    "workflow": ".github/workflows/api-source.yml",
+    "job": "bios-dev",
+    "step": "Independent CD sector load-and-execute by guest HuC6280 (diagnostic, not BIOS / not CD_READ)",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "01c4a0d6455dc7053359c7487c5a0d8984a33b1be04bd3bf21491835d815732a",
-    "job_sha256": "f498084e7b59ffc75ab1739cabebc3af120d40f1f8273cb644df7028fce4a426"
+    "sha256": "95bf4aad73bb129c4b94354490da722b12bba36f9f7e5883b2cc0edffee47257",
+    "job_sha256": "e1dd3ad50361c07be5c0d66cebdbfc2541909e46ae9f295e8aae1458f6855c67"
   },
   {
-    "workflow": ".github/workflows/nightly.yml",
-    "job": "build",
-    "step": "Build original HuCARD fixture",
+    "workflow": ".github/workflows/api-source.yml",
+    "job": "bios-dev",
+    "step": "Independent cold/warm System Card startup checkpoint (not BIOS boot)",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "29c722ca05980698b3d6610ea2fe5b35b190209de3bf3cfd0648778e6b97c481",
-    "job_sha256": "f498084e7b59ffc75ab1739cabebc3af120d40f1f8273cb644df7028fce4a426"
+    "sha256": "9f325df48d2b6e49146c5ec837db7a29da5a464016f40f8b6e78aa3d717b478f",
+    "job_sha256": "e1dd3ad50361c07be5c0d66cebdbfc2541909e46ae9f295e8aae1458f6855c67"
   },
   {
-    "workflow": ".github/workflows/nightly.yml",
-    "job": "build",
-    "step": "Prepare pinned tools from source",
+    "workflow": ".github/workflows/api-source.yml",
+    "job": "bios-dev",
+    "step": "Minimal reset entry MPR0/MPR1/stack (Issue",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "50ab411878e4b9aba287a524783f8af8553994572dd78a5cb7ab8443d0b408d0",
-    "job_sha256": "f498084e7b59ffc75ab1739cabebc3af120d40f1f8273cb644df7028fce4a426"
+    "sha256": "a4bc003a7917fe68729d9b7cf9727fc051c01e1a705c4314d6f6b06fc14eec73",
+    "job_sha256": "e1dd3ad50361c07be5c0d66cebdbfc2541909e46ae9f295e8aae1458f6855c67"
   },
   {
-    "workflow": ".github/workflows/nightly.yml",
-    "job": "build",
-    "step": "Hand off the nightly outputs as an intermediate artifact (unverified here; the guard job checks them)",
+    "workflow": ".github/workflows/api-source.yml",
+    "job": "bios-dev",
+    "step": "Real-core CD-DA observation via raw SCSI $D8/$DA/$D9/$DD (diagnostic, not the System Card CD_PLAY API)",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "5896123e1f7aa779d19e7cd786f5ab244ad9e853c7390d02feb6d51d29017b35",
-    "job_sha256": "f498084e7b59ffc75ab1739cabebc3af120d40f1f8273cb644df7028fce4a426"
+    "sha256": "aac8d4dfe65c3a4caef6865ceafb4521627cd19a7aab7054af1283710df067c0",
+    "job_sha256": "e1dd3ad50361c07be5c0d66cebdbfc2541909e46ae9f295e8aae1458f6855c67"
   },
   {
-    "workflow": ".github/workflows/nightly.yml",
-    "job": "build",
-    "step": "Record candidate success state",
+    "workflow": ".github/workflows/api-source.yml",
+    "job": "bios-dev",
+    "step": "Isolated Geargrafx trace harness (Issue",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "5f0f7f12e17e6dfbdcf1e259afa961f639409297688d37827c6c6d67d09b1c8a",
-    "job_sha256": "f498084e7b59ffc75ab1739cabebc3af120d40f1f8273cb644df7028fce4a426"
+    "sha256": "d0614e3042128adda9e55399d68c0e0965b8444c58a1d7a4e95a62e1b91784ea",
+    "job_sha256": "e1dd3ad50361c07be5c0d66cebdbfc2541909e46ae9f295e8aae1458f6855c67"
   },
   {
-    "workflow": ".github/workflows/nightly.yml",
-    "job": "build",
-    "step": "Static checks including Actions validation",
+    "workflow": ".github/workflows/api-source.yml",
+    "job": "bios-dev",
+    "step": "Incomplete firmware must be refused by the release gate (exit 3 + BLOCKED only)",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "8c765d6f93d1a0d382a19c4422d4e2e967820f132c090fc0310c54896ab85c27",
-    "job_sha256": "f498084e7b59ffc75ab1739cabebc3af120d40f1f8273cb644df7028fce4a426"
+    "sha256": "ddf8b2108b22bc12ffd56e487999c7fe171e6a24cd597fd95cba6905370eee4d",
+    "job_sha256": "e1dd3ad50361c07be5c0d66cebdbfc2541909e46ae9f295e8aae1458f6855c67"
   },
   {
-    "workflow": ".github/workflows/nightly.yml",
-    "job": "build",
-    "step": "Verify release-mode fixture",
+    "workflow": ".github/workflows/api-source.yml",
+    "job": "bios-dev",
+    "step": "Independent CD-ROM2 sector read by guest HuC6280 (diagnostic, not CD_READ / not BIOS)",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "a969b4892c053b0b83025419db746f7fbd0479dc1a5b494f7b1f09cbda12f51a",
-    "job_sha256": "f498084e7b59ffc75ab1739cabebc3af120d40f1f8273cb644df7028fce4a426"
-  },
-  {
-    "workflow": ".github/workflows/nightly.yml",
-    "job": "build",
-    "step": "Host tests (no Geargrafx needed)",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "ddf5d406afc7679e6ebe4cc858f3b50964ebd4f6e32c408dd64a7c7487a3100f",
-    "job_sha256": "f498084e7b59ffc75ab1739cabebc3af120d40f1f8273cb644df7028fce4a426"
-  },
-  {
-    "workflow": ".github/workflows/pages.yml",
-    "job": "build",
-    "step": "Resolve python3 (trusted)",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "3359fb9928a290ad87a3494ee765246aadd1d9b175358952cbbe6173fe11a627",
-    "job_sha256": "fb8823a27265777d085dc51aa05c7d860ae6abad3fd23167c7bf9e1f98f54732"
+    "sha256": "e61a9780236f6bac37d99977befabef7709fe66d8425b484f8252a29153e1382",
+    "job_sha256": "e1dd3ad50361c07be5c0d66cebdbfc2541909e46ae9f295e8aae1458f6855c67"
   },
   {
     "workflow": ".github/workflows/pages.yml",
@@ -266,17 +185,8 @@
     "step": "Stage Pages artifact (trusted guard)",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "47a7d01f2813adf14e3f470cd904464d7ed68e0089a4292d3812b3145ff1af1c",
-    "job_sha256": "fb8823a27265777d085dc51aa05c7d860ae6abad3fd23167c7bf9e1f98f54732"
-  },
-  {
-    "workflow": ".github/workflows/pages.yml",
-    "job": "build",
-    "step": "Guard placement (trusted)",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "a5a07c9eb4bd8826930e148004c3c9894e9073eb5e82ff932dfdbe389737de97",
-    "job_sha256": "fb8823a27265777d085dc51aa05c7d860ae6abad3fd23167c7bf9e1f98f54732"
+    "sha256": "20fbe9b2a04d2cba1d525060791a69df7bb177db8881f44a710c8e401314fef4",
+    "job_sha256": "3197a80f97a6338bc6a93bf8191eab28012752e4767354b4dd0417e7a653e2ea"
   },
   {
     "workflow": ".github/workflows/pages.yml",
@@ -284,35 +194,98 @@
     "step": "Verify Pages artifact (trusted guard)",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "bffcac58673ef566452f5fe02e77f6a4f93f01fc43681ef14fee61c9c5235152",
-    "job_sha256": "fb8823a27265777d085dc51aa05c7d860ae6abad3fd23167c7bf9e1f98f54732"
+    "sha256": "9478339fee47875511e470e7278d5d2e148194dda754df78241cd56286c1805e",
+    "job_sha256": "3197a80f97a6338bc6a93bf8191eab28012752e4767354b4dd0417e7a653e2ea"
   },
   {
-    "workflow": ".github/workflows/core-harness.yml",
-    "job": "core-harness",
-    "step": "Real-core harness, built-in self-tests and plug-in case",
-    "shell": "bash",
-    "runs_on": "ubuntu-24.04",
-    "sha256": "28833579de27b3792f1d9fd73038cdddca10a2f470687ff89feb5304324715d2",
-    "job_sha256": "61daee9cf724cd96f8fcc09691c0f53810e94e308babb1c16bee43c7dfa0fab4"
-  },
-  {
-    "workflow": ".github/workflows/core-harness.yml",
-    "job": "core-harness",
-    "step": "Prepare existing pinned source toolchain and Geargrafx",
+    "workflow": ".github/workflows/pages.yml",
+    "job": "build",
+    "step": "Resolve python3 (trusted)",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "6c611f8ec7b8de7cdcea95c5ef9d6731a82e0092f6471136a76e7f30155b3dbe",
-    "job_sha256": "61daee9cf724cd96f8fcc09691c0f53810e94e308babb1c16bee43c7dfa0fab4"
+    "sha256": "b9f2c403682d30c6538a47260f7b35f792c5f24c05d140dbfc05dc18a59d6268",
+    "job_sha256": "3197a80f97a6338bc6a93bf8191eab28012752e4767354b4dd0417e7a653e2ea"
   },
   {
-    "workflow": ".github/workflows/core-harness.yml",
-    "job": "core-harness",
-    "step": "Build DEV ROM only (no retail or reference BIOS)",
+    "workflow": ".github/workflows/pages.yml",
+    "job": "build",
+    "step": "Guard placement (trusted)",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "6c8bcc8ebc0b6e7a5199b7b6fa7cf9b3f4066c6efb14947131cb3f91e3cc6133",
-    "job_sha256": "61daee9cf724cd96f8fcc09691c0f53810e94e308babb1c16bee43c7dfa0fab4"
+    "sha256": "ff0a4b43ccfc168217e97aa6805bfdc16462c7b3b2fafa799234a85bf34d4682",
+    "job_sha256": "3197a80f97a6338bc6a93bf8191eab28012752e4767354b4dd0417e7a653e2ea"
+  },
+  {
+    "workflow": ".github/workflows/nightly.yml",
+    "job": "build",
+    "step": "Host tests (no Geargrafx needed)",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "088c31e9cae0ce9d387a33099da0ff20fb5e73e00c8790a853ec205f414bb82e",
+    "job_sha256": "6fb567be9b1a053ce3029f49636868e9518d1f701644716cde1e96a4d0df8506"
+  },
+  {
+    "workflow": ".github/workflows/nightly.yml",
+    "job": "build",
+    "step": "Static checks including Actions validation",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "13b85cf42da75a002fc3b3fee460b8b6b6f9b159e99cd3902a39f4a9ac5a6f6c",
+    "job_sha256": "6fb567be9b1a053ce3029f49636868e9518d1f701644716cde1e96a4d0df8506"
+  },
+  {
+    "workflow": ".github/workflows/nightly.yml",
+    "job": "build",
+    "step": "Prepare pinned tools from source",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "32193646b8c8a3f502233f3169ad999ff6c4a1b042fe1a3b35fc3844e511a76a",
+    "job_sha256": "6fb567be9b1a053ce3029f49636868e9518d1f701644716cde1e96a4d0df8506"
+  },
+  {
+    "workflow": ".github/workflows/nightly.yml",
+    "job": "build",
+    "step": "Real Geargrafx tests (required, fail-closed; Issue",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "515d06f2168187f8ff06c77f7e8787cc90e260950b60bd506a422ab27df18210",
+    "job_sha256": "6fb567be9b1a053ce3029f49636868e9518d1f701644716cde1e96a4d0df8506"
+  },
+  {
+    "workflow": ".github/workflows/nightly.yml",
+    "job": "build",
+    "step": "Record candidate success state",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "5a1899db966a1d1af1f1222f70a5ca0c8e3206c71b1971a092ac8ab2003a4820",
+    "job_sha256": "6fb567be9b1a053ce3029f49636868e9518d1f701644716cde1e96a4d0df8506"
+  },
+  {
+    "workflow": ".github/workflows/nightly.yml",
+    "job": "build",
+    "step": "Build original HuCARD fixture",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "a8d719d7d5afe62979a63913d393f7c4b0965be5415c9900dc56c60c871d0469",
+    "job_sha256": "6fb567be9b1a053ce3029f49636868e9518d1f701644716cde1e96a4d0df8506"
+  },
+  {
+    "workflow": ".github/workflows/nightly.yml",
+    "job": "build",
+    "step": "Verify release-mode fixture",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "c8baad79086de4cb8763036b93bd477c42bebe22e11f525512583be6ba8899f8",
+    "job_sha256": "6fb567be9b1a053ce3029f49636868e9518d1f701644716cde1e96a4d0df8506"
+  },
+  {
+    "workflow": ".github/workflows/nightly.yml",
+    "job": "build",
+    "step": "Hand off the nightly outputs as an intermediate artifact (unverified here; the guard job checks them)",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "fd62840de7678116f477d4e0ae2effd2bed8a26fca096f855b05df11cc2bc839",
+    "job_sha256": "6fb567be9b1a053ce3029f49636868e9518d1f701644716cde1e96a4d0df8506"
   },
   {
     "workflow": ".github/workflows/core-harness.yml",
@@ -320,8 +293,35 @@
     "step": "Hand off harness log and evidence as an intermediate artifact (unverified here; the guard job checks them)",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "b04379d8e85aab3b8b67819bebc7b35f83eff4a8acf060de59cec57e03914dcb",
-    "job_sha256": "61daee9cf724cd96f8fcc09691c0f53810e94e308babb1c16bee43c7dfa0fab4"
+    "sha256": "15fb9941e93b7f64086cf398c6dd060f997638aca6a7a0dba824ddabd77e92b8",
+    "job_sha256": "d488ef6e9f788517d22cbab8ecb5e1903fe4c79fb21bb83915f9eaa1f923eb43"
+  },
+  {
+    "workflow": ".github/workflows/core-harness.yml",
+    "job": "core-harness",
+    "step": "Prepare existing pinned source toolchain and Geargrafx",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "18ede97fd42e3645198af8a9fe0e3c8e44ee5c16b6bdf214052c34a988ec6ed6",
+    "job_sha256": "d488ef6e9f788517d22cbab8ecb5e1903fe4c79fb21bb83915f9eaa1f923eb43"
+  },
+  {
+    "workflow": ".github/workflows/core-harness.yml",
+    "job": "core-harness",
+    "step": "Real-core harness, built-in self-tests and plug-in case",
+    "shell": "bash",
+    "runs_on": "ubuntu-24.04",
+    "sha256": "2601b4c1574e5d13b7c48ca81cbc6192bd2a27ebe320a5435135a069eb2b2d37",
+    "job_sha256": "d488ef6e9f788517d22cbab8ecb5e1903fe4c79fb21bb83915f9eaa1f923eb43"
+  },
+  {
+    "workflow": ".github/workflows/core-harness.yml",
+    "job": "core-harness",
+    "step": "Build DEV ROM only (no retail or reference BIOS)",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "e85969a2fb42b034cab4bc3e366586e0455fe0e6962893a3ef4a195003702267",
+    "job_sha256": "d488ef6e9f788517d22cbab8ecb5e1903fe4c79fb21bb83915f9eaa1f923eb43"
   },
   {
     "workflow": ".github/workflows/core-harness.yml",
@@ -329,8 +329,8 @@
     "step": "Prepare existing pinned source toolchain and Geargrafx",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "6c611f8ec7b8de7cdcea95c5ef9d6731a82e0092f6471136a76e7f30155b3dbe",
-    "job_sha256": "40d2cf14db87d4ef596f2cc45cb2cb4eff93bf44ac41aa701912d08f292cc779"
+    "sha256": "18ede97fd42e3645198af8a9fe0e3c8e44ee5c16b6bdf214052c34a988ec6ed6",
+    "job_sha256": "8c9dfa0ed0f3846d8707ea4a561e6bf8537c11e2132d90163dd4ac9cd0997f0b"
   },
   {
     "workflow": ".github/workflows/core-harness.yml",
@@ -338,17 +338,8 @@
     "step": "DEV-only internal boot path, real Geargrafx, cold and warm (Issue",
     "shell": "bash",
     "runs_on": "ubuntu-24.04",
-    "sha256": "890362049715afc01ff7f915790b7c6c42a13fba872c019c0766212b28dd68ea",
-    "job_sha256": "40d2cf14db87d4ef596f2cc45cb2cb4eff93bf44ac41aa701912d08f292cc779"
-  },
-  {
-    "workflow": ".github/workflows/core-bcdbin.yml",
-    "job": "guard-bcdbin-core",
-    "step": "Resolve python3 (trusted)",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "3359fb9928a290ad87a3494ee765246aadd1d9b175358952cbbe6173fe11a627",
-    "job_sha256": "7a9edb83caed5ce84f0a453647eda6e825050154b0693714944ce07332dca6c9"
+    "sha256": "a608a9f865d50ae0c268d1baf83cffb2364d03ac321cdf5268380dd36bbea506",
+    "job_sha256": "8c9dfa0ed0f3846d8707ea4a561e6bf8537c11e2132d90163dd4ac9cd0997f0b"
   },
   {
     "workflow": ".github/workflows/core-bcdbin.yml",
@@ -356,17 +347,8 @@
     "step": "Verify staged artifacts (trusted guard) for Save real-core ex_bcdbin log",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "9d3e898a64ba10419da70992aec79e66c9c2195089163ae01643d42ca4feb270",
-    "job_sha256": "7a9edb83caed5ce84f0a453647eda6e825050154b0693714944ce07332dca6c9"
-  },
-  {
-    "workflow": ".github/workflows/core-bcdbin.yml",
-    "job": "guard-bcdbin-core",
-    "step": "Guard placement (trusted)",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "a5a07c9eb4bd8826930e148004c3c9894e9073eb5e82ff932dfdbe389737de97",
-    "job_sha256": "7a9edb83caed5ce84f0a453647eda6e825050154b0693714944ce07332dca6c9"
+    "sha256": "81e966172432dacdc7a3206af529b8dce4a98d7b7a3018b82c83338874493873",
+    "job_sha256": "45817e9ea7e0d0ae98676ad0a40dc358f1b130b4f718265b89ca7e90222eded8"
   },
   {
     "workflow": ".github/workflows/core-bcdbin.yml",
@@ -374,8 +356,26 @@
     "step": "Stage artifacts (trusted guard) for Save real-core ex_bcdbin log",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "c097e5419ce0b40048b608f3ecf0e5753a9297830a3b87ad18b94385676cd3d7",
-    "job_sha256": "7a9edb83caed5ce84f0a453647eda6e825050154b0693714944ce07332dca6c9"
+    "sha256": "95ca251047e1a0ece8210c4d81215748b3da3dda9b556586bdc78e2786ef40b7",
+    "job_sha256": "45817e9ea7e0d0ae98676ad0a40dc358f1b130b4f718265b89ca7e90222eded8"
+  },
+  {
+    "workflow": ".github/workflows/core-bcdbin.yml",
+    "job": "guard-bcdbin-core",
+    "step": "Resolve python3 (trusted)",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "b9f2c403682d30c6538a47260f7b35f792c5f24c05d140dbfc05dc18a59d6268",
+    "job_sha256": "45817e9ea7e0d0ae98676ad0a40dc358f1b130b4f718265b89ca7e90222eded8"
+  },
+  {
+    "workflow": ".github/workflows/core-bcdbin.yml",
+    "job": "guard-bcdbin-core",
+    "step": "Guard placement (trusted)",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "ff0a4b43ccfc168217e97aa6805bfdc16462c7b3b2fafa799234a85bf34d4682",
+    "job_sha256": "45817e9ea7e0d0ae98676ad0a40dc358f1b130b4f718265b89ca7e90222eded8"
   },
   {
     "workflow": ".github/workflows/api-source.yml",
@@ -383,8 +383,17 @@
     "step": "Verify staged artifacts (trusted guard) for Save diagnostic ROM and evidence, no linked GPL executable",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "03c49d2ee1b487bd9c740ebd07ffb13d1aad9d8f86d89e8ecf83ae5805587691",
-    "job_sha256": "9956e68f9ae95dd66d56ac0d37955173daf11ed92e17b57dd5e2b14d909de1f9"
+    "sha256": "5feb44ee08c562e3306f87dccbdbea76a07cb96ab85e7c5fdf5019ab7f634c32",
+    "job_sha256": "b2d414714480329c97939ba77fe5d766be6a912e52785cd05697cd90462e286d"
+  },
+  {
+    "workflow": ".github/workflows/api-source.yml",
+    "job": "guard-bios-dev",
+    "step": "Resolve python3 (trusted)",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "b9f2c403682d30c6538a47260f7b35f792c5f24c05d140dbfc05dc18a59d6268",
+    "job_sha256": "b2d414714480329c97939ba77fe5d766be6a912e52785cd05697cd90462e286d"
   },
   {
     "workflow": ".github/workflows/api-source.yml",
@@ -392,17 +401,8 @@
     "step": "Stage artifacts (trusted guard) for Save diagnostic ROM and evidence, no linked GPL executable",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "089a84bacd29423fbdb18d6558cbb44610d31838e71f91d849aa1b241e7a81c1",
-    "job_sha256": "9956e68f9ae95dd66d56ac0d37955173daf11ed92e17b57dd5e2b14d909de1f9"
-  },
-  {
-    "workflow": ".github/workflows/api-source.yml",
-    "job": "guard-bios-dev",
-    "step": "Resolve python3 (trusted)",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "3359fb9928a290ad87a3494ee765246aadd1d9b175358952cbbe6173fe11a627",
-    "job_sha256": "9956e68f9ae95dd66d56ac0d37955173daf11ed92e17b57dd5e2b14d909de1f9"
+    "sha256": "fd015d0b87ac2f60e1da0cd1523a42a35491b8ba85b7c960f7abbba8f778beb6",
+    "job_sha256": "b2d414714480329c97939ba77fe5d766be6a912e52785cd05697cd90462e286d"
   },
   {
     "workflow": ".github/workflows/api-source.yml",
@@ -410,17 +410,8 @@
     "step": "Guard placement (trusted)",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "a5a07c9eb4bd8826930e148004c3c9894e9073eb5e82ff932dfdbe389737de97",
-    "job_sha256": "9956e68f9ae95dd66d56ac0d37955173daf11ed92e17b57dd5e2b14d909de1f9"
-  },
-  {
-    "workflow": ".github/workflows/api-source.yml",
-    "job": "guard-cdread-verdict",
-    "step": "Resolve python3 (trusted)",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "3359fb9928a290ad87a3494ee765246aadd1d9b175358952cbbe6173fe11a627",
-    "job_sha256": "e71d483c960380fb4b7b277da78c63b4edf9c14ad356bbbee70c45c479984938"
+    "sha256": "ff0a4b43ccfc168217e97aa6805bfdc16462c7b3b2fafa799234a85bf34d4682",
+    "job_sha256": "b2d414714480329c97939ba77fe5d766be6a912e52785cd05697cd90462e286d"
   },
   {
     "workflow": ".github/workflows/api-source.yml",
@@ -428,17 +419,17 @@
     "step": "Verify staged artifacts (trusted guard) for Save verdict bytes (hashes only; no ROM, BIOS or disc data)",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "7ea58f10d622c07189099b708d53accf466abd52e16d40e062fbfefb4a428446",
-    "job_sha256": "e71d483c960380fb4b7b277da78c63b4edf9c14ad356bbbee70c45c479984938"
+    "sha256": "a9375ae748d69ed7ba0f2e2509851d9881ce58cd3358875974b97cbebd9b7768",
+    "job_sha256": "c36aafd2c289412431f85188a61a4f245f5e92adfd37c7e9537fced58575c1e6"
   },
   {
     "workflow": ".github/workflows/api-source.yml",
     "job": "guard-cdread-verdict",
-    "step": "Guard placement (trusted)",
+    "step": "Resolve python3 (trusted)",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "a5a07c9eb4bd8826930e148004c3c9894e9073eb5e82ff932dfdbe389737de97",
-    "job_sha256": "e71d483c960380fb4b7b277da78c63b4edf9c14ad356bbbee70c45c479984938"
+    "sha256": "b9f2c403682d30c6538a47260f7b35f792c5f24c05d140dbfc05dc18a59d6268",
+    "job_sha256": "c36aafd2c289412431f85188a61a4f245f5e92adfd37c7e9537fced58575c1e6"
   },
   {
     "workflow": ".github/workflows/api-source.yml",
@@ -446,17 +437,17 @@
     "step": "Stage artifacts (trusted guard) for Save verdict bytes (hashes only; no ROM, BIOS or disc data)",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "d74d673e9cfff1dd14dc1a51fdd5cec39a9abea6a16092b8e6e5b31560aa4d99",
-    "job_sha256": "e71d483c960380fb4b7b277da78c63b4edf9c14ad356bbbee70c45c479984938"
+    "sha256": "e39a39a402717a0aa92c3d17a1b20ed2f2922027c65ec81ec06b08a2c5f303fa",
+    "job_sha256": "c36aafd2c289412431f85188a61a4f245f5e92adfd37c7e9537fced58575c1e6"
   },
   {
-    "workflow": ".github/workflows/core-harness.yml",
-    "job": "guard-core-harness",
-    "step": "Resolve python3 (trusted)",
+    "workflow": ".github/workflows/api-source.yml",
+    "job": "guard-cdread-verdict",
+    "step": "Guard placement (trusted)",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "3359fb9928a290ad87a3494ee765246aadd1d9b175358952cbbe6173fe11a627",
-    "job_sha256": "57343901b27d1684e0ddfb70eb5e5ee748c49333b5da97458913515b062bf7f2"
+    "sha256": "ff0a4b43ccfc168217e97aa6805bfdc16462c7b3b2fafa799234a85bf34d4682",
+    "job_sha256": "c36aafd2c289412431f85188a61a4f245f5e92adfd37c7e9537fced58575c1e6"
   },
   {
     "workflow": ".github/workflows/core-harness.yml",
@@ -464,17 +455,8 @@
     "step": "Verify staged artifacts (trusted guard) for Save harness log and evidence",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "4b11d727595308cf2f543129697e84d7eca6a60ca0339b628c229dc98cefc83c",
-    "job_sha256": "57343901b27d1684e0ddfb70eb5e5ee748c49333b5da97458913515b062bf7f2"
-  },
-  {
-    "workflow": ".github/workflows/core-harness.yml",
-    "job": "guard-core-harness",
-    "step": "Guard placement (trusted)",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "a5a07c9eb4bd8826930e148004c3c9894e9073eb5e82ff932dfdbe389737de97",
-    "job_sha256": "57343901b27d1684e0ddfb70eb5e5ee748c49333b5da97458913515b062bf7f2"
+    "sha256": "49cf070b4c0ed7b1ffff7f580f7dfa60d0d2a279f92af13cfb5debfd215baa51",
+    "job_sha256": "ab45d228c480ec917b8aa9011d191961e559831c09157723430818a2ba5436ab"
   },
   {
     "workflow": ".github/workflows/core-harness.yml",
@@ -482,53 +464,26 @@
     "step": "Stage artifacts (trusted guard) for Save harness log and evidence",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "fe15d9aec3aa726aaeb229cd8e8ba2eb5f9d72580cf9d6b206c0f6ce0808b641",
-    "job_sha256": "57343901b27d1684e0ddfb70eb5e5ee748c49333b5da97458913515b062bf7f2"
+    "sha256": "690efcd6756e3ebe1f0ed1c84844b4eb2ae7b832ac6fc714aa0bd56c829a1b06",
+    "job_sha256": "ab45d228c480ec917b8aa9011d191961e559831c09157723430818a2ba5436ab"
   },
   {
-    "workflow": ".github/workflows/nightly.yml",
-    "job": "guard-nightly",
-    "step": "Verify staged artifacts (trusted guard) for Archive verified original fixture (not a release)",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "2ff994b292a15263d9b644a1855adb90e87958f98043c2e316f14a83737e0d36",
-    "job_sha256": "47fc82840c1d9953d9e57decd76f6eca823157110d1b6162febdcb37b6719c08"
-  },
-  {
-    "workflow": ".github/workflows/nightly.yml",
-    "job": "guard-nightly",
+    "workflow": ".github/workflows/core-harness.yml",
+    "job": "guard-core-harness",
     "step": "Resolve python3 (trusted)",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "3359fb9928a290ad87a3494ee765246aadd1d9b175358952cbbe6173fe11a627",
-    "job_sha256": "47fc82840c1d9953d9e57decd76f6eca823157110d1b6162febdcb37b6719c08"
+    "sha256": "b9f2c403682d30c6538a47260f7b35f792c5f24c05d140dbfc05dc18a59d6268",
+    "job_sha256": "ab45d228c480ec917b8aa9011d191961e559831c09157723430818a2ba5436ab"
   },
   {
-    "workflow": ".github/workflows/nightly.yml",
-    "job": "guard-nightly",
-    "step": "Stage artifacts (trusted guard) for Save baseline; accepted only when the whole run succeeds",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "53df9104558da57b15918d4e9d90cb3934be0fbc4e3463061b5decddb1ba4305",
-    "job_sha256": "47fc82840c1d9953d9e57decd76f6eca823157110d1b6162febdcb37b6719c08"
-  },
-  {
-    "workflow": ".github/workflows/nightly.yml",
-    "job": "guard-nightly",
-    "step": "Verify staged artifacts (trusted guard) for Save baseline; accepted only when the whole run succeeds",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "8459f3edbd5fb1dff0eee4ad7a3a733a085c462833875ff79975449ad43cf52f",
-    "job_sha256": "47fc82840c1d9953d9e57decd76f6eca823157110d1b6162febdcb37b6719c08"
-  },
-  {
-    "workflow": ".github/workflows/nightly.yml",
-    "job": "guard-nightly",
+    "workflow": ".github/workflows/core-harness.yml",
+    "job": "guard-core-harness",
     "step": "Guard placement (trusted)",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "a5a07c9eb4bd8826930e148004c3c9894e9073eb5e82ff932dfdbe389737de97",
-    "job_sha256": "47fc82840c1d9953d9e57decd76f6eca823157110d1b6162febdcb37b6719c08"
+    "sha256": "ff0a4b43ccfc168217e97aa6805bfdc16462c7b3b2fafa799234a85bf34d4682",
+    "job_sha256": "ab45d228c480ec917b8aa9011d191961e559831c09157723430818a2ba5436ab"
   },
   {
     "workflow": ".github/workflows/nightly.yml",
@@ -536,8 +491,53 @@
     "step": "Stage artifacts (trusted guard) for Archive verified original fixture (not a release)",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "c95fe4af6d56e78deefeb186c70b4c81d794ae309b397c2f8421382bc1607491",
-    "job_sha256": "47fc82840c1d9953d9e57decd76f6eca823157110d1b6162febdcb37b6719c08"
+    "sha256": "2a5558371a9d97dc87ff6f319a4d25f64d463ad6a359a934035ec1332e6a3724",
+    "job_sha256": "cc9a16006e91c9ce92dd02d389866b6f434e3b6c28c92fab49fbbc0a98fcbecd"
+  },
+  {
+    "workflow": ".github/workflows/nightly.yml",
+    "job": "guard-nightly",
+    "step": "Stage artifacts (trusted guard) for Save baseline; accepted only when the whole run succeeds",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "63651e20ffaa935b789c4f654c1498667d514be84a626406054e24f4ba49151d",
+    "job_sha256": "cc9a16006e91c9ce92dd02d389866b6f434e3b6c28c92fab49fbbc0a98fcbecd"
+  },
+  {
+    "workflow": ".github/workflows/nightly.yml",
+    "job": "guard-nightly",
+    "step": "Verify staged artifacts (trusted guard) for Save baseline; accepted only when the whole run succeeds",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "926100959493e994f091dc81039125b1388fc49d29fd08fba575070e3dd619df",
+    "job_sha256": "cc9a16006e91c9ce92dd02d389866b6f434e3b6c28c92fab49fbbc0a98fcbecd"
+  },
+  {
+    "workflow": ".github/workflows/nightly.yml",
+    "job": "guard-nightly",
+    "step": "Verify staged artifacts (trusted guard) for Archive verified original fixture (not a release)",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "95cb0259e62e978727661d353feba7384f6f46c10fee59e6762458890bbd2dcd",
+    "job_sha256": "cc9a16006e91c9ce92dd02d389866b6f434e3b6c28c92fab49fbbc0a98fcbecd"
+  },
+  {
+    "workflow": ".github/workflows/nightly.yml",
+    "job": "guard-nightly",
+    "step": "Resolve python3 (trusted)",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "b9f2c403682d30c6538a47260f7b35f792c5f24c05d140dbfc05dc18a59d6268",
+    "job_sha256": "cc9a16006e91c9ce92dd02d389866b6f434e3b6c28c92fab49fbbc0a98fcbecd"
+  },
+  {
+    "workflow": ".github/workflows/nightly.yml",
+    "job": "guard-nightly",
+    "step": "Guard placement (trusted)",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "ff0a4b43ccfc168217e97aa6805bfdc16462c7b3b2fafa799234a85bf34d4682",
+    "job_sha256": "cc9a16006e91c9ce92dd02d389866b6f434e3b6c28c92fab49fbbc0a98fcbecd"
   },
   {
     "workflow": ".github/workflows/ci.yml",
@@ -545,17 +545,8 @@
     "step": "Resolve python3 (trusted)",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "3359fb9928a290ad87a3494ee765246aadd1d9b175358952cbbe6173fe11a627",
-    "job_sha256": "d959eef67e9987b32fdcd927057245576515a4eb865f1472ab61a957c692ee73"
-  },
-  {
-    "workflow": ".github/workflows/ci.yml",
-    "job": "guard-verify",
-    "step": "Guard placement (trusted)",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "a5a07c9eb4bd8826930e148004c3c9894e9073eb5e82ff932dfdbe389737de97",
-    "job_sha256": "d959eef67e9987b32fdcd927057245576515a4eb865f1472ab61a957c692ee73"
+    "sha256": "b9f2c403682d30c6538a47260f7b35f792c5f24c05d140dbfc05dc18a59d6268",
+    "job_sha256": "4c2a6f5dae155e597d2e98a3a24f5d1bf9252394d80a51e9004fdbf6a6fcd033"
   },
   {
     "workflow": ".github/workflows/ci.yml",
@@ -563,8 +554,8 @@
     "step": "Stage artifacts (trusted guard) for Save verified test fixture and evidence",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "ac5f9e4bc5726ee5d81d1415dc31ed0efff594494c8b96c53dcc7eaf9fca392f",
-    "job_sha256": "d959eef67e9987b32fdcd927057245576515a4eb865f1472ab61a957c692ee73"
+    "sha256": "d005a8c04043f5df4b739c938037253ee10c5bb39fba37a376b832487a0d8376",
+    "job_sha256": "4c2a6f5dae155e597d2e98a3a24f5d1bf9252394d80a51e9004fdbf6a6fcd033"
   },
   {
     "workflow": ".github/workflows/ci.yml",
@@ -572,8 +563,17 @@
     "step": "Verify staged artifacts (trusted guard) for Save verified test fixture and evidence",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "c0f52e499404e1910aea74ef810a06a016c417cefd2fec2606aa4f3cebc91f5b",
-    "job_sha256": "d959eef67e9987b32fdcd927057245576515a4eb865f1472ab61a957c692ee73"
+    "sha256": "fcc81f01e3a679a4247797987e2217d153e0950a57378a2ee62b197180e9acc8",
+    "job_sha256": "4c2a6f5dae155e597d2e98a3a24f5d1bf9252394d80a51e9004fdbf6a6fcd033"
+  },
+  {
+    "workflow": ".github/workflows/ci.yml",
+    "job": "guard-verify",
+    "step": "Guard placement (trusted)",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "ff0a4b43ccfc168217e97aa6805bfdc16462c7b3b2fafa799234a85bf34d4682",
+    "job_sha256": "4c2a6f5dae155e597d2e98a3a24f5d1bf9252394d80a51e9004fdbf6a6fcd033"
   },
   {
     "workflow": ".github/workflows/nightly.yml",
@@ -581,8 +581,8 @@
     "step": "Compare exact main SHA against last successful built artifact",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "10982310a309980d8a31483c7eed19af7b8935ce25a16e2ede4c372c64cba6f3",
-    "job_sha256": "c6ccd90484bad60fae079fe698f4503ea14c6511391da5ef00d68a2d58fcb918"
+    "sha256": "0979ee180054fad72b9fe0636ba1aab708b82c66ff365387fa1996c9950ddbf7",
+    "job_sha256": "3eb8111bcbc1f03e44469dab304ffa0f5ef1b41dbef39e32c283a7089e8fb175"
   },
   {
     "workflow": ".github/workflows/pages.yml",
@@ -590,80 +590,8 @@
     "step": "Validate pages",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "afb5cb81d9637b1ab0320cddaef36cbf8e93751820395662f0a4c0fc2e673559",
-    "job_sha256": "95e053e35174bb65015e8370e8dfbd83190124c11e9d4e61920ce39cfcb8c759"
-  },
-  {
-    "workflow": ".github/workflows/ci.yml",
-    "job": "verify",
-    "step": "Real Geargrafx tests (required, fail-closed; Issue",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "01c4a0d6455dc7053359c7487c5a0d8984a33b1be04bd3bf21491835d815732a",
-    "job_sha256": "533b1e189dd9a4e9002f81ba8ca4d45dcda47db3f404a92ac47a2dab92f1cc8a"
-  },
-  {
-    "workflow": ".github/workflows/ci.yml",
-    "job": "verify",
-    "step": "Build original HuCARD fixture",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "29c722ca05980698b3d6610ea2fe5b35b190209de3bf3cfd0648778e6b97c481",
-    "job_sha256": "533b1e189dd9a4e9002f81ba8ca4d45dcda47db3f404a92ac47a2dab92f1cc8a"
-  },
-  {
-    "workflow": ".github/workflows/ci.yml",
-    "job": "verify",
-    "step": "Same-input rebuild and provenance record (Issue",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "3d5c7adec9f7aaca3f922903e997ce76a401716f4286ff8320e0417aaaffa0b6",
-    "job_sha256": "533b1e189dd9a4e9002f81ba8ca4d45dcda47db3f404a92ac47a2dab92f1cc8a"
-  },
-  {
-    "workflow": ".github/workflows/ci.yml",
-    "job": "verify",
-    "step": "Prepare pinned tools from source",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "50ab411878e4b9aba287a524783f8af8553994572dd78a5cb7ab8443d0b408d0",
-    "job_sha256": "533b1e189dd9a4e9002f81ba8ca4d45dcda47db3f404a92ac47a2dab92f1cc8a"
-  },
-  {
-    "workflow": ".github/workflows/ci.yml",
-    "job": "verify",
-    "step": "Static checks including Actions validation",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "8c765d6f93d1a0d382a19c4422d4e2e967820f132c090fc0310c54896ab85c27",
-    "job_sha256": "533b1e189dd9a4e9002f81ba8ca4d45dcda47db3f404a92ac47a2dab92f1cc8a"
-  },
-  {
-    "workflow": ".github/workflows/ci.yml",
-    "job": "verify",
-    "step": "Hand off the test fixture and evidence as an intermediate artifact (unverified here; the guard job checks them)",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "a58e56c99da0ac262742b348d806b35a2e18a607fbb6540611c27264a30336ab",
-    "job_sha256": "533b1e189dd9a4e9002f81ba8ca4d45dcda47db3f404a92ac47a2dab92f1cc8a"
-  },
-  {
-    "workflow": ".github/workflows/ci.yml",
-    "job": "verify",
-    "step": "Verify release-mode fixture",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "a969b4892c053b0b83025419db746f7fbd0479dc1a5b494f7b1f09cbda12f51a",
-    "job_sha256": "533b1e189dd9a4e9002f81ba8ca4d45dcda47db3f404a92ac47a2dab92f1cc8a"
-  },
-  {
-    "workflow": ".github/workflows/ci.yml",
-    "job": "verify",
-    "step": "Provenance guard on changed content (list edits need a verified maintainer approval)",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "d49b3425134d63399c943eec5da519ff70084522788e7a4e5c9a202ba43d0643",
-    "job_sha256": "533b1e189dd9a4e9002f81ba8ca4d45dcda47db3f404a92ac47a2dab92f1cc8a"
+    "sha256": "1072def68d8f4b206e9b9b12fabba5098afaa7b05e189b26c552639f3a87ecea",
+    "job_sha256": "e519908d1c206f3e2324d3d03e10a7c2e7cbbd42996034e98e02c82a9ea06644"
   },
   {
     "workflow": ".github/workflows/ci.yml",
@@ -671,8 +599,80 @@
     "step": "Host tests (no Geargrafx needed)",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "ddf5d406afc7679e6ebe4cc858f3b50964ebd4f6e32c408dd64a7c7487a3100f",
-    "job_sha256": "533b1e189dd9a4e9002f81ba8ca4d45dcda47db3f404a92ac47a2dab92f1cc8a"
+    "sha256": "088c31e9cae0ce9d387a33099da0ff20fb5e73e00c8790a853ec205f414bb82e",
+    "job_sha256": "cf638fd2cd47a36807e3bbb7f7f09b5822bd51e8e8655d405588a6349965dfef"
+  },
+  {
+    "workflow": ".github/workflows/ci.yml",
+    "job": "verify",
+    "step": "Static checks including Actions validation",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "13b85cf42da75a002fc3b3fee460b8b6b6f9b159e99cd3902a39f4a9ac5a6f6c",
+    "job_sha256": "cf638fd2cd47a36807e3bbb7f7f09b5822bd51e8e8655d405588a6349965dfef"
+  },
+  {
+    "workflow": ".github/workflows/ci.yml",
+    "job": "verify",
+    "step": "Prepare pinned tools from source",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "32193646b8c8a3f502233f3169ad999ff6c4a1b042fe1a3b35fc3844e511a76a",
+    "job_sha256": "cf638fd2cd47a36807e3bbb7f7f09b5822bd51e8e8655d405588a6349965dfef"
+  },
+  {
+    "workflow": ".github/workflows/ci.yml",
+    "job": "verify",
+    "step": "Hand off the test fixture and evidence as an intermediate artifact (unverified here; the guard job checks them)",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "46fba1880a9c7cf9e8fc8b1d03917aef5b9f0d1a08d6c174867535e6e5546c4c",
+    "job_sha256": "cf638fd2cd47a36807e3bbb7f7f09b5822bd51e8e8655d405588a6349965dfef"
+  },
+  {
+    "workflow": ".github/workflows/ci.yml",
+    "job": "verify",
+    "step": "Real Geargrafx tests (required, fail-closed; Issue",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "515d06f2168187f8ff06c77f7e8787cc90e260950b60bd506a422ab27df18210",
+    "job_sha256": "cf638fd2cd47a36807e3bbb7f7f09b5822bd51e8e8655d405588a6349965dfef"
+  },
+  {
+    "workflow": ".github/workflows/ci.yml",
+    "job": "verify",
+    "step": "Provenance guard on changed content (list edits need a verified maintainer approval)",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "7dc20125c03d600239760ae7c399fc99ba95f6c01bafa5ce8ff02ac00dba3f44",
+    "job_sha256": "cf638fd2cd47a36807e3bbb7f7f09b5822bd51e8e8655d405588a6349965dfef"
+  },
+  {
+    "workflow": ".github/workflows/ci.yml",
+    "job": "verify",
+    "step": "Build original HuCARD fixture",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "a8d719d7d5afe62979a63913d393f7c4b0965be5415c9900dc56c60c871d0469",
+    "job_sha256": "cf638fd2cd47a36807e3bbb7f7f09b5822bd51e8e8655d405588a6349965dfef"
+  },
+  {
+    "workflow": ".github/workflows/ci.yml",
+    "job": "verify",
+    "step": "Verify release-mode fixture",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "c8baad79086de4cb8763036b93bd477c42bebe22e11f525512583be6ba8899f8",
+    "job_sha256": "cf638fd2cd47a36807e3bbb7f7f09b5822bd51e8e8655d405588a6349965dfef"
+  },
+  {
+    "workflow": ".github/workflows/ci.yml",
+    "job": "verify",
+    "step": "Same-input rebuild and provenance record (Issue",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "fcf3f59794f85f537a2ebf8652c9c5cd0e193b2519ed976a4feb2b07f82b4c5a",
+    "job_sha256": "cf638fd2cd47a36807e3bbb7f7f09b5822bd51e8e8655d405588a6349965dfef"
   },
   {
     "workflow": ".github/workflows/api-source.yml",
@@ -680,17 +680,8 @@
     "step": "Hand off the verdict bytes as an intermediate artifact (unverified here; the guard job checks them)",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "08eca836182fd94698ca89775a0f4ad72fb369702f756e97148b0b7b8c3f9d9b",
-    "job_sha256": "f53daa29dc5a0d8417d8203b16fb28d094e2803fbef42af3a19397dba2d36b7e"
-  },
-  {
-    "workflow": ".github/workflows/api-source.yml",
-    "job": "verify-cdread-attestation",
-    "step": "Verify CD-read attestation against main (gh + tools/evidence_provenance.py)",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "57f56ea867a404039bd7ef4b7074413410e97063314b6aa539950f2dcf5f3035",
-    "job_sha256": "f53daa29dc5a0d8417d8203b16fb28d094e2803fbef42af3a19397dba2d36b7e"
+    "sha256": "8c47c695b83ecb00fb76a38952e45b5d21dd25378a7c2862e4c154659775d827",
+    "job_sha256": "6f6f8cfbeb876e57f53bee29243d0ba26463be629adabb4d724769e675b25527"
   },
   {
     "workflow": ".github/workflows/api-source.yml",
@@ -698,8 +689,17 @@
     "step": "Produce CD_READ verdict (Issue",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "958f2c53449a180416aea6ff0dc69dce6a0d0c01c0a1257b2bd3e6339a14cbd0",
-    "job_sha256": "f53daa29dc5a0d8417d8203b16fb28d094e2803fbef42af3a19397dba2d36b7e"
+    "sha256": "c3465fe4ef605141f8d6bf59b91334668ebdb1eb7762add3093151d106e20e4c",
+    "job_sha256": "6f6f8cfbeb876e57f53bee29243d0ba26463be629adabb4d724769e675b25527"
+  },
+  {
+    "workflow": ".github/workflows/api-source.yml",
+    "job": "verify-cdread-attestation",
+    "step": "Verify CD-read attestation against main (gh + tools/evidence_provenance.py)",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "c83ed577a8a288ec05e7748b55ee22286ffe00984db384351dff4ee7523beca5",
+    "job_sha256": "6f6f8cfbeb876e57f53bee29243d0ba26463be629adabb4d724769e675b25527"
   },
   {
     "workflow": ".github/workflows/api-source.yml",
@@ -707,7 +707,7 @@
     "step": "Verify verdict attestation against main",
     "shell": null,
     "runs_on": "ubuntu-24.04",
-    "sha256": "4bcff45422a3f78fec06c309ed09e15fafab3b2b64488c873e3b953373071933",
-    "job_sha256": "bdb90da838d1c2c240c660e2d953974e5f3aad429075bcc9f8d66effae1c992f"
+    "sha256": "8995f55c1a315c7e1beaec4e296f99d6b8a710a686ef140752a571baa0ca9510",
+    "job_sha256": "4302eed9f3868a68e7b9e74513904266475a981ec6fc8d7c85a4779a1915215c"
   }
 ]
