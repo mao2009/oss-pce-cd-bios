@@ -66,7 +66,8 @@ def check_pin_review(marker_path=REVIEW_MARKER_PATH, *, registry_sha256=REGISTRY
     """Fail closed unless the committed review marker names the current registry and core pins.
 
     Changing either pin without updating this marker in the same change is rejected. The marker is a
-    consistency gate for review, not authentication: the approval itself is the PR review.
+    consistency gate for review, not authentication. reviewed_in_pr is a self-declared number: only its
+    shape is checked here, and nothing verifies that the named PR approved the change.
     """
     try:
         marker = json.loads(Path(marker_path).read_bytes())
@@ -80,7 +81,7 @@ def check_pin_review(marker_path=REVIEW_MARKER_PATH, *, registry_sha256=REGISTRY
         raise ValueError('core_revision pin changed without updated review marker')
     if not (isinstance(marker['reviewed_in_pr'], int) and not isinstance(marker['reviewed_in_pr'], bool)
             and marker['reviewed_in_pr'] > 0):
-        raise ValueError('pin review marker must name the approving PR number')
+        raise ValueError('pin review marker must name a PR number (self-declared, not verified as an approval)')
 
 
 def verify_record(record, log_path, *, field, binary_sha256, declared_kind=None):
