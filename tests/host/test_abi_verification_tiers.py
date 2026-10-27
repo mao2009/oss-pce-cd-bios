@@ -233,6 +233,30 @@ class DesignDocumentTests(unittest.TestCase):
         self.assertRegex(self.text, re.compile(r"スキーマ.*変更しない|変更しない.*スキーマ"))
         self.assertIn("release_eligible", self.text)
 
+    def test_document_lists_all_six_owner_undecided_items(self):
+        for number in range(1, 7):
+            self.assertIn(f"### 8.{number} ", self.text)
+        for label in ("推奨", "互換性", "セキュリティ", "必要な人間の承認", "判断前に進めてよいこと"):
+            self.assertGreaterEqual(self.text.count(label), 6, label)
+
+
+class OwnerUndecidedStateTests(unittest.TestCase):
+    """The undecided tier words are design vocabulary only: they must not be stored or accepted as claim status."""
+
+    def test_partial_claim_status_is_refused(self):
+        claim = {"status": "PARTIAL", "value": "x", "sources": ["caller"], "confidence": "SOURCE_SUPPORTED"}
+        with self.assertRaisesRegex(ValueError, "unsupported claim status"):
+            adjudicate(claim, executed_callee=False)
+
+    def test_verified_equivalent_claim_status_is_refused(self):
+        claim = {"status": "VERIFIED-equivalent", "value": "x", "sources": ["caller"],
+                 "confidence": "SOURCE_SUPPORTED"}
+        with self.assertRaisesRegex(ValueError, "unsupported claim status"):
+            adjudicate(claim, executed_callee=False)
+
+    def test_dev_ledger_states_have_no_tier_values(self):
+        self.assertEqual({"NOT_READY", "DEV_CALLABLE", "BLOCKED"}, set(dev.STATES))
+
 
 if __name__ == "__main__":
     unittest.main()
