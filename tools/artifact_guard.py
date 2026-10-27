@@ -1478,6 +1478,9 @@ def _policy_structure_problems(workflow, text):
     problems = []
     if re.search(r"(?:^|[\s\[{,:\-])!", text):
         problems.append(f"{workflow}: an explicit YAML tag is refused in the policy workflow (Issue #544)")
+    if re.search(r"[^\x09\x0a\x0d\x20-\x7e]", text):   # printable ASCII only: a BOM, NEL, U+2028/2029, NBSP or zero-width
+        problems.append(f"{workflow}: a non-ASCII or control character is refused in the policy workflow; parsers disagree on "
+                        "line breaks and spaces outside ASCII (Issue #544)")
     if re.search(r"(?:^|[\r\n])\s*%", text):   # a YAML directive (%YAML 1.2) can change the schema; CR-only breaks count too
         problems.append(f"{workflow}: a YAML directive is refused in the policy workflow (Issue #544)")
     if re.search(r"(?:^|[\s\[{,:\-])[&*][\w-]", text):

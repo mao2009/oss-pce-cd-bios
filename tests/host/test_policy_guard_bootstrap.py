@@ -265,6 +265,19 @@ class Hardening(unittest.TestCase):
     def test_bare_github_context_in_top_level_name_is_refused(self):
         self.assert_refused(GOOD.replace('name: Policy guard', 'name: ${{ github }}', 1))
 
+    # 6e96d5c review: BOM before a directive; Unicode line separators that YAML 1.1 and 1.2 read differently
+    def test_bom_before_directive_is_refused(self):
+        self.assert_refused('﻿%YAML 1.2\n---\n' + GOOD)
+
+    def test_unicode_line_separator_in_key_is_refused(self):
+        self.assert_refused(GOOD.replace('on:', ' on:', 1))
+
+    def test_nel_line_break_is_refused(self):
+        self.assert_refused(GOOD.replace('on:', '\x85on:', 1))
+
+    def test_zero_width_character_in_run_is_refused(self):
+        self.assert_refused(GOOD.replace('python3 .trusted', 'python3​ .trusted', 1))
+
     def test_quoted_on_key_with_same_trigger_passes(self):
         self.assertEqual(problems(GOOD.replace('on:\n', '"on":\n', 1)), [])
 
