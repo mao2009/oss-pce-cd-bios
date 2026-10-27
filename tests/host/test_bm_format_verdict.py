@@ -357,5 +357,64 @@ class VerdictTypeGuardTest(unittest.TestCase):
         self.assertEqual(report["cases"][0]["verdict"], v.NOT_RUN)
 
 
+class AuditGapTest(unittest.TestCase):
+    """PR #509 audit (Issue #303). Each test was RED on the PR head before its fix."""
+
+    def _valid_with_payload(self):
+        image = bytearray(v._formatted())
+        image[bm.HEADER_LEN] = 0x5A  # user payload byte
+        return bytes(image)
+
+    def test_ok_over_valid_signature_image_is_fail(self):
+        # Gap: an OK on an already-formatted image would destroy user data.
+        self.assertEqual(v.judge(bm.OK, bm.OK, self._valid_with_payload(), v._formatted()), v.FAIL)
+
+    def test_model_ok_over_valid_signature_image_is_fail_in_run_case(self):
+        image = self._valid_with_payload()
+        with mock.patch.object(v, "guarded_format", return_value=(bm.OK, v._formatted())):
+            self.assertEqual(v.run_case("dbl", image, True, bm.OK)["verdict"], v.FAIL)
+
+    def test_unknown_status_with_no_expectation_is_fail(self):
+        # Gap: NOT_RUN hid an unknown model status; only the expectation was checked.
+        self.assertEqual(v.judge(None, "BOGUS", bytes(64), bytes(64)), v.FAIL)
+        with mock.patch.object(v, "guarded_format", return_value=("BOGUS", bytes(64))):
+            self.assertEqual(v.run_case("n", bytes(64), True, None)["verdict"], v.FAIL)
+
+    def test_non_tuple_model_return_is_fail(self):
+        # Gap: a list of two items was unpacked and counted as a success.
+        with mock.patch.object(v, "guarded_format", return_value=[bm.OK, v._formatted()]):
+            self.assertEqual(v.run_case("l", bytes(64), True, bm.OK)["verdict"], v.FAIL)
+
+    def test_memoryview_input_mutation_is_fail(self):
+        # Gap: the mutation check only covered bytearray, not other writable buffers.
+        backing = bytearray(64)
+
+        def mutating(image, *, allow_destructive=False):
+            image[0] = 0x7F
+            return bm.OK, v._formatted()
+
+        with mock.patch.object(v, "guarded_format", side_effect=mutating):
+            self.assertEqual(v.run_case("mv", memoryview(backing), True, bm.OK)["verdict"], v.FAIL)
+
+    def test_bytearray_subclass_output_with_lying_slices_is_fail(self):
+        # Gap: a subclass whose slicing hides a non-zero body passed the zero-fill check.
+        class Lying(bytearray):
+            def __getitem__(self, k):
+                if isinstance(k, slice) and (k.start or 0) >= len(bm.SIGNATURE):
+                    return bytes(len(range(*k.indices(len(self)))))
+                return super().__getitem__(k)
+
+        out = Lying(v._formatted())
+        out[40] = 0x01
+        self.assertEqual(v.judge(bm.OK, bm.OK, bytes(64), out), v.FAIL)
+
+    def test_report_is_not_driven_by_mutable_module_globals(self):
+        # Gap: release_eligible / abi were read from module globals, a self-declared approval surface.
+        with mock.patch.object(v, "RELEASE_ELIGIBLE", True), mock.patch.object(v, "ABI_STATUS", "VERIFIED"):
+            report = v.run_all()
+        self.assertFalse(report["release_eligible"])
+        self.assertEqual(report["abi"], "UNKNOWN")
+
+
 if __name__ == "__main__":
     unittest.main()
