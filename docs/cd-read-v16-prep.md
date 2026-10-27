@@ -16,7 +16,7 @@
 | 種別 | `kind` | 判定関数 | できること | できないこと |
 | --- | --- | --- | --- | --- |
 | 合成 SCSI 転送 | `synthetic_scsi` | `judge_synthetic()` | 自作媒体での転送長、宛先バイト、宛先外書込みの判定 | 純正 callee の戻り値・副作用の証拠 |
-| 純正 callee | `reference_callee` | `judge_callee()` | 信頼された `reference_jsr_gate.require_allowed('slot-03')` の結果だけで許可する。`obs['gate']` は許可を与えない。provenance（`origin` / `rom_sha256` / `core` / `head` / `evidence`）が必須（形式と存在のみ検査。自己申告の値であり認証はされていない。`rom_sha256` と `head` は 16 進の長さだけ検査する）。通過後のみ `cd_read_error_verdict.judge` に委譲 | 合成結果の代用、ゲートを開いたモックの結果を承認とみなすこと |
+| 純正 callee | `reference_callee` | `judge_callee()` | 信頼された `reference_jsr_gate.require_allowed('slot-03')` の結果だけで許可する。`obs['gate']` は許可を与えない。provenance（`origin` / `rom_sha256` / `core` / `head` / `evidence`）が必須（形式と存在のみ検査。自己申告の値であり認証はされていない。`rom_sha256` と `head` は長さと小文字 16 進の形式を検査する）。通過後のみ `cd_read_error_verdict.judge` に委譲 | 合成結果の代用、ゲートを開いたモックの結果を承認とみなすこと |
 
 **モックの扱い:** テストでゲートを `ALLOWED` にモックするものは「配線の確認」であり、承認ではない。実ゲートは現在 CLOSED（`NO_REVIEWED_GATE_RECORD`、`NO_INDEPENDENT_APPROVAL`）で、そのため実 callee 記録は BLOCKED になる。
 
