@@ -304,6 +304,20 @@ class Hardening(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'symbolic link'):
                     guard.check_guard_placement(Path(tmp))
 
+    def test_linked_workflows_directory_is_refused(self):
+        # 39b6de2 review: a link on the DIRECTORY (.github/workflows) is not seen by the per-file check. The link state is
+        # patched on that directory (Windows cannot create the link here) and the placement check must refuse it.
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / '.github' / 'workflows' / 'ci.yml'
+            path.parent.mkdir(parents=True)
+            path.write_text(GOOD, encoding='utf-8')
+            real_islink = __import__('os').path.islink
+            linked = str(Path(tmp) / '.github' / 'workflows')
+            with mock.patch('os.path.islink', side_effect=lambda p: str(p) == linked or real_islink(p)):
+                with self.assertRaisesRegex(ValueError, 'symbolic link'):
+                    guard.check_guard_placement(Path(tmp))
+
     def test_quoted_on_key_with_same_trigger_passes(self):
         self.assertEqual(problems(GOOD.replace('on:\n', '"on":\n', 1)), [])
 

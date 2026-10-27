@@ -1684,6 +1684,12 @@ def _pages_single_problems(jobs, per_job, label):
                                PAGES_JOB_KEYS)
 
 
+def _is_junction(path):
+    """True for a Windows directory junction (Python 3.12+ has Path.is_junction; older versions report False)."""
+    is_junction = getattr(path, "is_junction", None)
+    return bool(is_junction()) if callable(is_junction) else False
+
+
 def check_guard_placement(root=ROOT, partial_fixtures=False):
     """Static placement layer (run by make check and by the trusted copy): the preamble and stage/verify steps must
     surround every upload step, in the same job, exactly as written here.
@@ -1698,6 +1704,19 @@ def check_guard_placement(root=ROOT, partial_fixtures=False):
     """
     base = Path(root)
     problems = []
+    # Issue #544 (39b6de2 review): a link on a directory (or a Windows junction) is untrusted input too. Walk the trees the
+    # checks read without following links, and refuse any link or junction found on the way, directories included.
+    for tree in (".github", "tools"):
+        top = base / tree
+        if top.is_symlink() or _is_junction(top):
+            problems.append(f"{tree}: a symbolic link or junction is refused (untrusted input; Issue #544)")
+            continue
+        for dirpath, dirnames, filenames in os.walk(top, followlinks=False):
+            for name in dirnames + filenames:
+                entry = os.path.join(dirpath, name)
+                if os.path.islink(entry) or _is_junction(Path(entry)):
+                    problems.append(f"{Path(entry).relative_to(base).as_posix()}: a symbolic link or junction is refused "
+                                    "(untrusted input; Issue #544)")
     files = _workflow_files(base)
     if not files:
         raise ValueError(f"no workflow or action files under {WORKFLOWS}/ or {ACTIONS}/ to check; "
