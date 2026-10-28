@@ -1755,8 +1755,8 @@ def check_guard_placement(root=ROOT, partial_fixtures=False):
             problems.append(f"{label}: a lone CR line break is refused in the policy workflow (Issue #544)")
         # Do this before any node walk. A YAML alias can form a cycle, so later structural checks must not inspect it.
         integrity = yaml_integrity_violations(text, label)
-        if integrity and any("YAML alias" in problem or "YAML anchor" in problem for problem in integrity):
-            problems += integrity
+        problems += integrity   # every integrity finding is kept, as before this change (Issue #544 review)
+        if any("YAML alias" in problem or "YAML anchor" in problem for problem in integrity):
             continue
         try:
             steps = upload_steps(text)
