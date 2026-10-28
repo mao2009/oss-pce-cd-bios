@@ -482,8 +482,13 @@ def _touches_trusted(arg):
 
 
 def option_value(arg):
-    """The value an option names (--target-directory=tools gives tools); any other argument is itself."""
-    return arg.split("=", 1)[1] if arg.startswith("-") and "=" in arg else arg
+    """The value an option names: --target-directory=tools gives tools, and the attached short form -ttools gives tools
+    (cp -t DIR). Any other argument is itself."""
+    if arg.startswith("--") and "=" in arg:
+        return arg.split("=", 1)[1]
+    if arg.startswith(("-t", "-T")) and len(arg) > 2:
+        return arg[2:]
+    return arg
 
 
 def _names_repository_code(arg):

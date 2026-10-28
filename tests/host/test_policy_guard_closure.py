@@ -601,6 +601,22 @@ class SymlinkAndOptionValues(ClosureCase):
         self.assertTrue(policy.closure_of(self.trusted)[2])
 
 
+class AttachedShortTarget(ClosureCase):
+    """Last review of cb5e98f: the attached short forms of cp -t (-ttools, -t.git)."""
+
+    def set_run(self, text):
+        for root in (self.trusted, self.candidate):
+            (root / FIXTURE).write_text(priv_workflow(text), encoding='utf-8')
+
+    def test_attached_t_into_tools_is_refused(self):
+        self.set_run('cp build/payload -ttools')
+        self.assertTrue(policy.closure_of(self.trusted)[2])
+
+    def test_attached_t_into_git_is_refused(self):
+        self.set_run('cp build/payload -t.git')
+        self.assertTrue(policy.closure_of(self.trusted)[2])
+
+
 class UnprivilegedBoundary(unittest.TestCase):
     def test_nightly_plan_job_is_outside_the_privileged_closure(self):
         # The nightly plan job holds no write permission: its run: text is approved exactly (approval_problems) but its
