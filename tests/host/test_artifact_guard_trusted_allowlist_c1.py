@@ -146,7 +146,7 @@ class LinkWalkAndPlantedModules(unittest.TestCase):
         (root / 'tools').mkdir()
         (root / '.github' / 'workflows').mkdir(parents=True)
         (root / '.github' / 'workflows' / 'w.yml').write_text(
-            'name: w\non: [push]\njobs:\n  b:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo hi\n', encoding='utf-8')
+            'name: w\non: [push]\npermissions:\n  contents: read\njobs:\n  b:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo hi\n', encoding='utf-8')
         return root, os
 
     def link(self, os, target, name):
@@ -194,6 +194,8 @@ class LinkWalkAndPlantedModules(unittest.TestCase):
         (planted / 'tools').mkdir()
         shutil.copy(Path(guard.__file__), planted / 'tools' / 'artifact_guard.py')
         (planted / 'tools' / 'yaml.py').write_text('raise SystemExit("planted module was imported")\n', encoding='utf-8')
+        # a table beside the guard, so the run reaches the yaml import: a positive control for the planted module
+        (planted / 'tools' / 'artifact_guard_run_allowlist.json').write_text('[]', encoding='utf-8')
         result = subprocess.run([system.executable, str(planted / 'tools' / 'artifact_guard.py'), '--root', str(root),
                                  '--check-placement'], capture_output=True, text=True)
         self.assertNotIn('planted module was imported', result.stderr + result.stdout)
