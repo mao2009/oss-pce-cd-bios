@@ -544,7 +544,7 @@ class PublicDocsMutationTest(unittest.TestCase):
         self.assertTrue(stale_hits(self.CLEAN, expected))
 
     def test_html_wrapped_count_is_read(self):
-        html = "<div><span>12</span> / 81</div> DEV implemented slots <span>0</span>/81 ABI VERIFIED"
+        html = "<div><span>13</span> / 81</div> DEV implemented slots <span>0</span>/81 ABI VERIFIED"
         self.assertNotIn("DEV implementations", missing_claims(html))
         self.assertTrue(stale_hits("<span>11</span> / 81 DEV implemented"))
 
