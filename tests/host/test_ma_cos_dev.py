@@ -120,10 +120,36 @@ class CosMutantTests(unittest.TestCase):
 
 
 class CosWrapperSourceTests(unittest.TestCase):
-    """The wrapper must stay a pure tail jump: binary add, P restored, no table, no zero-page use."""
+    """The wrapper must stay a pure tail jump: exact instruction sequence, P restored, no table, no zero-page use."""
+
+    # The only instructions the wrapper may contain, in this order (labels, directives and comments are ignored).
+    EXPECTED = ["php", "cld", "clc", "adc #64", "plp", "jmp api_slot_45"]
+
+    @staticmethod
+    def instructions(lines):
+        """Instruction lines of the wrapper: comments stripped, blank lines, labels and assembler directives dropped."""
+        out = []
+        for raw in lines:
+            code = raw.split(";", 1)[0].strip()
+            if not code or code.endswith(":") or code.startswith("."):
+                continue
+            out.append(" ".join(code.split()))
+        return out
+
+    @classmethod
+    def violations(cls, lines):
+        """Empty list when the wrapper is exactly EXPECTED; otherwise a description of each difference."""
+        found = cls.instructions(lines)
+        if found == cls.EXPECTED:
+            return []
+        problems = [f"sequence {found!r} != {cls.EXPECTED!r}"]
+        for token in cls.EXPECTED:
+            if token not in found:
+                problems.append(f"missing {token!r}")
+        return problems
 
     def code(self):
-        return [line.split(";", 1)[0].rstrip() for line in COS_SOURCE.read_text(encoding="utf-8").splitlines()]
+        return COS_SOURCE.read_text(encoding="utf-8").splitlines()
 
     def test_slot_46_is_a_dev_override_and_depends_on_slot_45(self):
         self.assertIn(0x46, overrides())
@@ -132,38 +158,36 @@ class CosWrapperSourceTests(unittest.TestCase):
         self.assertIn("api_slot_46:", source)
         self.assertIn(".import api_slot_45", source)
 
-    REQUIRED = ("php", "cld", "clc", "adc #64", "plp", "jmp api_slot_45")
-
-    @staticmethod
-    def missing_contract(lines):
-        """Contract tokens absent from the wrapper's code lines (empty list = contract holds)."""
-        code = [c.strip() for c in lines if c.strip()]
-        return [token for token in CosWrapperSourceTests.REQUIRED if token not in code]
-
-    def test_wrapper_contract(self):
-        self.assertEqual(self.missing_contract(self.code()), [])
+    def test_wrapper_is_exactly_the_contract(self):
+        self.assertEqual(self.violations(self.code()), [])
         source = COS_SOURCE.read_text(encoding="utf-8")
         self.assertNotIn("cos_lo:", source)
         self.assertNotIn("cos_hi:", source)
 
     def test_wrapper_mutants_are_rejected(self):
-        """Mutants of the real wrapper text: each must fail missing_contract(). The unchanged wrapper must pass."""
+        """Each mutant of the real wrapper text must produce a violation; the unchanged wrapper must pass."""
         lines = self.code()
         mutants = {
-            "no_plp (P not restored)": [c for c in lines if c.strip() != "plp"],
-            "no_cld (decimal add)": [c for c in lines if c.strip() != "cld"],
+            "no_plp (P not restored)": [c for c in lines if c.split(";")[0].strip() != "plp"],
+            "no_cld (decimal add)": [c for c in lines if c.split(";")[0].strip() != "cld"],
+            "no_clc (carry in)": [c for c in lines if c.split(";")[0].strip() != "clc"],
             "phase_63": [c.replace("adc #64", "adc #63") for c in lines],
+            "phase_65": [c.replace("adc #64", "adc #65") for c in lines],
             "jump_to_fallback": [c.replace("jmp api_slot_45", "jmp api_slot_44") for c in lines],
+            "extra_pha_pla": [c.replace("    php ", "    pha\n    php ", 1).replace("    plp ", "    plp\n    pla ", 1) for c in lines],
+            "extra_phy": [c.replace("    php ", "    phy\n    php ", 1) for c in lines],
+            "jsr_not_jmp": [c.replace("jmp api_slot_45", "jsr api_slot_45\n    rts") for c in lines],
+            "plp_after_jmp (dead code after the jump)": [c for c in lines if c.split(";")[0].strip() != "plp"]
+                                    + ["    plp"],
         }
         for name, mutated in mutants.items():
-            self.assertTrue(self.missing_contract(mutated), f"mutant {name} was not rejected")
-        self.assertEqual(self.missing_contract(lines), [])
+            self.assertTrue(self.violations(mutated), f"mutant {name} was not rejected")
+        self.assertEqual(self.violations(lines), [])
 
     def test_no_zero_page_operands(self):
         operands = set()
-        for line in self.code():
-            if line.strip() and not line.strip().startswith("."):
-                operands.update(re.findall(r"(?<![#\w])\$([0-9A-Fa-f]{2})\b", line))
+        for line in self.instructions(self.code()):
+            operands.update(re.findall(r"(?<![#\w])\$([0-9A-Fa-f]{2})\b", line))
         self.assertEqual(operands, set())
 
 
