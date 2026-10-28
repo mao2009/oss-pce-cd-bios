@@ -1,10 +1,9 @@
-"""Opt-in real-core MA_SIN/MA_COS shift-identity check, requiring PR #522.
+"""Real-core MA_SIN/MA_COS mutual check, run by ``make dev-integration`` (CI job api-source).
 
-This is intentionally not part of ``make dev-integration`` on the standalone MA_COS
-branch.  Run it only against a ROM that contains both project-owned overrides:
-``python3 tests/integration/geargrafx_dev_sin_cos.py --rom ...``.  It checks
-SIN(a + 64) == COS(a) for the 22 MA_COS representative/SP-boundary vectors on the
-pinned Geargrafx core; it does not establish System Card ABI compatibility.
+Needs a ROM with both project-owned overrides (slot $45 MA_SIN, slot $46 MA_COS); a ROM missing
+either slot FAILS (exit 1). It checks SIN(a + 64) == COS(a) on the pinned Geargrafx core for 22
+representative/SP-boundary angles (19 with SP=$FF, 3 with SP=$06), against an independent math
+oracle (math.cos, not the table). It does not establish System Card ABI compatibility.
 """
 import argparse
 import math
