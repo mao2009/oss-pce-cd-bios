@@ -637,6 +637,23 @@ class BundledTargetOption(ClosureCase):
         self.assertTrue(policy.closure_of(self.trusted)[2])
 
 
+class PlantedModuleBesidePolicy(ClosureCase):
+    """Last review of 644e778: a module planted beside the policy script is not imported (the script directory is removed
+    from sys.path before any import)."""
+
+    def test_planted_yaml_beside_the_policy_script_is_not_imported(self):
+        import shutil
+        import subprocess
+        planted = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, str(planted), True)
+        (planted / 'tools').mkdir()
+        shutil.copy(TOOLS / 'policy_guard.py', planted / 'tools' / 'policy_guard.py')
+        (planted / 'tools' / 'yaml.py').write_text('raise SystemExit("planted module was imported")\n', encoding='utf-8')
+        result = subprocess.run([sys.executable, str(planted / 'tools' / 'policy_guard.py'), '--candidate',
+                                 str(self.candidate), '--trusted', str(self.trusted)], capture_output=True, text=True)
+        self.assertNotIn('planted module was imported', result.stderr + result.stdout)
+
+
 class UnprivilegedBoundary(unittest.TestCase):
     def test_nightly_plan_job_is_outside_the_privileged_closure(self):
         # The nightly plan job holds no write permission: its run: text is approved exactly (approval_problems) but its
