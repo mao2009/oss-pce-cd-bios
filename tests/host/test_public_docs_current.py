@@ -37,11 +37,6 @@ MERGED_PRS = (475, 477, 494, 495, 502, 506, 508, 516, 522, 527)
 MAIN_SNAPSHOTS = {'f90c16b': {'dev': 9, 'stub': 72}, '2954e90': {'dev': 13, 'stub': 68}}
 
 
-def _main_snapshot_value(text, key, value):
-    return any(re.search(r'\bmain\s+' + sha + r'\b', text, re.I) and counts.get(key) == value
-               for sha, counts in MAIN_SNAPSHOTS.items())
-
-
 HISTORICAL_CLAIMS = {"#174": {"stub": 80}, "86172e2": {"dev": 8}, "8a136ad": {"dev": 8}}
 STALE_PATTERNS = [
     r"\b8/81\b",  # any current 8/81 (the 2026-10-22 snapshot figure) is stale
@@ -174,7 +169,7 @@ def historical_value_ok(note, key, value):
 def segment_bounds(current, pos):
     """(start, end) of the sentence segment that contains `pos` (same split rule as segment_containing)."""
     start = 0
-    for sep in re.finditer(r"[.。;；]", current):
+    for sep in re.finditer(r"[.。;；\"\n]", current):
         end = sep.start()
         if start <= pos < end:
             return start, end
@@ -185,42 +180,24 @@ def segment_bounds(current, pos):
 MAIN_SHA_RE = re.compile(r"\b(f90c16b|2954e90)\b", re.IGNORECASE)  # a commit named with or without the word "main"
 
 
-def snapshot_exempt(line, pos, key, value):
-    """True only if the nearest commit-named main snapshot (`main <sha>`) in the same sentence records this value.
+def snapshot_status(line, pos, key, value):
+    """Judge a count against the commit named in its own sentence.
 
-    The SHA decides the value: a count next to "main 2954e90" must be 13 (dev) or 68 (stub); a count next to
-    "main f90c16b" must be 9 or 72. A count with no commit in its sentence is never exempt, and in a mixed
-    sentence the nearest commit wins, so a wrong value under the other SHA is still flagged.
-    key=None (a bare "N/81" count) matches any value recorded by the nearest snapshot.
+    Returns None when the sentence names no commit; True when the nearest named commit records this value
+    for `key`; False when it records another value (a wrong value under a commit is never hidden).
+    key=None (a bare "N/81" count) compares against any value the nearest snapshot records.
     """
     start, end = segment_bounds(line, pos)
     local = pos - start
     named = [(m.start(), m.group(1).lower()) for m in MAIN_SHA_RE.finditer(line[start:end])]
     if not named:
-        return False
+        return None
     _, sha = min(named, key=lambda item: abs(item[0] - local))
     counts = MAIN_SNAPSHOTS[sha]
     if key is None:
         return value in counts.values()
     return counts.get(key) == value
 
-
-
-def segment_containing(current, pos):
-    """Return the sentence segment (split on . ; 。 ；) that contains character position `pos`.
-
-    A comma or colon does NOT split a segment: a list such as
-    "main f90c16b (A, B, C) and 72 stubs" stays in one segment so the historical reference
-    covers every count in it. A period/semicolon ends a segment, which lets a line mix a
-    historical main f90c16b statement with a current PR-branch statement.
-    """
-    start = 0
-    for sep in re.finditer(r"[.。;；]", current):
-        end = sep.start()
-        if start <= pos < end:
-            return current[start:end]
-        start = sep.end()
-    return current[start:]
 
 
 def stale_hits(text, expected=EXPECTED):
@@ -243,10 +220,15 @@ def stale_hits(text, expected=EXPECTED):
             if re.search(pattern, current):
                 hits.append((number, pattern))
         for key, value, _denom, cstart, _cend in claims_in_line(current):
+            if key in ('dev', 'stub'):
+                verdict = snapshot_status(line, cstart, key, value)
+                if verdict is True:
+                    continue  # the commit named in this sentence records this value
+                if verdict is False:
+                    hits.append((number, f"{NAMES[key]} {value} does not match the commit named in its sentence"))
+                    continue
             if value == expected[key]:
                 continue
-            if key in ('dev', 'stub') and snapshot_exempt(line, cstart, key, value):
-                continue  # the nearest main commit named in this sentence records this value
             # Non-dev/stub keys (approval, abi, jsr) are never exempted by main f90c16b, and a
             # correct historical value never exempts a wrong current value on the same line.
             hits.append((number, f"{NAMES[key]} {value} != ledger {expected[key]}"))
@@ -255,13 +237,13 @@ def stale_hits(text, expected=EXPECTED):
                 if not historical_value_ok(note, key, value):
                     hits.append((number, f"historical {NAMES[key]} {value} does not match the cited PR"))
         for match in VALUE_RE.finditer(current):
-            if match.group(2) and int(match.group(1)) not in allowed:
-                val = int(match.group(1))
-                # blank_cites() は "f90c16b" を同長空白置換するため、履歴文脈は元の行 `line` で判定する。
-                seg = segment_containing(line, match.start())
-                exempt = snapshot_exempt(line, match.start(), None, val)
-                if not exempt:
-                    hits.append((number, f"count {match.group(0).strip()} is not derived from the ledger"))
+            if not match.group(2):
+                continue
+            val = int(match.group(1))
+            verdict = snapshot_status(line, match.start(), None, val)
+            if verdict is True or (verdict is None and val in allowed):
+                continue
+            hits.append((number, f"count {match.group(0).strip()} is not derived from the ledger"))
         # Limit state checks to text that describes each merged PR, with no other PR reference
         # between the PR mention and the open/unmerged/Draft wording. "and"/"および" does not
         # split the check: if another PR follows the conjunction, its wording is attributed to
@@ -632,6 +614,24 @@ class SnapshotShaBindingTests(unittest.TestCase):
         # 13 belongs to the nearest commit, f90c16b, which records 9: must not be hidden by main 2954e90.
         self.assertTrue(stale_hits("main 2954e90 and f90c16b have 13/81 DEV implementations."))
         self.assertEqual(stale_hits("main 2954e90 has 13 DEV implementations."), [])
+
+    def test_correct_ledger_value_under_the_wrong_sha_is_flagged(self):
+        # (a) 14 is the branch ledger value, but main 2954e90 records 13: the commit decides, so this must fail.
+        self.assertTrue(stale_hits("Main 2954e90 has 14 DEV implementations."))
+        self.assertTrue(stale_hits("Current main 2954e90: 14/81."))
+
+    def test_wrong_value_under_the_right_sha_is_flagged(self):
+        # (b)
+        self.assertTrue(stale_hits("Main 2954e90 has 9 DEV implementations."))
+
+    def test_right_value_under_the_right_sha_and_json_ld_line_pass(self):
+        # (c)
+        self.assertEqual(stale_hits("Main 2954e90 has 13 DEV implementations."), [])
+        json_ld = ('      "description": "Development-only open-source replacement for the PC Engine. '
+                   'Fourteen DEV-only implemented slots after Draft PR #524 merges (EX_GETVER, EX_SETWRT; '
+                   'none approved or ABI-verified). 67 nonreturning stub slots after Draft PR #524 merges. '
+                   'On main 2954e90, 13 DEV-only slots and 68 nonreturning stubs (no EX_SETWRT); full ABI.",')
+        self.assertEqual(stale_hits(json_ld), [])
 
     def test_stub_count_must_match_its_own_sha(self):
         self.assertTrue(stale_hits("Main 2954e90 has 68 stubs and 72 stubs."))
