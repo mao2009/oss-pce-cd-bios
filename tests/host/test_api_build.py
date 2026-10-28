@@ -147,7 +147,7 @@ class ApiBuildTests(unittest.TestCase):
         data = build(self.folder/'override-output', root=root).read_bytes()
         dbg = parse_dbg((self.folder/'override-output/dev.dbg').read_text())
         verify_image(data, {3}, dbg)
-        self.assertEqual(int.from_bytes(data[10:12], 'little'), 0xe2f0)
+        self.assertEqual(int.from_bytes(data[10:12], 'little'), 0xe2a0)
         # Valid structure is a mechanism test, not an implemented API or approval.
         with self.assertRaises(ValueError): release_gate({3})
         manifest = json.loads((self.folder/'override-output/manifest.json').read_text())
@@ -198,7 +198,7 @@ class ApiBuildTests(unittest.TestCase):
         data = bytearray(build(self.folder/name, root=root).read_bytes())
         dbg = parse_dbg((self.folder/name/'dev.dbg').read_text())
         verify_image(bytes(data), {3}, dbg)  # untampered baseline must pass
-        data[0x2f0 + offset] = value
+        data[0x2a0 + offset] = value
         return bytes(data), dbg
 
     def test_opcode_length_mismatch_is_rejected(self):
@@ -226,7 +226,7 @@ class ApiBuildTests(unittest.TestCase):
         root = self.make_root('tamper-root', slot_03=self.GOOD)
         data = bytearray(build(self.folder/'tamper', root=root).read_bytes())
         dbg = parse_dbg((self.folder/'tamper/dev.dbg').read_text())
-        at = 0x2f0 + data[0x2f0:0x310].index(0x4C)          # the override's JMP api_slot_00
+        at = 0x2a0 + data[0x2a0:0x2c0].index(0x4C)          # the override's JMP api_slot_00
         data[at+1:at+3] = bytes((0x00, 0xE9))               # ...retargeted into padding
         with self.assertRaisesRegex(ValueError, r'jumps to \$E900'): verify_image(bytes(data), {3}, dbg)
         data = bytearray(build(self.folder/'tamper2', root=root).read_bytes())
@@ -355,7 +355,7 @@ class ApiBuildTests(unittest.TestCase):
         data = bytearray(rom)
         at = 0x1E * 3
         self.assertEqual(data[at], 0x4C)
-        self.assertEqual(int.from_bytes(data[at+1:at+3], 'little'), 0xE2F0)
+        self.assertEqual(int.from_bytes(data[at+1:at+3], 'little'), 0xE2A0)
         data[at+1:at+3] = (0xE700).to_bytes(2, 'little')  # within $E100-$FFF6, so layout passes
         tampered = bytes(data)
         dbg = parse_dbg((self.folder / 'slot1e-table-change' / 'dev.dbg').read_text())
@@ -407,7 +407,7 @@ class ApiBuildTests(unittest.TestCase):
         (root / 'src' / 'boot.s').write_bytes((ROOT / 'src' / 'boot.s').read_bytes())
         # Same bank0 geometry, but OVERRIDES starts at $E900 (inside the probe overlay window).
         (root / 'src' / 'bank0.cfg').write_text(
-            (ROOT / 'src' / 'bank0.cfg').read_text().replace('start = $E2F0', 'start = $E900'))
+            (ROOT / 'src' / 'bank0.cfg').read_text().replace('start = $E2A0', 'start = $E900'))
         (root / 'src/overrides' / 'slot_1E.s').write_text(
             '.setcpu "huc6280"\n.segment "OVERRIDES"\n.export api_slot_1E\napi_slot_1E:\n'
             ' ldx #$03\n ldy #$00\n rts\n')
