@@ -106,9 +106,9 @@ IRQ requirements, errors and timing are `UNKNOWN`. Hu-Go contains an EX_GETVER
 name but no dedicated execution switch case; a name is not an implementation.
 
 This repository still does not claim the above is implemented. A candidate `$E05A` callee
-exists in `src/overrides/slot_1E.s` for the development ROM only, with a partial, real-core
-DEV contract (DEV-defined: X=3, Y=0, A preserved, Z=1/N=0/I=1, carry preserved), checked on the pinned real core by
-`tests/integration/geargrafx_contracts.py`. The ledger's slot `$1E` record keeps
+exists in `src/overrides/slot_1E.s` for the development ROM only. Its contract is a DEV-defined
+contract (X=3, Y=0, A preserved, Z=1/N=0/I=1, carry preserved), not a reference-BIOS value; it is
+checked on the pinned real core by `tests/integration/geargrafx_contracts.py`. The ledger's slot `$1E` record keeps
 `implementation_status: NOT_STARTED` / `verification: NOT_RUN` on purpose: `spec/api_contracts.json`
 records reference-BIOS verification state and has no representation for a development
 implementation. The ROM stays `abi: UNVERIFIED`, `release_eligible: false`.
