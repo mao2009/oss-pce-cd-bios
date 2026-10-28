@@ -72,7 +72,9 @@ def guest(reset, entry, a, sp=0xFF, p_entry=None):
 
 
 def check(label, rows, halt, a, sp=0xFF, p_entry=None):
-    cold = next(r for r in rows if r["phase"] == "cold")
+    cold = next((r for r in rows if r["phase"] == "cold"), None)
+    if cold is None:
+        raise ValueError(f"{label}: no cold-phase row from the probe")
     if cold["pc"] != halt:
         raise ValueError(f"{label}: guest did not reach its halt loop (pc ${cold['pc']:04X}, want ${halt:04X})")
     if cold["sp"] != sp:
@@ -221,7 +223,7 @@ def main():
             run_case(probe, data, folder, cue, reset, f"nz-a{a:02x}-p{p_entry:02x}", entry, a,
                      p_entry=p_entry)
             evidence["cases"].append({"angle": a, "expected_q15": q15(a), "sp": 0xFF,
-                                      "p_entry": p_entry, "nz_check": True})
+                                      "p_entry": p_entry})
         # Mutant detection: each mutant is applied to the assembled ROM (exactly one byte, confirmed
         # before running) and must be rejected by the real-core checks above.
         mutants = run_mutants(probe, data, folder, cue, reset, entry, body, evidence)

@@ -52,8 +52,10 @@ def run_case(probe, data, folder, cue, reset, sin_entry, cos_entry, angle, sp):
     image[reset - 0xE000:reset - 0xE000 + len(code)] = code
     rom = folder / f"sin-cos-{angle:02x}-{sp:02x}.pce"
     rom.write_bytes(image)
-    cold = next(row for row in dev.run_probe(probe, rom.resolve(), cue, count=2048)
-                if row["phase"] == "cold")
+    cold = next((row for row in dev.run_probe(probe, rom.resolve(), cue, count=2048)
+                 if row["phase"] == "cold"), None)
+    if cold is None:
+        raise ValueError(f"angle ${angle:02X}: no cold-phase row from the probe")
     if cold["pc"] != halt or cold["sp"] != sp:
         raise ValueError(f"angle ${angle:02X}: guest/stack failure")
     if cold["mpr"][1] != 0xF8 or cold["mpr"][7] != 0:

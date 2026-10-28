@@ -63,7 +63,7 @@ release:
 	@echo 'BLOCKED: BIOS APIs and System Card boot are unimplemented; no BIOS release is available.' >&2
 	@exit 1
 
-.PHONY: dev-rom dev-test dev-integration dev-sweep dev-bcdbin-sweep dev-mul16s-sweep dev-release-gate dev-release-gate-blocked
+.PHONY: dev-rom dev-test dev-integration dev-cos-sweep dev-sweep dev-bcdbin-sweep dev-mul16s-sweep dev-release-gate dev-release-gate-blocked
 dev-rom:
 	$(PYTHON) tools/build_rom.py --mode "$(MODE)"
 dev-test: dev-rom
@@ -87,6 +87,9 @@ dev-integration: dev-rom
 	$(PYTHON) tests/integration/geargrafx_dev_cos.py --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
 	$(PYTHON) tests/integration/geargrafx_dev_sin_cos.py --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
 	$(MAKE) dev-sweep MODE="$(MODE)"
+# Issue #80: manual real-core sweep of the MA_COS entry (slot $46): all 256 angle indices at SP=$FF. Not run by CI.
+dev-cos-sweep: dev-rom
+	$(PYTHON) tests/integration/geargrafx_dev_cos.py --full --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
 # Issue #494: manual large real-core sweep of the DEV ROM MA_MUL16S entry (slot 0x4F): every 65,536 multiplier x 6 multiplicands and every 65,536 multiplicand x 6 multipliers, at two caller SPs. Not run by CI.
 dev-mul16s-sweep: dev-rom
 	$(PYTHON) tests/integration/geargrafx_dev_mul16s.py --full --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"

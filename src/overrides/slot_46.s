@@ -8,7 +8,7 @@
 ;   out: X:A = cos(2*pi*A/256) as signed Q15, exactly the value api_slot_45 returns for (A+64) & $FF.
 ;   kept: Y and P (P is restored here before the jump; MA_SIN saves and restores Y and P itself).
 ;   clobbered: A and X (the result).
-;   uses: nothing beyond what api_slot_45 uses (zero page $F7, $F9, $FA; stack php/phy).
+;   uses: nothing beyond what api_slot_45 uses (zero page $F7, $F9, $FA; stack: php only, then the jump).
 ;   precondition: caller SP (before JSR) >= $06, same as api_slot_45. This wrapper pushes one byte
 ;                 transiently (php) and pops it before the jump, so the stack seen by api_slot_45 is
 ;                 identical to a direct call.
