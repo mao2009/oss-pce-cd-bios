@@ -15,7 +15,7 @@
 
 | 台帳 | 現在の値 | 意味 |
 | --- | --- | --- |
-| `spec/api_contracts.json`（参照 BIOS の契約） | 81 slot すべて `verification: NOT_RUN` | 台帳上は実測なし。ただし `spec/abi1_reference_review.json` の slot-1e（EX_GETVER）に、`docs/reference-bios-test-plan.md` で記録されたローカル限定の実コア測定がある（`prior_local_only: PRESENT`、`reproducible_real_core: NOT_RUN`。コミット済みのランナーでは再現できない）。この記録は台帳の値ではない。扱いは §8.3（公開範囲）と §9.2（未承認計測の非公開）に従う |
+| `spec/api_contracts.json`（参照 BIOS の契約） | 81 slot すべて `verification.status: NOT_RUN` | 台帳上は実測なし。ただし `spec/abi1_reference_review.json` の slot-1e（EX_GETVER）に、ローカル限定の実コア観測の記録が 1 件ある（`prior_local_only: PRESENT`、`reproducible_real_core: NOT_RUN`。コミット済みのランナーでは再現できない）。観測値は公開文書から取り下げ済み（オーナー最終裁定、2026-10-28）。この記録は台帳の値ではない。扱いは §8.3（公開範囲）と §9.2（未承認計測の非公開）に従う |
 | `spec/abi1_reference_review.json`（静的レビュー） | 7 件、`abi_state: NOT_RUN`、`static: OBSERVED_STATIC` | 静的解析の記録。検証ではない |
 | `spec/dev_implementations.json`（DEV 実装） | 81 行すべて `NOT_READY`、`approval` の `approved_by` / `review_ref` は null、DEV ROM の override は、基準 `ec496e9` 時点で 10 slot。本ブランチの HEAD では 12 slot（`tools/build_rom.py` の `overrides()`） | DEV ROM に実装がある slot と、その承認状態 |
 
@@ -51,7 +51,7 @@
 - 問い: 参照 BIOS の callee を実コアで実行し、入出力、フラグ、MPR、スタック、RAM 差分を測ったか。
 - 値: §3 の状態語。
 - 実行記録（`evidence_hash`、コア revision、入力、検証結果）が必要。現状は全 slot `NOT_RUN`。
-- 注意: 実測の事実と、その事実を公開してよいかは別問題（オーナー判断 §6 の「項目 5: CALLEE_VERIFICATION の公開範囲」）。
+- 注意: 実測の事実と、その事実を公開してよいかは別問題（オーナー判断 §6 の「項目 5: `CALLEE_VERIFICATION` で実測した事実のうち、公開してよい範囲」）。
 
 ### 2.4 DEV_IMPLEMENTATION（OSS の DEV ROM 実装）
 
@@ -155,7 +155,7 @@
 
 **オーナー裁定（設計方針、2026-10-28 受領）。** 以下は設計方針であり、承認値（`approved_by` / `review_ref`）、台帳の値、スキーマ、ゲートは変更しない。
 1. 3 軸キー（項目 2）: 追加は見送る（§8.2 の B）。台帳は現行スキーマのまま、§2 の対応表で読み替える。
-2. 実測（項目 3、公開範囲）: 原則 `LOCAL_ONLY` とする。公開するのは、オーナーが個別に指定した範囲だけ。既存の記載（§8.3）もこの方針の下で扱う。
+2. 実測（項目 5、公開範囲）: 原則 `LOCAL_ONLY` とする。公開するのは、オーナーが個別に指定した範囲だけ。EX_GETVER の観測値は、オーナー最終裁定により公開文書から取り下げた（§8.3）。
 3. 承認者（項目 1 と項目 4）: オーナーが指定した人間に限る。承認者の名簿と編集権限はオーナーが決め、人間が設定する。エージェントや CI は承認者を書かない。
 4. PARTIAL と VERIFIED-equivalent（項目 5）: 本書の定義だけで扱う（§8.5 の A）。台帳の値やコードの状態としては扱わない。
 5. 既存の ABI 分類文書（項目 6）: 相互参照を維持する（§8.6 の B）。`docs/abi-evidence-classification.md` は置き換えない。
@@ -188,7 +188,7 @@
 
 ### 8.3 項目 5: `CALLEE_VERIFICATION` の公開範囲
 
-- **現状:** 参照 BIOS の callee 内部実装は公開していない。ただし `docs/reference-bios-test-plan.md` には、EX_GETVER（slot 0x1E）の戻り値、フラグ、A の保持などの実コア実測が既に記載されている（私的な参照 BIOS を使用）。`docs/provenance.md` は、逆アセンブル一覧と抽出・翻訳されたファームウェアコードのコミットと配布を禁じている。全 81 slot の台帳値は `NOT_RUN`。この既存の記載の扱いが項目 3 の論点。
+- **現状:** 参照 BIOS の callee 内部実装は公開していない。EX_GETVER（slot 0x1E）の私的参照 BIOS による実コア観測値は、現行の公開文書から取り下げた（オーナー最終裁定、2026-10-28）。`docs/provenance.md` は、逆アセンブル一覧と抽出・翻訳されたファームウェアコードのコミットと配布を禁じている。全 81 slot の台帳値は `NOT_RUN`。
 - **選択肢:**
   - A. caller から見える ABI（引数、戻り値、破壊レジスタ）だけを公開する。
   - B. 内部挙動も含めて公開する。
@@ -243,7 +243,7 @@
 §8 の 6 項目は、§8 冒頭のオーナー裁定（設計方針）で方針が定まった。承認値はまだ付与されていない。次の保守的方針で運用する。この方針は承認ではなく、運用上の制限である。
 
 1. **承認者はオーナー管理の許可リストに限る。** 承認欄（`approved_by` / `review_ref`）を書けるのは、オーナーが決めた承認者だけとする。エージェントや CI は承認者を書かない。許可リストの作成は §8.1 と §8.4 の判断である。
-2. **承認されていない計測は公開しない。** 未承認の実測（ローカル限定の記録を含む）は、公開文書やテストの固定値に載せない。既存の記載（§8.3 の EX_GETVER の記録）の扱いは、§8.3 の判断まで変えない。
+2. **承認されていない計測は公開しない。** 未承認の実測（ローカル限定の記録を含む）は、公開文書やテストの固定値に載せない。EX_GETVER の観測値は公開文書から取り下げ済みで、公開文書に再掲しない（オーナー最終裁定、2026-10-28）。
 3. **VERIFIED-equivalent は実際の VERIFIED ではない。** この語は設計上の定義だけで、台帳の値として書かない。`VERIFIED` と同じ扱いとし、どの台帳も `VERIFIED` を持たない（0/81）。
 4. **既存の ABI 分類文書との相互参照を維持する。** `docs/abi-evidence-classification.md` の定義は置き換えず、本書から相互参照する（§8.6 の判断まで）。
 5. **ABI VERIFIED、DEV_CALLABLE、release_eligible の値は変えない。** 本書のどの作業も、台帳の承認値、スキーマ、ゲートを変更しない。VERIFIED は 0/81、DEV_CALLABLE の承認は 0、`release_eligible` は `false` のままとする。

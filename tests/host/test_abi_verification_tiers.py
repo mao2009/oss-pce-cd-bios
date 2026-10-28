@@ -7,7 +7,9 @@ and by an inline comment at the test:
 - positive controls: DevResultTests.test_dev_callable_keeps_abi_status_non_verified,
   ForgedEvidenceTests.test_resolved_artifact_is_not_observation (the hash-only resolution succeeds);
 - committed-state pin: SelfDeclaredApprovalTests.test_committed_dev_callable_count_is_zero;
-- positive vocabulary check: OwnerUndecidedStateTests.test_dev_ledger_states_have_no_tier_values.
+- positive vocabulary check: OwnerUndecidedStateTests.test_dev_ledger_states_have_no_tier_values;
+- partial check (not a proof): ReviewCountTests.test_approved_dev_row_breaks_committed_review_count,
+  which relies on the committed-count mismatch and does not test reference_abi_verified.
 DesignDocumentTests is a document check, labelled in its class docstring.
 
 Four axes are kept apart: SOURCE_EVIDENCE, PROVENANCE_APPROVAL, CALLEE_VERIFICATION and DEV_IMPLEMENTATION.
@@ -197,11 +199,14 @@ class DevResultTests(unittest.TestCase):
         self.assertEqual([], dev.validate(ledger, SLOTS, OVERRIDES))
         self.assertEqual(0, dev.summary(ledger, OVERRIDES)["abi_verified"])
 
+class ReviewCountTests(unittest.TestCase):
+    """Partial check, not a proof: an approved DEV row changes the committed review count, and the review refuses.
+
+    This class does NOT test reference_abi_verified. It relies on the committed-count mismatch
+    (owner_approved_dev_callable) and is labelled here and in the module docstring.
+    """
+
     def test_approved_dev_row_breaks_committed_review_count(self):
-        # The review cross-checks its committed summary against the DEV ledger. An approved DEV row changes that
-        # count, so the review must refuse rather than silently count DEV approval as reference verification.
-        # Note: this relies on the committed-count mismatch. It does not by itself prove that DEV approval is never
-        # counted as reference verification; that would need a separate check on the review's verified counts.
         ledger = base_ledger()
         entry = ledger["slots"][0x1E]
         entry["state"] = "DEV_CALLABLE"

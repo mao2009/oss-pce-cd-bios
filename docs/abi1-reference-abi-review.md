@@ -346,9 +346,8 @@ does not implement it, and it does not weaken the existing gate.
 
 ### 6.1 Re-evaluation of the existing `$1E` observation
 
-The prior local measurement recorded in `docs/reference-bios-test-plan.md`
-(`X = 3`, `Y = 0`, `A` preserved, `P = $06`, balanced `SP`, 8 instructions, RAM
-difference limited to the `JSR` push) is **consistent** with the static audit
+The prior local observation (its values are withdrawn from public documents,
+owner decision 2026-10-28) is **consistent** with the static audit
 of the image, which shows a three instruction callee that loads two bytes from
 the BIOS image's own version area and returns. The two sources agree.
 
@@ -434,7 +433,7 @@ The acceptance conditions are defined here, before any promotion is attempted:
 | --- | --- | --- |
 | `$1E` result | `X` and `Y` carry the version bytes **read from the BIOS image** | `X` and `Y` are **hard coded** to 3 and 0 |
 | `$1E` mechanism | two absolute loads from the image, then `RTS` | two immediate loads, then `RTS` |
-| `$1E` observable outcome for the measured input | `X = 3`, `Y = 0`, `A` preserved, `P = $06` | `X = 3`, `Y = 0`, `A` preserved, same flag pattern |
+| `$1E` observable outcome for the measured input | withdrawn from public documents (owner decision, 2026-10-28) | `X = 3`, `Y = 0`, `A` preserved (DEV-defined, not a reference value) |
 | `$3C` to `$42` value contract | **not established** | a project-own specification exists (`docs/ex-binbcd-internal.md`, `docs/ex-bcdbin.md`, `docs/ma-mul8s.md`) and is explicitly *not* the reference contract |
 | side effects | the reference BCD and arithmetic paths write the zero page and, for the arithmetic slots, switch a page bank | the DEV overrides stay in the stack page and the zero page, and never change an MPR |
 

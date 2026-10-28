@@ -59,11 +59,7 @@ python3 tools/reference_bios_runner.py /tmp/opencode/refbios/reset-config.json \
 | --- | --- |
 | スロット | `$1E`（入口 `$E05A`、ジャンプテーブルスロット `0x5A`） |
 | 手続き | 非公開BIOS内部実装（実コア観測済み、未公開） |
-| 戻り値 | X=3（メジャー）、Y=0（マイナー）→ バージョン "3.0"、**A保持**（呼出し前 0xAA → 後も 0xAA） |
-| フラグ後 | P=$06（Y=0によりZ=1） |
-| SP | $FF（呼出し前と同一、スタック釣り合い） |
-| 命令数 | 8（呼び出し元プロローグ含む） |
-| ram_diff | `$21FE`/`$21FF` のみ（JSR 戻りアドレスプッシュ） |
+| 戻り値・フラグ・SP・命令数・RAM 差分 | 取り下げ済み（オーナー最終裁定、2026-10-28。観測値は公開文書に記載しない） |
 | ガード | `detected=false`, `status=no_violation` |
 
 再現: 複数ランで同一結果（同一秒内は同一シード）。出力スキーマ `oss-pce-cd-bios/reference-observation/v1`、`status: OBSERVED`、`trust: LOCAL_ONLY_NOT_VERIFIED`。**VERIFIED ではない**（ABI承認・実ハードウェア比較未完了）。
@@ -158,6 +154,6 @@ PR #170のガード付き参照実行で、物理バンクエイリアスによ�
 
 - 公開API入口アドレス（`$E05A`）と非公開BIOS内部実装アドレスを区別。
 - `docs/final-report-20261016.md`、`docs/reference-bios-test-plan.md`、PR #170本文から非公開BIOS内部アドレス・命令列・ROMバイト列を削除。
-- 公開する機能的契約: X=3, Y=0, A保持、入口 `$E05A`、信頼レベル `LOCAL_ONLY_NOT_VERIFIED`。
+- 公開する機能的契約: 入口 `$E05A` のみ。私的参照 BIOS の観測値は取り下げ済み（オーナー最終裁定、2026-10-28）。DEV ROM 側の値は `docs/evidence/dev-callable-1e.md` を参照。信頼レベル `LOCAL_ONLY_NOT_VERIFIED`。
 
 この是正後も、slot `$1E`以外の80スロット＋9 PSGサブコマンド、ST0/ST1/ST2など`Memory::Write()`を経由しないI/O経路、実ハードウェア動作、System Card起動は未検証／BLOCKEDのまま。

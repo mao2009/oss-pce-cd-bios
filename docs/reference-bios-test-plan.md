@@ -189,18 +189,10 @@ the logical address `$20`) and the stack at `$2100`, and that placement does not
 depend on the MPRs. The pinned core therefore matches the hardware here, and a
 zero page operand of the BIOS behaves the same on the core and on hardware.
 
-**Measured EX_GETVER contract (實測, private reference BIOS, real core,
-deterministic across runs):**
-
-| item | value |
-| --- | --- |
-| slot | `0x1E`, entry `$E05A` (jump table slot `0x5A`) |
-| callee | Non-public BIOS internal implementation (observed via real core, not published) |
-| returns | X = 3 (major), Y = 0 (minor) → "3.0"; **A preserved** (`0xAA` still `0xAA`) |
-| flags after | `P = $06` (Z set because Y = 0) |
-| SP after | `$FF` (balanced — the call returned) |
-| instructions | 8 (including the sentinel caller prologue) |
-| ram_diff | `$21FE`/`$21FF` only — the JSR push of the return address |
+**EX_GETVER（slot `0x1E`、entry `$E05A`）の実測結果は、現行の公開文書から取り下げた**
+（オーナー最終裁定、2026-10-28）。私的参照 BIOS を実コアで実行して得た観測値は、本文書にも
+他の公開文書にも記載しない。ここに残すのは、試験手順、合成 ROM による安全性検証、非公開の
+状態説明だけである。過去の記録（git 履歴）は改変しない。
 
 Run locally with a private config whose `api_id` is `slot-1e` and whose
 allowlist is the page-1 interval `0x2000..0x4000`:
@@ -271,6 +263,6 @@ python3 -m unittest tests.host.test_reference_case_execute -v
 
 The `reference-reset-only` checkpoint remains distinct and available,
 because it does not inject or execute an API JSR. This PR records plans,
-bounded local-only reset observation, and **one** locally measured API
+bounded local-only reset observation, and **one** locally observed API (its observed values are withdrawn from public documents)
 (EX_GETVER, slot `0x1E`), **not** retail BIOS compatibility, a verified
 jump-table ABI, or 270 working runnable test ROMs.
