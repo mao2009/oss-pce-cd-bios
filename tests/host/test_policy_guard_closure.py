@@ -576,6 +576,31 @@ class WriterNormalisation(ClosureCase):
         self.assertEqual(policy.closure_of(self.trusted)[2], [])
 
 
+class SymlinkAndOptionValues(ClosureCase):
+    """Last review of e55b6f1: a candidate symlink, and option=value destinations (--target-directory=)."""
+
+    def set_run(self, text):
+        for root in (self.trusted, self.candidate):
+            (root / FIXTURE).write_text(priv_workflow(text), encoding='utf-8')
+
+    def test_candidate_symlink_is_refused(self):
+        import os
+        self.set_run('cp build/payload build/out')
+        try:
+            os.symlink(str(self.trusted / 'tools' / 'artifact_guard.py'), str(self.candidate / 'build_out_link'))
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f'symbolic links cannot be created here: {error}')
+        self.assertTrue(any('symbolic link' in p for p in policy.closure_problems(self.candidate, self.trusted)))
+
+    def test_target_directory_option_into_tools_is_refused(self):
+        self.set_run('cp build/payload --target-directory=tools')
+        self.assertTrue(policy.closure_of(self.trusted)[2])
+
+    def test_target_directory_option_into_the_root_is_refused(self):
+        self.set_run('cp build/payload --target-directory=.')
+        self.assertTrue(policy.closure_of(self.trusted)[2])
+
+
 class UnprivilegedBoundary(unittest.TestCase):
     def test_nightly_plan_job_is_outside_the_privileged_closure(self):
         # The nightly plan job holds no write permission: its run: text is approved exactly (approval_problems) but its

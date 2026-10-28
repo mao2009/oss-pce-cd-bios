@@ -481,10 +481,16 @@ def _touches_trusted(arg):
             or arg.startswith(("/", "~")) or any(c in arg for c in "*?["))
 
 
+def option_value(arg):
+    """The value an option names (--target-directory=tools gives tools); any other argument is itself."""
+    return arg.split("=", 1)[1] if arg.startswith("-") and "=" in arg else arg
+
+
 def _names_repository_code(arg):
     """A repository source or script, whether or not it exists: a writer may not copy it (a missing source is refused too)."""
-    norm = normalized_path(arg)   # ././tools/json and .//.github/x are the same repository paths
-    return norm.split("/")[0] in REPO_TOP_DIRS or arg.endswith(EXEC_EXT)
+    value = option_value(arg)
+    norm = normalized_path(value)   # ././tools/json and .//.github/x are the same repository paths
+    return norm.split("/")[0] in REPO_TOP_DIRS or value.endswith(EXEC_EXT)
 
 
 def normalized_path(arg):
@@ -495,9 +501,10 @@ def normalized_path(arg):
 def _protected_destination(arg):
     """Default deny for a writer (Issue #544): .git, the repository root (a name with no directory part) and any
     destination that normalises to the root. Only a directory under the repository is a destination here."""
-    if arg.startswith("-"):
+    value = option_value(arg)   # --target-directory=. is a destination too; a plain option flag is not
+    if value.startswith("-"):
         return False
-    norm = normalized_path(arg)
+    norm = normalized_path(value)
     return norm in (".", "") or norm == ".git" or norm.startswith(".git/") or "/" not in norm
 
 
@@ -625,6 +632,10 @@ def closure_problems(candidate, trusted):
     """Every file the privileged closure can execute must equal the trusted copy; no unanalyzable construct; no module or
     package added beside an executed one (sys.path[0] is the script directory; '.' is checked for python -m)."""
     files, directories, problems = closure_of(trusted)
+    for path in Path(candidate).rglob("*"):   # a symbolic link in the pull request could point a writer into the trusted tree
+        relative = path.relative_to(candidate)
+        if path.is_symlink() and ".git" not in relative.parts:
+            problems.append(f"{relative.as_posix()} is a symbolic link in the pull request; refused (Issue #544)")
     for name in ("GNUmakefile", "makefile"):   # exact names: a case-insensitive file system must not match Makefile
         if name in {p.name for p in Path(candidate).iterdir()} or name in {p.name for p in Path(trusted).iterdir()}:
             problems.append(f"{name} would be read by make before Makefile; refused (Issue #544)")
