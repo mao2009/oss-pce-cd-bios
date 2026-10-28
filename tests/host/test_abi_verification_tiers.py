@@ -101,14 +101,16 @@ class ForgedEvidenceTests(unittest.TestCase):
         self.assertRefusedAsUnauthenticated(observed_claim())
 
     def test_self_declared_realcore_marker_does_not_authenticate(self):
-        # The marker must not change the outcome: the refusal message is identical with and without it.
+        # Without the marker the claim stops at the provenance-marker gate. With it, the claim passes that gate and
+        # is still refused at the authentication gate: the self-declared text is not authentication.
         with self.assertRaises(ValueError) as without_marker:
             adjudicate(observed_claim(execution_conditions="geargrafx run"))
+        self.assertIn("lacks the REALCORE provenance marker", str(without_marker.exception))
         claim = observed_claim(execution_conditions="REALCORE, produced by the core")
         with self.assertRaises(ValueError) as with_marker:
             adjudicate(claim)
         self.assertIn("not authenticated", str(with_marker.exception))
-        self.assertEqual(str(with_marker.exception), str(without_marker.exception))
+        self.assertNotIn("lacks the REALCORE provenance marker", str(with_marker.exception))
 
     def test_executed_callee_false_is_refused_before_authentication(self):
         # Without an executed callee the claim never reaches the authentication gate; the flag is necessary, not sufficient.
