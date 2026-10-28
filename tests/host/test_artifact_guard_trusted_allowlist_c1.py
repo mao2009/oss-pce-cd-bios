@@ -112,5 +112,23 @@ class CommandLineEntry(unittest.TestCase):
         print(result.stderr.strip().splitlines()[-1][:220])
 
 
+class RootLinkRefused(unittest.TestCase):
+    """Last review of e55b6f1: a link at the repository root (outside .git) is refused by the placement check."""
+
+    def test_root_level_symbolic_link_is_refused(self):
+        import os
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        (root / 'tools').mkdir()
+        try:
+            os.symlink(str(root / 'tools'), str(root / 'dist'))
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f'symbolic links cannot be created here: {error}')
+        with self.assertRaises(ValueError) as caught:
+            guard.check_guard_placement(root)
+        self.assertIn('dist: a symbolic link or junction is refused', str(caught.exception))
+
+
 if __name__ == '__main__':
     unittest.main()

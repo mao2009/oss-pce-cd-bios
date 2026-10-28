@@ -1723,6 +1723,18 @@ def check_guard_placement(root=ROOT, partial_fixtures=False):
     """
     base = Path(root)
     problems = []
+    # Issue #544 (last review of e55b6f1): a link anywhere in the pull request (outside .git) can point a writer into the
+    # trusted checkout, so the whole tree is walked without following links and any link or junction is refused.
+    unreadable = []
+    for dirpath, dirnames, filenames in os.walk(base, followlinks=False, onerror=unreadable.append):
+        dirnames[:] = [name for name in dirnames if name != ".git"]
+        for name in dirnames + filenames:
+            entry = os.path.join(dirpath, name)
+            if os.path.islink(entry) or _is_junction(Path(entry)):
+                problems.append(f"{os.path.relpath(entry, base).replace(os.sep, '/')}: a symbolic link or junction is "
+                                "refused (untrusted input; Issue #544)")
+    if unreadable:
+        problems.append("a directory of the pull request cannot be listed; refused, never skipped (Issue #544)")
     # Issue #544 (39b6de2 review): a link on a directory (or a Windows junction) is untrusted input too. Walk the trees the
     # checks read without following links, and refuse any link or junction found on the way, directories included.
     for tree in (".github", "tools"):
