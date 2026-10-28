@@ -17,7 +17,7 @@
 | --- | --- | --- |
 | `spec/api_contracts.json`（参照 BIOS の契約） | 81 slot すべて `verification: NOT_RUN` | 台帳上は実測なし。ただし `spec/abi1_reference_review.json` の slot-1e（EX_GETVER）に、`docs/reference-bios-test-plan.md` で記録されたローカル限定の実コア測定がある（`prior_local_only: PRESENT`、`reproducible_real_core: NOT_RUN`。コミット済みのランナーでは再現できない）。この記録は台帳の値ではなく、§2.3 の扱いに従う |
 | `spec/abi1_reference_review.json`（静的レビュー） | 7 件、`abi_state: NOT_RUN`、`static: OBSERVED_STATIC` | 静的解析の記録。検証ではない |
-| `spec/dev_implementations.json`（DEV 実装） | 81 行すべて `NOT_READY`、`approval` の `approved_by` / `review_ref` は null、DEV ROM の override は 12 slot（`tools/build_rom.py` の `overrides()`） | DEV ROM に実装がある slot と、その承認状態 |
+| `spec/dev_implementations.json`（DEV 実装） | 81 行すべて `NOT_READY`、`approval` の `approved_by` / `review_ref` は null、DEV ROM の override は、基準 `ec496e9` 時点で 10 slot。本ブランチの HEAD では 12 slot（`tools/build_rom.py` の `overrides()`） | DEV ROM に実装がある slot と、その承認状態 |
 
 `tools/contracts.py` の `CLAIM_STATUSES` は `UNKNOWN` / `HYPOTHESIS` / `OBSERVED` / `BLOCKED` だけで、
 `VERIFIED` を表せない。`OBSERVED` は実コア由来の証明（#124、producer 認証）がないため
@@ -70,7 +70,7 @@
 | SOURCE_EVIDENCE | `HYPOTHESIS`（`SOURCE_FACT` は台帳の値ではなく、§2.1 の文書上のラベル） | `OBSERVED`、`VERIFIED`、provenance 承認、DEV_CALLABLE |
 | PROVENANCE_APPROVAL | `APPROVED`（人間の承認者が記録） | 挙動の正しさ、callee 実測、互換性、`OBSERVED`、`VERIFIED`、DEV_CALLABLE 承認（§8.4 で扱う） |
 | CALLEE_VERIFICATION | `OBSERVED`、`PARTIAL`、`VERIFIED-equivalent` には到達できない（`OBSERVED` は認証前に拒否。§3）。`UNKNOWN` には到達できる（§3） | `VERIFIED`（現スキーマでは表せない。#171）、DEV_CALLABLE 承認 |
-| DEV_IMPLEMENTATION | `DEV_CALLABLE`（DEV ROM に限る） | 参照 BIOS の `VERIFIED`、release 判定、互換性 |
+| DEV_IMPLEMENTATION | `DEV_CALLABLE`（DEV ROM に限る） | 参照 BIOS の `VERIFIED`、release 判定、互換性、`CALLEE_VERIFICATION` の `OBSERVED`、`PROVENANCE_APPROVAL` の `APPROVED`（DEV の PASS は実測や provenance の代わりにならない） |
 
 どの軸の値が揃っても、`release_eligible: true` にはならない。release gate は別の人間承認を要し、
 `tools/build_rom.py` の `release_gate()` は現在常に BLOCKED を返す。
@@ -127,7 +127,7 @@
 
 ## 6. オーナーが #324 で判断すること
 
-項目 1（台帳導入）と項目 2（DEV_CALLABLE の定義）は、Issue #324 のオーナー判断コメント（2026-10-21）で承認されている。承認は台帳導入と DEV_CALLABLE の定義に限り、項目 3〜5 は未決のまま（同コメントの記載）。`tools/dev_implementations.py` の冒頭コメント「items 1-2, owner approved」はこの判断と整合する。以下は未決。
+項目 1（台帳導入）と項目 2（DEV_CALLABLE の定義）は、Issue #324 のオーナー判断コメント（2026-10-21）で承認されている。承認は台帳導入と DEV_CALLABLE の定義に限り、項目 3〜5 は未決のまま（同コメントの記載）。`tools/dev_implementations.py` の冒頭コメント「items 1-2, owner approved」はこの判断と整合する。以下は未決（設計方針は §8 冒頭のオーナー裁定どおり。承認値は付与していない）。
 
 1. **項目 3: `ORIGINAL` の OSS 実装の `provenance_approval` を誰が承認するか。** 承認者の一覧がリポジトリにない（fail closed）。
 2. **項目 4: 台帳に 3 軸のキー（`source_evidence` / `provenance_approval` / `callee_verification`）を追加するか。**
@@ -152,6 +152,13 @@
 
 本節は §6 の 6 項目について、現状、選択肢、推奨とその理由、互換性、セキュリティ、必要な人間の承認、判断前に進めてよい作業を示す。
 推奨は提案であり、決定ではない。どの項目も、オーナーが判断するまでスキーマ、`VERIFIED` の扱い、信頼されたゲートの状態を変えない。
+
+**オーナー裁定（設計方針、2026-10-28 受領）。** 以下は設計方針であり、承認値（`approved_by` / `review_ref`）、台帳の値、スキーマ、ゲートは変更しない。
+1. 3 軸キー（項目 2）: 追加は見送る（§8.2 の B）。台帳は現行スキーマのまま、§2 の対応表で読み替える。
+2. 実測（項目 3、公開範囲）: 原則 `LOCAL_ONLY` とする。公開するのは、オーナーが個別に指定した範囲だけ。既存の記載（§8.3）もこの方針の下で扱う。
+3. 承認者（項目 1 と項目 4）: オーナーが指定した人間に限る。承認者の名簿と編集権限はオーナーが決め、人間が設定する。エージェントや CI は承認者を書かない。
+4. PARTIAL と VERIFIED-equivalent（項目 5）: 本書の定義だけで扱う（§8.5 の A）。台帳の値やコードの状態としては扱わない。
+5. 既存の ABI 分類文書（項目 6）: 相互参照を維持する（§8.6 の B）。`docs/abi-evidence-classification.md` は置き換えない。
 
 ### 8.1 項目 3: `provenance_approval` の承認者
 
@@ -233,7 +240,7 @@
 
 ## 9. 暫定方針（オーナー判断まで）
 
-§8 の 6 項目は未決のまま、次の保守的方針で運用する。この方針は承認ではなく、判断が出るまでの運用上の制限である。
+§8 の 6 項目は、§8 冒頭のオーナー裁定（設計方針）で方針が定まった。承認値はまだ付与されていない。次の保守的方針で運用する。この方針は承認ではなく、運用上の制限である。
 
 1. **承認者はオーナー管理の許可リストに限る。** 承認欄（`approved_by` / `review_ref`）を書けるのは、オーナーが決めた承認者だけとする。エージェントや CI は承認者を書かない。許可リストの作成は §8.1 と §8.4 の判断である。
 2. **承認されていない計測は公開しない。** 未承認の実測（ローカル限定の記録を含む）は、公開文書やテストの固定値に載せない。既存の記載（§8.3 の EX_GETVER の記録）の扱いは、§8.3 の判断まで変えない。
