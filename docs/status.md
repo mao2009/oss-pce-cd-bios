@@ -68,8 +68,7 @@ On the Issue #78 PR branch, MA_SQRT ($44) is added as a tenth DEV implementation
 | Command / artifact | What it means |
 | --- | --- |
 | `make setup`, `make build`, `make test`, `make test-real-core`, `make check` | Original 8 KiB synthetic HuCARD and host/real-core diagnostics, not a compatibility ROM |
-| `make dev-rom` | Development-only 256 KiB image, nine project-owned overrides + 72 nonreturning stubs on main f90c16b; 12/81 DEV implementations ($1E, $3C, $3D, $3E, $3F, $40, $41, $42, $43, $44, $46, $4F) + 69 nonreturning stubs on Issue #80 PR branch |
-| `make dev-sin-cos-integration` | Opt-in project-owned MA_SIN/MA_COS real-core shift-identity check. It requires the separate PR #522 MA_SIN ($45) work; this branch remains 12/81, while the combined branch would have 13 slots. It is not System Card ABI verification. |
+| `make dev-rom` | Development-only 256 KiB image, nine project-owned overrides + 72 nonreturning stubs on main f90c16b; 12/81 DEV implementations ($1E, $3C, $3D, $3E, $3F, $40, $41, $42, $43, $44, $45, $4F) + 69 nonreturning stubs on Issue #79 PR branch (PR #522) |
 | `make dev-integration`, `make dev-test` | Project-owned DEV ABI and synthetic Geargrafx tests, including MA_DIV16U and MA_MUL16S, not reference-BIOS verification |
 | `make dev-cdread-integration`, `make dev-cdload-exec-integration` | Guest CD transport and RAM payload experiments, not BIOS-mediated boot |
 | `make dev-boot-internal-integration` | DEV-only internal boot path regression (#502), wired into CI by #506 |

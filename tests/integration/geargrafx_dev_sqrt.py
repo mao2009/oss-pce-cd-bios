@@ -17,6 +17,7 @@ Needs the pinned cc65 and Geargrafx core (make setup, TOOLS_DIR on Linux). Missi
 import hashlib
 import json
 import math
+import re
 import subprocess
 import sys
 import tempfile
@@ -207,14 +208,19 @@ def main():
         # P flag preservation negative: break the `plp` that restores the caller's P
         # (the `plp; rts` at the end of the slot $44 body). Without PLP, P after the call
         # reflects post-ply flags rather than the entry P, so C/I/D/V/N/Z preservation fails.
-        # The body ends with `ply; plp; rts` (7A 28 60). Take the FIRST match after the body start:
-        # the next override (slot $46 MA_COS) also ends in plp; rts, so a last-match search would
-        # mutate the wrong routine (Issue #80 CI regression).
+        # Bound the scan to slot $44's own body from the linker map. A fixed 0x100 window reaches
+        # into the next override (slot $45 ends in ply; plp; rts too), which mutated the wrong routine.
+        map_text = (args.rom.parent / "dev.map").read_text()
+        sizes = dict(re.findall(r"(slot_\w+)\.o:\s+OVERRIDES\s+Offs=\w+\s+Size=(\w+)", map_text))
+        if "slot_44" not in sizes:
+            raise ValueError("slot_44 OVERRIDES size not found in dev.map")
+        body_size = int(sizes["slot_44"], 16)
+        if data[code_at + body_size - 1] != 0x60:
+            raise ValueError("slot $44 body (per dev.map size) does not end with RTS")
         plp_rts = None
-        for i in range(code_at, min(code_at + 0x100, len(data) - 2)):
-            if data[i] == 0x7A and data[i + 1] == 0x28 and data[i + 2] == 0x60:
-                plp_rts = i + 1
-                break
+        for i in range(code_at, min(code_at + body_size, len(data) - 1)):
+            if data[i] == 0x28 and data[i + 1] == 0x60:
+                plp_rts = i
         if plp_rts is None:
             raise ValueError("slot $44 body end (ply; plp; rts) not found")
         pmutant = bytearray(data)

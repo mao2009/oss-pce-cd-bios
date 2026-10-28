@@ -212,7 +212,7 @@ def stale_hits(text, expected=EXPECTED):
                     # Historical main f90c16b snapshot: only dev=9/81 and stubs=72/81 are legitimate.
                     if (key == 'dev' and value == 9) or (key == 'stub' and value == 72):
                         continue  # legitimate historical main snapshot value
-                    # A wrong historical value (e.g. "main f90c16b: 12/81") is flagged below.
+                    # A wrong historical value (e.g. "main f90c16b: 11/81") is flagged below.
                 else:
                     # main f90c16b may be referenced elsewhere on the same line. Such a line can
                     # still state historical values (9/81 dev, 72/81 stubs), but a segment that
@@ -401,7 +401,7 @@ class PublicDocsTest(unittest.TestCase):
         self.assertEqual(stale_hits("Current DEV implementations: 12/81 (historical 8a136ad: 8 DEV implementations)"), [])
         self.assertTrue(stale_hits("Current stubs: 80 (historical #174)"))
         self.assertTrue(stale_hits("Current stubs: 80 (historical #174: 80 stubs)"))
-        self.assertTrue(stale_hits("Current stubs: 69 (historical #174: 73 stubs)"))
+        self.assertTrue(stale_hits("Current stubs: 70 (historical #174: 73 stubs)"))
         self.assertTrue(stale_hits("Current DEV implementations: 9/81 (historical #174: 80 stubs)"))
         self.assertTrue(stale_hits("Current stubs: 70; historical #174: 80 stubs"))
 
@@ -487,7 +487,7 @@ class PublicDocsMutationTest(unittest.TestCase):
         self.assertEqual(missing_claims(self.CLEAN), [])
 
     def test_wrong_current_dev_count_is_flagged(self):
-        mutant = self.CLEAN.replace("12/81", "13/81")
+        mutant = self.CLEAN.replace("12/81", "11/81")
         self.assertTrue(stale_hits(mutant))
         self.assertIn("DEV implementations", missing_claims(mutant))
 
