@@ -222,7 +222,7 @@ def main():
             if data[i] == 0x28 and data[i + 1] == 0x60:
                 plp_rts = i
         if plp_rts is None:
-            raise ValueError("slot $44 body end (ply; plp; rts) not found")
+            raise ValueError("slot $44 body end (plp; rts) not found")
         pmutant = bytearray(data)
         pmutant[plp_rts] = 0xEA  # plp -> nop: P not restored
         prejected = 0
