@@ -22,6 +22,7 @@ else:
     from environment import DEPENDENCIES, executable
 
 MS_RES = 0x3F40                      # cd_media_state result block (see src/dev_boot_internal.s allocation table)
+DEV_BOOT_FLAG = "DEV_BOOT_INTERNAL"  # the opt-in build flag; only this build passes it (default ROM never does)
 ROM_NAME = "dev-only-not-compatible-dev-boot-internal.pce"
 REQUIRED = ("dev_boot_reset", "dev_boot_entry", "dev_media_halt", "cd_entry", "cd_buffer_ready", "cd_data_done", "cd_halt_ok",
             "cd_halt_fail", "cd_unexpected_interrupt", "cd_cdb", "cd_payload_return", "cd_media_state", "ms_done")
@@ -40,6 +41,15 @@ def parse_needed_labels(path: Path, names) -> dict:
     return found
 
 
+def dev_boot_units():
+    """Opt-in units in link order as (source, ca65 defines). Only this build selects the init path."""
+    return [
+        (ROOT / "src/dev_boot_internal.s", []),
+        (ROOT / "src/cd_load_exec_probe.s", ["-D", DEV_BOOT_FLAG]),
+        (ROOT / "src/cd_media_state.s", ["-D", f"MS_RES=${MS_RES:04X}"]),
+    ]
+
+
 def build_dev_boot_internal(original_path: Path, output: Path, mode="debug") -> Path:
     if mode not in ("debug", "release"):
         raise ValueError("MODE must be debug or release")
@@ -54,12 +64,7 @@ def build_dev_boot_internal(original_path: Path, output: Path, mode="debug") -> 
     debug_flags = ["-g"] if mode == "debug" else []
 
     objects = assemble_api_objects(output, mode)
-    units = [
-        (ROOT / "src/dev_boot_internal.s", []),
-        (ROOT / "src/cd_load_exec_probe.s", ["-D", "DEV_BOOT_INTERNAL"]),
-        (ROOT / "src/cd_media_state.s", ["-D", f"MS_RES=${MS_RES:04X}"]),
-    ]
-    for source, defines in units:
+    for source, defines in dev_boot_units():
         obj = output / (source.stem + ".o")
         subprocess.run([ca65, str(source), *defines, "-o", str(obj), *debug_flags], check=True)
         objects.append(obj)
