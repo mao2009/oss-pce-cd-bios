@@ -73,11 +73,12 @@ class ReferenceRunnerTests(unittest.TestCase):
                     runner.check_observation(dict(self.observation, **mutate), self.config)
 
     def test_reset_observation_keeps_the_nine_field_shape(self):
+        # SYNTHETIC FIXTURE, NOT A MEASUREMENT: placeholder values only; the shape is what this test checks.
         cfg = dict(self.config, api_id="reference-reset-only")
         reset = {
             "schema": runner.OBS_SCHEMA, "api_id": "reference-reset-only", "status": "OBSERVED",
             "engine": "geargrafx", "checkpoint": "reset_first_instruction_no_api_callee",
-            "registers": {"a": 0, "x": 0, "y": 0, "p": 4, "sp": 255, "pc": 0xE0F4},
+            "registers": {"a": 0, "x": 0, "y": 0, "p": 0, "sp": 255, "pc": 0xE100},
             "mpr": [0, 0, 0, 0, 0, 0, 0, 0], "ram_diff": [], "instructions_executed": 1,
         }
         runner.check_observation(reset, cfg)
