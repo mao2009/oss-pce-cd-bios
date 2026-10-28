@@ -432,6 +432,8 @@ SCOPE_KEYS_REFUSED = {"env", "defaults", "container", "services"}
 TRUSTED_GUARD = '".trusted-main/tools/artifact_guard.py"'
 TRUSTED_PY = '"${{ steps.pyresolve.outputs.python }}" ' + TRUSTED_GUARD + ' --root "$GITHUB_WORKSPACE"'
 CHECK_TEXT = TRUSTED_PY + " --check-placement"
+# Issue #511 (owner-approved wiring): the policy check runs the trusted guard against the pull request's tools/ and table.
+POLICY_TEXT = TRUSTED_PY + " --check-policy .trusted-main"
 PY_RESOLVE_RUN = 'echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"'
 CHECKOUT_PIN_RE = re.compile(r"actions/checkout@[0-9a-f]{40}$")
 # The exact with: inputs of the trusted main checkout: the guard file must come from this repository's main.
@@ -1986,7 +1988,7 @@ def _guard_text(kind, workflow, name, what):
 
 def _allowed_guard_run(run, finals, workflow):
     """Run lines a guard job may contain: the python resolve, the placement check, and the stage/verify of its uploads."""
-    if run in ([PY_RESOLVE_RUN], [CHECK_TEXT]):
+    if run in ([PY_RESOLVE_RUN], [CHECK_TEXT], [POLICY_TEXT]):
         return True
     return any(run in ([_guard_text(u["kind"], workflow, u["name"], "stage")],
                        [_guard_text(u["kind"], workflow, u["name"], "verify")]) for u in finals)
