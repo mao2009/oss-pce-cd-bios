@@ -655,39 +655,72 @@ class PlantedModuleBesidePolicy(ClosureCase):
 
 
 class StagingAreaOnly(ClosureCase):
-    """Owner ruling (Issue #544, option b): a privileged step writes only under build/stage/ and build/tmp/."""
+    """Owner ruling (Issue #544, option b): a privileged step writes only under build/stage/ and build/tmp/. Each refusal
+    is checked for its reason, not only for the fact that some problem exists."""
 
     def set_run(self, text):
         for root in (self.trusted, self.candidate):
             (root / FIXTURE).write_text(priv_workflow(text), encoding='utf-8')
 
-    def refused(self, text):
+    def problems(self, text):
         self.set_run(text)
-        return bool(policy.closure_of(self.trusted)[2])
+        return policy.closure_of(self.trusted)[2]
 
-    def test_write_into_docs_is_refused(self):
-        self.assertTrue(self.refused('cp build/stage/payload docs/x'))
+    def assertRefusedFor(self, text, reason):
+        found = self.problems(text)
+        self.assertTrue(any(reason in p for p in found), f'expected {reason!r} in {found!r}')
 
-    def test_write_into_build_outside_the_staging_areas_is_refused(self):
-        self.assertTrue(self.refused('tee build/out'))
+    def test_write_into_docs_is_refused_for_the_staging_reason(self):
+        self.assertRefusedFor('cp build/stage/payload docs/x', 'may write only under')
 
-    def test_write_into_the_git_directory_is_refused(self):
-        self.assertTrue(self.refused('cp build/stage/payload .git/config'))
+    def test_write_into_build_outside_the_staging_areas_is_refused_for_the_staging_reason(self):
+        self.assertRefusedFor('tee build/out', 'may write only under')
 
-    def test_write_into_the_trusted_checkout_is_refused(self):
-        self.assertTrue(self.refused('tee .trusted-main/tools/x'))
+    def test_write_into_the_git_directory_is_refused_for_the_default_deny_reason(self):
+        self.assertRefusedFor('cp build/stage/payload .git/config', 'default deny')
 
-    def test_dotdot_escape_from_staging_is_refused(self):
-        self.assertTrue(self.refused('tee build/stage/../../tools/x'))
+    def test_write_into_the_trusted_checkout_is_refused_for_the_trusted_reason(self):
+        self.assertRefusedFor('tee .trusted-main/tools/x', 'names a trusted checkout')
 
-    def test_target_directory_option_outside_staging_is_refused(self):
-        self.assertTrue(self.refused('cp build/stage/payload --target-directory=docs'))
+    def test_dotdot_escape_from_staging_is_refused_for_the_trusted_reason(self):
+        self.assertRefusedFor('tee build/stage/../../tools/x', 'names a trusted checkout')
 
-    def test_write_into_staging_is_allowed(self):
-        self.assertEqual(self.refused('cp build/stage/payload build/stage/out'), False)
+    def test_target_directory_option_naming_a_root_level_name_is_refused_for_the_default_deny_reason(self):
+        # docs has no directory part, so the default-deny rule (a repository-root name) refuses it first
+        self.assertRefusedFor('cp build/stage/payload --target-directory=docs', 'default deny')
 
-    def test_write_into_temp_is_allowed(self):
-        self.assertEqual(self.refused('mkdir -p build/tmp/x'), False)
+    def test_target_directory_option_outside_staging_is_refused_for_the_staging_reason(self):
+        self.assertRefusedFor('cp build/stage/payload --target-directory=build/out', 'may write only under')
+
+    def test_write_into_staging_has_no_problem(self):
+        self.assertEqual(self.problems('cp build/stage/payload build/stage/out'), [])
+
+    def test_write_into_temp_has_no_problem(self):
+        self.assertEqual(self.problems('mkdir -p build/tmp/x'), [])
+
+    def test_trusted_script_argument_outside_staging_is_refused(self):
+        self.assertRefusedFor('python3 .trusted/tools/policy_guard.py --out docs/x', 'an argument of the trusted script')
+
+    def test_trusted_script_argument_inside_staging_has_no_problem(self):
+        self.assertEqual(self.problems('python3 .trusted/tools/policy_guard.py --out build/stage/x'), [])
+
+    def test_policy_job_read_only_arguments_have_no_problem(self):
+        self.assertEqual(self.problems('python3 .trusted/tools/policy_guard.py --candidate .candidate --trusted .trusted'), [])
+
+
+class NestedGitSymlinkRefused(ClosureCase):
+    """Owner ruling (Issue #544): only the root .git is exempt from the symlink check; a nested .git is not."""
+
+    def test_nested_git_symlink_is_refused(self):
+        import os
+        for root in (self.trusted, self.candidate):
+            (root / FIXTURE).write_text(priv_workflow('cp build/stage/payload build/stage/out'), encoding='utf-8')
+        (self.candidate / 'build' / 'stage').mkdir(parents=True, exist_ok=True)
+        try:
+            os.symlink(str(self.trusted / 'tools'), str(self.candidate / 'build' / 'stage' / '.git'))
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f'symbolic links cannot be created here: {error}')
+        self.assertTrue(any('symbolic link' in p for p in policy.closure_problems(self.candidate, self.trusted)))
 
 
 class UnprivilegedBoundary(unittest.TestCase):

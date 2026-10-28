@@ -513,6 +513,8 @@ def normalized_path(arg):
 # Owner ruling (Issue #544, option b): a privileged job writes only to a dedicated temporary area and to the staging area
 # named here. Nothing else (.git, sources, the trusted or candidate checkouts) may be written by a privileged step.
 STAGING_AREAS = ("build/stage/", "build/tmp/")
+# Read-only inputs of the policy job (its run text is approved): these two names are read, never written.
+TRUSTED_SCRIPT_READ_ONLY_ARGS = (".candidate", ".trusted")
 
 
 def writer_destinations(args):
@@ -582,6 +584,16 @@ def _privileged_command_problems(run, where):
             if script_index is None or not options_ok or not _is_trusted_path(args[script_index]):
                 problems.append(f"{where}: {head} may run only a trusted checkout script in a privileged job; "
                                 f"{' '.join(words)[:60]!r} refused (Issue #544)")
+            else:
+                # Owner ruling (Issue #544): the arguments after the trusted script are in the write-range rule too. The
+                # two read-only inputs of the policy job are the only exception (TRUSTED_SCRIPT_READ_ONLY_ARGS, see the ADR).
+                for word in args[script_index + 1:]:
+                    value = option_value(word)
+                    if value.startswith("-") or value in TRUSTED_SCRIPT_READ_ONLY_ARGS:
+                        continue
+                    if not _in_staging_area(value):
+                        problems.append(f"{where}: an argument of the trusted script {args[script_index]!r} names {value!r}, "
+                                        f"outside {' or '.join(STAGING_AREAS)} (Issue #544); refused")
         elif head in PRIVILEGED_WRITERS:
             if any(re.fullmatch(r"-[A-Za-z]*[tT].+", a) for a in args):   # cp -rt.git/hooks: a target inside a bundled option
                 problems.append(f"{where}: {head} has a target directory attached inside a short-option bundle; refused "
@@ -675,7 +687,7 @@ def closure_problems(candidate, trusted):
     files, directories, problems = closure_of(trusted)
     for path in Path(candidate).rglob("*"):   # a symbolic link in the pull request could point a writer into the trusted tree
         relative = path.relative_to(candidate)
-        if path.is_symlink() and ".git" not in relative.parts:
+        if path.is_symlink() and not (relative.parts and relative.parts[0] == ".git"):   # only the root .git is exempt
             problems.append(f"{relative.as_posix()} is a symbolic link in the pull request; refused (Issue #544)")
     for name in ("GNUmakefile", "makefile"):   # exact names: a case-insensitive file system must not match Makefile
         if name in {p.name for p in Path(candidate).iterdir()} or name in {p.name for p in Path(trusted).iterdir()}:
