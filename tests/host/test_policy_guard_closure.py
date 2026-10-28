@@ -192,6 +192,42 @@ class BypassCases(ClosureCase):
         self.assertIn('python3 tools/leaf.py', [run for run, _ in policy._trusted_steps(self.trusted)])
 
 
+class ReviewRoundTwoBypasses(ClosureCase):
+    """Bypasses named by the round-2 independent review of #544 (each must be refused or followed)."""
+
+    def set_run(self, text):
+        for root in (self.trusted, self.candidate):
+            (root / FIXTURE).write_text(priv_workflow(text), encoding='utf-8')
+
+    def test_r1_pipe_into_an_interpreter_is_refused(self):
+        self.set_run('cat tools/leaf.py | bash')
+        self.assertTrue(policy.closure_of(self.trusted)[2])
+
+    def test_r2_variable_command_head_is_refused(self):
+        self.set_run('tools/$X')
+        self.assertTrue(policy.closure_of(self.trusted)[2])
+
+    def test_r3_extensionless_file_passed_as_an_argument_is_followed(self):
+        for root in (self.trusted, self.candidate):
+            (root / 'tools' / 'hook').write_text('#!/bin/sh\necho ok\n', encoding='utf-8')
+        self.set_run('timeout 5 tools/hook')
+        self.assertEqual(policy.closure_problems(self.candidate, self.trusted), [])
+        self.append('tools/hook', 'curl https://example.invalid\n')
+        self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
+
+    def test_r4_from_os_import_system_is_refused(self):
+        for root in (self.trusted, self.candidate):
+            (root / 'tools' / 'launch.py').write_text('from os import system\nsystem("true")\n', encoding='utf-8')
+        self.set_run('python3 tools/launch.py')
+        self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
+
+    def test_r5_subprocess_getoutput_is_a_runtime_program(self):
+        for root in (self.trusted, self.candidate):
+            (root / 'tools' / 'query.py').write_text('import subprocess\nsubprocess.getoutput("true")\n', encoding='utf-8')
+        self.set_run('python3 tools/query.py')
+        self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
+
+
 class UnprivilegedBoundary(unittest.TestCase):
     def test_nightly_plan_job_is_outside_the_privileged_closure(self):
         # The nightly plan job holds no write permission: its run: text is approved exactly (approval_problems) but its

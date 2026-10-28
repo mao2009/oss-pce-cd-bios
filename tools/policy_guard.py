@@ -87,7 +87,7 @@ def privileged_job(doc, body):
     if not isinstance(body, dict):
         return True
     permissions = body.get("permissions", doc.get("permissions"))
-    if permissions is None or permissions == "write-all" or "environment" in body or "secrets." in repr(body):
+    if permissions is None or permissions == "write-all" or "environment" in body or "secrets" in repr(body):
         return True
     if isinstance(permissions, dict) and any(value == "write" for value in permissions.values()):
         return True
@@ -228,15 +228,17 @@ def _analyze_shell(text, trusted, where):
                     files.add(_module_file(trusted, module))
                 continue
             positional = [a for a in args if not a.startswith("-")]
-            if positional:
+            if not positional:
+                problems.append(f"{where}: {head} reads its program from stdin or an option; cannot be analyzed (refused)")
+            else:
                 if "$" in positional[0]:
                     problems.append(f"{where}: {head} runs a path with a variable ({positional[0]!r}); refused (Issue #544)")
                 else:
                     files.add(positional[0])
-        for word in args:   # a repository script named in the arguments (for example: python3 "$x" tools/y.py)
-            if word.endswith(EXEC_EXT) and "$" in word:
-                problems.append(f"{where}: argument {word!r} is a variable path to a script; refused (Issue #544)")
-            elif word.endswith(EXEC_EXT) and PATH_TOKEN_RE.fullmatch(word):
+        for word in args:   # any argument naming a repository file may be executed or sourced by this command: follow it
+            if "$" in word and "/" in word:
+                problems.append(f"{where}: argument {word!r} is a variable path; cannot be resolved (refused, Issue #544)")
+            elif PATH_TOKEN_RE.fullmatch(word) and (base / word).is_file():
                 files.add(word)
     return files, targets, problems
 
@@ -337,6 +339,9 @@ def _python_facts(source):
             names.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             names.add(node.module)
+            if node.module == "os" and any(a.name in ("system", "popen") or a.name.startswith(("exec", "spawn"))
+                                           for a in node.names):
+                dynamic.append("from os import a program launcher")
         elif isinstance(node, ast.Call):
             callee = getattr(node.func, "id", None) or getattr(node.func, "attr", None) or ""
             owner = getattr(getattr(node.func, "value", None), "id", "")
@@ -351,7 +356,7 @@ def _python_facts(source):
             for keyword in node.keywords:
                 if keyword.arg == "shell" and getattr(keyword.value, "value", None) is True:
                     dynamic.append("shell=True")
-            if callee in ("run", "Popen", "call", "check_call", "check_output"):
+            if callee in ("run", "Popen", "call", "check_call", "check_output", "getoutput", "getstatusoutput"):
                 program = node.args[0] if node.args else next(
                     (k.value for k in node.keywords if k.arg == "args"), None)
                 literal = isinstance(program, ast.List) and all(isinstance(e, ast.Constant) for e in program.elts)
@@ -418,10 +423,10 @@ def closure_of(trusted):
         for f in step_files:
             if (base / f).is_file():
                 files.add(f)
-            elif "$" in f or f.startswith((".trusted", ".intake", "build/")):
-                continue
-            elif f.endswith(EXEC_EXT) or "/" in f:
-                problems.append(f"executed file {f!r} is not in the trusted tree (refused, Issue #544)")
+            elif f.startswith((".trusted-main/", ".trusted/")):
+                continue   # the trusted checkout of the guard and the policy job (pinned by the checkout ref, main)
+            else:
+                problems.append(f"executed file {f!r} is not in the trusted tree or cannot be resolved (refused, Issue #544)")
     if requested:
         make_files, problems = _analyze_makefile(trusted, requested, problems)
         files |= make_files
