@@ -8,7 +8,7 @@
 - Issue: #324（オーナー判断待ち）
 - 基準: origin/main `ec496e9`（HEAD は PR 本文を参照）
 - 先行文書: `docs/abi-evidence-classification.md`（PR #323 の設計提案）。本書は同文書の 3 軸を
-  4 軸に拡張し、フィールドごとの状態語の意味を定める。同文書と食い違う箇所は本書を優先する（§7）。
+  4 軸に拡張し、フィールドごとの状態語の意味を定める。同文書と食い違う箇所の優先規則は本書に定めていない。同文書の扱いは §8.6 のオーナー判断とする。
 - 負例テスト: `tests/host/test_abi_verification_tiers.py`
 
 ## 1. 現状（main 時点の事実）
@@ -99,7 +99,7 @@
 ## 4. 負例テスト
 
 `tests/host/test_abi_verification_tiers.py` は、次の 4 種類の入力が VERIFIED や承認に昇格しないことを確かめる。
-テストの fixture は同ファイル内の合成データで、実コアも参照 BIOS も使わない。
+テストの証拠 fixture は同ファイル内の合成データで、実コアも参照 BIOS も使わない。ただし一部の検査は、リポジトリに commit された台帳（`spec/*.json`）と `tests/host/test_api_build.py` などの既存ファイルを読み込んで検査する。
 
 | 種類 | 試すこと | 代表テスト |
 | --- | --- | --- |
@@ -121,7 +121,7 @@
 3. **`real_core_evidence` はパスの存在だけを確認する。** テストファイルの存在は、実コアで実行した証拠ではない。
 4. **`compatibility_basis` は未実装。** `docs/abi-evidence-classification.md` §4.2 の提案のみ。
 5. **producer 認証がない（#124、#171）。** `OBSERVED` も `VERIFIED-equivalent` も、この穴が塞がるまで到達できない。
-6. **全入力の DEV 実コア実行は台帳の外にある。** slot `$3D` の 256 入力 × 18 条件は WSL のローカル実行のみで、CI で再現されていない（Issue #324 のコメントに記載）。repo の `docs/evidence/dev-callable-3d.md` にはこの件数の記録がないため、件数は repo 内では未確認である。
+6. **全入力の DEV 実コア実行は台帳の外にある。** slot `$3D` の 256 入力 × 18 条件（4608 実行）は、`docs/evidence/dev-callable-3d.md` §3 に記録されている（失敗 0。有効 1800、不正 2808）。再現手順は `make dev-bcdbin-sweep`。ただしこの全入力実行は CI では再現しておらず、WSL のローカル実行の記録である（Issue #324 のコメントにも記載）。
    `docs/evidence/dev-callable-*.md` の記録は DEV 承認の判断材料であり、台帳の値ではない。
 
 ## 6. オーナーが #324 で判断すること
