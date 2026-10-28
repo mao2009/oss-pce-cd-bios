@@ -1,6 +1,6 @@
 """A/B comparison: CD read-ahead ON vs OFF on the pinned Geargrafx core (exp/cd-readahead-compare, diagnostic).
 
-Variant A (ON)  : core + probe compiled with -DGG_ENABLE_CDROM_CUEBIN_READAHEAD (the repo's standard flag set).
+Variant A (ON)  : core + probe compiled with -DGG_ENABLE_CDROM_CUEBIN_READAHEAD (same flag set as the tools/setup.py debugger build, define removed for B).
 Variant B (OFF): the same pinned source and flags with that one define removed.
 Both load the same synthetic CUE/BIN through `cdrom://` (the only path that selects streaming load options),
 with the same guest ROM, the same seed (CDRA_SEED pins the core RNG via a time() override), the same step budget.
@@ -8,7 +8,8 @@ Guest-visible records (HIT/PHASE/RUN) are compared record by record; VFS reads a
 with thread "worker" = read-ahead prefetch and "main" = demand.
 
 Outputs go to a mktemp directory and never into the repository. No ROM/BIOS bytes are printed; only counts,
-milestones and first-divergence positions. This is NOT a boot test: the guest is the CD read diagnostic ROM.
+CD diagnostic hit names and first-divergence positions. This is NOT a boot test: the guest is the CD read
+diagnostic ROM, and its HIT names are not boot milestones. Run under WSL only (cc65/g++/make, POSIX paths).
 """
 import argparse
 import hashlib
@@ -141,17 +142,17 @@ def guest_view(records):
     return seq
 
 
-def metrics(records, vfs, count, load_reads):
+def metrics(records, vfs, lba, count, disc, load_reads):
     phases = [(r["scsi_phase"], r["cd_irq_active"], r["cd_irq_enabled"], r["step"]) for r in records["PHASE"]]
     return {
         "read_requests_data_in": sum(1 for r in records["PHASE"] if r["scsi_phase"] == PHASE_DATA_IN),
         "sectors_requested": count * len(records["RUN"]),
-        "sectors_delivered": count * len(records["RUN"]),  # only counted after check_success passed
+        "sectors_delivered": sum(delivered_sectors(run, disc, lba, count) for run in records["RUN"]),
         "run_reasons": [r["reason"] for r in records["RUN"]],
         "halt_steps": [r["halted_after_step"] for r in records["RUN"]],
         "run_steps": [r["step"] for r in records["RUN"]],
         "phase_sequence": [p[:3] for p in phases],
-        "milestones": sorted({r["name"] for r in records["HIT"]}),
+        "cd_diagnostic_hits": sorted({r["name"] for r in records["HIT"]}),
         "mpr_at_run": [r["mpr"] for r in records["RUN"]],
         "mpr_first_checkpoint": records["HIT"][0]["mpr"] if records["HIT"] else None,
         "vfs_load_reads_before_guest": load_reads,
@@ -160,6 +161,12 @@ def metrics(records, vfs, count, load_reads):
         "vfs_demand_bytes": sum(e["bytes"] for e in vfs if e["thread"] == "main"),
         "vfs_prefetch_bytes": sum(e["bytes"] for e in vfs if e["thread"] == "worker"),
     }
+
+
+def delivered_sectors(run, disc, lba, count):
+    """Sectors whose bytes in guest RAM equal the expected disc sector (measured, not assumed)."""
+    buf = bytes.fromhex(run["buffer_hex"])
+    return sum(1 for i in range(count) if buf[i * SECTOR_BYTES:(i + 1) * SECTOR_BYTES] == disc[lba + i])
 
 
 def first_divergence(a, b):
@@ -176,6 +183,8 @@ def main():
     parser.add_argument("--mode", choices=("debug", "release"), default="debug")
     parser.add_argument("--work", help="empty or new directory for outputs (default: mktemp -d)")
     args = parser.parse_args()
+    if sys.platform.startswith("win"):
+        raise ValueError("BLOCKED: run inside WSL; cc65/g++/make paths are POSIX")
     cdread = ROOT / "build" / args.mode / "cdread-probe"
     rom_path = cdread / "cdread-probe-not-bios.pce"
     if not rom_path.is_file():
@@ -184,7 +193,10 @@ def main():
     manifest = json.loads((cdread / "manifest.json").read_text())
     symbols, labels = manifest["symbols"], cdread / "trace-labels.txt"
     disc = [sector_payload(i) for i in range(DISC_SECTORS)]
-    work = Path(args.work or tempfile.mkdtemp(prefix="cdra-compare-"))
+    work = Path(args.work) if args.work else Path(tempfile.mkdtemp(prefix="cdra-compare-"))
+    if args.work and work.exists() and any(work.iterdir()):
+        raise ValueError("--work must be a new or empty directory")
+    work.mkdir(parents=True, exist_ok=True)
     setup_module = _setup_module()
 
     build_dir = Path(tempfile.mkdtemp(prefix="cdra-build-", dir=work))
@@ -214,14 +226,13 @@ def main():
                 records, load, vfs = run_probe(probes[name], rom_file, cue_uri, labels, 1, log)
                 check_success(records, symbols, disc, lba, count)
                 results[name].setdefault(key, []).append({
-                    "guest": guest_view(records), "metrics": metrics(records, vfs, count, len(load)),
+                    "guest": guest_view(records), "metrics": metrics(records, vfs, lba, count, disc, len(load)),
                 })
         a, b = results["on"][key], results["off"][key]
         divergences[key] = first_divergence(a[0]["guest"], b[0]["guest"])
         for name, runs in (("on", a), ("off", b)):
-            if any(r["guest"] != runs[0]["guest"] or r["metrics"]["vfs_prefetch_reads"] != runs[0]["metrics"]["vfs_prefetch_reads"]
-                   or r["metrics"]["vfs_demand_reads"] != runs[0]["metrics"]["vfs_demand_reads"] for r in runs):
-                divergences[f"{key}_{name}_repeat"] = "NOT_REPRODUCIBLE"
+            if any(r != runs[0] for r in runs):
+                raise ValueError(f"FAIL: {name} {key} is not reproducible across {REPS} repetitions")
 
     on_prefetch = sum(r["metrics"]["vfs_prefetch_reads"] for v in results["on"].values() for r in v)
     off_prefetch = sum(r["metrics"]["vfs_prefetch_reads"] for v in results["off"].values() for r in v)
@@ -235,11 +246,11 @@ def main():
     for key in summary["scenarios"]:
         print(f"{key}: first_guest_divergence={divergences[key]} ON_prefetch={[r['metrics']['vfs_prefetch_reads'] for r in results['on'][key]]} "
               f"OFF_prefetch={[r['metrics']['vfs_prefetch_reads'] for r in results['off'][key]]}")
-    print(f"PASS A/B run complete; summary: {work / 'summary.json'}")
+    print(f"COMPLETE (diagnostic, not boot): reproducible in all repetitions; summary: {work / 'summary.json'}")
 
 
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
         raise SystemExit(f"cdra compare FAIL/BLOCKED: {error}") from error
