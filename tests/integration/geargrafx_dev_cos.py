@@ -6,9 +6,9 @@ binary and restore the caller's flags), preloads X=$5A and Y=$A5, JSRs $E0D2 wit
 then stores A (result low), X (result high), P, Y and SP at $2200-$2205 and halts.
 The expectation is this project's own spec (src/overrides/slot_46.s): Q15 cosine,
 X:A = round(32767 * cos(2*pi*A/256)). It is NOT the reference System Card MA_COS ABI (UNVERIFIED).
-Every angle index 0..255 is valid. The 256-angle check is the Python model
-(tests/host/test_ma_cos_dev.py); this run covers a representative subset on the real core.
-Run: python3 tests/integration/geargrafx_dev_cos.py --rom build/debug/bios-dev/dev-only-not-compatible-syscard3.pce
+Every angle index 0..255 is valid. The default run (CI via make dev-integration) uses --full: all 256
+angles at SP=$FF on the real core, plus the SP=$06 boundary, P and N/Z vectors and 4 mutants.
+Run: python3 tests/integration/geargrafx_dev_cos.py --full --rom build/debug/bios-dev/dev-only-not-compatible-syscard3.pce
 Needs the pinned cc65 and Geargrafx core (make setup, TOOLS_DIR on Linux). Missing tools exit 3 (BLOCKED).
 """
 import hashlib
@@ -181,7 +181,7 @@ def run_mutants(probe, data, folder, cue, reset, entry, body, evidence):
 def main():
     parser = __import__("argparse").ArgumentParser(description=__doc__)
     parser.add_argument("--rom", type=Path, required=True)
-    parser.add_argument("--full", action="store_true", help="all 256 angle indices at SP=$FF (manual sweep)")
+    parser.add_argument("--full", action="store_true", help="all 256 angle indices at SP=$FF (make dev-integration uses this)")
     args = parser.parse_args()
     data = args.rom.read_bytes()
     verify_dev_rom(data, manifest=args.rom.parent / "manifest.json")
@@ -204,7 +204,7 @@ def main():
         (folder / "original.bin").write_bytes(bytes(2352 * 32))
         cue = folder / "original.cue"
         cue.write_text('FILE "original.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
-        angles = list(range(256)) if args.full else CASES
+        angles = list(range(256)) if args.full else CASES  # make dev-integration passes --full
         for a in angles:
             run_case(probe, data, folder, cue, reset, f"cos-{a:02x}", entry, a)
             evidence["cases"].append({"angle": a, "expected_q15": q15(a), "sp": 0xFF})
