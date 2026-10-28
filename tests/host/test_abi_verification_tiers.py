@@ -186,6 +186,8 @@ class DevResultTests(unittest.TestCase):
     def test_dev_callable_is_not_absorbed_into_the_static_review(self):
         # The review cross-checks its committed summary against the DEV ledger. An approved DEV row changes that
         # count, so the review must refuse rather than silently count DEV approval as reference verification.
+        # Note: this relies on the committed-count mismatch. It does not by itself prove that DEV approval is never
+        # counted as reference verification; that would need a separate check on the review's verified counts.
         ledger = base_ledger()
         entry = ledger["slots"][0x1E]
         entry["state"] = "DEV_CALLABLE"

@@ -68,7 +68,7 @@
 | --- | --- | --- |
 | SOURCE_EVIDENCE | `HYPOTHESIS`（`SOURCE_FACT` は台帳の値ではなく、§2.1 の文書上のラベル） | `OBSERVED`、`VERIFIED`、provenance 承認、DEV_CALLABLE |
 | PROVENANCE_APPROVAL | `APPROVED`（人間の承認者が記録） | 挙動の正しさ、callee 実測、互換性、`OBSERVED`、`VERIFIED`、DEV_CALLABLE 承認（§8.4 で扱う） |
-| CALLEE_VERIFICATION | `OBSERVED`、`PARTIAL`、`VERIFIED-equivalent` には到達できない（`OBSERVED` は認証前に拒否。§3）。`UNKNOWN` と `BLOCKED` には到達できる | `VERIFIED`（現スキーマでは表せない。#171）、DEV_CALLABLE 承認 |
+| CALLEE_VERIFICATION | `OBSERVED`、`PARTIAL`、`VERIFIED-equivalent` には到達できない（`OBSERVED` は認証前に拒否。§3）。`UNKNOWN` には到達できる（§3） | `VERIFIED`（現スキーマでは表せない。#171）、DEV_CALLABLE 承認 |
 | DEV_IMPLEMENTATION | `DEV_CALLABLE`（DEV ROM に限る） | 参照 BIOS の `VERIFIED`、release 判定、互換性 |
 
 どの軸の値が揃っても、`release_eligible: true` にはならない。release gate は別の人間承認を要し、
@@ -121,7 +121,7 @@
 3. **`real_core_evidence` はパスの存在だけを確認する。** テストファイルの存在は、実コアで実行した証拠ではない。
 4. **`compatibility_basis` は未実装。** `docs/abi-evidence-classification.md` §4.2 の提案のみ。
 5. **producer 認証がない（#124、#171）。** `OBSERVED` も `VERIFIED-equivalent` も、この穴が塞がるまで到達できない。
-6. **全入力の DEV 実コア実行は台帳の外にある。** slot `$3D` の 256 入力 × 18 条件（4608 実行）は、`docs/evidence/dev-callable-3d.md` §3 に記録されている（失敗 0。有効 1800、不正 2808）。再現手順は `make dev-bcdbin-sweep`。この全入力実行は CI の `bios-dev` ジョブで実行される（`make dev-integration` 経由。CI 実測の記録は `docs/evidence/dev-callable-3d.md` §3）。Issue #324 のコメントにある件数は別の記録として扱い、本書は台帳の値として採用しない。
+6. **全入力の DEV 実コア実行は台帳の外にある。** slot `$3D` の 256 入力 × 18 条件（4608 実行）は、`docs/evidence/dev-callable-3d.md` §3 に記録されている（失敗 0。有効 1800、不正 2808）。再現手順は `make dev-bcdbin-sweep`。この全入力実行は `make dev-integration` に組み込まれ、CI の `bios-dev` ジョブで実行される設計である（`docs/evidence/dev-callable-3d.md` §3.1 と §6）。ただし初版の実行は CI ではなくローカル WSL のみで、この全件実行の CI 成功記録は同ファイルにない（同 §3.2 の注記）。Issue #324 のコメントにある件数は別の記録として扱い、本書は台帳の値として採用しない。
    `docs/evidence/dev-callable-*.md` の記録は DEV 承認の判断材料であり、台帳の値ではない。
 
 ## 6. オーナーが #324 で判断すること
