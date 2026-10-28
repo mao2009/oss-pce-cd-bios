@@ -204,9 +204,12 @@ def privileged_uses_problems(trusted):
                 continue
             if not uses.lower().startswith("actions/checkout@"):   # action names are case-insensitive on GitHub
                 # another pinned action may write where it is told (download-artifact path:): never into a trusted or candidate tree
-                values = [SAFE_EXPR_RE.sub("", v) for v in _leaf_strings(step.get("with") or {})]
-                if any("${{" in v or ".trusted" in v or ".candidate" in v or ".." in v or "\\" in v
-                       or v.startswith(("/", "~")) or re.match(r"[A-Za-z]:", v) for v in values):
+                # the whole step (with:, env: and any other key) except its name and uses, lower-cased: no expression, no shell
+                # variable, no traversal, no trusted or candidate name, no absolute or drive path
+                body_ = {key: value for key, value in step.items() if key not in ("name", "uses")}
+                values = [SAFE_EXPR_RE.sub("", v).lower() for v in _leaf_strings(body_)]
+                if any("${{" in v or "$" in v or "%" in v or ".trusted" in v or ".candidate" in v or ".." in v or "\\" in v
+                       or v.startswith(("/", "~")) or re.match(r"[a-z]:", v) for v in values):
                     problems.append(f"{where}: privileged action {uses!r} names a trusted or candidate path in with: "
                                     "(refused; Issue #544)")
                 continue

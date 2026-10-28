@@ -186,6 +186,18 @@ class PrivilegedCheckout(unittest.TestCase):
     def test_fixed_run_expression_in_a_privileged_with_value_passes(self):
         self.assertEqual(self._download_step(['          name: bios-${{ github.sha }}', '          path: evidence']), [])
 
+    def test_capitalised_trusted_name_in_with_is_refused(self):
+        self.assertTrue(self._download_step(['          path: .Trusted']))
+
+    def test_trusted_path_in_a_step_env_is_refused(self):
+        text = '\n'.join(['name: x', 'on: [push]', 'jobs:', '  j:', '    permissions:', '      id-token: write', '    steps:',
+                          f'      - uses: {DOWNLOAD}', '        env:', '          INPUT_PATH: .trusted', ''])
+        (self.trusted / FIXTURE).write_text(text, encoding='utf-8')
+        self.assertTrue(policy.privileged_uses_problems(self.trusted))
+
+    def test_shell_variable_in_a_with_value_is_refused(self):
+        self.assertTrue(self._download_step(['          path: $HOME/x']))
+
     def test_base_checkout_into_another_path_is_refused(self):
         self.assertTrue(self.uses_problems({'ref': policy.CHECKOUT_BASE_REF, 'path': '../x', 'persist-credentials': 'false'}))
 
