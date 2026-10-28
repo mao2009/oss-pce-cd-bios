@@ -154,7 +154,7 @@ def run_mutants(probe, data, folder, cue, reset, entry, body, evidence):
         # (name, file offset, new byte, angle that must expose it, caller P or None)
         ("phase_shift_adc_63", wrap["adc_operand"], 0x3F, 1, None),           # cos(a) = sin(a+63): off by one step
         ("plp_to_nop", wrap["plp"], 0xEA, 1, None),                           # P not restored / stack unbalanced
-        ("cld_to_nop_decimal_caller", wrap["cld"], 0xEA, 0x0A, 0x08),         # caller D=1: BCD add gives a wrong angle
+        ("cld_to_nop_decimal_caller", wrap["cld"], 0xEA, 0x99, 0x08),         # caller D=1: BCD add gives a wrong angle
         ("shared_sine_table_byte", t + 16, data[t + 16] ^ 0x01, 208, None),   # a=208 -> index (208+64)&$FF=16 in slot $45's table
     ]
     results = []
