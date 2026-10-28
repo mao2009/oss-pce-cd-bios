@@ -134,7 +134,13 @@ class ApprovedTextTests(unittest.TestCase):
         listed = workflow('echo hi', runs_on='[ubuntu-24.04]', shell='bash')   # a list is not a hosted label: shell: bash needed
         self.assertIsNone(self.check(listed, approve_text=listed))
         self.assertIsNotNone(self.check(workflow('echo bye', runs_on='[ubuntu-24.04]', shell='bash'), approve_text=listed))
-        self.assertIsNotNone(self.check(workflow('echo hi', runs_on='[ubuntu-24.04]'), approve_text=workflow('echo hi', runs_on='[ubuntu-24.04]')))
+        # runs-on changed from a list to a hosted label; shell: bash is present, so the Windows-shell rule passes and only
+        # the approval mismatch can refuse it
+        message = self.check(workflow('echo hi', runs_on='ubuntu-24.04', shell='bash'),
+                             approve_text=workflow('echo hi', runs_on='[ubuntu-24.04]', shell='bash'))
+        self.assertIsNotNone(message)
+        self.assertIn('not an approved exact match', message)
+        self.assertNotIn('no shell: bash', message)
 
     def test_job_level_environment_change_refused(self):
         # the step is approved, but the job's environment (which the signing identity binds to) changed
