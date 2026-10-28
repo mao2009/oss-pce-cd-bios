@@ -1206,9 +1206,17 @@
         "status": "UNKNOWN",
         "note": "reference System Card contract not verified; DEV-only project spec"
       },
-      "implementation": null,
-      "host_evidence": [],
-      "real_core_evidence": [],
+      "implementation": {
+        "source": "src/overrides/slot_45.s",
+        "license": "MIT (repository LICENSE)",
+        "provenance": "project-own quarter-wave Q15 table with quadrant folding (Issue #79); DEV contract: binary angle in A, signed 16-bit Q15 sine in X:A (X high, A low), round half up, same rule as MA_COS"
+      },
+      "host_evidence": [
+        "tests/host/test_ma_sin_dev.py"
+      ],
+      "real_core_evidence": [
+        "tests/integration/geargrafx_dev_sin.py"
+      ],
       "approval": {
         "approved_by": null,
         "review_ref": null

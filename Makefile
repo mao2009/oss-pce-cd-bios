@@ -82,6 +82,7 @@ dev-integration: dev-rom
 	$(PYTHON) tests/integration/geargrafx_dev_div16u.py --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
 	$(PYTHON) tests/integration/geargrafx_dev_mul16s.py --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
 	$(PYTHON) tests/integration/geargrafx_dev_sqrt.py --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
+	$(PYTHON) tests/integration/geargrafx_dev_sin.py --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
 	$(PYTHON) tests/integration/geargrafx_dev_ex_rnd.py --rom "build/$(MODE)/bios-dev/dev-only-not-compatible-syscard3.pce"
 	$(MAKE) dev-sweep MODE="$(MODE)"
 # Issue #494: manual large real-core sweep of the DEV ROM MA_MUL16S entry (slot 0x4F): every 65,536 multiplier x 6 multiplicands and every 65,536 multiplicand x 6 multipliers, at two caller SPs. Not run by CI.
