@@ -23,9 +23,11 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
+PROBE_SOURCE_PATH = Path(__file__).with_name("geargrafx_api_probe.cpp")
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from environment import DEPENDENCIES, executable  # noqa: E402
+from probe_digest import check_evidence_file, sha256_file  # noqa: E402
 from geargrafx_api import compile_probe  # noqa: E402
 from geargrafx_contracts import execute  # noqa: E402
 
@@ -273,14 +275,13 @@ def run_negatives(rom, labels, payload, folder, run):
     return negatives
 
 
-PROBE_SHA256 = hashlib.sha256(Path(__file__).with_name("geargrafx_api_probe.cpp").read_bytes()).hexdigest()
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=["debug", "release"], default="debug")
     mode = parser.parse_args().mode
     out = ROOT / "build" / mode / "handoff"
+    # An evidence file from an earlier run whose recorded probe digest no longer matches the source is STALE: fail.
+    check_evidence_file(out / "handoff-evidence.json", PROBE_SOURCE_PATH)
     rom_path, labels, size, trace_labels = build_handoff(out, mode)
     rom = rom_path.read_bytes()
     payload = expected_payload(labels["handoff_done"])
@@ -308,7 +309,7 @@ def main():
         # Derived from the probe source file at write time (never copied from an earlier run); the probe
         # path is recorded so the digest cannot be mistaken for a different probe build.
         "probe_source_file": "tests/integration/geargrafx_api_probe.cpp",
-        "probe_source_sha256": PROBE_SHA256,
+        "probe_source_sha256": sha256_file(PROBE_SOURCE_PATH),
         "geargrafx_revision": DEPENDENCIES["geargrafx"]["revision"],
         "bounded_run": {"fixed_instruction_budget": STEPS, "post_halt_steps": POST_HALT_STEPS,
                         "note": "the probe runs a fixed budget and does not stop early; PC/SP below are measured",

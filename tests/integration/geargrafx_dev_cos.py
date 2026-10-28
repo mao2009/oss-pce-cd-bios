@@ -174,7 +174,8 @@ def run_mutants(probe, data, folder, cue, reset, entry, body, evidence):
     results = []
     for name, offset, new, angle, p_entry in plan:
         if name == "cld_to_nop_decimal_caller":
-            assert p_entry & 0x08, "the CLD mutant is only observable with caller D=1"
+            if not p_entry & 0x08:  # explicit check: survives python -O
+                raise ValueError("the CLD mutant is only observable with caller D=1")
         mutant = apply_mutant(data, offset, new)
         label = f"mut-{name}"
         try:
