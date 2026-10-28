@@ -44,7 +44,7 @@ verified APIs, or hardware-compatibility proof.
 
 - **81+9 definitions** each contain nominal, boundary and invalid/timeout
   *placeholders* requiring API-specific review. They are not runnable programs.
-- **One** retail BIOS API has been measured locally and only against one
+- **One** retail BIOS API was observed locally (its values are withdrawn from public documents) and only against one
   candidate slot (EX_GETVER, slot `0x1E`). See
   "Guarded real guest JSR" below. Everything else remains `NOT RUN`.
   The measurement is local-only evidence, not a compatibility claim.

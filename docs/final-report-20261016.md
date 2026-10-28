@@ -42,11 +42,11 @@ python3 tools/reference_bios_runner.py /tmp/opencode/refbios/reset-config.json \
 
 ---
 
-## 4. EX_GETVER 実行可否（slot $1E、實測 → 可能、ガード付き）
+## 4. EX_GETVER 実行可否（slot $1E、観測 → 可能、ガード付き。観測値は取り下げ済み）
 
 - ガード解放前は `slot-1e` パスは明示的に BLOCKED（post-run空ram_diffでは不充分）。
 - `Memory::GetMemoryMapWrite`（防止）+ `AddBreakpoint`（検出）+ MPR0xFF隔離 + 命令単位予算による**コア内強制**を実装し、負例・正例を実コアで検証した後、パスを開放（CIは合成BIOS/合成CDで実行）。
-- ゲスト呼び出し `LDA #$AA; LDX #$55; LDY #$CC; JSR $E05A; BRA *` が実BIOSのslot `$1E` (`0xE000+3*0x1E = $E05A`) に到達し、呼び出し元に戻ることを実コアで確認。ジャンプテーブル先の内部手続きアドレスや内部命令列は非公開BIOSの実装詳細であり、本レポートでは公開しない（公開する機能的契約は§5の表に限定）。
+- ゲスト呼び出し `LDA #$AA; LDX #$55; LDY #$CC; JSR $E05A; BRA *` が実BIOSのslot `$1E` (`0xE000+3*0x1E = $E05A`) に到達し、呼び出し元に戻ることを実コアで確認した（観測値は取り下げ済み）。ジャンプテーブル先の内部手続きアドレスや内部命令列は非公開BIOSの実装詳細であり、本レポートでは公開しない（公開する機能的契約は§5の表に限定）。
 - 負例 `neg-write` (宛先 0x4000, CD-ROM RAMバンク0): `detected=true`, 書込み未着地。正例 `pos-write` (宛先 0x3E50, ワークRAM): `guard_after=0x5A` 着地。双方合成BIOSでPASS（`make test` / `make integration` に組込済）。
 
 評価: EX_GETVER スロットのゲストJSR/RTSは**実コア上で実行・戻り可能**。他80スロット＋9 PSGサブコマンドは未解放。
@@ -58,11 +58,11 @@ python3 tools/reference_bios_runner.py /tmp/opencode/refbios/reset-config.json \
 | 項目 | 値 |
 | --- | --- |
 | スロット | `$1E`（入口 `$E05A`、ジャンプテーブルスロット `0x5A`） |
-| 手続き | 非公開BIOS内部実装（実コア観測済み、未公開） |
+| 手続き | 非公開BIOS内部実装（実コアで観測。観測値は取り下げ済み、未公開） |
 | 戻り値・フラグ・SP・命令数・RAM 差分 | 取り下げ済み（オーナー最終裁定、2026-10-28。観測値は公開文書に記載しない） |
 | ガード | `detected=false`, `status=no_violation` |
 
-再現: 複数ランで同一結果（同一秒内は同一シード）。出力スキーマ `oss-pce-cd-bios/reference-observation/v1`、`status: OBSERVED`、`trust: LOCAL_ONLY_NOT_VERIFIED`。**VERIFIED ではない**（ABI承認・実ハードウェア比較未完了）。
+（取り下げた観測の再現性については記載しない。観測値は公開文書から取り下げ済み。）出力スキーマ `oss-pce-cd-bios/reference-observation/v1`、`status: OBSERVED`、`trust: LOCAL_ONLY_NOT_VERIFIED`。**VERIFIED ではない**（ABI承認・実ハードウェア比較未完了）。
 
 ---
 
@@ -110,7 +110,7 @@ python3 tools/reference_bios_runner.py /tmp/opencode/refbios/reset-config.json \
 
 1. **PR #170 / #174 のレビュー対応とCI完了待ち**（Draft維持、required CI successまでマージしない）。
 2. **次の1スロット**（優先度順の候補: CD_RESET `$01`、CD_READ `$03`、BCD変換等）について、実測→OSS実装→実コア検証のサイクルを繰り返す。1 Issue / 1 PR を維持。
-3. **ABI台帳の更新**：`docs/abi-contracts.md` のslot `$1E` を「実測あり（1スロット）」（実ハードウェア未確認のため`VERIFIED`にはしない）。
+3. **ABI台帳の更新**：`docs/abi-contracts.md` のslot `$1E` を「DEV 実装あり（参照の観測値は取り下げ済み）」（実ハードウェア未確認のため`VERIFIED`にはしない）。
 4. **日本語最終レポートのこの版**をPR #170に添付/参照。
 5. 互換性誇張の禁止：どの段階も「起動・商用ゲーム動作 VERIFIED」と主張しない。
 
@@ -118,7 +118,7 @@ python3 tools/reference_bios_runner.py /tmp/opencode/refbios/reset-config.json \
 
 ### 実証根拠の分類記号
 
-- **實測**: 私的BIOS/実コア/合成メディアによる実際のCPU実行観測（§3, §4, §5, §6の実コア検証）。
+- **観測**（観測値は取り下げ済み）: 私的BIOS/実コア/合成メディアによる実際のCPU実行観測（§3, §4, §5, §6の実コア検証）。
 - **合成**: 合成BIOS/合成CDによるCIテスト（`geargrafx_reference_guard.py`）。
 - **推定**: 未検証の仮定（コアページ1のハードウェア相違等）。
 - **NOT RUN**: 未実行のAPI/シナリオ（80スロット＋9 PSG、起動、商用ゲーム）。

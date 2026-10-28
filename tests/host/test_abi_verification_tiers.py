@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Negative tests for the ABI verification tiers (Issue #324, design: docs/abi-verification-tiers.md).
 
-Host-only. No real core, no reference BIOS, no CI artifacts. Fixtures are synthetic and live in this file.
+Host-only. No real core, no reference BIOS, no CI artifacts. Synthetic fixtures live in this file. Exception, stated
+here so the docstring is accurate: the ledger-based negatives (base_ledger, base_review, load_contracts) read the
+committed spec/*.json and tools/build_rom.py overrides; their inputs are then mutated in memory and never written back.
 Most classes are negative cases. Five tests are NOT negative cases, and each is labelled in its class docstring
 and by an inline comment at the test:
 - positive controls: DevResultTests.test_dev_callable_keeps_abi_status_non_verified,
