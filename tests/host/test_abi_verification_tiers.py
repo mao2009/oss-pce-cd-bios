@@ -114,6 +114,7 @@ class ForgedEvidenceTests(unittest.TestCase):
             (Path(directory) / digest).write_bytes(data)
             entry = observed_claim()["evidence"][0]
             entry["evidence_hash"] = digest
+            # Positive control (labelled): the hash-only resolution does succeed; the claim is still refused below.
             self.assertEqual(Path(directory) / digest,
                              contracts.resolve_evidence(entry, artifact_dir=Path(directory)))
             claim = observed_claim()

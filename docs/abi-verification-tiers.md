@@ -59,7 +59,7 @@
 - 値: `NOT_READY`（既定、承認なし）、`DEV_CALLABLE`（DEV ROM に限る。承認あり）、`BLOCKED`（理由付きで拒否）。
 - 書いてよい場所は `spec/dev_implementations.json` だけ。`spec/api_contracts.json` と
   `docs/research/*` には書かない。
-- 意味: DEV ROM についての記述に限る。参照 BIOS の ABI や互換性は一切含意しない（DEV_CALLABLE の定義。オーナー決定として提示されたが、リポジトリ内に決定記録は確認できない）。
+- 意味: DEV ROM についての記述に限る。参照 BIOS の ABI や互換性は一切含意しない（DEV_CALLABLE の定義。Issue #324 のオーナー判断コメント 2026-10-21 で承認されている）。
 - DEV テストの PASS は、OSS 実装の挙動の記録であって参照 BIOS の検証ではない。
 
 ### 2.5 軸の分離のまとめ
@@ -126,7 +126,7 @@
 
 ## 6. オーナーが #324 で判断すること
 
-項目 1（台帳導入）と項目 2（DEV_CALLABLE の定義）は、オーナー決定として提示されている。ただしリポジトリ内に決定記録は確認できない。`tools/dev_implementations.py` の冒頭コメントは「items 1-2, owner approved」と記すが、Issue #324 は未承認（意思決定待ち）と表示されている。両者は食い違うため、この記述は承認の根拠として使わない。以下は未決。
+項目 1（台帳導入）と項目 2（DEV_CALLABLE の定義）は、Issue #324 のオーナー判断コメント（2026-10-21）で承認されている。承認は台帳導入と DEV_CALLABLE の定義に限り、項目 3〜5 は未決のまま（同コメントの記載）。`tools/dev_implementations.py` の冒頭コメント「items 1-2, owner approved」はこの判断と整合する。以下は未決。
 
 1. **項目 3: `ORIGINAL` の OSS 実装の `provenance_approval` を誰が承認するか。** 承認者の一覧がリポジトリにない（fail closed）。
 2. **項目 4: 台帳に 3 軸のキー（`source_evidence` / `provenance_approval` / `callee_verification`）を追加するか。**
@@ -180,7 +180,7 @@
 
 ### 8.3 項目 5: `CALLEE_VERIFICATION` の公開範囲
 
-- **現状:** 参照 BIOS の実測は公開していない。`docs/provenance.md` は、逆アセンブル一覧と抽出・翻訳されたファームウェアコードのコミットと配布を禁じている。全 81 slot は `NOT_RUN`。
+- **現状:** 参照 BIOS の callee 内部実装は公開していない。ただし `docs/reference-bios-test-plan.md` には、EX_GETVER（slot 0x1E）の戻り値、フラグ、A の保持などの実コア実測が既に記載されている（私的な参照 BIOS を使用）。`docs/provenance.md` は、逆アセンブル一覧と抽出・翻訳されたファームウェアコードのコミットと配布を禁じている。全 81 slot の台帳値は `NOT_RUN`。この既存の記載の扱いが項目 3 の論点。
 - **選択肢:**
   - A. caller から見える ABI（引数、戻り値、破壊レジスタ）だけを公開する。
   - B. 内部挙動も含めて公開する。
