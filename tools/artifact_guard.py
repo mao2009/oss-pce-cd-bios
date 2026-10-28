@@ -1716,19 +1716,11 @@ def _is_junction(path):
         return False
 
 
-def check_guard_placement(root=ROOT, partial_fixtures=False):
-    """Static placement layer (run by make check and by the trusted copy): the preamble and stage/verify steps must
-    surround every upload step, in the same job, exactly as written here.
-
-    It scans the same files with the same parser as check_upload_artifacts, so a publication route the parser cannot
-    see through (release assets, `gh release`, reusable workflows) fails here too. Gating on "this file contains an
-    upload-artifact uses: line" left those routes uninspected by --check-placement while check_upload_artifacts
-    refused them (review finding A). A file with no upload step and no such route is not a publication and passes.
-
-    partial_fixtures=True is for tests only: a fixture api-source.yml may hold part of the workflow. main() never sets it,
-    so the real workflow must keep both signing jobs and both guard jobs (Issue #337 round 11).
-    """
-    base = Path(root)
+def link_problems(base):
+    """Issue #544: every symbolic link and junction in a tree (outside the repository's own root .git), at any depth, is
+    refused; a flagged directory is never descended into; an unlistable directory is refused. Used by the placement check
+    and by main() for every mode, on --root and --workflow-root, so no write path (stage, verify, post-build) skips it."""
+    base = Path(base)
     problems = []
     # Issue #544 (last review of e55b6f1): a link anywhere in the pull request (outside .git) can point a writer into the
     # trusted checkout, so the whole tree is walked without following links and any link or junction is refused.
@@ -1753,6 +1745,23 @@ def check_guard_placement(root=ROOT, partial_fixtures=False):
                                 "refused (untrusted input; Issue #544)")
     if unreadable:
         problems.append("a directory of the pull request cannot be listed; refused, never skipped (Issue #544)")
+    return problems
+
+
+def check_guard_placement(root=ROOT, partial_fixtures=False):
+    """Static placement layer (run by make check and by the trusted copy): the preamble and stage/verify steps must
+    surround every upload step, in the same job, exactly as written here.
+
+    It scans the same files with the same parser as check_upload_artifacts, so a publication route the parser cannot
+    see through (release assets, `gh release`, reusable workflows) fails here too. Gating on "this file contains an
+    upload-artifact uses: line" left those routes uninspected by --check-placement while check_upload_artifacts
+    refused them (review finding A). A file with no upload step and no such route is not a publication and passes.
+
+    partial_fixtures=True is for tests only: a fixture api-source.yml may hold part of the workflow. main() never sets it,
+    so the real workflow must keep both signing jobs and both guard jobs (Issue #337 round 11).
+    """
+    base = Path(root)
+    problems = link_problems(base)
     # Issue #544 (39b6de2 review): a link on a directory (or a Windows junction) is untrusted input too. Walk the trees the
     # checks read without following links, and refuse any link or junction found on the way, directories included.
     for tree in (".github", "tools"):
@@ -2793,6 +2802,10 @@ def main(argv):
         else:
             workflows_root = Path(argv[1])
         argv = argv[2:]
+    for tree in [root] + ([workflows_root] if workflows_root else []):   # Issue #544: links refused in every mode
+        found = link_problems(tree)
+        if found:
+            raise ValueError("artifact guard: " + "; ".join(found))
     if not argv:
         # Issue #349 (review): the default entry point is fail-closed. It runs every check that --check-placement runs.
         check_upload_artifacts(root)
