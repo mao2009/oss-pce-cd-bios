@@ -50,7 +50,7 @@ api_slot_1E:
 | E15 | マニフェストのハッシュ | 同上のビルドで生成 | `build/debug/bios-dev/manifest.json` の sha256 `f24e5115b587c83be751e653dae714666f569e3de24fb907edb1a9ec91c9d935`（ビルド時のブランチ HEAD `cf49557`）。manifest はビルドしたコミットを `source_sha` に埋め込むため、**コミットが変わると manifest 全体の sha256 も変わる**。再現性地比較できる値は manifest 内の `source_sha256`（ファイル別 sha256）である | PASS |
 | E16 | Geargrafx 固定 SHA | `tools/dependencies.json`: revision `b49ae82a012eade566d72e9d61c9d95a5caa4da3`、archive sha256 `a80a3eae26a8efcd994350e84bbe73c975e406ced41f8f2404c88b00d4217f68` | 記録のみ | INFO |
 | E17 | 承認フィールド不変 | `spec/dev_implementations.json` slot 30 の `approval` は null のまま | 本 PR は当該ファイルを変更しない | PASS |
-| E18 | 多入力の実コア確認（独立レビュー指摘 3 への対応） | `tests/integration/dev_getver_multi_input.py`（`make dev-integration` から実行、CI でも再現）。DEV ROM エントリ `$E05A`（slot $1E のテーブル JMP 先は `$E260`）を、A 入力 8 値（`$00` `$01` `$11` `$42` `$7F` `$80` `$AA` `$FF`）× 呼出時 C 2 値 × 呼出時 (X,Y) 2 組 × 呼出時 SP 3 値 の 96 条件で呼び、cold と warm の両方で A 保持・X=3・Y=0・P（C/Z/I/D/N）・SP 均衡・MPR1/MPR7 を検査 | `PASS real Geargrafx DEV ROM: EX_GETVER slot $1E entry $E05A 96 cases (8 A values x 2 carry x 2 X/Y x 3 SP; cold and warm); A preserved, X=3, Y=0, P (C/Z/I/D/N), SP, MPR1/MPR7 checked` | PASS |
+| E18 | 多入力の実コア確認（独立レビュー指摘 3 への対応） | `tests/integration/dev_getver_multi_input.py`（`make dev-integration` から実行、CI でも再現）。DEV ROM エントリ `$E05A`（slot $1E のテーブル JMP 先は `$E2A0`）を、A 入力 8 値（`$00` `$01` `$11` `$42` `$7F` `$80` `$AA` `$FF`）× 呼出時 C 2 値 × 呼出時 (X,Y) 2 組 × 呼出時 SP 3 値 の 96 条件で呼び、cold と warm の両方で A 保持・X=3・Y=0・P（C/Z/I/D/N）・SP 均衡・MPR1/MPR7 を検査 | `PASS real Geargrafx DEV ROM: EX_GETVER slot $1E entry $E05A 96 cases (8 A values x 2 carry x 2 X/Y x 3 SP; cold and warm); A preserved, X=3, Y=0, P (C/Z/I/D/N), SP, MPR1/MPR7 checked` | PASS |
 
 ### 3.1 注記
 

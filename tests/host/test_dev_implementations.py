@@ -223,7 +223,7 @@ class FailClosedTests(unittest.TestCase):
 
     def test_counts_are_separate_and_current(self):
         s = dev.summary(base(), OVERRIDES)
-        self.assertEqual((12, 69, 0), (s["dev_rom_callable"], s["dev_rom_unimplemented"], s["owner_approved"]))
+        self.assertEqual((13, 68, 0), (s["dev_rom_callable"], s["dev_rom_unimplemented"], s["owner_approved"]))
 
     def test_owner_approval_is_counted_apart_from_implementation(self):
         ledger = base()

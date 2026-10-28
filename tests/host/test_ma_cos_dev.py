@@ -1,14 +1,12 @@
-"""Host model of the DEV MA_COS override (slot $46, Issue #80). Exhaustive over all 256 angle indices.
+"""Host checks of the DEV MA_COS override (slot $46, Issue #80), stacked on MA_SIN (slot $45, Issue #79).
 
-The model mirrors src/overrides/slot_46.s: quadrant folding of a 65-entry Q15 quarter-wave table.
-  k = A (0..255), r = k & 63, q = k >> 6
-  index = 64 - r for odd q, r for even q; negate for q in {1, 2}
-  result = signed 16-bit Q15, value = round(32767 * cos(2*pi*k/256))
-The oracle is math.cos directly (not the table), so the table and the folding are both checked.
+MA_COS has no table of its own. src/overrides/slot_46.s is a tail jump into api_slot_45 with a 64-step
+phase shift (a quarter turn):  cos(a) = sin((a + 64) & $FF).  These tests check that identity against
+independent math oracles (math.cos / math.sin, not the table), using the table that slot_45.s actually
+contains, and check the wrapper's source contract (binary add, P restored, no own table).
 
 This does NOT run the assembled bytes; the real-core run is tests/integration/geargrafx_dev_cos.py.
-This is not the System Card MA_COS ABI (UNVERIFIED). MA_SIN-specific checks are deliberately
-separate: they are enabled only with REQUIRE_MA_SIN=1, after PR #522 supplies slot_45.s.
+This is not the System Card MA_COS ABI (UNVERIFIED).
 """
 import math
 import re
@@ -20,250 +18,149 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 from build_rom import overrides  # noqa: E402
 
-SOURCE = ROOT / "src" / "overrides" / "slot_46.s"
+COS_SOURCE = ROOT / "src" / "overrides" / "slot_46.s"
+SIN_SOURCE = ROOT / "src" / "overrides" / "slot_45.s"
 
 
-def q15_round(k):
-    """round(32767 * cos(2*pi*k/256)) as an integer; no tie is possible (cos is irrational except at 0/64/128/192)."""
-    return math.floor(32767 * math.cos(2 * math.pi * k / 256) + 0.5)
+def cos_oracle(a):
+    """round(32767 * cos(2*pi*a/256)) with round-half-up (no tie is possible except at the axes)."""
+    return math.floor(32767 * math.cos(2 * math.pi * a / 256) + 0.5)
 
 
-TABLE = [q15_round(i) for i in range(65)]  # T[0..64]
+def sin_oracle(a):
+    """round(32767 * sin(2*pi*a/256)) with round-half-up."""
+    return math.floor(32767 * math.sin(2 * math.pi * a / 256) + 0.5)
 
 
-def source_table():
-    """(lo, hi) byte lists parsed from the cos_lo / cos_hi .byte lines of slot_46.s."""
-    text = SOURCE.read_text(encoding="utf-8")
-    lo_block = text.split("cos_lo:", 1)[1].split("cos_hi:", 1)[0]
-    hi_block = text.split("cos_hi:", 1)[1]
-    parse = lambda block: [int(h, 16) for h in re.findall(r"\$([0-9A-Fa-f]{2})", block)]
-    return parse(lo_block), parse(hi_block)
-
-
-def dev_cos(k, table=TABLE):
-    """Signed 16-bit result (as Python int) for angle index k, computed as slot_46.s does."""
-    r = k & 0x3F
-    odd = (k & 0x40) != 0
-    index = (64 - r) if odd else r
-    value = table[index]
-    negate = ((k >> 6) ^ (k >> 7)) & 1
-    if negate:
-        value = -value
-    return value
-
-
-def as_word(value):
-    return value & 0xFFFF
-
-
-class DevCosModelTests(unittest.TestCase):
-    def test_all_angles_exhaustive(self):
-        """Every angle index 0..255: model == round(32767*cos(2*pi*k/256)) (independent oracle)."""
-        for k in range(256):
-            self.assertEqual(dev_cos(k), q15_round(k), k)
-
-    def test_quadrant_and_period_boundaries(self):
-        """Quadrant edges and the wrap points: 0, 63..65, 127..129, 191..193, 255."""
-        expect = {0: 32767, 64: 0, 128: -32767, 192: 0, 255: q15_round(1), 1: q15_round(1)}
-        for k, want in expect.items():
-            self.assertEqual(dev_cos(k), want, k)
-        for k in (63, 65, 127, 129, 191, 193):
-            self.assertEqual(dev_cos(k), q15_round(k), k)
-
-    def test_symmetry(self):
-        """cos is even: cos(k) == cos(256-k) for k in 1..255; quarter-turn antisymmetry about 64 and 192."""
-        for k in range(1, 256):
-            self.assertEqual(dev_cos(k), dev_cos(256 - k), k)
-        for d in range(0, 65):
-            self.assertEqual(dev_cos(64 + d), -dev_cos(64 - d) if d else 0, d)
-
-    def test_range_and_no_minus_32768(self):
-        """Output stays in -32767..+32767; the 16-bit encoding never yields $8000."""
-        for k in range(256):
-            v = dev_cos(k)
-            self.assertTrue(-32767 <= v <= 32767, k)
-            self.assertNotEqual(as_word(v), 0x8000, k)
-
-    def test_precision_error_bound(self):
-        """Quantization error of the Q15 table is at most 0.5 LSB (|error| <= 0.5/32767 of full scale)."""
-        worst = max(abs(dev_cos(k) - 32767 * math.cos(2 * math.pi * k / 256)) for k in range(256))
-        self.assertLessEqual(worst, 0.5 + 1e-9)
-
-    def test_source_table_matches_model(self):
-        """The bytes in slot_46.s equal the model table (65 entries each, Q15 little split)."""
-        lo, hi = source_table()
-        self.assertEqual(len(lo), 65)
-        self.assertEqual(len(hi), 65)
-        for i, want in enumerate(TABLE):
-            self.assertEqual(lo[i] | (hi[i] << 8), as_word(want), i)
-
-    def test_negative_mutants_detected(self):
-        """Mutants must differ from the oracle: missing negation, wrong quadrant index, off-by-one table."""
-        def no_negate(k):
-            r = k & 0x3F
-            return TABLE[(64 - r) if (k & 0x40) else r]
-
-        def wrong_index(k):
-            r = k & 0x3F
-            value = TABLE[r]  # ignores the odd-quadrant fold
-            return -value if ((k >> 6) ^ (k >> 7)) & 1 else value
-
-        bad_table = list(TABLE)
-        bad_table[32] += 1
-        mutants = {
-            "no_negate": lambda k: no_negate(k),
-            "wrong_index": wrong_index,
-            "table_off_by_one": lambda k: dev_cos(k, bad_table),
-        }
-        for name, fn in mutants.items():
-            differs = [k for k in range(256) if fn(k) != q15_round(k)]
-            self.assertTrue(differs, f"mutant {name} was not detected")
-
-    def test_slot_46_is_a_dev_override(self):
-        self.assertIn(0x46, overrides())
-        source = SOURCE.read_text(encoding="utf-8")
-        self.assertIn("api_slot_46:", source)
-        self.assertIn("MA_COS", source)
-        self.assertIn("Issue #80", source)
-        # Every zero-page operand in an instruction must be in $F7-$FA (immediates excluded).
-        code_lines = [line.split(";", 1)[0] for line in source.splitlines()
-                      if line.split(";", 1)[0].startswith("    ")
-                      and not line.split(";", 1)[0].strip().startswith(".")]
-        operands = set()
-        for line in code_lines:
-            operands.update(re.findall(r"(?<![#\w])\$([0-9A-Fa-f]{2})\b", line))
-        self.assertTrue(operands <= {"F7", "F8", "F9", "FA"}, operands)
-        self.assertNotIn("sta $00", source)
-        self.assertNotIn("sta $01", source)
-
-
-
-
-# --- Cross-identity with the MA_SIN contract (Issue #79, PR #522) -----------------------------
-# MA_SIN is a separate, not-yet-merged PR, so src/overrides/slot_45.s may be absent on this
-# branch. The comparison below therefore has two layers:
-#   1. A Q15-scale identity that does NOT depend on slot_45.s: COS(a) must equal a Q15 sine at
-#      (a + 64) mod 256, for all 256 angles. The sine is computed with math (independent oracle),
-#      not by copying the cosine formula, so the identity is a real cross-check of the cosine model.
-#   2. When slot_45.s IS present (after PR #522 lands), its quarter-wave table and folding are
-#      compared against this cosine table: T_sin[i] must equal T_cos[64 - i], and the MA_SIN model
-#      built from that table must agree with the cosine model on all 256 angles.
-SLOT45_PATH = ROOT / "src" / "overrides" / "slot_45.s"
-
-
-def sin_q15_oracle(k):
-    """Independent Q15 sine oracle: round(32767 * sin(2*pi*k/256))."""
-    return math.floor(32767 * math.sin(2 * math.pi * k / 256) + 0.5)
-
-
-def sin_table_from_cos():
-    """MA_SIN's quarter-wave table derived from MA_COS's own table: T_sin[i] = T_cos[64 - i]."""
-    return [TABLE[64 - i] for i in range(65)]
-
-
-def dev_sin_from_table(k, table):
-    """MA_SIN quadrant folding using an explicit 65-entry quarter-wave table."""
-    r = k & 0x3F
-    index = (64 - r) if (k & 0x40) else r
-    value = table[index]
-    if k & 0x80:
-        value = -value
-    return value
-
-
-def parse_slot45_table():
-    """Return the (lo, hi) byte lists from slot_45.s."""
-    text = SLOT45_PATH.read_text(encoding="utf-8")
+def slot45_table():
+    """The 65-entry quarter-wave table that slot_45.s actually contains: T[i] for i = 0..64."""
+    text = SIN_SOURCE.read_text(encoding="utf-8")
     lo_block = text.split("sin_lo:", 1)[1].split("sin_hi:", 1)[0]
     hi_block = text.split("sin_hi:", 1)[1]
-    parse = lambda block: [int(h, 16) for h in __import__("re").findall(r"\$([0-9A-Fa-f]{2})", block)]
-    return parse(lo_block), parse(hi_block)
+    parse = lambda block: [int(h, 16) for h in re.findall(r"\$([0-9A-Fa-f]{2})", block)]
+    lo, hi = parse(lo_block), parse(hi_block)
+    assert len(lo) == 65 and len(hi) == 65, "slot_45.s table is not 65 + 65 entries"
+    return [lo[i] | (hi[i] << 8) for i in range(65)]
 
 
-class StandaloneCosIdentityTests(unittest.TestCase):
-    """COS-only tests: these must remain runnable before MA_SIN is integrated."""
-    def test_identity_all_256_q15(self):
-        """SIN(a) == COS((a - 64) & 0xFF) for every angle, on the Q15 scale with the same rounding.
+def sin_routine(a, table):
+    """MA_SIN folding as slot_45.s does it, over an explicit table (used for mutants too)."""
+    r = a & 0x3F
+    index = (64 - r) if (a & 0x40) else r
+    value = table[index]
+    if a & 0x80:
+        value = -value
+    return value
 
-        Rearranged as COS(a) == SIN((a + 64) mod 256). The sine is an independent math oracle,
-        so this is a genuine cross-check rather than a copy of the cosine formula.
-        """
-        bad = [a for a in range(256)
-               if dev_cos(a) != sin_q15_oracle((a + 64) % 256)]
+
+def as_signed16(word):
+    return word - 0x10000 if word & 0x8000 else word
+
+
+def sin_word(a, table):
+    """MA_SIN result as the signed 16-bit value the routine returns in X:A."""
+    return as_signed16(sin_routine(a, table) & 0xFFFF)
+
+
+def cos_by_shift(a, table):
+    """MA_COS as specified: the sine routine at (a + 64) & $FF."""
+    return sin_word((a + 64) & 0xFF, table)
+
+
+TABLE = slot45_table()
+
+
+class CosShiftIdentityTests(unittest.TestCase):
+    def test_slot45_table_is_the_sine_oracle(self):
+        """The shared table is round(32767*sin(pi/2*i/64)) for i = 0..64 (independent check of MA_SIN's table)."""
+        for i in range(65):
+            self.assertEqual(TABLE[i], sin_oracle(i), i)
+
+    def test_all_256_angles_match_independent_cosine(self):
+        """cos(a) via the shifted sine routine == round(32767*cos(2*pi*a/256)) for every a in 0..255."""
+        bad = [a for a in range(256) if cos_by_shift(a, TABLE) != cos_oracle(a)]
         self.assertEqual(bad, [])
 
-    def test_identity_boundaries(self):
-        """COS(a) == SIN((a+64) mod 256) at the quadrant boundaries 0, 64, 128, 192, 255."""
-        for a in (0, 64, 128, 192, 255):
-            self.assertEqual(dev_cos(a), sin_q15_oracle((a + 64) % 256), a)
-        self.assertEqual([dev_cos(a) for a in (0, 64, 128, 192)], [32767, 0, -32767, 0])
+    def test_quadrant_boundaries(self):
+        expect = {0: 32767, 64: 0, 128: -32767, 192: 0}
+        for a, want in expect.items():
+            self.assertEqual(cos_by_shift(a, TABLE), want, a)
 
-    def test_sign_rule_matches_sine(self):
-        """Sign of COS(a) equals sign of the Q15 sine at (a + 64) mod 256, for all 256 angles."""
+    def test_range_and_no_minus_32768(self):
         for a in range(256):
-            self.assertEqual((dev_cos(a) > 0) - (dev_cos(a) < 0),
-                             (sin_q15_oracle((a + 64) % 256) > 0) - (sin_q15_oracle((a + 64) % 256) < 0), a)
+            v = cos_by_shift(a, TABLE)
+            self.assertTrue(-32767 <= v <= 32767, a)
 
-    def test_derived_sine_table_identity(self):
-        """A derived sine table proves the Q15 shift identity without requiring slot $45."""
-        st = sin_table_from_cos()
-        for a in range(256):
-            self.assertEqual(dev_cos(a), dev_sin_from_table((a + 64) % 256, st), a)
-
-    def test_mutants_detected_table_byte_quadrant_sign(self):
-        """Mutants must differ from the oracle: flipped table byte, wrong quadrant index, missing negation."""
-        bad_table = list(TABLE)
-        bad_table[16] ^= 0x01
-        # quadrant mutant: use r instead of 64-r for odd quadrants
-        def wrong_quadrant(k):
-            r = k & 0x3F
-            index = r  # ignores odd-quadrant fold
-            value = TABLE[index]
-            if ((k >> 6) ^ (k >> 7)) & 1:
-                value = -value
-            return value
-        # sign mutant: never negate
-        def no_negate(k):
-            r = k & 0x3F
-            index = (64 - r) if (k & 0x40) else r
-            return TABLE[index]
-        mutants = {
-            "table_byte_flip": lambda k: dev_cos(k, bad_table),
-            "wrong_quadrant": wrong_quadrant,
-            "missing_negation": no_negate,
-        }
-        for name, fn in mutants.items():
-            differs = [k for k in range(256) if fn(k) != q15_round(k)]
-            self.assertTrue(differs, f"mutant {name} was not detected")
+    def test_precision_bound(self):
+        worst = max(abs(cos_by_shift(a, TABLE) - 32767 * math.cos(2 * math.pi * a / 256)) for a in range(256))
+        self.assertLessEqual(worst, 0.5 + 1e-9)
 
 
-@unittest.skipUnless(
-    __import__("os").environ.get("REQUIRE_MA_SIN") == "1",
-    "MA_SIN integration is not required on the standalone MA_COS branch",
-)
-class RequiredMaSinIntegrationTests(unittest.TestCase):
-    """Cross-PR checks. REQUIRE_MA_SIN=1 makes a missing or malformed slot $45 a failure."""
+class CosMutantTests(unittest.TestCase):
+    """Each mutant must be detected by the 256-angle identity (a mutant that passes is a failed test)."""
 
-    def test_actual_slot45_table_and_model_match_cosine_shift(self):
-        if not SLOT45_PATH.exists():
-            self.fail("REQUIRE_MA_SIN=1 but PR #522 slot_45.s is absent")
-        lo, hi = parse_slot45_table()
-        self.assertEqual(len(lo), 65)
-        self.assertEqual(len(hi), 65)
-        sin_table = [(h << 8) | l for l, h in zip(lo, hi)]
-        # T_sin[i] must equal T_cos[64 - i].
-        for i in range(65):
-            self.assertEqual(sin_table[i], TABLE[64 - i], i)
-        for a in range(256):
-            self.assertEqual(dev_sin_from_table(a, sin_table), dev_cos((a - 64) & 0xFF), a)
-        # Full 256-angle identity using the actual MA_SIN table and folding.
-        for a in range(256):
+    def assertDetected(self, name, fn):
+        differs = [a for a in range(256) if fn(a) != cos_oracle(a)]
+        self.assertTrue(differs, f"mutant {name} was not detected")
+
+    def test_phase_shift_mutants(self):
+        for shift in (63, 65, 0, 128):
+            self.assertDetected(f"shift_{shift}", lambda a, s=shift: sin_word((a + s) & 0xFF, TABLE))
+
+    def test_table_byte_flip_in_slot45_is_detected(self):
+        bad = list(TABLE)
+        bad[16] ^= 0x01
+        self.assertDetected("table_byte_flip", lambda a: cos_by_shift(a, bad))
+
+    def test_missing_negation_is_detected(self):
+        def no_negate(a):
             r = a & 0x3F
-            index = (64 - r) if (a & 0x40) else r
-            value = sin_table[index]
-            if a & 0x80:
-                value = -value
-            self.assertEqual(dev_cos((a - 64) & 0xFF), value, a)
+            return TABLE[(64 - r) if (a & 0x40) else r]
+        self.assertDetected("missing_negation", lambda a: no_negate((a + 64) & 0xFF))
+
+
+class CosWrapperSourceTests(unittest.TestCase):
+    """The wrapper must stay a pure tail jump: binary add, P restored, no table, no zero-page use."""
+
+    def code(self):
+        return [line.split(";", 1)[0].rstrip() for line in COS_SOURCE.read_text(encoding="utf-8").splitlines()]
+
+    def test_slot_46_is_a_dev_override_and_depends_on_slot_45(self):
+        self.assertIn(0x46, overrides())
+        self.assertIn(0x45, overrides())
+        source = COS_SOURCE.read_text(encoding="utf-8")
+        self.assertIn("api_slot_46:", source)
+        self.assertIn(".import api_slot_45", source)
+
+    def test_wrapper_contract(self):
+        code = [c.strip() for c in self.code() if c.strip()]
+        for needed in ("php", "cld", "clc", "adc #64", "plp", "jmp api_slot_45"):
+            self.assertIn(needed, code, needed)
+        self.assertNotIn("cos_lo:", COS_SOURCE.read_text(encoding="utf-8"))
+        self.assertNotIn("cos_hi:", COS_SOURCE.read_text(encoding="utf-8"))
+
+    def test_wrapper_mutants_are_rejected(self):
+        """Source-level mutants of the wrapper: each must fail the contract (a no-op mutant is rejected too)."""
+        code = [c.strip() for c in self.code() if c.strip()]
+        required = ("php", "cld", "clc", "adc #64", "plp", "jmp api_slot_45")
+        mutants = {
+            "no_plp (P not restored)": [c for c in code if c != "plp"],
+            "no_cld (decimal add)": [c for c in code if c != "cld"],
+            "phase_63": [c.replace("adc #64", "adc #63") for c in code],
+            "jump_to_fallback": [c.replace("jmp api_slot_45", "jmp api_slot_44") for c in code],
+        }
+        for name, lines in mutants.items():
+            missing = [n for n in required if n not in lines]
+            self.assertTrue(missing, f"mutant {name} was not rejected")
+        # no-op mutant: the unchanged wrapper must satisfy the contract
+        self.assertEqual([n for n in required if n not in code], [])
+
+    def test_no_zero_page_operands(self):
+        operands = set()
+        for line in self.code():
+            if line.strip() and not line.strip().startswith("."):
+                operands.update(re.findall(r"(?<![#\w])\$([0-9A-Fa-f]{2})\b", line))
+        self.assertEqual(operands, set())
 
 
 if __name__ == "__main__":
