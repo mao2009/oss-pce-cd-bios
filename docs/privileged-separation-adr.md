@@ -9,15 +9,30 @@
 2. **書込みは 2 つの領域に限る。** 専用の一時領域 `build/tmp/` と、個別に認めたステージング領域 `build/stage/`。
    この規則は、特権の書込み（`cp`、`tee`、`mkdir`）の宛先と、信頼されたスクリプトの後ろの引数の両方に適用する。
    `gh` は書込み範囲の規則の対象ではない。`gh` は `repos/` で始まる単一の GET と `attestation verify` の二つに限る。
-   例外は、スクリプトとフラグの組ごとに列挙した読取り専用の対（`TRUSTED_SCRIPT_READ_ONLY_INPUTS`。現在は
-   `policy_guard.py` の `--candidate .candidate` と `--trusted .trusted` だけ）。この例外はオーナーの承認が必要な項目である。
+   例外は、信頼スクリプトの完全なパス、フラグ、値の三つ組（`TRUSTED_SCRIPT_READ_ONLY_INPUTS`。現在は
+   `.trusted/tools/policy_guard.py` に対する `--candidate .candidate` と `--trusted .trusted` の二つだけ。
+   別名のスクリプト、`--flag=value` の形、別の値はいずれも拒否する）。この例外はオーナーの承認が必要な項目である。
    `.git`、ソース、trusted checkout（`.trusted-main/`、`.trusted/`）、candidate checkout（`.candidate/`）への書換えは禁止。
-3. **特権操作の前提は三つ。** (a) 信頼された SHA（実装済み: 特権の checkout は信頼された main のみ）、
+3. **特権操作の前提は三つ。** (a) 信頼された SHA（実装済み。下の「信頼の境界」を参照）、
    (b) 承認済みスクリプト（実装は run: の完全一致の承認表による。スクリプト本体のハッシュ検査は未実装）、
    (c) 成果物の検証結果（sha256 の manifest。検証は既存の `--verify`、manifest の強制は未実装）。
    いずれかが欠ければ fail closed とする。
 4. **非特権 CI と特権 CI を分離する。** 非特権ジョブ（`contents: read`、secret なし）は PR のコードを実行してよいが、
    その出力は信頼されたガードが公開前に検査する。特権ジョブは別のワークフローに置く。
+
+## 信頼の境界（出典ごとの検査、`provenance_problems` と `privileged_uses_problems`）
+
+| 出典 | 何を表すか | 検査 |
+|---|---|---|
+| イベント・ペイロード（`GITHUB_EVENT_PATH`、GitHub が書く） | PR の base と head の SHA、base のブランチ名 | base のブランチが `main`（`PROTECTED_BASE`）、両 SHA が完全な 40 桁 |
+| checkout の結果（各 checkout の `git rev-parse HEAD`） | ランナーが実際に取り出したコミット | `.trusted` は base SHA、`.candidate` は head SHA と一致。自分の `.git` を持たない場合は拒否（親リポジトリの HEAD は読まない）。`GIT_*` 変数は除く |
+| 保護された base | 信頼される木の出所（`main`） | base に `policy-guard.yml` と `tools/policy_guard.py` が無い場合は信頼しない（bootstrap）。`policy_files_match` が拒否する |
+| check の発行元 | `policy-guard` の check run を作った app | ガードは自分の結果を検証できない。`check_run_records` が head SHA、app ID、完了、success を確認し、ruleset がこれを必須にする（オーナー管理） |
+
+特権ジョブの checkout は次の二つだけ許す（`privileged_uses_problems`）。(1) 保護された base の SHA（`github.event.pull_request.base.sha`）、
+persist-credentials false。(2) `policy-guard.yml` の候補の複製（head SHA、`.candidate` へ置く、データとしてのみ読む）。
+特権ジョブの `uses:` は完全な SHA への固定を要する。`pull_request_target` のワークフローは `contents: read` だけを持つ。
+SHA の一致は、イベントの値と checkout の実値の一致で確かめる。文字列の比較だけに頼らない（ワークフローの `ref:` も artifact_guard が形を検査する）。
 
 ## 根拠
 

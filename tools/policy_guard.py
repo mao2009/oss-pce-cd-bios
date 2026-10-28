@@ -31,8 +31,10 @@ import fnmatch
 import hashlib
 import importlib.util
 import json
+import os
 import posixpath
 import re
+import subprocess
 import sys
 
 POLICY_PATHS = (".github/workflows", ".github/actions", "tools/artifact_guard.py", "tools/artifact_guard_run_allowlist.json",
@@ -65,6 +67,10 @@ def policy_files_match(candidate, trusted):
             if mine.get(name) != theirs.get(name):
                 problems.append(f"{name} differs from the trusted main copy: a policy change needs trusted-main approval "
                                 "(Issue #544)")
+    for required in (POLICY_WORKFLOW, "tools/policy_guard.py"):
+        if not _tree(trusted, required):   # bootstrap: a base without the guard is not a trusted copy (Issue #544)
+            problems.append(f"{required} is not on the trusted base: the policy guard is not trusted here (bootstrap, refused; "
+                            "Issue #544)")
     if _tree(trusted, POLICY_WORKFLOW) and not _tree(candidate, POLICY_WORKFLOW):
         problems.append(f"{POLICY_WORKFLOW} is missing: the policy check cannot be removed (Issue #544)")
     return problems
@@ -105,31 +111,122 @@ def privileged_job(doc, body):
     return isinstance(triggers, (str, list, dict)) and "pull_request_target" in triggers
 
 
-def _trusted_steps(trusted):
-    """(run text or None, local action path or None) for every step of every PRIVILEGED trusted job and composite action.
-    Unprivileged jobs are outside the closure (see the docstring and docs/policy-bootstrap-owner-procedure.md)."""
+def _privileged_bodies(trusted):
+    """(workflow path, document, job or composite body) for every PRIVILEGED trusted job and composite action. Unprivileged
+    jobs are outside the closure (see the docstring and docs/policy-bootstrap-owner-procedure.md)."""
     import yaml
-    steps = []
     files = sorted((Path(trusted) / ".github").rglob("*.yml")) + sorted((Path(trusted) / ".github").rglob("*.yaml"))
     for path in files:
         doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         if not isinstance(doc, dict):
             continue
-        groups = []
+        rel = path.relative_to(Path(trusted)).as_posix()
         if isinstance(doc.get("runs"), dict):
-            groups.append(doc["runs"])   # composite action: always privileged here
+            yield rel, doc, doc["runs"]   # composite action: always privileged here
         for body in (doc.get("jobs") or {}).values():
             if privileged_job(doc, body):
-                groups.append(body)
-        for body in groups:
-            for step in (body.get("steps") or []) if isinstance(body, dict) else []:
-                if not isinstance(step, dict):
-                    continue
-                uses = step.get("uses")
-                local = uses[2:] if isinstance(uses, str) and uses.startswith("./") else None
-                run = step.get("run") if isinstance(step.get("run"), str) else None
-                steps.append((run, local))
+                yield rel, doc, body
+
+
+def _trusted_steps(trusted):
+    """(run text or None, local action path or None) for every step of every PRIVILEGED trusted job and composite action."""
+    steps = []
+    for _, _, body in _privileged_bodies(trusted):
+        for step in (body.get("steps") or []) if isinstance(body, dict) else []:
+            if not isinstance(step, dict):
+                continue
+            uses = step.get("uses")
+            local = uses[2:] if isinstance(uses, str) and uses.startswith("./") else None
+            run = step.get("run") if isinstance(step.get("run"), str) else None
+            steps.append((run, local))
     return steps
+
+
+# Issue #544 trust boundary (docs/privileged-separation-adr.md). Each source is checked on its own:
+#   event     GITHUB_EVENT_PATH, written by GitHub for this run: the pull request's base and head SHA and base branch.
+#   checkout  `git rev-parse HEAD` of each checkout, read from its own .git: what the runner really checked out.
+#   base      the protected branch the pull request targets (PROTECTED_BASE). A base without the guard is not trusted.
+#   issuer    the app that created the policy-guard check run: verified by the ruleset (check_run_records), not by this file.
+PROTECTED_BASE = "main"
+FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
+PINNED_USES_RE = re.compile(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}")
+CHECKOUT_BASE_REF = "${{ github.event.pull_request.base.sha }}"   # the trusted copy (privileged jobs may check out only this)
+CHECKOUT_HEAD_REF = "${{ github.event.pull_request.head.sha }}"
+# The one head checkout a privileged job may make: the policy job's data-only copy of the candidate (never executed).
+DATA_ONLY_HEAD_CHECKOUT = (".github/workflows/policy-guard.yml", CHECKOUT_HEAD_REF, ".candidate")
+CHECKOUT_KEYS = frozenset({"ref", "path", "persist-credentials", "fetch-depth"})
+
+
+def privileged_uses_problems(trusted):
+    """A privileged job's uses: is pinned to a full SHA. Its actions/checkout may take only the protected base SHA, with no
+    token kept, or the one data-only candidate copy. A pull_request_target workflow holds contents: read and nothing else.
+    Without this the closure above would hold for the trusted tree while a privileged checkout placed candidate code in it."""
+    problems = []
+    for rel, doc, body in _privileged_bodies(trusted):
+        where = f"{rel}"
+        triggers = doc.get("on", doc.get(True))
+        if isinstance(triggers, (str, list, dict)) and "pull_request_target" in triggers:
+            perms = body.get("permissions", doc.get("permissions")) if isinstance(body, dict) else None
+            if perms != {"contents": "read"}:
+                problems.append(f"{where}: pull_request_target runs with permissions {perms!r}; only contents: read (refused; "
+                                "Issue #544)")
+        for step in (body.get("steps") or []) if isinstance(body, dict) else []:
+            uses = step.get("uses") if isinstance(step, dict) else None
+            if uses is None:
+                continue
+            if not (isinstance(uses, str) and PINNED_USES_RE.fullmatch(uses)):
+                problems.append(f"{where}: privileged uses {uses!r} is not pinned to a full commit SHA (refused; Issue #544)")
+                continue
+            if not uses.startswith("actions/checkout@"):
+                continue
+            with_ = step.get("with") if isinstance(step.get("with"), dict) else {}
+            ref = with_.get("ref")
+            data_only = (rel, ref, with_.get("path")) == DATA_ONLY_HEAD_CHECKOUT
+            if not (set(with_) <= CHECKOUT_KEYS and "repository" not in with_ and with_.get("persist-credentials") is False
+                    and (ref == CHECKOUT_BASE_REF or data_only)):
+                problems.append(f"{where}: privileged checkout {with_!r} may check out only the protected base SHA, or the "
+                                "data-only candidate copy at .candidate, with persist-credentials false (refused; Issue #544)")
+    return problems
+
+
+def git_head(directory):
+    """The commit a checkout is at, or None. It is read from the checkout's own repository: a directory that is not the top
+    level of its own repository is refused, so a parent repository's HEAD is never taken for it. GIT_* variables are dropped."""
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    try:
+        top = subprocess.run(["git", "-C", str(directory), "rev-parse", "--show-toplevel"], capture_output=True, text=True,
+                             env=env, check=True).stdout.strip()
+        head = subprocess.run(["git", "-C", str(directory), "rev-parse", "--verify", "HEAD^{commit}"], capture_output=True,
+                              text=True, env=env, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    if Path(top).resolve() != Path(directory).resolve():
+        return None
+    return head
+
+
+def provenance_problems(candidate, trusted, event):
+    """The pull request the run is for (event payload) must target the protected base, and each checkout must really be at
+    the SHA the event names: the trusted copy at the base SHA, the candidate copy at the head SHA. Any missing piece fails."""
+    pr = event.get("pull_request") if isinstance(event, dict) else None
+    if not isinstance(pr, dict):
+        return ["the event payload has no pull_request object; the run is not tied to a pull request (refused; Issue #544)"]
+    base, head = pr.get("base") or {}, pr.get("head") or {}
+    problems = []
+    if base.get("ref") != PROTECTED_BASE:
+        problems.append(f"the pull request targets {base.get('ref')!r}, not the protected base {PROTECTED_BASE!r}; its copy "
+                        "is not the trusted main (refused; Issue #544)")
+    for name, sha in (("base", base.get("sha")), ("head", head.get("sha"))):
+        if not (isinstance(sha, str) and FULL_SHA_RE.fullmatch(sha)):
+            problems.append(f"the event payload has no full {name} SHA (refused; Issue #544)")
+    trusted_head, candidate_head = git_head(trusted), git_head(candidate)
+    if trusted_head is None or trusted_head != base.get("sha"):
+        problems.append(f"the trusted checkout is at {trusted_head}, but the event base SHA is {base.get('sha')} (SHA mismatch, "
+                        "refused; Issue #544)")
+    if candidate_head is None or candidate_head != head.get("sha"):
+        problems.append(f"the candidate checkout is at {candidate_head}, but the event head SHA is {head.get('sha')} (SHA "
+                        "mismatch, refused; Issue #544)")
+    return problems
 
 
 # Closure analysis (Issue #544 review). Scope: the files that a PRIVILEGED trusted run: text can execute, followed through
@@ -515,8 +612,9 @@ def normalized_path(arg):
 STAGING_AREAS = ("build/stage/", "build/tmp/")
 # Read-only inputs, per trusted script: an exact (flag, value) pair the script only reads (owner approval required, see the
 # ADR). Nothing else after a trusted script may name a path outside the staging areas.
+# Keyed by the exact trusted script path (not its basename), and used only as a separate (flag, value) pair.
 TRUSTED_SCRIPT_READ_ONLY_INPUTS = {
-    "policy_guard.py": {"--candidate": ".candidate", "--trusted": ".trusted"},
+    ".trusted/tools/policy_guard.py": {"--candidate": ".candidate", "--trusted": ".trusted"},
 }
 
 
@@ -590,25 +688,22 @@ def _privileged_command_problems(run, where):
             else:
                 # Owner ruling (Issue #544): the arguments after the trusted script are in the write-range rule too. The
                 # two read-only inputs of the policy job are the only exception (TRUSTED_SCRIPT_READ_ONLY_ARGS, see the ADR).
-                script_name = posixpath.basename(args[script_index])
+                script_name = normalized_path(args[script_index])
                 rest = args[script_index + 1:]
                 inputs = TRUSTED_SCRIPT_READ_ONLY_INPUTS.get(script_name, {})
                 i = 0
                 while i < len(rest):
                     word = rest[i]
-                    # the one exact read-only pair of this script (flag, value), and nothing else
+                    # the one exact read-only (flag, value) pair of this exact script, as two separate words, and nothing else
                     if word in inputs and i + 1 < len(rest) and rest[i + 1] == inputs[word]:
                         i += 2
                         continue
-                    if word.startswith("--") and "=" in word:
-                        name, value = word.split("=", 1)
-                        if name in inputs and value == inputs[name]:
-                            i += 1
-                            continue
+                    if word.startswith("--"):
+                        value = ""   # a bare long flag, or --flag=value, which is not an exact pair: its value is checked below
+                        if "=" in word:
+                            value = word.split("=", 1)[1]
                     else:
-                        value = word[2:] if word.startswith("-") and not word.startswith("--") else word
-                        if word.startswith("--"):
-                            value = ""   # a bare long flag names no value
+                        value = word[2:] if word.startswith("-") and len(word) > 2 else ("" if word.startswith("-") else word)
                     if value and not _in_staging_area(value):
                         problems.append(f"{where}: an argument of the trusted script {script_name!r} names {value!r}, "
                                         f"outside {' or '.join(STAGING_AREAS)} (Issue #544); refused")
@@ -641,7 +736,7 @@ def closure_of(trusted):
     """(files, directories, problems): what a privileged run can execute. Owner decision: the privileged set must run only
     trusted checkout code, so any repository file, make target or local action here is itself a problem."""
     base = Path(trusted)
-    problems, files, requested = [], set(), []
+    problems, files, requested = privileged_uses_problems(trusted), set(), []
     for run, local in _trusted_steps(trusted):
         if local:
             problems.append(f"local action {local!r} in a privileged job runs repository code; refused (Issue #544)")
@@ -658,7 +753,7 @@ def closure_of(trusted):
             if (base / f).is_file():
                 files.add(f)
             elif _is_trusted_path(f):
-                continue   # the trusted checkout of the guard and the policy job (pinned by the checkout ref, main)
+                continue   # .trusted/ or .trusted-main/: the protected base checkout, pinned by privileged_uses_problems
             else:
                 problems.append(f"executed file {f!r} is not in the trusted tree or cannot be resolved (refused, Issue #544)")
     if requested:
@@ -757,9 +852,13 @@ def check_run_records(payload, head_sha, expected_app_id):
     return problems
 
 
-def check_candidate(candidate, trusted):
-    """All candidate checks against the trusted copy. Returns the list of problems (empty when the candidate passes)."""
-    return policy_files_match(candidate, trusted) + approval_problems(candidate, trusted) + closure_problems(candidate, trusted)
+def check_candidate(candidate, trusted, event=None):
+    """All candidate checks against the trusted copy. Returns the list of problems (empty when the candidate passes). The
+    provenance check needs the event payload; main() always passes it, and event=None is for unit tests of the other checks."""
+    problems = policy_files_match(candidate, trusted) + approval_problems(candidate, trusted) + closure_problems(candidate, trusted)
+    if event is not None:
+        problems += provenance_problems(candidate, trusted, event)
+    return problems
 
 
 def main(argv):
@@ -774,7 +873,11 @@ def main(argv):
         return
     if len(argv) != 4 or argv[0] != "--candidate" or argv[2] != "--trusted":
         raise ValueError("usage: policy_guard.py --candidate DIR --trusted DIR")
-    problems = check_candidate(Path(argv[1]), Path(argv[3]))
+    event_path = os.environ.get("GITHUB_EVENT_PATH", "")
+    if not event_path:
+        raise ValueError("policy guard: GITHUB_EVENT_PATH is not set; the event payload is required (refused; Issue #544)")
+    event = json.loads(Path(event_path).read_text(encoding="utf-8"))
+    problems = check_candidate(Path(argv[1]), Path(argv[3]), event)
     if problems:
         raise ValueError("policy guard: " + "; ".join(problems))
     print("PASS policy guard: candidate matches the trusted main policy, approvals and called scripts")

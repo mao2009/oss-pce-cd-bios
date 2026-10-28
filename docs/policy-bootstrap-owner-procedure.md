@@ -100,3 +100,12 @@
 - [ ] 本文書のオーナー承認欄に記入した。
 
 承認欄: ____________ 日付: ____________
+
+## 7B. 信頼された SHA の検査（実装と未了）
+
+- 実装済み: `provenance_problems`（tools/policy_guard.py）は、イベント・ペイロードの base と head の SHA、各 checkout の `git rev-parse HEAD`、
+  base ブランチ（`main` のみ）を照合する。`privileged_uses_problems` は、特権ジョブの `uses:` の SHA 固定と checkout の ref を検査する。
+  `policy_files_match` は、base に guard が無い場合（bootstrap）を信頼しない。試験は tests/host/test_policy_guard_trust.py。
+- オーナー判断が必要: PR #545 の base は `wave26/w10-511` であり `main` ではない。したがって、この PR のガードは設計どおり拒否する。
+  #545 を `main` に向け直すか、base の扱いを変えるかを決める必要がある（この枝では変えない）。
+- 未了: check の発行元（app ID）は ruleset が検証する。ガード自身は自分の結果を検証できない。
