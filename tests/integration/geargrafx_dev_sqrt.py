@@ -50,13 +50,14 @@ def guest(reset, entry, x, a, sp=0xFF, p_entry=None):
     C/I/D/V reflect `p_entry`. (T=bit5, B=bit4 are not set by this guest.)
     """
     code = [0x78]  # SEI (probe requires first instruction SEI)
+    for mpr in (1, 0, 2, 3, 4, 5, 6):
+        code.extend([0xA9, 0xF8, 0x53, 1 << mpr])  # LDA #$F8; TAM: explicit work RAM, MPR1 = stack page
+    code.extend([0xA2, sp, 0x9A])  # SP before any PHA/PLP
     if p_entry is not None:
         code.extend([0xA9, p_entry & 0xFF, 0x48, 0x28])  # LDA #p_entry; PHA; PLP -> P = p_entry
     else:
         code.extend([0xF8, 0x38, 0xB8])  # SED (caller D=1), SEC (caller C=1), CLV (V=0)
     code.extend([
-        0xA9, 0xF8, 0x53, 0x02,  # LDA #$F8; TAM #$02 -> MPR1 = work RAM ($2000-$3FFF)
-        0xA2, sp, 0x9A,          # LDX #sp; TXS (caller SP; JSR then pushes 2 bytes)
         0xA2, x,                 # LDX #x (input high)
         0xA0, Y_PRESET,          # LDY #$A5
         0xA9, a,                 # LDA #a (input low; sets N/Z at entry)

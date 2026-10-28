@@ -273,6 +273,9 @@ def run_negatives(rom, labels, payload, folder, run):
     return negatives
 
 
+PROBE_SHA256 = hashlib.sha256(Path(__file__).with_name("geargrafx_api_probe.cpp").read_bytes()).hexdigest()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=["debug", "release"], default="debug")
@@ -302,7 +305,10 @@ def main():
                  "not CD boot, not CD_EXEC, not loader acceptance, not BIOS ABI",
         "rom_sha256": hashlib.sha256(rom).hexdigest(), "payload_bytes": size,
         "guest_source_sha256": hashlib.sha256((ROOT / "tests/fixtures/handoff-probe.s").read_bytes()).hexdigest(),
-        "probe_source_sha256": hashlib.sha256(Path(__file__).with_name("geargrafx_api_probe.cpp").read_bytes()).hexdigest(),
+        # Derived from the probe source file at write time (never copied from an earlier run); the probe
+        # path is recorded so the digest cannot be mistaken for a different probe build.
+        "probe_source_file": "tests/integration/geargrafx_api_probe.cpp",
+        "probe_source_sha256": PROBE_SHA256,
         "geargrafx_revision": DEPENDENCIES["geargrafx"]["revision"],
         "bounded_run": {"fixed_instruction_budget": STEPS, "post_halt_steps": POST_HALT_STEPS,
                         "note": "the probe runs a fixed budget and does not stop early; PC/SP below are measured",

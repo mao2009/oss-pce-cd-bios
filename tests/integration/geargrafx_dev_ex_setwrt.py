@@ -40,6 +40,10 @@ def guest(reset, entry, low, high, init, p_in=P_INPUT):
         0xA9, init & 0xFF, 0x8D, 0x02, 0x00,        # ST1 = initial MAWR low
         0xA9, init >> 8, 0x8D, 0x03, 0x00,          # ST2 = initial MAWR high
         0xA9, 0x00, 0x53, 0x01,             # MPR0 = 0 again (guest default)
+        0xA9, 0xF8, 0x53, 0x04, 0xA9, 0xF8, 0x53, 0x08, 0xA9, 0xF8, 0x53, 0x10,  # MPR2-4 = work RAM
+        0xA9, 0xF8, 0x53, 0x20, 0xA9, 0xF8, 0x53, 0x40,                         # MPR5-6 = work RAM
+        0x43, 0x01, 0x8D, 0x00, 0x23,       # TMA #1 -> $2300: MPR0 before the call
+        0x43, 0x02, 0x8D, 0x01, 0x23,       # TMA #2 -> $2301: MPR1 before the call
         0xA2, 0xFF, 0x9A,                   # SP = $FF
         0xA9, p_in, 0x48,                   # push requested caller status
         0xA2, high, 0xA0, 0x5A, 0xA9, low,  # X/Y/A inputs
@@ -75,6 +79,8 @@ def check(label, row, halt, low, high, init, p_in=P_INPUT):
     if row["sp"] != 0xFF or row["mpr"][0] != 0 or row["mpr"][1] != 0xF8 or row["mpr"][7] != 0:
         raise ValueError(f"{label}: stack/MPR not restored (sp={row['sp']}, mpr={row['mpr']})")
     ram = bytes.fromhex(row["work_ram_hex"])
+    if (ram[0x300], ram[0x301]) != (0x00, 0xF8):
+        raise ValueError(f"{label}: MPR before the call was {ram[0x300]:#x}/{ram[0x301]:#x}, want 0x00/0xF8")
     observed = (ram[STORE - 0x2000], ram[STORE - 0x1FFF], ram[STORE - 0x1FFE], ram[STORE - 0x1FFD])
     # P is evaluated separately so its bit-level contract is clear in evidence.
     if observed[0] != low or observed[2:] != (high, 0x5A):

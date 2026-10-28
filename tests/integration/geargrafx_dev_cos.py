@@ -45,19 +45,25 @@ def q15(k):
 
 
 def guest(reset, entry, a, sp=0xFF, p_entry=None):
-    """Reset-replacement code at CPU address `reset`. Returns (code, halt CPU address)."""
+    """Reset-replacement code at CPU address `reset`. Returns (code, halt CPU address).
+
+    Order matters: every MPR (MPR1 = stack page, MPR0 and MPR2-6 = work RAM $F8) and SP are set
+    before the first PHA/PLP, so the caller P is never read from an unmapped stack. MPR7 stays the
+    CPU reset mapping (bank 0). No test depends on the power-on MPR or register values.
+    """
     code = bytearray([0x78])                  # SEI (probe requires first instruction SEI)
+    for mpr in (1, 0, 2, 3, 4, 5, 6):
+        code.extend([0xA9, 0xF8, 0x53, 1 << mpr])  # LDA #$F8; TAM #(1<<mpr): work RAM
+    code.extend([0xA2, sp, 0x9A])             # LDX #sp; TXS (caller SP; JSR then pushes 2 bytes)
     if p_entry is None:
         code.extend([0xF8, 0x38, 0xB8])       # SED; SEC; CLV
     else:
-        code.extend([0xA9, p_entry & 0xFF, 0x48, 0x28])  # LDA #P; PHA; PLP
-    code.extend([0xA9, 0xF8, 0x53, 0x02,       # LDA #$F8; TAM #$02 -> MPR1 = work RAM ($2000-$3FFF)
-                  0xA2, sp, 0x9A,             # LDX #sp; TXS (caller SP; JSR then pushes 2 bytes)
-                  0xA2, X_PRESET,             # LDX #$5A (input X is ignored by MA_COS)
+        code.extend([0xA9, p_entry & 0xFF, 0x48, 0x28])  # LDA #P; PHA; PLP: caller P = p_entry
+    code.extend([0xA2, X_PRESET,             # LDX #$5A (input X is ignored by MA_COS)
                   0xA0, Y_PRESET,             # LDY #$A5
                   0xA9, a,                    # LDA #a (angle index)
                   0x48,                       # PHA (save angle)
-                  0x08,                       # PHP (P before JSR, D=1,C=1)
+                  0x08,                       # PHP (P before JSR)
                   0x68,                       # PLA
                   0x8D, P_PRE_OUT & 0xFF, P_PRE_OUT >> 8,  # STA $2400 (P before JSR)
                   0x68,                       # PLA (restore angle)
@@ -68,7 +74,7 @@ def guest(reset, entry, a, sp=0xFF, p_entry=None):
                   0x8C, (STORE + 3) & 0xFF, (STORE + 3) >> 8,  # STY $2203
                   0xBA, 0x8E, (STORE + 5) & 0xFF, (STORE + 5) >> 8])  # TSX; STX $2205 (SP after)
     halt = reset + len(code)
-    return code + bytes([0x80, 0xFE]), halt  # BRA -2
+    return bytes(code) + bytes([0x80, 0xFE]), halt  # BRA -2
 
 
 def check(label, rows, halt, a, sp=0xFF, p_entry=None):
@@ -92,6 +98,10 @@ def check(label, rows, halt, a, sp=0xFF, p_entry=None):
     if observed != (want, Y_PRESET, sp):
         raise ValueError(f"{label}: angle ${a:02X}: X:A/Y/SP observed {observed}, "
                          f"expected {(want, Y_PRESET, sp)}")
+    # Observability precondition: the caller's D (and I) must be the requested value at entry, or a
+    # CLD mutant cannot change the result and a PASS would prove nothing.
+    if p_entry is not None and (p_pre & 0x0C) != (p_entry & 0x0C):
+        raise ValueError(f"{label}: precondition failed: entry D/I is {p_pre & 0x0C:#x}, requested {p_entry & 0x0C:#x}")
     # P preservation: effective bits only (mask 0xCF); T/B core-specific.
     P_MASK = 0xCF
     if (p_pre & P_MASK) != (p_post & P_MASK):
@@ -159,8 +169,12 @@ def run_mutants(probe, data, folder, cue, reset, entry, body, evidence):
         ("cld_to_nop_decimal_caller", wrap["cld"], 0xEA, 0x99, 0x08),         # caller D=1: BCD add gives a wrong angle
         ("shared_sine_table_byte", t + 16, data[t + 16] ^ 0x01, 208, None),   # a=208 -> index (208+64)&$FF=16 in slot $45's table
     ]
+    # Baseline: the unmutated build must PASS the exact case the D-mutant needs (caller D=1 at entry).
+    run_case(probe, data, folder, cue, reset, "baseline-cld-caller-d1", entry, 0x99, p_entry=0x08)
     results = []
     for name, offset, new, angle, p_entry in plan:
+        if name == "cld_to_nop_decimal_caller":
+            assert p_entry & 0x08, "the CLD mutant is only observable with caller D=1"
         mutant = apply_mutant(data, offset, new)
         label = f"mut-{name}"
         try:
