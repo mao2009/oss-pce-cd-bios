@@ -85,9 +85,6 @@ class TrustedAllowlist(unittest.TestCase):
         self.assertIn('differs from the trusted main copy', str(caught.exception))
 
 
-if __name__ == '__main__':
-    unittest.main()
-
 
 class CommandLineEntry(unittest.TestCase):
     """The CLI entry point (--check-placement) reads the approval table from the guard's own tree, which is the trusted
@@ -113,3 +110,7 @@ class CommandLineEntry(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('not an approved exact match', result.stderr)
         print(result.stderr.strip().splitlines()[-1][:220])
+
+
+if __name__ == '__main__':
+    unittest.main()
