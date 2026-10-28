@@ -16,7 +16,7 @@
 ; OVERRIDES (start $E2A0, src/bank0.cfg), in MPR7, so instruction fetch is not affected by MPR0.
 ; Ceiling: NMI is assumed not to occur (PCE has no NMI source in use). Not observed on a real core.
 ; Stack: 5 bytes below the JMP target (P, Y, X, A, saved MPR0). No VBlank wait (timing not constrained).
-; ok path: N/Z/V are the values after CPX (PLP restores them from the php made after CPX). ng path: N/Z from CPX (not a contract).
+; ok path: N/Z are the values after CPX (PLP restores them from the php made after CPX); V is the caller's V, which CPX does not change. ng path: N/Z from CPX (not a contract).
 .setcpu "huc6280"
 .segment "OVERRIDES"
 .export api_slot_3A

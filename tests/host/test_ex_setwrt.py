@@ -88,7 +88,7 @@ class SetwrtSourceTests(unittest.TestCase):
                 self.assertFalse(0x2000 <= int(hexaddr, 16) <= 0x21FF, line)
 
     def test_routine_is_linked_in_overrides_mpr7(self):
-        # (a) The routine is linked into OVERRIDES, which bank0.cfg places at $E300 (MPR7, not the I/O window).
+        # (a) The routine is linked into OVERRIDES, which bank0.cfg places at $E2A0 (MPR7, not the I/O window).
         cfg = (ROOT / "src" / "bank0.cfg").read_text(encoding="utf-8")
         self.assertRegex(cfg, r"OVERRIDES:\s*load\s*=\s*ROM0,.*start\s*=\s*\$E[0-9A-Fa-f]{3}")
         start = int(re.search(r"OVERRIDES:.*start\s*=\s*\$([0-9A-Fa-f]{4})", cfg).group(1), 16)

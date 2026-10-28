@@ -22,8 +22,11 @@ int main(int argc, char** argv) {
     std::vector<u8> rom((std::istreambuf_iterator<char>(input)), {});
     GeargrafxCore core;
     core.Init(nullptr);
-    // Diagnostic only: Geargrafx seeds its power-on A/X/Y/S/P from time(NULL). Pin them (I set, D clear) so runs
-    // compare. MPR power-on values stay random: pinning them to 0 broke the MA_COS decimal-caller mutant (see log).
+    // Diagnostic only. Geargrafx seeds its power-on A/X/Y/S/P from time(NULL). SetResetValue(0x04) sets A, X, Y, S and P
+    // (S=4 too, which the guest overwrites before use). P=0x04 is I set, D clear, the same P the OBS check requires, so
+    // the judge is unaffected. The setter is not separately tested against the pinned Geargrafx; its effect was seen only in
+    // the 3-run loaded-row comparison and the gates. MPR power-on values stay random: pinning them to 0 broke the MA_COS
+    // decimal-caller mutant (see commit 1f7bd2c).
     core.GetHuC6280()->SetResetValue(0x04);
     // "-" = no media: the ROM becomes the card with CD hardware forced on (same loader as
     // geargrafx_cdread_probe.cpp; LoadBiosFromBuffer alone never Reset()s, so nothing would run).
