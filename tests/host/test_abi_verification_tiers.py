@@ -3,9 +3,9 @@
 
 Host-only. No real core, no reference BIOS, no CI artifacts. Fixtures are synthetic and live in this file.
 Most classes are negative cases. The positive controls (DevResultTests.test_dev_callable_keeps_abi_status_non_verified)
-and the document-consistency checks (DesignDocumentTests) are not negative cases. The committed-state pins
-(test_committed_dev_callable_count_is_zero, test_dev_ledger_states_have_no_tier_values) are not negative cases either.
-Each of these is labelled by an inline comment at its test.
+and the document-consistency checks (DesignDocumentTests, labelled in its class docstring) are not negative cases.
+The committed-state pins (test_committed_dev_callable_count_is_zero, test_dev_ledger_states_have_no_tier_values)
+are not negative cases either; each carries an inline comment at its test.
 
 Four axes are kept apart: SOURCE_EVIDENCE, PROVENANCE_APPROVAL, CALLEE_VERIFICATION and DEV_IMPLEMENTATION.
 Nothing from one axis may reach VERIFIED on the reference ABI. The tests below try to promote from each
@@ -185,7 +185,7 @@ class DevResultTests(unittest.TestCase):
         self.assertEqual([], dev.validate(ledger, SLOTS, OVERRIDES))
         self.assertEqual(0, dev.summary(ledger, OVERRIDES)["abi_verified"])
 
-    def test_committed_review_count_refuses_dev_approval(self):
+    def test_approved_dev_row_breaks_committed_review_count(self):
         # The review cross-checks its committed summary against the DEV ledger. An approved DEV row changes that
         # count, so the review must refuse rather than silently count DEV approval as reference verification.
         # Note: this relies on the committed-count mismatch. It does not by itself prove that DEV approval is never
@@ -229,7 +229,7 @@ class StaticAnalysisTests(unittest.TestCase):
 
 
 class DesignDocumentTests(unittest.TestCase):
-    """The design document must name the vocabulary the code actually uses."""
+    """Document checks, not negative cases: the design document must name the vocabulary the code actually uses."""
 
     def setUp(self):
         self.text = DESIGN_DOC.read_text(encoding="utf-8")
