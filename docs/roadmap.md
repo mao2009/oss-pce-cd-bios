@@ -1,6 +1,6 @@
 # Roadmap — evidence-graded milestones (no date promises)
 
-Use the [dated implementation status](status.md) (main `f90c16b`, committed 2026-10-22, state verified 2026-10-23) to distinguish merged **main** code from PR-branch work. Main f90c16b has 9 DEV implementations out of 81 candidate slots and 72 stubs; the Issue #79 PR branch (PR #522) adds MA_SIN $45 on top of MA_SQRT $44 for 12 DEV implementations out of 81 candidate slots and 69 stubs; owner-approved DEV_CALLABLE 0; 0/81 reference ABI VERIFIED; 0/81 reference JSR permitted. Real Geargrafx observations and unmerged work. Baseline: [PR #174](https://github.com/mao2009/oss-pce-cd-bios/pull/174)
+Use the [dated implementation status](status.md) (main `f90c16b`, committed 2026-10-22, state verified 2026-10-23) to distinguish merged **main** code from PR-branch work. Main f90c16b has 9 DEV implementations out of 81 candidate slots and 72 stubs; PR #522 (MA_SIN $45) is merged; the Issue #80 PR branch (PR #527) adds MA_COS $46 on top of MA_SIN $45 for 13 DEV implementations out of 81 candidate slots and 68 stubs; owner-approved DEV_CALLABLE 0; 0/81 reference ABI VERIFIED; 0/81 reference JSR permitted. Real Geargrafx observations and unmerged work. Baseline: [PR #174](https://github.com/mao2009/oss-pce-cd-bios/pull/174)
 merged as `05a0ea54` on 2026-10-17; later [#175](https://github.com/mao2009/oss-pce-cd-bios/pull/175)
 updated public status wording and [#176](https://github.com/mao2009/oss-pce-cd-bios/pull/176)
 added community Pages. A completed **diagnostic**, even one executing an original
