@@ -13,7 +13,7 @@
 ; ZERO_PAGE_ADDR = $2000 and STACK_ADDR = $2100, both in MPR1, so zero page and stack are outside the window.
 ; The routine uses NO zero-page addressing: the three VDC accesses are written with a: (absolute) so ca65 does not
 ; choose the zero-page form, which would address $2000-$2003 instead of $0000-$0003. The routine is linked into
-; OVERRIDES at $E300 (src/bank0.cfg), in MPR7, so instruction fetch is not affected by MPR0.
+; OVERRIDES (start $E2A0, src/bank0.cfg), in MPR7, so instruction fetch is not affected by MPR0.
 ; Ceiling: NMI is assumed not to occur (PCE has no NMI source in use). Not observed on a real core.
 ; Stack: 5 bytes below the JMP target (P, Y, X, A, saved MPR0). No VBlank wait (timing not constrained).
 ; ok path: N/Z/V are the values after CPX (PLP restores them from the php made after CPX). ng path: N/Z from CPX (not a contract).
