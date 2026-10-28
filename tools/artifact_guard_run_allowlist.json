@@ -542,11 +542,20 @@
   {
     "workflow": ".github/workflows/ci.yml",
     "job": "guard-verify",
+    "step": "Policy check (trusted main guard and approval table against the pull request)",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "329f02e3ad2dd246cb558bc7da50b21f40c14e7cde296db85a6c5e6fe0af5343",
+    "job_sha256": "4340b50e0a1f29e79eb0ae52596f4f1b3a5e970cdcc02303178c3c54991d442f"
+  },
+  {
+    "workflow": ".github/workflows/ci.yml",
+    "job": "guard-verify",
     "step": "Resolve python3 (trusted)",
     "shell": null,
     "runs_on": "ubuntu-24.04",
     "sha256": "b9f2c403682d30c6538a47260f7b35f792c5f24c05d140dbfc05dc18a59d6268",
-    "job_sha256": "6b602396ced6150ee71a79e80015726cb3ba41e44f0c3d205bd0f590be889901"
+    "job_sha256": "4340b50e0a1f29e79eb0ae52596f4f1b3a5e970cdcc02303178c3c54991d442f"
   },
   {
     "workflow": ".github/workflows/ci.yml",
@@ -555,7 +564,7 @@
     "shell": null,
     "runs_on": "ubuntu-24.04",
     "sha256": "d005a8c04043f5df4b739c938037253ee10c5bb39fba37a376b832487a0d8376",
-    "job_sha256": "6b602396ced6150ee71a79e80015726cb3ba41e44f0c3d205bd0f590be889901"
+    "job_sha256": "4340b50e0a1f29e79eb0ae52596f4f1b3a5e970cdcc02303178c3c54991d442f"
   },
   {
     "workflow": ".github/workflows/ci.yml",
@@ -564,7 +573,7 @@
     "shell": null,
     "runs_on": "ubuntu-24.04",
     "sha256": "fcc81f01e3a679a4247797987e2217d153e0950a57378a2ee62b197180e9acc8",
-    "job_sha256": "6b602396ced6150ee71a79e80015726cb3ba41e44f0c3d205bd0f590be889901"
+    "job_sha256": "4340b50e0a1f29e79eb0ae52596f4f1b3a5e970cdcc02303178c3c54991d442f"
   },
   {
     "workflow": ".github/workflows/ci.yml",
@@ -573,7 +582,7 @@
     "shell": null,
     "runs_on": "ubuntu-24.04",
     "sha256": "ff0a4b43ccfc168217e97aa6805bfdc16462c7b3b2fafa799234a85bf34d4682",
-    "job_sha256": "6b602396ced6150ee71a79e80015726cb3ba41e44f0c3d205bd0f590be889901"
+    "job_sha256": "4340b50e0a1f29e79eb0ae52596f4f1b3a5e970cdcc02303178c3c54991d442f"
   },
   {
     "workflow": ".github/workflows/nightly.yml",
