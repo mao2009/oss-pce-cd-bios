@@ -60,10 +60,10 @@ int main(int argc, char** argv) {
     auto cpu = processor->GetState();
     auto memory = core.GetMemory();
     auto vdc = core.GetHuC6270_1()->GetState();
-    const char* cycle = "cold";
+    const char* cycle = "cold"; unsigned long seq = 0; // diagnostic only: record order, never read by the judge
     auto observe = [&](const char* prefix, const char* phase) {
-        std::printf("%s {\"phase\":\"%s\",\"cycle\":\"%s\",\"pc\":%u,\"a\":%u,\"x\":%u,\"y\":%u,\"p\":%u,\"sp\":%u,\"irr\":%u,\"idr\":%u,\"mpr\":[",
-                    prefix, phase, cycle, cpu->PC->GetValue(), cpu->A->GetValue(), cpu->X->GetValue(),
+        std::printf("%s {\"phase\":\"%s\",\"cycle\":\"%s\",\"seq\":%lu,\"irq\":\"%s\",\"pc\":%u,\"a\":%u,\"x\":%u,\"y\":%u,\"p\":%u,\"sp\":%u,\"irr\":%u,\"idr\":%u,\"mpr\":[",
+                    prefix, phase, cycle, seq++, irq.c_str(), cpu->PC->GetValue(), cpu->A->GetValue(), cpu->X->GetValue(),
                     cpu->Y->GetValue(), cpu->P->GetValue(), cpu->S->GetValue(), *cpu->IRR, *cpu->IDR);
         for (int i=0;i<8;i++) std::printf("%s%u", i ? "," : "", memory->GetMpr(i));
         std::printf("],\"vdc_ar\":%u,\"vdc_r0\":%u,\"physical_pc\":%u,\"work_ram_0200_hex\":\"",
@@ -103,14 +103,14 @@ int main(int argc, char** argv) {
                 if (!injected) {
                     // timer: nothing is injected; the guest already armed its own timer before CLI.
                     observe("TRACE", irq == "timer" ? "timer_armed" : "irq_asserted");
-                    line(true);
+                    observe("TRACE", "irq_line_on"); line(true);
                     injected=true;
                 } else if (entered && !seen.count("irq_resumed")) {
                     observe("TRACE", "irq_resumed"); seen.insert("irq_resumed");
                 }
             }
             if (injected && labels.count(entry_label) && pc == labels[entry_label] && !entered) {
-                line(false);
+                observe("TRACE", "irq_entered"); line(false);
                 entered=true;
             }
             one_instruction();
@@ -131,10 +131,16 @@ int main(int argc, char** argv) {
     if (!stepping) return 6;
     steps(count); observe("OBS", "cold");
     steps(32); observe("OBS", "nonreturning");
+    const bool cold_entered = entered, cold_resumed = seen.count("irq_resumed") > 0; // cold-run IRQ outcome, before warm reset
     core.ResetMedia(true);
     cycle = "warm"; seen.clear(); injected=false; entered=false;
     steps(count); observe("OBS", "warm");
     memory->SetMpr(7,1);
+    // diagnostic stop reason; exit code and judge unchanged. irq_not_entered = an IRQ run never reached its entry.
+    const bool irq_missed = irq != "none" && !cold_entered;
+    std::printf("STOP {\"reason\":\"%s\",\"irq\":\"%s\",\"cold_irq_entered\":%s,\"cold_irq_resumed\":%s,\"records\":%lu}\n",
+                irq_missed ? "irq_not_entered" : "completed", irq.c_str(), cold_entered ? "true" : "false",
+                cold_resumed ? "true" : "false", seq);
     std::printf("BANK {\"mpr7\":1,\"physical_e000\":%u,\"byte_e000\":%u}\n",
                 memory->GetPhysicalAddress(0xe000), memory->Read(0xe000));
     return 0;
