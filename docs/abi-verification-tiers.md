@@ -59,7 +59,7 @@
 - 値: `NOT_READY`（既定、承認なし）、`DEV_CALLABLE`（DEV ROM に限る。承認あり）、`BLOCKED`（理由付きで拒否）。
 - 書いてよい場所は `spec/dev_implementations.json` だけ。`spec/api_contracts.json` と
   `docs/research/*` には書かない。
-- 意味: DEV ROM についての記述に限る。参照 BIOS の ABI や互換性は一切含意しない（オーナー承認 2026-10-21 の定義）。
+- 意味: DEV ROM についての記述に限る。参照 BIOS の ABI や互換性は一切含意しない（DEV_CALLABLE の定義。オーナー決定として提示されたが、リポジトリ内に決定記録は確認できない）。
 - DEV テストの PASS は、OSS 実装の挙動の記録であって参照 BIOS の検証ではない。
 
 ### 2.5 軸の分離のまとめ
@@ -99,7 +99,7 @@
 ## 4. 負例テスト
 
 `tests/host/test_abi_verification_tiers.py` は、次の 4 種類の入力が VERIFIED や承認に昇格しないことを確かめる。
-テストの証拠 fixture は同ファイル内の合成データで、実コアも参照 BIOS も使わない。ただし一部の検査は、リポジトリに commit された台帳（`spec/*.json`）と `tests/host/test_api_build.py` などの既存ファイルを読み込んで検査する。
+テストの証拠 fixture は同ファイル内の合成データで、実コアも参照 BIOS も使わない。ただし一部の検査は、リポジトリに commit された台帳（`spec/*.json`）を読み込んで検査する。
 
 | 種類 | 試すこと | 代表テスト |
 | --- | --- | --- |
@@ -126,7 +126,7 @@
 
 ## 6. オーナーが #324 で判断すること
 
-2026-10-21 の決定で項目 1（台帳導入）と項目 2（DEV_CALLABLE の定義）は承認済み。以下は未決。
+項目 1（台帳導入）と項目 2（DEV_CALLABLE の定義）は、オーナー決定として提示されている。ただしリポジトリ内に決定記録は確認できない。以下は未決。
 
 1. **項目 3: `ORIGINAL` の OSS 実装の `provenance_approval` を誰が承認するか。** 承認者の一覧がリポジトリにない（fail closed）。
 2. **項目 4: 台帳に 3 軸のキー（`source_evidence` / `provenance_approval` / `callee_verification`）を追加するか。**

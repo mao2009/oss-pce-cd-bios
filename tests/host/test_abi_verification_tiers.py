@@ -2,6 +2,8 @@
 """Negative tests for the ABI verification tiers (Issue #324, design: docs/abi-verification-tiers.md).
 
 Host-only. No real core, no reference BIOS, no CI artifacts. Fixtures are synthetic and live in this file.
+Most classes are negative cases. The positive controls (DevResultTests.test_dev_callable_keeps_abi_status_non_verified)
+and the document-consistency checks (DesignDocumentTests) are not negative cases; they are labelled in their docstrings.
 
 Four axes are kept apart: SOURCE_EVIDENCE, PROVENANCE_APPROVAL, CALLEE_VERIFICATION and DEV_IMPLEMENTATION.
 Nothing from one axis may reach VERIFIED on the reference ABI. The tests below try to promote from each
