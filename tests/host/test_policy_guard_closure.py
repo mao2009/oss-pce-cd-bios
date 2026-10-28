@@ -450,6 +450,40 @@ class PrivilegedHardening(ClosureCase):
         self.assertEqual(policy.closure_of(self.trusted)[2], [])
 
 
+class CriticalReviewRoute(ClosureCase):
+    """Review round (Issue #544, BLOCKED): the stdin program, chained command substitution, glob and absolute writes."""
+
+    def set_run(self, text):
+        for root in (self.trusted, self.candidate):
+            (root / FIXTURE).write_text(priv_workflow(text), encoding='utf-8')
+
+    def refused(self, text):
+        self.set_run(text)
+        return bool(policy.closure_of(self.trusted)[2])
+
+    def test_stdin_program_with_trusted_path_argument_is_refused(self):
+        self.assertTrue(self.refused('python3 - .trusted/tools/policy_guard.py'))
+
+    def test_bash_dash_s_is_refused(self):
+        self.assertTrue(self.refused('bash -s .trusted/tools/policy_guard.py'))
+
+    def test_interactive_option_is_refused(self):
+        self.assertTrue(self.refused('bash -i .trusted/tools/policy_guard.py'))
+
+    def test_chained_command_substitution_is_refused(self):
+        self.assertTrue(self.refused('echo $(command -v x)$(id)'))
+
+    def test_glob_write_into_trusted_checkout_is_refused(self):
+        self.assertTrue(self.refused('tee .tr*/tools/policy_guard.p* < /dev/null'))
+
+    def test_absolute_write_path_is_refused(self):
+        self.assertTrue(self.refused('tee /home/runner/work/_temp/_runner_file_commands/add_path_x'))
+
+    def test_policy_job_argument_form_is_allowed(self):
+        self.set_run('python3 .trusted/tools/policy_guard.py --candidate .candidate --trusted .trusted')
+        self.assertEqual(policy.closure_of(self.trusted)[2], [])
+
+
 class UnprivilegedBoundary(unittest.TestCase):
     def test_nightly_plan_job_is_outside_the_privileged_closure(self):
         # The nightly plan job holds no write permission: its run: text is approved exactly (approval_problems) but its

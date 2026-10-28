@@ -130,7 +130,7 @@ def _trusted_steps(trusted):
 # a variable in an executed path, an expression ${{ }} in the run text, a runtime-built program (subprocess) unless listed
 # in REVIEWED_EXTERNAL with its expected count, and dynamic loading. The table is itself a policy file.
 PATH_TOKEN_RE = re.compile(r"""[^\s"'`;&|()<>=]+""")
-SAFE_SUBST_RE = re.compile(r"\$\((?:command -v \S+|git rev-parse [\w-]+)\)")
+SAFE_SUBST_RE = re.compile(r"\$\((?:command -v [^\s)$]+|git rev-parse [\w-]+)\)")
 GH_EXPR_RE = re.compile(r"\$\{\{.*?\}\}")
 DYNAMIC_SHELL_RE = re.compile(r"`|\$\(")   # command substitution; eval/source/exec/. are checked as command words
 DYNAMIC_HEADS = ("eval", "source", "exec", "xargs", ".", "builtin", "command", "env", "nohup", "time", "sudo", "stdbuf")
@@ -467,14 +467,17 @@ PRIVILEGED_WRITERS = frozenset({"cp", "tee", "mkdir"})
 
 def _is_trusted_path(path):
     """A path under a trusted checkout, with no parent-directory step and no unresolved variable."""
-    return path.startswith(TRUSTED_CHECKOUTS) and ".." not in path.split("/") and "$" not in path
+    return (path.startswith(TRUSTED_CHECKOUTS) and ".." not in path.split("/") and "$" not in path
+            and not any(c in path for c in "*?["))
 
 
 REPO_TOP_DIRS = ("tools", "tests", "scripts", ".github", "src", "platforms")
 
 
 def _touches_trusted(arg):
-    return arg.startswith(TRUSTED_CHECKOUTS) or ".trusted" in arg or ".." in arg.split("/") or "$" in arg
+    """A writer or gh argument that could reach a trusted checkout, a parent step, a variable, a glob or an absolute path."""
+    return (arg.startswith(TRUSTED_CHECKOUTS) or ".trusted" in arg or ".." in arg.split("/") or "$" in arg
+            or arg.startswith(("/", "~")) or any(c in arg for c in "*?["))
 
 
 def _names_repository_code(arg):
@@ -511,10 +514,12 @@ def _privileged_command_problems(run, where):
             continue
         head, args = words[0], words[1:]
         if head in PRIVILEGED_INTERPRETERS:
-            positional = [a for a in args if not a.startswith("-")]
-            inline = any(a == "-c" or a.startswith("-m") or (a.startswith("-") and not a.startswith("--") and "c" in a[1:])
-                         for a in args)
-            if inline or not positional or not _is_trusted_path(positional[0]):
+            # The interpreter options come before the script path and may be only these letters (no -c, -m, -s, -i, and no
+            # stdin program "-"). Arguments after the script belong to the trusted script itself.
+            script_index = next((i for i, a in enumerate(args) if not a.startswith("-")), None)
+            before = args[:script_index] if script_index is not None else args
+            options_ok = all(re.fullmatch(r"-[IuBSEexo]+", a) for a in before)
+            if script_index is None or not options_ok or not _is_trusted_path(args[script_index]):
                 problems.append(f"{where}: {head} may run only a trusted checkout script in a privileged job; "
                                 f"{' '.join(words)[:60]!r} refused (Issue #544)")
         elif head in PRIVILEGED_WRITERS:
