@@ -33,6 +33,15 @@ PUBLIC_DOCS = [
 MERGED_PRS = (475, 477, 494, 495, 502, 506, 508, 516)
 # Counts a PR or commit recorded when it was current. Exempt only on a historical line that cites that PR/commit
 # with the same value. A date alone never qualifies.
+# Commit-named main snapshots whose DEV/stub counts are fixed facts (main f90c16b: 9/72; main 2954e90: 13/68).
+MAIN_SNAPSHOTS = {'f90c16b': {'dev': 9, 'stub': 72}, '2954e90': {'dev': 13, 'stub': 68}}
+
+
+def _main_snapshot_value(text, key, value):
+    return any(re.search(r'\bmain\s+' + sha + r'\b', text, re.I) and counts.get(key) == value
+               for sha, counts in MAIN_SNAPSHOTS.items())
+
+
 HISTORICAL_CLAIMS = {"#174": {"stub": 80}, "86172e2": {"dev": 8}, "8a136ad": {"dev": 8}}
 STALE_PATTERNS = [
     r"\b8/81\b",  # any current 8/81 (the 2026-10-22 snapshot figure) is stale
@@ -208,18 +217,17 @@ def stale_hits(text, expected=EXPECTED):
                 # A claim is a main f90c16b historical claim only when the segment containing
                 # THAT claim explicitly references "main f90c16b". A "main f90c16b" mention
                 # elsewhere on the line does not by itself exempt this claim.
-                if re.search(r'\bmain\s+f90c16b\b', seg, re.I):
+                if re.search(r'\bmain\s+(?:f90c16b|2954e90)\b', seg, re.I) and _main_snapshot_value(seg, key, value):
                     # Historical main f90c16b snapshot: only dev=9/81 and stubs=72/81 are legitimate.
-                    if (key == 'dev' and value == 9) or (key == 'stub' and value == 72):
-                        continue  # legitimate historical main snapshot value
+                    continue  # legitimate historical main snapshot value (MAIN_SNAPSHOTS)
                     # A wrong historical value (e.g. "main f90c16b: 13/81") is flagged below.
                 else:
                     # main f90c16b may be referenced elsewhere on the same line. Such a line can
                     # still state historical values (9/81 dev, 72/81 stubs), but a segment that
                     # labels the count "Current" states a current value and must match the ledger.
                     seg_is_current = bool(re.search(r'\bcurrent\b|現在', seg, re.I))
-                    if (not seg_is_current) and re.search(r'\bmain\s+f90c16b\b', line, re.I):
-                        if (key == 'dev' and value == 9) or (key == 'stub' and value == 72):
+                    if (not seg_is_current) and re.search(r'\bmain\s+(?:f90c16b|2954e90)\b', line, re.I) and _main_snapshot_value(line, key, value):
+                        if True:
                             continue  # historical main value referenced elsewhere on the line
             # Non-dev/stub keys (approval, abi, jsr) are never exempted by main f90c16b, and a
             # correct historical value never exempts a wrong current value on the same line.
@@ -233,11 +241,11 @@ def stale_hits(text, expected=EXPECTED):
                 val = int(match.group(1))
                 # blank_cites() は "f90c16b" を同長空白置換するため、履歴文脈は元の行 `line` で判定する。
                 seg = segment_containing(line, match.start())
-                historical_ctx = bool(re.search(r'\bmain\s+f90c16b\b', seg, re.I))
+                historical_ctx = bool(re.search(r'\bmain\s+(?:f90c16b|2954e90)\b', seg, re.I))
                 exempt = False
                 if historical_ctx:
-                    if val in (9, 72):
-                        exempt = True  # legitimate historical main snapshot count
+                    if val in (9, 72, 13, 68):
+                        exempt = True  # legitimate historical main snapshot count (MAIN_SNAPSHOTS)
                 else:
                     # main f90c16b may be referenced elsewhere on the same line; a segment that
                     # labels the count "Current" states a current value and must match the ledger.
