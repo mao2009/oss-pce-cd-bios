@@ -6,7 +6,8 @@
 ; ok : X < $80 -> VDC MAWR (register 0) = X:A, C=0. A, X, Y, MPR0 preserved. I/D/T flags preserved.
 ; ng : X >= $80 -> C=1, no I/O access, nothing modified (A, X, Y unchanged).
 ; VDC side effects (ok path only): ST0 selects register 0 (MAWR), ST1 = low byte, ST2 = high byte.
-; VRAM and the VDC data port are NOT written. MPR1 (the stack page $2100-$21FF) is never remapped.
+; The probe observes only AR, R0 (MAWR), CPU registers, RAM and MPR; VRAM and the VDC data port are not traced,
+; so no claim is made that they are unwritten. MPR1 (the stack page $2100-$21FF) is never remapped.
 ; Window: MPR0 is set to $FF so the VDC ports appear at $0000-$0003 for a few instructions, with IRQs masked (SEI).
 ; The window covers logical $0000-$1FFF. Evidence (src/huc6280.h of the pinned Geargrafx, non-GG_TESTING build):
 ; ZERO_PAGE_ADDR = $2000 and STACK_ADDR = $2100, both in MPR1, so zero page and stack are outside the window.

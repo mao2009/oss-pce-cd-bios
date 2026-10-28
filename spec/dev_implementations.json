@@ -957,7 +957,7 @@
         "tests/host/test_ex_setwrt.py"
       ],
       "real_core_evidence": [
-        "tests/integration/geargrafx_dev_ex_setwrt.py (pinned Geargrafx; executable run is required by make dev-integration)"
+        "tests/integration/geargrafx_dev_ex_setwrt.py (pinned Geargrafx; run by make dev-integration; the run output is not committed, so this is a gate, not a recorded observation)"
       ],
       "note": "DEV ROM implementation; the Geargrafx E2E probe observes A/X/Y/P, SP, MPR, RAM and HuC6270 MAWR. This is project-contract evidence only; NOT_READY until owner approval is recorded",
       "approval": {

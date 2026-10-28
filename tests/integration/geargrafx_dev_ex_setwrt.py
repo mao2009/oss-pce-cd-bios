@@ -111,13 +111,17 @@ def one_case(probe, data, folder, cue, reset, entry, label, low, high, init):
     return check(label, run_probe(probe, rom, cue), halt, low, high, init)
 
 
-def expect_rejected(probe, data, folder, cue, reset, entry, label, low, high, init):
+def expect_rejected(probe, data, folder, cue, reset, entry, label, low, high, init, reason):
+    """A mutant passes only if it is rejected for the expected reason (not for a halt or harness failure)."""
     try:
         one_case(probe, data, folder, cue, reset, entry, label, low, high, init)
     except ValueError as error:
-        if "BLOCKED:" in str(error):
+        message = str(error)
+        if "BLOCKED:" in message:
             raise
-        return str(error)
+        if reason not in message:
+            raise ValueError(f"mutant {label} rejected for the wrong reason: {message!r} (want {reason!r})")
+        return message
     raise ValueError(f"mutant {label} unexpectedly passed")
 
 
@@ -166,8 +170,10 @@ def main():
                 if at < 0 or data.find(pattern, at + 1, window[1]) >= 0:
                     raise ValueError(f"mutant {name}: pattern {pattern.hex()} not unique in the slot $3A body")
                 mutant[at:at + len(patch)] = patch
+            reason = "rejected address changed VDC" if high >= 0x80 else "MAWR VDC R0="
             evidence["negative_cases"].append({"case": name, "rejected_by": expect_rejected(
-                probe, bytes(mutant), folder, cue, reset, entry, f"mut-{name}", low, high, INITIAL_MAWR[0])})
+                probe, bytes(mutant), folder, cue, reset, entry, f"mut-{name}", low, high, INITIAL_MAWR[0],
+                reason)})
     (args.rom.parent / "geargrafx-dev-ex-setwrt-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
     print(f"PASS real Geargrafx DEV ROM: EX_SETWRT $3A {len(evidence['cases'])} valid/rejected MAWR cases with "
           f"non-zero initial MAWR; A/X/Y/P, SP, MPR, RAM and HuC6270 MAWR observed; "
