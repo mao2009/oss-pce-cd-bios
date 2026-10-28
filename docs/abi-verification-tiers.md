@@ -68,7 +68,7 @@
 | --- | --- | --- |
 | SOURCE_EVIDENCE | `HYPOTHESIS`（`SOURCE_FACT` は台帳の値ではなく、§2.1 の文書上のラベル） | `OBSERVED`、`VERIFIED`、provenance 承認、DEV_CALLABLE |
 | PROVENANCE_APPROVAL | `APPROVED`（人間の承認者が記録） | 挙動の正しさ、callee 実測、互換性、`OBSERVED`、`VERIFIED`、DEV_CALLABLE 承認（§8.4 で扱う） |
-| CALLEE_VERIFICATION | 到達できる状態はない（`OBSERVED` は認証前に拒否。§3） | `VERIFIED`（現スキーマでは表せない。#171）、DEV_CALLABLE 承認 |
+| CALLEE_VERIFICATION | `OBSERVED`、`PARTIAL`、`VERIFIED-equivalent` には到達できない（`OBSERVED` は認証前に拒否。§3）。`UNKNOWN` と `BLOCKED` には到達できる | `VERIFIED`（現スキーマでは表せない。#171）、DEV_CALLABLE 承認 |
 | DEV_IMPLEMENTATION | `DEV_CALLABLE`（DEV ROM に限る） | 参照 BIOS の `VERIFIED`、release 判定、互換性 |
 
 どの軸の値が揃っても、`release_eligible: true` にはならない。release gate は別の人間承認を要し、
@@ -83,7 +83,7 @@
 | 状態 | 意味 | 必要条件 | 現在到達できるか | 現在の件数 |
 | --- | --- | --- | --- | --- |
 | `UNKNOWN` | 根拠がない、または判定できない。既定値。 | なし。`value` は `UNKNOWN`、`confidence` は `UNKNOWN`。 | はい | 全フィールド |
-| `OBSERVED` | 記録された実コアの実行で、そのフィールドの挙動が観測された。 | 再現可能な実コア実行、実行の記録（`evidence_hash`、コア revision、入力、検証結果）、EMULATOR_SOURCE の参照、`REALCORE` の表示、callee 挙動のフィールドでは `executed_callee=True`、`observation_kind` がフィールドを覆う、各証拠の `measurement_point_id` が `spec/measurement_points.json` に登録され、その kind と field が一致する（#364、#515）、producer 認証（#124）。 | いいえ。認証前は `adjudicate_claim()` が拒否（`#124`）。静的レビューの `OBSERVED_STATIC` は別物 | 0 |
+| `OBSERVED` | 記録された実コアの実行で、そのフィールドの挙動が観測された。 | 再現可能な実コア実行、実行の記録（`evidence_hash`、コア revision、入力、検証結果）、EMULATOR_SOURCE の参照、`REALCORE` の表示、callee 挙動のフィールドでは `executed_callee=True`、`observation_kind` がフィールドを覆う、各証拠の `measurement_point_id` が `spec/measurement_points.json` に登録され、その kind と field が一致する（#364。欠落時の理由の文言は #515 の監査による）、producer 認証（#124）。 | いいえ。認証前は `adjudicate_claim()` が拒否（`#124`）。静的レビューの `OBSERVED_STATIC` は別物 | 0 |
 | `PARTIAL` | 観測したのは入力領域の一部（ケース、フラグ、条件）。 | `OBSERVED` の条件に加え、覆った範囲と覆っていない範囲を明記すること。 | いいえ（abi1 の語彙にあるが、再現可能な観測がない） | 0 |
 | `VERIFIED-equivalent` | 参照 BIOS の全入力領域が実コアで観測され、認証され、独立レビューされ、オーナーが承認した状態。 | `OBSERVED` の条件に加え、全入力領域、独立レビュー、オーナー承認、#171 の trusted VERIFIED 経路。 | いいえ。`VERIFIED` は `CLAIM_STATUSES` と `adjudicate_claim()` で拒否される。abi1 は静的経路からの `VERIFIED` を拒否する | 0 |
 
