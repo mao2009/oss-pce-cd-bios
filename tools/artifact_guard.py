@@ -2169,10 +2169,12 @@ def policy_violations(root, trusted_root):
     print("PASS artifact guard policy: guard and run allowlist match the trusted main copy")
 
 
-def enforced_check(root, check):
-    """Run check(root) with every run: text required to be approved (the command-line entry points use this)."""
+def enforced_check(root, check, allowlist_root=None):
+    """Run check(root) with every run: text required to be approved. The approval table is read from allowlist_root (the
+    trusted copy: the guard's own tree on the command line), never from the checked tree, so a pull request cannot approve
+    its own run: text (Issue #511). With allowlist_root None the checked tree is used (tests only)."""
     global _RUN_ALLOWLIST
-    _RUN_ALLOWLIST = load_run_allowlist(root)
+    _RUN_ALLOWLIST = load_run_allowlist(root if allowlist_root is None else allowlist_root)
     try:
         check(root)
     finally:
@@ -2761,7 +2763,7 @@ def main(argv):
     if not argv:
         # Issue #349 (review): the default entry point is fail-closed. It runs every check that --check-placement runs.
         check_upload_artifacts(root)
-        enforced_check(root, check_guard_placement)
+        enforced_check(root, check_guard_placement, allowlist_root=ROOT)
     elif argv[0] == "--post-build" and len(argv) == 3:
         check_post_build(argv[1], argv[2], root)
     elif argv[0] == "--stage" and len(argv) == 3:
@@ -2769,7 +2771,7 @@ def main(argv):
     elif argv[0] == "--verify" and len(argv) == 3:
         verify_artifacts(argv[1], argv[2], root, workflows_root)
     elif argv == ["--check-placement"]:
-        enforced_check(root, check_guard_placement)
+        enforced_check(root, check_guard_placement, allowlist_root=ROOT)
     elif argv == ["--emit-run-allowlist"]:   # for review: the entries that the reviewed allowlist file must hold
         print(json.dumps(build_run_allowlist(root), indent=2, ensure_ascii=False))
     elif argv[:1] == ["--check-policy"] and len(argv) == 2:   # the candidate guard and allowlist must equal the trusted copy
