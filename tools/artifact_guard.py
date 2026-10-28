@@ -55,7 +55,8 @@ import sys as _sys
 # Issue #544 (last review): the directory of this script is not an import source. A pull request can plant a module there
 # (.trusted-main/tools/yaml.py beside the trusted guard), so it is removed from sys.path before any other import, the same
 # effect as python -I, without changing the approved run: text.
-_sys.path[:] = [p for p in _sys.path if _os.path.abspath(p or _os.curdir) != _os.path.dirname(_os.path.abspath(__file__))]
+if __name__ == "__main__":   # only when run as the trusted script: importing the module must not change sys.path
+    _sys.path[:] = [p for p in _sys.path if _os.path.abspath(p or _os.curdir) != _os.path.dirname(_os.path.abspath(__file__))]
 from pathlib import Path
 import fnmatch
 import hashlib
