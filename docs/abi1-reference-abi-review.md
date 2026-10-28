@@ -347,9 +347,10 @@ does not implement it, and it does not weaken the existing gate.
 ### 6.1 Re-evaluation of the existing `$1E` observation
 
 The prior local observation (its values are withdrawn from public documents,
-owner decision 2026-10-28) is **consistent** with the static audit
-of the image, which shows a three instruction callee that loads two bytes from
-the BIOS image's own version area and returns. The two sources agree.
+owner decision 2026-10-28) is not compared here: its values are withdrawn from public documents (owner decision
+2026-10-28), so this document asserts no agreement with the static audit. The static
+audit of the image shows a three instruction callee that loads two bytes from the
+BIOS image's own version area and returns.
 
 What the prior observation does **not** establish, and what this phase therefore
 still lacks:

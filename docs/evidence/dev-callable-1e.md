@@ -27,7 +27,7 @@ api_slot_1E:
 
 本体バイト列: `a2 03 a0 00 60`（LDX #3; LDY #0; RTS）。
 
-ヘッダコメントには「固定の I/O 契約は、固定済み Geargrafx コアで、私有の参照 BIOS に対して測定した（slot $1E -> $F02D が $FEC2/$FEC3 を読み、X=3, Y=0, A 保持）」と記載されている。これは **測定の由来** の記述であり、DEV ROM 本体は独自に書かれた 5 バイトである。
+ヘッダコメントには、固定の I/O 契約を私有の参照 BIOS に対して測定した旨が記載されている。この測定の観測値と内部アドレスは、現行の公開文書から取り下げた（オーナー最終裁定、2026-10-28）。これは **測定の由来** の記述であり、DEV ROM 本体は独自に書かれた 5 バイトである。
 
 ## 3. 証拠表
 
@@ -64,10 +64,10 @@ api_slot_1E:
 - 方式: 別の general-purpose エージェントによる review-only 検証（コードと証拠のみを渡し、結論は渡さず。rom/ 不可、書き込み不可）。
 - 判定: **INSUFFICIENT（現状のままでは不十分）**。
 - 主な指摘:
-  1. 来歴の記述が不正確。EX_GETVER の契約値は **私有参照 BIOS** を実コアで観測して得たものであり（`docs/reference-bios-test-plan.md` の実測表）、`slot_1E.s` の「proprietary BIOS code からではない」はコードについてのみ正しい。`spec/dev_implementations.json` の「project-own measured contract」は測定対象を省いている。
+  1. 来歴の記述が不正確。EX_GETVER の契約値は **私有参照 BIOS** を実コアで観測して得たものであり（観測値は取り下げ済み）、`slot_1E.s` の「proprietary BIOS code からではない」はコードについてのみ正しい。`spec/dev_implementations.json` の「project-own measured contract」は測定対象を省いている。
   2. 実コアの検証は循環している。`tests/integration/geargrafx_contracts.py` の `IMPLEMENTED_SLOTS = {0x1E: {'a': 0x11, 'x': 3, 'y': 0, 'sp': 255}}` はその実測値をハードコードしたものであり、参照挙動の独立確認ではない。DEV ROM を BIOS として走らせている。
   3. 入力は A=0x11 の 1 ベクタのみ。「A 保持」は他の入力で未確認。X/Y は固定出力。
-  4. P レジスタの扱いが文書間で不一致。参照試験計画は `P = $06` を記録する一方、`geargrafx_contracts.py` は P 絶対値を固定しない（PRNG シード）としている。
+  4. P レジスタの扱いが文書間で不一致。参照試験計画の観測値は取り下げ済みであり、`geargrafx_contracts.py` は P 絶対値を固定しない（PRNG シード）としている。
   5. 証拠 E3 の CI 実行は当初 8b3bf4d のものだった。c906728 でも下記のとおり再実行され成功した。
   6. 私有 BIOS の測定記録はリポジトリに生ログ・ハッシュとして存在しない。独立 ABI レビューは未了（`docs/reference-bios-test-plan.md`）。クリーンルーム判定は Issue #40 が未クローズのため未了。
 - 承認フィールドは null のまま（`approved_by`, `review_ref`、`release_eligible: false`、状態 NOT_READY）。System Card 互換や VERIFIED は主張していないことを確認。
@@ -88,7 +88,7 @@ api_slot_1E:
 1. DEV ROM 画像とマニフェストの SHA-256 → **本 PR で取得済み**（E14 / E15）。manifest の sha256 はビルドしたコミットに依存するため、比較は `source_sha256` で行う。
 2. 私有 BIOS 測定の記録（生ログと測定条件の所在）。ヘッダコメントの来歴記述を、自己定義 ABI の主張とどう整合させるか。
 3. 観測値の多入力テスト → **A 保持については本 PR で対応済み**（E18: A 入力 8 値 × C 2 値 × (X,Y) 2 組 × SP 3 値 = 96 条件、cold と warm）。未了なのは「X/Y の入力依存性」の観点で、$1E は X=3・Y=0 を固定出力する契約のため入力依存性は存在しない（呼出側の X/Y は出力に影響しないことを E18 で確認している）。
-4. P レジスタの扱いの統一（参照試験計画 `P = $06` と、契約ハーネスの「絶対値を固定しない」の整理）。
+4. P レジスタの扱いの統一（参照試験計画の観測値（取り下げ済み）と、契約ハーネスの「絶対値を固定しない」の整理）。
 5. 個別の観測値を示す生 JSON → E18 の分（`geargrafx-dev-getver-evidence.json`）は本 PR のドライバがローカルに書き出す（ビルド成果物のため git には含めない）。CI アーティファクトには含まれないという点は変わらない。
 6. クリーンルーム・ライセンス判断（Issue #40 のクローズ）。
 7. 実機での検証は未実施（実機動作と ABI 承認は PENDING）。

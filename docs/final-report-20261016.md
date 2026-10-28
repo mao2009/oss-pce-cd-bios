@@ -70,7 +70,7 @@ python3 tools/reference_bios_runner.py /tmp/opencode/refbios/reset-config.json \
 
 - `src/overrides/slot_1E.s`: OSS独自実装のEX_GETVER（私的BIOSのバイトや逆コードを一切使用しない）。
   - `LDX #3; LDY #0; RTS`：X=メジャー、Y=マイナー、A保持、バランスの取れたRTS。
-  - 実測契約（X=3,Y=0,A保持）に合わせた。エントリはジャンプテーブル経由 `$E000+3*$1E=$E05A`。
+  - DEV 自己定義の契約（X=3,Y=0,A保持）として実装した。私的参照 BIOS の観測値は取り下げ済み。エントリはジャンプテーブル経由 `$E000+3*$1E=$E05A`。
 - `tools/build_rom.py`: `verify_dev_rom` によるオーバーライド本体のビルド時検証分離（他DEV診断ROMも共用）。リリースゲートは依然ブロック（未実装80スロット、`abi: UNVERIFIED`、`release_eligible: false`）。
 - 実コア検証（`make dev-integration`）: `api_jsr_1E` プローブで cold 時 a=0x11（呼出し元）/ x=3 / y=0 / p=6 / sp=255 / 継続復帰、RAM上の呼出し元A保持、スロット01/03等は非復帰スタブのまま。
 

@@ -151,7 +151,7 @@ next. Every other `slot-XX` and `psg-48-XX` scenario still lacks a reviewed
 fixture and stays **BLOCKED**.
 
 
-## Guarded real guest JSR (slot 0x1E) and measured EX_GETVER contract
+## Guarded real guest JSR (slot 0x1E) and EX_GETVER observation (values withdrawn)
 
 `tests/integration/geargrafx_reference_jsr.cpp` runs a real guest caller
 (`LDA #$AA; LDX #$55; LDY #$CC; JSR $E05A; BRA *`) against the private

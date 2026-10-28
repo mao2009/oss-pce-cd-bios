@@ -2,12 +2,12 @@
 """Negative tests for the ABI verification tiers (Issue #324, design: docs/abi-verification-tiers.md).
 
 Host-only. No real core, no reference BIOS, no CI artifacts. Fixtures are synthetic and live in this file.
-Most classes are negative cases. Four tests are NOT negative cases, and each is labelled in its class docstring
+Most classes are negative cases. Five tests are NOT negative cases, and each is labelled in its class docstring
 and by an inline comment at the test:
 - positive controls: DevResultTests.test_dev_callable_keeps_abi_status_non_verified,
   ForgedEvidenceTests.test_resolved_artifact_is_not_observation (the hash-only resolution succeeds);
 - committed-state pin: SelfDeclaredApprovalTests.test_committed_dev_callable_count_is_zero;
-- positive vocabulary check: OwnerUndecidedStateTests.test_dev_ledger_states_have_no_tier_values;
+- positive vocabulary check: OwnerUndecidedStateTests.test_dev_ledger_states_are_exactly_the_three_dev_states;
 - partial check (not a proof): ReviewCountTests.test_approved_dev_row_breaks_committed_review_count,
   which relies on the committed-count mismatch and does not test reference_abi_verified.
 DesignDocumentTests is a document check, labelled in its class docstring.
@@ -207,6 +207,7 @@ class ReviewCountTests(unittest.TestCase):
     """
 
     def test_approved_dev_row_breaks_committed_review_count(self):
+        # Partial check (labelled in the class docstring): relies on the committed-count mismatch only.
         ledger = base_ledger()
         entry = ledger["slots"][0x1E]
         entry["state"] = "DEV_CALLABLE"
@@ -290,7 +291,7 @@ class DesignDocumentTests(unittest.TestCase):
 class OwnerUndecidedStateTests(unittest.TestCase):
     """The undecided tier words are design vocabulary only: they must not be stored or accepted as claim status.
 
-    Contains one labelled positive vocabulary check: test_dev_ledger_states_have_no_tier_values (not a negative case).
+    Contains one labelled positive vocabulary check: test_dev_ledger_states_are_exactly_the_three_dev_states (not a negative case).
     """
 
     def test_partial_claim_status_is_refused(self):
@@ -304,7 +305,7 @@ class OwnerUndecidedStateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsupported claim status"):
             adjudicate(claim, executed_callee=False)
 
-    def test_dev_ledger_states_have_no_tier_values(self):
+    def test_dev_ledger_states_are_exactly_the_three_dev_states(self):
         # Positive vocabulary check (not a negative case): the DEV ledger states are exactly these three.
         self.assertEqual({"NOT_READY", "DEV_CALLABLE", "BLOCKED"}, set(dev.STATES))
 
