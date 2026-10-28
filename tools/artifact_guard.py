@@ -50,6 +50,12 @@ and upload. See the pull request description for the residual risk.
 Command line (run by the workflows from the trusted copy, with --root "$GITHUB_WORKSPACE"):
   --stage WORKFLOW STEP | --verify WORKFLOW STEP | --post-build WORKFLOW STEP | --check-placement | (no argument: static)
 """
+import os as _os
+import sys as _sys
+# Issue #544 (last review): the directory of this script is not an import source. A pull request can plant a module there
+# (.trusted-main/tools/yaml.py beside the trusted guard), so it is removed from sys.path before any other import, the same
+# effect as python -I, without changing the approved run: text.
+_sys.path[:] = [p for p in _sys.path if _os.path.abspath(p or _os.curdir) != _os.path.dirname(_os.path.abspath(__file__))]
 from pathlib import Path
 import fnmatch
 import hashlib
@@ -1726,9 +1732,20 @@ def check_guard_placement(root=ROOT, partial_fixtures=False):
     # Issue #544 (last review of e55b6f1): a link anywhere in the pull request (outside .git) can point a writer into the
     # trusted checkout, so the whole tree is walked without following links and any link or junction is refused.
     unreadable = []
+    git_dir = os.path.abspath(os.path.join(base, ".git"))   # only the repository's own git directory, at the root
     for dirpath, dirnames, filenames in os.walk(base, followlinks=False, onerror=unreadable.append):
-        dirnames[:] = [name for name in dirnames if name != ".git"]
-        for name in dirnames + filenames:
+        kept = []
+        for name in dirnames:
+            entry = os.path.join(dirpath, name)
+            if os.path.abspath(entry) == git_dir:
+                continue
+            if os.path.islink(entry) or _is_junction(Path(entry)):
+                problems.append(f"{os.path.relpath(entry, base).replace(os.sep, '/')}: a symbolic link or junction is "
+                                "refused (untrusted input; Issue #544)")
+                continue   # a flagged directory is never descended into
+            kept.append(name)
+        dirnames[:] = kept
+        for name in filenames:
             entry = os.path.join(dirpath, name)
             if os.path.islink(entry) or _is_junction(Path(entry)):
                 problems.append(f"{os.path.relpath(entry, base).replace(os.sep, '/')}: a symbolic link or junction is "
