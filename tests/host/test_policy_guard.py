@@ -90,9 +90,12 @@ class Cases(PolicyCase):
         (self.candidate / '.github' / 'workflows' / 'extra.yml').write_text(send, encoding='utf-8')
         self.assertTrue(policy.approval_problems(self.candidate, self.trusted))
 
-    def test_h_changed_called_script_is_refused(self):
-        self.append('tools/nightly_plan.sh', '\n# evades the check\n')   # called by nightly.yml: bash tools/nightly_plan.sh
-        self.assertTrue(policy.script_hash_problems(self.candidate, self.trusted))
+    def test_h_changed_called_script_is_outside_the_unprivileged_closure(self):
+        # Revised (Issue #544 review C-2): nightly.yml's plan job has no write permission, so its called script is not in the
+        # privileged closure. The refusal for a changed called script is tested on a privileged job in
+        # test_policy_guard_closure.py (cases 1-6). This boundary is an owner decision (see the C-3 procedure).
+        self.append('tools/nightly_plan.sh', '\n# unprivileged job: documented boundary\n')
+        self.assertEqual(policy.script_hash_problems(self.candidate, self.trusted), [])
 
 
 class RecordModel(unittest.TestCase):
