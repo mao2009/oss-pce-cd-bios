@@ -372,7 +372,7 @@ CHECK_CALL = GUARD_PREFIX + ' --check-placement'
 TRUSTED_CHECKOUT = ('      - name: Trusted guard (main)\n'
                     '        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683\n'
                     '        with:\n          ref: main\n          path: .trusted-main\n'
-                    '          sparse-checkout: tools/artifact_guard.py\n          sparse-checkout-cone-mode: false\n          persist-credentials: false\n')
+                    '          sparse-checkout: tools\n          sparse-checkout-cone-mode: false\n          persist-credentials: false\n')
 PY_RESOLVE = ('      - name: Resolve python3 (trusted)\n        id: pyresolve\n'
               '        run: echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"\n')
 PLACEMENT_STEP = '      - name: Guard placement (trusted)\n        run: |\n          ' + CHECK_CALL + '\n'
@@ -817,7 +817,7 @@ class GuardPlacementTests(unittest.TestCase):
     def test_trusted_checkout_must_pin_the_guard_file(self):
         # Without the sparse checkout of this exact file, a .trusted-main copy planted by an earlier step would not
         # be overwritten by main, so the guard could run from planted code.
-        without = GUARDED.replace('          sparse-checkout: tools/artifact_guard.py\n', '')
+        without = GUARDED.replace('          sparse-checkout: tools\n', '')
         self.assertNotEqual(GUARDED, without)
         self.assertNotEqual([], self.violations(without))
         self.assertEqual([], self.violations(GUARDED))   # the real form still passes
@@ -939,14 +939,14 @@ class GuardPlacementTests(unittest.TestCase):
                  '          with:\n'
                  '            ref: main\n'
                  '            path: .trusted-main\n'
-                 '            sparse-checkout: tools/artifact_guard.py\n'
+                 '            sparse-checkout: tools\n'
                  '            sparse-checkout-cone-mode: false\n'
                  '        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683\n'
                  '        with:\n'
                  '          repository: attacker/evil-guard\n'
                  '          ref: main\n'
                  '          path: .trusted-main\n'
-                 '          sparse-checkout: tools/artifact_guard.py\n'
+                 '          sparse-checkout: tools\n'
                  '          sparse-checkout-cone-mode: false\n'
                  '          persist-credentials: false\n')
         text = GUARDED.replace(TRUSTED_CHECKOUT, decoy)
@@ -960,7 +960,7 @@ class GuardPlacementTests(unittest.TestCase):
                 '          with:\n'
                 '            ref: main\n'
                 '            path: .trusted-main\n'
-                '            sparse-checkout: tools/artifact_guard.py\n'
+                '            sparse-checkout: tools\n'
                 '            sparse-checkout-cone-mode: false\n'
                 '          uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683\n'
                 '        run: echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"\n')
@@ -973,12 +973,12 @@ class GuardPlacementTests(unittest.TestCase):
         step = ('      - name: |\n'
                 '          ref: main\n'
                 '          path: .trusted-main\n'
-                '          sparse-checkout: tools/artifact_guard.py\n'
+                '          sparse-checkout: tools\n'
                 '          sparse-checkout-cone-mode: false\n'
                 '        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683\n'
                 '        with: *trusted_inputs\n')
         text = ('x-trusted: &trusted_inputs\n  ref: main\n  path: .trusted-main\n'
-                '  sparse-checkout: tools/artifact_guard.py\n  sparse-checkout-cone-mode: false\n'
+                '  sparse-checkout: tools\n  sparse-checkout-cone-mode: false\n'
                 '  repository: attacker/evil-guard\n' + GUARDED.replace(TRUSTED_CHECKOUT, step))
         self.assertNotEqual([], self.violations(text))
 

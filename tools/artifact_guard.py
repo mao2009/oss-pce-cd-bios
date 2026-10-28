@@ -436,7 +436,7 @@ PY_RESOLVE_RUN = 'echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"'
 CHECKOUT_PIN_RE = re.compile(r"actions/checkout@[0-9a-f]{40}$")
 # The exact with: inputs of the trusted main checkout: the guard file must come from this repository's main.
 TRUSTED_CHECKOUT_WANT = {"ref": "main", "path": ".trusted-main",
-                         "sparse-checkout": "tools/artifact_guard.py", "sparse-checkout-cone-mode": "false"}
+                         "sparse-checkout": "tools", "sparse-checkout-cone-mode": "false"}
 # The trusted checkout may only carry these with: inputs. Anything else (repository:, token:, ssh-key:, clean:)
 # could fetch the guard file from somewhere other than this repository's main, or leave a planted copy in place.
 TRUSTED_CHECKOUT_WITH = {"ref", "path", "sparse-checkout", "sparse-checkout-cone-mode", "persist-credentials"}

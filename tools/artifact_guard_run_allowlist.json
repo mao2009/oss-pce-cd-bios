@@ -180,42 +180,6 @@
     "job_sha256": "e1dd3ad50361c07be5c0d66cebdbfc2541909e46ae9f295e8aae1458f6855c67"
   },
   {
-    "workflow": ".github/workflows/pages.yml",
-    "job": "build",
-    "step": "Stage Pages artifact (trusted guard)",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "20fbe9b2a04d2cba1d525060791a69df7bb177db8881f44a710c8e401314fef4",
-    "job_sha256": "3197a80f97a6338bc6a93bf8191eab28012752e4767354b4dd0417e7a653e2ea"
-  },
-  {
-    "workflow": ".github/workflows/pages.yml",
-    "job": "build",
-    "step": "Verify Pages artifact (trusted guard)",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "9478339fee47875511e470e7278d5d2e148194dda754df78241cd56286c1805e",
-    "job_sha256": "3197a80f97a6338bc6a93bf8191eab28012752e4767354b4dd0417e7a653e2ea"
-  },
-  {
-    "workflow": ".github/workflows/pages.yml",
-    "job": "build",
-    "step": "Resolve python3 (trusted)",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "b9f2c403682d30c6538a47260f7b35f792c5f24c05d140dbfc05dc18a59d6268",
-    "job_sha256": "3197a80f97a6338bc6a93bf8191eab28012752e4767354b4dd0417e7a653e2ea"
-  },
-  {
-    "workflow": ".github/workflows/pages.yml",
-    "job": "build",
-    "step": "Guard placement (trusted)",
-    "shell": null,
-    "runs_on": "ubuntu-24.04",
-    "sha256": "ff0a4b43ccfc168217e97aa6805bfdc16462c7b3b2fafa799234a85bf34d4682",
-    "job_sha256": "3197a80f97a6338bc6a93bf8191eab28012752e4767354b4dd0417e7a653e2ea"
-  },
-  {
     "workflow": ".github/workflows/nightly.yml",
     "job": "build",
     "step": "Host tests (no Geargrafx needed)",
@@ -288,6 +252,42 @@
     "job_sha256": "6fb567be9b1a053ce3029f49636868e9518d1f701644716cde1e96a4d0df8506"
   },
   {
+    "workflow": ".github/workflows/pages.yml",
+    "job": "build",
+    "step": "Stage Pages artifact (trusted guard)",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "20fbe9b2a04d2cba1d525060791a69df7bb177db8881f44a710c8e401314fef4",
+    "job_sha256": "d476ee18325fedf4db9ec6a23579485981ee38caed05750ee0271ae8649e2ddc"
+  },
+  {
+    "workflow": ".github/workflows/pages.yml",
+    "job": "build",
+    "step": "Verify Pages artifact (trusted guard)",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "9478339fee47875511e470e7278d5d2e148194dda754df78241cd56286c1805e",
+    "job_sha256": "d476ee18325fedf4db9ec6a23579485981ee38caed05750ee0271ae8649e2ddc"
+  },
+  {
+    "workflow": ".github/workflows/pages.yml",
+    "job": "build",
+    "step": "Resolve python3 (trusted)",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "b9f2c403682d30c6538a47260f7b35f792c5f24c05d140dbfc05dc18a59d6268",
+    "job_sha256": "d476ee18325fedf4db9ec6a23579485981ee38caed05750ee0271ae8649e2ddc"
+  },
+  {
+    "workflow": ".github/workflows/pages.yml",
+    "job": "build",
+    "step": "Guard placement (trusted)",
+    "shell": null,
+    "runs_on": "ubuntu-24.04",
+    "sha256": "ff0a4b43ccfc168217e97aa6805bfdc16462c7b3b2fafa799234a85bf34d4682",
+    "job_sha256": "d476ee18325fedf4db9ec6a23579485981ee38caed05750ee0271ae8649e2ddc"
+  },
+  {
     "workflow": ".github/workflows/core-harness.yml",
     "job": "core-harness",
     "step": "Hand off harness log and evidence as an intermediate artifact (unverified here; the guard job checks them)",
@@ -348,7 +348,7 @@
     "shell": null,
     "runs_on": "ubuntu-24.04",
     "sha256": "81e966172432dacdc7a3206af529b8dce4a98d7b7a3018b82c83338874493873",
-    "job_sha256": "45817e9ea7e0d0ae98676ad0a40dc358f1b130b4f718265b89ca7e90222eded8"
+    "job_sha256": "c571bd1a9eff56d7642ba0aebdc3a3733188cee3aa4d1ca1d1ea7d0bf22f86b1"
   },
   {
     "workflow": ".github/workflows/core-bcdbin.yml",
@@ -357,7 +357,7 @@
     "shell": null,
     "runs_on": "ubuntu-24.04",
     "sha256": "95ca251047e1a0ece8210c4d81215748b3da3dda9b556586bdc78e2786ef40b7",
-    "job_sha256": "45817e9ea7e0d0ae98676ad0a40dc358f1b130b4f718265b89ca7e90222eded8"
+    "job_sha256": "c571bd1a9eff56d7642ba0aebdc3a3733188cee3aa4d1ca1d1ea7d0bf22f86b1"
   },
   {
     "workflow": ".github/workflows/core-bcdbin.yml",
@@ -366,7 +366,7 @@
     "shell": null,
     "runs_on": "ubuntu-24.04",
     "sha256": "b9f2c403682d30c6538a47260f7b35f792c5f24c05d140dbfc05dc18a59d6268",
-    "job_sha256": "45817e9ea7e0d0ae98676ad0a40dc358f1b130b4f718265b89ca7e90222eded8"
+    "job_sha256": "c571bd1a9eff56d7642ba0aebdc3a3733188cee3aa4d1ca1d1ea7d0bf22f86b1"
   },
   {
     "workflow": ".github/workflows/core-bcdbin.yml",
@@ -375,7 +375,7 @@
     "shell": null,
     "runs_on": "ubuntu-24.04",
     "sha256": "ff0a4b43ccfc168217e97aa6805bfdc16462c7b3b2fafa799234a85bf34d4682",
-    "job_sha256": "45817e9ea7e0d0ae98676ad0a40dc358f1b130b4f718265b89ca7e90222eded8"
+    "job_sha256": "c571bd1a9eff56d7642ba0aebdc3a3733188cee3aa4d1ca1d1ea7d0bf22f86b1"
   },
   {
     "workflow": ".github/workflows/api-source.yml",
@@ -384,7 +384,7 @@
     "shell": null,
     "runs_on": "ubuntu-24.04",
     "sha256": "5feb44ee08c562e3306f87dccbdbea76a07cb96ab85e7c5fdf5019ab7f634c32",
-    "job_sha256": "b2d414714480329c97939ba77fe5d766be6a912e52785cd05697cd90462e286d"
+    "job_sha256": "c630dded9ea544e296b30a715fcc91900a29dde3a3d311d7095d63a8dddcb3ea"
   },
   {
     "workflow": ".github/workflows/api-source.yml",
@@ -393,7 +393,7 @@
     "shell": null,
     "runs_on": "ubuntu-24.04",
     "sha256": "b9f2c403682d30c6538a47260f7b35f792c5f24c05d140dbfc05dc18a59d6268",
-    "job_sha256": "b2d414714480329c97939ba77fe5d766be6a912e52785cd05697cd90462e286d"
+    "job_sha256": "c630dded9ea544e296b30a715fcc91900a29dde3a3d311d7095d63a8dddcb3ea"
   },
   {
     "workflow": ".github/workflows/api-source.yml",
@@ -402,7 +402,7 @@
     "shell": null,
     "runs_on": "ubuntu-24.04",
     "sha256": "fd015d0b87ac2f60e1da0cd1523a42a35491b8ba85b7c960f7abbba8f778beb6",
-    "job_sha256": "b2d414714480329c97939ba77fe5d766be6a912e52785cd05697cd90462e286d"
+    "job_sha256": "c630dded9ea544e296b30a715fcc91900a29dde3a3d311d7095d63a8dddcb3ea"
   },
   {
     "workflow": ".github/workflows/api-source.yml",
@@ -411,7 +411,7 @@
     "shell": null,
     "runs_on": "ubuntu-24.04",
     "sha256": "ff0a4b43ccfc168217e97aa6805bfdc16462c7b3b2fafa799234a85bf34d4682",
-    "job_sha256": "b2d414714480329c97939ba77fe5d766be6a912e52785cd05697cd90462e286d"
+    "job_sha256": "c630dded9ea544e296b30a715fcc91900a29dde3a3d311d7095d63a8dddcb3ea"
   },
   {
     "workflow": ".github/workflows/api-source.yml",
@@ -420,7 +420,7 @@
     "shell": null,
     "runs_on": "ubuntu-24.04",
     "sha256": "a9375ae748d69ed7ba0f2e2509851d9881ce58cd3358875974b97cbebd9b7768",
-    "job_sha256": "c36aafd2c289412431f85188a61a4f245f5e92adfd37c7e9537fced58575c1e6"
+    "job_sha256": "6e5afcbf6683be3f64795b0847036ef07bd9726aab7a1b486472a49fc22eb151"
   },
   {
     "workflow": ".github/workflows/api-source.yml",
@@ -429,7 +429,7 @@
     "shell": null,
     "runs_on": "ubuntu-24.04",
     "sha256": "b9f2c403682d30c6538a47260f7b35f792c5f24c05d140dbfc05dc18a59d6268",
-    "job_sha256": "c36aafd2c289412431f85188a61a4f245f5e92adfd37c7e9537fced58575c1e6"
+    "job_sha256": "6e5afcbf6683be3f64795b0847036ef07bd9726aab7a1b486472a49fc22eb151"
   },
   {
     "workflow": ".github/workflows/api-source.yml",
@@ -438,7 +438,7 @@
     "shell": null,
     "runs_on": "ubuntu-24.04",
     "sha256": "e39a39a402717a0aa92c3d17a1b20ed2f2922027c65ec81ec06b08a2c5f303fa",
-    "job_sha256": "c36aafd2c289412431f85188a61a4f245f5e92adfd37c7e9537fced58575c1e6"
+    "job_sha256": "6e5afcbf6683be3f64795b0847036ef07bd9726aab7a1b486472a49fc22eb151"
   },
   {
     "workflow": ".github/workflows/api-source.yml",
@@ -447,7 +447,7 @@
     "shell": null,
     "runs_on": "ubuntu-24.04",
     "sha256": "ff0a4b43ccfc168217e97aa6805bfdc16462c7b3b2fafa799234a85bf34d4682",
-    "job_sha256": "c36aafd2c289412431f85188a61a4f245f5e92adfd37c7e9537fced58575c1e6"
+    "job_sha256": "6e5afcbf6683be3f64795b0847036ef07bd9726aab7a1b486472a49fc22eb151"
   },
   {
     "workflow": ".github/workflows/core-harness.yml",
@@ -456,7 +456,7 @@
     "shell": null,
     "runs_on": "ubuntu-24.04",
     "sha256": "49cf070b4c0ed7b1ffff7f580f7dfa60d0d2a279f92af13cfb5debfd215baa51",
-    "job_sha256": "ab45d228c480ec917b8aa9011d191961e559831c09157723430818a2ba5436ab"
+    "job_sha256": "8d8395f4d554ea007ffc01df5e6d1441e020194398c9795f941968e463f364ae"
   },
   {
     "workflow": ".github/workflows/core-harness.yml",
@@ -465,7 +465,7 @@
     "shell": null,
     "runs_on": "ubuntu-24.04",
     "sha256": "690efcd6756e3ebe1f0ed1c84844b4eb2ae7b832ac6fc714aa0bd56c829a1b06",
-    "job_sha256": "ab45d228c480ec917b8aa9011d191961e559831c09157723430818a2ba5436ab"
+    "job_sha256": "8d8395f4d554ea007ffc01df5e6d1441e020194398c9795f941968e463f364ae"
   },
   {
     "workflow": ".github/workflows/core-harness.yml",
@@ -474,7 +474,7 @@
     "shell": null,
     "runs_on": "ubuntu-24.04",
     "sha256": "b9f2c403682d30c6538a47260f7b35f792c5f24c05d140dbfc05dc18a59d6268",
-    "job_sha256": "ab45d228c480ec917b8aa9011d191961e559831c09157723430818a2ba5436ab"
+    "job_sha256": "8d8395f4d554ea007ffc01df5e6d1441e020194398c9795f941968e463f364ae"
   },
   {
     "workflow": ".github/workflows/core-harness.yml",
@@ -483,7 +483,7 @@
     "shell": null,
     "runs_on": "ubuntu-24.04",
     "sha256": "ff0a4b43ccfc168217e97aa6805bfdc16462c7b3b2fafa799234a85bf34d4682",
-    "job_sha256": "ab45d228c480ec917b8aa9011d191961e559831c09157723430818a2ba5436ab"
+    "job_sha256": "8d8395f4d554ea007ffc01df5e6d1441e020194398c9795f941968e463f364ae"
   },
   {
     "workflow": ".github/workflows/nightly.yml",
@@ -492,7 +492,7 @@
     "shell": null,
     "runs_on": "ubuntu-24.04",
     "sha256": "2a5558371a9d97dc87ff6f319a4d25f64d463ad6a359a934035ec1332e6a3724",
-    "job_sha256": "cc9a16006e91c9ce92dd02d389866b6f434e3b6c28c92fab49fbbc0a98fcbecd"
+    "job_sha256": "2c90f5430426686de526b4431221c556480e0253755542fc4d4e587a7b5fd610"
   },
   {
     "workflow": ".github/workflows/nightly.yml",
@@ -501,7 +501,7 @@
     "shell": null,
     "runs_on": "ubuntu-24.04",
     "sha256": "63651e20ffaa935b789c4f654c1498667d514be84a626406054e24f4ba49151d",
-    "job_sha256": "cc9a16006e91c9ce92dd02d389866b6f434e3b6c28c92fab49fbbc0a98fcbecd"
+    "job_sha256": "2c90f5430426686de526b4431221c556480e0253755542fc4d4e587a7b5fd610"
   },
   {
     "workflow": ".github/workflows/nightly.yml",
@@ -510,7 +510,7 @@
     "shell": null,
     "runs_on": "ubuntu-24.04",
     "sha256": "926100959493e994f091dc81039125b1388fc49d29fd08fba575070e3dd619df",
-    "job_sha256": "cc9a16006e91c9ce92dd02d389866b6f434e3b6c28c92fab49fbbc0a98fcbecd"
+    "job_sha256": "2c90f5430426686de526b4431221c556480e0253755542fc4d4e587a7b5fd610"
   },
   {
     "workflow": ".github/workflows/nightly.yml",
@@ -519,7 +519,7 @@
     "shell": null,
     "runs_on": "ubuntu-24.04",
     "sha256": "95cb0259e62e978727661d353feba7384f6f46c10fee59e6762458890bbd2dcd",
-    "job_sha256": "cc9a16006e91c9ce92dd02d389866b6f434e3b6c28c92fab49fbbc0a98fcbecd"
+    "job_sha256": "2c90f5430426686de526b4431221c556480e0253755542fc4d4e587a7b5fd610"
   },
   {
     "workflow": ".github/workflows/nightly.yml",
@@ -528,7 +528,7 @@
     "shell": null,
     "runs_on": "ubuntu-24.04",
     "sha256": "b9f2c403682d30c6538a47260f7b35f792c5f24c05d140dbfc05dc18a59d6268",
-    "job_sha256": "cc9a16006e91c9ce92dd02d389866b6f434e3b6c28c92fab49fbbc0a98fcbecd"
+    "job_sha256": "2c90f5430426686de526b4431221c556480e0253755542fc4d4e587a7b5fd610"
   },
   {
     "workflow": ".github/workflows/nightly.yml",
@@ -537,7 +537,7 @@
     "shell": null,
     "runs_on": "ubuntu-24.04",
     "sha256": "ff0a4b43ccfc168217e97aa6805bfdc16462c7b3b2fafa799234a85bf34d4682",
-    "job_sha256": "cc9a16006e91c9ce92dd02d389866b6f434e3b6c28c92fab49fbbc0a98fcbecd"
+    "job_sha256": "2c90f5430426686de526b4431221c556480e0253755542fc4d4e587a7b5fd610"
   },
   {
     "workflow": ".github/workflows/ci.yml",
@@ -546,7 +546,7 @@
     "shell": null,
     "runs_on": "ubuntu-24.04",
     "sha256": "b9f2c403682d30c6538a47260f7b35f792c5f24c05d140dbfc05dc18a59d6268",
-    "job_sha256": "4c2a6f5dae155e597d2e98a3a24f5d1bf9252394d80a51e9004fdbf6a6fcd033"
+    "job_sha256": "6b602396ced6150ee71a79e80015726cb3ba41e44f0c3d205bd0f590be889901"
   },
   {
     "workflow": ".github/workflows/ci.yml",
@@ -555,7 +555,7 @@
     "shell": null,
     "runs_on": "ubuntu-24.04",
     "sha256": "d005a8c04043f5df4b739c938037253ee10c5bb39fba37a376b832487a0d8376",
-    "job_sha256": "4c2a6f5dae155e597d2e98a3a24f5d1bf9252394d80a51e9004fdbf6a6fcd033"
+    "job_sha256": "6b602396ced6150ee71a79e80015726cb3ba41e44f0c3d205bd0f590be889901"
   },
   {
     "workflow": ".github/workflows/ci.yml",
@@ -564,7 +564,7 @@
     "shell": null,
     "runs_on": "ubuntu-24.04",
     "sha256": "fcc81f01e3a679a4247797987e2217d153e0950a57378a2ee62b197180e9acc8",
-    "job_sha256": "4c2a6f5dae155e597d2e98a3a24f5d1bf9252394d80a51e9004fdbf6a6fcd033"
+    "job_sha256": "6b602396ced6150ee71a79e80015726cb3ba41e44f0c3d205bd0f590be889901"
   },
   {
     "workflow": ".github/workflows/ci.yml",
@@ -573,7 +573,7 @@
     "shell": null,
     "runs_on": "ubuntu-24.04",
     "sha256": "ff0a4b43ccfc168217e97aa6805bfdc16462c7b3b2fafa799234a85bf34d4682",
-    "job_sha256": "4c2a6f5dae155e597d2e98a3a24f5d1bf9252394d80a51e9004fdbf6a6fcd033"
+    "job_sha256": "6b602396ced6150ee71a79e80015726cb3ba41e44f0c3d205bd0f590be889901"
   },
   {
     "workflow": ".github/workflows/nightly.yml",
