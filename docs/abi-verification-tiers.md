@@ -33,7 +33,7 @@
 
 - 問い: 固定版の公開ソース（caller 側 SDK、HLE エミュレータ、実コアのソース）が、その項目について何を書いているか。
 - 値: `UNKNOWN`（根拠なし）、`HYPOTHESIS`（ソースに記述がある。`confidence: SOURCE_SUPPORTED`）、
-  `SOURCE_FACT` は静的レビュー（`tools/abi1_reference_review.py` の `ITEM_STATUSES`）の語で、台帳 claim の値ではない。caller 側の一次ソース本文の事実に限る文書上のラベル。
+  `SOURCE_FACT` は静的レビュー（`tools/abi1_reference_review.py` の `ITEM_STATUSES`）の語で、台帳 claim の値ではない。公開の caller 側ソースまたはエミュレータソースから取った事実に限る文書上のラベル（`spec/abi1_reference_review.json` の定義と一致）。
 - 上限: ソース記述だけで `OBSERVED` や `VERIFIED` にはならない。
 - 既存の対応: `spec/api_contracts.json` の `sources` と `confidence`、`tools/contracts.py` の `SOURCE_KIND_MEANINGS`。
 - 判断者: 調査者。誤りはレビューで直す。
@@ -51,7 +51,7 @@
 - 問い: 参照 BIOS の callee を実コアで実行し、入出力、フラグ、MPR、スタック、RAM 差分を測ったか。
 - 値: §3 の状態語。
 - 実行記録（`evidence_hash`、コア revision、入力、検証結果）が必要。現状は全 slot `NOT_RUN`。
-- 注意: 実測の事実と、その事実を公開してよいかは別問題（オーナー判断 §6 の項目 5）。
+- 注意: 実測の事実と、その事実を公開してよいかは別問題（オーナー判断 §6 の項目 3）。
 
 ### 2.4 DEV_IMPLEMENTATION（OSS の DEV ROM 実装）
 
@@ -121,7 +121,7 @@
 3. **`real_core_evidence` はパスの存在だけを確認する。** テストファイルの存在は、実コアで実行した証拠ではない。
 4. **`compatibility_basis` は未実装。** `docs/abi-evidence-classification.md` §4.2 の提案のみ。
 5. **producer 認証がない（#124、#171）。** `OBSERVED` も `VERIFIED-equivalent` も、この穴が塞がるまで到達できない。
-6. **全入力の DEV 実コア実行は台帳の外にある。** slot `$3D` の 256 入力 × 18 条件（4608 実行）は、`docs/evidence/dev-callable-3d.md` §3 に記録されている（失敗 0。有効 1800、不正 2808）。再現手順は `make dev-bcdbin-sweep`。ただしこの全入力実行は CI では再現しておらず、WSL のローカル実行の記録である（Issue #324 のコメントにも記載）。
+6. **全入力の DEV 実コア実行は台帳の外にある。** slot `$3D` の 256 入力 × 18 条件（4608 実行）は、`docs/evidence/dev-callable-3d.md` §3 に記録されている（失敗 0。有効 1800、不正 2808）。再現手順は `make dev-bcdbin-sweep`。この全入力実行は CI の `bios-dev` ジョブで実行される（`make dev-integration` 経由。CI 実測の記録は `docs/evidence/dev-callable-3d.md` §3）。Issue #324 のコメントにある件数は別の記録として扱い、本書は台帳の値として採用しない。
    `docs/evidence/dev-callable-*.md` の記録は DEV 承認の判断材料であり、台帳の値ではない。
 
 ## 6. オーナーが #324 で判断すること
