@@ -154,7 +154,8 @@ class SelfDeclaredApprovalTests(unittest.TestCase):
         self.assertTrue(any("approv" in p for p in dev.validate(ledger, SLOTS, OVERRIDES)))
 
     def test_committed_ledgers_have_no_owner_approved_dev_callable(self):
-        # The committed ledger has no owner-approved DEV_CALLABLE row (summary counts, read-only).
+        # State check on committed data, not a negative case. It must be updated when an owner-approved
+        # DEV_CALLABLE row is recorded (§8.4); until then it pins the current state (no approval recorded).
         summary = dev.summary(base_ledger(), OVERRIDES)
         self.assertEqual(0, summary["dev_callable_approved"])
         self.assertEqual(0, summary["abi_verified"])

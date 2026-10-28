@@ -15,7 +15,7 @@
 
 | 台帳 | 現在の値 | 意味 |
 | --- | --- | --- |
-| `spec/api_contracts.json`（参照 BIOS の契約） | 81 slot すべて `verification: NOT_RUN` | 参照 BIOS の実測はなし |
+| `spec/api_contracts.json`（参照 BIOS の契約） | 81 slot すべて `verification: NOT_RUN` | 台帳上は実測なし。ただし `spec/abi1_reference_review.json` の slot-1e（EX_GETVER）に、`docs/reference-bios-test-plan.md` で記録されたローカル限定の実コア測定がある（`prior_local_only: PRESENT`、`reproducible_real_core: NOT_RUN`。コミット済みのランナーでは再現できない）。この記録は台帳の値ではなく、§2.3 の扱いに従う |
 | `spec/abi1_reference_review.json`（静的レビュー） | 7 件、`abi_state: NOT_RUN`、`static: OBSERVED_STATIC` | 静的解析の記録。検証ではない |
 | `spec/dev_implementations.json`（DEV 実装） | 81 行すべて `NOT_READY`、`approval` の `approved_by` / `review_ref` は null、DEV ROM の override は 12 slot（`tools/build_rom.py` の `overrides()`） | DEV ROM に実装がある slot と、その承認状態 |
 
@@ -67,8 +67,8 @@
 | 軸 | 到達できる最上位 | 到達できないもの |
 | --- | --- | --- |
 | SOURCE_EVIDENCE | `HYPOTHESIS`（`SOURCE_FACT` は台帳の値ではなく、§2.1 の文書上のラベル） | `OBSERVED`、`VERIFIED`、provenance 承認、DEV_CALLABLE |
-| PROVENANCE_APPROVAL | `APPROVED`（人間の承認者が記録） | 挙動の正しさ、callee 実測、互換性 |
-| CALLEE_VERIFICATION | 到達できる状態はない（`OBSERVED` は認証前に拒否。§3） | `VERIFIED`（現スキーマでは表せない。#171） |
+| PROVENANCE_APPROVAL | `APPROVED`（人間の承認者が記録） | 挙動の正しさ、callee 実測、互換性、`OBSERVED`、`VERIFIED`、DEV_CALLABLE 承認（§8.4 で扱う） |
+| CALLEE_VERIFICATION | 到達できる状態はない（`OBSERVED` は認証前に拒否。§3） | `VERIFIED`（現スキーマでは表せない。#171）、DEV_CALLABLE 承認 |
 | DEV_IMPLEMENTATION | `DEV_CALLABLE`（DEV ROM に限る） | 参照 BIOS の `VERIFIED`、release 判定、互換性 |
 
 どの軸の値が揃っても、`release_eligible: true` にはならない。release gate は別の人間承認を要し、
@@ -126,7 +126,7 @@
 
 ## 6. オーナーが #324 で判断すること
 
-項目 1（台帳導入）と項目 2（DEV_CALLABLE の定義）は、オーナー決定として提示されている。ただしリポジトリ内に決定記録は確認できない。以下は未決。
+項目 1（台帳導入）と項目 2（DEV_CALLABLE の定義）は、オーナー決定として提示されている。ただしリポジトリ内に決定記録は確認できない。`tools/dev_implementations.py` の冒頭コメントは「items 1-2, owner approved」と記すが、Issue #324 は未承認（意思決定待ち）と表示されている。両者は食い違うため、この記述は承認の根拠として使わない。以下は未決。
 
 1. **項目 3: `ORIGINAL` の OSS 実装の `provenance_approval` を誰が承認するか。** 承認者の一覧がリポジトリにない（fail closed）。
 2. **項目 4: 台帳に 3 軸のキー（`source_evidence` / `provenance_approval` / `callee_verification`）を追加するか。**
