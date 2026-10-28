@@ -147,6 +147,17 @@ class PrivilegedCheckout(unittest.TestCase):
         refused = self.uses_problems({'ref': policy.CHECKOUT_HEAD_REF, 'persist-credentials': 'false'})
         self.assertTrue(refused)
 
+    def test_data_only_head_tuple_in_another_workflow_is_refused(self):
+        # the same ref and path as the policy job, but in a file that is not policy-guard.yml: the exception is per file
+        self.assertTrue(self.uses_problems({'ref': policy.CHECKOUT_HEAD_REF, 'path': '.candidate',
+                                            'persist-credentials': 'false'}))
+
+    def test_reusable_workflow_call_in_a_privileged_job_is_refused(self):
+        text = ('name: x\non: [push]\njobs:\n  j:\n    permissions:\n      id-token: write\n'
+                '    uses: evil/repo/.github/workflows/x.yml@main\n    secrets: inherit\n')
+        (self.trusted / FIXTURE).write_text(text, encoding='utf-8')
+        self.assertTrue(policy.privileged_uses_problems(self.trusted))
+
     def test_privileged_checkout_of_the_base_with_credentials_is_refused(self):
         self.assertTrue(self.uses_problems({'ref': policy.CHECKOUT_BASE_REF, 'persist-credentials': 'true'}))
 

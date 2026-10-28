@@ -166,11 +166,14 @@ def privileged_uses_problems(trusted):
     for rel, doc, body in _privileged_bodies(trusted):
         where = rel
         triggers = doc.get("on", doc.get(True))
-        if isinstance(triggers, (str, list, dict)) and "pull_request_target" in triggers:
+        names = {triggers} if isinstance(triggers, str) else set(triggers or {}) if isinstance(triggers, (list, dict)) else set()
+        if "pull_request_target" in names:
             perms = body.get("permissions", doc.get("permissions")) if isinstance(body, dict) else None
             if perms != {"contents": "read"}:
                 problems.append(f"{where}: pull_request_target runs with permissions {perms!r}; only contents: read (refused; "
                                 "Issue #544)")
+        if isinstance(body, dict) and "uses" in body:   # a reusable workflow runs its own jobs with the caller's scope
+            problems.append(f"{where}: a privileged job calls a reusable workflow ({body['uses']!r}); refused (Issue #544)")
         for step in (body.get("steps") or []) if isinstance(body, dict) else []:
             uses = step.get("uses") if isinstance(step, dict) else None
             if uses is None:
