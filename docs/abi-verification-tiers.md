@@ -127,7 +127,7 @@
 
 ## 6. オーナーが #324 で判断すること
 
-項目 1（台帳導入）と項目 2（DEV_CALLABLE の定義）は、Issue #324 のオーナー判断コメント（2026-10-21）で承認されている。承認は台帳導入と DEV_CALLABLE の定義に限り、項目 3〜5 は未決のまま（同コメントの記載）。`tools/dev_implementations.py` の冒頭コメント「items 1-2, owner approved」はこの判断と整合する。以下は未決（設計方針は §8 冒頭のオーナー裁定どおり。承認値は付与していない）。
+項目 1（台帳導入）と項目 2（DEV_CALLABLE の定義）は、Issue #324 のオーナー判断コメント（2026-10-21）で承認されている。承認は台帳導入と DEV_CALLABLE の定義に限り、項目 3〜5 は未決のまま（同コメントの記載）。`tools/dev_implementations.py` の冒頭コメント「items 1-2, owner approved」はこの判断と整合する。以下は未決（設計方針は §8 冒頭のオーナー裁定どおり。承認値は付与していない）。下の番号は表示順であり、項目名（「項目 N」）は Issue #324 の番号に従う。「新規」は本書で追加した項目。
 
 1. **項目 3: `ORIGINAL` の OSS 実装の `provenance_approval` を誰が承認するか。** 承認者の一覧がリポジトリにない（fail closed）。
 2. **項目 4: 台帳に 3 軸のキー（`source_evidence` / `provenance_approval` / `callee_verification`）を追加するか。**

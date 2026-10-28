@@ -53,7 +53,7 @@ python3 tools/reference_bios_runner.py /tmp/opencode/refbios/reset-config.json \
 
 ---
 
-## 5. 実測 API 仕様（EX_GETVER、slot $1E、1スロットのみ、實測、確定的）
+## 5. EX_GETVER（slot $1E、1スロットのみ）の仕様（観測値は取り下げ済み）
 
 | 項目 | 値 |
 | --- | --- |

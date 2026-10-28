@@ -10,7 +10,10 @@ and by an inline comment at the test:
 - positive vocabulary check: OwnerUndecidedStateTests.test_dev_ledger_states_are_exactly_the_three_dev_states;
 - partial check (not a proof): ReviewCountTests.test_approved_dev_row_breaks_committed_review_count,
   which relies on the committed-count mismatch and does not test reference_abi_verified.
-DesignDocumentTests is a document check, labelled in its class docstring.
+DesignDocumentTests is a document check, labelled in its class docstring. Its six tests are
+test_document_names_the_four_axes, test_document_names_the_status_vocabulary_in_code,
+test_document_claims_no_compatibility, test_owner_items_remain_undecided,
+test_document_states_it_changes_no_schema_or_gate and test_document_lists_all_six_owner_undecided_items.
 
 Four axes are kept apart: SOURCE_EVIDENCE, PROVENANCE_APPROVAL, CALLEE_VERIFICATION and DEV_IMPLEMENTATION.
 Nothing from one axis may reach VERIFIED on the reference ABI. The tests below try to promote from each

@@ -90,8 +90,8 @@ refuses when the ledger has no reviewed record, when any hazard control is not
 requires every ledger row to restate `execution: "BLOCKED"`.
 
 Consequence for this phase: **the committed runner cannot execute a reference
-JSR for any slot**, including `$1E`. The local real-core measurement that
-`docs/reference-bios-test-plan.md` records for `$1E` was taken before
+JSR for any slot**, including `$1E`. A local real-core observation for `$1E`
+(recorded as local only; its values are withdrawn from public documents) was taken before
 `tools/reference_jsr_gate.py` was wired into the runner (PR #372), and it is
 therefore **not reproducible through the committed tooling today**. The gate is
 not touched by this phase, and no gate is bypassed by it.
@@ -346,9 +346,8 @@ does not implement it, and it does not weaken the existing gate.
 
 ### 6.1 Re-evaluation of the existing `$1E` observation
 
-The prior local observation (its values are withdrawn from public documents,
-owner decision 2026-10-28) is not compared here: its values are withdrawn from public documents (owner decision
-2026-10-28), so this document asserts no agreement with the static audit. The static
+The prior local observation (values withdrawn from public documents, owner decision
+2026-10-28) is not compared here, so this document asserts no agreement with the static audit. The static
 audit of the image shows a three instruction callee that loads two bytes from the
 BIOS image's own version area and returns.
 
@@ -438,9 +437,10 @@ The acceptance conditions are defined here, before any promotion is attempted:
 | `$3C` to `$42` value contract | **not established** | a project-own specification exists (`docs/ex-binbcd-internal.md`, `docs/ex-bcdbin.md`, `docs/ma-mul8s.md`) and is explicitly *not* the reference contract |
 | side effects | the reference BCD and arithmetic paths write the zero page and, for the arithmetic slots, switch a page bank | the DEV overrides stay in the stack page and the zero page, and never change an MPR |
 
-The two sides agree on the *observable outcome* of `$1E` for the measured input,
-but they are not the same implementation and the agreement is not a contract
-proof: the reference value depends on the image, the DEV value does not. A DEV
+The observable outcome of `$1E` on the reference side is not restated here (the
+observed values are withdrawn from public documents, owner decision 2026-10-28). The
+DEV implementation is not the same implementation: the reference value depends on the
+image, the DEV value does not, and no agreement between the two is asserted as a contract. A DEV
 observation must never be used as the expected value of a reference observation
 (`docs/abi-evidence-classification.md`, axis separation).
 
