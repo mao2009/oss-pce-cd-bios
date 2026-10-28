@@ -91,7 +91,7 @@ to publish a BIOS because most APIs and System Card boot remain unimplemented.
 On **main** the additional, development-only targets are:
 
 ```sh
-make dev-rom                    # 256 KiB; 9 DEV overrides ($1E, $3C, $3D, $3E, $3F, $40, $41, $42, $43, $4F) + 72 nonreturning stubs on main f90c16b; 12 DEV overrides ($1E, $3C, $3D, $3E, $3F, $40, $41, $42, $43, $44, $45, $4F) + 69 nonreturning stubs on Issue #79 PR branch (PR #522)
+make dev-rom                    # 256 KiB; 9 DEV overrides ($1E, $3C, $3D, $3F, $40, $41, $42, $43, $4F) + 72 nonreturning stubs on main f90c16b; 12 DEV overrides ($1E, $3C, $3D, $3E, $3F, $40, $41, $42, $43, $44, $45, $4F) + 69 nonreturning stubs on Issue #79 PR branch (PR #522)
 make dev-test                   # host API tests plus DEV ROM real-core integration
 make dev-integration            # DEV-only API integration (including MA_DIV16U); reference ABI still unverified
 make dev-startup-integration    # separate reset/MPR/stack checkpoint
