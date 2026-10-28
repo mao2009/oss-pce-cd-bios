@@ -24,6 +24,7 @@ APP_ID = 15368
 FIXTURE = '.github/workflows/priv_fixture.yml'
 ALLOWLIST = 'tools/artifact_guard_run_allowlist.json'
 CHECKOUT = 'actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683'
+DOWNLOAD = 'actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093'
 
 
 def git(cwd, *args):
@@ -151,6 +152,20 @@ class PrivilegedCheckout(unittest.TestCase):
         # the same ref and path as the policy job, but in a file that is not policy-guard.yml: the exception is per file
         self.assertTrue(self.uses_problems({'ref': policy.CHECKOUT_HEAD_REF, 'path': '.candidate',
                                             'persist-credentials': 'false'}))
+
+    def test_pinned_action_writing_into_the_trusted_tree_is_refused(self):
+        text = ('name: x\non: [push]\njobs:\n  j:\n    permissions:\n      id-token: write\n    steps:\n'
+                f'      - uses: {DOWNLOAD}\n        with:\n          path: .trusted/tools\n'
+                '      - run: test -f Makefile\n')
+        (self.trusted / FIXTURE).write_text(text, encoding='utf-8')
+        self.assertTrue(policy.privileged_uses_problems(self.trusted))
+
+    def test_secret_in_workflow_env_makes_the_job_privileged(self):
+        text = ('name: x\non: [push]\nenv:\n  T: ${{ secrets.X }}\njobs:\n  j:\n    permissions:\n      contents: read\n'
+                '    steps:\n      - run: make setup\n')
+        shutil.copy(REPO / 'Makefile', self.trusted / 'Makefile')
+        (self.trusted / FIXTURE).write_text(text, encoding='utf-8')
+        self.assertTrue(policy.closure_of(self.trusted)[2])   # privileged now: its run text is analysed, and make is refused
 
     def test_reusable_workflow_call_in_a_privileged_job_is_refused(self):
         text = ('name: x\non: [push]\njobs:\n  j:\n    permissions:\n      id-token: write\n'

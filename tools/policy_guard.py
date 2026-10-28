@@ -103,12 +103,15 @@ def privileged_job(doc, body):
     if not isinstance(body, dict):
         return True
     permissions = body.get("permissions", doc.get("permissions"))
-    if permissions is None or permissions == "write-all" or "environment" in body or "secrets" in repr(body):
+    # a secret read at workflow level (env, defaults) reaches every job, so it makes each job privileged too
+    if (permissions is None or permissions == "write-all" or "environment" in body or "secrets" in repr(body)
+            or "secrets" in repr(doc.get("env")) or "secrets" in repr(doc.get("defaults"))):
         return True
     if isinstance(permissions, dict) and any(value == "write" for value in permissions.values()):
         return True
     triggers = doc.get("on", doc.get(True))
-    return isinstance(triggers, (str, list, dict)) and "pull_request_target" in triggers
+    names = {triggers} if isinstance(triggers, str) else set(triggers or {}) if isinstance(triggers, (list, dict)) else set()
+    return "pull_request_target" in names
 
 
 def _privileged_bodies(trusted):
@@ -182,6 +185,11 @@ def privileged_uses_problems(trusted):
                 problems.append(f"{where}: privileged uses {uses!r} is not pinned to a full commit SHA (refused; Issue #544)")
                 continue
             if not uses.lower().startswith("actions/checkout@"):   # action names are case-insensitive on GitHub
+                # another pinned action may write where it is told (download-artifact path:): never into a trusted or candidate tree
+                values = [str(v) for v in step.get("with").values()] if isinstance(step.get("with"), dict) else []
+                if any(".trusted" in v or ".candidate" in v or ".." in v or v.startswith(("/", "~")) for v in values):
+                    problems.append(f"{where}: privileged action {uses!r} names a trusted or candidate path in with: "
+                                    "(refused; Issue #544)")
                 continue
             if uses.lower() != CHECKOUT_PIN:
                 problems.append(f"{where}: privileged checkout {uses!r} is not the audited pin {CHECKOUT_PIN!r} (refused; Issue #544)")
