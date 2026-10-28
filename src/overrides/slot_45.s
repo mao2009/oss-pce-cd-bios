@@ -56,7 +56,6 @@ idx_even:
     lda $F9             ; even quadrant: index = r
 idx_done:
     tay                 ; Y = table index 0..64
-    nop                 ; layout parity: makes the OVERRIDES end odd so the even-rounded trampoline == body end (MUL16S window, as PR #526)
     lda sin_lo,y
     ldx sin_hi,y        ; X:A = T[index] (non-negative)
     bit $F7             ; N = bit 7 of a (negative half-turn)

@@ -815,7 +815,7 @@
     ]
   },
   "summary": {
-    "dev_rom_implemented_apis": 12,
+    "dev_rom_implemented_apis": 13,
     "owner_approved_dev_callable": 0,
     "prior_local_only_observations": 1,
     "reference_abi_verified": 0,
