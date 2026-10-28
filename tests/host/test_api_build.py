@@ -56,7 +56,7 @@ class ApiBuildTests(unittest.TestCase):
         Z=1/N=0/I=1 with carry preserved) is verified on the real Geargrafx core in
         tests/integration/geargrafx_contracts.py; the absolute P byte is not fixed.
         """
-        self.assertEqual(set(overrides()), {0x1E, 0x3A, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x4F})  # 1E measured; 3A/3C/3D/3E/3F/40/41/42/43/44/45/4F project-own DEV routines
+        self.assertEqual(set(overrides()), {0x1E, 0x3A, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x4F})  # 1E measured; 3A/3C/3D/3E/3F/40/41/42/43/44/45/46/4F project-own DEV routines
         at = 0x1E * 3
         entry = int.from_bytes(self.rom[at+1:at+3], 'little')
         self.assertEqual(self.rom[entry-0xe000:entry-0xe000+5], bytes.fromhex('a2 03 a0 00 60'))
@@ -125,8 +125,8 @@ class ApiBuildTests(unittest.TestCase):
     def test_manifest_never_claims_release(self):
         manifest = json.loads((self.folder/'debug/manifest.json').read_text())
         self.assertFalse(manifest['release_eligible'])
-        self.assertEqual(manifest["overridden_slots"], [0x1E, 0x3A, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x4F])
-        self.assertEqual(len(manifest["unimplemented_slots"]), 68)
+        self.assertEqual(manifest["overridden_slots"], [0x1E, 0x3A, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x4F])
+        self.assertEqual(len(manifest["unimplemented_slots"]), 67)
         self.assertEqual(manifest['abi'], 'UNVERIFIED')
 
     def make_root(self, name, **slots):
@@ -416,6 +416,22 @@ class ApiBuildTests(unittest.TestCase):
         verify_dev_rom(rom, root)  # genuinely built, so identity accepts it
         with self.assertRaisesRegex(ValueError, 'probe overlay'):
             build_probe_images(rom, self.folder / 'overlay-probe', root=root)
+
+    def test_linked_dev_rom_keeps_overrides_out_of_probe_overlay(self):
+        """Regression for the MA_COS overflow: the REAL linked DEV ROM (not a synthetic fixture) must keep
+        every override below $E800, and the same overrides moved into the window must be refused."""
+        from tools.diagnostics import build_probe_images
+        rom = build(self.folder / 'real-overlay', root=ROOT).read_bytes()
+        self.assertEqual(rom[0x800:0x1000], b'\xff' * 0x800)  # linked image: overlay window is still padding
+        build_probe_images(rom, self.folder / 'real-overlay-probe', root=ROOT)  # real ROM is accepted
+        mutant = self.folder / 'overlay-mutant-root'
+        (mutant / 'src').mkdir(parents=True)
+        shutil.copytree(ROOT / 'src', mutant / 'src', dirs_exist_ok=True)
+        (mutant / 'src' / 'bank0.cfg').write_text(
+            (ROOT / 'src' / 'bank0.cfg').read_text().replace('start = $E2A0', 'start = $E7F0'))
+        mutant_rom = build(self.folder / 'overlay-mutant', root=mutant).read_bytes()
+        with self.assertRaisesRegex(ValueError, 'probe overlay'):
+            build_probe_images(mutant_rom, self.folder / 'overlay-mutant-probe', root=mutant)
 
 class ApiContractTests(unittest.TestCase):
     """cc65-independent API checks: no built ROM is needed, so these always run."""
