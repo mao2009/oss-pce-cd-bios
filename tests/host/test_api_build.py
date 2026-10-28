@@ -43,20 +43,20 @@ class ApiBuildTests(unittest.TestCase):
                 address = int.from_bytes(self.rom[at+1:at+3], 'little')
                 if slot in overridden:
                     # An override replaces the generated LDX #slot stub; its own body
-                    # is checked separately (test_slot_1e_override_matches_measured_contract).
+                    # is checked separately (test_slot_1e_override_matches_dev_contract_bytes).
                     self.assertNotEqual(self.rom[address-0xe000:address-0xe000+2], bytes((0xa2, slot)))
                 else:
                     self.assertEqual(self.rom[address-0xe000:address-0xe000+2], bytes((0xa2, slot)))
         self.assertEqual(0xe000+80*3, 0xe0f0)
 
-    def test_slot_1e_override_matches_measured_contract(self):
+    def test_slot_1e_override_matches_dev_contract_bytes(self):
         """Structure test: the slot_1E override body contains the expected instruction
         bytes (LDX #3; LDY #0; RTS). This verifies the override was linked correctly,
         NOT API compatibility. The guest-visible behaviour (X=3, Y=0, A preserved,
         Z=1/N=0/I=1 with carry preserved) is verified on the real Geargrafx core in
         tests/integration/geargrafx_contracts.py; the absolute P byte is not fixed.
         """
-        self.assertEqual(set(overrides()), {0x1E, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x4F})  # 1E measured; 3C/3D/3E/3F/40/41/42/43/44/45/46/4F project-own DEV routines
+        self.assertEqual(set(overrides()), {0x1E, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x4F})  # 1E DEV-defined contract; 3C/3D/3E/3F/40/41/42/43/44/45/46/4F project-own DEV routines
         at = 0x1E * 3
         entry = int.from_bytes(self.rom[at+1:at+3], 'little')
         self.assertEqual(self.rom[entry-0xe000:entry-0xe000+5], bytes.fromhex('a2 03 a0 00 60'))

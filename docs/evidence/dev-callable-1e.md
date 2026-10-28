@@ -14,9 +14,9 @@
 
 ## 2. 対象コード
 
-`src/overrides/slot_1E.s`（sha256 `d5d6e9dda8cacca57dd4963cf59f50cc93f16b6dc47386129e627e9a572b0f43`）:
+`src/overrides/slot_1E.s`（本 PR のコメント修正後の sha256 `6b7a4a02e7ea1a10cabe06fa0637b956bca5a2ec56bc9209c570a3d89cb3f727`。main の sha256 は `d5d6e9dda8cacca57dd4963cf59f50cc93f16b6dc47386129e627e9a572b0f43`）:
 
-> 初版は sha256 を `8be2efe63c547eb62833cf00e69e3f66860b67363a082daa912159eb7b707176` と記載していたが誤りで、main `c906728` と現在の main のいずれでも実ファイルは `d5d6e9dd…` である（`git show c906728:src/overrides/slot_1E.s` の sha256 と一致する）。ファイルは初版コミット `1de62ad` 以降変更されていない。
+> 初版は sha256 を `8be2efe63c547eb62833cf00e69e3f66860b67363a082daa912159eb7b707176` と記載していたが誤りで、main `c906728` と現在の main のいずれでも実ファイルは `d5d6e9dd…` である（`git show c906728:src/overrides/slot_1E.s` の sha256 と一致する）。main 上のファイルは初版コミット `1de62ad` 以降変更されていない。本 PR はコメントのみ変更している（コードのバイト列は不変）。
 
 ```
 api_slot_1E:
@@ -33,7 +33,7 @@ api_slot_1E:
 
 | # | 項目 | 方法 / コマンド | 結果 | 判定 |
 |---|---|---|---|---|
-| E1 | DEV ROM の $1E 入口がテーブルにあり、本体へ到達する | `tests/host/test_api_build.py::test_slot_1e_override_matches_measured_contract`（overrides() == {0x1E,0x3C,0x3D}、テーブル JMP 先が `a2 03 a0 00 60`） | CI `bios-dev` c906728: `Ran 68 tests` / `OK` | PASS |
+| E1 | DEV ROM の $1E 入口がテーブルにあり、本体へ到達する | `tests/host/test_api_build.py::test_slot_1e_override_matches_dev_contract_bytes`（overrides() == {0x1E,0x3C,0x3D}、テーブル JMP 先が `a2 03 a0 00 60`） | CI `bios-dev` c906728: `Ran 68 tests` / `OK` | PASS |
 | E2 | 同一ビルドでの host テスト（DEV ROM 構造・同一性・改ざん検出） | CI `verify`（`make test`）、run 39551289738 | success | PASS |
 | E3 | 実コア（Geargrafx）での $1E 呼び出し: X=3, Y=0, A 保持, 戻り | `make dev-integration` → `tests/integration/geargrafx_api.py`（`geargrafx_contracts.py` の IMPLEMENTED_SLOTS: a=0x11, x=3, y=0, sp=255） | CI `bios-dev` c906728 ログ: `PASS real Geargrafx System Card diagnostic: ... slot 1E EX_GETVER returned its measured contract; A/X/Y/P/SP/MPR/RAM observed; NMI NOT_TESTED` | PASS |
 | E4 | JSR / RTS と戻り PC | `geargrafx_api.py` / `geargrafx_contracts.py`: 戻り PC = `api_call_return+3`（JSR 3 バイト）、呼び出し中の SP=253、戻り後 SP=255 | 上記 E3 の PASS に含まれる | PASS（PASS 行のみで個別値は未掲載） |

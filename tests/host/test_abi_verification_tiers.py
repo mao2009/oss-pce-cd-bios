@@ -103,7 +103,7 @@ class ForgedEvidenceTests(unittest.TestCase):
     def test_self_declared_realcore_marker_does_not_authenticate(self):
         # The marker must not change the outcome: the refusal message is identical with and without it.
         with self.assertRaises(ValueError) as without_marker:
-            adjudicate(observed_claim())
+            adjudicate(observed_claim(execution_conditions="geargrafx run"))
         claim = observed_claim(execution_conditions="REALCORE, produced by the core")
         with self.assertRaises(ValueError) as with_marker:
             adjudicate(claim)

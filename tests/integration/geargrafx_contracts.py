@@ -36,13 +36,13 @@ def check_implemented_slot(records, symbols, slot, expected):
             raise ValueError('implemented API did not return to the caller continuation')
         observed = {r: row[r] for r in expected}
         if observed != expected:
-            raise ValueError(f'API ${slot:02X} returned {observed}, measured {expected}')
+            raise ValueError(f'API ${slot:02X} returned {observed}, DEV-defined {expected}')
         if not row['p'] & FLAG_ZERO:
-            raise ValueError(f'API ${slot:02X} returned with Z clear; the measured contract requires Z=1')
+            raise ValueError(f'API ${slot:02X} returned with Z clear; the DEV-defined contract requires Z=1')
         if row['p'] & FLAG_NEGATIVE:
-            raise ValueError(f'API ${slot:02X} returned with N set; the measured contract requires N=0')
+            raise ValueError(f'API ${slot:02X} returned with N set; the DEV-defined contract requires N=0')
         if not row['p'] & FLAG_INTERRUPT:
-            raise ValueError(f'API ${slot:02X} returned with I clear; the measured contract requires I=1')
+            raise ValueError(f'API ${slot:02X} returned with I clear; the DEV-defined contract requires I=1')
         caller_p = trace(records, row['cycle'], 'api_jsr')['p']
         if (row['p'] ^ caller_p) & FLAG_CARRY:
             raise ValueError(f'API ${slot:02X} did not preserve carry across the call')
