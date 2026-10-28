@@ -553,7 +553,10 @@ def _privileged_command_problems(run, where):
                 problems.append(f"{where}: {head} may run only a trusted checkout script in a privileged job; "
                                 f"{' '.join(words)[:60]!r} refused (Issue #544)")
         elif head in PRIVILEGED_WRITERS:
-            if any(_touches_trusted(a) for a in args):
+            if any(re.fullmatch(r"-[A-Za-z]*[tT].+", a) for a in args):   # cp -rt.git/hooks: a target inside a bundled option
+                problems.append(f"{where}: {head} has a target directory attached inside a short-option bundle; refused "
+                                "(Issue #544)")
+            elif any(_touches_trusted(a) for a in args):
                 problems.append(f"{where}: {head} names a trusted checkout, a parent step or a variable; refused (Issue #544)")
             elif any(_names_repository_code(a) for a in args):
                 problems.append(f"{where}: {head} names repository code (existing or missing); refused (Issue #544)")

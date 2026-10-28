@@ -617,6 +617,26 @@ class AttachedShortTarget(ClosureCase):
         self.assertTrue(policy.closure_of(self.trusted)[2])
 
 
+class BundledTargetOption(ClosureCase):
+    """Last review of 644e778: a target directory attached inside a bundled short option (cp -rt.git/hooks)."""
+
+    def set_run(self, text):
+        for root in (self.trusted, self.candidate):
+            (root / FIXTURE).write_text(priv_workflow(text), encoding='utf-8')
+
+    def test_bundled_target_into_git_hooks_is_refused(self):
+        self.set_run('cp -rt.git/hooks build/post-checkout')
+        self.assertTrue(policy.closure_of(self.trusted)[2])
+
+    def test_bundled_target_into_tools_is_refused(self):
+        self.set_run('cp -rttools build/x')
+        self.assertTrue(policy.closure_of(self.trusted)[2])
+
+    def test_bundled_target_with_dotdot_is_refused(self):
+        self.set_run('cp -rt.. build/x')
+        self.assertTrue(policy.closure_of(self.trusted)[2])
+
+
 class UnprivilegedBoundary(unittest.TestCase):
     def test_nightly_plan_job_is_outside_the_privileged_closure(self):
         # The nightly plan job holds no write permission: its run: text is approved exactly (approval_problems) but its
