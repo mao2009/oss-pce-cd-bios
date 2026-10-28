@@ -346,7 +346,7 @@ class PublicDocsTest(unittest.TestCase):
         implemented = {slot["id"] for slot in slots if slot.get("implementation")}
         source = {int(path.stem.split("_", 1)[1], 16) for path in (ROOT / "src" / "overrides").glob("slot_*.s")}
         self.assertEqual(len(slots), 81)
-        self.assertEqual(len(implemented), 12)
+        self.assertEqual(len(implemented), 13)
         self.assertEqual(len(slots) - len(implemented), 68)
         self.assertEqual(source, implemented, "src/overrides must match the implemented ledger slots")
         self.assertEqual(sum(1 for slot in slots if slot["approval"]["approved_by"]), 0)
