@@ -82,7 +82,7 @@
 
 | 状態 | 意味 | 必要条件 | 現在到達できるか | 現在の件数 |
 | --- | --- | --- | --- | --- |
-| `UNKNOWN` | 根拠がない、または判定できない。既定値。 | なし。`value` は `UNKNOWN`、`confidence` は `UNKNOWN`。 | はい | 全フィールド |
+| `UNKNOWN` | 根拠がない、または判定できない。既定値。 | なし。`value` は `UNKNOWN`、`confidence` は `UNKNOWN`。 | はい | 870 件（`spec/api_contracts.json` の 891 件の claim のうち。残り 21 件は HYPOTHESIS） |
 | `OBSERVED` | 記録された実コアの実行で、そのフィールドの挙動が観測された。 | 再現可能な実コア実行、実行の記録（`evidence_hash`、コア revision、入力、検証結果）、EMULATOR_SOURCE の参照、`REALCORE` の表示、callee 挙動のフィールドでは `executed_callee=True`、`observation_kind` がフィールドを覆う、各証拠の `measurement_point_id` が `spec/measurement_points.json` に登録され、その kind と field が一致する（#364。欠落時の理由の文言は #515 の監査による）、producer 認証（#124）。 | いいえ。認証前は `adjudicate_claim()` が拒否（`#124`）。静的レビューの `OBSERVED_STATIC` は別物 | 0 |
 | `PARTIAL` | 観測したのは入力領域の一部（ケース、フラグ、条件）。 | `OBSERVED` の条件に加え、覆った範囲と覆っていない範囲を明記すること。 | いいえ（abi1 の語彙にあるが、再現可能な観測がない） | 0 |
 | `VERIFIED-equivalent` | 参照 BIOS の全入力領域が実コアで観測され、認証され、独立レビューされ、オーナーが承認した状態。 | `OBSERVED` の条件に加え、全入力領域、独立レビュー、オーナー承認、#171 の trusted VERIFIED 経路。 | いいえ。`VERIFIED` は `CLAIM_STATUSES` と `adjudicate_claim()` で拒否される。abi1 は静的経路からの `VERIFIED` を拒否する | 0 |
@@ -105,7 +105,7 @@
 | --- | --- | --- |
 | 偽造証拠 | 形式が正しく、ハッシュが一致し、revision が pin と一致する証拠。`REALCORE` の文字列、`executed_callee`、呼び出し側が渡すハッシュ集合 | `ForgedEvidenceTests`（`#124` の拒否で止まること）、`VERIFIED` 状態の拒否 |
 | 自己申告の承認 | claim 内の `approval` キー、承認欄が空または片方だけの `DEV_CALLABLE`、承認者が自分で書いた値 | `SelfDeclaredApprovalTests`、`test_self_declared_approver_is_refused`（expectedFailure，§5） |
-| DEV の結果 | `DEV_CALLABLE` の行に `VERIFIED` の ABI 状態を付けた場合、承認された DEV 行を静的レビューに数えた場合 | `DevResultTests` |
+| DEV の結果 | `DEV_CALLABLE` の行に `VERIFIED` の ABI 状態を付けた場合 | `DevResultTests`（正の対照 1 件を含む）。承認された DEV 行が静的レビューの件数を変えることの検査は、件数の不一致に依存するため、DEV 承認の不算入を単独では証明しない（テストの注記を参照） |
 | 静的解析の結果 | 呼び出し側ソースだけの `OBSERVED`、静的レビューからの `VERIFIED`、`OBSERVED` / `PARTIAL` の静的レビュー、`EXECUTION_SAFE` を許可として扱う | `StaticAnalysisTests` |
 
 設計文書の語彙テスト（`DesignDocumentTests`）は、本書が使う状態語と 4 軸の名前がコードと一致することを確かめる。
