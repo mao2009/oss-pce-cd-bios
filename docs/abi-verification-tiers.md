@@ -121,7 +121,7 @@
 3. **`real_core_evidence` はパスの存在だけを確認する。** テストファイルの存在は、実コアで実行した証拠ではない。
 4. **`compatibility_basis` は未実装。** `docs/abi-evidence-classification.md` §4.2 の提案のみ。
 5. **producer 認証がない（#124、#171）。** `OBSERVED` も `VERIFIED-equivalent` も、この穴が塞がるまで到達できない。
-6. **全入力の DEV 実コア実行は台帳の外にある。** slot `$3D` の 256 入力 × 18 条件（4608 実行）は、`docs/evidence/dev-callable-3d.md` §3 に記録されている（失敗 0。有効 1800、不正 2808）。再現手順は `make dev-bcdbin-sweep`。この全入力実行は `make dev-integration` に組み込まれ、CI の `bios-dev` ジョブで実行される設計である（`docs/evidence/dev-callable-3d.md` §3.1 と §6）。ただし初版の実行は CI ではなくローカル WSL のみで、この全件実行の CI 成功記録は同ファイルにない（同 §3.2 の注記）。Issue #324 のコメントにある件数は別の記録として扱い、本書は台帳の値として採用しない。
+6. **全入力の DEV 実コア実行は台帳の外にある。** slot `$3D` の 256 入力 × 18 条件（4608 実行）は、`docs/evidence/dev-callable-3d.md` §3 に記録されている（失敗 0。有効 1800、不正 2808）。再現手順は `make dev-bcdbin-sweep`。この全入力実行は `make dev-integration` に組み込まれ、CI の `bios-dev` ジョブで実行される（`docs/evidence/dev-callable-3d.md` §3.1 の表に、CI の成功記録として 7 分 35 秒の実行が記載されている）。ただし、その記録がどの HEAD に対するものかは同ファイル §6 で「PR ページで確認すること」とされており、本書では未確認である。初版の実行は CI ではなくローカル WSL のみだった（同 §8）。Issue #324 のコメントにある件数は別の記録として扱い、本書は台帳の値として採用しない。
    `docs/evidence/dev-callable-*.md` の記録は DEV 承認の判断材料であり、台帳の値ではない。
 
 ## 6. オーナーが #324 で判断すること

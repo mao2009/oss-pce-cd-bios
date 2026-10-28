@@ -154,7 +154,7 @@ class SelfDeclaredApprovalTests(unittest.TestCase):
         entry["approval"] = {"approved_by": "worker-agent", "review_ref": "self"}
         self.assertTrue(any("approv" in p for p in dev.validate(ledger, SLOTS, OVERRIDES)))
 
-    def test_committed_ledgers_have_no_owner_approved_dev_callable(self):
+    def test_committed_dev_callable_count_is_zero(self):
         # State check on committed data, not a negative case. It must be updated when an owner-approved
         # DEV_CALLABLE row is recorded (§8.4); until then it pins the current state (no approval recorded).
         summary = dev.summary(base_ledger(), OVERRIDES)
@@ -183,7 +183,7 @@ class DevResultTests(unittest.TestCase):
         self.assertEqual([], dev.validate(ledger, SLOTS, OVERRIDES))
         self.assertEqual(0, dev.summary(ledger, OVERRIDES)["abi_verified"])
 
-    def test_dev_callable_is_not_absorbed_into_the_static_review(self):
+    def test_committed_review_count_refuses_dev_approval(self):
         # The review cross-checks its committed summary against the DEV ledger. An approved DEV row changes that
         # count, so the review must refuse rather than silently count DEV approval as reference verification.
         # Note: this relies on the committed-count mismatch. It does not by itself prove that DEV approval is never
