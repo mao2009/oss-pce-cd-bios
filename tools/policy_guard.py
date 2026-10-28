@@ -20,8 +20,10 @@ Static matching cannot prevent network sends from scripts that approved steps ca
 rests on least privilege, secret separation and trusted-publishing job separation.
 """
 from pathlib import Path
+import fnmatch
 import hashlib
 import importlib.util
+import json
 import re
 import sys
 
@@ -158,16 +160,37 @@ def _words(segment):
         return None
 
 
+def _discover_options(args):
+    """(start directory, pattern, top-level directory) of unittest discover, in the short and the long forms."""
+    values = {"start": ".", "pattern": "test*.py", "top": None}
+    names = {"-s": "start", "--start-directory": "start", "-p": "pattern", "--pattern": "pattern",
+             "-t": "top", "--top-level-directory": "top"}
+    index = 0
+    while index < len(args):
+        key, _, inline = args[index].partition("=")
+        if key in names:
+            if inline:
+                values[names[key]] = inline
+            elif index + 1 < len(args):
+                values[names[key]] = args[index + 1]
+                index += 1
+            else:
+                raise ValueError(f"unittest discover option {key} has no value (refused, Issue #544)")
+        index += 1
+    return values["start"], values["pattern"], values["top"]
+
+
 def _discover_files(trusted, args):
+    """Every test module and package __init__.py that discover imports under its start and top-level directories."""
     base = Path(trusted)
-    start = args[args.index("-s") + 1] if "-s" in args else "."
-    pattern = args[args.index("-p") + 1] if "-p" in args else "test*.py"
+    start, pattern, top = _discover_options(args)
     found = set()
-    top = base / start
-    if top.is_dir():
-        for path in top.rglob(pattern):
-            if path.is_file():
-                found.add(path.relative_to(base).as_posix())
+    for root in [start] + ([top] if top else []):
+        directory = base / root
+        if directory.is_dir():
+            for path in directory.rglob("*"):
+                if path.is_file() and (fnmatch.fnmatch(path.name, pattern) or path.name == "__init__.py"):
+                    found.add(path.relative_to(base).as_posix())
     return found
 
 
@@ -206,6 +229,10 @@ def _analyze_shell(text, trusted, where):
         if head in MAKE_CMDS:
             if any(a.startswith(("-C", "-f", "-I", "--directory", "--file", "--makefile", "--include-dir")) for a in args):
                 problems.append(f"{where}: make with -C, -f or -I selects another Makefile; refused (Issue #544)")
+                continue
+            if any("=" in a and not a.startswith("-") for a in args):
+                problems.append(f"{where}: make with a command-line variable (for example PYTHON= or SHELL=) changes what "
+                                "the recipes run; refused (Issue #544)")
                 continue
             positional = [a for a in args if not a.startswith("-") and "=" not in a]
             targets += positional if positional else ["__default__"]
@@ -287,6 +314,11 @@ def _analyze_makefile(trusted, requested, problems):
     base = Path(trusted)
     text = (base / "Makefile").read_text(encoding="utf-8")
     rules, variables, first = _makefile(trusted)
+    if re.search(r"^\s*(?:export\b|override\b|SHELL\b|\.SHELLFLAGS\b|MAKEFILES\b|MAKEFLAGS\b|\.DEFAULT_GOAL\b)",
+                 text, re.M):
+        problems.append("Makefile sets SHELL, MAKEFILES, MAKEFLAGS, export, override or .DEFAULT_GOAL; cannot be analyzed "
+                        "(refused, Issue #544)")
+        return {"Makefile"}, problems
     if re.search(r"!=|\$\((?:shell|eval|call|file|foreach)\b", text):
         problems.append("Makefile uses !=, $(shell), $(eval), $(call), $(file) or $(foreach); cannot be analyzed (refused)")
         return {"Makefile"}, problems
@@ -333,15 +365,18 @@ def _python_facts(source):
     """(imported module names, dynamic-loading constructs, string literals) of one Python file."""
     import ast
     tree = ast.parse(source)
-    names, dynamic, literals = set(), [], set()
+    names, dynamic, literals, relatives = set(), [], set(), []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             names.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             names.add(node.module)
+            names.update(f"{node.module}.{a.name}" for a in node.names if a.name != "*")
             if node.module == "os" and any(a.name in ("system", "popen") or a.name.startswith(("exec", "spawn"))
                                            for a in node.names):
                 dynamic.append("from os import a program launcher")
+        elif isinstance(node, ast.ImportFrom) and node.level > 0:
+            relatives.append((node.level, node.module or "", [a.name for a in node.names if a.name != "*"]))
         elif isinstance(node, ast.Call):
             callee = getattr(node.func, "id", None) or getattr(node.func, "attr", None) or ""
             owner = getattr(getattr(node.func, "value", None), "id", "")
@@ -364,7 +399,18 @@ def _python_facts(source):
                     dynamic.append(RUNTIME_PROGRAM)
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             literals.add(node.value)
-    return names, dynamic, literals
+    return names, dynamic, literals, relatives
+
+
+def _add_module_files(base, files, directory, dotted):
+    """Add the file each dotted name resolves to under directory, and the __init__.py of every parent package."""
+    parts = [p for p in dotted.split(".") if p]
+    prefix = f"{directory}/" if directory else ""
+    for depth in range(1, len(parts) + 1):
+        stem = "/".join(parts[:depth])
+        for candidate in (f"{prefix}{stem}.py", f"{prefix}{stem}/__init__.py"):
+            if (base / candidate).is_file():
+                files.add(candidate)
 
 
 def _python_closure(trusted, rel, problems):
@@ -372,7 +418,7 @@ def _python_closure(trusted, rel, problems):
     files = {rel}
     source = (base / rel).read_text(encoding="utf-8")
     try:
-        names, dynamic, literals = _python_facts(source)
+        names, dynamic, literals, relatives = _python_facts(source)
     except SyntaxError as error:
         problems.append(f"{rel} does not parse ({error}); cannot be analyzed (refused, Issue #544)")
         return files
@@ -389,12 +435,17 @@ def _python_closure(trusted, rel, problems):
     # sys.path[0] is the script directory, and unittest adds the top directory: follow imports from these directories.
     search = [rel.rsplit("/", 1)[0] if "/" in rel else "", "tools", "tests/host", "tests/integration", "tests", ""]
     for name in names:
-        dotted = name.replace(".", "/")
         for directory in search:
-            prefix = f"{directory}/" if directory else ""
-            for candidate in (f"{prefix}{dotted}.py", f"{prefix}{dotted}/__init__.py"):
-                if (base / candidate).is_file():
-                    files.add(candidate)
+            _add_module_files(base, files, directory, name)
+    package = rel.rsplit("/", 1)[0] if "/" in rel else ""
+    for level, module, aliases in relatives:
+        parts = package.split("/") if package else []
+        if level - 1 > len(parts):
+            problems.append(f"{rel} imports above its package; refused (Issue #544)")
+            continue
+        anchor = "/".join(parts[: len(parts) - (level - 1)])
+        for dotted in ([module] if module else []) + [f"{module}.{a}" if module else a for a in aliases]:
+            _add_module_files(base, files, anchor, dotted)
     for lit in literals:
         if lit.endswith(EXEC_EXT) and PATH_TOKEN_RE.fullmatch(lit) and (base / lit).is_file():
             files.add(lit)
@@ -494,12 +545,35 @@ def check_record_problems(record, head_sha, expected_app_id):
     return []
 
 
+def check_run_records(payload, head_sha, expected_app_id):
+    """The check-runs listing for the head SHA (GitHub REST: commits/{sha}/check-runs). Every run named policy-guard must be
+    for this head, from the expected app, completed with success; at least one must exist (Issue #544)."""
+    runs = [run for run in (payload or {}).get("check_runs", []) if run.get("name") == REQUIRED_CHECK]
+    if not runs:
+        return ["no policy-guard check run for this head: missing, removed or skipped (refused; Issue #544)"]
+    problems = []
+    for run in runs:
+        record = {"name": run.get("name"), "head_sha": run.get("head_sha"), "app_id": (run.get("app") or {}).get("id"),
+                  "conclusion": run.get("conclusion") if run.get("status") == "completed" else None}
+        problems += check_record_problems(record, head_sha, expected_app_id)
+    return problems
+
+
 def check_candidate(candidate, trusted):
     """All candidate checks against the trusted copy. Returns the list of problems (empty when the candidate passes)."""
     return policy_files_match(candidate, trusted) + approval_problems(candidate, trusted) + closure_problems(candidate, trusted)
 
 
 def main(argv):
+    if argv[:1] == ["--check-record"]:
+        if len(argv) != 6 or argv[2] != "--head" or argv[4] != "--app-id":
+            raise ValueError("usage: policy_guard.py --check-record RUNS.json --head SHA --app-id ID")
+        payload = json.loads(Path(argv[1]).read_text(encoding="utf-8"))
+        problems = check_run_records(payload, argv[3], int(argv[5]))
+        if problems:
+            raise ValueError("policy guard record: " + "; ".join(problems))
+        print("PASS policy guard record: policy-guard completed with success for this head and app")
+        return
     if len(argv) != 4 or argv[0] != "--candidate" or argv[2] != "--trusted":
         raise ValueError("usage: policy_guard.py --candidate DIR --trusted DIR")
     problems = check_candidate(Path(argv[1]), Path(argv[3]))

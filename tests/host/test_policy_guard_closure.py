@@ -22,6 +22,7 @@ import policy_guard as policy  # noqa: E402
 REPO = Path(__file__).resolve().parents[2]
 FIXTURE = '.github/workflows/priv_fixture.yml'
 ALLOWLIST = 'tools/artifact_guard_run_allowlist.json'
+APP_ID = 15368   # the same GitHub Actions app ID that test_policy_guard.py uses (existing value, not new)
 
 
 def priv_workflow(run):
@@ -226,6 +227,108 @@ class ReviewRoundTwoBypasses(ClosureCase):
             (root / 'tools' / 'query.py').write_text('import subprocess\nsubprocess.getoutput("true")\n', encoding='utf-8')
         self.set_run('python3 tools/query.py')
         self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
+
+
+class RoundFourBypasses(ClosureCase):
+    """Round-four review items (Issue #544): Makefile overrides, submodule and relative imports, parent packages, long
+    discover options, and the check-run record. Each must be refused or followed."""
+
+    def set_run(self, text):
+        for root in (self.trusted, self.candidate):
+            (root / FIXTURE).write_text(priv_workflow(text), encoding='utf-8')
+
+    def test_make_command_line_variable_is_refused(self):
+        self.set_run('make setup PYTHON=/tmp/evil')
+        self.assertTrue(policy.closure_of(self.trusted)[2])
+
+    def test_makefile_shell_directive_is_refused(self):
+        with (self.trusted / 'Makefile').open('a', encoding='utf-8') as handle:
+            handle.write('SHELL := /tmp/evil\n')
+        self.set_run('make setup')
+        self.assertTrue(policy.closure_of(self.trusted)[2])
+
+    def test_from_package_import_submodule_is_followed(self):
+        (self.trusted / 'tools' / 'user.py').write_text('from tools import leaf\n', encoding='utf-8')
+        (self.candidate / 'tools' / 'user.py').write_text('from tools import leaf\n', encoding='utf-8')
+        (self.trusted / 'tools' / 'leaf.py').write_text('VALUE = 1\n', encoding='utf-8')
+        (self.candidate / 'tools' / 'leaf.py').write_text('VALUE = 1\n', encoding='utf-8')
+        self.set_run('python3 tools/user.py')
+        self.assertEqual(policy.closure_problems(self.candidate, self.trusted), [])
+        self.append('tools/leaf.py', 'import os\n')
+        self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
+
+    def test_relative_import_is_followed(self):
+        for root in (self.trusted, self.candidate):
+            (root / 'tools' / 'pkg').mkdir(exist_ok=True)
+            (root / 'tools' / 'pkg' / '__init__.py').write_text('', encoding='utf-8')
+            (root / 'tools' / 'pkg' / 'rel.py').write_text('from . import helper\n', encoding='utf-8')
+            (root / 'tools' / 'pkg' / 'helper.py').write_text('VALUE = 1\n', encoding='utf-8')
+        self.set_run('python3 tools/pkg/rel.py')
+        self.assertEqual(policy.closure_problems(self.candidate, self.trusted), [])
+        self.append('tools/pkg/helper.py', 'import os\n')
+        self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
+
+    def test_parent_package_init_is_followed(self):
+        for root in (self.trusted, self.candidate):
+            (root / 'tools' / 'pkg').mkdir(exist_ok=True)
+            (root / 'tools' / 'pkg' / '__init__.py').write_text('X = 1\n', encoding='utf-8')
+            (root / 'tools' / 'pkg' / 'sub.py').write_text('VALUE = 1\n', encoding='utf-8')
+            (root / 'tools' / 'user2.py').write_text('import pkg.sub\n', encoding='utf-8')
+        self.set_run('python3 tools/user2.py')
+        self.assertEqual(policy.closure_problems(self.candidate, self.trusted), [])
+        self.append('tools/pkg/__init__.py', 'import os\n')
+        self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
+
+    def test_long_discover_options_are_followed(self):
+        self.set_run('python3 -m unittest discover --start-directory tests/host --pattern "test_policy_guard_closure.py"')
+        files, _, _ = policy.closure_of(self.trusted)
+        self.assertIn('tests/host/test_policy_guard_closure.py', files)
+        self.append('tests/host/test_policy_guard_closure.py', '\n# discovered in the privileged run\n')
+        self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
+
+
+class CheckRunRecord(unittest.TestCase):
+    """The check-run listing for the head SHA (the record check that the policy-guard ruleset relies on)."""
+
+    HEAD = 'a' * 40
+
+    def make_run(self, **overrides):
+        run = {'name': 'policy-guard', 'head_sha': self.HEAD, 'status': 'completed', 'conclusion': 'success',
+               'app': {'id': APP_ID}}
+        run.update(overrides)
+        return run
+
+    def test_matching_completed_success_passes(self):
+        self.assertEqual(policy.check_run_records({'check_runs': [self.make_run()]}, self.HEAD, APP_ID), [])
+
+    def test_missing_run_is_refused(self):
+        self.assertTrue(policy.check_run_records({'check_runs': []}, self.HEAD, APP_ID))
+
+    def test_wrong_app_is_refused(self):
+        self.assertTrue(policy.check_run_records({'check_runs': [self.make_run(app={'id': 1})]}, self.HEAD, APP_ID))
+
+    def test_stale_head_is_refused(self):
+        self.assertTrue(policy.check_run_records({'check_runs': [self.make_run(head_sha='b' * 40)]}, self.HEAD, APP_ID))
+
+    def test_skipped_is_refused(self):
+        self.assertTrue(policy.check_run_records({'check_runs': [self.make_run(conclusion='skipped')]}, self.HEAD, APP_ID))
+
+    def test_in_progress_is_refused(self):
+        self.assertTrue(policy.check_run_records(
+            {'check_runs': [self.make_run(status='in_progress', conclusion=None)]}, self.HEAD, APP_ID))
+
+    def test_command_line_record_check_refuses_skipped(self):
+        import json
+        import subprocess
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / 'runs.json'
+        path.write_text(json.dumps({'check_runs': [self.make_run(conclusion='skipped')]}), encoding='utf-8')
+        result = subprocess.run([sys.executable, str(TOOLS / 'policy_guard.py'), '--check-record', str(path),
+                                 '--head', self.HEAD, '--app-id', str(APP_ID)], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        print(result.stderr.strip().splitlines()[-1][:200])
 
 
 class UnprivilegedBoundary(unittest.TestCase):
