@@ -15,7 +15,7 @@
 
 | 台帳 | 現在の値 | 意味 |
 | --- | --- | --- |
-| `spec/api_contracts.json`（参照 BIOS の契約） | 81 slot すべて `verification: NOT_RUN` | 台帳上は実測なし。ただし `spec/abi1_reference_review.json` の slot-1e（EX_GETVER）に、`docs/reference-bios-test-plan.md` で記録されたローカル限定の実コア測定がある（`prior_local_only: PRESENT`、`reproducible_real_core: NOT_RUN`。コミット済みのランナーでは再現できない）。この記録は台帳の値ではなく、§2.3 の扱いに従う |
+| `spec/api_contracts.json`（参照 BIOS の契約） | 81 slot すべて `verification: NOT_RUN` | 台帳上は実測なし。ただし `spec/abi1_reference_review.json` の slot-1e（EX_GETVER）に、`docs/reference-bios-test-plan.md` で記録されたローカル限定の実コア測定がある（`prior_local_only: PRESENT`、`reproducible_real_core: NOT_RUN`。コミット済みのランナーでは再現できない）。この記録は台帳の値ではない。扱いは §8.3（公開範囲）と §9.2（未承認計測の非公開）に従う |
 | `spec/abi1_reference_review.json`（静的レビュー） | 7 件、`abi_state: NOT_RUN`、`static: OBSERVED_STATIC` | 静的解析の記録。検証ではない |
 | `spec/dev_implementations.json`（DEV 実装） | 81 行すべて `NOT_READY`、`approval` の `approved_by` / `review_ref` は null、DEV ROM の override は、基準 `ec496e9` 時点で 10 slot。本ブランチの HEAD では 12 slot（`tools/build_rom.py` の `overrides()`） | DEV ROM に実装がある slot と、その承認状態 |
 
@@ -193,7 +193,7 @@
   - A. caller から見える ABI（引数、戻り値、破壊レジスタ）だけを公開する。
   - B. 内部挙動も含めて公開する。
   - C. 承認まで何も公開しない。
-- **推奨: C を当面とし、承認後に A へ広げる。** 内部挙動は provenance の判断に依存する。公開範囲を先に決めると、承認前に内部の詳細が漏れる。
+- **推奨: C を当面とする。** 公開を広げるのは、オーナーが個別に指定した範囲に限る（オーナー裁定（b））。内部挙動は provenance の判断に依存する。公開範囲を先に決めると、承認前に内部の詳細が漏れる。
 - **互換性:** C は影響なし。A は承認後の追記で、既存の値は変えない。
 - **セキュリティ:** 内部の詳細の公開は、参照 BIOS の再配布や provenance 上の問題を招きうる。
 - **必要な人間の承認:** オーナーが公開範囲を決める。

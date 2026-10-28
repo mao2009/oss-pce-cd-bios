@@ -2,10 +2,13 @@
 """Negative tests for the ABI verification tiers (Issue #324, design: docs/abi-verification-tiers.md).
 
 Host-only. No real core, no reference BIOS, no CI artifacts. Fixtures are synthetic and live in this file.
-Most classes are negative cases. The positive controls (DevResultTests.test_dev_callable_keeps_abi_status_non_verified)
-and the document-consistency checks (DesignDocumentTests, labelled in its class docstring) are not negative cases.
-The committed-state pins (test_committed_dev_callable_count_is_zero, test_dev_ledger_states_have_no_tier_values)
-are not negative cases either; each carries an inline comment at its test.
+Most classes are negative cases. Four tests are NOT negative cases, and each is labelled in its class docstring
+and by an inline comment at the test:
+- positive controls: DevResultTests.test_dev_callable_keeps_abi_status_non_verified,
+  ForgedEvidenceTests.test_resolved_artifact_is_not_observation (the hash-only resolution succeeds);
+- committed-state pin: SelfDeclaredApprovalTests.test_committed_dev_callable_count_is_zero;
+- positive vocabulary check: OwnerUndecidedStateTests.test_dev_ledger_states_have_no_tier_values.
+DesignDocumentTests is a document check, labelled in its class docstring.
 
 Four axes are kept apart: SOURCE_EVIDENCE, PROVENANCE_APPROVAL, CALLEE_VERIFICATION and DEV_IMPLEMENTATION.
 Nothing from one axis may reach VERIFIED on the reference ABI. The tests below try to promote from each
@@ -77,7 +80,10 @@ def base_review():
 
 
 class ForgedEvidenceTests(unittest.TestCase):
-    """Well-formed, hash-matching, pinned-revision evidence still does not reach OBSERVED or VERIFIED."""
+    """Well-formed, hash-matching, pinned-revision evidence still does not reach OBSERVED or VERIFIED.
+
+    Contains one labelled positive control: test_resolved_artifact_is_not_observation (the hash-only resolution succeeds).
+    """
 
     def assertRefusedAsUnauthenticated(self, claim, **kwargs):
         with self.assertRaises(ValueError) as caught:
@@ -125,7 +131,10 @@ class ForgedEvidenceTests(unittest.TestCase):
 
 
 class SelfDeclaredApprovalTests(unittest.TestCase):
-    """A status, approval or DEV_CALLABLE declaration written by the claim itself is not approval."""
+    """A status, approval or DEV_CALLABLE declaration written by the claim itself is not approval.
+
+    Contains one labelled committed-state pin: test_committed_dev_callable_count_is_zero (not a negative case).
+    """
 
     def test_approval_key_inside_a_contract_claim_is_refused(self):
         claim = {"status": "HYPOTHESIS", "value": "x", "sources": ["caller"],
@@ -166,7 +175,10 @@ class SelfDeclaredApprovalTests(unittest.TestCase):
 
 
 class DevResultTests(unittest.TestCase):
-    """A DEV implementation, even when approved and tested, is not a reference ABI VERIFIED."""
+    """A DEV implementation, even when approved and tested, is not a reference ABI VERIFIED.
+
+    Contains one labelled positive control: test_dev_callable_keeps_abi_status_non_verified.
+    """
 
     def test_dev_callable_with_verified_abi_status_is_refused(self):
         ledger = base_ledger()
@@ -271,7 +283,10 @@ class DesignDocumentTests(unittest.TestCase):
 
 
 class OwnerUndecidedStateTests(unittest.TestCase):
-    """The undecided tier words are design vocabulary only: they must not be stored or accepted as claim status."""
+    """The undecided tier words are design vocabulary only: they must not be stored or accepted as claim status.
+
+    Contains one labelled positive vocabulary check: test_dev_ledger_states_have_no_tier_values (not a negative case).
+    """
 
     def test_partial_claim_status_is_refused(self):
         claim = {"status": "PARTIAL", "value": "x", "sources": ["caller"], "confidence": "SOURCE_SUPPORTED"}
