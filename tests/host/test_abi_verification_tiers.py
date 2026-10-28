@@ -48,6 +48,9 @@ def observed_claim(*, sources=("geargrafx",), kind="CALLEE_EXECUTION", execution
             "input_type": "ROM test input",
             "verification_result": "PASS",
             "evidence_hash": SYNTHETIC_DIGEST,
+            # Issue #364 / #515: a registered point whose kind and fields match, so the refusal under test is the
+            # authentication gate (#124), not the point check.
+            "measurement_point_id": "CALLEE_EXECUTION_SLOT",
         }],
         "observation_kind": kind,
     }
