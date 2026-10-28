@@ -106,30 +106,34 @@ def run_case(probe, base, folder, cue, reset, label, entry, a, sp=0xFF, count=20
     check(label, rows, halt, a, sp, p_entry)
 
 
-REJECT_MARKERS = ("observed", "not balanced", "MPR changed", "did not reach")
+REJECT_MARKERS = ("observed", "not balanced", "MPR changed", "did not reach", "P not preserved")
 
 
-def mutant_sites(data, body):
-    """Byte offsets (file offsets) of the mutation targets in the assembled slot $46 routine.
+def wrapper_sites(data, body):
+    """File offsets inside the assembled slot $46 wrapper, found by its exact byte sequence:
+    php; cld; clc; adc #64; plp; jmp api_slot_45  (08 D8 18 69 40 28 4C). Must be unique in the body."""
+    start = body - 0xE000
+    pattern = bytes([0x08, 0xD8, 0x18, 0x69, 0x40, 0x28, 0x4C])
+    hits = [i for i in range(start, start + 0x40) if data[i:i + len(pattern)] == pattern]
+    if len(hits) != 1:
+        raise ValueError(f"slot $46 wrapper not located uniquely in its body ({len(hits)} hits)")
+    p = hits[0]
+    return {"cld": p + 1, "adc_operand": p + 4, "plp": p + 5}
 
-    The table is located by its exact Q15 bytes (cos_lo then cos_hi, 65 bytes each), so the offsets
-    come from the built ROM, not from the source. Each pattern must be unique, otherwise we fail."""
-    lo = bytes((q15(i) & 0xFF) for i in range(65))
-    hi = bytes(((q15(i) >> 8) & 0xFF) for i in range(65))
+
+def sine_table_sites(data):
+    """Offset of the shared quarter-wave table (slot $45 sin_lo, then sin_hi), located by exact Q15 bytes."""
+    lo = bytes((q15_sin(i) & 0xFF) for i in range(65))
+    hi = bytes(((q15_sin(i) >> 8) & 0xFF) for i in range(65))
     table = data.find(lo)
     if table < 0 or data[table + 65:table + 130] != hi or data.find(lo, table + 1) >= 0:
-        raise ValueError("MA_COS Q15 table not located uniquely in the built ROM")
-    start = body - 0xE000
-    def unique(pattern):
-        hits = [i for i in range(start, table) if data[i:i + len(pattern)] == pattern]
-        if len(hits) != 1:
-            raise ValueError(f"pattern {pattern.hex()} found {len(hits)} times in slot $46 body")
-        return hits[0]
-    return {
-        "table": table,
-        "sign_bpl": unique(bytes([0x24, 0xF8, 0x10])) + 2,   # bit $F8 ; bpl done -> operand
-        "epilogue": unique(bytes([0x7A, 0x28, 0x60])),       # ply ; plp ; rts
-    }
+        raise ValueError("shared sine table not located uniquely in the built ROM")
+    return table
+
+
+def q15_sin(i):
+    """Independent oracle: round(32767 * sin(2*pi*i/256)), i.e. the sine table entries T[i] = sin(pi/2 * i/64)."""
+    return math.floor(32767 * math.sin(2 * math.pi * i / 256) + 0.5)
 
 
 def apply_mutant(data, offset, new):
@@ -144,23 +148,21 @@ def apply_mutant(data, offset, new):
 
 
 def run_mutants(probe, data, folder, cue, reset, entry, body, evidence):
-    sites = mutant_sites(data, body)
-    t = sites["table"]
+    wrap = wrapper_sites(data, body)
+    t = sine_table_sites(data)
     plan = [
-        # (name, file offset, new byte, angle that must expose it)
-        ("table_byte_flip_T16", t + 16, data[t + 16] ^ 0x01, 16),   # cos_lo[16] off by one LSB
-        # bpl skips negation for positive quadrants; BRA always skips it. Angle 128 must be negative,
-        # so only a negative input exposes this mutant.
-        ("sign_branch_bpl_to_bra", sites["sign_bpl"], 0x80, 128),
-        ("ply_to_plx_swap", sites["epilogue"], 0xFA, 1),            # PLY -> PLX: Y not restored
-        ("plp_to_nop_removal", sites["epilogue"] + 1, 0xEA, 1),     # PLP -> NOP: stack unbalanced
+        # (name, file offset, new byte, angle that must expose it, caller P or None)
+        ("phase_shift_adc_63", wrap["adc_operand"], 0x3F, 1, None),           # cos(a) = sin(a+63): off by one step
+        ("plp_to_nop", wrap["plp"], 0xEA, 1, None),                           # P not restored / stack unbalanced
+        ("cld_to_nop_decimal_caller", wrap["cld"], 0xEA, 0x0A, 0x08),         # caller D=1: BCD add gives a wrong angle
+        ("shared_sine_table_byte", t + 16, data[t + 16] ^ 0x01, 208, None),   # a=208 -> index (208+64)&$FF=16 in slot $45's table
     ]
     results = []
-    for name, offset, new, angle in plan:
+    for name, offset, new, angle, p_entry in plan:
         mutant = apply_mutant(data, offset, new)
         label = f"mut-{name}"
         try:
-            run_case(probe, mutant, folder, cue, reset, label, entry, angle)
+            run_case(probe, mutant, folder, cue, reset, label, entry, angle, p_entry=p_entry)
         except ValueError as error:
             message = str(error)
             if not any(marker in message for marker in REJECT_MARKERS):
@@ -228,7 +230,7 @@ def main():
     print(f"PASS real Geargrafx DEV ROM: MA_COS slot $46 {total} cases ({len(angles)} at SP=$FF, "
           f"3 at SP=$06 boundary, {len(P_FLAG_CASES)} P vectors, {len(NZ_CASES)} N/Z vectors); "
           f"the original 22 arithmetic/stack cases are retained; X:A=Q15 cosine of A, Y and SP checked; MPR1/MPR7 checked; "
-          f"mutants rejected {mutants}/4 (table byte, sign branch, ply->plx, plp->nop)")
+          f"mutants rejected {mutants}/4 (phase shift, plp->nop, caller-D cld->nop, shared sine table byte)")
 
 
 if __name__ == "__main__":
