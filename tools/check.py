@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 
-from artifact_guard import check_upload_artifacts, check_guard_placement, enforced_check
+from artifact_guard import check_upload_artifacts, check_guard_placement
 from environment import ROOT, executable, core_path
 
 
@@ -73,8 +73,7 @@ def main():
     # Fail closed before upload: no linked GPL probe executable or object may reach upload-artifact (#227).
     check_upload_artifacts(ROOT)
     # The guard must sit immediately before each upload in the same job (no build step in between).
-    # Issue #511 (audit): enforced, so an unapproved run: text is refused here too (was a fail-open path).
-    enforced_check(ROOT, check_guard_placement, allowlist_root=ROOT)
+    check_guard_placement(ROOT)
     core_path()
     output = ROOT / "build/check"
     output.mkdir(parents=True, exist_ok=True)

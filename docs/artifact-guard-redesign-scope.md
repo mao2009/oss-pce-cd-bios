@@ -3,10 +3,16 @@
 PR #529 は run: 承認（完全一致、承認表は信頼された main 側から読む）の最小修正だけを扱う。
 全面再設計は bootstrap の後に別 PR で行う（オーナー判断）。この文書はその別 PR の範囲を定める。
 
-## #529 で閉じたこと（最小修正）
+## #529 の監査結果
 
-- `tools/check.py` の `make check` 経路が `check_guard_placement` を承認表なしで呼んでいた（fail-open）。
-  `enforced_check` を通すように変更し、`tests/host/test_artifact_guard_check_enforced_audit.py` で確認する。
+- 信頼された main 側のガード（ci.yml / api-source.yml / pages.yml などの guard ジョブ）は、全ワークフローの `run:` を
+  main 側の承認表（完全一致、ダイジェスト）で検査する。監査で注入した 16 件（run: 追加、名前変更、if: 追加、flow 形式、
+  アンカー、重複キー、github-script、ローカル uses、composite action、トップレベル env / defaults、大文字の .YML など）
+  はすべて拒否された。承認表は候補（PR）の木ではなく信頼された main の木から読まれる。
+- 残存: `tools/check.py` の `make check`（ci.yml の verify ジョブ）は `check_guard_placement` を承認表なしで呼ぶ（fail-open）。
+  ただし公開の門は信頼された guard ジョブであり、verify ジョブのみで注入された run: はそこで拒否される。
+  `make check` を強制するには信頼された承認表が必要で、検査を候補の木の承認表に向けると自己承認になるため、
+  #529 では変更しない。別 PR で扱う。
 
 ## 別 PR の範囲（#529 では扱わない）
 
