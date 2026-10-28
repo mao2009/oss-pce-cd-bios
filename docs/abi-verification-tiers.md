@@ -51,7 +51,7 @@
 - 問い: 参照 BIOS の callee を実コアで実行し、入出力、フラグ、MPR、スタック、RAM 差分を測ったか。
 - 値: §3 の状態語。
 - 実行記録（`evidence_hash`、コア revision、入力、検証結果）が必要。現状は全 slot `NOT_RUN`。
-- 注意: 実測の事実と、その事実を公開してよいかは別問題（オーナー判断 §6 の項目 3）。
+- 注意: 実測の事実と、その事実を公開してよいかは別問題（オーナー判断 §6 の「項目 5: CALLEE_VERIFICATION の公開範囲」）。
 
 ### 2.4 DEV_IMPLEMENTATION（OSS の DEV ROM 実装）
 
@@ -109,7 +109,7 @@
 | DEV の結果 | `DEV_CALLABLE` の行に `VERIFIED` の ABI 状態を付けた場合 | `DevResultTests`（正の対照 1 件を含む）。承認された DEV 行が静的レビューの件数を変えることの検査は、件数の不一致に依存するため、DEV 承認の不算入を単独では証明しない（テストの注記を参照） |
 | 静的解析の結果 | 呼び出し側ソースだけの `OBSERVED`、静的レビューからの `VERIFIED`、`OBSERVED` / `PARTIAL` の静的レビュー、`EXECUTION_SAFE` を許可として扱う | `StaticAnalysisTests` |
 
-設計文書の語彙テスト（`DesignDocumentTests`）は、本書が使う状態語と 4 軸の名前がコードと一致することを確かめる。
+設計文書の検査（`DesignDocumentTests`）は、本書に状態語とセクション構成が現れることを確かめる存在検査である。4 軸の名前はコードに対応する定義がなく、検査は本書内の存在のみを見る。
 
 ## 5. 既知の穴（未解決）
 
