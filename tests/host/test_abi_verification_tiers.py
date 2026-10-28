@@ -231,9 +231,23 @@ class DesignDocumentTests(unittest.TestCase):
             self.assertIn(axis, self.text)
 
     def test_document_names_the_status_vocabulary_in_code(self):
+        # Whole-token match: "OBSERVED" must not be satisfied by "OBSERVED_STATIC".
         for state in sorted(review.ABI_STATES | review.ITEM_STATUSES):
-            self.assertIn(state, self.text, state)
+            self.assertRegex(self.text, rf"(?<![A-Za-z0-9_]){re.escape(state)}(?![A-Za-z0-9_])", state)
         self.assertIn("VERIFIED-equivalent", self.text)
+
+    def test_document_claims_no_compatibility(self):
+        self.assertIn("互換性を主張しない", self.text)
+        for phrase in ("互換性がある", "互換性を達成", "compatible System Card BIOS"):
+            self.assertNotIn(phrase, self.text)
+
+    def test_owner_items_remain_undecided(self):
+        # Requirement 3: section 8 records recommendations only; no decision or approval is written there.
+        self.assertIn("以下は未決", self.text)
+        section8 = self.text.split("\n## 8.", 1)[1]
+        self.assertIn("推奨は提案であり、決定ではない", section8)
+        for phrase in ("決定した", "承認した", "採用した", "承認済み"):
+            self.assertNotIn(phrase, section8, phrase)
 
     def test_document_states_it_changes_no_schema_or_gate(self):
         self.assertRegex(self.text, re.compile(r"スキーマ.*変更しない|変更しない.*スキーマ"))

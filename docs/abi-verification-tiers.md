@@ -66,7 +66,7 @@
 
 | 軸 | 到達できる最上位 | 到達できないもの |
 | --- | --- | --- |
-| SOURCE_EVIDENCE | `HYPOTHESIS`（`SOURCE_FACT` は静的レビューの語） | `OBSERVED`、`VERIFIED`、provenance 承認、DEV_CALLABLE |
+| SOURCE_EVIDENCE | `HYPOTHESIS`（`SOURCE_FACT` は台帳の値ではなく、§2.1 の文書上のラベル） | `OBSERVED`、`VERIFIED`、provenance 承認、DEV_CALLABLE |
 | PROVENANCE_APPROVAL | `APPROVED`（人間の承認者が記録） | 挙動の正しさ、callee 実測、互換性 |
 | CALLEE_VERIFICATION | 到達できる状態はない（`OBSERVED` は認証前に拒否。§3） | `VERIFIED`（現スキーマでは表せない。#171） |
 | DEV_IMPLEMENTATION | `DEV_CALLABLE`（DEV ROM に限る） | 参照 BIOS の `VERIFIED`、release 判定、互換性 |
@@ -121,7 +121,7 @@
 3. **`real_core_evidence` はパスの存在だけを確認する。** テストファイルの存在は、実コアで実行した証拠ではない。
 4. **`compatibility_basis` は未実装。** `docs/abi-evidence-classification.md` §4.2 の提案のみ。
 5. **producer 認証がない（#124、#171）。** `OBSERVED` も `VERIFIED-equivalent` も、この穴が塞がるまで到達できない。
-6. **全入力の DEV 実コア実行は台帳の外にある。** slot `$3D` の 256 入力 × 18 条件は WSL のローカル実行のみで、CI で再現されていない（Issue #324 のコメント）。
+6. **全入力の DEV 実コア実行は台帳の外にある。** slot `$3D` の 256 入力 × 18 条件は WSL のローカル実行のみで、CI で再現されていない（Issue #324 のコメントに記載）。repo の `docs/evidence/dev-callable-3d.md` にはこの件数の記録がないため、件数は repo 内では未確認である。
    `docs/evidence/dev-callable-*.md` の記録は DEV 承認の判断材料であり、台帳の値ではない。
 
 ## 6. オーナーが #324 で判断すること
