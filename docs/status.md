@@ -6,7 +6,7 @@ This is an evidence-scoped, **dated snapshot**, not a real-time compatibility re
 
 ## Six separate metrics
 
-Measured on main f90c16b: `src/overrides/slot_*.s` contains **9** files, `spec/dev_implementations.json` has **81** slots, **9** with a non-null `implementation`, and **0** owner approvals, and the 72 stubs are the remaining 81 − 9 entries.
+Measured on main f90c16b: `src/overrides/slot_*.s` contains **9** files, `spec/dev_implementations.json` has **81** slots, **9** with a non-null `implementation`, and **0** owner approvals, and main f90c16b's 72 stubs are the remaining 81 − 9 entries.
 
 | Metric | Confirmed on main | Meaning / limits |
 | --- | ---: | --- |
