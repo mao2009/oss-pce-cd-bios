@@ -133,5 +133,71 @@ class RootLinkRefused(unittest.TestCase):
         self.assertIn('dist: a symbolic link or junction is refused', str(caught.exception))
 
 
+class LinkWalkAndPlantedModules(unittest.TestCase):
+    """Last review of f7ec5b2: the link walk covers nested directories, files and .git at any depth (but not the root .git,
+    which is the repository's own), and a flagged directory is never descended into. A planted module beside the guard
+    is not imported (sys.path[0] is the guard's own directory, and it is removed before any import)."""
+
+    def make_root(self):
+        import os
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        (root / 'tools').mkdir()
+        (root / '.github' / 'workflows').mkdir(parents=True)
+        (root / '.github' / 'workflows' / 'w.yml').write_text(
+            'name: w\non: [push]\njobs:\n  b:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo hi\n', encoding='utf-8')
+        return root, os
+
+    def link(self, os, target, name):
+        try:
+            os.symlink(str(target), str(name))
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f'symbolic links cannot be created here: {error}')
+
+    def refusal(self, root):
+        try:
+            guard.check_guard_placement(root)
+        except ValueError as error:
+            return str(error)
+        return ''
+
+    def test_nested_directory_link_is_refused(self):
+        root, os = self.make_root()
+        self.link(os, root / 'tools', root / 'tools' / 'inner')
+        self.assertIn('tools/inner: a symbolic link or junction is refused', self.refusal(root))
+
+    def test_file_link_is_refused(self):
+        root, os = self.make_root()
+        self.link(os, root / 'tools', root / 'docs_link')
+        self.assertIn('docs_link: a symbolic link or junction is refused', self.refusal(root))
+
+    def test_nested_git_directory_link_is_refused(self):
+        root, os = self.make_root()
+        (root / 'tools' / '.git').mkdir()
+        self.link(os, root / 'tools', root / 'tools' / '.git' / 'hooks_link')
+        self.assertIn('tools/.git/hooks_link: a symbolic link', self.refusal(root))
+
+    def test_repository_root_git_directory_is_not_walked_for_links(self):
+        root, os = self.make_root()
+        (root / '.git').mkdir()
+        self.link(os, root / 'tools', root / '.git' / 'own_link')
+        self.assertEqual(self.refusal(root), '')
+
+    def test_planted_module_beside_the_guard_is_not_imported(self):
+        import shutil
+        import subprocess
+        import sys as system
+        root, _ = self.make_root()
+        planted = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, str(planted), True)
+        (planted / 'tools').mkdir()
+        shutil.copy(Path(guard.__file__), planted / 'tools' / 'artifact_guard.py')
+        (planted / 'tools' / 'yaml.py').write_text('raise SystemExit("planted module was imported")\n', encoding='utf-8')
+        result = subprocess.run([system.executable, str(planted / 'tools' / 'artifact_guard.py'), '--root', str(root),
+                                 '--check-placement'], capture_output=True, text=True)
+        self.assertNotIn('planted module was imported', result.stderr + result.stdout)
+
+
 if __name__ == '__main__':
     unittest.main()
