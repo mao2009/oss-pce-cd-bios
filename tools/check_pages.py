@@ -11,8 +11,18 @@ SITE = (Path(__file__).resolve().parents[1] / "site").resolve()
 ROOT = Path(__file__).resolve().parents[1]
 BASE = "https://mao2009.github.io/oss-pce-cd-bios/"
 REPO = "https://github.com/mao2009/oss-pce-cd-bios"
-ENGLISH_NUMBERS = {0: "zero", 1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven",
-                    8: "eight", 9: "nine", 10: "ten", 11: "eleven", 12: "twelve"}
+ONES = ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+        "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen")
+TENS = ("", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety")
+
+
+def english_number(count):
+    """English word for 0..99 (the DEV ROM count can grow with each merged slot); None outside that range."""
+    if not 0 <= count <= 99:
+        return None
+    if count < 20:
+        return ONES[count]
+    return TENS[count // 10] + ("" if count % 10 == 0 else "-" + ONES[count % 10])
 URLS = {
     (SITE / "index.html").resolve(): (BASE, "en"),
     (SITE / "ja" / "index.html").resolve(): (BASE + "ja/", "ja"),
@@ -192,7 +202,7 @@ def check_dev_rom_counts():
     implemented = sorted(slot["candidate_name"] for slot in slots if slot.get("implementation"))
     count, total = len(implemented), len(slots)
     stubs = total - count
-    word = ENGLISH_NUMBERS.get(count)
+    word = english_number(count)
     if word is None:
         raise ValueError(f"no English number word for the DEV ROM count {count}")
     english = (SITE / "index.html").read_text(encoding="utf-8")
