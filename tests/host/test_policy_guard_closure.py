@@ -532,6 +532,22 @@ class LastReviewRoutes(ClosureCase):
         self.assertEqual(policy.closure_of(self.trusted)[2], [])
 
 
+class ExitReviewRoutes(ClosureCase):
+    """Final review of e0c2a4f: legacy arithmetic and a full URL in gh api."""
+
+    def set_run(self, text):
+        for root in (self.trusted, self.candidate):
+            (root / FIXTURE).write_text(priv_workflow(text), encoding='utf-8')
+
+    def test_legacy_arithmetic_substitution_is_refused(self):
+        self.set_run('echo $[ 1 ]')
+        self.assertTrue(policy.closure_of(self.trusted)[2])
+
+    def test_gh_api_with_a_full_url_is_refused(self):
+        self.set_run('gh api https://example.invalid/x')
+        self.assertTrue(policy.closure_of(self.trusted)[2])
+
+
 class UnprivilegedBoundary(unittest.TestCase):
     def test_nightly_plan_job_is_outside_the_privileged_closure(self):
         # The nightly plan job holds no write permission: its run: text is approved exactly (approval_problems) but its

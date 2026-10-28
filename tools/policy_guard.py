@@ -494,7 +494,7 @@ def _privileged_command_problems(run, where):
     if re.search(r"<\(|>\(", run):
         problems.append(f"{where}: process substitution in a privileged run is refused (Issue #544)")
     text = "\n".join(line for line in run.splitlines() if not line.lstrip().startswith("#"))
-    if "$(" in text or "`" in text:   # no substitution in a privileged run at all (command -v can be the command word)
+    if "$(" in text or "`" in text or "$[" in text:   # no substitution or legacy arithmetic in a privileged run at all
         problems.append(f"{where}: command substitution in a privileged run is refused (Issue #544)")
     for segment in re.split(r"[\n;&|]+", text):
         words = _words(segment)
@@ -531,7 +531,8 @@ def _privileged_command_problems(run, where):
             elif any(_names_repository_code(a) for a in args):
                 problems.append(f"{where}: {head} names repository code (existing or missing); refused (Issue #544)")
         elif head == "gh":
-            api_read = args[:1] == ["api"] and len(args) == 2 and not args[1].startswith("-") and "graphql" not in args[1]
+            api_read = (args[:1] == ["api"] and len(args) == 2 and args[1].startswith("repos/")
+                        and "://" not in args[1] and "graphql" not in args[1])   # a bare repos/ path only, no full URL
             verify = args[:2] == ["attestation", "verify"]
             if not (api_read or verify) or any(_touches_trusted(a) for a in args):
                 problems.append(f"{where}: this gh command may write or is not listed; refused (Issue #544)")
