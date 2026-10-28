@@ -484,6 +484,22 @@ class CriticalReviewRoute(ClosureCase):
         self.assertEqual(policy.closure_of(self.trusted)[2], [])
 
 
+class FinalReviewRoute(ClosureCase):
+    """Final review (Issue #544): a command after ; hidden in a command -v match, and ./ writer prefixes."""
+
+    def set_run(self, text):
+        for root in (self.trusted, self.candidate):
+            (root / FIXTURE).write_text(priv_workflow(text), encoding='utf-8')
+
+    def test_command_hidden_after_semicolon_in_command_v_is_refused(self):
+        self.set_run('echo $(command -v x;sh<.candidate/p.sh)')
+        self.assertTrue(policy.closure_of(self.trusted)[2])
+
+    def test_dot_slash_repository_path_as_writer_target_is_refused(self):
+        self.set_run('cp .candidate/payload ./tools/json')
+        self.assertTrue(policy.closure_of(self.trusted)[2])
+
+
 class UnprivilegedBoundary(unittest.TestCase):
     def test_nightly_plan_job_is_outside_the_privileged_closure(self):
         # The nightly plan job holds no write permission: its run: text is approved exactly (approval_problems) but its

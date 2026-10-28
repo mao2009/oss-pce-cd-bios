@@ -130,7 +130,7 @@ def _trusted_steps(trusted):
 # a variable in an executed path, an expression ${{ }} in the run text, a runtime-built program (subprocess) unless listed
 # in REVIEWED_EXTERNAL with its expected count, and dynamic loading. The table is itself a policy file.
 PATH_TOKEN_RE = re.compile(r"""[^\s"'`;&|()<>=]+""")
-SAFE_SUBST_RE = re.compile(r"\$\((?:command -v [^\s)$]+|git rev-parse [\w-]+)\)")
+SAFE_SUBST_RE = re.compile(r"\$\((?:command -v [\w./-]+|git rev-parse [\w-]+)\)")
 GH_EXPR_RE = re.compile(r"\$\{\{.*?\}\}")
 DYNAMIC_SHELL_RE = re.compile(r"`|\$\(")   # command substitution; eval/source/exec/. are checked as command words
 DYNAMIC_HEADS = ("eval", "source", "exec", "xargs", ".", "builtin", "command", "env", "nohup", "time", "sudo", "stdbuf")
@@ -482,7 +482,8 @@ def _touches_trusted(arg):
 
 def _names_repository_code(arg):
     """A repository source or script, whether or not it exists: a writer may not copy it (a missing source is refused too)."""
-    return arg.split("/")[0] in REPO_TOP_DIRS or arg.endswith(EXEC_EXT)
+    norm = arg[2:] if arg.startswith("./") else arg   # ./tools/json is the same repository path as tools/json
+    return norm.split("/")[0] in REPO_TOP_DIRS or arg.endswith(EXEC_EXT)
 
 
 def _privileged_command_problems(run, where):
