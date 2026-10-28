@@ -22,6 +22,10 @@ int main(int argc, char** argv) {
     std::vector<u8> rom((std::istreambuf_iterator<char>(input)), {});
     GeargrafxCore core;
     core.Init(nullptr);
+    // Diagnostic only: Geargrafx seeds its power-on state from time(NULL), so registers and MPRs differed between
+    // identical runs. Pin them (I set, D clear, MPR all 0; MPR7=0 is the CPU reset contract) so runs are comparable.
+    core.GetHuC6280()->SetResetValue(0x04);
+    core.GetMemory()->SetResetValues(0, 0, 0, 0);
     // "-" = no media: the ROM becomes the card with CD hardware forced on (same loader as
     // geargrafx_cdread_probe.cpp; LoadBiosFromBuffer alone never Reset()s, so nothing would run).
     const bool have_disc = std::string(argv[2]) != "-";
