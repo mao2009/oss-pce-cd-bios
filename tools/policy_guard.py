@@ -513,8 +513,11 @@ def normalized_path(arg):
 # Owner ruling (Issue #544, option b): a privileged job writes only to a dedicated temporary area and to the staging area
 # named here. Nothing else (.git, sources, the trusted or candidate checkouts) may be written by a privileged step.
 STAGING_AREAS = ("build/stage/", "build/tmp/")
-# Read-only inputs of the policy job (its run text is approved): these two names are read, never written.
-TRUSTED_SCRIPT_READ_ONLY_ARGS = (".candidate", ".trusted")
+# Read-only inputs, per trusted script: an exact (flag, value) pair the script only reads (owner approval required, see the
+# ADR). Nothing else after a trusted script may name a path outside the staging areas.
+TRUSTED_SCRIPT_READ_ONLY_INPUTS = {
+    "policy_guard.py": {"--candidate": ".candidate", "--trusted": ".trusted"},
+}
 
 
 def writer_destinations(args):
@@ -587,13 +590,29 @@ def _privileged_command_problems(run, where):
             else:
                 # Owner ruling (Issue #544): the arguments after the trusted script are in the write-range rule too. The
                 # two read-only inputs of the policy job are the only exception (TRUSTED_SCRIPT_READ_ONLY_ARGS, see the ADR).
-                for word in args[script_index + 1:]:
-                    value = option_value(word)
-                    if value.startswith("-") or value in TRUSTED_SCRIPT_READ_ONLY_ARGS:
+                script_name = posixpath.basename(args[script_index])
+                rest = args[script_index + 1:]
+                inputs = TRUSTED_SCRIPT_READ_ONLY_INPUTS.get(script_name, {})
+                i = 0
+                while i < len(rest):
+                    word = rest[i]
+                    # the one exact read-only pair of this script (flag, value), and nothing else
+                    if word in inputs and i + 1 < len(rest) and rest[i + 1] == inputs[word]:
+                        i += 2
                         continue
-                    if not _in_staging_area(value):
-                        problems.append(f"{where}: an argument of the trusted script {args[script_index]!r} names {value!r}, "
+                    if word.startswith("--") and "=" in word:
+                        name, value = word.split("=", 1)
+                        if name in inputs and value == inputs[name]:
+                            i += 1
+                            continue
+                    else:
+                        value = word[2:] if word.startswith("-") and not word.startswith("--") else word
+                        if word.startswith("--"):
+                            value = ""   # a bare long flag names no value
+                    if value and not _in_staging_area(value):
+                        problems.append(f"{where}: an argument of the trusted script {script_name!r} names {value!r}, "
                                         f"outside {' or '.join(STAGING_AREAS)} (Issue #544); refused")
+                    i += 1
         elif head in PRIVILEGED_WRITERS:
             if any(re.fullmatch(r"-[A-Za-z]*[tT].+", a) for a in args):   # cp -rt.git/hooks: a target inside a bundled option
                 problems.append(f"{where}: {head} has a target directory attached inside a short-option bundle; refused "

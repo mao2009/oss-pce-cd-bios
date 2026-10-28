@@ -7,11 +7,14 @@
 1. **特権ジョブは候補コードを実行しない。** 特権ジョブが実行するのは、信頼された SHA の checkout 上のスクリプトだけとする。
    PR の候補は、ハッシュ・構文解析・ディレクトリ列挙の対象としてのみ読む。
 2. **書込みは 2 つの領域に限る。** 専用の一時領域 `build/tmp/` と、個別に認めたステージング領域 `build/stage/`。
-   この規則は、特権の書込み（`cp`、`tee`、`mkdir`、`gh`）の宛先と、信頼されたスクリプトの後ろの引数の両方に適用する。
-   例外は、ポリシージョブの読取り専用の入力（`.candidate`、`.trusted`）だけで、`TRUSTED_SCRIPT_READ_ONLY_ARGS` に列挙する。
-   この例外はオーナーの承認が必要な項目である。
+   この規則は、特権の書込み（`cp`、`tee`、`mkdir`）の宛先と、信頼されたスクリプトの後ろの引数の両方に適用する。
+   `gh` は書込み範囲の規則の対象ではない。`gh` は `repos/` で始まる単一の GET と `attestation verify` の二つに限る。
+   例外は、スクリプトとフラグの組ごとに列挙した読取り専用の対（`TRUSTED_SCRIPT_READ_ONLY_INPUTS`。現在は
+   `policy_guard.py` の `--candidate .candidate` と `--trusted .trusted` だけ）。この例外はオーナーの承認が必要な項目である。
    `.git`、ソース、trusted checkout（`.trusted-main/`、`.trusted/`）、candidate checkout（`.candidate/`）への書換えは禁止。
-3. **特権操作の前提は三つ。** (a) 信頼された SHA、(b) 承認済みスクリプトの固定ハッシュ、(c) 成果物の検証結果（sha256 の manifest）。
+3. **特権操作の前提は三つ。** (a) 信頼された SHA（実装済み: 特権の checkout は信頼された main のみ）、
+   (b) 承認済みスクリプト（実装は run: の完全一致の承認表による。スクリプト本体のハッシュ検査は未実装）、
+   (c) 成果物の検証結果（sha256 の manifest。検証は既存の `--verify`、manifest の強制は未実装）。
    いずれかが欠ければ fail closed とする。
 4. **非特権 CI と特権 CI を分離する。** 非特権ジョブ（`contents: read`、secret なし）は PR のコードを実行してよいが、
    その出力は信頼されたガードが公開前に検査する。特権ジョブは別のワークフローに置く。
@@ -27,7 +30,7 @@
 
 | 指摘 | 原因 | 新設計での解消 | 残る条件 |
 |---|---|---|---|
-| 書込みで PR の symlink（例: `build -> .trusted-main/tools`）を通り、信頼木へ届く | 書込み先を文字列で判定し、拒否リストで範囲を決めていた。リンク検査は配置・政策の検査にだけあった | 書込み先を `build/tmp/`、`build/stage/` の許可リストに限った（`writer_destinations` と `_in_staging_area`、試験 `StagingAreaOnly` 8 件）。リンクは `main()` の全モードで検査（`link_problems`） | 特権ジョブのワークフローで、ガードより前に書込みを行うステップが無いこと（全件確認が必要） |
+| 書込みで PR の symlink（例: `build -> .trusted-main/tools`）を通り、信頼木へ届く | 書込み先を文字列で判定し、拒否リストで範囲を決めていた。リンク検査は配置・政策の検査にだけあった | 書込み先を `build/tmp/`、`build/stage/` の許可リストに限った（`writer_destinations` と `_in_staging_area`、試験 `StagingAreaOnly` 12 件）。リンクは `main()` の全モードで検査（`link_problems`） | 特権ジョブのワークフローで、ガードより前に書込みを行うステップが無いこと（全件確認が必要） |
 | 試験の多くが、拒否の理由ではなく別の規則で通っている | 閉包解析の規則が多く、理由を検査していなかった | 閉包検査は併用する。試験 `StagingAreaOnly` は拒否の理由の文字列を検査する形に直し済み | 閉包の他の試験の理由文字列の検査（未了） |
 
 ## 特権ジョブと非特権ジョブの境界（現行 main との非互換を含む）

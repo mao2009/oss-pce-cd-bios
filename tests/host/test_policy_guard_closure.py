@@ -723,6 +723,37 @@ class NestedGitSymlinkRefused(ClosureCase):
         self.assertTrue(any('symbolic link' in p for p in policy.closure_problems(self.candidate, self.trusted)))
 
 
+class PostScriptFlagsAndReadOnlyPairs(ClosureCase):
+    """Owner ruling (Issue #544): a word after a trusted script with an attached value is checked as a value, and the only
+    read-only exception is an exact (flag, value) pair of a listed script."""
+
+    def set_run(self, text):
+        for root in (self.trusted, self.candidate):
+            (root / FIXTURE).write_text(priv_workflow(text), encoding='utf-8')
+
+    def problems(self, text):
+        self.set_run(text)
+        return policy.closure_of(self.trusted)[2]
+
+    def test_attached_short_value_outside_staging_is_refused(self):
+        found = self.problems('python3 .trusted/tools/policy_guard.py -o../../tools/x')
+        self.assertTrue(any('an argument of the trusted script' in p and '../../tools/x' in p for p in found), found)
+
+    def test_read_only_name_in_the_wrong_position_is_refused(self):
+        found = self.problems('python3 .trusted/tools/policy_guard.py --candidate .trusted')
+        self.assertTrue(any('an argument of the trusted script' in p and '.trusted' in p for p in found), found)
+
+    def test_read_only_pair_on_an_unlisted_script_is_refused(self):
+        found = self.problems('python3 .trusted/tools/artifact_guard.py --candidate .candidate')
+        self.assertTrue(any('an argument of the trusted script' in p for p in found), found)
+
+    def test_the_policy_job_pair_has_no_problem(self):
+        self.assertEqual(self.problems('python3 .trusted/tools/policy_guard.py --candidate .candidate --trusted .trusted'), [])
+
+    def test_a_bare_flag_has_no_problem(self):
+        self.assertEqual(self.problems('python3 .trusted/tools/policy_guard.py --help'), [])
+
+
 class UnprivilegedBoundary(unittest.TestCase):
     def test_nightly_plan_job_is_outside_the_privileged_closure(self):
         # The nightly plan job holds no write permission: its run: text is approved exactly (approval_problems) but its
