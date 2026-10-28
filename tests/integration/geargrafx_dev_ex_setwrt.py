@@ -25,11 +25,12 @@ import geargrafx_api as api  # noqa: E402
 BLOCKED_EXIT = 3
 SLOT = 0x3A
 STORE = 0x2200
-P_INPUT = 0xCD  # N,V,D,I,C set; the valid return must preserve all but C.
+P_INPUT = 0xCD  # N,V,D,I,C set; the valid return keeps V/D/I, sets N=1 and Z=0 from CPX, and clears C.
+P_INPUT_ZV = 0x42  # V and Z set, N and C clear: N/Z must come from CPX, not from the caller P.
 P_MASK = 0xEF   # B is not a stored CPU status flag.
 
 
-def guest(reset, entry, low, high, init):
+def guest(reset, entry, low, high, init, p_in=P_INPUT):
     """Set RAM stack/MPR1, a non-zero initial VDC MAWR (init), exact input P, call entry, then dump A/P/X/Y."""
     code = bytes([
         0x78, 0xD8,                         # SEI; CLD
@@ -40,7 +41,7 @@ def guest(reset, entry, low, high, init):
         0xA9, init >> 8, 0x8D, 0x03, 0x00,          # ST2 = initial MAWR high
         0xA9, 0x00, 0x53, 0x01,             # MPR0 = 0 again (guest default)
         0xA2, 0xFF, 0x9A,                   # SP = $FF
-        0xA9, P_INPUT, 0x48,                # push requested caller status
+        0xA9, p_in, 0x48,                   # push requested caller status
         0xA2, high, 0xA0, 0x5A, 0xA9, low,  # X/Y/A inputs
         0x28,                               # PLP: restore exact caller P after loads
         0x20, entry & 0xFF, entry >> 8,     # JSR slot $3A table entry
@@ -65,7 +66,7 @@ def run_probe(probe, rom, cue):
     return next(row for row in rows if row["phase"] == "cold")
 
 
-def check(label, row, halt, low, high, init):
+def check(label, row, halt, low, high, init, p_in=P_INPUT):
     required = ("a", "x", "y", "p", "sp", "mpr", "work_ram_hex", "vdc_ar", "vdc_r0")
     if any(key not in row for key in required):
         raise ValueError("BLOCKED: probe does not expose CPU/RAM/MPR/VDC state")
@@ -85,7 +86,8 @@ def check(label, row, halt, low, high, init):
             raise ValueError(f"{label}: initial MAWR equals the expected value; the case cannot detect a no-op")
         if row["vdc_ar"] != 0 or row["vdc_r0"] != (high << 8) | low:
             raise ValueError(f"{label}: MAWR VDC R0={row['vdc_r0']:#06x}, AR={row['vdc_ar']:#x}")
-        want_p = P_INPUT & ~1
+        # Contract: V, D, I, T are kept from the caller; N and Z are the CPX #$80 result (N=1, Z=0 for X<$80); C=0.
+        want_p = (p_in & ~0x83) | 0x80
         if (p & P_MASK) != want_p:
             raise ValueError(f"{label}: P=${p:02X}, want preserved N/V/D/I and C=0 (${want_p:02X})")
     else:
@@ -102,13 +104,13 @@ def check(label, row, halt, low, high, init):
 INITIAL_MAWR = (0x1357, 0x2468, 0x3579)  # non-zero, distinct from every expected MAWR used below
 
 
-def one_case(probe, data, folder, cue, reset, entry, label, low, high, init):
-    code, halt = guest(reset, entry, low, high, init)
+def one_case(probe, data, folder, cue, reset, entry, label, low, high, init, p_in=P_INPUT):
+    code, halt = guest(reset, entry, low, high, init, p_in)
     variant = bytearray(data)
     variant[reset - 0xE000:reset - 0xE000 + len(code)] = code
     rom = folder / f"{label}.pce"
     rom.write_bytes(variant)
-    return check(label, run_probe(probe, rom, cue), halt, low, high, init)
+    return check(label, run_probe(probe, rom, cue), halt, low, high, init, p_in)
 
 
 def expect_rejected(probe, data, folder, cue, reset, entry, label, low, high, init, reason):
@@ -143,11 +145,12 @@ def main():
         (folder / "original.bin").write_bytes(bytes(2352 * 32))
         cue = folder / "original.cue"
         cue.write_text('FILE "original.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
-        cases = ((0x00, 0x00), (0x34, 0x12), (0xFF, 0x7F), (0x34, 0x80), (0xAB, 0xFF))
-        for index, (low, high) in enumerate(cases):
+        cases = ((0x00, 0x00, P_INPUT), (0x34, 0x12, P_INPUT), (0xFF, 0x7F, P_INPUT), (0x34, 0x80, P_INPUT),
+                 (0xAB, 0xFF, P_INPUT), (0x34, 0x12, P_INPUT_ZV))
+        for index, (low, high, p_in) in enumerate(cases):
             init = INITIAL_MAWR[index % len(INITIAL_MAWR)]
             evidence["cases"].append(one_case(probe, data, folder, cue, reset, entry,
-                                                f"setwrt-{high:02x}{low:02x}", low, high, init))
+                                                f"setwrt-{high:02x}{low:02x}-p{p_in:02x}", low, high, init, p_in))
         # Each mutant edits instructions inside the slot $3A body only. The real core must reject every one.
         body = data[3 * SLOT + 1] | data[3 * SLOT + 2] << 8
         window = body - 0xE000, body - 0xE000 + 0x60

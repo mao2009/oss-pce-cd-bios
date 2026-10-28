@@ -70,9 +70,14 @@ class SetwrtSourceTests(unittest.TestCase):
     def test_no_zero_page_addressing(self):
         # (b) Zero page is $2000 on the pinned core, but a bare 1-2 digit operand (no #) is encoded as zero-page
         # by ca65 and would hit $20xx. Every VDC access must use the a: (absolute) prefix.
+        # The detector is first checked on known inputs, so it cannot pass silently.
+        bare = re.compile(r"(?<![#\w:])\$[0-9A-Fa-f]{1,2}(?![0-9A-Fa-f])")
+        self.assertTrue(bare.search("    sta $02"))
+        self.assertTrue(bare.search("    stz $00"))
+        self.assertFalse(bare.search("    sta a:$0002"))
+        self.assertFalse(bare.search("    lda #$02"))
         for line in self.code:
-            if re.search(r"(?<![#\w])\$[0-9A-Fa-f]{1,2}\b", line) and not line.split()[0].startswith("b"):
-                self.assertTrue(line.split()[0] in ("stz", "sta", "stx") and " a:$" in line, line)
+            self.assertIsNone(bare.search(line), line)
         for prefix in ("stz a:$0000", "sta a:$0002", "stx a:$0003"):
             self.assertIn(prefix, self.code)
 
