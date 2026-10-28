@@ -116,11 +116,14 @@ def run_probe(probe: Path, rom: Path, cue_uri: str, labels: Path, seed: int, vfs
                             env=env, capture_output=True, text=True, timeout=900)
     if result.returncode != 0:
         raise ValueError(f"probe exited {result.returncode}")
-    records = {"CAP": [], "HIT": [], "PHASE": [], "RUN": [], "BLOCK": []}
+    records = {"CAP": [], "HIT": [], "PHASE": [], "RUN": [], "BLOCK": [], "EVENTS": []}
     for line in result.stdout.splitlines():
         tag, _, body = line.partition(" ")
         if tag in records:
-            records[tag].append(json.loads(body))
+            obj = json.loads(body)
+            records[tag].append(obj)
+            if tag in ("HIT", "PHASE", "RUN"):
+                records["EVENTS"].append((tag, obj))
     if len(records["RUN"]) != 2 or len(records["CAP"]) != 1:
         raise ValueError("probe did not complete cold and warm runs")
     lines = vfs_log.read_text().splitlines() if vfs_log.exists() else []
@@ -133,12 +136,15 @@ def run_probe(probe: Path, rom: Path, cue_uri: str, labels: Path, seed: int, vfs
 
 
 def guest_view(records):
-    """Guest-visible, timing-normalised sequence: no VFS data, no host timing."""
+    """Guest-visible, timing-normalised sequence: no VFS data, no host timing.
+
+    Events are kept in their original emission order (chronological guest execution order),
+    not grouped by tag, so first_divergence reports the earliest differing event.
+    """
     seq = []
-    for tag in ("HIT", "PHASE", "RUN"):
-        for row in records[tag]:
-            keep = {k: v for k, v in row.items() if k not in ("buffer_head_hex", "buffer_hex", "result_hex")}
-            seq.append([tag, keep])
+    for tag, row in records.get("EVENTS", []):
+        keep = {k: v for k, v in row.items() if k not in ("buffer_head_hex", "buffer_hex", "result_hex")}
+        seq.append([tag, keep])
     return seq
 
 
@@ -214,6 +220,7 @@ def main():
 
     results = {"on": {}, "off": {}}
     divergences = {}
+    divergences_all = {}
     for lba, count in SCENARIOS:
         rom = payload if (lba, count) == DEFAULT_REQUEST else with_request(payload, symbols, lba, count)
         key = f"lba{lba}x{count}"
@@ -229,9 +236,13 @@ def main():
                     "guest": guest_view(records), "metrics": metrics(records, vfs, lba, count, disc, len(load)),
                 })
         a, b = results["on"][key], results["off"][key]
-        divergences[key] = first_divergence(a[0]["guest"], b[0]["guest"])
+        per_rep_divergences = [first_divergence(a[i]["guest"], b[i]["guest"]) for i in range(REPS)]
+        divergences[key] = per_rep_divergences[0]
+        divergences_all[key] = per_rep_divergences
+        # Reproducibility is judged on guest-visible records only. VFS thread counts/bytes depend on
+        # host scheduling and read-ahead timing and are reported as informational metrics.
         for name, runs in (("on", a), ("off", b)):
-            if any(r != runs[0] for r in runs):
+            if any(r["guest"] != runs[0]["guest"] for r in runs):
                 raise ValueError(f"FAIL: {name} {key} is not reproducible across {REPS} repetitions")
 
     on_prefetch = sum(r["metrics"]["vfs_prefetch_reads"] for v in results["on"].values() for r in v)
@@ -241,6 +252,8 @@ def main():
     if off_prefetch != 0:
         raise ValueError("FAIL: read-ahead OFF performed worker-thread reads")
     summary = {"reps": REPS, "scenarios": [f"lba{l}x{c}" for l, c in SCENARIOS], "divergence": divergences,
+               "divergence_all_reps": divergences_all,
+               "comparison_note": "ON/OFF toggle bundles chunk size, preload, cache and read-ahead; not isolated. VFS counts are informational.",
                "results": {n: {k: [r["metrics"] for r in v] for k, v in results[n].items()} for n in results}}
     (work / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
     for key in summary["scenarios"]:
