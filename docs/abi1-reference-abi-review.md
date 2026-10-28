@@ -90,8 +90,8 @@ refuses when the ledger has no reviewed record, when any hazard control is not
 requires every ledger row to restate `execution: "BLOCKED"`.
 
 Consequence for this phase: **the committed runner cannot execute a reference
-JSR for any slot**, including `$1E`. No reference observation for `$1E` is restated here (values withdrawn from public
-documents, owner decision 2026-10-28). Any such observation predates
+JSR for any slot**, including `$1E`. The reference-side values for `$1E` are not restated in this document (withdrawn from
+public documents, owner decision 2026-10-28). The committed runner's refusal predates
 `tools/reference_jsr_gate.py` being wired into the runner (PR #372), so it is
 **not reproducible through the committed tooling today**. The gate is
 not touched by this phase, and no gate is bypassed by it.
@@ -433,7 +433,7 @@ The acceptance conditions are defined here, before any promotion is attempted:
 | --- | --- | --- |
 | `$1E` result | `X` and `Y` carry the version bytes **read from the BIOS image** | `X` and `Y` are **hard coded** to 3 and 0 |
 | `$1E` mechanism | two absolute loads from the image, then `RTS` | two immediate loads, then `RTS` |
-| `$1E` observable outcome for the measured input | withdrawn from public documents (owner decision, 2026-10-28) | `X = 3`, `Y = 0`, `A` preserved (DEV-defined, not a reference value) |
+| `$1E` observable outcome (reference side) | withdrawn from public documents (owner decision, 2026-10-28) | `X = 3`, `Y = 0`, `A` preserved (DEV-defined, not a reference value) |
 | `$3C` to `$42` value contract | **not established** | a project-own specification exists (`docs/ex-binbcd-internal.md`, `docs/ex-bcdbin.md`, `docs/ma-mul8s.md`) and is explicitly *not* the reference contract |
 | side effects | the reference BCD and arithmetic paths write the zero page and, for the arithmetic slots, switch a page bank | the DEV overrides stay in the stack page and the zero page, and never change an MPR |
 

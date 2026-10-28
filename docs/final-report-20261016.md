@@ -5,7 +5,7 @@
 関連ブランチ: `feat/40-ex-getver`（HEAD `59b5613`, PR #174 Draft, Issue #40 紐付け）
 ベース: `main` = `49d2c1d`（マージコミット `7518c59`/`10e9fd6` 経由の先行作業を含む）
 
-本レポートは**実行結果の記録**であり、System Card 3.0 / OSS BIOS の互換性・起動保証を行うものではない。実測はスロット `$1E` のみ。推定・NOT RUN の区別を明示する。
+本レポートは**実行結果の記録**であり、System Card 3.0 / OSS BIOS の互換性・起動保証を行うものではない。対象のスロットは `$1E` のみ（観測値は取り下げ済み）。推定・NOT RUN の区別を明示する。
 
 ---
 
@@ -62,7 +62,7 @@ python3 tools/reference_bios_runner.py /tmp/opencode/refbios/reset-config.json \
 | 戻り値・フラグ・SP・命令数・RAM 差分 | 取り下げ済み（オーナー最終裁定、2026-10-28。観測値は公開文書に記載しない） |
 | ガード | `detected=false`, `status=no_violation` |
 
-（取り下げた観測の再現性については記載しない。観測値は公開文書から取り下げ済み。）出力スキーマ `oss-pce-cd-bios/reference-observation/v1`、`status: OBSERVED`、`trust: LOCAL_ONLY_NOT_VERIFIED`。**VERIFIED ではない**（ABI承認・実ハードウェア比較未完了）。
+（取り下げた観測の再現性については記載しない。観測値は公開文書から取り下げ済み。）出力スキーマ `oss-pce-cd-bios/reference-observation/v1`。取り下げた記録の状態欄の値は記載しない。**VERIFIED ではない**（ABI承認・実ハードウェア比較未完了）。
 
 ---
 
@@ -89,7 +89,7 @@ python3 tools/reference_bios_runner.py /tmp/opencode/refbios/reset-config.json \
 
 ## 8. 残ブロッカー（正直に記載）
 
-1. **測定済みAPIは1スロットのみ**（EX_GETVER slot $1E）。他80スロット＋9 PSGサブコマンドは `BLOCKED / NOT RUN`。レビュー済みfixture・実コア負例・独立ABI承認が未完了。
+1. **対象のAPIは1スロットのみ**（EX_GETVER slot $1E。観測値は取り下げ済み）。他80スロット＋9 PSGサブコマンドは `BLOCKED / NOT RUN`。レビュー済みfixture・実コア負例・独立ABI承認が未完了。
 2. **System Card起動・商用 CD-ROM² ゲーム起動は未検証**。本レポートのいかなる記述も起動保証ではない。
 3. **ABI未検証**（`abi: UNVERIFIED`、`override_checks: structural-only`）。実測はピンアップGeargrafxコア上のみで、実ハードウェア・他エミュレータ比較なし。
 4. **コア特異事項**: スタック/ゼロページがページ1（実ハードウェアはページ0）。OSS BIOSはこのコア挙動で動作させる必要がある。
@@ -148,7 +148,7 @@ PR #170のガード付き参照実行で、物理バンクエイリアスによ�
 #### Phase 4: ST0/ST1/ST2 I/Oバイパスの文書化（新規、完了）
 
 - **調査結果**: ST0/ST1/ST2（オプコード 0x03/0x13/0x23）は`m_huc6202->WriteFromCPU()`でVDCレジスタへ直接書き込み、`Memory::Write()`、`map_write`、CPUアドレス書込みブレークポイントをすべてバイパスする。不可逆なデバイス副作用を生じさせる。
-- **対策**: slot "$1E" のゲストコード（`LDA/LDX/LDY/JSR/BRA`）と測定済みEX_GETVER手続きにはST0/ST1/ST2やTAMは含まれないため、測定対象の実行経路では発生しない。将来の任意ゲストコードを許可するAPIは、この経路を対策せずに解放してはならない。プローブヘッダーに制限を文書化。
+- **対策**: slot "$1E" のゲストコード（`LDA/LDX/LDY/JSR/BRA`）とEX_GETVER 手続き（観測値は取り下げ済み）にはST0/ST1/ST2やTAMは含まれないため、測定対象の実行経路では発生しない。将来の任意ゲストコードを許可するAPIは、この経路を対策せずに解放してはならない。プローブヘッダーに制限を文書化。
 
 #### Phase 5: 非公開BIOS情報の非公開化（完了）
 

@@ -23,7 +23,7 @@ verified APIs, or hardware-compatibility proof.
    image the user is entitled to use. Never put its bytes in Git, CI, logs or artifacts.
 2. Confirm each candidate slot/PSG selector and its calling ABI from independent evidence.
    The `0xE000 + 3 * slot` entry is confirmed **only for slot `0x1E`** by local
-   real-core measurement (see "Guarded real guest JSR"); for the other 80 slots it
+   real-core observation (values withdrawn; see "Guarded real guest JSR"); for the other 80 slots it
    remains a hypothesis. The `0x48` PSG selectors are candidates, not
    independently validated dispatch semantics.
 3. Replace `TO_BE_DETERMINED_FROM_ABI` with a *reviewed* per-API input fixture, set
@@ -44,8 +44,8 @@ verified APIs, or hardware-compatibility proof.
 
 - **81+9 definitions** each contain nominal, boundary and invalid/timeout
   *placeholders* requiring API-specific review. They are not runnable programs.
-- **One** retail BIOS API was observed locally (its values are withdrawn from public documents) and only against one
-  candidate slot (EX_GETVER, slot `0x1E`). See
+- Only one candidate slot (EX_GETVER, slot `0x1E`) has a local-only observation, whose values are withdrawn
+  from public documents. See
   "Guarded real guest JSR" below. Everything else remains `NOT RUN`.
   The measurement is local-only evidence, not a compatibility claim.
 - The existing ABI ledger is authoritative about **uncertainty**; never fill
@@ -263,6 +263,6 @@ python3 -m unittest tests.host.test_reference_case_execute -v
 
 The `reference-reset-only` checkpoint remains distinct and available,
 because it does not inject or execute an API JSR. This PR records plans,
-bounded local-only reset observation, and **one** locally observed API (its observed values are withdrawn from public documents)
+bounded local-only reset observation, and a local-only observation for one API slot (its values are withdrawn from public documents)
 (EX_GETVER, slot `0x1E`), **not** retail BIOS compatibility, a verified
 jump-table ABI, or 270 working runnable test ROMs.
