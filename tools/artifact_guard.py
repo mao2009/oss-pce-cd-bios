@@ -2172,12 +2172,13 @@ def policy_violations(root, trusted_root):
     print("PASS artifact guard policy: guard and run allowlist match the trusted main copy")
 
 
-def enforced_check(root, check, allowlist_root=None):
+def enforced_check(root, check, allowlist_root):
     """Run check(root) with every run: text required to be approved. The approval table is read from allowlist_root (the
     trusted copy: the guard's own tree on the command line), never from the checked tree, so a pull request cannot approve
-    its own run: text (Issue #511). With allowlist_root None the checked tree is used (tests only)."""
+    its own run: text (Issue #511). Required: there is no default that would fall back to the checked tree. A missing or
+    unreadable table raises before any check runs (fail closed)."""
     global _RUN_ALLOWLIST
-    _RUN_ALLOWLIST = load_run_allowlist(root if allowlist_root is None else allowlist_root)
+    _RUN_ALLOWLIST = load_run_allowlist(allowlist_root)
     try:
         check(root)
     finally:

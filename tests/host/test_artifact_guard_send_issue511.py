@@ -42,7 +42,7 @@ def make_repo(files, approve=True):
 def enforced_refuses(root):
     """The refusal message, or None when the enforcing placement check passes."""
     try:
-        guard.enforced_check(root, guard.check_guard_placement)
+        guard.enforced_check(root, guard.check_guard_placement, allowlist_root=root)
     except ValueError as error:
         return str(error)
     return None
