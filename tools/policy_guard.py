@@ -96,6 +96,24 @@ def approval_problems(candidate, trusted):
     return []
 
 
+def _names_secret(value):
+    """A secret read anywhere in this value. Expression names are case-insensitive (SECRETS.X is the same context)."""
+    return "secrets" in repr(value).lower()
+
+
+def _leaf_strings(value):
+    """Every string inside a YAML value, at any depth (a with: value may be a list or a mapping)."""
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in _leaf_strings(v)]
+    if isinstance(value, list):
+        return [s for v in value for s in _leaf_strings(v)]
+    return [str(value)]
+
+
+# Only these expressions are fixed by the trusted run (no runner or event data), so they may appear in a privileged with: value.
+SAFE_EXPR_RE = re.compile(r"\$\{\{\s*github\.(?:sha|run_id|run_attempt)\s*\}\}")
+
+
 def privileged_job(doc, body):
     """A job is privileged when it can write, sign, deploy, reach a secret, or run on pull_request_target. A job with no
     permissions at either level is privileged (the repository default token may be write). A composite action has no job of
@@ -104,8 +122,8 @@ def privileged_job(doc, body):
         return True
     permissions = body.get("permissions", doc.get("permissions"))
     # a secret read at workflow level (env, defaults) reaches every job, so it makes each job privileged too
-    if (permissions is None or permissions == "write-all" or "environment" in body or "secrets" in repr(body)
-            or "secrets" in repr(doc.get("env")) or "secrets" in repr(doc.get("defaults"))):
+    if (permissions is None or permissions == "write-all" or "environment" in body or _names_secret(body)
+            or _names_secret(doc.get("env")) or _names_secret(doc.get("defaults"))):
         return True
     if isinstance(permissions, dict) and any(value == "write" for value in permissions.values()):
         return True
@@ -186,8 +204,9 @@ def privileged_uses_problems(trusted):
                 continue
             if not uses.lower().startswith("actions/checkout@"):   # action names are case-insensitive on GitHub
                 # another pinned action may write where it is told (download-artifact path:): never into a trusted or candidate tree
-                values = [str(v) for v in step.get("with").values()] if isinstance(step.get("with"), dict) else []
-                if any(".trusted" in v or ".candidate" in v or ".." in v or v.startswith(("/", "~")) for v in values):
+                values = [SAFE_EXPR_RE.sub("", v) for v in _leaf_strings(step.get("with") or {})]
+                if any("${{" in v or ".trusted" in v or ".candidate" in v or ".." in v or "\\" in v
+                       or v.startswith(("/", "~")) or re.match(r"[A-Za-z]:", v) for v in values):
                     problems.append(f"{where}: privileged action {uses!r} names a trusted or candidate path in with: "
                                     "(refused; Issue #544)")
                 continue
@@ -197,8 +216,9 @@ def privileged_uses_problems(trusted):
             with_ = step.get("with") if isinstance(step.get("with"), dict) else {}
             ref = with_.get("ref")
             data_only = (rel, ref, with_.get("path")) == DATA_ONLY_HEAD_CHECKOUT
+            base_copy = ref == CHECKOUT_BASE_REF and with_.get("path") == ".trusted"
             if not (set(with_) <= CHECKOUT_KEYS and "repository" not in with_ and with_.get("persist-credentials") is False
-                    and (ref == CHECKOUT_BASE_REF or data_only)):
+                    and (base_copy or data_only)):
                 problems.append(f"{where}: privileged checkout {with_!r} may check out only the protected base SHA, or the "
                                 "data-only candidate copy at .candidate, with persist-credentials false (refused; Issue #544)")
     return problems

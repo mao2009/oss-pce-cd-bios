@@ -167,6 +167,28 @@ class PrivilegedCheckout(unittest.TestCase):
         (self.trusted / FIXTURE).write_text(text, encoding='utf-8')
         self.assertTrue(policy.closure_of(self.trusted)[2])   # privileged now: its run text is analysed, and make is refused
 
+    def test_upper_case_secrets_context_makes_the_job_privileged(self):
+        text = '\n'.join(['name: x', 'on: [push]', 'jobs:', '  j:', '    permissions:', '      contents: read', '    steps:',
+                          '      - run: make setup', '        env:', '          T: ${{ SECRETS.X }}', ''])
+        shutil.copy(REPO / 'Makefile', self.trusted / 'Makefile')
+        (self.trusted / FIXTURE).write_text(text, encoding='utf-8')
+        self.assertTrue(policy.closure_of(self.trusted)[2])
+
+    def _download_step(self, with_lines):
+        text = '\n'.join(['name: x', 'on: [push]', 'jobs:', '  j:', '    permissions:', '      id-token: write', '    steps:',
+                          f'      - uses: {DOWNLOAD}', '        with:'] + with_lines + [''])
+        (self.trusted / FIXTURE).write_text(text, encoding='utf-8')
+        return policy.privileged_uses_problems(self.trusted)
+
+    def test_untrusted_expression_in_a_privileged_with_value_is_refused(self):
+        self.assertTrue(self._download_step(['          path: ${{ github.event.pull_request.title }}']))
+
+    def test_fixed_run_expression_in_a_privileged_with_value_passes(self):
+        self.assertEqual(self._download_step(['          name: bios-${{ github.sha }}', '          path: evidence']), [])
+
+    def test_base_checkout_into_another_path_is_refused(self):
+        self.assertTrue(self.uses_problems({'ref': policy.CHECKOUT_BASE_REF, 'path': '../x', 'persist-credentials': 'false'}))
+
     def test_reusable_workflow_call_in_a_privileged_job_is_refused(self):
         text = ('name: x\non: [push]\njobs:\n  j:\n    permissions:\n      id-token: write\n'
                 '    uses: evil/repo/.github/workflows/x.yml@main\n    secrets: inherit\n')
@@ -208,7 +230,8 @@ class PrivilegedCheckout(unittest.TestCase):
             self.assertTrue(policy.provenance_problems(Path(tmp), Path(tmp), {'pull_request': {'base': 'main', 'head': []}}))
 
     def test_base_checkout_of_the_protected_base_passes(self):
-        self.assertEqual(self.uses_problems({'ref': policy.CHECKOUT_BASE_REF, 'persist-credentials': 'false'}), [])
+        self.assertEqual(self.uses_problems({'ref': policy.CHECKOUT_BASE_REF, 'path': '.trusted',
+                                                     'persist-credentials': 'false'}), [])
 
     def test_unpinned_privileged_action_is_refused(self):
         (self.trusted / FIXTURE).write_text(priv_trusted_tree('test -f Makefile', {}).replace(CHECKOUT, 'actions/checkout@v4'),
