@@ -171,7 +171,7 @@ class ApiBuildTests(unittest.TestCase):
             'entry is data': ('.byte $60\n', 'not the address of an instruction|contains no code'),
             'jumps to padding': (' jmp $E900\n', r'jumps to \$E900'),
             'jumps into table gap': (' jmp $E0F5\n', r'jumps to \$E0F5'),
-            'jumps mid-instruction': (' ldx #$03\n jmp api_slot_03+1\n', r'jumps to \$E2F1'),
+            'jumps mid-instruction': (' ldx #$03\n jmp api_slot_03+1\n', r'jumps to $E2A1'),
             'jumps to boot body': (' jsr $F002\n rts\n', r'jumps to \$F002'),
             'branches to data': (' bra data\n rts\ndata: .byte $EA\n', 'jumps to'),
         }
