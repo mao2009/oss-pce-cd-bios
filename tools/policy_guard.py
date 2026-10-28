@@ -154,6 +154,7 @@ CHECKOUT_BASE_REF = "${{ github.event.pull_request.base.sha }}"   # the trusted 
 CHECKOUT_HEAD_REF = "${{ github.event.pull_request.head.sha }}"
 # The one head checkout a privileged job may make: the policy job's data-only copy of the candidate (never executed).
 DATA_ONLY_HEAD_CHECKOUT = (".github/workflows/policy-guard.yml", CHECKOUT_HEAD_REF, ".candidate")
+CHECKOUT_PIN = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"   # the one audited checkout (artifact_guard agrees)
 CHECKOUT_KEYS = frozenset({"ref", "path", "persist-credentials", "fetch-depth"})
 
 
@@ -163,7 +164,7 @@ def privileged_uses_problems(trusted):
     Without this the closure above would hold for the trusted tree while a privileged checkout placed candidate code in it."""
     problems = []
     for rel, doc, body in _privileged_bodies(trusted):
-        where = f"{rel}"
+        where = rel
         triggers = doc.get("on", doc.get(True))
         if isinstance(triggers, (str, list, dict)) and "pull_request_target" in triggers:
             perms = body.get("permissions", doc.get("permissions")) if isinstance(body, dict) else None
@@ -177,7 +178,10 @@ def privileged_uses_problems(trusted):
             if not (isinstance(uses, str) and PINNED_USES_RE.fullmatch(uses)):
                 problems.append(f"{where}: privileged uses {uses!r} is not pinned to a full commit SHA (refused; Issue #544)")
                 continue
-            if not uses.startswith("actions/checkout@"):
+            if not uses.lower().startswith("actions/checkout@"):   # action names are case-insensitive on GitHub
+                continue
+            if uses.lower() != CHECKOUT_PIN:
+                problems.append(f"{where}: privileged checkout {uses!r} is not the audited pin {CHECKOUT_PIN!r} (refused; Issue #544)")
                 continue
             with_ = step.get("with") if isinstance(step.get("with"), dict) else {}
             ref = with_.get("ref")
@@ -211,7 +215,8 @@ def provenance_problems(candidate, trusted, event):
     pr = event.get("pull_request") if isinstance(event, dict) else None
     if not isinstance(pr, dict):
         return ["the event payload has no pull_request object; the run is not tied to a pull request (refused; Issue #544)"]
-    base, head = pr.get("base") or {}, pr.get("head") or {}
+    base, head = pr.get("base"), pr.get("head")
+    base, head = (base if isinstance(base, dict) else {}), (head if isinstance(head, dict) else {})
     problems = []
     if base.get("ref") != PROTECTED_BASE:
         problems.append(f"the pull request targets {base.get('ref')!r}, not the protected base {PROTECTED_BASE!r}; its copy "

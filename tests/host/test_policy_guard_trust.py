@@ -157,6 +157,30 @@ class PrivilegedCheckout(unittest.TestCase):
         self.assertTrue(self.uses_problems({'ref': policy.CHECKOUT_BASE_REF, 'repository': 'x/y',
                                             'persist-credentials': 'false'}))
 
+    def test_uppercase_action_name_is_still_checked(self):
+        refused = self.uses_problems({'ref': policy.CHECKOUT_HEAD_REF, 'persist-credentials': 'true'})
+        self.assertTrue(refused)
+        (self.trusted / FIXTURE).write_text(priv_trusted_tree('test -f Makefile', {'ref': policy.CHECKOUT_HEAD_REF,
+                                                                                 'persist-credentials': 'true'})
+                                            .replace(CHECKOUT, CHECKOUT.replace('actions/checkout', 'ACTIONS/CHECKOUT')),
+                                            encoding='utf-8')
+        self.assertTrue(policy.privileged_uses_problems(self.trusted))
+
+    def test_other_pinned_sha_for_checkout_is_refused(self):
+        (self.trusted / FIXTURE).write_text(priv_trusted_tree('test -f Makefile', {'ref': policy.CHECKOUT_BASE_REF,
+                                                                                 'persist-credentials': 'false'})
+                                            .replace(CHECKOUT, 'actions/checkout@' + 'a' * 40), encoding='utf-8')
+        self.assertTrue(policy.privileged_uses_problems(self.trusted))
+
+    def test_data_only_candidate_copy_in_policy_job_passes(self):
+        text = (REPO / '.github/workflows/policy-guard.yml').read_text(encoding='utf-8')
+        (self.trusted / '.github/workflows/policy-guard.yml').write_text(text, encoding='utf-8')
+        self.assertEqual(policy.privileged_uses_problems(self.trusted), [])
+
+    def test_malformed_event_base_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertTrue(policy.provenance_problems(Path(tmp), Path(tmp), {'pull_request': {'base': 'main', 'head': []}}))
+
     def test_base_checkout_of_the_protected_base_passes(self):
         self.assertEqual(self.uses_problems({'ref': policy.CHECKOUT_BASE_REF, 'persist-credentials': 'false'}), [])
 
