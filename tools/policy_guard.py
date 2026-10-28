@@ -81,10 +81,13 @@ def approval_problems(candidate, trusted):
 
 
 def privileged_job(doc, body):
-    """A job is privileged when it can write, sign, deploy or run on pull_request_target (secrets are in its reach).
-    A composite action has no job of its own: its steps are always treated as privileged here (conservative)."""
-    permissions = body.get("permissions", doc.get("permissions")) if isinstance(body, dict) else None
-    if permissions == "write-all" or "environment" in (body or {}):
+    """A job is privileged when it can write, sign, deploy, reach a secret, or run on pull_request_target. A job with no
+    permissions at either level is privileged (the repository default token may be write). A composite action has no job of
+    its own: its steps are always privileged here (conservative)."""
+    if not isinstance(body, dict):
+        return True
+    permissions = body.get("permissions", doc.get("permissions"))
+    if permissions is None or permissions == "write-all" or "environment" in body or "secrets." in repr(body):
         return True
     if isinstance(permissions, dict) and any(value == "write" for value in permissions.values()):
         return True
@@ -94,11 +97,11 @@ def privileged_job(doc, body):
 
 def _trusted_steps(trusted):
     """(run text or None, local action path or None) for every step of every PRIVILEGED trusted job and composite action.
-    Unprivileged jobs (no write permission, no environment, no pull_request_target) are not in the closure: they hold no
-    secret and no signing right, and their output reaches the publish path only through the trusted guard (see the docstring)."""
+    Unprivileged jobs are outside the closure (see the docstring and docs/policy-bootstrap-owner-procedure.md)."""
     import yaml
     steps = []
-    for path in sorted((Path(trusted) / ".github").rglob("*.yml")):
+    files = sorted((Path(trusted) / ".github").rglob("*.yml")) + sorted((Path(trusted) / ".github").rglob("*.yaml"))
+    for path in files:
         doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         if not isinstance(doc, dict):
             continue
@@ -106,7 +109,7 @@ def _trusted_steps(trusted):
         if isinstance(doc.get("runs"), dict):
             groups.append(doc["runs"])   # composite action: always privileged here
         for body in (doc.get("jobs") or {}).values():
-            if isinstance(body, dict) and privileged_job(doc, body):
+            if privileged_job(doc, body):
                 groups.append(body)
         for body in groups:
             for step in (body.get("steps") or []) if isinstance(body, dict) else []:
@@ -119,22 +122,27 @@ def _trusted_steps(trusted):
     return steps
 
 
-# Closure analysis (Issue #544 review). Scope: the files that a trusted run: text can execute, followed through Makefile
-# prerequisites and recipes, shell commands, Python imports and literal paths. Static matching is a ceiling, not a proof:
-# a path assembled at runtime from non-literal parts, or a program that runs an external tree, is not followed. Such a
-# construct is refused unless it is listed in REVIEWED_EXTERNAL with its reason (that table is itself a policy file).
+# Closure analysis (Issue #544 review). Scope: the files that a PRIVILEGED trusted run: text can execute, followed through
+# Makefile prerequisites and recipes, shell commands, Python imports and literal paths. Static matching is a ceiling, not a
+# proof. Anything it cannot follow is refused rather than skipped: command substitution, eval/source/exec/., interpreter -c,
+# a variable in an executed path, an expression ${{ }} in the run text, a runtime-built program (subprocess) unless listed
+# in REVIEWED_EXTERNAL with its expected count, and dynamic loading. The table is itself a policy file.
 PATH_TOKEN_RE = re.compile(r"""[^\s"'`;&|()<>=]+""")
 SAFE_SUBST_RE = re.compile(r"\$\((?:command -v \S+|git rev-parse [\w-]+)\)")
 GH_EXPR_RE = re.compile(r"\$\{\{.*?\}\}")
 DYNAMIC_SHELL_RE = re.compile(r"`|\$\(")   # command substitution; eval/source/exec/. are checked as command words
-DYNAMIC_HEADS = ("eval", "source", "exec", "xargs", ".")
-MAKE_DYNAMIC_RE = re.compile(r"\$\((?:shell|eval|call|file)\b")
+DYNAMIC_HEADS = ("eval", "source", "exec", "xargs", ".", "builtin", "command", "env", "nohup", "time", "sudo", "stdbuf")
+SHELL_KEYWORDS = ("if", "then", "else", "elif", "fi", "do", "done", "while", "until", "!", "{", "}")
 MAKE_CMDS = ("make", "$(MAKE)", "${MAKE}")
 EXEC_EXT = (".py", ".sh", ".mk")
-# External trees executed by a trusted file, with the reason. The external tree is pinned by a checksum in the named file.
+DYNAMIC_PY_CALLS = ("exec", "eval", "__import__", "import_module", "runpy", "run_path",
+                    "spec_from_file_location", "exec_module", "load_module", "load_source")
+RUNTIME_PROGRAM = "a runtime-built program (subprocess)"
+# Files that run external trees, with the reason and the exact number of runtime-built subprocess calls reviewed.
 REVIEWED_EXTERNAL = {
-    "tools/setup.py": "make -C on the checksum-verified Geargrafx source tree (pin: tools/environment.py DEPENDENCIES); "
-                      "the external Makefile is not in this repository",
+    "tools/setup.py": ("4 calls (curl download at line 77; make -C at lines 142 and 197; the build command at line 159) "
+                       "on checksum-verified archives and source trees; the pins are in tools/environment.py DEPENDENCIES, "
+                       "and the external Makefiles are not in this repository", 4),
 }
 
 
@@ -174,7 +182,9 @@ def _module_file(trusted, module):
 
 def _analyze_shell(text, trusted, where):
     """Shell-like text -> (files, make_targets, problems). Only executed positions are followed; other paths are data."""
+    base = Path(trusted)
     problems, files, targets = [], set(), []
+    text = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))   # shebang and comments
     text = _strip_substitutions(text.replace("$(MAKE)", "make").replace("${MAKE}", "make"))
     if DYNAMIC_SHELL_RE.search(text):
         problems.append(f"{where}: command substitution cannot be analyzed; refused (Issue #544)")
@@ -182,7 +192,7 @@ def _analyze_shell(text, trusted, where):
         words = _words(segment)
         if not words:
             continue
-        while words and re.fullmatch(r"[A-Za-z_]\w*=.*", words[0]):
+        while words and (re.fullmatch(r"[A-Za-z_]\w*=.*", words[0]) or words[0] in SHELL_KEYWORDS):
             words = words[1:]
         if not words:
             continue
@@ -190,17 +200,25 @@ def _analyze_shell(text, trusted, where):
         if head in DYNAMIC_HEADS:
             problems.append(f"{where}: command word {head!r} runs text the analysis cannot follow; refused (Issue #544)")
             continue
-        if head in ("python", "python3", "bash", "sh", "zsh") and "-c" in args:
-            problems.append(f"{where}: {head} -c runs inline code that cannot be analyzed; refused (Issue #544)")
-            continue
         if head.startswith("$") and head not in MAKE_CMDS:
-            problems.append(f"{where}: command word {head!r} is a variable; the executed program cannot be analyzed "
-                            "(refused, Issue #544)")
+            problems.append(f"{where}: command word {head!r} is a variable; the executed program cannot be analyzed (refused)")
             continue
         if head in MAKE_CMDS:
-            targets += [w for w in args if re.fullmatch(r"[\w.\-/]+", w) and not w.startswith("-")]
+            if any(a.startswith(("-C", "-f", "-I", "--directory", "--file", "--makefile", "--include-dir")) for a in args):
+                problems.append(f"{where}: make with -C, -f or -I selects another Makefile; refused (Issue #544)")
+                continue
+            positional = [a for a in args if not a.startswith("-") and "=" not in a]
+            targets += positional if positional else ["__default__"]
             continue
-        if head in ("python", "python3", "bash", "sh", "zsh"):
+        interpreter = head in ("python", "python3", "bash", "sh", "zsh")
+        if interpreter and any(a.startswith("-") and not a.startswith("--") and "c" in a[1:] for a in args):
+            problems.append(f"{where}: {head} with -c runs inline code that cannot be analyzed; refused (Issue #544)")
+            continue
+        if head.startswith("./"):
+            files.add(head[2:])
+        elif "/" in head or (base / head).is_file():
+            files.add(head)   # an executed path, with or without an extension
+        if interpreter:
             if "-m" in args:
                 index = args.index("-m")
                 module = args[index + 1] if index + 1 < len(args) else ""
@@ -211,19 +229,22 @@ def _analyze_shell(text, trusted, where):
                 continue
             positional = [a for a in args if not a.startswith("-")]
             if positional:
-                files.add(positional[0])
-        elif head.startswith("./"):
-            files.add(head[2:])
+                if "$" in positional[0]:
+                    problems.append(f"{where}: {head} runs a path with a variable ({positional[0]!r}); refused (Issue #544)")
+                else:
+                    files.add(positional[0])
         for word in args:   # a repository script named in the arguments (for example: python3 "$x" tools/y.py)
-            if word.endswith(EXEC_EXT) and PATH_TOKEN_RE.fullmatch(word):
+            if word.endswith(EXEC_EXT) and "$" in word:
+                problems.append(f"{where}: argument {word!r} is a variable path to a script; refused (Issue #544)")
+            elif word.endswith(EXEC_EXT) and PATH_TOKEN_RE.fullmatch(word):
                 files.add(word)
     return files, targets, problems
 
 
 def _makefile(trusted):
-    """(rules, variables): rules[target] = (deps, recipe lines); variables[name] = value (simple one-level)."""
+    """(rules, variables, first target). rules[target] = (deps, recipe lines); variables[name] = value (simple, one level)."""
     text = (Path(trusted) / "Makefile").read_text(encoding="utf-8").replace("\\\n", " ")
-    rules, variables, current = {}, {}, None
+    rules, variables, current, first = {}, {}, None, None
     for raw in text.splitlines():
         if raw.startswith("\t") and current:
             rules[current][1].append(raw[1:])
@@ -231,41 +252,55 @@ def _makefile(trusted):
         line = raw.split("#", 1)[0].rstrip()
         if not line.strip():
             continue
-        assign = re.match(r"^\s*([A-Za-z_]\w*)\s*(?:\?=|:=|::=|\+=|=)\s*(.*)$", line)
-        if assign:
-            variables[assign.group(1)] = assign.group(2).strip()
-            current = None
-            continue
-        include = re.match(r"^-?include\s+(.+)$", line)
+        include = re.match(r"^-?s?include\s+(.+)$", line)
         if include:
             rules.setdefault("__include__", ([], []))[0].extend(include.group(1).split())
+            current = None
+            continue
+        assign = re.match(r"^\s*([A-Za-z_]\w*)\s*(\?=|:=|::=|\+=|=)\s*(.*)$", line)
+        if assign:
+            name, op, value = assign.group(1), assign.group(2), assign.group(3).strip()
+            variables[name] = (variables.get(name, "") + " " + value).strip() if op == "+=" else value
             current = None
             continue
         rule = re.match(r"^([^\t:=]+?)\s*:(?!=)\s*(.*)$", line)
         if rule:
             current = None
+            deps_part, _, inline = rule.group(2).partition(";")
             for name in rule.group(1).split():
                 if name == ".PHONY":
                     continue
                 entry = rules.setdefault(name, ([], []))
-                entry[0].extend(rule.group(2).split())
+                entry[0].extend(deps_part.split())
+                if inline.strip():
+                    entry[1].append(inline.strip())   # an inline recipe after ';'
+                if first is None:
+                    first = name
                 current = name
-    return rules, variables
+    return rules, variables, first
 
 
 def _analyze_makefile(trusted, requested, problems):
-    """Targets requested by make -> (files, problems), following prerequisites and recipe commands."""
+    """Targets requested by make -> (files, problems), following prerequisites, includes and recipe commands."""
     base = Path(trusted)
-    rules, variables = _makefile(trusted)
+    text = (base / "Makefile").read_text(encoding="utf-8")
+    rules, variables, first = _makefile(trusted)
+    if re.search(r"!=|\$\((?:shell|eval|call|file|foreach)\b", text):
+        problems.append("Makefile uses !=, $(shell), $(eval), $(call), $(file) or $(foreach); cannot be analyzed (refused)")
+        return {"Makefile"}, problems
     files = {"Makefile"}
     for dep in rules.get("__include__", ([], []))[0]:
         if (base / dep).is_file():
             files.add(dep)
         elif "$" in dep:
             problems.append(f"Makefile include {dep!r} is a variable path; cannot be analyzed (refused, Issue #544)")
-    pending, seen = list(requested), set()
+    pending, seen = [first if t == "__default__" else t for t in requested], set()
+    if "__default__" in requested and first is None:
+        problems.append("make with no target and no default goal in the trusted Makefile (refused, Issue #544)")
     while pending:
         target = pending.pop()
+        if target == "__default__":
+            target = first
         if target in seen:
             continue
         seen.add(target)
@@ -282,11 +317,8 @@ def _analyze_makefile(trusted, requested, problems):
             elif (base / dep).is_file() and dep.endswith(EXEC_EXT + ("Makefile",)):
                 files.add(dep)
         for line in recipe:
-            if MAKE_DYNAMIC_RE.search(line):
-                problems.append(f"Makefile recipe for {target!r} uses $(shell/eval/call); cannot be analyzed (refused)")
-                continue
-            expanded = re.sub(r"\$\((\w+)\)", lambda m: variables.get(m.group(1), m.group(0)), line)
-            if re.search(r"\$\([^)]*\)\S*/", expanded):
+            expanded = re.sub(r"\$\((\w+)\)", lambda m: variables.get(m.group(1), m.group(0)), line).lstrip("@-+ ")
+            if re.search(r"\$\(\w+\)\S*/|/\S*\$\(\w+\)", expanded):
                 problems.append(f"Makefile recipe for {target!r} builds a path from a variable (refused, Issue #544)")
             sub_files, sub_targets, sub_problems = _analyze_shell(expanded, trusted, f"Makefile:{target}")
             problems += sub_problems
@@ -306,17 +338,25 @@ def _python_facts(source):
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             names.add(node.module)
         elif isinstance(node, ast.Call):
-            callee = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
-            if callee in ("exec", "eval", "__import__", "import_module", "runpy"):
+            callee = getattr(node.func, "id", None) or getattr(node.func, "attr", None) or ""
+            owner = getattr(getattr(node.func, "value", None), "id", "")
+            if callee in DYNAMIC_PY_CALLS and callee not in ("system", "popen"):
                 dynamic.append(str(callee))
+            if callee in ("system", "popen") and owner == "os":
+                dynamic.append(f"os.{callee}")
+            if callee.startswith(("execv", "execl", "spawn")) and owner == "os":
+                dynamic.append(f"os.{callee}")
+            if callee == "getattr" and any(isinstance(a, ast.Constant) and a.value in DYNAMIC_PY_CALLS for a in node.args):
+                dynamic.append("getattr of a dynamic loader")
             for keyword in node.keywords:
                 if keyword.arg == "shell" and getattr(keyword.value, "value", None) is True:
                     dynamic.append("shell=True")
-            if callee in ("run", "Popen", "call", "check_call", "check_output") and node.args:
-                first = node.args[0]   # a program built at runtime (anything but a literal list of literal strings)
-                literal = isinstance(first, ast.List) and all(isinstance(e, ast.Constant) for e in first.elts)
-                if not literal:
-                    dynamic.append("a runtime-built program (subprocess)")
+            if callee in ("run", "Popen", "call", "check_call", "check_output"):
+                program = node.args[0] if node.args else next(
+                    (k.value for k in node.keywords if k.arg == "args"), None)
+                literal = isinstance(program, ast.List) and all(isinstance(e, ast.Constant) for e in program.elts)
+                if program is None or not literal:
+                    dynamic.append(RUNTIME_PROGRAM)
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             literals.add(node.value)
     return names, dynamic, literals
@@ -331,12 +371,16 @@ def _python_closure(trusted, rel, problems):
     except SyntaxError as error:
         problems.append(f"{rel} does not parse ({error}); cannot be analyzed (refused, Issue #544)")
         return files
-    if rel in REVIEWED_EXTERNAL:
-        dynamic = [d for d in dynamic if d != "a runtime-built program (subprocess)"]   # reviewed: the pin is in the entry
+    runtime = dynamic.count(RUNTIME_PROGRAM)
+    dynamic = [d for d in dynamic if d != RUNTIME_PROGRAM]
     for construct in dynamic:
-        problems.append(f"{rel} uses {construct}; cannot be analyzed (refused unless REVIEWED_EXTERNAL, Issue #544)")
-    if rel not in REVIEWED_EXTERNAL and re.search(r"subprocess\.run\(\s*command\b", source):
-        problems.append(f"{rel} runs a program built at runtime; needs a REVIEWED_EXTERNAL entry with its pin (Issue #544)")
+        problems.append(f"{rel} uses {construct}; cannot be analyzed (refused, Issue #544)")
+    reviewed = REVIEWED_EXTERNAL.get(rel)
+    if reviewed is None and runtime:
+        problems.append(f"{rel} runs {runtime} program(s) built at runtime; needs a REVIEWED_EXTERNAL entry with its pin")
+    elif reviewed is not None and runtime != reviewed[1]:
+        problems.append(f"{rel} has {runtime} runtime-built program call(s), the reviewed count is {reviewed[1]} "
+                        "(refused until reviewed again, Issue #544)")
     # sys.path[0] is the script directory, and unittest adds the top directory: follow imports from these directories.
     search = [rel.rsplit("/", 1)[0] if "/" in rel else "", "tools", "tests/host", "tests/integration", "tests", ""]
     for name in names:
@@ -353,9 +397,9 @@ def _python_closure(trusted, rel, problems):
 
 
 def closure_of(trusted):
-    """(files, directories, problems): what the trusted run: texts and local actions can execute."""
+    """(files, directories, problems): what the privileged trusted run: texts and local actions can execute."""
     base = Path(trusted)
-    problems, files, requested, makes = [], set(), [], False
+    problems, files, requested = [], set(), []
     for run, local in _trusted_steps(trusted):
         if local:
             action = base / local
@@ -365,17 +409,21 @@ def closure_of(trusted):
                 problems.append(f"local action {local!r} is missing in the trusted tree (refused, Issue #544)")
         if run is None:
             continue
+        if "${{" in run:
+            problems.append("a ${{ }} expression in a privileged run: text is refused (its value is runtime data, Issue #544)")
+            continue
         step_files, targets, step_problems = _analyze_shell(run, trusted, "run:")
         problems += step_problems
         requested += targets
-        makes = makes or bool(targets) or bool(re.search(r"(?:^|[\s;&|(])(?:make|\$\(MAKE\))\s", run))
         for f in step_files:
             if (base / f).is_file():
                 files.add(f)
-            elif f.endswith(EXEC_EXT) and not f.startswith((".trusted", ".intake", "build/", "$")):
+            elif "$" in f or f.startswith((".trusted", ".intake", "build/")):
+                continue
+            elif f.endswith(EXEC_EXT) or "/" in f:
                 problems.append(f"executed file {f!r} is not in the trusted tree (refused, Issue #544)")
-    if makes:
-        make_files, problems_make = _analyze_makefile(trusted, requested, problems)
+    if requested:
+        make_files, problems = _analyze_makefile(trusted, requested, problems)
         files |= make_files
     # Follow Python and shell files reached from the closure: their imports, literal paths and dynamic constructs.
     pending, done = sorted(files), set()
@@ -397,26 +445,32 @@ def closure_of(trusted):
     return files, directories, problems
 
 
+def _module_entries(root):
+    """Names a Python import from this directory could resolve to: top-level .py files and packages."""
+    if not root.is_dir():
+        return set()
+    return {p.name for p in root.iterdir() if (p.is_file() and p.suffix == ".py")
+            or (p.is_dir() and any(p.rglob("*.py")))}
+
+
 def closure_problems(candidate, trusted):
-    """Every file the trusted closure can execute must equal the trusted copy; no unanalyzable construct; no module added to
-    a directory that a closure module is run or imported from (sys.path[0] is the script directory)."""
+    """Every file the privileged closure can execute must equal the trusted copy; no unanalyzable construct; no module or
+    package added beside an executed one (sys.path[0] is the script directory; '.' is checked for python -m)."""
     files, directories, problems = closure_of(trusted)
     for rel in sorted(files):
         mine, theirs = Path(candidate) / rel, Path(trusted) / rel
         if not mine.is_file() or not theirs.is_file() or _sha(mine) != _sha(theirs):
-            problems.append(f"{rel} is executed by an approved run: and differs from the trusted copy or is missing "
+            problems.append(f"{rel} is executed by a privileged run: and differs from the trusted copy or is missing "
                             "(refused; Issue #544)")
-    for directory in sorted(directories):
-        trusted_names = {p.name for p in (Path(trusted) / directory).glob("*.py")}
-        for path in (Path(candidate) / directory).glob("*.py"):
-            if path.name not in trusted_names:
-                problems.append(f"{directory}/{path.name} is added beside an executed module and can shadow an import "
-                                "(refused; Issue #544)")
+    for directory in sorted(directories | {"."}):
+        for name in sorted(_module_entries(Path(candidate) / directory) - _module_entries(Path(trusted) / directory)):
+            problems.append(f"{directory}/{name} is added beside an executed module and can shadow an import "
+                            "(refused; Issue #544)")
     return problems
 
 
 def script_hash_problems(candidate, trusted):
-    """Compatibility name: the approved closure (see closure_problems)."""
+    """Compatibility name: the privileged closure (see closure_problems)."""
     return closure_problems(candidate, trusted)
 
 

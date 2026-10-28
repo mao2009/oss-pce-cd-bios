@@ -117,6 +117,81 @@ class PrivilegedClosure(ClosureCase):
         print(result.stderr.strip().splitlines()[-1][:200])
 
 
+class BypassCases(ClosureCase):
+    """Review bypasses of the first closure version (Issue #544 review, round 2). Each must be refused now."""
+
+    def set_run(self, text):
+        for root in (self.trusted, self.candidate):
+            (root / FIXTURE).write_text(priv_workflow(text), encoding='utf-8')
+
+    def test_c1_bare_make_runs_the_default_goal_and_its_closure(self):
+        self.set_run('make -j2')
+        files, _, _ = policy.closure_of(self.trusted)
+        self.assertIn('tools/setup.py', files)   # the default goal is the first rule: setup
+        self.append('tools/setup.py', '\n# default goal\n')
+        self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
+
+    def test_c2_variable_path_is_refused_on_the_trusted_side(self):
+        self.set_run('python3 $TOOLS/setup.py')
+        self.assertTrue(policy.closure_of(self.trusted)[2])
+
+    def test_c2_extensionless_executed_path_is_followed(self):
+        for root in (self.trusted, self.candidate):
+            (root / 'tools' / 'hook').write_text('#!/bin/sh\necho ok\n', encoding='utf-8')
+        self.set_run('tools/hook')
+        self.assertEqual(policy.closure_problems(self.candidate, self.trusted), [])
+        self.append('tools/hook', 'curl https://example.invalid\n')
+        self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
+
+    def test_c3_shell_keyword_hides_eval_is_refused(self):
+        self.set_run('if true; then eval "python3 tools/leaf.py"; fi')
+        self.assertTrue(policy.closure_of(self.trusted)[2])
+
+    def test_c3_interpreter_with_grouped_c_flag_is_refused(self):
+        self.set_run('bash -ec "python3 tools/leaf.py"')
+        self.assertTrue(policy.closure_of(self.trusted)[2])
+
+    def test_c4_package_added_beside_executed_code_shadows_an_import(self):
+        self.set_run('make setup')
+        (self.candidate / 'tools' / 'json').mkdir()
+        (self.candidate / 'tools' / 'json' / '__init__.py').write_text('raise SystemExit(1)\n', encoding='utf-8')
+        self.assertTrue(any('json' in p for p in policy.closure_problems(self.candidate, self.trusted)))
+
+    def test_c4_root_module_added_is_refused_for_python_m(self):
+        self.set_run('python3 -m unittest discover -s tests/host -p "test_policy_guard_closure.py"')
+        (self.candidate / 'unittest.py').write_text('raise SystemExit(1)\n', encoding='utf-8')
+        self.assertTrue(any('unittest.py' in p for p in policy.closure_problems(self.candidate, self.trusted)))
+
+    def test_m1_job_without_permissions_is_privileged(self):
+        import yaml
+        doc = yaml.safe_load('on: [push]\njobs:\n  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: make setup\n')
+        self.assertTrue(policy.privileged_job(doc, doc['jobs']['j']))
+
+    def test_m1_job_reading_a_secret_is_privileged(self):
+        import yaml
+        doc = yaml.safe_load('on: [push]\npermissions:\n  contents: read\njobs:\n  j:\n    runs-on: ubuntu-24.04\n'
+                             '    steps:\n      - run: echo ${{ secrets.X }}\n')
+        self.assertTrue(policy.privileged_job(doc, doc['jobs']['j']))
+
+    def test_m2_sinclude_is_followed(self):
+        for root in (self.trusted, self.candidate):
+            (root / 'tools' / 'x.mk').write_text('X = 1\n', encoding='utf-8')
+            with (root / 'Makefile').open('a', encoding='utf-8') as handle:
+                handle.write('sinclude tools/x.mk\n')
+        self.assertEqual(policy.closure_problems(self.candidate, self.trusted), [])
+        self.append('tools/x.mk', 'all:; curl https://example.invalid\n')
+        self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
+
+    def test_m4_expression_in_privileged_run_is_refused(self):
+        self.set_run('echo ${{ github.head_ref }}')
+        self.assertTrue(policy.closure_of(self.trusted)[2])
+
+    def test_m7_yaml_extension_workflows_are_scanned(self):
+        (self.trusted / '.github' / 'workflows' / 'priv_fixture.yaml').write_text(
+            priv_workflow('python3 tools/leaf.py'), encoding='utf-8')
+        self.assertIn('python3 tools/leaf.py', [run for run, _ in policy._trusted_steps(self.trusted)])
+
+
 class UnprivilegedBoundary(unittest.TestCase):
     def test_nightly_plan_job_is_outside_the_privileged_closure(self):
         # The nightly plan job holds no write permission: its run: text is approved exactly (approval_problems) but its
