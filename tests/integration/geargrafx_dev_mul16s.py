@@ -147,7 +147,8 @@ def find_trampoline_address(rom_dir, rom_path=None, payload_len=MAX_TRAMPOLINE_P
 
     Safety checks (the common check_trampoline_region):
     - OVERRIDES segment end must be found in dev.map (End is inclusive: first free byte = End + 1).
-    - Address rounded up to a 2-byte boundary for JMP absolute targeting.
+    - Address is the first free byte after OVERRIDES (no alignment: JMP abs has none, and the
+      mutant trampoline must sit at the end of the last override's PC window, as before the MA_COS layout).
     - Region start AND end must stay below the $F000 boundary.
     - Region must not overlap OVERRIDES, BOOT or any other defined segment.
     - Every payload byte must be unused ROM ($FF); a missing/unreadable ROM or bad map fails safe.
@@ -160,7 +161,6 @@ def find_trampoline_address(rom_dir, rom_path=None, payload_len=MAX_TRAMPOLINE_P
     ov = segments["OVERRIDES"]
     # End is inclusive (last byte address): first free byte is End + 1.
     addr = ov["end"] + 1
-    addr = (addr + 1) & ~1  # round up to next even address
 
     if rom_path is not None:
         if not rom_path.exists():
@@ -182,7 +182,7 @@ def validate_trampoline_address(dev_map_text, rom_data=None, payload_len=MAX_TRA
     if "OVERRIDES" not in segments:
         raise ValueError("OVERRIDES segment not found in dev.map")
     ov = segments["OVERRIDES"]
-    addr = (ov["end"] + 1 + 1) & ~1  # End inclusive -> first free byte, rounded up
+    addr = ov["end"] + 1  # End inclusive -> first free byte
     return check_trampoline_region(segments, addr, payload_len, rom_data)
 
 

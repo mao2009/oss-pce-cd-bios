@@ -65,12 +65,11 @@ idx_done:
     sec
     lda #0
     sbc $FA
-    sta $FA
+    pha                 ; low byte of the result waits on the stack (saves 5 bytes of OVERRIDES)
     lda #0
     sbc $F9
-    sta $F9
-    lda $FA
-    ldx $F9
+    tax                 ; high byte of the result -> X
+    pla                 ; low byte of the result -> A
 done:
     ply                 ; Y = caller's Y
     plp                 ; P = caller's P
