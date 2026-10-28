@@ -194,11 +194,10 @@ def expect_rejected(probe, data, folder, cue, reset, entry, label, low, high, in
             )
         return str(error)
     except ValueError as error:
-        message = str(error)
-        if "BLOCKED:" in message or "BLOCKED" in message:
+        if getattr(error, "reason", None) == "BLOCKED":
             raise
         raise ValueError(
-            f"mutant {label} rejected with unexpected exception: {message!r}"
+            f"mutant {label} rejected with unexpected exception: {error!r}"
         )
     raise ValueError(f"mutant {label} unexpectedly passed")
 
@@ -229,9 +228,9 @@ def main():
             (0x34, 0x80, P_INPUT, 0xFF),
             (0xAB, 0xFF, P_INPUT, 0xFF),
             (0x34, 0x12, P_INPUT_ZV, 0xFF),
-            # SP=$08: 境界+1（7バイト消費で$2101到達、SP wraparoundなし）
+            # SP=$08: 境界+1（7バイト消費で$2102到達、SP wraparoundなし）
             (0x34, 0x12, P_INPUT, 0x08),
-            # SP=$07: 契約下限（7バイト消費で$2100到達、SP wraparoundなし）
+            # SP=$07: 契約下限（7バイト消費で$2101到達、SP wraparoundなし）
             (0x00, 0x00, P_INPUT, 0x07),
             (0x34, 0x12, P_INPUT, 0x07),
         )
@@ -289,6 +288,6 @@ if __name__ == "__main__":
         print(f"DEV EX_SETWRT integration BLOCKED: {error.reason}: {error}", file=sys.stderr)
         raise SystemExit(BLOCKED_EXIT) from error
     except (ValueError, OSError, subprocess.SubprocessError) as error:
-        status = "BLOCKED" if "BLOCKED" in str(error) else "FAIL"
+        status = "BLOCKED" if getattr(error, "reason", None) == "BLOCKED" else "FAIL"
         print(f"DEV EX_SETWRT integration {status}: {error}", file=sys.stderr)
         raise SystemExit(BLOCKED_EXIT if status == "BLOCKED" else 1) from error
