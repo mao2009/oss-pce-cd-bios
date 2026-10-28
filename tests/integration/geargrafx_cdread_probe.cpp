@@ -20,6 +20,9 @@
 #include <cstdio>
 #include <cstdlib>
 
+#ifdef CDRA_VFS_MARK
+extern "C" void cdra_mark(const char* name);  // defined in cdra_vfs_shim.cpp
+#endif
 static const unsigned kResultOffset = 0x300;   // work RAM offset of CPU $2300
 static const unsigned kBufferOffset = 0x800;   // CPU $2800
 static const unsigned kBufferBytes = 6144;
@@ -198,6 +201,9 @@ int main(int argc, char** argv) {
         hex("buffer_hex", kBufferOffset, kBufferBytes);
         std::printf("}\n");
     };
+#ifdef CDRA_VFS_MARK  // read-ahead A/B harness only: splits load-time VFS reads from guest-driven reads
+    cdra_mark("guest_start");
+#endif
     run_once(false);
     core.ResetMedia(true);
     run_once(true);

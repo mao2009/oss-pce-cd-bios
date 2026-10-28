@@ -119,6 +119,11 @@ dev-cdread: dev-rom
 dev-cdread-integration: dev-cdread
 	$(PYTHON) tests/integration/geargrafx_cdread.py --mode "$(MODE)"
 
+.PHONY: dev-cdra-compare
+# Opt-in A/B of CD read-ahead ON vs OFF on the pinned core (exp/cd-readahead-compare). Diagnostic only, not boot.
+dev-cdra-compare: dev-cdread
+	$(PYTHON) tests/integration/geargrafx_cdra_compare.py --mode "$(MODE)"
+
 .PHONY: dev-cdload-exec dev-cdload-exec-integration
 # Opt-in Issues #14/#5 load-and-execute experiment; separate from the default DEV ROM and the other diagnostics.
 dev-cdload-exec: dev-rom
