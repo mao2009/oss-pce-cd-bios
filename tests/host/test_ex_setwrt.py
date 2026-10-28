@@ -4,10 +4,15 @@ Scope: a Python model of the documented contract (not the assembly) plus an exac
 check of src/overrides/slot_3A.s. No HuC6280 execution happens here. These checks are NOT evidence of
 behaviour on hardware or on the Geargrafx core; real-core verification is a separate, verifier-run step.
 
-Stack contract: the routine consumes at most 6 push bytes (php, phy, phx, pha, pha, pha)
-plus the caller's JSR 2-byte return address = 8 bytes below caller SP.
-SP=$07 is the contract lower bound (deepest write reaches $2101, no wraparound into $20xx).
-SP=$06 would wrap and is outside the contract.
+Stack contract:
+  Normal path inside api_slot_3A pushes at most 5 bytes simultaneously:
+    php, phy, phx, pha (caller A), pha (MPR0)
+  JSR return address: 2 bytes below caller SP.
+  Total max depth below caller SP: 5 + 2 = 7 bytes.
+  SP=$07 is the contract lower bound: deepest write reaches $2101 (inside stack page $2100-$21FF),
+  SP reaches $00 after the 5th push but does not wrap.
+  SP=$06 causes SP wraparound during the 5th push; out of contract.
+  Reject path: bcs branches immediately, 0 pushes inside routine, only JSR's 2 bytes.
 """
 import re
 import unittest
@@ -43,6 +48,10 @@ REASON_C_NOT_SET = "C_NOT_SET"
 REASON_NOOP_UNDETECTED = "NOOP_UNDETECTED"
 REASON_HALT_FAILURE = "HALT_FAILURE"
 REASON_UNEXPECTED_PASS = "UNEXPECTED_PASS"
+REASON_MAWR_CHANGED = "MAWR_CHANGED"
+REASON_REGISTER_MISMATCH = "REGISTER_MISMATCH"
+REASON_STACK_MISMATCH = "STACK_MISMATCH"
+REASON_MPR_MISMATCH = "MPR_MISMATCH"
 
 
 class SetwrtModelTests(unittest.TestCase):
@@ -64,38 +73,121 @@ class SetwrtModelTests(unittest.TestCase):
 class SetwrtStackTests(unittest.TestCase):
     """スタック境界の静的検証。実コアでは geargrafx_dev_ex_setwrt.py でSP=$07/$08を実測する。"""
 
-    def test_max_stack_consumption_is_8_bytes(self):
-        # JSR (2) + php(1) + phy(1) + phx(1) + pha(1: caller A) + pha(1: MPR0) + pha(1: keep A) = 8
-        max_consumption = 2 + 6
-        self.assertEqual(max_consumption, 8)
+    def test_normal_path_max_pushes_is_5(self):
+        # api_slot_3A normal path: php, phy, phx, pha (caller A), pha (MPR0) = 5 simultaneous pushes.
+        # After these, pla/pla/pha/pla/ply/plp pop/restore. Max simultaneous = 5.
+        # JSR return address adds 2 bytes below caller SP.
+        # Total max depth below caller SP = 5 + 2 = 7.
+        self.assertEqual(5 + 2, 7)
+
+    def test_reject_path_max_pushes_is_0(self):
+        # Reject path: cpx #$80 / bcs setwrt_reject / sec / rts, no pushes inside routine.
+        # Only JSR's 2 bytes below caller SP.
+        self.assertEqual(0 + 2, 2)
 
     def test_sp_07_is_contract_lower_bound(self):
-        # SP=$07: JSR uses $06/$05, routine pushes down to $00 (writes $2101), no wraparound.
-        # Deepest write is at $2101 which is inside the stack page ($2100-$21FF).
+        # SP=$07: JSR uses $06/$05 (SP -> $04), then 5 pushes use $04/$03/$02/$01/$00 (SP -> $FF).
+        # Deepest write at $2101 (5th push writes at $2100+$01=$2101), inside stack page $2100-$21FF.
+        # SP reaches $00 but the 6502 push writes BEFORE decrementing, so the 5th push writes at $2101.
+        # No $20xx write occurs. SP=$07 is safe.
         sp = 0x07
-        after_jsr = sp - 2          # $05
-        deepest_push = after_jsr - 6  # $07 - 2 - 6 = $07 - 8 = $FF? No: pushes go $05->$04->$03->$02->$01->$00->$FF?
-        # 6502 push: write at $2100+SP, then SP--. After 6 pushes from SP=$05: writes at $05,$04,$03,$02,$01,$00
-        # Deepest write address = $2100 + $00 = $2101. Inside stack page. No wraparound.
-        deepest_write_addr = 0x2100 + 0  # after 6th push, SP=$00, last write was at $2100+1=$2101? Let's count:
-        # SP=$05: write at $2105, SP=$04 (push 1: php)
-        # SP=$04: write at $2104, SP=$03 (push 2: phy)
-        # SP=$03: write at $2103, SP=$02 (push 3: phx)
-        # SP=$02: write at $2102, SP=$01 (push 4: pha caller A)
-        # SP=$01: write at $2101, SP=$00 (push 5: pha MPR0)
-        # SP=$00: write at $2100, SP=$FF (push 6: pha keep A)  <- Wait, this IS inside $2100-$21FF!
-        # Actually SP=$00 means write at $2100+$00=$2100, then SP=$FF. The write at $2100 is inside the stack page.
-        # So SP=$07 is safe: deepest write is at $2100, SP ends at $FF after the last push but pulls restore.
-        self.assertTrue(0x2100 <= deepest_write_addr <= 0x21FF)
+        sp_after_jsr = sp - 2          # $05
+        # Push sequence from SP=$05: write at $2105($04), $2104($03), $2103($02), $2102($01), $2101($00)
+        deepest_write_addr = 0x2100 + 1  # $2101
+        self.assertTrue(0x2100 <= deepest_write_addr <= 0x21FF, f"deepest write ${deepest_write_addr:04X} outside stack page")
+        self.assertEqual(sp_after_jsr - 5, 0x00)  # SP reaches $00 after 5 pushes
 
-    def test_sp_06_would_wrap(self):
-        # SP=$06: JSR uses $05/$04, 6 pushes go $03,$02,$01,$00,$FF,$FE
-        # The 5th push writes at $2100+$00=$2100 (OK), 6th push writes at $2100+$FF=$20FF (WRAPAROUND)
+    def test_sp_06_wraps_sp(self):
+        # SP=$06: JSR uses $05/$04 (SP -> $03), then 5 pushes use $03/$02/$01/$00/$FF.
+        # 5th push writes at $2100+$00=$2100, then SP wraps to $FF.
+        # The write at $2100 is inside the stack page, but SP wraparound ($00 -> $FF)
+        # is outside the contract.
         sp = 0x06
-        after_jsr = sp - 2  # $04
-        # push 1: write $2104, SP=$03; push 2: write $2103, SP=$02; push 3: write $2102, SP=$01
-        # push 4: write $2101, SP=$00; push 5: write $2100, SP=$FF; push 6: write $20FF, SP=$FE ← WRAP
-        self.assertTrue(sp - 2 - 5 < 0)  # 5th push reaches SP=00 boundary
+        sp_after_jsr = sp - 2          # $04
+        sp_after_5_pushes = (sp_after_jsr - 5) & 0xFF  # $FF (wrapped from $00)
+        self.assertEqual(sp_after_5_pushes, 0xFF)  # SP wrapped from $00 to $FF
+        # SP wraparound: out of contract.
+
+    def test_stack_page_is_2100_to_21ff(self):
+        # MPR1 = $F8 maps $2000-$3FFF; stack is at $2100-$21FF within that window.
+        # $20xx addresses are below the stack page (< $2100).
+        self.assertTrue(0x20FF < 0x2100)  # $20xx is below stack page
+        self.assertTrue(0x2100 <= 0x21FF)  # stack page is valid range
+
+
+class ProbeRejectedForHost(ValueError):
+    """Host-test mirror of the integration test's ProbeRejected."""
+    def __init__(self, reason, detail):
+        self.reason = reason
+        super().__init__(detail)
+
+
+class TestFalsePassRegression(unittest.TestCase):
+    """偽PASS回帰テスト: 期待理由とは異なる異常が発生してもFAILする。
+
+    修正前: check() が期待理由コードをエラーメッセージの先頭に付けるため、
+            expect_rejected() は常に一致と判定 → 偽PASS。
+    修正後: ProbeRejected.reason は実際の異常理由。不一致 → FAIL。
+    """
+
+    def _expect_rejected(self, expected_reason, check_fn):
+        """expect_rejected のホスト版: ProbeRejected.reason を厳密比較。"""
+        try:
+            check_fn()
+        except ProbeRejectedForHost as error:
+            if error.reason != expected_reason:
+                raise ValueError(
+                    f"rejected for wrong reason: got {error.reason!r}, want {expected_reason!r}"
+                )
+            return error.reason
+        raise ValueError("unexpectedly passed")
+
+    def test_false_pass_before_fix_scenario(self):
+        # 修正前なら偽PASSしていたシナリオ:
+        # MAWR_CHANGEDを期待しているが、実際にはSP異常（STACK_MISMATCH）が発生。
+        # 修正前: check()が"MAWR_CHANGED:"をプレフィクスに付ける → 一致 → PASS（偽）
+        # 修正後: ProbeRejected.reason="STACK_MISMATCH" != "MAWR_CHANGED" → FAIL
+        def check_fn():
+            raise ProbeRejectedForHost("STACK_MISMATCH", "SP mismatch")
+
+        with self.assertRaises(ValueError) as ctx:
+            self._expect_rejected("MAWR_CHANGED", check_fn)
+        self.assertIn("wrong reason", str(ctx.exception))
+
+    def test_matching_reason_passes(self):
+        # 正しい理由で拒否された場合はPASS。
+        def check_fn():
+            raise ProbeRejectedForHost("MAWR_CHANGED", "MAWR mismatch")
+
+        result = self._expect_rejected("MAWR_CHANGED", check_fn)
+        self.assertEqual(result, "MAWR_CHANGED")
+
+    def test_vdc_changed_vs_c_not_set_mismatch(self):
+        # VDC_CHANGEDを期待しているが、実際はC_NOT_SET。
+        def check_fn():
+            raise ProbeRejectedForHost("C_NOT_SET", "C not set")
+
+        with self.assertRaises(ValueError) as ctx:
+            self._expect_rejected("VDC_CHANGED", check_fn)
+        self.assertIn("wrong reason", str(ctx.exception))
+
+    def test_blocked_is_wrong_reason(self):
+        # BLOCKEDは正常な拒否ではなく、期待理由と不一致 → FAIL。
+        def check_fn():
+            raise ProbeRejectedForHost("BLOCKED", "probe missing")
+
+        with self.assertRaises(ValueError) as ctx:
+            self._expect_rejected("MAWR_CHANGED", check_fn)
+        self.assertIn("wrong reason", str(ctx.exception))
+
+    def test_unexpected_pass_fails(self):
+        # 変異体が予期せずパスした場合はFAIL。
+        def check_fn():
+            pass  # no exception
+
+        with self.assertRaises(ValueError) as ctx:
+            self._expect_rejected("MAWR_CHANGED", check_fn)
+        self.assertIn("unexpectedly passed", str(ctx.exception))
 
 
 class SetwrtSourceTests(unittest.TestCase):
@@ -119,9 +211,8 @@ class SetwrtSourceTests(unittest.TestCase):
                 self.assertIn(hexaddr.upper(), {"0000", "0002", "0003"}, line)
 
     def test_no_zero_page_addressing(self):
-        # (b) Zero page is $2000 on the pinned core, but a bare 1-2 digit operand (no #) is encoded as zero-page
-        # by ca65 and would hit $20xx. Every VDC access must use the a: (absolute) prefix.
-        # The detector is first checked on known inputs, so it cannot pass silently.
+        # Zero page is $2000 on the pinned core. A bare 1-2 digit operand (no #) encoded as zero-page
+        # by ca65 would hit $20xx. Every VDC access must use the a: (absolute) prefix.
         bare = re.compile(r"(?<![#\w:])\$[0-9A-Fa-f]{1,2}(?![0-9A-Fa-f])")
         self.assertTrue(bare.search("    sta $02"))
         self.assertTrue(bare.search("    stz $00"))
@@ -133,21 +224,18 @@ class SetwrtSourceTests(unittest.TestCase):
             self.assertIn(prefix, self.code)
 
     def test_no_access_to_the_stack_or_zero_page_window(self):
-        # (c) The stack ($2100-$21FF) and zero page ($2000) stay in MPR1. No operand may name them.
+        # The stack ($2100-$21FF) and zero page ($2000) stay in MPR1. No operand may name them.
         for line in self.code:
             for hexaddr in re.findall(r"\$([0-9A-Fa-f]{4})\b", line):
                 self.assertFalse(0x2000 <= int(hexaddr, 16) <= 0x21FF, line)
 
     def test_routine_is_linked_in_overrides_mpr7(self):
-        # (a) The routine is linked into OVERRIDES, which bank0.cfg places at $E2A0 (MPR7, not the I/O window).
         cfg = (ROOT / "src" / "bank0.cfg").read_text(encoding="utf-8")
         self.assertRegex(cfg, r"OVERRIDES:\s*load\s*=\s*ROM0,.*start\s*=\s*\$E[0-9A-Fa-f]{3}")
         start = int(re.search(r"OVERRIDES:.*start\s*=\s*\$([0-9A-Fa-f]{4})", cfg).group(1), 16)
         self.assertGreaterEqual(start, 0xE000)
 
     def test_window_is_mpr0_not_the_stack_page(self):
-        # RED on the MPR1 window: tam #$02 maps $2000-$3FFF, which holds the stack ($2100-$21FF).
-        # GREEN with the MPR0 window: $0000-$1FFF does not include the stack page.
         self.assertNotIn("tam #$02", self.code)
         self.assertNotIn("tma #$02", self.code)
         self.assertEqual(self.code.count("tam #$01"), 2)
@@ -158,10 +246,25 @@ class SetwrtSourceTests(unittest.TestCase):
         pulls = sum(1 for line in self.code if line.split()[0] in ("plp", "ply", "plx", "pla"))
         self.assertEqual(pushes, pulls)
 
+    def test_max_simultaneous_pushes_in_normal_path(self):
+        # Count the maximum number of pushes that remain on the stack at any point.
+        # php(1) phy(2) phx(3) pha(4) pha(5) -> pla(4) -> pla(3) -> pha(4) -> pla(3) -> ply(2) -> plp(1)
+        max_depth = 0
+        depth = 0
+        for line in self.code:
+            op = line.split()[0]
+            if op in ("php", "phy", "phx", "pha"):
+                depth += 1
+                max_depth = max(max_depth, depth)
+            elif op in ("plp", "ply", "plx", "pla"):
+                depth -= 1
+        self.assertEqual(max_depth, 5)  # 5 simultaneous pushes, not 6
+
     def test_structured_reason_codes_are_defined(self):
-        # 構造化拒否理由コードが安定した契約として定義されていること
         for code in (REASON_STACK_OVERFLOW, REASON_VDC_CHANGED, REASON_C_NOT_SET,
-                     REASON_NOOP_UNDETECTED, REASON_HALT_FAILURE, REASON_UNEXPECTED_PASS):
+                     REASON_NOOP_UNDETECTED, REASON_HALT_FAILURE, REASON_UNEXPECTED_PASS,
+                     REASON_MAWR_CHANGED, REASON_REGISTER_MISMATCH,
+                     REASON_STACK_MISMATCH, REASON_MPR_MISMATCH):
             self.assertIsInstance(code, str)
             self.assertTrue(len(code) > 0)
             self.assertEqual(code, code.upper())

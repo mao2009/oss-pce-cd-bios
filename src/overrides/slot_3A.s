@@ -15,7 +15,10 @@
 ; choose the zero-page form, which would address $2000-$2003 instead of $0000-$0003. The routine is linked into
 ; OVERRIDES (start $E2A0, src/bank0.cfg), in MPR7, so instruction fetch is not affected by MPR0.
 ; Ceiling: NMI is assumed not to occur (PCE has no NMI source in use). Not observed on a real core.
-; Stack: 5 bytes below the JMP target (P, Y, X, A, saved MPR0). No VBlank wait (timing not constrained).
+; Stack: max 5 bytes simultaneous below the JMP target (P, Y, X, A, saved MPR0).
+; JSR return address adds 2 bytes; total max depth below caller SP = 7 bytes.
+; SP=$07 is the contract lower bound (deepest write at $2101, inside stack page $2100-$21FF).
+; SP=$06 causes SP wraparound and is out of contract. No VBlank wait (timing not constrained).
 ; ok path: N/Z are the values after CPX (PLP restores them from the php made after CPX); V is the caller's V, which CPX does not change. ng path: N/Z from CPX (not a contract).
 .setcpu "huc6280"
 .segment "OVERRIDES"
