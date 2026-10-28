@@ -31,7 +31,7 @@ class LedgerTests(unittest.TestCase):
 
     def test_counts_separate_dev_rom_from_approval(self):
         summary = dev.summary(base(), OVERRIDES)
-        self.assertEqual(12, summary["dev_rom_callable"])
+        self.assertEqual(13, summary["dev_rom_callable"])
         self.assertEqual(0, summary["dev_callable_approved"])
         self.assertEqual(0, summary["abi_verified"])
         self.assertIs(False, summary["release_eligible"])
@@ -229,7 +229,7 @@ class FailClosedTests(unittest.TestCase):
         ledger = base()
         entry(ledger, 0x10)["approval"] = {"approved_by": "owner", "review_ref": "x"}
         s = dev.summary(ledger, OVERRIDES)
-        self.assertEqual((12, 1, 0), (s["dev_rom_callable"], s["owner_approved"], s["dev_callable_approved"]))
+        self.assertEqual((13, 1, 0), (s["dev_rom_callable"], s["owner_approved"], s["dev_callable_approved"]))
 
     def test_malformed_ledgers_are_rejected(self):
         for mutate in (

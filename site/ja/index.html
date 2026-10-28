@@ -42,7 +42,7 @@
       "url": "https://github.com/mao2009/oss-pce-cd-bios",
       "codeRepository": "https://github.com/mao2009/oss-pce-cd-bios",
       "license": "https://github.com/mao2009/oss-pce-cd-bios/blob/main/LICENSE",
-      "description": "Development-only open-source replacement for the PC Engine / TurboGrafx-CD Super System Card 3.0 BIOS. Twelve DEV-only implemented slots (EX_GETVER, EX_BINBCD, EX_BCDBIN, EX_RND, MA_MUL8U, MA_MUL8S, MA_MUL16U, MA_DIV16S, MA_DIV16U, MA_SQRT, MA_SIN, MA_MUL16S; none approved or ABI-verified); 69 nonreturning stub slots; full ABI and commercial compatibility unverified.",
+      "description": "Development-only open-source replacement for the PC Engine / TurboGrafx-CD Super System Card 3.0 BIOS. Thirteen DEV-only implemented slots (EX_GETVER, EX_BINBCD, EX_BCDBIN, EX_RND, MA_MUL8U, MA_MUL8S, MA_MUL16U, MA_DIV16S, MA_DIV16U, MA_SQRT, MA_SIN, MA_MUL16S; none approved or ABI-verified); 68 nonreturning stub slots; full ABI and commercial compatibility unverified.",
       "programmingLanguage": "Assembly",
       "keywords": [
         "PC Engine",
@@ -240,7 +240,7 @@
           <p class="section-intro">検索やAIによる案内でも誤解が起きないよう、実装済みの機能と未検証の範囲を分けて説明します。</p>
         </div>
         <div class="card-grid">
-          <article class="card"><span class="number">01 / 対応状況</span><h3>実際のゲームで使えるBIOS？</h3><p>まだ使えません。256KiBの開発用ROMには開発専用の実装が12件（EX_GETVER、EX_BINBCD、EX_BCDBIN、EX_RND、MA_MUL8U、MA_MUL8S、MA_MUL16U、MA_DIV16S、MA_DIV16U、MA_SQRT、MA_SIN、MA_MUL16S。いずれも承認・ABI検証は未了）あり、残り69スロットは未実装です。市販ゲームの互換性や配布可能な製品版は未達成です。</p></article>
+          <article class="card"><span class="number">01 / 対応状況</span><h3>実際のゲームで使えるBIOS？</h3><p>まだ使えません。256KiBの開発用ROMには開発専用の実装が13件（EX_GETVER、EX_BINBCD、EX_BCDBIN、EX_RND、MA_MUL8U、MA_MUL8S、MA_MUL16U、MA_DIV16S、MA_DIV16U、MA_SQRT、MA_SIN、MA_COS、MA_MUL16S。いずれも承認・ABI検証は未了）あり、残り68スロットは未実装です。市販ゲームの互換性や配布可能な製品版は未達成です。</p></article>
           <article class="card"><span class="number">02 / 検証</span><h3>どこまで動作確認した？</h3><p>Geargrafx実コアでEX_GETVERの復帰、MA_DIV16UなどのDEV演算API、合成CD読み込みを検証。別の合成スタック実験ではI/O領域へのpushの危険性も観測しました。純正ABI互換性やゲーム起動の証明ではありません。<a href="https://github.com/mao2009/oss-pce-cd-bios/pull/174">PR #174</a> を参照してください。</p></article>
           <article class="card"><span class="number">03 / 参加</span><h3>開発に参加するには？</h3><p><a href="https://github.com/mao2009/oss-pce-cd-bios/issues">GitHub Issues</a>から仕様調査、テスト、独自実装に取り組めます。<a href="https://github.com/mao2009/oss-pce-cd-bios/blob/main/CONTRIBUTING.md">参加方針</a>を確認し、純正BIOSデータをアップロードしないでください。</p></article>
         </div>

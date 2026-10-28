@@ -42,7 +42,7 @@
       "url": "https://github.com/mao2009/oss-pce-cd-bios",
       "codeRepository": "https://github.com/mao2009/oss-pce-cd-bios",
       "license": "https://github.com/mao2009/oss-pce-cd-bios/blob/main/LICENSE",
-      "description": "Development-only open-source replacement for the PC Engine / TurboGrafx-CD Super System Card 3.0 BIOS. Thirteen DEV-only implemented slots (EX_GETVER, EX_BINBCD, EX_BCDBIN, EX_RND, MA_MUL8U, MA_MUL8S, MA_MUL16U, MA_DIV16S, MA_DIV16U, MA_SQRT, MA_SIN, MA_MUL16S; none approved or ABI-verified); 69 nonreturning stub slots; full ABI and commercial compatibility unverified.",
+      "description": "Development-only open-source replacement for the PC Engine / TurboGrafx-CD Super System Card 3.0 BIOS. Thirteen DEV-only implemented slots (EX_GETVER, EX_BINBCD, EX_BCDBIN, EX_RND, MA_MUL8U, MA_MUL8S, MA_MUL16U, MA_DIV16S, MA_DIV16U, MA_SQRT, MA_SIN, MA_COS, MA_MUL16S; none approved or ABI-verified); 68 nonreturning stub slots; full ABI and commercial compatibility unverified.",
       "programmingLanguage": "Assembly",
       "keywords": [
         "PC Engine",
@@ -240,7 +240,7 @@
           <p class="section-intro">A short, source-linked summary for developers, researchers and anyone discovering this open-source PC Engine CD BIOS effort.</p>
         </div>
         <div class="card-grid">
-          <article class="card"><span class="number">01 / SCOPE</span><h3>Is it a usable System Card BIOS?</h3><p>Not yet. The 256 KiB development ROM has thirteen DEV-only implemented APIs (EX_GETVER, EX_BINBCD, EX_BCDBIN, EX_RND, MA_MUL8U, MA_MUL8S, MA_MUL16U, MA_DIV16S, MA_DIV16U, MA_SQRT, MA_SIN, MA_MUL16S; none approved or ABI-verified), while 69 other slots remain stubs. No retail-game compatibility or firmware release is established.</p></article>
+          <article class="card"><span class="number">01 / SCOPE</span><h3>Is it a usable System Card BIOS?</h3><p>Not yet. The 256 KiB development ROM has thirteen DEV-only implemented APIs (EX_GETVER, EX_BINBCD, EX_BCDBIN, EX_RND, MA_MUL8U, MA_MUL8S, MA_MUL16U, MA_DIV16S, MA_DIV16U, MA_SQRT, MA_SIN, MA_COS, MA_MUL16S; none approved or ABI-verified), while 68 other slots remain stubs. No retail-game compatibility or firmware release is established.</p></article>
           <article class="card"><span class="number">02 / EVIDENCE</span><h3>What has been tested?</h3><p>Geargrafx real-core tests observe EX_GETVER return, DEV-only arithmetic including MA_DIV16U, and synthetic CD sector reads. A separate synthetic stack experiment exposed unsafe I/O-mapped pushes. These diagnostics do not certify reference-BIOS ABI compatibility or game boot. See <a href="https://github.com/mao2009/oss-pce-cd-bios/pull/174">PR #174</a>.</p></article>
           <article class="card"><span class="number">03 / CONTRIBUTE</span><h3>How can I help?</h3><p>Start with a focused <a href="https://github.com/mao2009/oss-pce-cd-bios/issues">GitHub Issue</a> covering API research, reproducible testing or original firmware code. Follow the <a href="https://github.com/mao2009/oss-pce-cd-bios/blob/main/CONTRIBUTING.md">contribution policy</a> and do not upload private BIOS images.</p></article>
         </div>
