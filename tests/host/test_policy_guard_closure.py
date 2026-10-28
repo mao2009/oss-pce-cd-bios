@@ -331,6 +331,32 @@ class CheckRunRecord(unittest.TestCase):
         print(result.stderr.strip().splitlines()[-1][:200])
 
 
+class RoundFiveBypasses(ClosureCase):
+    """Round-five review items (Issue #544): root GNUmakefile shadowing, binary module shadowing, -m arguments."""
+
+    def set_run(self, text):
+        for root in (self.trusted, self.candidate):
+            (root / FIXTURE).write_text(priv_workflow(text), encoding='utf-8')
+
+    def test_c1_candidate_gnumakefile_is_refused(self):
+        self.set_run('make setup')
+        (self.candidate / 'GNUmakefile').write_text('setup:\n\techo pwned\n', encoding='utf-8')
+        self.assertTrue(any('GNUmakefile' in p for p in policy.closure_problems(self.candidate, self.trusted)))
+
+    def test_c2_candidate_sourceless_bytecode_shadow_is_refused(self):
+        self.set_run('make setup')
+        (self.candidate / 'tools' / 'json.pyc').write_bytes(b'\x00\x00\x00\x00')
+        self.assertTrue(any('json.pyc' in p for p in policy.closure_problems(self.candidate, self.trusted)))
+
+    def test_c3_file_named_in_the_arguments_of_dash_m_is_followed(self):
+        self.set_run('python3 -m json.tool tools/leaf.py')
+        for root in (self.trusted, self.candidate):
+            (root / 'tools' / 'leaf.py').write_text('VALUE = 1\n', encoding='utf-8')
+        self.assertEqual(policy.closure_problems(self.candidate, self.trusted), [])
+        self.append('tools/leaf.py', 'import os\n')
+        self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
+
+
 class UnprivilegedBoundary(unittest.TestCase):
     def test_nightly_plan_job_is_outside_the_privileged_closure(self):
         # The nightly plan job holds no write permission: its run: text is approved exactly (approval_problems) but its

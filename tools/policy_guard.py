@@ -253,6 +253,11 @@ def _analyze_shell(text, trusted, where):
                     files |= _discover_files(trusted, args)
                 elif _module_file(trusted, module):
                     files.add(_module_file(trusted, module))
+                for word in args:   # the arguments of a -m command can still name an executed repository file
+                    if "$" in word and "/" in word:
+                        problems.append(f"{where}: argument {word!r} is a variable path; cannot be resolved (refused)")
+                    elif PATH_TOKEN_RE.fullmatch(word) and (base / word).is_file():
+                        files.add(word)
                 continue
             positional = [a for a in args if not a.startswith("-")]
             if not positional:
@@ -501,18 +506,29 @@ def closure_of(trusted):
     return files, directories, problems
 
 
+MODULE_SUFFIXES = (".py", ".pyc", ".pyo", ".so", ".pyd")
+
+
 def _module_entries(root):
-    """Names a Python import from this directory could resolve to: top-level .py files and packages."""
+    """Names a Python import from this directory could resolve to: sources, bytecode, extension modules and packages."""
     if not root.is_dir():
         return set()
-    return {p.name for p in root.iterdir() if (p.is_file() and p.suffix == ".py")
-            or (p.is_dir() and any(p.rglob("*.py")))}
+    entries = set()
+    for p in root.iterdir():
+        if p.is_file() and p.suffix in MODULE_SUFFIXES:
+            entries.add(p.name)
+        elif p.is_dir() and (p.name == "__pycache__" or any(f.suffix in MODULE_SUFFIXES for f in p.rglob("*"))):
+            entries.add(p.name)
+    return entries
 
 
 def closure_problems(candidate, trusted):
     """Every file the privileged closure can execute must equal the trusted copy; no unanalyzable construct; no module or
     package added beside an executed one (sys.path[0] is the script directory; '.' is checked for python -m)."""
     files, directories, problems = closure_of(trusted)
+    for name in ("GNUmakefile", "makefile"):   # exact names: a case-insensitive file system must not match Makefile
+        if name in {p.name for p in Path(candidate).iterdir()} or name in {p.name for p in Path(trusted).iterdir()}:
+            problems.append(f"{name} would be read by make before Makefile; refused (Issue #544)")
     for rel in sorted(files):
         mine, theirs = Path(candidate) / rel, Path(trusted) / rel
         if not mine.is_file() or not theirs.is_file() or _sha(mine) != _sha(theirs):
