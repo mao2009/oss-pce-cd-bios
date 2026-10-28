@@ -29,7 +29,7 @@ import geargrafx_dev_bcd as dev  # noqa: E402  (entry_address, run_probe: the sh
 BLOCKED_EXIT = 3
 SLOT_MA_COS = 0x46
 STORE = 0x2200  # $2200 A(result lo), $2201 X(result hi), $2202 P after JSR, $2203 Y, $2205 SP after
-P_PRE_OUT = 0x2400  # P before JSR (captured before SED/SEC? actually after)
+P_PRE_OUT = 0x2400  # P before JSR (captured after the guest sets its P)
 # Angle indices covering each quadrant, quadrant boundaries and the wrap point.
 CASES = [0, 1, 31, 32, 33, 63, 64, 65, 96, 127, 128, 129, 160, 191, 192, 193, 224, 254, 255]
 Y_PRESET = 0xA5
@@ -210,7 +210,7 @@ def main():
         for a in (0, 64, 255):
             run_case(probe, data, folder, cue, reset, f"lowsp-{a:02x}", entry, a, sp=0x06)
             evidence["cases"].append({"angle": a, "expected_q15": q15(a), "sp": 0x06})
-        # P vectors use the same caller-visible convention as MA_SIN.  The original 22
+        # P vectors use the same caller-visible convention as MA_SIN.  The 19
         # arithmetic/stack cases above remain unchanged; these add effective-P coverage.
         for p_entry in P_FLAG_CASES:
             run_case(probe, data, folder, cue, reset, f"pflag-{p_entry:02x}", entry, 1,
@@ -229,7 +229,7 @@ def main():
     total = len(angles) + 3 + len(P_FLAG_CASES) + len(NZ_CASES)
     print(f"PASS real Geargrafx DEV ROM: MA_COS slot $46 {total} cases ({len(angles)} at SP=$FF, "
           f"3 at SP=$06 boundary, {len(P_FLAG_CASES)} P vectors, {len(NZ_CASES)} N/Z vectors); "
-          f"the original 22 arithmetic/stack cases are retained; X:A=Q15 cosine of A, Y and SP checked; MPR1/MPR7 checked; "
+          f"the 19 arithmetic/stack cases are unchanged; X:A=Q15 cosine of A, Y and SP checked; MPR1/MPR7 checked; "
           f"mutants rejected {mutants}/4 (phase shift, plp->nop, caller-D cld->nop, shared sine table byte)")
 
 

@@ -1233,7 +1233,7 @@
       "implementation": {
         "source": "src/overrides/slot_46.s",
         "license": "MIT (repository LICENSE)",
-        "provenance": "project-own quarter-wave Q15 table with quadrant folding, angle index in A, X:A result (Issue #80)"
+        "provenance": "project-own wrapper: cos(a) = sin((a+64)&0xFF) as a tail jump into the MA_SIN (slot $45) quarter-wave table, angle index in A, X:A result (Issue #80)"
       },
       "host_evidence": [
         "tests/host/test_ma_cos_dev.py"

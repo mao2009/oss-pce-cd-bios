@@ -132,28 +132,32 @@ class CosWrapperSourceTests(unittest.TestCase):
         self.assertIn("api_slot_46:", source)
         self.assertIn(".import api_slot_45", source)
 
+    REQUIRED = ("php", "cld", "clc", "adc #64", "plp", "jmp api_slot_45")
+
+    @staticmethod
+    def missing_contract(lines):
+        """Contract tokens absent from the wrapper's code lines (empty list = contract holds)."""
+        code = [c.strip() for c in lines if c.strip()]
+        return [token for token in CosWrapperSourceTests.REQUIRED if token not in code]
+
     def test_wrapper_contract(self):
-        code = [c.strip() for c in self.code() if c.strip()]
-        for needed in ("php", "cld", "clc", "adc #64", "plp", "jmp api_slot_45"):
-            self.assertIn(needed, code, needed)
-        self.assertNotIn("cos_lo:", COS_SOURCE.read_text(encoding="utf-8"))
-        self.assertNotIn("cos_hi:", COS_SOURCE.read_text(encoding="utf-8"))
+        self.assertEqual(self.missing_contract(self.code()), [])
+        source = COS_SOURCE.read_text(encoding="utf-8")
+        self.assertNotIn("cos_lo:", source)
+        self.assertNotIn("cos_hi:", source)
 
     def test_wrapper_mutants_are_rejected(self):
-        """Source-level mutants of the wrapper: each must fail the contract (a no-op mutant is rejected too)."""
-        code = [c.strip() for c in self.code() if c.strip()]
-        required = ("php", "cld", "clc", "adc #64", "plp", "jmp api_slot_45")
+        """Mutants of the real wrapper text: each must fail missing_contract(). The unchanged wrapper must pass."""
+        lines = self.code()
         mutants = {
-            "no_plp (P not restored)": [c for c in code if c != "plp"],
-            "no_cld (decimal add)": [c for c in code if c != "cld"],
-            "phase_63": [c.replace("adc #64", "adc #63") for c in code],
-            "jump_to_fallback": [c.replace("jmp api_slot_45", "jmp api_slot_44") for c in code],
+            "no_plp (P not restored)": [c for c in lines if c.strip() != "plp"],
+            "no_cld (decimal add)": [c for c in lines if c.strip() != "cld"],
+            "phase_63": [c.replace("adc #64", "adc #63") for c in lines],
+            "jump_to_fallback": [c.replace("jmp api_slot_45", "jmp api_slot_44") for c in lines],
         }
-        for name, lines in mutants.items():
-            missing = [n for n in required if n not in lines]
-            self.assertTrue(missing, f"mutant {name} was not rejected")
-        # no-op mutant: the unchanged wrapper must satisfy the contract
-        self.assertEqual([n for n in required if n not in code], [])
+        for name, mutated in mutants.items():
+            self.assertTrue(self.missing_contract(mutated), f"mutant {name} was not rejected")
+        self.assertEqual(self.missing_contract(lines), [])
 
     def test_no_zero_page_operands(self):
         operands = set()
