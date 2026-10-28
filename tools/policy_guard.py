@@ -510,6 +510,29 @@ def normalized_path(arg):
     return posixpath.normpath(arg) if arg and not arg.startswith("/") else arg
 
 
+# Owner ruling (Issue #544, option b): a privileged job writes only to a dedicated temporary area and to the staging area
+# named here. Nothing else (.git, sources, the trusted or candidate checkouts) may be written by a privileged step.
+STAGING_AREAS = ("build/stage/", "build/tmp/")
+
+
+def writer_destinations(args):
+    """Every argument that names a destination: a plain word, or the value of --target-directory= or -t/-T (attached or
+    separate). Option flags such as -p or -r name nothing."""
+    dests = []
+    for arg in args:
+        if arg.startswith("--") and "=" in arg:
+            dests.append(option_value(arg))
+        elif not arg.startswith("-"):
+            dests.append(arg)
+    return dests
+
+
+def _in_staging_area(arg):
+    norm = normalized_path(arg)
+    return (not norm.startswith("/") and ".." not in norm.split("/")
+            and any(norm.startswith(area) for area in STAGING_AREAS))
+
+
 def _protected_destination(arg):
     """Default deny for a writer (Issue #544): .git, the repository root (a name with no directory part) and any
     destination that normalises to the root. Only a directory under the repository is a destination here."""
@@ -569,6 +592,9 @@ def _privileged_command_problems(run, where):
                 problems.append(f"{where}: {head} names repository code (existing or missing); refused (Issue #544)")
             elif any(_protected_destination(a) for a in args):
                 problems.append(f"{where}: {head} names .git or a repository-root path (default deny); refused (Issue #544)")
+            elif any(not _in_staging_area(a) for a in writer_destinations(args)):
+                problems.append(f"{where}: {head} may write only under {' or '.join(STAGING_AREAS)} (owner ruling, Issue #544); "
+                                "refused")
         elif head == "gh":
             api_read = (args[:1] == ["api"] and len(args) == 2 and args[1].startswith("repos/")
                         and "://" not in args[1] and "graphql" not in args[1])   # a bare repos/ path only, no full URL

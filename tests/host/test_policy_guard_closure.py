@@ -571,8 +571,8 @@ class WriterNormalisation(ClosureCase):
     def test_repository_root_destination_is_refused(self):
         self.assertTrue(self.refused('tee out.txt'))
 
-    def test_a_build_destination_still_passes(self):
-        self.set_run('cp build/payload build/out')
+    def test_a_staging_destination_still_passes(self):
+        self.set_run('cp build/stage/payload build/stage/out')
         self.assertEqual(policy.closure_of(self.trusted)[2], [])
 
 
@@ -652,6 +652,42 @@ class PlantedModuleBesidePolicy(ClosureCase):
         result = subprocess.run([sys.executable, str(planted / 'tools' / 'policy_guard.py'), '--candidate',
                                  str(self.candidate), '--trusted', str(self.trusted)], capture_output=True, text=True)
         self.assertNotIn('planted module was imported', result.stderr + result.stdout)
+
+
+class StagingAreaOnly(ClosureCase):
+    """Owner ruling (Issue #544, option b): a privileged step writes only under build/stage/ and build/tmp/."""
+
+    def set_run(self, text):
+        for root in (self.trusted, self.candidate):
+            (root / FIXTURE).write_text(priv_workflow(text), encoding='utf-8')
+
+    def refused(self, text):
+        self.set_run(text)
+        return bool(policy.closure_of(self.trusted)[2])
+
+    def test_write_into_docs_is_refused(self):
+        self.assertTrue(self.refused('cp build/stage/payload docs/x'))
+
+    def test_write_into_build_outside_the_staging_areas_is_refused(self):
+        self.assertTrue(self.refused('tee build/out'))
+
+    def test_write_into_the_git_directory_is_refused(self):
+        self.assertTrue(self.refused('cp build/stage/payload .git/config'))
+
+    def test_write_into_the_trusted_checkout_is_refused(self):
+        self.assertTrue(self.refused('tee .trusted-main/tools/x'))
+
+    def test_dotdot_escape_from_staging_is_refused(self):
+        self.assertTrue(self.refused('tee build/stage/../../tools/x'))
+
+    def test_target_directory_option_outside_staging_is_refused(self):
+        self.assertTrue(self.refused('cp build/stage/payload --target-directory=docs'))
+
+    def test_write_into_staging_is_allowed(self):
+        self.assertEqual(self.refused('cp build/stage/payload build/stage/out'), False)
+
+    def test_write_into_temp_is_allowed(self):
+        self.assertEqual(self.refused('mkdir -p build/tmp/x'), False)
 
 
 class UnprivilegedBoundary(unittest.TestCase):
