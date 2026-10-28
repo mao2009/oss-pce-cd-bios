@@ -121,6 +121,16 @@ class RootLinkRefused(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
         (root / 'tools').mkdir()
+        (root / '.github' / 'workflows').mkdir(parents=True)   # the placement check refuses an empty set of workflows first
+        (root / '.github' / 'workflows' / 'w.yml').write_text('name: w
+on: [push]
+jobs:
+  b:
+    runs-on: ubuntu-24.04
+'
+                                                              '    steps:
+      - run: echo hi
+', encoding='utf-8')
         try:
             os.symlink(str(root / 'tools'), str(root / 'dist'))
         except (OSError, NotImplementedError) as error:
