@@ -500,6 +500,38 @@ class FinalReviewRoute(ClosureCase):
         self.assertTrue(policy.closure_of(self.trusted)[2])
 
 
+class LastReviewRoutes(ClosureCase):
+    """Review of 09db90a (BLOCKED): a substitution in command position, brace expansion, gh api writes, .candidate writes."""
+
+    def set_run(self, text):
+        for root in (self.trusted, self.candidate):
+            (root / FIXTURE).write_text(priv_workflow(text), encoding='utf-8')
+
+    def test_substitution_in_command_position_is_refused(self):
+        self.set_run('echo PAYLOAD | $(command -v tee) echo .trusted/tools/policy_guard.py')
+        self.assertTrue(policy.closure_of(self.trusted)[2])
+
+    def test_brace_expansion_into_a_parent_step_is_refused(self):
+        self.set_run('python3 .trusted/{..,x}/.candidate/tools/evil.py')
+        self.assertTrue(policy.closure_of(self.trusted)[2])
+
+    def test_brace_expansion_into_a_writer_is_refused(self):
+        self.set_run('tee .tru{s,x}ted/tools/y')
+        self.assertTrue(policy.closure_of(self.trusted)[2])
+
+    def test_gh_api_with_a_write_method_is_refused(self):
+        self.set_run('gh api -X PATCH repos/x/y')
+        self.assertTrue(policy.closure_of(self.trusted)[2])
+
+    def test_writer_into_candidate_checkout_is_refused(self):
+        self.set_run('tee .candidate/out')
+        self.assertTrue(policy.closure_of(self.trusted)[2])
+
+    def test_gh_api_read_and_the_brace_group_still_pass(self):
+        self.set_run('gh api repos/x/y; test -n "$X" || { echo no; exit 1; }')
+        self.assertEqual(policy.closure_of(self.trusted)[2], [])
+
+
 class UnprivilegedBoundary(unittest.TestCase):
     def test_nightly_plan_job_is_outside_the_privileged_closure(self):
         # The nightly plan job holds no write permission: its run: text is approved exactly (approval_problems) but its

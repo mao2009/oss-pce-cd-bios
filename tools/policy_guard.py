@@ -476,7 +476,7 @@ REPO_TOP_DIRS = ("tools", "tests", "scripts", ".github", "src", "platforms")
 
 def _touches_trusted(arg):
     """A writer or gh argument that could reach a trusted checkout, a parent step, a variable, a glob or an absolute path."""
-    return (arg.startswith(TRUSTED_CHECKOUTS) or ".trusted" in arg or ".." in arg.split("/") or "$" in arg
+    return (arg.startswith(TRUSTED_CHECKOUTS) or ".trusted" in arg or ".candidate" in arg or ".." in arg.split("/") or "$" in arg
             or arg.startswith(("/", "~")) or any(c in arg for c in "*?["))
 
 
@@ -494,8 +494,7 @@ def _privileged_command_problems(run, where):
     if re.search(r"<\(|>\(", run):
         problems.append(f"{where}: process substitution in a privileged run is refused (Issue #544)")
     text = "\n".join(line for line in run.splitlines() if not line.lstrip().startswith("#"))
-    text = _strip_substitutions(text)
-    if DYNAMIC_SHELL_RE.search(text):
+    if "$(" in text or "`" in text:   # no substitution in a privileged run at all (command -v can be the command word)
         problems.append(f"{where}: command substitution in a privileged run is refused (Issue #544)")
     for segment in re.split(r"[\n;&|]+", text):
         words = _words(segment)
@@ -509,6 +508,9 @@ def _privileged_command_problems(run, where):
         if re.fullmatch(r"[A-Za-z_]\w*=.*", words[0]):
             problems.append(f"{where}: a leading assignment ({words[0].split('=')[0]}=) in a privileged run is refused "
                             "(it can change the search path, Issue #544)")
+            continue
+        if any(("{" in word or "}" in word) and word not in ("{", "}") for word in words):
+            problems.append(f"{where}: a brace in a privileged word can expand to other paths; refused (Issue #544)")
             continue
         if any(">" in word or "<" in word for word in words):
             problems.append(f"{where}: a redirection in a privileged run is refused (it can write a trusted path, Issue #544)")
@@ -529,7 +531,9 @@ def _privileged_command_problems(run, where):
             elif any(_names_repository_code(a) for a in args):
                 problems.append(f"{where}: {head} names repository code (existing or missing); refused (Issue #544)")
         elif head == "gh":
-            if not (args[:2] == ["attestation", "verify"] or args[:1] == ["api"]) or any(_touches_trusted(a) for a in args):
+            api_read = args[:1] == ["api"] and len(args) == 2 and not args[1].startswith("-") and "graphql" not in args[1]
+            verify = args[:2] == ["attestation", "verify"]
+            if not (api_read or verify) or any(_touches_trusted(a) for a in args):
                 problems.append(f"{where}: this gh command may write or is not listed; refused (Issue #544)")
         elif head not in PRIVILEGED_HEADS:
             problems.append(f"{where}: command {head!r} is not allowed in a privileged job; refused (Issue #544)")
