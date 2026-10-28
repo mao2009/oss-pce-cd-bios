@@ -17,7 +17,7 @@
 | --- | --- | --- |
 | `spec/api_contracts.json`（参照 BIOS の契約） | 81 slot すべて `verification: NOT_RUN` | 参照 BIOS の実測はなし |
 | `spec/abi1_reference_review.json`（静的レビュー） | 7 件、`abi_state: NOT_RUN`、`static: OBSERVED_STATIC` | 静的解析の記録。検証ではない |
-| `spec/dev_implementations.json`（DEV 実装） | 81 行すべて `NOT_READY`、`approval` は null、DEV ROM の override は 10 slot | DEV ROM に実装がある slot と、その承認状態 |
+| `spec/dev_implementations.json`（DEV 実装） | 81 行すべて `NOT_READY`、`approval` の `approved_by` / `review_ref` は null、DEV ROM の override は 12 slot（`tools/build_rom.py` の `overrides()`） | DEV ROM に実装がある slot と、その承認状態 |
 
 `tools/contracts.py` の `CLAIM_STATUSES` は `UNKNOWN` / `HYPOTHESIS` / `OBSERVED` / `BLOCKED` だけで、
 `VERIFIED` を表せない。`OBSERVED` は実コア由来の証明（#124、producer 認証）がないため
@@ -154,7 +154,7 @@
 
 ### 8.1 項目 3: `provenance_approval` の承認者
 
-- **現状:** `provenance/` ディレクトリも承認者の一覧（`provenance/approvers.txt`）もリポジトリにない。承認者がいないので、`ORIGINAL` の承認は付かない（fail closed）。`tools/provenance_guard.py` は既に契約を定めている。承認者一覧の編集には、PR の base にある一覧に載った maintainer の承認が要り、PR 作成者は承認できず、一覧が空または無い base は閉じる。ブートストラップ時は、PR が追加する一覧を作成者以外の admin に限って使う。
+- **現状:** `provenance/` ディレクトリも承認者の一覧（`provenance/approvers.txt`）もリポジトリにない。承認者がいないので、`ORIGINAL` の承認は付かない（fail closed）。`tools/provenance_guard.py` は既に契約を定めている。承認者一覧の編集には、PR の base にある一覧に載った maintainer の承認が要り、PR 作成者は承認できない。base に一覧が無いブートストラップ時は、PR が追加する一覧を作成者以外の admin に限って使う。base にある一覧が空の場合は閉じる（`tools/provenance_guard.py` の docstring どおり）。
 - **選択肢:**
   - A. オーナーが名指しした承認者の一覧をリポジトリに置く（オーナーが作る人間のコミット）。
   - B. 複数のメンテナのグループに委ねる。

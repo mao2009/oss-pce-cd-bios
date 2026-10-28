@@ -87,11 +87,14 @@ class ForgedEvidenceTests(unittest.TestCase):
         claim = observed_claim(execution_conditions="REALCORE, produced by the core")
         self.assertRefusedAsUnauthenticated(claim)
 
-    def test_executed_callee_flag_alone_does_not_authenticate(self):
-        self.assertRefusedAsUnauthenticated(observed_claim(), executed_callee=True)
+    def test_executed_callee_false_is_refused_before_authentication(self):
+        # Without an executed callee the claim never reaches the authentication gate; the flag is necessary, not sufficient.
+        with self.assertRaisesRegex(ValueError, "requires an executed callee"):
+            adjudicate(observed_claim(), executed_callee=False)
 
-    def test_resolved_hash_set_from_a_caller_is_not_authentication(self):
-        self.assertRefusedAsUnauthenticated(observed_claim(), hashes=frozenset({SYNTHETIC_DIGEST}))
+    def test_empty_resolved_hash_set_is_refused_before_authentication(self):
+        with self.assertRaisesRegex(ValueError, "resolved evidence set is empty"):
+            adjudicate(observed_claim(), hashes=frozenset())
 
     def test_verified_status_is_never_representable(self):
         claim = observed_claim()
@@ -146,7 +149,7 @@ class SelfDeclaredApprovalTests(unittest.TestCase):
         entry = ledger["slots"][0x1E]
         entry["state"] = "DEV_CALLABLE"
         entry["approval"] = {"approved_by": "worker-agent", "review_ref": "self"}
-        self.assertTrue(dev.validate(ledger, SLOTS, OVERRIDES))
+        self.assertTrue(any("approv" in p for p in dev.validate(ledger, SLOTS, OVERRIDES)))
 
     def test_committed_ledgers_have_no_owner_approved_dev_callable(self):
         # The committed ledger has no owner-approved DEV_CALLABLE row (summary counts, read-only).
