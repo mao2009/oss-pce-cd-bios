@@ -2,11 +2,16 @@
 import ast
 import json
 import os
+import sys
+import tempfile
 from pathlib import Path
 import subprocess
 
-from artifact_guard import check_upload_artifacts, check_guard_placement
+from artifact_guard import check_upload_artifacts, check_guard_placement, enforced_check
 from environment import ROOT, executable, core_path
+
+TRUSTED_ALLOWLIST = "tools/artifact_guard_run_allowlist.json"
+TRUSTED_GUARD = "tools/artifact_guard.py"
 
 
 def git_output(repository, *arguments):
@@ -19,6 +24,49 @@ def resolve_commit(repository, ref):
         return git_output(repository, "rev-parse", "--verify", f"{ref}^{{commit}}")
     except subprocess.CalledProcessError as error:
         raise ValueError(f"cannot resolve Git comparison commit: {ref}") from error
+
+
+def resolve_trusted_allowlist_root():
+    """Return a temp directory holding the trusted run-allowlist table from origin/main, or None.
+
+    The allowlist must never be read from the checked tree: a pull request could add its own
+    run: texts and self-approve. When origin/main is unavailable (offline local run), None is
+    returned and the caller falls back to the local tree with a clear warning. GitHub Actions
+    always runs the guard from .trusted-main, so CI is protected regardless.
+    """
+    try:
+        data = git_output(ROOT, "show", f"origin/main:{TRUSTED_ALLOWLIST}")
+    except (ValueError, subprocess.CalledProcessError):
+        return None
+    tmp = Path(tempfile.mkdtemp(prefix="trusted-allowlist-"))
+    (tmp / TRUSTED_ALLOWLIST.split("/")[-1]).write_text(data, encoding="utf-8")
+    return tmp
+
+
+def guard_matches_trusted():
+    """Refuse when the local guard differs from origin/main's guard (Issue #511).
+
+    A pull request that replaces tools/artifact_guard.py with a weakened copy could disable
+    enforced_check entirely. The local copy must be byte-identical to the trusted main copy;
+    otherwise only trusted-main policy may change it. This is enforced under GitHub Actions
+    (pull_request/push), where the guard runs from .trusted-main and origin/main is the trust
+    anchor. Locally (GITHUB_EVENT_NAME unset), only a warning is emitted: a developer who
+    intentionally changes the guard must route it through trusted-main policy before CI passes."""
+    try:
+        trusted = git_output(ROOT, "show", f"origin/main:{TRUSTED_GUARD}")
+    except (ValueError, subprocess.CalledProcessError):
+        return   # origin/main unavailable: local-only boundary, skip
+    local = ROOT / TRUSTED_GUARD
+    if not local.is_file():
+        return   # nothing to compare locally
+    event_name = os.environ.get("GITHUB_EVENT_NAME", "local")
+    if local.read_text(encoding="utf-8") != trusted:
+        message = (
+            f"{TRUSTED_GUARD} differs from origin/main: the guard and its run-allowlist table "
+            "may only be changed through trusted-main policy, not by this pull request (Issue #511)")
+        if event_name in ("pull_request", "push"):
+            raise ValueError(message)
+        print(f"WARNING: {message}", file=sys.stderr)
 
 
 def check_git_diff(repository, event_name="local", event=None, base=None):
@@ -72,8 +120,27 @@ def main():
                     *map(str, sorted(ROOT.glob(".github/workflows/*.yml")))], check=True)
     # Fail closed before upload: no linked GPL probe executable or object may reach upload-artifact (#227).
     check_upload_artifacts(ROOT)
+    # The local guard must be byte-identical to the trusted main copy: a pull request cannot
+    # swap in a weakened guard to disable the run: approval (Issue #511).
+    guard_matches_trusted()
     # The guard must sit immediately before each upload in the same job (no build step in between).
-    check_guard_placement(ROOT)
+    # Run with the trusted allowlist so every run: text must be approved. The allowlist is read
+    # from origin/main, never from the checked tree, so a pull request cannot self-approve its
+    # own run: text (Issue #511). When origin/main is unavailable (offline local run), the local
+    # tree is the trust root: local make check trusts the local tree, CI runs the guard from
+    # .trusted-main and is protected regardless.
+    trusted_root = resolve_trusted_allowlist_root()
+    allowlist_root = trusted_root if trusted_root is not None else ROOT
+    if trusted_root is None:
+        print("WARNING: origin/main unavailable; local check trusts the local tree. "
+              "CI runs the guard from .trusted-main and is protected regardless.",
+              file=sys.stderr)
+    try:
+        enforced_check(ROOT, check_guard_placement, allowlist_root=allowlist_root)
+    finally:
+        if trusted_root is not None:
+            import shutil
+            shutil.rmtree(trusted_root, ignore_errors=True)
     core_path()
     output = ROOT / "build/check"
     output.mkdir(parents=True, exist_ok=True)
