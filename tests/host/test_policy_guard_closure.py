@@ -548,6 +548,34 @@ class ExitReviewRoutes(ClosureCase):
         self.assertTrue(policy.closure_of(self.trusted)[2])
 
 
+class WriterNormalisation(ClosureCase):
+    """Final review of a2020aa: repeated ./ and // spellings, .git and root-level destinations (default deny)."""
+
+    def set_run(self, text):
+        for root in (self.trusted, self.candidate):
+            (root / FIXTURE).write_text(priv_workflow(text), encoding='utf-8')
+
+    def refused(self, text):
+        self.set_run(text)
+        return bool(policy.closure_of(self.trusted)[2])
+
+    def test_repeated_dot_slash_repository_path_is_refused(self):
+        self.assertTrue(self.refused('cp build/payload ././tools/data.json'))
+
+    def test_double_slash_github_path_is_refused(self):
+        self.assertTrue(self.refused('cp build/payload .//.github/workflows/ci.yml'))
+
+    def test_git_hooks_destination_is_refused(self):
+        self.assertTrue(self.refused('cp build/payload .git/hooks/post-checkout'))
+
+    def test_repository_root_destination_is_refused(self):
+        self.assertTrue(self.refused('tee out.txt'))
+
+    def test_a_build_destination_still_passes(self):
+        self.set_run('cp build/payload build/out')
+        self.assertEqual(policy.closure_of(self.trusted)[2], [])
+
+
 class UnprivilegedBoundary(unittest.TestCase):
     def test_nightly_plan_job_is_outside_the_privileged_closure(self):
         # The nightly plan job holds no write permission: its run: text is approved exactly (approval_problems) but its

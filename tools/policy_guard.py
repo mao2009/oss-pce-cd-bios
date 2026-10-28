@@ -24,6 +24,7 @@ import fnmatch
 import hashlib
 import importlib.util
 import json
+import posixpath
 import re
 import sys
 
@@ -482,8 +483,22 @@ def _touches_trusted(arg):
 
 def _names_repository_code(arg):
     """A repository source or script, whether or not it exists: a writer may not copy it (a missing source is refused too)."""
-    norm = arg[2:] if arg.startswith("./") else arg   # ./tools/json is the same repository path as tools/json
+    norm = normalized_path(arg)   # ././tools/json and .//.github/x are the same repository paths
     return norm.split("/")[0] in REPO_TOP_DIRS or arg.endswith(EXEC_EXT)
+
+
+def normalized_path(arg):
+    """A path with its ./ and // steps collapsed, so no spelling of a repository path escapes the name checks."""
+    return posixpath.normpath(arg) if arg and not arg.startswith("/") else arg
+
+
+def _protected_destination(arg):
+    """Default deny for a writer (Issue #544): .git, the repository root (a name with no directory part) and any
+    destination that normalises to the root. Only a directory under the repository is a destination here."""
+    if arg.startswith("-"):
+        return False
+    norm = normalized_path(arg)
+    return norm in (".", "") or norm == ".git" or norm.startswith(".git/") or "/" not in norm
 
 
 def _privileged_command_problems(run, where):
@@ -530,6 +545,8 @@ def _privileged_command_problems(run, where):
                 problems.append(f"{where}: {head} names a trusted checkout, a parent step or a variable; refused (Issue #544)")
             elif any(_names_repository_code(a) for a in args):
                 problems.append(f"{where}: {head} names repository code (existing or missing); refused (Issue #544)")
+            elif any(_protected_destination(a) for a in args):
+                problems.append(f"{where}: {head} names .git or a repository-root path (default deny); refused (Issue #544)")
         elif head == "gh":
             api_read = (args[:1] == ["api"] and len(args) == 2 and args[1].startswith("repos/")
                         and "://" not in args[1] and "graphql" not in args[1])   # a bare repos/ path only, no full URL
