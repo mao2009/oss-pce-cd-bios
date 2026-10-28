@@ -7,7 +7,7 @@
       "entry_evidence": "JUMP_TABLE_3BYTE_JMP",
       "name": "EX_GETVER",
       "observation": {
-        "note": "A local real-core observation of this slot is recorded as local only; its observed values are withdrawn from public documents (owner decision, 2026-10-28). It is not reproducible through the committed runner, because tools/reference_jsr_gate.py refuses every slot by design, and it is local only evidence.",
+        "note": "No reference observation of this slot is published (values withdrawn from public documents, owner decision, 2026-10-28). It is not reproducible through the committed runner, because tools/reference_jsr_gate.py refuses every slot by design, and it is local only evidence.",
         "prior_evidence": "docs/reference-bios-test-plan.md",
         "prior_local_only": "PRESENT",
         "reproducible_real_core": "NOT_RUN"

@@ -15,7 +15,7 @@
 
 | 台帳 | 現在の値 | 意味 |
 | --- | --- | --- |
-| `spec/api_contracts.json`（参照 BIOS の契約） | 81 slot すべて `verification.status: NOT_RUN` | 台帳上は実測なし。ただし `spec/abi1_reference_review.json` の slot-1e（EX_GETVER）に、ローカル限定の実コア観測の記録が 1 件ある（`prior_local_only: PRESENT`、`reproducible_real_core: NOT_RUN`。コミット済みのランナーでは再現できない）。観測値は公開文書から取り下げ済み（オーナー最終裁定、2026-10-28）。この記録は台帳の値ではない。扱いは §8.3（公開範囲）と §9.2（未承認計測の非公開）に従う |
+| `spec/api_contracts.json`（参照 BIOS の契約） | 81 slot すべて `verification.status: NOT_RUN` | 台帳上は実測なし。`spec/abi1_reference_review.json` の slot-1e（EX_GETVER）には、管理用の欄（`prior_local_only`、`reproducible_real_core`）がある。この欄は参照の観測値を含まず、コミット済みのランナーでは再現できない。観測値は公開文書から取り下げ済み（オーナー最終裁定、2026-10-28）。この欄は台帳の値ではない。扱いは §8.3（公開範囲）と §9.2（未承認計測の非公開）に従う |
 | `spec/abi1_reference_review.json`（静的レビュー） | 7 件、`abi_state: NOT_RUN`、`static: OBSERVED_STATIC` | 静的解析の記録。検証ではない |
 | `spec/dev_implementations.json`（DEV 実装） | 81 行すべて `NOT_READY`、`approval` の `approved_by` / `review_ref` は null、DEV ROM の override は、基準 `ec496e9` 時点で 10 slot。本ブランチの HEAD では 13 slot（`tools/build_rom.py` の `overrides()`。main の #527 で slot 46 が追加された） | DEV ROM に実装がある slot と、その承認状態 |
 

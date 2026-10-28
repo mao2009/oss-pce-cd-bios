@@ -90,10 +90,10 @@ refuses when the ledger has no reviewed record, when any hazard control is not
 requires every ledger row to restate `execution: "BLOCKED"`.
 
 Consequence for this phase: **the committed runner cannot execute a reference
-JSR for any slot**, including `$1E`. A local real-core observation for `$1E`
-(recorded as local only; its values are withdrawn from public documents) was taken before
-`tools/reference_jsr_gate.py` was wired into the runner (PR #372), and it is
-therefore **not reproducible through the committed tooling today**. The gate is
+JSR for any slot**, including `$1E`. No reference observation for `$1E` is restated here (values withdrawn from public
+documents, owner decision 2026-10-28). Any such observation predates
+`tools/reference_jsr_gate.py` being wired into the runner (PR #372), so it is
+**not reproducible through the committed tooling today**. The gate is
 not touched by this phase, and no gate is bypassed by it.
 
 ### 2.2 What `#470` leaves open for this phase

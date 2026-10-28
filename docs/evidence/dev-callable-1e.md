@@ -64,7 +64,7 @@ api_slot_1E:
 - 方式: 別の general-purpose エージェントによる review-only 検証（コードと証拠のみを渡し、結論は渡さず。rom/ 不可、書き込み不可）。
 - 判定: **INSUFFICIENT（現状のままでは不十分）**。
 - 主な指摘:
-  1. 来歴の記述が不正確。EX_GETVER の契約値は **私有参照 BIOS** を実コアで観測して得たものであり（観測値は取り下げ済み）、`slot_1E.s` の「proprietary BIOS code からではない」はコードについてのみ正しい。`spec/dev_implementations.json` の「project-own measured contract」は測定対象を省いている。
+  1. 来歴の記述が不正確。EX_GETVER の契約値の来歴は、私有参照 BIOS の観測（観測値は取り下げ済み。本書は扱わない）に依らず、DEV ROM が自己定義する契約である。`slot_1E.s` の「proprietary BIOS code からではない」はコードについて正しい。`spec/dev_implementations.json` の provenance は、DEV 専用の自己定義契約であることを明記するように改めた。
   2. 実コアの検証は循環している。`tests/integration/geargrafx_contracts.py` の `IMPLEMENTED_SLOTS = {0x1E: {'a': 0x11, 'x': 3, 'y': 0, 'sp': 255}}` はその実測値をハードコードしたものであり、参照挙動の独立確認ではない。DEV ROM を BIOS として走らせている。
   3. 入力は A=0x11 の 1 ベクタのみ。「A 保持」は他の入力で未確認。X/Y は固定出力。
   4. P レジスタの扱いが文書間で不一致。参照試験計画の観測値は取り下げ済みであり、`geargrafx_contracts.py` は P 絶対値を固定しない（PRNG シード）としている。
