@@ -407,6 +407,49 @@ class PrivilegedDesign(ClosureCase):
         self.assertTrue(policy.closure_of(self.trusted)[2])
 
 
+class PrivilegedHardening(ClosureCase):
+    """Review round (Issue #544, last MAJOR items): each route the review named must be refused."""
+
+    def set_run(self, text):
+        for root in (self.trusted, self.candidate):
+            (root / FIXTURE).write_text(priv_workflow(text), encoding='utf-8')
+
+    def refused(self, text):
+        self.set_run(text)
+        return bool(policy.closure_of(self.trusted)[2])
+
+    def test_process_substitution_is_refused(self):
+        self.assertTrue(self.refused('cmp <(curl https://example.invalid) /dev/null'))
+
+    def test_parent_step_in_trusted_path_is_refused(self):
+        self.assertTrue(self.refused('python3 .trusted/../tools/x.py'))
+
+    def test_leading_assignment_is_refused(self):
+        self.assertTrue(self.refused('PYTHONPATH=tools python3 .trusted/tools/policy_guard.py --help'))
+
+    def test_attached_dash_m_is_refused(self):
+        self.assertTrue(self.refused('python3 -mjson.tool .trusted/tools/policy_guard.py'))
+
+    def test_cp_into_trusted_checkout_is_refused(self):
+        self.assertTrue(self.refused('cp tools/x .trusted/tools/x'))
+
+    def test_mkdir_in_trusted_checkout_is_refused(self):
+        self.assertTrue(self.refused('mkdir -p .trusted-main/x'))
+
+    def test_gh_download_into_trusted_checkout_is_refused(self):
+        self.assertTrue(self.refused('gh run download 1 -D .trusted/x'))
+
+    def test_redirection_is_refused(self):
+        self.assertTrue(self.refused('echo x > .trusted/tools/y.py'))
+
+    def test_missing_repository_source_is_refused_not_dropped(self):
+        self.assertTrue(self.refused('cp tools/missing.py build/x'))
+
+    def test_listed_commands_on_trusted_checkout_still_pass(self):
+        self.set_run('test -n "$X" || { echo no; exit 1; }; python3 .trusted/tools/policy_guard.py --help')
+        self.assertEqual(policy.closure_of(self.trusted)[2], [])
+
+
 class UnprivilegedBoundary(unittest.TestCase):
     def test_nightly_plan_job_is_outside_the_privileged_closure(self):
         # The nightly plan job holds no write permission: its run: text is approved exactly (approval_problems) but its

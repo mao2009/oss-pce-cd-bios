@@ -462,12 +462,33 @@ def _python_closure(trusted, rel, problems):
 PRIVILEGED_HEADS = frozenset({"test", "echo", "exit", "true", "false", "set", "cp", "mkdir", "cmp", "gh", "tee"})
 PRIVILEGED_INTERPRETERS = frozenset({"python3", "python", "bash", "sh"})
 TRUSTED_CHECKOUTS = (".trusted-main/", ".trusted/")
+PRIVILEGED_WRITERS = frozenset({"cp", "tee", "mkdir"})
+
+
+def _is_trusted_path(path):
+    """A path under a trusted checkout, with no parent-directory step and no unresolved variable."""
+    return path.startswith(TRUSTED_CHECKOUTS) and ".." not in path.split("/") and "$" not in path
+
+
+REPO_TOP_DIRS = ("tools", "tests", "scripts", ".github", "src", "platforms")
+
+
+def _touches_trusted(arg):
+    return arg.startswith(TRUSTED_CHECKOUTS) or ".trusted" in arg or ".." in arg.split("/") or "$" in arg
+
+
+def _names_repository_code(arg):
+    """A repository source or script, whether or not it exists: a writer may not copy it (a missing source is refused too)."""
+    return arg.split("/")[0] in REPO_TOP_DIRS or arg.endswith(EXEC_EXT)
 
 
 def _privileged_command_problems(run, where):
-    """A privileged run: text may run only PRIVILEGED_HEADS, and an interpreter only on a trusted checkout path.
-    Anything else (make, a repository script, a wrapper such as timeout, an unknown command, -c or -m) is refused."""
+    """A privileged run: text may run only PRIVILEGED_HEADS, and an interpreter only on a trusted checkout path. Writers
+    (cp, tee, mkdir) and gh may not name a trusted checkout, a parent step or an unresolved variable. Process substitution,
+    redirections, leading assignments, -c and any -m form (attached or not) are refused. Anything unknown is refused."""
     problems = []
+    if re.search(r"<\(|>\(", run):
+        problems.append(f"{where}: process substitution in a privileged run is refused (Issue #544)")
     text = "\n".join(line for line in run.splitlines() if not line.lstrip().startswith("#"))
     text = _strip_substitutions(text)
     if DYNAMIC_SHELL_RE.search(text):
@@ -477,17 +498,33 @@ def _privileged_command_problems(run, where):
         if words is None:
             problems.append(f"{where}: a privileged command cannot be parsed; refused (Issue #544)")
             continue
-        while words and (re.fullmatch(r"[A-Za-z_]\w*=.*", words[0]) or words[0] in SHELL_KEYWORDS):
+        while words and words[0] in SHELL_KEYWORDS:
             words = words[1:]
         if not words:
+            continue
+        if re.fullmatch(r"[A-Za-z_]\w*=.*", words[0]):
+            problems.append(f"{where}: a leading assignment ({words[0].split('=')[0]}=) in a privileged run is refused "
+                            "(it can change the search path, Issue #544)")
+            continue
+        if any(">" in word or "<" in word for word in words):
+            problems.append(f"{where}: a redirection in a privileged run is refused (it can write a trusted path, Issue #544)")
             continue
         head, args = words[0], words[1:]
         if head in PRIVILEGED_INTERPRETERS:
             positional = [a for a in args if not a.startswith("-")]
-            if any(a == "-c" or (a.startswith("-") and not a.startswith("--") and "c" in a[1:]) for a in args) \
-                    or "-m" in args or not positional or not positional[0].startswith(TRUSTED_CHECKOUTS):
+            inline = any(a == "-c" or a.startswith("-m") or (a.startswith("-") and not a.startswith("--") and "c" in a[1:])
+                         for a in args)
+            if inline or not positional or not _is_trusted_path(positional[0]):
                 problems.append(f"{where}: {head} may run only a trusted checkout script in a privileged job; "
-                                f"{head!r} {' '.join(args)[:60]!r} refused (Issue #544)")
+                                f"{' '.join(words)[:60]!r} refused (Issue #544)")
+        elif head in PRIVILEGED_WRITERS:
+            if any(_touches_trusted(a) for a in args):
+                problems.append(f"{where}: {head} names a trusted checkout, a parent step or a variable; refused (Issue #544)")
+            elif any(_names_repository_code(a) for a in args):
+                problems.append(f"{where}: {head} names repository code (existing or missing); refused (Issue #544)")
+        elif head == "gh":
+            if not (args[:2] == ["attestation", "verify"] or args[:1] == ["api"]) or any(_touches_trusted(a) for a in args):
+                problems.append(f"{where}: this gh command may write or is not listed; refused (Issue #544)")
         elif head not in PRIVILEGED_HEADS:
             problems.append(f"{where}: command {head!r} is not allowed in a privileged job; refused (Issue #544)")
     return problems
@@ -513,7 +550,7 @@ def closure_of(trusted):
         for f in step_files:
             if (base / f).is_file():
                 files.add(f)
-            elif f.startswith((".trusted-main/", ".trusted/")):
+            elif _is_trusted_path(f):
                 continue   # the trusted checkout of the guard and the policy job (pinned by the checkout ref, main)
             else:
                 problems.append(f"executed file {f!r} is not in the trusted tree or cannot be resolved (refused, Issue #544)")
