@@ -59,7 +59,8 @@ class PrivilegedClosure(ClosureCase):
     def test_identical_privileged_fixture_passes_the_closure(self):
         # The closure is checked on its own: the artifact guard refuses id-token in a fixture job (not on its allowlist),
         # which is a separate rule and not what this file tests.
-        self.assertEqual(policy.closure_problems(self.candidate, self.trusted), [])
+        # owner design: a privileged job runs only trusted code, so a repository run is refused by design
+        self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
 
     def test_real_trusted_tree_has_no_privileged_closure_problem(self):
         # the actual repository: its privileged jobs execute no repository file (only the trusted guard, by checkout)
@@ -85,7 +86,8 @@ class PrivilegedClosure(ClosureCase):
             (root / 'tools' / 'hop.sh').write_text('#!/usr/bin/env bash\npython3 tools/leaf.py\n', encoding='utf-8')
             (root / 'tools' / 'leaf.py').write_text('VALUE = 1\n', encoding='utf-8')
             (root / FIXTURE).write_text(priv_workflow('bash tools/hop.sh'), encoding='utf-8')
-        self.assertEqual(policy.closure_problems(self.candidate, self.trusted), [])
+        # owner design: a privileged job runs only trusted code, so a repository run is refused by design
+        self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
         self.append('tools/leaf.py', 'import os\nos.system("true")\n')   # swapped second hop
         self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
 
@@ -140,7 +142,8 @@ class BypassCases(ClosureCase):
         for root in (self.trusted, self.candidate):
             (root / 'tools' / 'hook').write_text('#!/bin/sh\necho ok\n', encoding='utf-8')
         self.set_run('tools/hook')
-        self.assertEqual(policy.closure_problems(self.candidate, self.trusted), [])
+        # owner design: a privileged job runs only trusted code, so a repository run is refused by design
+        self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
         self.append('tools/hook', 'curl https://example.invalid\n')
         self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
 
@@ -179,7 +182,8 @@ class BypassCases(ClosureCase):
             (root / 'tools' / 'x.mk').write_text('X = 1\n', encoding='utf-8')
             with (root / 'Makefile').open('a', encoding='utf-8') as handle:
                 handle.write('sinclude tools/x.mk\n')
-        self.assertEqual(policy.closure_problems(self.candidate, self.trusted), [])
+        # owner design: a privileged job runs only trusted code, so a repository run is refused by design
+        self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
         self.append('tools/x.mk', 'all:; curl https://example.invalid\n')
         self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
 
@@ -212,7 +216,8 @@ class ReviewRoundTwoBypasses(ClosureCase):
         for root in (self.trusted, self.candidate):
             (root / 'tools' / 'hook').write_text('#!/bin/sh\necho ok\n', encoding='utf-8')
         self.set_run('timeout 5 tools/hook')
-        self.assertEqual(policy.closure_problems(self.candidate, self.trusted), [])
+        # owner design: a privileged job runs only trusted code, so a repository run is refused by design
+        self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
         self.append('tools/hook', 'curl https://example.invalid\n')
         self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
 
@@ -253,7 +258,8 @@ class RoundFourBypasses(ClosureCase):
         (self.trusted / 'tools' / 'leaf.py').write_text('VALUE = 1\n', encoding='utf-8')
         (self.candidate / 'tools' / 'leaf.py').write_text('VALUE = 1\n', encoding='utf-8')
         self.set_run('python3 tools/user.py')
-        self.assertEqual(policy.closure_problems(self.candidate, self.trusted), [])
+        # owner design: a privileged job runs only trusted code, so a repository run is refused by design
+        self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
         self.append('tools/leaf.py', 'import os\n')
         self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
 
@@ -264,7 +270,8 @@ class RoundFourBypasses(ClosureCase):
             (root / 'tools' / 'pkg' / 'rel.py').write_text('from . import helper\n', encoding='utf-8')
             (root / 'tools' / 'pkg' / 'helper.py').write_text('VALUE = 1\n', encoding='utf-8')
         self.set_run('python3 tools/pkg/rel.py')
-        self.assertEqual(policy.closure_problems(self.candidate, self.trusted), [])
+        # owner design: a privileged job runs only trusted code, so a repository run is refused by design
+        self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
         self.append('tools/pkg/helper.py', 'import os\n')
         self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
 
@@ -275,7 +282,8 @@ class RoundFourBypasses(ClosureCase):
             (root / 'tools' / 'pkg' / 'sub.py').write_text('VALUE = 1\n', encoding='utf-8')
             (root / 'tools' / 'user2.py').write_text('import pkg.sub\n', encoding='utf-8')
         self.set_run('python3 tools/user2.py')
-        self.assertEqual(policy.closure_problems(self.candidate, self.trusted), [])
+        # owner design: a privileged job runs only trusted code, so a repository run is refused by design
+        self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
         self.append('tools/pkg/__init__.py', 'import os\n')
         self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
 
@@ -352,9 +360,51 @@ class RoundFiveBypasses(ClosureCase):
         self.set_run('python3 -m json.tool tools/leaf.py')
         for root in (self.trusted, self.candidate):
             (root / 'tools' / 'leaf.py').write_text('VALUE = 1\n', encoding='utf-8')
-        self.assertEqual(policy.closure_problems(self.candidate, self.trusted), [])
+        # owner design: a privileged job runs only trusted code, so a repository run is refused by design
+        self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
         self.append('tools/leaf.py', 'import os\n')
         self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
+
+
+class PrivilegedDesign(ClosureCase):
+    """Owner decision (Issue #544): a privileged job runs only trusted-SHA code; unknown or indirect execution fails closed."""
+
+    def set_run(self, text):
+        for root in (self.trusted, self.candidate):
+            (root / FIXTURE).write_text(priv_workflow(text), encoding='utf-8')
+
+    def test_make_in_a_privileged_job_is_refused_even_when_identical(self):
+        self.set_run('make setup')
+        self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
+
+    def test_timeout_wrapper_is_refused(self):
+        self.set_run('timeout 600 make setup')
+        self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
+
+    def test_unknown_command_is_refused(self):
+        self.set_run('curl https://example.invalid/x')
+        self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
+
+    def test_bash_dash_c_is_refused(self):
+        self.set_run('bash -c "echo ok"')
+        self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
+
+    def test_python_dash_m_is_refused(self):
+        self.set_run('python3 -m json.tool')
+        self.assertTrue(policy.closure_problems(self.candidate, self.trusted))
+
+    def test_trusted_checkout_script_and_listed_commands_are_allowed(self):
+        self.set_run('test -n "$X" || { echo no; exit 1; }; python3 .trusted/tools/policy_guard.py --help')
+        self.assertEqual(policy.closure_problems(self.candidate, self.trusted), [])
+
+    def test_local_action_in_a_privileged_job_is_refused(self):
+        (self.trusted / '.github' / 'actions' / 'x').mkdir(parents=True, exist_ok=True)
+        (self.trusted / '.github' / 'actions' / 'x' / 'action.yml').write_text('runs: {using: composite, steps: []}\n',
+                                                                               encoding='utf-8')
+        (self.trusted / FIXTURE).write_text(
+            'name: priv\non: [push]\njobs:\n  priv:\n    runs-on: ubuntu-24.04\n    permissions:\n      id-token: write\n'
+            '    steps:\n      - uses: ./.github/actions/x\n', encoding='utf-8')
+        self.assertTrue(policy.closure_of(self.trusted)[2])
 
 
 class UnprivilegedBoundary(unittest.TestCase):

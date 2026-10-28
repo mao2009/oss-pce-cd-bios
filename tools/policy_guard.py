@@ -457,19 +457,53 @@ def _python_closure(trusted, rel, problems):
     return files
 
 
+# Owner decision (Issue #544): a privileged job runs ONLY trusted code. The candidate is data. The commands it may run are
+# listed here; everything else is refused, so an indirect or unknown executor fails closed.
+PRIVILEGED_HEADS = frozenset({"test", "echo", "exit", "true", "false", "set", "cp", "mkdir", "cmp", "gh", "tee"})
+PRIVILEGED_INTERPRETERS = frozenset({"python3", "python", "bash", "sh"})
+TRUSTED_CHECKOUTS = (".trusted-main/", ".trusted/")
+
+
+def _privileged_command_problems(run, where):
+    """A privileged run: text may run only PRIVILEGED_HEADS, and an interpreter only on a trusted checkout path.
+    Anything else (make, a repository script, a wrapper such as timeout, an unknown command, -c or -m) is refused."""
+    problems = []
+    text = "\n".join(line for line in run.splitlines() if not line.lstrip().startswith("#"))
+    text = _strip_substitutions(text)
+    if DYNAMIC_SHELL_RE.search(text):
+        problems.append(f"{where}: command substitution in a privileged run is refused (Issue #544)")
+    for segment in re.split(r"[\n;&|]+", text):
+        words = _words(segment)
+        if words is None:
+            problems.append(f"{where}: a privileged command cannot be parsed; refused (Issue #544)")
+            continue
+        while words and (re.fullmatch(r"[A-Za-z_]\w*=.*", words[0]) or words[0] in SHELL_KEYWORDS):
+            words = words[1:]
+        if not words:
+            continue
+        head, args = words[0], words[1:]
+        if head in PRIVILEGED_INTERPRETERS:
+            positional = [a for a in args if not a.startswith("-")]
+            if any(a == "-c" or (a.startswith("-") and not a.startswith("--") and "c" in a[1:]) for a in args) \
+                    or "-m" in args or not positional or not positional[0].startswith(TRUSTED_CHECKOUTS):
+                problems.append(f"{where}: {head} may run only a trusted checkout script in a privileged job; "
+                                f"{head!r} {' '.join(args)[:60]!r} refused (Issue #544)")
+        elif head not in PRIVILEGED_HEADS:
+            problems.append(f"{where}: command {head!r} is not allowed in a privileged job; refused (Issue #544)")
+    return problems
+
+
 def closure_of(trusted):
-    """(files, directories, problems): what the privileged trusted run: texts and local actions can execute."""
+    """(files, directories, problems): what a privileged run can execute. Owner decision: the privileged set must run only
+    trusted checkout code, so any repository file, make target or local action here is itself a problem."""
     base = Path(trusted)
     problems, files, requested = [], set(), []
     for run, local in _trusted_steps(trusted):
         if local:
-            action = base / local
-            if action.is_dir():
-                files |= {path.relative_to(base).as_posix() for path in action.rglob("*") if path.is_file()}
-            else:
-                problems.append(f"local action {local!r} is missing in the trusted tree (refused, Issue #544)")
+            problems.append(f"local action {local!r} in a privileged job runs repository code; refused (Issue #544)")
         if run is None:
             continue
+        problems += _privileged_command_problems(run, "run:")
         if "${{" in run:
             problems.append("a ${{ }} expression in a privileged run: text is refused (its value is runtime data, Issue #544)")
             continue
