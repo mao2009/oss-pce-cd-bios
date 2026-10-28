@@ -552,8 +552,8 @@ class PublicDocsMutationTest(unittest.TestCase):
         slots = json.loads(json.dumps(LEDGER["slots"]))
         slots[1]["implementation"] = {"source": "src/overrides/slot_XX.s"}
         expected = expected_counts(slots, JSR_GATE["slots"])
-        self.assertEqual(expected["dev"], 13)
-        self.assertEqual(expected["stub"], 68)
+        self.assertEqual(expected["dev"], 14)
+        self.assertEqual(expected["stub"], 67)
         self.assertTrue(stale_hits(self.CLEAN, expected))
 
     def test_approval_and_abi_status_are_read_from_ledger(self):
