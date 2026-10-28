@@ -69,7 +69,7 @@
 | --- | --- | --- |
 | SOURCE_EVIDENCE | `HYPOTHESIS`（`SOURCE_FACT` は台帳の値ではなく、§2.1 の文書上のラベル） | `OBSERVED`、`VERIFIED`、provenance 承認、DEV_CALLABLE |
 | PROVENANCE_APPROVAL | `APPROVED`（人間の承認者が記録） | 挙動の正しさ、callee 実測、互換性、`OBSERVED`、`VERIFIED`、DEV_CALLABLE 承認（§8.4 で扱う） |
-| CALLEE_VERIFICATION | `OBSERVED`、`PARTIAL`、`VERIFIED-equivalent` には到達できない（`OBSERVED` は認証前に拒否。§3）。`UNKNOWN` には到達できる（§3） | `VERIFIED`（現スキーマでは表せない。#171）、DEV_CALLABLE 承認 |
+| CALLEE_VERIFICATION | `UNKNOWN`（§3）。`OBSERVED`、`PARTIAL`、`VERIFIED-equivalent` には到達できない（`OBSERVED` は認証前に拒否） | `VERIFIED`（現スキーマでは表せない。#171）、DEV_CALLABLE 承認 |
 | DEV_IMPLEMENTATION | `DEV_CALLABLE`（DEV ROM に限る） | 参照 BIOS の `VERIFIED`、release 判定、互換性、`CALLEE_VERIFICATION` の `OBSERVED`、`PROVENANCE_APPROVAL` の `APPROVED`（DEV の PASS は実測や provenance の代わりにならない） |
 
 どの軸の値が揃っても、`release_eligible: true` にはならない。release gate は別の人間承認を要し、

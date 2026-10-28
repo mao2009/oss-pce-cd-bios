@@ -27,7 +27,7 @@
 
 評価: コア上での実CPUステップ実行と観測は成功。実コア観測は**エミュレータ動作であり、実ハードウェアの証跡ではない**。
 
-## 3. RESET 観測（實測、私的BIOS × 実コア、1命令）
+## 3. RESET 観測（私的BIOS × 実コア、1命令。観測値は取り下げ済み）
 
 コマンド（成功）:
 ```
@@ -35,9 +35,7 @@ python3 tools/reference_bios_runner.py /tmp/opencode/refbios/reset-config.json \
   --adapter tools/geargrafx_reference_adapter.py \
   --output /tmp/opencode/refbios/reset-obs.json
 ```
-結果 (`OBSERVED LOCAL_ONLY`):
-- PC=0xE0F4、MPR7=0、I=1/D=0/T=0/B=0。
-- A/X/Y/SP と MPR0–6 は PRNG シード（`time(NULL)`）由来で、1秒以内は同一値。
+結果: 私的 BIOS の観測値（PC、MPR、フラグ、レジスタ、その再現性）は、オーナー最終裁定（2026-10-28）により公開文書から取り下げた。本節には値を記載しない。
 - **コア固有の重要発見**: 非テストビルドでは `ZERO_PAGE_ADDR=0x2000` / `STACK_ADDR=0x2100`（`huc6280.h`）。ゼロページと8ビットスタックは**ページ1**にあり、実ハードウェア（ページ0）とずれる。JSRのスタックプッシュは `$21FE/$21FF` に着地し、allowlistは `$2000..$4000`（ページ1）をカバーする必要があった。
 
 ---
