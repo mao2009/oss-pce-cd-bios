@@ -50,6 +50,13 @@ and upload. See the pull request description for the residual risk.
 Command line (run by the workflows from the trusted copy, with --root "$GITHUB_WORKSPACE"):
   --stage WORKFLOW STEP | --verify WORKFLOW STEP | --post-build WORKFLOW STEP | --check-placement | (no argument: static)
 """
+import os as _os
+import sys as _sys
+# Issue #544 (last review): the directory of this script is not an import source. A pull request can plant a module there
+# (.trusted-main/tools/yaml.py beside the trusted guard), so it is removed from sys.path before any other import, the same
+# effect as python -I, without changing the approved run: text.
+if __name__ == "__main__":   # only when run as the trusted script: importing the module must not change sys.path
+    _sys.path[:] = [p for p in _sys.path if _os.path.abspath(p or _os.curdir) != _os.path.dirname(_os.path.abspath(__file__))]
 from pathlib import Path
 import fnmatch
 import hashlib
@@ -432,11 +439,13 @@ SCOPE_KEYS_REFUSED = {"env", "defaults", "container", "services"}
 TRUSTED_GUARD = '".trusted-main/tools/artifact_guard.py"'
 TRUSTED_PY = '"${{ steps.pyresolve.outputs.python }}" ' + TRUSTED_GUARD + ' --root "$GITHUB_WORKSPACE"'
 CHECK_TEXT = TRUSTED_PY + " --check-placement"
+# Issue #511 (owner-approved wiring): the policy check runs the trusted guard against the pull request's tools/ and table.
+POLICY_TEXT = TRUSTED_PY + " --check-policy .trusted-main"
 PY_RESOLVE_RUN = 'echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"'
 CHECKOUT_PIN_RE = re.compile(r"actions/checkout@[0-9a-f]{40}$")
 # The exact with: inputs of the trusted main checkout: the guard file must come from this repository's main.
 TRUSTED_CHECKOUT_WANT = {"ref": "main", "path": ".trusted-main",
-                         "sparse-checkout": "tools/artifact_guard.py", "sparse-checkout-cone-mode": "false"}
+                         "sparse-checkout": "tools", "sparse-checkout-cone-mode": "false"}
 # The trusted checkout may only carry these with: inputs. Anything else (repository:, token:, ssh-key:, clean:)
 # could fetch the guard file from somewhere other than this repository's main, or leave a planted copy in place.
 TRUSTED_CHECKOUT_WITH = {"ref", "path", "sparse-checkout", "sparse-checkout-cone-mode", "persist-credentials"}
@@ -1707,6 +1716,38 @@ def _is_junction(path):
         return False
 
 
+def link_problems(base):
+    """Issue #544: every symbolic link and junction in a tree (outside the repository's own root .git), at any depth, is
+    refused; a flagged directory is never descended into; an unlistable directory is refused. Used by the placement check
+    and by main() for every mode, on --root and --workflow-root, so no write path (stage, verify, post-build) skips it."""
+    base = Path(base)
+    problems = []
+    # Issue #544 (last review of e55b6f1): a link anywhere in the pull request (outside .git) can point a writer into the
+    # trusted checkout, so the whole tree is walked without following links and any link or junction is refused.
+    unreadable = []
+    git_dir = os.path.abspath(os.path.join(base, ".git"))   # only the repository's own git directory, at the root
+    for dirpath, dirnames, filenames in os.walk(base, followlinks=False, onerror=unreadable.append):
+        kept = []
+        for name in dirnames:
+            entry = os.path.join(dirpath, name)
+            if os.path.abspath(entry) == git_dir:
+                continue
+            if os.path.islink(entry) or _is_junction(Path(entry)):
+                problems.append(f"{os.path.relpath(entry, base).replace(os.sep, '/')}: a symbolic link or junction is "
+                                "refused (untrusted input; Issue #544)")
+                continue   # a flagged directory is never descended into
+            kept.append(name)
+        dirnames[:] = kept
+        for name in filenames:
+            entry = os.path.join(dirpath, name)
+            if os.path.islink(entry) or _is_junction(Path(entry)):
+                problems.append(f"{os.path.relpath(entry, base).replace(os.sep, '/')}: a symbolic link or junction is "
+                                "refused (untrusted input; Issue #544)")
+    if unreadable:
+        problems.append("a directory of the pull request cannot be listed; refused, never skipped (Issue #544)")
+    return problems
+
+
 def check_guard_placement(root=ROOT, partial_fixtures=False):
     """Static placement layer (run by make check and by the trusted copy): the preamble and stage/verify steps must
     surround every upload step, in the same job, exactly as written here.
@@ -1720,7 +1761,7 @@ def check_guard_placement(root=ROOT, partial_fixtures=False):
     so the real workflow must keep both signing jobs and both guard jobs (Issue #337 round 11).
     """
     base = Path(root)
-    problems = []
+    problems = link_problems(base)
     # Issue #544 (39b6de2 review): a link on a directory (or a Windows junction) is untrusted input too. Walk the trees the
     # checks read without following links, and refuse any link or junction found on the way, directories included.
     for tree in (".github", "tools"):
@@ -1753,6 +1794,11 @@ def check_guard_placement(root=ROOT, partial_fixtures=False):
         # Issue #544: read_text turns CR into LF, so the policy workflow's raw bytes are checked for a lone CR here
         if label.endswith("/" + POLICY_GUARD_FILE) and re.search(r"\r(?!\n)", workflow.read_bytes().decode("utf-8")):
             problems.append(f"{label}: a lone CR line break is refused in the policy workflow (Issue #544)")
+        # Do this before any node walk. A YAML alias can form a cycle, so later structural checks must not inspect it.
+        integrity = yaml_integrity_violations(text, label)
+        problems += integrity   # every integrity finding is kept, as before this change (Issue #544 review)
+        if any("YAML alias" in problem or "YAML anchor" in problem for problem in integrity):
+            continue
         try:
             steps = upload_steps(text)
         except ValueError as error:   # an unsupported publishing route or an unparseable upload step
@@ -1763,7 +1809,6 @@ def check_guard_placement(root=ROOT, partial_fixtures=False):
             problems += scope_key_violations(text, label)   # a file with an upload step gets it in guard_placement_violations
         problems += publish_violations(text, label)
         problems += pages_structure_violations(text, label)
-        problems += yaml_integrity_violations(text, label)
         problems += attest_input_violations(text, label)
         problems += attest_download_violations(text, label, partial_fixtures)
         problems += attest_condition_violations(text, label)
@@ -1863,7 +1908,16 @@ def _is_trusted_checkout(lines, step, dash):
     if len(set(with_names)) != len(with_names) or not set(with_names) <= TRUSTED_CHECKOUT_WITH:
         return False
     with_values = dict(with_pairs)
-    return all(with_values.get(key) == value for key, value in TRUSTED_CHECKOUT_WANT.items())
+    # Staged policy migration: the legacy checkout contains only the guard
+    # script, while the new approved checkout also contains the signed run
+    # allowlist. Neither may point to an arbitrary directory or repository.
+    # The enforced run allowlist separately pins the *entire job* digest, so
+    # an attacker cannot mix the legacy form with new unapproved steps.
+    sparse = with_values.get("sparse-checkout")
+    return (sparse in ("tools/artifact_guard.py", "tools")
+            and all(with_values.get(key) == value
+                    for key, value in TRUSTED_CHECKOUT_WANT.items()
+                    if key != "sparse-checkout"))
 
 
 def _is_checkout(lines, step, dash):
@@ -1982,7 +2036,7 @@ def _guard_text(kind, workflow, name, what):
 
 def _allowed_guard_run(run, finals, workflow):
     """Run lines a guard job may contain: the python resolve, the placement check, and the stage/verify of its uploads."""
-    if run in ([PY_RESOLVE_RUN], [CHECK_TEXT]):
+    if run in ([PY_RESOLVE_RUN], [CHECK_TEXT], [POLICY_TEXT]):
         return True
     return any(run in ([_guard_text(u["kind"], workflow, u["name"], "stage")],
                        [_guard_text(u["kind"], workflow, u["name"], "verify")]) for u in finals)
@@ -2033,12 +2087,212 @@ STEP_EXCEPTIONS = {
 }
 
 
-def _step_problems(workflow, where, step):
+# Issue #511 (owner decision): exact-match run: approval. Every run: text must equal an approved text for its workflow, job,
+# step name, shell and runs-on. There is no shell parsing and no approval by command name: an unlisted or changed text is
+# refused. The approved list is a reviewed file in this repository; a change to it or to this guard is a policy change
+# (policy_violations, against the trusted main copy), not something a pull request can approve by itself.
+RUN_ALLOWLIST_FILE = "tools/artifact_guard_run_allowlist.json"
+# The marker is introduced only by the final, owner-reviewed workflow migration.
+# The trusted main guard reads this file from its own checkout, not from candidate data.
+POLICY_ACTIVATION_FILE = "tools/trusted_guard_policy_active.txt"
+POLICY_ACTIVATION_TEXT = "trusted-gate-policy-v1\n"
+POLICY_STEP_NAME = "Policy check (trusted main guard and approval table against the pull request)"
+POLICY_FILES = ("tools/artifact_guard.py", RUN_ALLOWLIST_FILE)
+_RUN_ALLOWLIST = None   # {key: {sha256}} while an enforcing check runs (see enforced_check); None means not enforced
+
+
+STEP_KNOWN_KEYS = frozenset({"name", "id", "if", "uses", "with", "run", "shell", "env", "working-directory",
+                             "continue-on-error", "timeout-minutes"})   # the step keys GitHub Actions defines (exact spelling)
+
+
+def _runs_on_text(job):
+    """The runs-on value as text (a composite action has none: ""). A list or mapping is keyed by its JSON text."""
+    if not isinstance(job, dict) or "runs-on" not in job:
+        return ""
+    value = job["runs-on"]
+    return value if isinstance(value, str) else json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+
+
+def _key_parts(workflow, where, step, runs_on):
+    """The exact key of one run: step. Every part is text or None, so the key survives the JSON file unchanged."""
+    name, shell = step.get("name"), step.get("shell")
+    return (workflow, where, None if name is None else str(name), None if shell is None else str(shell), runs_on)
+
+
+def _node_canonical(node):
+    """The approval form of a YAML node: its tag and its written text, per scalar, so 1_000 and 1000, yes and true, and
+    !!bool tRuE and true, are different values here (Issue #511). Mappings are sorted by key; sequences keep their order."""
+    import yaml
+    if isinstance(node, yaml.MappingNode):
+        pairs = [[_node_canonical(key), _node_canonical(value)] for key, value in node.value]
+        return {"map": sorted(pairs, key=lambda pair: json.dumps(pair, sort_keys=True))}
+    if isinstance(node, yaml.SequenceNode):
+        return {"seq": [_node_canonical(item) for item in node.value]}
+    return {"tag": node.tag, "text": node.value}
+
+
+def _node_digest(node):
+    return hashlib.sha256(json.dumps(_node_canonical(node), sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def _node_digests(text, is_action):
+    """{where: (job digest, [step digests in order])} from the YAML node tree of one file. where is the job id, or "runs" for
+    a composite action. The job digest covers every key of the job, steps included, and an empty digest never approves."""
+    import yaml
+    root = yaml.compose(text, Loader=yaml.SafeLoader)
+    if not isinstance(root, yaml.MappingNode):
+        return {}
+    def pairs_of(node):
+        return [(key.value, value) for key, value in node.value] if isinstance(node, yaml.MappingNode) else []
+    top = dict(pairs_of(root))
+    if is_action:
+        groups = [("runs", top["runs"])] if "runs" in top else []
+    else:
+        groups = list(pairs_of(top["jobs"])) if "jobs" in top else []
+    digests = {}
+    for where, body in groups:
+        steps = dict(pairs_of(body)).get("steps")
+        step_nodes = steps.value if isinstance(steps, yaml.SequenceNode) else []
+        digests[where] = (_node_digest(body), [_node_digest(step) for step in step_nodes])
+    return digests
+
+
+WORKFLOW_KEYS = frozenset({"name", "on", "permissions", "concurrency", "jobs"})   # top-level keys that cannot run code or send data
+
+
+def load_run_allowlist(root):
+    """The approved run: texts from RUN_ALLOWLIST_FILE, keyed as _key_parts. A missing or malformed file raises (fails closed)."""
+    path = Path(root) / RUN_ALLOWLIST_FILE
+    try:
+        entries = json.loads(path.read_text(encoding="utf-8"))
+        table = {}
+        for entry in entries:
+            key = (entry["workflow"], entry["job"], entry["step"], entry["shell"], entry["runs_on"])
+            table.setdefault(key, set()).add((entry["sha256"], entry["job_sha256"]))
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise ValueError(f"{RUN_ALLOWLIST_FILE} cannot be read, so no run: text can be approved ({error}; fails closed)")
+    # During the two-step rollout, legacy and new guard-verify jobs have
+    # exact preapproved digests. Once trusted main contains the activation
+    # marker, a candidate must not roll the job back to its old, unguarded
+    # form (which lacked the trusted --check-policy step).
+    activation = Path(root) / POLICY_ACTIVATION_FILE
+    if activation.is_symlink():
+        raise ValueError(f"{POLICY_ACTIVATION_FILE} is a link (fails closed)")
+    if activation.exists():
+        if not activation.is_file() or activation.read_text(encoding="utf-8") != POLICY_ACTIVATION_TEXT:
+            raise ValueError(f"{POLICY_ACTIVATION_FILE} is malformed (fails closed)")
+        policy_jobs = {entry["job_sha256"] for entry in entries
+                       if entry["workflow"] == ".github/workflows/ci.yml"
+                       and entry["job"] == "guard-verify"
+                       and entry["step"] == POLICY_STEP_NAME}
+        if len(policy_jobs) != 1:
+            raise ValueError("active trusted policy requires exactly one approved guard-verify policy job")
+        approved_job = next(iter(policy_jobs))
+        for key in list(table):
+            if key[0] == ".github/workflows/ci.yml" and key[1] == "guard-verify":
+                selected = {pair for pair in table[key] if pair[1] == approved_job}
+                if selected:
+                    table[key] = selected
+                else:
+                    del table[key]
+    return table
+
+
+def build_run_allowlist(root):
+    """Every run: text in the workflows and composite actions, as allowlist entries (for review; not an approval)."""
+    import yaml
+    base, entries = Path(root), []
+    for path in _workflow_files(base):
+        label = path.relative_to(base).as_posix()
+        text = path.read_text(encoding="utf-8")
+        doc = yaml.load(text, Loader=_strict_loader())
+        is_action = label.startswith(ACTIONS + "/")
+        digests = _node_digests(text, is_action)
+        if is_action:
+            composite = doc.get("runs") or {}
+            groups = [("runs", composite.get("steps") or [], "")]
+        else:
+            groups = [(job, body.get("steps") or [], _runs_on_text(body)) for job, body in (doc.get("jobs") or {}).items()
+                      if isinstance(body, dict)]
+        for where, steps, runs_on in groups:
+            job_sha, step_shas = digests.get(where, ("", []))
+            for index, step in enumerate(steps):
+                if isinstance(step, dict) and isinstance(step.get("run"), str):
+                    workflow_, job, name, shell, runs = _key_parts(label, where, step, runs_on)
+                    if not job_sha:
+                        raise ValueError(f"{label}: job {where!r} has a value with no approvable form; it cannot be approved")
+                    entries.append({"workflow": workflow_, "job": job, "step": name, "shell": shell, "runs_on": runs,
+                                    "sha256": step_shas[index], "job_sha256": job_sha})
+    return sorted(entries, key=lambda entry: json.dumps(entry, sort_keys=True))
+
+
+def _run_approved(workflow, where, step, runs_on, job_digest, step_digest):
+    if not job_digest:   # a job with no approvable form (an empty digest) is never approved; it must not match an empty entry
+        return False
+    return (step_digest, job_digest) in _RUN_ALLOWLIST.get(_key_parts(workflow, where, step, runs_on), set())
+
+
+def policy_violations(root, trusted_root):
+    """Issue #511 (owner decision). The guard and its run allowlist must equal the trusted main copy: a pull request cannot
+    approve a change to them. Fails closed when either copy is missing."""
+    problems = []
+    for rel in POLICY_FILES:
+        mine, theirs = Path(root) / rel, Path(trusted_root) / rel
+        if not mine.is_file() or not theirs.is_file():
+            problems.append(f"{rel} is missing in the candidate or the trusted root (fails closed)")
+        elif _sha256(mine) != _sha256(theirs):
+            problems.append(f"{rel} differs from the trusted main copy: a change to the guard or its run allowlist needs "
+                            "trusted-main policy, not this pull request (Issue #511)")
+    # The activation marker is reviewed during the first workflow migration.
+    # After it exists on trusted main it becomes immutable by an ordinary PR.
+    # A candidate cannot deactivate the strict guard-verify digest filter.
+    trusted_marker = Path(trusted_root) / POLICY_ACTIVATION_FILE
+    candidate_marker = Path(root) / POLICY_ACTIVATION_FILE
+    if trusted_marker.is_symlink() or candidate_marker.is_symlink():
+        problems.append(f"{POLICY_ACTIVATION_FILE} must not be a symbolic link")
+    elif trusted_marker.exists():
+        if not trusted_marker.is_file() or trusted_marker.read_text(encoding="utf-8") != POLICY_ACTIVATION_TEXT:
+            problems.append(f"{POLICY_ACTIVATION_FILE} on trusted main is malformed (fails closed)")
+        if not candidate_marker.is_file() or candidate_marker.read_bytes() != trusted_marker.read_bytes():
+            problems.append(f"{POLICY_ACTIVATION_FILE} differs from trusted main (fails closed)")
+    elif candidate_marker.exists():
+        # The sole first-time activation value is hard-coded in trusted code.
+        # Its presence in a candidate cannot activate policy in trusted main.
+        if not candidate_marker.is_file() or candidate_marker.read_text(encoding="utf-8") != POLICY_ACTIVATION_TEXT:
+            problems.append(f"{POLICY_ACTIVATION_FILE} has an invalid bootstrap value")
+    if problems:
+        raise ValueError("artifact guard policy: " + "; ".join(problems))
+    print("PASS artifact guard policy: guard, run allowlist and activation state match trusted policy")
+
+
+def enforced_check(root, check, allowlist_root):
+    """Run check(root) with every run: text required to be approved. The approval table is read from allowlist_root (the
+    trusted copy: the guard's own tree on the command line), never from the checked tree, so a pull request cannot approve
+    its own run: text (Issue #511). Required: there is no default that would fall back to the checked tree. A missing or
+    unreadable table raises before any check runs (fail closed)."""
+    global _RUN_ALLOWLIST
+    _RUN_ALLOWLIST = load_run_allowlist(allowlist_root)
+    try:
+        check(root)
+    finally:
+        _RUN_ALLOWLIST = None
+
+
+def _step_problems(workflow, where, step, runs_on="", job_digest="", step_digest=""):
     """Refusals for one step: a step env:, shell: or working-directory: key without an exception, and a run: text that
-    changes the PATH of later steps (GITHUB_PATH, GITHUB_ENV) or sets BASH_ENV or PATH. Issue #337 round 14."""
+    changes the PATH of later steps (GITHUB_PATH, GITHUB_ENV) or sets BASH_ENV or PATH. Issue #337 round 14.
+    A job that may run on Windows (runs-on names windows, or is a ${{ }} expression) needs shell: bash for its run: steps
+    (Issue #511, the default shell there is pwsh). Under enforced_check, a run: text that is not approved is refused."""
+    # Fail closed: any runs-on that is not a hosted ubuntu-* or macos-* label (a self-hosted label, a windows label, an
+    # expression) may be a Windows runner, whose default shell is PowerShell. A composite action has no runs-on: "" here.
+    windows = bool(runs_on) and not re.fullmatch(r"(?:ubuntu|macos)-[\w.]+", runs_on.strip())
     if not isinstance(step, dict):
         return [f"{workflow}: {where} has a step that is not a mapping (Issue #337 round 14)"]
     name, problems = step.get("name"), []
+    for key in step:   # Issue #511: GitHub reads step keys case-sensitively; "Run:" must not slip past the run: approval
+        if str(key) not in STEP_KNOWN_KEYS:
+            problems.append(f"{workflow}: {where} step {name!r} has the key {key!r}, which is not a GitHub Actions step key "
+                            "(refused; the run: approval reads only exact keys, Issue #511)")
     for key in step:
         if str(key).lower() not in STEP_ENV_KEYS:
             continue
@@ -2061,6 +2315,13 @@ def _step_problems(workflow, where, step):
         if reason:
             problems.append(f"{workflow}: {where} step {name!r} run: {reason} "
                             "(refused; it changes the PATH of later steps, Issue #337 round 14, 15)")
+        if windows and isinstance(run, str) and step.get("shell") != "bash":
+            problems.append(f"{workflow}: {where} step {name!r} run: has no shell: bash in a job that may run on Windows "
+                            "(the default there is PowerShell; refused, Issue #511)")
+        if _RUN_ALLOWLIST is not None and isinstance(run, str) and not _run_approved(workflow, where, step, runs_on, job_digest,
+                                                                                    step_digest):
+            problems.append(f"{workflow}: {where} step {name!r} run: text is not an approved exact match for this workflow, "
+                            "job, step, shell and runs-on (refused; unregistered or changed, Issue #511)")
     return problems
 
 
@@ -2115,6 +2376,28 @@ def _run_write_problem(run):
             if TARGET_DYNAMIC_RE.search(word) and not TARGET_OK_RE.fullmatch(word):
                 return f"copies or writes to an argument assembled at run time ({word!r}), which can name GITHUB_ENV"
     return None
+
+
+def _bool_word_problems(workflow, text):
+    """Issue #511. A value (not a key) whose YAML 1.1 bool tag is set by a word other than true or false (yes, no, on, off,
+    any case, on the same line, the next line or in a flow mapping). Such a word digests as the same value as true or false.
+    Reads the node tree, so the form of the line does not matter. An unreadable file gives no problem here: the other
+    checks refuse it."""
+    try:
+        import yaml
+        root_node = yaml.compose(text, Loader=yaml.SafeLoader)
+    except Exception:
+        return []
+    problems, stack = [], [root_node]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, yaml.MappingNode):
+            stack.extend(value for _, value in node.value)   # keys are skipped: on: is a key, not a value
+        elif isinstance(node, yaml.SequenceNode):
+            stack.extend(node.value)
+        elif isinstance(node, yaml.ScalarNode) and node.tag == "tag:yaml.org,2002:bool" and node.value not in ("true", "false"):
+            problems.append(f"{workflow}: the bool word {node.value!r} is refused; YAML 1.1 reads it as true or false (Issue #511)")
+    return problems
 
 
 def _yaml_unreadable(text):
@@ -2174,10 +2457,15 @@ def scope_key_violations(text, workflow):
     - a workflow whose jobs: is not a mapping, a job that is not a mapping, and a steps: that is not a list (fail closed).
     Applies to every workflow and composite action file, with or without an upload step. A file that cannot be parsed is
     refused here too (round 14), not only by yaml_integrity_violations."""
+    if re.search(r"""^\s*(?:-\s+)?["']?<<["']?\s*:""", text, re.M):   # Issue #511: a merge key can hide a run: from the approval
+        return [f"{workflow}: a YAML merge key (<<:) is refused; it can hide a run: the approval does not see (Issue #511)"]
     if Path(workflow).name == POLICY_GUARD_FILE:
         structure_problems = _policy_structure_problems(workflow, text)   # Issue #544: text and node tree, before any value
         if structure_problems:
             return structure_problems
+    bool_words = _bool_word_problems(workflow, text)   # Issue #511: yes/no/on/off read as bools, digest as true/false
+    if bool_words:
+        return bool_words
     trigger_problems = _trigger_key_problems(workflow, text)   # Issue #544: read the node tree, not the lines (flow, ?, ON)
     if trigger_problems:
         return trigger_problems
@@ -2191,13 +2479,21 @@ def scope_key_violations(text, workflow):
         return [f"{workflow}: YAML cannot be read, scope keys cannot be checked ({error}; Issue #337 round 14)"]
     if not isinstance(doc, dict):
         return [f"{workflow}: the file is not a mapping, scope keys cannot be checked (Issue #337 round 14)"]
-    problems = [f"{workflow}: top-level {key} is refused (can change the guard's PATH or RUNNER_TEMP)"
+    is_action = workflow.startswith(ACTIONS + "/")   # an action has its own top-level keys (description, inputs, runs)
+    problems = [f"{workflow}: top-level key {key!r} is not a known workflow key (refused; Issue #511)"
+                for key in sorted(doc, key=str)
+                if not is_action and ("on" if key is True else str(key)) not in WORKFLOW_KEYS]   # YAML 1.1 reads on: as True
+    problems += [f"{workflow}: top-level {key} is refused (can change the guard's PATH or RUNNER_TEMP)"
                 for key in sorted(doc, key=str) if str(key).lower() in SCOPE_KEYS_REFUSED]
+    try:
+        digests = _node_digests(text, is_action)
+    except Exception:   # a file the node reader cannot take gets no digests, so none of its steps can be approved
+        digests = {}
     if workflow.startswith(ACTIONS + "/"):
         runs = doc.get("runs")
         if not isinstance(runs, dict):
             return problems + [f"{workflow}: runs: must be a mapping, scope keys cannot be checked (Issue #337 round 14)"]
-        scopes = [("runs", runs.get("steps"))]
+        scopes = [("runs", runs.get("steps"), "")]
     else:
         jobs = doc.get("jobs")
         if not isinstance(jobs, dict):
@@ -2212,15 +2508,17 @@ def scope_key_violations(text, workflow):
                 if str(key).lower() in SCOPE_KEYS_REFUSED:
                     problems.append(f"{workflow}: job-level {key} in job {job!r} is refused "
                                     "(can change the guard's PATH or RUNNER_TEMP)")
-            scopes.append((job, body.get("steps")))
-    for where, steps in scopes:
+            scopes.append((job, body.get("steps"), _runs_on_text(body)))
+    for where, steps, runs_on in scopes:
         if steps is None:
             continue
         if not isinstance(steps, list):
             problems.append(f"{workflow}: {where} steps: must be a list (Issue #337 round 14)")
             continue
-        for step in steps:
-            problems += _step_problems(workflow, where, step)
+        job_digest, step_digests = digests.get(where, ("", []))
+        for index, step in enumerate(steps):
+            step_digest = step_digests[index] if index < len(step_digests) else ""
+            problems += _step_problems(workflow, where, step, runs_on, job_digest, step_digest)
     return problems
 
 
@@ -2559,10 +2857,14 @@ def main(argv):
         else:
             workflows_root = Path(argv[1])
         argv = argv[2:]
+    for tree in [root] + ([workflows_root] if workflows_root else []):   # Issue #544: links refused in every mode
+        found = link_problems(tree)
+        if found:
+            raise ValueError("artifact guard: " + "; ".join(found))
     if not argv:
         # Issue #349 (review): the default entry point is fail-closed. It runs every check that --check-placement runs.
         check_upload_artifacts(root)
-        check_guard_placement(root)
+        enforced_check(root, check_guard_placement, allowlist_root=ROOT)
     elif argv[0] == "--post-build" and len(argv) == 3:
         check_post_build(argv[1], argv[2], root)
     elif argv[0] == "--stage" and len(argv) == 3:
@@ -2570,7 +2872,11 @@ def main(argv):
     elif argv[0] == "--verify" and len(argv) == 3:
         verify_artifacts(argv[1], argv[2], root, workflows_root)
     elif argv == ["--check-placement"]:
-        check_guard_placement(root)
+        enforced_check(root, check_guard_placement, allowlist_root=ROOT)
+    elif argv == ["--emit-run-allowlist"]:   # for review: the entries that the reviewed allowlist file must hold
+        print(json.dumps(build_run_allowlist(root), indent=2, ensure_ascii=False))
+    elif argv[:1] == ["--check-policy"] and len(argv) == 2:   # the candidate guard and allowlist must equal the trusted copy
+        policy_violations(root, Path(argv[1]))
     else:
         raise ValueError("usage: artifact_guard.py [--root DIR] [--workflow-root DIR] "
                          "[--post-build|--stage|--verify WORKFLOW STEP | --check-placement]")
@@ -2579,7 +2885,7 @@ def main(argv):
 if __name__ == "__main__":
     try:
         main(sys.argv[1:])
-    except (ValueError, OSError) as error:
+    except (ValueError, OSError, TypeError) as error:
         raise SystemExit(f"artifact_guard: {error}") from error
     except RecursionError as error:   # a too-deep document is a refusal, not a traceback; named so it is not read as a bug (Issue #547)
         raise SystemExit(f"artifact_guard: refused, a YAML document is nested too deeply to check ({error}; Issue #547)") from error
