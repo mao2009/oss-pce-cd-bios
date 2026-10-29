@@ -151,6 +151,29 @@ class CacheTests(unittest.TestCase):
         self.assertTrue((source / '.source-integrity.json').is_file())
         self.assertFalse(source.with_name(source.name + '.extracting').exists())
 
+    def test_unowned_staging_directory_is_not_deleted(self):
+        # A directory that only has the reserved '.extracting' name was not created by this run; fetch must not remove it.
+        destination = dependency_dir('cc65')
+        staging = destination.with_name(destination.name + '.extracting')
+        staging.mkdir(parents=True)
+        (staging / 'user-notes.txt').write_text('not created by setup')
+        source = bootstrap.fetch('cc65')
+        self.assertEqual((staging / 'user-notes.txt').read_text(), 'not created by setup')
+        self.assertTrue((source / '.source-integrity.json').is_file())
+
+    def test_failed_extraction_leaves_no_staging_directory_behind(self):
+        extract = tarfile.TarFile.extractall
+
+        def interrupted(tar, *args, **kwargs):
+            extract(tar, *args, **kwargs)
+            raise OSError('simulated interrupted extraction')
+
+        with patch.object(tarfile.TarFile, 'extractall', interrupted):
+            with self.assertRaises(OSError):
+                bootstrap.fetch('cc65')
+        leftovers = [p.name for p in dependency_dir('cc65').parent.iterdir() if 'extracting' in p.name]
+        self.assertEqual(leftovers, [])
+
     def test_corrupt_archive_and_unverified_cache_are_rejected(self):
         data = self.archive.read_bytes()
         self.archive.write_bytes(b'corrupt archive')

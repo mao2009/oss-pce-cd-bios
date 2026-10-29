@@ -8,6 +8,7 @@ import platform
 import shutil
 import subprocess
 import tarfile
+import tempfile
 
 try:
     import fcntl
@@ -103,37 +104,40 @@ def fetch(name, desktop=False, debugger=False):
             # Upgrade an old cache only after every original file was verified.
             save_manifest(destination, manifest)
         return destination
-    staging = destination.with_name(destination.name + ".extracting")
-    if staging.exists():
-        # This is exclusively our staging area; final source directories are preserved.
-        shutil.rmtree(staging)
-    staging.mkdir()
-    with tarfile.open(archive) as tar:
-        # Python 3.10-compatible validation. Upstream agent metadata has symlinks;
-        # omit links entirely (none are used by the pinned build targets).
-        members = []
-        for member in tar.getmembers():
-            if member.issym() or member.islnk():
-                continue
-            parts = Path(member.name).parts
-            if Path(member.name).is_absolute() or ".." in parts:
-                raise ValueError(f"unsafe archive path: {member.name}")
-            if not member.isdir() and not member.isfile():
-                raise ValueError(f"unsupported archive member: {member.name}")
-            members.append(member)
-        tar.extractall(staging, members=members)
-    extracted = staging
-    if name != "actionlint":
-        entries = list(staging.iterdir())
-        if len(entries) != 1 or not entries[0].is_dir():
-            raise ValueError("source archive must have exactly one root")
-        extracted = entries[0]
-    verify_sources(extracted, name, manifest)
-    save_manifest(extracted, manifest)
-    (extracted / ".verified-archive-sha256").write_text(dep["sha256"] + "\n")
-    extracted.rename(destination)  # Publish only a complete, verified source tree.
-    if name != "actionlint":
-        staging.rmdir()
+    # A fresh staging directory for this run. Nothing that already exists at a reserved name is ever removed:
+    # an unrelated directory named '<dest>.extracting' is left alone, and only our own directory is cleaned up.
+    staging = Path(tempfile.mkdtemp(prefix=destination.name + ".extracting-", dir=destination.parent))
+    try:
+        staging.chmod(0o755)  # mkdtemp creates 0700; the verified tree is published with these permissions
+        with tarfile.open(archive) as tar:
+            # Python 3.10-compatible validation. Upstream agent metadata has symlinks;
+            # omit links entirely (none are used by the pinned build targets).
+            members = []
+            for member in tar.getmembers():
+                if member.issym() or member.islnk():
+                    continue
+                parts = Path(member.name).parts
+                if Path(member.name).is_absolute() or ".." in parts:
+                    raise ValueError(f"unsafe archive path: {member.name}")
+                if not member.isdir() and not member.isfile():
+                    raise ValueError(f"unsupported archive member: {member.name}")
+                members.append(member)
+            tar.extractall(staging, members=members)
+        extracted = staging
+        if name != "actionlint":
+            entries = list(staging.iterdir())
+            if len(entries) != 1 or not entries[0].is_dir():
+                raise ValueError("source archive must have exactly one root")
+            extracted = entries[0]
+        verify_sources(extracted, name, manifest)
+        save_manifest(extracted, manifest)
+        (extracted / ".verified-archive-sha256").write_text(dep["sha256"] + "\n")
+        extracted.rename(destination)  # Publish only a complete, verified source tree.
+        if name != "actionlint":
+            staging.rmdir()
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)  # our own directory only (created by mkdtemp above)
+        raise
     return destination
 
 
