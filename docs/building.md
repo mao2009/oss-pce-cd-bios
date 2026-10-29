@@ -39,9 +39,12 @@ Archive symlinks (Geargrafx agent metadata only at this pin) are omitted; they
 are unnecessary for these build targets. Setup serializes concurrent invocations,
 reuses verified downloads and sources, and safely repeats incremental builds.
 Failed checksum or build checks exit nonzero. Interrupted extraction staging is
-not deleted: if a `<dependency>.extracting` directory is left behind, setup refuses
-to run until you inspect it and remove it by hand. An existing unverified final
-directory is refused, never overwritten.
+not deleted: if a `<dependency>.extracting` path is left behind (a directory, file,
+or symlink), setup refuses to run and changes nothing there. Before removing or
+moving it, confirm its canonical path, its contents, who owns it, and what depends
+on it, and make sure it can be restored; deleting or quarantining it needs an
+individual approval, and nothing here removes it for you. An existing unverified
+final directory is refused, never overwritten.
 
 Reusing an extracted tree also hashes every original archive file and verifies
 its size/executable permission, rejects missing/changed files, extra source files and symlinks, and

@@ -172,6 +172,16 @@ class CacheTests(unittest.TestCase):
         self.assertTrue(staging.is_symlink())
         self.assertEqual((outside / 'keep.txt').read_text(), 'keep me')
 
+    def test_regular_file_at_staging_path_is_rejected_and_kept(self):
+        destination = dependency_dir('cc65')
+        staging = destination.with_name(destination.name + '.extracting')
+        staging.parent.mkdir(parents=True, exist_ok=True)
+        staging.write_text('user data')
+        with self.assertRaisesRegex(ValueError, 'not removed'):
+            bootstrap.fetch('cc65')
+        self.assertEqual(staging.read_text(), 'user data')
+        self.assertFalse(destination.exists())
+
     def test_corrupt_archive_and_unverified_cache_are_rejected(self):
         data = self.archive.read_bytes()
         self.archive.write_bytes(b'corrupt archive')
