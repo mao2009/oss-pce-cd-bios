@@ -13,7 +13,7 @@
 - `HYPOTHESIS`: ソースや文献に基づく未確認の動作仮説。呼出先を実行して確認していない。
 - `MEASURED`: 実行環境・対象・測定範囲を明記した実測事実。MEASURED は VERIFIED を自動的には意味しない。本台帳に CD_BASE 呼出先の実測はない。READ(6) の測定（#118 系）は CD_READ 経路の実測であり、CD_BASE の MEASURED には含めない。
 - `UNKNOWN`: 根拠不足。推測で埋めない。成功値も定義しない。
-- `BLOCKED`: 安全条件や依存関係が未成立で、確認できない状態。本台帳の項目には付けていない。
+- `BLOCKED`: 安全条件や依存関係が未成立で、確認できない状態。本台帳の項目には付けていない。ただし `docs/cd-read-contract.md` の T1〜T4 は、bundle がない場合に BLOCKED を付ける（実効判定）。
 - `VERIFIED`: 対象を限定し、要求される独立検証と信頼条件を満たした事実。本台帳では付けない。CD_BASE の純正 ABI の正式な VERIFIED 判定は既存 Trusted Gate の信頼境界に従い、今回は昇格させない。ホスト解析、DEV ROM の実測、Geargrafx 転送層の実測は、CD_BASE の純正 ABI の VERIFIED に含めない。
 
 呼出側ソースの記述（SOURCE_CONFIRMED）と呼出先（callee）の振る舞い（MEASURED / VERIFIED）は、別の項目として記録する。呼出側の記述は呼出先の振る舞いの証拠にならない。

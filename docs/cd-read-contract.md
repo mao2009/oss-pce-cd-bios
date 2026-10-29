@@ -8,11 +8,13 @@ Status tags:
 本文書の Status は**宣言上の状態（declared status）**である。実効信頼状態（effective trust state）は §4 の検査で決まり、
 現時点の実効値は LOCAL_ONLY までで、VERIFIED は実効化されない。語彙は `docs/cd-base-abi-ledger.md` §1
 （SOURCE_CONFIRMED / HYPOTHESIS / MEASURED / UNKNOWN / BLOCKED / VERIFIED）に従う。SOURCE_CONFIRMED と MEASURED は本文書の Status 値ではない。
+本文書の T1〜T5 の根拠は、列挙したシナリオの実行結果（MEASURED）である。MEASURED は VERIFIED を自動的には意味しない。
 
-* **VERIFIED**: 実行による測定に限る。列挙したシナリオを、原本ゲストコードが pinned real Geargrafx core
-  （`b49ae82a012eade566d72e9d61c9d95a5caa4da3`）上で実行した結果だけを根拠とする。ソースの記述、HLE、呼出側の期待、名前だけでは VERIFIED にならない。
-  本台帳ではこの語は*宣言上の状態*であり、自己申告の bundle では実効 VERIFIED にならない。gh attestation の出力や
-  台帳へ渡された run 記録でも成立しない（§4、#153）。このモジュールのどの関数も、現時点で実効 VERIFIED を返さない。
+* **VERIFIED**: 対象を限定し、要求される独立検証と信頼条件を満たした事実（`docs/cd-base-abi-ledger.md` §1 の承認方針）。
+  本文書の宣言上の VERIFIED は、列挙したシナリオを原本ゲストコードが pinned real Geargrafx core
+  （`b49ae82a012eade566d72e9d61c9d95a5caa4da3`）上で実行した結果を根拠とする表示である。ソースの記述、HLE、呼出側の期待、名前だけでは付けられない。
+  宣言上の VERIFIED は、独立検証と信頼条件が満たされるまで実効 VERIFIED ではない。自己申告の bundle では実効 VERIFIED にならず、
+  gh attestation の出力や`docs/cd-read-contract.md`（本文書）へ渡された run 記録でも成立しない（§4、#153）。このモジュールのどの関数も、現時点で実効 VERIFIED を返さない。
   仮に実効 VERIFIED になっても、転送層のエミュレータ証拠に限られる。実機と callee ABI は UNKNOWN のままである。
 * **LOCAL_ONLY**: a declared VERIFIED claim whose cited scenarios a self-declared bundle records consistently
   (pinned revision/archive hash, ROM hash, exact scenario kinds). The trust meaning is the same as
