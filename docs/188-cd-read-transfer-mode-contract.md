@@ -122,7 +122,7 @@
 * PR #574 の head commit（記録上）は `89a2fcd` と `ed1ec32`。squash 後の `origin/main` の ce85915 の文書内容は、head `89a2fcd` の文書内容と一致する（確認済み）。ce85915 の変更対象は文書 4 ファイルのみ（`docs/188-cd-read-transfer-mode-contract.md`、`docs/cd-base-contract.md`、`docs/cd-read-contract.md`、`docs/cd-read-mode-contract.md`）で、`tools/` と `tests/` は含まない。
 * `docs/cd-read-mode-contract.md` の R3・R8 は #574 で UNKNOWN に変更した。`tools/cd_read_contract.py` の R3・R8 は #574 の時点では `HYPOTHESIS` のままだったが、PR #576（72de119、Issue #575）で UNKNOWN に揃えた。本書の時点の origin/main では、文書と tools の R3・R8 は一致する。
 * 本書の検証記録（本修正の作成時。基点 origin/main `72de119`、worktree 上の全リポジトリ木）:
-  * 相対 Markdown リンク: 対象 5 文書（本書、`cd-base-contract.md`、`cd-read-contract.md`、`cd-read-mode-contract.md`、`cd-base-abi-ledger.md`）の相対リンク 30 件を検査し、欠落 0。
+  * 相対 Markdown リンク: 対象 5 文書（本書、`cd-base-contract.md`、`cd-read-contract.md`、`cd-read-mode-contract.md`、`cd-base-abi-ledger.md`）の相対リンク 29 件を検査し、欠落 0。
   * host 試験（`python -I`、`tests/host`）: `test_cd_read_contract` 56 件 OK、`test_cd_read_mode2_fixture` 7 件 OK、`test_cd_read_v16_contract` 45 件 OK、`test_cd_base_model` 28 件 OK。
   * HuCC ソース（`include/hucc/`）はこのリポジトリにないため、本書と各台帳の HuCC 行番号は**未検証**（文書に引用されたもの）。
 * 「#573」は Issue 番号である（PR 番号ではない）。
