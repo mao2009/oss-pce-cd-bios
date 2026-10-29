@@ -1,0 +1,251 @@
+# ABI 検証ティアの設計（Issue #324）
+
+**状態: 設計文書のみ。** スキーマ、ゲート、台帳、承認欄は変更しない。`spec/api_contracts.json`、
+`spec/dev_implementations.json`、`spec/abi1_reference_review.json` の値も変更しない。
+参照 BIOS の ABI は VERIFIED 0/81、DEV_CALLABLE のオーナー承認は 0、`release_eligible` は `false`
+のまま。本書は互換性を主張しない。
+
+- Issue: #324（オーナー判断待ち）
+- 基準: 本ブランチを作成した時点の main `ec496e9`（`ec496e9` は現在の main の祖先。main は本文書の作成後も進んでいる）
+- 先行文書: `docs/abi-evidence-classification.md`（PR #323 の設計提案）。本書は同文書の 3 軸を
+  4 軸に拡張し、フィールドごとの状態語の意味を定める。同文書と食い違う箇所の優先規則は本書に定めていない。同文書の扱いは §8.6 のオーナー判断とする。
+- 負例テスト: `tests/host/test_abi_verification_tiers.py`
+
+## 1. 現状（ブランチ作成時点 `ec496e9` の事実）
+
+| 台帳 | 現在の値 | 意味 |
+| --- | --- | --- |
+| `spec/api_contracts.json`（参照 BIOS の契約） | 81 slot すべて `verification.status: NOT_RUN` | 台帳上は実測なし。`spec/abi1_reference_review.json` の slot-1e（EX_GETVER）には、管理用の欄（`prior_local_only`、`reproducible_real_core`）がある。この欄は参照の観測値を含まず、コミット済みのランナーでは再現できない。観測値は現行の公開文書から取り下げ済み（出典未確認。Issue #324 と PR #528 に該当する記録はない。§8 冒頭）。この欄は台帳の値ではない。扱いは §8.3（公開範囲）と §9.2（未承認計測の非公開）に従う |
+| `spec/abi1_reference_review.json`（静的レビュー） | 7 件、`abi_state: NOT_RUN`、`static: OBSERVED_STATIC` | 静的解析の記録。検証ではない |
+| `spec/dev_implementations.json`（DEV 実装） | 81 行すべて `NOT_READY`、`approval` の `approved_by` / `review_ref` は null、DEV ROM の override は、基準 `ec496e9` 時点で 10 slot。本ブランチの HEAD では 13 slot（`tools/build_rom.py` の `overrides()`。`ec496e9` 以降に slot 3E、45、46 が追加された。46 は main の #527 による）。**main `94ef337` の現在値は 14 slot**（`src/overrides/slot_*.s` 14 件、`spec/dev_implementations.json` の `implementation` が null でない行 14 件。承認 0）。main は本ブランチに取り込まれていないため、本ブランチの 13 と main の 14 は別の時点の値である（main の 14 は `slot_3A` を含む）。過去の文書の件数（`docs/status.md` の 2954e90 時点 13/81、`README.md` の f90c16b 時点 9 件）は、それぞれの日付の記録として読む | DEV ROM に実装がある slot と、その承認状態 |
+
+`tools/contracts.py` の `CLAIM_STATUSES` は `UNKNOWN` / `HYPOTHESIS` / `OBSERVED` / `BLOCKED` だけで、
+`VERIFIED` を表せない。`OBSERVED` は実コア由来の証明（#124、producer 認証）がないため
+`adjudicate_claim()` が常に拒否する。
+
+## 2. 4 軸の定義と分離
+
+同じ語（`OBSERVED`、`PASS`、`HYPOTHESIS` など）が複数の意味で使われてきたため、
+4 つの問いを別の軸に分ける。どの軸の値も、他の軸の値から計算・補完しない。ツールが 1 軸を読んで
+別の軸を書き換えることは禁止する。
+
+### 2.1 SOURCE_EVIDENCE（公開ソースの記述）
+
+- 問い: 固定版の公開ソース（caller 側 SDK、HLE エミュレータ、実コアのソース）が、その項目について何を書いているか。
+- 値: `UNKNOWN`（根拠なし）、`HYPOTHESIS`（ソースに記述がある。`confidence: SOURCE_SUPPORTED`）、
+  `SOURCE_FACT` は静的レビュー（`tools/abi1_reference_review.py` の `ITEM_STATUSES`）の語で、台帳 claim の値ではない。公開の caller 側ソースまたはエミュレータソースから取った事実に限る文書上のラベル（`spec/abi1_reference_review.json` の定義と一致）。
+- 上限: ソース記述だけで `OBSERVED` や `VERIFIED` にはならない。
+- 既存の対応: `spec/api_contracts.json` の `sources` と `confidence`、`tools/contracts.py` の `SOURCE_KIND_MEANINGS`。
+- 判断者: 調査者。誤りはレビューで直す。
+
+### 2.2 PROVENANCE_APPROVAL（再利用・配布の承認）
+
+- 問い: そのソースやコードを、コピー、改変、ROM への組み込み、配布に使ってよいか。
+- 値: `PENDING` / `APPROVED` / `RESTRICTED`。利用形態は `DIRECT` / `ADAPTED` / `REFERENCE_ONLY` / `REJECTED`（`docs/provenance.md`）。
+- 現状: `provenance/` ディレクトリがリポジトリになく、承認者の一覧（`provenance/approvers.txt`）も存在しない。一覧がないため fail closed。
+- 判断者: 人間の承認者だけ。CI、スキャナ、エージェントは承認できない。
+- 注意: `APPROVED` は法的な再利用許可であり、挙動が正しいことの根拠にはならない。
+
+### 2.3 CALLEE_VERIFICATION（参照 BIOS callee の実測）
+
+- 問い: 参照 BIOS の callee を実コアで実行し、入出力、フラグ、MPR、スタック、RAM 差分を測ったか。
+- 値: §3 の状態語。
+- 実行記録（`evidence_hash`、コア revision、入力、検証結果）が必要。現状は全 slot `NOT_RUN`。
+- 注意: 実測の事実と、その事実を公開してよいかは別問題（オーナー判断 §6 の「項目 5: `CALLEE_VERIFICATION` で実測した事実のうち、公開してよい範囲」）。
+
+### 2.4 DEV_IMPLEMENTATION（OSS の DEV ROM 実装）
+
+- 問い: DEV ROM のこの slot に OSS 実装があり、構造検査と DEV テストが通ったか。
+- 値: `NOT_READY`（既定、承認なし）、`DEV_CALLABLE`（DEV ROM に限る。承認あり）、`BLOCKED`（理由付きで拒否）。
+- 書いてよい場所は `spec/dev_implementations.json` だけ。`spec/api_contracts.json` と
+  `docs/research/*` には書かない。
+- 意味: DEV ROM についての記述に限る。参照 BIOS の ABI や互換性は一切含意しない。
+- DEV_CALLABLE の定義（Issue #324 のオーナー判断コメント 2026-10-21 で承認）: DEV ROM に限り、実際にエントリ経由で呼び出せる独自実装を示す。System Card 互換性と純正 BIOS ABI の VERIFIED は含意しない。必要条件は、DEV ROM 経由の実コア実行、ABI の独自契約、レビュー、CI。最終承認はオーナー判断で、未承認・未計測・不一致は fail-closed。
+- DEV テストの PASS は、OSS 実装の挙動の記録であって参照 BIOS の検証ではない。
+
+### 2.5 軸の分離のまとめ
+
+| 軸 | 到達できる最上位 | 到達できないもの |
+| --- | --- | --- |
+| SOURCE_EVIDENCE | `HYPOTHESIS`（`SOURCE_FACT` は台帳の値ではなく、§2.1 の文書上のラベル） | `OBSERVED`、`VERIFIED`、provenance 承認、DEV_CALLABLE |
+| PROVENANCE_APPROVAL | `APPROVED`（人間の承認者が記録） | 挙動の正しさ、callee 実測、互換性、`OBSERVED`、`VERIFIED`、DEV_CALLABLE 承認（§8.4 で扱う） |
+| CALLEE_VERIFICATION | `UNKNOWN`（§3）。`OBSERVED`、`PARTIAL`、`VERIFIED-equivalent` には到達できない（`OBSERVED` は認証前に拒否） | `VERIFIED`（現スキーマでは表せない。#171）、DEV_CALLABLE 承認 |
+| DEV_IMPLEMENTATION | `DEV_CALLABLE`（DEV ROM に限る） | 参照 BIOS の `VERIFIED`、release 判定、互換性、`CALLEE_VERIFICATION` の `OBSERVED`、`PROVENANCE_APPROVAL` の `APPROVED`（DEV の PASS は実測や provenance の代わりにならない） |
+
+どの軸の値が揃っても、`release_eligible: true` にはならない。release gate は別の人間承認を要し、
+`tools/build_rom.py` の `release_gate()` は現在常に BLOCKED を返す。
+
+## 3. フィールドごとの状態の意味
+
+検証軸の状態は、契約の 1 フィールド（例: `returns`、`preserved`）ごとに判定する。
+現行の語彙は 2 系統ある。台帳 claim 用（`tools/contracts.py` の `CLAIM_STATUSES`）と、静的レビュー用
+（`tools/abi1_reference_review.py` の `ABI_STATES` と `ITEM_STATUSES`）。本書の 4 語は両者を対応づける読み替えである。
+
+| 状態 | 意味 | 必要条件 | 現在到達できるか | 現在の件数 |
+| --- | --- | --- | --- | --- |
+| `UNKNOWN` | 根拠がない、または判定できない。既定値。 | なし。`value` は `UNKNOWN`、`confidence` は `UNKNOWN`。 | はい | 870 件（`spec/api_contracts.json` の 891 件の claim のうち。残り 21 件は HYPOTHESIS） |
+| `OBSERVED` | 記録された実コアの実行で、そのフィールドの挙動が観測された。 | 再現可能な実コア実行、実行の記録（`evidence_hash`、コア revision、入力、検証結果）、EMULATOR_SOURCE の参照、`REALCORE` の表示、callee 挙動のフィールドでは `executed_callee=True`、`observation_kind` がフィールドを覆う、各証拠の `measurement_point_id` が `spec/measurement_points.json` に登録され、その kind と field が一致する（#364。欠落時の理由の文言は commit 83b75e8（#515）による）、producer 認証（#124）。 | いいえ。認証前は `adjudicate_claim()` が拒否（`#124`）。静的レビューの `OBSERVED_STATIC` は別物 | 0 |
+| `PARTIAL` | 観測したのは入力領域の一部（ケース、フラグ、条件）。 | `OBSERVED` の条件に加え、覆った範囲と覆っていない範囲を明記すること。 | いいえ（abi1 の語彙にあるが、再現可能な観測がない） | 0 |
+| `VERIFIED-equivalent` | 参照 BIOS の全入力領域が実コアで観測され、認証され、独立レビューされ、オーナーが承認した状態。 | `OBSERVED` の条件に加え、全入力領域、独立レビュー、オーナー承認、#171 の trusted VERIFIED 経路。 | いいえ。`VERIFIED` は `CLAIM_STATUSES` と `adjudicate_claim()` で拒否される。abi1 は静的経路からの `VERIFIED` を拒否する | 0 |
+
+補足:
+
+- `HYPOTHESIS`、`SOURCE_FACT`、`OBSERVED_STATIC` は SOURCE_EVIDENCE または静的レビューの値である。
+  CALLEE_VERIFICATION のどの状態にも昇格させない。
+- 「`OBSERVED` 相当」を `OBSERVED_STATIC`（静的レビュー）や `OBSERVED LOCAL_ONLY`（ローカル観測）に当てはめない。
+  名前が似ているが、CALLEE_VERIFICATION の `OBSERVED` ではない。
+- 状態の間に順序はない。どの状態からも他の状態を計算しない。
+- `VERIFIED-equivalent` は設計上の定義であり、この語を台帳の値として書くことは禁止する（`VERIFIED` を書けないのと同じ）。
+
+## 4. 負例テスト
+
+`tests/host/test_abi_verification_tiers.py` は、次の 4 種類の入力が VERIFIED や承認に昇格しないことを確かめる。
+テストの証拠 fixture は同ファイル内の合成データで、実コアも参照 BIOS も使わない。ただし一部の検査は、リポジトリに commit された台帳（`spec/*.json`）を読み込んで検査する。
+
+| 種類 | 試すこと | 代表テスト |
+| --- | --- | --- |
+| 偽造証拠 | 形式が正しく、ハッシュが一致し、revision が pin と一致する証拠。`REALCORE` の文字列、`executed_callee`、呼び出し側が渡すハッシュ集合 | `ForgedEvidenceTests`（`#124` の拒否で止まること）、`VERIFIED` 状態の拒否 |
+| 自己申告の承認 | claim 内の `approval` キー、承認欄が空または片方だけの `DEV_CALLABLE`、承認者が自分で書いた値 | `SelfDeclaredApprovalTests`、`test_self_declared_approver_is_refused`（expectedFailure，§5） |
+| DEV の結果 | `DEV_CALLABLE` の行に `VERIFIED` の ABI 状態を付けた場合 | `DevResultTests`（正の対照 1 件を含む）。承認された DEV 行が静的レビューの件数を変えることの検査は、件数の不一致に依存するため、DEV 承認の不算入を単独では証明しない（テストの注記を参照） |
+| 静的解析の結果 | 呼び出し側ソースだけの `OBSERVED`、静的レビューからの `VERIFIED`、`OBSERVED` / `PARTIAL` の静的レビュー、`EXECUTION_SAFE` を許可として扱う | `StaticAnalysisTests` |
+
+設計文書の検査（`DesignDocumentTests`）は、本書に状態語とセクション構成が現れることを確かめる存在検査である。4 軸の名前はコードに対応する定義がなく、検査は本書内の存在のみを見る。
+
+## 5. 既知の穴（未解決）
+
+1. **DEV 承認が自己申告を拒否しない。** `tools/dev_implementations.py` の `_owner_approved()` は、
+   `approved_by` と `review_ref` が空でない文字列であれば通す。エージェントが自分の名前で
+   `DEV_CALLABLE` を書けば、検証は通る。`test_self_declared_approver_is_refused` は expectedFailure で、
+   この穴を明示する。承認者の許可リストを作るのは §6 の判断事項（新規）。
+2. **`summary()` の `owner_approved` の名称。** この数は承認欄に文字列があるかどうかを数えるだけで、オーナー承認を数えていない。
+   名称は誤解を招く。改名は別 PR。
+3. **`real_core_evidence` はパスの存在だけを確認する。** テストファイルの存在は、実コアで実行した証拠ではない。
+4. **`compatibility_basis` は未実装。** `docs/abi-evidence-classification.md` §4.2 の提案のみ。
+5. **producer 認証がない（#124、#171）。** `OBSERVED` も `VERIFIED-equivalent` も、この穴が塞がるまで到達できない。
+6. **全入力の DEV 実コア実行は台帳の外にある。** slot `$3D` の 256 入力 × 18 条件（4608 実行）は、`docs/evidence/dev-callable-3d.md` §3 に記録されている（失敗 0。有効 1800、不正 2808）。再現手順は `make dev-bcdbin-sweep`。この全入力実行は `make dev-integration` に組み込まれ、CI の `bios-dev` ジョブで実行される（`docs/evidence/dev-callable-3d.md` §3.1 の表に、CI の成功記録として 7 分 35 秒の実行が記載されている）。ただし、その記録がどの HEAD に対するものかは同ファイル §6 で「PR ページで確認すること」とされており、本書では未確認である。初版の実行は CI ではなくローカル WSL のみだった（同 §8）。Issue #324 のコメントにある件数は別の記録として扱い、本書は台帳の値として採用しない。
+   `docs/evidence/dev-callable-*.md` の記録は DEV 承認の判断材料であり、台帳の値ではない。
+
+## 6. オーナーが #324 で判断すること
+
+項目 1（台帳導入）と項目 2（DEV_CALLABLE の定義）は、Issue #324 のオーナー判断コメント（2026-10-21）で承認されている。承認は台帳導入と DEV_CALLABLE の定義に限り、項目 3〜5 は未決のまま（同コメントの記載）。`tools/dev_implementations.py` の冒頭コメント「items 1-2, owner approved」はこの判断と整合する。以下は未決（§8 冒頭の設計方針は出典未確認の提案。承認値は付与していない）。下の番号は表示順であり、項目名（「項目 N」）は Issue #324 の番号に従う。「新規」は本書で追加した項目。
+
+1. **項目 3: `ORIGINAL` の OSS 実装の `provenance_approval` を誰が承認するか。** 承認者の一覧がリポジトリにない（fail closed）。
+2. **項目 4: 台帳に 3 軸のキー（`source_evidence` / `provenance_approval` / `callee_verification`）を追加するか。**
+   スキーマ変更なので、本書は提案しない。
+3. **項目 5: `CALLEE_VERIFICATION` で実測した事実のうち、公開してよい範囲。**
+4. **新規: DEV_CALLABLE の承認者の許可リストを作るか。** 作る場合は、承認欄の書き込み権限と、validator が
+   許可リストを検査するかを決める（§5 の 1）。
+5. **新規: 状態語（`PARTIAL`、`VERIFIED-equivalent`）の定義を採用するか。** 定義だけなら、スキーマ変更は要らない。
+6. **新規: 本書で `docs/abi-evidence-classification.md` §2 の定義を置き換えるか。**
+
+## 7. 変えないこと
+
+- `spec/api_contracts.json` のスキーマと、すべての status 値（`NOT_RUN`、`UNKNOWN` など）。
+- `VERIFIED` への昇格。どの台帳でも `VERIFIED` は 0 件。
+- `release_eligible`、`VERIFIED_PATH_ENABLED`、参照 JSR ゲート、承認フィールド。
+- 参照 BIOS の実行。本作業では実行していない。
+- オーナー承認の記録。本書と負例テストは承認欄に一切書き込まない。
+
+オーナー裁定 2026-10-24（Issue #324 のコメント。`measurement_point_id` の一時入力拡張）は本書の対象外であり、本書はそれを変更しない。
+
+## 8. 未決 6 項目の判断表（推奨と影響）
+
+本節は §6 の 6 項目について、現状、選択肢、推奨とその理由、互換性、セキュリティ、必要な人間の承認、判断前に進めてよい作業を示す。
+推奨は提案であり、決定ではない。どの項目も、オーナーが判断するまでスキーマ、`VERIFIED` の扱い、信頼されたゲートの状態を変えない。
+
+**設計方針（出典未確認。Issue #324 のコメント（最後は 2026-10-24）と PR #528 のコメントには、2026-10-28 付けのオーナー裁定に当たる記録がない）。** 以下は提案であり、承認ではない。承認値（`approved_by` / `review_ref`）、台帳の値、スキーマ、ゲートは変更しない。
+1. 3 軸キー（§6 の項目 4、§8.2）: 追加は見送る（§8.2 の B）。台帳は現行スキーマのまま、§2 の対応表で読み替える。
+2. 実測・公開範囲（§6 の項目 5、§8.3）: 未決。原則 `LOCAL_ONLY` とする案（未承認）。EX_GETVER の観測値は、現行の公開文書から取り下げた（作業上の操作。その裁定の出典は §8 冒頭のとおり未確認）。
+3. 承認者（§6 の項目 3、§8.1、および新規の §8.4）: 未決。提案は、オーナーが指定した人間に限る許可リスト。許可リストは存在せず、オーナーが決めて人間が設定するまで作られない。エージェントや CI は承認者を書かない。
+4. PARTIAL と VERIFIED-equivalent（§6 の新規項目 5、§8.5）: 本書の定義だけで扱う（§8.5 の A）。台帳の値やコードの状態としては扱わない。
+5. 既存の ABI 分類文書（§6 の新規項目 6、§8.6）: 相互参照を維持する（§8.6 の B）。`docs/abi-evidence-classification.md` は置き換えない。
+
+### 8.1 項目 3: `provenance_approval` の承認者
+
+- **現状:** `provenance/` ディレクトリも承認者の一覧（`provenance/approvers.txt`）もリポジトリにない。承認者がいないので、`ORIGINAL` の承認は付かない（fail closed）。`tools/provenance_guard.py` は既に契約を定めている。承認者一覧の編集には、PR の base にある一覧に載った maintainer の承認が要り、PR 作成者は承認できない。base に一覧が無いブートストラップ時は、PR が追加する一覧を作成者以外の admin に限って使う。base にある一覧が空の場合は閉じる（`tools/provenance_guard.py` の docstring どおり）。
+- **選択肢:**
+  - A. オーナーが名指しした承認者の一覧をリポジトリに置く（オーナーが作る人間のコミット）。
+  - B. 複数のメンテナのグループに委ねる。
+  - C. 承認者を置かず、`ORIGINAL` の DEV_CALLABLE を作らない。
+- **推奨: A。** 承認者は信頼の境界であり、エージェントや CI が書けてはならない。名指しの一覧なら、誰が承認できるかを監査できる。
+- **互換性:** 既存の台帳の値は変わらない。一覧がない現状は fail closed のまま。
+- **セキュリティ:** 一覧そのものが信頼の基点になる。エージェントが一覧を編集できれば、自己承認が成立する。一覧の編集権限をオーナーに限る（CODEOWNERS 等）必要がある。
+- **必要な人間の承認:** オーナーが承認者を決め、その一覧を人間の手でコミットする。
+- **判断前に進めてよいこと:** 一覧がないことを fail closed として検査するテスト。承認者なしでの DEV 実装の作業（承認は付けない）。
+
+### 8.2 項目 4: 台帳への 3 軸キーの追加
+
+- **現状:** 3 軸は本書の §2 で対応づけている。`spec/api_contracts.json` にはキーがない。`tools/contracts.py` の `CLAIM_KEYS` は固定集合で、未知のキーは拒否される。
+- **選択肢:**
+  - A. `spec/api_contracts.json` に 3 軸のキーを追加する（スキーマ変更）。
+  - B. 現状どおり、本書の対応表だけで読み替える。
+  - C. 3 軸の情報を別ファイルに置く。
+- **推奨: B を当面続ける。** キーを追加すると、`CLAIM_KEYS` の変更とスキーマ変更の承認が要る。承認者（§8.1）と公開範囲（§8.3）が決まる前に入れると、軸の値を別の軸から書き込む経路を作りかねない。
+- **互換性:** A は `CLAIM_KEYS` と全 81 行の検査を変える。B は影響なし。
+- **セキュリティ:** キーは宣言であり、計測ではない。キーが増えると、ツールが一軸を読んで別の軸を書く誘惑が生まれる。
+- **必要な人間の承認:** A の場合、オーナーによるスキーマ変更の承認。B は承認不要。
+- **判断前に進めてよいこと:** 対応表の維持と、キー欠落を前提にした負例テスト。
+
+### 8.3 項目 5: `CALLEE_VERIFICATION` の公開範囲
+
+- **現状:** 参照 BIOS の callee 内部実装は公開していない。EX_GETVER（slot 0x1E）の私的参照 BIOS による実コア観測値は、現行の公開文書から取り下げた（出典未確認：Issue #324 の議論）。`docs/provenance.md` は、逆アセンブル一覧と抽出・翻訳されたファームウェアコードのコミットと配布を禁じている。全 81 slot の台帳値は `NOT_RUN`。
+- **選択肢:**
+  - A. caller から見える ABI（引数、戻り値、破壊レジスタ）だけを公開する。
+  - B. 内部挙動も含めて公開する。
+  - C. 承認まで何も公開しない。
+- **状態: 未決（オーナー判断待ち）。** slot-1e（EX_GETVER）を含め、公開範囲は承認されていない。**推奨: C を当面とする。** 公開を広げるのは、オーナーが個別に指定した範囲に限る案（未承認。その裁定の出典は §8 冒頭のとおり未確認）。内部挙動は provenance の判断に依存する。公開範囲を先に決めると、承認前に内部の詳細が漏れる。
+- **互換性:** C は影響なし。A は承認後の追記で、既存の値は変えない。
+- **セキュリティ:** 内部の詳細の公開は、参照 BIOS の再配布や provenance 上の問題を招きうる。
+- **必要な人間の承認:** オーナーが公開範囲を決める。
+- **判断前に進めてよいこと:** ローカル観測を `LOCAL_ONLY` のまま保管すること。公開物には何も追加しない。
+
+### 8.4 新規: DEV_CALLABLE の承認者の許可リスト
+
+- **状態: 未決（オーナー判断待ち）。** 許可リストは未作成。下の推奨は提案である。
+
+- **現状:** `tools/dev_implementations.py` の `_owner_approved()` は空でない文字列を通す。`test_self_declared_approver_is_refused` は expectedFailure で、この穴を示している。
+- **選択肢:**
+  - A. オーナーが決めた承認者名の一覧をリポジトリに置き、validator がそれを検査する。
+  - B. 人間だけが署名する承認ファイルを別途置き、承認欄の値と照合する。
+  - C. 現状のまま（文字列のみ）。
+- **推奨: A。** 穴を直接塞ぐ最小の変更である。一覧の編集権限は §8.1 と同じくオーナーに限る。
+- **互換性:** 既存の台帳に `DEV_CALLABLE` の行はない。テストの正の例（`approved_by: owner`）は一覧に含める必要がある。
+- **セキュリティ:** 一覧が書き換えられれば無効になる。一覧の保護が前提である。
+- **必要な人間の承認:** オーナーが一覧の内容と編集権限を決め、その変更を人間が行う。
+- **判断前に進めてよいこと:** expectedFailure を残すこと。エージェントが `DEV_CALLABLE` を書かないこと。
+
+### 8.5 新規: 状態語 `PARTIAL` と `VERIFIED-equivalent` の採用
+
+- **現状:** 両方とも本書の定義だけである。`PARTIAL` は `tools/abi1_reference_review.py` の `ABI_STATES` にあるが、再現可能な観測がないため到達しない。`VERIFIED-equivalent` はどこにもない。
+- **選択肢:**
+  - A. 本書の用語としてだけ採用し、コードにもスキーマにも入れない。
+  - B. 台帳の値として追加する（スキーマ変更）。
+  - C. 採用せず、`OBSERVED` の注記で代用する。
+- **推奨: A。** 共通の語彙があれば読み手が混同しない。台帳に入れると、`VERIFIED-equivalent` が保存された値になり、昇格の経路を作る。
+- **互換性:** A は影響なし。B は `CLAIM_STATUSES` の変更とスキーマ変更を伴う。
+- **セキュリティ:** `VERIFIED-equivalent` を保存された値にすると、それ自体が検証済みのように読まれる。保存しないことが安全上の要点である。
+- **必要な人間の承認:** A はオーナーが定義を受け入れる。B はスキーマ変更の承認。
+- **判断前に進めてよいこと:** `PARTIAL` と `VERIFIED-equivalent` の claim 状態を `adjudicate_claim()` が拒否する負例テスト（本 PR で追加済み）を維持すること。
+
+### 8.6 新規: `docs/abi-evidence-classification.md` §2 の置き換え
+
+- **現状:** PR #323 の文書が main にあり、§2 に 3 軸の定義がある。本書の定義と一部が重なるが、同一ではない。
+- **選択肢:**
+  - A. #323 の §2 を本書の定義で置き換える。
+  - B. #323 の文書はそのままにし、本書から相互参照する。
+  - C. 2 つの文書を 1 つにまとめる。
+- **推奨: B を当面とし、§8.2 と §8.5 が決まってから A を検討する。** 既に main にある文書の書き換えは差分が大きく、決まっていない項目の定義を先に固定してしまう。
+- **互換性:** 文書だけの変更で、コードには影響しない。
+- **セキュリティ:** 定義が二つ残ると、読み手が異なる定義を採る危険がある。相互参照でその旨を示す。
+- **必要な人間の承認:** オーナーが A、B、C のどれかを決める。
+- **判断前に進めてよいこと:** 本書から #323 文書への相互参照（§2 に記載済み）。
+
+## 9. 暫定方針（オーナー判断まで）
+
+§8 の 6 項目は、すべて未決である。§8 冒頭の「設計方針」は出典未確認の提案であり、方針が定まったとは扱わない。承認値はまだ付与されていない。次の保守的方針で運用する。この方針は承認ではなく、運用上の制限である。
+
+1. **承認者はオーナー管理の許可リストに限る（未決：許可リストは未作成）。** 許可リストが作られるまで、承認欄（`approved_by` / `review_ref`）は空のままとする。エージェントや CI は承認者を書かない。許可リストの作成は §8.1 と §8.4 の判断である。
+2. **承認されていない計測は公開しない。** （slot-1e の公開範囲は未決。） 未承認の実測（ローカル限定の記録を含む）は、公開文書やテストの固定値に載せない。EX_GETVER の観測値は公開文書から取り下げ済みで、公開文書に再掲しない（出典未確認：Issue #324 の議論）。
+3. **VERIFIED-equivalent は実際の VERIFIED ではない。** この語は設計上の定義だけで、台帳の値として書かない。`VERIFIED` と同じ扱いとし、どの台帳も `VERIFIED` を持たない（0/81）。
+4. **既存の ABI 分類文書との相互参照を維持する。** `docs/abi-evidence-classification.md` の定義は置き換えず、本書から相互参照する（§8.6 の判断まで）。
+5. **ABI VERIFIED、DEV_CALLABLE、release_eligible の値は変えない。** 本書のどの作業も、台帳の承認値、スキーマ、ゲートを変更しない。VERIFIED は 0/81、DEV_CALLABLE の承認は 0、`release_eligible` は `false` のままとする。

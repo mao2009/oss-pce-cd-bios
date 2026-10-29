@@ -43,13 +43,13 @@ class ApiBuildTests(unittest.TestCase):
                 address = int.from_bytes(self.rom[at+1:at+3], 'little')
                 if slot in overridden:
                     # An override replaces the generated LDX #slot stub; its own body
-                    # is checked separately (test_slot_1e_override_matches_measured_contract).
+                    # is checked separately (test_slot_1e_override_matches_dev_contract_bytes).
                     self.assertNotEqual(self.rom[address-0xe000:address-0xe000+2], bytes((0xa2, slot)))
                 else:
                     self.assertEqual(self.rom[address-0xe000:address-0xe000+2], bytes((0xa2, slot)))
         self.assertEqual(0xe000+80*3, 0xe0f0)
 
-    def test_slot_1e_override_matches_measured_contract(self):
+    def test_slot_1e_override_matches_dev_contract_bytes(self):
         """Structure test: the slot_1E override body contains the expected instruction
         bytes (LDX #3; LDY #0; RTS). This verifies the override was linked correctly,
         NOT API compatibility. The guest-visible behaviour (X=3, Y=0, A preserved,

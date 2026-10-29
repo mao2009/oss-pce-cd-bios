@@ -23,7 +23,7 @@ verified APIs, or hardware-compatibility proof.
    image the user is entitled to use. Never put its bytes in Git, CI, logs or artifacts.
 2. Confirm each candidate slot/PSG selector and its calling ABI from independent evidence.
    The `0xE000 + 3 * slot` entry is confirmed **only for slot `0x1E`** by local
-   real-core measurement (see "Guarded real guest JSR"); for the other 80 slots it
+   real-core observation (values withdrawn; see "Guarded real guest JSR"); for the other 80 slots it
    remains a hypothesis. The `0x48` PSG selectors are candidates, not
    independently validated dispatch semantics.
 3. Replace `TO_BE_DETERMINED_FROM_ABI` with a *reviewed* per-API input fixture, set
@@ -44,8 +44,8 @@ verified APIs, or hardware-compatibility proof.
 
 - **81+9 definitions** each contain nominal, boundary and invalid/timeout
   *placeholders* requiring API-specific review. They are not runnable programs.
-- **One** retail BIOS API has been measured locally and only against one
-  candidate slot (EX_GETVER, slot `0x1E`). See
+- Only one candidate slot (EX_GETVER, slot `0x1E`) has a local-only observation, whose values are withdrawn
+  from public documents. See
   "Guarded real guest JSR" below. Everything else remains `NOT RUN`.
   The measurement is local-only evidence, not a compatibility claim.
 - The existing ABI ledger is authoritative about **uncertainty**; never fill
@@ -151,7 +151,7 @@ next. Every other `slot-XX` and `psg-48-XX` scenario still lacks a reviewed
 fixture and stays **BLOCKED**.
 
 
-## Guarded real guest JSR (slot 0x1E) and measured EX_GETVER contract
+## Guarded real guest JSR (slot 0x1E) and EX_GETVER observation (values withdrawn)
 
 `tests/integration/geargrafx_reference_jsr.cpp` runs a real guest caller
 (`LDA #$AA; LDX #$55; LDY #$CC; JSR $E05A; BRA *`) against the private
@@ -189,18 +189,10 @@ the logical address `$20`) and the stack at `$2100`, and that placement does not
 depend on the MPRs. The pinned core therefore matches the hardware here, and a
 zero page operand of the BIOS behaves the same on the core and on hardware.
 
-**Measured EX_GETVER contract (實測, private reference BIOS, real core,
-deterministic across runs):**
-
-| item | value |
-| --- | --- |
-| slot | `0x1E`, entry `$E05A` (jump table slot `0x5A`) |
-| callee | Non-public BIOS internal implementation (observed via real core, not published) |
-| returns | X = 3 (major), Y = 0 (minor) → "3.0"; **A preserved** (`0xAA` still `0xAA`) |
-| flags after | `P = $06` (Z set because Y = 0) |
-| SP after | `$FF` (balanced — the call returned) |
-| instructions | 8 (including the sentinel caller prologue) |
-| ram_diff | `$21FE`/`$21FF` only — the JSR push of the return address |
+**EX_GETVER（slot `0x1E`、entry `$E05A`）の実測結果は、現行の公開文書から取り下げた**
+（2026-10-28「オーナー最終裁定」とする記載。出典未確認で、承認ではない）。私的参照 BIOS を実コアで実行して得た観測値は、本文書にも
+他の公開文書にも記載しない。ここに残すのは、試験手順、合成 ROM による安全性検証、非公開の
+状態説明だけである。過去の記録（git 履歴）は改変しない。
 
 Run locally with a private config whose `api_id` is `slot-1e` and whose
 allowlist is the page-1 interval `0x2000..0x4000`:
@@ -271,6 +263,6 @@ python3 -m unittest tests.host.test_reference_case_execute -v
 
 The `reference-reset-only` checkpoint remains distinct and available,
 because it does not inject or execute an API JSR. This PR records plans,
-bounded local-only reset observation, and **one** locally measured API
+bounded local-only reset observation, and a local-only observation for one API slot (its values are withdrawn from public documents)
 (EX_GETVER, slot `0x1E`), **not** retail BIOS compatibility, a verified
 jump-table ABI, or 270 working runnable test ROMs.

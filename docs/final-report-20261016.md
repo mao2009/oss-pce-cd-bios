@@ -5,7 +5,7 @@
 関連ブランチ: `feat/40-ex-getver`（HEAD `59b5613`, PR #174 Draft, Issue #40 紐付け）
 ベース: `main` = `49d2c1d`（マージコミット `7518c59`/`10e9fd6` 経由の先行作業を含む）
 
-本レポートは**実行結果の記録**であり、System Card 3.0 / OSS BIOS の互換性・起動保証を行うものではない。実測はスロット `$1E` のみ。推定・NOT RUN の区別を明示する。
+本レポートは**実行結果の記録**であり、System Card 3.0 / OSS BIOS の互換性・起動保証を行うものではない。対象のスロットは `$1E` のみ（観測値は取り下げ済み）。推定・NOT RUN の区別を明示する。
 
 ---
 
@@ -27,7 +27,7 @@
 
 評価: コア上での実CPUステップ実行と観測は成功。実コア観測は**エミュレータ動作であり、実ハードウェアの証跡ではない**。
 
-## 3. RESET 観測（實測、私的BIOS × 実コア、1命令）
+## 3. RESET 観測（私的BIOS × 実コア、1命令。観測値は取り下げ済み）
 
 コマンド（成功）:
 ```
@@ -35,38 +35,32 @@ python3 tools/reference_bios_runner.py /tmp/opencode/refbios/reset-config.json \
   --adapter tools/geargrafx_reference_adapter.py \
   --output /tmp/opencode/refbios/reset-obs.json
 ```
-結果 (`OBSERVED LOCAL_ONLY`):
-- PC=0xE0F4、MPR7=0、I=1/D=0/T=0/B=0。
-- A/X/Y/SP と MPR0–6 は PRNG シード（`time(NULL)`）由来で、1秒以内は同一値。
-- **コア固有の重要発見**: 非テストビルドでは `ZERO_PAGE_ADDR=0x2000` / `STACK_ADDR=0x2100`（`huc6280.h`）。ゼロページと8ビットスタックは**ページ1**にあり、実ハードウェア（ページ0）とずれる。JSRのスタックプッシュは `$21FE/$21FF` に着地し、allowlistは `$2000..$4000`（ページ1）をカバーする必要があった。
+結果: 私的 BIOS の観測値（PC、MPR、フラグ、レジスタ、その再現性）は、2026-10-28 の「オーナー最終裁定」とする記載（出典未確認。承認ではない）により公開文書から取り下げた。本節には値を記載しない。
+- **コア固有の重要発見**: 非テストビルドでは `ZERO_PAGE_ADDR=0x2000` / `STACK_ADDR=0x2100`（`huc6280.h`）。ゼロページと8ビットスタックは**ページ1**にあり、実ハードウェア（ページ0）とずれる。取り下げた観測の数値は本書に記載しない。
 
 ---
 
-## 4. EX_GETVER 実行可否（slot $1E、實測 → 可能、ガード付き）
+## 4. EX_GETVER 実行可否（slot $1E、観測 → 可能、ガード付き。観測値は取り下げ済み）
 
 - ガード解放前は `slot-1e` パスは明示的に BLOCKED（post-run空ram_diffでは不充分）。
 - `Memory::GetMemoryMapWrite`（防止）+ `AddBreakpoint`（検出）+ MPR0xFF隔離 + 命令単位予算による**コア内強制**を実装し、負例・正例を実コアで検証した後、パスを開放（CIは合成BIOS/合成CDで実行）。
-- ゲスト呼び出し `LDA #$AA; LDX #$55; LDY #$CC; JSR $E05A; BRA *` が実BIOSのslot `$1E` (`0xE000+3*0x1E = $E05A`) に到達し、呼び出し元に戻ることを実コアで確認。ジャンプテーブル先の内部手続きアドレスや内部命令列は非公開BIOSの実装詳細であり、本レポートでは公開しない（公開する機能的契約は§5の表に限定）。
+- 公開 API 入口は slot `$1E`（`$E05A`）と記録する。非公開 BIOS に対する実コア上の到達・復帰の観測記録は、他の非公開観測値とともに本レポートの公開根拠から取り下げている。内部アドレス・命令列・内部動作については記載しない。
 - 負例 `neg-write` (宛先 0x4000, CD-ROM RAMバンク0): `detected=true`, 書込み未着地。正例 `pos-write` (宛先 0x3E50, ワークRAM): `guard_after=0x5A` 着地。双方合成BIOSでPASS（`make test` / `make integration` に組込済）。
 
-評価: EX_GETVER スロットのゲストJSR/RTSは**実コア上で実行・戻り可能**。他80スロット＋9 PSGサブコマンドは未解放。
+評価: 合成 BIOS による実コア試験はガード経路の診断結果に限定する。非公開 BIOS の JSR/RTS 到達・復帰を、本レポートの公開された検証済み契約とは扱わない。他80スロット＋9 PSGサブコマンドは未解放。
 
 ---
 
-## 5. 実測 API 仕様（EX_GETVER、slot $1E、1スロットのみ、實測、確定的）
+## 5. EX_GETVER（slot $1E、1スロットのみ）の仕様（観測値は取り下げ済み）
 
 | 項目 | 値 |
 | --- | --- |
 | スロット | `$1E`（入口 `$E05A`、ジャンプテーブルスロット `0x5A`） |
-| 手続き | 非公開BIOS内部実装（実コア観測済み、未公開） |
-| 戻り値 | X=3（メジャー）、Y=0（マイナー）→ バージョン "3.0"、**A保持**（呼出し前 0xAA → 後も 0xAA） |
-| フラグ後 | P=$06（Y=0によりZ=1） |
-| SP | $FF（呼出し前と同一、スタック釣り合い） |
-| 命令数 | 8（呼び出し元プロローグ含む） |
-| ram_diff | `$21FE`/`$21FF` のみ（JSR 戻りアドレスプッシュ） |
+| 手続き | 非公開BIOS内部実装（実コアで観測。観測値は取り下げ済み、未公開） |
+| 戻り値・フラグ・SP・命令数・RAM 差分 | 取り下げ済み（2026-10-28「オーナー最終裁定」とする記載、出典未確認。観測値は公開文書に記載しない） |
 | ガード | `detected=false`, `status=no_violation` |
 
-再現: 複数ランで同一結果（同一秒内は同一シード）。出力スキーマ `oss-pce-cd-bios/reference-observation/v1`、`status: OBSERVED`、`trust: LOCAL_ONLY_NOT_VERIFIED`。**VERIFIED ではない**（ABI承認・実ハードウェア比較未完了）。
+（取り下げた観測の再現性については記載しない。観測値は公開文書から取り下げ済み。）出力スキーマ `oss-pce-cd-bios/reference-observation/v1`。取り下げた記録の状態欄の値は記載しない。**VERIFIED ではない**（ABI承認・実ハードウェア比較未完了）。
 
 ---
 
@@ -74,7 +68,7 @@ python3 tools/reference_bios_runner.py /tmp/opencode/refbios/reset-config.json \
 
 - `src/overrides/slot_1E.s`: OSS独自実装のEX_GETVER（私的BIOSのバイトや逆コードを一切使用しない）。
   - `LDX #3; LDY #0; RTS`：X=メジャー、Y=マイナー、A保持、バランスの取れたRTS。
-  - 実測契約（X=3,Y=0,A保持）に合わせた。エントリはジャンプテーブル経由 `$E000+3*$1E=$E05A`。
+  - DEV 自己定義の契約（X=3,Y=0,A保持）として実装した。私的参照 BIOS の観測値は取り下げ済み。エントリはジャンプテーブル経由 `$E000+3*$1E=$E05A`。
 - `tools/build_rom.py`: `verify_dev_rom` によるオーバーライド本体のビルド時検証分離（他DEV診断ROMも共用）。リリースゲートは依然ブロック（未実装80スロット、`abi: UNVERIFIED`、`release_eligible: false`）。
 - 実コア検証（`make dev-integration`）: `api_jsr_1E` プローブで cold 時 a=0x11（呼出し元）/ x=3 / y=0 / p=6 / sp=255 / 継続復帰、RAM上の呼出し元A保持、スロット01/03等は非復帰スタブのまま。
 
@@ -93,7 +87,7 @@ python3 tools/reference_bios_runner.py /tmp/opencode/refbios/reset-config.json \
 
 ## 8. 残ブロッカー（正直に記載）
 
-1. **測定済みAPIは1スロットのみ**（EX_GETVER slot $1E）。他80スロット＋9 PSGサブコマンドは `BLOCKED / NOT RUN`。レビュー済みfixture・実コア負例・独立ABI承認が未完了。
+1. **対象のAPIは1スロットのみ**（EX_GETVER slot $1E。観測値は取り下げ済み）。他80スロット＋9 PSGサブコマンドは `BLOCKED / NOT RUN`。レビュー済みfixture・実コア負例・独立ABI承認が未完了。
 2. **System Card起動・商用 CD-ROM² ゲーム起動は未検証**。本レポートのいかなる記述も起動保証ではない。
 3. **ABI未検証**（`abi: UNVERIFIED`、`override_checks: structural-only`）。実測はピンアップGeargrafxコア上のみで、実ハードウェア・他エミュレータ比較なし。
 4. **コア特異事項**: スタック/ゼロページがページ1（実ハードウェアはページ0）。OSS BIOSはこのコア挙動で動作させる必要がある。
@@ -114,7 +108,7 @@ python3 tools/reference_bios_runner.py /tmp/opencode/refbios/reset-config.json \
 
 1. **PR #170 / #174 のレビュー対応とCI完了待ち**（Draft維持、required CI successまでマージしない）。
 2. **次の1スロット**（優先度順の候補: CD_RESET `$01`、CD_READ `$03`、BCD変換等）について、実測→OSS実装→実コア検証のサイクルを繰り返す。1 Issue / 1 PR を維持。
-3. **ABI台帳の更新**：`docs/abi-contracts.md` のslot `$1E` を「実測あり（1スロット）」（実ハードウェア未確認のため`VERIFIED`にはしない）。
+3. **ABI台帳の更新**：`docs/abi-contracts.md` のslot `$1E` を「DEV 実装あり（参照の観測値は取り下げ済み）」（実ハードウェア未確認のため`VERIFIED`にはしない）。
 4. **日本語最終レポートのこの版**をPR #170に添付/参照。
 5. 互換性誇張の禁止：どの段階も「起動・商用ゲーム動作 VERIFIED」と主張しない。
 
@@ -122,7 +116,7 @@ python3 tools/reference_bios_runner.py /tmp/opencode/refbios/reset-config.json \
 
 ### 実証根拠の分類記号
 
-- **實測**: 私的BIOS/実コア/合成メディアによる実際のCPU実行観測（§3, §4, §5, §6の実コア検証）。
+- **観測**（観測値は取り下げ済み）: 私的BIOS/実コア/合成メディアによる実際のCPU実行観測（§3, §4, §5, §6の実コア検証）。
 - **合成**: 合成BIOS/合成CDによるCIテスト（`geargrafx_reference_guard.py`）。
 - **推定**: 未検証の仮定（コアページ1のハードウェア相違等）。
 - **NOT RUN**: 未実行のAPI/シナリオ（80スロット＋9 PSG、起動、商用ゲーム）。
@@ -152,12 +146,12 @@ PR #170のガード付き参照実行で、物理バンクエイリアスによ�
 #### Phase 4: ST0/ST1/ST2 I/Oバイパスの文書化（新規、完了）
 
 - **調査結果**: ST0/ST1/ST2（オプコード 0x03/0x13/0x23）は`m_huc6202->WriteFromCPU()`でVDCレジスタへ直接書き込み、`Memory::Write()`、`map_write`、CPUアドレス書込みブレークポイントをすべてバイパスする。不可逆なデバイス副作用を生じさせる。
-- **対策**: slot "$1E" のゲストコード（`LDA/LDX/LDY/JSR/BRA`）と測定済みEX_GETVER手続きにはST0/ST1/ST2やTAMは含まれないため、測定対象の実行経路では発生しない。将来の任意ゲストコードを許可するAPIは、この経路を対策せずに解放してはならない。プローブヘッダーに制限を文書化。
+- **対策**: 公開された合成ゲストコード（`LDA/LDX/LDY/JSR/BRA`）自体には ST0/ST1/ST2 や TAM を含まない。一方、非公開 BIOS の内部手続きの命令・副作用は本書で公開・検証していないため、その実行経路にバイパス命令が存在しないとは断定しない。将来の任意ゲストコードや参照 callee を、この制限の証明なしに解放してはならない。プローブヘッダーに制限を文書化。
 
 #### Phase 5: 非公開BIOS情報の非公開化（完了）
 
 - 公開API入口アドレス（`$E05A`）と非公開BIOS内部実装アドレスを区別。
 - `docs/final-report-20261016.md`、`docs/reference-bios-test-plan.md`、PR #170本文から非公開BIOS内部アドレス・命令列・ROMバイト列を削除。
-- 公開する機能的契約: X=3, Y=0, A保持、入口 `$E05A`、信頼レベル `LOCAL_ONLY_NOT_VERIFIED`。
+- 公開する機能的契約: 入口 `$E05A` のみ。私的参照 BIOS の観測値は取り下げ済み（2026-10-28「オーナー最終裁定」とする記載、出典未確認）。DEV ROM 側の値は `docs/evidence/dev-callable-1e.md` を参照。信頼レベル `LOCAL_ONLY_NOT_VERIFIED`。
 
 この是正後も、slot `$1E`以外の80スロット＋9 PSGサブコマンド、ST0/ST1/ST2など`Memory::Write()`を経由しないI/O経路、実ハードウェア動作、System Card起動は未検証／BLOCKEDのまま。

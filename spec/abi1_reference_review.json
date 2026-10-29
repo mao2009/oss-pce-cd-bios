@@ -7,7 +7,7 @@
       "entry_evidence": "JUMP_TABLE_3BYTE_JMP",
       "name": "EX_GETVER",
       "observation": {
-        "note": "A local real-core measurement of this slot is recorded in docs/reference-bios-test-plan.md (X=3, Y=0, A preserved, P=$06, SP balanced, 8 instructions, RAM difference limited to the JSR push). It is not reproducible through the committed runner, because tools/reference_jsr_gate.py refuses every slot by design, and it is local only evidence.",
+        "note": "No reference observation of this slot is published (values withdrawn from public documents, cited owner ruling 2026-10-28, source untraceable). It is not reproducible through the committed runner, because tools/reference_jsr_gate.py refuses every slot by design, and it is local only evidence.",
         "prior_evidence": "docs/reference-bios-test-plan.md",
         "prior_local_only": "PRESENT",
         "reproducible_real_core": "NOT_RUN"

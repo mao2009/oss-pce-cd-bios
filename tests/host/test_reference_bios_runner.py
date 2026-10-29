@@ -10,15 +10,18 @@ import reference_bios_runner as runner
 
 
 def jsr_observation():
-    state = {"a": 0xAA, "x": 0x03, "y": 0x00, "p": 0x06, "sp": 0xFF, "pc": 0x3E09,
+    # SYNTHETIC FIXTURE, NOT A MEASUREMENT. All values are placeholders chosen for this test only; none is an
+    # observation of any reference BIOS. The schema requires status "OBSERVED", which is the only value this
+    # checker accepts; the synthetic provenance is stated here and in the test docstring.
+    state = {"a": 0x5A, "x": 0x11, "y": 0x22, "p": 0x04, "sp": 0x7F, "pc": 0x3E09,
              "mpr": [0x00, 0xF8, 0, 0, 0, 0, 0, 0]}
     return {
         "schema": runner.OBS_SCHEMA, "api_id": "slot-1e", "status": "OBSERVED",
         "engine": "geargrafx", "checkpoint": "slot_1e_ex_getver_returned_to_caller",
         "registers": {k: state[k] for k in ("a", "x", "y", "p", "sp", "pc")},
         "mpr": state["mpr"],
-        "ram_diff": [{"address": 0x21FE, "before": 0, "after": 8}],
-        "instructions_executed": 32,
+        "ram_diff": [{"address": 0x2010, "before": 0, "after": 0x5A}],
+        "instructions_executed": 16,
         "before": dict(state, pc=0x3E00),
         "after": state,
         "call": {"entry_reached": True, "callee_pc": 0xE000, "returned": True},
@@ -70,11 +73,12 @@ class ReferenceRunnerTests(unittest.TestCase):
                     runner.check_observation(dict(self.observation, **mutate), self.config)
 
     def test_reset_observation_keeps_the_nine_field_shape(self):
+        # SYNTHETIC FIXTURE, NOT A MEASUREMENT: placeholder values only; the shape is what this test checks.
         cfg = dict(self.config, api_id="reference-reset-only")
         reset = {
             "schema": runner.OBS_SCHEMA, "api_id": "reference-reset-only", "status": "OBSERVED",
             "engine": "geargrafx", "checkpoint": "reset_first_instruction_no_api_callee",
-            "registers": {"a": 0, "x": 0, "y": 0, "p": 4, "sp": 255, "pc": 0xE0F4},
+            "registers": {"a": 0, "x": 0, "y": 0, "p": 0, "sp": 255, "pc": 0xE100},
             "mpr": [0, 0, 0, 0, 0, 0, 0, 0], "ram_diff": [], "instructions_executed": 1,
         }
         runner.check_observation(reset, cfg)
