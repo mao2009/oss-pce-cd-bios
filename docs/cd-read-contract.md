@@ -7,8 +7,8 @@ Status tags:
 
 本文書の Status は**宣言上の状態（declared status）**である。実効信頼状態（effective trust state）は §4 の検査で決まり、
 現時点の実効値は LOCAL_ONLY までで、VERIFIED は実効化されない。語彙は `docs/cd-base-abi-ledger.md` §1
-（SOURCE_CONFIRMED / HYPOTHESIS / MEASURED / UNKNOWN / BLOCKED / VERIFIED）に従う。SOURCE_CONFIRMED と MEASURED は本文書の Status 値ではない。
-本文書の T1〜T5 の根拠は、列挙したシナリオの実行結果（MEASURED）である。MEASURED は VERIFIED を自動的には意味しない。
+（SOURCE_CONFIRMED / HYPOTHESIS / MEASURED / UNKNOWN / BLOCKED / VERIFIED）に従い、本文書での意味は次のとおり。
+MEASURED は実行によって得た証拠の分類であり、VERIFIED を自動的には意味しない。VERIFIED は T1〜T5 の宣言上の Status である。宣言上の VERIFIED は実効 VERIFIED を意味せず、実効信頼状態は既存の検査（`effective_status`）で決まる。System Card 3.0 の callee ABI は未検証のまま。
 
 * **VERIFIED**: 対象を限定し、要求される独立検証と信頼条件を満たした事実（`docs/cd-base-abi-ledger.md` §1 の承認方針）。
   本文書の宣言上の VERIFIED は、列挙したシナリオを原本ゲストコードが pinned real Geargrafx core
