@@ -571,7 +571,9 @@ int main(int argc, char** argv)
         gate.push_back(c);
     };
     add("1", !kDynamicMprDetection ? "NOT_IMPLEMENTED" : (t1_completed ? "PASS" : "FAIL"),
-        "trial 1 end_state=" + t1.end_state, "trial 1 end_state (not run under 14.13 option b)");
+        kDynamicMprDetection ? "trial 1 end_state=" + t1.end_state
+                             : std::string("trial 1 not run (14.13 option b)"),
+        "trial 1 end_state (not run under 14.13 option b)");
 
     const bool t2_pre = t2.has_w0 && t2.has_w1 && t2.has_w2;
     if (!t2_pre) {
