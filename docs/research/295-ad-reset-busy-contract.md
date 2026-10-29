@@ -156,7 +156,7 @@
 | (c) 判定に使う観測点の出典が確定 | 充足（`$08` と PLAYING は `adpcm_inline.h:84` の `m_playing`。CONFIRMED） | 充足（同左。W0〜W2 は既存の状態読取り） | 未充足（`$04` / `$80` の意味は UNKNOWN） |
 | (e) 安全条件: 手順が §10 の BLOCKED 項目に触れない | 独立レビューで確認する（本書の手順は device 層の読取りと、ハーネスからの `Adpcm::Write` だけを使い、CPU からの MMIO 書込み、IRQ の操作、CD 側の操作を含まない） | 独立レビューで確認する（PLAY と同じ扱い。ただし `ResetMedia` は CD 側の状態に作用するため、次を確認対象とする。`ResetMedia` は `GeargrafxCore::Reset()`（`geargrafx_core.cpp:1205`）を呼び、その中で `m_cdrom->Reset()`、`m_scsi_controller->Reset()`、`m_cdrom_audio->Reset()` を呼ぶ（`:1237-1239`）。(a) 三つの Reset の直接の書込みは各装置の内部変数であり、Memory::Write の経路を通らない（`cdrom.cpp:113-129`、`scsi_controller.cpp:176-204`、`cdrom_audio.cpp:115-131`）。(b) `CdRom::Reset` は 128 行目で `m_memory->UpdateBackupRam(m_bram_enabled)` を呼び（`memory_inline.h:544-558`）、CPU から見える `$F7` の写像（`m_memory_map` と `m_memory_map_write`）を変える。(c) `ScsiController::Reset` は 200 行目で `UpdateIRQs()` を呼び（`scsi_controller_inline.h:92-106`）、CD 側の IRQ 状態を変える。201 行目で `m_cdrom_audio->StopAudio()` を呼ぶ。これは CD 再生の状態を STOPPED にし（`cdrom_audio_inline.h:188-195`）、LaserActive が有効なら `m_laseractive->NotifyAudioStop` を呼ぶことがある。202 行目で `m_cdrom_media->SetCurrentSector(0)` を呼ぶ。これは媒体側のセクタ位置を変える（`cdrom_image.cpp:129-135`）。(d) `CdRomAudio::Reset` は 130 行目で `InvalidateSectorCache()` を呼ぶ（キャッシュフラグのみ）。(b) と (c) は CPU 可視の写像と IRQ 状態に関わるため、B2 と B6 の範囲に当たるかは断定せず、独立レビューで確認すべき対象とする。当たると確定した場合は、warm を BLOCKED とする） | 未充足（§3.4 の BLOCKED 条件、§10 の B4 と B11） |
 | (d) §3.4 の BLOCKED 解除条件（3 条件） | 対象外 | 対象外（gate の BLOCKED は §14.6 で維持） | 未充足 |
-| 判定 | (b) の承認後に開始できる。(a)、(c) は充足。(e) は (b) の承認の中で確認する | (b) の承認後に開始できる。(e) は (b) の承認の中で確認する（B6 の範囲に当たるかの確認を含む）。加えて §14.2 の前提（媒体の読込み済み、ブレークポイント一覧が空）が必要 | BLOCKED。試行を実行しない |
+| 判定 | (b) の承認後に開始できる。(a)、(c) は充足。(e) は (b) の承認の中で確認する | 動的 MPR 検出が UNPROVEN のため BLOCKED。試行 2 を開始しない。試行 1 を含む warm 系列全体を実行しない（§14.12 の 7、§14.13、§14.15）。(e) の確認と §14.2 の前提は、この BLOCKED の解除後に行う | BLOCKED。試行を実行しない |
 
 **判定 II: Issue #295 の ROM-Primitive 実装の開始条件（測定とは別）**
 
@@ -222,16 +222,16 @@
 
 | 項目 | 測定上限の値 | 適用範囲 | 理由（本文書が選んだ根拠） | 判定の実施点 |
 | --- | --- | --- | --- | --- |
-| 1 試行の安全上限（フレーム。§6.1 の `FRAME_SAFETY_CAP`） | 300 フレーム | 全区分の試行 | 1 試行が際限なく続かないための上限。根拠となる実測・仕様はない。リポジトリ内の既存値（`geargrafx_ad_reset.cpp` 32 行の `kPlayBudgetFrames = 240`）とは別の値で、互換性は主張しない | `RunToVBlank` の完了時 |
-| 区分成立の確認までの待ち上限 | 60 フレーム（§2.1 の手順 5） | **PLAY_ACTIVE 専用** | 再生中の観測が成立しない試行を打ち切るための上限。数値は PR #404 の guest 実行（`geargrafx_ad_reset_guest.cpp` 24 行、`kFrames = 60`）と一致するが、由来は別。TRANSFER_BUSY には待ち上限を設定していない（BLOCKED。§3.4） | `RunToVBlank` の完了時 |
+| 1 試行の安全上限（§6.1 の `FRAME_SAFETY_CAP`） | §6.1 の値 | 全区分の試行 | 1 試行が際限なく続かないための上限。根拠となる実測・仕様はない。リポジトリ内の既存値（`geargrafx_ad_reset.cpp` 32 行の `kPlayBudgetFrames = 240`）とは別の値で、互換性は主張しない | `RunToVBlank` の完了時 |
+| 区分成立の確認までの待ち上限（§6.1 の `OBSERVE_WAIT_FRAMES`） | §6.1 の値（§2.1 の手順 6） | **PLAY_ACTIVE 専用** | 再生中の観測が成立しない試行を打ち切るための上限。数値は PR #404 の guest 実行（`geargrafx_ad_reset_guest.cpp` 24 行、`kFrames = 60`）と一致するが、由来は別。TRANSFER_BUSY には待ち上限を設定していない（BLOCKED。§3.4） | `RunToVBlank` の完了時 |
 | 1 試行のマスタークロック累計 | 上限なし。S3 で記録する | 全区分 | 区分ごとに換算根拠が必要になるため、上限は置かず記録のみとする | `RunToVBlank` の完了時 |
-| 1 試行の壁時計 timeout | 120 秒 | 全区分 | ハングした試行を外部から打ち切るための上限。実行時間の測定はなく、根拠は UNKNOWN | 外部の監視（ハーネスを起動する親プロセス）が計時し、超過時にプロセスを終了させ、終了状態 `TIMEOUT` と記録する |
-| 1 プロセスの壁時計 timeout | 600 秒（複数試行を含む場合の全体） | §8 の系列 W（1 プロセス 2 試行）を含む全プロセス | 1 プロセスの全体を打ち切るための上限。既存の subprocess timeout（`geargrafx_ad_reset.py` 138 行、300 秒）とは別の値 | 同上。超過時はプロセスを終了させ、その時点の試行を `TIMEOUT` と記録する |
+| 1 試行の壁時計 timeout（§6.1 の `TRIAL_WALL_SECONDS`） | §6.1 の値 | 全区分 | ハングした試行を外部から打ち切るための上限。実行時間の測定はなく、根拠は UNKNOWN | 外部の監視（ハーネスを起動する親プロセス）が計時し、超過時にプロセスを終了させ、終了状態 `TIMEOUT` と記録する |
+| 1 プロセスの壁時計 timeout（§6.1 の `PROCESS_WALL_SECONDS`） | §6.1 の値（複数試行を含む場合の全体） | §8 の系列 W（1 プロセス 2 試行）を含む全プロセス | 1 プロセスの全体を打ち切るための上限。既存の subprocess timeout（`geargrafx_ad_reset.py` 138 行、300 秒）とは別の値 | 同上。超過時はプロセスを終了させ、その時点の試行を `TIMEOUT` と記録する |
 
 **実施点と執行者:** 上限は次の 2 種類に分け、それぞれの執行者を定める。
 
-- **フレーム境界の上限**（1 試行のフレーム上限 300、PLAY_ACTIVE の待ち上限 60）: ハーネスが判定する。判定は `RunToVBlank` の完了時（フレーム境界）と `Adpcm::Write` の直後に行う。フレーム数は後者では変わらないため、実質的には前者の時点で判定される。
-- **壁時計の上限**（1 試行 120 秒、1 プロセス 600 秒）: 外部の監視（ハーネスを起動する親プロセス）が判定する。ハーネスはこの上限を検出せず、フレーム境界や `Adpcm::Write` の時点に依存しない。
+- **フレーム境界の上限**（§6.1 の `FRAME_SAFETY_CAP` と `OBSERVE_WAIT_FRAMES`）: ハーネスが判定する。判定は `RunToVBlank` の完了時（フレーム境界）と `Adpcm::Write` の直後に行う。フレーム数は後者では変わらないため、実質的には前者の時点で判定される。
+- **壁時計の上限**（§6.1 の `TRIAL_WALL_SECONDS` と `PROCESS_WALL_SECONDS`）: 外部の監視（ハーネスを起動する親プロセス）が判定する。ハーネスはこの上限を検出せず、フレーム境界や `Adpcm::Write` の時点に依存しない。
 
 CPU の命令単位で計数・中断はしない（命令単位のフックは本契約で使わない。§10 の B4）。
 
@@ -463,7 +463,7 @@ ROM-Primitive の実装（`ad_reset_busy` の guest 実装など）は、本書�
 7. 再配置: `GetMemory()->GetWorkingRAM()` への memcpy（既存のハーネスと同じ。または `Memory::TryPoke`、`memory.h:66-67`）でゲストのバイト列を置く。`SetMpr(0, $00)`、`SetMpr(1, $F8)`、`SetMpr(2..7, $00)`（`memory.h:69`）。MPR0 を `$00` にする理由は、ADPCM をハーネスの device 層で操作するため、MMIO ページ `$FF` を外すことである。probe の同じ設定は `feature/issue-295-probe-full-capture@f152171` の `tests/integration/geargrafx_ad_reset_full.cpp` の `:215-218` にある。`LoadHuCardFromBuffer` は使わない（ROM を再ロードするため）。
 8. PC の設定: `GetHuC6280()->GetState()->PC->SetValue(0x3E00)`（`huc6280.h:59-73`）。任意で `ResetDebuggerExecutionState()`（`huc6280.h:175`）を呼ぶ。呼ぶかどうかは測定前に固定し、ログに記録する。S を `$FF`、P を `$04`（I=1）に設定する（`GetState()->S->SetValue(0xFF)`、`GetState()->P->SetValue(0x04)`。probe は `feature/issue-295-probe-full-capture@f152171` の `tests/integration/geargrafx_ad_reset_full.cpp` の `:223-224`、#404 は `tests/integration/geargrafx_ad_reset_guest.cpp:63-64` で同じ）。reset が乱数化する S と P を、ハーネスが決めた値に置く。PC、S、P の設定の直後に読み戻し、設定値と一致することを記録する（一致しない場合は §14.12 の規則に従う）。
 9. **W2 を採取する**（再配置と PC 設定の後）。
-10. 順序は固定する: (i) 静的チェック（W2 の直後に、配置済みのバイト列と MPR 設定を検査する）、(ii) 動的 MPR 検出（§14.13。選択肢 (b) では動的検出を行わず `NOT_IMPLEMENTED` と記録する。PC の設定後、ADPCM を操作する前に、最初の `RunToVBlank` を行う）。(i) と (ii) の結果を記録し、失敗なら系列を停止し、該当試行を BLOCKED とする。(ii) の結果が出るまで、手順 11 に進まない。
+10. 順序は固定する: (i) 静的チェック（W2 の直後に、配置済みのバイト列と MPR 設定を検査する）、(ii) 動的 MPR 検出（§14.13。選択肢 (b) では動的検出を行わず `NOT_IMPLEMENTED` と記録する。PC の設定後、ADPCM を操作する前に、最初の `RunToVBlank` を行う）。(i) と (ii) の結果を記録し、失敗なら系列を停止し、該当試行を BLOCKED とする。(ii) の「結果」は `NOT_IMPLEMENTED` を含む。選択肢 (b) の下では (ii) の結果は `NOT_IMPLEMENTED` であり、手順 11 には進まない。(b) の下では、warm 系列の試行 1 も実行しない（手順 1 から 11 を実行しない）。PLAY 測定を独立に走らせるかは別判定とし、warm 系列としては実行しない。
 11. 試行 1 と試行 2 の両方で、§2.1 の PLAY_ACTIVE の手順（ADPCM の設定、T_b、T_r、reset 発行、P0〜P3）を最後まで行う。試行 2 だけを warm として計上する。試行 1 は区分外である（§14.9）。
 
 ### 14.4 ゲストの開始点
@@ -532,7 +532,7 @@ ROM-Primitive の実装（`ad_reset_busy` の guest 実装など）は、本書�
 3. ブレークポイント一覧の件数が 0 である。試行 2 の W0 の前と W1 の後の 2 回を記録する（§14.2）。
 4. W1 の全項目（§14.7）が設定値と一致し、ハーネス側の `ResetMedia` 呼出し回数が 2 である（§14.5）。ADPCM RAM（64 KiB）のゼロの判定は、§14.14 の測定専用アクセサが独立レビューを通過するまで `NOT_CAPTURED` とし、PASS にしない。
 5. W2 の全項目（§14.7）が書いた値と一致する。MPR の期待値は MPR0=`$00`、MPR1=`$F8`、MPR2〜7=`$00` である（§14.3 の 7 と一致）。
-6. PC の設定経路が安定している。PC の設定直後の読戻しが `0x3E00` と一致し、かつ動的 MPR 検出の最初の `RunToVBlank` の完了後も PC が `0x3E00` である。読戻しが一致しない場合、または設定後に PC が変化した場合は、経路が不安定とみなし、その試行を BLOCKED とし、系列を停止する。
+6. PC の設定経路が安定している。PC の設定直後の読戻しが `0x3E00` と一致し、かつ、動的 MPR 検出の最初の `RunToVBlank` の完了後も PC が `0x3E00` である（この後半は、動的 MPR 検出を行う場合にのみ適用する。選択肢 (b) では動的検出を行わず、後半の適用対象はない）。読戻しが一致しない場合、または設定後に PC が変化した場合は、経路が不安定とみなし、その試行を BLOCKED とし、系列を停止する。
 7. 静的チェック（§14.3 の 10(i)）が合格し、かつ動的 MPR 検出（§14.13）が証明されている。現在は証明できていない（UNPROVEN）ため、この条件は `NOT_IMPLEMENTED` とし、PASS にしない。その結果、試行 2 は開始せず、warm は BLOCKED とする。
 8. 同一性の証拠（§14.5）が、試行 1 と試行 2 で一致している。
 
@@ -567,6 +567,7 @@ ROM-Primitive の実装（`ad_reset_busy` の guest 実装など）は、本書�
   1. 本契約の独立レビューで CRITICAL と MAJOR が 0。
   2. §14.14 の ADPCM RAM のアクセサ、および §14.13 の動的 MPR 検出（現在は選択肢 (b) であり、warm は BLOCKED。(a) は §14.13 の条件で改めて検討するまで採用しない）。ADPCM RAM のアクセサは、warm の BLOCKED とは独立に、独立レビューを通過する必要がある。
   3. §3.5 の判定 I の (b)（独立レビューによる承認）が充足。
+4. warm runner の `SERIES_TIMEOUT_S = 120` を、試行単位（`TRIAL_WALL_SECONDS` = 120 秒）と、プロセス単位（`PROCESS_WALL_SECONDS` = 600 秒）に分けて修正する。現行の 120 秒は、2 試行を含むプロセスの上限として誤っているため、この修正は測定の開始条件である。
 - warm の測定: §14.13 の (a) が別途証明され、契約が改訂されるまで開始しない（BLOCKED）。
 - 結果の扱い: warm の結果を VERIFIED（System Card ABI）へ昇格させない。結果は MEASURED の範囲に限る。
 - 集計: CONTROL `$80`（標準）と `$A0`（arm-B）は混合しない。`$A0` は集計に含めない。
