@@ -4,8 +4,9 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
+import tempfile
 
-from artifact_guard import check_upload_artifacts, check_guard_placement
 from environment import ROOT, executable, core_path
 
 
@@ -19,6 +20,32 @@ def resolve_commit(repository, ref):
         return git_output(repository, "rev-parse", "--verify", f"{ref}^{{commit}}")
     except subprocess.CalledProcessError as error:
         raise ValueError(f"cannot resolve Git comparison commit: {ref}") from error
+
+
+def check_with_trusted_artifact_guard(root=ROOT):
+    """Run the existing main guard, not a candidate-controlled Python import.
+
+    This protects the convenience make-check path against candidate guard
+    import-time code. Publication protection remains the separate trusted
+    GitHub Actions guard job; local origin/main alone is not a trust anchor.
+    """
+    main_commit = resolve_commit(root, "origin/main")
+    try:
+        source = subprocess.run(
+            ["git", "show", f"{main_commit}:tools/artifact_guard.py"],
+            cwd=root, check=True, capture_output=True).stdout
+    except subprocess.CalledProcessError as error:
+        raise ValueError("trusted main artifact guard is unavailable (fails closed)") from error
+
+    # A single owned temporary file, removed individually; no recursive deletion.
+    fd, filename = tempfile.mkstemp(prefix="oss-pce-trusted-guard-", suffix=".py")
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(source)
+        subprocess.run([sys.executable, "-I", filename, "--root", str(root.resolve())],
+                       cwd=root, check=True)
+    finally:
+        Path(filename).unlink(missing_ok=True)
 
 
 def check_git_diff(repository, event_name="local", event=None, base=None):
@@ -70,10 +97,8 @@ def main():
     # actionlint parses YAML and checks expressions, workflow schema and job wiring.
     subprocess.run([executable("actionlint"), "-shellcheck=", "-pyflakes=",
                     *map(str, sorted(ROOT.glob(".github/workflows/*.yml")))], check=True)
-    # Fail closed before upload: no linked GPL probe executable or object may reach upload-artifact (#227).
-    check_upload_artifacts(ROOT)
-    # The guard must sit immediately before each upload in the same job (no build step in between).
-    check_guard_placement(ROOT)
+    # Retain the existing upload and placement checks, run from trusted main.
+    check_with_trusted_artifact_guard(ROOT)
     core_path()
     output = ROOT / "build/check"
     output.mkdir(parents=True, exist_ok=True)
