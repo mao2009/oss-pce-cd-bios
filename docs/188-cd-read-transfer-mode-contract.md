@@ -34,7 +34,7 @@
 | `$FE` / `$FF` | [C] L294 `lda #$FF` / L322 `lda #$FE` を `_dh` に書く（コメントは「Signal a VRAM load.」） | VRAM 系 | 対象外 |
 | `6` | [C] 上書きローダ（`core-kernel.asm` L593-594） | MPR6 系 | 対象外 |
 
-**D1（決定・オーナー承認）**: 優先観測候補は `_dh = 3` とする（冒頭「優先観測候補」参照）。`_dh = 2` について既存文書間で出典表記が食い違っていた。[cd-read-mode-contract.md](cd-read-mode-contract.md):31（R3。訂正前は :30）は「HuCC, Hu-Go HLE」としていたが、HuCC が `_dh=2` を書かないことを確認したため訂正した（§4）。[cd-read-contract.md](cd-read-contract.md):137 は**主張（Destination mode 行）は変更せず、出典欄 出所に訂正注記のみ追記**した（§4 D1）。[abi-contracts.md](abi-contracts.md):136（「Hu-Go model; HuCC overlay loader also uses 6」）は本 PR の差分対象外で、食い違いを含めて事実として残す。`cd_read` の HuCC 呼出側（`include/hucc/` の2ファイル、ledger C06-C10、[research/148-cd-read-abi.md](research/148-cd-read-abi.md) §2.1）で確認できる `_dh` の値は `0 / 3 / $FE / $FF / 6` のみ。`include/huc/` は未検査。
+**D1（決定・オーナー承認）**: 優先観測候補は `_dh = 3` とする（冒頭「優先観測候補」参照）。`_dh = 2` について既存文書間で出典表記が食い違っていた。[cd-read-mode-contract.md](cd-read-mode-contract.md):31（R3。訂正前は :30）は「HuCC, Hu-Go HLE」としていたが、HuCC が `_dh=2` を書かないことを確認したため訂正した（§4）。[cd-read-contract.md](cd-read-contract.md) の Destination mode 行は**主張を変更せず、出典欄に訂正注記のみ追記**した（§4 D1。注: 当時の行番号は :137。現在は行分割後の :147・:148）。[abi-contracts.md](abi-contracts.md):138（「Hu-Go model; HuCC overlay loader also uses 6」）は本 PR の差分対象外で、食い違いを含めて事実として残す。`cd_read` の HuCC 呼出側（`include/hucc/` の2ファイル、ledger C06-C10、[research/148-cd-read-abi.md](research/148-cd-read-abi.md) §2.1）で確認できる `_dh` の値は `0 / 3 / $FE / $FF / 6` のみ。`include/huc/` は未検査。
 
 ## 2. 1モード・1セクターの契約表（`_dh = 3`）
 
@@ -90,7 +90,7 @@
 
 ## 4. 既存文書との整合（参照のみ）
 
-* **D1**: 訂正済み。[cd-read-mode-contract.md](cd-read-mode-contract.md) R3 の出典から HuCC を外し、「HuCC が `_dh=2` を書かないことを確認。`_dh=2` の出典は Hu-Go! HLE のみ（ライセンス未確定、根拠に使わない）」と記した。状態は HYPOTHESIS のまま変えていない。[cd-read-contract.md](cd-read-contract.md):137 は**主張（Destination mode 行）は書き換えず、出典欄 出所に訂正注記のみ追記**した（出典「HuCC + Hu-Go HLE」→ 「訂正: HuCC は `_dh=2` を書かないことを include/hucc/ の範囲で確認。…」。主張行は変更なし）。[abi-contracts.md](abi-contracts.md):136 は**変更していない**（本 PR の差分対象外。食い違いを含めて事実として残す）。
+* **D1**: 訂正済み。[cd-read-mode-contract.md](cd-read-mode-contract.md) R3 の出典から HuCC を外し、「HuCC が `_dh=2` を書かないことを確認。`_dh=2` の出典は Hu-Go! HLE のみ（ライセンス未確定、根拠に使わない）」と記した。（この「HYPOTHESIS のまま」は、後述の 2026-10-29 注記（R3・R8 を UNKNOWN に変更）より前の記録である。現在の R3 の状態は UNKNOWN）。[cd-read-contract.md](cd-read-contract.md) の Destination mode 行は**主張を書き換えず、出典欄に訂正注記のみ追記**した（出典「HuCC + Hu-Go HLE」→ 「訂正: HuCC は `_dh=2` を書かないことを include/hucc/ の範囲で確認。…」。主張行は変更なし）。[abi-contracts.md](abi-contracts.md):138 は**変更していない**（本 PR の差分対象外。食い違いを含めて事実として残す）。
 * 2026-10-29 注記: PR #574 により cd-read-mode-contract の R3・R8 は UNKNOWN に変更された。tools 側の不一致は Issue #575 で扱う。
 * **D2**: HuCC `_cd_loadbank.4` の宣言（L425）は `unsigned int sectors<_al>` と書いているが、本体（L436-438）は `_dh` を読むだけで、**非0のときだけ** `_al` へ 1バイト値を複写する。宣言・コメント（`sectors` / 「Get #sectors (0=whole file).」）は count の単位を規定するコードではなく、コードから確定できるのは「呼出側が AL に 1バイト値を入れる」ことまでである。したがって callee が count として読むレジスタは UNKNOWN のままで、count の単位も導出できない（「セクター」であることは HYPOTHESIS（コメント/宣言由来）、A4）。本 D2 は A4 の区分と矛盾しない。
 * **D3**: 基点（CD_BASE 相対か絶対か）の矛盾は [research/148-cd-read-abi.md](research/148-cd-read-abi.md) §6 の通り未解決。#11 の測定まで UNKNOWN。
@@ -112,5 +112,8 @@
 ## 7. 整合確認
 
 * 参照した Issue の状態（確認日 2026-10-22）: #12 OPEN、#11 OPEN、#139 CLOSED、#148 CLOSED、#149 OPEN、#173 OPEN、#189 OPEN、#190 OPEN、#365 / #366 / #367 OPEN、#389（PR）MERGED。
-* 本書の内部リンクは同ディレクトリの既存ファイルを指す（リンク先の実在は作業時に機械検査し、PR #503 のコメントに結果を記録した）。
-* 本 PR の差分は文書と `tools/cd_read_contract.py` の R3/R6/R8 の出典注記のみ（判定・状態・機械可読の値は変更なし、ROM・コードパスは変更なし）。実行した検証（`make test` / `make check` / CD_READ 関連ホストテスト）の結果は PR #503 のコメントに記録する。
+* 本書の内部リンクは同ディレクトリの既存ファイルを指す。2026-10-29 に、PR #574 の head（`ed1ec32`）で機械検査し、欠落はなかった。
+* PR #574 の変更対象は文書 4 ファイルのみ（`docs/188-cd-read-transfer-mode-contract.md`、`docs/cd-base-contract.md`、`docs/cd-read-contract.md`、`docs/cd-read-mode-contract.md`）。`tools/cd_read_contract.py` は変更していない。
+* `docs/cd-read-mode-contract.md` の R3・R8 は、本 PR で UNKNOWN に変更した。`tools/cd_read_contract.py` の R3・R8 は、まだ `HYPOTHESIS` である（main 時点でも同じ）。#574 単体では、この不一致が残る。この不一致は PR #576（Issue #575）の担当範囲で、main では未解決。
+* 「#573」は Issue 番号である（PR 番号ではない）。
+* 「28 件（実測）」は、`tests/host/test_cd_base_model.py` の実行結果に対応する（2026-10-29、head `ed1ec32` で `Ran 28 tests ... OK`）。CD_READ 関連の 3 モジュールの実行記録（80 件 OK）は、PR #503 のコメントにある（PR #503 の時点の記録）。
