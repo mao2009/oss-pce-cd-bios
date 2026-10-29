@@ -154,7 +154,7 @@
 | (a) 前提 PR（#403、#404）が main に統合 | 充足（CONFIRMED。#403 は 2026-10-21T00:57:46Z、#404 は 2026-10-21T01:42:48Z に merge） | 充足（同左） | 充足（同左） |
 | (b) 本契約の独立レビューによる承認 | 未充足（NOT_RUN） | 未充足（NOT_RUN） | 未充足（NOT_RUN） |
 | (c) 判定に使う観測点の出典が確定 | 充足（`$08` と PLAYING は `adpcm_inline.h:84` の `m_playing`。CONFIRMED） | 充足（同左。W0〜W2 は既存の状態読取り） | 未充足（`$04` / `$80` の意味は UNKNOWN） |
-| (e) 安全条件: 手順が §10 の BLOCKED 項目に触れない | 独立レビューで確認する（本書の手順は device 層の読取りと、ハーネスからの `Adpcm::Write` だけを使い、CPU からの MMIO 書込み、IRQ の操作、CD 側の操作を含まない） | 独立レビューで確認する（PLAY と同じ扱い。`ResetMedia` は `GeargrafxCore::Reset()`（`geargrafx_core.cpp:1205`）を呼び、その中で `m_cdrom->Reset()`、`m_scsi_controller->Reset()`、`m_cdrom_audio->Reset()` を呼ぶ（`:1237-1239`）。これは CD 側の状態の初期化であり、§10 の B6 の MMIO 書込みではない。ただし B6 の範囲に当たるかは断定しない。当たる場合は warm を BLOCKED とする） | 未充足（§3.4 の BLOCKED 条件、§10 の B4 と B11） |
+| (e) 安全条件: 手順が §10 の BLOCKED 項目に触れない | 独立レビューで確認する（本書の手順は device 層の読取りと、ハーネスからの `Adpcm::Write` だけを使い、CPU からの MMIO 書込み、IRQ の操作、CD 側の操作を含まない） | 独立レビューで確認する（PLAY と同じ扱い。`ResetMedia` は `GeargrafxCore::Reset()`（`geargrafx_core.cpp:1205`）を呼び、その中で `m_cdrom->Reset()`、`m_scsi_controller->Reset()`、`m_cdrom_audio->Reset()` を呼ぶ（`:1237-1239`）。これは CD 側の状態の初期化であり、§10 の B6 の MMIO 書込みではない（根拠: `CdRom::Reset`、`ScsiController::Reset`、`CdRomAudio::Reset` は、それぞれの装置の内部変数を書き（`cdrom.cpp:113-125`、`scsi_controller.cpp:176-188`、`cdrom_audio.cpp:115-127` の表示範囲）、Memory の書込み経路を通らない）。ただし B6 の範囲に当たるかは断定しない。当たる場合は warm を BLOCKED とする） | 未充足（§3.4 の BLOCKED 条件、§10 の B4 と B11） |
 | (d) §3.4 の BLOCKED 解除条件（3 条件） | 対象外 | 対象外（gate の BLOCKED は §14.6 で維持） | 未充足 |
 | 判定 | (b) の承認後に開始できる。(a)、(c) は充足。(e) は (b) の承認の中で確認する | (b) の承認後に開始できる。(e) は (b) の承認の中で確認する（B6 に当たらないことの確認を含む）。加えて §14.2 の前提（媒体の読込み済み、ブレークポイント一覧が空）が必要 | BLOCKED。試行を実行しない |
 
@@ -255,6 +255,7 @@ CPU の命令単位で計数・中断はしない（命令単位のフックは�
 - ゲストによる ADPCM または IRQ の MMIO アクセスをハーネスが検出した（検出できた場合のみ。検出できない場合は §10 の BLOCKED として扱う）。
 - 媒体の `IsReady` が偽だった（§14.2。`ResetMedia` は何もせず戻るため、成功扱いにしない）。
 - ブレークポイント一覧が空でなかった（§14.2）。
+- W1 または W2 の項目が設定値（または書いた値）と一致しなかった（§14.7、§14.12）。系列を停止し、該当試行を BLOCKED とする。
 
 ### 7.2 失敗時の動作
 
@@ -346,7 +347,7 @@ CPU の命令単位で計数・中断はしない（命令単位のフックは�
 | B3 | 転送中の、デバイス起点の書込み（ブロック転送、DMA） | `docs/research/367-device-write-audit.md`（デバイス起点の RAM 書込みの源泉監査。DEV-01 は `UpdateDMA` を指す。本書の行範囲は `adpcm_inline.h:191-226`）、`docs/173-write-path-inventory.md:42`（W17 は UNKNOWN、未監査） | 監査の範囲に依る |
 | B4 | 任意の PC、先頭 opcode での実行の中断 | `docs/research/365-st-opcode-boundary.md`（ST 命令境界の副作用前遮断の判定記録。#365 の残作業は OPEN であり、その根拠として引く。フレーム内中断をしない根拠は本出典ではなく、本書の方針である） | 中断はフレーム境界の外では行わない（§6） |
 | B5 | 純正 System Card の `JSR $E030`（AD_RESET 本体）の呼出し | `docs/research/ad-reset-contract.md:3`（`$E030` は候補エントリ。`BLOCKED_ABI`） | 候補であり、呼出先の実行は未確認 |
-| B6 | CD 側の MMIO のうち `$1802`、`$1804` への操作、および表に無い `$1800`、`$1801`、`$1803` への操作 | `docs/173-safety-monitor-limits.md:52`（`$1802`）、`:53`（`$1804`）は事前阻止不能。`$1800`、`$1801`、`$1803` は表に無い（UNKNOWN） | 表に無い範囲は保守的に BLOCKED とする |
+| B6 | CD 側の MMIO のうち `$1802`、`$1804` への操作、および表に無い `$1800`、`$1801`、`$1803` への操作 | `docs/173-safety-monitor-limits.md:52`（`$1802`）、`:53`（`$1804`）は事前阻止不能。`$1800`、`$1801`、`$1803` は表に無い（UNKNOWN） | 表に無い範囲は保守的に BLOCKED とする。`ResetMedia` が呼ぶ `CdRom::Reset` 等は、装置の内部変数を書き Memory の書込み経路を通らない（§3.5 の (e)。根拠は `cdrom.cpp:113-125`、`scsi_controller.cpp:176-188`、`cdrom_audio.cpp:115-127`）。ただし B6 の範囲に当たるかは独立レビューで確認する |
 | B7 | 純正 BIOS、市販 ROM、私有 ROM（`rom/`）の使用 | `docs/research/ad-reset-contract.md` の §7（System Card の BIOS バイト等を含めない。`AGENTS.md`、`docs/provenance.md` の除外） | 方針 |
 | B8 | 割込みの発生を伴う実行（IRQ の許可を CPU 側で行うこと） | `docs/173-safety-monitor-limits.md:55-56`、`docs/research/366-irq-entry-status.md` | B2 と同じ |
 | B9 | CPU 命令による `$180D`（reset 要求）の書込み | B1 と同じ根拠。reset の効果は `Clock` 内の `CheckReset` で現れる（`adpcm_inline.h:29-38`） | reset 要求はハーネスからのみ行う（§4） |
@@ -413,7 +414,7 @@ ROM-Primitive の実装（`ad_reset_busy` の guest 実装など）は、本書�
 
 ### 14.2 前提条件（ResetMedia の前に確認する）
 
-- 媒体が読み込まれていること。`ResetMedia` は媒体が読み込まれていない（`IsReady` が偽）と何もせず戻る（`geargrafx_core.cpp:387-388`）。戻り値はないため、ハーネスは呼出し前に `IsReady` を読んで記録する。偽なら試行を停止する（§7.1）。成功扱いにしない。
+- 媒体が読み込まれていること。`ResetMedia` は媒体が読み込まれていない（`IsReady` が偽）と何もせず戻る（`geargrafx_core.cpp:387-388`）。戻り値はないため、ハーネスは呼出し前に `GeargrafxCore::GetMedia()->IsReady()` を読んで記録する（`geargrafx_core.h:103`、`media.h:43`）。偽なら試行を停止する（§7.1）。成功扱いにしない。
 - `SetResetValues` と `SetResetValue` は、`ResetMedia` より前に呼ぶ（値は reset の消費時に読まれる。§1）。
 - ブレークポイント一覧が空であること。試行の開始前に、W0 の前と W1 の後の 2 回、ブレークポイント一覧の件数が 0 であることを読んで記録する。読取りの経路は `HuC6280::GetBreakpoints()`（`huc6280.h:172`、`const std::vector<GG_Breakpoint>*` を返す）で、件数は要素数とする。測定の前に固定版ソースで再確認する。空でなければ、その試行は BLOCKED（実行しない）とし、系列を停止する。根拠: `ResetBreakpoints` は `m_breakpoints.clear()` を行い（`huc6280.cpp:297-299`）、`HuC6280::Reset`（`huc6280.cpp:207-270`）からは呼ばれていない（この範囲の確認による）。したがって `ResetMedia` は一覧を消さない。
 - GeargrafxCore の生成時の挙動は未確認である。確認したのは `Memory` の生成で既定値の `Reset` が走ること（`memory.cpp:97`）だけである。
@@ -425,7 +426,7 @@ ROM-Primitive の実装（`ad_reset_busy` の guest 実装など）は、本書�
 
 1. （試行 1 のみ）インスタンスを作成し、合成 ROM を読み込む。インスタンス作成時に既定値による `Reset` が一度走るため、以下で上書きする。
 2. `GetMemory()->SetResetValues(0, 0, 0, 0)`（mpr、wram、card_ram、arcade_card）と `GetHuC6280()->SetResetValue(0)` を呼ぶ（`memory.h:77`、`memory.cpp:280-286`、`huc6280.h:142`）。
-3. 媒体の `IsReady` を読んで記録する（§14.2）。偽なら系列を停止し、該当試行を BLOCKED とする。
+3. 媒体の `GeargrafxCore::GetMedia()->IsReady()` を読んで記録する（§14.2。`geargrafx_core.h:103`、`media.h:43`）。偽なら系列を停止し、該当試行を BLOCKED とする。
 4. **W0 を採取する**（ResetMedia の前。残存状態。記録のみで判定しない）。
 5. `GeargrafxCore::ResetMedia(false)` を呼ぶ。
 6. **W1 を採取する**（ResetMedia の直後、再配置の前）。
@@ -465,7 +466,7 @@ ROM-Primitive の実装（`ad_reset_busy` の guest 実装など）は、本書�
   - MPR0〜MPR6: 設定値 0（`SetResetValues` の mpr。`memory.cpp:106-118`）。MPR7: 0（`memory.cpp:104`）。
   - CPU の P: I フラグが 1。IRR と IDR が 0（固定版 `huc6280.cpp` の Reset の範囲、§14.1）。
   - ADPCM: CONTROL（`$0D` の読戻し）が 0、サンプルレートが `$0F`、ADPCM RAM 64 KiB がゼロ（`adpcm.cpp:142-172`）。
-- W2（再配置と PC 設定の後）: 次の全項目が、書いた値と一致することを確認する（R5）。PC の読戻し（`0x3E00`）、S と P の読戻し（`$FF`、`$04`）、MPR0〜MPR7 の読戻し（設定値）、ゲストのバイト列（`80 FE`）の読戻し。不一致は試行 2 を開始せず、系列を停止し、該当試行を BLOCKED とする（§14.12）。
+- W2（再配置と PC 設定の後）: 次の全項目が、書いた値と一致することを確認する（R5）。PC の読戻し（`0x3E00`）、S と P の読戻し（`$FF`、`$04`）、MPR0〜MPR7 の読戻し（期待値は MPR0=`$00`、MPR1=`$F8`、MPR2〜7=`$00`。§14.3 の 7 と一致）、ゲストのバイト列（`80 FE`）の読戻し。不一致は試行 2 を開始せず、系列を停止し、該当試行を BLOCKED とする（§14.12）。
 - W0 と W1 の差は、reset の効果として記録のみ行う（R2c と同じ扱い。判定は別文書）。
 - 残存状態（W0）と再初期化後の状態（W1、W2）を混同しない。W0 の値を、再初期化後の期待値として使わない。
 
@@ -497,10 +498,10 @@ ROM-Primitive の実装（`ad_reset_busy` の guest 実装など）は、本書�
 試行 2 は、次の 1 から 8 の全てが成立したときに限り開始する。一つでも成立しなければ、試行 2 を開始せず、系列を停止し、該当試行を BLOCKED とする。
 
 1. 試行 1 が `COMPLETED` である（§14.8、§7.2）。
-2. 媒体の `IsReady` が真である。試行 2 の W0 の前と W1 の後の 2 回を記録する（§14.2）。
+2. 媒体の `GeargrafxCore::GetMedia()->IsReady()` が真である（`geargrafx_core.h:103`、`media.h:43`）。試行 2 の W0 の前と W1 の後の 2 回を記録する（§14.2）。
 3. ブレークポイント一覧の件数が 0 である。試行 2 の W0 の前と W1 の後の 2 回を記録する（§14.2）。
 4. W1 の全項目（§14.7）が設定値と一致し、ハーネス側の `ResetMedia` 呼出し回数が 2 である（§14.5）。
-5. W2 の全項目（§14.7）が書いた値と一致する。
+5. W2 の全項目（§14.7）が書いた値と一致する。MPR の期待値は MPR0=`$00`、MPR1=`$F8`、MPR2〜7=`$00` である（§14.3 の 7 と一致）。
 6. PC の設定経路が安定している。PC の設定直後の読戻しが `0x3E00` と一致し、かつ動的 MPR 検出の最初の `RunToVBlank` の完了後も PC が `0x3E00` である。読戻しが一致しない場合、または設定後に PC が変化した場合は、経路が不安定とみなし、その試行を BLOCKED とし、系列を停止する。
 7. 静的チェックと動的 MPR 検出（§14.3 の 10）が合格している。
 8. 同一性の証拠（§14.5）が、試行 1 と試行 2 で一致している。
