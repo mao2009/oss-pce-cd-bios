@@ -1,12 +1,20 @@
 """Static checks using actual pinned actionlint and assembler."""
 import ast
+import contextlib
 import json
 import os
 from pathlib import Path
 import subprocess
+import sys
+import tempfile
 
-from artifact_guard import check_upload_artifacts, check_guard_placement
 from environment import ROOT, executable, core_path
+
+# The guard and its run allowlist are read from origin/main, never from the checked tree (Issue #511).
+TRUSTED_REF = "origin/main"
+TRUST_FILES = ("tools/artifact_guard.py", "tools/artifact_guard_run_allowlist.json")
+# Local development only: trust the checked tree when origin/main is unavailable. Refused under CI.
+LOCAL_TRUST_OPT_IN = "OSS_PCE_DEV_TRUST_LOCAL"
 
 
 def git_output(repository, *arguments):
@@ -19,6 +27,85 @@ def resolve_commit(repository, ref):
         return git_output(repository, "rev-parse", "--verify", f"{ref}^{{commit}}")
     except subprocess.CalledProcessError as error:
         raise ValueError(f"cannot resolve Git comparison commit: {ref}") from error
+
+
+def in_ci():
+    return os.environ.get("CI") == "true" or os.environ.get("GITHUB_ACTIONS") == "true"
+
+
+@contextlib.contextmanager
+def trusted_root(repository=ROOT):
+    """Yield a directory holding TRUST_FILES as committed on origin/main, at the same relative paths.
+
+    Fails closed: a missing ref or file raises. Only LOCAL_TRUST_OPT_IN=1 outside CI trusts the checked tree
+    instead, and only when origin/main itself is unavailable."""
+    if os.environ.get(LOCAL_TRUST_OPT_IN) == "1":
+        if in_ci():
+            raise ValueError(f"{LOCAL_TRUST_OPT_IN}=1 is refused under CI (fails closed)")
+        probe = subprocess.run(["git", "rev-parse", "--verify", f"{TRUSTED_REF}^{{commit}}"],
+                               cwd=repository, capture_output=True)
+        if probe.returncode != 0:
+            print(f"WARNING: {TRUSTED_REF} unavailable; local development trusts the checked tree "
+                  f"({LOCAL_TRUST_OPT_IN}=1). CI runs the guard from .trusted-main and is protected regardless.",
+                  file=sys.stderr)
+            yield repository
+            return
+    try:
+        resolve_commit(repository, TRUSTED_REF)
+    except ValueError as error:
+        raise ValueError(f"{TRUSTED_REF} is unavailable, so the trusted guard and allowlist cannot be read "
+                         "(fails closed); run git fetch origin main") from error
+    # Only this context owns the temporary trust snapshot. The standard library manages its cleanup.
+    with tempfile.TemporaryDirectory(prefix="trusted-main-") as directory:
+        tmp = Path(directory)
+        for rel in TRUST_FILES:
+            try:
+                data = subprocess.run(["git", "cat-file", "blob", f"{TRUSTED_REF}:{rel}"], cwd=repository,
+                                      check=True, capture_output=True).stdout
+            except subprocess.CalledProcessError as error:
+                raise ValueError(f"{TRUSTED_REF}:{rel} is missing (fails closed)") from error
+            (tmp / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp / rel).write_bytes(data)
+        yield tmp
+
+
+def guard_matches_trusted(trusted, root=ROOT):
+    """Refuse a checked guard that differs from the trusted copy, so a pull request cannot weaken enforced_check.
+
+    Compared as Git blobs: a Windows checkout with core.autocrlf converts line endings, so raw bytes would differ."""
+    rel = "tools/artifact_guard.py"
+    if Path(trusted).resolve() == Path(root).resolve():
+        return   # dev opt-in (see trusted_root): the checked tree is the trust root, nothing to compare
+    checked = git_output(root, "hash-object", f"--path={rel}", "--", rel)
+    expected = git_output(root, "hash-object", "--no-filters", "--", str(Path(trusted) / rel))
+    if checked != expected:
+        raise ValueError(f"{rel} differs from {TRUSTED_REF}: the guard may only change through trusted-main policy "
+                         "(Issue #511)")
+
+
+def enforce_guard(root=ROOT):
+    """Execute the committed trusted guard in a separate isolated interpreter.
+
+    The PR's artifact_guard.py is not imported, and the trusted guard reads its
+    own approved table. Candidate files are passed as data. This is a local
+    defense-in-depth check: the actual security boundary is the trusted guard
+    executed independently by the guard-verify CI job.
+    """
+    with trusted_root(root) as trusted:
+        guard_matches_trusted(trusted, root)
+        trusted_script = Path(trusted) / "tools" / "artifact_guard.py"
+        if trusted_script.is_symlink() or not trusted_script.is_file():
+            raise ValueError("trusted artifact guard is missing or linked (fails closed)")
+        # -I ignores PYTHONPATH and excludes candidate checkout paths from imports.
+        # The guard's default CLI runs both upload and approved-placement checks.
+        result = subprocess.run([sys.executable, "-I", str(trusted_script),
+                                 "--root", str(Path(root).resolve())],
+                                cwd=trusted, capture_output=True, text=True)
+        if result.returncode != 0:
+            reason = (result.stderr or result.stdout).strip()
+            raise ValueError(f"trusted artifact guard refused (exit {result.returncode}): {reason}")
+        if result.stdout:
+            print(result.stdout, end="")
 
 
 def check_git_diff(repository, event_name="local", event=None, base=None):
@@ -70,10 +157,9 @@ def main():
     # actionlint parses YAML and checks expressions, workflow schema and job wiring.
     subprocess.run([executable("actionlint"), "-shellcheck=", "-pyflakes=",
                     *map(str, sorted(ROOT.glob(".github/workflows/*.yml")))], check=True)
-    # Fail closed before upload: no linked GPL probe executable or object may reach upload-artifact (#227).
-    check_upload_artifacts(ROOT)
-    # The guard must sit immediately before each upload in the same job (no build step in between).
-    check_guard_placement(ROOT)
+    # Run both the upload and placement checks from the trusted guard in an
+    # isolated interpreter; do not execute any candidate artifact_guard code.
+    enforce_guard(ROOT)
     core_path()
     output = ROOT / "build/check"
     output.mkdir(parents=True, exist_ok=True)
