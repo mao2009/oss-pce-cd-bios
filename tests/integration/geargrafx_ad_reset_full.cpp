@@ -17,6 +17,8 @@
 #include "adpcm.h"
 #include "memory.h"
 #include "huc6280.h"
+#include "huc6270.h"
+#include "cdrom.h"
 #include <cctype>
 #include <chrono>
 #include <cstdio>
@@ -44,6 +46,13 @@ struct Point {
     unsigned status, control, dma, sample_rate;
     unsigned playing, address, read_address, write_address, length, end_irq, half_irq;
     unsigned irr, idr;                // raw HuC6280 IRQ registers; semantics UNKNOWN (contract 5)
+    unsigned long long master_clock;  // GetMasterClockCycles(): monotonic since reset, GG_MASTER_CLOCK_RATE units
+    bool cd_ok;                       // CD state readable (GetCDROM() != nullptr)
+    unsigned cd_active, cd_enabled;   // raw ACTIVE_IRQS / ENABLED_IRQS bytes; semantics not claimed
+    bool vdc_ok;                      // HuC6270 (VDC1) readable
+    unsigned vdc_sr, vdc_hpos, vdc_vpos;  // raw state; semantics UNKNOWN
+    bool read_busy, write_busy;       // (m_read_cycles > 0), (m_write_cycles > 0) via GetStatusRegisterSnapshot
+    unsigned frame_samples, control_state, dma_state, sample_rate_state;  // remaining Adpcm_State scalars
 };
 
 // Read-only capture. Every accessor here is side-effect free (see the header comment).
@@ -78,6 +87,29 @@ Point capture(GeargrafxCore& core, unsigned frame)
     pt.half_irq = *st->HALF_IRQ ? 1 : 0;
     pt.irr = (unsigned)*cs->IRR;
     pt.idr = (unsigned)*cs->IDR;
+    pt.master_clock = core.GetMasterClockCycles();
+    CdRom* cdrom = core.GetCDROM();
+    pt.cd_ok = cdrom != nullptr;
+    if (cdrom) {
+        CdRom::CdRom_State* cds = cdrom->GetState();
+        pt.cd_active = *cds->ACTIVE_IRQS;
+        pt.cd_enabled = *cds->ENABLED_IRQS;
+    }
+    HuC6270* vdc = core.GetHuC6270_1();
+    pt.vdc_ok = vdc != nullptr;
+    if (vdc) {
+        HuC6270::HuC6270_State* vs = vdc->GetState();
+        pt.vdc_sr = *vs->SR;
+        pt.vdc_hpos = (unsigned)*vs->HPOS;
+        pt.vdc_vpos = (unsigned)*vs->VPOS;
+    }
+    const u8 snap = adpcm->GetStatusRegisterSnapshot();   // read-only: returns flags from bool members
+    pt.read_busy = (snap & 0x80) != 0;
+    pt.write_busy = (snap & 0x04) != 0;
+    pt.frame_samples = (unsigned)*st->FRAME_SAMPLES;
+    pt.control_state = *st->CONTROL;
+    pt.dma_state = *st->DMA;
+    pt.sample_rate_state = *st->SAMPLE_RATE;
     return pt;
 }
 
@@ -98,23 +130,38 @@ void emit_point(std::string& out, const char* name, const Point* pt, bool last)
     if (!pt) {
         out += "\"NOT_CAPTURED\"";
     } else {
-        char buf[1024];
+        char buf[2048];
         std::snprintf(buf, sizeof buf,
-                      "{\"frame\":%u,\"cpu\":{\"pc\":%u,\"a\":%u,\"x\":%u,\"y\":%u,\"s\":%u,\"p\":%u,"
+                      "{\"frame\":%u,\"clock\":{\"master_clock_cycles\":%llu,\"clock_calls\":\"NOT_CAPTURED\"},"
+                      "\"cpu\":{\"pc\":%u,\"a\":%u,\"x\":%u,\"y\":%u,\"s\":%u,\"p\":%u,"
                       "\"mpr\":[%u,%u,%u,%u,%u,%u,%u,%u]},\"wram_8k_hex\":\"",
-                      pt->frame, pt->pc, pt->a, pt->x, pt->y, pt->s, pt->p, pt->mpr[0], pt->mpr[1],
-                      pt->mpr[2], pt->mpr[3], pt->mpr[4], pt->mpr[5], pt->mpr[6], pt->mpr[7]);
+                      pt->frame, pt->master_clock, pt->pc, pt->a, pt->x, pt->y, pt->s, pt->p, pt->mpr[0],
+                      pt->mpr[1], pt->mpr[2], pt->mpr[3], pt->mpr[4], pt->mpr[5], pt->mpr[6], pt->mpr[7]);
         out += buf;
         hex_bytes(out, pt->wram);
         std::snprintf(buf, sizeof buf,
                       "\",\"adpcm\":{\"status_0c\":%u,\"control_0d\":%u,\"dma_0b\":%u,\"sample_rate_0e\":%u,"
                       "\"playing\":%u,\"address\":%u,\"read_address\":%u,\"write_address\":%u,\"length\":%u,"
-                      "\"end_irq\":%u,\"half_irq\":%u,\"read_cycles\":\"NOT_CAPTURED\","
-                      "\"write_cycles\":\"NOT_CAPTURED\",\"play_pending\":\"NOT_CAPTURED\"},"
-                      "\"irq\":{\"irr\":%u,\"idr\":%u,\"semantics\":\"UNKNOWN\"}}",
+                      "\"end_irq\":%u,\"half_irq\":%u,\"read_busy_bool\":%s,\"write_busy_bool\":%s,"
+                      "\"read_cycles\":\"NOT_CAPTURED\",\"write_cycles\":\"NOT_CAPTURED\","
+                      "\"play_pending\":\"NOT_CAPTURED\",\"frame_samples\":%u,\"state_control\":%u,"
+                      "\"state_dma\":%u,\"state_sample_rate\":%u,\"state_buffer\":\"NOT_CAPTURED\"},"
+                      "\"irq\":{\"irr\":%u,\"idr\":%u,\"irr_idr_source\":\"same values as irr and idr above; "
+                      "not duplicated\",\"cd_active\":%s,\"cd_enabled\":%s,\"semantics\":\"UNKNOWN\"},",
                       pt->status, pt->control, pt->dma, pt->sample_rate, pt->playing, pt->address,
-                      pt->read_address, pt->write_address, pt->length, pt->end_irq, pt->half_irq, pt->irr,
-                      pt->idr);
+                      pt->read_address, pt->write_address, pt->length, pt->end_irq, pt->half_irq,
+                      pt->read_busy ? "true" : "false", pt->write_busy ? "true" : "false",
+                      pt->frame_samples, pt->control_state, pt->dma_state, pt->sample_rate_state, pt->irr,
+                      pt->idr, pt->cd_ok ? std::to_string(pt->cd_active).c_str() : "\"NOT_CAPTURED\"",
+                      pt->cd_ok ? std::to_string(pt->cd_enabled).c_str() : "\"NOT_CAPTURED\"");
+        out += buf;
+        if (pt->vdc_ok)
+            std::snprintf(buf, sizeof buf,
+                          "\"vdc\":{\"unit\":\"HuC6270_1\",\"sr\":%u,\"hpos\":%u,\"vpos\":%u,"
+                          "\"semantics\":\"UNKNOWN\"}}",
+                          pt->vdc_sr, pt->vdc_hpos, pt->vdc_vpos);
+        else
+            std::snprintf(buf, sizeof buf, "\"vdc\":\"NOT_CAPTURED\"}");
         out += buf;
     }
     out += last ? "" : ",";
