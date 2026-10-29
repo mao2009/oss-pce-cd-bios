@@ -17,6 +17,7 @@ Each series gets its own process. Outputs stay in a new temporary directory that
 import argparse
 import hashlib
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -32,8 +33,11 @@ from geargrafx_reference_guard import synthetic_media  # noqa: E402
 
 PINNED_COMMIT = "b49ae82a012eade566d72e9d61c9d95a5caa4da3"
 GUEST_BYTES = bytes([0x80, 0xFE])  # BRA * placed at WRAM $1E00 (guest $3E00)
-SERIES_TIMEOUT_S = 120             # contract 6: wall clock per trial; the series has two trials
-PROCESS_TIMEOUT_S = 600            # contract 6: wall clock for one process (the whole series)
+# Contract 6.1 constants (the single definition). The C++ probe must carry the same values; main() checks it.
+FRAME_SAFETY_CAP = 300             # frames per trial (probe: kFrameBudget)
+OBSERVE_WAIT_FRAMES = 60           # frames allowed before PLAY_ACTIVE is observed (probe: kObserveWait)
+TRIAL_WALL_SECONDS = 120           # per trial, enforced by the probe at frame boundaries (probe: kTrialSeconds)
+PROCESS_WALL_SECONDS = 600         # per process, which holds two trials for warm (probe: kProcessSeconds)
 GATE_IDS = ("1", "2", "3", "4", "5", "6", "7", "8")
 EXIT_FAIL = 1
 
@@ -42,12 +46,23 @@ def sha256_file(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def check_probe_constants():
+    """Fail unless the C++ probe carries the contract 6.1 values (one definition, two readers)."""
+    text = (Path(__file__).resolve().parent / "geargrafx_ad_reset_warm.cpp").read_text(encoding="utf-8")
+    expected = {"kFrameBudget": FRAME_SAFETY_CAP, "kObserveWait": OBSERVE_WAIT_FRAMES,
+                "kTrialSeconds": TRIAL_WALL_SECONDS, "kProcessSeconds": PROCESS_WALL_SECONDS}
+    for name, value in expected.items():
+        match = re.search(rf"const (?:unsigned|double) {name} = ([0-9.]+);", text)
+        if not match or float(match.group(1)) != float(value):
+            raise ValueError(f"probe constant {name} does not match contract 6.1 value {value}")
+
+
 def run_series(probe, bios, cue, bios_sha, cue_sha):
     """Run one series in its own process. Returns the parsed record plus runner-side fields."""
     started = time.monotonic()
     try:
         result = subprocess.run([str(probe), str(bios), str(cue), bios_sha, cue_sha],
-                                timeout=SERIES_TIMEOUT_S, capture_output=True, text=True)
+                                timeout=PROCESS_WALL_SECONDS, capture_output=True, text=True)
     except subprocess.TimeoutExpired:
         # External kill at the wall-clock limit. The process state is not read after this (contract 6).
         return {"exit_code": "NOT_CAPTURED", "record": "NOT_CAPTURED", "end_state": "TIMEOUT",
@@ -97,6 +112,7 @@ def main():
         raise ValueError("--repeat must be at least 1")
     if DEPENDENCIES["geargrafx"]["revision"] != PINNED_COMMIT:
         raise ValueError("tools/dependencies.json geargrafx revision is not the contract's pinned commit")
+    check_probe_constants()
 
     directory = Path(tempfile.mkdtemp(prefix="pce-ad-reset-warm-"))  # not removed by this script
     bios, cue = synthetic_media(directory)
@@ -108,7 +124,7 @@ def main():
     session_start = time.monotonic()
     failures = []
     for repeat in range(args.repeat):
-        if time.monotonic() - session_start > PROCESS_TIMEOUT_S * args.repeat:
+        if time.monotonic() - session_start > PROCESS_WALL_SECONDS * args.repeat:
             failures.append(f"series#{repeat}: session wall clock exceeded")
             break
         series = run_series(probe, bios, cue, bios_sha, cue_sha)

@@ -12,9 +12,13 @@
 // Contract 14.12 (eight conditions) is judged before trial 2 starts. A condition that cannot be
 // captured through the public API is NOT_CAPTURED (never PASS). Trial 2 starts only when all eight
 // are PASS; otherwise trial 2 is NOT_STARTED and the series is BLOCKED.
+// ADPCM RAM (contract 14.14, Wave 7 decision): read through the existing upstream Adpcm::GetRAM()
+// (adpcm.h:63, adpcm_inline.h:386-389). The 64 KiB (0x10000) bytes are copied once per W1 at a frame boundary;
+// the pointer is held as const u8*, never written through, and the copy is checked (NULL, size, pointer
+// stable across the copy, unchanged readable state). A failed check is NOT_CAPTURED, never PASS.
 // Known gaps (reported, not worked around):
-//   - ADPCM RAM (64 KiB) is private (adpcm.h) and has no accessor: the W1 zero check is NOT_CAPTURED.
-//   - Dynamic MPR detection (contract 10(ii)) is not reachable from this probe: NOT_IMPLEMENTED.
+//   - Dynamic MPR detection (contract 10(ii)) is not reachable from this probe: NOT_IMPLEMENTED
+//     (contract 14.13 option (b)). Trial 2 therefore never starts; the warm series is BLOCKED.
 // ADPCM writes use Adpcm::Write (device layer, harness side). Reads are side-effect free (Read($0B/$0C/
 // $0D/$0E), GetState(), GetStatusRegisterSnapshot()). Read($0A) is never called. Checks happen only at
 // frame boundaries (RunToVBlank) and around Adpcm::Write. The harness never forces a CPU stop.
@@ -57,6 +61,7 @@ const double kTrialSeconds = 120.0;   // contract 6: per trial, checked at frame
 const double kProcessSeconds = 600.0; // contract 6: per process, checked at frame boundaries
 const unsigned kPlayAddress = 0x1234;
 const unsigned kResetValue = 0x80;    // CONTROL $80 (standard class; $A0 is not used here)
+const unsigned kAdpcmRamSize = 0x10000;  // upstream adpcm.h:95, m_adpcm_ram[0x10000]
 
 struct Point {
     unsigned frame;
@@ -133,6 +138,107 @@ Point capture(GeargrafxCore& core, unsigned frame)
     return pt;
 }
 
+// Readable state compared around the ADPCM RAM copy. Returns the names of the fields that differ.
+std::string state_diff(const Point& a, const Point& b)
+{
+    std::string d;
+    auto cmp = [&](bool same, const std::string& name) {
+        if (!same) {
+            if (!d.empty())
+                d += ",";
+            d += name;
+        }
+    };
+    cmp(a.pc == b.pc, "pc");
+    cmp(a.a == b.a, "a");
+    cmp(a.x == b.x, "x");
+    cmp(a.y == b.y, "y");
+    cmp(a.s == b.s, "s");
+    cmp(a.p == b.p, "p");
+    for (int i = 0; i < 8; ++i)
+        cmp(a.mpr[i] == b.mpr[i], "mpr" + std::to_string(i));
+    cmp(a.status == b.status, "status_0c");
+    cmp(a.control == b.control, "control_0d");
+    cmp(a.dma == b.dma, "dma_0b");
+    cmp(a.sample_rate == b.sample_rate, "sample_rate_0e");
+    cmp(a.playing == b.playing, "playing");
+    cmp(a.address == b.address, "address");
+    cmp(a.read_address == b.read_address, "read_address");
+    cmp(a.write_address == b.write_address, "write_address");
+    cmp(a.length == b.length, "length");
+    cmp(a.end_irq == b.end_irq, "end_irq");
+    cmp(a.half_irq == b.half_irq, "half_irq");
+    cmp(a.irr == b.irr, "irr");
+    cmp(a.idr == b.idr, "idr");
+    cmp(a.frame_samples == b.frame_samples, "frame_samples");
+    cmp(a.control_state == b.control_state, "control_state");
+    cmp(a.dma_state == b.dma_state, "dma_state");
+    cmp(a.sample_rate_state == b.sample_rate_state, "sample_rate_state");
+    cmp(a.master_clock == b.master_clock, "master_clock");
+    cmp(a.cd_active == b.cd_active, "cd_active");
+    cmp(a.cd_enabled == b.cd_enabled, "cd_enabled");
+    cmp(a.vdc_sr == b.vdc_sr, "vdc_sr");
+    cmp(a.vdc_hpos == b.vdc_hpos, "vdc_hpos");
+    cmp(a.vdc_vpos == b.vdc_vpos, "vdc_vpos");
+    return d;
+}
+
+// One ADPCM RAM snapshot. status is "CAPTURED" only when every rule of snapshot_adpcm_ram() held.
+struct RamSnapshot {
+    std::string status = "NOT_CAPTURED";
+    std::string reason = "not_taken";
+    std::vector<u8> bytes;                // private copy; kAdpcmRamSize bytes when CAPTURED
+    unsigned long long adpcm_object = 0;  // address of the Adpcm object read (same-instance evidence)
+    unsigned long long ptr = 0;           // GetRAM() value, checked before and after the copy
+    unsigned nonzero_count = 0;
+};
+
+// Reads the 64 KiB ADPCM RAM through the existing upstream Adpcm::GetRAM() (adpcm.h:63, adpcm_inline.h:386-389).
+// Rules:
+//   - the pointer is held as const u8* and only read; the only write is into this function's own vector
+//   - no const_cast, no write through the pointer, no Clock, no ADPCM Write, no Read($0A)
+//   - NULL pointer, size mismatch, a pointer that changes across the copy, or any change of the readable
+//     state (capture() before and after) gives NOT_CAPTURED with a reason
+//   - the copy is valid for this trial only; it is taken at a frame boundary (no RunToVBlank in between)
+RamSnapshot snapshot_adpcm_ram(GeargrafxCore& core, Adpcm* adpcm, unsigned frame)
+{
+    RamSnapshot r;
+    if (adpcm == nullptr) {
+        r.reason = "adpcm_null";
+        return r;
+    }
+    r.adpcm_object = (unsigned long long)(std::uintptr_t)adpcm;
+    const Point before = capture(core, frame);
+    const u8* view = adpcm->GetRAM();   // non-const upstream signature; stored as const, not written
+    if (view == nullptr) {
+        r.reason = "get_ram_null";
+        return r;
+    }
+    r.ptr = (unsigned long long)(std::uintptr_t)view;
+    std::vector<u8> copy(view, view + kAdpcmRamSize);
+    if (copy.size() != kAdpcmRamSize) {
+        r.reason = "size_mismatch";
+        return r;
+    }
+    if ((unsigned long long)(std::uintptr_t)adpcm->GetRAM() != r.ptr) {
+        r.reason = "pointer_changed_during_copy";
+        return r;
+    }
+    const Point after = capture(core, frame);
+    const std::string changed = state_diff(before, after);
+    if (!changed.empty()) {
+        r.reason = "state_changed:" + changed;
+        return r;
+    }
+    for (u8 b : copy)
+        if (b != 0)
+            ++r.nonzero_count;
+    r.bytes = std::move(copy);
+    r.status = "CAPTURED";
+    r.reason.clear();
+    return r;
+}
+
 void hex_bytes(std::string& out, const std::vector<u8>& bytes)
 {
     static const char digits[] = "0123456789abcdef";
@@ -143,8 +249,12 @@ void hex_bytes(std::string& out, const std::vector<u8>& bytes)
 }
 
 // Same point format as geargrafx_ad_reset_full.cpp (the 25-trial records use it).
-void emit_point(std::string& out, const char* name, const Point* pt, bool last)
+void emit_point(std::string& out, const char* name, const Point* pt, bool last, const RamSnapshot* ram = nullptr)
 {
+    std::string ram_json = "\"NOT_CAPTURED\"";
+    if (ram && ram->status == "CAPTURED")
+        ram_json = "{\"status\":\"CAPTURED\",\"bytes\":" + std::to_string(ram->bytes.size()) +
+                   ",\"nonzero\":" + std::to_string(ram->nonzero_count) + "}";
     out += "\"";
     out += name;
     out += "\":";
@@ -167,12 +277,12 @@ void emit_point(std::string& out, const char* name, const Point* pt, bool last)
                       "\"read_cycles\":\"NOT_CAPTURED\",\"write_cycles\":\"NOT_CAPTURED\","
                       "\"play_pending\":\"NOT_CAPTURED\",\"frame_samples\":%u,\"state_control\":%u,"
                       "\"state_dma\":%u,\"state_sample_rate\":%u,\"state_buffer\":\"NOT_CAPTURED\","
-                      "\"ram_64k\":\"NOT_CAPTURED\"},"
+                      "\"ram_64k\":%s},"
                       "\"irq\":{\"irr\":%u,\"idr\":%u,\"cd_active\":%s,\"cd_enabled\":%s,\"semantics\":\"UNKNOWN\"},",
                       pt->status, pt->control, pt->dma, pt->sample_rate, pt->playing, pt->address,
                       pt->read_address, pt->write_address, pt->length, pt->end_irq, pt->half_irq,
                       pt->read_busy ? "true" : "false", pt->write_busy ? "true" : "false",
-                      pt->frame_samples, pt->control_state, pt->dma_state, pt->sample_rate_state, pt->irr,
+                      pt->frame_samples, pt->control_state, pt->dma_state, pt->sample_rate_state, ram_json.c_str(), pt->irr,
                       pt->idr, pt->cd_ok ? std::to_string(pt->cd_active).c_str() : "\"NOT_CAPTURED\"",
                       pt->cd_ok ? std::to_string(pt->cd_enabled).c_str() : "\"NOT_CAPTURED\"");
         out += buf;
@@ -219,6 +329,7 @@ struct Trial {
     unsigned long long bp_w0 = 0, bp_w1 = 0;
     bool has_w0 = false, has_w1 = false, has_w2 = false;
     Point w0, w1, w2;
+    RamSnapshot ram_w1;                    // ADPCM RAM at W1 (contract 14.7, 14.12 item 4)
     unsigned pc_set_rb = 0, s_set_rb = 0, p_set_rb = 0;
     unsigned pc_after_frame = 0;
     bool reset_issued = false;
@@ -327,6 +438,7 @@ int main(int argc, char** argv)
         // step 6: W1 (after ResetMedia, before the placement)
         t.w1 = capture(core, t.frames);
         t.has_w1 = true;
+        t.ram_w1 = snapshot_adpcm_ram(core, adpcm, t.frames);
         t.reset_count_w1 = reset_count;
         t.ready_w1 = core.GetMedia()->IsReady();
         const std::vector<HuC6280::GG_Breakpoint>* bp1 = core.GetHuC6280()->GetBreakpoints();
@@ -476,11 +588,19 @@ int main(int argc, char** argv)
                              (i_set ? "true" : "false") + " irr_idr_zero=" + (irr_idr_zero ? "true" : "false") +
                              " adpcm_control_zero=" + (control_zero ? "true" : "false") +
                              " adpcm_rate_0f=" + (rate_0f ? "true" : "false") +
-                             " adpcm_ram_zero=NOT_CAPTURED reset_count_is_2=" + (reset_twice ? "true" : "false");
+                             " reset_count_is_2=" + (reset_twice ? "true" : "false");
+        const RamSnapshot& ram = t2.ram_w1;
+        const bool ram_captured = ram.status == "CAPTURED";
+        const bool ram_fail = ram_captured && ram.nonzero_count != 0;
+        std::string ram_text = ram_captured ? std::string("CAPTURED") : std::string("NOT_CAPTURED:") + ram.reason;
+        std::string ram_zero_text = !ram_captured ? std::string("NOT_CAPTURED")
+                                                  : (ram_fail ? std::string("false") : std::string("true"));
+        detail += " adpcm_ram=" + ram_text + " adpcm_ram_zero=" + ram_zero_text;
         const bool any_fail = !wram_zero || !mpr_low_zero || !mpr7_zero || !i_set || !irr_idr_zero ||
-                              !control_zero || !rate_0f || !reset_twice;
-        add("4", any_fail ? "FAIL" : "NOT_CAPTURED", detail,
-            "capture() geargrafx_ad_reset_warm.cpp; ADPCM RAM has no public accessor (adpcm.h:95 private)");
+                              !control_zero || !rate_0f || !reset_twice || ram_fail;
+        std::string status4 = any_fail ? "FAIL" : (ram_captured ? "PASS" : "NOT_CAPTURED");
+        add("4", status4, detail,
+            "W1 capture() and snapshot_adpcm_ram() (upstream Adpcm::GetRAM(), adpcm.h:63; adpcm_inline.h:386-389)");
     }
 
     if (!t2_pre) {
@@ -579,7 +699,7 @@ int main(int argc, char** argv)
             emit_point(out, "W0", &t.w0, false);
         else
             emit_point(out, "W0", nullptr, false);
-        emit_point(out, "W1", t.has_w1 ? &t.w1 : nullptr, false);
+        emit_point(out, "W1", t.has_w1 ? &t.w1 : nullptr, false, t.has_w1 ? &t.ram_w1 : nullptr);
         emit_point(out, "W2", t.has_w2 ? &t.w2 : nullptr, false);
         emit_point(out, "P0", t.has_p0 ? &t.p0 : nullptr, false);
         emit_point(out, "P1", t.has_p1 ? &t.p1 : nullptr, false);
