@@ -30,11 +30,11 @@
 | --- | --- | --- | --- |
 | `_dh = 3` | [C] HuCC `_cd_loadbank.4`（`hucc-systemcard.asm` L425-457）。L440-441 で `_dh=3`。L436-438 で `_dh` の値を非0のときだけ `_al` へ複写（コードの事実） | [HYPOTHESIS] count の単位がセクターであることは宣言 `sectors<_al>`（L425）とコメント（L436）に基づく仮説であって、コードの事実ではない（A4）。「1セクター指定が自然」という判断はこの仮説に依る | **採用（候補）** |
 | `_dh = 0` | [C] HuCC L384 `stz`（`_dh = 0`）。L381-382 が `_ax` に読出し長を入れる（コードの事実。1回の読み出し長は最大 `$2000`: L369 `cmp.h #$2000` / L372 `sbc.h #$2000` / L375 `lda.h #$2000`）。単位が「バイト」なのはコメント（L381「Set read length in bytes.」/ L384「Signal bytes, not sectors.」）由来 | 1セクター = 2048 バイト = `$0800`。count 単位が別軸（[HYPOTHESIS]、コメント/宣言由来） | 別モード（対象外） |
-| `_dh = 2` | [C] 確認範囲（`include/hucc/` の2ファイル）の `cd_read` 呼出側に使用箇所なし（後述 D1） | 既存文書 [cd-read-mode-contract.md](cd-read-mode-contract.md) / [188-cd-read-mode-safety.md](188-cd-read-mode-safety.md) の対象。既存文書間の出典表記が食い違っていた（訂正前の cd-read-mode-contract.md R3 は HuCC を挙げていた。本 PR で訂正した。HuCC 側に `_dh=2` が無いことは確認済み） | 既存契約の不一致は本 PR で訂正済み（D1） |
+| `_dh = 2` | [C] 確認範囲（`include/hucc/` の2ファイル）の `cd_read` 呼出側に使用箇所なし（後述 D1） | 既存文書 [cd-read-mode-contract.md](cd-read-mode-contract.md) / [188-cd-read-mode-safety.md](188-cd-read-mode-safety.md) の対象。既存文書間の出典表記が食い違っていた（訂正前の cd-read-mode-contract.md R3 は HuCC を挙げていた。#503 で訂正済み（§4 D1）。HuCC 側に `_dh=2` が無いことは確認済み） | 既存契約の不一致は #503 で訂正済み（D1） |
 | `$FE` / `$FF` | [C] L294 `lda #$FF` / L322 `lda #$FE` を `_dh` に書く（コメントは「Signal a VRAM load.」） | VRAM 系 | 対象外 |
 | `6` | [C] 上書きローダ（`core-kernel.asm` L593-594） | MPR6 系 | 対象外 |
 
-**D1（決定・オーナー承認）**: 優先観測候補は `_dh = 3` とする（冒頭「優先観測候補」参照）。`_dh = 2` について既存文書間で出典表記が食い違っていた。[cd-read-mode-contract.md](cd-read-mode-contract.md):31（R3。訂正前は :30）は「HuCC, Hu-Go HLE」としていたが、HuCC が `_dh=2` を書かないことを確認したため訂正した（§4）。[cd-read-contract.md](cd-read-contract.md) の Destination mode 行は**主張を変更せず、出典欄に訂正注記のみ追記**した（§4 D1。注: 当時の行番号は :137。現在は行分割後の :147・:148）。[abi-contracts.md](abi-contracts.md):138（「Hu-Go model; HuCC overlay loader also uses 6」）は本 PR の差分対象外で、食い違いを含めて事実として残す。`cd_read` の HuCC 呼出側（`include/hucc/` の2ファイル、ledger C06-C10、[research/148-cd-read-abi.md](research/148-cd-read-abi.md) §2.1）で確認できる `_dh` の値は `0 / 3 / $FE / $FF / 6` のみ。`include/huc/` は未検査。
+**D1（決定・オーナー承認）**: 優先観測候補は `_dh = 3` とする（冒頭「優先観測候補」参照）。`_dh = 2` について既存文書間で出典表記が食い違っていた。[cd-read-mode-contract.md](cd-read-mode-contract.md) の R3 行（origin/main で :31。#503 より前の版では :30）は、訂正前は「HuCC, Hu-Go HLE」を出典としていたが、HuCC が `_dh=2` を書かないことを確認したため訂正した（§4）。[cd-read-contract.md](cd-read-contract.md) の Destination mode 行は、#503 の時点（当時の行番号 :137）では主張を変えず出典欄に訂正注記のみを追記した。その後 #574（ce85915）で**一行を二行に分割**した（origin/main では :147 が `_dh` 0/3/6/`$FE`/`$FF`、:148 が `_dh` 1/2/4/5）。`_dh` 1/2/4/5 は HYPOTHESIS から **UNKNOWN** に下げた（§4 D1）。[abi-contracts.md](abi-contracts.md):138（「Hu-Go model; HuCC overlay loader also uses 6」）は本 PR の差分対象外で、食い違いを含めて事実として残す。`cd_read` の HuCC 呼出側（`include/hucc/` の2ファイル、ledger C06-C10、[research/148-cd-read-abi.md](research/148-cd-read-abi.md) §2.1）で確認できる `_dh` の値は `0 / 3 / $FE / $FF / 6` のみ。`include/huc/` は未検査。
 
 ## 2. 1モード・1セクターの契約表（`_dh = 3`）
 
@@ -90,8 +90,15 @@
 
 ## 4. 既存文書との整合（参照のみ）
 
-* **D1**: 訂正済み。[cd-read-mode-contract.md](cd-read-mode-contract.md) R3 の出典から HuCC を外し、「HuCC が `_dh=2` を書かないことを確認。`_dh=2` の出典は Hu-Go! HLE のみ（ライセンス未確定、根拠に使わない）」と記した。（この「HYPOTHESIS のまま」は、後述の 2026-10-29 注記（R3・R8 を UNKNOWN に変更）より前の記録である。現在の R3 の状態は UNKNOWN）。[cd-read-contract.md](cd-read-contract.md) の Destination mode 行は**主張を書き換えず、出典欄に訂正注記のみ追記**した（出典「HuCC + Hu-Go HLE」→ 「訂正: HuCC は `_dh=2` を書かないことを include/hucc/ の範囲で確認。…」。主張行は変更なし）。[abi-contracts.md](abi-contracts.md):138 は**変更していない**（本 PR の差分対象外。食い違いを含めて事実として残す）。
-* 2026-10-29 注記: PR #574 により cd-read-mode-contract の R3・R8 は UNKNOWN に変更された。tools 側の不一致は Issue #575 で扱う。
+* **D1**: 訂正済み（#503 の時点）。[cd-read-mode-contract.md](cd-read-mode-contract.md) R3 の出典から HuCC を外した。`_dh=2` について HuCC が書かないことは `include/hucc/` の2ファイルの範囲で確認した。現在の R3 は **UNKNOWN**（#574 で HYPOTHESIS から変更。出典は Hu-Go! HLE のみで、参照のみ・ライセンス未確定）。
+  [cd-read-contract.md](cd-read-contract.md) の Destination mode は、#503 の時点では出典欄への訂正注記のみだったが、#574 で次の二行に**分割**された（origin/main。主張の状態はそれぞれ下記）。
+  * `_dh` 0 / 3 / 6 / `$FE` / `$FF`（origin/main :147）: **HYPOTHESIS のまま**。根拠は HuCC 呼出側の書込み（`_dh=0` は `hucc-systemcard.asm` L384、`_dh=3` は L440-441、`_dh=$FE` は L322、`_dh=$FF` は L294、`_dh=6` は `core-kernel.asm` L593-594）。これは「呼出側がその値を書く」ことの根拠であり、callee がその値をどう解釈するかの根拠ではない。callee の実行は未実施（`CALLEE_REAL_CORE_RUNS = 0`）。行番号は doc-cited、本リポジトリでは未検証（§4 D5）。
+  * `_dh` 1 / 2 / 4 / 5（origin/main :148）: **HYPOTHESIS から UNKNOWN へ下げた**（#573 / #574）。根拠は Hu-Go! HLE のみ（参照のみ、ライセンス未確定）。HuCC は `_dh=2` を書かないことを確認している。
+  [abi-contracts.md](abi-contracts.md):138 は**変更していない**（食い違いを含めて事実として残す）。
+* 2026-10-29 注記: PR #574（ce85915）で cd-read-mode-contract の R3・R8 は UNKNOWN に変更された。その後 PR #576（72de119、Issue #575）で `tools/cd_read_contract.py` の RAM_MODE_ITEMS の R3・R8 も UNKNOWN に揃え、R6 の出典文を HuCC 呼出側の期待に書き換えた（R6 の状態は HYPOTHESIS のまま）。
+* **D5（R6 の参照先の関数名）**: [cd-read-mode-contract.md](cd-read-mode-contract.md) R6 が引く HuCC の行の所属関数は次のとおり。関数名と範囲は [cd-base-abi-ledger.md](cd-base-abi-ledger.md) S4・S5 と [cd-exec-contract-ledger.md](cd-exec-contract-ledger.md) H1b の記載に基づく **doc-cited、本リポジトリでは未検証**（HuCC ソースはこのリポジトリにない）。
+  * `hucc-systemcard.asm` L389-390（`tax` / `bne .done`）: 関数 `_cd_loaddata.4`（ledger S4 では `_cd_loaddata`、344–408 行の内側。`cd_read` の呼出しは 388 行）。
+  * `core-kernel.asm` L600-601（`cmp #0` / `bne .retry`）: 関数 `exec_overlay`（H1b では 578–614 行。ledger S5 では上書き読込み、`cd_read` は 596 行）。
 * **D2**: HuCC `_cd_loadbank.4` の宣言（L425）は `unsigned int sectors<_al>` と書いているが、本体（L436-438）は `_dh` を読むだけで、**非0のときだけ** `_al` へ 1バイト値を複写する。宣言・コメント（`sectors` / 「Get #sectors (0=whole file).」）は count の単位を規定するコードではなく、コードから確定できるのは「呼出側が AL に 1バイト値を入れる」ことまでである。したがって callee が count として読むレジスタは UNKNOWN のままで、count の単位も導出できない（「セクター」であることは HYPOTHESIS（コメント/宣言由来）、A4）。本 D2 は A4 の区分と矛盾しない。
 * **D3**: 基点（CD_BASE 相対か絶対か）の矛盾は [research/148-cd-read-abi.md](research/148-cd-read-abi.md) §6 の通り未解決。#11 の測定まで UNKNOWN。
 * **D4**: 既存の [188-cd-read-mode-safety.md](188-cd-read-mode-safety.md) の判定 BLOCKED は本書でも変わらない。本書は判定を変更しない。
@@ -112,8 +119,11 @@
 ## 7. 整合確認
 
 * 参照した Issue の状態（確認日 2026-10-22）: #12 OPEN、#11 OPEN、#139 CLOSED、#148 CLOSED、#149 OPEN、#173 OPEN、#189 OPEN、#190 OPEN、#365 / #366 / #367 OPEN、#389（PR）MERGED。
-* 本書の内部リンクは同ディレクトリの既存ファイルを指す。2026-10-29 に、PR #574 の head（`ed1ec32`）で機械検査し、欠落はなかった。
-* PR #574 の変更対象は文書 4 ファイルのみ（`docs/188-cd-read-transfer-mode-contract.md`、`docs/cd-base-contract.md`、`docs/cd-read-contract.md`、`docs/cd-read-mode-contract.md`）。`tools/cd_read_contract.py` は変更していない。
-* `docs/cd-read-mode-contract.md` の R3・R8 は、本 PR で UNKNOWN に変更した。`tools/cd_read_contract.py` の R3・R8 は、まだ `HYPOTHESIS` である（main 時点でも同じ）。#574 単体では、この不一致が残る。この不一致は PR #576（Issue #575）の担当範囲で、main では未解決。
+* PR #574 の head commit（記録上）は `89a2fcd` と `ed1ec32`。squash 後の `origin/main` の ce85915 の文書内容は、head `89a2fcd` の文書内容と一致する（確認済み）。ce85915 の変更対象は文書 4 ファイルのみ（`docs/188-cd-read-transfer-mode-contract.md`、`docs/cd-base-contract.md`、`docs/cd-read-contract.md`、`docs/cd-read-mode-contract.md`）で、`tools/` と `tests/` は含まない。
+* `docs/cd-read-mode-contract.md` の R3・R8 は #574 で UNKNOWN に変更した。`tools/cd_read_contract.py` の R3・R8 は #574 の時点では `HYPOTHESIS` のままだったが、PR #576（72de119、Issue #575）で UNKNOWN に揃えた。本書の時点の origin/main では、文書と tools の R3・R8 は一致する。
+* 本書の検証記録（本修正の作成時。基点 origin/main `72de119`、worktree 上の全リポジトリ木）:
+  * 相対 Markdown リンク: 対象 5 文書（本書、`cd-base-contract.md`、`cd-read-contract.md`、`cd-read-mode-contract.md`、`cd-base-abi-ledger.md`）の相対リンク 29 件を検査し、欠落 0。
+  * host 試験（`python -I`、`tests/host`）: `test_cd_read_contract` 56 件 OK、`test_cd_read_mode2_fixture` 7 件 OK、`test_cd_read_v16_contract` 45 件 OK、`test_cd_base_model` 28 件 OK。
+  * HuCC ソース（`include/hucc/`）はこのリポジトリにないため、本書と各台帳の HuCC 行番号は**未検証**（文書に引用されたもの）。
 * 「#573」は Issue 番号である（PR 番号ではない）。
-* 「28 件（実測）」は、`tests/host/test_cd_base_model.py` の実行結果に対応する（2026-10-29、head `ed1ec32` で `Ran 28 tests ... OK`）。CD_READ 関連の 3 モジュールの実行記録（80 件 OK）は、PR #503 のコメントにある（PR #503 の時点の記録）。
+* 過去の記録（参考）: CD_READ 関連 3 モジュールの当時の実行件数は、PR #503 のコメントにある。これは PR #503 の時点の記録であり、本修正の検証結果ではない。本書には件数を転記しない。
