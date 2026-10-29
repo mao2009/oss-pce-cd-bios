@@ -116,6 +116,48 @@ C28-C34 は「呼出側が観測していない」ことの記録であり、`UN
 P フラグ (N/V/Z/C/D/B/T)、スタック S、MPR0-2/5/6、IRQ/完了、`$20F8-$20F9`/`$20FF` の呼出後状態は、
 実コアで callee を実行して前後を比較するまで UNKNOWN である。§3 の副作用表もこれに対応する。
 
+### 2.4 呼出側ソースで確認した事実（SOURCE_CONFIRMED、別表）
+
+固定版 `54f5c73606c1e7142e8095c727cab2767e2b3cb3` の各ファイルを取得し、下表の行を直接読んだ（§1 の sha256 と一致を確認済み。`hucc-systemcard.h` は未取得のため、C05 は本表に含めない）。
+本表は §2.1 の Status を置き換えない。§2.1 の行は HYPOTHESIS / UNKNOWN のまま残す。
+本表の各行は「呼出側が命令として書いた事実」だけを載せ、その値が callee にとって何を意味するか、callee がどう読むかは含めない（それは §2.2 と HYPOTHESIS の行に残す）。
+UNOBSERVED の行（C28-C34）は UNKNOWN のままで、本表に入れない。
+
+| 事実 | 出典 (`include/hucc/`) | 行 | ソースの記述（確認した事実） | 何を読んだか |
+| --- | --- | --- | --- | --- |
+| F01 | pcengine.inc | 471 | `cd_read = $00:E009, FUNC` の宣言 | 宣言行を読み、エントリ番号の定義を確認した（呼出し命令ではない） |
+| F02 | pcengine.inc | 329-343 | `_ax`〜`_dh` を `$F8:20F8`〜`$F8:20FF` の別名として宣言 | 宣言行を読み、アドレスと幅（1 または 2 バイト）を確認した |
+| F03 | core.inc | 41-43 | マクロ `system`: `ldy #<\1` の後に `jsr call_bios` | マクロ本体の 3 行を読み、Y への書込みと呼出しを確認した |
+| F04 | hucc-systemcard.asm | 294-295 | `lda #$FF` → `sta <_dh` | 2 行を読み、_dh への $FF の書込みを確認した（297 行の `system cd_read` の直前） |
+| F05 | hucc-systemcard.asm | 322-323 | `lda #$FE` → `sta <_dh` | 2 行を読み、_dh への $FE の書込みを確認した |
+| F06 | hucc-systemcard.asm | 384 | `stz <_dh` | 行を読み、_dh のゼロ書込みを確認した（直後の 388 行が `system cd_read`） |
+| F07 | hucc-systemcard.asm | 381-382 | `sty <_ax`、`sta <_ah` | 2 行を読み、_ax の下位と上位バイトへの書込みを確認した |
+| F08 | hucc-systemcard.asm | 361 | `tii _bp, _bx, 2` | 行を読み、_bx への 2 バイト転送を確認した |
+| F09 | hucc-systemcard.asm | 436-438 | `lda <_dh`、`beq`、`sta <_al`（非 0 のとき） | 436-438 を読み、_dh を読んだ後に条件付きで _al へ書くことを確認した（§2.1 の C12 は行 436 だが、_al への書込みは 438） |
+| F10 | hucc-systemcard.asm | 440-441 | `lda #3` → `sta <_dh` | 2 行を読み、_dh への 3 の書込みを確認した |
+| F11 | hucc-systemcard.asm | 386 | `tii _bx, .cdread_ptr, 5` | 行を読み、_bx から 5 バイトを退避領域へ複写する命令を確認した |
+| F12 | hucc-systemcard.asm | 390, 392 | `bne .done`（390）の後に `tii .cdread_ptr, _bx, 5`（392） | 命令順を読み、390 の分岐が 392 の復元を飛ばすことを確認した |
+| F13 | hucc-systemcard.asm | 346-348 | `tma3`、`pha`、`tma4` | 3 行を読み、MPR3 と MPR4 の値を退避する命令を確認した |
+| F14 | hucc-systemcard.asm | 443-444、448-450 | `tma3`、`pha`（443-444）。`tax`、`pla`、`tam3`（448-450） | 退避と復元の命令列を読み、`system cd_read`（446）の前後で MPR3 を保存して戻すことを確認した |
+| F15 | hucc-systemcard.asm | 389-390 | `tax`（389）、`bne .done`（390） | 呼出し直後に A を X へ写し、NZ で分岐することを読んだ |
+| F16 | hucc-systemcard.asm | 300-302 | `cly`、`leave`（コメント「Return code in Y:X, X -> A」） | 3 行を読み、Y をゼロにしてから X を A に写して戻ることを確認した |
+| F17 | core-kernel.asm | 582-583 | `cla`、`tam7`（`exec_overlay`） | 2 行を読み、MPR7 へ 0 を書く命令を確認した（退避命令ではない） |
+| F18 | core-kernel.asm | 585 | `cli` | 行を読み、割込みフラグを解除する命令を確認した |
+| F19 | core-kernel.asm | 589-591 | `lda <core_1stbank`、`sta <_bl`、`stz <_bh` | 3 行を読み、_bl と _bh への書込みを確認した |
+| F20 | core-kernel.asm | 593-594 | `lda #6` → `sta <_dh` | 2 行を読み、_dh への 6 の書込みを確認した |
+| F21 | core-kernel.asm | 600 | `cmp #0`（直後に `bne .retry`） | 行を読み、呼出し後に A を読んで比較することを確認した |
+| F22 | core-kernel.asm | 539、543、545、547 | `get_file_lba:` の `cla`、`sta <_cl`、`sta <_ch`、`sta <_dl` | 4 箇所を読み、_cl、_ch、_dl への書込みを確認した |
+| F23 | hucc-systemcard.asm | 595-598 | `_add_sectors` の `adc <_dl`、`sta <_dl`、`adc <_ch` | 4 行を読み、_dl と _ch を加算して書くことを確認した（同じ行で _cl は書かれていない） |
+| F24 | core-startup.asm | 125-126 | `txa`、`tam0`（MPR0 = $FF） | 2 行を読み、X=$FF を A 経由で MPR0 へ写すことを確認した |
+| F25 | core-startup.asm | 127-128 | `lda #$F8`、`tam1` | 2 行を読み、MPR1 へ $F8 を写すことを確認した |
+
+**§2.1 の行番号と本表の不一致（記録のみ。既存の行は変えない。オーナー判断待ち）**:
+- C03（core-kernel.asm 509）: 509 行はコメントで、Y への書込みは F03（core.inc 42）。
+- C12（hucc-systemcard.asm 436）: 436 行は `_dh` の読取り。_al への書込みは F09（438 行）。
+- C16（hucc-systemcard.asm 594）: 594 行は `_add_sectors` の入口。_dl と _ch は F23。_cl はこの処理で書かれない。
+- C19（core-kernel.asm 503）: 503 行はコメント。MPR7 は F17 で 0 へ書かれ、退避ではない。
+- C27（hucc-systemcard.asm 448）: 448 行はコメント。MPR3 の復元は F14（449-450 行）。
+
 ## 3. callee副作用・戻り値
 
 | 項目 | 内容 | 状態 | 確定に必要な観測 |
