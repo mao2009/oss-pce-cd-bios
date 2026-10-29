@@ -408,7 +408,7 @@ ROM-Primitive の実装（`ad_reset_busy` の guest 実装など）は、本書�
 
 - 媒体が読み込まれていること。`ResetMedia` は媒体が読み込まれていない（`IsReady` が偽）と何もせず戻る（`geargrafx_core.cpp:387-388`）。戻り値はないため、ハーネスは呼出し前に `IsReady` を読んで記録する。偽なら試行を停止する（§7.1）。成功扱いにしない。
 - `SetResetValues` と `SetResetValue` は、`ResetMedia` より前に呼ぶ（値は reset の消費時に読まれる。§1）。
-- ブレークポイント一覧が空であること（M-E）。試行の開始前に、W0 の前と W1 の後の 2 回、ブレークポイント一覧の件数が 0 であることを読んで記録する。読取りの経路は、測定の前に固定版ソースで確認する。空でなければ、その試行は BLOCKED（実行しない）とし、系列を停止する。根拠: `ResetBreakpoints` は `m_breakpoints.clear()` を行い（`huc6280.cpp:297-299`）、`HuC6280::Reset`（`huc6280.cpp:207-270`）からは呼ばれていない（この範囲の確認による）。したがって `ResetMedia` は一覧を消さない。
+- ブレークポイント一覧が空であること（M-E）。試行の開始前に、W0 の前と W1 の後の 2 回、ブレークポイント一覧の件数が 0 であることを読んで記録する。読取りの経路は `HuC6280::GetBreakpoints()`（`huc6280.h:172`、`const std::vector<GG_Breakpoint>*` を返す）で、件数は要素数とする。測定の前に固定版ソースで再確認する。空でなければ、その試行は BLOCKED（実行しない）とし、系列を停止する。根拠: `ResetBreakpoints` は `m_breakpoints.clear()` を行い（`huc6280.cpp:297-299`）、`HuC6280::Reset`（`huc6280.cpp:207-270`）からは呼ばれていない（この範囲の確認による）。したがって `ResetMedia` は一覧を消さない。
 - GeargrafxCore の生成時の挙動は未確認である（m-4）。確認したのは `Memory` の生成で既定値の `Reset` が走ること（`memory.cpp:97`）だけである。
 - 同一インスタンスであることの証拠を §14.5 の手順で残す。
 
@@ -422,15 +422,15 @@ ROM-Primitive の実装（`ad_reset_busy` の guest 実装など）は、本書�
 4. **W0 を採取する**（ResetMedia の前。残存状態。記録のみで判定しない）。
 5. `GeargrafxCore::ResetMedia(false)` を呼ぶ。
 6. **W1 を採取する**（ResetMedia の直後、再配置の前）。
-7. 再配置: `GetMemory()->GetWorkingRAM()` への memcpy（既存のハーネスと同じ。または `Memory::TryPoke`、`memory.h:66-67`）でゲストのバイト列を置く。`SetMpr(0, $00)`、`SetMpr(1, $F8)`、`SetMpr(2..7, $00)`（`memory.h:69`。probe 73ef6ac の `tests/integration/geargrafx_ad_reset_full.cpp:168-171` と同じ。ADPCM は device 層（ハーネス）で操作するため、MPR0 は `$00` とする）。`LoadHuCardFromBuffer` は使わない（ROM を再ロードするため）。
-8. PC の設定: `GetHuC6280()->GetState()->PC->SetValue(0x3E00)`（`huc6280.h:59-73`）。任意で `ResetDebuggerExecutionState()`（`huc6280.h:175`）を呼ぶ。呼ぶかどうかは測定前に固定し、ログに記録する。S を `$FF`、P を `$04`（I=1）に設定する（`GetState()->S->SetValue(0xFF)`、`GetState()->P->SetValue(0x04)`。probe 73ef6ac の `:176-177`、#404 の `tests/integration/geargrafx_ad_reset_guest.cpp:63-64` と同じ）。reset が乱数化する S と P を、ハーネスが決めた値に置く（m-2）。
+7. 再配置: `GetMemory()->GetWorkingRAM()` への memcpy（既存のハーネスと同じ。または `Memory::TryPoke`、`memory.h:66-67`）でゲストのバイト列を置く。`SetMpr(0, $00)`、`SetMpr(1, $F8)`、`SetMpr(2..7, $00)`（`memory.h:69`）。MPR0 を `$00` にする理由は、ADPCM をハーネスの device 層で操作するため、MMIO ページ `$FF` を外すことである。probe の同じ設定は `feature/issue-295-probe-full-capture@f152171` の `tests/integration/geargrafx_ad_reset_full.cpp` の `:215-218` にある。`LoadHuCardFromBuffer` は使わない（ROM を再ロードするため）。
+8. PC の設定: `GetHuC6280()->GetState()->PC->SetValue(0x3E00)`（`huc6280.h:59-73`）。任意で `ResetDebuggerExecutionState()`（`huc6280.h:175`）を呼ぶ。呼ぶかどうかは測定前に固定し、ログに記録する。S を `$FF`、P を `$04`（I=1）に設定する（`GetState()->S->SetValue(0xFF)`、`GetState()->P->SetValue(0x04)`。probe は `feature/issue-295-probe-full-capture@f152171` の `tests/integration/geargrafx_ad_reset_full.cpp` の `:223-224`、#404 は `tests/integration/geargrafx_ad_reset_guest.cpp:63-64` で同じ）。reset が乱数化する S と P を、ハーネスが決めた値に置く（m-2）。
 9. **W2 を採取する**（再配置と PC 設定の後）。
 10. §14.6 の静的チェックと動的 MPR 検出を実行し、結果を記録する。失敗なら停止する。
 11. 試行 1 と試行 2 の両方で、§2.1 の PLAY_ACTIVE の手順（ADPCM の設定、T_b、T_r、reset 発行、P0〜P3）を最後まで行う。試行 2 だけを warm として計上する。試行 1 は区分外である（§14.9）。
 
 ### 14.4 ゲストの開始点
 
-- 開始点の論理アドレスは `$3E00` とする。ここに `BRA *`（バイト列 `$80 $FE`）を置く。これは #404 の検査用ゲストと同じである（#404 の `tests/integration/geargrafx_ad_reset_guest.cpp:20-21` は論理アドレスの定義、`:55-62` は MPR 設定と配置の順序）。バイト列の出典は、probe 73ef6ac の `tests/integration/geargrafx_ad_reset_full.cpp:173-174`（`wram[kStubIndex] = 0x80; wram[kStubIndex + 1] = 0xFE;`）と、既存の生ログの `bytes_hex` の `"80fe"` である。
+- 開始点の論理アドレスは `$3E00` とする。ここに `BRA *`（バイト列 `$80 $FE`）を置く。論理アドレスの定義は #404 の `tests/integration/geargrafx_ad_reset_guest.cpp:20-21`、MPR 設定と配置の順序は同 `:55-62` にある。バイト列の根拠は二つである。第一に、既存の生ログの `bytes_hex`（`"80fe"`）。第二に、probe の出典 `feature/issue-295-probe-full-capture@f152171` の `tests/integration/geargrafx_ad_reset_full.cpp` の `:220-221`（`wram[kStubIndex] = 0x80;` と `wram[kStubIndex + 1] = 0xFE;`）。
 - MPR1 = `$F8` により、論理 `$3E00` は WRAM のインデックス `$1E00` に対応する。
 - ゲストは MMIO にアクセスしない。ADPCM の操作はハーネスが device 層で行う。
 
