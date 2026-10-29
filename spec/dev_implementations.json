@@ -945,12 +945,20 @@
       "candidate_name": "EX_SETWRT",
       "state": "NOT_READY",
       "abi_contract": {
-        "status": "UNKNOWN",
+        "status": "PROJECT_SPEC_ONLY",
         "note": "reference System Card contract not verified; DEV-only project spec"
       },
-      "implementation": null,
-      "host_evidence": [],
+      "implementation": {
+        "source": "src/overrides/slot_3A.s",
+        "license": "MIT (repository LICENSE)",
+        "provenance": "project-own contract in slot_3A.s header (Issue #68)"
+      },
+      "host_evidence": [
+        "tests/host/test_ex_setwrt.py"
+      ],
       "real_core_evidence": [],
+      "real_core_gate": "tests/integration/geargrafx_dev_ex_setwrt.py (pinned Geargrafx; run by make dev-integration; output not committed). A gate, NOT recorded evidence; real_core_evidence stays empty until an owner-approved observation is committed.",
+      "note": "DEV ROM implementation; the Geargrafx E2E probe observes A/X/Y/P, SP, MPR, RAM and HuC6270 MAWR. This is project-contract evidence only; NOT_READY until owner approval is recorded",
       "approval": {
         "approved_by": null,
         "review_ref": null

@@ -2,7 +2,7 @@
 
 対象: スロット `$02`、エントリ `$E006`（`CD_BASE`）。親は #11。本書は調査台帳であり、ROM 実装・`spec/`・`docs/abi-contracts.md`・
 `docs/cd-base-abi-ledger.md` は変更しない。**実コアでの測定は一件もない。このため本書に VERIFIED はない**
-（既存台帳の VERIFIED はすべて「呼出側ソースにこの記述がある」という意味で、そのまま維持する）。
+（既存台帳の記録は、呼出側ソースの記述を確認した事実であり、本書では `SOURCE_CONFIRMED` と呼ぶ。`VERIFIED` とは呼ばない）。
 
 ## 1. 追加した独立候補の出典（#128 台帳に無かったもの）
 
@@ -18,17 +18,16 @@ W1・W2 は本文を言い換えて引用し、BIOS のバイト列・逆アセ�
 ただし W1 の著者が HuCC を参照した可能性を排除できないため、**独立した二つの証拠とは数えない**（独立性は UNKNOWN）。
 相反する記述は見つからなかった。W1 の「`recbase1` は読込み失敗後のみ使う」は、#128 台帳 §3 補足の「2ISO 経路の矛盾」を解く**候補**にとどまる（下記 (4)）。**矛盾は OPEN のまま**（実コア証拠なし）。
 
-補強（監査で追加）: Hu-Go! `mckayemu/hugo@64ed226d` `bios.c` L388-392 の HLE も CD_READ で `$2274+3*[$2273]` の3バイトをブロック番号に加算する（`$2273`=W1 の `retry?` と一致）。HLE であり実BIOSでなく、W1 との独立性も不明なので HYPOTHESIS を上げる根拠にはしない。
+参照のみ（補強には使わない）: Hu-Go! `mckayemu/hugo@64ed226d` `bios.c` の HLE は、ライセンス・帰属が未確定のため内容を参照しない（`docs/cd-base-abi-ledger.md` §1）。HLE であり実 BIOS の証拠にならないため、HYPOTHESIS の根拠にも独立した補強にも数えない。
 
-**#148 台帳（`docs/research/148-cd-read-abi.md`）との関係**: #148 は当初、基点を UNKNOWN としていた。本書の「相対」は W1（と HLE）に依るのみで、両台帳とも §6 / 項目4 で同じ状態（HYPOTHESIS、実コア未測定、2ISO 矛盾 OPEN）に揃えた。
-
+**#148 台帳（`docs/research/148-cd-read-abi.md`）との関係**: #148 は当初、基点を UNKNOWN としていた。本書の「相対」は W1 に依るのみで、両台帳とも §6 / 項目4 で同じ状態（HYPOTHESIS、実コア未測定、2ISO 矛盾 OPEN）に揃えた。
 ## 2. 六項目の判定
 
-状態語: VERIFIED（実コア証拠あり。今回 0 件）/ HYPOTHESIS（出典の記述はあるが呼出先未測定）/ UNKNOWN / BLOCKED（観測手段が現状ない）。
+状態語（`docs/cd-base-abi-ledger.md` §1 と同じ）: `SOURCE_CONFIRMED`（公開ソースの記述の確認。呼出側ソースにのみ使い、呼出先の振る舞いには付けない）/ `HYPOTHESIS`（出典に基づく未確認の動作仮説）/ `MEASURED`（実測。本書には 0 件）/ `UNKNOWN`（根拠不足。推測で埋めない）/ `BLOCKED`（安全条件や依存関係の未成立で確認できない）/ `VERIFIED`（本書では付けない）。
 
 | # | 項目 | 判定 | 独立した根拠（出典） | 観測可能性 | 決着に必要な観測 |
 | --- | --- | --- | --- | --- | --- |
-| 1 | 引数の場所 | HYPOTHESIS（呼出側の書込みのみ既存どおり VERIFIED-source。呼出先の読取りは UNKNOWN） | S1 と W1 が整合: `_BH=$80` が「CD-TNO モード」、`_AL`=BCD のトラック番号、`_CL` が設定先（`$01`=recbase0、`$02`=recbase1）。LBA・MSF 指定時のレジスタ割当と `$80` 以外のモード値は W1 に**記載なし**。`_BL`・`_DL`・`_CH` の役割も不明 | 現状 BLOCKED（実行可能な呼出先なし。`docs/cd-base-abi-ledger.md` §4a） | 実 System Card を載せたコアで `JSR $E006` を実行し、`_AL/_BH/_BL/_CL/_DL/_CH` を一つずつ変えて、後続 CD_READ の SCSI READ LBA と作業 RAM 差分を記録（入力感度試験） |
+| 1 | 引数の場所 | HYPOTHESIS（呼出側の書込みは SOURCE_CONFIRMED。呼出先の読取りは UNKNOWN） | S1 と W1 が整合: `_BH=$80` が「CD-TNO モード」、`_AL`=BCD のトラック番号、`_CL` が設定先（`$01`=recbase0、`$02`=recbase1）。LBA・MSF 指定時のレジスタ割当と `$80` 以外のモード値は W1 に**記載なし**。`_BL`・`_DL`・`_CH` の役割も不明 | 現状 BLOCKED（実行可能な呼出先なし。`docs/cd-base-abi-ledger.md` §4a） | 実 System Card を載せたコアで `JSR $E006` を実行し、`_AL/_BH/_BL/_CL/_DL/_CH` を一つずつ変えて、後続 CD_READ の SCSI READ LBA と作業 RAM 差分を記録（入力感度試験） |
 | 2 | ブロック番号は絶対 LBA か相対か | HYPOTHESIS: 相対（データトラック先頭基準） | W1「CD_READ は recbase0 を加算」「LBA はデータトラック先頭からの相対」。ただし「先頭」が INDEX 01 か PREGAP 先頭か、LBA の 0 が MSF 00:02:00 かは**記載なし**。HuCC S5/S4 は ISO 由来値を渡す（既存台帳どおり） | BLOCKED | INDEX 01 ≠ 0 の合成ディスク（PREGAP 付き。`tools/cd_base_probe.py`）で、リセット直後に CD_BASE なしで CD_READ を二つ以上のブロック番号で実行し、READ LBA − ブロック番号を記録。既存の四署名（`ABS_LBA` 等）のどれに一致するかで判定 |
 | 3 | 基準値の設定と保持 | HYPOTHESIS（部分） | W1: 基準は `recbase0`/`recbase1` の二つ。System Card が起動時に両方を「最初のデータトラックの LBA」に初期化する。保持期間、格納アドレス、CD_RESET での扱いは**記載なし**。「最初のデータトラックの LBA」の LBA が INDEX 01 か PREGAP 先頭かも不明 | BLOCKED | リセット直後、CD_BASE 後、CD_RESET 後、二回目の CD_READ 後に作業 RAM 全体を取り、`recbase0/1` の位置と値を特定。PREGAP 付きディスクで初期値が 150 か 0 かを読む |
 | 4 | CD_READ との関係 | HYPOTHESIS | W1: CD_BASE は `cd_read`・`cd_exec`・`cd_seek` 等の基準を変える。通常の読込みは recbase0、recbase1 は失敗後のみ。**含意**: HuCC の 2ISO 経路（S1、`_cl=2`）は recbase1 だけを設定するので、通常のオーバーレイ読込み（S5）の基準は変わらず、既存台帳の「矛盾」は成立しない可能性がある。ただしこれは W1 の読み方に依存する推論で未測定であり、**矛盾は OPEN として残す** | BLOCKED | `_CL=1` と `_CL=2` のそれぞれで CD_BASE → CD_READ（正常系）を実行し READ LBA を比較。さらに読込み失敗を人為的に起こし（READ 失敗の注入）、再試行が recbase1 を使うかを SCSI 層で観測 |
@@ -51,3 +50,7 @@ W1・W2 は本文を言い換えて引用し、BIOS のバイト列・逆アセ�
 
 1. 公式 System Card マニュアル（archive.org 等）を入手できれば、項目 1・2・6 の記述を再照合する（版・ライセンスを記録）。
 2. maintainer が私的 System Card を用いた実コア測定を許可した場合のみ、§2 の「必要な観測」を実行し `tools/cd_base_probe.judge` に渡す。
+
+## 変更履歴
+
+- 2026-10-29（PR #571 の修正）: 監査で追加した Hu-Go! HLE の補強記述を「参照のみ」へ変更し、HLE の式の転記を削除した。#148 との整合根拠を W1 のみとした。旧版は Hu-Go! HLE を補強として挙げていたため、その記述は撤回する。
