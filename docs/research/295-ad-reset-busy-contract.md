@@ -152,19 +152,27 @@
 - `$04` / `$80` が転送 busy であることを、ソースまたは実測で確定する（UNKNOWN を解消する）。
 - 独立レビューで、TRANSFER_BUSY の観測点と判定基準の固定を承認する。
 
-### 3.5 開始条件（Issue 本文との対応）
+### 3.5 開始条件（区分ごと）
 
-Issue #295 の「依存・開始条件」の原文は「Contract/Fixture/Diagnostic の根拠と必要なハード状態が確定し、前提 PR が main に統合された場合のみ」である。開始条件は次の 3 つである。
+Issue #295 の「依存・開始条件」の原文は「Contract/Fixture/Diagnostic の根拠と必要なハード状態が確定し、前提 PR が main に統合された場合のみ」である。本書は、この条件を区分ごとに次の表で読む。
 
-| 開始条件（Issue 本文） | 状態 | 根拠 | 未充足の理由 |
+| 条件 | PLAY_ACTIVE（§2.1） | warm（§14） | TRANSFER_BUSY（§2.2） |
 | --- | --- | --- | --- |
-| Contract/Fixture/Diagnostic の根拠が確定 | 一部充足 | `ad-reset-contract.md`、`ad-reset-fixture.md`、`ad-reset-diagnostic.md`（UNCONFIRMED: 本書で内容を確認していない）、本書 §3.0 | busy の判定に使う `$04` / `$80` の意味が UNKNOWN |
-| 必要なハード状態が確定 | 未充足 | §3.4 の 3 条件 | TRANSFER_BUSY の観測点、busy の確定、DMA 経路の扱いが未解決 |
-| 前提 PR が main に統合 | 充足（CONFIRMED） | PR #403 は 2026-10-21T00:57:46Z、PR #404 は 2026-10-21T01:42:48Z に merge | なし |
+| (a) 前提 PR（#403、#404）が main に統合 | 充足（CONFIRMED。#403 は 2026-10-21T00:57:46Z、#404 は 2026-10-21T01:42:48Z に merge） | 充足（同左） | 充足（同左） |
+| (b) 本契約の独立レビューによる承認 | 未充足（NOT_RUN） | 未充足（NOT_RUN） | 未充足（NOT_RUN） |
+| (c) 判定に使う観測点の出典が確定 | 充足（`$08` と PLAYING は `adpcm_inline.h:84` の `m_playing`。CONFIRMED） | 充足（同左。W0〜W2 は既存の状態読取り） | 未充足（`$04` / `$80` の意味は UNKNOWN） |
+| (d) §3.4 の BLOCKER 解除条件（3 条件） | 対象外 | 対象外（gate の BLOCKER は §14.6 で維持） | 未充足 |
+| 実行状態 | 開始しない（(b) が未充足のため） | 開始しない（(b) が未充足のため） | BLOCKER。試行は BLOCKED |
 
-判定: 開始条件のうち「一部充足」と「未充足」が残るため、測定の開始は BLOCKER であり、実行状態は BLOCKED とする。TRANSFER_BUSY は §3.4 の解除条件をすべて満たすまで BLOCKER のままとする。
+判定:
 
-注（開始条件ではない）: 独立再レビューは Issue の開始条件ではない。本書の承認手続きとして別に扱い、§13 の 5 で残件とする。現時点では未実施（NOT_RUN）であり、承認前は測定を行わない。
+- **PLAY_ACTIVE の開始条件は (a)、(b)、(c) である。** (d) は対象外である。(b) が充足されれば、(a) と (c) により開始できる。
+- **warm の開始条件は、PLAY_ACTIVE の (a)、(b)、(c) に加えて、§14.2 の前提（媒体の読込み済み、ブレークポイント一覧が空）である。**
+- **TRANSFER_BUSY だけが BLOCKER である**（(c) と (d) が未充足）。TRANSFER_BUSY は (a)、(b)、(c)、(d) をすべて満たすまで実行しない。
+- PLAY_ACTIVE と warm は、(b) が未充足であるため「開始しない」状態であり、BLOCKER とは呼ばない。
+- §12 と §14 の両立: §12 の「PLAY_ACTIVE は (b) の充足まで開始しない」と、§14 の「独立レビュー後に warm を行う」は、どちらも条件 (b) に依る同じ条件である。
+
+注: 独立レビューは Issue の開始条件ではなく、本書の承認手続きである。§13 の 5 で残件とする。現時点では未実施（NOT_RUN）であり、承認前は PLAY_ACTIVE も warm も測定を行わない。
 
 ## 4. reset 要求の発行方法（手順のみ）
 
@@ -202,7 +210,7 @@ Issue #295 の「依存・開始条件」の原文は「Contract/Fixture/Diagnos
 
 - ハードウェアの仕様や実時間。PC Engine の実フレームレート、ADPCM の実時間は UNKNOWN であり、フレーム数を秒やクロック数に換算する根拠はない。
 - 期待される結果や判定値。判定は §9.2 の基準で、測定後に別の結果文書で行う。
-- 測定の実績。本書の時点で、これらの上限に対応する試行は 0 件である。
+- 測定の実績。本契約の区分（§8）に対応する試行は 0 件である。契約の外の既存記録として PLAY_ACTIVE の 25 試行がある（§15）。それらに本契約の上限が適用されたかは記録から確認できず、本契約の集計には入れない。
 
 数値はすべて本文書が選んだ値である。選定理由は下表の「理由」欄に記す。
 
@@ -357,9 +365,9 @@ BLOCKER の項目は **11 件**（B1〜B11）である。初版は 10 件で、B
 | --- | --- | --- |
 | 出典 | device 層: `ad-reset-diagnostic.md` §3・§5（#294、記録あり。ログ本体は本書で未読）。guest 層: PR #403（merged 2026-10-21T00:57:46Z）と PR #404（merged 2026-10-21T01:42:48Z）の本文の記述（ログ本体は未読） | 本書（新規） |
 | 前提条件 | アイドル（PLAYING = 0、busy なし）から reset | §3.3 の区分ごとの成立条件を T_b と T_r で確認した後に reset |
-| 観測の範囲 | 既存の観測はいずれも、busy からの reset ではない。PR #404 本文は実コアでの実行結果を記すが、本書はその値を再掲しない（ログ未読のため）。実機・第 2 エミュレータは未実施（NOT_RUN、PR #404 本文） | 観測 0 件（§3.4 の BLOCKER により、実行状態は BLOCKED） |
+| 観測の範囲 | 既存の観測はいずれも、busy からの reset ではない。PR #404 本文は実コアでの実行結果を記すが、本書はその値を再掲しない（ログ未読のため）。実機・第 2 エミュレータは未実施（NOT_RUN、PR #404 本文） | TRANSFER_BUSY の観測 0 件（§3.4 の BLOCKER により、実行状態は BLOCKED）。契約の外の既存記録として PLAY_ACTIVE の 25 試行がある（§15。契約の集計には入れない） |
 | 既存の再生中 reset との関係 | #294 の `neg-reset-playing` は、CONTROL `$A0`（bit5 残存）での reset である。本書の `arm-B` に相当する。PLAY_ACTIVE（CONTROL `$80` での reset）の結果ではない | PLAY_ACTIVE（CONTROL `$80` での reset）を測定する。TRANSFER_BUSY は BLOCKER |
-| 区分 | §8 の cold、warm、new-process の区分は既存観測に適用していない（PR 本文に記載なし） | §3.3 の測定区分のうち PLAY_ACTIVE は busy reset ではない。PLAY_ACTIVE の測定も、§3.5 の開始条件が充足されるまでは開始しない（BLOCKER）。busy reset（TRANSFER_BUSY）の区分は BLOCKER（§3.4） |
+| 区分 | §8 の cold、warm、new-process の区分は既存観測に適用していない（PR 本文に記載なし） | §3.3 の測定区分のうち PLAY_ACTIVE は busy reset ではない。PLAY_ACTIVE の測定は、§3.5 の (b)（独立レビューの承認）が充足されるまで開始しない（未充足。BLOCKER ではない）。busy reset（TRANSFER_BUSY）の区分は BLOCKER（§3.4） |
 | 独立レビュー・CI | 独立レビュー未実施（診断 §5、PR #404 本文）。CI 未配線（PR #404 本文、§13 の 7） | 測定、独立レビュー、TRANSFER_BUSY の BLOCKER 解除条件（§3.4）の判定 |
 
 idle reset の結果を busy reset の結果として数えない。両者は別の観測として記録する。
@@ -370,7 +378,7 @@ Issue #295 の完了条件は「既知の ADPCM controller reset と busy 状態
 
 PLAY_ACTIVE（CONTROL `$80` での reset）の観測は、Issue の「busy」とは別の区分の観測である。Issue の完了条件 1 を満たす根拠としては扱わない。`arm-B`（`$A0`）は、#294 の既存観測との対応を見るための比較用の参照であり、Issue の完了条件とは結び付けない。
 
-1. PLAY_ACTIVE の実コア測定（§8 の区分ごとの最小数、§9 の判定を併記）。開始は §3.5 の開始条件の充足後（BLOCKER）。
+1. PLAY_ACTIVE の実コア測定（§8 の区分ごとの最小数、§9 の判定を併記）。開始は §3.5 の (a)、(b)、(c) の充足後。
 2. TRANSFER_BUSY の BLOCKER 解除条件（§3.4 の 3 点）の判定。解除できない場合は、転送 busy 中の reset を #295 の範囲外とするか、別の子 Issue に分けるかを判定する。
 3. `arm-B`（bit5 を残す要求）を #295 の範囲に含めるか、比較用の参照として別に扱うかの判定。
 4. IRQ マスクと保留フラグの保持場所の確認（§5 の UNKNOWN の解消）。
@@ -393,13 +401,15 @@ ROM-Primitive の実装（`ad_reset_busy` の guest 実装など）は、本書�
 - **不採用（方式 b）**: 前の試行の状態を持ち越して次の試行に使うこと。
 - 方式 a を「リセットを伴わない連続動作」とは表現しない。方式 a は、明示的なリセットを経て同一インスタンスで再開始する試行である。
 - 方式 a の reset が初期化しない範囲（ブレークポイント一覧、ディスアセンブルレコード、TurboLink 関連、LaserActive の一部、BRAM の扱い）には、前の試行の残存状態が残りうる。これは R6 の差異として記録する（§9.2）。
-- reset が初期化する範囲は、固定版ソースの読取りに基づく（未実測）。CPU（PC は `$FFFE` から読む。A、X、Y、S、P は既定で乱数。I=1。IRR、IDR=0。コールスタックをクリア。ブレークポイント要求をクリア）、WRAM 8 KiB、MPR0〜6（既定で乱数）と MPR7=0、ADPCM（状態、CONTROL=0、サンプルレート `$0F`、ADPCM RAM 64 KiB をゼロ）、IRQ（CPU の IDR、IRR、VDC、CD、ADPCM の end、half フラグ）。
+- reset が初期化する範囲は、固定版ソースの読取りに基づく（未実測）。CPU（PC は `$FFFE` から読む。A、X、Y、S、P は既定で乱数。I=1。IRR、IDR=0。コールスタックをクリア。run-to-breakpoint 要求をクリア（ブレークポイントの一覧は消えない。§14.2））、WRAM 8 KiB、MPR0〜6（既定で乱数）と MPR7=0、ADPCM（状態、CONTROL=0、サンプルレート `$0F`、ADPCM RAM 64 KiB をゼロ）、IRQ（CPU の IDR、IRR、VDC、CD、ADPCM の end、half フラグ）。
 - 根拠（固定版 b49ae82a の読取り）: `src/geargrafx_core.h:81`、`src/geargrafx_core.cpp:385-407`、`src/memory.cpp:100-126`、`src/adpcm.cpp:142-172`、`src/huc6280.h:139`、`:142`、`:175`。
 
 ### 14.2 前提条件（ResetMedia の前に確認する）
 
 - 媒体が読み込まれていること。`ResetMedia` は媒体が読み込まれていない（`IsReady` が偽）と何もせず戻る（`geargrafx_core.cpp:387-388`）。戻り値はないため、ハーネスは呼出し前に `IsReady` を読んで記録する。偽なら試行を停止する（§7.1）。成功扱いにしない。
 - `SetResetValues` と `SetResetValue` は、`ResetMedia` より前に呼ぶ（値は reset の消費時に読まれる。§1）。
+- ブレークポイント一覧が空であること（M-E）。試行の開始前に、W0 の前と W1 の後の 2 回、ブレークポイント一覧の件数が 0 であることを読んで記録する。読取りの経路は、測定の前に固定版ソースで確認する。空でなければ、その試行は BLOCKED（実行しない）とし、系列を停止する。根拠: `ResetBreakpoints` は `m_breakpoints.clear()` を行い（`huc6280.cpp:297-299`）、`HuC6280::Reset`（`huc6280.cpp:207-270`）からは呼ばれていない（この範囲の確認による）。したがって `ResetMedia` は一覧を消さない。
+- GeargrafxCore の生成時の挙動は未確認である（m-4）。確認したのは `Memory` の生成で既定値の `Reset` が走ること（`memory.cpp:97`）だけである。
 - 同一インスタンスであることの証拠を §14.5 の手順で残す。
 
 ### 14.3 順序（系列 W の各試行で同じ順序）
@@ -412,15 +422,15 @@ ROM-Primitive の実装（`ad_reset_busy` の guest 実装など）は、本書�
 4. **W0 を採取する**（ResetMedia の前。残存状態。記録のみで判定しない）。
 5. `GeargrafxCore::ResetMedia(false)` を呼ぶ。
 6. **W1 を採取する**（ResetMedia の直後、再配置の前）。
-7. 再配置: `GetMemory()->GetWorkingRAM()` への memcpy（既存のハーネスと同じ。または `Memory::TryPoke`、`memory.h:66-67`）でゲストのバイト列を置く。`SetMpr(0, $FF)`、`SetMpr(1, $F8)`、`SetMpr(2..6, $00)`（`memory.h:69`）。MPR7 は 0 のまま。`LoadHuCardFromBuffer` は使わない（ROM を再ロードするため）。
-8. PC の設定: `GetHuC6280()->GetState()->PC->SetValue(0x3E00)`（`huc6280.h:59-73`）。任意で `ResetDebuggerExecutionState()`（`huc6280.h:175`）を呼ぶ。呼ぶかどうかは測定前に固定し、ログに記録する。
+7. 再配置: `GetMemory()->GetWorkingRAM()` への memcpy（既存のハーネスと同じ。または `Memory::TryPoke`、`memory.h:66-67`）でゲストのバイト列を置く。`SetMpr(0, $00)`、`SetMpr(1, $F8)`、`SetMpr(2..7, $00)`（`memory.h:69`。probe 73ef6ac の `tests/integration/geargrafx_ad_reset_full.cpp:168-171` と同じ。ADPCM は device 層（ハーネス）で操作するため、MPR0 は `$00` とする）。`LoadHuCardFromBuffer` は使わない（ROM を再ロードするため）。
+8. PC の設定: `GetHuC6280()->GetState()->PC->SetValue(0x3E00)`（`huc6280.h:59-73`）。任意で `ResetDebuggerExecutionState()`（`huc6280.h:175`）を呼ぶ。呼ぶかどうかは測定前に固定し、ログに記録する。S を `$FF`、P を `$04`（I=1）に設定する（`GetState()->S->SetValue(0xFF)`、`GetState()->P->SetValue(0x04)`。probe 73ef6ac の `:176-177`、#404 の `tests/integration/geargrafx_ad_reset_guest.cpp:63-64` と同じ）。reset が乱数化する S と P を、ハーネスが決めた値に置く（m-2）。
 9. **W2 を採取する**（再配置と PC 設定の後）。
 10. §14.6 の静的チェックと動的 MPR 検出を実行し、結果を記録する。失敗なら停止する。
-11. 試行 2 のみ、§2.1 の PLAY_ACTIVE の手順（ADPCM の設定、T_b、T_r、reset 発行、P0〜P3）に進む。試行 2 だけを warm として計上する。
+11. 試行 1 と試行 2 の両方で、§2.1 の PLAY_ACTIVE の手順（ADPCM の設定、T_b、T_r、reset 発行、P0〜P3）を最後まで行う。試行 2 だけを warm として計上する。試行 1 は区分外である（§14.9）。
 
 ### 14.4 ゲストの開始点
 
-- 開始点の論理アドレスは `$3E00` とする。ここに `BRA *`（バイト列 `$80 $FE`）を置く。これは #404 の検査用ゲストと同じである（`tests/integration/geargrafx_ad_reset_guest.cpp:20-21`、`:55-62`）。
+- 開始点の論理アドレスは `$3E00` とする。ここに `BRA *`（バイト列 `$80 $FE`）を置く。これは #404 の検査用ゲストと同じである（#404 の `tests/integration/geargrafx_ad_reset_guest.cpp:20-21` は論理アドレスの定義、`:55-62` は MPR 設定と配置の順序）。バイト列の出典は、probe 73ef6ac の `tests/integration/geargrafx_ad_reset_full.cpp:173-174`（`wram[kStubIndex] = 0x80; wram[kStubIndex + 1] = 0xFE;`）と、既存の生ログの `bytes_hex` の `"80fe"` である。
 - MPR1 = `$F8` により、論理 `$3E00` は WRAM のインデックス `$1E00` に対応する。
 - ゲストは MMIO にアクセスしない。ADPCM の操作はハーネスが device 層で行う。
 
@@ -443,7 +453,11 @@ ROM-Primitive の実装（`ad_reset_busy` の guest 実装など）は、本書�
 ### 14.7 採取の時点と R5 の判定
 
 - W0（ResetMedia の前）: 残存状態。CPU、MPR、WRAM、ADPCM、IRQ を記録する。判定しない。
-- W1（ResetMedia の直後）: 判定対象は WRAM のゼロ初期化である。WRAM 全 8 KiB が、設定した初期化値 0 と一致することを、区分内の全試行で確認する。これは設定値との一致の確認であり、ハードウェアの期待値ではない。
+- W1（ResetMedia の直後）: 次の項目について、設定値（または固定版ソースの読取りで定まる値）との一致を確認する。これらは設定値との一致の確認であり、ハードウェアの期待値ではない。区分内の全試行で同じ項目を確認する。
+  - WRAM 全 8 KiB（`m_wram[0x0000–0x1FFF]`）: 設定値 0（`SetResetValues` の wram。`memory.cpp:122-125`）。
+  - MPR0〜MPR6: 設定値 0（`SetResetValues` の mpr。`memory.cpp:106-118`）。MPR7: 0（`memory.cpp:104`）。
+  - CPU の P: I フラグが 1。IRR と IDR が 0（固定版 `huc6280.cpp` の Reset の範囲、§14.1）。
+  - ADPCM: CONTROL（`$0D` の読戻し）が 0、サンプルレートが `$0F`、ADPCM RAM 64 KiB がゼロ（`adpcm.cpp:142-172`）。
 - W2（再配置と PC 設定の後）: ハーネスが書いた領域（ゲストのバイト列、MPR の設定値、PC の設定値）が、書いた値と一致することを確認する（R5）。
 - W0 と W1 の差は、reset の効果として記録のみ行う（R2c と同じ扱い。判定は別文書）。
 - 残存状態（W0）と再初期化後の状態（W1、W2）を混同しない。W0 の値を、再初期化後の期待値として使わない。
@@ -458,8 +472,9 @@ ROM-Primitive の実装（`ad_reset_busy` の guest 実装など）は、本書�
 
 ### 14.9 ウォームアップ（試行 1）
 
-- 試行 1 は、インスタンス作成直後の一連の手順を 1 回行う。観測値と終了状態を記録する。
-- 試行 1 は区分外である（§8）。正例にも負例にも使わない。
+- 試行 1 は、§14.3 の 1〜10 の手順を行い、続けて §2.1 の PLAY_ACTIVE の手順を最後まで行う。試行 2 と同じ形式で全項目を採取する。
+- 試行 1 の最終状態は、試行 1 の P3（§5 の発行後の予算終了時、または §7 の停止時）とする。P3 の時点の PC、MPR、WRAM、ADPCM 状態、IRQ 状態、S2 の全項目を記録し、終了状態（§3.3）を付ける。P0〜P2 も §5 と同じ形式で記録する。
+- 試行 1 は区分外である（§8）。正例にも負例にも使わない。終了状態は系列の停止条件（§14.8）にのみ使う。
 
 ### 14.10 停止後の規則
 
@@ -478,9 +493,20 @@ ROM-Primitive の実装（`ad_reset_busy` の guest 実装など）は、本書�
   - 修正 2 回目: `8fd587e16fce1c3145ddbed5cdd5baff025f5ff0`
   - 修正 3 回目（独立レビュー不承認への対応）: `a021efb1202df907d500fbaf685f496474407748`
   - 修正 4 回目（再レビュー条件付き承認への対応。改訂 R5 の直前）: `97de277aea236f388e4dc58b57ae1ac9264dca22`
-- **既存の測定ログ（保存のみ。本改訂では変更していない）**: 次の生ログが確認できた。目標の cold 5、new-process 20 に対し、確認できた生ログは cold 4、new-process 1 である。残りは未取得として扱う。
-  - cold（区分 cold、series repeat 0）: `C:/Users/Hobart/AppData/Local/Temp/claude/C--Users-Hobart-Documents-Projects-oss-pce-cd-bios/bff402ca-f572-4285-aa98-28d05eb20f70/scratchpad/series577-raw/cold-1.out` ほか `cold-2.out`、`cold-3.out`、`cold-4.out`（同じディレクトリ）
-  - new-process（区分 new-process、series repeat 20）: `C:/Users/Hobart/AppData/Local/Temp/claude/C--Users-Hobart-Documents-Projects-oss-pce-cd-bios/bff402ca-f572-4285-aa98-28d05eb20f70/scratchpad/series577-raw/newproc-21.out`
-  - 使用した probe: `73ef6ac`（ブランチ `feature/issue-295-probe-full-capture`、`tests/integration/geargrafx_ad_reset_full.py`、`tests/integration/geargrafx_ad_reset_full.cpp`）。
-  - 別の記録: `C:/Users/Hobart/AppData/Local/Temp/claude/C--Users-Hobart-Documents-Projects-oss-pce-cd-bios/bff402ca-f572-4285-aa98-28d05eb20f70/scratchpad/c577-results.md`。#294 の harness で new-process を 5 回行った記録で、PC、MPR、WRAM は未採取である。本契約の集計には含めない。
+- **契約の外の既存記録（本契約の集計には含めない）**: 25 試行を確認した。内訳は cold 5、new-process 20 で、すべて区分 PLAY_ACTIVE、CONTROL `$80`、終了状態 `COMPLETED` である。`clock_calls` は `NOT_CAPTURED` のため、R2b（Clock 呼出しの機会）の根拠にはならない。W0〜W2 の採取もない。
+  - 前回の記載（cold 4、new-process 1）は、ファイル数を数えた誤りであった。試行数は上記のとおりである。
+  - 取得に使った probe: 固定版 `73ef6ac`（ブランチ `feature/issue-295-probe-full-capture`、`tests/integration/geargrafx_ad_reset_full.py` と `.cpp`）。
+  - 生ログは測定者の作業領域（リポジトリ外）に保存してある。ファイルと試行数、SHA-256 は次のとおり。
+
+| 生ログのファイル名 | 試行数 | 内訳 | SHA-256 |
+| --- | --- | --- | --- |
+| cold-1.out | 1 | cold 1 | ff89cdd9f1015fdd04e7bc6ab0b7299302dd1b66147f9b63ae084e12a687025c |
+| cold-2.out | 1 | cold 1 | 027df673622f73cc7709e6e9f98a8ba6029540d9f6bb0a3d93f0e773bc6cd0e4 |
+| cold-3.out | 1 | cold 1 | bbbe157f4cf6ad7722046b828e610f126978d5040d44c34e0dd1dc4175895abe |
+| cold-4.out | 1 | cold 1 | e8d44fc5987e457411693d6e04320984ee7c84d53d8fa17a51321b31be6ae066 |
+| newproc-21.out | 21 | cold 1（repeat 0）、new-process 20（repeat 1〜20） | 3443510bdf2c6378d6d5f9264956c020e813e1b7f271f86d3e39b09ea30887f9 |
+
+  - 合計 25 試行（cold 5、new-process 20）。
+  - 別の記録（契約の外）: #294 の harness（`tests/integration/geargrafx_ad_reset.py`）による new-process 5 回の要約。PC、MPR、WRAM は未採取である。契約の集計には含めない。この要約も同じ作業領域に保存してある。
+- **改訂 R5 の修正（独立レビュー不承認への対応）**: §3.5 を区分ごとに分けた（PLAY_ACTIVE と warm は (a)、(b)、(c)、TRANSFER_BUSY だけが BLOCKER）。§6、§12、§13 の件数と開始条件の表記を §3.5 に合わせた。§14.2 にブレークポイント一覧の確認を追加した。§14.3 の順序と §14.9 の試行 1 の定義を揃えた（試行 1 も §2.1 の手順を最後まで行い、P3 を最終状態とする）。§14.7 の W1 の確認項目を広げた。S と P、MPR の設定を probe 73ef6ac と揃えた。§15 の既存記録を 25 試行に訂正した。
 - **warm のログ**: 改訂 R5 の下ではまだ存在しない。独立レビュー後の測定で取得する。
