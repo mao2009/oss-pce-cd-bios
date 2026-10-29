@@ -25,23 +25,16 @@
 | HYPOTHESIS | もっともらしいが出典がない。期待値の根拠にしない |
 | UNKNOWN | 出典がないハードウェア事実。推測で埋めない |
 
-**前提の軸（着手条件・前提項目の状態）**
-
-| 語 | 意味 |
-| --- | --- |
-| 充足 | 開始条件を満たす（Issue の開始条件の表示にのみ使う。§3.5） |
-| 一部充足 | 開始条件の一部のみ満たす（§3.5） |
-| 未充足 | 開始条件を満たさない（§3.5） |
-| BLOCKER | 着手を妨げる未解消の前提項目（§3.4、§10）。解消されるまで実行しない |
-
-**実行の軸（試行の状態）**
+**実行と前提の軸（試行・手順の状態）**
 
 | 語 | 意味 |
 | --- | --- |
 | PASS | 判定基準（§9.2）を満たして終了した |
 | FAIL | 判定基準を満たさなかった |
 | NOT_RUN | 手順を実行していない（理由を問わない。未実施の確認にもこれを使う） |
-| BLOCKED | BLOCKER が未解消のため、試行を実行しない |
+| BLOCKED | 前提項目が未解消のため、試行または手順を実行しない（承認時 97de277 の意味のまま使う）。前提の判定は §3.5 の表による |
+
+前提の判定（§3.5）は「充足」「一部充足」「未充足」で表す。
 
 **区分と終了状態（§3.3、§8）**
 
@@ -49,9 +42,7 @@
 - 試行の起動区分: cold、new-process、warm。
 - 終了状態: `COMPLETED`、`BUDGET_EXCEEDED`、`TIMEOUT`、`ABORTED`。
 
-**規則:** 用語は各軸で一度だけ定義し、本文ではこの表に定義された語のみを使う。`BLOCKER` は前提項目の状態にのみ使い、試行の状態には使わない。`BLOCKED` は試行の実行状態にのみ使う。`NOT_TESTED` は使わず、`NOT_RUN` に統一する。
-
-`MEASURED`（§11）は、測定ログが得られた後にのみ使う。`BLOCKED_ABI`、`DEV_CALLABLE`、`VERIFIED`、`release_eligible` は既存の契約のゲート語であり、上の軸には属さない。本書の対象区分（PLAY_ACTIVE、TRANSFER_BUSY）の試行は、まだ行っていない。
+**規則:** 用語は各軸で一度だけ定義し、本文ではこの表に定義された語のみを使う。`BLOCKED` は前提未解消による実行不可にだけ使う。`BLOCKER` は本書では使わない（改訂 R6 で承認時の `BLOCKED` に戻した。変更の記録は PR 本文の表）。`NOT_TESTED` は使わず、`NOT_RUN` に統一する。`MEASURED`（§11）は、測定ログが得られた後にのみ使う。`BLOCKED_ABI`、`DEV_CALLABLE`、`VERIFIED`、`release_eligible` は既存の契約のゲート語であり、上の軸には属さない。本書の対象区分（PLAY_ACTIVE、TRANSFER_BUSY）の試行は、まだ行っていない。
 
 ---
 
@@ -86,7 +77,7 @@
 
 ### 2.2 TRANSFER_BUSY（転送 busy）の手順
 
-本区分は現時点で **BLOCKER** である（前提項目が未解消）。条件は §3.4 に記す。BLOCKER の間は、この区分の試行を実行せず、実行状態は BLOCKED とする。
+本区分は現時点で **BLOCKED** である（前提項目が未解消）。条件は §3.4 に記す。BLOCKED の間は、この区分の試行を実行しない。
 
 ## 3. 観測点と測定区分
 
@@ -131,19 +122,19 @@
 | 区分名 | 定義 | 正例の候補となる条件 |
 | --- | --- | --- |
 | PLAY_ACTIVE | 再生中であることを観測した試行 | T_b と T_r の両方で、S1 の `$08` が 1 かつ S2 の PLAYING が 1 |
-| TRANSFER_BUSY | 転送処理が busy であることを観測した試行 | **BLOCKER**（§3.4）のため、試行の実行状態は BLOCKED。現時点でこの区分の試行は存在しない |
+| TRANSFER_BUSY | 転送処理が busy であることを観測した試行 | **BLOCKED**（§3.4）。現時点でこの区分の試行は存在しない |
 | UNOBSERVED_BUSY | 対象の busy 成立を確認できなかった試行 | 正例にしない。証拠として使わない。件数だけを報告する |
 
 - 区分とは別に、試行の終了状態（§6、§7.2）を持つ。終了状態は `COMPLETED`、`BUDGET_EXCEEDED`、`TIMEOUT`、`ABORTED` のいずれかである。試行は「区分」と「終了状態」の 2 軸で必ず分類する。
 - 終了状態が `BUDGET_EXCEEDED`、`TIMEOUT`、`ABORTED` の試行は、区分にかかわらず正例にも負例にも含めない。区分が `UNOBSERVED_BUSY` になるのは、成立を確認できないまま終了した場合である。
 - **PLAY_ACTIVE の PASS を TRANSFER_BUSY の PASS へ流用しない。** 再生中の reset の結果は、転送 busy 中の reset の結果としては扱わない。
 
-### 3.4 TRANSFER_BUSY が BLOCKER である条件
+### 3.4 TRANSFER_BUSY が BLOCKED である条件
 
-以下のいずれかが満たされない限り、TRANSFER_BUSY は BLOCKER とする（試行の実行状態は BLOCKED）。
+以下のいずれかが満たされない限り、TRANSFER_BUSY は BLOCKED とする。
 
-1. **`$0A` 書込み経路（device 層）**: `$04` の待ち時間は 1 回の書込みにつき最大 36 単位で消える（§3.0）。本ハーネスの観測点はフレーム境界（`RunToVBlank` の完了時）だけであり、T_b と T_r の両方で値が立っていることを保証できない。フレーム内の観測点を設けるには CPU 実行の強制停止が必要であり、これは §10 の B4 で BLOCKER である。
-2. **`$0B` の DMA 経路**: `$04` は DMA 経路でも立つ（`adpcm_inline.h:204`）。DMA 経路は SCSI コントローラの信号（`adpcm_inline.h:219-225`、`DataReady` など）に依存する（`adpcm_inline.h:191-226`）。その設定は CD 側の操作であり、§10 の B11 で BLOCKER である。
+1. **`$0A` 書込み経路（device 層）**: `$04` の待ち時間は 1 回の書込みにつき最大 36 単位で消える（§3.0）。本ハーネスの観測点はフレーム境界（`RunToVBlank` の完了時）だけであり、T_b と T_r の両方で値が立っていることを保証できない。フレーム内の観測点を設けるには CPU 実行の強制停止が必要であり、これは §10 の B4 で BLOCKED である。
+2. **`$0B` の DMA 経路**: `$04` は DMA 経路でも立つ（`adpcm_inline.h:204`）。DMA 経路は SCSI コントローラの信号（`adpcm_inline.h:219-225`、`DataReady` など）に依存する（`adpcm_inline.h:191-226`）。その設定は CD 側の操作であり、§10 の B11 で BLOCKED である。
 3. **`$80` の意味**: `m_read_cycles` は `$0A` の読出しで立つ。転送の意味を持つかは UNKNOWN であり、どの経路でも確定していない。
 
 解除の条件（3 つすべて）:
@@ -152,27 +143,40 @@
 - `$04` / `$80` が転送 busy であることを、ソースまたは実測で確定する（UNKNOWN を解消する）。
 - 独立レビューで、TRANSFER_BUSY の観測点と判定基準の固定を承認する。
 
-### 3.5 開始条件（区分ごと）
+### 3.5 開始条件（三つの独立した判定）
 
-Issue #295 の「依存・開始条件」の原文は「Contract/Fixture/Diagnostic の根拠と必要なハード状態が確定し、前提 PR が main に統合された場合のみ」である。本書は、この条件を区分ごとに次の表で読む。
+本節には三つの判定がある。どれか一つの充足を、他の判定の充足として扱わない。
+
+**判定 I: 測定の開始条件（区分ごと）**
 
 | 条件 | PLAY_ACTIVE（§2.1） | warm（§14） | TRANSFER_BUSY（§2.2） |
 | --- | --- | --- | --- |
 | (a) 前提 PR（#403、#404）が main に統合 | 充足（CONFIRMED。#403 は 2026-10-21T00:57:46Z、#404 は 2026-10-21T01:42:48Z に merge） | 充足（同左） | 充足（同左） |
 | (b) 本契約の独立レビューによる承認 | 未充足（NOT_RUN） | 未充足（NOT_RUN） | 未充足（NOT_RUN） |
 | (c) 判定に使う観測点の出典が確定 | 充足（`$08` と PLAYING は `adpcm_inline.h:84` の `m_playing`。CONFIRMED） | 充足（同左。W0〜W2 は既存の状態読取り） | 未充足（`$04` / `$80` の意味は UNKNOWN） |
-| (d) §3.4 の BLOCKER 解除条件（3 条件） | 対象外 | 対象外（gate の BLOCKER は §14.6 で維持） | 未充足 |
-| 実行状態 | 開始しない（(b) が未充足のため） | 開始しない（(b) が未充足のため） | BLOCKER。試行は BLOCKED |
+| (e) 安全条件: 手順が §10 の BLOCKED 項目に触れない | 充足（本書の手順は device 層の読取りと、ハーネスからの `Adpcm::Write` だけを使う。CPU からの MMIO 書込み、IRQ の操作、CD 側の操作を含まない。独立レビューで確認する） | 充足（同左。ResetMedia と WRAM 配置はハーネス側の操作） | 未充足（§3.4 の BLOCKED 条件、§10 の B4 と B11） |
+| (d) §3.4 の BLOCKED 解除条件（3 条件） | 対象外 | 対象外（gate の BLOCKED は §14.6 で維持） | 未充足 |
+| 判定 | (b) の承認後に開始できる。(a)、(c)、(e) は充足 | (b) の承認後に開始できる。加えて §14.2 の前提（媒体の読込み済み、ブレークポイント一覧が空）が必要 | BLOCKED。試行を実行しない |
 
-判定:
+**判定 II: Issue #295 の ROM-Primitive 実装の開始条件（測定とは別）**
 
-- **PLAY_ACTIVE の開始条件は (a)、(b)、(c) である。** (d) は対象外である。(b) が充足されれば、(a) と (c) により開始できる。
-- **warm の開始条件は、PLAY_ACTIVE の (a)、(b)、(c) に加えて、§14.2 の前提（媒体の読込み済み、ブレークポイント一覧が空）である。**
-- **TRANSFER_BUSY だけが BLOCKER である**（(c) と (d) が未充足）。TRANSFER_BUSY は (a)、(b)、(c)、(d) をすべて満たすまで実行しない。
-- PLAY_ACTIVE と warm は、(b) が未充足であるため「開始しない」状態であり、BLOCKER とは呼ばない。
-- §12 と §14 の両立: §12 の「PLAY_ACTIVE は (b) の充足まで開始しない」と、§14 の「独立レビュー後に warm を行う」は、どちらも条件 (b) に依る同じ条件である。
+| Issue 本文の開始条件（原文） | 状態 | 根拠 |
+| --- | --- | --- |
+| 「Contract/Fixture/Diagnostic の根拠」が確定 | 一部充足 | idle の観測契約は `ad-reset-contract.md`、`ad-reset-fixture.md`、`ad-reset-diagnostic.md` にある（UNCONFIRMED: 本書で内容を確認していない）。busy の根拠は UNKNOWN（`$04` / `$80` の意味） |
+| 「必要なハード状態」が確定 | 未充足 | TRANSFER_BUSY の BLOCKED 解除条件（§3.4）が未解消 |
+| 「前提 PR」が main に統合 | 充足（CONFIRMED） | #403、#404 |
 
-注: 独立レビューは Issue の開始条件ではなく、本書の承認手続きである。§13 の 5 で残件とする。現時点では未実施（NOT_RUN）であり、承認前は PLAY_ACTIVE も warm も測定を行わない。
+判定 II は未充足である。判定 I の PLAY_ACTIVE の測定条件が充足されても、判定 II は充足しない。
+
+**判定 III: Issue #295 の完了条件（測定とは別）**
+
+| Issue 本文の完了条件（原文の要旨） | 状態 | 根拠 |
+| --- | --- | --- |
+| 既知の ADPCM controller reset と busy 状態の最小 1 モードのみ実装、ジャンプテーブル未接続 | 未充足 | busy に対応する区分（TRANSFER_BUSY）は BLOCKED。PLAY_ACTIVE の測定結果だけでは、busy を含む実装の完了条件を満たさない（オーナー裁定） |
+| メモリ・MMIO 側作用、有界 timeout、負例をゲスト実 CPU で検証。根拠不足は BLOCKED | 未充足 | 本書の測定は未実施。ゲスト実 CPU での検証は、判定 I の測定後に別途必要 |
+| 原則 3 ファイル、差分 200〜250 行目安。独立レビュー、関連 CI、実測を区別した証拠台帳を記録 | 未充足 | 独立レビュー未実施（NOT_RUN）。CI 未配線（§13 の 7） |
+
+注: 独立レビュー（判定 I の (b)）は Issue の開始条件ではない。本書の承認手続きとして扱う（§13 の 5）。承認前は PLAY_ACTIVE も warm も測定を行わない。
 
 ## 4. reset 要求の発行方法（手順のみ）
 
@@ -217,7 +221,7 @@ Issue #295 の「依存・開始条件」の原文は「Contract/Fixture/Diagnos
 | 項目 | 測定上限の値 | 適用範囲 | 理由（本文書が選んだ根拠） | 判定の実施点 |
 | --- | --- | --- | --- | --- |
 | 1 試行のフレーム上限 | 300 フレーム | 全区分の試行 | 1 試行が際限なく続かないための上限。根拠となる実測・仕様はない。リポジトリ内の既存値（`geargrafx_ad_reset.cpp` 32 行の `kPlayBudgetFrames = 240`）とは別の値で、互換性は主張しない | `RunToVBlank` の完了時 |
-| 区分成立の確認までの待ち上限 | 60 フレーム（§2.1 の手順 5） | **PLAY_ACTIVE 専用** | 再生中の観測が成立しない試行を打ち切るための上限。数値は PR #404 の guest 実行（`geargrafx_ad_reset_guest.cpp` 24 行、`kFrames = 60`）と一致するが、由来は別。TRANSFER_BUSY には待ち上限を設定していない（BLOCKER。§3.4） | `RunToVBlank` の完了時 |
+| 区分成立の確認までの待ち上限 | 60 フレーム（§2.1 の手順 5） | **PLAY_ACTIVE 専用** | 再生中の観測が成立しない試行を打ち切るための上限。数値は PR #404 の guest 実行（`geargrafx_ad_reset_guest.cpp` 24 行、`kFrames = 60`）と一致するが、由来は別。TRANSFER_BUSY には待ち上限を設定していない（BLOCKED。§3.4） | `RunToVBlank` の完了時 |
 | 1 試行のマスタークロック累計 | 上限なし。S3 で記録する | 全区分 | 区分ごとに換算根拠が必要になるため、上限は置かず記録のみとする | `RunToVBlank` の完了時 |
 | 1 試行の壁時計 timeout | 120 秒 | 全区分 | ハングした試行を外部から打ち切るための上限。実行時間の測定はなく、根拠は UNKNOWN | 外部の監視（ハーネスを起動する親プロセス）が計時し、超過時にプロセスを終了させ、終了状態 `TIMEOUT` と記録する |
 | 1 プロセスの壁時計 timeout | 600 秒（複数試行を含む場合の全体） | §8 の系列 W（1 プロセス 2 試行）を含む全プロセス | 1 プロセスの全体を打ち切るための上限。既存の subprocess timeout（`geargrafx_ad_reset.py` 138 行、300 秒）とは別の値 | 同上。超過時はプロセスを終了させ、その時点の試行を `TIMEOUT` と記録する |
@@ -248,7 +252,7 @@ CPU の命令単位で計数・中断はしない（命令単位のフックは�
 - 固定版 commit、または合成 ROM の hash が、記録済みの値と一致しなかった。
 - ログの書込みに失敗した。
 - 予期しない例外が発生した。
-- ゲストによる ADPCM または IRQ の MMIO アクセスをハーネスが検出した（検出できた場合のみ。検出できない場合は §10 の BLOCKER として扱う）。
+- ゲストによる ADPCM または IRQ の MMIO アクセスをハーネスが検出した（検出できた場合のみ。検出できない場合は §10 の BLOCKED として扱う）。
 
 ### 7.2 失敗時の動作
 
@@ -295,7 +299,7 @@ CPU の命令単位で計数・中断はしない（命令単位のフックは�
 | ID | 項目 | 判定基準 |
 | --- | --- | --- |
 | R0 | 終了状態と hash | 終了状態が `COMPLETED`、終了コードが 0、合成 ROM と固定版 commit の hash が、比較する全試行で同一 |
-| R1 | busy（区分）成立の観測 | §3.3 の正例条件（T_b と T_r の両方）を満たすこと。TRANSFER_BUSY は BLOCKER のため実行状態が BLOCKED であり、判定しない |
+| R1 | busy（区分）成立の観測 | §3.3 の正例条件（T_b と T_r の両方）を満たすこと。TRANSFER_BUSY は BLOCKED のため判定しない |
 | R2a | reset 要求の読戻し | P1 の `Adpcm::Read($0D)` が、書き込んだ値 `$80`（`arm-B` では `$A0`）と一致すること。値は書込みの確認であり、reset の効果の期待値ではない |
 | R2b | reset 効果の機会 | P1 の後に `RunToVBlank` が 1 回以上完了し、その間に Clock の呼出しが 1 回以上あったことを S3 で記録していること（reset の効果そのものは判定しない） |
 | R2c | reset の効果（記録のみ、判定しない） | P2 の S2 で `m_control`、`m_playing`、`m_read_cycles`、`m_write_cycles`、`m_length` を記録する。本書では判定基準を置かない。値の判定は、測定後に別の結果文書で行う（期待値は本書で決め打ちしない） |
@@ -326,7 +330,7 @@ CPU の命令単位で計数・中断はしない（命令単位のフックは�
 - 本節（§9.1〜§9.4）の基準は、測定の前に確定する。
 - 測定後に基準を変更しない。変更が必要になった場合は、既存の測定結果を破棄し、新しい版の契約として記録し直す。
 
-## 10. 観測しない・実行しない項目（BLOCKER）
+## 10. 観測しない・実行しない項目（BLOCKED）
 
 以下は、副作用を事前に遮断できない、または安全条件が成立しないため、本契約で観測も実行もしない。
 
@@ -335,20 +339,20 @@ CPU の命令単位で計数・中断はしない（命令単位のフックは�
 | ID | 項目 | 根拠（リポジトリ内の出典） | 出典の範囲 |
 | --- | --- | --- | --- |
 | B1 | busy 中の、ゲストによる ADPCM MMIO（`$1808`〜`$180E`）への書込み | `docs/173-safety-monitor-limits.md:61`（汎用の MMIO 書込みは、既知 PC の場合を除き事前に遮断できない） | ADPCM のレジスタ個別の証拠は無い（UNKNOWN）。ADPCM の書込み経路は `adpcm_inline.h:91-122` |
-| B2 | IRQ に関わるバス操作（`$1402`、`$1403` への書込み、読取りを含む）、IRQ ハンドラ入口の観測 | `docs/173-safety-monitor-limits.md:55-56`、`:61`（`$1402`、`$1403` の書込みは検出のみで完遂し、事前阻止不能）。IRQ 入口は `docs/research/366-irq-entry-status.md` | 読取りは `docs/173-safety-monitor-limits.md` の表の対象外（UNKNOWN）。保守的に BLOCKER とする |
+| B2 | IRQ に関わるバス操作（`$1402`、`$1403` への書込み、読取りを含む）、IRQ ハンドラ入口の観測 | `docs/173-safety-monitor-limits.md:55-56`、`:61`（`$1402`、`$1403` の書込みは検出のみで完遂し、事前阻止不能）。IRQ 入口は `docs/research/366-irq-entry-status.md` | 読取りは `docs/173-safety-monitor-limits.md` の表の対象外（UNKNOWN）。保守的に BLOCKED とする |
 | B3 | 転送中の、デバイス起点の書込み（ブロック転送、DMA） | `docs/research/367-device-write-audit.md`（デバイス起点の RAM 書込みの源泉監査。DEV-01 は `UpdateDMA` を指す。本書の行範囲は `adpcm_inline.h:191-226`）、`docs/173-write-path-inventory.md:42`（W17 は UNKNOWN、未監査） | 監査の範囲に依る |
 | B4 | 任意の PC、先頭 opcode での実行の中断 | `docs/research/365-st-opcode-boundary.md`（ST 命令境界の副作用前遮断の判定記録。#365 の残作業は OPEN であり、その根拠として引く。フレーム内中断をしない根拠は本出典ではなく、本書の方針である） | 中断はフレーム境界の外では行わない（§6） |
 | B5 | 純正 System Card の `JSR $E030`（AD_RESET 本体）の呼出し | `docs/research/ad-reset-contract.md:3`（`$E030` は候補エントリ。`BLOCKED_ABI`） | 候補であり、呼出先の実行は未確認 |
-| B6 | CD 側の MMIO のうち `$1802`、`$1804` への操作、および表に無い `$1800`、`$1801`、`$1803` への操作 | `docs/173-safety-monitor-limits.md:52`（`$1802`）、`:53`（`$1804`）は事前阻止不能。`$1800`、`$1801`、`$1803` は表に無い（UNKNOWN） | 表に無い範囲は保守的に BLOCKER とする |
+| B6 | CD 側の MMIO のうち `$1802`、`$1804` への操作、および表に無い `$1800`、`$1801`、`$1803` への操作 | `docs/173-safety-monitor-limits.md:52`（`$1802`）、`:53`（`$1804`）は事前阻止不能。`$1800`、`$1801`、`$1803` は表に無い（UNKNOWN） | 表に無い範囲は保守的に BLOCKED とする |
 | B7 | 純正 BIOS、市販 ROM、私有 ROM（`rom/`）の使用 | `docs/research/ad-reset-contract.md` の §7（System Card の BIOS バイト等を含めない。`AGENTS.md`、`docs/provenance.md` の除外） | 方針 |
 | B8 | 割込みの発生を伴う実行（IRQ の許可を CPU 側で行うこと） | `docs/173-safety-monitor-limits.md:55-56`、`docs/research/366-irq-entry-status.md` | B2 と同じ |
 | B9 | CPU 命令による `$180D`（reset 要求）の書込み | B1 と同じ根拠。reset の効果は `Clock` 内の `CheckReset` で現れる（`adpcm_inline.h:29-38`） | reset 要求はハーネスからのみ行う（§4） |
 | B10 | 転送開始の CPU 命令による発行（`ad_trans`、`ad_play` の呼出し） | `docs/research/ad-reset-contract.md`（`BLOCKED_ABI`）、`docs/research/ad-trans-contract.md` | 純正 callee の ABI が未確定 |
 | B11 | `$0B`（DMA 経路）による転送 busy の成立、および SCSI 信号の設定 | `adpcm_inline.h:191-226`（DMA は SCSI の信号に依存）、`docs/research/367-device-write-audit.md`（DEV-01）、`docs/173-write-path-inventory.md:42`（W17） | §3.4 の 2 |
 
-BLOCKER の項目は **11 件**（B1〜B11）である。初版は 10 件で、B11 を追加した。
+BLOCKED の項目は **11 件**（B1〜B11）である。初版は 10 件で、B11 を追加した。
 
-加えて、区分 **TRANSFER_BUSY 全体が BLOCKER**（§3.4）である。
+加えて、区分 **TRANSFER_BUSY 全体が BLOCKED**（§3.4）である。
 
 ## 11. 結果の区分
 
@@ -365,21 +369,21 @@ BLOCKER の項目は **11 件**（B1〜B11）である。初版は 10 件で、B
 | --- | --- | --- |
 | 出典 | device 層: `ad-reset-diagnostic.md` §3・§5（#294、記録あり。ログ本体は本書で未読）。guest 層: PR #403（merged 2026-10-21T00:57:46Z）と PR #404（merged 2026-10-21T01:42:48Z）の本文の記述（ログ本体は未読） | 本書（新規） |
 | 前提条件 | アイドル（PLAYING = 0、busy なし）から reset | §3.3 の区分ごとの成立条件を T_b と T_r で確認した後に reset |
-| 観測の範囲 | 既存の観測はいずれも、busy からの reset ではない。PR #404 本文は実コアでの実行結果を記すが、本書はその値を再掲しない（ログ未読のため）。実機・第 2 エミュレータは未実施（NOT_RUN、PR #404 本文） | TRANSFER_BUSY の観測 0 件（§3.4 の BLOCKER により、実行状態は BLOCKED）。契約の外の既存記録として PLAY_ACTIVE の 25 試行がある（§15。契約の集計には入れない） |
-| 既存の再生中 reset との関係 | #294 の `neg-reset-playing` は、CONTROL `$A0`（bit5 残存）での reset である。本書の `arm-B` に相当する。PLAY_ACTIVE（CONTROL `$80` での reset）の結果ではない | PLAY_ACTIVE（CONTROL `$80` での reset）を測定する。TRANSFER_BUSY は BLOCKER |
-| 区分 | §8 の cold、warm、new-process の区分は既存観測に適用していない（PR 本文に記載なし） | §3.3 の測定区分のうち PLAY_ACTIVE は busy reset ではない。PLAY_ACTIVE の測定は、§3.5 の (b)（独立レビューの承認）が充足されるまで開始しない（未充足。BLOCKER ではない）。busy reset（TRANSFER_BUSY）の区分は BLOCKER（§3.4） |
-| 独立レビュー・CI | 独立レビュー未実施（診断 §5、PR #404 本文）。CI 未配線（PR #404 本文、§13 の 7） | 測定、独立レビュー、TRANSFER_BUSY の BLOCKER 解除条件（§3.4）の判定 |
+| 観測の範囲 | 既存の観測はいずれも、busy からの reset ではない。PR #404 本文は実コアでの実行結果を記すが、本書はその値を再掲しない（ログ未読のため）。実機・第 2 エミュレータは未実施（NOT_RUN、PR #404 本文） | TRANSFER_BUSY のTRANSFER_BUSY の観測 0 件（§3.4 の BLOCKED）。契約の外の既存記録として PLAY_ACTIVE の 25 試行がある（§15。契約の集計には入れない）。契約の外の既存記録として PLAY_ACTIVE の 25 試行がある（§15。契約の集計には入れない） |
+| 既存の再生中 reset との関係 | #294 の `neg-reset-playing` は、CONTROL `$A0`（bit5 残存）での reset である。本書の `arm-B` に相当する。PLAY_ACTIVE（CONTROL `$80` での reset）の結果ではない | PLAY_ACTIVE（CONTROL `$80` での reset）を測定する。TRANSFER_BUSY は BLOCKED |
+| 区分 | §8 の cold、warm、new-process の区分は、既存の device 層観測（idle）には適用していない。契約の外の PLAY_ACTIVE 記録 25 試行は §15 を参照 | §3.3 の測定区分のうち PLAY_ACTIVE は busy reset ではない。PLAY_ACTIVE の測定は、§3.5 の判定 I のうち (a)、(b)、(c)、(e) の充足後に開始できる（(b) は未充足のため、現時点では開始しない。BLOCKED ではない）。busy reset（TRANSFER_BUSY）の区分は BLOCKED（§3.4） |
+| 独立レビュー・CI | 独立レビュー未実施（診断 §5、PR #404 本文）。CI 未配線（PR #404 本文、§13 の 7） | 測定、独立レビュー、TRANSFER_BUSY の BLOCKED 解除条件（§3.4）の判定 |
 
 idle reset の結果を busy reset の結果として数えない。両者は別の観測として記録する。
 
 ## 13. 残件と Issue #295 の範囲
 
-Issue #295 の完了条件は「既知の ADPCM controller reset と busy 状態の最小 1 モード」である（Issue 本文の完了条件 1）。Issue 本文は PLAY_ACTIVE に言及しない。本書は、Issue の「busy」を TRANSFER_BUSY 系の主題として位置づける（§3.3、§12）。TRANSFER_BUSY は BLOCKER（§3.4）であり、Issue の「busy」と本書の TRANSFER_BUSY の対応関係は UNKNOWN である。出典で確定するまで、対応を主張しない。
+Issue #295 の完了条件は「既知の ADPCM controller reset と busy 状態の最小 1 モード」である（Issue 本文の完了条件 1）。Issue 本文は PLAY_ACTIVE に言及しない。本書は、Issue の「busy」を TRANSFER_BUSY 系の主題として位置づける（§3.3、§12）。PLAY_ACTIVE の測定結果は、判定 III（完了条件）を満たさない（オーナー裁定）。TRANSFER_BUSY は BLOCKED（§3.4）であり、Issue の「busy」と本書の TRANSFER_BUSY の対応関係は UNKNOWN である。出典で確定するまで、対応を主張しない。
 
 PLAY_ACTIVE（CONTROL `$80` での reset）の観測は、Issue の「busy」とは別の区分の観測である。Issue の完了条件 1 を満たす根拠としては扱わない。`arm-B`（`$A0`）は、#294 の既存観測との対応を見るための比較用の参照であり、Issue の完了条件とは結び付けない。
 
-1. PLAY_ACTIVE の実コア測定（§8 の区分ごとの最小数、§9 の判定を併記）。開始は §3.5 の (a)、(b)、(c) の充足後。
-2. TRANSFER_BUSY の BLOCKER 解除条件（§3.4 の 3 点）の判定。解除できない場合は、転送 busy 中の reset を #295 の範囲外とするか、別の子 Issue に分けるかを判定する。
+1. PLAY_ACTIVE の実コア測定（§8 の区分ごとの最小数、§9 の判定を併記）。開始は §3.5 の判定 I の (a)、(b)、(c)、(e) の充足後。判定 II と III とは独立である。
+2. TRANSFER_BUSY の BLOCKED 解除条件（§3.4 の 3 点）の判定。解除できない場合は、転送 busy 中の reset を #295 の範囲外とするか、別の子 Issue に分けるかを判定する。
 3. `arm-B`（bit5 を残す要求）を #295 の範囲に含めるか、比較用の参照として別に扱うかの判定。
 4. IRQ マスクと保留フラグの保持場所の確認（§5 の UNKNOWN の解消）。
 5. 独立再レビュー、CI への配線の判断。
@@ -387,7 +391,7 @@ PLAY_ACTIVE（CONTROL `$80` での reset）の観測は、Issue の「busy」と
 7. CI 未配線（CONFIRMED）: `Makefile` に `ad_reset` の記載はなく、`integration-test` の探索パターン `test_*.py` は `geargrafx_ad_reset*.py` に一致しない（origin/main の `git grep` で確認）。既存の観測は手動実行のみである。
 8. 参照番号の不一致（UNCONFIRMED）: PR #403 本文は device 層診断を #397 と書き、`ad-reset-diagnostic.md` は #294 と書く。正しい番号は未確認。
 9. 既存の上限値（CONFIRMED）: 既存コードには 256 回ポーリング（`src/ad_reset_idle.s` 21 行）、240 フレーム、300 秒の 3 値がある。本書の §6 の値とは別であり、統合するかどうかは未判定。
-10. AD_RESET 用の patch（出典の状態: UNKNOWN。前提項目の状態: BLOCKER）: `tests/integration/patches` に `ad_reset` の記載はなく、適用対象は未確認。全 patch の適用はしない。
+10. AD_RESET 用の patch（出典の状態: UNKNOWN。前提項目の状態: BLOCKED）: `tests/integration/patches` に `ad_reset` の記載はなく、適用対象は未確認。全 patch の適用はしない。
 
 ROM-Primitive の実装（`ad_reset_busy` の guest 実装など）は、本書の残件 1 と 2 が揃うまで開始しない。
 
@@ -425,7 +429,7 @@ ROM-Primitive の実装（`ad_reset_busy` の guest 実装など）は、本書�
 7. 再配置: `GetMemory()->GetWorkingRAM()` への memcpy（既存のハーネスと同じ。または `Memory::TryPoke`、`memory.h:66-67`）でゲストのバイト列を置く。`SetMpr(0, $00)`、`SetMpr(1, $F8)`、`SetMpr(2..7, $00)`（`memory.h:69`）。MPR0 を `$00` にする理由は、ADPCM をハーネスの device 層で操作するため、MMIO ページ `$FF` を外すことである。probe の同じ設定は `feature/issue-295-probe-full-capture@f152171` の `tests/integration/geargrafx_ad_reset_full.cpp` の `:215-218` にある。`LoadHuCardFromBuffer` は使わない（ROM を再ロードするため）。
 8. PC の設定: `GetHuC6280()->GetState()->PC->SetValue(0x3E00)`（`huc6280.h:59-73`）。任意で `ResetDebuggerExecutionState()`（`huc6280.h:175`）を呼ぶ。呼ぶかどうかは測定前に固定し、ログに記録する。S を `$FF`、P を `$04`（I=1）に設定する（`GetState()->S->SetValue(0xFF)`、`GetState()->P->SetValue(0x04)`。probe は `feature/issue-295-probe-full-capture@f152171` の `tests/integration/geargrafx_ad_reset_full.cpp` の `:223-224`、#404 は `tests/integration/geargrafx_ad_reset_guest.cpp:63-64` で同じ）。reset が乱数化する S と P を、ハーネスが決めた値に置く（m-2）。
 9. **W2 を採取する**（再配置と PC 設定の後）。
-10. §14.6 の静的チェックと動的 MPR 検出を実行し、結果を記録する。失敗なら停止する。
+10. 順序は固定する: (i) 静的チェック（W2 の直後に、配置済みのバイト列と MPR 設定を検査する）、(ii) 動的 MPR 検出（PC の設定後、ADPCM を操作する前に、既存の判定器で最初の `RunToVBlank` を行う）。(i) と (ii) の結果を記録し、失敗なら停止する。(ii) の結果が出るまで、手順 11 に進まない。
 11. 試行 1 と試行 2 の両方で、§2.1 の PLAY_ACTIVE の手順（ADPCM の設定、T_b、T_r、reset 発行、P0〜P3）を最後まで行う。試行 2 だけを warm として計上する。試行 1 は区分外である（§14.9）。
 
 ### 14.4 ゲストの開始点
@@ -445,9 +449,9 @@ ROM-Primitive の実装（`ad_reset_busy` の guest 実装など）は、本書�
 
 ### 14.6 #173 との整合
 
-- gate は BLOCKER のまま維持する（前提項目の状態。§0 の軸に従う）。本節は gate を解除しない。
-- 各 `ResetMedia` の後（W1 と W2 の間）に、既存の静的チェックと動的 MPR 検出を再実行し、結果を記録する。判定器の名称と版は、測定の前に固定する。
-- TRANSFER_BUSY は実行しない（§3.4 により BLOCKER。試行の実行状態は BLOCKED）。
+- gate は BLOCKED のまま維持する（前提項目の状態。§0 の軸に従う）。本節は gate を解除しない。
+- 各 `ResetMedia` の後に、§14.3 の 10 の順序（静的チェック、次に動的 MPR 検出）で既存の判定器を実行し、結果を記録する。判定器の名称と版は、測定の前に固定する。
+- TRANSFER_BUSY は実行しない（§3.4 により BLOCKED。試行の実行状態は BLOCKED）。
 - 集計は CONTROL=`$80` の標準試行だけとする。`$A0`（arm-B）は集計に混ぜない。
 
 ### 14.7 採取の時点と R5 の判定
@@ -468,7 +472,7 @@ ROM-Primitive の実装（`ad_reset_busy` の guest 実装など）は、本書�
 - 系列間で状態を共有しない。出力先は系列ごとに新しい一時ディレクトリとする。
 - 1 系列の内訳: 試行 1（ウォームアップ。終了状態を採取。区分外）、試行 2（warm。計上）。
 - 計上される warm は、系列ごとに 1 試行である。全体で 5 件とする。
-- 試行 1 の終了状態が `COMPLETED` 以外の場合、その系列を停止し、試行 2 は実行しない（§7.2）。
+- 試行 1 の終了状態が `COMPLETED` 以外の場合、その系列を停止し、試行 2 は実行しない（§7.2）。`COMPLETED` は、試行 1 が P3 に到達し、§7.1 の停止条件に当たらなかったことを意味する。試行 1 の区分（PLAY_ACTIVE か UNOBSERVED_BUSY か）は問わない。ウォームアップの目的は状態の確認であり、busy の成立は問わない。
 
 ### 14.9 ウォームアップ（試行 1）
 
@@ -508,5 +512,20 @@ ROM-Primitive の実装（`ad_reset_busy` の guest 実装など）は、本書�
 
   - 合計 25 試行（cold 5、new-process 20）。
   - 別の記録（契約の外）: #294 の harness（`tests/integration/geargrafx_ad_reset.py`）による new-process 5 回の要約。PC、MPR、WRAM は未採取である。契約の集計には含めない。この要約も同じ作業領域に保存してある。
-- **改訂 R5 の修正（独立レビュー不承認への対応）**: §3.5 を区分ごとに分けた（PLAY_ACTIVE と warm は (a)、(b)、(c)、TRANSFER_BUSY だけが BLOCKER）。§6、§12、§13 の件数と開始条件の表記を §3.5 に合わせた。§14.2 にブレークポイント一覧の確認を追加した。§14.3 の順序と §14.9 の試行 1 の定義を揃えた（試行 1 も §2.1 の手順を最後まで行い、P3 を最終状態とする）。§14.7 の W1 の確認項目を広げた。S と P、MPR の設定を probe 73ef6ac と揃えた。§15 の既存記録を 25 試行に訂正した。
+- **改訂 R5 の修正（独立レビュー不承認への対応）**: §3.5 を区分ごとに分けた（PLAY_ACTIVE と warm は (a)、(b)、(c)、TRANSFER_BUSY だけが BLOCKED）。§6、§12、§13 の件数と開始条件の表記を §3.5 に合わせた。§14.2 にブレークポイント一覧の確認を追加した。§14.3 の順序と §14.9 の試行 1 の定義を揃えた（試行 1 も §2.1 の手順を最後まで行い、P3 を最終状態とする）。§14.7 の W1 の確認項目を広げた。S と P、MPR の設定を probe 73ef6ac と揃えた。§15 の既存記録を 25 試行に訂正した。
+- **改訂 R6（独立レビューの裁定反映）**: 承認時（97de277）と現行の差分を行単位で記録する表を PR 本文に残した（削除はしない）。承認時の `BLOCKED` の意味に戻し、`BLOCKER` は使わない。§3.5 を三つの独立した判定（I: 測定、II: Issue の実装、III: Issue の完了）に分けた。PLAY_ACTIVE の測定条件（(a)、(b)、(c)、(e)）と TRANSFER_BUSY の BLOCKED を別の行に書いた。MAJOR の対応箇所は §16 に記した。過去の 25 試行は、遡及的に PASS にしない。新契約の下での判定も行わない。
 - **warm のログ**: 改訂 R5 の下ではまだ存在しない。独立レビュー後の測定で取得する。
+
+## 16. 独立レビューの指摘への対応（改訂 R6）
+
+| 指摘 | 対応箇所 |
+| --- | --- |
+| 測定開始ゲートと Issue 実装ゲートの混同 | §3.5 の判定 I（測定の開始）、判定 II（Issue の実装開始）、判定 III（Issue の完了）を独立に記載。判定 I の充足は判定 II と III を意味しない |
+| warm 第 1 試行の操作と COMPLETED 条件 | §14.3 の 11（試行 1 も §2.1 の手順を最後まで行う）、§14.9（試行 1 の最終状態は P3）、§14.8（COMPLETED の定義と、試行 2 へ進む条件） |
+| ResetMedia(false) の前提条件 | §14.2（媒体の IsReady、SetResetValues の順序、戻り値がないこと、no-op の扱い） |
+| 残存ブレークポイントの干渉 | §14.2（`GetBreakpoints()` で件数 0 を確認。W0 の前と W1 の後の 2 回）。根拠は `huc6280.cpp:297-299` と `:207-270` |
+| reset 後の W0〜W2 の採取と初期化検証 | §14.3 の 4、6、9、§14.7（W0 は判定しない。W1 は設定値との一致。W2 は書いた値との一致） |
+| 静的安全チェックと動的 MPR 検出の実施順序 | §14.3 の 10（静的チェック → 動的 MPR 検出 → ADPCM 操作の順）、§14.6 |
+| 過去 25 試行の集計記録との整合 | §6、§12、§15（契約の外の記録。遡及的な PASS にしない。新契約の下での判定は行わない） |
+
+指摘は 6 件（MAJOR）で、本表は指摘本文の 7 項目を個別に対応づけた。
