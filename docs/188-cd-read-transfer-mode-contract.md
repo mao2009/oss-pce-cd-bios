@@ -30,7 +30,7 @@
 | --- | --- | --- | --- |
 | `_dh = 3` | [C] HuCC `_cd_loadbank.4`（`hucc-systemcard.asm` L425-457）。L440-441 で `_dh=3`。L436-438 で `_dh` の値を非0のときだけ `_al` へ複写（コードの事実） | [HYPOTHESIS] count の単位がセクターであることは宣言 `sectors<_al>`（L425）とコメント（L436）に基づく仮説であって、コードの事実ではない（A4）。「1セクター指定が自然」という判断はこの仮説に依る | **採用（候補）** |
 | `_dh = 0` | [C] HuCC L384 `stz`（`_dh = 0`）。L381-382 が `_ax` に読出し長を入れる（コードの事実。1回の読み出し長は最大 `$2000`: L369 `cmp.h #$2000` / L372 `sbc.h #$2000` / L375 `lda.h #$2000`）。単位が「バイト」なのはコメント（L381「Set read length in bytes.」/ L384「Signal bytes, not sectors.」）由来 | 1セクター = 2048 バイト = `$0800`。count 単位が別軸（[HYPOTHESIS]、コメント/宣言由来） | 別モード（対象外） |
-| `_dh = 2` | [C] 確認範囲（`include/hucc/` の2ファイル）の `cd_read` 呼出側に使用箇所なし（後述 D1） | 既存文書 [cd-read-mode-contract.md](cd-read-mode-contract.md) / [188-cd-read-mode-safety.md](188-cd-read-mode-safety.md) の対象。既存文書間の出典表記が食い違っていた（訂正前の cd-read-mode-contract.md R3 は HuCC を挙げていた。本 PR で訂正した。HuCC 側に `_dh=2` が無いことは確認済み） | 既存契約の不一致は本 PR で訂正済み（D1） |
+| `_dh = 2` | [C] 確認範囲（`include/hucc/` の2ファイル）の `cd_read` 呼出側に使用箇所なし（後述 D1） | 既存文書 [cd-read-mode-contract.md](cd-read-mode-contract.md) / [188-cd-read-mode-safety.md](188-cd-read-mode-safety.md) の対象。既存文書間の出典表記が食い違っていた（訂正前の cd-read-mode-contract.md R3 は HuCC を挙げていた。#503 で訂正済み（§4 D1）。HuCC 側に `_dh=2` が無いことは確認済み） | 既存契約の不一致は #503 で訂正済み（D1） |
 | `$FE` / `$FF` | [C] L294 `lda #$FF` / L322 `lda #$FE` を `_dh` に書く（コメントは「Signal a VRAM load.」） | VRAM 系 | 対象外 |
 | `6` | [C] 上書きローダ（`core-kernel.asm` L593-594） | MPR6 系 | 対象外 |
 
