@@ -128,5 +128,35 @@ class PayloadFixtureNegativeTests(unittest.TestCase):
         self.assertReason("BAD_SHA256", fx.load_payload, bytes(s))
 
 
+class ReferenceCaseTests(unittest.TestCase):
+    """安全な非実行参照ケース: 未確定値は UNKNOWN(None)、純正 JSR は 0 回、判定は常に BLOCKED。"""
+
+    def test_unknown_reference_fields_are_null_not_guessed(self):
+        self.assertEqual(fx.REFERENCE_CASE, {"entry": None, "mpr": None, "stack": None})
+
+    def test_reference_jsr_allowance_is_zero(self):
+        self.assertEqual(fx.REFERENCE_JSR_ALLOWED, 0)
+
+    def test_every_authorization_combination_stays_blocked(self):
+        for authorized in (False, True):
+            for monitored in (False, True):
+                for known in (False, True):
+                    value = 0x3000 if known else None
+                    with self.subTest(authorized=authorized, monitored=monitored, known=known):
+                        verdict, reasons = fx.decide_reference_jsr(value, value, value, authorized, monitored)
+                        self.assertEqual(verdict, "BLOCKED")
+                        self.assertIn("GUARD_173_UNPROVEN", reasons)
+                        self.assertEqual("NOT_AUTHORIZED" in reasons, not authorized)
+                        self.assertEqual("NOT_MONITORED" in reasons, not monitored)
+
+    def test_unknown_fields_are_listed_as_block_reasons(self):
+        _, reasons = fx.decide_reference_jsr(None, None, None, authorized=True, monitored=True)
+        self.assertEqual(reasons, ["UNKNOWN_ENTRY", "UNKNOWN_MPR", "UNKNOWN_STACK", "GUARD_173_UNPROVEN"])
+
+    def test_reference_case_carries_no_code_bytes(self):
+        # 参照ケースは命令列・セクタ内容を持たない（自作ペイロードとも純正由来とも結びつけない）
+        self.assertFalse(any(isinstance(v, (bytes, bytearray)) for v in fx.REFERENCE_CASE.values()))
+
+
 if __name__ == "__main__":
     unittest.main()
