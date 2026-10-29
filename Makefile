@@ -1,5 +1,7 @@
 PYTHON ?= python3
 MODE ?= debug
+# Directory holding this Makefile (with trailing slash), so that clean removes this checkout's build/ wherever make is run from.
+REPO_ROOT := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
 .PHONY: setup build test test-real-core host-test check clean release setup-geargrafx integration integration-test
 
@@ -57,7 +59,7 @@ rom-provenance:
 	$(PYTHON) tools/rom_provenance.py --reproduce smoke --mode "$(MODE)"
 
 clean:
-	$(PYTHON) -c 'from pathlib import Path; import shutil; p = Path("build"); shutil.rmtree(p) if p.exists() else None'
+	$(PYTHON) -c 'import shutil, sys; from pathlib import Path; p = Path(sys.argv[1]); shutil.rmtree(p) if p.exists() else None' "$(REPO_ROOT)build"
 
 release:
 	@echo 'BLOCKED: BIOS APIs and System Card boot are unimplemented; no BIOS release is available.' >&2
