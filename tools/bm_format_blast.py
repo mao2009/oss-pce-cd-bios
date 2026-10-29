@@ -4,9 +4,9 @@ Reports which bytes of an in-memory synthetic image would change if the model's
 format_image() were applied. Output is a model property only: it is NOT a BIOS write set,
 NOT a BIOS return value, and NOT a safety approval. It performs no file, device, or BIOS I/O.
 
-Contract paths (docs/contracts/bm-format.md section 6, P-1..P-7) stay open: path A (BIOS
-$E048) and path B (HuC direct write) have UNKNOWN write sets, so bios_write_set is always
-"UNKNOWN" and verdict is always NOT_EXECUTED. release_eligible is always False.
+bios_write_set is always "UNKNOWN". The path B write range ($8000 series, page tests up to
+$A0; docs/contracts/bm-format.md section 2.1) is NOT part of this model. verdict is always
+NOT_EXECUTED and release_eligible is always False.
 """
 import bm_format_model as bm
 
