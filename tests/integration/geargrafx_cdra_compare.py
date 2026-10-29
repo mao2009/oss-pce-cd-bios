@@ -34,8 +34,9 @@ from geargrafx_cdread import DEFAULT_REQUEST, STEP_BUDGET  # noqa: E402
 
 DEFINE = "-DGG_ENABLE_CDROM_CUEBIN_READAHEAD"
 REPS = 5
-# (5,1): inside the first 64 sectors, which the load-time pass caches in both variants (hit control).
-# (100,3) and (200,3): beyond the cache window; ON must demand-read and prefetch, OFF reads its own chunk layout.
+# (5,1): inside the first 64 sectors, which the load-time pass caches in both variants (intentional non-read-ahead control).
+# (100,3) and (200,3): beyond the cache window; read-ahead is expected to be exercised (positive cases).
+# Prefetch is gated in aggregate over the positive cases only: a per-scenario gate would fail lba100x3 (measured 0 prefetch).
 SCENARIOS = (DEFAULT_REQUEST, (100, 3), (200, 3))
 PHASE_DATA_IN = 4
 # Larger than the streaming cache (64 one-sector chunks): the load-time pass caches only the first 64 sectors.
@@ -178,10 +179,33 @@ def delivered_sectors(run, disc, lba, count):
 def first_divergence(a, b):
     for index, (x, y) in enumerate(zip(a, b)):
         if x != y:
-            return {"index": index, "tag": x[0], "fields_differ": sorted(k for k in x[1] if x[1].get(k) != y[1].get(k))}
+            fields = ["tag"] if x[0] != y[0] else []
+            fields += sorted(k for k in set(x[1]) | set(y[1]) if x[1].get(k) != y[1].get(k))
+            return {"index": index, "tag": x[0], "fields_differ": fields}
     if len(a) != len(b):
         return {"index": min(len(a), len(b)), "tag": "LENGTH", "fields_differ": []}
     return None
+
+
+def scenario_key(request):
+    return f"lba{request[0]}x{request[1]}"
+
+
+def reproducibility_verdict(runs):
+    """Guest-visible records only. VFS metrics are informational and never decide reproducibility."""
+    return all(r["guest"] == runs[0]["guest"] for r in runs)
+
+
+def readahead_gate(prefetch_on, prefetch_off, control, positive):
+    """Prefetch counts are totals over repetitions per scenario key. Returns failure messages (empty = pass)."""
+    failures = []
+    if prefetch_on[control] != 0:
+        failures.append("control scenario prefetched with read-ahead ON; it is not a non-read-ahead control")
+    if sum(prefetch_on[k] for k in positive) == 0:
+        failures.append("read-ahead ON never prefetched in the positive scenarios; the experiment did not exercise read-ahead")
+    if any(count != 0 for count in prefetch_off.values()):
+        failures.append("read-ahead OFF performed worker-thread reads")
+    return failures
 
 
 def main():
@@ -223,7 +247,7 @@ def main():
     divergences_all = {}
     for lba, count in SCENARIOS:
         rom = payload if (lba, count) == DEFAULT_REQUEST else with_request(payload, symbols, lba, count)
-        key = f"lba{lba}x{count}"
+        key = scenario_key((lba, count))
         for rep in range(REPS):
             for name in ("on", "off"):  # interleave variants per repetition
                 log = work / f"vfs-{name}-{key}-{rep}.jsonl"
@@ -239,18 +263,15 @@ def main():
         per_rep_divergences = [first_divergence(a[i]["guest"], b[i]["guest"]) for i in range(REPS)]
         divergences[key] = per_rep_divergences[0]
         divergences_all[key] = per_rep_divergences
-        # Reproducibility is judged on guest-visible records only. VFS thread counts/bytes depend on
-        # host scheduling and read-ahead timing and are reported as informational metrics.
         for name, runs in (("on", a), ("off", b)):
-            if any(r["guest"] != runs[0]["guest"] for r in runs):
+            if not reproducibility_verdict(runs):
                 raise ValueError(f"FAIL: {name} {key} is not reproducible across {REPS} repetitions")
 
-    on_prefetch = sum(r["metrics"]["vfs_prefetch_reads"] for v in results["on"].values() for r in v)
-    off_prefetch = sum(r["metrics"]["vfs_prefetch_reads"] for v in results["off"].values() for r in v)
-    if on_prefetch == 0:
-        raise ValueError("FAIL: read-ahead ON never prefetched; the experiment did not exercise read-ahead")
-    if off_prefetch != 0:
-        raise ValueError("FAIL: read-ahead OFF performed worker-thread reads")
+    prefetch = {n: {k: sum(r["metrics"]["vfs_prefetch_reads"] for r in v) for k, v in results[n].items()} for n in results}
+    failures = readahead_gate(prefetch["on"], prefetch["off"], scenario_key(DEFAULT_REQUEST),
+                              [scenario_key(s) for s in SCENARIOS[1:]])
+    if failures:
+        raise ValueError("FAIL: " + "; ".join(failures))
     summary = {"reps": REPS, "scenarios": [f"lba{l}x{c}" for l, c in SCENARIOS], "divergence": divergences,
                "divergence_all_reps": divergences_all,
                "comparison_note": "ON/OFF toggle bundles chunk size, preload, cache and read-ahead; not isolated. VFS counts are informational.",
