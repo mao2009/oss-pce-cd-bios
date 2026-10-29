@@ -73,7 +73,7 @@ def _dev_override_list() -> str:
     """Human-readable list of implemented DEV override slots, sorted by slot number."""
     ov = overrides()
     names = {
-        0x1E: "EX_GETVER", 0x3C: "EX_BINBCD", 0x3D: "EX_BCDBIN", 0x3E: "EX_RND",
+        0x1E: "EX_GETVER", 0x3A: "EX_SETWRT", 0x3C: "EX_BINBCD", 0x3D: "EX_BCDBIN", 0x3E: "EX_RND",
         0x3F: "MA_MUL8U", 0x40: "MA_MUL8S", 0x41: "MA_MUL16U",
         0x42: "MA_DIV16S", 0x43: "MA_DIV16U", 0x44: "MA_SQRT", 0x45: "MA_SIN",
         0x46: "MA_COS", 0x4F: "MA_MUL16S",
@@ -149,18 +149,20 @@ def parse_dbg(text: str) -> dict[str, list[dict[str, str]]]:
 
 
 @functools.lru_cache(maxsize=None)
-def decode(raw: bytes) -> tuple[int, str, str]:
-    """First instruction of `raw` per cc65's own da65 HuC6280 table: (length, mnemonic, operand).
+def decode(raw: bytes, address: int) -> tuple[int, str, str]:
+    """First instruction of `raw` (linked at `address`) per cc65's own da65 HuC6280 table: (length, mnemonic, operand).
 
     Reusing da65 (same pinned cc65 revision as ca65) avoids a hand-written length table that could
-    become a verification blind spot. Undefined/truncated opcodes decode as '.byte'. Decoded at
-    address 0 on purpose: da65 splits instructions at labels, so only a branch into its own operand
-    bytes can make a valid instruction look short, and that is rejected anyway.
+    become a verification blind spot. Undefined/truncated opcodes decode as '.byte'. Decoded at the
+    real link address: da65 creates a label for every absolute operand that falls inside the range it
+    disassembles, so decoding at address 0 mangled `stz a:$0000` (the label lands in column 0 and the
+    line no longer matches) and split `sta a:$0002`. At the real address only a target inside the
+    instruction's own span can split it, and that is rejected anyway.
     """
     with tempfile.TemporaryDirectory() as tmp:
         binary = Path(tmp) / 'code.bin'
         binary.write_bytes(raw)
-        text = subprocess.run([executable('da65'), '--cpu', 'huc6280', '--comments', '4', '--start-addr', '0',
+        text = subprocess.run([executable('da65'), '--cpu', 'huc6280', '--comments', '4', '--start-addr', str(address),
                                str(binary)], capture_output=True, text=True, check=True).stdout
     for m in map(DA65_LINE.match, text.splitlines()):
         if m:
@@ -222,7 +224,7 @@ def verify_overrides(bank: bytes, overridden: set[int], dbg: dict) -> None:
                 raise ValueError(f'Override ${slot:02X} code ${address:04X} outside bank0 body')
         for address, size in spans:
             raw = bytes(bank[address - FIRST_ENTRY:address - FIRST_ENTRY + size])
-            length, mnemonic, operand = decode(raw)
+            length, mnemonic, operand = decode(raw, address)
             # Debug info says where instructions are; the ROM bytes must decode to exactly that length.
             if mnemonic == '.byte':
                 raise ValueError(f'Override ${slot:02X} ${address:04X}: undefined opcode ${raw[0]:02X} '

@@ -16,7 +16,7 @@
 | 主張 | 出典 | 種別 | 状態 |
 | --- | --- | --- | --- |
 | 名前 `CD_BASE` が `$E006`（スロット 2） | HuCC `include/hucc/pcengine.inc`（System Card 関数イコール、L468-552） | SDK イコール（呼出側） | HYPOTHESIS |
-| `CD_BASE` のセレクタ名 | Hu-Go `bios.c`（L30-133） | HLE エミュレータ | HYPOTHESIS。HLE は実 BIOS の証明にならない。エントリ番号は UNKNOWN |
+| `CD_BASE` のセレクタ名 | Hu-Go `bios.c`（L30-133） | HLE エミュレータ（参照のみ、ライセンス未確定。根拠に使わない） | UNKNOWN。名前の根拠は上の HuCC の行のみ。HLE は実 BIOS の証明にならない。エントリ番号は UNKNOWN |
 | 名前だけの観測 | `spec/api_contracts.json` の slot 2 | 既存の契約台帳 | `mapping_status` = HYPOTHESIS。全項目 UNKNOWN |
 | ブロック番号は 24bit（`_cl:_ch:_dl`、`$20FC/$20FD/$20FE`） | `docs/cd-read-contract.md`（#118 ブランチ、`origin/feat/12-cd-read-abi`） | HuCC 呼出側の読み取り | HYPOTHESIS |
 | 「ブロック番号が CD_BASE 相対か絶対 LBA か」 | 同上（#11 を参照） | 未解決 | UNKNOWN |
@@ -91,7 +91,7 @@ Zeograd や Stum の記事は名前の確認にのみ使う。
 
 | 種類 | 結果 |
 | --- | --- |
-| `tests/host/test_cd_base_model.py` | 21 件。MSF（境界・不正入力）、仮想 PREGAP、INDEX 00/01 の境界、INDEX 01 相対、ベースのラウンドトリップ、24bit 範囲、READ(6) 21bit |
+| `tests/host/test_cd_base_model.py` | 28 件（実測、2026-10-29）。MSF（境界・不正入力）、仮想 PREGAP、INDEX 00/01 の境界、INDEX 01 相対、ベースのラウンドトリップ、24bit 範囲、READ(6) 21bit |
 | 失敗確認 | モデル実装前に `ModuleNotFoundError` で失敗することを確認済み |
 | 実エミュレータ | **実施していない**（本 PR は Geargrafx を使わない） |
 
@@ -137,3 +137,7 @@ ROM に `CD_BASE` を入れると、ABI を推測した成功値を返すこと�
 - ホスト算術: `tools/cd_base_model.py`、`tests/host/test_cd_base_model.py`
 - 前提: `docs/cd-read-diagnostic.md`（アドレス契約）、`docs/cd-reset-contract.md`（#10 の形式）
 - 参照のみ: `docs/cd-read-contract.md`（#118 ブランチ）。`docs/oss-audit-systemcard.md` には CD_BASE の記述がなかった。
+
+## 変更履歴
+
+- 2026-10-29（#573）: 出典の「Hu-Go `bios.c`」のセレクタ名の行を、HYPOTHESIS から UNKNOWN へ下げた。Hu-Go! は HLE であり、ライセンス未確定のため参照のみとする。CD_BASE の名前の HYPOTHESIS の根拠は HuCC（`pcengine.inc`）の行に残す。PR #571 の方針と整合。

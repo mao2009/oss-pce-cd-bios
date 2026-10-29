@@ -50,7 +50,7 @@ separate, clean-clone run of the same commands.
   never stand in for emulator execution or a live scheduled Actions run.
 - Cache integrity tests cover normal incremental output reuse, same-size source
   edits, truncation/deletion, unexpected source/symlinks, corrupt/forged manifests,
-  legacy migration, interrupted extraction/retry, archive checksum failures and
+  legacy migration, interrupted extraction (leftover staging is refused, not retried), archive checksum failures and
   actual exclusive-lock blocking.
 - Nightly recovery tests exercise expiry/absence, failed/in-progress/other-branch
   workflows, download/missing-file/JSON failures, full state validation, owning

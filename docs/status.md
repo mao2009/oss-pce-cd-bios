@@ -2,9 +2,11 @@
 
 This is an evidence-scoped, **dated snapshot**, not a real-time compatibility report. Source tree: [main at `f90c16b`](https://github.com/mao2009/oss-pce-cd-bios/commit/f90c16b6ca7b3cd6f0ee66935aa08d43c329628d), after #475, #477, #495 (MA_MUL16S), #502 and #506 merged. Recheck main and [Actions](https://github.com/mao2009/oss-pce-cd-bios/actions) for later changes. Historical progress is available in [git history](https://github.com/mao2009/oss-pce-cd-bios/commits/main/docs/status.md). Earlier snapshots (2026-10-20, 2026-10-21 and 2026-10-22; historical `86172e2` / `8a136ad`: 8 DEV implementations) are superseded, not retroactively changed.
 
+**Historical baseline (2026-10-28, main 2954e90 after PR #527):** 13/81 DEV implementations and 68 stubs. This revision (PR #524, Issue #68, EX_SETWRT $3A) has 14/81 DEV implementations and 67 stubs. Reference ABI VERIFIED stays 0/81, and release remains blocked. Older sections below describe historical main f90c16b (9/81 DEV, 72 stubs).
+
 ## Six separate metrics
 
-Measured on main f90c16b: `src/overrides/slot_*.s` contains **9** files, `spec/dev_implementations.json` has **81** slots, **9** with a non-null `implementation`, and **0** owner approvals, and the 72 stubs are the remaining 81 − 9 entries.
+Measured on main f90c16b: `src/overrides/slot_*.s` contains **9** files, `spec/dev_implementations.json` has **81** slots, **9** with a non-null `implementation`, and **0** owner approvals, and main f90c16b's 72 stubs are the remaining 81 − 9 entries.
 
 | Metric | Confirmed on main | Meaning / limits |
 | --- | ---: | --- |
@@ -68,7 +70,7 @@ On the Issue #78 PR branch, MA_SQRT ($44) is added as a tenth DEV implementation
 | Command / artifact | What it means |
 | --- | --- |
 | `make setup`, `make build`, `make test`, `make test-real-core`, `make check` | Original 8 KiB synthetic HuCARD and host/real-core diagnostics, not a compatibility ROM |
-| `make dev-rom` | Development-only 256 KiB image, nine project-owned overrides ($1E, $3C, $3D, $3F, $40, $41, $42, $43, $4F) + 72 nonreturning stubs on main f90c16b; 13/81 DEV implementations ($1E, $3C, $3D, $3E, $3F, $40, $41, $42, $43, $44, $45, $46, $4F) + 68 nonreturning stubs on PR #527 (Issue #80; PR #522 MA_SIN is merged) |
+| `make dev-rom` | Development-only 256 KiB image. Historical main 2954e90: 13/81 DEV implementations and 68 stubs; this revision (PR #524, EX_SETWRT $3A): 14/81 DEV implementations and 67 nonreturning stubs. Historical main f90c16b: 9/81 DEV implementations and 72 stubs. These do not establish a verified reference BIOS ABI. |
 | `make dev-integration`, `make dev-test` | Project-owned DEV ABI and synthetic Geargrafx tests, including MA_DIV16U and MA_MUL16S, not reference-BIOS verification |
 | `make dev-cdread-integration`, `make dev-cdload-exec-integration` | Guest CD transport and RAM payload experiments, not BIOS-mediated boot |
 | `make dev-boot-internal-integration` | DEV-only internal boot path regression (#502), wired into CI by #506 |

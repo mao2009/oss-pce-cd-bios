@@ -30,9 +30,13 @@ PUBLIC_DOCS = [
     "site/index.html", "site/ja/index.html", "site/llms.txt",
 ]
 # Known-merged PRs and closed issues as of 2026-10-23 (checked with `gh pr view`). Fixed list: tests stay offline.
-MERGED_PRS = (475, 477, 494, 495, 502, 506, 508, 516)
+MERGED_PRS = (475, 477, 494, 495, 502, 506, 508, 516, 522, 527)
 # Counts a PR or commit recorded when it was current. Exempt only on a historical line that cites that PR/commit
 # with the same value. A date alone never qualifies.
+# Commit-named main snapshots whose DEV/stub counts are fixed facts (main f90c16b: 9/72; main 2954e90: 13/68).
+MAIN_SNAPSHOTS = {'f90c16b': {'dev': 9, 'stub': 72}, '2954e90': {'dev': 13, 'stub': 68}}
+
+
 HISTORICAL_CLAIMS = {"#174": {"stub": 80}, "86172e2": {"dev": 8}, "8a136ad": {"dev": 8}}
 STALE_PATTERNS = [
     r"\b8/81\b",  # any current 8/81 (the 2026-10-22 snapshot figure) is stale
@@ -162,21 +166,38 @@ def historical_value_ok(note, key, value):
     return any(cite in cited and HISTORICAL_CLAIMS[cite].get(key) == value for cite in HISTORICAL_CLAIMS)
 
 
-def segment_containing(current, pos):
-    """Return the sentence segment (split on . ; 。 ；) that contains character position `pos`.
-
-    A comma or colon does NOT split a segment: a list such as
-    "main f90c16b (A, B, C) and 72 stubs" stays in one segment so the historical reference
-    covers every count in it. A period/semicolon ends a segment, which lets a line mix a
-    historical main f90c16b statement with a current PR-branch statement.
-    """
+def segment_bounds(current, pos):
+    """(start, end) of the sentence segment that contains `pos` (same split rule as segment_containing)."""
     start = 0
-    for sep in re.finditer(r"[.。;；]", current):
+    for sep in re.finditer(r"[.。;；\"\n]", current):
         end = sep.start()
         if start <= pos < end:
-            return current[start:end]
+            return start, end
         start = sep.end()
-    return current[start:]
+    return start, len(current)
+
+
+MAIN_SHA_RE = re.compile(r"\b(f90c16b|2954e90)\b", re.IGNORECASE)  # a commit named with or without the word "main"
+
+
+def snapshot_status(line, pos, key, value):
+    """Judge a count against the commit named in its own sentence.
+
+    Returns None when the sentence names no commit; True when the nearest named commit records this value
+    for `key`; False when it records another value (a wrong value under a commit is never hidden).
+    key=None (a bare "N/81" count) compares against any value the nearest snapshot records.
+    """
+    start, end = segment_bounds(line, pos)
+    local = pos - start
+    named = [(m.start(), m.group(1).lower()) for m in MAIN_SHA_RE.finditer(line[start:end])]
+    if not named:
+        return None
+    _, sha = min(named, key=lambda item: abs(item[0] - local))
+    counts = MAIN_SNAPSHOTS[sha]
+    if key is None:
+        return value in counts.values()
+    return counts.get(key) == value
+
 
 
 def stale_hits(text, expected=EXPECTED):
@@ -199,28 +220,15 @@ def stale_hits(text, expected=EXPECTED):
             if re.search(pattern, current):
                 hits.append((number, pattern))
         for key, value, _denom, cstart, _cend in claims_in_line(current):
+            if key in ('dev', 'stub'):
+                verdict = snapshot_status(line, cstart, key, value)
+                if verdict is True:
+                    continue  # the commit named in this sentence records this value
+                if verdict is False:
+                    hits.append((number, f"{NAMES[key]} {value} does not match the commit named in its sentence"))
+                    continue
             if value == expected[key]:
                 continue
-            if key in ('dev', 'stub'):
-                # blank_cites() は "f90c16b" を7桁コミットIDとして同長空白置換するため、
-                # 履歴文脈の判定は置換前の元の行 `line` で行う（位置は1対1で保たれる）。
-                seg = segment_containing(line, cstart)
-                # A claim is a main f90c16b historical claim only when the segment containing
-                # THAT claim explicitly references "main f90c16b". A "main f90c16b" mention
-                # elsewhere on the line does not by itself exempt this claim.
-                if re.search(r'\bmain\s+f90c16b\b', seg, re.I):
-                    # Historical main f90c16b snapshot: only dev=9/81 and stubs=72/81 are legitimate.
-                    if (key == 'dev' and value == 9) or (key == 'stub' and value == 72):
-                        continue  # legitimate historical main snapshot value
-                    # A wrong historical value (e.g. "main f90c16b: 11/81") is flagged below.
-                else:
-                    # main f90c16b may be referenced elsewhere on the same line. Such a line can
-                    # still state historical values (9/81 dev, 72/81 stubs), but a segment that
-                    # labels the count "Current" states a current value and must match the ledger.
-                    seg_is_current = bool(re.search(r'\bcurrent\b|現在', seg, re.I))
-                    if (not seg_is_current) and re.search(r'\bmain\s+f90c16b\b', line, re.I):
-                        if (key == 'dev' and value == 9) or (key == 'stub' and value == 72):
-                            continue  # historical main value referenced elsewhere on the line
             # Non-dev/stub keys (approval, abi, jsr) are never exempted by main f90c16b, and a
             # correct historical value never exempts a wrong current value on the same line.
             hits.append((number, f"{NAMES[key]} {value} != ledger {expected[key]}"))
@@ -229,24 +237,13 @@ def stale_hits(text, expected=EXPECTED):
                 if not historical_value_ok(note, key, value):
                     hits.append((number, f"historical {NAMES[key]} {value} does not match the cited PR"))
         for match in VALUE_RE.finditer(current):
-            if match.group(2) and int(match.group(1)) not in allowed:
-                val = int(match.group(1))
-                # blank_cites() は "f90c16b" を同長空白置換するため、履歴文脈は元の行 `line` で判定する。
-                seg = segment_containing(line, match.start())
-                historical_ctx = bool(re.search(r'\bmain\s+f90c16b\b', seg, re.I))
-                exempt = False
-                if historical_ctx:
-                    if val in (9, 72):
-                        exempt = True  # legitimate historical main snapshot count
-                else:
-                    # main f90c16b may be referenced elsewhere on the same line; a segment that
-                    # labels the count "Current" states a current value and must match the ledger.
-                    seg_is_current = bool(re.search(r'\bcurrent\b|現在', seg, re.I))
-                    if (not seg_is_current) and re.search(r'\bmain\s+f90c16b\b', line, re.I):
-                        if val in (9, 72):
-                            exempt = True  # historical main count referenced elsewhere on the line
-                if not exempt:
-                    hits.append((number, f"count {match.group(0).strip()} is not derived from the ledger"))
+            if not match.group(2):
+                continue
+            val = int(match.group(1))
+            verdict = snapshot_status(line, match.start(), None, val)
+            if verdict is True or (verdict is None and val in allowed):
+                continue
+            hits.append((number, f"count {match.group(0).strip()} is not derived from the ledger"))
         # Limit state checks to text that describes each merged PR, with no other PR reference
         # between the PR mention and the open/unmerged/Draft wording. "and"/"および" does not
         # split the check: if another PR follows the conjunction, its wording is attributed to
@@ -326,7 +323,7 @@ def stale_hits(text, expected=EXPECTED):
 def missing_claims(text, expected=EXPECTED):
     """Return the labelled claims a public doc fails to state with the ledger-derived value.
 
-    The expected values are always the current PR-branch values (DEV 13/81, stubs 68/81).
+    The expected values are always the current PR-branch values (DEV 14/81, stubs 67/81).
     A historical main f90c16b heading does NOT switch the whole document to 9/81 and 72 stubs:
     each claim is judged individually by stale_hits().
     """
@@ -346,8 +343,8 @@ class PublicDocsTest(unittest.TestCase):
         implemented = {slot["id"] for slot in slots if slot.get("implementation")}
         source = {int(path.stem.split("_", 1)[1], 16) for path in (ROOT / "src" / "overrides").glob("slot_*.s")}
         self.assertEqual(len(slots), 81)
-        self.assertEqual(len(implemented), 13)
-        self.assertEqual(len(slots) - len(implemented), 68)
+        self.assertEqual(len(implemented), 14)
+        self.assertEqual(len(slots) - len(implemented), 67)
         self.assertEqual(source, implemented, "src/overrides must match the implemented ledger slots")
         self.assertEqual(sum(1 for slot in slots if slot["approval"]["approved_by"]), 0)
         self.assertIs(self.ledger["release_eligible"], False)
@@ -385,7 +382,7 @@ class PublicDocsTest(unittest.TestCase):
         self.assertTrue(stale_hits("- 2026-10-22 historical note: DEV count is 8/81. (9/81 now)\n## History"))
 
     def test_dated_bullet_under_history_heading_is_exempt(self):
-        text = "## Status\n\n- Current: 13/81.\n\n## History\n\n- 2026-10-22 snapshot: 9/81 DEV (historical).\n"
+        text = "## Status\n\n- Current: 14/81.\n\n## History\n\n- 2026-10-22 snapshot: 9/81 DEV (historical).\n"
         self.assertEqual(stale_hits(text), [])
         self.assertTrue(stale_hits("## Status\n\n- 2026-10-22 snapshot: 9/81 DEV (historical).\n"))
 
@@ -397,29 +394,29 @@ class PublicDocsTest(unittest.TestCase):
         self.assertTrue(stale_hits(roadmap.replace("(historical [#174]", "(as merged [#174]")))
 
     def test_historical_note_exempts_only_its_own_count(self):
-        self.assertEqual(stale_hits("Current stubs: 68 (historical #174: 80 stubs)"), [])
-        self.assertEqual(stale_hits("Current DEV implementations: 13/81 (historical 8a136ad: 8 DEV implementations)"), [])
+        self.assertEqual(stale_hits("Current stubs: 67 (historical #174: 80 stubs)"), [])
+        self.assertEqual(stale_hits("Current DEV implementations: 14/81 (historical 8a136ad: 8 DEV implementations)"), [])
         self.assertTrue(stale_hits("Current stubs: 80 (historical #174)"))
         self.assertTrue(stale_hits("Current stubs: 80 (historical #174: 80 stubs)"))
-        self.assertTrue(stale_hits("Current stubs: 70 (historical #174: 73 stubs)"))
+        self.assertTrue(stale_hits("Current stubs: 67 (historical #174: 73 stubs)"))
         self.assertTrue(stale_hits("Current DEV implementations: 9/81 (historical #174: 80 stubs)"))
-        self.assertTrue(stale_hits("Current stubs: 70; historical #174: 80 stubs"))
+        self.assertTrue(stale_hits("Current stubs: 67; historical #174: 80 stubs"))
 
     def test_history_pr_cite_must_be_the_whole_number(self):
         # #1740 is not #174: a note citing #1740 must not borrow #174's historical value.
         self.assertTrue(stale_hits("Current stubs: 70 (historical #1740: 80 stubs)"))
         self.assertTrue(stale_hits("Current stubs: 70 (historical #17: 80 stubs)"))
-        self.assertEqual(stale_hits("Current stubs: 68 (historical #174: 80 stubs)"), [])
+        self.assertEqual(stale_hits("Current stubs: 67 (historical #174: 80 stubs)"), [])
 
     def test_history_commit_cite_must_be_the_whole_id(self):
         # 8a136ad0 is not 8a136ad (and 86172e25 is not 86172e2): a longer SHA must not borrow the prefix's value.
-        self.assertTrue(stale_hits("Current DEV implementations: 13/81 (historical 8a136ad0: 8 DEV implementations)"))
-        self.assertTrue(stale_hits("Current DEV implementations: 13/81 (historical 86172e25: 8 DEV implementations)"))
+        self.assertTrue(stale_hits("Current DEV implementations: 14/81 (historical 8a136ad0: 8 DEV implementations)"))
+        self.assertTrue(stale_hits("Current DEV implementations: 14/81 (historical 86172e25: 8 DEV implementations)"))
 
     def test_history_commit_id_is_exempt_as_a_full_token(self):
         # The hex digits of a cited commit ID are not a count of the note.
         self.assertEqual(
-            stale_hits("Current DEV implementations: 13/81 (historical 86172e2: 8 DEV implementations)"), [])
+            stale_hits("Current DEV implementations: 14/81 (historical 86172e2: 8 DEV implementations)"), [])
         self.assertTrue(stale_hits("Current DEV implementations: 9/81 (historical 86172e2: 8 DEV implementations)"))
 
     def test_seven_digit_count_is_not_a_commit_cite(self):
@@ -477,7 +474,7 @@ class PublicDocsMutationTest(unittest.TestCase):
     """Mutations of a passing claim block. Each must be caught, or the check is too weak."""
 
     CLEAN = (
-        "Status: DEV implementation count: 13/81, 68 stubs.\n"
+        "Status: DEV implementation count: 14/81, 67 stubs.\n"
         "owner-approved DEV_CALLABLE: 0; reference ABI VERIFIED: 0/81; reference JSR permitted: 0/81.\n"
         "Measured on PR branch (Issue #78 adds MA_SQRT slot $44).\n"
     )
@@ -487,7 +484,7 @@ class PublicDocsMutationTest(unittest.TestCase):
         self.assertEqual(missing_claims(self.CLEAN), [])
 
     def test_wrong_current_dev_count_is_flagged(self):
-        mutant = self.CLEAN.replace("13/81", "11/81")
+        mutant = self.CLEAN.replace("14/81", "11/81")
         self.assertTrue(stale_hits(mutant))
         self.assertIn("DEV implementations", missing_claims(mutant))
 
@@ -504,7 +501,7 @@ class PublicDocsMutationTest(unittest.TestCase):
         self.assertIn("reference ABI VERIFIED", missing_claims(mutant))
 
     def test_one_correct_claim_does_not_excuse_a_wrong_one(self):
-        mutant = self.CLEAN + "DEV implementations 13/81; reference ABI VERIFIED 9/81.\n"
+        mutant = self.CLEAN + "DEV implementations 14/81; reference ABI VERIFIED 9/81.\n"
         self.assertTrue(stale_hits(mutant))
 
     def test_wrong_stub_count_is_flagged(self):
@@ -516,9 +513,9 @@ class PublicDocsMutationTest(unittest.TestCase):
         self.assertTrue(stale_hits("Stubs: 72 remain"))
 
     def test_bare_9_81_does_not_satisfy_claims(self):
-        self.assertEqual(stale_hits("13/81"), [])
+        self.assertEqual(stale_hits("14/81"), [])
         self.assertEqual(
-            set(missing_claims("13/81")),
+            set(missing_claims("14/81")),
             {"DEV implementations", "stubs", "DEV_CALLABLE approval", "reference ABI VERIFIED",
              "reference JSR permitted"},
         )
@@ -544,7 +541,7 @@ class PublicDocsMutationTest(unittest.TestCase):
         self.assertTrue(stale_hits(self.CLEAN, expected))
 
     def test_html_wrapped_count_is_read(self):
-        html = "<div><span>13</span> / 81</div> DEV implemented slots <span>0</span>/81 ABI VERIFIED"
+        html = "<div><span>14</span> / 81</div> DEV implemented slots <span>0</span>/81 ABI VERIFIED"
         self.assertNotIn("DEV implementations", missing_claims(html))
         self.assertTrue(stale_hits("<span>11</span> / 81 DEV implemented"))
 
@@ -552,8 +549,8 @@ class PublicDocsMutationTest(unittest.TestCase):
         slots = json.loads(json.dumps(LEDGER["slots"]))
         slots[1]["implementation"] = {"source": "src/overrides/slot_XX.s"}
         expected = expected_counts(slots, JSR_GATE["slots"])
-        self.assertEqual(expected["dev"], 14)
-        self.assertEqual(expected["stub"], 67)
+        self.assertEqual(expected["dev"], 15)
+        self.assertEqual(expected["stub"], 66)
         self.assertTrue(stale_hits(self.CLEAN, expected))
 
     def test_approval_and_abi_status_are_read_from_ledger(self):
@@ -579,22 +576,75 @@ class PublicDocsMutationTest(unittest.TestCase):
     def test_legitimate_main_historical_claims_are_not_false_positive(self):
         # 正当な main f90c16b 履歴記述は誤検出しない。
         self.assertEqual(stale_hits("main f90c16b: 9/81 DEV implementations and 72 stubs."), [])
-        self.assertEqual(stale_hits("Main f90c16b has 9 DEV implementations and 72 stubs; PR branch has 13/81 and 68 stubs."), [])
+        self.assertEqual(stale_hits("Main f90c16b has 9 DEV implementations and 72 stubs; PR branch has 14/81 and 67 stubs."), [])
 
     def test_history_heading_and_current_values_same_doc(self):
         # 履歴見出しと現在値が同じ文書に存在するケース：現在値は ledger と一致しなければならず、
         # 歴史値(9/81 dev, 72/81 stubs)のみが履歴文脈で免除される。
         text = ("## History\n- 2026-10-22 snapshot: 9/81 DEV (main f90c16b).\n\n"
-                "Current DEV implementations: 13/81, 68 stubs.\n"
+                "Current DEV implementations: 14/81, 67 stubs.\n"
                 "owner-approved DEV_CALLABLE: 0; reference ABI VERIFIED: 0/81; reference JSR permitted: 0/81.")
         self.assertEqual(stale_hits(text), [])
-        self.assertTrue(stale_hits(text.replace("13/81, 68 stubs", "11/81, 67 stubs")))
+        self.assertTrue(stale_hits(text.replace("14/81, 67 stubs", "11/81, 67 stubs")))
 
     def test_multiple_current_values_same_line(self):
         # 複数の現在値が同じ行に存在するケース：それぞれ個別に判定する。
         self.assertTrue(stale_hits("Current DEV implementations: 11/81; stubs: 70."))
         self.assertTrue(stale_hits("Current DEV implementations: 11/81; current stubs: 70; main f90c16b: 9/81."))
-        self.assertEqual(stale_hits("Current DEV implementations: 13/81; current stubs: 68; main f90c16b: 9/81 and 72 stubs."), [])
+        self.assertEqual(stale_hits("Current DEV implementations: 14/81; current stubs: 67; main f90c16b: 9/81 and 72 stubs."), [])
+
+
+
+class SnapshotShaBindingTests(unittest.TestCase):
+    """A historical main count is exempt only when the commit named in its own sentence records that value."""
+
+    def test_correct_sha_bound_snapshot_is_exempt(self):
+        self.assertEqual(stale_hits("Main 2954e90 has 13 DEV implementations."), [])
+        self.assertEqual(stale_hits("Historical main f90c16b had 9 DEV implementations and 72 stubs."), [])
+
+    def test_unmarked_wrong_count_is_flagged(self):
+        self.assertTrue(stale_hits("Current DEV implementations: 13/81."))
+        self.assertTrue(stale_hits("9/81 DEV implementations are current."))
+
+    def test_wrong_value_for_the_named_sha_is_flagged(self):
+        self.assertTrue(stale_hits("Main 2954e90 has 9 DEV implementations."))
+        self.assertTrue(stale_hits("Main f90c16b has 13 DEV implementations."))
+
+    def test_mixed_sentence_wrong_sha_value_is_flagged(self):
+        # 13 belongs to the nearest commit, f90c16b, which records 9: must not be hidden by main 2954e90.
+        self.assertTrue(stale_hits("main 2954e90 and f90c16b have 13/81 DEV implementations."))
+        self.assertEqual(stale_hits("main 2954e90 has 13 DEV implementations."), [])
+
+    def test_correct_ledger_value_under_the_wrong_sha_is_flagged(self):
+        # (a) 14 is the branch ledger value, but main 2954e90 records 13: the commit decides, so this must fail.
+        self.assertTrue(stale_hits("Main 2954e90 has 14 DEV implementations."))
+        self.assertTrue(stale_hits("Current main 2954e90: 14/81."))
+
+    def test_wrong_value_under_the_right_sha_is_flagged(self):
+        # (b)
+        self.assertTrue(stale_hits("Main 2954e90 has 9 DEV implementations."))
+
+    def test_right_value_under_the_right_sha_and_json_ld_line_pass(self):
+        # (c)
+        self.assertEqual(stale_hits("Main 2954e90 has 13 DEV implementations."), [])
+        json_ld = ('      "description": "Development-only open-source replacement for the PC Engine. '
+                   'Fourteen DEV-only implemented slots after Draft PR #524 merges (EX_GETVER, EX_SETWRT; '
+                   'none approved or ABI-verified). 67 nonreturning stub slots after Draft PR #524 merges. '
+                   'On main 2954e90, 13 DEV-only slots and 68 nonreturning stubs (no EX_SETWRT); full ABI.",')
+        self.assertEqual(stale_hits(json_ld), [])
+
+    def test_stub_count_must_match_its_own_sha(self):
+        self.assertTrue(stale_hits("Main 2954e90 has 68 stubs and 72 stubs."))
+        self.assertEqual(stale_hits("Main 2954e90 has 68 stubs."), [])
+
+
+class MergedPrStateTests(unittest.TestCase):
+    def test_merged_pr_described_as_open_draft_is_flagged(self):
+        self.assertTrue(stale_hits("PR #527 is open Draft work."))
+        self.assertTrue(stale_hits("PR #522 is an open Draft."))
+
+    def test_merged_pr_described_as_merged_is_not_flagged(self):
+        self.assertEqual(stale_hits("PR #527 merged into main."), [])
 
 
 if __name__ == "__main__":
