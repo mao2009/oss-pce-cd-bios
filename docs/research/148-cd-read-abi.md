@@ -23,7 +23,7 @@ Refs #148 / 親 #12。状態: **調査のみ。実装なし。VERIFIED の新規
 | `huc:include/hucc/core.inc` | CALLER | `6949584b6d7312f59a4e59a1a4d696070a7278bbce7386f8d06fd63abdb14475` | `system` マクロ = `ldy #<\1; jsr call_bios` (L41-44) |
 | `huc:include/hucc/core-kernel.asm` | CALLER | `ae183017c59c7adc3fe8851e7483c324b0387720bc757f618643a00a18942015` | `call_bios` (L500-516)、`get_file_lba` (L539-547)、`exec_overlay` (L578-614) |
 | `huc:include/hucc/core-startup.asm` | CALLER | `fa340fca7d88a3603b1b55a8d5359b81e414dce527ac0ac7fd4837f0a5f5b37a` | 起動時 MPR0=`$FF` / MPR1=`$F8` (L125-128) |
-| Hu-Go! `mckayemu/hugo@64ed226d` `bios.c` | HLE | `db3f227e09a73457bc9b0f2c54a3922ab9dca1e301f1b5029690c0d210972f22` | HLE のモード/A/N/Z (原本ファームウェアではない。台帳 §2 には**含めない**) |
+| Hu-Go! `mckayemu/hugo@64ed226d` `bios.c` | HLE | `db3f227e09a73457bc9b0f2c54a3922ab9dca1e301f1b5029690c0d210972f22` | 参照のみ（ライセンス未確定、HLE であり実 BIOS の証拠にならない。根拠に使わない。`docs/cd-base-abi-ledger.md` §1）。HLE のモード/A/N/Z (原本ファームウェアではない。台帳 §2 には**含めない**) |
 | [stum.de PC Engine CD-ROM² BIOS Method offsets](https://stum.de/2025/pcenginebiosoffsets/) | 第三者の表 | - | `cd_read` のジャンプ表入口 `$E009`、本体 `$EC6D`(1.0) / `$EC05`(2.0, 2.1, 3.0) / `$EC1E`(TG2.0, TG3.0)。BIOS呼出一般の前提: MPR7=`$00` を変えない、MPR0=`$FF`・MPR1=`$F8` を仮定 |
 | [stum.de「Why do PC Engine CD-ROM² games have a second data track?」](https://www.stum.de/2026/pc-engine-second-data-track/) (2026-05-01, CC BY-NC-SA 4.0) | 第三者の二次資料 (監査で追加。#146 の W1) | - | `cd_read` は `recbase0` を加算して実LBAを得る / 与えるLBAはデータトラック先頭相対 / 16回読込み失敗後は `recbase1` を使う (`retry?`=`$2273`)。根拠は著者の解析で、一次資料(逆アセンブル/マニュアル)の特定は不可 |
 | [PCE nesdev wiki CPU memory map](https://pce.nesdev.org/wiki/CPU_memory_map) | 第三者wiki | - | MPRとメモリ配置の一般論のみ。本文は今回の監査でも未取得(CD_READ固有の記述の有無は未確認。根拠には使わない) |
@@ -103,9 +103,10 @@ CD_READ 呼出の前後に何をするかだけを記録する。callee の実�
 * 呼出側が書く (CALLER_IN): `_dh`, `_ax`/`_al`, `_bx`/`_bl`/`_bh`, `_cl`/`_ch`/`_dl`, Y 選択子, CLI, MPR0/1 前提。
 * callee が要求する (CALLEE_REQUIRED): **UNKNOWN**。実コアで System Card の callee を実行した観測はゼロで、
   どの入力が必須かを示す証拠はない。HuCC の `note`/コメントも呼出側の防御にすぎない。
-* **基点の解釈**: `_cl/_ch/_dl` を絶対LBA とみなすか `recbase0` 相対とみなすかは callee 側の解釈で、stum.de と
-  Hu-Go! HLE が「相対 (`recbase0` 加算)」を示すのみ (どちらも実コアの callee 実行ではない)。HYPOTHESIS のまま
-  とし、#146 台帳との不一致は §6 に記録する。
+* **基点の解釈**: `_cl/_ch/_dl` を絶対LBA とみなすか `recbase0` 相対とみなすかは callee 側の解釈で、stum.de (#146 の W1) が
+  「相対 (`recbase0` 加算)」を示すのみ (実コアの callee 実行ではない)。Hu-Go! HLE は参照のみで根拠に数えない。
+  HYPOTHESIS のままとし、#146 台帳との不一致は §6 に記録する。
+  訂正: 旧版は Hu-Go! HLE を同じ根拠として挙げていたが、撤回する。
 * 呼出側が読む戻り値 (CALLER_OUT): A (C23-C25) のみ。X/Y は呼出側が上書きする (C26)。P フラグは読まれない
   (C30)。C26 は callee の Y を読むのではなく、CLY で Y をゼロにして LEAVE (X→A) で返値を整形する
   **caller 側の返値整形**であり、callee の返値使用とは分ける。
@@ -122,7 +123,7 @@ P フラグ (N/V/Z/C/D/B/T)、スタック S、MPR0-2/5/6、IRQ/完了、`$20F8-
 | --- | --- | --- | --- |
 | 成功時A | 0 | HYPOTHESIS | 実コアで呼出直後のAを記録 |
 | 失敗時A、エラーコード体系 | 非0。個別値は不明 | UNKNOWN | 負例(範囲外LBA、媒体なし、読取エラー)ごとにAを記録 |
-| P(N/Z/C/T/I/D) | Hu-GoはN/ZをAから設定、T=0 (HLE) | HYPOTHESIS | RTS直後のPをトレース(HuCCのTAX/BNEはBIOSのZ/Cを示さない)。呼出側台帳 C30 は P を UNOBSERVED とする |
+| P(N/Z/C/T/I/D) | 出典は Hu-Go! HLE のみ（参照のみ、根拠に使わない）。HuCC の TAX/BNE は BIOS の Z/C を示さない | UNKNOWN | RTS直後のPをトレース。呼出側台帳 C30 は P を UNOBSERVED とする。訂正: 旧版は HYPOTHESIS としていたが、独立した出典がないため UNKNOWN へ下げる |
 | X/Y保存 | 不明 | UNKNOWN | 呼出前後のX/Yを比較。呼出側台帳 C28(X) / C29(Y) |
 | `$20F8-$20FF` | HuCCは`_cd_loaddata.4`で`$20FA-$20FE`の5バイト(`_bl,_bh,_cl,_ch,_dl`)のみ退避=呼出側防御。`_ax`/`_dh`は退避せず各ループで再設定する。BIOSが書き換える/保存するかは不明 | UNKNOWN | 呼出前後の`$20F8-$20FF`ダンプ差分、およびBIOS内のこの領域への書込トレース。呼出側台帳 C22 / C34 |
 | 成功時MPR | 不明 | UNKNOWN | 呼出前後の MPR0-7 を全て記録。呼出側台帳 C32 (MPR0-2/5/6 は UNOBSERVED) |
@@ -149,7 +150,7 @@ P フラグ (N/V/Z/C/D/B/T)、スタック S、MPR0-2/5/6、IRQ/完了、`$20F8-
 
 ## 6. 台帳間の不一致 (記録。解消済みではない)
 
-* **CD_READ の基点 (本書 §2.2 の基点メモ) と #146 台帳 (146 項目2/3/4)**: 本書は当初「基点: UNKNOWN」としたが、#146 は stum.de を根拠に「相対(`recbase0` 加算)」を HYPOTHESIS とした。監査で Hu-Go! HLE にも同じ加算があることを確認し、本書も HYPOTHESIS に揃えた。どちらも実コアのcallee実行なし。
+* **CD_READ の基点 (本書 §2.2 の基点メモ) と #146 台帳 (146 項目2/3/4)**: 本書は当初「基点: UNKNOWN」としたが、#146 は stum.de を根拠に「相対(`recbase0` 加算)」を HYPOTHESIS とした。本書も HYPOTHESIS に揃えた。ただしその根拠は stum.de (W1) のみであり、Hu-Go! HLE の同じ加算は参照のみで数えない（訂正: 旧版は監査で Hu-Go! HLE を補強として挙げていた）。どちらも実コアのcallee実行なし。
 * **2ISO 経路の矛盾 (`docs/cd-base-abi-ledger.md` §3 補足)**: HuCC は 2ISO 時に `recbase1` のみを設定する (`_cl=2`)。#146 は「通常読込みは `recbase0`、`recbase1` は失敗後のみ」の読み方で矛盾が成立しない**可能性**を挙げるが、これは推論で未測定。**矛盾は OPEN のまま**。`_cl=1/2` 後の CD_READ の LBA 比較と失敗注入の実測が必要。
 * #146 と本書は、CD_BASE の `_cl` の意味 (`$01`=recbase0, `$02`=recbase1) を stum.de のみから得ており、独立した二つの証拠ではない。
 
