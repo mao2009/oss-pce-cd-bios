@@ -2092,6 +2092,11 @@ STEP_EXCEPTIONS = {
 # refused. The approved list is a reviewed file in this repository; a change to it or to this guard is a policy change
 # (policy_violations, against the trusted main copy), not something a pull request can approve by itself.
 RUN_ALLOWLIST_FILE = "tools/artifact_guard_run_allowlist.json"
+# The marker is introduced only by the final, owner-reviewed workflow migration.
+# The trusted main guard reads this file from its own checkout, not from candidate data.
+POLICY_ACTIVATION_FILE = "tools/trusted_guard_policy_active.txt"
+POLICY_ACTIVATION_TEXT = "trusted-gate-policy-v1\n"
+POLICY_STEP_NAME = "Policy check (trusted main guard and approval table against the pull request)"
 POLICY_FILES = ("tools/artifact_guard.py", RUN_ALLOWLIST_FILE)
 _RUN_ALLOWLIST = None   # {key: {sha256}} while an enforcing check runs (see enforced_check); None means not enforced
 
@@ -2166,6 +2171,30 @@ def load_run_allowlist(root):
             table.setdefault(key, set()).add((entry["sha256"], entry["job_sha256"]))
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise ValueError(f"{RUN_ALLOWLIST_FILE} cannot be read, so no run: text can be approved ({error}; fails closed)")
+    # During the two-step rollout, legacy and new guard-verify jobs have
+    # exact preapproved digests. Once trusted main contains the activation
+    # marker, a candidate must not roll the job back to its old, unguarded
+    # form (which lacked the trusted --check-policy step).
+    activation = Path(root) / POLICY_ACTIVATION_FILE
+    if activation.is_symlink():
+        raise ValueError(f"{POLICY_ACTIVATION_FILE} is a link (fails closed)")
+    if activation.exists():
+        if not activation.is_file() or activation.read_text(encoding="utf-8") != POLICY_ACTIVATION_TEXT:
+            raise ValueError(f"{POLICY_ACTIVATION_FILE} is malformed (fails closed)")
+        policy_jobs = {entry["job_sha256"] for entry in entries
+                       if entry["workflow"] == ".github/workflows/ci.yml"
+                       and entry["job"] == "guard-verify"
+                       and entry["step"] == POLICY_STEP_NAME}
+        if len(policy_jobs) != 1:
+            raise ValueError("active trusted policy requires exactly one approved guard-verify policy job")
+        approved_job = next(iter(policy_jobs))
+        for key in list(table):
+            if key[0] == ".github/workflows/ci.yml" and key[1] == "guard-verify":
+                selected = {pair for pair in table[key] if pair[1] == approved_job}
+                if selected:
+                    table[key] = selected
+                else:
+                    del table[key]
     return table
 
 
@@ -2214,9 +2243,26 @@ def policy_violations(root, trusted_root):
         elif _sha256(mine) != _sha256(theirs):
             problems.append(f"{rel} differs from the trusted main copy: a change to the guard or its run allowlist needs "
                             "trusted-main policy, not this pull request (Issue #511)")
+    # The activation marker is reviewed during the first workflow migration.
+    # After it exists on trusted main it becomes immutable by an ordinary PR.
+    # A candidate cannot deactivate the strict guard-verify digest filter.
+    trusted_marker = Path(trusted_root) / POLICY_ACTIVATION_FILE
+    candidate_marker = Path(root) / POLICY_ACTIVATION_FILE
+    if trusted_marker.is_symlink() or candidate_marker.is_symlink():
+        problems.append(f"{POLICY_ACTIVATION_FILE} must not be a symbolic link")
+    elif trusted_marker.exists():
+        if not trusted_marker.is_file() or trusted_marker.read_text(encoding="utf-8") != POLICY_ACTIVATION_TEXT:
+            problems.append(f"{POLICY_ACTIVATION_FILE} on trusted main is malformed (fails closed)")
+        if not candidate_marker.is_file() or candidate_marker.read_bytes() != trusted_marker.read_bytes():
+            problems.append(f"{POLICY_ACTIVATION_FILE} differs from trusted main (fails closed)")
+    elif candidate_marker.exists():
+        # The sole first-time activation value is hard-coded in trusted code.
+        # Its presence in a candidate cannot activate policy in trusted main.
+        if not candidate_marker.is_file() or candidate_marker.read_text(encoding="utf-8") != POLICY_ACTIVATION_TEXT:
+            problems.append(f"{POLICY_ACTIVATION_FILE} has an invalid bootstrap value")
     if problems:
         raise ValueError("artifact guard policy: " + "; ".join(problems))
-    print("PASS artifact guard policy: guard and run allowlist match the trusted main copy")
+    print("PASS artifact guard policy: guard, run allowlist and activation state match trusted policy")
 
 
 def enforced_check(root, check, allowlist_root):
