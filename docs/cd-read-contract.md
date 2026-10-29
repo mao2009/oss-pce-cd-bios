@@ -126,6 +126,10 @@ by design; the CI job `make dev-cdread-integration` is what produces the bundle.
 * Not verified by any of this: real hardware, a second emulator, the System Card 3.0 callee ABI (`$E009`),
   interrupt-driven transfer, no-disc behaviour.
 
+## 変更履歴
+
+* 2026-10-29（#573）: Hu-Go! だけを根拠にしていた「Destination mode」の `_dh=1/2/4/5`、「Count 0 ほか」、「Flags」、「Synchronous completion」を UNKNOWN へ下げた。`_dh` 行は HuCC 呼出側由来のモードを HYPOTHESIS のまま残した。Hu-Go! は参照のみとし、根拠に使わない（PR #571 の 148 側と整合）。旧版の「訂正:」注記（`_dh=2` の出典は Hu-Go! HLE のみ）は本節へ移し、本文には HuCC の確認事実だけを残した。
+
 ## 1. Callee ABI (System Card 3.0 service). No VERIFIED item
 
 Sources (provenance `PENDING`, see [abi-contracts.md](abi-contracts.md#cd_read--slot-03-candidate-e009)):
@@ -138,18 +142,18 @@ HuCC `pce-devel/huc@54f5c73606c1e7142e8095c727cab2767e2b3cb3` (`hucc-systemcard.
 | Entry | slot `$03`, CPU `$E009` (`$E000 + 3*slot`); MPR7 = bank 0 at call | HYPOTHESIS | HuCC `pcengine.inc`, `core-kernel.asm` |
 | Block number | 24-bit `_cl:_ch:_dl` (high:mid:low) at `$20FC/$20FD/$20FE` | HYPOTHESIS | HuCC callers, `get_file_lba` |
 | Block base | relative to a base set by CD_BASE (#11) vs absolute LBA | UNKNOWN | - |
-| Destination mode | `_dh`: 0 local bytes `_ax`; 1 local sectors (Hu-Go only); 2..6 RAM bank `_bl`, `_al` sectors; `$FE` VRAM `_bx` bytes `_ax`; `$FF` VRAM `_bx` sectors `_al` | HYPOTHESIS | 訂正: HuCC は `_dh=2` を書かないことを include/hucc/ の範囲で確認。`_dh=2` の出典は Hu-Go! HLE のみ（ライセンス未確定。根拠に使わない） |
+| Destination mode | `_dh`: 0 local bytes `_ax`; 1 local sectors (Hu-Go only); 2..6 RAM bank `_bl`, `_al` sectors; `$FE` VRAM `_bx` bytes `_ax`; `$FF` VRAM `_bx` sectors `_al` | HYPOTHESIS（0, 3, 6, `$FE`, `$FF`）/ UNKNOWN（1, 2, 4, 5: Hu-Go! HLE のみ） | HuCC 呼出側。HuCC は `_dh=2` を書かないことを include/hucc/ の範囲で確認（独立根拠なし）。Hu-Go! は参照のみで、ライセンス未確定につき根拠に使わない |
 | Mode list complete / invalid mode result | - | UNKNOWN | - |
-| Count 0, bank wrap, odd VRAM byte count, upper bounds | Hu-Go reports A=`$22` for `$FF` count 0 (HLE only) | HYPOTHESIS / UNKNOWN | Hu-Go `bios.c` |
+| Count 0, bank wrap, odd VRAM byte count, upper bounds | 未確認（Hu-Go! HLE は `$FF` count 0 で A=`$22` と示すが参照のみ） | UNKNOWN | 実コアの callee 実行が必要 |
 | Return | A=0 success, nonzero error | HYPOTHESIS | HuCC TAX/BNE, Hu-Go |
 | Error codes (no disc, bad block, read error, busy/timeout) | - | UNKNOWN | - |
-| Flags (N/Z/C/T/I/D) on return | Hu-Go sets N/Z from A, clears T (HLE) | HYPOTHESIS | Hu-Go |
+| Flags (N/Z/C/T/I/D) on return | 未確認（Hu-Go! HLE のみが記述。参照のみ、根拠に使わない） | UNKNOWN | - |
 | X/Y and work-RAM `$20F8-$20FF` clobber/preserve | HuCC saves `_bx.._dl` around calls (caller protection, not a clobber list) | HYPOTHESIS | HuCC |
 | Preserved registers / RAM | - | UNKNOWN | - |
 | MPR | caller restores MPR3 itself; HuCC comments that CD_READ corrupts it on error | HYPOTHESIS | HuCC |
 | Stack | JSR in / RTS out via HuCC `call_bios`; callee depth and balance | HYPOTHESIS / UNKNOWN | HuCC |
 | Interrupts | HuCC overlay loader runs CLI before CD_READ; BIOS IRQ requirement | HYPOTHESIS / UNKNOWN | HuCC |
-| Synchronous completion, timing | Hu-Go models a synchronous loop | HYPOTHESIS | Hu-Go |
+| Synchronous completion, timing | 未確認（Hu-Go! HLE のみが同期ループを記述。参照のみ、根拠に使わない） | UNKNOWN | - |
 
 ## 2. Transport layer (what any CD_READ must do on the bus). Emulator-verified part
 
