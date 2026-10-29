@@ -1,9 +1,9 @@
 # Issue #186: CD_BASE（$02）の LBA / INDEX 01 基準候補の観測計画（非実行）
 
 対象: スロット `$02`、候補エントリ `$E006`（`CD_BASE`）。親は #11、関連は #12。
-本書は**調査と観測計画であり、実測結果は含まない**。純正 BIOS の実行・観測は、安全な参照実行境界が検証されるまで行わない。`docs/173-safety-monitor-limits.md` の裁定では、RAM 系（MPR 変更と物理バンク別名）は事前拒否可能と記録され、MMIO と IRQ の書込みは BLOCKED（事前阻止不能）と記録されている。RAM は一部 PASS、MMIO・IRQ は BLOCKED のため、境界は全体として未確立とする。
+本書は**調査と観測計画であり、実測結果は含まない**。純正 BIOS の実行・観測は、安全な参照実行境界が検証されるまで行わない。`docs/173-safety-monitor-limits.md` の裁定では、RAM 系（MPR 変更と物理バンク別名）は事前拒否可能と記録され、一般の MMIO と IRQ の書込みは BLOCKED（事前阻止不能）と記録されている。既知 guest PC の `$1804` のみ事前遮断が PASS（`tests/integration/geargrafx_mmio1804_preblock.py`、既知コードに限る）。RAM は一部 PASS、一般の MMIO・IRQ は BLOCKED のため、境界は全体として未確立とする。
 
-- 実コア観測: **0 件**。BIOS 関連の VERIFIED は **0 件**。§1 の K9〜K11 は BIOS 以外（ホスト・DEV ROM・転送層）の範囲に限った VERIFIED で、範囲は表に明記する。
+- 実コア観測: **0 件**。BIOS 関連の VERIFIED は **0 件**。§1 の K9〜K11 の VERIFIED は両定義の文言には当てはまらず、既存文書内の先例に従った。owner 判断（下記）。
 - 既存の調査との関係: 台帳本体は `docs/cd-base-abi-ledger.md`、六項目の独立根拠は `docs/research/146-cd-base-abi.md`、CD_READ 側は `docs/research/148-cd-read-abi.md`、合成媒体の定義は `docs/cd-boot-loader-spec.md` §5 と `docs/cd-base-contract.md` §3。本書はそれらを再掲せず、**観測の条件と候補の区別**に絞る。
 - 状態語: VERIFIED / HYPOTHESIS / UNKNOWN / BLOCKED（`docs/cd-read-contract.md` の語彙に従う）。
 
@@ -16,14 +16,19 @@
 | K3 | 固定版全体で `cd_base` の呼出しは K2 の 1 箇所だけ | `docs/cd-base-abi-ledger.md` §2（同 commit の `grep`） | HYPOTHESIS（同上、grep の範囲。呼出側の記述） |
 | K4 | HuCC の `cd_read` 呼出し（5 箇所）の関数内には `cd_base` の呼出しがない | `docs/cd-base-abi-ledger.md` §3 (4)、`hucc-systemcard.asm` L285–452、`core-kernel.asm` L580–612 | HYPOTHESIS（呼出側ソースの記述。caller wrapper は VERIFIED に昇格させない） |
 | K5 | オーバーレイ読込みの呼出側は ISO ディレクトリ由来の値を加算せずに `cd_read` へ渡す。VRAM / データ読込みは `_add_sectors` でオフセットを加える | `core-kernel.asm` L531–552、L596。`hucc-systemcard.asm` L594–600 | HYPOTHESIS（呼出側ソースの記述。caller wrapper は VERIFIED に昇格させない） |
-| K6 | 「通常の CD_READ は `recbase0` を加算し、16 回の読込み失敗後に `recbase1` を使う」「LBA はデータトラック先頭からの相対」「`_cl`=`$01` が recbase0、`$02` が recbase1」 | stum.de「Why do PC Engine CD-ROM² games have a second data track?」<https://www.stum.de/2026/pc-engine-second-data-track/>（Michael Stum、2026-05-01、本文 CC BY-NC-SA 4.0）の二次資料。取得日: 本 PR では未再取得で、`docs/research/146-cd-base-abi.md` W1 の記録（2026-10-16 の検索）を引く。`$80` を「CD-TNO モード」とする記述は、この記事の例コードのコメント（`_BH = CD-TNO mode`）に由来する（HuCC K2 にはこの語はない）。HuCC K2 と値が整合する | HYPOTHESIS（著者の一次資料が未確認。HuCC を参照した可能性を排除できないため、独立した二つの証拠とは数えない） |
+| K6 | 「通常の CD_READ は `recbase0` を加算し、16 回の読込み失敗後に `recbase1` を使う」「LBA はデータトラック先頭からの相対」「`_cl`=`$01` が recbase0、`$02` が recbase1」 | stum.de「Why do PC Engine CD-ROM² games have a second data track?」<https://www.stum.de/2026/pc-engine-second-data-track/>（Michael Stum、2026-05-01、本文 CC BY-NC-SA 4.0）の二次資料。取得日: 本 PR では未再取得。`docs/research/146-cd-base-abi.md` W1 の記録日（2026-10-16）を引く。`$80` を「CD-TNO モード」とする記述は、この記事の例コードのコメント（`_BH = CD-TNO mode`）に由来する（HuCC K2 にはこの語はない）。HuCC K2 と値が整合する | HYPOTHESIS（著者の一次資料が未確認。HuCC を参照した可能性を排除できないため、独立した二つの証拠とは数えない） |
 | K7 | 「最初のデータトラックの LBA」で `recbase0/1` を初期化する | 同 W1（`docs/research/146-cd-base-abi.md` 項目 3） | HYPOTHESIS。「LBA」が INDEX 01 か PREGAP 先頭か未記載 |
 | K8 | 2ISO 経路（K2）は `recbase1` だけを設定し、通常のオーバーレイ読込み（K5）は `recbase0` を使う可能性がある。両者の矛盾は解けていない | `docs/cd-base-abi-ledger.md` §3 補足、`docs/research/146-cd-base-abi.md` §1 | UNKNOWN（矛盾は OPEN） |
-| K9 | 合成媒体（CUE `PREGAP 00:02:00` + `INDEX 01 00:00:00`）では INDEX 01 は LBA 150、LBA 0..149 は BIN に格納されない。INDEX 01 が 0 の対照媒体では絶対 LBA と INDEX 01 相対が一致する | `docs/cd-base-contract.md` §3、`tools/cue_analysis.py` | VERIFIED（ホスト側 CUE 解析の出力に限る。ツールの自己検査であり、CD_BASE の事実ではない） |
-| K10 | 本リポジトリの DEV ROM の `$E006` は、fail-closed の fallback（`$E295`、`X=$02`）へ入って同じ PC に留まる。RTS がないため呼出し後の観測はできない | `docs/cd-base-abi-ledger.md` §4a（固定版 Geargrafx `b49ae82a`、`make dev-cd-base-integration`） | VERIFIED（DEV ROM の測定。BIOS の証拠ではない。再現には `make dev-cd-base-integration` が必要で、証跡 JSON（`geargrafx-cd-base-evidence.json`）はローカル生成でコミットされていない） |
-| K11 | READ(6) の LBA は 21 bit。Geargrafx で T1（LBA n が BIN のセクタ n を返す）を確認 | `docs/cd-read-contract.md` T1 | VERIFIED（Geargrafx の転送層のみ。CD_READ 経路の測定で、CD_BASE の証拠ではない） |
+| K9 | 合成媒体（CUE `PREGAP 00:02:00` + `INDEX 01 00:00:00`）では INDEX 01 は LBA 150、LBA 0..149 は BIN に格納されない。INDEX 01 が 0 の対照媒体では絶対 LBA と INDEX 01 相対が一致する | `docs/cd-base-contract.md` §3、`tools/cue_analysis.py` | VERIFIED（owner 判断。ホスト側 CUE 解析の出力に限る。ツールの自己検査であり、CD_BASE の事実ではない） |
+| K10 | 本リポジトリの DEV ROM の `$E006` は、fail-closed の fallback（`$E295`、`X=$02`）へ入って同じ PC に留まる。RTS がないため呼出し後の観測はできない | `docs/cd-base-abi-ledger.md` §4a（固定版 Geargrafx `b49ae82a`、`make dev-cd-base-integration`） | VERIFIED（owner 判断。定義外の可能性あり（§1 の注）。DEV ROM の測定で、BIOS の証拠ではない。再現には `make dev-cd-base-integration` が必要で、証跡 JSON（`geargrafx-cd-base-evidence.json`）はローカル生成でコミットされていない） |
+| K11 | READ(6) の LBA は 21 bit。Geargrafx で T1（LBA n が BIN のセクタ n を返す）を確認 | `docs/cd-read-contract.md` T1 | VERIFIED（owner 判断。Geargrafx の転送層のみ。CD_READ 経路の測定で、CD_BASE の証拠ではない） |
 
-**VERIFIED の範囲（owner 判断が必要な論点）**: 本書は VERIFIED を BIOS 以外の範囲（K9〜K11）に限った。`docs/cd-base-contract.md` は「VERIFIED は実行した呼出先で測定された事実」と定め、`docs/research/148-cd-read-abi.md` の基準は caller wrapper を VERIFIED に昇格させない。一方、`docs/cd-base-abi-ledger.md` §1 は呼出側ソースの記述を VERIFIED として扱う。両者は衝突しており、どちらが正しいかは本書では断定しない。
+**VERIFIED の範囲（owner 判断が必要な論点）**: `docs/cd-base-contract.md` の定義は「実行した呼出先（BIOS 相当）で測定された事実」であり、`docs/research/148-cd-read-abi.md`（と `docs/cd-read-contract.md`）は caller wrapper・HLE・第三者名を VERIFIED にしない。K9〜K11 は両定義の文言には当てはまらず、既存文書内の先例に従った。
+- K9（CUE のホスト算術）: `docs/cd-base-contract.md` §1 の表が、ホスト側 CUE 解析を「VERIFIED（CUE 解析の範囲のみ）」とした先例。
+- K11（Geargrafx の READ(6) 転送層）: `docs/cd-read-contract.md` の T1 が、Geargrafx 測定を「VERIFIED（Geargrafx のみ）」とした先例。
+- K10（DEV ROM の非復帰）: 両定義のどちらにも当てはまらず、VERIFIED とした先例は無い。根拠は `docs/cd-base-abi-ledger.md` §4a の測定（固定版 Geargrafx `b49ae82a`、`make dev-cd-base-integration`、debug と release の両方で PASS）。ただし同 §4a はこの結果を「MEASURED」と記録しており、VERIFIED と書く本書の扱いは既存台帳と合わない。
+- 一方、`docs/cd-base-abi-ledger.md` §1 は呼出側ソースの記述を VERIFIED として扱う。これは両定義と衝突する。本書は K2〜K5 を HYPOTHESIS にして定義側に従った。
+どの扱いが正しいかは本書では断定しない。K9〜K11 を VERIFIED の件数に数えるかは owner が決める。
 
 ### 1.1 不採用の出典（根拠に使わない）
 
