@@ -5,11 +5,15 @@ image or disassembly. A third-party name, caller wrapper or HLE model is never p
 
 Status tags:
 
-* **VERIFIED**: the claim names scenarios that original guest code executed on the pinned real Geargrafx core
-  (`b49ae82a012eade566d72e9d61c9d95a5caa4da3`). In the ledger this tag is a *declared* claim. A self-declared
-  bundle cannot establish it, and neither can gh attestation output or a run record handed to the ledger
-  (section 4, #153): no function of this module returns an effective VERIFIED today. Even an effective VERIFIED
-  would be emulator evidence for the transport layer only; real hardware and the callee ABI stay UNKNOWN.
+本文書の Status は**宣言上の状態（declared status）**である。実効信頼状態（effective trust state）は §4 の検査で決まり、
+現時点の実効値は LOCAL_ONLY までで、VERIFIED は実効化されない。語彙は `docs/cd-base-abi-ledger.md` §1
+（SOURCE_CONFIRMED / HYPOTHESIS / MEASURED / UNKNOWN / BLOCKED / VERIFIED）に従う。SOURCE_CONFIRMED と MEASURED は本文書の Status 値ではない。
+
+* **VERIFIED**: 実行による測定に限る。列挙したシナリオを、原本ゲストコードが pinned real Geargrafx core
+  （`b49ae82a012eade566d72e9d61c9d95a5caa4da3`）上で実行した結果だけを根拠とする。ソースの記述、HLE、呼出側の期待、名前だけでは VERIFIED にならない。
+  本台帳ではこの語は*宣言上の状態*であり、自己申告の bundle では実効 VERIFIED にならない。gh attestation の出力や
+  台帳へ渡された run 記録でも成立しない（§4、#153）。このモジュールのどの関数も、現時点で実効 VERIFIED を返さない。
+  仮に実効 VERIFIED になっても、転送層のエミュレータ証拠に限られる。実機と callee ABI は UNKNOWN のままである。
 * **LOCAL_ONLY**: a declared VERIFIED claim whose cited scenarios a self-declared bundle records consistently
   (pinned revision/archive hash, ROM hash, exact scenario kinds). The trust meaning is the same as
   `LOCAL_ONLY` in `tools/evidence_provenance.py` (#125): no attestation, never compatibility evidence. The
@@ -148,6 +152,11 @@ HuCC `pce-devel/huc@54f5c73606c1e7142e8095c727cab2767e2b3cb3` (`hucc-systemcard.
 | Synchronous completion, timing | Hu-Go models a synchronous loop | HYPOTHESIS | Hu-Go |
 
 ## 2. Transport layer (what any CD_READ must do on the bus). Emulator-verified part
+
+T1 から T5 の Status 列は宣言上の状態である。T1 から T4 の VERIFIED は、対応する real-core シナリオ（§4 の表）の PASS が
+bundle にあるかで検査される。bundle がなければ BLOCKED、シナリオの欠落や結果の不一致は UNKNOWN に下げられる。
+bundle は自己申告のため、実効信頼状態は LOCAL_ONLY 止まりである。T5 の「Geargrafx behaviour only」は Geargrafx の挙動の測定であり、実機の挙動の証拠ではない。
+T6 から T8 は宣言どおり HYPOTHESIS / UNKNOWN で、実行の証拠を持たない。
 
 Executed by `src/cd_read_probe.s` (polling, IRQs off) through `$1800-$1804`; details in
 [cd-read-diagnostic.md](cd-read-diagnostic.md). Model: `tools/cd_read_contract.transport_outcome`.
