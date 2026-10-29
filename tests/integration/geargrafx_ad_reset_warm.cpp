@@ -413,7 +413,9 @@ int main(int argc, char** argv)
             t.end_state = "ABORTED";
             t.end_reason = "pc_outside_guest";
         } else if (t.end_state == "RUNNING" && t.frames >= kFrameBudget) {
-            // contract 6.1: the 300-frame safety cap is BUDGET_EXCEEDED, never a normal end
+            // contract 6.1: the 300-frame safety cap is BUDGET_EXCEEDED, never a normal end.
+            // Defensive branch (MINOR 3): unreachable on the current normal path, because a trial body runs at most
+            // about 63 frames (the 60-frame observe wait plus a few). Kept so a longer path cannot pass as normal.
             t.end_state = "BUDGET_EXCEEDED";
             t.end_reason = "frame_safety_cap_300";
         }
@@ -526,7 +528,10 @@ int main(int argc, char** argv)
                 }
             }
         }
-        if (t.end_state == "RUNNING") {             // not observed and not stopped by a limit: unexpected exit
+        // MINOR 3: defensive branch, unreachable on the current normal path. Every stop path above already sets a
+        // final state (the observe-wait limit sets BUDGET_EXCEEDED; stop_check sets TIMEOUT, ABORTED or
+        // BUDGET_EXCEEDED). Kept so that RUNNING can never be reported as a final state.
+        if (t.end_state == "RUNNING") {
             t.end_state = "ABORTED";
             t.end_reason = "not_completed";
         }
@@ -679,6 +684,13 @@ int main(int argc, char** argv)
     if (!t1_completed && t2.end_state == "NOT_STARTED")
         t2.end_reason = "trial 1 not COMPLETED (contract 14.8)";
 
+    // MINOR 2: under 14.13 option (b) neither trial runs. Both are BLOCKED (never NOT_STARTED in the output).
+    if (!kDynamicMprDetection) {
+        t1.end_state = "BLOCKED";
+        t1.end_reason = "dynamic_mpr_detection_not_implemented";
+        t2.end_state = "BLOCKED";
+        t2.end_reason = "dynamic_mpr_detection_not_implemented";
+    }
     std::string series_end = "COMPLETED";
     std::string series_reason = "normal_observation_complete";
     if (!kDynamicMprDetection) {
@@ -707,9 +719,11 @@ int main(int argc, char** argv)
             std::snprintf(b, sizeof b, "%llx", t.instance);
             return std::string(b);
         }() + "\",\"reset_count_at_w1\":" + std::to_string(t.reset_count_w1) + ",\"ready_w0\":" +
-               (t.ready_w0 ? "true" : "false") + ",\"ready_w1\":" + (t.ready_w1 ? "true" : "false") +
-               ",\"breakpoints_w0\":" + std::to_string(t.bp_w0) + ",\"breakpoints_w1\":" +
-               std::to_string(t.bp_w1) + "},";
+               // MINOR 1: a value is printed only when its capture point was reached; otherwise NOT_CAPTURED
+               (t.has_w0 ? (t.ready_w0 ? "true" : "false") : "\"NOT_CAPTURED\"") +
+               ",\"ready_w1\":" + (t.has_w1 ? (t.ready_w1 ? "true" : "false") : "\"NOT_CAPTURED\"") +
+               ",\"breakpoints_w0\":" + (t.has_w0 ? std::to_string(t.bp_w0) : std::string("\"NOT_CAPTURED\"")) +
+               ",\"breakpoints_w1\":" + (t.has_w1 ? std::to_string(t.bp_w1) : std::string("\"NOT_CAPTURED\"")) + "},";
         out += "\"reset\":{\"issued\":" + std::string(t.reset_issued ? "true" : "false") + ",\"write_value\":" +
                (t.reset_issued ? std::to_string(t.reset_write_value) : std::string("\"NOT_ISSUED\"")) +
                ",\"r2a_readback\":" +
