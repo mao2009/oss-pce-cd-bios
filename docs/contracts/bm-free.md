@@ -23,8 +23,8 @@
 | ID | 出典 | 取得 URL（revision 固定） | SHA-256 | 確認した行 | ライセンス |
 | --- | --- | --- | --- | --- | --- |
 | E1 | pce-devel/huc `include/hucc/pcengine.inc` | `https://raw.githubusercontent.com/pce-devel/huc/54f5c73606c1e7142e8095c727cab2767e2b3cb3/include/hucc/pcengine.inc` | `b6a25d33bb787ea1fe550c6e04aff9f8ccaaa91b649a05a963be24b440b728a9` | L8（Boost 明記）、L337–339（`_cx` / `_cl` / `_ch`）、L494（`bm_format`）、L495（`bm_free`） | Boost Software License 1.0 |
-| E2 | pce-devel/huc `include/hucc/hucc-systemcard.asm` | 同 revision の `hucc-systemcard.asm` | `4258b7c3e8751127c0615af3178e431d81043c25fa6cb2b6b1d51b566aec7ea9` | L8（Copyright John Brandwood 2024）、L10（Boost）、L54・L56・L57・L61（`BM_OK` / `BM_BAD_CHECKSUM` / `BM_DIR_CORRUPTED` / `BM_NOT_FORMATTED`）、L65（`__bm_error`）、L671–673（`_bm_format` 前のコメント）、L675–700（`_bm_format`）、L707–711（`bm_free` のコメント）、L713–722（`_bm_free` マクロ） | Boost Software License 1.0 |
-| E3 | pce-devel/huc `include/hucc/hucc-systemcard.h` | 同 revision の `hucc-systemcard.h` | `f2477642f867c3daeff00938534f3f8ef970d1a9403f44bd09e90894220b8a3b` | L112（`bm_free` の C 宣言、`(void)`） | Boost Software License 1.0 |
+| E2 | pce-devel/huc `include/hucc/hucc-systemcard.asm` | 同 revision の `hucc-systemcard.asm` | `4258b7c3e8751127c0615af3178e431d81043c25fa6cb2b6b1d51b566aec7ea9` | L8（Copyright John Brandwood 2024）、L10（Boost）、L54・L56・L57・L61（`BM_OK` / `BM_BAD_CHECKSUM` / `BM_DIR_CORRUPTED` / `BM_NOT_FORMATTED`）、L55（`BM_NOT_FOUND = 1`）、L65（`__bm_error`）、L667–673（`bm_format` の宣言コメント）、L675–700（`_bm_format`。L692 で `BM_NOT_FORMATTED` を返す）、L707–711（`bm_free` のコメント）、L713–722（`_bm_free` マクロ） | Boost Software License 1.0 |
+| E3 | pce-devel/huc `include/hucc/hucc-systemcard.h` | 同 revision の `hucc-systemcard.h` | `f2477642f867c3daeff00938534f3f8ef970d1a9403f44bd09e90894220b8a3b` | L32（`BM_NOT_FOUND 1`）、L112（`bm_free` の C 宣言、`(void)`） | Boost Software License 1.0 |
 
 - revision: `54f5c73606c1e7142e8095c727cab2767e2b3cb3`。
 - 行番号は 2026-10-29 に上記 URL から取得したファイルを `grep -n` / `Read` で直接確認した値である。WebFetch の要約は行番号を推測で数えるため採用していない。
@@ -52,7 +52,9 @@
 - `spec/api_contracts.json` が参照する `hugo:bios.c`（function selector、HLE、実行入口の証拠ではないと記録済み）も未確認。
 - 第 2 の独立した呼出先の根拠は現時点で無い。
 
-## 2. 呼出側から確認できた事実（確認済み）
+## 2. 呼出側の事実（確認済み・推定）
+
+### 2.1 確認済み（出典の指定行で直接確認）
 
 | ID | 項目 | 事実 | 出典 | 判定 |
 | --- | --- | --- | --- | --- |
@@ -65,9 +67,14 @@
 | C07 | エラー時の容量 | 呼出側マクロは A ≠ 0 のとき `_cx` を 0 にする | E2 L718–719 | 確認済み（呼出側が強制する値） |
 | C08 | 非 0 の扱い | `_bm_format` は `bm_free` の A が 0 なら `.done` へ進み、非 0 のときだけ `bm_format` を呼ぶ | E2 L677–680 | 確認済み（呼出側の分岐） |
 | C09 | `bm_format` の入力 | 非 0 時のみ `_ax` に文字列ポインタを置いて `bm_format`（`$00:E048`）を呼ぶ | E2 L682–687、E1 L494 | 確認済み（呼出側。実行しない） |
+| C12 | 呼出側のコメントとコードの不一致 | `bm_format` の宣言コメント（E2 L671・L673）は「`BM_OK, BM_NOT_FOUND`」を返すと書く。`BM_NOT_FOUND = 1` は E2 L55、E3 L32 に定義されている。一方、`bm_format` の失敗経路は E2 L692 で `BM_NOT_FORMATTED` を返す。コメントとコードが一致しない | E2 L55、L671、L673、L692、E3 L32 | 確認済み（記述とコードの不一致。挙動の根拠にしない） |
+
+### 2.2 推定（出典はあるが呼出先の裏付けがない）
+
+| ID | 項目 | 事実 | 出典 | 判定 |
+| --- | --- | --- | --- | --- |
 | C10 | 容量の単位（呼出側コメント） | 「number of user bytes available in BRAM」 | E2 L709 | 推定（呼出先の単位の根拠は呼出側コメントのみ） |
 | C11 | 事後条件（呼出側コメント） | `__bm_error` は `BM_OK` または `BM_NOT_FORMATTED` | E2 L711 | 推定（呼出先の事後条件の根拠は呼出側コメントのみ） |
-| C12 | 呼出側コメントの不整合 | `bm_format` の宣言コメント（E2 L667–673）は「`BM_OK, BM_NOT_FOUND`」と書くが、`BM_NOT_FOUND` は E2 の定数定義（L54–61）に無い | E2 L667–673、L54–61 | 確認済み（記述の不整合。挙動の根拠にしない） |
 
 ## 3. 呼出先（BIOS）について未確定の項目
 
@@ -92,7 +99,7 @@
 2. 容量の単位（U03）。呼出側コメントと合成モデルの「ブロック数」が一致しない点（P9 と `docs/305-bm-free-contract.md` §2.1）。
 3. 未フォーマット時に書込みが起きないかどうか（U08）。書込みを伴う経路（`bm_format`）は本 Issue の対象外。
 4. レジスタ・スタック・MPR の扱い（U09、U10）。
-5. C12 の不整合（`BM_NOT_FOUND` の記述）が古いコメントか、別の定数を指すのかは未確認。
+5. C12（コメントは `BM_NOT_FOUND` を返すと書き、コードは `BM_NOT_FORMATTED` を返す）が、古いコメントか意図した記述かは未確認。挙動の根拠には使わない。
 
 ## 5. 実機・実コア検証の記録
 
@@ -108,7 +115,8 @@
 
 - R01（入口）→ C01、R03（入力なし）→ C02、R05（容量の読み先）→ C03、R08（エラー時 0）→ C07、R10（状態の読み先）→ C04、R11（OK = 0）→ C05、R13（`$FF`）→ C06、R16（非 0 で `bm_format`）→ C08 / C09 に対応する。
 - 本書では C10、C11 を「推定」、C12 を新規の記録とした。`docs/305-bm-free-contract.md` は R07 を「HYPOTHESIS」、R13 を「CONFIRMED-by-source」としている。C10 は R07 と同じ判定、C06 は R13 と同じ判定である。
-- 既存台帳の行番号との照合: E1 L337–339、L494–495、E2 L54、L61、L65、L677–680、L713–722 は一致した。既存台帳の E2「L667–694」は本書の確認で `bm_format` の宣言コメント（L667）から `_bm_format` の終端付近までを指す範囲として整合する（開始行の指定が広いだけで誤りではない）。
+- 既存台帳の行番号との照合: E1 L337–339、L494–495、E2 L54、L61、L65、L677–680、L713–722 は一致した。既存台帳 `docs/305-bm-free-contract.md` の S2「L667–694」は、本書の確認で `bm_format` の宣言コメント（L667）から `_bm_format` の終端付近までを指す範囲として整合する（開始行の指定が広いだけで誤りではない）。
+- 出典 ID の対応: E1 = 305 の S1、E2 = S2、E3 = S3（本書は E 系の ID で統一する）。
 
 ## 7. 集計（表の判定列から数えた値）
 
