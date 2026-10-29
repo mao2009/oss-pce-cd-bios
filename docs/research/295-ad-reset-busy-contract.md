@@ -4,9 +4,38 @@
 
 **状態: 契約のみ。実コア測定は未実施。`BLOCKED_ABI`、`release_eligible=false`、`DEV_CALLABLE` 不可。System Card 互換の VERIFIED とは主張しない。契約の承認は独立再レビューの後。**
 
+安全規則（Issue #295 の「安全と運用」を継承）: 1 Issue = 1 Draft PR。main への直 push、force push、エージェントによるマージと Draft 解除は禁止。非公開 syscard3.pce、市販媒体のバイト列、逆アセンブルは公開しない。出典が不十分な場合は `BLOCKED_ABI`。
+
 本書の目的は、実測の前に測定手順と判定基準を固定することである。reset 後のフラグ、RAM、IRQ、転送の中断結果などの期待値は、本書では決め打ちしない。期待値を含む判定は、測定ログを取得した後に別文書で行う。
 
 ソースの参照は、固定版 Geargrafx（`src/`、commit `b49ae82a`）の読取りのみである。行番号はこの commit に対するものである。
+
+---
+
+## 0. 状態語
+
+本書は二つの軸を分けて使う。
+
+**出典の軸（事実の状態）**
+
+| 語 | 意味 |
+| --- | --- |
+| CONFIRMED | リポジトリ内の `file:line`、または merged PR 本文・Issue 本文の記述で確認できる。PR 本文の記述は、ログ本体を読んだことを意味しない |
+| UNCONFIRMED | 出典はあるが本書で確認していない、または出典が一部しかない |
+| HYPOTHESIS | もっともらしいが出典がない。期待値の根拠にしない |
+| BLOCKER | 着手または完了を妨げる未充足の条件 |
+| UNKNOWN | 出典がないハードウェア事実。推測で埋めない |
+
+**実行の軸（試行の状態）**
+
+| 語 | 意味 |
+| --- | --- |
+| PASS | 判定基準（§9.2）を満たして終了した |
+| FAIL | 判定基準を満たさなかった |
+| NOT_RUN | 手順を実行していない |
+| BLOCKED | 実行の前提が未充足のため、試行しない（§3.4、§10） |
+
+試行の区分（§3.3）と終了状態（`COMPLETED` など、§3.3）は、実行の軸とは別に記録する。`MEASURED`（§11）は、測定ログが得られた後にのみ使う。`BLOCKED_ABI`、`DEV_CALLABLE`、`VERIFIED`、`release_eligible` は既存の契約のゲート語であり、出典の軸にも実行の軸にも属さない。本書の対象区分（PLAY_ACTIVE、TRANSFER_BUSY）の試行は、まだ行っていない。
 
 ---
 
@@ -37,7 +66,7 @@
 3. `RunToVBlank` を 1 回実行する。この間に `CheckLength` が LENGTH を ADDRESS からコピーする。LENGTH の値は S2 で記録する（期待値として固定しない）。
 4. 再生を要求する: `Adpcm::Write($0D, $20)`（CONTROL bit4 = 0、bit5 = 1、bit7 = 0）。bit4 を 0 に戻すため、以後は LENGTH がコピーされず、再生で減算される（`adpcm_inline.h:275`）。bit5 の立ち上がりで再生要求が保留になる（`adpcm_inline.h:300-304`）。#294 の `neg-reset-playing` で再生を開始した経路と同じ CONTROL の値である。
 5. `RunToVBlank` を 1 フレームずつ進め、§3.2 の T_b で再生中を観測する。
-6. 観測できるまで最大 60 フレームまで待つ（§6）。観測できない試行は、区分 `UNOBSERVED_BUSY` とする。
+6. 観測できるまで最大 60 フレームまで待つ（§6 の PLAY_ACTIVE 専用の測定上限）。観測できない試行は、区分 `UNOBSERVED_BUSY` とする。
 
 ### 2.2 TRANSFER_BUSY（転送 busy）の手順
 
@@ -70,6 +99,8 @@
 | S1: ステータス | ADPCM_STAT（`$180C`） | device 層の `Adpcm::Read`（ハーネス側） | なし（`adpcm_inline.h:70`） |
 | S2: 内部状態 | `m_control`（`$0D` の読戻し）、PLAYING、ADDRESS、READ/WRITE_ADDRESS、LENGTH、`m_read_cycles`、`m_write_cycles`、`m_play_pending` | 読取りのみ（`Adpcm::GetState()` の経路） | なし |
 | S3: 時刻 | 経過フレーム数、Clock 呼出し回数、マスタークロックの累計（`GetMasterClockCycles`） | ハーネスのカウンタと core の読取り | なし |
+
+既存の device 層の観測（本書の測定ではない）: `tests/integration/geargrafx_ad_reset.cpp` の `snap()` は、`Adpcm::Read` で `$0D`、`$0C`、`$0B`、`$0E` を読み（44–47 行）、`GetState()` の内部状態を読む（48–54 行）。この読取りは、S1 と S2 の経路と同じ種類である。
 
 ### 3.2 観測の時点
 
@@ -105,6 +136,19 @@
 - `$04` / `$80` が転送 busy であることを、ソースまたは実測で確定する（UNKNOWN を解消する）。
 - 独立レビューで、TRANSFER_BUSY の観測点と判定基準の固定を承認する。
 
+### 3.5 開始条件（Issue 本文との対応）
+
+Issue #295 の「依存・開始条件」は、原文で「Contract/Fixture/Diagnostic の根拠と必要なハード状態が確定し、前提 PR が main に統合された場合のみ」である。各条件の状態は次のとおり。
+
+| 条件 | 状態 | 出典 | 未充足の内容 |
+| --- | --- | --- | --- |
+| 前提 PR の main 統合 | 充足（CONFIRMED） | PR #403 は 2026-10-21T00:57:46Z、PR #404 は 2026-10-21T01:42:48Z に merge | なし |
+| Contract / Fixture / Diagnostic の根拠 | 一部 UNCONFIRMED | `ad-reset-contract.md`、`ad-reset-fixture.md`、`ad-reset-diagnostic.md`、本書 §3.0 | busy の判定に使う `$04` / `$80` の意味が UNKNOWN |
+| 必要なハード状態の確定 | 未充足（UNKNOWN） | §3.4 の 3 条件 | TRANSFER_BUSY の観測点、busy の確定、DMA 経路の扱い |
+| 独立再レビュー（本書の承認） | 未実施（NOT_RUN） | 本書冒頭、§13 の 5 | 承認前は測定を行わない |
+
+判定: 測定の開始は **BLOCKED**。未充足の条件は「必要なハード状態の確定」（§3.4 の 3 条件）と「独立再レビュー」である。TRANSFER_BUSY は §3.4 の解除条件をすべて満たすまで BLOCKED のままとする。
+
 ## 4. reset 要求の発行方法（手順のみ）
 
 1. T_r の時点（フレーム境界。区分名に関わらず同じ）で、ハーネスが `Adpcm::Write($0D, $80)` を 1 回だけ呼ぶ（bit7 = 1、bit5 = 0）。
@@ -137,17 +181,23 @@
 
 ## 6. 有界の実行予算と timeout（測定前に決める）
 
-本値は測定を打ち切るための上限であり、期待される結果ではない。
+本節の数値は、**測定を打ち切るための上限（測定上限）** であり、次のいずれでもない。
+
+- ハードウェアの仕様や実時間。PC Engine の実フレームレート、ADPCM の実時間は UNKNOWN であり、フレーム数を秒やクロック数に換算する根拠はない。
+- 期待される結果や判定値。判定は §9.2 の基準で、測定後に別の結果文書で行う。
+- 測定の実績。本書の時点で、これらの上限に対応する試行は 0 件である。
+
+数値はすべて本文書が選んだ値である。選定理由は下表の「理由」欄に記す。
+
+| 項目 | 測定上限の値 | 適用範囲 | 理由（本文書が選んだ根拠） | 判定の実施点 |
+| --- | --- | --- | --- | --- |
+| 1 試行のフレーム上限 | 300 フレーム | 全区分の試行 | 1 試行が際限なく続かないための上限。根拠となる実測・仕様はない。リポジトリ内の既存値（`geargrafx_ad_reset.cpp` 32 行の `kPlayBudgetFrames = 240`）とは別の値で、互換性は主張しない | `RunToVBlank` の完了時 |
+| 区分成立の確認までの待ち上限 | 60 フレーム（§2.1 の手順 5） | **PLAY_ACTIVE 専用** | 再生中の観測が成立しない試行を打ち切るための上限。数値は PR #404 の guest 実行（`geargrafx_ad_reset_guest.cpp` 24 行、`kFrames = 60`）と一致するが、由来は別。TRANSFER_BUSY には待ち上限を設定していない（BLOCKED。§3.4） | `RunToVBlank` の完了時 |
+| 1 試行のマスタークロック累計 | 上限なし。S3 で記録する | 全区分 | 区分ごとに換算根拠が必要になるため、上限は置かず記録のみとする | `RunToVBlank` の完了時 |
+| 1 試行の壁時計 timeout | 120 秒 | 全区分 | ハングした試行を外部から打ち切るための上限。実行時間の測定はなく、根拠は UNKNOWN | 外部の監視（ハーネスを起動する親プロセス）が計時し、超過時にプロセスを終了させ、終了状態 `TIMEOUT` と記録する |
+| 1 プロセスの壁時計 timeout | 600 秒（複数試行を含む場合の全体） | §8 の系列 W（1 プロセス 2 試行）を含む全プロセス | 1 プロセスの全体を打ち切るための上限。既存の subprocess timeout（`geargrafx_ad_reset.py` 138 行、300 秒）とは別の値 | 同上。超過時はプロセスを終了させ、その時点の試行を `TIMEOUT` と記録する |
 
 **実施点:** 上限の判定は、`RunToVBlank` の完了時（フレーム境界）と `Adpcm::Write` の直後にだけ行う。CPU の命令単位で計数・中断はしない（命令単位のフックは本契約で使わない。§10 の B4）。
-
-| 項目 | 値 | 判定の実施点 |
-| --- | --- | --- |
-| 1 試行のフレーム上限 | 300 フレーム | `RunToVBlank` の完了時 |
-| 区分成立の確認までの待ち上限 | 60 フレーム（§2.1 の手順 5） | `RunToVBlank` の完了時 |
-| 1 試行のマスタークロック累計の記録 | 上限は設けず、S3 で記録する（フレーム上限で打ち切る） | `RunToVBlank` の完了時 |
-| 1 試行の壁時計 timeout | 120 秒 | 外部の監視（ハーネスを起動する親プロセス）が計時し、超過時にプロセスを終了させ、終了状態 `TIMEOUT` と記録する |
-| 1 プロセスの壁時計 timeout | 600 秒（複数試行を含む場合の全体） | 同上。超過時はプロセスを終了させ、その時点の試行を `TIMEOUT` と記録する |
 
 - 旧版の「2,000,000 CPU ステップ上限」は、命令単位の計数点が本契約にないため廃止する。実施点を持たない上限は、判定できないためである。
 - 安全性の確認方法: 本契約のハーネスは、フレーム境界と `Adpcm::Write` の直後以外では core に介入しない。CPU を途中で止める操作は行わない。これにより、命令単位の強制停止が必要な操作（§3.4 の解除条件、§10 の B4）は実施しない。
@@ -282,12 +332,12 @@ BLOCKED の項目は **11 件**（B1〜B11）である。初版は 10 件で、B
 
 | 項目 | idle reset（既存） | busy reset（本書の対象） |
 | --- | --- | --- |
-| 出典 | #294（device 層診断、`pos-reset`）、#403、#404（guest 実装と実コア判定） | 本書（新規） |
+| 出典 | device 層: `ad-reset-diagnostic.md` §3・§5（#294、記録あり。ログ本体は本書で未読）。guest 層: PR #403（merged 2026-10-21T00:57:46Z）と PR #404（merged 2026-10-21T01:42:48Z）の本文の記述（ログ本体は未読） | 本書（新規） |
 | 前提条件 | アイドル（PLAYING = 0、busy なし）から reset | §3.3 の区分ごとの成立条件を T_b と T_r で確認した後に reset |
-| 観測済みの範囲 | 実コアで PASS（合成 BIOS、合成 CD）。ログの hash は各 PR 本文に記録 | 未観測。本書は手順のみ |
+| 観測の範囲 | 既存の観測はいずれも、busy からの reset ではない。PR #404 本文は実コアでの実行結果を記すが、本書はその値を再掲しない（ログ未読のため）。実機・第 2 エミュレータは未実施（NOT_TESTED、PR #404 本文） | 観測 0 件（§3.4 の BLOCKED により未実施） |
 | 既存の再生中 reset との関係 | #294 の `neg-reset-playing` は、CONTROL `$A0`（bit5 残存）での reset である。本書の `arm-B` に相当する。PLAY_ACTIVE（CONTROL `$80` での reset）の結果ではない | PLAY_ACTIVE（CONTROL `$80` での reset）を測定する。TRANSFER_BUSY は BLOCKED |
-| 区分 | cold、warm、new-process のうち実施済みの区分のみ | §8 の 3 区分すべて（TRANSFER_BUSY は BLOCKED のため除く） |
-| 残件 | 独立レビュー未実施、CI 未配線（#404 本文） | 測定、独立レビュー、TRANSFER_BUSY の BLOCKED 解除条件（§3.4）の判定 |
+| 区分 | §8 の cold、warm、new-process の区分は既存観測に適用していない（PR 本文に記載なし） | §8 の 3 区分（PLAY_ACTIVE のみ。TRANSFER_BUSY は BLOCKED） |
+| 独立レビュー・CI | 独立レビュー未実施（診断 §5、PR #404 本文）。CI 未配線（PR #404 本文、§13 の 7） | 測定、独立レビュー、TRANSFER_BUSY の BLOCKED 解除条件（§3.4）の判定 |
 
 idle reset の結果を busy reset の結果として数えない。両者は別の観測として記録する。
 
@@ -301,5 +351,9 @@ Issue #295 の完了条件は「既知の ADPCM controller reset と busy 状態
 4. IRQ マスクと保留フラグの保持場所の確認（§5 の UNKNOWN の解消）。
 5. 独立再レビュー、CI への配線の判断。
 6. 測定結果が出た後の、期待値の判定（本書とは別の文書で行う）。
+7. CI 未配線（CONFIRMED）: `Makefile` に `ad_reset` の記載はなく、`integration-test` の探索パターン `test_*.py` は `geargrafx_ad_reset*.py` に一致しない（origin/main の `git grep` で確認）。既存の観測は手動実行のみである。
+8. 参照番号の不一致（UNCONFIRMED）: PR #403 本文は device 層診断を #397 と書き、`ad-reset-diagnostic.md` は #294 と書く。正しい番号は未確認。
+9. 既存の上限値（CONFIRMED）: 既存コードには 256 回ポーリング（`src/ad_reset_idle.s` 21 行）、240 フレーム、300 秒の 3 値がある。本書の §6 の値とは別であり、統合するかどうかは未判定。
+10. AD_RESET 用の patch（UNKNOWN、BLOCKER）: `tests/integration/patches` に `ad_reset` の記載はなく、適用対象は未確認。全 patch の適用はしない。
 
 ROM-Primitive の実装（`ad_reset_busy` の guest 実装など）は、本書の残件 1 と 2 が揃うまで開始しない。
