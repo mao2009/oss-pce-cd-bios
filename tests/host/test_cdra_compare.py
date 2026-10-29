@@ -2,6 +2,8 @@
 import importlib.util
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 _SPEC = importlib.util.spec_from_file_location("cdra_compare", ROOT / "tests/integration/geargrafx_cdra_compare.py")
@@ -78,6 +80,36 @@ class ReadAheadExerciseGateTests(unittest.TestCase):
         on = {CONTROL: 0, "lba100x3": 0, "lba200x3": 2}
         off = {CONTROL: 0, "lba100x3": 1, "lba200x3": 0}
         self.assertEqual(len(cdra.readahead_gate(on, off, CONTROL, POSITIVE)), 1)
+
+
+class BuildParallelismTests(unittest.TestCase):
+    def test_default_is_two_jobs_even_on_large_hosts(self):
+        self.assertEqual(cdra.DEFAULT_BUILD_JOBS, 2)
+        self.assertEqual(cdra.validate_build_jobs(cdra.DEFAULT_BUILD_JOBS), 2)
+
+    def test_explicit_single_and_max_jobs_are_allowed(self):
+        self.assertEqual(cdra.validate_build_jobs(1), 1)
+        self.assertEqual(cdra.validate_build_jobs(cdra.MAX_BUILD_JOBS), 4)
+
+    def test_invalid_job_counts_fail_before_compilation(self):
+        for value in (0, -1, 5, 100, True, "2", 2.5):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "build-jobs"):
+                cdra.validate_build_jobs(value)
+
+    def test_build_variant_passes_bounded_jobs_to_make(self):
+        setup = SimpleNamespace(debugger_overrides=lambda _: ["CXXFLAGS=-O2 " + cdra.DEFINE])
+        with patch.object(cdra, "_run") as invoke:
+            cdra.build_variant(Path("/synthetic/geargrafx"), True, setup, build_jobs=1)
+            cmd = invoke.call_args.args[0]
+            self.assertIn("-j1", cmd)
+            self.assertNotIn("-j4", cmd)
+
+    def test_build_variant_rejects_out_of_range_without_running_make(self):
+        setup = SimpleNamespace(debugger_overrides=lambda _: ["CXXFLAGS=-O2 " + cdra.DEFINE])
+        with patch.object(cdra, "_run") as invoke:
+            with self.assertRaisesRegex(ValueError, "build-jobs"):
+                cdra.build_variant(Path("/synthetic/geargrafx"), False, setup, build_jobs=20)
+            invoke.assert_not_called()
 
 
 if __name__ == "__main__":
