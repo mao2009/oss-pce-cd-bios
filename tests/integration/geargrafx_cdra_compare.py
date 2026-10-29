@@ -41,6 +41,15 @@ SCENARIOS = (DEFAULT_REQUEST, (100, 3), (200, 3))
 PHASE_DATA_IN = 4
 # Larger than the streaming cache (64 one-sector chunks): the load-time pass caches only the first 64 sectors.
 DISC_SECTORS = 256
+DEFAULT_BUILD_JOBS = 2
+MAX_BUILD_JOBS = 4
+
+
+def validate_build_jobs(value):
+    """Bound native compiler concurrency independently of the host CPU count."""
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= MAX_BUILD_JOBS:
+        raise ValueError(f"--build-jobs must be between 1 and {MAX_BUILD_JOBS}")
+    return value
 
 
 def _setup_module():
@@ -78,7 +87,8 @@ def extract_pinned_core(destination: Path) -> Path:
     return tree
 
 
-def build_variant(tree: Path, readahead: bool, setup_module) -> Path:
+def build_variant(tree: Path, readahead: bool, setup_module, build_jobs=DEFAULT_BUILD_JOBS) -> Path:
+    build_jobs = validate_build_jobs(build_jobs)
     platform = tree / "platforms" / "libretro"
     flags = setup_module.debugger_overrides(platform)
     if readahead:
@@ -89,7 +99,7 @@ def build_variant(tree: Path, readahead: bool, setup_module) -> Path:
         if any(DEFINE in flag for flag in flags):
             raise ValueError("define still present in OFF flag set")
     rev = DEPENDENCIES["geargrafx"]["revision"]
-    _run(["make", "-C", str(platform), f"-j{os.cpu_count() or 2}", f"GIT_VERSION={rev}", *flags])
+    _run(["make", "-C", str(platform), f"-j{build_jobs}", f"GIT_VERSION={rev}", *flags])
     return platform
 
 
@@ -212,7 +222,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("debug", "release"), default="debug")
     parser.add_argument("--work", help="empty or new directory for outputs (default: mktemp -d)")
+    parser.add_argument("--build-jobs", type=int, default=DEFAULT_BUILD_JOBS,
+                        help="native compiler jobs per variant, 1–4 (default: 2)")
     args = parser.parse_args()
+    build_jobs = validate_build_jobs(args.build_jobs)
     if sys.platform.startswith("win"):
         raise ValueError("BLOCKED: run inside WSL; cc65/g++/make paths are POSIX")
     cdread = ROOT / "build" / args.mode / "cdread-probe"
@@ -235,7 +248,7 @@ def main():
         vtree = build_dir / name
         vtree.mkdir()
         variant_tree = extract_pinned_core(vtree)  # each variant: its own pristine extraction and objects
-        platform = build_variant(variant_tree, readahead, setup_module)
+        platform = build_variant(variant_tree, readahead, setup_module, build_jobs)
         probes[name] = compile_probe(variant_tree, platform, readahead, build_dir)
 
     disc_dir = work / "disc"
