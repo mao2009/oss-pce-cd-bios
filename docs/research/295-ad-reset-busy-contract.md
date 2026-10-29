@@ -256,7 +256,7 @@ CPU の命令単位で計数・中断はしない（命令単位のフックは�
 **系列:** 同一 ROM・同一 hash で連続起動する一群。系列には次の 2 種類を使う。
 
 - 系列 S（cold と new-process 用）: 5 プロセスを連続で起動する。各プロセスは 1 試行のみ行う。
-- 系列 W（warm 用）: 1 プロセスの中で同じインスタンスを使い、2 試行を続けて行う。
+- 系列 W（warm 用）: 1 プロセスの中で同じインスタンスを使い、2 試行を続けて行う。開始条件は改訂 R5 の §14 に従う（同一インスタンスに対する明示的なコアリセットと、ゲスト再開始点の確定。状態の持ち越しは採用しない）。
 
 **区分の判定規則（排他的）:**
 
@@ -382,3 +382,105 @@ PLAY_ACTIVE（CONTROL `$80` での reset）の観測は、Issue の「busy」と
 10. AD_RESET 用の patch（出典の状態: UNKNOWN。前提項目の状態: BLOCKER）: `tests/integration/patches` に `ad_reset` の記載はなく、適用対象は未確認。全 patch の適用はしない。
 
 ROM-Primitive の実装（`ad_reset_busy` の guest 実装など）は、本書の残件 1 と 2 が揃うまで開始しない。
+
+## 14. warm の開始条件（改訂 R5、方式 a）
+
+本節は §8 の warm の開始条件を定める。§8 の既存の文言は消さず、本節が warm の手順として優先する。
+
+### 14.1 採用する方式と採用しない方式
+
+- **採用（方式 a）**: 同一 Geargrafx インスタンスに対する明示的なコアリセット（`GeargrafxCore::ResetMedia(false)`）と、ゲストの再開始点の確定。
+- **不採用（方式 b）**: 前の試行の状態を持ち越して次の試行に使うこと。
+- 方式 a を「リセットを伴わない連続動作」とは表現しない。方式 a は、明示的なリセットを経て同一インスタンスで再開始する試行である。
+- 方式 a の reset が初期化しない範囲（ブレークポイント一覧、ディスアセンブルレコード、TurboLink 関連、LaserActive の一部、BRAM の扱い）には、前の試行の残存状態が残りうる。これは R6 の差異として記録する（§9.2）。
+- reset が初期化する範囲は、固定版ソースの読取りに基づく（未実測）。CPU（PC は `$FFFE` から読む。A、X、Y、S、P は既定で乱数。I=1。IRR、IDR=0。コールスタックをクリア。ブレークポイント要求をクリア）、WRAM 8 KiB、MPR0〜6（既定で乱数）と MPR7=0、ADPCM（状態、CONTROL=0、サンプルレート `$0F`、ADPCM RAM 64 KiB をゼロ）、IRQ（CPU の IDR、IRR、VDC、CD、ADPCM の end、half フラグ）。
+- 根拠（固定版 b49ae82a の読取り）: `src/geargrafx_core.h:81`、`src/geargrafx_core.cpp:385-407`、`src/memory.cpp:100-126`、`src/adpcm.cpp:142-172`、`src/huc6280.h:139`、`:142`、`:175`。
+
+### 14.2 前提条件（ResetMedia の前に確認する）
+
+- 媒体が読み込まれていること。`ResetMedia` は媒体が読み込まれていない（`IsReady` が偽）と何もせず戻る（`geargrafx_core.cpp:387-388`）。戻り値はないため、ハーネスは呼出し前に `IsReady` を読んで記録する。偽なら試行を停止する（§7.1）。成功扱いにしない。
+- `SetResetValues` と `SetResetValue` は、`ResetMedia` より前に呼ぶ（値は reset の消費時に読まれる。§1）。
+- 同一インスタンスであることの証拠を §14.5 の手順で残す。
+
+### 14.3 順序（系列 W の各試行で同じ順序）
+
+本書の P0〜P3（§5、reset 発行の前後）と名前が衝突するため、本節では ResetMedia の前後を W0〜W2 と呼ぶ。
+
+1. （試行 1 のみ）インスタンスを作成し、合成 ROM を読み込む。インスタンス作成時に既定値による `Reset` が一度走るため、以下で上書きする。
+2. `GetMemory()->SetResetValues(0, 0, 0, 0)`（mpr、wram、card_ram、arcade_card）と `GetHuC6280()->SetResetValue(0)` を呼ぶ（`memory.h:77`、`memory.cpp:280-286`、`huc6280.h:142`）。
+3. 媒体の `IsReady` を読んで記録する（§14.2）。偽なら停止する。
+4. **W0 を採取する**（ResetMedia の前。残存状態。記録のみで判定しない）。
+5. `GeargrafxCore::ResetMedia(false)` を呼ぶ。
+6. **W1 を採取する**（ResetMedia の直後、再配置の前）。
+7. 再配置: `GetMemory()->GetWorkingRAM()` への memcpy（既存のハーネスと同じ。または `Memory::TryPoke`、`memory.h:66-67`）でゲストのバイト列を置く。`SetMpr(0, $FF)`、`SetMpr(1, $F8)`、`SetMpr(2..6, $00)`（`memory.h:69`）。MPR7 は 0 のまま。`LoadHuCardFromBuffer` は使わない（ROM を再ロードするため）。
+8. PC の設定: `GetHuC6280()->GetState()->PC->SetValue(0x3E00)`（`huc6280.h:59-73`）。任意で `ResetDebuggerExecutionState()`（`huc6280.h:175`）を呼ぶ。呼ぶかどうかは測定前に固定し、ログに記録する。
+9. **W2 を採取する**（再配置と PC 設定の後）。
+10. §14.6 の静的チェックと動的 MPR 検出を実行し、結果を記録する。失敗なら停止する。
+11. 試行 2 のみ、§2.1 の PLAY_ACTIVE の手順（ADPCM の設定、T_b、T_r、reset 発行、P0〜P3）に進む。試行 2 だけを warm として計上する。
+
+### 14.4 ゲストの開始点
+
+- 開始点の論理アドレスは `$3E00` とする。ここに `BRA *`（バイト列 `$80 $FE`）を置く。これは #404 の検査用ゲストと同じである（`tests/integration/geargrafx_ad_reset_guest.cpp:20-21`、`:55-62`）。
+- MPR1 = `$F8` により、論理 `$3E00` は WRAM のインデックス `$1E00` に対応する。
+- ゲストは MMIO にアクセスしない。ADPCM の操作はハーネスが device 層で行う。
+
+### 14.5 同一プロセス・同一インスタンスの証拠
+
+系列 W の各プロセスについて、次を試行 1 と試行 2 の開始時に記録する。
+
+- プロセス ID（OS の PID）。試行 1 と試行 2 で一致すること。
+- インスタンス識別子: `GeargrafxCore` オブジェクトのポインタ値と、プロセス内のインスタンス作成の通し番号（1）。試行 1 と試行 2 で一致すること。
+- ハーネス側の `ResetMedia` 呼出し回数（reset 世代）。試行 1 の W1 で 1、試行 2 の W1 で 2 となること。
+- いずれかが一致しない場合は、その系列を停止し、方式 a の結果として採用しない。
+
+### 14.6 #173 との整合
+
+- gate は BLOCKED のまま維持する。本節は gate を解除しない。
+- 各 `ResetMedia` の後（W1 と W2 の間）に、既存の静的チェックと動的 MPR 検出を再実行し、結果を記録する。判定器の名称と版は、測定の前に固定する。
+- TRANSFER_BUSY は実行しない（§3.4 により BLOCKED）。
+- 集計は CONTROL=`$80` の標準試行だけとする。`$A0`（arm-B）は集計に混ぜない。
+
+### 14.7 採取の時点と R5 の判定
+
+- W0（ResetMedia の前）: 残存状態。CPU、MPR、WRAM、ADPCM、IRQ を記録する。判定しない。
+- W1（ResetMedia の直後）: 判定対象は WRAM のゼロ初期化である。WRAM 全 8 KiB が、設定した初期化値 0 と一致することを、区分内の全試行で確認する。これは設定値との一致の確認であり、ハードウェアの期待値ではない。
+- W2（再配置と PC 設定の後）: ハーネスが書いた領域（ゲストのバイト列、MPR の設定値、PC の設定値）が、書いた値と一致することを確認する（R5）。
+- W0 と W1 の差は、reset の効果として記録のみ行う（R2c と同じ扱い。判定は別文書）。
+- 残存状態（W0）と再初期化後の状態（W1、W2）を混同しない。W0 の値を、再初期化後の期待値として使わない。
+
+### 14.8 系列と試行数
+
+- 系列 W を 5 本、それぞれ独立して実行する。1 系列は新しいプロセス 1 つで行う。
+- 系列間で状態を共有しない。出力先は系列ごとに新しい一時ディレクトリとする。
+- 1 系列の内訳: 試行 1（ウォームアップ。終了状態を採取。区分外）、試行 2（warm。計上）。
+- 計上される warm は、系列ごとに 1 試行である。全体で 5 件とする。
+- 試行 1 の終了状態が `COMPLETED` 以外の場合、その系列を停止し、試行 2 は実行しない（§7.2）。
+
+### 14.9 ウォームアップ（試行 1）
+
+- 試行 1 は、インスタンス作成直後の一連の手順を 1 回行う。観測値と終了状態を記録する。
+- 試行 1 は区分外である（§8）。正例にも負例にも使わない。
+
+### 14.10 停止後の規則
+
+- §7.2 を維持する。停止した試行の後は、方式 a を以後使わない。
+- 停止があった時点で測定を止め、報告して独立レビューを受ける。
+
+### 14.11 cold と new-process
+
+- §8 の cold と new-process は変更しない。方式 a は warm にだけ適用する。
+
+## 15. 改訂履歴
+
+- **改訂 R5（本節 §14 の追加）**: 同一 Geargrafx インスタンスに対する明示的なコアリセット（`ResetMedia(false)`）による warm の開始条件（方式 a）を定めた。方式 b（状態の持ち越し）は採用しない。既存の文言は削除していない。追加箇所は §14、§8 の warm の行への参照、本節の改訂履歴。測定は行っていない。独立レビューを受けるまで warm の測定は開始しない。
+- **旧リビジョンの場所（PR #577、ブランチ `feature/issue-295-busy-reset-contract`）**:
+  - 初版: `c1d353912bb6b094b8eb774d93e68b1ab8601591`
+  - 修正 2 回目: `8fd587e16fce1c3145ddbed5cdd5baff025f5ff0`
+  - 修正 3 回目（独立レビュー不承認への対応）: `a021efb1202df907d500fbaf685f496474407748`
+  - 修正 4 回目（再レビュー条件付き承認への対応。改訂 R5 の直前）: `97de277aea236f388e4dc58b57ae1ac9264dca22`
+- **既存の測定ログ（保存のみ。本改訂では変更していない）**: 次の生ログが確認できた。目標の cold 5、new-process 20 に対し、確認できた生ログは cold 4、new-process 1 である。残りは未取得として扱う。
+  - cold（区分 cold、series repeat 0）: `C:/Users/Hobart/AppData/Local/Temp/claude/C--Users-Hobart-Documents-Projects-oss-pce-cd-bios/bff402ca-f572-4285-aa98-28d05eb20f70/scratchpad/series577-raw/cold-1.out` ほか `cold-2.out`、`cold-3.out`、`cold-4.out`（同じディレクトリ）
+  - new-process（区分 new-process、series repeat 20）: `C:/Users/Hobart/AppData/Local/Temp/claude/C--Users-Hobart-Documents-Projects-oss-pce-cd-bios/bff402ca-f572-4285-aa98-28d05eb20f70/scratchpad/series577-raw/newproc-21.out`
+  - 使用した probe: `73ef6ac`（ブランチ `feature/issue-295-probe-full-capture`、`tests/integration/geargrafx_ad_reset_full.py`、`tests/integration/geargrafx_ad_reset_full.cpp`）。
+  - 別の記録: `C:/Users/Hobart/AppData/Local/Temp/claude/C--Users-Hobart-Documents-Projects-oss-pce-cd-bios/bff402ca-f572-4285-aa98-28d05eb20f70/scratchpad/c577-results.md`。#294 の harness で new-process を 5 回行った記録で、PC、MPR、WRAM は未採取である。本契約の集計には含めない。
+- **warm のログ**: 改訂 R5 の下ではまだ存在しない。独立レビュー後の測定で取得する。
