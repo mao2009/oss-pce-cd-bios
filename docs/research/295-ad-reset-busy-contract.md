@@ -64,7 +64,7 @@
 | 合成 ROM の生成 | 合成 BIOS と合成 CD は、ゼロ埋めの生成器で作る（#294 と同じ方式）。検査用ゲストは `ad_reset_idle` と同じく WRAM `$3E00` に置くバイト列とする（#404 方式）。ゲストのビルドには cc65 を使い、出力は専用の一時ディレクトリに置く |
 | 生成物の置き場所 | 新しく作った専用の一時ディレクトリだけ。リポジトリにはコミットしない |
 | hash の記録 | 測定時に、合成 BIOS、合成 CD、ゲストバイト列、固定版 commit の SHA-256 を計算し、測定ログ（専用の一時ディレクトリの中）に記録する。hash の値は本書に書かない |
-| WRAM の初期化値 | `Memory::SetResetValues(mpr=0x00, wram=0, card_ram=0, arcade_card=0)` で WRAM を 0 に固定する。負の値は乱数化になるため使わない（`memory.cpp:53`、`:120-126`、`:280-286`）。MPR の初期値も `mpr=0x00` で固定する（`memory.cpp:106-118`） |
+| WRAM の初期化値 | `memory.cpp:53` で WRAM の reset 値を 0 にする（`m_wram_reset_value = 0;`）。引数の要約（`mpr=0x00, wram=0, card_ram=0, arcade_card=0`）は本書の表記。負の値は乱数化になるため使わない（`:120-126`、`:280-286`）。MPR の初期値も `mpr=0x00` で固定する（`memory.cpp:106-118`） |
 | 初期化の順序 | `SetResetValues`（`memory.cpp:280-286`）は値を保持するだけである。値を消費するのは `Memory::Reset()`（`memory.cpp:100-126`）である。コンストラクタ内で既定値による `Reset()` が一度走る（`memory.cpp:97`）ため、`SetResetValues` は電源投入またはリセットの前に呼ぶ必要がある。測定ではコア全体の電源投入（または `Memory::Reset()` を通るリセット経路）の直前に `SetResetValues` を呼ぶ。その経路は測定前に固定版ソースで確認し、ログに記録する。反映の確認として、P0 で WRAM と MPR の値を記録する |
 | 禁止する入力 | 純正 BIOS、市販ゲーム ROM、私有 ROM（`rom/`）。いずれも使う前提にしない |
 | 実行環境 | WSL の clean clone で実行する場合も、`GIT_DIR` や `GIT_WORK_TREE` を環境変数で渡さない（MEMORY の規則に従う） |
@@ -359,14 +359,14 @@ BLOCKER の項目は **11 件**（B1〜B11）である。初版は 10 件で、B
 | 前提条件 | アイドル（PLAYING = 0、busy なし）から reset | §3.3 の区分ごとの成立条件を T_b と T_r で確認した後に reset |
 | 観測の範囲 | 既存の観測はいずれも、busy からの reset ではない。PR #404 本文は実コアでの実行結果を記すが、本書はその値を再掲しない（ログ未読のため）。実機・第 2 エミュレータは未実施（NOT_RUN、PR #404 本文） | 観測 0 件（§3.4 の BLOCKER により、実行状態は BLOCKED） |
 | 既存の再生中 reset との関係 | #294 の `neg-reset-playing` は、CONTROL `$A0`（bit5 残存）での reset である。本書の `arm-B` に相当する。PLAY_ACTIVE（CONTROL `$80` での reset）の結果ではない | PLAY_ACTIVE（CONTROL `$80` での reset）を測定する。TRANSFER_BUSY は BLOCKER |
-| 区分 | §8 の cold、warm、new-process の区分は既存観測に適用していない（PR 本文に記載なし） | §8 の 3 区分（PLAY_ACTIVE のみ。TRANSFER_BUSY は BLOCKER） |
+| 区分 | §8 の cold、warm、new-process の区分は既存観測に適用していない（PR 本文に記載なし） | §8 の区分のうち実施可能なのは PLAY_ACTIVE（busy reset ではない）のみ。busy reset（TRANSFER_BUSY）の区分は BLOCKER |
 | 独立レビュー・CI | 独立レビュー未実施（診断 §5、PR #404 本文）。CI 未配線（PR #404 本文、§13 の 7） | 測定、独立レビュー、TRANSFER_BUSY の BLOCKER 解除条件（§3.4）の判定 |
 
 idle reset の結果を busy reset の結果として数えない。両者は別の観測として記録する。
 
 ## 13. 残件と Issue #295 の範囲
 
-Issue #295 の完了条件は「既知の ADPCM controller reset と busy 状態の最小 1 モード」である（Issue 本文の完了条件 1）。Issue 本文は PLAY_ACTIVE に言及しない。本書は、Issue の「busy」を busy reset の主題（§3.3 の TRANSFER_BUSY の区分に対応するもの、§12）として扱う。ただし TRANSFER_BUSY は BLOCKER（§3.4）であり、Issue の「busy」と本書の TRANSFER_BUSY の対応関係は UNKNOWN であり、出典で確定するまで対応を主張しない。
+Issue #295 の完了条件は「既知の ADPCM controller reset と busy 状態の最小 1 モード」である（Issue 本文の完了条件 1）。Issue 本文は PLAY_ACTIVE に言及しない。本書は、Issue の「busy」を TRANSFER_BUSY 系の主題として位置づける（§3.3、§12）。TRANSFER_BUSY は BLOCKER（§3.4）であり、Issue の「busy」と本書の TRANSFER_BUSY の対応関係は UNKNOWN である。出典で確定するまで、対応を主張しない。
 
 PLAY_ACTIVE（CONTROL `$80` での reset）の観測は、Issue の「busy」とは別の区分の観測である。Issue の完了条件 1 を満たす根拠としては扱わない。`arm-B`（`$A0`）は、#294 の既存観測との対応を見るための比較用の参照であり、Issue の完了条件とは結び付けない。
 
@@ -379,6 +379,6 @@ PLAY_ACTIVE（CONTROL `$80` での reset）の観測は、Issue の「busy」と
 7. CI 未配線（CONFIRMED）: `Makefile` に `ad_reset` の記載はなく、`integration-test` の探索パターン `test_*.py` は `geargrafx_ad_reset*.py` に一致しない（origin/main の `git grep` で確認）。既存の観測は手動実行のみである。
 8. 参照番号の不一致（UNCONFIRMED）: PR #403 本文は device 層診断を #397 と書き、`ad-reset-diagnostic.md` は #294 と書く。正しい番号は未確認。
 9. 既存の上限値（CONFIRMED）: 既存コードには 256 回ポーリング（`src/ad_reset_idle.s` 21 行）、240 フレーム、300 秒の 3 値がある。本書の §6 の値とは別であり、統合するかどうかは未判定。
-10. AD_RESET 用の patch（UNKNOWN、BLOCKER）: `tests/integration/patches` に `ad_reset` の記載はなく、適用対象は未確認。全 patch の適用はしない。
+10. AD_RESET 用の patch（出典の状態: UNKNOWN。前提項目の状態: BLOCKER）: `tests/integration/patches` に `ad_reset` の記載はなく、適用対象は未確認。全 patch の適用はしない。
 
 ROM-Primitive の実装（`ad_reset_busy` の guest 実装など）は、本書の残件 1 と 2 が揃うまで開始しない。
