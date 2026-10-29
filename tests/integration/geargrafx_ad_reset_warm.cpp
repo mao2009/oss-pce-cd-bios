@@ -24,7 +24,12 @@
 // $0D/$0E), GetState(), GetStatusRegisterSnapshot()). Read($0A) is never called. Checks happen only at
 // frame boundaries (RunToVBlank) and around Adpcm::Write. The harness never forces a CPU stop.
 //
-// argv: bios cue bios_sha256 cue_sha256   (the runner computes the hashes and they are echoed back)
+// argv: bios cue bios_sha256 cue_sha256 nonce   (the runner computes the hashes and the nonce; the hashes are
+// echoed back; the nonce is used on every control line)
+// stdout: control lines "@@WARM <nonce> <seq> START n", "@@WARM <nonce> <seq> END n <state>",
+//         "@@WARM <nonce> <seq> FINAL <state>" (flushed per line). Under option (b) only the gate line
+//         "@@WARM <nonce> FINAL BLOCKED dynamic_mpr_detection_not_implemented" (no seq) is written.
+//         Other stdout text (the core's own log) is unprefixed and is ignored by the runner.
 // stderr: one JSON line. Exit 0 only when the series is COMPLETED (trial 2 ran to COMPLETED and all
 // eight conditions are PASS).
 #include "geargrafx_core.h"
@@ -34,6 +39,7 @@
 #include "huc6280.h"
 #include "huc6270.h"
 #include "cdrom.h"
+#include "warm_control.h"
 #include <cctype>
 #include <chrono>
 #include <cstdint>
@@ -61,8 +67,7 @@ const unsigned kObserveWait = 60;     // contract 6: frames allowed to observe P
 // Contract 14.13 option (b): the dynamic MPR detection is NOT_IMPLEMENTED, so the warm series is never run
 // (no trial 1, no trial 2 pre-trial part, no trial body). Set true only after option (a) is proven and reviewed.
 const bool kDynamicMprDetection = false;
-const double kTrialSeconds = 120.0;   // contract 6: per trial, checked at frame boundaries
-const double kProcessSeconds = 600.0; // contract 6: per process, checked at frame boundaries
+const char* const kGateReason = "dynamic_mpr_detection_not_implemented";
 const unsigned kPlayAddress = 0x1234;
 const unsigned kResetValue = 0x80;    // CONTROL $80 (standard class; $A0 is not used here)
 const unsigned kAdpcmRamSize = 0x10000;  // upstream adpcm.h:95, m_adpcm_ram[0x10000]
@@ -323,7 +328,7 @@ struct Check {
 struct Trial {
     int index = 0;
     std::string role;                      // "warmup" or "warm"
-    std::string end_state = "NOT_STARTED"; // COMPLETED, BUDGET_EXCEEDED, TIMEOUT, ABORTED, BLOCKED, NOT_STARTED
+    std::string end_state = "NOT_STARTED"; // COMPLETED, BUDGET_EXCEEDED, ABORTED, BLOCKED (TIMEOUT is never set here)
     std::string end_reason;
     std::string cls = "NOT_CAPTURED";      // PLAY_ACTIVE or UNOBSERVED_BUSY when the body runs; not classified otherwise
     bool body_ran = false;
@@ -358,9 +363,11 @@ std::string json_string(const std::string& s)
 
 int main(int argc, char** argv)
 {
-    if (argc != 5)
+    if (argc != 6)
         return 2;
     if (!is_hex_sha256(argv[3]) || !is_hex_sha256(argv[4]))
+        return 2;
+    if (!warm_control::valid_nonce(argv[5]))
         return 2;
 
     std::ifstream file(argv[1], std::ios::binary);
@@ -370,7 +377,6 @@ int main(int argc, char** argv)
     if (bios.empty())
         return 3;
 
-    const auto process_t0 = std::chrono::steady_clock::now();
     GeargrafxCore core;
     core.Init(nullptr);
     if (!core.LoadBiosFromBuffer(bios.data(), bios.size(), true))
@@ -386,6 +392,13 @@ int main(int argc, char** argv)
     const unsigned long long pid = (unsigned long long)WARM_GETPID();
     const unsigned long long instance = (unsigned long long)(std::uintptr_t)&core;
     unsigned reset_count = 0;   // ResetMedia calls on this instance (contract 14.5)
+    // Control lines go to stdout, one per line, flushed at once (design section 6). Core log lines are unprefixed.
+    warm_control::Writer ctl(
+        [](const std::string& line) {
+            std::fprintf(stdout, "%s\n", line.c_str());
+            std::fflush(stdout);
+        },
+        argv[5]);
 
     GeargrafxCore::GG_Debug_Run debug = {};
     std::vector<u8> frame(1024 * 512 * 4, 0);
@@ -397,19 +410,12 @@ int main(int argc, char** argv)
         ++t.frames;
     };
     // Stop checks at a frame boundary only. Returns true when the trial must stop (contract 7.1).
+    // The wall-clock limits (120 s per trial, 600 s per process) are enforced outside the probe by the runner's
+    // windows (contract 6.1). The probe never sets TIMEOUT, so trial_t0 is unused here.
     auto stop_check = [&](Trial& t, std::chrono::steady_clock::time_point trial_t0) {
-        const double process_secs =
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - process_t0).count();
-        const double trial_secs =
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - trial_t0).count();
+        (void)trial_t0;
         const unsigned pc = (unsigned)cs->PC->GetValue();
-        if (process_secs > kProcessSeconds) {
-            t.end_state = "TIMEOUT";
-            t.end_reason = "process_wall_clock";
-        } else if (trial_secs > kTrialSeconds) {
-            t.end_state = "TIMEOUT";
-            t.end_reason = "trial_wall_clock";
-        } else if (pc < kGuestBase || pc >= kGuestEnd) {
+        if (pc < kGuestBase || pc >= kGuestEnd) {
             t.end_state = "ABORTED";
             t.end_reason = "pc_outside_guest";
         } else if (t.end_state == "RUNNING" && t.frames >= kFrameBudget) {
@@ -529,8 +535,8 @@ int main(int argc, char** argv)
             }
         }
         // MINOR 3: defensive branch, unreachable on the current normal path. Every stop path above already sets a
-        // final state (the observe-wait limit sets BUDGET_EXCEEDED; stop_check sets TIMEOUT, ABORTED or
-        // BUDGET_EXCEEDED). Kept so that RUNNING can never be reported as a final state.
+        // final state (the observe-wait limit sets BUDGET_EXCEEDED; stop_check sets ABORTED or BUDGET_EXCEEDED).
+        // Kept so that RUNNING can never be reported as a final state.
         if (t.end_state == "RUNNING") {
             t.end_state = "ABORTED";
             t.end_reason = "not_completed";
@@ -545,9 +551,11 @@ int main(int argc, char** argv)
     t1.pid = pid;
     t1.instance = instance;
     if (kDynamicMprDetection) {
+        ctl.start(1);                            // control line before the pre-trial part (design section 3)
         const auto t0 = std::chrono::steady_clock::now();
         if (pre_trial(t1))
             trial_body(t1, t0);
+        ctl.end(1, t1.end_state);                // every started trial gets an END line, also when BLOCKED
     }
 
     // ---- trial 2 (warm), only after trial 1 is COMPLETED (contract 14.8) ----
@@ -558,8 +566,10 @@ int main(int argc, char** argv)
     t2.instance = instance;
     std::vector<Check> gate;
     const bool t1_completed = t1.end_state == "COMPLETED";
-    if (t1_completed)
+    if (t1_completed) {
+        ctl.start(2);
         pre_trial(t2);   // sets t2 fields; a 14.2 stop here leaves t2.end_state BLOCKED
+    }
 
     // ---- contract 14.12: eight conditions, judged before trial 2 starts ----
     auto add = [&](const char* id, const std::string& status, const std::string& detail, const char* source) {
@@ -702,13 +712,16 @@ int main(int argc, char** argv)
         t2.end_state = "BLOCKED";
         t2.end_reason = "dynamic_mpr_detection_not_implemented";
     }
+    if (t1_completed)
+        ctl.end(2, t2.end_state);                // trial 2 was started, so it ends with an END line
     std::string series_end = "COMPLETED";
     std::string series_reason = "normal_observation_complete";
     if (!kDynamicMprDetection) {
         series_end = "BLOCKED";
-        series_reason = "dynamic MPR detection NOT_IMPLEMENTED (contract 14.13 option b); warm series not run";
+        series_reason = kGateReason;             // the reason token, the same as the trials and the gate line
     } else if (!t1_completed) {
-        series_end = "BLOCKED";
+        // the series ends with trial 1's own state, so that FINAL and the JSON agree with the END line (design 6)
+        series_end = t1.end_state;
         series_reason = "trial 1 not COMPLETED";
     } else if (!all_pass || !t2.body_ran) {
         series_end = "BLOCKED";
@@ -720,6 +733,13 @@ int main(int argc, char** argv)
         series_reason = t2.end_reason;
     }
     const bool eligible_warm = t2.body_ran && t2.cls == "PLAY_ACTIVE" && t2.end_state == "COMPLETED" && all_pass;
+
+    // Control line at the end: FINAL with the series state (the runner checks it against the last END), or the gate
+    // line under option (b) with no seq.
+    if (kDynamicMprDetection)
+        ctl.final(series_end);
+    else
+        ctl.gate_blocked(kGateReason);
 
     auto emit_trial = [&](const Trial& t) {
         std::string out = "{\"index\":" + std::to_string(t.index) + ",\"role\":" + json_string(t.role) +
