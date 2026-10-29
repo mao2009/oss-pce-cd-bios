@@ -63,17 +63,16 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Checkout workflow files only (data for the placement check)
+      - name: Checkout pull request head as data (placement and policy checks read it; nothing here runs it)
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          sparse-checkout: .github/workflows
           persist-credentials: false
       - name: Trusted guard (main)
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: main
           path: .trusted-main
-          sparse-checkout: tools/artifact_guard.py
+          sparse-checkout: tools
           sparse-checkout-cone-mode: false
           persist-credentials: false
       - name: Resolve python3 (trusted)
@@ -83,6 +82,9 @@ jobs:
       - name: Guard placement (trusted)
         run: |
           "${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --check-placement
+      - name: Policy check (trusted main guard and approval table against the pull request)
+        run: |
+          "${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --check-policy .trusted-main
       - name: Download intermediate test fixture artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
