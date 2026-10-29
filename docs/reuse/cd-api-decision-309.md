@@ -9,7 +9,7 @@
 ## 1. 判定語
 
 正本 §1 の語彙をそのまま採用する: `REUSE_OK`（本表では該当なし）、`CLEANROOM_ONLY`、`DO_NOT_USE_UNTIL_LEGAL_REVIEW`、`UNKNOWN`。
-台帳の状態は次の語で併記する: `PENDING`（台帳 disposition。人間承認待ち）。全候補は PENDING（cleared 0 件）。本書は「再利用可」「採用」を確定しない。
+台帳の状態は次の語で併記する: `PENDING`（台帳 disposition。人間承認待ち）。台帳では L-01〜L-09、L-12〜L-19 は PENDING、L-10・L-11 は「提案: RESTRICTED（確定ではない）」である。cleared 0 件（確定した候補は無い）。本書は「再利用可」「採用」を確定しない。
 
 ## 2. API 索引（正本の行を重複させない）
 
@@ -26,7 +26,9 @@
 
 | 行 | API | 候補 | 台帳 reuse_mode / disposition | 正本との関係 | 判定 |
 | --- | --- | --- | --- | --- | --- |
-| N-1 | `CD_STAT` | L-18 ares `ares/pce/pcd/io.cpp`、`scsi.cpp` | REFERENCE_ONLY / PENDING | 正本 §3.2 は同ファイルを CD_READ 行に記録。CD_STAT への対応付けは本書の新規追記 | `CLEANROOM_ONLY`（正本 §3.2 の語を継承）。PENDING |
+| N-1 | `CD_STAT` | L-18 ares `ares/pce/pcd/io.cpp`、`scsi.cpp` | REFERENCE_ONLY / PENDING | 正本 §3.2 は同ファイルを CD_READ 行に記録。CD_STAT への対応付けは本書の新規追記 | **判定保留**（新たな判定は付けない）。PENDING |
+
+判定を保留した理由: 正本 §3.2 の `CLEANROOM_ONLY` は CD_READ の根拠に基づく判定であり、CD_STAT の根拠ではない。CD_STAT の mode と戻り A の対応が未確認のため（§4 U-1）、本書は CD_STAT 欄に判定を写さない。
 
 N-1 の依存と未決: ares の controller 層が CD_STAT の mode と戻り A に相当する状態を持つかは未確認（UNKNOWN、§4 U-1）。
 
@@ -64,7 +66,7 @@ N-1 の依存と未決: ares の controller 層が CD_STAT の mode と戻り A 
 
 ### 6.1 結果
 
-- 相対リンク: 3 件すべて存在（リンク切れ 0）。
+- 相対リンク: 一意なリンクは 2 件（正本、台帳）。いずれも存在（リンク切れ 0）。
 - 台帳 ID: 本書が引用する L-02、L-06、L-08、L-09、L-10、L-11、L-13、L-14、L-18 は台帳に存在（不一致 0）。
 - 外部 URL: 本書は新規に取得していない（NOT_RUN）。
 
