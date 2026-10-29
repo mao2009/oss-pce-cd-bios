@@ -52,7 +52,7 @@ N-1 の依存と未決: ares の controller 層が CD_STAT の mode と戻り A 
 
 ## 5. 正本と台帳の差（3 軸で整理）
 
-owner の決定に基づく整理。各行の `approval_status` は人間による確定状態を表し、未確定の行は `PENDING` または「提案」のまま記す。本書で確定したものは無い。
+owner の決定（Wave 2 指示）に基づく整理。この指示はリポジトリ内に記録が無いため、本書は決定の内容を整理したものとして扱う。各行の `approval_status` は人間による確定状態を表し、未確定の行は `PENDING` または「提案」のまま記す。本書で確定したものは無い。
 
 | ID | 候補（台帳 ID） | 台帳 `reuse_mode` | 正本の判定語（軸への対応） | `code_adoption` | `approval_status` | 差の種別 |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -60,7 +60,7 @@ owner の決定に基づく整理。各行の `approval_status` は人間によ�
 | K-2 | L-09 Hu-Go! `pcecd.c` | `REFERENCE_ONLY` | `DO_NOT_USE_UNTIL_LEGAL_REVIEW`（同上） | 取り込み禁止。著作権者未確認。参照先の `LICENSE.bsd-modified` が pin に無い | PENDING | 同上 |
 | K-3 | L-14 NeoCD `hlebios.cpp` 他 | `REFERENCE_ONLY` | `DO_NOT_USE_UNTIL_LEGAL_REVIEW`（同上） | 取り込み禁止。ファイル単位の権利者 UNKNOWN | PENDING | 同上。技術情報の参照は独立資料で裏付けられた事実に限る |
 | K-4 | L-10 Hu-Go! `bios.c` | `REJECTED` | `DO_NOT_USE_UNTIL_LEGAL_REVIEW`（§3.1、§3.4） | 取り込み禁止。GPL-2.0 の既定。MIT の ROM へ組込み不可 | 提案: RESTRICTED（確定ではない） | 語の差。`reuse_mode` と取り込み禁止の方向は一致 |
-| K-5 | L-02、L-06、L-13 | `REFERENCE_ONLY` | `CLEANROOM_ONLY`（§3.1、§3.2） | 保留。参照のみの方針で、コードの取り込みは承認されていない | PENDING | 語の差。`reuse_mode` の方向は一致 |
+| K-5 | L-02、L-06、L-13 | `REFERENCE_ONLY` | `CLEANROOM_ONLY`（§3.1、§3.2） | 取り込み禁止（正本 §3.1・§3.2 のコピー再利用は不可） | PENDING | 語の差。`reuse_mode` の方向は一致 |
 | K-6 | L-18 ares | `REFERENCE_ONLY` | `CLEANROOM_ONLY`（§3.2。ISC の表示保持で写せると記す） | 保留。ISC は法的に写せ得るが、`REFERENCE_ONLY` 方針を維持し取り込まない。方針変更は owner 判断 | PENDING | 語の差。方針（`REFERENCE_ONLY`）は維持する |
 | K-7 | L-10、L-11 | `REJECTED` | 正本 §4 項 5 は「採用対象外とする確定」と記す | 取り込み禁止（K-4 と同じ） | 提案: RESTRICTED（未確定。正式承認ではない） | 確定度の差。正本の「確定」の語は台帳の「提案」と食い違う。正本は変更せず、確定するかは owner が判断する |
 
@@ -78,14 +78,14 @@ owner の決定に基づく整理。各行の `approval_status` は人間によ�
 
 ### 6.1 結果
 
-- 相対リンク: 一意なリンクは 2 件（正本、台帳）。いずれも存在（リンク切れ 0）。
+- 相対リンク: 一意なリンクは 3 件（正本、台帳、[cd-oss-survey.md](../cd-oss-survey.md)）。いずれも存在（リンク切れ 0）。
 - 台帳 ID: 本書が引用する L-02、L-06、L-08、L-09、L-10、L-11、L-13、L-14、L-18 は台帳に存在（不一致 0）。
 - 外部 URL: 本書は新規に取得していない（NOT_RUN）。
 
 ### 6.2 リンク検査
 
 - 実施: Python で本書の相対リンクを解決し、ファイル存在を確認。結果は §6.1 のとおり（PASS）。
-- 正本 `docs/cd-reuse-decision-309.md` は本 PR の差分に含まれない（台帳ブランチに対する差分は空）。
+- 正本 `docs/cd-reuse-decision-309.md` は本 PR の差分に含まれない（正本に対する差分は空）。本 PR の差分は新規 docs 1 件の追加のみ。
 
 ### 6.3 NOT_RUN
 
