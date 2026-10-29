@@ -359,7 +359,7 @@ BLOCKER の項目は **11 件**（B1〜B11）である。初版は 10 件で、B
 | 前提条件 | アイドル（PLAYING = 0、busy なし）から reset | §3.3 の区分ごとの成立条件を T_b と T_r で確認した後に reset |
 | 観測の範囲 | 既存の観測はいずれも、busy からの reset ではない。PR #404 本文は実コアでの実行結果を記すが、本書はその値を再掲しない（ログ未読のため）。実機・第 2 エミュレータは未実施（NOT_RUN、PR #404 本文） | 観測 0 件（§3.4 の BLOCKER により、実行状態は BLOCKED） |
 | 既存の再生中 reset との関係 | #294 の `neg-reset-playing` は、CONTROL `$A0`（bit5 残存）での reset である。本書の `arm-B` に相当する。PLAY_ACTIVE（CONTROL `$80` での reset）の結果ではない | PLAY_ACTIVE（CONTROL `$80` での reset）を測定する。TRANSFER_BUSY は BLOCKER |
-| 区分 | §8 の cold、warm、new-process の区分は既存観測に適用していない（PR 本文に記載なし） | §3.3 の測定区分のうち実施可能なのは PLAY_ACTIVE（busy reset ではない）のみ。busy reset（TRANSFER_BUSY）の区分は BLOCKER |
+| 区分 | §8 の cold、warm、new-process の区分は既存観測に適用していない（PR 本文に記載なし） | §3.3 の測定区分のうち PLAY_ACTIVE は busy reset ではない。PLAY_ACTIVE の測定も、§3.5 の開始条件が充足されるまでは開始しない（BLOCKER）。busy reset（TRANSFER_BUSY）の区分は BLOCKER（§3.4） |
 | 独立レビュー・CI | 独立レビュー未実施（診断 §5、PR #404 本文）。CI 未配線（PR #404 本文、§13 の 7） | 測定、独立レビュー、TRANSFER_BUSY の BLOCKER 解除条件（§3.4）の判定 |
 
 idle reset の結果を busy reset の結果として数えない。両者は別の観測として記録する。
@@ -370,7 +370,7 @@ Issue #295 の完了条件は「既知の ADPCM controller reset と busy 状態
 
 PLAY_ACTIVE（CONTROL `$80` での reset）の観測は、Issue の「busy」とは別の区分の観測である。Issue の完了条件 1 を満たす根拠としては扱わない。`arm-B`（`$A0`）は、#294 の既存観測との対応を見るための比較用の参照であり、Issue の完了条件とは結び付けない。
 
-1. PLAY_ACTIVE の実コア測定（§8 の区分ごとの最小数、§9 の判定を併記）。
+1. PLAY_ACTIVE の実コア測定（§8 の区分ごとの最小数、§9 の判定を併記）。開始は §3.5 の開始条件の充足後（BLOCKER）。
 2. TRANSFER_BUSY の BLOCKER 解除条件（§3.4 の 3 点）の判定。解除できない場合は、転送 busy 中の reset を #295 の範囲外とするか、別の子 Issue に分けるかを判定する。
 3. `arm-B`（bit5 を残す要求）を #295 の範囲に含めるか、比較用の参照として別に扱うかの判定。
 4. IRQ マスクと保留フラグの保持場所の確認（§5 の UNKNOWN の解消）。
