@@ -3,13 +3,23 @@
 - 対象 Issue: [#309](https://github.com/mao2009/oss-pce-cd-bios/issues/309)（親: [#105](https://github.com/mao2009/oss-pce-cd-bios/issues/105)）。Refs のみ。
 - 基準: 台帳ブランチ `feature/parallel-w17-oss-ledger` HEAD `159e968`（PR #561 の積み上げ）。
 - **正本**: [cd-reuse-decision-309.md](../cd-reuse-decision-309.md)。API 別の判定、根拠、法務項目（§4）、推奨（§5）、検証（§7）は正本を参照する。正本は本 PR で変更しない。
-- 本書の役割: (a) 正本の API 行への索引、(b) 正本に無かった行の追記、(c) 正本と台帳 [oss-candidate-ledger.md](../oss-candidate-ledger.md)（L-xx）との矛盾の列挙。判定は新たに作らない。
+- 本書の役割: (a) 正本の API 行への索引、(b) 正本に無かった行の追記、(c) 正本と台帳 [oss-candidate-ledger.md](../oss-candidate-ledger.md)（L-xx）との差の 3 軸整理。新たな採用判定は作らない。
 - 対象外: `/rom` と純正 BIOS は読まず、使用しない。リファレンス BIOS は実行しない。コードは転記しない。
 
-## 1. 判定語
+## 1. 判定の 3 軸
 
-正本 §1 の語彙をそのまま採用する: `REUSE_OK`（本表では該当なし）、`CLEANROOM_ONLY`、`DO_NOT_USE_UNTIL_LEGAL_REVIEW`、`UNKNOWN`。
-台帳の状態は次の語で併記する: `PENDING`（台帳 disposition。人間承認待ち）。台帳では L-01〜L-09、L-12〜L-19 は PENDING、L-10・L-11 は「提案: RESTRICTED（確定ではない）」である。cleared 0 件（確定した候補は無い）。本書は「再利用可」「採用」を確定しない。
+差分の整理には次の 3 軸を使う。軸は互いに独立しており、一つの軸の値から他の軸を推測しない。
+
+| 軸 | 取り得る値 | 意味 |
+| --- | --- | --- |
+| `reuse_mode` | `REFERENCE_ONLY` / `DIRECT` / `ADAPTED` / `REJECTED` | 台帳の利用形態。`REFERENCE_ONLY` は仕様・挙動の参照に限り、コードを写さないという意味 |
+| `code_adoption` | 取り込み禁止 / 保留（理由付き） | コードをリポジトリや ROM に取り込めるかの状態。本書は取り込みを承認しない |
+| `approval_status` | `PENDING` / `提案: RESTRICTED（確定ではない）` / （人間による確定の記録のみ） | 人間による確定状態。本書は `APPROVED` と記す行を作らない |
+
+語の扱い:
+- 正本 §1 の語（`CLEANROOM_ONLY`、`DO_NOT_USE_UNTIL_LEGAL_REVIEW`、`UNKNOWN`）は、3 軸のどれに当たるかを §5 で示す。
+- 正本の `CLEANROOM_ONLY` は `reuse_mode = REFERENCE_ONLY` の語に相当する。正本の `DO_NOT_USE_UNTIL_LEGAL_REVIEW` は `code_adoption = 取り込み禁止` に相当する。
+- `reuse_mode` と `code_adoption` は独立に記録する。`REFERENCE_ONLY` でも、権利が不確実なコードの取り込みは禁止である。
 
 ## 2. API 索引（正本の行を重複させない）
 
@@ -40,21 +50,23 @@ N-1 の依存と未決: ares の controller 層が CD_STAT の mode と戻り A 
 | U-2 | 台帳 | HuC `include/huc/cdrom.asm`（CD_EXEC、正本 §3.3）、elmer `cd-core-scsitest/scsitest.asm`（CD_STAT、正本 §3.4）、`include/hucc/pcengine.inc`（宣言、正本 §3.1、§3.3、§3.4）は台帳に**未登録**。正本の判定は台帳の監査を経ていない | 台帳 [oss-candidate-ledger.md](../oss-candidate-ledger.md) の L-xx に無いことを確認。正本の 309 判定は残る |
 | U-3 | 基準 | 正本の基準は `origin/main` = `1cd5582`（2026-10-21）、台帳の基準は `origin/main` = `6407bd4`（2026-10-20）。正本の判定が台帳と同じ版を見ているかは未確認 | 両文書の基準行 |
 
-## 5. 矛盾一覧（owner 判断。どちらが正しいかは断定しない）
+## 5. 正本と台帳の差（3 軸で整理）
 
-台帳の値と正本の判定語が異なる箇所。語の差か判定の方向の差かを区別した。
+owner の決定に基づく整理。各行の `approval_status` は人間による確定状態を表し、未確定の行は `PENDING` または「提案」のまま記す。本書で確定したものは無い。
 
-| ID | 候補（台帳） | 台帳 | 正本 | 種別 | owner 判断事項 |
-| --- | --- | --- | --- | --- | --- |
-| K-1 | L-08 HuC elmer `cdrom.asm` | REFERENCE_ONLY / PENDING | §3.2 `DO_NOT_USE_UNTIL_LEGAL_REVIEW` | 方向の差（参照のみ か 採用不可 か） | 権利未確定の扱いを一つに決める |
-| K-2 | L-09 Hu-Go! `pcecd.c` | REFERENCE_ONLY / PENDING | §3.2 `DO_NOT_USE_UNTIL_LEGAL_REVIEW` | 方向の差 | 同上。参照する `LICENSE.bsd-modified` が pin に無い点を含む |
-| K-3 | L-14 NeoCD `hlebios.cpp` 他 | REFERENCE_ONLY / PENDING | §3.2 `DO_NOT_USE_UNTIL_LEGAL_REVIEW` | 方向の差 | ファイル単位の権利者 UNKNOWN の扱い |
-| K-4 | L-10 Hu-Go! `bios.c` | REJECTED / 提案 RESTRICTED | §3.1、§3.4 `DO_NOT_USE_UNTIL_LEGAL_REVIEW` | 語の差（採用不可の方向は一致） | 語を統一する |
-| K-5 | L-02、L-06、L-13 | REFERENCE_ONLY / PENDING | §3.1、§3.2 `CLEANROOM_ONLY` | 語の差（参照のみの方向は一致） | 語を統一する |
-| K-6 | L-18 ares | REFERENCE_ONLY / PENDING | §3.2 `CLEANROOM_ONLY`（ISC は写せると記す） | 語の差。正本は法的に写せると記し、台帳は方針 `REFERENCE_ONLY` を維持 | 方針を優先するか確認する |
-| K-7 | L-10、L-11 | 「提案: RESTRICTED（確定ではない）」 | §4 項 5 で「採用対象外とする確定」と記す | 確定の度合いの差 | 確定するかを人間が判断する |
+| ID | 候補（台帳 ID） | 台帳 `reuse_mode` | 正本の判定語（軸への対応） | `code_adoption` | `approval_status` | 差の種別 |
+| --- | --- | --- | --- | --- | --- | --- |
+| K-1 | L-08 HuC elmer `cdrom.asm` | `REFERENCE_ONLY` | `DO_NOT_USE_UNTIL_LEGAL_REVIEW`（`code_adoption` の禁止に相当） | 取り込み禁止。ベースは Hudson 原コード由来で権利者・表示が未確認 | PENDING | 語と軸の対応の差。`REFERENCE_ONLY` と取り込み禁止は両立する |
+| K-2 | L-09 Hu-Go! `pcecd.c` | `REFERENCE_ONLY` | `DO_NOT_USE_UNTIL_LEGAL_REVIEW`（同上） | 取り込み禁止。著作権者未確認。参照先の `LICENSE.bsd-modified` が pin に無い | PENDING | 同上 |
+| K-3 | L-14 NeoCD `hlebios.cpp` 他 | `REFERENCE_ONLY` | `DO_NOT_USE_UNTIL_LEGAL_REVIEW`（同上） | 取り込み禁止。ファイル単位の権利者 UNKNOWN | PENDING | 同上。技術情報の参照は独立資料で裏付けられた事実に限る |
+| K-4 | L-10 Hu-Go! `bios.c` | `REJECTED` | `DO_NOT_USE_UNTIL_LEGAL_REVIEW`（§3.1、§3.4） | 取り込み禁止。GPL-2.0 の既定。MIT の ROM へ組込み不可 | 提案: RESTRICTED（確定ではない） | 語の差。`reuse_mode` と取り込み禁止の方向は一致 |
+| K-5 | L-02、L-06、L-13 | `REFERENCE_ONLY` | `CLEANROOM_ONLY`（§3.1、§3.2） | 保留。参照のみの方針で、コードの取り込みは承認されていない | PENDING | 語の差。`reuse_mode` の方向は一致 |
+| K-6 | L-18 ares | `REFERENCE_ONLY` | `CLEANROOM_ONLY`（§3.2。ISC の表示保持で写せると記す） | 保留。ISC は法的に写せ得るが、`REFERENCE_ONLY` 方針を維持し取り込まない。方針変更は owner 判断 | PENDING | 語の差。方針（`REFERENCE_ONLY`）は維持する |
+| K-7 | L-10、L-11 | `REJECTED` | 正本 §4 項 5 は「採用対象外とする確定」と記す | 取り込み禁止（K-4 と同じ） | 提案: RESTRICTED（未確定。正式承認ではない） | 確定度の差。正本の「確定」の語は台帳の「提案」と食い違う。正本は変更せず、確定するかは owner が判断する |
 
-矛盾の判定を本書で一方に寄せることはしない。
+- 本書は第三者コードの採用を承認しない。`approval_status` に `APPROVED` と記す行は無い。
+- K-7 の `RESTRICTED` は台帳の「提案」であり、確定ではない。本書および本 PR で正式承認の記述をしない。
+- 技術情報（CD_READ、CD_EXEC、CD_STAT の挙動）は、独立資料（台帳、[cd-oss-survey.md](../cd-oss-survey.md) 等）で裏付けられた事実に限る。コードの構造や文言は写さない。
 
 ## 6. 検証
 
