@@ -121,12 +121,9 @@ def main():
     probe = compile_probe(directory, source_name="geargrafx_ad_reset_warm.cpp",
                           target_name="ad-reset-warm-probe")
 
-    session_start = time.monotonic()
+    # No session-wide cap: each process has its own external timeout (PROCESS_WALL_SECONDS, run_series).
     failures = []
     for repeat in range(args.repeat):
-        if time.monotonic() - session_start > PROCESS_WALL_SECONDS * args.repeat:
-            failures.append(f"series#{repeat}: session wall clock exceeded")
-            break
         series = run_series(probe, bios, cue, bios_sha, cue_sha)
         series["series"] = {"section8": "warm-series", "repeat": repeat}
         series["hashes"] = {"bios_sha256": bios_sha, "cue_sha256": cue_sha, "guest_bytes_sha256": guest_sha,

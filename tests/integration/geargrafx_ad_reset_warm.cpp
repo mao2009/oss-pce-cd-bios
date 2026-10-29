@@ -12,7 +12,7 @@
 //   (kDynamicMprDetection = false) none of these steps run: the warm series is BLOCKED without any trial.
 // Contract 14.12 (eight conditions) is judged before trial 2 starts. A condition that cannot be
 // captured through the public API is NOT_CAPTURED (never PASS). Trial 2 starts only when all eight
-// are PASS; otherwise trial 2 is NOT_STARTED and the series is BLOCKED.
+// are PASS; otherwise trial 2 is BLOCKED (never NOT_STARTED in the output) and the series is BLOCKED.
 // ADPCM RAM (contract 14.14, Wave 7 decision): read through the existing upstream Adpcm::GetRAM()
 // (adpcm.h:63, adpcm_inline.h:386-389). The 64 KiB (0x10000) bytes are copied once per W1 at a frame boundary;
 // the pointer is held as const u8*, never written through, and the copy is checked (NULL, size, pointer
@@ -681,8 +681,17 @@ int main(int argc, char** argv)
         t2.end_state = "BLOCKED";
         t2.end_reason = "14.12 not all PASS: " + failed_ids;
     }
-    if (!t1_completed && t2.end_state == "NOT_STARTED")
-        t2.end_reason = "trial 1 not COMPLETED (contract 14.8)";
+    // MINOR 6: trial 2 never starts unless trial 1 is COMPLETED. Its final state is BLOCKED, never NOT_STARTED.
+    if (!t1_completed && t2.end_state == "NOT_STARTED") {
+        t2.end_state = "BLOCKED";
+        t2.end_reason = "trial_1_not_completed";
+    }
+    // Internal NOT_STARTED is converted to a contract state before output (only BLOCKED is left for an unrun trial).
+    for (Trial* t : {&t1, &t2})
+        if (t->end_state == "NOT_STARTED") {
+            t->end_state = "BLOCKED";
+            t->end_reason = "not_run";
+        }
 
     // MINOR 2: under 14.13 option (b) neither trial runs. Both are BLOCKED (never NOT_STARTED as end_state).
     if (!kDynamicMprDetection) {
