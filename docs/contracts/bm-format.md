@@ -36,7 +36,7 @@ Refs #302 / 親 #34 / 後続 #303（非実行の安全モデル）/ #304（実�
 | huc:doc/huc/clibref.txt | 同 | `da488fa6d53db37f0c7849265a9a60066fb9fb0bb970545e7cf5182faf4c6265` | 記載なし | 説明文（L640-648） |
 
 * 3 つの HuCC ファイルの SHA-256 は `spec/api_contracts.json` の記録値（完全値）と一致した。
-* リポジトリ直下の `LICENSE` は単一のライセンスではない。冒頭で一括ライセンスとはできないと述べ、個別に GPL・Simplified BSD・freeware の記述がある。よって、ファイル単位の記載がないファイルは **UNKNOWN** とする。
+* pce-devel/huc リポジトリ直下の `LICENSE`（本リポジトリの LICENSE ではない）は単一のライセンスではない。冒頭で一括ライセンスとはできないと述べ、個別に GPL・Simplified BSD・freeware の記述がある。よって、ファイル単位の記載がないファイルは **UNKNOWN** とする。
 * 本書は HuC のソースを**コピーしない**。根拠は行番号で示す。
 
 ## 2. 破壊的操作の範囲（何が消えうるか）
@@ -50,10 +50,10 @@ Refs #302 / 親 #34 / 後続 #303（非実行の安全モデル）/ #304（実�
 | D-B1 | `$8000`〜`$8007`（8 バイト）を固定の識別値で上書き | L123-127（`_bm_id` を転記） | CONFIRMED-by-source（書込みの事実） |
 | D-B2 | `$8010`、`$8011` を 0 にする | L128-129 | CONFIRMED-by-source（書込みの事実） |
 | D-B3 | `$8005` に終端ポインタ（高位）を書く | L142-143 | CONFIRMED-by-source（書込みの事実） |
-| D-B4 | 各バンク先頭 8 バイトを試験のため反転書込みする | `_bm_testram` L88-107、ループ L132-141 | CONFIRMED-by-source（書込みの事実） |
+| D-B4 | 試験のため、256 バイトごとのページ先頭 8 バイトを反転書込みする。対象は `__di` の上位バイトを 1 ずつ増やしながら（L135-139）、`$A0` に達するか試験が失敗するまでの範囲（`$8000`〜`$9FFF` 内） | `_bm_testram` L88-107、ループ L132-141 | CONFIRMED-by-source（書込みの事実） |
 | D-B4b | D-B4 の試験後に元の値へ戻るか | 復元の経路（L104-105）から読み取れるが、全経路の追跡は未実施 | HYPOTHESIS |
 | D-B5 | 既存エントリ（利用者データ）の連結リストがどこまで壊れるか | 上記 D-B1〜D-B3 は先頭付近のみ。エントリ列の走査・消去は `_bm_format` 内にない | HYPOTHESIS（データ本体は直接消去しないと読める。実機未確認） |
-| D-B6 | 呼出側の zero page `$20F8`〜`$20FF`（8 バイト） | `_bm_testram` が `__ax,Y`（L93, L100）に書く。`__ax = $20F8`（equ.inc L33）、`_ax = __ax`（L51） | CONFIRMED-by-source |
+| D-B6 | 呼出側の zero page `$20F8`〜`$20FF`（8 バイト） | `_bm_testram` が `__ax,Y` に書く（書込みは L93 のみ。L100 は読出し）。`__ax = $20F8`（equ.inc L33）、`_ax = __ax`（L51） | CONFIRMED-by-source |
 
 * D-B6 は、本 Issue が指定する「$20F8-$20FF」の一部であり、呼出側の `_ax`〜`_dh` を**保存せずに破壊する**。経路 A の BIOS 側でこの範囲を使うかは UNKNOWN（B-ZP）。
 * ドキュメント（`hucc-function-reference.md` L1012、`clibref.txt` L644-646）は「データは消去されず、ヘッダが示さなくなる」と書く。これは説明文であり、コードで検証していない（HYPOTHESIS）。
@@ -122,7 +122,7 @@ Refs #302 / 親 #34 / 後続 #303（非実行の安全モデル）/ #304（実�
 | K-5 | `include/huc/startup.asm` L1253 | include | K-4 を取り込む | CONFIRMED-by-source（取込みの事実。条件分岐の有無は未確認） |
 | K-6 | `include/huc/system.inc` L91 | 記号定義のみ | `bm_format = $E048`。呼出し箇所なし | CONFIRMED-by-source |
 | K-7 | `examples/asm/elmer/kickc/bios.h` L52 | 定数定義のみ | 呼出し箇所なし | CONFIRMED-by-source |
-| K-8 | `doc/hucc/hucc-function-reference.md` L1011-1012、`doc/huc/clibref.txt` L640-648 | 説明文 | 動作の説明（K-4 の実装と一致しない点は §5） | CONFIRMED-by-source（文書の記述） |
+| K-8 | `doc/hucc/hucc-function-reference.md` L1011-1012、`doc/huc/clibref.txt` L640-648、`doc/huc/clibref_fr.txt` L640-649（仏語版。英語版と同じ内容で、「データは消去されず、ヘッダが示さなくなる」「状態を返す」と書く） | 説明文 | 動作の説明（K-4 の実装と一致しない点は §5）。仏語版の本文は読んで内容を照合した | CONFIRMED-by-source（文書の記述） |
 | K-9 | 本リポジトリ | 呼出し | 製品コードからの呼出しはない。`tools/reference_bios_scenarios.py` L23 は `BM_FORMAT` を危険操作の集合に入れる（呼出しではなく分類） | CONFIRMED-by-source |
 | K-10 | 同名 `_bm_format` の二重定義 | 衝突 | K-1（hucc-systemcard.asm L675）と K-4（huc_bram.asm L119）が同名のシンボルを定義する。どちらが何のツールチェーンで選ばれるかは未確認 | UNKNOWN（リンク選択条件） |
 
@@ -174,7 +174,7 @@ HYPOTHESIS のまま残す項目: A-7、D-B4b（試験領域の復元）、D-B5�
 ## 8. 検証
 
 * **V-1（ハッシュ）**: 3 つの HuCC ファイルの SHA-256 が `spec/api_contracts.json` の記録値と一致した（§1）。HuC の他ファイルは本書で計算した値を記録した。
-* **V-2（参照行の実在）**: 本書の行参照は、取得したソースの該当行を表示して内容を照合した。主な照合は次の通り: asm L54-61, L65, L667-698, L713-722、pcengine.inc L204-205, L329-343, L494-495、h L31-38, L111、huc_bram.asm L88-107, L112-151, L177-182, L326, L397-399, L754-803、equ.inc L33, L51、system.inc L91、bios.h L52、startup.asm L1253。全件一致。
+* **V-2（参照行の実在）**: 本書の行参照は、取得したソースの該当行を表示して内容を照合した。主な照合は次の通り: asm L54-61, L65, L667-698, L713-722、pcengine.inc L204-205, L329-343, L494-495、h L31-38, L111、huc_bram.asm L88-107, L112-151, L177-182, L326, L397-399, L754-803、equ.inc L33, L51、system.inc L91、bios.h L52、startup.asm L1253。照合範囲はこの一覧の行に限る。これらの行番号が指す箇所について、取得したソースの該当行と全件一致した。一覧外の行番号は、本書の他の節で引用されている場合でも、この照合の対象ではない。
 * **V-3（リポジトリ内の参照先）**: `docs/research/302-bm-format-contract.md`、`docs/173-safety-monitor-limits.md`、`docs/305-bm-free-contract.md`、`tools/bm_format_model.py`、`tools/bm_format_verdict.py`、`tools/reference_bios_scenarios.py`（L23）は実在を確認した。
 * **V-4（実コア・実機）**: **NOT_RUN**。理由: 実行・試験を行わない指示。純正 BIOS は公開 CI に存在しない。固定 Geargrafx は BRAM 書込みを副作用前に阻止できない（P-6）。
 * **V-5（テスト）**: コードを変更しないため、既存テストの実行は行っていない。
