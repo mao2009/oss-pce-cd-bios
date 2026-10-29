@@ -105,9 +105,7 @@ CD_READ 呼出の前後に何をするかだけを記録する。callee の実�
   どの入力が必須かを示す証拠はない。HuCC の `note`/コメントも呼出側の防御にすぎない。
 * **基点の解釈**: `_cl/_ch/_dl` を絶対LBA とみなすか `recbase0` 相対とみなすかは callee 側の解釈で、stum.de (#146 の W1) が
   「相対 (`recbase0` 加算)」を示すのみ (実コアの callee 実行ではない)。Hu-Go! HLE は参照のみで根拠に数えない。
-  HYPOTHESIS のままとし、#146 台帳との不一致は §6 に記録する。
-  訂正: 旧版は Hu-Go! HLE を同じ根拠として挙げていたが、撤回する。
-* 呼出側が読む戻り値 (CALLER_OUT): A (C23-C25) のみ。X/Y は呼出側が上書きする (C26)。P フラグは読まれない
+  HYPOTHESIS のままとし、#146 台帳との不一致は §6 に記録する。* 呼出側が読む戻り値 (CALLER_OUT): A (C23-C25) のみ。X/Y は呼出側が上書きする (C26)。P フラグは読まれない
   (C30)。C26 は callee の Y を読むのではなく、CLY で Y をゼロにして LEAVE (X→A) で返値を整形する
   **caller 側の返値整形**であり、callee の返値使用とは分ける。
 
@@ -121,15 +119,15 @@ P フラグ (N/V/Z/C/D/B/T)、スタック S、MPR0-2/5/6、IRQ/完了、`$20F8-
 
 | 項目 | 内容 | 状態 | 確定に必要な観測 |
 | --- | --- | --- | --- |
-| 成功時A | 0 | HYPOTHESIS | 実コアで呼出直後のAを記録 |
+| 成功時A | 0。根拠は呼出側 C23/C24 の `TAX`/`BNE` 分岐（呼出側の慣習）のみで、callee の成功値の証明ではない。Hu-Go! HLE は参照のみ | HYPOTHESIS（根拠が弱い。出典は確認済み） | 実コアで呼出直後のAを記録 |
 | 失敗時A、エラーコード体系 | 非0。個別値は不明 | UNKNOWN | 負例(範囲外LBA、媒体なし、読取エラー)ごとにAを記録 |
-| P(N/Z/C/T/I/D) | 出典は Hu-Go! HLE のみ（参照のみ、根拠に使わない）。HuCC の TAX/BNE は BIOS の Z/C を示さない | UNKNOWN | RTS直後のPをトレース。呼出側台帳 C30 は P を UNOBSERVED とする。訂正: 旧版は HYPOTHESIS としていたが、独立した出典がないため UNKNOWN へ下げる |
+| P(N/Z/C/T/I/D) | 出典は Hu-Go! HLE のみ（参照のみ、根拠に使わない）。HuCC の TAX/BNE は BIOS の Z/C を示さない | UNKNOWN | RTS直後のPをトレース。呼出側台帳 C30 は P を UNOBSERVED とする |
 | X/Y保存 | 不明 | UNKNOWN | 呼出前後のX/Yを比較。呼出側台帳 C28(X) / C29(Y) |
 | `$20F8-$20FF` | HuCCは`_cd_loaddata.4`で`$20FA-$20FE`の5バイト(`_bl,_bh,_cl,_ch,_dl`)のみ退避=呼出側防御。`_ax`/`_dh`は退避せず各ループで再設定する。BIOSが書き換える/保存するかは不明 | UNKNOWN | 呼出前後の`$20F8-$20FF`ダンプ差分、およびBIOS内のこの領域への書込トレース。呼出側台帳 C22 / C34 |
 | 成功時MPR | 不明 | UNKNOWN | 呼出前後の MPR0-7 を全て記録。呼出側台帳 C32 (MPR0-2/5/6 は UNOBSERVED) |
 | 失敗時MPR | HuCCコメント「エラー時にMPR3を壊す」 | HYPOTHESIS | 失敗を起こす負例の前後でMPR3(とMPR2-6)を記録。呼出側台帳 C21/C27 |
 | スタック | JSR/RTSの外側のみ。内部深さ・バランス | HYPOTHESIS / UNKNOWN | 呼出前後のSと最小Sを記録 |
-| 完了方式/タイミング | Hu-Goは同期ループ | HYPOTHESIS | 呼出から戻りまでのサイクル数と、その間のIRQ発生有無 |
+| 完了方式/タイミング | 出典は Hu-Go! HLE のみ（参照のみ、ライセンス未確定、根拠に使わない） | UNKNOWN | 呼出から戻りまでのサイクル数と、その間のIRQ発生有無 |
 | ディスク末尾・count境界の動作 | 転送層(T3/T4)のみ VERIFIED(Geargrafx)。callee側の戻りAと部分書込は不明 | UNKNOWN | #118と同じ合成媒体(LBA0-15)で、`$E009`経由 LBA13 x3 (末尾跨ぎ)、LBA16以降を呼び、戻りAと書込済みバイト数を観測 |
 | 無媒体時 (#133) | 転送層はGeargrafxでno-media実行不能(既存台帳T7) | UNKNOWN / BLOCKED | 無媒体で3.0を起動できる実コア設定の確立。またはエラーAの実機/別コア観測 |
 
@@ -150,7 +148,7 @@ P フラグ (N/V/Z/C/D/B/T)、スタック S、MPR0-2/5/6、IRQ/完了、`$20F8-
 
 ## 6. 台帳間の不一致 (記録。解消済みではない)
 
-* **CD_READ の基点 (本書 §2.2 の基点メモ) と #146 台帳 (146 項目2/3/4)**: 本書は当初「基点: UNKNOWN」としたが、#146 は stum.de を根拠に「相対(`recbase0` 加算)」を HYPOTHESIS とした。本書も HYPOTHESIS に揃えた。ただしその根拠は stum.de (W1) のみであり、Hu-Go! HLE の同じ加算は参照のみで数えない（訂正: 旧版は監査で Hu-Go! HLE を補強として挙げていた）。どちらも実コアのcallee実行なし。
+* **CD_READ の基点 (本書 §2.2 の基点メモ) と #146 台帳 (146 項目2/3/4)**: 本書は当初「基点: UNKNOWN」としたが、#146 は stum.de を根拠に「相対(`recbase0` 加算)」を HYPOTHESIS とした。本書も HYPOTHESIS に揃えた。ただしその根拠は stum.de (W1) のみであり、Hu-Go! HLE の同じ加算は参照のみで数えない。どちらも実コアのcallee実行なし。
 * **2ISO 経路の矛盾 (`docs/cd-base-abi-ledger.md` §3 補足)**: HuCC は 2ISO 時に `recbase1` のみを設定する (`_cl=2`)。#146 は「通常読込みは `recbase0`、`recbase1` は失敗後のみ」の読み方で矛盾が成立しない**可能性**を挙げるが、これは推論で未測定。**矛盾は OPEN のまま**。`_cl=1/2` 後の CD_READ の LBA 比較と失敗注入の実測が必要。
 * #146 と本書は、CD_BASE の `_cl` の意味 (`$01`=recbase0, `$02`=recbase1) を stum.de のみから得ており、独立した二つの証拠ではない。
 
@@ -162,3 +160,7 @@ P フラグ (N/V/Z/C/D/B/T)、スタック S、MPR0-2/5/6、IRQ/完了、`$20F8-
   呼出側の主張を VERIFIED へ昇格できないこと、UNOBSERVED 行が UNKNOWN のままであること、本表と
   `CALLER_LEDGER` の id が一致することを検査する。
 * `make check` / host テストの結果はPR本文に記載。
+
+## 変更履歴
+
+- 2026-10-29（PR #571 の修正）: Hu-Go! HLE を補強とした記述を「参照のみ」へ変更した。§3 の P フラグと完了方式/タイミングは、出典が Hu-Go! HLE のみのため UNKNOWN へ下げた。成功時A は出典（呼出側 C23/C24）を明記し、根拠が弱いことを注記した。HYPOTHESIS の判定は変えていない。旧版の Hu-Go! HLE を根拠とした記述は撤回する。
