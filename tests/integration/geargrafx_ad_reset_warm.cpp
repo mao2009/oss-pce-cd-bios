@@ -8,7 +8,8 @@
 //   2 SetResetValues + SetResetValue(0); 3 IsReady; 4 W0 (breakpoint count before ResetMedia);
 //   5 ResetMedia(false); 6 W1; 7 guest placement (MPR, WRAM bytes); 8 PC, S, P set and readback;
 //   9 W2; 10 (i) static readback check, (ii) one frame for PC stability (the dynamic MPR detector
-//   of 10(ii) is NOT_IMPLEMENTED here); then the trial body (contract 2.1).
+//   of 10(ii) is NOT_IMPLEMENTED here); then the trial body (contract 2.1). Under contract 14.13 option (b)
+//   (kDynamicMprDetection = false) none of these steps run: the warm series is BLOCKED without any trial.
 // Contract 14.12 (eight conditions) is judged before trial 2 starts. A condition that cannot be
 // captured through the public API is NOT_CAPTURED (never PASS). Trial 2 starts only when all eight
 // are PASS; otherwise trial 2 is NOT_STARTED and the series is BLOCKED.
@@ -57,6 +58,9 @@ const unsigned kGuestEnd = 0x4000;
 const unsigned kStubIndex = 0x1E00;
 const unsigned kFrameBudget = 300;    // contract 6: frames per trial
 const unsigned kObserveWait = 60;     // contract 6: frames allowed to observe PLAY_ACTIVE
+// Contract 14.13 option (b): the dynamic MPR detection is NOT_IMPLEMENTED, so the warm series is never run
+// (no trial 1, no trial 2 pre-trial part, no trial body). Set true only after option (a) is proven and reviewed.
+const bool kDynamicMprDetection = false;
 const double kTrialSeconds = 120.0;   // contract 6: per trial, checked at frame boundaries
 const double kProcessSeconds = 600.0; // contract 6: per process, checked at frame boundaries
 const unsigned kPlayAddress = 0x1234;
@@ -408,8 +412,12 @@ int main(int argc, char** argv)
         } else if (pc < kGuestBase || pc >= kGuestEnd) {
             t.end_state = "ABORTED";
             t.end_reason = "pc_outside_guest";
+        } else if (t.end_state == "RUNNING" && t.frames >= kFrameBudget) {
+            // contract 6.1: the 300-frame safety cap is BUDGET_EXCEEDED, never a normal end
+            t.end_state = "BUDGET_EXCEEDED";
+            t.end_reason = "frame_safety_cap_300";
         }
-        return t.end_state != "COMPLETED";
+        return t.end_state != "RUNNING";
     };
     auto playing_observed = [&]() {
         return (adpcm->Read(0x0C) & 0x08) != 0 && *adpcm->GetState()->PLAYING;
@@ -470,8 +478,8 @@ int main(int argc, char** argv)
     // Trial body (contract 2.1, play-reset-80 standard class). Runs only after the pre-trial part.
     auto trial_body = [&](Trial& t, std::chrono::steady_clock::time_point trial_t0) {
         t.body_ran = true;
-        t.end_state = "COMPLETED";
-        t.end_reason = "budget_end";
+        t.end_state = "RUNNING";              // set to a final state below; never left as RUNNING
+        t.end_reason = "";
         t.cls = "UNOBSERVED_BUSY";
         bool stopped = false;
         bool observed = false;
@@ -509,13 +517,20 @@ int main(int argc, char** argv)
             if (!stopped) {
                 t.p2 = capture(core, t.frames);
                 t.has_p2 = true;
-            }
-            while (!stopped && t.frames < kFrameBudget) {
+                // contract 6.1 normal observation complete: exactly one more VBlank after P2, then P3
                 run_frame(t);
                 stopped = stop_check(t, trial_t0);
+                if (!stopped) {
+                    t.end_state = "COMPLETED";
+                    t.end_reason = "normal_observation_complete";
+                }
             }
         }
-        t.p3 = capture(core, t.frames);             // P3: budget end or the stop point
+        if (t.end_state == "RUNNING") {             // not observed and not stopped by a limit: unexpected exit
+            t.end_state = "ABORTED";
+            t.end_reason = "not_completed";
+        }
+        t.p3 = capture(core, t.frames);             // P3: normal completion, budget end, or the stop point
     };
 
     // ---- trial 1 (warm-up) ----
@@ -524,7 +539,7 @@ int main(int argc, char** argv)
     t1.role = "warmup";
     t1.pid = pid;
     t1.instance = instance;
-    {
+    if (kDynamicMprDetection) {
         const auto t0 = std::chrono::steady_clock::now();
         if (pre_trial(t1))
             trial_body(t1, t0);
@@ -550,7 +565,8 @@ int main(int argc, char** argv)
         c.source = source;
         gate.push_back(c);
     };
-    add("1", t1_completed ? "PASS" : "FAIL", "trial 1 end_state=" + t1.end_state, "trial 1 end_state");
+    add("1", !kDynamicMprDetection ? "NOT_IMPLEMENTED" : (t1_completed ? "PASS" : "FAIL"),
+        "trial 1 end_state=" + t1.end_state, "trial 1 end_state (not run under 14.13 option b)");
 
     const bool t2_pre = t2.has_w0 && t2.has_w1 && t2.has_w2;
     if (!t2_pre) {
@@ -606,7 +622,8 @@ int main(int argc, char** argv)
     if (!t2_pre) {
         add("5", "NOT_EVALUATED", "trial 2 W2 not reached", "W2 capture");
         add("6", "NOT_EVALUATED", "trial 2 W2 not reached", "PC stability");
-        add("7", "NOT_EVALUATED", "trial 2 W2 not reached", "static (i) and dynamic (ii)");
+        add("7", kDynamicMprDetection ? "NOT_EVALUATED" : "NOT_IMPLEMENTED", "trial 2 W2 not reached",
+            "static (i) and dynamic (ii); 14.13 option b");
     } else {
         const Point& w2 = t2.w2;
         const bool pc_ok = t2.pc_set_rb == kGuestBase && w2.pc == kGuestBase;
@@ -663,8 +680,11 @@ int main(int argc, char** argv)
         t2.end_reason = "trial 1 not COMPLETED (contract 14.8)";
 
     std::string series_end = "COMPLETED";
-    std::string series_reason = "budget_end";
-    if (!t1_completed) {
+    std::string series_reason = "normal_observation_complete";
+    if (!kDynamicMprDetection) {
+        series_end = "BLOCKED";
+        series_reason = "dynamic MPR detection NOT_IMPLEMENTED (contract 14.13 option b); warm series not run";
+    } else if (!t1_completed) {
         series_end = "BLOCKED";
         series_reason = "trial 1 not COMPLETED";
     } else if (!all_pass || !t2.body_ran) {
