@@ -112,6 +112,7 @@ def decide_reference_jsr(entry=None, mpr=None, stack=None, authorized=False, mon
     """純正参照入力の JSR 判定。実行は一切せず、常に BLOCKED を返す（許可数は REFERENCE_JSR_ALLOWED = 0）。
 
     未確定の entry/MPR/stack、未承認、監視不足、および #173 の遮断未証明を理由として列挙する。
+    方針スタブであり、許可領域外（RAM・I/O・MPR）の検査は行わない（ゲートではない）。
     """
     reasons = [name for name, value in (("UNKNOWN_ENTRY", entry), ("UNKNOWN_MPR", mpr), ("UNKNOWN_STACK", stack))
                if value is None]
