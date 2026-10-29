@@ -136,7 +136,8 @@ class CacheTests(unittest.TestCase):
             bootstrap.fetch('cc65')
         self.assertFalse((source / '.source-integrity.json').exists())
 
-    def test_interrupted_extraction_can_resume_without_partial_publication(self):
+    def test_interrupted_extraction_leaves_staging_and_next_run_fails_closed(self):
+        # An interrupted run must not publish a partial tree, and its leftover staging dir must never be deleted.
         extract = tarfile.TarFile.extractall
 
         def interrupted(tar, *args, **kwargs):
@@ -146,10 +147,30 @@ class CacheTests(unittest.TestCase):
         with patch.object(tarfile.TarFile, 'extractall', interrupted):
             with self.assertRaises(OSError):
                 bootstrap.fetch('cc65')
-        self.assertFalse(dependency_dir('cc65').exists())
-        source = bootstrap.fetch('cc65')
-        self.assertTrue((source / '.source-integrity.json').is_file())
-        self.assertFalse(source.with_name(source.name + '.extracting').exists())
+        destination = dependency_dir('cc65')
+        staging = destination.with_name(destination.name + '.extracting')
+        self.assertFalse(destination.exists())
+        self.assertTrue(staging.is_dir())
+        note = staging / 'owner-note.txt'
+        note.write_text('keep me')
+        with self.assertRaisesRegex(ValueError, 'not removed'):
+            bootstrap.fetch('cc65')
+        self.assertEqual(note.read_text(), 'keep me')
+        self.assertFalse(destination.exists())
+
+    @unittest.skipUnless(_can_symlink(), 'symlinks need privilege on this host')
+    def test_symlink_at_staging_path_is_rejected_and_target_kept(self):
+        destination = dependency_dir('cc65')
+        staging = destination.with_name(destination.name + '.extracting')
+        outside = Path(self.directory.name) / 'outside'
+        outside.mkdir()
+        (outside / 'keep.txt').write_text('keep me')
+        staging.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(outside, staging, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, 'not removed'):
+            bootstrap.fetch('cc65')
+        self.assertTrue(staging.is_symlink())
+        self.assertEqual((outside / 'keep.txt').read_text(), 'keep me')
 
     def test_corrupt_archive_and_unverified_cache_are_rejected(self):
         data = self.archive.read_bytes()
