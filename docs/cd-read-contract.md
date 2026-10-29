@@ -6,7 +6,7 @@ image or disassembly. A third-party name, caller wrapper or HLE model is never p
 Status tags:
 
 本文書の Status は**宣言上の状態（declared status）**である。実効信頼状態（effective trust state）は §4 の検査で決まり、
-現時点の実効値は LOCAL_ONLY までで、VERIFIED は実効化されない。語彙は `docs/cd-base-abi-ledger.md` §1
+現時点の T1〜T4 の実効値は BLOCKED（実行記録の bundle がリポジトリにないため）である。LOCAL_ONLY は自己申告の bundle が全検査を通った場合の上限で、VERIFIED は実効化されない。語彙は `docs/cd-base-abi-ledger.md` §1
 （SOURCE_CONFIRMED / HYPOTHESIS / MEASURED / UNKNOWN / BLOCKED / VERIFIED）に従い、本文書での意味は次のとおり。
 MEASURED は実行によって得た証拠の分類であり、VERIFIED を自動的には意味しない。VERIFIED は T1〜T5 の宣言上の Status である。宣言上の VERIFIED は実効 VERIFIED を意味せず、実効信頼状態は既存の検査（`effective_status`）で決まる。System Card 3.0 の callee ABI は未検証のまま。
 
@@ -182,6 +182,67 @@ Executed by `src/cd_read_probe.s` (polling, IRQs off) through `$1800-$1804`; det
 
 `transport_outcome` raises instead of guessing for T7/T8 inputs, and the host test checks it against every
 positive and end-of-disc request in the real-core suite.
+
+### 2.1 宣言上の状態と実効証拠状態（T1〜T4）
+
+表の Status 列（および `tools/cd_read_contract.py` の TRANSPORT_CLAIMS）は**宣言上の状態（declared status）**である。
+本節は、その宣言に対応する**実効証拠状態（effective evidence status）**を別に記す。
+2026-10-29 時点の調査結果（研究上の所見）: head commit のリポジトリ内に、T1〜T4 の commit された実行記録は見つからなかった。
+そのため、T1〜T4 の実効証拠状態（status checker の戻り値）は **BLOCKED** である。
+宣言を書き換えず、ここでは実効証拠状態だけを示す。宣言上の VERIFIED は実効 VERIFIED ではない。
+
+| Id | 宣言上の状態（declared） | 実効証拠状態（effective evidence） | 欠けている証拠（調査結果） |
+| --- | --- | --- | --- |
+| T1 | VERIFIED | BLOCKED | bundle・`cdread-evidence.json`・log・attestation・commit 参照のいずれも見つからず |
+| T2 | VERIFIED | BLOCKED | 同上 |
+| T3 | VERIFIED | BLOCKED | 同上 |
+| T4 | VERIFIED | BLOCKED | 同上 |
+
+実効状態の規則（`tools/cd_read_contract.py` の `effective_status` / `compat_status` と一致させる）:
+
+| 入力 | 宣言 VERIFIED の実効状態 |
+| --- | --- |
+| bundle がない（`effective_status(None, None)` を含む） | BLOCKED |
+| bundle はあるが JSON オブジェクトでない、status が PASS でない、pinned Geargrafx または ROM と一致しない、`tests` がない | BLOCKED |
+| 基本検査は通るが、引用シナリオが欠ける、または結果の kind が一致しない | UNKNOWN |
+| 基本検査を通り、引用シナリオがすべて kind どおり記録されている（自己申告） | LOCAL_ONLY（上限。VERIFIED にはならない） |
+| `compat_status()`（どの入力でも） | BLOCKED。実効 VERIFIED を返すことはない |
+
+T1〜T4 に共通して、次が欠けている。
+
+* **bundle**: 実行で生成される `cdread-evidence.json` を commit していない。`tests/integration/geargrafx_cdread.py` は出力先に書くだけで、リポジトリ内に該当ファイルはない。
+* **commit 参照**: 実行したソース commit と、その commit での ROM ハッシュを記録した成果物がない。
+* **attestation**: 出力を検証できる attestation がない。bundle の `status` は自己申告であり（`tools/cd_read_contract.py` の `provenance_problem` は形式だけを見る）、自己申告の bundle は実効 VERIFIED にならない（冒頭の Status tags の LOCAL_ONLY 規定）。
+* **独立レビュー**: 作成者と異なる承認者による確認がない。
+* **呼出側と被呼出側の分離**: T1〜T4 は転送層（`$1800-$1804`）の証拠であり、HuCC 呼出側と BIOS callee の証拠ではない。callee 行（R 系）は本節の証拠で昇格しない。
+
+T1〜T4 を実効証拠で支えるために必要な条件（提案）:
+
+1. ソース commit: 実行した commit の SHA を bundle に記録する。
+2. 実行コマンド: `make dev-cdread-integration`（`Makefile` の L120-121。`MODE` の既定値は UNKNOWN）。
+3. 出力 bundle: 名前付きパスに commit する（§2.2 の保存先を参照）。
+4. Geargrafx revision の確認: `geargrafx_revision` が `b49ae82a012eade566d72e9d61c9d95a5caa4da3` であり、`source_archive_sha256` が pinned 値と一致すること。
+5. 独立レビュー: 承認者は作成者と別人であること。
+6. 呼出側と被呼出側の分離: 転送層の証拠と callee ABI の証拠を混ぜないこと。
+
+### 2.2 測定計画（提案。実行していない）
+
+本節は計画であり、測定結果ではない。ここに書かれた実行は 2026-10-29 時点で 0 件である。値はリポジトリを読んで確認したものだけを示し、読んでいない値は UNKNOWN とする。
+
+| 項目 | 値 | 根拠 |
+| --- | --- | --- |
+| ディスク | 合成 16 セクター、MODE1/2352 | `tools/make_cd_image.py` の `DEFAULT_SECTORS = 16`。ユーザデータは raw フレームの 16 バイト目から |
+| ゲスト ROM | 診断用 ROM（`src/cd_read_probe.s` 由来） | `tools/build_cdread.py`、§2 の冒頭 |
+| セクターサイズ | 2048 バイト | `tools/build_cdread.py` の `SECTOR_BYTES = 2048` |
+| ステップ予算 | 12,000,000 ゲスト命令 | `tests/integration/geargrafx_cdread.py` の `STEP_BUDGET` |
+| 停止確認 | 64 命令連続 | `tools/build_cdread.py` の `HALT_CONFIRM_STEPS = 64` |
+| 壁時計タイムアウト | UNKNOWN | リポジトリで確認していない |
+| 試行の種類 | cold と warm の両方 | `success_judgement` の記述 |
+| シナリオ | T1: LBA 5×1・0・15、T2: LBA 5×3、T3: LBA 16・0x1FFFFF、T4: LBA 14×3 | `tests/integration/geargrafx_cdread.py` の既存シナリオ名 |
+| 証拠形式 | `scope`、`rom_sha256`、`geargrafx_revision`、`source_archive_sha256`、`loader`、`disc`、`tests`、`status` | 既存出力の JSON フィールド。`source_commit` は現行出力になく、追加が必要（提案） |
+| 保存先 | `docs/evidence/` 配下に commit（例: `docs/evidence/cdread-transport-<短縮SHA>.json`） | 提案。`docs/evidence/` は既存ディレクトリ |
+| 独立レビュー | 作成者と別人が、固定 commit の clean clone で再実行して確認 | 提案。承認者数・承認記録の場所は UNKNOWN |
+| 対象外 | callee ABI、実機、第二のエミュレータ、CD-DA の TOC 種別判定 | 既存 bundle の `real_hardware_or_second_emulator`、`cd_da_track_behaviour` が NOT_TESTED |
 
 ## 3. What is implemented, what is blocked
 

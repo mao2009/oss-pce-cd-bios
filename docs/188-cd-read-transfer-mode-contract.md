@@ -19,7 +19,7 @@
   * **[C] 公開 caller ソース**: HuCC `pce-devel/huc@54f5c73606c1e7142e8095c727cab2767e2b3cb3` の呼出側コード。確認範囲は `include/hucc/` の2ファイル（`hucc-systemcard.asm` `4258b7c3…`、`core-kernel.asm` `ae183017…`。sha256 は `spec/api_contracts.json` と一致）のみ。`include/huc/` は未検査（[cd-base-abi-ledger.md](cd-base-abi-ledger.md):146、:151 の方針により、存在の事実も根拠に使わない）。行番号は取得したファイルに対するもの。
     - **[C] は「命令がそう書いている」ことだけを指す。** 同一ソース内のコメント・宣言（例: `_cd_loadbank.4` の宣言 `unsigned int sectors<_al>`（L425）、コメント `; Get #sectors (0=whole file).`（L436））は命令の事実ではない。**HYPOTHESIS（コメント/宣言由来）** として扱い、単独では [C] の根拠にしない。count の単位（セクターか否か）はこの区別に従う。
   * **[D] 既存文書**: 本リポジトリの既存文書・台帳（`tools/cd_read_contract.py` の定数を含む）。
-  * **[M] 実測（既存の観測証跡のみ）**: 転送層の READ(6) を Geargrafx（`b49ae82a`）で実行した結果。callee の実測ではない。
+  * **[M] 実測（既存の観測証跡のみ）**: 転送層の READ(6) を Geargrafx（`b49ae82a`）で実行した結果。callee の実測ではない。注: この [M] に対応する実行記録は commit されておらず、実効の証拠は未確立である（宣言上の状態と実効証拠状態の区別は [cd-read-contract.md](cd-read-contract.md) §2.1）。
 * 「確定」は **呼出側の入力・事実**（HuCC の cd_read 呼出側コードの**命令がそう書いている**こと。コメント・宣言は含まれない）に限る。[M] の転送層計測は callee の確定として読まない。callee（BIOS）がそれをどう解釈するかは、すべて未確定。
 
 ## 1. 対象モードの選定
@@ -84,7 +84,7 @@
 | 証跡 | 種類 | 内容 | 本書での扱い |
 | --- | --- | --- | --- |
 | HuCC 呼出側（L294-297、L322-325、L384-388、L425-457、`core-kernel.asm` L593-594） | [C] 公開 caller | `_dh` の書込み値と、その前後の `_al` / `_bl` / MPR3 退避 | 呼出側の事実として採用（命令が書いていること）。コメント・宣言の単位解釈は含まない。callee の値域の根拠にしない |
-| 転送層 READ(6)（T1-T4） | [M] 既存実測（Geargrafx `b49ae82a`） | 1-3 セクターの受信、範囲外 STATUS、末尾跨ぎ | バスの振る舞いのみ。`$E009` の結果ではない |
+| 転送層 READ(6)（T1-T4） | [M] 既存実測（Geargrafx `b49ae82a`。ただし commit された実行記録はなく、実効証拠は未確立。[cd-read-contract.md](cd-read-contract.md) §2.1） | 1-3 セクターの受信、範囲外 STATUS、末尾跨ぎ | バスの振る舞いのみ。`$E009` の結果ではない |
 | `CALLEE_REAL_CORE_RUNS = 0`（`tools/cd_read_contract.py`） | [D] 既存の機械記録 | callee の実行回数 0 | 本モードの callee 項目はすべて UNKNOWN / HYPOTHESIS |
 | stum.de / Zeograd | [D] 第三者 | `$E009` の入口、`recbase0` 相対の主張 | 入口の HYPOTHESIS にのみ使用。基点は UNKNOWN（A8） |
 
