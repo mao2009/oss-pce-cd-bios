@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Slot allocator for independent standalone Geargrafx instances (Issue #103).
 
-At most MAX_SLOTS (2) real-core instances may run at once. Each slot owns a private
-profile directory, work directory and loopback-only port (BASE_PORT + slot), so one
-Worker never drives another Worker's emulator. A slot is claimed by creating
-`slot-<n>.lock` with O_EXCL; only the owner that claimed it may release it.
+At most MAX_SLOTS (2) real-core instances may run at once, by advisory coordination:
+a slot is claimed by creating `slot-<n>.lock` with O_EXCL, and only its owner may release
+it. Each slot names a private profile/work directory and a reserved loopback port
+(BASE_PORT + slot). tools/mcp_checkpoint.py does NOT consult these locks; enforcement is
+the operator's responsibility.
 
 ponytail: no automatic stale-lock reclaim (a crashed owner needs `release --force`),
 add PID liveness checks when crashes become frequent.
@@ -16,7 +17,7 @@ from pathlib import Path
 import sys
 
 MAX_SLOTS = 2
-BASE_PORT = 47110  # loopback only: 127.0.0.1:47110 and 47111; used only by HTTP transport
+BASE_PORT = 47110  # reserved only: no HTTP transport uses it yet; loopback when used
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -60,9 +61,12 @@ def release(state_dir, slot, owner, force=False):
     lock = d / f"slot-{slot}.lock"
     if not lock.is_file():
         raise SlotError(f"slot {slot} is not held")
-    held = json.loads(lock.read_text(encoding="utf-8"))
-    if held.get("owner") != owner and not force:
-        raise SlotError(f"slot {slot} is owned by {held.get('owner')!r}")
+    try:
+        held_owner = json.loads(lock.read_text(encoding="utf-8")).get("owner")
+    except (OSError, ValueError, AttributeError):
+        held_owner = None  # empty or corrupt lock: owner unknown, only force may release
+    if held_owner != owner and not force:
+        raise SlotError(f"slot {slot} is owned by {held_owner!r} (unknown if None; use --force)")
     lock.unlink()
     return {"slot": slot, "released": True}
 

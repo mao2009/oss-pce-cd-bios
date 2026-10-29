@@ -55,6 +55,16 @@ class SlotAllocator(unittest.TestCase):
             gs.acquire(gs.REPO_ROOT / "tmp-should-not-exist", "workerA")
         self.assertFalse((gs.REPO_ROOT / "tmp-should-not-exist").exists())
 
+    def test_empty_lock_recovered_only_by_force(self):
+        self.state.mkdir(parents=True)
+        lock = self.state / "slot-0.lock"
+        lock.write_text("", encoding="utf-8")  # crash between O_EXCL create and json write
+        with self.assertRaises(gs.SlotError):
+            gs.release(self.state, 0, "workerA")
+        self.assertTrue(lock.exists())
+        gs.release(self.state, 0, "operator", force=True)
+        self.assertFalse(lock.exists())
+
     def test_empty_owner_refused(self):
         with self.assertRaises(gs.SlotError):
             gs.acquire(self.state, "")
