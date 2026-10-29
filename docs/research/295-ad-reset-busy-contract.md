@@ -435,9 +435,9 @@ ROM-Primitive の実装（`ad_reset_busy` の guest 実装など）は、本書�
 
 ### 14.6 #173 との整合
 
-- gate は BLOCKED のまま維持する。本節は gate を解除しない。
+- gate は BLOCKER のまま維持する（前提項目の状態。§0 の軸に従う）。本節は gate を解除しない。
 - 各 `ResetMedia` の後（W1 と W2 の間）に、既存の静的チェックと動的 MPR 検出を再実行し、結果を記録する。判定器の名称と版は、測定の前に固定する。
-- TRANSFER_BUSY は実行しない（§3.4 により BLOCKED）。
+- TRANSFER_BUSY は実行しない（§3.4 により BLOCKER。試行の実行状態は BLOCKED）。
 - 集計は CONTROL=`$80` の標準試行だけとする。`$A0`（arm-B）は集計に混ぜない。
 
 ### 14.7 採取の時点と R5 の判定
