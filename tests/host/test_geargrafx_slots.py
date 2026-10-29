@@ -1,5 +1,6 @@
 """Unit tests for tools/geargrafx_slots.py (Issue #103). Slot logic only; no emulator is run."""
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -56,8 +57,8 @@ class SlotAllocator(unittest.TestCase):
         self.assertFalse((gs.REPO_ROOT / "tmp-should-not-exist").exists())
 
     def test_empty_lock_recovered_only_by_force(self):
-        self.state.mkdir(parents=True)
-        lock = self.state / "slot-0.lock"
+        held = gs.acquire(self.state, "workerA")
+        lock = Path(held["lock"])
         lock.write_text("", encoding="utf-8")  # crash between O_EXCL create and json write
         with self.assertRaises(gs.SlotError):
             gs.release(self.state, 0, "workerA")
@@ -73,6 +74,74 @@ class SlotAllocator(unittest.TestCase):
         self.assertEqual(gs.main(["acquire", "--state-dir", str(self.state), "--owner", "a"]), 0)
         self.assertEqual(gs.main(["acquire", "--state-dir", str(self.state), "--owner", "b"]), 0)
         self.assertEqual(gs.main(["acquire", "--state-dir", str(self.state), "--owner", "c"]), 3)
+
+
+    def test_force_does_not_delete_unmarked_unrelated_lock(self):
+        self.state.mkdir(parents=True)
+        unrelated = self.state / "slot-0.lock"
+        unrelated.write_text("other-worker", encoding="utf-8")
+        with self.assertRaisesRegex(gs.SlotError, "marker"):
+            gs.release(self.state, 0, "operator", force=True)
+        self.assertEqual(unrelated.read_text(), "other-worker")
+        with self.assertRaisesRegex(gs.SlotError, "not empty"):
+            gs.acquire(self.state, "workerA")
+
+    def test_home_project_root_and_parent_are_never_slot_dirs(self):
+        for forbidden in (Path.home(), Path("/"), gs.REPO_ROOT, gs.REPO_ROOT.parent):
+            with self.subTest(path=str(forbidden)):
+                with self.assertRaises(gs.SlotError):
+                    gs.acquire(forbidden, "workerA")
+
+    def test_relative_and_symlinked_state_dirs_are_rejected(self):
+        with self.assertRaisesRegex(gs.SlotError, "absolute"):
+            gs.acquire("relative-slots", "workerA")
+        gs.acquire(self.state, "workerA")
+        linked = Path(self.tmp.name) / "alias"
+        linked.symlink_to(self.state, target_is_directory=True)
+        with self.assertRaisesRegex(gs.SlotError, "canonical"):
+            gs.release(linked, 0, "operator", force=True)
+        self.assertTrue((self.state / "slot-0.lock").exists())
+
+    def test_slot_out_of_range_never_unlinks_any_lock(self):
+        held = gs.acquire(self.state, "workerA")
+        for invalid in (-1, gs.MAX_SLOTS, 100, True, "0"):
+            with self.subTest(slot=invalid):
+                with self.assertRaisesRegex(gs.SlotError, "range"):
+                    gs.release(self.state, invalid, "operator", force=True)
+        self.assertTrue(Path(held["lock"]).exists())
+
+    def test_force_refuses_symlink_lock_without_touching_target(self):
+        gs.acquire(self.state, "workerA")
+        lock = self.state / "slot-0.lock"
+        lock.unlink()  # isolated fixture directory only
+        target = Path(self.tmp.name) / "unrelated"
+        target.write_text("do not delete", encoding="utf-8")
+        lock.symlink_to(target)
+        with self.assertRaises(gs.SlotError):
+            gs.release(self.state, 0, "operator", force=True)
+        self.assertEqual(target.read_text(), "do not delete")
+
+    def test_force_refuses_hardlinked_lock_without_touching_other_path(self):
+        held = gs.acquire(self.state, "workerA")
+        lock = Path(held["lock"])
+        other = Path(self.tmp.name) / "unrelated-hardlink"
+        os.link(lock, other)
+        with self.assertRaisesRegex(gs.SlotError, "single-link"):
+            gs.release(self.state, 0, "operator", force=True)
+        self.assertTrue(lock.exists())
+        self.assertTrue(other.exists())
+
+    def test_releasing_missing_state_dir_does_not_create_it(self):
+        with self.assertRaises(gs.SlotError):
+            gs.release(self.state, 0, "operator", force=True)
+        self.assertFalse(self.state.exists())
+
+    def test_invalid_marker_refuses_force_release(self):
+        held = gs.acquire(self.state, "workerA")
+        (self.state / gs.STATE_MARKER).write_text("wrong-project", encoding="utf-8")
+        with self.assertRaisesRegex(gs.SlotError, "marker"):
+            gs.release(self.state, held["slot"], "operator", force=True)
+        self.assertTrue(Path(held["lock"]).exists())
 
 
 if __name__ == "__main__":
