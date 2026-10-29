@@ -1642,6 +1642,9 @@ def _privilege_problems(doc, label):
         problems += _policy_guard_problems(label, doc)
     else:
         allowed = WORKFLOW_ALLOWED_TRIGGERS | ({"schedule"} if Path(label).name in SCHEDULE_WORKFLOWS else set())
+        # Issue #544: the policy job runs from the base branch under pull_request_target and holds no secrets (its own file only)
+        if Path(label).name == "policy-guard.yml":
+            allowed = allowed | {"pull_request_target"}
     extra = sorted(str(n) for n in names - allowed)
     if not names or extra:
         problems.append(f"{label}: triggers {sorted(map(str, names))} refused; only {sorted(allowed)} are allowed "

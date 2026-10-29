@@ -1,0 +1,929 @@
+"""Issue #544 (child of #511): the trusted-main policy check for run: approvals.
+
+Run from the MAIN copy (--trusted), reading the pull-request copy (--candidate) as data only. Nothing from the candidate is
+executed. The policy job (.github/workflows/policy-guard.yml) runs this file from the base SHA of the pull request.
+
+Checks, all against the trusted copy:
+  1. policy_files_match: the guard, the run allowlist, this file, the workflows, the actions and the policy workflow are
+     byte-identical to the trusted copy. A pull request cannot loosen them.
+  2. approval_problems: the trusted guard runs its enforced placement check on the candidate workflows with the TRUSTED
+     allowlist. Any run: text that is not approved on main is refused, including a new send command.
+  3. closure_problems: every file that a PRIVILEGED trusted job can execute (its run: texts, the Makefile targets they
+     request, the Python imports and shell paths they reach, local actions) must be byte-identical to the trusted copy,
+     and no module may be added beside an executed one. Unprivileged jobs are outside this closure (see privileged_job).
+     Ceilings: runtime-built paths and external trees are not followed; a subprocess with a runtime-built program is refused
+     unless listed in REVIEWED_EXTERNAL with its pin.
+  4. check_record_problems: the GitHub check result for the head SHA. Used by the ruleset verification (see the child issue):
+     a missing, renamed, skipped, reused (other head) or foreign-app result is refused.
+
+Static matching cannot prevent network sends from scripts that approved steps call. That is out of guaranteed scope and
+rests on least privilege, secret separation and trusted-publishing job separation.
+"""
+import os as _os
+import sys as _sys
+# Issue #544 (last review): the directory of this script is not an import source. A pull request can plant a module there
+# (.trusted-main/tools/yaml.py beside the trusted guard), so it is removed from sys.path before any other import, the same
+# effect as python -I, without changing the approved run: text.
+if __name__ == "__main__":   # only when run as the trusted script: importing the module must not change sys.path
+    _sys.path[:] = [p for p in _sys.path if _os.path.abspath(p or _os.curdir) != _os.path.dirname(_os.path.abspath(__file__))]
+from pathlib import Path
+import fnmatch
+import hashlib
+import importlib.util
+import json
+import os
+import posixpath
+import re
+import subprocess
+import sys
+
+POLICY_PATHS = (".github/workflows", ".github/actions", "tools/artifact_guard.py", "tools/artifact_guard_run_allowlist.json",
+                "tools/policy_guard.py")
+POLICY_WORKFLOW = ".github/workflows/policy-guard.yml"
+REQUIRED_CHECK = "policy-guard"
+SCRIPT_RE = re.compile(r"(?<![\w./-])((?:tools|tests|\.github)/[\w./-]+)")
+
+
+def _sha(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _tree(base, rel):
+    """{relative path: sha256} of one file or of every file under one directory of base."""
+    top = Path(base) / rel
+    if top.is_file():
+        return {rel: _sha(top)}
+    if not top.is_dir():
+        return {}
+    return {path.relative_to(base).as_posix(): _sha(path) for path in sorted(top.rglob("*")) if path.is_file()}
+
+
+def policy_files_match(candidate, trusted):
+    """Problems for every policy path whose files differ from the trusted copy (added, removed or changed)."""
+    problems = []
+    for rel in POLICY_PATHS:
+        mine, theirs = _tree(candidate, rel), _tree(trusted, rel)
+        for name in sorted(set(mine) | set(theirs)):
+            if mine.get(name) != theirs.get(name):
+                problems.append(f"{name} differs from the trusted main copy: a policy change needs trusted-main approval "
+                                "(Issue #544)")
+    for required in (POLICY_WORKFLOW, "tools/policy_guard.py"):
+        if not _tree(trusted, required):   # bootstrap: a base without the guard is not a trusted copy (Issue #544)
+            problems.append(f"{required} is not on the trusted base: the policy guard is not trusted here (bootstrap, refused; "
+                            "Issue #544)")
+    if _tree(trusted, POLICY_WORKFLOW) and not _tree(candidate, POLICY_WORKFLOW):
+        problems.append(f"{POLICY_WORKFLOW} is missing: the policy check cannot be removed (Issue #544)")
+    return problems
+
+
+def _trusted_guard(trusted):
+    spec = importlib.util.spec_from_file_location("trusted_artifact_guard", Path(trusted) / "tools" / "artifact_guard.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def approval_problems(candidate, trusted):
+    """The trusted guard's enforced placement check on the candidate, with the TRUSTED approval table."""
+    guard = _trusted_guard(trusted)
+    try:
+        guard._RUN_ALLOWLIST = guard.load_run_allowlist(trusted)
+        guard.check_guard_placement(candidate)
+    except ValueError as error:
+        return [str(error)]
+    finally:
+        guard._RUN_ALLOWLIST = None
+    return []
+
+
+def _names_secret(value):
+    """A secret read anywhere in this value. Expression names are case-insensitive (SECRETS.X is the same context)."""
+    return "secrets" in repr(value).lower()
+
+
+def _leaf_strings(value):
+    """Every string inside a YAML value, at any depth (a with: value may be a list or a mapping)."""
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in _leaf_strings(v)]
+    if isinstance(value, list):
+        return [s for v in value for s in _leaf_strings(v)]
+    return [str(value)]
+
+
+# Only these expressions are fixed by the trusted run (no runner or event data), so they may appear in a privileged with: value.
+SAFE_EXPR_RE = re.compile(r"\$\{\{\s*github\.(?:sha|run_id|run_attempt)\s*\}\}")
+
+
+def privileged_job(doc, body):
+    """A job is privileged when it can write, sign, deploy, reach a secret, or run on pull_request_target. A job with no
+    permissions at either level is privileged (the repository default token may be write). A composite action has no job of
+    its own: its steps are always privileged here (conservative)."""
+    if not isinstance(body, dict):
+        return True
+    permissions = body.get("permissions", doc.get("permissions"))
+    # a secret read at workflow level (env, defaults) reaches every job, so it makes each job privileged too
+    if (permissions is None or permissions == "write-all" or "environment" in body or _names_secret(body)
+            or _names_secret(doc.get("env")) or _names_secret(doc.get("defaults"))):
+        return True
+    if isinstance(permissions, dict) and any(value == "write" for value in permissions.values()):
+        return True
+    triggers = doc.get("on", doc.get(True))
+    names = {triggers} if isinstance(triggers, str) else set(triggers or {}) if isinstance(triggers, (list, dict)) else set()
+    return "pull_request_target" in names
+
+
+def _privileged_bodies(trusted):
+    """(workflow path, document, job or composite body) for every PRIVILEGED trusted job and composite action. Unprivileged
+    jobs are outside the closure (see the docstring and docs/policy-bootstrap-owner-procedure.md)."""
+    import yaml
+    files = sorted((Path(trusted) / ".github").rglob("*.yml")) + sorted((Path(trusted) / ".github").rglob("*.yaml"))
+    for path in files:
+        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        if not isinstance(doc, dict):
+            continue
+        rel = path.relative_to(Path(trusted)).as_posix()
+        if isinstance(doc.get("runs"), dict):
+            yield rel, doc, doc["runs"]   # composite action: always privileged here
+        for body in (doc.get("jobs") or {}).values():
+            if privileged_job(doc, body):
+                yield rel, doc, body
+
+
+def _trusted_steps(trusted):
+    """(run text or None, local action path or None) for every step of every PRIVILEGED trusted job and composite action."""
+    steps = []
+    for _, _, body in _privileged_bodies(trusted):
+        for step in (body.get("steps") or []) if isinstance(body, dict) else []:
+            if not isinstance(step, dict):
+                continue
+            uses = step.get("uses")
+            local = uses[2:] if isinstance(uses, str) and uses.startswith("./") else None
+            run = step.get("run") if isinstance(step.get("run"), str) else None
+            steps.append((run, local))
+    return steps
+
+
+# Issue #544 trust boundary (docs/privileged-separation-adr.md). Each source is checked on its own:
+#   event     GITHUB_EVENT_PATH, written by GitHub for this run: the pull request's base and head SHA and base branch.
+#   checkout  `git rev-parse HEAD` of each checkout, read from its own .git: what the runner really checked out.
+#   base      the protected branch the pull request targets (PROTECTED_BASE). A base without the guard is not trusted.
+#   issuer    the app that created the policy-guard check run: verified by the ruleset (check_run_records), not by this file.
+PROTECTED_BASE = "main"
+FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
+PINNED_USES_RE = re.compile(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}")
+CHECKOUT_BASE_REF = "${{ github.event.pull_request.base.sha }}"   # the trusted copy (privileged jobs may check out only this)
+CHECKOUT_HEAD_REF = "${{ github.event.pull_request.head.sha }}"
+# The one head checkout a privileged job may make: the policy job's data-only copy of the candidate (never executed).
+DATA_ONLY_HEAD_CHECKOUT = (".github/workflows/policy-guard.yml", CHECKOUT_HEAD_REF, ".candidate")
+CHECKOUT_PIN = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"   # the one audited checkout (artifact_guard agrees)
+CHECKOUT_KEYS = frozenset({"ref", "path", "persist-credentials", "fetch-depth"})
+
+
+def privileged_uses_problems(trusted):
+    """A privileged job's uses: is pinned to a full SHA. Its actions/checkout may take only the protected base SHA, with no
+    token kept, or the one data-only candidate copy. A pull_request_target workflow holds contents: read and nothing else.
+    Without this the closure above would hold for the trusted tree while a privileged checkout placed candidate code in it."""
+    problems = []
+    for rel, doc, body in _privileged_bodies(trusted):
+        where = rel
+        triggers = doc.get("on", doc.get(True))
+        names = {triggers} if isinstance(triggers, str) else set(triggers or {}) if isinstance(triggers, (list, dict)) else set()
+        if "pull_request_target" in names:
+            perms = body.get("permissions", doc.get("permissions")) if isinstance(body, dict) else None
+            if perms != {"contents": "read"}:
+                problems.append(f"{where}: pull_request_target runs with permissions {perms!r}; only contents: read (refused; "
+                                "Issue #544)")
+        if isinstance(body, dict) and "uses" in body:   # a reusable workflow runs its own jobs with the caller's scope
+            problems.append(f"{where}: a privileged job calls a reusable workflow ({body['uses']!r}); refused (Issue #544)")
+        for step in (body.get("steps") or []) if isinstance(body, dict) else []:
+            uses = step.get("uses") if isinstance(step, dict) else None
+            if uses is None:
+                continue
+            if not (isinstance(uses, str) and PINNED_USES_RE.fullmatch(uses)):
+                problems.append(f"{where}: privileged uses {uses!r} is not pinned to a full commit SHA (refused; Issue #544)")
+                continue
+            if not uses.lower().startswith("actions/checkout@"):   # action names are case-insensitive on GitHub
+                # another pinned action may write where it is told (download-artifact path:): never into a trusted or candidate tree
+                # the whole step (with:, env: and any other key) except its name and uses, lower-cased: no expression, no shell
+                # variable, no traversal, no trusted or candidate name, no absolute or drive path
+                body_ = {key: value for key, value in step.items() if key not in ("name", "uses")}
+                values = [SAFE_EXPR_RE.sub("", v).lower() for v in _leaf_strings(body_)]
+                if any("${{" in v or "$" in v or "%" in v or ".trusted" in v or ".candidate" in v or ".." in v or "\\" in v
+                       or v.startswith(("/", "~")) or re.match(r"[a-z]:", v) for v in values):
+                    problems.append(f"{where}: privileged action {uses!r} names a trusted or candidate path in with: "
+                                    "(refused; Issue #544)")
+                continue
+            if uses.lower() != CHECKOUT_PIN:
+                problems.append(f"{where}: privileged checkout {uses!r} is not the audited pin {CHECKOUT_PIN!r} (refused; Issue #544)")
+                continue
+            with_ = step.get("with") if isinstance(step.get("with"), dict) else {}
+            ref = with_.get("ref")
+            data_only = (rel, ref, with_.get("path")) == DATA_ONLY_HEAD_CHECKOUT
+            base_copy = ref == CHECKOUT_BASE_REF and with_.get("path") == ".trusted"
+            if not (set(with_) <= CHECKOUT_KEYS and "repository" not in with_ and with_.get("persist-credentials") is False
+                    and (base_copy or data_only)):
+                problems.append(f"{where}: privileged checkout {with_!r} may check out only the protected base SHA, or the "
+                                "data-only candidate copy at .candidate, with persist-credentials false (refused; Issue #544)")
+    return problems
+
+
+def git_head(directory):
+    """The commit a checkout is at, or None. It is read from the checkout's own repository: a directory that is not the top
+    level of its own repository is refused, so a parent repository's HEAD is never taken for it. GIT_* variables are dropped."""
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    try:
+        top = subprocess.run(["git", "-C", str(directory), "rev-parse", "--show-toplevel"], capture_output=True, text=True,
+                             env=env, check=True).stdout.strip()
+        head = subprocess.run(["git", "-C", str(directory), "rev-parse", "--verify", "HEAD^{commit}"], capture_output=True,
+                              text=True, env=env, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    if Path(top).resolve() != Path(directory).resolve():
+        return None
+    return head
+
+
+def provenance_problems(candidate, trusted, event):
+    """The pull request the run is for (event payload) must target the protected base, and each checkout must really be at
+    the SHA the event names: the trusted copy at the base SHA, the candidate copy at the head SHA. Any missing piece fails."""
+    pr = event.get("pull_request") if isinstance(event, dict) else None
+    if not isinstance(pr, dict):
+        return ["the event payload has no pull_request object; the run is not tied to a pull request (refused; Issue #544)"]
+    base, head = pr.get("base"), pr.get("head")
+    base, head = (base if isinstance(base, dict) else {}), (head if isinstance(head, dict) else {})
+    problems = []
+    if base.get("ref") != PROTECTED_BASE:
+        problems.append(f"the pull request targets {base.get('ref')!r}, not the protected base {PROTECTED_BASE!r}; its copy "
+                        "is not the trusted main (refused; Issue #544)")
+    for name, sha in (("base", base.get("sha")), ("head", head.get("sha"))):
+        if not (isinstance(sha, str) and FULL_SHA_RE.fullmatch(sha)):
+            problems.append(f"the event payload has no full {name} SHA (refused; Issue #544)")
+    trusted_head, candidate_head = git_head(trusted), git_head(candidate)
+    if trusted_head is None or trusted_head != base.get("sha"):
+        problems.append(f"the trusted checkout is at {trusted_head}, but the event base SHA is {base.get('sha')} (SHA mismatch, "
+                        "refused; Issue #544)")
+    if candidate_head is None or candidate_head != head.get("sha"):
+        problems.append(f"the candidate checkout is at {candidate_head}, but the event head SHA is {head.get('sha')} (SHA "
+                        "mismatch, refused; Issue #544)")
+    return problems
+
+
+# Closure analysis (Issue #544 review). Scope: the files that a PRIVILEGED trusted run: text can execute, followed through
+# Makefile prerequisites and recipes, shell commands, Python imports and literal paths. Static matching is a ceiling, not a
+# proof. Anything it cannot follow is refused rather than skipped: command substitution, eval/source/exec/., interpreter -c,
+# a variable in an executed path, an expression ${{ }} in the run text, a runtime-built program (subprocess) unless listed
+# in REVIEWED_EXTERNAL with its expected count, and dynamic loading. The table is itself a policy file.
+PATH_TOKEN_RE = re.compile(r"""[^\s"'`;&|()<>=]+""")
+SAFE_SUBST_RE = re.compile(r"\$\((?:command -v [\w./-]+|git rev-parse [\w-]+)\)")
+GH_EXPR_RE = re.compile(r"\$\{\{.*?\}\}")
+DYNAMIC_SHELL_RE = re.compile(r"`|\$\(")   # command substitution; eval/source/exec/. are checked as command words
+DYNAMIC_HEADS = ("eval", "source", "exec", "xargs", ".", "builtin", "command", "env", "nohup", "time", "sudo", "stdbuf")
+SHELL_KEYWORDS = ("if", "then", "else", "elif", "fi", "do", "done", "while", "until", "!", "{", "}")
+MAKE_CMDS = ("make", "$(MAKE)", "${MAKE}")
+EXEC_EXT = (".py", ".sh", ".mk")
+DYNAMIC_PY_CALLS = ("exec", "eval", "__import__", "import_module", "runpy", "run_path",
+                    "spec_from_file_location", "exec_module", "load_module", "load_source")
+RUNTIME_PROGRAM = "a runtime-built program (subprocess)"
+# Files that run external trees, with the reason and the exact number of runtime-built subprocess calls reviewed.
+REVIEWED_EXTERNAL = {
+    "tools/setup.py": ("4 calls (curl download at line 77; make -C at lines 142 and 197; the build command at line 159) "
+                       "on checksum-verified archives and source trees; the pins are in tools/environment.py DEPENDENCIES, "
+                       "and the external Makefiles are not in this repository", 4),
+}
+
+
+def _strip_substitutions(text):
+    return SAFE_SUBST_RE.sub(" ", GH_EXPR_RE.sub(" ", text))
+
+
+def _words(segment):
+    import shlex
+    try:
+        return shlex.split(segment, posix=True)
+    except ValueError:
+        return None
+
+
+def _discover_options(args):
+    """(start directory, pattern, top-level directory) of unittest discover, in the short and the long forms."""
+    values = {"start": ".", "pattern": "test*.py", "top": None}
+    names = {"-s": "start", "--start-directory": "start", "-p": "pattern", "--pattern": "pattern",
+             "-t": "top", "--top-level-directory": "top"}
+    index = 0
+    while index < len(args):
+        key, _, inline = args[index].partition("=")
+        if key in names:
+            if inline:
+                values[names[key]] = inline
+            elif index + 1 < len(args):
+                values[names[key]] = args[index + 1]
+                index += 1
+            else:
+                raise ValueError(f"unittest discover option {key} has no value (refused, Issue #544)")
+        index += 1
+    return values["start"], values["pattern"], values["top"]
+
+
+def _discover_files(trusted, args):
+    """Every test module and package __init__.py that discover imports under its start and top-level directories."""
+    base = Path(trusted)
+    start, pattern, top = _discover_options(args)
+    found = set()
+    for root in [start] + ([top] if top else []):
+        directory = base / root
+        if directory.is_dir():
+            for path in directory.rglob("*"):
+                if path.is_file() and (fnmatch.fnmatch(path.name, pattern) or path.name == "__init__.py"):
+                    found.add(path.relative_to(base).as_posix())
+    return found
+
+
+def _module_file(trusted, module):
+    base = Path(trusted)
+    rel = module.replace(".", "/")
+    for candidate in (rel + ".py", rel + "/__init__.py"):
+        if (base / candidate).is_file():
+            return candidate
+    return None
+
+
+def _analyze_shell(text, trusted, where):
+    """Shell-like text -> (files, make_targets, problems). Only executed positions are followed; other paths are data."""
+    base = Path(trusted)
+    problems, files, targets = [], set(), []
+    text = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))   # shebang and comments
+    text = _strip_substitutions(text.replace("$(MAKE)", "make").replace("${MAKE}", "make"))
+    if DYNAMIC_SHELL_RE.search(text):
+        problems.append(f"{where}: command substitution cannot be analyzed; refused (Issue #544)")
+    for segment in re.split(r"[\n;&|]+", text):
+        words = _words(segment)
+        if not words:
+            continue
+        while words and (re.fullmatch(r"[A-Za-z_]\w*=.*", words[0]) or words[0] in SHELL_KEYWORDS):
+            words = words[1:]
+        if not words:
+            continue
+        head, args = words[0], words[1:]
+        if head in DYNAMIC_HEADS:
+            problems.append(f"{where}: command word {head!r} runs text the analysis cannot follow; refused (Issue #544)")
+            continue
+        if head.startswith("$") and head not in MAKE_CMDS:
+            problems.append(f"{where}: command word {head!r} is a variable; the executed program cannot be analyzed (refused)")
+            continue
+        if head in MAKE_CMDS:
+            if any(a.startswith(("-C", "-f", "-I", "--directory", "--file", "--makefile", "--include-dir")) for a in args):
+                problems.append(f"{where}: make with -C, -f or -I selects another Makefile; refused (Issue #544)")
+                continue
+            if any("=" in a and not a.startswith("-") for a in args):
+                problems.append(f"{where}: make with a command-line variable (for example PYTHON= or SHELL=) changes what "
+                                "the recipes run; refused (Issue #544)")
+                continue
+            positional = [a for a in args if not a.startswith("-") and "=" not in a]
+            targets += positional if positional else ["__default__"]
+            continue
+        interpreter = head in ("python", "python3", "bash", "sh", "zsh")
+        if interpreter and any(a.startswith("-") and not a.startswith("--") and "c" in a[1:] for a in args):
+            problems.append(f"{where}: {head} with -c runs inline code that cannot be analyzed; refused (Issue #544)")
+            continue
+        if head.startswith("./"):
+            files.add(head[2:])
+        elif "/" in head or (base / head).is_file():
+            files.add(head)   # an executed path, with or without an extension
+        if interpreter:
+            if "-m" in args:
+                index = args.index("-m")
+                module = args[index + 1] if index + 1 < len(args) else ""
+                if "unittest" in args and "discover" in args:
+                    files |= _discover_files(trusted, args)
+                elif _module_file(trusted, module):
+                    files.add(_module_file(trusted, module))
+                for word in args:   # the arguments of a -m command can still name an executed repository file
+                    if "$" in word and "/" in word:
+                        problems.append(f"{where}: argument {word!r} is a variable path; cannot be resolved (refused)")
+                    elif PATH_TOKEN_RE.fullmatch(word) and (base / word).is_file():
+                        files.add(word)
+                continue
+            positional = [a for a in args if not a.startswith("-")]
+            if not positional:
+                problems.append(f"{where}: {head} reads its program from stdin or an option; cannot be analyzed (refused)")
+            else:
+                if "$" in positional[0]:
+                    problems.append(f"{where}: {head} runs a path with a variable ({positional[0]!r}); refused (Issue #544)")
+                else:
+                    files.add(positional[0])
+        for word in args:   # any argument naming a repository file may be executed or sourced by this command: follow it
+            if "$" in word and "/" in word:
+                problems.append(f"{where}: argument {word!r} is a variable path; cannot be resolved (refused, Issue #544)")
+            elif PATH_TOKEN_RE.fullmatch(word) and (base / word).is_file():
+                files.add(word)
+    return files, targets, problems
+
+
+def _makefile(trusted):
+    """(rules, variables, first target). rules[target] = (deps, recipe lines); variables[name] = value (simple, one level)."""
+    text = (Path(trusted) / "Makefile").read_text(encoding="utf-8").replace("\\\n", " ")
+    rules, variables, current, first = {}, {}, None, None
+    for raw in text.splitlines():
+        if raw.startswith("\t") and current:
+            rules[current][1].append(raw[1:])
+            continue
+        line = raw.split("#", 1)[0].rstrip()
+        if not line.strip():
+            continue
+        include = re.match(r"^-?s?include\s+(.+)$", line)
+        if include:
+            rules.setdefault("__include__", ([], []))[0].extend(include.group(1).split())
+            current = None
+            continue
+        assign = re.match(r"^\s*([A-Za-z_]\w*)\s*(\?=|:=|::=|\+=|=)\s*(.*)$", line)
+        if assign:
+            name, op, value = assign.group(1), assign.group(2), assign.group(3).strip()
+            variables[name] = (variables.get(name, "") + " " + value).strip() if op == "+=" else value
+            current = None
+            continue
+        rule = re.match(r"^([^\t:=]+?)\s*:(?!=)\s*(.*)$", line)
+        if rule:
+            current = None
+            deps_part, _, inline = rule.group(2).partition(";")
+            for name in rule.group(1).split():
+                if name == ".PHONY":
+                    continue
+                entry = rules.setdefault(name, ([], []))
+                entry[0].extend(deps_part.split())
+                if inline.strip():
+                    entry[1].append(inline.strip())   # an inline recipe after ';'
+                if first is None:
+                    first = name
+                current = name
+    return rules, variables, first
+
+
+def _analyze_makefile(trusted, requested, problems):
+    """Targets requested by make -> (files, problems), following prerequisites, includes and recipe commands."""
+    base = Path(trusted)
+    text = (base / "Makefile").read_text(encoding="utf-8")
+    rules, variables, first = _makefile(trusted)
+    if re.search(r"^\s*(?:export\b|override\b|SHELL\b|\.SHELLFLAGS\b|MAKEFILES\b|MAKEFLAGS\b|\.DEFAULT_GOAL\b)",
+                 text, re.M):
+        problems.append("Makefile sets SHELL, MAKEFILES, MAKEFLAGS, export, override or .DEFAULT_GOAL; cannot be analyzed "
+                        "(refused, Issue #544)")
+        return {"Makefile"}, problems
+    if re.search(r"!=|\$\((?:shell|eval|call|file|foreach)\b", text):
+        problems.append("Makefile uses !=, $(shell), $(eval), $(call), $(file) or $(foreach); cannot be analyzed (refused)")
+        return {"Makefile"}, problems
+    files = {"Makefile"}
+    for dep in rules.get("__include__", ([], []))[0]:
+        if (base / dep).is_file():
+            files.add(dep)
+        elif "$" in dep:
+            problems.append(f"Makefile include {dep!r} is a variable path; cannot be analyzed (refused, Issue #544)")
+    pending, seen = [first if t == "__default__" else t for t in requested], set()
+    if "__default__" in requested and first is None:
+        problems.append("make with no target and no default goal in the trusted Makefile (refused, Issue #544)")
+    while pending:
+        target = pending.pop()
+        if target == "__default__":
+            target = first
+        if target in seen:
+            continue
+        seen.add(target)
+        if target not in rules:
+            if (base / target).is_file():
+                files.add(target)
+            else:
+                problems.append(f"make target {target!r} is not in the trusted Makefile (refused, Issue #544)")
+            continue
+        deps, recipe = rules[target]
+        for dep in deps:
+            if dep in rules:
+                pending.append(dep)
+            elif (base / dep).is_file() and dep.endswith(EXEC_EXT + ("Makefile",)):
+                files.add(dep)
+        for line in recipe:
+            expanded = re.sub(r"\$\((\w+)\)", lambda m: variables.get(m.group(1), m.group(0)), line).lstrip("@-+ ")
+            if re.search(r"\$\(\w+\)\S*/|/\S*\$\(\w+\)", expanded):
+                problems.append(f"Makefile recipe for {target!r} builds a path from a variable (refused, Issue #544)")
+            sub_files, sub_targets, sub_problems = _analyze_shell(expanded, trusted, f"Makefile:{target}")
+            problems += sub_problems
+            files |= sub_files
+            pending += sub_targets
+    return files, problems
+
+
+def _python_facts(source):
+    """(imported module names, dynamic-loading constructs, string literals) of one Python file."""
+    import ast
+    tree = ast.parse(source)
+    names, dynamic, literals, relatives = set(), [], set(), []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names.add(node.module)
+            names.update(f"{node.module}.{a.name}" for a in node.names if a.name != "*")
+            if node.module == "os" and any(a.name in ("system", "popen") or a.name.startswith(("exec", "spawn"))
+                                           for a in node.names):
+                dynamic.append("from os import a program launcher")
+        elif isinstance(node, ast.ImportFrom) and node.level > 0:
+            relatives.append((node.level, node.module or "", [a.name for a in node.names if a.name != "*"]))
+        elif isinstance(node, ast.Call):
+            callee = getattr(node.func, "id", None) or getattr(node.func, "attr", None) or ""
+            owner = getattr(getattr(node.func, "value", None), "id", "")
+            if callee in DYNAMIC_PY_CALLS and callee not in ("system", "popen"):
+                dynamic.append(str(callee))
+            if callee in ("system", "popen") and owner == "os":
+                dynamic.append(f"os.{callee}")
+            if callee.startswith(("execv", "execl", "spawn")) and owner == "os":
+                dynamic.append(f"os.{callee}")
+            if callee == "getattr" and any(isinstance(a, ast.Constant) and a.value in DYNAMIC_PY_CALLS for a in node.args):
+                dynamic.append("getattr of a dynamic loader")
+            for keyword in node.keywords:
+                if keyword.arg == "shell" and getattr(keyword.value, "value", None) is True:
+                    dynamic.append("shell=True")
+            if callee in ("run", "Popen", "call", "check_call", "check_output", "getoutput", "getstatusoutput"):
+                program = node.args[0] if node.args else next(
+                    (k.value for k in node.keywords if k.arg == "args"), None)
+                literal = isinstance(program, ast.List) and all(isinstance(e, ast.Constant) for e in program.elts)
+                if program is None or not literal:
+                    dynamic.append(RUNTIME_PROGRAM)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            literals.add(node.value)
+    return names, dynamic, literals, relatives
+
+
+def _add_module_files(base, files, directory, dotted):
+    """Add the file each dotted name resolves to under directory, and the __init__.py of every parent package."""
+    parts = [p for p in dotted.split(".") if p]
+    prefix = f"{directory}/" if directory else ""
+    for depth in range(1, len(parts) + 1):
+        stem = "/".join(parts[:depth])
+        for candidate in (f"{prefix}{stem}.py", f"{prefix}{stem}/__init__.py"):
+            if (base / candidate).is_file():
+                files.add(candidate)
+
+
+def _python_closure(trusted, rel, problems):
+    base = Path(trusted)
+    files = {rel}
+    source = (base / rel).read_text(encoding="utf-8")
+    try:
+        names, dynamic, literals, relatives = _python_facts(source)
+    except SyntaxError as error:
+        problems.append(f"{rel} does not parse ({error}); cannot be analyzed (refused, Issue #544)")
+        return files
+    runtime = dynamic.count(RUNTIME_PROGRAM)
+    dynamic = [d for d in dynamic if d != RUNTIME_PROGRAM]
+    for construct in dynamic:
+        problems.append(f"{rel} uses {construct}; cannot be analyzed (refused, Issue #544)")
+    reviewed = REVIEWED_EXTERNAL.get(rel)
+    if reviewed is None and runtime:
+        problems.append(f"{rel} runs {runtime} program(s) built at runtime; needs a REVIEWED_EXTERNAL entry with its pin")
+    elif reviewed is not None and runtime != reviewed[1]:
+        problems.append(f"{rel} has {runtime} runtime-built program call(s), the reviewed count is {reviewed[1]} "
+                        "(refused until reviewed again, Issue #544)")
+    # sys.path[0] is the script directory, and unittest adds the top directory: follow imports from these directories.
+    search = [rel.rsplit("/", 1)[0] if "/" in rel else "", "tools", "tests/host", "tests/integration", "tests", ""]
+    for name in names:
+        for directory in search:
+            _add_module_files(base, files, directory, name)
+    package = rel.rsplit("/", 1)[0] if "/" in rel else ""
+    for level, module, aliases in relatives:
+        parts = package.split("/") if package else []
+        if level - 1 > len(parts):
+            problems.append(f"{rel} imports above its package; refused (Issue #544)")
+            continue
+        anchor = "/".join(parts[: len(parts) - (level - 1)])
+        for dotted in ([module] if module else []) + [f"{module}.{a}" if module else a for a in aliases]:
+            _add_module_files(base, files, anchor, dotted)
+    for lit in literals:
+        if lit.endswith(EXEC_EXT) and PATH_TOKEN_RE.fullmatch(lit) and (base / lit).is_file():
+            files.add(lit)
+    return files
+
+
+# Owner decision (Issue #544): a privileged job runs ONLY trusted code. The candidate is data. The commands it may run are
+# listed here; everything else is refused, so an indirect or unknown executor fails closed.
+PRIVILEGED_HEADS = frozenset({"test", "echo", "exit", "true", "false", "set", "cp", "mkdir", "cmp", "gh", "tee"})
+PRIVILEGED_INTERPRETERS = frozenset({"python3", "python", "bash", "sh"})
+TRUSTED_CHECKOUTS = (".trusted-main/", ".trusted/")
+PRIVILEGED_WRITERS = frozenset({"cp", "tee", "mkdir"})
+
+
+def _is_trusted_path(path):
+    """A path under a trusted checkout, with no parent-directory step and no unresolved variable."""
+    return (path.startswith(TRUSTED_CHECKOUTS) and ".." not in path.split("/") and "$" not in path
+            and not any(c in path for c in "*?["))
+
+
+REPO_TOP_DIRS = ("tools", "tests", "scripts", ".github", "src", "platforms")
+
+
+def _touches_trusted(arg):
+    """A writer or gh argument that could reach a trusted checkout, a parent step, a variable, a glob or an absolute path."""
+    return (arg.startswith(TRUSTED_CHECKOUTS) or ".trusted" in arg or ".candidate" in arg or ".." in arg.split("/") or "$" in arg
+            or arg.startswith(("/", "~")) or any(c in arg for c in "*?["))
+
+
+def option_value(arg):
+    """The value an option names: --target-directory=tools gives tools, and the attached short form -ttools gives tools
+    (cp -t DIR). Any other argument is itself."""
+    if arg.startswith("--") and "=" in arg:
+        return arg.split("=", 1)[1]
+    if arg.startswith(("-t", "-T")) and len(arg) > 2:
+        return arg[2:]
+    return arg
+
+
+def _names_repository_code(arg):
+    """A repository source or script, whether or not it exists: a writer may not copy it (a missing source is refused too)."""
+    value = option_value(arg)
+    norm = normalized_path(value)   # ././tools/json and .//.github/x are the same repository paths
+    return norm.split("/")[0] in REPO_TOP_DIRS or value.endswith(EXEC_EXT)
+
+
+def normalized_path(arg):
+    """A path with its ./ and // steps collapsed, so no spelling of a repository path escapes the name checks."""
+    return posixpath.normpath(arg) if arg and not arg.startswith("/") else arg
+
+
+# Owner ruling (Issue #544, option b): a privileged job writes only to a dedicated temporary area and to the staging area
+# named here. Nothing else (.git, sources, the trusted or candidate checkouts) may be written by a privileged step.
+STAGING_AREAS = ("build/stage/", "build/tmp/")
+# Read-only inputs, per trusted script: an exact (flag, value) pair the script only reads (owner approval required, see the
+# ADR). Nothing else after a trusted script may name a path outside the staging areas.
+# Keyed by the exact trusted script path (not its basename), and used only as a separate (flag, value) pair.
+TRUSTED_SCRIPT_READ_ONLY_INPUTS = {
+    ".trusted/tools/policy_guard.py": {"--candidate": ".candidate", "--trusted": ".trusted"},
+}
+
+
+def writer_destinations(args):
+    """Every argument that names a destination: a plain word, or the value of --target-directory= or -t/-T (attached or
+    separate). Option flags such as -p or -r name nothing."""
+    dests = []
+    for arg in args:
+        if arg.startswith("--") and "=" in arg:
+            dests.append(option_value(arg))
+        elif not arg.startswith("-"):
+            dests.append(arg)
+    return dests
+
+
+def _in_staging_area(arg):
+    norm = normalized_path(arg)
+    return (not norm.startswith("/") and ".." not in norm.split("/")
+            and any(norm.startswith(area) for area in STAGING_AREAS))
+
+
+def _protected_destination(arg):
+    """Default deny for a writer (Issue #544): .git, the repository root (a name with no directory part) and any
+    destination that normalises to the root. Only a directory under the repository is a destination here."""
+    value = option_value(arg)   # --target-directory=. is a destination too; a plain option flag is not
+    if value.startswith("-"):
+        return False
+    norm = normalized_path(value)
+    return norm in (".", "") or norm == ".git" or norm.startswith(".git/") or "/" not in norm
+
+
+def _privileged_command_problems(run, where):
+    """A privileged run: text may run only PRIVILEGED_HEADS, and an interpreter only on a trusted checkout path. Writers
+    (cp, tee, mkdir) and gh may not name a trusted checkout, a parent step or an unresolved variable. Process substitution,
+    redirections, leading assignments, -c and any -m form (attached or not) are refused. Anything unknown is refused."""
+    problems = []
+    if re.search(r"<\(|>\(", run):
+        problems.append(f"{where}: process substitution in a privileged run is refused (Issue #544)")
+    text = "\n".join(line for line in run.splitlines() if not line.lstrip().startswith("#"))
+    if "$(" in text or "`" in text or "$[" in text:   # no substitution or legacy arithmetic in a privileged run at all
+        problems.append(f"{where}: command substitution in a privileged run is refused (Issue #544)")
+    for segment in re.split(r"[\n;&|]+", text):
+        words = _words(segment)
+        if words is None:
+            problems.append(f"{where}: a privileged command cannot be parsed; refused (Issue #544)")
+            continue
+        while words and words[0] in SHELL_KEYWORDS:
+            words = words[1:]
+        if not words:
+            continue
+        if re.fullmatch(r"[A-Za-z_]\w*=.*", words[0]):
+            problems.append(f"{where}: a leading assignment ({words[0].split('=')[0]}=) in a privileged run is refused "
+                            "(it can change the search path, Issue #544)")
+            continue
+        if any(("{" in word or "}" in word) and word not in ("{", "}") for word in words):
+            problems.append(f"{where}: a brace in a privileged word can expand to other paths; refused (Issue #544)")
+            continue
+        if any(">" in word or "<" in word for word in words):
+            problems.append(f"{where}: a redirection in a privileged run is refused (it can write a trusted path, Issue #544)")
+            continue
+        head, args = words[0], words[1:]
+        if head in PRIVILEGED_INTERPRETERS:
+            # The interpreter options come before the script path and may be only these letters (no -c, -m, -s, -i, and no
+            # stdin program "-"). Arguments after the script belong to the trusted script itself.
+            script_index = next((i for i, a in enumerate(args) if not a.startswith("-")), None)
+            before = args[:script_index] if script_index is not None else args
+            options_ok = all(re.fullmatch(r"-[IuBSEexo]+", a) for a in before)
+            if script_index is None or not options_ok or not _is_trusted_path(args[script_index]):
+                problems.append(f"{where}: {head} may run only a trusted checkout script in a privileged job; "
+                                f"{' '.join(words)[:60]!r} refused (Issue #544)")
+            else:
+                # Owner ruling (Issue #544): the arguments after the trusted script are in the write-range rule too. The
+                # two read-only inputs of the policy job are the only exception (TRUSTED_SCRIPT_READ_ONLY_ARGS, see the ADR).
+                script_name = normalized_path(args[script_index])
+                rest = args[script_index + 1:]
+                inputs = TRUSTED_SCRIPT_READ_ONLY_INPUTS.get(script_name, {})
+                i = 0
+                while i < len(rest):
+                    word = rest[i]
+                    # the one exact read-only (flag, value) pair of this exact script, as two separate words, and nothing else
+                    if word in inputs and i + 1 < len(rest) and rest[i + 1] == inputs[word]:
+                        i += 2
+                        continue
+                    if word.startswith("--"):
+                        value = ""   # a bare long flag, or --flag=value, which is not an exact pair: its value is checked below
+                        if "=" in word:
+                            value = word.split("=", 1)[1]
+                    else:
+                        value = word[2:] if word.startswith("-") and len(word) > 2 else ("" if word.startswith("-") else word)
+                    if value and not _in_staging_area(value):
+                        problems.append(f"{where}: an argument of the trusted script {script_name!r} names {value!r}, "
+                                        f"outside {' or '.join(STAGING_AREAS)} (Issue #544); refused")
+                    i += 1
+        elif head in PRIVILEGED_WRITERS:
+            if any(re.fullmatch(r"-[A-Za-z]*[tT].+", a) for a in args):   # cp -rt.git/hooks: a target inside a bundled option
+                problems.append(f"{where}: {head} has a target directory attached inside a short-option bundle; refused "
+                                "(Issue #544)")
+            elif any(_touches_trusted(a) for a in args):
+                problems.append(f"{where}: {head} names a trusted checkout, a parent step or a variable; refused (Issue #544)")
+            elif any(_names_repository_code(a) for a in args):
+                problems.append(f"{where}: {head} names repository code (existing or missing); refused (Issue #544)")
+            elif any(_protected_destination(a) for a in args):
+                problems.append(f"{where}: {head} names .git or a repository-root path (default deny); refused (Issue #544)")
+            elif any(not _in_staging_area(a) for a in writer_destinations(args)):
+                problems.append(f"{where}: {head} may write only under {' or '.join(STAGING_AREAS)} (owner ruling, Issue #544); "
+                                "refused")
+        elif head == "gh":
+            api_read = (args[:1] == ["api"] and len(args) == 2 and args[1].startswith("repos/")
+                        and "://" not in args[1] and "graphql" not in args[1])   # a bare repos/ path only, no full URL
+            verify = args[:2] == ["attestation", "verify"]
+            if not (api_read or verify) or any(_touches_trusted(a) for a in args):
+                problems.append(f"{where}: this gh command may write or is not listed; refused (Issue #544)")
+        elif head not in PRIVILEGED_HEADS:
+            problems.append(f"{where}: command {head!r} is not allowed in a privileged job; refused (Issue #544)")
+    return problems
+
+
+def closure_of(trusted):
+    """(files, directories, problems): what a privileged run can execute. Owner decision: the privileged set must run only
+    trusted checkout code, so any repository file, make target or local action here is itself a problem."""
+    base = Path(trusted)
+    problems, files, requested = privileged_uses_problems(trusted), set(), []
+    for run, local in _trusted_steps(trusted):
+        if local:
+            problems.append(f"local action {local!r} in a privileged job runs repository code; refused (Issue #544)")
+        if run is None:
+            continue
+        problems += _privileged_command_problems(run, "run:")
+        if "${{" in run:
+            problems.append("a ${{ }} expression in a privileged run: text is refused (its value is runtime data, Issue #544)")
+            continue
+        step_files, targets, step_problems = _analyze_shell(run, trusted, "run:")
+        problems += step_problems
+        requested += targets
+        for f in step_files:
+            if (base / f).is_file():
+                files.add(f)
+            elif _is_trusted_path(f):
+                continue   # .trusted/ or .trusted-main/: the protected base checkout, pinned by privileged_uses_problems
+            else:
+                problems.append(f"executed file {f!r} is not in the trusted tree or cannot be resolved (refused, Issue #544)")
+    if requested:
+        make_files, problems = _analyze_makefile(trusted, requested, problems)
+        files |= make_files
+    # Follow Python and shell files reached from the closure: their imports, literal paths and dynamic constructs.
+    pending, done = sorted(files), set()
+    while pending:
+        rel = pending.pop()
+        if rel in done or not (base / rel).is_file():
+            continue
+        done.add(rel)
+        if rel.endswith(".py"):
+            new = _python_closure(trusted, rel, problems)
+        elif rel.endswith(".sh"):
+            new, _, sub = _analyze_shell((base / rel).read_text(encoding="utf-8"), trusted, rel)
+            problems += sub
+        else:
+            new = set()
+        files |= new
+        pending += sorted(new - done)
+    directories = {Path(f).parent.as_posix() for f in files if f.endswith(".py")}
+    return files, directories, problems
+
+
+MODULE_SUFFIXES = (".py", ".pyc", ".pyo", ".so", ".pyd")
+
+
+def _module_entries(root):
+    """Names a Python import from this directory could resolve to: sources, bytecode, extension modules and packages."""
+    if not root.is_dir():
+        return set()
+    entries = set()
+    for p in root.iterdir():
+        if p.is_file() and p.suffix in MODULE_SUFFIXES:
+            entries.add(p.name)
+        elif p.is_dir() and (p.name == "__pycache__" or any(f.suffix in MODULE_SUFFIXES for f in p.rglob("*"))):
+            entries.add(p.name)
+    return entries
+
+
+def closure_problems(candidate, trusted):
+    """Every file the privileged closure can execute must equal the trusted copy; no unanalyzable construct; no module or
+    package added beside an executed one (sys.path[0] is the script directory; '.' is checked for python -m)."""
+    files, directories, problems = closure_of(trusted)
+    for path in Path(candidate).rglob("*"):   # a symbolic link in the pull request could point a writer into the trusted tree
+        relative = path.relative_to(candidate)
+        if path.is_symlink() and not (relative.parts and relative.parts[0] == ".git"):   # only the root .git is exempt
+            problems.append(f"{relative.as_posix()} is a symbolic link in the pull request; refused (Issue #544)")
+    for name in ("GNUmakefile", "makefile"):   # exact names: a case-insensitive file system must not match Makefile
+        if name in {p.name for p in Path(candidate).iterdir()} or name in {p.name for p in Path(trusted).iterdir()}:
+            problems.append(f"{name} would be read by make before Makefile; refused (Issue #544)")
+    for rel in sorted(files):
+        mine, theirs = Path(candidate) / rel, Path(trusted) / rel
+        if not mine.is_file() or not theirs.is_file() or _sha(mine) != _sha(theirs):
+            problems.append(f"{rel} is executed by a privileged run: and differs from the trusted copy or is missing "
+                            "(refused; Issue #544)")
+    for directory in sorted(directories | {"."}):
+        for name in sorted(_module_entries(Path(candidate) / directory) - _module_entries(Path(trusted) / directory)):
+            problems.append(f"{directory}/{name} is added beside an executed module and can shadow an import "
+                            "(refused; Issue #544)")
+    return problems
+
+
+def script_hash_problems(candidate, trusted):
+    """Compatibility name: the privileged closure (see closure_problems)."""
+    return closure_problems(candidate, trusted)
+
+
+def check_record_problems(record, head_sha, expected_app_id):
+    """The required check result, as the ruleset must see it: the same name, the same head SHA, the expected app, success."""
+    if not record:
+        return ["no policy-guard result for this head: missing, removed or skipped (refused; Issue #544)"]
+    if record.get("name") != REQUIRED_CHECK:
+        return [f"check {record.get('name')!r} is not {REQUIRED_CHECK!r} (refused; Issue #544)"]
+    if record.get("head_sha") != head_sha:
+        return ["the result is for another head SHA (reused result, refused; Issue #544)"]
+    if record.get("app_id") != expected_app_id:
+        return ["the result comes from another app (fake job, refused; Issue #544)"]
+    if record.get("conclusion") != "success":
+        return [f"conclusion is {record.get('conclusion')!r}, not success (refused; Issue #544)"]
+    return []
+
+
+def check_run_records(payload, head_sha, expected_app_id):
+    """The check-runs listing for the head SHA (GitHub REST: commits/{sha}/check-runs). Every run named policy-guard must be
+    for this head, from the expected app, completed with success; at least one must exist (Issue #544)."""
+    runs = [run for run in (payload or {}).get("check_runs", []) if run.get("name") == REQUIRED_CHECK]
+    if not runs:
+        return ["no policy-guard check run for this head: missing, removed or skipped (refused; Issue #544)"]
+    problems = []
+    for run in runs:
+        record = {"name": run.get("name"), "head_sha": run.get("head_sha"), "app_id": (run.get("app") or {}).get("id"),
+                  "conclusion": run.get("conclusion") if run.get("status") == "completed" else None}
+        problems += check_record_problems(record, head_sha, expected_app_id)
+    return problems
+
+
+def check_candidate(candidate, trusted, event=None):
+    """All candidate checks against the trusted copy. Returns the list of problems (empty when the candidate passes). The
+    provenance check needs the event payload; main() always passes it, and event=None is for unit tests of the other checks."""
+    problems = policy_files_match(candidate, trusted) + approval_problems(candidate, trusted) + closure_problems(candidate, trusted)
+    if event is not None:
+        problems += provenance_problems(candidate, trusted, event)
+    return problems
+
+
+def main(argv):
+    if argv[:1] == ["--check-record"]:
+        if len(argv) != 6 or argv[2] != "--head" or argv[4] != "--app-id":
+            raise ValueError("usage: policy_guard.py --check-record RUNS.json --head SHA --app-id ID")
+        payload = json.loads(Path(argv[1]).read_text(encoding="utf-8"))
+        problems = check_run_records(payload, argv[3], int(argv[5]))
+        if problems:
+            raise ValueError("policy guard record: " + "; ".join(problems))
+        print("PASS policy guard record: policy-guard completed with success for this head and app")
+        return
+    if len(argv) != 4 or argv[0] != "--candidate" or argv[2] != "--trusted":
+        raise ValueError("usage: policy_guard.py --candidate DIR --trusted DIR")
+    event_path = os.environ.get("GITHUB_EVENT_PATH", "")
+    if not event_path:
+        raise ValueError("policy guard: GITHUB_EVENT_PATH is not set; the event payload is required (refused; Issue #544)")
+    event = json.loads(Path(event_path).read_text(encoding="utf-8"))
+    problems = check_candidate(Path(argv[1]), Path(argv[3]), event)
+    if problems:
+        raise ValueError("policy guard: " + "; ".join(problems))
+    print("PASS policy guard: candidate matches the trusted main policy, approvals and called scripts")
+
+
+if __name__ == "__main__":
+    try:
+        main(sys.argv[1:])
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
