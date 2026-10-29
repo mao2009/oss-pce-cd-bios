@@ -693,6 +693,33 @@ class RamModeContractTests(unittest.TestCase):
             with self.subTest(id=row["id"]):
                 self.assertRegex(text, rf"\|\s*{row['id']}\s*\|")
 
+    def test_doc_status_and_source_match_ram_mode_items(self):
+        # Issue #575: R3, R6, R8 in RAM_MODE_ITEMS must agree with docs/cd-read-mode-contract.md (status word and the
+        # key point of the source). Keyword checks, not exact strings, so wording can change without a false failure.
+        rows = {}
+        for line in MODE_DOC.read_text(encoding="utf-8").splitlines():
+            m = re.match(r"^\|\s*(R\d+)\s*\|[^|]*\|\s*(\w+)\s*\|(.*)\|\s*$", line)
+            if m:
+                rows[m.group(1)] = (m.group(2), m.group(3))
+        items = {i["id"]: i for i in cd_read_contract.RAM_MODE_ITEMS}
+        expected_keys = {
+            # id: (phrase in the code source, phrase in the doc source)
+            "R3": ("not a basis", "根拠に使わない"),
+            "R6": ("caller expectation", "呼出側"),
+            "R8": ("not a basis", "根拠に使わない"),
+        }
+        for rid, (code_phrase, doc_phrase) in expected_keys.items():
+            with self.subTest(id=rid):
+                doc_status, doc_source = rows[rid]
+                self.assertEqual(items[rid]["status"], doc_status)
+                self.assertIn(code_phrase, items[rid]["source"])
+                self.assertIn(doc_phrase, doc_source)
+        self.assertEqual(items["R6"]["status"], "HYPOTHESIS")
+        self.assertIn("HuCC", items["R6"]["source"])
+        self.assertIn("unmeasured", items["R6"]["source"])
+        self.assertIn("HuCC", rows["R6"][1])
+        self.assertIn("成功値の証明ではない", rows["R6"][1])
+
 
 if __name__ == "__main__":
     unittest.main()
