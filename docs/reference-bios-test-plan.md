@@ -190,7 +190,7 @@ depend on the MPRs. The pinned core therefore matches the hardware here, and a
 zero page operand of the BIOS behaves the same on the core and on hardware.
 
 **EX_GETVER（slot `0x1E`、entry `$E05A`）の実測結果は、現行の公開文書から取り下げた**
-（オーナー最終裁定、2026-10-28）。私的参照 BIOS を実コアで実行して得た観測値は、本文書にも
+（2026-10-28「オーナー最終裁定」とする記載。出典未確認で、承認ではない）。私的参照 BIOS を実コアで実行して得た観測値は、本文書にも
 他の公開文書にも記載しない。ここに残すのは、試験手順、合成 ROM による安全性検証、非公開の
 状態説明だけである。過去の記録（git 履歴）は改変しない。
 

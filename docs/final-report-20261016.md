@@ -35,7 +35,7 @@ python3 tools/reference_bios_runner.py /tmp/opencode/refbios/reset-config.json \
   --adapter tools/geargrafx_reference_adapter.py \
   --output /tmp/opencode/refbios/reset-obs.json
 ```
-結果: 私的 BIOS の観測値（PC、MPR、フラグ、レジスタ、その再現性）は、オーナー最終裁定（2026-10-28）により公開文書から取り下げた。本節には値を記載しない。
+結果: 私的 BIOS の観測値（PC、MPR、フラグ、レジスタ、その再現性）は、2026-10-28 の「オーナー最終裁定」とする記載（出典未確認。承認ではない）により公開文書から取り下げた。本節には値を記載しない。
 - **コア固有の重要発見**: 非テストビルドでは `ZERO_PAGE_ADDR=0x2000` / `STACK_ADDR=0x2100`（`huc6280.h`）。ゼロページと8ビットスタックは**ページ1**にあり、実ハードウェア（ページ0）とずれる。取り下げた観測の数値は本書に記載しない。
 
 ---
@@ -57,7 +57,7 @@ python3 tools/reference_bios_runner.py /tmp/opencode/refbios/reset-config.json \
 | --- | --- |
 | スロット | `$1E`（入口 `$E05A`、ジャンプテーブルスロット `0x5A`） |
 | 手続き | 非公開BIOS内部実装（実コアで観測。観測値は取り下げ済み、未公開） |
-| 戻り値・フラグ・SP・命令数・RAM 差分 | 取り下げ済み（オーナー最終裁定、2026-10-28。観測値は公開文書に記載しない） |
+| 戻り値・フラグ・SP・命令数・RAM 差分 | 取り下げ済み（2026-10-28「オーナー最終裁定」とする記載、出典未確認。観測値は公開文書に記載しない） |
 | ガード | `detected=false`, `status=no_violation` |
 
 （取り下げた観測の再現性については記載しない。観測値は公開文書から取り下げ済み。）出力スキーマ `oss-pce-cd-bios/reference-observation/v1`。取り下げた記録の状態欄の値は記載しない。**VERIFIED ではない**（ABI承認・実ハードウェア比較未完了）。
@@ -152,6 +152,6 @@ PR #170のガード付き参照実行で、物理バンクエイリアスによ�
 
 - 公開API入口アドレス（`$E05A`）と非公開BIOS内部実装アドレスを区別。
 - `docs/final-report-20261016.md`、`docs/reference-bios-test-plan.md`、PR #170本文から非公開BIOS内部アドレス・命令列・ROMバイト列を削除。
-- 公開する機能的契約: 入口 `$E05A` のみ。私的参照 BIOS の観測値は取り下げ済み（オーナー最終裁定、2026-10-28）。DEV ROM 側の値は `docs/evidence/dev-callable-1e.md` を参照。信頼レベル `LOCAL_ONLY_NOT_VERIFIED`。
+- 公開する機能的契約: 入口 `$E05A` のみ。私的参照 BIOS の観測値は取り下げ済み（2026-10-28「オーナー最終裁定」とする記載、出典未確認）。DEV ROM 側の値は `docs/evidence/dev-callable-1e.md` を参照。信頼レベル `LOCAL_ONLY_NOT_VERIFIED`。
 
 この是正後も、slot `$1E`以外の80スロット＋9 PSGサブコマンド、ST0/ST1/ST2など`Memory::Write()`を経由しないI/O経路、実ハードウェア動作、System Card起動は未検証／BLOCKEDのまま。
