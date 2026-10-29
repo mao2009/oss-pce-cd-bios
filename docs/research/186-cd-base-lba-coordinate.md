@@ -18,15 +18,15 @@
 | BLOCKED | 安全条件や依存関係が未成立のため、観測・判定ができない |
 | VERIFIED | 対象を限定し、要求される独立検証と信頼条件を満たした事実。**今回の統一方針では昇格させない** |
 
-cd-read-contract の T1 など既存文書の VERIFIED 宣言は、この統一方針とは別の文脈の記述である。本書の CD_BASE ABI には伝播させない。既存の台帳（`docs/cd-base-abi-ledger.md` §1）と cd-read-contract の宣言の整理は、別 Issue で扱う（本 PR では扱わない）。
+cd-read-contract の T1 など既存文書の VERIFIED 宣言は、この統一方針とは別の文脈の記述である。本書の CD_BASE ABI には伝播させない。既存の台帳（`docs/cd-base-abi-ledger.md` §1）と cd-read-contract の宣言の整理は、#570 で扱う（本 PR では扱わない）。
 
 ## 1. 既知の情報（出典付き）
 
 | ID | 内容 | 出典 | 分類 |
 | --- | --- | --- | --- |
 | K1 | 名前 `CD_BASE` がスロット `$02`、候補エントリ `$E006` に対応する | `docs/cd-base-contract.md` §1、HuCC `include/hucc/pcengine.inc` L470–471（ラベルの等号のみ） | HYPOTHESIS（マッピングは #1 の所管） |
-| K2a | HuCC の呼出側は、`SUPPORT_2ISO` が 1 のときだけ `_al` に最終トラック番号と推定される値、`_bh=$80`、`_cl=2` を設定して `jsr cd_base` を行う（既定の `SUPPORT_2ISO` は 0） | HuCC 固定版 `54f5c736` の `include/hucc/core-startup.asm` L293–301、`core-config.inc` L83–84。出典は `docs/cd-base-abi-ledger.md` §2 の記録 | SOURCE_CONFIRMED（呼出側の記述のみ。呼出先の振る舞いは含まない） |
-| K2b | `_al` が最終トラック番号であること、`_cl=2` が recbase1 を選ぶこと、`_bh=$80` が CD-TNO モードであること | K2a からの推測。`_cl` の意味は K6 の記事に依る | HYPOTHESIS（呼出先の振る舞いは未確認） |
+| K2a | HuCC の呼出側は、`SUPPORT_2ISO` が 1 のときだけ `_al` に `tnomax` の値（ソース注釈は「Set the last track as the backup area」）、`_bh=$80`、`_cl=2` を設定して `jsr cd_base` を行う（既定の `SUPPORT_2ISO` は 0） | HuCC 固定版 `54f5c736` の `include/hucc/core-startup.asm` L293–301、`core-config.inc` L83–84。出典は `docs/cd-base-abi-ledger.md` §2 の記録 | SOURCE_CONFIRMED（呼出側の記述のみ。呼出先の振る舞いは含まない） |
+| K2b | `_cl=2` が recbase1 を選ぶこと、`_bh=$80` が CD-TNO モードであること、callee が `_al` を読むこと | K2a からの推測（callee の振る舞い）。`_cl` の意味と `_bh` の意味は K6 の記事に依る | HYPOTHESIS（呼出先の振る舞いは未確認） |
 | K3 | 固定版全体で `cd_base` の呼出しは K2a の 1 箇所だけ | `docs/cd-base-abi-ledger.md` §2 の記録（同 commit の `grep`。本 PR では再実行していない） | SOURCE_CONFIRMED（grep の範囲） |
 | K4 | HuCC の `cd_read` 呼出し（5 箇所）の関数内には `cd_base` の呼出しがない | `docs/cd-base-abi-ledger.md` §3 (4)、`hucc-systemcard.asm` L285–452、`core-kernel.asm` L580–612 | SOURCE_CONFIRMED（呼出側の記述のみ） |
 | K5 | オーバーレイ読込みの呼出側は ISO ディレクトリ由来の値を加算せずに `cd_read` へ渡す。VRAM / データ読込みは `_add_sectors` でオフセットを加える | `core-kernel.asm` L531–552、L596。`hucc-systemcard.asm` L594–600 | SOURCE_CONFIRMED（呼出側の記述のみ） |
@@ -35,7 +35,7 @@ cd-read-contract の T1 など既存文書の VERIFIED 宣言は、この統一�
 | K8 | 2ISO 経路（K2a）は `recbase1` だけを設定し、通常のオーバーレイ読込み（K5）は `recbase0` を使う可能性がある。両者の矛盾は解けていない | `docs/cd-base-abi-ledger.md` §3 補足、`docs/research/146-cd-base-abi.md` §1 | UNKNOWN（矛盾は OPEN。論点 U5 に対応） |
 | K9 | 合成媒体（CUE `PREGAP 00:02:00` + `INDEX 01 00:00:00`）で INDEX 01 が LBA 150、LBA 0..149 が BIN に格納されないことの解析結果。INDEX 01 が 0 の対照媒体では絶対 LBA と INDEX 01 相対が一致する | `tools/cue_analysis.py` のホスト側解析（`docs/cd-base-contract.md` §3 の記述どおり）。実行環境はホスト、対象は合成 CUE の解析出力 | MEASURED（ホスト側解析。CD_BASE ABI の VERIFIED には含めない） |
 | K10 | 本リポジトリの DEV ROM の `$E006` は、fail-closed の fallback（`$E295`、`X=$02`）へ入って同じ PC に留まる。RTS がないため呼出し後の観測はできない | `docs/cd-base-abi-ledger.md` §4a。固定版 Geargrafx `b49ae82a`、`make dev-cd-base-integration`（debug と release の両方で PASS）。証跡 JSON（`geargrafx-cd-base-evidence.json`）はローカル生成でコミットされていない | MEASURED（DEV ROM の測定。BIOS の証拠ではない。再現には `make dev-cd-base-integration` が必要。CD_BASE ABI の VERIFIED には含めない。台帳 §4a の記録と統一） |
-| K11 | READ(6) の LBA は 21 bit。LBA n が BIN のセクタ n を返す（T1） | `docs/cd-read-contract.md` T1 の測定（Geargrafx 上の転送層のみ。実行したコミットは同文書の記録を引く）。T1 の既存宣言は VERIFIED だが、CD_BASE ABI へは伝播させない | MEASURED（転送層の測定。CD_READ 経路の事実で、CD_BASE の証拠ではない） |
+| K11 | READ(6) の LBA は 21 bit。LBA n が BIN のセクタ n を返す（T1） | `docs/cd-read-contract.md` T1 の測定（固定版 Geargrafx `b49ae82a` 上の転送層のみ。pin は同文書の記録による）。T1 の既存宣言は VERIFIED だが、CD_BASE ABI へは伝播させない | MEASURED（転送層の測定。CD_READ 経路の事実で、CD_BASE の証拠ではない） |
 
 ### 1.1 件数（§1 の知識項目 12 行に対する集計）
 
