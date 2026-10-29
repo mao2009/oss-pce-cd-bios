@@ -151,3 +151,22 @@ needed. The normal HuCARD core stays separate. `make dev-test` now verifies
 actual one-instruction stepping, registers/stack/RAM, guest bank switches,
 IRQ1/IRQ2, loader edge cases and additional negative procedures.
 [Exact conditions and API limitations](geargrafx-contract-evidence.md).
+
+## 独立 Geargrafx インスタンスの運用規則（#103）
+
+他 Worker が並列に使う前提の規則。実コア実行は本機で行えた場合のみ行い、行えなければ BLOCKED と記録する。
+
+- **同時実コアは最大 2 件**。`tools/geargrafx_slots.py` の `acquire` で枠を取得し、`release` で返却する（枠は `slot-<n>.lock` の O_EXCL で排他）。
+- **独立 profile / 作業ディレクトリ**: 枠ごとに `<state-dir>/slot-<n>/profile` と `.../work` を使う。`--portable` で実行し、ユーザー profile や他枠と共有しない。
+- **ポート**: stdio MCP では不要。HTTP を使う場合のみ `127.0.0.1:47110 + slot`（47110 / 47111）を使い、外部公開しない。
+- **state-dir はリポジトリ外**（scratchpad 等）。リポジトリ直下に一時ファイルを置かない。
+- **他 Worker の枠は操作しない**。異常終了で枠が残った場合は所有者の確認後に `release --force` する（自動回収なし）。
+- 実行は `tools/mcp_checkpoint.py --binary <geargrafx> --rom <合成ROM>` を枠の profile 内で行う。終了コード 0 = PASS、1 = FAIL/TIMEOUT、3 = BLOCKED（バイナリ無し）。
+- 合成 ROM のみ。純正 BIOS・市販ソフト・`rom/` は読み込まない。
+
+```sh
+python tools/geargrafx_slots.py acquire --state-dir <scratchpad>/geargrafx-slots --owner <worker>
+python tools/geargrafx_slots.py release --state-dir <scratchpad>/geargrafx-slots --slot <n> --owner <worker>
+```
+
+現状の実コア検証: 本機 Windows に standalone バイナリ無し（BLOCKED）。WSL 側は未確認（ツール制限）。
