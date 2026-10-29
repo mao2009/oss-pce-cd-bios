@@ -23,7 +23,7 @@ Refs #148 / 親 #12。状態: **調査のみ。実装なし。VERIFIED の新規
 | `huc:include/hucc/core.inc` | CALLER | `6949584b6d7312f59a4e59a1a4d696070a7278bbce7386f8d06fd63abdb14475` | `system` マクロ = `ldy #<\1; jsr call_bios` (L41-44) |
 | `huc:include/hucc/core-kernel.asm` | CALLER | `ae183017c59c7adc3fe8851e7483c324b0387720bc757f618643a00a18942015` | `call_bios` (L500-516)、`get_file_lba` (L539-547)、`exec_overlay` (L578-614) |
 | `huc:include/hucc/core-startup.asm` | CALLER | `fa340fca7d88a3603b1b55a8d5359b81e414dce527ac0ac7fd4837f0a5f5b37a` | 起動時 MPR0=`$FF` / MPR1=`$F8` (L125-128) |
-| Hu-Go! `mckayemu/hugo@64ed226d` `bios.c` | HLE | `db3f227e09a73457bc9b0f2c54a3922ab9dca1e301f1b5029690c0d210972f22` | HLE のモード/A/N/Z (原本ファームウェアではない。台帳 §2 には**含めない**) |
+| Hu-Go! `mckayemu/hugo@64ed226d` `bios.c` | HLE | `db3f227e09a73457bc9b0f2c54a3922ab9dca1e301f1b5029690c0d210972f22` | 参照のみ（ライセンス未確定、HLE であり実 BIOS の証拠にならない。根拠に使わない。`docs/cd-base-abi-ledger.md` §1）。HLE のモード/A/N/Z (原本ファームウェアではない。台帳 §2 には**含めない**) |
 | [stum.de PC Engine CD-ROM² BIOS Method offsets](https://stum.de/2025/pcenginebiosoffsets/) | 第三者の表 | - | `cd_read` のジャンプ表入口 `$E009`、本体 `$EC6D`(1.0) / `$EC05`(2.0, 2.1, 3.0) / `$EC1E`(TG2.0, TG3.0)。BIOS呼出一般の前提: MPR7=`$00` を変えない、MPR0=`$FF`・MPR1=`$F8` を仮定 |
 | [stum.de「Why do PC Engine CD-ROM² games have a second data track?」](https://www.stum.de/2026/pc-engine-second-data-track/) (2026-05-01, CC BY-NC-SA 4.0) | 第三者の二次資料 (監査で追加。#146 の W1) | - | `cd_read` は `recbase0` を加算して実LBAを得る / 与えるLBAはデータトラック先頭相対 / 16回読込み失敗後は `recbase1` を使う (`retry?`=`$2273`)。根拠は著者の解析で、一次資料(逆アセンブル/マニュアル)の特定は不可 |
 | [PCE nesdev wiki CPU memory map](https://pce.nesdev.org/wiki/CPU_memory_map) | 第三者wiki | - | MPRとメモリ配置の一般論のみ。本文は今回の監査でも未取得(CD_READ固有の記述の有無は未確認。根拠には使わない) |
@@ -103,9 +103,9 @@ CD_READ 呼出の前後に何をするかだけを記録する。callee の実�
 * 呼出側が書く (CALLER_IN): `_dh`, `_ax`/`_al`, `_bx`/`_bl`/`_bh`, `_cl`/`_ch`/`_dl`, Y 選択子, CLI, MPR0/1 前提。
 * callee が要求する (CALLEE_REQUIRED): **UNKNOWN**。実コアで System Card の callee を実行した観測はゼロで、
   どの入力が必須かを示す証拠はない。HuCC の `note`/コメントも呼出側の防御にすぎない。
-* **基点の解釈**: `_cl/_ch/_dl` を絶対LBA とみなすか `recbase0` 相対とみなすかは callee 側の解釈で、stum.de と
-  Hu-Go! HLE が「相対 (`recbase0` 加算)」を示すのみ (どちらも実コアの callee 実行ではない)。HYPOTHESIS のまま
-  とし、#146 台帳との不一致は §6 に記録する。
+* **基点の解釈**: `_cl/_ch/_dl` を絶対LBA とみなすか `recbase0` 相対とみなすかは callee 側の解釈で、stum.de (#146 の W1) が
+  「相対 (`recbase0` 加算)」を示すのみ (実コアの callee 実行ではない)。Hu-Go! HLE は参照のみで根拠に数えない。
+  HYPOTHESIS のままとし、#146 台帳との不一致は §6 に記録する。
 * 呼出側が読む戻り値 (CALLER_OUT): A (C23-C25) のみ。X/Y は呼出側が上書きする (C26)。P フラグは読まれない
   (C30)。C26 は callee の Y を読むのではなく、CLY で Y をゼロにして LEAVE (X→A) で返値を整形する
   **caller 側の返値整形**であり、callee の返値使用とは分ける。
@@ -116,19 +116,61 @@ C28-C34 は「呼出側が観測していない」ことの記録であり、`UN
 P フラグ (N/V/Z/C/D/B/T)、スタック S、MPR0-2/5/6、IRQ/完了、`$20F8-$20F9`/`$20FF` の呼出後状態は、
 実コアで callee を実行して前後を比較するまで UNKNOWN である。§3 の副作用表もこれに対応する。
 
+### 2.4 呼出側ソースで確認した事実（SOURCE_CONFIRMED、別表）
+
+固定版 `54f5c73606c1e7142e8095c727cab2767e2b3cb3` の各ファイルを取得し、下表の行を直接読んだ（§1 の sha256 と一致を確認済み。`hucc-systemcard.h` は未取得のため、C05 は本表に含めない）。
+本表は §2.1 の Status を置き換えない。§2.1 の行は HYPOTHESIS / UNKNOWN のまま残す。
+本表の各行は「呼出側が命令として書いた事実」だけを載せ、その値が callee にとって何を意味するか、callee がどう読むかは含めない（それは §2.2 と HYPOTHESIS の行に残す）。
+UNOBSERVED の行（C28-C34）は UNKNOWN のままで、本表に入れない。
+
+| 事実 | 出典 (`include/hucc/`) | 行 | ソースの記述（確認した事実） | 何を読んだか |
+| --- | --- | --- | --- | --- |
+| F01 | pcengine.inc | 471 | `cd_read = $00:E009, FUNC` の宣言 | 宣言行を読み、エントリ番号の定義を確認した（呼出し命令ではない） |
+| F02 | pcengine.inc | 329-343 | `_ax`〜`_dh` を `$F8:20F8`〜`$F8:20FF` の別名として宣言 | 宣言行を読み、アドレスと幅（1 または 2 バイト）を確認した |
+| F03 | core.inc | 41-43 | マクロ `system`: `ldy #<\1` の後に `jsr call_bios` | マクロ本体の 3 行を読み、Y への書込みと呼出しを確認した |
+| F04 | hucc-systemcard.asm | 294-295 | `lda #$FF` → `sta <_dh` | 2 行を読み、_dh への $FF の書込みを確認した（297 行の `system cd_read` の直前） |
+| F05 | hucc-systemcard.asm | 322-323 | `lda #$FE` → `sta <_dh` | 2 行を読み、_dh への $FE の書込みを確認した |
+| F06 | hucc-systemcard.asm | 384 | `stz <_dh` | 行を読み、_dh のゼロ書込みを確認した（直後の 388 行が `system cd_read`） |
+| F07 | hucc-systemcard.asm | 381-382 | `sty <_ax`、`sta <_ah` | 2 行を読み、_ax の下位と上位バイトへの書込みを確認した |
+| F08 | hucc-systemcard.asm | 361 | `tii _bp, _bx, 2` | 行を読み、_bx への 2 バイト転送を確認した |
+| F09 | hucc-systemcard.asm | 436-438 | `lda <_dh`、`beq`、`sta <_al`（非 0 のとき） | 436-438 を読み、_dh を読んだ後に条件付きで _al へ書くことを確認した（§2.1 の C12 は行 436 だが、_al への書込みは 438） |
+| F10 | hucc-systemcard.asm | 440-441 | `lda #3` → `sta <_dh` | 2 行を読み、_dh への 3 の書込みを確認した |
+| F11 | hucc-systemcard.asm | 386 | `tii _bx, .cdread_ptr, 5` | 行を読み、_bx から 5 バイトを退避領域へ複写する命令を確認した |
+| F12 | hucc-systemcard.asm | 390, 392 | `bne .done`（390）の後に `tii .cdread_ptr, _bx, 5`（392） | 命令順を読み、390 の分岐が 392 の復元を飛ばすことを確認した |
+| F13 | hucc-systemcard.asm | 346-348 | `tma3`、`pha`、`tma4` | 3 行を読み、MPR3 と MPR4 の値を退避する命令を確認した |
+| F14 | hucc-systemcard.asm | 443-444、449-450 | `tma3`、`pha`（443-444）。`pla`、`tam3`（449-450）。448 行は `tax`（復元ではない） | 退避と復元の命令列を読み、`system cd_read`（446）の前後で MPR3 を保存して戻すことを確認した |
+| F15 | hucc-systemcard.asm | 389-390 | `tax`（389）、`bne .done`（390） | 呼出し直後に A を X へ写し、NZ で分岐することを読んだ |
+| F16 | hucc-systemcard.asm | 300-302 | `cly`、`leave`（コメント「Return code in Y:X, X -> A」） | 3 行を読み、Y をゼロにしてから X を A に写して戻ることを確認した |
+| F17 | core-kernel.asm | 582-583 | `cla`、`tam7`（`exec_overlay`） | 2 行を読み、MPR7 へ 0 を書く命令を確認した（退避命令ではない） |
+| F18 | core-kernel.asm | 585 | `cli` | 行を読み、割込みフラグを解除する命令を確認した |
+| F19 | core-kernel.asm | 589-591 | `lda <core_1stbank`、`sta <_bl`、`stz <_bh` | 3 行を読み、_bl と _bh への書込みを確認した |
+| F20 | core-kernel.asm | 593-594 | `lda #6` → `sta <_dh` | 2 行を読み、_dh への 6 の書込みを確認した |
+| F21 | core-kernel.asm | 600 | `cmp #0`（直後に `bne .retry`） | 行を読み、呼出し後に A を読んで比較することを確認した |
+| F22 | core-kernel.asm | 539、543、545、547 | `get_file_lba:` の `cla`、`sta <_cl`、`sta <_ch`、`sta <_dl` | 4 箇所を読み、_cl、_ch、_dl への書込みを確認した |
+| F23 | hucc-systemcard.asm | 594-599 | `_add_sectors`: `adc <_dl`（595、_dl を読む）、`sta <_dl`（596、_dl を書く）、`adc <_ch`（598、_ch を読む）、`sta <_ch`（599、_ch を書く） | 594-599 を読み、_dl と _ch はそれぞれ読んで書き、_cl はこの処理で触れないことを確認した |
+| F24 | core-startup.asm | 123-126 | `ldx #$FF`（123）、`txs`（124）、`txa`（125）、`tam0`（126）。MPR0 = $FF | 123-126 を読み、123 で X に $FF を入れ、125-126 で X を A 経由で MPR0 へ写すことを確認した |
+| F25 | core-startup.asm | 127-128 | `lda #$F8`、`tam1` | 2 行を読み、MPR1 へ $F8 を写すことを確認した |
+
+**§2.1 の行番号と本表の不一致（記録のみ。既存の行は変えない。オーナー判断待ち）**:
+- C03（core-kernel.asm 509）: 509 行は `.self_mod_func: jsr $E000`（呼出し命令）。Y の書込みは 500 行の `sty .self_mod_func + 1`（jsr のオペランドへの書込み）で、マクロ側の Y 書込みは F03（core.inc 42）。
+- C12（hucc-systemcard.asm 436）: 436 行は `lda <_dh`（_dh の読取り）。_al への書込みは 438 行の `sta <_al`（非 0 のときのみ、F09）。
+- C16（hucc-systemcard.asm 594）: 594 行は `_add_sectors` の入口（`clc`）。_dl と _ch の読取りと書込みは 595-599 行（F23）。_cl はこの処理で書かれない。
+- C19（core-kernel.asm 503）: 503 行は `tma7`、504 行は `sta .self_mod_bank + 1` で、MPR7 の保存（503-504 行）が C19 の対象。505-506 行（`cla`、`tam7`）は call_bios 内で MPR7 を bank 0 に設定する。F17（582-583 行、exec_overlay）は別の箇所で、C19 の対象ではない。
+- C27（hucc-systemcard.asm 448）: 448 行は `tax`（A を X へ写す。返値の整形）で、MPR3 の復元ではない。MPR3 の復元は 449-450 行（`pla`、`tam3`、F14）。
+
 ## 3. callee副作用・戻り値
 
 | 項目 | 内容 | 状態 | 確定に必要な観測 |
 | --- | --- | --- | --- |
-| 成功時A | 0 | HYPOTHESIS | 実コアで呼出直後のAを記録 |
+| 成功時A | 0。根拠は呼出側 C23/C24 の `TAX`/`BNE` 分岐（呼出側の慣習）のみで、callee の成功値の証明ではない。Hu-Go! HLE は参照のみ | HYPOTHESIS（根拠が弱い。出典は確認済み） | 実コアで呼出直後のAを記録 |
 | 失敗時A、エラーコード体系 | 非0。個別値は不明 | UNKNOWN | 負例(範囲外LBA、媒体なし、読取エラー)ごとにAを記録 |
-| P(N/Z/C/T/I/D) | Hu-GoはN/ZをAから設定、T=0 (HLE) | HYPOTHESIS | RTS直後のPをトレース(HuCCのTAX/BNEはBIOSのZ/Cを示さない)。呼出側台帳 C30 は P を UNOBSERVED とする |
+| P(N/Z/C/T/I/D) | 出典は Hu-Go! HLE のみ（参照のみ、根拠に使わない）。HuCC の TAX/BNE は BIOS の Z/C を示さない | UNKNOWN | RTS直後のPをトレース。呼出側台帳 C30 は P を UNOBSERVED とする |
 | X/Y保存 | 不明 | UNKNOWN | 呼出前後のX/Yを比較。呼出側台帳 C28(X) / C29(Y) |
 | `$20F8-$20FF` | HuCCは`_cd_loaddata.4`で`$20FA-$20FE`の5バイト(`_bl,_bh,_cl,_ch,_dl`)のみ退避=呼出側防御。`_ax`/`_dh`は退避せず各ループで再設定する。BIOSが書き換える/保存するかは不明 | UNKNOWN | 呼出前後の`$20F8-$20FF`ダンプ差分、およびBIOS内のこの領域への書込トレース。呼出側台帳 C22 / C34 |
 | 成功時MPR | 不明 | UNKNOWN | 呼出前後の MPR0-7 を全て記録。呼出側台帳 C32 (MPR0-2/5/6 は UNOBSERVED) |
 | 失敗時MPR | HuCCコメント「エラー時にMPR3を壊す」 | HYPOTHESIS | 失敗を起こす負例の前後でMPR3(とMPR2-6)を記録。呼出側台帳 C21/C27 |
 | スタック | JSR/RTSの外側のみ。内部深さ・バランス | HYPOTHESIS / UNKNOWN | 呼出前後のSと最小Sを記録 |
-| 完了方式/タイミング | Hu-Goは同期ループ | HYPOTHESIS | 呼出から戻りまでのサイクル数と、その間のIRQ発生有無 |
+| 完了方式/タイミング | 出典は Hu-Go! HLE のみ（参照のみ、ライセンス未確定、根拠に使わない） | UNKNOWN | 呼出から戻りまでのサイクル数と、その間のIRQ発生有無 |
 | ディスク末尾・count境界の動作 | 転送層(T3/T4)のみ VERIFIED(Geargrafx)。callee側の戻りAと部分書込は不明 | UNKNOWN | #118と同じ合成媒体(LBA0-15)で、`$E009`経由 LBA13 x3 (末尾跨ぎ)、LBA16以降を呼び、戻りAと書込済みバイト数を観測 |
 | 無媒体時 (#133) | 転送層はGeargrafxでno-media実行不能(既存台帳T7) | UNKNOWN / BLOCKED | 無媒体で3.0を起動できる実コア設定の確立。またはエラーAの実機/別コア観測 |
 
@@ -149,7 +191,7 @@ P フラグ (N/V/Z/C/D/B/T)、スタック S、MPR0-2/5/6、IRQ/完了、`$20F8-
 
 ## 6. 台帳間の不一致 (記録。解消済みではない)
 
-* **CD_READ の基点 (本書 §2.2 の基点メモ) と #146 台帳 (146 項目2/3/4)**: 本書は当初「基点: UNKNOWN」としたが、#146 は stum.de を根拠に「相対(`recbase0` 加算)」を HYPOTHESIS とした。監査で Hu-Go! HLE にも同じ加算があることを確認し、本書も HYPOTHESIS に揃えた。どちらも実コアのcallee実行なし。
+* **CD_READ の基点 (本書 §2.2 の基点メモ) と #146 台帳 (146 項目2/3/4)**: 本書は当初「基点: UNKNOWN」としたが、#146 は stum.de を根拠に「相対(`recbase0` 加算)」を HYPOTHESIS とした。本書も HYPOTHESIS に揃えた。ただしその根拠は stum.de (W1) のみであり、Hu-Go! HLE の同じ加算は参照のみで数えない。どちらも実コアのcallee実行なし。
 * **2ISO 経路の矛盾 (`docs/cd-base-abi-ledger.md` §3 補足)**: HuCC は 2ISO 時に `recbase1` のみを設定する (`_cl=2`)。#146 は「通常読込みは `recbase0`、`recbase1` は失敗後のみ」の読み方で矛盾が成立しない**可能性**を挙げるが、これは推論で未測定。**矛盾は OPEN のまま**。`_cl=1/2` 後の CD_READ の LBA 比較と失敗注入の実測が必要。
 * #146 と本書は、CD_BASE の `_cl` の意味 (`$01`=recbase0, `$02`=recbase1) を stum.de のみから得ており、独立した二つの証拠ではない。
 
@@ -161,3 +203,7 @@ P フラグ (N/V/Z/C/D/B/T)、スタック S、MPR0-2/5/6、IRQ/完了、`$20F8-
   呼出側の主張を VERIFIED へ昇格できないこと、UNOBSERVED 行が UNKNOWN のままであること、本表と
   `CALLER_LEDGER` の id が一致することを検査する。
 * `make check` / host テストの結果はPR本文に記載。
+
+## 変更履歴
+
+- 2026-10-29（PR #571 の修正）: Hu-Go! HLE を補強とした記述を「参照のみ」へ変更した。§3 の P フラグと完了方式/タイミングは、出典が Hu-Go! HLE のみのため UNKNOWN へ下げた。成功時A は出典（呼出側 C23/C24）を明記し、根拠が弱いことを注記した。HYPOTHESIS の判定は変えていない。旧版の Hu-Go! HLE を根拠とした記述は撤回する。
