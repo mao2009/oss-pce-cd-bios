@@ -346,9 +346,7 @@ does not implement it, and it does not weaken the existing gate.
 
 ### 6.1 Re-evaluation of the existing `$1E` observation
 
-The prior local observation (values withdrawn from public documents; the cited 2026-10-28 owner ruling is untraceable) is not compared here, so this document asserts no agreement with the static audit. The static
-audit of the image shows a three instruction callee that loads two bytes from the
-BIOS image's own version area and returns.
+The prior local observation (values withdrawn from public documents; the cited 2026-10-28 owner ruling is untraceable) is not compared here. This public document therefore makes no claim about the private BIOS callee's instruction count, internal data reads or execution path, and does not assert agreement with the DEV implementation.
 
 What the prior observation does **not** establish, and what this phase therefore
 still lacks:
