@@ -4,12 +4,10 @@ import contextlib
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tempfile
 
-from artifact_guard import check_upload_artifacts, check_guard_placement, enforced_check
 from environment import ROOT, executable, core_path
 
 # The guard and its run allowlist are read from origin/main, never from the checked tree (Issue #511).
@@ -57,8 +55,9 @@ def trusted_root(repository=ROOT):
     except ValueError as error:
         raise ValueError(f"{TRUSTED_REF} is unavailable, so the trusted guard and allowlist cannot be read "
                          "(fails closed); run git fetch origin main") from error
-    tmp = Path(tempfile.mkdtemp(prefix="trusted-main-"))
-    try:
+    # Only this context owns the temporary trust snapshot. The standard library manages its cleanup.
+    with tempfile.TemporaryDirectory(prefix="trusted-main-") as directory:
+        tmp = Path(directory)
         for rel in TRUST_FILES:
             try:
                 data = subprocess.run(["git", "cat-file", "blob", f"{TRUSTED_REF}:{rel}"], cwd=repository,
@@ -68,8 +67,6 @@ def trusted_root(repository=ROOT):
             (tmp / rel).parent.mkdir(parents=True, exist_ok=True)
             (tmp / rel).write_bytes(data)
         yield tmp
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def guard_matches_trusted(trusted, root=ROOT):
@@ -87,11 +84,28 @@ def guard_matches_trusted(trusted, root=ROOT):
 
 
 def enforce_guard(root=ROOT):
-    """Placement check with every run: text approved by the trusted allowlist. The guard and the allowlist both come from
-    origin/main; the checked tree is data, never the trust root (Issue #511)."""
+    """Execute the committed trusted guard in a separate isolated interpreter.
+
+    The PR's artifact_guard.py is not imported, and the trusted guard reads its
+    own approved table. Candidate files are passed as data. This is a local
+    defense-in-depth check: the actual security boundary is the trusted guard
+    executed independently by the guard-verify CI job.
+    """
     with trusted_root(root) as trusted:
         guard_matches_trusted(trusted, root)
-        enforced_check(root, check_guard_placement, allowlist_root=trusted)
+        trusted_script = Path(trusted) / "tools" / "artifact_guard.py"
+        if trusted_script.is_symlink() or not trusted_script.is_file():
+            raise ValueError("trusted artifact guard is missing or linked (fails closed)")
+        # -I ignores PYTHONPATH and excludes candidate checkout paths from imports.
+        # The guard's default CLI runs both upload and approved-placement checks.
+        result = subprocess.run([sys.executable, "-I", str(trusted_script),
+                                 "--root", str(Path(root).resolve())],
+                                cwd=trusted, capture_output=True, text=True)
+        if result.returncode != 0:
+            reason = (result.stderr or result.stdout).strip()
+            raise ValueError(f"trusted artifact guard refused (exit {result.returncode}): {reason}")
+        if result.stdout:
+            print(result.stdout, end="")
 
 
 def check_git_diff(repository, event_name="local", event=None, base=None):
@@ -143,10 +157,8 @@ def main():
     # actionlint parses YAML and checks expressions, workflow schema and job wiring.
     subprocess.run([executable("actionlint"), "-shellcheck=", "-pyflakes=",
                     *map(str, sorted(ROOT.glob(".github/workflows/*.yml")))], check=True)
-    # Fail closed before upload: no linked GPL probe executable or object may reach upload-artifact (#227).
-    check_upload_artifacts(ROOT)
-    # The guard must sit immediately before each upload in the same job (no build step in between).
-    # Every run: text must be approved by the allowlist from origin/main (Issue #511).
+    # Run both the upload and placement checks from the trusted guard in an
+    # isolated interpreter; do not execute any candidate artifact_guard code.
     enforce_guard(ROOT)
     core_path()
     output = ROOT / "build/check"
