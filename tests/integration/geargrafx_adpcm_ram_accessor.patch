@@ -1,0 +1,32 @@
+--- a/src/adpcm.h
++++ b/src/adpcm.h
+@@ -61,6 +61,14 @@
+     void Write(u16 address, u8 value);
+     int EndFrame(s16* sample_buffer);
+     u8* GetRAM();
++    // Measurement patch (Issue #295, local measurement copy only; not in upstream).
++    // Read-only view of the whole 64 KiB ADPCM RAM (kRamSize bytes). The pointer refers to the RAM of this Adpcm
++    // object and stays valid for the lifetime of the Adpcm (the core instance). It is a view, not a copy: copy the
++    // bytes at a frame boundary if a stable snapshot is needed, because later Clock calls can change them.
++    // The const pointer type forbids writes through it. The call has no side effects: no Clock, no state change.
++    // Use this accessor instead of GetRAM() above, which returns a writable pointer.
++    static const unsigned kRamSize = 0x10000;
++    const u8* GetRAMConst() const;
+     Adpcm_State* GetState();
+     void SaveState(std::ostream& stream);
+     void LoadState(std::istream& stream, int version = GG_SAVESTATE_VERSION);
+--- a/src/adpcm.cpp
++++ b/src/adpcm.cpp
+@@ -171,6 +171,12 @@
+     memset(m_adpcm_ram, 0, sizeof(m_adpcm_ram));
+ }
+ 
++// Measurement patch (Issue #295): read-only view of the ADPCM RAM. See the declaration in adpcm.h.
++const u8* Adpcm::GetRAMConst() const
++{
++    return m_adpcm_ram;
++}
++
+ int Adpcm::EndFrame(s16* sample_buffer)
+ {
+     int samples = 0;
