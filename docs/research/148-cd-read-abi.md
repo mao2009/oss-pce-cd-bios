@@ -138,7 +138,7 @@ UNOBSERVED の行（C28-C34）は UNKNOWN のままで、本表に入れない�
 | F11 | hucc-systemcard.asm | 386 | `tii _bx, .cdread_ptr, 5` | 行を読み、_bx から 5 バイトを退避領域へ複写する命令を確認した |
 | F12 | hucc-systemcard.asm | 390, 392 | `bne .done`（390）の後に `tii .cdread_ptr, _bx, 5`（392） | 命令順を読み、390 の分岐が 392 の復元を飛ばすことを確認した |
 | F13 | hucc-systemcard.asm | 346-348 | `tma3`、`pha`、`tma4` | 3 行を読み、MPR3 と MPR4 の値を退避する命令を確認した |
-| F14 | hucc-systemcard.asm | 443-444、448-450 | `tma3`、`pha`（443-444）。`tax`、`pla`、`tam3`（448-450） | 退避と復元の命令列を読み、`system cd_read`（446）の前後で MPR3 を保存して戻すことを確認した |
+| F14 | hucc-systemcard.asm | 443-444、449-450 | `tma3`、`pha`（443-444）。`pla`、`tam3`（449-450）。448 行は `tax`（復元ではない） | 退避と復元の命令列を読み、`system cd_read`（446）の前後で MPR3 を保存して戻すことを確認した |
 | F15 | hucc-systemcard.asm | 389-390 | `tax`（389）、`bne .done`（390） | 呼出し直後に A を X へ写し、NZ で分岐することを読んだ |
 | F16 | hucc-systemcard.asm | 300-302 | `cly`、`leave`（コメント「Return code in Y:X, X -> A」） | 3 行を読み、Y をゼロにしてから X を A に写して戻ることを確認した |
 | F17 | core-kernel.asm | 582-583 | `cla`、`tam7`（`exec_overlay`） | 2 行を読み、MPR7 へ 0 を書く命令を確認した（退避命令ではない） |
@@ -147,16 +147,16 @@ UNOBSERVED の行（C28-C34）は UNKNOWN のままで、本表に入れない�
 | F20 | core-kernel.asm | 593-594 | `lda #6` → `sta <_dh` | 2 行を読み、_dh への 6 の書込みを確認した |
 | F21 | core-kernel.asm | 600 | `cmp #0`（直後に `bne .retry`） | 行を読み、呼出し後に A を読んで比較することを確認した |
 | F22 | core-kernel.asm | 539、543、545、547 | `get_file_lba:` の `cla`、`sta <_cl`、`sta <_ch`、`sta <_dl` | 4 箇所を読み、_cl、_ch、_dl への書込みを確認した |
-| F23 | hucc-systemcard.asm | 595-598 | `_add_sectors` の `adc <_dl`、`sta <_dl`、`adc <_ch` | 4 行を読み、_dl と _ch を加算して書くことを確認した（同じ行で _cl は書かれていない） |
-| F24 | core-startup.asm | 125-126 | `txa`、`tam0`（MPR0 = $FF） | 2 行を読み、X=$FF を A 経由で MPR0 へ写すことを確認した |
+| F23 | hucc-systemcard.asm | 594-599 | `_add_sectors`: `adc <_dl`（595、_dl を読む）、`sta <_dl`（596、_dl を書く）、`adc <_ch`（598、_ch を読む）、`sta <_ch`（599、_ch を書く） | 594-599 を読み、_dl と _ch はそれぞれ読んで書き、_cl はこの処理で触れないことを確認した |
+| F24 | core-startup.asm | 123-126 | `ldx #$FF`（123）、`txs`（124）、`txa`（125）、`tam0`（126）。MPR0 = $FF | 123-126 を読み、123 で X に $FF を入れ、125-126 で X を A 経由で MPR0 へ写すことを確認した |
 | F25 | core-startup.asm | 127-128 | `lda #$F8`、`tam1` | 2 行を読み、MPR1 へ $F8 を写すことを確認した |
 
 **§2.1 の行番号と本表の不一致（記録のみ。既存の行は変えない。オーナー判断待ち）**:
-- C03（core-kernel.asm 509）: 509 行はコメントで、Y への書込みは F03（core.inc 42）。
-- C12（hucc-systemcard.asm 436）: 436 行は `_dh` の読取り。_al への書込みは F09（438 行）。
-- C16（hucc-systemcard.asm 594）: 594 行は `_add_sectors` の入口。_dl と _ch は F23。_cl はこの処理で書かれない。
-- C19（core-kernel.asm 503）: 503 行はコメント。MPR7 は F17 で 0 へ書かれ、退避ではない。
-- C27（hucc-systemcard.asm 448）: 448 行はコメント。MPR3 の復元は F14（449-450 行）。
+- C03（core-kernel.asm 509）: 509 行は `.self_mod_func: jsr $E000`（呼出し命令）。Y の書込みは 500 行の `sty .self_mod_func + 1`（jsr のオペランドへの書込み）で、マクロ側の Y 書込みは F03（core.inc 42）。
+- C12（hucc-systemcard.asm 436）: 436 行は `lda <_dh`（_dh の読取り）。_al への書込みは 438 行の `sta <_al`（非 0 のときのみ、F09）。
+- C16（hucc-systemcard.asm 594）: 594 行は `_add_sectors` の入口（`clc`）。_dl と _ch の読取りと書込みは 595-599 行（F23）。_cl はこの処理で書かれない。
+- C19（core-kernel.asm 503）: 503 行は `tma7`、504 行は `sta .self_mod_bank + 1` で、MPR7 の保存（503-504 行）が C19 の対象。505-506 行（`cla`、`tam7`）は call_bios 内で MPR7 を bank 0 に設定する。F17（582-583 行、exec_overlay）は別の箇所で、C19 の対象ではない。
+- C27（hucc-systemcard.asm 448）: 448 行は `tax`（A を X へ写す。返値の整形）で、MPR3 の復元ではない。MPR3 の復元は 449-450 行（`pla`、`tam3`、F14）。
 
 ## 3. callee副作用・戻り値
 
