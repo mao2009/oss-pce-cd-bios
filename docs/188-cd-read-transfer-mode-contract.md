@@ -91,6 +91,7 @@
 ## 4. 既存文書との整合（参照のみ）
 
 * **D1**: 訂正済み。[cd-read-mode-contract.md](cd-read-mode-contract.md) R3 の出典から HuCC を外し、「HuCC が `_dh=2` を書かないことを確認。`_dh=2` の出典は Hu-Go! HLE のみ（ライセンス未確定、根拠に使わない）」と記した。状態は HYPOTHESIS のまま変えていない。[cd-read-contract.md](cd-read-contract.md):137 は**主張（Destination mode 行）は書き換えず、出典欄 出所に訂正注記のみ追記**した（出典「HuCC + Hu-Go HLE」→ 「訂正: HuCC は `_dh=2` を書かないことを include/hucc/ の範囲で確認。…」。主張行は変更なし）。[abi-contracts.md](abi-contracts.md):136 は**変更していない**（本 PR の差分対象外。食い違いを含めて事実として残す）。
+* 2026-10-29 注記: PR #574 により cd-read-mode-contract の R3・R8 は UNKNOWN に変更された。tools 側の不一致は Issue #575 で扱う。
 * **D2**: HuCC `_cd_loadbank.4` の宣言（L425）は `unsigned int sectors<_al>` と書いているが、本体（L436-438）は `_dh` を読むだけで、**非0のときだけ** `_al` へ 1バイト値を複写する。宣言・コメント（`sectors` / 「Get #sectors (0=whole file).」）は count の単位を規定するコードではなく、コードから確定できるのは「呼出側が AL に 1バイト値を入れる」ことまでである。したがって callee が count として読むレジスタは UNKNOWN のままで、count の単位も導出できない（「セクター」であることは HYPOTHESIS（コメント/宣言由来）、A4）。本 D2 は A4 の区分と矛盾しない。
 * **D3**: 基点（CD_BASE 相対か絶対か）の矛盾は [research/148-cd-read-abi.md](research/148-cd-read-abi.md) §6 の通り未解決。#11 の測定まで UNKNOWN。
 * **D4**: 既存の [188-cd-read-mode-safety.md](188-cd-read-mode-safety.md) の判定 BLOCKED は本書でも変わらない。本書は判定を変更しない。

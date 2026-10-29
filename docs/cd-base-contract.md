@@ -91,7 +91,7 @@ Zeograd や Stum の記事は名前の確認にのみ使う。
 
 | 種類 | 結果 |
 | --- | --- |
-| `tests/host/test_cd_base_model.py` | 21 件。MSF（境界・不正入力）、仮想 PREGAP、INDEX 00/01 の境界、INDEX 01 相対、ベースのラウンドトリップ、24bit 範囲、READ(6) 21bit |
+| `tests/host/test_cd_base_model.py` | 28 件（実測、2026-10-29）。MSF（境界・不正入力）、仮想 PREGAP、INDEX 00/01 の境界、INDEX 01 相対、ベースのラウンドトリップ、24bit 範囲、READ(6) 21bit |
 | 失敗確認 | モデル実装前に `ModuleNotFoundError` で失敗することを確認済み |
 | 実エミュレータ | **実施していない**（本 PR は Geargrafx を使わない） |
 

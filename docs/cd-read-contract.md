@@ -142,10 +142,11 @@ HuCC `pce-devel/huc@54f5c73606c1e7142e8095c727cab2767e2b3cb3` (`hucc-systemcard.
 | Entry | slot `$03`, CPU `$E009` (`$E000 + 3*slot`); MPR7 = bank 0 at call | HYPOTHESIS | HuCC `pcengine.inc`, `core-kernel.asm` |
 | Block number | 24-bit `_cl:_ch:_dl` (high:mid:low) at `$20FC/$20FD/$20FE` | HYPOTHESIS | HuCC callers, `get_file_lba` |
 | Block base | relative to a base set by CD_BASE (#11) vs absolute LBA | UNKNOWN | - |
-| Destination mode | `_dh`: 0 local bytes `_ax`; 1 local sectors (Hu-Go only); 2..6 RAM bank `_bl`, `_al` sectors; `$FE` VRAM `_bx` bytes `_ax`; `$FF` VRAM `_bx` sectors `_al` | HYPOTHESIS（0, 3, 6, `$FE`, `$FF`）/ UNKNOWN（1, 2, 4, 5: Hu-Go! HLE のみ） | HuCC 呼出側。HuCC は `_dh=2` を書かないことを include/hucc/ の範囲で確認（独立根拠なし）。Hu-Go! は参照のみで、ライセンス未確定につき根拠に使わない |
+| Destination mode, modes 0 / 3 / 6 / `$FE` / `$FF` | `_dh`: 0 local bytes `_ax`; 3 starting bank `_bl`, `_al` sectors; 6 RAM bank `_bl`, `_al` sectors; `$FE` VRAM `_bx` bytes `_ax`; `$FF` VRAM `_bx` sectors `_al` | HYPOTHESIS | HuCC 呼出側（`include/hucc/` の範囲） |
+| Destination mode, modes 1 / 2 / 4 / 5 | `_dh`: 1 local sectors; 2, 4, 5 RAM bank `_bl`, `_al` sectors | UNKNOWN | Hu-Go! HLE のみ（参照のみ、ライセンス未確定。根拠に使わない）。HuCC は `_dh=2` を書かないことを include/hucc/ の範囲で確認（独立根拠なし） |
 | Mode list complete / invalid mode result | - | UNKNOWN | - |
 | Count 0, bank wrap, odd VRAM byte count, upper bounds | 未確認（Hu-Go! HLE は `$FF` count 0 で A=`$22` と示すが参照のみ） | UNKNOWN | 実コアの callee 実行が必要 |
-| Return | A=0 success, nonzero error | HYPOTHESIS | HuCC TAX/BNE, Hu-Go |
+| Return | A=0 success, nonzero error | HYPOTHESIS | HuCC 呼出側の TAX/BNE（呼出側の期待。呼出先の成功値の証明ではない）。Hu-Go! は参照のみ（根拠に使わない。ライセンス未確定）。根拠の弱さ: 呼出側の比較のみで、callee の戻り値は未測定 |
 | Error codes (no disc, bad block, read error, busy/timeout) | - | UNKNOWN | - |
 | Flags (N/Z/C/T/I/D) on return | 未確認（Hu-Go! HLE のみが記述。参照のみ、根拠に使わない） | UNKNOWN | - |
 | X/Y and work-RAM `$20F8-$20FF` clobber/preserve | HuCC saves `_bx.._dl` around calls (caller protection, not a clobber list) | HYPOTHESIS | HuCC |

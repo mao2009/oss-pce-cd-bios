@@ -31,7 +31,7 @@ Every row is HYPOTHESIS or UNKNOWN. None is VERIFIED.
 | R3 | `_dh = 2` selects RAM bank `_bl`, `_al` sectors | UNKNOWN | HuCC は `_dh=2` を書かないことを確認（`include/hucc/` の2ファイルの範囲）。独立根拠なし。出典は Hu-Go! HLE のみ（参照のみ、ライセンス未確定。根拠に使わない） |
 | R4 | destination address in the bank (register pair, end address) | UNKNOWN | none |
 | R5 | block base: CD_BASE-relative (#11) or absolute LBA | UNKNOWN | none |
-| R6 | A = 0 on success | HYPOTHESIS | HuCC 呼出側の TAX/BNE（A=0 を成功として扱う呼出側の期待。HYPOTHESIS の定義どおり。呼出先の成功値の証明ではない）。Hu-Go! は参照のみで根拠に使わない（ライセンス未確定） |
+| R6 | A = 0 on success | HYPOTHESIS | HuCC 呼出側の TAX/BNE（`include/hucc/hucc-systemcard.asm` L389-390 の `tax` / `bne .done`、`include/hucc/core-kernel.asm` L600-601 の `cmp #0` / `bne .retry`。A=0 を成功として扱う呼出側の期待。HYPOTHESIS の定義どおり。呼出先の成功値の証明ではない）。Hu-Go! は参照のみで根拠に使わない（ライセンス未確定） |
 | R7 | error codes (no disc, bad block, read error, busy) | UNKNOWN | none |
 | R8 | N/Z/C/T on return | UNKNOWN | 出典は Hu-Go! HLE のみ（参照のみ、ライセンス未確定。根拠に使わない）。呼出側の TAX/BNE は BIOS の Z/C を示さない |
 | R9 | MPR state after success and after error (bank `_bl` mapping) | UNKNOWN | none (HuCC: CD_READ may corrupt MPR on error, unmeasured) |
