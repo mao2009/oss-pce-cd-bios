@@ -156,7 +156,7 @@
 | (c) 判定に使う観測点の出典が確定 | 充足（`$08` と PLAYING は `adpcm_inline.h:84` の `m_playing`。CONFIRMED） | 充足（同左。W0〜W2 は既存の状態読取り） | 未充足（`$04` / `$80` の意味は UNKNOWN） |
 | (e) 安全条件: 手順が §10 の BLOCKED 項目に触れない | 独立レビューで確認する（本書の手順は device 層の読取りと、ハーネスからの `Adpcm::Write` だけを使い、CPU からの MMIO 書込み、IRQ の操作、CD 側の操作を含まない） | 独立レビューで確認する（PLAY と同じ扱い。ただし `ResetMedia` は CD 側の状態に作用するため、次を確認対象とする。`ResetMedia` は `GeargrafxCore::Reset()`（`geargrafx_core.cpp:1205`）を呼び、その中で `m_cdrom->Reset()`、`m_scsi_controller->Reset()`、`m_cdrom_audio->Reset()` を呼ぶ（`:1237-1239`）。(a) 三つの Reset の直接の書込みは各装置の内部変数であり、Memory::Write の経路を通らない（`cdrom.cpp:113-129`、`scsi_controller.cpp:176-204`、`cdrom_audio.cpp:115-131`）。(b) `CdRom::Reset` は 128 行目で `m_memory->UpdateBackupRam(m_bram_enabled)` を呼び（`memory_inline.h:544-558`）、CPU から見える `$F7` の写像（`m_memory_map` と `m_memory_map_write`）を変える。(c) `ScsiController::Reset` は 200 行目で `UpdateIRQs()` を呼び（`scsi_controller_inline.h:92-106`）、CD 側の IRQ 状態を変える。201 行目で `m_cdrom_audio->StopAudio()` を呼ぶ。これは CD 再生の状態を STOPPED にし（`cdrom_audio_inline.h:188-195`）、LaserActive が有効なら `m_laseractive->NotifyAudioStop` を呼ぶことがある。202 行目で `m_cdrom_media->SetCurrentSector(0)` を呼ぶ。これは媒体側のセクタ位置を変える（`cdrom_image.cpp:129-135`）。(d) `CdRomAudio::Reset` は 130 行目で `InvalidateSectorCache()` を呼ぶ（キャッシュフラグのみ）。(b) と (c) は CPU 可視の写像と IRQ 状態に関わるため、B2 と B6 の範囲に当たるかは断定せず、独立レビューで確認すべき対象とする。当たると確定した場合は、warm を BLOCKED とする） | 未充足（§3.4 の BLOCKED 条件、§10 の B4 と B11） |
 | (d) §3.4 の BLOCKED 解除条件（3 条件） | 対象外 | 対象外（gate の BLOCKED は §14.6 で維持） | 未充足 |
-| 判定 | (b) の承認後に開始できる。(a)、(c) は充足。(e) は (b) の承認の中で確認する | 動的 MPR 検出が UNPROVEN のため BLOCKED。試行 2 を開始しない。試行 1 を含む warm 系列全体を実行しない（§14.12 の 7、§14.13、§14.15）。(e) の確認と §14.2 の前提は、この BLOCKED の解除後に行う | BLOCKED。試行を実行しない |
+| 判定 | (b) の承認後に開始できる。(a)、(c) は充足。(e) は (b) の承認の中で確認する | 動的 MPR 検出が UNPROVEN のため BLOCKED。試行 2 を開始しない。warm 系列の試行 1 は実行しない。warm 系列全体を実行しない（§14.12 の 7、§14.13、§14.15）。(e) の確認と §14.2 の前提は、この BLOCKED の解除後に行う | BLOCKED。試行を実行しない |
 
 **判定 II: Issue #295 の ROM-Primitive 実装の開始条件（測定とは別）**
 
@@ -178,7 +178,7 @@
 
 注: 独立レビュー（判定 I の (b)）は Issue の開始条件ではない。本書の承認手続きとして扱う（§13 の 5）。承認前は PLAY_ACTIVE も warm も測定を行わない。実測の開始条件は §14.15 に定める。現時点で測定の開始を承認したものではない。
 
-**warm の実行状態（改訂 R12）:** warm（試行 2）は、§14.13 の動的 MPR 検出が UNPROVEN であるため **BLOCKED** である。試行 2 は開始せず、warm の実行状態は BLOCKED とする。この規則は §14.12 の 7 と同一である。PLAY_ACTIVE の測定（試行 1 を含む。別区分）は、§3.5 の判定 I の条件で独立に判定する。
+**warm の実行状態（改訂 R12）:** warm（試行 2）は、§14.13 の動的 MPR 検出が UNPROVEN であるため **BLOCKED** である。試行 2 は開始せず、warm の実行状態は BLOCKED とする。この規則は §14.12 の 7 と同一である。warm 系列の試行 1 は実行しない。PLAY 測定を別に行う場合は、その判定は §3.5 の判定 I による。
 
 ## 4. reset 要求の発行方法（手順のみ）
 
