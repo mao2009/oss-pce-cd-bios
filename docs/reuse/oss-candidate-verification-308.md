@@ -9,6 +9,8 @@
 
 ## 1. pinned パスの照合（ファイル単位）
 
+件数: 台帳由来のパスは 31 行（うち NOT_FOUND 2）。追加 10 行（「補」9 行と hucc-systemcard.h）を加え、計 41 行。
+
 凡例: blob（Git オブジェクト SHA-1）と内容の SHA-256 は**先頭 8 桁**のみ記載する。再取得値は台帳の完全値と照合し、全件一致した（NOT_FOUND を除く）。
 
 | 台帳 ID | リポジトリ @ pinned SHA | パス | blob（先頭8桁） | サイズ（B） | SHA-256（先頭8桁） | 照合結果 |
@@ -73,14 +75,14 @@
 
 | ID | 候補 | reuse_mode（台帳） | disposition | ライセンス原文の確認 | NOTICE 義務（採用する場合） | 確信度（ライセンス判定） |
 | --- | --- | --- | --- | --- | --- | --- |
-| L-01 | HuCC hucc-math.asm | ADAPTED 候補 | PENDING | ヘッダの BSL-1.0 は既存記録。本 pin の全文は examples 側のみ取得 | 著作権表示と BSL-1.0 文の同梱が必要 | 中 |
+| L-01 | HuCC hucc-math.asm | ADAPTED 候補 | PENDING | ヘッダの BSL-1.0 は既存記録に加え、今回確認（2026-10-29、ヘッダの「Distributed under the Boost Software License, Version 1.0」を取得）。本 pin の全文は examples 側のみ取得 | 著作権表示と BSL-1.0 文の同梱が必要 | 中 |
 | L-02〜L-07 | HuCC ほか（VDC・入力・カーネル・推移依存） | REFERENCE_ONLY / ADAPTED 候補 | PENDING | ヘッダの BSL-1.0 / 「Boost 1.0」表記は既存記録。`Boost 1.0` と `BSL-1.0` の同一扱いは UNKNOWN（台帳 L-04） | 同上 | 中 |
 | L-08 | HuC elmer cdrom.asm | REFERENCE_ONLY | PENDING | 改変部のみ BSL-1.0、ベースは表示なし | ベースの権利が確定するまで採用不可 | 低 |
 | L-09 | Hu-Go! pcecd.c | REFERENCE_ONLY | PENDING | COPYING の例外指定と 3 条項文面を確認。`LICENSE.bsd-modified` は NOT_FOUND | 著作権者表示が無く、条件の全文も pin から確定不可 | 低 |
 | L-10 | Hu-Go! bios.c | REJECTED | 提案: RESTRICTED | GPL-2.0 既定（COPYING） | ROM への組込み不可 | 高（組込み不可の判定） |
 | L-11 | Hu-Go! cd.c | REJECTED | 提案: RESTRICTED | GPL-2.0 既定（COPYING） | ROM への組込み不可 | 高 |
 | L-12 | Hu-Go! COPYING | — | PENDING | 本文確認済み。参照先 2 件が欠落 | 条件の確定に必要 | 中 |
-| L-13 | nugget OpenBIOS cdrom | ADAPTED 候補（既存記録は REFERENCE_ONLY） | PENDING | repo LICENSE は MIT（2019）。file 単位の表示は既存記録のみ | MIT の著作権表示と許諾文の保持 | 中 |
+| L-13 | nugget OpenBIOS cdrom | REFERENCE_ONLY（台帳値） | PENDING | repo LICENSE は MIT（2019）。file 単位の表示は既存記録のみ | MIT の著作権表示と許諾文の保持 | 中 |
 | L-14 | NeoCD-Libretro 3 ファイル | REFERENCE_ONLY | PENDING | repo LICENSE.md は LGPL-3.0。file 単位の表示なし | 権利者 UNKNOWN のため確定不可 | 低 |
 | L-15 | Cult-of-GBA math | REFERENCE_ONLY | PENDING | repo LICENSE は MIT（2020-2021, DenSinH and fleroviux） | MIT の表示保持 | 中（ARM 命令のため転用不可） |
 | L-16 | cc65 runtime 3 ファイル | ADAPTED 候補 | PENDING | repo LICENSE は zlib 系の文言を確認 | zlib 系の表示・改変表示。NOTICE の有無は未確認 | 中 |
