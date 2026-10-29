@@ -325,7 +325,7 @@ struct Trial {
     std::string role;                      // "warmup" or "warm"
     std::string end_state = "NOT_STARTED"; // COMPLETED, BUDGET_EXCEEDED, TIMEOUT, ABORTED, BLOCKED, NOT_STARTED
     std::string end_reason;
-    std::string cls = "NOT_STARTED";       // PLAY_ACTIVE or UNOBSERVED_BUSY when the body runs
+    std::string cls = "NOT_CAPTURED";      // PLAY_ACTIVE or UNOBSERVED_BUSY when the body runs; not classified otherwise
     bool body_ran = false;
     unsigned long long pid = 0, instance = 0;
     unsigned reset_count_w1 = 0;
@@ -684,7 +684,7 @@ int main(int argc, char** argv)
     if (!t1_completed && t2.end_state == "NOT_STARTED")
         t2.end_reason = "trial 1 not COMPLETED (contract 14.8)";
 
-    // MINOR 2: under 14.13 option (b) neither trial runs. Both are BLOCKED (never NOT_STARTED in the output).
+    // MINOR 2: under 14.13 option (b) neither trial runs. Both are BLOCKED (never NOT_STARTED as end_state).
     if (!kDynamicMprDetection) {
         t1.end_state = "BLOCKED";
         t1.end_reason = "dynamic_mpr_detection_not_implemented";
@@ -718,7 +718,8 @@ int main(int argc, char** argv)
             char b[32];
             std::snprintf(b, sizeof b, "%llx", t.instance);
             return std::string(b);
-        }() + "\",\"reset_count_at_w1\":" + std::to_string(t.reset_count_w1) + ",\"ready_w0\":" +
+        }() + "\",\"reset_count_at_w1\":" +
+               (t.has_w1 ? std::to_string(t.reset_count_w1) : std::string("\"NOT_CAPTURED\"")) + ",\"ready_w0\":" +
                // MINOR 1: a value is printed only when its capture point was reached; otherwise NOT_CAPTURED
                (t.has_w0 ? (t.ready_w0 ? "true" : "false") : "\"NOT_CAPTURED\"") +
                ",\"ready_w1\":" + (t.has_w1 ? (t.ready_w1 ? "true" : "false") : "\"NOT_CAPTURED\"") +
