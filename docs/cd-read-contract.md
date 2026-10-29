@@ -6,7 +6,7 @@ image or disassembly. A third-party name, caller wrapper or HLE model is never p
 Status tags:
 
 本文書の Status は**宣言上の状態（declared status）**である。実効信頼状態（effective trust state）は §4 の検査で決まり、
-現時点の実効値は LOCAL_ONLY までで、VERIFIED は実効化されない。語彙は `docs/cd-base-abi-ledger.md` §1
+現時点の T1〜T4 の実効値は BLOCKED（実行記録の bundle がリポジトリにないため）である。LOCAL_ONLY は自己申告の bundle が全検査を通った場合の上限で、VERIFIED は実効化されない。語彙は `docs/cd-base-abi-ledger.md` §1
 （SOURCE_CONFIRMED / HYPOTHESIS / MEASURED / UNKNOWN / BLOCKED / VERIFIED）に従い、本文書での意味は次のとおり。
 MEASURED は実行によって得た証拠の分類であり、VERIFIED を自動的には意味しない。VERIFIED は T1〜T5 の宣言上の Status である。宣言上の VERIFIED は実効 VERIFIED を意味せず、実効信頼状態は既存の検査（`effective_status`）で決まる。System Card 3.0 の callee ABI は未検証のまま。
 
@@ -186,15 +186,26 @@ positive and end-of-disc request in the real-core suite.
 
 表の Status 列（および `tools/cd_read_contract.py` の TRANSPORT_CLAIMS）は**宣言上の状態（declared status）**である。
 本節は、その宣言に対応する**実効証拠状態（effective evidence status）**を別に記す。
-2026-10-29 時点で、T1〜T4 の実効証拠状態はいずれも **NOT_VERIFIED**（commit された実行記録がないため）である。
-宣言を書き換えず、ここでは実効証拠状態だけを示す。
+2026-10-29 時点の調査結果（研究上の所見）: head commit のリポジトリ内に、T1〜T4 の commit された実行記録は見つからなかった。
+そのため、T1〜T4 の実効証拠状態（status checker の戻り値）は **BLOCKED** である。
+宣言を書き換えず、ここでは実効証拠状態だけを示す。宣言上の VERIFIED は実効 VERIFIED ではない。
 
-| Id | 宣言上の状態（declared） | 実効証拠状態（effective evidence） | 欠けている証拠 |
+| Id | 宣言上の状態（declared） | 実効証拠状態（effective evidence） | 欠けている証拠（調査結果） |
 | --- | --- | --- | --- |
-| T1 | VERIFIED | NOT_VERIFIED | bundle・`cdread-evidence.json`・log・attestation・commit 参照のいずれも未コミット |
-| T2 | VERIFIED | NOT_VERIFIED | 同上 |
-| T3 | VERIFIED | NOT_VERIFIED | 同上 |
-| T4 | VERIFIED | NOT_VERIFIED | 同上 |
+| T1 | VERIFIED | BLOCKED | bundle・`cdread-evidence.json`・log・attestation・commit 参照のいずれも見つからず |
+| T2 | VERIFIED | BLOCKED | 同上 |
+| T3 | VERIFIED | BLOCKED | 同上 |
+| T4 | VERIFIED | BLOCKED | 同上 |
+
+実効状態の規則（`tools/cd_read_contract.py` の `effective_status` / `compat_status` と一致させる）:
+
+| 入力 | 宣言 VERIFIED の実効状態 |
+| --- | --- |
+| bundle がない（`effective_status(None, None)` を含む） | BLOCKED |
+| bundle はあるが JSON オブジェクトでない、status が PASS でない、pinned Geargrafx または ROM と一致しない、`tests` がない | BLOCKED |
+| 基本検査は通るが、引用シナリオが欠ける、または結果の kind が一致しない | UNKNOWN |
+| 基本検査を通り、引用シナリオがすべて kind どおり記録されている（自己申告） | LOCAL_ONLY（上限。VERIFIED にはならない） |
+| `compat_status()`（どの入力でも） | BLOCKED。実効 VERIFIED を返すことはない |
 
 T1〜T4 に共通して、次が欠けている。
 
