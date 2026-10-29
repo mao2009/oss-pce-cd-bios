@@ -22,7 +22,8 @@ MEASURED は実行によって得た証拠の分類であり、VERIFIED を自�
   acceptance condition is looser: #125 reaches LOCAL_ONLY only after all its artifact checks pass (disc
   hashes, its full scenario table, `primary_observations.RUN`), while this ledger checks only the fields
   listed here. A forged bundle with correct hashes reaches this level, so it is not PASS and not VERIFIED.
-* **HYPOTHESIS**: a pinned caller/HLE source shows an expectation; the System Card 3.0 callee was never executed.
+  本文書の LOCAL_ONLY は、証拠バンドルの検査結果に基づく実効信頼状態（effective trust state）であり、System Card 互換の VERIFIED ではない。T1〜T5 の宣言上の VERIFIED（declared status）とは区別する。宣言上の VERIFIED は実効 VERIFIED を意味せず、LOCAL_ONLY も VERIFIED の意味を持たない。
+* **HYPOTHESIS**: 公開された固定版の呼出側ソースの記述（SOURCE_CONFIRMED）から推測した callee の動作、またはその他の独立根拠に基づく未確認の動作仮説。System Card 3.0 の callee は実行して確認していない。呼出側の記述そのものは SOURCE_CONFIRMED であり、HYPOTHESIS ではない。Hu-Go! などの HLE は HYPOTHESIS の根拠にしない（参照のみ）。
 * **UNKNOWN**: no admissible evidence. A VERIFIED claim whose cited scenarios are missing or not PASS is
   downgraded to UNKNOWN.
 * **BLOCKED**: a VERIFIED claim that cannot be checked because no valid evidence bundle exists (no
