@@ -1,9 +1,9 @@
 # Issue #186: CD_BASE（$02）の LBA / INDEX 01 基準候補の観測計画（非実行）
 
 対象: スロット `$02`、候補エントリ `$E006`（`CD_BASE`）。親は #11、関連は #12。
-本書は**調査と観測計画であり、実測結果は含まない**。純正 BIOS の実行・観測は、安全な参照実行境界（#173 の RAM / MMIO / IRQ 強制境界）が検証されるまで行わない。
+本書は**調査と観測計画であり、実測結果は含まない**。純正 BIOS の実行・観測は、安全な参照実行境界が検証されるまで行わない。`docs/173-safety-monitor-limits.md` の裁定では、RAM 系（MPR 変更と物理バンク別名）は事前拒否可能と記録され、MMIO と IRQ の書込みは BLOCKED（事前阻止不能）と記録されている。RAM は一部 PASS、MMIO・IRQ は BLOCKED のため、境界は全体として未確立とする。
 
-- 実コア観測: **0 件**。本書に VERIFIED の項目はない（呼出側ソースの記述のみ、既存台帳と同じ扱い）。
+- 実コア観測: **0 件**。BIOS 関連の VERIFIED は **0 件**。§1 の K9〜K11 は BIOS 以外（ホスト・DEV ROM・転送層）の範囲に限った VERIFIED で、範囲は表に明記する。
 - 既存の調査との関係: 台帳本体は `docs/cd-base-abi-ledger.md`、六項目の独立根拠は `docs/research/146-cd-base-abi.md`、CD_READ 側は `docs/research/148-cd-read-abi.md`、合成媒体の定義は `docs/cd-boot-loader-spec.md` §5 と `docs/cd-base-contract.md` §3。本書はそれらを再掲せず、**観測の条件と候補の区別**に絞る。
 - 状態語: VERIFIED / HYPOTHESIS / UNKNOWN / BLOCKED（`docs/cd-read-contract.md` の語彙に従う）。
 
@@ -12,22 +12,24 @@
 | ID | 内容 | 出典 | 確度 |
 | --- | --- | --- | --- |
 | K1 | 名前 `CD_BASE` がスロット `$02`、候補エントリ `$E006` に対応する | `docs/cd-base-contract.md` §1、HuCC `include/hucc/pcengine.inc` L470–471（ラベルの等号のみ） | HYPOTHESIS（マッピングは #1 の所管） |
-| K2 | HuCC の呼出側は、`SUPPORT_2ISO` が 1 のときだけ `_al`（最終トラック番号と推定）、`_bh=$80`、`_cl=2` を設定して `jsr cd_base` を行う | HuCC 固定版 `54f5c736` の `include/hucc/core-startup.asm` L293–301、`core-config.inc` L83–84（既定 0） | VERIFIED（呼出側ソースの記述のみ） |
-| K3 | 固定版全体で `cd_base` の呼出しは K2 の 1 箇所だけ | `docs/cd-base-abi-ledger.md` §2（同 commit の `grep`） | VERIFIED（同上、grep の範囲） |
-| K4 | HuCC の `cd_read` 呼出し（5 箇所）の関数内には `cd_base` の呼出しがない | `docs/cd-base-abi-ledger.md` §3 (4)、`hucc-systemcard.asm` L285–452、`core-kernel.asm` L580–612 | VERIFIED（呼出側ソースの記述のみ） |
-| K5 | オーバーレイ読込みの呼出側は ISO ディレクトリ由来の値を加算せずに `cd_read` へ渡す。VRAM / データ読込みは `_add_sectors` でオフセットを加える | `core-kernel.asm` L531–552、L596。`hucc-systemcard.asm` L594–600 | VERIFIED（呼出側ソースの記述のみ） |
-| K6 | 「通常の CD_READ は `recbase0` を加算し、16 回の読込み失敗後に `recbase1` を使う」「LBA はデータトラック先頭からの相対」「`_cl`=`$01` が recbase0、`$02` が recbase1」 | stum.de（Michael Stum, 2026-05-01）、二次資料（`docs/research/146-cd-base-abi.md` W1）。HuCC K2 と値が整合する | HYPOTHESIS（著者の一次資料が未確認。HuCC を参照した可能性を排除できないため、独立した二つの証拠とは数えない） |
+| K2 | HuCC の呼出側は、`SUPPORT_2ISO` が 1 のときだけ `_al`（最終トラック番号と推定）、`_bh=$80`、`_cl=2` を設定して `jsr cd_base` を行う | HuCC 固定版 `54f5c736` の `include/hucc/core-startup.asm` L293–301、`core-config.inc` L83–84（既定 0） | HYPOTHESIS（呼出側ソースの記述。caller wrapper は VERIFIED に昇格させない） |
+| K3 | 固定版全体で `cd_base` の呼出しは K2 の 1 箇所だけ | `docs/cd-base-abi-ledger.md` §2（同 commit の `grep`） | HYPOTHESIS（同上、grep の範囲。呼出側の記述） |
+| K4 | HuCC の `cd_read` 呼出し（5 箇所）の関数内には `cd_base` の呼出しがない | `docs/cd-base-abi-ledger.md` §3 (4)、`hucc-systemcard.asm` L285–452、`core-kernel.asm` L580–612 | HYPOTHESIS（呼出側ソースの記述。caller wrapper は VERIFIED に昇格させない） |
+| K5 | オーバーレイ読込みの呼出側は ISO ディレクトリ由来の値を加算せずに `cd_read` へ渡す。VRAM / データ読込みは `_add_sectors` でオフセットを加える | `core-kernel.asm` L531–552、L596。`hucc-systemcard.asm` L594–600 | HYPOTHESIS（呼出側ソースの記述。caller wrapper は VERIFIED に昇格させない） |
+| K6 | 「通常の CD_READ は `recbase0` を加算し、16 回の読込み失敗後に `recbase1` を使う」「LBA はデータトラック先頭からの相対」「`_cl`=`$01` が recbase0、`$02` が recbase1」 | stum.de「Why do PC Engine CD-ROM² games have a second data track?」<https://www.stum.de/2026/pc-engine-second-data-track/>（Michael Stum、2026-05-01、本文 CC BY-NC-SA 4.0）の二次資料。取得日: 本 PR では未再取得で、`docs/research/146-cd-base-abi.md` W1 の記録（2026-10-16 の検索）を引く。`$80` を「CD-TNO モード」とする記述は、この記事の例コードのコメント（`_BH = CD-TNO mode`）に由来する（HuCC K2 にはこの語はない）。HuCC K2 と値が整合する | HYPOTHESIS（著者の一次資料が未確認。HuCC を参照した可能性を排除できないため、独立した二つの証拠とは数えない） |
 | K7 | 「最初のデータトラックの LBA」で `recbase0/1` を初期化する | 同 W1（`docs/research/146-cd-base-abi.md` 項目 3） | HYPOTHESIS。「LBA」が INDEX 01 か PREGAP 先頭か未記載 |
 | K8 | 2ISO 経路（K2）は `recbase1` だけを設定し、通常のオーバーレイ読込み（K5）は `recbase0` を使う可能性がある。両者の矛盾は解けていない | `docs/cd-base-abi-ledger.md` §3 補足、`docs/research/146-cd-base-abi.md` §1 | UNKNOWN（矛盾は OPEN） |
-| K9 | 合成媒体（CUE `PREGAP 00:02:00` + `INDEX 01 00:00:00`）では INDEX 01 は LBA 150、LBA 0..149 は BIN に格納されない。INDEX 01 が 0 の対照媒体では絶対 LBA と INDEX 01 相対が一致する | `docs/cd-base-contract.md` §3、`tools/cue_analysis.py` | VERIFIED（CUE 解析の範囲。ホスト算術であり BIOS の証拠ではない） |
-| K10 | 本リポジトリの DEV ROM の `$E006` は、fail-closed の fallback（`$E295`、`X=$02`）へ入って同じ PC に留まる。RTS がないため呼出し後の観測はできない | `docs/cd-base-abi-ledger.md` §4a（固定版 Geargrafx `b49ae82a`、`make dev-cd-base-integration`） | VERIFIED（DEV ROM の性質。BIOS の証拠ではない） |
-| K11 | READ(6) の LBA は 21 bit。Geargrafx で T1（LBA n が BIN のセクタ n を返す）を確認 | `docs/cd-read-contract.md` T1 | VERIFIED（Geargrafx のみ。CD_READ 経路の測定で、CD_BASE の証拠ではない） |
+| K9 | 合成媒体（CUE `PREGAP 00:02:00` + `INDEX 01 00:00:00`）では INDEX 01 は LBA 150、LBA 0..149 は BIN に格納されない。INDEX 01 が 0 の対照媒体では絶対 LBA と INDEX 01 相対が一致する | `docs/cd-base-contract.md` §3、`tools/cue_analysis.py` | VERIFIED（ホスト側 CUE 解析の出力に限る。ツールの自己検査であり、CD_BASE の事実ではない） |
+| K10 | 本リポジトリの DEV ROM の `$E006` は、fail-closed の fallback（`$E295`、`X=$02`）へ入って同じ PC に留まる。RTS がないため呼出し後の観測はできない | `docs/cd-base-abi-ledger.md` §4a（固定版 Geargrafx `b49ae82a`、`make dev-cd-base-integration`） | VERIFIED（DEV ROM の測定。BIOS の証拠ではない。再現には `make dev-cd-base-integration` が必要で、証跡 JSON（`geargrafx-cd-base-evidence.json`）はローカル生成でコミットされていない） |
+| K11 | READ(6) の LBA は 21 bit。Geargrafx で T1（LBA n が BIN のセクタ n を返す）を確認 | `docs/cd-read-contract.md` T1 | VERIFIED（Geargrafx の転送層のみ。CD_READ 経路の測定で、CD_BASE の証拠ではない） |
+
+**VERIFIED の範囲（owner 判断が必要な論点）**: 本書は VERIFIED を BIOS 以外の範囲（K9〜K11）に限った。`docs/cd-base-contract.md` は「VERIFIED は実行した呼出先で測定された事実」と定め、`docs/research/148-cd-read-abi.md` の基準は caller wrapper を VERIFIED に昇格させない。一方、`docs/cd-base-abi-ledger.md` §1 は呼出側ソースの記述を VERIFIED として扱う。両者は衝突しており、どちらが正しいかは本書では断定しない。
 
 ### 1.1 不採用の出典（根拠に使わない）
 
 | 出典 | 不採用の理由 |
 | --- | --- |
-| Hu-Go! `bios.c`（HLE、L388–392 で `$2273` を加算） | ライセンス・帰属が未確定。HLE であり実 BIOS ではない（`docs/cd-base-abi-ledger.md` §1 の規則）。**注: `docs/research/146-cd-base-abi.md` §1 と `docs/research/148-cd-read-abi.md` は「補強」として参照しているが、台帳 §1 の規則と矛盾するため、本書は採用しない** |
+| Hu-Go! `bios.c`（revision `mckayemu/hugo@64ed226d`、HLE、L388–392 で `$2273` を加算。revision は `docs/research/146-cd-base-abi.md` の記録どおりで、本 PR では未再確認） | ライセンス・帰属が未確定。HLE であり実 BIOS ではない（`docs/cd-base-abi-ledger.md` §1 の規則）。**注: `docs/research/146-cd-base-abi.md` §1 と `docs/research/148-cd-read-abi.md` は「補強」として参照しているが、台帳 §1 の規則と矛盾するため、本書は採用しない** |
 | HuC `include/huc/cdrom.asm`、`startup.asm`、`examples/asm/elmer/kickc/bios.h` | ライセンス未確認（`docs/cd-base-abi-ledger.md` §1） |
 | TED2 カードの `$E006` への書込み | CD_BASE の呼出しではなくレジスタ操作（同 §2） |
 | `tools/cd_base_model.py` のホスト算術 | BIOS の証拠ではない（同 §1） |
@@ -45,7 +47,7 @@
 | `ABS_LBA` | `lba = block` | INDEX 01 が 0 の媒体と、INDEX 01 が 150 の媒体で、READ LBA が変わらない |
 | `BASE_PLUS_BLOCK` | `lba = base + block` | `base` を変えると READ LBA が `base` 分だけ変わる（`base` の既定値が未知） |
 | `TRACK_START_PLUS_BLOCK` | `lba = INDEX01 + block` | INDEX 01 が 150 の媒体で、ABS_LBA と READ LBA が 150 ずれる |
-| `MSF_FRAMES_FROM_00_00_00` | `lba = block - 150` | 負の LBA で拒否される。ホスト換算の候補（呼出元の値の単位が MSF とは限らない） |
+| `MSF_FRAMES_FROM_00_00_00` | `lba = block - 150` | 拒否の理由は PREGAP 領域（LBA 0..149、BIN に格納されない）。`(155, 0)` も REJECT（`docs/cd-base-abi-ledger.md` §4 の表）。呼出元の値の単位が MSF とは限らない |
 
 ### 2.2 条件ごとの観測候補
 
@@ -55,10 +57,10 @@
 | --- | --- | --- | --- | --- |
 | C1 | リセット直後、CD_BASE なしで CD_READ、ブロック番号を二つ以上（既存計画の 5 と 155 相当） | READ LBA − ブロック番号 が一定なら既定の基準が推定できる。`ABS_LBA` は差 0 | UNKNOWN（既定の基準値が未知） | 既定の基準値、INDEX 01 が 150 の媒体での差 |
 | C2 | CD_BASE の `_al` だけを変える（他は固定） | READ LBA が変わるなら `_al` は基準の入力。変わらなければ `_al` は基準に効かない | UNKNOWN（読取り範囲が未確認） | `_al` が基準の入力か |
-| C3 | `_bh` だけを変える（`$80` と他の値） | 同上 | UNKNOWN（K2 は `$80` を「CD-TNO モード」とする。K6 と整合するが一次資料なし） | モード値の意味、`$80` 以外の値 |
+| C3 | `_bh` だけを変える（`$80` と他の値） | 同上 | UNKNOWN（`$80` を「CD-TNO モード」とする記述は K6 の記事の例コードにのみ現れ、HuCC K2 には無い。一次資料なし） | モード値の意味、`$80` 以外の値 |
 | C4 | `_cl` を `1` と `2` で変える | HYPOTHESIS: `_cl=1` は recbase0、`_cl=2` は recbase1 を変える。通常の CD_READ の LBA が `_cl=2` で変わらなければ、K8 の矛盾の候補解の一つを支持する | HYPOTHESIS（K6 のみ） | `_cl` の意味、2ISO 矛盾 |
 | C5 | `_bl`、`_dl`、`_ch` を変える（他は固定） | 変化があれば基準の入力に含まれる | UNKNOWN（HuCC の記述に該当なし） | 役割 |
-| C6 | INDEX 01 が 0 の媒体（対照）と 150 の媒体（PREGAP 付き）で、同じ（block、base）の CD_BASE → CD_READ | `ABS_LBA` と `TRACK_START_PLUS_BLOCK` は、対照で一致し、PREGAP 付きで 150 ずれる。`BASE_PLUS_BLOCK` は媒体に依らない | 高（候補式からの算術。BIOS の挙動は未知） | 実 BIOS の挙動、SCSI 層の LBA 対応（PREGAP 付き媒体は NOT RUN、`docs/cd-base-abi-ledger.md` §4a） |
+| C6 | INDEX 01 が 0 の媒体（対照）と 150 の媒体（PREGAP 付き）で、同じ（block、base）の CD_BASE → CD_READ | `ABS_LBA` と `TRACK_START_PLUS_BLOCK` は、対照で一致し、PREGAP 付きで 150 ずれる。`BASE_PLUS_BLOCK` は媒体に依らない | 中（候補式からの算術。BIOS の挙動は未知のため、区別できる前提は置けない） | 実 BIOS の挙動、SCSI 層の LBA 対応（PREGAP 付き媒体は NOT RUN、`docs/cd-base-abi-ledger.md` §4a） |
 | C7 | CD_BASE のあと、CD_RESET のみ | 基準が CD_RESET で消えるかどうか。消えなければ C1 と同じ差が残る | UNKNOWN | 保持期間、格納位置 |
 | C8 | CD_BASE のあとの CD_READ を二回実行（間に他の呼出しなし） | 基準が次の CD_READ まで残るなら、二回目も同じ差。K8 の矛盾の検証に必要 | UNKNOWN | 基準の復帰 |
 | C9 | 読込み失敗を注入し、再試行の READ LBA を観測（`_cl=2` の後） | HYPOTHESIS（K6）: 失敗後に recbase1 を使う。既存の観測計画（`tools/cd_base_probe.py`）には無い項目 | HYPOTHESIS（K6）。注入の手段は未確立 | 注入方法、K6 の真偽、#173 の境界 |
@@ -69,10 +71,12 @@
 
 - 実行記録は OBSERVED（値そのまま、または整合する候補の一覧）。未記録は UNKNOWN。呼出先が無い、または非復帰は BLOCKED（`tools/cd_base_probe.py` の `judge`）。
 - 候補の一つにだけ一致する記録は、その候補を「残る候補」として返すだけで、確定にはしない。
-- INDEX 01 が 0 の記録だけでは C6 の区別ができないため、C6 は UNKNOWN のまま残す。
+- INDEX 01 が 0 の記録だけでは C6 の区別ができないため、C6 は UNKNOWN のまま残す（本 PR の独自判断。`docs/cd-base-abi-ledger.md` §4a の判定器規則は、(2) について INDEX 01 が 0 の記録を UNKNOWN にすると定めるのみで、C6 全体への適用は本 PR の判断）。
 - 観測の値が `ABS_LBA` と `BASE_PLUS_BLOCK`（既定の base = 0）の両方に一致する場合、両者は区別できないと記す。
 
 ## 3. 確定できない論点（UNKNOWN）
+
+U1〜U12 は論点の ID。§1 の K8 は UNKNOWN（矛盾 OPEN）で、U5 に対応する。K と U は別の番号体系である。
 
 | # | 論点 | 現状 | 必要な情報 |
 | --- | --- | --- | --- |
@@ -100,7 +104,7 @@
 | N3 | ECMA-119 のエクステント記述の確認 | 文献 | リポジトリ外の規格。ライセンスを確認 | U10 |
 | N4 | `tools/cd_base_probe.py` の `OBSERVATION_PLAN` と本書 §2.2 の条件（C1〜C11）の対応を、既存の試験 `tests/host/test_cd_base_probe.py` で静的に照合する | 非実行（ホスト） | 合成記録のみ。BIOS の証拠ではない | 計画の欠落（C9 など）を見つける |
 | N5 | PREGAP 付き合成媒体の SCSI LBA 対応を、BIOS を使わずに読込みだけで測定する | 非 BIOS の媒体測定 | 純正 BIOS を実行しないこと。Geargrafx の媒体読込み経路のみ | U12。CD_BASE の証拠にはならない |
-| N6 | C2〜C11 の実行 | **BLOCKED** | 安全な参照実行境界（#173）の検証、呼出先の実行可能性、maintainer の許可が必要 | 実施しない |
+| N6 | C2〜C11 の実行 | **BLOCKED** | #173 の MMIO・IRQ 書込みの BLOCKED の解消（RAM 系の事前拒否だけでは足りない）、呼出先の実行可能性、maintainer の許可が必要 | 実施しない |
 
 ## 5. 境界
 
