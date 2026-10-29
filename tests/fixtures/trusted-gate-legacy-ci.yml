@@ -1,0 +1,108 @@
+name: CI (original fixture, not BIOS compatibility)
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Provenance guard on changed content (list edits need a verified maintainer approval)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 tools/provenance_guard.py
+          python3 -m unittest discover -s tests/host -p 'test_provenance_guard.py' -v
+      - name: Prepare pinned tools from source
+        run: make setup
+      - name: Build original HuCARD fixture
+        run: make build
+      - name: Host tests (no Geargrafx needed)
+        run: make test
+      - name: Real Geargrafx tests (required, fail-closed; Issue #398)
+        run: make test-real-core
+      - name: Static checks including Actions validation
+        run: make check
+      - name: Verify release-mode fixture
+        run: |
+          make build MODE=release
+          cmp build/debug/smoke-test-not-bios.pce build/release/smoke-test-not-bios.pce
+          python3 tools/build.py --verify build/debug/smoke-test-not-bios.pce
+      - name: Same-input rebuild and provenance record (Issue #335; fail-closed, stops before the handoff)
+        run: |
+          python3 tools/rom_provenance.py --reproduce smoke --mode debug
+          cmp build/debug/smoke-test-not-bios.pce build/rom-provenance/a/smoke-test-not-bios.pce
+          python3 tools/rom_provenance.py --rom build/debug/smoke-test-not-bios.pce --manifest build/debug/manifest.json
+      - name: Hand off the test fixture and evidence as an intermediate artifact (unverified here; the guard job checks them)
+        run: |
+          mkdir -p intermediate
+          cp --parents build/debug/*.pce build/debug/*.json build/debug/*.map build/debug/*.lbl build/debug/*.lst intermediate/
+      - name: Intermediate test fixture artifact (the guard job publishes it)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: intermediate-ci-fixture-${{ github.sha }}
+          path: intermediate/
+          if-no-files-found: error
+          retention-days: 1
+  guard-verify:
+    # Publishes only what the verify job handed over. It runs no build code: the trusted main tools, python3 resolved
+    # before anything else, the workflow files for the placement check, the download, the guard and the upload.
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout workflow files only (data for the placement check)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          sparse-checkout: .github/workflows
+          persist-credentials: false
+      - name: Trusted guard (main)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: main
+          path: .trusted-main
+          sparse-checkout: tools/artifact_guard.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Resolve python3 (trusted)
+        id: pyresolve
+        run: |
+          echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"
+      - name: Guard placement (trusted)
+        run: |
+          "${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --check-placement
+      - name: Download intermediate test fixture artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: intermediate-ci-fixture-${{ github.sha }}
+          path: .intake
+      - name: Stage artifacts (trusted guard) for Save verified test fixture and evidence
+        run: |
+          "${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root ".intake" --workflow-root "$GITHUB_WORKSPACE" --stage .github/workflows/ci.yml "Save verified test fixture and evidence"
+      - name: Verify staged artifacts (trusted guard) for Save verified test fixture and evidence
+        run: |
+          "${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root ".intake" --workflow-root "$GITHUB_WORKSPACE" --verify .github/workflows/ci.yml "Save verified test fixture and evidence"
+      - name: Save verified test fixture and evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: smoke-fixture-not-bios-${{ github.sha }}
+          path: |
+            .intake/.artifact-stage/build/debug/*.pce
+            .intake/.artifact-stage/build/debug/*.json
+            .intake/.artifact-stage/build/debug/*.map
+            .intake/.artifact-stage/build/debug/*.lbl
+            .intake/.artifact-stage/build/debug/*.lst
+          if-no-files-found: error
+          retention-days: 14
