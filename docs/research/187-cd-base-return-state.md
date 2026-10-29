@@ -1,6 +1,8 @@
 # Issue #187: CD_BASE（`$02`）の戻り値・レジスタ保持・MPR/RAM 副作用・RESET 後保持の出典整理
 
-対象: スロット `$02`、候補エントリ `$E006`（`CD_BASE`）。親は #11。依存: #186（LBA 座標系、参照のみ）、安全な参照実行境界 #173（未検証）。
+対象: スロット `$02`、候補エントリ `$E006`（`CD_BASE`）。親は #11。依存: #186（LBA 座標系、参照のみ）、安全な参照実行境界 #173（未検証。参照先は `docs/173-safety-monitor-limits.md`）。
+
+**注意: System Card の一次資料は未確認。W1・W2 は二次資料である。**
 
 本書は調査台帳であり、**実コアでの実行・観測は一件もない**。純正 BIOS は実行していない。私有 ROM（`rom/`）は読んでおらず、BIOS のコード・逆アセンブル・バイト列は転記しない。
 したがって本書に VERIFIED・OBSERVED の項目はない。出典の記述がない項目は UNKNOWN と書き、成功値・既定値・副作用は定義しない。
@@ -22,15 +24,15 @@
 | 出典 | 性質 | 内容 | 本書での重み |
 | --- | --- | --- | --- |
 | S1（HuCC `hucc-systemcard.asm`、固定版 `54f5c736`） | 呼出側ソース | `jsr cd_base` の前後で `_al`・`_bh`・`_cl` を設定する。呼出後に戻り値は読まない | 呼出側の事実のみ。呼出先の戻り値・保持の証拠ではない |
-| S4（同 `hucc-systemcard.asm`、`_cd_loaddata` 付近） | 呼出側ソース | CD_READ の前後で MPR3 を保存・復元し、X（コピー元の戻り値）が 0 以外をエラーとして扱う | CD_READ の呼出側の報告。CD_BASE の副作用の証拠ではない。呼出側の回復を callee 保存と見なさない |
+| S4（同 `hucc-systemcard.asm`、`_cd_loaddata` 付近） | 呼出側ソース | CD_READ の前後で MPR3 を保存・復元し、X（コピー元の戻り値）が 0 以外をエラーとして扱う。同じ箇所のコメントは、System Card の CD エラー時に MPR3 の値が壊れると記す（台帳の記録は 443–452 行、コメントは 450–452 行） | 呼出側の報告。CD_READ の副作用であり、CD_BASE の副作用の証拠ではない。呼出側の回復を callee 保存と見なさない |
 | S5（HuCC オーバーレイ読込み） | 呼出側ソース | CD_BASE を呼ばずに CD_READ を使う | CD_READ の基準が変わらない可能性の材料（#186 の範囲） |
-| W1（Michael Stum, 2026-05-01）<https://www.stum.de/2026/pc-engine-second-data-track/> | 二次資料（本文 CC BY-NC-SA 4.0） | CD_BASE を呼ぶ例と、基準 `recbase0`/`recbase1` の説明。System Card が起動時に両方を初期化すると記す | HYPOTHESIS。一次資料ではなく、解析手段と根拠の対応は記載なし。HuCC を参照した可能性を排除できない |
-| W2（Michael Stum, 2025-07-28）<https://stum.de/2025/pcenginebiosoffsets/> | 二次資料 | `cd_base` のジャンプテーブル入口 `$E006` と本体アドレス表のみ | 引数・戻り値・保持の記載なし |
-| Hu-Go `bios.c`（`64ed226d`） | HLE エミュレータ | CD_BASE/CD_RESET の応答を模擬する | 実 BIOS の証拠にならない（既存台帳と同じ扱い） |
+| W1（Michael Stum, 2026-05-01）<https://www.stum.de/2026/pc-engine-second-data-track/> | 二次資料（本文 CC BY-NC-SA 4.0）。台帳の S1〜S7 には含まれない | CD_BASE を呼ぶ例と、基準 `recbase0`/`recbase1` の説明。両基準を最初のデータトラックの LBA に設定すると記す（初期化のタイミングは記載なし） | HYPOTHESIS。一次資料ではなく、解析手段と根拠の対応は記載なし。HuCC を参照した可能性を排除できない |
+| W2（Michael Stum, 2025-07-28）<https://stum.de/2025/pcenginebiosoffsets/> | 二次資料。台帳の S1〜S7 には含まれない | `cd_base` のジャンプテーブル入口 `$E006` と本体アドレス表のみ | 引数・戻り値・保持の記載なし |
+| Hu-Go `bios.c`（`64ed226d`） | HLE エミュレータ。台帳の S1〜S7 には含まれない | CD_BASE/CD_RESET の応答を模擬する | ライセンス未確定のため根拠にしない（`docs/cd-base-abi-ledger.md` §1）。HLE であり実 BIOS の証拠にもならない |
 | 本リポジトリの DEV ROM の `$E006`（`make dev-cd-base-integration`、固定版 Geargrafx `b49ae82a`） | 自作 ROM の測定 | fail-closed の fallback（`$E295`）に入り、RTS がないため戻らない | 本 ROM の性質であり、BIOS の振る舞いの証拠ではない |
 | `docs/cd-reset-contract.md`（#121、#201 等） | 自作診断の測定 | `$1804` のバスリセット記録（Geargrafx のみ、未保存） | CD_RESET callee は未実行。RESET 後の基準値の保持には使えない |
 
-W1 の「`recbase1` は読込み失敗後のみ使う」「起動時に両方を初期化する」は、現時点で唯一の二次資料による記述であり、一次資料・実測のいずれでも確認していない。
+W1 の「`recbase1` は読込み失敗後のみ使う」「両基準を最初のデータトラックの LBA に設定する」は、現時点で唯一の二次資料による記述であり、一次資料・実測のいずれでも確認していない。初期化のタイミング（起動時か、その他か）は W1 に記載がなく、UNKNOWN とする。
 
 ## 3. 項目ごとの判定
 
@@ -42,12 +44,12 @@ W1 の「`recbase1` は読込み失敗後のみ使う」「起動時に両方を
 | 2 | 失敗時の戻り値・フラグ（無ディスク、範囲外、データでないトラック） | UNKNOWN（U2） | 出典なし。Hu-Go の戻り値は HLE のため根拠にしない | 失敗の定義自体が未確定 |
 | 3 | レジスタ保持（A/X/Y/P/SP） | UNKNOWN（U3） | 出典なし（既存台帳でも CD_BASE のレジスタ保持は未記載） | 呼出側の保存・復元は callee の保存の証拠にならない |
 | 4 | MPR0–7 の副作用 | UNKNOWN（U4） | CD_BASE について記述なし。S4 の MPR3 保存は CD_READ の呼出側の報告 | 呼出側の MPR 回復を callee 保存と誤認しない（#187 の完了条件） |
-| 5 | 作業 RAM の書込み範囲（`$20F8–$20FF` を含む） | UNKNOWN（U5） | 呼出側が `$20F8`–`$20FF`（`al`…`dh`）へ入力を置くことは S1 で確認（呼出側の書込み）。CD_READ 側の `$20FC–$20FE` は HYPOTHESIS のみ | 呼出先が読む・書く範囲は未観測。入力の書込みと出力の書込みを区別できない |
+| 5 | 作業 RAM の書込み範囲（`$20F8–$20FF` を含む） | UNKNOWN（U5） | 呼出側が `_al`・`_bh`・`_cl` を設定することは S1 で確認（呼出側の書込み）。`$20F8`–`$20FF` と `al`…`dh` の対応は S2（`include/hucc/pcengine.inc` 330–343 行）が根拠。`$20FC–$20FE` は `docs/cd-base-contract.md` の CD_READ 側の推定（出典は確認できず、本表の判定には含めない） | 呼出先が読む・書く範囲は未観測。入力の書込みと出力の書込みを区別できない |
 | 6 | 基準値の格納場所と保持期間（次の CD_READ まで有効か） | HYPOTHESIS（部分。格納場所は UNKNOWN）（U6） | W1 の `recbase0`/`recbase1` の二つの基準（単一の二次資料） | 格納アドレス、更新条件、保持期間は未確認 |
-| 7 | RESET 後の保持（CD_RESET で基準値が初期化されるか、残るか） | UNKNOWN（U7） | W1 は起動時の初期化を記すが、CD_RESET 後の扱いは記載なし。`docs/cd-reset-contract.md` は CD_RESET callee を未実行 | CD_RESET の呼出し前後で基準値を比較した記録がない。実行には別ゲートが要る（BLOCKED の条件を満たさない） |
-| 8 | 割込み（I フラグ）・完了条件・タイミング | UNKNOWN（U8） | 出典なし（`docs/cd-base-contract.md` の UNKNOWN と同じ） | 同期・非同期の区別もない。スタックの釣り合いは JSR/RTS の想定（HYPOTHESIS）に留まる |
+| 7 | RESET 後の保持（CD_RESET で基準値が初期化されるか、残るか） | UNKNOWN（U7） | W1 は両基準の初期化に言及するが、タイミングは記載なし。CD_RESET 後の扱いも記載なし。`docs/cd-reset-contract.md` は CD_RESET callee を未実行 | CD_RESET の呼出し前後で基準値を比較した記録がない。実行には別ゲートが要る（BLOCKED の条件を満たさない） |
+| 8 | 割込み（I フラグ）・完了条件・タイミング | UNKNOWN（U8） | 出典なし（`docs/cd-base-contract.md` の UNKNOWN と同じ） | 同期・非同期の区別もない。スタックの釣り合いは既存台帳の JSR/RTS の想定だが、本表では判定に含めず UNKNOWN とする |
 
-集計: VERIFIED 0 件、OBSERVED 0 件、HYPOTHESIS 1 件（項目 6 の一部）、UNKNOWN 7 件（項目 1・2・3・4・5・7・8）。項目 1〜5・7・8 の未確定点は U1〜U8 の番号で §4 に列挙する。
+集計（表の判定と一致）: VERIFIED 0 件、OBSERVED 0 件、HYPOTHESIS 1 件（項目 6）、UNKNOWN 7 件（項目 1・2・3・4・5・7・8）。合計 8 項目。本文中の HYPOTHESIS 表記は、この表の判定だけを指す。項目 1〜5・7・8 の未確定点は U1〜U8 の番号で §4 に列挙する（U6 は項目 6 の残り）。
 
 ## 4. 確定できない論点（UNKNOWN）
 
@@ -56,7 +58,7 @@ W1 の「`recbase1` は読込み失敗後のみ使う」「起動時に両方を
 - U3: レジスタ保持（A/X/Y/P/SP）。
 - U4: MPR0–7 の変化（CD_BASE 単独の副作用）。
 - U5: 作業 RAM の書込み範囲（呼出先が読む・書く範囲）。
-- U6: 基準値の格納アドレスと保持期間（HYPOTHESIS の残り）。
+- U6: 基準値の格納アドレスと保持期間（項目 6 の未確定部分）。
 - U7: CD_RESET 後の基準値（初期化・保持・消失のどれか）。
 - U8: 割込み条件、完了条件、タイミング、スタックの釣り合い。
 
