@@ -1908,7 +1908,16 @@ def _is_trusted_checkout(lines, step, dash):
     if len(set(with_names)) != len(with_names) or not set(with_names) <= TRUSTED_CHECKOUT_WITH:
         return False
     with_values = dict(with_pairs)
-    return all(with_values.get(key) == value for key, value in TRUSTED_CHECKOUT_WANT.items())
+    # Staged policy migration: the legacy checkout contains only the guard
+    # script, while the new approved checkout also contains the signed run
+    # allowlist. Neither may point to an arbitrary directory or repository.
+    # The enforced run allowlist separately pins the *entire job* digest, so
+    # an attacker cannot mix the legacy form with new unapproved steps.
+    sparse = with_values.get("sparse-checkout")
+    return (sparse in ("tools/artifact_guard.py", "tools")
+            and all(with_values.get(key) == value
+                    for key, value in TRUSTED_CHECKOUT_WANT.items()
+                    if key != "sparse-checkout"))
 
 
 def _is_checkout(lines, step, dash):
