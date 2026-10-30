@@ -70,25 +70,11 @@ class AllowlistPositive(unittest.TestCase):
         with self.assertRaises(pal.Refused):
             pal.validate(document, CONTRACTS)
 
-    def test_slot_74_is_an_unresolved_pair_with_unconfirmed_confidence(self):
-        api = public()["apis"][74]
-        self.assertEqual(api["source_confidence"], "UNCONFIRMED_NAME")
-        self.assertEqual(api["name_source"], "UNRESOLVED_ALTERNATIVES")
-
-    def test_the_four_author_labels_are_marked_unconfirmed(self):
-        document = public()
-        for slot in (77, 78, 79, 80):
-            with self.subTest(slot=slot):
-                self.assertEqual(document["apis"][slot]["source_confidence"], "UNCONFIRMED_NAME")
-                self.assertEqual(document["apis"][slot]["name_source"], "UNCONFIRMED_AUTHOR_LABEL")
-        self.assertEqual(document["apis"][30]["source_confidence"], "SECONDARY")
-
-    def test_the_alias_slots_are_marked_unresolved_in_the_public_output(self):
+    def test_every_slot_carries_the_same_withheld_status(self):
+        # Per-slot classification is not published: it would reconstruct secondary-source structure.
         apis = public()["apis"]
-        for slot in (13, 75, 76):
-            with self.subTest(slot=slot):
-                self.assertEqual(apis[slot]["name_source"], "UNRESOLVED_ALTERNATIVES")
-                self.assertEqual(apis[slot]["source_confidence"], "SECONDARY")
+        self.assertEqual({api["name_source"] for api in apis}, {"WITHHELD_PENDING"})
+        self.assertEqual({api["source_confidence"] for api in apis}, {"PENDING"})
 
     def test_the_command_prints_only_the_public_document(self):
         out, err = io.StringIO(), io.StringIO()
@@ -195,8 +181,20 @@ class AllowlistNegative(unittest.TestCase):
     def test_an_unconfirmed_confidence_on_a_confirmed_slot_is_refused(self):
         self.refused(lambda d: d["apis"][0].update(source_confidence="UNCONFIRMED_NAME"))
 
-    def test_a_name_source_outside_the_vocabulary_is_refused(self):
+    def test_a_name_source_outside_the_uniform_status_is_refused(self):
         self.refused(lambda d: d["apis"][0].update(name_source="PRIVATE_IMAGE"))
+
+    def test_a_per_slot_alias_classification_is_refused(self):
+        self.refused(lambda d: d["apis"][13].update(name_source="UNRESOLVED_ALTERNATIVES"))
+
+    def test_a_per_slot_author_label_classification_is_refused(self):
+        self.refused(lambda d: d["apis"][77].update(name_source="UNCONFIRMED_AUTHOR_LABEL"))
+
+    def test_a_per_slot_unconfirmed_confidence_is_refused(self):
+        self.refused(lambda d: d["apis"][74].update(source_confidence="UNCONFIRMED_NAME"))
+
+    def test_a_name_field_added_next_to_the_status_is_refused(self):
+        self.refused(lambda d: d["apis"][13].update(name="SYNTH_A / SYNTH_B"))
 
     def test_a_forged_entry_source_is_refused(self):
         self.refused(lambda d: d["apis"][0].update(entry_source="self-declared"))
@@ -234,7 +232,7 @@ class Slot13GateState(unittest.TestCase):
 
     def test_the_public_output_keeps_slot_13_closed_and_its_pair_unresolved(self):
         api = public()["apis"][SLOT13]
-        self.assertEqual(api["name_source"], "UNRESOLVED_ALTERNATIVES")
+        self.assertEqual(api["name_source"], "WITHHELD_PENDING")
         self.assertEqual(api["execution_gate"], "BLOCKED")
         self.assertIs(public()["release_eligible"], False)
 

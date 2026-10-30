@@ -26,4 +26,5 @@
 ## 公開版の扱い
 
 - 公開台帳は名称を出力しない（`name_publication: WITHHELD_PROVENANCE_PENDING`）。名称の公開は、provenance の承認後にオーナーが判断する。
+- 公開台帳の名称状態（`name_source`）と出典の確度（`source_confidence`）は、全スロットで同一の値（`WITHHELD_PENDING` / `PENDING`）とする。スロット別の分類は公開せず、内部の契約検査でだけ使う。
 - 公開管理出力は入口値を列挙しない（オーナー裁定）。入口の配置規則は、契約台帳側の整合検査にだけ使う。

@@ -3,15 +3,15 @@
 
 The public output is built only from explicitly allowed fields. It never copies a record and then deletes keys.
 Inputs are the contract ledger (slot, candidate name, candidate entry) and the repository's own jump-table layout
-rule (tools/build_rom.py: entries at $E000 + 3 x slot). No secondary-source table is read.
+rule (tools/build_rom.py). No secondary-source table is read.
 
-Names are not published. The names come from a secondary source whose reuse is not approved (provenance PENDING),
-so the public output carries only name_source and name_publication. Alias and author-label facts are published
-because they describe the status of a name, not the name itself.
+The output carries the status keys only, and every slot has the same status. A per-slot classification (a name pair,
+an author label, a confirmed name) is derived from secondary-source structure, so publishing it would reconstruct
+that structure. It is checked internally against the contract ledger and is never printed.
 
-Fail closed: the validator rejects any unknown key at any depth, any value outside its closed vocabulary, any
-contract whose entries differ from the layout rule or whose alias structure differs from the owner's set. No entry
-value is published: the public output lists slots and status only.
+Fail closed: the validator rejects any unknown key at any depth, any value outside the uniform status, any slot whose
+status differs from the others, and any contract whose entries differ from the layout rule or whose alias structure
+differs from the owner's set.
 
 Host only. No ROM and no private image is read.
 """
@@ -26,27 +26,26 @@ from build_rom import FIRST_ENTRY  # noqa: E402  (the repository's own jump-tabl
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACTS = ROOT / "spec" / "api_contracts.json"
 
-SCHEMA = "oss-pce-cd-bios/public-api-ledger/v3"
+SCHEMA = "oss-pce-cd-bios/public-api-ledger/v4"
 TOP_KEYS = frozenset({"schema", "release_eligible", "apis"})
-# No entry value is published here (owner ruling): the DEV table rule is checked on the contract side only.
 API_KEYS = frozenset({"slot", "entry_source", "name_source", "name_publication", "source_confidence",
                       "abi_verification", "execution_gate"})
+# A fixed description of the DEV table structure. It is not reference-BIOS ABI evidence.
 ENTRY_SOURCE = "DEV ROM generated-table structure (tools/build_rom.py); not reference-BIOS ABI evidence"
 NAME_PUBLICATION = "WITHHELD_PROVENANCE_PENDING"
-# SECONDARY_SOURCE: one name. UNRESOLVED_ALTERNATIVES: the name is an unresolved pair. UNCONFIRMED_AUTHOR_LABEL:
-# the name is the author's own label for a 2.0-added slot (this takes precedence over the pair status).
-NAME_SOURCES = frozenset({"SECONDARY_SOURCE", "UNRESOLVED_ALTERNATIVES", "UNCONFIRMED_AUTHOR_LABEL"})
-SOURCE_CONFIDENCES = frozenset({"SECONDARY", "UNCONFIRMED_NAME"})
+# Uniform for every slot: the per-slot classification is not published.
+NAME_SOURCE = "WITHHELD_PENDING"
+SOURCE_CONFIDENCE = "PENDING"
 ABI_VERIFICATION = "UNVERIFIED"
 EXECUTION_GATE = "BLOCKED"
-# Slots whose name is not confirmed: the author's labels (77-80) and the unresolved pair (74).
+SLOTS = 81
+
+# Internal classification, checked against the contract ledger and never printed.
+# SECONDARY_SOURCE: one name. UNRESOLVED_ALTERNATIVES: a name pair. UNCONFIRMED_AUTHOR_LABEL: an author's label.
 UNCONFIRMED_NAME_SLOTS = frozenset({74, 77, 78, 79, 80})
-# Slots whose name is the author's own label (the author's additions, not an official name).
 AUTHOR_LABEL_SLOTS = frozenset({77, 78, 79, 80})
-# Slots whose candidate name is an unresolved pair of names. The owner's set; the contract must agree with it.
 ALTERNATIVE_NAME_SLOTS = frozenset({13, 74, 75, 76, 80})
 NAME_PART = re.compile(r"[A-Z][A-Z0-9_]*")
-SLOTS = 81
 
 
 class Refused(Exception):
@@ -59,7 +58,7 @@ def _require(condition, message):
 
 
 def entry_for(slot):
-    """The jump-table entry the repository layout gives a slot (the only entry rule used here)."""
+    """The jump-table entry the repository layout gives a slot. Used only to check the contract ledger."""
     return f"0x{FIRST_ENTRY + 3 * slot:04X}"
 
 
@@ -82,31 +81,22 @@ def check_contracts(contracts):
 
 
 def build(contracts):
-    """Build the public ledger from explicitly allowed fields only."""
+    """Build the public ledger from explicitly allowed fields only. Every slot carries the same status."""
     check_contracts(contracts)
-    apis = []
-    for slot in range(SLOTS):
-        # The stronger status wins: an author label is reported as such even where it is also a pair.
-        if slot in AUTHOR_LABEL_SLOTS:
-            name_source = "UNCONFIRMED_AUTHOR_LABEL"
-        elif slot in ALTERNATIVE_NAME_SLOTS:
-            name_source = "UNRESOLVED_ALTERNATIVES"
-        else:
-            name_source = "SECONDARY_SOURCE"
-        apis.append({
-            "slot": slot,
-            "entry_source": ENTRY_SOURCE,
-            "name_source": name_source,
-            "name_publication": NAME_PUBLICATION,
-            "source_confidence": "UNCONFIRMED_NAME" if slot in UNCONFIRMED_NAME_SLOTS else "SECONDARY",
-            "abi_verification": ABI_VERIFICATION,
-            "execution_gate": EXECUTION_GATE,
-        })
+    apis = [{
+        "slot": slot,
+        "entry_source": ENTRY_SOURCE,
+        "name_source": NAME_SOURCE,
+        "name_publication": NAME_PUBLICATION,
+        "source_confidence": SOURCE_CONFIDENCE,
+        "abi_verification": ABI_VERIFICATION,
+        "execution_gate": EXECUTION_GATE,
+    } for slot in range(SLOTS)]
     return {"schema": SCHEMA, "release_eligible": False, "apis": apis}
 
 
 def validate(document, contracts):
-    """Raise Refused unless the document is exactly the allowed public shape with consistent values."""
+    """Raise Refused unless the document is exactly the allowed public shape with the uniform status."""
     check_contracts(contracts)
     _require(isinstance(document, dict) and set(document) == TOP_KEYS, "top-level keys")
     _require(document["schema"] == SCHEMA, "schema")
@@ -118,16 +108,8 @@ def validate(document, contracts):
         _require(api["slot"] == index and type(api["slot"]) is int, f"slot {index}: slot number")
         _require(api["entry_source"] == ENTRY_SOURCE, f"slot {index}: entry source")
         _require(api["name_publication"] == NAME_PUBLICATION, f"slot {index}: names must stay withheld")
-        _require(api["name_source"] in NAME_SOURCES, f"slot {index}: name source vocabulary")
-        _require(api["source_confidence"] in SOURCE_CONFIDENCES, f"slot {index}: confidence vocabulary")
-        _require((api["source_confidence"] == "UNCONFIRMED_NAME") == (index in UNCONFIRMED_NAME_SLOTS),
-                 f"slot {index}: the unconfirmed-name set is fixed (slots 74 and 77-80)")
-        if index in AUTHOR_LABEL_SLOTS:
-            _require(api["name_source"] == "UNCONFIRMED_AUTHOR_LABEL", f"slot {index}: author label")
-        elif index in ALTERNATIVE_NAME_SLOTS:
-            _require(api["name_source"] == "UNRESOLVED_ALTERNATIVES", f"slot {index}: alternative name")
-        else:
-            _require(api["name_source"] == "SECONDARY_SOURCE", f"slot {index}: secondary name")
+        _require(api["name_source"] == NAME_SOURCE, f"slot {index}: name status must be the uniform withheld state")
+        _require(api["source_confidence"] == SOURCE_CONFIDENCE, f"slot {index}: confidence must be the uniform pending state")
         _require(api["abi_verification"] == ABI_VERIFICATION, f"slot {index}: abi verification")
         _require(api["execution_gate"] == EXECUTION_GATE, f"slot {index}: execution gate")
     return document
