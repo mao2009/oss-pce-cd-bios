@@ -25,8 +25,8 @@ guard = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(guard)
 
 DENY_COMMANDS = [
-    "rm -rf /mnt/c/home/loach",
-    "rm -rf /home/loach/work",
+    "rm -rf /mnt/c/home/synthetic-user",
+    "rm -rf /home/synthetic-user/work",
     "rm -rf /",
     "rm -rf ~",
     "rm -rf ../",
@@ -313,6 +313,67 @@ class DenyTests(unittest.TestCase):
         rc, out = run_hook_bytes(data)
         self.assertEqual(rc, 0)
         self.assertEqual(stdout_verdict(out), "allow")
+
+
+class HomeRootTests(unittest.TestCase):
+    """The home directory is derived at run time. No user-specific path is written into the guard."""
+
+    def test_generic_roots_only_in_the_source(self):
+        self.assertEqual(guard.PROTECTED_BASE, ["/", "/home", "/mnt", "/mnt/c", "/mnt/c/users"])
+
+    def test_home_roots_come_from_the_environment(self):
+        with mock.patch.dict(os.environ, {"HOME": "/home/synthetic-user", "USERPROFILE": ""}):
+            roots = guard.home_roots()
+        self.assertIn(guard.canon("/home/synthetic-user"), roots)
+
+    def test_windows_and_mount_forms_of_one_home_compare_equal(self):
+        with mock.patch.dict(os.environ, {"HOME": "", "USERPROFILE": "C:\\Users\\synthetic-user"}):
+            roots = guard.home_roots()
+        self.assertIn(guard.canon("/mnt/c/Users/synthetic-user"), roots)
+
+    def test_relative_home_is_refused(self):
+        with mock.patch.dict(os.environ, {"HOME": "relative/dir", "USERPROFILE": ""}):
+            with self.assertRaises(guard.Deny) as caught:
+                guard.home_roots()
+        self.assertEqual(caught.exception.kind, "home")
+
+    def test_msys_and_windows_forms_of_one_path_compare_equal(self):
+        self.assertEqual(guard.canon("/c/Users/synthetic-user"), guard.canon("C:\\Users\\synthetic-user"))
+
+    def test_local_roots_come_from_the_environment(self):
+        with mock.patch.dict(os.environ, {"OSS_PCE_GUARD_PROTECTED": "/home/synthetic-owner"}):
+            roots = guard.local_roots(REPO)
+        self.assertIn(guard.canon("/home/synthetic-owner"), roots)
+
+    def test_malformed_local_config_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, ".claude"))
+            with open(os.path.join(tmp, ".claude", "guard-local.json"), "w", encoding="utf-8") as f:
+                f.write("{not json")
+            with self.assertRaises(guard.Deny) as caught:
+                guard.local_roots(tmp)
+        self.assertEqual(caught.exception.kind, "config")
+
+    def test_local_root_protects_a_registered_worktree_at_that_root(self):
+        # A registered worktree at a protected root is refused; without the local root it is allowed.
+        target = "/home/synthetic-owner/work"
+        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "git worktree remove " + target},
+                              "cwd": REPO})
+        registry = {guard.key(target)}
+        # local_roots is patched in both arms so that a local guard-local.json cannot change the result.
+        with mock.patch.object(guard, "load_registry", return_value=registry):
+            with mock.patch.object(guard, "local_roots", return_value=[guard.canon(target)]):
+                self.assertEqual(guard.decide(payload, REPO)[0], guard.DENY)
+            with mock.patch.object(guard, "local_roots", return_value=[]):
+                self.assertEqual(guard.decide(payload, REPO)[0], guard.ALLOW)
+
+    def test_undeterminable_home_fails_closed(self):
+        payload = {"tool_name": "Bash", "tool_input": {"command": "git status"}, "cwd": REPO}
+        with mock.patch("os.path.expanduser", return_value="~"), \
+                mock.patch.dict(os.environ, {"HOME": "", "USERPROFILE": ""}):
+            verdict, reason = guard.decide(json.dumps(payload), REPO)
+        self.assertEqual(verdict, guard.DENY)
+        self.assertTrue(reason.startswith("home:"), reason)
 
 
 class AllowTests(unittest.TestCase):

@@ -57,8 +57,9 @@ DANGER_PY = re.compile(r"rmtree|remove|unlink|rmdir|removedirs|system|subprocess
                        r"ctypes|socket", re.I)
 ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 MNT = re.compile(r"^/mnt/([A-Za-z])(/.*)?$")
-PROTECTED_BASE = ["/", "/home", "/mnt", "/mnt/c", "/mnt/c/users", "/home/loach",
-                  "/home/loach/work", "/mnt/c/home/loach"]
+MSYS = re.compile(r"^/([A-Za-z])(/.*)?$")  # Git Bash drive form: /c/Users/... is C:/Users/...
+# Generic roots only. The home directory is derived at run time (home_roots), never written into the public tree.
+PROTECTED_BASE = ["/", "/home", "/mnt", "/mnt/c", "/mnt/c/users"]
 
 
 class Deny(Exception):
@@ -84,9 +85,9 @@ class Ctx:
 
 
 def canon(path):
-    """Canonical absolute form: forward slashes, /mnt/c and c:/ both -> C:/."""
+    """Canonical absolute form: forward slashes; /mnt/c, /c (MSYS) and c:/ all -> C:/."""
     p = path.replace("\\", "/")
-    m = MNT.match(p)
+    m = MNT.match(p) or MSYS.match(p)
     if m:
         p = m.group(1).upper() + ":" + (m.group(2) or "/")
     drive = ""
@@ -102,6 +103,63 @@ def canon(path):
 
 def key(path):
     return canon(path).casefold()
+
+
+ABSOLUTE = re.compile(r"^(/|[A-Za-z]:[\\/])")
+
+
+def _absolute_root(value):
+    """A protected root in the same form resolve() gives a target: real path when it exists, else lexical.
+
+    A relative value is refused (fail closed).
+    """
+    if not ABSOLUTE.match(value):
+        raise Deny("home", "a protected root value is not absolute")
+    lexical = canon(value)
+    return canon(os.path.realpath(lexical)) if os.path.exists(lexical) else lexical
+
+
+def home_roots():
+    """Home directories to protect, derived from the environment at run time.
+
+    Sources: the process home (expanduser), HOME and USERPROFILE. A value that is unset or still
+    unexpanded ("~") is ignored. A relative value is refused. Each value is realpath'd and canonicalised, so
+    symlinked, Windows, /mnt/<drive> and MSYS forms of one home compare equal. An empty result makes the
+    caller fail closed.
+    """
+    raw = [os.path.expanduser("~"), os.environ.get("HOME", ""), os.environ.get("USERPROFILE", "")]
+    roots = []
+    for value in raw:
+        if value and value != "~":
+            roots.append(_absolute_root(value))
+    return sorted(set(roots))
+
+
+def local_roots(root):
+    """Extra protected roots kept outside the public tree.
+
+    Sources: the environment variable OSS_PCE_GUARD_PROTECTED (os.pathsep separated) and the untracked file
+    .claude/guard-local.json with {"protected": [absolute paths]}. A missing file adds nothing; an unreadable,
+    malformed or relative entry is refused (fail closed).
+    """
+    values = []
+    env = os.environ.get("OSS_PCE_GUARD_PROTECTED", "")
+    values += [item.strip() for item in env.split(os.pathsep) if item.strip()]
+    path = os.path.join(root, ".claude", "guard-local.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        data = {}
+    except Exception:
+        raise Deny("config", "local guard configuration is unreadable")
+    if not isinstance(data, dict):
+        raise Deny("config", "local guard configuration is malformed")
+    listed = data.get("protected", [])
+    if not isinstance(listed, list) or not all(isinstance(item, str) for item in listed):
+        raise Deny("config", "local guard configuration is malformed")
+    values += listed
+    return [_absolute_root(item) for item in values if item]
 
 
 def inside(k, base):
@@ -654,7 +712,11 @@ def _decide(raw, repo_root):
         cwd = root
     if not (cwd.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:[\\/]", cwd)):
         raise Deny("input", "cwd is not absolute")
-    protected = [key(p) for p in PROTECTED_BASE + [os.path.expanduser("~")]]
+    homes = home_roots()
+    if not homes:
+        # Fail closed: the protected set cannot be determined without a home directory.
+        raise Deny("home", "home directory cannot be determined; protected set unknown")
+    protected = [key(p) for p in PROTECTED_BASE + homes + local_roots(root)]
     protected += [key(root), key(os.path.join(root, ".git"))]
     ctx = Ctx(canon(cwd), key(root), key(os.path.join(root, ".git")),
               load_registry(root), protected)
