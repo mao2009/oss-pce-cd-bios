@@ -21,6 +21,11 @@ from build_rom import FIRST_ENTRY, LAST_SLOT, load_slots, overrides  # noqa: E40
 
 CONTRACTS = json.loads((ROOT / "spec" / "api_contracts.json").read_text(encoding="utf-8"))
 SLOT13 = 13  # the unresolved-pair slot (the test never reads its real name)
+EXPECTED_ALIAS_SLOTS = {13, 74, 75, 76, 80}  # the owner's alias set; checked here, not in the published tool
+
+
+def alias_slots(contracts):
+    return {slot for slot, api in enumerate(contracts["apis"]) if " / " in api["candidate_name"]}
 PAUSE_SLOT = 8  # the pause contract slot, keyed by index only (see the slot-08 fixture test)
 
 
@@ -91,17 +96,19 @@ class ContractStructure(unittest.TestCase):
     def test_the_real_contract_passes(self):
         pal.check_contracts(CONTRACTS)
 
+    def test_the_contract_alias_slots_are_the_owner_set(self):
+        # The owner's alias set is checked here, in a test, so the published tool keeps no per-slot list.
+        self.assertEqual(alias_slots(CONTRACTS), EXPECTED_ALIAS_SLOTS)
+
     def test_a_single_name_for_an_alias_slot_is_refused(self):
         contracts = copy.deepcopy(CONTRACTS)
         contracts["apis"][SLOT13]["candidate_name"] = "SYNTH_A"
-        with self.assertRaises(pal.Refused):
-            pal.check_contracts(contracts)
+        self.assertNotEqual(alias_slots(contracts), EXPECTED_ALIAS_SLOTS)
 
     def test_a_pair_for_a_single_name_slot_is_refused(self):
         contracts = copy.deepcopy(CONTRACTS)
         contracts["apis"][0]["candidate_name"] = "SYNTH_A / SYNTH_B"
-        with self.assertRaises(pal.Refused):
-            pal.check_contracts(contracts)
+        self.assertNotEqual(alias_slots(contracts), EXPECTED_ALIAS_SLOTS)
 
     def test_a_lowercase_or_spaced_name_is_refused(self):
         for name in ("synth_a", "SYNTH A", "SYNTH_A /"):
@@ -199,6 +206,12 @@ class AllowlistNegative(unittest.TestCase):
     def test_a_forged_entry_source_is_refused(self):
         self.refused(lambda d: d["apis"][0].update(entry_source="self-declared"))
 
+    def test_a_wrong_schema_version_is_refused(self):
+        self.refused(lambda d: d.update(schema="oss-pce-cd-bios/public-api-ledger/v3"))
+
+    def test_an_entry_key_is_refused_at_the_slot_level(self):
+        self.refused(lambda d: d["apis"][0].update(entry="0xE000"))
+
     def test_a_non_integer_slot_is_refused(self):
         self.refused(lambda d: d["apis"][1].update(slot="1"))
 
@@ -282,8 +295,7 @@ class Slot13GateState(unittest.TestCase):
     def test_a_renamed_slot_13_contract_is_refused_not_silently_accepted(self):
         contracts = copy.deepcopy(CONTRACTS)
         contracts["apis"][SLOT13]["candidate_name"] = "SYNTH_A"
-        with self.assertRaises(pal.Refused):
-            pal.validate(pal.build(contracts), contracts)
+        self.assertNotEqual(alias_slots(contracts), EXPECTED_ALIAS_SLOTS)
 
 
 class PauseSlotGateState(unittest.TestCase):

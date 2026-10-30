@@ -142,7 +142,7 @@ class BehaviorClaims(unittest.TestCase):
 
 
 # --- candidate entries: the layout rule, and refusal of anything the rule does not support --------------------------
-# The author's own labels only. Slot 74 is an unresolved pair, checked by the public ledger tests, not here.
+# A fixed sample of the contract ledger's unconfirmed-confidence slots (checked by this boundary test).
 UNCONFIRMED_NAME_SLOTS = (77, 78, 79, 80)
 
 

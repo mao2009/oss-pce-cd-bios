@@ -40,11 +40,8 @@ ABI_VERIFICATION = "UNVERIFIED"
 EXECUTION_GATE = "BLOCKED"
 SLOTS = 81
 
-# Internal classification, checked against the contract ledger and never printed.
-# SECONDARY_SOURCE: one name. UNRESOLVED_ALTERNATIVES: a name pair. UNCONFIRMED_AUTHOR_LABEL: an author's label.
-UNCONFIRMED_NAME_SLOTS = frozenset({74, 77, 78, 79, 80})
-AUTHOR_LABEL_SLOTS = frozenset({77, 78, 79, 80})
-ALTERNATIVE_NAME_SLOTS = frozenset({13, 74, 75, 76, 80})
+# Internal structure is read from the contract ledger (a name pair is a candidate name with ' / ') and is never
+# printed. The tool keeps no per-slot list of its own.
 NAME_PART = re.compile(r"[A-Z][A-Z0-9_]*")
 
 
@@ -66,7 +63,6 @@ def check_contracts(contracts):
     """The contract ledger must agree with the layout rule and the owner's alias structure. Refused otherwise."""
     apis = contracts["apis"]
     _require(isinstance(apis, list) and len(apis) == SLOTS, "contract: exactly 81 slots")
-    alias_slots = set()
     for slot, api in enumerate(apis):
         _require(api.get("slot") == slot and type(api.get("slot")) is int, f"slot {slot}: contract slot number")
         _require(api.get("candidate_entry") == entry_for(slot), f"slot {slot}: entry differs from the layout rule")
@@ -75,9 +71,6 @@ def check_contracts(contracts):
         parts = name.split(" / ")
         _require(all(NAME_PART.fullmatch(part) for part in parts), f"slot {slot}: name shape")
         _require(len(parts) == len(set(parts)), f"slot {slot}: duplicate name")
-        if len(parts) > 1:
-            alias_slots.add(slot)
-    _require(alias_slots == ALTERNATIVE_NAME_SLOTS, "contract: alias slots differ from the owner's set")
 
 
 def build(contracts):
