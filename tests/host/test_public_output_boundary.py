@@ -18,6 +18,7 @@ from pathlib import Path
 import contextlib
 import io
 import json
+import os
 import re
 import subprocess
 import sys
@@ -231,7 +232,10 @@ class LocalOutputStaysOutside(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         err, out = io.StringIO(), io.StringIO()
-        with mock.patch.object(audit, "audit_image", side_effect=OSError(secret)), \
+        # The CI guard (GITHUB_ACTIONS=true refuses before any image is read) is cleared here, so the test exercises
+        # the exception path on every runner.
+        with mock.patch.dict(os.environ, {"GITHUB_ACTIONS": ""}), \
+                mock.patch.object(audit, "audit_image", side_effect=OSError(secret)), \
                 contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
             rc = audit.main(["--rom", str(ROOT / "missing.bin"), "--output", str(Path(tmp.name) / "a.json")])
         self.assertEqual(rc, 2)
