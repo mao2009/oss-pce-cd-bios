@@ -31,7 +31,7 @@ System Card API の意味とは別物である。
    リリース版の GUI バイナリであるため、証拠としては使わない（`tools/dependencies.json` の固定版ではない）。
 
 探索したパス（名称のみ）: worktree 直下（`Makefile`, `tools/`, `tests/`, `docs/` を確認）、リポジトリ外の既定 tools ディレクトリ
-（存在せず）、`<repo>/rom/`（`Geargrafx/`, 市販ゲームのフォルダ, `syscard3.pce` の存在のみ確認。中身は読んでいない）、PATH 上の
+（存在せず）、`<repo>/rom/`（`Geargrafx/`, 市販ゲームのフォルダ, 非公開の参照画像は対象外。中身は読んでいない）、PATH 上の
 `make` / `ca65` / `ld65`（無し）、`python`（3.14 あり、`gcc` は WinLibs の mingw のみ）。
 
 ## 再試行記録 (2026-10-19)

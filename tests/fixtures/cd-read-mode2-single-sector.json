@@ -11,7 +11,6 @@
   "contract_source": "tools/cd_read_contract.py RAM_MODE_ITEMS / RAM_MODE_EXAMPLES; docs/cd-read-mode-contract.md",
   "gate": {
     "slot": 3,
-    "candidate_entry": "0xE009",
     "expected_execution": "BLOCKED",
     "expected_reason": "NO_REVIEWED_GATE_RECORD"
   },

@@ -1,16 +1,19 @@
-"""Host checks for the Issue #289 slot $00 (CD_BOOT, candidate $E000) caller-evidence ledger.
+"""Rule checks for the CD_BOOT (slot $00) caller-evidence ledger rules, on a synthetic ledger.
 
-Pure JSON checks: no ROM build, no emulator, no reference BIOS. The ledger must keep the
-reference callee BLOCKED_ABI, release_eligible=false, and must never promote an UNKNOWN or
-HYPOTHESIS field to SOURCE_FACT, or mark the candidate entry callable.
+The ledger document is withdrawn (owner ruling). The rules still apply to any ledger: the reference callee stays
+BLOCKED_ABI, release_eligible=false, no UNKNOWN or HYPOTHESIS field is promoted to SOURCE_FACT, and the candidate
+entry is never callable. The gate state for slot $00 is checked on the real gate.
 """
 import copy
 import json
+import sys
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-LEDGER = ROOT / 'docs/research/cd-boot-contract-ledger.json'
+sys.path.insert(0, str(ROOT / 'tools'))
+
+import reference_jsr_gate as gate  # noqa: E402
 
 STATUSES = {'SOURCE_FACT', 'HYPOTHESIS', 'UNKNOWN', 'PROJECT_DEV_FACT'}
 # These fields must stay at exactly this status. Promotion is a failure.
@@ -100,24 +103,50 @@ def check_ledger(ledger):
     return errors
 
 
-class CdBootContractLedgerTests(unittest.TestCase):
+def synthetic_ledger():
+    """A minimal ledger that passes check_ledger. It holds no document content."""
+    fields = []
+    for fid, status in REQUIRED_STATUS.items():
+        field = {'id': fid, 'status': status}
+        if status == 'SOURCE_FACT':
+            field.update(value='synthetic', sources=['PRIMARY_SDK_SYNTH'], note='')
+        elif status == 'UNKNOWN':
+            field.update(value=None, sources=[], note='synthetic: not established')
+        else:
+            field.update(value='synthetic', sources=[], note='')
+        fields.append(field)
+    return {
+        'block_status': 'BLOCKED_ABI',
+        'release_eligible': False,
+        'sources': {
+            'PRIMARY_SDK_SYNTH': {'tier': 'primary-sdk', 'licence': 'synthetic'},
+            'SECONDARY_SYNTH': {'tier': 'secondary', 'licence': 'synthetic'},
+            'PROJECT_SYNTH': {'tier': 'project', 'licence': 'synthetic', 'verified_primary': False},
+        },
+        'entries': [{'slot': 0, 'callable': 'UNKNOWN', 'returns_to_caller': 'UNKNOWN'}],
+        'fields': fields,
+    }
+
+
+class CdBootContractRules(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.ledger = json.loads(LEDGER.read_text(encoding='utf-8'))
+        cls.ledger = synthetic_ledger()
 
-    def test_ledger_passes_all_checks(self):
+    def test_the_synthetic_ledger_passes_all_checks(self):
         self.assertEqual(check_ledger(self.ledger), [])
 
-    def test_block_and_release_gates_hold(self):
-        self.assertEqual(self.ledger['block_status'], 'BLOCKED_ABI')
-        self.assertFalse(self.ledger['release_eligible'])
-        self.assertNotIn('DEV_CALLABLE', json.dumps(self.ledger))
+    def test_the_real_gate_keeps_the_boot_slot_blocked_and_not_released(self):
+        ledger, contracts = gate.load()
+        record = gate.resolve(0, ledger, contracts)
+        self.assertEqual(record['execution'], 'BLOCKED')
+        self.assertIs(record['release_eligible'], False)
 
     def test_promoting_an_unknown_is_rejected(self):
         bad = copy.deepcopy(self.ledger)
         for field in bad['fields']:
             if field['id'] == 'media_detection':
-                field.update(status='SOURCE_FACT', value='disc present', sources=['HUC_CORE_KERNEL'])
+                field.update(status='SOURCE_FACT', value='disc present', sources=['PRIMARY_SDK_SYNTH'])
         self.assertTrue(any('media_detection' in e for e in check_ledger(bad)))
 
     def test_promoting_secondary_only_rows_is_rejected(self):
@@ -131,14 +160,14 @@ class CdBootContractLedgerTests(unittest.TestCase):
     def test_secondary_only_source_fact_is_rejected(self):
         bad = copy.deepcopy(self.ledger)
         bad['fields'].append({'id': 'regression_secondary_only', 'status': 'SOURCE_FACT',
-                              'value': 'x', 'sources': ['ZEOGRAD_BIOS_NOTES'], 'note': ''})
+                              'value': 'x', 'sources': ['SECONDARY_SYNTH'], 'note': ''})
         errors = check_ledger(bad)
         self.assertTrue(any('regression_secondary_only' in e and 'primary-sdk' in e for e in errors), errors)
 
     def test_source_fact_citing_only_project_summary_is_rejected(self):
         bad = copy.deepcopy(self.ledger)
         bad['fields'].append({'id': 'regression_project_only', 'status': 'SOURCE_FACT',
-                              'value': 'x', 'sources': ['REPO_SYSTEM_CARD_ROM_DOC'], 'note': ''})
+                              'value': 'x', 'sources': ['PROJECT_SYNTH'], 'note': ''})
         errors = check_ledger(bad)
         self.assertTrue(any('regression_project_only' in e for e in errors), errors)
 

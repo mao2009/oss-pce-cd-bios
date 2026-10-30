@@ -6,7 +6,7 @@ code. One routine, four calls: A positive (LBA 5 -> ADPCM $0100), B negative (DM
 recovered), C recovery positive (LBA 5 -> $1100 after B), D bad input (LBA $200000, code 9, no bus activity),
 E invalid slot (PB_SLOT 4, code 9 written to slot 0 and therefore overwriting A's record; A is kept in a snapshot).
 Not BIOS, not AD_TRANS ($11), not a System Card compatibility claim; release_eligible=false.
-The internal contract is docs/research/ad-trans-routine-contract.md.
+The internal contract is 撤去済み文書.
 
 Modes (run manually, not wired into the Makefile; TOOLS_DIR must point at the pinned tools):
   python3 tests/integration/geargrafx_ad_trans_routine.py --out build/ad-trans-routine

@@ -25,7 +25,7 @@ Cases (vector in irq2 / irq1 / tiq):
 
 Run manually (not wired into the Makefile integration target):
     python3 tests/integration/geargrafx_irq_entry_guard.py
-Evidence: the PASS lines printed by a run; the measured table is in docs/research/366-irq-entry-status.md.
+Evidence: the PASS lines printed by a run; the measured table is in 撤去済み文書.
 """
 import copy
 import json

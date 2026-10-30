@@ -494,7 +494,7 @@
       "implementation": {
         "source": "src/overrides/slot_1E.s",
         "license": "MIT (repository LICENSE)",
-        "provenance": "project-own measured contract (Issue #40); reference contract measured on pinned core"
+        "provenance": "project-own contract defined for this DEV ROM (Issue #40); no reference contract is asserted"
       },
       "host_evidence": [
         "tests/host/test_api_build.py"

@@ -1,7 +1,7 @@
 # Building the development fixture
 
 The supported bootstrap host is **Linux x86_64**, Python 3.10 or newer, GNU Make,
-GCC/G++, binutils (`ar`) and curl. Tested locally on Zorin OS 18.1 / Ubuntu 24.04,
+GCC/G++, binutils (`ar`) and curl. Tested locally on a Linux distribution,
 x86_64, GCC 13.3.0 and Python 3.12.3. CI uses `ubuntu-24.04` with the same build
 scripts. No Docker, proprietary BIOS or commercial game is needed.
 

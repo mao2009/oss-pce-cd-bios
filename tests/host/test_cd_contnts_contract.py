@@ -5,12 +5,15 @@ change to those fields fails regardless of its citation. They run no emulator, r
 BIOS bytes. Passing them is not evidence of System Card behaviour.
 """
 import re
+import sys
 import unittest
 from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-DOC = ROOT / 'docs' / 'research' / 'cd-contnts-contract.md'
+sys.path.insert(0, str(ROOT / 'tools'))
+
+import reference_jsr_gate as gate  # noqa: E402
 
 FIELDS = ['id', 'side', 'item', 'status', 'value', 'source', 'reason']
 SIDES = {'caller', 'callee', 'reference', 'name'}
@@ -44,7 +47,7 @@ EXPECTED = {
     'F20': ('caller', 'SOURCE_FACT', '非 0 で `cd_reset` に戻り、待機からやり直す'),
     'F21': ('callee', 'UNKNOWN', 'UNKNOWN'),
     'F22': ('name', 'SOURCE_FACT', 'HuC `cd_contnts`、Hu-Go `CD_CONTENTS`、本リポジトリ `CD_CONTNTS`'),
-    'F23': ('callee', 'HYPOTHESIS', '版ごとに値が異なる。3.0 の列は 2.x と同じ値で、1.0 および TG3.0 の列とは異なる'),
+    'F23': ('callee', 'HYPOTHESIS', '所在は本書では記録しない'),
     'F24': ('reference', 'HYPOTHESIS', '名前定義のみ。`default:` で未処理扱い（元のバイト列へ戻す、dispatcher の挙動）'),
     'F25': ('reference', 'UNKNOWN', 'UNKNOWN'),
 }
@@ -145,65 +148,6 @@ def ledger_problems(rows, cells_text=()):
     return problems(rows, cells_text) + pin_problems(rows)
 
 
-class CdContntsLedgerTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.text = DOC.read_text(encoding='utf-8')
-        cls.rows = parse_rows(cls.text)
-
-    def test_ledger_obeys_rules_and_pins(self):
-        self.assertEqual(ledger_problems(self.rows, table_cells(self.text)), [])
-
-    def test_status_counts(self):
-        self.assertEqual(Counter(r['status'] for r in self.rows), Counter(EXPECTED_COUNTS))
-
-    def test_required_fields_are_covered(self):
-        by_id = {r['id']: r for r in self.rows}
-        for kw, rid in REQUIRED_FIELD_ROWS.items():
-            self.assertIn(rid, by_id, f'row {rid} missing')
-            self.assertTrue(token_in(kw, by_id[rid]['item']), f'{rid} item must cover {kw!r}')
-
-    def test_blocked_and_release_status_stated(self):
-        self.assertIn('BLOCKED_ABI', self.text)
-        self.assertIn('release_eligible=false', self.text)
-        self.assertIn('DEV_CALLABLE にしない', self.text)
-
-    def test_unknown_values_are_not_filled(self):
-        unknown = [r for r in self.rows if r['status'] == 'UNKNOWN']
-        self.assertTrue(unknown)
-        for r in unknown:
-            self.assertEqual(r['value'], 'UNKNOWN', r['id'])
-
-
-class LedgerMutationTest(unittest.TestCase):
-    """Promotions applied to the real ledger rows must be rejected. Each mutation changes one row."""
-
-    def _mutate(self, rid, **kw):
-        rows = parse_rows(DOC.read_text(encoding='utf-8'))
-        for r in rows:
-            if r['id'] == rid:
-                r.update(kw)
-        return rows
-
-    def test_reference_unknown_promoted_to_source_fact_is_rejected(self):
-        # F25 is the reference-side Zeograd row. S6 is a summary-only source, not a basis for promotion.
-        rows = self._mutate('F25', status='SOURCE_FACT', value='説明あり', source='S6')
-        self.assertTrue(ledger_problems(rows))
-
-    def test_reference_unknown_promoted_from_summary_fails_rule_layer(self):
-        # Rule layer alone (no pinned snapshot): S6 is summary-only, so a reference-side SOURCE_FACT is rejected.
-        rows = self._mutate('F25', status='SOURCE_FACT', value='説明あり', source='S6')
-        self.assertTrue(any(p.startswith('F25:') for p in problems(rows)))
-
-    def test_reference_unknown_promoted_from_pending_fails_rule_layer(self):
-        rows = self._mutate('F25', status='SOURCE_FACT', value='説明あり', source='PENDING')
-        self.assertTrue(any(p.startswith('F25:') for p in problems(rows)))
-
-    def test_callee_unknown_promoted_to_source_fact_is_rejected(self):
-        rows = self._mutate('F03', status='SOURCE_FACT', value='A=0', source='S4 688–697')
-        self.assertTrue(ledger_problems(rows))
-
-
 class RuleCheckerNegativeTest(unittest.TestCase):
     """The checker itself must reject promotion; these synthetic rows are not ledger data."""
 
@@ -236,6 +180,16 @@ class RuleCheckerNegativeTest(unittest.TestCase):
     def test_accepts_honest_callee_unknown(self):
         self.assertEqual(problems([self._row(side='callee', status='UNKNOWN', value='UNKNOWN',
                                              source='—')]), [])
+
+
+class RealGateState(unittest.TestCase):
+    """Slot 12: the release state is checked on the real gate, since the research document is withdrawn."""
+
+    def test_the_real_gate_keeps_the_slot_blocked_and_not_released(self):
+        ledger, contracts = gate.load()
+        record = gate.resolve(12, ledger, contracts)
+        self.assertEqual(record['execution'], 'BLOCKED')
+        self.assertIs(record['release_eligible'], False)
 
 
 if __name__ == '__main__':

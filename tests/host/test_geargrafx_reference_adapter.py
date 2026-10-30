@@ -15,8 +15,8 @@ def probe_row(**mutation):
     row = {"mode": "call", "status": "ok", "reason": "",
            "before": dict(state, pc=0x3E00), "after": state,
            "callee_pc": 0xE000, "entry_reached": True, "returned": True,
-           "detected": False, "detected_pc": 0, "instructions_executed": 8, "budget": 3000,
-           "ram_diff": [{"address": 0x21FE, "before": 0, "after": 8}]}
+           "detected": False, "detected_pc": 0, "instructions_executed": 12, "budget": 3000,
+           "ram_diff": [{"address": 0x2010, "before": 0, "after": 0x5A}]}  # synthetic placeholder
     row.update(mutation)
     return row
 
@@ -53,7 +53,7 @@ class ReferenceGeargrafxAdapterTests(unittest.TestCase):
         self.assertEqual(observation["registers"]["x"], 3)
         self.assertEqual(observation["checkpoint"], adapter.JSR_CHECKPOINT)
         self.assertFalse(observation["guard"]["detected"])
-        self.assertEqual(observation["ram_diff"], [{"address": 0x21FE, "before": 0, "after": 8}])
+        self.assertEqual(observation["ram_diff"], [{"address": 0x2010, "before": 0, "after": 0x5A}])
 
     def test_jsr_observation_rejects_incomplete_or_violating_runs(self):
         for mutation, message in [

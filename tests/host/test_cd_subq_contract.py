@@ -1,15 +1,18 @@
-"""Host checks for the Issue #259 CD_SUBQ caller ABI ledger (docs/research/cd-subq-contract.md).
+"""Host checks for the Issue #259 CD_SUBQ caller ABI ledger (撤去済み文書).
 
 Pure text checks: the ledger table is parsed and each row's status is validated. No ROM, no
 emulator, no reference BIOS. A promotion (UNKNOWN/HYPOTHESIS -> SOURCE_FACT without a pinned
 value, or any VERIFIED/OBSERVED/PASS/DEV_CALLABLE status) must fail these tests.
 """
 import re
+import sys
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-LEDGER = ROOT / 'docs' / 'research' / 'cd-subq-contract.md'
+sys.path.insert(0, str(ROOT / 'tools'))
+
+import reference_jsr_gate as gate  # noqa: E402
 
 ALLOWED_STATUS = {'SOURCE_FACT', 'HYPOTHESIS', 'UNKNOWN', 'BLOCKED'}
 FORBIDDEN_STATUS = {'VERIFIED', 'OBSERVED', 'PASS', 'DEV_CALLABLE', 'CALLABLE'}
@@ -100,35 +103,6 @@ def ledger_problems(text, pins=SOURCE_FACT_PINS):
     return problems
 
 
-class LedgerTableTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.text = LEDGER.read_text(encoding='utf-8')
-        cls.rows = parse_rows(cls.text)
-
-    def test_ledger_has_rows(self):
-        self.assertGreaterEqual(len(self.rows), 15)
-
-    def test_every_row_is_acceptable(self):
-        self.assertEqual(ledger_problems(self.text), [])
-
-    def test_no_row_claims_verified_or_callable(self):
-        for row in self.rows:
-            self.assertNotIn(row['status'], FORBIDDEN_STATUS, row['id'])
-
-    def test_callee_stays_blocked_and_not_release_eligible(self):
-        self.assertIn('release_eligible=false', self.text)
-        self.assertIn('BLOCKED_ABI', self.text)
-        self.assertIn('DEV_CALLABLE` なし', self.text)
-
-    def test_abi_fields_present_as_unknown_or_hypothesis(self):
-        # The issue's field list: inputs A/X/Y/P, $20F8-$20FF, return flags, SP/MPR, IRQ,
-        # side effects and failure. None of these may be SOURCE_FACT for the callee.
-        by_id = {r['id']: r for r in self.rows}
-        for fid in ('F6', 'F8', 'F11', 'F13', 'F14', 'F15', 'F16'):
-            self.assertIn(by_id[fid]['status'], {'UNKNOWN', 'BLOCKED'}, fid)
-
-
 class CheckerSelfTests(unittest.TestCase):
     """Promotion attempts on synthetic rows must be rejected by the same checker."""
 
@@ -186,59 +160,14 @@ class CheckerSelfTests(unittest.TestCase):
         self.assertEqual(check_row(self._row(status='SOURCE_FACT', value='decl', source='S1 478'), self.PIN), [])
 
 
-class MutationProbeTests(unittest.TestCase):
-    """Mutations applied in memory to the real ledger text. Each must produce a problem."""
+class RealGateState(unittest.TestCase):
+    """Slot 10: the release state is checked on the real gate, since the research document is withdrawn."""
 
-    @classmethod
-    def setUpClass(cls):
-        cls.text = LEDGER.read_text(encoding='utf-8')
-        cls.rows = parse_rows(cls.text)
-
-    def _flagged(self, mutated, row_id):
-        return [p for p in ledger_problems(mutated) if p.startswith(row_id + ':')]
-
-    def test_baseline_ledger_is_clean(self):
-        self.assertEqual(ledger_problems(self.text), [])
-
-    def test_f7_hypothesis_promoted_to_source_fact_with_bsl_cite_is_rejected(self):
-        mutated = mutate_row(self.text, 'F7', status='SOURCE_FACT', source='S2')
-        self.assertTrue(self._flagged(mutated, 'F7'))
-
-    def test_every_hypothesis_or_unknown_promotion_is_rejected(self):
-        for row in self.rows:
-            if row['status'] in ('HYPOTHESIS', 'UNKNOWN'):
-                with self.subTest(row=row['id']):
-                    mutated = mutate_row(self.text, row['id'], status='SOURCE_FACT', source='S2')
-                    self.assertTrue(self._flagged(mutated, row['id']))
-
-    def test_mixed_cite_with_z_source_is_rejected(self):
-        mutated = mutate_row(self.text, 'F12', source='S2、Z1')
-        self.assertTrue(self._flagged(mutated, 'F12'))
-
-    def test_excluded_or_pending_sources_are_rejected_as_source_fact_support(self):
-        for src in ('S5', 'X1', 'X2'):
-            with self.subTest(src=src):
-                mutated = mutate_row(self.text, 'F12', source=src)
-                self.assertTrue(self._flagged(mutated, 'F12'))
-
-    def test_f2_is_not_source_fact(self):
-        f2 = next(r for r in self.rows if r['id'] == 'F2')
-        self.assertNotEqual(f2['status'], 'SOURCE_FACT')
-
-    def test_naming_conflict_silently_resolved_to_cd_subq_is_rejected(self):
-        mutated = mutate_row(self.text, 'F17', value='`CD_SUBQ`')
-        self.assertTrue(any(p.startswith('F17:') for p in ledger_problems(mutated)))
-
-    def test_naming_conflict_reason_claiming_resolution_is_rejected(self):
-        f17 = next(r for r in self.rows if r['id'] == 'F17')
-        mutated = mutate_row(self.text, 'F17', reason=f17['reason'].replace('未解決', '解決済み'))
-        self.assertTrue(any(p.startswith('F17:') for p in ledger_problems(mutated)))
-
-    def test_forbidden_word_in_each_cell_is_rejected(self):
-        for col in ('item', 'value', 'source', 'reason'):
-            with self.subTest(col=col):
-                mutated = mutate_row(self.text, 'F9', **{col: 'PASS'})
-                self.assertTrue(any(f'in {col}' in p for p in ledger_problems(mutated)))
+    def test_the_real_gate_keeps_the_slot_blocked_and_not_released(self):
+        ledger, contracts = gate.load()
+        record = gate.resolve(10, ledger, contracts)
+        self.assertEqual(record['execution'], 'BLOCKED')
+        self.assertIs(record['release_eligible'], False)
 
 
 if __name__ == '__main__':

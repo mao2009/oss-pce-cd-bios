@@ -4,6 +4,7 @@ import unittest
 
 from tools import cd_read_contract as crc
 from tools import reference_jsr_gate as G
+from tools.build_rom import FIRST_ENTRY
 
 FIXTURE = crc.ROOT / "tests/fixtures/cd-read-mode2-single-sector.json"
 DOC = crc.ROOT / "docs/188-cd-read-mode-safety.md"
@@ -68,7 +69,8 @@ class Mode2FixtureTests(unittest.TestCase):
         rec = G.resolve(self.fx["gate"]["slot"], ledger, contracts)
         self.assertEqual(rec["execution"], self.fx["gate"]["expected_execution"])
         self.assertIn(self.fx["gate"]["expected_reason"], rec["reasons"])
-        self.assertEqual(rec["candidate_entry"], self.fx["gate"]["candidate_entry"])
+        # The entry is the DEV ROM table rule for the slot, computed here and not stored in the fixture.
+        self.assertEqual(rec["candidate_entry"], f"0x{FIRST_ENTRY + 3 * self.fx['gate']['slot']:04X}")
         self.assertFalse(rec["execution_permitted"])
         self.assertEqual(rec["jsr_count"], 0)
 

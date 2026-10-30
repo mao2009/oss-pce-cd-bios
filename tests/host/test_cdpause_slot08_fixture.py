@@ -273,8 +273,6 @@ ENTRY_TOKEN_ALLOWED_LINES = {
         "comment: states CD_PAUSE ($08) is not what this probe is",
     ("tests/host/test_cd_pause_contract.py", '"""Host checks for the CD_PAUSE caller-ABI evidence ledger (Issue #254).'):
         "module docstring: CD_PAUSE caller-ABI ledger (Issue #254)",
-    ("tests/host/test_cd_pause_contract.py", "self.assertIn('System Card の CD_PAUSE は一度も実行していない', self.text)"):
-        "ledger assertion text (Issue #254)",
     ("tests/host/test_cdda_state.py", "PAUSED / ENDED). It is NOT a verified description of the System Card CD_PLAY / CD_PAUSE /"):
         "module docstring: CD_PAUSE is not a verified description",
     ("tests/integration/geargrafx_cdda.py", "behaviour of the SCSI layer. The System Card CD_PLAY/CD_PAUSE/CD_SEARCH ABI is NOT measured here and"):

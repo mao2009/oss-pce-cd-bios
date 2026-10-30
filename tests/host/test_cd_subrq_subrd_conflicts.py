@@ -1,16 +1,15 @@
 """Host tests for Issue #271 (CD_SUBRQ / CD_SUBRD, $0D) research ledger.
 
-Reads docs/research/cd-subrq-subrd-conflicts.md as text only. No emulator, ROM or BIOS
-execution is involved. The pinned statuses guard against silent promotion of an UNKNOWN
-or silent resolution of a name/return conflict; changing one requires changing this file
-in review.
+Uses synthetic inputs and rule functions only; the ledger document is withdrawn. No emulator, ROM or BIOS
+execution is involved. The claim-row parser refuses a VERIFIED or an otherwise invalid status, and the
+execution-claim rule refuses a past-tense claim that the BIOS was run. Promotion of UNKNOWN or HYPOTHESIS
+rows is refused by the promotion rule of the pause ledger tests.
 """
 import re
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-DOC = ROOT / 'docs' / 'research' / 'cd-subrq-subrd-conflicts.md'
 
 SOURCE_FACT_CANON = (
     '- `SOURCE_FACT`: SOURCE_FACT = a caller-side fact written in a pinned primary source. It is independent of provenance PENDING. It does NOT indicate BIOS callee behavior.'
@@ -95,117 +94,7 @@ def _source_row(text, sid):
     return hits[0]
 
 
-class CdSubrqSubrdConflictLedgerTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.text = DOC.read_text(encoding='utf-8')
-        cls.rows = _claim_rows(cls.text)
-
-    def test_canonical_source_fact_definition_present(self):
-        self.assertIn(SOURCE_FACT_CANON, self.text)
-
-    def test_claim_statuses_are_pinned_and_within_allowed_set(self):
-        statuses = {cid: cells[3] for cid, cells in self.rows.items()}
-        self.assertEqual(statuses, EXPECTED)
-        self.assertTrue(set(statuses.values()) <= ALLOWED)
-
-    def test_no_verified_or_observed_claim_in_table(self):
-        for cid, cells in self.rows.items():
-            self.assertNotIn(cells[3], {'VERIFIED', 'OBSERVED', 'PASS'}, cid)
-
-    def test_name_conflict_is_kept_unresolved(self):
-        self.assertIn('conflict unresolved', self.rows['C1'][4])
-        self.assertIn('同一と断定しない', self.rows['C1'][4])
-
-    def test_zeograd_name_leg_is_not_source_fact(self):
-        # C1 is the HuC/Hu-Go/huexpress leg only; the Zeograd leg is split into C18.
-        self.assertIsNone(re.search(r'(?<![A-Za-z0-9_])Z(?![A-Za-z0-9_])', ' '.join(self.rows['C1'])))
-        self.assertEqual(self.rows['C18'][3], 'HYPOTHESIS')
-        self.assertIn('conflict unresolved', self.rows['C18'][4])
-
-    def test_return_and_q_conflicts_are_kept_unresolved(self):
-        self.assertIn('conflict unresolved', self.rows['C4'][4])
-        self.assertIn('conflict unresolved', self.rows['C8'][4])
-
-    def test_same_mechanism_hypothesis_is_not_adopted(self):
-        self.assertIn('採用しない', self.rows['C17'][4])
-
-    def test_blocked_and_release_gate_are_stated(self):
-        self.assertIn('BLOCKED_ABI', self.text)
-        self.assertIn('release_eligible=false', self.text)
-        self.assertIn('DEV_CALLABLE', self.text)
-
-    def test_citation_pins_resolve_to_commits(self):
-        md = _source_row(self.text, 'MD')
-        self.assertIn(MD_COMMIT, md)
-        self.assertIn(MD_BLOB, md)
-        self.assertNotIn('@797845ce', self.text)
-        self.assertIn('1473–1487 行', md)
-        gg = _source_row(self.text, 'GG')
-        self.assertIn(GG_COMMIT, gg)
-        self.assertNotIn(GG_UNRESOLVED, self.text)
-        hc = _source_row(self.text, 'HC')
-        self.assertIn('692 行', hc)
-        self.assertIn('481 行', hc)
-
-    def test_every_sha_token_is_a_full_40_hex_pin(self):
-        # Short SHAs (8 hex) are not allowed anywhere in the doc, including revision cells.
-        self.assertEqual(len(FULL_PINS), 6)
-        for pin in FULL_PINS:
-            self.assertEqual(len(pin), 40, pin)
-            self.assertIn(pin, self.text, pin)
-        for tok in SHA_TOKEN.findall(self.text):
-            if tok in REJECTED_SHORT_PINS:
-                continue
-            self.assertEqual(len(tok), 40, f'short SHA in doc: {tok}')
-            self.assertIn(tok, FULL_PINS, tok)
-
-    def test_c1_source_fact_is_hc_name_only(self):
-        # Review: HG and HX are HLE reimplementations, not primary sources, so they cannot back SOURCE_FACT.
-        c1 = self.rows['C1']
-        self.assertEqual(c1[3], 'SOURCE_FACT')
-        self.assertIn('HC', c1[2])
-        self.assertIn('481 行', c1[2])
-        self.assertNotIn('HG', c1[2])
-        self.assertNotIn('HX', c1[2])
-
-    def test_hg_hx_name_legs_are_hypothesis(self):
-        # Ledger SOURCE_FACT definition: reimplementation / developer claims are HYPOTHESIS.
-        c18 = self.rows['C18']
-        self.assertEqual(c18[3], 'HYPOTHESIS')
-        for src in ('Z', 'HG', 'HX'):
-            self.assertIn(src, c18[2], src)
-        self.assertIn('HLE', c18[2])
-        self.assertIn('conflict unresolved', c18[4])
-
-    def test_c19_notes_zeograd_general_description_only(self):
-        self.assertIn('Z の一般記述のみで $0D 固有の記載はない', self.rows['C19'][2])
-        self.assertNotIn('18 行目', self.rows['C19'][2])
-
-    def test_hc_zero_callers_is_local_grep_only(self):
-        hc = [l for l in self.text.splitlines() if l.startswith('| HC | cd_subrd = $00:E027')][0]
-        self.assertIn('local `git grep -i`', hc)
-        self.assertIn('独立の再確認は未実施', hc)
-
-    def test_claim_rows_are_in_ascending_id_order(self):
-        ids = list(self.rows)
-        self.assertEqual(ids, sorted(ids, key=lambda c: int(c[1:])))
-
-    def test_zeograd_source_records_version_and_hash_status(self):
-        z = _source_row(self.text, 'Z')
-        self.assertIn('版なし', z)
-        self.assertIn('本文ハッシュは未記録', z)
-        self.assertIn('SECONDARY_SOURCE', z)
-
-    def test_no_reference_bios_execution_claimed(self):
-        self.assertIn('一切していない', self.text)
-        # The verbatim canonical definition (negated callee wording, 'pinned') is exempt.
-        scanned = self.text.replace(SOURCE_FACT_CANON, '')
-        self.assertEqual(_exec_violations(scanned), [], 'affirmative execution wording found')
-        for cid, cells in self.rows.items():
-            for cell in cells:
-                self.assertFalse(set(re.findall(r'[A-Z_]+', cell)) & FORBIDDEN_CELL_TOKENS, cid)
-
+class ExecRuleTests(unittest.TestCase):
     def test_exec_rule_flags_past_tense_callee_phrasings(self):
         # Regression: each of these passed the former verb-stem list.
         for phrase in (
@@ -247,14 +136,6 @@ class ClaimRowNegativeTests(unittest.TestCase):
             for order in ((bad, good), (good, bad), (good, good)):
                 with self.assertRaises(ValueError, msg=(cid, order)):
                     _claim_rows(self._doc(*order))
-
-    def test_real_doc_rows_each_duplicated_are_rejected(self):
-        lines = [l for l in DOC.read_text(encoding='utf-8').splitlines() if l.startswith('| C')]
-        self.assertEqual(len(lines), 19)
-        for l in lines:
-            for dup in (lines + [l], [l] + lines):
-                with self.assertRaises(ValueError, msg=l[:8]):
-                    _claim_rows('\n'.join(dup))
 
     def test_wrong_column_count_is_rejected_for_every_id(self):
         for n in range(1, 20):

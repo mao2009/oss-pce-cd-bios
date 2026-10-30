@@ -20,7 +20,7 @@
 
 | API（slot） | Issue | 分類 | 主な根拠 |
 | --- | --- | --- | --- |
-| CD_BOOT（`$00`） | #9、#289 | UNKNOWN | callee 実装候補なし。宣言名のみ（HuC `pcengine.inc`、Boost-1.0 表示）。入口の意味は UNKNOWN、戻りは HYPOTHESIS（呼出側由来）（[cd-boot-contract](research/cd-boot-contract.md)） |
+| CD_BOOT（`$00`） | #9、#289 | UNKNOWN | callee 実装候補なし。宣言名のみ（HuC `pcengine.inc`、Boost-1.0 表示）。入口の意味は UNKNOWN、戻りは HYPOTHESIS（呼出側由来）（撤去済み文書（撤去済み文書）） |
 | CD_READ（`$03`） | #12、#148、#188、#189 | spec-reference only（転送層は awaiting relicensing） | 呼出側ラッパ（HuCC `hucc-systemcard.asm`）は参照のみ。SCSI 層（HuC elmer `cdrom.asm`）は派生元 Hudson の権利が不明 → awaiting relicensing |
 | CD_EXEC（`$05`） | #14、#239 | UNKNOWN | 実行可能な callee 候補が無い。固定版で呼出側が見つからなかった（[ledger](cd-exec-contract-ledger.md) A1）。検索の網羅性は未検証。HuC `include/huc/cdrom.asm` の `_cd_execoverlay` はライセンス表示が無く、対象外（awaiting relicensing） |
 | CD_STAT（`$09`） | #18、#229 | spec-reference only | busy/ready 判定の呼出側形のみ（HuC `scsitest.asm`、Boost-1.0）。A=0 の判定は HYPOTHESIS、他の戻り値の意味は UNKNOWN（[cd-stat-contract](research/cd-stat-contract.md)） |
@@ -69,7 +69,7 @@ CD_READ / CD_EXEC ──> CD_BOOT ($00, #9)                         [HYPOTHESIS]
 | CD_READ ← メディア状態 | 出典あり | 無媒体の callee 戻りが UNKNOWN（T7）。デバイス層の観測は §4 の E8 を参照 | [cd-read-contract §2](cd-read-contract.md)、[cd-media-state](cd-media-state.md) |
 | CD_READ ← MPR3 | 出典あり | 呼出側が退避・復元する。callee 内の MPR 状態は UNKNOWN | [188 B3](188-cd-read-transfer-mode-contract.md) |
 | CD_EXEC ← CD_READ | HYPOTHESIS | 固定版の HuC overlay loader は `cd_read` を直接呼ぶ（[ledger A3](cd-exec-contract-ledger.md)）が、CD_EXEC callee が CD_READ を使うかは UNKNOWN（呼出側なし、A1、D2） | [cd-exec ledger](cd-exec-contract-ledger.md) |
-| CD_BOOT ← CD_RESET | 削除 | リセット起動と slot 呼出しは「別の経路」と記されており（[cd-boot-contract](research/cd-boot-contract.md) §1）、依存とは言えない | — |
+| CD_BOOT ← CD_RESET | 削除 | リセット起動と slot 呼出しは「別の経路」と記されており（撤去済み文書（撤去済み文書） §1）、依存とは言えない | — |
 
 ## 4. #190（CD_READ 転送層）の解除に必要な証拠
 
