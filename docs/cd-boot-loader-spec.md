@@ -24,7 +24,7 @@
 
 ## 1. ゲーム固有の事実（CUE のメタデータ、ファイルサイズ、セクタヘッダ MSF）
 
-対象: `C:/Users/Hobart/Downloads/Shin Megami Tensei (Japan)/Shin Megami Tensei (Japan).cue`（ローカル読取のみ。内容は本書に含めない）。読んだのは CUE の本文、各 BIN のファイルサイズ、トラック 02 の BIN のフレーム 0〜299 のセクタヘッダ（各フレームの同期・ヘッダ部のうち MSF の 3 バイト）だけで、ユーザデータは読んでいない。
+対象: ローカルの商用メディア 1 件（パスと名称は非公開。ローカル読取のみ。内容は本書に含めない）。読んだのは CUE の本文、各 BIN のファイルサイズ、トラック 02 の BIN のフレーム 0〜299 のセクタヘッダ（各フレームの同期・ヘッダ部のうち MSF の 3 バイト）だけで、ユーザデータは読んでいない。
 
 | 項目 | 読んだ内容（CUE、ファイルサイズ、ヘッダ MSF） | 確度 |
 | --- | --- | --- |
@@ -70,16 +70,16 @@
 
 | # | 主張 | 出典 | 確度 | 備考 |
 | --- | --- | --- | --- | --- |
-| C1 | HuC SDK は `cd_boot = $00:E000` を宣言する | `pce-devel/huc` `54f5c736` の `include/hucc/pcengine.inc` 467–468 行（`docs/research/cd-boot-contract.md` の台帳経由。本セッションでは再取得していない） | HYPOTHESIS（宣言の存在。台帳経由で、本書では再取得していない） | 関数の意味・戻り・入力は含まない |
+| C1 | HuC SDK は `cd_boot = $00:E000` を宣言する | `pce-devel/huc` `54f5c736` の `include/hucc/pcengine.inc` 467–468 行（`撤去済み文書` の台帳経由。本セッションでは再取得していない） | HYPOTHESIS（宣言の存在。台帳経由で、本書では再取得していない） | 関数の意味・戻り・入力は含まない |
 | C2 | `$E000` が JMP テーブルの入口である | 二次資料 STUM（版別表）のみ | HYPOTHESIS | 一次資料で未照合 |
 | C3 | 起動は「最初のデータトラック」を選ぶ（通常 Track 2） | <https://www.stum.de/2026/pc-engine-second-data-track/>（2026-05-01、本セッションで取得して照合） | HYPOTHESIS | 二次資料。BIOS のバイナリ・一次資料では未確認 |
 | C4 | BIOS は各トラックに対し `cd_contnts`、`cd_dinfo` を順に呼び、データトラックを見つける | 同上 | HYPOTHESIS | 関数名は二次資料の記述 |
 | C5 | IPL は見つけたデータトラックの最初の 2 セクタから読む | 同上 | HYPOTHESIS | セクタ長（2048 か 2352 か）は UNKNOWN |
 | C6 | IPL の読込先アドレス、エントリ、ヘッダの各フィールド | 同上（記載なし） | UNKNOWN | 二次資料にも記載がない |
-| C7 | 16 回読みに失敗すると `retry?`（`$2273`）を立て、`recbase1` を使う | 同上（System Card 3.0 のアドレス付き） | HYPOTHESIS | 二次資料のみ。`$2273` の意味は未確認 |
+| C7 | 16 回読みに失敗すると内部の再試行フラグを立て、`recbase1` を使う（フラグのアドレスは非公開） | 同上（本体アドレス付き） | HYPOTHESIS | 二次資料のみ。内部フラグの意味は未確認 |
 | C8 | `recbase0 = recbase1 = 最初のデータトラックの LBA` が自動で設定される | 同上 | HYPOTHESIS | 二次資料 |
 | C9 | `necretro.org` の Boot ROM ページに起動手順の記述がある | <https://necretro.org/CD-ROM%C2%B2_systems/Boot_ROM> | UNKNOWN（**未取得**） | bot 保護（Anubis）で拒否された。本文は確認していない |
-| C10 | リセット時 MPR7 = `$00`、リセットベクタは `$FFFE` | `docs/system-card-rom.md`（リポジトリの要約）、`docs/research/cd-boot-contract.md` §5 | HYPOTHESIS | 製造元マニュアルは未照合 |
+| C10 | リセット時 MPR7 = `$00`、リセットベクタは `$FFFE` | `docs/system-card-rom.md`（リポジトリの要約）、`撤去済み文書` §5 | HYPOTHESIS | 製造元マニュアルは未照合 |
 | C11 | `cd_read` は slot `$03`、CPU `$E009`、24 ビットブロック番号 | `docs/cd-read-contract.md` §1（HYPOTHESIS 扱い） | HYPOTHESIS | BIOS 呼出し経路。ローダ本体の入力とは別 |
 | C12 | 呼出し時の MPR・IRQ・スタックの要求 | 全資料に記載なし | UNKNOWN | — |
 | C13 | 成功時の制御は戻らない | `docs/cd-exec-contract-ledger.md`（CD_EXEC について HYPOTHESIS）。ブート経路では記載なし | UNKNOWN | — |

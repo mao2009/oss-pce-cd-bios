@@ -1,7 +1,6 @@
 {
   "issue": 71,
   "slot": "0x3D",
-  "candidate_entry": "0xE0B7",
   "status": "CANDIDATE",
   "basis": "docs/ex-bcdbin.md",
   "note": "Project-own spec (packed BCD 1 byte, high nibble=tens). NOT the reference BIOS EX_BCDBIN ABI; not VERIFIED.",

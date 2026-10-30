@@ -17,8 +17,8 @@ def jsr_observation():
         "engine": "geargrafx", "checkpoint": "slot_1e_ex_getver_returned_to_caller",
         "registers": {k: state[k] for k in ("a", "x", "y", "p", "sp", "pc")},
         "mpr": state["mpr"],
-        "ram_diff": [{"address": 0x21FE, "before": 0, "after": 8}],
-        "instructions_executed": 32,
+        "ram_diff": [{"address": 0x2010, "before": 0, "after": 0x5A}],  # synthetic placeholder
+        "instructions_executed": 16,
         "before": dict(state, pc=0x3E00),
         "after": state,
         "call": {"entry_reached": True, "callee_pc": 0xE000, "returned": True},
@@ -74,7 +74,7 @@ class ReferenceRunnerTests(unittest.TestCase):
         reset = {
             "schema": runner.OBS_SCHEMA, "api_id": "reference-reset-only", "status": "OBSERVED",
             "engine": "geargrafx", "checkpoint": "reset_first_instruction_no_api_callee",
-            "registers": {"a": 0, "x": 0, "y": 0, "p": 4, "sp": 255, "pc": 0xE0F4},
+            "registers": {"a": 0, "x": 0, "y": 0, "p": 4, "sp": 255, "pc": 0xE100},
             "mpr": [0, 0, 0, 0, 0, 0, 0, 0], "ram_diff": [], "instructions_executed": 1,
         }
         runner.check_observation(reset, cfg)

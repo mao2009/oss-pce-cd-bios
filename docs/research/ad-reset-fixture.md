@@ -2,7 +2,7 @@
 
 スロット `$10`、候補エントリ `$E030`、親 #25。**状態: ABI は未確定（BLOCKED_ABI）。`release_eligible=false`。callee（System Card の AD_RESET）は未実行。**
 
-`tools/adreset_fixture.py` は、ADPCM コントローラのリセットを**自作の合成モデル**で表し、判定器が範囲外・未許可の操作を PASS にしないことを確かめる。モデルの挙動は本リポジトリの仮定であり、BIOS や実機の測定ではない。ABI の根拠は [ad-reset-contract.md](ad-reset-contract.md) に従う。
+`tools/adreset_fixture.py` は、ADPCM コントローラのリセットを**自作の合成モデル**で表し、判定器が範囲外・未許可の操作を PASS にしないことを確かめる。モデルの挙動は本リポジトリの仮定であり、BIOS や実機の測定ではない。ABI の根拠は 撤去済み文書 に従う。
 
 ## 1. 判定結果の意味
 
@@ -30,11 +30,11 @@ CLI は出力の先頭に `[synthetic model, not a callee result]` を出し、�
 | --- | --- | --- |
 | 合成ホストテスト | 実施 | `python -I -m unittest discover -s tests/host -p test_adreset_fixture.py -v`（13 件） |
 | 独立レビュー | CONDITIONAL | PR #343 のレビューで指摘（型違いの扱い、非 bool フラグ、entry の型、観測 entry の不一致）。指摘は本修正で反映済み。反映後の再レビューは別途行う。 |
-| provenance 審査 | PENDING | §2 の出典は本 PR で追加していない。`ENTRY_CANDIDATE = 0xE030` は [ad-reset-contract.md](ad-reset-contract.md) §2.1 H1（HuCC `include/hucc/pcengine.inc` 485 行の宣言）に由来する呼出側の SOURCE_FACT。出典の provenance は PENDING のままで、この事実は BIOS の振る舞いを示さない。 |
+| provenance 審査 | PENDING | §2 の出典は本 PR で追加していない。`ENTRY_CANDIDATE = 0xE030` は 撤去済み文書 §2.1 H1（HuCC `include/hucc/pcengine.inc` 485 行の宣言）に由来する呼出側の SOURCE_FACT。出典の provenance は PENDING のままで、この事実は BIOS の振る舞いを示さない。 |
 | callee 実行 | NOT_RUN | System Card の AD_RESET を実行していない。 |
 | 実機・第 2 エミュレータ | NOT_TESTED | — |
 
 ## 4. 残作業
 
-- callee を実行できる実コア harness の整備後、[ad-reset-contract.md](ad-reset-contract.md) の行 3b〜19b を同じ条件で測定する。
+- callee を実行できる実コア harness の整備後、撤去済み文書 の行 3b〜19b を同じ条件で測定する。
 - 合成モデルの仮定（busy 解除の 1 poll、予算 4）は、実測で置き換える前提の仮置きであり、確定値として扱わない。

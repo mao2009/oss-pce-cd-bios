@@ -16,7 +16,7 @@ FIXTURE = ROOT / "tests" / "fixtures" / "cdstat-slot09-cases.json"
 DEV_LEDGER = ROOT / "spec" / "dev_implementations.json"
 FORBIDDEN_WORDS = ("PASS", "VERIFIED", "OBSERVED", "DEV_CALLABLE")
 REQUIRED_CASE_IDS = {"caller_busy_path", "caller_ready_path", "no_media", "invalid_mode"}
-TOP_KEYS = {"schema", "issue", "slot", "entry_candidate", "candidate_name", "abi_status", "release_eligible",
+TOP_KEYS = {"schema", "issue", "slot", "candidate_name", "abi_status", "release_eligible",
             "execution", "reference_jsr_count", "reference_rom_opened", "provenance", "callee_abi",
             "declaration", "cases"}
 CASE_KEYS = {"id", "mode_a", "medium", "expected", "basis"}
@@ -46,8 +46,9 @@ def gate(data):
     if data.get("reference_rom_opened") is not False:
         reasons.append("reference ROM must not be opened")
     decl = data.get("declaration", {})
-    if decl.get("entry") != "0xE01B":
-        reasons.append("entry must be 0xE01B")
+    if "entry" in decl:
+        # The entry is the DEV table rule for the slot, taken at run time; a fixture must not store it.
+        reasons.append("entry must not be stored in the fixture (the DEV table rule gives it)")
     if decl.get("approval") is not None:
         reasons.append("DEV approval must stay null (not approved by this fixture)")
     if decl.get("rom_sha256") is not None:
@@ -85,7 +86,7 @@ def _mutants():
 
     # name -> (mutation, substring the refusal reason must contain)
     return {
-        "wrong_entry": (m(lambda d: d["declaration"].update(entry="0xE01C")), "entry must be"),
+        "wrong_entry": (m(lambda d: d["declaration"].update(entry="0xE01C")), "must not be stored"),
         "jsr_called": (m(lambda d: d.update(reference_jsr_count=1)), "JSR count"),
         "jsr_as_bool": (m(lambda d: d.update(reference_jsr_count=False)), "JSR count"),
         "rom_opened": (m(lambda d: d.update(reference_rom_opened=True)), "ROM must not"),
@@ -133,6 +134,14 @@ class CdStatSlot09Gate(unittest.TestCase):
         self.assertEqual(slot["state"], "NOT_READY")
         self.assertIsNone(slot["implementation"])
         self.assertEqual(slot["approval"], {"approved_by": None, "review_ref": None})
+
+
+class DevTableEntryForSlot09(unittest.TestCase):
+    """The entry of slot 9 is the DEV ROM table rule, computed at run time (the fixture no longer stores it)."""
+
+    def test_the_table_rule_gives_the_slot_entry(self):
+        from tools.build_rom import FIRST_ENTRY
+        self.assertEqual(f"0x{FIRST_ENTRY + 3 * 9:04X}", "0xE01B")
 
 
 if __name__ == "__main__":

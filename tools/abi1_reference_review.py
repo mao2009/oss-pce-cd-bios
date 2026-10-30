@@ -22,14 +22,16 @@ The validator therefore refuses a ledger that:
 * claims ``OBSERVED`` or ``PARTIAL`` without a reproducible real core
   observation, or keeps a reproducible observation while the state says
   ``NOT_RUN``;
-* counts a prior local only observation as a reproducible one;
 * records an API outside the Phase ABI-1 scope, or counts one API twice;
 * records an aggregate that does not match the ledger it summarises;
 * records an execution permission other than ``BLOCKED``, so that a static
   ``EXECUTION_SAFE`` verdict can never be read as a permission to call the
   reference BIOS;
 * drifts against ``spec/api_contracts.json``;
-* publishes a decoded instruction or a non public address.
+* publishes a decoded instruction or a non public address;
+* publishes any per slot detail derived from the private image (instruction
+  counts, hazard counts, store classes, static verdicts, item prose). The
+  public ledger keeps management state only (Issue #324, owner ruling A).
 
 The validator is host only. It never opens a BIOS, an emulator or a ROM.
 """
@@ -46,35 +48,33 @@ DEV_LEDGER_PATH = ROOT / "spec" / "dev_implementations.json"
 
 SCHEMA = "oss-pce-cd-bios/abi1-reference-review/v1"
 TOP_KEYS = {"schema", "phase", "release_eligible", "trust", "target", "method",
-            "scope", "summary", "jump_table", "apis"}
-TARGET_KEYS = {"product", "image", "image_sha256", "image_bytes", "header_bytes",
-               "body_bytes", "bank_bytes", "bank_count"}
+            "scope", "summary", "apis"}
+# Identity of the private image (hashes, checksums, sizes) is never published (owner ruling).
+TARGET_KEYS = {"image"}
 METHOD_KEYS = {"static_audit_tool", "decoder", "core_revision", "execution",
                "execution_blockers", "evidence_classes", "verification_states",
                "independent_approval_procedure"}
 SCOPE_KEYS = {"priority_api_ids", "note"}
-SUMMARY_KEYS = {"static_review_apis", "prior_local_only_observations",
-                "reproducible_real_core_observations", "reference_abi_verified",
+SUMMARY_KEYS = {"reproducible_real_core_observations", "reference_abi_verified",
                 "dev_rom_implemented_apis", "owner_approved_dev_callable"}
-JUMP_TABLE_KEYS = {"first_entry_cpu", "entry_count", "entry_stride_bytes",
-                   "all_entries_are_jmp_abs", "all_targets_distinct", "status", "note"}
-API_KEYS = {"api_id", "slot", "name", "candidate_entry", "entry_evidence", "static",
-            "static_items", "safety", "observation", "abi_state"}
-STATIC_KEYS = {"status", "callee_instructions", "return_kinds", "max_stack_bytes",
-               "hazard_counts", "store_target_classes", "zero_page_operand_stores",
-               "register_swap_ops", "non_returning_states", "unresolved",
-               "budget_exhausted"}
-SAFETY_KEYS = {"static_verdict", "scope", "basis", "residual_risks",
-               "execution_permission", "execution_permission_basis",
+# No field records that an analysis of the private image was performed (owner ruling: such metadata is not published).
+API_KEYS = {"api_id", "slot", "name", "safety", "observation", "abi_state"}
+SAFETY_KEYS = {"scope", "execution_permission", "execution_permission_basis",
                "approval_requirement"}
-OBSERVATION_KEYS = {"reproducible_real_core", "prior_local_only", "prior_evidence",
-                    "note"}
-ITEM_KEYS = {"entry_address_and_basis", "caller_supplied_registers",
-             "caller_preconditions", "expected_return_value",
-             "possibly_changed_registers", "cpu_flag_handling", "stack_usage",
-             "mpr_change", "ram_io_vdc_cd_side_effects",
-             "interrupt_or_timing_dependence",
-             "executable_conditions_and_blocked_conditions"}
+OBSERVATION_KEYS = {"reproducible_real_core", "note"}
+
+# Keys that carry detail derived from the private image. None may appear anywhere in the
+# published ledger, at any depth. The check is a negative guard, so a renamed or added
+# field of the same kind cannot slip in under a fresh name without a test change.
+FORBIDDEN_PUBLIC_KEYS = frozenset({
+    "callee_instructions", "instructions_decoded", "states_visited", "states_without_guaranteed_return",
+    "non_returning_states", "return_kinds", "returns_observed", "max_stack_bytes", "cross_page_count",
+    "hazard_counts", "hazard", "store_target_classes", "zero_page_operand_stores", "register_swap_ops",
+    "unresolved", "budget_exhausted", "static_items", "static_verdict", "basis", "residual_risks",
+    "mpr_write", "mpr_read",
+    # Entry addresses and entry-table evidence derived from the private image (owner ruling).
+    "candidate_entry", "entry_evidence",
+})
 
 # The static evidence classes. ``OBSERVED_STATIC`` is an observation of the
 # private image, not of a call.
@@ -82,20 +82,13 @@ ITEM_STATUSES = {"OBSERVED_STATIC", "SOURCE_FACT", "HYPOTHESIS", "UNKNOWN"}
 # The verification axis. NOT_RUN and BLOCKED are the only states a static
 # review can reach.
 ABI_STATES = {"NOT_RUN", "BLOCKED", "OBSERVED", "PARTIAL", "VERIFIED"}
-# A static verdict about the callee's side effect profile. It is not a
-# permission: the only permission this ledger can express is BLOCKED.
-STATIC_VERDICTS = {"EXECUTION_SAFE", "EXECUTION_SAFE_WITH_OBSERVABLE_ZERO_PAGE_WRITE",
-                   "EXECUTION_BLOCKED"}
 EXECUTION_PERMISSIONS = {"BLOCKED"}
 STATIC_SCOPE = "STATIC_PROFILE_ONLY"
 APPROVAL_REQUIREMENT = "A_SEPARATE_INDEPENDENT_SAFETY_APPROVAL_PROCEDURE_IS_REQUIRED_AND_IS_NOT_IMPLEMENTED"
-REPRODUCIBLE_OBSERVATION = {"NOT_RUN", "OBSERVED"}
-PRIOR_LOCAL_ONLY = {"ABSENT", "PRESENT"}
-HAZARD_NAMES = {"BLOCK_TRANSFER", "VDC_DIRECT_WRITE", "MPR_WRITE", "MPR_READ",
-                "IRQ_ENABLE", "IRQ_DISABLE", "ZERO_PAGE_STORE", "PAGE1_STORE",
-                "OTHER_STORE", "DATA_DEPENDENT_STORE", "CROSS_PAGE_CALL",
-                "INDIRECT_CONTROL_FLOW", "UNRESOLVED_TARGET", "NO_RETURN"}
-ENTRY_EVIDENCE = {"JUMP_TABLE_3BYTE_JMP"}
+# Only NOT_RUN is accepted. OBSERVED would need an independent certification, which is not implemented.
+REPRODUCIBLE_OBSERVATION = {"NOT_RUN"}
+# Words that would state a result. The note of a NOT_RUN slot must not claim one.
+EVIDENCE_CLAIMS = re.compile(r"OBSERVED|PARTIAL|VERIFIED|PASS|reproduced|was measured|was executed|returned")
 
 # The Phase ABI-1 scope: the seven priority slots of the phase. A ledger that
 # registers a different set of APIs is refused, so a static review cannot grow
@@ -124,9 +117,10 @@ FORBIDDEN_INSTRUCTION = re.compile(
 # Any four digit address in the published text must be a public one: a jump
 # table entry address, or a documented CPU/hardware constant.
 ADDRESS = re.compile(r"(?:\$|0x)([0-9A-Fa-f]{4})(?![0-9A-Fa-f])")
+# Only documented CPU and hardware constants and the DEV-defined public entry of slot $1E. The candidate entries of
+# the other slots are not public here (owner ruling, Issue #324): they are pending the source audit.
 PUBLIC_ADDRESSES = {"0000", "0100", "1000", "1FFF", "2000", "2100", "3FFF",
-                    "8000", "BFFF", "C000", "DFFF", "E000", "E05A", "E0B4", "E0B7",
-                    "E0BD", "E0C0", "E0C3", "E0C6", "FF80", "FFFF"}
+                    "8000", "BFFF", "C000", "DFFF", "E000", "E05A", "FF80", "FFFF"}
 
 
 class Invalid(Exception):
@@ -157,8 +151,21 @@ def _public_text(node):
             raise Invalid(f"{path}: published text contains a decoded instruction")
         for match in ADDRESS.finditer(text):
             if match.group(1).upper() not in PUBLIC_ADDRESSES:
-                raise Invalid(f"{path}: published text contains a non public address "
-                              f"${match.group(1).upper()}")
+                # The address itself is not echoed: a refusal log must not carry the value it refuses.
+                raise Invalid(f"{path}: published text contains a non public address")
+
+
+def _public_keys(node, path=""):
+    """Refuse any key that carries detail derived from the private image, at any depth."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            here = f"{path}.{key}" if path else str(key)
+            if key in FORBIDDEN_PUBLIC_KEYS:
+                raise Invalid(f"{here}: private-image detail is not published")
+            _public_keys(value, here)
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            _public_keys(value, f"{path}[{index}]")
 
 
 def compute_metrics(document, contracts, dev_ledger):
@@ -170,9 +177,6 @@ def compute_metrics(document, contracts, dev_ledger):
     """
     apis = document["apis"]
     return {
-        "static_review_apis": sum(1 for api in apis if api["static"]["status"] == "OBSERVED_STATIC"),
-        "prior_local_only_observations": sum(
-            1 for api in apis if api["observation"]["prior_local_only"] == "PRESENT"),
         "reproducible_real_core_observations": sum(
             1 for api in apis if api["observation"]["reproducible_real_core"] == "OBSERVED"),
         "reference_abi_verified": sum(1 for api in apis if api["abi_state"] == "VERIFIED"),
@@ -193,9 +197,6 @@ def validate(document, contracts, dev_ledger):
     _require(document["trust"] == "LOCAL_ONLY_NOT_VERIFIED", "review trust")
     _require(isinstance(document["target"], dict) and set(document["target"]) == TARGET_KEYS,
              "target keys")
-    digest = document["target"]["image_sha256"]
-    _require(isinstance(digest, str) and len(digest) == 64
-             and all(c in "0123456789abcdef" for c in digest), "image_sha256 must be lowercase sha256")
     _require(isinstance(document["method"], dict) and set(document["method"]) == METHOD_KEYS,
              "method keys")
     _require(document["method"]["execution"] == "NOT_RUN", "method execution must be NOT_RUN")
@@ -221,14 +222,6 @@ def validate(document, contracts, dev_ledger):
     _require(isinstance(document["summary"], dict) and set(document["summary"]) == SUMMARY_KEYS,
              "summary keys")
 
-    table = document["jump_table"]
-    _require(isinstance(table, dict) and set(table) == JUMP_TABLE_KEYS, "jump_table keys")
-    _require(table["first_entry_cpu"] == "0xE000", "jump_table first entry")
-    _require(table["entry_count"] == 81 and table["entry_stride_bytes"] == 3,
-             "jump_table geometry")
-    _require(table["all_entries_are_jmp_abs"] is True, "jump_table entries must be JMP abs")
-    _require(table["all_targets_distinct"] is True, "jump_table targets must be distinct")
-    _require(table["status"] == "OBSERVED_STATIC", "jump_table status")
 
     apis = document["apis"]
     _require(isinstance(apis, list) and apis, "apis must be a non empty list")
@@ -247,44 +240,11 @@ def validate(document, contracts, dev_ledger):
         _require(api_id == f"slot-{slot:02x}", f"{api_id}: api_id does not match the slot")
         claim = contracts["apis"][slot]
         _require(api["name"] == claim["candidate_name"], f"{api_id}: name differs from the claim ledger")
-        _require(api["candidate_entry"] == claim["candidate_entry"] == f"0x{0xE000 + 3 * slot:04X}",
-                 f"{api_id}: candidate entry differs from the claim ledger")
-        _require(api["entry_evidence"] in ENTRY_EVIDENCE, f"{api_id}: entry evidence vocabulary")
 
-        # --- the static review axis --------------------------------------------
-        static = api["static"]
-        _require(isinstance(static, dict) and set(static) == STATIC_KEYS, f"{api_id}: static keys")
-        _require(static["status"] == "OBSERVED_STATIC", f"{api_id}: static status")
-        _require(type(static["callee_instructions"]) is int and static["callee_instructions"] >= 0,
-                 f"{api_id}: callee instructions")
-        _require(isinstance(static["return_kinds"], list), f"{api_id}: return kinds")
-        _require(isinstance(static["hazard_counts"], dict)
-                 and set(static["hazard_counts"]) == HAZARD_NAMES, f"{api_id}: hazard names")
-        _require(all(type(v) is int and v >= 0 for v in static["hazard_counts"].values()),
-                 f"{api_id}: hazard counts")
-        _require(isinstance(static["store_target_classes"], dict), f"{api_id}: store classes")
-        _require(static["budget_exhausted"] is False, f"{api_id}: budget must not be exhausted")
-        _require(type(static["non_returning_states"]) is int
-                 and static["non_returning_states"] >= 0, f"{api_id}: non returning states")
-        _require(isinstance(static["unresolved"], list), f"{api_id}: unresolved")
-        items = api["static_items"]
-        _require(isinstance(items, dict) and set(items) == ITEM_KEYS, f"{api_id}: static item keys")
-        for key, item in items.items():
-            _require(isinstance(item, dict) and set(item) == {"status", "value"},
-                     f"{api_id}: static item {key} keys")
-            _require(item["status"] in ITEM_STATUSES, f"{api_id}: static item {key} status")
-            _require(isinstance(item["value"], str) and item["value"].strip(),
-                     f"{api_id}: static item {key} value")
-
-        # --- the static safety axis, and the permission axis --------------------
+        # --- the permission axis: management state only --------------------------
         safety = api["safety"]
         _require(isinstance(safety, dict) and set(safety) == SAFETY_KEYS, f"{api_id}: safety keys")
-        _require(safety["static_verdict"] in STATIC_VERDICTS, f"{api_id}: static verdict vocabulary")
-        _require(safety["scope"] == STATIC_SCOPE,
-                 f"{api_id}: a static verdict may only carry the static scope")
-        _require(isinstance(safety["basis"], list) and safety["basis"], f"{api_id}: safety basis")
-        _require(isinstance(safety["residual_risks"], list) and safety["residual_risks"],
-                 f"{api_id}: safety residual risks")
+        _require(safety["scope"] == STATIC_SCOPE, f"{api_id}: safety scope")
         _require(safety["execution_permission"] in EXECUTION_PERMISSIONS,
                  f"{api_id}: the execution permission of a static review is always BLOCKED")
         _require(isinstance(safety["execution_permission_basis"], str)
@@ -292,51 +252,24 @@ def validate(document, contracts, dev_ledger):
                  f"{api_id}: execution permission basis")
         _require(safety["approval_requirement"] == APPROVAL_REQUIREMENT,
                  f"{api_id}: approval requirement")
-        if safety["static_verdict"] != "EXECUTION_BLOCKED":
-            _require(not static["unresolved"],
-                     f"{api_id}: an unresolved static profile cannot be EXECUTION_SAFE")
-            _require(static["non_returning_states"] == 0,
-                     f"{api_id}: a non returning path cannot be EXECUTION_SAFE")
-        for hazard in ("MPR_WRITE", "VDC_DIRECT_WRITE", "BLOCK_TRANSFER", "IRQ_ENABLE",
-                       "DATA_DEPENDENT_STORE", "OTHER_STORE"):
-            if static["hazard_counts"][hazard]:
-                _require(safety["static_verdict"] == "EXECUTION_BLOCKED",
-                         f"{api_id}: {hazard} forces EXECUTION_BLOCKED")
 
         # --- the verification axis ---------------------------------------------
         observation = api["observation"]
         _require(isinstance(observation, dict) and set(observation) == OBSERVATION_KEYS,
                  f"{api_id}: observation keys")
+        # No independent evidence-certification method is implemented, so a self-declared reproducible observation
+        # is refused, and so is any note that makes an evidence claim (owner ruling: no self-declared promotion).
         _require(observation["reproducible_real_core"] in REPRODUCIBLE_OBSERVATION,
-                 f"{api_id}: reproducible observation vocabulary")
-        _require(observation["prior_local_only"] in PRIOR_LOCAL_ONLY,
-                 f"{api_id}: prior local only vocabulary")
+                 f"{api_id}: a self-declared reproducible observation is refused (no certification method)")
         _require(isinstance(observation["note"], str) and observation["note"].strip(),
                  f"{api_id}: observation note")
-        prior = observation["prior_evidence"]
-        _require(isinstance(prior, str) and prior.strip(), f"{api_id}: prior evidence")
-        if observation["prior_local_only"] == "PRESENT":
-            _require(prior.strip().upper() != "NONE",
-                     f"{api_id}: a prior observation has to name its source")
-            source = (ROOT / prior.strip()).resolve()
-            _require(source.is_file() and source.is_relative_to(ROOT.resolve()),
-                     f"{api_id}: the prior observation source is not a repository file")
-        else:
-            _require(prior.strip().upper() == "NONE",
-                     f"{api_id}: a slot without a prior observation must not cite prior evidence")
+        _require(not EVIDENCE_CLAIMS.search(observation["note"]),
+                 f"{api_id}: the observation note makes an evidence claim")
         _require(api["abi_state"] in ABI_STATES, f"{api_id}: abi state vocabulary")
         _require(api["abi_state"] != "VERIFIED",
                  f"{api_id}: VERIFIED is not reachable from a static review")
-        reproducible = observation["reproducible_real_core"] == "OBSERVED"
-        if api["abi_state"] in ("OBSERVED", "PARTIAL"):
-            _require(reproducible,
-                     f"{api_id}: {api['abi_state']} needs a reproducible real core observation")
-        else:
-            _require(not reproducible,
-                     f"{api_id}: a reproducible observation cannot stay in {api['abi_state']}")
-        if observation["prior_local_only"] == "PRESENT" and not reproducible:
-            _require(api["abi_state"] in ("NOT_RUN", "BLOCKED"),
-                     f"{api_id}: a prior local only observation is not a verification")
+        _require(api["abi_state"] not in ("OBSERVED", "PARTIAL"),
+                 f"{api_id}: {api['abi_state']} needs an independent evidence certification (not implemented)")
 
     _require(tuple(seen) == PRIORITY_API_IDS,
              "the reviewed APIs are not exactly the Phase ABI-1 scope")
@@ -347,6 +280,7 @@ def validate(document, contracts, dev_ledger):
         _require(document["summary"][key] == value,
                  f"summary.{key} is {document['summary'][key]}, the ledger says {value}")
     _public_text(document)
+    _public_keys(document)
     return document
 
 
@@ -382,10 +316,15 @@ def main(argv=None):
         parser.error("--check is required")
     try:
         document, contracts, dev_ledger = load()
-    except (Invalid, OSError, ValueError, KeyError, TypeError) as error:
-        print(f"BLOCKED: {error}")
+    except Exception as error:  # noqa: BLE001 - fail closed; only the class is shown (an error text can carry a path)
+        print(f"BLOCKED: {type(error).__name__} (details withheld)", file=sys.stderr)
         return 2
-    print(json.dumps(summary(document, contracts, dev_ledger), indent=2, sort_keys=True))
+    try:
+        report = summary(document, contracts, dev_ledger)
+    except Exception as error:  # noqa: BLE001 - same rule: no traceback, which could show an absolute path
+        print(f"BLOCKED: {type(error).__name__} (details withheld)", file=sys.stderr)
+        return 2
+    print(json.dumps(report, indent=2, sort_keys=True))
     return 0
 
 

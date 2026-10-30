@@ -28,7 +28,7 @@ slot-1 row of [spec/api_contracts.json](../spec/api_contracts.json).
 | --- | --- | --- |
 | `entry` | HYPOTHESIS | Caller-side HuCC equate `$E000 + 3*1 = $E003` (pcengine.inc @54f5c736, L468-552). Callee entry detail at `$E003` UNKNOWN: the callee is not executed. |
 | `arguments` | HYPOTHESIS | Caller-side only: HuCC `cd_reset(void)` takes no explicit A/X/Y or `$20F8-$20FF` (`al..dh`) inputs; Y carries only the trampoline selector (pcengine.inc/hucc-systemcard.asm @54f5c736). Callee argument contract unobserved. |
-| `returns` | UNKNOWN | Callee never executed; HuCC `void` is caller-side only. Return registers/flags UNKNOWN. |
+| `returns` | UNKNOWN | No approved verification evidence for callee execution; HuCC `void` is caller-side only. Return registers/flags UNKNOWN. |
 | `clobbered` | UNKNOWN | — |
 | `preserved` | UNKNOWN | No A/X/Y/P or `al..dh` preservation claim; callee not executed. |
 | `stack` | HYPOTHESIS | Caller-side only: JSR entry with expected RTS to the caller's continuation; trampoline balances PHA/PLA around bank changes (core.inc/core-kernel.asm @54f5c736). Callee depth/balance UNKNOWN. |
@@ -89,7 +89,7 @@ Hardware measurements are kept strictly separate from callee behavior:
 - #202: ST0/ST1/ST2 `WriteFromCPU` bypasses all MMIO/address-hook capture points, even with MPR0≠`$FF` → ST
   interception is BLOCKED.
 
-VERIFIED is not granted for any item: no reference-ROM (`rom/syscard3.pce`) callee execution exists, and the
+VERIFIED is not granted for any item: no approved verification evidence for a reference-ROM callee execution is registered, and the
 schema cannot represent VERIFIED. Success values, flags and completion conditions are not inferred.
 
 ## 将来実装しうる最小範囲（前提未充足・現時点で実装不可）

@@ -7,7 +7,7 @@
   "abi_status": "BLOCKED_ABI",
   "release_eligible": false,
   "execution": "NOT_RUN",
-  "slot_status": "HYPOTHESIS (C4 unresolved, docs/research/cd-pcmrd-contract.md)",
+  "slot_status": "HYPOTHESIS (C4 unresolved)",
   "provenance": "synthetic: author-defined medium, state and cases only; no System Card BIOS byte, disassembly, retail data, or ./rom/ content; no reference callee is executed",
   "callee_abi": {
     "arguments": "UNKNOWN",

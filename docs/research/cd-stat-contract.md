@@ -41,7 +41,7 @@ PASS・OBSERVED・VERIFIED の判定は本台帳に含めない。
 Hu-Go（参照専用、GPL-2）:
 
 - repository `mckayemu/hugo`、commit `64ed226da2288738781743eeef228c069e8973a4`、path `bios.c`
-- SHA-256 `db3f227e09a73457bc9b0f2c54a3922ab9dca1e301f1b5029690c0d210972f22`（`gh api` で commit と blob の内容を再確認。`docs/research/cd-contnts-contract.md` の記録と一致）
+- SHA-256 `db3f227e09a73457bc9b0f2c54a3922ab9dca1e301f1b5029690c0d210972f22`（`gh api` で commit と blob の内容を再確認。`撤去済み文書` の記録と一致）
 
 | ID | 出典（固定版内のパス） | 行 | ライセンス表示 | 用途・注意 |
 | --- | --- | --- | --- | --- |

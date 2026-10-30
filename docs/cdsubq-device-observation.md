@@ -2,7 +2,7 @@
 
 状態: **実コア結果は PASS（トラック 2・LBA 66 の PLAYING / PAUSED / STOPPED の 3 状態）。** 範囲は後述。System Card の CD_SUBQ ABI（引数・戻り値・Q バッファ配置）は UNKNOWN。
 本診断の PASS は、固定版 Geargrafx の SCSI/CD 層が既知の媒体位置で返した `$DD`（READ SUBCODE-Q）応答の観測であり、
-BIOS 互換性・callee ABI の証明ではない。親 Issue #19、呼出側の根拠は [cd-subq-contract.md](research/cd-subq-contract.md)。
+BIOS 互換性・callee ABI の証明ではない。親 Issue #19、呼出側の根拠は 撤去済み文書（撤去済み文書）。
 
 ## 何を観測するか
 

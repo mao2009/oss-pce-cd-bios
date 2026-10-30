@@ -57,7 +57,7 @@
 
 ### 3.4 実行結果（初版: 調整者による WSL 実行の転記）
 
-- 実行場所: WSL 上の清浄クローン `/home/loach/ph-main`（main `c906728`）
+- 実行場所: WSL 上の清浄クローン `<HOME>/ph-main`（main `c906728`）
 - スクリプト: `tests/integration/dev_bcd_full_sweep.py`（本 PR で追加。WSL 清浄クローン上で実行）
 - 結果行: `PASS DEV ROM EX_BINBCD $3C full domain: 256 inputs, 0 failures`
 - 内訳: 有効 0..99 が 100 件、範囲外 100..255 が 156 件、失敗入力は空（`failed_inputs = []`）
@@ -212,7 +212,7 @@ CI の正否は GitHub の PR ページで最終 HEAD に紐づく run を確認
 5. 既存の `docs/ex-binbcd-internal.md` の「PASS」記述、3 行目の古い接続記述、台帳の「real-core tested」注記を、承認前に修正するか（別 PR）。
 6. 残課題（調整者の指定）: 9 入力テスト（`geargrafx_dev_bcd.py`）の P レジスタ検査が C ビットのみである点。全入力スイープでは D/I を検査済みだが、既存テストの検査範囲は未修正。
 7. 残課題（調整者の指定）: clean-room（Issue #40）。本作業では内容を確認しておらず、結論にも使っていない。
-8. 全入力スイープ（`tests/integration/dev_bcd_full_sweep.py`）は WSL の清浄クローン（`/home/loach` 配下）から実行する。ROM バイトを含まない。
+8. 全入力スイープ（`tests/integration/dev_bcd_full_sweep.py`）は WSL の清浄クローン（`<HOME>` 配下）から実行する。ROM バイトを含まない。
 9. 承認フィールドは変更していない。承認はオーナーのみが行う。
 
 ## 9. 承認の状態
