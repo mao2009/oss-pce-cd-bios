@@ -100,12 +100,12 @@ class ContractStructure(unittest.TestCase):
         # The owner's alias set is checked here, in a test, so the published tool keeps no per-slot list.
         self.assertEqual(alias_slots(CONTRACTS), EXPECTED_ALIAS_SLOTS)
 
-    def test_a_single_name_for_an_alias_slot_is_refused(self):
+    def test_a_single_name_for_an_alias_slot_breaks_the_owner_set(self):
         contracts = copy.deepcopy(CONTRACTS)
         contracts["apis"][SLOT13]["candidate_name"] = "SYNTH_A"
         self.assertNotEqual(alias_slots(contracts), EXPECTED_ALIAS_SLOTS)
 
-    def test_a_pair_for_a_single_name_slot_is_refused(self):
+    def test_a_pair_for_a_single_name_slot_breaks_the_owner_set(self):
         contracts = copy.deepcopy(CONTRACTS)
         contracts["apis"][0]["candidate_name"] = "SYNTH_A / SYNTH_B"
         self.assertNotEqual(alias_slots(contracts), EXPECTED_ALIAS_SLOTS)
@@ -292,7 +292,7 @@ class Slot13GateState(unittest.TestCase):
         problems = dev.validate(ledger, load_slots(), set(overrides()))
         self.assertTrue(problems, "a DEV_CALLABLE slot 13 without approval must be reported")
 
-    def test_a_renamed_slot_13_contract_is_refused_not_silently_accepted(self):
+    def test_a_renamed_slot_13_contract_breaks_the_owner_set(self):
         contracts = copy.deepcopy(CONTRACTS)
         contracts["apis"][SLOT13]["candidate_name"] = "SYNTH_A"
         self.assertNotEqual(alias_slots(contracts), EXPECTED_ALIAS_SLOTS)

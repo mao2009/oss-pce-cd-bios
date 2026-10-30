@@ -10,8 +10,8 @@ an author label, a confirmed name) is derived from secondary-source structure, s
 that structure. It is checked internally against the contract ledger and is never printed.
 
 Fail closed: the validator rejects any unknown key at any depth, any value outside the uniform status, any slot whose
-status differs from the others, and any contract whose entries differ from the layout rule or whose alias structure
-differs from the owner's set.
+status differs from the others, and any contract whose entries differ from the layout rule or whose names are malformed
+or duplicated. The owner's alias set is checked by the tests, not by this tool.
 
 Host only. No ROM and no private image is read.
 """
@@ -60,7 +60,7 @@ def entry_for(slot):
 
 
 def check_contracts(contracts):
-    """The contract ledger must agree with the layout rule and the owner's alias structure. Refused otherwise."""
+    """The contract ledger must agree with the layout rule and must hold well-formed, unique names. Refused otherwise."""
     apis = contracts["apis"]
     _require(isinstance(apis, list) and len(apis) == SLOTS, "contract: exactly 81 slots")
     for slot, api in enumerate(apis):
