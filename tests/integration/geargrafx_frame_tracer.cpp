@@ -19,6 +19,8 @@
 #include "trace_logger.h"
 #include "geargrafx_frame_tracer_ring.h"
 #include "geargrafx_frame_tracer_ram.h"
+#include "geargrafx_trace_cpu_region.h"
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -43,12 +45,17 @@ struct CdSnap {
 };
 
 struct Event {
-    enum Kind { SAMPLE, CD, RAM, HANDOFF } kind;
+    enum Kind { SAMPLE, CD, RAM, HANDOFF, REGION } kind;
     unsigned frame;
     CpuSnap cpu;
     CdSnap cd;
     unsigned changed, first, last, cd_event, cd_command, cd_lba, cd_status;
     const FrameTracerRamMapping* ram;
+    unsigned event_pc, event_bank;
+    unsigned long long event_cycle;
+    const char* from_region;
+    const char* to_region;
+    bool trace_gap;
 };
 
 struct RamTracker {
@@ -105,9 +112,18 @@ void print_cd(const CdSnap& cd) {
 
 void print_event(const Event& event) {
     const char* kind = event.kind == Event::SAMPLE ? "sample" : event.kind == Event::CD ? "cd" :
-                        event.kind == Event::RAM ? "ram" : "handoff";
+                        event.kind == Event::RAM ? "ram" : event.kind == Event::REGION ? "region" : "handoff";
     std::printf("EVENT {\"kind\":\"%s\",\"frame\":%u,", kind, event.frame);
-    print_cpu(event.cpu);
+    if (event.kind == Event::REGION) {
+        // These fields come only from the TRACE_CPU entry, which contains the
+        // resolved bank and PC at instruction time.  Never serialize opcode
+        // bytes or disassembly text from that entry.
+        std::printf("\"event_cycle\":%llu,\"event_pc\":%u,\"event_bank\":%u,\"from_region\":\"%s\",\"to_region\":\"%s\",\"trace_gap\":%s",
+                    event.event_cycle, event.event_pc, event.event_bank, event.from_region,
+                    event.to_region, event.trace_gap ? "true" : "false");
+    } else {
+        print_cpu(event.cpu);
+    }
     if (event.kind == Event::CD) {
         // SCSI metadata is event-originated, but CPU/CD fields are sampled only
         // after RunToVBlank returns; never present them as event-time state.
@@ -200,7 +216,7 @@ int main(int argc, char** argv) {
     CpuSnap previous_cpu = cpu_snap(core, cpu, memory);
     CdSnap previous_cd = cd_snap(scsi, cdrom);
     std::printf("CAP {\"normal_frame_execution\":true,\"instruction_step\":false,\"guest_mutation\":false,"
-                   "\"mmio_reads\":false,\"scsi_event_notification\":true,\"ram_observation\":%s,\"ram_regions\":[",
+                   "\"mmio_reads\":false,\"scsi_event_notification\":true,\"cpu_event_notification\":true,\"ram_observation\":%s,\"ram_regions\":[",
                   observe_ram ? "true" : "false");
     for (unsigned i = 0; i != rams.size(); ++i)
         std::printf("%s{\"ram\":\"%s\",\"size\":%u,\"bank_first\":%u,\"bank_last\":%u}", i ? "," : "",
@@ -210,11 +226,12 @@ int main(int argc, char** argv) {
                 capacity, frames, have_disc ? "true" : "false", run_start, run_hold, run_start ? "true" : "false");
     TraceLogger* trace = core.GetTraceLogger();
     if (!trace->SetCapacity(kRingSize)) return 3;
-    trace->SetEnabledFlags(TRACE_FLAG_SCSI);
+    trace->SetEnabledFlags(TRACE_FLAG_CPU | TRACE_FLAG_SCSI);
     trace->SetEventFilter(TRACE_SCSI, TRACE_SCSI_FILTER_COMMANDS | TRACE_SCSI_FILTER_PHASES | TRACE_SCSI_FILTER_RESPONSES);
     trace->Reset();
-    u64 observed_scsi = 0;
-    u64 dropped_scsi = 0;
+    u64 observed_trace = 0;
+    u64 dropped_trace = 0;
+    const char* previous_region = nullptr;
 
     for (unsigned number = 1; number <= (unsigned)frames; ++number) {
         // This is the pinned core's public controller API.  No guest RAM, CPU,
@@ -241,15 +258,28 @@ int main(int argc, char** argv) {
         // changes that begin and end within one video frame.
         const u64 total = trace->GetTotalLogged();
         const u64 first_event = total > kRingSize ? total - kRingSize : 0;
-        if (observed_scsi < first_event) {
-            dropped_scsi += first_event - observed_scsi;
-            observed_scsi = first_event;
+        bool trace_gap = false;
+        if (observed_trace < first_event) {
+            dropped_trace += first_event - observed_trace;
+            observed_trace = first_event;
+            previous_region = nullptr;
+            trace_gap = true;
         }
-        for (; observed_scsi < total; ++observed_scsi) {
-            const GG_Trace_Entry& entry = trace->GetEntry((unsigned)(observed_scsi - first_event));
+        for (; observed_trace < total; ++observed_trace) {
+            const GG_Trace_Entry& entry = trace->GetEntry((unsigned)(observed_trace - first_event));
             if (entry.type == TRACE_SCSI)
                 ring.push({Event::CD, number, now_cpu, now_cd, 0, 0, 0, entry.scsi.event,
                            entry.scsi.command, entry.scsi.param, entry.scsi.status, nullptr});
+            if (entry.type == TRACE_CPU) {
+                const char* region = trace_cpu_region(entry.cpu.bank);
+                if (!previous_region || std::strcmp(previous_region, region) != 0) {
+                    ring.push({Event::REGION, number, now_cpu, now_cd, 0, 0, 0, 0, 0, 0, 0, nullptr,
+                               entry.cpu.pc, entry.cpu.bank, (unsigned long long)entry.cycle,
+                               previous_region ? previous_region : "unknown", region, trace_gap});
+                    previous_region = region;
+                    trace_gap = false;
+                }
+            }
         }
         unsigned wram_changed = 0;
         for (RamTracker& ram : rams) {
@@ -271,9 +301,9 @@ int main(int argc, char** argv) {
     }
     for (unsigned index = 0; index != ring.size(); ++index)
         print_event(ring.at(index));
-    std::printf("END {\"frames\":%ld,\"events\":%u,\"dropped\":%u,\"scsi_events_dropped\":%llu,\"overflow\":%s}", frames,
-                ring.size(), ring.dropped(), (unsigned long long)dropped_scsi,
-                (ring.dropped() || dropped_scsi) ? "true" : "false");
+    std::printf("END {\"frames\":%ld,\"events\":%u,\"dropped\":%u,\"trace_events_dropped\":%llu,\"overflow\":%s}", frames,
+                ring.size(), ring.dropped(), (unsigned long long)dropped_trace,
+                (ring.dropped() || dropped_trace) ? "true" : "false");
     std::printf("\n");
     return 0;
 }
