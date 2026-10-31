@@ -23,7 +23,8 @@ from geargrafx_harness import doctor, run_job, stage_disc  # noqa: E402
 
 MAX_FRAMES = 600
 MAX_EVENTS = 256
-EVENT_KINDS = {"sample", "cd", "wram", "handoff"}
+EVENT_KINDS = {"sample", "cd", "wram", "handoff", "region"}
+CPU_REGIONS = {"unknown", "other", "cdrom_ram", "working_ram", "hardware"}
 
 
 def run_schedule(start_frame, hold_frames, frames):
@@ -205,7 +206,7 @@ def parse_records(stdout):
     if cap.get("normal_frame_execution") is not True or cap.get("instruction_step") is not False:
         raise ValueError("not a normal-frame trace")
     if (cap.get("guest_mutation") is not False or cap.get("mmio_reads") is not False or
-            cap.get("scsi_event_notification") is not True):
+            cap.get("scsi_event_notification") is not True or cap.get("cpu_event_notification") is not True):
         raise ValueError("tracer safety capability missing")
     capacity = cap.get("ring_capacity")
     if type(capacity) is not int or not 1 <= capacity <= MAX_EVENTS:
@@ -224,12 +225,23 @@ def parse_records(stdout):
     if len(events) > capacity or end.get("events") != len(events):
         raise ValueError("ring event count mismatch")
     if (type(end.get("dropped")) is not int or end["dropped"] < 0 or
-            type(end.get("scsi_events_dropped")) is not int or end["scsi_events_dropped"] < 0 or
-            end.get("overflow") is not (end["dropped"] > 0 or end["scsi_events_dropped"] > 0)):
+            type(end.get("trace_events_dropped")) is not int or end["trace_events_dropped"] < 0 or
+            end.get("overflow") is not (end["dropped"] > 0 or end["trace_events_dropped"] > 0)):
         raise ValueError("invalid overflow accounting")
     for event in events:
         if event.get("kind") not in EVENT_KINDS or type(event.get("frame")) is not int or not 1 <= event["frame"] <= cap["frames"]:
             raise ValueError("invalid event header")
+        if event["kind"] == "region":
+            if (not all(type(event.get(key)) is int for key in ("event_cycle", "event_pc", "event_bank")) or
+                    not 0 <= event["event_pc"] <= 0xffff or not 0 <= event["event_bank"] <= 0xff or
+                    event.get("from_region") not in CPU_REGIONS or event.get("to_region") not in CPU_REGIONS or
+                    type(event.get("trace_gap")) is not bool):
+                raise ValueError("invalid event-time CPU region transition")
+            if event["from_region"] == "unknown" and event["trace_gap"] is False:
+                # The first retained event establishes a baseline; it is not a
+                # loss claim.  Later unknown transitions must disclose loss.
+                continue
+            continue
         if (type(event.get("pc")) is not int or type(event.get("physical_pc")) is not int or
                 type(event.get("pc_bank")) is not int or type(event.get("mpr")) is not list or len(event["mpr"]) != 8):
             raise ValueError("event lacks CPU/MPR snapshot")
