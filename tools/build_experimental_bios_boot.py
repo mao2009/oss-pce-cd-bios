@@ -14,14 +14,14 @@ import subprocess
 
 if __package__:
     from .build_rom import API_IMPLEMENTATION, BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
-    from .build_cdload_exec import DEFAULT_LBA, DISC_SECTORS, EXEC_ADDRESS, EXPECTED_MPR, SECTOR_BYTES, parse_labels
+    from .build_cdload_exec import DISC_SECTORS, EXEC_ADDRESS, EXPECTED_MPR, SECTOR_BYTES, parse_labels
     from .environment import DEPENDENCIES, executable
-    from .experimental_track_selection import assembler_defines, selection
+    from .experimental_track_selection import assembler_defines, selection_from_cue
 else:
     from build_rom import API_IMPLEMENTATION, BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
-    from build_cdload_exec import DEFAULT_LBA, DISC_SECTORS, EXEC_ADDRESS, EXPECTED_MPR, SECTOR_BYTES, parse_labels
+    from build_cdload_exec import DISC_SECTORS, EXEC_ADDRESS, EXPECTED_MPR, SECTOR_BYTES, parse_labels
     from environment import DEPENDENCIES, executable
-    from experimental_track_selection import assembler_defines, selection
+    from experimental_track_selection import assembler_defines, selection_from_cue
 
 MS_RES = 0x3F40
 EXPERIMENTAL_BOOT_FLAG = "EXPERIMENTAL_BIOS_BOOT"
@@ -42,19 +42,28 @@ def parse_needed_labels(path: Path, names) -> dict:
     return found
 
 
-def experimental_boot_units(selected=None):
-    """Opt-in link units. The default image never receives EXPERIMENTAL_BIOS_BOOT."""
-    selected = selection(1, DEFAULT_LBA) if selected is None else selection(selected["track"], selected["lba"], selected["kind"])
+def _experimental_boot_units(selected):
+    """Link units for an already-derived record; kept private to this builder."""
     return [
         (ROOT / "src/experimental_bios_boot.s", assembler_defines(selected)),
         (ROOT / "src/cd_load_exec_probe.s", ["-D", EXPERIMENTAL_BOOT_FLAG]),
     ]
 
 
-def build_experimental_bios_boot(original_path: Path, output: Path, mode="debug", selected=None) -> Path:
+def experimental_boot_units(cue_path):
+    """Opt-in link units; derive the record from the exact CUE to be mounted."""
+    if cue_path is None:
+        raise ValueError("experimental boot requires the exact mounted synthetic CUE")
+    selected = selection_from_cue(cue_path, cue_path)
+    return _experimental_boot_units(selected)
+
+
+def build_experimental_bios_boot(original_path: Path, output: Path, mode="debug", cue_path=None) -> Path:
     if mode not in ("debug", "release"):
         raise ValueError("MODE must be debug or release")
-    selected = selection(1, DEFAULT_LBA) if selected is None else selection(selected["track"], selected["lba"], selected["kind"])
+    if cue_path is None:
+        raise ValueError("experimental boot requires the exact mounted synthetic CUE")
+    selected = selection_from_cue(cue_path, cue_path)
     original = original_path.read_bytes()
     verify_dev_rom(original, manifest=original_path.parent / "manifest.json")
     ca65, ld65 = executable("ca65"), executable("ld65")
@@ -65,7 +74,7 @@ def build_experimental_bios_boot(original_path: Path, output: Path, mode="debug"
     output.mkdir(parents=True, exist_ok=True)
     debug_flags = ["-g"] if mode == "debug" else []
     objects = assemble_api_objects(output, mode)
-    for source, defines in experimental_boot_units(selected):
+    for source, defines in _experimental_boot_units(selected):
         obj = output / (source.stem + ".o")
         subprocess.run([ca65, str(source), *defines, "-o", str(obj), *debug_flags], check=True)
         objects.append(obj)
@@ -124,9 +133,11 @@ def build_experimental_bios_boot(original_path: Path, output: Path, mode="debug"
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=["debug", "release"], default="debug")
+    parser.add_argument("--cue", type=Path, required=True,
+                        help="the exact synthetic CUE that will be mounted for this image")
     args = parser.parse_args()
     base = ROOT / "build" / args.mode / "bios-dev" / "dev-only-not-compatible-syscard3.pce"
-    rom = build_experimental_bios_boot(base, ROOT / "build" / args.mode / "experimental-bios-boot", args.mode)
+    rom = build_experimental_bios_boot(base, ROOT / "build" / args.mode / "experimental-bios-boot", args.mode, args.cue)
     print(f"PASS experimental DEV-only 256 KiB image (NOT compatible, NOT a BIOS ABI): {rom}")
 
 

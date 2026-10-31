@@ -18,20 +18,22 @@
 ; track 1..99, then a 21-bit absolute LBA in high/middle/low order. The ROM
 ; validates its fixed prefix and every variable field; kind 0 deliberately
 ; denotes an audio/no-data selection and is refused.
+; No fallback selection exists.  In particular, an omitted host record must
+; never silently revive the old LBA 5 diagnostic request.
 .ifndef EXP_SELECTED_KIND
-EXP_SELECTED_KIND = 1
+    .error "host-derived EXP_SELECTED_KIND is required"
 .endif
 .ifndef EXP_SELECTED_TRACK
-EXP_SELECTED_TRACK = 1
+    .error "host-derived EXP_SELECTED_TRACK is required"
 .endif
 .ifndef EXP_SELECTED_LBA_HI
-EXP_SELECTED_LBA_HI = 0
+    .error "host-derived EXP_SELECTED_LBA_HI is required"
 .endif
 .ifndef EXP_SELECTED_LBA_MID
-EXP_SELECTED_LBA_MID = 0
+    .error "host-derived EXP_SELECTED_LBA_MID is required"
 .endif
 .ifndef EXP_SELECTED_LBA_LO
-EXP_SELECTED_LBA_LO = 5
+    .error "host-derived EXP_SELECTED_LBA_LO is required"
 .endif
 
 ; Keep the vector target to one instruction so the real-core trace can distinguish reset from init.
