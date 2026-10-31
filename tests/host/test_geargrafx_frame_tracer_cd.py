@@ -2,6 +2,7 @@
 from contextlib import redirect_stderr
 from io import StringIO
 from pathlib import Path
+import subprocess
 import sys
 import unittest
 from unittest import mock
@@ -18,30 +19,40 @@ class FrameTracerCdResultTests(unittest.TestCase):
         return code, stderr.getvalue()
 
     def test_tracer_blocker_is_explicit_and_exit_three(self):
-        code, stderr = self.invoke(bridge.TracerBlocked("RAM observer ON: doctor prerequisites"))
+        code, stderr = self.invoke(bridge.IntegrationBlocked("RAM observer ON: doctor prerequisites"))
         self.assertEqual(code, 3)
         self.assertEqual(stderr, "BLOCKED: frame-tracer CD integration: RAM observer ON: doctor prerequisites\n")
 
-    def test_probe_execution_failure_is_not_reported_as_blocked_or_assertion(self):
-        code, stderr = self.invoke(bridge.ProbeExecutionFailed("CD diagnostic probe execution: exit 7"))
-        self.assertEqual(code, 1)
-        self.assertEqual(stderr, "FAIL: frame-tracer CD integration: CD diagnostic probe execution: exit 7\n")
-
-    def test_probe_compile_exception_is_caught_as_probe_execution_failure(self):
-        with mock.patch.object(bridge, "compile_probe", side_effect=OSError("core unavailable")):
-            with self.assertRaisesRegex(bridge.ProbeExecutionFailed, "CD diagnostic probe execution: core unavailable"):
+    def test_compile_probe_blocker_is_structured_blocked_exit_three(self):
+        with mock.patch.object(bridge, "compile_probe", side_effect=ValueError("BLOCKED: missing g++")):
+            with self.assertRaisesRegex(bridge.IntegrationBlocked, "CD diagnostic probe build"):
                 bridge.execute_cd_diagnostic(Path("temporary"), Path("rom"), Path("cue"), Path("labels"))
+        code, stderr = self.invoke(bridge.IntegrationBlocked("CD diagnostic probe build: BLOCKED: missing g++"))
+        self.assertEqual(code, 3)
+        self.assertEqual(stderr, "BLOCKED: frame-tracer CD integration: CD diagnostic probe build: BLOCKED: missing g++\n")
 
-    def test_probe_value_error_is_not_misclassified_as_an_assertion(self):
+    def test_probe_exit_seven_is_structured_blocked_exit_three(self):
         with mock.patch.object(bridge, "compile_probe", return_value=Path("probe")), \
-                mock.patch.object(bridge, "execute", side_effect=ValueError("malformed probe record")):
-            with self.assertRaisesRegex(bridge.ProbeExecutionFailed, "malformed probe record"):
+                mock.patch.object(bridge, "execute", side_effect=subprocess.CalledProcessError(7, ["probe"])):
+            with self.assertRaisesRegex(bridge.IntegrationBlocked, "probe exit 7"):
                 bridge.execute_cd_diagnostic(Path("temporary"), Path("rom"), Path("cue"), Path("labels"))
+        code, stderr = self.invoke(bridge.IntegrationBlocked("CD diagnostic probe: core did not enable CD hardware (probe exit 7)"))
+        self.assertEqual(code, 3)
+        self.assertEqual(stderr, "BLOCKED: frame-tracer CD integration: CD diagnostic probe: core did not enable CD hardware (probe exit 7)\n")
 
-    def test_assertion_failure_is_distinct_from_probe_execution(self):
+    def test_oracle_assertion_is_fail_exit_one(self):
         code, stderr = self.invoke(ValueError("RAM region classification mismatch"))
         self.assertEqual(code, 1)
-        self.assertEqual(stderr, "FAIL: frame-tracer CD integration assertion: RAM region classification mismatch\n")
+        self.assertEqual(stderr, "FAIL: frame-tracer CD integration oracle assertion: RAM region classification mismatch\n")
+
+        code, stderr = self.invoke(AssertionError("CD-read oracle rejected records"))
+        self.assertEqual(code, 1)
+        self.assertEqual(stderr, "FAIL: frame-tracer CD integration oracle assertion: CD-read oracle rejected records\n")
+
+    def test_unexpected_exception_is_fail_exit_one(self):
+        code, stderr = self.invoke(KeyError("unexpected record shape"))
+        self.assertEqual(code, 1)
+        self.assertEqual(stderr, "FAIL: frame-tracer CD integration unexpected KeyError: 'unexpected record shape'\n")
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ the normal-frame RAM observer both on and off.  The trace reports metadata only.
 import argparse
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 
@@ -20,21 +21,29 @@ from make_cd_image import CUE_NAME, DEFAULT_SECTORS, build_image, sector_payload
 import geargrafx_frame_tracer as tracer  # noqa: E402
 
 
-class TracerBlocked(RuntimeError):
-    """The tracer reported a prerequisite blocker rather than a failed observation."""
+class IntegrationBlocked(RuntimeError):
+    """A documented prerequisite prevented this diagnostic from running."""
 
 
-class ProbeExecutionFailed(RuntimeError):
-    """The existing CD diagnostic probe did not execute to an observation."""
+TracerBlocked = IntegrationBlocked
 
 
 def execute_cd_diagnostic(directory, rom, cue, labels):
-    """Run the established diagnostic, translating host/probe failures to one result class."""
+    """Run the established diagnostic and preserve its explicit blocker outcomes."""
     try:
         probe = compile_probe(directory, "geargrafx_cdread_probe.cpp", "geargrafx-frame-tracer-cdread")
+    except ValueError as error:
+        # compile_probe uses this documented prefix for missing pinned tools/core objects.
+        if str(error).startswith("BLOCKED:"):
+            raise IntegrationBlocked(f"CD diagnostic probe build: {error}") from error
+        raise
+    try:
         return execute(probe, rom, cue, labels, STEP_BUDGET)
-    except Exception as error:
-        raise ProbeExecutionFailed(f"CD diagnostic probe execution: {error}") from error
+    except subprocess.CalledProcessError as error:
+        # Match the established CD-read diagnostic meaning for this probe exit.
+        if error.returncode == 7:
+            raise IntegrationBlocked("CD diagnostic probe: core did not enable CD hardware (probe exit 7)") from error
+        raise
 
 
 def trace(rom, cue, output, observe_ram):
@@ -60,7 +69,7 @@ def run(mode):
         on, off = trace(rom, cue, temporary / "on.json", True), trace(rom, cue, temporary / "off.json", False)
         for name, result in (("ON", on), ("OFF", off)):
             if result.get("status") == "BLOCKED":
-                raise TracerBlocked(f"RAM observer {name}: {result.get('reason', 'unspecified blocker')}")
+                raise IntegrationBlocked(f"RAM observer {name}: {result.get('reason', 'unspecified blocker')}")
         if on["status"] != "PASS" or off["status"] != "PASS":
             raise ValueError(f"frame trace did not complete: on={on['status']} off={off['status']}")
         expected = {"wram", "cdrom_ram", "card_ram"}
@@ -82,14 +91,14 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         run(args.mode)
-    except TracerBlocked as error:
+    except IntegrationBlocked as error:
         print(f"BLOCKED: frame-tracer CD integration: {error}", file=sys.stderr)
         return 3
-    except ProbeExecutionFailed as error:
-        print(f"FAIL: frame-tracer CD integration: {error}", file=sys.stderr)
+    except (AssertionError, ValueError) as error:
+        print(f"FAIL: frame-tracer CD integration oracle assertion: {error}", file=sys.stderr)
         return 1
-    except (OSError, RuntimeError, ValueError) as error:
-        print(f"FAIL: frame-tracer CD integration assertion: {error}", file=sys.stderr)
+    except Exception as error:  # unexpected diagnostic failures are failures, never blockers
+        print(f"FAIL: frame-tracer CD integration unexpected {type(error).__name__}: {error}", file=sys.stderr)
         return 1
     return 0
 
