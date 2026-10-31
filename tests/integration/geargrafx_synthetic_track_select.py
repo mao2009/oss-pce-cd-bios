@@ -8,7 +8,9 @@ real-core observation records that raw READ(6) itself does not provide it.
 """
 import argparse
 import json
+import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 import tempfile
@@ -36,26 +38,98 @@ class BlockedError(RuntimeError):
 def require_file(path):
     """Return an existing regular artifact, otherwise fail closed before judging it."""
     path = Path(path)
-    if not path.is_file():
-        raise BlockedError(f"BLOCKED: required diagnostic artifact is missing: {path.name}")
+    try:
+        info = path.lstat()
+    except OSError as error:
+        raise BlockedError(f"BLOCKED: required diagnostic artifact is unreadable: {path.name}") from error
+    if stat.S_ISLNK(info.st_mode):
+        raise BlockedError(f"BLOCKED: required diagnostic artifact must not be a symlink: {path.name}")
+    if not stat.S_ISREG(info.st_mode):
+        raise BlockedError(f"BLOCKED: required diagnostic artifact is not a regular file: {path.name}")
     return path
+
+
+def read_artifact(path):
+    """Read a regular artifact without following a replacement symlink.
+
+    Build outputs are evidence inputs.  A missing, unreadable, or swapped input
+    is unavailable evidence, rather than a completed-run oracle contradiction.
+    """
+    path = require_file(path)
+    try:
+        before = path.lstat()
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(path, flags)
+        with os.fdopen(fd, "rb") as artifact:
+            opened = os.fstat(artifact.fileno())
+            if not stat.S_ISREG(opened.st_mode):
+                raise BlockedError(f"BLOCKED: required diagnostic artifact is not a regular file: {path.name}")
+            data = artifact.read()
+        after = path.lstat()
+    except BlockedError:
+        raise
+    except OSError as error:
+        raise BlockedError(f"BLOCKED: required diagnostic artifact is unreadable: {path.name}") from error
+    if ((before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
+            or (after.st_dev, after.st_ino) != (opened.st_dev, opened.st_ino)
+            or stat.S_ISLNK(after.st_mode)):
+        raise BlockedError(f"BLOCKED: required diagnostic artifact changed while being read: {path.name}")
+    return data
+
+
+def read_json_artifact(path):
+    """Decode a complete JSON build artifact or classify it as unavailable."""
+    try:
+        value = json.loads(read_artifact(path).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise BlockedError(f"BLOCKED: required diagnostic artifact has partial or unreadable JSON: {Path(path).name}") from error
+    if type(value) is not dict:
+        raise BlockedError(f"BLOCKED: required diagnostic artifact JSON is not an object: {Path(path).name}")
+    return value
+
+
+RECORD_LISTS = ("CAP", "HIT", "PHASE", "RUN", "BLOCK", "INJECT")
+BASE_ROW_KEYS = ("name", "cycle", "step", "pc", "a", "x", "y", "p", "sp", "mpr",
+                 "scsi_phase", "scsi_signals", "load_sector", "load_count", "cd_irq_active", "cd_irq_enabled")
+ROW_KEYS = {
+    "CAP": ("instruction_step", "bios_loaded", "loader", "cdrom_hardware", "cdrom_media", "disc_given", "drive_ready"),
+    "HIT": BASE_ROW_KEYS + ("buffer_head_hex",),
+    "PHASE": BASE_ROW_KEYS,
+    "RUN": BASE_ROW_KEYS + ("reason", "halt_confirmed", "halted_after_step", "halt_confirmation_steps",
+                              "halt_confirmation_required", "result_hex", "buffer_hex"),
+    "BLOCK": (),
+    "INJECT": ("cycle", "step", "event"),
+}
+
+
+def require_row(row, tag, index):
+    if type(row) is not dict:
+        raise BlockedError(f"BLOCKED: probe {tag}[{index}] is not an observation object")
+    missing = [key for key in ROW_KEYS[tag] if key not in row]
+    if missing:
+        raise BlockedError(f"BLOCKED: probe {tag}[{index}] is missing keys: {', '.join(missing)}")
 
 
 def require_complete_records(records, case):
     """Reject a truncated probe transcript as unavailable evidence, not an oracle failure."""
-    if not isinstance(records, dict):
+    if type(records) is not dict:
         raise BlockedError(f"BLOCKED: {case}: probe returned no observation record")
-    required = ("CAP", "RUN", "PHASE")
-    missing = [key for key in required if not isinstance(records.get(key), list)]
+    missing = [key for key in RECORD_LISTS if type(records.get(key)) is not list]
     if missing:
-        raise BlockedError(f"BLOCKED: {case}: partial probe record missing {', '.join(missing)}")
-    if len(records["CAP"]) != 1 or [run.get("cycle") for run in records["RUN"]] != ["cold", "warm"]:
+        raise BlockedError(f"BLOCKED: {case}: partial probe record missing or malformed {', '.join(missing)}")
+    for tag in RECORD_LISTS:
+        for index, row in enumerate(records[tag]):
+            require_row(row, tag, index)
+    if len(records["CAP"]) != 1 or [run["cycle"] for run in records["RUN"]] != ["cold", "warm"]:
         raise BlockedError(f"BLOCKED: {case}: partial probe record lacks one cold/warm capability observation")
+    for tag in ("HIT", "PHASE", "INJECT"):
+        if any(row["cycle"] not in ("cold", "warm") for row in records[tag]):
+            raise BlockedError(f"BLOCKED: {case}: probe {tag} row lacks a cold/warm cycle")
 
 
 def exit_for_error(error):
     """Keep unavailable prerequisites separate from completed-run oracle failures."""
-    return EXIT_BLOCKED if isinstance(error, (BlockedError, FileNotFoundError, subprocess.SubprocessError)) \
+    return EXIT_BLOCKED if isinstance(error, (BlockedError, OSError, subprocess.SubprocessError)) \
         or str(error).startswith("BLOCKED:") else 1
 
 
@@ -63,7 +137,7 @@ def execute_complete(*args):
     """Run the probe, translating an unreadable/truncated transcript to BLOCKED."""
     try:
         records = execute(*args)
-    except (ValueError, json.JSONDecodeError) as error:
+    except (ValueError, json.JSONDecodeError, PermissionError, IsADirectoryError, OSError) as error:
         raise BlockedError(f"BLOCKED: probe observation is partial or unreadable: {error}") from error
     require_complete_records(records, "Geargrafx READ(6)")
     return records
@@ -88,11 +162,13 @@ def main():
     parser.add_argument("--mode", choices=("debug", "release"), default="debug")
     args = parser.parse_args()
     output = ROOT / "build" / args.mode / "cdread-probe"
-    rom = require_file(output / "cdread-probe-not-bios.pce").read_bytes()
-    manifest = json.loads(require_file(output / "manifest.json").read_text())
+    rom = read_artifact(output / "cdread-probe-not-bios.pce")
+    manifest = read_json_artifact(output / "manifest.json")
+    if type(manifest.get("symbols")) is not dict or "code_sha256_excluding_request" not in manifest:
+        raise BlockedError("BLOCKED: required diagnostic manifest is partial")
     labels, symbols = require_file(output / "trace-labels.txt"), manifest["symbols"]
     base = require_file(ROOT / "build" / args.mode / "bios-dev/dev-only-not-compatible-syscard3.pce")
-    digest = verify_cdread(rom, base.read_bytes(), symbols, manifest["code_sha256_excluding_request"])
+    digest = verify_cdread(rom, read_artifact(base), symbols, manifest["code_sha256_excluding_request"])
     probe = compile_probe(output, "geargrafx_cdread_probe.cpp", "geargrafx-synthetic-track-select-probe")
     results = {}
     with tempfile.TemporaryDirectory(prefix="pce-synthetic-track-select-") as tmp:

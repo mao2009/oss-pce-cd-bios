@@ -1,5 +1,6 @@
 """Host-only CUE selection checks for the synthetic real-core track diagnostic."""
 import importlib.util
+import json
 import tempfile
 import unittest
 from unittest import mock
@@ -56,6 +57,19 @@ class SyntheticTrackSelectionTests(unittest.TestCase):
 
 
 class SyntheticTrackSelectionClassificationTests(unittest.TestCase):
+    @staticmethod
+    def complete_records():
+        base = {"name": "checkpoint", "cycle": "cold", "step": 1, "pc": 0, "a": 0, "x": 0, "y": 0,
+                "p": 0, "sp": 0, "mpr": [0] * 8, "scsi_phase": 0, "scsi_signals": 0, "load_sector": 0,
+                "load_count": 0, "cd_irq_active": 0, "cd_irq_enabled": 0}
+        run = {**base, "reason": "cd_halt_ok", "halt_confirmed": True, "halted_after_step": 0,
+               "halt_confirmation_steps": 0, "halt_confirmation_required": 0, "result_hex": "00000000000000",
+               "buffer_hex": ""}
+        cap = {"instruction_step": True, "bios_loaded": True, "loader": "test", "cdrom_hardware": True,
+               "cdrom_media": True, "disc_given": True, "drive_ready": True}
+        return {"CAP": [cap], "HIT": [], "PHASE": [], "RUN": [run, {**run, "cycle": "warm"}],
+                "BLOCK": [], "INJECT": []}
+
     def test_missing_artifact_is_blocked(self):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(track_integration.BlockedError):
@@ -68,6 +82,58 @@ class SyntheticTrackSelectionClassificationTests(unittest.TestCase):
             track_integration.require_complete_records(partial, "test")
         with mock.patch.object(track_integration, "execute", side_effect=ValueError("probe did not complete cold and warm runs")):
             with self.assertRaisesRegex(track_integration.BlockedError, "partial or unreadable"):
+                track_integration.execute_complete("probe", "rom", "cue", "labels")
+
+    def test_malformed_transcript_container_rows_keys_and_cycles_are_blocked(self):
+        cases = []
+        records = self.complete_records(); records["PHASE"] = ()
+        cases.append(records)
+        records = self.complete_records(); records["RUN"][0] = []
+        cases.append(records)
+        records = self.complete_records(); del records["RUN"][0]["buffer_hex"]
+        cases.append(records)
+        records = self.complete_records(); records["RUN"][1]["cycle"] = "cold"
+        cases.append(records)
+        for records in cases:
+            with self.subTest(records=records):
+                with self.assertRaisesRegex(track_integration.BlockedError, "BLOCKED:"):
+                    track_integration.require_complete_records(records, "test")
+
+    def test_partial_json_and_unreadable_artifacts_are_blocked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            partial = root / "manifest.json"
+            partial.write_text('{"symbols": ')
+            with self.assertRaisesRegex(track_integration.BlockedError, "partial or unreadable JSON"):
+                track_integration.read_json_artifact(partial)
+            with self.assertRaises(track_integration.BlockedError):
+                track_integration.read_artifact(root)
+            artifact = root / "artifact"
+            artifact.write_bytes(b"ok")
+            with mock.patch.object(track_integration.os, "open", side_effect=PermissionError("denied")):
+                with self.assertRaisesRegex(track_integration.BlockedError, "unreadable"):
+                    track_integration.read_artifact(artifact)
+
+    def test_symlink_artifact_and_replacement_are_blocked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "target"; target.write_bytes(b"safe")
+            link = root / "link"
+            try:
+                link.symlink_to(target)
+            except OSError as error:
+                self.skipTest(f"cannot create symlink in this environment: {error}")
+            with self.assertRaisesRegex(track_integration.BlockedError, "symlink"):
+                track_integration.read_artifact(link)
+            replacement = root / "replacement"; replacement.write_bytes(b"other")
+            before, after = target.lstat(), replacement.lstat()
+            with mock.patch.object(Path, "lstat", autospec=True, side_effect=(before, before, after)):
+                with self.assertRaisesRegex(track_integration.BlockedError, "changed while being read"):
+                    track_integration.read_artifact(target)
+
+    def test_partial_json_from_probe_is_blocked(self):
+        with mock.patch.object(track_integration, "execute", side_effect=json.JSONDecodeError("partial", "{", 1)):
+            with self.assertRaises(track_integration.BlockedError):
                 track_integration.execute_complete("probe", "rom", "cue", "labels")
 
     def test_completed_oracle_failure_is_fail(self):
