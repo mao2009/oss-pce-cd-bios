@@ -87,9 +87,9 @@ cd_stack_ready:
     inc ptr+1
     dex
     bne @fill
-    lda #<BUF                ; invalid requests report zero bytes, not the sentinel-fill cursor
+    lda cd_read6_request     ; establish the selected target before validation, so every
     sta ptr
-    lda #>BUF
+    lda cd_read6_request+1  ; failure byte counts are relative to this target too
     sta ptr+1
 cd_buffer_ready:
     lda #1
@@ -98,26 +98,29 @@ cd_buffer_ready:
     beq @bad_request
     cmp #4
     bcs @bad_request
-    lda cd_read6_request+1   ; target must be in $2800-$3FFF and contain all requested pages
+    lda cd_read6_request+1   ; target must be in $2800-$3FFF
     cmp #$28
     bcc @bad_request
     cmp #$40
     bcs @bad_request
-    sta tmo0
     lda cd_cdb+4
     asl a
     asl a
     asl a                    ; count * 2048 -> high byte
-    tax                      ; preserve transfer-page count while checking the target end
+    tax                      ; preserve transfer-page count while checking the 16-bit end pointer
+    lda ptr                  ; end = target + count * $0800, including low byte and carry
     clc
-    adc tmo0
+    adc #$00
+    sta tmo0
+    txa
+    adc ptr+1
     bcs @bad_request
-    cmp #$41                 ; end pointer may be exactly $4000, never beyond it
-    bcs @bad_request
-    lda cd_read6_request
-    sta ptr
+    cmp #$40                 ; end pointer may be exactly $4000, never beyond it
+    bcc @target_ok
+    bne @bad_request
     lda tmo0
-    sta ptr+1
+    bne @bad_request
+@target_ok:
     txa
     sta remain+1
     lda #0
@@ -288,11 +291,11 @@ store_counts:
     sta RES+6
     sec
     lda ptr
-    sbc #<BUF
+    sbc cd_read6_request
     sta RES+2
     lda ptr+1
-    sbc #>BUF
-    sta RES+3                ; bytes transferred (little endian)
+    sbc cd_read6_request+1
+    sta RES+3                ; bytes transferred from the selected target (little endian)
     rts
 
 ; Bounded poll of $1800: (status & wmask) == want. C clear = reached, C set = timeout.
@@ -365,7 +368,7 @@ cd_unexpected_interrupt:
 
 ; Generic synthetic READ(6) request.  This is an original, diagnostic-only helper contract,
 ; not a System Card ABI: CDB gives a 21-bit absolute LBA and count; target is a work-RAM
-; CPU address.  Validation above accepts count 1..3 and a complete target range in $2800-$3FFF.
+; CPU address.  Validation above accepts count 1..3 and target + count * $0800 <= $4000.
 ; The fixed LBA 5 / one-sector / $2800 request remains the regression default.
 cd_cdb:
     .byte $08, $00, $00, $05, $01, $00
