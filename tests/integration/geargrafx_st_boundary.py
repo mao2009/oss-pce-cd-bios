@@ -112,13 +112,25 @@ def check_refused(row, mode):
                          f"R {row['vdc_r_before']:#x}->{row['vdc_r_after']:#x})")
     if _vdc_landed(row, kind):
         raise ValueError(f"{mode}: VDC side effect landed although the ST was refused")
-    # PR #418's immutable historical rows predate fetch-map reporting.  New
-    # mpr2 evidence requires it; current probe runs always emit all three fields.
-    has_fetch = all(type(row.get(key)) is int for key in ("fetch_opcode", "fetch_page", "fetch_mpr"))
-    if has_fetch and (row["fetch_opcode"] != ST_OPCODE[kind] or row["fetch_page"] != row["refused_pc"] >> 13):
-        raise ValueError(f"{mode}: monitor opcode does not match the CPU fetch boundary")
-    if mode == "st2-mpr2-unknown" and (not has_fetch or row["fetch_mpr"] != 0xF8):
-        raise ValueError(f"{mode}: ST2 was not checked through remapped MPR2")
+    # Current runs must carry a complete opcode/fetch-mapping observation. Older
+    # immutable evidence (if ever loaded by an archival tool) belongs in a
+    # separate historical validator; it must not weaken this live-run contract.
+    fetch = {}
+    for key in ("fetch_opcode", "fetch_page", "fetch_mpr"):
+        value = row.get(key)
+        if type(value) is not int:
+            raise ValueError(f"{mode}: missing/non-integer {key} fetch evidence")
+        fetch[key] = value
+    expected_page = row["refused_pc"] >> 13
+    if fetch["fetch_page"] != expected_page:
+        raise ValueError(f"{mode}: fetch page {fetch['fetch_page']}, expected CPU page {expected_page}")
+    if fetch["fetch_mpr"] != row["after"]["mpr"][expected_page]:
+        raise ValueError(f"{mode}: fetch MPR does not match the page's active MPR")
+    if fetch["fetch_opcode"] != ST_OPCODE[kind] or fetch["fetch_opcode"] != row["refused_opcode"]:
+        raise ValueError(f"{mode}: fetched opcode does not match the refused ST opcode")
+    physical_fetch_bank = fetch["fetch_mpr"]
+    if mode == "st2-mpr2-unknown" and (fetch["fetch_page"] != 2 or physical_fetch_bank != 0xF8):
+        raise ValueError(f"{mode}: ST2 fetch did not resolve through remapped page 2/MPR2 bank $F8")
     return REFUSED_VERDICT
 
 
@@ -165,6 +177,12 @@ def mutation_test_armed(refused_row, landed_row, mode):
         ("side_effect_landed", ({"vdc_ar_after": 0x07} if kind == "st0" else
                                 {"vdc_r_after": 0x5A} if kind == "st1" else {"vdc_r_after": 0xA500})),
         ("mpr0_ff", {"before": {"mpr": [0xFF] + [0] * 7}, "after": {"mpr": [0xFF] + [0] * 7}}),
+        ("fetch_opcode_missing", {"fetch_opcode": None}),
+        ("fetch_page_missing", {"fetch_page": None}),
+        ("fetch_mpr_missing", {"fetch_mpr": None}),
+        ("fetch_opcode_mismatch", {"fetch_opcode": other_op}),
+        ("fetch_page_mismatch", {"fetch_page": (ST_EXPECTED_PC[mode] >> 13) ^ 1}),
+        ("fetch_mpr_mismatch", {"fetch_mpr": base["fetch_mpr"] ^ 1}),
     ]
     for name, overwrite in mutations:
         if name == "monitor_disabled_run_as_armed":
