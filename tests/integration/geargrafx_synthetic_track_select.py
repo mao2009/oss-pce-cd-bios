@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 import sys
@@ -19,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from build_cdread import verify_cdread, with_request
+from build_cdread import BUFFER_BYTES, REQUIRED_SYMBOLS, verify_cdread, with_request
 from cdread_verify import check_success, describe_failure
 from environment import DEPENDENCIES
 from geargrafx_api import compile_probe
@@ -101,6 +102,68 @@ ROW_KEYS = {
     "INJECT": ("cycle", "step", "event"),
 }
 
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def require_int(value, field, minimum=0, maximum=None):
+    """Accept an actual integer in the consumer's domain, never bool."""
+    if type(value) is not int or value < minimum or (maximum is not None and value > maximum):
+        bounds = f"{minimum}..{maximum}" if maximum is not None else f">={minimum}"
+        raise BlockedError(f"BLOCKED: {field} is not an integer in {bounds}")
+    return value
+
+
+def require_hex(value, field, byte_length=None, minimum_bytes=None):
+    """Decode a complete, even-length hexadecimal observation before any oracle sees it."""
+    if type(value) is not str or len(value) % 2 or not re.fullmatch(r"[0-9a-fA-F]*", value):
+        raise BlockedError(f"BLOCKED: {field} is not valid even-length hexadecimal")
+    decoded = bytes.fromhex(value)
+    if byte_length is not None and len(decoded) != byte_length:
+        raise BlockedError(f"BLOCKED: {field} has {len(decoded)} bytes, expected {byte_length}")
+    if minimum_bytes is not None and len(decoded) < minimum_bytes:
+        raise BlockedError(f"BLOCKED: {field} has {len(decoded)} bytes, need at least {minimum_bytes}")
+    return decoded
+
+
+def require_manifest(manifest):
+    """Validate every build-manifest value consumed below before structural/oracle checks."""
+    symbols = manifest.get("symbols")
+    if type(symbols) is not dict:
+        raise BlockedError("BLOCKED: required diagnostic manifest symbols is not an object")
+    missing = [name for name in REQUIRED_SYMBOLS if name not in symbols]
+    if missing:
+        raise BlockedError(f"BLOCKED: required diagnostic manifest symbols missing: {', '.join(missing)}")
+    # All diagnostic labels are 16-bit CPU addresses.  The ROM verifier relies
+    # on these addresses for slices and vectors, so do not let bool/strings reach it.
+    for name in REQUIRED_SYMBOLS:
+        require_int(symbols[name], f"manifest symbol {name}", 0xE000, 0xFFFF)
+    if symbols["cd_entry"] != 0xF000:
+        raise BlockedError("BLOCKED: manifest symbol cd_entry is outside the diagnostic code base")
+    if not (0xF000 < symbols["cd_cdb"] <= 0xFFF6 - 8):
+        raise BlockedError("BLOCKED: manifest symbol cd_cdb cannot contain the complete READ(6) request")
+    digest = manifest.get("code_sha256_excluding_request")
+    if type(digest) is not str or not SHA256_RE.fullmatch(digest):
+        raise BlockedError("BLOCKED: manifest code_sha256_excluding_request is not a SHA-256 string")
+    return symbols, digest
+
+
+def require_base_row(row, tag, index):
+    prefix = f"probe {tag}[{index}]"
+    if type(row["name"]) is not str or not row["name"]:
+        raise BlockedError(f"BLOCKED: {prefix}.name is not a non-empty string")
+    if row["cycle"] not in ("cold", "warm"):
+        raise BlockedError(f"BLOCKED: {prefix}.cycle is not cold or warm")
+    require_int(row["step"], f"{prefix}.step", 0)
+    require_int(row["pc"], f"{prefix}.pc", 0, 0xFFFF)
+    for field in ("a", "x", "y", "p", "sp", "scsi_phase", "scsi_signals", "cd_irq_active", "cd_irq_enabled"):
+        require_int(row[field], f"{prefix}.{field}", 0, 0xFF)
+    if type(row["mpr"]) is not list or len(row["mpr"]) != 8:
+        raise BlockedError(f"BLOCKED: {prefix}.mpr is not an eight-byte list")
+    for item, value in enumerate(row["mpr"]):
+        require_int(value, f"{prefix}.mpr[{item}]", 0, 0xFF)
+    require_int(row["load_sector"], f"{prefix}.load_sector", 0, 0x1FFFFF)
+    require_int(row["load_count"], f"{prefix}.load_count", 0, 0xFF)
+
 
 def require_row(row, tag, index):
     if type(row) is not dict:
@@ -108,6 +171,37 @@ def require_row(row, tag, index):
     missing = [key for key in ROW_KEYS[tag] if key not in row]
     if missing:
         raise BlockedError(f"BLOCKED: probe {tag}[{index}] is missing keys: {', '.join(missing)}")
+    if tag in ("HIT", "PHASE", "RUN"):
+        require_base_row(row, tag, index)
+    if tag == "CAP":
+        for field in ("instruction_step", "bios_loaded", "cdrom_hardware", "cdrom_media", "disc_given", "drive_ready"):
+            if type(row[field]) is not bool:
+                raise BlockedError(f"BLOCKED: probe CAP[{index}].{field} is not boolean")
+        if type(row["loader"]) is not str or not row["loader"]:
+            raise BlockedError(f"BLOCKED: probe CAP[{index}].loader is not a non-empty string")
+    elif tag == "HIT":
+        require_hex(row["buffer_head_hex"], f"probe HIT[{index}].buffer_head_hex", byte_length=32)
+    elif tag == "RUN":
+        if type(row["reason"]) is not str or not row["reason"]:
+            raise BlockedError(f"BLOCKED: probe RUN[{index}].reason is not a non-empty string")
+        if type(row["halt_confirmed"]) is not bool:
+            raise BlockedError(f"BLOCKED: probe RUN[{index}].halt_confirmed is not boolean")
+        # The producer uses -1 when the complete instruction budget expires
+        # before it reaches a halt.  That is a completed negative observation
+        # for the oracle to FAIL, not missing evidence.
+        require_int(row["halted_after_step"], f"probe RUN[{index}].halted_after_step", -1)
+        require_int(row["halt_confirmation_steps"], f"probe RUN[{index}].halt_confirmation_steps", 0)
+        require_int(row["halt_confirmation_required"], f"probe RUN[{index}].halt_confirmation_required", 0)
+        # The probe snapshots 32 bytes of result RAM; the oracle consumes its
+        # first seven bytes, but accepting a shortened snapshot loses evidence.
+        require_hex(row["result_hex"], f"probe RUN[{index}].result_hex", byte_length=32)
+        require_hex(row["buffer_hex"], f"probe RUN[{index}].buffer_hex", byte_length=BUFFER_BYTES)
+    elif tag == "INJECT":
+        if row["cycle"] not in ("cold", "warm"):
+            raise BlockedError(f"BLOCKED: probe INJECT[{index}].cycle is not cold or warm")
+        require_int(row["step"], f"probe INJECT[{index}].step", 0)
+        if type(row["event"]) is not str or not row["event"]:
+            raise BlockedError(f"BLOCKED: probe INJECT[{index}].event is not a non-empty string")
 
 
 def require_complete_records(records, case):
@@ -164,11 +258,10 @@ def main():
     output = ROOT / "build" / args.mode / "cdread-probe"
     rom = read_artifact(output / "cdread-probe-not-bios.pce")
     manifest = read_json_artifact(output / "manifest.json")
-    if type(manifest.get("symbols")) is not dict or "code_sha256_excluding_request" not in manifest:
-        raise BlockedError("BLOCKED: required diagnostic manifest is partial")
-    labels, symbols = require_file(output / "trace-labels.txt"), manifest["symbols"]
+    symbols, code_digest = require_manifest(manifest)
+    labels = require_file(output / "trace-labels.txt")
     base = require_file(ROOT / "build" / args.mode / "bios-dev/dev-only-not-compatible-syscard3.pce")
-    digest = verify_cdread(rom, read_artifact(base), symbols, manifest["code_sha256_excluding_request"])
+    digest = verify_cdread(rom, read_artifact(base), symbols, code_digest)
     probe = compile_probe(output, "geargrafx_cdread_probe.cpp", "geargrafx-synthetic-track-select-probe")
     results = {}
     with tempfile.TemporaryDirectory(prefix="pce-synthetic-track-select-") as tmp:

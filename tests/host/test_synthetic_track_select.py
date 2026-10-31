@@ -63,12 +63,18 @@ class SyntheticTrackSelectionClassificationTests(unittest.TestCase):
                 "p": 0, "sp": 0, "mpr": [0] * 8, "scsi_phase": 0, "scsi_signals": 0, "load_sector": 0,
                 "load_count": 0, "cd_irq_active": 0, "cd_irq_enabled": 0}
         run = {**base, "reason": "cd_halt_ok", "halt_confirmed": True, "halted_after_step": 0,
-               "halt_confirmation_steps": 0, "halt_confirmation_required": 0, "result_hex": "00000000000000",
-               "buffer_hex": ""}
+               "halt_confirmation_steps": 0, "halt_confirmation_required": 0, "result_hex": "00" * 32,
+               "buffer_hex": "00" * track_integration.BUFFER_BYTES}
         cap = {"instruction_step": True, "bios_loaded": True, "loader": "test", "cdrom_hardware": True,
                "cdrom_media": True, "disc_given": True, "drive_ready": True}
-        return {"CAP": [cap], "HIT": [], "PHASE": [], "RUN": [run, {**run, "cycle": "warm"}],
+        return {"CAP": [cap], "HIT": [], "PHASE": [base, {**base, "cycle": "warm"}], "RUN": [run, {**run, "cycle": "warm"}],
                 "BLOCK": [], "INJECT": []}
+
+    @staticmethod
+    def complete_manifest():
+        return {"symbols": {name: (0xF000 if name == "cd_entry" else 0xF100)
+                            for name in track_integration.REQUIRED_SYMBOLS},
+                "code_sha256_excluding_request": "a" * 64}
 
     def test_missing_artifact_is_blocked(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -98,6 +104,48 @@ class SyntheticTrackSelectionClassificationTests(unittest.TestCase):
             with self.subTest(records=records):
                 with self.assertRaisesRegex(track_integration.BlockedError, "BLOCKED:"):
                     track_integration.require_complete_records(records, "test")
+
+    def test_manifest_schema_rejects_missing_none_string_and_bool_symbols(self):
+        for mutation in ("missing", None, "f100", True):
+            manifest = self.complete_manifest()
+            if mutation == "missing":
+                del manifest["symbols"]["cd_cdb"]
+            else:
+                manifest["symbols"]["cd_cdb"] = mutation
+            with self.subTest(mutation=mutation):
+                with self.assertRaisesRegex(track_integration.BlockedError, "BLOCKED:"):
+                    track_integration.require_manifest(manifest)
+
+    def test_manifest_schema_rejects_bad_digest(self):
+        manifest = self.complete_manifest()
+        manifest["code_sha256_excluding_request"] = "not-a-digest"
+        with self.assertRaises(track_integration.BlockedError):
+            track_integration.require_manifest(manifest)
+
+    def test_transcript_value_and_hex_errors_are_blocked(self):
+        mutations = {
+            "buffer_none": lambda r: r["RUN"][0].__setitem__("buffer_hex", None),
+            "buffer_non_hex": lambda r: r["RUN"][0].__setitem__("buffer_hex", "GG"),
+            "buffer_odd_hex": lambda r: r["RUN"][0].__setitem__("buffer_hex", "0"),
+            "buffer_short": lambda r: r["RUN"][0].__setitem__("buffer_hex", "00"),
+            "result_non_hex": lambda r: r["RUN"][0].__setitem__("result_hex", "XX" * 32),
+            "bad_cycle": lambda r: r["RUN"][0].__setitem__("cycle", "hot"),
+        }
+        for name, mutate in mutations.items():
+            records = self.complete_records()
+            mutate(records)
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(track_integration.BlockedError, "BLOCKED:"):
+                    track_integration.require_complete_records(records, "test")
+
+    def test_complete_transcript_reaches_oracle_and_mismatch_fails(self):
+        records = self.complete_records()
+        track_integration.require_complete_records(records, "test")
+        records["RUN"][0]["reason"] = "budget"
+        records["RUN"][0]["halted_after_step"] = -1
+        records["PHASE"] = []  # valid complete negative run: no phase transition occurred
+        track_integration.require_complete_records(records, "test")
+        self.assertEqual(track_integration.exit_for_error(ValueError("complete oracle mismatch")), 1)
 
     def test_partial_json_and_unreadable_artifacts_are_blocked(self):
         with tempfile.TemporaryDirectory() as tmp:
