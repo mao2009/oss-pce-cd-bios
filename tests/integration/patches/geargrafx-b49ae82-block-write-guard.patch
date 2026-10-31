@@ -7,7 +7,7 @@
 +// VERIFICATION-ONLY pre-write guard definitions (Issue #367 / #173). See huc6280_opcodes_inline.h.
 +bool (*gg_verify_block_write_guard)(void* context, unsigned block_op, unsigned dest) = nullptr;
 +bool (*gg_verify_transfer_start_guard)(void* context, unsigned stack_pointer) = nullptr;
-+bool (*gg_verify_transfer_abort_guard)(void* context, unsigned opcode) = nullptr;
++bool (*gg_verify_transfer_abort_guard)(void* context) = nullptr;
 +void* gg_verify_block_write_context = nullptr;
 +
  void HuC6280::OPCode0x00()
@@ -24,7 +24,7 @@
 +// Defined in huc6280_opcodes.cpp. The guard runs BEFORE the byte read and Memory::Write.
 +extern bool (*gg_verify_block_write_guard)(void* context, unsigned block_op, unsigned dest);
 +extern bool (*gg_verify_transfer_start_guard)(void* context, unsigned stack_pointer);
-+extern bool (*gg_verify_transfer_abort_guard)(void* context, unsigned opcode);
++extern bool (*gg_verify_transfer_abort_guard)(void* context);
 +extern void* gg_verify_block_write_context;
 +
 +// VERIFICATION-ONLY pre-push guard for TransferStart A/X/Y stack pushes (Issue #459 / #367 / #173).
@@ -98,7 +98,7 @@
 +    // opcode, so skip exactly the six operand bytes without entering transfer
 +    // state; consequently no stack push/read, source read, or TransferEnd occurs.
 +    if (gg_verify_transfer_abort_guard &&
-+        !gg_verify_transfer_abort_guard(gg_verify_block_write_context, m_memory->Read(m_PC.GetValue() - 1)))
++        !gg_verify_transfer_abort_guard(gg_verify_block_write_context))
 +    {
 +        m_PC.SetValue(m_PC.GetValue() + 6);
 +        return;

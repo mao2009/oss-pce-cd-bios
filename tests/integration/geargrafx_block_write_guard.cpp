@@ -42,7 +42,7 @@
 // Symbols defined only by the VERIFICATION-ONLY core patch (see patches/).
 extern bool (*gg_verify_block_write_guard)(void* context, unsigned block_op, unsigned dest);
 extern bool (*gg_verify_transfer_start_guard)(void* context, unsigned stack_pointer);
-extern bool (*gg_verify_transfer_abort_guard)(void* context, unsigned opcode);
+extern bool (*gg_verify_transfer_abort_guard)(void* context);
 
 namespace {
 
@@ -68,7 +68,7 @@ HuC6270::HuC6270_State* g_vdc = nullptr;
 unsigned g_stack_calls = 0, g_stack_refusals = 0, g_stack_sp = 0;
 unsigned g_abort_calls = 0, g_abort_refusals = 0;
 
-bool transfer_abort_guard(void*, unsigned)
+bool transfer_abort_guard(void*)
 {
     ++g_abort_calls;
     if (g_armed) { ++g_abort_refusals; return false; }
