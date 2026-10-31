@@ -109,6 +109,7 @@ def _cases():
         yield f"{op}-stackff-unguarded"
         yield f"{op}-stackwram-armed"
         yield f"{op}-safeabort-armed"
+        yield f"{op}-safeabort-unguarded"
 
 
 def _common(row, case):
@@ -330,6 +331,25 @@ def check_safeabort_armed(row, case):
         raise ValueError(f"{case}: abort wrote destination or stack")
     return "whole_instruction_refused_before_transferstart"
 
+def check_safeabort_allowed(row, case):
+    """Non-null callback returns true: must be identical to stackff null-hook control."""
+    _common(row, case)
+    if row.get("armed") is not False or row.get("abort_calls") != 1 or row.get("abort_refusals") != 0:
+        raise ValueError(f"{case}: allowing abort callback was not called/allowed")
+    # The setup is deliberately identical to stackff-unguarded: TransferStart
+    # pushes land in VDC and TransferEnd pops its registers.
+    verdict = check_stackff_unguarded(row, case)
+    if row["dst_after"] != ALLOWED_VALUE:
+        raise ValueError(f"{case}: allowing callback skipped the normal transfer")
+    return verdict
+
+def mutation_safeabort_allowed(row, case):
+    for key, value in (("abort_calls", 0), ("abort_refusals", 1), ("dst_after", 0), ("vdc_ar_after", 0)):
+        broken = copy.deepcopy(row); broken[key] = value
+        try: check_safeabort_allowed(broken, case)
+        except ValueError: continue
+        raise ValueError(f"mutation test FAILED: {case} {key}")
+
 
 def mutation_test(row, case):
     """Falsified armed observations must be rejected (proves the classifier can fail)."""
@@ -455,9 +475,11 @@ def main():
             elif variant == "stackff":
                 verdict = check_stackff_unguarded(row, case)
             else:
-                verdict = check_safeabort_armed(row, case) if variant == "safeabort" else check_stackwram_armed(row, case)
+                verdict = (check_safeabort_armed(row, case) if case.endswith("-armed") else check_safeabort_allowed(row, case)) if variant == "safeabort" else check_stackwram_armed(row, case)
                 if variant != "safeabort":
                     mutation_test(row, case)
+                elif not case.endswith("-armed"):
+                    mutation_safeabort_allowed(row, case)
             evidence.append((case, verdict, row))
             print(f"PASS {case}: {verdict}")
     for case, verdict, row in evidence:
