@@ -42,12 +42,14 @@
 
 検証: WSL で `python3 -m unittest -v tests/host/test_365_st_boundary_record.py` → 7 tests OK。`make host-test` → 2071 tests OK（expected failures=1）、新規 7 件を含む。
 
-## 残作業（#365 完了まで）
+## 追加する境界範囲（#365 の限定完了条件）
 
-1. 任意 PC・先頭命令を含む自由実行での opcode 識別（ゲートの一般化）。現状は単一ステップの合成ゲストのみ。
-2. opcode 検査のみを外す実コア変異の作成と、拒否されないことの確認。
-3. プローブのレジスタ採取を追加するか、`jsr_observation` の別スキーマ（ST 境界用）を新設して機械可読記録を準拠させる。共有ツールの変更は別 Issue で扱う。
-4. `geargrafx_st_boundary.py` を `make integration` 経路へ組み込むか判断する（現状は手動実行）。
-5. #366（IRQ 入口）、#367（ブロック転送・デバイス起点書込）の結果と統合し、#173 の解除判断は独立レビュー後に限る。
+`geargrafx_st_boundary.py` は、既存三ケースに加えて、guest が `TAM #$04` で MPR2 を `$F8` に変え、CPU page 2 (`$4010`) で fetch する ST2 を扱う。モニタは停止 PC、ページ、MPR、`Memory::Read(PC)` の opcode を同時に記録し、CPUが fetch するマッピングと検査対象を一致させる。
+
+実コアの RED 変異は、(a) opcode 検査全体を外す、(b) 先頭 PC の検査を外す、(c) ST2 を禁止集合から外す、(d) TAM 後に再検査しない、の各々で ST の VDC 副作用が着地することを要求する。通常の `$3E50` RAM 書込みは引き続き許可する。
+
+## #365 の外に残る BLOCKED
+
+この限定された single-step synthetic monitor は、自由実行の全命令列に対する VDC interceptor ではない。#366 の IRQ handler entry、#367 の block transfer / device-originated write、任意の reference BIOS JSR は対象外である。`tools/reference_jsr_gate.py` と `BLOCKED_ABI` / `release_eligible=false` は変更しない。
 
 #198 の結論（ST0/1/2 の WriteFromCPU 迂回は到達不能化以外に緩和策なし）は、本 PR では覆していない。

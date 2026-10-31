@@ -12,8 +12,9 @@
 // geargrafx_reference_jsr.cpp so geargrafx_reference_guard.run_mode() can drive it).
 // Modes:
 //   stN-unknown    monitor armed; ST opcode reached through JMP at an unknown PC (entry is a JMP)
+//   st2-mpr2-unknown monitor armed; guest TAM changes MPR2, then JMP reaches ST2 in page 2
 //   st0-entry      monitor armed; ST0 is the ENTRY instruction (no preceding instruction)
-//   stN-unguarded  MUTATION: same guests, monitor disabled; the ST must execute and land
+//   *-unguarded / *-no-recheck / *-wrong-opcode / *-no-entry-check: mutation runs
 //   pos-write      positive control: monitor armed, allowlisted RAM store must run unrefused
 #include "geargrafx_core.h"
 #include "huc6270.h"
@@ -32,6 +33,7 @@ namespace {
 const unsigned long kGuestBase = 0x3E00;  // page1 -> WRAM, guest entry
 const unsigned long kStubIndex = 0x1E00;  // WRAM index of the guest program
 const unsigned long kJumpTarget = 0x3E10;  // unknown-PC ST location (JMP target)
+const unsigned long kMpr2Target = 0x4010;  // page2, guest-remapped to the same WRAM bank
 const unsigned kResumeAttempts = 3;
 
 bool is_st_opcode(unsigned op)
@@ -67,12 +69,24 @@ int main(int argc, char** argv)
         return 2;
 
     bool armed = true;
+    bool stale_after_first_boundary = false, wrong_opcode_set = false, skip_entry_check = false;
+    bool mpr2_case = false;
     std::string st_kind;  // "st0", "st1", "st2" or "" (pos-write)
-    if (mode == "st0-entry" || mode == "st1-unknown" || mode == "st2-unknown") {
+    if (mode == "st0-entry" || mode == "st1-unknown" || mode == "st2-unknown" ||
+        mode == "st2-mpr2-unknown") {
         st_kind = mode.substr(0, 3);
+        mpr2_case = mode == "st2-mpr2-unknown";
     } else if (mode == "st0-unguarded" || mode == "st1-unguarded" || mode == "st2-unguarded") {
         st_kind = mode.substr(0, 3);
         armed = false;
+    } else if (mode == "st2-mpr2-no-recheck" || mode == "st2-mpr2-wrong-opcode") {
+        st_kind = "st2";
+        mpr2_case = true;
+        stale_after_first_boundary = mode == "st2-mpr2-no-recheck";
+        wrong_opcode_set = mode == "st2-mpr2-wrong-opcode";
+    } else if (mode == "st0-entry-no-entry-check") {
+        st_kind = "st0";
+        skip_entry_check = true;
     } else if (mode == "pos-write") {
         if (neg_addr < allow_start || neg_addr >= allow_end)
             return 2;
@@ -114,9 +128,14 @@ int main(int argc, char** argv)
         memory->SetMpr(i, 0x00);
     memory->SetMpr(0, 0x00);  // page 0 -> ROM, never the hardware page
 
-    std::vector<u8> code;
+    std::vector<u8> code, mpr2_code;
     if (st_kind == "st0") {
         code = {0x03, 0x07, 0x80, 0xFE};  // ST0 #$07 at entry, BRA *
+    } else if (mpr2_case) {
+        // The guest, not host setup, changes the MPR used to fetch the target.
+        // $4010 is CPU page 2, and MPR2=$F8 maps it to WRAM[0x10].
+        code = {0xA9, 0xF8, 0x53, 0x04, 0x4C, 0x10, 0x40};
+        mpr2_code = {0x23, 0xA5, 0x80, 0xFE};
     } else if (!st_kind.empty()) {
         u8 op = (st_kind == "st1") ? 0x13 : 0x23;
         u8 val = (st_kind == "st1") ? 0x5A : 0xA5;
@@ -136,6 +155,8 @@ int main(int argc, char** argv)
     u8* wram = memory->GetWorkingRAM();
     for (size_t i = 0; i < code.size(); ++i)
         wram[kStubIndex + i] = code[i];
+    for (size_t i = 0; i < mpr2_code.size(); ++i)
+        wram[0x10 + i] = mpr2_code[i];
 
     st->PC->SetValue((u16)kGuestBase);
     st->S->SetValue(0xFF);
@@ -152,7 +173,7 @@ int main(int argc, char** argv)
     unsigned vdc_ar_before = (u8)*vs->AR;
     unsigned vdc_r_before = vs->R[0];
     unsigned guard_before = memory->Read((u16)neg_addr);
-    unsigned st_pc_expected = (st_kind == "st0") ? kGuestBase : kJumpTarget;
+    unsigned st_pc_expected = mpr2_case ? kMpr2Target : (st_kind == "st0") ? kGuestBase : kJumpTarget;
 
     unsigned long executed = 0;
     bool refused = false;
@@ -167,7 +188,14 @@ int main(int argc, char** argv)
     auto boundary_allows = [&]() -> bool {
         unsigned pc = st->PC->GetValue();
         unsigned op = memory->Read((u16)pc);
-        if (armed && is_st_opcode(op)) {
+        bool check = armed;
+        if (skip_entry_check && pc == kGuestBase)
+            check = false;
+        if (stale_after_first_boundary && pc == kMpr2Target && memory->GetMpr(2) == 0xF8)
+            check = false;  // MUTATION: omit only the re-check after the guest changes MPR2.
+        if (wrong_opcode_set && op == 0x23)
+            check = false;  // MUTATION: forbidden-opcode set omits ST2.
+        if (check && is_st_opcode(op)) {
             refused = true;
             refused_op = op;
             refused_pc = pc;
@@ -209,6 +237,9 @@ int main(int argc, char** argv)
     std::fprintf(stderr, "\"mode\":\"%s\",\"status\":\"%s\",", mode.c_str(), status);
     std::fprintf(stderr, "\"reason\":\"%s\",",
                  refused ? "st_opcode_at_instruction_boundary" : (halted ? "" : "budget_exhausted"));
+    unsigned fetch_page = (unsigned)st->PC->GetValue() >> 13;
+    unsigned fetch_mpr = memory->GetMpr(fetch_page);
+    unsigned fetch_opcode = memory->Read((u16)st->PC->GetValue());
     std::fprintf(stderr, "\"armed\":%s,\"boundary_check\":%s,", armed ? "true" : "false", armed ? "true" : "false");
     std::fprintf(stderr, "\"refused\":%s,", refused ? "true" : "false");
     std::fprintf(stderr, "\"refused_opcode\":%u,\"refused_pc\":%lu,", refused_op, refused_pc);
@@ -220,6 +251,8 @@ int main(int argc, char** argv)
     std::fprintf(stderr, "\"instructions_executed\":%lu,", executed);
     std::fprintf(stderr, "\"budget\":%lu,", budget);
     std::fprintf(stderr, "\"st_mode\":\"%s\",", st_kind.c_str());
+    std::fprintf(stderr, "\"fetch_page\":%u,\"fetch_mpr\":%u,\"fetch_opcode\":%u,",
+                 fetch_page, fetch_mpr, fetch_opcode);
     std::fprintf(stderr, "\"before\":{\"mpr\":[%u,%u,%u,%u,%u,%u,%u,%u]},",
                  mpr_before[0], mpr_before[1], mpr_before[2], mpr_before[3],
                  mpr_before[4], mpr_before[5], mpr_before[6], mpr_before[7]);
