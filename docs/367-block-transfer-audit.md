@@ -55,12 +55,18 @@ TransferEnd は進むため、これは安全な命令停止ではない。
 
 ### 2026-10-31 再実行結果と境界
 
-`make block-write-guard` を再実行した。5 opcode x (hardware-page refusal / no-hook RED /
+`make block-write-guard` は5 opcode x (hardware-page refusal / no-hook RED /
 WRAM positive / stack-$FF refusal / stack-$FF no-hook RED / WRAM-stack positive) の30 synthetic
 real-core cases は PASS した。この実行が実証するのは **MPR page=$FF の一 byte destination
 store に限る verification-only pre-write hook** である。ROM bank、非-$FF forbidden RAM、
 MPR alias、multi-byte boundary crossing、length=0、TIA/TAI の複数 byte 順序、命令開始前の
 全体拒否は、この run では実証していないため BLOCKED である。
+
+別の `safeabort` mode は TransferStart の直前に検証専用 hook を置き、拒否時は operand
+6 byte を skip して transfer state に入らない。この mode では5命令とも stack push/pop、
+source read、destination write、VDC status clear、A/X/Y破壊を観測せず終了した。これは
+**pinned core に恒久実装された API ではなく** test patch の最小提案であり、production gate や
+ABI の安全性を解放しない。
 
 | 命令 | 書込み先の動き | モデル | 未確認事項 |
 |------|----------------|--------|------------|

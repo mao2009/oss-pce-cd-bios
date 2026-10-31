@@ -42,6 +42,7 @@
 // Symbols defined only by the VERIFICATION-ONLY core patch (see patches/).
 extern bool (*gg_verify_block_write_guard)(void* context, unsigned block_op, unsigned dest);
 extern bool (*gg_verify_transfer_start_guard)(void* context, unsigned stack_pointer);
+extern bool (*gg_verify_transfer_abort_guard)(void* context, unsigned opcode);
 
 namespace {
 
@@ -65,6 +66,14 @@ unsigned g_last_op = 0, g_last_dest = 0;
 unsigned g_ar_at_call = 0, g_r0_at_call = 0;
 HuC6270::HuC6270_State* g_vdc = nullptr;
 unsigned g_stack_calls = 0, g_stack_refusals = 0, g_stack_sp = 0;
+unsigned g_abort_calls = 0, g_abort_refusals = 0;
+
+bool transfer_abort_guard(void*, unsigned)
+{
+    ++g_abort_calls;
+    if (g_armed) { ++g_abort_refusals; return false; }
+    return true;
+}
 
 // Refuse the TransferStart A/X/Y pushes when the stack page (page 1: $2100|S) is mapped to $FF.
 bool transfer_start_guard(void*, unsigned stack_pointer)
@@ -122,7 +131,8 @@ int main(int argc, char** argv)
     bool forbidden = variant == "forbidden";
     bool stack_ff = variant == "stackff";
     bool stack_wram = variant == "stackwram";
-    bool stack = stack_ff || stack_wram;
+    bool safe_abort = variant == "safeabort";
+    bool stack = stack_ff || stack_wram || safe_abort;
     if (!forbidden && variant != "allowed" && !stack)
         return 2;
 
@@ -173,7 +183,7 @@ int main(int argc, char** argv)
     memory->SetMpr(0, forbidden ? 0xFF : 0x00);
     if (stack) {
         memory->SetMpr(0, 0xF8);
-        memory->SetMpr(1, stack_ff ? 0xFF : 0xF8);  // stack page: $2100|S lives in MPR1 (page 1)
+        memory->SetMpr(1, (stack_ff || safe_abort) ? 0xFF : 0xF8);  // stack page: $2100|S lives in MPR1 (page 1)
     }
 
     u16 dst = forbidden ? (u16)kForbiddenDst : (u16)allowed_dst;
@@ -207,6 +217,7 @@ int main(int argc, char** argv)
 
     gg_verify_block_write_guard = g_armed ? block_guard : nullptr;
     gg_verify_transfer_start_guard = g_armed ? transfer_start_guard : nullptr;
+    gg_verify_transfer_abort_guard = safe_abort ? transfer_abort_guard : nullptr;
 
     std::vector<u8> mpr_before(8), mpr_after(8);
     for (int i = 0; i < 8; ++i)
@@ -258,7 +269,8 @@ int main(int argc, char** argv)
     std::fprintf(stderr, "\"guard_block_op\":%u,\"guard_dest\":%u,", g_last_op, g_last_dest);
     std::fprintf(stderr, "\"guard_ar_at_call\":%u,\"guard_r0_at_call\":%u,", g_ar_at_call, g_r0_at_call);
     std::fprintf(stderr, "\"stack_guard_calls\":%u,\"stack_guard_refusals\":%u,\"stack_guard_sp\":%u,",
-                 g_stack_calls, g_stack_refusals, g_stack_sp);
+                  g_stack_calls, g_stack_refusals, g_stack_sp);
+    std::fprintf(stderr, "\"abort_calls\":%u,\"abort_refusals\":%u,", g_abort_calls, g_abort_refusals);
     std::fprintf(stderr, "\"expected_end_pc\":%lu,\"stop_pc\":%u,", end_pc, (unsigned)st->PC->GetValue());
     std::fprintf(stderr, "\"frames_run\":%u,\"frame_budget\":%lu,", frames_run, frames);
     std::fprintf(stderr, "\"before\":{\"mpr\":[%u,%u,%u,%u,%u,%u,%u,%u]},",
@@ -284,5 +296,6 @@ int main(int argc, char** argv)
     std::fflush(stderr);
     gg_verify_block_write_guard = nullptr;
     gg_verify_transfer_start_guard = nullptr;
+    gg_verify_transfer_abort_guard = nullptr;
     return 0;
 }

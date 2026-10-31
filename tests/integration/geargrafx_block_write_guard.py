@@ -108,6 +108,7 @@ def _cases():
         yield f"{op}-stackff-armed"
         yield f"{op}-stackff-unguarded"
         yield f"{op}-stackwram-armed"
+        yield f"{op}-safeabort-armed"
 
 
 def _common(row, case):
@@ -164,6 +165,8 @@ def _expected_mpr(variant):
         return 0xF8, 0xFF
     if variant == "stackwram":
         return 0xF8, 0xF8
+    if variant == "safeabort":
+        return 0xF8, 0xFF
     raise ValueError(f"unknown variant {variant}")
 
 
@@ -313,6 +316,20 @@ def check_stackwram_armed(row, case):
     _stack_block_ok(row, case)
     return "stack_push_allowed_bytes_landed"
 
+def check_safeabort_armed(row, case):
+    """Whole transfer refused before TransferStart: no push/pop, write, or VDC read side effect."""
+    _common(row, case)
+    if row.get("armed") is not True or row.get("abort_calls") != 1 or row.get("abort_refusals") != 1:
+        raise ValueError(f"{case}: abort hook not consulted/refused")
+    if row["stack_guard_calls"] != 0 or row["guard_calls"] != 0:
+        raise ValueError(f"{case}: entered TransferStart or per-byte path")
+    if row["vdc_ar_after"] != row["vdc_ar_before"] or row["vdc_r7_after"] != row["vdc_r7_before"] or \
+            row["vdc_sr_after"] != row["vdc_sr_before"] or row["a_after"] != 0x12 or row["x_after"] != 0x34 or row["y_after"] != 0x07:
+        raise ValueError(f"{case}: abort left a VDC/register side effect")
+    if row["dst_after"] != 0 or row["sp_after"] != row["sp_before"]:
+        raise ValueError(f"{case}: abort wrote destination or stack")
+    return "whole_instruction_refused_before_transferstart"
+
 
 def mutation_test(row, case):
     """Falsified armed observations must be rejected (proves the classifier can fail)."""
@@ -438,8 +455,9 @@ def main():
             elif variant == "stackff":
                 verdict = check_stackff_unguarded(row, case)
             else:
-                verdict = check_stackwram_armed(row, case)
-                mutation_test(row, case)
+                verdict = check_safeabort_armed(row, case) if variant == "safeabort" else check_stackwram_armed(row, case)
+                if variant != "safeabort":
+                    mutation_test(row, case)
             evidence.append((case, verdict, row))
             print(f"PASS {case}: {verdict}")
     for case, verdict, row in evidence:
@@ -447,8 +465,8 @@ def main():
                                         "core_revision": PINNED_CORE_REVISION, "bios": "SYNTHETIC",
                                         "hook": "VERIFICATION_ONLY_PATCH", "verdict": verdict,
                                         "row": row}, sort_keys=True))
-    print("PASS issue-367 TII/TIN/TIA/TDD/TAI: one-byte transfers only, destination pages mapped to $FF only, "
-          "pre-write refusal hook, synthetic media")
+    print("PASS issue-367 TII/TIN/TIA/TDD/TAI: one-byte $FF pre-write refusal plus verification-only "
+           "whole-instruction TransferStart abort, synthetic media")
     print("PASS issue-459 TransferStart A/X/Y pushes: the WRITE side effect is refused before it happens only "
           "when the stack page (MPR1) is mapped to $FF; pushes only, TransferStart only, synthetic media")
     print("BLOCKED issue-459: the refusal path is NOT a safe termination. TransferEnd unconditionally pops "
