@@ -52,9 +52,11 @@ _EXPECTED_FAILURES = (
     'selection_never_answered_timeout', 'drive_abort_at_data_in_entry', 'judge_observation_mutations',
     'halt_unconfirmed_cut_0_steps_after_arrival', 'halt_unconfirmed_cut_1_steps_after_arrival',
     'halt_unconfirmed_cut_63_steps_after_arrival', 'budget_exhausted_before_any_halt', 'no_media_loaded',
-    'blank_data_disc', 'invalid_target_outside_work_ram', 'invalid_target_range_overflow')
+    'blank_data_disc', 'invalid_target_outside_work_ram', 'invalid_target_range_overflow',
+    'invalid_target_end_4001')
 REQUIRED_SCENARIOS = ('single_sector_lba5', 'first_sector_lba0', 'last_sector_lba15', 'three_sectors_lba5',
-                       'disc_end_boundary_lba13_x3', 'single_sector_lba6_target_3000')
+                       'disc_end_boundary_lba13_x3', 'single_sector_lba6_target_2fff',
+                       'single_sector_lba6_target_end_4000', 'two_sectors_lba6_target_3000')
 # Exact result kind of every scenario tests/integration/geargrafx_cdread.py records (a superset of the #118
 # tools/cd_read_contract.py table). The artifact must carry exactly these names with exactly these kinds: a missing,
 # extra, or re-kinded scenario (a bad request recorded as PASS, a positive read as PASS_EXPECTED_FAILURE) is FAIL.

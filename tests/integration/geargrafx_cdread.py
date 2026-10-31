@@ -76,6 +76,30 @@ class Suite:
     def helper_variant(self, lba, count, target):
         return with_read6_request(self.payload, self.symbols, lba, count, target)
 
+    def helper_positive(self, name, lba, count, target):
+        """Check a generic request at its selected target, including its target-relative result count."""
+        records = self.run(self.helper_variant(lba, count, target))
+        expected = b"".join(self.disc[lba:lba + count])
+        start = target - 0x2800
+        end = start + len(expected)
+        for run, got_result in zip(records["RUN"], describe_failure(records)):
+            if (run["reason"], run["halt_confirmed"], got_result) != (
+                    "cd_halt_ok", True, ("cd_halt_ok", 0, 9, len(expected))):
+                raise ValueError(f"{name}: {run['cycle']} did not report a target-relative successful transfer")
+            got = bytes.fromhex(run["buffer_hex"])
+            if got[start:end] != expected:
+                raise ValueError(f"{name}: {run['cycle']} generic helper target data differs")
+            if any(byte != SENTINEL for byte in got[:start] + got[end:]):
+                raise ValueError(f"{name}: {run['cycle']} modified RAM outside the selected target range")
+            reads = [(row["load_sector"], row["load_count"]) for row in records["PHASE"]
+                     if row["cycle"] == run["cycle"] and row["scsi_phase"] == PHASE_DATA_IN]
+            if reads != [(lba, count)]:
+                raise ValueError(f"{name}: {run['cycle']} generic helper READ(6) trace is {reads}")
+        self.results[name] = {"status": "PASS", "lba": lba, "count": count, "target": target,
+                              "bytes": len(expected),
+                              "note": "cold/warm generic helper target and target-relative result count checked"}
+        return records
+
     def positive(self, name, lba, count):
         rom = self.payload if (lba, count) == DEFAULT_REQUEST else self.variant(lba, count)
         records = self.run(rom)
@@ -273,24 +297,10 @@ def main():
         suite.positive("last_sector_lba15", 15, 1)
         suite.positive("three_sectors_lba5", 5, 3)
         suite.positive("disc_end_boundary_lba13_x3", 13, 3)
-        # The generic diagnostic helper accepts a distinct in-window target.  The regular
-        # judge observes the whole $2800-$3FFF window, so compare the target slice directly.
-        target = 0x3000
-        records = suite.run(suite.helper_variant(6, 1, target))
-        for run in records["RUN"]:
-            if run["reason"] != "cd_halt_ok" or run["halt_confirmed"] is not True:
-                raise ValueError(f"{run['cycle']}: generic helper did not halt successfully")
-            got = bytes.fromhex(run["buffer_hex"])[target - 0x2800:target - 0x2800 + SECTOR_BYTES]
-            if got != suite.disc[6]:
-                raise ValueError(f"{run['cycle']}: generic helper target data differs")
-            reads = [(row["load_sector"], row["load_count"]) for row in records["PHASE"]
-                     if row["cycle"] == run["cycle"] and row["scsi_phase"] == PHASE_DATA_IN]
-            if reads != [(6, 1)]:
-                raise ValueError(f"{run['cycle']}: generic helper READ(6) trace is {reads}")
-        suite.results["single_sector_lba6_target_3000"] = {
-            "status": "PASS", "lba": 6, "count": 1, "target": target,
-            "note": "cold/warm generic helper request; full target sector compared",
-        }
+        # Low-byte and exact-end boundaries exercise the complete 16-bit target + length check.
+        suite.helper_positive("single_sector_lba6_target_2fff", 6, 1, 0x2fff)
+        suite.helper_positive("single_sector_lba6_target_end_4000", 6, 1, 0x3800)
+        suite.helper_positive("two_sectors_lba6_target_3000", 6, 2, 0x3000)
 
         # ---- negative: the identical judge must reject each of these ----
         suite.tampered_disc("tampered_identity_byte3", 5, 3)
@@ -308,6 +318,7 @@ def main():
         suite.failing_guest("oversized_sector_count", suite.variant(5, 4), 5, 4, 9, 1, 0)
         suite.invalid_target("invalid_target_outside_work_ram", suite.helper_variant(5, 1, 0x4000), 5, 1)
         suite.invalid_target("invalid_target_range_overflow", suite.helper_variant(5, 2, 0x3800), 5, 2)
+        suite.invalid_target("invalid_target_end_4001", suite.helper_variant(5, 1, 0x3801), 5, 1)
         # Timeout: selection is redirected to $1805 (a CD register this guest otherwise never touches), so the target never answers.
         stuck = bytearray(payload)
         at = symbols["cd_select"] - 0xE000
