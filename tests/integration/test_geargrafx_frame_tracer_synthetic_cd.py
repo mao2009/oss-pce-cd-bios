@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -37,11 +38,19 @@ class FrameTracerSyntheticCdRealCoreTests(unittest.TestCase):
     def test_cumulative_deltas_survive_event_overflow_on_synthetic_cd(self):
         with tracer.tempfile.TemporaryDirectory(prefix="frame-synthetic-cd-") as temporary:
             media = Path(temporary) / "media"
+            approved_root = Path(temporary) / "frame-tracer-root"
+            approved_root.mkdir(mode=0o700)
             build_image(media)
-            result = tracer.trace(SimpleNamespace(
-                frames=120, events=1, timeout=120.0, rom=self.rom, cue=media / CUE_NAME,
-                run_start_frame=None, run_hold_frames=None,
-            ))
+            # CI does not provide the local /tmp/opencode root used by the
+            # standalone diagnostic.  Give this test a freshly-created,
+            # private root instead; tracer validation and identity-checked
+            # cleanup remain enabled for its job beneath this root.
+            with mock.patch.object(tracer, "OPENCODE_TEMP_ROOT", approved_root), \
+                    mock.patch.object(tracer, "JOB_PARENT", approved_root / "frame-tracer-jobs"):
+                result = tracer.trace(SimpleNamespace(
+                    frames=120, events=1, timeout=120.0, rom=self.rom, cue=media / CUE_NAME,
+                    run_start_frame=None, run_hold_frames=None,
+                ))
 
         self.assertEqual(result["status"], "PASS", result)
         self.assertEqual(result["evidence"], "REAL_GEARGRAFX_CORE")
