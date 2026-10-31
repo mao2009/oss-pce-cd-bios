@@ -6,12 +6,17 @@ register/state metadata and working-RAM change ranges only, never guest bytes.
 """
 import argparse
 import json
+import os
 from pathlib import Path
+import secrets
 import shutil
+import stat
 import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
+OPENCODE_TEMP_ROOT = Path("/tmp/opencode")
+JOB_PARENT = OPENCODE_TEMP_ROOT / "frame-tracer-jobs"
 sys.path.insert(0, str(ROOT / "tests/integration"))
 from geargrafx_api import compile_probe  # noqa: E402
 from geargrafx_harness import doctor, run_job, stage_disc  # noqa: E402
@@ -30,6 +35,143 @@ def run_schedule(start_frame, hold_frames, frames):
     if not 1 <= start_frame <= frames or not 1 <= hold_frames <= frames or start_frame + hold_frames - 1 > frames:
         raise ValueError("RUN schedule is outside the requested frames")
     return ((start_frame, "press"), (start_frame + hold_frames - 1, "release"))
+
+
+def normalized_absolute(path):
+    """Return a lexical, normalized absolute path without following links."""
+    return Path(os.path.abspath(os.fspath(path)))
+
+
+def is_within(path, parent):
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def existing_opencode_worktrees():
+    """All existing direct children except this diagnostic's dedicated parent."""
+    root = normalized_absolute(OPENCODE_TEMP_ROOT)
+    parent = normalized_absolute(JOB_PARENT)
+    try:
+        return [child for child in root.iterdir() if child != parent and child.is_dir() and not child.is_symlink()]
+    except OSError:
+        return []
+
+
+def validate_tracked_job_dir(path, identity=None):
+    """Fail closed unless path is an owned direct child of the dedicated parent."""
+    supplied = Path(path)
+    if not supplied.is_absolute():
+        return False, "not_absolute"
+    job = normalized_absolute(supplied)
+    parent = normalized_absolute(JOB_PARENT)
+    opencode_root = normalized_absolute(OPENCODE_TEMP_ROOT)
+    prohibited = (Path("/"), Path.home(), normalized_absolute(ROOT), normalized_absolute(OPENCODE_TEMP_ROOT))
+    if job in prohibited:
+        return False, "prohibited_path"
+    try:
+        root_status = os.lstat(opencode_root)
+    except OSError:
+        return False, "missing"
+    if (not stat.S_ISDIR(root_status.st_mode) or stat.S_ISLNK(root_status.st_mode) or
+            root_status.st_uid != os.getuid()):
+        return False, "unsafe_root"
+    if any(is_within(job, worktree) for worktree in existing_opencode_worktrees()):
+        return False, "opencode_worktree"
+    if job.parent != parent:
+        return False, "not_direct_child"
+    try:
+        parent_status = os.lstat(parent)
+    except OSError:
+        return False, "missing"
+    if not stat.S_ISDIR(parent_status.st_mode) or stat.S_ISLNK(parent_status.st_mode):
+        return False, "unsafe_parent"
+    if parent_status.st_uid != os.getuid():
+        return False, "not_owned"
+    try:
+        current = os.lstat(job)
+    except OSError:
+        return False, "missing"
+    if not stat.S_ISDIR(current.st_mode) or stat.S_ISLNK(current.st_mode):
+        return False, "unsafe_job"
+    uid = os.getuid()
+    if current.st_uid != uid:
+        return False, "not_owned"
+    current_identity = (current.st_dev, current.st_ino, current.st_uid)
+    if identity is not None and current_identity != identity:
+        return False, "identity_changed"
+    return True, "ok"
+
+
+def make_tracked_job_dir():
+    """Create a current-user-owned job in the dedicated /tmp/opencode parent."""
+    parent = normalized_absolute(JOB_PARENT)
+    try:
+        root_status = os.lstat(normalized_absolute(OPENCODE_TEMP_ROOT))
+    except OSError as error:
+        raise RuntimeError("unsafe frame tracer temporary root") from error
+    if (not stat.S_ISDIR(root_status.st_mode) or stat.S_ISLNK(root_status.st_mode) or
+            root_status.st_uid != os.getuid()):
+        raise RuntimeError("unsafe frame tracer temporary root")
+    try:
+        parent.mkdir(mode=0o700, parents=False, exist_ok=True)
+        parent_status = os.lstat(parent)
+    except OSError as error:
+        raise RuntimeError("unsafe frame tracer temporary parent") from error
+    if (not stat.S_ISDIR(parent_status.st_mode) or stat.S_ISLNK(parent_status.st_mode) or
+            parent_status.st_uid != os.getuid()):
+        raise RuntimeError("unsafe frame tracer temporary parent")
+    try:
+        path = Path(tempfile.mkdtemp(prefix="pce-frame-trace-", dir=parent))
+        current = os.lstat(path)
+    except OSError as error:
+        raise RuntimeError("unable to create frame tracer temporary job") from error
+    identity = (current.st_dev, current.st_ino, current.st_uid)
+    valid, reason = validate_tracked_job_dir(path, identity)
+    if not valid:
+        raise RuntimeError(f"unsafe frame tracer temporary job: {reason}")
+    return path, identity
+
+
+def cleanup_tracked_job_dir(path, identity):
+    """Atomically quarantine and remove only the validated, original job."""
+    valid, reason = validate_tracked_job_dir(path, identity)
+    if not valid:
+        return False, reason
+    job = normalized_absolute(path)
+    parent = normalized_absolute(JOB_PARENT)
+    try:
+        expected_parent = os.lstat(parent)
+        nofollow = os.O_NOFOLLOW
+    except (AttributeError, OSError):
+        return False, "unsafe_parent"
+    try:
+        parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | nofollow)
+    except OSError:
+        return False, "unsafe_parent"
+    try:
+        opened_parent = os.fstat(parent_fd)
+        if (opened_parent.st_dev, opened_parent.st_ino, opened_parent.st_uid) != (
+                expected_parent.st_dev, expected_parent.st_ino, expected_parent.st_uid):
+            return False, "parent_changed"
+        current = os.stat(job.name, dir_fd=parent_fd, follow_symlinks=False)
+        if (not stat.S_ISDIR(current.st_mode) or stat.S_ISLNK(current.st_mode) or
+                (current.st_dev, current.st_ino, current.st_uid) != identity):
+            return False, "identity_changed"
+        quarantine = f".pce-frame-trace-cleanup-{secrets.token_hex(16)}"
+        os.rename(job.name, quarantine, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        quarantined = os.stat(quarantine, dir_fd=parent_fd, follow_symlinks=False)
+        if (not stat.S_ISDIR(quarantined.st_mode) or stat.S_ISLNK(quarantined.st_mode) or
+                (quarantined.st_dev, quarantined.st_ino, quarantined.st_uid) != identity):
+            return False, "quarantine_identity_changed"
+        shutil.rmtree(quarantine, dir_fd=parent_fd)
+    except OSError:
+        return False, "remove_failed"
+    finally:
+        os.close(parent_fd)
+    return True, "removed"
 
 
 def parse_records(stdout):
@@ -95,8 +237,11 @@ def parse_records(stdout):
             raise ValueError("invalid MPR snapshot")
         if event["kind"] == "wram" and not all(type(event.get(key)) is int for key in ("changed", "first_wram", "last_wram")):
             raise ValueError("invalid WRAM change event")
-        if event["kind"] == "cd" and not all(type(event.get(key)) is int for key in ("cd_event", "command", "lba", "status")):
-            raise ValueError("invalid CD event")
+        if event["kind"] == "cd":
+            if event.get("snapshot") != "FRAME_SNAPSHOT":
+                raise ValueError("SCSI metadata lacks FRAME_SNAPSHOT label")
+            if not all(type(event.get(key)) is int for key in ("cd_event", "command", "lba", "status")):
+                raise ValueError("invalid CD event")
     return cap, events, end
 
 
@@ -118,7 +263,11 @@ def trace(args):
     if report["status"] != "PASS":
         log.update(status=report["status"], reason="doctor prerequisites", evidence="NOT_RUN")
         return log
-    job = Path(tempfile.mkdtemp(prefix="pce-frame-trace-"))
+    try:
+        job, job_identity = make_tracked_job_dir()
+    except (OSError, RuntimeError) as error:
+        log.update(status="BLOCKED", reason=str(error), evidence="NOT_RUN")
+        return log
     try:
         try:
             probe = compile_probe(job, "geargrafx_frame_tracer.cpp", "geargrafx-frame-tracer")
@@ -157,7 +306,10 @@ def trace(args):
                    elapsed_s=result["elapsed_s"], capability=cap, events=events, summary=end)
         return log
     finally:
-        shutil.rmtree(job, ignore_errors=True)
+        cleaned, cleanup_reason = cleanup_tracked_job_dir(job, job_identity)
+        log["cleanup"] = "REMOVED" if cleaned else f"FAILED_{cleanup_reason.upper()}"
+        if not cleaned:
+            log.update(status="FAIL", reason=f"cleanup failed: {cleanup_reason}", evidence="NOT_RUN")
 
 
 def main(argv=None):
