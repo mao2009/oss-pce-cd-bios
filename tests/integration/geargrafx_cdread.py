@@ -17,7 +17,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
-from build_cdread import HALT_CONFIRM_STEPS, SECTOR_BYTES, verify_cdread, with_request
+from build_cdread import HALT_CONFIRM_STEPS, SECTOR_BYTES, verify_cdread, with_read6_request, with_request
 from cdread_verify import PHASE_DATA_IN, SENTINEL, check_success, describe_failure
 from cd_status import classify_records
 from environment import DEPENDENCIES
@@ -72,6 +72,33 @@ class Suite:
 
     def variant(self, lba, count):
         return with_request(self.payload, self.symbols, lba, count)
+
+    def helper_variant(self, lba, count, target):
+        return with_read6_request(self.payload, self.symbols, lba, count, target)
+
+    def helper_positive(self, name, lba, count, target):
+        """Check a generic request at its selected target, including its target-relative result count."""
+        records = self.run(self.helper_variant(lba, count, target))
+        expected = b"".join(self.disc[lba:lba + count])
+        start = target - 0x2800
+        end = start + len(expected)
+        for run, got_result in zip(records["RUN"], describe_failure(records)):
+            if (run["reason"], run["halt_confirmed"], got_result) != (
+                    "cd_halt_ok", True, ("cd_halt_ok", 0, 9, len(expected))):
+                raise ValueError(f"{name}: {run['cycle']} did not report a target-relative successful transfer")
+            got = bytes.fromhex(run["buffer_hex"])
+            if got[start:end] != expected:
+                raise ValueError(f"{name}: {run['cycle']} generic helper target data differs")
+            if any(byte != SENTINEL for byte in got[:start] + got[end:]):
+                raise ValueError(f"{name}: {run['cycle']} modified RAM outside the selected target range")
+            reads = [(row["load_sector"], row["load_count"]) for row in records["PHASE"]
+                     if row["cycle"] == run["cycle"] and row["scsi_phase"] == PHASE_DATA_IN]
+            if reads != [(lba, count)]:
+                raise ValueError(f"{name}: {run['cycle']} generic helper READ(6) trace is {reads}")
+        self.results[name] = {"status": "PASS", "lba": lba, "count": count, "target": target,
+                              "bytes": len(expected),
+                              "note": "cold/warm generic helper target and target-relative result count checked"}
+        return records
 
     def positive(self, name, lba, count):
         rom = self.payload if (lba, count) == DEFAULT_REQUEST else self.variant(lba, count)
@@ -130,6 +157,18 @@ class Suite:
         if outcome != "PASS" or any(v.category == "UNKNOWN_CODE" for v in verdicts):
             raise ValueError(f"{name}: status classifier did not accept the expected code {code}: {outcome}")
         return records
+
+    def invalid_target(self, name, rom, lba, count):
+        """Target validation is diagnostic-helper-specific, so do not mislabel it as the legacy count classifier."""
+        records = self.run(rom)
+        for run, got in zip(records["RUN"], describe_failure(records)):
+            if got != ("cd_halt_fail", 9, 1, 0):
+                raise ValueError(f"{name}: {run['cycle']} ended {got}, expected invalid-request failure")
+        if any(row["scsi_phase"] == PHASE_DATA_IN for row in records["PHASE"]):
+            raise ValueError(f"{name}: invalid target reached DATA_IN")
+        self.must_be_rejected(name, records, lba, count, match="did not stop at the success checkpoint",
+                              error_code=9, transferred_bytes=0,
+                              note="helper target validation; legacy count-only status classifier does not apply")
 
 
 # exactly the "loader" strings geargrafx_cdread_probe.cpp prints in its CAP record
@@ -258,6 +297,10 @@ def main():
         suite.positive("last_sector_lba15", 15, 1)
         suite.positive("three_sectors_lba5", 5, 3)
         suite.positive("disc_end_boundary_lba13_x3", 13, 3)
+        # Low-byte and exact-end boundaries exercise the complete 16-bit target + length check.
+        suite.helper_positive("single_sector_lba6_target_2fff", 6, 1, 0x2fff)
+        suite.helper_positive("single_sector_lba6_target_end_4000", 6, 1, 0x3800)
+        suite.helper_positive("two_sectors_lba6_target_3000", 6, 2, 0x3000)
 
         # ---- negative: the identical judge must reject each of these ----
         suite.tampered_disc("tampered_identity_byte3", 5, 3)
@@ -273,6 +316,9 @@ def main():
             raise ValueError("data read before the end-of-disc error is wrong")
         suite.failing_guest("zero_sector_count", suite.variant(5, 0), 5, 0, 9, 1, 0)
         suite.failing_guest("oversized_sector_count", suite.variant(5, 4), 5, 4, 9, 1, 0)
+        suite.invalid_target("invalid_target_outside_work_ram", suite.helper_variant(5, 1, 0x4000), 5, 1)
+        suite.invalid_target("invalid_target_range_overflow", suite.helper_variant(5, 2, 0x3800), 5, 2)
+        suite.invalid_target("invalid_target_end_4001", suite.helper_variant(5, 1, 0x3801), 5, 1)
         # Timeout: selection is redirected to $1805 (a CD register this guest otherwise never touches), so the target never answers.
         stuck = bytearray(payload)
         at = symbols["cd_select"] - 0xE000
