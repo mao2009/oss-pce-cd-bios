@@ -5,7 +5,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "integration"))
 import geargrafx_frame_tracer as tracer  # noqa: E402
@@ -57,30 +59,75 @@ class FrameTracerProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "FRAME_SNAPSHOT"):
             tracer.parse_records(output([row]))
 
-    def test_cleanup_rejects_untracked_or_replaced_directories(self):
+    def test_temp_paths_reject_outside_root_repo_home_and_worktrees_without_deletion(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            untracked = root / "untracked"
-            untracked.mkdir()
-            self.assertFalse(tracer.cleanup_tracked_job_dir(untracked, (0, 0)))
-            self.assertTrue(untracked.is_dir())
+            parent = root / "frame-tracer-jobs"
+            parent.mkdir()
+            worktree = root / "worktree"
+            worktree.mkdir()
+            outside = Path("/tmp/frame-tracer-outside")
+            with mock.patch.object(tracer, "OPENCODE_TEMP_ROOT", root), mock.patch.object(tracer, "JOB_PARENT", parent):
+                cases = [(outside, "not_direct_child"), (Path("/"), "prohibited_path"),
+                         (Path.home(), "prohibited_path"), (tracer.ROOT, "prohibited_path"),
+                         (worktree / "job", "opencode_worktree")]
+                for path, reason in cases:
+                    with self.subTest(path=path):
+                        self.assertEqual(tracer.validate_tracked_job_dir(path), (False, reason))
+            self.assertTrue(worktree.is_dir())
 
-            tracked, identity = tracer.make_tracked_job_dir()
-            moved = root / "original-job"
-            tracked.rename(moved)
-            tracked.mkdir()
-            try:
-                self.assertFalse(tracer.cleanup_tracked_job_dir(tracked, identity))
-                self.assertTrue(tracked.is_dir())
-                self.assertTrue(moved.is_dir())
-            finally:
-                shutil.rmtree(tracked)
-                shutil.rmtree(moved)
+    def test_temp_paths_reject_symlink_missing_and_unowned_jobs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "target"
+            target.mkdir()
+            parent_link = root / "frame-tracer-jobs"
+            parent_link.symlink_to(target, target_is_directory=True)
+            with mock.patch.object(tracer, "OPENCODE_TEMP_ROOT", root), mock.patch.object(tracer, "JOB_PARENT", parent_link):
+                self.assertEqual(tracer.validate_tracked_job_dir(parent_link / "job"), (False, "unsafe_parent"))
 
-    def test_cleanup_reports_missing_tracked_directory_without_deleting_anything(self):
-        tracked, identity = tracer.make_tracked_job_dir()
-        shutil.rmtree(tracked)
-        self.assertFalse(tracer.cleanup_tracked_job_dir(tracked, identity))
+            parent_link.unlink()
+            parent_link.mkdir()
+            symlink_job = parent_link / "job"
+            symlink_job.symlink_to(target, target_is_directory=True)
+            with mock.patch.object(tracer, "OPENCODE_TEMP_ROOT", root), mock.patch.object(tracer, "JOB_PARENT", parent_link):
+                self.assertEqual(tracer.validate_tracked_job_dir(symlink_job), (False, "unsafe_job"))
+                self.assertEqual(tracer.validate_tracked_job_dir(parent_link / "missing"), (False, "missing"))
+                owned = parent_link / "owned"
+                owned.mkdir()
+                real_lstat = tracer.os.lstat
+
+                def unowned_lstat(path):
+                    result = real_lstat(path)
+                    if Path(path) == owned:
+                        values = list(result)
+                        values[4] += 1  # st_uid
+                        return tracer.os.stat_result(values)
+                    return result
+
+                with mock.patch.object(tracer.os, "lstat", side_effect=unowned_lstat):
+                    self.assertEqual(tracer.validate_tracked_job_dir(owned), (False, "not_owned"))
+
+    def test_valid_tracked_job_is_created_and_removed_only_under_dedicated_parent(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            parent = root / "frame-tracer-jobs"
+            with mock.patch.object(tracer, "OPENCODE_TEMP_ROOT", root), mock.patch.object(tracer, "JOB_PARENT", parent):
+                job, identity = tracer.make_tracked_job_dir()
+                self.assertEqual(tracer.validate_tracked_job_dir(job, identity), (True, "ok"))
+                self.assertEqual(tracer.cleanup_tracked_job_dir(job, identity), (True, "removed"))
+                self.assertFalse(job.exists())
+
+    def test_cleanup_failure_is_reported_not_suppressed(self):
+        args = SimpleNamespace(frames=1, events=1, timeout=1, rom=Path("ignored"), cue=None)
+        with mock.patch.object(tracer, "doctor", return_value={"status": "PASS"}), \
+                mock.patch.object(tracer, "make_tracked_job_dir", return_value=(Path("/safe/job"), (1, 2, 3))), \
+                mock.patch.object(tracer, "compile_probe", side_effect=ValueError("blocked")), \
+                mock.patch.object(tracer, "cleanup_tracked_job_dir", return_value=(False, "identity_changed")):
+            log = tracer.trace(args)
+        self.assertEqual(log["status"], "FAIL")
+        self.assertEqual(log["cleanup"], "FAILED_IDENTITY_CHANGED")
+        self.assertEqual(log["reason"], "cleanup failed: identity_changed")
 
     @unittest.skipUnless(shutil.which("c++"), "C++ compiler unavailable")
     def test_ring_capacities_are_executed_in_cpp(self):

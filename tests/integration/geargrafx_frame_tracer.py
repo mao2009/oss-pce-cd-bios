@@ -14,6 +14,8 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
+OPENCODE_TEMP_ROOT = Path("/tmp/opencode")
+JOB_PARENT = OPENCODE_TEMP_ROOT / "frame-tracer-jobs"
 sys.path.insert(0, str(ROOT / "tests/integration"))
 from geargrafx_api import compile_probe  # noqa: E402
 from geargrafx_harness import doctor, run_job, stage_disc  # noqa: E402
@@ -23,27 +25,114 @@ MAX_EVENTS = 256
 EVENT_KINDS = {"sample", "cd", "wram", "handoff"}
 
 
+def normalized_absolute(path):
+    """Return a lexical, normalized absolute path without following links."""
+    return Path(os.path.abspath(os.fspath(path)))
+
+
+def is_within(path, parent):
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def existing_opencode_worktrees():
+    """All existing direct children except this diagnostic's dedicated parent."""
+    root = normalized_absolute(OPENCODE_TEMP_ROOT)
+    parent = normalized_absolute(JOB_PARENT)
+    try:
+        return [child for child in root.iterdir() if child != parent and child.is_dir() and not child.is_symlink()]
+    except OSError:
+        return []
+
+
+def validate_tracked_job_dir(path, identity=None):
+    """Fail closed unless path is an owned direct child of the dedicated parent."""
+    supplied = Path(path)
+    if not supplied.is_absolute():
+        return False, "not_absolute"
+    job = normalized_absolute(supplied)
+    parent = normalized_absolute(JOB_PARENT)
+    opencode_root = normalized_absolute(OPENCODE_TEMP_ROOT)
+    prohibited = (Path("/"), Path.home(), normalized_absolute(ROOT), normalized_absolute(OPENCODE_TEMP_ROOT))
+    if job in prohibited:
+        return False, "prohibited_path"
+    try:
+        root_status = os.lstat(opencode_root)
+    except OSError:
+        return False, "missing"
+    if (not stat.S_ISDIR(root_status.st_mode) or stat.S_ISLNK(root_status.st_mode) or
+            root_status.st_uid != os.getuid()):
+        return False, "unsafe_root"
+    if any(is_within(job, worktree) for worktree in existing_opencode_worktrees()):
+        return False, "opencode_worktree"
+    if job.parent != parent:
+        return False, "not_direct_child"
+    try:
+        parent_status = os.lstat(parent)
+    except OSError:
+        return False, "missing"
+    if not stat.S_ISDIR(parent_status.st_mode) or stat.S_ISLNK(parent_status.st_mode):
+        return False, "unsafe_parent"
+    if parent_status.st_uid != os.getuid():
+        return False, "not_owned"
+    try:
+        current = os.lstat(job)
+    except OSError:
+        return False, "missing"
+    if not stat.S_ISDIR(current.st_mode) or stat.S_ISLNK(current.st_mode):
+        return False, "unsafe_job"
+    uid = os.getuid()
+    if current.st_uid != uid:
+        return False, "not_owned"
+    current_identity = (current.st_dev, current.st_ino, current.st_uid)
+    if identity is not None and current_identity != identity:
+        return False, "identity_changed"
+    return True, "ok"
+
+
 def make_tracked_job_dir():
-    """Create a job directory and retain its identity for safe cleanup."""
-    path = Path(tempfile.mkdtemp(prefix="pce-frame-trace-"))
-    identity = os.lstat(path)
-    return path, (identity.st_dev, identity.st_ino)
+    """Create a current-user-owned job in the dedicated /tmp/opencode parent."""
+    parent = normalized_absolute(JOB_PARENT)
+    try:
+        root_status = os.lstat(normalized_absolute(OPENCODE_TEMP_ROOT))
+    except OSError as error:
+        raise RuntimeError("unsafe frame tracer temporary root") from error
+    if (not stat.S_ISDIR(root_status.st_mode) or stat.S_ISLNK(root_status.st_mode) or
+            root_status.st_uid != os.getuid()):
+        raise RuntimeError("unsafe frame tracer temporary root")
+    try:
+        parent.mkdir(mode=0o700, parents=False, exist_ok=True)
+        parent_status = os.lstat(parent)
+    except OSError as error:
+        raise RuntimeError("unsafe frame tracer temporary parent") from error
+    if (not stat.S_ISDIR(parent_status.st_mode) or stat.S_ISLNK(parent_status.st_mode) or
+            parent_status.st_uid != os.getuid()):
+        raise RuntimeError("unsafe frame tracer temporary parent")
+    try:
+        path = Path(tempfile.mkdtemp(prefix="pce-frame-trace-", dir=parent))
+        current = os.lstat(path)
+    except OSError as error:
+        raise RuntimeError("unable to create frame tracer temporary job") from error
+    identity = (current.st_dev, current.st_ino, current.st_uid)
+    valid, reason = validate_tracked_job_dir(path, identity)
+    if not valid:
+        raise RuntimeError(f"unsafe frame tracer temporary job: {reason}")
+    return path, identity
 
 
 def cleanup_tracked_job_dir(path, identity):
-    """Remove only the exact directory this tracer created, never a replacement."""
-    try:
-        current = os.lstat(path)
-    except FileNotFoundError:
-        return False
-    if (not stat.S_ISDIR(current.st_mode) or
-            (current.st_dev, current.st_ino) != identity):
-        return False
+    """Remove only the validated, original job and return a safe outcome code."""
+    valid, reason = validate_tracked_job_dir(path, identity)
+    if not valid:
+        return False, reason
     try:
         shutil.rmtree(path)
     except OSError:
-        return False
-    return True
+        return False, "remove_failed"
+    return True, "removed"
 
 
 def parse_records(stdout):
@@ -116,7 +205,11 @@ def trace(args):
     if report["status"] != "PASS":
         log.update(status=report["status"], reason="doctor prerequisites", evidence="NOT_RUN")
         return log
-    job, job_identity = make_tracked_job_dir()
+    try:
+        job, job_identity = make_tracked_job_dir()
+    except (OSError, RuntimeError) as error:
+        log.update(status="BLOCKED", reason=str(error), evidence="NOT_RUN")
+        return log
     try:
         try:
             probe = compile_probe(job, "geargrafx_frame_tracer.cpp", "geargrafx-frame-tracer")
@@ -154,7 +247,10 @@ def trace(args):
                    elapsed_s=result["elapsed_s"], capability=cap, events=events, summary=end)
         return log
     finally:
-        cleanup_tracked_job_dir(job, job_identity)
+        cleaned, cleanup_reason = cleanup_tracked_job_dir(job, job_identity)
+        log["cleanup"] = "REMOVED" if cleaned else f"FAILED_{cleanup_reason.upper()}"
+        if not cleaned:
+            log.update(status="FAIL", reason=f"cleanup failed: {cleanup_reason}", evidence="NOT_RUN")
 
 
 def main(argv=None):
