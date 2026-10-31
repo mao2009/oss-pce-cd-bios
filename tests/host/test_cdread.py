@@ -8,7 +8,7 @@ from tools.environment import requires_cc65
 
 from tools.build_cdread import (
     BANK_BASE, DEFAULT_COUNT, DEFAULT_LBA, EXPECTED_MPR, HALT_CONFIRM_STEPS, REQUIRED_SYMBOLS, build_cdread, code_digest,
-    parse_symbols, read_request, verify_cdread, with_request,
+    parse_symbols, read_request, verify_cdread, with_read6_request, with_request,
 )
 from tools.build_rom import build
 from tools.cdread_verify import check_success, describe_failure, result_block
@@ -51,6 +51,7 @@ class CdReadBuildTests(unittest.TestCase):
         self.assertEqual(read_request(self.payload, self.symbols), (DEFAULT_LBA, DEFAULT_COUNT))
         at = self.symbols["cd_cdb"] - BANK_BASE
         self.assertEqual(self.payload[at:at + 6], bytes((0x08, 0, 0, DEFAULT_LBA, DEFAULT_COUNT, 0)))
+        self.assertEqual(self.payload[at + 6:at + 8], b"\x00\x28")
 
     def test_with_request_roundtrip_and_limits(self):
         patched = with_request(self.payload, self.symbols, 0x1FFFFF, 255)
@@ -61,8 +62,18 @@ class CdReadBuildTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 with_request(self.payload, self.symbols, lba, count)
 
+    def test_generic_helper_request_can_select_target(self):
+        patched = with_read6_request(self.payload, self.symbols, 6, 3, 0x2800)
+        self.assertEqual(read_request(patched, self.symbols), (6, 3))
+        at = self.symbols["cd_cdb"] - BANK_BASE
+        self.assertEqual(patched[at + 6:at + 8], b"\x00\x28")
+        self.assertEqual(verify_cdread(patched, self.base, self.symbols, self.digest), hashlib.sha256(patched).hexdigest())
+        for target in (-1, 1 << 16):
+            with self.assertRaises(ValueError):
+                with_read6_request(self.payload, self.symbols, 5, 1, target)
+
     def test_every_non_request_byte_flip_in_the_code_bank_fails_closed(self):
-        request = range(self.symbols["cd_cdb"] - BANK_BASE, self.symbols["cd_cdb"] - BANK_BASE + 6)
+        request = range(self.symbols["cd_cdb"] - BANK_BASE, self.symbols["cd_cdb"] - BANK_BASE + 8)
         for offset in range(0x1000, 0x2000):
             if offset in request:
                 continue

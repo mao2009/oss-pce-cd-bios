@@ -17,7 +17,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
-from build_cdread import HALT_CONFIRM_STEPS, SECTOR_BYTES, verify_cdread, with_request
+from build_cdread import HALT_CONFIRM_STEPS, SECTOR_BYTES, verify_cdread, with_read6_request, with_request
 from cdread_verify import PHASE_DATA_IN, SENTINEL, check_success, describe_failure
 from cd_status import classify_records
 from environment import DEPENDENCIES
@@ -72,6 +72,9 @@ class Suite:
 
     def variant(self, lba, count):
         return with_request(self.payload, self.symbols, lba, count)
+
+    def helper_variant(self, lba, count, target):
+        return with_read6_request(self.payload, self.symbols, lba, count, target)
 
     def positive(self, name, lba, count):
         rom = self.payload if (lba, count) == DEFAULT_REQUEST else self.variant(lba, count)
@@ -130,6 +133,18 @@ class Suite:
         if outcome != "PASS" or any(v.category == "UNKNOWN_CODE" for v in verdicts):
             raise ValueError(f"{name}: status classifier did not accept the expected code {code}: {outcome}")
         return records
+
+    def invalid_target(self, name, rom, lba, count):
+        """Target validation is diagnostic-helper-specific, so do not mislabel it as the legacy count classifier."""
+        records = self.run(rom)
+        for run, got in zip(records["RUN"], describe_failure(records)):
+            if got != ("cd_halt_fail", 9, 1, 0):
+                raise ValueError(f"{name}: {run['cycle']} ended {got}, expected invalid-request failure")
+        if any(row["scsi_phase"] == PHASE_DATA_IN for row in records["PHASE"]):
+            raise ValueError(f"{name}: invalid target reached DATA_IN")
+        self.must_be_rejected(name, records, lba, count, match="did not stop at the success checkpoint",
+                              error_code=9, transferred_bytes=0,
+                              note="helper target validation; legacy count-only status classifier does not apply")
 
 
 # exactly the "loader" strings geargrafx_cdread_probe.cpp prints in its CAP record
@@ -258,6 +273,24 @@ def main():
         suite.positive("last_sector_lba15", 15, 1)
         suite.positive("three_sectors_lba5", 5, 3)
         suite.positive("disc_end_boundary_lba13_x3", 13, 3)
+        # The generic diagnostic helper accepts a distinct in-window target.  The regular
+        # judge observes the whole $2800-$3FFF window, so compare the target slice directly.
+        target = 0x3000
+        records = suite.run(suite.helper_variant(6, 1, target))
+        for run in records["RUN"]:
+            if run["reason"] != "cd_halt_ok" or run["halt_confirmed"] is not True:
+                raise ValueError(f"{run['cycle']}: generic helper did not halt successfully")
+            got = bytes.fromhex(run["buffer_hex"])[target - 0x2800:target - 0x2800 + SECTOR_BYTES]
+            if got != suite.disc[6]:
+                raise ValueError(f"{run['cycle']}: generic helper target data differs")
+            reads = [(row["load_sector"], row["load_count"]) for row in records["PHASE"]
+                     if row["cycle"] == run["cycle"] and row["scsi_phase"] == PHASE_DATA_IN]
+            if reads != [(6, 1)]:
+                raise ValueError(f"{run['cycle']}: generic helper READ(6) trace is {reads}")
+        suite.results["single_sector_lba6_target_3000"] = {
+            "status": "PASS", "lba": 6, "count": 1, "target": target,
+            "note": "cold/warm generic helper request; full target sector compared",
+        }
 
         # ---- negative: the identical judge must reject each of these ----
         suite.tampered_disc("tampered_identity_byte3", 5, 3)
@@ -273,6 +306,8 @@ def main():
             raise ValueError("data read before the end-of-disc error is wrong")
         suite.failing_guest("zero_sector_count", suite.variant(5, 0), 5, 0, 9, 1, 0)
         suite.failing_guest("oversized_sector_count", suite.variant(5, 4), 5, 4, 9, 1, 0)
+        suite.invalid_target("invalid_target_outside_work_ram", suite.helper_variant(5, 1, 0x4000), 5, 1)
+        suite.invalid_target("invalid_target_range_overflow", suite.helper_variant(5, 2, 0x3800), 5, 2)
         # Timeout: selection is redirected to $1805 (a CD register this guest otherwise never touches), so the target never answers.
         stuck = bytearray(payload)
         at = symbols["cd_select"] - 0xE000

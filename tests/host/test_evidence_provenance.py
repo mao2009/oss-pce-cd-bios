@@ -108,7 +108,7 @@ class EvidenceProvenanceTests(unittest.TestCase):
         text = (ROOT / 'tests/integration/geargrafx_cdread.py').read_text(encoding='utf-8')
         derived = {name: 'PASS' for name in re.findall(r'suite\.positive\("(\w+)"', text)}
         derived.update({name: 'PASS_EXPECTED_FAILURE' for name in
-                        re.findall(r'suite\.(?:failing_guest|must_be_rejected|tampered_disc)\("(\w+)"', text)})
+                        re.findall(r'suite\.(?:failing_guest|invalid_target|must_be_rejected|tampered_disc)\("(\w+)"', text)})
         derived.update(re.findall(r'results\["(\w+)"\] = \{\s*"status": "(\w+)"', text))
         self.assertIn('f"halt_unconfirmed_cut_{extra}_steps_after_arrival"', text)
         self.assertIn('for extra in (0, 1, HALT_CONFIRM_STEPS - 1):', text)
@@ -126,7 +126,8 @@ class EvidenceProvenanceTests(unittest.TestCase):
                     'read6_on_audio_track_lba': 'OBSERVED_EMULATOR_BEHAVIOUR'}
         self.assertEqual({name: ep.SCENARIO_KIND[name] for name in contract}, contract)
         self.assertEqual(ep.REQUIRED_SCENARIOS, ('single_sector_lba5', 'first_sector_lba0', 'last_sector_lba15',
-                                                 'three_sectors_lba5', 'disc_end_boundary_lba13_x3'))
+                                                  'three_sectors_lba5', 'disc_end_boundary_lba13_x3',
+                                                  'single_sector_lba6_target_3000'))
 
     def test_missing_forged_or_wrong_kind_scenarios_fail(self):
         for name, kind in ep.SCENARIO_KIND.items():
