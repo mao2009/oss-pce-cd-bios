@@ -16,17 +16,19 @@ if __package__:
     from .build_rom import API_IMPLEMENTATION, BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
     from .build_cdload_exec import DEFAULT_LBA, DISC_SECTORS, EXEC_ADDRESS, EXPECTED_MPR, SECTOR_BYTES, parse_labels
     from .environment import DEPENDENCIES, executable
+    from .experimental_track_selection import assembler_defines, selection
 else:
     from build_rom import API_IMPLEMENTATION, BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
     from build_cdload_exec import DEFAULT_LBA, DISC_SECTORS, EXEC_ADDRESS, EXPECTED_MPR, SECTOR_BYTES, parse_labels
     from environment import DEPENDENCIES, executable
+    from experimental_track_selection import assembler_defines, selection
 
 MS_RES = 0x3F40
 EXPERIMENTAL_BOOT_FLAG = "EXPERIMENTAL_BIOS_BOOT"
 ROM_NAME = "experimental-dev-only-not-compatible-syscard-sized.pce"
-REQUIRED = ("experimental_bios_reset", "experimental_bios_init", "experimental_bios_media_halt", "cd_entry",
+REQUIRED = ("experimental_bios_reset", "experimental_bios_init", "experimental_bios_selection_halt", "experimental_selection", "cd_entry",
             "cd_buffer_ready", "cd_data_done", "cd_halt_ok", "cd_halt_fail", "cd_unexpected_interrupt", "cd_cdb",
-            "cd_payload_return", "cd_media_state", "ms_done")
+             "cd_payload_return", "cd_set_read_lba")
 PAYLOAD_LABELS = ("payload_entry", "payload_done")
 
 
@@ -40,18 +42,19 @@ def parse_needed_labels(path: Path, names) -> dict:
     return found
 
 
-def experimental_boot_units():
+def experimental_boot_units(selected=None):
     """Opt-in link units. The default image never receives EXPERIMENTAL_BIOS_BOOT."""
+    selected = selection(1, DEFAULT_LBA) if selected is None else selection(selected["track"], selected["lba"], selected["kind"])
     return [
-        (ROOT / "src/experimental_bios_boot.s", []),
+        (ROOT / "src/experimental_bios_boot.s", assembler_defines(selected)),
         (ROOT / "src/cd_load_exec_probe.s", ["-D", EXPERIMENTAL_BOOT_FLAG]),
-        (ROOT / "src/cd_media_state.s", ["-D", f"MS_RES=${MS_RES:04X}"]),
     ]
 
 
-def build_experimental_bios_boot(original_path: Path, output: Path, mode="debug") -> Path:
+def build_experimental_bios_boot(original_path: Path, output: Path, mode="debug", selected=None) -> Path:
     if mode not in ("debug", "release"):
         raise ValueError("MODE must be debug or release")
+    selected = selection(1, DEFAULT_LBA) if selected is None else selection(selected["track"], selected["lba"], selected["kind"])
     original = original_path.read_bytes()
     verify_dev_rom(original, manifest=original_path.parent / "manifest.json")
     ca65, ld65 = executable("ca65"), executable("ld65")
@@ -62,7 +65,7 @@ def build_experimental_bios_boot(original_path: Path, output: Path, mode="debug"
     output.mkdir(parents=True, exist_ok=True)
     debug_flags = ["-g"] if mode == "debug" else []
     objects = assemble_api_objects(output, mode)
-    for source, defines in experimental_boot_units():
+    for source, defines in experimental_boot_units(selected):
         obj = output / (source.stem + ".o")
         subprocess.run([ca65, str(source), *defines, "-o", str(obj), *debug_flags], check=True)
         objects.append(obj)
@@ -100,14 +103,15 @@ def build_experimental_bios_boot(original_path: Path, output: Path, mode="debug"
     # The shared integration judge uses semantic trace names; these aliases point to this image's new reset labels.
     trace_symbols = dict(symbols)
     trace_symbols.update({"dev_boot_entry": symbols["experimental_bios_init"],
-                          "dev_media_halt": symbols["experimental_bios_media_halt"]})
+                           "dev_selection_halt": symbols["experimental_bios_selection_halt"]})
     (output / "trace-labels.txt").write_text("".join(f"{name} {value:04x}\n" for name, value in trace_symbols.items()), encoding="ascii")
     manifest = {
         "status": "EXPERIMENTAL-DEV-ONLY-not-compatible-not-a-bios-abi",
         "mode": mode, "rom_name": ROM_NAME, "rom_sha256": hashlib.sha256(data).hexdigest(), "rom_bytes": IMAGE_BYTES,
         "payload_sha256": hashlib.sha256(code).hexdigest(), "payload_bytes": len(code), "payload_checksum": sum(code) & 0xFF,
-        "payload_entry_offset": 0, "exec_address": EXEC_ADDRESS, "ms_result_address": MS_RES,
-        "default_request": {"lba": DEFAULT_LBA, "count": 1}, "sector_bytes": SECTOR_BYTES, "media_probe_lba": 0,
+        "payload_entry_offset": 0, "exec_address": EXEC_ADDRESS,
+        "selection_contract": {"host_side_cue_analysis": True, "guest_toc": "NOT_IMPLEMENTED", **selected},
+        "default_request": {"lba": selected["lba"], "count": 1}, "sector_bytes": SECTOR_BYTES,
         "symbols": symbols, "trace_symbols": trace_symbols, "expected_mpr": EXPECTED_MPR,
         "pinned_cc65": DEPENDENCIES["cc65"]["revision"], "api_implementation": API_IMPLEMENTATION,
         "cd_read_api_slot_03": "NOT_IMPLEMENTED", "system_card_abi": "NO_CLAIM", "release_eligible": False,

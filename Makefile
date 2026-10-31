@@ -217,6 +217,6 @@ routine-real-core:
 experimental-bios-boot: dev-rom
 	$(PYTHON) tools/build_experimental_bios_boot.py --mode "$(MODE)"
 
-# Pinned Geargrafx real-core check using the repository's generated synthetic fixture; no private media is read.
+# Pinned Geargrafx synthetic CUE check; host selects INDEX 01, guest validates the record (not TOC/API).
 experimental-bios-boot-integration: experimental-bios-boot
-	$(PYTHON) tests/integration/geargrafx_dev_boot_internal.py --mode "$(MODE)" --output "build/$(MODE)/experimental-bios-boot" --rom-name "experimental-dev-only-not-compatible-syscard-sized.pce"
+	$(PYTHON) tests/integration/geargrafx_experimental_track_contract.py --mode "$(MODE)"
