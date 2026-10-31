@@ -28,6 +28,40 @@
 
 ## ブロック転送の書込み先モデル
 
+### pinned コアの実装監査（b49ae82a）
+
+`src/huc6280_opcodes_inline.h` の実装を読み取り専用で再確認した。opcode は
+TII=`$73`、TIN=`$D3`、TDD=`$C3`、TIA=`$E3`、TAI=`$F3` で、各 operand は
+`source:u16, destination:u16, length:u16`（TransferStart の Fetch16 x3）である。
+TransferStart は A/X/Y を stack に push し、各後続 `RunInstruction` は
+`m_transfer_state==2` のとき一 byte だけ `Memory::Write(dest, Memory::Read(src,true),true)`
+を行い、PC を 1 byte decrement して同じ block opcode を再実行する。完了時だけ
+TransferEnd が stack pop と PC+6 を行う。従って single-step は block instruction
+全体の原子的停止ではなく、命令内の各 byte state の間の境界を観測できるだけである。
+
+| 命令 | opcode | source/destination 更新 |
+|---|---:|---|
+| TII | `$73` | source++, destination++ |
+| TIN | `$D3` | source++, destination fixed |
+| TDD | `$C3` | source--, destination-- |
+| TIA | `$E3` | source++, destination += `count` の偶奇で +1/-1 |
+| TAI | `$F3` | source += `count` の偶奇で +1/-1, destination++ |
+
+`Memory::Write` が MPR の CPU page mapping を解決する通常の byte-write path である。
+しかし検証専用 patch の hook 以外に #173 の production gate へ接続された per-byte
+allowlist はない。patch の hook は `Memory::Read` と `Memory::Write` の前にあるため、
+この限定 probe では副作用前である。一方、hook が拒否しても transfer state/count と
+TransferEnd は進むため、これは安全な命令停止ではない。
+
+### 2026-10-31 再実行結果と境界
+
+`make block-write-guard` を再実行した。5 opcode x (hardware-page refusal / no-hook RED /
+WRAM positive / stack-$FF refusal / stack-$FF no-hook RED / WRAM-stack positive) の30 synthetic
+real-core cases は PASS した。この実行が実証するのは **MPR page=$FF の一 byte destination
+store に限る verification-only pre-write hook** である。ROM bank、非-$FF forbidden RAM、
+MPR alias、multi-byte boundary crossing、length=0、TIA/TAI の複数 byte 順序、命令開始前の
+全体拒否は、この run では実証していないため BLOCKED である。
+
 | 命令 | 書込み先の動き | モデル | 未確認事項 |
 |------|----------------|--------|------------|
 | TII | dst を +1（src も +1） | 厳密（16bit ラップ） | 実コアでの確認なし |
@@ -123,6 +157,22 @@ A/X/Y 上書きとステータスレジスタのクリアは **TransferEnd の p
 | 変異テストで偽 PASS が出ないこと | host 変異テスト 3 件（静的のみ）に加え、実コア driver が armed 判定に変異検査を適用する | `MutationTest` 3 件、driver の `mutation_test` |
 
 ## デバイス起点 RAM 書込み（W17）
+
+### 遮断状態（source audit の範囲だけ）
+
+| 観測対象 | 結果 | 状態 |
+|---|---|---|
+| block-transfer CPU byte store | patch hook は byte write の前 | PRE_WRITE_GUARDED（verification-only、$FF destination 1-byte probe のみ） |
+| block-transfer 全命令 | production pre-execution deny は未接続 | UNGUARDED |
+| CD related transfer | 本監査で CPU main WRAM への device write を実測していない | NOT_VERIFIED |
+| ADPCM DMA | ADPCM RAM 内の DMA 状態は source にあるが main WRAM write を実測していない | NOT_VERIFIED |
+| VDC VRAM/SAT DMA | VDC 内部 VRAM/SAT の経路。CPU main WRAM write ではない | NOT_APPLICABLE |
+| timer/IRQ | request/ack は確認したが main WRAM write 経路はこの範囲で未確認 | NOT_VERIFIED |
+| backup/Arcade Card | 起動元または経路が未確定 | NOT_VERIFIED |
+
+この表の `PRE_WRITE_GUARDED` は device write を含まず、#173 の production safety gate が
+遮断済みである意味ではない。CPU 以外の各行は実コアで書込み時点を捕捉していないので
+PASS にしない。
 
 #419 で pinned Geargrafx（b49ae82）のソースを読み取り、検索語による範囲で列挙した（実行なし。詳細は `docs/research/367-device-write-audit.md`）。記録は 9 行:
 
