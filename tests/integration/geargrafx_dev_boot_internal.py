@@ -236,6 +236,34 @@ def no_media_mutations(records, symbols):
     return sorted(mutants)
 
 
+def passed_scenarios(results):
+    """Count only successful scenarios; expected rejections and blockers are not passes."""
+    return sum(1 for result in results.values() if result.get("status") == "PASS")
+
+
+def evidence_record(manifest, code, results, primary):
+    """JSON-safe diagnostic record. Its overall run status does not promote blocked scenarios."""
+    return {
+        "scope": "DEV-ONLY internal boot path (Issue #501); NOT compatible, NOT BIOS, NOT DEV_CALLABLE",
+        "rom_sha256": manifest["rom_sha256"], "payload_sha256": manifest["payload_sha256"],
+        "payload_bytes": len(code), "exec_address": EXEC_ADDRESS, "ms_result_address": MS_RES,
+        "geargrafx_revision": DEPENDENCIES["geargrafx"]["revision"],
+        "tests": results, "primary_observations": {"RUN": primary["RUN"], "HIT": primary["HIT"],
+                                                      "PHASE": primary["PHASE"]},
+        "not_tested": ["real hardware", "a second emulator", "RAM fault injection in the copy",
+                       "partial read with bytes transferred > 0 on the media check"],
+        "status": "PASS",
+    }
+
+
+def no_media_result(records, symbols):
+    """Judge and classify the unavailable-media scenario without treating its rejection as success."""
+    judge_no_media(records, symbols)
+    return {"status": "BLOCKED", "stopped_at": "dev_media_halt", "media_state": "NO_DATA (0x03)",
+            "note": "Geargrafx-only no-media observation; no DATA_IN and no payload READ(6)",
+            "judge_mutants": no_media_mutations(records, symbols)}
+
+
 class Suite:
     def __init__(self, probe, labels, symbols, code, folder, rom):
         self.probe, self.labels, self.symbols, self.code, self.folder, self.rom = probe, labels, symbols, code, folder, rom
@@ -393,11 +421,7 @@ def main():
         # (c) no inserted media: pinned Geargrafx reports GOOD without DATA_IN; the media probe must stop at
         # dev_media_halt with NO_DATA, without attempting the payload READ(6).  This is not real-hardware evidence.
         records = suite.run(rom_bytes, None, budget=STEP_BUDGET)
-        judge_no_media(records, symbols)
-        suite.results["no_media_stops_at_media_check"] = {
-            "status": "PASS_EXPECTED_FAILURE", "stopped_at": "dev_media_halt", "media_state": "NO_DATA (0x03)",
-            "note": "Geargrafx-only no-media observation; no DATA_IN and no payload READ(6)",
-            "judge_mutants": no_media_mutations(records, symbols)}
+        suite.results["no_media_stops_at_media_check"] = no_media_result(records, symbols)
         # (d) a payload whose marker byte is wrong: the ROM's own marker check after the return rejects it
         #     (PAYLOAD_MARKER_MISMATCH = 30 at stage 15); the success judge must also reject the observation
         wrong = bytearray(code)
@@ -415,19 +439,9 @@ def main():
 
         mutation_tests(suite, primary)
 
-    evidence = {
-        "scope": "DEV-ONLY internal boot path (Issue #501); NOT compatible, NOT BIOS, NOT DEV_CALLABLE",
-        "rom_sha256": manifest["rom_sha256"], "payload_sha256": manifest["payload_sha256"],
-        "payload_bytes": len(code), "exec_address": EXEC_ADDRESS, "ms_result_address": MS_RES,
-        "geargrafx_revision": DEPENDENCIES["geargrafx"]["revision"],
-        "tests": suite.results, "primary_observations": {"RUN": primary["RUN"], "HIT": primary["HIT"],
-                                                          "PHASE": primary["PHASE"]},
-        "not_tested": ["real hardware", "a second emulator", "RAM fault injection in the copy",
-                       "partial read with bytes transferred > 0 on the media check"],
-        "status": "PASS",
-    }
+    evidence = evidence_record(manifest, code, suite.results, primary)
     (output / "dev-boot-internal-evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
-    passed = sum(1 for r in suite.results.values() if r["status"].startswith("PASS"))
+    passed = passed_scenarios(suite.results)
     print(f"PASS DEV-only internal boot via real Geargrafx: {passed} scenarios "
           f"(cold+warm, guest READ(6) x2, RAM byte compare, PC order); NOT compatible, NOT BIOS, NOT DEV_CALLABLE")
 
