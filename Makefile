@@ -205,3 +205,13 @@ routine-real-core:
 	$(PYTHON) tests/integration/geargrafx_ma_div16u.py
 	$(PYTHON) tests/integration/geargrafx_ma_div16s.py
 	$(PYTHON) tests/integration/geargrafx_bcdbin.py
+
+.PHONY: experimental-bios-boot experimental-bios-boot-integration
+# Explicit opt-in only: 256 KiB DEV experiment with original reset/init code and project-owned synthetic CD flow.
+# NOT compatible with any System Card, NOT a BIOS ABI, and never a release artifact.
+experimental-bios-boot: dev-rom
+	$(PYTHON) tools/build_experimental_bios_boot.py --mode "$(MODE)"
+
+# Pinned Geargrafx real-core check using the repository's generated synthetic fixture; no private media is read.
+experimental-bios-boot-integration: experimental-bios-boot
+	$(PYTHON) tests/integration/geargrafx_dev_boot_internal.py --mode "$(MODE)" --output "build/$(MODE)/experimental-bios-boot" --rom-name "experimental-dev-only-not-compatible-syscard-sized.pce"

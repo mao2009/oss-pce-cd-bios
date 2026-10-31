@@ -450,5 +450,10 @@ cd_cdb:
 .import dev_boot_reset
     .word dev_boot_reset          ; Issue #501 DEV-only internal path (not compatible); default build keeps cd_entry
 .else
+.ifdef EXPERIMENTAL_BIOS_BOOT
+.import experimental_bios_reset
+    .word experimental_bios_reset ; experimental DEV-only image; not compatible, not a BIOS ABI
+.else
     .word cd_entry                ; Reset
+.endif
 .endif
