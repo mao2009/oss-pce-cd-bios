@@ -1,7 +1,7 @@
 PYTHON ?= python3
 MODE ?= debug
 
-.PHONY: setup build test test-real-core host-test check clean release setup-geargrafx integration integration-test
+.PHONY: setup build test test-real-core host-test check clean release setup-geargrafx integration integration-test irq-postaccept-boundary
 
 setup:
 	$(PYTHON) tools/setup.py all
@@ -26,6 +26,11 @@ test-real-core: build
 # Real-Geargrafx tests (fetch/build, real-core runs) live only in tests/integration (Issue #333).
 integration-test:
 	OSS_PCE_REQUIRE_CC65=1 $(PYTHON) -m unittest discover -s tests/integration -p 'test_*.py' -v
+
+# Issue #366: manual debugger-only synthetic IRQ acceptance -> handler boundary proof.
+# Not part of the ordinary libretro real-core gate: it needs the debugger step API.
+irq-postaccept-boundary:
+	$(PYTHON) tests/integration/geargrafx_irq_postaccept_boundary.py
 
 # Local host-only run: no build, no integration. cc65-dependent tests SKIP with a reason when cc65 is absent;
 # the required gate is `make test`.
