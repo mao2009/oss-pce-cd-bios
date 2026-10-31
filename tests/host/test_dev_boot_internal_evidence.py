@@ -40,6 +40,7 @@ class DevBootInternalEvidenceTests(unittest.TestCase):
         encoded = json.dumps(evidence, sort_keys=True)
         decoded = json.loads(encoded)
         self.assertEqual(decoded["tests"]["no_media_stops_at_media_check"]["status"], "BLOCKED")
+        self.assertEqual(decoded["tests"]["no_media_stops_at_media_check"]["assertion_result"], "PASS")
         self.assertEqual(boot.passed_scenarios(decoded["tests"]), 1)
 
     def test_no_media_judge_requires_rejection_integrity_for_cold_and_warm(self):

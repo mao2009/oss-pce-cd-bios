@@ -257,9 +257,10 @@ def evidence_record(manifest, code, results, primary):
 
 
 def no_media_result(records, symbols):
-    """Judge and classify the unavailable-media scenario without treating its rejection as success."""
+    """Judge unavailable media without promoting the blocked scenario itself to a success."""
     judge_no_media(records, symbols)
-    return {"status": "BLOCKED", "stopped_at": "dev_media_halt", "media_state": "NO_DATA (0x03)",
+    return {"status": "BLOCKED", "assertion_result": "PASS",
+            "stopped_at": "dev_media_halt", "media_state": "NO_DATA (0x03)",
             "note": "Geargrafx-only no-media observation; no DATA_IN and no payload READ(6)",
             "judge_mutants": no_media_mutations(records, symbols)}
 

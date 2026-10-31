@@ -35,7 +35,7 @@ LBA 5 を READ(6) で 2048 バイト `$2800` へ転送、`PCEX` ヘッダ検証�
 - 位置づけ: DEV専用。Issue #505 により `core-harness.yml` の追加ジョブ `dev-boot-internal-integration` が PR ごとに `make dev-boot-internal-integration` を実行する（回帰検出）。既存ジョブの条件・needs・required check は変更していない。`make test` / `make check` / `make test-real-core` には含まれない。この CI 結果は DEV 内部起動経路の回帰検出であり、純正互換や BIOS 経由の商用起動の成功を意味しない。
 - 停止位置: 媒体確認が失敗した場合、判定は `dev_media_halt` での停止（PC と理由 `dev_media_halt` の両方）を要求する。別 PC や budget 停止は拒否される。
 - 正例の判定: `dev_boot_entry` の到達、2 回の READ(6)（LBA 0 と LBA 5、SCSI 位相トレース）、RAM 2048 バイトの全バイト比較、ペイロード全体、マーカー、PC 順序、媒体確認結果 `$01`。
-- 負例（実コアで拒否されること）: セクタ数 2 を要求する ROM（ゲストが `INVALID_REQUEST` = 9 で停止）、LBA 0 にペイロードを置いた媒体（媒体確認で `MEDIA_UNRECOGNISED`）、媒体なし（固定 Geargrafx では `NO_DATA` = `$03` で `dev_media_halt`。実機の主張ではない）。媒体なしの evidence status は `BLOCKED` であり、PASS 集計には含めない。マーカー誤り（ゲストが `PAYLOAD_MARKER_MISMATCH` で停止）、転送バイトの改ざん（判定側が差分を検出）、ヘッダのマジック不一致、観測の改変（判定側のミューテーション）。
+- 負例（実コアで拒否されること）: セクタ数 2 を要求する ROM（ゲストが `INVALID_REQUEST` = 9 で停止）、LBA 0 にペイロードを置いた媒体（媒体確認で `MEDIA_UNRECOGNISED`）、媒体なし（固定 Geargrafx では `NO_DATA` = `$03` で `dev_media_halt`。実機の主張ではない）。媒体なしの scenario `status` は `BLOCKED` であり、PASS 集計には含めない。一方、その cold/warm 拒否判定とミューテーション拒否が実行・成功したことは別フィールド `assertion_result: PASS` で記録する。マーカー誤り（ゲストが `PAYLOAD_MARKER_MISMATCH` で停止）、転送バイトの改ざん（判定側が差分を検出）、ヘッダのマジック不一致、観測の改変（判定側のミューテーション）。
 
 ## 非目標
 
