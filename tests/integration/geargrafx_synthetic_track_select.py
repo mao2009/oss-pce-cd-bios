@@ -9,6 +9,7 @@ real-core observation records that raw READ(6) itself does not provide it.
 import argparse
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 
@@ -25,13 +26,55 @@ from make_cd_image import CUE_NAME as READ_CUE_NAME, build_image
 from synthetic_boot_media import CUE_NAME, write_case
 from synthetic_track_select import NoDataTrackError, select_first_mode1_track
 
+EXIT_BLOCKED = 3
+
+
+class BlockedError(RuntimeError):
+    """A required local diagnostic prerequisite or observation is unavailable."""
+
+
+def require_file(path):
+    """Return an existing regular artifact, otherwise fail closed before judging it."""
+    path = Path(path)
+    if not path.is_file():
+        raise BlockedError(f"BLOCKED: required diagnostic artifact is missing: {path.name}")
+    return path
+
+
+def require_complete_records(records, case):
+    """Reject a truncated probe transcript as unavailable evidence, not an oracle failure."""
+    if not isinstance(records, dict):
+        raise BlockedError(f"BLOCKED: {case}: probe returned no observation record")
+    required = ("CAP", "RUN", "PHASE")
+    missing = [key for key in required if not isinstance(records.get(key), list)]
+    if missing:
+        raise BlockedError(f"BLOCKED: {case}: partial probe record missing {', '.join(missing)}")
+    if len(records["CAP"]) != 1 or [run.get("cycle") for run in records["RUN"]] != ["cold", "warm"]:
+        raise BlockedError(f"BLOCKED: {case}: partial probe record lacks one cold/warm capability observation")
+
+
+def exit_for_error(error):
+    """Keep unavailable prerequisites separate from completed-run oracle failures."""
+    return EXIT_BLOCKED if isinstance(error, (BlockedError, FileNotFoundError, subprocess.SubprocessError)) \
+        or str(error).startswith("BLOCKED:") else 1
+
+
+def execute_complete(*args):
+    """Run the probe, translating an unreadable/truncated transcript to BLOCKED."""
+    try:
+        records = execute(*args)
+    except (ValueError, json.JSONDecodeError) as error:
+        raise BlockedError(f"BLOCKED: probe observation is partial or unreadable: {error}") from error
+    require_complete_records(records, "Geargrafx READ(6)")
+    return records
+
 
 def run_selected(probe, rom, labels, symbols, cue, selected):
     """Run and fully judge one selected INDEX 01 sector on cold and warm reset."""
     variant = with_request(rom, symbols, selected["lba"], 1)
     path = cue.parent / "selected-read-not-bios.pce"
     path.write_bytes(variant)
-    records = execute(probe, path, cue, labels)
+    records = execute_complete(probe, path, cue, labels)
     expected = selected["report"]
     from cue_analysis import user_sector
     # check_success indexes by absolute LBA; only the selected element is used.
@@ -45,10 +88,10 @@ def main():
     parser.add_argument("--mode", choices=("debug", "release"), default="debug")
     args = parser.parse_args()
     output = ROOT / "build" / args.mode / "cdread-probe"
-    rom = (output / "cdread-probe-not-bios.pce").read_bytes()
-    manifest = json.loads((output / "manifest.json").read_text())
-    labels, symbols = output / "trace-labels.txt", manifest["symbols"]
-    base = ROOT / "build" / args.mode / "bios-dev/dev-only-not-compatible-syscard3.pce"
+    rom = require_file(output / "cdread-probe-not-bios.pce").read_bytes()
+    manifest = json.loads(require_file(output / "manifest.json").read_text())
+    labels, symbols = require_file(output / "trace-labels.txt"), manifest["symbols"]
+    base = require_file(ROOT / "build" / args.mode / "bios-dev/dev-only-not-compatible-syscard3.pce")
     digest = verify_cdread(rom, base.read_bytes(), symbols, manifest["code_sha256_excluding_request"])
     probe = compile_probe(output, "geargrafx_cdread_probe.cpp", "geargrafx-synthetic-track-select-probe")
     results = {}
@@ -91,7 +134,7 @@ def main():
         audio_rom = with_request(rom, symbols, 0, 1)
         audio_path = audio / "audio-read-not-bios.pce"
         audio_path.write_bytes(audio_rom)
-        audio_records = execute(probe, audio_path, audio / CUE_NAME, labels)
+        audio_records = execute_complete(probe, audio_path, audio / CUE_NAME, labels)
         expected_audio = (audio / "synthetic-boot.bin").read_bytes()[16:16 + 2048]
         for run, failure in zip(audio_records["RUN"], describe_failure(audio_records)):
             got = bytes.fromhex(run["buffer_hex"])[:2048]
@@ -115,5 +158,7 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, ValueError, RuntimeError) as error:
-        raise SystemExit(f"synthetic track selection FAIL/BLOCKED: {error}") from error
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+        status = "BLOCKED" if exit_for_error(error) == EXIT_BLOCKED else "FAIL"
+        print(f"synthetic track selection {status}: {error}", file=sys.stderr)
+        raise SystemExit(exit_for_error(error)) from error

@@ -1,12 +1,19 @@
 """Host-only CUE selection checks for the synthetic real-core track diagnostic."""
+import importlib.util
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from tools import cue_analysis
 from tools import synthetic_boot_media as media
 from tools.make_cd_image import CUE_NAME as READ_CUE_NAME, build_image
 from tools.synthetic_track_select import NoDataTrackError, select_first_mode1_track
+
+INTEGRATION = Path(__file__).resolve().parents[1] / "integration" / "geargrafx_synthetic_track_select.py"
+SPEC = importlib.util.spec_from_file_location("geargrafx_synthetic_track_select", INTEGRATION)
+track_integration = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(track_integration)
 
 
 class SyntheticTrackSelectionTests(unittest.TestCase):
@@ -46,3 +53,23 @@ class SyntheticTrackSelectionTests(unittest.TestCase):
         cue = self.write("NO_TRACK", "V1")
         with self.assertRaises(NoDataTrackError):
             select_first_mode1_track(cue)
+
+
+class SyntheticTrackSelectionClassificationTests(unittest.TestCase):
+    def test_missing_artifact_is_blocked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(track_integration.BlockedError):
+                track_integration.require_file(Path(tmp) / "missing.pce")
+        self.assertEqual(track_integration.exit_for_error(track_integration.BlockedError("BLOCKED: missing")), 3)
+
+    def test_partial_core_observation_is_blocked(self):
+        partial = {"CAP": [{}], "RUN": [{"cycle": "cold"}], "PHASE": []}
+        with self.assertRaisesRegex(track_integration.BlockedError, "partial probe record"):
+            track_integration.require_complete_records(partial, "test")
+        with mock.patch.object(track_integration, "execute", side_effect=ValueError("probe did not complete cold and warm runs")):
+            with self.assertRaisesRegex(track_integration.BlockedError, "partial or unreadable"):
+                track_integration.execute_complete("probe", "rom", "cue", "labels")
+
+    def test_completed_oracle_failure_is_fail(self):
+        self.assertEqual(track_integration.exit_for_error(ValueError("cold: RAM differs from sector data")), 1)
+        self.assertEqual(track_integration.exit_for_error(ValueError("unexpected Geargrafx behaviour")), 1)
