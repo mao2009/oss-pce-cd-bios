@@ -120,6 +120,11 @@ dev-cdread: dev-rom
 dev-cdread-integration: dev-cdread
 	$(PYTHON) tests/integration/geargrafx_cdread.py --mode "$(MODE)"
 
+.PHONY: dev-synthetic-track-select-integration
+# Opt-in #607 follow-up: host CUE MODE1 selection + guest READ(6), not a BIOS TOC/API command.
+dev-synthetic-track-select-integration: dev-cdread
+	$(PYTHON) tests/integration/geargrafx_synthetic_track_select.py --mode "$(MODE)"
+
 .PHONY: dev-cdra-compare
 # Opt-in A/B of CD read-ahead ON vs OFF on the pinned core (exp/cd-readahead-compare). Diagnostic only, not boot.
 dev-cdra-compare: dev-cdread
