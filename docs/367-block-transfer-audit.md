@@ -147,7 +147,7 @@ A/X/Y 上書きとステータスレジスタのクリアは **TransferEnd の p
 | 受入条件 | 状況 | 根拠 |
 |----------|------|------|
 | 5 命令の途中からの安全な実行中断 | **未実証（UNMEASURED）**。TII の byte 境界 single-step 観測はあるが、block-write driver は free-run であり、TIN/TDD/TIA/TAI の同等観測は未実施。拒否後も転送と TransferEnd は進む | `geargrafx_block_write_guard.py` の LIMIT 行、`473-caller-stack-experiment.md` |
-| 書込み先が $FF ページの 1 バイト転送が書込み前に拒否される（負例） | **実コアで実測済み**（`*-forbidden-armed` 5 件 + 対照 `*-forbidden-unguarded` 5 件）。armed は VDC 副作用前に拒否、no-hook RED では副作用が着地。30 ケース PASS の一部 | `tests/integration/geargrafx_block_write_guard.py` |
+| 書込み先が $FF ページの 1 バイト転送が書込み前に拒否される（負例） | **実コアで実測済み**（`*-forbidden-armed` 5 件 + 対照 `*-forbidden-unguarded` 5 件）。armed は VDC 副作用前に拒否、no-hook RED では副作用が着地。#612当時の30ケース PASS の一部（#613は40ケース） | `tests/integration/geargrafx_block_write_guard.py` |
 | 許可域（WRAM）への 1 バイト転送が届く（正例） | **実コアで実測済み**（`*-allowed-armed` 5 件）。書込みが着地 | 同上 |
 | TransferStart の A/X/Y push がスタックページ $FF で書込み前に拒否される（#459、負例） | **実コアで実測済み**（`*-stackff-armed` 5 件 + 対照 `*-stackff-unguarded` 5 件）。拒否は VDC AR / R[7] 不変で確認。ただし拒否は「安全な停止」ではない（pop による I/O 読み出し・A/X/Y 破壊・VDC ステータスレジスタのクリアも実測） | `tests/integration/geargrafx_block_write_guard.py`（`PASS issue-459` 行と `BLOCKED issue-459` 行） |
 | 拒否後の A/X/Y・S・PC・P・MPR・VDC 状態の最終状態（#459） | **実コアで実測済み**。S は釣り合う（`$04`→`$04`）、PC は終了点、P は不変、MPR 8 本は不変。A/X/Y は I/O 読み出し値で上書きされ、VDC ステータスレジスタは `$05`→`$00` | 同上（「#459 拒否後の実コア追跡」節） |
