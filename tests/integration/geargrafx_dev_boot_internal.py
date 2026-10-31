@@ -34,7 +34,7 @@ BUFFER_BASE = 0x2800        # the probe dumps $2800-$3FFF (6144 bytes)
 MARK_OFF = 0x3F00 - BUFFER_BASE
 MS_RES = 0x3F40             # cd_media_state result block for this path (src/dev_boot_internal.s)
 MS_OFF = MS_RES - BUFFER_BASE
-MS_STATE_OK, MS_UNRECOGNISED, MS_STAGE_DONE = 0x01, 0x02, 6
+MS_STATE_OK, MS_UNRECOGNISED, MS_NO_DATA, MS_STAGE_DONE = 0x01, 0x02, 0x03, 6
 ORDER = ("dev_boot_entry", "cd_media_state", "ms_done", "cd_buffer_ready", "cd_data_done", "payload_entry", "payload_done",
          "cd_payload_return", "cd_halt_ok")
 MARKER = (0xA5, 0x5A, 0xF8, 0xFF, 0x3C)  # payload writes: MARK[0], MARK[1], MARK[4], MARK[5], MARK[6]
@@ -174,6 +174,95 @@ def judge_unrecognised(records, symbols):
         rows = [row for row in records["PHASE"] if row["cycle"] == cycle and row["scsi_phase"] == PHASE_DATA_IN]
         if [(row["load_sector"], row["load_count"]) for row in rows] != [(0, 1)]:
             raise ValueError(f"{cycle}: READ(6) beyond the media check: {rows}")
+
+
+def judge_no_media(records, symbols):
+    """Geargrafx's no-media path is an expected rejection, never a boot success.
+
+    The probe's no-media loader enables CD hardware without a disc.  On the pinned
+    core, READ(6) ends GOOD without DATA_IN, which cd_media_state reports as
+    NO_DATA.  This is an emulator observation, not a real-hardware claim.
+    """
+    caps = records["CAP"]
+    if len(caps) != 1 or (caps[0].get("cdrom_hardware"), caps[0].get("cdrom_media"),
+                          caps[0].get("disc_given")) != (True, False, False):
+        raise ValueError(f"no-media capability record is not CD hardware without media: {caps}")
+    if [run["cycle"] for run in records["RUN"]] != ["cold", "warm"]:
+        raise ValueError("missing cold/warm runs")
+    for run in records["RUN"]:
+        cycle = run["cycle"]
+        if run["reason"] != "dev_media_halt" or run["pc"] != symbols["dev_media_halt"]:
+            raise ValueError(f"{cycle}: stopped with {run['reason']} at PC {run['pc']:#x}, "
+                             f"expected dev_media_halt at {symbols['dev_media_halt']:#x}")
+        check_halt_confirmation(run)
+        ms = bytes.fromhex(run["buffer_hex"])[MS_OFF:MS_OFF + 7]
+        if (ms[0], ms[1], ms[2] | ms[3] << 8, ms[4], ms[5]) != (MS_NO_DATA, MS_STAGE_DONE, 0, 0, 0):
+            raise ValueError(f"{cycle}: no-media result at {MS_RES:#x} is not NO_DATA: {ms.hex()}")
+        names = [h["name"] for h in records["HIT"] if h["cycle"] == cycle and h["name"] in
+                 ("dev_boot_entry", "cd_media_state", "ms_done", "dev_media_halt", "cd_entry",
+                  "cd_buffer_ready", "cd_data_done", "payload_entry", "payload_done", "cd_payload_return",
+                  "cd_halt_ok")]
+        if names != ["dev_boot_entry", "cd_media_state", "ms_done", "dev_media_halt"]:
+            raise ValueError(f"{cycle}: no-media label order is wrong: {names}")
+        rows = [row for row in records["PHASE"] if row["cycle"] == cycle and row["scsi_phase"] == PHASE_DATA_IN]
+        if rows:
+            raise ValueError(f"{cycle}: no-media run entered DATA_IN: {rows}")
+
+
+def no_media_mutations(records, symbols):
+    """The no-media judge must reject changes to its halt, state, and no-DATA_IN observations."""
+    mutants = {}
+    for index, cycle in enumerate(("cold", "warm")):
+        twin = copy.deepcopy(records)
+        twin["RUN"][index]["reason"] = "budget"
+        mutants[f"{cycle}_reason_budget"] = twin
+        twin = copy.deepcopy(records)
+        data = bytearray(bytes.fromhex(twin["RUN"][index]["buffer_hex"]))
+        data[MS_OFF] = MS_UNRECOGNISED
+        twin["RUN"][index]["buffer_hex"] = data.hex()
+        mutants[f"{cycle}_state_unrecognised"] = twin
+        twin = copy.deepcopy(records)
+        twin["PHASE"].append({"cycle": cycle, "scsi_phase": PHASE_DATA_IN, "load_sector": 0, "load_count": 1})
+        mutants[f"{cycle}_data_in"] = twin
+        twin = copy.deepcopy(records)
+        twin["HIT"].append({"cycle": cycle, "name": "cd_entry"})
+        mutants[f"{cycle}_payload_path_label"] = twin
+    for name, twin in mutants.items():
+        try:
+            judge_no_media(twin, symbols)
+        except ValueError:
+            continue
+        raise ValueError(f"no-media judge accepted mutated observation: {name}")
+    return sorted(mutants)
+
+
+def passed_scenarios(results):
+    """Count only successful scenarios; expected rejections and blockers are not passes."""
+    return sum(1 for result in results.values() if result.get("status") == "PASS")
+
+
+def evidence_record(manifest, code, results, primary):
+    """JSON-safe diagnostic record. Its overall run status does not promote blocked scenarios."""
+    return {
+        "scope": "DEV-ONLY internal boot path (Issue #501); NOT compatible, NOT BIOS, NOT DEV_CALLABLE",
+        "rom_sha256": manifest["rom_sha256"], "payload_sha256": manifest["payload_sha256"],
+        "payload_bytes": len(code), "exec_address": EXEC_ADDRESS, "ms_result_address": MS_RES,
+        "geargrafx_revision": DEPENDENCIES["geargrafx"]["revision"],
+        "tests": results, "primary_observations": {"RUN": primary["RUN"], "HIT": primary["HIT"],
+                                                      "PHASE": primary["PHASE"]},
+        "not_tested": ["real hardware", "a second emulator", "RAM fault injection in the copy",
+                       "partial read with bytes transferred > 0 on the media check"],
+        "status": "PASS",
+    }
+
+
+def no_media_result(records, symbols):
+    """Judge unavailable media without promoting the blocked scenario itself to a success."""
+    judge_no_media(records, symbols)
+    return {"status": "BLOCKED", "assertion_result": "PASS",
+            "stopped_at": "dev_media_halt", "media_state": "NO_DATA (0x03)",
+            "note": "Geargrafx-only no-media observation; no DATA_IN and no payload READ(6)",
+            "judge_mutants": no_media_mutations(records, symbols)}
 
 
 class Suite:
@@ -330,7 +419,11 @@ def main():
         suite.results["disc_unrecognised_at_media_check"] = {
             "status": "PASS", "stopped_at": "dev_media_halt", "media_state": "MEDIA_UNRECOGNISED (0x02)",
             "note": "LBA 0 without the synthetic magic; halted at dev_media_halt; no LBA 5 read"}
-        # (c) a payload whose marker byte is wrong: the ROM's own marker check after the return rejects it
+        # (c) no inserted media: pinned Geargrafx reports GOOD without DATA_IN; the media probe must stop at
+        # dev_media_halt with NO_DATA, without attempting the payload READ(6).  This is not real-hardware evidence.
+        records = suite.run(rom_bytes, None, budget=STEP_BUDGET)
+        suite.results["no_media_stops_at_media_check"] = no_media_result(records, symbols)
+        # (d) a payload whose marker byte is wrong: the ROM's own marker check after the return rejects it
         #     (PAYLOAD_MARKER_MISMATCH = 30 at stage 15); the success judge must also reject the observation
         wrong = bytearray(code)
         at = bytes(wrong).index(b"\xa9\x3c")  # lda #$3C (payload marker value)
@@ -338,28 +431,18 @@ def main():
         suite.failure("payload_marker_wrong", suite.rom_for(DEFAULT_LBA),
                       suite.disc("wrong-marker", DEFAULT_LBA, code=bytes(wrong)), 30, 15, SECTOR_BYTES,
                       after_payload=True, note="marker byte $3C -> $3D")
-        # (d) transfer tampered on the disc: the guest copies what it reads; the judge compares every byte
+        # (e) transfer tampered on the disc: the guest copies what it reads; the judge compares every byte
         records = suite.run(suite.rom_for(DEFAULT_LBA), suite.disc("tampered", DEFAULT_LBA, tamper=[(300, 0x01)]))
         suite.expect_reject("transfer_byte_tampered", records, DEFAULT_LBA, code, note="user byte 300 XOR 1")
-        # (e) bad header checks still stop the path before the payload (from the Issue #14/#5 set)
+        # (f) bad header checks still stop the path before the payload (from the Issue #14/#5 set)
         suite.failure("bad_magic", suite.rom, suite.disc("bad-magic", DEFAULT_LBA, tamper=[(0, 0x01)]),
                       20, 11, SECTOR_BYTES)
 
         mutation_tests(suite, primary)
 
-    evidence = {
-        "scope": "DEV-ONLY internal boot path (Issue #501); NOT compatible, NOT BIOS, NOT DEV_CALLABLE",
-        "rom_sha256": manifest["rom_sha256"], "payload_sha256": manifest["payload_sha256"],
-        "payload_bytes": len(code), "exec_address": EXEC_ADDRESS, "ms_result_address": MS_RES,
-        "geargrafx_revision": DEPENDENCIES["geargrafx"]["revision"],
-        "tests": suite.results, "primary_observations": {"RUN": primary["RUN"], "HIT": primary["HIT"],
-                                                          "PHASE": primary["PHASE"]},
-        "not_tested": ["real hardware", "a second emulator", "RAM fault injection in the copy",
-                       "partial read with bytes transferred > 0 on the media check"],
-        "status": "PASS",
-    }
+    evidence = evidence_record(manifest, code, suite.results, primary)
     (output / "dev-boot-internal-evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
-    passed = sum(1 for r in suite.results.values() if r["status"].startswith("PASS"))
+    passed = passed_scenarios(suite.results)
     print(f"PASS DEV-only internal boot via real Geargrafx: {passed} scenarios "
           f"(cold+warm, guest READ(6) x2, RAM byte compare, PC order); NOT compatible, NOT BIOS, NOT DEV_CALLABLE")
 
