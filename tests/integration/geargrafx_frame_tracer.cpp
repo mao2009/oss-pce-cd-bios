@@ -128,7 +128,7 @@ void print_event(const Event& event) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc != 7)
+    if (argc != 8)
         return 2;
     char* end = nullptr;
     long frames = std::strtol(argv[3], &end, 10);
@@ -146,6 +146,10 @@ int main(int argc, char** argv) {
     long run_hold = std::strtol(argv[6], &end, 10);
     if (!end || *end || run_hold < 0 || run_hold > frames ||
         ((run_start == 0) != (run_hold == 0)) || (run_start && run_start + run_hold - 1 > frames))
+        return 2;
+    end = nullptr;
+    long observe_ram = std::strtol(argv[7], &end, 10);
+    if (!end || *end || (observe_ram != 0 && observe_ram != 1))
         return 2;
     std::ifstream input(argv[1], std::ios::binary);
     if (!input)
@@ -187,17 +191,23 @@ int main(int argc, char** argv) {
         rams.push_back(ram);
         return true;
     };
-    if (!add_ram(FRAME_TRACER_WRAM, (unsigned)memory->GetWorkingRAMSize(), 0, memory->GetWorkingRAM(), true) ||
+    if (observe_ram &&
+        (!add_ram(FRAME_TRACER_WRAM, (unsigned)memory->GetWorkingRAMSize(), 0, memory->GetWorkingRAM(), true) ||
         !add_ram(FRAME_TRACER_CDROM_RAM, (unsigned)memory->GetCDROMRAMSize(), 0, memory->GetCDROMRAM(), false) ||
         !add_ram(FRAME_TRACER_CARD_RAM, (unsigned)memory->GetCardRAMSize(),
-                 (unsigned)memory->GetCardRAMStart(), memory->GetCardRAM(), false))
+                  (unsigned)memory->GetCardRAMStart(), memory->GetCardRAM(), false)))
         return 3;
     CpuSnap previous_cpu = cpu_snap(core, cpu, memory);
     CdSnap previous_cd = cd_snap(scsi, cdrom);
     std::printf("CAP {\"normal_frame_execution\":true,\"instruction_step\":false,\"guest_mutation\":false,"
-                  "\"mmio_reads\":false,\"scsi_event_notification\":true,\"ram_observation\":true,\"ring_capacity\":%ld,\"frames\":%ld,"
-                 "\"disc_given\":%s,\"run_start_frame\":%ld,\"run_hold_frames\":%ld,\"run_input_requested\":%s}\n",
-                 capacity, frames, have_disc ? "true" : "false", run_start, run_hold, run_start ? "true" : "false");
+                   "\"mmio_reads\":false,\"scsi_event_notification\":true,\"ram_observation\":%s,\"ram_regions\":[",
+                  observe_ram ? "true" : "false");
+    for (unsigned i = 0; i != rams.size(); ++i)
+        std::printf("%s{\"ram\":\"%s\",\"size\":%u,\"bank_first\":%u,\"bank_last\":%u}", i ? "," : "",
+                    rams[i].mapping.name, rams[i].mapping.size, rams[i].mapping.first_bank, rams[i].mapping.last_bank);
+    std::printf("],\"ring_capacity\":%ld,\"frames\":%ld,\"disc_given\":%s,\"run_start_frame\":%ld,"
+                "\"run_hold_frames\":%ld,\"run_input_requested\":%s}\n",
+                capacity, frames, have_disc ? "true" : "false", run_start, run_hold, run_start ? "true" : "false");
     TraceLogger* trace = core.GetTraceLogger();
     if (!trace->SetCapacity(kRingSize)) return 3;
     trace->SetEnabledFlags(TRACE_FLAG_SCSI);
