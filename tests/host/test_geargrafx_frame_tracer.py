@@ -118,6 +118,25 @@ class FrameTracerProtocolTests(unittest.TestCase):
                 self.assertEqual(tracer.cleanup_tracked_job_dir(job, identity), (True, "removed"))
                 self.assertFalse(job.exists())
 
+    def test_cleanup_quarantines_original_and_preserves_post_rename_replacement(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            parent = root / "frame-tracer-jobs"
+            with mock.patch.object(tracer, "OPENCODE_TEMP_ROOT", root), mock.patch.object(tracer, "JOB_PARENT", parent):
+                job, identity = tracer.make_tracked_job_dir()
+                (job / "original").write_text("remove")
+                real_rename = tracer.os.rename
+
+                def replace_after_quarantine(source, destination, **kwargs):
+                    real_rename(source, destination, **kwargs)
+                    if source == job.name:
+                        job.mkdir()
+                        (job / "replacement").write_text("keep")
+
+                with mock.patch.object(tracer.os, "rename", side_effect=replace_after_quarantine):
+                    self.assertEqual(tracer.cleanup_tracked_job_dir(job, identity), (True, "removed"))
+                self.assertEqual((job / "replacement").read_text(), "keep")
+
     def test_cleanup_failure_is_reported_not_suppressed(self):
         args = SimpleNamespace(frames=1, events=1, timeout=1, rom=Path("ignored"), cue=None)
         with mock.patch.object(tracer, "doctor", return_value={"status": "PASS"}), \

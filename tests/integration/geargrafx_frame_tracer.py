@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import secrets
 import shutil
 import stat
 import sys
@@ -124,14 +125,41 @@ def make_tracked_job_dir():
 
 
 def cleanup_tracked_job_dir(path, identity):
-    """Remove only the validated, original job and return a safe outcome code."""
+    """Atomically quarantine and remove only the validated, original job."""
     valid, reason = validate_tracked_job_dir(path, identity)
     if not valid:
         return False, reason
+    job = normalized_absolute(path)
+    parent = normalized_absolute(JOB_PARENT)
     try:
-        shutil.rmtree(path)
+        expected_parent = os.lstat(parent)
+        nofollow = os.O_NOFOLLOW
+    except (AttributeError, OSError):
+        return False, "unsafe_parent"
+    try:
+        parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | nofollow)
+    except OSError:
+        return False, "unsafe_parent"
+    try:
+        opened_parent = os.fstat(parent_fd)
+        if (opened_parent.st_dev, opened_parent.st_ino, opened_parent.st_uid) != (
+                expected_parent.st_dev, expected_parent.st_ino, expected_parent.st_uid):
+            return False, "parent_changed"
+        current = os.stat(job.name, dir_fd=parent_fd, follow_symlinks=False)
+        if (not stat.S_ISDIR(current.st_mode) or stat.S_ISLNK(current.st_mode) or
+                (current.st_dev, current.st_ino, current.st_uid) != identity):
+            return False, "identity_changed"
+        quarantine = f".pce-frame-trace-cleanup-{secrets.token_hex(16)}"
+        os.rename(job.name, quarantine, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        quarantined = os.stat(quarantine, dir_fd=parent_fd, follow_symlinks=False)
+        if (not stat.S_ISDIR(quarantined.st_mode) or stat.S_ISLNK(quarantined.st_mode) or
+                (quarantined.st_dev, quarantined.st_ino, quarantined.st_uid) != identity):
+            return False, "quarantine_identity_changed"
+        shutil.rmtree(quarantine, dir_fd=parent_fd)
     except OSError:
         return False, "remove_failed"
+    finally:
+        os.close(parent_fd)
     return True, "removed"
 
 
