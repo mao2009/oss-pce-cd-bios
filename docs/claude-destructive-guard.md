@@ -41,6 +41,15 @@
 - フック側のタイムアウト（20 秒、`.claude/settings.json`）と起動失敗は `onFailure: "block"` により拒否（Claude Code 側の仕組み。セッション内では未確認）
 - 拒否理由には種別と理由のみを表示する。コマンド文字列は出力しない（トークンらしき文字列を含んでいても漏れない）
 
+## 保護ルート（利用者固有の情報を公開ツリーに置かない）
+
+- 常に保護されるのは、一般的なルート（`/`、`/home`、`/mnt`、`/mnt/c`、`/mnt/c/users`）、リポジトリ、`.git`、そしてホーム（`expanduser("~")`、`HOME`、`USERPROFILE`）である。
+- 作業者固有の追加ルートは、公開ツリーに書かない。次のいずれかで与える。
+  - 環境変数 `OSS_PCE_GUARD_PROTECTED`（`os.pathsep` 区切り、絶対パス）
+  - 追跡しないファイル `.claude/guard-local.json`（`{"protected": ["絶対パス", ...]}`。`.gitignore` 登録済み）
+- 追加ルートは作業ツリーごとに読まれる。linked worktree では、環境変数か、そのworktreeの `guard-local.json` が必要である。
+- 相対パス、読めない設定、不正な形式は fail closed で拒否する。ホームが決まらない場合も拒否する。
+
 ## 残存リスク（必ず読むこと）
 
 - 文字列ベースの PreToolUse フックは任意のコード実行を止められない。iex と Invoke-Expression は拒否するが、任意のインタプリタ（`python3 script.py`、`node -e`、`perl -e`、`ruby`、`busybox` などの多機能バイナリ）の実行は許可される
