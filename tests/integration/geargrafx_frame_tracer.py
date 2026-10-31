@@ -1,8 +1,8 @@
 """Run the bounded, observation-only Geargrafx normal-frame tracer.
 
 This is a local diagnostic, not a BIOS boot or compatibility test.  It reuses the
-existing pinned-core probe compiler and private process runner.  Events contain
-register/state metadata and working-RAM change ranges only, never guest bytes.
+existing pinned-core probe compiler and private process runner. Events contain
+register/state metadata and RAM change counts/ranges/banks only, never guest bytes.
 """
 import argparse
 import json
@@ -23,7 +23,12 @@ from geargrafx_harness import doctor, run_job, stage_disc  # noqa: E402
 
 MAX_FRAMES = 600
 MAX_EVENTS = 256
-EVENT_KINDS = {"sample", "cd", "wram", "handoff"}
+EVENT_KINDS = {"sample", "cd", "ram", "handoff"}
+RAM_BANK_RANGES = {
+    "wram": ((0x2000, 0xf8, 0xfb), (0x8000, 0xf8, 0xfb)),
+    "cdrom_ram": ((0x10000, 0x80, 0x87),),
+    "card_ram": ((0x8000, 0x40, 0x5f), (0x30000, 0x68, 0x7f)),
+}
 
 
 def run_schedule(start_frame, hold_frames, frames):
@@ -174,7 +179,7 @@ def cleanup_tracked_job_dir(path, identity):
     return True, "removed"
 
 
-def parse_records(stdout):
+def parse_records(stdout, require_ram_observation=True):
     """Validate the small public-safe protocol emitted by the C++ tracer."""
     cap = end = None
     inputs = []
@@ -204,8 +209,11 @@ def parse_records(stdout):
         raise ValueError("missing CAP or END")
     if cap.get("normal_frame_execution") is not True or cap.get("instruction_step") is not False:
         raise ValueError("not a normal-frame trace")
+    if type(cap.get("ram_observation")) is not bool:
+        raise ValueError("invalid RAM observation capability")
     if (cap.get("guest_mutation") is not False or cap.get("mmio_reads") is not False or
-            cap.get("scsi_event_notification") is not True):
+            cap.get("scsi_event_notification") is not True or
+            (cap.get("ram_observation") is not True and require_ram_observation)):
         raise ValueError("tracer safety capability missing")
     capacity = cap.get("ring_capacity")
     if type(capacity) is not int or not 1 <= capacity <= MAX_EVENTS:
@@ -221,6 +229,16 @@ def parse_records(stdout):
             raise ValueError("RUN input API did not report press/release")
     elif inputs or start != 0 or hold != 0:
         raise ValueError("unexpected RUN input record")
+    regions = cap.get("ram_regions")
+    if type(regions) is not list:
+        raise ValueError("invalid RAM region inventory")
+    if cap.get("ram_observation") is True:
+        for region in regions:
+            if not isinstance(region, dict) or (region.get("size"), region.get("bank_first"), region.get("bank_last")) not in \
+                    RAM_BANK_RANGES.get(region.get("ram"), ()):
+                raise ValueError("unconfirmed RAM region mapping")
+    elif regions:
+        raise ValueError("RAM regions emitted while RAM observation is disabled")
     if len(events) > capacity or end.get("events") != len(events):
         raise ValueError("ring event count mismatch")
     if (type(end.get("dropped")) is not int or end["dropped"] < 0 or
@@ -235,8 +253,18 @@ def parse_records(stdout):
             raise ValueError("event lacks CPU/MPR snapshot")
         if any(type(value) is not int or not 0 <= value <= 255 for value in event["mpr"]):
             raise ValueError("invalid MPR snapshot")
-        if event["kind"] == "wram" and not all(type(event.get(key)) is int for key in ("changed", "first_wram", "last_wram")):
-            raise ValueError("invalid WRAM change event")
+        if event["kind"] == "ram":
+            if cap.get("ram_observation") is not True:
+                raise ValueError("RAM event emitted while RAM observation is disabled")
+            ram, size = event.get("ram"), event.get("size")
+            if ram not in RAM_BANK_RANGES or type(size) is not int:
+                raise ValueError("invalid RAM classification")
+            if (size, event.get("bank_first"), event.get("bank_last")) not in RAM_BANK_RANGES[ram]:
+                raise ValueError("unconfirmed RAM bank mapping")
+            if not all(type(event.get(key)) is int for key in ("changed", "first_offset", "last_offset")):
+                raise ValueError("invalid RAM change event")
+            if not 1 <= event["changed"] <= size or not 0 <= event["first_offset"] <= event["last_offset"] < size:
+                raise ValueError("invalid RAM change range")
         if event["kind"] == "cd":
             if event.get("snapshot") != "FRAME_SNAPSHOT":
                 raise ValueError("SCSI metadata lacks FRAME_SNAPSHOT label")
@@ -290,7 +318,8 @@ def trace(args):
                 return log
             cue = str(disc / staged[0])
         result = run_job([str(probe), str(rom), cue, str(args.frames), str(args.events),
-                          str(args.run_start_frame or 0), str(args.run_hold_frames or 0)], job, args.timeout)
+                           str(args.run_start_frame or 0), str(args.run_hold_frames or 0),
+                           "1" if args.observe_ram else "0"], job, args.timeout)
         if result["status"]:
             log.update(status=result["status"], reason=result["reason"], evidence="NOT_RUN")
             return log
@@ -298,7 +327,7 @@ def trace(args):
             log.update(status="FAIL", reason=f"probe exited {result['exit_code']}", evidence="NOT_RUN")
             return log
         try:
-            cap, events, end = parse_records(result["stdout"])
+            cap, events, end = parse_records(result["stdout"], require_ram_observation=args.observe_ram)
         except (ValueError, TypeError, json.JSONDecodeError) as error:
             log.update(status="FAIL", reason=f"trace rejected: {error}", evidence="NOT_RUN")
             return log
@@ -321,6 +350,9 @@ def main(argv=None):
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--run-start-frame", type=int, help="frame before which to press RUN via Geargrafx's public controller API")
     parser.add_argument("--run-hold-frames", type=int, help="number of complete frames for which RUN is held")
+    parser.add_argument("--no-observe-ram", dest="observe_ram", action="store_false",
+                        help="disable RAM snapshots; useful only for observer A/B diagnostics")
+    parser.set_defaults(observe_ram=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
