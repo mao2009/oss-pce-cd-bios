@@ -32,13 +32,29 @@ def output(events, dropped=0, trace_events_dropped=0, capacity=4, run=None):
     cap = {"normal_frame_execution": True, "instruction_step": False, "guest_mutation": False, "scsi_event_notification": True,
             "ram_observation": True, "ram_regions": [], "cpu_event_notification": True,
            "mmio_reads": False, "ring_capacity": capacity, "frames": 2, "disc_given": False,
+           "ram_delta_summary": True,
            "run_input_requested": bool(run), "run_start_frame": 1 if run else 0, "run_hold_frames": 2 if run else 0}
     end = {"frames": 2, "events": len(events), "dropped": dropped, "trace_events_dropped": trace_events_dropped,
-           "overflow": bool(dropped or trace_events_dropped)}
+           "overflow": bool(dropped or trace_events_dropped), "ram_deltas": ram_deltas()}
     inputs = [] if not run else ["INPUT " + json.dumps({"frame": 1, "action": "press", "run_pressed": True}),
                                  "INPUT " + json.dumps({"frame": 2, "action": "release", "run_pressed": False})]
     return "\n".join(["CAP " + json.dumps(cap), *inputs, *["EVENT " + json.dumps(row) for row in events],
-                      "END " + json.dumps(end)])
+                       "END " + json.dumps(end)])
+
+
+def ram_deltas():
+    return [
+        {"region": "wram", "present": True, "availability": "PRESENT", "size": 8192,
+         "bank_first": 248, "bank_last": 251, "updates": 2, "first_frame": 1, "last_frame": 2,
+         "min_offset": 1, "max_offset": 8, "max_changed": 4, "scsi_correlation": "OBSERVED",
+         "scsi_update_frames": [2]},
+        {"region": "cdrom_ram", "present": False, "availability": "ABSENT", "updates": 0,
+         "first_frame": None, "last_frame": None, "min_offset": None, "max_offset": None,
+         "max_changed": 0, "scsi_correlation": "NONE_OBSERVED", "scsi_update_frames": []},
+        {"region": "card_ram", "present": None, "availability": "UNKNOWN", "updates": 0,
+         "first_frame": None, "last_frame": None, "min_offset": None, "max_offset": None,
+         "max_changed": 0, "scsi_correlation": "UNKNOWN", "scsi_update_frames": []},
+    ]
 
 
 class FrameTracerProtocolTests(unittest.TestCase):
@@ -70,6 +86,24 @@ class FrameTracerProtocolTests(unittest.TestCase):
         row["event_bank"] = 256
         with self.assertRaisesRegex(ValueError, "region transition"):
             tracer.parse_records(output([row]))
+
+    def test_ram_summary_survives_output_ring_overflow(self):
+        _, _, end = tracer.parse_records(output([event("sample", 2)], dropped=99, capacity=1))
+        self.assertEqual(end["ram_deltas"][0]["updates"], 2)
+        self.assertEqual(end["ram_deltas"][0]["scsi_update_frames"], [2])
+
+    def test_ram_summary_distinguishes_absent_and_unknown_regions(self):
+        _, _, end = tracer.parse_records(output([event()]))
+        self.assertEqual(end["ram_deltas"][1]["availability"], "ABSENT")
+        self.assertEqual(end["ram_deltas"][2]["availability"], "UNKNOWN")
+
+    def test_refuses_invalid_ram_summary_mapping_or_unavailable_updates(self):
+        bad_mapping = output([event()]).replace('"bank_last": 251', '"bank_last": 250')
+        bad_missing = output([event()]).replace('"updates": 0, "first_frame": null', '"updates": 1, "first_frame": null', 1)
+        for text in (bad_mapping, bad_missing):
+            with self.subTest(text=text):
+                with self.assertRaises(ValueError):
+                    tracer.parse_records(text)
 
     def test_run_schedule_uses_press_hold_release_boundaries(self):
         self.assertEqual(tracer.run_schedule(2, 3, 5), ((2, "press"), (4, "release")))
@@ -197,7 +231,8 @@ class FrameTracerProtocolTests(unittest.TestCase):
     def test_ring_capacities_are_executed_in_cpp(self):
         include = Path(__file__).resolve().parents[1] / "integration"
         with tempfile.TemporaryDirectory() as temporary:
-            for stem in ("geargrafx_frame_tracer_ring_test", "geargrafx_frame_tracer_ram_test"):
+            for stem in ("geargrafx_frame_tracer_ring_test", "geargrafx_frame_tracer_ram_test",
+                         "geargrafx_frame_tracer_ram_summary_test"):
                 source = Path(__file__).with_name(stem + ".cpp")
                 binary = Path(temporary) / stem
                 subprocess.run(["c++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-I", str(include),
@@ -239,6 +274,7 @@ class FrameTracerProtocolTests(unittest.TestCase):
         self.assertIn("GetCDROMRAM()", source)
         self.assertIn("GetCardRAM()", source)
         self.assertNotIn("%02x", source)
+        self.assertIn("ram_deltas", source)
         self.assertIn("TRACE_FLAG_CPU", source)
         self.assertIn("entry.cpu.bank", source)
         self.assertNotIn("entry.cpu.opcodes", source)

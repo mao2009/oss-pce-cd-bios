@@ -43,6 +43,48 @@ def run_schedule(start_frame, hold_frames, frames):
     return ((start_frame, "press"), (start_frame + hold_frames - 1, "release"))
 
 
+def validate_ram_deltas(rows, frames):
+    """Validate cumulative, byte-free RAM metadata independently of event retention."""
+    if type(rows) is not list or {row.get("region") for row in rows if type(row) is dict} != set(RAM_BANK_RANGES) or len(rows) != 3:
+        raise ValueError("invalid RAM region summary")
+    for row in rows:
+        if type(row) is not dict:
+            raise ValueError("invalid RAM region entry")
+        region, present, availability = row.get("region"), row.get("present"), row.get("availability")
+        if availability not in {"PRESENT", "ABSENT", "UNKNOWN"}:
+            raise ValueError("invalid RAM availability")
+        if (availability == "PRESENT") != (present is True) or (availability == "ABSENT") != (present is False) or \
+                (availability == "UNKNOWN") != (present is None):
+            raise ValueError("RAM availability is not distinct")
+        updates, max_changed = row.get("updates"), row.get("max_changed")
+        if type(updates) is not int or updates < 0 or type(max_changed) is not int or max_changed < 0:
+            raise ValueError("invalid RAM update count")
+        range_keys = ("first_frame", "last_frame", "min_offset", "max_offset")
+        if availability != "PRESENT":
+            if updates or max_changed or any(row.get(key) is not None for key in range_keys):
+                raise ValueError("unavailable RAM has deltas")
+            continue
+        # Single confirmed table shared with parse_records and the C++ RAM header.
+        # This accepts the same wram layouts (0x2000 or 0x8000) as the event path.
+        if (row.get("size"), row.get("bank_first"), row.get("bank_last")) not in RAM_BANK_RANGES[region]:
+            raise ValueError("unconfirmed RAM bank mapping")
+        if updates:
+            first, last, minimum, maximum = (row.get(key) for key in range_keys)
+            if not all(type(value) is int for value in (first, last, minimum, maximum)) or not 1 <= first <= last <= frames or \
+                    not 0 <= minimum <= maximum < row["size"] or not 1 <= max_changed <= row["size"]:
+                raise ValueError("invalid RAM delta range")
+        elif max_changed or any(row.get(key) is not None for key in range_keys):
+            raise ValueError("empty RAM delta has range")
+        correlation, scsi_frames = row.get("scsi_correlation"), row.get("scsi_update_frames")
+        if correlation not in {"OBSERVED", "NONE_OBSERVED", "UNKNOWN"} or type(scsi_frames) is not list or \
+                any(type(frame) is not int or not 1 <= frame <= frames for frame in scsi_frames) or scsi_frames != sorted(set(scsi_frames)):
+            raise ValueError("invalid SCSI frame correlation")
+        if correlation == "OBSERVED" and not scsi_frames:
+            raise ValueError("observed SCSI correlation lacks frames")
+        if correlation == "NONE_OBSERVED" and scsi_frames:
+            raise ValueError("empty SCSI correlation has frames")
+
+
 def normalized_absolute(path):
     """Return a lexical, normalized absolute path without following links."""
     return Path(os.path.abspath(os.fspath(path)))
@@ -214,6 +256,7 @@ def parse_records(stdout, require_ram_observation=True):
         raise ValueError("invalid RAM observation capability")
     if (cap.get("guest_mutation") is not False or cap.get("mmio_reads") is not False or
             cap.get("scsi_event_notification") is not True or cap.get("cpu_event_notification") is not True or
+            cap.get("ram_delta_summary") is not True or
             (cap.get("ram_observation") is not True and require_ram_observation)):
         raise ValueError("tracer safety capability missing")
     capacity = cap.get("ring_capacity")
@@ -246,6 +289,7 @@ def parse_records(stdout, require_ram_observation=True):
             type(end.get("trace_events_dropped")) is not int or end["trace_events_dropped"] < 0 or
             end.get("overflow") is not (end["dropped"] > 0 or end["trace_events_dropped"] > 0)):
         raise ValueError("invalid overflow accounting")
+    validate_ram_deltas(end.get("ram_deltas"), cap["frames"])
     for event in events:
         if event.get("kind") not in EVENT_KINDS or type(event.get("frame")) is not int or not 1 <= event["frame"] <= cap["frames"]:
             raise ValueError("invalid event header")
