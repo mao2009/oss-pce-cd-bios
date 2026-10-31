@@ -66,7 +66,7 @@ public:
 
     unsigned size() const { return size_; }
     unsigned dropped() const { return dropped_; }
-    const Event& at(unsigned index) const { return events_[(begin_ + index) % kRingSize]; }
+    const Event& at(unsigned index) const { return events_[(begin_ + index) % capacity_]; }
 
 private:
     std::array<Event, kRingSize> events_{};
