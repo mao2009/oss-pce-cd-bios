@@ -324,29 +324,72 @@ def check_safeabort_armed(row, case):
         raise ValueError(f"{case}: abort hook not consulted/refused")
     if row["stack_guard_calls"] != 0 or row["guard_calls"] != 0:
         raise ValueError(f"{case}: entered TransferStart or per-byte path")
+    _final_state_ok(row, case)
+    if row["a_after"] != 0x12 or row["x_after"] != 0x34 or row["y_after"] != 0x07:
+        raise ValueError(f"{case}: refusal corrupted A/X/Y")
+    if row["before"]["mpr"] != row["after"]["mpr"]:
+        raise ValueError(f"{case}: refusal changed MPR")
+    if row["stack_wram_after"] != row["stack_wram_before"]:
+        raise ValueError(f"{case}: refusal changed stack WRAM")
     if row["vdc_ar_after"] != row["vdc_ar_before"] or row["vdc_r7_after"] != row["vdc_r7_before"] or \
             row["vdc_sr_after"] != row["vdc_sr_before"] or row["a_after"] != 0x12 or row["x_after"] != 0x34 or row["y_after"] != 0x07:
         raise ValueError(f"{case}: abort left a VDC/register side effect")
     if row["dst_after"] != 0 or row["sp_after"] != row["sp_before"]:
         raise ValueError(f"{case}: abort wrote destination or stack")
+    if row["vdc_read_buffer_after"] != row["vdc_read_buffer_before"]:
+        raise ValueError(f"{case}: abort changed VDC read buffer")
     return "whole_instruction_refused_before_transferstart"
 
-def check_safeabort_allowed(row, case):
-    """Non-null callback returns true: must be identical to stackff null-hook control."""
+def mutation_safeabort_armed(row, case):
+    mutations = (
+        ("callback_not_called", {"abort_calls": 0}),
+        ("callback_allowed", {"abort_refusals": 0}),
+        ("transferstart_entered", {"stack_guard_calls": 1}),
+        ("per_byte_path_entered", {"guard_calls": 1}),
+        ("P_corruption", {"p_after": row["p_before"] ^ 1}),
+        ("SP_corruption", {"sp_after": row["sp_after"] - 1}),
+        ("PC_mismatch", {"stop_pc": row["stop_pc"] - 1}),
+        ("A_corruption", {"a_after": row["a_after"] ^ 1}),
+        ("MPR_change", {"after": {"mpr": [0] * 8}}),
+        ("destination_write", {"dst_after": ALLOWED_VALUE}),
+        ("stack_WRAM_write", {"stack_wram_after": [1, 0, 0]}),
+        ("VDC_status_clear", {"vdc_sr_after": row["vdc_sr_before"] ^ 1}),
+    )
+    for name, changes in mutations:
+        broken = copy.deepcopy(row); broken.update(changes)
+        try: check_safeabort_armed(broken, case)
+        except ValueError: continue
+        raise ValueError(f"mutation test FAILED: {case} {name}")
+
+def check_safeabort_allowed(row, case, null_hook_control):
+    """Non-null allowing callback must preserve the null-hook baseline exactly."""
     _common(row, case)
     if row.get("armed") is not False or row.get("abort_calls") != 1 or row.get("abort_refusals") != 0:
         raise ValueError(f"{case}: allowing abort callback was not called/allowed")
-    # The setup is deliberately identical to stackff-unguarded: TransferStart
-    # pushes land in VDC and TransferEnd pops its registers.
+    if type(null_hook_control) is not dict:
+        raise ValueError(f"{case}: null-hook positive-control observation missing")
+    # Compare independent real-core rows from identical guest/MPR/register setup.
+    compare_fields = ("opcode", "dest", "src_value", "stop_pc", "sp_before", "sp_after",
+                      "p_before", "p_after", "a_after", "x_after", "y_after",
+                      "vdc_ar_before", "vdc_ar_after", "vdc_r_before", "vdc_r_after",
+                      "vdc_r7_before", "vdc_r7_after", "vdc_sr_before", "vdc_sr_after",
+                      "vdc_read_buffer_before", "vdc_read_buffer_after", "dst_before", "dst_after",
+                      "src_after", "stack_wram_before", "stack_wram_after", "before", "after")
+    for field in compare_fields:
+        if row.get(field) != null_hook_control.get(field):
+            raise ValueError(f"{case}: allowing callback changed {field} from null-hook control")
     verdict = check_stackff_unguarded(row, case)
     if row["dst_after"] != ALLOWED_VALUE:
         raise ValueError(f"{case}: allowing callback skipped the normal transfer")
     return verdict
 
-def mutation_safeabort_allowed(row, case):
-    for key, value in (("abort_calls", 0), ("abort_refusals", 1), ("dst_after", 0), ("vdc_ar_after", 0)):
+def mutation_safeabort_allowed(row, case, null_hook_control):
+    mutations = (("abort_calls", 0), ("abort_refusals", 1), ("dst_after", 0),
+                 ("vdc_ar_after", 0), ("sp_after", row["sp_after"] - 1),
+                 ("a_after", row["a_after"] ^ 1), ("stack_wram_after", [1, 0, 0]))
+    for key, value in mutations:
         broken = copy.deepcopy(row); broken[key] = value
-        try: check_safeabort_allowed(broken, case)
+        try: check_safeabort_allowed(broken, case, null_hook_control)
         except ValueError: continue
         raise ValueError(f"mutation test FAILED: {case} {key}")
 
@@ -458,8 +501,10 @@ def main():
         bios, cue = synthetic_media(directory)
         probe = build_probes(directory)
         evidence = []
+        null_hook_controls = {}
         for case in _cases():
             row = run_case(probe, bios, cue, case)
+            op_name = case.split("-")[0]
             variant = case.split("-")[1]
             if variant == "forbidden" and case.endswith("-armed"):
                 verdict = check_forbidden_armed(row, case)
@@ -474,12 +519,16 @@ def main():
                 mutation_test(row, case)
             elif variant == "stackff":
                 verdict = check_stackff_unguarded(row, case)
+                null_hook_controls[op_name] = row
             else:
-                verdict = (check_safeabort_armed(row, case) if case.endswith("-armed") else check_safeabort_allowed(row, case)) if variant == "safeabort" else check_stackwram_armed(row, case)
+                verdict = (check_safeabort_armed(row, case) if case.endswith("-armed") else
+                           check_safeabort_allowed(row, case, null_hook_controls.get(op_name))) if variant == "safeabort" else check_stackwram_armed(row, case)
                 if variant != "safeabort":
                     mutation_test(row, case)
-                elif not case.endswith("-armed"):
-                    mutation_safeabort_allowed(row, case)
+                elif case.endswith("-armed"):
+                    mutation_safeabort_armed(row, case)
+                else:
+                    mutation_safeabort_allowed(row, case, null_hook_controls.get(op_name))
             evidence.append((case, verdict, row))
             print(f"PASS {case}: {verdict}")
     for case, verdict, row in evidence:
