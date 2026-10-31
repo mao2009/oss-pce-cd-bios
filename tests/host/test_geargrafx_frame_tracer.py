@@ -27,7 +27,7 @@ def event(kind="sample", frame=1):
 
 def output(events, dropped=0, scsi_events_dropped=0, capacity=4, run=None):
     cap = {"normal_frame_execution": True, "instruction_step": False, "guest_mutation": False, "scsi_event_notification": True,
-           "ram_observation": True,
+            "ram_observation": True, "ram_regions": [],
            "mmio_reads": False, "ring_capacity": capacity, "frames": 2, "disc_given": False,
            "run_input_requested": bool(run), "run_start_frame": 1 if run else 0, "run_hold_frames": 2 if run else 0}
     end = {"frames": 2, "events": len(events), "dropped": dropped, "scsi_events_dropped": scsi_events_dropped,
@@ -71,6 +71,12 @@ class FrameTracerProtocolTests(unittest.TestCase):
         row["snapshot"] = "EVENT_TIME"
         with self.assertRaisesRegex(ValueError, "FRAME_SNAPSHOT"):
             tracer.parse_records(output([row]))
+
+    def test_accepts_observer_off_without_ram_events(self):
+        text = output([event()]).replace('"ram_observation": true', '"ram_observation": false')
+        cap, events, _ = tracer.parse_records(text, require_ram_observation=False)
+        self.assertFalse(cap["ram_observation"])
+        self.assertEqual([row["kind"] for row in events], ["sample"])
 
     def test_accepts_only_confirmed_ram_mappings_and_metadata_ranges(self):
         for ram, size, first, last in (("wram", 8192, 248, 251), ("cdrom_ram", 65536, 128, 135),
@@ -164,7 +170,7 @@ class FrameTracerProtocolTests(unittest.TestCase):
 
     def test_cleanup_failure_is_reported_not_suppressed(self):
         args = SimpleNamespace(frames=1, events=1, timeout=1, rom=Path("ignored"), cue=None,
-                               run_start_frame=None, run_hold_frames=None)
+                                run_start_frame=None, run_hold_frames=None, observe_ram=True)
         with mock.patch.object(tracer, "doctor", return_value={"status": "PASS"}), \
                 mock.patch.object(tracer, "make_tracked_job_dir", return_value=(Path("/safe/job"), (1, 2, 3))), \
                 mock.patch.object(tracer, "compile_probe", side_effect=ValueError("blocked")), \
