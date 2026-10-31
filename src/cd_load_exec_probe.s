@@ -7,7 +7,7 @@
 .setcpu "huc6280"
 .segment "BOOT"
 .export cd_entry, cd_stack_ready, cd_buffer_ready, cd_command_sent, cd_data_done
-.export cd_halt_ok, cd_halt_fail, cd_unexpected_interrupt, cd_cdb, cd_select, cd_payload_return
+.export cd_halt_ok, cd_halt_fail, cd_unexpected_interrupt, cd_cdb, cd_select, cd_payload_return, cd_set_read_lba
 
 ; --- CD-ROM2 I/O (MPR0 = $FF maps hardware at $0000-$1FFF) ---
 CD_STATUS = $1800
@@ -34,6 +34,8 @@ wmask  = $08
 want   = $09
 last   = $0A
 alt    = $0B
+cdb    = $27E0           ; writable six-byte READ(6) CDB in work RAM
+cdb_selected = $27E6     ; nonzero only between cd_set_read_lba and cd_entry
 RES    = $2300           ; result block: [0] code, [1] stage, [2:3] bytes, [4] SCSI status, [5] msg, [6] last bus
 MARK   = $3F00           ; payload marker (src/cd_load_exec_payload.s); inside the probe's $2800-$3FFF RAM dump
 RETVEC = $3F10           ; payload returns with jmp (RETVEC)
@@ -77,6 +79,18 @@ cd_stack_ready:
     sta alt
     lda #$00
     sta CD_ACK
+    lda cdb_selected
+    bne @cdb_ready
+    ldy #0
+@copy_cdb:
+    lda cd_cdb,y             ; ROM template permits host-built diagnostic variants
+    sta cdb,y
+    iny
+    cpy #6
+    bne @copy_cdb
+@cdb_ready:
+    lda #0
+    sta cdb_selected
     lda #<BUF                ; sentinel-fill the staging sector so stale RAM cannot pass
     sta ptr
     lda #>BUF
@@ -98,7 +112,7 @@ cd_stack_ready:
 cd_buffer_ready:
     lda #1
     sta RES+1
-    lda cd_cdb+4             ; this experiment reads exactly one sector
+    lda cdb+4                ; this experiment reads exactly one sector
     cmp #1
     bne @bad_request
     lda #0
@@ -153,7 +167,7 @@ cd_select:
     lda #3
     jmp fail
 @put:
-    lda cd_cdb,y
+    lda cdb,y
     sta CD_DATA
     jsr ack_byte
     bcc @next
@@ -353,6 +367,29 @@ fail:
     jsr store_counts
 cd_halt_fail:
     bra cd_halt_fail
+
+; Set the READ(6) LBA used by this diagnostic. A/X/Y are respectively the low,
+; middle and high (low five bits) bytes.  Callers remain responsible for the
+; one-sector contract checked at cd_buffer_ready.  This is an internal helper,
+; not a System Card CD_READ entry point.
+cd_set_read_lba:
+    pha
+    phy
+    ldy #0
+@template:
+    lda cd_cdb,y
+    sta cdb,y
+    iny
+    cpy #6
+    bne @template
+    ply
+    pla
+    sta cdb+3
+    stx cdb+2
+    sty cdb+1
+    lda #1
+    sta cdb_selected
+    rts
 
 store_counts:
     lda last

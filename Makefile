@@ -215,8 +215,9 @@ routine-real-core:
 # Explicit opt-in only: 256 KiB DEV experiment with original reset/init code and project-owned synthetic CD flow.
 # NOT compatible with any System Card, NOT a BIOS ABI, and never a release artifact.
 experimental-bios-boot: dev-rom
-	$(PYTHON) tools/build_experimental_bios_boot.py --mode "$(MODE)"
+	@[ -n "$(EXPERIMENTAL_CUE)" ] || { echo 'BLOCKED: EXPERIMENTAL_CUE must name the exact synthetic CUE to mount' >&2; exit 1; }
+	$(PYTHON) tools/build_experimental_bios_boot.py --mode "$(MODE)" --cue "$(EXPERIMENTAL_CUE)"
 
-# Pinned Geargrafx real-core check using the repository's generated synthetic fixture; no private media is read.
-experimental-bios-boot-integration: experimental-bios-boot
-	$(PYTHON) tests/integration/geargrafx_dev_boot_internal.py --mode "$(MODE)" --output "build/$(MODE)/experimental-bios-boot" --rom-name "experimental-dev-only-not-compatible-syscard-sized.pce"
+# Pinned Geargrafx synthetic CUE check; host selects INDEX 01, guest validates the record (not TOC/API).
+experimental-bios-boot-integration: dev-rom
+	$(PYTHON) tests/integration/geargrafx_experimental_track_contract.py --mode "$(MODE)"
