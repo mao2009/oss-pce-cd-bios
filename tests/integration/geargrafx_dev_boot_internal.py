@@ -199,8 +199,9 @@ def judge_no_media(records, symbols):
         if (ms[0], ms[1], ms[2] | ms[3] << 8, ms[4], ms[5]) != (MS_NO_DATA, MS_STAGE_DONE, 0, 0, 0):
             raise ValueError(f"{cycle}: no-media result at {MS_RES:#x} is not NO_DATA: {ms.hex()}")
         names = [h["name"] for h in records["HIT"] if h["cycle"] == cycle and h["name"] in
-                 ("dev_boot_entry", "cd_media_state", "ms_done", "dev_media_halt", "cd_buffer_ready",
-                  "payload_entry", "cd_halt_ok")]
+                 ("dev_boot_entry", "cd_media_state", "ms_done", "dev_media_halt", "cd_entry",
+                  "cd_buffer_ready", "cd_data_done", "payload_entry", "payload_done", "cd_payload_return",
+                  "cd_halt_ok")]
         if names != ["dev_boot_entry", "cd_media_state", "ms_done", "dev_media_halt"]:
             raise ValueError(f"{cycle}: no-media label order is wrong: {names}")
         rows = [row for row in records["PHASE"] if row["cycle"] == cycle and row["scsi_phase"] == PHASE_DATA_IN]
@@ -223,6 +224,9 @@ def no_media_mutations(records, symbols):
         twin = copy.deepcopy(records)
         twin["PHASE"].append({"cycle": cycle, "scsi_phase": PHASE_DATA_IN, "load_sector": 0, "load_count": 1})
         mutants[f"{cycle}_data_in"] = twin
+        twin = copy.deepcopy(records)
+        twin["HIT"].append({"cycle": cycle, "name": "cd_entry"})
+        mutants[f"{cycle}_payload_path_label"] = twin
     for name, twin in mutants.items():
         try:
             judge_no_media(twin, symbols)
