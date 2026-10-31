@@ -189,6 +189,7 @@ int main(int argc, char** argv) {
     trace->SetEventFilter(TRACE_SCSI, TRACE_SCSI_FILTER_COMMANDS | TRACE_SCSI_FILTER_PHASES | TRACE_SCSI_FILTER_RESPONSES);
     trace->Reset();
     u64 observed_scsi = 0;
+    u64 dropped_scsi = 0;
 
     for (unsigned number = 1; number <= (unsigned)frames; ++number) {
         int samples = 0;
@@ -203,7 +204,10 @@ int main(int argc, char** argv) {
         // changes that begin and end within one video frame.
         const u64 total = trace->GetTotalLogged();
         const u64 first_event = total > kRingSize ? total - kRingSize : 0;
-        if (observed_scsi < first_event) observed_scsi = first_event;
+        if (observed_scsi < first_event) {
+            dropped_scsi += first_event - observed_scsi;
+            observed_scsi = first_event;
+        }
         for (; observed_scsi < total; ++observed_scsi) {
             const GG_Trace_Entry& entry = trace->GetEntry((unsigned)(observed_scsi - first_event));
             if (entry.type == TRACE_SCSI)
@@ -232,8 +236,9 @@ int main(int argc, char** argv) {
     }
     for (unsigned index = 0; index != ring.size(); ++index)
         print_event(ring.at(index));
-    std::printf("END {\"frames\":%ld,\"events\":%u,\"dropped\":%u,\"overflow\":%s}", frames,
-                ring.size(), ring.dropped(), ring.dropped() ? "true" : "false");
+    std::printf("END {\"frames\":%ld,\"events\":%u,\"dropped\":%u,\"scsi_events_dropped\":%llu,\"overflow\":%s}", frames,
+                ring.size(), ring.dropped(), (unsigned long long)dropped_scsi,
+                (ring.dropped() || dropped_scsi) ? "true" : "false");
     std::printf("\n");
     return 0;
 }

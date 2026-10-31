@@ -19,10 +19,11 @@ def event(kind="sample", frame=1):
     return row
 
 
-def output(events, dropped=0, capacity=4):
+def output(events, dropped=0, scsi_events_dropped=0, capacity=4):
     cap = {"normal_frame_execution": True, "instruction_step": False, "guest_mutation": False, "scsi_event_notification": True,
            "mmio_reads": False, "ring_capacity": capacity, "frames": 2, "disc_given": False}
-    end = {"frames": 2, "events": len(events), "dropped": dropped, "overflow": bool(dropped)}
+    end = {"frames": 2, "events": len(events), "dropped": dropped, "scsi_events_dropped": scsi_events_dropped,
+           "overflow": bool(dropped or scsi_events_dropped)}
     return "\n".join(["CAP " + json.dumps(cap), *["EVENT " + json.dumps(row) for row in events],
                       "END " + json.dumps(end)])
 
@@ -41,6 +42,11 @@ class FrameTracerProtocolTests(unittest.TestCase):
         self.assertEqual(len(parsed), 2)
         self.assertEqual(end["dropped"], 7)
         self.assertTrue(end["overflow"])
+
+    def test_core_scsi_event_loss_is_explicit_overflow(self):
+        _, _, end = tracer.parse_records(output([event("cd")], scsi_events_dropped=3))
+        self.assertTrue(end["overflow"])
+        self.assertEqual(end["scsi_events_dropped"], 3)
 
     def test_refuses_mutating_or_stepped_protocols_and_bad_ring_counts(self):
         cases = [

@@ -56,7 +56,9 @@ def parse_records(stdout):
         raise ValueError("invalid ring capacity")
     if len(events) > capacity or end.get("events") != len(events):
         raise ValueError("ring event count mismatch")
-    if type(end.get("dropped")) is not int or end["dropped"] < 0 or end.get("overflow") is not (end["dropped"] > 0):
+    if (type(end.get("dropped")) is not int or end["dropped"] < 0 or
+            type(end.get("scsi_events_dropped")) is not int or end["scsi_events_dropped"] < 0 or
+            end.get("overflow") is not (end["dropped"] > 0 or end["scsi_events_dropped"] > 0)):
         raise ValueError("invalid overflow accounting")
     for event in events:
         if event.get("kind") not in EVENT_KINDS or type(event.get("frame")) is not int or not 1 <= event["frame"] <= cap["frames"]:
