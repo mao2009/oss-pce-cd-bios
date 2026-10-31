@@ -1,8 +1,8 @@
 """Run the bounded, observation-only Geargrafx normal-frame tracer.
 
 This is a local diagnostic, not a BIOS boot or compatibility test.  It reuses the
-existing pinned-core probe compiler and private process runner.  Events contain
-register/state metadata and working-RAM change ranges only, never guest bytes.
+existing pinned-core probe compiler and private process runner. Events contain
+register/state metadata and RAM change counts/ranges/banks only, never guest bytes.
 """
 import argparse
 import json
@@ -23,7 +23,12 @@ from geargrafx_harness import doctor, run_job, stage_disc  # noqa: E402
 
 MAX_FRAMES = 600
 MAX_EVENTS = 256
-EVENT_KINDS = {"sample", "cd", "wram", "handoff"}
+EVENT_KINDS = {"sample", "cd", "ram", "handoff"}
+RAM_BANK_RANGES = {
+    "wram": ((0x2000, 0xf8, 0xfb), (0x8000, 0xf8, 0xfb)),
+    "cdrom_ram": ((0x10000, 0x80, 0x87),),
+    "card_ram": ((0x8000, 0x40, 0x5f), (0x30000, 0x68, 0x7f)),
+}
 
 
 def run_schedule(start_frame, hold_frames, frames):
@@ -205,7 +210,7 @@ def parse_records(stdout):
     if cap.get("normal_frame_execution") is not True or cap.get("instruction_step") is not False:
         raise ValueError("not a normal-frame trace")
     if (cap.get("guest_mutation") is not False or cap.get("mmio_reads") is not False or
-            cap.get("scsi_event_notification") is not True):
+            cap.get("scsi_event_notification") is not True or cap.get("ram_observation") is not True):
         raise ValueError("tracer safety capability missing")
     capacity = cap.get("ring_capacity")
     if type(capacity) is not int or not 1 <= capacity <= MAX_EVENTS:
@@ -235,8 +240,16 @@ def parse_records(stdout):
             raise ValueError("event lacks CPU/MPR snapshot")
         if any(type(value) is not int or not 0 <= value <= 255 for value in event["mpr"]):
             raise ValueError("invalid MPR snapshot")
-        if event["kind"] == "wram" and not all(type(event.get(key)) is int for key in ("changed", "first_wram", "last_wram")):
-            raise ValueError("invalid WRAM change event")
+        if event["kind"] == "ram":
+            ram, size = event.get("ram"), event.get("size")
+            if ram not in RAM_BANK_RANGES or type(size) is not int:
+                raise ValueError("invalid RAM classification")
+            if (size, event.get("bank_first"), event.get("bank_last")) not in RAM_BANK_RANGES[ram]:
+                raise ValueError("unconfirmed RAM bank mapping")
+            if not all(type(event.get(key)) is int for key in ("changed", "first_offset", "last_offset")):
+                raise ValueError("invalid RAM change event")
+            if not 1 <= event["changed"] <= size or not 0 <= event["first_offset"] <= event["last_offset"] < size:
+                raise ValueError("invalid RAM change range")
         if event["kind"] == "cd":
             if event.get("snapshot") != "FRAME_SNAPSHOT":
                 raise ValueError("SCSI metadata lacks FRAME_SNAPSHOT label")
