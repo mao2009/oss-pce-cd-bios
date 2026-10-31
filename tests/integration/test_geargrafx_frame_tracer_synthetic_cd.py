@@ -35,7 +35,7 @@ class FrameTracerSyntheticCdRealCoreTests(unittest.TestCase):
         cls.rom = build_dev_boot_internal(base, ROOT / "build/debug/dev-boot-internal", "debug")
 
     def test_cumulative_deltas_survive_event_overflow_on_synthetic_cd(self):
-        with tracer.tempfile.TemporaryDirectory(prefix="frame-synthetic-cd-", dir="/tmp/opencode") as temporary:
+        with tracer.tempfile.TemporaryDirectory(prefix="frame-synthetic-cd-") as temporary:
             media = Path(temporary) / "media"
             build_image(media)
             result = tracer.trace(SimpleNamespace(
