@@ -392,15 +392,23 @@ def check_safeabort_allowed(row, case, null_hook_control):
     return verdict
 
 def mutation_safeabort_allowed(row, case, null_hook_control):
-    mutations = (("abort_calls", 0), ("abort_refusals", 1), ("dst_after", 0),
-                 ("vdc_ar_after", 0), ("sp_after", row["sp_after"] - 1),
-                 ("a_after", row["a_after"] ^ 1), ("x_after", row["x_after"] ^ 1),
-                 ("y_after", row["y_after"] ^ 1), ("stack_wram_after", [1, 0, 0]),
-                 ("guard_calls", 1), ("guard_refusals", 1),
-                 ("vdc_r7_after", row["vdc_r7_after"] ^ 1),
-                 ("vdc_sr_after", row["vdc_sr_after"] ^ 1),
-                 ("vdc_read_buffer_after", row["vdc_read_buffer_after"] ^ 1))
-    for key, value in mutations:
+    fields = ("opcode", "dest", "src_value", "stop_pc", "sp_before", "sp_after",
+              "p_before", "p_after", "a_after", "x_after", "y_after",
+              "vdc_ar_before", "vdc_ar_after", "vdc_r_before", "vdc_r_after",
+              "vdc_r7_before", "vdc_r7_after", "vdc_sr_before", "vdc_sr_after",
+              "vdc_read_buffer_before", "vdc_read_buffer_after", "dst_before", "dst_after",
+              "src_after", "stack_wram_before", "stack_wram_after", "guard_calls", "guard_refusals",
+              "stack_guard_calls", "stack_guard_refusals", "before", "after")
+    for key in fields:
+        value = copy.deepcopy(row[key])
+        if type(value) is int:
+            value += 1
+        elif type(value) is list:
+            value[0] = (value[0] + 1) if type(value[0]) is int else value[0]
+        elif type(value) is dict and type(value.get("mpr")) is list:
+            value["mpr"][0] ^= 1
+        else:
+            raise ValueError(f"{case}: unsupported mutation value for {key}")
         broken = copy.deepcopy(row); broken[key] = value
         try: check_safeabort_allowed(broken, case, null_hook_control)
         except ValueError: continue
