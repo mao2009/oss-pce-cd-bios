@@ -57,7 +57,10 @@ def run(mode):
     folder = ROOT / "build" / mode / "cdread-probe"
     rom, labels = folder / "cdread-probe-not-bios.pce", folder / "trace-labels.txt"
     if not rom.is_file() or not labels.is_file():
-        raise ValueError("run make dev-cdread first")
+        missing = [name for path, name in ((rom, "ROM"), (labels, "trace labels")) if not path.is_file()]
+        raise IntegrationBlocked(
+            f"missing generated CD-read artifacts ({', '.join(missing)}); run make dev-cdread first"
+        )
     with tempfile.TemporaryDirectory(prefix="pce-frame-tracer-cd-", dir="/tmp/opencode") as temporary:
         temporary = Path(temporary)
         manifest = build_image(temporary / "disc")

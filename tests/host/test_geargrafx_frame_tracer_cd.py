@@ -4,6 +4,7 @@ from io import StringIO
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -22,6 +23,29 @@ class FrameTracerCdResultTests(unittest.TestCase):
         code, stderr = self.invoke(bridge.IntegrationBlocked("RAM observer ON: doctor prerequisites"))
         self.assertEqual(code, 3)
         self.assertEqual(stderr, "BLOCKED: frame-tracer CD integration: RAM observer ON: doctor prerequisites\n")
+
+    def test_direct_invocation_with_missing_generated_artifacts_is_blocked_exit_three(self):
+        """Do not require `make dev-cdread` just to classify this direct diagnostic call."""
+        stderr = StringIO()
+        with tempfile.TemporaryDirectory() as temporary, \
+                mock.patch.object(bridge, "ROOT", Path(temporary)), redirect_stderr(stderr):
+            code = bridge.main(["--mode", "debug"])
+        self.assertEqual(code, 3)
+        self.assertEqual(
+            stderr.getvalue(),
+            "BLOCKED: frame-tracer CD integration: missing generated CD-read artifacts (ROM, trace labels); "
+            "run make dev-cdread first\n",
+        )
+
+    def test_direct_run_with_one_missing_generated_artifact_is_blocked(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            folder = root / "build/debug/cdread-probe"
+            folder.mkdir(parents=True)
+            (folder / "cdread-probe-not-bios.pce").write_bytes(b"synthetic test marker")
+            with mock.patch.object(bridge, "ROOT", root):
+                with self.assertRaisesRegex(bridge.IntegrationBlocked, r"\(trace labels\)"):
+                    bridge.run("debug")
 
     def test_compile_probe_blocker_is_structured_blocked_exit_three(self):
         with mock.patch.object(bridge, "compile_probe", side_effect=ValueError("BLOCKED: missing g++")):
