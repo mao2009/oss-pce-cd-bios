@@ -9,7 +9,7 @@
 
 - 5 命令はいずれも **1 命令内で length 回のバイト書込みを行う**（複数書込み）。静的な範囲検査では、書込み先が許可域外に届くかを命令実行前に判定できる（`tools/block_xfer_audit.py`）。
 - **実コアでの書込み前遮断は実測対象になった（旧記述の NOT_RUN は置き換え）。** `tests/integration/geargrafx_block_write_guard.py`（`make block-write-guard`、`make integration` に含まれる）が pinned Geargrafx（b49ae82）と検証専用パッチ付きの実コアで、TII/TIN/TIA/TDD/TAI の 1 バイト転送を合成メディアで実行する。期待 PASS は 30 ケース（各命令 6 種: 拒否・フックなし対照・許可 の 3 種に、#459 のスタック push 用の 3 種を加えたもの）。
-- **命令内の 1-byte 境界は single-step で観測できるが、命令全体の安全な中断は未実証（UNMEASURED）。** driver は書込み前拒否と拒否後の継続・副作用を測る。hook が拒否しても転送状態と TransferEnd は進むため、安全停止の証拠ではない。
+- **TII の命令内 1-byte 境界だけは別の single-step 実験で観測済みだが、TIN/TDD/TIA/TAI の同等観測と、命令全体の安全な中断は未実証（UNMEASURED）。** block-write driver は書込み前拒否と拒否後の継続・副作用を free-run で測る。hook が拒否しても転送状態と TransferEnd は進むため、安全停止の証拠ではない。
 - 試験の拒否方針（書込み先が $FF ページの場合に拒否）は probe の中に書かれており、本番ゲートの証拠ではない。driver は「コアのフック点が書込み前に拒否できる」ことだけを示す。
 - **#459（TransferStart の A/X/Y push）:** 旧状態では、スタックページ（MPR1）を $FF にマップすると A/X/Y の push が VDC に着地した（実測: AR 0→7、R[7] 0→564）。検証専用パッチに TransferStart 用の書込み前フックを追加し、スタックページが $FF のとき push だけを拒否する。拒否した場合、push は書かれず S は 3 だけ動く（TransferEnd の pop と釣り合う）。**適用範囲は TransferStart の push のみ。** PHA/PHP/JSR/IRQ などの他の push、TransferEnd の pop（$FF ページからの読出し。ガード対象外）、その他の書込みは対象外。拒否方針は probe 内に書かれたテスト方針で、本番ゲートの証拠ではない。
 - **#459 の拒否経路は「安全に停止する経路」ではない（実コアで実測）。** TransferEnd は常に 3 バイトを pop する。push を拒否するとその 3 スロットは一度も書かれていないため、スタックページが $FF のときは $2102/$2103/$2104（VDC のデータ読み出しバッファ LSB/MSB とステータスレジスタ）を**読み出す**ことになる。実測値は下記の「#459 拒否後の実コア追跡」節。A/X/Y は読み出した値で上書きされ、$2104 の読み出しは VDC ステータスレジスタを**クリア**する（IRQ1 解除）。ブロック転送本体も実行される（転送先バイトは着地する）。したがって push の拒否だけでは安全性を証明できず、**本番用安全機構が必要**（スタックページを $FF にマップしない、または TransferEnd の pop まで覆うゲート）。**検証専用パッチは本番用安全機構ではない。** ゲートは BLOCKED のまま。
@@ -36,8 +36,8 @@ TII=`$73`、TIN=`$D3`、TDD=`$C3`、TIA=`$E3`、TAI=`$F3` で、各 operand は
 TransferStart は A/X/Y を stack に push し、各後続 `RunInstruction` は
 `m_transfer_state==2` のとき一 byte だけ `Memory::Write(dest, Memory::Read(src,true),true)`
 を行い、PC を 1 byte decrement して同じ block opcode を再実行する。完了時だけ
-TransferEnd が stack pop と PC+6 を行う。従って single-step は block instruction
-全体の原子的停止ではなく、命令内の各 byte state の間の境界を観測できるだけである。
+TransferEnd が stack pop と PC+6 を行う。TII の別実験は命令内 byte state 間の境界を観測したが、
+この source 読みと block-write driver は5命令すべての同等な single-step 実測を意味しない。
 
 | 命令 | opcode | source/destination 更新 |
 |---|---:|---|
@@ -130,7 +130,7 @@ A/X/Y 上書きとステータスレジスタのクリアは **TransferEnd の p
 - スタックページが $FF 以外（例: $F8）のときの TransferStart push 拒否（ガードは $FF ページのときだけ拒否する）。
 - TransferStart 以外の push（PHA/PHP/JSR/IRQ）、および TransferEnd の pop 自体への遮断（pop は対象外）。
 - 割込み（NMI/IRQ1）が処理中に上記の拒否が起きた場合の挙動、DEC 等の他命令との併用。
-- 命令途中から副作用なく安全に中断できるかは**未実証（UNMEASURED）**。byte 境界の single-step 観測と 1-byte 書込み前拒否は実測済みだが、命令全体の安全な停止は実証していない。
+- 命令途中から副作用なく安全に中断できるかは**未実証（UNMEASURED）**。TII の byte 境界 single-step 観測と、5命令の 1-byte 書込み前拒否は実測済みだが、TIN/TDD/TIA/TAI の同等観測および命令全体の安全な停止は実証していない。
 - デバイス起点の RAM 書込み（#419 の列挙 9 行のうち判定未了 2 行）の実コア実測。
 - 本番 ROM、ROM への書込み、CD 起動、実ゲーム、純正 BIOS との互換性。いずれも対象外。
 
@@ -146,7 +146,7 @@ A/X/Y 上書きとステータスレジスタのクリアは **TransferEnd の p
 
 | 受入条件 | 状況 | 根拠 |
 |----------|------|------|
-| 5 命令の途中からの安全な実行中断 | **未実証（UNMEASURED）**。single-step の byte 境界観測と書込み前拒否は確認したが、拒否後も転送と TransferEnd は進む | `geargrafx_block_write_guard.py` の LIMIT 行と実コア観測 |
+| 5 命令の途中からの安全な実行中断 | **未実証（UNMEASURED）**。TII の byte 境界 single-step 観測はあるが、block-write driver は free-run であり、TIN/TDD/TIA/TAI の同等観測は未実施。拒否後も転送と TransferEnd は進む | `geargrafx_block_write_guard.py` の LIMIT 行、`473-caller-stack-experiment.md` |
 | 書込み先が $FF ページの 1 バイト転送が書込み前に拒否される（負例） | **実コアで実測済み**（`*-forbidden-armed` 5 件 + 対照 `*-forbidden-unguarded` 5 件）。armed は VDC 副作用前に拒否、no-hook RED では副作用が着地。30 ケース PASS の一部 | `tests/integration/geargrafx_block_write_guard.py` |
 | 許可域（WRAM）への 1 バイト転送が届く（正例） | **実コアで実測済み**（`*-allowed-armed` 5 件）。書込みが着地 | 同上 |
 | TransferStart の A/X/Y push がスタックページ $FF で書込み前に拒否される（#459、負例） | **実コアで実測済み**（`*-stackff-armed` 5 件 + 対照 `*-stackff-unguarded` 5 件）。拒否は VDC AR / R[7] 不変で確認。ただし拒否は「安全な停止」ではない（pop による I/O 読み出し・A/X/Y 破壊・VDC ステータスレジスタのクリアも実測） | `tests/integration/geargrafx_block_write_guard.py`（`PASS issue-459` 行と `BLOCKED issue-459` 行） |
@@ -186,7 +186,7 @@ PASS にしない。
 ## 残課題と BLOCKED 理由
 
 BLOCKED 理由:
-1. 命令全体を副作用なく安全に停止する手段は未実証。1-byte 書込み前拒否と byte 境界の single-step 観測は実測済みだが、拒否後も転送は継続する（上記）。
+1. 命令全体を副作用なく安全に停止する手段は未実証。5命令の1-byte書込み前拒否と TII の byte 境界 single-step 観測はあるが、TIN/TDD/TIA/TAI の同等観測は未実施で、拒否後も転送は継続する（上記）。
 2. 実行時オペランドの復号（src/dst/length）が未配線。静的検査は入力が既知のときのみ使える。
 3. デバイス起点書込みの判定が未了（列挙は #419 で済み、UNK-01/02 の起動元は未確定、実コアでのプローブは未実施）。
 4. #459 の拒否経路が安全な停止ではない（実コアで実測）。TransferEnd の pop は一度も書かれていないスタックスロットを $FF ページ（VDC レジスタ）から読み出し、A/X/Y を破壊し、VDC ステータスレジスタをクリアする。命令自体の実行も止まらない。本番用安全機構（スタックページを $FF にマップしない、または TransferEnd の pop まで覆うゲート）が未実装・未検証。
