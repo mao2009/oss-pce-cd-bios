@@ -331,7 +331,8 @@ def check_safeabort_armed(row, case):
         raise ValueError(f"{case}: refusal changed MPR")
     if row["stack_wram_after"] != row["stack_wram_before"]:
         raise ValueError(f"{case}: refusal changed stack WRAM")
-    if row["vdc_ar_after"] != row["vdc_ar_before"] or row["vdc_r7_after"] != row["vdc_r7_before"] or \
+    if row["vdc_ar_after"] != row["vdc_ar_before"] or row["vdc_r_after"] != row["vdc_r_before"] or \
+            row["vdc_r7_after"] != row["vdc_r7_before"] or \
             row["vdc_sr_after"] != row["vdc_sr_before"] or row["a_after"] != 0x12 or row["x_after"] != 0x34 or row["y_after"] != 0x07:
         raise ValueError(f"{case}: abort left a VDC/register side effect")
     if row["dst_after"] != 0 or row["sp_after"] != row["sp_before"]:
@@ -350,10 +351,16 @@ def mutation_safeabort_armed(row, case):
         ("SP_corruption", {"sp_after": row["sp_after"] - 1}),
         ("PC_mismatch", {"stop_pc": row["stop_pc"] - 1}),
         ("A_corruption", {"a_after": row["a_after"] ^ 1}),
+        ("X_corruption", {"x_after": row["x_after"] ^ 1}),
+        ("Y_corruption", {"y_after": row["y_after"] ^ 1}),
         ("MPR_change", {"after": {"mpr": [0] * 8}}),
         ("destination_write", {"dst_after": ALLOWED_VALUE}),
         ("stack_WRAM_write", {"stack_wram_after": [1, 0, 0]}),
+        ("VDC_AR_change", {"vdc_ar_after": row["vdc_ar_before"] ^ 1}),
+        ("VDC_R0_change", {"vdc_r_after": row["vdc_r_before"] ^ 1}),
+        ("VDC_R7_change", {"vdc_r7_after": row["vdc_r7_before"] ^ 1}),
         ("VDC_status_clear", {"vdc_sr_after": row["vdc_sr_before"] ^ 1}),
+        ("VDC_read_buffer_change", {"vdc_read_buffer_after": row["vdc_read_buffer_before"] ^ 1}),
     )
     for name, changes in mutations:
         broken = copy.deepcopy(row); broken.update(changes)
@@ -374,7 +381,8 @@ def check_safeabort_allowed(row, case, null_hook_control):
                       "vdc_ar_before", "vdc_ar_after", "vdc_r_before", "vdc_r_after",
                       "vdc_r7_before", "vdc_r7_after", "vdc_sr_before", "vdc_sr_after",
                       "vdc_read_buffer_before", "vdc_read_buffer_after", "dst_before", "dst_after",
-                      "src_after", "stack_wram_before", "stack_wram_after", "before", "after")
+                      "src_after", "stack_wram_before", "stack_wram_after", "guard_calls", "guard_refusals",
+                      "stack_guard_calls", "stack_guard_refusals", "before", "after")
     for field in compare_fields:
         if row.get(field) != null_hook_control.get(field):
             raise ValueError(f"{case}: allowing callback changed {field} from null-hook control")
@@ -386,7 +394,12 @@ def check_safeabort_allowed(row, case, null_hook_control):
 def mutation_safeabort_allowed(row, case, null_hook_control):
     mutations = (("abort_calls", 0), ("abort_refusals", 1), ("dst_after", 0),
                  ("vdc_ar_after", 0), ("sp_after", row["sp_after"] - 1),
-                 ("a_after", row["a_after"] ^ 1), ("stack_wram_after", [1, 0, 0]))
+                 ("a_after", row["a_after"] ^ 1), ("x_after", row["x_after"] ^ 1),
+                 ("y_after", row["y_after"] ^ 1), ("stack_wram_after", [1, 0, 0]),
+                 ("guard_calls", 1), ("guard_refusals", 1),
+                 ("vdc_r7_after", row["vdc_r7_after"] ^ 1),
+                 ("vdc_sr_after", row["vdc_sr_after"] ^ 1),
+                 ("vdc_read_buffer_after", row["vdc_read_buffer_after"] ^ 1))
     for key, value in mutations:
         broken = copy.deepcopy(row); broken[key] = value
         try: check_safeabort_allowed(broken, case, null_hook_control)
