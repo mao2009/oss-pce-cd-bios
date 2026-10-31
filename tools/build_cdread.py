@@ -39,6 +39,17 @@ ERROR_NAMES = {
     7: "STATUS_MESSAGE_TIMEOUT", 8: "BUS_NOT_FREED", 9: "INVALID_REQUEST", 10: "ACK_HANDSHAKE_TIMEOUT",
     0xff: "IN_PROGRESS",
 }
+EXIT_BLOCKED = 3
+
+
+class BlockedBuildInputError(ValueError):
+    """A required development build product is unavailable, so this diagnostic cannot run."""
+
+
+def require_dev_rom(path: Path) -> None:
+    """Require the `make dev-rom` product without treating a missing prerequisite as a failed oracle."""
+    if not path.is_file():
+        raise BlockedBuildInputError(f"missing dev-cdread build input: {path}; run `make dev-rom` first")
 
 
 def parse_symbols(path: Path) -> dict:
@@ -159,12 +170,22 @@ def main():
     parser.add_argument("--mode", choices=["debug", "release"], default="debug")
     args = parser.parse_args()
     base = ROOT / "build" / args.mode / "bios-dev" / "dev-only-not-compatible-syscard3.pce"
+    require_dev_rom(base)
     rom = build_cdread(base, ROOT / "build" / args.mode / "cdread-probe", args.mode)
     print(f"PASS original CD read diagnostic (NOT BIOS, CD_READ API NOT_IMPLEMENTED): {rom}")
 
 
-if __name__ == "__main__":
+def cli() -> int:
     try:
         main()
+    except BlockedBuildInputError as error:
+        print(f"BLOCKED cdread build: {error}")
+        return EXIT_BLOCKED
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
-        raise SystemExit(f"cdread build FAIL/BLOCKED: {error}") from error
+        print(f"FAIL cdread build: {error}")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(cli())
