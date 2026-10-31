@@ -7,8 +7,8 @@
 // CPU state, MPRs, and CD/SCSI state are sampled through state pointers at frame
 // boundaries only.
 //
-// argv: rom cue|- frames event_capacity
-// Output: CAP, EVENT (bounded ring, oldest entries overwritten), END.
+// argv: rom cue|- frames event_capacity run_start_frame|0 run_hold_frames|0
+// Output: CAP, INPUT, EVENT (bounded ring, oldest entries overwritten), END.
 #include "geargrafx_core.h"
 #include "huc6280.h"
 #include "memory.h"
@@ -139,7 +139,7 @@ void print_event(const Event& event) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc != 5)
+    if (argc != 7)
         return 2;
     char* end = nullptr;
     long frames = std::strtol(argv[3], &end, 10);
@@ -148,6 +148,15 @@ int main(int argc, char** argv) {
     end = nullptr;
     long capacity = std::strtol(argv[4], &end, 10);
     if (!end || *end || capacity < 1 || capacity > kRingSize)
+        return 2;
+    end = nullptr;
+    long run_start = std::strtol(argv[5], &end, 10);
+    if (!end || *end || run_start < 0 || run_start > frames)
+        return 2;
+    end = nullptr;
+    long run_hold = std::strtol(argv[6], &end, 10);
+    if (!end || *end || run_hold < 0 || run_hold > frames ||
+        ((run_start == 0) != (run_hold == 0)) || (run_start && run_start + run_hold - 1 > frames))
         return 2;
     std::ifstream input(argv[1], std::ios::binary);
     if (!input)
@@ -181,8 +190,9 @@ int main(int argc, char** argv) {
     CpuSnap previous_cpu = cpu_snap(core, cpu, memory);
     CdSnap previous_cd = cd_snap(scsi, cdrom);
     std::printf("CAP {\"normal_frame_execution\":true,\"instruction_step\":false,\"guest_mutation\":false,"
-                 "\"mmio_reads\":false,\"scsi_event_notification\":true,\"ring_capacity\":%ld,\"frames\":%ld,\"disc_given\":%s}\n",
-                 capacity, frames, have_disc ? "true" : "false");
+                 "\"mmio_reads\":false,\"scsi_event_notification\":true,\"ring_capacity\":%ld,\"frames\":%ld,"
+                 "\"disc_given\":%s,\"run_start_frame\":%ld,\"run_hold_frames\":%ld,\"run_input_requested\":%s}\n",
+                 capacity, frames, have_disc ? "true" : "false", run_start, run_hold, run_start ? "true" : "false");
     TraceLogger* trace = core.GetTraceLogger();
     if (!trace->SetCapacity(kRingSize)) return 3;
     trace->SetEnabledFlags(TRACE_FLAG_SCSI);
@@ -192,8 +202,20 @@ int main(int argc, char** argv) {
     u64 dropped_scsi = 0;
 
     for (unsigned number = 1; number <= (unsigned)frames; ++number) {
+        // This is the pinned core's public controller API.  No guest RAM, CPU,
+        // MPR, IRQ, CD, or SCSI state is changed by the tracer.
+        if (run_start && number == (unsigned)run_start) {
+            core.KeyPressed(GG_CONTROLLER_1, GG_KEY_RUN);
+            std::printf("INPUT {\"frame\":%u,\"action\":\"press\",\"run_pressed\":%s}\n", number,
+                        core.GetInput()->IsKeyPressed(GG_CONTROLLER_1, GG_KEY_RUN) ? "true" : "false");
+        }
         int samples = 0;
         core.RunToVBlank(frame.data(), audio.data(), &samples, &normal, false);
+        if (run_start && number == (unsigned)(run_start + run_hold - 1)) {
+            core.KeyReleased(GG_CONTROLLER_1, GG_KEY_RUN);
+            std::printf("INPUT {\"frame\":%u,\"action\":\"release\",\"run_pressed\":%s}\n", number,
+                        core.GetInput()->IsKeyPressed(GG_CONTROLLER_1, GG_KEY_RUN) ? "true" : "false");
+        }
         CpuSnap now_cpu = cpu_snap(core, cpu, memory);
         CdSnap now_cd = cd_snap(scsi, cdrom);
         Event sample = {Event::SAMPLE, number, now_cpu, now_cd, 0, 0, 0, 0, 0, 0, 0};

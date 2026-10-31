@@ -21,13 +21,25 @@ MAX_EVENTS = 256
 EVENT_KINDS = {"sample", "cd", "wram", "handoff"}
 
 
+def run_schedule(start_frame, hold_frames, frames):
+    """Return public-controller actions before/after whole-frame execution."""
+    if (start_frame is None) != (hold_frames is None):
+        raise ValueError("RUN start and hold must be specified together")
+    if start_frame is None:
+        return ()
+    if not 1 <= start_frame <= frames or not 1 <= hold_frames <= frames or start_frame + hold_frames - 1 > frames:
+        raise ValueError("RUN schedule is outside the requested frames")
+    return ((start_frame, "press"), (start_frame + hold_frames - 1, "release"))
+
+
 def parse_records(stdout):
     """Validate the small public-safe protocol emitted by the C++ tracer."""
     cap = end = None
+    inputs = []
     events = []
     for line in stdout.splitlines():
         tag, separator, body = line.partition(" ")
-        if tag not in {"CAP", "EVENT", "END"}:
+        if tag not in {"CAP", "INPUT", "EVENT", "END"}:
             continue
         if not separator:
             raise ValueError(f"{tag} missing JSON body")
@@ -38,6 +50,8 @@ def parse_records(stdout):
             if cap is not None:
                 raise ValueError("duplicate CAP")
             cap = row
+        elif tag == "INPUT":
+            inputs.append(row)
         elif tag == "EVENT":
             events.append(row)
         else:
@@ -54,6 +68,17 @@ def parse_records(stdout):
     capacity = cap.get("ring_capacity")
     if type(capacity) is not int or not 1 <= capacity <= MAX_EVENTS:
         raise ValueError("invalid ring capacity")
+    requested = cap.get("run_input_requested")
+    if type(requested) is not bool:
+        raise ValueError("invalid RUN capability")
+    start, hold = cap.get("run_start_frame"), cap.get("run_hold_frames")
+    if requested:
+        if run_schedule(start, hold, cap["frames"]) != tuple((row.get("frame"), row.get("action")) for row in inputs):
+            raise ValueError("RUN input schedule mismatch")
+        if [row.get("run_pressed") for row in inputs] != [True, False]:
+            raise ValueError("RUN input API did not report press/release")
+    elif inputs or start != 0 or hold != 0:
+        raise ValueError("unexpected RUN input record")
     if len(events) > capacity or end.get("events") != len(events):
         raise ValueError("ring event count mismatch")
     if (type(end.get("dropped")) is not int or end["dropped"] < 0 or
@@ -79,12 +104,17 @@ def trace(args):
     if not 1 <= args.frames <= MAX_FRAMES or not 1 <= args.events <= MAX_EVENTS:
         return {"status": "FAIL", "reason": f"limits are frames 1..{MAX_FRAMES}, events 1..{MAX_EVENTS}",
                 "evidence": "NOT_RUN"}
+    try:
+        schedule = run_schedule(args.run_start_frame, args.run_hold_frames, args.frames)
+    except ValueError as error:
+        return {"status": "FAIL", "reason": str(error), "evidence": "NOT_RUN"}
     # Do not invoke doctor() on caller media: it records input paths and hashes.
     # The core/tool readiness result is retained without private input metadata.
     report = doctor(None, None, None)
     log = {"schema_version": 1, "scope": "normal-frame core observation; not BIOS boot or compatibility evidence",
            "artifact_policy": "LOCAL_ONLY: never upload traces; events contain no guest bytes",
-            "core_readiness": report["status"], "frames": args.frames, "ring_capacity": args.events}
+           "core_readiness": report["status"], "frames": args.frames, "ring_capacity": args.events,
+           "run_input": {"requested": bool(schedule), "schedule": schedule}}
     if report["status"] != "PASS":
         log.update(status=report["status"], reason="doctor prerequisites", evidence="NOT_RUN")
         return log
@@ -110,7 +140,8 @@ def trace(args):
                 log.update(status="FAIL", reason="invalid disc input", evidence="NOT_RUN")
                 return log
             cue = str(disc / staged[0])
-        result = run_job([str(probe), str(rom), cue, str(args.frames), str(args.events)], job, args.timeout)
+        result = run_job([str(probe), str(rom), cue, str(args.frames), str(args.events),
+                          str(args.run_start_frame or 0), str(args.run_hold_frames or 0)], job, args.timeout)
         if result["status"]:
             log.update(status=result["status"], reason=result["reason"], evidence="NOT_RUN")
             return log
@@ -136,6 +167,8 @@ def main(argv=None):
     parser.add_argument("--frames", type=int, default=2)
     parser.add_argument("--events", type=int, default=64)
     parser.add_argument("--timeout", type=float, default=30.0)
+    parser.add_argument("--run-start-frame", type=int, help="frame before which to press RUN via Geargrafx's public controller API")
+    parser.add_argument("--run-hold-frames", type=int, help="number of complete frames for which RUN is held")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
