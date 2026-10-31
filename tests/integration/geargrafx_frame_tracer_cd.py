@@ -20,17 +20,32 @@ from make_cd_image import CUE_NAME, DEFAULT_SECTORS, build_image, sector_payload
 import geargrafx_frame_tracer as tracer  # noqa: E402
 
 
+class TracerBlocked(RuntimeError):
+    """The tracer reported a prerequisite blocker rather than a failed observation."""
+
+
+class ProbeExecutionFailed(RuntimeError):
+    """The existing CD diagnostic probe did not execute to an observation."""
+
+
+def execute_cd_diagnostic(directory, rom, cue, labels):
+    """Run the established diagnostic, translating host/probe failures to one result class."""
+    try:
+        probe = compile_probe(directory, "geargrafx_cdread_probe.cpp", "geargrafx-frame-tracer-cdread")
+        return execute(probe, rom, cue, labels, STEP_BUDGET)
+    except Exception as error:
+        raise ProbeExecutionFailed(f"CD diagnostic probe execution: {error}") from error
+
+
 def trace(rom, cue, output, observe_ram):
     return tracer.trace(argparse.Namespace(rom=rom, cue=cue, frames=40, events=256, timeout=60.0,
                                            run_start_frame=None, run_hold_frames=None,
                                            observe_ram=observe_ram))
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mode", choices=("debug", "release"), default="debug")
-    args = parser.parse_args()
-    folder = ROOT / "build" / args.mode / "cdread-probe"
+def run(mode):
+    """Run the bridge; callers classify blocked tracer and probe execution separately."""
+    folder = ROOT / "build" / mode / "cdread-probe"
     rom, labels = folder / "cdread-probe-not-bios.pce", folder / "trace-labels.txt"
     if not rom.is_file() or not labels.is_file():
         raise ValueError("run make dev-cdread first")
@@ -39,11 +54,13 @@ def main():
         manifest = build_image(temporary / "disc")
         cue = temporary / "disc" / CUE_NAME
         # Existing guest diagnostic and oracle: this is the precondition for the observer run.
-        probe = compile_probe(temporary, "geargrafx_cdread_probe.cpp", "geargrafx-frame-tracer-cdread")
-        records = execute(probe, rom, cue, labels, STEP_BUDGET)
+        records = execute_cd_diagnostic(temporary, rom, cue, labels)
         symbols = json.loads((folder / "manifest.json").read_text())["symbols"]
         check_success(records, symbols, [sector_payload(i) for i in range(DEFAULT_SECTORS)], *DEFAULT_REQUEST)
         on, off = trace(rom, cue, temporary / "on.json", True), trace(rom, cue, temporary / "off.json", False)
+        for name, result in (("ON", on), ("OFF", off)):
+            if result.get("status") == "BLOCKED":
+                raise TracerBlocked(f"RAM observer {name}: {result.get('reason', 'unspecified blocker')}")
         if on["status"] != "PASS" or off["status"] != "PASS":
             raise ValueError(f"frame trace did not complete: on={on['status']} off={off['status']}")
         expected = {"wram", "cdrom_ram", "card_ram"}
@@ -59,8 +76,23 @@ def main():
               "observed delta wram only; observer ON/OFF both completed (frame records not compared); no guest bytes")
 
 
-if __name__ == "__main__":
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--mode", choices=("debug", "release"), default="debug")
+    args = parser.parse_args(argv)
     try:
-        main()
+        run(args.mode)
+    except TracerBlocked as error:
+        print(f"BLOCKED: frame-tracer CD integration: {error}", file=sys.stderr)
+        return 3
+    except ProbeExecutionFailed as error:
+        print(f"FAIL: frame-tracer CD integration: {error}", file=sys.stderr)
+        return 1
     except (OSError, RuntimeError, ValueError) as error:
-        raise SystemExit(f"frame-tracer CD integration FAIL/BLOCKED: {error}") from error
+        print(f"FAIL: frame-tracer CD integration assertion: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
