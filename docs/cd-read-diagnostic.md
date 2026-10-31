@@ -33,10 +33,12 @@ image is byte-identical to the base ROM and verified on every build).
 
 The guest diagnostic has an original, fixed-size request record immediately after its READ(6) CDB: a 21-bit
 absolute LBA, an 8-bit count, and a 16-bit CPU target. It is **not callable BIOS API surface**. The checked
-synthetic-only bounds are count `1..3` and a complete `count * 2048` byte range within work RAM
-`$2800..$3FFF`; invalid requests stop before selecting the bus with diagnostic error 9. The default remains
-LBA 5, one sector, target `$2800` so existing fixed-LBA regression coverage is retained. The real-core suite
-also covers a nonzero LBA, multi-sector reads, target `$3000`, and invalid target bounds, each cold and warm.
+synthetic-only bounds are count `1..3` and a full 16-bit `target + count * 2048` end pointer no greater than
+`$4000` (the transferred range is therefore within work RAM `$2800..$3FFF`); invalid requests stop before
+selecting the bus with diagnostic error 9. The result byte count is relative to the selected target. The default
+remains LBA 5, one sector, target `$2800` so existing fixed-LBA regression coverage is retained. The real-core
+suite covers low-byte and exact-end target boundaries, a two-sector nondefault target, and invalid target bounds,
+each cold and warm.
 
 ## Fixture disc (`tools/make_cd_image.py`)
 
