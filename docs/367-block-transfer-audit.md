@@ -8,7 +8,7 @@
 ## 結論（要約）
 
 - 5 命令はいずれも **1 命令内で length 回のバイト書込みを行う**（複数書込み）。静的な範囲検査では、書込み先が許可域外に届くかを命令実行前に判定できる（`tools/block_xfer_audit.py`）。
-- **実コアでの書込み前遮断は実測対象になった（旧記述の NOT_RUN は置き換え）。** `tests/integration/geargrafx_block_write_guard.py`（`make block-write-guard`、`make integration` に含まれる）が pinned Geargrafx（b49ae82）と検証専用パッチ付きの実コアで、TII/TIN/TIA/TDD/TAI の 1 バイト転送を合成メディアで実行する。期待 PASS は 30 ケース（各命令 6 種: 拒否・フックなし対照・許可 の 3 種に、#459 のスタック push 用の 3 種を加えたもの）。
+- **実コアでの書込み前遮断は実測対象になった（旧記述の NOT_RUN は置き換え）。** `tests/integration/geargrafx_block_write_guard.py`（`make block-write-guard`、`make integration` に含まれる）が pinned Geargrafx（b49ae82）と検証専用パッチ付きの実コアで、TII/TIN/TIA/TDD/TAI の 1 バイト転送を合成メディアで実行する。**この#612時点の suite は30ケース**（各命令6種: 拒否・フックなし対照・許可の3種に、#459のスタックpush用の3種を加えたもの）。後続#613はsafeabort拒否/許可を加え、suiteを40ケースへ拡張する。30件は#612時点の記録であり、後続suiteの現行件数ではない。
 - **TII の命令内 1-byte 境界だけは別の single-step 実験で観測済みだが、TIN/TDD/TIA/TAI の同等観測と、命令全体の安全な中断は未実証（UNMEASURED）。** block-write driver は書込み前拒否と拒否後の継続・副作用を free-run で測る。hook が拒否しても転送状態と TransferEnd は進むため、安全停止の証拠ではない。
 - 試験の拒否方針（書込み先が $FF ページの場合に拒否）は probe の中に書かれており、本番ゲートの証拠ではない。driver は「コアのフック点が書込み前に拒否できる」ことだけを示す。
 - **#459（TransferStart の A/X/Y push）:** 旧状態では、スタックページ（MPR1）を $FF にマップすると A/X/Y の push が VDC に着地した（実測: AR 0→7、R[7] 0→564）。検証専用パッチに TransferStart 用の書込み前フックを追加し、スタックページが $FF のとき push だけを拒否する。拒否した場合、push は書かれず S は 3 だけ動く（TransferEnd の pop と釣り合う）。**適用範囲は TransferStart の push のみ。** PHA/PHP/JSR/IRQ などの他の push、TransferEnd の pop（$FF ページからの読出し。ガード対象外）、その他の書込みは対象外。拒否方針は probe 内に書かれたテスト方針で、本番ゲートの証拠ではない。
@@ -55,7 +55,7 @@ TransferEnd は進むため、これは安全な命令停止ではない。
 
 ### 2026-10-31 再実行結果と境界
 
-`make block-write-guard` を再実行した。5 opcode x (hardware-page refusal / no-hook RED /
+`make block-write-guard` を#612時点のsuiteで再実行した。5 opcode x (hardware-page refusal / no-hook RED /
 WRAM positive / stack-$FF refusal / stack-$FF no-hook RED / WRAM-stack positive) の30 synthetic
 real-core cases は PASS した。この実行が実証するのは **MPR page=$FF の一 byte destination
 store に限る verification-only pre-write hook** である。ROM bank、非-$FF forbidden RAM、
