@@ -17,8 +17,9 @@ def event(kind="sample", frame=1):
     row = {"kind": kind, "frame": frame, "master_clock": 1, "pc": 57344, "pc_page": 7, "pc_bank": 0,
            "physical_pc": 0, "pc_is_wram": False, "a": 0, "x": 0, "y": 0, "p": 4, "sp": 255,
             "mpr": [0] * 8}
-    if kind == "wram":
-        row.update(changed=2, first_wram=512, last_wram=513)
+    if kind == "ram":
+        row.update(ram="wram", size=8192, changed=2, first_offset=512, last_offset=513,
+                   bank_first=248, bank_last=251)
     if kind == "cd":
         row.update(snapshot="FRAME_SNAPSHOT", cd_event=1, command=8, lba=5, status=0)
     return row
@@ -26,6 +27,7 @@ def event(kind="sample", frame=1):
 
 def output(events, dropped=0, scsi_events_dropped=0, capacity=4, run=None):
     cap = {"normal_frame_execution": True, "instruction_step": False, "guest_mutation": False, "scsi_event_notification": True,
+           "ram_observation": True,
            "mmio_reads": False, "ring_capacity": capacity, "frames": 2, "disc_given": False,
            "run_input_requested": bool(run), "run_start_frame": 1 if run else 0, "run_hold_frames": 2 if run else 0}
     end = {"frames": 2, "events": len(events), "dropped": dropped, "scsi_events_dropped": scsi_events_dropped,
@@ -38,10 +40,10 @@ def output(events, dropped=0, scsi_events_dropped=0, capacity=4, run=None):
 
 class FrameTracerProtocolTests(unittest.TestCase):
     def test_accepts_bounded_cpu_cd_memory_and_handoff_events(self):
-        rows = [event(), event("cd"), event("wram"), event("handoff", 2)]
+        rows = [event(), event("cd"), event("ram"), event("handoff", 2)]
         cap, parsed, end = tracer.parse_records(output(rows))
         self.assertEqual(cap["ring_capacity"], 4)
-        self.assertEqual([row["kind"] for row in parsed], ["sample", "cd", "wram", "handoff"])
+        self.assertEqual([row["kind"] for row in parsed], ["sample", "cd", "ram", "handoff"])
         self.assertFalse(end["overflow"])
 
     def test_ring_overflow_is_explicit_and_retains_only_capacity(self):
@@ -68,6 +70,18 @@ class FrameTracerProtocolTests(unittest.TestCase):
         row = event("cd")
         row["snapshot"] = "EVENT_TIME"
         with self.assertRaisesRegex(ValueError, "FRAME_SNAPSHOT"):
+            tracer.parse_records(output([row]))
+
+    def test_accepts_only_confirmed_ram_mappings_and_metadata_ranges(self):
+        for ram, size, first, last in (("wram", 8192, 248, 251), ("cdrom_ram", 65536, 128, 135),
+                                       ("card_ram", 32768, 64, 95), ("card_ram", 196608, 104, 127)):
+            with self.subTest(ram=ram, size=size):
+                row = event("ram")
+                row.update(ram=ram, size=size, bank_first=first, bank_last=last)
+                tracer.parse_records(output([row]))
+        row = event("ram")
+        row.update(ram="card_ram", size=32768, bank_first=64, bank_last=67)
+        with self.assertRaisesRegex(ValueError, "unconfirmed RAM bank mapping"):
             tracer.parse_records(output([row]))
 
     def test_temp_paths_reject_outside_root_repo_home_and_worktrees_without_deletion(self):
@@ -162,13 +176,14 @@ class FrameTracerProtocolTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("c++"), "C++ compiler unavailable")
     def test_ring_capacities_are_executed_in_cpp(self):
-        source = Path(__file__).with_name("geargrafx_frame_tracer_ring_test.cpp")
-        include = source.parents[1] / "integration"
+        include = Path(__file__).resolve().parents[1] / "integration"
         with tempfile.TemporaryDirectory() as temporary:
-            binary = Path(temporary) / "ring-test"
-            subprocess.run(["c++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-I", str(include),
-                            str(source), "-o", str(binary)], check=True)
-            subprocess.run([str(binary)], check=True)
+            for stem in ("geargrafx_frame_tracer_ring_test", "geargrafx_frame_tracer_ram_test"):
+                source = Path(__file__).with_name(stem + ".cpp")
+                binary = Path(temporary) / stem
+                subprocess.run(["c++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-I", str(include),
+                                str(source), "-o", str(binary)], check=True)
+                subprocess.run([str(binary)], check=True)
 
     def test_refuses_mutating_or_stepped_protocols_and_bad_ring_counts(self):
         cases = [
@@ -191,6 +206,10 @@ class FrameTracerProtocolTests(unittest.TestCase):
         self.assertNotIn("RunInstruction(", source)
         self.assertNotIn("step_debugger = true", source)
         self.assertIn("GetTraceLogger()", source)
+        self.assertIn("GetWorkingRAM()", source)
+        self.assertIn("GetCDROMRAM()", source)
+        self.assertIn("GetCardRAM()", source)
+        self.assertNotIn("%02x", source)
         self.assertIn("core.KeyPressed(GG_CONTROLLER_1, GG_KEY_RUN)", source)
         self.assertIn("core.KeyReleased(GG_CONTROLLER_1, GG_KEY_RUN)", source)
 
