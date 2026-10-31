@@ -24,12 +24,15 @@ def event(kind="sample", frame=1):
     return row
 
 
-def output(events, dropped=0, scsi_events_dropped=0, capacity=4):
+def output(events, dropped=0, scsi_events_dropped=0, capacity=4, run=None):
     cap = {"normal_frame_execution": True, "instruction_step": False, "guest_mutation": False, "scsi_event_notification": True,
-           "mmio_reads": False, "ring_capacity": capacity, "frames": 2, "disc_given": False}
+           "mmio_reads": False, "ring_capacity": capacity, "frames": 2, "disc_given": False,
+           "run_input_requested": bool(run), "run_start_frame": 1 if run else 0, "run_hold_frames": 2 if run else 0}
     end = {"frames": 2, "events": len(events), "dropped": dropped, "scsi_events_dropped": scsi_events_dropped,
            "overflow": bool(dropped or scsi_events_dropped)}
-    return "\n".join(["CAP " + json.dumps(cap), *["EVENT " + json.dumps(row) for row in events],
+    inputs = [] if not run else ["INPUT " + json.dumps({"frame": 1, "action": "press", "run_pressed": True}),
+                                 "INPUT " + json.dumps({"frame": 2, "action": "release", "run_pressed": False})]
+    return "\n".join(["CAP " + json.dumps(cap), *inputs, *["EVENT " + json.dumps(row) for row in events],
                       "END " + json.dumps(end)])
 
 
@@ -52,6 +55,14 @@ class FrameTracerProtocolTests(unittest.TestCase):
         _, _, end = tracer.parse_records(output([event("cd")], scsi_events_dropped=3))
         self.assertTrue(end["overflow"])
         self.assertEqual(end["scsi_events_dropped"], 3)
+
+    def test_run_schedule_uses_press_hold_release_boundaries(self):
+        self.assertEqual(tracer.run_schedule(2, 3, 5), ((2, "press"), (4, "release")))
+        tracer.parse_records(output([event()], run=True))
+        for values in ((None, 1, 2), (2, None, 2), (2, 2, 2)):
+            with self.subTest(values=values):
+                with self.assertRaises(ValueError):
+                    tracer.run_schedule(*values)
 
     def test_refuses_scsi_records_without_frame_snapshot_label(self):
         row = event("cd")
@@ -138,7 +149,8 @@ class FrameTracerProtocolTests(unittest.TestCase):
                 self.assertEqual((job / "replacement").read_text(), "keep")
 
     def test_cleanup_failure_is_reported_not_suppressed(self):
-        args = SimpleNamespace(frames=1, events=1, timeout=1, rom=Path("ignored"), cue=None)
+        args = SimpleNamespace(frames=1, events=1, timeout=1, rom=Path("ignored"), cue=None,
+                               run_start_frame=None, run_hold_frames=None)
         with mock.patch.object(tracer, "doctor", return_value={"status": "PASS"}), \
                 mock.patch.object(tracer, "make_tracked_job_dir", return_value=(Path("/safe/job"), (1, 2, 3))), \
                 mock.patch.object(tracer, "compile_probe", side_effect=ValueError("blocked")), \
@@ -179,6 +191,8 @@ class FrameTracerProtocolTests(unittest.TestCase):
         self.assertNotIn("RunInstruction(", source)
         self.assertNotIn("step_debugger = true", source)
         self.assertIn("GetTraceLogger()", source)
+        self.assertIn("core.KeyPressed(GG_CONTROLLER_1, GG_KEY_RUN)", source)
+        self.assertIn("core.KeyReleased(GG_CONTROLLER_1, GG_KEY_RUN)", source)
 
 
 if __name__ == "__main__":
