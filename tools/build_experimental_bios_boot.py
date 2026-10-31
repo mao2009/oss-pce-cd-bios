@@ -14,14 +14,16 @@ import subprocess
 
 if __package__:
     from .build_rom import API_IMPLEMENTATION, BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
-    from .build_cdload_exec import DISC_SECTORS, EXEC_ADDRESS, EXPECTED_MPR, SECTOR_BYTES, parse_labels
+    from .build_cdload_exec import DISC_SECTORS, EXEC_ADDRESS, EXPECTED_MPR, SECTOR_BYTES, encode_sector, parse_labels
+    from .cue_analysis import analyze, user_sector
     from .environment import DEPENDENCIES, executable
-    from .experimental_track_selection import assembler_defines, selection_from_cue
+    from .experimental_track_selection import assembler_defines, selection_from_cue, verify_media_identity
 else:
     from build_rom import API_IMPLEMENTATION, BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
-    from build_cdload_exec import DISC_SECTORS, EXEC_ADDRESS, EXPECTED_MPR, SECTOR_BYTES, parse_labels
+    from build_cdload_exec import DISC_SECTORS, EXEC_ADDRESS, EXPECTED_MPR, SECTOR_BYTES, encode_sector, parse_labels
+    from cue_analysis import analyze, user_sector
     from environment import DEPENDENCIES, executable
-    from experimental_track_selection import assembler_defines, selection_from_cue
+    from experimental_track_selection import assembler_defines, selection_from_cue, verify_media_identity
 
 MS_RES = 0x3F40
 EXPERIMENTAL_BOOT_FLAG = "EXPERIMENTAL_BIOS_BOOT"
@@ -58,12 +60,37 @@ def experimental_boot_units(cue_path):
     return _experimental_boot_units(selected)
 
 
-def build_experimental_bios_boot(original_path: Path, output: Path, mode="debug", cue_path=None) -> Path:
+def build_experimental_payload(output: Path, mode="debug") -> tuple[bytes, dict]:
+    """Build the standalone synthetic payload before its final medium is selected."""
+    if mode not in ("debug", "release"):
+        raise ValueError("MODE must be debug or release")
+    ca65, ld65 = executable("ca65"), executable("ld65")
+    debug_flags = ["-g"] if mode == "debug" else []
+    output.mkdir(parents=True, exist_ok=True)
+    payload_obj = output / "cd_load_exec_payload.o"
+    subprocess.run([ca65, str(ROOT / "src/cd_load_exec_payload.s"), "-o", str(payload_obj), *debug_flags], check=True)
+    payload_bin, payload_labels = output / "payload.bin", output / "payload.lbl"
+    subprocess.run([ld65, "-C", str(ROOT / "src/cd_load_exec_payload.cfg"), "-o", str(payload_bin),
+                    "-Ln", str(payload_labels), str(payload_obj)], check=True)
+    code, symbols = payload_bin.read_bytes(), parse_labels(payload_labels)
+    if symbols.get("payload_entry") != EXEC_ADDRESS or not 1 <= len(code) <= 255:
+        raise ValueError("payload must start at EXEC_ADDRESS and be 1..255 bytes")
+    return code, symbols
+
+
+def build_experimental_bios_boot(original_path: Path, output: Path, mode="debug", cue_path=None, payload_code=None) -> Path:
     if mode not in ("debug", "release"):
         raise ValueError("MODE must be debug or release")
     if cue_path is None:
         raise ValueError("experimental boot requires the exact mounted synthetic CUE")
+    if type(payload_code) is not bytes or not 1 <= len(payload_code) <= 255:
+        raise ValueError("experimental boot requires a finalized 1..255-byte payload before media selection")
     selected = selection_from_cue(cue_path, cue_path)
+    # The selection is made only after media finalization.  Recheck immediately
+    # before producing a ROM that embeds it, rather than trusting pathname equality.
+    verify_media_identity(selected["media_identity"], cue_path)
+    if user_sector(cue_path, analyze(cue_path), selected["lba"]) != encode_sector(selected["lba"], payload_code):
+        raise ValueError("finalized selected sector does not contain the experimental ROM payload")
     original = original_path.read_bytes()
     verify_dev_rom(original, manifest=original_path.parent / "manifest.json")
     ca65, ld65 = executable("ca65"), executable("ld65")
@@ -99,21 +126,19 @@ def build_experimental_bios_boot(original_path: Path, output: Path, mode="debug"
     if data[reset_vector & 0x1FFF] != 0x78:
         raise ValueError("experimental reset must start with SEI")
 
-    payload_obj = output / "cd_load_exec_payload.o"
-    subprocess.run([ca65, str(ROOT / "src/cd_load_exec_payload.s"), "-o", str(payload_obj), *debug_flags], check=True)
-    payload_bin, payload_labels = output / "payload.bin", output / "payload.lbl"
-    subprocess.run([ld65, "-C", str(ROOT / "src/cd_load_exec_payload.cfg"), "-o", str(payload_bin),
-                    "-Ln", str(payload_labels), str(payload_obj)], check=True)
-    code, pay_symbols = payload_bin.read_bytes(), parse_labels(payload_labels)
-    if pay_symbols.get("payload_entry") != EXEC_ADDRESS or not 1 <= len(code) <= 255:
-        raise ValueError("payload must start at EXEC_ADDRESS and be 1..255 bytes")
+    code, pay_symbols = build_experimental_payload(output, mode)
+    if code != payload_code:
+        raise ValueError("experimental ROM payload differs from the finalized media payload")
     symbols = {name: rom_symbols[name] for name in REQUIRED}
     symbols.update({name: pay_symbols[name] for name in PAYLOAD_LABELS})
     # The shared integration judge uses semantic trace names; these aliases point to this image's new reset labels.
     trace_symbols = dict(symbols)
     trace_symbols.update({"dev_boot_entry": symbols["experimental_bios_init"],
-                           "dev_selection_halt": symbols["experimental_bios_selection_halt"]})
+                          "dev_selection_halt": symbols["experimental_bios_selection_halt"]})
     (output / "trace-labels.txt").write_text("".join(f"{name} {value:04x}\n" for name, value in trace_symbols.items()), encoding="ascii")
+    # Building can take long enough for an external writer to replace a test
+    # input.  The integration performs the final mount-adjacent check as well.
+    verify_media_identity(selected["media_identity"], cue_path)
     manifest = {
         "status": "EXPERIMENTAL-DEV-ONLY-not-compatible-not-a-bios-abi",
         "mode": mode, "rom_name": ROM_NAME, "rom_sha256": hashlib.sha256(data).hexdigest(), "rom_bytes": IMAGE_BYTES,
@@ -137,7 +162,9 @@ def main():
                         help="the exact synthetic CUE that will be mounted for this image")
     args = parser.parse_args()
     base = ROOT / "build" / args.mode / "bios-dev" / "dev-only-not-compatible-syscard3.pce"
-    rom = build_experimental_bios_boot(base, ROOT / "build" / args.mode / "experimental-bios-boot", args.mode, args.cue)
+    output = ROOT / "build" / args.mode / "experimental-bios-boot"
+    payload, _ = build_experimental_payload(output, args.mode)
+    rom = build_experimental_bios_boot(base, output, args.mode, args.cue, payload)
     print(f"PASS experimental DEV-only 256 KiB image (NOT compatible, NOT a BIOS ABI): {rom}")
 
 

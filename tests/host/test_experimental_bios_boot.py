@@ -3,7 +3,8 @@ import unittest
 from pathlib import Path
 
 from tools.build_experimental_bios_boot import EXPERIMENTAL_BOOT_FLAG, ROM_NAME, experimental_boot_units
-from tools.experimental_track_selection import SelectionError, assembler_defines, selection_from_cue
+from tools.experimental_track_selection import (SelectionError, assembler_defines, media_identity,
+                                                selection_from_cue, verify_media_identity)
 from tools.synthetic_boot_media import CUE_NAME, write_case
 import tempfile
 
@@ -72,6 +73,50 @@ class ExperimentalBootSelectionTests(unittest.TestCase):
                 selection_from_cue(root / CUE_NAME, other)
         with self.assertRaises((SelectionError, TypeError)):
             assembler_defines({"track": 2, "lba": 241, "kind": 1})
+
+    def test_media_identity_accepts_final_payload_and_rejects_content_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_case(root, "NONE", "V2")
+            cue = root / CUE_NAME
+            record = selection_from_cue(cue, cue)
+            verify_media_identity(record["media_identity"], cue)
+            self.assertEqual(record["media_identity"], media_identity(cue))
+            # Same pathname, changed BIN bytes: reject before any core launch.
+            binary = root / "synthetic-boot.bin"
+            data = bytearray(binary.read_bytes()); data[-1] ^= 1; binary.write_bytes(data)
+            with self.assertRaisesRegex(SelectionError, "content differs"):
+                verify_media_identity(record["media_identity"], cue)
+
+    def test_media_identity_rejects_cue_size_and_reference_substitution(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_case(root, "NONE", "V1")
+            cue = root / CUE_NAME
+            identity = media_identity(cue)
+            cue.write_text(cue.read_text(encoding="ascii") + "REM changed after selection\n", encoding="ascii")
+            with self.assertRaises(SelectionError):
+                verify_media_identity(identity, cue)
+
+    def test_media_identity_rejects_bin_size_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_case(root, "NONE", "V1")
+            cue = root / CUE_NAME
+            identity = media_identity(cue)
+            with (root / "synthetic-boot.bin").open("ab") as binary:
+                binary.write(b"x")
+            with self.assertRaises(SelectionError):
+                verify_media_identity(identity, cue)
+            # A distinct but byte-identical target still has a different ordered
+            # relative FILE reference and must not be silently mounted.
+            write_case(root, "NONE", "V1")
+            identity = media_identity(cue)
+            original = root / "synthetic-boot.bin"
+            alternate = root / "replacement.bin"; alternate.write_bytes(original.read_bytes())
+            cue.write_text(cue.read_text(encoding="ascii").replace("synthetic-boot.bin", "replacement.bin"), encoding="ascii")
+            with self.assertRaises(SelectionError):
+                verify_media_identity(identity, cue)
 
     def test_make_target_is_opt_in_and_has_real_core_target(self):
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
