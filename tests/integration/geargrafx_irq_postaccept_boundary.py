@@ -37,14 +37,32 @@ def check(row, irq):
         raise ValueError("handler executed or resume was not rejected three times")
     if not row["stack_checked"] or not row["stack_ok"] or row["stack_cpu"] != [0x21FF, 0x21FE, 0x21FD] or row["stack_physical"] != [0x1FF, 0x1FE, 0x1FD]:
         raise ValueError("IRQ stack writes were not confined to the mapped allowed stack")
+    if row["stack_before"] != [0xA1, 0xB2, 0xC3] or row["stack"] != [0x3E, 0x01, 0x00]:
+        raise ValueError("stack sentinels/frame values do not prove all three writes")
+    if row["stack_frame_layout"] != row["stack"]:
+        raise ValueError("stack frame values differ from CPU-address-ordered observations")
+    if row["only_stack_writes"] is not True:
+        raise ValueError("WRAM changed outside the three allowed stack bytes")
     if row["vdc_ar_before"] != row["vdc_ar_after"] or row["vdc_r_before"] != row["vdc_r_after"] or row["marker"] != 0:
         raise ValueError("handler side effect landed before refusal")
 
 def mutation(row, irq):
     # Classifier mutations additionally prove that its mandatory evidence is not ignored.
-    for field, value in (("accepted", False), ("fetch_opcode", 0), ("classified_vector", 0),
-                         ("handler_steps", 1), ("resume_refused", 2), ("stack_checked", False)):
-        bad = copy.deepcopy(row); bad[field] = value
+    mutations = (("accepted", False), ("fetch_opcode", 0), ("classified_vector", 0),
+                 ("handler_steps", 1), ("resume_refused", 2), ("stack_checked", False),
+                 ("stack_no_writes", {"stack": [0xA1, 0xB2, 0xC3]}),
+                 ("stack_one_byte_missing", {"stack": [0x3E, 0xB2, 0xC3]}),
+                 ("stack_frame_order_mismatch", {"stack_frame_layout": [0x00, 0x01, 0x3E]}),
+                 ("wrong_physical_offset", {"stack_physical": [0x1FF, 0x1FE, 0x1FC]}),
+                 ("stack_ok_false", {"stack_ok": False}),
+                 ("extra_wram_write", {"only_stack_writes": False}),
+                 ("stack_sentinel_missing", {"stack_before": [0, 0, 0]}))
+    for field, value in mutations:
+        bad = copy.deepcopy(row)
+        if isinstance(value, dict):
+            bad.update(value)
+        else:
+            bad[field] = value
         try: check(bad, irq)
         except ValueError: continue
         raise ValueError(f"classifier accepted mutation {field}")
@@ -65,6 +83,7 @@ def main():
                 else: raise ValueError(f"RED mutation accepted: {irq}-{red}")
             print("PASS %s: accepted -> handler $%04X -> opcode refused; handler instructions=0; resume=3/3" % (irq, row["handler_pc"]))
             print("EVIDENCE " + json.dumps({"case": irq, "observation_kind": "REAL_CORE_EXECUTION", "core_revision": REV, "bios": "SYNTHETIC", "row": row}, sort_keys=True))
+            print("MUTATION PASS %s: stack/frame and non-stack WRAM corruptions rejected by classifier" % irq)
     print("BLOCKED libretro: this proof requires the debugger instruction-step API; no libretro execution claim.")
     return 0
 

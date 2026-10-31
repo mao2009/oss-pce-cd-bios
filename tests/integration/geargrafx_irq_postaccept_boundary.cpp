@@ -59,7 +59,9 @@ int main(int argc, char** argv) {
     const u8 handler_code[] = {0x03, 0x07, 0xA9, 0x77, 0x8D, 0x60, 0x3E, 0x80, 0xFE};
     for (unsigned i = 0; i < sizeof(guest); ++i) wram[0x1E00 + i] = guest[i];
     for (unsigned i = 0; i < sizeof(handler_code); ++i) wram[0x1F80 + irq * 0x20 + i] = handler_code[i];
-    wram[0x1E60] = 0; wram[0x1FFD] = wram[0x1FFE] = wram[0x1FFF] = 0;
+    wram[0x1E60] = 0;
+    // Distinct physical sentinels make absence/partial/wrong-offset pushes visible.
+    wram[0x1FF] = 0xA1; wram[0x1FE] = 0xB2; wram[0x1FD] = 0xC3;
     s->PC->SetValue(kGuest); s->S->SetValue(0xFF); s->A->SetValue(0); s->X->SetValue(0); s->Y->SetValue(0); s->P->SetValue(0x14);
     if (irq == 0) cpu->AssertIRQ2(true);
     else if (irq == 1) cpu->AssertIRQ1(true);
@@ -70,6 +72,7 @@ int main(int argc, char** argv) {
     int samples = 0;
     // CLI (request remains pending because CheckIRQs observes I before CLI), then BRA accepts it.
     core.RunToVBlank(frame.data(), audio.data(), &samples, &debug, false);
+    const unsigned stack_before_accept[3] = {wram[0x1FF], wram[0x1FE], wram[0x1FD]};
     core.RunToVBlank(frame.data(), audio.data(), &samples, &debug, false);
     const unsigned pc_after_accept = s->PC->GetValue(), sp_after_accept = s->S->GetValue();
     HuC6270::HuC6270_State* vdc = core.GetHuC6270_1()->GetState();
@@ -109,9 +112,12 @@ int main(int argc, char** argv) {
         bool is_stack = i == physical[0] || i == physical[1] || i == physical[2];
         if (wram_before_accept[i] != wram[i] && !is_stack) only_stack_writes = false;
     }
-    const bool stack_ok = stack[0] == 0x3E && stack[1] == 0x01 && stack[2] == 0x00 &&
+    const bool stack_ok = stack_before_accept[0] == 0xA1 && stack_before_accept[1] == 0xB2 && stack_before_accept[2] == 0xC3 &&
+                          stack[0] == 0x3E && stack[1] == 0x01 && stack[2] == 0x00 &&
                           wram[physical[0]] == stack[0] && wram[physical[1]] == stack[1] &&
                           wram[physical[2]] == stack[2] && only_stack_writes;
-    std::fprintf(stderr, "{\"case\":\"%s\",\"accepted\":%s,\"observed_vector\":%u,\"classified_vector\":%u,\"handler_pc\":%u,\"pc_after_accept\":%u,\"sp_before\":255,\"sp_after\":%u,\"irr\":%u,\"idr\":%u,\"fetch_page\":%u,\"fetch_mpr\":%u,\"fetch_opcode\":%u,\"handler_steps\":%u,\"resume_attempts\":%u,\"resume_refused\":%u,\"stack_checked\":%s,\"stack_ok\":%s,\"stack_cpu\":[8703,8702,8701],\"stack_physical\":[511,510,509],\"stack\":[%u,%u,%u],\"vdc_ar_before\":%u,\"vdc_ar_after\":%u,\"vdc_r_before\":%u,\"vdc_r_after\":%u,\"marker\":%u}", source.c_str(), accepted ? "true" : "false", observed_vector, classified_vector, handler, pc_after_accept, sp_after_accept, *s->IRR, *s->IDR, fetch_page, fetch_mpr, fetch_opcode, handler_steps, resume_attempts, resume_refused, stack_checked ? "true" : "false", stack_ok ? "true" : "false", stack[0], stack[1], stack[2], ar_before, ar_after, r_before, r_after, wram[0x1E60]);
+    // This is the observed byte layout ordered by CPU stack addresses; it is
+    // not a cycle-by-cycle chronological trace of the writes.
+    std::fprintf(stderr, "{\"case\":\"%s\",\"accepted\":%s,\"observed_vector\":%u,\"classified_vector\":%u,\"handler_pc\":%u,\"pc_after_accept\":%u,\"sp_before\":255,\"sp_after\":%u,\"irr\":%u,\"idr\":%u,\"fetch_page\":%u,\"fetch_mpr\":%u,\"fetch_opcode\":%u,\"handler_steps\":%u,\"resume_attempts\":%u,\"resume_refused\":%u,\"stack_checked\":%s,\"stack_ok\":%s,\"stack_cpu\":[8703,8702,8701],\"stack_physical\":[511,510,509],\"stack_before\":[%u,%u,%u],\"stack\":[%u,%u,%u],\"stack_frame_layout\":[%u,%u,%u],\"only_stack_writes\":%s,\"vdc_ar_before\":%u,\"vdc_ar_after\":%u,\"vdc_r_before\":%u,\"vdc_r_after\":%u,\"marker\":%u}", source.c_str(), accepted ? "true" : "false", observed_vector, classified_vector, handler, pc_after_accept, sp_after_accept, *s->IRR, *s->IDR, fetch_page, fetch_mpr, fetch_opcode, handler_steps, resume_attempts, resume_refused, stack_checked ? "true" : "false", stack_ok ? "true" : "false", stack_before_accept[0], stack_before_accept[1], stack_before_accept[2], stack[0], stack[1], stack[2], stack[0], stack[1], stack[2], only_stack_writes ? "true" : "false", ar_before, ar_after, r_before, r_after, wram[0x1E60]);
     return 0;
 }
