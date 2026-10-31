@@ -8,8 +8,8 @@
 ## 結論（要約）
 
 - 5 命令はいずれも **1 命令内で length 回のバイト書込みを行う**（複数書込み）。静的な範囲検査では、書込み先が許可域外に届くかを命令実行前に判定できる（`tools/block_xfer_audit.py`）。
-- **実コアでの書込み前遮断は実測対象になった（旧記述の NOT_RUN は置き換え）。** `tests/integration/geargrafx_block_write_guard.py`（`make block-write-guard`、`make integration` に含まれる）が pinned Geargrafx（b49ae82）と検証専用パッチ付きの実コアで、TII/TIN/TIA/TDD/TAI の 1 バイト転送を合成メディアで実行する。期待 PASS は 30 ケース（各命令 6 種: 拒否・フックなし対照・許可 の 3 種に、#459 のスタック push 用の 3 種を加えたもの）。
-- **命令途中で停止できるかは未実測（UNMEASURED）のまま。** driver は書込み前の拒否のみを測る。
+- **実コアでの書込み前遮断は実測対象になった（旧記述の NOT_RUN は置き換え）。** `tests/integration/geargrafx_block_write_guard.py`（`make block-write-guard`、`make integration` に含まれる）が pinned Geargrafx（b49ae82）と検証専用パッチ付きの実コアで、TII/TIN/TIA/TDD/TAI の 1 バイト転送を合成メディアで実行する。**この#612時点の suite は30ケース**（各命令6種: 拒否・フックなし対照・許可の3種に、#459のスタックpush用の3種を加えたもの）。後続#613はsafeabort拒否/許可を加え、suiteを40ケースへ拡張する。30件は#612時点の記録であり、後続suiteの現行件数ではない。
+- **TII の命令内 1-byte 境界だけは別の single-step 実験で観測済みだが、TIN/TDD/TIA/TAI の同等観測と、命令全体の安全な中断は未実証（UNMEASURED）。** block-write driver は書込み前拒否と拒否後の継続・副作用を free-run で測る。hook が拒否しても転送状態と TransferEnd は進むため、安全停止の証拠ではない。
 - 試験の拒否方針（書込み先が $FF ページの場合に拒否）は probe の中に書かれており、本番ゲートの証拠ではない。driver は「コアのフック点が書込み前に拒否できる」ことだけを示す。
 - **#459（TransferStart の A/X/Y push）:** 旧状態では、スタックページ（MPR1）を $FF にマップすると A/X/Y の push が VDC に着地した（実測: AR 0→7、R[7] 0→564）。検証専用パッチに TransferStart 用の書込み前フックを追加し、スタックページが $FF のとき push だけを拒否する。拒否した場合、push は書かれず S は 3 だけ動く（TransferEnd の pop と釣り合う）。**適用範囲は TransferStart の push のみ。** PHA/PHP/JSR/IRQ などの他の push、TransferEnd の pop（$FF ページからの読出し。ガード対象外）、その他の書込みは対象外。拒否方針は probe 内に書かれたテスト方針で、本番ゲートの証拠ではない。
 - **#459 の拒否経路は「安全に停止する経路」ではない（実コアで実測）。** TransferEnd は常に 3 バイトを pop する。push を拒否するとその 3 スロットは一度も書かれていないため、スタックページが $FF のときは $2102/$2103/$2104（VDC のデータ読み出しバッファ LSB/MSB とステータスレジスタ）を**読み出す**ことになる。実測値は下記の「#459 拒否後の実コア追跡」節。A/X/Y は読み出した値で上書きされ、$2104 の読み出しは VDC ステータスレジスタを**クリア**する（IRQ1 解除）。ブロック転送本体も実行される（転送先バイトは着地する）。したがって push の拒否だけでは安全性を証明できず、**本番用安全機構が必要**（スタックページを $FF にマップしない、または TransferEnd の pop まで覆うゲート）。**検証専用パッチは本番用安全機構ではない。** ゲートは BLOCKED のまま。
@@ -28,13 +28,47 @@
 
 ## ブロック転送の書込み先モデル
 
+### pinned コアの実装監査（b49ae82a）
+
+`src/huc6280_opcodes_inline.h` の実装を読み取り専用で再確認した。opcode は
+TII=`$73`、TIN=`$D3`、TDD=`$C3`、TIA=`$E3`、TAI=`$F3` で、各 operand は
+`source:u16, destination:u16, length:u16`（TransferStart の Fetch16 x3）である。
+TransferStart は A/X/Y を stack に push し、各後続 `RunInstruction` は
+`m_transfer_state==2` のとき一 byte だけ `Memory::Write(dest, Memory::Read(src,true),true)`
+を行い、PC を 1 byte decrement して同じ block opcode を再実行する。完了時だけ
+TransferEnd が stack pop と PC+6 を行う。TII の別実験は命令内 byte state 間の境界を観測したが、
+この source 読みと block-write driver は5命令すべての同等な single-step 実測を意味しない。
+
+| 命令 | opcode | source/destination 更新 |
+|---|---:|---|
+| TII | `$73` | source++, destination++ |
+| TIN | `$D3` | source++, destination fixed |
+| TDD | `$C3` | source--, destination-- |
+| TIA | `$E3` | source++, destination += `count` の偶奇で +1/-1 |
+| TAI | `$F3` | source += `count` の偶奇で +1/-1, destination++ |
+
+`Memory::Write` が MPR の CPU page mapping を解決する通常の byte-write path である。
+しかし検証専用 patch の hook 以外に #173 の production gate へ接続された per-byte
+allowlist はない。patch の hook は `Memory::Read` と `Memory::Write` の前にあるため、
+この限定 probe では副作用前である。一方、hook が拒否しても transfer state/count と
+TransferEnd は進むため、これは安全な命令停止ではない。
+
+### 2026-10-31 再実行結果と境界
+
+`make block-write-guard` を#612時点のsuiteで再実行した。5 opcode x (hardware-page refusal / no-hook RED /
+WRAM positive / stack-$FF refusal / stack-$FF no-hook RED / WRAM-stack positive) の30 synthetic
+real-core cases は PASS した。この実行が実証するのは **MPR page=$FF の一 byte destination
+store に限る verification-only pre-write hook** である。ROM bank、非-$FF forbidden RAM、
+MPR alias、multi-byte boundary crossing、length=0、TIA/TAI の複数 byte 順序、命令開始前の
+全体拒否は、この run では実証していないため BLOCKED である。
+
 | 命令 | 書込み先の動き | モデル | 未確認事項 |
 |------|----------------|--------|------------|
-| TII | dst を +1（src も +1） | 厳密（16bit ラップ） | 実コアでの確認なし |
-| TDD | dst を -1（src も -1） | 厳密（16bit ラップ） | 同上 |
-| TIN | dst 固定（src は +1） | 厳密 | 同上 |
-| TIA | dst が交互（src は +1） | dst..dst+length の過大近似 | 交互の順序・基準の進み方は未確認 |
-| TAI | src が交互（dst は +1） | dst の集合は TII と同じ | 同上 |
+| TII | dst を +1（src も +1） | 厳密（16bit ラップ） | 1-byte は実コア確認済み。複数byte・16bit ラップ未実測 |
+| TDD | dst を -1（src も -1） | 厳密（16bit ラップ） | 1-byte は実コア確認済み。複数byte・16bit ラップ未実測 |
+| TIN | dst 固定（src は +1） | 厳密 | 1-byte は実コア確認済み。複数byte・16bit ラップ未実測 |
+| TIA | dst が交互（src は +1） | dst..dst+length の過大近似 | 1-byte は実コア確認済み。複数byteの交互順序・基準の進み方は未実測 |
+| TAI | src が交互（dst は +1） | dst の集合は TII と同じ | 1-byte は実コア確認済み。複数byteの交互順序・基準の進み方は未実測 |
 
 - length 0 は最悪ケース（0x10000 バイト）として扱う。長さ 0 の規則は未確認。
 - 過大近似のため、拒否は保守的（過剰拒否はありうる）。許可が楽観的になることはない。
@@ -91,12 +125,12 @@ A/X/Y 上書きとステータスレジスタのクリアは **TransferEnd の p
 
 **未検証の範囲（この PR では測っていない）**
 
-- **本番用安全機構そのもの。** 本番用ゲートは未実装・未検証であり、本 PR の検証専用パッチは它的ではない。
-- 1 バイト以外の転送長（length 0、length > 1）、複数バイト着他バンクへの転送。
+- **本番用安全機構そのもの。** 本番用ゲートは未実装・未検証であり、本 PR の検証専用パッチは代替ではない。
+- 1 バイト以外の転送長（length 0、length > 1）、複数バイト転送での他バンク到達。
 - スタックページが $FF 以外（例: $F8）のときの TransferStart push 拒否（ガードは $FF ページのときだけ拒否する）。
 - TransferStart 以外の push（PHA/PHP/JSR/IRQ）、および TransferEnd の pop 自体への遮断（pop は対象外）。
 - 割込み（NMI/IRQ1）が処理中に上記の拒否が起きた場合の挙動、DEC 等の他命令との併用。
--  命令途中停止（ミidic命令の実行を中断できるか）は**未実測（UNMEASURED）**。driver は書込み前拒否のみを測る。
+- 命令途中から副作用なく安全に中断できるかは**未実証（UNMEASURED）**。TII の byte 境界 single-step 観測と、5命令の 1-byte 書込み前拒否は実測済みだが、TIN/TDD/TIA/TAI の同等観測および命令全体の安全な停止は実証していない。
 - デバイス起点の RAM 書込み（#419 の列挙 9 行のうち判定未了 2 行）の実コア実測。
 - 本番 ROM、ROM への書込み、CD 起動、実ゲーム、純正 BIOS との互換性。いずれも対象外。
 
@@ -112,17 +146,33 @@ A/X/Y 上書きとステータスレジスタのクリアは **TransferEnd の p
 
 | 受入条件 | 状況 | 根拠 |
 |----------|------|------|
-| 5 命令の命令途中停止の実測 | **未実施（UNMEASURED）**。driver は命令内の書込み前拒否のみを測り、途中停止は測らない | `geargrafx_block_write_guard.py` の LIMIT 行 |
-| 書込み先が $FF ページの 1 バイト転送が書込み前に拒否される（負例） | **実コアの driver で検証対象**（`*-forbidden-armed` 5 件 + 対照 `*-forbidden-unguarded` 5 件）。判定条件は VDC AR 不変（結果はこの PR では記録していない） | `tests/integration/geargrafx_block_write_guard.py` |
-| 許可域（WRAM）への 1 バイト転送が届く（正例） | **実コアの driver で検証対象**（`*-allowed-armed` 5 件） | 同上 |
+| 5 命令の途中からの安全な実行中断 | **未実証（UNMEASURED）**。TII の byte 境界 single-step 観測はあるが、block-write driver は free-run であり、TIN/TDD/TIA/TAI の同等観測は未実施。拒否後も転送と TransferEnd は進む | `geargrafx_block_write_guard.py` の LIMIT 行、`473-caller-stack-experiment.md` |
+| 書込み先が $FF ページの 1 バイト転送が書込み前に拒否される（負例） | **実コアで実測済み**（`*-forbidden-armed` 5 件 + 対照 `*-forbidden-unguarded` 5 件）。armed は VDC 副作用前に拒否、no-hook RED では副作用が着地。#612当時の30ケース PASS の一部（#613は40ケース） | `tests/integration/geargrafx_block_write_guard.py` |
+| 許可域（WRAM）への 1 バイト転送が届く（正例） | **実コアで実測済み**（`*-allowed-armed` 5 件）。書込みが着地 | 同上 |
 | TransferStart の A/X/Y push がスタックページ $FF で書込み前に拒否される（#459、負例） | **実コアで実測済み**（`*-stackff-armed` 5 件 + 対照 `*-stackff-unguarded` 5 件）。拒否は VDC AR / R[7] 不変で確認。ただし拒否は「安全な停止」ではない（pop による I/O 読み出し・A/X/Y 破壊・VDC ステータスレジスタのクリアも実測） | `tests/integration/geargrafx_block_write_guard.py`（`PASS issue-459` 行と `BLOCKED issue-459` 行） |
 | 拒否後の A/X/Y・S・PC・P・MPR・VDC 状態の最終状態（#459） | **実コアで実測済み**。S は釣り合う（`$04`→`$04`）、PC は終了点、P は不変、MPR 8 本は不変。A/X/Y は I/O 読み出し値で上書きされ、VDC ステータスレジスタは `$05`→`$00` | 同上（「#459 拒否後の実コア追跡」節） |
 | TransferStart の push がスタックページ WRAM で届く（#459、正例） | **実コアで実測済み**（`*-stackwram-armed` 5 件）。A/X/Y はスタックから復元され、VDC ステータスレジスタは読まれない（対照実験） | 同上 |
 | 複数バイト・他バンク・TIA/TAI の交互順序 | **静的のみ**（host モデル。実コアでは未検証） | `tests/host/test_block_xfer_audit.py` |
 | デバイス起点 RAM 書込みの監査列挙 | **ソース列挙済み（#419、検索範囲内）。判定は未了**。UNK-01/02 は起動元未確定、実コアでのプローブ未実施 | 下記、`docs/research/367-device-write-audit.md` |
-| 変異テストで偽 PASS が出ないこと | host 変異テスト 3 件（静的のみ）に加え、実コア driver が armed 判定に変異検査を適用する | `MutationTest` 3 件、driver の `mutation_test` |
+| 変異テストで偽 PASS が出ないこと | host 変異テスト 3 件（静的のみ）に加え、実コア driver の armed 判定に対する mutation が PASS | `MutationTest` 3 件、driver の `mutation_test` |
 
 ## デバイス起点 RAM 書込み（W17）
+
+### 遮断状態（source audit の範囲だけ）
+
+| 観測対象 | 結果 | 状態 |
+|---|---|---|
+| block-transfer CPU byte store | patch hook は byte write の前 | PRE_WRITE_GUARDED（verification-only、$FF destination 1-byte probe のみ） |
+| block-transfer 全命令 | production pre-execution deny は未接続 | UNGUARDED |
+| CD related transfer | 本監査で CPU main WRAM への device write を実測していない | NOT_VERIFIED |
+| ADPCM DMA | ADPCM RAM 内の DMA 状態は source にあるが main WRAM write を実測していない | NOT_VERIFIED |
+| VDC VRAM/SAT DMA | VDC 内部 VRAM/SAT の経路。CPU main WRAM write ではない | NOT_APPLICABLE |
+| timer/IRQ | request/ack は確認したが main WRAM write 経路はこの範囲で未確認 | NOT_VERIFIED |
+| backup/Arcade Card | 起動元または経路が未確定 | NOT_VERIFIED |
+
+この表の `PRE_WRITE_GUARDED` は device write を含まず、#173 の production safety gate が
+遮断済みである意味ではない。CPU 以外の各行は実コアで書込み時点を捕捉していないので
+PASS にしない。
 
 #419 で pinned Geargrafx（b49ae82）のソースを読み取り、検索語による範囲で列挙した（実行なし。詳細は `docs/research/367-device-write-audit.md`）。記録は 9 行:
 
@@ -136,15 +186,15 @@ A/X/Y 上書きとステータスレジスタのクリアは **TransferEnd の p
 ## 残課題と BLOCKED 理由
 
 BLOCKED 理由:
-1. 命令途中で停止するかが未実測。書込み前拒否は実コア driver で測定対象になった（上記）。
+1. 命令全体を副作用なく安全に停止する手段は未実証。5命令の1-byte書込み前拒否と TII の byte 境界 single-step 観測はあるが、TIN/TDD/TIA/TAI の同等観測は未実施で、拒否後も転送は継続する（上記）。
 2. 実行時オペランドの復号（src/dst/length）が未配線。静的検査は入力が既知のときのみ使える。
 3. デバイス起点書込みの判定が未了（列挙は #419 で済み、UNK-01/02 の起動元は未確定、実コアでのプローブは未実施）。
 4. #459 の拒否経路が安全な停止ではない（実コアで実測）。TransferEnd の pop は一度も書かれていないスタックスロットを $FF ページ（VDC レジスタ）から読み出し、A/X/Y を破壊し、VDC ステータスレジスタをクリアする。命令自体の実行も止まらない。本番用安全機構（スタックページを $FF にマップしない、または TransferEnd の pop まで覆うゲート）が未実装・未検証。
 
 解除条件:
-- 実コアで 5 命令それぞれについて、複数バイト・他バンクを含めて許可外書込みが着地しないことを記録する。命令途中の停止有無も WSL 実行で記録する（`tools/jsr_observation.py` のスキーマ）。
+- 実コアで 5 命令それぞれについて、複数バイト・他バンクを含めて許可外書込みが着地しないことを記録する。命令全体を副作用なく安全に停止できるかも WSL 実行で記録する（`tools/jsr_observation.py` のスキーマ）。
 - TIA の交互順序・長さ 0 の規則を実コアで確認し、過大近似を正確な集合に置き換える。
 - UNK-01/02 の起動元を確定し、デバイス起点の各経路の遮断可否を判定する（別 Issue）。
 - #459 について本番用安全機構（スタックページの $FF マップを禁止する、または TransferEnd の pop まで覆うゲート）を実装し、実コアで「拒否後に A/X/Y・S・PC・P・MPR・VDC 状態が保存される」ことを記録する。検証専用パッチの測定結果だけでは解除できない。
 
-次の候補: 命令途中停止の実測（V04 専用の probe モード追加。共有フックは #365 の担当範囲のため、新規ファイルで実装する）。
+次の候補: 命令全体の安全な事前拒否・中断可否の実測（V04 専用の probe モード追加。共有フックは #365 の担当範囲のため、新規ファイルで実装する）。
