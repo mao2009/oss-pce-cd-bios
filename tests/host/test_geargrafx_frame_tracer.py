@@ -1,7 +1,10 @@
 """Synthetic protocol tests for the normal-frame tracer; no Geargrafx core runs here."""
 import json
 from pathlib import Path
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "integration"))
@@ -15,7 +18,7 @@ def event(kind="sample", frame=1):
     if kind == "wram":
         row.update(changed=2, first_wram=512, last_wram=513)
     if kind == "cd":
-        row.update(cd_event=1, command=8, lba=5, status=0)
+        row.update(snapshot="FRAME_SNAPSHOT", cd_event=1, command=8, lba=5, status=0)
     return row
 
 
@@ -47,6 +50,47 @@ class FrameTracerProtocolTests(unittest.TestCase):
         _, _, end = tracer.parse_records(output([event("cd")], scsi_events_dropped=3))
         self.assertTrue(end["overflow"])
         self.assertEqual(end["scsi_events_dropped"], 3)
+
+    def test_refuses_scsi_records_without_frame_snapshot_label(self):
+        row = event("cd")
+        row["snapshot"] = "EVENT_TIME"
+        with self.assertRaisesRegex(ValueError, "FRAME_SNAPSHOT"):
+            tracer.parse_records(output([row]))
+
+    def test_cleanup_rejects_untracked_or_replaced_directories(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            untracked = root / "untracked"
+            untracked.mkdir()
+            self.assertFalse(tracer.cleanup_tracked_job_dir(untracked, (0, 0)))
+            self.assertTrue(untracked.is_dir())
+
+            tracked, identity = tracer.make_tracked_job_dir()
+            moved = root / "original-job"
+            tracked.rename(moved)
+            tracked.mkdir()
+            try:
+                self.assertFalse(tracer.cleanup_tracked_job_dir(tracked, identity))
+                self.assertTrue(tracked.is_dir())
+                self.assertTrue(moved.is_dir())
+            finally:
+                shutil.rmtree(tracked)
+                shutil.rmtree(moved)
+
+    def test_cleanup_reports_missing_tracked_directory_without_deleting_anything(self):
+        tracked, identity = tracer.make_tracked_job_dir()
+        shutil.rmtree(tracked)
+        self.assertFalse(tracer.cleanup_tracked_job_dir(tracked, identity))
+
+    @unittest.skipUnless(shutil.which("c++"), "C++ compiler unavailable")
+    def test_ring_capacities_are_executed_in_cpp(self):
+        source = Path(__file__).with_name("geargrafx_frame_tracer_ring_test.cpp")
+        include = source.parents[1] / "integration"
+        with tempfile.TemporaryDirectory() as temporary:
+            binary = Path(temporary) / "ring-test"
+            subprocess.run(["c++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-I", str(include),
+                            str(source), "-o", str(binary)], check=True)
+            subprocess.run([str(binary)], check=True)
 
     def test_refuses_mutating_or_stepped_protocols_and_bad_ring_counts(self):
         cases = [

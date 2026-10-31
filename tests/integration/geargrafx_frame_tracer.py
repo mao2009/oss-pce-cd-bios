@@ -6,8 +6,10 @@ register/state metadata and working-RAM change ranges only, never guest bytes.
 """
 import argparse
 import json
+import os
 from pathlib import Path
 import shutil
+import stat
 import sys
 import tempfile
 
@@ -19,6 +21,29 @@ from geargrafx_harness import doctor, run_job, stage_disc  # noqa: E402
 MAX_FRAMES = 600
 MAX_EVENTS = 256
 EVENT_KINDS = {"sample", "cd", "wram", "handoff"}
+
+
+def make_tracked_job_dir():
+    """Create a job directory and retain its identity for safe cleanup."""
+    path = Path(tempfile.mkdtemp(prefix="pce-frame-trace-"))
+    identity = os.lstat(path)
+    return path, (identity.st_dev, identity.st_ino)
+
+
+def cleanup_tracked_job_dir(path, identity):
+    """Remove only the exact directory this tracer created, never a replacement."""
+    try:
+        current = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    if (not stat.S_ISDIR(current.st_mode) or
+            (current.st_dev, current.st_ino) != identity):
+        return False
+    try:
+        shutil.rmtree(path)
+    except OSError:
+        return False
+    return True
 
 
 def parse_records(stdout):
@@ -70,8 +95,11 @@ def parse_records(stdout):
             raise ValueError("invalid MPR snapshot")
         if event["kind"] == "wram" and not all(type(event.get(key)) is int for key in ("changed", "first_wram", "last_wram")):
             raise ValueError("invalid WRAM change event")
-        if event["kind"] == "cd" and not all(type(event.get(key)) is int for key in ("cd_event", "command", "lba", "status")):
-            raise ValueError("invalid CD event")
+        if event["kind"] == "cd":
+            if event.get("snapshot") != "FRAME_SNAPSHOT":
+                raise ValueError("SCSI metadata lacks FRAME_SNAPSHOT label")
+            if not all(type(event.get(key)) is int for key in ("cd_event", "command", "lba", "status")):
+                raise ValueError("invalid CD event")
     return cap, events, end
 
 
@@ -88,7 +116,7 @@ def trace(args):
     if report["status"] != "PASS":
         log.update(status=report["status"], reason="doctor prerequisites", evidence="NOT_RUN")
         return log
-    job = Path(tempfile.mkdtemp(prefix="pce-frame-trace-"))
+    job, job_identity = make_tracked_job_dir()
     try:
         try:
             probe = compile_probe(job, "geargrafx_frame_tracer.cpp", "geargrafx-frame-tracer")
@@ -126,7 +154,7 @@ def trace(args):
                    elapsed_s=result["elapsed_s"], capability=cap, events=events, summary=end)
         return log
     finally:
-        shutil.rmtree(job, ignore_errors=True)
+        cleanup_tracked_job_dir(job, job_identity)
 
 
 def main(argv=None):

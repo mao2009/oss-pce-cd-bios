@@ -16,6 +16,7 @@
 #include "cdrom.h"
 #include "scsi_controller.h"
 #include "trace_logger.h"
+#include "geargrafx_frame_tracer_ring.h"
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -47,30 +48,6 @@ struct Event {
     CpuSnap cpu;
     CdSnap cd;
     unsigned changed, first, last, cd_event, cd_command, cd_lba, cd_status;
-};
-
-class Ring {
-public:
-    explicit Ring(unsigned capacity) : capacity_(capacity), begin_(0), size_(0), dropped_(0) {}
-
-    void push(const Event& event) {
-        if (size_ < capacity_) {
-            events_[(begin_ + size_) % kRingSize] = event;
-            ++size_;
-            return;
-        }
-        events_[begin_] = event;
-        begin_ = (begin_ + 1) % kRingSize;
-        ++dropped_;
-    }
-
-    unsigned size() const { return size_; }
-    unsigned dropped() const { return dropped_; }
-    const Event& at(unsigned index) const { return events_[(begin_ + index) % capacity_]; }
-
-private:
-    std::array<Event, kRingSize> events_{};
-    unsigned capacity_, begin_, size_, dropped_;
 };
 
 CpuSnap cpu_snap(GeargrafxCore& core, HuC6280::HuC6280_State* cpu, Memory* memory) {
@@ -124,8 +101,10 @@ void print_event(const Event& event) {
     std::printf("EVENT {\"kind\":\"%s\",\"frame\":%u,", kind, event.frame);
     print_cpu(event.cpu);
     if (event.kind == Event::CD) {
-        // SCSI event metadata only; command payload bytes are never serialized.
-        std::printf(",\"cd_event\":%u,\"command\":%u,\"lba\":%u,\"status\":%u,",
+        // SCSI metadata is event-originated, but CPU/CD fields are sampled only
+        // after RunToVBlank returns; never present them as event-time state.
+        // Command payload bytes are never serialized.
+        std::printf(",\"snapshot\":\"FRAME_SNAPSHOT\",\"cd_event\":%u,\"command\":%u,\"lba\":%u,\"status\":%u,",
                     event.cd_event, event.cd_command, event.cd_lba, event.cd_status);
         print_cd(event.cd);
     } else if (event.kind == Event::WRAM) {
@@ -175,7 +154,7 @@ int main(int argc, char** argv) {
     std::vector<u8> frame(1024 * 512 * 4);
     std::vector<s16> audio(65536);
     GeargrafxCore::GG_Debug_Run normal = {};  // no step_debugger: normal whole-frame execution
-    Ring ring((unsigned)capacity);
+    FrameTracerRing<Event, kRingSize> ring((unsigned)capacity);
     std::array<u8, kWorkRamBytes> previous_wram{};
     std::memcpy(previous_wram.data(), memory->GetWorkingRAM(), previous_wram.size());
     CpuSnap previous_cpu = cpu_snap(core, cpu, memory);
