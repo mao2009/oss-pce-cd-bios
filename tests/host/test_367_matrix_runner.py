@@ -77,6 +77,17 @@ class MatrixDispatchTest(unittest.TestCase):
         self.assertEqual("deny-" in "tii-len0", False)
         self.assertEqual("tii-len0".endswith("tam-deny"), False)
 
+    def test_len0_dispatches_to_deny_true(self):
+        # Dispatch order in main(): case.endswith("len0") is checked before
+        # case in LEN_CASES.  Verify tii-len0 hits the explicit len0 branch
+        # (deny=True) rather than falling through to the LEN_CASES allow path.
+        case = "tii-len0"
+        deny_boolean = "deny-" in case or case.endswith("tam-deny")
+        self.assertFalse(deny_boolean, "tii-len0 must not match the deny- boolean")
+        self.assertTrue(case.endswith("len0"), "tii-len0 must match the explicit len0 branch")
+        self.assertNotIn(case, M.LEN_CASES,
+                         "tii-len0 must not be in LEN_CASES (would route to allow path)")
+
 
 if __name__ == "__main__":
     unittest.main()

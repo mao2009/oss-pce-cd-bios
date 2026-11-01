@@ -201,10 +201,13 @@ def mutation_test(row, case, deny=False):
             continue
         if case.endswith("len0"):
             # length=0 produces an empty transfer: byte_guard_calls is already 0
-            # (cannot be decremented) and dest_values is already empty (cannot be
-            # zeroed further).  These mutations are no-ops and are explicitly
-            # excluded; all other mutations still apply to the preflight decision.
-            if name in ("transfer_byte_count", "partial_destination_result"):
+            # (cannot be decremented), dest_values is already empty (cannot be
+            # zeroed further), and dst_bank is empty (MPR_alias_resolution is a
+            # no-op: [b^1 for b in []] == []).  These mutations are no-ops and are
+            # explicitly excluded; all other mutations still apply to the preflight
+            # decision (preflight callback, decision inversion, address direction,
+            # stack, CPU, VDC, MPR).
+            if name in ("transfer_byte_count", "partial_destination_result", "MPR_alias_resolution"):
                 continue
         try: assert_core_row(broken,case,deny=deny)
         except (ValueError,KeyError): continue
