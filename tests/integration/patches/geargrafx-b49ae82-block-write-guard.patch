@@ -1,13 +1,16 @@
 --- a/src/huc6280_opcodes.cpp
 +++ b/src/huc6280_opcodes.cpp
-@@ -20,6 +20,12 @@
+@@ -20,6 +20,15 @@
  #include "huc6280.h"
  #include "memory.h"
  
 +// VERIFICATION-ONLY pre-write guard definitions (Issue #367 / #173). See huc6280_opcodes_inline.h.
 +bool (*gg_verify_block_write_guard)(void* context, unsigned block_op, unsigned dest) = nullptr;
 +bool (*gg_verify_transfer_start_guard)(void* context, unsigned stack_pointer) = nullptr;
-+bool (*gg_verify_transfer_abort_guard)(void* context) = nullptr;
++bool (*gg_verify_transfer_abort_guard)(void* context, unsigned block_op,
++                                      unsigned source, unsigned dest, unsigned length) = nullptr;
++void (*gg_verify_block_byte_observer)(void* context, unsigned block_op,
++                                      unsigned source, unsigned dest) = nullptr;
 +void* gg_verify_block_write_context = nullptr;
 +
  void HuC6280::OPCode0x00()
@@ -15,7 +18,7 @@
      // BRK
 --- a/src/huc6280_opcodes_inline.h
 +++ b/src/huc6280_opcodes_inline.h
-@@ -25,6 +25,26 @@
+@@ -25,6 +25,55 @@
  #include "memory.h"
  #include "huc6280_names.h"
  
@@ -24,7 +27,10 @@
 +// Defined in huc6280_opcodes.cpp. The guard runs BEFORE the byte read and Memory::Write.
 +extern bool (*gg_verify_block_write_guard)(void* context, unsigned block_op, unsigned dest);
 +extern bool (*gg_verify_transfer_start_guard)(void* context, unsigned stack_pointer);
-+extern bool (*gg_verify_transfer_abort_guard)(void* context);
++extern bool (*gg_verify_transfer_abort_guard)(void* context, unsigned block_op,
++                                              unsigned source, unsigned dest, unsigned length);
++extern void (*gg_verify_block_byte_observer)(void* context, unsigned block_op,
++                                              unsigned source, unsigned dest);
 +extern void* gg_verify_block_write_context;
 +
 +// VERIFICATION-ONLY pre-push guard for TransferStart A/X/Y stack pushes (Issue #459 / #367 / #173).
@@ -39,71 +45,157 @@
 +    return !gg_verify_block_write_guard || gg_verify_block_write_guard(gg_verify_block_write_context, block_op, dest);
 +}
 +
++// VERIFICATION-ONLY safe preflight: operands are peeked without bus reads, and
++// only from ordinary WRAM banks. Any unpeekable/MMIO/code-mapped case fails closed.
++INLINE bool GG_VerifyTransferPreflight_Allowed(Memory* memory, u16 operand_pc, unsigned block_op)
++{
++    if (!gg_verify_transfer_abort_guard)
++        return true;
++    u8 operand[6];
++    for (unsigned i = 0; i < 6; ++i) {
++        u16 address = (u16)(operand_pc + i);
++        u8 bank = memory->GetMpr((u8)(address >> 13));
++        if (memory->GetBankType(bank) != Memory::MEMORY_BANK_TYPE_WRAM ||
++            !memory->TryPeek(address, &operand[i]))
++            return false;
++    }
++    unsigned source = operand[0] | (operand[1] << 8);
++    unsigned dest = operand[2] | (operand[3] << 8);
++    unsigned length = operand[4] | (operand[5] << 8);
++    return gg_verify_transfer_abort_guard(gg_verify_block_write_context, block_op, source, dest, length);
++}
++
++INLINE void GG_ObserveBlockByte(unsigned block_op, unsigned source, unsigned dest)
++{
++    if (gg_verify_block_byte_observer)
++        gg_verify_block_byte_observer(gg_verify_block_write_context, block_op, source, dest);
++}
++
  INLINE void HuC6280::OPCodes_ADC(u8 value)
  {
      u8 a;
-@@ -525,7 +544,8 @@
+@@ -517,5 +536,10 @@
+     if (m_transfer_state == 0)
+     {
++        if (!GG_VerifyTransferPreflight_Allowed(m_memory, m_PC.GetValue(), 4))
++        {
++            m_PC.SetValue(m_PC.GetValue() + 6);
++            return;
++        }
+         OPCodes_TransferStart();
+         return;
+     }
+@@ -525,7 +546,11 @@
      if (m_transfer_state == 2)
      {
          m_cycles += 6;
 -        m_memory->Write(m_transfer_dest, m_memory->Read(m_transfer_source, true), true);
 +        if (GG_VerifyBlockWrite_Allowed(4, m_transfer_dest))
++        {
++            GG_ObserveBlockByte(4, m_transfer_source, m_transfer_dest);
 +            m_memory->Write(m_transfer_dest, m_memory->Read(m_transfer_source, true), true);
++        }
          m_transfer_source += (m_transfer_count & 1) ? -1 : 1;
          m_transfer_dest++;
          m_transfer_count++;
-@@ -556,7 +576,8 @@
+@@ -548,5 +569,10 @@
+     if (m_transfer_state == 0)
+     {
++        if (!GG_VerifyTransferPreflight_Allowed(m_memory, m_PC.GetValue(), 3))
++        {
++            m_PC.SetValue(m_PC.GetValue() + 6);
++            return;
++        }
+         OPCodes_TransferStart();
+         return;
+     }
+@@ -556,7 +584,11 @@
      if (m_transfer_state == 2)
      {
          m_cycles += 6;
 -        m_memory->Write(m_transfer_dest, m_memory->Read(m_transfer_source, true), true);
 +        if (GG_VerifyBlockWrite_Allowed(3, m_transfer_dest))
++        {
++            GG_ObserveBlockByte(3, m_transfer_source, m_transfer_dest);
 +            m_memory->Write(m_transfer_dest, m_memory->Read(m_transfer_source, true), true);
++        }
          m_transfer_source--;
          m_transfer_dest--;
          m_transfer_length--;
-@@ -586,7 +607,8 @@
+@@ -578,5 +599,10 @@
+     if (m_transfer_state == 0)
+     {
++        if (!GG_VerifyTransferPreflight_Allowed(m_memory, m_PC.GetValue(), 2))
++        {
++            m_PC.SetValue(m_PC.GetValue() + 6);
++            return;
++        }
+         OPCodes_TransferStart();
+         return;
+     }
+@@ -586,7 +617,11 @@
      if (m_transfer_state == 2)
      {
          m_cycles += 6;
 -        m_memory->Write(m_transfer_dest, m_memory->Read(m_transfer_source, true), true);
 +        if (GG_VerifyBlockWrite_Allowed(2, m_transfer_dest))
++        {
++            GG_ObserveBlockByte(2, m_transfer_source, m_transfer_dest);
 +            m_memory->Write(m_transfer_dest, m_memory->Read(m_transfer_source, true), true);
++        }
          m_transfer_source++;
          m_transfer_dest += (m_transfer_count & 1) ? -1 : 1;
          m_transfer_count++;
-@@ -617,7 +639,8 @@
+@@ -609,5 +634,10 @@
+     if (m_transfer_state == 0)
+     {
++        if (!GG_VerifyTransferPreflight_Allowed(m_memory, m_PC.GetValue(), 0))
++        {
++            m_PC.SetValue(m_PC.GetValue() + 6);
++            return;
++        }
+         OPCodes_TransferStart();
+         return;
+     }
+@@ -617,7 +652,11 @@
      if (m_transfer_state == 2)
      {
          m_cycles += 6;
 -        m_memory->Write(m_transfer_dest, m_memory->Read(m_transfer_source, true), true);
 +        if (GG_VerifyBlockWrite_Allowed(0, m_transfer_dest))
++        {
++            GG_ObserveBlockByte(0, m_transfer_source, m_transfer_dest);
 +            m_memory->Write(m_transfer_dest, m_memory->Read(m_transfer_source, true), true);
++        }
          m_transfer_source++;
          m_transfer_dest++;
          m_transfer_length--;
-@@ -647,7 +670,8 @@
+@@ -639,5 +669,10 @@
+     if (m_transfer_state == 0)
+     {
++        if (!GG_VerifyTransferPreflight_Allowed(m_memory, m_PC.GetValue(), 1))
++        {
++            m_PC.SetValue(m_PC.GetValue() + 6);
++            return;
++        }
+         OPCodes_TransferStart();
+         return;
+     }
+@@ -647,7 +688,11 @@
      if (m_transfer_state == 2)
      {
          m_cycles += 6;
 -        m_memory->Write(m_transfer_dest, m_memory->Read(m_transfer_source, true), true);
 +        if (GG_VerifyBlockWrite_Allowed(1, m_transfer_dest))
++        {
++            GG_ObserveBlockByte(1, m_transfer_source, m_transfer_dest);
 +            m_memory->Write(m_transfer_dest, m_memory->Read(m_transfer_source, true), true);
++        }
          m_transfer_source++;
          m_transfer_length--;
  
-@@ -669,9 +693,34 @@
+@@ -669,9 +703,24 @@
  {
-+    // VERIFICATION-ONLY whole-instruction refusal. PC is immediately after the
-+    // opcode, so skip exactly the six operand bytes without entering transfer
-+    // state; consequently no stack push/read, source read, or TransferEnd occurs.
-+    if (gg_verify_transfer_abort_guard &&
-+        !gg_verify_transfer_abort_guard(gg_verify_block_write_context))
-+    {
-+        m_PC.SetValue(m_PC.GetValue() + 6);
-+        return;
-+    }
-+
      m_transfer_state = 2;
  
 -    StackPush8(m_Y.GetValue());
