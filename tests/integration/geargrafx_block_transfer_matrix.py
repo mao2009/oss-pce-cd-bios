@@ -24,7 +24,7 @@ DENY_CASES = tuple(f"{op}-deny-{kind}" for op in OPS for kind in ("hw", "rom", "
 CASES = [f"{op}-len{n}" for op in OPS for n in LENGTHS]
 CASES += ["tii-boundary-1fff", "tia-boundary-3fff", "tii-boundary-7fff", "tai-boundary-ffff",
           "tdd-reverse-4000", "tii-boundary-alias", "tii-alias-overlap", "tii-tam-alias",
-          "tii-tam-deny"]
+          "tii-tam-deny", "tii-len0"]
 CASES += list(DENY_CASES) + ["tia-deny-nonmono"]
 
 def run(probe, bios, cue, case):
@@ -126,6 +126,10 @@ def assert_core_row(row, case, *, deny=False):
         expected_bank = row["mpr_after"][logical >> 13]
         if bank != expected_bank or ((bank >= 0xF8 and bank <= 0xFB) != (physical >= 0)):
             raise ValueError(f"{case}: destination MPR/physical mapping inconsistent")
+    if case.endswith("len0"):
+        if row["preflight_deny"] != 1 or row["preflight_allow"] != 0:
+            raise ValueError(f"{case}: length 0 was not denied")
+        return
     if deny:
         if row["preflight_deny"] != 1 or row["preflight_allow"] != 0:
             raise ValueError(f"{case}: prohibited destination did not cause whole-transfer refusal")
@@ -179,6 +183,7 @@ def mutation_test(row, case, deny=False):
     if bad_dst == row["preflight_dst"]: bad_dst[0] ^= 1
     mutations = (("preflight_callback_missing", {"preflight_calls":0}),
                  ("decision_inverted", {"preflight_allow":1 if deny else 0,"preflight_deny":0 if deny else 1}),
+                 ("len0_mutation_guard", {"preflight_calls":0}),
                  ("transfer_byte_count", {"byte_guard_calls":1 if deny else max(0,row["byte_guard_calls"]-1)}),
                  ("source_update_direction", {"byte_src":bad_src}),
                  ("destination_update_direction", {"preflight_dst":bad_dst}),
@@ -189,6 +194,8 @@ def mutation_test(row, case, deny=False):
     for name, change in mutations:
         broken=dict(row);broken.update(change)
         if name == "TransferEnd_stack" and (case.endswith("tam-alias") or case.endswith("tam-deny")):
+            continue
+        if case.endswith("len0") and name != "preflight_callback_missing":
             continue
         try: assert_core_row(broken,case,deny=deny)
         except (ValueError,KeyError): continue
@@ -208,6 +215,11 @@ def main():
                 if case.endswith("alias-overlap"):
                     if row["src_wram_index"] != [0,1,2] or row["dst_wram_index"] != [1,2,3] or row["dest_values"] != [0x11,0x11,0x11]:
                         raise ValueError("TII overlapping physical WRAM alias did not show sequential read-after-write")
+            elif case.endswith("len0"):
+                assert_core_row(row, case, deny=True)
+                if row["preflight_allow"] != 0 or row["preflight_deny"] != 1:
+                    raise ValueError(f"{case}: length 0 was not denied")
+                return
             elif deny:
                 assert_core_row(row, case, deny=True)
             else:

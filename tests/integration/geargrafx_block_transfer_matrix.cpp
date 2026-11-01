@@ -73,6 +73,7 @@ int main(int argc,char** argv) {
     bool tam=false,deny=false,overlap=scenario=="alias-overlap";
     if(scenario.rfind("len",0)==0)len=std::strtoul(scenario.c_str()+3,nullptr,10);
     else if(scenario=="boundary-1fff"){len=2;dst=0x1FFF;}
+    else if(scenario=="len0"){len=0;src=0x3E80;dst=0x3E90;}
     else if(scenario=="boundary-3fff"){len=2;dst=0x3FFF;}
     else if(scenario=="boundary-7fff"){len=2;dst=0x7FFF;}
     else if(scenario=="boundary-ffff"){len=2;dst=0xFFFF;}
@@ -85,8 +86,8 @@ int main(int argc,char** argv) {
     else if(scenario=="tam-deny"){tam=true;deny=true;len=2;src=0x3E80;dst=0x4010;}
     else if(overlap){if(op!=0)return 2;len=3;src=0x4000;dst=0x2001;}
     else return 2;
-    if(op==3&&scenario.rfind("len",0)==0){src+=len-1;dst+=len-1;}
-    if(!len||len>8)return 2;
+    if(op==3&&scenario.rfind("len",0)==0&&len>0){src+=len-1;dst+=len-1;}
+    if(len>8)return 2;
     g_deny=deny;
     std::ifstream file(argv[1],std::ios::binary);std::vector<u8> bios((std::istreambuf_iterator<char>(file)),{});
     if(bios.size()<0x2000)return 3;
