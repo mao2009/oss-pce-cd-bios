@@ -19,6 +19,7 @@ from geargrafx_reference_guard import synthetic_media
 
 OPS = {"tii": (0, 0x73), "tin": (1, 0xD3), "tia": (2, 0xE3), "tdd": (3, 0xC3), "tai": (4, 0xF3)}
 LENGTHS = (1, 2, 3, 4, 8)
+LEN_CASES = {f"{op}-len{n}" for op in OPS for n in LENGTHS}
 PATTERN = (0x13, 0x27, 0x3B, 0x4F, 0x63, 0x77, 0x8B, 0x9F)
 DENY_CASES = tuple(f"{op}-deny-{kind}" for op in OPS for kind in ("hw", "rom", "backup"))
 CASES = [f"{op}-len{n}" for op in OPS for n in LENGTHS]
@@ -210,7 +211,7 @@ def main():
             deny = "deny-" in case or case.endswith("tam-deny")
             # Operand fixture: default matrix tests use src=$3E80/dst=$3E90; explicit boundary
             # and denial cases are interpreted from the probe's returned decoded operands.
-            if "-len" in case or case.endswith("alias-overlap"):
+            if case in LEN_CASES or case.endswith("alias-overlap"):
                 assert_core_row(row, case)
                 if case.endswith("alias-overlap"):
                     if row["src_wram_index"] != [0,1,2] or row["dst_wram_index"] != [1,2,3] or row["dest_values"] != [0x11,0x11,0x11]:
