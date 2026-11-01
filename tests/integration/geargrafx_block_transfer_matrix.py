@@ -127,6 +127,12 @@ def assert_core_row(row, case, *, deny=False):
         expected_bank = row["mpr_after"][logical >> 13]
         if bank != expected_bank or ((bank >= 0xF8 and bank <= 0xFB) != (physical >= 0)):
             raise ValueError(f"{case}: destination MPR/physical mapping inconsistent")
+    # MPR snapshot at preflight time must equal MPR at transfer end / abort.
+    # This holds for all cases: deny (preflight state preserved), allow (no
+    # unintended MPR change during transfer), and TAM (TAM change happens
+    # before preflight, so preflight_mpr already reflects it).
+    if row["preflight_mpr"] != row["mpr_after"]:
+        raise ValueError(f"{case}: MPR changed between preflight and transfer end/abort")
     if case.endswith("len0"):
         if row["preflight_deny"] != 1 or row["preflight_allow"] != 0:
             raise ValueError(f"{case}: length 0 was not denied")
@@ -185,6 +191,8 @@ def mutation_test(row, case, deny=False):
     bad_dst = row["preflight_dst"][::-1] or [1]
     if bad_src == row["byte_src"]: bad_src[0] ^= 1
     if bad_dst == row["preflight_dst"]: bad_dst[0] ^= 1
+    mpr_after = row["mpr_after"]
+    preflight_mpr = row["preflight_mpr"]
     mutations = (("preflight_callback_missing", {"preflight_calls":0}),
                  ("decision_inverted", {"preflight_allow":1 if deny else 0,"preflight_deny":0 if deny else 1}),
                  ("len0_mutation_guard", {"preflight_calls":0}),
@@ -194,24 +202,47 @@ def mutation_test(row, case, deny=False):
                  ("MPR_alias_resolution", {"dst_bank":[b^1 for b in row["dst_bank"]]}),
                  ("partial_destination_result", {"dest_values":[0]*len(row["dest_values"])}),
                  ("TransferEnd_stack", {"stack_wram_after":[0,0,1]}),
-                 ("VDC_status_effect", {"vdc_sr":[row["vdc_sr"][0],row["vdc_sr"][0]^1]}))
+                 ("VDC_status_effect", {"vdc_sr":[row["vdc_sr"][0],row["vdc_sr"][0]^1]}),
+                 # MPR immutability mutations: preflight MPR snapshot must match
+                 # transfer-end/abort MPR.  Breaking any one MPR must be detected.
+                 ("preflight_mpr_missing", None),
+                 ("preflight_mpr_short", {"preflight_mpr":preflight_mpr[:7]}),
+                 ("preflight_mpr_type_wrong", {"preflight_mpr":[str(b) for b in preflight_mpr]}),
+                 ("MPR0_destroyed", {"mpr_after":[b^(0xFF if j==0 else 0) for j,b in enumerate(mpr_after)]}),
+                 ("MPR1_destroyed", {"mpr_after":[b^(0xFF if j==1 else 0) for j,b in enumerate(mpr_after)]}),
+                 ("MPR2_destroyed", {"mpr_after":[b^(0xFF if j==2 else 0) for j,b in enumerate(mpr_after)]}),
+                 ("MPR3_destroyed", {"mpr_after":[b^(0xFF if j==3 else 0) for j,b in enumerate(mpr_after)]}),
+                 ("MPR4_destroyed", {"mpr_after":[b^(0xFF if j==4 else 0) for j,b in enumerate(mpr_after)]}),
+                 ("MPR5_destroyed", {"mpr_after":[b^(0xFF if j==5 else 0) for j,b in enumerate(mpr_after)]}),
+                 ("MPR6_destroyed", {"mpr_after":[b^(0xFF if j==6 else 0) for j,b in enumerate(mpr_after)]}),
+                 ("MPR7_destroyed", {"mpr_after":[b^(0xFF if j==7 else 0) for j,b in enumerate(mpr_after)]}))
+    executed_mutations = []
+    excluded_mutations = []
+    detected_mutations = []
     for name, change in mutations:
-        broken=dict(row);broken.update(change)
+        broken=dict(row)
+        if name == "preflight_mpr_missing":
+            broken.pop("preflight_mpr", None)
+        elif change is not None:
+            broken.update(change)
+        executed_mutations.append(name)
         if name == "TransferEnd_stack" and (case.endswith("tam-alias") or case.endswith("tam-deny")):
-            continue
+            excluded_mutations.append(name); continue
         if case.endswith("len0"):
             # length=0 produces an empty transfer: byte_guard_calls is already 0
             # (cannot be decremented), dest_values is already empty (cannot be
             # zeroed further), and dst_bank is empty (MPR_alias_resolution is a
-            # no-op: [b^1 for b in []] == []).  These mutations are no-ops and are
-            # explicitly excluded; all other mutations still apply to the preflight
-            # decision (preflight callback, decision inversion, address direction,
-            # stack, CPU, VDC, MPR).
+            # no-op: [b^1 for b in []] == []).  These three are no-ops and are
+            # explicitly excluded.  The new MPR snapshot destruction mutations
+            # MUST apply to length=0 (MPR immutability is checked even with no
+            # transfer bytes).
             if name in ("transfer_byte_count", "partial_destination_result", "MPR_alias_resolution"):
-                continue
+                excluded_mutations.append(name); continue
         try: assert_core_row(broken,case,deny=deny)
-        except (ValueError,KeyError): continue
+        except (ValueError,KeyError):
+            detected_mutations.append(name); continue
         raise ValueError(f"{case}: classifier accepted mutation {name}")
+    print(f"MUTATION {case}: executed={len(executed_mutations)} excluded={len(excluded_mutations)} detected={len(detected_mutations)}")
 
 def main():
     expected_cases = {
@@ -234,9 +265,12 @@ def main():
         # TIA non-monotonic deny: 1
         "tia-deny-nonmono",
     }
-    assert len(CASES) == len(expected_cases), f"CASES count {len(CASES)} != expected {len(expected_cases)}"
-    assert len(set(CASES)) == len(CASES), "duplicate cases in CASES"
-    assert set(CASES) == expected_cases, f"CASES set mismatch: {set(CASES) ^ expected_cases}"
+    if len(CASES) != len(expected_cases):
+        raise ValueError(f"CASES count {len(CASES)} != expected {len(expected_cases)}")
+    if len(set(CASES)) != len(CASES):
+        raise ValueError("duplicate cases in CASES")
+    if set(CASES) != expected_cases:
+        raise ValueError(f"CASES set mismatch: {set(CASES) ^ expected_cases}")
     executed = []
     with tempfile.TemporaryDirectory(prefix="pce-block-matrix-") as tmp:
         d = Path(tmp); bios, cue = synthetic_media(d)

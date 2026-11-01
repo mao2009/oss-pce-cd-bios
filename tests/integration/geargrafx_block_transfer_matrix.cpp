@@ -27,6 +27,7 @@ bool g_deny=false;
 unsigned g_pre_calls=0,g_pre_allow=0,g_pre_deny=0,g_byte_calls=0,g_start_calls=0;
 unsigned g_op=0,g_src=0,g_dst=0,g_len=0;
 unsigned g_pre_a=0,g_pre_x=0,g_pre_y=0,g_pre_p=0,g_pre_sp=0;
+unsigned g_pre_mpr[8]={0,0,0,0,0,0,0,0};
 std::vector<unsigned> g_plan_src,g_plan_dst,g_plan_src_bank,g_plan_dst_bank,g_byte_src,g_byte_dst;
 std::vector<int> g_plan_src_phys,g_plan_dst_phys;
 int op_index(const std::string& s) { for(int i=0;i<5;++i) if(s==kNames[i]) return i; return -1; }
@@ -44,6 +45,7 @@ bool preflight(void*,unsigned op,unsigned src,unsigned dst,unsigned len) {
     g_pre_p=g_cpu->P->GetValue();g_pre_sp=g_cpu->S->GetValue();
     g_plan_src.clear();g_plan_dst.clear();g_plan_src_bank.clear();g_plan_dst_bank.clear();
     g_plan_src_phys.clear();g_plan_dst_phys.clear();
+    for(int i=0;i<8;++i) g_pre_mpr[i]=g_mem->GetMpr(i);
     if(op>=5 || len==0 || len>8) {++g_pre_deny;return false;}
     unsigned s=src,d=dst;bool safe=true;
     for(unsigned i=0;i<len;++i) {
@@ -128,6 +130,7 @@ int main(int argc,char** argv) {
     std::fprintf(stderr,"],\"byte_src\":[");for(size_t i=0;i<g_byte_src.size();++i)std::fprintf(stderr,"%s%u",i?",":"",g_byte_src[i]);std::fprintf(stderr,"],\"byte_dst\":[");for(size_t i=0;i<g_byte_dst.size();++i)std::fprintf(stderr,"%s%u",i?",":"",g_byte_dst[i]);
     std::fprintf(stderr,"],\"byte_guard_calls\":%u,\"start_calls\":%u,\"pc\":%u,\"sp_before\":%u,\"sp_after\":%u,\"p_before\":%u,\"p_after\":%u,\"a_before\":%u,\"a_after\":%u,\"x_before\":%u,\"x_after\":%u,\"y_before\":%u,\"y_after\":%u,\"preflight_cpu\":[%u,%u,%u,%u,%u],\"mpr_before\":[",g_byte_calls,g_start_calls,st->PC->GetValue(),sp0,st->S->GetValue(),p0,st->P->GetValue(),regs0[0],st->A->GetValue(),regs0[1],st->X->GetValue(),regs0[2],st->Y->GetValue(),g_pre_a,g_pre_x,g_pre_y,g_pre_p,g_pre_sp);
     for(int i=0;i<8;++i)std::fprintf(stderr,"%s%u",i?",":"",mpr0[i]);std::fprintf(stderr,"],\"mpr_after\":[");for(int i=0;i<8;++i)std::fprintf(stderr,"%s%u",i?",":"",mem->GetMpr(i));
+    std::fprintf(stderr,"],\"preflight_mpr\":[");for(int i=0;i<8;++i)std::fprintf(stderr,"%s%u",i?",":"",g_pre_mpr[i]);
     std::fprintf(stderr,"],\"dest_values\":[");for(unsigned i=0;i<len;++i)std::fprintf(stderr,"%s%u",i?",":"",destval[i]);std::fprintf(stderr,"],\"changed_wram\":[");for(size_t i=0;i<changed.size();++i)std::fprintf(stderr,"%s{\"index\":%u,\"value\":%u}",i?",":"",changed[i],changed_values[i]);
     std::fprintf(stderr,"],\"stack_wram_before\":[%u,%u,%u],\"stack_wram_after\":[%u,%u,%u],\"vdc_ar\":[%u,%u],\"vdc_r0\":[%u,%u],\"vdc_r7\":[%u,%u],\"vdc_sr\":[%u,%u],\"vdc_read_buffer\":[%u,%u]}",before[0x1FD],before[0x1FE],before[0x1FF],after[0x1FD],after[0x1FE],after[0x1FF],ar0,(u8)*vs->AR,r00,vs->R[0],r70,vs->R[7],sr0,*vs->SR,rb0,*vs->READ_BUFFER);
     return 0;

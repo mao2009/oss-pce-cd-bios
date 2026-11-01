@@ -4,6 +4,9 @@ Synthetic only: no emulator, BIOS, ROM, or Geargrafx core is read.  Verifies tha
 the matrix runner definition (CASES, LEN_CASES, DENY_CASES, expected case set,
 dispatch order) is internally consistent and that all 51 cases are statically
 accounted for, with tii-len0 routed to the deny path and tia-deny-nonmono last.
+
+Also verifies MPR immutability mutation definitions and fail-closed properties
+(no Python `assert` for safety checks; explicit exceptions only).
 """
 import sys
 import unittest
@@ -87,6 +90,83 @@ class MatrixDispatchTest(unittest.TestCase):
         self.assertTrue(case.endswith("len0"), "tii-len0 must match the explicit len0 branch")
         self.assertNotIn(case, M.LEN_CASES,
                          "tii-len0 must not be in LEN_CASES (would route to allow path)")
+
+
+class MatrixMPRTest(unittest.TestCase):
+    """MPR immutability must be verified for all 8 MPRs, including length=0."""
+
+    def test_preflight_mpr_field_expected_in_probe(self):
+        # The probe emits preflight_mpr[8]; assert_core_row reads it.
+        # This is a structural check: assert_core_row references preflight_mpr.
+        import inspect
+        src = inspect.getsource(M.assert_core_row)
+        self.assertIn('row["preflight_mpr"]', src,
+                      "assert_core_row must read preflight_mpr from probe row")
+        self.assertIn('row["mpr_after"]', src,
+                      "assert_core_row must compare preflight_mpr against mpr_after")
+
+    def test_mpr_immutability_check_applies_to_all_cases(self):
+        # preflight_mpr == mpr_after must be checked outside the deny/allow split
+        # so it applies to len0 and all deny/allow cases.
+        import inspect
+        src = inspect.getsource(M.assert_core_row)
+        # The check must appear before the deny/allow split and before the len0 early block
+        preflight_mpr_idx = src.find('row["preflight_mpr"] != row["mpr_after"]')
+        self.assertNotEqual(preflight_mpr_idx, -1,
+                            "preflight_mpr == mpr_after check must exist")
+        deny_idx = src.find("    if deny:")
+        len0_idx = src.find('if case.endswith("len0"):')
+        self.assertLess(preflight_mpr_idx, deny_idx,
+                        "MPR immutability check must precede deny block")
+        self.assertLess(preflight_mpr_idx, len0_idx,
+                        "MPR immutability check must precede len0 block")
+
+    def test_mpr_mutations_defined(self):
+        # 8 MPR destruction mutations + 3 preflight_mpr mutations = 11 MPR mutations
+        import inspect
+        src = inspect.getsource(M.mutation_test)
+        for i in range(8):
+            self.assertIn(f"MPR{i}_destroyed", src,
+                          f"MPR{i}_destroyed mutation must be defined")
+        self.assertIn("preflight_mpr_missing", src)
+        self.assertIn("preflight_mpr_short", src)
+        self.assertIn("preflight_mpr_type_wrong", src)
+
+    def test_mpr_mutations_apply_to_len0(self):
+        # MPR snapshot destruction mutations must NOT be excluded for length=0
+        import inspect
+        src = inspect.getsource(M.mutation_test)
+        len0_block_start = src.find('if case.endswith("len0"):')
+        len0_exclusions = src[len0_block_start:src.find("        try:", len0_block_start)]
+        # Only the 3 existing no-op mutations should be excluded for len0
+        for name in ("transfer_byte_count", "partial_destination_result", "MPR_alias_resolution"):
+            self.assertIn(name, len0_exclusions,
+                          f"{name} must be excluded for len0")
+        # MPR mutations must NOT be in the len0 exclusion list
+        for i in range(8):
+            self.assertNotIn(f"MPR{i}_destroyed", len0_exclusions,
+                             f"MPR{i}_destroyed must NOT be excluded for len0")
+        for name in ("preflight_mpr_missing", "preflight_mpr_short", "preflight_mpr_type_wrong"):
+            self.assertNotIn(name, len0_exclusions,
+                             f"{name} must NOT be excluded for len0")
+
+
+class MatrixFailClosedTest(unittest.TestCase):
+    """Safety checks must not rely on Python `assert` (disabled with -O)."""
+
+    def test_no_assert_for_safety_checks(self):
+        # Read the source and confirm no `assert` is used for case set validation.
+        matrix_path = Path(M.__file__).resolve()
+        src = matrix_path.read_text(encoding="utf-8")
+        # Find the main() function body and check case validation uses raise, not assert
+        main_start = src.find("def main():")
+        main_src = src[main_start:]
+        # The expected_cases validation should use if/raise, not assert
+        self.assertIn("if len(CASES) != len(expected_cases):", main_src)
+        self.assertIn("raise ValueError(f\"CASES count", main_src)
+        self.assertNotIn("assert len(CASES)", main_src)
+        self.assertNotIn("assert len(set(CASES))", main_src)
+        self.assertNotIn("assert set(CASES)", main_src)
 
 
 if __name__ == "__main__":
