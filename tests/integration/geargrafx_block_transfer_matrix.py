@@ -130,7 +130,10 @@ def assert_core_row(row, case, *, deny=False):
     if case.endswith("len0"):
         if row["preflight_deny"] != 1 or row["preflight_allow"] != 0:
             raise ValueError(f"{case}: length 0 was not denied")
-        return
+    # length=0 falls through to the whole-instruction deny block below so that
+    # CPU/RAM/VDC/MPR/stack immutability is verified with the same checks as
+    # other prohibited-destination refusals.  byte_guard_calls/start_calls are 0
+    # and dest_values is empty for length=0, which the deny block tolerates.
     if deny:
         if row["preflight_deny"] != 1 or row["preflight_allow"] != 0:
             raise ValueError(f"{case}: prohibited destination did not cause whole-transfer refusal")
@@ -196,13 +199,42 @@ def mutation_test(row, case, deny=False):
         broken=dict(row);broken.update(change)
         if name == "TransferEnd_stack" and (case.endswith("tam-alias") or case.endswith("tam-deny")):
             continue
-        if case.endswith("len0") and name != "preflight_callback_missing":
-            continue
+        if case.endswith("len0"):
+            # length=0 produces an empty transfer: byte_guard_calls is already 0
+            # (cannot be decremented) and dest_values is already empty (cannot be
+            # zeroed further).  These mutations are no-ops and are explicitly
+            # excluded; all other mutations still apply to the preflight decision.
+            if name in ("transfer_byte_count", "partial_destination_result"):
+                continue
         try: assert_core_row(broken,case,deny=deny)
         except (ValueError,KeyError): continue
         raise ValueError(f"{case}: classifier accepted mutation {name}")
 
 def main():
+    expected_cases = {
+        # Length matrix: 5 ops x lengths 1/2/3/4/8 = 25
+        *[f"{op}-len{n}" for op in OPS for n in LENGTHS],
+        # Page boundary: 4
+        "tii-boundary-1fff", "tia-boundary-3fff", "tii-boundary-7fff", "tai-boundary-ffff",
+        # Reverse traversal: 1
+        "tdd-reverse-4000",
+        # Physical alias: 1
+        "tii-boundary-alias",
+        # Source/destination overlap: 1
+        "tii-alias-overlap",
+        # TAM: 2
+        "tii-tam-alias", "tii-tam-deny",
+        # Length=0 refusal: 1
+        "tii-len0",
+        # Prohibited destination: 5 ops x 3 kinds = 15
+        *list(DENY_CASES),
+        # TIA non-monotonic deny: 1
+        "tia-deny-nonmono",
+    }
+    assert len(CASES) == len(expected_cases), f"CASES count {len(CASES)} != expected {len(expected_cases)}"
+    assert len(set(CASES)) == len(CASES), "duplicate cases in CASES"
+    assert set(CASES) == expected_cases, f"CASES set mismatch: {set(CASES) ^ expected_cases}"
+    executed = []
     with tempfile.TemporaryDirectory(prefix="pce-block-matrix-") as tmp:
         d = Path(tmp); bios, cue = synthetic_media(d)
         probe = build_probes(d, "geargrafx_block_transfer_matrix.cpp", "block-transfer-matrix-probe")
@@ -211,23 +243,25 @@ def main():
             deny = "deny-" in case or case.endswith("tam-deny")
             # Operand fixture: default matrix tests use src=$3E80/dst=$3E90; explicit boundary
             # and denial cases are interpreted from the probe's returned decoded operands.
-            if case in LEN_CASES or case.endswith("alias-overlap"):
+            if case.endswith("len0"):
+                assert_core_row(row, case, deny=True)
+            elif case in LEN_CASES or case.endswith("alias-overlap"):
                 assert_core_row(row, case)
                 if case.endswith("alias-overlap"):
                     if row["src_wram_index"] != [0,1,2] or row["dst_wram_index"] != [1,2,3] or row["dest_values"] != [0x11,0x11,0x11]:
                         raise ValueError("TII overlapping physical WRAM alias did not show sequential read-after-write")
-            elif case.endswith("len0"):
-                assert_core_row(row, case, deny=True)
-                if row["preflight_allow"] != 0 or row["preflight_deny"] != 1:
-                    raise ValueError(f"{case}: length 0 was not denied")
-                return
             elif deny:
                 assert_core_row(row, case, deny=True)
             else:
                 assert_core_row(row, case)
+            executed.append(case)
             print(f"REAL_CORE_PASS {case}: calls={row['preflight_calls']} deny={row['preflight_deny']} bytes={row['byte_guard_calls']}")
             print("EVIDENCE " + json.dumps({"observation_kind":"REAL_CORE_EXECUTION","core_revision":"b49ae82a012eade566d72e9d61c9d95a5caa4da3","case":case,"row":row},sort_keys=True))
             mutation_test(row,case,deny=deny)
+    if executed != CASES:
+        raise ValueError(f"case execution order mismatch: executed {len(executed)} vs expected {len(CASES)}")
+    if executed[-1] != "tia-deny-nonmono":
+        raise ValueError(f"last executed case was {executed[-1]!r}, expected tia-deny-nonmono")
     print(f"PASS: {len(CASES)} synthetic pinned real-core matrix cases; production safety remains BLOCKED")
 
 if __name__ == "__main__":
