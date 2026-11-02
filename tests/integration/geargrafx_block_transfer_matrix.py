@@ -359,6 +359,14 @@ def mutation_totals(results):
         raise ValueError(f"mutation totals: violations {totals}")
     return totals
 
+def is_deny_case(case):
+    """Single source of truth for the deny dispatch used by main().
+
+    Covers length=0 (whole-instruction refusal), TAM deny, every prohibited-destination
+    case (deny-hw/rom/backup) and tia-deny-nonmono.  Allowed cases return False.
+    """
+    return case.endswith("len0") or "deny-" in case or case.endswith("tam-deny")
+
 def main():
     expected_cases = {
         # Length matrix: 5 ops x lengths 1/2/3/4/8 = 25
@@ -393,7 +401,7 @@ def main():
         probe = build_probes(d, "geargrafx_block_transfer_matrix.cpp", "block-transfer-matrix-probe")
         for case in CASES:
             row = run(probe, bios, cue, case)
-            deny = case.endswith("len0") or "deny-" in case or case.endswith("tam-deny")
+            deny = is_deny_case(case)
             # Operand fixture: default matrix tests use src=$3E80/dst=$3E90; explicit boundary
             # and denial cases are interpreted from the probe's returned decoded operands.
             if case.endswith("len0"):

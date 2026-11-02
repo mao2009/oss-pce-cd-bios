@@ -8,9 +8,12 @@ accounted for, with tii-len0 routed to the deny path and tia-deny-nonmono last.
 Also verifies MPR immutability mutation definitions and fail-closed properties
 (no Python `assert` for safety checks; explicit exceptions only).
 """
+import contextlib
+import io
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tests" / "integration"))
@@ -115,37 +118,32 @@ class MatrixDispatchTest(unittest.TestCase):
             for op in M.OPS:
                 case = f"{op}-deny-{kind}"
                 self.assertIn(case, M.CASES)
-                deny = "deny-" in case or case.endswith("tam-deny")
-                self.assertTrue(deny, f"{case} must be classified as deny")
+                self.assertTrue(M.is_deny_case(case), f"{case} must be classified as deny")
 
     def test_tam_deny_membership(self):
         self.assertIn("tii-tam-deny", M.CASES)
-        deny = "deny-" in "tii-tam-deny" or "tii-tam-deny".endswith("tam-deny")
-        self.assertTrue(deny)
+        self.assertTrue(M.is_deny_case("tii-tam-deny"))
+        self.assertFalse(M.is_deny_case("tii-tam-alias"))
 
     def test_len0_deny_classification(self):
-        # tii-len0 is not in DENY_CASES and does not contain "deny-", but must be
-        # dispatched as deny via the explicit case.endswith("len0") branch.
-        self.assertEqual("tii-len0" in M.LEN_CASES, False)
-        self.assertEqual("deny-" in "tii-len0", False)
-        self.assertEqual("tii-len0".endswith("tam-deny"), False)
-
-    def test_main_derives_deny_for_len0(self):
-        # main() must pass deny=True for tii-len0 to the mutation suite (regression for the len0 dispatch).
-        import inspect
-        src = inspect.getsource(M.main)
-        self.assertIn('case.endswith("len0") or "deny-" in case', src)
+        # tii-len0 is not in LEN_CASES and is not a "deny-" name, yet must be denied.
+        self.assertNotIn("tii-len0", M.LEN_CASES)
+        self.assertTrue(M.is_deny_case("tii-len0"))
 
     def test_len0_dispatches_to_deny_true(self):
-        # Dispatch order in main(): case.endswith("len0") is checked before
-        # case in LEN_CASES.  Verify tii-len0 hits the explicit len0 branch
-        # (deny=True) rather than falling through to the LEN_CASES allow path.
-        case = "tii-len0"
-        deny_boolean = "deny-" in case or case.endswith("tam-deny")
-        self.assertFalse(deny_boolean, "tii-len0 must not match the deny- boolean")
-        self.assertTrue(case.endswith("len0"), "tii-len0 must match the explicit len0 branch")
-        self.assertNotIn(case, M.LEN_CASES,
+        # Behavioural: the real deny predicate sends tii-len0 to the deny path.
+        self.assertTrue(M.is_deny_case("tii-len0"))
+        self.assertNotIn("tii-len0", M.LEN_CASES,
                          "tii-len0 must not be in LEN_CASES (would route to allow path)")
+
+    def test_is_deny_case_matches_exact_18_deny_cases(self):
+        expected = {*M.DENY_CASES, "tii-len0", "tii-tam-deny", "tia-deny-nonmono"}
+        self.assertEqual(len(expected), 18)
+        actual = {c for c in M.CASES if M.is_deny_case(c)}
+        self.assertEqual(actual, expected)
+        allowed = [c for c in M.CASES if not M.is_deny_case(c)]
+        self.assertEqual(len(allowed), 33)
+        self.assertFalse(any(c in expected for c in allowed))
 
 
 class MatrixMPRTest(unittest.TestCase):
@@ -331,6 +329,57 @@ class MutationAuditTest(unittest.TestCase):
         import subprocess
         proc = subprocess.run([sys.executable, "-O", "-c", script], capture_output=True, text=True, timeout=120)
         self.assertEqual(proc.returncode, 3, proc.stderr)
+
+
+class MainDispatchTest(unittest.TestCase):
+    """Runs the real main() loop with the emulator, probe build, and mutation suite replaced by recorders.
+
+    Observes the deny value actually passed to assert_core_row and mutation_test for each of the 51 cases.
+    """
+
+    def _run_main_recording(self):
+        core_deny, mut_deny = {}, {}
+        fake_row = {
+            "preflight_calls": 1, "preflight_deny": 0, "byte_guard_calls": 0,
+            "src_wram_index": [0, 1, 2], "dst_wram_index": [1, 2, 3], "dest_values": [0x11, 0x11, 0x11],
+        }
+        applied = [f"m{i}" for i in range(20)]
+
+        def fake_core(row, case, *, deny=False):
+            core_deny[case] = deny
+
+        def fake_mut(row, case, deny=False):
+            mut_deny[case] = deny
+            return {"case": case, "deny": deny, "defined": 20, "excluded": [], "applied": applied,
+                    "detected": applied, "accepted": [], "duplicate": [], "unexpected_noop": [],
+                    "exclusion_violation": []}
+
+        with mock.patch.object(M, "build_probes", return_value=None), \
+             mock.patch.object(M, "synthetic_media", return_value=(Path("bios"), Path("cue"))), \
+             mock.patch.object(M, "run", side_effect=lambda *a: dict(fake_row)), \
+             mock.patch.object(M, "assert_core_row", side_effect=fake_core), \
+             mock.patch.object(M, "mutation_test", side_effect=fake_mut), \
+             contextlib.redirect_stdout(io.StringIO()):
+            M.main()
+        return core_deny, mut_deny
+
+    def test_main_passes_is_deny_case_to_mutation_suite_for_all_51(self):
+        core_deny, mut_deny = self._run_main_recording()
+        self.assertEqual(set(mut_deny), set(M.CASES))
+        self.assertEqual(len(mut_deny), 51)
+        for case in M.CASES:
+            self.assertEqual(mut_deny[case], M.is_deny_case(case), f"mutation deny mismatch for {case}")
+
+    def test_main_len0_mutation_and_classifier_are_denied(self):
+        core_deny, mut_deny = self._run_main_recording()
+        self.assertTrue(mut_deny["tii-len0"])
+        self.assertTrue(core_deny["tii-len0"])
+
+    def test_main_classifier_deny_matches_predicate_for_all_51(self):
+        core_deny, _ = self._run_main_recording()
+        for case in M.CASES:
+            # main() passes deny=True explicitly for len0 and deny cases; allowed cases use the default False.
+            self.assertEqual(core_deny[case], M.is_deny_case(case), f"classifier deny mismatch for {case}")
 
 
 if __name__ == "__main__":
