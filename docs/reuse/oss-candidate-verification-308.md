@@ -113,7 +113,7 @@ UNKNOWN 件数: **10 項目**（上記 1〜10）。
 | 区分 | 結果 | 理由 |
 | --- | --- | --- |
 | pinned パスの取得と blob・SHA-256 照合（§1） | PASS（台帳記載の全パスが存在し一致。NOT_FOUND は Hu-Go! の 2 件のみ） | 検証日時 2026-10-29T03:39:22Z |
-| 外部 pinned 再取得（2026-11-02、p7 作業） | PASS（49 件の pinned raw を再取得。47 件は HTTP 200 で、主張と照合した SHA-256 / blob が一致。2 件は HTTP 404 で NOT_FOUND を再確認） | 検証ログ: `docs/reuse/external-verification-log-p7.md` |
+| 外部 pinned 再取得（2026-11-02、p7 作業） | PASS（49 件の pinned raw を再取得。47 件は HTTP 200 で、文書の SHA-256 主張と一致。blob の主張があるのは 39 件のみで、その 39 件について blob も確認。SHA-256 主張のうち 8 桁 prefix のみのものは prefix 一致のみを確認。2 件は HTTP 404 で NOT_FOUND を再確認） | 検証ログ: `docs/reuse/external-verification-log-p7.md` |
 | LICENSE / COPYING の冒頭確認（§2） | PASS（確認範囲は冒頭のみ） | 全文の比較は未実施 |
 | 台帳の file 単位の権利者・NOTICE の確定 | NOT_RUN | 人間の provenance 監査が必要 |
 | L-19 の取得 | NOT_RUN | pin 未記録のため |
