@@ -61,7 +61,7 @@ owner の決定（Wave 2 指示）に基づく整理。この指示はリポジ�
 | K-3 | L-14 NeoCD `hlebios.cpp` 他 | `REFERENCE_ONLY` | `DO_NOT_USE_UNTIL_LEGAL_REVIEW`（同上） | 取り込み禁止。ファイル単位の権利者 UNKNOWN | PENDING | 同上。技術情報の参照は独立資料で裏付けられた事実に限る |
 | K-4 | L-10 Hu-Go! `bios.c` | `REJECTED` | `DO_NOT_USE_UNTIL_LEGAL_REVIEW`（§3.1、§3.4） | 取り込み禁止。GPL-2.0 の既定。MIT の ROM へ組込み不可 | 提案: RESTRICTED（確定ではない） | 語の差。`reuse_mode` と取り込み禁止の方向は一致 |
 | K-5 | L-02、L-06、L-13 | `REFERENCE_ONLY` | `CLEANROOM_ONLY`（§3.1、§3.2） | 取り込み禁止（正本 §3.1・§3.2 のコピー再利用は不可） | PENDING | 語の差。`reuse_mode` の方向は一致 |
-| K-6 | L-18 ares | `REFERENCE_ONLY` | `CLEANROOM_ONLY`（§3.2。ISC の表示保持で写せると記す） | 保留。ISC は法的に写せ得るが、`REFERENCE_ONLY` 方針を維持し取り込まない。方針変更は owner 判断 | PENDING | 語の差。方針（`REFERENCE_ONLY`）は維持する |
+| K-6 | L-18 ares | `REFERENCE_ONLY` | `CLEANROOM_ONLY`（§3.2。ISC の表示保持で写せると記す） | ISC の表示条件は未確認。法的評価は未実施。本書は法的結論を示さない。`REFERENCE_ONLY` 方針を維持し取り込まない | PENDING | 語の差。方針（`REFERENCE_ONLY`）は維持する |
 | K-7 | L-10、L-11 | `REJECTED` | 正本 §4 項 5 は「採用対象外とする確定」と記す | 取り込み禁止（K-4 と同じ） | 提案: RESTRICTED（未確定。正式承認ではない） | 確定度の差。正本の「確定」の語は台帳の「提案」と食い違う。正本は変更せず、確定するかは owner が判断する |
 
 - 本書は第三者コードの採用を承認しない。`approval_status` に `APPROVED` と記す行は無い。
