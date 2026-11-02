@@ -1,7 +1,9 @@
 """Synthetic protocol tests for the normal-frame tracer; no Geargrafx core runs here."""
 import json
+import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -281,6 +283,65 @@ class FrameTracerProtocolTests(unittest.TestCase):
         self.assertNotIn("entry.cpu.name", source)
         self.assertIn("core.KeyPressed(GG_CONTROLLER_1, GG_KEY_RUN)", source)
         self.assertIn("core.KeyReleased(GG_CONTROLLER_1, GG_KEY_RUN)", source)
+
+
+@unittest.skipUnless(hasattr(os, "getuid"), "POSIX ownership and permission modes are required")
+class PrivateTempRootTests(unittest.TestCase):
+    def test_missing_root_is_created_private_and_reused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "opencode"
+            with mock.patch.object(tracer, "OPENCODE_TEMP_ROOT", root):
+                self.assertEqual(tracer.ensure_private_root(), root)
+                status = os.lstat(root)
+                self.assertTrue(stat.S_ISDIR(status.st_mode))
+                self.assertEqual(stat.S_IMODE(status.st_mode) & 0o077, 0)
+                self.assertEqual(tracer.ensure_private_root(), root)
+
+    def test_symlink_root_is_refused_without_following_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "target"
+            target.mkdir(mode=0o700)
+            root = Path(tmp) / "opencode"
+            root.symlink_to(target, target_is_directory=True)
+            with mock.patch.object(tracer, "OPENCODE_TEMP_ROOT", root):
+                with self.assertRaises(RuntimeError):
+                    tracer.ensure_private_root()
+
+    def test_group_or_other_accessible_root_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "opencode"
+            root.mkdir(mode=0o700)
+            os.chmod(root, 0o755)
+            with mock.patch.object(tracer, "OPENCODE_TEMP_ROOT", root):
+                with self.assertRaises(RuntimeError):
+                    tracer.ensure_private_root()
+
+    def test_regular_file_at_root_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "opencode"
+            root.write_text("not a directory", encoding="utf-8")
+            with mock.patch.object(tracer, "OPENCODE_TEMP_ROOT", root):
+                with self.assertRaises(RuntimeError):
+                    tracer.ensure_private_root()
+
+    def test_job_is_created_without_a_preexisting_root_and_cleanup_is_identity_checked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "opencode"
+            parent = root / "frame-tracer-jobs"
+            with mock.patch.object(tracer, "OPENCODE_TEMP_ROOT", root), \
+                    mock.patch.object(tracer, "JOB_PARENT", parent):
+                path, identity = tracer.make_tracked_job_dir()
+                self.assertTrue(path.is_dir())
+                self.assertEqual(path.parent, parent)
+                ok, reason = tracer.cleanup_tracked_job_dir(path, identity)
+                self.assertTrue(ok, reason)
+                self.assertFalse(path.exists())
+
+    def test_cd_diagnostic_no_longer_hardcodes_the_shared_root(self):
+        source = (Path(__file__).resolve().parents[2] / "tests/integration/geargrafx_frame_tracer_cd.py").read_text(
+            encoding="utf-8")
+        self.assertNotIn('dir="/tmp/opencode"', source)
+        self.assertIn("tracer.ensure_private_root()", source)
 
 
 if __name__ == "__main__":

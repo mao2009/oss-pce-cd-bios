@@ -49,7 +49,7 @@ class FrameTracerSyntheticCdRealCoreTests(unittest.TestCase):
                     mock.patch.object(tracer, "JOB_PARENT", approved_root / "frame-tracer-jobs"):
                 result = tracer.trace(SimpleNamespace(
                     frames=120, events=1, timeout=120.0, rom=self.rom, cue=media / CUE_NAME,
-                    run_start_frame=None, run_hold_frames=None,
+                    run_start_frame=None, run_hold_frames=None, observe_ram=True,
                 ))
 
         self.assertEqual(result["status"], "PASS", result)

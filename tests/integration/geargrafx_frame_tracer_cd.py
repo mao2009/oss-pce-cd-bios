@@ -61,7 +61,7 @@ def run(mode):
         raise IntegrationBlocked(
             f"missing generated CD-read artifacts ({', '.join(missing)}); run make dev-cdread first"
         )
-    with tempfile.TemporaryDirectory(prefix="pce-frame-tracer-cd-", dir="/tmp/opencode") as temporary:
+    with tempfile.TemporaryDirectory(prefix="pce-frame-tracer-cd-", dir=str(tracer.ensure_private_root())) as temporary:
         temporary = Path(temporary)
         manifest = build_image(temporary / "disc")
         cue = temporary / "disc" / CUE_NAME

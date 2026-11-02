@@ -153,16 +153,34 @@ def validate_tracked_job_dir(path, identity=None):
     return True, "ok"
 
 
-def make_tracked_job_dir():
-    """Create a current-user-owned job in the dedicated /tmp/opencode parent."""
-    parent = normalized_absolute(JOB_PARENT)
+def ensure_private_root():
+    """Return the dedicated root, creating it privately (mode 0700) when absent.
+
+    An existing root is used only if it is a real directory (not a symlink),
+    owned by the current user, and not accessible to group or others.  Any other
+    state fails closed.  Nothing is removed here.
+    """
+    root = normalized_absolute(OPENCODE_TEMP_ROOT)
     try:
-        root_status = os.lstat(normalized_absolute(OPENCODE_TEMP_ROOT))
+        os.mkdir(root, 0o700)
+    except FileExistsError:
+        pass
     except OSError as error:
         raise RuntimeError("unsafe frame tracer temporary root") from error
-    if (not stat.S_ISDIR(root_status.st_mode) or stat.S_ISLNK(root_status.st_mode) or
-            root_status.st_uid != os.getuid()):
+    try:
+        status = os.lstat(root)
+    except OSError as error:
+        raise RuntimeError("unsafe frame tracer temporary root") from error
+    if (not stat.S_ISDIR(status.st_mode) or stat.S_ISLNK(status.st_mode) or
+            status.st_uid != os.getuid() or stat.S_IMODE(status.st_mode) & 0o077):
         raise RuntimeError("unsafe frame tracer temporary root")
+    return root
+
+
+def make_tracked_job_dir():
+    """Create a current-user-owned job in the dedicated parent under a private root."""
+    ensure_private_root()
+    parent = normalized_absolute(JOB_PARENT)
     try:
         parent.mkdir(mode=0o700, parents=False, exist_ok=True)
         parent_status = os.lstat(parent)
