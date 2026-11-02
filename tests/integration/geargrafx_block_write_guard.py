@@ -322,6 +322,11 @@ def check_safeabort_armed(row, case):
     _common(row, case)
     if row.get("armed") is not True or row.get("abort_calls") != 1 or row.get("abort_refusals") != 1:
         raise ValueError(f"{case}: abort hook not consulted/refused")
+    op = case.split("-")[0]
+    if row.get("abort_operands_valid") is not True or \
+            (row["abort_op"], row["abort_source"], row["abort_dest"], row["abort_length"]) != \
+            (OPS[op][0], 0x1E80, ALLOWED_STACK_DST, 1):
+        raise ValueError(f"{case}: safely peeked preflight operands mismatch")
     if row["stack_guard_calls"] != 0 or row["guard_calls"] != 0:
         raise ValueError(f"{case}: entered TransferStart or per-byte path")
     _final_state_ok(row, case)
@@ -470,7 +475,7 @@ def mutation_test(row, case):
         raise ValueError(f"mutation test FAILED: {case} {name} accepted by the armed classifier")
 
 
-def build_probes(directory):
+def build_probes(directory, source_name=PROBE_SOURCE, target_name="block-write-guard-probe"):
     """Stock probe objects with ONLY src/huc6280_opcodes.o replaced by the patched build."""
     source = dependency_dir("geargrafx").with_name(dependency_dir("geargrafx").name + "-debugger")
     make_dir = source / "platforms/libretro"
@@ -494,8 +499,8 @@ def build_probes(directory):
     build_command(["g++", *flags, "-c", str(staged / "src/huc6280_opcodes.cpp"), "-o", str(patched_obj)],
                   cwd=str(make_dir))
     link = [patched_obj if p == stock[0] else p for p in objects]
-    probe = directory / "block-write-guard-probe"
-    build_command(["g++", *flags, str(Path(__file__).with_name(PROBE_SOURCE)), *map(str, link),
+    probe = directory / target_name
+    build_command(["g++", *flags, str(Path(__file__).with_name(source_name)), *map(str, link),
                    "-lm", "-o", str(probe)], cwd=str(make_dir))
     return probe
 

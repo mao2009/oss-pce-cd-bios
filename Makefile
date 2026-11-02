@@ -1,7 +1,7 @@
 PYTHON ?= python3
 MODE ?= debug
 
-.PHONY: setup build test test-real-core host-test check clean release setup-geargrafx integration integration-test irq-postaccept-boundary
+.PHONY: setup build test test-real-core host-test check clean release setup-geargrafx integration integration-test irq-postaccept-boundary block-transfer-matrix
 
 setup:
 	$(PYTHON) tools/setup.py all
@@ -47,11 +47,17 @@ integration: build
 	$(PYTHON) tests/integration/geargrafx_st_bypass.py
 	$(PYTHON) tests/integration/geargrafx_bcdbin.py
 	$(MAKE) block-write-guard
+	$(MAKE) block-transfer-matrix
 
 # Issue #367: free-running pre-write refusal via a verification-only core patch (synthetic media). Runs in `integration`.
 .PHONY: block-write-guard
 block-write-guard:
 	$(PYTHON) tests/integration/geargrafx_block_write_guard.py
+
+# Issue #367: pinned multi-byte block transfer preflight matrix on Geargrafx b49ae82. Runs in `integration`.
+.PHONY: block-transfer-matrix
+block-transfer-matrix:
+	$(PYTHON) tests/integration/geargrafx_block_transfer_matrix.py
 
 check:
 	$(PYTHON) tools/contracts.py
