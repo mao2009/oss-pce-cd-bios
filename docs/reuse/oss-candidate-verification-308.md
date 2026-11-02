@@ -11,51 +11,51 @@
 
 件数: 台帳由来のパスは 31 行（うち NOT_FOUND 2）。追加 10 行（「補」9 行と hucc-systemcard.h）を加え、計 41 行。
 
-凡例: blob（Git オブジェクト SHA-1）と内容の SHA-256 は**先頭 8 桁**のみ記載する。再取得値は台帳の完全値と照合し、全件一致した（NOT_FOUND を除く）。
+凡例: blob（Git オブジェクト SHA-1）と内容の SHA-256 は**先頭 8 桁**のみ記載する。再取得値は台帳の完全値と照合し、全件一致した（NOT_FOUND を除く）。 2026-11-02 の再取得（`docs/reuse/external-verification-log-p7.md`）では、主張の桁数（64 桁の完全値、または先頭 8 桁）に従って照合した。
 
 | 台帳 ID | リポジトリ @ pinned SHA | パス | blob（先頭8桁） | サイズ（B） | SHA-256（先頭8桁） | 照合結果 |
 | --- | --- | --- | --- | --- | --- | --- |
-| L-01 | pce-devel/huc @ `54f5c73` | `include/hucc/hucc-math.asm` | 0cee925a | 14021 | e259826d | 一致 |
-| L-02 | 同上 | `include/hucc/hucc-systemcard.asm` | 027f8932 | 20230 | 4258b7c3 | 一致 |
-| L-02 | 同上 | `include/hucc/hucc-systemcard.h` | f907b4b0 | 5522 | f2477642 | 台帳に記載なし（追加確認） |
-| L-03 | 同上 | `include/hucc/core-startup.asm` | aef6da44 | 16736 | fa340fca | 一致 |
-| L-04 | 同上 | `include/hucc/vdc.asm` | 68d95e93 | 31186 | 4cc4c903 | 一致 |
-| L-05 | 同上 | `include/hucc/joypad.asm` | b3e9639a | 29389 | 7c867b77 | 一致 |
-| L-06 | 同上 | `include/hucc/core-kernel.asm` | 129bf9df | 17483 | ae183017 | 一致 |
-| L-07 | 同上 | `include/hucc/common.asm` | 04caaa30 | 7421 | c16d337c | 一致 |
-| L-07 | 同上 | `include/hucc/vce.asm` | 333a7134 | 14094 | 6a88c2e9 | 一致 |
-| L-08 | 同上 | `examples/asm/elmer/include/cdrom.asm` | d8f304ed | 45646 | a1de6902 | 一致 |
-| 補 | 同上 | `examples/asm/elmer/LICENSE_1_0.txt` | 36b7cd93 | 1338 | c9bff757 | 台帳 §7 の記載と一致（本文は未読） |
-| 補 | 同上 | `LICENSE`（ルート） | 473965af | 2386 | 294d72d6 | 台帳未記載（追加） |
-| L-09 | mckayemu/hugo @ `64ed226` | `pcecd.c` | 780eba35 | 20589 | 7ada6b45 | 一致 |
-| L-10 | 同上 | `bios.c` | a8c4efab | 29130 | db3f227e | 一致 |
-| L-11 | 同上 | `cd.c` | af675c16 | 1188 | 31229a81 | 一致 |
-| L-12 | 同上 | `COPYING` | ff408338 | 218 | 7062ee21 | 一致 |
-| 補 | 同上 | `AUTHORS` | 456c4e11 | 1188 | a9109bcf | 一致 |
-| L-12 | 同上 | `LICENSE.gpl` | — | — | — | **NOT_FOUND**（HTTP 404）。台帳の記載どおり |
-| L-12 | 同上 | `LICENSE.bsd-modified` | — | — | — | **NOT_FOUND**（HTTP 404）。台帳の記載どおり |
-| L-13 | pcsx-redux/nugget @ `c950e18` | `openbios/cdrom/cdrom.c` | 6ce570ad | 5489 | 312a415e | 一致 |
-| L-13 | 同上 | `openbios/cdrom/statemachine.c` | c6ee3bdf | 21997 | b49830ea | 一致 |
-| L-13 | 同上 | `openbios/cdrom/helpers.c` | 53343c91 | 3373 | d7ee3bb3 | 一致 |
-| 補 | 同上 | `LICENSE` | 490e7cb3 | 1075 | 7e423e1a | 台帳未記載（追加） |
-| L-14 | libretro/neocd_libretro @ `b1e04c7` | `src/hlebios.cpp` | 15a7c259 | 78705 | e84e9809 | 一致 |
-| L-14 | 同上 | `src/cdromtoc.cpp` | 50cb044d | 24161 | 8c628fff | 一致 |
-| L-14 | 同上 | `src/cdromcontroller.cpp` | 2576ca7b | 10710 | 3b4af97b | 一致 |
-| 補 | 同上 | `LICENSE.md` | fcf85b87 | 7693 | e16063f1 | 台帳 §2 の記載と一致 |
-| L-15 | Cult-of-GBA/BIOS @ `a30e9a9` | `bios_calls/math/division.s` | d8eb105c | 1776 | f0f8f423 | 一致 |
-| L-15 | 同上 | `bios_calls/math/sqrt.s` | 236feb4a | 770 | 810d0ba2 | 一致 |
-| L-15 | 同上 | `bios_calls/math/arctan.s` | f4a03543 | 4850 | cd61cc12 | 一致 |
-| 補 | 同上 | `LICENSE` | fae47d5e | 1068 | 761675b9 | 一致 |
-| L-16 | cc65/cc65 @ `71746c8` | `libsrc/runtime/udiv.s` | 4115382c | 1671 | 256c162a | 一致 |
-| L-16 | 同上 | `libsrc/runtime/umul16x16r32.s` | cfcf82d9 | 1661 | cac8f1dc | 一致 |
-| L-16 | 同上 | `libsrc/runtime/mulax3.s` | 34237960 | 447 | 954d7cdb | 一致 |
-| 補 | 同上 | `LICENSE` | 88cacf14 | 808 | 8e87ae93 | 一致（blob は台帳 §2 と一致） |
-| L-17 | drhelius/Geargrafx @ `b49ae82` | `src/scsi_controller.cpp` | d622ef87 | 35840 | 2dbb6e14 | 一致 |
-| L-17 | 同上 | `src/cdrom.cpp` | f1b2402d | 12934 | b80300d2 | 一致 |
-| 補 | 同上 | `LICENSE` | f288702d | 35149 | 3972dc97 | 台帳未記載（追加） |
-| L-18 | ares-emulator/ares @ `9408cb4` | `ares/pce/pcd/io.cpp` | 54e6a7f7 | 6249 | 9e3f7da8 | 一致 |
-| L-18 | 同上 | `ares/pce/pcd/scsi.cpp` | 35be3b7c | 10269 | 2fa6bd1f | 一致 |
-| 補 | 同上 | `LICENSE` | a0edf8fc | 41598 | a1053dec | 台帳未記載（追加） |
+| L-01 | pce-devel/huc @ `54f5c73` | `include/hucc/hucc-math.asm` | 0cee925a | 14021 | e259826d | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） |
+| L-02 | 同上 | `include/hucc/hucc-systemcard.asm` | 027f8932 | 20230 | 4258b7c3 | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） |
+| L-02 | 同上 | `include/hucc/hucc-systemcard.h` | f907b4b0 | 5522 | f2477642 | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致）。台帳に記載なし（追加確認） |
+| L-03 | 同上 | `include/hucc/core-startup.asm` | aef6da44 | 16736 | fa340fca | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） |
+| L-04 | 同上 | `include/hucc/vdc.asm` | 68d95e93 | 31186 | 4cc4c903 | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） |
+| L-05 | 同上 | `include/hucc/joypad.asm` | b3e9639a | 29389 | 7c867b77 | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） |
+| L-06 | 同上 | `include/hucc/core-kernel.asm` | 129bf9df | 17483 | ae183017 | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） |
+| L-07 | 同上 | `include/hucc/common.asm` | 04caaa30 | 7421 | c16d337c | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） |
+| L-07 | 同上 | `include/hucc/vce.asm` | 333a7134 | 14094 | 6a88c2e9 | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） |
+| L-08 | 同上 | `examples/asm/elmer/include/cdrom.asm` | d8f304ed | 45646 | a1de6902 | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） |
+| 補 | 同上 | `examples/asm/elmer/LICENSE_1_0.txt` | 36b7cd93 | 1338 | c9bff757 | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 先頭 8 桁一致）。台帳 §7 の記載と一致（本文は未読） |
+| 補 | 同上 | `LICENSE`（ルート） | 473965af | 2386 | 294d72d6 | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 先頭 8 桁一致）。台帳未記載（追加） |
+| L-09 | mckayemu/hugo @ `64ed226` | `pcecd.c` | 780eba35 | 20589 | 7ada6b45 | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 先頭 8 桁一致） |
+| L-10 | 同上 | `bios.c` | a8c4efab | 29130 | db3f227e | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） |
+| L-11 | 同上 | `cd.c` | af675c16 | 1188 | 31229a81 | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） |
+| L-12 | 同上 | `COPYING` | ff408338 | 218 | 7062ee21 | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） |
+| 補 | 同上 | `AUTHORS` | 456c4e11 | 1188 | a9109bcf | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） |
+| L-12 | 同上 | `LICENSE.gpl` | — | — | — | **NOT_FOUND**（HTTP 404）。台帳の記載どおり。2026-11-02 の再取得でも HTTP 404 を確認 |
+| L-12 | 同上 | `LICENSE.bsd-modified` | — | — | — | **NOT_FOUND**（HTTP 404）。台帳の記載どおり。2026-11-02 の再取得でも HTTP 404 を確認 |
+| L-13 | pcsx-redux/nugget @ `c950e18` | `openbios/cdrom/cdrom.c` | 6ce570ad | 5489 | 312a415e | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 先頭 8 桁一致） |
+| L-13 | 同上 | `openbios/cdrom/statemachine.c` | c6ee3bdf | 21997 | b49830ea | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） |
+| L-13 | 同上 | `openbios/cdrom/helpers.c` | 53343c91 | 3373 | d7ee3bb3 | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） |
+| 補 | 同上 | `LICENSE` | 490e7cb3 | 1075 | 7e423e1a | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 先頭 8 桁一致）。台帳未記載（追加） |
+| L-14 | libretro/neocd_libretro @ `b1e04c7` | `src/hlebios.cpp` | 15a7c259 | 78705 | e84e9809 | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） |
+| L-14 | 同上 | `src/cdromtoc.cpp` | 50cb044d | 24161 | 8c628fff | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） |
+| L-14 | 同上 | `src/cdromcontroller.cpp` | 2576ca7b | 10710 | 3b4af97b | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） |
+| 補 | 同上 | `LICENSE.md` | fcf85b87 | 7693 | e16063f1 | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 先頭 8 桁一致）。台帳 §2 の記載と一致 |
+| L-15 | Cult-of-GBA/BIOS @ `a30e9a9` | `bios_calls/math/division.s` | d8eb105c | 1776 | f0f8f423 | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） |
+| L-15 | 同上 | `bios_calls/math/sqrt.s` | 236feb4a | 770 | 810d0ba2 | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） |
+| L-15 | 同上 | `bios_calls/math/arctan.s` | f4a03543 | 4850 | cd61cc12 | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） |
+| 補 | 同上 | `LICENSE` | fae47d5e | 1068 | 761675b9 | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 先頭 8 桁一致） |
+| L-16 | cc65/cc65 @ `71746c8` | `libsrc/runtime/udiv.s` | 4115382c | 1671 | 256c162a | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） |
+| L-16 | 同上 | `libsrc/runtime/umul16x16r32.s` | cfcf82d9 | 1661 | cac8f1dc | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） |
+| L-16 | 同上 | `libsrc/runtime/mulax3.s` | 34237960 | 447 | 954d7cdb | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 先頭 8 桁一致） |
+| 補 | 同上 | `LICENSE` | 88cacf14 | 808 | 8e87ae93 | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 先頭 8 桁一致）（blob は台帳 §2 と一致） |
+| L-17 | drhelius/Geargrafx @ `b49ae82` | `src/scsi_controller.cpp` | d622ef87 | 35840 | 2dbb6e14 | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） |
+| L-17 | 同上 | `src/cdrom.cpp` | f1b2402d | 12934 | b80300d2 | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） |
+| 補 | 同上 | `LICENSE` | f288702d | 35149 | 3972dc97 | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 先頭 8 桁一致）。台帳未記載（追加） |
+| L-18 | ares-emulator/ares @ `9408cb4` | `ares/pce/pcd/io.cpp` | 54e6a7f7 | 6249 | 9e3f7da8 | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） |
+| L-18 | 同上 | `ares/pce/pcd/scsi.cpp` | 35be3b7c | 10269 | 2fa6bd1f | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） |
+| 補 | 同上 | `LICENSE` | a0edf8fc | 41598 | a1053dec | 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 先頭 8 桁一致）。台帳未記載（追加） |
 
 ## 2. ルート LICENSE の冒頭確認（本文の一部、コピーなし）
 
@@ -113,6 +113,7 @@ UNKNOWN 件数: **10 項目**（上記 1〜10）。
 | 区分 | 結果 | 理由 |
 | --- | --- | --- |
 | pinned パスの取得と blob・SHA-256 照合（§1） | PASS（台帳記載の全パスが存在し一致。NOT_FOUND は Hu-Go! の 2 件のみ） | 検証日時 2026-10-29T03:39:22Z |
+| 外部 pinned 再取得（2026-11-02、p7 作業） | PASS（49 件の pinned raw を再取得。47 件は HTTP 200 で、主張と照合した SHA-256 / blob が一致。2 件は HTTP 404 で NOT_FOUND を再確認） | 検証ログ: `docs/reuse/external-verification-log-p7.md` |
 | LICENSE / COPYING の冒頭確認（§2） | PASS（確認範囲は冒頭のみ） | 全文の比較は未実施 |
 | 台帳の file 単位の権利者・NOTICE の確定 | NOT_RUN | 人間の provenance 監査が必要 |
 | L-19 の取得 | NOT_RUN | pin 未記録のため |

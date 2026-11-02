@@ -24,16 +24,16 @@ Refs #302 / 親 #34 / 後続 #303（非実行の安全モデル）/ #304（実�
 
 | key | パス | SHA-256（完全値） | ライセンス（ファイル内の記載） | 用途 |
 | --- | --- | --- | --- | --- |
-| huc:include/hucc/pcengine.inc | include/hucc/pcengine.inc | `b6a25d33bb787ea1fe550c6e04aff9f8ccaaa91b649a05a963be24b440b728a9` | Boost 1.0（L8） | 入口宣言（L494）、`_ax` 等の別名（L329-343）、`IFU_BRAM_LOCK/UNLOCK`（L204-205） |
-| huc:include/hucc/hucc-systemcard.asm | 同 | `4258b7c3e8751127c0615af3178e431d81043c25fa6cb2b6b1d51b566aec7ea9` | Boost 1.0（L10）、Copyright John Brandwood 2024（L8） | 経路 A のラッパー（L54-61, L65, L667-698, L713-722） |
-| huc:include/hucc/hucc-systemcard.h | 同 | `f2477642f867c3daeff00938534f3f8ef970d1a9403f44bd09e90894220b8a3b` | Boost 1.0（L13） | C 宣言（L111）、定数（L31-38） |
-| huc:include/huc/huc_bram.asm | include/huc/huc_bram.asm | `95d1d5f4dcedde6ceb9c20f740364fc2ece7bb9f730a186dc158deacfeb0a515` | **ファイル内に記載なし → UNKNOWN** | 経路 B の `_bm_format`（L112-151）、判定（L754-770）、`_bm_testram`（L88-107）、解除・復元（L777-803） |
-| huc:include/huc/startup.asm | include/huc/startup.asm | `584d130bb10bdb4a85ad054f458365ee1ae032b5688d651a17362e2121dadc8d` | 記載なし → UNKNOWN | L1253 で `huc_bram.asm` を include |
-| huc:include/huc/equ.inc | include/huc/equ.inc | `3f9e521731904316193ba40182fa644e82511c667a267a032618911c28b847cd` | 記載なし → UNKNOWN | `__ax = $20F8`（L33）、`_ax = __ax`（L51） |
-| huc:include/huc/system.inc | include/huc/system.inc | `29be0d4f0c6e460689fb8ba78bbf04e75aea326d19c3fb3040df9087d9d9d01c` | 記載なし → UNKNOWN | `bm_format = $E048`（L91） |
-| huc:examples/asm/elmer/kickc/bios.h | 同 | `f99e5d63d9a4e97dd28e28f84b5b4742e0fc29aa0134af90f8872001e7cc2436` | Boost 1.0（L8） | 定数のみ（L52） |
-| huc:doc/hucc/hucc-function-reference.md | 同 | `06ce76b902522456681ef95f42046da0ff4bb781f64c20a5ae7552fd08aae0f0` | 記載なし | 説明文（L1011-1012） |
-| huc:doc/huc/clibref.txt | 同 | `da488fa6d53db37f0c7849265a9a60066fb9fb0bb970545e7cf5182faf4c6265` | 記載なし | 説明文（L640-648） |
+| huc:include/hucc/pcengine.inc | include/hucc/pcengine.inc | `b6a25d33bb787ea1fe550c6e04aff9f8ccaaa91b649a05a963be24b440b728a9` 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） | Boost 1.0（L8） | 入口宣言（L494）、`_ax` 等の別名（L329-343）、`IFU_BRAM_LOCK/UNLOCK`（L204-205） |
+| huc:include/hucc/hucc-systemcard.asm | 同 | `4258b7c3e8751127c0615af3178e431d81043c25fa6cb2b6b1d51b566aec7ea9` 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） | Boost 1.0（L10）、Copyright John Brandwood 2024（L8） | 経路 A のラッパー（L54-61, L65, L667-698, L713-722） |
+| huc:include/hucc/hucc-systemcard.h | 同 | `f2477642f867c3daeff00938534f3f8ef970d1a9403f44bd09e90894220b8a3b` 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） | Boost 1.0（L13） | C 宣言（L111）、定数（L31-38） |
+| huc:include/huc/huc_bram.asm | include/huc/huc_bram.asm | `95d1d5f4dcedde6ceb9c20f740364fc2ece7bb9f730a186dc158deacfeb0a515` 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） | **ファイル内に記載なし → UNKNOWN** | 経路 B の `_bm_format`（L112-151）、判定（L754-770）、`_bm_testram`（L88-107）、解除・復元（L777-803） |
+| huc:include/huc/startup.asm | include/huc/startup.asm | `584d130bb10bdb4a85ad054f458365ee1ae032b5688d651a17362e2121dadc8d` 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） | 記載なし → UNKNOWN | L1253 で `huc_bram.asm` を include |
+| huc:include/huc/equ.inc | include/huc/equ.inc | `3f9e521731904316193ba40182fa644e82511c667a267a032618911c28b847cd` 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） | 記載なし → UNKNOWN | `__ax = $20F8`（L33）、`_ax = __ax`（L51） |
+| huc:include/huc/system.inc | include/huc/system.inc | `29be0d4f0c6e460689fb8ba78bbf04e75aea326d19c3fb3040df9087d9d9d01c` 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） | 記載なし → UNKNOWN | `bm_format = $E048`（L91） |
+| huc:examples/asm/elmer/kickc/bios.h | 同 | `f99e5d63d9a4e97dd28e28f84b5b4742e0fc29aa0134af90f8872001e7cc2436` 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） | Boost 1.0（L8） | 定数のみ（L52） |
+| huc:doc/hucc/hucc-function-reference.md | 同 | `06ce76b902522456681ef95f42046da0ff4bb781f64c20a5ae7552fd08aae0f0` 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） | 記載なし | 説明文（L1011-1012） |
+| huc:doc/huc/clibref.txt | 同 | `da488fa6d53db37f0c7849265a9a60066fb9fb0bb970545e7cf5182faf4c6265` 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致） | 記載なし | 説明文（L640-648） |
 
 * 3 つの HuCC ファイルの SHA-256 は `spec/api_contracts.json` の記録値（完全値）と一致した。
 * pce-devel/huc リポジトリ直下の `LICENSE`（本リポジトリの LICENSE ではない）は単一のライセンスではない。冒頭で一括ライセンスとはできないと述べ、個別に GPL・Simplified BSD・freeware の記述がある。よって、ファイル単位の記載がないファイルは **UNKNOWN** とする。
@@ -173,7 +173,7 @@ HYPOTHESIS のまま残す項目: A-7、D-B4b（試験領域の復元）、D-B5�
 
 ## 8. 検証
 
-* **V-1（ハッシュ）**: 3 つの HuCC ファイルの SHA-256 が `spec/api_contracts.json` の記録値と一致した（§1）。HuC の他ファイルは本書で計算した値を記録した。
+* **V-1（ハッシュ）**: 3 つの HuCC ファイルの SHA-256 が `spec/api_contracts.json` の記録値と一致した（§1）。HuC の他ファイルは本書で計算した値を記録した。2026-11-02 の外部 pinned 再取得で、上表の 10 件すべての SHA-256 の一致を確認した（検証ログ参照）。
 * **V-2（参照行の実在）**: 本書の行参照は、取得したソースの該当行を表示して内容を照合した。主な照合は次の通り: asm L54-61, L65, L667-698, L713-722、pcengine.inc L204-205, L329-343, L494-495、h L31-38, L111、huc_bram.asm L88-107, L112-151, L177-182, L326, L397-399, L754-803、equ.inc L33, L51、system.inc L91、bios.h L52、startup.asm L1253。照合範囲はこの一覧の行に限る。これらの行番号が指す箇所について、取得したソースの該当行と全件一致した。一覧外の行番号は、本書の他の節で引用されている場合でも、この照合の対象ではない。
 * **V-3（リポジトリ内の参照先）**: `docs/research/302-bm-format-contract.md`、`docs/173-safety-monitor-limits.md`、`docs/305-bm-free-contract.md`、`tools/bm_format_model.py`、`tools/bm_format_verdict.py`、`tools/reference_bios_scenarios.py`（L23）は実在を確認した。
 * **V-4（実コア・実機）**: **NOT_RUN**。理由: 実行・試験を行わない指示。純正 BIOS は公開 CI に存在しない。固定 Geargrafx は BRAM 書込みを副作用前に阻止できない（P-6）。
