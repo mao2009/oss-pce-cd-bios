@@ -8,7 +8,8 @@
 // boundaries only.
 //
 // argv: rom cue|- frames event_capacity run_start_frame|0 run_hold_frames|0
-// Output: CAP, INPUT, EVENT (bounded ring, oldest entries overwritten), END.
+// Output: CAP, INPUT, EVENT (bounded ring, oldest entries overwritten), END
+// with a cumulative RAM summary that is deliberately independent of that ring.
 #include "geargrafx_core.h"
 #include "huc6280.h"
 #include "memory.h"
@@ -17,7 +18,7 @@
 #include "scsi_controller.h"
 #include "trace_logger.h"
 #include "geargrafx_frame_tracer_ring.h"
-#include <array>
+#include "geargrafx_frame_tracer_ram_summary.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -30,7 +31,6 @@ namespace {
 
 constexpr unsigned kMaxFrames = 600;
 constexpr unsigned kRingSize = 256;
-constexpr unsigned kWorkRamBytes = 0x2000;
 
 struct CpuSnap {
     unsigned master_clock, pc, pc_page, pc_bank, physical_pc, pc_is_wram, a, x, y, p, sp;
@@ -48,6 +48,16 @@ struct Event {
     CpuSnap cpu;
     CdSnap cd;
     unsigned changed, first, last, cd_event, cd_command, cd_lba, cd_status;
+};
+
+struct RamTracker {
+    const char* name;
+    bool present, unknown;
+    FrameTracerRamMapping mapping;
+    const u8* current;
+    std::vector<u8> previous;
+    FrameTracerRamSummary summary;
+    std::vector<unsigned> scsi_update_frames;
 };
 
 CpuSnap cpu_snap(GeargrafxCore& core, HuC6280::HuC6280_State* cpu, Memory* memory) {
@@ -115,6 +125,43 @@ void print_event(const Event& event) {
     std::printf("}\n");
 }
 
+void print_optional(unsigned value, bool have_value) {
+    if (have_value) std::printf("%u", value);
+    else std::printf("null");
+}
+
+void print_ram_summary(const std::vector<RamTracker>& rams, bool scsi_trace_lost) {
+    std::printf(",\"ram_deltas\":[");
+    for (unsigned index = 0; index != rams.size(); ++index) {
+        const RamTracker& ram = rams[index];
+        const bool changed = ram.summary.updates != 0;
+        std::printf("%s{\"region\":\"%s\",\"present\":", index ? "," : "", ram.name);
+        if (ram.unknown) {
+            std::printf("null,\"availability\":\"UNKNOWN\"");
+        } else if (!ram.present) {
+            std::printf("false,\"availability\":\"ABSENT\"");
+        } else {
+            std::printf("true,\"availability\":\"PRESENT\",\"size\":%u,\"bank_first\":%u,\"bank_last\":%u",
+                        ram.mapping.size, ram.mapping.first_bank, ram.mapping.last_bank);
+        }
+        std::printf(",\"updates\":%u,\"first_frame\":", ram.summary.updates);
+        print_optional(ram.summary.first_frame, changed);
+        std::printf(",\"last_frame\":");
+        print_optional(ram.summary.last_frame, changed);
+        std::printf(",\"min_offset\":");
+        print_optional(ram.summary.min_offset, changed);
+        std::printf(",\"max_offset\":");
+        print_optional(ram.summary.max_offset, changed);
+        std::printf(",\"max_changed\":%u,\"scsi_correlation\":\"%s\",\"scsi_update_frames\":[",
+                    ram.summary.max_changed, scsi_trace_lost || ram.summary.scsi_correlation_unknown ? "UNKNOWN" :
+                    (ram.scsi_update_frames.empty() ? "NONE_OBSERVED" : "OBSERVED"));
+        for (unsigned frame = 0; frame != ram.scsi_update_frames.size(); ++frame)
+            std::printf("%s%u", frame ? "," : "", ram.scsi_update_frames[frame]);
+        std::printf("]}");
+    }
+    std::printf("]");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -164,12 +211,31 @@ int main(int argc, char** argv) {
     std::vector<s16> audio(65536);
     GeargrafxCore::GG_Debug_Run normal = {};  // no step_debugger: normal whole-frame execution
     FrameTracerRing<Event, kRingSize> ring((unsigned)capacity);
-    std::array<u8, kWorkRamBytes> previous_wram{};
-    std::memcpy(previous_wram.data(), memory->GetWorkingRAM(), previous_wram.size());
+    std::vector<RamTracker> rams;
+    const auto add_ram = [&rams](const char* name, FrameTracerRamKind kind, unsigned size, unsigned start,
+                                 const u8* current) {
+        RamTracker ram = {name, false, false, {}, current, {}, FrameTracerEmptyRamSummary(), {}};
+        if (!size) {
+            rams.push_back(ram);
+            return;
+        }
+        if (!current || !FrameTracerMapRam(kind, size, start, &ram.mapping)) {
+            ram.unknown = true;
+            rams.push_back(ram);
+            return;
+        }
+        ram.present = true;
+        ram.previous.assign(current, current + ram.mapping.size);
+        rams.push_back(ram);
+    };
+    add_ram("wram", FRAME_TRACER_WRAM, (unsigned)memory->GetWorkingRAMSize(), 0, memory->GetWorkingRAM());
+    add_ram("cdrom_ram", FRAME_TRACER_CDROM_RAM, (unsigned)memory->GetCDROMRAMSize(), 0, memory->GetCDROMRAM());
+    add_ram("card_ram", FRAME_TRACER_CARD_RAM, (unsigned)memory->GetCardRAMSize(),
+            (unsigned)memory->GetCardRAMStart(), memory->GetCardRAM());
     CpuSnap previous_cpu = cpu_snap(core, cpu, memory);
     CdSnap previous_cd = cd_snap(scsi, cdrom);
     std::printf("CAP {\"normal_frame_execution\":true,\"instruction_step\":false,\"guest_mutation\":false,"
-                 "\"mmio_reads\":false,\"scsi_event_notification\":true,\"ring_capacity\":%ld,\"frames\":%ld,"
+                 "\"mmio_reads\":false,\"scsi_event_notification\":true,\"ram_delta_summary\":true,\"ring_capacity\":%ld,\"frames\":%ld,"
                  "\"disc_given\":%s,\"run_start_frame\":%ld,\"run_hold_frames\":%ld,\"run_input_requested\":%s}\n",
                  capacity, frames, have_disc ? "true" : "false", run_start, run_hold, run_start ? "true" : "false");
     TraceLogger* trace = core.GetTraceLogger();
@@ -209,37 +275,41 @@ int main(int argc, char** argv) {
             dropped_scsi += first_event - observed_scsi;
             observed_scsi = first_event;
         }
+        bool scsi_observed_this_frame = false;
         for (; observed_scsi < total; ++observed_scsi) {
             const GG_Trace_Entry& entry = trace->GetEntry((unsigned)(observed_scsi - first_event));
-            if (entry.type == TRACE_SCSI)
+            if (entry.type == TRACE_SCSI) {
+                scsi_observed_this_frame = true;
                 ring.push({Event::CD, number, now_cpu, now_cd, 0, 0, 0, entry.scsi.event,
-                           entry.scsi.command, entry.scsi.param, entry.scsi.status});
-        }
-        unsigned changed = 0, first = kWorkRamBytes, last = 0;
-        const u8* wram = memory->GetWorkingRAM();
-        for (unsigned offset = 0; offset != kWorkRamBytes; ++offset) {
-            if (previous_wram[offset] != wram[offset]) {
-                ++changed;
-                if (first == kWorkRamBytes) first = offset;
-                last = offset;
+                            entry.scsi.command, entry.scsi.param, entry.scsi.status});
             }
         }
-        if (changed)
-            ring.push({Event::WRAM, number, now_cpu, now_cd, changed, first, last, 0, 0, 0, 0});
+        unsigned wram_changed = 0;
+        // Correlation is frame-local and only uses notifications seen above;
+        // it is never presented as event-time RAM state.
+        for (RamTracker& ram : rams) {
+            if (!ram.present) continue;
+            const FrameTracerRamDelta delta = FrameTracerCompareRam(ram.previous.data(), ram.current, ram.mapping.size);
+            if (std::strcmp(ram.name, "wram") == 0) wram_changed = delta.changed;
+            FrameTracerAccumulateRam(&ram.summary, delta, number, scsi_observed_this_frame, false);
+            if (delta.changed && scsi_observed_this_frame) ram.scsi_update_frames.push_back(number);
+            std::memcpy(ram.previous.data(), ram.current, ram.mapping.size);
+        }
         // This is deliberately only a candidate: a mapped WRAM PC plus a recent
         // WRAM update, never a claim of a BIOS-to-game control transfer.
-        if (now_cpu.pc_is_wram && changed &&
+        if (now_cpu.pc_is_wram && wram_changed &&
             (!previous_cpu.pc_is_wram || previous_cpu.physical_pc != now_cpu.physical_pc))
             ring.push({Event::HANDOFF, number, now_cpu, now_cd, 0, 0, 0, 0, 0, 0, 0});
-        std::memcpy(previous_wram.data(), wram, previous_wram.size());
         previous_cpu = now_cpu;
         previous_cd = now_cd;
     }
     for (unsigned index = 0; index != ring.size(); ++index)
         print_event(ring.at(index));
-    std::printf("END {\"frames\":%ld,\"events\":%u,\"dropped\":%u,\"scsi_events_dropped\":%llu,\"overflow\":%s}", frames,
+    std::printf("END {\"frames\":%ld,\"events\":%u,\"dropped\":%u,\"scsi_events_dropped\":%llu,\"overflow\":%s", frames,
                 ring.size(), ring.dropped(), (unsigned long long)dropped_scsi,
                 (ring.dropped() || dropped_scsi) ? "true" : "false");
+    print_ram_summary(rams, dropped_scsi != 0);
+    std::printf("}");
     std::printf("\n");
     return 0;
 }
