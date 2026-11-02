@@ -21,6 +21,7 @@ else:
 BANK_BASE = 0xE000
 CODE_BASE = 0xF000
 CDB_BYTES = 6
+REQUEST_BYTES = CDB_BYTES + 2
 REQUIRED_SYMBOLS = ("cd_entry", "cd_stack_ready", "cd_buffer_ready", "cd_command_sent", "cd_data_done",
                     "cd_halt_ok", "cd_halt_fail", "cd_unexpected_interrupt", "cd_cdb", "cd_select")
 # Guest memory contract of src/cd_read_probe.s (diagnostic choices, not System Card allocation).
@@ -69,7 +70,7 @@ def verify_cdread(data: bytes, original: bytes, symbols: dict, code_sha256=None)
         raise ValueError("CD diagnostic must have 262144 bytes")
     if data[:0x1000] != original[:0x1000]:
         raise ValueError("CD diagnostic changed the API table/fallback/reserved overlay")
-    end = symbols["cd_cdb"] + CDB_BYTES - BANK_BASE
+    end = symbols["cd_cdb"] + REQUEST_BYTES - BANK_BASE
     if not 0x1000 < end <= 0x1ff6:
         raise ValueError("CD diagnostic code does not fit before the vectors")
     if data[end:0x1ff6] != b"\xff" * (0x1ff6 - end):
@@ -101,6 +102,16 @@ def with_request(data: bytes, symbols: dict, lba: int, count: int) -> bytes:
     if patched[at] != 0x08:
         raise ValueError("embedded CDB is not READ(6)")
     patched[at + 1:at + 5] = bytes(((lba >> 16) & 0x1F, (lba >> 8) & 0xFF, lba & 0xFF, count))
+    return bytes(patched)
+
+
+def with_read6_request(data: bytes, symbols: dict, lba: int, count: int, target: int) -> bytes:
+    """Return a test-input variant of the diagnostic-only READ(6) helper request."""
+    if not 0 <= target < 1 << 16:
+        raise ValueError("READ(6) target is a 16-bit guest CPU address")
+    patched = bytearray(with_request(data, symbols, lba, count))
+    at = request_offset(symbols) + CDB_BYTES
+    patched[at:at + 2] = target.to_bytes(2, "little")
     return bytes(patched)
 
 
@@ -136,7 +147,7 @@ def build_cdread(original_path: Path, output: Path, mode="debug") -> Path:
         raise ValueError("embedded default READ(6) request differs from the documented default")
     (output / "trace-labels.txt").write_text(
         "".join(f"{name} {value:04x}\n" for name, value in symbols.items()), encoding="ascii")
-    code_end = symbols["cd_cdb"] + CDB_BYTES - BANK_BASE
+    code_end = symbols["cd_cdb"] + REQUEST_BYTES - BANK_BASE
     manifest = {
         "status": "development-cd-read-diagnostic-not-compatible-bios",
         "mode": mode, "rom_sha256": digest, "rom_bytes": IMAGE_BYTES,
@@ -146,7 +157,7 @@ def build_cdread(original_path: Path, output: Path, mode="debug") -> Path:
         "pinned_cc65": DEPENDENCIES["cc65"]["revision"],
         "symbols": symbols, "expected_mpr": EXPECTED_MPR,
         "result_address": RESULT_ADDRESS, "buffer_address": BUFFER_ADDRESS,
-        "default_request": {"lba": DEFAULT_LBA, "count": DEFAULT_COUNT},
+        "default_request": {"lba": DEFAULT_LBA, "count": DEFAULT_COUNT, "target": BUFFER_ADDRESS},
         "api_implementation": API_IMPLEMENTATION, "cd_read_api_slot_03": "NOT_IMPLEMENTED",
         "final_system_card_layout": "UNKNOWN", "release_eligible": False,
     }
