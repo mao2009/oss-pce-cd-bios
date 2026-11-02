@@ -151,7 +151,7 @@ void print_optional(unsigned value, bool have_value) {
     else std::printf("null");
 }
 
-void print_ram_summary(const std::vector<RamTracker>& rams, bool scsi_trace_lost) {
+void print_ram_summary(const std::vector<RamTracker>& rams) {
     std::printf(",\"ram_deltas\":[");
     for (unsigned index = 0; index != rams.size(); ++index) {
         const RamTracker& ram = rams[index];
@@ -174,7 +174,7 @@ void print_ram_summary(const std::vector<RamTracker>& rams, bool scsi_trace_lost
         std::printf(",\"max_offset\":");
         print_optional(ram.summary.max_offset, changed);
         std::printf(",\"max_changed\":%u,\"scsi_correlation\":\"%s\",\"scsi_update_frames\":[",
-                    ram.summary.max_changed, scsi_trace_lost || ram.summary.scsi_correlation_unknown ? "UNKNOWN" :
+                    ram.summary.max_changed, ram.summary.scsi_correlation_unknown ? "UNKNOWN" :
                     (ram.scsi_update_frames.empty() ? "NONE_OBSERVED" : "OBSERVED"));
         for (unsigned frame = 0; frame != ram.scsi_update_frames.size(); ++frame)
             std::printf("%s%u", frame ? "," : "", ram.scsi_update_frames[frame]);
@@ -312,11 +312,15 @@ int main(int argc, char** argv) {
         const u64 total = trace->GetTotalLogged();
         const u64 first_event = total > kRingSize ? total - kRingSize : 0;
         bool trace_gap = false;
+        // A core trace gap means this frame's SCSI notifications may be incomplete.
+        // Output-ring overflow is a separate, bounded-output concern and never reaches here.
+        bool frame_scsi_incomplete = false;
         if (observed_trace < first_event) {
             dropped_trace += first_event - observed_trace;
             observed_trace = first_event;
             previous_region = nullptr;
             trace_gap = true;
+            frame_scsi_incomplete = true;
         }
         bool scsi_observed_this_frame = false;
         for (; observed_trace < total; ++observed_trace) {
@@ -344,7 +348,10 @@ int main(int argc, char** argv) {
             if (!ram.present) continue;
             const FrameTracerRamDelta delta = FrameTracerCompareRam(ram.previous.data(), ram.current, ram.mapping.size);
             if (std::strcmp(ram.name, "wram") == 0) wram_changed = delta.changed;
-            FrameTracerAccumulateRam(&ram.summary, delta, number, scsi_observed_this_frame, false);
+            // Only a frame that changed this RAM region and lacked complete SCSI notifications
+            // can make its correlation UNKNOWN; unchanged frames carry no correlation claim.
+            FrameTracerAccumulateRam(&ram.summary, delta, number, scsi_observed_this_frame,
+                                     frame_scsi_incomplete && delta.changed != 0);
             if (delta.changed && scsi_observed_this_frame) ram.scsi_update_frames.push_back(number);
             if (delta.changed)
                 ring.push({Event::RAM, number, now_cpu, now_cd, delta.changed, delta.first, delta.last,
@@ -364,7 +371,7 @@ int main(int argc, char** argv) {
     std::printf("END {\"frames\":%ld,\"events\":%u,\"dropped\":%u,\"trace_events_dropped\":%llu,\"overflow\":%s", frames,
                 ring.size(), ring.dropped(), (unsigned long long)dropped_trace,
                 (ring.dropped() || dropped_trace) ? "true" : "false");
-    print_ram_summary(rams, dropped_trace != 0);
+    print_ram_summary(rams);
     std::printf("}");
     std::printf("\n");
     return 0;
