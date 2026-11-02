@@ -20,8 +20,9 @@ inline FrameTracerRamSummary FrameTracerEmptyRamSummary() {
 
 inline void FrameTracerAccumulateRam(FrameTracerRamSummary* summary, const FrameTracerRamDelta& delta,
                                      unsigned frame, bool scsi_event_observed, bool scsi_correlation_unknown) {
-    if (scsi_correlation_unknown) summary->scsi_correlation_unknown = true;
+    // An unchanged frame carries no correlation claim, so incompleteness only matters for a changed frame.
     if (!delta.changed) return;
+    if (scsi_correlation_unknown) summary->scsi_correlation_unknown = true;
     ++summary->updates;
     if (summary->updates == 1) {
         summary->first_frame = summary->last_frame = frame;

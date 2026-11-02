@@ -43,11 +43,11 @@ int main() {
     FrameTracerAccumulateRam(&incomplete, delta, 4, true, true);
     assert(incomplete.scsi_correlation_unknown);
 
-    // The loop passes (frame_scsi_incomplete && delta.changed): an unchanged, incomplete frame
-    // must not make the region UNKNOWN.
+    // An unchanged frame with incomplete SCSI observation must not make the region UNKNOWN:
+    // the header gates incompleteness on a changed frame, independent of the caller.
     FrameTracerRamSummary unchanged = FrameTracerEmptyRamSummary();
     const unsigned char same[] = {1, 2, 3};
-    FrameTracerAccumulateRam(&unchanged, FrameTracerCompareRam(same, same, 3), 9, false, false);
+    FrameTracerAccumulateRam(&unchanged, FrameTracerCompareRam(same, same, 3), 9, false, true);
     assert(!unchanged.scsi_correlation_unknown && unchanged.updates == 0);
 
     // Cumulative RAM accounting survives many frames of ring-independent observation.
