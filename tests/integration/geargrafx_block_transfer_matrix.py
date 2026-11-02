@@ -131,6 +131,8 @@ def assert_core_row(row, case, *, deny=False):
     # This holds for all cases: deny (preflight state preserved), allow (no
     # unintended MPR change during transfer), and TAM (TAM change happens
     # before preflight, so preflight_mpr already reflects it).
+    if type(row.get("preflight_mpr")) is not list or len(row["preflight_mpr"]) != 8:
+        raise ValueError(f"{case}: preflight MPR0-7 snapshot missing or malformed")
     if row["preflight_mpr"] != row["mpr_after"]:
         raise ValueError(f"{case}: MPR changed between preflight and transfer end/abort")
     if case.endswith("len0"):
@@ -186,63 +188,176 @@ def assert_core_row(row, case, *, deny=False):
     if row["changed_wram"] is None:
         raise ValueError(f"{case}: missing whole-WRAM delta")
 
-def mutation_test(row, case, deny=False):
+# Change marker: the observation field is removed from the row entirely.
+_MISSING = object()
+
+# Audited per-category exclusions (names) and expected (defined, excluded, applied).
+# Enforced in mutation_test(); any drift is a FAIL, not a warning.
+EXPECTED_EXCLUSIONS = {
+    "normal": frozenset(),
+    "len0": frozenset({"partial_destination_result", "MPR_alias_resolution"}),
+    "tam": frozenset({"TransferEnd_stack"}),
+}
+MUTATION_DEFINED = 20
+
+def mutation_category(case):
+    if case.endswith("len0"):
+        return "len0"
+    # tam-deny takes the refusal branch, which checks the stack frame; only the
+    # allowed TAM transfer skips the physical stack-frame check.
+    if case.endswith("tam-alias"):
+        return "tam"
+    return "normal"
+
+def expected_mutation_counts(case):
+    excluded = EXPECTED_EXCLUSIONS[mutation_category(case)]
+    return MUTATION_DEFINED, len(excluded), MUTATION_DEFINED - len(excluded)
+
+def _noop_if(condition, reason):
+    return ("noop", reason) if condition else None
+
+def mutation_specs(row, case, deny=False):
+    """Ordered (name, changes, exclusion) triples for one case.
+
+    changes maps observation fields to replacement values (_MISSING removes the
+    field).  exclusion is None (the mutation must be applied and detected) or a
+    (kind, reason) pair where kind is 'noop' (declared to leave the observation
+    unchanged; verified at run time) or 'unobserved' (the classifier does not
+    evaluate the field for this case; verified to be accepted at run time).
+    """
+    tam = mutation_category(case) == "tam"
     bad_src = row["byte_src"][::-1] or [1]
     bad_dst = row["preflight_dst"][::-1] or [1]
     if bad_src == row["byte_src"]: bad_src[0] ^= 1
     if bad_dst == row["preflight_dst"]: bad_dst[0] ^= 1
     mpr_after = row["mpr_after"]
     preflight_mpr = row["preflight_mpr"]
-    mutations = (("preflight_callback_missing", {"preflight_calls":0}),
-                 ("decision_inverted", {"preflight_allow":1 if deny else 0,"preflight_deny":0 if deny else 1}),
-                 ("len0_mutation_guard", {"preflight_calls":0}),
-                 ("transfer_byte_count", {"byte_guard_calls":1 if deny else max(0,row["byte_guard_calls"]-1)}),
-                 ("source_update_direction", {"byte_src":bad_src}),
-                 ("destination_update_direction", {"preflight_dst":bad_dst}),
-                 ("MPR_alias_resolution", {"dst_bank":[b^1 for b in row["dst_bank"]]}),
-                 ("partial_destination_result", {"dest_values":[0]*len(row["dest_values"])}),
-                 ("TransferEnd_stack", {"stack_wram_after":[0,0,1]}),
-                 ("VDC_status_effect", {"vdc_sr":[row["vdc_sr"][0],row["vdc_sr"][0]^1]}),
-                 # MPR immutability mutations: preflight MPR snapshot must match
-                 # transfer-end/abort MPR.  Breaking any one MPR must be detected.
-                 ("preflight_mpr_missing", None),
-                 ("preflight_mpr_short", {"preflight_mpr":preflight_mpr[:7]}),
-                 ("preflight_mpr_type_wrong", {"preflight_mpr":[str(b) for b in preflight_mpr]}),
-                 ("MPR0_destroyed", {"mpr_after":[b^(0xFF if j==0 else 0) for j,b in enumerate(mpr_after)]}),
-                 ("MPR1_destroyed", {"mpr_after":[b^(0xFF if j==1 else 0) for j,b in enumerate(mpr_after)]}),
-                 ("MPR2_destroyed", {"mpr_after":[b^(0xFF if j==2 else 0) for j,b in enumerate(mpr_after)]}),
-                 ("MPR3_destroyed", {"mpr_after":[b^(0xFF if j==3 else 0) for j,b in enumerate(mpr_after)]}),
-                 ("MPR4_destroyed", {"mpr_after":[b^(0xFF if j==4 else 0) for j,b in enumerate(mpr_after)]}),
-                 ("MPR5_destroyed", {"mpr_after":[b^(0xFF if j==5 else 0) for j,b in enumerate(mpr_after)]}),
-                 ("MPR6_destroyed", {"mpr_after":[b^(0xFF if j==6 else 0) for j,b in enumerate(mpr_after)]}),
-                 ("MPR7_destroyed", {"mpr_after":[b^(0xFF if j==7 else 0) for j,b in enumerate(mpr_after)]}))
-    executed_mutations = []
-    excluded_mutations = []
-    detected_mutations = []
-    for name, change in mutations:
-        broken=dict(row)
-        if name == "preflight_mpr_missing":
-            broken.pop("preflight_mpr", None)
-        elif change is not None:
-            broken.update(change)
-        executed_mutations.append(name)
-        if name == "TransferEnd_stack" and (case.endswith("tam-alias") or case.endswith("tam-deny")):
-            excluded_mutations.append(name); continue
-        if case.endswith("len0"):
-            # length=0 produces an empty transfer: byte_guard_calls is already 0
-            # (cannot be decremented), dest_values is already empty (cannot be
-            # zeroed further), and dst_bank is empty (MPR_alias_resolution is a
-            # no-op: [b^1 for b in []] == []).  These three are no-ops and are
-            # explicitly excluded.  The new MPR snapshot destruction mutations
-            # MUST apply to length=0 (MPR immutability is checked even with no
-            # transfer bytes).
-            if name in ("transfer_byte_count", "partial_destination_result", "MPR_alias_resolution"):
-                excluded_mutations.append(name); continue
-        try: assert_core_row(broken,case,deny=deny)
-        except (ValueError,KeyError):
-            detected_mutations.append(name); continue
-        raise ValueError(f"{case}: classifier accepted mutation {name}")
-    print(f"MUTATION {case}: executed={len(executed_mutations)} excluded={len(excluded_mutations)} detected={len(detected_mutations)}")
+    specs = [
+        ("preflight_callback_missing", {"preflight_calls": 0}, None),
+        ("decision_inverted", {"preflight_allow": 1 if deny else 0, "preflight_deny": 0 if deny else 1}, None),
+        # Deny mode sets the count to 1 (a 0->1 change), so it is applicable to length=0 too.
+        ("transfer_byte_count", {"byte_guard_calls": 1 if deny else max(0, row["byte_guard_calls"] - 1)}, None),
+        ("source_update_direction", {"byte_src": bad_src}, None),
+        ("destination_update_direction", {"preflight_dst": bad_dst}, None),
+        ("MPR_alias_resolution", {"dst_bank": [b ^ 1 for b in row["dst_bank"]]},
+         _noop_if(not row["dst_bank"], "no MPR-resolved destination page bank to alias")),
+        ("partial_destination_result", {"dest_values": [0] * len(row["dest_values"])},
+         _noop_if(not row["dest_values"], "no destination bytes to zero")),
+        ("TransferEnd_stack", {"stack_wram_after": [0, 0, 1]},
+         ("unobserved", "TAM: classifier does not check the physical stack frame") if tam else None),
+        ("VDC_status_effect", {"vdc_sr": [row["vdc_sr"][0], row["vdc_sr"][0] ^ 1]}, None),
+        # MPR immutability: the preflight MPR snapshot must match transfer-end/abort MPR.
+        ("preflight_mpr_missing", {"preflight_mpr": _MISSING}, None),
+        ("preflight_mpr_short", {"preflight_mpr": preflight_mpr[:7]}, None),
+        ("preflight_mpr_type_wrong", {"preflight_mpr": [str(b) for b in preflight_mpr]}, None),
+    ]
+    for j in range(8):
+        specs.append((f"MPR{j}_destroyed",
+                      {"mpr_after": [b ^ (0xFF if k == j else 0) for k, b in enumerate(mpr_after)]}, None))
+    return specs
+
+def _field_state(d, key):
+    return ("present", repr(d[key])) if key in d else ("absent", None)
+
+def run_mutation_suite(row, case, deny=False, classify=None, specs=None):
+    """Apply each mutation, verify it changed the observation, and count the outcome.
+
+    defined = excluded + applied; applied = detected.  Duplicate observation changes,
+    undeclared no-ops, exclusions that contradict the observation, and classifier
+    acceptance of an applied mutation are collected and raised at the end
+    (fail-closed; explicit raises only, so behaviour is identical under `python -O`).
+    """
+    if classify is None:
+        classify = lambda broken, c, d: assert_core_row(broken, c, deny=d)
+    if specs is None:
+        specs = mutation_specs(row, case, deny)
+    result = {"case": case, "deny": deny, "defined": len(specs), "excluded": [], "applied": [],
+              "detected": [], "accepted": [], "duplicate": [], "unexpected_noop": [],
+              "exclusion_violation": []}
+    names = [name for name, _, _ in specs]
+    for i, name in enumerate(names):
+        if name in names[:i]:
+            result["duplicate"].append(f"{name} (same name)")
+    seen = {}
+    for name, changes, exclusion in specs:
+        broken = dict(row)
+        for key, value in changes.items():
+            if value is _MISSING:
+                broken.pop(key, None)
+            else:
+                broken[key] = value
+        changed = any(_field_state(row, k) != _field_state(broken, k) for k in changes)
+        signature = tuple(sorted((k, _field_state(broken, k)) for k in changes))
+        if signature in seen:
+            result["duplicate"].append(f"{name} duplicates {seen[signature]} (same observation change)")
+            continue
+        seen[signature] = name
+        if exclusion is not None:
+            kind, reason = exclusion
+            if kind == "noop":
+                if changed:
+                    result["exclusion_violation"].append(f"{name}: declared no-op but changed the observation")
+            elif kind == "unobserved":
+                if not changed:
+                    result["exclusion_violation"].append(f"{name}: declared unobserved but did not change the row")
+                else:
+                    try:
+                        classify(broken, case, deny)
+                    except ValueError:
+                        result["exclusion_violation"].append(f"{name}: declared unobserved but classifier rejects it")
+            else:
+                raise ValueError(f"{case}: unknown exclusion kind {kind!r} for {name}")
+            result["excluded"].append({"name": name, "kind": kind, "reason": reason, "changed": changed})
+            continue
+        if not changed:
+            result["unexpected_noop"].append(name)
+            continue
+        result["applied"].append(name)
+        try:
+            classify(broken, case, deny)
+        except ValueError:
+            result["detected"].append(name)
+            continue
+        result["accepted"].append(name)
+    problems = {k: result[k] for k in ("duplicate", "unexpected_noop", "exclusion_violation", "accepted") if result[k]}
+    if problems:
+        raise ValueError(f"{case}: mutation suite violations {json.dumps(problems, sort_keys=True)}")
+    if result["defined"] != len(result["excluded"]) + len(result["applied"]):
+        raise ValueError(f"{case}: defined != excluded + applied")
+    if len(result["applied"]) != len(result["detected"]):
+        raise ValueError(f"{case}: applied != detected")
+    return result
+
+def mutation_test(row, case, deny=False):
+    result = run_mutation_suite(row, case, deny)
+    want = expected_mutation_counts(case)
+    got = (result["defined"], len(result["excluded"]), len(result["applied"]))
+    if got != want:
+        raise ValueError(f"{case}: mutation counts (defined, excluded, applied) {got} != expected {want}")
+    names = {e["name"] for e in result["excluded"]}
+    if names != EXPECTED_EXCLUSIONS[mutation_category(case)]:
+        raise ValueError(f"{case}: excluded mutations {sorted(names)} != expected")
+    print("MUTATION_EVIDENCE " + json.dumps(result, sort_keys=True))
+    return result
+
+def mutation_totals(results):
+    totals = {"defined": 0, "excluded": 0, "applied": 0, "detected": 0,
+              "accepted": 0, "duplicate": 0, "unexpected_noop": 0}
+    for r in results:
+        totals["defined"] += r["defined"]
+        totals["excluded"] += len(r["excluded"])
+        totals["applied"] += len(r["applied"])
+        totals["detected"] += len(r["detected"])
+        totals["accepted"] += len(r["accepted"])
+        totals["duplicate"] += len(r["duplicate"])
+        totals["unexpected_noop"] += len(r["unexpected_noop"])
+    if totals["defined"] != totals["excluded"] + totals["applied"]:
+        raise ValueError(f"mutation totals: defined {totals['defined']} != excluded+applied")
+    if totals["applied"] != totals["detected"]:
+        raise ValueError(f"mutation totals: applied {totals['applied']} != detected {totals['detected']}")
+    if totals["accepted"] or totals["duplicate"] or totals["unexpected_noop"]:
+        raise ValueError(f"mutation totals: violations {totals}")
+    return totals
 
 def main():
     expected_cases = {
@@ -272,12 +387,13 @@ def main():
     if set(CASES) != expected_cases:
         raise ValueError(f"CASES set mismatch: {set(CASES) ^ expected_cases}")
     executed = []
+    mutation_results = []
     with tempfile.TemporaryDirectory(prefix="pce-block-matrix-") as tmp:
         d = Path(tmp); bios, cue = synthetic_media(d)
         probe = build_probes(d, "geargrafx_block_transfer_matrix.cpp", "block-transfer-matrix-probe")
         for case in CASES:
             row = run(probe, bios, cue, case)
-            deny = "deny-" in case or case.endswith("tam-deny")
+            deny = case.endswith("len0") or "deny-" in case or case.endswith("tam-deny")
             # Operand fixture: default matrix tests use src=$3E80/dst=$3E90; explicit boundary
             # and denial cases are interpreted from the probe's returned decoded operands.
             if case.endswith("len0"):
@@ -294,11 +410,14 @@ def main():
             executed.append(case)
             print(f"REAL_CORE_PASS {case}: calls={row['preflight_calls']} deny={row['preflight_deny']} bytes={row['byte_guard_calls']}")
             print("EVIDENCE " + json.dumps({"observation_kind":"REAL_CORE_EXECUTION","core_revision":"b49ae82a012eade566d72e9d61c9d95a5caa4da3","case":case,"row":row},sort_keys=True))
-            mutation_test(row,case,deny=deny)
+            mutation_results.append(mutation_test(row,case,deny=deny))
     if executed != CASES:
         raise ValueError(f"case execution order mismatch: executed {len(executed)} vs expected {len(CASES)}")
     if executed[-1] != "tia-deny-nonmono":
         raise ValueError(f"last executed case was {executed[-1]!r}, expected tia-deny-nonmono")
+    if [r["case"] for r in mutation_results] != CASES:
+        raise ValueError("mutation audit did not complete for every case")
+    print("MUTATION_TOTAL " + json.dumps(mutation_totals(mutation_results), sort_keys=True))
     print(f"PASS: {len(CASES)} synthetic pinned real-core matrix cases; production safety remains BLOCKED")
 
 if __name__ == "__main__":

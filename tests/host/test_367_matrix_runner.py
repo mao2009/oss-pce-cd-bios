@@ -18,6 +18,56 @@ sys.path.insert(0, str(ROOT / "tests" / "integration"))
 import geargrafx_block_transfer_matrix as M  # noqa: E402
 
 
+def synthetic_row(*, length, deny=False, tam_alias=False):
+    """Minimal synthetic probe row carrying only the observation fields the mutation suite reads."""
+    n = length
+    mpr = [0xF8] * 8
+    if tam_alias:
+        mpr[2] = 0xF9  # legal guest TAM MPR2 change, made before preflight
+    return {
+        "preflight_calls": 1,
+        "preflight_allow": 0 if deny else 1,
+        "preflight_deny": 1 if deny else 0,
+        "byte_guard_calls": 0 if deny else n,
+        "byte_src": [] if deny else [0x3E80 + i for i in range(n)],
+        "preflight_src": [0x3E80 + i for i in range(n)],
+        "preflight_dst": [0x3E90 + i for i in range(n)],
+        "dst_bank": [0xF8] * n,
+        "dest_values": [0x13 + i for i in range(n)],
+        "mpr_before": list(mpr),
+        "mpr_after": list(mpr),
+        "preflight_mpr": list(mpr),
+        "vdc_sr": [0, 0],
+        "stack_wram_after": [0x34, 0x12, 0x07],
+    }
+
+
+def reject_all(broken, case, deny):
+    raise ValueError("rejected")
+
+
+def accept_all(broken, case, deny):
+    return None
+
+
+def ignoring(row, ignored):
+    """Classifier that accepts only changes confined to `ignored` fields (models an unobserved field)."""
+    def classify(broken, case, deny):
+        for key in row:
+            if key in ignored:
+                continue
+            if M._field_state(broken, key) != M._field_state(row, key):
+                raise ValueError("rejected")
+    return classify
+
+
+def mpr_rule(broken, case, deny):
+    """Classifier for MPR immutability only: preflight MPR snapshot must be an intact 8-entry list equal to mpr_after."""
+    pre = broken.get("preflight_mpr")
+    if type(pre) is not list or len(pre) != 8 or pre != broken["mpr_after"]:
+        raise ValueError("MPR immutability violated")
+
+
 class MatrixCaseSetTest(unittest.TestCase):
     """The static CASES list must match the expected 51-case set exactly."""
 
@@ -80,6 +130,12 @@ class MatrixDispatchTest(unittest.TestCase):
         self.assertEqual("deny-" in "tii-len0", False)
         self.assertEqual("tii-len0".endswith("tam-deny"), False)
 
+    def test_main_derives_deny_for_len0(self):
+        # main() must pass deny=True for tii-len0 to the mutation suite (regression for the len0 dispatch).
+        import inspect
+        src = inspect.getsource(M.main)
+        self.assertIn('case.endswith("len0") or "deny-" in case', src)
+
     def test_len0_dispatches_to_deny_true(self):
         # Dispatch order in main(): case.endswith("len0") is checked before
         # case in LEN_CASES.  Verify tii-len0 hits the explicit len0 branch
@@ -123,32 +179,24 @@ class MatrixMPRTest(unittest.TestCase):
 
     def test_mpr_mutations_defined(self):
         # 8 MPR destruction mutations + 3 preflight_mpr mutations = 11 MPR mutations
-        import inspect
-        src = inspect.getsource(M.mutation_test)
+        names = {name for name, _, _ in M.mutation_specs(synthetic_row(length=2), "tii-boundary-1fff", False)}
         for i in range(8):
-            self.assertIn(f"MPR{i}_destroyed", src,
+            self.assertIn(f"MPR{i}_destroyed", names,
                           f"MPR{i}_destroyed mutation must be defined")
-        self.assertIn("preflight_mpr_missing", src)
-        self.assertIn("preflight_mpr_short", src)
-        self.assertIn("preflight_mpr_type_wrong", src)
+        self.assertIn("preflight_mpr_missing", names)
+        self.assertIn("preflight_mpr_short", names)
+        self.assertIn("preflight_mpr_type_wrong", names)
 
     def test_mpr_mutations_apply_to_len0(self):
-        # MPR snapshot destruction mutations must NOT be excluded for length=0
-        import inspect
-        src = inspect.getsource(M.mutation_test)
-        len0_block_start = src.find('if case.endswith("len0"):')
-        len0_exclusions = src[len0_block_start:src.find("        try:", len0_block_start)]
-        # Only the 3 existing no-op mutations should be excluded for len0
-        for name in ("transfer_byte_count", "partial_destination_result", "MPR_alias_resolution"):
-            self.assertIn(name, len0_exclusions,
-                          f"{name} must be excluded for len0")
-        # MPR mutations must NOT be in the len0 exclusion list
+        # MPR snapshot destruction mutations must NOT be excluded for length=0.
+        # Behavioural check on the real definitions (synthetic length=0 row).
+        row = synthetic_row(length=0, deny=True)
+        excluded = {e["name"] for e in M.run_mutation_suite(row, "tii-len0", True, classify=reject_all)["excluded"]}
+        self.assertEqual(excluded, {"partial_destination_result", "MPR_alias_resolution"})
         for i in range(8):
-            self.assertNotIn(f"MPR{i}_destroyed", len0_exclusions,
-                             f"MPR{i}_destroyed must NOT be excluded for len0")
+            self.assertNotIn(f"MPR{i}_destroyed", excluded)
         for name in ("preflight_mpr_missing", "preflight_mpr_short", "preflight_mpr_type_wrong"):
-            self.assertNotIn(name, len0_exclusions,
-                             f"{name} must NOT be excluded for len0")
+            self.assertNotIn(name, excluded)
 
 
 class MatrixFailClosedTest(unittest.TestCase):
@@ -167,6 +215,122 @@ class MatrixFailClosedTest(unittest.TestCase):
         self.assertNotIn("assert len(CASES)", main_src)
         self.assertNotIn("assert len(set(CASES))", main_src)
         self.assertNotIn("assert set(CASES)", main_src)
+
+
+class MutationAuditTest(unittest.TestCase):
+    """Mutation counting: defined = excluded + applied, applied = detected, no duplicates or no-ops."""
+
+    def test_normal_case_is_20_0_20(self):
+        res = M.run_mutation_suite(synthetic_row(length=2), "tii-boundary-1fff", False, classify=reject_all)
+        self.assertEqual((res["defined"], len(res["excluded"]), len(res["applied"]), len(res["detected"])), (20, 0, 20, 20))
+
+    def test_len0_is_20_2_18_and_transfer_byte_count_applies(self):
+        res = M.run_mutation_suite(synthetic_row(length=0, deny=True), "tii-len0", True, classify=reject_all)
+        self.assertEqual((res["defined"], len(res["excluded"]), len(res["applied"]), len(res["detected"])), (20, 2, 18, 18))
+        self.assertIn("transfer_byte_count", res["applied"])
+        self.assertEqual(M.expected_mutation_counts("tii-len0"), (20, 2, 18))
+
+    def test_tam_is_20_1_19_with_unobserved_stack_exclusion(self):
+        row = synthetic_row(length=2, tam_alias=True)
+        res = M.run_mutation_suite(row, "tii-tam-alias", False, classify=ignoring(row, {"stack_wram_after"}))
+        self.assertEqual((res["defined"], len(res["excluded"]), len(res["applied"]), len(res["detected"])), (20, 1, 19, 19))
+        self.assertEqual(res["excluded"][0]["name"], "TransferEnd_stack")
+        self.assertEqual(res["excluded"][0]["kind"], "unobserved")
+        self.assertEqual(M.expected_mutation_counts("tii-tam-deny"), (20, 0, 20))
+
+    def test_tam_deny_refusal_checks_stack_frame(self):
+        # The refusal branch compares stack_wram_after with before, so TransferEnd_stack is observed.
+        row = synthetic_row(length=2, deny=True, tam_alias=True)
+        res = M.run_mutation_suite(row, "tii-tam-deny", True, classify=reject_all)
+        self.assertEqual((res["defined"], len(res["excluded"]), len(res["applied"]), len(res["detected"])), (20, 0, 20, 20))
+        self.assertIn("TransferEnd_stack", res["applied"])
+
+    def test_len0_duplicate_mutation_is_removed(self):
+        names = [name for name, _, _ in M.mutation_specs(synthetic_row(length=0, deny=True), "tii-len0", True)]
+        self.assertNotIn("len0_mutation_guard", names)
+        self.assertEqual(len(names), len(set(names)))
+        self.assertEqual(len(names), 20)
+
+    def test_duplicate_observation_under_new_name_is_rejected(self):
+        row = synthetic_row(length=0, deny=True)
+        specs = M.mutation_specs(row, "tii-len0", True) + [("len0_mutation_guard", {"preflight_calls": 0}, None)]
+        with self.assertRaisesRegex(ValueError, "duplicates preflight_callback_missing"):
+            M.run_mutation_suite(row, "tii-len0", True, classify=reject_all, specs=specs)
+
+    def test_same_name_twice_is_rejected(self):
+        row = synthetic_row(length=2)
+        specs = M.mutation_specs(row, "tii-boundary-1fff", False)
+        specs.append(specs[0])
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            M.run_mutation_suite(row, "tii-boundary-1fff", False, classify=reject_all, specs=specs)
+
+    def test_undeclared_noop_is_rejected(self):
+        specs = [("noop_mut", {"preflight_calls": 1}, None)]
+        with self.assertRaisesRegex(ValueError, "unexpected_noop"):
+            M.run_mutation_suite(synthetic_row(length=2), "tii-boundary-1fff", False, classify=reject_all, specs=specs)
+
+    def test_declared_noop_that_changes_observation_is_rejected(self):
+        specs = [("bogus_noop", {"preflight_calls": 0}, ("noop", "claimed no-op"))]
+        with self.assertRaisesRegex(ValueError, "declared no-op but changed"):
+            M.run_mutation_suite(synthetic_row(length=2), "tii-boundary-1fff", False, classify=reject_all, specs=specs)
+
+    def test_excluded_is_not_counted_as_applied(self):
+        specs = [("real_noop", {"preflight_calls": 1}, ("noop", "no-op by design")),
+                 ("real", {"preflight_calls": 0}, None)]
+        res = M.run_mutation_suite(synthetic_row(length=2), "tii-boundary-1fff", False, classify=reject_all, specs=specs)
+        self.assertEqual([e["name"] for e in res["excluded"]], ["real_noop"])
+        self.assertEqual(res["applied"], ["real"])
+        self.assertEqual(res["detected"], ["real"])
+        self.assertEqual(res["defined"], 2)
+
+    def test_applied_detected_mismatch_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "accepted"):
+            M.run_mutation_suite(synthetic_row(length=2), "tii-boundary-1fff", False, classify=accept_all)
+
+    def test_unobserved_exclusion_contradicted_by_classifier_is_rejected(self):
+        row = synthetic_row(length=2, tam_alias=True)
+        # reject_all detects the stack change, so the TAM 'unobserved' declaration is wrong.
+        with self.assertRaisesRegex(ValueError, "declared unobserved but classifier rejects"):
+            M.run_mutation_suite(row, "tii-tam-alias", False, classify=reject_all)
+
+    def test_totals_invariants(self):
+        res = M.run_mutation_suite(synthetic_row(length=2), "tii-boundary-1fff", False, classify=reject_all)
+        totals = M.mutation_totals([res])
+        self.assertEqual(totals["defined"], totals["excluded"] + totals["applied"])
+        self.assertEqual(totals["applied"], totals["detected"])
+        self.assertEqual((totals["duplicate"], totals["unexpected_noop"], totals["accepted"]), (0, 0, 0))
+
+    def test_mpr_mutations_all_applied_and_detected(self):
+        for row, case, deny in ((synthetic_row(length=2), "tii-boundary-1fff", False),
+                                (synthetic_row(length=0, deny=True), "tii-len0", True),
+                                (synthetic_row(length=2, tam_alias=True), "tii-tam-alias", False)):
+            specs = [s for s in M.mutation_specs(row, case, deny)
+                     if s[0].endswith("_destroyed") or s[0].startswith("preflight_mpr")]
+            self.assertEqual(len(specs), 11, case)
+            res = M.run_mutation_suite(row, case, deny, classify=mpr_rule, specs=specs)
+            self.assertEqual(len(res["detected"]), 11, case)
+            self.assertEqual(res["excluded"], [], case)
+
+    def test_mpr_rule_does_not_flag_legal_tam_mpr2_change(self):
+        mpr_rule(synthetic_row(length=2, tam_alias=True), "tii-tam-alias", False)  # must not raise
+
+    def test_fail_closed_under_python_O(self):
+        script = (
+            "import sys\n"
+            f"sys.path.insert(0, {str(ROOT / 'tests' / 'integration')!r})\n"
+            "import geargrafx_block_transfer_matrix as M\n"
+            "def reject(b, c, d):\n"
+            "    raise ValueError('rejected')\n"
+            "specs = [('a', {'preflight_calls': 0}, None), ('b', {'preflight_calls': 0}, None)]\n"
+            "try:\n"
+            "    M.run_mutation_suite({'preflight_calls': 1}, 'tii-boundary-1fff', False, classify=reject, specs=specs)\n"
+            "except ValueError:\n"
+            "    sys.exit(3)\n"
+            "sys.exit(0)\n"
+        )
+        import subprocess
+        proc = subprocess.run([sys.executable, "-O", "-c", script], capture_output=True, text=True, timeout=120)
+        self.assertEqual(proc.returncode, 3, proc.stderr)
 
 
 if __name__ == "__main__":
