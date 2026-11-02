@@ -62,4 +62,3 @@
 | 49 | bm-format / 305 | pce-devel/huc @ `54f5c73` | `doc/huc/clibref.txt` | https://raw.githubusercontent.com/pce-devel/huc/54f5c73606c1e7142e8095c727cab2767e2b3cb3/doc/huc/clibref.txt | 200 | 31508 | `da488fa6d53db37f0c7849265a9a60066fb9fb0bb970545e7cf5182faf4c6265` | 完全値 64 桁（bm-format） | YES | N/A |
 
 注記: 「blob 照合」の N/A は blob の主張がないもの。BM 行（bm-format / 305）は主張が完全値の SHA-256 のみ。L-02 の `hucc-systemcard.asm` と `hucc-systemcard.h` は 308 と bm-format で重複して記録されている。
-
