@@ -383,11 +383,15 @@ def mutation_tests(suite, records):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("debug", "release"), default="debug")
+    parser.add_argument("--output", type=Path,
+                        help="built diagnostic directory; default is the Issue #501 DEV-internal image")
+    parser.add_argument("--rom-name", default="dev-only-not-compatible-dev-boot-internal.pce")
     args = parser.parse_args()
-    output = ROOT / "build" / args.mode / "dev-boot-internal"
-    rom_bytes = (output / "dev-only-not-compatible-dev-boot-internal.pce").read_bytes()
+    output = args.output or ROOT / "build" / args.mode / "dev-boot-internal"
+    rom_bytes = (output / args.rom_name).read_bytes()
     manifest = json.loads((output / "manifest.json").read_text())
-    symbols = manifest["symbols"]
+    # Experimental images may give the common synthetic-flow labels aliases in trace_symbols.
+    symbols = manifest.get("trace_symbols", manifest["symbols"])
     if manifest.get("dev_callable") is not False or manifest.get("release_eligible") is not False:
         raise ValueError("manifest must state dev_callable=false and release_eligible=false")
     code = (output / "payload.bin").read_bytes()
@@ -441,9 +445,10 @@ def main():
         mutation_tests(suite, primary)
 
     evidence = evidence_record(manifest, code, suite.results, primary)
-    (output / "dev-boot-internal-evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+    evidence_name = "dev-boot-internal-evidence.json" if args.output is None else "experimental-bios-boot-evidence.json"
+    (output / evidence_name).write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
     passed = passed_scenarios(suite.results)
-    print(f"PASS DEV-only internal boot via real Geargrafx: {passed} scenarios "
+    print(f"PASS synthetic DEV-only boot flow via real Geargrafx: {passed} scenarios "
           f"(cold+warm, guest READ(6) x2, RAM byte compare, PC order); NOT compatible, NOT BIOS, NOT DEV_CALLABLE")
 
 
