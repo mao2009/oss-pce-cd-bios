@@ -21,15 +21,19 @@ def event(kind="sample", frame=1):
         row.update(changed=2, first_wram=512, last_wram=513)
     if kind == "cd":
         row.update(snapshot="FRAME_SNAPSHOT", cd_event=1, command=8, lba=5, status=0)
+    if kind == "region":
+        row = {"kind": "region", "frame": frame, "event_cycle": 1, "event_pc": 8192,
+               "event_bank": 248, "from_region": "other", "to_region": "working_ram", "trace_gap": False}
     return row
 
 
-def output(events, dropped=0, scsi_events_dropped=0, capacity=4, run=None):
+def output(events, dropped=0, trace_events_dropped=0, capacity=4, run=None):
     cap = {"normal_frame_execution": True, "instruction_step": False, "guest_mutation": False, "scsi_event_notification": True,
+           "cpu_event_notification": True,
            "mmio_reads": False, "ring_capacity": capacity, "frames": 2, "disc_given": False,
            "run_input_requested": bool(run), "run_start_frame": 1 if run else 0, "run_hold_frames": 2 if run else 0}
-    end = {"frames": 2, "events": len(events), "dropped": dropped, "scsi_events_dropped": scsi_events_dropped,
-           "overflow": bool(dropped or scsi_events_dropped)}
+    end = {"frames": 2, "events": len(events), "dropped": dropped, "trace_events_dropped": trace_events_dropped,
+           "overflow": bool(dropped or trace_events_dropped)}
     inputs = [] if not run else ["INPUT " + json.dumps({"frame": 1, "action": "press", "run_pressed": True}),
                                  "INPUT " + json.dumps({"frame": 2, "action": "release", "run_pressed": False})]
     return "\n".join(["CAP " + json.dumps(cap), *inputs, *["EVENT " + json.dumps(row) for row in events],
@@ -51,10 +55,20 @@ class FrameTracerProtocolTests(unittest.TestCase):
         self.assertEqual(end["dropped"], 7)
         self.assertTrue(end["overflow"])
 
-    def test_core_scsi_event_loss_is_explicit_overflow(self):
-        _, _, end = tracer.parse_records(output([event("cd")], scsi_events_dropped=3))
+    def test_core_trace_loss_is_explicit_overflow(self):
+        _, _, end = tracer.parse_records(output([event("region")], trace_events_dropped=3))
         self.assertTrue(end["overflow"])
-        self.assertEqual(end["scsi_events_dropped"], 3)
+        self.assertEqual(end["trace_events_dropped"], 3)
+
+    def test_accepts_event_time_region_metadata_without_cpu_snapshot(self):
+        _, rows, _ = tracer.parse_records(output([event("region")]))
+        self.assertEqual(rows[0]["to_region"], "working_ram")
+
+    def test_refuses_bad_event_time_region_metadata(self):
+        row = event("region")
+        row["event_bank"] = 256
+        with self.assertRaisesRegex(ValueError, "region transition"):
+            tracer.parse_records(output([row]))
 
     def test_run_schedule_uses_press_hold_release_boundaries(self):
         self.assertEqual(tracer.run_schedule(2, 3, 5), ((2, "press"), (4, "release")))
@@ -170,6 +184,16 @@ class FrameTracerProtocolTests(unittest.TestCase):
                             str(source), "-o", str(binary)], check=True)
             subprocess.run([str(binary)], check=True)
 
+    @unittest.skipUnless(shutil.which("c++"), "C++ compiler unavailable")
+    def test_confirmed_trace_cpu_bank_regions_are_executed_in_cpp(self):
+        source = Path(__file__).with_name("geargrafx_trace_cpu_region_test.cpp")
+        include = source.parents[1] / "integration"
+        with tempfile.TemporaryDirectory() as temporary:
+            binary = Path(temporary) / "region-test"
+            subprocess.run(["c++", "-std=c++11", "-Wall", "-Wextra", "-Werror", "-I", str(include),
+                            str(source), "-o", str(binary)], check=True)
+            subprocess.run([str(binary)], check=True)
+
     def test_refuses_mutating_or_stepped_protocols_and_bad_ring_counts(self):
         cases = [
             output([event()]).replace('"guest_mutation": true', '"guest_mutation": false'),
@@ -191,6 +215,10 @@ class FrameTracerProtocolTests(unittest.TestCase):
         self.assertNotIn("RunInstruction(", source)
         self.assertNotIn("step_debugger = true", source)
         self.assertIn("GetTraceLogger()", source)
+        self.assertIn("TRACE_FLAG_CPU", source)
+        self.assertIn("entry.cpu.bank", source)
+        self.assertNotIn("entry.cpu.opcodes", source)
+        self.assertNotIn("entry.cpu.name", source)
         self.assertIn("core.KeyPressed(GG_CONTROLLER_1, GG_KEY_RUN)", source)
         self.assertIn("core.KeyReleased(GG_CONTROLLER_1, GG_KEY_RUN)", source)
 
