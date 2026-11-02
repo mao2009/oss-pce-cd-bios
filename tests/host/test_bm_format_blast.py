@@ -1,4 +1,4 @@
-"""Blast-radius model (Issue #303): non-executing, synthetic images only. Model: tools/bm_format_blast.py."""
+"""Blast-radius model (Issue #303): BIOS not executed; format_image runs on a copy; synthetic images only. Model: tools/bm_format_blast.py."""
 import ast
 import sys
 import unittest
@@ -23,14 +23,14 @@ class BlastRadiusTest(unittest.TestCase):
         self.assertEqual(r["model_status"], bm.OK)
         # SIGNATURE has two trailing zero bytes, so they do not change on a blank image.
         self.assertEqual(r["changed_ranges"], [(0, 6)])
-        self.assertFalse(r["user_data_at_risk"])
+        self.assertFalse(r["path_a_user_data_at_risk"])
 
     def test_dirty_invalid_image_reports_destroyed_data(self):
         r = blast.blast_radius(b"\xAA" * bm.MIN_CAPACITY, allow_destructive=True)
         self.assertEqual(r["model_status"], bm.OK)
         self.assertEqual(r["changed_ranges"], [(0, bm.MIN_CAPACITY)])
         self.assertEqual(r["nonzero_destroyed_count"], bm.MIN_CAPACITY)
-        self.assertTrue(r["user_data_at_risk"])
+        self.assertTrue(r["path_a_user_data_at_risk"])
 
     def test_partial_change_reports_disjoint_ranges(self):
         image = bytearray(bm.MIN_CAPACITY)
@@ -45,7 +45,7 @@ class BlastRadiusTest(unittest.TestCase):
         r = blast.blast_radius(formatted(), allow_destructive=True)
         self.assertEqual(r["model_status"], bm.ALREADY_FORMATTED)
         self.assertEqual(r["changed_ranges"], [])
-        self.assertFalse(r["user_data_at_risk"])
+        self.assertFalse(r["path_a_user_data_at_risk"])
 
     def test_unconfirmed_and_short_images_change_nothing(self):
         dirty = b"\xAA" * bm.MIN_CAPACITY
@@ -56,9 +56,18 @@ class BlastRadiusTest(unittest.TestCase):
 
     def test_output_never_claims_bios_or_approval(self):
         r = blast.blast_radius(b"\xAA" * bm.MIN_CAPACITY, allow_destructive=True)
-        self.assertEqual(r["verdict"], blast.NOT_EXECUTED)
+        self.assertEqual(r["verdict"], "UNKNOWN")
+        self.assertIs(r["bios_executed"], False)
         self.assertEqual(r["bios_write_set"], "UNKNOWN")
         self.assertIs(r["release_eligible"], False)
+
+    def test_scope_names_path_b_as_not_modeled(self):
+        r = blast.blast_radius(b"\xAA" * bm.MIN_CAPACITY, allow_destructive=True)
+        self.assertEqual(r["scope"]["modeled_paths"], ["path_A"])
+        self.assertEqual(len(r["scope"]["not_modeled"]), 1)
+        self.assertTrue(r["scope"]["not_modeled"][0].startswith("path_B:"))
+        self.assertIn("$8000-$9FFF", r["scope"]["not_modeled"][0])
+        self.assertIn("$20F8-$20FF", r["scope"]["not_modeled"][0])
 
     def test_input_buffer_is_not_mutated(self):
         image = bytearray(b"\xAA" * bm.MIN_CAPACITY)
