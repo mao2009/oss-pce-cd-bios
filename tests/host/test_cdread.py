@@ -4,8 +4,12 @@ import hashlib
 from pathlib import Path
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
+from unittest.mock import patch
 from tools.environment import requires_cc65
 
+import tools.build_cdread as build_cdread_module
 from tools.build_cdread import (
     BANK_BASE, DEFAULT_COUNT, DEFAULT_LBA, EXPECTED_MPR, HALT_CONFIRM_STEPS, REQUIRED_SYMBOLS, build_cdread, code_digest,
     parse_symbols, read_request, verify_cdread, with_request,
@@ -93,6 +97,35 @@ class CdReadBuildTests(unittest.TestCase):
             missing.write_text("\n".join(l for l in labels.splitlines() if not l.endswith(" .cd_select")) + "\n")
             with self.assertRaisesRegex(ValueError, "mismatch"):
                 parse_symbols(missing)
+
+
+class CdReadCliStatusTests(unittest.TestCase):
+    def run_cli(self, root):
+        output = StringIO()
+        with patch.object(build_cdread_module, "ROOT", root), patch("sys.argv", ["build_cdread.py"]), \
+                redirect_stdout(output):
+            code = build_cdread_module.cli()
+        return code, output.getvalue()
+
+    def test_missing_dev_rom_input_is_blocked_with_exit_3(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = root / "build/debug/bios-dev/dev-only-not-compatible-syscard3.pce"
+            code, output = self.run_cli(root)
+            self.assertEqual(code, build_cdread_module.EXIT_BLOCKED)
+            self.assertIn("BLOCKED cdread build: missing dev-cdread build input", output)
+            self.assertFalse(base.exists())
+
+    def test_existing_but_invalid_dev_rom_input_is_an_oracle_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = root / "build/debug/bios-dev/dev-only-not-compatible-syscard3.pce"
+            base.parent.mkdir(parents=True)
+            base.write_bytes(b"not a development ROM")
+            code, output = self.run_cli(root)
+            self.assertEqual(code, 1)
+            self.assertTrue(output.startswith("FAIL cdread build: "), output)
+            self.assertNotIn("BLOCKED", output)
 
 
 def good_records(symbols, lba=5, count=1):
