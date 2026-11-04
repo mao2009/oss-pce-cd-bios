@@ -77,8 +77,10 @@ def _c_refused_push(row):   # C refused a stack access, nothing touched the I/O 
             and row["instructions_after_refusal"] == 0 and row["instruction_refused"] is True)
 
 
-def _io_landed(row):
-    return row["io_writes"] >= 1
+def _io_landed(row):   # the guard refused (decision 0 logged) yet the first entry/push byte reached $2104
+    io = [e for e in row["events"] if e["kind"] == "io"]
+    refused = [e for e in row["events"] if e["kind"] == "stack" and e["decision"] == 0]
+    return bool(io) and (io[0]["op"], io[0]["address"]) == (G.WRITE, 0x2104) and bool(refused)
 
 
 MUTANTS = {
@@ -124,12 +126,17 @@ def evaluate(rows):
         for route in M.BANK_ROUTES:
             for bank in M.BANK_VARIANTS:
                 case = f"{method}:{route}-armed{bank}"
+                if rows[case].get("exit", 0) != 0:
+                    raise ValueError(f"{case}: probe failed (exit {rows[case].get('exit')})")
+                M._snapshot_fields(rows[case], case)
                 want_bank = 0x80 if bank == "ram" else 0xF7
                 if rows[case].get("stack_bank") != want_bank or rows[case]["refusal"].get("mpr1") != want_bank:
                     raise ValueError(f"{case}: stack bank {rows[case].get('stack_bank')} / refusal MPR1 "
                                      f"{rows[case]['refusal'].get('mpr1')}, want {want_bank:#x}")
                 table[(f"{route}@{bank}", method)] = M.check_armed(rows[case], case, BANK_EXPECT[method])
     for case, (want, must_fail, evidence) in MUTANTS.items():
+        if rows[case].get("exit", 0) != 0:
+            raise ValueError(f"{case}: probe failed (exit {rows[case].get('exit')})")
         M._snapshot_fields(rows[case], case)
         got, c = M.verdict(rows[case], 0)
         if got != want or c[must_fail] or not evidence(rows[case]):
@@ -161,7 +168,8 @@ def main():
              for m in METHODS}
     for route in routes:
         if M.NOTES.get(route):
-            print(f"NOTE {route} (methods A and A+C): {M.NOTES[route]}")
+            scope = "all methods" if route == "tamjsr" else "methods A and A+C"
+            print(f"NOTE {route} ({scope}): {M.NOTES[route]}")
     print("NOTE (method C): irq takes the IRQ entry and the block opcodes run TransferStart before C refuses the "
           "first push; under A and A+C those rows are refused before the instruction.")
     print(f"EXPECTATIONS_MET issue-500 A/C/A+C comparison: {len(rows)} real-core runs, {len(detections)} detections, expectations "
