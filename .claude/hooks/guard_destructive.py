@@ -736,7 +736,7 @@ def timeout_candidates(args):
     the first non-option (the "+" getopt form), so options after DURATION belong to COMMAND. Options before it:
     -k and -s (and --kill-after, --signal) take a value, separate or attached; other options are flags. Anything
     the grammar does not cover is analysed conservatively: a non-numeric duration and an option-like command name
-    are also candidates. An attached value that GNU rejects (for example -ks) runs nothing and is allowed."""
+    are also candidates, and so is every suffix of an option-like candidate."""
     i = 0
     while i < len(args):
         a = args[i]
@@ -763,10 +763,13 @@ def timeout_candidates(args):
     if not re.match(r"^[0-9.]+[smhd]?$", args[i]):
         # A non-numeric duration is an error in GNU timeout; the word is kept as a possible command (fail closed).
         cands.append(args[i:])
-    if cands[0] and cands[0][0].startswith("-"):
-        # An option-like command name is not a command GNU timeout can run; its suffixes are kept (fail closed).
-        cands += [cands[0][k:] for k in range(1, len(cands[0]))]
-    return cands
+    out = []
+    for c in cands:
+        out.append(c)
+        if c and c[0].startswith("-"):
+            # An option-like word may be read as an option; its suffixes are kept too (fail closed).
+            out += [c[k:] for k in range(1, len(c))]
+    return out
 
 
 def unwrap(name, args):
