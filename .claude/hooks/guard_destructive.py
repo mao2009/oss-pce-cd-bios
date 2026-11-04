@@ -44,11 +44,12 @@ LAUNCHER_MAX_WORDS = 256
 # PowerShell process launchers whose argument expression is not inspected: a launcher with expression syntax
 # (comma arrays, parentheses, @(), scriptblocks, variables) is an execution form the guard cannot parse, so it is denied.
 PS_PROC_LAUNCH_RE = re.compile(
-    r"(?i)(?<![\w-])(start-process|start|saps|invoke-item|ii|invoke-wmimethod|invoke-cimmethod|iwmi|icim)(?![\w-])")
+    r"(?i)(?<![\w-])(start-process|start|saps|invoke-item|ii|invoke-wmimethod|invoke-cimmethod|iwmi|icim|"
+    r"invoke-command|icm|start-job|sajb|start-threadjob)(?![\w-])")
 EXPR_SYNTAX_RE = re.compile(r"[,()@{}$]")
 # PowerShell method call syntax (.Delete(), $x[0].Delete()). The "(" would split the call from its object, so the call
 # is refused on the raw text before any split. Property access ($_.Name) is not a call and is not refused.
-METHOD_CALL_RE = re.compile(r"(?i)\.\s*(?:\w+\s*\(|['\"(])|-membername\b")
+METHOD_CALL_RE = re.compile(r"(?i)\.\s*(?:\w+\s*\(|['\"(])|-mem\w*\b")
 CD_NAMES = {"cd", "chdir", "set-location", "sl"}
 # Always denied: destructive by nature, or cannot be inspected.
 ALWAYS_DENY = {"unlink", "shred", "rmdir", "rd", "dd", "mkfs", "truncate", "wipefs",
@@ -815,7 +816,7 @@ def analyze_argv(words, ctx, ps, depth):
         if not words:
             return
         w0 = words[0]
-        if ps and len(words) > 1 and re.match(r"^[A-Za-z_]\w*$", w0) and words[1].startswith("="):
+        if ps and len(words) > 1 and words[1].startswith("="):
             # PowerShell "name =value": the value after "=" is the command position.
             value = words[1][1:]
             words = ([value] if value else []) + words[2:]
