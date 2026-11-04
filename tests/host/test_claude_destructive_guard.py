@@ -788,10 +788,35 @@ class LauncherClassTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(guard.name_status(name), status)
 
-    def test_a_name_alone_never_gives_unknown_execution(self):
-        for name in ["mytool", "sh", "env", "rm", "echo", "python3", "sort", "git", "npm"]:
-            with self.subTest(name=name):
-                self.assertNotEqual(guard.name_status(name), "UNKNOWN_EXECUTION")
+    def test_posix_escaped_absolute_paths_resolve_to_the_shell(self):
+        # Git Bash resolves each of these words to /bin/sh (checked with printf). The shell then runs rm -rf /.
+        for cmd in ["\\/bin/s\\h -c 'rm -rf /'", "\\\\/bin/s\\h -c 'rm -rf /'", "/bin/s\\h -c 'rm -rf /'",
+                    "\"/bin/s\"\\h -c 'rm -rf /'", "'/bin/s'\\h -c 'rm -rf /'", "/bin/\\s\\h -c 'rm -rf /'",
+                    "+/bin/s\\h -c 'rm -rf /'"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+
+    def test_backslash_name_without_a_path_is_refused(self):
+        for cmd in ["tools\\rm -rf /", ".\\rm.exe -rf /", "\\\\server\\share\\rm.exe -rf /"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
+
+    def test_fused_function_name_is_denied(self):
+        for cmd, tool in [("function f{rm -rf /}", "PowerShell"), ("function f{rm -rf /;}", "Bash"),
+                          ("function f(){ rm -rf /; }", "Bash"), ("function f\\{ rm -rf /; }", "Bash")]:
+            with self.subTest(cmd=cmd, tool=tool):
+                self.assertEqual(verdict(cmd, tool=tool), "DENY")
+
+    def test_ordinary_function_definitions_are_allowed(self):
+        for cmd in ["function f { echo hi; }; f", "f() { echo hi; }; f"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "ALLOW")
+
+    def test_exec_doas_sudo_hand_off_to_the_wrapped_command(self):
+        for cmd in ["exec rm -rf /", "doas rm -rf /", "sudo rm -rf /", "exec sh -c 'rm -rf /'",
+                    "sudo sh -c 'rm -rf /'", "doas sh -c 'rm -rf /'"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
 
     def test_function_body_is_checked(self):
         self.assertEqual(verdict("function f { rm -rf /; }; f"), "DENY")
@@ -833,7 +858,12 @@ class LauncherMutationTests(unittest.TestCase):
         "function keyword handling removed": ('        if w0 == "function":', '        if False:'),
         "coproc handling removed": ('        if w0 == "coproc":', '        if False:'),
         "coproc NAME reading removed": ('            if len(rest) >= 2:', '            if False:'),
-        "absolute path shell escape removed": ('        if w0.startswith("/") and "\\\\" in w0:', '        if False:'),
+        "POSIX escape unescaping removed": ('            w0 = unescaped', '            pass'),
+        "fused function name check removed": ('            if len(words) < 2 or any(ch in words[1] for ch in "{}()"):',
+                                              '            if len(words) < 2:'),
+        "exec removed from wrappers": ('"builtin", "exec", "nohup"', '"builtin", "nohup"'),
+        "doas removed from wrappers": ('"sudo", "doas", "env"', '"sudo", "env"'),
+        "sudo removed from wrappers": ('WRAPPERS = {"sudo", ', 'WRAPPERS = {'),
         "wrapper handoff removed": ('        if handoff(name):', '        if False:'),
         "table: sort moved to NONE": ('("OPTION", "sort rg find', '("NONE", "sort rg find'),
         "table: rm not dangerous": ('("DANGEROUS", "rm"),', '("NONE", "rm"),'),

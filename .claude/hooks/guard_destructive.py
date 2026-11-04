@@ -61,7 +61,7 @@ DANGER_PY = re.compile(r"rmtree|remove|unlink|rmdir|removedirs|system|subprocess
 # the form it is given, so the name alone never proves safety or danger.
 LAUNCH_TABLE = (
     ("NONE", "echo printf cat ls pwd head tail wc uniq cut tr basename dirname realpath date stat du df "
-             "touch mkdir test true false which type grep egrep fgrep"),
+             "test true false which type grep egrep fgrep"),
     ("FIXED_HELPER", "diff file"),
     ("OPTION", "sort rg find tar rsync ssh scp sftp"),
     ("GIT", "git"),
@@ -751,9 +751,10 @@ def analyze_argv(words, ctx, ps, depth):
         w0 = words[0]
         if w0 == "function":
             # X3a: function NAME { body }. The body's commands are in command position, so the words after the
-            # name are analysed as ordinary words. A function keyword without a name is not resolvable: fail closed.
-            if len(words) < 2:
-                raise Deny("function", "function keyword without a name is not resolvable")
+            # name are analysed as ordinary words. A name fused with a brace or parenthesis (f{rm, f(), or no name
+            # at all) cannot be split reliably: fail closed.
+            if len(words) < 2 or any(ch in words[1] for ch in "{}()"):
+                raise Deny("function", "function keyword without a plain name is not resolvable")
             words = words[2:]
             continue
         if w0 == "coproc":
@@ -771,11 +772,13 @@ def analyze_argv(words, ctx, ps, depth):
             raise Deny("command-word", "unexpanded word in command position")
         # A backslash before a plain character only quotes it: \rm is rm.
         w0 = re.sub(r"^\\+(?=[^\\/])", "", w0)
-        # POSIX absolute path with a shell escape: /bin/s\h is /bin/sh. Windows drive paths keep their backslashes.
-        if w0.startswith("/") and "\\" in w0:
-            w0 = re.sub(r"\\(?=[^\\/])", "", w0)
-        if "\\" in w0 and not re.match(r"^(?:[A-Za-z]:)?[\\/]", w0):
-            raise Deny("command-word", "backslash in command name")
+        # A backslash word that is not a drive path is read as POSIX: \/bin/s\h is /bin/sh. A backslash word with
+        # no "/" after unescaping (tools\rm, .\rm.exe, \\server\share) is refused: its name is not known.
+        if "\\" in w0 and not re.match(r"^[A-Za-z]:[\\/]", w0):
+            unescaped = re.sub(r"\\(.)", r"\1", w0, flags=re.S)
+            if "/" not in unescaped:
+                raise Deny("command-word", "backslash in command name")
+            w0 = unescaped
         name = posixpath.basename(w0.replace("\\", "/")).lower()
         if name.endswith(".exe"):
             name = name[:-4]
