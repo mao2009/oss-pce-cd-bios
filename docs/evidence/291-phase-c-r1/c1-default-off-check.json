@@ -1,0 +1,57 @@
+{
+  "label": "C1 default-OFF sanity (no GG_TEST_RNG_SEED)",
+  "launches": {
+    "default_off_det_r1": {
+      "post_reset_state": {
+        "PC": "E000",
+        "A": 146,
+        "X": 206,
+        "Y": 117,
+        "S": 229,
+        "P": 196,
+        "MPR": [
+          109,
+          20,
+          67,
+          159,
+          187,
+          52,
+          27,
+          0
+        ]
+      },
+      "halt_state_PC": "E028",
+      "trace_pcs_ok": true,
+      "exit_code": 0,
+      "test_only_string_found_in_run_dir": [],
+      "exe_sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d"
+    },
+    "default_off_det_r2": {
+      "post_reset_state": {
+        "PC": "E000",
+        "A": 168,
+        "X": 27,
+        "Y": 138,
+        "S": 121,
+        "P": 69,
+        "MPR": [
+          15,
+          156,
+          154,
+          50,
+          161,
+          24,
+          217,
+          0
+        ]
+      },
+      "halt_state_PC": "E028",
+      "trace_pcs_ok": true,
+      "exit_code": 0,
+      "test_only_string_found_in_run_dir": [],
+      "exe_sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d"
+    }
+  },
+  "post_reset_distinct_across_launches": true,
+  "no_test_only_string": true
+}

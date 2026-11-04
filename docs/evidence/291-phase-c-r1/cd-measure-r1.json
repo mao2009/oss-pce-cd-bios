@@ -1,0 +1,1359 @@
+{
+  "phase": "C-R1 CD-state measurement",
+  "comparisons": {
+    "cdA_r1_vs_cdA_r2": {
+      "snap_reset_sha256": [
+        "3dd909c4e9b87cf463ca891ac088dbc85deae11d5aa0b918d7d83453607c56df",
+        "3dd909c4e9b87cf463ca891ac088dbc85deae11d5aa0b918d7d83453607c56df"
+      ],
+      "snap_step_sha256": [
+        "457143e0a53aaa7d5acb306c68b8c0b4f73579b79c838d1047a6f685962e4ab7",
+        "457143e0a53aaa7d5acb306c68b8c0b4f73579b79c838d1047a6f685962e4ab7"
+      ],
+      "reset_identical": true,
+      "step16_identical": true,
+      "result": "PASS (identical)",
+      "snapshot_blocked": false
+    },
+    "cdP_r1_vs_cdP_r2": {
+      "snap_reset_sha256": [
+        "40d4d8a21951f5c28654146627ac3de85747d444b387e6a468c6f04e0be0e0d3",
+        "ba8e3fc559f6010e0787119f40d467ea746e3cfbfcea5d30527e7be039c66ffd"
+      ],
+      "snap_step_sha256": [
+        "0e334f4b48e87f41778105d7b302cc54c5874e4055affa2e1f6dbef24a4fb84a",
+        "66e5bfaf800bff9fcf5ee546d5cbfd13362f9b41682e43ac067a385597bd794f"
+      ],
+      "reset_identical": false,
+      "step16_identical": false,
+      "result": "FAIL (differs)",
+      "snapshot_blocked": false
+    }
+  },
+  "runs": {
+    "cdA_r1": {
+      "label": "cdA_r1",
+      "exe": "<EVIDENCE_ROOT>/phase-c/build-det/bin/geargrafx.exe",
+      "seed_env": "0x00C0FFEE",
+      "steps": 16,
+      "exe_sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
+      "area_names": [
+        "BRAM",
+        "LOGICAL",
+        "PALETTES",
+        "PHYSICAL",
+        "SAT",
+        "SYSTEM RAM",
+        "VRAM",
+        "ZP"
+      ],
+      "bios_load": {
+        "ok": true,
+        "value": {
+          "bios_name": "Unknown",
+          "file_path": "<EVIDENCE_ROOT>/phase-c/synthetic/synthetic_bios.bin",
+          "success": true,
+          "type": "syscard",
+          "valid_crc": false,
+          "warning": "CRC does not match any known BIOS"
+        }
+      },
+      "media_load": {
+        "ok": true,
+        "value": {
+          "file_path": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
+          "is_cdrom": true,
+          "is_sgx": false,
+          "rom_name": "synthetic_cd.cue",
+          "softpatch_applied": false,
+          "success": true
+        }
+      },
+      "paused_after_reset": {
+        "ok": true,
+        "status": {
+          "at_breakpoint": false,
+          "paused": true,
+          "pc": "E000"
+        }
+      },
+      "snap_reset": {
+        "cpu": {
+          "PC": "E000",
+          "A": 91,
+          "X": 199,
+          "Y": 10,
+          "S": 53,
+          "P": 197,
+          "MPR": [
+            106,
+            119,
+            120,
+            177,
+            114,
+            19,
+            182,
+            0
+          ]
+        },
+        "cdrom_status": {
+          "ok": true,
+          "value": {
+            "active_irqs": "00",
+            "bram_enabled": true,
+            "cycles_to_event": 0,
+            "cycles_to_load": 0,
+            "enabled_irqs": "00",
+            "fader": "00",
+            "irq_adpcm_end": false,
+            "irq_adpcm_half": false,
+            "irq_data": false,
+            "irq_status": false,
+            "length": "00:02:16",
+            "media_type": "cue",
+            "next_event": "NONE",
+            "next_sector_load": 0,
+            "reset": 0,
+            "scsi_ack": false,
+            "scsi_atn": false,
+            "scsi_bsy": false,
+            "scsi_cd": false,
+            "scsi_data_bus": "00",
+            "scsi_io": false,
+            "scsi_msg": false,
+            "scsi_phase": "BUS FREE",
+            "scsi_req": false,
+            "scsi_rst": false,
+            "scsi_sel": false,
+            "sector_count": 16,
+            "sectors_left": 0,
+            "tracks": 1
+          }
+        },
+        "cdrom_tracks": {
+          "ok": true,
+          "value": {
+            "audio_track_count": 0,
+            "current_lba": 0,
+            "current_track": 1,
+            "data_track_count": 1,
+            "media_name": "synthetic_cd.cue",
+            "media_type": "cue",
+            "sector_count": 16,
+            "total_length_msf": "00:02:16",
+            "track_count": 1,
+            "tracks": [
+              {
+                "duration_msf": "00:00:16",
+                "end_lba": 15,
+                "end_msf": "00:00:15",
+                "file_offset": 0,
+                "has_lead_in": false,
+                "is_audio": false,
+                "is_current": true,
+                "number": 1,
+                "sector_count": 16,
+                "sector_size": 2048,
+                "start_lba": 0,
+                "start_msf": "00:00:00",
+                "type": "MODE1/2048"
+              }
+            ]
+          }
+        },
+        "cdrom_audio_status": {
+          "ok": true,
+          "value": {
+            "audible": false,
+            "audio_sector": false,
+            "current_lba": 0,
+            "current_position_msf": "00:00:00",
+            "current_sample": 0,
+            "current_track": 1,
+            "current_track_end_lba": 15,
+            "current_track_length_msf": "00:00:16",
+            "current_track_position_lba": 0,
+            "current_track_position_msf": "00:00:00",
+            "current_track_sector_size": 2048,
+            "current_track_start_lba": 0,
+            "current_track_type": "MODE1/2048",
+            "fader_applies_to_cd_audio": false,
+            "fader_enabled": false,
+            "fader_gain": 1.0,
+            "fader_raw": 0,
+            "fader_speed": "NONE",
+            "fader_target": "NONE",
+            "frame_samples": 0,
+            "frame_samples_per_channel": 0,
+            "left_sample": 0,
+            "output_state": "SILENT",
+            "playback_delay_cycles": 0,
+            "playback_delay_ms": 0.0,
+            "right_sample": 0,
+            "samples_per_sector": 588,
+            "seek_cycles": 0,
+            "seek_ms": 0.0,
+            "start_lba": 0,
+            "start_position_msf": "00:00:00",
+            "state": "IDLE",
+            "stop_event": "STOP",
+            "stop_lba": 0,
+            "stop_position_msf": "00:00:00"
+          }
+        },
+        "mem_BRAM": {
+          "len": 2048,
+          "sha256": "92928df1a2b74d2353d49ac23829d610f96faac765435341e396f8799caf937e"
+        },
+        "mem_SYSTEM_RAM": {
+          "len": 8192,
+          "sha256": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47"
+        }
+      },
+      "step_errors": [],
+      "snap_step": {
+        "cpu": {
+          "PC": "E028",
+          "A": 2,
+          "X": 199,
+          "Y": 10,
+          "S": 53,
+          "P": 69,
+          "MPR": [
+            255,
+            248,
+            120,
+            177,
+            114,
+            19,
+            182,
+            0
+          ]
+        },
+        "cdrom_status": {
+          "ok": true,
+          "value": {
+            "active_irqs": "00",
+            "bram_enabled": true,
+            "cycles_to_event": 0,
+            "cycles_to_load": 0,
+            "enabled_irqs": "00",
+            "fader": "00",
+            "irq_adpcm_end": false,
+            "irq_adpcm_half": false,
+            "irq_data": false,
+            "irq_status": false,
+            "length": "00:02:16",
+            "media_type": "cue",
+            "next_event": "NONE",
+            "next_sector_load": 0,
+            "reset": 0,
+            "scsi_ack": false,
+            "scsi_atn": false,
+            "scsi_bsy": false,
+            "scsi_cd": false,
+            "scsi_data_bus": "00",
+            "scsi_io": false,
+            "scsi_msg": false,
+            "scsi_phase": "BUS FREE",
+            "scsi_req": false,
+            "scsi_rst": false,
+            "scsi_sel": false,
+            "sector_count": 16,
+            "sectors_left": 0,
+            "tracks": 1
+          }
+        },
+        "cdrom_tracks": {
+          "ok": true,
+          "value": {
+            "audio_track_count": 0,
+            "current_lba": 0,
+            "current_track": 1,
+            "data_track_count": 1,
+            "media_name": "synthetic_cd.cue",
+            "media_type": "cue",
+            "sector_count": 16,
+            "total_length_msf": "00:02:16",
+            "track_count": 1,
+            "tracks": [
+              {
+                "duration_msf": "00:00:16",
+                "end_lba": 15,
+                "end_msf": "00:00:15",
+                "file_offset": 0,
+                "has_lead_in": false,
+                "is_audio": false,
+                "is_current": true,
+                "number": 1,
+                "sector_count": 16,
+                "sector_size": 2048,
+                "start_lba": 0,
+                "start_msf": "00:00:00",
+                "type": "MODE1/2048"
+              }
+            ]
+          }
+        },
+        "cdrom_audio_status": {
+          "ok": true,
+          "value": {
+            "audible": false,
+            "audio_sector": false,
+            "current_lba": 0,
+            "current_position_msf": "00:00:00",
+            "current_sample": 0,
+            "current_track": 1,
+            "current_track_end_lba": 15,
+            "current_track_length_msf": "00:00:16",
+            "current_track_position_lba": 0,
+            "current_track_position_msf": "00:00:00",
+            "current_track_sector_size": 2048,
+            "current_track_start_lba": 0,
+            "current_track_type": "MODE1/2048",
+            "fader_applies_to_cd_audio": false,
+            "fader_enabled": false,
+            "fader_gain": 1.0,
+            "fader_raw": 0,
+            "fader_speed": "NONE",
+            "fader_target": "NONE",
+            "frame_samples": 0,
+            "frame_samples_per_channel": 0,
+            "left_sample": 0,
+            "output_state": "SILENT",
+            "playback_delay_cycles": 0,
+            "playback_delay_ms": 0.0,
+            "right_sample": 0,
+            "samples_per_sector": 588,
+            "seek_cycles": 0,
+            "seek_ms": 0.0,
+            "start_lba": 0,
+            "start_position_msf": "00:00:00",
+            "state": "IDLE",
+            "stop_event": "STOP",
+            "stop_lba": 0,
+            "stop_position_msf": "00:00:00"
+          }
+        },
+        "mem_BRAM": {
+          "len": 2048,
+          "sha256": "92928df1a2b74d2353d49ac23829d610f96faac765435341e396f8799caf937e"
+        },
+        "mem_SYSTEM_RAM": {
+          "len": 8192,
+          "sha256": "133b6ba7f438530445b41b77998364c7607bbccd7e0457bf817a1a1680b850bb"
+        }
+      },
+      "trace_after_steps": {
+        "ok": true,
+        "value": {
+          "count": 0,
+          "lines": [],
+          "next_sequence": 0,
+          "oldest_sequence": 0,
+          "overrun": false,
+          "start": 0,
+          "total_entries": 0,
+          "total_logged": 0
+        }
+      },
+      "exit_code": 0,
+      "stderr_bytes": 0,
+      "snap_reset_sha256": "3dd909c4e9b87cf463ca891ac088dbc85deae11d5aa0b918d7d83453607c56df",
+      "snap_step_sha256": "457143e0a53aaa7d5acb306c68b8c0b4f73579b79c838d1047a6f685962e4ab7"
+    },
+    "cdA_r2": {
+      "label": "cdA_r2",
+      "exe": "<EVIDENCE_ROOT>/phase-c/build-det/bin/geargrafx.exe",
+      "seed_env": "0x00C0FFEE",
+      "steps": 16,
+      "exe_sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
+      "area_names": [
+        "BRAM",
+        "LOGICAL",
+        "PALETTES",
+        "PHYSICAL",
+        "SAT",
+        "SYSTEM RAM",
+        "VRAM",
+        "ZP"
+      ],
+      "bios_load": {
+        "ok": true,
+        "value": {
+          "bios_name": "Unknown",
+          "file_path": "<EVIDENCE_ROOT>/phase-c/synthetic/synthetic_bios.bin",
+          "success": true,
+          "type": "syscard",
+          "valid_crc": false,
+          "warning": "CRC does not match any known BIOS"
+        }
+      },
+      "media_load": {
+        "ok": true,
+        "value": {
+          "file_path": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
+          "is_cdrom": true,
+          "is_sgx": false,
+          "rom_name": "synthetic_cd.cue",
+          "softpatch_applied": false,
+          "success": true
+        }
+      },
+      "paused_after_reset": {
+        "ok": true,
+        "status": {
+          "at_breakpoint": false,
+          "paused": true,
+          "pc": "E000"
+        }
+      },
+      "snap_reset": {
+        "cpu": {
+          "PC": "E000",
+          "A": 91,
+          "X": 199,
+          "Y": 10,
+          "S": 53,
+          "P": 197,
+          "MPR": [
+            106,
+            119,
+            120,
+            177,
+            114,
+            19,
+            182,
+            0
+          ]
+        },
+        "cdrom_status": {
+          "ok": true,
+          "value": {
+            "active_irqs": "00",
+            "bram_enabled": true,
+            "cycles_to_event": 0,
+            "cycles_to_load": 0,
+            "enabled_irqs": "00",
+            "fader": "00",
+            "irq_adpcm_end": false,
+            "irq_adpcm_half": false,
+            "irq_data": false,
+            "irq_status": false,
+            "length": "00:02:16",
+            "media_type": "cue",
+            "next_event": "NONE",
+            "next_sector_load": 0,
+            "reset": 0,
+            "scsi_ack": false,
+            "scsi_atn": false,
+            "scsi_bsy": false,
+            "scsi_cd": false,
+            "scsi_data_bus": "00",
+            "scsi_io": false,
+            "scsi_msg": false,
+            "scsi_phase": "BUS FREE",
+            "scsi_req": false,
+            "scsi_rst": false,
+            "scsi_sel": false,
+            "sector_count": 16,
+            "sectors_left": 0,
+            "tracks": 1
+          }
+        },
+        "cdrom_tracks": {
+          "ok": true,
+          "value": {
+            "audio_track_count": 0,
+            "current_lba": 0,
+            "current_track": 1,
+            "data_track_count": 1,
+            "media_name": "synthetic_cd.cue",
+            "media_type": "cue",
+            "sector_count": 16,
+            "total_length_msf": "00:02:16",
+            "track_count": 1,
+            "tracks": [
+              {
+                "duration_msf": "00:00:16",
+                "end_lba": 15,
+                "end_msf": "00:00:15",
+                "file_offset": 0,
+                "has_lead_in": false,
+                "is_audio": false,
+                "is_current": true,
+                "number": 1,
+                "sector_count": 16,
+                "sector_size": 2048,
+                "start_lba": 0,
+                "start_msf": "00:00:00",
+                "type": "MODE1/2048"
+              }
+            ]
+          }
+        },
+        "cdrom_audio_status": {
+          "ok": true,
+          "value": {
+            "audible": false,
+            "audio_sector": false,
+            "current_lba": 0,
+            "current_position_msf": "00:00:00",
+            "current_sample": 0,
+            "current_track": 1,
+            "current_track_end_lba": 15,
+            "current_track_length_msf": "00:00:16",
+            "current_track_position_lba": 0,
+            "current_track_position_msf": "00:00:00",
+            "current_track_sector_size": 2048,
+            "current_track_start_lba": 0,
+            "current_track_type": "MODE1/2048",
+            "fader_applies_to_cd_audio": false,
+            "fader_enabled": false,
+            "fader_gain": 1.0,
+            "fader_raw": 0,
+            "fader_speed": "NONE",
+            "fader_target": "NONE",
+            "frame_samples": 0,
+            "frame_samples_per_channel": 0,
+            "left_sample": 0,
+            "output_state": "SILENT",
+            "playback_delay_cycles": 0,
+            "playback_delay_ms": 0.0,
+            "right_sample": 0,
+            "samples_per_sector": 588,
+            "seek_cycles": 0,
+            "seek_ms": 0.0,
+            "start_lba": 0,
+            "start_position_msf": "00:00:00",
+            "state": "IDLE",
+            "stop_event": "STOP",
+            "stop_lba": 0,
+            "stop_position_msf": "00:00:00"
+          }
+        },
+        "mem_BRAM": {
+          "len": 2048,
+          "sha256": "92928df1a2b74d2353d49ac23829d610f96faac765435341e396f8799caf937e"
+        },
+        "mem_SYSTEM_RAM": {
+          "len": 8192,
+          "sha256": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47"
+        }
+      },
+      "step_errors": [],
+      "snap_step": {
+        "cpu": {
+          "PC": "E028",
+          "A": 2,
+          "X": 199,
+          "Y": 10,
+          "S": 53,
+          "P": 69,
+          "MPR": [
+            255,
+            248,
+            120,
+            177,
+            114,
+            19,
+            182,
+            0
+          ]
+        },
+        "cdrom_status": {
+          "ok": true,
+          "value": {
+            "active_irqs": "00",
+            "bram_enabled": true,
+            "cycles_to_event": 0,
+            "cycles_to_load": 0,
+            "enabled_irqs": "00",
+            "fader": "00",
+            "irq_adpcm_end": false,
+            "irq_adpcm_half": false,
+            "irq_data": false,
+            "irq_status": false,
+            "length": "00:02:16",
+            "media_type": "cue",
+            "next_event": "NONE",
+            "next_sector_load": 0,
+            "reset": 0,
+            "scsi_ack": false,
+            "scsi_atn": false,
+            "scsi_bsy": false,
+            "scsi_cd": false,
+            "scsi_data_bus": "00",
+            "scsi_io": false,
+            "scsi_msg": false,
+            "scsi_phase": "BUS FREE",
+            "scsi_req": false,
+            "scsi_rst": false,
+            "scsi_sel": false,
+            "sector_count": 16,
+            "sectors_left": 0,
+            "tracks": 1
+          }
+        },
+        "cdrom_tracks": {
+          "ok": true,
+          "value": {
+            "audio_track_count": 0,
+            "current_lba": 0,
+            "current_track": 1,
+            "data_track_count": 1,
+            "media_name": "synthetic_cd.cue",
+            "media_type": "cue",
+            "sector_count": 16,
+            "total_length_msf": "00:02:16",
+            "track_count": 1,
+            "tracks": [
+              {
+                "duration_msf": "00:00:16",
+                "end_lba": 15,
+                "end_msf": "00:00:15",
+                "file_offset": 0,
+                "has_lead_in": false,
+                "is_audio": false,
+                "is_current": true,
+                "number": 1,
+                "sector_count": 16,
+                "sector_size": 2048,
+                "start_lba": 0,
+                "start_msf": "00:00:00",
+                "type": "MODE1/2048"
+              }
+            ]
+          }
+        },
+        "cdrom_audio_status": {
+          "ok": true,
+          "value": {
+            "audible": false,
+            "audio_sector": false,
+            "current_lba": 0,
+            "current_position_msf": "00:00:00",
+            "current_sample": 0,
+            "current_track": 1,
+            "current_track_end_lba": 15,
+            "current_track_length_msf": "00:00:16",
+            "current_track_position_lba": 0,
+            "current_track_position_msf": "00:00:00",
+            "current_track_sector_size": 2048,
+            "current_track_start_lba": 0,
+            "current_track_type": "MODE1/2048",
+            "fader_applies_to_cd_audio": false,
+            "fader_enabled": false,
+            "fader_gain": 1.0,
+            "fader_raw": 0,
+            "fader_speed": "NONE",
+            "fader_target": "NONE",
+            "frame_samples": 0,
+            "frame_samples_per_channel": 0,
+            "left_sample": 0,
+            "output_state": "SILENT",
+            "playback_delay_cycles": 0,
+            "playback_delay_ms": 0.0,
+            "right_sample": 0,
+            "samples_per_sector": 588,
+            "seek_cycles": 0,
+            "seek_ms": 0.0,
+            "start_lba": 0,
+            "start_position_msf": "00:00:00",
+            "state": "IDLE",
+            "stop_event": "STOP",
+            "stop_lba": 0,
+            "stop_position_msf": "00:00:00"
+          }
+        },
+        "mem_BRAM": {
+          "len": 2048,
+          "sha256": "92928df1a2b74d2353d49ac23829d610f96faac765435341e396f8799caf937e"
+        },
+        "mem_SYSTEM_RAM": {
+          "len": 8192,
+          "sha256": "133b6ba7f438530445b41b77998364c7607bbccd7e0457bf817a1a1680b850bb"
+        }
+      },
+      "trace_after_steps": {
+        "ok": true,
+        "value": {
+          "count": 0,
+          "lines": [],
+          "next_sequence": 0,
+          "oldest_sequence": 0,
+          "overrun": false,
+          "start": 0,
+          "total_entries": 0,
+          "total_logged": 0
+        }
+      },
+      "exit_code": 0,
+      "stderr_bytes": 0,
+      "snap_reset_sha256": "3dd909c4e9b87cf463ca891ac088dbc85deae11d5aa0b918d7d83453607c56df",
+      "snap_step_sha256": "457143e0a53aaa7d5acb306c68b8c0b4f73579b79c838d1047a6f685962e4ab7"
+    },
+    "cdP_r1": {
+      "label": "cdP_r1",
+      "exe": "<EVIDENCE_ROOT>/env-geargrafx/build/bin/geargrafx.exe",
+      "seed_env": null,
+      "steps": 16,
+      "exe_sha256": "4933885ca1cebd4a979dcd8da1a1324aadac95885d3403b7019fe5f7df664827",
+      "area_names": [
+        "BRAM",
+        "LOGICAL",
+        "PALETTES",
+        "PHYSICAL",
+        "SAT",
+        "SYSTEM RAM",
+        "VRAM",
+        "ZP"
+      ],
+      "bios_load": {
+        "ok": true,
+        "value": {
+          "bios_name": "Unknown",
+          "file_path": "<EVIDENCE_ROOT>/phase-c/synthetic/synthetic_bios.bin",
+          "success": true,
+          "type": "syscard",
+          "valid_crc": false,
+          "warning": "CRC does not match any known BIOS"
+        }
+      },
+      "media_load": {
+        "ok": true,
+        "value": {
+          "file_path": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
+          "is_cdrom": true,
+          "is_sgx": false,
+          "rom_name": "synthetic_cd.cue",
+          "softpatch_applied": false,
+          "success": true
+        }
+      },
+      "paused_after_reset": {
+        "ok": true,
+        "status": {
+          "at_breakpoint": false,
+          "paused": true,
+          "pc": "E000"
+        }
+      },
+      "snap_reset": {
+        "cpu": {
+          "PC": "E000",
+          "A": 250,
+          "X": 25,
+          "Y": 201,
+          "S": 130,
+          "P": 135,
+          "MPR": [
+            172,
+            76,
+            252,
+            54,
+            90,
+            173,
+            150,
+            0
+          ]
+        },
+        "cdrom_status": {
+          "ok": true,
+          "value": {
+            "active_irqs": "00",
+            "bram_enabled": true,
+            "cycles_to_event": 0,
+            "cycles_to_load": 0,
+            "enabled_irqs": "00",
+            "fader": "00",
+            "irq_adpcm_end": false,
+            "irq_adpcm_half": false,
+            "irq_data": false,
+            "irq_status": false,
+            "length": "00:02:16",
+            "media_type": "cue",
+            "next_event": "NONE",
+            "next_sector_load": 0,
+            "reset": 0,
+            "scsi_ack": false,
+            "scsi_atn": false,
+            "scsi_bsy": false,
+            "scsi_cd": false,
+            "scsi_data_bus": "00",
+            "scsi_io": false,
+            "scsi_msg": false,
+            "scsi_phase": "BUS FREE",
+            "scsi_req": false,
+            "scsi_rst": false,
+            "scsi_sel": false,
+            "sector_count": 16,
+            "sectors_left": 0,
+            "tracks": 1
+          }
+        },
+        "cdrom_tracks": {
+          "ok": true,
+          "value": {
+            "audio_track_count": 0,
+            "current_lba": 0,
+            "current_track": 1,
+            "data_track_count": 1,
+            "media_name": "synthetic_cd.cue",
+            "media_type": "cue",
+            "sector_count": 16,
+            "total_length_msf": "00:02:16",
+            "track_count": 1,
+            "tracks": [
+              {
+                "duration_msf": "00:00:16",
+                "end_lba": 15,
+                "end_msf": "00:00:15",
+                "file_offset": 0,
+                "has_lead_in": false,
+                "is_audio": false,
+                "is_current": true,
+                "number": 1,
+                "sector_count": 16,
+                "sector_size": 2048,
+                "start_lba": 0,
+                "start_msf": "00:00:00",
+                "type": "MODE1/2048"
+              }
+            ]
+          }
+        },
+        "cdrom_audio_status": {
+          "ok": true,
+          "value": {
+            "audible": false,
+            "audio_sector": false,
+            "current_lba": 0,
+            "current_position_msf": "00:00:00",
+            "current_sample": 0,
+            "current_track": 1,
+            "current_track_end_lba": 15,
+            "current_track_length_msf": "00:00:16",
+            "current_track_position_lba": 0,
+            "current_track_position_msf": "00:00:00",
+            "current_track_sector_size": 2048,
+            "current_track_start_lba": 0,
+            "current_track_type": "MODE1/2048",
+            "fader_applies_to_cd_audio": false,
+            "fader_enabled": false,
+            "fader_gain": 1.0,
+            "fader_raw": 0,
+            "fader_speed": "NONE",
+            "fader_target": "NONE",
+            "frame_samples": 0,
+            "frame_samples_per_channel": 0,
+            "left_sample": 0,
+            "output_state": "SILENT",
+            "playback_delay_cycles": 0,
+            "playback_delay_ms": 0.0,
+            "right_sample": 0,
+            "samples_per_sector": 588,
+            "seek_cycles": 0,
+            "seek_ms": 0.0,
+            "start_lba": 0,
+            "start_position_msf": "00:00:00",
+            "state": "IDLE",
+            "stop_event": "STOP",
+            "stop_lba": 0,
+            "stop_position_msf": "00:00:00"
+          }
+        },
+        "mem_BRAM": {
+          "len": 2048,
+          "sha256": "92928df1a2b74d2353d49ac23829d610f96faac765435341e396f8799caf937e"
+        },
+        "mem_SYSTEM_RAM": {
+          "len": 8192,
+          "sha256": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47"
+        }
+      },
+      "step_errors": [],
+      "snap_step": {
+        "cpu": {
+          "PC": "E028",
+          "A": 2,
+          "X": 25,
+          "Y": 201,
+          "S": 130,
+          "P": 5,
+          "MPR": [
+            255,
+            248,
+            252,
+            54,
+            90,
+            173,
+            150,
+            0
+          ]
+        },
+        "cdrom_status": {
+          "ok": true,
+          "value": {
+            "active_irqs": "00",
+            "bram_enabled": true,
+            "cycles_to_event": 0,
+            "cycles_to_load": 0,
+            "enabled_irqs": "00",
+            "fader": "00",
+            "irq_adpcm_end": false,
+            "irq_adpcm_half": false,
+            "irq_data": false,
+            "irq_status": false,
+            "length": "00:02:16",
+            "media_type": "cue",
+            "next_event": "NONE",
+            "next_sector_load": 0,
+            "reset": 0,
+            "scsi_ack": false,
+            "scsi_atn": false,
+            "scsi_bsy": false,
+            "scsi_cd": false,
+            "scsi_data_bus": "00",
+            "scsi_io": false,
+            "scsi_msg": false,
+            "scsi_phase": "BUS FREE",
+            "scsi_req": false,
+            "scsi_rst": false,
+            "scsi_sel": false,
+            "sector_count": 16,
+            "sectors_left": 0,
+            "tracks": 1
+          }
+        },
+        "cdrom_tracks": {
+          "ok": true,
+          "value": {
+            "audio_track_count": 0,
+            "current_lba": 0,
+            "current_track": 1,
+            "data_track_count": 1,
+            "media_name": "synthetic_cd.cue",
+            "media_type": "cue",
+            "sector_count": 16,
+            "total_length_msf": "00:02:16",
+            "track_count": 1,
+            "tracks": [
+              {
+                "duration_msf": "00:00:16",
+                "end_lba": 15,
+                "end_msf": "00:00:15",
+                "file_offset": 0,
+                "has_lead_in": false,
+                "is_audio": false,
+                "is_current": true,
+                "number": 1,
+                "sector_count": 16,
+                "sector_size": 2048,
+                "start_lba": 0,
+                "start_msf": "00:00:00",
+                "type": "MODE1/2048"
+              }
+            ]
+          }
+        },
+        "cdrom_audio_status": {
+          "ok": true,
+          "value": {
+            "audible": false,
+            "audio_sector": false,
+            "current_lba": 0,
+            "current_position_msf": "00:00:00",
+            "current_sample": 0,
+            "current_track": 1,
+            "current_track_end_lba": 15,
+            "current_track_length_msf": "00:00:16",
+            "current_track_position_lba": 0,
+            "current_track_position_msf": "00:00:00",
+            "current_track_sector_size": 2048,
+            "current_track_start_lba": 0,
+            "current_track_type": "MODE1/2048",
+            "fader_applies_to_cd_audio": false,
+            "fader_enabled": false,
+            "fader_gain": 1.0,
+            "fader_raw": 0,
+            "fader_speed": "NONE",
+            "fader_target": "NONE",
+            "frame_samples": 0,
+            "frame_samples_per_channel": 0,
+            "left_sample": 0,
+            "output_state": "SILENT",
+            "playback_delay_cycles": 0,
+            "playback_delay_ms": 0.0,
+            "right_sample": 0,
+            "samples_per_sector": 588,
+            "seek_cycles": 0,
+            "seek_ms": 0.0,
+            "start_lba": 0,
+            "start_position_msf": "00:00:00",
+            "state": "IDLE",
+            "stop_event": "STOP",
+            "stop_lba": 0,
+            "stop_position_msf": "00:00:00"
+          }
+        },
+        "mem_BRAM": {
+          "len": 2048,
+          "sha256": "92928df1a2b74d2353d49ac23829d610f96faac765435341e396f8799caf937e"
+        },
+        "mem_SYSTEM_RAM": {
+          "len": 8192,
+          "sha256": "133b6ba7f438530445b41b77998364c7607bbccd7e0457bf817a1a1680b850bb"
+        }
+      },
+      "trace_after_steps": {
+        "ok": true,
+        "value": {
+          "count": 0,
+          "lines": [],
+          "next_sequence": 0,
+          "oldest_sequence": 0,
+          "overrun": false,
+          "start": 0,
+          "total_entries": 0,
+          "total_logged": 0
+        }
+      },
+      "exit_code": 0,
+      "stderr_bytes": 0,
+      "snap_reset_sha256": "40d4d8a21951f5c28654146627ac3de85747d444b387e6a468c6f04e0be0e0d3",
+      "snap_step_sha256": "0e334f4b48e87f41778105d7b302cc54c5874e4055affa2e1f6dbef24a4fb84a"
+    },
+    "cdP_r2": {
+      "label": "cdP_r2",
+      "exe": "<EVIDENCE_ROOT>/env-geargrafx/build/bin/geargrafx.exe",
+      "seed_env": null,
+      "steps": 16,
+      "exe_sha256": "4933885ca1cebd4a979dcd8da1a1324aadac95885d3403b7019fe5f7df664827",
+      "area_names": [
+        "BRAM",
+        "LOGICAL",
+        "PALETTES",
+        "PHYSICAL",
+        "SAT",
+        "SYSTEM RAM",
+        "VRAM",
+        "ZP"
+      ],
+      "bios_load": {
+        "ok": true,
+        "value": {
+          "bios_name": "Unknown",
+          "file_path": "<EVIDENCE_ROOT>/phase-c/synthetic/synthetic_bios.bin",
+          "success": true,
+          "type": "syscard",
+          "valid_crc": false,
+          "warning": "CRC does not match any known BIOS"
+        }
+      },
+      "media_load": {
+        "ok": true,
+        "value": {
+          "file_path": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
+          "is_cdrom": true,
+          "is_sgx": false,
+          "rom_name": "synthetic_cd.cue",
+          "softpatch_applied": false,
+          "success": true
+        }
+      },
+      "paused_after_reset": {
+        "ok": true,
+        "status": {
+          "at_breakpoint": false,
+          "paused": true,
+          "pc": "E000"
+        }
+      },
+      "snap_reset": {
+        "cpu": {
+          "PC": "E000",
+          "A": 226,
+          "X": 93,
+          "Y": 247,
+          "S": 73,
+          "P": 199,
+          "MPR": [
+            154,
+            187,
+            204,
+            39,
+            247,
+            91,
+            244,
+            0
+          ]
+        },
+        "cdrom_status": {
+          "ok": true,
+          "value": {
+            "active_irqs": "00",
+            "bram_enabled": true,
+            "cycles_to_event": 0,
+            "cycles_to_load": 0,
+            "enabled_irqs": "00",
+            "fader": "00",
+            "irq_adpcm_end": false,
+            "irq_adpcm_half": false,
+            "irq_data": false,
+            "irq_status": false,
+            "length": "00:02:16",
+            "media_type": "cue",
+            "next_event": "NONE",
+            "next_sector_load": 0,
+            "reset": 0,
+            "scsi_ack": false,
+            "scsi_atn": false,
+            "scsi_bsy": false,
+            "scsi_cd": false,
+            "scsi_data_bus": "00",
+            "scsi_io": false,
+            "scsi_msg": false,
+            "scsi_phase": "BUS FREE",
+            "scsi_req": false,
+            "scsi_rst": false,
+            "scsi_sel": false,
+            "sector_count": 16,
+            "sectors_left": 0,
+            "tracks": 1
+          }
+        },
+        "cdrom_tracks": {
+          "ok": true,
+          "value": {
+            "audio_track_count": 0,
+            "current_lba": 0,
+            "current_track": 1,
+            "data_track_count": 1,
+            "media_name": "synthetic_cd.cue",
+            "media_type": "cue",
+            "sector_count": 16,
+            "total_length_msf": "00:02:16",
+            "track_count": 1,
+            "tracks": [
+              {
+                "duration_msf": "00:00:16",
+                "end_lba": 15,
+                "end_msf": "00:00:15",
+                "file_offset": 0,
+                "has_lead_in": false,
+                "is_audio": false,
+                "is_current": true,
+                "number": 1,
+                "sector_count": 16,
+                "sector_size": 2048,
+                "start_lba": 0,
+                "start_msf": "00:00:00",
+                "type": "MODE1/2048"
+              }
+            ]
+          }
+        },
+        "cdrom_audio_status": {
+          "ok": true,
+          "value": {
+            "audible": false,
+            "audio_sector": false,
+            "current_lba": 0,
+            "current_position_msf": "00:00:00",
+            "current_sample": 0,
+            "current_track": 1,
+            "current_track_end_lba": 15,
+            "current_track_length_msf": "00:00:16",
+            "current_track_position_lba": 0,
+            "current_track_position_msf": "00:00:00",
+            "current_track_sector_size": 2048,
+            "current_track_start_lba": 0,
+            "current_track_type": "MODE1/2048",
+            "fader_applies_to_cd_audio": false,
+            "fader_enabled": false,
+            "fader_gain": 1.0,
+            "fader_raw": 0,
+            "fader_speed": "NONE",
+            "fader_target": "NONE",
+            "frame_samples": 0,
+            "frame_samples_per_channel": 0,
+            "left_sample": 0,
+            "output_state": "SILENT",
+            "playback_delay_cycles": 0,
+            "playback_delay_ms": 0.0,
+            "right_sample": 0,
+            "samples_per_sector": 588,
+            "seek_cycles": 0,
+            "seek_ms": 0.0,
+            "start_lba": 0,
+            "start_position_msf": "00:00:00",
+            "state": "IDLE",
+            "stop_event": "STOP",
+            "stop_lba": 0,
+            "stop_position_msf": "00:00:00"
+          }
+        },
+        "mem_BRAM": {
+          "len": 2048,
+          "sha256": "92928df1a2b74d2353d49ac23829d610f96faac765435341e396f8799caf937e"
+        },
+        "mem_SYSTEM_RAM": {
+          "len": 8192,
+          "sha256": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47"
+        }
+      },
+      "step_errors": [],
+      "snap_step": {
+        "cpu": {
+          "PC": "E028",
+          "A": 2,
+          "X": 93,
+          "Y": 247,
+          "S": 73,
+          "P": 69,
+          "MPR": [
+            255,
+            248,
+            204,
+            39,
+            247,
+            91,
+            244,
+            0
+          ]
+        },
+        "cdrom_status": {
+          "ok": true,
+          "value": {
+            "active_irqs": "00",
+            "bram_enabled": true,
+            "cycles_to_event": 0,
+            "cycles_to_load": 0,
+            "enabled_irqs": "00",
+            "fader": "00",
+            "irq_adpcm_end": false,
+            "irq_adpcm_half": false,
+            "irq_data": false,
+            "irq_status": false,
+            "length": "00:02:16",
+            "media_type": "cue",
+            "next_event": "NONE",
+            "next_sector_load": 0,
+            "reset": 0,
+            "scsi_ack": false,
+            "scsi_atn": false,
+            "scsi_bsy": false,
+            "scsi_cd": false,
+            "scsi_data_bus": "00",
+            "scsi_io": false,
+            "scsi_msg": false,
+            "scsi_phase": "BUS FREE",
+            "scsi_req": false,
+            "scsi_rst": false,
+            "scsi_sel": false,
+            "sector_count": 16,
+            "sectors_left": 0,
+            "tracks": 1
+          }
+        },
+        "cdrom_tracks": {
+          "ok": true,
+          "value": {
+            "audio_track_count": 0,
+            "current_lba": 0,
+            "current_track": 1,
+            "data_track_count": 1,
+            "media_name": "synthetic_cd.cue",
+            "media_type": "cue",
+            "sector_count": 16,
+            "total_length_msf": "00:02:16",
+            "track_count": 1,
+            "tracks": [
+              {
+                "duration_msf": "00:00:16",
+                "end_lba": 15,
+                "end_msf": "00:00:15",
+                "file_offset": 0,
+                "has_lead_in": false,
+                "is_audio": false,
+                "is_current": true,
+                "number": 1,
+                "sector_count": 16,
+                "sector_size": 2048,
+                "start_lba": 0,
+                "start_msf": "00:00:00",
+                "type": "MODE1/2048"
+              }
+            ]
+          }
+        },
+        "cdrom_audio_status": {
+          "ok": true,
+          "value": {
+            "audible": false,
+            "audio_sector": false,
+            "current_lba": 0,
+            "current_position_msf": "00:00:00",
+            "current_sample": 0,
+            "current_track": 1,
+            "current_track_end_lba": 15,
+            "current_track_length_msf": "00:00:16",
+            "current_track_position_lba": 0,
+            "current_track_position_msf": "00:00:00",
+            "current_track_sector_size": 2048,
+            "current_track_start_lba": 0,
+            "current_track_type": "MODE1/2048",
+            "fader_applies_to_cd_audio": false,
+            "fader_enabled": false,
+            "fader_gain": 1.0,
+            "fader_raw": 0,
+            "fader_speed": "NONE",
+            "fader_target": "NONE",
+            "frame_samples": 0,
+            "frame_samples_per_channel": 0,
+            "left_sample": 0,
+            "output_state": "SILENT",
+            "playback_delay_cycles": 0,
+            "playback_delay_ms": 0.0,
+            "right_sample": 0,
+            "samples_per_sector": 588,
+            "seek_cycles": 0,
+            "seek_ms": 0.0,
+            "start_lba": 0,
+            "start_position_msf": "00:00:00",
+            "state": "IDLE",
+            "stop_event": "STOP",
+            "stop_lba": 0,
+            "stop_position_msf": "00:00:00"
+          }
+        },
+        "mem_BRAM": {
+          "len": 2048,
+          "sha256": "92928df1a2b74d2353d49ac23829d610f96faac765435341e396f8799caf937e"
+        },
+        "mem_SYSTEM_RAM": {
+          "len": 8192,
+          "sha256": "133b6ba7f438530445b41b77998364c7607bbccd7e0457bf817a1a1680b850bb"
+        }
+      },
+      "trace_after_steps": {
+        "ok": true,
+        "value": {
+          "count": 0,
+          "lines": [],
+          "next_sequence": 0,
+          "oldest_sequence": 0,
+          "overrun": false,
+          "start": 0,
+          "total_entries": 0,
+          "total_logged": 0
+        }
+      },
+      "exit_code": 0,
+      "stderr_bytes": 0,
+      "snap_reset_sha256": "ba8e3fc559f6010e0787119f40d467ea746e3cfbfcea5d30527e7be039c66ffd",
+      "snap_step_sha256": "66e5bfaf800bff9fcf5ee546d5cbfd13362f9b41682e43ac067a385597bd794f"
+    }
+  }
+}
