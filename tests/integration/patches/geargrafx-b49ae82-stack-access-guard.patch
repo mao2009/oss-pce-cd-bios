@@ -1,6 +1,6 @@
 --- a/src/huc6280.h
 +++ b/src/huc6280.h
-@@ -27,6 +27,29 @@
+@@ -27,6 +27,31 @@
  #include "common.h"
  #include "huc6280_registers.h"
  
@@ -12,17 +12,19 @@
 +//   latches gg_verify_stack_refused, and asks the debugger run loop to stop after this instruction.
 +// gg_verify_io_observer: called for every CPU read/write of the hardware page ($FF bank) BEFORE the
 +//   access (observation only; it cannot refuse).
-+// gg_verify_pre_instruction: called at the start of every RunInstruction (observation; the probe may
-+//   also apply a harness-side MPR setting here).
++// gg_verify_pre_instruction: called at the start of every RunInstruction, before the instruction changes
++//   anything (the probe may also apply a harness-side MPR setting here). Returning false refuses the
++//   instruction before it executes (method A of #473, Issue #498): RunInstruction returns 0 cycles and
++//   requests a debugger-loop stop. Debugger build only (the non-debugger build has no stop request).
 +// gg_verify_stack_mutation: 0 = none. Mutants exist only to prove the test can fail:
 +//   1 = push16 checks only before its second byte, 2 = pop increments S before the check,
 +//   3 = no latch and no stop request, 4 = the refusal is computed but ignored (access performed),
-+//   5 = latch kept but no stop request.
++//   5 = latch kept but no stop request, 6 = a pre-instruction refusal is ignored (instruction executes).
 +// After a refused access the rest of the instruction still runs, and the run loop still clocks the
 +// hardware for the instruction's cycles before it stops (device time advances; no CPU access is made).
 +extern bool (*gg_verify_stack_guard)(void* context, unsigned op, unsigned s, unsigned transfer_state, bool latched);
 +extern void (*gg_verify_io_observer)(void* context, unsigned is_write, unsigned address, unsigned value);
-+extern void (*gg_verify_pre_instruction)(void* context, unsigned pc, unsigned transfer_state);
++extern bool (*gg_verify_pre_instruction)(void* context, unsigned pc, unsigned transfer_state);
 +extern void* gg_verify_stack_context;
 +extern bool gg_verify_stack_refused;
 +extern int gg_verify_stack_mutation;
@@ -30,7 +32,7 @@
  #define FLAG_CARRY      0x01
  #define FLAG_ZERO       0x02
  #define FLAG_INTERRUPT  0x04
-@@ -122,6 +145,10 @@
+@@ -122,6 +147,10 @@
      void Init(Memory* memory, HuC6202* huc6202);
      void Reset();
      u32 RunInstruction(bool* completed = NULL);
@@ -51,7 +53,7 @@
 +// Null hooks = upstream behaviour. Declarations and semantics: huc6280.h; guard logic: huc6280_inline.h.
 +bool (*gg_verify_stack_guard)(void* context, unsigned op, unsigned s, unsigned transfer_state, bool latched) = nullptr;
 +void (*gg_verify_io_observer)(void* context, unsigned is_write, unsigned address, unsigned value) = nullptr;
-+void (*gg_verify_pre_instruction)(void* context, unsigned pc, unsigned transfer_state) = nullptr;
++bool (*gg_verify_pre_instruction)(void* context, unsigned pc, unsigned transfer_state) = nullptr;
 +void* gg_verify_stack_context = nullptr;
 +bool gg_verify_stack_refused = false;
 +int gg_verify_stack_mutation = 0;
@@ -93,18 +95,39 @@
  INLINE void HuC6280::TraceCpuEvent()
  {
      if (IsValidPointer(m_trace_logger) && m_trace_logger->IsEnabled(TRACE_CPU))
-@@ -71,6 +96,10 @@
-     m_clocked_master_cycles = 0;
-     m_extra_master_cycles = 0;
+@@ -63,13 +88,28 @@
+     m_prev_opcode_address = m_PC.GetValue();
+ #endif
  
-+    // VERIFICATION-ONLY (Issue #499): instruction-start observation point. Null = upstream behaviour.
-+    if (gg_verify_pre_instruction)
-+        gg_verify_pre_instruction(gg_verify_stack_context, m_PC.GetValue(), m_transfer_state);
++    m_cycles = 0;
++    m_clocked_master_cycles = 0;
++    m_extra_master_cycles = 0;
 +
++    // VERIFICATION-ONLY (Issue #499 observation point; Issue #498 method A refusal point). Null =
++    // upstream behaviour. Called before the instruction touches any architectural state (the T flag
++    // handling below included). false = do not execute this instruction: nothing is fetched or changed,
++    // no cycles are charged, and the debugger run loop is asked to stop (mutation 6 ignores the refusal).
++    if (gg_verify_pre_instruction &&
++        !gg_verify_pre_instruction(gg_verify_stack_context, m_PC.GetValue(), m_transfer_state) &&
++        gg_verify_stack_mutation != 6)
++    {
++#if !defined(GG_DISABLE_DISASSEMBLER)
++        m_memory_breakpoint_hit = true;
++#endif
++        return 0;
++    }
++
+     m_transfer_flag = IsSetFlag(FLAG_TRANSFER);
+ #if !defined(GG_TESTING)
+     ClearFlag(FLAG_TRANSFER);
+ #endif
+-    m_cycles = 0;
+-    m_clocked_master_cycles = 0;
+-    m_extra_master_cycles = 0;
+ 
      TraceCpuEvent();
  
-     u8 opcode = Fetch8();
-@@ -368,23 +397,51 @@
+@@ -368,23 +408,51 @@
  #endif
  }
  
@@ -157,7 +180,7 @@
      u8 l = m_memory->Read(STACK_ADDR | m_S.GetValue());
      m_S.Increment();
      u8 h = m_memory->Read(STACK_ADDR | m_S.GetValue());
-@@ -393,7 +450,15 @@
+@@ -393,7 +461,15 @@
  
  INLINE u8 HuC6280::StackPop8()
  {
