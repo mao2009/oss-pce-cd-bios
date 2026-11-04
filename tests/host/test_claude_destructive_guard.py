@@ -859,19 +859,22 @@ class LauncherClassTests(unittest.TestCase):
         for cmd in ["timeout rm -rf /", "timeout 5 rm -rf /", "timeout 5 -s KILL rm -rf /",
                     "timeout -s KILL 5 rm -rf /", "timeout 5s sh -c 'rm -rf /'", "timeout -- 5 rm -rf /",
                     "timeout --signal KILL 5 rm -rf /", "timeout --kill-after 5 5 rm -rf /",
-                    "timeout .5 rm -rf /", "timeout 1.5 rm -rf /", "timeout abc rm -rf /"]:
+                    "timeout .5 rm -rf /", "timeout 1.5 rm -rf /", "timeout abc rm -rf /",
+                    "timeout --kill 1 5 rm -rf /", "timeout --sig KILL 5 rm -rf /", "timeout --s KILL 5 rm -rf /"]:
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd), "DENY")
         self.assertEqual(verdict("timeout 5 echo hi"), "ALLOW")
 
     def test_timeout_ordinary_arguments_are_not_read_as_commands(self):
         for cmd in ["timeout 5 echo rm", "timeout 30 grep -rn rm docs", "timeout 5 rg -n sh src",
-                    "timeout 5 -- echo hi", "timeout -k 1 5 echo hi", "timeout --kill-after=1 5 echo hi"]:
+                    "timeout 5 -- echo hi", "timeout -k 1 5 echo hi", "timeout --kill-after=1 5 echo hi",
+                    "timeout --foreground 5 echo hi", "timeout --kill 1 5 echo hi"]:
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd), "ALLOW")
 
     def test_quoted_powershell_names_are_the_same_command(self):
         for cmd in ['"Remove"-Item -Recurse -Force /', "'Remove'-Item -Recurse -Force /", 'r"m" -Recurse -Force /',
+                    '   "Remove"-Item -Recurse -Force /',
                     '"rm .exe" -rf /']:
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
@@ -921,7 +924,8 @@ class LauncherMutationTests(unittest.TestCase):
         "builtin removed from wrappers": ('"command", "builtin", "exec"', '"command", "exec"'),
         "timeout rule removed": ('        if name == "timeout":', '        if False:'),
         "trailing dot and space normalisation removed": ('        name = name.rstrip(". ") or name', '        pass'),
-        "timeout value options removed": ('        if a in TIMEOUT_VALUE_OPTS:', '        if False:'),
+        "timeout long option prefixes removed": ('            hits = [o for o in TIMEOUT_LONG if o.startswith(a[2:])] if "=" not in a else []',
+                                                 '            hits = []'),
         "PowerShell quoted command name not joined": ('                head = [m.group(1).replace(\'"\', "").replace("\'", "")]',
                                                      '                head = [m.group(1)]'),
         "table: sort moved to NONE": ('("OPTION", "sort rg find', '("NONE", "sort rg find'),

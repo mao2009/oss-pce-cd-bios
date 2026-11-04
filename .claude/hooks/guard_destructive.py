@@ -726,7 +726,9 @@ def claude_mention(args):
                or SUBST in a for a in args)
 
 
-TIMEOUT_VALUE_OPTS = {"-k", "-s", "--kill-after", "--signal"}
+# GNU timeout long options. getopt_long accepts any unambiguous prefix, so --kill, --sig and --s are valid.
+TIMEOUT_LONG = ("foreground", "kill-after", "preserve-status", "signal", "verbose", "help", "version")
+TIMEOUT_LONG_VALUE = {"kill-after", "signal"}
 
 
 def timeout_candidates(args):
@@ -742,10 +744,10 @@ def timeout_candidates(args):
             break
         if not (a.startswith("-") and len(a) > 1):
             break
-        if a in TIMEOUT_VALUE_OPTS:
-            i += 2
-        elif a.startswith("--"):
-            i += 1
+        if a.startswith("--"):
+            # Long option: an exact name or an unambiguous prefix; only --kill-after and --signal take a value.
+            hits = [o for o in TIMEOUT_LONG if o.startswith(a[2:])] if "=" not in a else []
+            i += 2 if len(hits) == 1 and hits[0] in TIMEOUT_LONG_VALUE else 1
         else:
             # Short cluster: -k or -s takes the rest of the word as its value, or the next word if it is last.
             takes_next = False
