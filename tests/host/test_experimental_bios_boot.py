@@ -28,9 +28,11 @@ class ExperimentalBootSelectionTests(unittest.TestCase):
     def test_new_reset_source_has_the_fail_closed_synthetic_flow(self):
         source = (ROOT / "src/experimental_bios_boot.s").read_text(encoding="utf-8")
         for line in ("experimental_bios_reset:", "experimental_bios_init:", "cld", "tam #$01", "tam #$02",
-                      "txs", "experimental_selection:", "cpx #1", "jsr cd_set_read_lba", "jmp cd_entry",
+                      "txs", "experimental_selection:", "cpx #1", "jsr cd_set_read_lba", "jmp cd_entry_selected",
                       "experimental_bios_selection_halt:"):
             self.assertIn(line, source)
+        code = [line.split(";")[0].strip() for line in source.splitlines()]
+        self.assertNotIn("jmp cd_entry", code)  # the plain entry would discard the selected CDB
         self.assertIn("experimental_selection_prefix", source)
         self.assertIn("cpx #6", source)
         self.assertIn('"XSEL", 1, 1', source)  # guest checks magic, version, and format
@@ -40,6 +42,30 @@ class ExperimentalBootSelectionTests(unittest.TestCase):
         self.assertNotIn("EXP_SELECTED_LBA_LO = 5", source)
         self.assertIn("NOT a compatible System Card BIOS", source)
         self.assertIn("NO ABI claim", source)
+
+    def test_plain_cd_entry_never_trusts_power_on_selection_flag(self):
+        """Only cd_entry_selected may keep a caller-built CDB; plain cd_entry clears the RAM flag first."""
+        source = (ROOT / "src/cd_load_exec_probe.s").read_text(encoding="utf-8")
+        code = [line.split(";")[0].strip() for line in source.splitlines()]
+        code = [line for line in code if line]
+        entry, selected = code.index("cd_entry:"), code.index("cd_entry_selected:")
+        mapped, ready = code.index("tam #$02", entry), code.index("cd_stack_ready:")
+        self.assertLess(entry, selected)
+        self.assertLess(selected, ready)
+        # MPR1 maps work RAM before the flag is written; the clear is on the plain path only.
+        clear = code.index("stz cdb_selected", entry)
+        self.assertLess(mapped, clear)
+        self.assertLess(clear, selected)
+        self.assertNotIn("stz cdb_selected", code[selected:ready])
+        self.assertEqual(code[clear + 1], "bra cd_map_banks")
+        self.assertIn("cd_map_banks:", code[selected:ready])
+        # The flag is consumed and reset before any READ(6) uses it.
+        consume = code.index("lda cdb_selected", ready)
+        self.assertLess(consume, code.index("cd_buffer_ready:"))
+        # Only the experimental boot, which calls cd_set_read_lba first, may use the selected entry.
+        users = [path.name for path in (ROOT / "src").glob("*.s")
+                 if "jmp cd_entry_selected" in path.read_text(encoding="utf-8")]
+        self.assertEqual(users, ["experimental_bios_boot.s"])
 
     def test_image_contract_is_explicitly_256k_and_nonrelease(self):
         builder = (ROOT / "tools/build_experimental_bios_boot.py").read_text(encoding="utf-8")

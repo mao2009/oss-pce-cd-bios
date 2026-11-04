@@ -8,6 +8,7 @@
 .segment "BOOT"
 .export cd_entry, cd_stack_ready, cd_buffer_ready, cd_command_sent, cd_data_done
 .export cd_halt_ok, cd_halt_fail, cd_unexpected_interrupt, cd_cdb, cd_select, cd_payload_return, cd_set_read_lba
+.export cd_entry_selected
 
 ; --- CD-ROM2 I/O (MPR0 = $FF maps hardware at $0000-$1FFF) ---
 CD_STATUS = $1800
@@ -35,7 +36,7 @@ want   = $09
 last   = $0A
 alt    = $0B
 cdb    = $27E0           ; writable six-byte READ(6) CDB in work RAM
-cdb_selected = $27E6     ; nonzero only between cd_set_read_lba and cd_entry
+cdb_selected = $27E6     ; nonzero only between cd_set_read_lba and cd_entry_selected; cd_entry clears it
 RES    = $2300           ; result block: [0] code, [1] stage, [2:3] bytes, [4] SCSI status, [5] msg, [6] last bus
 MARK   = $3F00           ; payload marker (src/cd_load_exec_payload.s); inside the probe's $2800-$3FFF RAM dump
 RETVEC = $3F10           ; payload returns with jmp (RETVEC)
@@ -53,6 +54,19 @@ cd_entry:
     tam #$01                 ; MPR0: hardware IO
     lda #$F8
     tam #$02                 ; MPR1: work RAM $2000-$3FFF
+    stz cdb_selected         ; plain entry never trusts power-on RAM: always use the ROM CDB template
+    bra cd_map_banks
+; Entered only by a caller that has just run cd_set_read_lba (which sets cdb_selected).
+; Same CPU/MPR setup as cd_entry, but the caller-built CDB is kept.
+cd_entry_selected:
+    sei
+    cld
+    csh
+    lda #$FF
+    tam #$01                 ; MPR0: hardware IO
+    lda #$F8
+    tam #$02                 ; MPR1: work RAM $2000-$3FFF
+cd_map_banks:
     lda #$01
     tam #$04
     lda #$02

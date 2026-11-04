@@ -11,7 +11,7 @@
 .setcpu "huc6280"
 .segment "BOOT"
 .export experimental_bios_reset, experimental_bios_init, experimental_bios_selection_halt, experimental_selection
-.import cd_entry, cd_set_read_lba
+.import cd_entry_selected, cd_set_read_lba
 
 ; The build tool places only original, host-analysed synthetic CUE information
 ; here. Record: "XSEL", version 1, format 1, kind 1 (MODE1/2352 INDEX 01),
@@ -69,7 +69,7 @@ experimental_bios_init:
     ldx experimental_selection+9
     ldy experimental_selection+8
     jsr cd_set_read_lba
-    jmp cd_entry
+    jmp cd_entry_selected        ; plain cd_entry would discard the selected CDB
 
 ; Fail closed before any READ(6). This does not represent a System Card error
 ; or reset contract.

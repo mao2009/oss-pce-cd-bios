@@ -2,8 +2,9 @@
 """Build an opt-in experimental 256 KiB System-Card-sized DEV image.
 
 NOT a compatible System Card BIOS. NOT a BIOS ABI implementation. NOT release eligible.
-The image has original reset code, then reuses this repository's synthetic-only media check,
-READ(6), RAM-copy, and payload-handoff diagnostics. It does not consume private ROM media.
+The image has original reset code that validates a host-built selection record (derived from an
+original synthetic CUE's INDEX 01), then reuses this repository's synthetic-only READ(6), RAM-copy,
+and payload-handoff diagnostics. It does not parse a TOC and does not consume private ROM media.
 """
 import argparse
 import hashlib
@@ -30,7 +31,7 @@ EXPERIMENTAL_BOOT_FLAG = "EXPERIMENTAL_BIOS_BOOT"
 ROM_NAME = "experimental-dev-only-not-compatible-syscard-sized.pce"
 REQUIRED = ("experimental_bios_reset", "experimental_bios_init", "experimental_bios_selection_halt", "experimental_selection", "cd_entry",
             "cd_buffer_ready", "cd_data_done", "cd_halt_ok", "cd_halt_fail", "cd_unexpected_interrupt", "cd_cdb",
-             "cd_payload_return", "cd_set_read_lba")
+             "cd_payload_return", "cd_set_read_lba", "cd_entry_selected")
 PAYLOAD_LABELS = ("payload_entry", "payload_done")
 
 
