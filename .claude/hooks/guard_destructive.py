@@ -667,6 +667,10 @@ def python_rule(args):
         # The guard does not expand shell variables or run substitutions, so their value cannot be inspected.
         if "$" in code or "`" in code or SUBST in code:
             raise Deny("unexpanded", "python -c code with an unexpanded variable or substitution is not inspected")
+        # Unquoted braces can split the code itself ({open,}"(...)" gives "open(...)"). A brace pair with a comma or
+        # a range inside is refused. This also refuses some dict literals with a comma: a known false positive.
+        if re.search(r"\{[^{}]*(,|\.\.)[^{}]*\}", code):
+            raise Deny("unexpanded", "python -c code with a brace expansion pattern is not inspected")
         if DANGER_PY.search(code):
             raise Deny("python-c", "python -c with a file or process operation")
 

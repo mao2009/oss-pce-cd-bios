@@ -871,6 +871,13 @@ class PythonCAttachedTests(unittest.TestCase):
                 self.assertEqual(self._verdict(cmd), "DENY")
         self.assertEqual(self._verdict("python3 -m unittest discover -s tests/host -v"), "ALLOW")
 
+    def test_brace_expansion_that_builds_the_code_is_denied(self):
+        # Unquoted braces split the code itself: the word split gives "-c" and "open(...)" with no dash in the code.
+        for cmd in ["python3 -c {open,}\"('/tmp/zz','w').close()\"",
+                    "python3 -c {imp,}\"ort os; os.\"{remo,}\"ve('/tmp/zz')\""]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._verdict(cmd), "DENY")
+
     def test_variable_supplied_option_or_code_is_denied(self):
         # The value of a shell variable is not visible to the guard, so a python argument that contains one is refused.
         for cmd in ["D=-c; python3 $D\"open('/tmp/zz','w').close()\"",
@@ -948,10 +955,14 @@ class PythonCAttachedMutationTests(unittest.TestCase):
         "variable in a python argument not refused": (
             "if \"$\" in arg or \"`\" in arg or SUBST in arg:",
             "if False:"),
+        "brace expansion pattern in code not refused": (
+            "if re.search(r\"\\{[^{}]*(,|\\.\\.)[^{}]*\\}\", code):",
+            "if False:"),
     }
     DETECTING = ["test_attached_write_forms_are_denied", "test_two_c_options_check_every_code",
                  "test_unexpanded_code_is_denied", "test_brace_expansion_that_builds_a_c_option_is_denied",
-                 "test_variable_supplied_option_or_code_is_denied"]
+                 "test_variable_supplied_option_or_code_is_denied",
+                 "test_brace_expansion_that_builds_the_code_is_denied"]
 
     def _run(self, hook_text):
         with tempfile.TemporaryDirectory() as td:
