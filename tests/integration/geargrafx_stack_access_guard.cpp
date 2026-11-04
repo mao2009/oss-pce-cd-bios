@@ -68,7 +68,10 @@ unsigned g_guard_calls = 0, g_guard_refusals = 0, g_guard_latched_calls = 0;
 unsigned g_instructions = 0, g_instructions_after_refusal = 0, g_io_after_refusal = 0;
 bool g_refused_seen = false;
 bool g_flip_tend = false, g_flipped = false;
-unsigned g_flip_instruction = 0;
+unsigned g_flip_instruction = 0, g_flip_at = 0, g_stack_bank = 0xFF;
+bool g_method_a = false, g_instruction_refused = false;
+unsigned g_refusal_kind = 0;        // 0 none, 1 stack access (method C), 2 instruction (method A)
+unsigned g_instruction_refusals = 0;
 Snapshot g_instr_start = {};        // snapshot at the start of the instruction that is running
 Snapshot g_refusal_instr = {};      // snapshot at the start of the instruction of the first refusal
 Snapshot g_at_refusal = {};         // live CPU state inside the first refused guard call
@@ -110,6 +113,7 @@ bool stack_guard(void*, unsigned op, unsigned s, unsigned transfer_state, bool l
         ++g_guard_refusals;
         if (!g_refused_seen) {
             g_refused_seen = true;
+            g_refusal_kind = 1;
             g_refusal_instr = g_instr_start;
             g_at_refusal = snap();
             g_refusal_op = op;
@@ -135,17 +139,42 @@ void io_observer(void*, unsigned is_write, unsigned address, unsigned value)
     record(e);
 }
 
-void pre_instruction(void*, unsigned, unsigned transfer_state)
+// Method A (Issue #498, #473): refuse an instruction BEFORE it executes when the stack page (MPR1) is not
+// the allowed WRAM bank at its start. Test policy, defined here (S1 #497 contract: $F8 only).
+bool pre_instruction(void*, unsigned, unsigned transfer_state)
 {
     if (g_refused_seen)
         ++g_instructions_after_refusal;
     ++g_instructions;
-    if (g_flip_tend && !g_flipped && transfer_state == 1) {
-        g_memory->SetMpr(1, 0xFF);   // harness-side direct MPR1 setting (S1 #497: direct SetMpr path)
+    // Harness-side direct MPR1 setting in the middle of the run (S1 #497 DIRECT_SETMPR path; the contract
+    // makes any mid-run direct setting a FAIL, so these are negative cases).
+    bool flip_now = (g_flip_tend && transfer_state == 1) || (g_flip_at && g_instructions == g_flip_at);
+    if (flip_now && !g_flipped) {
+        g_memory->SetMpr(1, (u8)g_stack_bank);
         g_flipped = true;
         g_flip_instruction = g_instructions;
     }
     g_instr_start = snap();
+    if (!g_method_a)
+        return true;
+    if (!g_instruction_refused && g_memory->GetMpr(1) == 0xF8)
+        return true;
+    if (!g_refused_seen) {
+        g_refused_seen = true;
+        g_refusal_kind = 2;
+        g_refusal_instr = g_instr_start;
+        g_at_refusal = g_instr_start;
+        g_refusal_op = 255;
+        g_refusal_s = g_instr_start.s;
+        g_refusal_ts = transfer_state;
+        g_refusal_mpr1 = g_memory->GetMpr(1);
+        g_refusal_cycles = 0;
+        g_vdc_ar_at_refusal = (u8)*g_vdc->AR;
+        g_io_before_refusal = g_io_reads + g_io_writes;
+    }
+    g_instruction_refused = true;
+    ++g_instruction_refusals;
+    return false;
 }
 
 void print_snapshot(const char* name, const Snapshot& s)
@@ -201,12 +230,19 @@ bool route_for(const std::string& name, Route* r)
         r->code = {0x53, 0x02, bra, self}; r->irr = 0x02; r->vector_lo = 0x1FF8; r->p = 0x00;
         r->loops = {kHandler};
     }
-    else if (name == "tstart" || name == "tend") {
-        r->code = {0x73, (u8)(kSrc & 0xFF), (u8)(kSrc >> 8), (u8)(kDst & 0xFF), (u8)(kDst >> 8), 0x01, 0x00,
+    else if (name == "tstart" || name == "tend" || name == "tin" || name == "tia" || name == "tdd" || name == "tai" ||
+             name == "tendtin" || name == "tendtia" || name == "tendtdd" || name == "tendtai") {
+        // TransferStart/TransferEnd through each block transfer opcode (all share OPCodes_TransferStart/End).
+        // tend<op>: the same transfer with the harness MPR1 change before the TransferEnd step.
+        std::string base = name.compare(0, 4, "tend") == 0 && name.size() > 4 ? name.substr(4) : name;
+        u8 op = base == "tin" ? 0xD3 : base == "tia" ? 0xE3 : base == "tdd" ? 0xC3 : base == "tai" ? 0xF3 : 0x73;
+        r->code = {op, (u8)(kSrc & 0xFF), (u8)(kSrc >> 8), (u8)(kDst & 0xFF), (u8)(kDst >> 8), 0x01, 0x00,
                    bra, self};
         r->a = 0x12;
         r->read_buffer = 0xBEEF; r->status = 0x05;
     }
+    else if (name == "flippha") { r->code = {0xEA, 0x48, bra, self}; }   // NOP; PHA (MPR1 set before the PHA)
+    else if (name == "tamjsr") { r->code = {0x53, 0x02, 0x20, 0x10, 0x1E}; r->loops = {0x1E10}; }  // TAM #$02; JSR
     else if (name == "phasame") { r->code = {0x48, bra, self}; r->a = 0x05; r->ar = 0x05; }
     else if (name == "pharestore") { r->code = {0x48, 0x03, 0x00, bra, self}; r->a = 0x07; r->ar = 0x00; }
     else return false;
@@ -224,25 +260,46 @@ int main(int argc, char** argv)
     if (!end || *end || frames < 1 || frames > 10)
         return 2;
     std::string mode = argv[3];
-    size_t dash = mode.find('-');
+    // Optional method prefix (Issue #498 / #500): "C:" (default, method C stack guard of #499), "A:" (method
+    // A instruction refusal), "AC:" (both).
+    std::string method = "C", rest = mode;
+    size_t colon = mode.find(':');
+    if (colon != std::string::npos) {
+        method = mode.substr(0, colon);
+        rest = mode.substr(colon + 1);
+    }
+    if (method != "C" && method != "A" && method != "AC")
+        return 2;
+    size_t dash = rest.find('-');
     if (dash == std::string::npos)
         return 2;
-    std::string route_name = mode.substr(0, dash);
-    std::string variant = mode.substr(dash + 1);
+    std::string route_name = rest.substr(0, dash);
+    std::string variant = rest.substr(dash + 1);
     int mutation = 0;
     bool guarded = true;
-    if (variant == "allowed" || variant == "armed") {}
+    unsigned bank = 0xFF;   // stack page bank for every variant except allowed
+    if (variant == "allowed") bank = 0xF8;
+    else if (variant == "armed") {}
     else if (variant == "unguarded") guarded = false;
+    else if (variant == "armedram") bank = 0x80;                          // CD-ROM RAM (not the allowed WRAM)
+    else if (variant == "unguardedram") { bank = 0x80; guarded = false; }
+    else if (variant == "armedbram") bank = 0xF7;                         // backup RAM bank (S1: refused)
+    else if (variant == "unguardedbram") { bank = 0xF7; guarded = false; }
     else if (variant == "mut-late16") mutation = 1;
     else if (variant == "mut-popinc") mutation = 2;
     else if (variant == "mut-nolatch") mutation = 3;
     else if (variant == "mut-ignore") mutation = 4;
     else if (variant == "mut-nostop") mutation = 5;
+    else if (variant == "mut-aignore") mutation = 6;
+    else if (variant == "mut-alate") mutation = 7;
     else return 2;
     Route route;
     if (!route_for(route_name, &route))
         return 2;
     bool io_stack = variant != "allowed";
+    g_stack_bank = bank;
+    bool use_c = guarded && method.find('C') != std::string::npos;
+    g_method_a = guarded && method.find('A') != std::string::npos;
 
     std::ifstream file(argv[1], std::ios::binary);
     if (!file)
@@ -274,8 +331,11 @@ int main(int argc, char** argv)
     memory->SetMpr(0, 0xF8);
     for (int i = 2; i <= 7; ++i)
         memory->SetMpr(i, 0x00);
-    bool stack_ff_at_start = io_stack && route_name != "irqtam" && route_name != "tend";
-    memory->SetMpr(1, stack_ff_at_start ? 0xFF : 0xF8);
+    // Routes whose stack page changes during the run start from the allowed WRAM bank.
+    bool is_tend = route_name.compare(0, 4, "tend") == 0;
+    bool changes_later = route_name == "irqtam" || is_tend || route_name == "flippha" ||
+                         route_name == "tamjsr";
+    memory->SetMpr(1, (u8)(io_stack && !changes_later ? bank : 0xF8));
 
     u8* wram = memory->GetWorkingRAM();
     for (unsigned i = 0x0100; i < 0x0200; ++i)
@@ -297,7 +357,9 @@ int main(int argc, char** argv)
 
     g_st->PC->SetValue((u16)kGuest);
     g_st->S->SetValue((u8)route.s);
-    g_st->A->SetValue((u8)(route_name == "irqtam" ? (io_stack ? 0xFF : 0xF8) : route.a));
+    // irqtam / tamjsr: the guest's TAM #$02 sets MPR1 = A.
+    bool tam_route = route_name == "irqtam" || route_name == "tamjsr";
+    g_st->A->SetValue((u8)(tam_route ? (io_stack ? bank : 0xF8) : route.a));
     g_st->X->SetValue((u8)route.x);
     g_st->Y->SetValue((u8)route.y);
     g_st->P->SetValue((u8)route.p);
@@ -308,11 +370,12 @@ int main(int argc, char** argv)
     *g_vdc->SR = (u16)route.status;
     *g_vdc->AR = (u8)route.ar;
 
-    g_flip_tend = route_name == "tend" && io_stack;
+    g_flip_tend = is_tend && io_stack;
+    g_flip_at = route_name == "flippha" && io_stack ? 2 : 0;   // before the PHA (instruction 2)
     gg_verify_stack_mutation = mutation;
     gg_verify_stack_refused = false;
     gg_verify_stack_context = nullptr;
-    gg_verify_stack_guard = guarded ? stack_guard : nullptr;
+    gg_verify_stack_guard = use_c ? stack_guard : nullptr;
     gg_verify_io_observer = io_observer;
     gg_verify_pre_instruction = pre_instruction;
 
@@ -324,6 +387,15 @@ int main(int argc, char** argv)
     for (unsigned i = 0; i < 256; ++i)
         stack_before[i] = wram[0x0100 + i];
     unsigned dst_before = wram[kDst];
+    // Non-WRAM stack banks (Issue #498 / #500 unknown-bank cases): bank $80 = CD-ROM RAM offset 0, bank $F7 =
+    // backup RAM. The stack page is offset $0100-$01FF of the bank.
+    u8* cdram = memory->GetCDROMRAM();
+    u8* bram = memory->GetBackupRAM();
+    std::vector<u8> cdram_before(256, 0), bram_before(256, 0);
+    for (unsigned i = 0; i < 256; ++i) {
+        if (cdram) cdram_before[i] = cdram[0x0100 + i];
+        if (bram) bram_before[i] = bram[0x0100 + i];
+    }
 
     GeargrafxCore::GG_Debug_Run debug = {};   // debugger loop: a refusal's stop request ends the frame
     std::vector<u8> frame(1024 * 512 * 4, 0);
@@ -336,17 +408,22 @@ int main(int argc, char** argv)
         ++frames_run;
         // Never resume the guest after a refusal. "halted" only restates this latch; the evidence that
         // nothing ran after the refusal is instructions_after_refusal (counted at every instruction start).
-        if (gg_verify_stack_refused) {
+        if (gg_verify_stack_refused || g_instruction_refused) {
             halted = true;
             break;
         }
     }
     Snapshot stop = snap();
 
-    unsigned stack_changed = 0;
-    for (unsigned i = 0; i < 256; ++i)
+    unsigned stack_changed = 0, cdram_changed = 0, bram_changed = 0;
+    for (unsigned i = 0; i < 256; ++i) {
         if (wram[0x0100 + i] != stack_before[i])
             ++stack_changed;
+        if (cdram && cdram[0x0100 + i] != cdram_before[i])
+            ++cdram_changed;
+        if (bram && bram[0x0100 + i] != bram_before[i])
+            ++bram_changed;
+    }
 
     std::fprintf(stderr, "{\"mode\":\"%s\",\"route\":\"%s\",\"variant\":\"%s\",\"guarded\":%s,\"mutation\":%d,",
                  mode.c_str(), route_name.c_str(), variant.c_str(), guarded ? "true" : "false", mutation);
@@ -359,8 +436,13 @@ int main(int argc, char** argv)
     std::fprintf(stderr, "\"io_reads\":%u,\"io_writes\":%u,\"io_before_refusal\":%u,\"io_after_refusal\":%u,",
                  g_io_reads, g_io_writes, g_io_before_refusal, g_io_after_refusal);
     std::fprintf(stderr, "\"refused\":%s,\"refusal\":{\"op\":%u,\"s\":%u,\"transfer_state\":%u,\"mpr1\":%u,"
-                 "\"cycles\":%u,\"vdc_ar\":%u},", g_refused_seen ? "true" : "false", g_refusal_op, g_refusal_s,
-                 g_refusal_ts, g_refusal_mpr1, g_refusal_cycles, g_vdc_ar_at_refusal);
+                 "\"cycles\":%u,\"vdc_ar\":%u,\"kind\":\"%s\"},", g_refused_seen ? "true" : "false", g_refusal_op,
+                 g_refusal_s, g_refusal_ts, g_refusal_mpr1, g_refusal_cycles, g_vdc_ar_at_refusal,
+                 g_refusal_kind == 1 ? "stack" : g_refusal_kind == 2 ? "instruction" : "none");
+    std::fprintf(stderr, "\"method\":\"%s\",\"stack_bank\":%u,\"instruction_refused\":%s,\"instruction_refusals\":%u,"
+                 "\"cdram_present\":%s,\"bram_present\":%s,\"cdram_bytes_changed\":%u,\"bram_bytes_changed\":%u,",
+                 method.c_str(), bank, g_instruction_refused ? "true" : "false", g_instruction_refusals,
+                 cdram ? "true" : "false", bram ? "true" : "false", cdram_changed, bram_changed);
     std::fprintf(stderr, "\"harness_mpr1_flip\":%s,\"flip_instruction\":%u,", g_flipped ? "true" : "false",
                  g_flip_instruction);
     print_snapshot("start", start);

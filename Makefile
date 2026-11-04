@@ -49,6 +49,13 @@ integration: build
 	$(MAKE) block-write-guard
 	$(MAKE) block-transfer-matrix
 	$(MAKE) stack-access-guard
+	$(MAKE) stack-methods
+
+# Issue #498 (#473 S2, method A): instruction refusal before execution, judged on eight criteria, on the same
+# verification-only core patch (synthetic media, debugger build). Not a production mechanism. Runs in `integration`.
+.PHONY: stack-methods
+stack-methods:
+	$(PYTHON) tests/integration/geargrafx_stack_methods.py
 
 # Issue #499 (#473 S3, method C): stack push/pop refused before the side effect via a verification-only core
 # patch (synthetic media, debugger build). Not a production mechanism. Runs in `integration`.
