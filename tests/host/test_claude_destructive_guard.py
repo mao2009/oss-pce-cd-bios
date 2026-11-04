@@ -789,7 +789,8 @@ class LauncherClassTests(unittest.TestCase):
                 self.assertEqual(guard.name_status(name), status)
 
     def test_posix_escaped_absolute_paths_resolve_to_the_shell(self):
-        # Git Bash resolves each of these words to /bin/sh (checked with printf). The shell then runs rm -rf /.
+        # Git Bash expansion (checked with printf): most of these words are /bin/sh; \\/bin/s\h and +/bin/s\h keep
+        # a leading backslash or a + and are not an exact /bin/sh. All are DENY: the guard fails closed on them.
         for cmd in ["\\/bin/s\\h -c 'rm -rf /'", "\\\\/bin/s\\h -c 'rm -rf /'", "/bin/s\\h -c 'rm -rf /'",
                     "\"/bin/s\"\\h -c 'rm -rf /'", "'/bin/s'\\h -c 'rm -rf /'", "/bin/\\s\\h -c 'rm -rf /'",
                     "+/bin/s\\h -c 'rm -rf /'"]:
@@ -837,9 +838,31 @@ class LauncherClassTests(unittest.TestCase):
         self.assertEqual(verdict("/bin/s\\h -c 'rm -rf /'"), "DENY")
 
     def test_wrapper_handoff_still_checks_the_wrapped_command(self):
-        for cmd in ["nice -n 5 rm -rf /", "env -i rm -rf /", "timeout 5 rm -rf /"]:
+        # The expected wrapper list is written out here, not read from guard.WRAPPERS, so a removed entry is a failure.
+        expected = ["builtin", "command", "doas", "env", "exec", "ionice", "nice", "nohup", "setsid", "stdbuf",
+                    "sudo", "time", "timeout", "xargs"]
+        self.assertEqual(sorted(guard.WRAPPERS), expected)
+        # Every wrapper hands off: the destructive command and the shell form behind it are both DENY.
+        for wrapper in expected:
+            for cmd in [wrapper + " rm -rf /", wrapper + " sh -c 'rm -rf /'"]:
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(verdict(cmd), "DENY")
+        for cmd in ["nice -n 5 rm -rf /", "env -i rm -rf /"]:
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd), "DENY")
+
+    def test_timeout_forms_are_checked(self):
+        for cmd in ["timeout rm -rf /", "timeout 5 rm -rf /", "timeout 5 -s KILL rm -rf /",
+                    "timeout -s KILL 5 rm -rf /", "timeout 5s sh -c 'rm -rf /'", "timeout -- 5 rm -rf /"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+        self.assertEqual(verdict("timeout 5 echo hi"), "ALLOW")
+
+    def test_names_with_trailing_dots_or_spaces_are_the_command(self):
+        for cmd, tool in [("rm. -rf /", "Bash"), ("RM.EXE. -rf /", "Bash"), ("rm\\  -rf /", "Bash"),
+                          ("C:\\Windows\\System32\\rm. -rf /", "PowerShell")]:
+            with self.subTest(cmd=cmd, tool=tool):
+                self.assertEqual(verdict(cmd, tool=tool), "DENY")
 
     def test_ordinary_commands_and_out_of_scope_forms_are_unchanged(self):
         # pip install is X3d's conditional case: X3a does not change it, so it stays ALLOW here.
@@ -865,6 +888,13 @@ class LauncherMutationTests(unittest.TestCase):
         "doas removed from wrappers": ('"sudo", "doas", "env"', '"sudo", "env"'),
         "sudo removed from wrappers": ('WRAPPERS = {"sudo", ', 'WRAPPERS = {'),
         "wrapper handoff removed": ('        if handoff(name):', '        if False:'),
+        "xargs removed from wrappers": ('"setsid", "stdbuf", "xargs"}', '"setsid", "stdbuf"}'),
+        "stdbuf removed from wrappers": ('"timeout", "setsid", "stdbuf", "xargs"}', '"timeout", "setsid", "xargs"}'),
+        "setsid removed from wrappers": ('"timeout", "setsid", "stdbuf"', '"timeout", "stdbuf"'),
+        "ionice removed from wrappers": ('"nice", "ionice", "timeout"', '"nice", "timeout"'),
+        "builtin removed from wrappers": ('"command", "builtin", "exec"', '"command", "exec"'),
+        "timeout rule removed": ('        if name == "timeout":', '        if False:'),
+        "trailing dot and space normalisation removed": ('        name = name.rstrip(". ")', '        pass'),
         "table: sort moved to NONE": ('("OPTION", "sort rg find', '("NONE", "sort rg find'),
         "table: rm not dangerous": ('("DANGEROUS", "rm"),', '("NONE", "rm"),'),
     }

@@ -719,6 +719,27 @@ def claude_mention(args):
                or SUBST in a for a in args)
 
 
+TIMEOUT_DURATION = re.compile(r"^[0-9]+(\.[0-9]+)?[smhd]?$")
+
+
+def timeout_candidates(args):
+    """Argv suffixes that may be the command timeout runs (X3a: a form the guard does not fully parse)."""
+    i = 0
+    while i < len(args) and args[i].startswith("-") and len(args[i]) > 1:
+        if args[i] == "--":
+            i += 1
+            break
+        i += 2 if args[i] in WRAPPER_ARGS["timeout"] else 1
+    rest = args[i:]
+    if not rest:
+        return []
+    if TIMEOUT_DURATION.match(rest[0]):
+        rest = rest[1:]
+    if rest and rest[0].startswith("-"):
+        return [rest[k:] for k in range(len(rest))]
+    return [rest]
+
+
 def unwrap(name, args):
     withargs = WRAPPER_ARGS.get(name, set())
     i = 0
@@ -780,8 +801,16 @@ def analyze_argv(words, ctx, ps, depth):
                 raise Deny("command-word", "backslash in command name")
             w0 = unescaped
         name = posixpath.basename(w0.replace("\\", "/")).lower()
+        # Windows drops trailing dots and spaces from a file name (rm. and rm  are rm), so they are dropped here too.
+        name = name.rstrip(". ")
         if name.endswith(".exe"):
-            name = name[:-4]
+            name = name[:-4].rstrip(". ")
+        if name == "timeout":
+            # timeout [OPTION] DURATION COMMAND. A duration that is not numeric is not skipped; an option after the
+            # duration is not understood, so every later suffix is analysed as a possible command (fail closed).
+            for cand in timeout_candidates(words[1:]):
+                analyze_argv(cand, ctx.copy(), ps, depth + 1)
+            return
         if handoff(name):
             words = unwrap(name, words[1:])
             continue
