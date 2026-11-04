@@ -49,10 +49,8 @@ class FrameTracerSyntheticCdRealCoreTests(unittest.TestCase):
                     mock.patch.object(tracer, "JOB_PARENT", approved_root / "frame-tracer-jobs"):
                 result = tracer.trace(SimpleNamespace(
                     frames=120, events=1, timeout=120.0, rom=self.rom, cue=media / CUE_NAME,
-                    run_start_frame=None, run_hold_frames=None, observe_ram=True, control_experiment=True,
+                    run_start_frame=None, run_hold_frames=None, observe_ram=True,
                 ))
-            # Diagnostic output only (not asserted): frame-boundary control comparisons.
-            print("CONTROL_EXPERIMENT", result.get("control_experiment"))
 
         self.assertEqual(result["status"], "PASS", result)
         self.assertEqual(result["evidence"], "REAL_GEARGRAFX_CORE")
@@ -64,7 +62,7 @@ class FrameTracerSyntheticCdRealCoreTests(unittest.TestCase):
         rows = {row["region"]: row for row in summary["ram_deltas"]}
         # The synthetic read changes WRAM and has observed SCSI-frame correlation.
         self.assertGreater(rows["wram"]["updates"], 0)
-        self.assertEqual(rows["wram"]["scsi_correlation"], "OBSERVED", result.get("scsi_correlation_basis"))
+        self.assertEqual(rows["wram"]["scsi_correlation"], "OBSERVED")
         self.assertTrue(rows["wram"]["scsi_update_frames"])
         # These mapped core regions are present but unchanged in this diagnostic.
         for region in ("cdrom_ram", "card_ram"):

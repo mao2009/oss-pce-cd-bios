@@ -186,7 +186,7 @@ void print_ram_summary(const std::vector<RamTracker>& rams) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc != 8 && argc != 9)
+    if (argc != 8)
         return 2;
     char* end = nullptr;
     long frames = std::strtol(argv[3], &end, 10);
@@ -208,12 +208,6 @@ int main(int argc, char** argv) {
     end = nullptr;
     long observe_ram = std::strtol(argv[7], &end, 10);
     if (!end || *end || (observe_ram != 0 && observe_ram != 1))
-        return 2;
-    // Optional ninth argument selects Run B: SCSI notification only, with the CPU trace
-    // category disabled, so CPU instruction volume cannot evict SCSI entries.  The default
-    // (eight arguments) is the full Run A, which keeps CPU and SCSI notifications together.
-    const bool scsi_only = argc == 9 && std::strcmp(argv[8], "scsi") == 0;
-    if (argc == 9 && !scsi_only && std::strcmp(argv[8], "full") != 0)
         return 2;
     std::ifstream input(argv[1], std::ios::binary);
     if (!input)
@@ -270,10 +264,9 @@ int main(int argc, char** argv) {
     CpuSnap previous_cpu = cpu_snap(core, cpu, memory);
     CdSnap previous_cd = cd_snap(scsi, cdrom);
     std::printf("CAP {\"normal_frame_execution\":true,\"instruction_step\":false,\"guest_mutation\":false,"
-                "\"mmio_reads\":false,\"scsi_event_notification\":true,\"cpu_event_notification\":%s,"
-                "\"trace_mode\":\"%s\","
+                "\"mmio_reads\":false,\"scsi_event_notification\":true,\"cpu_event_notification\":true,"
                 "\"ram_observation\":%s,\"ram_delta_summary\":true,\"ram_regions\":[",
-                scsi_only ? "false" : "true", scsi_only ? "scsi" : "full", observe_ram ? "true" : "false");
+                observe_ram ? "true" : "false");
     bool first_region = true;
     for (const RamTracker& ram : rams) {
         if (!ram.present) continue;
@@ -285,12 +278,19 @@ int main(int argc, char** argv) {
                 "\"run_hold_frames\":%ld,\"run_input_requested\":%s}\n",
                 capacity, frames, have_disc ? "true" : "false", run_start, run_hold, run_start ? "true" : "false");
     TraceLogger* trace = core.GetTraceLogger();
-    if (!trace->SetCapacity(kRingSize)) return 3;
-    trace->SetEnabledFlags(scsi_only ? TRACE_FLAG_SCSI : (TRACE_FLAG_CPU | TRACE_FLAG_SCSI));
+    // Core trace buffer: the pinned core's own default capacity (TRACE_BUFFER_SIZE), never the
+    // output-ring size.  Output-ring overflow does not change what the core retains, and a
+    // core overwrite is detected below as an explicit gap (dropped_trace, frame_scsi_incomplete).
+    const u64 core_capacity = trace->GetCapacity();
+    if (core_capacity == 0) return 3;
+    trace->SetEnabledFlags(TRACE_FLAG_CPU | TRACE_FLAG_SCSI);
     trace->SetEventFilter(TRACE_SCSI, TRACE_SCSI_FILTER_COMMANDS | TRACE_SCSI_FILTER_PHASES | TRACE_SCSI_FILTER_RESPONSES);
     trace->Reset();
     u64 observed_trace = 0;
     u64 dropped_trace = 0;
+    // Measurements for the single-run design: largest per-frame core entry count and SCSI count.
+    u64 max_frame_core_entries = 0;
+    unsigned max_frame_scsi_events = 0;
     const char* previous_region = nullptr;
 
     for (unsigned number = 1; number <= (unsigned)frames; ++number) {
@@ -317,7 +317,7 @@ int main(int argc, char** argv) {
         // Consume the core's read-only event notifications.  This retains phase
         // changes that begin and end within one video frame.
         const u64 total = trace->GetTotalLogged();
-        const u64 first_event = total > kRingSize ? total - kRingSize : 0;
+        const u64 first_event = total > core_capacity ? total - core_capacity : 0;
         bool trace_gap = false;
         // A core trace gap means this frame's SCSI notifications may be incomplete.
         // Output-ring overflow is a separate, bounded-output concern and never reaches here.
@@ -331,11 +331,13 @@ int main(int argc, char** argv) {
         }
         bool scsi_observed_this_frame = false;
         unsigned scsi_events_this_frame = 0;
+        if (total - observed_trace > max_frame_core_entries) max_frame_core_entries = total - observed_trace;
         for (; observed_trace < total; ++observed_trace) {
             const GG_Trace_Entry& entry = trace->GetEntry((unsigned)(observed_trace - first_event));
             if (entry.type == TRACE_SCSI) {
                 scsi_observed_this_frame = true;
                 ++scsi_events_this_frame;
+                if (scsi_events_this_frame > max_frame_scsi_events) max_frame_scsi_events = scsi_events_this_frame;
                 ring.push({Event::CD, number, now_cpu, now_cd, 0, 0, 0, entry.scsi.event,
                            entry.scsi.command, entry.scsi.param, entry.scsi.status, nullptr});
             }
@@ -351,9 +353,6 @@ int main(int argc, char** argv) {
             }
         }
         unsigned wram_changed = 0;
-        // Per-region changed-byte counts for this frame, in rams order; used by the
-        // cross-run comparison and the Run B correlation (never printed as guest bytes).
-        std::vector<unsigned> frame_changed(rams.size(), 0u);
         // Correlation is frame-local and only uses notifications seen above;
         // it is never presented as event-time RAM state.
         for (RamTracker& ram : rams) {
@@ -364,7 +363,6 @@ int main(int argc, char** argv) {
             // can make its correlation UNKNOWN; unchanged frames carry no correlation claim.
             FrameTracerAccumulateRam(&ram.summary, delta, number, scsi_observed_this_frame,
                                      frame_scsi_incomplete && delta.changed != 0);
-            frame_changed[(size_t)(&ram - rams.data())] = delta.changed;
             if (delta.changed && scsi_observed_this_frame) ram.scsi_update_frames.push_back(number);
             if (delta.changed)
                 ring.push({Event::RAM, number, now_cpu, now_cd, delta.changed, delta.first, delta.last,
@@ -376,31 +374,6 @@ int main(int argc, char** argv) {
         if (now_cpu.pc_is_wram && wram_changed &&
             (!previous_cpu.pc_is_wram || previous_cpu.physical_pc != now_cpu.physical_pc))
             ring.push({Event::HANDOFF, number, now_cpu, now_cd, 0, 0, 0, 0, 0, 0, 0, nullptr});
-        // Per-frame records for the Run A / Run B comparison.  They carry frame-boundary CPU
-        // and CD register state, per-region changed-byte counts, a 64-bit FNV-1a hash of the
-        // tracked RAM bytes (no guest bytes are printed), and SCSI notification counts.
-        u64 state_hash = 1469598103934665603ULL;
-        for (const RamTracker& ram : rams) {
-            if (!ram.present) continue;
-            for (unsigned byte = 0; byte != ram.mapping.size; ++byte) {
-                state_hash ^= ram.current[byte];
-                state_hash *= 1099511628211ULL;
-            }
-        }
-        std::printf("SCSI {\"frame\":%u,\"events\":%u,\"incomplete\":%s}\n", number, scsi_events_this_frame,
-                    frame_scsi_incomplete ? "true" : "false");
-        std::printf("STATE {\"frame\":%u,\"master_clock\":%u,\"pc\":%u,\"pc_bank\":%u,\"a\":%u,\"x\":%u,\"y\":%u,"
-                    "\"p\":%u,\"sp\":%u,\"mpr\":[%u,%u,%u,%u,%u,%u,%u,%u],\"cd_phase\":%d,\"cd_signals\":%u,"
-                    "\"cd_load_sector\":%u,\"cd_load_count\":%u,\"cd_irq_active\":%u,\"cd_irq_enabled\":%u,"
-                    "\"ram_hash\":\"%016llx\",\"ram_changed\":{",
-                    number, now_cpu.master_clock, now_cpu.pc, now_cpu.pc_bank, now_cpu.a, now_cpu.x, now_cpu.y,
-                    now_cpu.p, now_cpu.sp, now_cpu.mpr[0], now_cpu.mpr[1], now_cpu.mpr[2], now_cpu.mpr[3],
-                    now_cpu.mpr[4], now_cpu.mpr[5], now_cpu.mpr[6], now_cpu.mpr[7], now_cd.phase, now_cd.signals,
-                    now_cd.load_sector, now_cd.load_count, now_cd.irq_active, now_cd.irq_enabled,
-                    (unsigned long long)state_hash);
-        for (size_t index = 0; index != rams.size(); ++index)
-            std::printf("%s\"%s\":%u", index ? "," : "", rams[index].name, frame_changed[index]);
-        std::printf("}}\n");
         previous_cpu = now_cpu;
         previous_cd = now_cd;
     }
@@ -409,6 +382,9 @@ int main(int argc, char** argv) {
     std::printf("END {\"frames\":%ld,\"events\":%u,\"dropped\":%u,\"trace_events_dropped\":%llu,\"overflow\":%s", frames,
                 ring.size(), ring.dropped(), (unsigned long long)dropped_trace,
                 (ring.dropped() || dropped_trace) ? "true" : "false");
+    // Core-buffer usage for the CI measurement: capacity, peak per-frame entries, peak SCSI per frame.
+    std::printf(",\"core_capacity\":%llu,\"max_frame_core_entries\":%llu,\"max_frame_scsi_events\":%u",
+                (unsigned long long)core_capacity, (unsigned long long)max_frame_core_entries, max_frame_scsi_events);
     print_ram_summary(rams);
     std::printf("}");
     std::printf("\n");
