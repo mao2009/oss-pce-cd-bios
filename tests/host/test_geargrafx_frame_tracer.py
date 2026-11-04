@@ -285,6 +285,130 @@ class FrameTracerProtocolTests(unittest.TestCase):
         self.assertIn("core.KeyReleased(GG_CONTROLLER_1, GG_KEY_RUN)", source)
 
 
+def _state_row(frame, wram_changed=0, pc=0x100):
+    return {"frame": frame, "master_clock": frame * 100, "pc": pc, "pc_bank": 0xF8, "a": 0, "x": 0, "y": 0,
+            "p": 0, "sp": 0x80, "mpr": [0xF8, 0xF9, 0xFA, 0xFB, 0xF7, 0xF8, 0, 0], "cd_phase": 0,
+            "cd_signals": 0, "cd_load_sector": 0, "cd_load_count": 0, "cd_irq_active": 0, "cd_irq_enabled": 0,
+            "ram_hash": "0" * 16, "ram_changed": {"wram": wram_changed, "cdrom_ram": 0, "card_ram": 0}}
+
+
+def _scsi_row(frame, events=0, incomplete=False):
+    return {"frame": frame, "events": events, "incomplete": incomplete}
+
+
+def _index(rows):
+    """Frame-keyed mapping, as parse_frame_records returns it."""
+    return {row["frame"]: row for row in rows}
+
+
+def _stdout(mode, states, scsis):
+    states = list(states.values()) if isinstance(states, dict) else states
+    scsis = list(scsis.values()) if isinstance(scsis, dict) else scsis
+    cap = {"trace_mode": mode, "cpu_event_notification": mode == "full", "ram_observation": True}
+    lines = ["CAP " + json.dumps(cap)]
+    lines += ["STATE " + json.dumps(row) for row in states]
+    lines += ["SCSI " + json.dumps(row) for row in scsis]
+    return "\n".join(lines) + "\n"
+
+
+def _ram_rows(wram_updates=0, first=None, last=None):
+    wram = {"region": "wram", "present": True, "availability": "PRESENT", "size": 0x2000, "bank_first": 0xF8,
+            "bank_last": 0xFB, "updates": wram_updates, "first_frame": first, "last_frame": last,
+            "min_offset": 0 if wram_updates else None, "max_offset": 7 if wram_updates else None,
+            "max_changed": 1 if wram_updates else 0, "scsi_correlation": "NONE_OBSERVED", "scsi_update_frames": []}
+    absent = [{"region": name, "present": False, "availability": "ABSENT", "updates": 0, "first_frame": None,
+               "last_frame": None, "min_offset": None, "max_offset": None, "max_changed": 0,
+               "scsi_correlation": "NONE_OBSERVED", "scsi_update_frames": []} for name in ("cdrom_ram", "card_ram")]
+    return [wram] + absent
+
+
+def _wram(rows):
+    return next(row for row in rows if row["region"] == "wram")
+
+
+class DualRunCorrelationTests(unittest.TestCase):
+    FRAMES = 4
+
+    def _states(self, changed_frames, pc=0x100):
+        return _index([_state_row(f, wram_changed=1 if f in changed_frames else 0, pc=pc)
+                       for f in range(1, self.FRAMES + 1)])
+
+    def test_parse_requires_matching_mode_and_every_frame(self):
+        states = list(self._states({1, 3}).values())
+        scsi = [_scsi_row(f) for f in range(1, self.FRAMES + 1)]
+        tracer.parse_frame_records(_stdout("scsi", states, scsi), "scsi", self.FRAMES)
+        with self.assertRaises(ValueError):
+            tracer.parse_frame_records(_stdout("scsi", states, scsi), "full", self.FRAMES)
+        with self.assertRaises(ValueError):
+            tracer.parse_frame_records(_stdout("scsi", states[:-1], scsi), "scsi", self.FRAMES)
+
+    def test_compare_detects_state_and_scsi_count_mismatch(self):
+        scsi = _index([_scsi_row(f) for f in range(1, self.FRAMES + 1)])
+        ok, _ = tracer.compare_runs(self._states({1}), scsi, self._states({1}), scsi, self.FRAMES)
+        self.assertTrue(ok)
+        ok, reason = tracer.compare_runs(self._states({1}), scsi, self._states({1}, pc=0x200), scsi, self.FRAMES)
+        self.assertFalse(ok)
+        self.assertIn("frame 1", reason)
+        scsi_b = dict(scsi)
+        scsi_b[1] = _scsi_row(1, events=2)
+        ok, _ = tracer.compare_runs(self._states({1}), scsi, self._states({1}), scsi_b, self.FRAMES)
+        self.assertFalse(ok)
+
+    def test_complete_scsi_on_changed_frame_is_observed_and_unchanged_frames_are_ignored(self):
+        scsi_b = _index([_scsi_row(1, events=1), _scsi_row(2), _scsi_row(3), _scsi_row(4)])
+        rows = _ram_rows(2, 1, 3)
+        tracer.apply_scsi_correlation(rows, self._states({1, 3}), scsi_b, self.FRAMES)
+        self.assertEqual(_wram(rows)["scsi_correlation"], "OBSERVED")
+        self.assertEqual(_wram(rows)["scsi_update_frames"], [1])
+
+    def test_incomplete_scsi_on_a_changed_frame_is_unknown_not_observed(self):
+        scsi_b = _index([_scsi_row(1, events=1), _scsi_row(2), _scsi_row(3, incomplete=True), _scsi_row(4)])
+        rows = _ram_rows(2, 1, 3)
+        tracer.apply_scsi_correlation(rows, self._states({1, 3}), scsi_b, self.FRAMES)
+        self.assertEqual(_wram(rows)["scsi_correlation"], "UNKNOWN")
+        self.assertEqual(_wram(rows)["scsi_update_frames"], [])
+
+    def test_incomplete_scsi_on_an_unchanged_frame_does_not_make_the_region_unknown(self):
+        scsi_b = _index([_scsi_row(1, events=1), _scsi_row(2, incomplete=True), _scsi_row(3), _scsi_row(4)])
+        rows = _ram_rows(2, 1, 3)
+        tracer.apply_scsi_correlation(rows, self._states({1, 3}), scsi_b, self.FRAMES)
+        self.assertEqual(_wram(rows)["scsi_correlation"], "OBSERVED")
+
+    def test_no_scsi_notification_is_never_promoted_to_observed(self):
+        scsi_b = _index([_scsi_row(f) for f in range(1, self.FRAMES + 1)])
+        rows = _ram_rows(2, 1, 3)
+        tracer.apply_scsi_correlation(rows, self._states({1, 3}), scsi_b, self.FRAMES)
+        self.assertEqual(_wram(rows)["scsi_correlation"], "NONE_OBSERVED")
+
+    def test_state_mismatch_marks_every_present_region_unknown(self):
+        scsi = [_scsi_row(f, events=1) for f in range(1, self.FRAMES + 1)]
+        end = {"ram_deltas": _ram_rows(2, 1, 3)}
+        basis = tracer.compare_and_correlate(_stdout("full", self._states({1, 3}), scsi),
+                                             _stdout("scsi", self._states({1, 3}, pc=0x200), scsi), end, self.FRAMES)
+        self.assertEqual(basis["status"], "UNKNOWN")
+        self.assertEqual(_wram(end["ram_deltas"])["scsi_correlation"], "UNKNOWN")
+
+    def test_matching_runs_end_to_end_report_observed_with_run_b_frames(self):
+        scsi_a = [_scsi_row(1, events=1), _scsi_row(2), _scsi_row(3), _scsi_row(4)]
+        scsi_b = [_scsi_row(1, events=1), _scsi_row(2), _scsi_row(3), _scsi_row(4)]
+        end = {"ram_deltas": _ram_rows(2, 1, 3)}
+        basis = tracer.compare_and_correlate(_stdout("full", self._states({1, 3}), scsi_a),
+                                             _stdout("scsi", self._states({1, 3}), scsi_b), end, self.FRAMES)
+        self.assertEqual(basis["status"], "PASS")
+        self.assertEqual(_wram(end["ram_deltas"])["scsi_correlation"], "OBSERVED")
+
+    def test_cumulative_frames_keep_the_full_ram_accounting(self):
+        frames = 300
+        states = [_state_row(f, wram_changed=1) for f in range(1, frames + 1)]
+        scsi = [_scsi_row(f, events=1 if f % 10 == 0 else 0) for f in range(1, frames + 1)]
+        rows = _ram_rows(frames, 1, frames)
+        tracer.apply_scsi_correlation(rows, {f: states[f - 1] for f in range(1, frames + 1)},
+                                      {f: scsi[f - 1] for f in range(1, frames + 1)}, frames)
+        self.assertEqual(_wram(rows)["scsi_correlation"], "OBSERVED")
+        self.assertEqual(_wram(rows)["scsi_update_frames"], list(range(10, frames + 1, 10)))
+        self.assertEqual(_wram(rows)["updates"], frames)
+
+
 @unittest.skipUnless(hasattr(os, "getuid"), "POSIX ownership and permission modes are required")
 class PrivateTempRootTests(unittest.TestCase):
     def test_missing_root_is_created_private_and_reused(self):

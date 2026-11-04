@@ -347,6 +347,118 @@ def parse_records(stdout, require_ram_observation=True):
     return cap, events, end
 
 
+FRAME_STATE_KEYS = ("master_clock", "pc", "pc_bank", "a", "x", "y", "p", "sp", "cd_phase", "cd_signals",
+                    "cd_load_sector", "cd_load_count", "cd_irq_active", "cd_irq_enabled")
+
+
+def validate_state_row(row):
+    """Frame-boundary state from one run.  Only register, CD-register, hash and count fields."""
+    for key in FRAME_STATE_KEYS:
+        value = row.get(key)
+        if type(value) is not int or (key != "cd_phase" and value < 0):
+            raise ValueError(f"invalid state field {key}")
+    value = row.get("ram_hash")
+    if type(value) is not str or len(value) != 16 or any(ch not in "0123456789abcdef" for ch in value):
+        raise ValueError("invalid RAM state hash")
+    mpr = row.get("mpr")
+    if type(mpr) is not list or len(mpr) != 8 or any(type(v) is not int or not 0 <= v <= 0xFF for v in mpr):
+        raise ValueError("invalid MPR state")
+    changed = row.get("ram_changed")
+    if type(changed) is not dict or set(changed) != set(RAM_BANK_RANGES) or \
+            any(type(v) is not int or v < 0 for v in changed.values()):
+        raise ValueError("invalid RAM change counts")
+
+
+def parse_frame_records(stdout, expected_mode, frames):
+    """Parse per-frame STATE and SCSI rows.  Any missing, duplicate or malformed row fails closed."""
+    cap_row, states, scsi = None, {}, {}
+    for line in stdout.splitlines():
+        tag, separator, body = line.partition(" ")
+        if tag == "CAP":
+            cap_row = json.loads(body) if separator else None
+            continue
+        if tag not in {"STATE", "SCSI"}:
+            continue
+        if not separator:
+            raise ValueError(f"{tag} missing JSON body")
+        row = json.loads(body)
+        if type(row) is not dict:
+            raise ValueError(f"{tag} body is not an object")
+        frame = row.get("frame")
+        if type(frame) is not int or not 1 <= frame <= frames:
+            raise ValueError(f"{tag} frame is outside the run")
+        target = states if tag == "STATE" else scsi
+        if frame in target:
+            raise ValueError(f"duplicate {tag} frame")
+        target[frame] = row
+    if type(cap_row) is not dict or cap_row.get("trace_mode") != expected_mode or \
+            cap_row.get("cpu_event_notification") is not (expected_mode == "full"):
+        raise ValueError("trace mode does not match the requested run")
+    expected = set(range(1, frames + 1))
+    if set(states) != expected or set(scsi) != expected:
+        raise ValueError("missing per-frame records")
+    for row in states.values():
+        validate_state_row(row)
+    for row in scsi.values():
+        if type(row.get("events")) is not int or row["events"] < 0 or type(row.get("incomplete")) is not bool:
+            raise ValueError("invalid SCSI notification row")
+    return states, scsi
+
+
+def compare_runs(states_a, scsi_a, states_b, scsi_b, frames):
+    """Run A and Run B must agree on every frame-boundary state and SCSI notification count."""
+    for frame in range(1, frames + 1):
+        if states_a[frame] != states_b[frame]:
+            return False, f"frame {frame}: frame-boundary state differs between Run A and Run B"
+        if scsi_a[frame]["events"] != scsi_b[frame]["events"]:
+            return False, f"frame {frame}: SCSI notification count differs between runs"
+    return True, "Run A and Run B agree on every frame-boundary state and SCSI notification count"
+
+
+def apply_scsi_correlation(rows, states_a, scsi_b, frames):
+    """Set SCSI correlation from Run B only.  Unknown inputs yield UNKNOWN, never OBSERVED.
+
+    A frame counts toward a region only if Run A changed that region's bytes in that frame.
+    An incomplete Run B SCSI observation on such a frame makes the region UNKNOWN.  Output-ring
+    overflow is not an input here, and no CPU-trace entry is read.
+    """
+    for row in rows:
+        region = row.get("region")
+        row["scsi_update_frames"] = []
+        if states_a is None or scsi_b is None or row.get("availability") != "PRESENT":
+            row["scsi_correlation"] = "UNKNOWN"
+            continue
+        changed = [f for f in range(1, frames + 1) if states_a[f]["ram_changed"].get(region, 0)]
+        if any(scsi_b[f]["incomplete"] for f in changed):
+            row["scsi_correlation"] = "UNKNOWN"
+            continue
+        hits = [f for f in changed if scsi_b[f]["events"] > 0]
+        row["scsi_correlation"] = "OBSERVED" if hits else "NONE_OBSERVED"
+        row["scsi_update_frames"] = hits
+    validate_ram_deltas(rows, frames)
+
+
+def compare_and_correlate(stdout_a, stdout_b, end, frames):
+    """Combine Run A (full) and Run B (SCSI-only).  Any failure marks correlation UNKNOWN."""
+    states_a = scsi_b = None
+    try:
+        states_a, scsi_a = parse_frame_records(stdout_a, "full", frames)
+        states_b, scsi_b = parse_frame_records(stdout_b, "scsi", frames)
+        comparable, reason = compare_runs(states_a, scsi_a, states_b, scsi_b, frames)
+    except (ValueError, TypeError, KeyError, json.JSONDecodeError) as error:
+        comparable, reason = False, f"dual-run rejected: {error}"
+    if not comparable:
+        states_a = scsi_b = None
+    try:
+        apply_scsi_correlation(end["ram_deltas"], states_a, scsi_b, frames)
+    except (ValueError, TypeError, KeyError) as error:
+        for row in end.get("ram_deltas", []):
+            row["scsi_correlation"], row["scsi_update_frames"] = "UNKNOWN", []
+        comparable, reason = False, f"correlation rejected: {error}"
+    return {"status": "PASS" if comparable else "UNKNOWN", "reason": reason, "frames": frames,
+            "run_a": "full (CPU+SCSI+RAM)", "run_b": "scsi-only (SCSI notification, CPU trace disabled)"}
+
+
 def trace(args):
     if not 1 <= args.frames <= MAX_FRAMES or not 1 <= args.events <= MAX_EVENTS:
         return {"status": "FAIL", "reason": f"limits are frames 1..{MAX_FRAMES}, events 1..{MAX_EVENTS}",
@@ -405,8 +517,21 @@ def trace(args):
         except (ValueError, TypeError, json.JSONDecodeError) as error:
             log.update(status="FAIL", reason=f"trace rejected: {error}", evidence="NOT_RUN")
             return log
+        dual = {"status": "NOT_RUN", "reason": "RAM observation disabled: no SCSI correlation claimed"}
+        if args.observe_ram:
+            # Run B: a separate process, CPU trace category disabled, so Run A's shared
+            # bounded buffer never decides the SCSI correlation.
+            run_b = run_job([str(probe), str(rom), cue, str(args.frames), str(args.events),
+                             str(args.run_start_frame or 0), str(args.run_hold_frames or 0), "1", "scsi"],
+                            job, args.timeout)
+            if run_b["status"] or run_b["exit_code"] != 0:
+                log.update(status="FAIL", reason="SCSI-only run did not complete", evidence="NOT_RUN")
+                return log
+            dual = compare_and_correlate(result["stdout"], run_b["stdout"], end, args.frames)
+            dual["elapsed_s_run_a"], dual["elapsed_s_run_b"] = result["elapsed_s"], run_b["elapsed_s"]
         log.update(status="PASS", reason="bounded normal-frame trace completed", evidence="REAL_GEARGRAFX_CORE",
-                   elapsed_s=result["elapsed_s"], capability=cap, events=events, summary=end)
+                   elapsed_s=result["elapsed_s"], capability=cap, events=events, summary=end,
+                   scsi_correlation_basis=dual)
         return log
     finally:
         cleaned, cleanup_reason = cleanup_tracked_job_dir(job, job_identity)
