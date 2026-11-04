@@ -39,11 +39,12 @@ PS_HOSTS = {"powershell", "pwsh"}
 PS_RM = {"remove-item", "ri", "del", "erase"}
 # PowerShell cmdlets that start a process or a job from their arguments (their arguments are analysed as a command).
 PS_LAUNCH_NAMES = {"start-process", "start", "saps", "invoke-item", "ii", "invoke-command", "icm", "start-job",
-                   "sajb", "start-threadjob"}
+                   "sajb", "start-threadjob", "invoke-wmimethod", "invoke-cimmethod"}
 LAUNCHER_MAX_WORDS = 256
 # PowerShell process launchers whose argument expression is not inspected: a launcher with expression syntax
 # (comma arrays, parentheses, @(), scriptblocks, variables) is an execution form the guard cannot parse, so it is denied.
-PS_PROC_LAUNCH_RE = re.compile(r"(?i)(?<![\w-])(start-process|start|saps|invoke-item|ii)(?![\w-])")
+PS_PROC_LAUNCH_RE = re.compile(
+    r"(?i)(?<![\w-])(start-process|start|saps|invoke-item|ii|invoke-wmimethod|invoke-cimmethod)(?![\w-])")
 EXPR_SYNTAX_RE = re.compile(r"[,()@{}$]")
 CD_NAMES = {"cd", "chdir", "set-location", "sl"}
 # Always denied: destructive by nature, or cannot be inspected.
@@ -840,6 +841,11 @@ def analyze_argv(words, ctx, ps, depth):
             return
         if SUBST in w0:
             raise Deny("command-word", "command substitution in command position")
+        if ps and len(words) == 1 and w0.startswith("$") and not any(ch in w0 for ch in "*?[]{}`~"):
+            # A lone PowerShell variable is an expression, not a command ($_.Name in a scriptblock body). A variable
+            # with arguments ($RM -rf dir) stays a command position and is refused below.
+            words = words[1:]
+            continue
         if w0 not in ("[", "[[") and any(ch in w0 for ch in "$*?[]{}`~"):
             raise Deny("command-word", "unexpanded word in command position")
         # A backslash before a plain character only quotes it: \rm is rm.
@@ -876,7 +882,14 @@ def analyze_argv(words, ctx, ps, depth):
         if len(tokens) > LAUNCHER_MAX_WORDS:
             raise Deny("launcher", "launcher with too many arguments is not inspected")
         for k in range(len(tokens)):
-            analyze_text(" ".join(tokens[k:]), ctx.copy(), True, depth + 1)
+            try:
+                analyze_text(" ".join(tokens[k:]), ctx.copy(), True, depth + 1)
+            except Deny as e:
+                # A path fragment split out of a quoted path with a space ("C:\Program Files\app.exe") is a backslash
+                # word that is no command. Only that refusal is skipped; every other candidate is still analysed.
+                if e.kind == "command-word" and "\\" in tokens[k]:
+                    continue
+                raise
     if name in EVAL_LIKE and any(SUBST in a for a in args):
         raise Deny("substitution", "command substitution passed to a shell, eval or source is not inspected")
     if name in WRITE_NAMES or (name == "sed" and any(

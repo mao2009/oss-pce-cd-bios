@@ -916,6 +916,23 @@ class LauncherClassTests(unittest.TestCase):
                 self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
         self.assertEqual(verdict("Start-Process notepad file.txt", tool="PowerShell"), "ALLOW")
 
+    def test_wmi_and_cim_process_launchers_are_checked(self):
+        for cmd in ["Invoke-WmiMethod -Class Win32_Process -Name Create -ArgumentList 'cmd /c rd /s /q C:\\x'",
+                    "Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='rm -rf /'}",
+                    "saps powershell -ArgumentList -c,Remove-Item,-Recurse,-Force,/",
+                    "start notepad @args"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
+
+    def test_powershell_variables_in_scriptblocks_and_quoted_paths_are_allowed(self):
+        for cmd in ["Get-Process | ForEach-Object { $_.Name }", "Get-ChildItem | ForEach-Object { $_.FullName }",
+                    'Start-Process "C:\\Program Files\\app.exe"', '"C:\\Program Files\\app.exe" foo']:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "ALLOW")
+
+    def test_launcher_argument_list_is_capped(self):
+        self.assertEqual(verdict("Start-Process notepad " + " ".join(["x"] * 300), tool="PowerShell"), "DENY")
+
     def test_then_keyword_is_a_command_position(self):
         self.assertEqual(verdict("if true; then rm -rf /; fi"), "DENY")
 
@@ -974,12 +991,21 @@ class LauncherMutationTests(unittest.TestCase):
         "PowerShell start alias removed": ('{"start-process", "start", "saps"', '{"start-process", "saps"'),
         "PowerShell ii alias removed": ('"invoke-item", "ii", "invoke-command"', '"invoke-item", "invoke-command"'),
         "then keyword removed": ('"if", "then", "else"', '"if", "else"'),
+        "PowerShell variable value rule removed": ('        if ps and len(words) == 1 and w0.startswith("$") and not any(ch in w0 for ch in "*?[]{}`~"):',
+                                                   '        if False:'),
+        "saps removed from the expression launcher pattern": ('(start-process|start|saps|invoke-item|ii|',
+                                                              '(start-process|start|invoke-item|ii|'),
+        "@ removed from the expression syntax": ('EXPR_SYNTAX_RE = re.compile(r"[,()@{}$]")',
+                                                 'EXPR_SYNTAX_RE = re.compile(r"[,(){}$]")'),
+        "launcher argument cap removed": ('        if len(tokens) > LAUNCHER_MAX_WORDS:', '        if False:'),
+        "launcher path-fragment skip removed": ('                if e.kind == "command-word" and "\\\\" in tokens[k]:',
+                                                '                if False:'),
         "PowerShell launcher expression rule removed": ('    if ps and PS_PROC_LAUNCH_RE.search(text) and EXPR_SYNTAX_RE.search(text):',
                                                         '    if False:'),
         "saps alias removed": ('"start", "saps", "invoke-item"', '"start", "invoke-item"'),
         "Invoke-Item alias removed": ('"saps", "invoke-item", "ii"', '"saps", "ii"'),
         "Start-Job alias removed": ('"icm", "start-job",', '"icm",'),
-        "start-threadjob alias removed": ('"sajb", "start-threadjob"}', '"sajb"}'),
+        "start-threadjob alias removed": ('"sajb", "start-threadjob", ', '"sajb", '),
         "brace split applied to Bash too": ('(ps and c in "{}")', '(c in "{}")'),
         "coproc handling removed": ('        if w0.lower() == "coproc":', '        if False:'),
         "PowerShell scriptblock braces not split": ('        if c in ";&|()\\n" or (ps and c in "{}"):', '        if c in ";&|()\\n":'),
