@@ -659,6 +659,10 @@ def python_rule(args):
     for arg in args:
         if "-" in arg and any(ch in arg for ch in "{}*?[]"):
             raise Deny("unexpanded", "python argument with a dash and a brace or glob character is not inspected")
+        # A shell variable or substitution anywhere in a python argument can supply the "-" or the "c" of an
+        # option (D=-c; python3 $D"..."; python3 -$Dopen(...)). Its value is not visible here, so it is refused.
+        if "$" in arg or "`" in arg or SUBST in arg:
+            raise Deny("unexpanded", "python argument with an unexpanded variable or substitution is not inspected")
     for code in python_c_codes(args):
         # The guard does not expand shell variables or run substitutions, so their value cannot be inspected.
         if "$" in code or "`" in code or SUBST in code:

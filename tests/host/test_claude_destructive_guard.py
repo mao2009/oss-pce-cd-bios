@@ -871,6 +871,45 @@ class PythonCAttachedTests(unittest.TestCase):
                 self.assertEqual(self._verdict(cmd), "DENY")
         self.assertEqual(self._verdict("python3 -m unittest discover -s tests/host -v"), "ALLOW")
 
+    def test_variable_supplied_option_or_code_is_denied(self):
+        # The value of a shell variable is not visible to the guard, so a python argument that contains one is refused.
+        for cmd in ["D=-c; python3 $D\"open('/tmp/zz','w').close()\"",
+                    "D=-; python3 ${D}copen\"x\"",
+                    "D=-; python3 {$D,}c\"open('/tmp/zz','w').close()\"",
+                    "python3 '-$Dopen(\"x\",\"w\")'"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._verdict(cmd), "DENY")
+
+    def test_python_regression_on_ordinary_commands(self):
+        # Twenty ordinary commands (regression corpus). The expected verdicts are the measured hotfix verdicts.
+        # The DENY rows are known over-denials (false positives), recorded here and tracked for Issue X.
+        corpus = [
+            ("python3 -m unittest discover -s tests/host -v", "ALLOW"),
+            ("python3 -m unittest discover -s tests/host -p 'test_*.py'", "ALLOW"),
+            ("python3 -m unittest discover -s tests/host -p 'test-*.py'", "DENY"),       # FP: dash and glob
+            ("python3 -m pytest -q tests/", "ALLOW"),
+            ("python3 -m pytest tests/test-*.py", "DENY"),                               # FP: dash and glob
+            ("python3 -c \"print(1 + 1)\"", "ALLOW"),
+            ("python3 -c \"print(1 - 2)\"", "ALLOW"),
+            ("python3 -c \"x=[1,2]; print(x[-1])\"", "DENY"),                            # FP: negative index
+            ("python3 -c \"import json; print(json.dumps({'a': 1}))\"", "ALLOW"),
+            ("python3 -c \"import json; print(json.dumps({'a': -1}))\"", "DENY"),        # FP: dash in code
+            ("python3 -c \"d = {'a-b': 1}; print(d)\"", "DENY"),                         # FP: hyphen in key
+            ("python3 -c \"print('a-b'[0:1])\"", "DENY"),                                 # FP: hyphen and slice
+            ("python3 -c \"import re; print(re.findall(r'[a-z]-x', 'a-x'))\"", "DENY"),   # FP: dash and brackets
+            ("python3 -c \"import sys; print(sys.version)\"", "ALLOW"),
+            ("python3 -c \"import sys; print(sys.executable)\"", "DENY"),                # FP: 'exec' inside a word
+            ("python3 -m json.tool --indent 2 data.json", "ALLOW"),
+            ("python3 -m http.server --bind 127.0.0.1 8000", "ALLOW"),
+            ("python3 -m compileall -q src", "ALLOW"),
+            ("python3 -m pip install -r requirements-dev.txt", "ALLOW"),
+            ("python3 scripts/check-links.py", "ALLOW"),
+        ]
+        self.assertEqual(len(corpus), 20)
+        for cmd, expected in corpus:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._verdict(cmd), expected)
+
     def test_unexpanded_code_is_denied(self):
         # The guard cannot see the value of a shell variable or a substitution used as the code of -c.
         for cmd in ["X=\"open('/tmp/zz','w').close()\"; python3 -c \"$X\"",
@@ -901,15 +940,18 @@ class PythonCAttachedMutationTests(unittest.TestCase):
         "only the first -c is checked": (
             "    for code in python_c_codes(args):",
             "    for code in python_c_codes(args)[:1]:"),
-        "unexpanded code not refused": (
-            "if \"$\" in code or \"`\" in code or SUBST in code:",
-            "if False:"),
+        # Note: the code-level "$" check is now redundant with the argument-level check below (code is an argument),
+        # so a mutant of it would be equivalent and is not used here. The argument-level mutant covers the same forms.
         "brace and glob argument with a dash not refused": (
             "if \"-\" in arg and any(ch in arg for ch in \"{}*?[]\"):",
             "if False:"),
+        "variable in a python argument not refused": (
+            "if \"$\" in arg or \"`\" in arg or SUBST in arg:",
+            "if False:"),
     }
     DETECTING = ["test_attached_write_forms_are_denied", "test_two_c_options_check_every_code",
-                 "test_unexpanded_code_is_denied", "test_brace_expansion_that_builds_a_c_option_is_denied"]
+                 "test_unexpanded_code_is_denied", "test_brace_expansion_that_builds_a_c_option_is_denied",
+                 "test_variable_supplied_option_or_code_is_denied"]
 
     def _run(self, hook_text):
         with tempfile.TemporaryDirectory() as td:
