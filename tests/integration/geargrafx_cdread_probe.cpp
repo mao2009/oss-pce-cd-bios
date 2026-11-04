@@ -60,6 +60,7 @@ int main(int argc, char** argv) {
     if (labels.count("reset_ready")) halts = {"reset_ready", "reset_unexpected_interrupt"};
     // Issue #501: the DEV-only internal path's media-check halt (absent from every other label file).
     if (labels.count("dev_media_halt")) halts.push_back("dev_media_halt");
+    if (labels.count("dev_selection_halt")) halts.push_back("dev_selection_halt");
     for (const auto& needed : halts)
         if (!labels.count(needed)) return 2;
 
