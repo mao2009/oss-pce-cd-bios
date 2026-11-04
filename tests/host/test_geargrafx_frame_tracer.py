@@ -380,6 +380,18 @@ class DualRunCorrelationTests(unittest.TestCase):
         tracer.apply_scsi_correlation(rows, self._states({1, 3}), scsi_b, self.FRAMES)
         self.assertEqual(_wram(rows)["scsi_correlation"], "NONE_OBSERVED")
 
+    def test_evicted_run_a_scsi_count_does_not_block_a_complete_run_b(self):
+        # Run A shares its bounded buffer with CPU entries: its zero count is an incomplete
+        # observation, not disagreement.  The correlation is still taken from complete Run B.
+        scsi_a = [_scsi_row(1, events=0, incomplete=True), _scsi_row(2), _scsi_row(3), _scsi_row(4)]
+        scsi_b = [_scsi_row(1, events=1), _scsi_row(2), _scsi_row(3), _scsi_row(4)]
+        end = {"ram_deltas": _ram_rows(2, 1, 3)}
+        basis = tracer.compare_and_correlate(_stdout("full", self._states({1, 3}), scsi_a),
+                                             _stdout("scsi", self._states({1, 3}), scsi_b), end, self.FRAMES)
+        self.assertEqual(basis["status"], "PASS")
+        self.assertEqual(_wram(end["ram_deltas"])["scsi_correlation"], "OBSERVED")
+        self.assertEqual(_wram(end["ram_deltas"])["scsi_update_frames"], [1])
+
     def test_state_mismatch_marks_every_present_region_unknown(self):
         scsi = [_scsi_row(f, events=1) for f in range(1, self.FRAMES + 1)]
         end = {"ram_deltas": _ram_rows(2, 1, 3)}

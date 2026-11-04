@@ -406,12 +406,18 @@ def parse_frame_records(stdout, expected_mode, frames):
 
 
 def compare_runs(states_a, scsi_a, states_b, scsi_b, frames):
-    """Run A and Run B must agree on every frame-boundary state and SCSI notification count."""
+    """Run A and Run B must agree on every frame-boundary state; SCSI counts are compared only where both are complete.
+
+    Run A shares a bounded buffer with CPU entries, so its SCSI count can be evicted.  An
+    incomplete count is therefore not evidence of disagreement and is not compared.  The
+    correlation itself is always taken from Run B alone.
+    """
     for frame in range(1, frames + 1):
         if states_a[frame] != states_b[frame]:
             return False, f"frame {frame}: frame-boundary state differs between Run A and Run B"
-        if scsi_a[frame]["events"] != scsi_b[frame]["events"]:
-            return False, f"frame {frame}: SCSI notification count differs between runs"
+        row_a, row_b = scsi_a[frame], scsi_b[frame]
+        if not row_a["incomplete"] and not row_b["incomplete"] and row_a["events"] != row_b["events"]:
+            return False, f"frame {frame}: SCSI notification count differs between complete runs"
     return True, "Run A and Run B agree on every frame-boundary state and SCSI notification count"
 
 
@@ -421,6 +427,9 @@ def apply_scsi_correlation(rows, states_a, scsi_b, frames):
     A frame counts toward a region only if Run A changed that region's bytes in that frame.
     An incomplete Run B SCSI observation on such a frame makes the region UNKNOWN.  Output-ring
     overflow is not an input here, and no CPU-trace entry is read.
+
+    OBSERVED means a SCSI notification occurred in the same frame as the RAM change.  It is a
+    temporal coincidence reported per frame, not a claim of causation.
     """
     for row in rows:
         region = row.get("region")
