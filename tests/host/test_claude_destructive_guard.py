@@ -875,6 +875,14 @@ class LauncherClassTests(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd), "ALLOW")
 
+    def test_powershell_scriptblocks_and_keywords_are_checked(self):
+        for cmd in ["FUNCTION f { Remove-Item -Recurse -Force / }; f", "try { Remove-Item -Recurse -Force / }",
+                    "Get-Item / | ForEach-Object { Remove-Item -Recurse -Force $_ }",
+                    "Invoke-Command { Remove-Item -Recurse -Force / }", "& { Remove-Item -Recurse -Force / }",
+                    "Start-Job -ScriptBlock { Remove-Item -Recurse -Force / }"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
+
     def test_unclosed_quote_in_the_first_powershell_piece_is_denied(self):
         self.assertEqual(verdict('"echo hi', tool="PowerShell"), "DENY")
 
@@ -913,8 +921,9 @@ class LauncherMutationTests(unittest.TestCase):
     temporary copy of the hook and this test module in a temporary folder; no repository file is changed."""
 
     MUTANTS = {
-        "function keyword handling removed": ('        if w0 == "function":', '        if False:'),
-        "coproc handling removed": ('        if w0 == "coproc":', '        if False:'),
+        "function keyword handling removed": ('        if w0.lower() == "function":', '        if False:'),
+        "coproc handling removed": ('        if w0.lower() == "coproc":', '        if False:'),
+        "PowerShell scriptblock braces not split": ('        if c in ";&|()\\n" or (ps and c in "{}"):', '        if c in ";&|()\\n":'),
         "coproc NAME reading removed": ('            if len(rest) >= 2:', '            if False:'),
         "POSIX escape unescaping removed": ('            w0 = unescaped', '            pass'),
         "fused function name check removed": ('            if len(words) < 2 or any(ch in words[1] for ch in "{}()"):',
@@ -932,7 +941,7 @@ class LauncherMutationTests(unittest.TestCase):
         "trailing dot and space normalisation removed": ('        name = name.rstrip(". ") or name', '        pass'),
         "timeout attached short value taken as next word": ('takes_next = j == len(a) - 1', 'takes_next = True'),
         "PowerShell head ignores a leading tab": ('            if m:\n                head', '            if m and not seg.startswith("\\t"):\n                head'),
-        "timeout long value consumes no extra word": ('i += 2 if len(hits) == 1 and hits[0] in TIMEOUT_LONG_VALUE else 1',
+        "timeout long value consumes no extra word":('i += 2 if len(hits) == 1 and hits[0] in TIMEOUT_LONG_VALUE else 1',
                                                       'i += 2'),
         "timeout option-like suffixes removed": ('        if c and c[0].startswith("-"):', '        if False:'),
         "timeout long option prefixes removed":('            hits = [o for o in TIMEOUT_LONG if o.startswith(a[2:])] if "=" not in a else []',

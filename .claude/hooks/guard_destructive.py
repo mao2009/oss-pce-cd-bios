@@ -540,7 +540,9 @@ def split_segments(text, ps=False):
                     k += 1
                 if k < n and text[k] in "\"'$":
                     raise Deny("powershell", "call operator with a string or variable is not inspected")
-        if c in ";&|()\n":
+        # PowerShell scriptblocks ({ ... }) are command bodies wherever they appear (try, ForEach-Object, Invoke-Command,
+        # Start-Job -ScriptBlock). Each block boundary starts a segment, so the commands inside are analysed.
+        if c in ";&|()\n" or (ps and c in "{}"):
             segs.append("".join(cur))
             redirs.append(rd)
             cur, rd = [], []
@@ -800,7 +802,7 @@ def analyze_argv(words, ctx, ps, depth):
         if not words:
             return
         w0 = words[0]
-        if w0 == "function":
+        if w0.lower() == "function":
             # X3a: function NAME { body }. The body's commands are in command position, so the words after the
             # name are analysed as ordinary words. A name fused with a brace or parenthesis (f{rm, f(), or no name
             # at all) cannot be split reliably: fail closed.
@@ -808,7 +810,7 @@ def analyze_argv(words, ctx, ps, depth):
                 raise Deny("function", "function keyword without a plain name is not resolvable")
             words = words[2:]
             continue
-        if w0 == "coproc":
+        if w0.lower() == "coproc":
             # X3a: coproc CMD ... or coproc NAME CMD ... Both readings are analysed, so the command is checked either way.
             rest = words[1:]
             if not rest:
