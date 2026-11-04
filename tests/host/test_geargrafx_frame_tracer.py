@@ -354,6 +354,24 @@ class DualRunCorrelationTests(unittest.TestCase):
         ok, _ = tracer.compare_runs(self._states({1}), scsi, self._states({1}), scsi_b, self.FRAMES)
         self.assertFalse(ok)
 
+    def test_state_mismatch_reports_first_differing_field_and_both_values(self):
+        scsi = [_scsi_row(f) for f in range(1, self.FRAMES + 1)]
+        ok, reason = tracer.compare_runs(self._states({1}), _index(scsi), self._states({1}, pc=0x200),
+                                         _index(scsi), self.FRAMES)
+        self.assertFalse(ok)
+        self.assertIn("frame 1", reason)
+        self.assertIn("field pc run A=256 run B=512", reason)
+        mpr_b = _state_row(1)
+        mpr_b["mpr"][2] = 0x11
+        ok, reason = tracer.compare_runs({1: _state_row(1)}, {1: _scsi_row(1)}, {1: mpr_b}, {1: _scsi_row(1)}, 1)
+        self.assertFalse(ok)
+        self.assertIn("field mpr[2] run A=250 run B=17", reason)
+        digest_b = _state_row(1)
+        digest_b["ram_hash"] = "f" * 16
+        ok, reason = tracer.compare_runs({1: _state_row(1)}, {1: _scsi_row(1)}, {1: digest_b}, {1: _scsi_row(1)}, 1)
+        self.assertFalse(ok)
+        self.assertIn("field ram_hash run A=0000000000000000 run B=ffffffffffffffff", reason)
+
     def test_complete_scsi_on_changed_frame_is_observed_and_unchanged_frames_are_ignored(self):
         scsi_b = _index([_scsi_row(1, events=1), _scsi_row(2), _scsi_row(3), _scsi_row(4)])
         rows = _ram_rows(2, 1, 3)

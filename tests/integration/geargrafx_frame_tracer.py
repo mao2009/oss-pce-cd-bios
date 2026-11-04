@@ -405,6 +405,28 @@ def parse_frame_records(stdout, expected_mode, frames):
     return states, scsi
 
 
+def first_state_difference(row_a, row_b):
+    """Diagnostic text for the first differing field.  Shows only integers, enums and the RAM digest.
+
+    Used only to explain a mismatch; the comparison itself is row equality (compare_runs).
+    """
+    for key in sorted(set(row_a) | set(row_b)):
+        value_a, value_b = row_a.get(key), row_b.get(key)
+        if value_a == value_b:
+            continue
+        if key in ("mpr", "ram_changed") and isinstance(value_a, (list, dict)) and isinstance(value_b, (list, dict)):
+            if isinstance(value_a, list):
+                for index, (x, y) in enumerate(zip(value_a, value_b)):
+                    if x != y:
+                        return f"field {key}[{index}] run A={x} run B={y}"
+            else:
+                for name in sorted(set(value_a) | set(value_b)):
+                    if value_a.get(name) != value_b.get(name):
+                        return f"field {key}[{name}] run A={value_a.get(name)} run B={value_b.get(name)}"
+        return f"field {key} run A={value_a} run B={value_b}"
+    return "no differing field found"
+
+
 def compare_runs(states_a, scsi_a, states_b, scsi_b, frames):
     """Run A and Run B must agree on every frame-boundary state; SCSI counts are compared only where both are complete.
 
@@ -414,7 +436,8 @@ def compare_runs(states_a, scsi_a, states_b, scsi_b, frames):
     """
     for frame in range(1, frames + 1):
         if states_a[frame] != states_b[frame]:
-            return False, f"frame {frame}: frame-boundary state differs between Run A and Run B"
+            return False, f"frame {frame}: frame-boundary state differs between Run A and Run B: " + \
+                first_state_difference(states_a[frame], states_b[frame])
         row_a, row_b = scsi_a[frame], scsi_b[frame]
         if not row_a["incomplete"] and not row_b["incomplete"] and row_a["events"] != row_b["events"]:
             return False, f"frame {frame}: SCSI notification count differs between complete runs"
