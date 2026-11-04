@@ -1,7 +1,7 @@
 PYTHON ?= python3
 MODE ?= debug
 
-.PHONY: setup build test test-real-core host-test check clean release setup-geargrafx integration integration-test
+.PHONY: setup build test test-real-core host-test check clean release setup-geargrafx integration integration-test irq-postaccept-boundary block-transfer-matrix
 
 setup:
 	$(PYTHON) tools/setup.py all
@@ -27,6 +27,11 @@ test-real-core: build
 integration-test:
 	OSS_PCE_REQUIRE_CC65=1 $(PYTHON) -m unittest discover -s tests/integration -p 'test_*.py' -v
 
+# Issue #366: manual debugger-only synthetic IRQ acceptance -> handler boundary proof.
+# Not part of the ordinary libretro real-core gate: it needs the debugger step API.
+irq-postaccept-boundary:
+	$(PYTHON) tests/integration/geargrafx_irq_postaccept_boundary.py
+
 # Local host-only run: no build, no integration. cc65-dependent tests SKIP with a reason when cc65 is absent;
 # the required gate is `make test`.
 host-test:
@@ -42,11 +47,17 @@ integration: build
 	$(PYTHON) tests/integration/geargrafx_st_bypass.py
 	$(PYTHON) tests/integration/geargrafx_bcdbin.py
 	$(MAKE) block-write-guard
+	$(MAKE) block-transfer-matrix
 
 # Issue #367: free-running pre-write refusal via a verification-only core patch (synthetic media). Runs in `integration`.
 .PHONY: block-write-guard
 block-write-guard:
 	$(PYTHON) tests/integration/geargrafx_block_write_guard.py
+
+# Issue #367: pinned multi-byte block transfer preflight matrix on Geargrafx b49ae82. Runs in `integration`.
+.PHONY: block-transfer-matrix
+block-transfer-matrix:
+	$(PYTHON) tests/integration/geargrafx_block_transfer_matrix.py
 
 check:
 	$(PYTHON) tools/contracts.py
@@ -160,6 +171,10 @@ dev-cd-base-integration: dev-rom
 # Opt-in Issue #6 isolated trace harness: real-core positive + classified negatives on the CD read ROM.
 dev-trace-integration: dev-cdread
 	$(PYTHON) tests/integration/geargrafx_trace.py --mode "$(MODE)"
+.PHONY: dev-frame-tracer-cd-integration
+# Issue #603: opt-in real-core bridge of the metadata-only RAM tracer and original synthetic CD-read diagnostic.
+dev-frame-tracer-cd-integration: dev-cdread
+	$(PYTHON) tests/integration/geargrafx_frame_tracer_cd.py --mode "$(MODE)"
 .PHONY: dev-cdda dev-cdda-integration dev-cdda-scenarios-integration
 # Opt-in Issue #15 CD-DA observation diagnostic (raw SCSI $D8/$DA/$D9/$DD, not the System Card CD_PLAY API).
 dev-cdda: dev-rom

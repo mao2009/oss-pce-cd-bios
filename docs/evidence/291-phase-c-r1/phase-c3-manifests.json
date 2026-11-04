@@ -1,0 +1,488 @@
+{
+  "label": "C3 Test 5 isolation manifests (per run directory)",
+  "runs": {
+    "default_off_det_r1": {
+      "before_files": {
+        "geargrafx.exe": {
+          "sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
+          "source": "build-det"
+        },
+        "SDL3.dll": {
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad",
+          "source": "pinned build/bin (read-only copy)"
+        }
+      },
+      "before_matches_after_for_exe_dll": true,
+      "after_listing": {
+        "config.ini": {
+          "size": 26465,
+          "sha256": "f6a9e84de27fb67b19c94db91fef3e823f71d0e3b8f6f11eed0390a087ae33da"
+        },
+        "geargrafx.exe": {
+          "size": 15476837,
+          "sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d"
+        },
+        "SDL3.dll": {
+          "size": 4558193,
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad"
+        },
+        "stderr.txt": {
+          "size": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "new_files_after_run": [
+        "config.ini",
+        "stderr.txt"
+      ],
+      "new_files_outside_allowed": []
+    },
+    "default_off_det_r2": {
+      "before_files": {
+        "geargrafx.exe": {
+          "sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
+          "source": "build-det"
+        },
+        "SDL3.dll": {
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad",
+          "source": "pinned build/bin (read-only copy)"
+        }
+      },
+      "before_matches_after_for_exe_dll": true,
+      "after_listing": {
+        "config.ini": {
+          "size": 26465,
+          "sha256": "5331b8a935ea767703c8a42b0bd58b38737376fa0b249316c068088ff2c7fa54"
+        },
+        "geargrafx.exe": {
+          "size": 15476837,
+          "sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d"
+        },
+        "SDL3.dll": {
+          "size": 4558193,
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad"
+        },
+        "stderr.txt": {
+          "size": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "new_files_after_run": [
+        "config.ini",
+        "stderr.txt"
+      ],
+      "new_files_outside_allowed": []
+    },
+    "det_S1_r1": {
+      "before_files": {
+        "geargrafx.exe": {
+          "sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
+          "source": "build-det"
+        },
+        "SDL3.dll": {
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad",
+          "source": "pinned build/bin (read-only copy)"
+        }
+      },
+      "before_matches_after_for_exe_dll": true,
+      "after_listing": {
+        "config.ini": {
+          "size": 26402,
+          "sha256": "d10c2ea1a98bec4c1fc282b2fa6452191a342bd30cf20187e2d296e1df0eff6c"
+        },
+        "geargrafx.exe": {
+          "size": 15476837,
+          "sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d"
+        },
+        "SDL3.dll": {
+          "size": 4558193,
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad"
+        },
+        "stderr.txt": {
+          "size": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "new_files_after_run": [
+        "config.ini",
+        "stderr.txt"
+      ],
+      "new_files_outside_allowed": []
+    },
+    "det_S1_r2": {
+      "before_files": {
+        "geargrafx.exe": {
+          "sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
+          "source": "build-det"
+        },
+        "SDL3.dll": {
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad",
+          "source": "pinned build/bin (read-only copy)"
+        }
+      },
+      "before_matches_after_for_exe_dll": true,
+      "after_listing": {
+        "config.ini": {
+          "size": 26402,
+          "sha256": "417f835ab038232a31e5d363fe336f0cdba089e4d13c321658a5c76e94c8b36a"
+        },
+        "geargrafx.exe": {
+          "size": 15476837,
+          "sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d"
+        },
+        "SDL3.dll": {
+          "size": 4558193,
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad"
+        },
+        "stderr.txt": {
+          "size": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "new_files_after_run": [
+        "config.ini",
+        "stderr.txt"
+      ],
+      "new_files_outside_allowed": []
+    },
+    "det_S1_r3": {
+      "before_files": {
+        "geargrafx.exe": {
+          "sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
+          "source": "build-det"
+        },
+        "SDL3.dll": {
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad",
+          "source": "pinned build/bin (read-only copy)"
+        }
+      },
+      "before_matches_after_for_exe_dll": true,
+      "after_listing": {
+        "config.ini": {
+          "size": 26402,
+          "sha256": "8fac55bd87e87de6037e2a4a98ab4bbbedec9f1c3b501e813d10c7943c32bf9b"
+        },
+        "geargrafx.exe": {
+          "size": 15476837,
+          "sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d"
+        },
+        "SDL3.dll": {
+          "size": 4558193,
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad"
+        },
+        "stderr.txt": {
+          "size": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "new_files_after_run": [
+        "config.ini",
+        "stderr.txt"
+      ],
+      "new_files_outside_allowed": []
+    },
+    "det_S1_up_r1": {
+      "before_files": {
+        "geargrafx.exe": {
+          "sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
+          "source": "build-det"
+        },
+        "SDL3.dll": {
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad",
+          "source": "pinned build/bin (read-only copy)"
+        }
+      },
+      "before_matches_after_for_exe_dll": true,
+      "after_listing": {
+        "config.ini": {
+          "size": 26423,
+          "sha256": "d4a45760723da3ff66eeab8243f13da09cc89df059aec0f6f1e74d7003012342"
+        },
+        "geargrafx.exe": {
+          "size": 15476837,
+          "sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d"
+        },
+        "SDL3.dll": {
+          "size": 4558193,
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad"
+        },
+        "stderr.txt": {
+          "size": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "new_files_after_run": [
+        "config.ini",
+        "stderr.txt"
+      ],
+      "new_files_outside_allowed": []
+    },
+    "det_S2_r1": {
+      "before_files": {
+        "geargrafx.exe": {
+          "sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
+          "source": "build-det"
+        },
+        "SDL3.dll": {
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad",
+          "source": "pinned build/bin (read-only copy)"
+        }
+      },
+      "before_matches_after_for_exe_dll": true,
+      "after_listing": {
+        "config.ini": {
+          "size": 26402,
+          "sha256": "84c0a5ba588fde3480626dd8a188be0ae5802a7ab0f88f2466fc6af02b8a8263"
+        },
+        "geargrafx.exe": {
+          "size": 15476837,
+          "sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d"
+        },
+        "SDL3.dll": {
+          "size": 4558193,
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad"
+        },
+        "stderr.txt": {
+          "size": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "new_files_after_run": [
+        "config.ini",
+        "stderr.txt"
+      ],
+      "new_files_outside_allowed": []
+    },
+    "det_S2_r2": {
+      "before_files": {
+        "geargrafx.exe": {
+          "sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
+          "source": "build-det"
+        },
+        "SDL3.dll": {
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad",
+          "source": "pinned build/bin (read-only copy)"
+        }
+      },
+      "before_matches_after_for_exe_dll": true,
+      "after_listing": {
+        "config.ini": {
+          "size": 26402,
+          "sha256": "3382d0a555702e2e35b15b96dc7827077bb3e85c0ae290be69a69dfa2c4af768"
+        },
+        "geargrafx.exe": {
+          "size": 15476837,
+          "sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d"
+        },
+        "SDL3.dll": {
+          "size": 4558193,
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad"
+        },
+        "stderr.txt": {
+          "size": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "new_files_after_run": [
+        "config.ini",
+        "stderr.txt"
+      ],
+      "new_files_outside_allowed": []
+    },
+    "det_S2_r3": {
+      "before_files": {
+        "geargrafx.exe": {
+          "sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
+          "source": "build-det"
+        },
+        "SDL3.dll": {
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad",
+          "source": "pinned build/bin (read-only copy)"
+        }
+      },
+      "before_matches_after_for_exe_dll": true,
+      "after_listing": {
+        "config.ini": {
+          "size": 26402,
+          "sha256": "4e821d4743b6ecd7d2f6d307e13decb456e76c5eb42e74e87a2e7f7c5ec550c5"
+        },
+        "geargrafx.exe": {
+          "size": 15476837,
+          "sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d"
+        },
+        "SDL3.dll": {
+          "size": 4558193,
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad"
+        },
+        "stderr.txt": {
+          "size": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "new_files_after_run": [
+        "config.ini",
+        "stderr.txt"
+      ],
+      "new_files_outside_allowed": []
+    },
+    "pinned_r1": {
+      "before_files": {
+        "geargrafx.exe": {
+          "sha256": "4933885ca1cebd4a979dcd8da1a1324aadac95885d3403b7019fe5f7df664827",
+          "source": "pinned"
+        },
+        "SDL3.dll": {
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad",
+          "source": "pinned build/bin (read-only copy)"
+        }
+      },
+      "before_matches_after_for_exe_dll": true,
+      "after_listing": {
+        "config.ini": {
+          "size": 26402,
+          "sha256": "ecc67f0bea2825889281e475aa5e9a21398397852c419f80dffd728ac59e94db"
+        },
+        "geargrafx.exe": {
+          "size": 15476837,
+          "sha256": "4933885ca1cebd4a979dcd8da1a1324aadac95885d3403b7019fe5f7df664827"
+        },
+        "SDL3.dll": {
+          "size": 4558193,
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad"
+        },
+        "stderr.txt": {
+          "size": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "new_files_after_run": [
+        "config.ini",
+        "stderr.txt"
+      ],
+      "new_files_outside_allowed": []
+    },
+    "pinned_r2": {
+      "before_files": {
+        "geargrafx.exe": {
+          "sha256": "4933885ca1cebd4a979dcd8da1a1324aadac95885d3403b7019fe5f7df664827",
+          "source": "pinned"
+        },
+        "SDL3.dll": {
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad",
+          "source": "pinned build/bin (read-only copy)"
+        }
+      },
+      "before_matches_after_for_exe_dll": true,
+      "after_listing": {
+        "config.ini": {
+          "size": 26402,
+          "sha256": "8e5ce28b37299d8d79f0792013e83d8c325e98cedb2a776b86ba6e7d82d99469"
+        },
+        "geargrafx.exe": {
+          "size": 15476837,
+          "sha256": "4933885ca1cebd4a979dcd8da1a1324aadac95885d3403b7019fe5f7df664827"
+        },
+        "SDL3.dll": {
+          "size": 4558193,
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad"
+        },
+        "stderr.txt": {
+          "size": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "new_files_after_run": [
+        "config.ini",
+        "stderr.txt"
+      ],
+      "new_files_outside_allowed": []
+    },
+    "pinned_r3": {
+      "before_files": {
+        "geargrafx.exe": {
+          "sha256": "4933885ca1cebd4a979dcd8da1a1324aadac95885d3403b7019fe5f7df664827",
+          "source": "pinned"
+        },
+        "SDL3.dll": {
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad",
+          "source": "pinned build/bin (read-only copy)"
+        }
+      },
+      "before_matches_after_for_exe_dll": true,
+      "after_listing": {
+        "config.ini": {
+          "size": 26402,
+          "sha256": "8b3468528ebc74dec77b3f6a53c4fdbcb7089fd32e76828cd49d9691a92de274"
+        },
+        "geargrafx.exe": {
+          "size": 15476837,
+          "sha256": "4933885ca1cebd4a979dcd8da1a1324aadac95885d3403b7019fe5f7df664827"
+        },
+        "SDL3.dll": {
+          "size": 4558193,
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad"
+        },
+        "stderr.txt": {
+          "size": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "new_files_after_run": [
+        "config.ini",
+        "stderr.txt"
+      ],
+      "new_files_outside_allowed": []
+    },
+    "probe-det-S1": {
+      "before_files": {
+        "geargrafx.exe": {
+          "sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
+          "source": "build-det"
+        },
+        "SDL3.dll": {
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad",
+          "source": "pinned build/bin (read-only copy)"
+        }
+      },
+      "before_matches_after_for_exe_dll": true,
+      "after_listing": {
+        "config.ini": {
+          "size": 26423,
+          "sha256": "740f4ab6933dd5a3ae30ee49b7a0742c88aa2d7b2c2184ac3fb697e16c6c2567"
+        },
+        "geargrafx.exe": {
+          "size": 15476837,
+          "sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d"
+        },
+        "SDL3.dll": {
+          "size": 4558193,
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad"
+        },
+        "stderr.txt": {
+          "size": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "new_files_after_run": [
+        "config.ini",
+        "stderr.txt"
+      ],
+      "new_files_outside_allowed": []
+    }
+  },
+  "media_dir_manifest": {
+    "media-hashes.json": {
+      "size": 1040,
+      "sha256": "f9b5e0d50b24fc84674285065faba7fb8ef7ef7457ca9d58fb447918b307c7e9"
+    },
+    "synthetic_cd.bin": {
+      "size": 32768,
+      "sha256": "7ba14aad9eee82d234c1eafbad6ba4d9d60a8ba4db73bce56eb817e2ed3ac64c"
+    },
+    "synthetic_cd.cue": {
+      "size": 75,
+      "sha256": "a751990e25024069547721265e946052639710589a3d94c7e6afd1a675836dd2"
+    }
+  },
+  "bios_sha256": "e122f0154b6b341a4d08deddd855289a7a5ca43e814aa9391737f7e7f52f70d7"
+}

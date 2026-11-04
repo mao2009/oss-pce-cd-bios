@@ -1,0 +1,197 @@
+{
+  "phase": "C-R1 T4 re-run",
+  "kind": "NEW re-run evidence (not the historical probe; the historical probe output was not saved)",
+  "expected_file": "<EVIDENCE_ROOT>/phase-c/phase-c-r1/t4-expected-r1.json",
+  "expected_file_sha256_before_run": "d23732586bdc9b9652128c128e7d780fda56626e10b9240c73a4f9013b239f48",
+  "expected_file_note": "R2 annotation: d2373258 is the unpublished pre-publication original used for the run. The published copy t4-expected-r1.json has SHA-256 60d1309d; it differs in line endings and in one citation string, and the expected values are identical. The run result is not changed.",
+  "observed": {
+    "noinput_SEL0_2010": "3F",
+    "noinput_SEL1_2011": "3F",
+    "up_SEL0_2010": "3F",
+    "up_SEL1_2011": "3E"
+  },
+  "checks": {
+    "noinput_matches_expected": true,
+    "up_matches_expected": true,
+    "result": "PASS"
+  },
+  "launches": {
+    "t4r1_noinput": {
+      "run_dir": "<EVIDENCE_ROOT>/phase-c/phase-c-r1/runs/t4r1_noinput",
+      "exe_sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
+      "seed_env": "0x00C0FFEE",
+      "press_up": false,
+      "input_response": null,
+      "bios_load": {
+        "bios_name": "Unknown",
+        "file_path": "<EVIDENCE_ROOT>/phase-c/synthetic/synthetic_bios.bin",
+        "success": true,
+        "type": "syscard",
+        "valid_crc": false,
+        "warning": "CRC does not match any known BIOS"
+      },
+      "media_load": {
+        "file_path": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
+        "is_cdrom": true,
+        "is_sgx": false,
+        "rom_name": "synthetic_cd.cue",
+        "softpatch_applied": false,
+        "success": true
+      },
+      "trace_pcs": [
+        "E000",
+        "E002",
+        "E004",
+        "E006",
+        "E009",
+        "E00B",
+        "E00D",
+        "E00F",
+        "E012",
+        "E015",
+        "E018",
+        "E01A",
+        "E01D",
+        "E020",
+        "E023",
+        "E025"
+      ],
+      "trace_entry_count": 16,
+      "exit_code": 0,
+      "sysram_marker": {
+        "wram0000": "01",
+        "wram0001": "02",
+        "wram0010": "3F",
+        "wram0011": "3F"
+      },
+      "post_reset_state": {
+        "PC": "E000",
+        "A": 91,
+        "X": 199,
+        "Y": 10,
+        "S": 53,
+        "P": 197,
+        "MPR": [
+          106,
+          119,
+          120,
+          177,
+          114,
+          19,
+          182,
+          0
+        ]
+      },
+      "halt_state": {
+        "PC": "E028",
+        "A": 2,
+        "X": 199,
+        "Y": 10,
+        "S": 53,
+        "P": 69,
+        "MPR": [
+          255,
+          248,
+          120,
+          177,
+          114,
+          19,
+          182,
+          0
+        ]
+      },
+      "stderr_tail": ""
+    },
+    "t4r1_up": {
+      "run_dir": "<EVIDENCE_ROOT>/phase-c/phase-c-r1/runs/t4r1_up",
+      "exe_sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
+      "seed_env": "0x00C0FFEE",
+      "press_up": true,
+      "input_response": {
+        "action": "press",
+        "button": "up",
+        "player": 1,
+        "success": true
+      },
+      "bios_load": {
+        "bios_name": "Unknown",
+        "file_path": "<EVIDENCE_ROOT>/phase-c/synthetic/synthetic_bios.bin",
+        "success": true,
+        "type": "syscard",
+        "valid_crc": false,
+        "warning": "CRC does not match any known BIOS"
+      },
+      "media_load": {
+        "file_path": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
+        "is_cdrom": true,
+        "is_sgx": false,
+        "rom_name": "synthetic_cd.cue",
+        "softpatch_applied": false,
+        "success": true
+      },
+      "trace_pcs": [
+        "E000",
+        "E002",
+        "E004",
+        "E006",
+        "E009",
+        "E00B",
+        "E00D",
+        "E00F",
+        "E012",
+        "E015",
+        "E018",
+        "E01A",
+        "E01D",
+        "E020",
+        "E023",
+        "E025"
+      ],
+      "trace_entry_count": 16,
+      "exit_code": 0,
+      "sysram_marker": {
+        "wram0000": "01",
+        "wram0001": "02",
+        "wram0010": "3F",
+        "wram0011": "3E"
+      },
+      "post_reset_state": {
+        "PC": "E000",
+        "A": 91,
+        "X": 199,
+        "Y": 10,
+        "S": 53,
+        "P": 197,
+        "MPR": [
+          106,
+          119,
+          120,
+          177,
+          114,
+          19,
+          182,
+          0
+        ]
+      },
+      "halt_state": {
+        "PC": "E028",
+        "A": 2,
+        "X": 199,
+        "Y": 10,
+        "S": 53,
+        "P": 69,
+        "MPR": [
+          255,
+          248,
+          120,
+          177,
+          114,
+          19,
+          182,
+          0
+        ]
+      },
+      "stderr_tail": ""
+    }
+  }
+}

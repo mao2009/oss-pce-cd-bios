@@ -1,8 +1,8 @@
 """Run the bounded, observation-only Geargrafx normal-frame tracer.
 
 This is a local diagnostic, not a BIOS boot or compatibility test.  It reuses the
-existing pinned-core probe compiler and private process runner.  Events contain
-register/state metadata and working-RAM change ranges only, never guest bytes.
+existing pinned-core probe compiler and private process runner. Events contain
+register/state metadata and RAM change counts/ranges/banks only, never guest bytes.
 """
 import argparse
 import json
@@ -23,7 +23,13 @@ from geargrafx_harness import doctor, run_job, stage_disc  # noqa: E402
 
 MAX_FRAMES = 600
 MAX_EVENTS = 256
-EVENT_KINDS = {"sample", "cd", "wram", "handoff"}
+EVENT_KINDS = {"sample", "cd", "ram", "handoff", "region"}
+RAM_BANK_RANGES = {
+    "wram": ((0x2000, 0xf8, 0xfb), (0x8000, 0xf8, 0xfb)),
+    "cdrom_ram": ((0x10000, 0x80, 0x87),),
+    "card_ram": ((0x8000, 0x40, 0x5f), (0x30000, 0x68, 0x7f)),
+}
+CPU_REGIONS = {"unknown", "other", "cdrom_ram", "working_ram", "hardware"}
 
 
 def run_schedule(start_frame, hold_frames, frames):
@@ -35,6 +41,48 @@ def run_schedule(start_frame, hold_frames, frames):
     if not 1 <= start_frame <= frames or not 1 <= hold_frames <= frames or start_frame + hold_frames - 1 > frames:
         raise ValueError("RUN schedule is outside the requested frames")
     return ((start_frame, "press"), (start_frame + hold_frames - 1, "release"))
+
+
+def validate_ram_deltas(rows, frames):
+    """Validate cumulative, byte-free RAM metadata independently of event retention."""
+    if type(rows) is not list or {row.get("region") for row in rows if type(row) is dict} != set(RAM_BANK_RANGES) or len(rows) != 3:
+        raise ValueError("invalid RAM region summary")
+    for row in rows:
+        if type(row) is not dict:
+            raise ValueError("invalid RAM region entry")
+        region, present, availability = row.get("region"), row.get("present"), row.get("availability")
+        if availability not in {"PRESENT", "ABSENT", "UNKNOWN"}:
+            raise ValueError("invalid RAM availability")
+        if (availability == "PRESENT") != (present is True) or (availability == "ABSENT") != (present is False) or \
+                (availability == "UNKNOWN") != (present is None):
+            raise ValueError("RAM availability is not distinct")
+        updates, max_changed = row.get("updates"), row.get("max_changed")
+        if type(updates) is not int or updates < 0 or type(max_changed) is not int or max_changed < 0:
+            raise ValueError("invalid RAM update count")
+        range_keys = ("first_frame", "last_frame", "min_offset", "max_offset")
+        if availability != "PRESENT":
+            if updates or max_changed or any(row.get(key) is not None for key in range_keys):
+                raise ValueError("unavailable RAM has deltas")
+            continue
+        # Single confirmed table shared with parse_records and the C++ RAM header.
+        # This accepts the same wram layouts (0x2000 or 0x8000) as the event path.
+        if (row.get("size"), row.get("bank_first"), row.get("bank_last")) not in RAM_BANK_RANGES[region]:
+            raise ValueError("unconfirmed RAM bank mapping")
+        if updates:
+            first, last, minimum, maximum = (row.get(key) for key in range_keys)
+            if not all(type(value) is int for value in (first, last, minimum, maximum)) or not 1 <= first <= last <= frames or \
+                    not 0 <= minimum <= maximum < row["size"] or not 1 <= max_changed <= row["size"]:
+                raise ValueError("invalid RAM delta range")
+        elif max_changed or any(row.get(key) is not None for key in range_keys):
+            raise ValueError("empty RAM delta has range")
+        correlation, scsi_frames = row.get("scsi_correlation"), row.get("scsi_update_frames")
+        if correlation not in {"OBSERVED", "NONE_OBSERVED", "UNKNOWN"} or type(scsi_frames) is not list or \
+                any(type(frame) is not int or not 1 <= frame <= frames for frame in scsi_frames) or scsi_frames != sorted(set(scsi_frames)):
+            raise ValueError("invalid SCSI frame correlation")
+        if correlation == "OBSERVED" and not scsi_frames:
+            raise ValueError("observed SCSI correlation lacks frames")
+        if correlation == "NONE_OBSERVED" and scsi_frames:
+            raise ValueError("empty SCSI correlation has frames")
 
 
 def normalized_absolute(path):
@@ -105,16 +153,34 @@ def validate_tracked_job_dir(path, identity=None):
     return True, "ok"
 
 
-def make_tracked_job_dir():
-    """Create a current-user-owned job in the dedicated /tmp/opencode parent."""
-    parent = normalized_absolute(JOB_PARENT)
+def ensure_private_root():
+    """Return the dedicated root, creating it privately (mode 0700) when absent.
+
+    An existing root is used only if it is a real directory (not a symlink),
+    owned by the current user, and not accessible to group or others.  Any other
+    state fails closed.  Nothing is removed here.
+    """
+    root = normalized_absolute(OPENCODE_TEMP_ROOT)
     try:
-        root_status = os.lstat(normalized_absolute(OPENCODE_TEMP_ROOT))
+        os.mkdir(root, 0o700)
+    except FileExistsError:
+        pass
     except OSError as error:
         raise RuntimeError("unsafe frame tracer temporary root") from error
-    if (not stat.S_ISDIR(root_status.st_mode) or stat.S_ISLNK(root_status.st_mode) or
-            root_status.st_uid != os.getuid()):
+    try:
+        status = os.lstat(root)
+    except OSError as error:
+        raise RuntimeError("unsafe frame tracer temporary root") from error
+    if (not stat.S_ISDIR(status.st_mode) or stat.S_ISLNK(status.st_mode) or
+            status.st_uid != os.getuid() or stat.S_IMODE(status.st_mode) & 0o077):
         raise RuntimeError("unsafe frame tracer temporary root")
+    return root
+
+
+def make_tracked_job_dir():
+    """Create a current-user-owned job in the dedicated parent under a private root."""
+    ensure_private_root()
+    parent = normalized_absolute(JOB_PARENT)
     try:
         parent.mkdir(mode=0o700, parents=False, exist_ok=True)
         parent_status = os.lstat(parent)
@@ -174,7 +240,7 @@ def cleanup_tracked_job_dir(path, identity):
     return True, "removed"
 
 
-def parse_records(stdout):
+def parse_records(stdout, require_ram_observation=True):
     """Validate the small public-safe protocol emitted by the C++ tracer."""
     cap = end = None
     inputs = []
@@ -204,8 +270,12 @@ def parse_records(stdout):
         raise ValueError("missing CAP or END")
     if cap.get("normal_frame_execution") is not True or cap.get("instruction_step") is not False:
         raise ValueError("not a normal-frame trace")
+    if type(cap.get("ram_observation")) is not bool:
+        raise ValueError("invalid RAM observation capability")
     if (cap.get("guest_mutation") is not False or cap.get("mmio_reads") is not False or
-            cap.get("scsi_event_notification") is not True):
+            cap.get("scsi_event_notification") is not True or cap.get("cpu_event_notification") is not True or
+            cap.get("ram_delta_summary") is not True or
+            (cap.get("ram_observation") is not True and require_ram_observation)):
         raise ValueError("tracer safety capability missing")
     capacity = cap.get("ring_capacity")
     if type(capacity) is not int or not 1 <= capacity <= MAX_EVENTS:
@@ -221,22 +291,54 @@ def parse_records(stdout):
             raise ValueError("RUN input API did not report press/release")
     elif inputs or start != 0 or hold != 0:
         raise ValueError("unexpected RUN input record")
+    regions = cap.get("ram_regions")
+    if type(regions) is not list:
+        raise ValueError("invalid RAM region inventory")
+    if cap.get("ram_observation") is True:
+        for region in regions:
+            if not isinstance(region, dict) or (region.get("size"), region.get("bank_first"), region.get("bank_last")) not in \
+                    RAM_BANK_RANGES.get(region.get("ram"), ()):
+                raise ValueError("unconfirmed RAM region mapping")
+    elif regions:
+        raise ValueError("RAM regions emitted while RAM observation is disabled")
     if len(events) > capacity or end.get("events") != len(events):
         raise ValueError("ring event count mismatch")
     if (type(end.get("dropped")) is not int or end["dropped"] < 0 or
-            type(end.get("scsi_events_dropped")) is not int or end["scsi_events_dropped"] < 0 or
-            end.get("overflow") is not (end["dropped"] > 0 or end["scsi_events_dropped"] > 0)):
+            type(end.get("trace_events_dropped")) is not int or end["trace_events_dropped"] < 0 or
+            end.get("overflow") is not (end["dropped"] > 0 or end["trace_events_dropped"] > 0)):
         raise ValueError("invalid overflow accounting")
+    validate_ram_deltas(end.get("ram_deltas"), cap["frames"])
     for event in events:
         if event.get("kind") not in EVENT_KINDS or type(event.get("frame")) is not int or not 1 <= event["frame"] <= cap["frames"]:
             raise ValueError("invalid event header")
+        if event["kind"] == "region":
+            if (not all(type(event.get(key)) is int for key in ("event_cycle", "event_pc", "event_bank")) or
+                    not 0 <= event["event_pc"] <= 0xffff or not 0 <= event["event_bank"] <= 0xff or
+                    event.get("from_region") not in CPU_REGIONS or event.get("to_region") not in CPU_REGIONS or
+                    type(event.get("trace_gap")) is not bool):
+                raise ValueError("invalid event-time CPU region transition")
+            if event["from_region"] == "unknown" and event["trace_gap"] is False:
+                # The first retained event establishes a baseline; it is not a
+                # loss claim.  Later unknown transitions must disclose loss.
+                continue
+            continue
         if (type(event.get("pc")) is not int or type(event.get("physical_pc")) is not int or
                 type(event.get("pc_bank")) is not int or type(event.get("mpr")) is not list or len(event["mpr"]) != 8):
             raise ValueError("event lacks CPU/MPR snapshot")
         if any(type(value) is not int or not 0 <= value <= 255 for value in event["mpr"]):
             raise ValueError("invalid MPR snapshot")
-        if event["kind"] == "wram" and not all(type(event.get(key)) is int for key in ("changed", "first_wram", "last_wram")):
-            raise ValueError("invalid WRAM change event")
+        if event["kind"] == "ram":
+            if cap.get("ram_observation") is not True:
+                raise ValueError("RAM event emitted while RAM observation is disabled")
+            ram, size = event.get("ram"), event.get("size")
+            if ram not in RAM_BANK_RANGES or type(size) is not int:
+                raise ValueError("invalid RAM classification")
+            if (size, event.get("bank_first"), event.get("bank_last")) not in RAM_BANK_RANGES[ram]:
+                raise ValueError("unconfirmed RAM bank mapping")
+            if not all(type(event.get(key)) is int for key in ("changed", "first_offset", "last_offset")):
+                raise ValueError("invalid RAM change event")
+            if not 1 <= event["changed"] <= size or not 0 <= event["first_offset"] <= event["last_offset"] < size:
+                raise ValueError("invalid RAM change range")
         if event["kind"] == "cd":
             if event.get("snapshot") != "FRAME_SNAPSHOT":
                 raise ValueError("SCSI metadata lacks FRAME_SNAPSHOT label")
@@ -290,7 +392,8 @@ def trace(args):
                 return log
             cue = str(disc / staged[0])
         result = run_job([str(probe), str(rom), cue, str(args.frames), str(args.events),
-                          str(args.run_start_frame or 0), str(args.run_hold_frames or 0)], job, args.timeout)
+                           str(args.run_start_frame or 0), str(args.run_hold_frames or 0),
+                           "1" if args.observe_ram else "0"], job, args.timeout)
         if result["status"]:
             log.update(status=result["status"], reason=result["reason"], evidence="NOT_RUN")
             return log
@@ -298,7 +401,7 @@ def trace(args):
             log.update(status="FAIL", reason=f"probe exited {result['exit_code']}", evidence="NOT_RUN")
             return log
         try:
-            cap, events, end = parse_records(result["stdout"])
+            cap, events, end = parse_records(result["stdout"], require_ram_observation=args.observe_ram)
         except (ValueError, TypeError, json.JSONDecodeError) as error:
             log.update(status="FAIL", reason=f"trace rejected: {error}", evidence="NOT_RUN")
             return log
@@ -321,6 +424,9 @@ def main(argv=None):
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--run-start-frame", type=int, help="frame before which to press RUN via Geargrafx's public controller API")
     parser.add_argument("--run-hold-frames", type=int, help="number of complete frames for which RUN is held")
+    parser.add_argument("--no-observe-ram", dest="observe_ram", action="store_false",
+                        help="disable RAM snapshots; useful only for observer A/B diagnostics")
+    parser.set_defaults(observe_ram=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
