@@ -367,6 +367,187 @@ class OwnershipTests(unittest.TestCase):
         self.assertEqual(verdict(cmd, repo_root=self.root), "DENY")
 
 
+def write_text(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
+class ProtectedRootTests(unittest.TestCase):
+    """Protected roots: home, repository root, ancestors of protected paths, environment and local
+    configuration, required mode (fail-closed), linked worktrees, and worktree removal.
+
+    Temporary layouts with a synthetic home only. Nothing is deleted or written outside them.
+    """
+
+    def setUp(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        self.tmp = os.path.realpath(td.name)
+        self.home = os.path.join(self.tmp, "home", "synthetic-owner")
+        self.repo = os.path.join(self.tmp, "repo")
+        self.owned = os.path.join(self.tmp, "owned-elsewhere")
+        self.ok_wt = os.path.join(self.tmp, "wt-ok")
+        os.makedirs(self.home)
+        os.makedirs(os.path.join(self.repo, ".git"))
+        os.makedirs(os.path.join(self.repo, ".claude"))
+        write_text(os.path.join(self.repo, "file.txt"), "x\n")
+        self._registry(self.repo, {self.home, self.repo, self.owned, self.ok_wt,
+                                   os.path.dirname(self.home), self.tmp})
+        env = mock.patch.dict(os.environ, {"HOME": self.home, "USERPROFILE": self.home,
+                                           "OSS_PCE_GUARD_PROTECTED": "",
+                                           "OSS_PCE_GUARD_REQUIRE_LOCAL": ""})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def _registry(self, root, paths):
+        write_text(os.path.join(root, ".claude", "worktree-owners.json"),
+                   json.dumps({"worktrees": [{"path": p, "owner": "alice"} for p in sorted(paths)]}))
+
+    def _local(self, content):
+        write_text(os.path.join(self.repo, ".claude", "guard-local.json"), content)
+
+    def _symlink(self, target, link, is_dir):
+        try:
+            os.symlink(target, link, target_is_directory=is_dir)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest("symlink creation not permitted here: " + type(exc).__name__)
+
+    def test_home_repository_and_parent_removal_denied(self):
+        cmds = ["git worktree remove " + self.home, "rm -rf " + self.home, "rm " + self.home,
+                "git worktree remove " + self.repo, "rm -rf " + self.repo, "rm " + self.repo,
+                "git worktree remove " + os.path.dirname(self.home), "git worktree remove " + self.tmp]
+        for cmd in cmds:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, repo_root=self.repo), "DENY")
+
+    def test_environment_and_local_config_add_protection(self):
+        cmd = "git worktree remove " + self.owned
+        self.assertEqual(verdict(cmd, repo_root=self.repo), "ALLOW")
+        with mock.patch.dict(os.environ, {"OSS_PCE_GUARD_PROTECTED": self.owned}):
+            self.assertEqual(verdict(cmd, repo_root=self.repo), "DENY")
+        self._local(json.dumps({"protected": [self.owned]}))
+        self.assertEqual(verdict(cmd, repo_root=self.repo), "DENY")
+        self._local(json.dumps({"protected": []}))
+        self.assertEqual(verdict(cmd, repo_root=self.repo), "ALLOW")
+
+    def test_linked_worktree_uses_main_checkout_config_and_cannot_weaken_it(self):
+        main = os.path.join(self.tmp, "main")
+        linked = os.path.join(self.tmp, "linked")
+        gitdir = os.path.join(main, ".git", "worktrees", "linked")
+        os.makedirs(os.path.join(main, ".claude"))
+        write_text(os.path.join(linked, ".git"), "gitdir: " + gitdir + "\n")
+        write_text(os.path.join(gitdir, "commondir"), "../..\n")
+        self._registry(linked, {self.owned})
+        cmd = "git worktree remove " + self.owned
+        self.assertEqual(verdict(cmd, repo_root=linked), "ALLOW")
+        write_text(os.path.join(main, ".claude", "guard-local.json"), json.dumps({"protected": [self.owned]}))
+        self.assertEqual(verdict(cmd, repo_root=linked), "DENY")
+        write_text(os.path.join(linked, ".claude", "guard-local.json"), json.dumps({"protected": []}))
+        self.assertEqual(verdict(cmd, repo_root=linked), "DENY")
+
+    def test_broken_local_config_and_unresolvable_worktree_fail_closed(self):
+        for content in ("{bad", "[]", json.dumps({"protected": "x"}), json.dumps({"protected": ["relative/x"]})):
+            self._local(content)
+            with self.subTest(content=content):
+                self.assertEqual(verdict("git status", repo_root=self.repo), "DENY")
+        broken = os.path.join(self.tmp, "linked-broken")
+        write_text(os.path.join(broken, ".git"), "not a gitdir line\n")
+        self.assertEqual(verdict("git status", repo_root=broken), "DENY")
+
+    def test_required_mode_matrix(self):
+        def required():
+            return mock.patch.dict(os.environ, {"OSS_PCE_GUARD_REQUIRE_LOCAL": "1"})
+        with required():
+            self.assertEqual(verdict("git status", repo_root=self.repo), "DENY")  # no config
+        self._local("{bad")
+        with required():
+            self.assertEqual(verdict("git status", repo_root=self.repo), "DENY")  # invalid JSON
+        self._local(json.dumps({"protected": [self.owned]}))
+        with required():
+            self.assertEqual(verdict("git status", repo_root=self.repo), "DENY")  # no required list
+        self._local(json.dumps({"protected": [self.owned], "required": [self.ok_wt]}))
+        with required():
+            self.assertEqual(verdict("git status", repo_root=self.repo), "DENY")  # required not configured
+        self._local(json.dumps({"protected": [self.owned], "required": [self.owned]}))
+        with required():
+            self.assertEqual(verdict("git status", repo_root=self.repo), "ALLOW")
+            self.assertEqual(verdict("git worktree remove " + self.owned, repo_root=self.repo), "DENY")
+
+    def test_worktree_removal_cases(self):
+        self.assertEqual(verdict("git worktree remove " + self.ok_wt, repo_root=self.repo), "ALLOW")
+        self.assertEqual(verdict("git worktree remove " + os.path.join(self.tmp, "unregistered"),
+                                 repo_root=self.repo), "DENY")
+        self.assertEqual(verdict("git worktree remove --force " + self.ok_wt, repo_root=self.repo), "DENY")
+
+    def test_symlink_routes_denied(self):
+        link_home = os.path.join(self.repo, "link-home")
+        self._symlink(self.home, link_home, True)
+        self.assertEqual(verdict("git worktree remove " + link_home, repo_root=self.repo), "DENY")
+        outside = os.path.join(self.tmp, "outside.txt")
+        write_text(outside, "outside\n")
+        link_file = os.path.join(self.repo, "link-file")
+        self._symlink(outside, link_file, False)
+        self.assertEqual(verdict("rm " + link_file, repo_root=self.repo), "DENY")
+        outdir = os.path.join(self.tmp, "outdir")
+        write_text(os.path.join(outdir, "x"), "x\n")
+        link_dir = os.path.join(self.repo, "link-dir")
+        self._symlink(outdir, link_dir, True)
+        self.assertEqual(verdict("rm " + os.path.join(link_dir, "x"), repo_root=self.repo), "DENY")
+
+    def test_dotdot_aliases_of_protected_roots_denied(self):
+        # Registered alias spellings: the ".." must be normalised before the MSYS drive mapping.
+        self._registry(self.repo, {"/abc/../mnt/c/users", "/home/../mnt/c/users", "/tmp/../mnt/c/users",
+                                   "/a/..", "/a/../home", "/a/../mnt/c/users"})
+        for cmd in ["git worktree remove /abc/../mnt/c/users", "git worktree remove /home/../mnt/c/users",
+                    "git worktree remove /tmp/../mnt/c/users",
+                    "git worktree remove /a/..", "git worktree remove /a/../home",
+                    "git worktree remove /a/../mnt/c/users"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, repo_root=self.repo), "DENY")
+        # Host-independent normalisation check: the alias and its plain form canonicalise to the same key.
+        # No protected-set membership or existing path is assumed (see test_protected_home_and_its_aliases).
+        self.assertEqual(guard.canon("/abc/../c/users/prague"), guard.canon("/c/users/prague"))
+        self.assertEqual(guard.canon("/a/../home"), guard.canon("/home"))
+        # Excess ".." above a drive root must keep the drive letter (regression of the previous fix).
+        for cmd in ["rm C:/../README.md", "rm C:\\..\\README.md"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, repo_root=self.repo), "DENY")
+
+    def test_protected_home_and_its_aliases(self):
+        # The temporary HOME is the protected root here. Its own path and ".." aliases of it must be refused,
+        # wherever the temporary directory is (the test does not depend on the host's real home).
+        aliases = [self.home,
+                   os.path.join(self.home, "..", os.path.basename(self.home)),
+                   os.path.join(self.tmp, "home", ".", "synthetic-owner")]
+        self._registry(self.repo, set(aliases))
+        for cmd_path in aliases:
+            with self.subTest(path=cmd_path):
+                self.assertEqual(verdict("git worktree remove " + cmd_path, repo_root=self.repo), "DENY")
+
+    def test_synthetic_drive_form_home_and_aliases(self):
+        # A synthetic home in drive form that does not exist on any host: the drive form, the MSYS form, the
+        # /mnt form and ".." aliases must all be refused, with no dependence on the real home or on existence.
+        synthetic = "C:/Users/synthetic-owner"
+        with mock.patch.dict(os.environ, {"HOME": synthetic, "USERPROFILE": synthetic}):
+            # key() is the casefolded canonical form that the guard compares with.
+            self.assertEqual(guard.key("/abc/../c/users/synthetic-owner"), guard.key(synthetic))
+            self.assertEqual(guard.key("/c/Users/synthetic-owner"), guard.key(synthetic))
+            aliases = [synthetic, "/c/Users/synthetic-owner", "/mnt/c/users/synthetic-owner",
+                       "/abc/../c/users/synthetic-owner", "/abc/../mnt/c/users/synthetic-owner",
+                       "C:/Users/x/../synthetic-owner"]
+            self._registry(self.repo, set(aliases))
+            for path in aliases:
+                with self.subTest(path=path):
+                    self.assertEqual(verdict("git worktree remove " + path, repo_root=self.repo), "DENY")
+
+    def test_normal_operations_allowed(self):
+        for cmd in ["rm " + os.path.join(self.repo, "file.txt"), "git status",
+                    "git worktree remove " + self.ok_wt, "make test"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, repo_root=self.repo), "ALLOW")
+
+
 CHILD = r"""
 import importlib.util, json, sys, time
 spec = importlib.util.spec_from_file_location("g", sys.argv[1])
