@@ -41,6 +41,10 @@ PS_RM = {"remove-item", "ri", "del", "erase"}
 PS_LAUNCH_NAMES = {"start-process", "start", "saps", "invoke-item", "ii", "invoke-command", "icm", "start-job",
                    "sajb", "start-threadjob"}
 LAUNCHER_MAX_WORDS = 256
+# PowerShell process launchers whose argument expression is not inspected: a launcher with expression syntax
+# (comma arrays, parentheses, @(), scriptblocks, variables) is an execution form the guard cannot parse, so it is denied.
+PS_PROC_LAUNCH_RE = re.compile(r"(?i)(?<![\w-])(start-process|start|saps|invoke-item|ii)(?![\w-])")
+EXPR_SYNTAX_RE = re.compile(r"[,()@{}$]")
 CD_NAMES = {"cd", "chdir", "set-location", "sl"}
 # Always denied: destructive by nature, or cannot be inspected.
 ALWAYS_DENY = {"unlink", "shred", "rmdir", "rd", "dd", "mkfs", "truncate", "wipefs",
@@ -912,6 +916,8 @@ def analyze_argv(words, ctx, ps, depth):
 def analyze_text(text, ctx, ps, depth):
     if depth > MAX_DEPTH:
         raise Deny("depth", "command nesting too deep")
+    if ps and PS_PROC_LAUNCH_RE.search(text) and EXPR_SYNTAX_RE.search(text):
+        raise Deny("launcher", "PowerShell process launcher with expression syntax is not inspected")
     segs, subs, redirs = split_segments(text, ps)
     for body in subs:
         analyze_text(body, ctx.copy(), ps, depth + 1)

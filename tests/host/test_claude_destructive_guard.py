@@ -903,6 +903,19 @@ class LauncherClassTests(unittest.TestCase):
                 self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
         self.assertEqual(verdict("@{ a = 'x'; b = 1 }", tool="PowerShell"), "ALLOW")
 
+    def test_launcher_expression_syntax_and_aliases_are_denied(self):
+        for cmd in ["Start-Process powershell -ArgumentList -c,Remove-Item,-Recurse,-Force,/",
+                    "Start-Process powershell -ArgumentList ('-c Remove-Item -Recurse -Force /')",
+                    "Start-Process powershell -ArgumentList @('-c','Remove-Item -Recurse -Force /')",
+                    "saps powershell -Command Remove-Item -Recurse -Force /",
+                    "Invoke-Item powershell -Command Remove-Item -Recurse -Force /",
+                    "Start-Job powershell -Command Remove-Item -Recurse -Force /",
+                    "sajb powershell -Command Remove-Item -Recurse -Force /",
+                    "start-threadjob powershell -Command Remove-Item -Recurse -Force /"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
+        self.assertEqual(verdict("Start-Process notepad file.txt", tool="PowerShell"), "ALLOW")
+
     def test_then_keyword_is_a_command_position(self):
         self.assertEqual(verdict("if true; then rm -rf /; fi"), "DENY")
 
@@ -961,6 +974,12 @@ class LauncherMutationTests(unittest.TestCase):
         "PowerShell start alias removed": ('{"start-process", "start", "saps"', '{"start-process", "saps"'),
         "PowerShell ii alias removed": ('"invoke-item", "ii", "invoke-command"', '"invoke-item", "invoke-command"'),
         "then keyword removed": ('"if", "then", "else"', '"if", "else"'),
+        "PowerShell launcher expression rule removed": ('    if ps and PS_PROC_LAUNCH_RE.search(text) and EXPR_SYNTAX_RE.search(text):',
+                                                        '    if False:'),
+        "saps alias removed": ('"start", "saps", "invoke-item"', '"start", "invoke-item"'),
+        "Invoke-Item alias removed": ('"saps", "invoke-item", "ii"', '"saps", "ii"'),
+        "Start-Job alias removed": ('"icm", "start-job",', '"icm",'),
+        "start-threadjob alias removed": ('"sajb", "start-threadjob"}', '"sajb"}'),
         "brace split applied to Bash too": ('(ps and c in "{}")', '(c in "{}")'),
         "coproc handling removed": ('        if w0.lower() == "coproc":', '        if False:'),
         "PowerShell scriptblock braces not split": ('        if c in ";&|()\\n" or (ps and c in "{}"):', '        if c in ";&|()\\n":'),
