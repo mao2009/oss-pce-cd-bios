@@ -748,9 +748,18 @@ class PlatformPathFormTests(unittest.TestCase):
                                 reason)
 
     def test_unmapped_alias_is_refused_on_every_host(self):
-        verdict, reason = self._decide("rm /cygdrive/c" + self.repo + "/sub/../file.txt")
+        rest = os.path.splitdrive(self.repo)[1].replace("\\", "/")
+        verdict, reason = self._decide("rm /cygdrive/c" + rest + "/sub/../file.txt")
         self.assertEqual(verdict, "DENY")
         self.assertTrue(reason.startswith("rm-unresolvable-dotdot"), reason)
+
+    def test_bare_drive_alias_before_dotdot_is_refused_on_every_host(self):
+        # Git Bash resolves /c/.. to /, so a bare alias followed by .. is refused, never judged as the drive root.
+        for cmd in ["rm /c/../Users/x/file.txt", "rm /mnt/c/../Users/x/file.txt", "rm /cygdrive/c/../file.txt"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._decide(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertTrue(reason.startswith("rm-unresolvable-dotdot"), reason)
 
 
 class MutationDetectionTests(unittest.TestCase):
@@ -786,6 +795,14 @@ class MutationDetectionTests(unittest.TestCase):
                                   capture_output=True, text=True, timeout=300)
             return proc.returncode, proc.stderr
 
+    # Only failures of these symlink-specific tests count as detection; a failure elsewhere is not evidence.
+    SYMLINK_FAILURE_TESTS = [
+        "test_dangling_symlink_entries_are_refused",
+        "test_dotdot_through_symlink_reaches_real_target",
+        "test_link_entry_reached_through_dotdot_is_refused",
+        "test_symlink_routes_denied",
+    ]
+
     def test_symlink_tests_detect_each_mutant(self):
         with open(HOOK, encoding="utf-8") as f:
             original = f.read()
@@ -797,7 +814,9 @@ class MutationDetectionTests(unittest.TestCase):
             with self.subTest(mutant=name):
                 self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
                 code, out = self._run(original.replace(old, new))
-                self.assertNotEqual(code, 0, "mutant not detected by the symlink tests: " + name)
+                failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
+                detected = any(t in ln for ln in failing for t in self.SYMLINK_FAILURE_TESTS)
+                self.assertTrue(detected, "mutant not detected by a symlink test: " + name + "\n" + "\n".join(failing))
 
 
 CHILD = r"""

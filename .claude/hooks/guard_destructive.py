@@ -251,6 +251,10 @@ def _dotdot_unresolved(p, raw_form):
     for i, comp in enumerate(parts):
         if comp == "..":
             before = "/".join(parts[:i]) or "/"
+            # A bare drive alias before ".." (/c/.., /mnt/c/.., /cygdrive/c/..) is refused: Git Bash resolves
+            # /c/.. to /, not to the drive root that the native mapping would give.
+            if re.fullmatch(r"/(mnt/|cygdrive/)?[A-Za-z]", before):
+                return True
             # Test the native form: /c/... and /mnt/c/... are mapped to C:/... first. An unmapped alias such as
             # /cygdrive/... is not native here, so it does not exist and the path is refused (fail-closed).
             if not os.path.exists(canon(before, normalize=False)):
