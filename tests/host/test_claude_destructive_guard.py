@@ -548,6 +548,64 @@ class ProtectedRootTests(unittest.TestCase):
                 self.assertEqual(verdict(cmd, repo_root=self.repo), "ALLOW")
 
 
+class SymlinkResolutionTests(unittest.TestCase):
+    """Piece A: a symlink followed by ".." resolves to its real target, and a link reached through ".." is a link.
+
+    The symlink cases need symlink creation. Where it is not permitted they SKIP; a SKIP is not a PASS and
+    must be read as not run. The canon cases need no symlink and run everywhere.
+    """
+
+    def setUp(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        self.tmp = os.path.realpath(td.name)
+        self.repo = os.path.join(self.tmp, "repo")
+        os.makedirs(os.path.join(self.repo, ".git"))
+        os.makedirs(os.path.join(self.repo, ".claude"))
+        write_text(os.path.join(self.repo, "file.txt"), "x\n")
+        self.outdir = os.path.join(self.tmp, "outdir")
+        write_text(os.path.join(self.outdir, "placeholder"), "p\n")
+        write_text(os.path.join(self.tmp, "outer.txt"), "outside\n")
+
+    def _symlink(self, target, link, is_dir):
+        try:
+            os.symlink(target, link, target_is_directory=is_dir)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest("symlink creation not permitted here: " + type(exc).__name__)
+
+    def _decide(self, cmd):
+        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": self.repo})
+        return guard.decide(payload, repo_root=self.repo)
+
+    def test_dotdot_through_symlink_reaches_real_target(self):
+        link_dir = os.path.join(self.repo, "link-dir")
+        self._symlink(self.outdir, link_dir, True)
+        # link-dir/.. is the real parent of outdir (the temporary directory), so outer.txt is outside the repo.
+        verdict, reason = self._decide("rm " + os.path.join(link_dir, "..", "outer.txt"))
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+
+    def test_link_entry_reached_through_dotdot_is_refused(self):
+        link_dir = os.path.join(self.repo, "link-dir")
+        self._symlink(self.outdir, link_dir, True)
+        inner = os.path.join(self.outdir, "inner-link")
+        self._symlink(os.path.join(self.repo, "file.txt"), inner, False)
+        # inner-link is a symlink whose target is inside the repo. The command reaches it through "..".
+        verdict, reason = self._decide("rm " + os.path.join(link_dir, "..", "outdir", "inner-link"))
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("rm-symlink"), reason)
+
+    def test_ordinary_in_repo_removal_still_allowed(self):
+        verdict, _ = self._decide("rm " + os.path.join(self.repo, "file.txt"))
+        self.assertEqual(verdict, "ALLOW")
+
+    def test_canon_without_normalisation_keeps_dotdot(self):
+        self.assertEqual(guard.canon("/home/x/../y", normalize=False), "/home/x/../y")
+
+    def test_canon_default_still_normalises(self):
+        self.assertEqual(guard.canon("/home/x/../y"), "/home/y")
+
+
 CHILD = r"""
 import importlib.util, json, sys, time
 spec = importlib.util.spec_from_file_location("g", sys.argv[1])

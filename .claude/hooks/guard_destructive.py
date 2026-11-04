@@ -86,13 +86,17 @@ class Ctx:
         return c
 
 
-def canon(path):
-    """Canonical absolute form: forward slashes, /mnt/c and c:/ both -> C:/."""
+def canon(path, normalize=True):
+    """Canonical absolute form: forward slashes, /mnt/c and c:/ both -> C:/.
+
+    normalize=False keeps the raw ".." spelling, so that a caller can resolve it on the filesystem
+    (a symlink followed by ".." must reach its real target, not the lexical one).
+    """
     p = path.replace("\\", "/")
     # Absolute POSIX-form inputs are normalised before the drive mapping, so /abc/../mnt/c/users becomes
     # /mnt/c/users and then C:/users, and /a/../home becomes /home, not A:/home. Drive-letter inputs start
     # with a letter, so C:/../x is not normalised here and keeps its drive.
-    if p.startswith("/"):
+    if normalize and p.startswith("/"):
         p = posixpath.normpath(p)
     m = MNT.match(p) or MSYS.match(p)
     if m:
@@ -102,7 +106,8 @@ def canon(path):
     if m:
         drive = m.group(1).upper() + ":"
         p = p[2:] or "/"
-    p = posixpath.normpath(p)
+    if normalize:
+        p = posixpath.normpath(p)
     if p.startswith("//"):
         p = "/" + p.lstrip("/")
     return drive + p
@@ -234,8 +239,13 @@ def is_protected(k, ctx):
     return False
 
 
-def resolve(raw, ctx):
-    """Return (lexical canonical, real canonical) for a path argument."""
+def resolve_full(raw, ctx):
+    """Return (lexical canonical, real canonical, final entry is a link) for a path argument.
+
+    The real path resolves the raw spelling on the filesystem, so a symlink followed by ".." reaches its
+    real target. The final entry is checked as a link after its parent directory is resolved, so a link
+    reached through ".." is seen as a link. Absent paths keep the lexical form.
+    """
     if not raw:
         raise Deny("path", "empty path")
     if "$" in raw or "`" in raw:
@@ -252,7 +262,17 @@ def resolve(raw, ctx):
             raise Deny("path", "drive-relative path")
         p = ctx.cwd.rstrip("/") + "/" + p
     lex = canon(p)
-    real = canon(os.path.realpath(lex)) if os.path.exists(lex) else lex
+    raw_form = canon(p, normalize=False)
+    real = canon(os.path.realpath(raw_form)) if os.path.exists(raw_form) else lex
+    parent, base = os.path.split(raw_form)
+    entry_link = base not in ("", ".", "..") and os.path.islink(
+        os.path.join(os.path.realpath(parent) if parent else ".", base))
+    return lex, real, entry_link
+
+
+def resolve(raw, ctx):
+    """Return (lexical canonical, real canonical) for a path argument."""
+    lex, real, _ = resolve_full(raw, ctx)
     return lex, real
 
 
@@ -493,9 +513,9 @@ def rm_rule(args, ps, ctx):
         raise Deny("rm-recursive", "recursive delete is denied")
     if len(targets) != 1:
         raise Deny("rm", "rm needs exactly one target")
-    lex, real = resolve(targets[0], ctx)
+    lex, real, entry_link = resolve_full(targets[0], ctx)
     rk = real.casefold()
-    if os.path.islink(lex):
+    if os.path.islink(lex) or entry_link:
         raise Deny("rm-symlink", "symlink delete is denied")
     if not inside(rk, ctx.root) or rk == ctx.root:
         raise Deny("rm-outside-repo", "rm target is not inside the repo root")
