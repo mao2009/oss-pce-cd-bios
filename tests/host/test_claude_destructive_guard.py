@@ -871,6 +871,17 @@ class PythonCAttachedTests(unittest.TestCase):
                 self.assertEqual(self._verdict(cmd), "DENY")
         self.assertEqual(self._verdict("python3 -m unittest discover -s tests/host -v"), "ALLOW")
 
+    def test_glob_in_code_matching_a_file_here_is_denied(self):
+        # bash expands "open*" to a file name in the working directory, and that name becomes the code. Only a glob
+        # that matches here is refused, so "2*3" and "x[0]" stay allowed when nothing matches.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = os.path.realpath(tmp)
+            payload = lambda cmd: json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": tmp})
+            self.assertEqual(guard.decide(payload("python3 -c open*"), REPO)[0], "ALLOW")
+            write_text(os.path.join(tmp, "open_glob_target.txt"), "x\n")
+            self.assertEqual(guard.decide(payload("python3 -c open*"), REPO)[0], "DENY")
+            self.assertEqual(guard.decide(payload("python3 -c 'print(2*3)'"), REPO)[0], "ALLOW")
+
     def test_brace_expansion_that_builds_the_code_is_denied(self):
         # Unquoted braces split the code itself: the word split gives "-c" and "open(...)" with no dash in the code.
         for cmd in ["python3 -c {open,}\"('/tmp/zz','w').close()\"",
@@ -955,6 +966,9 @@ class PythonCAttachedMutationTests(unittest.TestCase):
         "variable in a python argument not refused": (
             "if \"$\" in arg or \"`\" in arg or SUBST in arg:",
             "if False:"),
+        "glob in code matching a file not refused": (
+            "if cwd is not None and _glob_matches_here(code, cwd):",
+            "if False:"),
         "brace expansion pattern in code not refused": (
             "if re.search(r\"\\{[^{}]*(,|\\.\\.)[^{}]*\\}\", code):",
             "if False:"),
@@ -962,7 +976,8 @@ class PythonCAttachedMutationTests(unittest.TestCase):
     DETECTING = ["test_attached_write_forms_are_denied", "test_two_c_options_check_every_code",
                  "test_unexpanded_code_is_denied", "test_brace_expansion_that_builds_a_c_option_is_denied",
                  "test_variable_supplied_option_or_code_is_denied",
-                 "test_brace_expansion_that_builds_the_code_is_denied"]
+                 "test_brace_expansion_that_builds_the_code_is_denied",
+                 "test_glob_in_code_matching_a_file_here_is_denied"]
 
     def _run(self, hook_text):
         with tempfile.TemporaryDirectory() as td:

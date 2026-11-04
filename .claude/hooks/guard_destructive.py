@@ -6,6 +6,7 @@ permissionDecision "deny" (exit 0). An ALLOW prints nothing (exit 0), so the
 normal permission flow still applies. The command is only inspected, never run.
 Rules: docs/claude-destructive-guard.md.
 """
+import glob
 import json
 import os
 import posixpath
@@ -652,7 +653,18 @@ def python_c_codes(args):
     return codes
 
 
-def python_rule(args):
+def _glob_matches_here(pattern, cwd):
+    """True if the pattern, read as a shell glob in cwd, matches a file. Such a pattern in -c code (open*) is
+    expanded by bash to a file name, which then becomes the code. An error here is refused (fail-closed)."""
+    if not any(ch in pattern for ch in "*?["):
+        return False
+    try:
+        return bool(glob.glob(pattern, root_dir=cwd))
+    except (OSError, ValueError, TypeError):
+        return True
+
+
+def python_rule(args, cwd=None):
     # Brace or glob expansion can build an option such as -c from a word (python3 {-c,}"open(...)"), and the guard
     # does not see the expanded word. Such a word always contains a literal "-", so an argument with a dash and a
     # brace or glob character is refused.
@@ -671,6 +683,9 @@ def python_rule(args):
         # a range inside is refused. This also refuses some dict literals with a comma: a known false positive.
         if re.search(r"\{[^{}]*(,|\.\.)[^{}]*\}", code):
             raise Deny("unexpanded", "python -c code with a brace expansion pattern is not inspected")
+        # A glob in the code (open*) is expanded by bash to a file name here, and that name becomes the code.
+        if cwd is not None and _glob_matches_here(code, cwd):
+            raise Deny("unexpanded", "python -c code that matches a file name here (glob) is not inspected")
         if DANGER_PY.search(code):
             raise Deny("python-c", "python -c with a file or process operation")
 
@@ -790,7 +805,7 @@ def analyze_argv(words, ctx, ps, depth):
     elif name == "find":
         find_rule(args, ps, ctx, depth)
     elif PY_NAME.match(name):
-        python_rule(args)
+        python_rule(args, ctx.cwd)
 
 
 def analyze_text(text, ctx, ps, depth):
