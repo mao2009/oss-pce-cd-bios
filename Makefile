@@ -50,6 +50,13 @@ integration: build
 	$(MAKE) block-transfer-matrix
 	$(MAKE) stack-access-guard
 	$(MAKE) stack-methods
+	$(MAKE) stack-methods-compare
+
+# Issue #500 (#473 S4): methods A, C and A+C compared under the same conditions on the eight criteria
+# (synthetic media, debugger build, verification-only patch). Not a production mechanism. Runs in `integration`.
+.PHONY: stack-methods-compare
+stack-methods-compare:
+	$(PYTHON) tests/integration/geargrafx_stack_methods_compare.py
 
 # Issue #498 (#473 S2, method A): instruction refusal before execution, judged on eight criteria, on the same
 # verification-only core patch (synthetic media, debugger build). Not a production mechanism. Runs in `integration`.

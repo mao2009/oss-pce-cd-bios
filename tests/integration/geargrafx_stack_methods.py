@@ -174,8 +174,8 @@ def check_armed(row, case, expect):
         raise ValueError(f"{case}: verdict {got} failing {sorted(failing)}, want {expect['verdict']} "
                          f"{sorted(expect['failing'])}")
     refusal = row.get("refusal", {})
-    if refusal.get("kind") != "instruction":
-        raise ValueError(f"{case}: first refusal kind {refusal.get('kind')!r}, want 'instruction'")
+    if refusal.get("kind") != expect.get("kind", "instruction"):
+        raise ValueError(f"{case}: first refusal kind {refusal.get('kind')!r}, want {expect.get('kind', 'instruction')!r}")
     first = row["refusal_instruction_start"]
     if first["pc"] != expect["pc"] or first["transfer_state"] != expect.get("transfer_state", 0):
         raise ValueError(f"{case}: refused instruction at {first['pc']:#x} (transfer state {first['transfer_state']}), "
