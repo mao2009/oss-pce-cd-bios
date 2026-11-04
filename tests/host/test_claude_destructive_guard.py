@@ -573,7 +573,6 @@ class ProtectedPathTests(unittest.TestCase):
     def test_normal_operations_allowed(self):
         cmds = ["rm " + os.path.join(self.repo, "file.txt"),
                 "rm -f " + os.path.join(self.repo, "file.txt"),
-                "rm -f " + os.path.join(self.repo, "not-there.txt"),
                 "git status", "git diff --stat", "git worktree remove " + self.ok_wt,
                 "make test", "python3 -m unittest discover -s tests/host -v"]
         for cmd in cmds:
@@ -581,7 +580,11 @@ class ProtectedPathTests(unittest.TestCase):
                 self.assertEqual(verdict(cmd, repo_root=self.repo), "ALLOW")
 
     def test_forced_removal_of_absent_or_protected_targets_still_denied(self):
+        # No shortcut for an absent target: an earlier segment may create it (ln -s ... && rm -f ...).
         cmds = ["rm -f " + os.path.join(self.tmp, "not-there.txt"),   # outside the repo
+                "rm -f " + os.path.join(self.repo, "not-there.txt"),   # absent inside the repo
+                "ln -s " + self.owned + " " + os.path.join(self.repo, "d") + " && rm -f "
+                + os.path.join(self.repo, "d", "victim"),
                 "rm -f " + os.path.join(self.repo, "sub"),            # existing directory
                 "rm -f " + os.path.join(self.repo, ".claude", "nope.json")]
         for cmd in cmds:
@@ -604,9 +607,27 @@ class ProtectedPathTests(unittest.TestCase):
                      "open('a.txt', 'r+')",
                      "open('a.txt', mode='w')",
                      "import os; os.replace('a', 'b')",
-                     "import shutil; shutil.copy('a', 'b')"]:
+                     "import shutil; shutil.copy('a', 'b')",
+                     # A closing paren inside a string literal must not hide the real mode.
+                     "open('/x)'[:-1], 'w').close()",
+                     "print('evil', file=open('x)'[:-1], 'w'))",
+                     "open('.cla' + 'ude/s)'[:-1], 'w')"]:
             with self.subTest(code=code):
                 self.assertEqual(verdict("python3 -c " + repr(code), repo_root=self.repo), "DENY")
+
+    def test_python_unparseable_or_indirect_open_denied(self):
+        for code in ["open('a.txt'", "f = open; f('a.txt', 'w')", "import io; io.open('a.txt', 'w')"]:
+            with self.subTest(code=code):
+                self.assertEqual(verdict("python3 -c " + repr(code), repo_root=self.repo), "DENY")
+
+    def test_git_metadata_writes_denied(self):
+        cmds = ["echo gitdir: " + self.tmp + " > " + os.path.join(self.repo, ".git"),
+                "mv " + os.path.join(self.repo, ".git") + " " + os.path.join(self.tmp, "elsewhere"),
+                "cp README.md " + os.path.join(self.repo, ".git", "config")]
+        for cmd in cmds:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, repo_root=self.repo), "DENY")
+        self.assertEqual(verdict("echo x > .gitignore-note", repo_root=self.repo), "ALLOW")
 
 
 CHILD = r"""

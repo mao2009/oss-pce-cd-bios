@@ -6,6 +6,7 @@ permissionDecision "deny" (exit 0). An ALLOW prints nothing (exit 0), so the
 normal permission flow still applies. The command is only inspected, never run.
 Rules: docs/claude-destructive-guard.md.
 """
+import ast
 import json
 import os
 import posixpath
@@ -55,10 +56,10 @@ WRITE_NAMES = {"tee", "cp", "mv", "install", "rsync", "touch", "mkdir", "ln", "c
 DANGER_PY = re.compile(r"rmtree|remove|unlink|rmdir|removedirs|system|subprocess|popen|"
                        r"shutil|spawn|exec|eval|__import__|write|truncate|"
                        r"ctypes|socket|replace|rename|chmod|chown|symlink|copy|move|dump|link", re.I)
-# open() is judged by its arguments, not by its name: only builtin open() with a read mode passes.
-OPEN_ANY = re.compile(r"open\s*\(")
-OPEN_CALL = re.compile(r"(?<![\w.])open\s*\(([^()]*)\)")
-READ_MODE = re.compile(r"""^(?:'(?:r|rb|br|rt|tr)'|"(?:r|rb|br|rt|tr)")$""")
+# python -c: open() is judged on the parsed AST (see _open_is_read_only), never by regex.
+READ_MODES = frozenset({"r", "rb", "br", "rt", "tr"})
+# A .git path component (not .gitignore): writes and redirects to it are denied like .claude/.
+GIT_NAME = re.compile(r"(^|/)\.git(/|$)")
 ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 MNT = re.compile(r"^/mnt/([A-Za-z])(/.*)?$")
 MSYS = re.compile(r"^/([A-Za-z])(/.*)?$")  # Git Bash drive form: /c/Users/... is C:/Users/...
@@ -88,7 +89,7 @@ class Ctx:
         return c
 
 
-def canon(path):
+def canon(path, normalize=True):
     """Canonical absolute form: forward slashes; /mnt/c, /c (MSYS) and c:/ all -> C:/."""
     p = path.replace("\\", "/")
     m = MNT.match(p) or MSYS.match(p)
@@ -99,7 +100,8 @@ def canon(path):
     if m:
         drive = m.group(1).upper() + ":"
         p = p[2:] or "/"
-    p = posixpath.normpath(p)
+    if normalize:
+        p = posixpath.normpath(p)
     if p.startswith("//"):
         p = "/" + p.lstrip("/")
     return drive + p
@@ -230,7 +232,11 @@ def resolve(raw, ctx):
             raise Deny("path", "drive-relative path")
         p = ctx.cwd.rstrip("/") + "/" + p
     lex = canon(p)
-    real = canon(os.path.realpath(lex)) if os.path.exists(lex) else lex
+    # Existing paths resolve the raw spelling, so a symlink followed by ".." reaches its real target.
+    # Absent paths stay lexical: realpath would add a drive to POSIX-form entries such as /home/x on Windows,
+    # and an absent target cannot be deleted anyway.
+    raw_form = canon(p, normalize=False)
+    real = canon(os.path.realpath(raw_form)) if os.path.exists(raw_form) else lex
     return lex, real
 
 
@@ -342,8 +348,9 @@ def check_redirect(raw):
         raise Deny("path", "empty redirect target")
     # Check the raw spelling (Windows C:\...\.claude) and the unescaped one (.cl\aude).
     for v in (raw, target):
-        if ".claude" in v.replace("\\", "/").casefold():
-            raise Deny("claude-write", "redirect into .claude/ is denied")
+        low = v.replace("\\", "/").casefold()
+        if ".claude" in low or GIT_NAME.search(low):
+            raise Deny("claude-write", "redirect into .claude/ or .git is denied")
 
 
 def split_segments(text, ps=False):
@@ -446,7 +453,7 @@ def inside_claude(path, ctx):
 
 
 def rm_rule(args, ps, ctx):
-    recursive, force, targets, end = False, False, [], False
+    recursive, targets, end = False, [], False
     for a in args:
         if end or a == "-" or not a.startswith("-"):
             targets.append(a)
@@ -459,17 +466,13 @@ def rm_rule(args, ps, ctx):
         elif a.startswith("--"):
             if a == "--recursive":
                 recursive = True
-            elif a == "--force":
-                force = True
-            elif a not in ("--interactive", "--verbose"):
+            elif a not in ("--force", "--interactive", "--verbose"):
                 raise Deny("rm", "unknown rm long option")
         else:
             for ch in a[1:]:
                 if ch in "rRd":
                     recursive = True
-                elif ch == "f":
-                    force = True
-                elif ch not in "iv":
+                elif ch not in "fiv":
                     raise Deny("rm", "unknown rm option")
     if recursive:
         raise Deny("rm-recursive", "recursive delete is denied")
@@ -488,8 +491,6 @@ def rm_rule(args, ps, ctx):
         raise Deny("rm-guard", "rm inside .claude (guard and settings) is denied")
     if is_protected(rk, ctx):
         raise Deny("rm-protected", "rm target is or contains a protected path")
-    if force and not os.path.lexists(real):
-        return  # rm -f of an in-repo path that does not exist removes nothing
     if not os.path.isfile(real):
         raise Deny("rm", "rm target is not a regular file")
 
@@ -566,22 +567,32 @@ def find_rule(args, ps, ctx, depth):
 
 
 def _open_is_read_only(code):
-    """True if every open( in code is builtin open(path) or open(path, '<r|rb|br|rt|tr>') with a literal mode.
+    """True only if the code parses and every use of `open` is builtin open(path) or open(path, <literal read mode>).
 
-    Method forms (x.open), keyword or non-literal modes, extra arguments and nested calls are not
-    judged read-only, so they stay denied.
+    Judged on the AST, so string literals cannot hide a call's real arguments. Any other reference to
+    `open` (attribute such as io.open or x.open, a bare name used as a value, keyword or starred
+    arguments, a non-literal or write mode) makes the code not read-only.
     """
-    total = len(OPEN_ANY.findall(code))
-    ok = 0
-    for m in OPEN_CALL.finditer(code):
-        args = m.group(1)
-        parts = [p.strip() for p in args.split(",")]
-        if not parts[0] or "=" in args or len(parts) > 2:
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError, RecursionError):
+        return False
+    call_funcs = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "open":
+            if node.keywords or len(node.args) not in (1, 2) or any(isinstance(a, ast.Starred) for a in node.args):
+                return False
+            if len(node.args) == 2:
+                mode = node.args[1]
+                if not (isinstance(mode, ast.Constant) and isinstance(mode.value, str)
+                        and mode.value in READ_MODES):
+                    return False
+            call_funcs.add(id(node.func))
+        elif isinstance(node, ast.Name) and node.id == "open" and id(node) not in call_funcs:
             return False
-        if len(parts) == 2 and not READ_MODE.match(parts[1]):
+        elif isinstance(node, ast.Attribute) and node.attr == "open":
             return False
-        ok += 1
-    return ok == total
+    return True
 
 
 def python_rule(args):
@@ -623,10 +634,11 @@ def check_assign(word):
 
 
 def claude_mention(args):
-    """True if an argument names .claude/ (raw or unescaped) or carries a substitution."""
-    return any(".claude" in a.replace("\\", "/").casefold()
-               or ".claude" in _unescape(a).replace("\\", "/").casefold()
-               or SUBST in a for a in args)
+    """True if an argument names .claude/ or .git (raw or unescaped) or carries a substitution."""
+    def names_guarded(text):
+        low = text.replace("\\", "/").casefold()
+        return ".claude" in low or bool(GIT_NAME.search(low))
+    return any(names_guarded(a) or names_guarded(_unescape(a)) or SUBST in a for a in args)
 
 
 def unwrap(name, args):
