@@ -55,11 +55,26 @@ WRITE_NAMES = {"tee", "cp", "mv", "install", "rsync", "touch", "mkdir", "ln", "c
                "add-content", "out-file", "new-item", "cpi", "mi", "ni", "sc", "ac"}
 DANGER_PY = re.compile(r"rmtree|remove|unlink|rmdir|removedirs|system|subprocess|popen|"
                        r"shutil|spawn|exec|eval|__import__|write|truncate|"
-                       r"ctypes|socket|replace|rename|chmod|chown|symlink|copy|move|dump|link", re.I)
+                       r"ctypes|socket|replace|rename|chmod|chown|symlink|copy|move|dump|link|"
+                       r"getattr|globals|locals|vars|builtins|__dict__", re.I)
 # python -c: open() is judged on the parsed AST (see _open_is_read_only), never by regex.
 READ_MODES = frozenset({"r", "rb", "br", "rt", "tr"})
-# A .git path component (not .gitignore): writes and redirects to it are denied like .claude/.
-GIT_NAME = re.compile(r"(^|/)\.git(/|$)")
+
+
+def guarded_name(text):
+    """True if text names .claude or .git, as a path component or inside the path.
+
+    Components are compared after dropping Windows trailing dots and spaces (".git." and ".git " are .git),
+    and 8.3 short names (GIT~1, CLAUDE~1) are matched too. A .gitignore-style name is not a match.
+    """
+    low = text.replace("\\", "/").casefold()
+    if ".claude" in low:
+        return True
+    for comp in low.split("/"):
+        c = comp.rstrip(". ")
+        if c in (".git", ".claude") or re.fullmatch(r"(git|claude)~\d+", c):
+            return True
+    return False
 ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 MNT = re.compile(r"^/mnt/([A-Za-z])(/.*)?$")
 MSYS = re.compile(r"^/([A-Za-z])(/.*)?$")  # Git Bash drive form: /c/Users/... is C:/Users/...
@@ -165,17 +180,28 @@ def main_worktree_root(root):
     return os.path.dirname(common)
 
 
-def _read_local_config(path):
-    """Protected entries from one guard-local.json. Missing file: none. Unreadable or malformed: refuse."""
+REQUIRE_ENV = "OSS_PCE_GUARD_REQUIRE_LOCAL"
+
+
+def _load_local_dict(path):
+    """Parsed guard-local.json, or None if the file is absent. Unreadable or not an object: refuse."""
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except FileNotFoundError:
-        return []
+        return None
     except Exception:
         raise Deny("config", "local guard configuration is unreadable")
     if not isinstance(data, dict):
         raise Deny("config", "local guard configuration is malformed")
+    return data
+
+
+def _read_local_config(path):
+    """Protected entries from one guard-local.json. Missing file: none. Unreadable or malformed: refuse."""
+    data = _load_local_dict(path)
+    if data is None:
+        return []
     listed = data.get("protected", [])
     if not isinstance(listed, list) or not all(isinstance(item, str) for item in listed):
         raise Deny("config", "local guard configuration is malformed")
@@ -197,8 +223,23 @@ def local_roots(root):
     values += [item.strip() for item in env.split(os.pathsep) if item.strip()]
     values += _read_local_config(os.path.join(root, ".claude", "guard-local.json"))
     main = main_worktree_root(root)
+    main_cfg = os.path.join(main, ".claude", "guard-local.json")
     if os.path.normcase(main) != os.path.normcase(root):
-        values += _read_local_config(os.path.join(main, ".claude", "guard-local.json"))
+        values += _read_local_config(main_cfg)
+    # Required mode (owner opt-in, OSS_PCE_GUARD_REQUIRE_LOCAL=1): the main checkout's configuration must
+    # exist and list the owner paths in "required"; each of them must be among the configured protected roots.
+    # Anything that cannot be confirmed refuses. Without the variable, the defaults apply as before.
+    if os.environ.get(REQUIRE_ENV, "") not in ("", "0"):
+        cfg = _load_local_dict(main_cfg)
+        if cfg is None:
+            raise Deny("config", "required local guard configuration is missing")
+        required = cfg.get("required")
+        if not isinstance(required, list) or not required or not all(isinstance(r, str) for r in required):
+            raise Deny("config", "required local guard configuration lists no required paths")
+        resolved = {_absolute_root(item) for item in values if item}
+        for r in required:
+            if _absolute_root(r) not in resolved:
+                raise Deny("config", "a required protected path is not configured")
     return [_absolute_root(item) for item in values if item]
 
 
@@ -348,8 +389,7 @@ def check_redirect(raw):
         raise Deny("path", "empty redirect target")
     # Check the raw spelling (Windows C:\...\.claude) and the unescaped one (.cl\aude).
     for v in (raw, target):
-        low = v.replace("\\", "/").casefold()
-        if ".claude" in low or GIT_NAME.search(low):
+        if guarded_name(v):
             raise Deny("claude-write", "redirect into .claude/ or .git is denied")
 
 
@@ -588,10 +628,17 @@ def _open_is_read_only(code):
                         and mode.value in READ_MODES):
                     return False
             call_funcs.add(id(node.func))
+        elif isinstance(node, ast.Name) and node.id in ("builtins", "__builtins__"):
+            return False
         elif isinstance(node, ast.Name) and node.id == "open" and id(node) not in call_funcs:
             return False
         elif isinstance(node, ast.Attribute) and node.attr == "open":
             return False
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            # `from io import open as o` and `import builtins` reach open without a Name "open".
+            for alias in node.names:
+                if alias.name in ("open", "builtins") or alias.asname in ("open", "builtins"):
+                    return False
     return True
 
 
@@ -635,10 +682,7 @@ def check_assign(word):
 
 def claude_mention(args):
     """True if an argument names .claude/ or .git (raw or unescaped) or carries a substitution."""
-    def names_guarded(text):
-        low = text.replace("\\", "/").casefold()
-        return ".claude" in low or bool(GIT_NAME.search(low))
-    return any(names_guarded(a) or names_guarded(_unescape(a)) or SUBST in a for a in args)
+    return any(guarded_name(a) or guarded_name(_unescape(a)) or SUBST in a for a in args)
 
 
 def unwrap(name, args):
@@ -694,7 +738,7 @@ def analyze_argv(words, ctx, ps, depth):
         # Target not statically known (variable or backtick): fail closed.
         if any("$" in a or "`" in a for a in args):
             raise Deny("unexpanded", "write with an unexpanded variable or backtick is not inspected")
-        if claude_mention(args) or inside_claude(ctx.cwd, ctx):
+        if claude_mention(args) or inside_claude(ctx.cwd, ctx) or guarded_name(ctx.cwd):
             raise Deny("claude-write", "write to .claude/ (guard, registry, settings) is denied")
     elif PY_NAME.match(name) or name in INTERP:
         if claude_mention(args):
@@ -730,8 +774,8 @@ def analyze_text(text, ctx, ps, depth):
     for body in subs:
         analyze_text(body, ctx.copy(), ps, depth + 1)
     for seg, ops in zip(segs, redirs):
-        if ops and inside_claude(ctx.cwd, ctx):
-            raise Deny("claude-write", "redirect while cwd is inside .claude/ is denied")
+        if ops and (inside_claude(ctx.cwd, ctx) or guarded_name(ctx.cwd)):
+            raise Deny("claude-write", "redirect while cwd is inside .claude/ or .git is denied")
         for target in ops:
             check_redirect(target)
         analyze_argv(words_of(seg, ps), ctx, ps, depth)

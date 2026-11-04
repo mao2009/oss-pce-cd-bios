@@ -458,7 +458,8 @@ class ProtectedPathTests(unittest.TestCase):
         self._registry(self.repo, {self.home, self.repo, self.owned, self.ok_wt,
                                    os.path.dirname(self.home), self.tmp})
         env = mock.patch.dict(os.environ, {"HOME": self.home, "USERPROFILE": self.home,
-                                           "OSS_PCE_GUARD_PROTECTED": ""})
+                                           "OSS_PCE_GUARD_PROTECTED": "",
+                                           "OSS_PCE_GUARD_REQUIRE_LOCAL": ""})
         env.start()
         self.addCleanup(env.stop)
 
@@ -545,6 +546,52 @@ class ProtectedPathTests(unittest.TestCase):
         self.assertEqual(verdict("git worktree remove " + self.home, repo_root=self.repo), "DENY")
         self.assertEqual(verdict("git worktree remove " + self.owned, repo_root=self.repo), "ALLOW")
 
+    # Required mode (owner opt-in): OSS_PCE_GUARD_REQUIRE_LOCAL=1 refuses whenever the owner configuration
+    # cannot be confirmed. Without it, the defaults apply (see the tests above).
+    def _required(self, env_value=True):
+        return mock.patch.dict(os.environ, {"OSS_PCE_GUARD_REQUIRE_LOCAL": "1" if env_value else ""})
+
+    def test_required_mode_without_config_denies(self):
+        with self._required():
+            self.assertEqual(verdict("git status", repo_root=self.repo), "DENY")
+
+    def test_required_mode_with_invalid_json_denies(self):
+        self._local("{bad")
+        with self._required():
+            self.assertEqual(verdict("git status", repo_root=self.repo), "DENY")
+
+    def test_required_mode_without_required_list_denies(self):
+        self._local(json.dumps({"protected": [self.owned]}))
+        with self._required():
+            self.assertEqual(verdict("git status", repo_root=self.repo), "DENY")
+
+    def test_required_mode_with_missing_required_path_denies(self):
+        self._local(json.dumps({"protected": [self.owned], "required": [self.ok_wt]}))
+        with self._required():
+            self.assertEqual(verdict("git status", repo_root=self.repo), "DENY")
+
+    def test_required_mode_with_complete_config_allows_and_protects(self):
+        self._local(json.dumps({"protected": [self.owned], "required": [self.owned]}))
+        with self._required():
+            self.assertEqual(verdict("git status", repo_root=self.repo), "ALLOW")
+            self.assertEqual(verdict("git worktree remove " + self.owned, repo_root=self.repo), "DENY")
+
+    def test_required_mode_off_keeps_defaults_without_config(self):
+        with self._required(env_value=False):
+            self.assertEqual(verdict("git status", repo_root=self.repo), "ALLOW")
+
+    def test_linked_worktree_cannot_weaken_main_config(self):
+        main = os.path.join(self.tmp, "main2")
+        linked = os.path.join(self.tmp, "linked2")
+        gitdir = os.path.join(main, ".git", "worktrees", "linked2")
+        write_text(os.path.join(linked, ".git"), "gitdir: " + gitdir + "\n")
+        write_text(os.path.join(gitdir, "commondir"), "../..\n")
+        write_text(os.path.join(main, ".claude", "guard-local.json"), json.dumps({"protected": [self.owned]}))
+        # The worktree's own file tries to remove the protection: it can only add, so the main entry still holds.
+        write_text(os.path.join(linked, ".claude", "guard-local.json"), json.dumps({"protected": []}))
+        self._registry(linked, {self.owned})
+        self.assertEqual(verdict("git worktree remove " + self.owned, repo_root=linked), "DENY")
+
     # Worktree removal.
     def test_worktree_removal_cases(self):
         self.assertEqual(verdict("git worktree remove " + self.ok_wt, repo_root=self.repo), "ALLOW")
@@ -616,7 +663,10 @@ class ProtectedPathTests(unittest.TestCase):
                 self.assertEqual(verdict("python3 -c " + repr(code), repo_root=self.repo), "DENY")
 
     def test_python_unparseable_or_indirect_open_denied(self):
-        for code in ["open('a.txt'", "f = open; f('a.txt', 'w')", "import io; io.open('a.txt', 'w')"]:
+        for code in ["open('a.txt'", "f = open; f('a.txt', 'w')", "import io; io.open('a.txt', 'w')",
+                     "from io import open as o; o('a.txt', 'w')",
+                     "import builtins; builtins.open('a.txt', 'w')",
+                     "getattr(__builtins__, 'open')('a.txt', 'w')"]:
             with self.subTest(code=code):
                 self.assertEqual(verdict("python3 -c " + repr(code), repo_root=self.repo), "DENY")
 
@@ -627,7 +677,21 @@ class ProtectedPathTests(unittest.TestCase):
         for cmd in cmds:
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd, repo_root=self.repo), "DENY")
+        # Current-directory and Windows-alias forms of .git are denied too.
+        for cmd in ["cd " + os.path.join(self.repo, ".git") + " && echo x > config",
+                    "cd " + os.path.join(self.repo, ".git") + " && tee config",
+                    "echo x > .git.",
+                    "echo x > .git ",
+                    "echo x > GIT~1/config",
+                    "echo x > CLAUDE~1/settings.json"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, repo_root=self.repo), "DENY")
         self.assertEqual(verdict("echo x > .gitignore-note", repo_root=self.repo), "ALLOW")
+        self.assertEqual(verdict("echo x > docs/.gitkeep", repo_root=self.repo), "ALLOW")
+
+    def test_python_read_with_import_still_allowed(self):
+        self.assertEqual(verdict("python3 -c " + repr("import json; print(json.load(open('x.json')))"),
+                                 repo_root=self.repo), "ALLOW")
 
 
 CHILD = r"""
