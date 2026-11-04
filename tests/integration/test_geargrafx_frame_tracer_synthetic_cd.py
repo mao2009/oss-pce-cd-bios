@@ -35,7 +35,7 @@ class FrameTracerSyntheticCdRealCoreTests(unittest.TestCase):
         base = ROOT / "build/debug/bios-dev/dev-only-not-compatible-syscard3.pce"
         cls.rom = build_dev_boot_internal(base, ROOT / "build/debug/dev-boot-internal", "debug")
 
-    def run_tracer(self, frames=120, core_capacity=None, warm_reset_frame=None):
+    def run_tracer(self, frames=120, core_capacity=None, warm_reset_frame=None, events=1):
         with tracer.tempfile.TemporaryDirectory(prefix="frame-synthetic-cd-") as temporary:
             media = Path(temporary) / "media"
             approved_root = Path(temporary) / "frame-tracer-root"
@@ -48,7 +48,7 @@ class FrameTracerSyntheticCdRealCoreTests(unittest.TestCase):
             with mock.patch.object(tracer, "OPENCODE_TEMP_ROOT", approved_root), \
                     mock.patch.object(tracer, "JOB_PARENT", approved_root / "frame-tracer-jobs"):
                 result = tracer.trace(SimpleNamespace(
-                    frames=frames, events=1, timeout=120.0, rom=self.rom, cue=media / CUE_NAME,
+                    frames=frames, events=events, timeout=120.0, rom=self.rom, cue=media / CUE_NAME,
                     run_start_frame=None, run_hold_frames=None, observe_ram=True, core_capacity=core_capacity,
                     warm_reset_frame=warm_reset_frame,
                 ))
@@ -89,10 +89,36 @@ class FrameTracerSyntheticCdRealCoreTests(unittest.TestCase):
             self.assertEqual(bound["status"], tracer.LOWER_BOUND)
             self.assertEqual(bound["value"], summary["max_frame_scsi_events"])
             self.assertLessEqual(bound["value"], entries["retained_max"])  # only read entries are counted
-        # REGION classification (checked by the reader as well): at most one baseline, and only first.
-        kinds = [event["region_kind"] for event in result["events"] if event["kind"] == "region"]
-        self.assertNotIn("baseline", kinds[1:])
         return entries, drops, capacity
+
+    def region_kinds(self, result):
+        return [event["region_kind"] for event in result["events"] if event["kind"] == "region"]
+
+    def test_region_classification_on_a_gap_free_run(self):
+        # A ring large enough to retain REGION events: without core-trace gaps every REGION is the
+        # single leading baseline (if retained) or a transition, never after_gap.
+        result = self.run_tracer(frames=20, events=256)
+        entries, drops, _ = self.assert_core_accounting(result, 20)
+        self.assert_default_capacity_is_gap_free(entries, drops, result["measurements"])
+        kinds = self.region_kinds(result)
+        self.assertTrue(kinds, "no REGION event retained; the check would be vacuous")
+        self.assertNotIn("after_gap", kinds)
+        self.assertNotIn("baseline", kinds[1:])
+        if result["summary"]["dropped"] == 0:
+            self.assertEqual(kinds[0], "baseline")
+
+    def test_region_events_after_forced_gaps_are_after_gap_not_baseline(self):
+        # Capacity 1: every frame loses entries, the gap is carried to the next REGION, and the one
+        # entry read per frame can never yield a transition.  The PR-B defect would show a second baseline.
+        result = self.run_tracer(frames=30, core_capacity=1, events=256)
+        entries, drops, _ = self.assert_core_accounting(result, 30)
+        self.assertGreater(drops["value"], 0)
+        kinds = self.region_kinds(result)
+        self.assertIn("after_gap", kinds)
+        self.assertNotIn("baseline", kinds[1:])
+        self.assertLessEqual(set(kinds), {"after_gap", "baseline"})
+        gap_regions = [event for event in result["events"] if event["kind"] == "region" and event["trace_gap"]]
+        self.assertTrue(all(event["from_region"] == "unknown" for event in gap_regions))
 
     def assert_default_capacity_is_gap_free(self, entries, drops, table):
         # One frame is ~119k CPU cycles and every instruction takes at least 2, so a frame cannot log
@@ -172,6 +198,11 @@ class FrameTracerSyntheticCdRealCoreTests(unittest.TestCase):
         # logger, so every frame, including the reset frame, must still be accounted.
         result = self.run_tracer(frames=120, warm_reset_frame=60)
         self.assertEqual(result["capability"]["warm_reset_frame"], 60)
+        # The requested reset is declared, not hidden behind guest_mutation:false, and the reset frame's
+        # RAM delta (which includes the reset's own writes) is never attributed to SCSI.
+        self.assertEqual(result["capability"]["guest_mutation"], "requested_warm_reset")
+        for row in result["summary"]["ram_deltas"]:
+            self.assertNotIn(60, row["scsi_update_frames"])
         entries, drops, _ = self.assert_core_accounting(result, 120)
         self.assert_default_capacity_is_gap_free(entries, drops, result["measurements"])
 

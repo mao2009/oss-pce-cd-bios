@@ -47,6 +47,23 @@
 - トレースを有効にしたことが `RunToVBlank` 内のコア動作に与える影響は、この検査の対象外。観測器が干渉しないことの主張ではない。
 - warm reset（`RESET` 行）は、要求に基づいてゲストを意図的にリセットする操作であり、この検査の対象外。
 
+## warm reset
+
+`--warm-reset-frame N`（2..frames）を指定すると、フレーム N の `RunToVBlank` の直前に、固定版コアの `GeargrafxCore::ResetMedia(true)` を1回だけ呼ぶ。これは既存の API プローブと同じ warm reset である。
+
+- **宣言**：CAP の `guest_mutation` は、リセットを要求しない場合は `false`、要求した場合は `"requested_warm_reset"` になる。どちらの値も、トレーサー自身がゲストのメモリやレジスタに書き込むことはないことを前提としている。読み手は、`guest_mutation` の値と `warm_reset_frame` および `RESET` 行が一致することを必須とする。
+- **コアの挙動**：`Reset()` は、コアの状態を次のように変える。`preserve_ram` で戻るのはバックアップ RAM だけで、`RESET` 行の `ram_preserved` は `backup_ram_only` になる。
+  - マスタークロックを 0 に戻す。
+  - CPU、VDC、CD、SCSI をリセットする。
+  - MPR を初期化し直す（コアの設定に従い、固定値または乱数）。
+  - WRAM、CD RAM、カード RAM を書き換える（WRAM も、固定値または乱数）。
+- **TraceLogger**：`Reset()` は TraceLogger に触れない。そのため、リセットをまたいでもカウンタは連続し、不連続フレームは発生しない（実コアテストで確認している）。
+- **フレーム N の RAM**：フレーム N の RAM 差分には、リセット自体による書き換えが含まれる。そのため次のように扱う。
+  - そのフレームの SCSI 相関は UNKNOWN とする。
+  - `scsi_update_frames` には入れない（読み手が検証する）。
+  - HANDOFF 候補は出さない。
+- **`event_cycle`**：マスタークロックが 0 に戻るので、リセット後の REGION の `event_cycle` は小さくなる（巻き戻る）。`event_cycle` を実行全体で単調な時刻として扱わないこと。
+
 ## 容量の上限
 
 `MAX_CORE_CAPACITY`（Python）は、固定版の `TRACE_BUFFER_SIZE`（100000）と同じ値である。C++ 側の上限は `TRACE_BUFFER_SIZE` そのもので、これを超える値は argv の段階で拒否する。この対応関係は次のテストで固定している。

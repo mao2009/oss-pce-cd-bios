@@ -719,8 +719,8 @@ class CoreTraceAccountingTests(unittest.TestCase):
         self.assertIn("requested core capacity", log["reason"])
 
     def test_trace_passes_the_warm_reset_and_checks_it_was_applied(self):
-        reset = {"frame": 2, "kind": "warm", "api": tracer.WARM_RESET_API, "performed": True}
-        log, argv = self.run_trace(None, output([event()], cap_fields={"warm_reset_frame": 2}, resets=[reset]), 2)
+        log, argv = self.run_trace(None, output([event()], cap_fields=warm_cap(), resets=[WARM_RESET],
+                                                ram_deltas=warm_rows()), 2)
         self.assertEqual((log["status"], argv[-1]), ("PASS", "2"))
         log, _ = self.run_trace(None, output([event()]), 2)  # tracer reported warm_reset_frame=0
         self.assertEqual((log["status"], log["evidence"]), ("FAIL", "NOT_RUN"))
@@ -819,14 +819,55 @@ class RegionClassificationTests(unittest.TestCase):
         self.assertIn('!from_unknown ? "transition" : event.trace_gap ? "after_gap" : "baseline"', source)
 
 
+def warm_cap(frame=2):
+    """CAP fields of a run that requested a warm reset before `frame`."""
+    return {"warm_reset_frame": frame, "guest_mutation": "requested_warm_reset"}
+
+
+def warm_rows():
+    """RAM rows of a valid warm-reset run: the reset frame (2) is not SCSI-attributed."""
+    rows = ram_deltas()
+    rows[0]["scsi_update_frames"] = [1]
+    return rows
+
+
+WARM_RESET = {"frame": 2, "kind": "warm", "api": "GeargrafxCore::ResetMedia(true)", "performed": True,
+              "master_clock_reset": True, "ram_preserved": "backup_ram_only"}
+
+
 class WarmResetRecordTests(unittest.TestCase):
-    RESET = {"frame": 2, "kind": "warm", "api": "GeargrafxCore::ResetMedia(true)", "performed": True}
+    RESET = WARM_RESET
 
     def test_accepts_the_requested_warm_reset(self):
-        tracer.parse_records(output([event()], cap_fields={"warm_reset_frame": 2}, resets=[self.RESET]))
+        cap, _, _ = tracer.parse_records(output([event()], cap_fields=warm_cap(), resets=[self.RESET],
+                                                ram_deltas=warm_rows()))
+        self.assertEqual(cap["guest_mutation"], "requested_warm_reset")  # declared, not hidden as false
+
+    def test_refuses_undeclared_or_misdeclared_guest_mutation(self):
+        rows = ram_deltas()
+        rows[0]["scsi_update_frames"] = [2]  # the reset frame
+        cases = {
+            "warm reset declared as no mutation": (
+                output([event()], cap_fields={"warm_reset_frame": 2}, resets=[self.RESET]),
+                "tracer safety capability missing"),
+            "mutation declared without a warm reset": (
+                output([event()], cap_fields={"guest_mutation": "requested_warm_reset"}),
+                "tracer safety capability missing"),
+            "other mutation label": (
+                output([event()], cap_fields={"warm_reset_frame": 2, "guest_mutation": "reset"}, resets=[self.RESET]),
+                "tracer safety capability missing"),
+            "zero is not false": (output([event()], cap_fields={"guest_mutation": 0}), "tracer safety capability missing"),
+            "reset frame attributed to SCSI": (
+                output([event()], cap_fields=warm_cap(), resets=[self.RESET], ram_deltas=rows),
+                "warm reset frame attributed as a SCSI-correlated RAM update"),
+        }
+        for name, (text, message) in cases.items():
+            with self.subTest(name):
+                with self.assertRaisesRegex(ValueError, message):
+                    tracer.parse_records(text)
 
     def test_refuses_missing_extra_or_failed_resets(self):
-        warm = {"warm_reset_frame": 2}
+        warm = warm_cap()
         cases = {
             "requested but not recorded": (output([event()], cap_fields=warm), "does not match the requested"),
             "recorded but not requested": (output([event()], resets=[self.RESET]), "does not match the requested"),
@@ -838,8 +879,14 @@ class WarmResetRecordTests(unittest.TestCase):
                            "does not match the requested"),
             "other API": (output([event()], cap_fields=warm, resets=[dict(self.RESET, api="Reset()")]),
                           "does not match the requested"),
-            "frame 1": (output([event()], cap_fields={"warm_reset_frame": 1}), "invalid warm reset frame"),
-            "after last frame": (output([event()], cap_fields={"warm_reset_frame": 3}), "invalid warm reset frame"),
+            "RAM preservation not stated": (output([event()], cap_fields=warm,
+                                                   resets=[dict(self.RESET, ram_preserved="all")]),
+                                            "does not match the requested"),
+            "master clock reset not stated": (output([event()], cap_fields=warm,
+                                                     resets=[dict(self.RESET, master_clock_reset=False)]),
+                                              "does not match the requested"),
+            "frame 1": (output([event()], cap_fields=warm_cap(1)), "invalid warm reset frame"),
+            "after last frame": (output([event()], cap_fields=warm_cap(3)), "invalid warm reset frame"),
             "bool frame": (output([event()], cap_fields={"warm_reset_frame": True}), "invalid warm reset frame"),
             "RESET in pre-PR-C output": (output([event()], pre_c=True, resets=[self.RESET]), "PR-C records without"),
             "partial PR-C capability": (output([event()], cap_fields={"warm_reset_frame": MISSING}),
@@ -860,9 +907,15 @@ class WarmResetRecordTests(unittest.TestCase):
             encoding="utf-8")
         self.assertEqual(source.count("core.ResetMedia(true);"), 1)
         # Guarded only by the requested frame, and recorded right after the call (real-core test checks it ran).
-        self.assertRegex(source, r"if \(warm_reset_frame && number == \(unsigned\)warm_reset_frame\) \{\n"
+        self.assertRegex(source, r"const bool reset_this_frame = warm_reset_frame && number == \(unsigned\)warm_reset_frame;"
+                                 r"\n\s*if \(reset_this_frame\) \{\n"
                                  r"(\s*//[^\n]*\n)*\s*const bool media_ready = core\.GetMedia\(\)->IsReady\(\);\n"
                                  r"\s*core\.ResetMedia\(true\);\n\s*std::printf\(\"RESET ")
+        # The reset frame's RAM delta is never attributed to SCSI and never yields a HANDOFF candidate.
+        self.assertIn("(frame_scsi_incomplete || reset_this_frame) && delta.changed != 0", source)
+        self.assertIn("if (delta.changed && scsi_observed_this_frame && !reset_this_frame)", source)
+        self.assertIn("if (!reset_this_frame && now_cpu.pc_is_wram && wram_changed &&", source)
+        self.assertIn('warm_reset_frame ? "\\"requested_warm_reset\\"" : "false"', source)
         reset = source.index("core.ResetMedia(true);")
         self.assertLess(source.index("for (unsigned number = 1;"), reset)
         self.assertLess(reset, source.index("core.RunToVBlank("))
@@ -899,7 +952,7 @@ class ScsiFailClosedTests(unittest.TestCase):
         table = table_of(output([event()], core_trace=self.BROKEN, overflow=True))
         self.assert_lower_bound(table, 3, "discontinuous in 1 of 2")
 
-    def test_legacy_outputs_never_measure_the_scsi_maximum(self):
+    def test_pre_pr_b_output_never_measures_and_pr_b_output_is_classified_by_its_accounting(self):
         self.assert_lower_bound(table_of(output([event()], legacy=True)), 3, "pre-PR-B tracer output")
         # PR-B output (core_trace, no PR-C fields) with no gap is exact by the same accounting.
         self.assertEqual(table_of(output([event()], pre_c=True))["max_frame_scsi_events"]["status"], tracer.MEASURED)

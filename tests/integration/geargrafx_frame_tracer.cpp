@@ -313,10 +313,12 @@ int main(int argc, char** argv) {
         return 3;
     CpuSnap previous_cpu = cpu_snap(core, cpu, memory);
     CdSnap previous_cd = cd_snap(scsi, cdrom);
-    std::printf("CAP {\"normal_frame_execution\":true,\"instruction_step\":false,\"guest_mutation\":false,"
+    // guest_mutation: the tracer itself never writes guest memory or registers.  A requested warm reset
+    // is the one deliberate guest-state change, and the capability says so instead of claiming false.
+    std::printf("CAP {\"normal_frame_execution\":true,\"instruction_step\":false,\"guest_mutation\":%s,"
                 "\"mmio_reads\":false,\"scsi_event_notification\":true,\"cpu_event_notification\":true,"
                 "\"ram_observation\":%s,\"ram_delta_summary\":true,\"ram_regions\":[",
-                observe_ram ? "true" : "false");
+                warm_reset_frame ? "\"requested_warm_reset\"" : "false", observe_ram ? "true" : "false");
     bool first_region = true;
     for (const RamTracker& ram : rams) {
         if (!ram.present) continue;
@@ -364,15 +366,21 @@ int main(int argc, char** argv) {
     bool trace_gap = false;
 
     for (unsigned number = 1; number <= (unsigned)frames; ++number) {
-        if (warm_reset_frame && number == (unsigned)warm_reset_frame) {
-            // Public core API; the trace logger is not part of GeargrafxCore::Reset().
+        const bool reset_this_frame = warm_reset_frame && number == (unsigned)warm_reset_frame;
+        if (reset_this_frame) {
+            // Public core API; the trace logger is not part of GeargrafxCore::Reset().  Reset() zeroes the
+            // master clock, resets CPU/VDC/CD/SCSI, reinitializes MPRs and rewrites WRAM/CD RAM/card RAM
+            // (fixed value or random, per core settings);
+            // preserve_ram restores only the backup RAM.  This frame's RAM deltas therefore mix reset writes
+            // with guest execution, so its SCSI correlation is UNKNOWN and no HANDOFF candidate is claimed.
             const bool media_ready = core.GetMedia()->IsReady();
             core.ResetMedia(true);
             std::printf("RESET {\"frame\":%u,\"kind\":\"warm\",\"api\":\"GeargrafxCore::ResetMedia(true)\","
-                        "\"performed\":%s}\n", number, media_ready ? "true" : "false");
+                        "\"performed\":%s,\"master_clock_reset\":true,\"ram_preserved\":\"backup_ram_only\"}\n",
+                        number, media_ready ? "true" : "false");
         }
-        // This is the pinned core's public controller API.  No guest RAM, CPU,
-        // MPR, IRQ, CD, or SCSI state is changed by the tracer.
+        // This is the pinned core's public controller API.  Apart from a requested warm reset above, no
+        // guest RAM, CPU, MPR, IRQ, CD, or SCSI state is changed by the tracer.
         if (run_start && number == (unsigned)run_start) {
             core.KeyPressed(GG_CONTROLLER_1, GG_KEY_RUN);
             std::printf("INPUT {\"frame\":%u,\"action\":\"press\",\"run_pressed\":%s}\n", number,
@@ -450,9 +458,12 @@ int main(int argc, char** argv) {
             if (std::strcmp(ram.name, "wram") == 0) wram_changed = delta.changed;
             // Only a frame that changed this RAM region and lacked complete SCSI notifications
             // can make its correlation UNKNOWN; unchanged frames carry no correlation claim.
+            // A warm-reset frame's delta includes the reset's own RAM writes: its correlation is UNKNOWN and
+            // it is never attributed to a SCSI notification.
             FrameTracerAccumulateRam(&ram.summary, delta, number, scsi_observed_this_frame,
-                                     frame_scsi_incomplete && delta.changed != 0);
-            if (delta.changed && scsi_observed_this_frame) ram.scsi_update_frames.push_back(number);
+                                     (frame_scsi_incomplete || reset_this_frame) && delta.changed != 0);
+            if (delta.changed && scsi_observed_this_frame && !reset_this_frame)
+                ram.scsi_update_frames.push_back(number);
             if (delta.changed)
                 ring.push({Event::RAM, number, now_cpu, now_cd, delta.changed, delta.first, delta.last,
                            0, 0, 0, 0, &ram.mapping});
@@ -460,7 +471,7 @@ int main(int argc, char** argv) {
         }
         // This is deliberately only a candidate: a mapped WRAM PC plus a recent
         // WRAM update, never a claim of a BIOS-to-game control transfer.
-        if (now_cpu.pc_is_wram && wram_changed &&
+        if (!reset_this_frame && now_cpu.pc_is_wram && wram_changed &&
             (!previous_cpu.pc_is_wram || previous_cpu.physical_pc != now_cpu.physical_pc))
             ring.push({Event::HANDOFF, number, now_cpu, now_cd, 0, 0, 0, 0, 0, 0, 0, nullptr});
         previous_cpu = now_cpu;

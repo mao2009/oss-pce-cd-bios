@@ -51,6 +51,21 @@ class FrameTracerCdResultTests(unittest.TestCase):
                 self.assertEqual(sibling.read_text(), "keep")  # nothing else in the folder is touched
                 self.assertEqual(sorted(p.name for p in path.parent.iterdir()), [bridge.EVIDENCE_NAME, "unrelated.txt"])
 
+    def test_symlinked_evidence_path_is_refused_without_writing_through_it(self):
+        for linked in (bridge.EVIDENCE_NAME, "frame-tracer-cd", "build"):
+            with self.subTest(linked=linked), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                real_is_symlink = Path.is_symlink
+                stderr = StringIO()
+                with mock.patch.object(bridge, "ROOT", root), \
+                        mock.patch.object(Path, "is_symlink", lambda self: self.name == linked or real_is_symlink(self)), \
+                        mock.patch.object(bridge, "run", side_effect=AssertionError("must not run")), \
+                        redirect_stderr(stderr):
+                    code = bridge.main([])
+                self.assertEqual(code, 1)
+                self.assertIn("symbolic link", stderr.getvalue())
+                self.assertFalse(evidence_file(root).exists())  # nothing written through the link
+
     def test_failure_records_carry_no_reason_text_or_paths(self):
         self.invoke(ValueError("/home/someone/private/path detail"))
         self.assertNotIn("private", json.dumps(self.last_record))

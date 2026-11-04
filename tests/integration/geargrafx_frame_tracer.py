@@ -395,6 +395,7 @@ def cleanup_tracked_job_dir(path, identity):
 
 REGION_KINDS = {"baseline", "after_gap", "transition"}
 WARM_RESET_API = "GeargrafxCore::ResetMedia(true)"
+REQUESTED_WARM_RESET = "requested_warm_reset"
 
 
 def validate_regions_and_resets(cap, end, events, resets, has_core_trace):
@@ -419,9 +420,13 @@ def validate_regions_and_resets(cap, end, events, resets, has_core_trace):
     frames, warm = cap["frames"], cap["warm_reset_frame"]
     if type(warm) is not int or not (warm == 0 or 2 <= warm <= frames):
         raise ValueError("invalid warm reset frame")
-    expected = [] if not warm else [{"frame": warm, "kind": "warm", "api": WARM_RESET_API, "performed": True}]
+    expected = [] if not warm else [{"frame": warm, "kind": "warm", "api": WARM_RESET_API, "performed": True,
+                                     "master_clock_reset": True, "ram_preserved": "backup_ram_only"}]
     if resets != expected:
         raise ValueError("warm reset record does not match the requested reset")
+    # The reset frame's RAM delta includes the reset's own writes: it is never attributed to SCSI.
+    if warm and any(warm in row.get("scsi_update_frames", ()) for row in end["ram_deltas"]):
+        raise ValueError("warm reset frame attributed as a SCSI-correlated RAM update")
     core = end["core_trace"]
     gaps_possible = core["gap_frames"] > 0 or core["discontinuity_frames"] > 0
     for index, event in enumerate(regions):
@@ -474,7 +479,13 @@ def parse_records(stdout, require_ram_observation=True):
         raise ValueError("not a normal-frame trace")
     if type(cap.get("ram_observation")) is not bool:
         raise ValueError("invalid RAM observation capability")
-    if (cap.get("guest_mutation") is not False or cap.get("mmio_reads") is not False or
+    # The tracer never writes guest state; the only exception is a requested, recorded warm reset,
+    # which must be declared as such (checked against the RESET record in validate_regions_and_resets).
+    warm_requested = type(cap.get("warm_reset_frame")) is int and cap["warm_reset_frame"] > 0
+    allowed_mutation = REQUESTED_WARM_RESET if warm_requested else False
+    mutation = cap.get("guest_mutation")
+    if (type(mutation) is not type(allowed_mutation) or mutation != allowed_mutation or
+            cap.get("mmio_reads") is not False or
             cap.get("scsi_event_notification") is not True or cap.get("cpu_event_notification") is not True or
             cap.get("ram_delta_summary") is not True or
             (cap.get("ram_observation") is not True and require_ram_observation)):

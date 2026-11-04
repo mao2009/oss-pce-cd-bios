@@ -113,8 +113,17 @@ EVIDENCE_NAME = "frame-tracer-measurements.json"
 def write_evidence(mode, record):
     """Write this diagnostic's own evidence file (overwritten in place; nothing else is touched)."""
     output = ROOT / "build" / mode / "frame-tracer-cd"
+    target = output / EVIDENCE_NAME
+    chain = (ROOT / "build", ROOT / "build" / mode, output, target)
+
+    def refuse_links():
+        # Never follow a link out of build/: a symlinked folder or evidence file is refused, not written through.
+        if any(path.is_symlink() for path in chain):
+            raise ValueError("refusing to write frame-tracer evidence through a symbolic link")
+    refuse_links()  # before mkdir, so no directory is created through a linked parent
     output.mkdir(parents=True, exist_ok=True)
-    (output / EVIDENCE_NAME).write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+    refuse_links()
+    target.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
 
 
 def status_record(status):
@@ -176,7 +185,11 @@ def main(argv=None):
     args = parser.parse_args(argv)
     # Mark the evidence file INCOMPLETE before running, so a file left by an earlier successful run
     # can never stand in for this one; only a completed, checked run rewrites it as PASS.
-    write_evidence(args.mode, status_record("INCOMPLETE"))
+    try:
+        write_evidence(args.mode, status_record("INCOMPLETE"))
+    except (OSError, ValueError) as error:
+        print(f"FAIL: frame-tracer CD integration evidence path: {error}", file=sys.stderr)
+        return 1
     try:
         run(args.mode)
     except IntegrationBlocked as error:
