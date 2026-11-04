@@ -14,6 +14,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "integration"))
 import geargrafx_frame_tracer as tracer  # noqa: E402
 
+MISSING = object()  # sentinel: drop the END field entirely
+
 
 def event(kind="sample", frame=1):
     row = {"kind": kind, "frame": frame, "master_clock": 1, "pc": 57344, "pc_page": 7, "pc_bank": 0,
@@ -30,14 +32,21 @@ def event(kind="sample", frame=1):
     return row
 
 
-def output(events, dropped=0, trace_events_dropped=0, capacity=4, run=None):
+def output(events, dropped=0, trace_events_dropped=0, capacity=4, run=None, **end_fields):
     cap = {"normal_frame_execution": True, "instruction_step": False, "guest_mutation": False, "scsi_event_notification": True,
             "ram_observation": True, "ram_regions": [], "cpu_event_notification": True,
            "mmio_reads": False, "ring_capacity": capacity, "frames": 2, "disc_given": False,
            "ram_delta_summary": True,
            "run_input_requested": bool(run), "run_start_frame": 1 if run else 0, "run_hold_frames": 2 if run else 0}
     end = {"frames": 2, "events": len(events), "dropped": dropped, "trace_events_dropped": trace_events_dropped,
-           "overflow": bool(dropped or trace_events_dropped), "ram_deltas": ram_deltas()}
+           "overflow": bool(dropped or trace_events_dropped), "ram_deltas": ram_deltas(),
+           "pushed": len(events) + dropped, "core_capacity": 100000, "max_frame_core_entries": 40,
+           "max_frame_scsi_events": 3}
+    for key, value in end_fields.items():
+        if value is MISSING:
+            end.pop(key, None)
+        else:
+            end[key] = value
     inputs = [] if not run else ["INPUT " + json.dumps({"frame": 1, "action": "press", "run_pressed": True}),
                                  "INPUT " + json.dumps({"frame": 2, "action": "release", "run_pressed": False})]
     return "\n".join(["CAP " + json.dumps(cap), *inputs, *["EVENT " + json.dumps(row) for row in events],
@@ -351,6 +360,118 @@ class CoreTraceCapacityTests(unittest.TestCase):
         self.assertNotIn("SetCapacity(kRingSize)", source)
         self.assertIn("trace->GetCapacity()", source)
         self.assertIn("total > core_capacity", source)
+
+
+class MeasurementTableTests(unittest.TestCase):
+    """PR-A: core_capacity and the output-ring dropped count; the other three stay NOT_MEASURED."""
+
+    def test_valid_run_classifies_each_quantity_without_estimates(self):
+        cap, _, end = tracer.parse_records(output([event("sample", 2), event("handoff", 2)], dropped=7, capacity=2))
+        table = tracer.measurements(cap, end)
+        self.assertEqual(set(table), {"core_capacity", "output_ring_dropped", "max_frame_core_entries",
+                                      "max_frame_scsi_events", "core_trace_dropped_frames"})
+        self.assertEqual(table["core_capacity"], {
+            "status": tracer.REPORTED_BY_CORE, "value": 100000, "kind": "configuration",
+            "source": "pinned core TraceLogger::GetCapacity()"})
+        ring = table["output_ring_dropped"]
+        self.assertEqual((ring["status"], ring["value"], ring["pushed"], ring["retained"], ring["ring_capacity"]),
+                         (tracer.MEASURED, 7, 9, 2, 2))
+        for name in ("max_frame_core_entries", "max_frame_scsi_events", "core_trace_dropped_frames"):
+            self.assertEqual(table[name]["status"], tracer.NOT_MEASURED)
+            self.assertEqual(set(table[name]), {"status", "reason"})  # raw END values are never promoted
+
+    def test_configuration_is_never_labelled_measured(self):
+        cap, _, end = tracer.parse_records(output([event()]))
+        table = tracer.measurements(cap, end)
+        self.assertNotEqual(table["core_capacity"]["status"], tracer.MEASURED)
+        self.assertEqual(table["output_ring_dropped"]["value"], 0)
+
+    def test_refuses_inconsistent_or_missing_ring_and_core_fields(self):
+        one = [event()]
+        cases = {
+            "pushed missing": output(one, pushed=MISSING),
+            "pushed too small": output(one, pushed=0),
+            "pushed too large": output(one, pushed=2),
+            "pushed bool": output([], pushed=False),
+            "pushed string": output(one, pushed="1"),
+            "dropped while not full": output(one, dropped=3, capacity=4),
+            "core_capacity missing": output(one, core_capacity=MISSING),
+            "core_capacity zero": output(one, core_capacity=0),
+            # Isolates the capacity check: with zero maxima no other bound rejects a zero capacity.
+            "core_capacity zero, zero maxima": output(one, core_capacity=0, max_frame_core_entries=0,
+                                                      max_frame_scsi_events=0),
+            "core_capacity bool": output(one, core_capacity=True),
+            "core_capacity float": output(one, core_capacity=100000.0),
+            "max entries missing": output(one, max_frame_core_entries=MISSING),
+            "max entries negative": output(one, max_frame_core_entries=-1),
+            "max entries above capacity": output(one, core_capacity=10, max_frame_core_entries=11),
+            "max scsi missing": output(one, max_frame_scsi_events=MISSING),
+            "max scsi above entries": output(one, max_frame_core_entries=2, max_frame_scsi_events=3),
+            "max scsi bool": output(one, max_frame_scsi_events=True),
+        }
+        for name, text in cases.items():
+            with self.subTest(name):
+                with self.assertRaises(ValueError):
+                    tracer.parse_records(text)
+
+    def test_tracer_source_emits_the_independent_push_counter(self):
+        source = (Path(__file__).resolve().parents[2] / "tests/integration/geargrafx_frame_tracer.cpp").read_text(
+            encoding="utf-8")
+        ring = (Path(__file__).resolve().parents[2] / "tests/integration/geargrafx_frame_tracer_ring.h").read_text(
+            encoding="utf-8")
+        self.assertIn('",\\"pushed\\":%llu", ring.pushed()', source)
+        self.assertIn("++pushed_;", ring)
+        # The counter is incremented before the retain/drop branch, so it counts every push.
+        self.assertLess(ring.index("++pushed_;"), ring.index("if (size_ < capacity_)"))
+
+
+class MeasurementEvidenceTests(unittest.TestCase):
+    """CD wrapper: the counts-only table is checked before anything is written or printed."""
+
+    @staticmethod
+    def run_table(dropped=5, retained=1, capacity=100000):
+        cap, _, end = tracer.parse_records(output([event()] * retained, dropped=dropped, capacity=retained,
+                                                  core_capacity=capacity))
+        return {"status": "PASS", "measurements": tracer.measurements(cap, end)}
+
+    def evidence(self, on, off):
+        import geargrafx_frame_tracer_cd as cd
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(cd, "ROOT", Path(tmp)):
+            result = cd.measurement_evidence("debug", on, off)
+            written = json.loads((Path(tmp) / "build/debug/frame-tracer-cd/frame-tracer-measurements.json").read_text())
+        return result, written
+
+    def test_writes_counts_only_table_for_both_runs(self):
+        result, written = self.evidence(self.run_table(), self.run_table(dropped=0))
+        self.assertEqual(result, written)
+        self.assertEqual(written["core_capacity"]["value"], 100000)
+        self.assertEqual(written["runs"]["observer_on"]["output_ring_dropped"]["value"], 5)
+        self.assertEqual(written["runs"]["observer_off"]["output_ring_dropped"]["value"], 0)
+        self.assertEqual(written["guest_bytes"], "NONE")
+        for table in written["runs"].values():  # the five quantities only: no events, traces or guest data
+            self.assertEqual(set(table), {"core_capacity", "output_ring_dropped", *tracer.NOT_MEASURED_REASONS})
+
+    def test_refuses_promoted_missing_or_inconsistent_tables(self):
+        promoted = self.run_table()
+        promoted["measurements"]["max_frame_scsi_events"] = {"status": tracer.MEASURED, "value": 3}
+        relabelled = self.run_table()
+        relabelled["measurements"]["core_capacity"]["status"] = tracer.MEASURED
+        bad_push = self.run_table()
+        bad_push["measurements"]["output_ring_dropped"]["pushed"] += 1
+        missing = self.run_table()
+        del missing["measurements"]["core_trace_dropped_frames"]
+        cases = {
+            "NOT_MEASURED promoted": (promoted, self.run_table()),
+            "configuration relabelled": (self.run_table(), relabelled),
+            "push mismatch": (bad_push, self.run_table()),
+            "quantity missing": (missing, self.run_table()),
+            "no table": ({"status": "PASS"}, self.run_table()),
+            "capacity differs": (self.run_table(capacity=100000), self.run_table(capacity=50000)),
+        }
+        for name, (on, off) in cases.items():
+            with self.subTest(name):
+                with self.assertRaises(ValueError):
+                    self.evidence(on, off)
 
 
 if __name__ == "__main__":

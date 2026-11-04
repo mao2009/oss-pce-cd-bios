@@ -59,6 +59,26 @@ class FrameTracerSyntheticCdRealCoreTests(unittest.TestCase):
         self.assertTrue(summary["overflow"])
         self.assertGreater(summary["dropped"], 0)
         self.assertEqual(summary["events"], 1)
+        # Measurement table: the output-ring dropped count is a real count checked by an independent
+        # push counter; core_capacity is the core-reported configuration, not a usage measurement.
+        table = result["measurements"]
+        ring = table["output_ring_dropped"]
+        self.assertEqual(ring["status"], tracer.MEASURED)
+        self.assertEqual(ring["value"], summary["dropped"])
+        self.assertEqual(ring["retained"], 1)
+        self.assertEqual(ring["ring_capacity"], 1)
+        self.assertEqual(ring["pushed"], summary["pushed"])
+        self.assertEqual(ring["pushed"], ring["retained"] + ring["value"])
+        self.assertGreaterEqual(ring["pushed"], 120)  # one SAMPLE is pushed for every one of the 120 frames
+        capacity = table["core_capacity"]
+        self.assertEqual(capacity["status"], tracer.REPORTED_BY_CORE)
+        self.assertEqual(capacity["kind"], "configuration")
+        self.assertIs(type(capacity["value"]), int)
+        self.assertGreater(capacity["value"], 0)
+        self.assertEqual(capacity["value"], summary["core_capacity"])
+        for name in ("max_frame_core_entries", "max_frame_scsi_events", "core_trace_dropped_frames"):
+            self.assertEqual(table[name]["status"], tracer.NOT_MEASURED, name)
+            self.assertNotIn("value", table[name], name)
         rows = {row["region"]: row for row in summary["ram_deltas"]}
         # The synthetic read changes WRAM and has observed SCSI-frame correlation.
         self.assertGreater(rows["wram"]["updates"], 0)
