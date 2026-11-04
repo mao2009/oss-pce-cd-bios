@@ -8,7 +8,9 @@
 // boundaries only. RAM output is counts, offset ranges, and mapped bank ranges;
 // it never serializes RAM bytes.
 //
-// argv: rom cue|- frames event_capacity run_start_frame|0 run_hold_frames|0
+// argv: rom cue|- frames event_capacity run_start_frame|0 run_hold_frames|0 observe_ram core_capacity|0
+// core_capacity 0 keeps the pinned core's default trace buffer (TRACE_BUFFER_SIZE); a non-zero
+// value calls the core's TraceLogger::SetCapacity before frame 1 (trace buffer only, never guest state).
 // Output: CAP, INPUT, EVENT (bounded ring, oldest entries overwritten), END
 // with a cumulative RAM summary that is deliberately independent of that ring.
 #include "geargrafx_core.h"
@@ -19,6 +21,7 @@
 #include "scsi_controller.h"
 #include "trace_logger.h"
 #include "geargrafx_frame_tracer_ring.h"
+#include "geargrafx_frame_tracer_core_account.h"
 #include "geargrafx_frame_tracer_ram.h"
 #include "geargrafx_frame_tracer_ram_summary.h"
 #include "geargrafx_trace_cpu_region.h"
@@ -35,6 +38,7 @@ namespace {
 
 constexpr unsigned kMaxFrames = 600;
 constexpr unsigned kRingSize = 256;
+constexpr long kMaxCoreCapacity = TRACE_BUFFER_SIZE;  // never ask for more than the core's own default
 
 struct CpuSnap {
     unsigned master_clock, pc, pc_page, pc_bank, physical_pc, pc_is_wram, a, x, y, p, sp;
@@ -98,6 +102,34 @@ bool same_cd(const CdSnap& left, const CdSnap& right) {
     return left.phase == right.phase && left.signals == right.signals && left.load_sector == right.load_sector &&
            left.load_count == right.load_count && left.irq_active == right.irq_active &&
            left.irq_enabled == right.irq_enabled;
+}
+
+// Guest-visible state read through state pointers only, compared around the tracer's own
+// TraceLogger calls.  It is never printed: only the number of checks and mismatches is emitted.
+struct GuestFingerprint {
+    CpuSnap cpu;
+    CdSnap cd;
+    int speed;
+    unsigned timer, timer_counter, timer_reload, idr, irr;
+    std::vector<u8> ram;  // present, observed RAM regions only (empty when RAM observation is off)
+};
+
+GuestFingerprint guest_fingerprint(GeargrafxCore& core, HuC6280::HuC6280_State* cpu, Memory* memory,
+                                   ScsiController::Scsi_State* scsi, CdRom::CdRom_State* cdrom,
+                                   const std::vector<RamTracker>& rams) {
+    GuestFingerprint print = {cpu_snap(core, cpu, memory), cd_snap(scsi, cdrom), (int)*cpu->SPEED,
+                              (unsigned)*cpu->TIMER, (unsigned)*cpu->TIMER_COUNTER, (unsigned)*cpu->TIMER_RELOAD,
+                              (unsigned)*cpu->IDR, (unsigned)*cpu->IRR, {}};
+    for (const RamTracker& ram : rams)
+        if (ram.present) print.ram.insert(print.ram.end(), ram.current, ram.current + ram.mapping.size);
+    return print;
+}
+
+bool same_guest(const GuestFingerprint& left, const GuestFingerprint& right) {
+    return left.cpu.master_clock == right.cpu.master_clock && same_cpu(left.cpu, right.cpu) &&
+           same_cd(left.cd, right.cd) && left.speed == right.speed && left.timer == right.timer &&
+           left.timer_counter == right.timer_counter && left.timer_reload == right.timer_reload &&
+           left.idr == right.idr && left.irr == right.irr && left.ram == right.ram;
 }
 
 void print_cpu(const CpuSnap& cpu) {
@@ -186,7 +218,7 @@ void print_ram_summary(const std::vector<RamTracker>& rams) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc != 8)
+    if (argc != 9)
         return 2;
     char* end = nullptr;
     long frames = std::strtol(argv[3], &end, 10);
@@ -208,6 +240,10 @@ int main(int argc, char** argv) {
     end = nullptr;
     long observe_ram = std::strtol(argv[7], &end, 10);
     if (!end || *end || (observe_ram != 0 && observe_ram != 1))
+        return 2;
+    end = nullptr;
+    long requested_core_capacity = std::strtol(argv[8], &end, 10);
+    if (!end || *end || requested_core_capacity < 0 || requested_core_capacity > kMaxCoreCapacity)
         return 2;
     std::ifstream input(argv[1], std::ios::binary);
     if (!input)
@@ -275,17 +311,34 @@ int main(int argc, char** argv) {
         first_region = false;
     }
     std::printf("],\"ring_capacity\":%ld,\"frames\":%ld,\"disc_given\":%s,\"run_start_frame\":%ld,"
-                "\"run_hold_frames\":%ld,\"run_input_requested\":%s}\n",
-                capacity, frames, have_disc ? "true" : "false", run_start, run_hold, run_start ? "true" : "false");
+                "\"run_hold_frames\":%ld,\"run_input_requested\":%s,\"core_capacity_requested\":%ld,"
+                "\"trace_api_guest_ram_checked\":%s}\n",
+                capacity, frames, have_disc ? "true" : "false", run_start, run_hold, run_start ? "true" : "false",
+                requested_core_capacity, observe_ram ? "true" : "false");
     TraceLogger* trace = core.GetTraceLogger();
-    // Core trace buffer: the pinned core's own default capacity (TRACE_BUFFER_SIZE), never the
-    // output-ring size.  Output-ring overflow does not change what the core retains, and a
-    // core overwrite is detected below as an explicit gap (dropped_trace, frame_scsi_incomplete).
+    // The tracer's TraceLogger calls touch only the core's trace buffer.  Guest state is
+    // fingerprinted before and after them; a mismatch is counted, never hidden.
+    unsigned guest_checks = 0, guest_changes = 0;
+    const GuestFingerprint before_setup = guest_fingerprint(core, cpu, memory, scsi, cdrom, rams);
+    // Core trace buffer: the pinned core's own default capacity (TRACE_BUFFER_SIZE) unless a
+    // smaller one is requested, never the output-ring size.  Output-ring overflow does not change
+    // what the core retains, and a core overwrite is detected below as an explicit gap
+    // (dropped_trace, frame_scsi_incomplete).
+    if (requested_core_capacity && !trace->SetCapacity((u32)requested_core_capacity)) return 3;
     const u64 core_capacity = trace->GetCapacity();
-    if (core_capacity == 0) return 3;
+    if (core_capacity == 0 || (requested_core_capacity && core_capacity != (u64)requested_core_capacity)) return 3;
     trace->SetEnabledFlags(TRACE_FLAG_CPU | TRACE_FLAG_SCSI);
     trace->SetEventFilter(TRACE_SCSI, TRACE_SCSI_FILTER_COMMANDS | TRACE_SCSI_FILTER_PHASES | TRACE_SCSI_FILTER_RESPONSES);
     trace->Reset();
+    ++guest_checks;
+    if (!same_guest(before_setup, guest_fingerprint(core, cpu, memory, scsi, cdrom, rams))) ++guest_changes;
+    // Pre-clamp per-frame counts come from GetTotalLogged() deltas, cross-checked against the
+    // sequence counter (not zeroed by Reset), the capacity and the retained count.
+    const FrameTracerCoreSample core_start = {trace->GetTotalLogged(), trace->GetSequence(),
+                                              trace->GetCapacity(), trace->GetCount()};
+    if (!FrameTracerCoreAccount::valid_start(core_start)) return 3;
+    FrameTracerCoreAccount core_account(core_start);
+    u64 consumed_trace = 0;
     u64 observed_trace = 0;
     u64 dropped_trace = 0;
     // Measurements for the single-run design: largest per-frame core entry count and SCSI count.
@@ -316,13 +369,23 @@ int main(int argc, char** argv) {
             ring.push({Event::CD, number, now_cpu, now_cd, 0, 0, 0, 255, 0, 0, 0, nullptr});
         // Consume the core's read-only event notifications.  This retains phase
         // changes that begin and end within one video frame.
+        const GuestFingerprint before_trace = guest_fingerprint(core, cpu, memory, scsi, cdrom, rams);
         const u64 total = trace->GetTotalLogged();
+        const FrameTracerCoreFrame core_frame = core_account.account(
+            {total, trace->GetSequence(), trace->GetCapacity(), trace->GetCount()});
         const u64 first_event = total > core_capacity ? total - core_capacity : 0;
         bool trace_gap = false;
         // A core trace gap means this frame's SCSI notifications may be incomplete.
         // Output-ring overflow is a separate, bounded-output concern and never reaches here.
         bool frame_scsi_incomplete = false;
-        if (observed_trace < first_event) {
+        if (!core_frame.continuous) {
+            // The counters moved inconsistently (e.g. an unexpected Reset or capacity change), so
+            // which retained entries are new is unknown: consume none and resynchronize.
+            observed_trace = total;
+            previous_region = nullptr;
+            trace_gap = true;
+            frame_scsi_incomplete = true;
+        } else if (observed_trace < first_event) {
             dropped_trace += first_event - observed_trace;
             observed_trace = first_event;
             previous_region = nullptr;
@@ -334,6 +397,7 @@ int main(int argc, char** argv) {
         if (total - observed_trace > max_frame_core_entries) max_frame_core_entries = total - observed_trace;
         for (; observed_trace < total; ++observed_trace) {
             const GG_Trace_Entry& entry = trace->GetEntry((unsigned)(observed_trace - first_event));
+            ++consumed_trace;
             if (entry.type == TRACE_SCSI) {
                 scsi_observed_this_frame = true;
                 ++scsi_events_this_frame;
@@ -352,6 +416,8 @@ int main(int argc, char** argv) {
                 }
             }
         }
+        ++guest_checks;
+        if (!same_guest(before_trace, guest_fingerprint(core, cpu, memory, scsi, cdrom, rams))) ++guest_changes;
         unsigned wram_changed = 0;
         // Correlation is frame-local and only uses notifications seen above;
         // it is never presented as event-time RAM state.
@@ -379,16 +445,30 @@ int main(int argc, char** argv) {
     }
     for (unsigned index = 0; index != ring.size(); ++index)
         print_event(ring.at(index));
+    // A discontinuous frame lost an unknown number of core entries that trace_events_dropped cannot
+    // count, so it also sets overflow: an unknown loss is never presented as no loss.
     std::printf("END {\"frames\":%ld,\"events\":%u,\"dropped\":%u,\"trace_events_dropped\":%llu,\"overflow\":%s", frames,
                 ring.size(), ring.dropped(), (unsigned long long)dropped_trace,
-                (ring.dropped() || dropped_trace) ? "true" : "false");
+                (ring.dropped() || dropped_trace || core_account.discontinuous_frames()) ? "true" : "false");
     // Every output-ring push, counted independently so the reader can check pushed == events + dropped.
     std::printf(",\"pushed\":%llu", ring.pushed());
     // Core-buffer fields.  core_capacity is the core's configured buffer size (TraceLogger::GetCapacity),
-    // not a usage measurement.  max_frame_core_entries is computed after the gap clamp above and can
-    // under-count, and max_frame_scsi_events misses entries lost in a gap: the reader keeps both NOT_MEASURED.
+    // not a usage measurement.  max_frame_core_entries is the legacy post-clamp (retained) maximum, kept
+    // for compatibility; the reader measures the pre-clamp value from core_trace.max_frame_logged instead.
+    // max_frame_scsi_events misses entries lost in a gap, so the reader keeps it NOT_MEASURED (PR-C).
     std::printf(",\"core_capacity\":%llu,\"max_frame_core_entries\":%llu,\"max_frame_scsi_events\":%u",
                 (unsigned long long)core_capacity, (unsigned long long)max_frame_core_entries, max_frame_scsi_events);
+    // Pre-clamp core accounting (A1 PR-B).  total_logged and sequence_delta are read from the core at
+    // the end; the per-frame fields come from GetTotalLogged() deltas between frame samples.  consumed
+    // counts entries actually read with GetEntry(); lost counts entries overwritten before being read.
+    std::printf(",\"core_trace\":{\"total_logged\":%llu,\"sequence_delta\":%llu,\"logged_accounted\":%llu,"
+                "\"consumed\":%llu,\"lost\":%llu,\"frames_accounted\":%u,\"discontinuity_frames\":%u,"
+                "\"gap_frames\":%u,\"max_frame_logged\":%llu}",
+                (unsigned long long)trace->GetTotalLogged(),
+                (unsigned long long)(trace->GetSequence() - core_start.sequence), core_account.logged(),
+                (unsigned long long)consumed_trace, core_account.lost(), core_account.accounted_frames(),
+                core_account.discontinuous_frames(), core_account.gap_frames(), core_account.max_frame_logged());
+    std::printf(",\"trace_api_guest_checks\":%u,\"trace_api_guest_changes\":%u", guest_checks, guest_changes);
     print_ram_summary(rams);
     std::printf("}");
     std::printf("\n");

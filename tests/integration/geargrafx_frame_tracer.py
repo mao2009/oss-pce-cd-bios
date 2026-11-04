@@ -36,27 +36,120 @@ CPU_REGIONS = {"unknown", "other", "cdrom_ram", "working_ram", "hardware"}
 MEASURED = "MEASURED"
 REPORTED_BY_CORE = "REPORTED_BY_CORE"
 NOT_MEASURED = "NOT_MEASURED"
+MEASUREMENT_NAMES = ("core_capacity", "output_ring_dropped", "max_frame_core_entries",
+                     "max_frame_scsi_events", "core_trace_dropped_frames")
+# Quantities that stay NOT_MEASURED for every tracer output format.
 NOT_MEASURED_REASONS = {
-    "max_frame_core_entries": "computed after the core-gap clamp, so a frame that overflowed the core buffer "
-                              "is under-counted; needs the pre-clamp per-frame count",
     "max_frame_scsi_events": "counts only SCSI entries the core still retains; entries lost in a core-trace gap "
-                             "are not counted",
-    "core_trace_dropped_frames": "not emitted: only the total of lost core entries (trace_events_dropped) is counted",
+                             "are not counted (fail-closed handling and a lower bound are PR-C)",
 }
+# A1 PR-B: measured from the END core_trace accounting.  Without it (pre-PR-B output) or when the
+# core counters were discontinuous, they stay NOT_MEASURED with these reasons.
+CORE_TRACE_MEASURED = ("max_frame_core_entries", "core_trace_dropped_frames")
+LEGACY_NOT_MEASURED_REASONS = {
+    "max_frame_core_entries": "pre-PR-B tracer output: no core_trace accounting, and the legacy END field is "
+                              "computed after the core-gap clamp, so it can under-count",
+    "core_trace_dropped_frames": "pre-PR-B tracer output: no core_trace accounting; only the total of lost core "
+                                 "entries (trace_events_dropped) is emitted",
+}
+CORE_TRACE_KEYS = {"total_logged", "sequence_delta", "logged_accounted", "consumed", "lost", "frames_accounted",
+                   "discontinuity_frames", "gap_frames", "max_frame_logged"}
+MAX_CORE_CAPACITY = 100000  # pinned core TRACE_BUFFER_SIZE (src/trace_logger.h at the pinned revision)
+CORE_TRACE_SOURCE = ("pinned core TraceLogger::GetTotalLogged() delta between consecutive post-RunToVBlank "
+                     "samples, cross-checked per frame with GetSequence(), GetCount() and GetCapacity()")
 
 
 def measurements(cap, end):
     """Classify the five tracer quantities for one validated run (no estimates, no defaults)."""
     table = {
         "core_capacity": {"status": REPORTED_BY_CORE, "value": end["core_capacity"],
+                          "requested": cap.get("core_capacity_requested"),
                           "kind": "configuration", "source": "pinned core TraceLogger::GetCapacity()"},
         "output_ring_dropped": {"status": MEASURED, "value": end["dropped"], "pushed": end["pushed"],
                                 "retained": end["events"], "ring_capacity": cap["ring_capacity"],
                                 "kind": "count", "source": "tracer output ring (pushed == retained + dropped)"},
     }
+    if cap.get("core_capacity_requested") is None:
+        del table["core_capacity"]["requested"]  # pre-PR-B output: the field was not emitted
     for name, reason in NOT_MEASURED_REASONS.items():
         table[name] = {"status": NOT_MEASURED, "reason": reason}
+    core = end.get("core_trace")
+    if core is None:
+        for name, reason in LEGACY_NOT_MEASURED_REASONS.items():
+            table[name] = {"status": NOT_MEASURED, "reason": reason}
+        return table
+    if core["discontinuity_frames"]:
+        reason = (f"core trace counters were discontinuous in {core['discontinuity_frames']} of {end['frames']} "
+                  "frame(s) (unexpected Reset, capacity change or retained-count mismatch); per-frame counts for "
+                  "those frames are unknown")
+        for name in CORE_TRACE_MEASURED:
+            table[name] = {"status": NOT_MEASURED, "reason": reason}
+        return table
+    frames = core["frames_accounted"]
+    table["max_frame_core_entries"] = {
+        "status": MEASURED, "value": core["max_frame_logged"], "kind": "count",
+        "unit": "core trace entries logged in one frame, before the capacity clamp",
+        "frames": frames, "retained_max": end["max_frame_core_entries"],
+        "counted_types": "entry types the tracer enables: TRACE_CPU and filtered TRACE_SCSI",
+        "source": CORE_TRACE_SOURCE}
+    table["core_trace_dropped_frames"] = {
+        "status": MEASURED, "value": core["gap_frames"], "lost_entries": core["lost"], "kind": "count",
+        "unit": "frames in which the core overwrote entries before the tracer read them",
+        "frames": frames, "source": CORE_TRACE_SOURCE + "; lost = logged - capacity when positive"}
     return table
+
+
+def validate_core_trace(cap, end):
+    """Validate the PR-B core accounting; return False for a pre-PR-B (legacy) output.
+
+    Every check is an invariant of a single run of the C++ accounting, never a comparison with
+    another run.  Legacy output is accepted only when every PR-B field is absent.
+    """
+    pr_b = {"core_trace": end, "trace_api_guest_checks": end, "trace_api_guest_changes": end,
+            "core_capacity_requested": cap, "trace_api_guest_ram_checked": cap}
+    present = {key for key, row in pr_b.items() if key in row}
+    if not present:
+        return False
+    if present != set(pr_b):
+        raise ValueError(f"core trace accounting fields incomplete: missing {sorted(set(pr_b) - present)}")
+    frames, capacity = cap["frames"], end["core_capacity"]
+    requested = cap["core_capacity_requested"]
+    if type(requested) is not int or not 0 <= requested <= MAX_CORE_CAPACITY:
+        raise ValueError("invalid requested core trace capacity")
+    if requested and capacity != requested:
+        raise ValueError("core trace capacity differs from the requested capacity")
+    if cap["trace_api_guest_ram_checked"] is not cap["ram_observation"]:
+        raise ValueError("guest RAM check does not match RAM observation")
+    checks, changes = end["trace_api_guest_checks"], end["trace_api_guest_changes"]
+    if type(checks) is not int or type(changes) is not int or checks != frames + 1:
+        raise ValueError("guest state was not checked around every trace API block")
+    if changes != 0:
+        raise ValueError("guest state changed across tracer trace API calls")
+    core = end["core_trace"]
+    if type(core) is not dict or set(core) != CORE_TRACE_KEYS or \
+            any(type(core[key]) is not int or core[key] < 0 for key in CORE_TRACE_KEYS):
+        raise ValueError("invalid core trace accounting fields")
+    accounted, discontinuous, gaps = core["frames_accounted"], core["discontinuity_frames"], core["gap_frames"]
+    logged, lost, consumed, max_logged = core["logged_accounted"], core["lost"], core["consumed"], core["max_frame_logged"]
+    if accounted + discontinuous != frames or gaps > accounted:
+        raise ValueError("core trace frame accounting does not cover every frame")
+    if lost != end["trace_events_dropped"] or consumed + lost != logged:
+        raise ValueError("core trace entry accounting mismatch (consumed + lost != logged)")
+    if (gaps == 0) != (lost == 0):
+        raise ValueError("core trace gap frames disagree with lost entries")
+    if max_logged > logged or logged > accounted * max_logged:
+        raise ValueError("per-frame core maximum is inconsistent with the logged total")
+    # Each gap frame loses at most (its logged - capacity) <= (max_logged - capacity) entries.  With
+    # lost >= 1 this also rejects a gap whose per-frame maximum does not exceed the capacity.
+    if gaps and lost > gaps * (max_logged - capacity):
+        raise ValueError("core trace loss is impossible for the per-frame maximum and capacity")
+    if not gaps and max_logged > capacity:
+        raise ValueError("a frame logged more than the core capacity without a gap")
+    if end["max_frame_core_entries"] != min(max_logged, capacity):
+        raise ValueError("retained per-frame maximum is not the clamped pre-clamp maximum")
+    if not discontinuous and not core["total_logged"] == core["sequence_delta"] == logged:
+        raise ValueError("core trace counters disagree (total_logged, sequence_delta, logged)")
+    return True
 
 
 def run_schedule(start_frame, hold_frames, frames):
@@ -330,9 +423,14 @@ def parse_records(stdout, require_ram_observation=True):
         raise ValueError("RAM regions emitted while RAM observation is disabled")
     if len(events) > capacity or end.get("events") != len(events):
         raise ValueError("ring event count mismatch")
+    # PR-B: a discontinuous core-trace frame lost an unknown number of entries, so it must also be
+    # reported as overflow (trace_events_dropped counts only the losses that are known exactly).
+    core = end.get("core_trace")
+    discontinuous = type(core) is dict and type(core.get("discontinuity_frames")) is int and \
+        core["discontinuity_frames"] > 0
     if (type(end.get("dropped")) is not int or end["dropped"] < 0 or
             type(end.get("trace_events_dropped")) is not int or end["trace_events_dropped"] < 0 or
-            end.get("overflow") is not (end["dropped"] > 0 or end["trace_events_dropped"] > 0)):
+            end.get("overflow") is not (end["dropped"] > 0 or end["trace_events_dropped"] > 0 or discontinuous)):
         raise ValueError("invalid overflow accounting")
     # Output ring: the independent push counter must equal retained + dropped, and a ring
     # that dropped anything must be full.  Otherwise the dropped count is not trusted.
@@ -350,6 +448,9 @@ def parse_records(stdout, require_ram_observation=True):
         raise ValueError("invalid per-frame core entry field")
     if type(max_scsi) is not int or not 0 <= max_scsi <= max_entries:
         raise ValueError("invalid per-frame SCSI event field")
+    if type(cap.get("frames")) is not int or not 1 <= cap["frames"] <= MAX_FRAMES or end.get("frames") != cap["frames"]:
+        raise ValueError("invalid frame count")
+    validate_core_trace(cap, end)
     validate_ram_deltas(end.get("ram_deltas"), cap["frames"])
     for event in events:
         if event.get("kind") not in EVENT_KINDS or type(event.get("frame")) is not int or not 1 <= event["frame"] <= cap["frames"]:
@@ -391,8 +492,13 @@ def parse_records(stdout, require_ram_observation=True):
 
 
 def trace(args):
-    if not 1 <= args.frames <= MAX_FRAMES or not 1 <= args.events <= MAX_EVENTS:
-        return {"status": "FAIL", "reason": f"limits are frames 1..{MAX_FRAMES}, events 1..{MAX_EVENTS}",
+    # Callers that predate PR-B pass no core_capacity: keep the pinned core's default buffer.
+    core_capacity = getattr(args, "core_capacity", None)
+    if not 1 <= args.frames <= MAX_FRAMES or not 1 <= args.events <= MAX_EVENTS or \
+            (core_capacity is not None and (type(core_capacity) is not int or
+                                            not 1 <= core_capacity <= MAX_CORE_CAPACITY)):
+        return {"status": "FAIL", "reason": f"limits are frames 1..{MAX_FRAMES}, events 1..{MAX_EVENTS}, "
+                                            f"core capacity 1..{MAX_CORE_CAPACITY}",
                 "evidence": "NOT_RUN"}
     try:
         schedule = run_schedule(args.run_start_frame, args.run_hold_frames, args.frames)
@@ -436,7 +542,7 @@ def trace(args):
             cue = str(disc / staged[0])
         result = run_job([str(probe), str(rom), cue, str(args.frames), str(args.events),
                            str(args.run_start_frame or 0), str(args.run_hold_frames or 0),
-                           "1" if args.observe_ram else "0"], job, args.timeout)
+                           "1" if args.observe_ram else "0", str(core_capacity or 0)], job, args.timeout)
         if result["status"]:
             log.update(status=result["status"], reason=result["reason"], evidence="NOT_RUN")
             return log
@@ -447,6 +553,10 @@ def trace(args):
             cap, events, end = parse_records(result["stdout"], require_ram_observation=args.observe_ram)
         except (ValueError, TypeError, json.JSONDecodeError) as error:
             log.update(status="FAIL", reason=f"trace rejected: {error}", evidence="NOT_RUN")
+            return log
+        if cap.get("core_capacity_requested") != (core_capacity or 0):
+            log.update(status="FAIL", reason="trace rejected: tracer did not apply the requested core capacity",
+                       evidence="NOT_RUN")
             return log
         log.update(status="PASS", reason="bounded normal-frame trace completed", evidence="REAL_GEARGRAFX_CORE",
                    elapsed_s=result["elapsed_s"], capability=cap, events=events, summary=end,
@@ -470,6 +580,8 @@ def main(argv=None):
     parser.add_argument("--run-hold-frames", type=int, help="number of complete frames for which RUN is held")
     parser.add_argument("--no-observe-ram", dest="observe_ram", action="store_false",
                         help="disable RAM snapshots; useful only for observer A/B diagnostics")
+    parser.add_argument("--core-capacity", type=int,
+                        help=f"core trace buffer entries (1..{MAX_CORE_CAPACITY}); default keeps the core's own")
     parser.set_defaults(observe_ram=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
