@@ -46,6 +46,9 @@ LAUNCHER_MAX_WORDS = 256
 PS_PROC_LAUNCH_RE = re.compile(
     r"(?i)(?<![\w-])(start-process|start|saps|invoke-item|ii|invoke-wmimethod|invoke-cimmethod)(?![\w-])")
 EXPR_SYNTAX_RE = re.compile(r"[,()@{}$]")
+# PowerShell method call syntax (.Delete(), $x[0].Delete()). The "(" would split the call from its object, so the call
+# is refused on the raw text before any split. Property access ($_.Name) is not a call and is not refused.
+METHOD_CALL_RE = re.compile(r"\.\w+\s*\(")
 CD_NAMES = {"cd", "chdir", "set-location", "sl"}
 # Always denied: destructive by nature, or cannot be inspected.
 ALWAYS_DENY = {"unlink", "shred", "rmdir", "rd", "dd", "mkfs", "truncate", "wipefs",
@@ -885,9 +888,9 @@ def analyze_argv(words, ctx, ps, depth):
         # so a destructive command after a separator in the same token ("tools\app.exe;rm -rf /") is still analysed.
         for k in range(len(tokens)):
             analyze_text(" ".join(tokens[k:]), ctx.copy(), True, depth + 1)
-    if name in (".", "source") and args and args[0].startswith("$"):
-        # Sourcing a variable names a file or a script that is not known here (fail closed).
-        raise Deny("unexpanded", "sourcing a variable is not inspected")
+    if name in (".", "source") and any(("$" in a or "`" in a or SUBST in a) for a in args):
+        # Sourcing a path that names a variable (or a substitution) is a file that is not known here (fail closed).
+        raise Deny("unexpanded", "sourcing a variable or substitution is not inspected")
     if name in EVAL_LIKE and any(SUBST in a for a in args):
         raise Deny("substitution", "command substitution passed to a shell, eval or source is not inspected")
     if name in WRITE_NAMES or (name == "sed" and any(
@@ -927,6 +930,8 @@ def analyze_argv(words, ctx, ps, depth):
 def analyze_text(text, ctx, ps, depth):
     if depth > MAX_DEPTH:
         raise Deny("depth", "command nesting too deep")
+    if ps and METHOD_CALL_RE.search(text):
+        raise Deny("powershell", "PowerShell method call is not inspected")
     if ps and PS_PROC_LAUNCH_RE.search(text) and EXPR_SYNTAX_RE.search(text):
         raise Deny("launcher", "PowerShell process launcher with expression syntax is not inspected")
     segs, subs, redirs = split_segments(text, ps)

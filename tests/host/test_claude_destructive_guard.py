@@ -941,6 +941,26 @@ class LauncherClassTests(unittest.TestCase):
             with self.subTest(cmd=cmd, tool=tool):
                 self.assertEqual(verdict(cmd, tool=tool), "DENY")
 
+    def test_powershell_method_calls_are_denied(self):
+        for cmd in ["$x.Delete()", "$x[0].Delete()", "Get-Item / | ForEach-Object { $_.Delete() }",
+                    "Get-ChildItem | % { $_.Delete() }"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
+        self.assertEqual(verdict("Get-Process | ForEach-Object { $_.Name }", tool="PowerShell"), "ALLOW")
+
+    def test_sourcing_a_path_with_a_variable_is_denied(self):
+        for cmd, tool in [("source ./$x", "Bash"), (". ./$x", "Bash"), (". ./$x", "PowerShell")]:
+            with self.subTest(cmd=cmd, tool=tool):
+                self.assertEqual(verdict(cmd, tool=tool), "DENY")
+
+    def test_remaining_control_keywords_are_command_positions(self):
+        for cmd in ["while true; do rm -rf /; done", "until false; do rm -rf /; done",
+                    "while rm -rf /; do :; done", "until rm -rf /; do :; done",
+                    "if true; then :; elif rm -rf /; then :; fi",
+                    "if true; then echo hi; elif true; then rm -rf /; fi", "! rm -rf /", "fi rm -rf /"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+
     def test_else_and_do_keywords_are_command_positions(self):
         self.assertEqual(verdict("if true; then echo hi; else rm -rf /; fi"), "DENY")
         self.assertEqual(verdict("for x in a; do rm -rf /; done"), "DENY")
@@ -1013,12 +1033,19 @@ class LauncherMutationTests(unittest.TestCase):
         "@ removed from the expression syntax": ('EXPR_SYNTAX_RE = re.compile(r"[,()@{}$]")',
                                                  'EXPR_SYNTAX_RE = re.compile(r"[,(){}$]")'),
         "launcher argument cap removed": ('        if len(tokens) > LAUNCHER_MAX_WORDS:', '        if False:'),
-        "variable sourcing rule removed": ('    if name in (".", "source") and args and args[0].startswith("$"):', '    if False:'),
         "PowerShell dollar removed from expression syntax": ('EXPR_SYNTAX_RE = re.compile(r"[,()@{}$]")',
                                                              'EXPR_SYNTAX_RE = re.compile(r"[,()@{}]")'),
         "lone variable length condition removed": ('        if ps and len(words) == 1 and w0.startswith("$")',
                                                    '        if ps and w0.startswith("$")'),
         "else keyword removed": ('"then", "else", "elif"', '"then", "elif"'),
+        "while keyword removed": ('"while", "until"', '"until"'),
+        "until keyword removed": ('"while", "until"', '"while"'),
+        "elif keyword removed": ('"then", "else", "elif"', '"then", "else"'),
+        "fi keyword removed": ('"elif", "fi", "do"', '"elif", "do"'),
+        "bang keyword removed": ('KEYWORDS = {"{", "}", "!",', 'KEYWORDS = {"{", "}",'),
+        "PowerShell method call rule removed": ('    if ps and METHOD_CALL_RE.search(text):', '    if False:'),
+        "sourcing any-variable rule removed": ('    if name in (".", "source") and any(("$" in a or "`" in a or SUBST in a) for a in args):',
+                                               '    if False:'),
         "do keyword removed": ('"fi", "do", "done"', '"fi", "done"'),
         "PowerShell launcher expression rule removed": ('    if ps and PS_PROC_LAUNCH_RE.search(text) and EXPR_SYNTAX_RE.search(text):',
                                                         '    if False:'),
