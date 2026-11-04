@@ -827,6 +827,144 @@ class MutationDetectionTests(unittest.TestCase):
                 self.assertTrue(detected, "mutant not detected by a symlink test: " + name + "\n" + "\n".join(failing))
 
 
+class PythonArgvCertaintyTests(unittest.TestCase):
+    """Issue #630 X1 (L1 shell word layer and L2 argv layer). A python command is judged only when its argv is certain:
+    no unquoted special character, and no $, backtick or backslash inside double quotes. Known bypasses are DENY.
+    Decision-level only: nothing is executed, no file is created. Host-independent (no symlink)."""
+
+    def _v(self, cmd):
+        return verdict(cmd)
+
+    def test_known_bypasses_are_denied(self):
+        cmds = [
+            "python3 '-copen(\"/tmp/zz\",\"w\").close()'",         # attached -c, quoted
+            "python3 -c'open(\"/tmp/zz\",\"w\").close()'",         # attached -c, quoted code
+            "python3 -uc\"import os; os.remove('x')\"",            # bundle with c
+            "python3 -Wc \"open('x','w').close()\"",               # -W takes c as value and keeps next arg
+            "D=-c; python3 $D\"open('/tmp/zz','w').close()\"",     # variable supplies the option
+            "D=-; python3 ${D}copen\"x\"",                         # parameter expansion
+            "python3 {-c,}\"open('/tmp/zz','w').close()\"",        # brace builds the option
+            "python3 -c {open,}\"('/tmp/zz','w').close()\"",       # brace builds the code
+            "python3 -c open*",                                   # glob code, no file needed
+            "touch zz_no_file_needed && python3 -c open*",        # chain plus glob: no hook-time file dependence
+            "python3 -c \"$(echo open)\"",                        # substitution
+            "python3 -c \"import os; os.remove('x')\" ; python3 tests/test-*.py",  # unquoted glob argument
+        ]
+        for cmd in cmds:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._v(cmd), "DENY")
+
+    def test_quoted_forms_are_judged_on_their_literal_text(self):
+        allowed = [
+            "python3 -c 'print(2*3)'",
+            "python3 -c \"print(1 + 1)\"",
+            "python3 -m pytest -q 'tests/test-*.py'",
+            "python3 -m unittest discover -s tests/host -p 'test-*.py'",
+            "python3 -cprint(1)",
+            "python3 -Wignore -cprint(1)",
+            "python3 -Wcopen('x','w')",
+            "python3 -mcopen",
+        ]
+        for cmd in allowed:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._v(cmd), "ALLOW")
+
+    def test_separate_c_forms_are_still_denied(self):
+        self.assertEqual(self._v("python3 -c \"open('x','w').close()\""), "DENY")
+        self.assertEqual(self._v("python3 -c \"import os; os.remove('x')\""), "DENY")
+
+    def test_single_quoted_dollar_in_argument_is_refused(self):
+        self.assertEqual(self._v("python3 '-$Dopen(\"x\",\"w\")'"), "DENY")
+
+    @unittest.expectedFailure
+    def test_known_gap_reflection_is_denied(self):
+        # Known gap, closed by X2 (AST allowlist). Remove this marker when X2 closes it.
+        self.assertEqual(self._v("python3 -c \"import operator, io; operator.attrgetter('open')(io)('/tmp/zz','w')\""),
+                         "DENY")
+
+    @unittest.expectedFailure
+    def test_known_gap_io_write_is_denied(self):
+        # Known gap, closed by X2 (AST allowlist). Remove this marker when X2 closes it.
+        self.assertEqual(self._v("python3 -c \"import io; io.FileIO('/tmp/zz','w')\""), "DENY")
+
+    def test_regression_corpus_of_twenty_ordinary_commands(self):
+        corpus = [
+            ("python3 -m unittest discover -s tests/host -v", "ALLOW"),
+            ("python3 -m unittest discover -s tests/host -p 'test_*.py'", "ALLOW"),
+            ("python3 -m unittest discover -s tests/host -p 'test-*.py'", "ALLOW"),   # FP removed: quoted glob
+            ("python3 -m pytest -q tests/", "ALLOW"),
+            ("python3 -m pytest tests/test-*.py", "DENY"),   # unquoted glob: argv not certain (quote it)
+            ("python3 -c \"print(1 + 1)\"", "ALLOW"),
+            ("python3 -c \"print(1 - 2)\"", "ALLOW"),
+            ("python3 -c \"x=[1,2]; print(x[-1])\"", "ALLOW"),   # FP removed: negative index
+            ("python3 -c \"import json; print(json.dumps({'a': 1}))\"", "ALLOW"),
+            ("python3 -c \"import json; print(json.dumps({'a': -1}))\"", "ALLOW"),   # FP removed
+            ("python3 -c \"d = {'a-b': 1}; print(d)\"", "ALLOW"),                   # FP removed
+            ("python3 -c \"print('a-b'[0:1])\"", "ALLOW"),                          # FP removed
+            ("python3 -c \"import re; print(re.findall(r'[a-z]-x', 'a-x'))\"", "ALLOW"),   # FP removed
+            ("python3 -c \"import sys; print(sys.version)\"", "ALLOW"),
+            ("python3 -c \"import sys; print(sys.executable)\"", "DENY"),   # pre-existing: 'exec' inside a word
+            ("python3 -m json.tool --indent 2 data.json", "ALLOW"),
+            ("python3 -m http.server --bind 127.0.0.1 8000", "ALLOW"),
+            ("python3 -m compileall -q src", "ALLOW"),
+            ("python3 -m pip install -r requirements-dev.txt", "ALLOW"),
+            ("python3 scripts/check-links.py", "ALLOW"),
+        ]
+        self.assertEqual(len(corpus), 20)
+        for cmd, expected in corpus:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._v(cmd), expected)
+
+
+class PythonArgvMutationTests(unittest.TestCase):
+    """Mutants of the X1 layers. Each must make a named PythonArgvCertaintyTests method fail (an assertion failure,
+    not an import error). Runs on every host (no symlink)."""
+
+    MUTANTS = {
+        "certainty check removed": (
+            "if PY_START.match(seg) and not python_word_certainty(seg):",
+            "if False:"),
+        "attached code ignored (next argument only)": (
+            "codes.append(rest if rest else (args[i + 1] if i + 1 < len(args) else \"\"))",
+            "codes.append(args[i + 1] if i + 1 < len(args) else \"\")"),
+        "variable argument rule removed": (
+            "if \"$\" in arg or \"`\" in arg or SUBST in arg:",
+            "if False:"),
+    }
+    DETECTING = ["test_known_bypasses_are_denied", "test_single_quoted_dollar_in_argument_is_refused",
+                 "test_separate_c_forms_are_still_denied"]
+
+    def _run(self, hook_text):
+        with tempfile.TemporaryDirectory() as td:
+            root = os.path.realpath(td)
+            hooks = os.path.join(root, ".claude", "hooks")
+            host = os.path.join(root, "tests", "host")
+            os.makedirs(hooks)
+            os.makedirs(host)
+            write_text(os.path.join(hooks, "guard_destructive.py"), hook_text)
+            with open(THIS_FILE, encoding="utf-8") as f:
+                write_text(os.path.join(host, "test_claude_destructive_guard.py"), f.read())
+            names = ["test_claude_destructive_guard.PythonArgvCertaintyTests"]
+            proc = subprocess.run([sys.executable, "-m", "unittest", "-v"] + names, cwd=host,
+                                  capture_output=True, text=True, timeout=300)
+            return proc.returncode, proc.stderr
+
+    def test_argv_mutants_are_detected(self):
+        with open(HOOK, encoding="utf-8") as f:
+            original = f.read()
+        code, out = self._run(original)
+        self.assertEqual(code, 0, "unmutated copy must pass PythonArgvCertaintyTests:\n" + out[-800:])
+        for name, (old, new) in self.MUTANTS.items():
+            with self.subTest(mutant=name):
+                self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
+                code, out = self._run(original.replace(old, new))
+                failing = [re.match(r"(?:FAIL|ERROR): (\S+) \(", ln) for ln in out.splitlines()
+                           if ln.startswith(("FAIL:", "ERROR:"))]
+                names = [m.group(1) for m in failing if m]
+                detected = any(n in self.DETECTING for n in names)
+                self.assertTrue(detected, "mutant not detected by a PythonArgvCertaintyTests assertion: " + name)
+
+
 CHILD = r"""
 import importlib.util, json, sys, time
 spec = importlib.util.spec_from_file_location("g", sys.argv[1])

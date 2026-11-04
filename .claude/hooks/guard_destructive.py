@@ -630,13 +630,62 @@ def find_rule(args, ps, ctx, depth):
             analyze_argv(args[i + 1:j], ctx, ps, depth + 1)
 
 
-def python_rule(args):
+PY_START = re.compile(r"\s*(?:sudo\s+|env\s+(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*)?(?:python[0-9.]*|py)(?=\s|$)")
+# Bash expands or splits on these when they are unquoted. Inside double quotes only $, backtick and backslash are
+# special. Single quotes are fully literal.
+UNQUOTED_SPECIAL = frozenset("$`{}*?[]~\\()<>|&;#!")
+DQUOTED_SPECIAL = frozenset("$`\\")
+
+
+def python_word_certainty(seg):
+    """True if the raw segment of a python command has no special character outside single quotes, and no
+    $, backtick or backslash inside double quotes. Then the argv bash passes is exactly the quote-removed words,
+    so the guard judges the same argv. Otherwise the argv depends on expansion and is not certain."""
+    state = None
+    for ch in seg:
+        if state == "'":
+            if ch == "'":
+                state = None
+        elif state == '"':
+            if ch == '"':
+                state = None
+            elif ch in DQUOTED_SPECIAL:
+                return False
+        elif ch in "'\"":
+            state = ch
+        elif ch in UNQUOTED_SPECIAL:
+            return False
+    return state is None
+
+
+def python_c_codes(args):
+    """Every code string of a python -c option. In a short-option bundle, -c takes the rest of the bundle as its
+    code ("-copen(...)", "-Icopen(...)"); only an empty rest takes the next argument. -W, -X and -m take the rest of
+    the bundle as a value, so a "c" after them is not -c, and a "c" after them is kept as a candidate (fail-closed)."""
+    codes = []
     for i, a in enumerate(args):
-        if short_has(a, "c"):
-            code = args[i + 1] if i + 1 < len(args) else ""
-            if DANGER_PY.search(code):
-                raise Deny("python-c", "python -c with a file or process operation")
-            return
+        if a.startswith("-") and not a.startswith("--"):
+            flags = a[1:]
+            for j, ch in enumerate(flags):
+                if ch == "c":
+                    rest = flags[j + 1:]
+                    codes.append(rest if rest else (args[i + 1] if i + 1 < len(args) else ""))
+                    break
+                if ch in "WXm":
+                    if "c" in flags[j + 1:]:
+                        codes.append(args[i + 1] if i + 1 < len(args) else "")
+                    break
+    return codes
+
+
+def python_rule(args):
+    # A shell variable or substitution in a python argument: its value is not visible here.
+    for arg in args:
+        if "$" in arg or "`" in arg or SUBST in arg:
+            raise Deny("unexpanded", "python argument with an unexpanded variable or substitution is not inspected")
+    for code in python_c_codes(args):
+        if DANGER_PY.search(code):
+            raise Deny("python-c", "python -c with a file or process operation")
 
 
 def shell_rule(args, ctx, depth):
@@ -761,6 +810,10 @@ def analyze_text(text, ctx, ps, depth):
     if depth > MAX_DEPTH:
         raise Deny("depth", "command nesting too deep")
     segs, subs, redirs = split_segments(text, ps)
+    # A python command whose argv is not certain (unquoted or double-quoted expansion characters) is refused.
+    for seg in segs:
+        if PY_START.match(seg) and not python_word_certainty(seg):
+            raise Deny("unexpanded", "python command whose argv depends on shell expansion is not inspected")
     for body in subs:
         analyze_text(body, ctx.copy(), ps, depth + 1)
     for seg, ops in zip(segs, redirs):
