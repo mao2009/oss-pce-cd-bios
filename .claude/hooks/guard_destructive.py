@@ -735,7 +735,8 @@ def timeout_candidates(args):
     """The command timeout runs: timeout [OPTION]... DURATION COMMAND [ARG]... GNU timeout stops option parsing at
     the first non-option (the "+" getopt form), so options after DURATION belong to COMMAND. Options before it:
     -k and -s (and --kill-after, --signal) take a value, separate or attached; other options are flags. Anything
-    the grammar does not cover is refused (fail closed)."""
+    the grammar does not cover is analysed conservatively: a non-numeric duration and an option-like command name
+    are also candidates. An attached value that GNU rejects (for example -ks) runs nothing and is allowed."""
     i = 0
     while i < len(args):
         a = args[i]
@@ -833,7 +834,7 @@ def analyze_argv(words, ctx, ps, depth):
             name = name[:-4].rstrip(". ") or name[:-4]
         if name == "timeout":
             # timeout's option grammar (long options with a separate value, non-integer durations) is not parsed, so
-            # every suffix of its arguments is analysed as a possible command. Bounded by TIMEOUT_MAX_WORDS.
+            # the command it runs is taken from its grammar (timeout_candidates), with conservative extra candidates.
             for cand in timeout_candidates(words[1:]):
                 analyze_argv(cand, ctx.copy(), ps, depth + 1)
             return

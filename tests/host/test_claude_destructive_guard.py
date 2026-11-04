@@ -860,7 +860,8 @@ class LauncherClassTests(unittest.TestCase):
                     "timeout -s KILL 5 rm -rf /", "timeout 5s sh -c 'rm -rf /'", "timeout -- 5 rm -rf /",
                     "timeout --signal KILL 5 rm -rf /", "timeout --kill-after 5 5 rm -rf /",
                     "timeout .5 rm -rf /", "timeout 1.5 rm -rf /", "timeout abc rm -rf /",
-                    "timeout --kill 1 5 rm -rf /", "timeout --sig KILL 5 rm -rf /", "timeout --s KILL 5 rm -rf /"]:
+                    "timeout --kill 1 5 rm -rf /", "timeout --sig KILL 5 rm -rf /", "timeout --s KILL 5 rm -rf /",
+                    "timeout -k5 rm -rf /", "timeout -s9 rm -rf /", "timeout 5 -- rm -rf /"]:
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd), "DENY")
         self.assertEqual(verdict("timeout 5 echo hi"), "ALLOW")
@@ -874,7 +875,7 @@ class LauncherClassTests(unittest.TestCase):
 
     def test_quoted_powershell_names_are_the_same_command(self):
         for cmd in ['"Remove"-Item -Recurse -Force /', "'Remove'-Item -Recurse -Force /", 'r"m" -Recurse -Force /',
-                    '   "Remove"-Item -Recurse -Force /',
+                    '   "Remove"-Item -Recurse -Force /', '\t"Remove"-Item -Recurse -Force /',
                     '"rm .exe" -rf /']:
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
@@ -924,7 +925,9 @@ class LauncherMutationTests(unittest.TestCase):
         "builtin removed from wrappers": ('"command", "builtin", "exec"', '"command", "exec"'),
         "timeout rule removed": ('        if name == "timeout":', '        if False:'),
         "trailing dot and space normalisation removed": ('        name = name.rstrip(". ") or name', '        pass'),
-        "timeout long option prefixes removed": ('            hits = [o for o in TIMEOUT_LONG if o.startswith(a[2:])] if "=" not in a else []',
+        "timeout attached short value taken as next word": ('takes_next = j == len(a) - 1', 'takes_next = True'),
+        "PowerShell head ignores a leading tab": ('            if m:\n                head', '            if m and not seg.startswith("\\t"):\n                head'),
+        "timeout long option prefixes removed":('            hits = [o for o in TIMEOUT_LONG if o.startswith(a[2:])] if "=" not in a else []',
                                                  '            hits = []'),
         "PowerShell quoted command name not joined": ('                head = [m.group(1).replace(\'"\', "").replace("\'", "")]',
                                                      '                head = [m.group(1)]'),
