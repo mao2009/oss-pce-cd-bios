@@ -9,8 +9,12 @@
 // it never serializes RAM bytes.
 //
 // argv: rom cue|- frames event_capacity run_start_frame|0 run_hold_frames|0 observe_ram core_capacity|0
+//       warm_reset_frame|0
 // core_capacity 0 keeps the pinned core's default trace buffer (TRACE_BUFFER_SIZE); a non-zero
 // value calls the core's TraceLogger::SetCapacity before frame 1 (trace buffer only, never guest state).
+// warm_reset_frame N (2..frames) calls the pinned core's public GeargrafxCore::ResetMedia(true) once,
+// before frame N runs: the same warm reset the existing API probe uses.  It is a requested,
+// recorded guest reset (RESET line), not a tracer write to guest memory or registers.
 // Output: CAP, INPUT, EVENT (bounded ring, oldest entries overwritten), END
 // with a cumulative RAM summary that is deliberately independent of that ring.
 #include "geargrafx_core.h"
@@ -155,9 +159,15 @@ void print_event(const Event& event) {
         // These fields come only from the TRACE_CPU entry, which contains the
         // resolved bank and PC at instruction time.  Never serialize opcode
         // bytes or disassembly text from that entry.
-        std::printf("\"event_cycle\":%llu,\"event_pc\":%u,\"event_bank\":%u,\"from_region\":\"%s\",\"to_region\":\"%s\",\"trace_gap\":%s",
+        // region_kind: "baseline" (first region of the run, nothing lost before it), "after_gap"
+        // (first region after a core-trace gap or discontinuity) or "transition" (between two
+        // known regions).  "unknown" is only ever a from_region.
+        const bool from_unknown = std::strcmp(event.from_region, "unknown") == 0;
+        std::printf("\"event_cycle\":%llu,\"event_pc\":%u,\"event_bank\":%u,\"from_region\":\"%s\",\"to_region\":\"%s\",\"trace_gap\":%s,"
+                    "\"region_kind\":\"%s\"",
                     event.event_cycle, event.event_pc, event.event_bank, event.from_region,
-                    event.to_region, event.trace_gap ? "true" : "false");
+                    event.to_region, event.trace_gap ? "true" : "false",
+                    !from_unknown ? "transition" : event.trace_gap ? "after_gap" : "baseline");
     } else {
         print_cpu(event.cpu);
     }
@@ -218,7 +228,7 @@ void print_ram_summary(const std::vector<RamTracker>& rams) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc != 9)
+    if (argc != 10)
         return 2;
     char* end = nullptr;
     long frames = std::strtol(argv[3], &end, 10);
@@ -244,6 +254,10 @@ int main(int argc, char** argv) {
     end = nullptr;
     long requested_core_capacity = std::strtol(argv[8], &end, 10);
     if (!end || *end || requested_core_capacity < 0 || requested_core_capacity > kMaxCoreCapacity)
+        return 2;
+    end = nullptr;
+    long warm_reset_frame = std::strtol(argv[9], &end, 10);
+    if (!end || *end || warm_reset_frame < 0 || warm_reset_frame == 1 || warm_reset_frame > frames)
         return 2;
     std::ifstream input(argv[1], std::ios::binary);
     if (!input)
@@ -312,9 +326,9 @@ int main(int argc, char** argv) {
     }
     std::printf("],\"ring_capacity\":%ld,\"frames\":%ld,\"disc_given\":%s,\"run_start_frame\":%ld,"
                 "\"run_hold_frames\":%ld,\"run_input_requested\":%s,\"core_capacity_requested\":%ld,"
-                "\"trace_api_guest_ram_checked\":%s}\n",
+                "\"trace_api_guest_ram_checked\":%s,\"region_gap_carry\":true,\"warm_reset_frame\":%ld}\n",
                 capacity, frames, have_disc ? "true" : "false", run_start, run_hold, run_start ? "true" : "false",
-                requested_core_capacity, observe_ram ? "true" : "false");
+                requested_core_capacity, observe_ram ? "true" : "false", warm_reset_frame);
     TraceLogger* trace = core.GetTraceLogger();
     // The tracer's TraceLogger calls touch only the core's trace buffer.  Guest state is
     // fingerprinted before and after them; a mismatch is counted, never hidden.
@@ -345,8 +359,18 @@ int main(int argc, char** argv) {
     u64 max_frame_core_entries = 0;
     unsigned max_frame_scsi_events = 0;
     const char* previous_region = nullptr;
+    // Set by a core-trace gap or discontinuity and carried across frames until the next REGION
+    // event is emitted, so a gap is never hidden when the following frames consume no CPU entry.
+    bool trace_gap = false;
 
     for (unsigned number = 1; number <= (unsigned)frames; ++number) {
+        if (warm_reset_frame && number == (unsigned)warm_reset_frame) {
+            // Public core API; the trace logger is not part of GeargrafxCore::Reset().
+            const bool media_ready = core.GetMedia()->IsReady();
+            core.ResetMedia(true);
+            std::printf("RESET {\"frame\":%u,\"kind\":\"warm\",\"api\":\"GeargrafxCore::ResetMedia(true)\","
+                        "\"performed\":%s}\n", number, media_ready ? "true" : "false");
+        }
         // This is the pinned core's public controller API.  No guest RAM, CPU,
         // MPR, IRQ, CD, or SCSI state is changed by the tracer.
         if (run_start && number == (unsigned)run_start) {
@@ -374,7 +398,6 @@ int main(int argc, char** argv) {
         const FrameTracerCoreFrame core_frame = core_account.account(
             {total, trace->GetSequence(), trace->GetCapacity(), trace->GetCount()});
         const u64 first_event = total > core_capacity ? total - core_capacity : 0;
-        bool trace_gap = false;
         // A core trace gap means this frame's SCSI notifications may be incomplete.
         // Output-ring overflow is a separate, bounded-output concern and never reaches here.
         bool frame_scsi_incomplete = false;
@@ -447,7 +470,7 @@ int main(int argc, char** argv) {
         print_event(ring.at(index));
     // A discontinuous frame lost an unknown number of core entries that trace_events_dropped cannot
     // count, so it also sets overflow: an unknown loss is never presented as no loss.
-    std::printf("END {\"frames\":%ld,\"events\":%u,\"dropped\":%u,\"trace_events_dropped\":%llu,\"overflow\":%s", frames,
+    std::printf("END {\"frames\":%ld,\"events\":%u,\"dropped\":%llu,\"trace_events_dropped\":%llu,\"overflow\":%s", frames,
                 ring.size(), ring.dropped(), (unsigned long long)dropped_trace,
                 (ring.dropped() || dropped_trace || core_account.discontinuous_frames()) ? "true" : "false");
     // Every output-ring push, counted independently so the reader can check pushed == events + dropped.
@@ -455,7 +478,8 @@ int main(int argc, char** argv) {
     // Core-buffer fields.  core_capacity is the core's configured buffer size (TraceLogger::GetCapacity),
     // not a usage measurement.  max_frame_core_entries is the legacy post-clamp (retained) maximum, kept
     // for compatibility; the reader measures the pre-clamp value from core_trace.max_frame_logged instead.
-    // max_frame_scsi_events misses entries lost in a gap, so the reader keeps it NOT_MEASURED (PR-C).
+    // max_frame_scsi_events counts only entries actually read: the reader marks it MEASURED only when no
+    // frame had a core-trace gap or discontinuity, and otherwise reports it as a separate LOWER_BOUND.
     std::printf(",\"core_capacity\":%llu,\"max_frame_core_entries\":%llu,\"max_frame_scsi_events\":%u",
                 (unsigned long long)core_capacity, (unsigned long long)max_frame_core_entries, max_frame_scsi_events);
     // Pre-clamp core accounting (A1 PR-B).  total_logged and sequence_delta are read from the core at

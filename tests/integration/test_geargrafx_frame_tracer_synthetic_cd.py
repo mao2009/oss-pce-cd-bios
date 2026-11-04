@@ -35,7 +35,7 @@ class FrameTracerSyntheticCdRealCoreTests(unittest.TestCase):
         base = ROOT / "build/debug/bios-dev/dev-only-not-compatible-syscard3.pce"
         cls.rom = build_dev_boot_internal(base, ROOT / "build/debug/dev-boot-internal", "debug")
 
-    def run_tracer(self, frames=120, core_capacity=None):
+    def run_tracer(self, frames=120, core_capacity=None, warm_reset_frame=None):
         with tracer.tempfile.TemporaryDirectory(prefix="frame-synthetic-cd-") as temporary:
             media = Path(temporary) / "media"
             approved_root = Path(temporary) / "frame-tracer-root"
@@ -50,6 +50,7 @@ class FrameTracerSyntheticCdRealCoreTests(unittest.TestCase):
                 result = tracer.trace(SimpleNamespace(
                     frames=frames, events=1, timeout=120.0, rom=self.rom, cue=media / CUE_NAME,
                     run_start_frame=None, run_hold_frames=None, observe_ram=True, core_capacity=core_capacity,
+                    warm_reset_frame=warm_reset_frame,
                 ))
         self.assertEqual(result["status"], "PASS", result)
         self.assertEqual(result["evidence"], "REAL_GEARGRAFX_CORE")
@@ -75,9 +76,31 @@ class FrameTracerSyntheticCdRealCoreTests(unittest.TestCase):
         self.assertEqual(entries["retained_max"], summary["max_frame_core_entries"])
         self.assertEqual(drops["lost_entries"], summary["trace_events_dropped"])
         self.assertLessEqual(drops["value"], frames)
-        self.assertEqual(table["max_frame_scsi_events"]["status"], tracer.NOT_MEASURED)  # PR-C
-        self.assertNotIn("value", table["max_frame_scsi_events"])
+        # PR-C fail-closed SCSI maximum: exact only without any gap frame, else a separate lower bound.
+        scsi = table["max_frame_scsi_events"]
+        if drops["value"] == 0:
+            self.assertEqual(scsi["status"], tracer.MEASURED)
+            self.assertEqual(scsi["value"], summary["max_frame_scsi_events"])
+            self.assertNotIn(tracer.SCSI_LOWER_BOUND, table)
+        else:
+            self.assertEqual(set(scsi), {"status", "reason"})
+            self.assertEqual(scsi["status"], tracer.NOT_MEASURED)
+            bound = table[tracer.SCSI_LOWER_BOUND]
+            self.assertEqual(bound["status"], tracer.LOWER_BOUND)
+            self.assertEqual(bound["value"], summary["max_frame_scsi_events"])
+            self.assertLessEqual(bound["value"], entries["retained_max"])  # only read entries are counted
+        # REGION classification (checked by the reader as well): at most one baseline, and only first.
+        kinds = [event["region_kind"] for event in result["events"] if event["kind"] == "region"]
+        self.assertNotIn("baseline", kinds[1:])
         return entries, drops, capacity
+
+    def assert_default_capacity_is_gap_free(self, entries, drops, table):
+        # One frame is ~119k CPU cycles and every instruction takes at least 2, so a frame cannot log
+        # TRACE_BUFFER_SIZE (100000) entries: with the default buffer no frame loses entries, and the
+        # SCSI maximum must therefore be exact.  A gap here would be a real finding, not noise.
+        self.assertLess(entries["value"], table["core_capacity"]["value"])
+        self.assertEqual((drops["value"], drops["lost_entries"]), (0, 0))
+        self.assertEqual(table["max_frame_scsi_events"]["status"], tracer.MEASURED)
 
     def test_cumulative_deltas_survive_event_overflow_on_synthetic_cd(self):
         result = self.run_tracer()
@@ -105,7 +128,9 @@ class FrameTracerSyntheticCdRealCoreTests(unittest.TestCase):
         self.assertGreater(capacity["value"], 0)
         self.assertEqual(capacity["value"], summary["core_capacity"])
         self.assertEqual(capacity["requested"], 0)  # the pinned core's default buffer
-        self.assert_core_accounting(result, 120)
+        entries, drops, _ = self.assert_core_accounting(result, 120)
+        self.assert_default_capacity_is_gap_free(entries, drops, table)
+        self.assertEqual(result["capability"]["warm_reset_frame"], 0)  # cold boot only
         rows = {row["region"]: row for row in summary["ram_deltas"]}
         # The synthetic read changes WRAM and has observed SCSI-frame correlation.
         self.assertGreater(rows["wram"]["updates"], 0)
@@ -137,6 +162,28 @@ class FrameTracerSyntheticCdRealCoreTests(unittest.TestCase):
         core = summary["core_trace"]
         self.assertLessEqual(core["consumed"], 60)
         self.assertGreaterEqual(core["consumed"], drops["value"])
+        # Expected PR-C result at capacity 1: the SCSI maximum is NOT_MEASURED, with a LOWER_BOUND row.
+        self.assertEqual(table["max_frame_scsi_events"]["status"], tracer.NOT_MEASURED)
+        self.assertEqual(table[tracer.SCSI_LOWER_BOUND]["status"], tracer.LOWER_BOUND)
+        self.assertLessEqual(table[tracer.SCSI_LOWER_BOUND]["value"], 1)  # one retained entry per frame
+
+    def test_core_trace_counters_stay_continuous_across_a_warm_reset(self):
+        # GeargrafxCore::ResetMedia(true) (the existing probes' warm reset) does not reset the trace
+        # logger, so every frame, including the reset frame, must still be accounted.
+        result = self.run_tracer(frames=120, warm_reset_frame=60)
+        self.assertEqual(result["capability"]["warm_reset_frame"], 60)
+        entries, drops, _ = self.assert_core_accounting(result, 120)
+        self.assert_default_capacity_is_gap_free(entries, drops, result["measurements"])
+
+    def test_core_capacity_at_the_pinned_upper_bound_is_accepted(self):
+        # MAX_CORE_CAPACITY must equal the pinned TRACE_BUFFER_SIZE: the C++ tracer rejects anything
+        # above it, and SetCapacity at the same size keeps the core's own buffer.
+        result = self.run_tracer(frames=10, core_capacity=tracer.MAX_CORE_CAPACITY)
+        table = result["measurements"]
+        self.assertEqual((table["core_capacity"]["value"], table["core_capacity"]["requested"]),
+                         (tracer.MAX_CORE_CAPACITY, tracer.MAX_CORE_CAPACITY))
+        entries, drops, _ = self.assert_core_accounting(result, 10)
+        self.assert_default_capacity_is_gap_free(entries, drops, table)
 
 
 if __name__ == "__main__":

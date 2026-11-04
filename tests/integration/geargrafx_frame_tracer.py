@@ -36,13 +36,31 @@ CPU_REGIONS = {"unknown", "other", "cdrom_ram", "working_ram", "hardware"}
 MEASURED = "MEASURED"
 REPORTED_BY_CORE = "REPORTED_BY_CORE"
 NOT_MEASURED = "NOT_MEASURED"
+# A bound computed only from entries that were actually read.  It is never the measured quantity
+# itself and lives in its own row, so a reader cannot take it for the exact value.
+LOWER_BOUND = "LOWER_BOUND"
 MEASUREMENT_NAMES = ("core_capacity", "output_ring_dropped", "max_frame_core_entries",
                      "max_frame_scsi_events", "core_trace_dropped_frames")
-# Quantities that stay NOT_MEASURED for every tracer output format.
-NOT_MEASURED_REASONS = {
-    "max_frame_scsi_events": "counts only SCSI entries the core still retains; entries lost in a core-trace gap "
-                             "are not counted (fail-closed handling and a lower bound are PR-C)",
-}
+# A1 PR-C: present only when max_frame_scsi_events is NOT_MEASURED.
+SCSI_LOWER_BOUND = "scsi_events_lower_bound"
+# Quantities that stay NOT_MEASURED for every tracer output format (none since PR-C).
+NOT_MEASURED_REASONS = {}
+# What END trace_api_guest_checks/trace_api_guest_changes do and do not show (see docs/frame-tracer-measurements.md).
+GUEST_STATE_CHECK_SCOPE = (
+    "guest CPU registers, MPRs, master clock, timer, IDR/IRR, CD/SCSI state and observed RAM compared only "
+    "immediately before and after the tracer's own TraceLogger API calls (setup, then once per frame); this is "
+    "not an observer non-interference claim: enabling core tracing inside RunToVBlank is not covered")
+# How to read the raw END object kept in the log as "summary".
+SUMMARY_SCOPE = (
+    "raw, unlabelled END fields as emitted by the C++ tracer; only 'measurements' carries a status. "
+    "summary.max_frame_core_entries is the retained (post-clamp) maximum, whereas "
+    "measurements.max_frame_core_entries is the pre-clamp maximum; summary.max_frame_scsi_events is exact only "
+    "when measurements.max_frame_scsi_events is MEASURED, otherwise it is the scsi_events_lower_bound value")
+SCSI_EXACT_SOURCE = ("SCSI entries read with GetEntry() per frame; exact only because every logged core entry was "
+                     "read (no core-trace gap frame and no discontinuous frame)")
+SCSI_LOWER_BOUND_SOURCE = ("largest per-frame count of SCSI entries that were actually read with GetEntry(); "
+                           "SCSI entries overwritten before being read are not counted, so the true maximum is "
+                           "at least this value")
 # A1 PR-B: measured from the END core_trace accounting.  Without it (pre-PR-B output) or when the
 # core counters were discontinuous, they stay NOT_MEASURED with these reasons.
 CORE_TRACE_MEASURED = ("max_frame_core_entries", "core_trace_dropped_frames")
@@ -77,25 +95,40 @@ def measurements(cap, end):
     if core is None:
         for name, reason in LEGACY_NOT_MEASURED_REASONS.items():
             table[name] = {"status": NOT_MEASURED, "reason": reason}
-        return table
-    if core["discontinuity_frames"]:
+        scsi_reason = "pre-PR-B tracer output: core-trace gaps and discontinuities cannot be ruled out"
+    elif core["discontinuity_frames"]:
         reason = (f"core trace counters were discontinuous in {core['discontinuity_frames']} of {end['frames']} "
                   "frame(s) (unexpected Reset, capacity change or retained-count mismatch); per-frame counts for "
                   "those frames are unknown")
         for name in CORE_TRACE_MEASURED:
             table[name] = {"status": NOT_MEASURED, "reason": reason}
-        return table
-    frames = core["frames_accounted"]
-    table["max_frame_core_entries"] = {
-        "status": MEASURED, "value": core["max_frame_logged"], "kind": "count",
-        "unit": "core trace entries logged in one frame, before the capacity clamp",
-        "frames": frames, "retained_max": end["max_frame_core_entries"],
-        "counted_types": "entry types the tracer enables: TRACE_CPU and filtered TRACE_SCSI",
-        "source": CORE_TRACE_SOURCE}
-    table["core_trace_dropped_frames"] = {
-        "status": MEASURED, "value": core["gap_frames"], "lost_entries": core["lost"], "kind": "count",
-        "unit": "frames in which the core overwrote entries before the tracer read them",
-        "frames": frames, "source": CORE_TRACE_SOURCE + "; lost = logged - capacity when positive"}
+        scsi_reason = reason
+    else:
+        frames = core["frames_accounted"]
+        table["max_frame_core_entries"] = {
+            "status": MEASURED, "value": core["max_frame_logged"], "kind": "count",
+            "unit": "core trace entries logged in one frame, before the capacity clamp",
+            "frames": frames, "retained_max": end["max_frame_core_entries"],
+            "counted_types": "entry types the tracer enables: TRACE_CPU and filtered TRACE_SCSI",
+            "source": CORE_TRACE_SOURCE}
+        table["core_trace_dropped_frames"] = {
+            "status": MEASURED, "value": core["gap_frames"], "lost_entries": core["lost"], "kind": "count",
+            "unit": "frames in which the core overwrote entries before the tracer read them",
+            "frames": frames, "source": CORE_TRACE_SOURCE + "; lost = logged - capacity when positive"}
+        scsi_reason = None if not core["gap_frames"] else (
+            f"{core['gap_frames']} of {end['frames']} frame(s) lost {core['lost']} core entries before they were read; "
+            "how many of those were SCSI entries is unknown")
+    # Fail-closed: the SCSI maximum is exact only when nothing logged was lost or skipped.
+    if scsi_reason is None:
+        table["max_frame_scsi_events"] = {
+            "status": MEASURED, "value": end["max_frame_scsi_events"], "kind": "count",
+            "unit": "SCSI trace entries (commands, phases, responses filter) logged in one frame",
+            "frames": core["frames_accounted"], "source": SCSI_EXACT_SOURCE}
+    else:
+        table["max_frame_scsi_events"] = {"status": NOT_MEASURED, "reason": scsi_reason}
+        table[SCSI_LOWER_BOUND] = {
+            "status": LOWER_BOUND, "value": end["max_frame_scsi_events"], "bound_of": "max_frame_scsi_events",
+            "kind": "lower_bound", "source": SCSI_LOWER_BOUND_SOURCE}
     return table
 
 
@@ -360,14 +393,61 @@ def cleanup_tracked_job_dir(path, identity):
     return True, "removed"
 
 
+REGION_KINDS = {"baseline", "after_gap", "transition"}
+WARM_RESET_API = "GeargrafxCore::ResetMedia(true)"
+
+
+def validate_regions_and_resets(cap, end, events, resets, has_core_trace):
+    """A1 PR-C: REGION classification and the optional warm reset, checked within one run.
+
+    The tracer carries trace_gap across frames until the next REGION event, so "unknown" with
+    trace_gap=false can only be the run's single baseline.  Pre-PR-C output (no region_gap_carry)
+    is accepted without these checks, and must then contain no PR-C records.
+    """
+    regions = [event for event in events if event["kind"] == "region"]
+    pr_c = {key for key in ("region_gap_carry", "warm_reset_frame") if key in cap}
+    if not pr_c:
+        if resets or any("region_kind" in event for event in regions):
+            raise ValueError("PR-C records without the PR-C capability")
+        return
+    if pr_c != {"region_gap_carry", "warm_reset_frame"}:
+        raise ValueError("PR-C capability fields incomplete")
+    if not has_core_trace:
+        raise ValueError("PR-C output lacks the PR-B core trace accounting")
+    if cap["region_gap_carry"] is not True:
+        raise ValueError("REGION gap carry capability missing")
+    frames, warm = cap["frames"], cap["warm_reset_frame"]
+    if type(warm) is not int or not (warm == 0 or 2 <= warm <= frames):
+        raise ValueError("invalid warm reset frame")
+    expected = [] if not warm else [{"frame": warm, "kind": "warm", "api": WARM_RESET_API, "performed": True}]
+    if resets != expected:
+        raise ValueError("warm reset record does not match the requested reset")
+    core = end["core_trace"]
+    gaps_possible = core["gap_frames"] > 0 or core["discontinuity_frames"] > 0
+    for index, event in enumerate(regions):
+        kind, gap, from_unknown = event.get("region_kind"), event["trace_gap"], event["from_region"] == "unknown"
+        if kind not in REGION_KINDS or event["to_region"] == "unknown":
+            raise ValueError("invalid REGION classification")
+        if kind != ("transition" if not from_unknown else "after_gap" if gap else "baseline") or \
+                (kind == "transition" and gap):
+            raise ValueError("REGION classification disagrees with from_region/trace_gap")
+        if kind == "baseline" and index != 0:
+            raise ValueError("a REGION baseline after the first REGION event hides a gap")
+        if kind == "after_gap" and not gaps_possible:
+            raise ValueError("REGION gap without any core-trace gap or discontinuity")
+    if regions and end["dropped"] == 0 and regions[0]["from_region"] != "unknown":
+        raise ValueError("first REGION event of a complete output ring does not start from unknown")
+
+
 def parse_records(stdout, require_ram_observation=True):
     """Validate the small public-safe protocol emitted by the C++ tracer."""
     cap = end = None
     inputs = []
     events = []
+    resets = []
     for line in stdout.splitlines():
         tag, separator, body = line.partition(" ")
-        if tag not in {"CAP", "INPUT", "EVENT", "END"}:
+        if tag not in {"CAP", "INPUT", "EVENT", "END", "RESET"}:
             continue
         if not separator:
             raise ValueError(f"{tag} missing JSON body")
@@ -380,6 +460,8 @@ def parse_records(stdout, require_ram_observation=True):
             cap = row
         elif tag == "INPUT":
             inputs.append(row)
+        elif tag == "RESET":
+            resets.append(row)
         elif tag == "EVENT":
             events.append(row)
         else:
@@ -450,7 +532,7 @@ def parse_records(stdout, require_ram_observation=True):
         raise ValueError("invalid per-frame SCSI event field")
     if type(cap.get("frames")) is not int or not 1 <= cap["frames"] <= MAX_FRAMES or end.get("frames") != cap["frames"]:
         raise ValueError("invalid frame count")
-    validate_core_trace(cap, end)
+    has_core_trace = validate_core_trace(cap, end)
     validate_ram_deltas(end.get("ram_deltas"), cap["frames"])
     for event in events:
         if event.get("kind") not in EVENT_KINDS or type(event.get("frame")) is not int or not 1 <= event["frame"] <= cap["frames"]:
@@ -488,17 +570,21 @@ def parse_records(stdout, require_ram_observation=True):
                 raise ValueError("SCSI metadata lacks FRAME_SNAPSHOT label")
             if not all(type(event.get(key)) is int for key in ("cd_event", "command", "lba", "status")):
                 raise ValueError("invalid CD event")
+    validate_regions_and_resets(cap, end, events, resets, has_core_trace)
     return cap, events, end
 
 
 def trace(args):
     # Callers that predate PR-B pass no core_capacity: keep the pinned core's default buffer.
     core_capacity = getattr(args, "core_capacity", None)
+    # Callers that predate PR-C pass no warm_reset_frame: a cold-boot-only run.
+    warm_reset = getattr(args, "warm_reset_frame", None)
     if not 1 <= args.frames <= MAX_FRAMES or not 1 <= args.events <= MAX_EVENTS or \
             (core_capacity is not None and (type(core_capacity) is not int or
-                                            not 1 <= core_capacity <= MAX_CORE_CAPACITY)):
+                                            not 1 <= core_capacity <= MAX_CORE_CAPACITY)) or \
+            (warm_reset is not None and (type(warm_reset) is not int or not 2 <= warm_reset <= args.frames)):
         return {"status": "FAIL", "reason": f"limits are frames 1..{MAX_FRAMES}, events 1..{MAX_EVENTS}, "
-                                            f"core capacity 1..{MAX_CORE_CAPACITY}",
+                                            f"core capacity 1..{MAX_CORE_CAPACITY}, warm reset frame 2..frames",
                 "evidence": "NOT_RUN"}
     try:
         schedule = run_schedule(args.run_start_frame, args.run_hold_frames, args.frames)
@@ -542,7 +628,8 @@ def trace(args):
             cue = str(disc / staged[0])
         result = run_job([str(probe), str(rom), cue, str(args.frames), str(args.events),
                            str(args.run_start_frame or 0), str(args.run_hold_frames or 0),
-                           "1" if args.observe_ram else "0", str(core_capacity or 0)], job, args.timeout)
+                           "1" if args.observe_ram else "0", str(core_capacity or 0), str(warm_reset or 0)],
+                          job, args.timeout)
         if result["status"]:
             log.update(status=result["status"], reason=result["reason"], evidence="NOT_RUN")
             return log
@@ -558,9 +645,14 @@ def trace(args):
             log.update(status="FAIL", reason="trace rejected: tracer did not apply the requested core capacity",
                        evidence="NOT_RUN")
             return log
+        if cap.get("warm_reset_frame") != (warm_reset or 0):
+            log.update(status="FAIL", reason="trace rejected: tracer did not apply the requested warm reset",
+                       evidence="NOT_RUN")
+            return log
         log.update(status="PASS", reason="bounded normal-frame trace completed", evidence="REAL_GEARGRAFX_CORE",
                    elapsed_s=result["elapsed_s"], capability=cap, events=events, summary=end,
-                   measurements=measurements(cap, end))
+                   measurements=measurements(cap, end), guest_state_check_scope=GUEST_STATE_CHECK_SCOPE,
+                   summary_scope=SUMMARY_SCOPE)
         return log
     finally:
         cleaned, cleanup_reason = cleanup_tracked_job_dir(job, job_identity)
@@ -582,6 +674,8 @@ def main(argv=None):
                         help="disable RAM snapshots; useful only for observer A/B diagnostics")
     parser.add_argument("--core-capacity", type=int,
                         help=f"core trace buffer entries (1..{MAX_CORE_CAPACITY}); default keeps the core's own")
+    parser.add_argument("--warm-reset-frame", type=int,
+                        help="frame (2..frames) before which the core's public ResetMedia(true) warm reset runs")
     parser.set_defaults(observe_ram=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)

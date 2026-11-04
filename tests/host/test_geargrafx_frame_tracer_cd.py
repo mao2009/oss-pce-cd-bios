@@ -1,6 +1,7 @@
 """Host-only result classification tests for the #603 CD/tracer bridge."""
 from contextlib import redirect_stderr
 from io import StringIO
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -12,12 +13,49 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "integration"))
 import geargrafx_frame_tracer_cd as bridge  # noqa: E402
 
 
+def evidence_file(root):
+    return root / "build/debug/frame-tracer-cd" / bridge.EVIDENCE_NAME
+
+
 class FrameTracerCdResultTests(unittest.TestCase):
     def invoke(self, error):
         stderr = StringIO()
-        with mock.patch.object(bridge, "run", side_effect=error), redirect_stderr(stderr):
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(bridge, "ROOT", Path(temporary)), \
+                mock.patch.object(bridge, "run", side_effect=error), redirect_stderr(stderr):
             code = bridge.main([])
+            self.last_record = json.loads(evidence_file(Path(temporary)).read_text())
         return code, stderr.getvalue()
+
+    def test_stale_success_evidence_never_survives_a_failed_or_interrupted_run(self):
+        stale = {"status": "PASS", "evidence_valid": True, "runs": {"observer_on": {}}}
+        for error, status in ((ValueError("oracle"), "FAIL"), (bridge.IntegrationBlocked("doctor"), "BLOCKED"),
+                              (KeyError("shape"), "FAIL")):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                path = evidence_file(root)
+                path.parent.mkdir(parents=True)
+                path.write_text(json.dumps(stale))
+                sibling = path.parent / "unrelated.txt"
+                sibling.write_text("keep")
+                seen = []
+
+                def failing_run(mode):
+                    seen.append(json.loads(path.read_text()))  # what a reader sees mid-run
+                    raise error
+                with mock.patch.object(bridge, "ROOT", root), mock.patch.object(bridge, "run", failing_run), \
+                        redirect_stderr(StringIO()):
+                    bridge.main([])
+                self.assertEqual((seen[0]["status"], seen[0]["evidence_valid"]), ("INCOMPLETE", False))
+                record = json.loads(path.read_text())
+                self.assertEqual((record["status"], record["evidence_valid"], record["runs"]), (status, False, None))
+                self.assertEqual(sibling.read_text(), "keep")  # nothing else in the folder is touched
+                self.assertEqual(sorted(p.name for p in path.parent.iterdir()), [bridge.EVIDENCE_NAME, "unrelated.txt"])
+
+    def test_failure_records_carry_no_reason_text_or_paths(self):
+        self.invoke(ValueError("/home/someone/private/path detail"))
+        self.assertNotIn("private", json.dumps(self.last_record))
+        self.assertEqual(set(self.last_record), {"status", "evidence_valid", "runs", "scope",
+                                                 "proprietary_content", "guest_bytes"})
 
     def test_tracer_blocker_is_explicit_and_exit_three(self):
         code, stderr = self.invoke(bridge.IntegrationBlocked("RAM observer ON: doctor prerequisites"))
