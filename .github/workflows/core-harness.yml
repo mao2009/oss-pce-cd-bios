@@ -124,3 +124,22 @@ jobs:
         run: |
           set -euo pipefail
           make experimental-bios-boot-integration
+  # Synthetic CUE data-track selection (INDEX 01 / pregap / audio refusal), real Geargrafx cold and warm. Additive job: no
+  # needs, no secrets, changes no existing job. Original synthetic media only; NOT a BIOS TOC/API and NOT compatible.
+  synthetic-track-select-integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare existing pinned source toolchain and Geargrafx
+        run: make setup
+      - name: DEV-only synthetic CUE data-track selection, real Geargrafx (BLOCKED, script exit 3, fails the job; not a BIOS API)
+        shell: bash
+        run: |
+          set -euo pipefail
+          make dev-synthetic-track-select-integration
