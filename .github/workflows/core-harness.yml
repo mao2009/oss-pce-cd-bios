@@ -138,7 +138,7 @@ jobs:
           persist-credentials: false
       - name: Prepare existing pinned source toolchain and Geargrafx
         run: make setup
-      - name: DEV-only synthetic CUE data-track selection, real Geargrafx (BLOCKED=3 fails the job; not a BIOS API)
+      - name: DEV-only synthetic CUE data-track selection, real Geargrafx (BLOCKED, script exit 3, fails the job; not a BIOS API)
         shell: bash
         run: |
           set -euo pipefail
