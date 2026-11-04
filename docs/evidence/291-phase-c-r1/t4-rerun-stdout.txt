@@ -1,0 +1,18 @@
+expected written <SCRATCHPAD>\phase-c\phase-c-r1/t4-expected-r1.json d23732586bdc9b9652128c128e7d780fda56626e10b9240c73a4f9013b239f48
+{
+ "observed": {
+  "noinput_SEL0_2010": "3F",
+  "noinput_SEL1_2011": "3F",
+  "up_SEL0_2010": "3F",
+  "up_SEL1_2011": "3E"
+ },
+ "checks": {
+  "noinput_matches_expected": true,
+  "up_matches_expected": true,
+  "result": "PASS"
+ },
+ "exit": {
+  "t4r1_noinput": 0,
+  "t4r1_up": 0
+ }
+}

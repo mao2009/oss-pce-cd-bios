@@ -1,0 +1,42 @@
+{
+  "label": "C3 pre-registered expectations (written before any launch)",
+  "bios_sha256": "e122f0154b6b341a4d08deddd855289a7a5ca43e814aa9391737f7e7f52f70d7",
+  "bios_size": 262144,
+  "media_cue_sha256": "a751990e25024069547721265e946052639710589a3d94c7e6afd1a675836dd2",
+  "media_bin_sha256": "7ba14aad9eee82d234c1eafbad6ba4d9d60a8ba4db73bce56eb817e2ed3ac64c",
+  "seed_A": "0x00C0FFEE",
+  "seed_B": "0x0BADF00D",
+  "entry": "E000",
+  "input_bp": "E012",
+  "halt": "E028",
+  "expected_trace_pcs": [
+    "E000",
+    "E002",
+    "E004",
+    "E006",
+    "E009",
+    "E00B",
+    "E00D",
+    "E00F",
+    "E012",
+    "E015",
+    "E018",
+    "E01A",
+    "E01D",
+    "E020",
+    "E023",
+    "E025"
+  ],
+  "expected_trace_count": 16,
+  "expected_sysram_markers": {
+    "wram0000": "01",
+    "wram0001": "02"
+  },
+  "T1": "same seed: post-reset state, halt state, SYSTEM RAM sha, LOGICAL sha, CD status, trace identical across >=3 launches",
+  "T2": "seed A vs seed B: reset CPU/MPR state differs; each det run matches xorshift32 draw-order model",
+  "T3": "trace after reset == expected_trace_pcs; zero-entry trace is FAIL",
+  "T4": "press Up: SEL0 low nibble unchanged; SEL1 low nibble bit0 cleared (Up is in high nibble, read on SEL=1; src/types.h:77-83, input_inline.h:174-180). NOTE: the first draft relation (bit0 on SEL=0) was corrected from source after a probe run; see phase-c3-tests.md.",
+  "T5": "each run: only config.ini and tmp/ new beyond exe/dll; media, BIOS, pinned exe and pinned config unchanged",
+  "pinned_exe_sha256_before": "4933885ca1cebd4a979dcd8da1a1324aadac95885d3403b7019fe5f7df664827",
+  "det_exe_sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d"
+}

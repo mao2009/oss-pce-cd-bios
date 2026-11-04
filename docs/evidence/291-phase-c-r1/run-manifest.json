@@ -1,0 +1,357 @@
+{
+  "label": "C-R1 run manifest (no reference BIOS, no rom/, no reference JSR, no commercial medium)",
+  "inputs_and_binaries": {
+    "pinned_exe": {
+      "path_kind": "scratchpad-relative",
+      "sha256": "4933885ca1cebd4a979dcd8da1a1324aadac95885d3403b7019fe5f7df664827",
+      "size": 15476837
+    },
+    "pinned_dll": {
+      "path_kind": "scratchpad-relative",
+      "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad",
+      "size": 4558193
+    },
+    "pinned_config_ini": {
+      "path_kind": "scratchpad-relative",
+      "sha256": "2a595b26f04ee7a60b09b241b191d49e66e8ae91ccc70624025fd6d83bca7b84",
+      "size": 28769
+    },
+    "test_exe_det": {
+      "path_kind": "scratchpad-relative",
+      "sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
+      "size": 15476837
+    },
+    "synthetic_bios": {
+      "path_kind": "scratchpad-relative",
+      "sha256": "e122f0154b6b341a4d08deddd855289a7a5ca43e814aa9391737f7e7f52f70d7",
+      "size": 262144
+    },
+    "synthetic_cue": {
+      "path_kind": "scratchpad-relative",
+      "sha256": "a751990e25024069547721265e946052639710589a3d94c7e6afd1a675836dd2",
+      "size": 75
+    },
+    "synthetic_bin": {
+      "path_kind": "scratchpad-relative",
+      "sha256": "7ba14aad9eee82d234c1eafbad6ba4d9d60a8ba4db73bce56eb817e2ed3ac64c",
+      "size": 32768
+    }
+  },
+  "missing": [],
+  "r1_run_dirs": {
+    "cdA_r1": {
+      "files": {
+        "config.ini": {
+          "size": 26473,
+          "sha256": "28d0029706e24f68c38547fe90dfb57521c41984de5c079fd18aa9863490badc"
+        },
+        "geargrafx.exe": {
+          "size": 15476837,
+          "sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d"
+        },
+        "SDL3.dll": {
+          "size": 4558193,
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad"
+        },
+        "stderr.txt": {
+          "size": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "config_path_keys": {
+        "SaveFilesPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\cdA_r1\\",
+        "SaveStatesPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\cdA_r1\\",
+        "BackupRAMPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\cdA_r1\\",
+        "LastOpenPath": "",
+        "SysCardBiosPath": "",
+        "GameExpressBiosPath": "",
+        "PacJapanBiosPath": "",
+        "PacUsBiosPath": "",
+        "RecentROM0": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue"
+      }
+    },
+    "cdA_r2": {
+      "files": {
+        "config.ini": {
+          "size": 26473,
+          "sha256": "48aed3dadf23f64b18938f4364128c25d82139b9e2568c426fabfacf82f6b991"
+        },
+        "geargrafx.exe": {
+          "size": 15476837,
+          "sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d"
+        },
+        "SDL3.dll": {
+          "size": 4558193,
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad"
+        },
+        "stderr.txt": {
+          "size": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "config_path_keys": {
+        "SaveFilesPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\cdA_r2\\",
+        "SaveStatesPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\cdA_r2\\",
+        "BackupRAMPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\cdA_r2\\",
+        "LastOpenPath": "",
+        "SysCardBiosPath": "",
+        "GameExpressBiosPath": "",
+        "PacJapanBiosPath": "",
+        "PacUsBiosPath": "",
+        "RecentROM0": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue"
+      }
+    },
+    "cdP_r1": {
+      "files": {
+        "config.ini": {
+          "size": 26473,
+          "sha256": "0393c6735085d3f52d1b9d297f7d091fd6f541595e7283575f77766f077d1773"
+        },
+        "geargrafx.exe": {
+          "size": 15476837,
+          "sha256": "4933885ca1cebd4a979dcd8da1a1324aadac95885d3403b7019fe5f7df664827"
+        },
+        "SDL3.dll": {
+          "size": 4558193,
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad"
+        },
+        "stderr.txt": {
+          "size": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "config_path_keys": {
+        "SaveFilesPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\cdP_r1\\",
+        "SaveStatesPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\cdP_r1\\",
+        "BackupRAMPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\cdP_r1\\",
+        "LastOpenPath": "",
+        "SysCardBiosPath": "",
+        "GameExpressBiosPath": "",
+        "PacJapanBiosPath": "",
+        "PacUsBiosPath": "",
+        "RecentROM0": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue"
+      }
+    },
+    "cdP_r2": {
+      "files": {
+        "config.ini": {
+          "size": 26473,
+          "sha256": "5c745b4ce92c833335af9a44d97ab4b3e2546cec4629425ca55fe32f45e49f2e"
+        },
+        "geargrafx.exe": {
+          "size": 15476837,
+          "sha256": "4933885ca1cebd4a979dcd8da1a1324aadac95885d3403b7019fe5f7df664827"
+        },
+        "SDL3.dll": {
+          "size": 4558193,
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad"
+        },
+        "stderr.txt": {
+          "size": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "config_path_keys": {
+        "SaveFilesPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\cdP_r2\\",
+        "SaveStatesPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\cdP_r2\\",
+        "BackupRAMPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\cdP_r2\\",
+        "LastOpenPath": "",
+        "SysCardBiosPath": "",
+        "GameExpressBiosPath": "",
+        "PacJapanBiosPath": "",
+        "PacUsBiosPath": "",
+        "RecentROM0": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue"
+      }
+    },
+    "t4r1_noinput": {
+      "files": {
+        "config.ini": {
+          "size": 26500,
+          "sha256": "67acbeefc221e0def92b17d8c5ba8325842748e12a9f616c002b822e30f84059"
+        },
+        "geargrafx.exe": {
+          "size": 15476837,
+          "sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d"
+        },
+        "SDL3.dll": {
+          "size": 4558193,
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad"
+        },
+        "stderr.txt": {
+          "size": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "config_path_keys": {
+        "SaveFilesPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\t4r1_noinput\\",
+        "SaveStatesPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\t4r1_noinput\\",
+        "BackupRAMPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\t4r1_noinput\\",
+        "LastOpenPath": "",
+        "SysCardBiosPath": "",
+        "GameExpressBiosPath": "",
+        "PacJapanBiosPath": "",
+        "PacUsBiosPath": "",
+        "RecentROM0": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue"
+      }
+    },
+    "t4r1_up": {
+      "files": {
+        "config.ini": {
+          "size": 26465,
+          "sha256": "381742484e3f2bba92a828569163dbf07a669771dcfad01af346057d8472c6b7"
+        },
+        "geargrafx.exe": {
+          "size": 15476837,
+          "sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d"
+        },
+        "SDL3.dll": {
+          "size": 4558193,
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad"
+        },
+        "stderr.txt": {
+          "size": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "config_path_keys": {
+        "SaveFilesPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\t4r1_up\\",
+        "SaveStatesPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\t4r1_up\\",
+        "BackupRAMPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\t4r1_up\\",
+        "LastOpenPath": "",
+        "SysCardBiosPath": "",
+        "GameExpressBiosPath": "",
+        "PacJapanBiosPath": "",
+        "PacUsBiosPath": "",
+        "RecentROM0": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue"
+      }
+    }
+  },
+  "historical_run_dirs_checked": {
+    "probe-det-S1": {
+      "files": {
+        "config.ini": {
+          "size": 26423,
+          "sha256": "740f4ab6933dd5a3ae30ee49b7a0742c88aa2d7b2c2184ac3fb697e16c6c2567"
+        },
+        "geargrafx.exe": {
+          "size": 15476837,
+          "sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d"
+        },
+        "SDL3.dll": {
+          "size": 4558193,
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad"
+        },
+        "stderr.txt": {
+          "size": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "config_path_keys": {
+        "SaveFilesPath": "<SCRATCHPAD>\\phase-c\\runs\\probe-det-S1\\",
+        "SaveStatesPath": "<SCRATCHPAD>\\phase-c\\runs\\probe-det-S1\\",
+        "BackupRAMPath": "<SCRATCHPAD>\\phase-c\\runs\\probe-det-S1\\",
+        "LastOpenPath": "",
+        "SysCardBiosPath": "",
+        "GameExpressBiosPath": "",
+        "PacJapanBiosPath": "",
+        "PacUsBiosPath": "",
+        "RecentROM0": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue"
+      }
+    },
+    "det_S1_r1": {
+      "files": {
+        "config.ini": {
+          "size": 26402,
+          "sha256": "d10c2ea1a98bec4c1fc282b2fa6452191a342bd30cf20187e2d296e1df0eff6c"
+        },
+        "geargrafx.exe": {
+          "size": 15476837,
+          "sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d"
+        },
+        "SDL3.dll": {
+          "size": 4558193,
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad"
+        },
+        "stderr.txt": {
+          "size": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "config_path_keys": {
+        "SaveFilesPath": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r1\\",
+        "SaveStatesPath": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r1\\",
+        "BackupRAMPath": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r1\\",
+        "LastOpenPath": "",
+        "SysCardBiosPath": "",
+        "GameExpressBiosPath": "",
+        "PacJapanBiosPath": "",
+        "PacUsBiosPath": "",
+        "RecentROM0": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue"
+      }
+    },
+    "det_S1_up_r1": {
+      "files": {
+        "config.ini": {
+          "size": 26423,
+          "sha256": "d4a45760723da3ff66eeab8243f13da09cc89df059aec0f6f1e74d7003012342"
+        },
+        "geargrafx.exe": {
+          "size": 15476837,
+          "sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d"
+        },
+        "SDL3.dll": {
+          "size": 4558193,
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad"
+        },
+        "stderr.txt": {
+          "size": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "config_path_keys": {
+        "SaveFilesPath": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_up_r1\\",
+        "SaveStatesPath": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_up_r1\\",
+        "BackupRAMPath": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_up_r1\\",
+        "LastOpenPath": "",
+        "SysCardBiosPath": "",
+        "GameExpressBiosPath": "",
+        "PacJapanBiosPath": "",
+        "PacUsBiosPath": "",
+        "RecentROM0": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue"
+      }
+    },
+    "pinned_r1": {
+      "files": {
+        "config.ini": {
+          "size": 26402,
+          "sha256": "ecc67f0bea2825889281e475aa5e9a21398397852c419f80dffd728ac59e94db"
+        },
+        "geargrafx.exe": {
+          "size": 15476837,
+          "sha256": "4933885ca1cebd4a979dcd8da1a1324aadac95885d3403b7019fe5f7df664827"
+        },
+        "SDL3.dll": {
+          "size": 4558193,
+          "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad"
+        },
+        "stderr.txt": {
+          "size": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "config_path_keys": {
+        "SaveFilesPath": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r1\\",
+        "SaveStatesPath": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r1\\",
+        "BackupRAMPath": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r1\\",
+        "LastOpenPath": "",
+        "SysCardBiosPath": "",
+        "GameExpressBiosPath": "",
+        "PacJapanBiosPath": "",
+        "PacUsBiosPath": "",
+        "RecentROM0": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue"
+      }
+    }
+  },
+  "pinned_exe_unchanged_vs_C3_record": true,
+  "bios_unchanged_vs_C3_record": true
+}

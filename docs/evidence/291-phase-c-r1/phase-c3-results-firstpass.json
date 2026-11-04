@@ -1,0 +1,2219 @@
+{
+  "phase": "C3",
+  "expected_file": "<SCRATCHPAD>/phase-c/phase-c3-expected.json",
+  "pinned_exe_sha256_before": "4933885ca1cebd4a979dcd8da1a1324aadac95885d3403b7019fe5f7df664827",
+  "pinned_exe_sha256_after": "4933885ca1cebd4a979dcd8da1a1324aadac95885d3403b7019fe5f7df664827",
+  "det_exe_sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
+  "tests": {
+    "T1_reproducibility": {
+      "checks": {
+        "post_reset_state_equal": true,
+        "halt_state_equal": true,
+        "sysram_sha_equal": true,
+        "logical_sha_equal": true,
+        "cdrom_status_equal": true,
+        "trace_equal": true,
+        "post_reset_stable_within_each_run": true
+      },
+      "runs": [
+        "det_S1_r1",
+        "det_S1_r2",
+        "det_S1_r3"
+      ],
+      "result": "PASS",
+      "baseline_pinned_post_reset_distinct_values": 3,
+      "baseline_pinned_halt_distinct_values": 3,
+      "baseline_pinned_sysram_distinct_values": 1
+    },
+    "T2_seeds": {
+      "seedA_runs": 3,
+      "seedB_runs": 3,
+      "seedA_post_reset": {
+        "A": 91,
+        "X": 199,
+        "Y": 10,
+        "S": 53,
+        "P": 197,
+        "MPR": [
+          106,
+          119,
+          120,
+          177,
+          114,
+          19,
+          182,
+          0
+        ]
+      },
+      "seedB_post_reset": {
+        "A": 137,
+        "X": 83,
+        "Y": 250,
+        "S": 3,
+        "P": 68,
+        "MPR": [
+          247,
+          253,
+          91,
+          186,
+          122,
+          119,
+          206,
+          0
+        ]
+      },
+      "differing_fields": [
+        "A",
+        "X",
+        "Y",
+        "S",
+        "P",
+        "MPR"
+      ],
+      "xorshift_model_check": {
+        "det_S1_r1": {
+          "mpr_match": true,
+          "mpr_first_index": 521,
+          "rnd_index": 1040,
+          "predicted": {
+            "A": 91,
+            "X": 199,
+            "Y": 10,
+            "S": 53,
+            "P": 209
+          },
+          "observed": {
+            "A": 91,
+            "X": 199,
+            "Y": 10,
+            "S": 53,
+            "P": 197
+          },
+          "cpu_regs_match_model": false
+        },
+        "det_S1_r2": {
+          "mpr_match": true,
+          "mpr_first_index": 521,
+          "rnd_index": 1040,
+          "predicted": {
+            "A": 91,
+            "X": 199,
+            "Y": 10,
+            "S": 53,
+            "P": 209
+          },
+          "observed": {
+            "A": 91,
+            "X": 199,
+            "Y": 10,
+            "S": 53,
+            "P": 197
+          },
+          "cpu_regs_match_model": false
+        },
+        "det_S1_r3": {
+          "mpr_match": true,
+          "mpr_first_index": 521,
+          "rnd_index": 1040,
+          "predicted": {
+            "A": 91,
+            "X": 199,
+            "Y": 10,
+            "S": 53,
+            "P": 209
+          },
+          "observed": {
+            "A": 91,
+            "X": 199,
+            "Y": 10,
+            "S": 53,
+            "P": 197
+          },
+          "cpu_regs_match_model": false
+        },
+        "det_S2_r1": {
+          "mpr_match": true,
+          "mpr_first_index": 520,
+          "rnd_index": 1039,
+          "predicted": {
+            "A": 137,
+            "X": 83,
+            "Y": 250,
+            "S": 3,
+            "P": 120
+          },
+          "observed": {
+            "A": 137,
+            "X": 83,
+            "Y": 250,
+            "S": 3,
+            "P": 68
+          },
+          "cpu_regs_match_model": false
+        },
+        "det_S2_r2": {
+          "mpr_match": true,
+          "mpr_first_index": 520,
+          "rnd_index": 1039,
+          "predicted": {
+            "A": 137,
+            "X": 83,
+            "Y": 250,
+            "S": 3,
+            "P": 120
+          },
+          "observed": {
+            "A": 137,
+            "X": 83,
+            "Y": 250,
+            "S": 3,
+            "P": 68
+          },
+          "cpu_regs_match_model": false
+        },
+        "det_S2_r3": {
+          "mpr_match": true,
+          "mpr_first_index": 520,
+          "rnd_index": 1039,
+          "predicted": {
+            "A": 137,
+            "X": 83,
+            "Y": 250,
+            "S": 3,
+            "P": 120
+          },
+          "observed": {
+            "A": 137,
+            "X": 83,
+            "Y": 250,
+            "S": 3,
+            "P": 68
+          },
+          "cpu_regs_match_model": false
+        }
+      },
+      "result": "FAIL"
+    },
+    "T3_trace": {
+      "per_run": {
+        "det_S1_r1": {
+          "count": 16,
+          "pcs_match_expected": true,
+          "zero_entry": false
+        },
+        "det_S1_r2": {
+          "count": 16,
+          "pcs_match_expected": true,
+          "zero_entry": false
+        },
+        "det_S1_r3": {
+          "count": 16,
+          "pcs_match_expected": true,
+          "zero_entry": false
+        },
+        "det_S2_r1": {
+          "count": 16,
+          "pcs_match_expected": true,
+          "zero_entry": false
+        },
+        "det_S2_r2": {
+          "count": 16,
+          "pcs_match_expected": true,
+          "zero_entry": false
+        },
+        "det_S2_r3": {
+          "count": 16,
+          "pcs_match_expected": true,
+          "zero_entry": false
+        },
+        "det_S1_up_r1": {
+          "count": 16,
+          "pcs_match_expected": true,
+          "zero_entry": false
+        }
+      },
+      "result": "PASS"
+    },
+    "T4_input": {
+      "noinput_SEL0_at_2010": 63,
+      "input_SEL0_at_2010": 63,
+      "noinput_SEL1_at_2011": 63,
+      "input_SEL1_at_2011": 62,
+      "input_visible_in_ram": true,
+      "relation_SEL0_unchanged": true,
+      "relation_SEL1_bit0_cleared": true,
+      "markers_no": {
+        "wram0000": "01",
+        "wram0001": "02",
+        "wram0010": "3F",
+        "wram0011": "3F"
+      },
+      "markers_up": {
+        "wram0000": "01",
+        "wram0001": "02",
+        "wram0010": "3F",
+        "wram0011": "3E"
+      },
+      "result": "PASS"
+    },
+    "T5_isolation": {
+      "per_run": {
+        "pinned_r1": {
+          "new_files": [
+            "config.ini",
+            "stderr.txt"
+          ],
+          "changed": [],
+          "removed": [],
+          "new_outside_allowed": []
+        },
+        "pinned_r2": {
+          "new_files": [
+            "config.ini",
+            "stderr.txt"
+          ],
+          "changed": [],
+          "removed": [],
+          "new_outside_allowed": []
+        },
+        "pinned_r3": {
+          "new_files": [
+            "config.ini",
+            "stderr.txt"
+          ],
+          "changed": [],
+          "removed": [],
+          "new_outside_allowed": []
+        },
+        "det_S1_r1": {
+          "new_files": [
+            "config.ini",
+            "stderr.txt"
+          ],
+          "changed": [],
+          "removed": [],
+          "new_outside_allowed": []
+        },
+        "det_S1_r2": {
+          "new_files": [
+            "config.ini",
+            "stderr.txt"
+          ],
+          "changed": [],
+          "removed": [],
+          "new_outside_allowed": []
+        },
+        "det_S1_r3": {
+          "new_files": [
+            "config.ini",
+            "stderr.txt"
+          ],
+          "changed": [],
+          "removed": [],
+          "new_outside_allowed": []
+        },
+        "det_S1_up_r1": {
+          "new_files": [
+            "config.ini",
+            "stderr.txt"
+          ],
+          "changed": [],
+          "removed": [],
+          "new_outside_allowed": []
+        },
+        "det_S2_r1": {
+          "new_files": [
+            "config.ini",
+            "stderr.txt"
+          ],
+          "changed": [],
+          "removed": [],
+          "new_outside_allowed": []
+        },
+        "det_S2_r2": {
+          "new_files": [
+            "config.ini",
+            "stderr.txt"
+          ],
+          "changed": [],
+          "removed": [],
+          "new_outside_allowed": []
+        },
+        "det_S2_r3": {
+          "new_files": [
+            "config.ini",
+            "stderr.txt"
+          ],
+          "changed": [],
+          "removed": [],
+          "new_outside_allowed": []
+        }
+      },
+      "media_dir_unchanged": true,
+      "bios_unchanged": true,
+      "pinned_exe_unchanged": true,
+      "pinned_config_unchanged": true,
+      "config_path_keys": {
+        "pinned_r1": [
+          {
+            "key": "TraceDiskPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r1\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "SaveFilesPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r1\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "SaveStatesPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r1\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "ScreenshotPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r1\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "VideoRecordingPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r1\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "BackupRAMPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r1\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "MB128Path",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r1\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "RecentROM0",
+            "value": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+            "inside_run_dir": false
+          }
+        ],
+        "pinned_r2": [
+          {
+            "key": "TraceDiskPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r2\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "SaveFilesPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r2\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "SaveStatesPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r2\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "ScreenshotPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r2\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "VideoRecordingPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r2\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "BackupRAMPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r2\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "MB128Path",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r2\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "RecentROM0",
+            "value": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+            "inside_run_dir": false
+          }
+        ],
+        "pinned_r3": [
+          {
+            "key": "TraceDiskPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r3\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "SaveFilesPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r3\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "SaveStatesPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r3\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "ScreenshotPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r3\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "VideoRecordingPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r3\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "BackupRAMPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r3\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "MB128Path",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r3\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "RecentROM0",
+            "value": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+            "inside_run_dir": false
+          }
+        ],
+        "det_S1_r1": [
+          {
+            "key": "TraceDiskPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r1\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "SaveFilesPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r1\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "SaveStatesPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r1\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "ScreenshotPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r1\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "VideoRecordingPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r1\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "BackupRAMPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r1\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "MB128Path",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r1\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "RecentROM0",
+            "value": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+            "inside_run_dir": false
+          }
+        ],
+        "det_S1_r2": [
+          {
+            "key": "TraceDiskPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r2\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "SaveFilesPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r2\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "SaveStatesPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r2\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "ScreenshotPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r2\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "VideoRecordingPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r2\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "BackupRAMPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r2\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "MB128Path",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r2\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "RecentROM0",
+            "value": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+            "inside_run_dir": false
+          }
+        ],
+        "det_S1_r3": [
+          {
+            "key": "TraceDiskPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r3\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "SaveFilesPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r3\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "SaveStatesPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r3\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "ScreenshotPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r3\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "VideoRecordingPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r3\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "BackupRAMPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r3\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "MB128Path",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r3\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "RecentROM0",
+            "value": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+            "inside_run_dir": false
+          }
+        ],
+        "det_S1_up_r1": [
+          {
+            "key": "TraceDiskPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_up_r1\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "SaveFilesPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_up_r1\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "SaveStatesPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_up_r1\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "ScreenshotPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_up_r1\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "VideoRecordingPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_up_r1\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "BackupRAMPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_up_r1\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "MB128Path",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_up_r1\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "RecentROM0",
+            "value": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+            "inside_run_dir": false
+          }
+        ],
+        "det_S2_r1": [
+          {
+            "key": "TraceDiskPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r1\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "SaveFilesPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r1\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "SaveStatesPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r1\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "ScreenshotPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r1\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "VideoRecordingPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r1\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "BackupRAMPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r1\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "MB128Path",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r1\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "RecentROM0",
+            "value": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+            "inside_run_dir": false
+          }
+        ],
+        "det_S2_r2": [
+          {
+            "key": "TraceDiskPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r2\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "SaveFilesPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r2\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "SaveStatesPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r2\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "ScreenshotPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r2\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "VideoRecordingPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r2\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "BackupRAMPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r2\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "MB128Path",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r2\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "RecentROM0",
+            "value": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+            "inside_run_dir": false
+          }
+        ],
+        "det_S2_r3": [
+          {
+            "key": "TraceDiskPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r3\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "SaveFilesPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r3\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "SaveStatesPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r3\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "ScreenshotPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r3\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "VideoRecordingPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r3\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "BackupRAMPath",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r3\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "MB128Path",
+            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r3\\",
+            "inside_run_dir": true
+          },
+          {
+            "key": "RecentROM0",
+            "value": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+            "inside_run_dir": false
+          }
+        ]
+      },
+      "result": "PASS"
+    }
+  },
+  "runs": {
+    "pinned_r1": {
+      "label": "pinned_r1",
+      "exe_src": "<SCRATCHPAD>/env-geargrafx/build/bin/geargrafx.exe",
+      "seed_env": null,
+      "press_up": false,
+      "exe_sha256": "4933885ca1cebd4a979dcd8da1a1324aadac95885d3403b7019fe5f7df664827",
+      "area_ids": {
+        "SYSTEM RAM": 0,
+        "ZP": 1,
+        "VRAM": 4,
+        "SAT": 6,
+        "PALETTES": 8,
+        "BRAM": 10,
+        "LOGICAL": 14,
+        "PHYSICAL": 15
+      },
+      "bios_load": {
+        "bios_name": "Unknown",
+        "file_path": "<SCRATCHPAD>/phase-c/synthetic/synthetic_bios.bin",
+        "success": true,
+        "type": "syscard",
+        "valid_crc": false,
+        "warning": "CRC does not match any known BIOS"
+      },
+      "media_load": {
+        "file_path": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+        "is_cdrom": true,
+        "is_sgx": false,
+        "rom_name": "synthetic_cd.cue",
+        "softpatch_applied": false,
+        "success": true
+      },
+      "post_reset_state": {
+        "PC": "E000",
+        "A": 51,
+        "X": 28,
+        "Y": 45,
+        "S": 81,
+        "P": 135,
+        "MPR": [
+          216,
+          147,
+          237,
+          4,
+          91,
+          220,
+          242,
+          0
+        ]
+      },
+      "post_reset_stable_over_0.5s": true,
+      "trace_set": {
+        "disk_size": "100MB",
+        "filters": [
+          "cpu.instructions"
+        ],
+        "memory_size": "100K",
+        "output": "memory",
+        "status": "started",
+        "total_entries": 0
+      },
+      "trace_pcs": [
+        "E000",
+        "E002",
+        "E004",
+        "E006",
+        "E009",
+        "E00B",
+        "E00D",
+        "E00F",
+        "E012",
+        "E015",
+        "E018",
+        "E01A",
+        "E01D",
+        "E020",
+        "E023",
+        "E025"
+      ],
+      "trace_entry_count": 16,
+      "halt_state": {
+        "PC": "E028",
+        "A": 2,
+        "X": 28,
+        "Y": 45,
+        "S": 81,
+        "P": 5,
+        "MPR": [
+          255,
+          248,
+          237,
+          4,
+          91,
+          220,
+          242,
+          0
+        ]
+      },
+      "cdrom_status": {
+        "active_irqs": "00",
+        "bram_enabled": true,
+        "cycles_to_event": 0,
+        "cycles_to_load": 0,
+        "enabled_irqs": "00",
+        "fader": "00",
+        "irq_adpcm_end": false,
+        "irq_adpcm_half": false,
+        "irq_data": false,
+        "irq_status": false,
+        "length": "00:02:16",
+        "media_type": "cue",
+        "next_event": "NONE",
+        "next_sector_load": 0,
+        "reset": 0,
+        "scsi_ack": false,
+        "scsi_atn": false,
+        "scsi_bsy": false,
+        "scsi_cd": false,
+        "scsi_data_bus": "00",
+        "scsi_io": false,
+        "scsi_msg": false,
+        "scsi_phase": "BUS FREE",
+        "scsi_req": false,
+        "scsi_rst": false,
+        "scsi_sel": false,
+        "sector_count": 16,
+        "sectors_left": 0,
+        "tracks": 1
+      },
+      "sysram_hex_len": 8192,
+      "sysram_sha256": "133b6ba7f438530445b41b77998364c7607bbccd7e0457bf817a1a1680b850bb",
+      "sysram_bytes_head": "010200000000000000000000000000003F3F0000000000000000000000000000",
+      "sysram_marker": {
+        "wram0000": "01",
+        "wram0001": "02",
+        "wram0010": "3F",
+        "wram0011": "3F"
+      },
+      "logical_sha256": "d5fffac12cbb69bbe525f4d445e9d9f19f70914cfdc920fa70dfdb33385afc18",
+      "logical_len": 65536,
+      "exit_code": 0,
+      "stderr_tail": ""
+    },
+    "pinned_r2": {
+      "label": "pinned_r2",
+      "exe_src": "<SCRATCHPAD>/env-geargrafx/build/bin/geargrafx.exe",
+      "seed_env": null,
+      "press_up": false,
+      "exe_sha256": "4933885ca1cebd4a979dcd8da1a1324aadac95885d3403b7019fe5f7df664827",
+      "area_ids": {
+        "SYSTEM RAM": 0,
+        "ZP": 1,
+        "VRAM": 4,
+        "SAT": 6,
+        "PALETTES": 8,
+        "BRAM": 10,
+        "LOGICAL": 14,
+        "PHYSICAL": 15
+      },
+      "bios_load": {
+        "bios_name": "Unknown",
+        "file_path": "<SCRATCHPAD>/phase-c/synthetic/synthetic_bios.bin",
+        "success": true,
+        "type": "syscard",
+        "valid_crc": false,
+        "warning": "CRC does not match any known BIOS"
+      },
+      "media_load": {
+        "file_path": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+        "is_cdrom": true,
+        "is_sgx": false,
+        "rom_name": "synthetic_cd.cue",
+        "softpatch_applied": false,
+        "success": true
+      },
+      "post_reset_state": {
+        "PC": "E000",
+        "A": 144,
+        "X": 237,
+        "Y": 48,
+        "S": 7,
+        "P": 70,
+        "MPR": [
+          55,
+          68,
+          248,
+          233,
+          84,
+          33,
+          218,
+          0
+        ]
+      },
+      "post_reset_stable_over_0.5s": true,
+      "trace_set": {
+        "disk_size": "100MB",
+        "filters": [
+          "cpu.instructions"
+        ],
+        "memory_size": "100K",
+        "output": "memory",
+        "status": "started",
+        "total_entries": 0
+      },
+      "trace_pcs": [
+        "E000",
+        "E002",
+        "E004",
+        "E006",
+        "E009",
+        "E00B",
+        "E00D",
+        "E00F",
+        "E012",
+        "E015",
+        "E018",
+        "E01A",
+        "E01D",
+        "E020",
+        "E023",
+        "E025"
+      ],
+      "trace_entry_count": 16,
+      "halt_state": {
+        "PC": "E028",
+        "A": 2,
+        "X": 237,
+        "Y": 48,
+        "S": 7,
+        "P": 68,
+        "MPR": [
+          255,
+          248,
+          248,
+          233,
+          84,
+          33,
+          218,
+          0
+        ]
+      },
+      "cdrom_status": {
+        "active_irqs": "00",
+        "bram_enabled": true,
+        "cycles_to_event": 0,
+        "cycles_to_load": 0,
+        "enabled_irqs": "00",
+        "fader": "00",
+        "irq_adpcm_end": false,
+        "irq_adpcm_half": false,
+        "irq_data": false,
+        "irq_status": false,
+        "length": "00:02:16",
+        "media_type": "cue",
+        "next_event": "NONE",
+        "next_sector_load": 0,
+        "reset": 0,
+        "scsi_ack": false,
+        "scsi_atn": false,
+        "scsi_bsy": false,
+        "scsi_cd": false,
+        "scsi_data_bus": "00",
+        "scsi_io": false,
+        "scsi_msg": false,
+        "scsi_phase": "BUS FREE",
+        "scsi_req": false,
+        "scsi_rst": false,
+        "scsi_sel": false,
+        "sector_count": 16,
+        "sectors_left": 0,
+        "tracks": 1
+      },
+      "sysram_hex_len": 8192,
+      "sysram_sha256": "133b6ba7f438530445b41b77998364c7607bbccd7e0457bf817a1a1680b850bb",
+      "sysram_bytes_head": "010200000000000000000000000000003F3F0000000000000000000000000000",
+      "sysram_marker": {
+        "wram0000": "01",
+        "wram0001": "02",
+        "wram0010": "3F",
+        "wram0011": "3F"
+      },
+      "logical_sha256": "f07303ee0f026fbb9c2784b103ffbdff2ff9b4fe000863924672d7c58de12662",
+      "logical_len": 65536,
+      "exit_code": 0,
+      "stderr_tail": ""
+    },
+    "pinned_r3": {
+      "label": "pinned_r3",
+      "exe_src": "<SCRATCHPAD>/env-geargrafx/build/bin/geargrafx.exe",
+      "seed_env": null,
+      "press_up": false,
+      "exe_sha256": "4933885ca1cebd4a979dcd8da1a1324aadac95885d3403b7019fe5f7df664827",
+      "area_ids": {
+        "SYSTEM RAM": 0,
+        "ZP": 1,
+        "VRAM": 4,
+        "SAT": 6,
+        "PALETTES": 8,
+        "BRAM": 10,
+        "LOGICAL": 14,
+        "PHYSICAL": 15
+      },
+      "bios_load": {
+        "bios_name": "Unknown",
+        "file_path": "<SCRATCHPAD>/phase-c/synthetic/synthetic_bios.bin",
+        "success": true,
+        "type": "syscard",
+        "valid_crc": false,
+        "warning": "CRC does not match any known BIOS"
+      },
+      "media_load": {
+        "file_path": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+        "is_cdrom": true,
+        "is_sgx": false,
+        "rom_name": "synthetic_cd.cue",
+        "softpatch_applied": false,
+        "success": true
+      },
+      "post_reset_state": {
+        "PC": "E000",
+        "A": 175,
+        "X": 243,
+        "Y": 175,
+        "S": 14,
+        "P": 199,
+        "MPR": [
+          47,
+          19,
+          41,
+          206,
+          1,
+          241,
+          102,
+          0
+        ]
+      },
+      "post_reset_stable_over_0.5s": true,
+      "trace_set": {
+        "disk_size": "100MB",
+        "filters": [
+          "cpu.instructions"
+        ],
+        "memory_size": "100K",
+        "output": "memory",
+        "status": "started",
+        "total_entries": 0
+      },
+      "trace_pcs": [
+        "E000",
+        "E002",
+        "E004",
+        "E006",
+        "E009",
+        "E00B",
+        "E00D",
+        "E00F",
+        "E012",
+        "E015",
+        "E018",
+        "E01A",
+        "E01D",
+        "E020",
+        "E023",
+        "E025"
+      ],
+      "trace_entry_count": 16,
+      "halt_state": {
+        "PC": "E028",
+        "A": 2,
+        "X": 243,
+        "Y": 175,
+        "S": 14,
+        "P": 69,
+        "MPR": [
+          255,
+          248,
+          41,
+          206,
+          1,
+          241,
+          102,
+          0
+        ]
+      },
+      "cdrom_status": {
+        "active_irqs": "00",
+        "bram_enabled": true,
+        "cycles_to_event": 0,
+        "cycles_to_load": 0,
+        "enabled_irqs": "00",
+        "fader": "00",
+        "irq_adpcm_end": false,
+        "irq_adpcm_half": false,
+        "irq_data": false,
+        "irq_status": false,
+        "length": "00:02:16",
+        "media_type": "cue",
+        "next_event": "NONE",
+        "next_sector_load": 0,
+        "reset": 0,
+        "scsi_ack": false,
+        "scsi_atn": false,
+        "scsi_bsy": false,
+        "scsi_cd": false,
+        "scsi_data_bus": "00",
+        "scsi_io": false,
+        "scsi_msg": false,
+        "scsi_phase": "BUS FREE",
+        "scsi_req": false,
+        "scsi_rst": false,
+        "scsi_sel": false,
+        "sector_count": 16,
+        "sectors_left": 0,
+        "tracks": 1
+      },
+      "sysram_hex_len": 8192,
+      "sysram_sha256": "133b6ba7f438530445b41b77998364c7607bbccd7e0457bf817a1a1680b850bb",
+      "sysram_bytes_head": "010200000000000000000000000000003F3F0000000000000000000000000000",
+      "sysram_marker": {
+        "wram0000": "01",
+        "wram0001": "02",
+        "wram0010": "3F",
+        "wram0011": "3F"
+      },
+      "logical_sha256": "d14e25f089a66b269492712e1d53908863abf933a70190bbdce896a1afa5f565",
+      "logical_len": 65536,
+      "exit_code": 0,
+      "stderr_tail": ""
+    },
+    "det_S1_r1": {
+      "label": "det_S1_r1",
+      "exe_src": "<SCRATCHPAD>/phase-c/build-det/bin/geargrafx.exe",
+      "seed_env": "0x00C0FFEE",
+      "press_up": false,
+      "exe_sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
+      "area_ids": {
+        "SYSTEM RAM": 0,
+        "ZP": 1,
+        "VRAM": 4,
+        "SAT": 6,
+        "PALETTES": 8,
+        "BRAM": 10,
+        "LOGICAL": 14,
+        "PHYSICAL": 15
+      },
+      "bios_load": {
+        "bios_name": "Unknown",
+        "file_path": "<SCRATCHPAD>/phase-c/synthetic/synthetic_bios.bin",
+        "success": true,
+        "type": "syscard",
+        "valid_crc": false,
+        "warning": "CRC does not match any known BIOS"
+      },
+      "media_load": {
+        "file_path": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+        "is_cdrom": true,
+        "is_sgx": false,
+        "rom_name": "synthetic_cd.cue",
+        "softpatch_applied": false,
+        "success": true
+      },
+      "post_reset_state": {
+        "PC": "E000",
+        "A": 91,
+        "X": 199,
+        "Y": 10,
+        "S": 53,
+        "P": 197,
+        "MPR": [
+          106,
+          119,
+          120,
+          177,
+          114,
+          19,
+          182,
+          0
+        ]
+      },
+      "post_reset_stable_over_0.5s": true,
+      "trace_set": {
+        "disk_size": "100MB",
+        "filters": [
+          "cpu.instructions"
+        ],
+        "memory_size": "100K",
+        "output": "memory",
+        "status": "started",
+        "total_entries": 0
+      },
+      "trace_pcs": [
+        "E000",
+        "E002",
+        "E004",
+        "E006",
+        "E009",
+        "E00B",
+        "E00D",
+        "E00F",
+        "E012",
+        "E015",
+        "E018",
+        "E01A",
+        "E01D",
+        "E020",
+        "E023",
+        "E025"
+      ],
+      "trace_entry_count": 16,
+      "halt_state": {
+        "PC": "E028",
+        "A": 2,
+        "X": 199,
+        "Y": 10,
+        "S": 53,
+        "P": 69,
+        "MPR": [
+          255,
+          248,
+          120,
+          177,
+          114,
+          19,
+          182,
+          0
+        ]
+      },
+      "cdrom_status": {
+        "active_irqs": "00",
+        "bram_enabled": true,
+        "cycles_to_event": 0,
+        "cycles_to_load": 0,
+        "enabled_irqs": "00",
+        "fader": "00",
+        "irq_adpcm_end": false,
+        "irq_adpcm_half": false,
+        "irq_data": false,
+        "irq_status": false,
+        "length": "00:02:16",
+        "media_type": "cue",
+        "next_event": "NONE",
+        "next_sector_load": 0,
+        "reset": 0,
+        "scsi_ack": false,
+        "scsi_atn": false,
+        "scsi_bsy": false,
+        "scsi_cd": false,
+        "scsi_data_bus": "00",
+        "scsi_io": false,
+        "scsi_msg": false,
+        "scsi_phase": "BUS FREE",
+        "scsi_req": false,
+        "scsi_rst": false,
+        "scsi_sel": false,
+        "sector_count": 16,
+        "sectors_left": 0,
+        "tracks": 1
+      },
+      "sysram_hex_len": 8192,
+      "sysram_sha256": "133b6ba7f438530445b41b77998364c7607bbccd7e0457bf817a1a1680b850bb",
+      "sysram_bytes_head": "010200000000000000000000000000003F3F0000000000000000000000000000",
+      "sysram_marker": {
+        "wram0000": "01",
+        "wram0001": "02",
+        "wram0010": "3F",
+        "wram0011": "3F"
+      },
+      "logical_sha256": "3e6c4854206a1cff11b98d542b47e7806262b5ef069f60fc262446c1d1e1cd48",
+      "logical_len": 65536,
+      "exit_code": 0,
+      "stderr_tail": ""
+    },
+    "det_S1_r2": {
+      "label": "det_S1_r2",
+      "exe_src": "<SCRATCHPAD>/phase-c/build-det/bin/geargrafx.exe",
+      "seed_env": "0x00C0FFEE",
+      "press_up": false,
+      "exe_sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
+      "area_ids": {
+        "SYSTEM RAM": 0,
+        "ZP": 1,
+        "VRAM": 4,
+        "SAT": 6,
+        "PALETTES": 8,
+        "BRAM": 10,
+        "LOGICAL": 14,
+        "PHYSICAL": 15
+      },
+      "bios_load": {
+        "bios_name": "Unknown",
+        "file_path": "<SCRATCHPAD>/phase-c/synthetic/synthetic_bios.bin",
+        "success": true,
+        "type": "syscard",
+        "valid_crc": false,
+        "warning": "CRC does not match any known BIOS"
+      },
+      "media_load": {
+        "file_path": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+        "is_cdrom": true,
+        "is_sgx": false,
+        "rom_name": "synthetic_cd.cue",
+        "softpatch_applied": false,
+        "success": true
+      },
+      "post_reset_state": {
+        "PC": "E000",
+        "A": 91,
+        "X": 199,
+        "Y": 10,
+        "S": 53,
+        "P": 197,
+        "MPR": [
+          106,
+          119,
+          120,
+          177,
+          114,
+          19,
+          182,
+          0
+        ]
+      },
+      "post_reset_stable_over_0.5s": true,
+      "trace_set": {
+        "disk_size": "100MB",
+        "filters": [
+          "cpu.instructions"
+        ],
+        "memory_size": "100K",
+        "output": "memory",
+        "status": "started",
+        "total_entries": 0
+      },
+      "trace_pcs": [
+        "E000",
+        "E002",
+        "E004",
+        "E006",
+        "E009",
+        "E00B",
+        "E00D",
+        "E00F",
+        "E012",
+        "E015",
+        "E018",
+        "E01A",
+        "E01D",
+        "E020",
+        "E023",
+        "E025"
+      ],
+      "trace_entry_count": 16,
+      "halt_state": {
+        "PC": "E028",
+        "A": 2,
+        "X": 199,
+        "Y": 10,
+        "S": 53,
+        "P": 69,
+        "MPR": [
+          255,
+          248,
+          120,
+          177,
+          114,
+          19,
+          182,
+          0
+        ]
+      },
+      "cdrom_status": {
+        "active_irqs": "00",
+        "bram_enabled": true,
+        "cycles_to_event": 0,
+        "cycles_to_load": 0,
+        "enabled_irqs": "00",
+        "fader": "00",
+        "irq_adpcm_end": false,
+        "irq_adpcm_half": false,
+        "irq_data": false,
+        "irq_status": false,
+        "length": "00:02:16",
+        "media_type": "cue",
+        "next_event": "NONE",
+        "next_sector_load": 0,
+        "reset": 0,
+        "scsi_ack": false,
+        "scsi_atn": false,
+        "scsi_bsy": false,
+        "scsi_cd": false,
+        "scsi_data_bus": "00",
+        "scsi_io": false,
+        "scsi_msg": false,
+        "scsi_phase": "BUS FREE",
+        "scsi_req": false,
+        "scsi_rst": false,
+        "scsi_sel": false,
+        "sector_count": 16,
+        "sectors_left": 0,
+        "tracks": 1
+      },
+      "sysram_hex_len": 8192,
+      "sysram_sha256": "133b6ba7f438530445b41b77998364c7607bbccd7e0457bf817a1a1680b850bb",
+      "sysram_bytes_head": "010200000000000000000000000000003F3F0000000000000000000000000000",
+      "sysram_marker": {
+        "wram0000": "01",
+        "wram0001": "02",
+        "wram0010": "3F",
+        "wram0011": "3F"
+      },
+      "logical_sha256": "3e6c4854206a1cff11b98d542b47e7806262b5ef069f60fc262446c1d1e1cd48",
+      "logical_len": 65536,
+      "exit_code": 0,
+      "stderr_tail": ""
+    },
+    "det_S1_r3": {
+      "label": "det_S1_r3",
+      "exe_src": "<SCRATCHPAD>/phase-c/build-det/bin/geargrafx.exe",
+      "seed_env": "0x00C0FFEE",
+      "press_up": false,
+      "exe_sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
+      "area_ids": {
+        "SYSTEM RAM": 0,
+        "ZP": 1,
+        "VRAM": 4,
+        "SAT": 6,
+        "PALETTES": 8,
+        "BRAM": 10,
+        "LOGICAL": 14,
+        "PHYSICAL": 15
+      },
+      "bios_load": {
+        "bios_name": "Unknown",
+        "file_path": "<SCRATCHPAD>/phase-c/synthetic/synthetic_bios.bin",
+        "success": true,
+        "type": "syscard",
+        "valid_crc": false,
+        "warning": "CRC does not match any known BIOS"
+      },
+      "media_load": {
+        "file_path": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+        "is_cdrom": true,
+        "is_sgx": false,
+        "rom_name": "synthetic_cd.cue",
+        "softpatch_applied": false,
+        "success": true
+      },
+      "post_reset_state": {
+        "PC": "E000",
+        "A": 91,
+        "X": 199,
+        "Y": 10,
+        "S": 53,
+        "P": 197,
+        "MPR": [
+          106,
+          119,
+          120,
+          177,
+          114,
+          19,
+          182,
+          0
+        ]
+      },
+      "post_reset_stable_over_0.5s": true,
+      "trace_set": {
+        "disk_size": "100MB",
+        "filters": [
+          "cpu.instructions"
+        ],
+        "memory_size": "100K",
+        "output": "memory",
+        "status": "started",
+        "total_entries": 0
+      },
+      "trace_pcs": [
+        "E000",
+        "E002",
+        "E004",
+        "E006",
+        "E009",
+        "E00B",
+        "E00D",
+        "E00F",
+        "E012",
+        "E015",
+        "E018",
+        "E01A",
+        "E01D",
+        "E020",
+        "E023",
+        "E025"
+      ],
+      "trace_entry_count": 16,
+      "halt_state": {
+        "PC": "E028",
+        "A": 2,
+        "X": 199,
+        "Y": 10,
+        "S": 53,
+        "P": 69,
+        "MPR": [
+          255,
+          248,
+          120,
+          177,
+          114,
+          19,
+          182,
+          0
+        ]
+      },
+      "cdrom_status": {
+        "active_irqs": "00",
+        "bram_enabled": true,
+        "cycles_to_event": 0,
+        "cycles_to_load": 0,
+        "enabled_irqs": "00",
+        "fader": "00",
+        "irq_adpcm_end": false,
+        "irq_adpcm_half": false,
+        "irq_data": false,
+        "irq_status": false,
+        "length": "00:02:16",
+        "media_type": "cue",
+        "next_event": "NONE",
+        "next_sector_load": 0,
+        "reset": 0,
+        "scsi_ack": false,
+        "scsi_atn": false,
+        "scsi_bsy": false,
+        "scsi_cd": false,
+        "scsi_data_bus": "00",
+        "scsi_io": false,
+        "scsi_msg": false,
+        "scsi_phase": "BUS FREE",
+        "scsi_req": false,
+        "scsi_rst": false,
+        "scsi_sel": false,
+        "sector_count": 16,
+        "sectors_left": 0,
+        "tracks": 1
+      },
+      "sysram_hex_len": 8192,
+      "sysram_sha256": "133b6ba7f438530445b41b77998364c7607bbccd7e0457bf817a1a1680b850bb",
+      "sysram_bytes_head": "010200000000000000000000000000003F3F0000000000000000000000000000",
+      "sysram_marker": {
+        "wram0000": "01",
+        "wram0001": "02",
+        "wram0010": "3F",
+        "wram0011": "3F"
+      },
+      "logical_sha256": "3e6c4854206a1cff11b98d542b47e7806262b5ef069f60fc262446c1d1e1cd48",
+      "logical_len": 65536,
+      "exit_code": 0,
+      "stderr_tail": ""
+    },
+    "det_S1_up_r1": {
+      "label": "det_S1_up_r1",
+      "exe_src": "<SCRATCHPAD>/phase-c/build-det/bin/geargrafx.exe",
+      "seed_env": "0x00C0FFEE",
+      "press_up": true,
+      "exe_sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
+      "area_ids": {
+        "SYSTEM RAM": 0,
+        "ZP": 1,
+        "VRAM": 4,
+        "SAT": 6,
+        "PALETTES": 8,
+        "BRAM": 10,
+        "LOGICAL": 14,
+        "PHYSICAL": 15
+      },
+      "bios_load": {
+        "bios_name": "Unknown",
+        "file_path": "<SCRATCHPAD>/phase-c/synthetic/synthetic_bios.bin",
+        "success": true,
+        "type": "syscard",
+        "valid_crc": false,
+        "warning": "CRC does not match any known BIOS"
+      },
+      "media_load": {
+        "file_path": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+        "is_cdrom": true,
+        "is_sgx": false,
+        "rom_name": "synthetic_cd.cue",
+        "softpatch_applied": false,
+        "success": true
+      },
+      "post_reset_state": {
+        "PC": "E000",
+        "A": 91,
+        "X": 199,
+        "Y": 10,
+        "S": 53,
+        "P": 197,
+        "MPR": [
+          106,
+          119,
+          120,
+          177,
+          114,
+          19,
+          182,
+          0
+        ]
+      },
+      "post_reset_stable_over_0.5s": true,
+      "trace_set": {
+        "disk_size": "100MB",
+        "filters": [
+          "cpu.instructions"
+        ],
+        "memory_size": "100K",
+        "output": "memory",
+        "status": "started",
+        "total_entries": 0
+      },
+      "input": {
+        "action": "press",
+        "button": "up",
+        "player": 1,
+        "success": true
+      },
+      "trace_pcs": [
+        "E000",
+        "E002",
+        "E004",
+        "E006",
+        "E009",
+        "E00B",
+        "E00D",
+        "E00F",
+        "E012",
+        "E015",
+        "E018",
+        "E01A",
+        "E01D",
+        "E020",
+        "E023",
+        "E025"
+      ],
+      "trace_entry_count": 16,
+      "halt_state": {
+        "PC": "E028",
+        "A": 2,
+        "X": 199,
+        "Y": 10,
+        "S": 53,
+        "P": 69,
+        "MPR": [
+          255,
+          248,
+          120,
+          177,
+          114,
+          19,
+          182,
+          0
+        ]
+      },
+      "cdrom_status": {
+        "active_irqs": "00",
+        "bram_enabled": true,
+        "cycles_to_event": 0,
+        "cycles_to_load": 0,
+        "enabled_irqs": "00",
+        "fader": "00",
+        "irq_adpcm_end": false,
+        "irq_adpcm_half": false,
+        "irq_data": false,
+        "irq_status": false,
+        "length": "00:02:16",
+        "media_type": "cue",
+        "next_event": "NONE",
+        "next_sector_load": 0,
+        "reset": 0,
+        "scsi_ack": false,
+        "scsi_atn": false,
+        "scsi_bsy": false,
+        "scsi_cd": false,
+        "scsi_data_bus": "00",
+        "scsi_io": false,
+        "scsi_msg": false,
+        "scsi_phase": "BUS FREE",
+        "scsi_req": false,
+        "scsi_rst": false,
+        "scsi_sel": false,
+        "sector_count": 16,
+        "sectors_left": 0,
+        "tracks": 1
+      },
+      "sysram_hex_len": 8192,
+      "sysram_sha256": "5bb01a506259a7df7f4d27d34f4e69e4a8356609e933b2e23c31f28055f48a36",
+      "sysram_bytes_head": "010200000000000000000000000000003F3E0000000000000000000000000000",
+      "sysram_marker": {
+        "wram0000": "01",
+        "wram0001": "02",
+        "wram0010": "3F",
+        "wram0011": "3E"
+      },
+      "logical_sha256": "7b6564ed39c114d2fedab82031dbcd6b1044e90c56cc723e4bd8195016e03429",
+      "logical_len": 65536,
+      "exit_code": 0,
+      "stderr_tail": ""
+    },
+    "det_S2_r1": {
+      "label": "det_S2_r1",
+      "exe_src": "<SCRATCHPAD>/phase-c/build-det/bin/geargrafx.exe",
+      "seed_env": "0x0BADF00D",
+      "press_up": false,
+      "exe_sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
+      "area_ids": {
+        "SYSTEM RAM": 0,
+        "ZP": 1,
+        "VRAM": 4,
+        "SAT": 6,
+        "PALETTES": 8,
+        "BRAM": 10,
+        "LOGICAL": 14,
+        "PHYSICAL": 15
+      },
+      "bios_load": {
+        "bios_name": "Unknown",
+        "file_path": "<SCRATCHPAD>/phase-c/synthetic/synthetic_bios.bin",
+        "success": true,
+        "type": "syscard",
+        "valid_crc": false,
+        "warning": "CRC does not match any known BIOS"
+      },
+      "media_load": {
+        "file_path": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+        "is_cdrom": true,
+        "is_sgx": false,
+        "rom_name": "synthetic_cd.cue",
+        "softpatch_applied": false,
+        "success": true
+      },
+      "post_reset_state": {
+        "PC": "E000",
+        "A": 137,
+        "X": 83,
+        "Y": 250,
+        "S": 3,
+        "P": 68,
+        "MPR": [
+          247,
+          253,
+          91,
+          186,
+          122,
+          119,
+          206,
+          0
+        ]
+      },
+      "post_reset_stable_over_0.5s": true,
+      "trace_set": {
+        "disk_size": "100MB",
+        "filters": [
+          "cpu.instructions"
+        ],
+        "memory_size": "100K",
+        "output": "memory",
+        "status": "started",
+        "total_entries": 0
+      },
+      "trace_pcs": [
+        "E000",
+        "E002",
+        "E004",
+        "E006",
+        "E009",
+        "E00B",
+        "E00D",
+        "E00F",
+        "E012",
+        "E015",
+        "E018",
+        "E01A",
+        "E01D",
+        "E020",
+        "E023",
+        "E025"
+      ],
+      "trace_entry_count": 16,
+      "halt_state": {
+        "PC": "E028",
+        "A": 2,
+        "X": 83,
+        "Y": 250,
+        "S": 3,
+        "P": 68,
+        "MPR": [
+          255,
+          248,
+          91,
+          186,
+          122,
+          119,
+          206,
+          0
+        ]
+      },
+      "cdrom_status": {
+        "active_irqs": "00",
+        "bram_enabled": true,
+        "cycles_to_event": 0,
+        "cycles_to_load": 0,
+        "enabled_irqs": "00",
+        "fader": "00",
+        "irq_adpcm_end": false,
+        "irq_adpcm_half": false,
+        "irq_data": false,
+        "irq_status": false,
+        "length": "00:02:16",
+        "media_type": "cue",
+        "next_event": "NONE",
+        "next_sector_load": 0,
+        "reset": 0,
+        "scsi_ack": false,
+        "scsi_atn": false,
+        "scsi_bsy": false,
+        "scsi_cd": false,
+        "scsi_data_bus": "00",
+        "scsi_io": false,
+        "scsi_msg": false,
+        "scsi_phase": "BUS FREE",
+        "scsi_req": false,
+        "scsi_rst": false,
+        "scsi_sel": false,
+        "sector_count": 16,
+        "sectors_left": 0,
+        "tracks": 1
+      },
+      "sysram_hex_len": 8192,
+      "sysram_sha256": "133b6ba7f438530445b41b77998364c7607bbccd7e0457bf817a1a1680b850bb",
+      "sysram_bytes_head": "010200000000000000000000000000003F3F0000000000000000000000000000",
+      "sysram_marker": {
+        "wram0000": "01",
+        "wram0001": "02",
+        "wram0010": "3F",
+        "wram0011": "3F"
+      },
+      "logical_sha256": "f9e08bdaadd5923f6bb355071f1f69b1a02445b1d9c5d95d298b6a3ee4ce6f81",
+      "logical_len": 65536,
+      "exit_code": 0,
+      "stderr_tail": ""
+    },
+    "det_S2_r2": {
+      "label": "det_S2_r2",
+      "exe_src": "<SCRATCHPAD>/phase-c/build-det/bin/geargrafx.exe",
+      "seed_env": "0x0BADF00D",
+      "press_up": false,
+      "exe_sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
+      "area_ids": {
+        "SYSTEM RAM": 0,
+        "ZP": 1,
+        "VRAM": 4,
+        "SAT": 6,
+        "PALETTES": 8,
+        "BRAM": 10,
+        "LOGICAL": 14,
+        "PHYSICAL": 15
+      },
+      "bios_load": {
+        "bios_name": "Unknown",
+        "file_path": "<SCRATCHPAD>/phase-c/synthetic/synthetic_bios.bin",
+        "success": true,
+        "type": "syscard",
+        "valid_crc": false,
+        "warning": "CRC does not match any known BIOS"
+      },
+      "media_load": {
+        "file_path": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+        "is_cdrom": true,
+        "is_sgx": false,
+        "rom_name": "synthetic_cd.cue",
+        "softpatch_applied": false,
+        "success": true
+      },
+      "post_reset_state": {
+        "PC": "E000",
+        "A": 137,
+        "X": 83,
+        "Y": 250,
+        "S": 3,
+        "P": 68,
+        "MPR": [
+          247,
+          253,
+          91,
+          186,
+          122,
+          119,
+          206,
+          0
+        ]
+      },
+      "post_reset_stable_over_0.5s": true,
+      "trace_set": {
+        "disk_size": "100MB",
+        "filters": [
+          "cpu.instructions"
+        ],
+        "memory_size": "100K",
+        "output": "memory",
+        "status": "started",
+        "total_entries": 0
+      },
+      "trace_pcs": [
+        "E000",
+        "E002",
+        "E004",
+        "E006",
+        "E009",
+        "E00B",
+        "E00D",
+        "E00F",
+        "E012",
+        "E015",
+        "E018",
+        "E01A",
+        "E01D",
+        "E020",
+        "E023",
+        "E025"
+      ],
+      "trace_entry_count": 16,
+      "halt_state": {
+        "PC": "E028",
+        "A": 2,
+        "X": 83,
+        "Y": 250,
+        "S": 3,
+        "P": 68,
+        "MPR": [
+          255,
+          248,
+          91,
+          186,
+          122,
+          119,
+          206,
+          0
+        ]
+      },
+      "cdrom_status": {
+        "active_irqs": "00",
+        "bram_enabled": true,
+        "cycles_to_event": 0,
+        "cycles_to_load": 0,
+        "enabled_irqs": "00",
+        "fader": "00",
+        "irq_adpcm_end": false,
+        "irq_adpcm_half": false,
+        "irq_data": false,
+        "irq_status": false,
+        "length": "00:02:16",
+        "media_type": "cue",
+        "next_event": "NONE",
+        "next_sector_load": 0,
+        "reset": 0,
+        "scsi_ack": false,
+        "scsi_atn": false,
+        "scsi_bsy": false,
+        "scsi_cd": false,
+        "scsi_data_bus": "00",
+        "scsi_io": false,
+        "scsi_msg": false,
+        "scsi_phase": "BUS FREE",
+        "scsi_req": false,
+        "scsi_rst": false,
+        "scsi_sel": false,
+        "sector_count": 16,
+        "sectors_left": 0,
+        "tracks": 1
+      },
+      "sysram_hex_len": 8192,
+      "sysram_sha256": "133b6ba7f438530445b41b77998364c7607bbccd7e0457bf817a1a1680b850bb",
+      "sysram_bytes_head": "010200000000000000000000000000003F3F0000000000000000000000000000",
+      "sysram_marker": {
+        "wram0000": "01",
+        "wram0001": "02",
+        "wram0010": "3F",
+        "wram0011": "3F"
+      },
+      "logical_sha256": "f9e08bdaadd5923f6bb355071f1f69b1a02445b1d9c5d95d298b6a3ee4ce6f81",
+      "logical_len": 65536,
+      "exit_code": 0,
+      "stderr_tail": ""
+    },
+    "det_S2_r3": {
+      "label": "det_S2_r3",
+      "exe_src": "<SCRATCHPAD>/phase-c/build-det/bin/geargrafx.exe",
+      "seed_env": "0x0BADF00D",
+      "press_up": false,
+      "exe_sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
+      "area_ids": {
+        "SYSTEM RAM": 0,
+        "ZP": 1,
+        "VRAM": 4,
+        "SAT": 6,
+        "PALETTES": 8,
+        "BRAM": 10,
+        "LOGICAL": 14,
+        "PHYSICAL": 15
+      },
+      "bios_load": {
+        "bios_name": "Unknown",
+        "file_path": "<SCRATCHPAD>/phase-c/synthetic/synthetic_bios.bin",
+        "success": true,
+        "type": "syscard",
+        "valid_crc": false,
+        "warning": "CRC does not match any known BIOS"
+      },
+      "media_load": {
+        "file_path": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+        "is_cdrom": true,
+        "is_sgx": false,
+        "rom_name": "synthetic_cd.cue",
+        "softpatch_applied": false,
+        "success": true
+      },
+      "post_reset_state": {
+        "PC": "E000",
+        "A": 137,
+        "X": 83,
+        "Y": 250,
+        "S": 3,
+        "P": 68,
+        "MPR": [
+          247,
+          253,
+          91,
+          186,
+          122,
+          119,
+          206,
+          0
+        ]
+      },
+      "post_reset_stable_over_0.5s": true,
+      "trace_set": {
+        "disk_size": "100MB",
+        "filters": [
+          "cpu.instructions"
+        ],
+        "memory_size": "100K",
+        "output": "memory",
+        "status": "started",
+        "total_entries": 0
+      },
+      "trace_pcs": [
+        "E000",
+        "E002",
+        "E004",
+        "E006",
+        "E009",
+        "E00B",
+        "E00D",
+        "E00F",
+        "E012",
+        "E015",
+        "E018",
+        "E01A",
+        "E01D",
+        "E020",
+        "E023",
+        "E025"
+      ],
+      "trace_entry_count": 16,
+      "halt_state": {
+        "PC": "E028",
+        "A": 2,
+        "X": 83,
+        "Y": 250,
+        "S": 3,
+        "P": 68,
+        "MPR": [
+          255,
+          248,
+          91,
+          186,
+          122,
+          119,
+          206,
+          0
+        ]
+      },
+      "cdrom_status": {
+        "active_irqs": "00",
+        "bram_enabled": true,
+        "cycles_to_event": 0,
+        "cycles_to_load": 0,
+        "enabled_irqs": "00",
+        "fader": "00",
+        "irq_adpcm_end": false,
+        "irq_adpcm_half": false,
+        "irq_data": false,
+        "irq_status": false,
+        "length": "00:02:16",
+        "media_type": "cue",
+        "next_event": "NONE",
+        "next_sector_load": 0,
+        "reset": 0,
+        "scsi_ack": false,
+        "scsi_atn": false,
+        "scsi_bsy": false,
+        "scsi_cd": false,
+        "scsi_data_bus": "00",
+        "scsi_io": false,
+        "scsi_msg": false,
+        "scsi_phase": "BUS FREE",
+        "scsi_req": false,
+        "scsi_rst": false,
+        "scsi_sel": false,
+        "sector_count": 16,
+        "sectors_left": 0,
+        "tracks": 1
+      },
+      "sysram_hex_len": 8192,
+      "sysram_sha256": "133b6ba7f438530445b41b77998364c7607bbccd7e0457bf817a1a1680b850bb",
+      "sysram_bytes_head": "010200000000000000000000000000003F3F0000000000000000000000000000",
+      "sysram_marker": {
+        "wram0000": "01",
+        "wram0001": "02",
+        "wram0010": "3F",
+        "wram0011": "3F"
+      },
+      "logical_sha256": "f9e08bdaadd5923f6bb355071f1f69b1a02445b1d9c5d95d298b6a3ee4ce6f81",
+      "logical_len": 65536,
+      "exit_code": 0,
+      "stderr_tail": ""
+    }
+  }
+}
