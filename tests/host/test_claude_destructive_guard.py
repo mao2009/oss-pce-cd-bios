@@ -615,6 +615,11 @@ class ProtectedPathTests(unittest.TestCase):
         link_dir = os.path.join(self.repo, "link-dir")
         self._symlink(outdir, link_dir, True)
         self.assertEqual(verdict("rm " + os.path.join(link_dir, "x"), repo_root=self.repo), "DENY")
+        # A link followed by ".." must reach the real parent of the link target, not the lexical one.
+        outer = os.path.join(self.tmp, "outer-target.txt")
+        write_text(outer, "outside\n")
+        self.assertEqual(verdict("rm " + os.path.join(link_dir, "..", "outer-target.txt"), repo_root=self.repo),
+                         "DENY")
 
     # Normal operations must stay allowed (decision only; nothing is run).
     def test_normal_operations_allowed(self):
