@@ -48,6 +48,13 @@ integration: build
 	$(PYTHON) tests/integration/geargrafx_bcdbin.py
 	$(MAKE) block-write-guard
 	$(MAKE) block-transfer-matrix
+	$(MAKE) stack-access-guard
+
+# Issue #499 (#473 S3, method C): stack push/pop refused before the side effect via a verification-only core
+# patch (synthetic media, debugger build). Not a production mechanism. Runs in `integration`.
+.PHONY: stack-access-guard
+stack-access-guard:
+	$(PYTHON) tests/integration/geargrafx_stack_access_guard.py
 
 # Issue #367: free-running pre-write refusal via a verification-only core patch (synthetic media). Runs in `integration`.
 .PHONY: block-write-guard

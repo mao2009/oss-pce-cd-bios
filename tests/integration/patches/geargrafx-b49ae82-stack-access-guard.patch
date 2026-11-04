@@ -1,0 +1,200 @@
+--- a/src/huc6280.h
++++ b/src/huc6280.h
+@@ -27,6 +27,29 @@
+ #include "common.h"
+ #include "huc6280_registers.h"
+ 
++// VERIFICATION-ONLY hooks (Issue #499, method C of #473). NOT upstream code. Defined in huc6280.cpp.
++// All hooks are null by default, which is upstream behaviour.
++// gg_verify_stack_guard: consulted BEFORE every stack access, before any memory read/write and before
++//   S changes. op: 0 = push8, 1 = push16, 2 = pop8, 3 = pop16. s = S before the access. latched = a
++//   previous access was already refused. A refusal (false) performs no read/write, leaves S unchanged,
++//   latches gg_verify_stack_refused, and asks the debugger run loop to stop after this instruction.
++// gg_verify_io_observer: called for every CPU read/write of the hardware page ($FF bank) BEFORE the
++//   access (observation only; it cannot refuse).
++// gg_verify_pre_instruction: called at the start of every RunInstruction (observation; the probe may
++//   also apply a harness-side MPR setting here).
++// gg_verify_stack_mutation: 0 = none. Mutants exist only to prove the test can fail:
++//   1 = push16 checks only before its second byte, 2 = pop increments S before the check,
++//   3 = no latch and no stop request, 4 = the refusal is computed but ignored (access performed),
++//   5 = latch kept but no stop request.
++// After a refused access the rest of the instruction still runs, and the run loop still clocks the
++// hardware for the instruction's cycles before it stops (device time advances; no CPU access is made).
++extern bool (*gg_verify_stack_guard)(void* context, unsigned op, unsigned s, unsigned transfer_state, bool latched);
++extern void (*gg_verify_io_observer)(void* context, unsigned is_write, unsigned address, unsigned value);
++extern void (*gg_verify_pre_instruction)(void* context, unsigned pc, unsigned transfer_state);
++extern void* gg_verify_stack_context;
++extern bool gg_verify_stack_refused;
++extern int gg_verify_stack_mutation;
++
+ #define FLAG_CARRY      0x01
+ #define FLAG_ZERO       0x02
+ #define FLAG_INTERRUPT  0x04
+@@ -122,6 +145,10 @@
+     void Init(Memory* memory, HuC6202* huc6202);
+     void Reset();
+     u32 RunInstruction(bool* completed = NULL);
++    // VERIFICATION-ONLY read-only accessors (Issue #499). NOT upstream code. They change no state.
++    u32 GG_VerifyTransferState() const { return m_transfer_state; }
++    u32 GG_VerifyCycles() const { return m_cycles; }
++    s32 GG_VerifyIrqPending() const { return m_irq_pending; }
+     void SetHardwareClock(GG_Clock_Hardware_Fn clock_fn, void* context);
+     u32 GetClockedMasterCycles() const;
+     void ClockCountedCycles(unsigned int cycles);
+--- a/src/huc6280.cpp
++++ b/src/huc6280.cpp
+@@ -28,6 +28,15 @@
+ #include "trace_logger.h"
+ #include "profiler.h"
+ 
++// VERIFICATION-ONLY stack access guard (Issue #499, method C of #473). NOT upstream code.
++// Null hooks = upstream behaviour. Declarations and semantics: huc6280.h; guard logic: huc6280_inline.h.
++bool (*gg_verify_stack_guard)(void* context, unsigned op, unsigned s, unsigned transfer_state, bool latched) = nullptr;
++void (*gg_verify_io_observer)(void* context, unsigned is_write, unsigned address, unsigned value) = nullptr;
++void (*gg_verify_pre_instruction)(void* context, unsigned pc, unsigned transfer_state) = nullptr;
++void* gg_verify_stack_context = nullptr;
++bool gg_verify_stack_refused = false;
++int gg_verify_stack_mutation = 0;
++
+ HuC6280::HuC6280(Random* random)
+ {
+     m_random = random;
+--- a/src/huc6280_inline.h
++++ b/src/huc6280_inline.h
+@@ -29,6 +29,31 @@
+ #include "trace_logger.h"
+ #include "profiler.h"
+ 
++// VERIFICATION-ONLY (Issue #499). True = the stack access may go ahead. Called before any access.
++// Once a refusal is latched every later stack access in the run is refused as well (the guard is still
++// told, with latched = true). Mutation 3 disables the latch; mutation 4 ignores the decision.
++INLINE bool GG_VerifyStackAllowed(unsigned op, unsigned s, unsigned transfer_state)
++{
++    if (!gg_verify_stack_guard)
++        return true;
++    bool latched = gg_verify_stack_refused;
++    bool allowed = gg_verify_stack_guard(gg_verify_stack_context, op, s, transfer_state, latched) && !latched;
++    if (!allowed && gg_verify_stack_mutation != 3)
++        gg_verify_stack_refused = true;
++    if (gg_verify_stack_mutation == 4)
++        return true;
++    return allowed;
++}
++
++// Stop request after a refusal: the debugger run loop leaves RunToVBlank after this instruction.
++// Mutations 3 and 5 suppress it (5 keeps the latch, so only the stop request itself is removed).
++#if !defined(GG_DISABLE_DISASSEMBLER)
++#define GG_VERIFY_STACK_STOP() do { if (gg_verify_stack_mutation != 3 && gg_verify_stack_mutation != 5) \
++    m_memory_breakpoint_hit = true; } while (0)
++#else
++#define GG_VERIFY_STACK_STOP() do { } while (0)
++#endif
++
+ INLINE void HuC6280::TraceCpuEvent()
+ {
+     if (IsValidPointer(m_trace_logger) && m_trace_logger->IsEnabled(TRACE_CPU))
+@@ -71,6 +96,10 @@
+     m_clocked_master_cycles = 0;
+     m_extra_master_cycles = 0;
+ 
++    // VERIFICATION-ONLY (Issue #499): instruction-start observation point. Null = upstream behaviour.
++    if (gg_verify_pre_instruction)
++        gg_verify_pre_instruction(gg_verify_stack_context, m_PC.GetValue(), m_transfer_state);
++
+     TraceCpuEvent();
+ 
+     u8 opcode = Fetch8();
+@@ -368,23 +397,51 @@
+ #endif
+ }
+ 
++// VERIFICATION-ONLY (Issue #499): every stack access asks GG_VerifyStackAllowed first. Both bytes of a
++// 16-bit push/pop live in page 1 ($2100|S wraps inside the page), so one check before the first byte
++// covers the whole access (mutation 1 moves the push16 check to the second byte). A refused push writes
++// nothing and leaves S; a refused pop reads nothing, leaves S, and returns 0. The rest of the instruction
++// still runs (the caller uses the 0), so the CPU state at the stop is NOT the pre-instruction state.
+ INLINE void HuC6280::StackPush16(u16 value)
+ {
++    if (gg_verify_stack_mutation != 1 && !GG_VerifyStackAllowed(1, m_S.GetValue(), m_transfer_state))
++    {
++        GG_VERIFY_STACK_STOP();
++        return;
++    }
+     m_memory->Write(STACK_ADDR | m_S.GetValue(), static_cast<u8>(value >> 8));
+     m_S.Decrement();
++    if (gg_verify_stack_mutation == 1 && !GG_VerifyStackAllowed(1, m_S.GetValue(), m_transfer_state))
++    {
++        GG_VERIFY_STACK_STOP();
++        return;
++    }
+     m_memory->Write(STACK_ADDR | m_S.GetValue(), static_cast<u8>(value & 0x00FF));
+     m_S.Decrement();
+ }
+ 
+ INLINE void HuC6280::StackPush8(u8 value)
+ {
++    if (!GG_VerifyStackAllowed(0, m_S.GetValue(), m_transfer_state))
++    {
++        GG_VERIFY_STACK_STOP();
++        return;
++    }
+     m_memory->Write(STACK_ADDR | m_S.GetValue(), value);
+     m_S.Decrement();
+ }
+ 
+ INLINE u16 HuC6280::StackPop16()
+ {
+-    m_S.Increment();
++    if (gg_verify_stack_mutation == 2)
++        m_S.Increment();
++    if (!GG_VerifyStackAllowed(3, m_S.GetValue(), m_transfer_state))
++    {
++        GG_VERIFY_STACK_STOP();
++        return 0;
++    }
++    if (gg_verify_stack_mutation != 2)
++        m_S.Increment();
+     u8 l = m_memory->Read(STACK_ADDR | m_S.GetValue());
+     m_S.Increment();
+     u8 h = m_memory->Read(STACK_ADDR | m_S.GetValue());
+@@ -393,7 +450,15 @@
+ 
+ INLINE u8 HuC6280::StackPop8()
+ {
+-    m_S.Increment();
++    if (gg_verify_stack_mutation == 2)
++        m_S.Increment();
++    if (!GG_VerifyStackAllowed(2, m_S.GetValue(), m_transfer_state))
++    {
++        GG_VERIFY_STACK_STOP();
++        return 0;
++    }
++    if (gg_verify_stack_mutation != 2)
++        m_S.Increment();
+     return m_memory->Read(STACK_ADDR | m_S.GetValue());
+ }
+ 
+--- a/src/memory_inline.h
++++ b/src/memory_inline.h
+@@ -53,6 +53,10 @@
+     u8 bank = m_mpr[mpr_index];
+     u16 offset = address & 0x1FFF;
+ 
++    // VERIFICATION-ONLY (Issue #499): observe every CPU read of the hardware page before it happens.
++    if (bank == 0xFF && gg_verify_io_observer)
++        gg_verify_io_observer(gg_verify_stack_context, 0, address, 0);
++
+ #if !defined(GG_DISABLE_DISASSEMBLER)
+     if (m_huc6280->HasMemoryHooks(true))
+         CheckMemoryHooks(address, bank, offset, true);
+@@ -273,6 +277,10 @@
+     u8 bank = m_mpr[mpr_index];
+     u16 offset = address & 0x1FFF;
+ 
++    // VERIFICATION-ONLY (Issue #499): observe every CPU write of the hardware page before it happens.
++    if (bank == 0xFF && gg_verify_io_observer)
++        gg_verify_io_observer(gg_verify_stack_context, 1, address, value);
++
+ #if !defined(GG_DISABLE_DISASSEMBLER)
+     if (m_huc6280->HasMemoryHooks(false))
+         CheckMemoryHooks(address, bank, offset, false);
