@@ -13,8 +13,14 @@ device-originated writes, the libretro build and real hardware are not covered a
 refusal policy (MPR1 = $F8 only, S1 #497) is a test policy inside the probe. Not a production mechanism.
 #173/#367/#459, BLOCKED_ABI, release_eligible, DEV_CALLABLE and ABI VERIFIED are unchanged.
 
-The expectations for C and A+C below were written from the pinned source and the #499 / #498 measurements
-before the first real-core run of this driver.
+Each expectation for C and A+C below was written from the pinned source and the #499 / #498 measurements
+before the first real-core run of its case (the tend* rows were added with the #645 review changes, also
+before their first run).
+
+In A+C, method A refuses first on every route where MPR1 is wrong at an instruction start, so the C guard is
+consulted only on IRQ-in-TAM and in the mutants that disable A (mut-aignore on PHA/JSR). The conclusions hold
+for the observed routes only. The evidence that a $80 stack write would land (the unguarded bank controls)
+comes from geargrafx_stack_methods.py (make stack-methods), which runs in the same make integration.
 
     python3 tests/integration/geargrafx_stack_methods_compare.py   (make stack-methods-compare; in make integration)
 """
@@ -47,7 +53,8 @@ EXPECT_C = {
     "rti": _c({PC, SPM, IRQ}),                     # SetP(0): I cleared; PC = 0
     "pla": _c({PC, REGS, SPM}), "plx": _c({PC, REGS, SPM}), "ply": _c({PC, REGS, SPM}),   # value 0, Z set
     "plp": _c({PC, SPM, IRQ}),                     # SetP(0)
-    "irq": _c({PC, SPM, IRQ}, index=2, pc=0x1E01),  # entry sets I, loads the vector
+    "irq": _c({PC, SPM, IRQ}, index=2, pc=0x1E01),  # entry sets I (clear after CLI), loads the vector
+    # (brk fails only PC: the route starts with I already set, so SetFlag(I) changes nothing.)
     "irqtam": _c({PC, SPM, IRQ}),                  # TAM's own MPR1 change + entry
     **{op: _c({XFER}) for op in M.BLOCK_OPS},      # transfer state 0 -> 2 before the first push
     # TransferEnd step with the harness MPR1 change (every block opcode): pops refused, values 0, state 1 -> 0.
@@ -63,11 +70,22 @@ BANK_EXPECT = {"A": dict(verdict=SAFE, failing=set(), index=1, pc=G.GUEST),
                "AC": dict(verdict=SAFE, failing=set(), index=1, pc=G.GUEST)}
 # Mutants on A+C: with method A's refusal ignored (mutant 6), C still refuses the push (BLOCKED, not
 # UNSAFE); with C's push16 check moved (mutant 1) on IRQ-in-TAM, A cannot help and the first byte lands.
+# case -> (expected verdict, criterion that must fail, evidence check on the row)
+def _c_refused_push(row):   # C refused a stack access, nothing touched the I/O page, nothing ran after
+    stack_refusals = [e for e in row["events"] if e["kind"] == "stack" and e["decision"] == 0]
+    return (row["guard_refusals"] >= 1 and bool(stack_refusals) and row["io_reads"] + row["io_writes"] == 0
+            and row["instructions_after_refusal"] == 0 and row["instruction_refused"] is True)
+
+
+def _io_landed(row):
+    return row["io_writes"] >= 1
+
+
 MUTANTS = {
-    "AC:pha-mut-aignore": BLOCKED,
-    "AC:jsr-mut-aignore": BLOCKED,
-    "AC:irqtam-mut-late16": UNSAFE,
-    "C:pha-mut-ignore": UNSAFE,
+    "AC:pha-mut-aignore": (BLOCKED, PC, _c_refused_push),
+    "AC:jsr-mut-aignore": (BLOCKED, PC, _c_refused_push),
+    "AC:irqtam-mut-late16": (UNSAFE, "io_prevented", _io_landed),
+    "C:pha-mut-ignore": (UNSAFE, "io_prevented", _io_landed),
 }
 
 
@@ -99,18 +117,24 @@ def evaluate(rows):
             table[(route, method)] = (got, failing)
             if got == SAFE:
                 for name, broken in M.falsified(rows[case]):
-                    if M.verdict(broken)[0] == SAFE:
+                    v = M.verdict(broken)[0]
+                    if v == SAFE:
                         raise ValueError(f"{case}: falsified {name} still judged SAFE")
-                    detections.append((case, f"falsified:{name}", "not SAFE"))
+                    detections.append((case, f"falsified:{name}", v))
         for route in M.BANK_ROUTES:
             for bank in M.BANK_VARIANTS:
                 case = f"{method}:{route}-armed{bank}"
+                want_bank = 0x80 if bank == "ram" else 0xF7
+                if rows[case].get("stack_bank") != want_bank or rows[case]["refusal"].get("mpr1") != want_bank:
+                    raise ValueError(f"{case}: stack bank {rows[case].get('stack_bank')} / refusal MPR1 "
+                                     f"{rows[case]['refusal'].get('mpr1')}, want {want_bank:#x}")
                 table[(f"{route}@{bank}", method)] = M.check_armed(rows[case], case, BANK_EXPECT[method])
-    for case, want in MUTANTS.items():
+    for case, (want, must_fail, evidence) in MUTANTS.items():
         M._snapshot_fields(rows[case], case)
-        got, _ = M.verdict(rows[case], 0)
-        if got != want:
-            raise ValueError(f"mutation {case}: judged {got}, want {want}")
+        got, c = M.verdict(rows[case], 0)
+        if got != want or c[must_fail] or not evidence(rows[case]):
+            raise ValueError(f"mutation {case}: judged {got} ({must_fail}={c[must_fail]}, "
+                             f"evidence={evidence(rows[case])}), want {want} with {must_fail} failing")
         detections.append((case, "mutant", got))
     return table, detections
 
@@ -137,16 +161,22 @@ def main():
              for m in METHODS}
     for route in routes:
         if M.NOTES.get(route):
-            print(f"NOTE {route}: {M.NOTES[route]}")
+            print(f"NOTE {route} (methods A and A+C): {M.NOTES[route]}")
+    print("NOTE (method C): irq takes the IRQ entry and the block opcodes run TransferStart before C refuses the "
+          "first push; under A and A+C those rows are refused before the instruction.")
     print(f"EXPECTATIONS_MET issue-500 A/C/A+C comparison: {len(rows)} real-core runs, {len(detections)} detections, expectations "
           f"met; totals {json.dumps(count, sort_keys=True)} (pinned core {G.PINNED_CORE_REVISION}, synthetic BIOS/CD)")
-    print("RESULT issue-500: A+C prevents every observed forbidden side effect (no UNSAFE). It stops consistently "
-          "(SAFE_IN_SCOPE) wherever MPR1 is wrong at an instruction start. Two cases stay BLOCKED: IRQ-in-TAM (C "
+    print("RESULT issue-500 (observed routes only): A+C prevents every observed forbidden side effect (no UNSAFE). "
+          "It stops consistently (SAFE_IN_SCOPE) on the observed routes where MPR1 is wrong at an instruction "
+          "start; there A refuses first and C is not consulted. C acts in A+C only on IRQ-in-TAM and in the "
+          "mutants that disable A. Two cases stay BLOCKED: IRQ-in-TAM (C "
           "refuses the entry pushes inside the TAM's RunInstruction, but the TAM's MPR1 change, the I flag and the "
           "vector PC are already applied) and a mid-transfer MPR1 change on every block opcode (the stop is inside "
           "the block transfer).")
-    print("UNKNOWN (not covered): ST0/ST1/ST2 WriteFromCPU, device-originated writes, the libretro build, real "
-          "hardware; NMI not applicable on the pinned core. Not a production mechanism; no gate changes.")
+    print("UNKNOWN (not covered): ST0/ST1/ST2 WriteFromCPU, device-originated writes, a new IRQ assert inside the "
+          "TAM instruction, the hardware clocking that still follows a C-refused instruction (it applies to "
+          "IRQ-in-TAM under A+C), the libretro build, real hardware; NMI not applicable on the pinned core. Not a "
+          "production mechanism; no gate changes.")
     return 0
 
 

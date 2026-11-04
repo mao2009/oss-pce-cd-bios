@@ -37,9 +37,18 @@ class ExpectationTests(unittest.TestCase):
         self.assertEqual({r for r, v in verdicts.items() if v == X.BLOCKED}, {"irqtam", *M.MID_TRANSFER})
 
     def test_mutants_cover_both_methods(self):
-        self.assertEqual(X.MUTANTS["AC:pha-mut-aignore"], X.BLOCKED)    # C catches what A missed
-        self.assertEqual(X.MUTANTS["AC:irqtam-mut-late16"], X.UNSAFE)   # broken C on A's hole lands
-        self.assertEqual(X.MUTANTS["C:pha-mut-ignore"], X.UNSAFE)
+        self.assertEqual(X.MUTANTS["AC:pha-mut-aignore"][:2], (X.BLOCKED, "pc_preserved"))   # C catches A's miss
+        self.assertEqual(X.MUTANTS["AC:irqtam-mut-late16"][:2], (X.UNSAFE, "io_prevented"))  # broken C on A's hole
+        self.assertEqual(X.MUTANTS["C:pha-mut-ignore"][:2], (X.UNSAFE, "io_prevented"))
+
+    def test_mutant_evidence_checks_need_real_observations(self):
+        caught = X.MUTANTS["AC:pha-mut-aignore"][2]
+        row = dict(guard_refusals=1, io_reads=0, io_writes=0, instructions_after_refusal=0, instruction_refused=True,
+                   events=[dict(kind="stack", decision=0)])
+        self.assertTrue(caught(row))
+        for broken in (dict(row, guard_refusals=0), dict(row, events=[]), dict(row, io_writes=1),
+                       dict(row, instructions_after_refusal=2), dict(row, instruction_refused=False)):
+            self.assertFalse(caught(broken))
 
     def test_cases_are_unique_and_method_prefixed(self):
         cases = list(X.cases())
