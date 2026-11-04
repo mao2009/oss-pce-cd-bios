@@ -57,8 +57,11 @@ DANGER_PY = re.compile(r"rmtree|remove|unlink|rmdir|removedirs|system|subprocess
                        r"ctypes|socket", re.I)
 ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 MNT = re.compile(r"^/mnt/([A-Za-z])(/.*)?$")
-PROTECTED_BASE = ["/", "/home", "/mnt", "/mnt/c", "/mnt/c/users", "/home/loach",
-                  "/home/loach/work", "/mnt/c/home/loach"]
+MSYS = re.compile(r"^/([A-Za-z])(/.*)?$")  # Git Bash drive form: /c/Users/... is C:/Users/...
+# Generic roots only. The home directory is derived at run time (home_roots); owner-specific roots come
+# from the untracked local configuration (local_roots), never from this public file.
+PROTECTED_BASE = ["/", "/home", "/mnt", "/mnt/c", "/mnt/c/users"]
+REQUIRE_ENV = "OSS_PCE_GUARD_REQUIRE_LOCAL"
 
 
 class Deny(Exception):
@@ -86,7 +89,7 @@ class Ctx:
 def canon(path):
     """Canonical absolute form: forward slashes, /mnt/c and c:/ both -> C:/."""
     p = path.replace("\\", "/")
-    m = MNT.match(p)
+    m = MNT.match(p) or MSYS.match(p)
     if m:
         p = m.group(1).upper() + ":" + (m.group(2) or "/")
     drive = ""
@@ -102,6 +105,116 @@ def canon(path):
 
 def key(path):
     return canon(path).casefold()
+
+
+ABSOLUTE = re.compile(r"^(/|[A-Za-z]:[\\/])")
+
+
+def _absolute_root(value):
+    """A protected root in the same form resolve() gives a target: real path when it exists, else lexical.
+
+    A relative value is refused (fail closed).
+    """
+    if not ABSOLUTE.match(value):
+        raise Deny("home", "a protected root value is not absolute")
+    lexical = canon(value)
+    return canon(os.path.realpath(lexical)) if os.path.exists(lexical) else lexical
+
+
+def home_roots():
+    """Home directories to protect, derived from the environment at run time (expanduser, HOME, USERPROFILE).
+
+    An unset or unexpanded value is ignored; a relative value is refused. An empty result makes the caller
+    fail closed. The values are additive: they cannot remove a default root.
+    """
+    raw = [os.path.expanduser("~"), os.environ.get("HOME", ""), os.environ.get("USERPROFILE", "")]
+    roots = []
+    for value in raw:
+        if value and value != "~":
+            roots.append(_absolute_root(value))
+    return sorted(set(roots))
+
+
+def main_worktree_root(root):
+    """Root of the main checkout. A linked worktree (.git is a file) resolves through its commondir.
+
+    Fail closed: a .git file that cannot be resolved refuses, because the main checkout's local configuration
+    could not be found.
+    """
+    git = os.path.join(root, ".git")
+    if os.path.isdir(git) or not os.path.exists(git):
+        return root
+    try:
+        with open(git, encoding="utf-8") as f:
+            m = re.match(r"gitdir:\s*(.+)$", f.read().strip())
+        if not m:
+            raise ValueError("no gitdir line")
+        gitdir = os.path.normpath(os.path.join(root, m.group(1).strip()))
+        with open(os.path.join(gitdir, "commondir"), encoding="utf-8") as f:
+            common = os.path.normpath(os.path.join(gitdir, f.read().strip()))
+    except Exception:
+        raise Deny("config", "linked worktree git directory cannot be resolved")
+    if os.path.basename(common) != ".git":
+        raise Deny("config", "linked worktree common directory is not a .git directory")
+    return os.path.dirname(common)
+
+
+def _load_local_dict(path):
+    """Parsed guard-local.json, or None if the file is absent. Unreadable or not an object: refuse."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return None
+    except Exception:
+        raise Deny("config", "local guard configuration is unreadable")
+    if not isinstance(data, dict):
+        raise Deny("config", "local guard configuration is malformed")
+    return data
+
+
+def _read_local_config(path):
+    """Protected entries from one guard-local.json. Missing file: none. Unreadable or malformed: refuse."""
+    data = _load_local_dict(path)
+    if data is None:
+        return []
+    listed = data.get("protected", [])
+    if not isinstance(listed, list) or not all(isinstance(item, str) for item in listed):
+        raise Deny("config", "local guard configuration is malformed")
+    return listed
+
+
+def local_roots(root):
+    """Extra protected roots kept outside the public tree. Additive only; never removes a default.
+
+    Sources, all unioned: the environment variable OSS_PCE_GUARD_PROTECTED (os.pathsep separated),
+    .claude/guard-local.json in this checkout, and the same file in the main checkout when this is a linked
+    worktree. A missing file adds nothing. An unreadable, malformed, unresolvable or relative entry refuses.
+
+    Required mode (OSS_PCE_GUARD_REQUIRE_LOCAL set to anything other than "" or "0"): the main checkout's file
+    must exist and list "required" paths, and each required path must be among the configured protected
+    roots. Anything that cannot be confirmed refuses.
+    """
+    values = []
+    env = os.environ.get("OSS_PCE_GUARD_PROTECTED", "")
+    values += [item.strip() for item in env.split(os.pathsep) if item.strip()]
+    values += _read_local_config(os.path.join(root, ".claude", "guard-local.json"))
+    main = main_worktree_root(root)
+    main_cfg = os.path.join(main, ".claude", "guard-local.json")
+    if os.path.normcase(main) != os.path.normcase(root):
+        values += _read_local_config(main_cfg)
+    if os.environ.get(REQUIRE_ENV, "") not in ("", "0"):
+        cfg = _load_local_dict(main_cfg)
+        if cfg is None:
+            raise Deny("config", "required local guard configuration is missing")
+        required = cfg.get("required")
+        if not isinstance(required, list) or not required or not all(isinstance(r, str) for r in required):
+            raise Deny("config", "required local guard configuration lists no required paths")
+        resolved = {_absolute_root(item) for item in values if item}
+        for r in required:
+            if _absolute_root(r) not in resolved:
+                raise Deny("config", "a required protected path is not configured")
+    return [_absolute_root(item) for item in values if item]
 
 
 def inside(k, base):
@@ -654,7 +767,11 @@ def _decide(raw, repo_root):
         cwd = root
     if not (cwd.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:[\\/]", cwd)):
         raise Deny("input", "cwd is not absolute")
-    protected = [key(p) for p in PROTECTED_BASE + [os.path.expanduser("~")]]
+    homes = home_roots()
+    if not homes:
+        # Fail closed: the protected set cannot be determined without a home directory.
+        raise Deny("home", "home directory cannot be determined; protected set unknown")
+    protected = [key(p) for p in PROTECTED_BASE + homes + local_roots(root)]
     protected += [key(root), key(os.path.join(root, ".git"))]
     ctx = Ctx(canon(cwd), key(root), key(os.path.join(root, ".git")),
               load_registry(root), protected)
