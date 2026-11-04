@@ -1029,6 +1029,13 @@ class LauncherClassTests(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd), "ALLOW")
 
+    def test_glued_digit_after_a_brace_or_comma_is_an_fd_number(self):
+        for cmd, tool in [("ForEach-Object {2>x Remove-Item -Recurse -Force /}", "PowerShell"),
+                          ("1,2>x Remove-Item -Recurse -Force /", "PowerShell"),
+                          ("timeout -k5>x rm -rf /", "Bash")]:
+            with self.subTest(cmd=cmd, tool=tool):
+                self.assertEqual(verdict(cmd, tool=tool), "DENY")
+
     def test_spaced_digits_before_a_redirect_are_arguments(self):
         for cmd in ["timeout -k 5 >x rm -rf /", "nice -n 5 >x rm -rf /", "sudo -u 5 >x rm -rf /",
                     "ionice -c 2 >x rm -rf /", "xargs -n 5 >x rm -rf /", "timeout -s 9 >x rm -rf /",
@@ -1166,6 +1173,8 @@ class LauncherMutationTests(unittest.TestCase):
         "redirection operator not marked": ('            if c == ">":\n                rd.append(_redir_target(text, j))\n            cur.append(" " + REDIR_MARK + text[start:j] + " ")',
                                             '            if c == ">":\n                rd.append(_redir_target(text, j))\n            cur.append(text[start:j])'),
         "glued fd digits not taken into the operator": ('                del cur[-k:]', '                pass'),
+        "glued fd digit only at the start of the text": ('(i - k == 0 or text[i - k - 1] in " \\t\\n;&|(){},")',
+                                                         '(i - k == 0 or text[i - k - 1] in "")'),
         "ampersand-greater marker branch removed": ('        if quote is None and c == "&" and i + 1 < n and text[i + 1] == ">":',
                                                     '        if False:'),
         "fd-dup or clobber character not taken into the operator": (

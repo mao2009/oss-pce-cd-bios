@@ -571,7 +571,7 @@ def split_segments(text, ps=False):
             while i - k - 1 >= 0 and text[i - k - 1].isdigit():
                 k += 1
             start = i
-            if k and (i - k == 0 or text[i - k - 1] in " \t\n;&|()") and "".join(cur[-k:]) == text[i - k:i]:
+            if k and (i - k == 0 or text[i - k - 1] in " \t\n;&|(){},") and "".join(cur[-k:]) == text[i - k:i]:
                 del cur[-k:]
                 start = i - k
             if c == ">":
