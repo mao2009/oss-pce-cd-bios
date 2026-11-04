@@ -984,6 +984,16 @@ class PythonCommandPositionTests(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(self._d(cmd)[0], "DENY")
 
+    def test_commands_that_run_a_named_program_are_not_non_exec(self):
+        # sort --compress-program=PROG and rg --pre=PROG run PROG (reviewer CRITICAL on 714345c). They must not
+        # be treated as commands that run no program, so a python word behind them is still checked.
+        self.assertNotIn("sort", guard.NON_EXEC_COMMANDS)
+        self.assertNotIn("rg", guard.NON_EXEC_COMMANDS)
+        for cmd in ["sort -S 1K python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "rg --pre python3 {-c,}\"open('/tmp/zz','w').close()\""]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._d(cmd)[0], "DENY")
+
     def test_unknown_or_option_taking_wrappers_do_not_hide_python(self):
         for cmd in ["taskset -c 0 python3 {-c,}\"open('/tmp/zz','w').close()\"",
                     "chrt 10 python3 {-c,}\"open('/tmp/zz','w').close()\"",

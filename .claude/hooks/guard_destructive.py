@@ -630,8 +630,11 @@ def find_rule(args, ps, ctx, depth):
             analyze_argv(args[i + 1:j], ctx, ps, depth + 1)
 
 
+# Commands on this list must not run another program, whatever their options. sort (--compress-program=PROG) and
+# rg (--pre=PROG) do run a named program, so they are NOT here; they are treated as possible wrappers (reviewer
+# CRITICAL on 714345c). Keep this list to commands whose options cannot name a program.
 NON_EXEC_COMMANDS = frozenset({
-    "echo", "printf", "grep", "egrep", "fgrep", "rg", "cat", "ls", "pwd", "cd", "head", "tail", "wc", "sort",
+    "echo", "printf", "grep", "egrep", "fgrep", "cat", "ls", "pwd", "cd", "head", "tail", "wc",
     "uniq", "cut", "tr", "which", "type", "test", "true", "false", "diff", "file", "stat", "du", "df", "basename",
     "dirname", "realpath", "date", "touch", "mkdir"})
 
