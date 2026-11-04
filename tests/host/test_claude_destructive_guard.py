@@ -769,6 +769,106 @@ class PlatformPathFormTests(unittest.TestCase):
                 self.assertTrue(reason.startswith("rm-unresolvable-dotdot"), reason)
 
 
+class LauncherClassTests(unittest.TestCase):
+    """Issue #639 X3a: command-position and launcher classification. Decision-level only; nothing is executed.
+    Option grammars (X3b), wrapper and shell grammars (X3c) and interpreter or tool forms (X3d) are not tested here."""
+
+    def test_launch_classes(self):
+        cases = {"echo": "NONE", "sort": "OPTION", "rg": "OPTION", "diff": "FIXED_HELPER", "cd": "CD",
+                 "env": "WRAPPER", "sh": "SHELL", "eval": "SHELL", "perl": "INTERP", "python3": "PY", "py": "PY",
+                 "git": "GIT", "npm": "PKG", "rm": "DANGEROUS", "remove-item": "DANGEROUS", "mytool": "UNKNOWN"}
+        for name, cls in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(guard.launch_class(name), cls)
+
+    def test_name_status(self):
+        cases = {"rm": "KNOWN_DANGEROUS", "echo": "KNOWN_SAFE", "diff": "KNOWN_SAFE", "cd": "KNOWN_SAFE",
+                 "mytool": "UNKNOWN_CHECKED", "sh": "FORM_DEPENDENT", "git": "FORM_DEPENDENT", "sort": "FORM_DEPENDENT"}
+        for name, status in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(guard.name_status(name), status)
+
+    def test_a_name_alone_never_gives_unknown_execution(self):
+        for name in ["mytool", "sh", "env", "rm", "echo", "python3", "sort", "git", "npm"]:
+            with self.subTest(name=name):
+                self.assertNotEqual(guard.name_status(name), "UNKNOWN_EXECUTION")
+
+    def test_function_body_is_checked(self):
+        self.assertEqual(verdict("function f { rm -rf /; }; f"), "DENY")
+        self.assertEqual(verdict("function f { echo hi; }; f"), "ALLOW")
+
+    def test_function_without_a_name_is_denied(self):
+        self.assertEqual(verdict("function"), "DENY")
+
+    def test_coproc_command_is_checked_in_both_readings(self):
+        self.assertEqual(verdict("coproc rm -rf /"), "DENY")
+        self.assertEqual(verdict("coproc NAME rm -rf /"), "DENY")
+        self.assertEqual(verdict("coproc sleep 1"), "ALLOW")
+
+    def test_coproc_without_a_command_is_denied(self):
+        self.assertEqual(verdict("coproc"), "DENY")
+
+    def test_absolute_path_with_shell_escape_is_resolved_to_its_command(self):
+        self.assertEqual(verdict("/bin/s\\h -c 'rm -rf /'"), "DENY")
+
+    def test_wrapper_handoff_still_checks_the_wrapped_command(self):
+        for cmd in ["nice -n 5 rm -rf /", "env -i rm -rf /", "timeout 5 rm -rf /"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+
+    def test_ordinary_commands_and_out_of_scope_forms_are_unchanged(self):
+        # pip install is X3d's conditional case: X3a does not change it, so it stays ALLOW here.
+        for cmd in ["echo hi", "cat README.md | head -n 5", "ls -la", "git status --short", "sort -u names.txt",
+                    "rg -n TODO src", "python3 -m unittest discover -s tests/host -v", "make test", "npm test",
+                    "pip install -r requirements-dev.txt"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "ALLOW")
+
+
+class LauncherMutationTests(unittest.TestCase):
+    """Issue #639 X3a: each classification rule must be detected by the LauncherClassTests tests. Each mutant is a
+    temporary copy of the hook and this test module in a temporary folder; no repository file is changed."""
+
+    MUTANTS = {
+        "function keyword handling removed": ('        if w0 == "function":', '        if False:'),
+        "coproc handling removed": ('        if w0 == "coproc":', '        if False:'),
+        "coproc NAME reading removed": ('            if len(rest) >= 2:', '            if False:'),
+        "absolute path shell escape removed": ('        if w0.startswith("/") and "\\\\" in w0:', '        if False:'),
+        "wrapper handoff removed": ('        if handoff(name):', '        if False:'),
+        "table: sort moved to NONE": ('("OPTION", "sort rg find', '("NONE", "sort rg find'),
+        "table: rm not dangerous": ('("DANGEROUS", "rm"),', '("NONE", "rm"),'),
+    }
+
+    def _run(self, hook_text):
+        with tempfile.TemporaryDirectory() as td:
+            root = os.path.realpath(td)
+            hooks = os.path.join(root, ".claude", "hooks")
+            host = os.path.join(root, "tests", "host")
+            os.makedirs(hooks)
+            os.makedirs(host)
+            write_text(os.path.join(hooks, "guard_destructive.py"), hook_text)
+            with open(THIS_FILE, encoding="utf-8") as f:
+                write_text(os.path.join(host, "test_claude_destructive_guard.py"), f.read())
+            proc = subprocess.run([sys.executable, "-m", "unittest", "-v",
+                                   "test_claude_destructive_guard.LauncherClassTests"], cwd=host,
+                                  capture_output=True, text=True, timeout=300)
+            return proc.returncode, proc.stderr
+
+    def test_launcher_tests_detect_each_mutant(self):
+        with open(HOOK, encoding="utf-8") as f:
+            original = f.read()
+        code, out = self._run(original)
+        self.assertEqual(code, 0, "unmutated copy must pass LauncherClassTests:\n" + out[-800:])
+        for name, (old, new) in self.MUTANTS.items():
+            with self.subTest(mutant=name):
+                self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
+                code, out = self._run(original.replace(old, new))
+                failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
+                detected = any("LauncherClassTests." in ln for ln in failing)
+                self.assertTrue(detected, "mutant not detected by a LauncherClassTests test: " + name + "\n"
+                                + "\n".join(failing))
+
+
 class MutationDetectionTests(unittest.TestCase):
     """Linux CI (any host where symlinks can be created): the symlink tests must FAIL for each mutant of Piece A's
     rules. Each mutant is a temporary copy of the hook and this test module in a temporary folder. No repository

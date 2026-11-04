@@ -55,6 +55,50 @@ WRITE_NAMES = {"tee", "cp", "mv", "install", "rsync", "touch", "mkdir", "ln", "c
 DANGER_PY = re.compile(r"rmtree|remove|unlink|rmdir|removedirs|system|subprocess|popen|"
                        r"shutil|spawn|exec|eval|__import__|open\s*\(|write|truncate|"
                        r"ctypes|socket", re.I)
+# X3a (Issue #639): launcher classification by command name. Names only. Option grammars (X3b), wrapper and
+# shell grammars (X3c) and interpreter or tool forms (X3d) are decided by their own units. A name in no class is
+# UNKNOWN (UNKNOWN_CHECKED: the existing rules apply). A launcher class is FORM_DEPENDENT: its status depends on
+# the form it is given, so the name alone never proves safety or danger.
+LAUNCH_TABLE = (
+    ("NONE", "echo printf cat ls pwd head tail wc uniq cut tr basename dirname realpath date stat du df "
+             "touch mkdir test true false which type grep egrep fgrep"),
+    ("FIXED_HELPER", "diff file"),
+    ("OPTION", "sort rg find tar rsync ssh scp sftp"),
+    ("GIT", "git"),
+    ("PKG", "npm npx yarn pnpm pip pip3 uv pipx"),
+    ("DANGEROUS", "rm"),
+)
+LAUNCH_CLASS = {name: cls for cls, names in LAUNCH_TABLE for name in names.split()}
+LAUNCH_CLASS.update({n: "CD" for n in CD_NAMES})
+LAUNCH_CLASS.update({n: "WRAPPER" for n in WRAPPERS})
+LAUNCH_CLASS.update({n: "SHELL" for n in SHELLS | PS_HOSTS | {"eval", "source", "."}})
+LAUNCH_CLASS.update({n: "INTERP" for n in INTERP})
+LAUNCH_CLASS.update({n: "DANGEROUS" for n in PS_RM | ALWAYS_DENY})
+
+
+def launch_class(name):
+    """Class of a normalised command name (basename, lowercase, no .exe)."""
+    if PY_NAME.match(name):
+        return "PY"
+    return LAUNCH_CLASS.get(name, "UNKNOWN")
+
+
+def name_status(name):
+    """Name-level status. UNKNOWN_EXECUTION is never given to a name: it comes from a form (X3b to X3d) or from
+    the fail-closed conditions of analyze_argv (function and coproc without a command)."""
+    cls = launch_class(name)
+    if cls == "DANGEROUS":
+        return "KNOWN_DANGEROUS"
+    if cls in ("NONE", "FIXED_HELPER", "CD"):
+        return "KNOWN_SAFE"
+    if cls == "UNKNOWN":
+        return "UNKNOWN_CHECKED"
+    return "FORM_DEPENDENT"
+
+
+def handoff(name):
+    """Boundary to X3c: a WRAPPER hands the rest of argv to unwrap(). Other classes do not hand off."""
+    return launch_class(name) == "WRAPPER"
 ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 MNT = re.compile(r"^/mnt/([A-Za-z])(/.*)?$")
 MSYS = re.compile(r"^/([A-Za-z])(/.*)?$")  # Git Bash drive form: /c/Users/... is C:/Users/...
@@ -705,18 +749,37 @@ def analyze_argv(words, ctx, ps, depth):
         if not words:
             return
         w0 = words[0]
+        if w0 == "function":
+            # X3a: function NAME { body }. The body's commands are in command position, so the words after the
+            # name are analysed as ordinary words. A function keyword without a name is not resolvable: fail closed.
+            if len(words) < 2:
+                raise Deny("function", "function keyword without a name is not resolvable")
+            words = words[2:]
+            continue
+        if w0 == "coproc":
+            # X3a: coproc CMD ... or coproc NAME CMD ... Both readings are analysed, so the command is checked either way.
+            rest = words[1:]
+            if not rest:
+                raise Deny("coproc", "coproc without a command is not resolvable")
+            analyze_argv(rest, ctx.copy(), ps, depth + 1)
+            if len(rest) >= 2:
+                analyze_argv(rest[1:], ctx.copy(), ps, depth + 1)
+            return
         if SUBST in w0:
             raise Deny("command-word", "command substitution in command position")
         if w0 not in ("[", "[[") and any(ch in w0 for ch in "$*?[]{}`~"):
             raise Deny("command-word", "unexpanded word in command position")
         # A backslash before a plain character only quotes it: \rm is rm.
         w0 = re.sub(r"^\\+(?=[^\\/])", "", w0)
+        # POSIX absolute path with a shell escape: /bin/s\h is /bin/sh. Windows drive paths keep their backslashes.
+        if w0.startswith("/") and "\\" in w0:
+            w0 = re.sub(r"\\(?=[^\\/])", "", w0)
         if "\\" in w0 and not re.match(r"^(?:[A-Za-z]:)?[\\/]", w0):
             raise Deny("command-word", "backslash in command name")
         name = posixpath.basename(w0.replace("\\", "/")).lower()
         if name.endswith(".exe"):
             name = name[:-4]
-        if name in WRAPPERS:
+        if handoff(name):
             words = unwrap(name, words[1:])
             continue
         break
