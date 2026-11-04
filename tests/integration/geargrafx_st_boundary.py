@@ -36,10 +36,15 @@ from geargrafx_reference_guard import check_pos, run_mode, synthetic_media  # no
 
 PINNED_CORE_REVISION = "b49ae82a012eade566d72e9d61c9d95a5caa4da3"
 ST_OPCODE = {"st0": 0x03, "st1": 0x13, "st2": 0x23}
-ST_EXPECTED_PC = {"st0-entry": 0x3E00, "st1-unknown": 0x3E10, "st2-unknown": 0x3E10}
-ST_EXECUTED_BEFORE_REFUSAL = {"st0-entry": 0, "st1-unknown": 1, "st2-unknown": 1}
+ST_EXPECTED_PC = {"st0-entry": 0x3E00, "st1-unknown": 0x3E10, "st2-unknown": 0x3E10,
+                  "st2-mpr2-unknown": 0x4010}
+ST_EXECUTED_BEFORE_REFUSAL = {"st0-entry": 0, "st1-unknown": 1, "st2-unknown": 1,
+                              "st2-mpr2-unknown": 3}
 ARMED_MODES = tuple(ST_EXPECTED_PC)
-UNGUARDED_MODES = ("st0-unguarded", "st1-unguarded", "st2-unguarded")
+MUTATIONS = {"st0-entry": ("st0-entry-no-entry-check",),
+             "st1-unknown": ("st1-unguarded",),
+             "st2-unknown": ("st2-unguarded",),
+             "st2-mpr2-unknown": ("st2-mpr2-no-recheck", "st2-mpr2-wrong-opcode")}
 POS_CONTROL = 0x3E50
 MPR0_NON_FF = 0x00
 RESUME_ATTEMPTS = 3
@@ -68,15 +73,18 @@ def _common(row, mode):
         mpr = row.get(side, {}).get("mpr", [])
         if type(mpr) is not list or len(mpr) != 8 or mpr[0] != MPR0_NON_FF:
             raise ValueError(f"{mode} MPR0 {side} not {MPR0_NON_FF:#x} (!= $FF): {mpr[:1]}")
-    if row.get("before", {}).get("mpr") != row.get("after", {}).get("mpr"):
+    dynamic_mpr2 = mode == "st2-mpr2-unknown"
+    if not dynamic_mpr2 and row.get("before", {}).get("mpr") != row.get("after", {}).get("mpr"):
         raise ValueError(f"{mode}: MPR configuration changed during the run")
+    if dynamic_mpr2 and (row["before"]["mpr"][2], row["after"]["mpr"][2]) != (0, 0xF8):
+        raise ValueError(f"{mode}: guest MPR2 remap was not observed")
     for name in ("vdc_ar_before", "vdc_ar_after", "vdc_r_before", "vdc_r_after", "stop_pc",
                  "instructions_executed"):
         if type(row.get(name)) is not int:
             raise ValueError(f"{mode} missing/non-integer {name}: {row.get(name)!r}")
 
 
-def check_refused(row, mode):
+def _check_refused(row, mode, require_fetch):
     """Armed classifier: the ST must be refused at its instruction boundary, with no side effect."""
     _common(row, mode)
     if row.get("status") != "refused" or row.get("refused") is not True:
@@ -104,7 +112,38 @@ def check_refused(row, mode):
                          f"R {row['vdc_r_before']:#x}->{row['vdc_r_after']:#x})")
     if _vdc_landed(row, kind):
         raise ValueError(f"{mode}: VDC side effect landed although the ST was refused")
+    # Current runs must carry a complete opcode/fetch-mapping observation. Older
+    # immutable evidence (if ever loaded by an archival tool) belongs in a
+    # separate historical validator; it must not weaken this live-run contract.
+    fetch = {}
+    for key in ("fetch_opcode", "fetch_page", "fetch_mpr"):
+        value = row.get(key)
+        if type(value) is not int:
+            if not require_fetch:
+                return REFUSED_VERDICT
+            raise ValueError(f"{mode}: missing/non-integer {key} fetch evidence")
+        fetch[key] = value
+    expected_page = row["refused_pc"] >> 13
+    if fetch["fetch_page"] != expected_page:
+        raise ValueError(f"{mode}: fetch page {fetch['fetch_page']}, expected CPU page {expected_page}")
+    if fetch["fetch_mpr"] != row["after"]["mpr"][expected_page]:
+        raise ValueError(f"{mode}: fetch MPR does not match the page's active MPR")
+    if fetch["fetch_opcode"] != ST_OPCODE[kind] or fetch["fetch_opcode"] != row["refused_opcode"]:
+        raise ValueError(f"{mode}: fetched opcode does not match the refused ST opcode")
+    physical_fetch_bank = fetch["fetch_mpr"]
+    if mode == "st2-mpr2-unknown" and (fetch["fetch_page"] != 2 or physical_fetch_bank != 0xF8):
+        raise ValueError(f"{mode}: ST2 fetch did not resolve through remapped page 2/MPR2 bank $F8")
     return REFUSED_VERDICT
+
+
+def check_refused(row, mode):
+    """Validate live probe evidence; fetch opcode and mapping fields are mandatory."""
+    return _check_refused(row, mode, require_fetch=True)
+
+
+def check_refused_historical(row, mode):
+    """Validate immutable pre-fetch-map records only; never used by live runs."""
+    return _check_refused(row, mode, require_fetch=False)
 
 
 def check_unguarded(row, mode):
@@ -119,7 +158,21 @@ def check_unguarded(row, mode):
     return LANDED_VERDICT
 
 
-def mutation_test_armed(refused_row, landed_row, mode):
+def check_bypassed_mutation(row, mode):
+    """A real monitor mutation must execute ST and therefore cannot pass as refusal."""
+    normalized = mode.replace("-no-entry-check", "-entry").replace("-no-recheck", "-unknown") \
+        .replace("-wrong-opcode", "-unknown")
+    checked = copy.deepcopy(row)
+    checked["mode"] = normalized
+    _common(checked, normalized)
+    if row.get("armed") is not True or row.get("boundary_check") is not True:
+        raise ValueError(f"{mode}: named mutation disabled the entire boundary monitor")
+    if row.get("status") != "ok" or row.get("refused") is not False or not _vdc_landed(row, _kind(mode)):
+        raise ValueError(f"{mode}: mutation did not execute the prohibited ST")
+    return LANDED_VERDICT
+
+
+def mutation_test_armed(refused_row, landed_row, mode, historical=False):
     """Falsified armed observations and the disabled-monitor run must all be rejected by check_refused."""
     base = copy.deepcopy(refused_row)
     kind = _kind(mode)
@@ -137,6 +190,15 @@ def mutation_test_armed(refused_row, landed_row, mode):
                                 {"vdc_r_after": 0x5A} if kind == "st1" else {"vdc_r_after": 0xA500})),
         ("mpr0_ff", {"before": {"mpr": [0xFF] + [0] * 7}, "after": {"mpr": [0xFF] + [0] * 7}}),
     ]
+    if all(type(base.get(key)) is int for key in ("fetch_opcode", "fetch_page", "fetch_mpr")):
+        mutations.extend([
+            ("fetch_opcode_missing", {"fetch_opcode": None}),
+            ("fetch_page_missing", {"fetch_page": None}),
+            ("fetch_mpr_missing", {"fetch_mpr": None}),
+            ("fetch_opcode_mismatch", {"fetch_opcode": other_op}),
+            ("fetch_page_mismatch", {"fetch_page": (ST_EXPECTED_PC[mode] >> 13) ^ 1}),
+            ("fetch_mpr_mismatch", {"fetch_mpr": base["fetch_mpr"] ^ 1}),
+        ])
     for name, overwrite in mutations:
         if name == "monitor_disabled_run_as_armed":
             broken = overwrite
@@ -144,7 +206,7 @@ def mutation_test_armed(refused_row, landed_row, mode):
             broken = copy.deepcopy(base)
             broken.update(overwrite)
         try:
-            check_refused(broken, mode)
+            (check_refused_historical if historical else check_refused)(broken, mode)
         except ValueError:
             continue  # falsified observation rejected
         raise ValueError(f"mutation test FAILED: {mode} {name} accepted by the armed classifier")
@@ -161,11 +223,22 @@ def main():
             kind = _kind(mode)
             refused_row = run_mode(probe, bios, cue, mode, 0)
             verdicts[mode] = check_refused(refused_row, mode)
-            landed_row = run_mode(probe, bios, cue, f"{kind}-unguarded", 0)
-            verdicts[f"{kind}-unguarded"] = check_unguarded(landed_row, f"{kind}-unguarded")
-            mutation_test_armed(refused_row, landed_row, mode)
-            for case, verdict, row in ((mode, verdicts[mode], refused_row),
-                                       (f"{kind}-unguarded", verdicts[f"{kind}-unguarded"], landed_row)):
+            mutations = []
+            for mutation in MUTATIONS[mode]:
+                landed_row = run_mode(probe, bios, cue, mutation, 0)
+                verdicts[mutation] = (check_unguarded(landed_row, mutation)
+                                      if mutation.endswith("-unguarded") else check_bypassed_mutation(landed_row, mutation))
+                mutations.append((mutation, verdicts[mutation], landed_row))
+                broken = copy.deepcopy(landed_row); broken["mode"] = mode
+                with_error = False
+                try:
+                    check_refused(broken, mode)
+                except ValueError:
+                    with_error = True
+                if not with_error:
+                    raise ValueError(f"mutation test FAILED: {mode} {mutation} accepted as refused")
+            mutation_test_armed(refused_row, mutations[0][2], mode)
+            for case, verdict, row in [(mode, verdicts[mode], refused_row), *mutations]:
                 print("EVIDENCE " + json.dumps({"case": case, "observation_kind": "REAL_CORE_EXECUTION",
                                                 "core_revision": PINNED_CORE_REVISION, "bios": "SYNTHETIC",
                                                 "verdict": verdict, "row": row}, sort_keys=True))
@@ -174,10 +247,10 @@ def main():
                   f"resume_refused={refused_row['resume_refused']}/{refused_row['resume_attempts']} "
                   f"vdc_ar={refused_row['vdc_ar_before']:#x}->{refused_row['vdc_ar_after']:#x} "
                   f"vdc_r={refused_row['vdc_r_before']:#x}->{refused_row['vdc_r_after']:#x} -> {verdicts[mode]}")
-            print(f"UNGUARDED {kind}: status={landed_row['status']} stop_pc={landed_row['stop_pc']:#x} "
-                  f"vdc_ar={landed_row['vdc_ar_before']:#x}->{landed_row['vdc_ar_after']:#x} "
-                  f"vdc_r={landed_row['vdc_r_before']:#x}->{landed_row['vdc_r_after']:#x} "
-                  f"-> {verdicts[f'{kind}-unguarded']}")
+            for mutation, verdict, row in mutations:
+                print(f"MUTATION {mutation}: status={row['status']} stop_pc={row['stop_pc']:#x} "
+                      f"vdc_ar={row['vdc_ar_before']:#x}->{row['vdc_ar_after']:#x} "
+                      f"vdc_r={row['vdc_r_before']:#x}->{row['vdc_r_after']:#x} -> {verdict}")
         check_pos(run_mode(probe, bios, cue, "pos-write", POS_CONTROL), POS_CONTROL)
     print("PASS issue-365 ST0/ST1/ST2 instruction-boundary monitor (synthetic ROM, pinned core):")
     print(f"  armed: {len(ARMED_MODES)} cases refused before side effect, resume refused {RESUME_ATTEMPTS}/{RESUME_ATTEMPTS}")

@@ -12,9 +12,9 @@
 
 | ID | 出典 | 位置 | 備考 |
 | --- | --- | --- | --- |
-| S1 | pce-devel/huc `include/hucc/pcengine.inc`、revision `54f5c73606c1e7142e8095c727cab2767e2b3cb3` | L491–499（`bm_format` ～ `bm_files` の等号、`bm_free = $00:E04B, FUNC` は L495）、L337–339（`_cx = $F8:20FC, 2`、`_cl`、`_ch`） | sha256 `b6a25d33bb787ea1fe550c6e04aff9f8ccaaa91b649a05a963be24b440b728a9`。Boost-1.0（ファイル先頭 L8–10 に明記）。呼出側の等号のみ |
-| S2 | pce-devel/huc `include/hucc/hucc-systemcard.asm`、同 revision | L54–61（BM_ 定数）、L65（`__bm_error`）、L667–694（`_bm_format`、`bm_free` の戻り値を分岐）、L707–722（`_bm_free` マクロ） | sha256 `4258b7c3e8751127c0615af3178e431d81043c25fa6cb2b6b1d51b566aec7ea9`。Boost-1.0（`Copyright John Brandwood 2024` L8、ライセンス L10–12）。呼出側ラッパー（CD 系だけでなく BM 系も含む） |
-| S3 | 同 `include/hucc/hucc-systemcard.h` | L112（`unsigned int __fastcall __macro bm_free( void )` の宣言） | sha256 `f2477642f867c3daeff00938534f3f8ef970d1a9403f44bd09e90894220b8a3b`。Boost-1.0（ファイル先頭 L13–15 に明記） |
+| S1 | pce-devel/huc `include/hucc/pcengine.inc`、revision `54f5c73606c1e7142e8095c727cab2767e2b3cb3` | L491–499（`bm_format` ～ `bm_files` の等号、`bm_free = $00:E04B, FUNC` は L495）、L337–339（`_cx = $F8:20FC, 2`、`_cl`、`_ch`） | sha256 `b6a25d33bb787ea1fe550c6e04aff9f8ccaaa91b649a05a963be24b440b728a9` 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致）。Boost-1.0（ファイル先頭 L8–10 に明記）。呼出側の等号のみ |
+| S2 | pce-devel/huc `include/hucc/hucc-systemcard.asm`、同 revision | L54–61（BM_ 定数）、L65（`__bm_error`）、L667–694（`_bm_format`、`bm_free` の戻り値を分岐）、L707–722（`_bm_free` マクロ） | sha256 `4258b7c3e8751127c0615af3178e431d81043c25fa6cb2b6b1d51b566aec7ea9` 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致）。Boost-1.0（`Copyright John Brandwood 2024` L8、ライセンス L10–12）。呼出側ラッパー（CD 系だけでなく BM 系も含む） |
+| S3 | 同 `include/hucc/hucc-systemcard.h` | L112（`unsigned int __fastcall __macro bm_free( void )` の宣言） | sha256 `f2477642f867c3daeff00938534f3f8ef970d1a9403f44bd09e90894220b8a3b` 検証済み（2026-11-02, 取得 URL は検証ログ参照、SHA-256 一致）。Boost-1.0（ファイル先頭 L13–15 に明記） |
 | S4 | リポジトリ `docs/system-card-rom.md` | L102（バックアップ RAM 窓 `$F7` / `$1EE000`、コアは 2 KiB を初期化） | プロジェクトの注記。コア側の出典は本 Issue で再確認していない |
 | S5 | リポジトリ `docs/api-inventory.md` | L50（`$19` / `$E04B` / `BM_FREE` / #35） | 一覧のみ |
 | S6 | リポジトリ `spec/api_contracts.json` slot 25、`spec/api_slots.json` id 25 | `mapping_status: HYPOTHESIS`、`arguments/returns/clobbered/preserved/stack/mpr/ram/flags/irq/errors` 全て `UNKNOWN` | 台帳の現状。本 PR は変更しない |
