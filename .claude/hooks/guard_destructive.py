@@ -358,7 +358,14 @@ def strip_quotes(tok):
 def words_of(seg, ps):
     try:
         if ps:
-            return [strip_quotes(t) for t in shlex.split(seg, posix=False)]
+            # PowerShell: the command name may be quoted in pieces ("Remove"-Item, r"m"). The first piece is one word
+            # with its quotes removed, so "C:\Program Files\x.exe" stays one word too.
+            m = re.match(r"""\s*((?:"[^"]*"|'[^']*'|[^\s"'])+)""", seg)
+            head = []
+            if m:
+                head = [m.group(1).replace('"', "").replace("'", "")]
+                seg = seg[m.end():]
+            return head + [strip_quotes(t) for t in shlex.split(seg, posix=False)]
         # Keep Windows-style backslashes literal (C:\x) instead of shell-escaping them.
         seg = re.sub(r"\\(?=[A-Za-z0-9.:_\-/])", r"\\\\", seg)
         return shlex.split(seg, posix=True)
@@ -719,16 +726,44 @@ def claude_mention(args):
                or SUBST in a for a in args)
 
 
-TIMEOUT_MAX_WORDS = 256
+TIMEOUT_VALUE_OPTS = {"-k", "-s", "--kill-after", "--signal"}
 
 
 def timeout_candidates(args):
-    """Every suffix of the arguments may be the command timeout runs. No word is skipped as an option value or a
-    duration, so long options with a separate value and non-integer durations cannot hide a command (fail closed).
-    The argument list is bounded: a longer one is denied, which keeps the analysis linear in practice."""
-    if len(args) > TIMEOUT_MAX_WORDS:
-        raise Deny("timeout", "timeout with too many arguments is not inspected")
-    return [args[k:] for k in range(len(args))]
+    """The command timeout runs: timeout [OPTION]... DURATION COMMAND [ARG]... GNU timeout stops option parsing at
+    the first non-option (the "+" getopt form), so options after DURATION belong to COMMAND. Options before it:
+    -k and -s (and --kill-after, --signal) take a value, separate or attached; other options are flags. Anything
+    the grammar does not cover is refused (fail closed)."""
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            i += 1
+            break
+        if not (a.startswith("-") and len(a) > 1):
+            break
+        if a in TIMEOUT_VALUE_OPTS:
+            i += 2
+        elif a.startswith("--"):
+            i += 1
+        else:
+            # Short cluster: -k or -s takes the rest of the word as its value, or the next word if it is last.
+            takes_next = False
+            for j in range(1, len(a)):
+                if a[j] in "ks":
+                    takes_next = j == len(a) - 1
+                    break
+            i += 2 if takes_next else 1
+    if i >= len(args):
+        return []
+    cands = [args[i + 1:]]
+    if not re.match(r"^[0-9.]+[smhd]?$", args[i]):
+        # A non-numeric duration is an error in GNU timeout; the word is kept as a possible command (fail closed).
+        cands.append(args[i:])
+    if cands[0] and cands[0][0].startswith("-"):
+        # An option-like command name is not a command GNU timeout can run; its suffixes are kept (fail closed).
+        cands += [cands[0][k:] for k in range(1, len(cands[0]))]
+    return cands
 
 
 def unwrap(name, args):
