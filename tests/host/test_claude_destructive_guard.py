@@ -978,6 +978,22 @@ class LauncherClassTests(unittest.TestCase):
                 self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
         self.assertEqual(verdict("@{ 'my key' = 'x'; b = 1 }", tool="PowerShell"), "ALLOW")
 
+    def test_bash_append_assignment_then_command_is_denied(self):
+        for cmd in ["x+=1 rm -rf /", "a+=b rm -rf /"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+        self.assertEqual(verdict("echo x+=1"), "ALLOW")
+
+    def test_powershell_hashtable_keys_and_member_abbreviations_are_checked(self):
+        for cmd in ["@{my-key=Remove-Item -Recurse -Force /}", "@{'my key'=Remove-Item -Recurse -Force /}",
+                    "@{a-b=Remove-Item -Recurse -Force /}", "@{a.b=Remove-Item -Recurse -Force /}",
+                    "Get-ChildItem | ForEach-Object -M Delete", "Get-ChildItem | ForEach-Object -Me Delete"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
+        for cmd in ["Write-Error -Message hi", "@{ 'my key' = 'x' }"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "ALLOW")
+
     def test_if_with_a_command_in_its_segment_is_denied(self):
         self.assertEqual(verdict("if rm -rf /; then :; fi"), "DENY")
 
@@ -1072,8 +1088,10 @@ class LauncherMutationTests(unittest.TestCase):
                                                    '        if ps and w0.startswith("$")'),
         "else keyword removed": ('"then", "else", "elif"', '"then", "elif"'),
         "if keyword removed": ('"if", "then", "else"', '"then", "else"'),
-        "quoted and parenthesised member rule removed": (r'''|['\"(])|-mem\w*\b")''', r''')|-mem\w*\b")'''),
-        "member abbreviation rule removed": (r'''|-mem\w*\b")''', r'''|-membernamex\b")'''),
+        "quoted and parenthesised member rule removed": (r'''|['\"(])|-m(?:e|em\w*)?\b")''', r''')|-m(?:e|em\w*)?\b")'''),
+        "member abbreviation rule removed": (r'''|-m(?:e|em\w*)?\b")''', r'''|-membernamex\b")'''),
+        "Bash assignment with += not recognised": (r'''ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")''', r'''ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")'''),
+        "PowerShell name=value rule for any key removed": ('        if ps and "=" in w0 and not w0.startswith("="):', '        if False:'),
         "icm removed from the expression launcher pattern": (r'''invoke-command|icm|start-job''', r'''invoke-command|start-job'''),
         "method call whitespace rule removed": (r'''(?:\w+\s*\(|['\"(])''', r'''(?:\w+\(|['\"(])'''),
         "iwmi removed from the expression launcher pattern": (r'''|iwmi|icim|''', r'''|icim|'''),

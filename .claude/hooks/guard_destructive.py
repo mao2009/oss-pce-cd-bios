@@ -49,7 +49,7 @@ PS_PROC_LAUNCH_RE = re.compile(
 EXPR_SYNTAX_RE = re.compile(r"[,()@{}$]")
 # PowerShell method call syntax (.Delete(), $x[0].Delete()). The "(" would split the call from its object, so the call
 # is refused on the raw text before any split. Property access ($_.Name) is not a call and is not refused.
-METHOD_CALL_RE = re.compile(r"(?i)\.\s*(?:\w+\s*\(|['\"(])|-mem\w*\b")
+METHOD_CALL_RE = re.compile(r"(?i)\.\s*(?:\w+\s*\(|['\"(])|-m(?:e|em\w*)?\b")
 CD_NAMES = {"cd", "chdir", "set-location", "sl"}
 # Always denied: destructive by nature, or cannot be inspected.
 ALWAYS_DENY = {"unlink", "shred", "rmdir", "rd", "dd", "mkfs", "truncate", "wipefs",
@@ -112,7 +112,7 @@ def name_status(name):
 def handoff(name):
     """Boundary to X3c: a WRAPPER hands the rest of argv to unwrap(). Other classes do not hand off."""
     return launch_class(name) == "WRAPPER"
-ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
 MNT = re.compile(r"^/mnt/([A-Za-z])(/.*)?$")
 MSYS = re.compile(r"^/([A-Za-z])(/.*)?$")  # Git Bash drive form: /c/Users/... is C:/Users/...
 # Generic roots only. The home directory is derived at run time (home_roots); owner-specific roots come
@@ -821,8 +821,9 @@ def analyze_argv(words, ctx, ps, depth):
             value = words[1][1:]
             words = ([value] if value else []) + words[2:]
             continue
-        if ps and "=" in w0 and ASSIGN.match(w0):
-            # PowerShell name=value with no spaces: the value (after "=") is the command position.
+        if ps and "=" in w0 and not w0.startswith("="):
+            # PowerShell name=value with no spaces, for any key ('my key'=, my-key=, a.b=): the value after the first "=" is
+            # the command position.
             value = w0.split("=", 1)[1]
             words = ([value] if value else []) + words[1:]
             continue
