@@ -497,7 +497,6 @@ class ProtectedRootTests(unittest.TestCase):
 
     def test_dotdot_aliases_of_protected_roots_denied(self):
         # Registered alias spellings: the ".." must be normalised before the MSYS drive mapping.
-        self._registry(self.repo, {"/a/..", "/a/../home", "/a/../mnt/c/users"})
         self._registry(self.repo, {"/abc/../mnt/c/users", "/home/../mnt/c/users", "/tmp/../mnt/c/users",
                                    "/a/..", "/a/../home", "/a/../mnt/c/users"})
         for cmd in ["git worktree remove /abc/../mnt/c/users", "git worktree remove /home/../mnt/c/users",
@@ -525,6 +524,22 @@ class ProtectedRootTests(unittest.TestCase):
         for cmd_path in aliases:
             with self.subTest(path=cmd_path):
                 self.assertEqual(verdict("git worktree remove " + cmd_path, repo_root=self.repo), "DENY")
+
+    def test_synthetic_drive_form_home_and_aliases(self):
+        # A synthetic home in drive form that does not exist on any host: the drive form, the MSYS form, the
+        # /mnt form and ".." aliases must all be refused, with no dependence on the real home or on existence.
+        synthetic = "C:/Users/synthetic-owner"
+        with mock.patch.dict(os.environ, {"HOME": synthetic, "USERPROFILE": synthetic}):
+            # key() is the casefolded canonical form that the guard compares with.
+            self.assertEqual(guard.key("/abc/../c/users/synthetic-owner"), guard.key(synthetic))
+            self.assertEqual(guard.key("/c/Users/synthetic-owner"), guard.key(synthetic))
+            aliases = [synthetic, "/c/Users/synthetic-owner", "/mnt/c/users/synthetic-owner",
+                       "/abc/../c/users/synthetic-owner", "/abc/../mnt/c/users/synthetic-owner",
+                       "C:/Users/x/../synthetic-owner"]
+            self._registry(self.repo, set(aliases))
+            for path in aliases:
+                with self.subTest(path=path):
+                    self.assertEqual(verdict("git worktree remove " + path, repo_root=self.repo), "DENY")
 
     def test_normal_operations_allowed(self):
         for cmd in ["rm " + os.path.join(self.repo, "file.txt"), "git status",
