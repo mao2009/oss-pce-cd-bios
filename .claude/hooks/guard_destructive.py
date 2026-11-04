@@ -630,20 +630,30 @@ def find_rule(args, ps, ctx, depth):
             analyze_argv(args[i + 1:j], ctx, ps, depth + 1)
 
 
-def python_word_in(words):
-    """True if a word of the segment, normalised as the guard dispatches it, is a python command: quotes and
-    backslashes are already removed in words, a path is reduced to its basename, and a .exe suffix is dropped.
-    Any position counts (after a wrapper, an assignment, or a path), so no prefix can hide the command."""
-    for w in words:
+def python_in_command_position(words):
+    """True if the command that runs is python. Keywords, assignments, wrapper names and their options and numbers are
+    skipped, as the guard's own dispatch does. A python word that is only an argument (echo python3, grep python) does
+    not count: it is a string, not a python process. Words come from words_of, so quotes and backslashes are removed."""
+    i = 0
+    while i < len(words):
+        w = words[i]
+        if w in KEYWORDS or ASSIGN.match(w) or w.startswith("-") or re.fullmatch(r"\d+(\.\d+)?[smhd]?", w):
+            i += 1
+            continue
         n = posixpath.basename(w.replace("\\", "/")).lower()
         if n.endswith(".exe"):
             n = n[:-4]
-        if re.fullmatch(r"python[0-9.]*|py", n):
-            return True
+        if n in WRAPPERS:
+            i += 1
+            continue
+        return re.fullmatch(r"python[0-9.]*|py", n) is not None
     return False
+
+
 # Bash expands or splits on these when they are unquoted. Inside double quotes only $, backtick and backslash are
-# special. Single quotes are fully literal.
-UNQUOTED_SPECIAL = frozenset("$`{}*?[]~\\()<>|&;#!")
+# special. Single quotes are fully literal. Redirections (< >) do not change argv; their targets are checked by the
+# redirect rules. A process substitution or command substitution changes argv, so it is refused (see SUBST below).
+UNQUOTED_SPECIAL = frozenset("$`{}*?[]~\\()|&;#!")
 DQUOTED_SPECIAL = frozenset("$`\\")
 
 
@@ -651,6 +661,10 @@ def python_word_certainty(seg):
     """True if the raw segment of a python command has no special character outside single quotes, and no
     $, backtick or backslash inside double quotes. Then the argv bash passes is exactly the quote-removed words,
     so the guard judges the same argv. Otherwise the argv depends on expansion and is not certain."""
+    if SUBST in seg:
+        # A command or process substitution outside the python argv changes the argv (the substituted text or a
+        # /dev/fd path becomes a word). It is not certain.
+        return False
     state = None
     for ch in seg:
         if state == "'":
@@ -822,7 +836,7 @@ def analyze_text(text, ctx, ps, depth):
     segs, subs, redirs = split_segments(text, ps)
     # A python command whose argv is not certain (unquoted or double-quoted expansion characters) is refused.
     for seg in segs:
-        if python_word_in(words_of(seg, ps)) and not python_word_certainty(seg):
+        if python_in_command_position(words_of(seg, ps)) and not python_word_certainty(seg):
             raise Deny("unexpanded", "python command whose argv depends on shell expansion is not inspected")
     for body in subs:
         analyze_text(body, ctx.copy(), ps, depth + 1)

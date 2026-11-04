@@ -940,13 +940,64 @@ class PythonArgvCertaintyTests(unittest.TestCase):
                 self.assertEqual(self._v(cmd), expected)
 
 
+class PythonCommandPositionTests(unittest.TestCase):
+    """Issue #630 X1: a python command is one whose command word (after keywords, assignments and wrappers) is python.
+    The word python as an argument, or inside a quoted string, is not a python process. The reason is checked, so a
+    denial is attributed to the rule that gave it. Decision-level only; nothing is executed."""
+
+    def _d(self, cmd):
+        return guard.decide(json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": REPO}),
+                            repo_root=REPO)
+
+    def test_python_in_command_position_with_expansion_is_denied_by_the_argv_rule(self):
+        for cmd in ["python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "nice python3 -c open*",
+                    "FOO=1 python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "env -i python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "sh -c 'python3 {-c,}\"open(1)\"'"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertTrue(reason.startswith("unexpanded"), reason)
+
+    def test_python_word_as_an_argument_is_not_a_python_process(self):
+        for cmd in ["echo python3 > out.txt", "echo python3", "printf 'python3 %s\\n' x",
+                    "grep -r python src/*.py", "cat python", "ls /x/py", "find . -name 'python*'",
+                    "echo \"python3 is $HOME\"", "which python3 && echo ok", "grep python README.md"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_python_with_a_redirect_is_judged_on_its_argv_not_the_redirect(self):
+        self.assertEqual(self._d("python3 -c 'print(1)' > out.txt")[0], "ALLOW")
+        verdict, reason = self._d("python3 -c 'print(1)' > $OUT")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("unexpanded"), reason)
+
+    def test_substitution_in_python_argv_is_refused(self):
+        verdict, reason = self._d("python3 -c \"print(1)\" <(echo open)")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("unexpanded"), reason)
+
+    def test_quoted_and_escaped_python_spellings_are_command_position(self):
+        for cmd in ["\"python3\" {-c,}\"open(1)\"", "\\python3 {-c,}\"open(1)\"", "python.exe {-c,}\"open(1)\""]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._d(cmd)[0], "DENY")
+
+    def test_ordinary_python_runs_are_allowed(self):
+        for cmd in ["python3 -c 'print(1)'", "python3 -m unittest discover -s tests/host -v",
+                    "nice python3 scripts/check-links.py"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._d(cmd)[0], "ALLOW")
+
+
 class PythonArgvMutationTests(unittest.TestCase):
     """Mutants of the X1 layers. Each must make a named PythonArgvCertaintyTests method fail (an assertion failure,
     not an import error). Runs on every host (no symlink)."""
 
     MUTANTS = {
         "certainty check removed": (
-            "if python_word_in(words_of(seg, ps)) and not python_word_certainty(seg):",
+            "if python_in_command_position(words_of(seg, ps)) and not python_word_certainty(seg):",
             "if False:"),
         "attached code ignored (next argument only)": (
             "codes.append(rest if rest else (args[i + 1] if i + 1 < len(args) else \"\"))",
