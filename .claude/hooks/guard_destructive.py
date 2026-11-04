@@ -6,6 +6,7 @@ permissionDecision "deny" (exit 0). An ALLOW prints nothing (exit 0), so the
 normal permission flow still applies. The command is only inspected, never run.
 Rules: docs/claude-destructive-guard.md.
 """
+import ast
 import json
 import os
 import posixpath
@@ -53,8 +54,11 @@ WRITE_NAMES = {"tee", "cp", "mv", "install", "rsync", "touch", "mkdir", "ln", "c
                "copy", "move", "copy-item", "move-item", "rename-item", "set-content",
                "add-content", "out-file", "new-item", "cpi", "mi", "ni", "sc", "ac"}
 DANGER_PY = re.compile(r"rmtree|remove|unlink|rmdir|removedirs|system|subprocess|popen|"
-                       r"shutil|spawn|exec|eval|__import__|open\s*\(|write|truncate|"
-                       r"ctypes|socket", re.I)
+                       r"shutil|spawn|exec|eval|__import__|write|truncate|"
+                       r"ctypes|socket|replace|rename|chmod|chown|symlink|copy|move|dump|link|"
+                       r"getattr|globals|locals|vars|builtins|__dict__", re.I)
+# python -c: open() is judged on the parsed AST (see _open_is_read_only), never by regex.
+READ_MODES = frozenset({"r", "rb", "br", "rt", "tr"})
 ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 MNT = re.compile(r"^/mnt/([A-Za-z])(/.*)?$")
 MSYS = re.compile(r"^/([A-Za-z])(/.*)?$")  # Git Bash drive form: /c/Users/... is C:/Users/...
@@ -630,11 +634,47 @@ def find_rule(args, ps, ctx, depth):
             analyze_argv(args[i + 1:j], ctx, ps, depth + 1)
 
 
+def _open_is_read_only(code):
+    """True only if the code parses and every use of `open` is builtin open(path) or open(path, <literal read mode>).
+
+    Judged on the AST, so string literals cannot hide a call's real arguments. Any other reference to
+    `open` (attribute such as io.open or x.open, a bare name used as a value, keyword or starred
+    arguments, a non-literal or write mode) makes the code not read-only.
+    """
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError, RecursionError):
+        return False
+    call_funcs = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "open":
+            if node.keywords or len(node.args) not in (1, 2) or any(isinstance(a, ast.Starred) for a in node.args):
+                return False
+            if len(node.args) == 2:
+                mode = node.args[1]
+                if not (isinstance(mode, ast.Constant) and isinstance(mode.value, str)
+                        and mode.value in READ_MODES):
+                    return False
+            call_funcs.add(id(node.func))
+        elif isinstance(node, ast.Name) and node.id in ("builtins", "__builtins__"):
+            return False
+        elif isinstance(node, ast.Name) and node.id == "open" and id(node) not in call_funcs:
+            return False
+        elif isinstance(node, ast.Attribute) and node.attr == "open":
+            return False
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            # `from io import open as o` and `import builtins` reach open without a Name "open".
+            for alias in node.names:
+                if alias.name in ("open", "builtins") or alias.asname in ("open", "builtins"):
+                    return False
+    return True
+
+
 def python_rule(args):
     for i, a in enumerate(args):
         if short_has(a, "c"):
             code = args[i + 1] if i + 1 < len(args) else ""
-            if DANGER_PY.search(code):
+            if DANGER_PY.search(code) or not _open_is_read_only(code):
                 raise Deny("python-c", "python -c with a file or process operation")
             return
 

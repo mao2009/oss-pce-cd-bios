@@ -827,6 +827,94 @@ class MutationDetectionTests(unittest.TestCase):
                 self.assertTrue(detected, "mutant not detected by a symlink test: " + name + "\n" + "\n".join(failing))
 
 
+class PythonOpenTests(unittest.TestCase):
+    """python -c: open() is judged on the AST. Read-only open(path) and open(path, literal read mode) are allowed;
+    write, indirect, aliased, non-literal or unparseable forms are refused. The wider danger word list is refused.
+    Host-independent: no filesystem, no symlink. The "import json" read must still be allowed."""
+
+    READ_ONLY = [
+        "import json; print(json.load(open('x.json')))",
+        "print(open('a.txt').read())",
+        "print(open('a.txt', 'rb').read())",
+        "print(open('a.txt', 'rt').read())",
+    ]
+    WRITE_OR_INDIRECT = [
+        "open('a.txt', 'w').write('x')",
+        "open('a.txt', chr(119)).write('x')",
+        "from pathlib import Path; Path('a').open('w')",
+        "open('a.txt', 'r+')",
+        "open('a.txt', mode='w')",
+        "import os; os.replace('a', 'b')",
+        "import shutil; shutil.copy('a', 'b')",
+        "open('/x)'[:-1], 'w').close()",
+        "print('evil', file=open('x)'[:-1], 'w'))",
+        "open('a.txt'",
+        "f = open; f('a.txt', 'w')",
+        "import io; io.open('a.txt', 'w')",
+        "from io import open as o; o('a.txt', 'w')",
+        "import builtins; builtins.open('a.txt', 'w')",
+        "getattr(__builtins__, 'open')('a.txt', 'w')",
+    ]
+
+    def _verdict(self, code):
+        return verdict("python3 -c " + repr(code))
+
+    def test_read_only_python_is_not_refused(self):
+        for code in self.READ_ONLY:
+            with self.subTest(code=code):
+                self.assertEqual(self._verdict(code), "ALLOW")
+
+    def test_python_write_and_indirect_forms_are_refused(self):
+        for code in self.WRITE_OR_INDIRECT:
+            with self.subTest(code=code):
+                self.assertEqual(self._verdict(code), "DENY")
+
+
+class PythonOpenMutationTests(unittest.TestCase):
+    """Mutants of the python -c rule run in a temporary copy of the hook and this module. Each must make a named
+    PythonOpenTests method fail (an assertion failure, not an import error). Runs on every host."""
+
+    MUTANTS = {
+        "AST open judgement removed": (
+            "if DANGER_PY.search(code) or not _open_is_read_only(code):",
+            "if DANGER_PY.search(code):"),
+        "wider danger word list reduced to the old list": (
+            "replace|rename|chmod|chown|symlink|copy|move|dump|link|",
+            ""),
+    }
+    DETECTING = ["test_read_only_python_is_not_refused", "test_python_write_and_indirect_forms_are_refused"]
+
+    def _run(self, hook_text):
+        with tempfile.TemporaryDirectory() as td:
+            root = os.path.realpath(td)
+            hooks = os.path.join(root, ".claude", "hooks")
+            host = os.path.join(root, "tests", "host")
+            os.makedirs(hooks)
+            os.makedirs(host)
+            write_text(os.path.join(hooks, "guard_destructive.py"), hook_text)
+            with open(THIS_FILE, encoding="utf-8") as f:
+                write_text(os.path.join(host, "test_claude_destructive_guard.py"), f.read())
+            names = ["test_claude_destructive_guard.PythonOpenTests"]
+            proc = subprocess.run([sys.executable, "-m", "unittest", "-v"] + names, cwd=host,
+                                  capture_output=True, text=True, timeout=300)
+            return proc.returncode, proc.stderr
+
+    def test_python_rule_mutants_are_detected(self):
+        with open(HOOK, encoding="utf-8") as f:
+            original = f.read()
+        code, out = self._run(original)
+        self.assertEqual(code, 0, "unmutated copy must pass PythonOpenTests:\n" + out[-800:])
+        for name, (old, new) in self.MUTANTS.items():
+            with self.subTest(mutant=name):
+                self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
+                code, out = self._run(original.replace(old, new))
+                failing = [re.match(r"(?:FAIL|ERROR): (\S+) \(", ln) for ln in out.splitlines()
+                           if ln.startswith(("FAIL:", "ERROR:"))]
+                names = [m.group(1) for m in failing if m]
+                detected = any(n in self.DETECTING for n in names)
+                self.assertTrue(detected, "mutant not detected by a PythonOpenTests assertion: " + name)
+
+
 CHILD = r"""
 import importlib.util, json, sys, time
 spec = importlib.util.spec_from_file_location("g", sys.argv[1])
