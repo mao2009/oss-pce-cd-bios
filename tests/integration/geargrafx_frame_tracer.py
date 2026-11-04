@@ -501,6 +501,34 @@ def compare_and_correlate(stdout_a, stdout_b, end, frames):
             "diagnostic_evidence": evidence}
 
 
+def first_frame_mismatch(states_x, states_y, frames):
+    for frame in range(1, frames + 1):
+        if states_x[frame] != states_y[frame]:
+            return {"frame": frame, "difference": first_state_difference(states_x[frame], states_y[frame])}
+    return "MATCH"
+
+
+def control_experiment_report(runs, frames):
+    """Diagnostic only: compare frame-boundary states across four independent processes.
+
+    A1/A2 are Full runs and B1/B2 are SCSI-only runs.  The report never changes the trace
+    status or the SCSI correlation; a failed or unparsable run makes the report BLOCKED.
+    """
+    report = {"status": "DIAGNOSTIC", "frames": frames, "pairs": {},
+              "elapsed_s": {label: run.get("elapsed_s") for label, run in runs.items()}}
+    parsed = {}
+    for label, run in runs.items():
+        if run.get("status") or run.get("exit_code") != 0:
+            return {**report, "status": "BLOCKED", "reason": f"run {label} did not complete"}
+        try:
+            parsed[label] = parse_frame_records(run["stdout"], "scsi" if label.startswith("B") else "full", frames)[0]
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError) as error:
+            return {**report, "status": "BLOCKED", "reason": f"run {label} rejected: {error}"}
+    for left, right in (("A1", "A2"), ("B1", "B2"), ("A1", "B1"), ("A2", "B2")):
+        report["pairs"][f"{left}_vs_{right}"] = first_frame_mismatch(parsed[left], parsed[right], frames)
+    return report
+
+
 def trace(args):
     if not 1 <= args.frames <= MAX_FRAMES or not 1 <= args.events <= MAX_EVENTS:
         return {"status": "FAIL", "reason": f"limits are frames 1..{MAX_FRAMES}, events 1..{MAX_EVENTS}",
@@ -571,6 +599,17 @@ def trace(args):
                 return log
             dual = compare_and_correlate(result["stdout"], run_b["stdout"], end, args.frames)
             dual["elapsed_s_run_a"], dual["elapsed_s_run_b"] = result["elapsed_s"], run_b["elapsed_s"]
+            if getattr(args, "control_experiment", False):
+                # Diagnostic only: two more independent processes (one per mode) so that every
+                # pair of runs can be compared.  This reports; it never changes the status or
+                # the correlation decision above.
+                extra = {}
+                for label, mode_args in (("A2", []), ("B2", ["scsi"])):
+                    extra[label] = run_job([str(probe), str(rom), cue, str(args.frames), str(args.events),
+                                            str(args.run_start_frame or 0), str(args.run_hold_frames or 0),
+                                            "1"] + mode_args, job, args.timeout)
+                log["control_experiment"] = control_experiment_report(
+                    {"A1": result, "A2": extra["A2"], "B1": run_b, "B2": extra["B2"]}, args.frames)
         log.update(status="PASS", reason="bounded normal-frame trace completed", evidence="REAL_GEARGRAFX_CORE",
                    elapsed_s=result["elapsed_s"], capability=cap, events=events, summary=end,
                    scsi_correlation_basis=dual)

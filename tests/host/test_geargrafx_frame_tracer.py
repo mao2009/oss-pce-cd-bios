@@ -354,6 +354,23 @@ class DualRunCorrelationTests(unittest.TestCase):
         ok, _ = tracer.compare_runs(self._states({1}), scsi, self._states({1}), scsi_b, self.FRAMES)
         self.assertFalse(ok)
 
+    def test_control_report_names_first_mismatch_and_blocks_on_failed_runs(self):
+        scsi = [_scsi_row(f) for f in range(1, self.FRAMES + 1)]
+        runs = {
+            "A1": {"status": None, "exit_code": 0, "elapsed_s": 1.0, "stdout": _stdout("full", self._states({1}), scsi)},
+            "A2": {"status": None, "exit_code": 0, "elapsed_s": 1.0, "stdout": _stdout("full", self._states({1}), scsi)},
+            "B1": {"status": None, "exit_code": 0, "elapsed_s": 1.0, "stdout": _stdout("scsi", self._states({1}), scsi)},
+            "B2": {"status": None, "exit_code": 0, "elapsed_s": 1.0,
+                   "stdout": _stdout("scsi", self._states({1}, pc=0x200), scsi)},
+        }
+        report = tracer.control_experiment_report(runs, self.FRAMES)
+        self.assertEqual(report["status"], "DIAGNOSTIC")
+        self.assertEqual(report["pairs"]["A1_vs_A2"], "MATCH")
+        self.assertEqual(report["pairs"]["B1_vs_B2"]["frame"], 1)
+        self.assertIn("field pc run A=256 run B=512", report["pairs"]["B1_vs_B2"]["difference"])
+        runs["B2"]["exit_code"] = 1
+        self.assertEqual(tracer.control_experiment_report(runs, self.FRAMES)["status"], "BLOCKED")
+
     def test_state_mismatch_reports_first_differing_field_and_both_values(self):
         scsi = [_scsi_row(f) for f in range(1, self.FRAMES + 1)]
         ok, reason = tracer.compare_runs(self._states({1}), _index(scsi), self._states({1}, pc=0x200),
