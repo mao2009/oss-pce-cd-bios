@@ -445,9 +445,11 @@ int main(int argc, char** argv) {
     }
     for (unsigned index = 0; index != ring.size(); ++index)
         print_event(ring.at(index));
+    // A discontinuous frame lost an unknown number of core entries that trace_events_dropped cannot
+    // count, so it also sets overflow: an unknown loss is never presented as no loss.
     std::printf("END {\"frames\":%ld,\"events\":%u,\"dropped\":%u,\"trace_events_dropped\":%llu,\"overflow\":%s", frames,
                 ring.size(), ring.dropped(), (unsigned long long)dropped_trace,
-                (ring.dropped() || dropped_trace) ? "true" : "false");
+                (ring.dropped() || dropped_trace || core_account.discontinuous_frames()) ? "true" : "false");
     // Every output-ring push, counted independently so the reader can check pushed == events + dropped.
     std::printf(",\"pushed\":%llu", ring.pushed());
     // Core-buffer fields.  core_capacity is the core's configured buffer size (TraceLogger::GetCapacity),

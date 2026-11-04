@@ -423,9 +423,14 @@ def parse_records(stdout, require_ram_observation=True):
         raise ValueError("RAM regions emitted while RAM observation is disabled")
     if len(events) > capacity or end.get("events") != len(events):
         raise ValueError("ring event count mismatch")
+    # PR-B: a discontinuous core-trace frame lost an unknown number of entries, so it must also be
+    # reported as overflow (trace_events_dropped counts only the losses that are known exactly).
+    core = end.get("core_trace")
+    discontinuous = type(core) is dict and type(core.get("discontinuity_frames")) is int and \
+        core["discontinuity_frames"] > 0
     if (type(end.get("dropped")) is not int or end["dropped"] < 0 or
             type(end.get("trace_events_dropped")) is not int or end["trace_events_dropped"] < 0 or
-            end.get("overflow") is not (end["dropped"] > 0 or end["trace_events_dropped"] > 0)):
+            end.get("overflow") is not (end["dropped"] > 0 or end["trace_events_dropped"] > 0 or discontinuous)):
         raise ValueError("invalid overflow accounting")
     # Output ring: the independent push counter must equal retained + dropped, and a ring
     # that dropped anything must be full.  Otherwise the dropped count is not trusted.

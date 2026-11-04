@@ -517,7 +517,10 @@ class CoreTraceAccountingTests(unittest.TestCase):
     def test_discontinuous_counters_keep_quantities_not_measured(self):
         broken = self.changed(self.BASE, frames_accounted=1, discontinuity_frames=1, logged_accounted=40,
                               consumed=40, total_logged=5, sequence_delta=999)
-        table = table_of(output([event()], core_trace=broken))
+        table = table_of(output([event()], core_trace=broken, overflow=True))
+        # An unknown loss is never presented as no loss: without overflow the output is rejected.
+        with self.assertRaisesRegex(ValueError, "invalid overflow accounting"):
+            tracer.parse_records(output([event()], core_trace=broken, overflow=False))
         for name in tracer.CORE_TRACE_MEASURED:
             self.assertEqual(table[name]["status"], tracer.NOT_MEASURED, name)
             self.assertNotIn("value", table[name])
@@ -620,7 +623,8 @@ class CoreTraceAccountingTests(unittest.TestCase):
             encoding="utf-8")
         for needle in ("trace->GetSequence()", "trace->GetCount()", "core_account.account(",
                        "FrameTracerCoreAccount::valid_start(core_start)", "if (!core_frame.continuous)",
-                       "++consumed_trace;", "trace->SetCapacity((u32)requested_core_capacity)"):
+                       "++consumed_trace;", "trace->SetCapacity((u32)requested_core_capacity)",
+                       "(ring.dropped() || dropped_trace || core_account.discontinuous_frames())"):
             self.assertIn(needle, source)
         # Both guest-state comparisons are real (not short-circuited) and each is counted.
         for label in ("before_setup", "before_trace"):
