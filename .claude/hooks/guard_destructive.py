@@ -38,7 +38,9 @@ GIT_OPT_ARG = {"-c", "--git-dir", "--work-tree", "--namespace"}
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
 PS_HOSTS = {"powershell", "pwsh"}
 PS_RM = {"remove-item", "ri", "del", "erase"}
-CD_NAMES = {"cd", "chdir", "set-location", "sl"}
+CD_NAMES = {"cd", "chdir", "set-location", "sl", "pushd", "popd", "push-location", "pop-location"}
+# Inside .git or .claude only these run uninspected; anything else (interpreters, awk, perl, ...) is denied.
+READ_ONLY_IN_GUARDED = {"ls", "cat", "head", "tail", "grep", "stat", "pwd", "echo", "wc", "git"}
 # Always denied: destructive by nature, or cannot be inspected.
 ALWAYS_DENY = {"unlink", "shred", "rmdir", "rd", "dd", "mkfs", "truncate", "wipefs",
                "srm", "cmd", "cmd.exe"}
@@ -562,9 +564,17 @@ def git_rule(args, ctx):
     # Aliases are not resolved: an alias set on the command line could hide a subcommand.
     if any("alias." in a.casefold() for a in args[:i]):
         raise Deny("git-alias", "git alias set on the command line is denied")
+    if guarded_name(ctx.cwd):
+        raise Deny("git-guarded-dir", "git run from inside .git or .claude (cwd or -C) is denied")
     if i >= len(args):
         return
     sub, rest = args[i], args[i + 1:]
+    # Subcommands that write .git metadata (config can set hooks/include paths; refs move HEAD and branches).
+    if sub == "config" and not any(a in ("--get", "--get-all", "--get-regexp", "--list", "-l", "--show-origin")
+                                   for a in rest):
+        raise Deny("git-config-write", "git config write is denied")
+    if sub == "update-ref" or (sub == "symbolic-ref" and sum(1 for a in rest if not a.startswith("-")) > 1):
+        raise Deny("git-ref-write", "git ref write is denied")
     if sub == "clean" and any(short_has(a, "f") or a == "--force" for a in rest):
         raise Deny("git-clean", "git clean with force is denied")
     if sub == "reset" and any(a in ("--hard", "--merge") for a in rest):
@@ -731,6 +741,8 @@ def analyze_argv(words, ctx, ps, depth):
             continue
         break
     args = words[1:]
+    if guarded_name(ctx.cwd) and name not in CD_NAMES and name not in READ_ONLY_IN_GUARDED:
+        raise Deny("claude-write", "commands run from inside .git or .claude are not inspected; denied")
     if name in EVAL_LIKE and any(SUBST in a for a in args):
         raise Deny("substitution", "command substitution passed to a shell, eval or source is not inspected")
     if name in WRITE_NAMES or (name == "sed" and any(

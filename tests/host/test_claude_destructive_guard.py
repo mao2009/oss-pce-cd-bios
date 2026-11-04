@@ -683,9 +683,19 @@ class ProtectedPathTests(unittest.TestCase):
                     "echo x > .git.",
                     "echo x > .git ",
                     "echo x > GIT~1/config",
-                    "echo x > CLAUDE~1/settings.json"]:
+                    "echo x > CLAUDE~1/settings.json",
+                    "pushd " + os.path.join(self.repo, ".git") + " && echo x > config",
+                    "cd " + os.path.join(self.repo, ".git") + " && perl -pi -e s/a/b/ config",
+                    "cd " + os.path.join(self.repo, ".git") + " && awk 'BEGIN{print 1 > \"config\"}'",
+                    "git config core.hooksPath x",
+                    "git update-ref refs/heads/x HEAD",
+                    "git symbolic-ref HEAD refs/heads/x",
+                    "git -C " + os.path.join(self.repo, ".git") + " status"]:
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd, repo_root=self.repo), "DENY")
+        for cmd in ["git config --get core.hooksPath", "git status", "git symbolic-ref HEAD"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, repo_root=self.repo), "ALLOW")
         self.assertEqual(verdict("echo x > .gitignore-note", repo_root=self.repo), "ALLOW")
         self.assertEqual(verdict("echo x > docs/.gitkeep", repo_root=self.repo), "ALLOW")
 
