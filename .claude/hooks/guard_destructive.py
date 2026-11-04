@@ -630,30 +630,40 @@ def find_rule(args, ps, ctx, depth):
             analyze_argv(args[i + 1:j], ctx, ps, depth + 1)
 
 
-def python_in_command_position(words):
-    """True if the command that runs is python. Keywords, assignments, wrapper names and their options and numbers are
-    skipped, as the guard's own dispatch does. A python word that is only an argument (echo python3, grep python) does
-    not count: it is a string, not a python process. Words come from words_of, so quotes and backslashes are removed."""
+NON_EXEC_COMMANDS = frozenset({
+    "echo", "printf", "grep", "egrep", "fgrep", "rg", "cat", "ls", "pwd", "cd", "head", "tail", "wc", "sort",
+    "uniq", "cut", "tr", "which", "type", "test", "true", "false", "diff", "file", "stat", "du", "df", "basename",
+    "dirname", "realpath", "date", "touch", "mkdir"})
+
+
+def _cmd_name(word):
+    n = posixpath.basename(word.replace("\\", "/")).lower()
+    return n[:-4] if n.endswith(".exe") else n
+
+
+def python_position_args(words):
+    """The arguments of the python process this segment runs, or None if python does not run here.
+
+    The command word is the first word after keywords and assignments. A known non-executing command (echo, grep,
+    printf, ...) runs no python. Any other command may be a wrapper, known or not (nice, taskset -c 0, uv run,
+    busybox, ...): then python is the first later word whose name is python, so no prefix hides it. Words come from
+    words_of, so quotes and backslashes are already removed."""
     i = 0
-    while i < len(words):
-        w = words[i]
-        if w in KEYWORDS or ASSIGN.match(w) or w.startswith("-") or re.fullmatch(r"\d+(\.\d+)?[smhd]?", w):
-            i += 1
-            continue
-        n = posixpath.basename(w.replace("\\", "/")).lower()
-        if n.endswith(".exe"):
-            n = n[:-4]
-        if n in WRAPPERS:
-            i += 1
-            continue
-        return re.fullmatch(r"python[0-9.]*|py", n) is not None
-    return False
+    while i < len(words) and (words[i] in KEYWORDS or ASSIGN.match(words[i])):
+        i += 1
+    if i >= len(words) or _cmd_name(words[i]) in NON_EXEC_COMMANDS:
+        return None
+    for j in range(i, len(words)):
+        if re.fullmatch(r"python[0-9.]*|py", _cmd_name(words[j])):
+            return words[j + 1:]
+    return None
 
 
 # Bash expands or splits on these when they are unquoted. Inside double quotes only $, backtick and backslash are
-# special. Single quotes are fully literal. Redirections (< >) do not change argv; their targets are checked by the
-# redirect rules. A process substitution or command substitution changes argv, so it is refused (see SUBST below).
-UNQUOTED_SPECIAL = frozenset("$`{}*?[]~\\()|&;#!")
+# special. Single quotes are fully literal. A process or command substitution changes argv (SUBST, below).
+# Input redirection (<) and here-strings give python code over stdin, so < is special. Output redirection (>) does
+# not change argv or code; its target is checked by the redirect rules, so > is not special.
+UNQUOTED_SPECIAL = frozenset("$`{}*?[]~\\()|&;#!<")
 DQUOTED_SPECIAL = frozenset("$`\\")
 
 
@@ -836,8 +846,12 @@ def analyze_text(text, ctx, ps, depth):
     segs, subs, redirs = split_segments(text, ps)
     # A python command whose argv is not certain (unquoted or double-quoted expansion characters) is refused.
     for seg in segs:
-        if python_in_command_position(words_of(seg, ps)) and not python_word_certainty(seg):
-            raise Deny("unexpanded", "python command whose argv depends on shell expansion is not inspected")
+        pargs = python_position_args(words_of(seg, ps))
+        if pargs is not None:
+            if not python_word_certainty(seg):
+                raise Deny("unexpanded", "python command whose argv depends on shell expansion is not inspected")
+            # The python arguments are judged here too, so a wrapper that dispatch does not know cannot hide -c code.
+            python_rule(pargs)
     for body in subs:
         analyze_text(body, ctx.copy(), ps, depth + 1)
     for seg, ops in zip(segs, redirs):

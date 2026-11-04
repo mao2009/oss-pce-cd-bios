@@ -984,6 +984,33 @@ class PythonCommandPositionTests(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(self._d(cmd)[0], "DENY")
 
+    def test_unknown_or_option_taking_wrappers_do_not_hide_python(self):
+        for cmd in ["taskset -c 0 python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "chrt 10 python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "timeout -s KILL 5 python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "sudo -u root python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "env -u HOME python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "xargs -I {} python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "exec -a x python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "uv run python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "busybox python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "flock /tmp/l python3 {-c,}\"open('/tmp/zz','w').close()\""]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._d(cmd)[0], "DENY")
+
+    def test_python_code_behind_an_unknown_wrapper_is_checked(self):
+        # Dispatch does not reach python_rule through taskset or exec -a. The code is still judged here.
+        for cmd in ["taskset -c 0 python3 -c 'open(\"/tmp/zz\",\"w\").close()'",
+                    "exec -a x python3 -c 'open(\"/tmp/zz\",\"w\").close()'",
+                    "uv run python3 -c 'import os; os.remove(\"x\")'"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._d(cmd)[0], "DENY")
+
+    def test_stdin_code_and_here_strings_are_refused(self):
+        for cmd in ["python3 < x.py", "python3 <<< \"open('/tmp/zz','w').close()\""]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._d(cmd)[0], "DENY")
+
     def test_ordinary_python_runs_are_allowed(self):
         for cmd in ["python3 -c 'print(1)'", "python3 -m unittest discover -s tests/host -v",
                     "nice python3 scripts/check-links.py"]:
@@ -997,7 +1024,7 @@ class PythonArgvMutationTests(unittest.TestCase):
 
     MUTANTS = {
         "certainty check removed": (
-            "if python_in_command_position(words_of(seg, ps)) and not python_word_certainty(seg):",
+            "if not python_word_certainty(seg):",
             "if False:"),
         "attached code ignored (next argument only)": (
             "codes.append(rest if rest else (args[i + 1] if i + 1 < len(args) else \"\"))",
