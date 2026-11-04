@@ -127,6 +127,9 @@ def strip_redirections(words):
     while i < len(words):
         w = words[i]
         if w.startswith(REDIR_MARK):
+            if i + 1 < len(words) and words[i + 1].startswith(REDIR_MARK):
+                # An operator whose target is another operator (> 2>x) has no target: a syntax error in the shell.
+                raise Deny("redirect", "redirection with no target is not inspected")
             i += 2 if i + 1 < len(words) else 1
             continue
         out.append(w)

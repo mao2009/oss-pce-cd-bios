@@ -1029,6 +1029,12 @@ class LauncherClassTests(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd), "ALLOW")
 
+    def test_operator_with_an_operator_as_its_target_is_denied(self):
+        for cmd, tool in [("> 2>x rm -rf /", "Bash"), ("&> 2>x rm -rf /", "Bash"), ("echo a; > 2>x rm -rf /", "Bash"),
+                          ("> 2>x Remove-Item -Recurse -Force /", "PowerShell")]:
+            with self.subTest(cmd=cmd, tool=tool):
+                self.assertEqual(verdict(cmd, tool=tool), "DENY")
+
     def test_glued_digit_after_a_brace_or_comma_is_an_fd_number(self):
         for cmd, tool in [("ForEach-Object {2>x Remove-Item -Recurse -Force /}", "PowerShell"),
                           ("1,2>x Remove-Item -Recurse -Force /", "PowerShell"),
@@ -1173,7 +1179,13 @@ class LauncherMutationTests(unittest.TestCase):
         "redirection operator not marked": ('            if c == ">":\n                rd.append(_redir_target(text, j))\n            cur.append(" " + REDIR_MARK + text[start:j] + " ")',
                                             '            if c == ">":\n                rd.append(_redir_target(text, j))\n            cur.append(text[start:j])'),
         "glued fd digits not taken into the operator": ('                del cur[-k:]', '                pass'),
-        "glued fd digit only at the start of the text": ('(i - k == 0 or text[i - k - 1] in " \\t\\n;&|(){},")',
+        "operator target that is an operator not denied": ('    if i + 1 < len(words) and words[i + 1].startswith(REDIR_MARK):',
+                                                           '    if False:'),
+        "glued fd digit after a brace not taken": ('(i - k == 0 or text[i - k - 1] in " \\t\\n;&|(){},")',
+                                                   '(i - k == 0 or text[i - k - 1] in " \\t\\n;&|(),")'),
+        "glued fd digit after a comma not taken": ('(i - k == 0 or text[i - k - 1] in " \\t\\n;&|(){},")',
+                                                   '(i - k == 0 or text[i - k - 1] in " \\t\\n;&|(){}")'),
+        "glued fd digit only at the start of the text":('(i - k == 0 or text[i - k - 1] in " \\t\\n;&|(){},")',
                                                          '(i - k == 0 or text[i - k - 1] in "")'),
         "ampersand-greater marker branch removed": ('        if quote is None and c == "&" and i + 1 < n and text[i + 1] == ">":',
                                                     '        if False:'),
