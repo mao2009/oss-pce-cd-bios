@@ -115,7 +115,20 @@ def handoff(name):
 ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
 # A word that starts with a redirection (>out, 2>/dev/null, &>x, <in) and the bare operator forms (>, 2>, >>, <).
 REDIR_WORD = re.compile(r"^\d*(?:[<>]|&>)")
-REDIR_OP = re.compile(r"^\d*(?:>>?|<|&>>?)$")
+REDIR_OP = re.compile(r"^\d*(?:>>?\||>>?|>&|<{1,3}|<>|<&|&>>?)$")
+
+
+def strip_redirections(words):
+    """Remove redirection words from argv everywhere: a redirection never changes argv. A bare operator also takes
+    the next word as its target. Targets are checked by the redirect rules, not here."""
+    out, i = [], 0
+    while i < len(words):
+        if REDIR_WORD.match(words[i]):
+            i += 2 if REDIR_OP.fullmatch(words[i]) and i + 1 < len(words) else 1
+            continue
+        out.append(words[i])
+        i += 1
+    return out
 MNT = re.compile(r"^/mnt/([A-Za-z])(/.*)?$")
 MSYS = re.compile(r"^/([A-Za-z])(/.*)?$")  # Git Bash drive form: /c/Users/... is C:/Users/...
 # Generic roots only. The home directory is derived at run time (home_roots); owner-specific roots come
@@ -546,6 +559,12 @@ def split_segments(text, ps=False):
             cur.append(c)
             i += 1
             continue
+        if quote is None and ((c == "&" and ((i and text[i - 1] in "<>") or (i + 1 < n and text[i + 1] == ">")))
+                              or (c == "|" and i and text[i - 1] == ">")):
+            # &, | inside a redirection operator (>&, &>, <&, >|) are part of the operator, not a separator.
+            cur.append(c)
+            i += 1
+            continue
         if ps and c == "&" and quote is None:
             # PowerShell call operator (& "x", & $cmd); && is a chain, not a call.
             prev = text[i - 1] if i else ""
@@ -811,6 +830,7 @@ def unwrap(name, args):
 def analyze_argv(words, ctx, ps, depth):
     if depth > MAX_DEPTH:
         raise Deny("depth", "command nesting too deep")
+    words = strip_redirections(words)
     while True:
         # PowerShell has no environment prefix: "a=Remove-Item" (a hashtable entry) is name=value, and its value runs.
         while words and (words[0] in KEYWORDS or (ASSIGN.match(words[0]) and not ps)):
@@ -819,11 +839,6 @@ def analyze_argv(words, ctx, ps, depth):
         if not words:
             return
         w0 = words[0]
-        if REDIR_WORD.match(w0):
-            # A redirection before the command word does not change argv (>out rm -rf /): skip it and, when it is a
-            # bare operator, its separate target. The targets themselves are checked by the redirect rules.
-            words = words[2:] if REDIR_OP.fullmatch(w0) and len(words) > 1 else words[1:]
-            continue
         if ps and len(words) > 1 and words[1].startswith("="):
             # PowerShell "name =value": the value after "=" is the command position.
             value = words[1][1:]

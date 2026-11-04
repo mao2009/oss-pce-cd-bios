@@ -1008,6 +1008,18 @@ class LauncherClassTests(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
 
+    def test_redirections_anywhere_in_a_command_do_not_hide_it(self):
+        for cmd in ["2>&1 rm -rf /", "1>&2 rm -rf /", ">&2 rm -rf /", ">| out rm -rf /", "&> out rm -rf /",
+                    "<<< x rm -rf /", "sudo >x -u root rm -rf /", "env >x -i rm -rf /", "nice >x -n 5 rm -rf /",
+                    "timeout >x 5 rm -rf /", "timeout 2>/dev/null 5 rm -rf /", "sudo 2>&1 -u root rm -rf /"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+        for cmd in ["echo hi 2>&1", "ls 2>&1 | head -n 5", "make test 2>&1 | tail -n 3", "echo a && echo b",
+                    "echo hi >&2", "echo a >out", "timeout 5 echo hi 2>&1"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "ALLOW")
+        self.assertEqual(verdict("2>&1 Remove-Item -Recurse -Force /", tool="PowerShell"), "DENY")
+
     def test_powershell_name_value_after_a_comma_is_checked(self):
         for cmd in ["@{k=1, a=Remove-Item -Recurse -Force /}", "@{k = 1, a=Remove-Item -Recurse -Force /}",
                     "@{a = 1, b = Remove-Item -Recurse -Force /}", "@(1, a=Remove-Item -Recurse -Force /)",
@@ -1134,7 +1146,9 @@ class LauncherMutationTests(unittest.TestCase):
         "start-threadjob alias removed": ('"sajb", "start-threadjob", ', '"sajb", '),
         "brace and comma split applied to Bash too": ('(ps and c in "{},")', '(c in "{},")'),
         "PowerShell comma split removed": ('(ps and c in "{},")', '(ps and c in "{}")'),
-        "redirect before the command word not skipped": ('        if REDIR_WORD.match(w0):', '        if False:'),
+        "redirections not stripped from argv": ('    words = strip_redirections(words)', '    pass'),
+        "fd-dup and clobber operators split as separators": ('        if quote is None and ((c == "&" and',
+                                                              '        if False and ((c == "&" and'),
         "coproc handling removed": ('        if w0.lower() == "coproc":', '        if False:'),
         "PowerShell scriptblock braces not split": ('        if c in ";&|()\\n" or (ps and c in "{},"):', '        if c in ";&|()\\n":'),
         "coproc NAME reading removed": ('            if len(rest) >= 2:', '            if False:'),
