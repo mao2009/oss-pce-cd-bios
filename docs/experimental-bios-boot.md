@@ -29,6 +29,6 @@ The integration command builds the pinned Geargrafx diagnostic frontend and gene
 
 - single data track (LBA 0) and mixed audio + pregap media with a dynamic, non-LBA-5 INDEX 01 selection: the reset-vector boot path by label order and PC, SP at halt, a clean load/execute result block, the selected 2048-byte sector, the payload copy at `$3000`, the handoff marker, and exactly one READ(6) of the selected LBA;
 - host refusal of an audio-only CUE;
-- guest refusal of a host-valid image with one record field corrupted (magic, version, kind, track 0, track 100, LBA above 21 bits, and kind with an audio-only medium mounted): each halts at `experimental_bios_selection_halt` with no SCSI command/data phase.
+- guest refusal of a host-valid image with one record field corrupted (magic, version, format, kind, track 0, track 100, LBA above 21 bits, and kind with an audio-only medium mounted): each halts at `experimental_bios_selection_halt` with no SCSI command/data phase.
 
 It writes `build/<mode>/experimental-bios-boot/experimental-track-contract-evidence.json`. A successful result is **synthetic-disc real-core diagnostic evidence only**; it is not System Card BIOS API execution or a game boot result. Missing pinned tools/core is `FAIL/BLOCKED`, not PASS.

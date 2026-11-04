@@ -37,8 +37,10 @@ SECTOR_BYTES = 2048
 SENTINEL = 0x5A
 MARKER = (0xA5, 0x5A, 0xF8, 0xFF, 0x3C)
 CYCLES = ["cold", "warm"]
-# First-arrival order of the boot path; every label here has its own PC in this image.
-BOOT_ORDER = ("experimental_bios_reset", "experimental_bios_init", "cd_set_read_lba", "cd_entry_selected",
+# First-arrival order of the boot path; every label here has its own PC in this image.  It starts at init:
+# the probe executes the reset vector's one-byte SEI (experimental_bios_reset) before its first label check,
+# as for dev_boot_entry in geargrafx_dev_boot_internal.py; the builder pins that reset -> SEI -> init layout.
+BOOT_ORDER = ("experimental_bios_init", "cd_set_read_lba", "cd_entry_selected",
               "cd_buffer_ready", "cd_data_done", "payload_entry", "payload_done", "cd_payload_return", "cd_halt_ok")
 # Labels a rejected selection must never reach: nothing past the guest's record validation.
 NOT_AFTER_REJECT = ("cd_set_read_lba", "cd_entry", "cd_entry_selected", "cd_buffer_ready", "cd_data_done",
@@ -47,6 +49,7 @@ NOT_AFTER_REJECT = ("cd_set_read_lba", "cd_entry", "cd_entry_selected", "cd_buff
 GUEST_NEGATIVES = (
     ("magic", 0, ord("Y")),
     ("version", 4, 2),
+    ("format", 5, 2),
     ("kind_zero", 6, 0),
     ("track_zero", 7, 0),
     ("track_100", 7, 100),
