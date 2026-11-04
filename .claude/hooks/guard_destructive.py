@@ -630,13 +630,28 @@ def find_rule(args, ps, ctx, depth):
             analyze_argv(args[i + 1:j], ctx, ps, depth + 1)
 
 
-def python_rule(args):
+def python_c_codes(args):
+    """Every code string of a python -c option. In a short-option bundle, -c takes the rest of the bundle as its
+    code ("-copen(...)", "-Icopen(...)"); only an empty rest takes the next argument. -W, -X and -m take the rest of
+    the bundle as a value, so a "c" after them is not -c."""
+    codes = []
     for i, a in enumerate(args):
-        if short_has(a, "c"):
-            code = args[i + 1] if i + 1 < len(args) else ""
-            if DANGER_PY.search(code):
-                raise Deny("python-c", "python -c with a file or process operation")
-            return
+        if a.startswith("-") and not a.startswith("--"):
+            flags = a[1:]
+            for j, ch in enumerate(flags):
+                if ch == "c":
+                    rest = flags[j + 1:]
+                    codes.append(rest if rest else (args[i + 1] if i + 1 < len(args) else ""))
+                    break
+                if ch in "WXm":
+                    break
+    return codes
+
+
+def python_rule(args):
+    for code in python_c_codes(args):
+        if DANGER_PY.search(code):
+            raise Deny("python-c", "python -c with a file or process operation")
 
 
 def shell_rule(args, ctx, depth):

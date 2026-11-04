@@ -827,6 +827,92 @@ class MutationDetectionTests(unittest.TestCase):
                 self.assertTrue(detected, "mutant not detected by a symlink test: " + name + "\n" + "\n".join(failing))
 
 
+class PythonCAttachedTests(unittest.TestCase):
+    """python -c with the code attached to the option ("-copen(...)", "-Icopen(...)") is judged like the separate form.
+    Every -c is checked. -W, -X and -m take the rest of their bundle as a value, so a "c" after them is not -c.
+    Decision-level only: nothing is executed. Host-independent."""
+
+    def _verdict(self, cmd):
+        return verdict(cmd)
+
+    def test_attached_write_forms_are_denied(self):
+        # Quoted forms are the executable ones. Unquoted parentheses are a shell syntax error (bash -n), not a bypass.
+        cmds = ["python3 '-copen(\"x\",\"w\").close()'",
+                "python3 -c\"import os; os.remove('x')\"",
+                "python3 -c'open(\"x\",\"w\").close()'",
+                "python3 '-Icopen(\"x\",\"w\").close()'",
+                "python3 -uc\"import os; os.remove('x')\"",
+                "python3 -c'import os; os.remove(\"x\")'"]
+        for cmd in cmds:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._verdict(cmd), "DENY")
+
+    def test_attached_read_free_code_is_allowed(self):
+        for cmd in ["python3 -cprint(1)", "python3 -I -cprint(1)", "python3 -Wignore -cprint(1)"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._verdict(cmd), "ALLOW")
+
+    def test_w_x_m_bundles_do_not_hide_a_code_argument(self):
+        # Python takes the rest of -W/-X/-m as a value: no code is executed, so these are not -c.
+        for cmd in ["python3 -Wcopen('x','w')", "python3 -mcopen"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._verdict(cmd), "ALLOW")
+
+    def test_two_c_options_check_every_code(self):
+        self.assertEqual(self._verdict("python3 -c 'print(1)' -c 'import os; os.remove(1)'"), "DENY")
+        self.assertEqual(self._verdict("python3 -cprint(1) -cprint(2)"), "ALLOW")
+
+    def test_separate_forms_are_still_denied(self):
+        for cmd in ["python3 -c \"open('x','w').close()\"", "python3 -c \"import os; os.remove('x')\""]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._verdict(cmd), "DENY")
+
+
+class PythonCAttachedMutationTests(unittest.TestCase):
+    """Two mutants of the -c option parser. Each must make a named PythonCAttachedTests method fail (an assertion
+    failure, not an import error). Runs in a temporary copy on every host; no symlink, so it runs on Windows too."""
+
+    MUTANTS = {
+        "attached code ignored (next argument only)": (
+            "codes.append(rest if rest else (args[i + 1] if i + 1 < len(args) else \"\"))",
+            "codes.append(args[i + 1] if i + 1 < len(args) else \"\")"),
+        "only the first -c is checked": (
+            "    for code in python_c_codes(args):",
+            "    for code in python_c_codes(args)[:1]:"),
+    }
+    DETECTING = ["test_attached_write_forms_are_denied", "test_two_c_options_check_every_code"]
+
+    def _run(self, hook_text):
+        with tempfile.TemporaryDirectory() as td:
+            root = os.path.realpath(td)
+            hooks = os.path.join(root, ".claude", "hooks")
+            host = os.path.join(root, "tests", "host")
+            os.makedirs(hooks)
+            os.makedirs(host)
+            write_text(os.path.join(hooks, "guard_destructive.py"), hook_text)
+            with open(THIS_FILE, encoding="utf-8") as f:
+                write_text(os.path.join(host, "test_claude_destructive_guard.py"), f.read())
+            names = ["test_claude_destructive_guard.PythonCAttachedTests"]
+            proc = subprocess.run([sys.executable, "-m", "unittest", "-v"] + names, cwd=host,
+                                  capture_output=True, text=True, timeout=300)
+            return proc.returncode, proc.stderr
+
+    def test_c_option_mutants_are_detected(self):
+        with open(HOOK, encoding="utf-8") as f:
+            original = f.read()
+        code, out = self._run(original)
+        self.assertEqual(code, 0, "unmutated copy must pass PythonCAttachedTests:\n" + out[-800:])
+        for name, (old, new) in self.MUTANTS.items():
+            with self.subTest(mutant=name):
+                self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
+                code, out = self._run(original.replace(old, new))
+                failing = [re.match(r"(?:FAIL|ERROR): (\S+) \(", ln) for ln in out.splitlines()
+                           if ln.startswith(("FAIL:", "ERROR:"))]
+                names = [m.group(1) for m in failing if m]
+                detected = any(n in self.DETECTING for n in names)
+                self.assertTrue(detected, "mutant not detected by a PythonCAttachedTests assertion: " + name)
+
+
 CHILD = r"""
 import importlib.util, json, sys, time
 spec = importlib.util.spec_from_file_location("g", sys.argv[1])
