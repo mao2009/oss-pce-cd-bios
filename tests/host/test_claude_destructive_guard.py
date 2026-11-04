@@ -502,6 +502,10 @@ class ProtectedRootTests(unittest.TestCase):
                     "git worktree remove /a/../mnt/c/users"]:
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd, repo_root=self.repo), "DENY")
+        # Excess ".." above a drive root must keep the drive letter (regression of the previous fix).
+        for cmd in ["rm C:/../README.md", "rm C:\\..\\README.md"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, repo_root=self.repo), "DENY")
 
     def test_normal_operations_allowed(self):
         for cmd in ["rm " + os.path.join(self.repo, "file.txt"), "git status",

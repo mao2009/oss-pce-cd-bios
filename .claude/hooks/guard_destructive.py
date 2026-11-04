@@ -89,8 +89,10 @@ class Ctx:
 def canon(path):
     """Canonical absolute form: forward slashes, /mnt/c and c:/ both -> C:/."""
     p = path.replace("\\", "/")
-    # Normalise ".." before the drive mapping: /a/../home must become /home, not A:/home.
-    p = posixpath.normpath(p)
+    # Linux alias forms (/a/..., /mnt/c/...): normalise ".." before the drive mapping, so /a/../home becomes
+    # /home, not A:/home. Drive-letter inputs are not normalised here, so C:/../x keeps its drive.
+    if MNT.match(p) or MSYS.match(p):
+        p = posixpath.normpath(p)
     m = MNT.match(p) or MSYS.match(p)
     if m:
         p = m.group(1).upper() + ":" + (m.group(2) or "/")
