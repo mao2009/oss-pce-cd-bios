@@ -498,7 +498,11 @@ class ProtectedRootTests(unittest.TestCase):
     def test_dotdot_aliases_of_protected_roots_denied(self):
         # Registered alias spellings: the ".." must be normalised before the MSYS drive mapping.
         self._registry(self.repo, {"/a/..", "/a/../home", "/a/../mnt/c/users"})
-        for cmd in ["git worktree remove /a/..", "git worktree remove /a/../home",
+        self._registry(self.repo, {"/abc/../mnt/c/users", "/home/../mnt/c/users", "/tmp/../mnt/c/users",
+                                   "/abc/../c/users/prague", "/a/..", "/a/../home", "/a/../mnt/c/users"})
+        for cmd in ["git worktree remove /abc/../mnt/c/users", "git worktree remove /home/../mnt/c/users",
+                    "git worktree remove /tmp/../mnt/c/users", "git worktree remove /abc/../c/users/prague",
+                    "git worktree remove /a/..", "git worktree remove /a/../home",
                     "git worktree remove /a/../mnt/c/users"]:
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd, repo_root=self.repo), "DENY")
