@@ -835,6 +835,20 @@ class PythonArgvCertaintyTests(unittest.TestCase):
     def _v(self, cmd):
         return verdict(cmd)
 
+    def test_wrapper_and_prefix_forms_are_judged_like_the_plain_form(self):
+        # A python command after a wrapper, an assignment or a path is judged on certainty too.
+        for cmd in ["nice python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "FOO=1 python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "/usr/bin/python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "env -i python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "time python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "command python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "timeout 5 python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "nice python3 -c open*"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._v(cmd), "DENY")
+        self.assertEqual(self._v("nice python3 -m unittest discover -s tests/host -v"), "ALLOW")
+
     def test_known_bypasses_are_denied(self):
         cmds = [
             "python3 '-copen(\"/tmp/zz\",\"w\").close()'",         # attached -c, quoted
@@ -922,7 +936,7 @@ class PythonArgvMutationTests(unittest.TestCase):
 
     MUTANTS = {
         "certainty check removed": (
-            "if PY_START.match(seg) and not python_word_certainty(seg):",
+            "if PY_START.search(seg) and not python_word_certainty(seg):",
             "if False:"),
         "attached code ignored (next argument only)": (
             "codes.append(rest if rest else (args[i + 1] if i + 1 < len(args) else \"\"))",

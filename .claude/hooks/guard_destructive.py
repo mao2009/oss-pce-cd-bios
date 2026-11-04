@@ -630,7 +630,9 @@ def find_rule(args, ps, ctx, depth):
             analyze_argv(args[i + 1:j], ctx, ps, depth + 1)
 
 
-PY_START = re.compile(r"\s*(?:sudo\s+|env\s+(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*)?(?:python[0-9.]*|py)(?=\s|$)")
+# A python command word anywhere in the segment: after a wrapper (nice, time, timeout 5, command, env -i), an
+# assignment (FOO=1), or a path (/usr/bin/python3). Any such segment is judged on certainty, not only the first word.
+PY_START = re.compile(r"(?:^|[\s;&|(/])(?:python[0-9.]*|py)(?=\s|$)")
 # Bash expands or splits on these when they are unquoted. Inside double quotes only $, backtick and backslash are
 # special. Single quotes are fully literal.
 UNQUOTED_SPECIAL = frozenset("$`{}*?[]~\\()<>|&;#!")
@@ -812,7 +814,7 @@ def analyze_text(text, ctx, ps, depth):
     segs, subs, redirs = split_segments(text, ps)
     # A python command whose argv is not certain (unquoted or double-quoted expansion characters) is refused.
     for seg in segs:
-        if PY_START.match(seg) and not python_word_certainty(seg):
+        if PY_START.search(seg) and not python_word_certainty(seg):
             raise Deny("unexpanded", "python command whose argv depends on shell expansion is not inspected")
     for body in subs:
         analyze_text(body, ctx.copy(), ps, depth + 1)
