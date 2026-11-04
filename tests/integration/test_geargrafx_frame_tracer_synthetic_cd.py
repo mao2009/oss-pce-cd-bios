@@ -62,7 +62,7 @@ class FrameTracerSyntheticCdRealCoreTests(unittest.TestCase):
         rows = {row["region"]: row for row in summary["ram_deltas"]}
         # The synthetic read changes WRAM and has observed SCSI-frame correlation.
         self.assertGreater(rows["wram"]["updates"], 0)
-        self.assertEqual(rows["wram"]["scsi_correlation"], "OBSERVED")
+        self.assertEqual(rows["wram"]["scsi_correlation"], "OBSERVED", result.get("scsi_correlation_basis"))
         self.assertTrue(rows["wram"]["scsi_update_frames"])
         # These mapped core regions are present but unchanged in this diagnostic.
         for region in ("cdrom_ram", "card_ram"):

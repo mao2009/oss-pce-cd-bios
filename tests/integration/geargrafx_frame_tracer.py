@@ -464,8 +464,18 @@ def compare_and_correlate(stdout_a, stdout_b, end, frames):
         for row in end.get("ram_deltas", []):
             row["scsi_correlation"], row["scsi_update_frames"] = "UNKNOWN", []
         comparable, reason = False, f"correlation rejected: {error}"
+    # Diagnostic display of existing evidence only: nothing above reads these fields.
+    evidence = {}
+    if states_a is not None and scsi_b is not None:
+        for row in end.get("ram_deltas", []):
+            region = row.get("region")
+            changed = [f for f in range(1, frames + 1) if states_a[f]["ram_changed"].get(region, 0)]
+            evidence[region] = {"changed_count": len(changed), "changed_frames": changed[:20],
+                                "run_b_incomplete_on_changed": [f for f in changed if scsi_b[f]["incomplete"]][:20],
+                                "run_b_scsi_events_on_changed": [f for f in changed if scsi_b[f]["events"]][:20]}
     return {"status": "PASS" if comparable else "UNKNOWN", "reason": reason, "frames": frames,
-            "run_a": "full (CPU+SCSI+RAM)", "run_b": "scsi-only (SCSI notification, CPU trace disabled)"}
+            "run_a": "full (CPU+SCSI+RAM)", "run_b": "scsi-only (SCSI notification, CPU trace disabled)",
+            "diagnostic_evidence": evidence}
 
 
 def trace(args):
