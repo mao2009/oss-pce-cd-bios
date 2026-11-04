@@ -630,9 +630,17 @@ def find_rule(args, ps, ctx, depth):
             analyze_argv(args[i + 1:j], ctx, ps, depth + 1)
 
 
-# A python command word anywhere in the segment: after a wrapper (nice, time, timeout 5, command, env -i), an
-# assignment (FOO=1), or a path (/usr/bin/python3). Any such segment is judged on certainty, not only the first word.
-PY_START = re.compile(r"(?:^|[\s;&|(/])(?:python[0-9.]*|py)(?=\s|$)")
+def python_word_in(words):
+    """True if a word of the segment, normalised as the guard dispatches it, is a python command: quotes and
+    backslashes are already removed in words, a path is reduced to its basename, and a .exe suffix is dropped.
+    Any position counts (after a wrapper, an assignment, or a path), so no prefix can hide the command."""
+    for w in words:
+        n = posixpath.basename(w.replace("\\", "/")).lower()
+        if n.endswith(".exe"):
+            n = n[:-4]
+        if re.fullmatch(r"python[0-9.]*|py", n):
+            return True
+    return False
 # Bash expands or splits on these when they are unquoted. Inside double quotes only $, backtick and backslash are
 # special. Single quotes are fully literal.
 UNQUOTED_SPECIAL = frozenset("$`{}*?[]~\\()<>|&;#!")
@@ -814,7 +822,7 @@ def analyze_text(text, ctx, ps, depth):
     segs, subs, redirs = split_segments(text, ps)
     # A python command whose argv is not certain (unquoted or double-quoted expansion characters) is refused.
     for seg in segs:
-        if PY_START.search(seg) and not python_word_certainty(seg):
+        if python_word_in(words_of(seg, ps)) and not python_word_certainty(seg):
             raise Deny("unexpanded", "python command whose argv depends on shell expansion is not inspected")
     for body in subs:
         analyze_text(body, ctx.copy(), ps, depth + 1)

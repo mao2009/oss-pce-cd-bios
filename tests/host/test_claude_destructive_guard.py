@@ -844,7 +844,17 @@ class PythonArgvCertaintyTests(unittest.TestCase):
                     "time python3 {-c,}\"open('/tmp/zz','w').close()\"",
                     "command python3 {-c,}\"open('/tmp/zz','w').close()\"",
                     "timeout 5 python3 {-c,}\"open('/tmp/zz','w').close()\"",
-                    "nice python3 -c open*"]:
+                    "nice python3 -c open*",
+                    # The command word itself spelled differently: quoted, escaped, or with .exe.
+                    "\"python3\" {-c,}\"open('/tmp/zz','w').close()\"",
+                    "'python3' {-c,}\"open('/tmp/zz','w').close()\"",
+                    "\\python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "p\"y\"thon3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "python.exe {-c,}\"open('/tmp/zz','w').close()\"",
+                    "python3.exe {-c,}\"open('/tmp/zz','w').close()\"",
+                    "py.exe {-c,}\"open('/tmp/zz','w').close()\"",
+                    "\"/usr/bin/python3\" {-c,}\"open('/tmp/zz','w').close()\"",
+                    "/usr/bin/python3.exe {-c,}\"open('/tmp/zz','w').close()\""]:
             with self.subTest(cmd=cmd):
                 self.assertEqual(self._v(cmd), "DENY")
         self.assertEqual(self._v("nice python3 -m unittest discover -s tests/host -v"), "ALLOW")
@@ -936,7 +946,7 @@ class PythonArgvMutationTests(unittest.TestCase):
 
     MUTANTS = {
         "certainty check removed": (
-            "if PY_START.search(seg) and not python_word_certainty(seg):",
+            "if python_word_in(words_of(seg, ps)) and not python_word_certainty(seg):",
             "if False:"),
         "attached code ignored (next argument only)": (
             "codes.append(rest if rest else (args[i + 1] if i + 1 < len(args) else \"\"))",
