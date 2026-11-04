@@ -499,17 +499,32 @@ class ProtectedRootTests(unittest.TestCase):
         # Registered alias spellings: the ".." must be normalised before the MSYS drive mapping.
         self._registry(self.repo, {"/a/..", "/a/../home", "/a/../mnt/c/users"})
         self._registry(self.repo, {"/abc/../mnt/c/users", "/home/../mnt/c/users", "/tmp/../mnt/c/users",
-                                   "/abc/../c/users/prague", "/a/..", "/a/../home", "/a/../mnt/c/users"})
+                                   "/a/..", "/a/../home", "/a/../mnt/c/users"})
         for cmd in ["git worktree remove /abc/../mnt/c/users", "git worktree remove /home/../mnt/c/users",
-                    "git worktree remove /tmp/../mnt/c/users", "git worktree remove /abc/../c/users/prague",
+                    "git worktree remove /tmp/../mnt/c/users",
                     "git worktree remove /a/..", "git worktree remove /a/../home",
                     "git worktree remove /a/../mnt/c/users"]:
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd, repo_root=self.repo), "DENY")
+        # Host-independent normalisation check: the alias and its plain form canonicalise to the same key.
+        # No protected-set membership or existing path is assumed (see test_protected_home_and_its_aliases).
+        self.assertEqual(guard.canon("/abc/../c/users/prague"), guard.canon("/c/users/prague"))
+        self.assertEqual(guard.canon("/a/../home"), guard.canon("/home"))
         # Excess ".." above a drive root must keep the drive letter (regression of the previous fix).
         for cmd in ["rm C:/../README.md", "rm C:\\..\\README.md"]:
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd, repo_root=self.repo), "DENY")
+
+    def test_protected_home_and_its_aliases(self):
+        # The temporary HOME is the protected root here. Its own path and ".." aliases of it must be refused,
+        # wherever the temporary directory is (the test does not depend on the host's real home).
+        aliases = [self.home,
+                   os.path.join(self.home, "..", os.path.basename(self.home)),
+                   os.path.join(self.tmp, "home", ".", "synthetic-owner")]
+        self._registry(self.repo, set(aliases))
+        for cmd_path in aliases:
+            with self.subTest(path=cmd_path):
+                self.assertEqual(verdict("git worktree remove " + cmd_path, repo_root=self.repo), "DENY")
 
     def test_normal_operations_allowed(self):
         for cmd in ["rm " + os.path.join(self.repo, "file.txt"), "git status",
