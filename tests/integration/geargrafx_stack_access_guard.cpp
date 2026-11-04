@@ -230,9 +230,12 @@ bool route_for(const std::string& name, Route* r)
         r->code = {0x53, 0x02, bra, self}; r->irr = 0x02; r->vector_lo = 0x1FF8; r->p = 0x00;
         r->loops = {kHandler};
     }
-    else if (name == "tstart" || name == "tend" || name == "tin" || name == "tia" || name == "tdd" || name == "tai") {
+    else if (name == "tstart" || name == "tend" || name == "tin" || name == "tia" || name == "tdd" || name == "tai" ||
+             name == "tendtin" || name == "tendtia" || name == "tendtdd" || name == "tendtai") {
         // TransferStart/TransferEnd through each block transfer opcode (all share OPCodes_TransferStart/End).
-        u8 op = name == "tin" ? 0xD3 : name == "tia" ? 0xE3 : name == "tdd" ? 0xC3 : name == "tai" ? 0xF3 : 0x73;
+        // tend<op>: the same transfer with the harness MPR1 change before the TransferEnd step.
+        std::string base = name.compare(0, 4, "tend") == 0 && name.size() > 4 ? name.substr(4) : name;
+        u8 op = base == "tin" ? 0xD3 : base == "tia" ? 0xE3 : base == "tdd" ? 0xC3 : base == "tai" ? 0xF3 : 0x73;
         r->code = {op, (u8)(kSrc & 0xFF), (u8)(kSrc >> 8), (u8)(kDst & 0xFF), (u8)(kDst >> 8), 0x01, 0x00,
                    bra, self};
         r->a = 0x12;
@@ -288,6 +291,7 @@ int main(int argc, char** argv)
     else if (variant == "mut-ignore") mutation = 4;
     else if (variant == "mut-nostop") mutation = 5;
     else if (variant == "mut-aignore") mutation = 6;
+    else if (variant == "mut-alate") mutation = 7;
     else return 2;
     Route route;
     if (!route_for(route_name, &route))
@@ -328,7 +332,8 @@ int main(int argc, char** argv)
     for (int i = 2; i <= 7; ++i)
         memory->SetMpr(i, 0x00);
     // Routes whose stack page changes during the run start from the allowed WRAM bank.
-    bool changes_later = route_name == "irqtam" || route_name == "tend" || route_name == "flippha" ||
+    bool is_tend = route_name.compare(0, 4, "tend") == 0;
+    bool changes_later = route_name == "irqtam" || is_tend || route_name == "flippha" ||
                          route_name == "tamjsr";
     memory->SetMpr(1, (u8)(io_stack && !changes_later ? bank : 0xF8));
 
@@ -365,7 +370,7 @@ int main(int argc, char** argv)
     *g_vdc->SR = (u16)route.status;
     *g_vdc->AR = (u8)route.ar;
 
-    g_flip_tend = route_name == "tend" && io_stack;
+    g_flip_tend = is_tend && io_stack;
     g_flip_at = route_name == "flippha" && io_stack ? 2 : 0;   // before the PHA (instruction 2)
     gg_verify_stack_mutation = mutation;
     gg_verify_stack_refused = false;

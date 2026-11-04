@@ -7,10 +7,14 @@ hook of patches/geargrafx-b49ae82-stack-access-guard.patch (gg_verify_pre_instru
 nothing is fetched or changed, the debugger run loop is asked to stop, and the probe never resumes).
 The I/O observer of the same patch records every CPU access of the hardware page in order.
 
-This closes the S2 measurement gaps listed in docs/498-mpr1-tam-irq-measurement.md (PR #517 review MAJOR:
-only the TAM path was measured): harness direct SetMpr at instruction 0 and mid-run, JSR (the CASE_IO
-shape) and PHA, the five block transfer opcodes, VDC reads, any hardware page access (not only VDC value
-changes), same-value writes, non-WRAM stack banks, and the order/addresses of the IRQ-in-TAM pushes.
+This measures the S2 paths that docs/498-mpr1-tam-irq-measurement.md listed as NOT_RUN (PR #517 review
+MAJOR: only the TAM path was measured): harness direct SetMpr at instruction 0 and mid-run, a CASE_IO-like
+JSR (TAM to $FF then JSR; the #481 fixture itself is not reused) and PHA, the five block transfer opcodes
+(armed under A they are refused before decode, so the opcode itself runs only in the controls and in the
+mid-transfer cases tend / tendtin / tendtia / tendtdd / tendtai), VDC reads, any hardware page access (not
+only VDC value changes), same-value writes, non-WRAM stack banks ($80 established; $F7 refusal only), and the
+order/addresses of the IRQ-in-TAM pushes. The "irq" route under A refuses the CLI, so it does not exercise an
+IRQ entry; the IRQ entry under A is irqtam.
 
 Every armed run is judged on eight independent criteria (the stop is compared with the start of the
 refused instruction):
@@ -51,38 +55,58 @@ BLOCK_OPS = ("tstart", "tin", "tia", "tdd", "tai")
 
 # allowed: stop state of the positive run (MPR1 = $F8 throughout).
 # unguarded: ordered hardware page accesses with a null guard (stack page = $FF).
+MID_TRANSFER = ("tend", "tendtin", "tendtia", "tendtdd", "tendtai")   # MPR1 set before the TransferEnd step
 ALLOWED = {
     **{r: dict(pc=G.ROUTES[r]["allowed"]["pc"], s=G.ROUTES[r]["allowed"]["s"], window=G.ROUTES[r]["allowed"]["window"])
        for r in G.ROUTES},
     **{op: dict(pc=0x1E07, s=0x04, window=[0, 0, 0x34, 0x12, 0x07]) for op in ("tin", "tia", "tdd", "tai")},
+    **{op: dict(pc=0x1E07, s=0x04, window=[0, 0, 0x34, 0x12, 0x07]) for op in MID_TRANSFER[1:]},
     "flippha": dict(pc=0x1E02, s=0x03, window=[0, 0, 0, 0, 0x5A]),
     "tamjsr": dict(pc=0x1E10, s=0x02, window=[0, 0, 0, 0x04, 0x1E]),
 }
 UNGUARDED_IO = {
     **{r: G.ROUTES[r]["io"] for r in G.ROUTES},
     **{op: TRANSFER_IO for op in ("tin", "tia", "tdd", "tai")},
+    **{op: POP_IO for op in MID_TRANSFER[1:]},
     "flippha": [(W, 0x2104)],
     "tamjsr": [(W, 0x2104), (W, 0x2103)],
 }
 ROUTES = tuple(ALLOWED)
+# What a row does and does not exercise (printed with the results).
+NOTES = {
+    "irq": "method A refuses the CLI at instruction 1, so no IRQ is taken; IRQ-entry behaviour under A is shown "
+           "only by irqtam",
+    **{op: "armed under A: refused before the opcode is fetched (opcode not exercised); the opcode runs in the "
+           "allowed/unguarded controls and in tend" + op for op in ("tin", "tia", "tdd", "tai")},
+    "tstart": "armed under A: refused before the opcode is fetched; the mid-transfer case is tend",
+    "tamjsr": "CASE_IO-like (TAM to $FF then JSR); the #481 CASE_IO fixture itself is not reused",
+}
 
 # Method A, armed (stack page $FF): expected verdict, failing criteria, refused instruction (index, PC).
 # Index counts RunInstruction calls from 1. A block transfer is 3 calls: TransferStart, 1 byte, TransferEnd.
 EXPECT_A = {r: dict(verdict=SAFE, failing=set(), index=1, pc=G.GUEST) for r in ROUTES}
 EXPECT_A["flippha"] = dict(verdict=SAFE, failing=set(), index=2, pc=0x1E01)      # direct SetMpr before the PHA
 EXPECT_A["tamjsr"] = dict(verdict=SAFE, failing=set(), index=2, pc=0x1E02)       # TAM ran; JSR refused
-EXPECT_A["tend"] = dict(verdict=BLOCKED, failing={"resume_safe"}, index=3, pc=G.GUEST, transfer_state=1,
-                        legit_stack_bytes=3, dst=0x5A)                           # stop inside the block transfer
+for _route in MID_TRANSFER:                                                      # stop inside the block transfer
+    EXPECT_A[_route] = dict(verdict=BLOCKED, failing={"resume_safe"}, index=3, pc=G.GUEST, transfer_state=1,
+                            legit_stack_bytes=3, dst=0x5A)
 EXPECT_A["irqtam"] = dict(verdict=UNSAFE, failing={"io_prevented", "resume_safe"}, index=2, pc=H,
                           io=PUSH_IO)    # the IRQ pushes of the TAM's own RunInstruction land; then refused
 # Non-WRAM stack banks (S1 #497: refused). $80 = CD-ROM RAM, $F7 = backup RAM.
 BANK_ROUTES = ("pha", "jsr")
 BANK_VARIANTS = {"ram": "cdram_bytes_changed", "bram": "bram_bytes_changed"}
 UNGUARDED_RAM_BYTES = {"pha": 1, "jsr": 2}   # CD-ROM RAM bytes written by the pushes without a guard
-MUTANTS = {"mut-aignore": ("pha", "jsr", "tstart")}   # the pre-instruction refusal is ignored
+# Real-core mutants of the refusal point: mutant -> (routes, expected verdict, criterion that must fail).
+MUTANTS = {
+    "mut-aignore": (("pha", "jsr", "tstart"), UNSAFE, "io_prevented"),    # refusal ignored: instruction runs
+    "mut-alate": (("pha", "jsr", "tstart"), BLOCKED, "pc_preserved"),     # refusal after the opcode fetch
+}
 
 
-def _snapshot_fields(row):
+def _snapshot_fields(row, case=None):
+    """Row integrity (not evidence): shape, the requested mode, and I/O counters matching the event log."""
+    if case is not None and row.get("mode") != case:
+        raise ValueError(f"{case}: measured wrong mode {row.get('mode')!r}")
     for name in ("start", "stop", "refusal_instruction_start"):
         G._snapshot(row, name)
     for name in ("io_reads", "io_writes", "instructions_after_refusal", "stack_bytes_changed",
@@ -90,18 +114,31 @@ def _snapshot_fields(row):
         G._int(row, name)
     for name in ("ar", "r0", "r1", "r7", "sr", "read_buffer"):
         G._pair(row, name)
+    dst = row.get("dst")
+    if type(dst) is not list or len(dst) != 2 or not all(type(v) is int for v in dst):
+        raise ValueError(f"{case}: malformed dst")
+    if row.get("events_truncated") is False and len(G.io_accesses(row)) != row["io_reads"] + row["io_writes"]:
+        raise ValueError(f"{case}: I/O counters do not match the event log")
 
 
-def criteria(row, legit_stack_bytes=0):
-    """The eight criteria of an armed run, from observations only (configuration fields are not read)."""
+def criteria(row, legit_stack_bytes=0, legit_dst=False):
+    """The eight criteria of an armed run, from observations only (configuration fields are not read).
+
+    Reference points: criteria 3-7 compare the stop with the start of the refused instruction; the IRR part
+    of criterion 6 compares the run start with the run end. On an UNSAFE row (criterion 1 or 2 failed) the
+    other criteria are informational: e.g. for IRQ-in-TAM under A the refused instruction is the handler's
+    first one, which starts after the IRQ entry already set I.
+    """
     _snapshot_fields(row)
     first, stop = row["refusal_instruction_start"], row["stop"]
     io = row["io_reads"] + row["io_writes"]
     vdc_same = all(G._pair(row, n)[0] == G._pair(row, n)[1] for n in ("ar", "r0", "r1", "r7", "sr", "read_buffer"))
     result = {
         "io_prevented": io == 0 and vdc_same,
+        # RAM: the three stack banks and the block transfer destination (legitimate only where expected).
         "ram_prevented": row["cdram_bytes_changed"] == 0 and row["bram_bytes_changed"] == 0
-                         and row["stack_bytes_changed"] == legit_stack_bytes,
+                         and row["stack_bytes_changed"] == legit_stack_bytes
+                         and (legit_dst or row["dst"][0] == row["dst"][1]),
         "registers_preserved": all(first[k] == stop[k] for k in ("a", "x", "y")),
         "pc_preserved": first["pc"] == stop["pc"],
         "s_p_mpr_preserved": first["s"] == stop["s"] and first["p"] == stop["p"] and first["mpr"] == stop["mpr"],
@@ -110,14 +147,14 @@ def criteria(row, legit_stack_bytes=0):
     }
     # Resuming is never done; this judges whether the stop would be an exact point to resume from: no side
     # effect at all, nothing changed, outside a block transfer, and nothing ran after the refusal.
-    result["resume_safe"] = (row.get("refused") is True and row.get("halted") is True
-                             and row["instructions_after_refusal"] == 0 and stop["transfer_state"] == 0
-                             and all(result[k] for k in CRITERIA[:7]))
+    # (instructions_after_refusal is the evidence that nothing ran; "halted" only restates the probe latch.)
+    result["resume_safe"] = (row.get("refused") is True and row["instructions_after_refusal"] == 0
+                             and stop["transfer_state"] == 0 and all(result[k] for k in CRITERIA[:7]))
     return result
 
 
-def verdict(row, legit_stack_bytes=0):
-    c = criteria(row, legit_stack_bytes)
+def verdict(row, legit_stack_bytes=0, legit_dst=False):
+    c = criteria(row, legit_stack_bytes, legit_dst)
     if not (c["io_prevented"] and c["ram_prevented"]) or row["instructions_after_refusal"] != 0:
         return UNSAFE, c
     if row.get("refused") is not True:
@@ -126,7 +163,7 @@ def verdict(row, legit_stack_bytes=0):
 
 
 def check_allowed(row, case, route):
-    _snapshot_fields(row)
+    _snapshot_fields(row, case)
     want = ALLOWED[route]
     if row.get("exit", 0) != 0 or row.get("refused") is not False:
         raise ValueError(f"{case}: allowed run refused or failed ({row.get('exit')}, {row.get('refused')})")
@@ -141,7 +178,7 @@ def check_allowed(row, case, route):
 
 
 def check_unguarded(row, case, route):
-    _snapshot_fields(row)
+    _snapshot_fields(row, case)
     if row.get("exit", 0) != 0 or row.get("refused") is not False or row.get("guard_calls") != 0:
         raise ValueError(f"{case}: control consulted a guard or failed")
     if G.io_accesses(row) != UNGUARDED_IO[route]:
@@ -150,7 +187,7 @@ def check_unguarded(row, case, route):
 
 
 def check_unguarded_bank(row, case, route, bank):
-    _snapshot_fields(row)
+    _snapshot_fields(row, case)
     if row.get("exit", 0) != 0 or row.get("refused") is not False:
         raise ValueError(f"{case}: control refused or failed")
     if row["io_reads"] or row["io_writes"]:
@@ -160,22 +197,24 @@ def check_unguarded_bank(row, case, route, bank):
             raise ValueError(f"{case}: CD-ROM RAM bytes changed {row['cdram_bytes_changed']}, "
                              f"want {UNGUARDED_RAM_BYTES[route]}")
         return "cdrom_ram_written_without_guard"
-    # $F7: whether backup RAM accepts the write is not asserted (not established beforehand); reported only.
-    return f"backup_ram_present={row.get('bram_present')} bytes_changed={row['bram_bytes_changed']}"
+    # $F7: whether backup RAM accepts the write is NOT asserted (not established beforehand); reported only, so
+    # the $F7 rows show a refusal but no established forbidden-write evidence (unlike $80).
+    return f"NOT_ASSERTED backup_ram_present={row.get('bram_present')} bytes_changed={row['bram_bytes_changed']}"
 
 
 def check_armed(row, case, expect):
     """Verdict and criteria must equal the expectation; refusal must be method A's, at the expected point."""
     if row.get("exit", 0) != 0:
         raise ValueError(f"{case}: probe failed (exit {row.get('exit')})")
-    got, c = verdict(row, expect.get("legit_stack_bytes", 0))
+    _snapshot_fields(row, case)
+    got, c = verdict(row, expect.get("legit_stack_bytes", 0), "dst" in expect)
     failing = {k for k, ok in c.items() if not ok}
     if got != expect["verdict"] or failing != expect["failing"]:
         raise ValueError(f"{case}: verdict {got} failing {sorted(failing)}, want {expect['verdict']} "
                          f"{sorted(expect['failing'])}")
     refusal = row.get("refusal", {})
-    if refusal.get("kind") != "instruction":
-        raise ValueError(f"{case}: first refusal kind {refusal.get('kind')!r}, want 'instruction'")
+    if refusal.get("kind") != expect.get("kind", "instruction"):
+        raise ValueError(f"{case}: first refusal kind {refusal.get('kind')!r}, want {expect.get('kind', 'instruction')!r}")
     first = row["refusal_instruction_start"]
     if first["pc"] != expect["pc"] or first["transfer_state"] != expect.get("transfer_state", 0):
         raise ValueError(f"{case}: refused instruction at {first['pc']:#x} (transfer state {first['transfer_state']}), "
@@ -192,9 +231,15 @@ def check_armed(row, case, expect):
 def falsified(row):
     """Each criterion must be able to fail: falsified copies of a SAFE row must not stay SAFE."""
     first = row["refusal_instruction_start"]
+
+    def io(r, op):   # a consistent falsification: counter and event log together
+        r["events"] = list(r.get("events", [])) + [{"seq": 999, "kind": "io", "op": op, "address": 0x2104, "value": 0,
+                                                     "decision": -1, "latched": False, "mpr1": 0xFF, "instruction": 1}]
+        r["io_writes" if op == W else "io_reads"] += 1
+
     changes = {
-        "io_write": lambda r: r.update(io_writes=1),
-        "io_read": lambda r: r.update(io_reads=1),
+        "io_write": lambda r: io(r, W),
+        "io_read": lambda r: io(r, R),
         "vdc_status": lambda r: r["vdc"]["sr"].__setitem__(1, r["vdc"]["sr"][0] ^ 1),
         "cdram_write": lambda r: r.update(cdram_bytes_changed=1),
         "bram_write": lambda r: r.update(bram_bytes_changed=1),
@@ -210,7 +255,7 @@ def falsified(row):
         "i_flag": lambda r: r["stop"].__setitem__("p", first["p"] ^ 0x04),
         "transfer_state": lambda r: r["stop"].__setitem__("transfer_state", first["transfer_state"] + 1),
         "resumed": lambda r: r.update(instructions_after_refusal=1),
-        "not_halted": lambda r: r.update(halted=False),
+        "dst_write": lambda r: r["dst"].__setitem__(1, r["dst"][0] ^ 1),
         "no_refusal": lambda r: r.update(refused=False),
     }
     for name, change in changes.items():
@@ -228,7 +273,7 @@ def cases():
             for bank in BANK_VARIANTS:
                 yield f"{method}:{route}-armed{bank}"
                 yield f"{method}:{route}-unguarded{bank}"
-        for mutant, routes in MUTANTS.items():
+        for mutant, (routes, _, _) in MUTANTS.items():
             for route in routes:
                 yield f"{method}:{route}-{mutant}"
 
@@ -243,7 +288,8 @@ def evaluate(rows):
             got, failing = check_armed(rows[f"{base}-armed"], f"{base}-armed", EXPECT_A[route])
             table[(method, route)] = dict(verdict=got, failing=failing,
                                           criteria=criteria(rows[f"{base}-armed"],
-                                                            EXPECT_A[route].get("legit_stack_bytes", 0)),
+                                                            EXPECT_A[route].get("legit_stack_bytes", 0),
+                                                            "dst" in EXPECT_A[route]),
                                           io=G.io_accesses(rows[f"{base}-armed"]))
             control, _ = verdict(rows[f"{base}-unguarded"])
             if control != UNSAFE:
@@ -267,12 +313,14 @@ def evaluate(rows):
                 notes.append((f"{base}-unguarded{bank}",
                               check_unguarded_bank(rows[f"{base}-unguarded{bank}"], f"{base}-unguarded{bank}",
                                                    route, bank)))
-        for mutant, routes in MUTANTS.items():
+        for mutant, (routes, want, must_fail) in MUTANTS.items():
             for route in routes:
                 case = f"{method}:{route}-{mutant}"
-                v, _ = verdict(rows[case])
-                if v != UNSAFE:
-                    raise ValueError(f"mutation NOT detected: {case} judged {v}")
+                _snapshot_fields(rows[case], case)
+                v, c = verdict(rows[case])
+                if v != want or c[must_fail]:
+                    raise ValueError(f"mutation NOT detected as expected: {case} judged {v} "
+                                     f"({must_fail}={c[must_fail]}), want {want} with {must_fail} failing")
                 detections.append((case, mutant, v))
     return table, detections, notes
 
@@ -295,13 +343,16 @@ def main():
         print(f"NOTE {case}: {note}")
     for (method, route), result in table.items():
         flags = " ".join(f"{k}={'Y' if v else 'N'}" for k, v in result["criteria"].items())
-        print(f"ROUTE {method} {route}: {result['verdict']} {flags} io={result['io']}")
-    print(f"PASS issue-498 method A measurement: {len(rows)} real-core runs, {len(detections)} detections, "
+        note = NOTES.get(route) if "@" not in route else (
+            "refusal shown; a forbidden write to $F7 is not established" if route.endswith("@bram") else None)
+        print(f"ROUTE {method} {route}: {result['verdict']} {flags} io={result['io']}"
+              + (f" NOTE: {note}" if note else ""))
+    print(f"EXPECTATIONS_MET issue-498 method A measurement: {len(rows)} real-core runs, {len(detections)} detections, "
           f"expectations met (pinned core {G.PINNED_CORE_REVISION}, synthetic BIOS/CD, verification-only patch)")
     print("UNSAFE issue-498 method A: IRQ-in-TAM. The TAM's own RunInstruction takes the pending IRQ after MPR1 = $FF "
           "and its three entry pushes land on the hardware page ($2104, $2103, $2102 in that order) before the next "
           "instruction boundary. Method A alone does not close this hole.")
-    print("BLOCKED issue-498 method A: a mid-transfer direct SetMpr (tend) is refused before the TransferEnd step "
+    print("BLOCKED issue-498 method A: a mid-transfer direct SetMpr (tend, tendtin/tia/tdd/tai) is refused before the TransferEnd step "
           "without any side effect, but the stop is inside the block transfer (transfer state 1), so it is not a "
           "safe point to resume.")
     print("UNKNOWN (not covered): ST0/ST1/ST2 WriteFromCPU, device-originated writes, the libretro build, a new IRQ "

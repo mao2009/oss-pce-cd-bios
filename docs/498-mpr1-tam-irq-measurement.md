@@ -157,3 +157,25 @@ TOOLS_DIR=<tools> OSS_PCE_REQUIRE_CC65=1 python3 tests/integration/test_mpr1_tam
 ```
 
 （`make integration-test` でも実行される。コアかツールが無い場合は FAIL で、スキップしない。）
+
+## 追記：PR #645 による S2 経路の実測（上の表は #517 時点の記録として残す）
+
+PR #645（`tests/integration/geargrafx_stack_methods.py`、`make stack-methods`）は、上の「限界と未実施」と「#498 の未完了条件」で NOT_RUN または PARTIAL だった経路を、検証専用パッチを当てた pinned コアで測定する。
+
+測定の方式：
+- 方式 A は、命令の**実行前**に拒否する（`gg_verify_pre_instruction`）。#517 の、命令境界での判定やハーネスによる停止とは別の実装である。
+- 結果は 8 基準で判定する：I/O、RAM、A/X/Y、PC、S/P/MPR、IRQ、転送の内部状態、再開しても安全か。
+- 証拠の区分：REAL_CORE_EXECUTION、合成 BIOS・合成 CD、VERIFICATION_ONLY_PATCH。
+
+| 上の表の項目 | #645 での扱い |
+|---|---|
+| TII/TIN/TIA/TDD/TAI での $FF 書込み・読出し | Armed の場合、方式 A は命令を**デコードする前に**拒否するため、opcode そのものは実行されない（全 5 命令で SAFE_IN_SCOPE）。opcode が実行されるのは allowed / unguarded の対照と、転送途中の MPR1 変更（`tend`、`tendtin`、`tendtia`、`tendtdd`、`tendtai`）。後者はすべて BLOCKED（ブロック転送の内部で停止するため、再開しても安全な点ではない） |
+| JSR/PHA の $FF 書込み | 測定した（SAFE_IN_SCOPE）。JSR は、TAM で $FF にした直後に JSR を実行する **CASE_IO 型**の経路（`tamjsr`）でも測った。#481 の CASE_IO fixture そのものは再利用していない |
+| ハーネスによる直接 SetMpr（$FF、実行途中の命令番号） | 測定した（`flippha` は SAFE_IN_SCOPE、`tend*` は BLOCKED）。#497 の契約では、実行途中の直接設定は FAIL 扱いの負例である |
+| 値が変わらない書込み、VDC の読出し、VDC 以外の I/O | I/O ページへの CPU アクセスをすべて、アクセスの前に記録する（値の変化だけを見る方式ではない） |
+| IRQ-in-TAM の push の順序と番地 | 測定した：`$2104` → `$2103` → `$2102`。方式 A 単独の判定は UNSAFE |
+| リセット直後の MPR1 の初期値 | 対象外（#497 の契約で UNDETERMINED） |
+| TAM の命令中に新たに IRQ が assert される経路 | 対象外（プローブから命令の中へ介入できない） |
+| 独立レビュー | PR #645 で実施（結果は PR を参照） |
+
+ST0/ST1/ST2、デバイス起点の書込み、libretro ビルド、実機は対象外であり、UNKNOWN のまま。`#459` / `#367` のゲートは解除しない。
