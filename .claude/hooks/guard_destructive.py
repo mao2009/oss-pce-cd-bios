@@ -37,6 +37,19 @@ GIT_OPT_ARG = {"-c", "--git-dir", "--work-tree", "--namespace"}
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
 PS_HOSTS = {"powershell", "pwsh"}
 PS_RM = {"remove-item", "ri", "del", "erase"}
+# PowerShell cmdlets that start a process or a job from their arguments (their arguments are analysed as a command).
+PS_LAUNCH_NAMES = {"start-process", "start", "saps", "invoke-item", "ii", "invoke-command", "icm", "start-job",
+                   "sajb", "start-threadjob", "invoke-wmimethod", "invoke-cimmethod", "iwmi", "icim"}
+LAUNCHER_MAX_WORDS = 256
+# PowerShell process launchers whose argument expression is not inspected: a launcher with expression syntax
+# (comma arrays, parentheses, @(), scriptblocks, variables) is an execution form the guard cannot parse, so it is denied.
+PS_PROC_LAUNCH_RE = re.compile(
+    r"(?i)(?<![\w-])(start-process|start|saps|invoke-item|ii|invoke-wmimethod|invoke-cimmethod|iwmi|icim|"
+    r"invoke-command|icm|start-job|sajb|start-threadjob)(?![\w-])")
+EXPR_SYNTAX_RE = re.compile(r"[,()@{}$]")
+# PowerShell method call syntax (.Delete(), $x[0].Delete()). The "(" would split the call from its object, so the call
+# is refused on the raw text before any split. Property access ($_.Name) is not a call and is not refused.
+METHOD_CALL_RE = re.compile(r"(?i)\.\s*(?:\w+\s*\(|['\"(])|-m(?:e|em\w*)?\b")
 CD_NAMES = {"cd", "chdir", "set-location", "sl"}
 # Always denied: destructive by nature, or cannot be inspected.
 ALWAYS_DENY = {"unlink", "shred", "rmdir", "rd", "dd", "mkfs", "truncate", "wipefs",
@@ -55,7 +68,73 @@ WRITE_NAMES = {"tee", "cp", "mv", "install", "rsync", "touch", "mkdir", "ln", "c
 DANGER_PY = re.compile(r"rmtree|remove|unlink|rmdir|removedirs|system|subprocess|popen|"
                        r"shutil|spawn|exec|eval|__import__|open\s*\(|write|truncate|"
                        r"ctypes|socket", re.I)
-ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# X3a (Issue #639): launcher classification by command name. Names only. Option grammars (X3b), wrapper and
+# shell grammars (X3c) and interpreter or tool forms (X3d) are decided by their own units. A name in no class is
+# UNKNOWN (UNKNOWN_CHECKED: the existing rules apply). A launcher class is FORM_DEPENDENT: its status depends on
+# the form it is given, so the name alone never proves safety or danger.
+LAUNCH_TABLE = (
+    ("NONE", "echo printf cat ls pwd head tail wc uniq cut tr basename dirname realpath date stat du df "
+             "test true false which type grep egrep fgrep"),
+    ("FIXED_HELPER", "diff file"),
+    ("OPTION", "sort rg find tar rsync ssh scp sftp"),
+    ("GIT", "git"),
+    ("PKG", "npm npx yarn pnpm pip pip3 uv pipx"),
+    ("DANGEROUS", "rm"),
+)
+LAUNCH_CLASS = {name: cls for cls, names in LAUNCH_TABLE for name in names.split()}
+LAUNCH_CLASS.update({n: "CD" for n in CD_NAMES})
+LAUNCH_CLASS.update({n: "WRAPPER" for n in WRAPPERS})
+LAUNCH_CLASS.update({n: "SHELL" for n in SHELLS | PS_HOSTS | {"eval", "source", "."}})
+LAUNCH_CLASS.update({n: "INTERP" for n in INTERP})
+LAUNCH_CLASS.update({n: "DANGEROUS" for n in PS_RM | ALWAYS_DENY})
+
+
+def launch_class(name):
+    """Class of a normalised command name (basename, lowercase, no .exe)."""
+    if PY_NAME.match(name):
+        return "PY"
+    return LAUNCH_CLASS.get(name, "UNKNOWN")
+
+
+def name_status(name):
+    """Name-level status. UNKNOWN_EXECUTION is never given to a name: it comes from a form (X3b to X3d) or from
+    the fail-closed conditions of analyze_argv (function and coproc without a command)."""
+    cls = launch_class(name)
+    if cls == "DANGEROUS":
+        return "KNOWN_DANGEROUS"
+    if cls in ("NONE", "FIXED_HELPER", "CD"):
+        return "KNOWN_SAFE"
+    if cls == "UNKNOWN":
+        return "UNKNOWN_CHECKED"
+    return "FORM_DEPENDENT"
+
+
+def handoff(name):
+    """Boundary to X3c: a WRAPPER hands the rest of argv to unwrap(). Other classes do not hand off."""
+    return launch_class(name) == "WRAPPER"
+ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
+# A word that starts with a redirection (>out, 2>/dev/null, &>x, <in) and the bare operator forms (>, 2>, >>, <).
+# Marker for an unquoted redirection operator (see split_segments). Control characters are rejected on input, so a
+# \x01 never comes from the command text itself.
+REDIR_MARK = "\x01"
+
+
+def strip_redirections(words):
+    """Remove redirections from argv everywhere: a redirection never changes argv. A marked operator takes the next
+    word as its target; an fd number directly before a marked operator goes with it. Targets are checked by the
+    redirect rules (check_redirect), not here."""
+    out, i = [], 0
+    while i < len(words):
+        w = words[i]
+        if w.startswith(REDIR_MARK):
+            if i + 1 < len(words) and words[i + 1].startswith(REDIR_MARK):
+                # An operator whose target is another operator (> 2>x) has no target: a syntax error in the shell.
+                raise Deny("redirect", "redirection with no target is not inspected")
+            i += 2 if i + 1 < len(words) else 1
+            continue
+        out.append(w)
+        i += 1
+    return out
 MNT = re.compile(r"^/mnt/([A-Za-z])(/.*)?$")
 MSYS = re.compile(r"^/([A-Za-z])(/.*)?$")  # Git Bash drive form: /c/Users/... is C:/Users/...
 # Generic roots only. The home directory is derived at run time (home_roots); owner-specific roots come
@@ -314,7 +393,14 @@ def strip_quotes(tok):
 def words_of(seg, ps):
     try:
         if ps:
-            return [strip_quotes(t) for t in shlex.split(seg, posix=False)]
+            # PowerShell: the command name may be quoted in pieces ("Remove"-Item, r"m"). The first piece is one word
+            # with its quotes removed, so "C:\Program Files\x.exe" stays one word too.
+            m = re.match(r"""\s*((?:"[^"]*"|'[^']*'|[^\s"'])+)""", seg)
+            head = []
+            if m:
+                head = [m.group(1).replace('"', "").replace("'", "")]
+                seg = seg[m.end():]
+            return head + [strip_quotes(t) for t in shlex.split(seg, posix=False)]
         # Keep Windows-style backslashes literal (C:\x) instead of shell-escaping them.
         seg = re.sub(r"\\(?=[A-Za-z0-9.:_\-/])", r"\\\\", seg)
         return shlex.split(seg, posix=True)
@@ -474,10 +560,35 @@ def split_segments(text, ps=False):
             cur.append(c)
             i += 1
             continue
-        if c == ">":
-            rd.append(_redir_target(text, i + 1))
-            cur.append(c)
-            i += 1
+        if c in "<>":
+            # An unquoted redirection operator is marked and set off by spaces, so it is never glued to a word
+            # (rm>x is rm, >, x). A quoted '>' is an ordinary word and is not marked.
+            j = i
+            while j < n and text[j] == c:
+                j += 1
+            # The operator takes one more character when it is >& or <& (fd dup) or >| (clobber).
+            if j < n and text[j] in ("&|" if c == ">" else "&"):
+                j += 1
+            # A digit run glued to the operator in the source is its fd number (2>x). A spaced digit is an argument.
+            k = 0
+            while i - k - 1 >= 0 and text[i - k - 1].isdigit():
+                k += 1
+            start = i
+            if k and (i - k == 0 or text[i - k - 1] in " \t\n;&|(){},") and "".join(cur[-k:]) == text[i - k:i]:
+                del cur[-k:]
+                start = i - k
+            if c == ">":
+                rd.append(_redir_target(text, j))
+            cur.append(" " + REDIR_MARK + text[start:j] + " ")
+            i = j
+            continue
+        if quote is None and c == "&" and i + 1 < n and text[i + 1] == ">":
+            j = i + 1
+            while j < n and text[j] == ">":
+                j += 1
+            rd.append(_redir_target(text, j))
+            cur.append(" " + REDIR_MARK + text[i:j] + " ")
+            i = j
             continue
         if ps and c == "&" and quote is None:
             # PowerShell call operator (& "x", & $cmd); && is a chain, not a call.
@@ -489,7 +600,9 @@ def split_segments(text, ps=False):
                     k += 1
                 if k < n and text[k] in "\"'$":
                     raise Deny("powershell", "call operator with a string or variable is not inspected")
-        if c in ";&|()\n":
+        # PowerShell scriptblocks ({ ... }) are command bodies wherever they appear (try, ForEach-Object, Invoke-Command,
+        # Start-Job -ScriptBlock). Each block boundary starts a segment, so the commands inside are analysed.
+        if c in ";&|()\n" or (ps and c in "{},"):
             segs.append("".join(cur))
             redirs.append(rd)
             cur, rd = [], []
@@ -675,6 +788,52 @@ def claude_mention(args):
                or SUBST in a for a in args)
 
 
+# GNU timeout long options. getopt_long accepts any unambiguous prefix, so --kill, --sig and --s are valid.
+TIMEOUT_LONG = ("foreground", "kill-after", "preserve-status", "signal", "verbose", "help", "version")
+TIMEOUT_LONG_VALUE = {"kill-after", "signal"}
+
+
+def timeout_candidates(args):
+    """The command timeout runs: timeout [OPTION]... DURATION COMMAND [ARG]... GNU timeout stops option parsing at
+    the first non-option (the "+" getopt form), so options after DURATION belong to COMMAND. Options before it:
+    -k and -s (and --kill-after, --signal) take a value, separate or attached; other options are flags. Anything
+    the grammar does not cover is analysed conservatively: a non-numeric duration and an option-like command name
+    are also candidates, and so is every suffix of an option-like candidate."""
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            i += 1
+            break
+        if not (a.startswith("-") and len(a) > 1):
+            break
+        if a.startswith("--"):
+            # Long option: an exact name or an unambiguous prefix; only --kill-after and --signal take a value.
+            hits = [o for o in TIMEOUT_LONG if o.startswith(a[2:])] if "=" not in a else []
+            i += 2 if len(hits) == 1 and hits[0] in TIMEOUT_LONG_VALUE else 1
+        else:
+            # Short cluster: -k or -s takes the rest of the word as its value, or the next word if it is last.
+            takes_next = False
+            for j in range(1, len(a)):
+                if a[j] in "ks":
+                    takes_next = j == len(a) - 1
+                    break
+            i += 2 if takes_next else 1
+    if i >= len(args):
+        return []
+    cands = [args[i + 1:]]
+    if not re.match(r"^[0-9.]+[smhd]?$", args[i]):
+        # A non-numeric duration is an error in GNU timeout; the word is kept as a possible command (fail closed).
+        cands.append(args[i:])
+    out = []
+    for c in cands:
+        out.append(c)
+        if c and c[0].startswith("-"):
+            # An option-like word may be read as an option; its suffixes are kept too (fail closed).
+            out += [c[k:] for k in range(1, len(c))]
+    return out
+
+
 def unwrap(name, args):
     withargs = WRAPPER_ARGS.get(name, set())
     i = 0
@@ -690,37 +849,98 @@ def unwrap(name, args):
             i += 2 if a in withargs else 1
         else:
             break
-    if name == "timeout" and i < len(args):
-        i += 1
     return args[i:]
 
 
 def analyze_argv(words, ctx, ps, depth):
     if depth > MAX_DEPTH:
         raise Deny("depth", "command nesting too deep")
+    words = strip_redirections(words)
     while True:
-        while words and (words[0] in KEYWORDS or ASSIGN.match(words[0])):
+        # PowerShell has no environment prefix: "a=Remove-Item" (a hashtable entry) is name=value, and its value runs.
+        while words and (words[0] in KEYWORDS or (ASSIGN.match(words[0]) and not ps)):
             check_assign(words[0])
             words = words[1:]
         if not words:
             return
         w0 = words[0]
+        if ps and len(words) > 1 and words[1].startswith("="):
+            # PowerShell "name =value": the value after "=" is the command position.
+            value = words[1][1:]
+            words = ([value] if value else []) + words[2:]
+            continue
+        if ps and "=" in w0 and not w0.startswith("="):
+            # PowerShell name=value with no spaces, for any key ('my key'=, my-key=, a.b=): the value after the first "=" is
+            # the command position.
+            value = w0.split("=", 1)[1]
+            words = ([value] if value else []) + words[1:]
+            continue
+        if w0.lower() == "function":
+            # X3a: function NAME { body }. The body's commands are in command position, so the words after the
+            # name are analysed as ordinary words. A name fused with a brace or parenthesis (f{rm, f(), or no name
+            # at all) cannot be split reliably: fail closed.
+            if len(words) < 2 or any(ch in words[1] for ch in "{}()"):
+                raise Deny("function", "function keyword without a plain name is not resolvable")
+            words = words[2:]
+            continue
+        if w0.lower() == "coproc":
+            # X3a: coproc CMD ... or coproc NAME CMD ... Both readings are analysed, so the command is checked either way.
+            rest = words[1:]
+            if not rest:
+                raise Deny("coproc", "coproc without a command is not resolvable")
+            analyze_argv(rest, ctx.copy(), ps, depth + 1)
+            if len(rest) >= 2:
+                analyze_argv(rest[1:], ctx.copy(), ps, depth + 1)
+            return
         if SUBST in w0:
             raise Deny("command-word", "command substitution in command position")
+        if ps and len(words) == 1 and w0.startswith("$") and not any(ch in w0 for ch in "*?[]{}`~"):
+            # A lone PowerShell variable is an expression, not a command ($_.Name in a scriptblock body). A variable
+            # with arguments ($RM -rf dir) stays a command position and is refused below.
+            words = words[1:]
+            continue
         if w0 not in ("[", "[[") and any(ch in w0 for ch in "$*?[]{}`~"):
             raise Deny("command-word", "unexpanded word in command position")
         # A backslash before a plain character only quotes it: \rm is rm.
         w0 = re.sub(r"^\\+(?=[^\\/])", "", w0)
-        if "\\" in w0 and not re.match(r"^(?:[A-Za-z]:)?[\\/]", w0):
-            raise Deny("command-word", "backslash in command name")
+        # A backslash word that is not a drive path is read as POSIX: \/bin/s\h is /bin/sh. A backslash word with
+        # no "/" after unescaping (tools\rm, .\rm.exe, \\server\share) is refused: its name is not known.
+        if "\\" in w0 and not re.match(r"^[A-Za-z]:[\\/]", w0):
+            unescaped = re.sub(r"\\(.)", r"\1", w0, flags=re.S)
+            if "/" not in unescaped:
+                raise Deny("command-word", "backslash in command name")
+            w0 = unescaped
         name = posixpath.basename(w0.replace("\\", "/")).lower()
+        # Windows drops trailing dots and spaces from a file name (rm. and rm  are rm), so they are dropped here too.
+        name = name.rstrip(". ") or name
         if name.endswith(".exe"):
-            name = name[:-4]
-        if name in WRAPPERS:
+            name = name[:-4].rstrip(". ") or name[:-4]
+        if name == "timeout":
+            # timeout's option grammar (long options with a separate value, non-integer durations) is not parsed, so
+            # the command it runs is taken from its grammar (timeout_candidates), with conservative extra candidates.
+            for cand in timeout_candidates(words[1:]):
+                analyze_argv(cand, ctx.copy(), ps, depth + 1)
+            return
+        if handoff(name):
             words = unwrap(name, words[1:])
             continue
         break
     args = words[1:]
+    if ps and name in PS_LAUNCH_NAMES:
+        # A PowerShell process launcher runs its arguments as a command line, and its options (-FilePath, -ArgumentList)
+        # may come first, so every suffix of the arguments is analysed as a command line. Bounded: a longer argument
+        # list is denied.
+        # Re-split on whitespace: a quoted argument ('-c Remove-Item ...') is one word but several command words.
+        tokens = " ".join(args).split()
+        if len(tokens) > LAUNCHER_MAX_WORDS:
+            raise Deny("launcher", "launcher with too many arguments is not inspected")
+        # No candidate is skipped: a path split at its space ("Files\app.exe") is refused like any other command word,
+        # so a destructive command after a separator in the same token ("tools\app.exe;rm -rf /") is still analysed.
+        for k in range(len(tokens)):
+            analyze_text(" ".join(tokens[k:]), ctx.copy(), True, depth + 1)
+    if name in (".", "source") and any(("$" in a or "`" in a or SUBST in a) for a in args):
+        # Sourcing a path that names a variable (or a substitution) is a file that is not known here (fail closed).
+        raise Deny("unexpanded", "sourcing a variable or substitution is not inspected")
     if name in EVAL_LIKE and any(SUBST in a for a in args):
         raise Deny("substitution", "command substitution passed to a shell, eval or source is not inspected")
     if name in WRITE_NAMES or (name == "sed" and any(
@@ -760,6 +980,10 @@ def analyze_argv(words, ctx, ps, depth):
 def analyze_text(text, ctx, ps, depth):
     if depth > MAX_DEPTH:
         raise Deny("depth", "command nesting too deep")
+    if ps and METHOD_CALL_RE.search(text):
+        raise Deny("powershell", "PowerShell method call is not inspected")
+    if ps and PS_PROC_LAUNCH_RE.search(text) and EXPR_SYNTAX_RE.search(text):
+        raise Deny("launcher", "PowerShell process launcher with expression syntax is not inspected")
     segs, subs, redirs = split_segments(text, ps)
     for body in subs:
         analyze_text(body, ctx.copy(), ps, depth + 1)

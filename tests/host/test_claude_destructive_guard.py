@@ -769,6 +769,489 @@ class PlatformPathFormTests(unittest.TestCase):
                 self.assertTrue(reason.startswith("rm-unresolvable-dotdot"), reason)
 
 
+class LauncherClassTests(unittest.TestCase):
+    """Issue #639 X3a: command-position and launcher classification. Decision-level only; nothing is executed.
+    Option grammars (X3b), wrapper and shell grammars (X3c) and interpreter or tool forms (X3d) are not tested here."""
+
+    def test_launch_classes(self):
+        cases = {"echo": "NONE", "sort": "OPTION", "rg": "OPTION", "diff": "FIXED_HELPER", "cd": "CD",
+                 "env": "WRAPPER", "sh": "SHELL", "eval": "SHELL", "perl": "INTERP", "python3": "PY", "py": "PY",
+                 "git": "GIT", "npm": "PKG", "rm": "DANGEROUS", "remove-item": "DANGEROUS", "mytool": "UNKNOWN"}
+        for name, cls in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(guard.launch_class(name), cls)
+
+    def test_name_status(self):
+        cases = {"rm": "KNOWN_DANGEROUS", "echo": "KNOWN_SAFE", "diff": "KNOWN_SAFE", "cd": "KNOWN_SAFE",
+                 "mytool": "UNKNOWN_CHECKED", "sh": "FORM_DEPENDENT", "git": "FORM_DEPENDENT", "sort": "FORM_DEPENDENT"}
+        for name, status in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(guard.name_status(name), status)
+
+    def test_posix_escaped_absolute_paths_resolve_to_the_shell(self):
+        # Git Bash expansion (checked with printf): most of these words are /bin/sh; \\/bin/s\h and +/bin/s\h keep
+        # a leading backslash or a + and are not an exact /bin/sh. All are DENY: the guard fails closed on them.
+        for cmd in ["\\/bin/s\\h -c 'rm -rf /'", "\\\\/bin/s\\h -c 'rm -rf /'", "/bin/s\\h -c 'rm -rf /'",
+                    "\"/bin/s\"\\h -c 'rm -rf /'", "'/bin/s'\\h -c 'rm -rf /'", "/bin/\\s\\h -c 'rm -rf /'",
+                    "+/bin/s\\h -c 'rm -rf /'"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+
+    def test_backslash_name_without_a_path_is_refused(self):
+        for cmd in ["tools\\rm -rf /", ".\\rm.exe -rf /", "\\\\server\\share\\rm.exe -rf /"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
+
+    def test_fused_function_name_is_denied(self):
+        for cmd, tool in [("function f{rm -rf /}", "PowerShell"), ("function f{rm -rf /;}", "Bash"),
+                          ("function f(){ rm -rf /; }", "Bash"), ("function f\\{ rm -rf /; }", "Bash")]:
+            with self.subTest(cmd=cmd, tool=tool):
+                self.assertEqual(verdict(cmd, tool=tool), "DENY")
+
+    def test_escaped_parenthesis_fused_name_is_denied(self):
+        bs = chr(92)
+        self.assertEqual(verdict("function f" + bs + "(rm -rf /" + bs + ")"), "DENY")
+
+    def test_ordinary_function_definitions_are_allowed(self):
+        for cmd in ["function f { echo hi; }; f", "f() { echo hi; }; f"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "ALLOW")
+
+    def test_exec_doas_sudo_hand_off_to_the_wrapped_command(self):
+        for cmd in ["exec rm -rf /", "doas rm -rf /", "sudo rm -rf /", "exec sh -c 'rm -rf /'",
+                    "sudo sh -c 'rm -rf /'", "doas sh -c 'rm -rf /'"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+
+    def test_function_body_is_checked(self):
+        self.assertEqual(verdict("function f { rm -rf /; }; f"), "DENY")
+        self.assertEqual(verdict("function f { echo hi; }; f"), "ALLOW")
+
+    def test_function_without_a_name_is_denied(self):
+        self.assertEqual(verdict("function"), "DENY")
+
+    def test_coproc_command_is_checked_in_both_readings(self):
+        self.assertEqual(verdict("coproc rm -rf /"), "DENY")
+        self.assertEqual(verdict("coproc NAME rm -rf /"), "DENY")
+        self.assertEqual(verdict("coproc sleep 1"), "ALLOW")
+
+    def test_coproc_without_a_command_is_denied(self):
+        self.assertEqual(verdict("coproc"), "DENY")
+
+    def test_absolute_path_with_shell_escape_is_resolved_to_its_command(self):
+        self.assertEqual(verdict("/bin/s\\h -c 'rm -rf /'"), "DENY")
+
+    def test_wrapper_handoff_still_checks_the_wrapped_command(self):
+        # The expected wrapper list is written out here, not read from guard.WRAPPERS, so a removed entry is a failure.
+        expected = ["builtin", "command", "doas", "env", "exec", "ionice", "nice", "nohup", "setsid", "stdbuf",
+                    "sudo", "time", "timeout", "xargs"]
+        self.assertEqual(sorted(guard.WRAPPERS), expected)
+        # Every wrapper hands off: the destructive command and the shell form behind it are both DENY.
+        for wrapper in expected:
+            for cmd in [wrapper + " rm -rf /", wrapper + " sh -c 'rm -rf /'"]:
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(verdict(cmd), "DENY")
+        for cmd in ["nice -n 5 rm -rf /", "env -i rm -rf /"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+
+    def test_timeout_forms_are_checked(self):
+        for cmd in ["timeout rm -rf /", "timeout 5 rm -rf /", "timeout 5 -s KILL rm -rf /",
+                    "timeout -s KILL 5 rm -rf /", "timeout 5s sh -c 'rm -rf /'", "timeout -- 5 rm -rf /",
+                    "timeout --signal KILL 5 rm -rf /", "timeout --kill-after 5 5 rm -rf /",
+                    "timeout .5 rm -rf /", "timeout 1.5 rm -rf /", "timeout abc rm -rf /",
+                    "timeout --kill 1 5 rm -rf /", "timeout --sig KILL 5 rm -rf /", "timeout --s KILL 5 rm -rf /",
+                    "timeout -k5 rm -rf /", "timeout -s9 rm -rf /", "timeout 5 -- rm -rf /",
+                    "timeout -k 1 5 rm -rf /", "timeout -- -s rm -rf /", "timeout -- -k 5 rm -rf /"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+        self.assertEqual(verdict("timeout 5 echo hi"), "ALLOW")
+
+    def test_timeout_ordinary_arguments_are_not_read_as_commands(self):
+        for cmd in ["timeout 5 echo rm", "timeout 30 grep -rn rm docs", "timeout 5 rg -n sh src",
+                    "timeout 5 -- echo hi", "timeout -k 1 5 echo hi", "timeout --kill-after=1 5 echo hi",
+                    "timeout --foreground 5 echo hi", "timeout --kill 1 5 echo hi",
+                    "timeout --foreground 5 echo rm -rf /"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "ALLOW")
+
+    def test_powershell_scriptblocks_and_keywords_are_checked(self):
+        for cmd in ["FUNCTION f { Remove-Item -Recurse -Force / }; f", "try { Remove-Item -Recurse -Force / }",
+                    "Get-Item / | ForEach-Object { Remove-Item -Recurse -Force $_ }",
+                    "Invoke-Command { Remove-Item -Recurse -Force / }", "& { Remove-Item -Recurse -Force / }",
+                    "Start-Job -ScriptBlock { Remove-Item -Recurse -Force / }"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
+
+    def test_hashtable_values_and_launcher_arguments_are_checked(self):
+        for cmd in ["Write-Output @{ a = Remove-Item -Recurse -Force / }", "@{ a = Remove-Item -Recurse -Force / }",
+                    "Start-Process powershell -ArgumentList '-c Remove-Item -Recurse -Force /'"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
+        self.assertEqual(verdict("@{ a = 'x'; b = 1 }", tool="PowerShell"), "ALLOW")
+        self.assertEqual(verdict("Start-Process notepad file.txt", tool="PowerShell"), "ALLOW")
+
+    def test_launcher_options_first_and_no_space_hashtable_forms_are_checked(self):
+        for cmd in ["Start-Process -FilePath powershell -ArgumentList '-c Remove-Item -Recurse -Force /'",
+                    "Start-Process -FilePath rm -ArgumentList '-rf /'",
+                    "Start-Process -ArgumentList '-c Remove-Item -Recurse -Force /' -FilePath powershell",
+                    "@{a=Remove-Item -Recurse -Force /}", "@{a =Remove-Item -Recurse -Force /}", "a = Remove-Item",
+                    "ii powershell -Command Remove-Item -Recurse -Force /",
+                    "icm powershell -Command Remove-Item -Recurse -Force /",
+                    "start powershell -Command Remove-Item -Recurse -Force /"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
+        self.assertEqual(verdict("@{ a = 'x'; b = 1 }", tool="PowerShell"), "ALLOW")
+
+    def test_launcher_expression_syntax_and_aliases_are_denied(self):
+        for cmd in ["Start-Process powershell -ArgumentList -c,Remove-Item,-Recurse,-Force,/",
+                    "Start-Process powershell -ArgumentList ('-c Remove-Item -Recurse -Force /')",
+                    "Start-Process powershell -ArgumentList @('-c','Remove-Item -Recurse -Force /')",
+                    "saps powershell -Command Remove-Item -Recurse -Force /",
+                    "Invoke-Item powershell -Command Remove-Item -Recurse -Force /",
+                    "Start-Job powershell -Command Remove-Item -Recurse -Force /",
+                    "sajb powershell -Command Remove-Item -Recurse -Force /",
+                    "start-threadjob powershell -Command Remove-Item -Recurse -Force /"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
+        self.assertEqual(verdict("Start-Process notepad file.txt", tool="PowerShell"), "ALLOW")
+
+    def test_wmi_and_cim_process_launchers_are_checked(self):
+        for cmd in ["Invoke-WmiMethod -Class Win32_Process -Name Create -ArgumentList 'cmd /c rd /s /q C:\\x'",
+                    "Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='rm -rf /'}",
+                    "saps powershell -ArgumentList -c,Remove-Item,-Recurse,-Force,/",
+                    "start notepad @args"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
+
+    def test_powershell_variables_in_scriptblocks_and_quoted_paths_are_allowed(self):
+        for cmd in ["Get-Process | ForEach-Object { $_.Name }", "Get-ChildItem | ForEach-Object { $_.FullName }",
+                    '"C:\\Program Files\\app.exe" foo']:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "ALLOW")
+
+    def test_launcher_path_fragments_variables_and_blocks_are_checked(self):
+        # A quoted path with a space is refused, fail closed: the launcher re-split reads its fragment as a command.
+        for cmd, tool in [('Start-Process "C:\\Program Files\\app.exe"', "PowerShell"),
+                          ('Start-Process "tools\\app.exe;rm -rf /"', "PowerShell"),
+                          ('Start-Process ".\\x.exe;rm -rf /"', "PowerShell"),
+                          ("Start-Process powershell -ArgumentList $x", "PowerShell"),
+                          ("$RM -rf dir", "PowerShell"), (". $x", "PowerShell"), (". $x", "Bash"),
+                          ("source $x", "Bash")]:
+            with self.subTest(cmd=cmd, tool=tool):
+                self.assertEqual(verdict(cmd, tool=tool), "DENY")
+
+    def test_powershell_method_calls_are_denied(self):
+        for cmd in ["$x.Delete()", "$x[0].Delete()", "Get-Item / | ForEach-Object { $_.Delete() }",
+                    "Get-ChildItem | % { $_.Delete() }"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
+        self.assertEqual(verdict("Get-Process | ForEach-Object { $_.Name }", tool="PowerShell"), "ALLOW")
+
+    def test_quoted_parenthesised_and_named_member_calls_are_denied(self):
+        for cmd in ["$x.'Delete'()", '$x.("Delete")()', "$x.Delete ()",
+                    "Get-Item / | ForEach-Object { $_.'Delete'() }",
+                    "Get-ChildItem | ForEach-Object -MemberName Delete"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
+
+    def test_wmi_and_cim_aliases_are_launchers(self):
+        for cmd in ["iwmi -Class Win32_Process -Name Create -ArgumentList 'cmd /c rd /s /q C:\\x'",
+                    "icim -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='rm -rf /'}"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
+
+    def test_scriptblock_hosts_with_expression_syntax_are_denied(self):
+        for cmd in ["iwmi -Class Win32_Process -Name Create -ArgumentList $x",
+                    "icim -ClassName Win32_Process -MethodName Create -Arguments $x",
+                    "icm ('Remove-Item -Recurse -Force /')", "Invoke-Command -ScriptBlock $sb",
+                    "Start-Job @('Remove-Item -Recurse -Force /')", "sajb -c,Remove-Item,-Recurse,-Force,/",
+                    "start-threadjob ('Remove-Item -Recurse -Force /')", "Invoke-Command { Get-Item x }"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
+
+    def test_member_abbreviation_and_non_identifier_hashtable_keys_are_checked(self):
+        for cmd in ["Get-ChildItem | ForEach-Object -Mem Delete", "Get-ChildItem | ForEach-Object -Member Delete",
+                    "@{ 'my key' = Remove-Item -Recurse -Force / }", "@{ my-key = Remove-Item -Recurse -Force / }",
+                    '@{ "a b" = Remove-Item -Recurse -Force / }']:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
+        self.assertEqual(verdict("@{ 'my key' = 'x'; b = 1 }", tool="PowerShell"), "ALLOW")
+
+    def test_bash_append_assignment_then_command_is_denied(self):
+        for cmd in ["x+=1 rm -rf /", "a+=b rm -rf /"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+        self.assertEqual(verdict("echo x+=1"), "ALLOW")
+
+    def test_powershell_hashtable_keys_and_member_abbreviations_are_checked(self):
+        for cmd in ["@{my-key=Remove-Item -Recurse -Force /}", "@{'my key'=Remove-Item -Recurse -Force /}",
+                    "@{a-b=Remove-Item -Recurse -Force /}", "@{a.b=Remove-Item -Recurse -Force /}",
+                    "Get-ChildItem | ForEach-Object -M Delete", "Get-ChildItem | ForEach-Object -Me Delete"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
+        for cmd in ["Write-Error -Message hi", "@{ 'my key' = 'x' }"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "ALLOW")
+
+    def test_redirect_before_the_command_word_is_skipped_not_the_command(self):
+        for cmd in [">out rm -rf /", "2>/dev/null rm -rf /", "< in rm -rf /", "x=1 >out rm -rf /",
+                    "x+=1 >out rm -rf /", ">x sudo rm -rf /", ">x timeout 5 rm -rf /", "env >x rm -rf /"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+        for cmd in ["echo hi >out", ">out echo hi", "> out echo hi", "2>/dev/null ls"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "ALLOW")
+
+    def test_process_launcher_alias_with_a_variable_argument_is_denied(self):
+        for cmd in ["saps powershell -ArgumentList $x", "start powershell -ArgumentList $x"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
+
+    def test_redirections_anywhere_in_a_command_do_not_hide_it(self):
+        for cmd in ["2>&1 rm -rf /", "1>&2 rm -rf /", ">&2 rm -rf /", ">| out rm -rf /", "&> out rm -rf /",
+                    "<<< x rm -rf /", "sudo >x -u root rm -rf /", "env >x -i rm -rf /", "nice >x -n 5 rm -rf /",
+                    "timeout >x 5 rm -rf /", "timeout 2>/dev/null 5 rm -rf /", "sudo 2>&1 -u root rm -rf /"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+        for cmd in ["echo hi 2>&1", "ls 2>&1 | head -n 5", "make test 2>&1 | tail -n 3", "echo a && echo b",
+                    "echo hi >&2", "echo a >out", "timeout 5 echo hi 2>&1"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "ALLOW")
+        self.assertEqual(verdict("2>&1 Remove-Item -Recurse -Force /", tool="PowerShell"), "DENY")
+
+    def test_glued_and_quoted_operators_are_marked_correctly(self):
+        for cmd in ["rm>x -rf /", "rm&>x -rf /", "rm<x -rf /", "env -u '>' rm -rf /", "xargs -I '>' rm -rf /",
+                    "coproc '>' rm -rf /", "sudo>x -u root rm -rf /"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+        for cmd in ["echo '>' hi", "echo a>b", "echo x>out.txt", "'>' rm -rf /"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "ALLOW")
+
+    def test_operator_with_an_operator_as_its_target_is_denied(self):
+        for cmd, tool in [("> 2>x rm -rf /", "Bash"), ("&> 2>x rm -rf /", "Bash"), ("echo a; > 2>x rm -rf /", "Bash"),
+                          ("> 2>x Remove-Item -Recurse -Force /", "PowerShell")]:
+            with self.subTest(cmd=cmd, tool=tool):
+                self.assertEqual(verdict(cmd, tool=tool), "DENY")
+
+    def test_glued_digit_after_a_brace_or_comma_is_an_fd_number(self):
+        for cmd, tool in [("ForEach-Object {2>x Remove-Item -Recurse -Force /}", "PowerShell"),
+                          ("1,2>x Remove-Item -Recurse -Force /", "PowerShell"),
+                          ("timeout -k5>x rm -rf /", "Bash")]:
+            with self.subTest(cmd=cmd, tool=tool):
+                self.assertEqual(verdict(cmd, tool=tool), "DENY")
+
+    def test_spaced_digits_before_a_redirect_are_arguments(self):
+        for cmd in ["timeout -k 5 >x rm -rf /", "nice -n 5 >x rm -rf /", "sudo -u 5 >x rm -rf /",
+                    "ionice -c 2 >x rm -rf /", "xargs -n 5 >x rm -rf /", "timeout -s 9 >x rm -rf /",
+                    "sudo&>x -u root rm -rf /"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+
+    def test_powershell_name_value_after_a_comma_is_checked(self):
+        for cmd in ["@{k=1, a=Remove-Item -Recurse -Force /}", "@{k = 1, a=Remove-Item -Recurse -Force /}",
+                    "@{a = 1, b = Remove-Item -Recurse -Force /}", "@(1, a=Remove-Item -Recurse -Force /)",
+                    "1, Remove-Item -Recurse -Force /"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
+
+    def test_if_with_a_command_in_its_segment_is_denied(self):
+        self.assertEqual(verdict("if rm -rf /; then :; fi"), "DENY")
+
+    def test_sourcing_a_path_with_a_variable_is_denied(self):
+        for cmd, tool in [("source ./$x", "Bash"), (". ./$x", "Bash"), (". ./$x", "PowerShell")]:
+            with self.subTest(cmd=cmd, tool=tool):
+                self.assertEqual(verdict(cmd, tool=tool), "DENY")
+
+    def test_remaining_control_keywords_are_command_positions(self):
+        for cmd in ["while true; do rm -rf /; done", "until false; do rm -rf /; done",
+                    "while rm -rf /; do :; done", "until rm -rf /; do :; done",
+                    "if true; then :; elif rm -rf /; then :; fi",
+                    "if true; then echo hi; elif true; then rm -rf /; fi", "! rm -rf /", "fi rm -rf /"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+
+    def test_else_and_do_keywords_are_command_positions(self):
+        self.assertEqual(verdict("if true; then echo hi; else rm -rf /; fi"), "DENY")
+        self.assertEqual(verdict("for x in a; do rm -rf /; done"), "DENY")
+
+    def test_launcher_argument_list_is_capped(self):
+        self.assertEqual(verdict("Start-Process notepad " + " ".join(["x"] * 300), tool="PowerShell"), "DENY")
+
+    def test_then_keyword_is_a_command_position(self):
+        self.assertEqual(verdict("if true; then rm -rf /; fi"), "DENY")
+
+    def test_function_keyword_without_braces_is_checked(self):
+        self.assertEqual(verdict("FUNCTION f Remove-Item -Recurse -Force /", tool="PowerShell"), "DENY")
+        self.assertEqual(verdict("FUNCTION f rm -rf /"), "DENY")
+
+    def test_brace_words_in_bash_stay_unexpanded(self):
+        for cmd in ["{rm,-rf,/}", "r{m,} -rf /"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+
+    def test_unclosed_quote_in_the_first_powershell_piece_is_denied(self):
+        self.assertEqual(verdict('"echo hi', tool="PowerShell"), "DENY")
+
+    def test_quoted_powershell_names_are_the_same_command(self):
+        for cmd in ['"Remove"-Item -Recurse -Force /', "'Remove'-Item -Recurse -Force /", 'r"m" -Recurse -Force /',
+                    '   "Remove"-Item -Recurse -Force /', '\t"Remove"-Item -Recurse -Force /',
+                    '"rm .exe" -rf /']:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
+
+    def test_dot_names_keep_their_meaning(self):
+        for cmd in [". $(echo hi)", '. "$(echo hi)"', "..exe $(echo hi)"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+
+    def test_rm_with_a_space_before_exe_is_denied(self):
+        self.assertEqual(verdict("rm .exe -rf /", tool="PowerShell"), "DENY")
+
+    def test_names_with_trailing_dots_or_spaces_are_the_command(self):
+        for cmd, tool in [("rm. -rf /", "Bash"), ("RM.EXE. -rf /", "Bash"), ("rm\\  -rf /", "Bash"),
+                          ("C:\\Windows\\System32\\rm. -rf /", "PowerShell")]:
+            with self.subTest(cmd=cmd, tool=tool):
+                self.assertEqual(verdict(cmd, tool=tool), "DENY")
+
+    def test_ordinary_commands_and_out_of_scope_forms_are_unchanged(self):
+        # pip install is X3d's conditional case: X3a does not change it, so it stays ALLOW here.
+        for cmd in ["echo hi", "cat README.md | head -n 5", "ls -la", "git status --short", "sort -u names.txt",
+                    "rg -n TODO src", "python3 -m unittest discover -s tests/host -v", "make test", "npm test",
+                    "pip install -r requirements-dev.txt"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "ALLOW")
+
+
+class LauncherMutationTests(unittest.TestCase):
+    """Issue #639 X3a: each classification rule must be detected by the LauncherClassTests tests. Each mutant is a
+    temporary copy of the hook and this test module in a temporary folder; no repository file is changed."""
+
+    MUTANTS = {
+        "function keyword handling removed": ('        if w0.lower() == "function":', '        if False:'),
+        "function keyword case-sensitive": ('        if w0.lower() == "function":', '        if w0 == "function":'),
+        "PowerShell launcher arguments not analysed": ('    if ps and name in PS_LAUNCH_NAMES:', '    if False:'),
+        "PowerShell name=value rule removed": ('        if ps and len(words) > 1 and words[1].startswith("="):',
+                                               '        if False:'),
+        "PowerShell start alias removed": ('{"start-process", "start", "saps"', '{"start-process", "saps"'),
+        "PowerShell ii alias removed": ('"invoke-item", "ii", "invoke-command"', '"invoke-item", "invoke-command"'),
+        "then keyword removed": ('"if", "then", "else"', '"if", "else"'),
+        "PowerShell variable value rule removed": ('        if ps and len(words) == 1 and w0.startswith("$") and not any(ch in w0 for ch in "*?[]{}`~"):',
+                                                   '        if False:'),
+        "saps removed from the expression launcher pattern": ('(start-process|start|saps|invoke-item|ii|',
+                                                              '(start-process|start|invoke-item|ii|'),
+        "@ removed from the expression syntax": ('EXPR_SYNTAX_RE = re.compile(r"[,()@{}$]")',
+                                                 'EXPR_SYNTAX_RE = re.compile(r"[,(){}$]")'),
+        "launcher argument cap removed": ('        if len(tokens) > LAUNCHER_MAX_WORDS:', '        if False:'),
+        "PowerShell dollar removed from expression syntax": ('EXPR_SYNTAX_RE = re.compile(r"[,()@{}$]")',
+                                                             'EXPR_SYNTAX_RE = re.compile(r"[,()@{}]")'),
+        "lone variable length condition removed": ('        if ps and len(words) == 1 and w0.startswith("$")',
+                                                   '        if ps and w0.startswith("$")'),
+        "else keyword removed": ('"then", "else", "elif"', '"then", "elif"'),
+        "if keyword removed": ('"if", "then", "else"', '"then", "else"'),
+        "quoted and parenthesised member rule removed": (r'''|['\"(])|-m(?:e|em\w*)?\b")''', r''')|-m(?:e|em\w*)?\b")'''),
+        "member abbreviation rule removed": (r'''|-m(?:e|em\w*)?\b")''', r'''|-membernamex\b")'''),
+        "Bash assignment with += not recognised": (r'''ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")''', r'''ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")'''),
+        "PowerShell name=value rule for any key removed": ('        if ps and "=" in w0 and not w0.startswith("="):', '        if False:'),
+        "icm removed from the expression launcher pattern": (r'''invoke-command|icm|start-job''', r'''invoke-command|start-job'''),
+        "method call whitespace rule removed": (r'''(?:\w+\s*\(|['\"(])''', r'''(?:\w+\(|['\"(])'''),
+        "iwmi removed from the expression launcher pattern": (r'''|iwmi|icim|''', r'''|icim|'''),
+        "iwmi removed from the launcher names": ('"invoke-cimmethod", "iwmi", "icim"}', '"invoke-cimmethod"}'),
+        "while keyword removed": ('"while", "until"', '"until"'),
+        "until keyword removed": ('"while", "until"', '"while"'),
+        "elif keyword removed": ('"then", "else", "elif"', '"then", "else"'),
+        "fi keyword removed": ('"elif", "fi", "do"', '"elif", "do"'),
+        "bang keyword removed": ('KEYWORDS = {"{", "}", "!",', 'KEYWORDS = {"{", "}",'),
+        "PowerShell method call rule removed": ('    if ps and METHOD_CALL_RE.search(text):', '    if False:'),
+        "sourcing any-variable rule removed": ('    if name in (".", "source") and any(("$" in a or "`" in a or SUBST in a) for a in args):',
+                                               '    if False:'),
+        "do keyword removed": ('"fi", "do", "done"', '"fi", "done"'),
+        "PowerShell launcher expression rule removed": ('    if ps and PS_PROC_LAUNCH_RE.search(text) and EXPR_SYNTAX_RE.search(text):',
+                                                        '    if False:'),
+        "saps alias removed": ('"start", "saps", "invoke-item"', '"start", "invoke-item"'),
+        "Invoke-Item alias removed": ('"saps", "invoke-item", "ii"', '"saps", "ii"'),
+        "Start-Job alias removed": ('"icm", "start-job",', '"icm",'),
+        "start-threadjob alias removed": ('"sajb", "start-threadjob", ', '"sajb", '),
+        "brace and comma split applied to Bash too": ('(ps and c in "{},")', '(c in "{},")'),
+        "PowerShell comma split removed": ('(ps and c in "{},")', '(ps and c in "{}")'),
+        "redirections not stripped from argv": ('    words = strip_redirections(words)', '    pass'),
+        "redirection operator not marked": ('            if c == ">":\n                rd.append(_redir_target(text, j))\n            cur.append(" " + REDIR_MARK + text[start:j] + " ")',
+                                            '            if c == ">":\n                rd.append(_redir_target(text, j))\n            cur.append(text[start:j])'),
+        "glued fd digits not taken into the operator": ('                del cur[-k:]', '                pass'),
+        "operator target that is an operator not denied": ('    if i + 1 < len(words) and words[i + 1].startswith(REDIR_MARK):',
+                                                           '    if False:'),
+        "glued fd digit after a brace not taken": ('(i - k == 0 or text[i - k - 1] in " \\t\\n;&|(){},")',
+                                                   '(i - k == 0 or text[i - k - 1] in " \\t\\n;&|(),")'),
+        "glued fd digit after a comma not taken": ('(i - k == 0 or text[i - k - 1] in " \\t\\n;&|(){},")',
+                                                   '(i - k == 0 or text[i - k - 1] in " \\t\\n;&|(){}")'),
+        "glued fd digit only at the start of the text":('(i - k == 0 or text[i - k - 1] in " \\t\\n;&|(){},")',
+                                                         '(i - k == 0 or text[i - k - 1] in "")'),
+        "ampersand-greater marker branch removed": ('        if quote is None and c == "&" and i + 1 < n and text[i + 1] == ">":',
+                                                    '        if False:'),
+        "fd-dup or clobber character not taken into the operator": (
+            '            if j < n and text[j] in ("&|" if c == ">" else "&"):',
+            '            if False:'),
+        "coproc handling removed": ('        if w0.lower() == "coproc":', '        if False:'),
+        "PowerShell scriptblock braces not split": ('        if c in ";&|()\\n" or (ps and c in "{},"):', '        if c in ";&|()\\n":'),
+        "coproc NAME reading removed": ('            if len(rest) >= 2:', '            if False:'),
+        "POSIX escape unescaping removed": ('            w0 = unescaped', '            pass'),
+        "fused function name check removed": ('            if len(words) < 2 or any(ch in words[1] for ch in "{}()"):',
+                                              '            if len(words) < 2:'),
+        "exec removed from wrappers": ('"builtin", "exec", "nohup"', '"builtin", "nohup"'),
+        "doas removed from wrappers": ('"sudo", "doas", "env"', '"sudo", "env"'),
+        "sudo removed from wrappers": ('WRAPPERS = {"sudo", ', 'WRAPPERS = {'),
+        "wrapper handoff removed": ('        if handoff(name):', '        if False:'),
+        "xargs removed from wrappers": ('"setsid", "stdbuf", "xargs"}', '"setsid", "stdbuf"}'),
+        "stdbuf removed from wrappers": ('"timeout", "setsid", "stdbuf", "xargs"}', '"timeout", "setsid", "xargs"}'),
+        "setsid removed from wrappers": ('"timeout", "setsid", "stdbuf"', '"timeout", "stdbuf"'),
+        "ionice removed from wrappers": ('"nice", "ionice", "timeout"', '"nice", "timeout"'),
+        "builtin removed from wrappers": ('"command", "builtin", "exec"', '"command", "exec"'),
+        "timeout rule removed": ('        if name == "timeout":', '        if False:'),
+        "trailing dot and space normalisation removed": ('        name = name.rstrip(". ") or name', '        pass'),
+        "timeout attached short value taken as next word": ('takes_next = j == len(a) - 1', 'takes_next = True'),
+        "PowerShell head ignores a leading tab": ('            if m:\n                head', '            if m and not seg.startswith("\\t"):\n                head'),
+        "timeout long value consumes no extra word":('i += 2 if len(hits) == 1 and hits[0] in TIMEOUT_LONG_VALUE else 1',
+                                                      'i += 2'),
+        "timeout option-like suffixes removed": ('        if c and c[0].startswith("-"):', '        if False:'),
+        "timeout long option prefixes removed":('            hits = [o for o in TIMEOUT_LONG if o.startswith(a[2:])] if "=" not in a else []',
+                                                 '            hits = []'),
+        "PowerShell quoted command name not joined": ('                head = [m.group(1).replace(\'"\', "").replace("\'", "")]',
+                                                     '                head = [m.group(1)]'),
+        "table: sort moved to NONE": ('("OPTION", "sort rg find', '("NONE", "sort rg find'),
+        "table: rm not dangerous": ('("DANGEROUS", "rm"),', '("NONE", "rm"),'),
+    }
+
+    def _run(self, hook_text):
+        with tempfile.TemporaryDirectory() as td:
+            root = os.path.realpath(td)
+            hooks = os.path.join(root, ".claude", "hooks")
+            host = os.path.join(root, "tests", "host")
+            os.makedirs(hooks)
+            os.makedirs(host)
+            write_text(os.path.join(hooks, "guard_destructive.py"), hook_text)
+            with open(THIS_FILE, encoding="utf-8") as f:
+                write_text(os.path.join(host, "test_claude_destructive_guard.py"), f.read())
+            proc = subprocess.run([sys.executable, "-m", "unittest", "-v",
+                                   "test_claude_destructive_guard.LauncherClassTests"], cwd=host,
+                                  capture_output=True, text=True, timeout=300)
+            return proc.returncode, proc.stderr
+
+    def test_launcher_tests_detect_each_mutant(self):
+        with open(HOOK, encoding="utf-8") as f:
+            original = f.read()
+        code, out = self._run(original)
+        self.assertEqual(code, 0, "unmutated copy must pass LauncherClassTests:\n" + out[-800:])
+        for name, (old, new) in self.MUTANTS.items():
+            with self.subTest(mutant=name):
+                self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
+                code, out = self._run(original.replace(old, new))
+                failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
+                detected = any("LauncherClassTests." in ln for ln in failing)
+                self.assertTrue(detected, "mutant not detected by a LauncherClassTests test: " + name + "\n"
+                                + "\n".join(failing))
+
+
 class MutationDetectionTests(unittest.TestCase):
     """Linux CI (any host where symlinks can be created): the symlink tests must FAIL for each mutant of Piece A's
     rules. Each mutant is a temporary copy of the hook and this test module in a temporary folder. No repository
