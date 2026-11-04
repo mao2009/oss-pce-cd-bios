@@ -114,19 +114,25 @@ def handoff(name):
     return launch_class(name) == "WRAPPER"
 ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
 # A word that starts with a redirection (>out, 2>/dev/null, &>x, <in) and the bare operator forms (>, 2>, >>, <).
-REDIR_WORD = re.compile(r"^\d*(?:[<>]|&>)")
-REDIR_OP = re.compile(r"^\d*(?:>>?\||>>?|>&|<{1,3}|<>|<&|&>>?)$")
+# Marker for an unquoted redirection operator (see split_segments). Control characters are rejected on input, so a
+# \x01 never comes from the command text itself.
+REDIR_MARK = "\x01"
 
 
 def strip_redirections(words):
-    """Remove redirection words from argv everywhere: a redirection never changes argv. A bare operator also takes
-    the next word as its target. Targets are checked by the redirect rules, not here."""
+    """Remove redirections from argv everywhere: a redirection never changes argv. A marked operator takes the next
+    word as its target; an fd number directly before a marked operator goes with it. Targets are checked by the
+    redirect rules (check_redirect), not here."""
     out, i = [], 0
     while i < len(words):
-        if REDIR_WORD.match(words[i]):
-            i += 2 if REDIR_OP.fullmatch(words[i]) and i + 1 < len(words) else 1
+        w = words[i]
+        if w.isdigit() and i + 1 < len(words) and words[i + 1].startswith(REDIR_MARK):
+            i += 1
             continue
-        out.append(words[i])
+        if w.startswith(REDIR_MARK):
+            i += 2 if i + 1 < len(words) else 1
+            continue
+        out.append(w)
         i += 1
     return out
 MNT = re.compile(r"^/mnt/([A-Za-z])(/.*)?$")
@@ -554,16 +560,27 @@ def split_segments(text, ps=False):
             cur.append(c)
             i += 1
             continue
-        if c == ">":
-            rd.append(_redir_target(text, i + 1))
-            cur.append(c)
-            i += 1
+        if c in "<>":
+            # An unquoted redirection operator is marked and set off by spaces, so it is never glued to a word
+            # (rm>x is rm, >, x). A quoted '>' is an ordinary word and is not marked.
+            j = i
+            while j < n and text[j] == c:
+                j += 1
+            # The operator takes one more character when it is >& or <& (fd dup) or >| (clobber).
+            if j < n and text[j] in ("&|" if c == ">" else "&"):
+                j += 1
+            if c == ">":
+                rd.append(_redir_target(text, j))
+            cur.append(" " + REDIR_MARK + text[i:j] + " ")
+            i = j
             continue
-        if quote is None and ((c == "&" and ((i and text[i - 1] in "<>") or (i + 1 < n and text[i + 1] == ">")))
-                              or (c == "|" and i and text[i - 1] == ">")):
-            # &, | inside a redirection operator (>&, &>, <&, >|) are part of the operator, not a separator.
-            cur.append(c)
-            i += 1
+        if quote is None and c == "&" and i + 1 < n and text[i + 1] == ">":
+            j = i + 1
+            while j < n and text[j] == ">":
+                j += 1
+            rd.append(_redir_target(text, j))
+            cur.append(" " + REDIR_MARK + text[i:j] + " ")
+            i = j
             continue
         if ps and c == "&" and quote is None:
             # PowerShell call operator (& "x", & $cmd); && is a chain, not a call.

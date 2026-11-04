@@ -1020,6 +1020,15 @@ class LauncherClassTests(unittest.TestCase):
                 self.assertEqual(verdict(cmd), "ALLOW")
         self.assertEqual(verdict("2>&1 Remove-Item -Recurse -Force /", tool="PowerShell"), "DENY")
 
+    def test_glued_and_quoted_operators_are_marked_correctly(self):
+        for cmd in ["rm>x -rf /", "rm&>x -rf /", "rm<x -rf /", "env -u '>' rm -rf /", "xargs -I '>' rm -rf /",
+                    "coproc '>' rm -rf /", "sudo>x -u root rm -rf /"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+        for cmd in ["echo '>' hi", "echo a>b", "echo x>out.txt", "'>' rm -rf /"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "ALLOW")
+
     def test_powershell_name_value_after_a_comma_is_checked(self):
         for cmd in ["@{k=1, a=Remove-Item -Recurse -Force /}", "@{k = 1, a=Remove-Item -Recurse -Force /}",
                     "@{a = 1, b = Remove-Item -Recurse -Force /}", "@(1, a=Remove-Item -Recurse -Force /)",
@@ -1147,8 +1156,11 @@ class LauncherMutationTests(unittest.TestCase):
         "brace and comma split applied to Bash too": ('(ps and c in "{},")', '(c in "{},")'),
         "PowerShell comma split removed": ('(ps and c in "{},")', '(ps and c in "{}")'),
         "redirections not stripped from argv": ('    words = strip_redirections(words)', '    pass'),
-        "fd-dup and clobber operators split as separators": ('        if quote is None and ((c == "&" and',
-                                                              '        if False and ((c == "&" and'),
+        "redirection operator not marked": ('            if c == ">":\n                rd.append(_redir_target(text, j))\n            cur.append(" " + REDIR_MARK + text[i:j] + " ")',
+                                            '            if c == ">":\n                rd.append(_redir_target(text, j))\n            cur.append(text[i:j])'),
+        "fd-dup or clobber character not taken into the operator": (
+            '            if j < n and text[j] in ("&|" if c == ">" else "&"):',
+            '            if False:'),
         "coproc handling removed": ('        if w0.lower() == "coproc":', '        if False:'),
         "PowerShell scriptblock braces not split": ('        if c in ";&|()\\n" or (ps and c in "{},"):', '        if c in ";&|()\\n":'),
         "coproc NAME reading removed": ('            if len(rest) >= 2:', '            if False:'),
