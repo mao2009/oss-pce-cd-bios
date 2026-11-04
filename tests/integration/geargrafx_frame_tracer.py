@@ -30,6 +30,33 @@ RAM_BANK_RANGES = {
     "card_ram": ((0x8000, 0x40, 0x5f), (0x30000, 0x68, 0x7f)),
 }
 CPU_REGIONS = {"unknown", "other", "cdrom_ram", "working_ram", "hardware"}
+# Status words for the per-run measurement table.  A configuration value the core
+# reports is never called MEASURED; a value the tracer cannot obtain exactly stays
+# NOT_MEASURED, and its raw END field (if any) is not promoted to a measurement.
+MEASURED = "MEASURED"
+REPORTED_BY_CORE = "REPORTED_BY_CORE"
+NOT_MEASURED = "NOT_MEASURED"
+NOT_MEASURED_REASONS = {
+    "max_frame_core_entries": "computed after the core-gap clamp, so a frame that overflowed the core buffer "
+                              "is under-counted; needs the pre-clamp per-frame count",
+    "max_frame_scsi_events": "counts only SCSI entries the core still retains; entries lost in a core-trace gap "
+                             "are not counted",
+    "core_trace_dropped_frames": "not emitted: only the total of lost core entries (trace_events_dropped) is counted",
+}
+
+
+def measurements(cap, end):
+    """Classify the five tracer quantities for one validated run (no estimates, no defaults)."""
+    table = {
+        "core_capacity": {"status": REPORTED_BY_CORE, "value": end["core_capacity"],
+                          "kind": "configuration", "source": "pinned core TraceLogger::GetCapacity()"},
+        "output_ring_dropped": {"status": MEASURED, "value": end["dropped"], "pushed": end["pushed"],
+                                "retained": end["events"], "ring_capacity": cap["ring_capacity"],
+                                "kind": "count", "source": "tracer output ring (pushed == retained + dropped)"},
+    }
+    for name, reason in NOT_MEASURED_REASONS.items():
+        table[name] = {"status": NOT_MEASURED, "reason": reason}
+    return table
 
 
 def run_schedule(start_frame, hold_frames, frames):
@@ -307,6 +334,22 @@ def parse_records(stdout, require_ram_observation=True):
             type(end.get("trace_events_dropped")) is not int or end["trace_events_dropped"] < 0 or
             end.get("overflow") is not (end["dropped"] > 0 or end["trace_events_dropped"] > 0)):
         raise ValueError("invalid overflow accounting")
+    # Output ring: the independent push counter must equal retained + dropped, and a ring
+    # that dropped anything must be full.  Otherwise the dropped count is not trusted.
+    if type(end.get("pushed")) is not int or end["pushed"] != end["events"] + end["dropped"]:
+        raise ValueError("output ring push accounting mismatch (pushed != events + dropped)")
+    if end["dropped"] > 0 and end["events"] != capacity:
+        raise ValueError("output ring dropped events while not full")
+    # Core-buffer fields: required and internally consistent.  core_capacity is the core's
+    # configured size; the two per-frame maxima are validated but not promoted (see measurements()).
+    core_capacity = end.get("core_capacity")
+    if type(core_capacity) is not int or core_capacity < 1:
+        raise ValueError("invalid core trace capacity")
+    max_entries, max_scsi = end.get("max_frame_core_entries"), end.get("max_frame_scsi_events")
+    if type(max_entries) is not int or not 0 <= max_entries <= core_capacity:
+        raise ValueError("invalid per-frame core entry field")
+    if type(max_scsi) is not int or not 0 <= max_scsi <= max_entries:
+        raise ValueError("invalid per-frame SCSI event field")
     validate_ram_deltas(end.get("ram_deltas"), cap["frames"])
     for event in events:
         if event.get("kind") not in EVENT_KINDS or type(event.get("frame")) is not int or not 1 <= event["frame"] <= cap["frames"]:
@@ -406,7 +449,8 @@ def trace(args):
             log.update(status="FAIL", reason=f"trace rejected: {error}", evidence="NOT_RUN")
             return log
         log.update(status="PASS", reason="bounded normal-frame trace completed", evidence="REAL_GEARGRAFX_CORE",
-                   elapsed_s=result["elapsed_s"], capability=cap, events=events, summary=end)
+                   elapsed_s=result["elapsed_s"], capability=cap, events=events, summary=end,
+                   measurements=measurements(cap, end))
         return log
     finally:
         cleaned, cleanup_reason = cleanup_tracked_job_dir(job, job_identity)

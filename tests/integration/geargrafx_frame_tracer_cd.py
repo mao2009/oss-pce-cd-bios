@@ -84,8 +84,39 @@ def run(mode):
         # Both modes completed. Do not assert record equality: separate normal-frame
         # processes can land at different instruction boundaries around CD polling.
         # This is therefore not an observer noninterference claim.
+        table = measurement_evidence(mode, on, off)
+        ring = {name: table["runs"][name]["output_ring_dropped"] for name in ("observer_on", "observer_off")}
         print("PASS real Geargrafx synthetic CD-read + RAM observer: regions wram/cdrom_ram/card_ram; "
-              "observed delta wram only; observer ON/OFF both completed (frame records not compared); no guest bytes")
+              "observed delta wram only; observer ON/OFF both completed (frame records not compared); no guest bytes; "
+              f"core_capacity={table['core_capacity']['value']} (REPORTED_BY_CORE configuration); "
+              f"output ring dropped ON={ring['observer_on']['value']}/{ring['observer_on']['pushed']} "
+              f"OFF={ring['observer_off']['value']}/{ring['observer_off']['pushed']} pushed (MEASURED); "
+              f"{', '.join(sorted(tracer.NOT_MEASURED_REASONS))} NOT_MEASURED")
+
+
+def measurement_evidence(mode, on, off):
+    """Counts-only measurement table for both runs; written under build/ (never guest bytes or traces)."""
+    runs = {"observer_on": on.get("measurements"), "observer_off": off.get("measurements")}
+    for name, table in runs.items():
+        if type(table) is not dict or set(table) != {"core_capacity", "output_ring_dropped", *tracer.NOT_MEASURED_REASONS}:
+            raise ValueError(f"{name}: measurement table missing or incomplete")
+        ring = table["output_ring_dropped"]
+        if table["core_capacity"].get("status") != tracer.REPORTED_BY_CORE or ring.get("status") != tracer.MEASURED:
+            raise ValueError(f"{name}: unexpected measurement status")
+        if ring["pushed"] != ring["retained"] + ring["value"]:
+            raise ValueError(f"{name}: output ring push accounting mismatch")
+        if any(table[key].get("status") != tracer.NOT_MEASURED for key in tracer.NOT_MEASURED_REASONS):
+            raise ValueError(f"{name}: a NOT_MEASURED quantity was reported as measured")
+    capacities = {table["core_capacity"]["value"] for table in runs.values()}
+    if len(capacities) != 1:
+        raise ValueError(f"core trace capacity differs between observer runs: {sorted(capacities)}")
+    evidence = {"scope": "frame tracer measurement table on synthetic CD media; diagnostic only, not BIOS evidence",
+                "core_capacity": runs["observer_on"]["core_capacity"], "runs": runs,
+                "proprietary_content": "NONE", "guest_bytes": "NONE"}
+    output = ROOT / "build" / mode / "frame-tracer-cd"
+    output.mkdir(parents=True, exist_ok=True)
+    (output / "frame-tracer-measurements.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+    return evidence
 
 
 def main(argv=None):

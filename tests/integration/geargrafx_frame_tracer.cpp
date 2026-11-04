@@ -382,7 +382,11 @@ int main(int argc, char** argv) {
     std::printf("END {\"frames\":%ld,\"events\":%u,\"dropped\":%u,\"trace_events_dropped\":%llu,\"overflow\":%s", frames,
                 ring.size(), ring.dropped(), (unsigned long long)dropped_trace,
                 (ring.dropped() || dropped_trace) ? "true" : "false");
-    // Core-buffer usage for the CI measurement: capacity, peak per-frame entries, peak SCSI per frame.
+    // Every output-ring push, counted independently so the reader can check pushed == events + dropped.
+    std::printf(",\"pushed\":%llu", ring.pushed());
+    // Core-buffer fields.  core_capacity is the core's configured buffer size (TraceLogger::GetCapacity),
+    // not a usage measurement.  max_frame_core_entries is computed after the gap clamp above and can
+    // under-count, and max_frame_scsi_events misses entries lost in a gap: the reader keeps both NOT_MEASURED.
     std::printf(",\"core_capacity\":%llu,\"max_frame_core_entries\":%llu,\"max_frame_scsi_events\":%u",
                 (unsigned long long)core_capacity, (unsigned long long)max_frame_core_entries, max_frame_scsi_events);
     print_ram_summary(rams);
