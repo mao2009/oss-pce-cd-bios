@@ -26,7 +26,7 @@ IRQ-in-TAM, a same-value write and a write-then-restore) the driver runs:
       nothing but PC moved over the fetched bytes is PASS; any other change is BLOCKED (side effect
       prevented, stop not consistent). Changes are never assumed to be reversible.
 * ``unguarded`` (CONTROL) null guard, MPR1 = $FF: the I/O page accesses must be observed.
-* mutants (``mut-late16`` / ``mut-popinc`` / ``mut-nolatch`` / ``mut-ignore``): patch mutants switched on at
+* mutants (``mut-late16`` / ``mut-popinc`` / ``mut-nolatch`` / ``mut-ignore`` / ``mut-nostop``): patch mutants switched on at
   run time; the armed classifier must reject every one. Every unguarded control is also fed to the armed
   classifier and must be rejected.
 
@@ -133,6 +133,9 @@ ROUTES = {
     "phasame": dict(allowed=dict(pc=0x1E01, s=0x03, window=[0, 0, 0, 0, 0x05], calls=1),
                     armed=dict(op=PUSH8, calls=1, latched=0, changed={"pc"}, pc=0x1E01, verdict=PASS),
                     io=[(WRITE, 0x2104)], state_invisible=True),
+    # ST0 #$00 restores VDC AR through HuC6202::WriteFromCPU, which is NOT the Memory::Write path, so the
+    # observer never sees it (by design: only the PHA write to $2104 is the logged event). In the allowed
+    # run the ST0 still writes AR; "no I/O page access" there means no CPU Memory::Read/Write of bank $FF.
     "pharestore": dict(allowed=dict(pc=0x1E03, s=0x03, window=[0, 0, 0, 0, 0x07], calls=1),
                        armed=dict(op=PUSH8, calls=1, latched=0, changed={"pc"}, pc=0x1E01, verdict=PASS),
                        io=[(WRITE, 0x2104)], state_invisible=True),
@@ -146,7 +149,12 @@ MUTANTS = {
     "mut-popinc": ("rts", "rti", "pla", "plp", "plx", "ply", "tend"),  # pop moves S before the check
     "mut-nolatch": ("jsr", "rti", "irq", "tstart"),                  # no latch, no stop: guest resumed
     "mut-ignore": ("pha", "rts", "tstart"),                          # refusal computed but not enforced
+    "mut-nostop": ("pha", "jsr", "tstart"),                          # latch kept, stop request removed
 }
+# Internal-state labels. PASS routes keep every register except PC, which has moved past the refused
+# instruction: the refused push is dropped, so a re-run would have to rewind PC to the instruction start.
+STATE_PASS = "REGISTERS_UNCHANGED_PC_ADVANCED"
+STATE_BLOCKED = "CHANGED"
 
 
 def _int(row, *path):
@@ -262,8 +270,13 @@ def side_effect_check(row, case):
     if row.get("refused") is not True or row.get("latched") is not True or row.get("halted") is not True:
         raise ValueError(f"{case}: no latched refusal / halt (refused={row.get('refused')}, "
                          f"latched={row.get('latched')}, halted={row.get('halted')})")
-    for key in ("op", "s", "transfer_state", "mpr1"):
+    for key in ("op", "s", "transfer_state", "mpr1", "vdc_ar"):
         _int(row, "refusal", key)
+    if row["refusal"]["vdc_ar"] != _pair(row, "ar")[0]:
+        raise ValueError(f"{case}: VDC AR already changed when the guard was called "
+                         f"({_pair(row, 'ar')[0]:#x}->{row['refusal']['vdc_ar']:#x})")
+    if _int(row, "irr_before") != _int(row, "irr_after"):
+        raise ValueError(f"{case}: interrupt request register changed {row['irr_before']:#x}->{row['irr_after']:#x}")
     if row["refusal"]["op"] != want["op"] or row["refusal"]["mpr1"] != IO_MPR:
         raise ValueError(f"{case}: first refusal op {row['refusal'].get('op')} MPR1 {row['refusal'].get('mpr1')}, "
                          f"want {want['op']} / {IO_MPR:#x}")
@@ -389,6 +402,8 @@ def falsified_rows(row, case):
     put("transfer_state_changed", lambda r: r["stop"].__setitem__(
         "transfer_state", (r["stop"]["transfer_state"] + 1) % 3))
     put("events_truncated", lambda r: r.update(events_truncated=True))
+    put("irr_changed", lambda r: r.update(irr_after=r["irr_before"] ^ 1))
+    put("vdc_ar_written_before_the_guard", lambda r: r["refusal"].update(vdc_ar=r["refusal"]["vdc_ar"] ^ 1))
     return out
 
 
@@ -457,8 +472,9 @@ def evaluate(rows):
                               "rejected only through the event log"))
         for name, broken in falsified_rows(rows[f"{route}-armed"], f"{route}-armed"):
             mutations.append((f"{route}-armed", f"falsified:{name}", must_reject(broken, f"{route}-armed", name)))
-        table[route] = dict(allowed=allowed, side_effect="PREVENTED", state="PRESERVED" if verdict == PASS else
-                            "CHANGED", changed=changed, verdict=verdict, control=control)
+        table[route] = dict(allowed=allowed, side_effect="PREVENTED",
+                            state=STATE_PASS if verdict == PASS else STATE_BLOCKED, changed=changed, verdict=verdict,
+                            control=control)
     for mutant, routes in MUTANTS.items():
         for route in routes:
             case = f"{route}-{mutant}"
@@ -501,10 +517,15 @@ def main():
           "entry still loads the new PC, TransferStart has already set its transfer state, TransferEnd has already "
           "cleared it), so the CPU state at the stop is not the pre-instruction state. Not a production mechanism; "
           "#459/#367/#173 stay BLOCKED; no gate changes.")
+    print(f"NOTE issue-499 PASS routes: state={STATE_PASS} means every register except PC is unchanged and PC is past "
+          "the refused instruction; the refused push is dropped, so a re-run would have to rewind PC to the "
+          "instruction start. This is not a restored pre-instruction state.")
     print("LIMIT: test policy (MPR1 = $F8 only) lives in the probe; debugger build only (libretro build NOT_MEASURED); "
-          "harness stops after the refused instruction and never resumes; refused pops return 0; MMIO observation is "
-          "the CPU Memory::Read/Write path only (ST0/ST1/ST2 WriteFromCPU and device-originated writes are not "
-          "observed); NMI not applicable on the pinned core; no reference BIOS; no hardware claim.")
+          "harness stops after the refused instruction and never resumes; refused pops return 0; the run loop still "
+          "clocks the hardware (VDC/timer/PSG/CD/ADPCM) for the refused instruction's full cycle count before the stop, "
+          "so device time advances (the stop snapshot is taken after that); MMIO observation is the CPU "
+          "Memory::Read/Write path only (ST0/ST1/ST2 WriteFromCPU and device-originated writes are not observed); "
+          "NMI not applicable on the pinned core; no reference BIOS; no hardware claim.")
     return 0
 
 

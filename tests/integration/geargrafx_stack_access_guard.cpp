@@ -14,7 +14,7 @@
 //   variant: allowed     MPR1 = $F8 (WRAM): the guard is consulted and allows (positive)
 //            armed       MPR1 = $FF (I/O): the guard refuses before the access (negative)
 //            unguarded   MPR1 = $FF, null guard: the accesses land on the I/O page (control)
-//            mut-late16 | mut-popinc | mut-nolatch | mut-ignore
+//            mut-late16 | mut-popinc | mut-nolatch | mut-ignore | mut-nostop
 //                        armed with a patch mutant switched on (the classifier must reject the run)
 //   irqtam starts with MPR1 = $F8 and the guest's TAM sets MPR1 = A ($F8 allowed, $FF otherwise) with
 //   IRQ1 pending and I = 0, so the IRQ entry pushes happen inside the TAM's RunInstruction.
@@ -237,6 +237,7 @@ int main(int argc, char** argv)
     else if (variant == "mut-popinc") mutation = 2;
     else if (variant == "mut-nolatch") mutation = 3;
     else if (variant == "mut-ignore") mutation = 4;
+    else if (variant == "mut-nostop") mutation = 5;
     else return 2;
     Route route;
     if (!route_for(route_name, &route))
@@ -316,6 +317,7 @@ int main(int argc, char** argv)
     gg_verify_pre_instruction = pre_instruction;
 
     Snapshot start = snap();
+    unsigned irr_before = *g_st->IRR;
     unsigned vdc_ar_before = (u8)*g_vdc->AR, vdc_r0_before = g_vdc->R[0], vdc_r1_before = g_vdc->R[1];
     unsigned vdc_r7_before = g_vdc->R[7], vdc_sr_before = *g_vdc->SR, vdc_buffer_before = *g_vdc->READ_BUFFER;
     unsigned stack_before[256];
@@ -332,7 +334,9 @@ int main(int argc, char** argv)
         int samples = 0;
         core.RunToVBlank(frame.data(), audio.data(), &samples, &debug, false);
         ++frames_run;
-        if (gg_verify_stack_refused) {   // never resume the guest after a refusal
+        // Never resume the guest after a refusal. "halted" only restates this latch; the evidence that
+        // nothing ran after the refusal is instructions_after_refusal (counted at every instruction start).
+        if (gg_verify_stack_refused) {
             halted = true;
             break;
         }
@@ -367,7 +371,7 @@ int main(int argc, char** argv)
                  "\"read_buffer\":[%u,%u]},", vdc_ar_before, (unsigned)(u8)*g_vdc->AR, vdc_r0_before,
                  (unsigned)g_vdc->R[0], vdc_r1_before, (unsigned)g_vdc->R[1], vdc_r7_before, (unsigned)g_vdc->R[7],
                  vdc_sr_before, (unsigned)*g_vdc->SR, vdc_buffer_before, (unsigned)*g_vdc->READ_BUFFER);
-    std::fprintf(stderr, "\"irr_after\":%u,", (unsigned)*g_st->IRR);
+    std::fprintf(stderr, "\"irr_before\":%u,\"irr_after\":%u,", irr_before, (unsigned)*g_st->IRR);
     std::fprintf(stderr, "\"stack_window_before\":[%u,%u,%u,%u,%u],\"stack_window_after\":[%u,%u,%u,%u,%u],",
                  stack_before[0], stack_before[1], stack_before[2], stack_before[3], stack_before[4],
                  (unsigned)wram[0x0100], (unsigned)wram[0x0101], (unsigned)wram[0x0102], (unsigned)wram[0x0103],

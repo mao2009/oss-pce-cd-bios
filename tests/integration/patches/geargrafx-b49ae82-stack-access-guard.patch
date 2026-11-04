@@ -1,6 +1,6 @@
 --- a/src/huc6280.h
 +++ b/src/huc6280.h
-@@ -27,6 +27,26 @@
+@@ -27,6 +27,29 @@
  #include "common.h"
  #include "huc6280_registers.h"
  
@@ -16,7 +16,10 @@
 +//   also apply a harness-side MPR setting here).
 +// gg_verify_stack_mutation: 0 = none. Mutants exist only to prove the test can fail:
 +//   1 = push16 checks only before its second byte, 2 = pop increments S before the check,
-+//   3 = no latch and no stop request, 4 = the refusal is computed but ignored (access performed).
++//   3 = no latch and no stop request, 4 = the refusal is computed but ignored (access performed),
++//   5 = latch kept but no stop request.
++// After a refused access the rest of the instruction still runs, and the run loop still clocks the
++// hardware for the instruction's cycles before it stops (device time advances; no CPU access is made).
 +extern bool (*gg_verify_stack_guard)(void* context, unsigned op, unsigned s, unsigned transfer_state, bool latched);
 +extern void (*gg_verify_io_observer)(void* context, unsigned is_write, unsigned address, unsigned value);
 +extern void (*gg_verify_pre_instruction)(void* context, unsigned pc, unsigned transfer_state);
@@ -27,7 +30,7 @@
  #define FLAG_CARRY      0x01
  #define FLAG_ZERO       0x02
  #define FLAG_INTERRUPT  0x04
-@@ -122,6 +142,10 @@
+@@ -122,6 +145,10 @@
      void Init(Memory* memory, HuC6202* huc6202);
      void Reset();
      u32 RunInstruction(bool* completed = NULL);
@@ -45,7 +48,7 @@
  #include "profiler.h"
  
 +// VERIFICATION-ONLY stack access guard (Issue #499, method C of #473). NOT upstream code.
-+// Null hooks = upstream behaviour. Declarations and semantics: huc6280_inline.h.
++// Null hooks = upstream behaviour. Declarations and semantics: huc6280.h; guard logic: huc6280_inline.h.
 +bool (*gg_verify_stack_guard)(void* context, unsigned op, unsigned s, unsigned transfer_state, bool latched) = nullptr;
 +void (*gg_verify_io_observer)(void* context, unsigned is_write, unsigned address, unsigned value) = nullptr;
 +void (*gg_verify_pre_instruction)(void* context, unsigned pc, unsigned transfer_state) = nullptr;
@@ -58,7 +61,7 @@
      m_random = random;
 --- a/src/huc6280_inline.h
 +++ b/src/huc6280_inline.h
-@@ -29,6 +29,29 @@
+@@ -29,6 +29,31 @@
  #include "trace_logger.h"
  #include "profiler.h"
  
@@ -79,8 +82,10 @@
 +}
 +
 +// Stop request after a refusal: the debugger run loop leaves RunToVBlank after this instruction.
++// Mutations 3 and 5 suppress it (5 keeps the latch, so only the stop request itself is removed).
 +#if !defined(GG_DISABLE_DISASSEMBLER)
-+#define GG_VERIFY_STACK_STOP() do { if (gg_verify_stack_mutation != 3) m_memory_breakpoint_hit = true; } while (0)
++#define GG_VERIFY_STACK_STOP() do { if (gg_verify_stack_mutation != 3 && gg_verify_stack_mutation != 5) \
++    m_memory_breakpoint_hit = true; } while (0)
 +#else
 +#define GG_VERIFY_STACK_STOP() do { } while (0)
 +#endif
@@ -88,7 +93,7 @@
  INLINE void HuC6280::TraceCpuEvent()
  {
      if (IsValidPointer(m_trace_logger) && m_trace_logger->IsEnabled(TRACE_CPU))
-@@ -71,6 +94,10 @@
+@@ -71,6 +96,10 @@
      m_clocked_master_cycles = 0;
      m_extra_master_cycles = 0;
  
@@ -99,7 +104,7 @@
      TraceCpuEvent();
  
      u8 opcode = Fetch8();
-@@ -368,23 +395,51 @@
+@@ -368,23 +397,51 @@
  #endif
  }
  
@@ -152,7 +157,7 @@
      u8 l = m_memory->Read(STACK_ADDR | m_S.GetValue());
      m_S.Increment();
      u8 h = m_memory->Read(STACK_ADDR | m_S.GetValue());
-@@ -393,7 +448,15 @@
+@@ -393,7 +450,15 @@
  
  INLINE u8 HuC6280::StackPop8()
  {

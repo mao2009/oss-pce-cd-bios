@@ -40,7 +40,8 @@ def _row(case, **fields):
                instructions=10, instructions_after_refusal=0, io_reads=0, io_writes=0, io_before_refusal=0,
                io_after_refusal=0, refusal=dict(op=0, s=0, transfer_state=0, mpr1=0, cycles=0, vdc_ar=0),
                harness_mpr1_flip=False, flip_instruction=0, start=_snap(), refusal_instruction_start=_snap(),
-               at_refusal=_snap(), stop=_snap(), vdc=_vdc(), irr_after=0, stack_window_before=[0, 0, 0, 0, 0],
+               at_refusal=_snap(), stop=_snap(), vdc=_vdc(), irr_before=0, irr_after=0,
+               stack_window_before=[0, 0, 0, 0, 0],
                stack_window_after=[0, 0, 0, 0, 0], stack_bytes_changed=0, dst=[0, 0], events_truncated=False,
                events=[])
     row.update(fields)
@@ -219,6 +220,9 @@ class ClassifierTests(unittest.TestCase):
         table, mutations = G.evaluate(rows)
         self.assertEqual({r: t["verdict"] for r, t in table.items()},
                          {r: s["armed"]["verdict"] for r, s in G.ROUTES.items()})
+        for route, result in table.items():   # PASS never claims a restored pre-instruction state
+            self.assertEqual(result["state"], G.STATE_PASS if result["verdict"] == G.PASS else G.STATE_BLOCKED)
+        self.assertNotIn("PRESERVED", G.STATE_PASS)
         self.assertTrue(all(reason for _, _, reason in mutations))
 
 
@@ -271,9 +275,20 @@ class PatchBoundaryTests(unittest.TestCase):
 
     def test_make_integration_runs_the_driver(self):
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-        integration = makefile[makefile.index("\nintegration: build"):makefile.index("\n# Issue #499")]
-        self.assertIn("$(MAKE) stack-access-guard", integration)
+        start = makefile.index("\nintegration: build\n") + 1
+        recipe = []
+        for line in makefile[start:].splitlines()[1:]:
+            if not line.startswith("\t"):
+                break   # the recipe ends at the first line that is not a tab-indented command
+            recipe.append(line.strip())
+        self.assertIn("$(MAKE) stack-access-guard", recipe)
         self.assertIn("stack-access-guard:\n\t$(PYTHON) tests/integration/geargrafx_stack_access_guard.py", makefile)
+
+    def test_stop_request_and_its_mutants_are_in_the_patch(self):
+        text = PATCH.read_text(encoding="utf-8")
+        self.assertIn("gg_verify_stack_mutation != 3 && gg_verify_stack_mutation != 5", text)
+        self.assertIn("m_memory_breakpoint_hit = true", text)
+        self.assertEqual(set(G.MUTANTS), {"mut-late16", "mut-popinc", "mut-nolatch", "mut-ignore", "mut-nostop"})
 
 
 if __name__ == "__main__":
