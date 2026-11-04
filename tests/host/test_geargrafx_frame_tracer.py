@@ -1,6 +1,7 @@
 """Synthetic protocol tests for the normal-frame tracer; no Geargrafx core runs here."""
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import stat
@@ -32,25 +33,62 @@ def event(kind="sample", frame=1):
     return row
 
 
-def output(events, dropped=0, trace_events_dropped=0, capacity=4, run=None, **end_fields):
+def core_trace_for(end, frames=2):
+    """A core_trace object consistent with the END fields, as the C++ accounting would emit it.
+
+    One frame carries the per-frame maximum (and every lost entry); the other frames log at most
+    30 entries, never more than the capacity.
+    """
+    capacity, retained_max, lost = end.get("core_capacity"), end.get("max_frame_core_entries"), \
+        end.get("trace_events_dropped")
+    if not all(type(value) is int for value in (capacity, retained_max, lost)):
+        capacity, retained_max, lost = 100000, 40, 0  # negative tests: other checks reject first
+    maximum = capacity + lost if lost else retained_max
+    other = min(30, maximum, capacity)
+    logged = maximum + other * (frames - 1)
+    return {"total_logged": logged, "sequence_delta": logged, "logged_accounted": logged, "consumed": logged - lost,
+            "lost": lost, "frames_accounted": frames, "discontinuity_frames": 0, "gap_frames": 1 if lost else 0,
+            "max_frame_logged": maximum}
+
+
+def output(events, dropped=0, trace_events_dropped=0, capacity=4, run=None, legacy=False, core_trace=None,
+           cap_fields=None, **end_fields):
     cap = {"normal_frame_execution": True, "instruction_step": False, "guest_mutation": False, "scsi_event_notification": True,
             "ram_observation": True, "ram_regions": [], "cpu_event_notification": True,
            "mmio_reads": False, "ring_capacity": capacity, "frames": 2, "disc_given": False,
            "ram_delta_summary": True,
-           "run_input_requested": bool(run), "run_start_frame": 1 if run else 0, "run_hold_frames": 2 if run else 0}
+           "run_input_requested": bool(run), "run_start_frame": 1 if run else 0, "run_hold_frames": 2 if run else 0,
+           "core_capacity_requested": 0, "trace_api_guest_ram_checked": True}
     end = {"frames": 2, "events": len(events), "dropped": dropped, "trace_events_dropped": trace_events_dropped,
            "overflow": bool(dropped or trace_events_dropped), "ram_deltas": ram_deltas(),
            "pushed": len(events) + dropped, "core_capacity": 100000, "max_frame_core_entries": 40,
-           "max_frame_scsi_events": 3}
+           "max_frame_scsi_events": 3, "trace_api_guest_checks": 3, "trace_api_guest_changes": 0}
     for key, value in end_fields.items():
         if value is MISSING:
             end.pop(key, None)
         else:
             end[key] = value
+    for key, value in (cap_fields or {}).items():
+        if value is MISSING:
+            cap.pop(key, None)
+        else:
+            cap[key] = value
+    if core_trace is not MISSING:
+        end["core_trace"] = core_trace if core_trace is not None else core_trace_for(end)
+    if legacy:  # pre-PR-B tracer output: none of the PR-B fields exist
+        for key in ("core_trace", "trace_api_guest_checks", "trace_api_guest_changes"):
+            end.pop(key, None)
+        for key in ("core_capacity_requested", "trace_api_guest_ram_checked"):
+            cap.pop(key, None)
     inputs = [] if not run else ["INPUT " + json.dumps({"frame": 1, "action": "press", "run_pressed": True}),
                                  "INPUT " + json.dumps({"frame": 2, "action": "release", "run_pressed": False})]
     return "\n".join(["CAP " + json.dumps(cap), *inputs, *["EVENT " + json.dumps(row) for row in events],
                        "END " + json.dumps(end)])
+
+
+def table_of(text):
+    cap, _, end = tracer.parse_records(text)
+    return tracer.measurements(cap, end)
 
 
 def ram_deltas():
@@ -84,7 +122,7 @@ class FrameTracerProtocolTests(unittest.TestCase):
         self.assertTrue(end["overflow"])
 
     def test_core_trace_loss_is_explicit_overflow(self):
-        _, _, end = tracer.parse_records(output([event("region")], trace_events_dropped=3))
+        _, _, end = tracer.parse_records(output([event("region")], trace_events_dropped=3, core_capacity=40))
         self.assertTrue(end["overflow"])
         self.assertEqual(end["trace_events_dropped"], 3)
 
@@ -131,7 +169,7 @@ class FrameTracerProtocolTests(unittest.TestCase):
             tracer.parse_records(output([row]))
 
     def test_accepts_observer_off_without_ram_events(self):
-        text = output([event()]).replace('"ram_observation": true', '"ram_observation": false')
+        text = output([event()], cap_fields={"ram_observation": False, "trace_api_guest_ram_checked": False})
         cap, events, _ = tracer.parse_records(text, require_ram_observation=False)
         self.assertFalse(cap["ram_observation"])
         self.assertEqual([row["kind"] for row in events], ["sample"])
@@ -243,7 +281,7 @@ class FrameTracerProtocolTests(unittest.TestCase):
         include = Path(__file__).resolve().parents[1] / "integration"
         with tempfile.TemporaryDirectory() as temporary:
             for stem in ("geargrafx_frame_tracer_ring_test", "geargrafx_frame_tracer_ram_test",
-                         "geargrafx_frame_tracer_ram_summary_test"):
+                         "geargrafx_frame_tracer_ram_summary_test", "geargrafx_frame_tracer_core_account_test"):
                 source = Path(__file__).with_name(stem + ".cpp")
                 binary = Path(temporary) / stem
                 subprocess.run(["c++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-I", str(include),
@@ -363,22 +401,22 @@ class CoreTraceCapacityTests(unittest.TestCase):
 
 
 class MeasurementTableTests(unittest.TestCase):
-    """PR-A: core_capacity and the output-ring dropped count; the other three stay NOT_MEASURED."""
+    """PR-A: core_capacity and the output-ring dropped count.  PR-B rows are covered by CoreTraceAccountingTests."""
 
     def test_valid_run_classifies_each_quantity_without_estimates(self):
         cap, _, end = tracer.parse_records(output([event("sample", 2), event("handoff", 2)], dropped=7, capacity=2))
         table = tracer.measurements(cap, end)
+        self.assertEqual(set(table), set(tracer.MEASUREMENT_NAMES))
         self.assertEqual(set(table), {"core_capacity", "output_ring_dropped", "max_frame_core_entries",
                                       "max_frame_scsi_events", "core_trace_dropped_frames"})
         self.assertEqual(table["core_capacity"], {
-            "status": tracer.REPORTED_BY_CORE, "value": 100000, "kind": "configuration",
+            "status": tracer.REPORTED_BY_CORE, "value": 100000, "requested": 0, "kind": "configuration",
             "source": "pinned core TraceLogger::GetCapacity()"})
         ring = table["output_ring_dropped"]
         self.assertEqual((ring["status"], ring["value"], ring["pushed"], ring["retained"], ring["ring_capacity"]),
                          (tracer.MEASURED, 7, 9, 2, 2))
-        for name in ("max_frame_core_entries", "max_frame_scsi_events", "core_trace_dropped_frames"):
-            self.assertEqual(table[name]["status"], tracer.NOT_MEASURED)
-            self.assertEqual(set(table[name]), {"status", "reason"})  # raw END values are never promoted
+        self.assertEqual(table["max_frame_scsi_events"]["status"], tracer.NOT_MEASURED)
+        self.assertEqual(set(table["max_frame_scsi_events"]), {"status", "reason"})  # raw END value never promoted
 
     def test_configuration_is_never_labelled_measured(self):
         cap, _, end = tracer.parse_records(output([event()]))
@@ -425,6 +463,175 @@ class MeasurementTableTests(unittest.TestCase):
         self.assertLess(ring.index("++pushed_;"), ring.index("if (size_ < capacity_)"))
 
 
+class CoreTraceAccountingTests(unittest.TestCase):
+    """A1 PR-B: pre-clamp per-frame core counts and core-trace gap frames, from END core_trace."""
+
+    BASE = core_trace_for({"core_capacity": 100000, "max_frame_core_entries": 40, "trace_events_dropped": 0})
+    # Gap run: capacity 40, one frame logged 43 (3 lost), the other 30.
+    GAP = core_trace_for({"core_capacity": 40, "max_frame_core_entries": 40, "trace_events_dropped": 3})
+
+    @staticmethod
+    def changed(base, **fields):
+        row = dict(base)
+        for key, value in fields.items():
+            if value is MISSING:
+                row.pop(key)
+            else:
+                row[key] = value
+        return row
+
+    def gap_output(self, core_trace=None, **fields):
+        fields.setdefault("core_capacity", 40)
+        fields.setdefault("trace_events_dropped", 3)
+        return output([event()], core_trace=core_trace or self.GAP, **fields)
+
+    def test_valid_run_measures_pre_clamp_maximum_and_gap_frames(self):
+        table = table_of(output([event()]))
+        entries, drops = table["max_frame_core_entries"], table["core_trace_dropped_frames"]
+        self.assertEqual((entries["status"], entries["value"], entries["retained_max"], entries["frames"]),
+                         (tracer.MEASURED, 40, 40, 2))
+        self.assertEqual((drops["status"], drops["value"], drops["lost_entries"], drops["frames"]),
+                         (tracer.MEASURED, 0, 0, 2))
+        self.assertEqual(table["max_frame_scsi_events"]["status"], tracer.NOT_MEASURED)
+        self.assertEqual(table["core_capacity"]["status"], tracer.REPORTED_BY_CORE)
+
+    def test_gap_frame_maximum_exceeds_capacity_and_is_not_the_clamped_value(self):
+        table = table_of(self.gap_output())
+        entries, drops = table["max_frame_core_entries"], table["core_trace_dropped_frames"]
+        self.assertEqual((entries["value"], entries["retained_max"]), (43, 40))  # pre-clamp, above capacity 40
+        self.assertEqual((drops["value"], drops["lost_entries"]), (1, 3))
+        self.assertEqual(table["max_frame_scsi_events"]["status"], tracer.NOT_MEASURED)  # still PR-C
+
+    def test_requested_capacity_is_configuration_not_measurement(self):
+        table = table_of(self.gap_output(cap_fields={"core_capacity_requested": 40}))
+        self.assertEqual(table["core_capacity"]["status"], tracer.REPORTED_BY_CORE)
+        self.assertEqual((table["core_capacity"]["value"], table["core_capacity"]["requested"]), (40, 40))
+
+    def test_legacy_output_is_accepted_but_never_measured(self):
+        table = table_of(output([event()], legacy=True))
+        for name, reason in tracer.LEGACY_NOT_MEASURED_REASONS.items():
+            self.assertEqual(table[name], {"status": tracer.NOT_MEASURED, "reason": reason})
+        self.assertNotIn("requested", table["core_capacity"])
+        self.assertEqual(table["output_ring_dropped"]["status"], tracer.MEASURED)
+
+    def test_discontinuous_counters_keep_quantities_not_measured(self):
+        broken = self.changed(self.BASE, frames_accounted=1, discontinuity_frames=1, logged_accounted=40,
+                              consumed=40, total_logged=5, sequence_delta=999)
+        table = table_of(output([event()], core_trace=broken))
+        for name in tracer.CORE_TRACE_MEASURED:
+            self.assertEqual(table[name]["status"], tracer.NOT_MEASURED, name)
+            self.assertNotIn("value", table[name])
+            self.assertIn("discontinuous in 1 of 2", table[name]["reason"])
+
+    def test_no_not_measured_row_carries_a_value(self):
+        for text in (output([event()]), self.gap_output(), output([event()], legacy=True)):
+            for name, row in table_of(text).items():
+                if row["status"] == tracer.NOT_MEASURED:
+                    self.assertEqual(set(row), {"status", "reason"}, name)
+
+    def test_refuses_inconsistent_core_accounting(self):
+        base, gap = self.BASE, self.GAP
+        cases = {
+            "frames not covered": output([event()], core_trace=self.changed(base, frames_accounted=3)),
+            "more gap frames than accounted": self.gap_output(self.changed(gap, gap_frames=3)),
+            "lost differs from trace_events_dropped": self.gap_output(self.changed(gap, lost=2, consumed=71)),
+            "consumed + lost != logged": output([event()], core_trace=self.changed(base, consumed=69)),
+            "lost without gap frame": output([event()], trace_events_dropped=3,
+                                             core_trace=self.changed(base, lost=3, consumed=67)),
+            "gap frame without loss": output([event()], core_trace=self.changed(base, gap_frames=1)),
+            "maximum above logged total": output([event()], max_frame_core_entries=71,
+                                                 core_trace=self.changed(base, max_frame_logged=71)),
+            "logged above frames x maximum": output([event()], core_trace=self.changed(
+                base, logged_accounted=81, consumed=81, total_logged=81, sequence_delta=81)),
+            "loss larger than possible": self.gap_output(self.changed(gap, lost=4, consumed=69),
+                                                         trace_events_dropped=4),
+            "gap with maximum not above capacity": self.gap_output(self.changed(gap, max_frame_logged=40)),
+            "above capacity without gap": output([event()], core_capacity=40, core_trace=self.changed(
+                base, max_frame_logged=41, logged_accounted=71, consumed=71, total_logged=71, sequence_delta=71)),
+            "retained maximum is not the clamp": output([event()], max_frame_core_entries=39, core_trace=base),
+            "total_logged differs": output([event()], core_trace=self.changed(base, total_logged=71)),
+            "sequence_delta differs": output([event()], core_trace=self.changed(base, sequence_delta=69)),
+            "not an object": output([event()], core_trace=[]),
+            "extra key": output([event()], core_trace=self.changed(base, extra=0)),
+            "missing key": output([event()], core_trace=self.changed(base, lost=MISSING)),
+            "bool value": output([event()], core_trace=self.changed(base, gap_frames=False)),
+            "negative value": output([event()], core_trace=self.changed(base, discontinuity_frames=-1,
+                                                                        frames_accounted=3)),
+            "END frames differ": output([event()], frames=3),
+            "guest checks short": output([event()], trace_api_guest_checks=2),
+            "guest checks bool": output([event()], trace_api_guest_checks=True),
+            "guest state changed": output([event()], trace_api_guest_changes=1),
+            "guest changes bool": output([event()], trace_api_guest_changes=False),
+            "requested negative": output([event()], cap_fields={"core_capacity_requested": -1}),
+            "requested above core default": output([event()], cap_fields={"core_capacity_requested": 100001},
+                                                   core_capacity=100001),
+            "requested bool": output([event()], cap_fields={"core_capacity_requested": False}),
+            "requested not applied": output([event()], cap_fields={"core_capacity_requested": 50}),
+            "RAM check mismatch": output([event()], cap_fields={"trace_api_guest_ram_checked": False}),
+            "RAM check not bool": output([event()], cap_fields={"trace_api_guest_ram_checked": 1}),
+        }
+        for key in ("core_trace", "trace_api_guest_checks", "trace_api_guest_changes"):
+            cases[f"partial: END {key} missing"] = output([event()], core_trace=MISSING if key == "core_trace"
+                                                          else None, **({} if key == "core_trace" else {key: MISSING}))
+        for key in ("core_capacity_requested", "trace_api_guest_ram_checked"):
+            cases[f"partial: CAP {key} missing"] = output([event()], cap_fields={key: MISSING})
+        for name, text in cases.items():
+            with self.subTest(name):
+                with self.assertRaises(ValueError):
+                    tracer.parse_records(text)
+
+    def test_trace_refuses_out_of_range_core_capacity_before_running(self):
+        for value in (0, -1, 100001, True, "40", 40.0):
+            args = SimpleNamespace(frames=1, events=1, timeout=1, rom=Path("ignored"), cue=None,
+                                   run_start_frame=None, run_hold_frames=None, observe_ram=True,
+                                   core_capacity=value)
+            with self.subTest(value=value), mock.patch.object(tracer, "doctor", side_effect=AssertionError):
+                log = tracer.trace(args)
+                self.assertEqual((log["status"], log["evidence"]), ("FAIL", "NOT_RUN"))
+
+    def run_trace(self, core_capacity, stdout):
+        args = SimpleNamespace(frames=2, events=4, timeout=1, rom=Path("ignored"), cue=None,
+                               run_start_frame=None, run_hold_frames=None, observe_ram=True)
+        if core_capacity is not MISSING:
+            args.core_capacity = core_capacity
+        job = {"status": None, "exit_code": 0, "stdout": stdout, "elapsed_s": 0.1}
+        with mock.patch.object(tracer, "doctor", return_value={"status": "PASS"}), \
+                mock.patch.object(tracer, "make_tracked_job_dir", return_value=(Path("/safe/job"), (1, 2, 3))), \
+                mock.patch.object(tracer, "compile_probe", return_value=Path("probe")), \
+                mock.patch.object(tracer.shutil, "copyfile"), \
+                mock.patch.object(tracer, "run_job", return_value=job) as run_job, \
+                mock.patch.object(tracer, "cleanup_tracked_job_dir", return_value=(True, "removed")):
+            log = tracer.trace(args)
+        return log, run_job.call_args.args[0]
+
+    def test_trace_passes_the_requested_capacity_and_checks_it_was_applied(self):
+        log, argv = self.run_trace(40, self.gap_output(cap_fields={"core_capacity_requested": 40}))
+        self.assertEqual((log["status"], argv[-1]), ("PASS", "40"))
+        self.assertEqual(log["measurements"]["max_frame_core_entries"]["value"], 43)
+        for missing in (None, MISSING):  # PR-A callers (no attribute) keep the core default
+            log, argv = self.run_trace(missing, output([event()]))
+            self.assertEqual((log["status"], argv[-1]), ("PASS", "0"))
+        log, _ = self.run_trace(40, output([event()]))  # tracer reported requested=0
+        self.assertEqual((log["status"], log["evidence"]), ("FAIL", "NOT_RUN"))
+        self.assertIn("requested core capacity", log["reason"])
+
+    def test_tracer_source_accounts_core_counters_and_checks_guest_state(self):
+        source = (Path(__file__).resolve().parents[2] / "tests/integration/geargrafx_frame_tracer.cpp").read_text(
+            encoding="utf-8")
+        for needle in ("trace->GetSequence()", "trace->GetCount()", "core_account.account(",
+                       "FrameTracerCoreAccount::valid_start(core_start)", "if (!core_frame.continuous)",
+                       "++consumed_trace;", "trace->SetCapacity((u32)requested_core_capacity)"):
+            self.assertIn(needle, source)
+        # Both guest-state comparisons are real (not short-circuited) and each is counted.
+        for label in ("before_setup", "before_trace"):
+            check = (r"\+\+guest_checks;\n\s*if \(!same_guest\(" + label +
+                     r", guest_fingerprint\(core, cpu, memory, scsi, cdrom, rams\)\)\) \+\+guest_changes;")
+            self.assertEqual(len(re.findall(check, source)), 1, label)
+        # SetCapacity is only reached when a capacity is requested, before frame 1.
+        self.assertIn("if (requested_core_capacity && !trace->SetCapacity(", source)
+        self.assertLess(source.index("SetCapacity("), source.index("for (unsigned number = 1;"))
+
+
 class MeasurementEvidenceTests(unittest.TestCase):
     """CD wrapper: the counts-only table is checked before anything is written or printed."""
 
@@ -449,7 +656,10 @@ class MeasurementEvidenceTests(unittest.TestCase):
         self.assertEqual(written["runs"]["observer_off"]["output_ring_dropped"]["value"], 0)
         self.assertEqual(written["guest_bytes"], "NONE")
         for table in written["runs"].values():  # the five quantities only: no events, traces or guest data
-            self.assertEqual(set(table), {"core_capacity", "output_ring_dropped", *tracer.NOT_MEASURED_REASONS})
+            self.assertEqual(set(table), set(tracer.MEASUREMENT_NAMES))
+            self.assertEqual(table["max_frame_core_entries"]["status"], tracer.MEASURED)
+            self.assertEqual(table["core_trace_dropped_frames"]["status"], tracer.MEASURED)
+            self.assertEqual(table["max_frame_scsi_events"]["status"], tracer.NOT_MEASURED)
 
     def test_refuses_promoted_missing_or_inconsistent_tables(self):
         promoted = self.run_table()
@@ -460,7 +670,15 @@ class MeasurementEvidenceTests(unittest.TestCase):
         bad_push["measurements"]["output_ring_dropped"]["pushed"] += 1
         missing = self.run_table()
         del missing["measurements"]["core_trace_dropped_frames"]
+        legacy_on = {"status": "PASS", "measurements": table_of(output([event()], legacy=True))}
+        bad_drops = self.run_table()
+        bad_drops["measurements"]["core_trace_dropped_frames"]["value"] = 3  # three gap frames, zero lost entries
+        too_many_drops = self.run_table()
+        too_many_drops["measurements"]["core_trace_dropped_frames"].update(value=5, lost_entries=9)  # 2 frames
         cases = {
+            "legacy (pre-PR-B) table on the real core": (legacy_on, self.run_table()),
+            "dropped frames without lost entries": (bad_drops, self.run_table()),
+            "more dropped frames than frames": (too_many_drops, self.run_table()),
             "NOT_MEASURED promoted": (promoted, self.run_table()),
             "configuration relabelled": (self.run_table(), relabelled),
             "push mismatch": (bad_push, self.run_table()),
