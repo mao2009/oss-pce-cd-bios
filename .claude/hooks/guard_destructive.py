@@ -653,6 +653,12 @@ def python_c_codes(args):
 
 
 def python_rule(args):
+    # Brace or glob expansion can build an option such as -c from a word (python3 {-c,}"open(...)"), and the guard
+    # does not see the expanded word. Such a word always contains a literal "-", so an argument with a dash and a
+    # brace or glob character is refused.
+    for arg in args:
+        if "-" in arg and any(ch in arg for ch in "{}*?[]"):
+            raise Deny("unexpanded", "python argument with a dash and a brace or glob character is not inspected")
     for code in python_c_codes(args):
         # The guard does not expand shell variables or run substitutions, so their value cannot be inspected.
         if "$" in code or "`" in code or SUBST in code:

@@ -862,6 +862,15 @@ class PythonCAttachedTests(unittest.TestCase):
         self.assertEqual(self._verdict("python3 -c 'print(1)' -c 'import os; os.remove(1)'"), "DENY")
         self.assertEqual(self._verdict("python3 -cprint(1) -cprint(2)"), "ALLOW")
 
+    def test_brace_expansion_that_builds_a_c_option_is_denied(self):
+        # bash turns python3 {-c,}"open(...)" into python3 -copen(...): the guard must not read it as a plain word.
+        for cmd in ["python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "python3 {-c,\"open('/tmp/zz','w').close()\"}",
+                    "python3 -c*"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._verdict(cmd), "DENY")
+        self.assertEqual(self._verdict("python3 -m unittest discover -s tests/host -v"), "ALLOW")
+
     def test_unexpanded_code_is_denied(self):
         # The guard cannot see the value of a shell variable or a substitution used as the code of -c.
         for cmd in ["X=\"open('/tmp/zz','w').close()\"; python3 -c \"$X\"",
@@ -895,9 +904,12 @@ class PythonCAttachedMutationTests(unittest.TestCase):
         "unexpanded code not refused": (
             "if \"$\" in code or \"`\" in code or SUBST in code:",
             "if False:"),
+        "brace and glob argument with a dash not refused": (
+            "if \"-\" in arg and any(ch in arg for ch in \"{}*?[]\"):",
+            "if False:"),
     }
     DETECTING = ["test_attached_write_forms_are_denied", "test_two_c_options_check_every_code",
-                 "test_unexpanded_code_is_denied"]
+                 "test_unexpanded_code_is_denied", "test_brace_expansion_that_builds_a_c_option_is_denied"]
 
     def _run(self, hook_text):
         with tempfile.TemporaryDirectory() as td:
