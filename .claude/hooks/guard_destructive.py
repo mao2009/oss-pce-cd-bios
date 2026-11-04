@@ -126,9 +126,6 @@ def strip_redirections(words):
     out, i = [], 0
     while i < len(words):
         w = words[i]
-        if w.isdigit() and i + 1 < len(words) and words[i + 1].startswith(REDIR_MARK):
-            i += 1
-            continue
         if w.startswith(REDIR_MARK):
             i += 2 if i + 1 < len(words) else 1
             continue
@@ -569,9 +566,17 @@ def split_segments(text, ps=False):
             # The operator takes one more character when it is >& or <& (fd dup) or >| (clobber).
             if j < n and text[j] in ("&|" if c == ">" else "&"):
                 j += 1
+            # A digit run glued to the operator in the source is its fd number (2>x). A spaced digit is an argument.
+            k = 0
+            while i - k - 1 >= 0 and text[i - k - 1].isdigit():
+                k += 1
+            start = i
+            if k and (i - k == 0 or text[i - k - 1] in " \t\n;&|()") and "".join(cur[-k:]) == text[i - k:i]:
+                del cur[-k:]
+                start = i - k
             if c == ">":
                 rd.append(_redir_target(text, j))
-            cur.append(" " + REDIR_MARK + text[i:j] + " ")
+            cur.append(" " + REDIR_MARK + text[start:j] + " ")
             i = j
             continue
         if quote is None and c == "&" and i + 1 < n and text[i + 1] == ">":

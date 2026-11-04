@@ -1029,6 +1029,13 @@ class LauncherClassTests(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd), "ALLOW")
 
+    def test_spaced_digits_before_a_redirect_are_arguments(self):
+        for cmd in ["timeout -k 5 >x rm -rf /", "nice -n 5 >x rm -rf /", "sudo -u 5 >x rm -rf /",
+                    "ionice -c 2 >x rm -rf /", "xargs -n 5 >x rm -rf /", "timeout -s 9 >x rm -rf /",
+                    "sudo&>x -u root rm -rf /"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+
     def test_powershell_name_value_after_a_comma_is_checked(self):
         for cmd in ["@{k=1, a=Remove-Item -Recurse -Force /}", "@{k = 1, a=Remove-Item -Recurse -Force /}",
                     "@{a = 1, b = Remove-Item -Recurse -Force /}", "@(1, a=Remove-Item -Recurse -Force /)",
@@ -1156,8 +1163,11 @@ class LauncherMutationTests(unittest.TestCase):
         "brace and comma split applied to Bash too": ('(ps and c in "{},")', '(c in "{},")'),
         "PowerShell comma split removed": ('(ps and c in "{},")', '(ps and c in "{}")'),
         "redirections not stripped from argv": ('    words = strip_redirections(words)', '    pass'),
-        "redirection operator not marked": ('            if c == ">":\n                rd.append(_redir_target(text, j))\n            cur.append(" " + REDIR_MARK + text[i:j] + " ")',
-                                            '            if c == ">":\n                rd.append(_redir_target(text, j))\n            cur.append(text[i:j])'),
+        "redirection operator not marked": ('            if c == ">":\n                rd.append(_redir_target(text, j))\n            cur.append(" " + REDIR_MARK + text[start:j] + " ")',
+                                            '            if c == ">":\n                rd.append(_redir_target(text, j))\n            cur.append(text[start:j])'),
+        "glued fd digits not taken into the operator": ('                del cur[-k:]', '                pass'),
+        "ampersand-greater marker branch removed": ('        if quote is None and c == "&" and i + 1 < n and text[i + 1] == ">":',
+                                                    '        if False:'),
         "fd-dup or clobber character not taken into the operator": (
             '            if j < n and text[j] in ("&|" if c == ">" else "&"):',
             '            if False:'),
