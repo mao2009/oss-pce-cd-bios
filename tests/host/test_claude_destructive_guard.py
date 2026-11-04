@@ -606,6 +606,105 @@ class SymlinkResolutionTests(unittest.TestCase):
         self.assertEqual(guard.canon("/home/x/../y"), "/home/y")
 
 
+class DotdotRmTests(unittest.TestCase):
+    """rm with a ".." component. A path with a real ".." component that does not resolve at hook time is refused
+    (rm-unresolvable-dotdot). A path with ".." that resolves is judged by its real target. An absent plain path,
+    or a ".." inside a file name, is not refused by this rule. Expectations are host-independent except the
+    dangling-symlink test, which SKIPs where symlinks cannot be created."""
+
+    def setUp(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        self.tmp = os.path.realpath(td.name)
+        self.repo = os.path.join(self.tmp, "repo")
+        os.makedirs(os.path.join(self.repo, ".git"))
+        os.makedirs(os.path.join(self.repo, ".claude"))
+        os.makedirs(os.path.join(self.repo, "sub"))
+        write_text(os.path.join(self.repo, "file.txt"), "x\n")
+        write_text(os.path.join(self.repo, "file..txt"), "x\n")
+        write_text(os.path.join(self.repo, "sub", "inner.txt"), "x\n")
+        write_text(os.path.join(self.tmp, "outer.txt"), "outside\n")
+
+    def _decide(self, cmd):
+        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": self.repo})
+        return guard.decide(payload, repo_root=self.repo)
+
+    def test_absent_path_with_dotdot_is_refused(self):
+        verdict, reason = self._decide("rm " + os.path.join(self.repo, "nosuch", "..", "file.txt"))
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("rm-unresolvable-dotdot"), reason)
+
+    def test_absent_plain_path_is_not_refused_by_the_dotdot_rule(self):
+        verdict, reason = self._decide("rm " + os.path.join(self.repo, "not-there.txt"))
+        self.assertEqual(verdict, "DENY")
+        self.assertFalse(reason.startswith("rm-unresolvable-dotdot"), reason)
+        self.assertTrue(reason.startswith("rm:"), reason)
+
+    def test_existing_dotdot_inside_the_repo_is_allowed(self):
+        self.assertEqual(self._decide("rm " + os.path.join(self.repo, "sub", "..", "file.txt"))[0], "ALLOW")
+
+    def test_relative_existing_dotdot_inside_the_repo_is_allowed(self):
+        self.assertEqual(self._decide("rm sub/../file.txt")[0], "ALLOW")
+
+    def test_relative_absent_dotdot_is_refused(self):
+        verdict, reason = self._decide("rm sub/../nope.txt")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("rm-unresolvable-dotdot"), reason)
+
+    def test_dotdot_inside_a_file_name_is_not_a_component(self):
+        self.assertEqual(self._decide("rm " + os.path.join(self.repo, "file..txt"))[0], "ALLOW")
+        verdict, reason = self._decide("rm " + os.path.join(self.repo, "nope..txt"))
+        self.assertEqual(verdict, "DENY")
+        self.assertFalse(reason.startswith("rm-unresolvable-dotdot"), reason)
+
+    def test_existing_dotdot_that_leaves_the_repo_is_denied_by_its_real_target(self):
+        verdict, reason = self._decide("rm " + os.path.join(self.repo, "..", "outer.txt"))
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        verdict, reason = self._decide("rm ../outer.txt")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+
+    def test_quoted_existing_dotdot_path_is_judged_like_the_unquoted_one(self):
+        self.assertEqual(self._decide('rm "' + os.path.join(self.repo, "sub", "..", "file.txt") + '"')[0], "ALLOW")
+
+    def test_shell_variable_in_the_path_is_refused(self):
+        verdict, reason = self._decide("rm $HOME/../file.txt")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("unexpanded"), reason)
+
+    def test_windows_drive_form_absent_dotdot_is_refused(self):
+        verdict, reason = self._decide("rm C:/nosuch-volume/../file.txt")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("rm-unresolvable-dotdot"), reason)
+
+    def test_windows_unc_form_with_dotdot_is_refused(self):
+        verdict, reason = self._decide(r"rm \\nosuch-server\share\..\file.txt")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("rm-unresolvable-dotdot"), reason)
+
+    def test_dotdot_escape_toward_a_protected_home_is_refused(self):
+        verdict, reason = self._decide("rm " + os.path.join(self.repo, "sub", "..", "..", "home", "victim.txt"))
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("rm-unresolvable-dotdot"), reason)
+
+    def test_worktree_remove_through_dotdot_still_denied_for_the_root(self):
+        self.assertEqual(self._decide("git worktree remove " + os.path.join(self.repo, "sub", ".."))[0], "DENY")
+
+    def test_dangling_symlink_entries_are_refused(self):
+        dangle = os.path.join(self.repo, "dangle")
+        try:
+            os.symlink(os.path.join(self.tmp, "nowhere"), dangle)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest("symlink creation not permitted here: " + type(exc).__name__)
+        verdict, reason = self._decide("rm " + dangle)
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("rm-symlink"), reason)
+        verdict, reason = self._decide("rm " + os.path.join(dangle, "..", "x"))
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("rm-unresolvable-dotdot"), reason)
+
+
 CHILD = r"""
 import importlib.util, json, sys, time
 spec = importlib.util.spec_from_file_location("g", sys.argv[1])

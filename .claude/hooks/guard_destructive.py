@@ -239,12 +239,33 @@ def is_protected(k, ctx):
     return False
 
 
-def resolve_full(raw, ctx):
+def _dotdot_unresolved(p, raw_form):
+    """True if a real ".." component in p cannot be resolved here. p is the slash-normalised path; raw_form the
+    raw spelling. Refused when the whole path does not exist, or when the directory that a ".." follows does not
+    exist (Windows resolves ".." lexically, so a path can "exist" through an absent directory)."""
+    parts = p.split("/")
+    if ".." not in parts:
+        return False
+    if not os.path.exists(raw_form):
+        return True
+    for i, comp in enumerate(parts):
+        if comp == "..":
+            before = "/".join(parts[:i]) or "/"
+            if not os.path.exists(before):
+                return True
+    return False
+
+
+def resolve_full(raw, ctx, deny_unresolvable_dotdot=False):
     """Return (lexical canonical, real canonical, final entry is a link) for a path argument.
 
     The real path resolves the raw spelling on the filesystem, so a symlink followed by ".." reaches its
     real target. The final entry is checked as a link after its parent directory is resolved, so a link
     reached through ".." is seen as a link. Absent paths keep the lexical form.
+
+    deny_unresolvable_dotdot (rm only): a path with a real ".." component that does not resolve at hook time
+    is refused, because a link created earlier in the same command could change where ".." leads. Only a
+    path that has a ".." component is refused; an absent plain path is not.
     """
     if not raw:
         raise Deny("path", "empty path")
@@ -263,6 +284,8 @@ def resolve_full(raw, ctx):
         p = ctx.cwd.rstrip("/") + "/" + p
     lex = canon(p)
     raw_form = canon(p, normalize=False)
+    if deny_unresolvable_dotdot and _dotdot_unresolved(p, raw_form):
+        raise Deny("rm-unresolvable-dotdot", "a path with .. that does not resolve here is denied")
     real = canon(os.path.realpath(raw_form)) if os.path.exists(raw_form) else lex
     parent, base = os.path.split(raw_form)
     entry_link = base not in ("", ".", "..") and os.path.islink(
@@ -513,7 +536,7 @@ def rm_rule(args, ps, ctx):
         raise Deny("rm-recursive", "recursive delete is denied")
     if len(targets) != 1:
         raise Deny("rm", "rm needs exactly one target")
-    lex, real, entry_link = resolve_full(targets[0], ctx)
+    lex, real, entry_link = resolve_full(targets[0], ctx, deny_unresolvable_dotdot=True)
     rk = real.casefold()
     if os.path.islink(lex) or entry_link:
         raise Deny("rm-symlink", "symlink delete is denied")
