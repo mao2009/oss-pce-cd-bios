@@ -644,12 +644,19 @@ def python_c_codes(args):
                     codes.append(rest if rest else (args[i + 1] if i + 1 < len(args) else ""))
                     break
                 if ch in "WXm":
+                    # Python takes the rest of the bundle as a value, so this is not -c. A "c" after it is kept
+                    # as a candidate with the next argument (fail-closed; "-Wc 'code'" was denied on main).
+                    if "c" in flags[j + 1:]:
+                        codes.append(args[i + 1] if i + 1 < len(args) else "")
                     break
     return codes
 
 
 def python_rule(args):
     for code in python_c_codes(args):
+        # The guard does not expand shell variables or run substitutions, so their value cannot be inspected.
+        if "$" in code or "`" in code or SUBST in code:
+            raise Deny("unexpanded", "python -c code with an unexpanded variable or substitution is not inspected")
         if DANGER_PY.search(code):
             raise Deny("python-c", "python -c with a file or process operation")
 

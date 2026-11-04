@@ -862,6 +862,19 @@ class PythonCAttachedTests(unittest.TestCase):
         self.assertEqual(self._verdict("python3 -c 'print(1)' -c 'import os; os.remove(1)'"), "DENY")
         self.assertEqual(self._verdict("python3 -cprint(1) -cprint(2)"), "ALLOW")
 
+    def test_unexpanded_code_is_denied(self):
+        # The guard cannot see the value of a shell variable or a substitution used as the code of -c.
+        for cmd in ["X=\"open('/tmp/zz','w').close()\"; python3 -c \"$X\"",
+                    "X=\"open('/tmp/zz','w').close()\"; python3 -c $X",
+                    "python3 -c \"$(echo open)\""]:
+            with self.subTest(cmd=cmd):
+                # The verdict is the contract. A substitution may be refused by an earlier rule (claude-write) first.
+                self.assertEqual(self._verdict(cmd), "DENY")
+
+    def test_w_then_c_with_separate_code_is_still_denied(self):
+        # On main this was DENY ("-Wc" took the next argument as code). It must not become ALLOW.
+        self.assertEqual(self._verdict("python3 -Wc \"open('x','w').close()\""), "DENY")
+
     def test_separate_forms_are_still_denied(self):
         for cmd in ["python3 -c \"open('x','w').close()\"", "python3 -c \"import os; os.remove('x')\""]:
             with self.subTest(cmd=cmd):
@@ -879,8 +892,12 @@ class PythonCAttachedMutationTests(unittest.TestCase):
         "only the first -c is checked": (
             "    for code in python_c_codes(args):",
             "    for code in python_c_codes(args)[:1]:"),
+        "unexpanded code not refused": (
+            "if \"$\" in code or \"`\" in code or SUBST in code:",
+            "if False:"),
     }
-    DETECTING = ["test_attached_write_forms_are_denied", "test_two_c_options_check_every_code"]
+    DETECTING = ["test_attached_write_forms_are_denied", "test_two_c_options_check_every_code",
+                 "test_unexpanded_code_is_denied"]
 
     def _run(self, hook_text):
         with tempfile.TemporaryDirectory() as td:
