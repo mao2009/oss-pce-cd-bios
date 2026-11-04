@@ -8,6 +8,7 @@ import ast
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -546,6 +547,284 @@ class ProtectedRootTests(unittest.TestCase):
                     "git worktree remove " + self.ok_wt, "make test"]:
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd, repo_root=self.repo), "ALLOW")
+
+
+class SymlinkResolutionTests(unittest.TestCase):
+    """Piece A: a symlink followed by ".." resolves to its real target, and a link reached through ".." is a link.
+
+    The symlink cases need symlink creation. Where it is not permitted they SKIP; a SKIP is not a PASS and
+    must be read as not run. The canon cases need no symlink and run everywhere.
+    """
+
+    def setUp(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        self.tmp = os.path.realpath(td.name)
+        self.repo = os.path.join(self.tmp, "repo")
+        os.makedirs(os.path.join(self.repo, ".git"))
+        os.makedirs(os.path.join(self.repo, ".claude"))
+        write_text(os.path.join(self.repo, "file.txt"), "x\n")
+        self.outdir = os.path.join(self.tmp, "outdir")
+        write_text(os.path.join(self.outdir, "placeholder"), "p\n")
+        write_text(os.path.join(self.tmp, "outer.txt"), "outside\n")
+
+    def _symlink(self, target, link, is_dir):
+        try:
+            os.symlink(target, link, target_is_directory=is_dir)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest("symlink creation not permitted here: " + type(exc).__name__)
+
+    def _decide(self, cmd):
+        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": self.repo})
+        return guard.decide(payload, repo_root=self.repo)
+
+    def test_dotdot_through_symlink_reaches_real_target(self):
+        link_dir = os.path.join(self.repo, "link-dir")
+        self._symlink(self.outdir, link_dir, True)
+        # link-dir/.. is the real parent of outdir (the temporary directory), so outer.txt is outside the repo.
+        verdict, reason = self._decide("rm " + os.path.join(link_dir, "..", "outer.txt"))
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+
+    def test_link_entry_reached_through_dotdot_is_refused(self):
+        link_dir = os.path.join(self.repo, "link-dir")
+        self._symlink(self.outdir, link_dir, True)
+        inner = os.path.join(self.outdir, "inner-link")
+        self._symlink(os.path.join(self.repo, "file.txt"), inner, False)
+        # inner-link is a symlink whose target is inside the repo. The command reaches it through "..".
+        verdict, reason = self._decide("rm " + os.path.join(link_dir, "..", "outdir", "inner-link"))
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("rm-symlink"), reason)
+
+    def test_ordinary_in_repo_removal_still_allowed(self):
+        verdict, _ = self._decide("rm " + os.path.join(self.repo, "file.txt"))
+        self.assertEqual(verdict, "ALLOW")
+
+    def test_canon_without_normalisation_keeps_dotdot(self):
+        self.assertEqual(guard.canon("/home/x/../y", normalize=False), "/home/x/../y")
+
+    def test_canon_default_still_normalises(self):
+        self.assertEqual(guard.canon("/home/x/../y"), "/home/y")
+
+
+class DotdotRmTests(unittest.TestCase):
+    """rm with a ".." component. A path with a real ".." component that does not resolve at hook time is refused
+    (rm-unresolvable-dotdot). A path with ".." that resolves is judged by its real target. An absent plain path,
+    or a ".." inside a file name, is not refused by this rule. Expectations are host-independent except the
+    dangling-symlink test, which SKIPs where symlinks cannot be created."""
+
+    def setUp(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        self.tmp = os.path.realpath(td.name)
+        self.repo = os.path.join(self.tmp, "repo")
+        os.makedirs(os.path.join(self.repo, ".git"))
+        os.makedirs(os.path.join(self.repo, ".claude"))
+        os.makedirs(os.path.join(self.repo, "sub"))
+        write_text(os.path.join(self.repo, "file.txt"), "x\n")
+        write_text(os.path.join(self.repo, "file..txt"), "x\n")
+        write_text(os.path.join(self.repo, "sub", "inner.txt"), "x\n")
+        write_text(os.path.join(self.tmp, "outer.txt"), "outside\n")
+
+    def _decide(self, cmd):
+        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": self.repo})
+        return guard.decide(payload, repo_root=self.repo)
+
+    def test_absent_path_with_dotdot_is_refused(self):
+        verdict, reason = self._decide("rm " + os.path.join(self.repo, "nosuch", "..", "file.txt"))
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("rm-unresolvable-dotdot"), reason)
+
+    def test_absent_plain_path_is_not_refused_by_the_dotdot_rule(self):
+        verdict, reason = self._decide("rm " + os.path.join(self.repo, "not-there.txt"))
+        self.assertEqual(verdict, "DENY")
+        self.assertFalse(reason.startswith("rm-unresolvable-dotdot"), reason)
+        self.assertTrue(reason.startswith("rm:"), reason)
+
+    def test_existing_dotdot_inside_the_repo_is_allowed(self):
+        self.assertEqual(self._decide("rm " + os.path.join(self.repo, "sub", "..", "file.txt"))[0], "ALLOW")
+
+    def test_relative_existing_dotdot_inside_the_repo_is_allowed(self):
+        self.assertEqual(self._decide("rm sub/../file.txt")[0], "ALLOW")
+
+    def test_relative_absent_dotdot_is_refused(self):
+        verdict, reason = self._decide("rm sub/../nope.txt")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("rm-unresolvable-dotdot"), reason)
+
+    def test_dotdot_inside_a_file_name_is_not_a_component(self):
+        self.assertEqual(self._decide("rm " + os.path.join(self.repo, "file..txt"))[0], "ALLOW")
+        verdict, reason = self._decide("rm " + os.path.join(self.repo, "nope..txt"))
+        self.assertEqual(verdict, "DENY")
+        self.assertFalse(reason.startswith("rm-unresolvable-dotdot"), reason)
+
+    def test_existing_dotdot_that_leaves_the_repo_is_denied_by_its_real_target(self):
+        verdict, reason = self._decide("rm " + os.path.join(self.repo, "..", "outer.txt"))
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        verdict, reason = self._decide("rm ../outer.txt")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+
+    def test_quoted_existing_dotdot_path_is_judged_like_the_unquoted_one(self):
+        self.assertEqual(self._decide('rm "' + os.path.join(self.repo, "sub", "..", "file.txt") + '"')[0], "ALLOW")
+
+    def test_shell_variable_in_the_path_is_refused(self):
+        verdict, reason = self._decide("rm $HOME/../file.txt")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("unexpanded"), reason)
+
+    def test_windows_drive_form_absent_dotdot_is_refused(self):
+        verdict, reason = self._decide("rm C:/nosuch-volume/../file.txt")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("rm-unresolvable-dotdot"), reason)
+
+    def test_windows_unc_form_with_dotdot_is_refused(self):
+        verdict, reason = self._decide(r"rm \\nosuch-server\share\..\file.txt")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("rm-unresolvable-dotdot"), reason)
+
+    def test_dotdot_escape_toward_a_protected_home_is_refused(self):
+        verdict, reason = self._decide("rm " + os.path.join(self.repo, "sub", "..", "..", "home", "victim.txt"))
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("rm-unresolvable-dotdot"), reason)
+
+    def test_worktree_remove_through_dotdot_still_denied_for_the_root(self):
+        self.assertEqual(self._decide("git worktree remove " + os.path.join(self.repo, "sub", ".."))[0], "DENY")
+
+    def test_dangling_symlink_entries_are_refused(self):
+        dangle = os.path.join(self.repo, "dangle")
+        try:
+            os.symlink(os.path.join(self.tmp, "nowhere"), dangle)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest("symlink creation not permitted here: " + type(exc).__name__)
+        verdict, reason = self._decide("rm " + dangle)
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("rm-symlink"), reason)
+        verdict, reason = self._decide("rm " + os.path.join(dangle, "..", "x"))
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("rm-unresolvable-dotdot"), reason)
+        # The file exists, so only the unresolvable-dotdot rule refuses this (the mutant allows it).
+        verdict, reason = self._decide("rm " + os.path.join(dangle, "..", "file.txt"))
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("rm-unresolvable-dotdot"), reason)
+
+
+class PlatformPathFormTests(unittest.TestCase):
+    """MSYS (/c/...) and /mnt (/mnt/c/...) forms, and an unmapped alias (/cygdrive/...).
+
+    On Windows the mapped native path is judged: an in-repo ".." is allowed and an outside target is refused.
+    On other hosts these forms are not native paths, so they are refused, never guessed to be safe. An unmapped
+    alias is refused on every host."""
+
+    def setUp(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        self.tmp = os.path.realpath(td.name)
+        self.repo = os.path.join(self.tmp, "repo")
+        os.makedirs(os.path.join(self.repo, ".git"))
+        os.makedirs(os.path.join(self.repo, ".claude"))
+        os.makedirs(os.path.join(self.repo, "sub"))
+        write_text(os.path.join(self.repo, "file.txt"), "x\n")
+        write_text(os.path.join(self.tmp, "outer.txt"), "outside\n")
+
+    def _decide(self, cmd):
+        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": self.repo})
+        return guard.decide(payload, repo_root=self.repo)
+
+    def test_msys_and_mnt_forms_follow_the_native_path(self):
+        if os.name == "nt":
+            drive, rest = os.path.splitdrive(self.repo)
+            native = rest.replace("\\", "/")
+            forms = ["/" + drive[0].lower() + native, "/mnt/" + drive[0].lower() + native]
+            inside_ok = True
+        else:
+            forms = ["/t" + self.repo, "/mnt/t" + self.repo]
+            inside_ok = False
+        for base in forms:
+            with self.subTest(form=base):
+                verdict, reason = self._decide("rm " + base + "/sub/../file.txt")
+                self.assertEqual(verdict, "ALLOW" if inside_ok else "DENY", reason)
+                if not inside_ok:
+                    self.assertTrue(reason.startswith("rm-unresolvable-dotdot"), reason)
+                verdict, reason = self._decide("rm " + base + "/../outer.txt")
+                self.assertEqual(verdict, "DENY", reason)
+                self.assertTrue(reason.startswith("rm-outside-repo" if inside_ok else "rm-unresolvable-dotdot"),
+                                reason)
+
+    def test_unmapped_alias_is_refused_on_every_host(self):
+        rest = os.path.splitdrive(self.repo)[1].replace("\\", "/")
+        verdict, reason = self._decide("rm /cygdrive/c" + rest + "/sub/../file.txt")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("rm-unresolvable-dotdot"), reason)
+
+    def test_bare_drive_alias_before_dotdot_is_refused_on_every_host(self):
+        # Git Bash resolves /c/.. to /, so a bare alias followed by .. is refused, never judged as the drive root.
+        for cmd in ["rm /c/../Users/x/file.txt", "rm /mnt/c/../Users/x/file.txt", "rm /cygdrive/c/../file.txt",
+                    "rm /c//../Users/x/file.txt", "rm /c/./../Users/x/file.txt",
+                    "rm /c/Users/../../Users/x/file.txt"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._decide(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertTrue(reason.startswith("rm-unresolvable-dotdot"), reason)
+
+
+class MutationDetectionTests(unittest.TestCase):
+    """Linux CI (any host where symlinks can be created): the symlink tests must FAIL for each mutant of Piece A's
+    rules. Each mutant is a temporary copy of the hook and this test module in a temporary folder. No repository
+    file and no remote branch is changed. If symlinks cannot be created, the class SKIPs: a SKIP is not a PASS."""
+
+    MUTANTS = {
+        "raw-spelling realpath reverted": (
+            "real = canon(os.path.realpath(raw_form)) if os.path.exists(raw_form) else lex",
+            "real = canon(os.path.realpath(lex)) if os.path.exists(lex) else lex"),
+        "entry-link check removed": (
+            "if os.path.islink(lex) or entry_link:",
+            "if os.path.islink(lex):"),
+        "unresolvable-dotdot rule removed": (
+            "if deny_unresolvable_dotdot and _dotdot_unresolved(p, raw_form):",
+            "if False:"),
+    }
+    SYMLINK_TESTS = ["SymlinkResolutionTests", "DotdotRmTests", "ProtectedRootTests.test_symlink_routes_denied"]
+
+    def _run(self, hook_text):
+        with tempfile.TemporaryDirectory() as td:
+            root = os.path.realpath(td)
+            hooks = os.path.join(root, ".claude", "hooks")
+            host = os.path.join(root, "tests", "host")
+            os.makedirs(hooks)
+            os.makedirs(host)
+            write_text(os.path.join(hooks, "guard_destructive.py"), hook_text)
+            with open(THIS_FILE, encoding="utf-8") as f:
+                write_text(os.path.join(host, "test_claude_destructive_guard.py"), f.read())
+            names = ["test_claude_destructive_guard." + n for n in self.SYMLINK_TESTS]
+            proc = subprocess.run([sys.executable, "-m", "unittest", "-v"] + names, cwd=host,
+                                  capture_output=True, text=True, timeout=300)
+            return proc.returncode, proc.stderr
+
+    # Only failures of these symlink-specific tests count as detection; a failure elsewhere is not evidence.
+    SYMLINK_FAILURE_TESTS = [
+        "test_dangling_symlink_entries_are_refused",
+        "test_dotdot_through_symlink_reaches_real_target",
+        "test_link_entry_reached_through_dotdot_is_refused",
+        "test_symlink_routes_denied",
+    ]
+
+    def test_symlink_tests_detect_each_mutant(self):
+        with open(HOOK, encoding="utf-8") as f:
+            original = f.read()
+        code, out = self._run(original)
+        if "skipped 'symlink" in out:
+            self.skipTest("symlink creation not permitted here; mutation detection not run")
+        self.assertEqual(code, 0, "unmutated copy must pass the symlink tests:\n" + out[-800:])
+        for name, (old, new) in self.MUTANTS.items():
+            with self.subTest(mutant=name):
+                self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
+                code, out = self._run(original.replace(old, new))
+                failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
+                names = [re.match(r"(?:FAIL|ERROR): (\S+) \(", ln) for ln in failing]
+                detected = any(m and m.group(1) in self.SYMLINK_FAILURE_TESTS for m in names)
+                self.assertTrue(detected, "mutant not detected by a symlink test: " + name + "\n" + "\n".join(failing))
 
 
 CHILD = r"""
