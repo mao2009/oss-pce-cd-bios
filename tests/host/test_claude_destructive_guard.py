@@ -8,6 +8,7 @@ import ast
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -703,6 +704,10 @@ class DotdotRmTests(unittest.TestCase):
         verdict, reason = self._decide("rm " + os.path.join(dangle, "..", "x"))
         self.assertEqual(verdict, "DENY")
         self.assertTrue(reason.startswith("rm-unresolvable-dotdot"), reason)
+        # The file exists, so only the unresolvable-dotdot rule refuses this (the mutant allows it).
+        verdict, reason = self._decide("rm " + os.path.join(dangle, "..", "file.txt"))
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("rm-unresolvable-dotdot"), reason)
 
 
 class PlatformPathFormTests(unittest.TestCase):
@@ -755,7 +760,9 @@ class PlatformPathFormTests(unittest.TestCase):
 
     def test_bare_drive_alias_before_dotdot_is_refused_on_every_host(self):
         # Git Bash resolves /c/.. to /, so a bare alias followed by .. is refused, never judged as the drive root.
-        for cmd in ["rm /c/../Users/x/file.txt", "rm /mnt/c/../Users/x/file.txt", "rm /cygdrive/c/../file.txt"]:
+        for cmd in ["rm /c/../Users/x/file.txt", "rm /mnt/c/../Users/x/file.txt", "rm /cygdrive/c/../file.txt",
+                    "rm /c//../Users/x/file.txt", "rm /c/./../Users/x/file.txt",
+                    "rm /c/Users/../../Users/x/file.txt"]:
             with self.subTest(cmd=cmd):
                 verdict, reason = self._decide(cmd)
                 self.assertEqual(verdict, "DENY")
@@ -815,7 +822,8 @@ class MutationDetectionTests(unittest.TestCase):
                 self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
                 code, out = self._run(original.replace(old, new))
                 failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
-                detected = any(t in ln for ln in failing for t in self.SYMLINK_FAILURE_TESTS)
+                names = [re.match(r"(?:FAIL|ERROR): (\S+) \(", ln) for ln in failing]
+                detected = any(m and m.group(1) in self.SYMLINK_FAILURE_TESTS for m in names)
                 self.assertTrue(detected, "mutant not detected by a symlink test: " + name + "\n" + "\n".join(failing))
 
 
