@@ -891,6 +891,21 @@ class LauncherClassTests(unittest.TestCase):
         self.assertEqual(verdict("@{ a = 'x'; b = 1 }", tool="PowerShell"), "ALLOW")
         self.assertEqual(verdict("Start-Process notepad file.txt", tool="PowerShell"), "ALLOW")
 
+    def test_launcher_options_first_and_no_space_hashtable_forms_are_checked(self):
+        for cmd in ["Start-Process -FilePath powershell -ArgumentList '-c Remove-Item -Recurse -Force /'",
+                    "Start-Process -FilePath rm -ArgumentList '-rf /'",
+                    "Start-Process -ArgumentList '-c Remove-Item -Recurse -Force /' -FilePath powershell",
+                    "@{a=Remove-Item -Recurse -Force /}", "@{a =Remove-Item -Recurse -Force /}", "a = Remove-Item",
+                    "ii powershell -Command Remove-Item -Recurse -Force /",
+                    "icm powershell -Command Remove-Item -Recurse -Force /",
+                    "start powershell -Command Remove-Item -Recurse -Force /"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
+        self.assertEqual(verdict("@{ a = 'x'; b = 1 }", tool="PowerShell"), "ALLOW")
+
+    def test_then_keyword_is_a_command_position(self):
+        self.assertEqual(verdict("if true; then rm -rf /; fi"), "DENY")
+
     def test_function_keyword_without_braces_is_checked(self):
         self.assertEqual(verdict("FUNCTION f Remove-Item -Recurse -Force /", tool="PowerShell"), "DENY")
         self.assertEqual(verdict("FUNCTION f rm -rf /"), "DENY")
@@ -940,9 +955,12 @@ class LauncherMutationTests(unittest.TestCase):
     MUTANTS = {
         "function keyword handling removed": ('        if w0.lower() == "function":', '        if False:'),
         "function keyword case-sensitive": ('        if w0.lower() == "function":', '        if w0 == "function":'),
-        "PowerShell assignment value skipped": ('        if ps and len(words) > 2 and words[1] == "=":',
-                                                '        if False:'),
         "PowerShell launcher arguments not analysed": ('    if ps and name in PS_LAUNCH_NAMES:', '    if False:'),
+        "PowerShell name=value rule removed": ('        if ps and len(words) > 1 and re.match(r"^[A-Za-z_]\\w*$", w0) and words[1].startswith("="):',
+                                               '        if False:'),
+        "PowerShell start alias removed": ('{"start-process", "start", "saps"', '{"start-process", "saps"'),
+        "PowerShell ii alias removed": ('"invoke-item", "ii", "invoke-command"', '"invoke-item", "invoke-command"'),
+        "then keyword removed": ('"if", "then", "else"', '"if", "else"'),
         "brace split applied to Bash too": ('(ps and c in "{}")', '(c in "{}")'),
         "coproc handling removed": ('        if w0.lower() == "coproc":', '        if False:'),
         "PowerShell scriptblock braces not split": ('        if c in ";&|()\\n" or (ps and c in "{}"):', '        if c in ";&|()\\n":'),

@@ -40,6 +40,7 @@ PS_RM = {"remove-item", "ri", "del", "erase"}
 # PowerShell cmdlets that start a process or a job from their arguments (their arguments are analysed as a command).
 PS_LAUNCH_NAMES = {"start-process", "start", "saps", "invoke-item", "ii", "invoke-command", "icm", "start-job",
                    "sajb", "start-threadjob"}
+LAUNCHER_MAX_WORDS = 256
 CD_NAMES = {"cd", "chdir", "set-location", "sl"}
 # Always denied: destructive by nature, or cannot be inspected.
 ALWAYS_DENY = {"unlink", "shred", "rmdir", "rd", "dd", "mkfs", "truncate", "wipefs",
@@ -799,16 +800,22 @@ def analyze_argv(words, ctx, ps, depth):
     if depth > MAX_DEPTH:
         raise Deny("depth", "command nesting too deep")
     while True:
-        while words and (words[0] in KEYWORDS or ASSIGN.match(words[0])):
+        # PowerShell has no environment prefix: "a=Remove-Item" (a hashtable entry) is name=value, and its value runs.
+        while words and (words[0] in KEYWORDS or (ASSIGN.match(words[0]) and not ps)):
             check_assign(words[0])
             words = words[1:]
         if not words:
             return
         w0 = words[0]
-        if ps and len(words) > 2 and words[1] == "=":
-            # PowerShell "name = value" (a hashtable entry or an assignment): the value is an expression that can run
-            # a command, so the value is the command position.
-            words = words[2:]
+        if ps and len(words) > 1 and re.match(r"^[A-Za-z_]\w*$", w0) and words[1].startswith("="):
+            # PowerShell "name =value": the value after "=" is the command position.
+            value = words[1][1:]
+            words = ([value] if value else []) + words[2:]
+            continue
+        if ps and "=" in w0 and ASSIGN.match(w0):
+            # PowerShell name=value with no spaces: the value (after "=") is the command position.
+            value = w0.split("=", 1)[1]
+            words = ([value] if value else []) + words[1:]
             continue
         if w0.lower() == "function":
             # X3a: function NAME { body }. The body's commands are in command position, so the words after the
@@ -857,9 +864,15 @@ def analyze_argv(words, ctx, ps, depth):
         break
     args = words[1:]
     if ps and name in PS_LAUNCH_NAMES:
-        # A PowerShell process launcher runs its arguments as a command line (Start-Process powershell -ArgumentList
-        # '-c ...'). The arguments are analysed as text; the launcher itself is not otherwise classified.
-        analyze_text(" ".join(args), ctx.copy(), True, depth + 1)
+        # A PowerShell process launcher runs its arguments as a command line, and its options (-FilePath, -ArgumentList)
+        # may come first, so every suffix of the arguments is analysed as a command line. Bounded: a longer argument
+        # list is denied.
+        # Re-split on whitespace: a quoted argument ('-c Remove-Item ...') is one word but several command words.
+        tokens = " ".join(args).split()
+        if len(tokens) > LAUNCHER_MAX_WORDS:
+            raise Deny("launcher", "launcher with too many arguments is not inspected")
+        for k in range(len(tokens)):
+            analyze_text(" ".join(tokens[k:]), ctx.copy(), True, depth + 1)
     if name in EVAL_LIKE and any(SUBST in a for a in args):
         raise Deny("substitution", "command substitution passed to a shell, eval or source is not inspected")
     if name in WRITE_NAMES or (name == "sed" and any(
