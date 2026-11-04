@@ -994,6 +994,27 @@ class LauncherClassTests(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd, tool="PowerShell"), "ALLOW")
 
+    def test_redirect_before_the_command_word_is_skipped_not_the_command(self):
+        for cmd in [">out rm -rf /", "2>/dev/null rm -rf /", "< in rm -rf /", "x=1 >out rm -rf /",
+                    "x+=1 >out rm -rf /", ">x sudo rm -rf /", ">x timeout 5 rm -rf /", "env >x rm -rf /"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+        for cmd in ["echo hi >out", ">out echo hi", "> out echo hi", "2>/dev/null ls"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "ALLOW")
+
+    def test_process_launcher_alias_with_a_variable_argument_is_denied(self):
+        for cmd in ["saps powershell -ArgumentList $x", "start powershell -ArgumentList $x"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
+
+    def test_powershell_name_value_after_a_comma_is_checked(self):
+        for cmd in ["@{k=1, a=Remove-Item -Recurse -Force /}", "@{k = 1, a=Remove-Item -Recurse -Force /}",
+                    "@{a = 1, b = Remove-Item -Recurse -Force /}", "@(1, a=Remove-Item -Recurse -Force /)",
+                    "1, Remove-Item -Recurse -Force /"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
+
     def test_if_with_a_command_in_its_segment_is_denied(self):
         self.assertEqual(verdict("if rm -rf /; then :; fi"), "DENY")
 
@@ -1111,9 +1132,11 @@ class LauncherMutationTests(unittest.TestCase):
         "Invoke-Item alias removed": ('"saps", "invoke-item", "ii"', '"saps", "ii"'),
         "Start-Job alias removed": ('"icm", "start-job",', '"icm",'),
         "start-threadjob alias removed": ('"sajb", "start-threadjob", ', '"sajb", '),
-        "brace split applied to Bash too": ('(ps and c in "{}")', '(c in "{}")'),
+        "brace and comma split applied to Bash too": ('(ps and c in "{},")', '(c in "{},")'),
+        "PowerShell comma split removed": ('(ps and c in "{},")', '(ps and c in "{}")'),
+        "redirect before the command word not skipped": ('        if REDIR_WORD.match(w0):', '        if False:'),
         "coproc handling removed": ('        if w0.lower() == "coproc":', '        if False:'),
-        "PowerShell scriptblock braces not split": ('        if c in ";&|()\\n" or (ps and c in "{}"):', '        if c in ";&|()\\n":'),
+        "PowerShell scriptblock braces not split": ('        if c in ";&|()\\n" or (ps and c in "{},"):', '        if c in ";&|()\\n":'),
         "coproc NAME reading removed": ('            if len(rest) >= 2:', '            if False:'),
         "POSIX escape unescaping removed": ('            w0 = unescaped', '            pass'),
         "fused function name check removed": ('            if len(words) < 2 or any(ch in words[1] for ch in "{}()"):',

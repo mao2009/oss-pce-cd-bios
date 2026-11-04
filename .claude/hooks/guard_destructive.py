@@ -113,6 +113,9 @@ def handoff(name):
     """Boundary to X3c: a WRAPPER hands the rest of argv to unwrap(). Other classes do not hand off."""
     return launch_class(name) == "WRAPPER"
 ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
+# A word that starts with a redirection (>out, 2>/dev/null, &>x, <in) and the bare operator forms (>, 2>, >>, <).
+REDIR_WORD = re.compile(r"^\d*(?:[<>]|&>)")
+REDIR_OP = re.compile(r"^\d*(?:>>?|<|&>>?)$")
 MNT = re.compile(r"^/mnt/([A-Za-z])(/.*)?$")
 MSYS = re.compile(r"^/([A-Za-z])(/.*)?$")  # Git Bash drive form: /c/Users/... is C:/Users/...
 # Generic roots only. The home directory is derived at run time (home_roots); owner-specific roots come
@@ -555,7 +558,7 @@ def split_segments(text, ps=False):
                     raise Deny("powershell", "call operator with a string or variable is not inspected")
         # PowerShell scriptblocks ({ ... }) are command bodies wherever they appear (try, ForEach-Object, Invoke-Command,
         # Start-Job -ScriptBlock). Each block boundary starts a segment, so the commands inside are analysed.
-        if c in ";&|()\n" or (ps and c in "{}"):
+        if c in ";&|()\n" or (ps and c in "{},"):
             segs.append("".join(cur))
             redirs.append(rd)
             cur, rd = [], []
@@ -816,6 +819,11 @@ def analyze_argv(words, ctx, ps, depth):
         if not words:
             return
         w0 = words[0]
+        if REDIR_WORD.match(w0):
+            # A redirection before the command word does not change argv (>out rm -rf /): skip it and, when it is a
+            # bare operator, its separate target. The targets themselves are checked by the redirect rules.
+            words = words[2:] if REDIR_OP.fullmatch(w0) and len(words) > 1 else words[1:]
+            continue
         if ps and len(words) > 1 and words[1].startswith("="):
             # PowerShell "name =value": the value after "=" is the command position.
             value = words[1][1:]
