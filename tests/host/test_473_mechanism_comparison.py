@@ -41,7 +41,8 @@ class Comparison(unittest.TestCase):
             self.assertIn(s, CMP)
             self.assertIn(s, AUDIT)
         self.assertIn("30 ケース", CMP)
-        self.assertIn("30 ケース", AUDIT)
+        self.assertIn("#612時点の suite は30ケース", AUDIT)
+        self.assertIn("後続#613はsafeabort拒否/許可を加え、suiteを40ケースへ拡張", AUDIT)
         self.assertNotIn("検出する前に、ガードが", CMP)  # O6 once had a self-contradicting sentence
         self.assertIn("UNMEASURED", CMP)
         self.assertIn("`$05`→`$00`", CMP)
