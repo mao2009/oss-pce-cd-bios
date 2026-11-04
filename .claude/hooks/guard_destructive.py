@@ -251,7 +251,9 @@ def _dotdot_unresolved(p, raw_form):
     for i, comp in enumerate(parts):
         if comp == "..":
             before = "/".join(parts[:i]) or "/"
-            if not os.path.exists(before):
+            # Test the native form: /c/... and /mnt/c/... are mapped to C:/... first. An unmapped alias such as
+            # /cygdrive/... is not native here, so it does not exist and the path is refused (fail-closed).
+            if not os.path.exists(canon(before, normalize=False)):
                 return True
     return False
 

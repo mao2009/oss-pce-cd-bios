@@ -705,6 +705,101 @@ class DotdotRmTests(unittest.TestCase):
         self.assertTrue(reason.startswith("rm-unresolvable-dotdot"), reason)
 
 
+class PlatformPathFormTests(unittest.TestCase):
+    """MSYS (/c/...) and /mnt (/mnt/c/...) forms, and an unmapped alias (/cygdrive/...).
+
+    On Windows the mapped native path is judged: an in-repo ".." is allowed and an outside target is refused.
+    On other hosts these forms are not native paths, so they are refused, never guessed to be safe. An unmapped
+    alias is refused on every host."""
+
+    def setUp(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        self.tmp = os.path.realpath(td.name)
+        self.repo = os.path.join(self.tmp, "repo")
+        os.makedirs(os.path.join(self.repo, ".git"))
+        os.makedirs(os.path.join(self.repo, ".claude"))
+        os.makedirs(os.path.join(self.repo, "sub"))
+        write_text(os.path.join(self.repo, "file.txt"), "x\n")
+        write_text(os.path.join(self.tmp, "outer.txt"), "outside\n")
+
+    def _decide(self, cmd):
+        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": self.repo})
+        return guard.decide(payload, repo_root=self.repo)
+
+    def test_msys_and_mnt_forms_follow_the_native_path(self):
+        if os.name == "nt":
+            drive, rest = os.path.splitdrive(self.repo)
+            native = rest.replace("\\", "/")
+            forms = ["/" + drive[0].lower() + native, "/mnt/" + drive[0].lower() + native]
+            inside_ok = True
+        else:
+            forms = ["/t" + self.repo, "/mnt/t" + self.repo]
+            inside_ok = False
+        for base in forms:
+            with self.subTest(form=base):
+                verdict, reason = self._decide("rm " + base + "/sub/../file.txt")
+                self.assertEqual(verdict, "ALLOW" if inside_ok else "DENY", reason)
+                if not inside_ok:
+                    self.assertTrue(reason.startswith("rm-unresolvable-dotdot"), reason)
+                verdict, reason = self._decide("rm " + base + "/../outer.txt")
+                self.assertEqual(verdict, "DENY", reason)
+                self.assertTrue(reason.startswith("rm-outside-repo" if inside_ok else "rm-unresolvable-dotdot"),
+                                reason)
+
+    def test_unmapped_alias_is_refused_on_every_host(self):
+        verdict, reason = self._decide("rm /cygdrive/c" + self.repo + "/sub/../file.txt")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("rm-unresolvable-dotdot"), reason)
+
+
+class MutationDetectionTests(unittest.TestCase):
+    """Linux CI (any host where symlinks can be created): the symlink tests must FAIL for each mutant of Piece A's
+    rules. Each mutant is a temporary copy of the hook and this test module in a temporary folder. No repository
+    file and no remote branch is changed. If symlinks cannot be created, the class SKIPs: a SKIP is not a PASS."""
+
+    MUTANTS = {
+        "raw-spelling realpath reverted": (
+            "real = canon(os.path.realpath(raw_form)) if os.path.exists(raw_form) else lex",
+            "real = canon(os.path.realpath(lex)) if os.path.exists(lex) else lex"),
+        "entry-link check removed": (
+            "if os.path.islink(lex) or entry_link:",
+            "if os.path.islink(lex):"),
+        "unresolvable-dotdot rule removed": (
+            "if deny_unresolvable_dotdot and _dotdot_unresolved(p, raw_form):",
+            "if False:"),
+    }
+    SYMLINK_TESTS = ["SymlinkResolutionTests", "DotdotRmTests", "ProtectedRootTests.test_symlink_routes_denied"]
+
+    def _run(self, hook_text):
+        with tempfile.TemporaryDirectory() as td:
+            root = os.path.realpath(td)
+            hooks = os.path.join(root, ".claude", "hooks")
+            host = os.path.join(root, "tests", "host")
+            os.makedirs(hooks)
+            os.makedirs(host)
+            write_text(os.path.join(hooks, "guard_destructive.py"), hook_text)
+            with open(THIS_FILE, encoding="utf-8") as f:
+                write_text(os.path.join(host, "test_claude_destructive_guard.py"), f.read())
+            names = ["test_claude_destructive_guard." + n for n in self.SYMLINK_TESTS]
+            proc = subprocess.run([sys.executable, "-m", "unittest", "-v"] + names, cwd=host,
+                                  capture_output=True, text=True, timeout=300)
+            return proc.returncode, proc.stderr
+
+    def test_symlink_tests_detect_each_mutant(self):
+        with open(HOOK, encoding="utf-8") as f:
+            original = f.read()
+        code, out = self._run(original)
+        if "skipped 'symlink" in out:
+            self.skipTest("symlink creation not permitted here; mutation detection not run")
+        self.assertEqual(code, 0, "unmutated copy must pass the symlink tests:\n" + out[-800:])
+        for name, (old, new) in self.MUTANTS.items():
+            with self.subTest(mutant=name):
+                self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
+                code, out = self._run(original.replace(old, new))
+                self.assertNotEqual(code, 0, "mutant not detected by the symlink tests: " + name)
+
+
 CHILD = r"""
 import importlib.util, json, sys, time
 spec = importlib.util.spec_from_file_location("g", sys.argv[1])
