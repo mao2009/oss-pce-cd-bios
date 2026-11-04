@@ -87,7 +87,8 @@ def run(mode):
         table = measurement_evidence(mode, on, off)
         ring = {name: table["runs"][name]["output_ring_dropped"] for name in ("observer_on", "observer_off")}
         core = {name: (table["runs"][name]["max_frame_core_entries"]["value"],
-                       table["runs"][name]["core_trace_dropped_frames"]["value"])
+                       table["runs"][name]["core_trace_dropped_frames"]["value"],
+                       scsi_text(table["runs"][name]))
                 for name in ("observer_on", "observer_off")}
         print("PASS real Geargrafx synthetic CD-read + RAM observer: regions wram/cdrom_ram/card_ram; "
               "observed delta wram only; observer ON/OFF both completed (frame records not compared); no guest bytes; "
@@ -96,15 +97,61 @@ def run(mode):
               f"OFF={ring['observer_off']['value']}/{ring['observer_off']['pushed']} pushed (MEASURED); "
               f"max_frame_core_entries ON={core['observer_on'][0]} OFF={core['observer_off'][0]} (MEASURED, pre-clamp); "
               f"core_trace_dropped_frames ON={core['observer_on'][1]} OFF={core['observer_off'][1]} (MEASURED); "
-              f"{', '.join(sorted(tracer.NOT_MEASURED_REASONS))} NOT_MEASURED")
+              f"max_frame_scsi_events ON={core['observer_on'][2]} OFF={core['observer_off'][2]}")
+
+
+def scsi_text(table):
+    row = table["max_frame_scsi_events"]
+    if row["status"] == tracer.MEASURED:
+        return f"{row['value']} (MEASURED)"
+    return f"NOT_MEASURED, lower bound {table[tracer.SCSI_LOWER_BOUND]['value']} (LOWER_BOUND)"
+
+
+EVIDENCE_NAME = "frame-tracer-measurements.json"
+
+
+def write_evidence(mode, record):
+    """Write this diagnostic's own evidence file (overwritten in place; nothing else is touched)."""
+    output = ROOT / "build" / mode / "frame-tracer-cd"
+    target = output / EVIDENCE_NAME
+    chain = (ROOT / "build", ROOT / "build" / mode, output, target)
+
+    def refuse_links():
+        # Never follow a link out of build/: a symlinked folder or evidence file is refused, not written through.
+        if any(path.is_symlink() for path in chain):
+            raise ValueError("refusing to write frame-tracer evidence through a symbolic link")
+    refuse_links()  # before mkdir, so no directory is created through a linked parent
+    output.mkdir(parents=True, exist_ok=True)
+    refuse_links()
+    target.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+
+
+def status_record(status):
+    """A counts-free record for a run that did not (or not yet) succeed: never success evidence."""
+    return {"status": status, "evidence_valid": False, "runs": None,
+            "scope": "frame tracer measurement table on synthetic CD media; diagnostic only, not BIOS evidence",
+            "proprietary_content": "NONE", "guest_bytes": "NONE"}
 
 
 def measurement_evidence(mode, on, off):
     """Counts-only measurement table for both runs; written under build/ (never guest bytes or traces)."""
     runs = {"observer_on": on.get("measurements"), "observer_off": off.get("measurements")}
     for name, table in runs.items():
-        if type(table) is not dict or set(table) != set(tracer.MEASUREMENT_NAMES):
+        if type(table) is not dict or not set(tracer.MEASUREMENT_NAMES) <= set(table) or \
+                set(table) - set(tracer.MEASUREMENT_NAMES) - {tracer.SCSI_LOWER_BOUND}:
             raise ValueError(f"{name}: measurement table missing or incomplete")
+        # Fail-closed SCSI maximum: exact (MEASURED, no lower-bound row) exactly when no core-trace
+        # frame lost entries; otherwise NOT_MEASURED with a separate LOWER_BOUND row.
+        scsi, bound = table["max_frame_scsi_events"], table.get(tracer.SCSI_LOWER_BOUND)
+        gap_free = table["core_trace_dropped_frames"].get("value") == 0
+        if gap_free != (scsi.get("status") == tracer.MEASURED) or gap_free != (bound is None):
+            raise ValueError(f"{name}: SCSI maximum status disagrees with core-trace gap frames")
+        if gap_free and (type(scsi.get("value")) is not int or scsi["value"] < 0):
+            raise ValueError(f"{name}: max_frame_scsi_events is not a measured count")
+        if not gap_free and (scsi.get("status") != tracer.NOT_MEASURED or "value" in scsi or
+                             bound.get("status") != tracer.LOWER_BOUND or type(bound.get("value")) is not int or
+                             bound["value"] < 0):
+            raise ValueError(f"{name}: SCSI lower bound is not separated from the NOT_MEASURED maximum")
         ring = table["output_ring_dropped"]
         if table["core_capacity"].get("status") != tracer.REPORTED_BY_CORE or ring.get("status") != tracer.MEASURED:
             raise ValueError(f"{name}: unexpected measurement status")
@@ -125,11 +172,10 @@ def measurement_evidence(mode, on, off):
     if len(capacities) != 1:
         raise ValueError(f"core trace capacity differs between observer runs: {sorted(capacities)}")
     evidence = {"scope": "frame tracer measurement table on synthetic CD media; diagnostic only, not BIOS evidence",
+                "status": "PASS", "evidence_valid": True,
                 "core_capacity": runs["observer_on"]["core_capacity"], "runs": runs,
                 "proprietary_content": "NONE", "guest_bytes": "NONE"}
-    output = ROOT / "build" / mode / "frame-tracer-cd"
-    output.mkdir(parents=True, exist_ok=True)
-    (output / "frame-tracer-measurements.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+    write_evidence(mode, evidence)
     return evidence
 
 
@@ -137,15 +183,25 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("debug", "release"), default="debug")
     args = parser.parse_args(argv)
+    # Mark the evidence file INCOMPLETE before running, so a file left by an earlier successful run
+    # can never stand in for this one; only a completed, checked run rewrites it as PASS.
+    try:
+        write_evidence(args.mode, status_record("INCOMPLETE"))
+    except (OSError, ValueError) as error:
+        print(f"FAIL: frame-tracer CD integration evidence path: {error}", file=sys.stderr)
+        return 1
     try:
         run(args.mode)
     except IntegrationBlocked as error:
+        write_evidence(args.mode, status_record("BLOCKED"))
         print(f"BLOCKED: frame-tracer CD integration: {error}", file=sys.stderr)
         return 3
     except (AssertionError, ValueError) as error:
+        write_evidence(args.mode, status_record("FAIL"))
         print(f"FAIL: frame-tracer CD integration oracle assertion: {error}", file=sys.stderr)
         return 1
     except Exception as error:  # unexpected diagnostic failures are failures, never blockers
+        write_evidence(args.mode, status_record("FAIL"))
         print(f"FAIL: frame-tracer CD integration unexpected {type(error).__name__}: {error}", file=sys.stderr)
         return 1
     return 0
