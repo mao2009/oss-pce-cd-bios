@@ -37,6 +37,9 @@ GIT_OPT_ARG = {"-c", "--git-dir", "--work-tree", "--namespace"}
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
 PS_HOSTS = {"powershell", "pwsh"}
 PS_RM = {"remove-item", "ri", "del", "erase"}
+# PowerShell cmdlets that start a process or a job from their arguments (their arguments are analysed as a command).
+PS_LAUNCH_NAMES = {"start-process", "start", "saps", "invoke-item", "ii", "invoke-command", "icm", "start-job",
+                   "sajb", "start-threadjob"}
 CD_NAMES = {"cd", "chdir", "set-location", "sl"}
 # Always denied: destructive by nature, or cannot be inspected.
 ALWAYS_DENY = {"unlink", "shred", "rmdir", "rd", "dd", "mkfs", "truncate", "wipefs",
@@ -802,6 +805,11 @@ def analyze_argv(words, ctx, ps, depth):
         if not words:
             return
         w0 = words[0]
+        if ps and len(words) > 2 and words[1] == "=":
+            # PowerShell "name = value" (a hashtable entry or an assignment): the value is an expression that can run
+            # a command, so the value is the command position.
+            words = words[2:]
+            continue
         if w0.lower() == "function":
             # X3a: function NAME { body }. The body's commands are in command position, so the words after the
             # name are analysed as ordinary words. A name fused with a brace or parenthesis (f{rm, f(), or no name
@@ -848,6 +856,10 @@ def analyze_argv(words, ctx, ps, depth):
             continue
         break
     args = words[1:]
+    if ps and name in PS_LAUNCH_NAMES:
+        # A PowerShell process launcher runs its arguments as a command line (Start-Process powershell -ArgumentList
+        # '-c ...'). The arguments are analysed as text; the launcher itself is not otherwise classified.
+        analyze_text(" ".join(args), ctx.copy(), True, depth + 1)
     if name in EVAL_LIKE and any(SUBST in a for a in args):
         raise Deny("substitution", "command substitution passed to a shell, eval or source is not inspected")
     if name in WRITE_NAMES or (name == "sed" and any(

@@ -883,6 +883,23 @@ class LauncherClassTests(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
 
+    def test_hashtable_values_and_launcher_arguments_are_checked(self):
+        for cmd in ["Write-Output @{ a = Remove-Item -Recurse -Force / }", "@{ a = Remove-Item -Recurse -Force / }",
+                    "Start-Process powershell -ArgumentList '-c Remove-Item -Recurse -Force /'"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
+        self.assertEqual(verdict("@{ a = 'x'; b = 1 }", tool="PowerShell"), "ALLOW")
+        self.assertEqual(verdict("Start-Process notepad file.txt", tool="PowerShell"), "ALLOW")
+
+    def test_function_keyword_without_braces_is_checked(self):
+        self.assertEqual(verdict("FUNCTION f Remove-Item -Recurse -Force /", tool="PowerShell"), "DENY")
+        self.assertEqual(verdict("FUNCTION f rm -rf /"), "DENY")
+
+    def test_brace_words_in_bash_stay_unexpanded(self):
+        for cmd in ["{rm,-rf,/}", "r{m,} -rf /"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+
     def test_unclosed_quote_in_the_first_powershell_piece_is_denied(self):
         self.assertEqual(verdict('"echo hi', tool="PowerShell"), "DENY")
 
@@ -922,6 +939,11 @@ class LauncherMutationTests(unittest.TestCase):
 
     MUTANTS = {
         "function keyword handling removed": ('        if w0.lower() == "function":', '        if False:'),
+        "function keyword case-sensitive": ('        if w0.lower() == "function":', '        if w0 == "function":'),
+        "PowerShell assignment value skipped": ('        if ps and len(words) > 2 and words[1] == "=":',
+                                                '        if False:'),
+        "PowerShell launcher arguments not analysed": ('    if ps and name in PS_LAUNCH_NAMES:', '    if False:'),
+        "brace split applied to Bash too": ('(ps and c in "{}")', '(c in "{}")'),
         "coproc handling removed": ('        if w0.lower() == "coproc":', '        if False:'),
         "PowerShell scriptblock braces not split": ('        if c in ";&|()\\n" or (ps and c in "{}"):', '        if c in ";&|()\\n":'),
         "coproc NAME reading removed": ('            if len(rest) >= 2:', '            if False:'),
