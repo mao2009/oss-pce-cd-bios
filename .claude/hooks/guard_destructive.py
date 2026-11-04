@@ -575,6 +575,18 @@ def git_rule(args, ctx):
         raise Deny("git-config-write", "git config write is denied")
     if sub == "update-ref" or (sub == "symbolic-ref" and sum(1 for a in rest if not a.startswith("-")) > 1):
         raise Deny("git-ref-write", "git ref write is denied")
+    if sub == "symbolic-ref" and any(a in ("-d", "--delete") or (a.startswith("-") and not a.startswith("--")
+                                                                 and "d" in a[1:]) for a in rest):
+        raise Deny("git-ref-write", "git symbolic-ref delete is denied")
+    if sub == "remote" and rest and rest[0] in ("add", "set-url", "rename", "remove", "rm", "set-head",
+                                                 "set-branches", "prune"):
+        raise Deny("git-config-write", "git remote write is denied")
+    if sub == "branch" and any(a in ("-u",) or a.startswith("--set-upstream") for a in rest):
+        raise Deny("git-config-write", "git branch --set-upstream is denied")
+    if sub == "replace" and not any(a in ("-l", "--list") for a in rest):
+        raise Deny("git-ref-write", "git replace is denied")
+    if sub == "notes" and rest and rest[0] in ("add", "append", "edit", "remove", "copy", "merge"):
+        raise Deny("git-ref-write", "git notes write is denied")
     if sub == "clean" and any(short_has(a, "f") or a == "--force" for a in rest):
         raise Deny("git-clean", "git clean with force is denied")
     if sub == "reset" and any(a in ("--hard", "--merge") for a in rest):
@@ -764,6 +776,9 @@ def analyze_argv(words, ctx, ps, depth):
     elif name in PS_HOSTS:
         pwsh_rule(args, ctx, depth)
     elif name in CD_NAMES:
+        if name in ("popd", "pop-location"):
+            # The directory stack is not tracked, so the guard's cwd after a pop would be wrong.
+            raise Deny("cd-pop", "popd/Pop-Location is denied: the directory stack is not tracked")
         if args and args[0].startswith("-"):
             raise Deny("cd", "cd with option is not inspected")
         ctx.cwd = resolve(args[0] if args else "~", ctx)[1]
@@ -779,10 +794,17 @@ def analyze_argv(words, ctx, ps, depth):
         python_rule(args)
 
 
+RM_START = re.compile(r"^\s*\\?(rm|remove-item|ri|del|erase)(\s|$)", re.I)
+
+
 def analyze_text(text, ctx, ps, depth):
     if depth > MAX_DEPTH:
         raise Deny("depth", "command nesting too deep")
     segs, subs, redirs = split_segments(text, ps)
+    # rm is judged on the filesystem as it is at hook time. An earlier segment of the same command may
+    # change that (mv, ln, a redirect), so rm is denied in any multi-segment command.
+    if sum(1 for s in segs if s.strip()) > 1 and any(RM_START.match(s) for s in segs):
+        raise Deny("rm-chain", "rm in a multi-segment command is denied (filesystem may change first)")
     for body in subs:
         analyze_text(body, ctx.copy(), ps, depth + 1)
     for seg, ops in zip(segs, redirs):

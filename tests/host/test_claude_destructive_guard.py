@@ -704,6 +704,25 @@ class ProtectedPathTests(unittest.TestCase):
         self.assertEqual(verdict("echo x > .gitignore-note", repo_root=self.repo), "ALLOW")
         self.assertEqual(verdict("echo x > docs/.gitkeep", repo_root=self.repo), "ALLOW")
 
+    def test_popd_and_git_metadata_forms_and_rm_chain_denied(self):
+        git_dir = os.path.join(self.repo, ".git")
+        cmds = ["pushd " + git_dir + " && pushd " + self.tmp + " && popd && echo x > config",
+                "popd", "Pop-Location",
+                "git symbolic-ref -d HEAD", "git symbolic-ref --delete HEAD",
+                "git remote add x /tmp/y", "git remote set-url origin /tmp/y",
+                "git branch --set-upstream-to=origin/main", "git branch -u origin/main",
+                "git replace a b", "git notes add -m x",
+                "rm " + os.path.join(self.repo, "file.txt") + " && echo ok",
+                "mv " + os.path.join(self.repo, "file.txt") + " " + os.path.join(self.tmp, "d2")
+                + " && rm " + os.path.join(self.repo, "file.txt")]
+        for cmd in cmds:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, repo_root=self.repo), "DENY")
+        for cmd in ["git remote -v", "git branch --list", "git notes show", "git replace --list",
+                    "rm " + os.path.join(self.repo, "file.txt")]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, repo_root=self.repo), "ALLOW")
+
     def test_python_read_with_import_still_allowed(self):
         self.assertEqual(verdict("python3 -c " + repr("import json; print(json.load(open('x.json')))"),
                                  repo_root=self.repo), "ALLOW")
