@@ -428,6 +428,187 @@ class OwnershipTests(unittest.TestCase):
         self.assertEqual(verdict(cmd, repo_root=self.root), "DENY")
 
 
+def write_text(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
+class ProtectedPathTests(unittest.TestCase):
+    """Protected roots: home, repository root, ancestors of protected paths, environment and local config,
+    linked worktrees, symlinks, fail-closed configuration, and normal operations that must stay allowed.
+
+    Every decision is made on a temporary layout with a synthetic home. No test deletes or writes a real
+    worktree or user file; the static test at the bottom of this module keeps it that way.
+    """
+
+    def setUp(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        self.tmp = os.path.realpath(td.name)
+        self.home = os.path.join(self.tmp, "home", "synthetic-owner")
+        self.repo = os.path.join(self.tmp, "repo")
+        self.owned = os.path.join(self.tmp, "owned-elsewhere")
+        self.ok_wt = os.path.join(self.tmp, "wt-ok")
+        os.makedirs(self.home)
+        os.makedirs(os.path.join(self.repo, ".git"))
+        os.makedirs(os.path.join(self.repo, ".claude"))
+        os.makedirs(os.path.join(self.repo, "sub"))
+        write_text(os.path.join(self.repo, "file.txt"), "x\n")
+        self._registry(self.repo, {self.home, self.repo, self.owned, self.ok_wt,
+                                   os.path.dirname(self.home), self.tmp})
+        env = mock.patch.dict(os.environ, {"HOME": self.home, "USERPROFILE": self.home,
+                                           "OSS_PCE_GUARD_PROTECTED": ""})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def _registry(self, root, paths):
+        write_text(os.path.join(root, ".claude", "worktree-owners.json"),
+                   json.dumps({"worktrees": [{"path": p, "owner": "alice"} for p in sorted(paths)]}))
+
+    def _local(self, content):
+        write_text(os.path.join(self.repo, ".claude", "guard-local.json"), content)
+
+    def _symlink(self, target, link, is_dir):
+        try:
+            os.symlink(target, link, target_is_directory=is_dir)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest("symlink creation not permitted here: " + type(exc).__name__)
+
+    # Home, repository root and ancestors of protected paths.
+    def test_home_directory_removal_denied(self):
+        for cmd in ("git worktree remove " + self.home, "rm -rf " + self.home, "rm " + self.home):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, repo_root=self.repo), "DENY")
+
+    def test_repository_root_removal_denied(self):
+        for cmd in ("git worktree remove " + self.repo, "rm -rf " + self.repo, "rm " + self.repo):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, repo_root=self.repo), "DENY")
+
+    def test_parent_of_protected_path_removal_denied(self):
+        for cmd in ("git worktree remove " + os.path.dirname(self.home),
+                    "git worktree remove " + self.tmp):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, repo_root=self.repo), "DENY")
+
+    # Extra protection: environment variable, guard-local.json, and the main checkout of a linked worktree.
+    def test_environment_variable_adds_protection(self):
+        cmd = "git worktree remove " + self.owned
+        self.assertEqual(verdict(cmd, repo_root=self.repo), "ALLOW")
+        with mock.patch.dict(os.environ, {"OSS_PCE_GUARD_PROTECTED": self.owned}):
+            self.assertEqual(verdict(cmd, repo_root=self.repo), "DENY")
+
+    def test_guard_local_json_adds_protection(self):
+        cmd = "git worktree remove " + self.owned
+        self._local(json.dumps({"protected": [self.owned]}))
+        self.assertEqual(verdict(cmd, repo_root=self.repo), "DENY")
+        self._local(json.dumps({"protected": []}))
+        self.assertEqual(verdict(cmd, repo_root=self.repo), "ALLOW")
+
+    def test_linked_worktree_uses_main_checkout_local_config(self):
+        main = os.path.join(self.tmp, "main")
+        linked = os.path.join(self.tmp, "linked")
+        gitdir = os.path.join(main, ".git", "worktrees", "linked")
+        os.makedirs(os.path.join(main, ".claude"))
+        write_text(os.path.join(linked, ".git"), "gitdir: " + gitdir + "\n")
+        write_text(os.path.join(gitdir, "commondir"), "../..\n")
+        self._registry(linked, {self.owned})
+        cmd = "git worktree remove " + self.owned
+        self.assertEqual(verdict(cmd, repo_root=linked), "ALLOW")
+        write_text(os.path.join(main, ".claude", "guard-local.json"), json.dumps({"protected": [self.owned]}))
+        self.assertEqual(verdict(cmd, repo_root=linked), "DENY")
+
+    # Fail closed: a broken configuration refuses; it never removes a protection.
+    def test_broken_local_config_fails_closed(self):
+        for content in ("{bad", "[]", json.dumps({"protected": "x"}), json.dumps({"protected": [1]}),
+                        json.dumps({"protected": ["relative/owned"]})):
+            self._local(content)
+            with self.subTest(content=content):
+                self.assertEqual(verdict("git status", repo_root=self.repo), "DENY")
+
+    def test_relative_environment_entry_fails_closed(self):
+        with mock.patch.dict(os.environ, {"OSS_PCE_GUARD_PROTECTED": "relative/owned"}):
+            self.assertEqual(verdict("git status", repo_root=self.repo), "DENY")
+
+    def test_unresolvable_linked_worktree_fails_closed(self):
+        broken = os.path.join(self.tmp, "linked-broken")
+        write_text(os.path.join(broken, ".git"), "not a gitdir line\n")
+        self.assertEqual(verdict("git status", repo_root=broken), "DENY")
+        other = os.path.join(self.tmp, "other-gitdir")
+        write_text(os.path.join(broken, ".git"), "gitdir: " + other + "\n")
+        write_text(os.path.join(other, "commondir"), ".\n")
+        self.assertEqual(verdict("git status", repo_root=broken), "DENY")
+
+    def test_absent_local_config_adds_nothing_and_keeps_defaults(self):
+        self.assertFalse(os.path.exists(os.path.join(self.repo, ".claude", "guard-local.json")))
+        self.assertEqual(verdict("git worktree remove " + self.home, repo_root=self.repo), "DENY")
+        self.assertEqual(verdict("git worktree remove " + self.owned, repo_root=self.repo), "ALLOW")
+
+    # Worktree removal.
+    def test_worktree_removal_cases(self):
+        self.assertEqual(verdict("git worktree remove " + self.ok_wt, repo_root=self.repo), "ALLOW")
+        self.assertEqual(verdict("git worktree remove " + os.path.join(self.tmp, "unregistered"),
+                                 repo_root=self.repo), "DENY")
+        self.assertEqual(verdict("git worktree remove --force " + self.ok_wt, repo_root=self.repo), "DENY")
+        self.assertEqual(verdict("git worktree prune", repo_root=self.repo), "DENY")
+
+    # Symlinks must not reach a protected or outside target.
+    def test_symlink_bypass_denied(self):
+        link_home = os.path.join(self.repo, "link-home")
+        self._symlink(self.home, link_home, True)
+        self.assertEqual(verdict("git worktree remove " + link_home, repo_root=self.repo), "DENY")
+        outside = os.path.join(self.tmp, "outside.txt")
+        write_text(outside, "outside\n")
+        link_file = os.path.join(self.repo, "link-file")
+        self._symlink(outside, link_file, False)
+        self.assertEqual(verdict("rm " + link_file, repo_root=self.repo), "DENY")
+        outdir = os.path.join(self.tmp, "outdir")
+        write_text(os.path.join(outdir, "x"), "x\n")
+        link_dir = os.path.join(self.repo, "link-dir")
+        self._symlink(outdir, link_dir, True)
+        self.assertEqual(verdict("rm " + os.path.join(link_dir, "x"), repo_root=self.repo), "DENY")
+
+    # Normal operations must stay allowed (decision only; nothing is run).
+    def test_normal_operations_allowed(self):
+        cmds = ["rm " + os.path.join(self.repo, "file.txt"),
+                "rm -f " + os.path.join(self.repo, "file.txt"),
+                "rm -f " + os.path.join(self.repo, "not-there.txt"),
+                "git status", "git diff --stat", "git worktree remove " + self.ok_wt,
+                "make test", "python3 -m unittest discover -s tests/host -v"]
+        for cmd in cmds:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, repo_root=self.repo), "ALLOW")
+
+    def test_forced_removal_of_absent_or_protected_targets_still_denied(self):
+        cmds = ["rm -f " + os.path.join(self.tmp, "not-there.txt"),   # outside the repo
+                "rm -f " + os.path.join(self.repo, "sub"),            # existing directory
+                "rm -f " + os.path.join(self.repo, ".claude", "nope.json")]
+        for cmd in cmds:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, repo_root=self.repo), "DENY")
+
+    # Regression for false positives: read-only python must pass; write forms must stay denied.
+    def test_read_only_python_is_not_refused(self):
+        for code in ["import json; print(json.load(open('x.json')))",
+                     "print(open('a.txt').read())",
+                     "print(open('a.txt', 'rb').read())",
+                     "print(open('a.txt', 'rt').read())"]:
+            with self.subTest(code=code):
+                self.assertEqual(verdict("python3 -c " + repr(code), repo_root=self.repo), "ALLOW")
+
+    def test_python_write_forms_stay_denied(self):
+        for code in ["open('a.txt', 'w').write('x')",
+                     "open('a.txt', chr(119)).write('x')",
+                     "from pathlib import Path; Path('a').open('w')",
+                     "open('a.txt', 'r+')",
+                     "open('a.txt', mode='w')",
+                     "import os; os.replace('a', 'b')",
+                     "import shutil; shutil.copy('a', 'b')"]:
+            with self.subTest(code=code):
+                self.assertEqual(verdict("python3 -c " + repr(code), repo_root=self.repo), "DENY")
+
+
 CHILD = r"""
 import importlib.util, json, sys, time
 spec = importlib.util.spec_from_file_location("g", sys.argv[1])

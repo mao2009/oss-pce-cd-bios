@@ -53,8 +53,12 @@ WRITE_NAMES = {"tee", "cp", "mv", "install", "rsync", "touch", "mkdir", "ln", "c
                "copy", "move", "copy-item", "move-item", "rename-item", "set-content",
                "add-content", "out-file", "new-item", "cpi", "mi", "ni", "sc", "ac"}
 DANGER_PY = re.compile(r"rmtree|remove|unlink|rmdir|removedirs|system|subprocess|popen|"
-                       r"shutil|spawn|exec|eval|__import__|open\s*\(|write|truncate|"
-                       r"ctypes|socket", re.I)
+                       r"shutil|spawn|exec|eval|__import__|write|truncate|"
+                       r"ctypes|socket|replace|rename|chmod|chown|symlink|copy|move|dump|link", re.I)
+# open() is judged by its arguments, not by its name: only builtin open() with a read mode passes.
+OPEN_ANY = re.compile(r"open\s*\(")
+OPEN_CALL = re.compile(r"(?<![\w.])open\s*\(([^()]*)\)")
+READ_MODE = re.compile(r"""^(?:'(?:r|rb|br|rt|tr)'|"(?:r|rb|br|rt|tr)")$""")
 ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 MNT = re.compile(r"^/mnt/([A-Za-z])(/.*)?$")
 MSYS = re.compile(r"^/([A-Za-z])(/.*)?$")  # Git Bash drive form: /c/Users/... is C:/Users/...
@@ -135,22 +139,37 @@ def home_roots():
     return sorted(set(roots))
 
 
-def local_roots(root):
-    """Extra protected roots kept outside the public tree.
+def main_worktree_root(root):
+    """Root of the main checkout. A linked worktree (.git is a file) resolves through its commondir.
 
-    Sources: the environment variable OSS_PCE_GUARD_PROTECTED (os.pathsep separated) and the untracked file
-    .claude/guard-local.json with {"protected": [absolute paths]}. A missing file adds nothing; an unreadable,
-    malformed or relative entry is refused (fail closed).
+    Fail closed: a .git file that cannot be resolved refuses the command, because the local guard
+    configuration of the main checkout could not be found.
     """
-    values = []
-    env = os.environ.get("OSS_PCE_GUARD_PROTECTED", "")
-    values += [item.strip() for item in env.split(os.pathsep) if item.strip()]
-    path = os.path.join(root, ".claude", "guard-local.json")
+    git = os.path.join(root, ".git")
+    if os.path.isdir(git) or not os.path.exists(git):
+        return root
+    try:
+        with open(git, encoding="utf-8") as f:
+            m = re.match(r"gitdir:\s*(.+)$", f.read().strip())
+        if not m:
+            raise ValueError("no gitdir line")
+        gitdir = os.path.normpath(os.path.join(root, m.group(1).strip()))
+        with open(os.path.join(gitdir, "commondir"), encoding="utf-8") as f:
+            common = os.path.normpath(os.path.join(gitdir, f.read().strip()))
+    except Exception:
+        raise Deny("config", "linked worktree git directory cannot be resolved")
+    if os.path.basename(common) != ".git":
+        raise Deny("config", "linked worktree common directory is not a .git directory")
+    return os.path.dirname(common)
+
+
+def _read_local_config(path):
+    """Protected entries from one guard-local.json. Missing file: none. Unreadable or malformed: refuse."""
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except FileNotFoundError:
-        data = {}
+        return []
     except Exception:
         raise Deny("config", "local guard configuration is unreadable")
     if not isinstance(data, dict):
@@ -158,7 +177,26 @@ def local_roots(root):
     listed = data.get("protected", [])
     if not isinstance(listed, list) or not all(isinstance(item, str) for item in listed):
         raise Deny("config", "local guard configuration is malformed")
-    values += listed
+    return listed
+
+
+def local_roots(root):
+    """Extra protected roots kept outside the public tree (additive only; never removes a default).
+
+    Sources, all unioned:
+      - the environment variable OSS_PCE_GUARD_PROTECTED (os.pathsep separated);
+      - .claude/guard-local.json in this checkout;
+      - .claude/guard-local.json in the main checkout when this is a linked worktree, so that every
+        worktree of one clone is guarded by the same local configuration.
+    A missing file adds nothing. An unreadable, malformed, unresolvable or relative entry is refused.
+    """
+    values = []
+    env = os.environ.get("OSS_PCE_GUARD_PROTECTED", "")
+    values += [item.strip() for item in env.split(os.pathsep) if item.strip()]
+    values += _read_local_config(os.path.join(root, ".claude", "guard-local.json"))
+    main = main_worktree_root(root)
+    if os.path.normcase(main) != os.path.normcase(root):
+        values += _read_local_config(os.path.join(main, ".claude", "guard-local.json"))
     return [_absolute_root(item) for item in values if item]
 
 
@@ -408,7 +446,7 @@ def inside_claude(path, ctx):
 
 
 def rm_rule(args, ps, ctx):
-    recursive, targets, end = False, [], False
+    recursive, force, targets, end = False, False, [], False
     for a in args:
         if end or a == "-" or not a.startswith("-"):
             targets.append(a)
@@ -421,13 +459,17 @@ def rm_rule(args, ps, ctx):
         elif a.startswith("--"):
             if a == "--recursive":
                 recursive = True
-            elif a not in ("--force", "--interactive", "--verbose"):
+            elif a == "--force":
+                force = True
+            elif a not in ("--interactive", "--verbose"):
                 raise Deny("rm", "unknown rm long option")
         else:
             for ch in a[1:]:
                 if ch in "rRd":
                     recursive = True
-                elif ch not in "fiv":
+                elif ch == "f":
+                    force = True
+                elif ch not in "iv":
                     raise Deny("rm", "unknown rm option")
     if recursive:
         raise Deny("rm-recursive", "recursive delete is denied")
@@ -446,6 +488,8 @@ def rm_rule(args, ps, ctx):
         raise Deny("rm-guard", "rm inside .claude (guard and settings) is denied")
     if is_protected(rk, ctx):
         raise Deny("rm-protected", "rm target is or contains a protected path")
+    if force and not os.path.lexists(real):
+        return  # rm -f of an in-repo path that does not exist removes nothing
     if not os.path.isfile(real):
         raise Deny("rm", "rm target is not a regular file")
 
@@ -521,11 +565,30 @@ def find_rule(args, ps, ctx, depth):
             analyze_argv(args[i + 1:j], ctx, ps, depth + 1)
 
 
+def _open_is_read_only(code):
+    """True if every open( in code is builtin open(path) or open(path, '<r|rb|br|rt|tr>') with a literal mode.
+
+    Method forms (x.open), keyword or non-literal modes, extra arguments and nested calls are not
+    judged read-only, so they stay denied.
+    """
+    total = len(OPEN_ANY.findall(code))
+    ok = 0
+    for m in OPEN_CALL.finditer(code):
+        args = m.group(1)
+        parts = [p.strip() for p in args.split(",")]
+        if not parts[0] or "=" in args or len(parts) > 2:
+            return False
+        if len(parts) == 2 and not READ_MODE.match(parts[1]):
+            return False
+        ok += 1
+    return ok == total
+
+
 def python_rule(args):
     for i, a in enumerate(args):
         if short_has(a, "c"):
             code = args[i + 1] if i + 1 < len(args) else ""
-            if DANGER_PY.search(code):
+            if DANGER_PY.search(code) or not _open_is_read_only(code):
                 raise Deny("python-c", "python -c with a file or process operation")
             return
 
