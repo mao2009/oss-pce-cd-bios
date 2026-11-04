@@ -1,11 +1,11 @@
 # RecentROM0 and portable isolation (C-R1, review item M-7)
 
-Scope: the test-only configuration of the synthetic runs. Pinned source `scratchpad/env-geargrafx/src` (HEAD b49ae82a), read-only. Not excluded from the record: `RecentROM0` is audited below.
+Scope: the test-only configuration of the synthetic runs. Pinned source `<EVIDENCE_ROOT>/env-geargrafx/src` (HEAD b49ae82a), read-only. Not excluded from the record: `RecentROM0` is audited below.
 
 ## 1. What is stored
 
 - Key: `[Emulator] RecentROM0` (`platforms/shared/desktop/config_definitions.inc.h:269`, `CONFIG_STRING_ARRAY("Emulator", "RecentROM%d", config_emulator.recent_roms, config_max_recent_roms, "")`; in memory `config_data.h:68`, 15 slots).
-- Value in every run directory: the path string as passed to `load_media`, which is the synthetic CUE under `scratchpad/<SYNTH_MEDIA>/` (absolute, forward slashes). This path is outside the run directory.
+- Value in every run directory: the path string as passed to `load_media`, which is the synthetic CUE under `<EVIDENCE_ROOT>/<SYNTH_MEDIA>/` (absolute, forward slashes). This path is outside the run directory.
 - Other path keys in the run `config.ini` (`SysCardBiosPath`, `GameExpressBiosPath`, `PacJapanBiosPath`, `PacUsBiosPath`, `LastOpenPath`, `SaveFilesPath`, `SaveStatesPath`, `BackupRAMPath`, `ScreenshotPath`, `TraceDiskPath`, `MB128Path`, `VideoRecordingPath`) are empty or resolve inside the run directory. Checked for all R1 run directories and four historical ones with `phase-c-r1/scripts/r1_manifest.py` (`run-manifest.json`): every R1 run has `SysCardBiosPath = ''` and `RecentROM0` set to the synthetic CUE.
 
 ## 2. Where it is written

@@ -1,6 +1,6 @@
 {
   "label": "SYNTHETIC_BIOS (own bytes; not a System Card BIOS; no reference data)",
-  "bios_path": "<SCRATCHPAD>\\phase-c\\synthetic\\synthetic_bios.bin",
+  "bios_path": "<EVIDENCE_ROOT>/phase-c/synthetic/synthetic_bios.bin",
   "bios_size": 262144,
   "bios_sha256": "e122f0154b6b341a4d08deddd855289a7a5ca43e814aa9391737f7e7f52f70d7",
   "generator_sha256": "71c15d84646deaf8a214d0fb03022c839c41c554a2027f2a27446469d614192b",

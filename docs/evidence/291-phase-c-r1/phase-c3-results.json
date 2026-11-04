@@ -1,6 +1,6 @@
 {
   "phase": "C3",
-  "expected_file": "<SCRATCHPAD>/phase-c/phase-c3-expected.json",
+  "expected_file": "<EVIDENCE_ROOT>/phase-c/phase-c3-expected.json",
   "pinned_exe_sha256_before": "4933885ca1cebd4a979dcd8da1a1324aadac95885d3403b7019fe5f7df664827",
   "pinned_exe_sha256_after": "4933885ca1cebd4a979dcd8da1a1324aadac95885d3403b7019fe5f7df664827",
   "det_exe_sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
@@ -199,7 +199,7 @@
           "cpu_regs_match_model": true
         }
       },
-      "model_revision": "P includes reset flag masking (huc6280.cpp:232-240): P=(raw & ~0x38)|0x04. First-pass check (raw P) failed on P only; see phase-c3-results-firstpass.json.",
+      "model_revision": "P includes reset flag masking (huc6280.cpp:232-239): P=(raw & ~0x38)|0x04. First-pass check (raw P) failed on P only; see phase-c3-results-firstpass.json.",
       "result": "PASS"
     },
     "T3_trace": {
@@ -365,420 +365,420 @@
         "pinned_r1": [
           {
             "key": "TraceDiskPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r1\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/pinned_r1/",
             "inside_run_dir": true
           },
           {
             "key": "SaveFilesPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r1\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/pinned_r1/",
             "inside_run_dir": true
           },
           {
             "key": "SaveStatesPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r1\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/pinned_r1/",
             "inside_run_dir": true
           },
           {
             "key": "ScreenshotPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r1\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/pinned_r1/",
             "inside_run_dir": true
           },
           {
             "key": "VideoRecordingPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r1\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/pinned_r1/",
             "inside_run_dir": true
           },
           {
             "key": "BackupRAMPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r1\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/pinned_r1/",
             "inside_run_dir": true
           },
           {
             "key": "MB128Path",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r1\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/pinned_r1/",
             "inside_run_dir": true
           },
           {
             "key": "RecentROM0",
-            "value": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+            "value": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
             "inside_run_dir": false
           }
         ],
         "pinned_r2": [
           {
             "key": "TraceDiskPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r2\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/pinned_r2/",
             "inside_run_dir": true
           },
           {
             "key": "SaveFilesPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r2\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/pinned_r2/",
             "inside_run_dir": true
           },
           {
             "key": "SaveStatesPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r2\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/pinned_r2/",
             "inside_run_dir": true
           },
           {
             "key": "ScreenshotPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r2\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/pinned_r2/",
             "inside_run_dir": true
           },
           {
             "key": "VideoRecordingPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r2\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/pinned_r2/",
             "inside_run_dir": true
           },
           {
             "key": "BackupRAMPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r2\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/pinned_r2/",
             "inside_run_dir": true
           },
           {
             "key": "MB128Path",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r2\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/pinned_r2/",
             "inside_run_dir": true
           },
           {
             "key": "RecentROM0",
-            "value": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+            "value": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
             "inside_run_dir": false
           }
         ],
         "pinned_r3": [
           {
             "key": "TraceDiskPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r3\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/pinned_r3/",
             "inside_run_dir": true
           },
           {
             "key": "SaveFilesPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r3\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/pinned_r3/",
             "inside_run_dir": true
           },
           {
             "key": "SaveStatesPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r3\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/pinned_r3/",
             "inside_run_dir": true
           },
           {
             "key": "ScreenshotPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r3\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/pinned_r3/",
             "inside_run_dir": true
           },
           {
             "key": "VideoRecordingPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r3\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/pinned_r3/",
             "inside_run_dir": true
           },
           {
             "key": "BackupRAMPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r3\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/pinned_r3/",
             "inside_run_dir": true
           },
           {
             "key": "MB128Path",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r3\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/pinned_r3/",
             "inside_run_dir": true
           },
           {
             "key": "RecentROM0",
-            "value": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+            "value": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
             "inside_run_dir": false
           }
         ],
         "det_S1_r1": [
           {
             "key": "TraceDiskPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r1\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_r1/",
             "inside_run_dir": true
           },
           {
             "key": "SaveFilesPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r1\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_r1/",
             "inside_run_dir": true
           },
           {
             "key": "SaveStatesPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r1\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_r1/",
             "inside_run_dir": true
           },
           {
             "key": "ScreenshotPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r1\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_r1/",
             "inside_run_dir": true
           },
           {
             "key": "VideoRecordingPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r1\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_r1/",
             "inside_run_dir": true
           },
           {
             "key": "BackupRAMPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r1\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_r1/",
             "inside_run_dir": true
           },
           {
             "key": "MB128Path",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r1\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_r1/",
             "inside_run_dir": true
           },
           {
             "key": "RecentROM0",
-            "value": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+            "value": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
             "inside_run_dir": false
           }
         ],
         "det_S1_r2": [
           {
             "key": "TraceDiskPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r2\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_r2/",
             "inside_run_dir": true
           },
           {
             "key": "SaveFilesPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r2\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_r2/",
             "inside_run_dir": true
           },
           {
             "key": "SaveStatesPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r2\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_r2/",
             "inside_run_dir": true
           },
           {
             "key": "ScreenshotPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r2\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_r2/",
             "inside_run_dir": true
           },
           {
             "key": "VideoRecordingPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r2\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_r2/",
             "inside_run_dir": true
           },
           {
             "key": "BackupRAMPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r2\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_r2/",
             "inside_run_dir": true
           },
           {
             "key": "MB128Path",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r2\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_r2/",
             "inside_run_dir": true
           },
           {
             "key": "RecentROM0",
-            "value": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+            "value": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
             "inside_run_dir": false
           }
         ],
         "det_S1_r3": [
           {
             "key": "TraceDiskPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r3\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_r3/",
             "inside_run_dir": true
           },
           {
             "key": "SaveFilesPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r3\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_r3/",
             "inside_run_dir": true
           },
           {
             "key": "SaveStatesPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r3\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_r3/",
             "inside_run_dir": true
           },
           {
             "key": "ScreenshotPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r3\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_r3/",
             "inside_run_dir": true
           },
           {
             "key": "VideoRecordingPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r3\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_r3/",
             "inside_run_dir": true
           },
           {
             "key": "BackupRAMPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r3\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_r3/",
             "inside_run_dir": true
           },
           {
             "key": "MB128Path",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r3\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_r3/",
             "inside_run_dir": true
           },
           {
             "key": "RecentROM0",
-            "value": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+            "value": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
             "inside_run_dir": false
           }
         ],
         "det_S1_up_r1": [
           {
             "key": "TraceDiskPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_up_r1\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_up_r1/",
             "inside_run_dir": true
           },
           {
             "key": "SaveFilesPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_up_r1\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_up_r1/",
             "inside_run_dir": true
           },
           {
             "key": "SaveStatesPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_up_r1\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_up_r1/",
             "inside_run_dir": true
           },
           {
             "key": "ScreenshotPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_up_r1\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_up_r1/",
             "inside_run_dir": true
           },
           {
             "key": "VideoRecordingPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_up_r1\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_up_r1/",
             "inside_run_dir": true
           },
           {
             "key": "BackupRAMPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_up_r1\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_up_r1/",
             "inside_run_dir": true
           },
           {
             "key": "MB128Path",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_up_r1\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_up_r1/",
             "inside_run_dir": true
           },
           {
             "key": "RecentROM0",
-            "value": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+            "value": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
             "inside_run_dir": false
           }
         ],
         "det_S2_r1": [
           {
             "key": "TraceDiskPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r1\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S2_r1/",
             "inside_run_dir": true
           },
           {
             "key": "SaveFilesPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r1\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S2_r1/",
             "inside_run_dir": true
           },
           {
             "key": "SaveStatesPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r1\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S2_r1/",
             "inside_run_dir": true
           },
           {
             "key": "ScreenshotPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r1\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S2_r1/",
             "inside_run_dir": true
           },
           {
             "key": "VideoRecordingPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r1\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S2_r1/",
             "inside_run_dir": true
           },
           {
             "key": "BackupRAMPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r1\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S2_r1/",
             "inside_run_dir": true
           },
           {
             "key": "MB128Path",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r1\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S2_r1/",
             "inside_run_dir": true
           },
           {
             "key": "RecentROM0",
-            "value": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+            "value": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
             "inside_run_dir": false
           }
         ],
         "det_S2_r2": [
           {
             "key": "TraceDiskPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r2\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S2_r2/",
             "inside_run_dir": true
           },
           {
             "key": "SaveFilesPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r2\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S2_r2/",
             "inside_run_dir": true
           },
           {
             "key": "SaveStatesPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r2\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S2_r2/",
             "inside_run_dir": true
           },
           {
             "key": "ScreenshotPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r2\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S2_r2/",
             "inside_run_dir": true
           },
           {
             "key": "VideoRecordingPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r2\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S2_r2/",
             "inside_run_dir": true
           },
           {
             "key": "BackupRAMPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r2\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S2_r2/",
             "inside_run_dir": true
           },
           {
             "key": "MB128Path",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r2\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S2_r2/",
             "inside_run_dir": true
           },
           {
             "key": "RecentROM0",
-            "value": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+            "value": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
             "inside_run_dir": false
           }
         ],
         "det_S2_r3": [
           {
             "key": "TraceDiskPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r3\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S2_r3/",
             "inside_run_dir": true
           },
           {
             "key": "SaveFilesPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r3\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S2_r3/",
             "inside_run_dir": true
           },
           {
             "key": "SaveStatesPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r3\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S2_r3/",
             "inside_run_dir": true
           },
           {
             "key": "ScreenshotPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r3\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S2_r3/",
             "inside_run_dir": true
           },
           {
             "key": "VideoRecordingPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r3\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S2_r3/",
             "inside_run_dir": true
           },
           {
             "key": "BackupRAMPath",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r3\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S2_r3/",
             "inside_run_dir": true
           },
           {
             "key": "MB128Path",
-            "value": "<SCRATCHPAD>\\phase-c\\runs\\det_S2_r3\\",
+            "value": "<EVIDENCE_ROOT>/phase-c/runs/det_S2_r3/",
             "inside_run_dir": true
           },
           {
             "key": "RecentROM0",
-            "value": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+            "value": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
             "inside_run_dir": false
           }
         ]
@@ -789,7 +789,7 @@
   "runs": {
     "pinned_r1": {
       "label": "pinned_r1",
-      "exe_src": "<SCRATCHPAD>/env-geargrafx/build/bin/geargrafx.exe",
+      "exe_src": "<EVIDENCE_ROOT>/env-geargrafx/build/bin/geargrafx.exe",
       "seed_env": null,
       "press_up": false,
       "exe_sha256": "4933885ca1cebd4a979dcd8da1a1324aadac95885d3403b7019fe5f7df664827",
@@ -805,14 +805,14 @@
       },
       "bios_load": {
         "bios_name": "Unknown",
-        "file_path": "<SCRATCHPAD>/phase-c/synthetic/synthetic_bios.bin",
+        "file_path": "<EVIDENCE_ROOT>/phase-c/synthetic/synthetic_bios.bin",
         "success": true,
         "type": "syscard",
         "valid_crc": false,
         "warning": "CRC does not match any known BIOS"
       },
       "media_load": {
-        "file_path": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+        "file_path": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
         "is_cdrom": true,
         "is_sgx": false,
         "rom_name": "synthetic_cd.cue",
@@ -932,7 +932,7 @@
     },
     "pinned_r2": {
       "label": "pinned_r2",
-      "exe_src": "<SCRATCHPAD>/env-geargrafx/build/bin/geargrafx.exe",
+      "exe_src": "<EVIDENCE_ROOT>/env-geargrafx/build/bin/geargrafx.exe",
       "seed_env": null,
       "press_up": false,
       "exe_sha256": "4933885ca1cebd4a979dcd8da1a1324aadac95885d3403b7019fe5f7df664827",
@@ -948,14 +948,14 @@
       },
       "bios_load": {
         "bios_name": "Unknown",
-        "file_path": "<SCRATCHPAD>/phase-c/synthetic/synthetic_bios.bin",
+        "file_path": "<EVIDENCE_ROOT>/phase-c/synthetic/synthetic_bios.bin",
         "success": true,
         "type": "syscard",
         "valid_crc": false,
         "warning": "CRC does not match any known BIOS"
       },
       "media_load": {
-        "file_path": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+        "file_path": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
         "is_cdrom": true,
         "is_sgx": false,
         "rom_name": "synthetic_cd.cue",
@@ -1075,7 +1075,7 @@
     },
     "pinned_r3": {
       "label": "pinned_r3",
-      "exe_src": "<SCRATCHPAD>/env-geargrafx/build/bin/geargrafx.exe",
+      "exe_src": "<EVIDENCE_ROOT>/env-geargrafx/build/bin/geargrafx.exe",
       "seed_env": null,
       "press_up": false,
       "exe_sha256": "4933885ca1cebd4a979dcd8da1a1324aadac95885d3403b7019fe5f7df664827",
@@ -1091,14 +1091,14 @@
       },
       "bios_load": {
         "bios_name": "Unknown",
-        "file_path": "<SCRATCHPAD>/phase-c/synthetic/synthetic_bios.bin",
+        "file_path": "<EVIDENCE_ROOT>/phase-c/synthetic/synthetic_bios.bin",
         "success": true,
         "type": "syscard",
         "valid_crc": false,
         "warning": "CRC does not match any known BIOS"
       },
       "media_load": {
-        "file_path": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+        "file_path": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
         "is_cdrom": true,
         "is_sgx": false,
         "rom_name": "synthetic_cd.cue",
@@ -1218,7 +1218,7 @@
     },
     "det_S1_r1": {
       "label": "det_S1_r1",
-      "exe_src": "<SCRATCHPAD>/phase-c/build-det/bin/geargrafx.exe",
+      "exe_src": "<EVIDENCE_ROOT>/phase-c/build-det/bin/geargrafx.exe",
       "seed_env": "0x00C0FFEE",
       "press_up": false,
       "exe_sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
@@ -1234,14 +1234,14 @@
       },
       "bios_load": {
         "bios_name": "Unknown",
-        "file_path": "<SCRATCHPAD>/phase-c/synthetic/synthetic_bios.bin",
+        "file_path": "<EVIDENCE_ROOT>/phase-c/synthetic/synthetic_bios.bin",
         "success": true,
         "type": "syscard",
         "valid_crc": false,
         "warning": "CRC does not match any known BIOS"
       },
       "media_load": {
-        "file_path": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+        "file_path": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
         "is_cdrom": true,
         "is_sgx": false,
         "rom_name": "synthetic_cd.cue",
@@ -1361,7 +1361,7 @@
     },
     "det_S1_r2": {
       "label": "det_S1_r2",
-      "exe_src": "<SCRATCHPAD>/phase-c/build-det/bin/geargrafx.exe",
+      "exe_src": "<EVIDENCE_ROOT>/phase-c/build-det/bin/geargrafx.exe",
       "seed_env": "0x00C0FFEE",
       "press_up": false,
       "exe_sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
@@ -1377,14 +1377,14 @@
       },
       "bios_load": {
         "bios_name": "Unknown",
-        "file_path": "<SCRATCHPAD>/phase-c/synthetic/synthetic_bios.bin",
+        "file_path": "<EVIDENCE_ROOT>/phase-c/synthetic/synthetic_bios.bin",
         "success": true,
         "type": "syscard",
         "valid_crc": false,
         "warning": "CRC does not match any known BIOS"
       },
       "media_load": {
-        "file_path": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+        "file_path": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
         "is_cdrom": true,
         "is_sgx": false,
         "rom_name": "synthetic_cd.cue",
@@ -1504,7 +1504,7 @@
     },
     "det_S1_r3": {
       "label": "det_S1_r3",
-      "exe_src": "<SCRATCHPAD>/phase-c/build-det/bin/geargrafx.exe",
+      "exe_src": "<EVIDENCE_ROOT>/phase-c/build-det/bin/geargrafx.exe",
       "seed_env": "0x00C0FFEE",
       "press_up": false,
       "exe_sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
@@ -1520,14 +1520,14 @@
       },
       "bios_load": {
         "bios_name": "Unknown",
-        "file_path": "<SCRATCHPAD>/phase-c/synthetic/synthetic_bios.bin",
+        "file_path": "<EVIDENCE_ROOT>/phase-c/synthetic/synthetic_bios.bin",
         "success": true,
         "type": "syscard",
         "valid_crc": false,
         "warning": "CRC does not match any known BIOS"
       },
       "media_load": {
-        "file_path": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+        "file_path": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
         "is_cdrom": true,
         "is_sgx": false,
         "rom_name": "synthetic_cd.cue",
@@ -1647,7 +1647,7 @@
     },
     "det_S1_up_r1": {
       "label": "det_S1_up_r1",
-      "exe_src": "<SCRATCHPAD>/phase-c/build-det/bin/geargrafx.exe",
+      "exe_src": "<EVIDENCE_ROOT>/phase-c/build-det/bin/geargrafx.exe",
       "seed_env": "0x00C0FFEE",
       "press_up": true,
       "exe_sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
@@ -1663,14 +1663,14 @@
       },
       "bios_load": {
         "bios_name": "Unknown",
-        "file_path": "<SCRATCHPAD>/phase-c/synthetic/synthetic_bios.bin",
+        "file_path": "<EVIDENCE_ROOT>/phase-c/synthetic/synthetic_bios.bin",
         "success": true,
         "type": "syscard",
         "valid_crc": false,
         "warning": "CRC does not match any known BIOS"
       },
       "media_load": {
-        "file_path": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+        "file_path": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
         "is_cdrom": true,
         "is_sgx": false,
         "rom_name": "synthetic_cd.cue",
@@ -1796,7 +1796,7 @@
     },
     "det_S2_r1": {
       "label": "det_S2_r1",
-      "exe_src": "<SCRATCHPAD>/phase-c/build-det/bin/geargrafx.exe",
+      "exe_src": "<EVIDENCE_ROOT>/phase-c/build-det/bin/geargrafx.exe",
       "seed_env": "0x0BADF00D",
       "press_up": false,
       "exe_sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
@@ -1812,14 +1812,14 @@
       },
       "bios_load": {
         "bios_name": "Unknown",
-        "file_path": "<SCRATCHPAD>/phase-c/synthetic/synthetic_bios.bin",
+        "file_path": "<EVIDENCE_ROOT>/phase-c/synthetic/synthetic_bios.bin",
         "success": true,
         "type": "syscard",
         "valid_crc": false,
         "warning": "CRC does not match any known BIOS"
       },
       "media_load": {
-        "file_path": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+        "file_path": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
         "is_cdrom": true,
         "is_sgx": false,
         "rom_name": "synthetic_cd.cue",
@@ -1939,7 +1939,7 @@
     },
     "det_S2_r2": {
       "label": "det_S2_r2",
-      "exe_src": "<SCRATCHPAD>/phase-c/build-det/bin/geargrafx.exe",
+      "exe_src": "<EVIDENCE_ROOT>/phase-c/build-det/bin/geargrafx.exe",
       "seed_env": "0x0BADF00D",
       "press_up": false,
       "exe_sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
@@ -1955,14 +1955,14 @@
       },
       "bios_load": {
         "bios_name": "Unknown",
-        "file_path": "<SCRATCHPAD>/phase-c/synthetic/synthetic_bios.bin",
+        "file_path": "<EVIDENCE_ROOT>/phase-c/synthetic/synthetic_bios.bin",
         "success": true,
         "type": "syscard",
         "valid_crc": false,
         "warning": "CRC does not match any known BIOS"
       },
       "media_load": {
-        "file_path": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+        "file_path": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
         "is_cdrom": true,
         "is_sgx": false,
         "rom_name": "synthetic_cd.cue",
@@ -2082,7 +2082,7 @@
     },
     "det_S2_r3": {
       "label": "det_S2_r3",
-      "exe_src": "<SCRATCHPAD>/phase-c/build-det/bin/geargrafx.exe",
+      "exe_src": "<EVIDENCE_ROOT>/phase-c/build-det/bin/geargrafx.exe",
       "seed_env": "0x0BADF00D",
       "press_up": false,
       "exe_sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
@@ -2098,14 +2098,14 @@
       },
       "bios_load": {
         "bios_name": "Unknown",
-        "file_path": "<SCRATCHPAD>/phase-c/synthetic/synthetic_bios.bin",
+        "file_path": "<EVIDENCE_ROOT>/phase-c/synthetic/synthetic_bios.bin",
         "success": true,
         "type": "syscard",
         "valid_crc": false,
         "warning": "CRC does not match any known BIOS"
       },
       "media_load": {
-        "file_path": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+        "file_path": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
         "is_cdrom": true,
         "is_sgx": false,
         "rom_name": "synthetic_cd.cue",
@@ -2226,7 +2226,7 @@
   },
   "reevaluation": {
     "T2": "recomputed from saved per-run states; no new launches",
-    "firstpass_file": "<SCRATCHPAD>/phase-c/phase-c3-results-firstpass.json"
+    "firstpass_file": "<EVIDENCE_ROOT>/phase-c/phase-c3-results-firstpass.json"
   },
   "tests_summary": {
     "T1_reproducibility": "PASS",

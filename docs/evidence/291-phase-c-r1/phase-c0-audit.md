@@ -1,6 +1,6 @@
 # Phase C0: environment and source audit (Issue #291)
 
-Scope: source-confirmed audit of the pinned Geargrafx tree. No reference BIOS, no `rom/`, no reference JSR, no commercial medium, no GitHub access. All paths below are under the pinned tree `scratchpad/env-geargrafx/src` (commit b49ae82a012eade566d72e9d61c9d95a5caa4da3). Line numbers are from the pinned tree (unmodified).
+Scope: source-confirmed audit of the pinned Geargrafx tree. No reference BIOS, no `rom/`, no reference JSR, no commercial medium, no GitHub access. All paths below are under the pinned tree the pinned Geargrafx source tree (not published) (commit b49ae82a012eade566d72e9d61c9d95a5caa4da3). Line numbers are from the pinned tree (unmodified).
 
 ## Environment record (taken at start of C0)
 
@@ -8,7 +8,7 @@ Scope: source-confirmed audit of the pinned Geargrafx tree. No reference BIOS, n
 |---|---|
 | Pinned HEAD | `b49ae82a012eade566d72e9d61c9d95a5caa4da3` (verified with `git rev-parse HEAD`) |
 | Pinned tree status | `git status --short` in `src/` printed nothing (clean). Report only; not changed. |
-| Pinned binary | `scratchpad/env-geargrafx/build/bin/geargrafx.exe` |
+| Pinned binary | the pinned binary (not published) |
 | Pinned binary SHA-256 (before) | `4933885ca1cebd4a979dcd8da1a1324aadac95885d3403b7019fe5f7df664827` |
 | Memory at start | 7,170,588 kB free of 16,641,588 kB physical (about 43 %) |
 | Other build/emulator processes | none found at start (`tasklist` for ninja, cmake, cc1plus, geargrafx, make, g++, ld). Re-checked before the test build (see C1 record). |

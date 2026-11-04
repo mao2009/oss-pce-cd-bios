@@ -7,7 +7,7 @@ Scope: synthetic BIOS (`phase-c/synthetic/synthetic_bios.bin`) and synthetic CUE
 | | Historical (C3, 17:52-17:54) | C-R1 re-run (this step) |
 |---|---|---|
 | Kind | probe run (`run_c3.py probe`, 17:52) and full-run runs `det_S1_r1` and `det_S1_up_r1` (17:53-17:54) | new re-run, `phase-c-r1/runs/t4r1_noinput` and `t4r1_up` |
-| Expected values written before the run | `phase-c3-expected.json` (17:53:34) for T4 relation; the probe's expectation is not recorded in a separate file | `phase-c-r1/t4-expected-r1.json`, written 2026-11-02T09:18:47Z before the first R1 launch (sha256 `d23732586bdc9b9652128c128e7d780fda56626e10b9240c73a4f9013b239f48`) |
+| Expected values written before the run | `phase-c3-expected.json` (17:53:34) for T4 relation; the probe's expectation is not recorded in a separate file | `phase-c-r1/t4-expected-r1.json`, written 2026-11-02T09:18:47Z (the experimenter's own record; the order against the first launch is not independently timestamped) (unpublished pre-publication original, sha256 `d23732586bdc9b9652128c128e7d780fda56626e10b9240c73a4f9013b239f48`; the published copy has sha256 `60d1309d1aaa38cb8e4b27e6d8d76063653d857320cf95e5c2ac2e7486597ab5`, differing in line endings and one citation string, with identical expected values) |
 | Observed (SEL0 at 0x2010, SEL1 at 0x2011) | no input: 3F / 3F; Up: 3F / 3E (`det_S1_r1`, `det_S1_up_r1`, `phase-c3-results.json`) | no input: 3F / 3F; Up: 3F / 3E (`t4-rerun-r1.json`) |
 | Result | full-run T4 PASS | T4 re-run PASS (`checks.result`) |
 
@@ -25,11 +25,11 @@ The corrected relation (SEL=0 unchanged; SEL=1 bit0 cleared by Up) is derived fr
 - `src/input.cpp:47` idle pad value `0xFFFF` (active low).
 - `src/input_inline.h:29` press clears the bit (`&= ~key`); `src/types.h:81` `GG_KEY_UP = 0x10`.
 - `src/input_inline.h:103` `m_sel = bit 0 of the write`; `:123` `m_register = 0x30` on each port write (the register is rebuilt when the synthetic program writes `$1000`, not on the read). Both `:103` and `:123` are in the same port-write function as `:204-217` (its `TraceInputEvent(TRACE_INPUT_WRITE, ...)` is at `:220`).
-- `src/input_inline.h:204-217` (standard pad, default controller type `input.cpp:48`): `m_sel ? (raw >> 4) & 0x0F : raw & 0x0F` (inside `if (!m_clr)`).
+- `src/input_inline.h:204-218` (`if (!m_clr)` block; standard-pad branch `:211-217`; default controller type `input.cpp:48`): `m_sel ? (raw >> 4) & 0x0F : raw & 0x0F` (inside `if (!m_clr)`).
 
 Derived values: no input, SEL=0: `0x30 | 0x0F = 0x3F`; no input, SEL=1: `0x3F`; Up, SEL=0: `0x3F`; Up, SEL=1: `0x30 | 0x0E = 0x3E`. These match the re-run.
 
-Citation: the earlier T4 justification cited `src/input_inline.h:174-180`. Those lines are the mouse branch (`:148` onward, `:174-177` choose mouse or pad nibble with no high-nibble rule). They do not support the relation. The correct lines are `:204-217` (M-1, MAJOR, citation only; the content was re-checked in source and is correct).
+Citation: the earlier T4 justification cited `src/input_inline.h:174-180`. Those lines are the mouse branch (`:148` onward, `:174-177` choose mouse or pad nibble with no high-nibble rule). They do not support the relation. The correct lines are `:204-218` (the `if (!m_clr)` block; the standard-pad branch is `:211-217`) (M-1, MAJOR, citation only; the content was re-checked in source and is correct).
 
 ## 4. C-R1 re-run: procedure and result
 
@@ -52,7 +52,7 @@ Checks: no-input matches expected (3F/3F); Up matches expected (3F/3E). Result *
 
 ## 5. Corrected manifest (M-5)
 
-`synthetic/synthetic_bios_manifest.json` (17:48, original kept, sha256 `c498afa2e883354e37ff1776a7f95e97e958ce33cf17fd89ea9d603b39c3f129` as recorded in `phase-c3-tests.md`) contains the superseded field `joypad_expectation` ("Up clears bit0 on SEL=0 row"). The -r1 copy `phase-c-r1/synthetic_bios_manifest-r1.json` replaces that field with the current relation and states that the earlier draft was superseded. Diff: `phase-c-r1/diffs/synthetic_bios_manifest-r1.diff` (one line).
+`synthetic/synthetic_bios_manifest.json` (17:48, original kept but not published, sha256 `c498afa2e883354e37ff1776a7f95e97e958ce33cf17fd89ea9d603b39c3f129` as recorded in `phase-c3-tests.md`; an experimenter record that cannot be verified from this repository) contains the superseded field `joypad_expectation` ("Up clears bit0 on SEL=0 row"). The -r1 copy `phase-c-r1/synthetic_bios_manifest-r1.json` replaces that field with the current relation and states that the earlier draft was superseded. Diff: `phase-c-r1/diffs/synthetic_bios_manifest-r1.diff` (one line).
 
 ## 6. Status
 
@@ -60,5 +60,5 @@ Checks: no-input matches expected (3F/3F); Up matches expected (3F/3E). Result *
 |---|---|
 | T4 relation (SEL=0 unchanged, SEL=1 bit0 cleared by Up) | **RESOLVED**: source-derived and re-run PASS (new evidence) |
 | Historical probe output (M-4) | **UNKNOWN**: not preserved; cannot be restored; would be settled only by the original stdout, which does not exist |
-| Citation (M-1, MAJOR) | **RESOLVED**: corrected to `input_inline.h:204-217` in the -r1 documents; the content is correct |
+| Citation (M-1, MAJOR) | **RESOLVED**: corrected to `input_inline.h:204-218` (standard-pad branch `:211-217`) in the -r1 documents; the content is correct |
 | Stale manifest field (M-5) | **RESOLVED**: -r1 copy corrected; original kept |

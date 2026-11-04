@@ -1,8 +1,9 @@
 {
   "phase": "C-R1 T4 re-run",
   "kind": "NEW re-run evidence (not the historical probe; the historical probe output was not saved)",
-  "expected_file": "<SCRATCHPAD>\\phase-c\\phase-c-r1/t4-expected-r1.json",
+  "expected_file": "<EVIDENCE_ROOT>/phase-c/phase-c-r1/t4-expected-r1.json",
   "expected_file_sha256_before_run": "d23732586bdc9b9652128c128e7d780fda56626e10b9240c73a4f9013b239f48",
+  "expected_file_note": "R2 annotation: d2373258 is the unpublished pre-publication original used for the run. The published copy t4-expected-r1.json has SHA-256 60d1309d; it differs in line endings and in one citation string, and the expected values are identical. The run result is not changed.",
   "observed": {
     "noinput_SEL0_2010": "3F",
     "noinput_SEL1_2011": "3F",
@@ -16,21 +17,21 @@
   },
   "launches": {
     "t4r1_noinput": {
-      "run_dir": "<SCRATCHPAD>\\phase-c\\phase-c-r1/runs/t4r1_noinput",
+      "run_dir": "<EVIDENCE_ROOT>/phase-c/phase-c-r1/runs/t4r1_noinput",
       "exe_sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
       "seed_env": "0x00C0FFEE",
       "press_up": false,
       "input_response": null,
       "bios_load": {
         "bios_name": "Unknown",
-        "file_path": "<SCRATCHPAD>/phase-c/synthetic/synthetic_bios.bin",
+        "file_path": "<EVIDENCE_ROOT>/phase-c/synthetic/synthetic_bios.bin",
         "success": true,
         "type": "syscard",
         "valid_crc": false,
         "warning": "CRC does not match any known BIOS"
       },
       "media_load": {
-        "file_path": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+        "file_path": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
         "is_cdrom": true,
         "is_sgx": false,
         "rom_name": "synthetic_cd.cue",
@@ -102,7 +103,7 @@
       "stderr_tail": ""
     },
     "t4r1_up": {
-      "run_dir": "<SCRATCHPAD>\\phase-c\\phase-c-r1/runs/t4r1_up",
+      "run_dir": "<EVIDENCE_ROOT>/phase-c/phase-c-r1/runs/t4r1_up",
       "exe_sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
       "seed_env": "0x00C0FFEE",
       "press_up": true,
@@ -114,14 +115,14 @@
       },
       "bios_load": {
         "bios_name": "Unknown",
-        "file_path": "<SCRATCHPAD>/phase-c/synthetic/synthetic_bios.bin",
+        "file_path": "<EVIDENCE_ROOT>/phase-c/synthetic/synthetic_bios.bin",
         "success": true,
         "type": "syscard",
         "valid_crc": false,
         "warning": "CRC does not match any known BIOS"
       },
       "media_load": {
-        "file_path": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+        "file_path": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
         "is_cdrom": true,
         "is_sgx": false,
         "rom_name": "synthetic_cd.cue",

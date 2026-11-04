@@ -2,37 +2,37 @@
   "label": "C-R1 run manifest (no reference BIOS, no rom/, no reference JSR, no commercial medium)",
   "inputs_and_binaries": {
     "pinned_exe": {
-      "path_kind": "scratchpad-relative",
+      "path_kind": "evidence-root-relative",
       "sha256": "4933885ca1cebd4a979dcd8da1a1324aadac95885d3403b7019fe5f7df664827",
       "size": 15476837
     },
     "pinned_dll": {
-      "path_kind": "scratchpad-relative",
+      "path_kind": "evidence-root-relative",
       "sha256": "24e78de9285bb07dfab3692b5b249f381f4b9cf894cf301c085242fd1a22cdad",
       "size": 4558193
     },
     "pinned_config_ini": {
-      "path_kind": "scratchpad-relative",
+      "path_kind": "evidence-root-relative",
       "sha256": "2a595b26f04ee7a60b09b241b191d49e66e8ae91ccc70624025fd6d83bca7b84",
       "size": 28769
     },
     "test_exe_det": {
-      "path_kind": "scratchpad-relative",
+      "path_kind": "evidence-root-relative",
       "sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
       "size": 15476837
     },
     "synthetic_bios": {
-      "path_kind": "scratchpad-relative",
+      "path_kind": "evidence-root-relative",
       "sha256": "e122f0154b6b341a4d08deddd855289a7a5ca43e814aa9391737f7e7f52f70d7",
       "size": 262144
     },
     "synthetic_cue": {
-      "path_kind": "scratchpad-relative",
+      "path_kind": "evidence-root-relative",
       "sha256": "a751990e25024069547721265e946052639710589a3d94c7e6afd1a675836dd2",
       "size": 75
     },
     "synthetic_bin": {
-      "path_kind": "scratchpad-relative",
+      "path_kind": "evidence-root-relative",
       "sha256": "7ba14aad9eee82d234c1eafbad6ba4d9d60a8ba4db73bce56eb817e2ed3ac64c",
       "size": 32768
     }
@@ -59,15 +59,15 @@
         }
       },
       "config_path_keys": {
-        "SaveFilesPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\cdA_r1\\",
-        "SaveStatesPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\cdA_r1\\",
-        "BackupRAMPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\cdA_r1\\",
+        "SaveFilesPath": "<EVIDENCE_ROOT>/phase-c/phase-c-r1/runs/cdA_r1/",
+        "SaveStatesPath": "<EVIDENCE_ROOT>/phase-c/phase-c-r1/runs/cdA_r1/",
+        "BackupRAMPath": "<EVIDENCE_ROOT>/phase-c/phase-c-r1/runs/cdA_r1/",
         "LastOpenPath": "",
         "SysCardBiosPath": "",
         "GameExpressBiosPath": "",
         "PacJapanBiosPath": "",
         "PacUsBiosPath": "",
-        "RecentROM0": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue"
+        "RecentROM0": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue"
       }
     },
     "cdA_r2": {
@@ -90,15 +90,15 @@
         }
       },
       "config_path_keys": {
-        "SaveFilesPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\cdA_r2\\",
-        "SaveStatesPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\cdA_r2\\",
-        "BackupRAMPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\cdA_r2\\",
+        "SaveFilesPath": "<EVIDENCE_ROOT>/phase-c/phase-c-r1/runs/cdA_r2/",
+        "SaveStatesPath": "<EVIDENCE_ROOT>/phase-c/phase-c-r1/runs/cdA_r2/",
+        "BackupRAMPath": "<EVIDENCE_ROOT>/phase-c/phase-c-r1/runs/cdA_r2/",
         "LastOpenPath": "",
         "SysCardBiosPath": "",
         "GameExpressBiosPath": "",
         "PacJapanBiosPath": "",
         "PacUsBiosPath": "",
-        "RecentROM0": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue"
+        "RecentROM0": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue"
       }
     },
     "cdP_r1": {
@@ -121,15 +121,15 @@
         }
       },
       "config_path_keys": {
-        "SaveFilesPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\cdP_r1\\",
-        "SaveStatesPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\cdP_r1\\",
-        "BackupRAMPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\cdP_r1\\",
+        "SaveFilesPath": "<EVIDENCE_ROOT>/phase-c/phase-c-r1/runs/cdP_r1/",
+        "SaveStatesPath": "<EVIDENCE_ROOT>/phase-c/phase-c-r1/runs/cdP_r1/",
+        "BackupRAMPath": "<EVIDENCE_ROOT>/phase-c/phase-c-r1/runs/cdP_r1/",
         "LastOpenPath": "",
         "SysCardBiosPath": "",
         "GameExpressBiosPath": "",
         "PacJapanBiosPath": "",
         "PacUsBiosPath": "",
-        "RecentROM0": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue"
+        "RecentROM0": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue"
       }
     },
     "cdP_r2": {
@@ -152,15 +152,15 @@
         }
       },
       "config_path_keys": {
-        "SaveFilesPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\cdP_r2\\",
-        "SaveStatesPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\cdP_r2\\",
-        "BackupRAMPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\cdP_r2\\",
+        "SaveFilesPath": "<EVIDENCE_ROOT>/phase-c/phase-c-r1/runs/cdP_r2/",
+        "SaveStatesPath": "<EVIDENCE_ROOT>/phase-c/phase-c-r1/runs/cdP_r2/",
+        "BackupRAMPath": "<EVIDENCE_ROOT>/phase-c/phase-c-r1/runs/cdP_r2/",
         "LastOpenPath": "",
         "SysCardBiosPath": "",
         "GameExpressBiosPath": "",
         "PacJapanBiosPath": "",
         "PacUsBiosPath": "",
-        "RecentROM0": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue"
+        "RecentROM0": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue"
       }
     },
     "t4r1_noinput": {
@@ -183,15 +183,15 @@
         }
       },
       "config_path_keys": {
-        "SaveFilesPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\t4r1_noinput\\",
-        "SaveStatesPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\t4r1_noinput\\",
-        "BackupRAMPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\t4r1_noinput\\",
+        "SaveFilesPath": "<EVIDENCE_ROOT>/phase-c/phase-c-r1/runs/t4r1_noinput/",
+        "SaveStatesPath": "<EVIDENCE_ROOT>/phase-c/phase-c-r1/runs/t4r1_noinput/",
+        "BackupRAMPath": "<EVIDENCE_ROOT>/phase-c/phase-c-r1/runs/t4r1_noinput/",
         "LastOpenPath": "",
         "SysCardBiosPath": "",
         "GameExpressBiosPath": "",
         "PacJapanBiosPath": "",
         "PacUsBiosPath": "",
-        "RecentROM0": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue"
+        "RecentROM0": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue"
       }
     },
     "t4r1_up": {
@@ -214,15 +214,15 @@
         }
       },
       "config_path_keys": {
-        "SaveFilesPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\t4r1_up\\",
-        "SaveStatesPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\t4r1_up\\",
-        "BackupRAMPath": "<SCRATCHPAD>\\phase-c\\phase-c-r1\\runs\\t4r1_up\\",
+        "SaveFilesPath": "<EVIDENCE_ROOT>/phase-c/phase-c-r1/runs/t4r1_up/",
+        "SaveStatesPath": "<EVIDENCE_ROOT>/phase-c/phase-c-r1/runs/t4r1_up/",
+        "BackupRAMPath": "<EVIDENCE_ROOT>/phase-c/phase-c-r1/runs/t4r1_up/",
         "LastOpenPath": "",
         "SysCardBiosPath": "",
         "GameExpressBiosPath": "",
         "PacJapanBiosPath": "",
         "PacUsBiosPath": "",
-        "RecentROM0": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue"
+        "RecentROM0": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue"
       }
     }
   },
@@ -247,15 +247,15 @@
         }
       },
       "config_path_keys": {
-        "SaveFilesPath": "<SCRATCHPAD>\\phase-c\\runs\\probe-det-S1\\",
-        "SaveStatesPath": "<SCRATCHPAD>\\phase-c\\runs\\probe-det-S1\\",
-        "BackupRAMPath": "<SCRATCHPAD>\\phase-c\\runs\\probe-det-S1\\",
+        "SaveFilesPath": "<EVIDENCE_ROOT>/phase-c/runs/probe-det-S1/",
+        "SaveStatesPath": "<EVIDENCE_ROOT>/phase-c/runs/probe-det-S1/",
+        "BackupRAMPath": "<EVIDENCE_ROOT>/phase-c/runs/probe-det-S1/",
         "LastOpenPath": "",
         "SysCardBiosPath": "",
         "GameExpressBiosPath": "",
         "PacJapanBiosPath": "",
         "PacUsBiosPath": "",
-        "RecentROM0": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue"
+        "RecentROM0": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue"
       }
     },
     "det_S1_r1": {
@@ -278,15 +278,15 @@
         }
       },
       "config_path_keys": {
-        "SaveFilesPath": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r1\\",
-        "SaveStatesPath": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r1\\",
-        "BackupRAMPath": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_r1\\",
+        "SaveFilesPath": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_r1/",
+        "SaveStatesPath": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_r1/",
+        "BackupRAMPath": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_r1/",
         "LastOpenPath": "",
         "SysCardBiosPath": "",
         "GameExpressBiosPath": "",
         "PacJapanBiosPath": "",
         "PacUsBiosPath": "",
-        "RecentROM0": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue"
+        "RecentROM0": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue"
       }
     },
     "det_S1_up_r1": {
@@ -309,15 +309,15 @@
         }
       },
       "config_path_keys": {
-        "SaveFilesPath": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_up_r1\\",
-        "SaveStatesPath": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_up_r1\\",
-        "BackupRAMPath": "<SCRATCHPAD>\\phase-c\\runs\\det_S1_up_r1\\",
+        "SaveFilesPath": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_up_r1/",
+        "SaveStatesPath": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_up_r1/",
+        "BackupRAMPath": "<EVIDENCE_ROOT>/phase-c/runs/det_S1_up_r1/",
         "LastOpenPath": "",
         "SysCardBiosPath": "",
         "GameExpressBiosPath": "",
         "PacJapanBiosPath": "",
         "PacUsBiosPath": "",
-        "RecentROM0": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue"
+        "RecentROM0": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue"
       }
     },
     "pinned_r1": {
@@ -340,15 +340,15 @@
         }
       },
       "config_path_keys": {
-        "SaveFilesPath": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r1\\",
-        "SaveStatesPath": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r1\\",
-        "BackupRAMPath": "<SCRATCHPAD>\\phase-c\\runs\\pinned_r1\\",
+        "SaveFilesPath": "<EVIDENCE_ROOT>/phase-c/runs/pinned_r1/",
+        "SaveStatesPath": "<EVIDENCE_ROOT>/phase-c/runs/pinned_r1/",
+        "BackupRAMPath": "<EVIDENCE_ROOT>/phase-c/runs/pinned_r1/",
         "LastOpenPath": "",
         "SysCardBiosPath": "",
         "GameExpressBiosPath": "",
         "PacJapanBiosPath": "",
         "PacUsBiosPath": "",
-        "RecentROM0": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue"
+        "RecentROM0": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue"
       }
     }
   },

@@ -1,5 +1,5 @@
 {
-  "label": "C3 pre-registered expectations (written before any launch)",
+  "label": "C3 expectations. Original label: pre-registered expectations written before any launch. Corrected in R2: the T4 relation was probed before this file was written, and T2 pre-launch registration is UNKNOWN (see README revision history).",
   "bios_sha256": "e122f0154b6b341a4d08deddd855289a7a5ca43e814aa9391737f7e7f52f70d7",
   "bios_size": 262144,
   "media_cue_sha256": "a751990e25024069547721265e946052639710589a3d94c7e6afd1a675836dd2",

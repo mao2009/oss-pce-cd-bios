@@ -1,6 +1,6 @@
 # C0 addendum: CD image thread timing and CD state equality (C-R1, Issue #291)
 
-Scope: synthetic CUE/BIN only (`<SYNTH_MEDIA>/synthetic_cd.cue`, unmodified). No reference BIOS, no `rom/`, no commercial medium. Source: pinned tree `scratchpad/env-geargrafx/src` (HEAD b49ae82a), read-only. File references are `file:line` in that tree unless marked `[test build]`.
+Scope: synthetic CUE/BIN only (`<SYNTH_MEDIA>/synthetic_cd.cue`, unmodified). No reference BIOS, no `rom/`, no commercial medium. Source: pinned tree the pinned Geargrafx source tree (not published) (HEAD b49ae82a), read-only. File references are `file:line` in that tree unless marked `[test build]`.
 
 This addendum closes review item M-6 ("audit omits CD image worker-thread timing"). It also corrects the review's statement that the synthetic CUE exercises the cuebin worker thread.
 
@@ -23,7 +23,7 @@ The physical-drive worker does exist in the build (`GG_ENABLE_PHYSICAL_CDROM`), 
 | Thread | Start | Stop | Body and waits | Reached by the synthetic CUE? |
 |---|---|---|---|---|
 | Media loader (`load_media_thread_func`) | `emu.cpp:192` (`emu_load_media_async`) | join at `emu.cpp:150-153`; state flag `loading_state` set at `emu.cpp:189` | runs `geargrafx->LoadMedia` (`emu.cpp:187`) | yes (this is the load, not a CD worker) |
-| CUE read-ahead worker | `cdrom_cuebin_image.cpp:1520-1528` (called `:190-192`) | `:1530-1542` (from dtor `:44-50` and `Reset` `:58-63`) | `:1544-1586`; `wait_for(100 ms)` at `:1558`; keep-alive every `GG_CDROM_CUEBIN_KEEPALIVE_SECONDS` = 5 (`cdrom_cuebin_image.h:33`, `:1580`) | **no** (compiled out) |
+| CUE read-ahead worker | `cdrom_cuebin_image.cpp:1520-1528` (called `:191-192`, guard `:190-193`) | `:1530-1542` (from dtor `:44-50` and `Reset` `:58-63`) | `:1544-1586`; `wait_for(100 ms)` at `:1558`; keep-alive every `GG_CDROM_CUEBIN_KEEPALIVE_SECONDS` = 5 (`cdrom_cuebin_image.h:33`, `:1580`) | **no** (compiled out) |
 | Physical CD worker | `cdrom_physical_image.cpp:810-817` (called from device load `:127`) | `:820-829`; also `Reset` calls `StopWorker` `:64-66` (no-op when not started) | `:873-918`; `wait_for(250 ms)` at `:885` | **no** (not started by a CUE load) |
 
 ## 3. Timing relative to the load, reset, CD controller init, and CPU start (synthetic CUE path)

@@ -33,7 +33,7 @@
   "runs": {
     "cdA_r1": {
       "label": "cdA_r1",
-      "exe": "<SCRATCHPAD>/phase-c/build-det/bin/geargrafx.exe",
+      "exe": "<EVIDENCE_ROOT>/phase-c/build-det/bin/geargrafx.exe",
       "seed_env": "0x00C0FFEE",
       "steps": 16,
       "exe_sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
@@ -51,7 +51,7 @@
         "ok": true,
         "value": {
           "bios_name": "Unknown",
-          "file_path": "<SCRATCHPAD>/phase-c/synthetic/synthetic_bios.bin",
+          "file_path": "<EVIDENCE_ROOT>/phase-c/synthetic/synthetic_bios.bin",
           "success": true,
           "type": "syscard",
           "valid_crc": false,
@@ -61,7 +61,7 @@
       "media_load": {
         "ok": true,
         "value": {
-          "file_path": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+          "file_path": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
           "is_cdrom": true,
           "is_sgx": false,
           "rom_name": "synthetic_cd.cue",
@@ -364,7 +364,7 @@
     },
     "cdA_r2": {
       "label": "cdA_r2",
-      "exe": "<SCRATCHPAD>/phase-c/build-det/bin/geargrafx.exe",
+      "exe": "<EVIDENCE_ROOT>/phase-c/build-det/bin/geargrafx.exe",
       "seed_env": "0x00C0FFEE",
       "steps": 16,
       "exe_sha256": "f773867aff19a3818a0be968e5a9afdebffe8104d57e4e4172adb0b8cd66371d",
@@ -382,7 +382,7 @@
         "ok": true,
         "value": {
           "bios_name": "Unknown",
-          "file_path": "<SCRATCHPAD>/phase-c/synthetic/synthetic_bios.bin",
+          "file_path": "<EVIDENCE_ROOT>/phase-c/synthetic/synthetic_bios.bin",
           "success": true,
           "type": "syscard",
           "valid_crc": false,
@@ -392,7 +392,7 @@
       "media_load": {
         "ok": true,
         "value": {
-          "file_path": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+          "file_path": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
           "is_cdrom": true,
           "is_sgx": false,
           "rom_name": "synthetic_cd.cue",
@@ -695,7 +695,7 @@
     },
     "cdP_r1": {
       "label": "cdP_r1",
-      "exe": "<SCRATCHPAD>/env-geargrafx/build/bin/geargrafx.exe",
+      "exe": "<EVIDENCE_ROOT>/env-geargrafx/build/bin/geargrafx.exe",
       "seed_env": null,
       "steps": 16,
       "exe_sha256": "4933885ca1cebd4a979dcd8da1a1324aadac95885d3403b7019fe5f7df664827",
@@ -713,7 +713,7 @@
         "ok": true,
         "value": {
           "bios_name": "Unknown",
-          "file_path": "<SCRATCHPAD>/phase-c/synthetic/synthetic_bios.bin",
+          "file_path": "<EVIDENCE_ROOT>/phase-c/synthetic/synthetic_bios.bin",
           "success": true,
           "type": "syscard",
           "valid_crc": false,
@@ -723,7 +723,7 @@
       "media_load": {
         "ok": true,
         "value": {
-          "file_path": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+          "file_path": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
           "is_cdrom": true,
           "is_sgx": false,
           "rom_name": "synthetic_cd.cue",
@@ -1026,7 +1026,7 @@
     },
     "cdP_r2": {
       "label": "cdP_r2",
-      "exe": "<SCRATCHPAD>/env-geargrafx/build/bin/geargrafx.exe",
+      "exe": "<EVIDENCE_ROOT>/env-geargrafx/build/bin/geargrafx.exe",
       "seed_env": null,
       "steps": 16,
       "exe_sha256": "4933885ca1cebd4a979dcd8da1a1324aadac95885d3403b7019fe5f7df664827",
@@ -1044,7 +1044,7 @@
         "ok": true,
         "value": {
           "bios_name": "Unknown",
-          "file_path": "<SCRATCHPAD>/phase-c/synthetic/synthetic_bios.bin",
+          "file_path": "<EVIDENCE_ROOT>/phase-c/synthetic/synthetic_bios.bin",
           "success": true,
           "type": "syscard",
           "valid_crc": false,
@@ -1054,7 +1054,7 @@
       "media_load": {
         "ok": true,
         "value": {
-          "file_path": "<SCRATCHPAD>/<SYNTH_MEDIA>/synthetic_cd.cue",
+          "file_path": "<EVIDENCE_ROOT>/<SYNTH_MEDIA>/synthetic_cd.cue",
           "is_cdrom": true,
           "is_sgx": false,
           "rom_name": "synthetic_cd.cue",
