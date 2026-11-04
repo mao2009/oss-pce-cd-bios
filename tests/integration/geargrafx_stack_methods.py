@@ -107,6 +107,7 @@ def _snapshot_fields(row, case=None):
     """Row integrity (not evidence): shape, the requested mode, and I/O counters matching the event log."""
     if case is not None and row.get("mode") != case:
         raise ValueError(f"{case}: measured wrong mode {row.get('mode')!r}")
+    case = case if case is not None else row.get("mode")   # label for the messages below
     for name in ("start", "stop", "refusal_instruction_start"):
         G._snapshot(row, name)
     for name in ("io_reads", "io_writes", "instructions_after_refusal", "stack_bytes_changed",

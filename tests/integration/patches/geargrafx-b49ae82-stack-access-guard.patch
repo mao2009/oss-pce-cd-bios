@@ -21,7 +21,7 @@
 +//   1 = push16 checks only before its second byte, 2 = pop increments S before the check,
 +//   3 = no latch and no stop request, 4 = the refusal is computed but ignored (access performed),
 +//   5 = latch kept but no stop request, 6 = a pre-instruction refusal is ignored (instruction executes),
-+//   7 = a pre-instruction refusal is applied only after the opcode fetch (PC and the T flag have moved).
++//   7 = a pre-instruction refusal is applied only after the opcode fetch (PC has moved; T too, if it was set).
 +// After a refused access the rest of the instruction still runs, and the run loop still clocks the
 +// hardware for the instruction's cycles before it stops (device time advances; no CPU access is made).
 +extern bool (*gg_verify_stack_guard)(void* context, unsigned op, unsigned s, unsigned transfer_state, bool latched);
@@ -109,7 +109,7 @@
 +    // upstream behaviour. Called before the instruction touches any architectural state (the T flag
 +    // handling below included). false = do not execute this instruction: nothing is fetched or changed,
 +    // no cycles are charged, and the debugger run loop is asked to stop (mutation 6 ignores the refusal;
-+    // mutation 7 applies it only after the opcode fetch, so PC and the T flag have already changed).
++    // mutation 7 applies it only after the opcode fetch, so PC (and T, if it was set) has already changed).
 +#if defined(GG_DISABLE_DISASSEMBLER)
 +#error "VERIFICATION-ONLY refusal needs the debugger build: without its stop request a refusal never ends the frame"
 +#endif
