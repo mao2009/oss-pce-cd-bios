@@ -275,9 +275,10 @@ class PatchBoundaryTests(unittest.TestCase):
 
     def test_make_integration_runs_the_driver(self):
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-        start = makefile.index("\nintegration: build\n") + 1
+        target = re.search(r"^integration:.*$", makefile, re.M)
+        self.assertIsNotNone(target)
         recipe = []
-        for line in makefile[start:].splitlines()[1:]:
+        for line in makefile[target.end():].splitlines()[1:]:
             if not line.startswith("\t"):
                 break   # the recipe ends at the first line that is not a tab-indented command
             recipe.append(line.strip())

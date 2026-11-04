@@ -275,8 +275,11 @@ def side_effect_check(row, case):
     if row["refusal"]["vdc_ar"] != _pair(row, "ar")[0]:
         raise ValueError(f"{case}: VDC AR already changed when the guard was called "
                          f"({_pair(row, 'ar')[0]:#x}->{row['refusal']['vdc_ar']:#x})")
+    # Fail-closed, but not attributed to the guard: IRR can also change by device activity during the
+    # post-refusal hardware clocking (see LIMIT). Every armed run stops inside its first frame.
     if _int(row, "irr_before") != _int(row, "irr_after"):
-        raise ValueError(f"{case}: interrupt request register changed {row['irr_before']:#x}->{row['irr_after']:#x}")
+        raise ValueError(f"{case}: interrupt request register changed {row['irr_before']:#x}->{row['irr_after']:#x} "
+                         "(CPU- or device-originated; not attributed to the guard; run not accepted)")
     if row["refusal"]["op"] != want["op"] or row["refusal"]["mpr1"] != IO_MPR:
         raise ValueError(f"{case}: first refusal op {row['refusal'].get('op')} MPR1 {row['refusal'].get('mpr1')}, "
                          f"want {want['op']} / {IO_MPR:#x}")
