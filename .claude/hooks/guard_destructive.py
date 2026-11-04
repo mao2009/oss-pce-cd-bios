@@ -719,25 +719,16 @@ def claude_mention(args):
                or SUBST in a for a in args)
 
 
-TIMEOUT_DURATION = re.compile(r"^[0-9]+(\.[0-9]+)?[smhd]?$")
+TIMEOUT_MAX_WORDS = 256
 
 
 def timeout_candidates(args):
-    """Argv suffixes that may be the command timeout runs (X3a: a form the guard does not fully parse)."""
-    i = 0
-    while i < len(args) and args[i].startswith("-") and len(args[i]) > 1:
-        if args[i] == "--":
-            i += 1
-            break
-        i += 2 if args[i] in WRAPPER_ARGS["timeout"] else 1
-    rest = args[i:]
-    if not rest:
-        return []
-    if TIMEOUT_DURATION.match(rest[0]):
-        rest = rest[1:]
-    if rest and rest[0].startswith("-"):
-        return [rest[k:] for k in range(len(rest))]
-    return [rest]
+    """Every suffix of the arguments may be the command timeout runs. No word is skipped as an option value or a
+    duration, so long options with a separate value and non-integer durations cannot hide a command (fail closed).
+    The argument list is bounded: a longer one is denied, which keeps the analysis linear in practice."""
+    if len(args) > TIMEOUT_MAX_WORDS:
+        raise Deny("timeout", "timeout with too many arguments is not inspected")
+    return [args[k:] for k in range(len(args))]
 
 
 def unwrap(name, args):
@@ -755,8 +746,6 @@ def unwrap(name, args):
             i += 2 if a in withargs else 1
         else:
             break
-    if name == "timeout" and i < len(args):
-        i += 1
     return args[i:]
 
 
@@ -802,12 +791,12 @@ def analyze_argv(words, ctx, ps, depth):
             w0 = unescaped
         name = posixpath.basename(w0.replace("\\", "/")).lower()
         # Windows drops trailing dots and spaces from a file name (rm. and rm  are rm), so they are dropped here too.
-        name = name.rstrip(". ")
+        name = name.rstrip(". ") or name
         if name.endswith(".exe"):
-            name = name[:-4].rstrip(". ")
+            name = name[:-4].rstrip(". ") or name[:-4]
         if name == "timeout":
-            # timeout [OPTION] DURATION COMMAND. A duration that is not numeric is not skipped; an option after the
-            # duration is not understood, so every later suffix is analysed as a possible command (fail closed).
+            # timeout's option grammar (long options with a separate value, non-integer durations) is not parsed, so
+            # every suffix of its arguments is analysed as a possible command. Bounded by TIMEOUT_MAX_WORDS.
             for cand in timeout_candidates(words[1:]):
                 analyze_argv(cand, ctx.copy(), ps, depth + 1)
             return
