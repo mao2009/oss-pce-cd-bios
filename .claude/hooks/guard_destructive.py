@@ -881,15 +881,13 @@ def analyze_argv(words, ctx, ps, depth):
         tokens = " ".join(args).split()
         if len(tokens) > LAUNCHER_MAX_WORDS:
             raise Deny("launcher", "launcher with too many arguments is not inspected")
+        # No candidate is skipped: a path split at its space ("Files\app.exe") is refused like any other command word,
+        # so a destructive command after a separator in the same token ("tools\app.exe;rm -rf /") is still analysed.
         for k in range(len(tokens)):
-            try:
-                analyze_text(" ".join(tokens[k:]), ctx.copy(), True, depth + 1)
-            except Deny as e:
-                # A path fragment split out of a quoted path with a space ("C:\Program Files\app.exe") is a backslash
-                # word that is no command. Only that refusal is skipped; every other candidate is still analysed.
-                if e.kind == "command-word" and "\\" in tokens[k]:
-                    continue
-                raise
+            analyze_text(" ".join(tokens[k:]), ctx.copy(), True, depth + 1)
+    if name in (".", "source") and args and args[0].startswith("$"):
+        # Sourcing a variable names a file or a script that is not known here (fail closed).
+        raise Deny("unexpanded", "sourcing a variable is not inspected")
     if name in EVAL_LIKE and any(SUBST in a for a in args):
         raise Deny("substitution", "command substitution passed to a shell, eval or source is not inspected")
     if name in WRITE_NAMES or (name == "sed" and any(

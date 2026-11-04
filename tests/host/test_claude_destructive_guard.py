@@ -926,9 +926,24 @@ class LauncherClassTests(unittest.TestCase):
 
     def test_powershell_variables_in_scriptblocks_and_quoted_paths_are_allowed(self):
         for cmd in ["Get-Process | ForEach-Object { $_.Name }", "Get-ChildItem | ForEach-Object { $_.FullName }",
-                    'Start-Process "C:\\Program Files\\app.exe"', '"C:\\Program Files\\app.exe" foo']:
+                    '"C:\\Program Files\\app.exe" foo']:
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd, tool="PowerShell"), "ALLOW")
+
+    def test_launcher_path_fragments_variables_and_blocks_are_checked(self):
+        # A quoted path with a space is refused, fail closed: the launcher re-split reads its fragment as a command.
+        for cmd, tool in [('Start-Process "C:\\Program Files\\app.exe"', "PowerShell"),
+                          ('Start-Process "tools\\app.exe;rm -rf /"', "PowerShell"),
+                          ('Start-Process ".\\x.exe;rm -rf /"', "PowerShell"),
+                          ("Start-Process powershell -ArgumentList $x", "PowerShell"),
+                          ("$RM -rf dir", "PowerShell"), (". $x", "PowerShell"), (". $x", "Bash"),
+                          ("source $x", "Bash")]:
+            with self.subTest(cmd=cmd, tool=tool):
+                self.assertEqual(verdict(cmd, tool=tool), "DENY")
+
+    def test_else_and_do_keywords_are_command_positions(self):
+        self.assertEqual(verdict("if true; then echo hi; else rm -rf /; fi"), "DENY")
+        self.assertEqual(verdict("for x in a; do rm -rf /; done"), "DENY")
 
     def test_launcher_argument_list_is_capped(self):
         self.assertEqual(verdict("Start-Process notepad " + " ".join(["x"] * 300), tool="PowerShell"), "DENY")
@@ -998,8 +1013,13 @@ class LauncherMutationTests(unittest.TestCase):
         "@ removed from the expression syntax": ('EXPR_SYNTAX_RE = re.compile(r"[,()@{}$]")',
                                                  'EXPR_SYNTAX_RE = re.compile(r"[,(){}$]")'),
         "launcher argument cap removed": ('        if len(tokens) > LAUNCHER_MAX_WORDS:', '        if False:'),
-        "launcher path-fragment skip removed": ('                if e.kind == "command-word" and "\\\\" in tokens[k]:',
-                                                '                if False:'),
+        "variable sourcing rule removed": ('    if name in (".", "source") and args and args[0].startswith("$"):', '    if False:'),
+        "PowerShell dollar removed from expression syntax": ('EXPR_SYNTAX_RE = re.compile(r"[,()@{}$]")',
+                                                             'EXPR_SYNTAX_RE = re.compile(r"[,()@{}]")'),
+        "lone variable length condition removed": ('        if ps and len(words) == 1 and w0.startswith("$")',
+                                                   '        if ps and w0.startswith("$")'),
+        "else keyword removed": ('"then", "else", "elif"', '"then", "elif"'),
+        "do keyword removed": ('"fi", "do", "done"', '"fi", "done"'),
         "PowerShell launcher expression rule removed": ('    if ps and PS_PROC_LAUNCH_RE.search(text) and EXPR_SYNTAX_RE.search(text):',
                                                         '    if False:'),
         "saps alias removed": ('"start", "saps", "invoke-item"', '"start", "invoke-item"'),
