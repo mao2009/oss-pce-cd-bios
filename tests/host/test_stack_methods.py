@@ -28,7 +28,7 @@ def _snap(**fields):
 def safe_row():
     """A method A refusal before the first instruction: nothing executed, nothing changed."""
     snap = _snap()
-    return dict(mode="A:pha-armed", exit=0, refused=True, halted=True, latched=False, instructions=1,
+    return dict(mode="A:pha-armed", exit=0, dst=[0, 0], refused=True, halted=True, latched=False, instructions=1,
                 instructions_after_refusal=0, io_reads=0, io_writes=0, stack_bytes_changed=0,
                 cdram_bytes_changed=0, bram_bytes_changed=0, irr_before=0, irr_after=0,
                 refusal=dict(kind="instruction", op=255, s=4, transfer_state=0, mpr1=0xFF),
@@ -52,7 +52,20 @@ class CriteriaTests(unittest.TestCase):
         for field in ("io_writes", "io_reads", "cdram_bytes_changed", "bram_bytes_changed", "stack_bytes_changed"):
             row = safe_row()
             row[field] = 1
+            if field.startswith("io_"):   # keep the row consistent: the event log carries the access too
+                row["events"] = [dict(seq=0, kind="io", op=1 if field == "io_writes" else 0, address=0x2104, value=0,
+                                      decision=-1, latched=False, mpr1=0xFF, instruction=1)]
             self.assertEqual(M.verdict(row)[0], M.UNSAFE, field)
+        row = safe_row()
+        row["dst"] = [0, 0x5A]
+        self.assertEqual(M.verdict(row)[0], M.UNSAFE, "dst")
+        self.assertEqual(M.verdict(row, legit_dst=True)[0], M.SAFE, "legit dst")
+
+    def test_inconsistent_counters_are_rejected_as_malformed(self):
+        row = safe_row()
+        row["io_writes"] = 1   # counter without the event: integrity failure, not a verdict
+        with self.assertRaises(ValueError):
+            M.verdict(row)
 
     def test_execution_after_the_refusal_is_unsafe(self):
         row = safe_row()
@@ -105,7 +118,25 @@ class ExpectationTests(unittest.TestCase):
         self.assertEqual(M.EXPECT_A["irqtam"]["io"], [(1, 0x2104), (1, 0x2103), (1, 0x2102)])
         self.assertEqual((M.EXPECT_A["tend"]["verdict"], M.EXPECT_A["tend"]["failing"]), (M.BLOCKED, {"resume_safe"}))
         unsafe_or_blocked = {r for r, e in M.EXPECT_A.items() if e["verdict"] != M.SAFE}
-        self.assertEqual(unsafe_or_blocked, {"irqtam", "tend"})
+        self.assertEqual(unsafe_or_blocked, {"irqtam", *M.MID_TRANSFER})
+
+    def test_mid_transfer_cases_cover_every_block_opcode(self):
+        self.assertEqual(set(M.MID_TRANSFER), {"tend", "tendtin", "tendtia", "tendtdd", "tendtai"})
+        for route in M.MID_TRANSFER:
+            self.assertEqual(M.EXPECT_A[route]["verdict"], M.BLOCKED, route)
+
+    def test_real_core_mutants_cover_ignored_and_late_refusals(self):
+        self.assertEqual(M.MUTANTS["mut-aignore"][1:], (M.UNSAFE, "io_prevented"))
+        self.assertEqual(M.MUTANTS["mut-alate"][1:], (M.BLOCKED, "pc_preserved"))
+
+    def test_no_route_sets_the_t_flag(self):
+        """The pre-instruction snapshot moved before the T flag handling (#498); no route starts with T set."""
+        text = PROBE.read_text(encoding="utf-8")
+        values = {int(v, 16) for v in re.findall(r"r->p = 0x([0-9A-Fa-f]{2});", text)}
+        default = re.search(r"Route d = \{\"\", \{\}, 0x[0-9A-F]+, 0x[0-9A-F]+, 0x[0-9A-F]+, 0x[0-9A-F]+, 0x([0-9A-F]+),", text)
+        values.add(int(default.group(1), 16))
+        self.assertTrue(values)
+        self.assertTrue(all(v & 0x20 == 0 for v in values), values)
 
     def test_cases_are_unique(self):
         cases = list(M.cases())
@@ -127,7 +158,8 @@ class PatchAndProbeTests(unittest.TestCase):
         refused = body[hook:hook + 8]
         self.assertTrue(any("m_memory_breakpoint_hit = true;" in line for line in refused))
         self.assertTrue(any(line.strip() == "return 0;" for line in refused))
-        self.assertIn("gg_verify_stack_mutation != 6", "\n".join(refused))
+        self.assertIn("gg_verify_stack_mutation != 6", "\n".join(body[hook - 4:hook + 8]))
+        self.assertIn('#error "VERIFICATION-ONLY refusal needs the debugger build', "\n".join(body))
 
     def test_probe_keeps_method_c_as_the_default(self):
         text = PROBE.read_text(encoding="utf-8")
