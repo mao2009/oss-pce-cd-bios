@@ -34,7 +34,7 @@ class ExpectationTests(unittest.TestCase):
     def test_a_plus_c_is_never_unsafe_and_keeps_two_blocked_routes(self):
         verdicts = {r: e["verdict"] for r, e in X.EXPECT_AC.items()}
         self.assertNotIn(X.UNSAFE, verdicts.values())
-        self.assertEqual({r for r, v in verdicts.items() if v == X.BLOCKED}, {"irqtam", "tend"})
+        self.assertEqual({r for r, v in verdicts.items() if v == X.BLOCKED}, {"irqtam", *M.MID_TRANSFER})
 
     def test_mutants_cover_both_methods(self):
         self.assertEqual(X.MUTANTS["AC:pha-mut-aignore"], X.BLOCKED)    # C catches what A missed

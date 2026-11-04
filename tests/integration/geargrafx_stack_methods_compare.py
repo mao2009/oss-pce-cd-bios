@@ -50,7 +50,8 @@ EXPECT_C = {
     "irq": _c({PC, SPM, IRQ}, index=2, pc=0x1E01),  # entry sets I, loads the vector
     "irqtam": _c({PC, SPM, IRQ}),                  # TAM's own MPR1 change + entry
     **{op: _c({XFER}) for op in M.BLOCK_OPS},      # transfer state 0 -> 2 before the first push
-    "tend": _c({REGS, PC, XFER}, index=3, transfer_state=1, legit_stack_bytes=3, dst=0x5A),
+    # TransferEnd step with the harness MPR1 change (every block opcode): pops refused, values 0, state 1 -> 0.
+    **{r: _c({REGS, PC, XFER}, index=3, transfer_state=1, legit_stack_bytes=3, dst=0x5A) for r in M.MID_TRANSFER},
 }
 # A+C: A refuses first wherever MPR1 is wrong at the instruction start, so A's results stand; on IRQ-in-TAM
 # A lets the TAM run and C refuses the entry pushes inside the same RunInstruction.
@@ -106,6 +107,7 @@ def evaluate(rows):
                 case = f"{method}:{route}-armed{bank}"
                 table[(f"{route}@{bank}", method)] = M.check_armed(rows[case], case, BANK_EXPECT[method])
     for case, want in MUTANTS.items():
+        M._snapshot_fields(rows[case], case)
         got, _ = M.verdict(rows[case], 0)
         if got != want:
             raise ValueError(f"mutation {case}: judged {got}, want {want}")
@@ -133,12 +135,16 @@ def main():
         print(f"COMPARE {route}: {cells}")
     count = {m: {v: sum(1 for (r, mm), (vv, _) in table.items() if mm == m and vv == v) for v in (SAFE, BLOCKED, UNSAFE)}
              for m in METHODS}
-    print(f"PASS issue-500 A/C/A+C comparison: {len(rows)} real-core runs, {len(detections)} detections, expectations "
+    for route in routes:
+        if M.NOTES.get(route):
+            print(f"NOTE {route}: {M.NOTES[route]}")
+    print(f"EXPECTATIONS_MET issue-500 A/C/A+C comparison: {len(rows)} real-core runs, {len(detections)} detections, expectations "
           f"met; totals {json.dumps(count, sort_keys=True)} (pinned core {G.PINNED_CORE_REVISION}, synthetic BIOS/CD)")
     print("RESULT issue-500: A+C prevents every observed forbidden side effect (no UNSAFE). It stops consistently "
           "(SAFE_IN_SCOPE) wherever MPR1 is wrong at an instruction start. Two cases stay BLOCKED: IRQ-in-TAM (C "
           "refuses the entry pushes inside the TAM's RunInstruction, but the TAM's MPR1 change, the I flag and the "
-          "vector PC are already applied) and a mid-transfer MPR1 change (the stop is inside the block transfer).")
+          "vector PC are already applied) and a mid-transfer MPR1 change on every block opcode (the stop is inside "
+          "the block transfer).")
     print("UNKNOWN (not covered): ST0/ST1/ST2 WriteFromCPU, device-originated writes, the libretro build, real "
           "hardware; NMI not applicable on the pinned core. Not a production mechanism; no gate changes.")
     return 0
