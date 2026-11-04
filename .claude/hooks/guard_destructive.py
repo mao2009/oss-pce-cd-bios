@@ -39,16 +39,16 @@ PS_HOSTS = {"powershell", "pwsh"}
 PS_RM = {"remove-item", "ri", "del", "erase"}
 # PowerShell cmdlets that start a process or a job from their arguments (their arguments are analysed as a command).
 PS_LAUNCH_NAMES = {"start-process", "start", "saps", "invoke-item", "ii", "invoke-command", "icm", "start-job",
-                   "sajb", "start-threadjob", "invoke-wmimethod", "invoke-cimmethod"}
+                   "sajb", "start-threadjob", "invoke-wmimethod", "invoke-cimmethod", "iwmi", "icim"}
 LAUNCHER_MAX_WORDS = 256
 # PowerShell process launchers whose argument expression is not inspected: a launcher with expression syntax
 # (comma arrays, parentheses, @(), scriptblocks, variables) is an execution form the guard cannot parse, so it is denied.
 PS_PROC_LAUNCH_RE = re.compile(
-    r"(?i)(?<![\w-])(start-process|start|saps|invoke-item|ii|invoke-wmimethod|invoke-cimmethod)(?![\w-])")
+    r"(?i)(?<![\w-])(start-process|start|saps|invoke-item|ii|invoke-wmimethod|invoke-cimmethod|iwmi|icim)(?![\w-])")
 EXPR_SYNTAX_RE = re.compile(r"[,()@{}$]")
 # PowerShell method call syntax (.Delete(), $x[0].Delete()). The "(" would split the call from its object, so the call
 # is refused on the raw text before any split. Property access ($_.Name) is not a call and is not refused.
-METHOD_CALL_RE = re.compile(r"\.\w+\s*\(")
+METHOD_CALL_RE = re.compile(r"(?i)\.\s*(?:\w+\s*\(|['\"(])|-membername\b")
 CD_NAMES = {"cd", "chdir", "set-location", "sl"}
 # Always denied: destructive by nature, or cannot be inspected.
 ALWAYS_DENY = {"unlink", "shred", "rmdir", "rd", "dd", "mkfs", "truncate", "wipefs",

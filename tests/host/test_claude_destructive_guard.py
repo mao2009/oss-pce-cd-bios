@@ -948,6 +948,22 @@ class LauncherClassTests(unittest.TestCase):
                 self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
         self.assertEqual(verdict("Get-Process | ForEach-Object { $_.Name }", tool="PowerShell"), "ALLOW")
 
+    def test_quoted_parenthesised_and_named_member_calls_are_denied(self):
+        for cmd in ["$x.'Delete'()", '$x.("Delete")()', "$x.Delete ()",
+                    "Get-Item / | ForEach-Object { $_.'Delete'() }",
+                    "Get-ChildItem | ForEach-Object -MemberName Delete"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
+
+    def test_wmi_and_cim_aliases_are_launchers(self):
+        for cmd in ["iwmi -Class Win32_Process -Name Create -ArgumentList 'cmd /c rd /s /q C:\\x'",
+                    "icim -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='rm -rf /'}"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
+
+    def test_if_with_a_command_in_its_segment_is_denied(self):
+        self.assertEqual(verdict("if rm -rf /; then :; fi"), "DENY")
+
     def test_sourcing_a_path_with_a_variable_is_denied(self):
         for cmd, tool in [("source ./$x", "Bash"), (". ./$x", "Bash"), (". ./$x", "PowerShell")]:
             with self.subTest(cmd=cmd, tool=tool):
@@ -1038,6 +1054,11 @@ class LauncherMutationTests(unittest.TestCase):
         "lone variable length condition removed": ('        if ps and len(words) == 1 and w0.startswith("$")',
                                                    '        if ps and w0.startswith("$")'),
         "else keyword removed": ('"then", "else", "elif"', '"then", "elif"'),
+        "if keyword removed": ('"if", "then", "else"', '"then", "else"'),
+        "quoted and parenthesised member rule removed": (r'''|['\"(])|-membername\b")''', r''')|-membername\b")'''),
+        "method call whitespace rule removed": (r'''(?:\w+\s*\(|['\"(])''', r'''(?:\w+\(|['\"(])'''),
+        "iwmi removed from the expression launcher pattern": (r'''|iwmi|icim)''', r''')'''),
+        "iwmi removed from the launcher names": ('"invoke-cimmethod", "iwmi", "icim"}', '"invoke-cimmethod"}'),
         "while keyword removed": ('"while", "until"', '"until"'),
         "until keyword removed": ('"while", "until"', '"while"'),
         "elif keyword removed": ('"then", "else", "elif"', '"then", "else"'),
