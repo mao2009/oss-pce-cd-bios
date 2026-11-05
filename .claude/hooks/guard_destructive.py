@@ -538,17 +538,12 @@ def rm_rule(args, ps, ctx):
 
 
 def worktree_remove(args, ctx):
-    if any(a in ("-f", "--force") for a in args):
-        raise Deny("git-worktree-remove", "forced worktree removal is denied")
-    targets = [a for a in args if not a.startswith("-")]
-    if len(targets) != 1:
-        raise Deny("git-worktree-remove", "expected exactly one worktree path")
-    _, real = resolve(targets[0], ctx)
-    k = real.casefold()
-    if k not in ctx.registry:
-        raise Deny("git-worktree-remove", "worktree owner not recorded; treated as protected")
-    if is_protected(k, ctx) or k == ctx.root:
-        raise Deny("git-worktree-remove", "protected worktree path")
+    """Unconditionally deny removing a worktree.
+
+    A registry entry records ownership; it is never authorization to delete a
+    worktree. This holds regardless of path, options, or Owner approval.
+    """
+    raise Deny("git-worktree-remove", "git worktree remove is always denied")
 
 
 def git_rule(args, ctx):
