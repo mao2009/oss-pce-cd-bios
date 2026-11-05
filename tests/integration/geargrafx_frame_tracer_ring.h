@@ -25,14 +25,14 @@ public:
     }
 
     unsigned size() const { return size_; }
-    unsigned dropped() const { return dropped_; }
+    unsigned long long dropped() const { return dropped_; }
     unsigned long long pushed() const { return pushed_; }
     const T& at(unsigned index) const { return entries_[(begin_ + index) % capacity_]; }
 
 private:
     std::array<T, MaxCapacity> entries_{};
-    unsigned capacity_, begin_, size_, dropped_;
-    unsigned long long pushed_;
+    unsigned capacity_, begin_, size_;
+    unsigned long long dropped_, pushed_;  // both 64-bit, so pushed == size + dropped cannot wrap apart
 };
 
 #endif
