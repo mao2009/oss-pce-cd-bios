@@ -987,7 +987,8 @@ def analyze_argv(words, ctx, ps, depth):
             w0 = unescaped
         name = posixpath.basename(w0.replace("\\", "/")).lower()
         # Windows drops trailing dots and spaces from a file name (rm. and rm  are rm), so they are dropped here too.
-        name = name.rstrip(". ") or name
+        # A leading = is zsh's expansion of a command name to its path (=sort); the same program is named (fail closed).
+        name = name.lstrip("=").rstrip(". ") or name
         if name.endswith(".exe"):
             name = name[:-4].rstrip(". ") or name[:-4]
         if name == "timeout":

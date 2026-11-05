@@ -1208,7 +1208,7 @@ class LauncherMutationTests(unittest.TestCase):
         "ionice removed from wrappers": ('"nice", "ionice", "timeout"', '"nice", "timeout"'),
         "builtin removed from wrappers": ('"command", "builtin", "exec"', '"command", "exec"'),
         "timeout rule removed": ('        if name == "timeout":', '        if False:'),
-        "trailing dot and space normalisation removed": ('        name = name.rstrip(". ") or name', '        pass'),
+        "trailing dot and space normalisation removed": ('        name = name.lstrip("=").rstrip(". ") or name', '        pass'),
         "timeout attached short value taken as next word": ('takes_next = j == len(a) - 1', 'takes_next = True'),
         "PowerShell head ignores a leading tab": ('            if m:\n                head', '            if m and not seg.startswith("\\t"):\n                head'),
         "timeout long value consumes no extra word":('i += 2 if len(hits) == 1 and hits[0] in TIMEOUT_LONG_VALUE else 1',
@@ -1300,6 +1300,8 @@ class X3bProgramOptionTests(unittest.TestCase):
         "ssh -o Proxy{Command=sh,} host", "tar x{I,} sh a.tar", "tar {I,}sh a.tar",
         "tar --checkpoint-action={exec,}=sh -xf a.tar", "export {RSYNC_RSH,X}=sh && rsync a b",
         "X=RSYNC_RSH; export $X=sh && rsync a b", "ssh -* host", "sort --compress*=sh x", "tar x* a.tar",
+        # found in review 6: a leading = (zsh path expansion) names the same program
+        "=sort --compress-program=sh x", "=tar -I sh -xf a.tar", "=rsync -e sh a b", "=ssh -o ProxyCommand=sh host",
     ]
     ALLOW = [
         "sort -u names.txt", "sort -o out.txt names.txt", "sort --check names.txt",
@@ -1352,6 +1354,8 @@ class X3bMutationTests(unittest.TestCase):
         "assignment with an expansion not denied": (r'''    if any("=" in w and ("{" in w or "}" in w or "$" in w) for w in words):''',
                                                     r'''    if False:'''),
         "tool filter removed": ('    if name not in PROGRAM_TOOLS:', '    if False:'),
+        "leading equals not stripped from tool names": ('name = name.lstrip("=").rstrip(". ") or name',
+                                                       'name = name.rstrip(". ") or name'),
         "old-style tar cluster rule removed": (r'''    if name == "tar" and args and re.fullmatch(r"[A-Za-z]+", args[0]):''',
                                                r'''    if False:'''),
         "environment name normalisation removed": (r'''or v + "=" in w.replace("\\", "").replace('"', "").replace("'", "")''',
