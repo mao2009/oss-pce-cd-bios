@@ -26,7 +26,8 @@ UNSUPPORTED_DIRECTIVES = {".macro", ".incbin", ".define", ".repeat", ".mac", ".e
 CONDITIONAL_OPEN = {".if", ".ifdef", ".ifndef", ".ifblank", ".ifnblank", ".ifconst"}
 CONDITIONAL_OTHER = {".else", ".elseif", ".endif"}
 SEGMENT_SHORTCUTS = {".code": "CODE", ".zeropage": "ZEROPAGE", ".bss": "BSS", ".data": "DATA", ".rodata": "RODATA"}
-RAM_SEGMENTS = {"ZEROPAGE", "BSS"}   # src/bank0.cfg places every other segment in ROM0
+RAM_SEGMENTS = {"ZEROPAGE", "BSS"}   # RAM segments by convention (placed by the RAM-side linker configs);
+                                     # src/bank0.cfg places the code segments (CODE, OVERRIDES, BOOT, ...) in ROM0
 
 
 @dataclass
@@ -49,6 +50,7 @@ class Source:
     symbols: dict = field(default_factory=dict)     # constants: name -> int
     labels: dict = field(default_factory=dict)      # label -> segment
     unsupported: list = field(default_factory=list) # (line number, reason)
+    conditional_constants: set = field(default_factory=set)  # assigned inside .if blocks: build-dependent
     includes: list = field(default_factory=list)
 
     def instructions(self):
@@ -164,14 +166,29 @@ def parse(path, root=None):
     src = Source(rel)
     segment, depth = "CODE", 0
     raw_lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    # first pass: constants (NAME = expr), in order; unresolved ones stay unknown
+    # first pass: constants (NAME = expr), in order; unresolved ones stay unknown. A constant assigned inside a
+    # conditional block (.if / .ifdef / .ifndef ...) depends on the build (e.g. a -D option), so it is NOT
+    # resolved: every use of it stays undecidable.
+    cdepth = 0
     for raw in raw_lines:
         body = _strip_comment(raw).strip()
+        first = re.split(r"\s+", body, maxsplit=1)[0].lower() if body else ""
+        if first in CONDITIONAL_OPEN:
+            cdepth += 1
+            continue
+        if first == ".endif":
+            cdepth = max(0, cdepth - 1)
+            continue
         m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*:?=\s*(.+)$", body)
-        if m:
-            value = evaluate(m.group(2), src.symbols)
-            if value is not None:
-                src.symbols[m.group(1)] = value
+        if not m:
+            continue
+        if cdepth > 0 or m.group(1) in src.conditional_constants:
+            src.conditional_constants.add(m.group(1))
+            src.symbols.pop(m.group(1), None)
+            continue
+        value = evaluate(m.group(2), src.symbols)
+        if value is not None:
+            src.symbols[m.group(1)] = value
     for number_, raw in enumerate(raw_lines, 1):
         body = _strip_comment(raw).strip()
         if not body:
@@ -189,7 +206,8 @@ def parse(path, root=None):
         if not body:
             src.lines.append(Line(rel, number_, labels, "", "", segment, depth > 0, text=raw))
             continue
-        word, _, rest = body.partition(" ")
+        parts = re.split(r"\s+", body, maxsplit=1)   # any whitespace (space or TAB) ends the statement word
+        word, rest = parts[0], (parts[1] if len(parts) > 1 else "")
         word_l = word.lower()
         if word_l.startswith("."):
             if word_l in UNSUPPORTED_DIRECTIVES:

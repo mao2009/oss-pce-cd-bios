@@ -149,6 +149,65 @@ class NegativeTests(unittest.TestCase):
         c["rule_groups"] = ["CI-1", "CI-9"]
         self.assert_fail("CI-1.00", contract=c)
 
+    # --- #662 independent review ---
+    def _site(self, report, rule):
+        return [f["verdict"] for f in report.findings if f["rule"] == rule and f["where"].startswith("src/api.s:")]
+
+    def assert_not_static_only(self, report):
+        """The undecidable TAM site is NOT_STATIC and gets no STATIC_OK of its own."""
+        sites = [f["where"] for f in report.findings if f["rule"] == "CI-1.04" and f["verdict"] == C.NOT_STATIC]
+        self.assertEqual(len(sites), 1, report.findings)
+        self.assertFalse([f for f in report.findings if f["where"] == sites[0] and f["verdict"] == C.OK])
+
+    def test_conditional_lda_is_not_static_not_ok(self):   # MAJOR: .ifdef / .else picks the LDA value
+        src = {**SOURCES, "src/api.s": API.replace("    lda #$FF\n", ".ifdef ALT\n    lda #$10\n.else\n    lda #$FF\n.endif\n")}
+        self.assert_not_static_only(run(src, BASE))
+
+    def test_data_byte_between_lda_and_tam(self):   # MAJOR: .byte $68 assembles to PLA
+        src = {**SOURCES, "src/api.s": API.replace("    lda #$FF\n", "    lda #$FF\n    .byte $68\n")}
+        self.assert_not_static_only(run(src, BASE))
+
+    def test_undecidable_mpr1_change_in_api_is_fail(self):
+        src = {**SOURCES, "src/api.s": API.replace("    lda #$FF\n    tam #$01", ".ifdef ALT\n    lda #$10\n.else\n"
+                                                                             "    lda #$FF\n.endif\n    tam #$02")}
+        c = copy.deepcopy(BASE)
+        c["files"]["src/api.s"]["tam"][0]["mask"] = "0x02"
+        self.assert_fail("CI-1.05", src, c)
+
+    def test_conditional_constant_is_not_fixed(self):   # MEDIUM: .ifndef V / V = $FF / .endif (a -D option)
+        src = {**SOURCES, "src/api.s": ".ifndef V\nV = $FF\n.endif\n" + API.replace("lda #$FF", "lda #V")}
+        self.assert_not_static_only(run(src, BASE))
+
+    def test_unconditional_constant_is_still_resolved(self):   # positive
+        src = {**SOURCES, "src/api.s": "V = $FF\n" + API.replace("lda #$FF", "lda #V")}
+        report = run(src, BASE)
+        self.assertFalse(report.failed(), report.findings)
+        self.assertIn(C.OK, self._site(report, "CI-1.03"))
+
+    def test_tab_after_directive(self):   # MEDIUM: .incbin<TAB>"x.bin" must not bypass the unsupported check
+        self.assert_fail("CI-1.02", {**SOURCES, "src/api.s": API + ".incbin\t\"x.bin\"\n"})
+
+    def test_tab_after_segment_is_honoured(self):
+        src = {**SOURCES, "src/api.s": API.replace(".segment \"OVERRIDES\"", ".segment\t\"OVERRIDES\"").replace(
+            "    plp\n", "    sta api_slot_00\n    plp\n")}
+        self.assert_fail("CI-1.08", src)
+
+    def test_store_to_label_plus_offset(self):   # MEDIUM: sta label+1 (operand patching)
+        self.assert_fail("CI-1.08", {**SOURCES, "src/api.s": API.replace("    plp\n", "    sta api_slot_00+1\n    plp\n")})
+
+    def test_read_modify_write_on_code(self):   # MEDIUM: inc / smb on a code label
+        self.assert_fail("CI-1.08", {**SOURCES, "src/api.s": API.replace("    plp\n", "    inc api_slot_00\n    plp\n")})
+        self.assert_fail("CI-1.08", {**SOURCES, "src/api.s": API.replace("    plp\n", "    smb3 api_slot_00\n    plp\n")})
+
+    def test_rmw_on_zero_page_is_not_flagged(self):   # positive
+        src = {**SOURCES, "src/api.s": ".zeropage\nzp: .res 1\n" + API.replace("    plp\n", "    inc zp\n    plp\n")}
+        self.assertNotIn(C.FAIL, verdicts(run(src, BASE), "CI-1.08"))
+
+    def test_malformed_contract_hex_is_fail(self):
+        c = copy.deepcopy(BASE)
+        c["files"]["src/api.s"]["tam"][0]["value"] = "0xZZ"
+        self.assert_fail("CI-1.00", contract=c)
+
     def test_zero_page_store_is_not_a_code_store(self):
         src = {**SOURCES, "src/api.s": ".zeropage\nzp: .res 1\n" + API.replace("    plp\n", "    sta zp\n    plp\n")}
         self.assertNotIn(C.FAIL, verdicts(run(src, BASE), "CI-1.08"))
