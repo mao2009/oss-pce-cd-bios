@@ -1883,6 +1883,172 @@ class TarRuleMutationTests(unittest.TestCase):
                 self.assertTrue(detected, "mutant not detected by a TarRuleTests test: " + name + "\n" + "\n".join(failing))
 
 
+class WrapperWriteTests(unittest.TestCase):
+    """A wrapper's own file-writing operand is judged where its grammar identifies it: GNU time -o writes
+    the named file, and flock creates its lock file when it is missing. Decision-only; nothing is executed."""
+
+    def test_time_output_option_is_denied_in_every_form(self):
+        for cmd in ("time -o /tmp/evil_out ls",
+                    "time -o .claude/evil ls",
+                    "time -o out.txt ls",
+                    "time -oout.txt ls",
+                    "time -a -o out.txt ls",
+                    "time -vo out.txt ls",
+                    "env time -o /tmp/e ls",
+                    "sudo time -o /tmp/e ls"):
+            with self.subTest(cmd=cmd):
+                decision, reason = guard.decide(payload(cmd), repo_root=REPO)
+                self.assertEqual(decision, "DENY", (cmd, reason))
+                self.assertTrue(reason.startswith("write"), (cmd, reason))
+
+    def test_time_without_output_option_is_unchanged(self):
+        for cmd in ("time ls", "time -p ls", "time -f '%e' ls", "time -f o ls"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "ALLOW")
+
+    def test_flock_lock_file_must_not_be_created_in_a_protected_directory(self):
+        for cmd in ("flock .claude/newlock ls", "flock .git/newlock ls"):
+            with self.subTest(cmd=cmd):
+                decision, reason = guard.decide(payload(cmd), repo_root=REPO)
+                self.assertEqual(decision, "DENY", (cmd, reason))
+                self.assertTrue(reason.startswith("write"), (cmd, reason))
+        # The same through the working directory: a relative lock name while cwd is inside .claude/.
+        data = json.dumps({"session_id": "t", "hook_event_name": "PreToolUse",
+                           "cwd": os.path.join(REPO, ".claude"), "tool_name": "Bash",
+                           "tool_input": {"command": "flock newlock ls"}})
+        decision, reason = guard.decide(data, repo_root=REPO)
+        self.assertEqual(decision, "DENY", reason)
+        self.assertTrue(reason.startswith("write"), reason)
+        # Outside lock files stay allowed (the Round 6/7 contract), as do repository paths and fds.
+        for cmd in ("flock /tmp/newlock ls", "flock repo.lock ls", "flock -n repo.lock ls", "flock 9 ls"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "ALLOW")
+
+    def test_flock_lock_file_through_a_symlinked_directory_is_denied(self):
+        # The lock file does not exist yet: only resolving every literal prefix (not just the full
+        # path, which does not lexist) sees that the middle link leads into .claude/.
+        with tempfile.TemporaryDirectory() as td:
+            repo = os.path.join(os.path.realpath(td), "repo")
+            os.makedirs(os.path.join(repo, ".git"))
+            os.makedirs(os.path.join(repo, ".claude"))
+            os.makedirs(os.path.join(repo, "sub"))
+            try:
+                os.symlink(os.path.join(repo, ".claude"), os.path.join(repo, "sub", "clink"),
+                           target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest("symlink creation not permitted here: " + type(exc).__name__)
+            data = json.dumps({"session_id": "t", "hook_event_name": "PreToolUse",
+                               "cwd": repo, "tool_name": "Bash",
+                               "tool_input": {"command": "flock sub/clink/newlock ls"}})
+            decision, reason = guard.decide(data, repo_root=repo)
+            self.assertEqual(decision, "DENY", reason)
+            self.assertTrue(reason.startswith("write"), reason)
+
+    def test_symlinked_cwd_cannot_hide_protected_wrapper_writes(self):
+        # The cwd itself is a symlink, not a component of the lock-file operand.
+        # These are guard decisions only; flock/nohup commands are never executed.
+        with tempfile.TemporaryDirectory() as td:
+            repo = os.path.realpath(os.path.join(td, "repo"))
+            os.makedirs(os.path.join(repo, ".git"))
+            os.makedirs(os.path.join(repo, ".claude"))
+            os.makedirs(os.path.join(repo, "safe"))
+            cases = (("claude_link", ".claude"), ("git_link", ".git"), ("safe_link", "safe"))
+            try:
+                for alias, target in cases:
+                    os.symlink(os.path.join(repo, target), os.path.join(repo, alias),
+                               target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest("symlink creation not permitted here: " + type(exc).__name__)
+            for alias, target in cases:
+                cwd = os.path.join(repo, alias)
+                for command in ("flock newlock ls", "nohup ls"):
+                    with self.subTest(alias=alias, command=command):
+                        data = json.dumps({"session_id": "t", "hook_event_name": "PreToolUse",
+                                           "cwd": cwd, "tool_name": "Bash",
+                                           "tool_input": {"command": command}})
+                        decision, reason = guard.decide(data, repo_root=repo)
+                        denied = target in (".claude", ".git") if command.startswith("flock") else target == ".claude"
+                        self.assertEqual(decision, "DENY" if denied else "ALLOW", reason)
+
+    def test_implicit_write_checks_resolve_cwd_without_symlink_privileges(self):
+        # Host-independent regression/mutation test: simulate an existing symlink to .claude
+        # even on Windows hosts where os.symlink is unavailable.
+        alias = guard.canon(os.path.join(REPO, "synthetic-wrapper-cwd-alias"))
+        target = guard.canon(os.path.join(REPO, ".claude"))
+        ctx = guard.Ctx(alias, guard.key(REPO), guard.key(os.path.join(REPO, ".git")), set(), [])
+        original_isdir = os.path.isdir
+        original_realpath = os.path.realpath
+
+        def isdir(path):
+            return True if path == alias else original_isdir(path)
+
+        def realpath(path):
+            return target if path == alias else original_realpath(path)
+
+        with mock.patch.object(guard.os.path, "isdir", side_effect=isdir), \
+             mock.patch.object(guard.os.path, "realpath", side_effect=realpath):
+            for command, args in (("nohup", ["ls"]), ("flock", ["newlock", "ls"])):
+                with self.subTest(command=command):
+                    with self.assertRaises(guard.Deny) as cm:
+                        guard.wrapper_candidates(command, args, ctx)
+                    self.assertIn(cm.exception.kind, ("claude-write", "write"))
+        self.assertEqual(ctx.cwd, alias)  # the wrapper check does not mutate the caller's context
+
+    def test_nohup_inside_claude_directory_is_denied(self):
+        data = json.dumps({"session_id": "t", "hook_event_name": "PreToolUse",
+                           "cwd": os.path.join(REPO, ".claude"), "tool_name": "Bash",
+                           "tool_input": {"command": "nohup ls"}})
+        decision, reason = guard.decide(data, repo_root=REPO)
+        self.assertEqual(decision, "DENY", reason)
+        self.assertTrue(reason.startswith("claude-write"), reason)
+        self.assertEqual(verdict("nohup ls"), "ALLOW")
+
+
+class WrapperWriteMutationTests(unittest.TestCase):
+    """Each wrapper write rule above must be detected by a named WrapperWriteTests failure."""
+
+    MUTANTS = {
+        "time -o write denial removed": (
+            'if name == "time" and ch == "o":', 'if False and ch == "o":'),
+        "flock lock file check removed": (
+            'if inside_claude(real, ctx) or rk == ctx.git or inside(rk, ctx.git):',
+            'if False:'),
+        "nohup .claude check removed": (
+            'if name == "nohup" and inside_claude(ctx.cwd, ctx):', 'if False:'),
+        "wrapper cwd realpath bypass restored": (
+            'ctx = wrapper_write_context(ctx)', 'ctx = ctx'),
+    }
+
+    def _run(self, hook_text):
+        with tempfile.TemporaryDirectory() as td:
+            root = os.path.realpath(td)
+            hooks = os.path.join(root, ".claude", "hooks")
+            host = os.path.join(root, "tests", "host")
+            os.makedirs(hooks)
+            os.makedirs(host)
+            write_text(os.path.join(hooks, "guard_destructive.py"), hook_text)
+            with open(THIS_FILE, encoding="utf-8") as f:
+                write_text(os.path.join(host, "test_claude_destructive_guard.py"), f.read())
+            proc = subprocess.run([sys.executable, "-m", "unittest", "-v",
+                                   "test_claude_destructive_guard.WrapperWriteTests"], cwd=host,
+                                  capture_output=True, text=True, timeout=300)
+            return proc.returncode, proc.stderr
+
+    def test_wrapper_write_tests_detect_each_mutant(self):
+        with open(HOOK, encoding="utf-8") as f:
+            original = f.read()
+        code, out = self._run(original)
+        self.assertEqual(code, 0, "unmutated copy must pass WrapperWriteTests:\n" + out[-800:])
+        for name, (old, new) in self.MUTANTS.items():
+            with self.subTest(mutant=name):
+                self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
+                code, out = self._run(original.replace(old, new))
+                failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
+                detected = any("WrapperWriteTests." in ln for ln in failing)
+                self.assertTrue(detected, "mutant not detected by a WrapperWriteTests test: " + name
+                                + "\n" + "\n".join(failing))
+
+
 class AllowlistRsyncTests(unittest.TestCase):
     """Issue #640 X3b (structural allowlist), rsync. The grammar comes from the rsync manual, not from running rsync
     (rsync is not installed on this host). Decision-level only; nothing is executed."""

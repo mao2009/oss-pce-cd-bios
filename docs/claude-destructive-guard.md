@@ -20,6 +20,7 @@
 - `git worktree remove`: **常に拒否**。`.claude/worktree-owners.json` に所有者が記録されていても許可しない。`--force` の有無、対象パス、Owner 承認の有無にかかわらず、このフック経由の削除は禁止（所有者登録は削除権限を意味しない）
 - `find -delete`、`find -exec` 内の拒否対象コマンド
 - `xargs`、`sudo`、`env`、`command`、`nohup`、`time`、`timeout`、`nice` などのラッパーを剥がして再判定
+- ラッパー自身の書き込みも検査する: GNU `time -o`（指定ファイルへ計測結果を書き込む）は形にかかわらず常に拒否。`flock` のロックファイルは、存在しなければ新規作成されるため、`.claude/` 内と `.git` 内に作る場合は拒否する（リポジトリ外のロックファイルは従来どおり許可。数値のみの場合は開いているファイル記述子で、何も作成しない）。`nohup` はカレントディレクトリが `.claude/` 内の場合、`nohup.out` への追記が起きるため拒否。`flock`・`nohup` の書き込み判定では、存在するカレントディレクトリの symlink を実体パスに解決し、`.claude/`・`.git` への symlink 経由の誤許可を防ぐ
 - `bash -c`、`sh -c`、`zsh -c` などの文字列、`eval`・`source`・`.` の引数を再帰的に検査する。ただし、これらに渡すコマンド置換・プロセス置換（`$(...)`、バッククォート、`<(...)`、`>(...)`）は中身を知れないため拒否する。`-c` を伴わないシェルの起動、`cmd`、`powershell -EncodedCommand`、`-File` も拒否
 - PowerShell の `iex`、`Invoke-Expression`、文字列または変数を対象とする `&` 呼び出し演算子（`& "x"`、`& $cmd`）は中身を検査できないため拒否。`pwsh -c "$(...)"` も拒否
 - `git -c alias.*` と、環境変数（`GIT_CONFIG_*` など）による alias 設定を拒否。`git -C dir` や `--git-dir` の後に続く破壊的なサブコマンドは通常どおり拒否
