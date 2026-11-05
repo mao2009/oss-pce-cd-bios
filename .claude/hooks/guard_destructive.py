@@ -736,11 +736,13 @@ def git_rule(args, ctx):
 # GNU and BSD variants of the same tools take the same program-naming options.
 PROGRAM_ALIAS = {"gsort": "sort", "gtar": "tar", "bsdtar": "tar"}
 PROGRAM_TOOLS = {"sort", "rg", "tar", "rsync", "ssh", "scp", "sftp"}
+# A brace group that bash expands: it has a comma or a sequence (x{I,}, {1..3}). A brace group without either is literal.
+BRACE_EXPANDS = re.compile(r"\{[^{}]*(,|\.\.)[^{}]*\}")
 # Builtins that set a variable from their arguments (export $A$B, declare, read, ...).
 SETTER_BUILTINS = ("export", "declare", "typeset", "local", "readonly", "read")
 # Environment variables that name a program the tool starts (prefix assignments: VAR=x tool, env VAR=x tool).
 PROGRAM_ENV = ("RSYNC_RSH", "SSH_ASKPASS", "TAR_OPTIONS", "SSH_SK_HELPER", "RIPGREP_CONFIG_PATH", "RSYNC_CONNECT_PROG",
-               "RSYNC_SHELL")
+               "RSYNC_SHELL", "LD_PRELOAD")
 # ssh, scp and sftp -o KEY=VALUE (ssh_config keywords, case-insensitive). Only the keys listed here are allowed. A key that
 # runs a local command or loads a provider or an included file (ProxyCommand, LocalCommand, PermitLocalCommand,
 # KnownHostsCommand, Include, Match, PKCS11Provider, SecurityKeyProvider, XAuthLocation, ...) is not listed, so it is DENY.
@@ -933,6 +935,7 @@ ALLOWLIST = {
         "long_args": (),
         "short_flags": "46AaCfGgKkMNnqsTtVvXxYyZ",
         "short_args": "BbcDEeiJLlmOPpQRSWwo",
+        "short_value_strict": "J",
         "short_arg_keys": {"o": SSH_OPTION_KEYS},
     },
     # scp (scp(1), OpenBSD manual, fetched). -F (config) and -S (program for the encrypted connection) are not listed.
@@ -942,6 +945,7 @@ ALLOWLIST = {
         "long_args": (),
         "short_flags": "346ABCOpqrRTv",
         "short_args": "cilPJo",
+        "short_value_strict": "J",
         "short_arg_keys": {"o": SSH_OPTION_KEYS},
     },
     # sftp (sftp(1), OpenBSD manual, fetched). -D (local sftp server run directly), -S (program) and -b (batch file, whose
@@ -952,6 +956,7 @@ ALLOWLIST = {
         "long_args": (),
         "short_flags": "46AaCfNpqrv",
         "short_args": "BcJilPRsXo",
+        "short_value_strict": "J",
         "short_arg_keys": {"o": SSH_OPTION_KEYS},
     },
 }
@@ -1001,6 +1006,10 @@ def allowlist_rule(name, args):
                     value = a[j + 1:] if j < len(a) - 1 else (args[i] if i < len(args) else "")
                     if j == len(a) - 1:
                         i += 1  # the value is the next word
+                    if ch in spec.get("short_value_strict", "") and (
+                            value.startswith("-") or "=" in value or any(c.isspace() for c in value)):
+                        # -J names jump hosts; a value that is a dashed word or a KEY=VALUE pair is an option, not a host.
+                        raise Deny("program-option", name + " -" + ch + " value is not a plain host list: " + a)
                     if ch in spec.get("short_arg_keys", {}):
                         # -o KEY=VALUE (or KEY VALUE): the key must be one the grammar lists.
                         key = re.split(r"[=\s]", value, 1)[0].lower()
@@ -1023,7 +1032,7 @@ def program_option_rule(name, args):
     # value that is not in the word the guard reads. A glob in a file argument does not form an option, so only
     # dashed arguments (and tar's first cluster word) are checked for globs.
     for a in args:
-        if "$" in a or "`" in a or SUBST in a or "\\" in a or "{" in a or "}" in a:
+        if "$" in a or "`" in a or SUBST in a or "\\" in a or BRACE_EXPANDS.search(a):
             raise Deny("program-option", name + " argument with an expansion or escape is not inspected")
         # A glob that starts the word (*-compress-program, [-]-to-command) can expand to a dashed file name, so it is an
         # option; a glob after a letter (names*.txt) cannot start with a dash.
@@ -1032,8 +1041,15 @@ def program_option_rule(name, args):
     if name == "tar" and args and any(c in args[0] for c in "*?["):
         raise Deny("program-option", "tar first word with a glob is not inspected")
     if name == "tar" and args and re.fullmatch(r"[A-Za-z]+", args[0]):
-        # Old-style tar: the first word is an option cluster (tar xf a.tar, tar Ixf sh a.tar), read as its dashed form.
+        # Old-style tar: the first word is an option cluster (tar xf a.tar, tar Ixf sh a.tar). Its letters take their
+        # arguments from the following words in order, so the dashed reading is only safe if every letter is listed.
+        spec = ALLOWLIST["tar"]
+        if any(c not in spec["short_flags"] + spec["short_args"] for c in args[0]):
+            raise Deny("program-option", "tar old-style cluster letter is not in the allowlist: " + args[0])
         args = ["-" + args[0]] + list(args[1:])
+    if name == "tar" and "--force-local" not in args and any(":" in a for a in args):
+        # GNU tar treats host:name as a remote archive and starts a remote shell; --force-local says it is local.
+        raise Deny("program-option", "tar argument with a colon may be a remote archive: not inspected")
     allowlist_rule(name, args)
 
 
@@ -1141,22 +1157,18 @@ def timeout_candidates(args):
     return out
 
 
-def unwrap(name, args):
-    withargs = WRAPPER_ARGS.get(name, set())
-    i = 0
-    while i < len(args):
-        a = args[i]
-        if a == "--":
-            i += 1
-            break
-        if name == "env" and ASSIGN.match(a):
-            check_assign(a)
-            i += 1
-        elif a.startswith("-") and len(a) > 1:
-            i += 2 if a in withargs else 1
-        else:
-            break
-    return args[i:]
+def wrapper_candidates(name, args):
+    """A wrapper's own options are not parsed here: their arity differs per tool and option (--unset X, nice --adjustment
+    5, stdbuf -o L), so a misread option would hide the command it starts. Every suffix of the words is therefore analysed
+    as a possible command; the real one is among them. env -S (--split-string) takes one string that is split into
+    several words, so it is denied."""
+    if name == "env":
+        for tok in args:
+            if tok == "--" or not tok.startswith("-"):
+                break
+            if tok.startswith("--split") or (not tok.startswith("--") and "S" in tok[1:]):
+                raise Deny("wrapper", "env -S (split-string) is not inspected")
+    return [args[k:] for k in range(len(args) + 1)]
 
 
 def analyze_argv(words, ctx, ps, depth):
@@ -1175,6 +1187,12 @@ def analyze_argv(words, ctx, ps, depth):
     # Windows environment names are case-insensitive, so the comparison is made in uppercase.
     if any(v in w.replace("\\", "").replace('"', "").replace("'", "").upper() for w in words for v in PROGRAM_ENV):
         raise Deny("program-option", "a program-naming environment variable is not inspected")
+    # A PATH assignment changes which helper a program starts (rsync's remote form starts ssh through PATH). With a
+    # program tool in the same command it is denied; the tool name is compared by its basename, without .exe.
+    if any(w.replace("\\", "").replace('"', "").replace("'", "").upper().startswith("PATH=") for w in words) and any(
+            PROGRAM_ALIAS.get(re.sub(r"\.exe$", "", w.replace("\\", "/").split("/")[-1].lower()), re.sub(r"\.exe$", "", w.replace("\\", "/").split("/")[-1].lower())) in PROGRAM_TOOLS
+            for w in words):
+        raise Deny("program-option", "PATH is set in a command that starts a program tool: not inspected")
     words = strip_redirections(words)
     while True:
         # PowerShell has no environment prefix: "a=Remove-Item" (a hashtable entry) is name=value, and its value runs.
@@ -1243,8 +1261,9 @@ def analyze_argv(words, ctx, ps, depth):
                 analyze_argv(cand, ctx.copy(), ps, depth + 1)
             return
         if handoff(name):
-            words = unwrap(name, words[1:])
-            continue
+            for cand in wrapper_candidates(name, words[1:]):
+                analyze_argv(cand, ctx.copy(), ps, depth + 1)
+            return
         break
     args = words[1:]
     program_option_rule(name, args)

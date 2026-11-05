@@ -1356,9 +1356,8 @@ class X3bMutationTests(unittest.TestCase):
         "GNU and BSD name aliases removed": ('    name = PROGRAM_ALIAS.get(name, name)', '    pass'),
         "program-naming environment variables not checked": (r'''    if any(v in w.replace("\\", "").replace('"', "").replace("'", "").upper() for w in words for v in PROGRAM_ENV):''',
                                                              r'''    if False:'''),
-        "expansion or escape in a tool argument not denied": (r'''        if "$" in a or "`" in a or SUBST in a or "\\" in a or "{" in a or "}" in a:''',
+        "expansion or escape in a tool argument not denied": (r'''        if "$" in a or "`" in a or SUBST in a or "\\" in a or BRACE_EXPANDS.search(a):''',
                                                               r'''        if False:'''),
-        "brace in a tool argument not denied": (r'''or "\\" in a or "{" in a or "}" in a:''', r'''or "\\" in a:'''),
         "dashed or leading glob in a tool argument not denied": (r'''        if any(c in a for c in "*?[") and (a.startswith("-") or a[:1] in "*?["):''',
                                                       r'''        if False:'''),
         "tar first word glob not denied": (r'''    if name == "tar" and args and any(c in args[0] for c in "*?["):''',
@@ -1587,6 +1586,8 @@ class AllowlistTarTests(unittest.TestCase):
         "tar -xf a.tar -I sh", "tar a.tar --to-command=sh",
         # boundary: an old-style cluster is read as its dashed form
         "tar xIf sh a.tar", "tar Ixf sh a.tar",
+        # boundary: old-style letters take their arguments from the following words in order, so I takes sh
+        "tar cfI sh a.tar",
         # the GNU and BSD names
         "gtar --to-command=sh -xf a.tar", "bsdtar -Fsh a.tar",
     ]
@@ -1600,7 +1601,7 @@ class AllowlistTarTests(unittest.TestCase):
         "tar --checkpoint=100 -xf a.tar", "tar --checkpoint-action=echo=x -xf a.tar",
         "tar --checkpoint-action=echo=exec -xf a.tar",
         # boundary: an option value is consumed; the next word is a value, not an option
-        "tar cfI sh a.tar", "tar -C -I -xf a.tar", "tar --file --to-command=sh -cf out.tar",
+        "tar -C -I -xf a.tar", "tar --file --to-command=sh -cf out.tar",
         # boundary: after --, every word is a file name
         "tar -xf a.tar -- -I",
         # old-style clusters
@@ -1646,8 +1647,6 @@ class AllowlistTarMutationTests(unittest.TestCase):
             '"long_arg_deny_prefix": {"checkpoint-action": ("exec",)},', '"long_arg_deny_prefix": {},'),
         "checkpoint-action exec value matched case-sensitively": (
             'value.lower().startswith(p)', 'value.startswith(p)'),
-        "old-style cluster not read as its dashed form": (
-            '        args = ["-" + args[0]] + list(args[1:])', '        args = list(args)'),
         "long option value not consumed from the next word": (
             '                if not eq:\n                    i += 1  # the value is the next word\n                if any(',
             '                if False:\n                    i += 1  # the value is the next word\n                if any('),
@@ -1750,8 +1749,7 @@ class AllowlistRsyncMutationTests(unittest.TestCase):
             '"long_args": ("backup-dir", "suffix", "chmod",', '"long_args": ("copy-as", "backup-dir", "suffix", "chmod",'),
         "-e allowed as a short letter": ('"short_args": "Bf@T",', '"short_args": "Bf@Te",'),
         "-M allowed as a short letter": ('"short_args": "Bf@T",', '"short_args": "Bf@TM",'),
-        "RSYNC_SHELL removed from the program variables": (
-            '"RSYNC_CONNECT_PROG",\n               "RSYNC_SHELL")', '"RSYNC_CONNECT_PROG")'),
+        "RSYNC_SHELL removed from the program variables": ('"RSYNC_SHELL", "LD_PRELOAD")', '"LD_PRELOAD")'),
         "unlisted long option not denied": (
             '                raise Deny("program-option", name + " option is not in the allowlist: " + a)', '                pass'),
     }
@@ -1862,8 +1860,8 @@ class AllowlistSshFamilyMutationTests(unittest.TestCase):
         "sftp -D allowed as a short letter": ('"short_args": "BcJilPRsXo",', '"short_args": "BcJilPRsXoD",'),
         "sftp -b allowed as a short letter": ('"short_args": "BcJilPRsXo",', '"short_args": "BcJilPRsXob",'),
         "separate short value not consumed": (
-            '                        i += 1  # the value is the next word\n                    if ch in spec.get("short_arg_keys", {}):',
-            '                        pass\n                    if ch in spec.get("short_arg_keys", {}):'),
+            '                        i += 1  # the value is the next word\n                    if ch in spec.get("short_value_strict", "") and (',
+            '                        pass\n                    if ch in spec.get("short_value_strict", "") and ('),
     }
 
     def _run(self, hook_text):
@@ -1893,6 +1891,103 @@ class AllowlistSshFamilyMutationTests(unittest.TestCase):
                 failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
                 detected = any("AllowlistSshFamilyTests." in ln for ln in failing)
                 self.assertTrue(detected, "mutant not detected by an AllowlistSshFamilyTests test: " + name + "\n"
+                                + "\n".join(failing))
+
+
+class ReviewFixTests(unittest.TestCase):
+    """Issue #640 X3b, independent review (HEAD 13cba47): each finding is a DENY case that was ALLOW, or an ordinary
+    command that was DENY. Decision-level only; nothing is executed."""
+
+    DENY = [
+        # wrappers: env -S splits one string; a wrapper option of unknown arity hid the command it starts
+        "env -S 'rm -rf src'", "env -S 'ssh -oProxyCommand=x h'", "env --split-string='ssh -oProxyCommand=x h'",
+        "env -Sssh -oProxyCommand=x h", "env -i -S 'rm -rf x'",
+        "env --unset X ssh -oProxyCommand=x h", "nice --adjustment 5 ssh -oProxyCommand=x h",
+        "sudo --user root ssh -oProxyCommand=x h", "xargs --max-args 1 ssh -oProxyCommand=x h",
+        "xargs -e ssh -oProxyCommand=x h", "ionice -t ssh -oProxyCommand=x h", "stdbuf -o L ssh -oProxyCommand=x h",
+        "exec -a x ssh -oProxyCommand=x h", "nice -n 5 ssh -oProxyCommand=x h",
+        # PATH assignment with a program tool (rsync's remote form starts ssh through PATH)
+        "PATH=/x rsync -a a host:b", "env PATH=/x rsync -a a host:b", "PATH=/x rsync -a host:a b",
+        # ssh, scp, sftp: -J names hosts; a dashed word, a KEY=VALUE pair or a space is an option, not a host
+        "ssh -J '-oProxyCommand=x' h", "ssh -J-oProxyCommand=x h", "scp -J '-oProxyCommand=x' a b",
+        "sftp -J '-oProxyCommand=x' h", "ssh -J h1,-oProxyCommand=x h2",
+        # tar: an old-style letter that is not listed (I after f takes the next word), a remote archive
+        "tar fI x.tar sh", "tar xfI x.tar sh", "tar -cf host:x.tar a", "tar -cf user@host:x.tar a",
+        # the program-variable list: the dynamic loader preloads a library into the tool
+        "LD_PRELOAD=/x sort f", "env LD_PRELOAD=/x sort f",
+    ]
+    ALLOW = [
+        # ordinary wrapper uses: the words after the options are the command, and it is allowed
+        "nice -n 5 ls", "env FOO=1 ls", "env -i ls", "sudo -u root ls", "timeout 5 sort x",
+        # ordinary -J: a host, a user and port, or a host list
+        "ssh -J jump host", "ssh -J user@jump:2222 host", "ssh -J jump1,jump2 host",
+        # braces that bash does not expand (no comma and no sequence) are literal
+        "rg 'a{2}' src",
+        # tar: a colon is allowed with --force-local (a local archive); ordinary old-style clusters
+        "tar --force-local -cf host:x.tar a", "tar cf out.tar src",
+    ]
+
+    def test_review_deny_list(self):
+        for cmd in self.DENY:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+
+    def test_review_allow_list(self):
+        for cmd in self.ALLOW:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "ALLOW")
+
+
+class ReviewFixMutationTests(unittest.TestCase):
+    """Issue #640 X3b, review fixes: each rule must be detected by a named ReviewFixTests failure."""
+
+    MUTANTS = {
+        "wrapper candidates limited to the first word": (
+            '    return [args[k:] for k in range(len(args) + 1)]', '    return [args]'),
+        "env -S check removed": (
+            '            if tok.startswith("--split") or (not tok.startswith("--") and "S" in tok[1:]):',
+            '            if False:'),
+        "PATH prefix check removed": (
+            '    if any(w.replace("\\\\", "").replace(\'"\', "").replace("\'", "").upper().startswith("PATH=") for w in words) and any(',
+            '    if False and any('),
+        "-J strict value check removed": (
+            '                    if ch in spec.get("short_value_strict", "") and (', '                    if False and ('),
+        "old-style tar letter check removed": (
+            '        if any(c not in spec["short_flags"] + spec["short_args"] for c in args[0]):',
+            '        if False:'),
+        "tar colon check removed": (
+            '    if name == "tar" and "--force-local" not in args and any(":" in a for a in args):', '    if False:'),
+        "LD_PRELOAD removed from the program variables": ('"RSYNC_SHELL", "LD_PRELOAD")', '"RSYNC_SHELL")'),
+        "brace groups without a comma or sequence denied": ('BRACE_EXPANDS.search(a):', '"{" in a or "}" in a:'),
+    }
+
+    def _run(self, hook_text):
+        with tempfile.TemporaryDirectory() as td:
+            root = os.path.realpath(td)
+            hooks = os.path.join(root, ".claude", "hooks")
+            host = os.path.join(root, "tests", "host")
+            os.makedirs(hooks)
+            os.makedirs(host)
+            write_text(os.path.join(hooks, "guard_destructive.py"), hook_text)
+            with open(THIS_FILE, encoding="utf-8") as f:
+                write_text(os.path.join(host, "test_claude_destructive_guard.py"), f.read())
+            proc = subprocess.run([sys.executable, "-m", "unittest", "-v",
+                                   "test_claude_destructive_guard.ReviewFixTests"], cwd=host,
+                                  capture_output=True, text=True, timeout=300)
+            return proc.returncode, proc.stderr
+
+    def test_review_fix_tests_detect_each_mutant(self):
+        with open(HOOK, encoding="utf-8") as f:
+            original = f.read()
+        code, out = self._run(original)
+        self.assertEqual(code, 0, "unmutated copy must pass ReviewFixTests:\n" + out[-800:])
+        for name, (old, new) in self.MUTANTS.items():
+            with self.subTest(mutant=name):
+                self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
+                code, out = self._run(original.replace(old, new))
+                failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
+                detected = any("ReviewFixTests." in ln for ln in failing)
+                self.assertTrue(detected, "mutant not detected by a ReviewFixTests test: " + name + "\n"
                                 + "\n".join(failing))
 
 
