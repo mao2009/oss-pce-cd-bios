@@ -742,10 +742,10 @@ PROGRAM_ALIAS = {"gsort": "sort", "gtar": "tar", "bsdtar": "tar"}
 # Environment variables that name a program the tool starts (prefix assignments: VAR=x tool, env VAR=x tool).
 PROGRAM_ENV = ("RSYNC_RSH", "SSH_ASKPASS", "TAR_OPTIONS")
 # A short letter that names a program in its cluster: tar -I PROG, rsync -e PROG, scp/sftp -S PROG.
-PROGRAM_SHORT = {"tar": "IF", "rsync": "e", "scp": "S", "sftp": "SD"}
+PROGRAM_SHORT = {"tar": "IF", "rsync": "e", "ssh": "F", "scp": "SF", "sftp": "SDF"}
 # ssh-family -o KEY=VALUE: a key that runs a local command.
 SSH_O_TOOLS = ("ssh", "scp", "sftp")
-SSH_LAUNCH_KEYS = ("proxycommand", "localcommand", "permitlocalcommand", "knownhostscommand",
+SSH_LAUNCH_KEYS = ("include", "proxycommand", "localcommand", "permitlocalcommand", "knownhostscommand",
                    "pkcs11provider", "securitykeyprovider", "match")
 
 
@@ -756,13 +756,18 @@ def program_option_rule(name, args):
     ssh_o = name in SSH_O_TOOLS
     for i, a in enumerate(args):
         nxt = args[i + 1] if i + 1 < len(args) else ""
+        if a.startswith("-") and ("$" in a or "`" in a or SUBST in a):
+            # An option name or value that is computed at run time cannot be checked here (fail closed).
+            raise Deny("program-option", name + " option with an unexpanded name or value is not inspected")
+        # A backslash in an option name is a shell escape (--compress\-program is --compress-program).
+        a = a.replace("\\", "")
         if a.startswith("--"):
             key, eq, val = a[2:].partition("=")
             if key and any(o.startswith(key) for o in longs):
                 raise Deny("program-option", name + " option names a program: " + a)
             # tar --checkpoint-action=exec=... runs a program; other checkpoint actions do not (--checkpoint=N is fine).
             if name == "tar" and len(key) >= 11 and "checkpoint-action".startswith(key) \
-                    and (val if eq else nxt).startswith("exec"):
+                    and (val if eq else nxt).lower().startswith("exec"):
                 raise Deny("program-option", "tar checkpoint action exec runs a program")
             continue
         if a.startswith("-") and len(a) > 1:
@@ -826,8 +831,6 @@ def check_assign(word):
     # GIT_CONFIG_* variables can define an alias just like "git -c alias.x=..."
     if "alias." in word.casefold():
         raise Deny("git-alias", "git alias set through an environment variable is denied")
-    if word.split("=", 1)[0] in PROGRAM_ENV:
-        raise Deny("program-option", "environment variable names a program: " + word.split("=", 1)[0])
 
 
 def claude_mention(args):
@@ -904,6 +907,9 @@ def unwrap(name, args):
 def analyze_argv(words, ctx, ps, depth):
     if depth > MAX_DEPTH:
         raise Deny("depth", "command nesting too deep")
+    # A program-naming environment variable anywhere in the command (prefix, export, env -S, a shell string) is denied.
+    if any(v + "=" in w for w in words for v in PROGRAM_ENV):
+        raise Deny("program-option", "a program-naming environment variable is not inspected")
     words = strip_redirections(words)
     while True:
         # PowerShell has no environment prefix: "a=Remove-Item" (a hashtable entry) is name=value, and its value runs.
