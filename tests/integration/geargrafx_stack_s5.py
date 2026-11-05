@@ -26,7 +26,7 @@ with A (E alone refuses nothing). The eight criteria and verdicts are those of g
   - every #498 route under A+D and A+E (regression, no false positive in the allowed controls);
   - probe-side mutants (D off, D checking bit 0, E off) and falsified rows.
 NOT covered (UNKNOWN, never PASS): an IRQ newly asserted while the TAM instruction executes (every IRQ here is
-pending before the TAM starts), ST0/ST1/ST2, device-originated writes, the libretro
+pending before the TAM starts), the TAM's m_mpr_buffer (TMA #$00 reads it; not observed), ST0/ST1/ST2, device-originated writes, the libretro
 build, real hardware. NMI is not applicable on the pinned core.
 
 Synthetic BIOS/CD only; no reference BIOS. #173/#367/#459, BLOCKED_ABI, release_eligible, DEV_CALLABLE and ABI
@@ -184,8 +184,14 @@ MUTANTS = {
     "AD:irqtam-mut-dbit": (UNSAFE, lambda r: r.get("decode_refusals") == 0 and _io_landed(r)),
     "AE:irqtam-mut-eoff": (UNSAFE, lambda r: r.get("irq_deferrals") == 0 and _io_landed(r)),
 }
-# The wrong-bit mutant on allowed / forbidden sweep cells: check_sweep must reject both rows.
-SWEEP_MUTANTS = {"AD:tam01ff-mut-dbit": (0x01, 0xFF), "AD:tam02ff-mut-dbit": (0x02, 0xFF)}
+# The wrong-bit mutant on allowed / forbidden sweep cells: check_sweep must reject both rows, and the row
+# must show why: a false positive (D refuses an allowed TAM) / a missed refusal (A refuses after the TAM).
+SWEEP_MUTANTS = {
+    "AD:tam01ff-mut-dbit": ((0x01, 0xFF), lambda r: r.get("refused") is True
+                            and r.get("refusal_reason") == "decode_tam" and r.get("instructions") == 1),
+    "AD:tam02ff-mut-dbit": ((0x02, 0xFF), lambda r: r.get("refused") is True
+                            and r.get("refusal_reason") == "mpr1" and r["stop"]["mpr"][1] == 0xFF),
+}
 
 
 def sweep_cases():
@@ -272,6 +278,8 @@ def evaluate(rows):
         for route in IRQ_ROUTES:
             case = f"{method}:{route}-armed"
             table[(route, method)] = check_policy_row(rows[case], case, irq_expect(method, route))
+            if rows[case].get("guard_calls") != 0:   # A or D refuses before any stack access
+                raise ValueError(f"{case}: the C guard was consulted; the row would say something about C")
     for route in IRQ_ROUTES:
         case = f"A:{route}-unguarded"
         result = check_irq_unguarded(rows[case], case, route)
@@ -288,7 +296,10 @@ def evaluate(rows):
         if got != want or not visible(rows[case]):
             raise ValueError(f"mutation {case}: judged {got} (visible={visible(rows[case])}), want {want}")
         detections.append((case, "mutant", got))
-    for case, (mask, a) in SWEEP_MUTANTS.items():
+    for case, ((mask, a), why) in SWEEP_MUTANTS.items():
+        _row_ok(rows[case], case)   # a failed probe run is not a detection
+        if not why(rows[case]):
+            raise ValueError(f"mutation {case}: the row does not show the wrong-bit decode")
         try:
             check_sweep(rows[case], case, "AD", mask, a)
         except ValueError as error:
@@ -305,20 +316,26 @@ def comparison(rows):
         group = [rows[f"{method}:{r}-armed"] for r, (_, i) in IRQ_ROUTES.items() if i == 0]
         out[method] = {
             "1_side_effect_blocked_before": all(r["io_reads"] + r["io_writes"] == 0 for r in group),
-            "2_cpu_state_at_stop_equals_run_start": all(
+            "2a_a_x_y_s_p_at_stop_equal_run_start": all(
                 all(r["stop"][k] == r["start"][k] for k in ("a", "x", "y", "s", "p")) for r in group),
+            "2b_pc_at_stop_equals_run_start": all(r["stop"]["pc"] == r["start"]["pc"] for r in group),
             "3_mpr_unchanged_from_run_start": all(r["stop"]["mpr"] == r["start"]["mpr"] for r in group),
             "4_irq_still_pending_not_entered": all(r["irr_before"] == r["irr_after"] != 0
                                                    and not r.get("handler_entry_instruction") for r in group),
             "5_transfer_state_zero": all(r["stop"]["transfer_state"] == 0 for r in group),
             "6_no_instruction_after_refusal": all(r["instructions_after_refusal"] == 0 for r in group),
-            "7_handler_entry_instruction_in_allowed_run": HANDLER_ENTRY[method],
+            "7_handler_entry_instruction_in_allowed_run": sorted({rows[f"{method}:{r}-allowed"][
+                "handler_entry_instruction"] for r, (_, i) in IRQ_ROUTES.items() if i == 0}),
             "refused_instruction": sorted({r["refusal_instruction_start"]["pc"] for r in group}),
         }
     out["AD"]["8_implementation"] = ("probe-side only: peek opcode + operand without a bus read in the existing "
-                                     "pre-instruction hook; needs the operand decode of TAM (one opcode)")
+                                     "pre-instruction hook; needs the operand decode of TAM (one opcode); what is "
+                                     "peekable is specific to this core (Memory::TryPeek: not the hardware page, "
+                                     "not mapper banks below $80 except SF2 / Arcade Card)")
     out["AE"]["8_implementation"] = ("core change: a flag consulted in RunInstruction's IRQ check; the TAM's MPR "
-                                     "change is applied and the IRQ latency grows by one instruction per TAM")
+                                     "change is applied; the IRQ is deferred by one instruction per TAM and on "
+                                     "every instruction whose opcode cannot be peeked (could starve IRQs while "
+                                     "code runs from a non-peekable bank; not measured)")
     return out
 
 
@@ -356,11 +373,15 @@ def main():
           f"{len(detections)} detections, expectations met; totals {json.dumps(count, sort_keys=True)} "
           f"(pinned core {G.PINNED_CORE_REVISION}, synthetic BIOS/CD, verification-only patch)")
     print("RESULT issue-647 (observed fixtures only): A+D and A+E each close the observed IRQ-in-TAM hole "
-          "(IRQ1/IRQ2/TIQ, I = 0 and 1: SAFE_IN_SCOPE, no hardware page access). D refuses the TAM itself, so MPR1 "
+          "(IRQ1/IRQ2/TIQ with I = 0: UNSAFE under A, SAFE_IN_SCOPE under A+D and A+E, no hardware page access; "
+          "with I = 1 all three are SAFE_IN_SCOPE, a regression check). D refuses the TAM itself, so MPR1 "
           "stays $F8 and the IRQ stays pending; E lets the TAM run (MPR1 = $FF is applied and visible), keeps the IRQ "
-          "pending and A refuses the next instruction. The mid-transfer rows stay BLOCKED under both (#648).")
+          "pending and A refuses the next instruction. The mid-transfer rows stay BLOCKED under both (#648). "
+          "The bitmask sweep judges the TAM only (the harness stops before instruction 2), for the measured A "
+          "values ($F8/$FF on all masks; $80/$F7/$00 on five).")
     print("UNKNOWN (not covered): an IRQ newly asserted while the TAM executes (all IRQs here are pending before the "
-          "TAM), ST0/ST1/ST2, device-originated writes, the libretro build, real "
+          "TAM), the TAM's m_mpr_buffer (read back by TMA #$00; not observed), IRQ starvation by E on non-peekable "
+          "code, ST0/ST1/ST2, device-originated writes, the libretro build, real "
           "hardware; NMI not applicable. Not a production mechanism; no gate changes.")
     return 0
 

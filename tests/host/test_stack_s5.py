@@ -96,6 +96,9 @@ class ExpectationTests(unittest.TestCase):
         for case, (want, _) in S.MUTANTS.items():
             self.assertEqual(want, S.UNSAFE, case)
         self.assertEqual(set(S.SWEEP_MUTANTS), {"AD:tam01ff-mut-dbit", "AD:tam02ff-mut-dbit"})
+        false_positive = S.SWEEP_MUTANTS["AD:tam01ff-mut-dbit"][1]
+        self.assertTrue(false_positive(dict(refused=True, refusal_reason="decode_tam", instructions=1)))
+        self.assertFalse(false_positive(dict(exit=2)))   # a failed run is not a detection
 
     def test_cases_are_unique(self):
         cases = list(S.cases())
@@ -108,6 +111,9 @@ class ComparisonTests(unittest.TestCase):
         base = _row("AD:irqtam-armed", True, "decode_tam", 1, 0x1E00, [0xF8, 0xF8, 0, 0, 0, 0, 0, 0], decode=1)
         base.update(irr_before=2, irr_after=2, handler_entry_instruction=0)
         rows = {}
+        for method, entry in (("AD", 2), ("AE", 3)):
+            for route in S.IRQ_ROUTES:
+                rows[f"{method}:{route}-allowed"] = dict(handler_entry_instruction=entry)
         for method in ("AD", "AE"):
             for route, (_, i_flag) in S.IRQ_ROUTES.items():
                 row = copy.deepcopy(base)
@@ -118,7 +124,7 @@ class ComparisonTests(unittest.TestCase):
         self.assertTrue(out["AD"]["3_mpr_unchanged_from_run_start"])
         self.assertFalse(out["AE"]["3_mpr_unchanged_from_run_start"])
         self.assertEqual((out["AD"]["7_handler_entry_instruction_in_allowed_run"],
-                          out["AE"]["7_handler_entry_instruction_in_allowed_run"]), (2, 3))
+                          out["AE"]["7_handler_entry_instruction_in_allowed_run"]), ([2], [3]))
 
 
 class WiringTests(unittest.TestCase):
