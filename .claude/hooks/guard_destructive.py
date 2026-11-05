@@ -1540,11 +1540,26 @@ def wrapper_command_index(name, args, ctx):
     return i
 
 
+def wrapper_write_context(ctx):
+    """Resolve an existing cwd before checking implicit wrapper writes.
+
+    The hook's cwd can itself be a symlink to .claude/ or .git/. resolve() deliberately keeps an absent
+    final path lexical, so resolving the nonexistent lock file alone misses that symlink. Keep the
+    original context untouched and use the real cwd only for wrappers that implicitly write there.
+    An absent/synthetic cwd is unchanged; in a real hook invocation the process cwd already exists.
+    """
+    if not os.path.isdir(ctx.cwd):
+        return ctx
+    return ctx.copy(cwd=canon(os.path.realpath(ctx.cwd)))
+
+
 def wrapper_candidates(name, args, ctx):
     """A wrapper's own options are not parsed here: their arity differs per tool and option (--unset X, nice --adjustment
     5, stdbuf -o L), so a misread option would hide the command it starts. Every suffix of the words is therefore analysed
     as a possible command; the real one is among them. env -S (--split-string) takes one string that is split into
     several words, so it is denied."""
+    if name in ("nohup", "flock"):
+        ctx = wrapper_write_context(ctx)
     if name == "env":
         for tok in args:
             if tok == "--" or not tok.startswith("-"):
