@@ -1710,6 +1710,64 @@ class AllowlistRgMutationTests(unittest.TestCase):
                                 + "\n".join(failing))
 
 
+class RawDotdotContainmentTests(unittest.TestCase):
+    """A raw '..' may cross a symlink before lexical normalization, escaping the repository.
+
+    Decision-only tests; no cp, mv, tar, or other shell command is executed.
+    """
+
+    @staticmethod
+    def context_for(repo):
+        return guard.Ctx(guard.canon(repo), guard.key(repo),
+                         guard.key(os.path.join(repo, ".git")), set(), [])
+
+    def test_raw_parent_component_rejected_for_all_path_roles(self):
+        with tempfile.TemporaryDirectory() as td:
+            ctx = self.context_for(os.path.realpath(td))
+            for path in ("src/../target", "src/./../target",
+                         r"src\..\target", "src/../../target"):
+                for role in ("archive", "dir", "member"):
+                    with self.subTest(path=path, role=role):
+                        self.assertFalse(guard.tar_path_ok(path, ctx, role))
+            self.assertTrue(guard.tar_path_ok("src/target", ctx, "archive"))
+
+    def test_symlink_then_dotdot_is_denied_across_write_paths(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = os.path.realpath(os.path.join(td, "repo"))
+            outside = os.path.join(td, "outside", "nested")
+            os.makedirs(repo)
+            os.makedirs(outside)
+            try:
+                os.symlink(outside, os.path.join(repo, "lnk"), target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest("symlinks unavailable (" + type(exc).__name__ + "): NOT_VERIFIED")
+            escaped = os.path.realpath(os.path.join(repo, "lnk", "..", "target.txt"))
+            self.assertNotEqual(os.path.commonpath([repo, escaped]), repo)
+            ctx = self.context_for(repo)
+            for role in ("archive", "dir", "member"):
+                with self.subTest(role=role):
+                    self.assertFalse(guard.tar_path_ok("lnk/../target.txt", ctx, role))
+            commands = (
+                "cp seed lnk/../target.txt",
+                "mv seed lnk/../target.txt",
+                "mkdir lnk/../target",
+                "touch lnk/../target.txt",
+                "tee lnk/../target.txt",
+                "sort -o lnk/../target.txt seed",
+                "tar -cf lnk/../target.tar seed",
+                "tar -cf out.tar lnk/../target.txt",
+                "echo hello > lnk/../target.txt",
+            )
+            for command in commands:
+                with self.subTest(command=command):
+                    data = json.dumps({
+                        "session_id": "t", "hook_event_name": "PreToolUse", "cwd": repo,
+                        "tool_name": "Bash", "tool_input": {"command": command},
+                    })
+                    actual, reason = guard.decide(data, repo_root=repo)
+                    self.assertEqual(actual, "DENY", (command, reason))
+
+
 class TarRuleTests(unittest.TestCase):
     """Issue #640 X3b, design B+C: tar's explicit grammar (tar_rule). The only allowed forms are -t (list) of an explicitly
     named .tar archive and -c (create) of an explicitly named archive, with repository-relative operands. Extraction and
