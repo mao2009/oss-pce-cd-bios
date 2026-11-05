@@ -35,6 +35,48 @@ ORDER = ("cd_buffer_ready", "cd_data_done", "payload_entry", "payload_done", "cd
 HEADER_FAILURES = {20, 21, 22, 23}  # rejected at stage 11, after the full sector was transferred
 
 
+VARIANT_TRAILER = 0x7E   # same ROM, different disc payload: only the payload's final marker immediate changes
+
+
+def payload_variant(code, trailer):
+    """Return the payload with only its final marker immediate changed (same length, same entry)."""
+    sites = [i for i in range(len(code) - 1) if code[i:i + 2] == b"\xa9\x3c"]
+    if len(sites) != 1:
+        raise ValueError("payload must contain exactly one lda #$3C marker store")
+    variant = bytearray(code)
+    variant[sites[0] + 1] = trailer
+    return bytes(variant)
+
+
+def judge_marker_mismatch(records, code, symbols, lba, observed_trailer):
+    """Unchanged ROM + a disc payload that writes a different marker.
+
+    The payload must run (its bytes are in RAM and it returns), and the ROM's own return check must
+    fail closed with PAYLOAD_MARKER_MISMATCH (30) at stage 15, cold AND warm.
+    """
+    if [run["cycle"] for run in records["RUN"]] != ["cold", "warm"]:
+        raise ValueError("missing cold/warm runs")
+    for run in records["RUN"]:
+        cycle = run["cycle"]
+        if run["reason"] != "cd_halt_fail":
+            raise ValueError(f"{cycle}: stopped with {run['reason']}, not at cd_halt_fail")
+        check_halt_confirmation(run)
+        block = result_block(run)
+        if (block["code"], block["stage"], block["bytes"], block["scsi_status"], block["scsi_message"]) \
+                != (30, 15, SECTOR_BYTES, 0, 0):
+            raise ValueError(f"{cycle}: result block is not PAYLOAD_MARKER_MISMATCH at stage 15: {block}")
+        buffer = bytes.fromhex(run["buffer_hex"])
+        if buffer[EXEC_OFF:EXEC_OFF + len(code)] != code:
+            raise ValueError(f"{cycle}: RAM at {EXEC_ADDRESS:#x} is not the disc payload that ran")
+        mark = buffer[MARK_OFF:MARK_OFF + 7]
+        if (mark[0], mark[1], mark[4], mark[5], mark[6]) != (0xA5, 0x5A, 0xF8, 0xFF, observed_trailer):
+            raise ValueError(f"{cycle}: observed marker {mark.hex()} is not the disc payload's")
+        names = [h["name"] for h in records["HIT"] if h["cycle"] == cycle and h["name"] in ORDER]
+        if names != ["cd_buffer_ready", "cd_data_done", "payload_entry", "payload_done", "cd_payload_return"]:
+            raise ValueError(f"{cycle}: label order {names} is not the mismatch path")
+    check_scsi_sequence(records, lba, 1)
+
+
 def judge_success(records, code, symbols, lba, count):
     """Raise ValueError unless cold AND warm runs loaded, verified, executed and returned exactly.
 
@@ -249,6 +291,25 @@ def main():
         suite.positive("payload_from_lba0", 0)
         suite.positive("payload_from_last_sector_lba15", DISC_SECTORS - 1)
 
+        # ---- same ROM, different disc payload: the observed result must follow the disc ----
+        variant_code = payload_variant(code, VARIANT_TRAILER)
+        variant_suite = Suite(probe, labels, symbols, variant_code, Path(tmp), rom_bytes)
+        if variant_suite.rom_for(DEFAULT_LBA) != rom_bytes:
+            raise ValueError("variant run would use a different ROM")
+        variant_records = variant_suite.run(rom_bytes, variant_suite.disc("disc-variant-lba5", DEFAULT_LBA))
+        judge_marker_mismatch(variant_records, variant_code, symbols, DEFAULT_LBA, VARIANT_TRAILER)
+        try:
+            judge_success(variant_records, variant_code, symbols, DEFAULT_LBA, 1)
+        except ValueError as error:
+            variant_suite.results["payload_variant_same_rom_lba5"] = {
+                "status": "PASS_EXPECTED_FAILURE", "rom_sha256": manifest["rom_sha256"],
+                "variant_payload_sha256": hashlib.sha256(variant_code).hexdigest(),
+                "baseline_marker_trailer": 0x3C, "observed_marker_trailer": VARIANT_TRAILER,
+                "success_judge_rejected_because": str(error)}
+        else:
+            raise ValueError("success judge accepted the variant payload result")
+        suite.results.update(variant_suite.results)
+
         # ---- negative: the same judge must reject each of these ----
         plain = Path(tmp) / "plain"
         build_image(plain, DISC_SECTORS)  # no header in the requested sector
@@ -281,6 +342,9 @@ def main():
         "payload_bytes": len(code), "exec_address": EXEC_ADDRESS,
         "geargrafx_revision": DEPENDENCIES["geargrafx"]["revision"],
         "tests": suite.results, "primary_observations": {"RUN": primary["RUN"], "HIT": primary["HIT"]},
+        "payload_variant": {"baseline_marker_trailer": 0x3C, "observed_marker_trailer": VARIANT_TRAILER,
+                             "rom_sha256": manifest["rom_sha256"],
+                             "variant_payload_sha256": hashlib.sha256(variant_code).hexdigest()},
         "not_tested": ["partial sector read with bytes transferred > 0 (only the abort at data-in was injected)",
                        "copy-verify failure in RAM (no RAM fault injection)", "real hardware", "a second emulator"],
         "status": "PASS",
