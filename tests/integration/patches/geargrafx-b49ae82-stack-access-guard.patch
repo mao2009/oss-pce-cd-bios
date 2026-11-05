@@ -1,6 +1,6 @@
 --- a/src/huc6280.h
 +++ b/src/huc6280.h
-@@ -27,6 +27,36 @@
+@@ -27,6 +27,42 @@
  #include "common.h"
  #include "huc6280_registers.h"
  
@@ -30,6 +30,12 @@
 +// gg_verify_defer_irq (Issue #647): set by the probe at an instruction start; while true, RunInstruction
 +//   does not take the IRQ after this instruction (it stays pending). false = upstream behaviour.
 +extern bool gg_verify_defer_irq;
++// gg_verify_clock_observer (Issue #653): called inside ClockHardwareCycles after the hardware was clocked
++//   and BEFORE CheckIRQs. ClockHardwareCycles runs only at hardware clock points INSIDE an instruction
++//   (VDC/VCE access, PSG write, VDC stall); the cycles left after RunInstruction are clocked by the core
++//   loop without it. Observation (the probe may also set an IRR bit here to model an IRQ asserted at that
++//   point). Null = upstream behaviour.
++extern void (*gg_verify_clock_observer)(void* context, unsigned master_cycles);
 +extern void* gg_verify_stack_context;
 +extern bool gg_verify_stack_refused;
 +extern int gg_verify_stack_mutation;
@@ -37,7 +43,7 @@
  #define FLAG_CARRY      0x01
  #define FLAG_ZERO       0x02
  #define FLAG_INTERRUPT  0x04
-@@ -122,6 +152,15 @@
+@@ -122,6 +158,19 @@
      void Init(Memory* memory, HuC6202* huc6202);
      void Reset();
      u32 RunInstruction(bool* completed = NULL);
@@ -50,12 +56,16 @@
 +    u32 GG_VerifyTransferDest() const { return m_transfer_dest; }
 +    u32 GG_VerifyTransferLength() const { return m_transfer_length; }
 +    u32 GG_VerifyTransferCount() const { return m_transfer_count; }
++    // (Issue #653) timer down-counter of master cycles to the next tick: read, and set by the harness before
++    // the run or at an instruction start only (fixture setup, like the harness MPR settings).
++    s32 GG_VerifyTimerCycles() const { return m_timer_cycles; }
++    void GG_VerifySetTimerCycles(s32 cycles) { m_timer_cycles = cycles; }
      void SetHardwareClock(GG_Clock_Hardware_Fn clock_fn, void* context);
      u32 GetClockedMasterCycles() const;
      void ClockCountedCycles(unsigned int cycles);
 --- a/src/huc6280.cpp
 +++ b/src/huc6280.cpp
-@@ -28,6 +28,16 @@
+@@ -28,6 +28,17 @@
  #include "trace_logger.h"
  #include "profiler.h"
  
@@ -66,6 +76,7 @@
 +bool (*gg_verify_pre_instruction)(void* context, unsigned pc, unsigned transfer_state) = nullptr;
 +void* gg_verify_stack_context = nullptr;
 +bool gg_verify_defer_irq = false;
++void (*gg_verify_clock_observer)(void* context, unsigned master_cycles) = nullptr;
 +bool gg_verify_stack_refused = false;
 +int gg_verify_stack_mutation = 0;
 +
@@ -149,7 +160,7 @@
      m_cycles += k_huc6280_opcode_cycles[opcode];
  
      CheckIRQs();
-@@ -87,7 +134,11 @@
+@@ -87,7 +134,12 @@
      UNUSED(instruction_completed);
  #endif
  
@@ -157,12 +168,27 @@
 +    // VERIFICATION-ONLY (Issue #647, S5 IRQ deferral experiment): when set for this instruction, the IRQ
 +    // that upstream would take inside this RunInstruction stays pending for the next instruction boundary.
 +    // false = upstream behaviour.
-+    if((m_irq_pending || IS_SET_BIT(m_interrupt_request_register, 2)) && (m_transfer_state == 0) &&
-+       !gg_verify_defer_irq)
++    // (Issue #653) mutant 9 takes the IRQ even inside a block transfer.
++    if((m_irq_pending || IS_SET_BIT(m_interrupt_request_register, 2)) &&
++       (m_transfer_state == 0 || gg_verify_stack_mutation == 9) && !gg_verify_defer_irq)
          HandleIRQ();
  
      DisassembleNextOPCode();
-@@ -368,23 +419,51 @@
+@@ -181,7 +233,12 @@
+     m_clock_hardware_fn(m_clock_hardware_context, master_cycles);
+     m_clocked_master_cycles += master_cycles;
+ 
+-    CheckIRQs();
++    // VERIFICATION-ONLY (Issue #653): observe the mid-instruction clock point; mutant 8 skips the
++    // CheckIRQs here (an IRQ asserted at this point would then be seen only at the next fetch).
++    if (gg_verify_clock_observer)
++        gg_verify_clock_observer(gg_verify_stack_context, master_cycles);
++    if (gg_verify_stack_mutation != 8)
++        CheckIRQs();
+ }
+ 
+ INLINE void HuC6280::ClockCountedCycles(unsigned int cycles)
+@@ -368,23 +425,51 @@
  #endif
  }
  
@@ -215,7 +241,7 @@
      u8 l = m_memory->Read(STACK_ADDR | m_S.GetValue());
      m_S.Increment();
      u8 h = m_memory->Read(STACK_ADDR | m_S.GetValue());
-@@ -393,7 +472,15 @@
+@@ -393,7 +478,15 @@
  
  INLINE u8 HuC6280::StackPop8()
  {

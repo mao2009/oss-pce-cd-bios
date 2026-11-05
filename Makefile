@@ -53,7 +53,15 @@ integration: build
 	$(MAKE) stack-methods-compare
 	$(MAKE) stack-s5
 	$(MAKE) stack-s6
+	$(MAKE) stack-irq-timing
 	$(MAKE) caller-stack-contract
+
+# Issue #653 (#473 S7): IRQs newly asserted inside an instruction (timer / harness request bits at a chosen
+# instruction or clock point) and where they are taken: TAM, STA to the VDC, the five block transfers (synthetic
+# media, debugger build, verification-only patch). Not a production mechanism. Runs in `integration`.
+.PHONY: stack-irq-timing
+stack-irq-timing:
+	$(PYTHON) tests/integration/geargrafx_stack_irq_timing.py
 
 # Issue #648 (#473 S6): block transfers (TII/TIN/TDD/TIA/TAI) refused before TransferStart (pre-start range check)
 # and during the transfer (MPR change), judged on the eight criteria; IRQ during a transfer (synthetic media,
