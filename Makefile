@@ -54,7 +54,15 @@ integration: build
 	$(MAKE) stack-s5
 	$(MAKE) stack-s6
 	$(MAKE) stack-irq-timing
+	$(MAKE) stack-mpr-buffer
 	$(MAKE) caller-stack-contract
+
+# Issue #654 (#473 S8): the TAM/TMA buffer (m_mpr_buffer) and TMA #$00 for single / multi-MPR TAM and TMA, TAM #$00,
+# refused TAMs (A / A+D / A+E) and IRQ-in-TAM (synthetic media, debugger build, verification-only patch with a
+# read-only accessor). Not a production mechanism. Runs in `integration`.
+.PHONY: stack-mpr-buffer
+stack-mpr-buffer:
+	$(PYTHON) tests/integration/geargrafx_stack_mpr_buffer.py
 
 # Issue #653 (#473 S7): IRQs newly asserted inside an instruction (timer / harness request bits at a chosen
 # instruction or clock point) and where they are taken: TAM, STA to the VDC, the five block transfers (synthetic

@@ -258,6 +258,17 @@
      return m_memory->Read(STACK_ADDR | m_S.GetValue());
  }
  
+--- a/src/memory.h
++++ b/src/memory.h
+@@ -70,6 +70,8 @@
+     u8 GetMpr(u8 index);
+     void SetMprTAM(u8 bits, u8 value);
+     u8 GetMprTMA(u8 bits);
++    // VERIFICATION-ONLY read-only accessor (Issue #654). NOT upstream code. It changes no state.
++    u8 GG_VerifyMprBuffer() const { return m_mpr_buffer; }
+     void SetTraceLogger(TraceLogger* trace_logger);
+     u32 GetPhysicalAddress(u16 address);
+     bool GetROMPhysicalAddress(u8 bank, u16 offset, u32& address);
 --- a/src/memory_inline.h
 +++ b/src/memory_inline.h
 @@ -53,6 +53,10 @@
