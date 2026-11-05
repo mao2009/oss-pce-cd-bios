@@ -1593,7 +1593,7 @@ class AllowlistTarTests(unittest.TestCase):
     ]
     ALLOW = [
         # normal archive commands
-        "tar -xf a.tar", "tar -czf out.tgz src", "tar -tvf a.tar", "tar -C dir -xf a.tar", "tar --list --file=a.tar",
+        "tar -xf a.tar", "tar -tvf a.tar", "tar -C dir -xf a.tar", "tar --list --file=a.tar",
         "tar --strip-components=1 -xf a.tar", "tar --sort=name -cf a.tar src", "tar -T list.txt -cf a.tar",
         "tar -xf a.tar --no-same-owner", "tar --exclude-vcs -cf a.tar src", "tar --format=gnu -cf a.tar src",
         "gtar -xf a.tar", "bsdtar -xf a.tar",
@@ -1749,7 +1749,7 @@ class AllowlistRsyncMutationTests(unittest.TestCase):
             '"long_args": ("backup-dir", "suffix", "chmod",', '"long_args": ("copy-as", "backup-dir", "suffix", "chmod",'),
         "-e allowed as a short letter": ('"short_args": "Bf@T",', '"short_args": "Bf@Te",'),
         "-M allowed as a short letter": ('"short_args": "Bf@T",', '"short_args": "Bf@TM",'),
-        "RSYNC_SHELL removed from the program variables": ('"RSYNC_SHELL", "LD_PRELOAD")', '"LD_PRELOAD")'),
+        "RSYNC_SHELL removed from the program variables": ('"RSYNC_SHELL", "LD_PRELOAD",', '"LD_PRELOAD",'),
         "unlisted long option not denied": (
             '                raise Deny("program-option", name + " option is not in the allowlist: " + a)', '                pass'),
     }
@@ -1947,9 +1947,8 @@ class ReviewFixMutationTests(unittest.TestCase):
         "env -S check removed": (
             '            if tok.startswith("--split") or (not tok.startswith("--") and "S" in tok[1:]):',
             '            if False:'),
-        "PATH prefix check removed": (
-            '    if any(w.replace("\\\\", "").replace(\'"\', "").replace("\'", "").upper().startswith("PATH=") for w in words) and any(',
-            '    if False and any('),
+        "PATH check matches every word": (
+            r'''    if any(re.match(r"PATH\+?=", w.replace("\\", "")''', r'''    if any((w.replace("\\", "")'''),
         "-J strict value check removed": (
             '                    if ch in spec.get("short_value_strict", "") and (', '                    if False and ('),
         "old-style tar letter check removed": (
@@ -1957,7 +1956,7 @@ class ReviewFixMutationTests(unittest.TestCase):
             '        if False:'),
         "tar colon check removed": (
             '    if name == "tar" and "--force-local" not in args and any(":" in a for a in args):', '    if False:'),
-        "LD_PRELOAD removed from the program variables": ('"RSYNC_SHELL", "LD_PRELOAD")', '"RSYNC_SHELL")'),
+        "LD_PRELOAD removed from the program variables": ('"RSYNC_SHELL", "LD_PRELOAD",', '"RSYNC_SHELL",'),
         "brace groups without a comma or sequence denied": ('BRACE_EXPANDS.search(a):', '"{" in a or "}" in a:'),
     }
 
@@ -1988,6 +1987,98 @@ class ReviewFixMutationTests(unittest.TestCase):
                 failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
                 detected = any("ReviewFixTests." in ln for ln in failing)
                 self.assertTrue(detected, "mutant not detected by a ReviewFixTests test: " + name + "\n"
+                                + "\n".join(failing))
+
+
+class PathCompressorLibraryTests(unittest.TestCase):
+    """Issue #640 X3b, owner scope: PATH-resolved compressors (UNKNOWN_EXECUTION, denied), library-loading variables,
+    PATH+=, and ProxyJump values. Decision-level only; nothing is executed.
+
+    Observed on this host (GNU tar 1.35): `env PATH=/nonexistent tar -czf ...` fails with "/bin/sh: line 1: gzip: command
+    not found" and exit 127, so tar starts gzip by name through PATH. The same mechanism is assumed for -j, -J, -Z and -a
+    (recorded as UNKNOWN_EXECUTION). rg is a shell function here that calls Claude Code's built-in ripgrep, not a
+    standalone binary, so rg -z is UNKNOWN_EXECUTION and denied."""
+
+    DENY = [
+        # compressors started by name through PATH: tar short, cluster, old-style, long, and the abbreviation
+        "tar -czf out.tgz src", "tar -cjf out.tbz src", "tar -cJf out.txz src", "tar -cZf out.Z src",
+        "tar -caf out.tar.gz src", "tar --gzip -cf out.tar src", "tar --auto-compress -cf out.tgz src",
+        "tar --bzip2 -cf out.tar src", "tar --gz -cf out.tar src", "tar -xzf out.tgz", "tar -tzf out.tgz",
+        "tar -xf a.tgz -z", "tar xzf a.tgz",
+        # rg: the search-zip option runs an external decompressor
+        "rg -z needle d.gz", "rg --search-zip needle d.gz", "rg -nz needle src", "rg --search-zip=yes x src",
+        # PATH+= appends to the search path a program tool uses
+        "PATH+=:/x rsync -a a host:b", "env PATH+=:/x rsync -a a h:b", "PATH+=:/x scp a h:b", "PATH+=:/x tar -tf a",
+        # library-loading variables, as prefix assignments and through env
+        "LD_LIBRARY_PATH=/tmp/x tar -tf a", "LD_AUDIT=/tmp/x.so tar -tf a", "DYLD_INSERT_LIBRARIES=/x tar -tf a",
+        "SSH_SK_PROVIDER=/tmp/x.so ssh h", "env LD_LIBRARY_PATH=/x tar -tf a",
+        # ProxyJump names hosts: a dashed word, a KEY=VALUE pair or a space in its value is an option
+        "ssh -o ProxyJump=-oProxyCommand=x h", "ssh -o 'ProxyJump=-oX' h", "ssh -o ProxyJump=h=x h",
+        "ssh -o 'ProxyJump h x' h",
+    ]
+    ALLOW = [
+        # ordinary archive commands without a compressor flag; gzip is a separate command, not a program option
+        "tar -cf out.tar src", "tar -xf a.tar -C dir", "tar -tvf a.tar", "tar -cf out.tar src && gzip out.tar",
+        # ordinary rg use; -a is --text, not a decompressor
+        "rg -n needle src", "rg -a needle src",
+        # PATH with no program tool in the command; ordinary ProxyJump hosts
+        "PATH+=:/x ls", "ssh -o ProxyJump=user@jump:2222 h", "ssh -o 'ProxyJump=bastion' h",
+    ]
+
+    def test_compressor_and_library_deny_list(self):
+        for cmd in self.DENY:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+
+    def test_compressor_and_library_allow_list(self):
+        for cmd in self.ALLOW:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "ALLOW")
+
+
+class PathCompressorLibraryMutationTests(unittest.TestCase):
+    """Issue #640 X3b, owner scope: each rule must be detected by a named PathCompressorLibraryTests failure."""
+
+    MUTANTS = {
+        "tar z flag restored": ('"short_flags": "AcdrtuxnSGOmpskUWBihlRvwoPM",', '"short_flags": "AcdrtuxnSGOmpskUWBihlRvwoPMz",'),
+        "tar j flag restored": ('"short_flags": "AcdrtuxnSGOmpskUWBihlRvwoPM",', '"short_flags": "AcdrtuxnSGOmpskUWBihlRvwoPMj",'),
+        "rg z flag restored": ('"short_flags": "FisvxUSawLubnNHIclopqVPh",', '"short_flags": "FisvxUSawzLubnNHIclopqVPh",'),
+        "tar gzip long flag restored": (
+            '"long_flags": ("absolute-names", "acls", "anchored", "append", "block-number",',
+            '"long_flags": ("absolute-names", "acls", "anchored", "append", "gzip", "block-number",'),
+        "PATH+= not matched": (r'''re.match(r"PATH\+?=",''', r'''re.match(r"PATH=",'''),
+        "LD_AUDIT removed from the program variables": (
+            '"LD_LIBRARY_PATH", "LD_AUDIT", "DYLD_INSERT_LIBRARIES"', '"LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES"'),
+        "ProxyJump value check removed": ('if key == "proxyjump" and (', 'if False and ('),
+    }
+
+    def _run(self, hook_text):
+        with tempfile.TemporaryDirectory() as td:
+            root = os.path.realpath(td)
+            hooks = os.path.join(root, ".claude", "hooks")
+            host = os.path.join(root, "tests", "host")
+            os.makedirs(hooks)
+            os.makedirs(host)
+            write_text(os.path.join(hooks, "guard_destructive.py"), hook_text)
+            with open(THIS_FILE, encoding="utf-8") as f:
+                write_text(os.path.join(host, "test_claude_destructive_guard.py"), f.read())
+            proc = subprocess.run([sys.executable, "-m", "unittest", "-v",
+                                   "test_claude_destructive_guard.PathCompressorLibraryTests"], cwd=host,
+                                  capture_output=True, text=True, timeout=300)
+            return proc.returncode, proc.stderr
+
+    def test_compressor_library_tests_detect_each_mutant(self):
+        with open(HOOK, encoding="utf-8") as f:
+            original = f.read()
+        code, out = self._run(original)
+        self.assertEqual(code, 0, "unmutated copy must pass PathCompressorLibraryTests:\n" + out[-800:])
+        for name, (old, new) in self.MUTANTS.items():
+            with self.subTest(mutant=name):
+                self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
+                code, out = self._run(original.replace(old, new))
+                failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
+                detected = any("PathCompressorLibraryTests." in ln for ln in failing)
+                self.assertTrue(detected, "mutant not detected by a PathCompressorLibraryTests test: " + name + "\n"
                                 + "\n".join(failing))
 
 

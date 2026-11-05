@@ -742,7 +742,7 @@ BRACE_EXPANDS = re.compile(r"\{[^{}]*(,|\.\.)[^{}]*\}")
 SETTER_BUILTINS = ("export", "declare", "typeset", "local", "readonly", "read")
 # Environment variables that name a program the tool starts (prefix assignments: VAR=x tool, env VAR=x tool).
 PROGRAM_ENV = ("RSYNC_RSH", "SSH_ASKPASS", "TAR_OPTIONS", "SSH_SK_HELPER", "RIPGREP_CONFIG_PATH", "RSYNC_CONNECT_PROG",
-               "RSYNC_SHELL", "LD_PRELOAD")
+               "RSYNC_SHELL", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "DYLD_INSERT_LIBRARIES", "SSH_SK_PROVIDER")
 # ssh, scp and sftp -o KEY=VALUE (ssh_config keywords, case-insensitive). Only the keys listed here are allowed. A key that
 # runs a local command or loads a provider or an included file (ProxyCommand, LocalCommand, PermitLocalCommand,
 # KnownHostsCommand, Include, Match, PKCS11Provider, SecurityKeyProvider, XAuthLocation, ...) is not listed, so it is DENY.
@@ -795,11 +795,11 @@ ALLOWLIST = {
                       "color", "encoding", "context", "after-context", "before-context", "generate", "hidden",
                       "no-ignore", "no-ignore-dot", "no-ignore-exclude", "no-ignore-files", "no-ignore-global",
                       "no-ignore-parent", "no-ignore-vcs", "no-require-git", "no-messages", "null"),
-        "short_flags": "FisvxUSawzLubnNHIclopqVPh",
+        "short_flags": "FisvxUSawLubnNHIclopqVPh",
         "short_args": "egfrtTABCmMEjd",
         "long_flags": ("pretty", "ignore-case", "invert-match", "line-regexp", "word-regexp", "case-sensitive",
                        "smart-case", "fixed-strings", "multiline", "multiline-dotall", "null-data", "pcre2", "text",
-                       "search-zip", "count", "count-matches", "files-with-matches", "files-without-match", "json",
+                       "count", "count-matches", "files-with-matches", "files-without-match", "json",
                        "line-number", "no-line-number", "with-filename", "no-filename", "column", "byte-offset",
                        "only-matching", "quiet", "stats", "trim", "vimgrep", "files", "no-config", "no-messages",
                        "follow", "unrestricted", "sort-files", "include-zero", "mmap", "block-buffered",
@@ -846,16 +846,16 @@ ALLOWLIST = {
                       "use-compress-program", "usage", "utc", "verbatim-files-from", "verbose", "verify", "version",
                       "volno-file", "warning", "wildcards", "wildcards-match-slash", "xattrs", "xattrs-exclude",
                       "xattrs-include", "xform", "xz", "zstd", "uncompress", "ungzip"),
-        "short_flags": "AcdrtuxnSGOmpskUWBiajJzZhlRvwoPM",
+        "short_flags": "AcdrtuxnSGOmpskUWBihlRvwoPM",
         "short_args": "bfCTXLHVKNg",
-        "long_flags": ("absolute-names", "acls", "anchored", "append", "auto-compress", "block-number", "bzip2",
-                       "catenate", "check-device", "check-links", "clamp-mtime", "compare", "compress", "concatenate",
+        "long_flags": ("absolute-names", "acls", "anchored", "append", "block-number",
+                       "catenate", "check-device", "check-links", "clamp-mtime", "compare", "concatenate",
                        "confirmation", "create", "delay-directory-restore", "delete", "dereference", "diff",
                        "exclude-backups", "exclude-caches", "exclude-caches-all", "exclude-caches-under", "exclude-vcs",
-                       "exclude-vcs-ignores", "extract", "force-local", "full-time", "get", "gunzip", "gzip",
+                       "exclude-vcs-ignores", "extract", "force-local", "full-time", "get",
                        "hard-dereference", "help", "ignore-case", "ignore-command-error", "ignore-failed-read",
                        "ignore-zeros", "incremental", "interactive", "keep-directory-symlink", "keep-newer-files",
-                       "keep-old-files", "list", "lzip", "lzma", "lzop", "multi-volume", "no-acls", "no-anchored",
+                       "keep-old-files", "list", "multi-volume", "no-acls", "no-anchored",
                        "no-auto-compress", "no-check-device", "no-delay-directory-restore", "no-ignore-case",
                        "no-ignore-command-error", "no-null", "no-overwrite-dir", "no-recursion", "no-same-owner",
                        "no-same-permissions", "no-seek", "no-selinux", "no-unquote", "no-verbatim-files-from",
@@ -866,7 +866,7 @@ ALLOWLIST = {
                        "show-omitted-dirs", "show-snapshot-field-ranges", "show-stored-names",
                        "show-transformed-names", "skip-old-files", "sparse", "test-label", "to-stdout", "touch",
                        "unlink-first", "unquote", "update", "usage", "utc", "verbatim-files-from", "verbose", "verify",
-                       "version", "wildcards", "wildcards-match-slash", "xattrs", "xz", "zstd", "uncompress", "ungzip"),
+                       "version", "wildcards", "wildcards-match-slash", "xattrs"),
         "long_args": ("add-file", "after-date", "blocking-factor", "directory", "exclude", "exclude-from",
                       "exclude-ignore", "exclude-ignore-recursive", "exclude-tag", "exclude-tag-all", "exclude-tag-under",
                       "file", "files-from", "format", "group", "group-map", "hole-detection", "label", "level",
@@ -1015,6 +1015,11 @@ def allowlist_rule(name, args):
                         key = re.split(r"[=\s]", value, 1)[0].lower()
                         if key not in spec["short_arg_keys"][ch]:
                             raise Deny("program-option", name + " -" + ch + " key is not in the allowlist: " + a)
+                        parts = re.split(r"[=\s]", value, 1)
+                        rest = parts[1] if len(parts) > 1 else ""
+                        if key == "proxyjump" and (rest.startswith("-") or "=" in rest or any(c.isspace() for c in rest)):
+                            # ProxyJump names hosts; a dashed word or a KEY=VALUE pair in its value is an option, not a host.
+                            raise Deny("program-option", name + " -o ProxyJump value is not a plain host list: " + a)
                     break  # the rest of the cluster is the value
                 raise Deny("program-option", name + " short option is not in the allowlist: " + a)
             continue
@@ -1189,7 +1194,7 @@ def analyze_argv(words, ctx, ps, depth):
         raise Deny("program-option", "a program-naming environment variable is not inspected")
     # A PATH assignment changes which helper a program starts (rsync's remote form starts ssh through PATH). With a
     # program tool in the same command it is denied; the tool name is compared by its basename, without .exe.
-    if any(w.replace("\\", "").replace('"', "").replace("'", "").upper().startswith("PATH=") for w in words) and any(
+    if any(re.match(r"PATH\+?=", w.replace("\\", "").replace('"', "").replace("'", "").upper()) for w in words) and any(
             PROGRAM_ALIAS.get(re.sub(r"\.exe$", "", w.replace("\\", "/").split("/")[-1].lower()), re.sub(r"\.exe$", "", w.replace("\\", "/").split("/")[-1].lower())) in PROGRAM_TOOLS
             for w in words):
         raise Deny("program-option", "PATH is set in a command that starts a program tool: not inspected")
