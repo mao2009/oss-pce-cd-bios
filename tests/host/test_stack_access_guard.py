@@ -228,8 +228,16 @@ class ClassifierTests(unittest.TestCase):
 
 class PatchBoundaryTests(unittest.TestCase):
     def test_patch_touches_only_the_four_core_files(self):
-        files = re.findall(r"^\+\+\+ b/(\S+)", PATCH.read_text(encoding="utf-8"), re.M)
-        self.assertEqual(files, ["src/huc6280.h", "src/huc6280.cpp", "src/huc6280_inline.h", "src/memory_inline.h"])
+        text = PATCH.read_text(encoding="utf-8")
+        files = re.findall(r"^\+\+\+ b/(\S+)", text, re.M)
+        # (#654 adds memory.h, for one read-only accessor and its comment only.)
+        self.assertEqual(files, ["src/huc6280.h", "src/huc6280.cpp", "src/huc6280_inline.h", "src/memory.h",
+                                 "src/memory_inline.h"])
+        memory_h = text.split("+++ b/src/memory.h", 1)[1].split("--- a/src/", 1)[0]
+        added = [line for line in memory_h.splitlines() if line.startswith("+")]
+        self.assertEqual(len(added), 2)
+        self.assertIn("u8 GG_VerifyMprBuffer() const { return m_mpr_buffer; }", added[1])
+        self.assertEqual([line for line in memory_h.splitlines() if line.startswith("-")], [])
 
     def test_patch_is_marked_verification_only_and_null_by_default(self):
         text = PATCH.read_text(encoding="utf-8")
