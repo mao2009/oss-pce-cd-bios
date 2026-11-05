@@ -3,7 +3,8 @@
   "status": "VERIFICATION_DESIGN_ONLY",
   "note": "C-3 static contract (#473). Text-level declarations checked by tools/c3_static_check.py. Not a production safety proof, not an ABI, not an approval. Production allowlist UNDECIDED (Owner).",
   "rule_groups": [
-    "CI-1"
+    "CI-1",
+    "CI-2"
   ],
   "production_allowlist": {
     "status": "UNDECIDED",
@@ -13,6 +14,26 @@
     "transfer_regions": null,
     "mmio_devices": null,
     "note": "Owner decision pending. The #497 verification value (MPR1 = $F8 only) is NOT a production allowlist."
+  },
+  "regions": {
+    "_note": "Hardware memory-map facts used to describe declared transfers (PCE: WRAM bank $F8, hardware page bank $FF). Describing a region is not an allowlist; allowing it in production is production_allowlist (UNDECIDED).",
+    "wram": {
+      "kind": "ram",
+      "bank": "0xF8"
+    },
+    "rom_bank0": {
+      "kind": "rom",
+      "bank": "0x00"
+    },
+    "vdc_data_port": {
+      "kind": "mmio",
+      "bank": "0xFF",
+      "offsets": [
+        "0x0002",
+        "0x0003"
+      ],
+      "device": "VDC data port"
+    }
   },
   "scope": {
     "bios": [
@@ -70,19 +91,23 @@
   "files": {
     "src/ad_reset_idle.s": {
       "role": "internal",
-      "tam": []
+      "tam": [],
+      "transfers": []
     },
     "src/adt_dma_routine.s": {
       "role": "internal",
-      "tam": []
+      "tam": [],
+      "transfers": []
     },
     "src/boot.s": {
       "role": "internal",
-      "tam": []
+      "tam": [],
+      "transfers": []
     },
     "src/cd_media_state.s": {
       "role": "internal",
-      "tam": []
+      "tam": [],
+      "transfers": []
     },
     "src/dev_boot_internal.s": {
       "role": "reset_init",
@@ -97,19 +122,23 @@
           "value": "0xF8",
           "purpose": "MPR1 = work RAM at reset (stack page $2100-$21FF)"
         }
-      ]
+      ],
+      "transfers": []
     },
     "src/ex_bcdbin.s": {
       "role": "api",
-      "tam": []
+      "tam": [],
+      "transfers": []
     },
     "src/ex_binbcd.s": {
       "role": "api",
-      "tam": []
+      "tam": [],
+      "transfers": []
     },
     "src/ex_rnd.s": {
       "role": "api",
-      "tam": []
+      "tam": [],
+      "transfers": []
     },
     "src/experimental_bios_boot.s": {
       "role": "reset_init",
@@ -124,31 +153,38 @@
           "value": "0xF8",
           "purpose": "MPR1 = work RAM at reset"
         }
-      ]
+      ],
+      "transfers": []
     },
     "src/math/ma_div16s.s": {
       "role": "api",
-      "tam": []
+      "tam": [],
+      "transfers": []
     },
     "src/math/ma_div16u.s": {
       "role": "api",
-      "tam": []
+      "tam": [],
+      "transfers": []
     },
     "src/math/ma_mul16u.s": {
       "role": "api",
-      "tam": []
+      "tam": [],
+      "transfers": []
     },
     "src/math/ma_mul8s.s": {
       "role": "api",
-      "tam": []
+      "tam": [],
+      "transfers": []
     },
     "src/math/ma_mul8u.s": {
       "role": "api",
-      "tam": []
+      "tam": [],
+      "transfers": []
     },
     "src/overrides/slot_1E.s": {
       "role": "api",
-      "tam": []
+      "tam": [],
+      "transfers": []
     },
     "src/overrides/slot_3A.s": {
       "role": "api",
@@ -163,55 +199,68 @@
           "value": "restore",
           "reason": "caller MPR0 saved by TMA #$01 and restored before return"
         }
-      ]
+      ],
+      "transfers": []
     },
     "src/overrides/slot_3C.s": {
       "role": "api",
-      "tam": []
+      "tam": [],
+      "transfers": []
     },
     "src/overrides/slot_3D.s": {
       "role": "api",
-      "tam": []
+      "tam": [],
+      "transfers": []
     },
     "src/overrides/slot_3E.s": {
       "role": "api",
-      "tam": []
+      "tam": [],
+      "transfers": []
     },
     "src/overrides/slot_3F.s": {
       "role": "api",
-      "tam": []
+      "tam": [],
+      "transfers": []
     },
     "src/overrides/slot_40.s": {
       "role": "api",
-      "tam": []
+      "tam": [],
+      "transfers": []
     },
     "src/overrides/slot_41.s": {
       "role": "api",
-      "tam": []
+      "tam": [],
+      "transfers": []
     },
     "src/overrides/slot_42.s": {
       "role": "api",
-      "tam": []
+      "tam": [],
+      "transfers": []
     },
     "src/overrides/slot_43.s": {
       "role": "api",
-      "tam": []
+      "tam": [],
+      "transfers": []
     },
     "src/overrides/slot_44.s": {
       "role": "api",
-      "tam": []
+      "tam": [],
+      "transfers": []
     },
     "src/overrides/slot_45.s": {
       "role": "api",
-      "tam": []
+      "tam": [],
+      "transfers": []
     },
     "src/overrides/slot_46.s": {
       "role": "api",
-      "tam": []
+      "tam": [],
+      "transfers": []
     },
     "src/overrides/slot_4F.s": {
       "role": "api",
-      "tam": []
+      "tam": [],
+      "transfers": []
     },
     "src/reset_entry.s": {
       "role": "reset_init",
@@ -226,7 +275,8 @@
           "value": "0xF8",
           "purpose": "MPR1 = work RAM at reset (stack page $2100)"
         }
-      ]
+      ],
+      "transfers": []
     }
   }
 }

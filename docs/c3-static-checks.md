@@ -62,6 +62,38 @@ An unclassified file is a FAIL. The reader is not an assembler:
 The contract lists the rule groups it is checked with (`rule_groups`). A declared group whose module is missing is a
 FAIL, never a silent skip.
 
+## CI-2: block transfer contract (#660)
+
+Each bios file lists its TII / TIN / TDD / TIA / TAI sites in source order (`transfers`), with:
+
+- the operands;
+- the mapping (`mpr`: page → bank) of every page the transfer touches;
+- a source and a destination region, taken from the `regions` table (kind `ram`, `rom` or `mmio`);
+- the purpose.
+
+Address sequences follow the pinned core, as measured in #648:
+
+| Instruction | Sequence |
+|---|---|
+| TDD | decrements both addresses |
+| TIN | keeps the destination fixed |
+| TIA | alternates the destination between dst and dst+1 |
+| TAI | alternates the source |
+
+Length 0 means 65536 bytes.
+
+| Rule | Check |
+|---|---|
+| CI-2.01 | Every transfer is declared, in order. |
+| CI-2.02 | The operands are static constants. Run-time or linker-placed operands are outside the supported scope and are a FAIL. |
+| CI-2.03 | The declared operands equal the source operands. |
+| CI-2.04 | Every touched page has a declared mapping (fail closed). |
+| CI-2.05 | Every source and destination byte is inside its declared region. A ROM destination is a FAIL. |
+| CI-2.06 | A legitimate I/O transfer, such as TIA to the VDC data port, is declared with an `mmio` destination region. It is **not** refused for being I/O. It is reported BLOCKED until the production allowlist (UNDECIDED) covers it. |
+| CI-2.07 | NOT_STATIC: a mid-transfer mapping change, IRQ entry during a transfer, device DMA, and operands rewritten at run time (#648 / #653 are emulator evidence; real hardware is #655). |
+
+Today the bios scope has no block transfers. The tool prints the site count.
+
 ## Not decidable statically (NOT_STATIC / UNKNOWN)
 
 - Self-modifying code.
