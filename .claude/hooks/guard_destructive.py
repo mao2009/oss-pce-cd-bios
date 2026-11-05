@@ -1112,7 +1112,12 @@ def tar_path_ok(path, ctx, role):
         return False
     if role != "member" and any(c in path for c in "*?["):
         return False
-    norm = posixpath.normpath(path.replace("\\", "/"))
+    # Check the original components before normpath: link/../x can escape the repository
+    # when link is a symlink, even though its lexical normalization is just x.
+    slash_path = path.replace("\\", "/")
+    if ".." in slash_path.split("/"):
+        return False
+    norm = posixpath.normpath(slash_path)
     parts = norm.split("/")
     if norm.startswith("/") or ABSOLUTE.match(path) or ".." in parts:
         return False
