@@ -270,7 +270,8 @@ class PatchBoundaryTests(unittest.TestCase):
         text = PROBE.read_text(encoding="utf-8")
         loop = text[text.index("while (frames_run < frames)"):text.index("Snapshot stop = snap();")]
         # The method C latch (and, since #498, the method A instruction refusal) ends the run loop.
-        self.assertRegex(loop, r"if \(gg_verify_stack_refused( \|\| g_instruction_refused)?\)")
+        # (#647 adds the harness budget stop of the TAM bitmask sweep.)
+        self.assertRegex(loop, r"if \(gg_verify_stack_refused( \|\| g_instruction_refused)?( \|\| g_budget_stop)?\)")
         self.assertIn("break;", loop)
         self.assertIn("allow = !latched && mpr1 == 0xF8", text)
 

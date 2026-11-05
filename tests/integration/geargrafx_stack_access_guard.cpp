@@ -11,6 +11,7 @@
 // argv: bios cue mode frames
 // mode = <route>-<variant>
 //   route:   jsr pha php bsr rts rti irq tstart tend brk pla plp phx phy plx ply irqtam phasame pharestore
+//            (#647) irqtam2 irqtamt irqtam1i irqtam2i irqtamti tamcode tmapos tmaneg tam<mask><A> (hex)
 //   variant: allowed     MPR1 = $F8 (WRAM): the guard is consulted and allows (positive)
 //            armed       MPR1 = $FF (I/O): the guard refuses before the access (negative)
 //            unguarded   MPR1 = $FF, null guard: the accesses land on the I/O page (control)
@@ -25,6 +26,7 @@
 #include "huc6270.h"
 #include "huc6280.h"
 #include "memory.h"
+#include "memory_inline.h"   // Memory::TryPeek (no bus side effects)
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -72,6 +74,12 @@ unsigned g_flip_instruction = 0, g_flip_at = 0, g_stack_bank = 0xFF;
 bool g_method_a = false, g_instruction_refused = false;
 unsigned g_refusal_kind = 0;        // 0 none, 1 stack access (method C), 2 instruction (method A)
 unsigned g_instruction_refusals = 0;
+// Issue #647 (S5): D = decode-time refusal of a TAM that would map MPR1 to a forbidden bank; E = defer the
+// IRQ that would be taken inside a TAM instruction. Both are TEST policies defined here.
+bool g_method_d = false, g_method_e = false, g_budget_stop = false;
+unsigned g_decode_refusals = 0, g_irq_deferrals = 0, g_handler_entry = 0, g_budget = 0;
+int g_d_mut = 0, g_e_mut = 0;     // probe-side mutants: D off (1) / D checks bit 0 (2); E off (1)
+const char* g_refusal_reason = "none";
 Snapshot g_instr_start = {};        // snapshot at the start of the instruction that is running
 Snapshot g_refusal_instr = {};      // snapshot at the start of the instruction of the first refusal
 Snapshot g_at_refusal = {};         // live CPU state inside the first refused guard call
@@ -155,13 +163,34 @@ bool pre_instruction(void*, unsigned, unsigned transfer_state)
         g_flip_instruction = g_instructions;
     }
     g_instr_start = snap();
-    if (!g_method_a)
+    if (!g_handler_entry && g_instr_start.pc == kHandler)
+        g_handler_entry = g_instructions;        // first instruction of the IRQ/BRK handler
+    // Peek the opcode (and a TAM operand) without a bus read; not peekable = fail closed.
+    u8 op = 0, bits = 0;
+    u16 pc = (u16)g_instr_start.pc;
+    bool peek_ok = g_memory->TryPeek(pc, &op) && (op != 0x53 || g_memory->TryPeek((u16)(pc + 1), &bits));
+    gg_verify_defer_irq = g_method_e && g_e_mut == 0 && (!peek_ok || op == 0x53);
+    if (gg_verify_defer_irq)
+        ++g_irq_deferrals;
+    unsigned checked_bit = g_d_mut == 2 ? 0x01 : 0x02;   // MPR1 is bit 1 of the TAM operand
+    bool decode_refuse = g_method_d && g_d_mut != 1 &&
+                         (!peek_ok || (op == 0x53 && (bits & checked_bit) && g_instr_start.a != 0xF8));
+    bool a_refuse = g_method_a && (g_instruction_refused || g_memory->GetMpr(1) != 0xF8);
+    // Harness budget (TAM bitmask sweep): stop before the next instruction unless method A refuses it. It
+    // takes precedence over D there, because the sweep judges only the TAM (instruction 1); D's not-peekable
+    // branch is measured by its own route (tamcode).
+    if (!a_refuse && g_budget && g_instructions > g_budget) {
+        g_budget_stop = true;
+        return false;
+    }
+    if (!a_refuse && !decode_refuse)
         return true;
-    if (!g_instruction_refused && g_memory->GetMpr(1) == 0xF8)
-        return true;
+    if (decode_refuse && !a_refuse)
+        ++g_decode_refusals;
     if (!g_refused_seen) {
         g_refused_seen = true;
         g_refusal_kind = 2;
+        g_refusal_reason = a_refuse ? "mpr1" : peek_ok ? "decode_tam" : "decode_unpeekable";
         g_refusal_instr = g_instr_start;
         g_at_refusal = g_instr_start;
         g_refusal_op = 255;
@@ -226,9 +255,27 @@ bool route_for(const std::string& name, Route* r)
     else if (name == "irq") {
         r->code = {0x58, bra, self}; r->irr = 0x02; r->vector_lo = 0x1FF8; r->loops = {kHandler};
     }
-    else if (name == "irqtam") {
-        r->code = {0x53, 0x02, bra, self}; r->irr = 0x02; r->vector_lo = 0x1FF8; r->p = 0x00;
+    else if (name == "irqtam" || name == "irqtam2" || name == "irqtamt" || name == "irqtam1i" ||
+             name == "irqtam2i" || name == "irqtamti") {
+        // TAM #$02 with IRQ1 / IRQ2 / TIQ requested; the "i" variants start with I = 1 (no entry).
+        bool irq2 = name.compare(0, 7, "irqtam2") == 0, tiq = name.compare(0, 7, "irqtamt") == 0;
+        r->code = {0x53, 0x02, bra, self};
+        r->irr = irq2 ? 0x01 : tiq ? 0x04 : 0x02;
+        r->vector_lo = irq2 ? 0x1FF6 : tiq ? 0x1FFA : 0x1FF8;
+        r->p = name.back() == 'i' ? 0x04 : 0x00;
         r->loops = {kHandler};
+    }
+    else if (name == "tamcode") {   // TAM #$01 with A = $FF: the code page (MPR0) becomes the hardware page
+        r->a = 0xFF; r->code = {0x53, 0x01, bra, self};
+    }
+    else if (name == "tmapos") { r->code = {0x43, 0x02, 0x53, 0x02, bra, self}; }   // TMA #$02 (A = MPR1); TAM #$02
+    else if (name == "tmaneg") { r->code = {0x43, 0x80, 0x53, 0x02, bra, self}; }   // TMA #$80 (A = MPR7 = $00); TAM #$02
+    else if (name.size() == 7 && name.compare(0, 3, "tam") == 0 &&
+             name.find_first_not_of("0123456789abcdef", 3) == std::string::npos) {
+        // TAM bitmask sweep: tam<mask hex><A hex>; the harness stops before the second instruction.
+        unsigned mask = (unsigned)std::strtoul(name.substr(3, 2).c_str(), nullptr, 16);
+        r->a = (unsigned)std::strtoul(name.substr(5, 2).c_str(), nullptr, 16);
+        r->code = {0x53, (u8)mask, bra, self};
     }
     else if (name == "tstart" || name == "tend" || name == "tin" || name == "tia" || name == "tdd" || name == "tai" ||
              name == "tendtin" || name == "tendtia" || name == "tendtdd" || name == "tendtai") {
@@ -261,14 +308,16 @@ int main(int argc, char** argv)
         return 2;
     std::string mode = argv[3];
     // Optional method prefix (Issue #498 / #500): "C:" (default, method C stack guard of #499), "A:" (method
-    // A instruction refusal), "AC:" (both).
+    // A instruction refusal), "AC:" (both). Issue #647: "AD" / "ADC" add D (decode-time TAM refusal),
+    // "AE" / "AEC" add E (IRQ deferral during a TAM).
     std::string method = "C", rest = mode;
     size_t colon = mode.find(':');
     if (colon != std::string::npos) {
         method = mode.substr(0, colon);
         rest = mode.substr(colon + 1);
     }
-    if (method != "C" && method != "A" && method != "AC")
+    if (method != "C" && method != "A" && method != "AC" && method != "AD" && method != "AE" &&
+        method != "ADC" && method != "AEC")
         return 2;
     size_t dash = rest.find('-');
     if (dash == std::string::npos)
@@ -292,6 +341,9 @@ int main(int argc, char** argv)
     else if (variant == "mut-nostop") mutation = 5;
     else if (variant == "mut-aignore") mutation = 6;
     else if (variant == "mut-alate") mutation = 7;
+    else if (variant == "mut-doff") g_d_mut = 1;      // probe-side: D disabled
+    else if (variant == "mut-dbit") g_d_mut = 2;      // probe-side: D checks the wrong operand bit
+    else if (variant == "mut-eoff") g_e_mut = 1;      // probe-side: E disabled
     else return 2;
     Route route;
     if (!route_for(route_name, &route))
@@ -300,6 +352,8 @@ int main(int argc, char** argv)
     g_stack_bank = bank;
     bool use_c = guarded && method.find('C') != std::string::npos;
     g_method_a = guarded && method.find('A') != std::string::npos;
+    g_method_d = guarded && method.find('D') != std::string::npos;
+    g_method_e = guarded && method.find('E') != std::string::npos;
 
     std::ifstream file(argv[1], std::ios::binary);
     if (!file)
@@ -333,8 +387,11 @@ int main(int argc, char** argv)
         memory->SetMpr(i, 0x00);
     // Routes whose stack page changes during the run start from the allowed WRAM bank.
     bool is_tend = route_name.compare(0, 4, "tend") == 0;
-    bool changes_later = route_name == "irqtam" || is_tend || route_name == "flippha" ||
-                         route_name == "tamjsr";
+    bool sweep = route_name.size() == 7 && route_name.compare(0, 3, "tam") == 0 &&
+                 route_name.find_first_not_of("0123456789abcdef", 3) == std::string::npos;
+    bool irqtam = route_name.compare(0, 6, "irqtam") == 0;
+    bool changes_later = irqtam || is_tend || route_name == "flippha" || route_name == "tamjsr" ||
+                         route_name == "tamcode" || route_name.compare(0, 3, "tma") == 0 || sweep;
     memory->SetMpr(1, (u8)(io_stack && !changes_later ? bank : 0xF8));
 
     u8* wram = memory->GetWorkingRAM();
@@ -358,7 +415,7 @@ int main(int argc, char** argv)
     g_st->PC->SetValue((u16)kGuest);
     g_st->S->SetValue((u8)route.s);
     // irqtam / tamjsr: the guest's TAM #$02 sets MPR1 = A.
-    bool tam_route = route_name == "irqtam" || route_name == "tamjsr";
+    bool tam_route = irqtam || route_name == "tamjsr";
     g_st->A->SetValue((u8)(tam_route ? (io_stack ? bank : 0xF8) : route.a));
     g_st->X->SetValue((u8)route.x);
     g_st->Y->SetValue((u8)route.y);
@@ -372,6 +429,7 @@ int main(int argc, char** argv)
 
     g_flip_tend = is_tend && io_stack;
     g_flip_at = route_name == "flippha" && io_stack ? 2 : 0;   // before the PHA (instruction 2)
+    g_budget = sweep ? 1 : 0;                                   // sweep: stop before instruction 2
     gg_verify_stack_mutation = mutation;
     gg_verify_stack_refused = false;
     gg_verify_stack_context = nullptr;
@@ -408,7 +466,7 @@ int main(int argc, char** argv)
         ++frames_run;
         // Never resume the guest after a refusal. "halted" only restates this latch; the evidence that
         // nothing ran after the refusal is instructions_after_refusal (counted at every instruction start).
-        if (gg_verify_stack_refused || g_instruction_refused) {
+        if (gg_verify_stack_refused || g_instruction_refused || g_budget_stop) {
             halted = true;
             break;
         }
@@ -443,6 +501,10 @@ int main(int argc, char** argv)
                  "\"cdram_present\":%s,\"bram_present\":%s,\"cdram_bytes_changed\":%u,\"bram_bytes_changed\":%u,",
                  method.c_str(), bank, g_instruction_refused ? "true" : "false", g_instruction_refusals,
                  cdram ? "true" : "false", bram ? "true" : "false", cdram_changed, bram_changed);
+    std::fprintf(stderr, "\"refusal_reason\":\"%s\",\"decode_refusals\":%u,\"irq_deferrals\":%u,"
+                 "\"handler_entry_instruction\":%u,\"budget_stop\":%s,",
+                 g_refusal_reason, g_decode_refusals, g_irq_deferrals, g_handler_entry,
+                 g_budget_stop ? "true" : "false");
     std::fprintf(stderr, "\"harness_mpr1_flip\":%s,\"flip_instruction\":%u,", g_flipped ? "true" : "false",
                  g_flip_instruction);
     print_snapshot("start", start);
