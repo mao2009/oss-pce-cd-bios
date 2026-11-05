@@ -1924,6 +1924,26 @@ class WrapperWriteTests(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd), "ALLOW")
 
+    def test_flock_lock_file_through_a_symlinked_directory_is_denied(self):
+        # The lock file does not exist yet: only resolving every literal prefix (not just the full
+        # path, which does not lexist) sees that the middle link leads into .claude/.
+        with tempfile.TemporaryDirectory() as td:
+            repo = os.path.join(os.path.realpath(td), "repo")
+            os.makedirs(os.path.join(repo, ".git"))
+            os.makedirs(os.path.join(repo, ".claude"))
+            os.makedirs(os.path.join(repo, "sub"))
+            try:
+                os.symlink(os.path.join(repo, ".claude"), os.path.join(repo, "sub", "clink"),
+                           target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest("symlink creation not permitted here: " + type(exc).__name__)
+            data = json.dumps({"session_id": "t", "hook_event_name": "PreToolUse",
+                               "cwd": repo, "tool_name": "Bash",
+                               "tool_input": {"command": "flock sub/clink/newlock ls"}})
+            decision, reason = guard.decide(data, repo_root=repo)
+            self.assertEqual(decision, "DENY", reason)
+            self.assertTrue(reason.startswith("write"), reason)
+
     def test_nohup_inside_claude_directory_is_denied(self):
         data = json.dumps({"session_id": "t", "hook_event_name": "PreToolUse",
                            "cwd": os.path.join(REPO, ".claude"), "tool_name": "Bash",
@@ -1941,7 +1961,7 @@ class WrapperWriteMutationTests(unittest.TestCase):
         "time -o write denial removed": (
             'if name == "time" and ch == "o":', 'if False and ch == "o":'),
         "flock lock file check removed": (
-            'if names_claude(args[i]) or inside_claude(real, ctx) or rk == ctx.git or inside(rk, ctx.git):',
+            'if inside_claude(real, ctx) or rk == ctx.git or inside(rk, ctx.git):',
             'if False:'),
         "nohup .claude check removed": (
             'if name == "nohup" and inside_claude(ctx.cwd, ctx):', 'if False:'),
