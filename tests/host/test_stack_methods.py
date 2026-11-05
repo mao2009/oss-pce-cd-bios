@@ -165,7 +165,7 @@ class PatchAndProbeTests(unittest.TestCase):
         text = PROBE.read_text(encoding="utf-8")
         self.assertIn('std::string method = "C", rest = mode;', text)
         self.assertIn('g_method_a = guarded && method.find(\'A\') != std::string::npos;', text)
-        self.assertIn("if (gg_verify_stack_refused || g_instruction_refused)", text)
+        self.assertIn("if (gg_verify_stack_refused || g_instruction_refused", text)
 
     def test_make_integration_runs_the_driver(self):
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")

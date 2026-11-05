@@ -51,6 +51,21 @@ integration: build
 	$(MAKE) stack-access-guard
 	$(MAKE) stack-methods
 	$(MAKE) stack-methods-compare
+	$(MAKE) stack-s5
+	$(MAKE) caller-stack-contract
+
+# Issue #647 (#473 S5): decode-time TAM refusal (D) and IRQ deferral (E) on top of method A, all TAM bitmasks,
+# IRQ1/IRQ2/TIQ with I = 0/1, TMA (synthetic media, debugger build, verification-only patch). Not a production
+# mechanism. Runs in `integration`.
+.PHONY: stack-s5
+stack-s5:
+	$(PYTHON) tests/integration/geargrafx_stack_s5.py
+
+# PR #481 (Refs #473): caller-stack contract experiment on the unmodified pinned core (synthetic test-only HuCARD,
+# needs cc65 from `make setup`). Runs in `integration` as the #481 regression check of #499/#500.
+.PHONY: caller-stack-contract
+caller-stack-contract:
+	$(PYTHON) tests/integration/geargrafx_caller_stack_contract.py
 
 # Issue #500 (#473 S4): methods A, C and A+C compared under the same conditions on the eight criteria
 # (synthetic media, debugger build, verification-only patch). Not a production mechanism. Runs in `integration`.
