@@ -2,8 +2,8 @@
 
 One ROM, built once from the host selection record only (no payload bytes embedded). Then, on the pinned core:
   RESET -> init -> host-selected LBA -> READ(6) -> guest PCEX validation -> copy to $3000 -> execute -> return.
-Two different synthetic IPLs on the SAME ROM must produce different observed results. Every negative must be
-rejected without copying or executing. The ROM bytes are re-verified after all runs.
+Two different synthetic IPLs on the SAME ROM must produce different observed results. Every negative (except the
+step-budget timeout) must be rejected without copying or executing. The ROM bytes are re-verified after all runs.
 """
 import argparse
 import hashlib
@@ -17,32 +17,42 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import geargrafx_cdload_exec as T  # judges and synthetic payload helpers, shared with #5/#14 and PR #658
-from build_cdload_exec import DISC_SECTORS, HDR_BYTES, SECTOR_BYTES, USER_OFFSET, build_exec_disc, encode_sector
+from build_cdload_exec import HDR_BYTES, SECTOR_BYTES, USER_OFFSET, encode_sector
 from build_experimental_bios_boot import PAYLOAD_LABELS, build_experimental_payload
 from build_ipl_boot import build_ipl_rom
-from experimental_track_selection import SelectionError, selection_from_cue
+from experimental_track_selection import SelectionError, assembler_defines, selection_from_cue
 from geargrafx_api import compile_probe
 from geargrafx_cdread import execute
 from make_cd_image import BIN_NAME, CUE_NAME, RAW_BYTES, build_image
 
 STEP_BUDGET = T.STEP_BUDGET
+SECTORS = 300         # synthetic BIN length: must contain the selected sector
+TARGET_LBA = 0x000109  # 265 = 00:03:40 MSF; MID byte 0x01 and LO byte 0x09 non-zero, HI byte zero (see host check)
 
 
-def to_pregap_cue(cue):
-    """Move the data track's INDEX 01 to frame 9 so the selected LBA is non-zero (all LBA bytes are exercised)."""
+def set_index01(cue, lba):
+    """Move the data track's INDEX 01 to `lba` frames so the selected LBA is `lba` (synthetic layout only)."""
     text = cue.read_text(encoding="ascii")
     if text.count("INDEX 01 00:00:00\n") != 1:
         raise ValueError("unexpected synthetic CUE layout")
-    cue.write_text(text.replace("INDEX 01 00:00:00\n", "INDEX 00 00:00:00\n    INDEX 01 00:00:09\n", 1), encoding="ascii")
+    mm, ss, ff = lba // (60 * 75), (lba // 75) % 60, lba % 75
+    text = text.replace("INDEX 01 00:00:00\n",
+                        f"INDEX 00 00:00:00\n    INDEX 01 {mm:02d}:{ss:02d}:{ff:02d}\n", 1)
+    cue.write_text(text, encoding="ascii")
     return cue
 
 
-def assert_not_copied(records, code):
-    """No run may leave the IPL bytes at $3000 (the copy destination): rejection happened before copy."""
-    for run in records["RUN"]:
-        buffer = bytes.fromhex(run["buffer_hex"])
-        if buffer[T.EXEC_OFF:T.EXEC_OFF + len(code)] == code:
-            raise ValueError(f"{run['cycle']}: IPL bytes were copied to RAM before the rejection")
+def make_disc(directory, lba, code=None, entry=0):
+    """Synthetic MODE1 data track of SECTORS sectors; optionally write a PCEX sector at `lba` (BIN frame index)."""
+    build_image(directory, SECTORS)
+    cue = directory / CUE_NAME
+    if code is not None:
+        bin_path = directory / BIN_NAME
+        raw = bytearray(bin_path.read_bytes())
+        at = lba * RAW_BYTES + USER_OFFSET
+        raw[at:at + SECTOR_BYTES] = encode_sector(lba, code, entry)
+        bin_path.write_bytes(raw)
+    return cue
 
 
 def tamper_bin(cue, lba, edits):
@@ -51,6 +61,16 @@ def tamper_bin(cue, lba, edits):
     for offset, delta in edits:
         raw[lba * RAW_BYTES + USER_OFFSET + offset] ^= delta
     bin_path.write_bytes(raw)
+
+
+def assert_not_copied(records, code):
+    """No run may leave the IPL bytes at $3000 (copy destination): the rejection must happen before the copy."""
+    for run in records["RUN"]:
+        buffer = bytes.fromhex(run["buffer_hex"])
+        if len(buffer) != 6144:
+            raise ValueError(f"{run['cycle']}: RAM dump has {len(buffer)} bytes, expected 6144")
+        if buffer[T.EXEC_OFF:T.EXEC_OFF + len(code)] == code:
+            raise ValueError(f"{run['cycle']}: IPL bytes were copied to RAM before the rejection")
 
 
 def main():
@@ -68,13 +88,20 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix="pce-dev-ipl-") as tmp:
         tmp = Path(tmp)
-        # Learn the host-selected LBA from the synthetic layout (same for every disc built with build_image/build_exec_disc).
         layout_dir = tmp / "layout"
-        build_image(layout_dir, DISC_SECTORS)
-        layout_cue = to_pregap_cue(layout_dir / CUE_NAME)
-        lba = selection_from_cue(layout_cue, layout_cue)["lba"]
-        if lba != 9:
-            raise ValueError(f"expected the pregap layout to select LBA 9, got {lba}")
+        layout_cue = set_index01(make_disc(layout_dir, TARGET_LBA), TARGET_LBA)
+        selected = selection_from_cue(layout_cue, layout_cue)
+        lba = selected["lba"]
+        if lba != TARGET_LBA:
+            raise ValueError(f"expected the layout to select LBA {TARGET_LBA}, got {lba}")
+
+        # Host-side encoding of the full 21-bit LBA (the real core cannot use a file this large here).
+        wide = dict(selected, lba=0x010203)
+        defines = assembler_defines(wide)
+        for expected in ("EXP_SELECTED_LBA_HI=$01", "EXP_SELECTED_LBA_MID=$02", "EXP_SELECTED_LBA_LO=$03"):
+            if expected not in defines:
+                raise ValueError(f"host encoding of LBA 0x010203 is wrong, missing {expected}: {defines}")
+        results["host_lba_encoding_0x010203"] = {"status": "PASS", "scope": "host encoding only, not real-core"}
 
         rom_path, rom_symbols = build_ipl_rom(original, out, mode, layout_cue)
         rom_bytes = rom_path.read_bytes()
@@ -86,6 +113,7 @@ def main():
         if code_a in rom_bytes or code_b in rom_bytes:
             raise ValueError("an IPL payload was found inside the ROM image")
         results["rom"]["payload_bytes_found_in_rom"] = False
+
         symbols = dict(rom_symbols)
         symbols.update({name: payload_symbols[name] for name in PAYLOAD_LABELS})
         labels = out / "trace-labels.txt"
@@ -93,13 +121,10 @@ def main():
 
         def disc(name, code, entry=0, edits=(), blank=False):
             directory = tmp / name
-            if blank:
-                build_image(directory, DISC_SECTORS)
-            else:
-                build_exec_disc(directory, lba, code, entry)
-            cue = to_pregap_cue(directory / CUE_NAME)
-            if selection_from_cue(cue, cue)["lba"] != lba:
-                raise ValueError(f"{name}: mounted disc selects a different LBA than the ROM record")
+            cue = set_index01(make_disc(directory, lba, None if blank else code, entry), lba)
+            mounted = selection_from_cue(cue, cue)
+            if (mounted["track"], mounted["lba"], mounted["kind"]) != (selected["track"], lba, selected["kind"]):
+                raise ValueError(f"{name}: mounted disc selects a different record than the ROM was built for")
             tamper_bin(cue, lba, edits)
             return cue
 
@@ -126,7 +151,7 @@ def main():
         else:
             raise ValueError("success judge accepted IPL B")
 
-        # ---- negatives: rejected before copy/execution (reuse the #5/#14 expectations) ----
+        # ---- negatives: rejected before copy/execution (expectations from the #5/#14 judges) ----
         negatives = [
             ("bad_magic", dict(edits=[(0, 0x01)]), 20, 11, SECTOR_BYTES),
             ("bad_checksum_code_byte", dict(edits=[(HDR_BYTES + 3, 0x01)]), 23, 11, SECTOR_BYTES),
@@ -163,21 +188,20 @@ def main():
             selection_from_cue(audio_cue, audio_cue)
         except SelectionError as error:
             message = str(error)
-            if "MODE1" not in message and "data" not in message.lower():
+            if message != "synthetic layout has no MODE1/2352 data track":
                 raise ValueError(f"audio-only refusal has an unexpected reason: {message}")
-            results["audio_only_medium"] = {"status": "PASS_EXPECTED_FAILURE", "host_refusal": message[:120]}
+            results["audio_only_medium"] = {"status": "PASS_EXPECTED_FAILURE", "host_refusal": message}
         else:
             raise ValueError("audio-only medium produced a selection record")
 
-    # ROM must be byte-identical after every run (no rebuild per payload).
+    # ROM must be byte-identical after every run (no rebuild per IPL).
     if hashlib.sha256(rom_path.read_bytes()).hexdigest() != rom_sha:
         raise ValueError("ROM changed during the test")
-    if not results.get("audio_only_medium"):
-        raise ValueError("audio-only refusal was not checked")
     results["rom"]["unchanged_after_all_runs"] = True
     passed = sum(1 for value in results.values() if isinstance(value, dict) and str(value.get("status", "")).startswith("PASS"))
     evidence = {"scope": "DEV-only IPL boot, synthetic media only; NOT compatible, NOT a BIOS ABI, NOT commercial",
-                "mode": mode, "results": results, "status": "PASS"}
+                "mode": mode, "results": results, "status": "PASS",
+                "limitation": "real-core LBA is 0x000109 (MID and LO bytes); the HI byte is covered only by the host encoding check"}
     (out / "dev-ipl-boot-evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
     print(f"PASS DEV-only IPL boot from RESET ({passed} scenarios; one ROM, two synthetic IPLs; cold+warm); "
           f"NOT compatible, NOT BIOS, NOT DEV_CALLABLE")
