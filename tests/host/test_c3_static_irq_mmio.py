@@ -330,6 +330,36 @@ class NegativeTests(unittest.TestCase):
         c["files"]["src/api.s"]["tam"].insert(1, {"mask": "0x03", "value": "restore", "reason": "x"})
         self.assert_fail("CI-3.02", src, c)
 
+    # --- #667 final review (M1-M3, D1-D2) ---
+    def test_conditional_sei(self):   # M1: a build without X has no IRQ mask
+        self.assert_fail("CI-3.02", {**SOURCES, "src/api.s": WINDOW.replace("    sei\n", ".ifdef X\n    sei\n.endif\n")})
+
+    def test_conditional_mpr0_setup_before_unconditional_call(self):   # M1
+        src = {**SOURCES, "src/reset.s": RESET.replace("    lda #$FF\n    tam #$01\n",
+                                                       ".ifdef X\n    lda #$FF\n    tam #$01\n.endif\n")}
+        self.assert_fail("CI-3.03", src)
+
+    def test_multi_mpr_tam_remaps_mpr0_before_call(self):   # M2: TAM #$05 includes MPR0
+        src = {**SOURCES, "src/reset.s": RESET.replace("    jsr dev_poll\n", "    lda #$00\n    tam #$05\n    jsr dev_poll\n")}
+        c = copy.deepcopy(BASE)
+        c["files"]["src/reset.s"]["tam"].append({"mask": "0x05", "value": "0x00"})
+        self.assert_fail("CI-3.03", src, c)
+
+    def test_handler_branches_out(self):   # M3
+        self.assert_fail("CI-3.05", {**SOURCES, "src/reset.s": RESET.replace(
+            "irq_halt:\n    bra irq_halt", "irq_halt:\n    beq reset_entry\n    bra irq_halt")})
+
+    def test_caller_by_branch_is_discovered(self):   # D1
+        src = {**SOURCES, "src/api.s": WINDOW.replace("    rts", "    clc\n    bcc dev_poll")}
+        self.assert_fail("CI-3.03", src)
+
+    def test_reset_init_without_vectors_is_not_static(self):   # D2
+        src = {**SOURCES, "src/reset.s": RESET.split(".segment \"VECTORS\"")[0]}
+        c = copy.deepcopy(BASE)
+        del c["files"]["src/reset.s"]["vectors"]
+        report = run(src, c)
+        self.assertIn(C.NOT_STATIC, by_rule(report, "CI-3.05"))
+
     def test_reset_vector_not_declared(self):
         c = copy.deepcopy(BASE)
         c["files"]["src/reset.s"]["vectors"]["reset"] = "other"

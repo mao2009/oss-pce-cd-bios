@@ -41,7 +41,9 @@ Every `src/**/*.s` file is classified, with a reason for each fixture:
 
 An unclassified file is a FAIL. The reader is not an assembler:
 
-- It reads every branch of `.if` / `.ifdef` blocks, so the result covers a superset of any one build.
+- It reads every branch of `.if` / `.ifdef` blocks. That is a superset for "what may happen" rules (a TAM, an
+  access, a call in any build). For rules that need something in every build (an SEI or the MPR0 set-up of a
+  window, the MPR0 set-up before an unconditional call), a conditional SEI / set-up / restore is a FAIL.
 - It reports `.macro`, `.incbin` and `.define`, and unknown statements, as unsupported, which is a FAIL for bios
   files.
 - It does not follow `.include`. Each included file is a bios file of its own.
@@ -156,6 +158,19 @@ The routine documents that its caller maps MPR0 = $FF.
   fall-through.
 - A handler is a FAIL if it contains TAM / TMA / ST0-2, a block transfer, a call or jump to another routine, or an
   indirect, unresolved or page-0 operand.
+
+### Known limits (stated, not hidden)
+
+- **Window restore value:** a window's closing TAM must take its value at run time (the CI-1 `restore`). The value
+  it restores is not checked.
+- **Handler flags:** a handler may contain CLI, PLP or SEI; the static check does not judge IRQ re-enabling inside
+  handlers.
+- **IRQ masking in precondition routines:** the precondition model checks the MPR0 set-up only, not that IRQs are
+  masked in the caller or the callee. Handlers themselves may not touch page 0 (CI-3.05).
+- **Window entry labels:** an SEI placed before a fall-through entry label inside a window file is rejected. This is
+  fail-closed, and no current source uses the pattern (accepted LOW).
+- **Vectors in other builds:** a reset entry whose vectors live in fixtures or build options is reported NOT_STATIC,
+  and those handlers are not checked.
 
 ### Limits of the reader
 

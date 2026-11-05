@@ -45,6 +45,20 @@ def _op(source, ln):
     return c3_asm.operand(ln.operand, source.symbols, ln.mnemonic)
 
 
+def _target(ln):
+    """Label operand of a branch / jump / call (BBRn / BBSn: the label after the comma)."""
+    text = ln.operand
+    if ln.mnemonic[:3] in ("bbr", "bbs") and "," in text:
+        text = text.split(",", 1)[1]
+    return text.strip()
+
+
+def _touches_mpr0(source, ln):
+    """A TAM whose mask includes MPR0 (an unresolved mask counts as touching it)."""
+    value = _op(source, ln).value
+    return ln.mnemonic == "tam" and (value is None or value & 0x01)
+
+
 def _routine_of(source, line, transparent=frozenset()):
     """(instructions, start, index): the routine containing `line` starts after the closest preceding line
     (label-only lines included) that carries a non-local label not listed in `transparent`."""
@@ -134,6 +148,10 @@ def _windows(source, report):
             continue
         _, start, _ = _routine_of(source, ins[i])
         seis = [k for k in range(start, i) if ins[k].mnemonic == "sei"]
+        if ins[i].conditional or ins[i - 1].conditional or (seis and ins[seis[-1]].conditional):
+            report.add("CI-3.02", FAIL, where(ins[i]), "MPR0 window set-up or its SEI is inside a conditional "
+                       "(.if / .ifdef) block: not every build masks IRQs / maps MPR0 (unsupported)")
+            continue
         if not seis or not _straight(source, ins, seis[-1], i) or any(
                 x.mnemonic in ("cli", "plp", "rti") for x in ins[seis[-1]:i]):
             report.add("CI-3.02", FAIL, where(ins[i]), "MPR0 -> hardware page without an SEI on the same straight-line "
@@ -141,6 +159,9 @@ def _windows(source, report):
             continue
         j = next((k for k in range(i + 1, len(ins)) if ins[k].mnemonic == "tam" and
                   _op(source, ins[k]).value == 0x01), None)
+        if j is not None and ins[j].conditional:
+            report.add("CI-3.02", FAIL, where(ins[j]), "the restoring TAM is inside a conditional block")
+            continue
         if j is None:
             report.add("CI-3.02", FAIL, where(ins[i]), "MPR0 hardware-page window is never restored")
             continue
@@ -175,7 +196,7 @@ def _check_precondition(path, source, mmio, sources, files, report):
     for cpath, csrc in sources.items():
         cins = csrc.instructions()
         for k, ln in enumerate(cins):
-            if ln.mnemonic not in CALLS or ln.operand.strip() not in exported or cpath == path:
+            if ln.mnemonic not in CALLS | BRANCHES or _target(ln) not in exported or cpath == path:
                 continue
             found.add(cpath)
             if cpath not in declared:
@@ -185,7 +206,11 @@ def _check_precondition(path, source, mmio, sources, files, report):
             pass_decl = files.get(cpath, {}).get("mmio_pass_labels", {})
             pass_labels = {lab for lab, reason in pass_decl.items() if reason}   # each needs a stated reason
             _, start, _ = _routine_of(csrc, ln, frozenset(pass_labels))
-            tams = [m for m in range(start, k) if cins[m].mnemonic == "tam" and _op(csrc, cins[m]).value == 0x01]
+            tams = [m for m in range(start, k) if _touches_mpr0(csrc, cins[m])]
+            if tams and not ln.conditional and any(cins[m].conditional for m in (tams[-1], tams[-1] - 1)):
+                report.add("CI-3.03", FAIL, where(ln), "the MPR0 set-up before this unconditional call is inside a "
+                           "conditional block (not every build maps MPR0)")
+                continue
             between = [lab for x in _labels_between(csrc, cins[tams[-1]].number, ln.number) for lab in x.labels] \
                 if tams else []
             targeted = {(x.operand.split(",", 1)[1] if x.mnemonic[:3] in ("bbr", "bbs") and "," in x.operand
@@ -212,6 +237,11 @@ def _check_precondition(path, source, mmio, sources, files, report):
 
 def _check_vectors(path, source, decl, report):
     vector_lines = [ln for ln in source.lines if ln.segment == "VECTORS" and (ln.mnemonic or ln.directive)]
+    if not vector_lines and decl.get("role") == "reset_init" and not decl.get("vectors"):
+        report.add("CI-3.05", NOT_STATIC, path, "reset entry without a VECTORS segment in this file: the interrupt "
+                   "vectors of its builds live outside the bios scope (fixtures / build options); their handlers "
+                   "are not checked")
+        return
     if not vector_lines:
         if decl.get("vectors"):
             report.add("CI-3.05", FAIL, path, "vectors declared but the file has no VECTORS segment")
@@ -248,7 +278,7 @@ def _check_vectors(path, source, decl, report):
             op = _op(source, ln)
             if ln.mnemonic in {"tam", "tma", "brk"} | ST_OPS | TRANSFERS:
                 bad = (ln, "changes a mapping or touches I/O")
-            elif ln.mnemonic in CALLS and not ln.operand.strip().startswith("@") and ln.operand.strip() != label:
+            elif ln.mnemonic in CALLS | BRANCHES and not _target(ln).startswith("@") and _target(ln) != label:
                 bad = (ln, "calls or jumps to another routine (not followed by the static check)")
             elif ln.mnemonic in MEMORY_OPS and op.mode == "memory" and (op.indirect or op.logical_address() is None
                                                                         or op.logical_address() < 0x2000):
