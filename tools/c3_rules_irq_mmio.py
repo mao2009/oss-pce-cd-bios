@@ -94,8 +94,9 @@ def _straight(source, ins, a, b):
 
 
 def _memory_accesses(source, report, path):
-    """(page0 [(line, addr)], indirect [line], high [line]) of the file; unresolved operands are FAIL."""
-    page0, indirect, high = [], [], []
+    """(page0 [(line, addr)], indirect [line], high [line], build_dependent [line]) of the file; operands that cannot
+    be resolved and are neither a label of the file nor a build-dependent constant are FAIL."""
+    page0, indirect, high, build_dependent = [], [], [], []
     for ln in source.instructions():
         if ln.mnemonic not in MEMORY_OPS:
             continue
@@ -106,6 +107,9 @@ def _memory_accesses(source, report, path):
             indirect.append(ln)
             continue
         addr = op.logical_address()
+        if addr is None and op.symbol in source.conditional_constants:
+            build_dependent.append(ln)          # address set by a build option (e.g. -D): undecidable, not a FAIL
+            continue
         if addr is None:
             seg = source.labels.get(op.symbol)
             base = ln.operand.split(",")[0].strip() if ln.mnemonic != "tst" else \
@@ -136,7 +140,7 @@ def _memory_accesses(source, report, path):
             page0.append((ln, addr))
         elif 0x4000 <= addr < 0xE000:
             high.append(ln)
-    return page0, indirect, high
+    return page0, indirect, high, build_dependent
 
 
 def _windows(source, report):
@@ -313,7 +317,12 @@ def check(contract, sources, report):
             if ln.mnemonic in CALLS and not re.match(r"^[A-Za-z_@][A-Za-z0-9_]*$", ln.operand.strip()):
                 report.add("CI-3.03", FAIL, where(ln), f"{ln.mnemonic.upper()} {ln.operand.strip()!r}: not a bare label "
                            "(indirect or expression), so callers and targets cannot be found statically")
-        page0, indirect, high = _memory_accesses(source, report, path)
+        page0, indirect, high, build_dependent = _memory_accesses(source, report, path)
+        if build_dependent:
+            names = sorted({_op(source, ln).symbol for ln in build_dependent})
+            report.add("CI-3.02", NOT_STATIC, path, f"{len(build_dependent)} access(es) through build-dependent "
+                       f"constant(s) {names} (assigned inside a conditional block, e.g. a -D option): the address, "
+                       "and so whether it is page 0 / the hardware page, cannot be decided from the text")
         mmio = decl.get("mmio")
         for ln, addr in page0:
             if _op(source, ln).indexed:

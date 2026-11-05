@@ -129,6 +129,11 @@ Addressing follows ca65:
   as absolute,Y.
 - For TST, the memory operand is the second one.
 
+An operand built from a build-dependent constant (one assigned inside a conditional block, such as a `.ifndef`
+default overridden with `-D`, or a constant derived from one) is NOT_STATIC: its address, and so whether it is page
+0, cannot be decided from the text. An operand that cannot be resolved for any other reason (an import or unknown
+name) stays a FAIL.
+
 A TAM that maps $FF through an MPR other than MPR0 is a FAIL. Absolute accesses to pages 2-6, and to
 linker-placed RAM (BSS), are NOT_STATIC.
 
@@ -180,7 +185,8 @@ The routine documents that its caller maps MPR0 = $FF.
 
 ### Limits of the reader
 
-- A constant assigned more than once is reported as unsupported, which is a FAIL.
+- A constant assigned more than once unconditionally is reported as unsupported, which is a FAIL. Assignments
+  inside conditional blocks make the constant build-dependent (NOT_STATIC) instead.
 - Command-line `-D` overrides used by the build scripts are outside the check.
 
 ## Not decidable statically (NOT_STATIC / UNKNOWN)

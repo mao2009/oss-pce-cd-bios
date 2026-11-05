@@ -370,6 +370,18 @@ class NegativeTests(unittest.TestCase):
         report = run(src, c)
         self.assertIn(C.NOT_STATIC, by_rule(report, "CI-3.05"))
 
+    # --- merge of #662 / #663 into #667: build-dependent addresses ---
+    def test_build_dependent_address_is_not_static_not_fail(self):   # .ifndef default, overridden by -D
+        src = {**SOURCES, "src/dev.s": DEVICE.replace("ptr = $04", "ptr = $04\n.ifndef R0\nR0 = $2300\n.endif\nRES = R0")
+               .replace("    rts", "    sta RES+1\n    rts")}
+        report = run(src)
+        self.assertNotIn(C.FAIL, by_rule(report, "CI-3.02"), report.findings)
+        self.assertTrue(any(f["verdict"] == C.NOT_STATIC and "build-dependent" in f["message"]
+                            for f in report.findings if f["rule"] == "CI-3.02"))
+
+    def test_unknown_symbol_is_still_fail(self):   # an import or unknown name is not build-dependent
+        self.assert_fail("CI-3.02", {**SOURCES, "src/dev.s": DEVICE.replace("    rts", "    sta RES+1\n    rts")})
+
     def test_reset_vector_not_declared(self):
         c = copy.deepcopy(BASE)
         c["files"]["src/reset.s"]["vectors"]["reset"] = "other"

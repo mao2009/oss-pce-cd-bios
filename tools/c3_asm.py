@@ -210,6 +210,8 @@ def parse(path, root=None):
         value = evaluate(m.group(2), src.symbols)
         if value is not None:
             src.symbols[m.group(1)] = value
+        elif set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", m.group(2))) & src.conditional_constants:
+            src.conditional_constants.add(m.group(1))   # derived from a build-dependent constant
     for number_, raw in enumerate(raw_lines, 1):
         body = _strip_comment(raw).strip()
         if not body:
