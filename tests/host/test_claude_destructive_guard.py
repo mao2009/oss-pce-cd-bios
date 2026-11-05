@@ -1353,11 +1353,9 @@ class X3bMutationTests(unittest.TestCase):
     a temporary copy of the hook and this test module; no repository file is changed."""
 
     MUTANTS = {
-        "sftp -D rule removed": ('"sftp": "SDFb"', '"sftp": "SFb"'),
         "GNU and BSD name aliases removed": ('    name = PROGRAM_ALIAS.get(name, name)', '    pass'),
         "program-naming environment variables not checked": (r'''    if any(v in w.replace("\\", "").replace('"', "").replace("'", "").upper() for w in words for v in PROGRAM_ENV):''',
                                                              r'''    if False:'''),
-        "ssh -o value glob not denied": (r'''                    if any(c in value for c in "*?["):''', r'''                    if False:'''),
         "expansion or escape in a tool argument not denied": (r'''        if "$" in a or "`" in a or SUBST in a or "\\" in a or "{" in a or "}" in a:''',
                                                               r'''        if False:'''),
         "brace in a tool argument not denied": (r'''or "\\" in a or "{" in a or "}" in a:''', r'''or "\\" in a:'''),
@@ -1371,10 +1369,8 @@ class X3bMutationTests(unittest.TestCase):
         "SSH_SK_HELPER removed from the program variables": ('"TAR_OPTIONS", "SSH_SK_HELPER",', '"TAR_OPTIONS",'),
         "RIPGREP_CONFIG_PATH removed from the program variables": ('"SSH_SK_HELPER", "RIPGREP_CONFIG_PATH",', '"SSH_SK_HELPER",'),
         "RSYNC_CONNECT_PROG removed from the program variables": ('"RIPGREP_CONFIG_PATH", "RSYNC_CONNECT_PROG",', '"RIPGREP_CONFIG_PATH",'),
-        "XAuthLocation key removed": ('"knownhostscommand", "xauthlocation",', '"knownhostscommand",'),
         "variable set by a builtin with an expansion not denied": (
             r'''    if setter and any("$" in w or "`" in w or SUBST in w for w in words):''', r'''    if False:'''),
-        "sftp -b batch file not denied": ('"sftp": "SDFb"', '"sftp": "SDF"'),
         "escaped setter builtin not unescaped": ('    plain = [w.replace("\\\\", "") for w in words]', '    plain = list(words)'),
         "printf -v attached to an expansion not denied": (
             'or ("printf" in plain and any(w.startswith("-v") for w in plain))', 'or False'),
@@ -1384,12 +1380,6 @@ class X3bMutationTests(unittest.TestCase):
                                                    r'''w.upper() for w in words'''),
         "environment name case folding removed": (r'''.replace("'", "").upper() for w in words''',
                                                   r'''.replace("'", "") for w in words'''),
-        "ssh -F rule removed": ('"ssh": "F", ', ''),
-        "ssh Include key removed": ('SSH_LAUNCH_KEYS = ("include", ', 'SSH_LAUNCH_KEYS = ('),
-        "ssh KnownHostsCommand key removed": ('"knownhostscommand",', ''),
-        "scp and sftp -S rules removed": ('"scp": "SF", "sftp": "SDFb"', '"sftp": "DFb"'),
-        "ssh -o rule removed": ('ssh_o = name in SSH_O_TOOLS', 'ssh_o = False'),
-        "ssh ProxyCommand key removed": ('("include", "proxycommand"', '("include", "zzz"'),
         "program option check not called": ('    program_option_rule(name, args)\n', ''),
     }
 
@@ -1793,6 +1783,116 @@ class AllowlistRsyncMutationTests(unittest.TestCase):
                 failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
                 detected = any("AllowlistRsyncTests." in ln for ln in failing)
                 self.assertTrue(detected, "mutant not detected by an AllowlistRsyncTests test: " + name + "\n"
+                                + "\n".join(failing))
+
+
+class AllowlistSshFamilyTests(unittest.TestCase):
+    """Issue #640 X3b (structural allowlist), ssh, scp and sftp. The grammars come from the OpenBSD manual pages, not
+    from running the tools (not installed on this host). Decision-level only; nothing is executed."""
+
+    DENY = [
+        # ssh, normal: the config file (may include ProxyCommand) and the PKCS#11 library, alone or in a cluster
+        "ssh -F evil.conf host", "ssh -Fevil.conf host", "ssh -vF x host", "ssh -I /lib/x.so host",
+        # ssh, normal: the -o keys that run a local command or load a provider or an included file
+        "ssh -o ProxyCommand=sh host", "ssh -oProxyCommand=sh host", "ssh -o proxycommand=sh host",
+        "ssh -o 'ProxyCommand sh' host", "ssh -vo ProxyCommand=sh host", "ssh -o LocalCommand=sh host",
+        "ssh -o PermitLocalCommand=yes host", "ssh -o KnownHostsCommand=sh host", "ssh -o Include=/tmp/x host",
+        "ssh -o 'Match exec \"sh\"' host", "ssh -o PKCS11Provider=x host", "ssh -o SecurityKeyProvider=x host",
+        "ssh -o XAuthLocation=sh host", "ssh -X -o XAuthLocation=sh host",
+        # ssh, abnormal: an unlisted -o key, a key with a leading space, a long option (ssh has none in this grammar)
+        "ssh -o Unknown=1 host", "ssh -o ' ProxyCommand=sh' host", "ssh --help",
+        # scp, normal and abnormal: -S (program) and -F (config), and -o keys
+        "scp -S sh a b", "scp -Ssh a b", "scp -F x a b", "scp -r -S sh a b", "scp -o ProxyCommand=sh a b",
+        "scp -oProxyCommand=sh a b", "scp -o LocalCommand=sh a b", "scp -q -o Include=x a b",
+        # sftp, normal and abnormal: -D (local server), -S (program), -b (batch file), -F (config), and -o keys
+        "sftp -D sh host", "sftp -Dsh host", "sftp -S sh host", "sftp -b batch.txt host", "sftp -bbatch host",
+        "sftp -F x host", "sftp -o ProxyCommand=sh host", "sftp -o PKCS11Provider=x host",
+        # boundary: a key with a glob, or a glob at the start of the -o value, is not a listed key
+        "ssh -o Proxy*=sh host", "scp -o *roxyCommand=sh a b",
+    ]
+    ALLOW = [
+        # ssh, normal
+        "ssh host", "ssh -o BatchMode=yes host", "ssh -p 22 host", "ssh -p22 -l user host",
+        "ssh -i key -o StrictHostKeyChecking=no host", "ssh -vvv -o ServerAliveInterval=30 host",
+        "ssh -L 8080:localhost:80 host", "ssh -J jump host", "ssh -S none host", "ssh -o Compression yes host",
+        "ssh -o 'ProxyJump=bastion' host", "ssh -X host", "ssh -E log.txt host", "ssh -o ControlPath=none host",
+        # ssh, boundary: -i takes the next word as the key file, so -F there is a file name, not an option;
+        # after -- every word is an operand
+        "ssh -i -F host", "ssh -- -oProxyCommand=sh",
+        # scp, normal and boundary
+        "scp -r -P 2222 a host:b", "scp -3 a b", "scp -i key a b", "scp -o BatchMode=yes a b", "scp -l 100 a b",
+        "scp -- -S a b", "scp -i -S a b",
+        # sftp, normal and boundary
+        "sftp host", "sftp -P 2222 host", "sftp -o BatchMode=yes host", "sftp -s sftp host",
+        "sftp -X nrequests=64 host", "sftp -R 16 host", "sftp -i -b host",
+    ]
+
+    def test_ssh_family_deny_list(self):
+        for cmd in self.DENY:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+
+    def test_ssh_family_allow_list(self):
+        for cmd in self.ALLOW:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "ALLOW")
+
+    def test_ssh_family_grammar_options_are_listed_in_the_key_list(self):
+        # Every key that the grammar allows must be lowercase, so the case-insensitive check can match it.
+        for key in guard.SSH_OPTION_KEYS:
+            with self.subTest(key=key):
+                self.assertEqual(key, key.lower())
+
+
+class AllowlistSshFamilyMutationTests(unittest.TestCase):
+    """Issue #640 X3b (allowlist), ssh/scp/sftp: each rule must be detected by a named AllowlistSshFamilyTests failure."""
+
+    MUTANTS = {
+        "ProxyCommand allowed as an -o key": ('SSH_OPTION_KEYS = ("batchmode", "port",', 'SSH_OPTION_KEYS = ("proxycommand", "batchmode", "port",'),
+        "Include allowed as an -o key": ('SSH_OPTION_KEYS = ("batchmode", "port",', 'SSH_OPTION_KEYS = ("include", "batchmode", "port",'),
+        "LocalCommand allowed as an -o key": ('SSH_OPTION_KEYS = ("batchmode", "port",', 'SSH_OPTION_KEYS = ("localcommand", "batchmode", "port",'),
+        "PermitLocalCommand allowed as an -o key": ('SSH_OPTION_KEYS = ("batchmode", "port",', 'SSH_OPTION_KEYS = ("permitlocalcommand", "batchmode", "port",'),
+        "KnownHostsCommand allowed as an -o key": ('SSH_OPTION_KEYS = ("batchmode", "port",', 'SSH_OPTION_KEYS = ("knownhostscommand", "batchmode", "port",'),
+        "XAuthLocation allowed as an -o key": ('SSH_OPTION_KEYS = ("batchmode", "port",', 'SSH_OPTION_KEYS = ("xauthlocation", "batchmode", "port",'),
+        "PKCS11Provider allowed as an -o key": ('SSH_OPTION_KEYS = ("batchmode", "port",', 'SSH_OPTION_KEYS = ("pkcs11provider", "batchmode", "port",'),
+        "-o key matched case-sensitively": ('key = re.split(r"[=\\s]", value, 1)[0].lower()', 'key = re.split(r"[=\\s]", value, 1)[0]'),
+        "-o key not checked": ('                        if key not in spec["short_arg_keys"][ch]:', '                        if False:'),
+        "ssh -F allowed as a short letter": ('"short_args": "BbcDEeiJLlmOPpQRSWwo",', '"short_args": "BbcDEeiFJLlmOPpQRSWwo",'),
+        "scp -S allowed as a short letter": ('"short_args": "cilPJo",', '"short_args": "cilPJoS",'),
+        "sftp -D allowed as a short letter": ('"short_args": "BcJilPRsXo",', '"short_args": "BcJilPRsXoD",'),
+        "sftp -b allowed as a short letter": ('"short_args": "BcJilPRsXo",', '"short_args": "BcJilPRsXob",'),
+        "separate short value not consumed": (
+            '                        i += 1  # the value is the next word\n                    if ch in spec.get("short_arg_keys", {}):',
+            '                        pass\n                    if ch in spec.get("short_arg_keys", {}):'),
+    }
+
+    def _run(self, hook_text):
+        with tempfile.TemporaryDirectory() as td:
+            root = os.path.realpath(td)
+            hooks = os.path.join(root, ".claude", "hooks")
+            host = os.path.join(root, "tests", "host")
+            os.makedirs(hooks)
+            os.makedirs(host)
+            write_text(os.path.join(hooks, "guard_destructive.py"), hook_text)
+            with open(THIS_FILE, encoding="utf-8") as f:
+                write_text(os.path.join(host, "test_claude_destructive_guard.py"), f.read())
+            proc = subprocess.run([sys.executable, "-m", "unittest", "-v",
+                                   "test_claude_destructive_guard.AllowlistSshFamilyTests"], cwd=host,
+                                  capture_output=True, text=True, timeout=300)
+            return proc.returncode, proc.stderr
+
+    def test_ssh_family_allowlist_tests_detect_each_mutant(self):
+        with open(HOOK, encoding="utf-8") as f:
+            original = f.read()
+        code, out = self._run(original)
+        self.assertEqual(code, 0, "unmutated copy must pass AllowlistSshFamilyTests:\n" + out[-800:])
+        for name, (old, new) in self.MUTANTS.items():
+            with self.subTest(mutant=name):
+                self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
+                code, out = self._run(original.replace(old, new))
+                failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
+                detected = any("AllowlistSshFamilyTests." in ln for ln in failing)
+                self.assertTrue(detected, "mutant not detected by an AllowlistSshFamilyTests test: " + name + "\n"
                                 + "\n".join(failing))
 
 

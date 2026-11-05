@@ -731,9 +731,8 @@ def git_rule(args, ctx):
 
 
 # X3b (Issue #640): program-naming options. An option whose value names a program that the tool starts is an
-# execution form the guard does not analyse, so it is denied (UNKNOWN_EXECUTION). Matching is conservative: a long
-# option may be abbreviated (getopt, clap), so any token that is a prefix of a program-naming long option is denied.
-PROGRAM_LONG = {"sort": ("compress-program",), "rg": ("pre", "pre-glob", "hostname-bin")}
+# execution form the guard does not analyse, so it is DENY (UNKNOWN_EXECUTION). Every tool in PROGRAM_TOOLS is decided by
+# its structural grammar in ALLOWLIST below; a tool not in ALLOWLIST is never allowed through this rule.
 # GNU and BSD variants of the same tools take the same program-naming options.
 PROGRAM_ALIAS = {"gsort": "sort", "gtar": "tar", "bsdtar": "tar"}
 PROGRAM_TOOLS = {"sort", "rg", "tar", "rsync", "ssh", "scp", "sftp"}
@@ -742,12 +741,18 @@ SETTER_BUILTINS = ("export", "declare", "typeset", "local", "readonly", "read")
 # Environment variables that name a program the tool starts (prefix assignments: VAR=x tool, env VAR=x tool).
 PROGRAM_ENV = ("RSYNC_RSH", "SSH_ASKPASS", "TAR_OPTIONS", "SSH_SK_HELPER", "RIPGREP_CONFIG_PATH", "RSYNC_CONNECT_PROG",
                "RSYNC_SHELL")
-# A short letter that names a program in its cluster: ssh -F, scp/sftp -S PROG (sort, rg, tar, rsync are in ALLOWLIST).
-PROGRAM_SHORT = {"ssh": "F", "scp": "SF", "sftp": "SDFb"}
-# ssh-family -o KEY=VALUE: a key that runs a local command.
-SSH_O_TOOLS = ("ssh", "scp", "sftp")
-SSH_LAUNCH_KEYS = ("include", "proxycommand", "localcommand", "permitlocalcommand", "knownhostscommand", "xauthlocation",
-                   "pkcs11provider", "securitykeyprovider", "match")
+# ssh, scp and sftp -o KEY=VALUE (ssh_config keywords, case-insensitive). Only the keys listed here are allowed. A key that
+# runs a local command or loads a provider or an included file (ProxyCommand, LocalCommand, PermitLocalCommand,
+# KnownHostsCommand, Include, Match, PKCS11Provider, SecurityKeyProvider, XAuthLocation, ...) is not listed, so it is DENY.
+SSH_OPTION_KEYS = ("batchmode", "port", "user", "hostname", "stricthostkeychecking", "userknownhostsfile",
+                   "globalknownhostsfile", "identityfile", "identitiesonly", "identityagent", "addkeystoagent",
+                   "serveraliveinterval", "serveralivecountmax", "connecttimeout", "compression", "loglevel",
+                   "forwardagent", "forwardx11", "forwardx11trusted", "tcpkeepalive", "numberofpasswordprompts",
+                   "passwordauthentication", "pubkeyauthentication", "kbdinteractiveauthentication",
+                   "preferredauthentications", "ciphers", "macs", "kexalgorithms", "hostkeyalgorithms",
+                   "controlmaster", "controlpath", "controlpersist", "requesttty", "escapechar", "checkhostip",
+                   "hashknownhosts", "exitonforwardfailure", "sendenv", "setenv", "localforward", "remoteforward",
+                   "dynamicforward", "proxyjump", "tunnel", "tunneldevice", "pubkeyacceptedalgorithms")
 
 
 # X3b structural allowlist (Issue #640, replaces the per-option denylist one tool at a time). Each tool lists every
@@ -920,6 +925,35 @@ ALLOWLIST = {
                       "log-file", "log-file-format", "password-file", "write-batch", "only-write-batch", "read-batch",
                       "protocol", "iconv", "checksum-seed", "nice", "address", "port", "sockopts", "outbuf"),
     },
+    # ssh (ssh(1), OpenBSD manual, fetched). -F (config file, which may include ProxyCommand) and -I (PKCS#11 library)
+    # are not listed, so they are DENY. -o KEY is checked against SSH_OPTION_KEYS. ssh has no long options here.
+    "ssh": {
+        "full_long": (),
+        "long_flags": (),
+        "long_args": (),
+        "short_flags": "46AaCfGgKkMNnqsTtVvXxYyZ",
+        "short_args": "BbcDEeiJLlmOPpQRSWwo",
+        "short_arg_keys": {"o": SSH_OPTION_KEYS},
+    },
+    # scp (scp(1), OpenBSD manual, fetched). -F (config) and -S (program for the encrypted connection) are not listed.
+    "scp": {
+        "full_long": (),
+        "long_flags": (),
+        "long_args": (),
+        "short_flags": "346ABCOpqrRTv",
+        "short_args": "cilPJo",
+        "short_arg_keys": {"o": SSH_OPTION_KEYS},
+    },
+    # sftp (sftp(1), OpenBSD manual, fetched). -D (local sftp server run directly), -S (program) and -b (batch file, whose
+    # ! lines run local commands) are not listed, so they are DENY. -F (config) is not listed.
+    "sftp": {
+        "full_long": (),
+        "long_flags": (),
+        "long_args": (),
+        "short_flags": "46AaCfNpqrv",
+        "short_args": "BcJilPRsXo",
+        "short_arg_keys": {"o": SSH_OPTION_KEYS},
+    },
 }
 
 
@@ -964,8 +998,14 @@ def allowlist_rule(name, args):
                     j += 1
                     continue
                 if ch in spec["short_args"]:
+                    value = a[j + 1:] if j < len(a) - 1 else (args[i] if i < len(args) else "")
                     if j == len(a) - 1:
                         i += 1  # the value is the next word
+                    if ch in spec.get("short_arg_keys", {}):
+                        # -o KEY=VALUE (or KEY VALUE): the key must be one the grammar lists.
+                        key = re.split(r"[=\s]", value, 1)[0].lower()
+                        if key not in spec["short_arg_keys"][ch]:
+                            raise Deny("program-option", name + " -" + ch + " key is not in the allowlist: " + a)
                     break  # the rest of the cluster is the value
                 raise Deny("program-option", name + " short option is not in the allowlist: " + a)
             continue
@@ -976,9 +1016,6 @@ def program_option_rule(name, args):
     name = PROGRAM_ALIAS.get(name, name)
     if name not in PROGRAM_TOOLS:
         return
-    longs = PROGRAM_LONG.get(name, ())
-    shorts = PROGRAM_SHORT.get(name, "")
-    ssh_o = name in SSH_O_TOOLS
     # The guard reads the words the shell passes on, not the shell's own expansion or escape. For these tools an
     # argument that contains an expansion or a backslash cannot be checked here, so it is denied (fail closed).
     # Windows backslash paths in these tools are denied too; this is a documented over-denial.
@@ -997,31 +1034,7 @@ def program_option_rule(name, args):
     if name == "tar" and args and re.fullmatch(r"[A-Za-z]+", args[0]):
         # Old-style tar: the first word is an option cluster (tar xf a.tar, tar Ixf sh a.tar), read as its dashed form.
         args = ["-" + args[0]] + list(args[1:])
-    if name in ALLOWLIST:
-        # The structural allowlist decides for this tool; the denylist below applies only to tools not yet migrated.
-        allowlist_rule(name, args)
-        return
-    for i, a in enumerate(args):
-        nxt = args[i + 1] if i + 1 < len(args) else ""
-        # A backslash in an option name is a shell escape (--compress\-program is --compress-program).
-        a = a.replace("\\", "")
-        if a.startswith("--"):
-            key, eq, val = a[2:].partition("=")
-            if key and any(o.startswith(key) for o in longs):
-                raise Deny("program-option", name + " option names a program: " + a)
-            continue
-        if a.startswith("-") and len(a) > 1:
-            for j in range(1, len(a)):
-                ch = a[j]
-                if ch in shorts:
-                    raise Deny("program-option", name + " option names a program: " + a)
-                if ssh_o and ch == "o":
-                    value = (a[j + 1:] or nxt).lower()
-                    if any(c in value for c in "*?["):
-                        raise Deny("program-option", name + " -o value with a glob is not inspected")
-                    if any(k in value for k in SSH_LAUNCH_KEYS):
-                        raise Deny("program-option", name + " -o names a local command: " + a)
-                    break  # the rest of the cluster is the -o value
+    allowlist_rule(name, args)
 
 
 def find_rule(args, ps, ctx, depth):
