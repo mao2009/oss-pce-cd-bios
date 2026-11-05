@@ -1295,6 +1295,11 @@ class X3bProgramOptionTests(unittest.TestCase):
         # old-style tar option clusters
         "ssh -o Proxy\\Command=sh host", "tar --checkpoint-action e\\xec=sh -xf a.tar", "ssh -o $X host",
         "ssh -o \"$X\" host", "export RSYNC\\_RSH=sh && rsync a b", "tar I sh -xf a.tar", "tar Ixf sh a.tar",
+        # found in review 5: brace expansion and globs produce the option name or value after the shell expands them
+        "sort --{compress-program=sh,} x", "sort --compress-program{=sh,} x", "ssh -o{Proxy,}Command=sh host",
+        "ssh -o Proxy{Command=sh,} host", "tar x{I,} sh a.tar", "tar {I,}sh a.tar",
+        "tar --checkpoint-action={exec,}=sh -xf a.tar", "export {RSYNC_RSH,X}=sh && rsync a b",
+        "X=RSYNC_RSH; export $X=sh && rsync a b", "ssh -* host", "sort --compress*=sh x", "tar x* a.tar",
     ]
     ALLOW = [
         "sort -u names.txt", "sort -o out.txt names.txt", "sort --check names.txt",
@@ -1305,6 +1310,7 @@ class X3bProgramOptionTests(unittest.TestCase):
         "ssh host", "ssh -o BatchMode=yes host", "ssh -p 22 host",
         "diff -l a b", "file -z a.gz",
         "tar xf a.tar", "echo $HOME", "echo x\\y",
+        "sort -u names*.txt", "rg -n TODO src/*.py", "echo {a,b}",
     ]
 
     def test_program_naming_options_are_denied(self):
@@ -1336,8 +1342,15 @@ class X3bMutationTests(unittest.TestCase):
         "tar remote-command long rules removed": ('"rsh-command", "rmt-command"),', '),'),
         "GNU and BSD name aliases removed": ('    name = PROGRAM_ALIAS.get(name, name)', '    pass'),
         "program-naming environment variables not checked": ('    if any(v + "=" in w or', '    if False and any(v + "=" in w or'),
-        "expansion or escape in a tool argument not denied": (r'''        if "$" in a or "`" in a or SUBST in a or "\\" in a:''',
+        "expansion or escape in a tool argument not denied": (r'''        if "$" in a or "`" in a or SUBST in a or "\\" in a or "{" in a or "}" in a:''',
                                                               r'''        if False:'''),
+        "brace in a tool argument not denied": (r'''or "\\" in a or "{" in a or "}" in a:''', r'''or "\\" in a:'''),
+        "dashed glob in a tool argument not denied": (r'''        if a.startswith("-") and any(c in a for c in "*?["):''',
+                                                      r'''        if False:'''),
+        "tar first word glob not denied": (r'''    if name == "tar" and args and any(c in args[0] for c in "*?["):''',
+                                           r'''    if False:'''),
+        "assignment with an expansion not denied": (r'''    if any("=" in w and ("{" in w or "}" in w or "$" in w) for w in words):''',
+                                                    r'''    if False:'''),
         "tool filter removed": ('    if name not in PROGRAM_TOOLS:', '    if False:'),
         "old-style tar cluster rule removed": (r'''    if name == "tar" and args and re.fullmatch(r"[A-Za-z]+", args[0]):''',
                                                r'''    if False:'''),

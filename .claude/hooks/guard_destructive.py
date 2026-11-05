@@ -760,9 +760,16 @@ def program_option_rule(name, args):
     # The guard reads the words the shell passes on, not the shell's own expansion or escape. For these tools an
     # argument that contains an expansion or a backslash cannot be checked here, so it is denied (fail closed).
     # Windows backslash paths in these tools are denied too; this is a documented over-denial.
+    # Brace expansion and globs are expanded by the shell before the tool runs, so they can make an option name or
+    # value that is not in the word the guard reads. A glob in a file argument does not form an option, so only
+    # dashed arguments (and tar's first cluster word) are checked for globs.
     for a in args:
-        if "$" in a or "`" in a or SUBST in a or "\\" in a:
+        if "$" in a or "`" in a or SUBST in a or "\\" in a or "{" in a or "}" in a:
             raise Deny("program-option", name + " argument with an expansion or escape is not inspected")
+        if a.startswith("-") and any(c in a for c in "*?["):
+            raise Deny("program-option", name + " option with a glob is not inspected")
+    if name == "tar" and args and any(c in args[0] for c in "*?["):
+        raise Deny("program-option", "tar first word with a glob is not inspected")
     if name == "tar" and args and re.fullmatch(r"[A-Za-z]+", args[0]):
         # Old-style tar: the first word is an option cluster (tar xf a.tar; tar Ixf sh a.tar).
         if set(args[0]) & set(shorts):
@@ -918,6 +925,8 @@ def analyze_argv(words, ctx, ps, depth):
     if depth > MAX_DEPTH:
         raise Deny("depth", "command nesting too deep")
     # A program-naming environment variable anywhere in the command (prefix, export, env -S, a shell string) is denied.
+    if any("=" in w and ("{" in w or "}" in w or "$" in w) for w in words):
+        raise Deny("expansion", "an assignment with an expansion is not inspected")
     if any(v + "=" in w or v + "=" in w.replace("\\", "").replace('"', "").replace("'", "")
            for w in words for v in PROGRAM_ENV):
         raise Deny("program-option", "a program-naming environment variable is not inspected")
