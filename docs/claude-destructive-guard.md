@@ -17,7 +17,7 @@
 
 - `rm`: 単一の通常ファイルで、リポジトリ内、かつ `.git` と `.claude` の外のものだけ許可。再帰（`-r`/`-R`/`-d`/`--recursive`）は常に拒否。ワイルドカード、未展開の `$VAR`、`~user`、シンボリックリンクも拒否
 - `git clean` のフラグに `f` を含むもの、`git reset --hard`/`--merge`、`git checkout -f`/`--`/`.`、`git restore`（`--staged` のみ除く）、`git switch -f`/`--discard-changes`、`git branch -D`/`-f`、`git stash clear`/`drop`、強制・削除の `git push`、`git worktree prune`
-- `git worktree remove`: 所有者が `.claude/worktree-owners.json` に記録されている場合のみ、`--force` なしで許可。レジストリがない・壊れている場合は全て拒否
+- `git worktree remove`: **常に拒否**。登録済みworktreeでも、`--force` の有無やOwner承認の有無にかかわらずフック経由では実行しない。`.claude/worktree-owners.json` は保護対象の記録に使うが、削除許可の根拠にはしない
 - `find -delete`、`find -exec` 内の拒否対象コマンド
 - `xargs`、`sudo`、`env`、`command`、`nohup`、`time`、`timeout`、`nice` などのラッパーを剥がして再判定
 - `bash -c`、`sh -c`、`zsh -c` などの文字列、`eval`・`source`・`.` の引数を再帰的に検査する。ただし、これらに渡すコマンド置換・プロセス置換（`$(...)`、バッククォート、`<(...)`、`>(...)`）は中身を知れないため拒否する。`-c` を伴わないシェルの起動、`cmd`、`powershell -EncodedCommand`、`-File` も拒否
