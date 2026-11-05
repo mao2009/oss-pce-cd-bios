@@ -1265,7 +1265,7 @@ class X3bProgramOptionTests(unittest.TestCase):
         "tar --to-command='sh -c \"rm -rf x\"' -xf a.tar", "tar -I sh -xf a.tar", "tar -Ish -xf a.tar",
         "tar -xIsh a.tar", "tar --use-compress-program=sh -xf a.tar", "tar --checkpoint-action=exec=sh -xf a.tar",
         # rsync: -e in a cluster, long options
-        "rsync -e 'sh -c \"rm -rf x\"' a b", "rsync -avze ssh a b", "rsync --rsh=sh a b", "rsync --rsync-path=sh a b",
+        "rsync -e 'sh -c \"rm -rf x\"' a b", "rsync -avze ssh a b", "rsync --rsh=sh a b", "rsync --rsync-path=sh a b", "rsync --rsync=sh a b", "rsync --rem=sh a b",
         # ssh family: -o keys, attached and clustered forms, -S
         "ssh -o ProxyCommand='sh -c \"rm -rf x\"' host", "ssh -oProxyCommand=sh host", "ssh -vo ProxyCommand=sh host",
         "ssh -o LocalCommand=sh host", "ssh -o PermitLocalCommand=yes host", "ssh -o proxycommand=sh host",
@@ -1353,15 +1353,8 @@ class X3bMutationTests(unittest.TestCase):
     a temporary copy of the hook and this test module; no repository file is changed."""
 
     MUTANTS = {
-        "tar long rules removed": ('"to-command", "use-compress-program", ', ''),
         "rsync long rules removed": ('"rsync": ("rsh", "rsync-path", "remote-option")', ''),
-        "tar -I rule removed": ('"tar": "IF"', '"tar": "F"'),
-        "tar -F rule removed": ('"tar": "IF"', '"tar": "I"'),
-        "tar script long rules removed": ('"info-script", "new-volume-script",', ''),
-        "tar checkpoint prefix length rule raised": ('            if name == "tar" and len(key) >= 11',
-                                                     '            if name == "tar" and len(key) >= 12'),
         "sftp -D rule removed": ('"sftp": "SDFb"', '"sftp": "SFb"'),
-        "tar remote-command long rules removed": ('"rsh-command", "rmt-command"),', '),'),
         "GNU and BSD name aliases removed": ('    name = PROGRAM_ALIAS.get(name, name)', '    pass'),
         "program-naming environment variables not checked": (r'''    if any(v in w.replace("\\", "").replace('"', "").replace("'", "").upper() for w in words for v in PROGRAM_ENV):''',
                                                              r'''    if False:'''),
@@ -1388,16 +1381,12 @@ class X3bMutationTests(unittest.TestCase):
             'or ("printf" in plain and any(w.startswith("-v") for w in plain))', 'or False'),
         "leading equals not stripped from tool names": ('name = name.lstrip("=").rstrip(". ") or name',
                                                        'name = name.rstrip(". ") or name'),
-        "old-style tar cluster rule removed": (r'''    if name == "tar" and args and re.fullmatch(r"[A-Za-z]+", args[0]):''',
-                                               r'''    if False:'''),
         "environment name normalisation removed": (r'''w.replace("\\", "").replace('"', "").replace("'", "").upper() for w in words''',
                                                    r'''w.upper() for w in words'''),
         "environment name case folding removed": (r'''.replace("'", "").upper() for w in words''',
                                                   r'''.replace("'", "") for w in words'''),
         "ssh -F rule removed": ('"ssh": "F", ', ''),
         "ssh Include key removed": ('SSH_LAUNCH_KEYS = ("include", ', 'SSH_LAUNCH_KEYS = ('),
-        "tar checkpoint action case-sensitive": ('(val if eq else nxt).lower().startswith("exec")',
-                                                 '(val if eq else nxt).startswith("exec")'),
         "ssh KnownHostsCommand key removed": ('"knownhostscommand",', ''),
         "rsync -e rule removed": ('"rsync": "eM", ', ''),
         "rsync remote-option rule removed": ('"rsync-path", "remote-option")', '"rsync-path")'),
@@ -1406,8 +1395,6 @@ class X3bMutationTests(unittest.TestCase):
         "ssh ProxyCommand key removed": ('("include", "proxycommand"', '("include", "zzz"'),
         "long option abbreviation made exact": ('if key and any(o.startswith(key) for o in longs):',
                                                 'if key and any(o == key for o in longs):'),
-        "tar checkpoint-action exec rule removed": ('            if name == "tar" and len(key) >= 11',
-                                                    '            if False and len(key) >= 11'),
         "program option check not called": ('    program_option_rule(name, args)\n', ''),
     }
 
@@ -1590,6 +1577,127 @@ class AllowlistRgMutationTests(unittest.TestCase):
                 failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
                 detected = any("AllowlistRgTests." in ln for ln in failing)
                 self.assertTrue(detected, "mutant not detected by an AllowlistRgTests test: " + name + "\n"
+                                + "\n".join(failing))
+
+
+class AllowlistTarTests(unittest.TestCase):
+    """Issue #640 X3b (structural allowlist), tar (GNU tar 1.35 grammar). Decision-level only; nothing is executed.
+    The DENY list covers the normal, abnormal and boundary forms of the program-naming options; the ALLOW list covers
+    ordinary archive commands and the boundary cases where an option value is consumed and names no program."""
+
+    DENY = [
+        # normal: the program-naming long options, by name and as a value
+        "tar --to-command=sh -xf a.tar", "tar --use-compress-program=sh -xf a.tar", "tar --info-script=sh -xf a.tar",
+        "tar --new-volume-script sh -xf a.tar", "tar --rsh-command=sh -xf a.tar", "tar --rmt-command=sh -xf a.tar",
+        # normal: a short letter that names a program (-I, -F), alone or in a cluster
+        "tar -I sh -xf a.tar", "tar -cIf sh a.tar", "tar -F sh a.tar",
+        # abnormal: letters and options the grammar does not list, or a flag given a value
+        "tar -y a.tar", "tar -xy a.tar", "tar --bogus -xf a.tar", "tar --to-stdout=x -xf a.tar",
+        # abnormal: an abbreviation that is ambiguous or resolves to an unlisted option
+        "tar --to -xf a.tar", "tar --f -xf a.tar", "tar --use=sh -xf a.tar", "tar --rm=sh -xf a.tar",
+        # abnormal: --checkpoint-action with an exec value, as "=", as the next word, in any case
+        "tar --checkpoint-action=exec=sh -xf a.tar", "tar --checkpoint-action exec=sh -xf a.tar",
+        "tar --checkpoint-action=Exec=sh -xf a.tar", "tar --checkpoint-=exec=sh -xf a.tar",
+        # boundary: options after a file name still count (GNU tar permutes options)
+        "tar -xf a.tar -I sh", "tar a.tar --to-command=sh",
+        # boundary: an old-style cluster is read as its dashed form
+        "tar xIf sh a.tar", "tar Ixf sh a.tar",
+        # the GNU and BSD names
+        "gtar --to-command=sh -xf a.tar", "bsdtar -Fsh a.tar",
+    ]
+    ALLOW = [
+        # normal archive commands
+        "tar -xf a.tar", "tar -czf out.tgz src", "tar -tvf a.tar", "tar -C dir -xf a.tar", "tar --list --file=a.tar",
+        "tar --strip-components=1 -xf a.tar", "tar --sort=name -cf a.tar src", "tar -T list.txt -cf a.tar",
+        "tar -xf a.tar --no-same-owner", "tar --exclude-vcs -cf a.tar src", "tar --format=gnu -cf a.tar src",
+        "gtar -xf a.tar", "bsdtar -xf a.tar",
+        # the checkpoint forms that name no program
+        "tar --checkpoint=100 -xf a.tar", "tar --checkpoint-action=echo=x -xf a.tar",
+        "tar --checkpoint-action=echo=exec -xf a.tar",
+        # boundary: an option value is consumed; the next word is a value, not an option
+        "tar cfI sh a.tar", "tar -C -I -xf a.tar", "tar --file --to-command=sh -cf out.tar",
+        # boundary: after --, every word is a file name
+        "tar -xf a.tar -- -I",
+        # old-style clusters
+        "tar xf a.tar", "tar cf out.tar -C dir .", "tar cvf x.tar src",
+        # a glob that does not start a word is a file name
+        "tar -xf a.tar names*.txt",
+    ]
+
+    def test_tar_deny_list(self):
+        for cmd in self.DENY:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+
+    def test_tar_allow_list(self):
+        for cmd in self.ALLOW:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "ALLOW")
+
+    def test_tar_grammar_names_are_in_the_full_list(self):
+        # An abbreviation is resolved against full_long, so every listed option must be in it.
+        spec = guard.ALLOWLIST["tar"]
+        listed = spec["long_flags"] + spec["long_args"] + spec["long_optional_any"] + tuple(spec["long_arg_deny_prefix"])
+        for name in listed:
+            with self.subTest(option=name):
+                self.assertIn(name, spec["full_long"])
+
+
+class AllowlistTarMutationTests(unittest.TestCase):
+    """Issue #640 X3b (allowlist), tar: each rule must be detected by a named AllowlistTarTests failure."""
+
+    MUTANTS = {
+        "to-command allowed as a long argument": (
+            '"long_args": ("add-file", "after-date",', '"long_args": ("to-command", "add-file", "after-date",'),
+        "unlisted long option not denied": (
+            '                raise Deny("program-option", name + " option is not in the allowlist: " + a)', '                pass'),
+        "-I allowed as a short letter": ('"short_args": "bfCTXLHVKNg",', '"short_args": "bfCTXLHVKNgI",'),
+        "-F allowed as a short letter": ('"short_args": "bfCTXLHVKNg",', '"short_args": "bfCTXLHVKNgF",'),
+        "info-script allowed as a long argument": (
+            '"long_args": ("add-file", "after-date",', '"long_args": ("info-script", "add-file", "after-date",'),
+        "rsh-command allowed as a long argument": (
+            '"long_args": ("add-file", "after-date",', '"long_args": ("rsh-command", "add-file", "after-date",'),
+        "checkpoint-action exec value rule removed": (
+            '"long_arg_deny_prefix": {"checkpoint-action": ("exec",)},', '"long_arg_deny_prefix": {},'),
+        "checkpoint-action exec value matched case-sensitively": (
+            'value.lower().startswith(p)', 'value.startswith(p)'),
+        "old-style cluster not read as its dashed form": (
+            '        args = ["-" + args[0]] + list(args[1:])', '        args = list(args)'),
+        "long option value not consumed from the next word": (
+            '                if not eq:\n                    i += 1  # the value is the next word\n                if any(',
+            '                if False:\n                    i += 1  # the value is the next word\n                if any('),
+        "optional checkpoint value allowed as a separate word": (
+            '"long_optional_any": ("backup", "atime-preserve", "checkpoint", ',
+            '"long_optional_any": ("backup", "atime-preserve", '),
+    }
+
+    def _run(self, hook_text):
+        with tempfile.TemporaryDirectory() as td:
+            root = os.path.realpath(td)
+            hooks = os.path.join(root, ".claude", "hooks")
+            host = os.path.join(root, "tests", "host")
+            os.makedirs(hooks)
+            os.makedirs(host)
+            write_text(os.path.join(hooks, "guard_destructive.py"), hook_text)
+            with open(THIS_FILE, encoding="utf-8") as f:
+                write_text(os.path.join(host, "test_claude_destructive_guard.py"), f.read())
+            proc = subprocess.run([sys.executable, "-m", "unittest", "-v",
+                                   "test_claude_destructive_guard.AllowlistTarTests"], cwd=host,
+                                  capture_output=True, text=True, timeout=300)
+            return proc.returncode, proc.stderr
+
+    def test_tar_allowlist_tests_detect_each_mutant(self):
+        with open(HOOK, encoding="utf-8") as f:
+            original = f.read()
+        code, out = self._run(original)
+        self.assertEqual(code, 0, "unmutated copy must pass AllowlistTarTests:\n" + out[-800:])
+        for name, (old, new) in self.MUTANTS.items():
+            with self.subTest(mutant=name):
+                self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
+                code, out = self._run(original.replace(old, new))
+                failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
+                detected = any("AllowlistTarTests." in ln for ln in failing)
+                self.assertTrue(detected, "mutant not detected by an AllowlistTarTests test: " + name + "\n"
                                 + "\n".join(failing))
 
 

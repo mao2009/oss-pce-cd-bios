@@ -734,8 +734,6 @@ def git_rule(args, ctx):
 # execution form the guard does not analyse, so it is denied (UNKNOWN_EXECUTION). Matching is conservative: a long
 # option may be abbreviated (getopt, clap), so any token that is a prefix of a program-naming long option is denied.
 PROGRAM_LONG = {"sort": ("compress-program",), "rg": ("pre", "pre-glob", "hostname-bin"),
-                "tar": ("to-command", "use-compress-program", "info-script", "new-volume-script",
-                        "rsh-command", "rmt-command"),
                 "rsync": ("rsh", "rsync-path", "remote-option")}
 # GNU and BSD variants of the same tools take the same program-naming options.
 PROGRAM_ALIAS = {"gsort": "sort", "gtar": "tar", "bsdtar": "tar"}
@@ -744,8 +742,8 @@ PROGRAM_TOOLS = {"sort", "rg", "tar", "rsync", "ssh", "scp", "sftp"}
 SETTER_BUILTINS = ("export", "declare", "typeset", "local", "readonly", "read")
 # Environment variables that name a program the tool starts (prefix assignments: VAR=x tool, env VAR=x tool).
 PROGRAM_ENV = ("RSYNC_RSH", "SSH_ASKPASS", "TAR_OPTIONS", "SSH_SK_HELPER", "RIPGREP_CONFIG_PATH", "RSYNC_CONNECT_PROG")
-# A short letter that names a program in its cluster: tar -I PROG, rsync -e PROG, scp/sftp -S PROG.
-PROGRAM_SHORT = {"tar": "IF", "rsync": "eM", "ssh": "F", "scp": "SF", "sftp": "SDFb"}
+# A short letter that names a program in its cluster: rsync -e PROG, scp/sftp -S PROG (tar is in ALLOWLIST).
+PROGRAM_SHORT = {"rsync": "eM", "ssh": "F", "scp": "SF", "sftp": "SDFb"}
 # ssh-family -o KEY=VALUE: a key that runs a local command.
 SSH_O_TOOLS = ("ssh", "scp", "sftp")
 SSH_LAUNCH_KEYS = ("include", "proxycommand", "localcommand", "permitlocalcommand", "knownhostscommand", "xauthlocation",
@@ -808,6 +806,70 @@ ALLOWLIST = {
                       "sort", "sortr", "engine", "dfa-size-limit", "regex-size-limit", "max-filesize", "ignore-file",
                       "color", "encoding", "context", "after-context", "before-context", "generate"),
     },
+    # GNU tar 1.35 (tar --help). Program-naming options (--to-command, --use-compress-program, --info-script,
+    # --new-volume-script, --rsh-command, --rmt-command, -I, -F) are in full_long but not in any allow list, so they
+    # are DENY. --checkpoint-action names a program when its value starts with exec.
+    "tar": {
+        "full_long": ("absolute-names", "acls", "add-file", "after-date", "anchored", "append", "atime-preserve",
+                      "auto-compress", "backup", "block-number", "blocking-factor", "bzip2", "catenate",
+                      "check-device", "check-links", "checkpoint", "checkpoint-action", "clamp-mtime", "compare",
+                      "compress", "concatenate", "confirmation", "create", "delay-directory-restore", "delete",
+                      "dereference", "diff", "directory", "exclude", "exclude-backups", "exclude-caches",
+                      "exclude-caches-all", "exclude-caches-under", "exclude-from", "exclude-ignore",
+                      "exclude-ignore-recursive", "exclude-tag", "exclude-tag-all", "exclude-tag-under", "exclude-vcs",
+                      "exclude-vcs-ignores", "extract", "file", "files-from", "force-local", "format", "full-time",
+                      "get", "group", "group-map", "gunzip", "gzip", "hard-dereference", "help", "hole-detection",
+                      "ignore-case", "ignore-command-error", "ignore-failed-read", "ignore-zeros", "incremental",
+                      "index-file", "info-script", "interactive", "keep-directory-symlink", "keep-newer-files",
+                      "keep-old-files", "label", "level", "list", "listed-incremental", "lzip", "lzma", "lzop", "mode",
+                      "mtime", "multi-volume", "new-volume-script", "newer", "newer-mtime", "no-acls", "no-anchored",
+                      "no-auto-compress", "no-check-device", "no-delay-directory-restore", "no-ignore-case",
+                      "no-ignore-command-error", "no-null", "no-overwrite-dir", "no-quote-chars", "no-recursion",
+                      "no-same-owner", "no-same-permissions", "no-seek", "no-selinux", "no-unquote",
+                      "no-verbatim-files-from", "no-wildcards", "no-wildcards-match-slash", "no-xattrs", "null",
+                      "numeric-owner", "occurrence", "old-archive", "one-file-system", "one-top-level", "overwrite",
+                      "overwrite-dir", "owner", "owner-map", "pax-option", "portability", "posix", "preserve-order",
+                      "preserve-permissions", "quote-chars", "quoting-style", "read-full-records", "record-size",
+                      "recursion", "recursive-unlink", "remove-files", "restrict", "rmt-command", "rsh-command",
+                      "same-order", "same-owner", "same-permissions", "seek", "selinux", "show-defaults",
+                      "show-omitted-dirs", "show-snapshot-field-ranges", "show-stored-names",
+                      "show-transformed-names", "skip-old-files", "sort", "sparse", "sparse-version",
+                      "starting-file", "strip-components", "suffix", "tape-length", "test-label", "to-command",
+                      "to-stdout", "totals", "touch", "transform", "unlink-first", "unquote", "update",
+                      "use-compress-program", "usage", "utc", "verbatim-files-from", "verbose", "verify", "version",
+                      "volno-file", "warning", "wildcards", "wildcards-match-slash", "xattrs", "xattrs-exclude",
+                      "xattrs-include", "xform", "xz", "zstd", "uncompress", "ungzip"),
+        "short_flags": "AcdrtuxnSGOmpskUWBiajJzZhlRvwoPM",
+        "short_args": "bfCTXLHVKNg",
+        "long_flags": ("absolute-names", "acls", "anchored", "append", "auto-compress", "block-number", "bzip2",
+                       "catenate", "check-device", "check-links", "clamp-mtime", "compare", "compress", "concatenate",
+                       "confirmation", "create", "delay-directory-restore", "delete", "dereference", "diff",
+                       "exclude-backups", "exclude-caches", "exclude-caches-all", "exclude-caches-under", "exclude-vcs",
+                       "exclude-vcs-ignores", "extract", "force-local", "full-time", "get", "gunzip", "gzip",
+                       "hard-dereference", "help", "ignore-case", "ignore-command-error", "ignore-failed-read",
+                       "ignore-zeros", "incremental", "interactive", "keep-directory-symlink", "keep-newer-files",
+                       "keep-old-files", "list", "lzip", "lzma", "lzop", "multi-volume", "no-acls", "no-anchored",
+                       "no-auto-compress", "no-check-device", "no-delay-directory-restore", "no-ignore-case",
+                       "no-ignore-command-error", "no-null", "no-overwrite-dir", "no-recursion", "no-same-owner",
+                       "no-same-permissions", "no-seek", "no-selinux", "no-unquote", "no-verbatim-files-from",
+                       "no-wildcards", "no-wildcards-match-slash", "no-xattrs", "null", "numeric-owner", "old-archive",
+                       "one-file-system", "overwrite", "overwrite-dir", "portability", "posix", "preserve-order",
+                       "preserve-permissions", "read-full-records", "recursion", "recursive-unlink", "remove-files",
+                       "restrict", "same-order", "same-owner", "same-permissions", "seek", "selinux", "show-defaults",
+                       "show-omitted-dirs", "show-snapshot-field-ranges", "show-stored-names",
+                       "show-transformed-names", "skip-old-files", "sparse", "test-label", "to-stdout", "touch",
+                       "unlink-first", "unquote", "update", "usage", "utc", "verbatim-files-from", "verbose", "verify",
+                       "version", "wildcards", "wildcards-match-slash", "xattrs", "xz", "zstd", "uncompress", "ungzip"),
+        "long_args": ("add-file", "after-date", "blocking-factor", "directory", "exclude", "exclude-from",
+                      "exclude-ignore", "exclude-ignore-recursive", "exclude-tag", "exclude-tag-all", "exclude-tag-under",
+                      "file", "files-from", "format", "group", "group-map", "hole-detection", "label", "level",
+                      "listed-incremental", "mode", "mtime", "newer", "newer-mtime", "owner", "owner-map", "pax-option",
+                      "quote-chars", "no-quote-chars", "quoting-style", "record-size", "sort", "sparse-version",
+                      "starting-file", "strip-components", "tape-length", "transform", "xform", "xattrs-exclude",
+                      "xattrs-include", "warning", "checkpoint-action"),
+        "long_optional_any": ("backup", "atime-preserve", "checkpoint", "one-top-level", "occurrence", "suffix", "totals"),
+        "long_arg_deny_prefix": {"checkpoint-action": ("exec",)},
+    },
 }
 
 
@@ -828,8 +890,13 @@ def allowlist_rule(name, args):
                 raise Deny("program-option", name + " long option is not resolved: " + a)
             opt = hits[0]
             if opt in spec["long_args"]:
+                value = val if eq else (args[i] if i < len(args) else "")
                 if not eq:
                     i += 1  # the value is the next word
+                if any(value.lower().startswith(p) for p in spec.get("long_arg_deny_prefix", {}).get(opt, ())):
+                    raise Deny("program-option", name + " option value names a program: " + a)
+            elif opt in spec.get("long_optional_any", ()):
+                pass  # an optional value comes only after '=' and names no program
             elif opt in spec.get("long_optional", ()):
                 if eq and val not in spec["optional_values"]:
                     raise Deny("program-option", name + " option value is not allowed: " + a)
@@ -878,9 +945,8 @@ def program_option_rule(name, args):
     if name == "tar" and args and any(c in args[0] for c in "*?["):
         raise Deny("program-option", "tar first word with a glob is not inspected")
     if name == "tar" and args and re.fullmatch(r"[A-Za-z]+", args[0]):
-        # Old-style tar: the first word is an option cluster (tar xf a.tar; tar Ixf sh a.tar).
-        if set(args[0]) & set(shorts):
-            raise Deny("program-option", "tar old-style option cluster names a program: " + args[0])
+        # Old-style tar: the first word is an option cluster (tar xf a.tar, tar Ixf sh a.tar), read as its dashed form.
+        args = ["-" + args[0]] + list(args[1:])
     if name in ALLOWLIST:
         # The structural allowlist decides for this tool; the denylist below applies only to tools not yet migrated.
         allowlist_rule(name, args)
@@ -893,10 +959,6 @@ def program_option_rule(name, args):
             key, eq, val = a[2:].partition("=")
             if key and any(o.startswith(key) for o in longs):
                 raise Deny("program-option", name + " option names a program: " + a)
-            # tar --checkpoint-action=exec=... runs a program; other checkpoint actions do not (--checkpoint=N is fine).
-            if name == "tar" and len(key) >= 11 and "checkpoint-action".startswith(key) \
-                    and (val if eq else nxt).lower().startswith("exec"):
-                raise Deny("program-option", "tar checkpoint action exec runs a program")
             continue
         if a.startswith("-") and len(a) > 1:
             for j in range(1, len(a)):
