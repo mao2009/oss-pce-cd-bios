@@ -18,6 +18,12 @@
 //            under test: refused), w (range ends before it: allowed), e (destination page set before the
 //            TransferEnd step); xself (TII over its own opcode), xlen0 (length 0 = 65536).
 //            For x routes MPR1 is always $F8: the variant bank goes to the page under test, not to MPR1.
+//            (#653) ni_<base>_<src>_<k>[_i]: an IRQ newly asserted at instruction k. base = tam (TAM #$02;
+//            armed: A = $FF), sta (STA $4000 on the hardware page: a mid-instruction clock point),
+//            tii tin tdd tia tai (WRAM -> WRAM, 4 bytes), tiiv tinv tddv tiav taiv (to the VDC data port:
+//            clock points inside the byte steps). src = t (timer armed at the start of k to expire at the
+//            first hardware clock after it), q1 / q2 (IRQ1 / IRQ2 set at the start of k), q1m / q2m (set at
+//            the first mid-instruction clock point of k, if k has one). _i = start with I = 1.
 //   variant: allowed     MPR1 = $F8 (WRAM): the guard is consulted and allows (positive)
 //            armed       MPR1 = $FF (I/O): the guard refuses before the access (negative)
 //            unguarded   MPR1 = $FF, null guard: the accesses land on the I/O page (control)
@@ -96,6 +102,14 @@ unsigned g_t_op = 0, g_x_forbid = 0;   // opcode at TransferStart; x route: page
 unsigned g_t_mpr[8] = {}, g_t_refusals = 0, g_flip_mpr = 1;
 unsigned g_t_at_refusal[4] = {};  // transfer source, destination, remaining length, step count
 bool g_t_resumed = false;
+// Issue #653: an IRQ newly asserted at instruction g_ni_k (see the header). Observation only.
+bool g_ni = false, g_ni_done = false, g_ni_mid_armed = false, g_ni_injected = false, g_ni_noinject = false;
+unsigned g_ni_k = 0, g_ni_bits = 0, g_ni_mode = 0;   // mode 0 timer, 1 boundary IRR, 2 mid-instruction IRR
+struct NiTime { unsigned i, pc, irr, pend, ts, a, x, y, p, s, src, dst, len; unsigned mpr[8]; };
+struct NiClock { unsigned i, cycles, irr; bool injected; };
+std::vector<NiTime> g_ni_timeline;
+std::vector<NiClock> g_ni_clocks;
+unsigned g_ni_clock_calls = 0;
 Snapshot g_instr_start = {};        // snapshot at the start of the instruction that is running
 Snapshot g_refusal_instr = {};      // snapshot at the start of the instruction of the first refusal
 Snapshot g_at_refusal = {};         // live CPU state inside the first refused guard call
@@ -163,6 +177,21 @@ void io_observer(void*, unsigned is_write, unsigned address, unsigned value)
     record(e);
 }
 
+// Issue #653: hardware clock point inside an instruction (called after the clock, before CheckIRQs).
+void clock_observer(void*, unsigned master_cycles)
+{
+    ++g_ni_clock_calls;
+    bool inject = g_ni_mid_armed && !g_ni_injected && !g_ni_noinject && g_instructions == g_ni_k;
+    if (inject) {
+        *g_st->IRR = (u8)(*g_st->IRR | g_ni_bits);
+        g_ni_injected = true;
+    }
+    if (g_ni_clocks.size() < 32) {
+        NiClock e = {g_instructions, master_cycles, (unsigned)*g_st->IRR, inject};
+        g_ni_clocks.push_back(e);
+    }
+}
+
 // Method A (Issue #498, #473): refuse an instruction BEFORE it executes when the stack page (MPR1) is not
 // the allowed WRAM bank at its start. Test policy, defined here (S1 #497 contract: $F8 only).
 bool pre_instruction(void*, unsigned, unsigned transfer_state)
@@ -177,6 +206,29 @@ bool pre_instruction(void*, unsigned, unsigned transfer_state)
         g_memory->SetMpr(g_flip_mpr, (u8)g_stack_bank);
         g_flipped = true;
         g_flip_instruction = g_instructions;
+    }
+    if (g_ni && !g_ni_done && g_instructions == g_ni_k) {
+        g_ni_done = true;
+        if (g_ni_mode == 0) {           // timer: counter 0, one master cycle to the tick -> expires at the
+            *g_st->TIMER = true;        // first hardware clock after this point
+            *g_st->TIMER_COUNTER = 0;
+            *g_st->TIMER_RELOAD = 0x7F;
+            g_cpu->GG_VerifySetTimerCycles(1);
+        } else if (g_ni_mode == 1) {
+            if (!g_ni_noinject) { *g_st->IRR = (u8)(*g_st->IRR | g_ni_bits); g_ni_injected = true; }
+        } else {
+            g_ni_mid_armed = true;
+        }
+    }
+    if (g_ni && g_ni_timeline.size() < 16) {
+        NiTime e = {g_instructions, (unsigned)g_st->PC->GetValue(), (unsigned)*g_st->IRR,
+                    (unsigned)g_cpu->GG_VerifyIrqPending(), transfer_state, (unsigned)g_st->A->GetValue(),
+                    (unsigned)g_st->X->GetValue(), (unsigned)g_st->Y->GetValue(), (unsigned)g_st->P->GetValue(),
+                    (unsigned)g_st->S->GetValue(), g_cpu->GG_VerifyTransferSource(), g_cpu->GG_VerifyTransferDest(),
+                    g_cpu->GG_VerifyTransferLength(), {}};
+        for (int m = 0; m < 8; ++m)
+            e.mpr[m] = g_memory->GetMpr(m);
+        g_ni_timeline.push_back(e);
     }
     g_instr_start = snap();
     if (!g_handler_entry && g_instr_start.pc == kHandler)
@@ -347,6 +399,45 @@ bool route_for(const std::string& name, Route* r)
         r->p = name.back() == 'i' ? 0x04 : 0x00;
         r->loops = {kHandler};
     }
+    else if (name.compare(0, 3, "ni_") == 0) {
+        // ni_<base>_<src>_<k>[_i]
+        std::vector<std::string> f;
+        size_t at = 3;
+        while (at <= name.size()) {
+            size_t us = name.find('_', at);
+            f.push_back(name.substr(at, us == std::string::npos ? std::string::npos : us - at));
+            if (us == std::string::npos) break;
+            at = us + 1;
+        }
+        if (f.size() < 3 || f.size() > 4 || (f.size() == 4 && f[3] != "i"))
+            return false;
+        const std::string& base = f[0];
+        const std::string& src = f[1];
+        char* kend = nullptr;
+        unsigned k = (unsigned)std::strtoul(f[2].c_str(), &kend, 10);
+        if (f[2].empty() || !kend || *kend || k < 1 || k > 8) return false;
+        if (src == "t") { g_ni_mode = 0; g_ni_bits = 0x04; }
+        else if (src == "q1" || src == "q2") { g_ni_mode = 1; g_ni_bits = src == "q1" ? 0x02 : 0x01; }
+        else if (src == "q1m" || src == "q2m") { g_ni_mode = 2; g_ni_bits = src == "q1m" ? 0x02 : 0x01; }
+        else return false;
+        g_ni_k = k;
+        g_ni = true;
+        r->p = f.size() == 4 ? 0x04 : 0x00;
+        r->loops = {kHandler};
+        if (base == "tam") { r->code = {0x53, 0x02, bra, self}; }
+        else if (base == "sta") { r->a = 0x05; r->code = {0x8D, 0x00, 0x40, bra, self}; }   // STA $4000 (VDC AR)
+        else {
+            bool vdc = base.size() == 4 && base[3] == 'v';
+            std::string opn = base.substr(0, 3);
+            u8 op = opn == "tii" ? 0x73 : opn == "tdd" ? 0xC3 : opn == "tin" ? 0xD3 : opn == "tia" ? 0xE3 :
+                    opn == "tai" ? 0xF3 : 0;
+            if (!op || (base.size() != 3 && !vdc)) return false;
+            unsigned src_a = 0x1E80, dst = vdc ? 0x4002 : 0x4000;   // $4002 = VDC data port (MPR2 = $FF)
+            if (op == 0xC3) { src_a += 3; dst += 3; }
+            r->code = {op, (u8)(src_a & 0xFF), (u8)(src_a >> 8), (u8)(dst & 0xFF), (u8)(dst >> 8), 0x04, 0x00,
+                       bra, self};
+        }
+    }
     else if (name == "xself" || name == "xlen0") {   // TII over its own opcode / length 0 (65536)
         bool own = name == "xself";
         r->code = {0x73, 0x80, 0x1E, 0x00, (u8)(own ? 0x1E : 0x40), (u8)(own ? 4 : 0), 0x00, bra, self};
@@ -467,6 +558,9 @@ int main(int argc, char** argv)
     else if (variant == "mut-tfirst") g_t_mut = 3;    // probe-side: pre-start check of the first byte only
     else if (variant == "mut-tseq") g_t_mut = 4;      // probe-side: every opcode modelled as TII
     else if (variant == "mut-tnoself") g_t_mut = 5;   // probe-side: no own-opcode check before the start
+    else if (variant == "mut-noinject") g_ni_noinject = true;   // probe-side: the IRQ is never injected
+    else if (variant == "mut-nomidcheck") mutation = 8;         // core: no CheckIRQs at mid clock points
+    else if (variant == "mut-xferirq") mutation = 9;            // core: IRQ taken inside a block transfer
     else return 2;
     Route route;
     if (!route_for(route_name, &route))
@@ -485,6 +579,12 @@ int main(int argc, char** argv)
     std::vector<u8> bios((std::istreambuf_iterator<char>(file)), {});
     if (bios.size() < 0x2000)
         return 3;
+    if (g_ni) {   // every IRQ vector (IRQ2 $FFF6, IRQ1 $FFF8, TIQ $FFFA) -> the handler
+        for (unsigned v : {0x1FF6u, 0x1FF8u, 0x1FFAu}) {
+            bios[v] = (u8)(kHandler & 0xFF);
+            bios[v + 1] = (u8)(kHandler >> 8);
+        }
+    }
     if (route.vector_lo) {
         bios[route.vector_lo] = (u8)(kHandler & 0xFF);
         bios[route.vector_lo + 1] = (u8)(kHandler >> 8);
@@ -516,7 +616,7 @@ int main(int argc, char** argv)
     bool irqtam = route_name.compare(0, 6, "irqtam") == 0;
     bool changes_later = irqtam || is_tend || route_name == "flippha" || route_name == "tamjsr" ||
                          route_name == "tamcode" || route_name.compare(0, 3, "tma") == 0 || sweep ||
-                         route_name[0] == 'x';
+                         route_name[0] == 'x' || g_ni;
     memory->SetMpr(1, (u8)(io_stack && !changes_later ? bank : 0xF8));
 
     u8* wram = memory->GetWorkingRAM();
@@ -540,7 +640,7 @@ int main(int argc, char** argv)
     g_st->PC->SetValue((u16)kGuest);
     g_st->S->SetValue((u8)route.s);
     // irqtam / tamjsr: the guest's TAM #$02 sets MPR1 = A.
-    bool tam_route = irqtam || route_name == "tamjsr";
+    bool tam_route = irqtam || route_name == "tamjsr" || route_name.compare(0, 7, "ni_tam_") == 0;
     g_st->A->SetValue((u8)(tam_route ? (io_stack ? bank : 0xF8) : route.a));
     g_st->X->SetValue((u8)route.x);
     g_st->Y->SetValue((u8)route.y);
@@ -555,6 +655,16 @@ int main(int argc, char** argv)
     g_flip_tend = is_tend && io_stack;
     g_flip_at = route_name == "flippha" && io_stack ? 2 : 0;   // before the PHA (instruction 2)
     g_budget = sweep ? 1 : 0;                                   // sweep: stop before instruction 2
+    if (g_ni) {
+        // Page 2: the hardware page for sta and the VDC transfers, WRAM otherwise; page 3 WRAM.
+        std::string base = route_name.substr(3, route_name.find('_', 3) - 3);
+        bool hw = base == "sta" || (base.size() == 4 && base[3] == 'v');
+        memory->SetMpr(2, (u8)(hw ? 0xFF : 0xF8));
+        memory->SetMpr(3, 0xF8);
+        for (unsigned i = 0; i < 4; ++i)
+            wram[kSrc + i] = (u8)(0x5A + i);
+        *g_st->TIMER = false;   // the timer is armed only at instruction k (timer routes)
+    }
     if (route_name[0] == 'x') {
         // Pages 2 and 3 = WRAM; the variant bank goes to the page under test (d / c / w: as listed in
         // route_for, s: source page 3; m / m1: set by the harness before byte step 3 = instruction 4;
@@ -581,6 +691,7 @@ int main(int argc, char** argv)
     gg_verify_stack_guard = use_c ? stack_guard : nullptr;
     gg_verify_io_observer = io_observer;
     gg_verify_pre_instruction = pre_instruction;
+    gg_verify_clock_observer = clock_observer;
 
     Snapshot start = snap();
     unsigned irr_before = *g_st->IRR;
@@ -665,6 +776,23 @@ int main(int argc, char** argv)
                  g_t_at_refusal[2], g_t_at_refusal[3], g_cpu->GG_VerifyTransferSource(),
                  g_cpu->GG_VerifyTransferDest(), g_cpu->GG_VerifyTransferLength(), g_cpu->GG_VerifyTransferCount(),
                  wram_changed, wram_offsets.c_str());
+    std::fprintf(stderr, "\"ni\":{\"active\":%s,\"mode\":%u,\"k\":%u,\"bits\":%u,\"injected\":%s,"
+                 "\"clock_calls\":%u,\"speed\":%d,\"timeline\":[", g_ni ? "true" : "false", g_ni_mode,
+                 g_ni_k, g_ni_bits, g_ni_injected ? "true" : "false", g_ni_clock_calls, (int)*g_st->SPEED);
+    for (size_t i = 0; i < g_ni_timeline.size(); ++i) {
+        const NiTime& e = g_ni_timeline[i];
+        std::fprintf(stderr, "%s{\"i\":%u,\"pc\":%u,\"irr\":%u,\"pend\":%u,\"ts\":%u,\"a\":%u,\"x\":%u,\"y\":%u,"
+                     "\"p\":%u,\"s\":%u,\"xfer\":[%u,%u,%u],\"mpr\":[%u,%u,%u,%u,%u,%u,%u,%u]}", i ? "," : "",
+                     e.i, e.pc, e.irr, e.pend, e.ts, e.a, e.x, e.y, e.p, e.s, e.src, e.dst, e.len, e.mpr[0], e.mpr[1],
+                     e.mpr[2], e.mpr[3], e.mpr[4], e.mpr[5], e.mpr[6], e.mpr[7]);
+    }
+    std::fprintf(stderr, "],\"clocks\":[");
+    for (size_t i = 0; i < g_ni_clocks.size(); ++i) {
+        const NiClock& e = g_ni_clocks[i];
+        std::fprintf(stderr, "%s{\"i\":%u,\"cycles\":%u,\"irr\":%u,\"injected\":%s}", i ? "," : "", e.i,
+                     e.cycles, e.irr, e.injected ? "true" : "false");
+    }
+    std::fprintf(stderr, "]},");
     std::fprintf(stderr, "\"harness_mpr1_flip\":%s,\"flip_instruction\":%u,", g_flipped ? "true" : "false",
                  g_flip_instruction);
     print_snapshot("start", start);
@@ -695,6 +823,7 @@ int main(int argc, char** argv)
     gg_verify_stack_guard = nullptr;
     gg_verify_io_observer = nullptr;
     gg_verify_pre_instruction = nullptr;
+    gg_verify_clock_observer = nullptr;
     gg_verify_stack_mutation = 0;
     return 0;
 }
