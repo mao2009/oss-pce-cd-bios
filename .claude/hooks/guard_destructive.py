@@ -1472,9 +1472,10 @@ WRAPPER_OPTS = {
 }
 
 
-def wrapper_command_index(name, args):
+def wrapper_command_index(name, args, ctx):
     """Index in args of the word the wrapper starts: after its options, their values, env's NAME=VALUE pairs, and timeout's
-    duration. An option outside the grammar is DENY."""
+    duration. An option outside the grammar is DENY. A wrapper's own file-writing operand (time -o, flock's lock
+    file) is judged here, where the operand is identified."""
     valued_s, flags_s, valued_l, flags_l = WRAPPER_OPTS[name]
     i = 0
     while i < len(args):
@@ -1496,6 +1497,10 @@ def wrapper_command_index(name, args):
         j, step = 1, 1
         while j < len(a):
             ch = a[j]
+            if name == "time" and ch == "o":
+                # GNU time -o writes the timing report to the named file (truncating it, appending with -a):
+                # a wrapper's own write option, denied in every form like the program tools' write options.
+                raise Deny("write", "time -o writes a file: DENY in every form")
             if ch in valued_s:
                 step = 1 if j < len(a) - 1 else 2  # attached value, or the value is the next word
                 break
@@ -1509,11 +1514,20 @@ def wrapper_command_index(name, args):
     if name == "timeout":
         i += 1  # timeout DURATION COMMAND: the first operand is the duration
     if name == "flock":
-        i += 1  # flock [OPTION]... FILE COMMAND: the first operand is the lock file (-c gives the command instead)
+        # flock [OPTION]... FILE COMMAND: the first operand is the lock file (-c gives the command instead).
+        # flock creates the lock file when it is missing, as touch does. A lock file outside the repository
+        # is allowed (Round 6/7), but creating one inside .claude/ or .git is a write into a protected
+        # directory. A numeric operand is an open file descriptor and creates nothing.
+        if i < len(args) and not args[i].isdigit():
+            _lex, real = resolve(args[i], ctx)
+            rk = real.casefold()
+            if names_claude(args[i]) or inside_claude(real, ctx) or rk == ctx.git or inside(rk, ctx.git):
+                raise Deny("write", "flock lock file is in .claude/ or .git: " + args[i])
+        i += 1
     return i
 
 
-def wrapper_candidates(name, args):
+def wrapper_candidates(name, args, ctx):
     """A wrapper's own options are not parsed here: their arity differs per tool and option (--unset X, nice --adjustment
     5, stdbuf -o L), so a misread option would hide the command it starts. Every suffix of the words is therefore analysed
     as a possible command; the real one is among them. env -S (--split-string) takes one string that is split into
@@ -1524,8 +1538,12 @@ def wrapper_candidates(name, args):
                 break
             if tok.startswith("--split") or (not tok.startswith("--") and "S" in tok[1:]):
                 raise Deny("wrapper", "env -S (split-string) is not inspected")
+    if name == "nohup" and inside_claude(ctx.cwd, ctx):
+        # nohup appends the command's output to nohup.out in the current directory: inside .claude/ that
+        # writes into the guard's own directory.
+        raise Deny("claude-write", "nohup run inside .claude/ writes nohup.out there")
     if name in WRAPPER_OPTS:
-        start = wrapper_command_index(name, args)
+        start = wrapper_command_index(name, args, ctx)
         return [args[start:]] if start < len(args) else []
     return [args[k:] for k in range(len(args) + 1)]
 
@@ -1628,7 +1646,7 @@ def analyze_argv(words, ctx, ps, depth):
                 analyze_argv(cand, ctx.copy(), ps, depth + 1)
             return
         if handoff(name):
-            for cand in wrapper_candidates(name, words[1:]):
+            for cand in wrapper_candidates(name, words[1:], ctx):
                 # An option-looking word (-n, --command=...) or a number (timeout 5) cannot be the command a wrapper starts;
                 # the command is a later suffix. Strings are covered by the text analysis below.
                 # For a wrapper with a grammar the command word is exact, so it is analysed even when it looks like an option.
