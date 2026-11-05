@@ -743,13 +743,105 @@ def find_rule(args, ps, ctx, depth):
             analyze_argv(args[i + 1:j], ctx, ps, depth + 1)
 
 
-def python_rule(args):
+# Commands on this list must not run another program, whatever their options. sort (--compress-program=PROG) and
+# rg (--pre=PROG) do run a named program, so they are NOT here; they are treated as possible wrappers (reviewer
+# CRITICAL on 714345c). Keep this list to commands whose options cannot name a program.
+NON_EXEC_COMMANDS = frozenset({
+    "echo", "printf", "grep", "egrep", "fgrep", "cat", "ls", "pwd", "cd", "head", "tail", "wc",
+    "uniq", "cut", "tr", "which", "type", "test", "true", "false", "diff", "file", "stat", "du", "df", "basename",
+    "dirname", "realpath", "date", "touch", "mkdir"})
+
+
+def _cmd_name(word):
+    n = posixpath.basename(word.replace("\\", "/")).lower()
+    return n[:-4] if n.endswith(".exe") else n
+
+
+def python_position_args(words):
+    """The arguments of the python process this segment runs, or None if python does not run here.
+
+    The command word is the first word after keywords and assignments. A known non-executing command (echo, grep,
+    printf, ...) runs no python. Any other command may be a wrapper, known or not (nice, taskset -c 0, uv run,
+    busybox, ...): then python is the first later word whose name is python, so no prefix hides it. Words come from
+    words_of, so quotes and backslashes are already removed."""
+    i = 0
+    while i < len(words) and (words[i] in KEYWORDS or ASSIGN.match(words[i])):
+        i += 1
+    if i >= len(words) or _cmd_name(words[i]) in NON_EXEC_COMMANDS:
+        return None
+    for j in range(i, len(words)):
+        if re.fullmatch(r"python[0-9.]*|py", _cmd_name(words[j])):
+            return words[j + 1:]
+    return None
+
+
+# Bash expands or splits on these when they are unquoted. Inside double quotes only $, backtick and backslash are
+# special. Single quotes are fully literal. A process or command substitution changes argv (SUBST, below).
+# Input redirection (<) and here-strings give python code over stdin, so < is special. Output redirection (>) does
+# not change argv or code; its target is checked by the redirect rules, so > is not special.
+UNQUOTED_SPECIAL = frozenset("$`{}*?[]~\\()|&;#!<")
+DQUOTED_SPECIAL = frozenset("$`\\")
+
+
+def python_word_certainty(seg):
+    """True if the raw segment of a python command has no special character outside single quotes, and no
+    $, backtick or backslash inside double quotes. Then the argv bash passes is exactly the quote-removed words,
+    so the guard judges the same argv. Otherwise the argv depends on expansion and is not certain."""
+    if SUBST in seg:
+        # A command or process substitution outside the python argv changes the argv (the substituted text or a
+        # /dev/fd path becomes a word). It is not certain.
+        return False
+    state = None
+    word_start = True
+    for ch in seg:
+        if state == "'":
+            if ch == "'":
+                state = None
+        elif state == '"':
+            if ch == '"':
+                state = None
+            elif ch in DQUOTED_SPECIAL:
+                return False
+        elif ch == "#" and word_start:
+            # A word-initial # starts a comment, exactly as split_segments tokenises it: the rest of the
+            # segment is not part of any word, so it cannot change the argv.
+            break
+        elif ch in "'\"":
+            state = ch
+        elif ch in UNQUOTED_SPECIAL:
+            return False
+        word_start = ch in " \t;&|()"
+    return state is None
+
+
+def python_c_codes(args):
+    """Every code string of a python -c option. In a short-option bundle, -c takes the rest of the bundle as its
+    code ("-copen(...)", "-Icopen(...)"); only an empty rest takes the next argument. -W, -X and -m take the rest of
+    the bundle as a value, so a "c" after them is not -c, and a "c" after them is kept as a candidate (fail-closed)."""
+    codes = []
     for i, a in enumerate(args):
-        if short_has(a, "c"):
-            code = args[i + 1] if i + 1 < len(args) else ""
-            if DANGER_PY.search(code):
-                raise Deny("python-c", "python -c with a file or process operation")
-            return
+        if a.startswith("-") and not a.startswith("--"):
+            flags = a[1:]
+            for j, ch in enumerate(flags):
+                if ch == "c":
+                    rest = flags[j + 1:]
+                    codes.append(rest if rest else (args[i + 1] if i + 1 < len(args) else ""))
+                    break
+                if ch in "WXm":
+                    if "c" in flags[j + 1:]:
+                        codes.append(args[i + 1] if i + 1 < len(args) else "")
+                    break
+    return codes
+
+
+def python_rule(args):
+    # A shell variable or substitution in a python argument: its value is not visible here.
+    for arg in args:
+        if "$" in arg or "`" in arg or SUBST in arg:
+            raise Deny("unexpanded", "python argument with an unexpanded variable or substitution is not inspected")
+    for code in python_c_codes(args):
+        if DANGER_PY.search(code):
+            raise Deny("python-c", "python -c with a file or process operation")
 
 
 def shell_rule(args, ctx, depth):
@@ -835,6 +927,16 @@ def timeout_candidates(args):
 
 
 def unwrap(name, args):
+    # GNU env -S/--split-string reparses a string into an argv vector and may
+    # start a hidden python -c (or any other command). The shell word parser
+    # cannot prove that vector, so refuse every spelling instead of skipping it.
+    # This also covers bundled short options and abbreviated long options.
+    if name == "env" and any(
+            (a.startswith("--") and a != "--"
+             and "split-string".startswith(a[2:].split("=", 1)[0]))
+            or (a.startswith("-") and not a.startswith("--") and "S" in a[1:])
+            for a in args):
+        raise Deny("wrapper-argv", "env split-string reparses an uninspected command line")
     withargs = WRAPPER_ARGS.get(name, set())
     i = 0
     while i < len(args):
@@ -985,6 +1087,14 @@ def analyze_text(text, ctx, ps, depth):
     if ps and PS_PROC_LAUNCH_RE.search(text) and EXPR_SYNTAX_RE.search(text):
         raise Deny("launcher", "PowerShell process launcher with expression syntax is not inspected")
     segs, subs, redirs = split_segments(text, ps)
+    # A python command whose argv is not certain (unquoted or double-quoted expansion characters) is refused.
+    for seg in segs:
+        pargs = python_position_args(words_of(seg, ps))
+        if pargs is not None:
+            if not python_word_certainty(seg):
+                raise Deny("unexpanded", "python command whose argv depends on shell expansion is not inspected")
+            # The python arguments are judged here too, so a wrapper that dispatch does not know cannot hide -c code.
+            python_rule(pargs)
     for body in subs:
         analyze_text(body, ctx.copy(), ps, depth + 1)
     for seg, ops in zip(segs, redirs):
