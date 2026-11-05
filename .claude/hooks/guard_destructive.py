@@ -736,7 +736,7 @@ def git_rule(args, ctx):
 PROGRAM_LONG = {"sort": ("compress-program",), "rg": ("pre", "pre-glob", "hostname-bin"),
                 "tar": ("to-command", "use-compress-program", "info-script", "new-volume-script",
                         "rsh-command", "rmt-command"),
-                "rsync": ("rsh", "rsync-path")}
+                "rsync": ("rsh", "rsync-path", "remote-option")}
 # GNU and BSD variants of the same tools take the same program-naming options.
 PROGRAM_ALIAS = {"gsort": "sort", "gtar": "tar", "bsdtar": "tar"}
 PROGRAM_TOOLS = {"sort", "rg", "tar", "rsync", "ssh", "scp", "sftp"}
@@ -745,7 +745,7 @@ SETTER_BUILTINS = ("export", "declare", "typeset", "local", "readonly", "read")
 # Environment variables that name a program the tool starts (prefix assignments: VAR=x tool, env VAR=x tool).
 PROGRAM_ENV = ("RSYNC_RSH", "SSH_ASKPASS", "TAR_OPTIONS", "SSH_SK_HELPER", "RIPGREP_CONFIG_PATH", "RSYNC_CONNECT_PROG")
 # A short letter that names a program in its cluster: tar -I PROG, rsync -e PROG, scp/sftp -S PROG.
-PROGRAM_SHORT = {"tar": "IF", "rsync": "e", "ssh": "F", "scp": "SF", "sftp": "SDFb"}
+PROGRAM_SHORT = {"tar": "IF", "rsync": "eM", "ssh": "F", "scp": "SF", "sftp": "SDFb"}
 # ssh-family -o KEY=VALUE: a key that runs a local command.
 SSH_O_TOOLS = ("ssh", "scp", "sftp")
 SSH_LAUNCH_KEYS = ("include", "proxycommand", "localcommand", "permitlocalcommand", "knownhostscommand", "xauthlocation",
@@ -934,7 +934,7 @@ def analyze_argv(words, ctx, ps, depth):
     if any("=" in w and ("{" in w or "}" in w or "$" in w) for w in words):
         raise Deny("expansion", "an assignment with an expansion is not inspected")
     # A variable set by a builtin from an expansion ($A$B) has its name known only at run time: denied (fail closed).
-    setter = any(w in SETTER_BUILTINS for w in words) or ("printf" in words and "-v" in words)
+    setter = any(w in SETTER_BUILTINS for w in words) or ("printf" in words and any(w.startswith("-v") for w in words))
     if setter and any("$" in w or "`" in w or SUBST in w for w in words):
         raise Deny("expansion", "a variable set by a builtin with an expansion is not inspected")
     # Any mention of a program-naming variable (assignment, +=, export, read, printf -v) is denied (fail closed).

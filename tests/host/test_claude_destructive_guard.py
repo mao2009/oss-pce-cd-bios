@@ -1314,6 +1314,9 @@ class X3bProgramOptionTests(unittest.TestCase):
         # found in review 11: a variable name assembled from an expansion; sftp -b batch file
         "A=RSYN; B=C_RSH=sh; export $A$B && rsync a b", "A=RSYN; B=C_RSH; printf -v \"$A$B\" sh && rsync a b",
         "A=RSYN; B=C_RSH=sh; declare $A$B", "sftp -b batch.txt host",
+        # found in review 12: an attached -v option on printf; rsync remote options (-M, --remote-option)
+        "A=RSYN; B=C_RSH; set -a; printf -v$A$B sh && rsync a b", "rsync -M--rsync-path=sh a b",
+        "rsync --remote-option=--rsync-path=sh a b",
         # found in review 8: rg --hostname-bin runs the named executable (rg --help); ssh SSH_SK_HELPER names a helper
         "rg --hostname-bin=sh x src", "rg --hostname-bin sh x src", "SSH_SK_HELPER=sh ssh host",
         "ssh -o Proxy*=sh host", "ssh -o ProxyCom*=sh host",
@@ -1352,7 +1355,7 @@ class X3bMutationTests(unittest.TestCase):
         "sort compress-program rule removed": ('"sort": ("compress-program",), ', ''),
         "rg pre rules removed": ('"rg": ("pre", "pre-glob", "hostname-bin"),', ''),
         "tar long rules removed": ('"to-command", "use-compress-program", ', ''),
-        "rsync long rules removed": ('"rsync": ("rsh", "rsync-path")', ''),
+        "rsync long rules removed": ('"rsync": ("rsh", "rsync-path", "remote-option")', ''),
         "tar -I rule removed": ('"tar": "IF"', '"tar": "F"'),
         "tar -F rule removed": ('"tar": "IF"', '"tar": "I"'),
         "tar script long rules removed": ('"info-script", "new-volume-script",', ''),
@@ -1382,6 +1385,8 @@ class X3bMutationTests(unittest.TestCase):
         "variable set by a builtin with an expansion not denied": (
             r'''    if setter and any("$" in w or "`" in w or SUBST in w for w in words):''', r'''    if False:'''),
         "sftp -b batch file not denied": ('"sftp": "SDFb"', '"sftp": "SDF"'),
+        "printf -v attached to an expansion not denied": (
+            'or ("printf" in words and any(w.startswith("-v") for w in words))', 'or False'),
         "leading equals not stripped from tool names": ('name = name.lstrip("=").rstrip(". ") or name',
                                                        'name = name.rstrip(". ") or name'),
         "old-style tar cluster rule removed": (r'''    if name == "tar" and args and re.fullmatch(r"[A-Za-z]+", args[0]):''',
@@ -1395,7 +1400,8 @@ class X3bMutationTests(unittest.TestCase):
         "tar checkpoint action case-sensitive": ('(val if eq else nxt).lower().startswith("exec")',
                                                  '(val if eq else nxt).startswith("exec")'),
         "ssh KnownHostsCommand key removed": ('"knownhostscommand",', ''),
-        "rsync -e rule removed": ('"rsync": "e", ', ''),
+        "rsync -e rule removed": ('"rsync": "eM", ', ''),
+        "rsync remote-option rule removed": ('"rsync-path", "remote-option")', '"rsync-path")'),
         "scp and sftp -S rules removed": ('"scp": "SF", "sftp": "SDFb"', '"sftp": "DFb"'),
         "ssh -o rule removed": ('ssh_o = name in SSH_O_TOOLS', 'ssh_o = False'),
         "ssh ProxyCommand key removed": ('("include", "proxycommand"', '("include", "zzz"'),
