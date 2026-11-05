@@ -297,12 +297,16 @@ def main():
         if variant_suite.rom_for(DEFAULT_LBA) != rom_bytes:
             raise ValueError("variant run would use a different ROM")
         variant_records = variant_suite.run(rom_bytes, variant_suite.disc("disc-variant-lba5", DEFAULT_LBA))
+        if variant_records["rom_sha256"] != manifest["rom_sha256"]:
+            raise ValueError("variant run did not execute the manifest ROM")
         judge_marker_mismatch(variant_records, variant_code, symbols, DEFAULT_LBA, VARIANT_TRAILER)
         try:
             judge_success(variant_records, variant_code, symbols, DEFAULT_LBA, 1)
         except ValueError as error:
+            if "cd_halt_fail" not in str(error):
+                raise ValueError(f"success judge rejected the variant for an unexpected reason: {error}")
             variant_suite.results["payload_variant_same_rom_lba5"] = {
-                "status": "PASS_EXPECTED_FAILURE", "rom_sha256": manifest["rom_sha256"],
+                "status": "PASS_EXPECTED_FAILURE", "rom_sha256": variant_records["rom_sha256"],
                 "variant_payload_sha256": hashlib.sha256(variant_code).hexdigest(),
                 "baseline_marker_trailer": 0x3C, "observed_marker_trailer": VARIANT_TRAILER,
                 "success_judge_rejected_because": str(error)}
