@@ -870,6 +870,7 @@ class PythonArgvCertaintyTests(unittest.TestCase):
             'env --split-str=\'python3 -c open("x","w")\'',
             'env --split-string \'rm -rf x\'',
             'env -u HOME -S \'python3 -c open("x","w")\'',
+            "sudo env -S 'rm -rf x'",  # Wrapper nesting also reaches unwrap(env).
         ]
         for cmd in commands:
             with self.subTest(cmd=cmd):
@@ -881,6 +882,26 @@ class PythonArgvCertaintyTests(unittest.TestCase):
                     "env FOO=bar python3 -c 'print(1)'"):
             with self.subTest(cmd=cmd):
                 self.assertEqual(self._v(cmd), "ALLOW")
+
+
+    def test_env_split_string_fail_closed_over_denial_is_explicit(self):
+        # Owner chose to preserve fail-closed global scanning for X1.
+        # These are *not* env split-string invocations, but are denied
+        # because unwrap(env) scans the entire remaining argv, even after
+        # the program name or '--', including -u's attached value.
+        examples = (
+            "env python3 -S script.py",
+            "env ls -S",
+            "env -uSESSION python3 -c 'print(1)'",
+            "env -- ls -S",
+            "env ls --sp",
+            "env --=x python3 -c 'print(1)'",
+        )
+        for cmd in examples:
+            with self.subTest(cmd=cmd):
+                decision, reason = guard.decide(payload(cmd), repo_root=REPO)
+                self.assertEqual(decision, "DENY", (cmd, reason))
+                self.assertTrue(reason.startswith("wrapper-argv"), (cmd, reason))
 
 
     def test_known_bypasses_are_denied(self):
