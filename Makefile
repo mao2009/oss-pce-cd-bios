@@ -297,3 +297,9 @@ experimental-bios-boot: dev-rom
 # Pinned Geargrafx synthetic CUE check; host selects INDEX 01, guest validates the record (not TOC/API).
 experimental-bios-boot-integration: dev-rom
 	$(PYTHON) tests/integration/geargrafx_experimental_track_contract.py --mode "$(MODE)"
+
+.PHONY: dev-ipl-boot-integration
+# Issue #668: DEV-only IPL boot from RESET (host selection record, guest PCEX validation, RAM, execute).
+# Synthetic media only; one ROM, two synthetic IPLs. NOT compatible, NOT a BIOS ABI, NOT commercial.
+dev-ipl-boot-integration: dev-rom
+	$(PYTHON) tests/integration/geargrafx_dev_ipl_boot.py --mode "$(MODE)"
