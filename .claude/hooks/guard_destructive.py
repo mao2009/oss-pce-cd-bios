@@ -932,7 +932,8 @@ def analyze_argv(words, ctx, ps, depth):
     if any("=" in w and ("{" in w or "}" in w or "$" in w) for w in words):
         raise Deny("expansion", "an assignment with an expansion is not inspected")
     # Any mention of a program-naming variable (assignment, +=, export, read, printf -v) is denied (fail closed).
-    if any(v in w.replace("\\", "").replace('"', "").replace("'", "") for w in words for v in PROGRAM_ENV):
+    # Windows environment names are case-insensitive, so the comparison is made in uppercase.
+    if any(v in w.replace("\\", "").replace('"', "").replace("'", "").upper() for w in words for v in PROGRAM_ENV):
         raise Deny("program-option", "a program-naming environment variable is not inspected")
     words = strip_redirections(words)
     while True:
