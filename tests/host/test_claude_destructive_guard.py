@@ -1258,7 +1258,7 @@ class X3bProgramOptionTests(unittest.TestCase):
 
     DENY = [
         # sort, rg: long options, separate value, abbreviation, quoting
-        "sort --compress-program=sh payload.txt", "sort -S 1K --compress-program=bash p.txt",
+        "sort -o $OUT in.txt", "sort --compress-program=sh payload.txt", "sort -S 1K --compress-program=bash p.txt",
         "sort --compress-program sh payload.txt", "sort --compress=sh payload.txt",
         "rg --pre=sh x y", "rg --pre sh -n x src", "rg --pre-glob '*.x' x src", "rg --pre='sh' x src",
         # tar: long, short cluster, attached value, checkpoint action
@@ -1328,11 +1328,11 @@ class X3bProgramOptionTests(unittest.TestCase):
         "sort -u names.txt", "sort -o out.txt names.txt", "sort --check names.txt",
         "rg -n TODO src", "rg --pretty TODO src", "rg --no-config x",
         "find . -name '*.py'", "find . -exec grep -l x {} ;",
-        "tar -xf a.tar", "tar --checkpoint=100 -xf a.tar", "tar --checkpoint-action=echo=x -xf a.tar",
+        "tar -tf a.tar",
         "rsync -a src/ dst/", "rsync --delete -a a b",
         "ssh host", "ssh -o BatchMode=yes host", "ssh -p 22 host",
         "diff -l a b", "file -z a.gz",
-        "tar xf a.tar", "echo $HOME", "echo x\\y",
+        "echo $HOME", "echo x\\y",
         "sort -u names*.txt", "rg -n TODO src/*.py", "echo {a,b}", "rg --hyperlink-format=default x src",
         "printf %s $HOME",
     ]
@@ -1356,7 +1356,7 @@ class X3bMutationTests(unittest.TestCase):
         "GNU and BSD name aliases removed": ('    name = PROGRAM_ALIAS.get(name, name)', '    pass'),
         "program-naming environment variables not checked": (r'''    if any(v in w.replace("\\", "").replace('"', "").replace("'", "").upper() for w in words for v in PROGRAM_ENV):''',
                                                              r'''    if False:'''),
-        "expansion or escape in a tool argument not denied": (r'''        if "$" in a or "`" in a or SUBST in a or "\\" in a or BRACE_EXPANDS.search(a):''',
+        "expansion or escape in a tool argument not denied": (r'''        if "$" in a or "`" in a or SUBST in a or "\\" in a or brace_may_form_option(a, name):''',
                                                               r'''        if False:'''),
         "dashed or leading glob in a tool argument not denied": (r'''        if any(c in a for c in "*?[") and (a.startswith("-") or a[:1] in "*?["):''',
                                                       r'''        if False:'''),
@@ -1377,7 +1377,7 @@ class X3bMutationTests(unittest.TestCase):
                                                    r'''w.upper() for w in words'''),
         "environment name case folding removed": (r'''.replace("'", "").upper() for w in words''',
                                                   r'''.replace("'", "") for w in words'''),
-        "program option check not called": ('    program_option_rule(name, args)\n', ''),
+        "program option check not called": ('    program_option_rule(name, args, ctx)\n', ''),
     }
 
     def _run(self, hook_text):
@@ -1562,95 +1562,86 @@ class AllowlistRgMutationTests(unittest.TestCase):
                                 + "\n".join(failing))
 
 
-class AllowlistTarTests(unittest.TestCase):
-    """Issue #640 X3b (structural allowlist), tar (GNU tar 1.35 grammar). Decision-level only; nothing is executed.
-    The DENY list covers the normal, abnormal and boundary forms of the program-naming options; the ALLOW list covers
-    ordinary archive commands and the boundary cases where an option value is consumed and names no program."""
+class TarRuleTests(unittest.TestCase):
+    """Issue #640 X3b, design B+C: tar's explicit grammar (tar_rule). The only allowed forms are -t (list) of an explicitly
+    named .tar archive and -c (create) of an explicitly named archive, with repository-relative operands. Extraction and
+    everything else is DENY (fail closed). Decision-level only; nothing is executed."""
 
     DENY = [
-        # normal: the program-naming long options, by name and as a value
-        "tar --to-command=sh -xf a.tar", "tar --use-compress-program=sh -xf a.tar", "tar --info-script=sh -xf a.tar",
-        "tar --new-volume-script sh -xf a.tar", "tar --rsh-command=sh -xf a.tar", "tar --rmt-command=sh -xf a.tar",
-        # normal: a short letter that names a program (-I, -F), alone or in a cluster
-        "tar -I sh -xf a.tar", "tar -cIf sh a.tar", "tar -F sh a.tar",
-        # abnormal: letters and options the grammar does not list, or a flag given a value
-        "tar -y a.tar", "tar -xy a.tar", "tar --bogus -xf a.tar", "tar --to-stdout=x -xf a.tar",
-        # abnormal: an abbreviation that is ambiguous or resolves to an unlisted option
-        "tar --to -xf a.tar", "tar --f -xf a.tar", "tar --use=sh -xf a.tar", "tar --rm=sh -xf a.tar",
-        # abnormal: --checkpoint-action with an exec value, as "=", as the next word, in any case
-        "tar --checkpoint-action=exec=sh -xf a.tar", "tar --checkpoint-action exec=sh -xf a.tar",
-        "tar --checkpoint-action=Exec=sh -xf a.tar", "tar --checkpoint-=exec=sh -xf a.tar",
-        # boundary: options after a file name still count (GNU tar permutes options)
-        "tar -xf a.tar -I sh", "tar a.tar --to-command=sh",
-        # boundary: an old-style cluster is read as its dashed form
-        "tar xIf sh a.tar", "tar Ixf sh a.tar",
-        # boundary: old-style letters take their arguments from the following words in order, so I takes sh
-        "tar cfI sh a.tar",
-        # the GNU and BSD names
-        "gtar --to-command=sh -xf a.tar", "bsdtar -Fsh a.tar",
+        # extraction writes to paths the archive names, which cannot be inspected from argv
+        "tar -xf a.tar", "tar --extract --file a.tar", "tar -x -f a.tar", "tar -xvf a.tar -C dir", "tar -x a.tar",
+        "tar xf a.tar", "tar cf out.tar src", "tar tf a.tar",
+        # operations other than list and create
+        "tar -rf a.tar x", "tar -uf a.tar x", "tar -df a.tar", "tar -Af a.tar b.tar", "tar -tcf a.tar src",
+        # stdin, stdout and default archives
+        "tar -tf - ", "cat a.tar | tar -tf -", "tar -cf - src", "tar -t", "tar -c src",
+        # compression and program-naming letters and long options
+        "tar -tzf a.tgz", "tar -czf out.tar src", "tar -cjf out.tar src", "tar -cIf sh a.tar", "tar --gzip -cf out.tar src",
+        "tar --list --to-stdout --file=a.tar", "tar -t --to-command=sh -f a.tar", "tar --checkpoint=100 -tf a.tar",
+        # archive names: a glob, a compressed name, a remote host, an absolute or escaping path, .claude or .git
+        "tar -tf a*.tar", "tar -tf a[ab].tar", "tar -tf a.tgz", "tar -tf a.tar.gz", "tar -tf ../x.tar", "tar -tf /abs/x.tar",
+        "tar -tf C:/x.tar", "tar -tf host:x.tar", "tar -cf .claude/x.tar src", "tar -cf .cl?ude/x.tar src",
+        "tar -cf .git/x.tar src", "tar -cf out.tar -C ../x .", "tar -cf out.tar -C .claude .", "tar -cf out.tar -C /abs .",
+        # a leading glob can expand to a dashed name (a file called -x), so it is an option position: denied (the quoted
+        # form is the known over-denial of a quoted non-dashed glob value, accepted as LOW)
+        "tar -tf a.tar '*.py'",
+        # members: an escaping or absolute name, a remote host, an expansion
+        "tar -cf out.tar ../secret", "tar -cf out.tar /etc/passwd", "tar -cf out.tar a:b", "tar -cf out.tar $(echo a)",
     ]
     ALLOW = [
-        # normal archive commands
-        "tar -xf a.tar", "tar -tvf a.tar", "tar -C dir -xf a.tar", "tar --list --file=a.tar",
-        "tar --strip-components=1 -xf a.tar", "tar --sort=name -cf a.tar src", "tar -T list.txt -cf a.tar",
-        "tar -xf a.tar --no-same-owner", "tar --exclude-vcs -cf a.tar src", "tar --format=gnu -cf a.tar src",
-        "gtar -xf a.tar", "bsdtar -xf a.tar",
-        # the checkpoint forms that name no program
-        "tar --checkpoint=100 -xf a.tar", "tar --checkpoint-action=echo=x -xf a.tar",
-        "tar --checkpoint-action=echo=exec -xf a.tar",
-        # boundary: an option value is consumed; the next word is a value, not an option
-        "tar -C -I -xf a.tar", "tar --file --to-command=sh -cf out.tar",
-        # boundary: after --, every word is a file name
-        "tar -xf a.tar -- -I",
-        # old-style clusters
-        "tar xf a.tar", "tar cf out.tar -C dir .", "tar cvf x.tar src",
-        # a glob that does not start a word is a file name
-        "tar -xf a.tar names*.txt",
+        # list of an explicit .tar archive
+        "tar -tf a.tar", "tar -tvf a.tar", "tar --list --file=a.tar", "tar --list --file a.tar", "tar -t -f ./a.tar",
+        "tar -tf a.tar.gz.tar", "tar -tf 'a b.tar'", "tar -tf a.tar src/file.txt",
+        "tar -tf a.tar -C dir", "tar -tf a.tar -- x",
+        # create of an explicit archive, with repository-relative operands
+        "tar -cf out.tar src", "tar -cvf out.tgz dir", "tar -cf out.tar -C dir .", "tar -cf out.tar src tests",
+        "tar --create --file=out.tar src", "tar -cf out.tar src/*.py", "tar -cf out.tar.xz src",
     ]
 
-    def test_tar_deny_list(self):
+    def test_tar_rule_deny_list(self):
         for cmd in self.DENY:
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd), "DENY")
 
-    def test_tar_allow_list(self):
+    def test_tar_rule_allow_list(self):
         for cmd in self.ALLOW:
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd), "ALLOW")
 
-    def test_tar_grammar_names_are_in_the_full_list(self):
-        # An abbreviation is resolved against full_long, so every listed option must be in it.
-        spec = guard.ALLOWLIST["tar"]
-        listed = spec["long_flags"] + spec["long_args"] + spec["long_optional_any"] + tuple(spec["long_arg_deny_prefix"])
-        for name in listed:
-            with self.subTest(option=name):
-                self.assertIn(name, spec["full_long"])
+    def test_tar_archive_through_a_symlink_that_leaves_the_repository_is_denied(self):
+        # Path normalization: a symlink inside the repository that points outside it is followed, so the operand leaves.
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as outside:
+            repo = os.path.realpath(td)
+            real_dir = os.path.join(repo, "real")
+            os.makedirs(real_dir)
+            link = os.path.join(repo, "lnk")
+            try:
+                os.symlink(os.path.realpath(outside), link, target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest("symlinks cannot be created here (" + type(exc).__name__ + "): NOT_VERIFIED on this host")
+            def decide(cmd):
+                # The working directory must be the temporary repository: relative operands resolve from it.
+                body = json.dumps({"session_id": "t", "hook_event_name": "PreToolUse", "cwd": repo,
+                                   "tool_name": "Bash", "tool_input": {"command": cmd}})
+                return guard.decide(body, repo_root=repo)[0]
+            self.assertEqual(decide("tar -tf real/a.tar"), "ALLOW")
+            self.assertEqual(decide("tar -tf lnk/a.tar"), "DENY")
 
 
-class AllowlistTarMutationTests(unittest.TestCase):
-    """Issue #640 X3b (allowlist), tar: each rule must be detected by a named AllowlistTarTests failure."""
+class TarRuleMutationTests(unittest.TestCase):
+    """Issue #640 X3b, design B+C: each safety condition of tar_rule must be detected by a named TarRuleTests failure."""
 
     MUTANTS = {
-        "to-command allowed as a long argument": (
-            '"long_args": ("add-file", "after-date",', '"long_args": ("to-command", "add-file", "after-date",'),
-        "unlisted long option not denied": (
-            '                raise Deny("program-option", name + " option is not in the allowlist: " + a)', '                pass'),
-        "-I allowed as a short letter": ('"short_args": "bfCTXLHVKNg",', '"short_args": "bfCTXLHVKNgI",'),
-        "-F allowed as a short letter": ('"short_args": "bfCTXLHVKNg",', '"short_args": "bfCTXLHVKNgF",'),
-        "info-script allowed as a long argument": (
-            '"long_args": ("add-file", "after-date",', '"long_args": ("info-script", "add-file", "after-date",'),
-        "rsh-command allowed as a long argument": (
-            '"long_args": ("add-file", "after-date",', '"long_args": ("rsh-command", "add-file", "after-date",'),
-        "checkpoint-action exec value rule removed": (
-            '"long_arg_deny_prefix": {"checkpoint-action": ("exec",)},', '"long_arg_deny_prefix": {},'),
-        "checkpoint-action exec value matched case-sensitively": (
-            'value.lower().startswith(p)', 'value.startswith(p)'),
-        "long option value not consumed from the next word": (
-            '                if not eq:\n                    i += 1  # the value is the next word\n                if any(',
-            '                if False:\n                    i += 1  # the value is the next word\n                if any('),
-        "optional checkpoint value allowed as a separate word": (
-            '"long_optional_any": ("backup", "atime-preserve", "checkpoint", ',
-            '"long_optional_any": ("backup", "atime-preserve", '),
+        ".tar requirement for list removed": (
+            '    if "t" in ops and not archive.lower().endswith(".tar"):', '    if False:'),
+        "exactly one of list or create not required": (
+            '    if ops not in ({"t"}, {"c"}):', '    if False:'),
+        "glob in an archive or directory name allowed": (
+            '    if role != "member" and any(c in path for c in "*?["):', '    if False:'),
+        "containment inside the repository not checked": (
+            '    if not (k == ctx.root or inside(k, ctx.root)):', '    if False:'),
+        "-C directory not checked": (
+            '    if directory is not None and not tar_path_ok(directory, ctx, "dir"):', '    if False:'),
     }
 
     def _run(self, hook_text):
@@ -1664,23 +1655,29 @@ class AllowlistTarMutationTests(unittest.TestCase):
             with open(THIS_FILE, encoding="utf-8") as f:
                 write_text(os.path.join(host, "test_claude_destructive_guard.py"), f.read())
             proc = subprocess.run([sys.executable, "-m", "unittest", "-v",
-                                   "test_claude_destructive_guard.AllowlistTarTests"], cwd=host,
+                                   "test_claude_destructive_guard.TarRuleTests"], cwd=host,
                                   capture_output=True, text=True, timeout=300)
             return proc.returncode, proc.stderr
 
-    def test_tar_allowlist_tests_detect_each_mutant(self):
+    # Detectable only where a link can leave the repository (symlinks): NOT_VERIFIED on Windows, verified on Linux.
+    LINUX_ONLY = ("containment inside the repository not checked",)
+
+    def test_tar_rule_tests_detect_each_mutant(self):
         with open(HOOK, encoding="utf-8") as f:
             original = f.read()
         code, out = self._run(original)
-        self.assertEqual(code, 0, "unmutated copy must pass AllowlistTarTests:\n" + out[-800:])
+        self.assertEqual(code, 0, "unmutated copy must pass TarRuleTests:\n" + out[-800:])
         for name, (old, new) in self.MUTANTS.items():
             with self.subTest(mutant=name):
+                if name in self.LINUX_ONLY and os.name != "posix":
+                    # On Windows the drive-relative path check denies these before the mutated rule is reached. The
+                    # detection is only observable where the path is not a drive path: NOT_VERIFIED here (SKIP, not PASS).
+                    self.skipTest("NOT_VERIFIED on this host: detected only where the path is not a drive path (Linux)")
                 self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
                 code, out = self._run(original.replace(old, new))
                 failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
-                detected = any("AllowlistTarTests." in ln for ln in failing)
-                self.assertTrue(detected, "mutant not detected by an AllowlistTarTests test: " + name + "\n"
-                                + "\n".join(failing))
+                detected = any("TarRuleTests." in ln for ln in failing)
+                self.assertTrue(detected, "mutant not detected by a TarRuleTests test: " + name + "\n" + "\n".join(failing))
 
 
 class AllowlistRsyncTests(unittest.TestCase):
@@ -1923,7 +1920,6 @@ class ReviewFixTests(unittest.TestCase):
         # braces that bash does not expand (no comma and no sequence) are literal
         "rg 'a{2}' src",
         # tar: a colon is allowed with --force-local (a local archive); ordinary old-style clusters
-        "tar cf out.tar src",
     ]
 
     def test_review_deny_list(self):
@@ -1950,13 +1946,8 @@ class ReviewFixMutationTests(unittest.TestCase):
             r'''    if any(re.match(r"PATH\+?=", w.replace("\\", "")''', r'''    if any((w.replace("\\", "")'''),
         "-J strict value check removed": (
             '                    if ch in spec.get("short_value_strict", "") and (', '                    if False and ('),
-        "old-style tar letter check removed": (
-            '        if any(c not in spec["short_flags"] + spec["short_args"] for c in args[0]):',
-            '        if False:'),
-        "tar colon check removed": (
-            '    if name == "tar" and any(":" in a for a in args):', '    if False:'),
         "LD_PRELOAD removed from the program variables": ('"RSYNC_SHELL", "LD_PRELOAD",', '"RSYNC_SHELL",'),
-        "brace groups without a comma or sequence denied": ('BRACE_EXPANDS.search(a):', '"{" in a or "}" in a:'),
+        "brace groups without a comma or sequence denied": ('or brace_may_form_option(a, name):', 'or "{" in a or "}" in a:'),
     }
 
     def _run(self, hook_text):
@@ -2008,10 +1999,10 @@ class PathCompressorLibraryTests(unittest.TestCase):
         # rg: the search-zip option runs an external decompressor
         "rg -z needle d.gz", "rg --search-zip needle d.gz", "rg -nz needle src", "rg --search-zip=yes x src",
         # PATH+= appends to the search path a program tool uses
-        "PATH+=:/x rsync -a a host:b", "env PATH+=:/x rsync -a a h:b", "PATH+=:/x scp a h:b", "PATH+=:/x tar -tf a",
+        "PATH+=:/x rsync -a a host:b", "env PATH+=:/x rsync -a a h:b", "PATH+=:/x scp a h:b", "PATH+=:/x tar -tf a.tar",
         # library-loading variables, as prefix assignments and through env
-        "LD_LIBRARY_PATH=/tmp/x tar -tf a", "LD_AUDIT=/tmp/x.so tar -tf a", "DYLD_INSERT_LIBRARIES=/x tar -tf a",
-        "SSH_SK_PROVIDER=/tmp/x.so ssh h", "env LD_LIBRARY_PATH=/x tar -tf a",
+        "LD_LIBRARY_PATH=/tmp/x tar -tf a.tar", "LD_AUDIT=/tmp/x.so tar -tf a.tar", "DYLD_INSERT_LIBRARIES=/x tar -tf a.tar",
+        "SSH_SK_PROVIDER=/tmp/x.so ssh h", "env LD_LIBRARY_PATH=/x tar -tf a.tar",
         # ProxyJump names hosts: a dashed word, a KEY=VALUE pair or a space in its value is an option
         "ssh -o ProxyJump=-oProxyCommand=x h", "ssh -o 'ProxyJump=-oX' h", "ssh -o ProxyJump=h=x h",
         "ssh -o 'ProxyJump h x' h",
@@ -2025,13 +2016,13 @@ class PathCompressorLibraryTests(unittest.TestCase):
     ]
     ALLOW = [
         # ordinary archive commands without a compressor flag; gzip is a separate command, not a program option
-        "tar -cf out.tar src", "tar -xf a.tar -C dir", "tar -tvf a.tar", "tar -cf out.tar src && gzip out.tar",
+        "tar -cf out.tar src", "tar -tvf a.tar", "tar -cf out.tar src && gzip out.tar",
         # ordinary rg use; -a is --text, not a decompressor
         "rg -n needle src", "rg -a needle src",
         # PATH with no program tool in the command; ordinary ProxyJump hosts
         "PATH+=:/x ls", "ssh -o ProxyJump=user@jump:2222 h", "ssh -o 'ProxyJump=bastion' h",
         # the documented workaround: decompression in gzip (not a program option), the archive on stdin for tar
-        "gzip -dc a.tgz | tar -xf -", "tar -xf a.tar",
+        "gzip -dc a.tgz",
     ]
 
     def test_compressor_and_library_deny_list(self):
@@ -2049,12 +2040,7 @@ class PathCompressorLibraryMutationTests(unittest.TestCase):
     """Issue #640 X3b, owner scope: each rule must be detected by a named PathCompressorLibraryTests failure."""
 
     MUTANTS = {
-        "tar z flag restored": ('"short_flags": "AcdrtuxnSGOmpskUWBihlRvwoPM",', '"short_flags": "AcdrtuxnSGOmpskUWBihlRvwoPMz",'),
-        "tar j flag restored": ('"short_flags": "AcdrtuxnSGOmpskUWBihlRvwoPM",', '"short_flags": "AcdrtuxnSGOmpskUWBihlRvwoPMj",'),
         "rg z flag restored": ('"short_flags": "FisvxUSawLubnNHIclopqVPh",', '"short_flags": "FisvxUSawzLubnNHIclopqVPh",'),
-        "tar gzip long flag restored": (
-            '"long_flags": ("absolute-names", "acls", "anchored", "append", "block-number",',
-            '"long_flags": ("absolute-names", "acls", "anchored", "append", "gzip", "block-number",'),
         "PATH+= not matched": (r'''re.match(r"PATH\+?=",''', r'''re.match(r"PATH=",'''),
         "LD_AUDIT removed from the program variables": (
             '"LD_LIBRARY_PATH", "LD_AUDIT", "DYLD_INSERT_LIBRARIES"', '"LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES"'),
@@ -2106,9 +2092,6 @@ class ReviewRound2MutationTests(unittest.TestCase):
             '"type-list", "pretty", "ignore-case", "invert-match"'),
         "rsync --info removed": ('"sockopts", "outbuf", "info", "debug"),', '"sockopts", "outbuf"),'),
         "rsync --compress removed": ('"no-motd", "compress", "checksum",', '"no-motd", "checksum",'),
-        "tar compressed-file suffix check removed": (
-            '    if name == "tar" and any(re.sub(r"[ .]+$", "", a.lower()).endswith(COMPRESSED_SUFFIXES) for a in args)',
-            '    if False and any(re.sub(r"[ .]+$", "", a.lower()).endswith(COMPRESSED_SUFFIXES) for a in args)'),
     }
 
     def _run(self, hook_text):
@@ -2161,7 +2144,7 @@ class ReviewRound3Tests(unittest.TestCase):
         # tar creates without reading: an archive name with a compressed suffix is written uncompressed
         "tar -cf out.tgz dir", "tar -cvf out.tgz dir", "tar -cf out.tar dir", "tar -cf out.tar.xz src",
         # tar: a glob operand whose literal tail is not a compressed suffix (names*.txt and a*.tar)
-        "tar -tf a*.tar", "tar -xf a.tar names*.txt",
+        "tar -tf a.tar names*.txt",
         # sftp with no piped or redirected input
         "sftp host",
     ]
@@ -2181,15 +2164,9 @@ class ReviewRound3MutationTests(unittest.TestCase):
     """Issue #640 X3b, review round 3: each rule must be detected by a named ReviewRound3Tests failure."""
 
     MUTANTS = {
-        "archive suffix compared without removing trailing dots and spaces": (
-            'any(re.sub(r"[ .]+$", "", a.lower()).endswith(COMPRESSED_SUFFIXES) for a in args)',
-            'any(a.lower().endswith(COMPRESSED_SUFFIXES) for a in args)'),
-        "create-only exemption removed": ('            and not tar_only_creates(args):', '            and True:'),
-        "glob operand rule removed": ('            if not ext or ("." + ext) in COMPRESSED_SUFFIXES:', '            if False:'),
         "sftp piped or redirected input rule removed": (
-            '    if tool != "PowerShell" and re.search(r"sftp", cmd, re.IGNORECASE) and re.search(r"[|<]", cmd):',
-            '    if False:'),
-        ".tb2 suffix removed": ('".tb2", ".bz", ', ''),
+            '    if re.search(r"sftp", squashed, re.IGNORECASE) and (',
+            '    if False and ('),
     }
 
     def _run(self, hook_text):
@@ -2244,7 +2221,7 @@ class ReviewRound4Tests(unittest.TestCase):
     ]
     ALLOW = [
         # tar: a glob operand with a non-compressed extension (names*.txt, a*.tar) and create without a colon
-        "tar -tf a*.tar", "tar -xf a.tar names*.txt", "tar -cf out.tar dir",
+        "tar -tf a.tar names*.txt", "tar -cf out.tar dir",
         # sort and ssh writes outside .claude
         "sort -o out.txt names.txt", "ssh -E log.txt host",
         # sftp with no piped or redirected input
@@ -2266,23 +2243,18 @@ class ReviewRound4MutationTests(unittest.TestCase):
     """Issue #640 X3b, review round 4: each rule must be detected by a named ReviewRound4Tests failure."""
 
     MUTANTS = {
-        "glob operand extension check replaced by the tail-only test": (
-            '            if not ext or ("." + ext) in COMPRESSED_SUFFIXES:', '            if not tail or tail.endswith(COMPRESSED_SUFFIXES):'),
-        "colon check exempted by --force-local": (
-            '    if name == "tar" and any(":" in a for a in args):',
-            '    if name == "tar" and "--force-local" not in args and any(":" in a for a in args):'),
         "sftp piped or redirected input rule removed": (
-            '    if tool != "PowerShell" and re.search(r"sftp", cmd, re.IGNORECASE) and re.search(r"[|<]", cmd):',
-            '    if False:'),
+            '    if re.search(r"sftp", squashed, re.IGNORECASE) and (',
+            '    if False and ('),
         "DYLD_FALLBACK_LIBRARY_PATH removed": ('"DYLD_FALLBACK_LIBRARY_PATH", "DYLD_LIBRARY_PATH", ', ''),
         "sort -o write under .claude not denied": (
-            r'''                    if ch in spec.get("short_writes", "") and ".claude" in value.lower().replace("\\", "/"):''',
+            '                    if ch in spec.get("short_writes", "") and names_claude(value):',
             '                    if False:'),
         "sort --output write under .claude not denied": (
-            r'''                if opt in spec.get("long_writes", ()) and ".claude" in value.lower().replace("\\", "/"):''',
+            '                if opt in spec.get("long_writes", ()) and names_claude(value):',
             '                if False:'),
         "ssh -o value under .claude not denied": (
-            r'''                        if ".claude" in value.lower().replace("\\", "/"):''', '                        if False:'),
+            '                        if names_claude(value):', '                        if False:'),
     }
 
     def _run(self, hook_text):
@@ -2312,6 +2284,116 @@ class ReviewRound4MutationTests(unittest.TestCase):
                 failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
                 detected = any("ReviewRound4Tests." in ln for ln in failing)
                 self.assertTrue(detected, "mutant not detected by a ReviewRound4Tests test: " + name + "\n"
+                                + "\n".join(failing))
+
+
+class ReviewRound5Tests(unittest.TestCase):
+    """Issue #640 X3b, review round 5 and the owner rulings: a comment's apostrophe (tokenizer), .claude targets written
+    through a glob, pushd/popd and Push-Location, sftp input in any spelling and under PowerShell or coproc, a PowerShell
+    environment change next to a program tool, a cd into a glob that may name .claude, newlines in tool arguments, and the
+    brace rule (rg 'x{2,3}' is allowed; a brace that can start a dashed word is still denied). Decision-level only."""
+
+    DENY = [
+        # tokenizer: a word-initial # is a comment; its apostrophe is not a quote, and the next line is a command
+        "sort x # it's\nrm -rf d", "sort x # it's\necho '",
+        # .claude written through a glob (fnmatch on the path component), through sort, ssh and tar
+        "sort -o .cl?ude/x in.txt", "sort -o .cl[a]ude/x in.txt", "sort --output .cl?ude/x in.txt",
+        "sort -T .claude in.txt", "ssh -M -S .claude/cs host", "ssh -E .cl?ude/log host", "rsync -a src .cl?ude/",
+        "cp payload .cl?ude/settings.json", "echo x | tee .cl?ude/x", "ln -s .cl?ude linkdir",
+        # directory changes: pushd and Push-Location are tracked; popd and Pop-Location are denied
+        "pushd .claude && cp payload settings.json", "cd .cl?ude && cp x y", "popd",
+        # sftp input: quote-split names, coproc, and PowerShell piped input
+        "printf '!id\\n' | s''ftp host", "coproc sftp host; echo '!id'",
+        # a newline inside a tool argument is not inspected
+        "ssh -o 'Port=22\nProxyCommand=x' host",
+        # PowerShell: a program tool with an environment change, and a directory change into a glob that may name .claude
+        "Push-Location .cl?ude; Copy-Item x y",
+        # the brace rule still denies a brace that can start a dashed word
+        "sort --{compress-program=sh,} x",
+    ]
+    ALLOW = [
+        # comments: the comment is not a command; the apostrophe does not open a quote
+        "sort x # it's",
+        # .claude is not named by these
+        "sort -o out.txt names.txt", "ssh -E log.txt host", "pushd src && ls", "cp a b",
+        # sftp with no piped or redirected input
+        "sftp host",
+        # braces that bash does not expand (no comma, or a plain prefix)
+        "rg 'x{2,3}' src", "rg 'a{2}' src", "echo {a,b}",
+    ]
+    POWERSHELL_DENY = ["'!id' | sftp host", "Push-Location .cl?ude; Copy-Item x y",
+                       "Set-Item -Path ('env:RSYNC_' + 'RSH') -Value 'x'; rsync -a src host:dst"]
+
+    def test_round5_deny_list(self):
+        for cmd in self.DENY:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+
+    def test_round5_allow_list(self):
+        for cmd in self.ALLOW:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "ALLOW")
+
+    def test_round5_powershell(self):
+        for cmd in self.POWERSHELL_DENY:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
+
+
+class ReviewRound5MutationTests(unittest.TestCase):
+    """Issue #640 X3b, review round 5: each rule must be detected by a named ReviewRound5Tests failure."""
+
+    MUTANTS = {
+        "word-initial # comment skip removed": (
+            r'''        if quote is None and c == "#" and (i == 0 or text[i - 1] in " \t\n;&|()"):''', '        if False:'),
+        "glob component match removed from names_claude": (
+            '    return any(part and fnmatch.fnmatchcase(".claude", part) for part in v.split("/"))', '    return False'),
+        "pushd removed from the directory-change names": (
+            'CD_NAMES = {"cd", "chdir", "set-location", "sl", "pushd", "push-location"}',
+            'CD_NAMES = {"cd", "chdir", "set-location", "sl"}'),
+        "popd denied rule removed": ('"popd", "pop-location"}', '"popd_x"}'),
+        "ssh -S write check removed": ('"short_writes": "ES",', '"short_writes": "E",'),
+        "sort -T write check removed": ('"short_writes": "oT",', '"short_writes": "o",'),
+        "sftp coproc rule removed": (
+            r'''            re.search(r"[|<]", cmd) or re.search(r"\bcoproc\b", cmd, re.IGNORECASE)):''',
+            r'''            re.search(r"[|<]", cmd)):'''),
+        "quotes and backslashes not removed before the sftp check": (
+            r'''    squashed = re.sub(r"[\"'\\]", "", cmd)''', '    squashed = cmd'),
+        "PowerShell environment-change rule removed": (
+            r'''    if tool == "PowerShell" and re.search(r"env:|\$env|environment", cmd, re.IGNORECASE) and re.search(''',
+            r'''    if False and re.search('''),
+        "newline in a tool argument not denied": (r'''        if "\n" in a:''', '        if False:'),
+        "brace rule restored to every brace group": (
+            'or brace_may_form_option(a, name):', 'or BRACE_EXPANDS.search(a):'),
+    }
+
+    def _run(self, hook_text):
+        with tempfile.TemporaryDirectory() as td:
+            root = os.path.realpath(td)
+            hooks = os.path.join(root, ".claude", "hooks")
+            host = os.path.join(root, "tests", "host")
+            os.makedirs(hooks)
+            os.makedirs(host)
+            write_text(os.path.join(hooks, "guard_destructive.py"), hook_text)
+            with open(THIS_FILE, encoding="utf-8") as f:
+                write_text(os.path.join(host, "test_claude_destructive_guard.py"), f.read())
+            proc = subprocess.run([sys.executable, "-m", "unittest", "-v",
+                                   "test_claude_destructive_guard.ReviewRound5Tests"], cwd=host,
+                                  capture_output=True, text=True, timeout=300)
+            return proc.returncode, proc.stderr
+
+    def test_round5_tests_detect_each_mutant(self):
+        with open(HOOK, encoding="utf-8") as f:
+            original = f.read()
+        code, out = self._run(original)
+        self.assertEqual(code, 0, "unmutated copy must pass ReviewRound5Tests:\n" + out[-800:])
+        for name, (old, new) in self.MUTANTS.items():
+            with self.subTest(mutant=name):
+                self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
+                code, out = self._run(original.replace(old, new))
+                failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
+                detected = any("ReviewRound5Tests." in ln for ln in failing)
+                self.assertTrue(detected, "mutant not detected by a ReviewRound5Tests test: " + name + "\n"
                                 + "\n".join(failing))
 
 

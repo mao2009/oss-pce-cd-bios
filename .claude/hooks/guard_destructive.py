@@ -6,6 +6,7 @@ permissionDecision "deny" (exit 0). An ALLOW prints nothing (exit 0), so the
 normal permission flow still applies. The command is only inspected, never run.
 Rules: docs/claude-destructive-guard.md.
 """
+import fnmatch
 import json
 import os
 import posixpath
@@ -50,10 +51,12 @@ EXPR_SYNTAX_RE = re.compile(r"[,()@{}$]")
 # PowerShell method call syntax (.Delete(), $x[0].Delete()). The "(" would split the call from its object, so the call
 # is refused on the raw text before any split. Property access ($_.Name) is not a call and is not refused.
 METHOD_CALL_RE = re.compile(r"(?i)\.\s*(?:\w+\s*\(|['\"(])|-m(?:e|em\w*)?\b")
-CD_NAMES = {"cd", "chdir", "set-location", "sl"}
+CD_NAMES = {"cd", "chdir", "set-location", "sl", "pushd", "push-location"}
 # Always denied: destructive by nature, or cannot be inspected.
 ALWAYS_DENY = {"unlink", "shred", "rmdir", "rd", "dd", "mkfs", "truncate", "wipefs",
-               "srm", "cmd", "cmd.exe"}
+               "srm", "cmd", "cmd.exe",
+               # popd and Pop-Location return to a directory the guard cannot know (the stack is not tracked): denied.
+               "popd", "pop-location"}
 PY_NAME = re.compile(r"^python(3(\.\d+)?)?$|^py$")
 # Placeholder for a $(...), `...`, <(...) or >(...) body. NUL is rejected on input,
 # so the placeholder can never collide with user text.
@@ -552,6 +555,12 @@ def split_segments(text, ps=False):
             cur.append(c)
             i += 1
             continue
+        if quote is None and c == "#" and (i == 0 or text[i - 1] in " \t\n;&|()"):
+            # A word-initial unquoted # starts a comment that runs to the end of the line. Quotes inside it are not
+            # quotes (sort x # it's): the comment is skipped, and the newline that ends it still separates commands.
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+            continue
         if c in "'\"":
             if quote is None and i + 1 < n and text[i + 1] == c:
                 i += 2                       # empty pair: r""m is rm
@@ -756,6 +765,19 @@ def tar_only_creates(args):
     return creates and not reads
 # A brace group that bash expands: it has a comma or a sequence (x{I,}, {1..3}). A brace group without either is literal.
 BRACE_EXPANDS = re.compile(r"\{[^{}]*(,|\.\.)[^{}]*\}")
+
+
+def brace_may_form_option(a, name):
+    """A brace group bash expands can make a word that is an option. Any braced tar word counts (tar's old-style cluster
+    reads its first letters). Otherwise only a word that can expand to a dashed word counts: a group after a plain prefix
+    (x{2,3}) expands to plain words, so it is not an option. A group with no prefix can start with a dash."""
+    m = BRACE_EXPANDS.search(a)
+    if not m:
+        return False
+    if name == "tar":
+        return True
+    prefix = a[:m.start()]
+    return prefix == "" or prefix.startswith("-")
 # Builtins that set a variable from their arguments (export $A$B, declare, read, ...).
 SETTER_BUILTINS = ("export", "declare", "typeset", "local", "readonly", "read")
 # Environment variables that name a program the tool starts (prefix assignments: VAR=x tool, env VAR=x tool).
@@ -789,7 +811,7 @@ ALLOWLIST = {
                       "temporary-directory", "parallel", "unique", "zero-terminated", "help", "version"),
         "short_flags": "bdfgiMhnRrVcCmsuz",
         "short_args": "kotTS",
-        "short_writes": "o",
+        "short_writes": "oT",
         "long_writes": ("output",),
         "long_flags": ("ignore-leading-blanks", "dictionary-order", "ignore-case", "general-numeric-sort",
                        "ignore-nonprinting", "month-sort", "human-numeric-sort", "numeric-sort", "random-sort",
@@ -833,70 +855,6 @@ ALLOWLIST = {
                       "context-separator", "field-context-separator", "field-match-separator", "path-separator",
                       "sort", "sortr", "engine", "dfa-size-limit", "regex-size-limit", "max-filesize", "ignore-file",
                       "color", "encoding", "context", "after-context", "before-context", "generate"),
-    },
-    # GNU tar 1.35 (tar --help). Program-naming options (--to-command, --use-compress-program, --info-script,
-    # --new-volume-script, --rsh-command, --rmt-command, -I, -F) are in full_long but not in any allow list, so they
-    # are DENY. --checkpoint-action names a program when its value starts with exec.
-    "tar": {
-        "full_long": ("absolute-names", "acls", "add-file", "after-date", "anchored", "append", "atime-preserve",
-                      "auto-compress", "backup", "block-number", "blocking-factor", "bzip2", "catenate",
-                      "check-device", "check-links", "checkpoint", "checkpoint-action", "clamp-mtime", "compare",
-                      "compress", "concatenate", "confirmation", "create", "delay-directory-restore", "delete",
-                      "dereference", "diff", "directory", "exclude", "exclude-backups", "exclude-caches",
-                      "exclude-caches-all", "exclude-caches-under", "exclude-from", "exclude-ignore",
-                      "exclude-ignore-recursive", "exclude-tag", "exclude-tag-all", "exclude-tag-under", "exclude-vcs",
-                      "exclude-vcs-ignores", "extract", "file", "files-from", "force-local", "format", "full-time",
-                      "get", "group", "group-map", "gunzip", "gzip", "hard-dereference", "help", "hole-detection",
-                      "ignore-case", "ignore-command-error", "ignore-failed-read", "ignore-zeros", "incremental",
-                      "index-file", "info-script", "interactive", "keep-directory-symlink", "keep-newer-files",
-                      "keep-old-files", "label", "level", "list", "listed-incremental", "lzip", "lzma", "lzop", "mode",
-                      "mtime", "multi-volume", "new-volume-script", "newer", "newer-mtime", "no-acls", "no-anchored",
-                      "no-auto-compress", "no-check-device", "no-delay-directory-restore", "no-ignore-case",
-                      "no-ignore-command-error", "no-null", "no-overwrite-dir", "no-quote-chars", "no-recursion",
-                      "no-same-owner", "no-same-permissions", "no-seek", "no-selinux", "no-unquote",
-                      "no-verbatim-files-from", "no-wildcards", "no-wildcards-match-slash", "no-xattrs", "null",
-                      "numeric-owner", "occurrence", "old-archive", "one-file-system", "one-top-level", "overwrite",
-                      "overwrite-dir", "owner", "owner-map", "pax-option", "portability", "posix", "preserve-order",
-                      "preserve-permissions", "quote-chars", "quoting-style", "read-full-records", "record-size",
-                      "recursion", "recursive-unlink", "remove-files", "restrict", "rmt-command", "rsh-command",
-                      "same-order", "same-owner", "same-permissions", "seek", "selinux", "show-defaults",
-                      "show-omitted-dirs", "show-snapshot-field-ranges", "show-stored-names",
-                      "show-transformed-names", "skip-old-files", "sort", "sparse", "sparse-version",
-                      "starting-file", "strip-components", "suffix", "tape-length", "test-label", "to-command",
-                      "to-stdout", "totals", "touch", "transform", "unlink-first", "unquote", "update",
-                      "use-compress-program", "usage", "utc", "verbatim-files-from", "verbose", "verify", "version",
-                      "volno-file", "warning", "wildcards", "wildcards-match-slash", "xattrs", "xattrs-exclude",
-                      "xattrs-include", "xform", "xz", "zstd", "uncompress", "ungzip"),
-        "short_flags": "AcdrtuxnSGOmpskUWBihlRvwoPM",
-        "short_args": "bfCTXLHVKNg",
-        "long_flags": ("absolute-names", "acls", "anchored", "append", "block-number",
-                       "catenate", "check-device", "check-links", "clamp-mtime", "compare", "concatenate",
-                       "confirmation", "create", "delay-directory-restore", "delete", "dereference", "diff",
-                       "exclude-backups", "exclude-caches", "exclude-caches-all", "exclude-caches-under", "exclude-vcs",
-                       "exclude-vcs-ignores", "extract", "force-local", "full-time", "get",
-                       "hard-dereference", "help", "ignore-case", "ignore-command-error", "ignore-failed-read",
-                       "ignore-zeros", "incremental", "interactive", "keep-directory-symlink", "keep-newer-files",
-                       "keep-old-files", "list", "multi-volume", "no-acls", "no-anchored",
-                       "no-auto-compress", "no-check-device", "no-delay-directory-restore", "no-ignore-case",
-                       "no-ignore-command-error", "no-null", "no-overwrite-dir", "no-recursion", "no-same-owner",
-                       "no-same-permissions", "no-seek", "no-selinux", "no-unquote", "no-verbatim-files-from",
-                       "no-wildcards", "no-wildcards-match-slash", "no-xattrs", "null", "numeric-owner", "old-archive",
-                       "one-file-system", "overwrite", "overwrite-dir", "portability", "posix", "preserve-order",
-                       "preserve-permissions", "read-full-records", "recursion", "recursive-unlink", "remove-files",
-                       "restrict", "same-order", "same-owner", "same-permissions", "seek", "selinux", "show-defaults",
-                       "show-omitted-dirs", "show-snapshot-field-ranges", "show-stored-names",
-                       "show-transformed-names", "skip-old-files", "sparse", "test-label", "to-stdout", "touch",
-                       "unlink-first", "unquote", "update", "usage", "utc", "verbatim-files-from", "verbose", "verify",
-                       "version", "wildcards", "wildcards-match-slash", "xattrs"),
-        "long_args": ("add-file", "after-date", "blocking-factor", "directory", "exclude", "exclude-from",
-                      "exclude-ignore", "exclude-ignore-recursive", "exclude-tag", "exclude-tag-all", "exclude-tag-under",
-                      "file", "files-from", "format", "group", "group-map", "hole-detection", "label", "level",
-                      "listed-incremental", "mode", "mtime", "newer", "newer-mtime", "owner", "owner-map", "pax-option",
-                      "quote-chars", "no-quote-chars", "quoting-style", "record-size", "sort", "sparse-version",
-                      "starting-file", "strip-components", "tape-length", "transform", "xform", "xattrs-exclude",
-                      "xattrs-include", "warning", "checkpoint-action"),
-        "long_optional_any": ("backup", "atime-preserve", "checkpoint", "one-top-level", "occurrence", "suffix", "totals"),
-        "long_arg_deny_prefix": {"checkpoint-action": ("exec",)},
     },
     # rsync (OPTION SUMMARY of rsync.html, fetched from the upstream manual; rsync is not installed on this host, so
     # this grammar is not verified by running rsync). --rsh/-e, --rsync-path, -M/--remote-option, --early-input,
@@ -956,7 +914,7 @@ ALLOWLIST = {
         "long_args": (),
         "short_flags": "46AaCfGgKkMNnqsTtVvXxYyZ",
         "short_args": "BbcDEeiJLlmOPpQRSWwo",
-        "short_writes": "E",
+        "short_writes": "ES",
         "short_value_strict": "J",
         "short_arg_keys": {"o": SSH_OPTION_KEYS},
     },
@@ -1002,7 +960,7 @@ def allowlist_rule(name, args):
             opt = hits[0]
             if opt in spec["long_args"]:
                 value = val if eq else (args[i] if i < len(args) else "")
-                if opt in spec.get("long_writes", ()) and ".claude" in value.lower().replace("\\", "/"):
+                if opt in spec.get("long_writes", ()) and names_claude(value):
                     raise Deny("program-option", name + " " + opt + " writes under .claude: " + a)
                 if not eq:
                     i += 1  # the value is the next word
@@ -1028,7 +986,7 @@ def allowlist_rule(name, args):
                     continue
                 if ch in spec["short_args"]:
                     value = a[j + 1:] if j < len(a) - 1 else (args[i] if i < len(args) else "")
-                    if ch in spec.get("short_writes", "") and ".claude" in value.lower().replace("\\", "/"):
+                    if ch in spec.get("short_writes", "") and names_claude(value):
                         raise Deny("program-option", name + " -" + ch + " writes under .claude: " + a)
                     if j == len(a) - 1:
                         i += 1  # the value is the next word
@@ -1041,7 +999,7 @@ def allowlist_rule(name, args):
                         key = re.split(r"[=\s]", value, 1)[0].lower()
                         if key not in spec["short_arg_keys"][ch]:
                             raise Deny("program-option", name + " -" + ch + " key is not in the allowlist: " + a)
-                        if ".claude" in value.lower().replace("\\", "/"):
+                        if names_claude(value):
                             raise Deny("program-option", name + " -" + ch + " value names a path under .claude: " + a)
                         parts = re.split(r"[=\s]", value, 1)
                         rest = parts[1] if len(parts) > 1 else ""
@@ -1054,7 +1012,127 @@ def allowlist_rule(name, args):
         # a file name, or - for stdin: not an option
 
 
-def program_option_rule(name, args):
+def tar_path_ok(path, ctx, role):
+    """A tar operand the grammar accepts. role: "archive" (written or read as a whole), "dir" (-C), or "member" (a name
+    inside the archive or on the command line). Archive and dir must be literal (no glob), relative, inside the repository,
+    without .. and without a link that leaves it, and must not be .claude/ or .git. Members may be globs (they only read),
+    but still may not escape the repository. Fail closed."""
+    if not path or ":" in path or "\n" in path or path.startswith("-"):
+        return False
+    if role != "member" and any(c in path for c in "*?["):
+        return False
+    norm = posixpath.normpath(path.replace("\\", "/"))
+    parts = norm.split("/")
+    if norm.startswith("/") or ABSOLUTE.match(path) or ".." in parts:
+        return False
+    if role != "member" and (names_claude(path) or ".git" in [p.casefold() for p in parts]):
+        return False
+    # The literal part before the first glob component is what is resolved (a glob cannot be resolved as a path); links
+    # in that part are followed, so a member glob under a link that leaves the repository is refused.
+    base_parts = []
+    for p in parts:
+        if any(c in p for c in "*?["):
+            break
+        base_parts.append(p)
+    # Every literal prefix is resolved, not only the full path: a name that does not exist yet (a.tar) is resolved
+    # lexically, so a link in the middle (lnk/a.tar with lnk -> outside) would otherwise be missed.
+    prefixes = ["/".join(base_parts[:i]) for i in range(1, len(base_parts) + 1)] or ["."]
+    k = None
+    for pre in prefixes:
+        _lex, real = resolve(pre, ctx)
+        k = key(real)
+        if not (k == ctx.root or inside(k, ctx.root)):
+            return False
+    if role != "member" and (k == ctx.git or inside(k, ctx.git) or inside_claude(real, ctx)):
+        return False
+    return True
+
+
+def tar_rule(args, ctx):
+    """The explicit tar grammar: the only tar forms that are allowed. A read is -t (list) of an explicit .tar archive. A
+    write is -c (create) to an explicit archive. Everything else is DENY (fail closed): extraction (-x) writes to paths the
+    archive names, which cannot be inspected from argv; old-style clusters; stdin (-) and default archives; compression
+    letters and long options; globs, colons, absolute or .. paths and links that leave the repository in any operand."""
+    ops, archive, directory, members = set(), None, None, []
+    i, options_done = 0, False
+
+    def value_of(rest):
+        nonlocal i
+        if rest:
+            return rest
+        if i >= len(args):
+            raise Deny("tar", "tar option needs a value")
+        v = args[i]
+        i += 1
+        return v
+
+    while i < len(args):
+        a = args[i]
+        i += 1
+        if a == "-":
+            raise Deny("tar", "tar with stdin or stdout (-) is not inspected")
+        if not options_done and a == "--":
+            options_done = True
+            continue
+        if options_done or not a.startswith("-"):
+            members.append(a)
+            continue
+        if a.startswith("--"):
+            opt, eq, val = a[2:].partition("=")
+            if opt in ("list", "create") and not eq:
+                ops.add("t" if opt == "list" else "c")
+            elif opt == "verbose" and not eq:
+                pass
+            elif opt in ("file", "directory"):
+                v = val if eq else value_of("")
+                if opt == "file":
+                    if archive is not None:
+                        raise Deny("tar", "tar with a repeated -f archive is not inspected")
+                    archive = v
+                else:
+                    if directory is not None:
+                        raise Deny("tar", "tar with a repeated -C directory is not inspected")
+                    directory = v
+            else:
+                raise Deny("tar", "tar long option is not in the tar grammar: " + a)
+            continue
+        j = 1
+        while j < len(a):
+            ch = a[j]
+            j += 1
+            if ch in "tc":
+                ops.add(ch)
+            elif ch == "v":
+                pass
+            elif ch in "fC":
+                v = value_of(a[j:])
+                if ch == "f":
+                    if archive is not None:
+                        raise Deny("tar", "tar with a repeated -f archive is not inspected")
+                    archive = v
+                else:
+                    if directory is not None:
+                        raise Deny("tar", "tar with a repeated -C directory is not inspected")
+                    directory = v
+                break
+            else:
+                raise Deny("tar", "tar option letter is not in the tar grammar: " + ch)
+    if ops not in ({"t"}, {"c"}):
+        raise Deny("tar", "tar needs exactly one of -t (list) or -c (create); other operations are not inspected")
+    if archive is None:
+        raise Deny("tar", "tar without an explicit -f archive (stdin, tape or default) is not inspected")
+    if "t" in ops and not archive.lower().endswith(".tar"):
+        raise Deny("tar", "tar -t reads only an explicitly named .tar archive (compression is found from the contents)")
+    if not tar_path_ok(archive, ctx, "archive"):
+        raise Deny("tar", "tar archive is not an inspectable repository path")
+    if directory is not None and not tar_path_ok(directory, ctx, "dir"):
+        raise Deny("tar", "tar -C directory is not an inspectable repository path")
+    for m in members:
+        if not tar_path_ok(m, ctx, "member"):
+            raise Deny("tar", "tar member name is not an inspectable repository path")
+
+
+def program_option_rule(name, args, ctx=None):
     name = PROGRAM_ALIAS.get(name, name)
     if name not in PROGRAM_TOOLS:
         return
@@ -1065,39 +1143,20 @@ def program_option_rule(name, args):
     # value that is not in the word the guard reads. A glob in a file argument does not form an option, so only
     # dashed arguments (and tar's first cluster word) are checked for globs.
     for a in args:
-        if "$" in a or "`" in a or SUBST in a or "\\" in a or BRACE_EXPANDS.search(a):
+        if "\n" in a:
+            raise Deny("program-option", name + " argument with a newline is not inspected")
+        if "$" in a or "`" in a or SUBST in a or "\\" in a or brace_may_form_option(a, name):
             raise Deny("program-option", name + " argument with an expansion or escape is not inspected")
         # A glob that starts the word (*-compress-program, [-]-to-command) can expand to a dashed file name, so it is an
         # option; a glob after a letter (names*.txt) cannot start with a dash.
         if any(c in a for c in "*?[") and (a.startswith("-") or a[:1] in "*?["):
             raise Deny("program-option", name + " option with a glob is not inspected")
-    if name == "tar" and args and any(c in args[0] for c in "*?["):
-        raise Deny("program-option", "tar first word with a glob is not inspected")
-    if name == "tar" and args and re.fullmatch(r"[A-Za-z]+", args[0]):
-        # Old-style tar: the first word is an option cluster (tar xf a.tar, tar Ixf sh a.tar). Its letters take their
-        # arguments from the following words in order, so the dashed reading is only safe if every letter is listed.
-        spec = ALLOWLIST["tar"]
-        if any(c not in spec["short_flags"] + spec["short_args"] for c in args[0]):
-            raise Deny("program-option", "tar old-style cluster letter is not in the allowlist: " + args[0])
-        args = ["-" + args[0]] + list(args[1:])
-    if name == "tar" and any(":" in a for a in args):
-        # GNU tar treats host:name as a remote archive and starts a remote shell. --force-local is not trusted here: its
-        # token can sit after -- or as another option's value, so any colon operand is denied.
-        raise Deny("program-option", "tar argument with a colon may be a remote archive: not inspected")
-    if name == "tar" and any(re.sub(r"[ .]+$", "", a.lower()).endswith(COMPRESSED_SUFFIXES) for a in args) \
-            and not tar_only_creates(args):
-        # Windows drops trailing dots and spaces from a file name, so they are dropped before the suffix test.
-        # tar reads a compressed archive by starting a decompressor through PATH (observed: "tar (child): gzip: Cannot exec"
-        # with an empty PATH), even without -z. The contents are not read here, so the name is the only signal (UNKNOWN_EXECUTION).
-        raise Deny("program-option", "tar archive with a compressed-file suffix: a decompressor may start through PATH")
-    for a in args:
-        if name == "tar" and not a.startswith("-") and any(c in a for c in "*?["):
-            # A glob operand may expand to a compressed archive unless its literal tail is non-empty and is not a
-            # compressed suffix (names*.txt and a*.tar are safe; a* and a*.tgz are not).
-            tail = re.split(r"[*?\[\]]", a)[-1].lower().rstrip(". ")
-            ext = tail.rsplit(".", 1)[-1] if "." in tail else ""
-            if not ext or ("." + ext) in COMPRESSED_SUFFIXES:
-                raise Deny("program-option", "tar operand with a glob may expand to a compressed archive: not inspected")
+    if name == "tar":
+        # tar has its own explicit grammar (tar_rule). The ALLOWLIST grammar below applies to the other tools only.
+        if ctx is None:
+            raise Deny("tar", "tar is decided with the working context; none was given")
+        tar_rule(args, ctx)
+        return
     allowlist_rule(name, args)
 
 
@@ -1152,11 +1211,18 @@ def check_assign(word):
         raise Deny("git-alias", "git alias set through an environment variable is denied")
 
 
+def names_claude(value):
+    """True if a path (or a word that may expand to one) names .claude/ literally, or through a glob: a path component that
+    fnmatch maps onto .claude (.cl?ude, .cl[a]ude, *) counts. Fail closed."""
+    v = _unescape(value).replace("\\", "/").casefold()
+    if ".claude" in v:
+        return True
+    return any(part and fnmatch.fnmatchcase(".claude", part) for part in v.split("/"))
+
+
 def claude_mention(args):
-    """True if an argument names .claude/ (raw or unescaped) or carries a substitution."""
-    return any(".claude" in a.replace("\\", "/").casefold()
-               or ".claude" in _unescape(a).replace("\\", "/").casefold()
-               or SUBST in a for a in args)
+    """True if an argument names .claude/ (literally or through a glob, raw or unescaped) or carries a substitution."""
+    return any(names_claude(a) or SUBST in a for a in args)
 
 
 # GNU timeout long options. getopt_long accepts any unambiguous prefix, so --kill, --sig and --s are valid.
@@ -1321,7 +1387,7 @@ def analyze_argv(words, ctx, ps, depth):
             return
         break
     args = words[1:]
-    program_option_rule(name, args)
+    program_option_rule(name, args, ctx)
     if ps and name in PS_LAUNCH_NAMES:
         # A PowerShell process launcher runs its arguments as a command line, and its options (-FilePath, -ArgumentList)
         # may come first, so every suffix of the arguments is analysed as a command line. Bounded: a longer argument
@@ -1360,6 +1426,8 @@ def analyze_argv(words, ctx, ps, depth):
     elif name in CD_NAMES:
         if args and args[0].startswith("-"):
             raise Deny("cd", "cd with option is not inspected")
+        if args and any(c in args[0] for c in "*?[") and names_claude(args[0]):
+            raise Deny("cd", "cd into a glob that may name .claude/ is not inspected")
         ctx.cwd = resolve(args[0] if args else "~", ctx)[1]
     elif name in ALWAYS_DENY:
         raise Deny("destructive", name + " is denied")
@@ -1451,8 +1519,16 @@ def _decide(raw, repo_root):
               load_registry(root), protected)
     # sftp reads its commands from stdin when no batch file is given, and a "!" line runs a local command. Piped or
     # redirected input cannot be inspected here, so an sftp command with a pipe or an input redirection is DENY.
-    if tool != "PowerShell" and re.search(r"sftp", cmd, re.IGNORECASE) and re.search(r"[|<]", cmd):
-        raise Deny("program-option", "sftp with piped or redirected input: its commands are not inspected")
+    # Quotes and backslashes are removed first (s''ftp, \sftp name sftp); coproc feeds its command a pipe too.
+    squashed = re.sub(r"[\"'\\]", "", cmd)
+    if re.search(r"sftp", squashed, re.IGNORECASE) and (
+            re.search(r"[|<]", cmd) or re.search(r"\bcoproc\b", cmd, re.IGNORECASE)):
+        raise Deny("program-option", "sftp with piped or redirected input or a coprocess: its commands are not inspected")
+    # A program-naming variable can be built at run time in PowerShell (Set-Item env:, concatenation, $env:). With a
+    # program tool in the same command the environment is not inspected: denied (fail closed).
+    if tool == "PowerShell" and re.search(r"env:|\$env|environment", cmd, re.IGNORECASE) and re.search(
+            r"\b(" + "|".join(sorted(PROGRAM_TOOLS)) + r")\b", cmd, re.IGNORECASE):
+        raise Deny("program-option", "a PowerShell environment change with a program tool is not inspected")
     analyze_text(cmd, ctx, tool == "PowerShell", 0)
     return ALLOW, "no destructive operation found"
 
