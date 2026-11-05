@@ -1944,6 +1944,56 @@ class WrapperWriteTests(unittest.TestCase):
             self.assertEqual(decision, "DENY", reason)
             self.assertTrue(reason.startswith("write"), reason)
 
+    def test_symlinked_cwd_cannot_hide_protected_wrapper_writes(self):
+        # The cwd itself is a symlink, not a component of the lock-file operand.
+        # These are guard decisions only; flock/nohup commands are never executed.
+        with tempfile.TemporaryDirectory() as td:
+            repo = os.path.realpath(os.path.join(td, "repo"))
+            os.makedirs(os.path.join(repo, ".git"))
+            os.makedirs(os.path.join(repo, ".claude"))
+            os.makedirs(os.path.join(repo, "safe"))
+            cases = (("claude_link", ".claude"), ("git_link", ".git"), ("safe_link", "safe"))
+            try:
+                for alias, target in cases:
+                    os.symlink(os.path.join(repo, target), os.path.join(repo, alias),
+                               target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest("symlink creation not permitted here: " + type(exc).__name__)
+            for alias, target in cases:
+                cwd = os.path.join(repo, alias)
+                for command in ("flock newlock ls", "nohup ls"):
+                    with self.subTest(alias=alias, command=command):
+                        data = json.dumps({"session_id": "t", "hook_event_name": "PreToolUse",
+                                           "cwd": cwd, "tool_name": "Bash",
+                                           "tool_input": {"command": command}})
+                        decision, reason = guard.decide(data, repo_root=repo)
+                        denied = target in (".claude", ".git") if command.startswith("flock") else target == ".claude"
+                        self.assertEqual(decision, "DENY" if denied else "ALLOW", reason)
+
+    def test_implicit_write_checks_resolve_cwd_without_symlink_privileges(self):
+        # Host-independent regression/mutation test: simulate an existing symlink to .claude
+        # even on Windows hosts where os.symlink is unavailable.
+        alias = guard.canon(os.path.join(REPO, "synthetic-wrapper-cwd-alias"))
+        target = guard.canon(os.path.join(REPO, ".claude"))
+        ctx = guard.Ctx(alias, guard.key(REPO), guard.key(os.path.join(REPO, ".git")), set(), [])
+        original_isdir = os.path.isdir
+        original_realpath = os.path.realpath
+
+        def isdir(path):
+            return True if path == alias else original_isdir(path)
+
+        def realpath(path):
+            return target if path == alias else original_realpath(path)
+
+        with mock.patch.object(guard.os.path, "isdir", side_effect=isdir), \
+             mock.patch.object(guard.os.path, "realpath", side_effect=realpath):
+            for command, args in (("nohup", ["ls"]), ("flock", ["newlock", "ls"])):
+                with self.subTest(command=command):
+                    with self.assertRaises(guard.Deny) as cm:
+                        guard.wrapper_candidates(command, args, ctx)
+                    self.assertIn(cm.exception.kind, ("claude-write", "write"))
+        self.assertEqual(ctx.cwd, alias)  # the wrapper check does not mutate the caller's context
+
     def test_nohup_inside_claude_directory_is_denied(self):
         data = json.dumps({"session_id": "t", "hook_event_name": "PreToolUse",
                            "cwd": os.path.join(REPO, ".claude"), "tool_name": "Bash",
@@ -1965,6 +2015,8 @@ class WrapperWriteMutationTests(unittest.TestCase):
             'if False:'),
         "nohup .claude check removed": (
             'if name == "nohup" and inside_claude(ctx.cwd, ctx):', 'if False:'),
+        "wrapper cwd realpath bypass restored": (
+            'ctx = wrapper_write_context(ctx)', 'ctx = ctx'),
     }
 
     def _run(self, hook_text):
