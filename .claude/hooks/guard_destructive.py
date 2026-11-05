@@ -736,6 +736,9 @@ def git_rule(args, ctx):
 # GNU and BSD variants of the same tools take the same program-naming options.
 PROGRAM_ALIAS = {"gsort": "sort", "gtar": "tar", "bsdtar": "tar"}
 PROGRAM_TOOLS = {"sort", "rg", "tar", "rsync", "ssh", "scp", "sftp"}
+# File-name suffixes of compressed archives. tar reads them through a PATH-resolved decompressor (see program_option_rule).
+COMPRESSED_SUFFIXES = (".gz", ".tgz", ".bz2", ".tbz", ".tbz2", ".xz", ".txz", ".lz", ".lzma", ".lz4", ".zst", ".tzst",
+                       ".z", ".taz", ".tlz")
 # A brace group that bash expands: it has a comma or a sequence (x{I,}, {1..3}). A brace group without either is literal.
 BRACE_EXPANDS = re.compile(r"\{[^{}]*(,|\.\.)[^{}]*\}")
 # Builtins that set a variable from their arguments (export $A$B, declare, read, ...).
@@ -780,7 +783,7 @@ ALLOWLIST = {
         "optional_values": ("diagnose-first", "quiet", "silent"),
     },
     "rg": {
-        "full_long": ("pre", "pre-glob", "hostname-bin", "pretty", "hyperlink-format", "ignore-case",
+        "full_long": ("pre", "pre-glob", "hostname-bin", "heading", "no-heading", "type-list", "pretty", "hyperlink-format", "ignore-case",
                       "invert-match", "line-regexp", "word-regexp", "case-sensitive", "smart-case", "fixed-strings",
                       "multiline", "multiline-dotall", "null-data", "pcre2", "text", "search-zip", "count",
                       "count-matches", "files-with-matches", "files-without-match", "json", "line-number",
@@ -797,7 +800,7 @@ ALLOWLIST = {
                       "no-ignore-parent", "no-ignore-vcs", "no-require-git", "no-messages", "null"),
         "short_flags": "FisvxUSawLubnNHIclopqVPh",
         "short_args": "egfrtTABCmMEjd",
-        "long_flags": ("pretty", "ignore-case", "invert-match", "line-regexp", "word-regexp", "case-sensitive",
+        "long_flags": ("heading", "no-heading", "type-list", "pretty", "ignore-case", "invert-match", "line-regexp", "word-regexp", "case-sensitive",
                        "smart-case", "fixed-strings", "multiline", "multiline-dotall", "null-data", "pcre2", "text",
                        "count", "count-matches", "files-with-matches", "files-without-match", "json",
                        "line-number", "no-line-number", "with-filename", "no-filename", "column", "byte-offset",
@@ -906,7 +909,7 @@ ALLOWLIST = {
                       "no-detach"),
         "short_flags": "vqcarRbulLkKHpEAXogDtUNOJSnWxdmIyCzFiPs0468h",
         "short_args": "Bf@T",
-        "long_flags": ("verbose", "quiet", "no-motd", "checksum", "archive", "recursive", "inc-recursive",
+        "long_flags": ("verbose", "quiet", "no-motd", "compress", "checksum", "archive", "recursive", "inc-recursive",
                        "no-inc-recursive", "relative", "no-implied-dirs", "backup", "update", "inplace", "append",
                        "append-verify", "dirs", "old-dirs", "mkpath", "links", "copy-links", "copy-unsafe-links",
                        "safe-links", "copy-dirlinks", "keep-dirlinks", "hard-links", "perms", "executability", "acls",
@@ -925,7 +928,7 @@ ALLOWLIST = {
                       "compress-level", "compress-threads", "skip-compress", "filter", "exclude", "exclude-from",
                       "include", "include-from", "files-from", "bwlimit", "stop-after", "stop-at", "out-format",
                       "log-file", "log-file-format", "password-file", "write-batch", "only-write-batch", "read-batch",
-                      "protocol", "iconv", "checksum-seed", "nice", "address", "port", "sockopts", "outbuf"),
+                      "protocol", "iconv", "checksum-seed", "nice", "address", "port", "sockopts", "outbuf", "info", "debug"),
     },
     # ssh (ssh(1), OpenBSD manual, fetched). -F (config file, which may include ProxyCommand) and -I (PKCS#11 library)
     # are not listed, so they are DENY. -o KEY is checked against SSH_OPTION_KEYS. ssh has no long options here.
@@ -1055,6 +1058,10 @@ def program_option_rule(name, args):
     if name == "tar" and "--force-local" not in args and any(":" in a for a in args):
         # GNU tar treats host:name as a remote archive and starts a remote shell; --force-local says it is local.
         raise Deny("program-option", "tar argument with a colon may be a remote archive: not inspected")
+    if name == "tar" and any(a.lower().endswith(COMPRESSED_SUFFIXES) for a in args):
+        # tar reads a compressed archive by starting a decompressor through PATH (observed: "tar (child): gzip: Cannot exec"
+        # with an empty PATH), even without -z. The contents are not read here, so the name is the only signal (UNKNOWN_EXECUTION).
+        raise Deny("program-option", "tar archive with a compressed-file suffix: a decompressor may start through PATH")
     allowlist_rule(name, args)
 
 
@@ -1176,6 +1183,16 @@ def wrapper_candidates(name, args):
     return [args[k:] for k in range(len(args) + 1)]
 
 
+def command_name(w):
+    """The program name a command word starts: the basename, lower-cased, without a leading = (zsh), trailing dots and
+    spaces (Windows drops them from file names), and .exe. The PATH check and the dispatch use this same normalization."""
+    name = posixpath.basename(w.replace("\\", "/")).lower()
+    name = name.lstrip("=").rstrip(". ") or name
+    if name.endswith(".exe"):
+        name = name[:-4].rstrip(". ") or name[:-4]
+    return name
+
+
 def analyze_argv(words, ctx, ps, depth):
     if depth > MAX_DEPTH:
         raise Deny("depth", "command nesting too deep")
@@ -1195,7 +1212,7 @@ def analyze_argv(words, ctx, ps, depth):
     # A PATH assignment changes which helper a program starts (rsync's remote form starts ssh through PATH). With a
     # program tool in the same command it is denied; the tool name is compared by its basename, without .exe.
     if any(re.match(r"PATH\+?=", w.replace("\\", "").replace('"', "").replace("'", "").upper()) for w in words) and any(
-            PROGRAM_ALIAS.get(re.sub(r"\.exe$", "", w.replace("\\", "/").split("/")[-1].lower()), re.sub(r"\.exe$", "", w.replace("\\", "/").split("/")[-1].lower())) in PROGRAM_TOOLS
+            PROGRAM_ALIAS.get(command_name(w), command_name(w)) in PROGRAM_TOOLS
             for w in words):
         raise Deny("program-option", "PATH is set in a command that starts a program tool: not inspected")
     words = strip_redirections(words)
@@ -1253,12 +1270,9 @@ def analyze_argv(words, ctx, ps, depth):
             if "/" not in unescaped:
                 raise Deny("command-word", "backslash in command name")
             w0 = unescaped
-        name = posixpath.basename(w0.replace("\\", "/")).lower()
-        # Windows drops trailing dots and spaces from a file name (rm. and rm  are rm), so they are dropped here too.
-        # A leading = is zsh's expansion of a command name to its path (=sort); the same program is named (fail closed).
-        name = name.lstrip("=").rstrip(". ") or name
-        if name.endswith(".exe"):
-            name = name[:-4].rstrip(". ") or name[:-4]
+        # Windows drops trailing dots and spaces from a file name (rm. and rm  are rm); a leading = is zsh's expansion of
+        # a command name to its path (=sort). command_name() is the one normalization, shared with the PATH check.
+        name = command_name(w0)
         if name == "timeout":
             # timeout's option grammar (long options with a separate value, non-integer durations) is not parsed, so
             # the command it runs is taken from its grammar (timeout_candidates), with conservative extra candidates.

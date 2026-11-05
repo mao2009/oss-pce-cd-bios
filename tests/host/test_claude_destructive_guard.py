@@ -1208,7 +1208,7 @@ class LauncherMutationTests(unittest.TestCase):
         "ionice removed from wrappers": ('"nice", "ionice", "timeout"', '"nice", "timeout"'),
         "builtin removed from wrappers": ('"command", "builtin", "exec"', '"command", "exec"'),
         "timeout rule removed": ('        if name == "timeout":', '        if False:'),
-        "trailing dot and space normalisation removed": ('        name = name.lstrip("=").rstrip(". ") or name', '        pass'),
+        "trailing dot and space normalisation removed": ('    name = name.lstrip("=").rstrip(". ") or name', '    pass'),
         "timeout attached short value taken as next word": ('takes_next = j == len(a) - 1', 'takes_next = True'),
         "PowerShell head ignores a leading tab": ('            if m:\n                head', '            if m and not seg.startswith("\\t"):\n                head'),
         "timeout long value consumes no extra word":('i += 2 if len(hits) == 1 and hits[0] in TIMEOUT_LONG_VALUE else 1',
@@ -1501,7 +1501,7 @@ class AllowlistRgTests(unittest.TestCase):
     ALLOW = [
         "rg -n TODO src", "rg --pretty TODO src", "rg --hyperlink-format=default x src", "rg -e --pre=sh x",
         "rg -- --pre=sh x", "rg -i -e foo src", "rg --no-config x", "rg -tpy foo src", "rg -A 2 foo src",
-        "rg --count x src", "rg x src",
+        "rg --count x src", "rg x src", "rg --no-heading foo", "rg --type-list", "rg --heading foo src",
     ]
 
     def test_rg_deny_list(self):
@@ -1713,6 +1713,7 @@ class AllowlistRsyncTests(unittest.TestCase):
         "rsync --bwlimit=100 -a a b", "rsync -avh a b", "rsync -av --exclude=tmp src dst",
         "rsync -T /tmp/x -a a b", "rsync --timeout=30 --chmod=g+w -a a b", "rsync --delete-after --partial-dir=.p -a a b",
         "rsync -C -a a b", "rsync --files-from list.txt a b",
+        "rsync --info=progress2 -a a b", "rsync --debug=all a b", "rsync --compress a b",
         # boundary: an option value is consumed; after -- every word is a file name
         "rsync --exclude tmp -a a b", "rsync -a -- -weird a b", "rsync -a -- -e sh a b",
     ]
@@ -2003,6 +2004,7 @@ class PathCompressorLibraryTests(unittest.TestCase):
         # compressors started by name through PATH: tar short, cluster, old-style, long, and the abbreviation
         "tar -czf out.tgz src", "tar -cjf out.tbz src", "tar -cJf out.txz src", "tar -cZf out.Z src",
         "tar -caf out.tar.gz src", "tar --gzip -cf out.tar src", "tar --auto-compress -cf out.tgz src",
+        "tar -czf out.tar src", "tar -cjf out.tar src", "tar -cJf out.tar src",
         "tar --bzip2 -cf out.tar src", "tar --gz -cf out.tar src", "tar -xzf out.tgz", "tar -tzf out.tgz",
         "tar -xf a.tgz -z", "tar xzf a.tgz",
         # rg: the search-zip option runs an external decompressor
@@ -2015,6 +2017,13 @@ class PathCompressorLibraryTests(unittest.TestCase):
         # ProxyJump names hosts: a dashed word, a KEY=VALUE pair or a space in its value is an option
         "ssh -o ProxyJump=-oProxyCommand=x h", "ssh -o 'ProxyJump=-oX' h", "ssh -o ProxyJump=h=x h",
         "ssh -o 'ProxyJump h x' h",
+        # the PATH check uses the same name normalization as dispatch: quotes, trailing dot or space, leading =, .exe
+        'PATH=/x "rsync " -a a b', "PATH=/x rsync. -a a b", "PATH=/x rsync.exe. a b", "PATH=/x =rsync -a a b",
+        "PATH=/x 'ssh'. h", 'PATH=/x "sftp " h', "PATH=/x ssh\\  h", 'PATH+=/x "rsync " a b',
+        'PATH=/x "/usr/bin/scp " a b',
+        # tar reads a compressed archive through a PATH-resolved decompressor, even without -z (observed with an empty PATH)
+        "tar -xf a.tgz", "tar -tf d.tar.gz", "tar -xf a.tar.bz2", "tar -cf out.tar.xz src", "tar -xf x.TGZ",
+        "tar -xf a.tar.Z", "tar -xf a.tar.gz -C dir",
     ]
     ALLOW = [
         # ordinary archive commands without a compressor flag; gzip is a separate command, not a program option
@@ -2023,6 +2032,8 @@ class PathCompressorLibraryTests(unittest.TestCase):
         "rg -n needle src", "rg -a needle src",
         # PATH with no program tool in the command; ordinary ProxyJump hosts
         "PATH+=:/x ls", "ssh -o ProxyJump=user@jump:2222 h", "ssh -o 'ProxyJump=bastion' h",
+        # the documented workaround: decompression in gzip (not a program option), the archive on stdin for tar
+        "gzip -dc a.tgz | tar -xf -", "tar -xf a.tar",
     ]
 
     def test_compressor_and_library_deny_list(self):
@@ -2080,6 +2091,57 @@ class PathCompressorLibraryMutationTests(unittest.TestCase):
                 detected = any("PathCompressorLibraryTests." in ln for ln in failing)
                 self.assertTrue(detected, "mutant not detected by a PathCompressorLibraryTests test: " + name + "\n"
                                 + "\n".join(failing))
+
+
+class ReviewRound2MutationTests(unittest.TestCase):
+    """Issue #640 X3b, review round 2: each rule must be detected by a named failure in PathCompressorLibraryTests,
+    AllowlistRgTests or AllowlistRsyncTests."""
+
+    MUTANTS = {
+        "PATH name normalization drops trailing dots and spaces": (
+            '    name = name.lstrip("=").rstrip(". ") or name', '    name = name.lstrip("=") or name'),
+        "PATH check compares the raw word": (
+            '            PROGRAM_ALIAS.get(command_name(w), command_name(w)) in PROGRAM_TOOLS',
+            '            PROGRAM_ALIAS.get(w.lower(), w.lower()) in PROGRAM_TOOLS'),
+        "rg --no-heading removed": (
+            '"no-heading", "type-list", "pretty", "ignore-case", "invert-match"',
+            '"type-list", "pretty", "ignore-case", "invert-match"'),
+        "rsync --info removed": ('"sockopts", "outbuf", "info", "debug"),', '"sockopts", "outbuf"),'),
+        "rsync --compress removed": ('"no-motd", "compress", "checksum",', '"no-motd", "checksum",'),
+        "tar compressed-file suffix check removed": (
+            '    if name == "tar" and any(a.lower().endswith(COMPRESSED_SUFFIXES) for a in args):', '    if False:'),
+    }
+
+    def _run(self, hook_text):
+        with tempfile.TemporaryDirectory() as td:
+            root = os.path.realpath(td)
+            hooks = os.path.join(root, ".claude", "hooks")
+            host = os.path.join(root, "tests", "host")
+            os.makedirs(hooks)
+            os.makedirs(host)
+            write_text(os.path.join(hooks, "guard_destructive.py"), hook_text)
+            with open(THIS_FILE, encoding="utf-8") as f:
+                write_text(os.path.join(host, "test_claude_destructive_guard.py"), f.read())
+            proc = subprocess.run([sys.executable, "-m", "unittest", "-v",
+                                   "test_claude_destructive_guard.PathCompressorLibraryTests",
+                                   "test_claude_destructive_guard.AllowlistRgTests",
+                                   "test_claude_destructive_guard.AllowlistRsyncTests"], cwd=host,
+                                  capture_output=True, text=True, timeout=300)
+            return proc.returncode, proc.stderr
+
+    def test_review_round2_tests_detect_each_mutant(self):
+        with open(HOOK, encoding="utf-8") as f:
+            original = f.read()
+        code, out = self._run(original)
+        self.assertEqual(code, 0, "unmutated copy must pass the round-2 classes:\n" + out[-800:])
+        for name, (old, new) in self.MUTANTS.items():
+            with self.subTest(mutant=name):
+                self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
+                code, out = self._run(original.replace(old, new))
+                failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
+                detected = any(("PathCompressorLibraryTests." in ln or "AllowlistRgTests." in ln
+                                or "AllowlistRsyncTests." in ln) for ln in failing)
+                self.assertTrue(detected, "mutant not detected by a round-2 test: " + name + "\n" + "\n".join(failing))
 
 
 class MutationDetectionTests(unittest.TestCase):
