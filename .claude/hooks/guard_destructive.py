@@ -762,6 +762,16 @@ def claude_mention(args):
 
 
 def unwrap(name, args):
+    # GNU env -S/--split-string reparses a string into an argv vector and may
+    # start a hidden python -c (or any other command). The shell word parser
+    # cannot prove that vector, so refuse every spelling instead of skipping it.
+    # This also covers bundled short options and abbreviated long options.
+    if name == "env" and any(
+            (a.startswith("--") and a != "--"
+             and "split-string".startswith(a[2:].split("=", 1)[0]))
+            or (a.startswith("-") and not a.startswith("--") and "S" in a[1:])
+            for a in args):
+        raise Deny("wrapper-argv", "env split-string reparses an uninspected command line")
     withargs = WRAPPER_ARGS.get(name, set())
     i = 0
     while i < len(args):
