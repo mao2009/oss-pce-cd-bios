@@ -178,6 +178,22 @@ class NegativeTests(unittest.TestCase):
         self.assertIn(C.NOT_STATIC, by_rule(report, "CI-2.08"), report.findings)
         self.assertNotIn(C.OK, by_rule(report, "CI-2.05"))
 
+    def _assert_mapping_not_static(self, src):
+        report = run(src, BASE)
+        self.assertIn(C.NOT_STATIC, by_rule(report, "CI-2.08"), report.findings)
+        self.assertNotIn(C.OK, by_rule(report, "CI-2.05"))
+
+    def test_branch_past_the_tam(self):   # re-review MEDIUM: the taken branch skips the mapping
+        self._assert_mapping_not_static(API.replace("    lda #$F8\n    tam #$04\n",
+                                                    "    bcs @x\n    lda #$F8\n    tam #$04\n@x:\n"))
+
+    def test_tam_only_in_a_conditional_block(self):
+        self._assert_mapping_not_static(API.replace("    lda #$F8\n    tam #$04\n",
+                                                    ".ifdef X\n    lda #$F8\n    tam #$04\n.endif\n"))
+
+    def test_call_between_tam_and_transfer(self):   # the callee may remap
+        self._assert_mapping_not_static(API.replace("    tii $5F00", "    jsr other\n    tii $5F00"))
+
     def test_region_kind_must_match_the_bank(self):   # LOW: self-declared kinds
         c = copy.deepcopy(BASE)
         c["regions"]["wram"] = {"kind": "ram", "bank": "0x00"}

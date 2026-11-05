@@ -66,6 +66,25 @@ def _regions(contract, report):
     return out
 
 
+PATH_BREAKERS = {"bcc", "bcs", "beq", "bmi", "bne", "bpl", "bvc", "bvs", "bra", "bsr", "jmp", "jsr", "rts", "rti",
+                 "brk"} | {f"{op}{i}" for op in ("bbr", "bbs") for i in range(8)}
+
+
+def _path_break(source, ins, tam, line):
+    """Why the mapping set by `tam` may not hold at `line`, or None: a label (local ones too) after the TAM, a
+    branch / jump / call / return in between, a directive line in between, or a different conditional state."""
+    if tam.conditional != line.conditional:
+        return "different conditional state"
+    for ln in source.lines:
+        if tam.number < ln.number <= line.number and ln.labels:
+            return f"label {ln.labels[0]} in between"
+        if tam.number < ln.number < line.number and ln.directive:
+            return f"directive {ln.directive} in between"
+    mid = [x for x in ins if tam.number < x.number < line.number]
+    breaker = next((x for x in mid if x.mnemonic in PATH_BREAKERS), None)
+    return f"{breaker.mnemonic.upper()} at line {breaker.number} in between" if breaker else None
+
+
 def _mapping_status(source, line, pages, mpr):
     """Cross-check the declared mapping of every touched page against the TAMs of the same routine before the
     transfer. FAIL: a TAM gives a different bank. NOT_STATIC: a page is not mapped in this routine (the mapping
@@ -89,6 +108,10 @@ def _mapping_status(source, line, pages, mpr):
             continue
         if c3_asm.operand(tam.operand, source.symbols).value is None:
             unknown.append(f"page {page}: TAM mask at line {tam.number} not resolved")
+            continue
+        path_break = _path_break(source, ins, tam, line)
+        if path_break:
+            unknown.append(f"page {page}: TAM at line {tam.number} is not on every path to the transfer ({path_break})")
             continue
         kind, value = resolve_tam_value(source, tam)
         if kind != "imm":
