@@ -379,6 +379,18 @@ class NegativeTests(unittest.TestCase):
         self.assertTrue(any(f["verdict"] == C.NOT_STATIC and "build-dependent" in f["message"]
                             for f in report.findings if f["rule"] == "CI-3.02"))
 
+    def test_build_dependent_mixed_with_unknown_name_is_fail(self):   # B1
+        src = {**SOURCES, "src/dev.s": DEVICE.replace("ptr = $04", "ptr = $04\n.ifndef R0\nR0 = $2300\n.endif")
+               .replace("    rts", "    sta R0+IMP\n    rts")}
+        self.assert_fail("CI-3.02", src)
+
+    def test_window_summary_not_ok_with_build_dependent_access(self):   # B2
+        src = {**SOURCES, "src/api.s": ".ifndef HW\nHW = $0002\n.endif\n" + WINDOW.replace(
+            "    plp\n", "    sta a:HW\n    plp\n")}
+        report = run(src)
+        self.assertFalse([f for f in report.findings if f["rule"] == "CI-3.02" and f["verdict"] == C.OK
+                          and f["where"] == "src/api.s"], report.findings)
+
     def test_unknown_symbol_is_still_fail(self):   # an import or unknown name is not build-dependent
         self.assert_fail("CI-3.02", {**SOURCES, "src/dev.s": DEVICE.replace("    rts", "    sta RES+1\n    rts")})
 

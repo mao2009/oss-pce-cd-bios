@@ -93,6 +93,15 @@ def _straight(source, ins, a, b):
     return not any(x.mnemonic in WINDOW_BREAKERS for x in ins[a + 1:b])
 
 
+def _base_text(ln):
+    """Address expression of a memory operand, without the a: / z: prefix and the index (TST: second operand)."""
+    text = ln.operand.split(",", 1)[1] if ln.mnemonic == "tst" and "," in ln.operand else ln.operand
+    if ln.mnemonic in c3_asm.ZP_FIRST_OPS:
+        text = text.split(",")[0]
+    base = text.split(",")[0].strip().removeprefix("a:").removeprefix("z:")
+    return base.strip("() ")
+
+
 def _memory_accesses(source, report, path):
     """(page0 [(line, addr)], indirect [line], high [line], build_dependent [line]) of the file; operands that cannot
     be resolved and are neither a label of the file nor a build-dependent constant are FAIL."""
@@ -107,7 +116,9 @@ def _memory_accesses(source, report, path):
             indirect.append(ln)
             continue
         addr = op.logical_address()
-        if addr is None and op.symbol in source.conditional_constants:
+        names = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", _base_text(ln)))
+        if addr is None and names and names <= (source.conditional_constants | set(source.symbols)) and \
+                names & source.conditional_constants:   # every name build-dependent or resolved (B1)
             build_dependent.append(ln)          # address set by a build option (e.g. -D): undecidable, not a FAIL
             continue
         if addr is None:
@@ -351,7 +362,7 @@ def check(contract, sources, report):
                     report.add("CI-3.02", FAIL, where(ln), f"access to ${addr:04X} outside every MPR0 window")
                 if not windows:
                     report.add("CI-3.02", FAIL, path, "window mapping declared but no valid MPR0 window in the file")
-                elif not outside and not bad and page0:
+                elif not outside and not bad and page0 and not build_dependent:   # B2: no undecidable access
                     report.add("CI-3.02", OK, path, f"{len(page0)} {mmio.get('device', 'MMIO')} access(es) inside "
                                f"{len(windows)} SEI-masked, straight-line MPR0 window(s) closed by the restoring TAM "
                                "(text-level)")
