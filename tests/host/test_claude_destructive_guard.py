@@ -1315,6 +1315,7 @@ class X3bProgramOptionTests(unittest.TestCase):
         "A=RSYN; B=C_RSH=sh; export $A$B && rsync a b", "A=RSYN; B=C_RSH; printf -v \"$A$B\" sh && rsync a b",
         "A=RSYN; B=C_RSH=sh; declare $A$B", "sftp -b batch.txt host",
         # found in review 12: an attached -v option on printf; rsync remote options (-M, --remote-option)
+        "A=RSYN; B=C_RSH=sh; \\export $A$B && rsync a b", "A=RSYN; B=C_RSH; set -a; \\printf -v$A$B sh && rsync a b",
         "A=RSYN; B=C_RSH; set -a; printf -v$A$B sh && rsync a b", "rsync -M--rsync-path=sh a b",
         "rsync --remote-option=--rsync-path=sh a b",
         # found in review 8: rg --hostname-bin runs the named executable (rg --help); ssh SSH_SK_HELPER names a helper
@@ -1385,8 +1386,9 @@ class X3bMutationTests(unittest.TestCase):
         "variable set by a builtin with an expansion not denied": (
             r'''    if setter and any("$" in w or "`" in w or SUBST in w for w in words):''', r'''    if False:'''),
         "sftp -b batch file not denied": ('"sftp": "SDFb"', '"sftp": "SDF"'),
+        "escaped setter builtin not unescaped": ('    plain = [w.replace("\\\\", "") for w in words]', '    plain = list(words)'),
         "printf -v attached to an expansion not denied": (
-            'or ("printf" in words and any(w.startswith("-v") for w in words))', 'or False'),
+            'or ("printf" in plain and any(w.startswith("-v") for w in plain))', 'or False'),
         "leading equals not stripped from tool names": ('name = name.lstrip("=").rstrip(". ") or name',
                                                        'name = name.rstrip(". ") or name'),
         "old-style tar cluster rule removed": (r'''    if name == "tar" and args and re.fullmatch(r"[A-Za-z]+", args[0]):''',

@@ -934,7 +934,9 @@ def analyze_argv(words, ctx, ps, depth):
     if any("=" in w and ("{" in w or "}" in w or "$" in w) for w in words):
         raise Deny("expansion", "an assignment with an expansion is not inspected")
     # A variable set by a builtin from an expansion ($A$B) has its name known only at run time: denied (fail closed).
-    setter = any(w in SETTER_BUILTINS for w in words) or ("printf" in words and any(w.startswith("-v") for w in words))
+    # A backslash-escaped builtin (\export, \printf) is the same builtin: compare the unescaped word.
+    plain = [w.replace("\\", "") for w in words]
+    setter = any(w in SETTER_BUILTINS for w in plain) or ("printf" in plain and any(w.startswith("-v") for w in plain))
     if setter and any("$" in w or "`" in w or SUBST in w for w in words):
         raise Deny("expansion", "a variable set by a builtin with an expansion is not inspected")
     # Any mention of a program-naming variable (assignment, +=, export, read, printf -v) is denied (fail closed).
