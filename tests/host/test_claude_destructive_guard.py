@@ -869,6 +869,18 @@ class PythonArgvCertaintyTests(unittest.TestCase):
         # A # inside a word is not a comment and stays uninspected (fail closed, unchanged).
         self.assertEqual(self._v("python3 -c 'print(1)' foo#bar"), "DENY")
 
+    def test_python_word_as_data_of_a_program_executing_tool_is_fail_closed(self):
+        # Owner accepted (2026-11-05, #632 review MEDIUM M2, no code change): rg and similar tools are
+        # not in NON_EXEC_COMMANDS because they can execute programs (rg --pre), so the X1 pre-pass
+        # cannot tell a python word used as data from a wrapper launching python. With an expansion
+        # in the segment the verdict is DENY: a known, accepted over-denial, not a blanket allow.
+        for cmd in ("rg python3 *.py", "ack python3 *.py", "cp python3 {a,b}"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._v(cmd), "DENY")
+        for cmd in ("rg python3 README", "grep python3 *.py"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._v(cmd), "ALLOW")
+
     def test_env_split_string_cannot_hide_an_uninspected_launcher(self):
         # GNU env -S splits its string *after* the shell, so scanning the shell's
         # original argv is insufficient. The hook only decides; it never executes these.
