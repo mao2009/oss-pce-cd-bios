@@ -28,6 +28,7 @@
 - 64 KB（UTF-8 バイト数）を超えるコマンドは "too large to inspect" として拒否する。正規表現を使わず語の線形走査で判定するため、上限内の入力は処理時間が抑えられる
 - `git push` の refspec 削除（`:branch`、`+:branch`）と `--prune` を拒否
 - `python -c` で削除・プロセス起動・書き込みに該当する語（`rmtree`、`remove`、`unlink`、`subprocess`、`open(` など）を含むもの
+- python の引数が静的に確定しないコマンド: コマンド列に python の語が含まれ、その区間に未展開の glob・`$`・バッククォートなどが含まれる場合、python へ渡る引数を確定できないため拒否する（X1）。既知の過剰拒否（Owner 受容済み、#632 レビュー MEDIUM M2）: `rg` のようなプログラム実行経路（`--pre`）を持つツールは「プログラムを実行しないコマンド」の一覧に入れられないため、`rg python3 *.py` のように python の語がデータ引数でも、展開を含む区間は拒否される。展開を含まない形（`rg python3 README`）と、実行経路を持たないツール（`grep python3 *.py`）は許可される
 - PowerShell の `Remove-Item`/`ri`/`del`/`erase` で `-Recurse`/`-Force` の略記（`-r`、`-fo` など）を含むもの（単一ファイルの場合は rm と同じ規則）
 - `unlink`、`shred`、`rmdir`、`rd`、`dd`、`mkfs`、`truncate`、`cmd`
 - コマンド置換 `$(...)` とバッククォートの中身も同じ規則で検査し、一つでも拒否なら全体を拒否。コマンド位置に置換がある場合も拒否
