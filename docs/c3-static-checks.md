@@ -93,7 +93,9 @@ Length 0 means 65536 bytes.
 | CI-2.03 | The declared operands equal the source operands. |
 | CI-2.04 | Every touched page has a declared mapping (fail closed). |
 | CI-2.05 | Every source and destination byte is inside its declared region. A ROM destination is a FAIL. |
-| CI-2.06 | A legitimate I/O transfer, such as TIA to the VDC data port, is declared with an `mmio` destination region. It is **not** refused for being I/O. It is reported BLOCKED until the production allowlist (UNDECIDED) covers it. |
+| CI-2.06 | A legitimate I/O transfer, such as TIA to the VDC data port, is declared with an `mmio` source or destination region. It is **not** refused for being I/O. It is reported BLOCKED, never STATIC_OK, until the production allowlist (UNDECIDED) covers it. This applies to reading device ports as well as writing them. |
+| CI-2.08 | The declared mapping of every touched page is cross-checked against the TAMs of the same routine before the transfer. A TAM that gives a different bank is a FAIL. A page the routine does not map itself (its mapping comes from the caller or environment), or a TAM value that cannot be decided, makes the transfer NOT_STATIC: the declaration is then only an assumption, and the transfer is never STATIC_OK. |
+| CI-2.00 | A region's kind must match its bank, using memory-map facts: `mmio` = $FF, `ram` = $68-$87 / $F7-$FB, `rom` = below $68. The `wram` region covers the whole bank, including the zero page and the stack page. |
 | CI-2.07 | NOT_STATIC: a mid-transfer mapping change, IRQ entry during a transfer, device DMA, and operands rewritten at run time (#648 / #653 are emulator evidence; real hardware is #655). |
 
 Today the bios scope has no block transfers. The tool prints the site count.
