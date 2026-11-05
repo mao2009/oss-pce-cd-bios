@@ -733,17 +733,17 @@ def git_rule(args, ctx):
 # X3b (Issue #640): program-naming options. An option whose value names a program that the tool starts is an
 # execution form the guard does not analyse, so it is denied (UNKNOWN_EXECUTION). Matching is conservative: a long
 # option may be abbreviated (getopt, clap), so any token that is a prefix of a program-naming long option is denied.
-PROGRAM_LONG = {"sort": ("compress-program",), "rg": ("pre", "pre-glob", "hostname-bin"),
-                "rsync": ("rsh", "rsync-path", "remote-option")}
+PROGRAM_LONG = {"sort": ("compress-program",), "rg": ("pre", "pre-glob", "hostname-bin")}
 # GNU and BSD variants of the same tools take the same program-naming options.
 PROGRAM_ALIAS = {"gsort": "sort", "gtar": "tar", "bsdtar": "tar"}
 PROGRAM_TOOLS = {"sort", "rg", "tar", "rsync", "ssh", "scp", "sftp"}
 # Builtins that set a variable from their arguments (export $A$B, declare, read, ...).
 SETTER_BUILTINS = ("export", "declare", "typeset", "local", "readonly", "read")
 # Environment variables that name a program the tool starts (prefix assignments: VAR=x tool, env VAR=x tool).
-PROGRAM_ENV = ("RSYNC_RSH", "SSH_ASKPASS", "TAR_OPTIONS", "SSH_SK_HELPER", "RIPGREP_CONFIG_PATH", "RSYNC_CONNECT_PROG")
-# A short letter that names a program in its cluster: rsync -e PROG, scp/sftp -S PROG (tar is in ALLOWLIST).
-PROGRAM_SHORT = {"rsync": "eM", "ssh": "F", "scp": "SF", "sftp": "SDFb"}
+PROGRAM_ENV = ("RSYNC_RSH", "SSH_ASKPASS", "TAR_OPTIONS", "SSH_SK_HELPER", "RIPGREP_CONFIG_PATH", "RSYNC_CONNECT_PROG",
+               "RSYNC_SHELL")
+# A short letter that names a program in its cluster: ssh -F, scp/sftp -S PROG (sort, rg, tar, rsync are in ALLOWLIST).
+PROGRAM_SHORT = {"ssh": "F", "scp": "SF", "sftp": "SDFb"}
 # ssh-family -o KEY=VALUE: a key that runs a local command.
 SSH_O_TOOLS = ("ssh", "scp", "sftp")
 SSH_LAUNCH_KEYS = ("include", "proxycommand", "localcommand", "permitlocalcommand", "knownhostscommand", "xauthlocation",
@@ -869,6 +869,56 @@ ALLOWLIST = {
                       "xattrs-include", "warning", "checkpoint-action"),
         "long_optional_any": ("backup", "atime-preserve", "checkpoint", "one-top-level", "occurrence", "suffix", "totals"),
         "long_arg_deny_prefix": {"checkpoint-action": ("exec",)},
+    },
+    # rsync (OPTION SUMMARY of rsync.html, fetched from the upstream manual; rsync is not installed on this host, so
+    # this grammar is not verified by running rsync). --rsh/-e, --rsync-path, -M/--remote-option, --early-input,
+    # --copy-as and the daemon options are not listed, so they are DENY.
+    "rsync": {
+        "full_long": ("verbose", "info", "debug", "stderr", "quiet", "no-motd", "checksum", "archive", "recursive",
+                      "inc-recursive", "no-inc-recursive", "relative", "no-implied-dirs", "backup", "backup-dir",
+                      "suffix", "update", "inplace", "append", "append-verify", "dirs", "old-dirs", "mkpath", "links",
+                      "copy-links", "copy-unsafe-links", "safe-links", "insecure-links", "confine-root", "munge-links",
+                      "copy-dirlinks", "keep-dirlinks", "hard-links", "perms", "executability", "chmod", "acls", "xattrs",
+                      "owner", "group", "devices", "copy-devices", "write-devices", "specials", "drop-D", "times",
+                      "atimes", "open-noatime", "crtimes", "omit-dir-times", "omit-link-times", "super", "fake-super",
+                      "sparse", "preallocate", "dry-run", "whole-file", "no-whole-file", "checksum-choice",
+                      "one-file-system", "block-size", "rsh", "rsync-path", "existing", "ignore-non-existing",
+                      "ignore-existing", "remove-source-files", "del", "delete", "delete-before", "delete-during",
+                      "delete-delay", "delete-after", "delete-excluded", "ignore-missing-args", "delete-missing-args",
+                      "ignore-errors", "force", "max-delete", "max-size", "min-size", "max-alloc", "partial",
+                      "partial-dir", "delay-updates", "delay-symlinks", "prune-empty-dirs", "numeric-ids", "usermap",
+                      "groupmap", "chown", "timeout", "contimeout", "ignore-times", "size-only", "modify-window",
+                      "temp-dir", "fuzzy", "compare-dest", "copy-dest", "link-dest", "compress", "compress-choice",
+                      "compress-level", "compress-threads", "skip-compress", "cvs-exclude", "filter", "exclude",
+                      "exclude-from", "include", "include-from", "files-from", "from0", "old-args", "secluded-args",
+                      "trust-sender", "copy-as", "address", "port", "sockopts", "blocking-io", "outbuf", "stats",
+                      "8-bit-output", "human-readable", "progress", "itemize-changes", "remote-option", "out-format",
+                      "log-file", "log-file-format", "password-file", "early-input", "list-only", "bwlimit", "stop-after",
+                      "stop-at", "fsync", "write-batch", "only-write-batch", "read-batch", "protocol", "iconv",
+                      "checksum-seed", "ipv4", "ipv6", "nice", "no-nice", "version", "help", "daemon", "config", "dparam",
+                      "no-detach"),
+        "short_flags": "vqcarRbulLkKHpEAXogDtUNOJSnWxdmIyCzFiPs0468h",
+        "short_args": "Bf@T",
+        "long_flags": ("verbose", "quiet", "no-motd", "checksum", "archive", "recursive", "inc-recursive",
+                       "no-inc-recursive", "relative", "no-implied-dirs", "backup", "update", "inplace", "append",
+                       "append-verify", "dirs", "old-dirs", "mkpath", "links", "copy-links", "copy-unsafe-links",
+                       "safe-links", "copy-dirlinks", "keep-dirlinks", "hard-links", "perms", "executability", "acls",
+                       "xattrs", "owner", "group", "devices", "specials", "times", "atimes", "open-noatime", "crtimes",
+                       "omit-dir-times", "omit-link-times", "super", "fake-super", "sparse", "preallocate", "dry-run",
+                       "whole-file", "no-whole-file", "one-file-system", "existing", "ignore-non-existing",
+                       "ignore-existing", "remove-source-files", "del", "delete", "delete-before", "delete-during",
+                       "delete-delay", "delete-after", "delete-excluded", "ignore-missing-args", "delete-missing-args",
+                       "ignore-errors", "force", "partial", "delay-updates", "delay-symlinks", "prune-empty-dirs",
+                       "numeric-ids", "ignore-times", "size-only", "fuzzy", "cvs-exclude", "from0", "old-args",
+                       "secluded-args", "blocking-io", "stats", "8-bit-output", "human-readable", "progress",
+                       "itemize-changes", "list-only", "fsync", "ipv4", "ipv6", "no-nice", "version", "help"),
+        "long_args": ("backup-dir", "suffix", "chmod", "block-size", "checksum-choice", "max-delete", "max-size",
+                      "min-size", "max-alloc", "partial-dir", "usermap", "groupmap", "chown", "timeout", "contimeout",
+                      "modify-window", "temp-dir", "compare-dest", "copy-dest", "link-dest", "compress-choice",
+                      "compress-level", "compress-threads", "skip-compress", "filter", "exclude", "exclude-from",
+                      "include", "include-from", "files-from", "bwlimit", "stop-after", "stop-at", "out-format",
+                      "log-file", "log-file-format", "password-file", "write-batch", "only-write-batch", "read-batch",
+                      "protocol", "iconv", "checksum-seed", "nice", "address", "port", "sockopts", "outbuf"),
     },
 }
 

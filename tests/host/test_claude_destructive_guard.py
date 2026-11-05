@@ -1353,7 +1353,6 @@ class X3bMutationTests(unittest.TestCase):
     a temporary copy of the hook and this test module; no repository file is changed."""
 
     MUTANTS = {
-        "rsync long rules removed": ('"rsync": ("rsh", "rsync-path", "remote-option")', ''),
         "sftp -D rule removed": ('"sftp": "SDFb"', '"sftp": "SFb"'),
         "GNU and BSD name aliases removed": ('    name = PROGRAM_ALIAS.get(name, name)', '    pass'),
         "program-naming environment variables not checked": (r'''    if any(v in w.replace("\\", "").replace('"', "").replace("'", "").upper() for w in words for v in PROGRAM_ENV):''',
@@ -1371,7 +1370,7 @@ class X3bMutationTests(unittest.TestCase):
         "tool filter removed": ('    if name not in PROGRAM_TOOLS:', '    if False:'),
         "SSH_SK_HELPER removed from the program variables": ('"TAR_OPTIONS", "SSH_SK_HELPER",', '"TAR_OPTIONS",'),
         "RIPGREP_CONFIG_PATH removed from the program variables": ('"SSH_SK_HELPER", "RIPGREP_CONFIG_PATH",', '"SSH_SK_HELPER",'),
-        "RSYNC_CONNECT_PROG removed from the program variables": ('"RIPGREP_CONFIG_PATH", "RSYNC_CONNECT_PROG")', '"RIPGREP_CONFIG_PATH")'),
+        "RSYNC_CONNECT_PROG removed from the program variables": ('"RIPGREP_CONFIG_PATH", "RSYNC_CONNECT_PROG",', '"RIPGREP_CONFIG_PATH",'),
         "XAuthLocation key removed": ('"knownhostscommand", "xauthlocation",', '"knownhostscommand",'),
         "variable set by a builtin with an expansion not denied": (
             r'''    if setter and any("$" in w or "`" in w or SUBST in w for w in words):''', r'''    if False:'''),
@@ -1388,13 +1387,9 @@ class X3bMutationTests(unittest.TestCase):
         "ssh -F rule removed": ('"ssh": "F", ', ''),
         "ssh Include key removed": ('SSH_LAUNCH_KEYS = ("include", ', 'SSH_LAUNCH_KEYS = ('),
         "ssh KnownHostsCommand key removed": ('"knownhostscommand",', ''),
-        "rsync -e rule removed": ('"rsync": "eM", ', ''),
-        "rsync remote-option rule removed": ('"rsync-path", "remote-option")', '"rsync-path")'),
         "scp and sftp -S rules removed": ('"scp": "SF", "sftp": "SDFb"', '"sftp": "DFb"'),
         "ssh -o rule removed": ('ssh_o = name in SSH_O_TOOLS', 'ssh_o = False'),
         "ssh ProxyCommand key removed": ('("include", "proxycommand"', '("include", "zzz"'),
-        "long option abbreviation made exact": ('if key and any(o.startswith(key) for o in longs):',
-                                                'if key and any(o == key for o in longs):'),
         "program option check not called": ('    program_option_rule(name, args)\n', ''),
     }
 
@@ -1698,6 +1693,106 @@ class AllowlistTarMutationTests(unittest.TestCase):
                 failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
                 detected = any("AllowlistTarTests." in ln for ln in failing)
                 self.assertTrue(detected, "mutant not detected by an AllowlistTarTests test: " + name + "\n"
+                                + "\n".join(failing))
+
+
+class AllowlistRsyncTests(unittest.TestCase):
+    """Issue #640 X3b (structural allowlist), rsync. The grammar comes from the rsync manual, not from running rsync
+    (rsync is not installed on this host). Decision-level only; nothing is executed."""
+
+    DENY = [
+        # normal: the remote shell and the remote program, short and long, attached and separate
+        "rsync -e 'sh -c \"rm -rf x\"' a b", "rsync -avze ssh a b", "rsync -esh a b", "rsync -e ssh a b",
+        "rsync --rsh=sh a b", "rsync --rsh sh a b", "rsync --rsync-path=sh a b", "rsync --rsync-path sh a b",
+        # normal: the remote-option forwarding (-M), attached and separate, and its long form
+        "rsync -M--rsync-path=sh a b", "rsync -M sh a b", "rsync --remote-option=--rsync-path=sh a b",
+        "rsync -avM sh a b",
+        # abnormal: an abbreviation that is ambiguous or resolves to an unlisted program option
+        "rsync --rs=sh a b", "rsync --rsync=sh a b", "rsync --rem=sh a b",
+        # abnormal: unlisted letters and options, and options that feed or name daemon or user programs
+        "rsync -Q a b", "rsync --bogus a b", "rsync --early-input=x a b", "rsync --copy-as=root a b",
+        "rsync --daemon", "rsync --config=x", "rsync --dparam=x",
+        # boundary: the program variables, in any case and as a prefix assignment
+        "RSYNC_RSH=sh rsync a b", "env RSYNC_RSH=sh rsync a b", "RSYNC_SHELL=sh RSYNC_CONNECT_PROG=x rsync rsync://h/m d",
+        "RSYNC_CONNECT_PROG=sh rsync rsync://h/m d", "rsync_shell=sh rsync rsync://h/m d",
+        # boundary: a dashed glob or a brace in an option is not inspected
+        "rsync -e* a b", "rsync --{rsh,x}=sh a b",
+    ]
+    ALLOW = [
+        # normal sync commands
+        "rsync -a src/ dst/", "rsync --delete -a a b", "rsync -n -v --progress src/ host:/dst/",
+        "rsync --bwlimit=100 -a a b", "rsync -avh a b", "rsync -av --exclude=tmp src dst",
+        "rsync -T /tmp/x -a a b", "rsync --timeout=30 --chmod=g+w -a a b", "rsync --delete-after --partial-dir=.p -a a b",
+        "rsync -C -a a b", "rsync --files-from list.txt a b",
+        # boundary: an option value is consumed; after -- every word is a file name
+        "rsync --exclude tmp -a a b", "rsync -a -- -weird a b", "rsync -a -- -e sh a b",
+    ]
+
+    def test_rsync_deny_list(self):
+        for cmd in self.DENY:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+
+    def test_rsync_allow_list(self):
+        for cmd in self.ALLOW:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "ALLOW")
+
+    def test_rsync_grammar_names_are_in_the_full_list(self):
+        spec = guard.ALLOWLIST["rsync"]
+        listed = spec["long_flags"] + spec["long_args"]
+        for name in listed:
+            with self.subTest(option=name):
+                self.assertIn(name, spec["full_long"])
+
+
+class AllowlistRsyncMutationTests(unittest.TestCase):
+    """Issue #640 X3b (allowlist), rsync: each rule must be detected by a named AllowlistRsyncTests failure."""
+
+    MUTANTS = {
+        "rsh allowed as a long argument": (
+            '"long_args": ("backup-dir", "suffix", "chmod",', '"long_args": ("rsh", "backup-dir", "suffix", "chmod",'),
+        "rsync-path allowed as a long argument": (
+            '"long_args": ("backup-dir", "suffix", "chmod",', '"long_args": ("rsync-path", "backup-dir", "suffix", "chmod",'),
+        "remote-option allowed as a long argument": (
+            '"long_args": ("backup-dir", "suffix", "chmod",', '"long_args": ("remote-option", "backup-dir", "suffix", "chmod",'),
+        "copy-as allowed as a long argument": (
+            '"long_args": ("backup-dir", "suffix", "chmod",', '"long_args": ("copy-as", "backup-dir", "suffix", "chmod",'),
+        "-e allowed as a short letter": ('"short_args": "Bf@T",', '"short_args": "Bf@Te",'),
+        "-M allowed as a short letter": ('"short_args": "Bf@T",', '"short_args": "Bf@TM",'),
+        "RSYNC_SHELL removed from the program variables": (
+            '"RSYNC_CONNECT_PROG",\n               "RSYNC_SHELL")', '"RSYNC_CONNECT_PROG")'),
+        "unlisted long option not denied": (
+            '                raise Deny("program-option", name + " option is not in the allowlist: " + a)', '                pass'),
+    }
+
+    def _run(self, hook_text):
+        with tempfile.TemporaryDirectory() as td:
+            root = os.path.realpath(td)
+            hooks = os.path.join(root, ".claude", "hooks")
+            host = os.path.join(root, "tests", "host")
+            os.makedirs(hooks)
+            os.makedirs(host)
+            write_text(os.path.join(hooks, "guard_destructive.py"), hook_text)
+            with open(THIS_FILE, encoding="utf-8") as f:
+                write_text(os.path.join(host, "test_claude_destructive_guard.py"), f.read())
+            proc = subprocess.run([sys.executable, "-m", "unittest", "-v",
+                                   "test_claude_destructive_guard.AllowlistRsyncTests"], cwd=host,
+                                  capture_output=True, text=True, timeout=300)
+            return proc.returncode, proc.stderr
+
+    def test_rsync_allowlist_tests_detect_each_mutant(self):
+        with open(HOOK, encoding="utf-8") as f:
+            original = f.read()
+        code, out = self._run(original)
+        self.assertEqual(code, 0, "unmutated copy must pass AllowlistRsyncTests:\n" + out[-800:])
+        for name, (old, new) in self.MUTANTS.items():
+            with self.subTest(mutant=name):
+                self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
+                code, out = self._run(original.replace(old, new))
+                failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
+                detected = any("AllowlistRsyncTests." in ln for ln in failing)
+                self.assertTrue(detected, "mutant not detected by an AllowlistRsyncTests test: " + name + "\n"
                                 + "\n".join(failing))
 
 
