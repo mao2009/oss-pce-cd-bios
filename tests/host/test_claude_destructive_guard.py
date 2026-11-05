@@ -229,6 +229,10 @@ KNOWN_UNRESOLVED_MUTANTS = {
     "PowerShell dollar removed from expression syntax": GENERIC,
     "PowerShell head ignores a leading tab": GENERIC,
     "assignment with an expansion not denied": GENERIC,
+    "comment not treated as certain": "on the merged lineages split_segments strips comments from the segment "
+                                       "before python_word_certainty runs, so the certainty comment rule is "
+                                       "unreachable; the verdicts are pinned by PythonArgvCertaintyTests; "
+                                       "follow-up issue",
     "coproc NAME reading removed": GENERIC,
     "escaped setter builtin not unescaped": GENERIC,
     "expansion or escape in a tool argument not denied": GENERIC,
@@ -3172,6 +3176,332 @@ class MutationDetectionTests(unittest.TestCase):
                 self.assertTrue(detected, "mutant not detected by a symlink test: " + name + "\n" + "\n".join(failing))
 
 
+class PythonArgvCertaintyTests(unittest.TestCase):
+    """Issue #630 X1 (L1 shell word layer and L2 argv layer). A python command is judged only when its argv is certain:
+    no unquoted special character, and no $, backtick or backslash inside double quotes. Known bypasses are DENY.
+    Decision-level only: nothing is executed, no file is created. Host-independent (no symlink)."""
+
+    def _v(self, cmd):
+        return verdict(cmd)
+
+    def test_wrapper_and_prefix_forms_are_judged_like_the_plain_form(self):
+        # A python command after a wrapper, an assignment or a path is judged on certainty too.
+        for cmd in ["nice python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "FOO=1 python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "/usr/bin/python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "env -i python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "time python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "command python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "timeout 5 python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "nice python3 -c open*",
+                    # The command word itself spelled differently: quoted, escaped, or with .exe.
+                    "\"python3\" {-c,}\"open('/tmp/zz','w').close()\"",
+                    "'python3' {-c,}\"open('/tmp/zz','w').close()\"",
+                    "\\python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "p\"y\"thon3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "python.exe {-c,}\"open('/tmp/zz','w').close()\"",
+                    "python3.exe {-c,}\"open('/tmp/zz','w').close()\"",
+                    "py.exe {-c,}\"open('/tmp/zz','w').close()\"",
+                    "\"/usr/bin/python3\" {-c,}\"open('/tmp/zz','w').close()\"",
+                    "/usr/bin/python3.exe {-c,}\"open('/tmp/zz','w').close()\""]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._v(cmd), "DENY")
+        self.assertEqual(self._v("nice python3 -m unittest discover -s tests/host -v"), "ALLOW")
+
+    def test_trailing_comment_does_not_make_python_argv_uncertain(self):
+        # A word-initial # starts a comment (the tokenizer strips it the same way): text after it is
+        # not a word and cannot change the argv, so it must not make a certain python command uncertain.
+        self.assertEqual(self._v("python3 -c 'print(1)' # just a comment"), "ALLOW")
+        self.assertEqual(verdict("python3 -c 'print(1)' # just a comment", "PowerShell"), "ALLOW")
+        # The comment does not hide the code either: dangerous code before it is still judged.
+        self.assertEqual(self._v("python3 -c \"import os; os.remove('x')\" # comment"), "DENY")
+        # A # inside a word is not a comment and stays uninspected (fail closed, unchanged).
+        self.assertEqual(self._v("python3 -c 'print(1)' foo#bar"), "DENY")
+
+    def test_python_word_as_data_of_a_program_executing_tool_is_fail_closed(self):
+        # Owner accepted (2026-11-05, #632 review MEDIUM M2, no code change): rg and similar tools are
+        # not in NON_EXEC_COMMANDS because they can execute programs (rg --pre), so the X1 pre-pass
+        # cannot tell a python word used as data from a wrapper launching python. With an expansion
+        # in the segment the verdict is DENY: a known, accepted over-denial, not a blanket allow.
+        for cmd in ("rg python3 *.py", "ack python3 *.py", "cp python3 {a,b}"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._v(cmd), "DENY")
+        for cmd in ("rg python3 README", "grep python3 *.py"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._v(cmd), "ALLOW")
+
+    def test_env_split_string_cannot_hide_an_uninspected_launcher(self):
+        # GNU env -S splits its string *after* the shell, so scanning the shell's
+        # original argv is insufficient. The hook only decides; it never executes these.
+        commands = [
+            'env -S \'python3 -c open("x","w")\'',
+            'env -Spython3 -c \'open("x","w")\'',
+            'env -iS \'python3 -c open("x","w")\'',
+            'env --split-string=\'python3 -c open("x","w")\'',
+            'env --split-str=\'python3 -c open("x","w")\'',
+            'env --split-string \'rm -rf x\'',
+            'env -u HOME -S \'python3 -c open("x","w")\'',
+            "sudo env -S 'rm -rf x'",  # Wrapper nesting also reaches unwrap(env).
+        ]
+        for cmd in commands:
+            with self.subTest(cmd=cmd):
+                decision, reason = guard.decide(payload(cmd), repo_root=REPO)
+                self.assertEqual(decision, "DENY", (cmd, reason))
+                self.assertTrue(reason.startswith("wrapper-argv"), (cmd, reason))
+        for cmd in ("env -i python3 -c 'print(1)'",
+                    "env -u HOME python3 -m unittest",
+                    "env FOO=bar python3 -c 'print(1)'"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._v(cmd), "ALLOW")
+
+
+    def test_env_split_string_fail_closed_over_denial_is_explicit(self):
+        # Owner chose to preserve fail-closed global scanning for X1.
+        # These are *not* env split-string invocations, but are denied
+        # because unwrap(env) scans the entire remaining argv, even after
+        # the program name or '--', including -u's attached value.
+        examples = (
+            "env python3 -S script.py",
+            "env ls -S",
+            "env -uSESSION python3 -c 'print(1)'",
+            "env -- ls -S",
+            "env ls --sp",
+            "env --=x python3 -c 'print(1)'",
+        )
+        for cmd in examples:
+            with self.subTest(cmd=cmd):
+                decision, reason = guard.decide(payload(cmd), repo_root=REPO)
+                self.assertEqual(decision, "DENY", (cmd, reason))
+                self.assertTrue(reason.startswith("wrapper-argv"), (cmd, reason))
+
+
+    def test_known_bypasses_are_denied(self):
+        cmds = [
+            "python3 '-copen(\"/tmp/zz\",\"w\").close()'",         # attached -c, quoted
+            "python3 -c'open(\"/tmp/zz\",\"w\").close()'",         # attached -c, quoted code
+            "python3 -uc\"import os; os.remove('x')\"",            # bundle with c
+            "python3 -Wc \"open('x','w').close()\"",               # -W takes c as value and keeps next arg
+            "D=-c; python3 $D\"open('/tmp/zz','w').close()\"",     # variable supplies the option
+            "D=-; python3 ${D}copen\"x\"",                         # parameter expansion
+            "python3 {-c,}\"open('/tmp/zz','w').close()\"",        # brace builds the option
+            "python3 -c {open,}\"('/tmp/zz','w').close()\"",       # brace builds the code
+            "python3 -c open*",                                   # glob code, no file needed
+            "touch zz_no_file_needed && python3 -c open*",        # chain plus glob: no hook-time file dependence
+            "python3 -c \"$(echo open)\"",                        # substitution
+            "python3 -c \"import os; os.remove('x')\" ; python3 tests/test-*.py",  # unquoted glob argument
+        ]
+        for cmd in cmds:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._v(cmd), "DENY")
+
+    def test_quoted_forms_are_judged_on_their_literal_text(self):
+        allowed = [
+            "python3 -c 'print(2*3)'",
+            "python3 -c \"print(1 + 1)\"",
+            "python3 -m pytest -q 'tests/test-*.py'",
+            "python3 -m unittest discover -s tests/host -p 'test-*.py'",
+            "python3 -cprint(1)",
+            "python3 -Wignore -cprint(1)",
+            "python3 -Wcopen('x','w')",
+            "python3 -mcopen",
+        ]
+        for cmd in allowed:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._v(cmd), "ALLOW")
+
+    def test_separate_c_forms_are_still_denied(self):
+        self.assertEqual(self._v("python3 -c \"open('x','w').close()\""), "DENY")
+        self.assertEqual(self._v("python3 -c \"import os; os.remove('x')\""), "DENY")
+
+    def test_single_quoted_dollar_in_argument_is_refused(self):
+        self.assertEqual(self._v("python3 '-$Dopen(\"x\",\"w\")'"), "DENY")
+
+    @unittest.expectedFailure
+    def test_known_gap_reflection_is_denied(self):
+        # Known gap, closed by X2 (AST allowlist). Remove this marker when X2 closes it.
+        self.assertEqual(self._v("python3 -c \"import operator, io; operator.attrgetter('open')(io)('/tmp/zz','w')\""),
+                         "DENY")
+
+    @unittest.expectedFailure
+    def test_known_gap_io_write_is_denied(self):
+        # Known gap, closed by X2 (AST allowlist). Remove this marker when X2 closes it.
+        self.assertEqual(self._v("python3 -c \"import io; io.FileIO('/tmp/zz','w')\""), "DENY")
+
+    def test_regression_corpus_of_twenty_ordinary_commands(self):
+        corpus = [
+            ("python3 -m unittest discover -s tests/host -v", "ALLOW"),
+            ("python3 -m unittest discover -s tests/host -p 'test_*.py'", "ALLOW"),
+            ("python3 -m unittest discover -s tests/host -p 'test-*.py'", "ALLOW"),   # FP removed: quoted glob
+            ("python3 -m pytest -q tests/", "ALLOW"),
+            ("python3 -m pytest tests/test-*.py", "DENY"),   # unquoted glob: argv not certain (quote it)
+            ("python3 -c \"print(1 + 1)\"", "ALLOW"),
+            ("python3 -c \"print(1 - 2)\"", "ALLOW"),
+            ("python3 -c \"x=[1,2]; print(x[-1])\"", "ALLOW"),   # FP removed: negative index
+            ("python3 -c \"import json; print(json.dumps({'a': 1}))\"", "ALLOW"),
+            ("python3 -c \"import json; print(json.dumps({'a': -1}))\"", "ALLOW"),   # FP removed
+            ("python3 -c \"d = {'a-b': 1}; print(d)\"", "ALLOW"),                   # FP removed
+            ("python3 -c \"print('a-b'[0:1])\"", "ALLOW"),                          # FP removed
+            ("python3 -c \"import re; print(re.findall(r'[a-z]-x', 'a-x'))\"", "ALLOW"),   # FP removed
+            ("python3 -c \"import sys; print(sys.version)\"", "ALLOW"),
+            ("python3 -c \"import sys; print(sys.executable)\"", "DENY"),   # pre-existing: 'exec' inside a word
+            ("python3 -m json.tool --indent 2 data.json", "ALLOW"),
+            ("python3 -m http.server --bind 127.0.0.1 8000", "ALLOW"),
+            ("python3 -m compileall -q src", "ALLOW"),
+            ("python3 -m pip install -r requirements-dev.txt", "ALLOW"),
+            ("python3 scripts/check-links.py", "ALLOW"),
+        ]
+        self.assertEqual(len(corpus), 20)
+        for cmd, expected in corpus:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._v(cmd), expected)
+
+
+class PythonCommandPositionTests(unittest.TestCase):
+    """Issue #630 X1: a python command is one whose command word (after keywords, assignments and wrappers) is python.
+    The word python as an argument, or inside a quoted string, is not a python process. The reason is checked, so a
+    denial is attributed to the rule that gave it. Decision-level only; nothing is executed."""
+
+    def _d(self, cmd):
+        return guard.decide(json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": REPO}),
+                            repo_root=REPO)
+
+    def test_python_in_command_position_with_expansion_is_denied_by_the_argv_rule(self):
+        for cmd in ["python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "nice python3 -c open*",
+                    "FOO=1 python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "env -i python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "sh -c 'python3 {-c,}\"open(1)\"'"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertTrue(reason.startswith("unexpanded"), reason)
+
+    def test_python_word_as_an_argument_is_not_a_python_process(self):
+        for cmd in ["echo python3 > out.txt", "echo python3", "printf 'python3 %s\\n' x",
+                    "grep -r python src/*.py", "cat python", "ls /x/py", "find . -name 'python*'",
+                    "echo \"python3 is $HOME\"", "which python3 && echo ok", "grep python README.md"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_python_with_a_redirect_is_judged_on_its_argv_not_the_redirect(self):
+        self.assertEqual(self._d("python3 -c 'print(1)' > out.txt")[0], "ALLOW")
+        verdict, reason = self._d("python3 -c 'print(1)' > $OUT")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("unexpanded"), reason)
+
+    def test_substitution_in_python_argv_is_refused(self):
+        verdict, reason = self._d("python3 -c \"print(1)\" <(echo open)")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("unexpanded"), reason)
+
+    def test_quoted_and_escaped_python_spellings_are_command_position(self):
+        for cmd in ["\"python3\" {-c,}\"open(1)\"", "\\python3 {-c,}\"open(1)\"", "python.exe {-c,}\"open(1)\""]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._d(cmd)[0], "DENY")
+
+    def test_commands_that_run_a_named_program_are_not_non_exec(self):
+        # sort --compress-program=PROG and rg --pre=PROG run PROG (reviewer CRITICAL on 714345c). They must not
+        # be treated as commands that run no program, so a python word behind them is still checked.
+        self.assertNotIn("sort", guard.NON_EXEC_COMMANDS)
+        self.assertNotIn("rg", guard.NON_EXEC_COMMANDS)
+        for cmd in ["sort -S 1K python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "rg --pre python3 {-c,}\"open('/tmp/zz','w').close()\""]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._d(cmd)[0], "DENY")
+
+    def test_unknown_or_option_taking_wrappers_do_not_hide_python(self):
+        for cmd in ["taskset -c 0 python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "chrt 10 python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "timeout -s KILL 5 python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "sudo -u root python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "env -u HOME python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "xargs -I {} python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "exec -a x python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "uv run python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "busybox python3 {-c,}\"open('/tmp/zz','w').close()\"",
+                    "flock /tmp/l python3 {-c,}\"open('/tmp/zz','w').close()\""]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._d(cmd)[0], "DENY")
+
+    def test_python_code_behind_an_unknown_wrapper_is_checked(self):
+        # Dispatch does not reach python_rule through taskset or exec -a. The code is still judged here.
+        for cmd in ["taskset -c 0 python3 -c 'open(\"/tmp/zz\",\"w\").close()'",
+                    "exec -a x python3 -c 'open(\"/tmp/zz\",\"w\").close()'",
+                    "uv run python3 -c 'import os; os.remove(\"x\")'"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._d(cmd)[0], "DENY")
+
+    def test_stdin_code_and_here_strings_are_refused(self):
+        for cmd in ["python3 < x.py", "python3 <<< \"open('/tmp/zz','w').close()\""]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._d(cmd)[0], "DENY")
+
+    def test_ordinary_python_runs_are_allowed(self):
+        for cmd in ["python3 -c 'print(1)'", "python3 -m unittest discover -s tests/host -v",
+                    "nice python3 scripts/check-links.py"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._d(cmd)[0], "ALLOW")
+
+
+class PythonArgvMutationTests(unittest.TestCase):
+    """Mutants of the X1 layers. Each must make a named PythonArgvCertaintyTests method fail (an assertion failure,
+    not an import error). Runs on every host (no symlink)."""
+
+    MUTANTS = {
+        "env -S launch rejection removed": (
+            '            if (tok.startswith("--") and tok != "--" and "split-string".startswith(tok[2:].split("=", 1)[0])) or (tok.startswith("-") and not tok.startswith("--") and "S" in tok[1:]):',
+            '            if False:'),
+        "certainty check removed": (
+            "if not python_word_certainty(seg):",
+            "if False:"),
+        "comment not treated as certain": (
+            'elif ch == "#" and word_start:', 'elif ch == "#" and False:'),
+        "attached code ignored (next argument only)": (
+            "codes.append(rest if rest else (args[i + 1] if i + 1 < len(args) else \"\"))",
+            "codes.append(args[i + 1] if i + 1 < len(args) else \"\")"),
+        "variable argument rule removed": (
+            "if \"$\" in arg or \"`\" in arg or SUBST in arg:",
+            "if False:"),
+    }
+    DETECTING = ["test_env_split_string_cannot_hide_an_uninspected_launcher",
+                 "test_trailing_comment_does_not_make_python_argv_uncertain",
+                 "test_known_bypasses_are_denied", "test_single_quoted_dollar_in_argument_is_refused",
+                 "test_separate_c_forms_are_still_denied"]
+
+    def _run(self, hook_text):
+        with tempfile.TemporaryDirectory() as td:
+            root = os.path.realpath(td)
+            hooks = os.path.join(root, ".claude", "hooks")
+            host = os.path.join(root, "tests", "host")
+            os.makedirs(hooks)
+            os.makedirs(host)
+            write_text(os.path.join(hooks, "guard_destructive.py"), hook_text)
+            with open(THIS_FILE, encoding="utf-8") as f:
+                write_text(os.path.join(host, "test_claude_destructive_guard.py"), f.read())
+            names = ["test_claude_destructive_guard.PythonArgvCertaintyTests"]
+            proc = subprocess.run([sys.executable, "-m", "unittest", "-v"] + names, cwd=host,
+                                  capture_output=True, text=True, timeout=300)
+            return proc.returncode, proc.stderr
+
+    def test_argv_mutants_are_detected(self):
+        with open(HOOK, encoding="utf-8") as f:
+            original = f.read()
+        code, out = self._run(original)
+        self.assertEqual(code, 0, "unmutated copy must pass PythonArgvCertaintyTests:\n" + out[-800:])
+        for name, (old, new) in self.MUTANTS.items():
+            if name in KNOWN_UNRESOLVED_MUTANTS:
+                continue
+            with self.subTest(mutant=name):
+                self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
+                code, out = self._run(original.replace(old, new))
+                failing = [re.match(r"(?:FAIL|ERROR): (\S+) \(", ln) for ln in out.splitlines()
+                           if ln.startswith(("FAIL:", "ERROR:"))]
+                names = [m.group(1) for m in failing if m]
+                detected = any(n in self.DETECTING for n in names)
+                self.assertTrue(detected, "mutant not detected by a PythonArgvCertaintyTests assertion: " + name)
+
+
 CHILD = r"""
 import importlib.util, json, sys, time
 spec = importlib.util.spec_from_file_location("g", sys.argv[1])
@@ -3378,7 +3708,7 @@ class MutationRegisterTests(unittest.TestCase):
         self.assertEqual(sorted(set(KNOWN_UNRESOLVED_MUTANTS) - defined), [])
 
     def test_register_count_is_locked(self):
-        self.assertEqual(len(KNOWN_UNRESOLVED_MUTANTS), 21, "review the register before changing its size")
+        self.assertEqual(len(KNOWN_UNRESOLVED_MUTANTS), 22, "review the register before changing its size")
 
 
 class RoundBReviewRegressionTests(unittest.TestCase):
