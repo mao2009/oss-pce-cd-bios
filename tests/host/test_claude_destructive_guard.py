@@ -1300,6 +1300,10 @@ class X3bProgramOptionTests(unittest.TestCase):
         "ssh -o Proxy{Command=sh,} host", "tar x{I,} sh a.tar", "tar {I,}sh a.tar",
         "tar --checkpoint-action={exec,}=sh -xf a.tar", "export {RSYNC_RSH,X}=sh && rsync a b",
         "X=RSYNC_RSH; export $X=sh && rsync a b", "ssh -* host", "sort --compress*=sh x", "tar x* a.tar",
+        # found in review 9: a leading glob that expands to a dashed name; XAuthLocation; config-file variables
+        "sort [-]-compress-program=sh x", "sort *-compress-program=sh x", "ssh [-]o ProxyCommand=sh host",
+        "tar -xf a.tar [-]-to-command=sh", "ssh -o XAuthLocation=sh host", "ssh -X -o XAuthLocation=sh host",
+        "RIPGREP_CONFIG_PATH=cfg.txt rg x src", "RSYNC_CONNECT_PROG=sh rsync rsync://h/m d",
         # found in review 7: += appends, indirect settings (printf -v, read, export without =), globs in -o values
         "export RSYNC_RSH+=sh && rsync a b", "SSH_ASKPASS+=sh ssh host", "printf -v RSYNC_RSH sh && export RSYNC_RSH && rsync a b",
         "read RSYNC_RSH <<< sh; export RSYNC_RSH; rsync a b", "ssh -o *roxyCommand=sh host",
@@ -1319,7 +1323,7 @@ class X3bProgramOptionTests(unittest.TestCase):
         "ssh host", "ssh -o BatchMode=yes host", "ssh -p 22 host",
         "diff -l a b", "file -z a.gz",
         "tar xf a.tar", "echo $HOME", "echo x\\y",
-        "sort -u names*.txt", "rg -n TODO src/*.py", "echo {a,b}",
+        "sort -u names*.txt", "rg -n TODO src/*.py", "echo {a,b}", "rg --hyperlink-format=default x src",
     ]
 
     def test_program_naming_options_are_denied(self):
@@ -1356,7 +1360,7 @@ class X3bMutationTests(unittest.TestCase):
         "expansion or escape in a tool argument not denied": (r'''        if "$" in a or "`" in a or SUBST in a or "\\" in a or "{" in a or "}" in a:''',
                                                               r'''        if False:'''),
         "brace in a tool argument not denied": (r'''or "\\" in a or "{" in a or "}" in a:''', r'''or "\\" in a:'''),
-        "dashed glob in a tool argument not denied": (r'''        if a.startswith("-") and any(c in a for c in "*?["):''',
+        "dashed or leading glob in a tool argument not denied": (r'''        if any(c in a for c in "*?[") and (a.startswith("-") or a[:1] in "*?["):''',
                                                       r'''        if False:'''),
         "tar first word glob not denied": (r'''    if name == "tar" and args and any(c in args[0] for c in "*?["):''',
                                            r'''    if False:'''),
@@ -1364,7 +1368,10 @@ class X3bMutationTests(unittest.TestCase):
                                                     r'''    if False:'''),
         "tool filter removed": ('    if name not in PROGRAM_TOOLS:', '    if False:'),
         "rg hostname-bin removed": ('"pre-glob", "hostname-bin"),', '"pre-glob"),'),
-        "SSH_SK_HELPER removed from the program variables": ('"TAR_OPTIONS", "SSH_SK_HELPER")', '"TAR_OPTIONS")'),
+        "SSH_SK_HELPER removed from the program variables": ('"TAR_OPTIONS", "SSH_SK_HELPER",', '"TAR_OPTIONS",'),
+        "RIPGREP_CONFIG_PATH removed from the program variables": ('"SSH_SK_HELPER", "RIPGREP_CONFIG_PATH",', '"SSH_SK_HELPER",'),
+        "RSYNC_CONNECT_PROG removed from the program variables": ('"RIPGREP_CONFIG_PATH", "RSYNC_CONNECT_PROG")', '"RIPGREP_CONFIG_PATH")'),
+        "XAuthLocation key removed": ('"knownhostscommand", "xauthlocation",', '"knownhostscommand",'),
         "leading equals not stripped from tool names": ('name = name.lstrip("=").rstrip(". ") or name',
                                                        'name = name.rstrip(". ") or name'),
         "old-style tar cluster rule removed": (r'''    if name == "tar" and args and re.fullmatch(r"[A-Za-z]+", args[0]):''',

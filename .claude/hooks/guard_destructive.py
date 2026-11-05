@@ -741,12 +741,12 @@ PROGRAM_LONG = {"sort": ("compress-program",), "rg": ("pre", "pre-glob", "hostna
 PROGRAM_ALIAS = {"gsort": "sort", "gtar": "tar", "bsdtar": "tar"}
 PROGRAM_TOOLS = {"sort", "rg", "tar", "rsync", "ssh", "scp", "sftp"}
 # Environment variables that name a program the tool starts (prefix assignments: VAR=x tool, env VAR=x tool).
-PROGRAM_ENV = ("RSYNC_RSH", "SSH_ASKPASS", "TAR_OPTIONS", "SSH_SK_HELPER")
+PROGRAM_ENV = ("RSYNC_RSH", "SSH_ASKPASS", "TAR_OPTIONS", "SSH_SK_HELPER", "RIPGREP_CONFIG_PATH", "RSYNC_CONNECT_PROG")
 # A short letter that names a program in its cluster: tar -I PROG, rsync -e PROG, scp/sftp -S PROG.
 PROGRAM_SHORT = {"tar": "IF", "rsync": "e", "ssh": "F", "scp": "SF", "sftp": "SDF"}
 # ssh-family -o KEY=VALUE: a key that runs a local command.
 SSH_O_TOOLS = ("ssh", "scp", "sftp")
-SSH_LAUNCH_KEYS = ("include", "proxycommand", "localcommand", "permitlocalcommand", "knownhostscommand",
+SSH_LAUNCH_KEYS = ("include", "proxycommand", "localcommand", "permitlocalcommand", "knownhostscommand", "xauthlocation",
                    "pkcs11provider", "securitykeyprovider", "match")
 
 
@@ -766,7 +766,9 @@ def program_option_rule(name, args):
     for a in args:
         if "$" in a or "`" in a or SUBST in a or "\\" in a or "{" in a or "}" in a:
             raise Deny("program-option", name + " argument with an expansion or escape is not inspected")
-        if a.startswith("-") and any(c in a for c in "*?["):
+        # A glob that starts the word (*-compress-program, [-]-to-command) can expand to a dashed file name, so it is an
+        # option; a glob after a letter (names*.txt) cannot start with a dash.
+        if any(c in a for c in "*?[") and (a.startswith("-") or a[:1] in "*?["):
             raise Deny("program-option", name + " option with a glob is not inspected")
     if name == "tar" and args and any(c in args[0] for c in "*?["):
         raise Deny("program-option", "tar first word with a glob is not inspected")
