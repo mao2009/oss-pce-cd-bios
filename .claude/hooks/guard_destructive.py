@@ -1519,9 +1519,22 @@ def wrapper_command_index(name, args, ctx):
         # is allowed (Round 6/7), but creating one inside .claude/ or .git is a write into a protected
         # directory. A numeric operand is an open file descriptor and creates nothing.
         if i < len(args) and not args[i].isdigit():
-            _lex, real = resolve(args[i], ctx)
-            rk = real.casefold()
-            if names_claude(args[i]) or inside_claude(real, ctx) or rk == ctx.git or inside(rk, ctx.git):
+            # Every literal prefix is resolved, as in tar_path_ok: a name that does not exist yet is
+            # resolved lexically, so a link in the middle (link/newlock with link -> .claude) would
+            # otherwise be missed.
+            operand = args[i].replace("\\", "/")
+            parts = [p for p in operand.split("/") if p not in ("", ".")]
+            hit = names_claude(args[i])
+            for j in range(1, len(parts) + 1):
+                pre = "/".join(parts[:j])
+                if operand.startswith("/"):
+                    pre = "/" + pre
+                _lex, real = resolve(pre, ctx)
+                rk = real.casefold()
+                if inside_claude(real, ctx) or rk == ctx.git or inside(rk, ctx.git):
+                    hit = True
+                    break
+            if hit:
                 raise Deny("write", "flock lock file is in .claude/ or .git: " + args[i])
         i += 1
     return i
