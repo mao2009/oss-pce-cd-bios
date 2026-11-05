@@ -1304,6 +1304,8 @@ class X3bProgramOptionTests(unittest.TestCase):
         "export RSYNC_RSH+=sh && rsync a b", "SSH_ASKPASS+=sh ssh host", "printf -v RSYNC_RSH sh && export RSYNC_RSH && rsync a b",
         "read RSYNC_RSH <<< sh; export RSYNC_RSH; rsync a b", "ssh -o *roxyCommand=sh host",
         "export $X=y", "export {A,B}=y",
+        # found in review 8: rg --hostname-bin runs the named executable (rg --help); ssh SSH_SK_HELPER names a helper
+        "rg --hostname-bin=sh x src", "rg --hostname-bin sh x src", "SSH_SK_HELPER=sh ssh host",
         "ssh -o Proxy*=sh host", "ssh -o ProxyCom*=sh host",
         # found in review 6: a leading = (zsh path expansion) names the same program
         "=sort --compress-program=sh x", "=tar -I sh -xf a.tar", "=rsync -e sh a b", "=ssh -o ProxyCommand=sh host",
@@ -1337,7 +1339,7 @@ class X3bMutationTests(unittest.TestCase):
 
     MUTANTS = {
         "sort compress-program rule removed": ('"sort": ("compress-program",), ', ''),
-        "rg pre rules removed": ('"rg": ("pre", "pre-glob"),', ''),
+        "rg pre rules removed": ('"rg": ("pre", "pre-glob", "hostname-bin"),', ''),
         "tar long rules removed": ('"to-command", "use-compress-program", ', ''),
         "rsync long rules removed": ('"rsync": ("rsh", "rsync-path")', ''),
         "tar -I rule removed": ('"tar": "IF"', '"tar": "F"'),
@@ -1361,6 +1363,8 @@ class X3bMutationTests(unittest.TestCase):
         "assignment with an expansion not denied": (r'''    if any("=" in w and ("{" in w or "}" in w or "$" in w) for w in words):''',
                                                     r'''    if False:'''),
         "tool filter removed": ('    if name not in PROGRAM_TOOLS:', '    if False:'),
+        "rg hostname-bin removed": ('"pre-glob", "hostname-bin"),', '"pre-glob"),'),
+        "SSH_SK_HELPER removed from the program variables": ('"TAR_OPTIONS", "SSH_SK_HELPER")', '"TAR_OPTIONS")'),
         "leading equals not stripped from tool names": ('name = name.lstrip("=").rstrip(". ") or name',
                                                        'name = name.rstrip(". ") or name'),
         "old-style tar cluster rule removed": (r'''    if name == "tar" and args and re.fullmatch(r"[A-Za-z]+", args[0]):''',

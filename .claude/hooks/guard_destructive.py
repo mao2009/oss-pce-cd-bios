@@ -733,7 +733,7 @@ def git_rule(args, ctx):
 # X3b (Issue #640): program-naming options. An option whose value names a program that the tool starts is an
 # execution form the guard does not analyse, so it is denied (UNKNOWN_EXECUTION). Matching is conservative: a long
 # option may be abbreviated (getopt, clap), so any token that is a prefix of a program-naming long option is denied.
-PROGRAM_LONG = {"sort": ("compress-program",), "rg": ("pre", "pre-glob"),
+PROGRAM_LONG = {"sort": ("compress-program",), "rg": ("pre", "pre-glob", "hostname-bin"),
                 "tar": ("to-command", "use-compress-program", "info-script", "new-volume-script",
                         "rsh-command", "rmt-command"),
                 "rsync": ("rsh", "rsync-path")}
@@ -741,7 +741,7 @@ PROGRAM_LONG = {"sort": ("compress-program",), "rg": ("pre", "pre-glob"),
 PROGRAM_ALIAS = {"gsort": "sort", "gtar": "tar", "bsdtar": "tar"}
 PROGRAM_TOOLS = {"sort", "rg", "tar", "rsync", "ssh", "scp", "sftp"}
 # Environment variables that name a program the tool starts (prefix assignments: VAR=x tool, env VAR=x tool).
-PROGRAM_ENV = ("RSYNC_RSH", "SSH_ASKPASS", "TAR_OPTIONS")
+PROGRAM_ENV = ("RSYNC_RSH", "SSH_ASKPASS", "TAR_OPTIONS", "SSH_SK_HELPER")
 # A short letter that names a program in its cluster: tar -I PROG, rsync -e PROG, scp/sftp -S PROG.
 PROGRAM_SHORT = {"tar": "IF", "rsync": "e", "ssh": "F", "scp": "SF", "sftp": "SDF"}
 # ssh-family -o KEY=VALUE: a key that runs a local command.
