@@ -25,6 +25,12 @@ KEYWORDS = {"{", "}", "!", "if", "then", "else", "elif", "fi", "do", "done",
             "while", "until", "(", ")"}
 WRAPPERS = {"sudo", "doas", "env", "command", "builtin", "exec", "nohup", "time",
             "nice", "ionice", "timeout", "setsid", "stdbuf", "xargs"}
+# External launchers (#664): each runs its arguments as a command. Their options are not parsed (wrapper_candidates analyses
+# every suffix of the words), so any option arity is covered. String launchers (watch, su -c, script -c) also re-analyse the
+# text of every suffix, because their argument is a shell string.
+WRAPPERS |= {"flock", "chroot", "taskset", "chrt", "unbuffer", "strace", "nsenter", "unshare", "setpriv", "runuser",
+             "fakeroot", "busybox", "sshpass", "watch", "su", "script", "coproc"}
+STRING_LAUNCHERS = {"watch", "su", "script"}
 WRAPPER_ARGS = {
     "xargs": {"-I", "-n", "-P", "-d", "-L", "-s", "-E", "-a", "-e"},
     "env": {"-u", "-C", "-S"},
@@ -1048,6 +1054,22 @@ def tar_path_ok(path, ctx, role):
     return True
 
 
+def tar_archive_is_plain(archive, ctx):
+    """A tar read takes its decompressor from the archive's contents (magic bytes), not its name, so the name cannot show
+    it. The header is read before the command runs: a missing archive is refused by tar before any decompressor starts;
+    an existing one must carry the ustar magic at offset 257 (an uncompressed tar). Anything else is DENY. A file that is
+    replaced after this check is not covered (time-of-check to time-of-use: recorded in the design document)."""
+    _lex, real = resolve(archive, ctx)
+    try:
+        with open(real, "rb") as f:
+            head = f.read(512)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return len(head) == 512 and head[257:262] == b"ustar"
+
+
 def tar_rule(args, ctx):
     """The explicit tar grammar: the only tar forms that are allowed. A read is -t (list) of an explicit .tar archive. A
     write is -c (create) to an explicit archive. Everything else is DENY (fail closed): extraction (-x) writes to paths the
@@ -1125,6 +1147,8 @@ def tar_rule(args, ctx):
         raise Deny("tar", "tar -t reads only an explicitly named .tar archive (compression is found from the contents)")
     if not tar_path_ok(archive, ctx, "archive"):
         raise Deny("tar", "tar archive is not an inspectable repository path")
+    if "t" in ops and not tar_archive_is_plain(archive, ctx):
+        raise Deny("tar", "tar -t: the archive exists and is not an uncompressed tar (its contents decide the decompressor)")
     if directory is not None and not tar_path_ok(directory, ctx, "dir"):
         raise Deny("tar", "tar -C directory is not an inspectable repository path")
     for m in members:
@@ -1384,6 +1408,10 @@ def analyze_argv(words, ctx, ps, depth):
         if handoff(name):
             for cand in wrapper_candidates(name, words[1:]):
                 analyze_argv(cand, ctx.copy(), ps, depth + 1)
+            if name in STRING_LAUNCHERS:
+                # The argument of watch, su -c or script -c is a shell string: every suffix is analysed as text.
+                for k in range(1, len(words)):
+                    analyze_text(" ".join(words[k:]), ctx.copy(), ps, depth + 1)
             return
         break
     args = words[1:]
@@ -1529,6 +1557,15 @@ def _decide(raw, repo_root):
     if tool == "PowerShell" and re.search(r"env:|\$env|environment", cmd, re.IGNORECASE) and re.search(
             r"\b(" + "|".join(sorted(PROGRAM_TOOLS)) + r")\b", cmd, re.IGNORECASE):
         raise Deny("program-option", "a PowerShell environment change with a program tool is not inspected")
+    # A variable that changes the search path or names a program (PATH, PATH+=, LD_*, RSYNC_*, ...), set in one segment or
+    # in a string, changes which program a tool in another segment starts. That cannot be shown safe statically, so a
+    # mention of such a variable with a program tool anywhere in the same command is DENY (fail closed).
+    # PATH is a variable here, not the tail of an option (--rsync-path, find -path): it must not follow - / or .
+    if re.search(r"(?i)((?<![A-Za-z0-9_\-/.])PATH|(?<![A-Za-z0-9_])(" + "|".join(re.escape(v) for v in PROGRAM_ENV) + r"))"
+                 r"(?![A-Za-z0-9_])",
+                 squashed) and re.search(
+            r"(?i)(?<![A-Za-z0-9_])(" + "|".join(sorted(PROGRAM_TOOLS)) + r")(?![A-Za-z0-9_])", squashed):
+        raise Deny("program-option", "PATH or a program-naming variable with a program tool in one command: not inspected")
     analyze_text(cmd, ctx, tool == "PowerShell", 0)
     return ALLOW, "no destructive operation found"
 

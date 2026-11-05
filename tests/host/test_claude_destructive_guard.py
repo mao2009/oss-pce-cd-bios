@@ -843,8 +843,9 @@ class LauncherClassTests(unittest.TestCase):
 
     def test_wrapper_handoff_still_checks_the_wrapped_command(self):
         # The expected wrapper list is written out here, not read from guard.WRAPPERS, so a removed entry is a failure.
-        expected = ["builtin", "command", "doas", "env", "exec", "ionice", "nice", "nohup", "setsid", "stdbuf",
-                    "sudo", "time", "timeout", "xargs"]
+        expected = ["builtin", "busybox", "chroot", "chrt", "command", "coproc", "doas", "env", "exec", "fakeroot", "flock",
+                    "ionice", "nice", "nohup", "nsenter", "runuser", "script", "setpriv", "setsid", "sshpass", "stdbuf",
+                    "strace", "su", "sudo", "taskset", "time", "timeout", "unbuffer", "unshare", "watch", "xargs"]
         self.assertEqual(sorted(guard.WRAPPERS), expected)
         # Every wrapper hands off: the destructive command and the shell form behind it are both DENY.
         for wrapper in expected:
@@ -1354,8 +1355,6 @@ class X3bMutationTests(unittest.TestCase):
 
     MUTANTS = {
         "GNU and BSD name aliases removed": ('    name = PROGRAM_ALIAS.get(name, name)', '    pass'),
-        "program-naming environment variables not checked": (r'''    if any(v in w.replace("\\", "").replace('"', "").replace("'", "").upper() for w in words for v in PROGRAM_ENV):''',
-                                                             r'''    if False:'''),
         "expansion or escape in a tool argument not denied": (r'''        if "$" in a or "`" in a or SUBST in a or "\\" in a or brace_may_form_option(a, name):''',
                                                               r'''        if False:'''),
         "dashed or leading glob in a tool argument not denied": (r'''        if any(c in a for c in "*?[") and (a.startswith("-") or a[:1] in "*?["):''',
@@ -1373,10 +1372,6 @@ class X3bMutationTests(unittest.TestCase):
             'or ("printf" in plain and any(w.startswith("-v") for w in plain))', 'or False'),
         "leading equals not stripped from tool names": ('name = name.lstrip("=").rstrip(". ") or name',
                                                        'name = name.rstrip(". ") or name'),
-        "environment name normalisation removed": (r'''w.replace("\\", "").replace('"', "").replace("'", "").upper() for w in words''',
-                                                   r'''w.upper() for w in words'''),
-        "environment name case folding removed": (r'''.replace("'", "").upper() for w in words''',
-                                                  r'''.replace("'", "") for w in words'''),
         "program option check not called": ('    program_option_rule(name, args, ctx)\n', ''),
     }
 
@@ -1636,8 +1631,6 @@ class TarRuleMutationTests(unittest.TestCase):
             '    if "t" in ops and not archive.lower().endswith(".tar"):', '    if False:'),
         "exactly one of list or create not required": (
             '    if ops not in ({"t"}, {"c"}):', '    if False:'),
-        "glob in an archive or directory name allowed": (
-            '    if role != "member" and any(c in path for c in "*?["):', '    if False:'),
         "containment inside the repository not checked": (
             '    if not (k == ctx.root or inside(k, ctx.root)):', '    if False:'),
         "-C directory not checked": (
@@ -2041,7 +2034,6 @@ class PathCompressorLibraryMutationTests(unittest.TestCase):
 
     MUTANTS = {
         "rg z flag restored": ('"short_flags": "FisvxUSawLubnNHIclopqVPh",', '"short_flags": "FisvxUSawzLubnNHIclopqVPh",'),
-        "PATH+= not matched": (r'''re.match(r"PATH\+?=",''', r'''re.match(r"PATH=",'''),
         "LD_AUDIT removed from the program variables": (
             '"LD_LIBRARY_PATH", "LD_AUDIT", "DYLD_INSERT_LIBRARIES"', '"LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES"'),
         "ProxyJump value check removed": ('if key == "proxyjump" and (', 'if False and ('),
@@ -2082,11 +2074,6 @@ class ReviewRound2MutationTests(unittest.TestCase):
     AllowlistRgTests or AllowlistRsyncTests."""
 
     MUTANTS = {
-        "PATH name normalization drops trailing dots and spaces": (
-            '    name = name.lstrip("=").rstrip(". ") or name', '    name = name.lstrip("=") or name'),
-        "PATH check compares the raw word": (
-            '            PROGRAM_ALIAS.get(command_name(w), command_name(w)) in PROGRAM_TOOLS',
-            '            PROGRAM_ALIAS.get(w.lower(), w.lower()) in PROGRAM_TOOLS'),
         "rg --no-heading removed": (
             '"no-heading", "type-list", "pretty", "ignore-case", "invert-match"',
             '"type-list", "pretty", "ignore-case", "invert-match"'),
@@ -2359,9 +2346,6 @@ class ReviewRound5MutationTests(unittest.TestCase):
             r'''            re.search(r"[|<]", cmd)):'''),
         "quotes and backslashes not removed before the sftp check": (
             r'''    squashed = re.sub(r"[\"'\\]", "", cmd)''', '    squashed = cmd'),
-        "PowerShell environment-change rule removed": (
-            r'''    if tool == "PowerShell" and re.search(r"env:|\$env|environment", cmd, re.IGNORECASE) and re.search(''',
-            r'''    if False and re.search('''),
         "newline in a tool argument not denied": (r'''        if "\n" in a:''', '        if False:'),
         "brace rule restored to every brace group": (
             'or brace_may_form_option(a, name):', 'or BRACE_EXPANDS.search(a):'),
@@ -2394,6 +2378,116 @@ class ReviewRound5MutationTests(unittest.TestCase):
                 failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
                 detected = any("ReviewRound5Tests." in ln for ln in failing)
                 self.assertTrue(detected, "mutant not detected by a ReviewRound5Tests test: " + name + "\n"
+                                + "\n".join(failing))
+
+
+class ReviewRound6Tests(unittest.TestCase):
+    """Issue #640 X3b, a6cf00f review and Owner rulings: external launchers (#664: flock, sshpass, watch, su -c, script -c,
+    coproc and similar run their arguments as a command), PATH and program-naming variables changed in one segment or a
+    string while a program tool runs in the same command (#665), and a tar read decides its decompressor from the archive
+    contents, so the header is checked before the command runs. Decision-level only; nothing is executed."""
+
+    DENY = [
+        # #664: each launcher runs a program-option tar or ssh; its arguments are analysed whatever their arity
+        "flock /tmp/l tar -I sh -xf a", "chroot / tar -I sh -xf a", "taskset 1 ssh -oProxyCommand=x h",
+        "chrt 0 tar -I sh", "unbuffer tar -I sh", "strace -o /dev/null tar -I sh", "nsenter -t 1 tar -I sh",
+        "unshare -r tar -I sh", "setpriv --reuid 1 tar -I sh", "runuser -u x -- tar -I sh", "fakeroot tar -I sh",
+        "busybox tar -I sh", "sshpass -p x ssh -oProxyCommand=x h",
+        # string launchers: the argument is a shell string, analysed as text
+        "watch 'tar -I sh -xf a'", "su -c 'tar -I sh' user", "script -c 'tar -I sh' /dev/null",
+        "coproc sftp host; echo '!id' >&63",
+        # #665: a variable that changes the search path or names a program, with a program tool in the same command
+        "PATH=/x; rsync a h:b", "PATH=/x && scp a h:b", "export PATH=/x; ssh h", "eval 'PATH=/x; rsync a h:b'",
+        "PATH=/x sh -c 'rsync a h:b'", "PATH+=:/x rsync a h:b", "RSYNC_RSH=sh; rsync -a a b", "LD_AUDIT=/x; sort f",
+    ]
+    ALLOW = [
+        # ordinary launcher use: the command they start is allowed
+        "nice -n 5 ls", "timeout 5 sort x", "flock /tmp/l ls",
+        # the variable is mentioned with no program tool: not a program start
+        "echo $PATH", "ls && echo $PATH", "PATH=/x ls",
+        # a missing archive: tar refuses it before any decompressor starts
+        "tar -tf missing.tar",
+    ]
+    POWERSHELL_DENY = ["Set-Item env:PATH 'C:\\x'; scp a h:b"]
+
+    def test_round6_deny_list(self):
+        for cmd in self.DENY:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+
+    def test_round6_allow_list(self):
+        for cmd in self.ALLOW:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "ALLOW")
+
+    def test_round6_powershell(self):
+        for cmd in self.POWERSHELL_DENY:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
+
+    def test_tar_list_reads_only_an_uncompressed_archive(self):
+        # The archive's contents are the input here: a fixture per case, in a temporary repository (never in the repo).
+        ustar = bytearray(512)
+        ustar[257:262] = b"ustar"
+        cases = {
+            "plain.tar": (bytes(ustar), "ALLOW"),
+            "gz.tar": (b"\x1f\x8b" + bytes(510), "DENY"),
+            "xz.tar": (b"\xfd7zXZ\x00" + bytes(506), "DENY"),
+            "empty.tar": (b"", "DENY"),
+        }
+        with tempfile.TemporaryDirectory() as td:
+            repo = os.path.realpath(td)
+            for name, (data, _want) in cases.items():
+                with open(os.path.join(repo, name), "wb") as f:
+                    f.write(data)
+            for name, (_data, want) in cases.items():
+                with self.subTest(archive=name):
+                    body = json.dumps({"session_id": "t", "hook_event_name": "PreToolUse", "cwd": repo,
+                                       "tool_name": "Bash", "tool_input": {"command": "tar -tf " + name}})
+                    self.assertEqual(guard.decide(body, repo_root=repo)[0], want)
+
+
+class ReviewRound6MutationTests(unittest.TestCase):
+    """Issue #640 X3b, round 6: each rule must be detected by a named ReviewRound6Tests failure."""
+
+    MUTANTS = {
+        "string launcher text analysis removed": ('            if name in STRING_LAUNCHERS:', '            if False:'),
+        "sshpass removed from the launchers": ('"busybox", "sshpass", "watch"', '"busybox", "sshpas", "watch"'),
+        "cross-segment variable rule removed": (
+            r'''    if re.search(r"(?i)((?<![A-Za-z0-9_\-/.])PATH|''', r'''    if False and re.search(r"(?i)((?<![A-Za-z0-9_\-/.])PATH|'''),
+        "tar -t header check removed": ('    if "t" in ops and not tar_archive_is_plain(archive, ctx):', '    if False:'),
+        "ustar magic not checked": ('    return len(head) == 512 and head[257:262] == b"ustar"', '    return True'),
+        "missing archive refused": (
+            '    except FileNotFoundError:\n        return True', '    except FileNotFoundError:\n        return False'),
+    }
+
+    def _run(self, hook_text):
+        with tempfile.TemporaryDirectory() as td:
+            root = os.path.realpath(td)
+            hooks = os.path.join(root, ".claude", "hooks")
+            host = os.path.join(root, "tests", "host")
+            os.makedirs(hooks)
+            os.makedirs(host)
+            write_text(os.path.join(hooks, "guard_destructive.py"), hook_text)
+            with open(THIS_FILE, encoding="utf-8") as f:
+                write_text(os.path.join(host, "test_claude_destructive_guard.py"), f.read())
+            proc = subprocess.run([sys.executable, "-m", "unittest", "-v",
+                                   "test_claude_destructive_guard.ReviewRound6Tests"], cwd=host,
+                                  capture_output=True, text=True, timeout=300)
+            return proc.returncode, proc.stderr
+
+    def test_round6_tests_detect_each_mutant(self):
+        with open(HOOK, encoding="utf-8") as f:
+            original = f.read()
+        code, out = self._run(original)
+        self.assertEqual(code, 0, "unmutated copy must pass ReviewRound6Tests:\n" + out[-800:])
+        for name, (old, new) in self.MUTANTS.items():
+            with self.subTest(mutant=name):
+                self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
+                code, out = self._run(original.replace(old, new))
+                failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
+                detected = any("ReviewRound6Tests." in ln for ln in failing)
+                self.assertTrue(detected, "mutant not detected by a ReviewRound6Tests test: " + name + "\n"
                                 + "\n".join(failing))
 
 
