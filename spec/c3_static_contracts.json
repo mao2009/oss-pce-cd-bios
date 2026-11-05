@@ -4,7 +4,8 @@
   "note": "C-3 static contract (#473). Text-level declarations checked by tools/c3_static_check.py. Not a production safety proof, not an ABI, not an approval. Production allowlist UNDECIDED (Owner).",
   "rule_groups": [
     "CI-1",
-    "CI-2"
+    "CI-2",
+    "CI-3"
   ],
   "production_allowlist": {
     "status": "UNDECIDED",
@@ -16,7 +17,7 @@
     "note": "Owner decision pending. The #497 verification value (MPR1 = $F8 only) is NOT a production allowlist."
   },
   "regions": {
-    "_note": "Hardware memory-map facts used to describe declared transfers (PCE: WRAM bank $F8, hardware page bank $FF). Describing a region is not an allowlist; allowing it in production is production_allowlist (UNDECIDED).",
+    "_note": "Hardware memory map facts used to describe declared transfers (PCE: WRAM bank $F8, hardware page bank $FF). Describing a region is not an allowlist: allowing it in production is production_allowlist (UNDECIDED).",
     "wram": {
       "kind": "ram",
       "bank": "0xF8"
@@ -92,22 +93,78 @@
     "src/ad_reset_idle.s": {
       "role": "internal",
       "tam": [],
-      "transfers": []
+      "transfers": [],
+      "mmio": {
+        "device": "ADPCM control / status",
+        "addresses": [
+          "0x180C",
+          "0x180D"
+        ],
+        "mapping": "precondition",
+        "entry": "ad_reset_idle",
+        "callers": []
+      }
     },
     "src/adt_dma_routine.s": {
       "role": "internal",
       "tam": [],
-      "transfers": []
+      "transfers": [],
+      "mmio": {
+        "device": "CD-ROM2 SCSI and ADPCM DMA",
+        "addresses": [
+          "0x1800",
+          "0x1801",
+          "0x1802",
+          "0x1804",
+          "0x1808",
+          "0x1809",
+          "0x180B",
+          "0x180C",
+          "0x180D"
+        ],
+        "mapping": "precondition",
+        "entry": "adt_dma_sector",
+        "callers": []
+      },
+      "indirect": {
+        "count": 9,
+        "reason": "result slot written through the zero-page pointer rp"
+      }
     },
     "src/boot.s": {
       "role": "internal",
       "tam": [],
-      "transfers": []
+      "transfers": [],
+      "vectors": {
+        "irq_handlers": [
+          "reset_not_implemented"
+        ],
+        "reset": "reset_not_implemented"
+      }
     },
     "src/cd_media_state.s": {
       "role": "internal",
       "tam": [],
-      "transfers": []
+      "transfers": [],
+      "mmio": {
+        "device": "CD-ROM2 SCSI",
+        "addresses": [
+          "0x1800",
+          "0x1801",
+          "0x1802",
+          "0x1804"
+        ],
+        "mapping": "precondition",
+        "entry": "cd_media_state",
+        "callers": [
+          "src/dev_boot_internal.s",
+          "src/reset_entry.s"
+        ]
+      },
+      "indirect": {
+        "count": 2,
+        "reason": "result block written through the zero-page pointer ptr"
+      }
     },
     "src/dev_boot_internal.s": {
       "role": "reset_init",
@@ -200,7 +257,16 @@
           "reason": "caller MPR0 saved by TMA #$01 and restored before return"
         }
       ],
-      "transfers": []
+      "transfers": [],
+      "mmio": {
+        "device": "VDC address / data ports",
+        "addresses": [
+          "0x0000",
+          "0x0002",
+          "0x0003"
+        ],
+        "mapping": "window"
+      }
     },
     "src/overrides/slot_3C.s": {
       "role": "api",
@@ -276,7 +342,16 @@
           "purpose": "MPR1 = work RAM at reset (stack page $2100)"
         }
       ],
-      "transfers": []
+      "transfers": [],
+      "mmio_pass_labels": {
+        "reset_mpr_ready": "exported observation point (#143) between the MPR setup and the opt-in cd_media_state call; no bios-scope branch, jump or call targets it (checked); an entry from outside the bios scope would skip the setup (NOT_STATIC)"
+      },
+      "vectors": {
+        "irq_handlers": [
+          "reset_unexpected_interrupt"
+        ],
+        "reset": "reset_entry"
+      }
     }
   }
 }

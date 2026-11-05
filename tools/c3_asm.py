@@ -28,6 +28,8 @@ CONDITIONAL_OTHER = {".else", ".elseif", ".endif"}
 SEGMENT_SHORTCUTS = {".code": "CODE", ".zeropage": "ZEROPAGE", ".bss": "BSS", ".data": "DATA", ".rodata": "RODATA"}
 RAM_SEGMENTS = {"ZEROPAGE", "BSS"}   # RAM segments by convention (placed by the RAM-side linker configs);
                                      # src/bank0.cfg places the code segments (CODE, OVERRIDES, BOOT, ...) in ROM0
+ZP_Y_OPS = {"ldx", "stx"}            # the only opcodes with a zero page,Y form; others assemble abs,Y
+ZP_FIRST_OPS = {f"{op}{i}" for op in ("bbr", "bbs", "rmb", "smb") for i in range(8)}
 
 
 @dataclass
@@ -126,18 +128,29 @@ class Operand:
     indexed: bool = False
     indirect: bool = False
     text: str = ""
+    index_reg: str = ""   # "x" / "y" / ""
+    symbol: str = ""      # leading identifier of the address expression, if any
+    mnemonic: str = ""
 
     def logical_address(self):
-        """Logical CPU address of a memory operand (zero page = $2000 + value on the HuC6280), or None."""
+        """Logical CPU address of a memory operand (zero page = $2000 + value on the HuC6280), or None.
+
+        A value <= $FF is zero page unless forced absolute (a:) or indexed by Y on an opcode without a zero
+        page,Y form (only LDX / STX have one): ca65 then assembles absolute,Y."""
         if self.mode != "memory" or self.value is None or self.indirect:
             return None
-        if self.forced == "z" or (self.forced != "a" and 0 <= self.value <= 0xFF):
+        absolute_y = self.index_reg == "y" and self.mnemonic not in ZP_Y_OPS
+        if self.forced == "z" or (self.forced != "a" and not absolute_y and 0 <= self.value <= 0xFF):
             return 0x2000 + (self.value & 0xFF)
         return self.value & 0xFFFF
 
 
-def operand(text, symbols):
+def operand(text, symbols, mnemonic=""):
     t = text.strip()
+    if mnemonic == "tst" and "," in t:            # TST #imm, mem[,x]: the memory operand is second
+        t = t.split(",", 1)[1].strip()
+    elif mnemonic in ZP_FIRST_OPS and "," in t:     # BBRn / BBSn zp, label: the zero-page operand first
+        t = t.split(",", 1)[0].strip()
     if not t:
         return Operand("none", None, text=t)
     if t.lower() == "a":
@@ -150,13 +163,16 @@ def operand(text, symbols):
     indirect = t.startswith("(")
     base = t
     indexed = False
-    m = re.match(r"^\(?(.*?)\)?\s*,\s*[xXyY]\)?$", t)
+    index_reg = ""
+    m = re.match(r"^\(?(.*?)\)?\s*,\s*([xXyY])\)?$", t)
     if m:
-        base, indexed = m.group(1), True
+        base, indexed, index_reg = m.group(1), True, m.group(2).lower()
     if indirect:
         base = base.strip("()").split(",")[0]
     value = evaluate(base, symbols)
-    return Operand("memory", value, forced, indexed, indirect, text)
+    sym = re.match(r"^[<>]?\s*([A-Za-z_@][A-Za-z0-9_]*)", base.strip())
+    return Operand("memory", value, forced, indexed, indirect, text, index_reg, sym.group(1) if sym else "",
+                   mnemonic)
 
 
 def parse(path, root=None):
@@ -168,9 +184,11 @@ def parse(path, root=None):
     raw_lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     # first pass: constants (NAME = expr), in order; unresolved ones stay unknown. A constant assigned inside a
     # conditional block (.if / .ifdef / .ifndef ...) depends on the build (e.g. a -D option), so it is NOT
-    # resolved: every use of it stays undecidable.
+    # resolved: every use of it stays undecidable (NOT_STATIC). An unconditional constant assigned more than
+    # once is unsupported (ca65 rejects a plain redefinition; the reader does not model .set).
     cdepth = 0
-    for raw in raw_lines:
+    assigned = {}
+    for number_, raw in enumerate(raw_lines, 1):
         body = _strip_comment(raw).strip()
         first = re.split(r"\s+", body, maxsplit=1)[0].lower() if body else ""
         if first in CONDITIONAL_OPEN:
@@ -186,9 +204,14 @@ def parse(path, root=None):
             src.conditional_constants.add(m.group(1))
             src.symbols.pop(m.group(1), None)
             continue
+        if m.group(1) in assigned:
+            src.unsupported.append((number_, f"constant {m.group(1)} is assigned more than once"))
+        assigned[m.group(1)] = number_
         value = evaluate(m.group(2), src.symbols)
         if value is not None:
             src.symbols[m.group(1)] = value
+        elif set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", m.group(2))) & src.conditional_constants:
+            src.conditional_constants.add(m.group(1))   # derived from a build-dependent constant
     for number_, raw in enumerate(raw_lines, 1):
         body = _strip_comment(raw).strip()
         if not body:
