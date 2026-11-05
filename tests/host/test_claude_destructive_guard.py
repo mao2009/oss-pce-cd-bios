@@ -1923,7 +1923,7 @@ class ReviewFixTests(unittest.TestCase):
         # braces that bash does not expand (no comma and no sequence) are literal
         "rg 'a{2}' src",
         # tar: a colon is allowed with --force-local (a local archive); ordinary old-style clusters
-        "tar --force-local -cf host:x.tar a", "tar cf out.tar src",
+        "tar cf out.tar src",
     ]
 
     def test_review_deny_list(self):
@@ -1954,7 +1954,7 @@ class ReviewFixMutationTests(unittest.TestCase):
             '        if any(c not in spec["short_flags"] + spec["short_args"] for c in args[0]):',
             '        if False:'),
         "tar colon check removed": (
-            '    if name == "tar" and "--force-local" not in args and any(":" in a for a in args):', '    if False:'),
+            '    if name == "tar" and any(":" in a for a in args):', '    if False:'),
         "LD_PRELOAD removed from the program variables": ('"RSYNC_SHELL", "LD_PRELOAD",', '"RSYNC_SHELL",'),
         "brace groups without a comma or sequence denied": ('BRACE_EXPANDS.search(a):', '"{" in a or "}" in a:'),
     }
@@ -2185,9 +2185,9 @@ class ReviewRound3MutationTests(unittest.TestCase):
             'any(re.sub(r"[ .]+$", "", a.lower()).endswith(COMPRESSED_SUFFIXES) for a in args)',
             'any(a.lower().endswith(COMPRESSED_SUFFIXES) for a in args)'),
         "create-only exemption removed": ('            and not tar_only_creates(args):', '            and True:'),
-        "glob operand rule removed": ('            if not tail or tail.endswith(COMPRESSED_SUFFIXES):', '            if False:'),
+        "glob operand rule removed": ('            if not ext or ("." + ext) in COMPRESSED_SUFFIXES:', '            if False:'),
         "sftp piped or redirected input rule removed": (
-            '    if tool != "PowerShell" and re.search(r"(^|[\\s;&|(])sftp(\\s|$)", cmd) and re.search(r"[|<]", cmd):',
+            '    if tool != "PowerShell" and re.search(r"sftp", cmd, re.IGNORECASE) and re.search(r"[|<]", cmd):',
             '    if False:'),
         ".tb2 suffix removed": ('".tb2", ".bz", ', ''),
     }
@@ -2219,6 +2219,99 @@ class ReviewRound3MutationTests(unittest.TestCase):
                 failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
                 detected = any("ReviewRound3Tests." in ln for ln in failing)
                 self.assertTrue(detected, "mutant not detected by a ReviewRound3Tests test: " + name + "\n"
+                                + "\n".join(failing))
+
+
+class ReviewRound4Tests(unittest.TestCase):
+    """Issue #640 X3b, review round 4 (HEAD 6198663): glob operands that complete a compressed suffix with a glob
+    character; any colon operand of tar (no --force-local exemption); sftp with a pipe or redirect under any spelling;
+    DYLD_* loader variables; sort and ssh writes under .claude. Decision-level only; nothing is executed."""
+
+    DENY = [
+        # tar glob operands whose literal tail has no dot, or whose extension is compressed: a glob character supplies the dot
+        "tar -tf x?gz", "tar -tf x*gz", "tar -xf x?tgz", "tar -tf x*z", "tar -tf a[.]tgz", "tar -tf a[.]gz",
+        # tar: a colon operand is denied whatever --force-local says (its token can be a value or follow --)
+        "tar -cf host:x.tar -- --force-local", "tar -cf host:x.tar -C --force-local src",
+        "tar --force-local -cf host:x.tar a", "tar --force-local -tf a.tgz:",
+        # sftp with a pipe or redirect, in any spelling of the program name
+        "sftp.exe host < cmds", "/usr/bin/sftp host <cmds", "SFTP host < cmds", '"sftp" host < cmds',
+        # DYLD_* loader variables
+        "DYLD_FALLBACK_LIBRARY_PATH=/x rg foo src", "DYLD_LIBRARY_PATH=/x tar -tf a",
+        # writes under .claude: sort -o and --output, ssh -E and the known-hosts options
+        "sort -o .claude/x f", "sort --output .claude/x f", "sort -o.claude/x f", "sort --output=.claude/x f",
+        "ssh -o UserKnownHostsFile=.claude/kh host", "ssh -E .claude/log host",
+        "ssh -o 'GlobalKnownHostsFile=.claude/x' host",
+    ]
+    ALLOW = [
+        # tar: a glob operand with a non-compressed extension (names*.txt, a*.tar) and create without a colon
+        "tar -tf a*.tar", "tar -xf a.tar names*.txt", "tar -cf out.tar dir",
+        # sort and ssh writes outside .claude
+        "sort -o out.txt names.txt", "ssh -E log.txt host",
+        # sftp with no piped or redirected input
+        "sftp host",
+    ]
+
+    def test_round4_deny_list(self):
+        for cmd in self.DENY:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+
+    def test_round4_allow_list(self):
+        for cmd in self.ALLOW:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "ALLOW")
+
+
+class ReviewRound4MutationTests(unittest.TestCase):
+    """Issue #640 X3b, review round 4: each rule must be detected by a named ReviewRound4Tests failure."""
+
+    MUTANTS = {
+        "glob operand extension check replaced by the tail-only test": (
+            '            if not ext or ("." + ext) in COMPRESSED_SUFFIXES:', '            if not tail or tail.endswith(COMPRESSED_SUFFIXES):'),
+        "colon check exempted by --force-local": (
+            '    if name == "tar" and any(":" in a for a in args):',
+            '    if name == "tar" and "--force-local" not in args and any(":" in a for a in args):'),
+        "sftp piped or redirected input rule removed": (
+            '    if tool != "PowerShell" and re.search(r"sftp", cmd, re.IGNORECASE) and re.search(r"[|<]", cmd):',
+            '    if False:'),
+        "DYLD_FALLBACK_LIBRARY_PATH removed": ('"DYLD_FALLBACK_LIBRARY_PATH", "DYLD_LIBRARY_PATH", ', ''),
+        "sort -o write under .claude not denied": (
+            r'''                    if ch in spec.get("short_writes", "") and ".claude" in value.lower().replace("\\", "/"):''',
+            '                    if False:'),
+        "sort --output write under .claude not denied": (
+            r'''                if opt in spec.get("long_writes", ()) and ".claude" in value.lower().replace("\\", "/"):''',
+            '                if False:'),
+        "ssh -o value under .claude not denied": (
+            r'''                        if ".claude" in value.lower().replace("\\", "/"):''', '                        if False:'),
+    }
+
+    def _run(self, hook_text):
+        with tempfile.TemporaryDirectory() as td:
+            root = os.path.realpath(td)
+            hooks = os.path.join(root, ".claude", "hooks")
+            host = os.path.join(root, "tests", "host")
+            os.makedirs(hooks)
+            os.makedirs(host)
+            write_text(os.path.join(hooks, "guard_destructive.py"), hook_text)
+            with open(THIS_FILE, encoding="utf-8") as f:
+                write_text(os.path.join(host, "test_claude_destructive_guard.py"), f.read())
+            proc = subprocess.run([sys.executable, "-m", "unittest", "-v",
+                                   "test_claude_destructive_guard.ReviewRound4Tests"], cwd=host,
+                                  capture_output=True, text=True, timeout=300)
+            return proc.returncode, proc.stderr
+
+    def test_round4_tests_detect_each_mutant(self):
+        with open(HOOK, encoding="utf-8") as f:
+            original = f.read()
+        code, out = self._run(original)
+        self.assertEqual(code, 0, "unmutated copy must pass ReviewRound4Tests:\n" + out[-800:])
+        for name, (old, new) in self.MUTANTS.items():
+            with self.subTest(mutant=name):
+                self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
+                code, out = self._run(original.replace(old, new))
+                failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
+                detected = any("ReviewRound4Tests." in ln for ln in failing)
+                self.assertTrue(detected, "mutant not detected by a ReviewRound4Tests test: " + name + "\n"
                                 + "\n".join(failing))
 
 

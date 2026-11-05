@@ -760,7 +760,8 @@ BRACE_EXPANDS = re.compile(r"\{[^{}]*(,|\.\.)[^{}]*\}")
 SETTER_BUILTINS = ("export", "declare", "typeset", "local", "readonly", "read")
 # Environment variables that name a program the tool starts (prefix assignments: VAR=x tool, env VAR=x tool).
 PROGRAM_ENV = ("RSYNC_RSH", "SSH_ASKPASS", "TAR_OPTIONS", "SSH_SK_HELPER", "RIPGREP_CONFIG_PATH", "RSYNC_CONNECT_PROG",
-               "RSYNC_SHELL", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "DYLD_INSERT_LIBRARIES", "SSH_SK_PROVIDER")
+               "RSYNC_SHELL", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "DYLD_INSERT_LIBRARIES", "SSH_SK_PROVIDER",
+               "DYLD_FALLBACK_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH")
 # ssh, scp and sftp -o KEY=VALUE (ssh_config keywords, case-insensitive). Only the keys listed here are allowed. A key that
 # runs a local command or loads a provider or an included file (ProxyCommand, LocalCommand, PermitLocalCommand,
 # KnownHostsCommand, Include, Match, PKCS11Provider, SecurityKeyProvider, XAuthLocation, ...) is not listed, so it is DENY.
@@ -788,6 +789,8 @@ ALLOWLIST = {
                       "temporary-directory", "parallel", "unique", "zero-terminated", "help", "version"),
         "short_flags": "bdfgiMhnRrVcCmsuz",
         "short_args": "kotTS",
+        "short_writes": "o",
+        "long_writes": ("output",),
         "long_flags": ("ignore-leading-blanks", "dictionary-order", "ignore-case", "general-numeric-sort",
                        "ignore-nonprinting", "month-sort", "human-numeric-sort", "numeric-sort", "random-sort",
                        "reverse", "version-sort", "merge", "stable", "unique", "zero-terminated", "debug",
@@ -953,6 +956,7 @@ ALLOWLIST = {
         "long_args": (),
         "short_flags": "46AaCfGgKkMNnqsTtVvXxYyZ",
         "short_args": "BbcDEeiJLlmOPpQRSWwo",
+        "short_writes": "E",
         "short_value_strict": "J",
         "short_arg_keys": {"o": SSH_OPTION_KEYS},
     },
@@ -998,6 +1002,8 @@ def allowlist_rule(name, args):
             opt = hits[0]
             if opt in spec["long_args"]:
                 value = val if eq else (args[i] if i < len(args) else "")
+                if opt in spec.get("long_writes", ()) and ".claude" in value.lower().replace("\\", "/"):
+                    raise Deny("program-option", name + " " + opt + " writes under .claude: " + a)
                 if not eq:
                     i += 1  # the value is the next word
                 if any(value.lower().startswith(p) for p in spec.get("long_arg_deny_prefix", {}).get(opt, ())):
@@ -1022,6 +1028,8 @@ def allowlist_rule(name, args):
                     continue
                 if ch in spec["short_args"]:
                     value = a[j + 1:] if j < len(a) - 1 else (args[i] if i < len(args) else "")
+                    if ch in spec.get("short_writes", "") and ".claude" in value.lower().replace("\\", "/"):
+                        raise Deny("program-option", name + " -" + ch + " writes under .claude: " + a)
                     if j == len(a) - 1:
                         i += 1  # the value is the next word
                     if ch in spec.get("short_value_strict", "") and (
@@ -1033,6 +1041,8 @@ def allowlist_rule(name, args):
                         key = re.split(r"[=\s]", value, 1)[0].lower()
                         if key not in spec["short_arg_keys"][ch]:
                             raise Deny("program-option", name + " -" + ch + " key is not in the allowlist: " + a)
+                        if ".claude" in value.lower().replace("\\", "/"):
+                            raise Deny("program-option", name + " -" + ch + " value names a path under .claude: " + a)
                         parts = re.split(r"[=\s]", value, 1)
                         rest = parts[1] if len(parts) > 1 else ""
                         if key == "proxyjump" and (rest.startswith("-") or "=" in rest or any(c.isspace() for c in rest)):
@@ -1070,8 +1080,9 @@ def program_option_rule(name, args):
         if any(c not in spec["short_flags"] + spec["short_args"] for c in args[0]):
             raise Deny("program-option", "tar old-style cluster letter is not in the allowlist: " + args[0])
         args = ["-" + args[0]] + list(args[1:])
-    if name == "tar" and "--force-local" not in args and any(":" in a for a in args):
-        # GNU tar treats host:name as a remote archive and starts a remote shell; --force-local says it is local.
+    if name == "tar" and any(":" in a for a in args):
+        # GNU tar treats host:name as a remote archive and starts a remote shell. --force-local is not trusted here: its
+        # token can sit after -- or as another option's value, so any colon operand is denied.
         raise Deny("program-option", "tar argument with a colon may be a remote archive: not inspected")
     if name == "tar" and any(re.sub(r"[ .]+$", "", a.lower()).endswith(COMPRESSED_SUFFIXES) for a in args) \
             and not tar_only_creates(args):
@@ -1084,7 +1095,8 @@ def program_option_rule(name, args):
             # A glob operand may expand to a compressed archive unless its literal tail is non-empty and is not a
             # compressed suffix (names*.txt and a*.tar are safe; a* and a*.tgz are not).
             tail = re.split(r"[*?\[\]]", a)[-1].lower().rstrip(". ")
-            if not tail or tail.endswith(COMPRESSED_SUFFIXES):
+            ext = tail.rsplit(".", 1)[-1] if "." in tail else ""
+            if not ext or ("." + ext) in COMPRESSED_SUFFIXES:
                 raise Deny("program-option", "tar operand with a glob may expand to a compressed archive: not inspected")
     allowlist_rule(name, args)
 
@@ -1439,7 +1451,7 @@ def _decide(raw, repo_root):
               load_registry(root), protected)
     # sftp reads its commands from stdin when no batch file is given, and a "!" line runs a local command. Piped or
     # redirected input cannot be inspected here, so an sftp command with a pipe or an input redirection is DENY.
-    if tool != "PowerShell" and re.search(r"(^|[\s;&|(])sftp(\s|$)", cmd) and re.search(r"[|<]", cmd):
+    if tool != "PowerShell" and re.search(r"sftp", cmd, re.IGNORECASE) and re.search(r"[|<]", cmd):
         raise Deny("program-option", "sftp with piped or redirected input: its commands are not inspected")
     analyze_text(cmd, ctx, tool == "PowerShell", 0)
     return ALLOW, "no destructive operation found"
