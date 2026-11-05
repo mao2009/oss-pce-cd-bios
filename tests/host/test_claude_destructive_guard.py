@@ -354,18 +354,21 @@ class HomeRootTests(unittest.TestCase):
                 guard.local_roots(tmp)
         self.assertEqual(caught.exception.kind, "config")
 
-    def test_local_root_protects_a_registered_worktree_at_that_root(self):
-        # A registered worktree at a protected root is refused; without the local root it is allowed.
+    def test_local_root_marks_a_registered_worktree_as_protected(self):
+        # Registry ownership must NOT authorize worktree removal. Test the
+        # protected-set composition independently of any destructive verdict.
         target = "/home/synthetic-owner/work"
-        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "git worktree remove " + target},
-                              "cwd": REPO})
-        registry = {guard.key(target)}
-        # local_roots is patched in both arms so that a local guard-local.json cannot change the result.
-        with mock.patch.object(guard, "load_registry", return_value=registry):
-            with mock.patch.object(guard, "local_roots", return_value=[guard.canon(target)]):
-                self.assertEqual(guard.decide(payload, REPO)[0], guard.DENY)
-            with mock.patch.object(guard, "local_roots", return_value=[]):
-                self.assertEqual(guard.decide(payload, REPO)[0], guard.ALLOW)
+        with mock.patch.object(guard, "local_roots", return_value=[guard.canon(target)]):
+            protected = [guard.key(p) for p in guard.PROTECTED_BASE + guard.home_roots()
+                         + guard.local_roots(REPO)]
+            ctx = guard.Ctx(guard.canon(REPO), guard.key(REPO),
+                            guard.key(os.path.join(REPO, ".git")), {guard.key(target)}, protected)
+            self.assertTrue(guard.is_protected(guard.key(target), ctx))
+        with mock.patch.object(guard, "local_roots", return_value=[]):
+            protected = [guard.key(p) for p in guard.PROTECTED_BASE + guard.home_roots()
+                         + guard.local_roots(REPO)]
+            self.assertNotIn(guard.key(target), protected)
+
 
     def test_undeterminable_home_fails_closed(self):
         payload = {"tool_name": "Bash", "tool_input": {"command": "git status"}, "cwd": REPO}
@@ -404,9 +407,12 @@ class OwnershipTests(unittest.TestCase):
         with open(self.registry, "w", encoding="utf-8") as f:
             json.dump({"worktrees": [{"path": self.owned, "owner": "alice"}]}, f)
 
-    def test_registered_worktree_remove_allowed(self):
+    def test_registered_worktree_remove_denied_even_with_owner_recorded(self):
         cmd = "git worktree remove " + self.owned
-        self.assertEqual(verdict(cmd, repo_root=self.root), "ALLOW")
+        decision, reason = guard.decide(payload(cmd), repo_root=self.root)
+        self.assertEqual(decision, "DENY")
+        self.assertTrue(reason.startswith("git-worktree-remove"), reason)
+
 
     def test_unregistered_worktree_remove_denied(self):
         cmd = "git worktree remove " + os.path.join(self.root, "wt-other")
@@ -495,17 +501,21 @@ class ProtectedPathTests(unittest.TestCase):
 
     # Extra protection: environment variable, guard-local.json, and the main checkout of a linked worktree.
     def test_environment_variable_adds_protection(self):
-        cmd = "git worktree remove " + self.owned
-        self.assertEqual(verdict(cmd, repo_root=self.repo), "ALLOW")
+        self.assertNotIn(guard.key(self.owned),
+                         {guard.key(p) for p in guard.local_roots(self.repo)})
         with mock.patch.dict(os.environ, {"OSS_PCE_GUARD_PROTECTED": self.owned}):
-            self.assertEqual(verdict(cmd, repo_root=self.repo), "DENY")
+            self.assertIn(guard.key(self.owned),
+                          {guard.key(p) for p in guard.local_roots(self.repo)})
+
 
     def test_guard_local_json_adds_protection(self):
-        cmd = "git worktree remove " + self.owned
         self._local(json.dumps({"protected": [self.owned]}))
-        self.assertEqual(verdict(cmd, repo_root=self.repo), "DENY")
+        self.assertIn(guard.key(self.owned),
+                      {guard.key(p) for p in guard.local_roots(self.repo)})
         self._local(json.dumps({"protected": []}))
-        self.assertEqual(verdict(cmd, repo_root=self.repo), "ALLOW")
+        self.assertNotIn(guard.key(self.owned),
+                         {guard.key(p) for p in guard.local_roots(self.repo)})
+
 
     def test_linked_worktree_uses_main_checkout_local_config(self):
         main = os.path.join(self.tmp, "main")
@@ -515,12 +525,14 @@ class ProtectedPathTests(unittest.TestCase):
         write_text(os.path.join(linked, ".git"), "gitdir: " + gitdir + "\n")
         write_text(os.path.join(gitdir, "commondir"), "../..\n")
         self._registry(linked, {self.owned})
-        cmd = "git worktree remove " + self.owned
-        self.assertEqual(verdict(cmd, repo_root=linked), "ALLOW")
-        write_text(os.path.join(main, ".claude", "guard-local.json"), json.dumps({"protected": [self.owned]}))
-        self.assertEqual(verdict(cmd, repo_root=linked), "DENY")
+        self.assertNotIn(guard.key(self.owned),
+                         {guard.key(p) for p in guard.local_roots(linked)})
+        write_text(os.path.join(main, ".claude", "guard-local.json"),
+                   json.dumps({"protected": [self.owned]}))
+        self.assertIn(guard.key(self.owned),
+                      {guard.key(p) for p in guard.local_roots(linked)})
 
-    # Fail closed: a broken configuration refuses; it never removes a protection.
+
     def test_broken_local_config_fails_closed(self):
         for content in ("{bad", "[]", json.dumps({"protected": "x"}), json.dumps({"protected": [1]}),
                         json.dumps({"protected": ["relative/owned"]})):
@@ -543,11 +555,14 @@ class ProtectedPathTests(unittest.TestCase):
 
     def test_absent_local_config_adds_nothing_and_keeps_defaults(self):
         self.assertFalse(os.path.exists(os.path.join(self.repo, ".claude", "guard-local.json")))
+        self.assertNotIn(guard.key(self.owned),
+                         {guard.key(p) for p in guard.local_roots(self.repo)})
         self.assertEqual(verdict("git worktree remove " + self.home, repo_root=self.repo), "DENY")
-        self.assertEqual(verdict("git worktree remove " + self.owned, repo_root=self.repo), "ALLOW")
+        self.assertEqual(verdict("git worktree remove " + self.owned, repo_root=self.repo), "DENY")
 
-    # Required mode (owner opt-in): OSS_PCE_GUARD_REQUIRE_LOCAL=1 refuses whenever the owner configuration
-    # cannot be confirmed. Without it, the defaults apply (see the tests above).
+    # Required mode (owner opt-in): an incomplete local config is always refused.
+
+
     def _required(self, env_value=True):
         return mock.patch.dict(os.environ, {"OSS_PCE_GUARD_REQUIRE_LOCAL": "1" if env_value else ""})
 
@@ -590,17 +605,27 @@ class ProtectedPathTests(unittest.TestCase):
         # The worktree's own file tries to remove the protection: it can only add, so the main entry still holds.
         write_text(os.path.join(linked, ".claude", "guard-local.json"), json.dumps({"protected": []}))
         self._registry(linked, {self.owned})
+        self.assertIn(guard.key(self.owned),
+                      {guard.key(p) for p in guard.local_roots(linked)})
         self.assertEqual(verdict("git worktree remove " + self.owned, repo_root=linked), "DENY")
 
     # Worktree removal.
     def test_worktree_removal_cases(self):
-        self.assertEqual(verdict("git worktree remove " + self.ok_wt, repo_root=self.repo), "ALLOW")
-        self.assertEqual(verdict("git worktree remove " + os.path.join(self.tmp, "unregistered"),
-                                 repo_root=self.repo), "DENY")
-        self.assertEqual(verdict("git worktree remove --force " + self.ok_wt, repo_root=self.repo), "DENY")
+        for cmd in ("git worktree remove " + self.ok_wt,
+                    "git worktree remove --force " + self.ok_wt,
+                    "git worktree remove -- " + self.ok_wt,
+                    "git worktree remove " + os.path.join(self.tmp, "unregistered"),
+                    "git worktree remove",
+                    "git -C " + self.repo + " worktree remove " + self.ok_wt):
+            with self.subTest(command=cmd):
+                decision, reason = guard.decide(payload(cmd), repo_root=self.repo)
+                self.assertEqual(decision, "DENY")
+                self.assertTrue(reason.startswith("git-worktree-remove"), (cmd, reason))
         self.assertEqual(verdict("git worktree prune", repo_root=self.repo), "DENY")
 
     # Symlinks must not reach a protected or outside target.
+
+
     def test_symlink_bypass_denied(self):
         link_home = os.path.join(self.repo, "link-home")
         self._symlink(self.home, link_home, True)
@@ -625,7 +650,7 @@ class ProtectedPathTests(unittest.TestCase):
     def test_normal_operations_allowed(self):
         cmds = ["rm " + os.path.join(self.repo, "file.txt"),
                 "rm -f " + os.path.join(self.repo, "file.txt"),
-                "git status", "git diff --stat", "git worktree remove " + self.ok_wt,
+                "git status", "git diff --stat",
                 "make test", "python3 -m unittest discover -s tests/host -v"]
         for cmd in cmds:
             with self.subTest(cmd=cmd):
