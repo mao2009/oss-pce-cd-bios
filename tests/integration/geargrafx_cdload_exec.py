@@ -294,8 +294,6 @@ def main():
         # ---- same ROM, different disc payload: the observed result must follow the disc ----
         variant_code = payload_variant(code, VARIANT_TRAILER)
         variant_suite = Suite(probe, labels, symbols, variant_code, Path(tmp), rom_bytes)
-        if variant_suite.rom_for(DEFAULT_LBA) != rom_bytes:
-            raise ValueError("variant run would use a different ROM")
         variant_records = variant_suite.run(rom_bytes, variant_suite.disc("disc-variant-lba5", DEFAULT_LBA))
         if variant_records["rom_sha256"] != manifest["rom_sha256"]:
             raise ValueError("variant run did not execute the manifest ROM")
@@ -347,7 +345,7 @@ def main():
         "geargrafx_revision": DEPENDENCIES["geargrafx"]["revision"],
         "tests": suite.results, "primary_observations": {"RUN": primary["RUN"], "HIT": primary["HIT"]},
         "payload_variant": {"baseline_marker_trailer": 0x3C, "observed_marker_trailer": VARIANT_TRAILER,
-                             "rom_sha256": manifest["rom_sha256"],
+                             "rom_sha256": variant_records["rom_sha256"],
                              "variant_payload_sha256": hashlib.sha256(variant_code).hexdigest()},
         "not_tested": ["partial sector read with bytes transferred > 0 (only the abort at data-in was injected)",
                        "copy-verify failure in RAM (no RAM fault injection)", "real hardware", "a second emulator"],
