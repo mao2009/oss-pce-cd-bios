@@ -859,6 +859,51 @@ class PythonArgvCertaintyTests(unittest.TestCase):
                 self.assertEqual(self._v(cmd), "DENY")
         self.assertEqual(self._v("nice python3 -m unittest discover -s tests/host -v"), "ALLOW")
 
+    def test_env_split_string_cannot_hide_an_uninspected_launcher(self):
+        # GNU env -S splits its string *after* the shell, so scanning the shell's
+        # original argv is insufficient. The hook only decides; it never executes these.
+        commands = [
+            'env -S \'python3 -c open("x","w")\'',
+            'env -Spython3 -c \'open("x","w")\'',
+            'env -iS \'python3 -c open("x","w")\'',
+            'env --split-string=\'python3 -c open("x","w")\'',
+            'env --split-str=\'python3 -c open("x","w")\'',
+            'env --split-string \'rm -rf x\'',
+            'env -u HOME -S \'python3 -c open("x","w")\'',
+            "sudo env -S 'rm -rf x'",  # Wrapper nesting also reaches unwrap(env).
+        ]
+        for cmd in commands:
+            with self.subTest(cmd=cmd):
+                decision, reason = guard.decide(payload(cmd), repo_root=REPO)
+                self.assertEqual(decision, "DENY", (cmd, reason))
+                self.assertTrue(reason.startswith("wrapper-argv"), (cmd, reason))
+        for cmd in ("env -i python3 -c 'print(1)'",
+                    "env -u HOME python3 -m unittest",
+                    "env FOO=bar python3 -c 'print(1)'"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._v(cmd), "ALLOW")
+
+
+    def test_env_split_string_fail_closed_over_denial_is_explicit(self):
+        # Owner chose to preserve fail-closed global scanning for X1.
+        # These are *not* env split-string invocations, but are denied
+        # because unwrap(env) scans the entire remaining argv, even after
+        # the program name or '--', including -u's attached value.
+        examples = (
+            "env python3 -S script.py",
+            "env ls -S",
+            "env -uSESSION python3 -c 'print(1)'",
+            "env -- ls -S",
+            "env ls --sp",
+            "env --=x python3 -c 'print(1)'",
+        )
+        for cmd in examples:
+            with self.subTest(cmd=cmd):
+                decision, reason = guard.decide(payload(cmd), repo_root=REPO)
+                self.assertEqual(decision, "DENY", (cmd, reason))
+                self.assertTrue(reason.startswith("wrapper-argv"), (cmd, reason))
+
+
     def test_known_bypasses_are_denied(self):
         cmds = [
             "python3 '-copen(\"/tmp/zz\",\"w\").close()'",         # attached -c, quoted
@@ -1033,6 +1078,8 @@ class PythonArgvMutationTests(unittest.TestCase):
     not an import error). Runs on every host (no symlink)."""
 
     MUTANTS = {
+        "env -S launch rejection removed": (
+            'if name == "env" and any(', 'if False and any('),
         "certainty check removed": (
             "if not python_word_certainty(seg):",
             "if False:"),
@@ -1043,7 +1090,8 @@ class PythonArgvMutationTests(unittest.TestCase):
             "if \"$\" in arg or \"`\" in arg or SUBST in arg:",
             "if False:"),
     }
-    DETECTING = ["test_known_bypasses_are_denied", "test_single_quoted_dollar_in_argument_is_refused",
+    DETECTING = ["test_env_split_string_cannot_hide_an_uninspected_launcher",
+                 "test_known_bypasses_are_denied", "test_single_quoted_dollar_in_argument_is_refused",
                  "test_separate_c_forms_are_still_denied"]
 
     def _run(self, hook_text):
