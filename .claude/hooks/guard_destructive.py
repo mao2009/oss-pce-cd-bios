@@ -59,6 +59,16 @@ EXPR_SYNTAX_RE = re.compile(r"[,()@{}$]")
 # is refused on the raw text before any split. Property access ($_.Name) is not a call and is not refused.
 METHOD_CALL_RE = re.compile(r"(?i)\.\s*(?:\w+\s*\(|['\"(])|-m(?:e|em\w*)?\b")
 CD_NAMES = {"cd", "chdir", "set-location", "sl", "pushd", "push-location"}
+# External commands whose arguments only read data, or name plain files (writes into .claude/ are checked by WRITE_NAMES).
+# None of them runs another program or evaluates its arguments. Any other external command with arguments is DENY.
+SAFE_EXTERNAL = {"cat", "head", "tail", "wc", "ls", "echo", "printf", "pwd", "true", "false", "diff", "stat", "file",
+                 "which", "sleep", "uname", "whoami", "basename", "dirname", "realpath", "readlink", "grep"}
+# Ordinary development writes (Owner, Round A): cp, mv, mkdir, touch and tee are allowed when each option is in
+# SAFE_WRITE_OPTS and each operand is a repository path that tar_path_ok accepts (see safe_write_rule).
+SAFE_WRITE = {"cp", "mv", "mkdir", "touch", "tee"}
+# Never allowed: ln creates links the guard cannot follow to the place they point at; rsync and scp copy to or from
+# another location or host, which is not inspected from argv (Owner Round 13, not revoked).
+WRITE_DENY = {"ln", "rsync", "scp"}
 # Always denied: destructive by nature, or cannot be inspected.
 ALWAYS_DENY = {"unlink", "shred", "rmdir", "rd", "dd", "mkfs", "truncate", "wipefs",
                "srm", "cmd", "cmd.exe",
@@ -381,7 +391,7 @@ def resolve_full(raw, ctx, deny_unresolvable_dotdot=False):
     raw_form = canon(p, normalize=False)
     if deny_unresolvable_dotdot and _dotdot_unresolved(p, raw_form):
         raise Deny("rm-unresolvable-dotdot", "a path with .. that does not resolve here is denied")
-    real = canon(os.path.realpath(raw_form)) if os.path.exists(raw_form) else lex
+    real = canon(os.path.realpath(raw_form)) if os.path.lexists(raw_form) else lex
     parent, base = os.path.split(raw_form)
     entry_link = base not in ("", ".", "..") and os.path.islink(
         os.path.join(os.path.realpath(parent) if parent else ".", base))
@@ -496,7 +506,7 @@ def _redir_target(text, j):
     return text[start:min(j, n)]
 
 
-def check_redirect(raw):
+def check_redirect(raw, op=">", ctx=None, ps=False):
     """Deny a redirect target that names .claude/ or cannot be known statically."""
     if not raw:
         return
@@ -504,13 +514,22 @@ def check_redirect(raw):
         raise Deny("unexpanded", "redirect target with a variable or substitution is not inspected")
     if any(ch in raw for ch in "*?[]{}"):
         raise Deny("glob", "redirect target with a glob or brace is not statically known")
-    target = _unescape(raw)
+    target = raw.replace('"', "").replace("'", "") if ps else _unescape(raw)
     if not target:
         raise Deny("path", "empty redirect target")
     # Check the raw spelling (Windows C:\...\.claude) and the unescaped one (.cl\aude).
     for v in (raw, target):
         if ".claude" in v.replace("\\", "/").casefold():
             raise Deny("claude-write", "redirect into .claude/ is denied")
+    # A duplicate or close of a file descriptor (2>&1, >&-) and the null device write no file. Any other redirect writes
+    # a file: it is allowed only when the path is a repository path (the cp rule), and DENY otherwise (Owner, Round A).
+    if op.endswith("&") and re.fullmatch(r"\d+|-", raw):
+        return
+    if target.casefold() in ("/dev/null", "nul"):
+        return
+    if ctx is not None and tar_path_ok(target, ctx, "archive"):
+        return
+    raise Deny("redirect", "redirect writes outside the repository or to a protected path: " + raw)
 
 
 def split_segments(text, ps=False):
@@ -529,7 +548,7 @@ def split_segments(text, ps=False):
                 quote = None
             i += 1
             continue
-        if c == "\\" and i + 1 < n:
+        if c == "\\" and i + 1 < n and not ps:
             if text[i + 1] == "\n":          # line continuation
                 i += 2
                 continue
@@ -599,7 +618,7 @@ def split_segments(text, ps=False):
                 del cur[-k:]
                 start = i - k
             if c == ">":
-                rd.append(_redir_target(text, j))
+                rd.append((text[i:j], _redir_target(text, j)))
             cur.append(" " + REDIR_MARK + text[start:j] + " ")
             i = j
             continue
@@ -607,7 +626,7 @@ def split_segments(text, ps=False):
             j = i + 1
             while j < n and text[j] == ">":
                 j += 1
-            rd.append(_redir_target(text, j))
+            rd.append((text[i:j], _redir_target(text, j)))
             cur.append(" " + REDIR_MARK + text[i:j] + " ")
             i = j
             continue
@@ -694,7 +713,7 @@ def rm_rule(args, ps, ctx):
 
 
 def worktree_remove(args, ctx):
-    if any(a in ("-f", "--force") for a in args):
+    if any(a == "-f" or git_long_is(a, ("--force",)) for a in args):
         raise Deny("git-worktree-remove", "forced worktree removal is denied")
     targets = [a for a in args if not a.startswith("-")]
     if len(targets) != 1:
@@ -707,9 +726,29 @@ def worktree_remove(args, ctx):
         raise Deny("git-worktree-remove", "protected worktree path")
 
 
+def git_long_is(a, names):
+    """True if a is one of the git long options, or an unambiguous prefix of one: git accepts --forc for --force, so a prefix
+    of a denied option is denied (fail closed; a prefix that also names an allowed option is over-denied)."""
+    if not a.startswith("--") or len(a) < 3:
+        return False
+    key = a[2:].split("=", 1)[0]
+    return any(n[2:].startswith(key) for n in names)
+
+
 def git_rule(args, ctx):
     i = 0
     while i < len(args) and args[i].startswith("-"):
+        if args[i] == "--config-env" or args[i].startswith("--config-env="):
+            raise Deny("git-config", "git --config-env is not inspected")
+        if args[i] == "-c" or (args[i].startswith("-c") and not args[i].startswith("-C")):
+            # git -c key=value runs a program for some keys (core.fsmonitor, core.sshCommand, core.pager): only the keys
+            # that change formatting are allowed.
+            raw_key = args[i + 1] if args[i] == "-c" and i + 1 < len(args) else args[i][2:]
+            key = raw_key.split("=", 1)[0].lower()
+            if not key.startswith(GIT_SAFE_CONFIG):
+                raise Deny("git-config", "git -c key is not in the allowlist: " + key)
+            i += 2 if args[i] == "-c" else 1
+            continue
         if args[i] == "-C" and i + 1 < len(args):
             ctx = ctx.copy(cwd=resolve(args[i + 1], ctx)[1])
             i += 2
@@ -723,24 +762,35 @@ def git_rule(args, ctx):
     if i >= len(args):
         return
     sub, rest = args[i], args[i + 1:]
-    if sub == "clean" and any(short_has(a, "f") or a == "--force" for a in rest):
+    if sub == "bundle":
+        raise Deny("git-write", "git bundle writes a named file: DENY (Owner Round 13 audit)")
+    if sub in ("diff", "format-patch", "archive", "log", "show", "blame") and any(
+            a == "-o" or a.startswith(("-o", "--output")) for a in rest):
+        raise Deny("git-write", "git output option writes a named file: DENY (Owner Round 13 audit)")
+    if sub == "config":
+        writes = {"--add", "--replace-all", "--unset", "--unset-all", "--remove-section", "--rename-section", "--edit",
+                  "-e", "--global", "--system", "--file", "-f", "--worktree", "--blob"}
+        positional = [a for a in rest if not a.startswith("-")]
+        if any(a in writes or a.startswith(("--file=", "--blob=")) for a in rest) or len(positional) > 1:
+            raise Deny("git-write", "git config write is DENY (Owner Round 13 audit)")
+    if sub == "clean" and any(short_has(a, "f") or git_long_is(a, ("--force",)) for a in rest):
         raise Deny("git-clean", "git clean with force is denied")
-    if sub == "reset" and any(a in ("--hard", "--merge") for a in rest):
+    if sub == "reset" and any(git_long_is(a, ("--hard", "--merge")) for a in rest):
         raise Deny("git-reset", "git reset --hard/--merge is denied")
-    if sub == "checkout" and (any(a in ("-f", "--force", "--", ".") for a in rest)):
+    if sub == "checkout" and (any(a in ("-f", "--", ".") or git_long_is(a, ("--force",)) for a in rest)):
         raise Deny("git-checkout", "forced or path checkout can discard changes")
     if sub == "restore":
         if "--staged" in rest and not any(a in ("--worktree", "-W") for a in rest):
             return
         raise Deny("git-restore", "git restore can discard working-tree changes")
-    if sub == "switch" and any(a in ("-f", "--force", "--discard-changes") for a in rest):
+    if sub == "switch" and any(a == "-f" or git_long_is(a, ("--force", "--discard-changes")) for a in rest):
         raise Deny("git-switch", "forced switch can discard changes")
-    if sub == "branch" and any(a in ("-D", "-f", "--force") for a in rest):
+    if sub == "branch" and any(a in ("-D", "-f") or git_long_is(a, ("--force",)) for a in rest):
         raise Deny("git-branch", "forced branch delete or move is denied")
     if sub == "stash" and rest[:1] in (["clear"], ["drop"]):
         raise Deny("git-stash", "stash clear/drop is denied")
     if sub == "push" and any(
-            a in ("--force", "--force-with-lease", "--mirror", "--delete", "--prune")
+            git_long_is(a, ("--force", "--force-with-lease", "--mirror", "--delete", "--prune"))
             or a.startswith(("--force-with-lease=", "+", ":")) or short_has(a, "fd")
             for a in rest):
         raise Deny("git-push", "force or delete push is denied")
@@ -749,6 +799,7 @@ def git_rule(args, ctx):
             raise Deny("git-worktree-prune", "git worktree prune is denied")
         if rest[0] == "remove":
             worktree_remove(rest[1:], ctx)
+            raise Deny("git-worktree-remove", "git worktree remove is DENY (Owner, Round A)")
 
 
 # X3b (Issue #640): program-naming options. An option whose value names a program that the tool starts is an
@@ -757,6 +808,22 @@ def git_rule(args, ctx):
 # GNU and BSD variants of the same tools take the same program-naming options.
 PROGRAM_ALIAS = {"gsort": "sort", "gtar": "tar", "bsdtar": "tar"}
 PROGRAM_TOOLS = {"sort", "rg", "tar", "rsync", "ssh", "scp", "sftp"}
+# Build and test tools (Owner decision, Round A option 4): allowed in a trusted repository, within the path rules of
+# dev_tool_rule. They run project code (Makefile recipes, npm scripts, test code, build scripts) that the hook cannot
+# inspect; this is a documented limit (docs/claude-destructive-guard.md).
+DEV_TOOLS = {"make", "npm", "pytest", "dotnet", "node", "cargo", "rustc", "gcc", "clang", "cmake", "ninja"}
+# Options that run code or write outside the repository, per tool. A long option (--x, or -x with more than one letter)
+# matches by prefix; a single letter matches inside a combined cluster (-pe, -ep). Owner decision, Round A option 4.
+DEV_DENY_OPTS = {"node": {"-e", "--eval", "-p", "--print", "-i", "--interactive"},
+                 "pytest": {"-p", "-o", "--basetemp", "--rootdir", "--cache", "--confcutdir"},
+                 "npm": {"-g", "--global", "--prefix", "--location", "--cache", "--userconfig", "--globalconfig"},
+                 "cmake": {"-E"}, "dotnet": {"--interactive"}, "cargo": {"--config"},
+                 "gcc": {"-B", "-wrapper", "-specs", "-fplugin"}, "clang": {"-B", "-wrapper", "-fplugin"}}
+# Subcommands that run code outside the repository or publish (per tool).
+DEV_DENY_WORDS = {"npm": {"exec", "x", "publish", "login", "adduser", "token", "unpublish", "deprecate", "link", "ln"},
+                  "cargo": {"install", "publish", "login"}, "dotnet": {"tool", "nuget"}}
+# git -c keys that do not run programs or change where git writes (color, advice, output and log formatting).
+GIT_SAFE_CONFIG = ("color.", "advice.", "core.quotepath", "i18n.", "log.", "status.")
 # File-name suffixes of compressed archives. tar reads them through a PATH-resolved decompressor (see program_option_rule).
 COMPRESSED_SUFFIXES = (".gz", ".tgz", ".bz2", ".tbz", ".tbz2", ".tb2", ".bz", ".xz", ".txz", ".lz", ".lzma", ".lz4", ".lzo",
                        ".tzo", ".zst", ".tzst", ".z", ".taz", ".tlz")
@@ -795,7 +862,9 @@ SETTER_BUILTINS = ("export", "declare", "typeset", "local", "readonly", "read")
 # Environment variables that name a program the tool starts (prefix assignments: VAR=x tool, env VAR=x tool).
 PROGRAM_ENV = ("RSYNC_RSH", "SSH_ASKPASS", "TAR_OPTIONS", "SSH_SK_HELPER", "RIPGREP_CONFIG_PATH", "RSYNC_CONNECT_PROG",
                "RSYNC_SHELL", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "DYLD_INSERT_LIBRARIES", "SSH_SK_PROVIDER",
-               "DYLD_FALLBACK_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH", "PATHEXT")
+               "DYLD_FALLBACK_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH", "PATHEXT",
+               "CARGO_HOME", "CARGO_TARGET_DIR", "NPM_CONFIG_PREFIX", "NPM_CONFIG_USERCONFIG",
+               "NPM_CONFIG_GLOBALCONFIG", "NPM_CONFIG_CACHE")
 # ssh, scp and sftp -o KEY=VALUE (ssh_config keywords, case-insensitive). Only the keys listed here are allowed. A key that
 # runs a local command or loads a provider or an included file (ProxyCommand, LocalCommand, PermitLocalCommand,
 # KnownHostsCommand, Include, Match, PKCS11Provider, SecurityKeyProvider, XAuthLocation, ...) is not listed, so it is DENY.
@@ -805,7 +874,7 @@ SSH_OPTION_KEYS = ("batchmode", "port", "user", "hostname", "stricthostkeychecki
                    "forwardagent", "forwardx11", "forwardx11trusted", "tcpkeepalive", "numberofpasswordprompts",
                    "passwordauthentication", "pubkeyauthentication", "kbdinteractiveauthentication",
                    "preferredauthentications", "ciphers", "macs", "kexalgorithms", "hostkeyalgorithms",
-                   "controlmaster", "controlpath", "controlpersist", "requesttty", "escapechar", "checkhostip",
+                   "controlmaster", "controlpersist", "requesttty", "escapechar", "checkhostip",
                    "hashknownhosts", "exitonforwardfailure", "sendenv", "setenv", "localforward", "remoteforward",
                    "dynamicforward", "proxyjump", "tunnel", "tunneldevice", "pubkeyacceptedalgorithms")
 
@@ -824,7 +893,9 @@ ALLOWLIST = {
         "short_flags": "bdfgiMhnRrVcCmsuz",
         "short_args": "kotTS",
         "short_writes": "oT",
+        "short_deny": "T",
         "long_writes": ("output",),
+        "long_deny": ("temporary-directory",),
         "long_flags": ("ignore-leading-blanks", "dictionary-order", "ignore-case", "general-numeric-sort",
                        "ignore-nonprinting", "month-sort", "human-numeric-sort", "numeric-sort", "random-sort",
                        "reverse", "version-sort", "merge", "stable", "unique", "zero-terminated", "debug",
@@ -926,7 +997,7 @@ ALLOWLIST = {
         "long_args": (),
         "short_flags": "46AaCfGgKkMNnqsTtVvXxYyZ",
         "short_args": "BbcDEeiJLlmOPpQRSWwo",
-        "short_writes": "ES",
+        "short_deny": "ES",
         "short_value_strict": "J",
         "short_arg_keys": {"o": SSH_OPTION_KEYS},
     },
@@ -954,7 +1025,7 @@ ALLOWLIST = {
 }
 
 
-def allowlist_rule(name, args):
+def allowlist_rule(name, args, ctx=None):
     """Walk the arguments under the tool's grammar. Anything the grammar does not list is denied. A '--' ends the
     options; the words after it are file names. A non-option word (a file name, or - for stdin) is allowed."""
     spec = ALLOWLIST[name]
@@ -972,8 +1043,10 @@ def allowlist_rule(name, args):
             opt = hits[0]
             if opt in spec["long_args"]:
                 value = val if eq else (args[i] if i < len(args) else "")
-                if opt in spec.get("long_writes", ()) and names_claude(value):
-                    raise Deny("program-option", name + " " + opt + " writes under .claude: " + a)
+                if opt in spec.get("long_deny", ()):
+                    raise Deny("write", name + " " + opt + " writes a file: DENY in every form (Owner Round 13)")
+                if opt in spec.get("long_writes", ()) and not (ctx is not None and tar_path_ok(value, ctx, "archive")):
+                    raise Deny("write", name + " " + opt + " writes outside the repository or a protected path: " + a)
                 if not eq:
                     i += 1  # the value is the next word
                 if any(value.lower().startswith(p) for p in spec.get("long_arg_deny_prefix", {}).get(opt, ())):
@@ -998,8 +1071,10 @@ def allowlist_rule(name, args):
                     continue
                 if ch in spec["short_args"]:
                     value = a[j + 1:] if j < len(a) - 1 else (args[i] if i < len(args) else "")
-                    if ch in spec.get("short_writes", "") and names_claude(value):
-                        raise Deny("program-option", name + " -" + ch + " writes under .claude: " + a)
+                    if ch in spec.get("short_deny", ""):
+                        raise Deny("write", name + " -" + ch + " writes a file: DENY in every form (Owner Round 13)")
+                    if ch in spec.get("short_writes", "") and not (ctx is not None and tar_path_ok(value, ctx, "archive")):
+                        raise Deny("write", name + " -" + ch + " writes outside the repository or a protected path: " + a)
                     if j == len(a) - 1:
                         i += 1  # the value is the next word
                     if ch in spec.get("short_value_strict", "") and (
@@ -1015,6 +1090,10 @@ def allowlist_rule(name, args):
                             raise Deny("program-option", name + " -" + ch + " value names a path under .claude: " + a)
                         parts = re.split(r"[=\s]", value, 1)
                         rest = parts[1] if len(parts) > 1 else ""
+                        if key in ("userknownhostsfile", "globalknownhostsfile") and rest not in ("/dev/null", "NUL") and not (
+                                ctx is not None and tar_path_ok(rest, ctx, "archive")):
+                            raise Deny("write", name + " -o " + key + " writes a known-hosts file outside the repository or "
+                                       "into .git/.claude: " + a)
                         if key == "proxyjump" and (rest.startswith("-") or "=" in rest or any(c.isspace() for c in rest)):
                             # ProxyJump names hosts; a dashed word or a KEY=VALUE pair in its value is an option, not a host.
                             raise Deny("program-option", name + " -o ProxyJump value is not a plain host list: " + a)
@@ -1037,7 +1116,7 @@ def tar_path_ok(path, ctx, role):
     parts = norm.split("/")
     if norm.startswith("/") or ABSOLUTE.match(path) or ".." in parts:
         return False
-    if (role != "member" and names_claude(path)) or ".git" in [p.casefold() for p in parts]:
+    if (role != "member" and names_claude(path)) or protected_part(parts, role):
         return False
     # The literal part before the first glob component is what is resolved (a glob cannot be resolved as a path); links
     # in that part are followed, so a member glob under a link that leaves the repository is refused.
@@ -1058,26 +1137,6 @@ def tar_path_ok(path, ctx, role):
     if role != "member" and (k == ctx.git or inside(k, ctx.git) or inside_claude(real, ctx)):
         return False
     return True
-
-
-def tar_archive_is_plain(archive, ctx):
-    """A tar read takes its decompressor from the archive's contents (magic bytes), not its name, so the name cannot show
-    it. The header is read before the command runs: a missing archive is refused by tar before any decompressor starts;
-    an existing one must carry the ustar magic at offset 257 (an uncompressed tar). Anything else is DENY. A file that is
-    replaced after this check is not covered (time-of-check to time-of-use: recorded in the design document)."""
-    _lex, real = resolve(archive, ctx)
-    try:
-        with open(real, "rb") as f:
-            head = f.read(512)
-    except FileNotFoundError:
-        return True
-    except OSError:
-        return False
-    # GNU tar picks its decompressor from the magic bytes at offset 0, so a compressed file is refused even with ustar later.
-    if any(head.startswith(m) for m in (b"\x1f\x8b", b"BZh", b"\xfd7zXZ\x00", b"\x28\xb5\x2f\xfd", b"LZIP", b"\x1f\x9d",
-                                        b"\x89LZO", b"\x5d\x00")):
-        return False
-    return len(head) == 512 and head[257:262] == b"ustar"
 
 
 def tar_rule(args, ctx):
@@ -1149,16 +1208,14 @@ def tar_rule(args, ctx):
                 break
             else:
                 raise Deny("tar", "tar option letter is not in the tar grammar: " + ch)
-    if ops not in ({"t"}, {"c"}):
-        raise Deny("tar", "tar needs exactly one of -t (list) or -c (create); other operations are not inspected")
+    if ops != {"c"}:
+        # Owner ruling: a read of an existing archive cannot be checked against the file tar actually reads (TOCTOU), and the
+        # decompressor is chosen from its contents. Only create (-c) is allowed.
+        raise Deny("tar", "tar is allowed only with -c (create): reads of an archive are not inspected (TOCTOU)")
     if archive is None:
         raise Deny("tar", "tar without an explicit -f archive (stdin, tape or default) is not inspected")
-    if "t" in ops and not archive.lower().endswith(".tar"):
-        raise Deny("tar", "tar -t reads only an explicitly named .tar archive (compression is found from the contents)")
     if not tar_path_ok(archive, ctx, "archive"):
         raise Deny("tar", "tar archive is not an inspectable repository path")
-    if "t" in ops and not tar_archive_is_plain(archive, ctx):
-        raise Deny("tar", "tar -t: the archive exists and is not an uncompressed tar (its contents decide the decompressor)")
     if directory is not None and not tar_path_ok(directory, ctx, "dir"):
         raise Deny("tar", "tar -C directory is not an inspectable repository path")
     for m in members:
@@ -1191,12 +1248,86 @@ def program_option_rule(name, args, ctx=None):
             raise Deny("tar", "tar is decided with the working context; none was given")
         tar_rule(args, ctx)
         return
-    allowlist_rule(name, args)
+    allowlist_rule(name, args, ctx)
+
+
+SAFE_WRITE_OPTS = {"cp": {"-r", "-R", "-p", "-v", "-n"}, "mv": {"-v", "-n"}, "mkdir": {"-p", "-v"},
+                   "touch": {"-a", "-m", "-c"}, "tee": {"-a"}}
+
+
+def safe_write_rule(name, args, ctx):
+    """cp, mv, mkdir, touch and tee (Owner, Round A). Every option must be listed for the command, and every operand must be
+    a repository path that tar_path_ok accepts: inside the repository, literal, no .., not .claude/ or .git, and no link that
+    leaves the repository. A glob, a variable or a path outside the repository is DENY. The check runs before the command;
+    a path replaced after the check is a residual TOCTOU risk (docs/claude-destructive-guard.md)."""
+    allowed = SAFE_WRITE_OPTS[name]
+    for a in args:
+        if any(c in a for c in "$`") or SUBST in a:
+            raise Deny("unexpanded", name + " argument with an expansion is not inspected: " + a)
+        if a == "--":
+            continue
+        if a.startswith("-") and a != "-":
+            if a not in allowed:
+                raise Deny("program-option", name + " option is not in the SAFE_WRITE_OPTS list: " + a)
+            continue
+        if not tar_path_ok(a, ctx, "dir"):
+            raise Deny("program-option", name + " operand is not a plain repository path: " + a)
+
+
+def dev_tool_opt_denied(name, a):
+    """True if a dev-tool argument is one of the tool's denied options (see DEV_DENY_OPTS for the matching rule)."""
+    key = a.split("=", 1)[0]
+    for opt in DEV_DENY_OPTS.get(name, set()):
+        if opt.startswith("--") or (opt.startswith("-") and len(opt) > 2):
+            if key.startswith(opt):
+                return True
+        elif key.startswith("--"):
+            continue
+        elif key == opt or (key.startswith("-") and opt[1:] in key[1:]):
+            return True
+    return False
+
+
+def dev_tool_rule(name, args, ctx):
+    """Build and test tools (Owner decision, Round A option 4). A protected, outside, parent, home, glob, brace or unexpanded
+    word is DENY (the parent directory is ..; a value after = or an attached short value is checked the same way). Options
+    that run code or write outside the repository are DENY per tool (dev_tool_opt_denied), and so are the listed subcommands.
+    The tools run project code that this hook cannot inspect (documented)."""
+    deny_words = DEV_DENY_WORDS.get(name, set())
+    for a in args:
+        if any(c in a for c in "$`*?[]{}") or SUBST in a or "\n" in a:
+            raise Deny("dev-tool", name + " argument with an expansion or glob is not inspected: " + a)
+        if ".." in a or "~" in a:
+            raise Deny("dev-tool", name + " argument names a parent or home path: " + a)
+        if a.startswith("-") and dev_tool_opt_denied(name, a):
+            raise Deny("dev-tool", name + " option runs code or writes outside the repository: " + a)
+        if a in deny_words:
+            raise Deny("dev-tool", name + " subcommand runs code or changes the machine: " + a)
+        # A program named by a linker or wrapper option (rustc -C linker=, cargo rustc-wrapper) runs in the build.
+        if re.search(r"(?i)linker|wrapper|runner", a):
+            raise Deny("dev-tool", name + " option names a program the build runs: " + a)
+        # A bare protected name (make -C .git, make -C .claude) is checked as well as a path-shaped word.
+        if names_claude(a) or protected_part([a], "dir"):
+            raise Deny("dev-tool", name + " argument names a protected component: " + a)
+        value = a.split("=", 1)[1] if "=" in a else a
+        if "/" in value or "\\" in value or re.match(r"^[A-Za-z]:", value):
+            if (not tar_path_ok(value, ctx, "member") or names_claude(value)
+                    or protected_part(value.replace("\\", "/").split("/"), "dir")):
+                raise Deny("dev-tool", name + " argument names a path outside the repository or a protected one: " + a)
+
+
+def gzip_rule(args, ctx):
+    """Every gzip form is DENY (Owner D2). The file gzip reads is checked before the command runs, and the check cannot be
+    tied to the file it opens: a symlink or a replacement between the two is not covered. Without that guarantee the form
+    is not allowed, and this is fail-closed for gzip -c, gzip -dc and gzip FILE alike."""
+    raise Deny("gzip", "gzip is DENY: the checked file cannot be tied to the file it reads (TOCTOU)")
 
 
 def find_rule(args, ps, ctx, depth):
     if "-delete" in args:
         raise Deny("find-delete", "find -delete is denied")
+    if any(a in ("-fprint", "-fprint0", "-fprintf", "-fls") for a in args):
+        raise Deny("find-write", "find -fprint/-fls writes a named file: DENY (Owner Round 13 audit)")
     for i, a in enumerate(args):
         if a in ("-exec", "-execdir", "-ok", "-okdir"):
             j = i + 1
@@ -1251,7 +1382,20 @@ def names_claude(value):
     v = _unescape(value).replace("\\", "/").casefold()
     if ".claude" in v:
         return True
-    return any(part and fnmatch.fnmatchcase(".claude", part) for part in v.split("/"))
+    return any(part and fnmatch.fnmatchcase(".claude", part.rstrip(". ")) for part in v.split("/"))
+
+
+def protected_part(parts, role):
+    """True if a path component names .git (any role) or .claude (any role but member globs), in a spelling Windows resolves
+    to it: trailing dots and spaces are dropped (".git." and ".git " are .git). An 8.3 short name (CLAUDE~1, GIT~1) cannot be
+    mapped here, so it is refused in a write role (fail closed)."""
+    for p in parts:
+        n = p.rstrip(". ").casefold()
+        if n == ".git" or (role != "member" and n == ".claude"):
+            return True
+        if role != "member" and re.fullmatch(r"[^~]{1,8}~\d+(\.[^~]*)?", p):
+            return True
+    return False
 
 
 def claude_mention(args):
@@ -1305,6 +1449,65 @@ def timeout_candidates(args):
     return out
 
 
+# Option grammars of the wrappers whose command word can be found exactly: (short options taking a value, short flags,
+# long options taking a value, long flags). An option outside the grammar is DENY (fail closed). Other wrappers keep the
+# suffix analysis of wrapper_candidates.
+WRAPPER_OPTS = {
+    "sudo": ({"u", "g", "C", "h", "p", "r", "t", "T", "U"}, {"E", "H", "i", "s", "n", "b", "k", "K", "S", "A", "l", "v", "e"},
+             {"user", "group", "close-from", "host", "prompt", "role", "type", "command-timeout", "other-user"},
+             {"preserve-env", "login", "shell", "non-interactive", "stdin", "askpass", "list", "validate",
+              "reset-timestamp", "edit", "background", "set-home", "help", "version"}),
+    "env": ({"u", "C"}, {"i", "0", "v"}, {"unset", "chdir"}, {"ignore-environment", "null", "debug"}),
+    "nice": ({"n"}, set(), {"adjustment"}, set()),
+    "timeout": ({"s", "k"}, {"v"}, {"signal", "kill-after"}, {"foreground", "preserve-status", "verbose"}),
+    "nohup": (set(), set(), set(), set()),
+    "time": ({"f", "o"}, {"p", "v", "a", "q"}, set(), set()),
+    "flock": ({"w", "E", "c"}, {"s", "x", "u", "n", "o"}, {"timeout", "conflict-exit-code", "command"},
+              {"shared", "exclusive", "unlock", "nonblock", "verbose", "close"}),
+}
+
+
+def wrapper_command_index(name, args):
+    """Index in args of the word the wrapper starts: after its options, their values, env's NAME=VALUE pairs, and timeout's
+    duration. An option outside the grammar is DENY."""
+    valued_s, flags_s, valued_l, flags_l = WRAPPER_OPTS[name]
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            i += 1
+            break
+        if not a.startswith("-") or a == "-":
+            break
+        if a.startswith("--"):
+            key, eq, _val = a[2:].partition("=")
+            if key in valued_l:
+                i += 1 if eq else 2
+            elif key in flags_l and not eq:
+                i += 1
+            else:
+                raise Deny("wrapper", name + " option is not in the wrapper grammar: " + a)
+            continue
+        j, step = 1, 1
+        while j < len(a):
+            ch = a[j]
+            if ch in valued_s:
+                step = 1 if j < len(a) - 1 else 2  # attached value, or the value is the next word
+                break
+            if ch not in flags_s:
+                raise Deny("wrapper", name + " option letter is not in the wrapper grammar: " + a)
+            j += 1
+        i += step
+    if name == "env":
+        while i < len(args) and ASSIGN.match(args[i]):
+            i += 1  # NAME=VALUE pairs before the command
+    if name == "timeout":
+        i += 1  # timeout DURATION COMMAND: the first operand is the duration
+    if name == "flock":
+        i += 1  # flock [OPTION]... FILE COMMAND: the first operand is the lock file (-c gives the command instead)
+    return i
+
+
 def wrapper_candidates(name, args):
     """A wrapper's own options are not parsed here: their arity differs per tool and option (--unset X, nice --adjustment
     5, stdbuf -o L), so a misread option would hide the command it starts. Every suffix of the words is therefore analysed
@@ -1316,6 +1519,9 @@ def wrapper_candidates(name, args):
                 break
             if tok.startswith("--split") or (not tok.startswith("--") and "S" in tok[1:]):
                 raise Deny("wrapper", "env -S (split-string) is not inspected")
+    if name in WRAPPER_OPTS:
+        start = wrapper_command_index(name, args)
+        return [args[start:]] if start < len(args) else []
     return [args[k:] for k in range(len(args) + 1)]
 
 
@@ -1348,7 +1554,7 @@ def analyze_argv(words, ctx, ps, depth):
     # A PATH assignment changes which helper a program starts (rsync's remote form starts ssh through PATH). With a
     # program tool in the same command it is denied; the tool name is compared by its basename, without .exe.
     if any(re.match(r"PATH\+?=", w.replace("\\", "").replace('"', "").replace("'", "").upper()) for w in words) and any(
-            PROGRAM_ALIAS.get(command_name(w), command_name(w)) in PROGRAM_TOOLS
+            PROGRAM_ALIAS.get(command_name(w), command_name(w)) in (PROGRAM_TOOLS | DEV_TOOLS)
             for w in words):
         raise Deny("program-option", "PATH is set in a command that starts a program tool: not inspected")
     words = strip_redirections(words)
@@ -1409,6 +1615,7 @@ def analyze_argv(words, ctx, ps, depth):
         # Windows drops trailing dots and spaces from a file name (rm. and rm  are rm); a leading = is zsh's expansion of
         # a command name to its path (=sort). command_name() is the one normalization, shared with the PATH check.
         name = command_name(w0)
+        path_word = "/" in w0 or "\\" in w0
         if name == "timeout":
             # timeout's option grammar (long options with a separate value, non-integer durations) is not parsed, so
             # the command it runs is taken from its grammar (timeout_candidates), with conservative extra candidates.
@@ -1417,15 +1624,23 @@ def analyze_argv(words, ctx, ps, depth):
             return
         if handoff(name):
             for cand in wrapper_candidates(name, words[1:]):
+                # An option-looking word (-n, --command=...) or a number (timeout 5) cannot be the command a wrapper starts;
+                # the command is a later suffix. Strings are covered by the text analysis below.
+                # For a wrapper with a grammar the command word is exact, so it is analysed even when it looks like an option.
+                if name not in WRAPPER_OPTS and cand and (cand[0].startswith("-") or cand[0].isdigit()):
+                    continue
                 analyze_argv(cand, ctx.copy(), ps, depth + 1)
             if name in STRING_LAUNCHERS:
-                # The argument of watch, su -c or script -c is a shell string: every suffix is analysed as text.
+                # A shell string argument is text, whatever its shape: a quoted string with a space (sudo -s "rm -rf x"),
+                # the value after -c or --command (flock -c rm lock), and the value after --name= (flock --command="rm").
+                # Plain words and options are commands for the suffix pass, which the grammar narrows to the real command.
                 for k in range(1, len(words)):
-                    analyze_text(" ".join(words[k:]), ctx.copy(), ps, depth + 1)
-                    for w in words[k:]:
-                        # --command="rm -rf x": the value after the = is a shell string too.
-                        if w.startswith("-") and "=" in w:
-                            analyze_text(w.split("=", 1)[1], ctx.copy(), ps, depth + 1)
+                    if not words[k].startswith("-") and any(ch.isspace() for ch in words[k]):
+                        analyze_text(words[k], ctx.copy(), ps, depth + 1)
+                    if words[k] in ("-c", "--command") and k + 1 < len(words):
+                        analyze_text(words[k + 1], ctx.copy(), ps, depth + 1)
+                    if words[k].startswith("--") and "=" in words[k]:
+                        analyze_text(words[k].split("=", 1)[1], ctx.copy(), ps, depth + 1)
             return
         break
     args = words[1:]
@@ -1481,6 +1696,27 @@ def analyze_argv(words, ctx, ps, depth):
         find_rule(args, ps, ctx, depth)
     elif PY_NAME.match(name):
         python_rule(args)
+    elif path_word:
+        raise Deny("unknown", "a program named by a path is not inspected: " + w0)
+    elif name in WRITE_DENY:
+        raise Deny("write", name + " creates a link or copies to another location: DENY (Owner Round 13)")
+    elif name in SAFE_WRITE:
+        safe_write_rule(name, args, ctx)
+    elif name in SAFE_EXTERNAL:
+        pass  # read-only: its options cannot write
+    elif name == "gzip":
+        gzip_rule(args, ctx)
+    elif name in DEV_TOOLS:
+        dev_tool_rule(name, args, ctx)
+    elif PROGRAM_ALIAS.get(name, name) in PROGRAM_TOOLS or not args:
+        pass  # a program tool (its own grammar ran above), or no arguments
+    else:
+        # Owner rule: an external command that is not provably safe is DENY when it takes arguments (fail closed). Listing
+        # a name is not enough when its arguments can run code: make, npm, pip, uv, ltrace, numactl, parallel are all here.
+        raise Deny("unknown", "external command with arguments that is not in the allowlist: " + name)
+
+
+MAX_REDIRECTS = 64  # each redirection is a path check; an unbounded number of them is refused (fail closed, time bound)
 
 
 def analyze_text(text, ctx, ps, depth):
@@ -1491,13 +1727,15 @@ def analyze_text(text, ctx, ps, depth):
     if ps and PS_PROC_LAUNCH_RE.search(text) and EXPR_SYNTAX_RE.search(text):
         raise Deny("launcher", "PowerShell process launcher with expression syntax is not inspected")
     segs, subs, redirs = split_segments(text, ps)
+    if sum(len(ops) for ops in redirs) > MAX_REDIRECTS:
+        raise Deny("redirect", "more than %d redirections are not inspected" % MAX_REDIRECTS)
     for body in subs:
         analyze_text(body, ctx.copy(), ps, depth + 1)
     for seg, ops in zip(segs, redirs):
         if ops and inside_claude(ctx.cwd, ctx):
             raise Deny("claude-write", "redirect while cwd is inside .claude/ is denied")
-        for target in ops:
-            check_redirect(target)
+        for op, target in ops:
+            check_redirect(target, op, ctx, ps)
         analyze_argv(words_of(seg, ps), ctx, ps, depth)
 
 
@@ -1578,7 +1816,7 @@ def _decide(raw, repo_root):
     if re.search(r"(?i)((?<![A-Za-z0-9_\-/.])PATH|(?<![A-Za-z0-9_])(" + "|".join(re.escape(v) for v in PROGRAM_ENV) + r"))"
                  r"(?![A-Za-z0-9_])",
                  squashed) and re.search(
-            r"(?i)(?<![A-Za-z0-9_])(" + "|".join(sorted(PROGRAM_TOOLS | set(PROGRAM_ALIAS))) + r")(?![A-Za-z0-9_])",
+            r"(?i)(?<![A-Za-z0-9_])(" + "|".join(sorted(PROGRAM_TOOLS | set(PROGRAM_ALIAS) | DEV_TOOLS)) + r")(?![A-Za-z0-9_])",
             squashed):
         raise Deny("program-option", "PATH or a program-naming variable with a program tool in one command: not inspected")
     analyze_text(cmd, ctx, tool == "PowerShell", 0)
