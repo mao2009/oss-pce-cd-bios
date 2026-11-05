@@ -730,6 +730,53 @@ def git_rule(args, ctx):
             worktree_remove(rest[1:], ctx)
 
 
+# X3b (Issue #640): program-naming options. An option whose value names a program that the tool starts is an
+# execution form the guard does not analyse, so it is denied (UNKNOWN_EXECUTION). Matching is conservative: a long
+# option may be abbreviated (getopt, clap), so any token that is a prefix of a program-naming long option is denied.
+PROGRAM_LONG = {"sort": ("compress-program",), "rg": ("pre", "pre-glob"),
+                "tar": ("to-command", "use-compress-program", "info-script", "new-volume-script",
+                        "rsh-command", "rmt-command"),
+                "rsync": ("rsh", "rsync-path")}
+# GNU and BSD variants of the same tools take the same program-naming options.
+PROGRAM_ALIAS = {"gsort": "sort", "gtar": "tar", "bsdtar": "tar"}
+# Environment variables that name a program the tool starts (prefix assignments: VAR=x tool, env VAR=x tool).
+PROGRAM_ENV = ("RSYNC_RSH", "SSH_ASKPASS", "TAR_OPTIONS")
+# A short letter that names a program in its cluster: tar -I PROG, rsync -e PROG, scp/sftp -S PROG.
+PROGRAM_SHORT = {"tar": "IF", "rsync": "e", "scp": "S", "sftp": "SD"}
+# ssh-family -o KEY=VALUE: a key that runs a local command.
+SSH_O_TOOLS = ("ssh", "scp", "sftp")
+SSH_LAUNCH_KEYS = ("proxycommand", "localcommand", "permitlocalcommand", "knownhostscommand",
+                   "pkcs11provider", "securitykeyprovider", "match")
+
+
+def program_option_rule(name, args):
+    name = PROGRAM_ALIAS.get(name, name)
+    longs = PROGRAM_LONG.get(name, ())
+    shorts = PROGRAM_SHORT.get(name, "")
+    ssh_o = name in SSH_O_TOOLS
+    for i, a in enumerate(args):
+        nxt = args[i + 1] if i + 1 < len(args) else ""
+        if a.startswith("--"):
+            key, eq, val = a[2:].partition("=")
+            if key and any(o.startswith(key) for o in longs):
+                raise Deny("program-option", name + " option names a program: " + a)
+            # tar --checkpoint-action=exec=... runs a program; other checkpoint actions do not (--checkpoint=N is fine).
+            if name == "tar" and len(key) >= 11 and "checkpoint-action".startswith(key) \
+                    and (val if eq else nxt).startswith("exec"):
+                raise Deny("program-option", "tar checkpoint action exec runs a program")
+            continue
+        if a.startswith("-") and len(a) > 1:
+            for j in range(1, len(a)):
+                ch = a[j]
+                if ch in shorts:
+                    raise Deny("program-option", name + " option names a program: " + a)
+                if ssh_o and ch == "o":
+                    value = (a[j + 1:] or nxt).lower()
+                    if any(k in value for k in SSH_LAUNCH_KEYS):
+                        raise Deny("program-option", name + " -o names a local command: " + a)
+                    break  # the rest of the cluster is the -o value
+
+
 def find_rule(args, ps, ctx, depth):
     if "-delete" in args:
         raise Deny("find-delete", "find -delete is denied")
@@ -779,6 +826,8 @@ def check_assign(word):
     # GIT_CONFIG_* variables can define an alias just like "git -c alias.x=..."
     if "alias." in word.casefold():
         raise Deny("git-alias", "git alias set through an environment variable is denied")
+    if word.split("=", 1)[0] in PROGRAM_ENV:
+        raise Deny("program-option", "environment variable names a program: " + word.split("=", 1)[0])
 
 
 def claude_mention(args):
@@ -926,6 +975,7 @@ def analyze_argv(words, ctx, ps, depth):
             continue
         break
     args = words[1:]
+    program_option_rule(name, args)
     if ps and name in PS_LAUNCH_NAMES:
         # A PowerShell process launcher runs its arguments as a command line, and its options (-FilePath, -ArgumentList)
         # may come first, so every suffix of the arguments is analysed as a command line. Bounded: a longer argument

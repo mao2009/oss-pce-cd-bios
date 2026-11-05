@@ -1252,6 +1252,120 @@ class LauncherMutationTests(unittest.TestCase):
                                 + "\n".join(failing))
 
 
+class X3bProgramOptionTests(unittest.TestCase):
+    """Issue #640 X3b: program-naming options. Decision-level only; nothing is executed. A program named by an option
+    is an execution form the guard does not analyse, so it is DENY (UNKNOWN_EXECUTION)."""
+
+    DENY = [
+        # sort, rg: long options, separate value, abbreviation, quoting
+        "sort --compress-program=sh payload.txt", "sort -S 1K --compress-program=bash p.txt",
+        "sort --compress-program sh payload.txt", "sort --compress=sh payload.txt",
+        "rg --pre=sh x y", "rg --pre sh -n x src", "rg --pre-glob '*.x' x src", "rg --pre='sh' x src",
+        # tar: long, short cluster, attached value, checkpoint action
+        "tar --to-command='sh -c \"rm -rf x\"' -xf a.tar", "tar -I sh -xf a.tar", "tar -Ish -xf a.tar",
+        "tar -xIsh a.tar", "tar --use-compress-program=sh -xf a.tar", "tar --checkpoint-action=exec=sh -xf a.tar",
+        # rsync: -e in a cluster, long options
+        "rsync -e 'sh -c \"rm -rf x\"' a b", "rsync -avze ssh a b", "rsync --rsh=sh a b", "rsync --rsync-path=sh a b",
+        # ssh family: -o keys, attached and clustered forms, -S
+        "ssh -o ProxyCommand='sh -c \"rm -rf x\"' host", "ssh -oProxyCommand=sh host", "ssh -vo ProxyCommand=sh host",
+        "ssh -o LocalCommand=sh host", "ssh -o PermitLocalCommand=yes host", "ssh -o proxycommand=sh host",
+        "scp -S sh a b", "sftp -S sh host",
+        # find: -exec runs its command through the common entry; -delete
+        "find . -exec sh -c 'rm -rf x' ;", "find . -exec rm -rf / ;", "find . -delete",
+        # option position: after a positional word
+        "rg TODO --pre sh src",
+        # found in review: tar -F / info and new-volume scripts, the 11-char checkpoint prefix, ssh config keys, sftp -D
+        "tar -F sh a.tar", "tar -Fsh a.tar", "tar --info-script=sh -xf a.tar", "tar --new-volume-script=sh -xf a.tar",
+        "tar --checkpoint-=exec=sh -xf a.tar", "ssh -o KnownHostsCommand=sh host", "ssh -o PKCS11Provider=x host",
+        "ssh -o 'Match exec \"sh\"' host", "sftp -D sh host",
+        # found in review 2: tar remote-archive commands, GNU/BSD name variants, environment prefix assignments
+        "tar --rsh-command=sh -xf a.tar", "tar --rsh-command sh -xf a.tar", "tar --rmt-command=sh -xf a.tar",
+        "tar --rmt=sh -xf a.tar", "tar --rsh=sh -xf a.tar", "gsort --compress-program=sh x",
+        "gtar --to-command=sh -xf a.tar", "gtar -Fsh a.tar", "bsdtar --to-command=sh -xf a.tar",
+        "RSYNC_RSH=sh rsync a b", "env RSYNC_RSH=sh rsync a b", "SSH_ASKPASS=sh ssh host",
+        "TAR_OPTIONS=--to-command=sh tar -xf a.tar",
+    ]
+    ALLOW = [
+        "sort -u names.txt", "sort -o out.txt names.txt", "sort --check names.txt",
+        "rg -n TODO src", "rg --pretty TODO src", "rg --no-config x",
+        "find . -name '*.py'", "find . -exec grep -l x {} ;",
+        "tar -xf a.tar", "tar --checkpoint=100 -xf a.tar", "tar --checkpoint-action=echo=x -xf a.tar",
+        "rsync -a src/ dst/", "rsync --delete -a a b",
+        "ssh host", "ssh -o BatchMode=yes host", "ssh -p 22 host",
+        "diff -l a b", "file -z a.gz",
+    ]
+
+    def test_program_naming_options_are_denied(self):
+        for cmd in self.DENY:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+
+    def test_ordinary_uses_of_the_same_tools_are_allowed(self):
+        for cmd in self.ALLOW:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "ALLOW")
+
+
+class X3bMutationTests(unittest.TestCase):
+    """Issue #640 X3b: each program-option rule must be detected by a named X3bProgramOptionTests failure. Each mutant is
+    a temporary copy of the hook and this test module; no repository file is changed."""
+
+    MUTANTS = {
+        "sort compress-program rule removed": ('"sort": ("compress-program",), ', ''),
+        "rg pre rules removed": ('"rg": ("pre", "pre-glob"),', ''),
+        "tar long rules removed": ('"to-command", "use-compress-program", ', ''),
+        "rsync long rules removed": ('"rsync": ("rsh", "rsync-path")', ''),
+        "tar -I rule removed": ('"tar": "IF"', '"tar": "F"'),
+        "tar -F rule removed": ('"tar": "IF"', '"tar": "I"'),
+        "tar script long rules removed": ('"info-script", "new-volume-script",', ''),
+        "tar checkpoint prefix length rule raised": ('            if name == "tar" and len(key) >= 11',
+                                                     '            if name == "tar" and len(key) >= 12'),
+        "sftp -D rule removed": ('"sftp": "SD"', '"sftp": "S"'),
+        "tar remote-command long rules removed": ('"rsh-command", "rmt-command"),', '),'),
+        "GNU and BSD name aliases removed": ('    name = PROGRAM_ALIAS.get(name, name)', '    pass'),
+        "environment prefix program variables not checked": ('    if word.split("=", 1)[0] in PROGRAM_ENV:', '    if False:'),
+        "ssh KnownHostsCommand key removed": ('"knownhostscommand",', ''),
+        "rsync -e rule removed": ('"rsync": "e", ', ''),
+        "scp and sftp -S rules removed": ('"scp": "S", "sftp": "SD"', '"sftp": "D"'),
+        "ssh -o rule removed": ('ssh_o = name in SSH_O_TOOLS', 'ssh_o = False'),
+        "ssh ProxyCommand key removed": ('SSH_LAUNCH_KEYS = ("proxycommand"', 'SSH_LAUNCH_KEYS = ("zzz"'),
+        "long option abbreviation made exact": ('if key and any(o.startswith(key) for o in longs):',
+                                                'if key and any(o == key for o in longs):'),
+        "tar checkpoint-action exec rule removed": ('            if name == "tar" and len(key) >= 11',
+                                                    '            if False and len(key) >= 11'),
+        "program option check not called": ('    program_option_rule(name, args)\n', ''),
+    }
+
+    def _run(self, hook_text):
+        with tempfile.TemporaryDirectory() as td:
+            root = os.path.realpath(td)
+            hooks = os.path.join(root, ".claude", "hooks")
+            host = os.path.join(root, "tests", "host")
+            os.makedirs(hooks)
+            os.makedirs(host)
+            write_text(os.path.join(hooks, "guard_destructive.py"), hook_text)
+            with open(THIS_FILE, encoding="utf-8") as f:
+                write_text(os.path.join(host, "test_claude_destructive_guard.py"), f.read())
+            proc = subprocess.run([sys.executable, "-m", "unittest", "-v",
+                                   "test_claude_destructive_guard.X3bProgramOptionTests"], cwd=host,
+                                  capture_output=True, text=True, timeout=300)
+            return proc.returncode, proc.stderr
+
+    def test_program_option_tests_detect_each_mutant(self):
+        with open(HOOK, encoding="utf-8") as f:
+            original = f.read()
+        code, out = self._run(original)
+        self.assertEqual(code, 0, "unmutated copy must pass X3bProgramOptionTests:\n" + out[-800:])
+        for name, (old, new) in self.MUTANTS.items():
+            with self.subTest(mutant=name):
+                self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
+                code, out = self._run(original.replace(old, new))
+                failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
+                detected = any("X3bProgramOptionTests." in ln for ln in failing)
+                self.assertTrue(detected, "mutant not detected by an X3bProgramOptionTests test: " + name + "\n"
+                                + "\n".join(failing))
+
+
 class MutationDetectionTests(unittest.TestCase):
     """Linux CI (any host where symlinks can be created): the symlink tests must FAIL for each mutant of Piece A's
     rules. Each mutant is a temporary copy of the hook and this test module in a temporary folder. No repository
