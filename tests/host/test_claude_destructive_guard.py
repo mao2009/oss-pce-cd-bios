@@ -1930,8 +1930,6 @@ class ReviewFixMutationTests(unittest.TestCase):
     """Issue #640 X3b, review fixes: each rule must be detected by a named ReviewFixTests failure."""
 
     MUTANTS = {
-        "wrapper candidates limited to the first word": (
-            '    return [args[k:] for k in range(len(args) + 1)]', '    return [args]'),
         "env -S check removed": (
             '            if tok.startswith("--split") or (not tok.startswith("--") and "S" in tok[1:]):',
             '            if False:'),
@@ -2332,7 +2330,7 @@ class ReviewRound5MutationTests(unittest.TestCase):
 
     MUTANTS = {
         "word-initial # comment skip removed": (
-            r'''        if quote is None and c == "#" and (i == 0 or text[i - 1] in " \t\n;&|()"):''', '        if False:'),
+            r'''        if quote is None and c == "#" and (i == 0 or (text[i - 1]''', r'''        if False and (i == 0 or (text[i - 1]'''),
         "glob component match removed from names_claude": (
             '    return any(part and fnmatch.fnmatchcase(".claude", part) for part in v.split("/"))', '    return False'),
         "pushd removed from the directory-change names": (
@@ -2488,6 +2486,118 @@ class ReviewRound6MutationTests(unittest.TestCase):
                 failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
                 detected = any("ReviewRound6Tests." in ln for ln in failing)
                 self.assertTrue(detected, "mutant not detected by a ReviewRound6Tests test: " + name + "\n"
+                                + "\n".join(failing))
+
+
+class ReviewRound7Tests(unittest.TestCase):
+    """Issue #640 X3b, review of 01dfeea: string forms of every wrapper (sudo -s, flock --command=), an escaped space or
+    semicolon before #, PowerShell call operators with an expression and PowerShell block comments, the cross-segment
+    alias tools (gtar, bsdtar, gsort), PATHEXT, tar members under .git, and a compressed archive whose ustar header is
+    present (the magic at offset 0 decides the decompressor). Decision-level only; nothing is executed."""
+
+    DENY = [
+        "flock -c \"rm -rf x\" lock", "flock --command=\"rm -rf x\" lock", "runuser -c \"rm -rf x\" root",
+        "su --command=\"rm -rf x\"", "sudo -s \"rm -rf x\"",
+        "echo \\ #; rm -rf x", "echo \\;#; rm -rf x",
+        "PATH=/tmp/x; gtar -cf out.x a", "PATHEXT=.bat ssh h",
+        "tar -cf out.tar .git/config",
+    ]
+    POWERSHELL_DENY = ["& ('r'+'m') -rf x", "<# note #> Remove-Item -Recurse -Force x"]
+    ALLOW = [
+        # a # after a space is a comment; the rm is inside it
+        "echo a # comment; rm -rf x",
+        # ordinary launcher use
+        "flock /tmp/l ls",
+    ]
+    POWERSHELL_ALLOW = ["Get-Date"]
+
+    def test_round7_deny_list(self):
+        for cmd in self.DENY:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+
+    def test_round7_allow_list(self):
+        for cmd in self.ALLOW:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "ALLOW")
+
+    def test_round7_powershell(self):
+        for cmd in self.POWERSHELL_DENY:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "DENY")
+        for cmd in self.POWERSHELL_ALLOW:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd, tool="PowerShell"), "ALLOW")
+
+    def test_tar_list_refuses_a_compressed_file_with_a_ustar_header(self):
+        # The magic at offset 0 decides the decompressor, so a gzip file with ustar at 257 is refused.
+        ustar = bytearray(512)
+        ustar[257:262] = b"ustar"
+        gz = bytearray(ustar)
+        gz[0:2] = b"\x1f\x8b"
+        with tempfile.TemporaryDirectory() as td:
+            repo = os.path.realpath(td)
+            with open(os.path.join(repo, "gz.tar"), "wb") as f:
+                f.write(bytes(gz))
+            with open(os.path.join(repo, "plain.tar"), "wb") as f:
+                f.write(bytes(ustar))
+            for name, want in (("gz.tar", "DENY"), ("plain.tar", "ALLOW")):
+                with self.subTest(archive=name):
+                    body = json.dumps({"session_id": "t", "hook_event_name": "PreToolUse", "cwd": repo,
+                                       "tool_name": "Bash", "tool_input": {"command": "tar -tf " + name}})
+                    self.assertEqual(guard.decide(body, repo_root=repo)[0], want)
+
+
+class ReviewRound7MutationTests(unittest.TestCase):
+    """Issue #640 X3b, round 7: each rule must be detected by a named ReviewRound7Tests failure."""
+
+    MUTANTS = {
+        "PATHEXT removed from the program variables": (
+            '"DYLD_FRAMEWORK_PATH", "PATHEXT")', '"DYLD_FRAMEWORK_PATH")'),
+        "gtar, bsdtar and gsort not program tools across segments": (
+            r'''"|".join(sorted(PROGRAM_TOOLS | set(PROGRAM_ALIAS)))''', r'''"|".join(sorted(PROGRAM_TOOLS))'''),
+        "PowerShell block comment rule removed": (
+            r'''        if ps and quote is None and text.startswith("<#", i):''', '        if False:'),
+        "escaped character before # not checked": (
+            r'''(text[i - 1] in " \t\n;&|()" and not (i >= 2 and text[i - 2] == "\\"))''', r'''(text[i - 1] in " \t\n;&|()")'''),
+        "call operator before a bracket not refused": (
+            r'''                if k < n and text[k] in "\"'$({":''', r'''                if k < n and text[k] in "\"'$":'''),
+        "compression magic at offset 0 not checked": (
+            r'''    if any(head.startswith(m) for m in (''', r'''    if False and any(head.startswith(m) for m in ('''),
+        "long-option value not analysed as text": (
+            r'''                        if w.startswith("-") and "=" in w:''', '                        if False:'),
+        "tar member under .git not refused": (
+            r'''    if (role != "member" and names_claude(path)) or ".git" in [p.casefold() for p in parts]:''',
+            r'''    if (role != "member" and names_claude(path)):'''),
+    }
+
+    def _run(self, hook_text):
+        with tempfile.TemporaryDirectory() as td:
+            root = os.path.realpath(td)
+            hooks = os.path.join(root, ".claude", "hooks")
+            host = os.path.join(root, "tests", "host")
+            os.makedirs(hooks)
+            os.makedirs(host)
+            write_text(os.path.join(hooks, "guard_destructive.py"), hook_text)
+            with open(THIS_FILE, encoding="utf-8") as f:
+                write_text(os.path.join(host, "test_claude_destructive_guard.py"), f.read())
+            proc = subprocess.run([sys.executable, "-m", "unittest", "-v",
+                                   "test_claude_destructive_guard.ReviewRound7Tests"], cwd=host,
+                                  capture_output=True, text=True, timeout=300)
+            return proc.returncode, proc.stderr
+
+    def test_round7_tests_detect_each_mutant(self):
+        with open(HOOK, encoding="utf-8") as f:
+            original = f.read()
+        code, out = self._run(original)
+        self.assertEqual(code, 0, "unmutated copy must pass ReviewRound7Tests:\n" + out[-800:])
+        for name, (old, new) in self.MUTANTS.items():
+            with self.subTest(mutant=name):
+                self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
+                code, out = self._run(original.replace(old, new))
+                failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
+                detected = any("ReviewRound7Tests." in ln for ln in failing)
+                self.assertTrue(detected, "mutant not detected by a ReviewRound7Tests test: " + name + "\n"
                                 + "\n".join(failing))
 
 

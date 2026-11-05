@@ -30,7 +30,8 @@ WRAPPERS = {"sudo", "doas", "env", "command", "builtin", "exec", "nohup", "time"
 # text of every suffix, because their argument is a shell string.
 WRAPPERS |= {"flock", "chroot", "taskset", "chrt", "unbuffer", "strace", "nsenter", "unshare", "setpriv", "runuser",
              "fakeroot", "busybox", "sshpass", "watch", "su", "script", "coproc"}
-STRING_LAUNCHERS = {"watch", "su", "script"}
+# Every wrapper's argument can be a shell string (sudo -s "rm -rf x", flock --command="..."): all of them are re-analysed as text.
+STRING_LAUNCHERS = WRAPPERS
 WRAPPER_ARGS = {
     "xargs": {"-I", "-n", "-P", "-d", "-L", "-s", "-E", "-a", "-e"},
     "env": {"-u", "-C", "-S"},
@@ -561,7 +562,12 @@ def split_segments(text, ps=False):
             cur.append(c)
             i += 1
             continue
-        if quote is None and c == "#" and (i == 0 or text[i - 1] in " \t\n;&|()"):
+        if ps and quote is None and text.startswith("<#", i):
+            # A PowerShell block comment <# ... #> is skipped; the commands in it are not run here.
+            j = text.find("#>", i + 2)
+            i = n if j < 0 else j + 2
+            continue
+        if quote is None and c == "#" and (i == 0 or (text[i - 1] in " \t\n;&|()" and not (i >= 2 and text[i - 2] == "\\"))):
             # A word-initial unquoted # starts a comment that runs to the end of the line. Quotes inside it are not
             # quotes (sort x # it's): the comment is skipped, and the newline that ends it still separates commands.
             j = text.find("\n", i)
@@ -613,7 +619,7 @@ def split_segments(text, ps=False):
                 k = i + 1
                 while k < n and text[k] in " \t":
                     k += 1
-                if k < n and text[k] in "\"'$":
+                if k < n and text[k] in "\"'$({":
                     raise Deny("powershell", "call operator with a string or variable is not inspected")
         # PowerShell scriptblocks ({ ... }) are command bodies wherever they appear (try, ForEach-Object, Invoke-Command,
         # Start-Job -ScriptBlock). Each block boundary starts a segment, so the commands inside are analysed.
@@ -789,7 +795,7 @@ SETTER_BUILTINS = ("export", "declare", "typeset", "local", "readonly", "read")
 # Environment variables that name a program the tool starts (prefix assignments: VAR=x tool, env VAR=x tool).
 PROGRAM_ENV = ("RSYNC_RSH", "SSH_ASKPASS", "TAR_OPTIONS", "SSH_SK_HELPER", "RIPGREP_CONFIG_PATH", "RSYNC_CONNECT_PROG",
                "RSYNC_SHELL", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "DYLD_INSERT_LIBRARIES", "SSH_SK_PROVIDER",
-               "DYLD_FALLBACK_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH")
+               "DYLD_FALLBACK_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH", "PATHEXT")
 # ssh, scp and sftp -o KEY=VALUE (ssh_config keywords, case-insensitive). Only the keys listed here are allowed. A key that
 # runs a local command or loads a provider or an included file (ProxyCommand, LocalCommand, PermitLocalCommand,
 # KnownHostsCommand, Include, Match, PKCS11Provider, SecurityKeyProvider, XAuthLocation, ...) is not listed, so it is DENY.
@@ -1031,7 +1037,7 @@ def tar_path_ok(path, ctx, role):
     parts = norm.split("/")
     if norm.startswith("/") or ABSOLUTE.match(path) or ".." in parts:
         return False
-    if role != "member" and (names_claude(path) or ".git" in [p.casefold() for p in parts]):
+    if (role != "member" and names_claude(path)) or ".git" in [p.casefold() for p in parts]:
         return False
     # The literal part before the first glob component is what is resolved (a glob cannot be resolved as a path); links
     # in that part are followed, so a member glob under a link that leaves the repository is refused.
@@ -1066,6 +1072,10 @@ def tar_archive_is_plain(archive, ctx):
     except FileNotFoundError:
         return True
     except OSError:
+        return False
+    # GNU tar picks its decompressor from the magic bytes at offset 0, so a compressed file is refused even with ustar later.
+    if any(head.startswith(m) for m in (b"\x1f\x8b", b"BZh", b"\xfd7zXZ\x00", b"\x28\xb5\x2f\xfd", b"LZIP", b"\x1f\x9d",
+                                        b"\x89LZO", b"\x5d\x00")):
         return False
     return len(head) == 512 and head[257:262] == b"ustar"
 
@@ -1412,6 +1422,10 @@ def analyze_argv(words, ctx, ps, depth):
                 # The argument of watch, su -c or script -c is a shell string: every suffix is analysed as text.
                 for k in range(1, len(words)):
                     analyze_text(" ".join(words[k:]), ctx.copy(), ps, depth + 1)
+                    for w in words[k:]:
+                        # --command="rm -rf x": the value after the = is a shell string too.
+                        if w.startswith("-") and "=" in w:
+                            analyze_text(w.split("=", 1)[1], ctx.copy(), ps, depth + 1)
             return
         break
     args = words[1:]
@@ -1564,7 +1578,8 @@ def _decide(raw, repo_root):
     if re.search(r"(?i)((?<![A-Za-z0-9_\-/.])PATH|(?<![A-Za-z0-9_])(" + "|".join(re.escape(v) for v in PROGRAM_ENV) + r"))"
                  r"(?![A-Za-z0-9_])",
                  squashed) and re.search(
-            r"(?i)(?<![A-Za-z0-9_])(" + "|".join(sorted(PROGRAM_TOOLS)) + r")(?![A-Za-z0-9_])", squashed):
+            r"(?i)(?<![A-Za-z0-9_])(" + "|".join(sorted(PROGRAM_TOOLS | set(PROGRAM_ALIAS))) + r")(?![A-Za-z0-9_])",
+            squashed):
         raise Deny("program-option", "PATH or a program-naming variable with a program tool in one command: not inspected")
     analyze_text(cmd, ctx, tool == "PowerShell", 0)
     return ALLOW, "no destructive operation found"
