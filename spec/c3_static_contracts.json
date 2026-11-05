@@ -1,0 +1,232 @@
+{
+  "schema": 1,
+  "status": "VERIFICATION_DESIGN_ONLY",
+  "note": "C-3 static contract (#473). Text-level declarations checked by tools/c3_static_check.py. Not a production safety proof, not an ABI, not an approval. Production allowlist UNDECIDED (Owner).",
+  "rule_groups": [
+    "CI-1"
+  ],
+  "production_allowlist": {
+    "status": "UNDECIDED",
+    "approved_by": null,
+    "review_ref": null,
+    "mpr1_stack_banks": null,
+    "transfer_regions": null,
+    "mmio_devices": null,
+    "note": "Owner decision pending. The #497 verification value (MPR1 = $F8 only) is NOT a production allowlist."
+  },
+  "scope": {
+    "bios": [
+      "src/ad_reset_idle.s",
+      "src/adt_dma_routine.s",
+      "src/boot.s",
+      "src/cd_media_state.s",
+      "src/dev_boot_internal.s",
+      "src/ex_bcdbin.s",
+      "src/ex_binbcd.s",
+      "src/ex_rnd.s",
+      "src/experimental_bios_boot.s",
+      "src/math/ma_div16s.s",
+      "src/math/ma_div16u.s",
+      "src/math/ma_mul16u.s",
+      "src/math/ma_mul8s.s",
+      "src/math/ma_mul8u.s",
+      "src/overrides/slot_1E.s",
+      "src/overrides/slot_3A.s",
+      "src/overrides/slot_3C.s",
+      "src/overrides/slot_3D.s",
+      "src/overrides/slot_3E.s",
+      "src/overrides/slot_3F.s",
+      "src/overrides/slot_40.s",
+      "src/overrides/slot_41.s",
+      "src/overrides/slot_42.s",
+      "src/overrides/slot_43.s",
+      "src/overrides/slot_44.s",
+      "src/overrides/slot_45.s",
+      "src/overrides/slot_46.s",
+      "src/overrides/slot_4F.s",
+      "src/reset_entry.s"
+    ],
+    "fixture": [
+      "src/ad_trans_dma_probe.s",
+      "src/adt_dma_routine_boot.s",
+      "src/cd_load_exec_payload.s",
+      "src/cd_load_exec_probe.s",
+      "src/cd_read_probe.s",
+      "src/cd_reset_probe.s",
+      "src/cdda_probe.s",
+      "src/startup_probe.s"
+    ],
+    "fixture_reasons": {
+      "src/ad_trans_dma_probe.s": "development-only hardware diagnostic guest (#400 / #299), not firmware code",
+      "src/adt_dma_routine_boot.s": "development-only boot and driver for the adt_dma_sector routine test (#300); uses .macro",
+      "src/cd_load_exec_payload.s": "development-only payload of the load-and-execute experiment (#14 / #5)",
+      "src/cd_load_exec_probe.s": "development-only load-and-execute experiment (#14 / #5)",
+      "src/cd_read_probe.s": "development-only CD-ROM2 sector-read diagnostic (#5)",
+      "src/cd_reset_probe.s": "development-only CD-ROM2 bus-reset diagnostic (#10)",
+      "src/cdda_probe.s": "development-only CD-DA observation diagnostic (#15)",
+      "src/startup_probe.s": "development-only System Card startup checkpoint (#4)"
+    }
+  },
+  "files": {
+    "src/ad_reset_idle.s": {
+      "role": "internal",
+      "tam": []
+    },
+    "src/adt_dma_routine.s": {
+      "role": "internal",
+      "tam": []
+    },
+    "src/boot.s": {
+      "role": "internal",
+      "tam": []
+    },
+    "src/cd_media_state.s": {
+      "role": "internal",
+      "tam": []
+    },
+    "src/dev_boot_internal.s": {
+      "role": "reset_init",
+      "tam": [
+        {
+          "mask": "0x01",
+          "value": "0xFF",
+          "purpose": "MPR0 = hardware page (CD-ROM2 at $1800)"
+        },
+        {
+          "mask": "0x02",
+          "value": "0xF8",
+          "purpose": "MPR1 = work RAM at reset (stack page $2100-$21FF)"
+        }
+      ]
+    },
+    "src/ex_bcdbin.s": {
+      "role": "api",
+      "tam": []
+    },
+    "src/ex_binbcd.s": {
+      "role": "api",
+      "tam": []
+    },
+    "src/ex_rnd.s": {
+      "role": "api",
+      "tam": []
+    },
+    "src/experimental_bios_boot.s": {
+      "role": "reset_init",
+      "tam": [
+        {
+          "mask": "0x01",
+          "value": "0xFF",
+          "purpose": "MPR0 = hardware page"
+        },
+        {
+          "mask": "0x02",
+          "value": "0xF8",
+          "purpose": "MPR1 = work RAM at reset"
+        }
+      ]
+    },
+    "src/math/ma_div16s.s": {
+      "role": "api",
+      "tam": []
+    },
+    "src/math/ma_div16u.s": {
+      "role": "api",
+      "tam": []
+    },
+    "src/math/ma_mul16u.s": {
+      "role": "api",
+      "tam": []
+    },
+    "src/math/ma_mul8s.s": {
+      "role": "api",
+      "tam": []
+    },
+    "src/math/ma_mul8u.s": {
+      "role": "api",
+      "tam": []
+    },
+    "src/overrides/slot_1E.s": {
+      "role": "api",
+      "tam": []
+    },
+    "src/overrides/slot_3A.s": {
+      "role": "api",
+      "tam": [
+        {
+          "mask": "0x01",
+          "value": "0xFF",
+          "purpose": "MPR0 = hardware page for the VDC window (IRQ masked by SEI)"
+        },
+        {
+          "mask": "0x01",
+          "value": "restore",
+          "reason": "caller MPR0 saved by TMA #$01 and restored before return"
+        }
+      ]
+    },
+    "src/overrides/slot_3C.s": {
+      "role": "api",
+      "tam": []
+    },
+    "src/overrides/slot_3D.s": {
+      "role": "api",
+      "tam": []
+    },
+    "src/overrides/slot_3E.s": {
+      "role": "api",
+      "tam": []
+    },
+    "src/overrides/slot_3F.s": {
+      "role": "api",
+      "tam": []
+    },
+    "src/overrides/slot_40.s": {
+      "role": "api",
+      "tam": []
+    },
+    "src/overrides/slot_41.s": {
+      "role": "api",
+      "tam": []
+    },
+    "src/overrides/slot_42.s": {
+      "role": "api",
+      "tam": []
+    },
+    "src/overrides/slot_43.s": {
+      "role": "api",
+      "tam": []
+    },
+    "src/overrides/slot_44.s": {
+      "role": "api",
+      "tam": []
+    },
+    "src/overrides/slot_45.s": {
+      "role": "api",
+      "tam": []
+    },
+    "src/overrides/slot_46.s": {
+      "role": "api",
+      "tam": []
+    },
+    "src/overrides/slot_4F.s": {
+      "role": "api",
+      "tam": []
+    },
+    "src/reset_entry.s": {
+      "role": "reset_init",
+      "tam": [
+        {
+          "mask": "0x01",
+          "value": "0xFF",
+          "purpose": "MPR0 = hardware page"
+        },
+        {
+          "mask": "0x02",
+          "value": "0xF8",
+          "purpose": "MPR1 = work RAM at reset (stack page $2100)"
+        }
+      ]
+    }
+  }
+}

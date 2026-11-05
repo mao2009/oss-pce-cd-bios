@@ -122,6 +122,7 @@ block-transfer-matrix:
 check:
 	$(PYTHON) tools/contracts.py
 	$(PYTHON) tools/check.py
+	$(PYTHON) tools/c3_static_check.py
 
 # Issue #335: same-input rebuild must be byte-identical and its manifest must describe the ROM (fail-closed).
 rom-provenance:
