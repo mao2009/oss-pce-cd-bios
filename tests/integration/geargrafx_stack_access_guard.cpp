@@ -12,6 +12,12 @@
 // mode = <route>-<variant>
 //   route:   jsr pha php bsr rts rti irq tstart tend brk pla plp phx phy plx ply irqtam phasame pharestore
 //            (#647) irqtam2 irqtamt irqtam1i irqtam2i irqtamti tamcode tmapos tmaneg tam<mask><A> (hex)
+//            (#648) x<op><kind>, op = tii tin tdd tia tai, kind = d (destination page = variant bank),
+//            s (source page), m (destination page set mid-transfer), m1 (MPR1 set mid-transfer),
+//            q / q2 / qt (IRQ1 / IRQ2 / TIQ pending during the transfer), c (range crosses into the page
+//            under test: refused), w (range ends before it: allowed), e (destination page set before the
+//            TransferEnd step); xself (TII over its own opcode), xlen0 (length 0 = 65536).
+//            For x routes MPR1 is always $F8: the variant bank goes to the page under test, not to MPR1.
 //   variant: allowed     MPR1 = $F8 (WRAM): the guard is consulted and allows (positive)
 //            armed       MPR1 = $FF (I/O): the guard refuses before the access (negative)
 //            unguarded   MPR1 = $FF, null guard: the accesses land on the I/O page (control)
@@ -80,6 +86,16 @@ bool g_method_d = false, g_method_e = false, g_budget_stop = false;
 unsigned g_decode_refusals = 0, g_irq_deferrals = 0, g_handler_entry = 0, g_budget = 0;
 int g_d_mut = 0, g_e_mut = 0;     // probe-side mutants: D off (1) / D checks bit 0 (2); E off (1)
 const char* g_refusal_reason = "none";
+// Issue #648 (S6): T = block transfer guard. Before TransferStart: every source and destination byte of
+// the transfer (operands peeked without a bus read) must lie in a page mapped to WRAM $F8; during the
+// transfer: no MPR may differ from its value at TransferStart. TEST policy defined here.
+bool g_method_t = false, g_t_active = false;
+int g_t_mut = 0;                  // 1 resume after a T refusal, 2 no mid-transfer check, 3 first byte only,
+                                  // 4 every opcode modelled as TII (wrong address sequence), 5 no self check
+unsigned g_t_op = 0, g_x_forbid = 0;   // opcode at TransferStart; x route: page under test
+unsigned g_t_mpr[8] = {}, g_t_refusals = 0, g_flip_mpr = 1;
+unsigned g_t_at_refusal[4] = {};  // transfer source, destination, remaining length, step count
+bool g_t_resumed = false;
 Snapshot g_instr_start = {};        // snapshot at the start of the instruction that is running
 Snapshot g_refusal_instr = {};      // snapshot at the start of the instruction of the first refusal
 Snapshot g_at_refusal = {};         // live CPU state inside the first refused guard call
@@ -158,7 +174,7 @@ bool pre_instruction(void*, unsigned, unsigned transfer_state)
     // makes any mid-run direct setting a FAIL, so these are negative cases).
     bool flip_now = (g_flip_tend && transfer_state == 1) || (g_flip_at && g_instructions == g_flip_at);
     if (flip_now && !g_flipped) {
-        g_memory->SetMpr(1, (u8)g_stack_bank);
+        g_memory->SetMpr(g_flip_mpr, (u8)g_stack_bank);
         g_flipped = true;
         g_flip_instruction = g_instructions;
     }
@@ -176,6 +192,63 @@ bool pre_instruction(void*, unsigned, unsigned transfer_state)
     bool decode_refuse = g_method_d && g_d_mut != 1 &&
                          (!peek_ok || (op == 0x53 && (bits & checked_bit) && g_instr_start.a != 0xF8));
     bool a_refuse = g_method_a && (g_instruction_refused || g_memory->GetMpr(1) != 0xF8);
+    const char* t_reason = nullptr;
+    if (g_method_t && !peek_ok) {
+        t_reason = "transfer_unpeekable";           // fail closed: the opcode is not known
+    } else if (g_method_t && transfer_state == 0) {
+        g_t_active = false;
+        bool block = peek_ok && (op == 0x73 || op == 0xC3 || op == 0xD3 || op == 0xE3 || op == 0xF3);
+        if (block) {
+            u8 b[6] = {};
+            bool ok = true;
+            for (int i = 0; i < 6; ++i)
+                ok = ok && g_memory->TryPeek((u16)(pc + 1 + i), &b[i]);
+            if (!ok)
+                t_reason = "transfer_unpeekable";
+            unsigned src = b[0] | (b[1] << 8), dst = b[2] | (b[3] << 8), len = b[4] | (b[5] << 8);
+            if (!len)
+                len = 0x10000;                        // length 0 = 65536 bytes (pinned source)
+            unsigned limit = g_t_mut == 3 ? 1 : len;
+            // The instruction's own seven bytes, as physical (bank, offset): a destination byte there would
+            // rewrite the opcode that every byte step re-runs.
+            unsigned self[7];
+            for (unsigned k = 0; k < 7; ++k) {
+                unsigned a = (pc + k) & 0xFFFF;
+                self[k] = (g_memory->GetMpr(a >> 13) << 13) | (a & 0x1FFF);
+            }
+            for (unsigned i = 0; ok && !t_reason && i < limit; ++i) {
+                // Address sequences of the pinned source: TDD decrements both, TIN keeps the
+                // destination, TIA alternates the destination, TAI alternates the source.
+                bool tii = g_t_mut == 4;
+                unsigned s = tii ? src + i : op == 0xC3 ? src - i : op == 0xF3 ? src + (i & 1) : src + i;
+                unsigned d = tii ? dst + i : op == 0xC3 ? dst - i : op == 0xD3 ? dst : op == 0xE3 ? dst + (i & 1)
+                                                                                            : dst + i;
+                s &= 0xFFFF;
+                d &= 0xFFFF;
+                if (g_memory->GetMpr(s >> 13) != 0xF8 || g_memory->GetMpr(d >> 13) != 0xF8)
+                    t_reason = "transfer_range";
+                unsigned dp = (g_memory->GetMpr(d >> 13) << 13) | (d & 0x1FFF);
+                for (unsigned k = 0; g_t_mut != 5 && !t_reason && k < 7; ++k)
+                    if (dp == self[k])
+                        t_reason = "transfer_self";
+            }
+            if (!t_reason) {
+                for (int i = 0; i < 8; ++i)
+                    g_t_mpr[i] = g_memory->GetMpr(i);
+                g_t_op = op;
+                g_t_active = true;
+            }
+        }
+    } else if (g_method_t && g_t_active && g_t_mut != 2) {
+        if (op != g_t_op)
+            t_reason = "transfer_opcode_changed";     // the transfer rewrote its own opcode
+        for (int i = 0; i < 8 && !t_reason; ++i)
+            if (g_memory->GetMpr(i) != g_t_mpr[i])
+                t_reason = "transfer_mpr_changed";
+    }
+    bool t_refuse = t_reason != nullptr;
+    if (t_refuse && !a_refuse)
+        ++g_t_refusals;
     // Harness budget (TAM bitmask sweep): stop before the next instruction unless method A refuses it. It
     // takes precedence over D there, because the sweep judges only the TAM (instruction 1); D's not-peekable
     // branch is measured by its own route (tamcode).
@@ -183,14 +256,19 @@ bool pre_instruction(void*, unsigned, unsigned transfer_state)
         g_budget_stop = true;
         return false;
     }
-    if (!a_refuse && !decode_refuse)
+    if (!a_refuse && !decode_refuse && !t_refuse)
         return true;
     if (decode_refuse && !a_refuse)
         ++g_decode_refusals;
     if (!g_refused_seen) {
         g_refused_seen = true;
         g_refusal_kind = 2;
-        g_refusal_reason = a_refuse ? "mpr1" : peek_ok ? "decode_tam" : "decode_unpeekable";
+        g_refusal_reason = a_refuse ? "mpr1" : decode_refuse ? (peek_ok ? "decode_tam" : "decode_unpeekable")
+                                                           : t_reason;
+        g_t_at_refusal[0] = g_cpu->GG_VerifyTransferSource();
+        g_t_at_refusal[1] = g_cpu->GG_VerifyTransferDest();
+        g_t_at_refusal[2] = g_cpu->GG_VerifyTransferLength();
+        g_t_at_refusal[3] = g_cpu->GG_VerifyTransferCount();
         g_refusal_instr = g_instr_start;
         g_at_refusal = g_instr_start;
         g_refusal_op = 255;
@@ -200,6 +278,10 @@ bool pre_instruction(void*, unsigned, unsigned transfer_state)
         g_refusal_cycles = 0;
         g_vdc_ar_at_refusal = (u8)*g_vdc->AR;
         g_io_before_refusal = g_io_reads + g_io_writes;
+    }
+    if (g_t_mut == 1 && t_refuse && !a_refuse && !decode_refuse) {
+        g_t_resumed = true;      // mutant: the refusal is recorded but the guest is resumed
+        return true;
     }
     g_instruction_refused = true;
     ++g_instruction_refusals;
@@ -265,6 +347,42 @@ bool route_for(const std::string& name, Route* r)
         r->p = name.back() == 'i' ? 0x04 : 0x00;
         r->loops = {kHandler};
     }
+    else if (name == "xself" || name == "xlen0") {   // TII over its own opcode / length 0 (65536)
+        bool own = name == "xself";
+        r->code = {0x73, 0x80, 0x1E, 0x00, (u8)(own ? 0x1E : 0x40), (u8)(own ? 4 : 0), 0x00, bra, self};
+    }
+    else if (name.size() >= 5 && name[0] == 'x') {
+        std::string opn = name.substr(1, 3), kind = name.substr(4);
+        u8 op = opn == "tii" ? 0x73 : opn == "tdd" ? 0xC3 : opn == "tin" ? 0xD3 : opn == "tia" ? 0xE3 :
+                opn == "tai" ? 0xF3 : 0;
+        if (!op || (kind != "d" && kind != "s" && kind != "m" && kind != "m1" && kind != "q" && kind != "q2" &&
+                    kind != "qt" && kind != "c" && kind != "w" && kind != "e"))
+            return false;
+        unsigned src = kind == "s" ? 0x6000 : 0x1E80, dst = kind == "s" ? 0x4010 : 0x4000;
+        if (op == 0xC3) { src += 3; dst += 3; }   // TDD runs downwards over the same four bytes
+        g_x_forbid = kind == "d" ? 2 : kind == "s" ? 3 : 0;
+        if (kind == "c" || kind == "w") {
+            // Page-boundary fixtures per opcode (pinned address sequences). c: the range reaches the page
+            // under test; w: it stops just before it (an incrementing model would wrongly reach it).
+            static const struct { const char* name; unsigned src, dst, page; } k_cross[] = {
+                {"tiic", 0x1E80, 0x3FFE, 2}, {"tiiw", 0x1E80, 0x3FFC, 2},
+                {"tinc", 0x3FFE, 0x3F00, 2}, {"tinw", 0x1E80, 0x3FFF, 2},
+                {"tddc", 0x1E83, 0x6001, 2}, {"tddw", 0x1E83, 0x6003, 2},
+                {"tiac", 0x1E80, 0x5FFF, 3}, {"tiaw", 0x1E80, 0x3FFE, 2},
+                {"taic", 0x5FFF, 0x3F00, 3}, {"taiw", 0x3FFE, 0x3F00, 2},
+            };
+            std::string key = opn + kind;
+            for (const auto& c : k_cross)
+                if (key == c.name) { src = c.src; dst = c.dst; g_x_forbid = c.page; }
+        }
+        r->code = {op, (u8)(src & 0xFF), (u8)(src >> 8), (u8)(dst & 0xFF), (u8)(dst >> 8), 0x04, 0x00, bra, self};
+        if (kind[0] == 'q') {   // IRQ1 (q) / IRQ2 (q2) / TIQ (qt) pending with I = 0 during the transfer
+            r->irr = kind == "q2" ? 0x01 : kind == "qt" ? 0x04 : 0x02;
+            r->vector_lo = kind == "q2" ? 0x1FF6 : kind == "qt" ? 0x1FFA : 0x1FF8;
+            r->p = 0x00;
+            r->loops = {kHandler};
+        }
+    }
     else if (name == "tamcode") {   // TAM #$01 with A = $FF: the code page (MPR0) becomes the hardware page
         r->a = 0xFF; r->code = {0x53, 0x01, bra, self};
     }
@@ -317,7 +435,7 @@ int main(int argc, char** argv)
         rest = mode.substr(colon + 1);
     }
     if (method != "C" && method != "A" && method != "AC" && method != "AD" && method != "AE" &&
-        method != "ADC" && method != "AEC")
+        method != "ADC" && method != "AEC" && method != "AT")
         return 2;
     size_t dash = rest.find('-');
     if (dash == std::string::npos)
@@ -344,6 +462,11 @@ int main(int argc, char** argv)
     else if (variant == "mut-doff") g_d_mut = 1;      // probe-side: D disabled
     else if (variant == "mut-dbit") g_d_mut = 2;      // probe-side: D checks the wrong operand bit
     else if (variant == "mut-eoff") g_e_mut = 1;      // probe-side: E disabled
+    else if (variant == "mut-tresume") g_t_mut = 1;   // probe-side: guest resumed after a T refusal
+    else if (variant == "mut-tnomid") g_t_mut = 2;    // probe-side: no mid-transfer MPR check
+    else if (variant == "mut-tfirst") g_t_mut = 3;    // probe-side: pre-start check of the first byte only
+    else if (variant == "mut-tseq") g_t_mut = 4;      // probe-side: every opcode modelled as TII
+    else if (variant == "mut-tnoself") g_t_mut = 5;   // probe-side: no own-opcode check before the start
     else return 2;
     Route route;
     if (!route_for(route_name, &route))
@@ -354,6 +477,7 @@ int main(int argc, char** argv)
     g_method_a = guarded && method.find('A') != std::string::npos;
     g_method_d = guarded && method.find('D') != std::string::npos;
     g_method_e = guarded && method.find('E') != std::string::npos;
+    g_method_t = guarded && method.find('T') != std::string::npos;
 
     std::ifstream file(argv[1], std::ios::binary);
     if (!file)
@@ -391,7 +515,8 @@ int main(int argc, char** argv)
                  route_name.find_first_not_of("0123456789abcdef", 3) == std::string::npos;
     bool irqtam = route_name.compare(0, 6, "irqtam") == 0;
     bool changes_later = irqtam || is_tend || route_name == "flippha" || route_name == "tamjsr" ||
-                         route_name == "tamcode" || route_name.compare(0, 3, "tma") == 0 || sweep;
+                         route_name == "tamcode" || route_name.compare(0, 3, "tma") == 0 || sweep ||
+                         route_name[0] == 'x';
     memory->SetMpr(1, (u8)(io_stack && !changes_later ? bank : 0xF8));
 
     u8* wram = memory->GetWorkingRAM();
@@ -430,6 +555,26 @@ int main(int argc, char** argv)
     g_flip_tend = is_tend && io_stack;
     g_flip_at = route_name == "flippha" && io_stack ? 2 : 0;   // before the PHA (instruction 2)
     g_budget = sweep ? 1 : 0;                                   // sweep: stop before instruction 2
+    if (route_name[0] == 'x') {
+        // Pages 2 and 3 = WRAM; the variant bank goes to the page under test (d / c / w: as listed in
+        // route_for, s: source page 3; m / m1: set by the harness before byte step 3 = instruction 4;
+        // e: destination page set before the TransferEnd step = instruction 6).
+        std::string kind = route_name.size() > 4 ? route_name.substr(4) : "";
+        memory->SetMpr(2, 0xF8);
+        memory->SetMpr(3, 0xF8);
+        if (io_stack && g_x_forbid)
+            memory->SetMpr(g_x_forbid, (u8)bank);
+        if (io_stack && (kind == "m" || kind == "m1" || kind == "e")) {
+            g_flip_mpr = kind == "m1" ? 1 : 2;
+            g_flip_at = kind == "e" ? 6 : 4;
+        }
+        wram[0x1FFE] = 0x71;                         // source bytes at page boundaries ($3FFE / $5FFE)
+        wram[0x1FFF] = 0x72;
+        for (unsigned i = 0; i < 4; ++i) {
+            wram[kSrc + i] = (u8)(0x5A + i);       // source bytes ($1E80)
+            wram[i] = (u8)(0x61 + i);              // source bytes of the s routes ($6000 = WRAM $0000)
+        }
+    }
     gg_verify_stack_mutation = mutation;
     gg_verify_stack_refused = false;
     gg_verify_stack_context = nullptr;
@@ -445,6 +590,7 @@ int main(int argc, char** argv)
     for (unsigned i = 0; i < 256; ++i)
         stack_before[i] = wram[0x0100 + i];
     unsigned dst_before = wram[kDst];
+    std::vector<u8> wram_before(wram, wram + 0x2000);   // every WRAM byte (block transfer destinations)
     // Non-WRAM stack banks (Issue #498 / #500 unknown-bank cases): bank $80 = CD-ROM RAM offset 0, bank $F7 =
     // backup RAM. The stack page is offset $0100-$01FF of the bank.
     u8* cdram = memory->GetCDROMRAM();
@@ -505,6 +651,20 @@ int main(int argc, char** argv)
                  "\"handler_entry_instruction\":%u,\"budget_stop\":%s,",
                  g_refusal_reason, g_decode_refusals, g_irq_deferrals, g_handler_entry,
                  g_budget_stop ? "true" : "false");
+    unsigned wram_changed = 0;
+    std::string wram_offsets;
+    for (unsigned i = 0; i < 0x2000; ++i) {
+        if ((i >> 8) == 1 || wram[i] == wram_before[i])
+            continue;                                    // the stack page is counted separately
+        if (++wram_changed <= 16)
+            wram_offsets += (wram_offsets.empty() ? "" : ",") + std::to_string(i);
+    }
+    std::fprintf(stderr, "\"t_refusals\":%u,\"t_resumed\":%s,\"t_at_refusal\":[%u,%u,%u,%u],"
+                 "\"t_stop\":[%u,%u,%u,%u],\"wram_bytes_changed\":%u,\"wram_changed_offsets\":[%s],",
+                 g_t_refusals, g_t_resumed ? "true" : "false", g_t_at_refusal[0], g_t_at_refusal[1],
+                 g_t_at_refusal[2], g_t_at_refusal[3], g_cpu->GG_VerifyTransferSource(),
+                 g_cpu->GG_VerifyTransferDest(), g_cpu->GG_VerifyTransferLength(), g_cpu->GG_VerifyTransferCount(),
+                 wram_changed, wram_offsets.c_str());
     std::fprintf(stderr, "\"harness_mpr1_flip\":%s,\"flip_instruction\":%u,", g_flipped ? "true" : "false",
                  g_flip_instruction);
     print_snapshot("start", start);

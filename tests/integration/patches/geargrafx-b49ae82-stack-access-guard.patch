@@ -37,7 +37,7 @@
  #define FLAG_CARRY      0x01
  #define FLAG_ZERO       0x02
  #define FLAG_INTERRUPT  0x04
-@@ -122,6 +152,10 @@
+@@ -122,6 +152,15 @@
      void Init(Memory* memory, HuC6202* huc6202);
      void Reset();
      u32 RunInstruction(bool* completed = NULL);
@@ -45,6 +45,11 @@
 +    u32 GG_VerifyTransferState() const { return m_transfer_state; }
 +    u32 GG_VerifyCycles() const { return m_cycles; }
 +    s32 GG_VerifyIrqPending() const { return m_irq_pending; }
++    // (Issue #648) block transfer counters, read-only: source, destination, remaining length, step count.
++    u32 GG_VerifyTransferSource() const { return m_transfer_source; }
++    u32 GG_VerifyTransferDest() const { return m_transfer_dest; }
++    u32 GG_VerifyTransferLength() const { return m_transfer_length; }
++    u32 GG_VerifyTransferCount() const { return m_transfer_count; }
      void SetHardwareClock(GG_Clock_Hardware_Fn clock_fn, void* context);
      u32 GetClockedMasterCycles() const;
      void ClockCountedCycles(unsigned int cycles);

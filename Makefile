@@ -52,7 +52,15 @@ integration: build
 	$(MAKE) stack-methods
 	$(MAKE) stack-methods-compare
 	$(MAKE) stack-s5
+	$(MAKE) stack-s6
 	$(MAKE) caller-stack-contract
+
+# Issue #648 (#473 S6): block transfers (TII/TIN/TDD/TIA/TAI) refused before TransferStart (pre-start range check)
+# and during the transfer (MPR change), judged on the eight criteria; IRQ during a transfer (synthetic media,
+# debugger build, verification-only patch). Not a production mechanism. Runs in `integration`.
+.PHONY: stack-s6
+stack-s6:
+	$(PYTHON) tests/integration/geargrafx_stack_s6.py
 
 # Issue #647 (#473 S5): decode-time TAM refusal (D) and IRQ deferral (E) on top of method A, all TAM bitmasks,
 # IRQ1/IRQ2/TIQ with I = 0/1, TMA (synthetic media, debugger build, verification-only patch). Not a production
