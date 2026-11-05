@@ -26,12 +26,16 @@ class ExpectationTests(unittest.TestCase):
                 e = S.mid_expect(op, kind)
                 self.assertEqual(e["verdict"], S.BLOCKED, (op, kind))
                 self.assertIn("resume_safe", e["failing"])
-                self.assertEqual(e["transfer_state"], 2)
+                self.assertEqual(e["transfer_state"], 1 if kind == "e" else 2)
                 self.assertGreater(e["wram"], 0)   # bytes already written are expected, not hidden
+        self.assertEqual(S.SELF_MID_EXPECT["verdict"], S.BLOCKED)
+        self.assertEqual(S.SELF_MID_EXPECT["reason"], "transfer_opcode_changed")
 
     def test_pre_start_refusal_changes_nothing(self):
         e = S.PRESTART_EXPECT
         self.assertEqual((e["verdict"], e["failing"], e["index"], e["wram"]), (S.SAFE, set(), 1, 0))
+        self.assertEqual(S.SELF_EXPECT["reason"], "transfer_self")
+        self.assertEqual(set(S.CROSS_IO), set(S.OPS))   # page-crossing fixture for every opcode
 
     def test_irq_sources(self):
         self.assertEqual(S.IRQ_KINDS, {"q": 0x02, "q2": 0x01, "qt": 0x04})
@@ -39,7 +43,9 @@ class ExpectationTests(unittest.TestCase):
     def test_every_mutant_must_be_unsafe_and_visible(self):
         self.assertEqual(len([c for c in S.MUTANTS if c.endswith("mut-tresume")]), 6)
         self.assertEqual(len([c for c in S.MUTANTS if c.endswith("mut-tnomid")]), 5)
-        self.assertIn("AT:xcross-mut-tfirst", S.MUTANTS)
+        self.assertIn("AT:xtiic-mut-tfirst", S.MUTANTS)
+        self.assertIn("AT:xtddc-mut-tseq", S.MUTANTS)
+        self.assertEqual(len(S.FALSE_POSITIVE_MUTANTS), 3)
         resumed = S.MUTANTS["AT:xtiim-mut-tresume"]
         self.assertTrue(resumed(dict(t_resumed=True, instructions_after_refusal=5, io_after_refusal=2)))
         self.assertFalse(resumed(dict(t_resumed=True, instructions_after_refusal=0, io_after_refusal=0)))

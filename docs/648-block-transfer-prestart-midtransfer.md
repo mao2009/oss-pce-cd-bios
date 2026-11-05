@@ -9,10 +9,12 @@ and ABI VERIFIED are unchanged.
 - **Pre-start.** At the instruction start of TII / TIN / TDD / TIA / TAI with transfer state 0, the probe peeks the
   six operands without a bus read. It computes every source and destination address of the transfer (pinned
   source: TDD decrements both, TIN keeps the destination, TIA alternates the destination, TAI alternates the
-  source, length 0 = 65536). If any byte lies in a page not mapped to WRAM $F8, the whole instruction is refused
-  before the opcode fetch. The TransferStart stack precondition (MPR1 = $F8) is method A's check.
-- **Mid-transfer.** At every later step of the same transfer, no MPR may differ from its value at TransferStart.
-  If one does, the step is refused before it runs.
+  source, length 0 = 65536). If any byte lies in a page not mapped to WRAM $F8, or a destination byte is one of
+  the instruction's own seven bytes (each byte step re-runs the opcode), the whole instruction is refused before
+  the opcode fetch. An opcode that cannot be peeked is refused (fail closed). The TransferStart stack
+  precondition (MPR1 = $F8) is method A's check.
+- **Mid-transfer.** At every later step of the same transfer, the opcode must be the one of TransferStart and no
+  MPR may differ from its value at TransferStart. If either changed, the step is refused before it runs.
 - After a refusal the guest is never resumed.
 
 The patch adds only read-only accessors for the transfer counters (source, destination, remaining length, step count).
@@ -29,25 +31,36 @@ The patch adds only read-only accessors for the transfer counters (source, desti
     reaches the hardware page.
   - `mut-tnomid` (no mid-transfer check) and `mut-tfirst` (pre-start check of the first byte only) show that each
     part of T is needed.
+  - `mut-tseq` (every opcode modelled as TII) is caught by the per-opcode page-boundary fixtures: TDD crossing
+    downwards lands on I/O (UNSAFE), and the TIN / TIA / TAI fixtures that stop before the forbidden page are
+    wrongly refused (false positive).
+  - `mut-tnoself` (no own-opcode check before the start) shows the mid-transfer opcode check: the first byte
+    step rewrites the TII opcode and the next step is refused (BLOCKED inside the transfer).
 
 ## Mid-transfer MPR change paths on the pinned core
 
 | Path | Status |
 |---|---|
-| TAM | Not possible inside a transfer: each byte step re-runs the block opcode. |
+| TAM | Not possible inside a transfer, unless the transfer rewrites its own opcode: each byte step re-runs the opcode at PC. T refuses such a transfer before the start, and refuses a changed opcode mid-transfer. |
 | IRQ handler | Not possible: the IRQ is not taken while the transfer state ≠ 0. Measured for IRQ1, IRQ2 and TIQ on all five opcodes: the handler starts after TransferEnd. |
-| Harness direct SetMpr | Measured. S1 #497 makes any mid-run direct setting a FAIL. Covered by `m` (destination page before byte step 3), `m1` (MPR1 before byte step 3) and, at the TransferEnd step, the #498 `tend*` rows. |
+| Harness direct SetMpr | Measured. S1 #497 makes any mid-run direct setting a FAIL. Covered by `m` (destination page before byte step 3), `m1` (MPR1 before byte step 3), `e` (destination page before the TransferEnd step) and the #498 `tend*` rows (MPR1 before the TransferEnd step). Without T, `e` has no side effect (TransferEnd only pops from the stack); T's refusal there is conservative. |
 
 ## PR #613 re-evaluated
 
-#613's abort (`make block-write-guard`) is re-evaluated from the source; it is not re-run here.
+#613 (`make block-write-guard`) is re-evaluated from the source; it is not re-run here.
 
-1. It refuses after the opcode fetch.
-2. It skips the six operands (PC + 7).
-3. The guest continues.
+- Its whole-instruction abort refuses after the opcode fetch, skips the six operands (PC + 7), and lets the guest
+  continue.
+- Its per-byte write guard skips one byte write and continues the transfer.
 
-So on the eight criteria the PC is not preserved and the guest runs after the refusal: it is not SAFE_IN_SCOPE.
-T refuses before the fetch and stops.
+On the eight criteria, the PC / transfer state then differ from the refused instruction's start, and the guest
+runs after the refusal. Neither is SAFE_IN_SCOPE. T refuses before the fetch and stops.
+
+## push16 / pop
+
+The two-byte access, the order of the S change and latching (#644 mutants late16, popinc, nolatch, ignore,
+nostop) are covered by `make stack-access-guard` (#499) on the same probe and patch in the same
+`make integration`. They are not repeated here.
 
 ## Evidence
 
