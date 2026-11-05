@@ -1360,8 +1360,6 @@ class X3bMutationTests(unittest.TestCase):
                                                               r'''        if False:'''),
         "dashed or leading glob in a tool argument not denied": (r'''        if any(c in a for c in "*?[") and (a.startswith("-") or a[:1] in "*?["):''',
                                                       r'''        if False:'''),
-        "tar first word glob not denied": (r'''    if name == "tar" and args and any(c in args[0] for c in "*?["):''',
-                                           r'''    if False:'''),
         "assignment with an expansion not denied": (r'''    if any("=" in w and ("{" in w or "}" in w or "$" in w) for w in words):''',
                                                     r'''    if False:'''),
         "tool filter removed": ('    if name not in PROGRAM_TOOLS:', '    if False:'),
@@ -2022,7 +2020,7 @@ class PathCompressorLibraryTests(unittest.TestCase):
         "PATH=/x 'ssh'. h", 'PATH=/x "sftp " h', "PATH=/x ssh\\  h", 'PATH+=/x "rsync " a b',
         'PATH=/x "/usr/bin/scp " a b',
         # tar reads a compressed archive through a PATH-resolved decompressor, even without -z (observed with an empty PATH)
-        "tar -xf a.tgz", "tar -tf d.tar.gz", "tar -xf a.tar.bz2", "tar -cf out.tar.xz src", "tar -xf x.TGZ",
+        "tar -xf a.tgz", "tar -tf d.tar.gz", "tar -xf a.tar.bz2", "tar -xf x.TGZ",
         "tar -xf a.tar.Z", "tar -xf a.tar.gz -C dir",
     ]
     ALLOW = [
@@ -2109,7 +2107,8 @@ class ReviewRound2MutationTests(unittest.TestCase):
         "rsync --info removed": ('"sockopts", "outbuf", "info", "debug"),', '"sockopts", "outbuf"),'),
         "rsync --compress removed": ('"no-motd", "compress", "checksum",', '"no-motd", "checksum",'),
         "tar compressed-file suffix check removed": (
-            '    if name == "tar" and any(a.lower().endswith(COMPRESSED_SUFFIXES) for a in args):', '    if False:'),
+            '    if name == "tar" and any(re.sub(r"[ .]+$", "", a.lower()).endswith(COMPRESSED_SUFFIXES) for a in args)',
+            '    if False and any(re.sub(r"[ .]+$", "", a.lower()).endswith(COMPRESSED_SUFFIXES) for a in args)'),
     }
 
     def _run(self, hook_text):
@@ -2142,6 +2141,85 @@ class ReviewRound2MutationTests(unittest.TestCase):
                 detected = any(("PathCompressorLibraryTests." in ln or "AllowlistRgTests." in ln
                                 or "AllowlistRsyncTests." in ln) for ln in failing)
                 self.assertTrue(detected, "mutant not detected by a round-2 test: " + name + "\n" + "\n".join(failing))
+
+
+class ReviewRound3Tests(unittest.TestCase):
+    """Issue #640 X3b, review round 3 (HEAD 90bc365): sftp input from a pipe or a redirection; trailing dots and spaces in
+    compressed archive names; globs that may expand to a compressed archive; the suffixes .tb2, .bz, .lzo, .tzo; and a
+    create-only tar (it reads no archive, so no decompressor starts). Decision-level only; nothing is executed."""
+
+    DENY = [
+        # sftp: commands from a pipe or a redirected file or here-string cannot be inspected
+        "sftp host < batch.txt", "printf '!touch x\\n' | sftp host", "sftp host <<< '!id'",
+        # tar reads: the suffix is checked with trailing dots and spaces removed, and the other compressed suffixes
+        "tar -tf a.tb2", "tar -tf a.bz", "tar -tf a.lzo", "tar -tf a.tzo", "tar -xf a.tar.bz",
+        "tar -tf a.tgz.", 'tar -tf "a.tgz "', "tar -tf a.gz.", "tar -tf a.TGZ.", "tar -tf a.tbz2.",
+        # tar: a glob operand whose literal tail is empty or is a compressed suffix
+        "tar -tf a*", "tar -tf a*.tgz", "tar -xf a*",
+    ]
+    ALLOW = [
+        # tar creates without reading: an archive name with a compressed suffix is written uncompressed
+        "tar -cf out.tgz dir", "tar -cvf out.tgz dir", "tar -cf out.tar dir", "tar -cf out.tar.xz src",
+        # tar: a glob operand whose literal tail is not a compressed suffix (names*.txt and a*.tar)
+        "tar -tf a*.tar", "tar -xf a.tar names*.txt",
+        # sftp with no piped or redirected input
+        "sftp host",
+    ]
+
+    def test_round3_deny_list(self):
+        for cmd in self.DENY:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+
+    def test_round3_allow_list(self):
+        for cmd in self.ALLOW:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "ALLOW")
+
+
+class ReviewRound3MutationTests(unittest.TestCase):
+    """Issue #640 X3b, review round 3: each rule must be detected by a named ReviewRound3Tests failure."""
+
+    MUTANTS = {
+        "archive suffix compared without removing trailing dots and spaces": (
+            'any(re.sub(r"[ .]+$", "", a.lower()).endswith(COMPRESSED_SUFFIXES) for a in args)',
+            'any(a.lower().endswith(COMPRESSED_SUFFIXES) for a in args)'),
+        "create-only exemption removed": ('            and not tar_only_creates(args):', '            and True:'),
+        "glob operand rule removed": ('            if not tail or tail.endswith(COMPRESSED_SUFFIXES):', '            if False:'),
+        "sftp piped or redirected input rule removed": (
+            '    if tool != "PowerShell" and re.search(r"(^|[\\s;&|(])sftp(\\s|$)", cmd) and re.search(r"[|<]", cmd):',
+            '    if False:'),
+        ".tb2 suffix removed": ('".tb2", ".bz", ', ''),
+    }
+
+    def _run(self, hook_text):
+        with tempfile.TemporaryDirectory() as td:
+            root = os.path.realpath(td)
+            hooks = os.path.join(root, ".claude", "hooks")
+            host = os.path.join(root, "tests", "host")
+            os.makedirs(hooks)
+            os.makedirs(host)
+            write_text(os.path.join(hooks, "guard_destructive.py"), hook_text)
+            with open(THIS_FILE, encoding="utf-8") as f:
+                write_text(os.path.join(host, "test_claude_destructive_guard.py"), f.read())
+            proc = subprocess.run([sys.executable, "-m", "unittest", "-v",
+                                   "test_claude_destructive_guard.ReviewRound3Tests"], cwd=host,
+                                  capture_output=True, text=True, timeout=300)
+            return proc.returncode, proc.stderr
+
+    def test_round3_tests_detect_each_mutant(self):
+        with open(HOOK, encoding="utf-8") as f:
+            original = f.read()
+        code, out = self._run(original)
+        self.assertEqual(code, 0, "unmutated copy must pass ReviewRound3Tests:\n" + out[-800:])
+        for name, (old, new) in self.MUTANTS.items():
+            with self.subTest(mutant=name):
+                self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
+                code, out = self._run(original.replace(old, new))
+                failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
+                detected = any("ReviewRound3Tests." in ln for ln in failing)
+                self.assertTrue(detected, "mutant not detected by a ReviewRound3Tests test: " + name + "\n"
+                                + "\n".join(failing))
 
 
 class MutationDetectionTests(unittest.TestCase):

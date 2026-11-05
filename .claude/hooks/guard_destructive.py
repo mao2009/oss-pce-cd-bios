@@ -737,8 +737,23 @@ def git_rule(args, ctx):
 PROGRAM_ALIAS = {"gsort": "sort", "gtar": "tar", "bsdtar": "tar"}
 PROGRAM_TOOLS = {"sort", "rg", "tar", "rsync", "ssh", "scp", "sftp"}
 # File-name suffixes of compressed archives. tar reads them through a PATH-resolved decompressor (see program_option_rule).
-COMPRESSED_SUFFIXES = (".gz", ".tgz", ".bz2", ".tbz", ".tbz2", ".xz", ".txz", ".lz", ".lzma", ".lz4", ".zst", ".tzst",
-                       ".z", ".taz", ".tlz")
+COMPRESSED_SUFFIXES = (".gz", ".tgz", ".bz2", ".tbz", ".tbz2", ".tb2", ".bz", ".xz", ".txz", ".lz", ".lzma", ".lz4", ".lzo",
+                       ".tzo", ".zst", ".tzst", ".z", ".taz", ".tlz")
+
+
+def tar_only_creates(args):
+    """True when tar creates an archive and reads none: -c or --create, and no -x -t -d -r -u -A (or their long forms).
+    Over-approximated on purpose: a letter in any dashed word counts."""
+    letters, longs = set(), set()
+    for a in args:
+        if a.startswith("--"):
+            longs.add(a[2:].split("=")[0])
+        elif a.startswith("-") and len(a) > 1:
+            letters |= set(a[1:])
+    creates = "c" in letters or "create" in longs
+    reads = bool(letters & set("xtdrAu")) or bool(longs & {"extract", "get", "list", "diff", "compare", "append",
+                                                          "catenate", "concatenate", "update", "delete"})
+    return creates and not reads
 # A brace group that bash expands: it has a comma or a sequence (x{I,}, {1..3}). A brace group without either is literal.
 BRACE_EXPANDS = re.compile(r"\{[^{}]*(,|\.\.)[^{}]*\}")
 # Builtins that set a variable from their arguments (export $A$B, declare, read, ...).
@@ -1058,10 +1073,19 @@ def program_option_rule(name, args):
     if name == "tar" and "--force-local" not in args and any(":" in a for a in args):
         # GNU tar treats host:name as a remote archive and starts a remote shell; --force-local says it is local.
         raise Deny("program-option", "tar argument with a colon may be a remote archive: not inspected")
-    if name == "tar" and any(a.lower().endswith(COMPRESSED_SUFFIXES) for a in args):
+    if name == "tar" and any(re.sub(r"[ .]+$", "", a.lower()).endswith(COMPRESSED_SUFFIXES) for a in args) \
+            and not tar_only_creates(args):
+        # Windows drops trailing dots and spaces from a file name, so they are dropped before the suffix test.
         # tar reads a compressed archive by starting a decompressor through PATH (observed: "tar (child): gzip: Cannot exec"
         # with an empty PATH), even without -z. The contents are not read here, so the name is the only signal (UNKNOWN_EXECUTION).
         raise Deny("program-option", "tar archive with a compressed-file suffix: a decompressor may start through PATH")
+    for a in args:
+        if name == "tar" and not a.startswith("-") and any(c in a for c in "*?["):
+            # A glob operand may expand to a compressed archive unless its literal tail is non-empty and is not a
+            # compressed suffix (names*.txt and a*.tar are safe; a* and a*.tgz are not).
+            tail = re.split(r"[*?\[\]]", a)[-1].lower().rstrip(". ")
+            if not tail or tail.endswith(COMPRESSED_SUFFIXES):
+                raise Deny("program-option", "tar operand with a glob may expand to a compressed archive: not inspected")
     allowlist_rule(name, args)
 
 
@@ -1413,6 +1437,10 @@ def _decide(raw, repo_root):
     protected += [key(root), key(os.path.join(root, ".git"))]
     ctx = Ctx(canon(cwd), key(root), key(os.path.join(root, ".git")),
               load_registry(root), protected)
+    # sftp reads its commands from stdin when no batch file is given, and a "!" line runs a local command. Piped or
+    # redirected input cannot be inspected here, so an sftp command with a pipe or an input redirection is DENY.
+    if tool != "PowerShell" and re.search(r"(^|[\s;&|(])sftp(\s|$)", cmd) and re.search(r"[|<]", cmd):
+        raise Deny("program-option", "sftp with piped or redirected input: its commands are not inspected")
     analyze_text(cmd, ctx, tool == "PowerShell", 0)
     return ALLOW, "no destructive operation found"
 
