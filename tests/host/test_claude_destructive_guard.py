@@ -1452,13 +1452,13 @@ class X3bProgramOptionTests(unittest.TestCase):
         "sort -u names.txt", "sort --check names.txt",
         "rg -n TODO src", "rg --pretty TODO src", "rg --no-config x",
         "find . -name '*.py'", "find . -exec grep -l x {} ;",
-        
+
         "ssh host", "ssh -o BatchMode=yes host", "ssh -p 22 host",
         "diff -l a b", "file -z a.gz",
         "echo $HOME", "echo x\\y",
         "sort -u names*.txt", "rg -n TODO src/*.py", "echo {a,b}", "rg --hyperlink-format=default x src",
         "printf %s $HOME",
-    
+
         # restored (Round A): ordinary development write, allowed when its paths pass the guard
         'sort -o out.txt names.txt',
     ]
@@ -1557,7 +1557,7 @@ class AllowlistSortTests(unittest.TestCase):
         "sort -u names.txt", "sort --check names.txt", "sort -C names.txt",
         "sort --check=quiet names.txt", "sort --sort=numeric x", "sort -k 2,2 -t , data.csv", "sort -S 1K -n x",
         "sort --version", "sort --help", "sort -- --compress-program=sh x",
-    
+
         # restored (Round A): ordinary development write, allowed when its paths pass the guard
         'sort -o out.txt names.txt',
     ]
@@ -1738,9 +1738,9 @@ class TarRuleTests(unittest.TestCase):
     ]
     ALLOW = [
         # create of an explicit archive, with repository-relative operands
-        
-        
-    
+
+
+
         # restored (Round A): ordinary development write, allowed when its paths pass the guard
         'tar --create --file=out.tar src', 'tar -cf out.tar -C dir .', 'tar -cf out.tar src', 'tar -cf out.tar src tests', 'tar -cf out.tar src/*.py', 'tar -cf out.tar.xz src', 'tar -cvf out.tgz dir',
     ]
@@ -1849,13 +1849,13 @@ class AllowlistRsyncTests(unittest.TestCase):
     ]
     ALLOW = [
         # normal sync commands
-        
-        
-        
-        
-        
+
+
+
+
+
         # boundary: an option value is consumed; after -- every word is a file name
-        
+
     ]
 
     def test_rsync_deny_list(self):
@@ -1973,17 +1973,17 @@ class AllowlistSshFamilyTests(unittest.TestCase):
         "ssh host", "ssh -o BatchMode=yes host", "ssh -p 22 host", "ssh -p22 -l user host",
         "ssh -i key -o StrictHostKeyChecking=no host", "ssh -vvv -o ServerAliveInterval=30 host",
         "ssh -L 8080:localhost:80 host", "ssh -J jump host", "ssh -o Compression yes host",
-        "ssh -o 'ProxyJump=bastion' host", "ssh -X host", 
+        "ssh -o 'ProxyJump=bastion' host", "ssh -X host",
         # ssh, boundary: -i takes the next word as the key file, so -F there is a file name, not an option;
         # after -- every word is an operand
         "ssh -i -F host", "ssh -- -oProxyCommand=sh",
         # scp, normal and boundary
-        
-        
+
+
         # sftp, normal and boundary
-        
-        
-    
+
+
+
         # restored (Round A): ordinary development write, allowed when its paths pass the guard
         'sftp -P 2222 host', 'sftp -R 16 host', 'sftp -X nrequests=64 host', 'sftp -i -b host', 'sftp -o BatchMode=yes host', 'sftp -s sftp host', 'sftp host',
     ]
@@ -2192,13 +2192,13 @@ class PathCompressorLibraryTests(unittest.TestCase):
     ]
     ALLOW = [
         # ordinary archive commands without a compressor flag; gzip is a separate command, not a program option
-        
+
         # ordinary rg use; -a is --text, not a decompressor
         "rg -n needle src", "rg -a needle src",
         # PATH with no program tool in the command; ordinary ProxyJump hosts
         "PATH+=:/x ls", "ssh -o ProxyJump=user@jump:2222 h", "ssh -o 'ProxyJump=bastion' h",
         # gzip is DENY in every form (Owner D2): the checked file cannot be tied to the file gzip reads
-    
+
         # restored (Round A): ordinary development write, allowed when its paths pass the guard
         'tar -cf out.tar src',
     ]
@@ -2327,10 +2327,10 @@ class ReviewRound3Tests(unittest.TestCase):
     ]
     ALLOW = [
         # tar creates without reading: an archive name with a compressed suffix is written uncompressed
-        
+
         # sftp with no piped or redirected input
-        
-    
+
+
         # restored (Round A): ordinary development write, allowed when its paths pass the guard
         'sftp host', 'tar -cf out.tar dir', 'tar -cf out.tar.xz src', 'tar -cf out.tgz dir', 'tar -cvf out.tgz dir',
     ]
@@ -2409,12 +2409,12 @@ class ReviewRound4Tests(unittest.TestCase):
     ]
     ALLOW = [
         # tar: a glob operand with a non-compressed extension (names*.txt, a*.tar) and create without a colon
-        
+
         # sort and ssh writes outside .claude
-        
+
         # sftp with no piped or redirected input
-        
-    
+
+
         # restored (Round A): ordinary development write, allowed when its paths pass the guard
         'sftp host', 'sort -o out.txt names.txt', 'tar -cf out.tar dir',
     ]
@@ -2522,7 +2522,7 @@ class ReviewRound5Tests(unittest.TestCase):
         # the brace rule still denies a brace that can start a dashed word
         "sort --{compress-program=sh,} x",
         # file-writing commands are DENY in every form (Owner D1, Round 12)
-        
+
     ]
     ALLOW = [
         # comments: the comment is not a command; the apostrophe does not open a quote
@@ -2530,10 +2530,10 @@ class ReviewRound5Tests(unittest.TestCase):
         # .claude is not named by these
         "pushd src && ls",
         # sftp with no piped or redirected input
-        
+
         # braces that bash does not expand (no comma, or a plain prefix)
         "rg 'x{2,3}' src", "rg 'a{2}' src", "echo {a,b}",
-    
+
         # restored (Round A): ordinary development write, allowed when its paths pass the guard
         'sftp host', 'sort -o out.txt names.txt',
     ]
@@ -2851,7 +2851,7 @@ class Round8ExpectationTests(unittest.TestCase):
     """
 
     DENY = [
-        
+
         "pip install -r requirements-dev.txt", "tar -tf a.tar", "tar -tvf a.tar", "tar --list --file=a.tar",
         "tar --list --file a.tar", "tar -t -f ./a.tar", "tar -tf a.tar.gz.tar", "tar -tf 'a b.tar'",
         "tar -tf a.tar src/file.txt", "tar -tf a.tar -C dir", "tar -tf a.tar -- x", "tar -tf a.tar names*.txt",
@@ -2859,15 +2859,15 @@ class Round8ExpectationTests(unittest.TestCase):
         "gzip -dc a.tgz", "gzip -c out.txt",
         "timeout 5 -- echo hi", "'>' rm -rf /",
         # file-writing commands (Owner D1): DENY in every form
-        
+
     ]
     POWERSHELL_DENY = ["Write-Error -Message hi", "Start-Process notepad file.txt",
                        '"C:\\Program Files\\app.exe" foo']
     ALLOW = [
         # the approved create form (gzip is DENY in every form: Owner D2)
-        
+
         "ls -la", "cat README.md | head -n 20",
-    
+
         # restored (Round A): ordinary development write, allowed when its paths pass the guard
         'tar -cf out.tar src', 'tar -cvf out.tgz dir',
     ]
