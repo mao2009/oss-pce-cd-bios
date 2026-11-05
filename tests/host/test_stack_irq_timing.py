@@ -44,6 +44,29 @@ class ModelTests(unittest.TestCase):
         row["ni"]["clocks"] = []
         self.assertEqual(S.observed_assert(row, 4), ("boundary", 4))
 
+    def test_assert_before_refusal(self):
+        self.assertEqual(S.assert_before_refusal("A", "ni_tam_t_1"), (True, 2))     # TAM ran: the timer expired
+        self.assertEqual(S.assert_before_refusal("A", "ni_tam_t_2"), (False, 3))    # armed at the refused instruction
+        self.assertEqual(S.assert_before_refusal("AD", "ni_tam_t_1"), (False, 2))   # TAM refused: no clocking
+        self.assertEqual(S.assert_before_refusal("AD", "ni_tam_q1_1"), (True, 1))
+        self.assertEqual(S.assert_before_refusal("AD", "ni_tam_q1_2"), (False, 2))
+
+    def test_criterion6_reference_adds_only_the_asserted_bit(self):
+        row = {"irr_before": 0x00}
+        self.assertEqual(S._at_refusal(row, 0x04, True)["irr_before"], 0x04)
+        self.assertEqual(S._at_refusal(row, 0x04, False)["irr_before"], 0x00)
+
+    def test_repeat_mismatches(self):
+        first = {"a": {"x": 1}, "b": {"x": 2}}
+        self.assertEqual(S.repeat_mismatches(first, {"a": {"x": 1}}), [])
+        self.assertEqual(S.repeat_mismatches(first, {"a": {"x": 1}, "b": {"x": 3}}), ["b"])
+
+    def test_irq2_has_i1_rows(self):
+        cases = S.cases()
+        self.assertIn("A:ni_tam_q2_1_i-allowed", cases)
+        self.assertIn("A:ni_sta_q2m_1_i-allowed", cases)
+        self.assertIn("A:ni_tii_q2_3_i-allowed", cases)
+
     def test_cases_unique_and_not_measured_listed(self):
         cases = S.cases()
         self.assertEqual(len(cases), len(set(cases)))

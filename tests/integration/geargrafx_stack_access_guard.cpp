@@ -105,7 +105,7 @@ bool g_t_resumed = false;
 // Issue #653: an IRQ newly asserted at instruction g_ni_k (see the header). Observation only.
 bool g_ni = false, g_ni_done = false, g_ni_mid_armed = false, g_ni_injected = false, g_ni_noinject = false;
 unsigned g_ni_k = 0, g_ni_bits = 0, g_ni_mode = 0;   // mode 0 timer, 1 boundary IRR, 2 mid-instruction IRR
-struct NiTime { unsigned i, pc, irr, pend, ts; };
+struct NiTime { unsigned i, pc, irr, pend, ts, a, x, y, p, s, src, dst, len; unsigned mpr[8]; };
 struct NiClock { unsigned i, cycles, irr; bool injected; };
 std::vector<NiTime> g_ni_timeline;
 std::vector<NiClock> g_ni_clocks;
@@ -222,7 +222,12 @@ bool pre_instruction(void*, unsigned, unsigned transfer_state)
     }
     if (g_ni && g_ni_timeline.size() < 16) {
         NiTime e = {g_instructions, (unsigned)g_st->PC->GetValue(), (unsigned)*g_st->IRR,
-                    (unsigned)g_cpu->GG_VerifyIrqPending(), transfer_state};
+                    (unsigned)g_cpu->GG_VerifyIrqPending(), transfer_state, (unsigned)g_st->A->GetValue(),
+                    (unsigned)g_st->X->GetValue(), (unsigned)g_st->Y->GetValue(), (unsigned)g_st->P->GetValue(),
+                    (unsigned)g_st->S->GetValue(), g_cpu->GG_VerifyTransferSource(), g_cpu->GG_VerifyTransferDest(),
+                    g_cpu->GG_VerifyTransferLength(), {}};
+        for (int m = 0; m < 8; ++m)
+            e.mpr[m] = g_memory->GetMpr(m);
         g_ni_timeline.push_back(e);
     }
     g_instr_start = snap();
@@ -408,8 +413,9 @@ bool route_for(const std::string& name, Route* r)
             return false;
         const std::string& base = f[0];
         const std::string& src = f[1];
-        unsigned k = (unsigned)std::strtoul(f[2].c_str(), nullptr, 10);
-        if (k < 1 || k > 8) return false;
+        char* kend = nullptr;
+        unsigned k = (unsigned)std::strtoul(f[2].c_str(), &kend, 10);
+        if (f[2].empty() || !kend || *kend || k < 1 || k > 8) return false;
         if (src == "t") { g_ni_mode = 0; g_ni_bits = 0x04; }
         else if (src == "q1" || src == "q2") { g_ni_mode = 1; g_ni_bits = src == "q1" ? 0x02 : 0x01; }
         else if (src == "q1m" || src == "q2m") { g_ni_mode = 2; g_ni_bits = src == "q1m" ? 0x02 : 0x01; }
@@ -775,8 +781,10 @@ int main(int argc, char** argv)
                  g_ni_k, g_ni_bits, g_ni_injected ? "true" : "false", g_ni_clock_calls, (int)*g_st->SPEED);
     for (size_t i = 0; i < g_ni_timeline.size(); ++i) {
         const NiTime& e = g_ni_timeline[i];
-        std::fprintf(stderr, "%s{\"i\":%u,\"pc\":%u,\"irr\":%u,\"pend\":%u,\"ts\":%u}", i ? "," : "", e.i,
-                     e.pc, e.irr, e.pend, e.ts);
+        std::fprintf(stderr, "%s{\"i\":%u,\"pc\":%u,\"irr\":%u,\"pend\":%u,\"ts\":%u,\"a\":%u,\"x\":%u,\"y\":%u,"
+                     "\"p\":%u,\"s\":%u,\"xfer\":[%u,%u,%u],\"mpr\":[%u,%u,%u,%u,%u,%u,%u,%u]}", i ? "," : "",
+                     e.i, e.pc, e.irr, e.pend, e.ts, e.a, e.x, e.y, e.p, e.s, e.src, e.dst, e.len, e.mpr[0], e.mpr[1],
+                     e.mpr[2], e.mpr[3], e.mpr[4], e.mpr[5], e.mpr[6], e.mpr[7]);
     }
     std::fprintf(stderr, "],\"clocks\":[");
     for (size_t i = 0; i < g_ni_clocks.size(); ++i) {

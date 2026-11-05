@@ -34,8 +34,13 @@ Route `ni_<base>_<src>_<k>[_i]`: an IRQ is asserted at instruction k.
 | `tii`…`tai` | WRAM → WRAM transfers (no clock points) |
 | `tiiv`…`taiv` | Transfers to the VDC data port (clock points in the byte steps) |
 
-`_i` starts the run with I = 1. The timer setting is deterministic: it depends only on the master cycles clocked from
-the arming point.
+`_i` starts the run with I = 1 (IRQ1, IRQ2 and TIQ each have I = 1 rows). The timer setting depends only on the
+master cycles clocked from the arming point, and every timer case is run three times; the rows must be identical
+(`REPEATABLE` line).
+
+The per-instruction timeline records PC, IRR, the pending mask, transfer state, A/X/Y/P/S, MPR0-7 and the transfer
+counters. The request bits model device IRQs; a device model could also rewrite a request bit, and the timeline
+would show that.
 
 ## Results (expectations fixed before CI, checked by a local exploratory run)
 
@@ -45,8 +50,9 @@ the arming point.
 | TAM, TIQ raised in its cycles (`t_1`) | start of the next instruction (TAM has no clock point) | after the next instruction (3). With A = $FF, A refuses that instruction: SAFE. A+D refuses the TAM: SAFE |
 | TAM, assert inside the TAM (`q1m_1`) | — | **NOT_MEASURED**: there is no clock point inside TAM on the pinned core |
 | STA to the VDC, assert at its clock point | inside the STA | at the end of the same STA (2) |
-| Block transfer, assert in TransferStart or a byte step (`t_1`…`t_5`, `q1_3`, VDC `q1m_3`) | during the transfer | only after TransferEnd (7). IRQ1/IRQ2/TIQ, all 5 opcodes, A and A+T |
-| Block transfer, assert in the TransferEnd step (`t_6`, `q1_7`) | the next instruction | after it (8) |
+| Block transfer, assert in TransferStart or a measured byte step (WRAM: `t_1`, `t_3`, `t_5`, `q1_3`, `q2_3`; VDC: `t_2`, `t_5`, `q1m_3`, `q2m_4`) | during the transfer | only after TransferEnd (7). IRQ1/IRQ2/TIQ, all 5 opcodes, A and A+T (WRAM); A (VDC) |
+| Block transfer, request bit set at the start of the TransferEnd step (`q1_6`) | the TransferEnd step | at its end (7) |
+| Block transfer, timer raised in the TransferEnd step (`t_6`), or request bit set at the instruction after TransferEnd (`q1_7`) | the instruction after TransferEnd | after it (8) |
 | I = 1 | — | never |
 
 **Mutants**
@@ -56,16 +62,21 @@ the arming point.
 - IRQ inside a transfer: taken at instruction 4. Under A+T, the next step runs the handler's opcode, so T refuses it
   (`transfer_opcode_changed`, inside the transfer: BLOCKED).
 
-The SAFE armed rows are falsified on every criterion. Criterion 6 compares the IRR at the refused instruction's start
-with the stop, because the asserts happen before the refusal by design.
+The SAFE armed rows are falsified on every criterion. For criterion 6 the run-start IRR is taken together with the
+one request bit this fixture asserted, and only if the timeline shows it before the refusal; any other IRR change
+still fails. Each armed row checks whether the assert happened before the refusal. Rows where it could not (the
+refused instruction is where the timer would expire, or where the bit would be set) are printed as controls, not as
+measured asserts.
 
 ## D and T under these conditions
 
 - **Method D:** IRQs newly asserted in TAM's cycles do not add a hole on the pinned core. They are taken only after
   the next instruction, which method A already judges. The only TAM hole remains an IRQ that is pending before the
   TAM, which D closes.
-- **Method T:** IRQ entry does not happen inside a transfer, so an IRQ handler cannot change a mapping mid-transfer.
-  If a core did take it (mutant 9), T refuses the next step.
+- **Method T:** on the pinned core, IRQ entry does not happen inside a transfer, so an IRQ handler cannot change a
+  mapping mid-transfer. If a core did take it (mutant 9), T refuses the next step. Because nothing is taken inside a
+  transfer on this core, the transfer rows compare A and A+T on allowed (WRAM) transfers only. There is no armed or
+  unguarded transfer row with a newly asserted IRQ; A+T is challenged by mutant 9.
 
 ## Not covered (UNKNOWN / NOT_MEASURED)
 

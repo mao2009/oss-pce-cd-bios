@@ -14,7 +14,8 @@ assert (fixture, route ni_<base>_<src>_<k>[_i]):
   q1 / q2  IRQ1 / IRQ2 request bit set by the harness at the start of k (before its fetch).
   q1m/q2m  IRQ1 / IRQ2 set by the harness at the first clock point inside k; if k has none, nothing is injected and
            the case is NOT_MEASURED (it is not counted as an assert).
-Device-originated IRQ1 (VDC) / IRQ2 (CD) timing is modelled only by these harness request bits.
+Device-originated IRQ1 (VDC) / IRQ2 (CD) timing is modelled only by these harness request bits (a device model
+could also rewrite a request bit; the timeline would show it).
 
 Expectation model (from the pinned source, written before the first CI run; checked against a local exploratory
 build, MinGW, supplementary): an assert is VISIBLE to the CheckIRQs after the next opcode fetch, or at once if it
@@ -25,8 +26,13 @@ its end if the IRQ was visible during it, the I flag allowed it, and the transfe
   - STA to the hardware page has a clock point: an assert there is taken at the end of the same instruction.
   - block transfers: not taken while the transfer state is not 0; taken at the end of TransferEnd if visible by its
     fetch, else after the next instruction.
-Judged on the eight criteria of geargrafx_stack_methods.py for the armed (refused) rows; criterion 6 compares the
-IRR at the refused instruction's start with the stop (the asserts happen by design before the refusal).
+Judged on the eight criteria of geargrafx_stack_methods.py for the armed (refused) rows; for criterion 6 the run-start
+IRR is taken together with the one request bit this fixture asserts, and only if the timeline shows that bit before
+the refusal (any other IRR change still fails the criterion). Each armed row also checks whether the assert happened
+before the refusal; rows where it could not (the refused instruction is the one the timer was armed at, or the
+injection point is never reached) are labelled as such, not as measured asserts. Every timer case is run three
+times and must give identical rows (repeatability of the fixed-timer fixture). The per-instruction timeline records
+PC, IRR, the pending mask, transfer state, A/X/Y/P/S, MPR0-7 and the transfer counters.
 
 Not covered (UNKNOWN / NOT_MEASURED): an assert inside TAM (no clock point on the pinned core), device-originated
 IRQ timing, ST0/ST1/ST2, DMA, the libretro build, real hardware (#655). Synthetic BIOS/CD only. Not a production
@@ -121,6 +127,10 @@ def _row_ok(row, case):
         raise ValueError(f"{case}: missing #653 observation")
     if any(type(e.get("i")) is not int or type(e.get("irr")) is not int for e in ni["timeline"] + ni["clocks"]):
         raise ValueError(f"{case}: malformed timeline")
+    for e in ni["timeline"]:
+        if not all(type(e.get(k)) is int for k in ("pc", "pend", "ts", "a", "x", "y", "p", "s")) or \
+                len(e.get("mpr", [])) != 8 or len(e.get("xfer", [])) != 3:
+            raise ValueError(f"{case}: timeline entry without the CPU / MPR / transfer state")
 
 
 def check_completed(row, case):
@@ -154,14 +164,29 @@ def check_completed(row, case):
     return entry, got
 
 
-def _at_refusal(row):
-    """Criterion 6 reference: the IRR at the refused instruction's start (asserts happen before it by design)."""
-    index = row["instructions"]
-    starts = [e for e in row["ni"]["timeline"] if e["i"] == index]
+def assert_before_refusal(method, route):
+    """(asserted, instruction at whose start the bit is first visible) for an armed TAM row, from the model: A
+    refuses instruction 2 (MPR1 = $FF after the TAM), A+D refuses instruction 1. A harness bit set at the start of
+    k is in place before that instruction's refusal; the timer armed at the start of k expires only if k runs."""
+    _, src, k, _ = parse(route)
+    refused_at = 1 if method == "AD" else 2
+    if src == "t":
+        return (k < refused_at), k + 1
+    return (k <= refused_at), k
+
+
+def _at_refusal(row, bit, asserted):
+    """Criterion 6 reference: the run-start IRR plus the one request bit the fixture asserted before the refusal."""
     fixed = copy.deepcopy(row)
-    if starts:
-        fixed["irr_before"] = starts[0]["irr"]
+    if asserted:
+        fixed["irr_before"] = row["irr_before"] | bit
     return fixed
+
+
+def repeat_mismatches(first, again):
+    """Cases whose repeated run differs from the first one (the rows must be identical)."""
+    return sorted(case for case, row in again.items() if json.dumps(row, sort_keys=True) !=
+                  json.dumps(first[case], sort_keys=True))
 
 
 def check_tam_armed(row, case):
@@ -170,15 +195,20 @@ def check_tam_armed(row, case):
     _row_ok(row, case)
     method, rest = case.split(":")
     route = rest.split("-", 1)[0]
-    _, _, _, i_flag = parse(route)
+    _, src, _, i_flag = parse(route)
     visible, _, _ = expected(route)
+    asserted, at = assert_before_refusal(method, route)
+    got_assert = observed_assert(row, BITS[src])
+    if got_assert != (("boundary", at) if asserted else (None, None)):
+        raise ValueError(f"{case}: assert observed {got_assert}, want {('boundary', at) if asserted else 'none'}")
     if method == "AD":
         want = dict(verdict=SAFE, failing=set(), index=1, pc=GUEST)
     elif visible <= 1 and not i_flag:
         want = dict(verdict=UNSAFE, failing={"io_prevented", "resume_safe"}, index=2, pc=H, io=M.PUSH_IO)
     else:
         want = dict(verdict=SAFE, failing=set(), index=2, pc=0x1E02)
-    return M.check_armed(_at_refusal(row), case, want)
+    got, failing = M.check_armed(_at_refusal(row, BITS[src], asserted), case, want)
+    return got, failing, asserted
 
 
 def check_tam_unguarded(row, case):
@@ -194,10 +224,10 @@ def check_tam_unguarded(row, case):
     return UNSAFE if entry else "no entry"
 
 
-TAM_ALLOWED = ("t_1", "t_2", "q1_1", "q2_1", "q1_2", "q2_2", "q1m_1", "t_1_i", "q1_1_i")
+TAM_ALLOWED = ("t_1", "t_2", "q1_1", "q2_1", "q1_2", "q2_2", "q1m_1", "t_1_i", "q1_1_i", "q2_1_i")
 TAM_ARMED = ("t_1", "t_2", "q1_1", "q2_1", "q1_2", "t_1_i")
-STA = ("t_1", "q1_1", "q2_1", "q1m_1", "q2m_1", "t_1_i", "q1m_1_i")
-WRAM_XFER = ("t_1", "t_3", "t_5", "t_6", "q1_3", "q2_3", "q1_6", "q1_7", "q1m_3", "t_3_i")
+STA = ("t_1", "q1_1", "q2_1", "q1m_1", "q2m_1", "t_1_i", "q1m_1_i", "q2m_1_i")
+WRAM_XFER = ("t_1", "t_3", "t_5", "t_6", "q1_3", "q2_3", "q1_6", "q1_7", "q1m_3", "t_3_i", "q2_3_i")
 VDC_XFER = ("t_2", "t_5", "t_6", "q1m_3", "q2m_4", "t_3_i")
 # Mutants: case -> handler entry instruction the mutant must produce (the correct model gives a different value).
 MUTANTS = {
@@ -249,7 +279,9 @@ def evaluate(rows):
         elif variant == "armed":
             armed[case] = check_tam_armed(rows[case], case)
             if armed[case][0] == SAFE:
-                for name, broken in M.falsified(_at_refusal(rows[case])):
+                route = rest.split("-", 1)[0]
+                fixed = _at_refusal(rows[case], BITS[parse(route)[1]], armed[case][2])
+                for name, broken in M.falsified(fixed):
                     if M.verdict(broken)[0] == SAFE:
                         raise ValueError(f"{case}: falsified {name} still judged SAFE")
                     detections.append((case, f"falsified:{name}", M.verdict(broken)[0]))
@@ -284,7 +316,13 @@ def main():
         bios, cue = synthetic_media(directory)
         probe = G.build_probes(directory)
         rows = {case: G.run_case(probe, bios, cue, case) for case in cases()}
+        timer_cases = [c for c in cases() if parse(c.split(":")[1].split("-", 1)[0])[1] == "t"]
+        repeats = [{c: G.run_case(probe, bios, cue, c) for c in timer_cases} for _ in range(2)]
     timing, armed, controls, detections = evaluate(rows)
+    for again in repeats:
+        mismatch = repeat_mismatches(rows, again)
+        if mismatch:
+            raise ValueError(f"fixed-timer fixture not repeatable: {mismatch[:5]}")
     for case, row in rows.items():
         print("EVIDENCE " + json.dumps({"case": case, "observation_kind": "REAL_CORE_EXECUTION",
                                         "core_revision": G.PINNED_CORE_REVISION, "bios": "SYNTHETIC",
@@ -297,11 +335,15 @@ def main():
         status = "NOT_MEASURED (no hardware clock point inside the instruction)" if case in NOT_MEASURED else (
             f"{place}; handler entered at instruction {entry or 'never (I = 1)'}")
         print(f"TIMING {case}: {status}")
-    for case, (got, failing) in armed.items():
-        print(f"ARMED {case}: {got}({','.join(failing) or '-'})")
+    for case, (got, failing, asserted) in armed.items():
+        note = "IRQ asserted before the refusal" if asserted else (
+            "no assert before the refusal (the refused instruction is where it would have been asserted): control")
+        print(f"ARMED {case}: {got}({','.join(failing) or '-'}) {note}")
     for case, result in controls:
         print(f"CONTROL {case}: {result}")
-    print(f"EXPECTATIONS_MET issue-653 IRQ assert/accept timing: {len(rows)} real-core runs, {len(detections)} "
+    print(f"REPEATABLE issue-653: {len(timer_cases)} fixed-timer cases run 3 times each, identical rows")
+    print(f"EXPECTATIONS_MET issue-653 IRQ assert/accept timing: {len(rows) + 2 * len(timer_cases)} real-core runs, "
+          f"{len(detections)} "
           f"detections, expectations met (pinned core {G.PINNED_CORE_REVISION}, synthetic BIOS/CD, verification-only "
           "patch)")
     print("RESULT issue-653 (observed fixtures only): TAM has no hardware clock point on the pinned core, so a TIQ "
@@ -309,8 +351,9 @@ def main():
           "refuses that next instruction (SAFE_IN_SCOPE) and A+D refuses the TAM itself. An IRQ asserted before the "
           "TAM is taken inside it (S5 hole: UNSAFE under A, SAFE under A+D). An assert at a clock point inside an "
           "instruction (STA to the VDC) is taken at the end of that same instruction. During TII/TIN/TDD/TIA/TAI an "
-          "IRQ asserted in any step (including at clock points inside VDC byte steps) is taken only after "
-          "TransferEnd; a core that took it inside the transfer (mutant) is refused by T at the next step.")
+          "IRQ asserted in the measured steps (TransferStart, byte steps 3 and 5 for WRAM transfers; byte steps "
+          "2-5 at VDC clock points) is taken only after TransferEnd, on the pinned core; a core that took it "
+          "inside the transfer (mutant) is refused by T at the next step.")
     print("NOT_MEASURED / UNKNOWN: an assert inside TAM itself (no clock point), device-originated IRQ1/IRQ2 timing "
           "(modelled by harness request bits), ST0/ST1/ST2, DMA, the libretro build, real hardware (#655). Not a "
           "production mechanism; no gate changes.")
