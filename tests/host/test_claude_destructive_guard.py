@@ -1311,6 +1311,9 @@ class X3bProgramOptionTests(unittest.TestCase):
         # found in review 10: Windows environment names are case-insensitive
         "rsync_rsh=sh rsync a b", "Rsync_Rsh=sh rsync a b", "env rsync_rsh=sh rsync a b", "ssh_askpass=sh ssh host",
         "tar_options=--to-command=sh tar -xf a.tar",
+        # found in review 11: a variable name assembled from an expansion; sftp -b batch file
+        "A=RSYN; B=C_RSH=sh; export $A$B && rsync a b", "A=RSYN; B=C_RSH; printf -v \"$A$B\" sh && rsync a b",
+        "A=RSYN; B=C_RSH=sh; declare $A$B", "sftp -b batch.txt host",
         # found in review 8: rg --hostname-bin runs the named executable (rg --help); ssh SSH_SK_HELPER names a helper
         "rg --hostname-bin=sh x src", "rg --hostname-bin sh x src", "SSH_SK_HELPER=sh ssh host",
         "ssh -o Proxy*=sh host", "ssh -o ProxyCom*=sh host",
@@ -1327,6 +1330,7 @@ class X3bProgramOptionTests(unittest.TestCase):
         "diff -l a b", "file -z a.gz",
         "tar xf a.tar", "echo $HOME", "echo x\\y",
         "sort -u names*.txt", "rg -n TODO src/*.py", "echo {a,b}", "rg --hyperlink-format=default x src",
+        "printf %s $HOME",
     ]
 
     def test_program_naming_options_are_denied(self):
@@ -1354,7 +1358,7 @@ class X3bMutationTests(unittest.TestCase):
         "tar script long rules removed": ('"info-script", "new-volume-script",', ''),
         "tar checkpoint prefix length rule raised": ('            if name == "tar" and len(key) >= 11',
                                                      '            if name == "tar" and len(key) >= 12'),
-        "sftp -D rule removed": ('"sftp": "SDF"', '"sftp": "SF"'),
+        "sftp -D rule removed": ('"sftp": "SDFb"', '"sftp": "SFb"'),
         "tar remote-command long rules removed": ('"rsh-command", "rmt-command"),', '),'),
         "GNU and BSD name aliases removed": ('    name = PROGRAM_ALIAS.get(name, name)', '    pass'),
         "program-naming environment variables not checked": (r'''    if any(v in w.replace("\\", "").replace('"', "").replace("'", "").upper() for w in words for v in PROGRAM_ENV):''',
@@ -1375,6 +1379,9 @@ class X3bMutationTests(unittest.TestCase):
         "RIPGREP_CONFIG_PATH removed from the program variables": ('"SSH_SK_HELPER", "RIPGREP_CONFIG_PATH",', '"SSH_SK_HELPER",'),
         "RSYNC_CONNECT_PROG removed from the program variables": ('"RIPGREP_CONFIG_PATH", "RSYNC_CONNECT_PROG")', '"RIPGREP_CONFIG_PATH")'),
         "XAuthLocation key removed": ('"knownhostscommand", "xauthlocation",', '"knownhostscommand",'),
+        "variable set by a builtin with an expansion not denied": (
+            r'''    if setter and any("$" in w or "`" in w or SUBST in w for w in words):''', r'''    if False:'''),
+        "sftp -b batch file not denied": ('"sftp": "SDFb"', '"sftp": "SDF"'),
         "leading equals not stripped from tool names": ('name = name.lstrip("=").rstrip(". ") or name',
                                                        'name = name.rstrip(". ") or name'),
         "old-style tar cluster rule removed": (r'''    if name == "tar" and args and re.fullmatch(r"[A-Za-z]+", args[0]):''',
@@ -1389,7 +1396,7 @@ class X3bMutationTests(unittest.TestCase):
                                                  '(val if eq else nxt).startswith("exec")'),
         "ssh KnownHostsCommand key removed": ('"knownhostscommand",', ''),
         "rsync -e rule removed": ('"rsync": "e", ', ''),
-        "scp and sftp -S rules removed": ('"scp": "SF", "sftp": "SDF"', '"sftp": "DF"'),
+        "scp and sftp -S rules removed": ('"scp": "SF", "sftp": "SDFb"', '"sftp": "DFb"'),
         "ssh -o rule removed": ('ssh_o = name in SSH_O_TOOLS', 'ssh_o = False'),
         "ssh ProxyCommand key removed": ('("include", "proxycommand"', '("include", "zzz"'),
         "long option abbreviation made exact": ('if key and any(o.startswith(key) for o in longs):',
