@@ -1353,7 +1353,6 @@ class X3bMutationTests(unittest.TestCase):
     a temporary copy of the hook and this test module; no repository file is changed."""
 
     MUTANTS = {
-        "sort compress-program rule removed": ('"sort": ("compress-program",), ', ''),
         "rg pre rules removed": ('"rg": ("pre", "pre-glob", "hostname-bin"),', ''),
         "tar long rules removed": ('"to-command", "use-compress-program", ', ''),
         "rsync long rules removed": ('"rsync": ("rsh", "rsync-path", "remote-option")', ''),
@@ -1441,6 +1440,85 @@ class X3bMutationTests(unittest.TestCase):
                 failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
                 detected = any("X3bProgramOptionTests." in ln for ln in failing)
                 self.assertTrue(detected, "mutant not detected by an X3bProgramOptionTests test: " + name + "\n"
+                                + "\n".join(failing))
+
+
+class AllowlistSortTests(unittest.TestCase):
+    """Issue #640 X3b (structural allowlist), sort. Decision-level only; nothing is executed."""
+
+    DENY = [
+        "sort --compress-program=sh x", "sort --compress-program sh x", "sort --comp=sh x", "sort --co=sh x",
+        "sort --c x", "sort -S 1K --compress-program=bash p", "sort -k1 --compress-program=sh x",
+        "sort -t , x --compress-program=sh", "sort -uq x", "sort -x x", "sort --bogus x", "sort --check=bogus x",
+    ]
+    ALLOW = [
+        "sort -u names.txt", "sort -o out.txt names.txt", "sort --check names.txt", "sort -C names.txt",
+        "sort --check=quiet names.txt", "sort --sort=numeric x", "sort -k 2,2 -t , data.csv", "sort -S 1K -n x",
+        "sort --version", "sort --help", "sort -o --compress-program=sh x", "sort -- --compress-program=sh x",
+    ]
+
+    def test_sort_deny_list(self):
+        for cmd in self.DENY:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+
+    def test_sort_allow_list(self):
+        for cmd in self.ALLOW:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "ALLOW")
+
+
+class AllowlistMutationTests(unittest.TestCase):
+    """Issue #640 X3b (allowlist), sort: each parser rule must be detected by a named AllowlistSortTests failure."""
+
+    MUTANTS = {
+        "compress-program allowed as a long argument": (
+            '"long_args": ("random-source", ', '"long_args": ("compress-program", "random-source", '),
+        "unlisted long option not denied": (
+            '                raise Deny("program-option", name + " option is not in the allowlist: " + a)',
+            '                pass'),
+        "unlisted short letter skipped instead of denied": (
+            '                raise Deny("program-option", name + " short option is not in the allowlist: " + a)',
+            '                j += 1'),
+        "cluster stops after the first flag letter": (
+            '                    j += 1\n                    continue', '                    break'),
+        "short value not consumed from the next word": (
+            '                    if j == len(a) - 1:\n                        i += 1  # the value is the next word',
+            '                    if False:\n                        i += 1  # the value is the next word'),
+        "-- does not end the options": (
+            '        if a == "--":\n            return', '        if a == "--":\n            pass'),
+        "abbreviation resolved against the allowlist only": (
+            '            hits = [o for o in spec["full_long"] if o == key] or [o for o in spec["full_long"] if o.startswith(key)]',
+            '            hits = [o for o in spec["long_flags"] + spec["long_args"] if o.startswith(key)]'),
+    }
+
+    def _run(self, hook_text):
+        with tempfile.TemporaryDirectory() as td:
+            root = os.path.realpath(td)
+            hooks = os.path.join(root, ".claude", "hooks")
+            host = os.path.join(root, "tests", "host")
+            os.makedirs(hooks)
+            os.makedirs(host)
+            write_text(os.path.join(hooks, "guard_destructive.py"), hook_text)
+            with open(THIS_FILE, encoding="utf-8") as f:
+                write_text(os.path.join(host, "test_claude_destructive_guard.py"), f.read())
+            proc = subprocess.run([sys.executable, "-m", "unittest", "-v",
+                                   "test_claude_destructive_guard.AllowlistSortTests"], cwd=host,
+                                  capture_output=True, text=True, timeout=300)
+            return proc.returncode, proc.stderr
+
+    def test_allowlist_tests_detect_each_mutant(self):
+        with open(HOOK, encoding="utf-8") as f:
+            original = f.read()
+        code, out = self._run(original)
+        self.assertEqual(code, 0, "unmutated copy must pass AllowlistSortTests:\n" + out[-800:])
+        for name, (old, new) in self.MUTANTS.items():
+            with self.subTest(mutant=name):
+                self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
+                code, out = self._run(original.replace(old, new))
+                failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
+                detected = any("AllowlistSortTests." in ln for ln in failing)
+                self.assertTrue(detected, "mutant not detected by an AllowlistSortTests test: " + name + "\n"
                                 + "\n".join(failing))
 
 

@@ -752,6 +752,75 @@ SSH_LAUNCH_KEYS = ("include", "proxycommand", "localcommand", "permitlocalcomman
                    "pkcs11provider", "securitykeyprovider", "match")
 
 
+# X3b structural allowlist (Issue #640, replaces the per-option denylist one tool at a time). Each tool lists every
+# short letter and long option it accepts: an option that is not listed is DENY (UNKNOWN_EXECUTION). Abbreviations of
+# a long option are resolved against the tool's FULL long-option list, so a prefix that could name an unlisted program
+# option is denied. "full_long" is the tool's documented long-option list; "allow_*" are the accepted ones.
+ALLOWLIST = {
+    "sort": {
+        "full_long": ("ignore-leading-blanks", "dictionary-order", "ignore-case", "general-numeric-sort",
+                      "ignore-nonprinting", "month-sort", "human-numeric-sort", "numeric-sort", "random-sort",
+                      "random-source", "reverse", "sort", "version-sort", "batch-size", "check", "compress-program",
+                      "debug", "files0-from", "key", "merge", "output", "stable", "buffer-size", "field-separator",
+                      "temporary-directory", "parallel", "unique", "zero-terminated", "help", "version"),
+        "short_flags": "bdfgiMhnRrVcCmsuz",
+        "short_args": "kotTS",
+        "long_flags": ("ignore-leading-blanks", "dictionary-order", "ignore-case", "general-numeric-sort",
+                       "ignore-nonprinting", "month-sort", "human-numeric-sort", "numeric-sort", "random-sort",
+                       "reverse", "version-sort", "merge", "stable", "unique", "zero-terminated", "debug",
+                       "help", "version"),
+        "long_args": ("random-source", "sort", "batch-size", "key", "output", "buffer-size", "field-separator",
+                      "temporary-directory", "parallel", "files0-from"),
+        "long_optional": ("check",),
+        "optional_values": ("diagnose-first", "quiet", "silent"),
+    },
+}
+
+
+def allowlist_rule(name, args):
+    """Walk the arguments under the tool's grammar. Anything the grammar does not list is denied. A '--' ends the
+    options; the words after it are file names. A non-option word (a file name, or - for stdin) is allowed."""
+    spec = ALLOWLIST[name]
+    i = 0
+    while i < len(args):
+        a = args[i]
+        i += 1
+        if a == "--":
+            return
+        if a.startswith("--"):
+            key, eq, val = a[2:].partition("=")
+            hits = [o for o in spec["full_long"] if o == key] or [o for o in spec["full_long"] if o.startswith(key)]
+            if len(hits) != 1:
+                raise Deny("program-option", name + " long option is not resolved: " + a)
+            opt = hits[0]
+            if opt in spec["long_args"]:
+                if not eq:
+                    i += 1  # the value is the next word
+            elif opt in spec.get("long_optional", ()):
+                if eq and val not in spec["optional_values"]:
+                    raise Deny("program-option", name + " option value is not allowed: " + a)
+            elif opt in spec["long_flags"]:
+                if eq:
+                    raise Deny("program-option", name + " flag takes no value: " + a)
+            else:
+                raise Deny("program-option", name + " option is not in the allowlist: " + a)
+            continue
+        if a.startswith("-") and len(a) > 1:
+            j = 1
+            while j < len(a):
+                ch = a[j]
+                if ch in spec["short_flags"]:
+                    j += 1
+                    continue
+                if ch in spec["short_args"]:
+                    if j == len(a) - 1:
+                        i += 1  # the value is the next word
+                    break  # the rest of the cluster is the value
+                raise Deny("program-option", name + " short option is not in the allowlist: " + a)
+            continue
+        # a file name, or - for stdin: not an option
+
+
 def program_option_rule(name, args):
     name = PROGRAM_ALIAS.get(name, name)
     if name not in PROGRAM_TOOLS:
@@ -778,6 +847,10 @@ def program_option_rule(name, args):
         # Old-style tar: the first word is an option cluster (tar xf a.tar; tar Ixf sh a.tar).
         if set(args[0]) & set(shorts):
             raise Deny("program-option", "tar old-style option cluster names a program: " + args[0])
+    if name in ALLOWLIST:
+        # The structural allowlist decides for this tool; the denylist below applies only to tools not yet migrated.
+        allowlist_rule(name, args)
+        return
     for i, a in enumerate(args):
         nxt = args[i + 1] if i + 1 < len(args) else ""
         # A backslash in an option name is a shell escape (--compress\-program is --compress-program).
