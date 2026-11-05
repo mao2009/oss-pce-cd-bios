@@ -22,6 +22,7 @@ verification contract "MPR1 = $F8 only" (#497) is NOT used as a production allow
 import argparse
 import importlib
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -30,6 +31,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import c3_asm  # noqa: E402
 
 FAIL, OK, BLOCKED, NOT_STATIC = "FAIL", "STATIC_OK", "BLOCKED", "NOT_STATIC"
+RMW = {"inc", "dec", "asl", "lsr", "rol", "ror", "tsb", "trb"} | \
+    {f"{op}{i}" for op in ("rmb", "smb") for i in range(8)}   # read-modify-write: they write memory too
 CONTRACT = ROOT / "spec" / "c3_static_contracts.json"
 RULE_MODULES = {"CI-2": "c3_rules_transfer", "CI-3": "c3_rules_irq_mmio"}   # groups beyond the built-in CI-1
 ROLES = {"reset_init", "api", "internal"}
@@ -68,15 +71,35 @@ def previous_instruction(source, line):
     return None if between else prev
 
 
+def undecidable_between(source, prev, line):
+    """Why the value carried from `prev` to `line` cannot be decided from the text, or None: a directive or
+    data line in between (.byte, .endif, .else ...: it may assemble to code or select another branch), or a
+    different conditional state of the two instructions."""
+    if prev.conditional != line.conditional:
+        return "the two instructions are in different conditional states"
+    other = [ln for ln in source.lines if prev.number < ln.number < line.number and ln.directive]
+    if other:
+        return f"directive {other[0].directive} between them"
+    return None
+
+
 def resolve_tam_value(source, line):
     """('imm', value) when A comes from LDA #imm right before the TAM, ('dynamic', how) otherwise."""
     prev = previous_instruction(source, line)
     if prev is None:
         return ("dynamic", "label or start of routine before the TAM")
+    why = undecidable_between(source, prev, line)
+    if why:
+        return ("undecidable", why)
     if prev.mnemonic == "lda":
         op = c3_asm.operand(prev.operand, source.symbols)
         if op.mode == "immediate" and op.value is not None:
             return ("imm", op.value & 0xFF)
+        if op.mode == "immediate":
+            name = prev.operand.lstrip("#<> ").split("+")[0].split("-")[0].strip()
+            if name in source.conditional_constants:
+                return ("undecidable", f"constant {name} is defined inside a conditional block (build option)")
+            return ("undecidable", f"immediate {prev.operand!r} cannot be resolved statically")
     return ("dynamic", f"A comes from {prev.mnemonic.upper()}")
 
 
@@ -153,6 +176,17 @@ def check_file_mpr(source, decl, report):
         if int(d["mask"], 16) != mask:
             report.add("CI-1.03", FAIL, where(ln), f"declared mask {d['mask']} != source mask ${mask:02X}")
             continue
+        if kind == "undecidable":
+            # The value cannot be decided from the text (directive / data line or another conditional state between
+            # LDA and TAM, or a build-dependent constant). An MPR1 change outside reset_init is a contract violation
+            # whatever the value; otherwise the result is NOT_STATIC, never STATIC_OK.
+            if mask & 0x02 and role != "reset_init":
+                report.add("CI-1.05", FAIL, where(ln), "TAM changes MPR1 (stack page) outside a reset-init file "
+                           "(static contract S-1)")
+            else:
+                report.add("CI-1.04", NOT_STATIC, where(ln), f"TAM #${mask:02X}: the value cannot be decided from the "
+                           f"text ({value}); not STATIC_OK")
+            continue
         if d["value"] == "restore":
             if kind != "dynamic" or mask not in saves or saves[mask] > ln.number or not d.get("reason"):
                 report.add("CI-1.04", FAIL, where(ln), "declared 'restore' needs a dynamic value, an earlier TMA of the "
@@ -183,13 +217,18 @@ def check_file_mpr(source, decl, report):
                 report.add("CI-1.06", FAIL, where(ln), "TXS (stack pointer change) outside a reset-init file")
             else:
                 report.add("CI-1.06", BLOCKED, where(ln), "reset-time stack pointer: the stack-pointer ABI is UNKNOWN")
-        if ln.mnemonic in STORES:
-            op = c3_asm.operand(ln.operand, source.symbols)
-            target = ln.operand.split(",")[0].strip().removeprefix("a:").removeprefix("z:")
-            seg = source.labels.get(target)
+        if ln.mnemonic in STORES | RMW:
+            text = ln.operand
+            if ln.mnemonic[:3] in ("rmb", "smb"):
+                text = text.split(",")[0]
+            op = c3_asm.operand(text, source.symbols)
+            base = text.split(",")[0].strip().removeprefix("a:").removeprefix("z:").strip("() <>")
+            target = (re.match(r"^[A-Za-z_@][A-Za-z0-9_]*", base) or [None])[0] if base else None
+            seg = source.labels.get(target) if target else None
             if op.mode == "memory" and seg and seg.upper() not in c3_asm.RAM_SEGMENTS:
-                report.add("CI-1.08", FAIL, where(ln), f"store to label {target!r} in segment {seg!r}: self-modifying "
-                           "code is outside the supported static scope")
+                report.add("CI-1.08", FAIL, where(ln), f"{ln.mnemonic.upper()} writes to label {target!r} "
+                           f"(operand {ln.operand.strip()!r}) in segment {seg!r}: self-modifying code is outside the "
+                           "supported static scope")
 
 
 def run(contract_path=CONTRACT, root=ROOT):
@@ -207,7 +246,10 @@ def run(contract_path=CONTRACT, root=ROOT):
             report.add("CI-1.02", FAIL, f, "bios file without a contract entry")
             continue
         sources[f] = c3_asm.parse(root / f, root)
-        check_file_mpr(sources[f], decl, report)
+        try:
+            check_file_mpr(sources[f], decl, report)
+        except (ValueError, KeyError, TypeError) as error:
+            report.add("CI-1.00", FAIL, f, f"malformed contract entry: {error}")
     for extra in sorted(set(contract.get("files", {})) - set(bios_files)):
         report.add("CI-1.02", FAIL, extra, "contract entry for a file outside the bios scope")
     report.add("CI-1.08", NOT_STATIC, "bios scope", "absence of self-modifying code, of computed jumps into data, and of "

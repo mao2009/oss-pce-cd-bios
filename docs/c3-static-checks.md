@@ -45,6 +45,10 @@ An unclassified file is a FAIL. The reader is not an assembler:
 - It reports `.macro`, `.incbin` and `.define`, and unknown statements, as unsupported, which is a FAIL for bios
   files.
 - It does not follow `.include`. Each included file is a bios file of its own.
+- Any whitespace (space or TAB) after a directive or mnemonic ends the statement word.
+- A constant assigned inside a conditional block is not resolved: it can differ between builds.
+- Unsupported constructs (`.macro`, `.incbin`, `.define`, unknown statements) are a FAIL, because CI-1.02 is a
+  declared contract rule for bios files. Values the reader cannot decide are NOT_STATIC.
 
 ## CI-1: MPR / stack contract (#659)
 
@@ -53,11 +57,11 @@ An unclassified file is a FAIL. The reader is not an assembler:
 | CI-1.01 | Every source file is classified; every fixture has a reason. |
 | CI-1.02 | Each bios file declares its role (`reset_init`, `api` or `internal`); no unsupported constructs. |
 | CI-1.03 | Every TAM is declared in source order, with its mask and value. Undeclared or stale declarations are FAIL. |
-| CI-1.04 | The TAM mask is an immediate. The value comes from the `LDA #imm` just before the TAM. A run-time value is accepted only as `restore`, which needs an earlier TMA of the same mask in the file. |
+| CI-1.04 | The TAM mask is an immediate. The value comes from the `LDA #imm` just before the TAM. A run-time value is accepted only as `restore`, which needs an earlier TMA of the same mask in the file. If the value cannot be decided from the text — a directive or data line (`.byte`, `.else`, `.endif`, ...) between the LDA and the TAM, different conditional states of the two, or a constant defined inside a conditional block (a build option such as `-D`) — the site is NOT_STATIC, never STATIC_OK. An MPR1 change outside `reset_init` stays a FAIL whatever the value. |
 | CI-1.05 | A TAM that changes MPR1 (the stack page) is allowed only in `reset_init`, and is reported BLOCKED because the production allowlist is UNDECIDED. Anywhere else it is a FAIL (static contract S-1). |
 | CI-1.06 | TXS is allowed only in `reset_init`, and is reported BLOCKED because the stack-pointer ABI is UNKNOWN. Anywhere else it is a FAIL. |
 | CI-1.07 | The production allowlist is UNDECIDED, with all values null. |
-| CI-1.08 | A store to a label in a ROM segment is a FAIL. The absence of self-modifying code in general is reported NOT_STATIC. |
+| CI-1.08 | A store (STA / STX / STY / STZ) or read-modify-write (INC / DEC / ASL / LSR / ROL / ROR / TSB / TRB / RMBn / SMBn) to a label in a ROM segment is a FAIL, including `label+offset` forms. The absence of self-modifying code in general is reported NOT_STATIC. |
 
 The contract lists the rule groups it is checked with (`rule_groups`). A declared group whose module is missing is a
 FAIL, never a silent skip.
