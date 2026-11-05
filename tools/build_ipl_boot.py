@@ -8,7 +8,8 @@ The ROM is linked from the same original reset code as the experimental image
 (track, INDEX 01 LBA, kind) embedded. Unlike tools/build_experimental_bios_boot.py, it does not require
 the selected sector to equal any payload known at ROM build time, so the same ROM is valid for any disc
 whose selected sector the guest validates itself (PCEX header, length, entry, checksum) before copying
-to RAM and executing it.
+to RAM and executing it. The ROM is valid only for discs whose INDEX 01 is the embedded LBA; the host
+checks that for every mounted disc in the integration test.
 """
 import hashlib
 import json

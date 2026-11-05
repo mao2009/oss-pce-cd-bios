@@ -28,6 +28,23 @@ from make_cd_image import BIN_NAME, CUE_NAME, RAW_BYTES, build_image
 STEP_BUDGET = T.STEP_BUDGET
 
 
+def to_pregap_cue(cue):
+    """Move the data track's INDEX 01 to frame 9 so the selected LBA is non-zero (all LBA bytes are exercised)."""
+    text = cue.read_text(encoding="ascii")
+    if text.count("INDEX 01 00:00:00\n") != 1:
+        raise ValueError("unexpected synthetic CUE layout")
+    cue.write_text(text.replace("INDEX 01 00:00:00\n", "INDEX 00 00:00:00\n    INDEX 01 00:00:09\n", 1), encoding="ascii")
+    return cue
+
+
+def assert_not_copied(records, code):
+    """No run may leave the IPL bytes at $3000 (the copy destination): rejection happened before copy."""
+    for run in records["RUN"]:
+        buffer = bytes.fromhex(run["buffer_hex"])
+        if buffer[T.EXEC_OFF:T.EXEC_OFF + len(code)] == code:
+            raise ValueError(f"{run['cycle']}: IPL bytes were copied to RAM before the rejection")
+
+
 def tamper_bin(cue, lba, edits):
     bin_path = cue.parent / BIN_NAME
     raw = bytearray(bin_path.read_bytes())
@@ -54,16 +71,21 @@ def main():
         # Learn the host-selected LBA from the synthetic layout (same for every disc built with build_image/build_exec_disc).
         layout_dir = tmp / "layout"
         build_image(layout_dir, DISC_SECTORS)
-        layout_cue = layout_dir / CUE_NAME
+        layout_cue = to_pregap_cue(layout_dir / CUE_NAME)
         lba = selection_from_cue(layout_cue, layout_cue)["lba"]
+        if lba != 9:
+            raise ValueError(f"expected the pregap layout to select LBA 9, got {lba}")
 
         rom_path, rom_symbols = build_ipl_rom(original, out, mode, layout_cue)
-        rom_sha = hashlib.sha256(rom_path.read_bytes()).hexdigest()
-        results["rom"] = {"name": rom_path.name, "sha256": rom_sha, "bytes": rom_path.stat().st_size,
-                          "payload_embedded_in_rom": False, "selected_lba": lba}
+        rom_bytes = rom_path.read_bytes()
+        rom_sha = hashlib.sha256(rom_bytes).hexdigest()
+        results["rom"] = {"name": rom_path.name, "sha256": rom_sha, "bytes": len(rom_bytes), "selected_lba": lba}
 
         code_a, payload_symbols = build_experimental_payload(out / "payload", mode)
         code_b = T.payload_variant(code_a, T.VARIANT_TRAILER)
+        if code_a in rom_bytes or code_b in rom_bytes:
+            raise ValueError("an IPL payload was found inside the ROM image")
+        results["rom"]["payload_bytes_found_in_rom"] = False
         symbols = dict(rom_symbols)
         symbols.update({name: payload_symbols[name] for name in PAYLOAD_LABELS})
         labels = out / "trace-labels.txt"
@@ -75,7 +97,9 @@ def main():
                 build_image(directory, DISC_SECTORS)
             else:
                 build_exec_disc(directory, lba, code, entry)
-            cue = directory / CUE_NAME
+            cue = to_pregap_cue(directory / CUE_NAME)
+            if selection_from_cue(cue, cue)["lba"] != lba:
+                raise ValueError(f"{name}: mounted disc selects a different LBA than the ROM record")
             tamper_bin(cue, lba, edits)
             return cue
 
@@ -113,17 +137,21 @@ def main():
         for name, kwargs, code, stage, transferred in negatives:
             records = run(disc(name, code_a, **kwargs))
             T.judge_failure(records, code, stage, transferred)
+            assert_not_copied(records, code_a)
             results[name] = {"status": "PASS_EXPECTED_FAILURE", "guest_error": code, "stage": stage, "bytes": transferred}
 
         records = run(disc("abort", code_a), inject="eject-in-data")
         T.judge_failure(records, 4, 5, 0)
+        assert_not_copied(records, code_a)
         results["drive_abort_at_data_in"] = {"status": "PASS_EXPECTED_FAILURE", "guest_error": 4, "stage": 5, "bytes": 0}
 
         records = run(disc("budget", code_a), budget=1000)
-        if any(run_["reason"] != "budget" for run_ in records["RUN"]) or any(
+        if len(records["RUN"]) != 2 or any(run_["reason"] != "budget" for run_ in records["RUN"]) or any(
                 h["name"] in T.ORDER[2:] for h in records["HIT"]):
             raise ValueError("step-budget run did not stop before the IPL was entered")
-        results["step_budget_exhausted"] = {"status": "PASS_EXPECTED_FAILURE", "budget": 1000}
+        assert_not_copied(records, code_a)
+        results["step_budget_exhausted"] = {"status": "PASS_EXPECTED_FAILURE", "budget": 1000,
+                                            "note": "timeout by step budget, not a guest rejection"}
 
         # ---- host refusal: audio-only medium never yields a selection record ----
         audio = tmp / "audio"
@@ -134,13 +162,18 @@ def main():
         try:
             selection_from_cue(audio_cue, audio_cue)
         except SelectionError as error:
-            results["audio_only_medium"] = {"status": "PASS_EXPECTED_FAILURE", "host_refusal": str(error)[:120]}
+            message = str(error)
+            if "MODE1" not in message and "data" not in message.lower():
+                raise ValueError(f"audio-only refusal has an unexpected reason: {message}")
+            results["audio_only_medium"] = {"status": "PASS_EXPECTED_FAILURE", "host_refusal": message[:120]}
         else:
             raise ValueError("audio-only medium produced a selection record")
 
     # ROM must be byte-identical after every run (no rebuild per payload).
     if hashlib.sha256(rom_path.read_bytes()).hexdigest() != rom_sha:
         raise ValueError("ROM changed during the test")
+    if not results.get("audio_only_medium"):
+        raise ValueError("audio-only refusal was not checked")
     results["rom"]["unchanged_after_all_runs"] = True
     passed = sum(1 for value in results.values() if isinstance(value, dict) and str(value.get("status", "")).startswith("PASS"))
     evidence = {"scope": "DEV-only IPL boot, synthetic media only; NOT compatible, NOT a BIOS ABI, NOT commercial",
