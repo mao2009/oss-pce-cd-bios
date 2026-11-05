@@ -1291,6 +1291,10 @@ class X3bProgramOptionTests(unittest.TestCase):
         "sort --compress\\-program=sh x", "tar --to\\-command=sh -xf a.tar",
         "tar --checkpoint-action=EXEC=sh -xf a.tar", "ssh -F evil.conf host", "ssh -o Include=/tmp/x host",
         "scp -F x a b", "sftp -F x host",
+        # found in review 4: escapes and expansions in option tokens and values, export with an escaped name,
+        # old-style tar option clusters
+        "ssh -o Proxy\\Command=sh host", "tar --checkpoint-action e\\xec=sh -xf a.tar", "ssh -o $X host",
+        "ssh -o \"$X\" host", "export RSYNC\\_RSH=sh && rsync a b", "tar I sh -xf a.tar", "tar Ixf sh a.tar",
     ]
     ALLOW = [
         "sort -u names.txt", "sort -o out.txt names.txt", "sort --check names.txt",
@@ -1300,6 +1304,7 @@ class X3bProgramOptionTests(unittest.TestCase):
         "rsync -a src/ dst/", "rsync --delete -a a b",
         "ssh host", "ssh -o BatchMode=yes host", "ssh -p 22 host",
         "diff -l a b", "file -z a.gz",
+        "tar xf a.tar", "echo $HOME", "echo x\\y",
     ]
 
     def test_program_naming_options_are_denied(self):
@@ -1330,11 +1335,14 @@ class X3bMutationTests(unittest.TestCase):
         "sftp -D rule removed": ('"sftp": "SDF"', '"sftp": "SF"'),
         "tar remote-command long rules removed": ('"rsh-command", "rmt-command"),', '),'),
         "GNU and BSD name aliases removed": ('    name = PROGRAM_ALIAS.get(name, name)', '    pass'),
-        "program-naming environment variables not checked": ('    if any(v + "=" in w for w in words for v in PROGRAM_ENV):',
-                                                             '    if False:'),
-        "computed option names not denied": ('        if a.startswith("-") and ("$" in a or "`" in a or SUBST in a):',
-                                             '        if False:'),
-        "backslash escapes in option names not removed": ('        a = a.replace("\\\\", "")', '        pass'),
+        "program-naming environment variables not checked": ('    if any(v + "=" in w or', '    if False and any(v + "=" in w or'),
+        "expansion or escape in a tool argument not denied": (r'''        if "$" in a or "`" in a or SUBST in a or "\\" in a:''',
+                                                              r'''        if False:'''),
+        "tool filter removed": ('    if name not in PROGRAM_TOOLS:', '    if False:'),
+        "old-style tar cluster rule removed": (r'''    if name == "tar" and args and re.fullmatch(r"[A-Za-z]+", args[0]):''',
+                                               r'''    if False:'''),
+        "environment name normalisation removed": (r'''or v + "=" in w.replace("\\", "").replace('"', "").replace("'", "")''',
+                                                   ''),
         "ssh -F rule removed": ('"ssh": "F", ', ''),
         "ssh Include key removed": ('SSH_LAUNCH_KEYS = ("include", ', 'SSH_LAUNCH_KEYS = ('),
         "tar checkpoint action case-sensitive": ('(val if eq else nxt).lower().startswith("exec")',

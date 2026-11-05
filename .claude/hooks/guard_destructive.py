@@ -739,6 +739,7 @@ PROGRAM_LONG = {"sort": ("compress-program",), "rg": ("pre", "pre-glob"),
                 "rsync": ("rsh", "rsync-path")}
 # GNU and BSD variants of the same tools take the same program-naming options.
 PROGRAM_ALIAS = {"gsort": "sort", "gtar": "tar", "bsdtar": "tar"}
+PROGRAM_TOOLS = {"sort", "rg", "tar", "rsync", "ssh", "scp", "sftp"}
 # Environment variables that name a program the tool starts (prefix assignments: VAR=x tool, env VAR=x tool).
 PROGRAM_ENV = ("RSYNC_RSH", "SSH_ASKPASS", "TAR_OPTIONS")
 # A short letter that names a program in its cluster: tar -I PROG, rsync -e PROG, scp/sftp -S PROG.
@@ -751,14 +752,23 @@ SSH_LAUNCH_KEYS = ("include", "proxycommand", "localcommand", "permitlocalcomman
 
 def program_option_rule(name, args):
     name = PROGRAM_ALIAS.get(name, name)
+    if name not in PROGRAM_TOOLS:
+        return
     longs = PROGRAM_LONG.get(name, ())
     shorts = PROGRAM_SHORT.get(name, "")
     ssh_o = name in SSH_O_TOOLS
+    # The guard reads the words the shell passes on, not the shell's own expansion or escape. For these tools an
+    # argument that contains an expansion or a backslash cannot be checked here, so it is denied (fail closed).
+    # Windows backslash paths in these tools are denied too; this is a documented over-denial.
+    for a in args:
+        if "$" in a or "`" in a or SUBST in a or "\\" in a:
+            raise Deny("program-option", name + " argument with an expansion or escape is not inspected")
+    if name == "tar" and args and re.fullmatch(r"[A-Za-z]+", args[0]):
+        # Old-style tar: the first word is an option cluster (tar xf a.tar; tar Ixf sh a.tar).
+        if set(args[0]) & set(shorts):
+            raise Deny("program-option", "tar old-style option cluster names a program: " + args[0])
     for i, a in enumerate(args):
         nxt = args[i + 1] if i + 1 < len(args) else ""
-        if a.startswith("-") and ("$" in a or "`" in a or SUBST in a):
-            # An option name or value that is computed at run time cannot be checked here (fail closed).
-            raise Deny("program-option", name + " option with an unexpanded name or value is not inspected")
         # A backslash in an option name is a shell escape (--compress\-program is --compress-program).
         a = a.replace("\\", "")
         if a.startswith("--"):
@@ -908,7 +918,8 @@ def analyze_argv(words, ctx, ps, depth):
     if depth > MAX_DEPTH:
         raise Deny("depth", "command nesting too deep")
     # A program-naming environment variable anywhere in the command (prefix, export, env -S, a shell string) is denied.
-    if any(v + "=" in w for w in words for v in PROGRAM_ENV):
+    if any(v + "=" in w or v + "=" in w.replace("\\", "").replace('"', "").replace("'", "")
+           for w in words for v in PROGRAM_ENV):
         raise Deny("program-option", "a program-naming environment variable is not inspected")
     words = strip_redirections(words)
     while True:
