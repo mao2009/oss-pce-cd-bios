@@ -1,7 +1,7 @@
 # Issue #188: CD_READ の1モード・1セクターの転送先と count 境界（静的契約整理）
 
 親: #12 / #11。前提: #148（CLOSED、呼出側台帳）、#139（CLOSED、契約台帳）。後続: #189（無媒体・範囲外）、#190（独立 RAM 転送 routine）、#149（slot `$03` 接続）。
-既存文書（参照のみ・書き換えない）: [cd-read-contract.md](cd-read-contract.md)、[cd-read-diagnostic.md](cd-read-diagnostic.md)、[cd-read-mode-contract.md](cd-read-mode-contract.md)、[188-cd-read-mode-safety.md](188-cd-read-mode-safety.md)、[research/148-cd-read-abi.md](research/148-cd-read-abi.md)、[abi-contracts.md](abi-contracts.md)（CD_READ 節）。
+既存文書（参照のみ・書き換えない）: [cd-read-contract.md](cd-read-contract.md)、[cd-read-diagnostic.md](cd-read-diagnostic.md)、[cd-read-mode-contract.md](cd-read-mode-contract.md)、[188-cd-read-mode-safety.md](188-cd-read-mode-safety.md)、撤去済み文書（撤去済み文書）、[abi-contracts.md](abi-contracts.md)（CD_READ 節）。
 
 ## 優先観測候補（D1 の決定）
 
@@ -13,7 +13,7 @@
 
 ## 0. 判定と範囲
 
-* **実観測: 未実施。純正 BIOS の実行 0 件、`$E009` の呼出 0 件。** 安全ゲート（#173 の子 #365/#366/#367 が OPEN、slot 3 の reviewed gate 記録と独立承認なし）が未充足のため。
+* **承認済みの実観測証拠: 未登録。** 承認済みの検証証拠として登録された実観測はない。安全ゲート（#173 の子 #365/#366/#367 が OPEN、slot 3 の reviewed gate 記録と独立承認なし）が未充足のため。
 * 本書は **静的な読み取りのみ** の契約整理。新規の Geargrafx 実行、新規の実機観測はない。
 * 根拠は次の3種類に分けて記す。
   * **[C] 公開 caller ソース**: HuCC `pce-devel/huc@54f5c73606c1e7142e8095c727cab2767e2b3cb3` の呼出側コード。確認範囲は `include/hucc/` の2ファイル（`hucc-systemcard.asm` `4258b7c3…`、`core-kernel.asm` `ae183017…`。sha256 は `spec/api_contracts.json` と一致）のみ。`include/huc/` は未検査（[cd-base-abi-ledger.md](cd-base-abi-ledger.md):146、:151 の方針により、存在の事実も根拠に使わない）。行番号は取得したファイルに対するもの。
@@ -34,7 +34,7 @@
 | `$FE` / `$FF` | [C] L294 `lda #$FF` / L322 `lda #$FE` を `_dh` に書く（コメントは「Signal a VRAM load.」） | VRAM 系 | 対象外 |
 | `6` | [C] 上書きローダ（`core-kernel.asm` L593-594） | MPR6 系 | 対象外 |
 
-**D1（決定・オーナー承認）**: 優先観測候補は `_dh = 3` とする（冒頭「優先観測候補」参照）。`_dh = 2` について既存文書間で出典表記が食い違っていた。[cd-read-mode-contract.md](cd-read-mode-contract.md) の R3 行（origin/main で :31。#503 より前の版では :30）は、訂正前は「HuCC, Hu-Go HLE」を出典としていたが、HuCC が `_dh=2` を書かないことを確認したため訂正した（§4）。[cd-read-contract.md](cd-read-contract.md) の Destination mode 行は、#503 の時点（当時の行番号 :137）では主張を変えず出典欄に訂正注記のみを追記した。その後 #574（ce85915）で**一行を二行に分割**した（origin/main では :147 が `_dh` 0/3/6/`$FE`/`$FF`、:148 が `_dh` 1/2/4/5）。`_dh` 1/2/4/5 は HYPOTHESIS から **UNKNOWN** に下げた（§4 D1）。[abi-contracts.md](abi-contracts.md):138（「Hu-Go model; HuCC overlay loader also uses 6」）は本 PR の差分対象外で、食い違いを含めて事実として残す。`cd_read` の HuCC 呼出側（`include/hucc/` の2ファイル、ledger C06-C10、[research/148-cd-read-abi.md](research/148-cd-read-abi.md) §2.1）で確認できる `_dh` の値は `0 / 3 / $FE / $FF / 6` のみ。`include/huc/` は未検査。
+**D1（決定・オーナー承認）**: 優先観測候補は `_dh = 3` とする（冒頭「優先観測候補」参照）。`_dh = 2` について既存文書間で出典表記が食い違っていた。[cd-read-mode-contract.md](cd-read-mode-contract.md) の R3 行（origin/main で :31。#503 より前の版では :30）は、訂正前は「HuCC, Hu-Go HLE」を出典としていたが、HuCC が `_dh=2` を書かないことを確認したため訂正した（§4）。[cd-read-contract.md](cd-read-contract.md) の Destination mode 行は、#503 の時点（当時の行番号 :137）では主張を変えず出典欄に訂正注記のみを追記した。その後 #574（ce85915）で**一行を二行に分割**した（origin/main では :147 が `_dh` 0/3/6/`$FE`/`$FF`、:148 が `_dh` 1/2/4/5）。`_dh` 1/2/4/5 は HYPOTHESIS から **UNKNOWN** に下げた（§4 D1）。[abi-contracts.md](abi-contracts.md):138（「Hu-Go model; HuCC overlay loader also uses 6」）は本 PR の差分対象外で、食い違いを含めて事実として残す。`cd_read` の HuCC 呼出側（`include/hucc/` の2ファイル、ledger C06-C10、撤去済み文書（撤去済み文書） §2.1）で確認できる `_dh` の値は `0 / 3 / $FE / $FF / 6` のみ。`include/huc/` は未検査。
 
 ## 2. 1モード・1セクターの契約表（`_dh = 3`）
 
@@ -51,7 +51,7 @@
 | A5 | 転送層の1セクター（count 1） | READ(6) で LBA 0 / 5 / 15 の1セクターを受信し、バイトが一致する | [M] `single_sector_lba5`、`first_sector_lba0`、`last_sector_lba15`（[cd-read-contract.md](cd-read-contract.md) §2 T1） | 転送層のみ（[M]、Geargrafx のみ） | callee の `_al = 1` 解釈: UNKNOWN |
 | A6 | 「1セクター」の呼出側の使用 | 確認範囲の2ファイルに、`_dh = 3` の呼出で count 1 を渡す箇所はない。件数の計算元を示すコードも確認範囲にない（根拠なし） | 根拠なし | UNKNOWN（count 1 の caller 使用例なし）。count の数値がセクター単位と確定できるか否かは、A4 のとおり HYPOTHESIS（コメント/宣言由来）のまま | UNKNOWN |
 | A7 | VRAM 転送の有無 | なし。VRAM 転送は `$FE` / `$FF` で信号する（命令は L294 `lda #$FF` / L322 `lda #$FE` と `sta <_dh`。**「VRAM」の語はコメント（L294/L322「Signal a VRAM load.」）由来**） | [C]（L294 `$FF`、L322 `$FE` と本ラッパの `_dh=3` の対比。VRAM である根拠はコメント/宣言由来で HYPOTHESIS） | 確定（呼出側は `$FE`/`$FF` を指定しない） | UNKNOWN（3 が VRAM に書かないかは未観測） |
-| A8 | 基点（block number）の作り方 | `_cl:_ch:_dl` は呼出側で作る（`get_file_info` / `_add_sectors`、[D] `research/148-cd-read-abi.md` C15-C16）。絶対 LBA とみなすか CD_BASE 相対か | [C][D] | 確定（呼出側の計算） | UNKNOWN（#11 CD_BASE と未解決の矛盾、[D] `research/148-cd-read-abi.md` §6） |
+| A8 | 基点（block number）の作り方 | `_cl:_ch:_dl` は呼出側で作る（`get_file_info` / `_add_sectors`、[D] `撤去済み文書` C15-C16）。絶対 LBA とみなすか CD_BASE 相対か | [C][D] | 確定（呼出側の計算） | UNKNOWN（#11 CD_BASE と未解決の矛盾、[D] `撤去済み文書` §6） |
 
 ### 2.2 呼出側が読む・保存する状態
 
@@ -60,7 +60,7 @@
 | B1 | 戻り値 | `system cd_read` の後、コードを `X` へ移し（`tax`）、MPR3 を戻してから `A` に戻す（`txa`） | [C] L448-451 | 確定（呼出側の戻り処理） | 成功時 A の値: UNKNOWN。`_cd_loaddata.4` の `tax`/`bne`（L389-390）は別関数の慣習で callee の根拠ではない（#188 完了条件 3） |
 | B2 | 失敗時 A とエラーコード体系 | 呼出側は非0を透過する | [C] | UNKNOWN | UNKNOWN（no disc / bad block / read error / busy の値なし。[D] `abi-contracts.md` CD_READ 節） |
 | B3 | MPR3 | 呼出側が `tma3`/`pha` で退避し、`tam3` で戻す（L443-444、L449-450） | [C] | 確定（呼出側の防御） | 成功時 MPR3 の状態: UNKNOWN。失敗時に MPR3 が壊れる: HYPOTHESIS（コメント L448-451 「System Card function has a bug which destroys the value on a CD error」） |
-| B4 | MPR0-2 / 4-7 | 呼出側は観測しない | [D] `research/148-cd-read-abi.md` C32 | UNKNOWN | UNKNOWN |
+| B4 | MPR0-2 / 4-7 | 呼出側は観測しない | [D] `撤去済み文書` C32 | UNKNOWN | UNKNOWN |
 | B5 | X / Y | 呼出側は戻り後に `cly`（L453）で Y を 0 にし、`leave`（L455）で X を A に移す。Y:X 形式の戻り値の上位は呼出側が書く | [C] | 呼出後の X/Y 保存: UNKNOWN | UNKNOWN |
 | B6 | `$20F8-$20FF` | 本ラッパは `_cl` / `_si` を使う。呼出前後の退避は本ラッパ内で見えない | [C] | UNKNOWN | UNKNOWN（[D] C22 / C34） |
 | B7 | IRQ 前提 | 本ラッパ内に `cli` / `sei` がない（L425-457）。上書きローダだけ `cli` を置く | [C]（[D] C17） | 呼出し時の P.I は不明 | CLI の要否: UNKNOWN |
@@ -100,7 +100,7 @@
   * `hucc-systemcard.asm` L389-390（`tax` / `bne .done`）: 関数 `_cd_loaddata.4`（ledger S4 では `_cd_loaddata`、344–408 行の内側。`cd_read` の呼出しは 388 行）。
   * `core-kernel.asm` L600-601（`cmp #0` / `bne .retry`）: 関数 `exec_overlay`（H1b では 578–614 行。ledger S5 では上書き読込み、`cd_read` は 596 行）。
 * **D2**: HuCC `_cd_loadbank.4` の宣言（L425）は `unsigned int sectors<_al>` と書いているが、本体（L436-438）は `_dh` を読むだけで、**非0のときだけ** `_al` へ 1バイト値を複写する。宣言・コメント（`sectors` / 「Get #sectors (0=whole file).」）は count の単位を規定するコードではなく、コードから確定できるのは「呼出側が AL に 1バイト値を入れる」ことまでである。したがって callee が count として読むレジスタは UNKNOWN のままで、count の単位も導出できない（「セクター」であることは HYPOTHESIS（コメント/宣言由来）、A4）。本 D2 は A4 の区分と矛盾しない。
-* **D3**: 基点（CD_BASE 相対か絶対か）の矛盾は [research/148-cd-read-abi.md](research/148-cd-read-abi.md) §6 の通り未解決。#11 の測定まで UNKNOWN。
+* **D3**: 基点（CD_BASE 相対か絶対か）の矛盾は 撤去済み文書（撤去済み文書） §6 の通り未解決。#11 の測定まで UNKNOWN。
 * **D4**: 既存の [188-cd-read-mode-safety.md](188-cd-read-mode-safety.md) の判定 BLOCKED は本書でも変わらない。本書は判定を変更しない。
 
 ## 5. #189 / #190 / #149 への引き継ぎ

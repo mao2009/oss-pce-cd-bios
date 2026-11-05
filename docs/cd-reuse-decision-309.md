@@ -36,10 +36,10 @@
 
 | 候補・ソース（版） | ライセンス（出典） | コピー再利用 | 仕様のみ参照 | 再ライセンス・許諾 | 欠落している契約 | 実装依存 | 判定 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| HuC `include/hucc/pcengine.inc`（[pce-devel/huc @ `54f5c736`](https://github.com/pce-devel/huc/blob/54f5c73606c1e7142e8095c727cab2767e2b3cb3/include/hucc/pcengine.inc)、467–468 行の `cd_boot = $00:E000` 宣言） | 8–10 行「Distributed under the Boost Software License, Version 1.0.」（今回確認） | 不可（宣言 1 行。写す対象が無い） | 可: 名称と番地の宣言という事実のみ | 表示保持。LICENSE_1_0.txt の同梱方法は人間判断（`include/hucc/` に無い） | 入口の意味、入力、戻り、MPR、スタック、IRQ（すべて UNKNOWN。[cd-boot-contract §4](research/cd-boot-contract.md)） | なし（宣言のみ） | `CLEANROOM_ONLY` |
+| HuC `include/hucc/pcengine.inc`（[pce-devel/huc @ `54f5c736`](https://github.com/pce-devel/huc/blob/54f5c73606c1e7142e8095c727cab2767e2b3cb3/include/hucc/pcengine.inc)、467–468 行の `cd_boot = $00:E000` 宣言） | 8–10 行「Distributed under the Boost Software License, Version 1.0.」（今回確認） | 不可（宣言 1 行。写す対象が無い） | 可: 名称と番地の宣言という事実のみ | 表示保持。LICENSE_1_0.txt の同梱方法は人間判断（`include/hucc/` に無い） | 入口の意味、入力、戻り、MPR、スタック、IRQ（すべて UNKNOWN。撤去済み文書 §4（撤去済み文書）） | なし（宣言のみ） | `CLEANROOM_ONLY` |
 | HuCC `include/hucc/core-kernel.asm` 478–516 行（呼出側 `call_bios`、同 `54f5c736`） | 8–10 行 Copyright John Brandwood 2021–2024、Boost-1.0 の表示（今回確認） | 不可: 呼出側であり callee ではない。ルート LICENSE の不明瞭さにより、コピーは確定できない | 可: 呼出し前に `tma7`/`tam7` で MPR7 を bank `$00` にし、戻り後に復元する（呼出側の SOURCE_FACT） | 同上 | callee の MPR0–6 要求、戻り規約、IRQ 状態 | MPR7、SP（呼出側のみ確認）、`sei` は CD ソフトリセット経路のみ | `CLEANROOM_ONLY` |
 | Hu-Go! `bios.c`（[mckayemu/hugo @ `64ed226d`](https://github.com/mckayemu/hugo/blob/64ed226da2288738781743eeef228c069e8973a4/bios.c)） | `COPYING` 1–2 行「GNU GENERAL PUBLIC LICENSE Version 2」（今回確認）。ファイル内に著作権表示なし | 不可（GPL-2.0 が既定。コピーする場合の条件と、本プロジェクトの MIT 方針との両立は未確認。[ledger L-10](oss-candidate-ledger.md)） | 不可（HLE の挙動は実機の証拠にならない。[cd-stat §F26](research/cd-stat-contract.md) と同じ扱い） | GPL-2.0 の条件と ROM 配布方針の両立は未確認。人間判断 | — | — | `DO_NOT_USE_UNTIL_LEGAL_REVIEW` |
-| STUM 2025 offsets（二次資料、[cd-boot-contract §2](research/cd-boot-contract.md)） | CC BY-NC-SA 4.0 の本文（既存記録。今回未再読） | 不可（NC 条件） | 不可（版別の本体番地は HYPOTHESIS のみ） | 非商用条件の扱いを人間判断 | 本体番地（未照合） | — | `DO_NOT_USE_UNTIL_LEGAL_REVIEW` |
+| STUM 2025 offsets（二次資料、撤去済み文書 §2） | CC BY-NC-SA 4.0 の本文（既存記録。今回未再読） | 不可（NC 条件） | 不可（本体番地は HYPOTHESIS のみ） | 非商用条件の扱いを人間判断 | 本体番地（未照合） | — | `DO_NOT_USE_UNTIL_LEGAL_REVIEW` |
 
 ### 3.2 CD_READ（`$E009`）
 
@@ -131,7 +131,7 @@
 
 ### 7.3 make check の結果
 
-- `TOOLS_DIR=/home/loach/oss-pce-cd-bios-tools`（`tools/setup.py actionlint` で v1.7.7 を導入）で `make check` を実行し、終了コード 0 を確認した。
+- `TOOLS_DIR=<HOME>/oss-pce-cd-bios-tools`（`tools/setup.py actionlint` で v1.7.7 を導入）で `make check` を実行し、終了コード 0 を確認した。
 - `tools/contracts.py`: PASS（81 件の候補契約が整合。BIOS 検証は NOT_RUN）。
 - `tools/check.py`: PASS（Actions の schema、構文、whitespace を含む）。
 - 最初の実行は、`/tmp` の既定の TOOLS_DIR に actionlint が無いため失敗した。ツール導入の問題であり、コードの問題ではない。

@@ -71,7 +71,7 @@ SCENARIO_KIND = {
 #   CALLER_SAVE - the caller saves/restores this itself (caller defence, not callee proof)
 #   CALLER_DECLARATION - a declaration/prototype (not a runtime caller write before the call)
 #   UNOBSERVED  - no cited caller reads it; stays UNKNOWN
-# The human-readable twin table lives in docs/research/148-cd-read-abi.md section 2; tests/host/
+# The human-readable twin table lives in 撤去済み文書 section 2; tests/host/
 # test_cd_read_contract.py checks both against this module and spec/api_contracts.json.
 HUC_REV = "54f5c73606c1e7142e8095c727cab2767e2b3cb3"
 HUC_INC = "huc:include/hucc/pcengine.inc"

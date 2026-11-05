@@ -1,0 +1,388 @@
+{
+  "model": "source-order simulation, pinned src b49ae82a, default config",
+  "seeds": {
+    "det_S1": {
+      "init_prefix_draws": 521,
+      "init_scsi_draws": 1,
+      "init_mpr_rejections": 1,
+      "reset_mpr_rejections": 0,
+      "final_mpr_first_draw_index": 521,
+      "final_mpr_values": [
+        106,
+        119,
+        120,
+        177,
+        114,
+        19,
+        182
+      ],
+      "cpu_index": 1040,
+      "A": 91,
+      "X": 199,
+      "Y": 10,
+      "S": 53,
+      "P_raw_draw": 209,
+      "P_model": 197,
+      "total_draws_after_final_reset": 1043,
+      "events": [
+        {
+          "what": "Init ScsiController::Reset",
+          "first_index": 0,
+          "last_index": 0,
+          "rejections": 0
+        },
+        {
+          "what": "Init Memory::Reset MPR loop",
+          "first_index": 1,
+          "last_index": 8,
+          "rejections": 1
+        },
+        {
+          "what": "Init HuC6260 colour",
+          "first_index": 9,
+          "last_index": 520,
+          "rejections": 0
+        },
+        {
+          "what": "Reset Memory::Reset MPR loop",
+          "first_index": 521,
+          "last_index": 527,
+          "rejections": 0
+        },
+        {
+          "what": "Reset HuC6260 colour",
+          "first_index": 528,
+          "last_index": 1039,
+          "rejections": 0
+        },
+        {
+          "what": "Reset HuC6280::Reset (A/X/Y/S rnd, P)",
+          "first_index": 1040,
+          "last_index": 1041,
+          "rejections": 0
+        },
+        {
+          "what": "Reset ScsiController::Reset",
+          "first_index": 1042,
+          "last_index": 1042,
+          "rejections": 0
+        }
+      ]
+    },
+    "det_S2": {
+      "init_prefix_draws": 520,
+      "init_scsi_draws": 1,
+      "init_mpr_rejections": 0,
+      "reset_mpr_rejections": 0,
+      "final_mpr_first_draw_index": 520,
+      "final_mpr_values": [
+        247,
+        253,
+        91,
+        186,
+        122,
+        119,
+        206
+      ],
+      "cpu_index": 1039,
+      "A": 137,
+      "X": 83,
+      "Y": 250,
+      "S": 3,
+      "P_raw_draw": 120,
+      "P_model": 68,
+      "total_draws_after_final_reset": 1042,
+      "events": [
+        {
+          "what": "Init ScsiController::Reset",
+          "first_index": 0,
+          "last_index": 0,
+          "rejections": 0
+        },
+        {
+          "what": "Init Memory::Reset MPR loop",
+          "first_index": 1,
+          "last_index": 7,
+          "rejections": 0
+        },
+        {
+          "what": "Init HuC6260 colour",
+          "first_index": 8,
+          "last_index": 519,
+          "rejections": 0
+        },
+        {
+          "what": "Reset Memory::Reset MPR loop",
+          "first_index": 520,
+          "last_index": 526,
+          "rejections": 0
+        },
+        {
+          "what": "Reset HuC6260 colour",
+          "first_index": 527,
+          "last_index": 1038,
+          "rejections": 0
+        },
+        {
+          "what": "Reset HuC6280::Reset (A/X/Y/S rnd, P)",
+          "first_index": 1039,
+          "last_index": 1040,
+          "rejections": 0
+        },
+        {
+          "what": "Reset ScsiController::Reset",
+          "first_index": 1041,
+          "last_index": 1041,
+          "rejections": 0
+        }
+      ]
+    }
+  },
+  "runs": {
+    "det_S1_r1": {
+      "observed": {
+        "A": 91,
+        "X": 199,
+        "Y": 10,
+        "S": 53,
+        "P": 197,
+        "MPR": [
+          106,
+          119,
+          120,
+          177,
+          114,
+          19,
+          182
+        ]
+      },
+      "simulated_A_X_Y_S_Pmodel": [
+        91,
+        199,
+        10,
+        53,
+        197
+      ],
+      "match": {
+        "A": true,
+        "X": true,
+        "Y": true,
+        "S": true,
+        "P_masked_model": true,
+        "P_raw_model": false,
+        "MPR0_6": true,
+        "observed_mpr_first_index_recorded": null
+      }
+    },
+    "det_S1_r2": {
+      "observed": {
+        "A": 91,
+        "X": 199,
+        "Y": 10,
+        "S": 53,
+        "P": 197,
+        "MPR": [
+          106,
+          119,
+          120,
+          177,
+          114,
+          19,
+          182
+        ]
+      },
+      "simulated_A_X_Y_S_Pmodel": [
+        91,
+        199,
+        10,
+        53,
+        197
+      ],
+      "match": {
+        "A": true,
+        "X": true,
+        "Y": true,
+        "S": true,
+        "P_masked_model": true,
+        "P_raw_model": false,
+        "MPR0_6": true,
+        "observed_mpr_first_index_recorded": null
+      }
+    },
+    "det_S1_r3": {
+      "observed": {
+        "A": 91,
+        "X": 199,
+        "Y": 10,
+        "S": 53,
+        "P": 197,
+        "MPR": [
+          106,
+          119,
+          120,
+          177,
+          114,
+          19,
+          182
+        ]
+      },
+      "simulated_A_X_Y_S_Pmodel": [
+        91,
+        199,
+        10,
+        53,
+        197
+      ],
+      "match": {
+        "A": true,
+        "X": true,
+        "Y": true,
+        "S": true,
+        "P_masked_model": true,
+        "P_raw_model": false,
+        "MPR0_6": true,
+        "observed_mpr_first_index_recorded": null
+      }
+    },
+    "det_S1_up_r1": {
+      "observed": {
+        "A": 91,
+        "X": 199,
+        "Y": 10,
+        "S": 53,
+        "P": 197,
+        "MPR": [
+          106,
+          119,
+          120,
+          177,
+          114,
+          19,
+          182
+        ]
+      },
+      "simulated_A_X_Y_S_Pmodel": [
+        91,
+        199,
+        10,
+        53,
+        197
+      ],
+      "match": {
+        "A": true,
+        "X": true,
+        "Y": true,
+        "S": true,
+        "P_masked_model": true,
+        "P_raw_model": false,
+        "MPR0_6": true,
+        "observed_mpr_first_index_recorded": null
+      }
+    },
+    "det_S2_r1": {
+      "observed": {
+        "A": 137,
+        "X": 83,
+        "Y": 250,
+        "S": 3,
+        "P": 68,
+        "MPR": [
+          247,
+          253,
+          91,
+          186,
+          122,
+          119,
+          206
+        ]
+      },
+      "simulated_A_X_Y_S_Pmodel": [
+        137,
+        83,
+        250,
+        3,
+        68
+      ],
+      "match": {
+        "A": true,
+        "X": true,
+        "Y": true,
+        "S": true,
+        "P_masked_model": true,
+        "P_raw_model": false,
+        "MPR0_6": true,
+        "observed_mpr_first_index_recorded": null
+      }
+    },
+    "det_S2_r2": {
+      "observed": {
+        "A": 137,
+        "X": 83,
+        "Y": 250,
+        "S": 3,
+        "P": 68,
+        "MPR": [
+          247,
+          253,
+          91,
+          186,
+          122,
+          119,
+          206
+        ]
+      },
+      "simulated_A_X_Y_S_Pmodel": [
+        137,
+        83,
+        250,
+        3,
+        68
+      ],
+      "match": {
+        "A": true,
+        "X": true,
+        "Y": true,
+        "S": true,
+        "P_masked_model": true,
+        "P_raw_model": false,
+        "MPR0_6": true,
+        "observed_mpr_first_index_recorded": null
+      }
+    },
+    "det_S2_r3": {
+      "observed": {
+        "A": 137,
+        "X": 83,
+        "Y": 250,
+        "S": 3,
+        "P": 68,
+        "MPR": [
+          247,
+          253,
+          91,
+          186,
+          122,
+          119,
+          206
+        ]
+      },
+      "simulated_A_X_Y_S_Pmodel": [
+        137,
+        83,
+        250,
+        3,
+        68
+      ],
+      "match": {
+        "A": true,
+        "X": true,
+        "Y": true,
+        "S": true,
+        "P_masked_model": true,
+        "P_raw_model": false,
+        "MPR0_6": true,
+        "observed_mpr_first_index_recorded": null
+      }
+    }
+  }
+}

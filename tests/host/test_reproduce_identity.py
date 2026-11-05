@@ -79,7 +79,7 @@ class Harness(unittest.TestCase):
             Path(cmd[cmd.index("--output") + 1]).write_text(json.dumps(fresh), encoding="utf-8")
             return mock.Mock(returncode=0, stderr="")
 
-        with mock.patch.object(reproduce_static_triage, "COMMITTED", com), \
+        with mock.patch.object(reproduce_static_triage, "BASELINE", com), \
                 mock.patch("reproduce_static_triage.subprocess.run", side_effect=auditor) as run:
             rc = main(["--rom", str(self.rom)] + (args or []))
         self.seen["run"] = run
@@ -149,14 +149,14 @@ class Harness(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(self.run_main(projection(callee()), projection(callee(instructions_decoded=6))), 1)
             self.assertFalse(self.seen["snap"].parent.exists())
-            with self.assertRaises(RuntimeError):  # auditor crash
-                self.run_main(projection(), projection(), crash=RuntimeError("boom"))
+            # auditor crash: refused with exit 2, no traceback escapes, and the snapshot is still deleted
+            self.assertEqual(self.run_main(projection(), projection(), crash=RuntimeError("boom")), 2)
             self.assertFalse(self.seen["snap"].parent.exists())
 
     def test_auditor_nonzero_exit_fails(self):
         com = self.dir / "c.json"
         com.write_text("{}")
-        with mock.patch.object(reproduce_static_triage, "COMMITTED", com), \
+        with mock.patch.object(reproduce_static_triage, "BASELINE", com), \
                 mock.patch("reproduce_static_triage.subprocess.run",
                            return_value=mock.Mock(returncode=7, stderr="x")), \
                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -180,36 +180,103 @@ class Harness(unittest.TestCase):
         self.assertFalse(compare_projection(huge, projection(callee()))[0])
 
 
-    def test_budget_exhausted_slots_listed(self):
+    def test_budget_exhausted_count_is_reported_without_slot_ids(self):
         old = projection(callee(budget_exhausted=True))
         new = projection(callee(budget_exhausted=True, states_without_guaranteed_return=4))
         err = io.StringIO()
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
             self.assertEqual(self.run_main(new, old), 3)
-        self.assertIn("lower bound): slot-00", err.getvalue())
+        # The count is reported; the slot identities are not printed (owner ruling: no per-slot detail in output).
+        self.assertIn("1 slot(s) exhausted the budget", err.getvalue())
+        self.assertNotIn("slot-00", err.getvalue())
 
     def test_snapshot_not_deleted_is_loud_and_nonzero(self):
         pr = projection(callee())
         out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err),                 mock.patch("reproduce_static_triage.shutil.rmtree", side_effect=PermissionError("locked")):
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+            mock.patch("reproduce_static_triage.shutil.rmtree", side_effect=PermissionError("locked")):
             rc = self.run_main(pr, pr)
         self.assertEqual(rc, 1)
-        self.assertIn("SNAPSHOT NOT DELETED: " + str(self.seen["snap"].parent), err.getvalue())
+        # The temporary path is withheld from the message (owner ruling: no paths in terminal or CI logs).
+        self.assertIn("SNAPSHOT NOT DELETED", err.getvalue())
+        self.assertNotIn(str(self.seen["snap"].parent), err.getvalue())
         shutil.rmtree(self.seen["snap"].parent)
 
     def test_size_checked_before_read(self):
         self.rom.write_bytes(b"x" * 1000)
-        with mock.patch.object(Path, "read_bytes", side_effect=AssertionError("read")),                 contextlib.redirect_stderr(io.StringIO()):
+        with mock.patch.object(Path, "read_bytes", side_effect=AssertionError("read")), \
+                contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(main(["--rom", str(self.rom)]), 2)
 
     def test_auditor_stderr_truncated(self):
         com = self.dir / "c.json"
         com.write_text("{}")
         err = io.StringIO()
-        with mock.patch.object(reproduce_static_triage, "COMMITTED", com),                 mock.patch("reproduce_static_triage.subprocess.run",
-                           return_value=mock.Mock(returncode=7, stderr="z" * 5000)),                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+        with mock.patch.object(reproduce_static_triage, "BASELINE", com), \
+                mock.patch("reproduce_static_triage.subprocess.run",
+                           return_value=mock.Mock(returncode=7, stderr="z" * 5000)), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
             self.assertEqual(main(["--rom", str(self.rom)]), 1)
         self.assertLess(len(err.getvalue()), 700)
+
+
+class BaselinePathCli(unittest.TestCase):
+    """The --baseline command-line path (the module default is cleared, so only the argument is used)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        self.rom = self.dir / "rom.bin"
+        self.rom.write_bytes(bytes(range(256)) * 1024)
+
+    def cli(self, fresh, args):
+        def auditor(cmd, **kw):
+            Path(cmd[cmd.index("--output") + 1]).write_text(json.dumps(fresh), encoding="utf-8")
+            return mock.Mock(returncode=0, stderr="")
+
+        with mock.patch.object(reproduce_static_triage, "BASELINE", None), \
+                mock.patch("reproduce_static_triage.subprocess.run", side_effect=auditor), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            return main(["--rom", str(self.rom)] + args)
+
+    def test_no_baseline_is_unbaselined_not_a_pass(self):
+        self.assertEqual(self.cli(projection(callee()), []), 3)
+
+    def test_matching_external_baseline_passes(self):
+        pr = projection(callee())
+        baseline = self.dir / "baseline.json"
+        baseline.write_text(json.dumps(pr), encoding="utf-8")
+        self.assertEqual(self.cli(pr, ["--baseline", str(baseline)]), 0)
+
+    def test_missing_baseline_file_is_unbaselined(self):
+        self.assertEqual(self.cli(projection(callee()), ["--baseline", str(self.dir / "absent.json")]), 3)
+
+    def test_malformed_baseline_json_is_unbaselined(self):
+        baseline = self.dir / "bad.json"
+        baseline.write_text("{not json", encoding="utf-8")
+        self.assertEqual(self.cli(projection(callee()), ["--baseline", str(baseline)]), 3)
+
+    def test_wrong_shape_baseline_is_unbaselined_not_fail_or_blocked(self):
+        for shape in ([], {}, {"apis": "x"}, None):
+            with self.subTest(shape=shape):
+                baseline = self.dir / "shape.json"
+                baseline.write_text(json.dumps(shape), encoding="utf-8")
+                self.assertEqual(self.cli(projection(callee()), ["--baseline", str(baseline)]), 3)
+
+    def test_baseline_inside_the_repository_is_refused_before_any_read(self):
+        with mock.patch("reproduce_static_triage.subprocess.run") as run:
+            rc = main(["--rom", str(self.rom), "--baseline", str(ROOT / "README.md")])
+        self.assertEqual(rc, 2)
+        run.assert_not_called()
+
+    def test_an_os_error_while_inspecting_the_image_is_blocked_without_traceback(self):
+        with mock.patch.object(Path, "is_file", side_effect=PermissionError("denied")), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = main(["--rom", str(self.rom)])
+        self.assertEqual(rc, 2)
+        self.assertNotIn("Traceback", err.getvalue())
+        self.assertNotIn(str(self.rom), err.getvalue())
 
 
 class CompareProjection(unittest.TestCase):
@@ -221,10 +288,9 @@ class CompareProjection(unittest.TestCase):
         self.assertTrue(compare_projection(projection(callee(flag=4.0)), projection(callee(flag=4.0)))[0])
 
     def test_value_above_states_visited_accepted_and_bound(self):
-        # Synthetic shape modelled on a local, unrecorded private-ROM observation (value 17 vs states_visited 16);
-        # no ROM content. Dead ends are counted but never in states_visited.
-        old = projection(callee(states_visited=16, non_returning_states=16))
-        new = projection(callee(states_visited=16, non_returning_states=16, states_without_guaranteed_return=17))
+        # Synthetic numbers only. A dead-end count may exceed states_visited, within the bound checked by the rule.
+        old = projection(callee(states_visited=8, non_returning_states=8))
+        new = projection(callee(states_visited=8, non_returning_states=8, states_without_guaranteed_return=9))
         self.assertEqual(compare_projection(new, old), (True, "", ["states_without_guaranteed_return"]))
 
     def test_non_int_floor_fails_closed(self):

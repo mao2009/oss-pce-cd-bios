@@ -48,15 +48,13 @@ On the Issue #78 PR branch, MA_SQRT ($44) is added as a tenth DEV implementation
 ## Merged evidence PRs and source identity
 
 - [#475](https://github.com/mao2009/oss-pce-cd-bios/pull/475) (merged 2026-10-22): EX_GETVER synthetic observation schema/validation. A record digest is an **integrity check, not producer authentication**. It does not promote reference ABI status or grant reference ROM execution.
-- [#477](https://github.com/mao2009/oss-pce-cd-bios/pull/477) (merged 2026-10-22): `docs/evidence/reference-static-triage-81.json`, a static 81-entry jump-table profile (`scope: STATIC_PROFILE_ONLY`; all 81 entries are `JMP_ABS`; `execution_permission: NOT_PRODUCED_BY_THIS_TOOL`). It is **static triage**, **not** reference ABI VERIFIED and not execution permission.
-- [#476](https://github.com/mao2009/oss-pce-cd-bios/issues/476) (OPEN, BLOCKED): private local headerless 262,144-byte reference payload (CRC32 6D9A73EF) matched the pinned Geargrafx database label and reproduced seven earlier static facts, but the historical headered 262,656-byte SHA-256 has **not** been independently reconciled. CRC32 equivalence is not cryptographic provenance and not proof of full ROM identity.
+- [#476](https://github.com/mao2009/oss-pce-cd-bios/issues/476) (OPEN, BLOCKED): Its identity values are withheld by owner ruling, and the identity has **not** been independently reconciled. Matching a database label is not cryptographic provenance and not proof of full ROM identity.
 
 ## PR and issue state reconciliation (2026-10-23)
 
 | Item | State on 2026-10-23 | Public-doc wording |
 | --- | --- | --- |
 | #475 EX_GETVER observation schema | MERGED (2026-10-22) | Merged evidence, not ABI status |
-| #477 81-entry static profile | MERGED (2026-10-22) | Static triage only; not VERIFIED |
 | #495 MA_MUL16S ($4F), Issue #494 | MERGED (2026-10-22); #494 CLOSED | Counted in main f90c16b: 9/81 |
 | #502 DEV-only internal boot path, Issue #501 | MERGED (2026-10-22); #501 CLOSED | DEV path, not BIOS boot |
 | #506 CI wiring, Issue #505 | MERGED (2026-10-22); #505 CLOSED | Wired in `core-harness.yml` |

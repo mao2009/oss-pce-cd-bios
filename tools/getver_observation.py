@@ -242,10 +242,10 @@ def abi_status(records):
 
 
 # DEV ROM version bytes from src/overrides/slot_1E.s. They describe this project's own routine only and
-# are never the expected value of a reference observation (docs/abi1-reference-abi-review.md section 8).
+# are never the expected value of a reference observation.
 DEV_OUTPUT = {"x": 3, "y": 0}
 
-# Caller-side SOURCE_FACT only (docs/abi-contracts.md, "Focused caller contracts"). Nothing here describes
+# Caller-side SOURCE_FACT only (docs/abi-contracts.md). Nothing here describes
 # callee or BIOS behaviour; the reference return value stays UNKNOWN.
 CALLER_SOURCE_FACTS = (
     {"id": "CALLER_MAJOR_IN_X", "statement": "caller compares X with 3 for the System Card version check",

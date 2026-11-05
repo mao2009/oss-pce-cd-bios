@@ -11,7 +11,7 @@ for this mode, and CD_BASE are separate Issues. Machine copy: `RAM_MODE_ITEMS` a
 * **Real-core transport (measured):** READ(6) on the pinned Geargrafx (`b49ae82a`), scenarios in
   [cd-read-contract.md](cd-read-contract.md) section 2 (T1-T4). This shows bus behaviour of the drive, not the BIOS
   callee. Labelled LOCAL_ONLY in that doc.
-* **Real-core callee (measured):** `CALLEE_REAL_CORE_RUNS = 0`. The genuine `$E009` was never executed.
+* **Real-core callee (approved verification evidence):** `CALLEE_REAL_CORE_RUNS = 0`. No approved verification evidence is registered for the genuine `$E009`.
   Reason: the safety gate is not satisfied. #173 is OPEN and its children #365 (opcode/PC pre-block), #366 (IRQ
   entry) and #367 (block transfer and device-initiated writes) are OPEN. `docs/173-safety-monitor-limits.md`
   records ST0/ST1/ST2 (`$03`/`$13`/`$23`) writes that bypass the RAM write hook, so a callee run cannot be
@@ -53,7 +53,7 @@ Transport examples use the 16-sector fixture (`FIXTURE_SECTORS`). `expect` is (d
 | P3 | positive | 15 | 1 | (1, False) | `last_sector_lba15` |
 | N1 | negative | 16 | 1 | (0, True), destination untouched | `invalid_sector_lba16` |
 | N2 | negative | 2^21-1 | 1 | (0, True) | `invalid_sector_lba_max` |
-| N3 | negative | 5 | 0 | UNKNOWN (T8: count 0 never executed) | not measured |
+| N3 | negative | 5 | 0 | UNKNOWN (T8: no approved count registered) | not measured |
 | N4 | negative | 5 | 4 | UNKNOWN (outside counts 1..3) | not measured |
 
 Callee-level negatives (R7, R9, R11) are UNKNOWN and have no example yet. Writing one needs a real-core callee

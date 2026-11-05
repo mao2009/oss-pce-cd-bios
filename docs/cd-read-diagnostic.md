@@ -29,6 +29,17 @@ cmp build/debug/cdread-probe/cdread-probe-not-bios.pce build/release/cdread-prob
 The default DEV ROM, the #4 startup ROM and the 81-entry API table are untouched (the first 4 KiB of the
 image is byte-identical to the base ROM and verified on every build).
 
+## Generic diagnostic READ(6) request
+
+The guest diagnostic has an original, fixed-size request record immediately after its READ(6) CDB: a 21-bit
+absolute LBA, an 8-bit count, and a 16-bit CPU target. It is **not callable BIOS API surface**. The checked
+synthetic-only bounds are count `1..3` and a full 16-bit `target + count * 2048` end pointer no greater than
+`$4000` (the transferred range is therefore within work RAM `$2800..$3FFF`); invalid requests stop before
+selecting the bus with diagnostic error 9. The result byte count is relative to the selected target. The default
+remains LBA 5, one sector, target `$2800` so existing fixed-LBA regression coverage is retained. The real-core
+suite covers low-byte and exact-end target boundaries, a two-sector nondefault target, and invalid target bounds,
+each cold and warm.
+
 ## Fixture disc (`tools/make_cd_image.py`)
 
 * CUE/BIN, one **MODE1/2352** track, `INDEX 01 00:00:00` so SCSI LBA *n* is BIN sector *n*. 16 sectors by default.

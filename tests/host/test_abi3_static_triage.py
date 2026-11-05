@@ -1,79 +1,61 @@
-"""Host checks for the Phase ABI-3 static triage projection (Issue #476).
+"""Public boundary checks for the Phase ABI-3 static triage (Issue #476; owner ruling A, Issue #324).
 
-The projection is the committed output of tools/reference_rom_static_audit.py on the local payload.
-These tests need no ROM: they check the committed file's shape, its jump table, and that its seven
-previously reviewed slots reproduce the committed ABI-1 static ledger exactly. The ROM itself is never
-read here; regenerating the file is tools/reproduce_static_triage.py (local only).
+No per-slot projection is published. The local regeneration tool
+(tools/reproduce_static_triage.py) writes outside the repository and needs the private image, so these
+tests need no ROM. They check that the public files carry only management state, and that the seven
+ABI-1 slots keep no detail derived from the private image.
 """
 from pathlib import Path
 import json
-import re
+import sys
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-PROJECTION = ROOT / "docs" / "evidence" / "reference-static-triage-81.json"
+sys.path.insert(0, str(ROOT / "tools"))
+
+import abi1_reference_review as review  # noqa: E402
+
+REMOVED_PROJECTION = ROOT / "docs" / "evidence" / "reference-static-triage-81.json"
 ABI1 = ROOT / "spec" / "abi1_reference_review.json"
 TRACKED_SLOTS = (0x1E, 0x3C, 0x3D, 0x3F, 0x40, 0x41, 0x42)
 
 
-class ProjectionShapeTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.data = json.loads(PROJECTION.read_text(encoding="utf-8"))
+class PublicBoundaryTests(unittest.TestCase):
+    def test_the_81_slot_projection_is_not_committed(self):
+        self.assertFalse(REMOVED_PROJECTION.exists())
 
-    def test_schema_and_scope_are_static_only(self):
-        self.assertEqual(self.data["schema"], "oss-pce-cd-bios/reference-rom-static-audit/v1")
-        self.assertEqual(self.data["scope"], "STATIC_PROFILE_ONLY")
-        self.assertEqual(self.data["execution_permission"], "NOT_PRODUCED_BY_THIS_TOOL")
+    def test_public_evidence_files_carry_no_private_image_detail(self):
+        public = [ABI1, *sorted((ROOT / "docs" / "evidence").glob("*.json"))]
+        for path in public:
+            with self.subTest(path=path.name):
+                document = json.loads(path.read_text(encoding="utf-8"))
+                # Raises Invalid for any forbidden key, at any depth.
+                review._public_keys(document)
 
-    def test_all_81_slots_present_once_in_order(self):
-        self.assertEqual([api["slot"] for api in self.data["apis"]], list(range(81)))
-
-    def test_jump_table_is_81_distinct_jmp_abs_entries(self):
-        table = self.data["jump_table"]
-        self.assertEqual(table["entry_count"], 81)
-        self.assertEqual(table["distinct_targets"], 81)
-        self.assertTrue(table["all_entries_are_jmp_abs"])
-        self.assertTrue(table["all_targets_distinct"])
-
-    def test_payload_provenance_is_recorded_without_header(self):
-        prov = self.data["provenance"]
-        self.assertEqual(prov["image_bytes"], 262144)
-        self.assertEqual(prov["header_bytes"], 0)
-        self.assertEqual(prov["trust"], "LOCAL_ONLY_NOT_VERIFIED")
-
-    def test_projection_contains_no_long_hex_runs(self):
-        # ROM bytes would appear as long hex strings; the projection carries only counts and booleans.
-        self.assertIsNone(re.search(r"[0-9A-Fa-f]{32,}", PROJECTION.read_text(encoding="utf-8")))
+    def test_a_private_image_detail_key_is_refused_at_any_depth(self):
+        for key in ("callee_instructions", "hazard_counts", "static_verdict", "static_items", "instructions_decoded"):
+            with self.subTest(key=key):
+                with self.assertRaises(review.Invalid):
+                    review._public_keys({"apis": [{"safety": {key: 1}}]})
 
 
-class TrackedConsistencyTests(unittest.TestCase):
-    """The seven APIs reviewed in ABI-1 must reproduce their committed static facts exactly."""
+class TrackedSlotTests(unittest.TestCase):
+    """The seven ABI-1 slots keep only management state: a static review was performed."""
 
     @classmethod
     def setUpClass(cls):
-        cls.projection = json.loads(PROJECTION.read_text(encoding="utf-8"))
         cls.ledger = json.loads(ABI1.read_text(encoding="utf-8"))
 
-    def test_seven_tracked_slots_match_abi1_static_ledger(self):
-        by_slot = {api["slot"]: api for api in self.projection["apis"]}
-        ledger = {int(api["api_id"].split("-")[1], 16): api for api in self.ledger["apis"]}
-        self.assertEqual(set(ledger), set(TRACKED_SLOTS))
-        for slot in TRACKED_SLOTS:
-            with self.subTest(slot=hex(slot)):
-                mine, theirs = by_slot[slot], ledger[slot]
-                self.assertEqual(mine["candidate_entry"], theirs["candidate_entry"])
-                static = theirs["static"]
-                callee = mine["callee"]
-                self.assertEqual(callee["instructions_decoded"], static["callee_instructions"])
-                self.assertEqual(callee["hazard_counts"], static["hazard_counts"])
-                self.assertEqual(callee["max_stack_bytes"], static["max_stack_bytes"])
-                self.assertEqual(callee["non_returning_states"], static["non_returning_states"])
-                self.assertEqual(callee["register_swap_ops"], static["register_swap_ops"])
-                self.assertEqual(callee["returns_observed"], static["return_kinds"])
-                self.assertEqual(callee["store_target_classes"], static["store_target_classes"])
-                self.assertEqual(callee["unresolved"], static["unresolved"])
-                self.assertEqual(callee["zero_page_operand_stores"], static["zero_page_operand_stores"])
+    def test_seven_tracked_slots_are_the_phase_scope(self):
+        slots = {int(api["api_id"].split("-")[1], 16) for api in self.ledger["apis"]}
+        self.assertEqual(slots, set(TRACKED_SLOTS))
+
+    def test_each_slot_has_only_management_state(self):
+        for api in self.ledger["apis"]:
+            with self.subTest(api=api["api_id"]):
+                self.assertNotIn("static", api)
+                self.assertEqual(api["safety"]["execution_permission"], "BLOCKED")
+                self.assertNotIn("static_items", api)
 
 
 class AbiStateTests(unittest.TestCase):

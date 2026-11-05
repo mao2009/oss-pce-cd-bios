@@ -106,3 +106,58 @@ jobs:
           set -euo pipefail
           mkdir -p build/debug/dev-boot-internal
           make dev-boot-internal-integration 2>&1 | tee build/debug/dev-boot-internal/run.log
+  # Opt-in image regression: original reset code plus project-owned synthetic media only. It is not a compatible BIOS.
+  experimental-bios-boot-integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare existing pinned source toolchain and Geargrafx
+        run: make setup
+      - name: Experimental DEV-only synthetic boot flow, real Geargrafx (not compatible, no ABI claim)
+        shell: bash
+        run: |
+          set -euo pipefail
+          make experimental-bios-boot-integration
+  # Issue #668: DEV-only IPL boot from RESET (one ROM, two synthetic IPLs, real Geargrafx). Additive job: no needs,
+  # no secrets, changes no existing job. Synthetic media only; NOT compatible, NOT a BIOS ABI, NOT commercial.
+  dev-ipl-boot-integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare existing pinned source toolchain and Geargrafx
+        run: make setup
+      - name: DEV-only IPL boot from RESET, synthetic media, real Geargrafx (not compatible, no ABI claim)
+        run: |
+          set -euo pipefail
+          make dev-ipl-boot-integration
+  # Synthetic CUE data-track selection (INDEX 01 / pregap / audio refusal), real Geargrafx cold and warm. Additive job: no
+  # needs, no secrets, changes no existing job. Original synthetic media only; NOT a BIOS TOC/API and NOT compatible.
+  synthetic-track-select-integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare existing pinned source toolchain and Geargrafx
+        run: make setup
+      - name: DEV-only synthetic CUE data-track selection, real Geargrafx (BLOCKED, script exit 3, fails the job; not a BIOS API)
+        shell: bash
+        run: |
+          set -euo pipefail
+          make dev-synthetic-track-select-integration

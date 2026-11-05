@@ -148,7 +148,7 @@ BIOS は実行せず、BIOS ABI 互換の証拠ではない。
 未監視（判定の対象外）: IRQ 受理と IRQ 源、MMIO 書込み、スタック内容（`stack_01f8_hex` と `irr`/`idr` は記録のみ）、ZP 窓外の RAM、サイクル数・タイミング。
 
 CI 用フィクスチャ `tests/fixtures/core-harness-plugin.json` の期待値（a=17, x=3, y=0）は、
-リポジトリ内 OSS 実装 slot_1E の観測値（`docs/final-report-20261016.md` §6、`api_jsr_1E`
+リポジトリ内 OSS 実装 slot_1E の DEV 側の検証（`api_jsr_1E`
 プローブの cold 観測）に基づく **回帰用の期待値** である。BIOS ABI の独立した正解ではない。
 
 実コア実行は opt-in で上記コマンド 1 つに限り、Linux 固定（pinned Geargrafx の

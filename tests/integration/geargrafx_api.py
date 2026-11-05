@@ -159,7 +159,7 @@ def main():
                                'geargrafx_profile': 'separate debugger-enabled source-identical build',
                                'source_archive_sha256': DEPENDENCIES['geargrafx']['sha256']},
                 'api_exit': {'status': 'OBSERVED_ONE_SLOT',
-                             'reason': 'slot $1E EX_GETVER returns the measured contract; the other 80 slots are nonreturning stubs'},
+                             'reason': 'slot $1E EX_GETVER returns the DEV-defined contract; the other 80 slots are nonreturning stubs'},
                 'nmi': {'status': 'NOT_TESTED', 'reason': 'pinned Geargrafx HuC6280 has no NMI input or $FFFC dispatch'}}
     with tempfile.TemporaryDirectory(prefix='pce-api-probe-') as tmp:
         folder = Path(tmp)
@@ -218,7 +218,7 @@ def main():
     (output / 'geargrafx-api-evidence.json').write_text(json.dumps(evidence, indent=2) + '\n')
     print('PASS real Geargrafx System Card diagnostic: reset/cold/warm, slots 00/48/50, original 4 negatives; '
           '9 CPU/RAM/IRQ1/IRQ2/timer/JSR-slot experiments, 9 loader cases, 2 procedure + 3 interrupt negatives; '
-          'slot 1E EX_GETVER returned its measured contract; A/X/Y/P/SP/MPR/RAM observed; NMI NOT_TESTED')
+          'slot 1E EX_GETVER returned its DEV-defined contract; A/X/Y/P/SP/MPR/RAM observed; NMI NOT_TESTED')
 
 
 if __name__ == '__main__':
