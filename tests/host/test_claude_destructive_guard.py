@@ -837,6 +837,7 @@ class PythonOpenTests(unittest.TestCase):
         "print(open('a.txt').read())",
         "print(open('a.txt', 'rb').read())",
         "print(open('a.txt', 'rt').read())",
+        "from pathlib import Path; print(Path('a.txt').read_text())",
     ]
     WRITE_OR_INDIRECT = [
         "open('a.txt', 'w').write('x')",
@@ -854,6 +855,14 @@ class PythonOpenTests(unittest.TestCase):
         "from io import open as o; o('a.txt', 'w')",
         "import builtins; builtins.open('a.txt', 'w')",
         "getattr(__builtins__, 'open')('a.txt', 'w')",
+        "import io; io.FileIO('a.txt', 'w')",
+        "from io import FileIO as f; f('a.txt', 'w')",
+        "from pathlib import Path; Path('a.txt').touch()",
+        "from pathlib import Path; Path('folder').mkdir()",
+        "import os; os.makedirs('folder')",
+        "import os; os.mkfifo('pipe')",
+        "import os; os.mknod('node')",
+        "import os; os.utime('a.txt')",
     ]
 
     def _verdict(self, code):
@@ -869,6 +878,19 @@ class PythonOpenTests(unittest.TestCase):
             with self.subTest(code=code):
                 self.assertEqual(self._verdict(code), "DENY")
 
+    def test_shadowed_open_is_not_treated_as_the_builtin(self):
+        # AST function/class definitions and parameter names are strings, not ast.Name stores.
+        # Check the AST predicate directly to ensure the intended rule makes the decision.
+        shadowing = [
+            "def open(path):\n    return path\nopen('x')",
+            "async def open(path):\n    return path\nopen('x')",
+            "class open:\n    pass\nopen('x')",
+            "def f(open):\n    return open('x')",
+        ]
+        for code in shadowing:
+            with self.subTest(code=code):
+                self.assertFalse(guard._open_is_read_only(code))
+
 
 class PythonOpenMutationTests(unittest.TestCase):
     """Mutants of the python -c rule run in a temporary copy of the hook and this module. Each must make a named
@@ -881,8 +903,16 @@ class PythonOpenMutationTests(unittest.TestCase):
         "wider danger word list reduced to the old list": (
             "replace|rename|chmod|chown|symlink|copy|move|dump|link|",
             ""),
+        "new file mutation methods ignored": (
+            "fileio|touch|mkdir|makedirs|mkfifo|mknod|utime|",
+            ""),
+        "function definition shadowing ignored": (
+            'and node.name == "open":', 'and False:'),
+        "argument shadowing ignored": (
+            'and node.arg == "open":', 'and False:'),
     }
-    DETECTING = ["test_read_only_python_is_not_refused", "test_python_write_and_indirect_forms_are_refused"]
+    DETECTING = ["test_read_only_python_is_not_refused", "test_python_write_and_indirect_forms_are_refused",
+                 "test_shadowed_open_is_not_treated_as_the_builtin"]
 
     def _run(self, hook_text):
         with tempfile.TemporaryDirectory() as td:
