@@ -66,6 +66,10 @@ def judge_marker_mismatch(records, code, symbols, lba, observed_trailer):
                 != (30, 15, SECTOR_BYTES, 0, 0):
             raise ValueError(f"{cycle}: result block is not PAYLOAD_MARKER_MISMATCH at stage 15: {block}")
         buffer = bytes.fromhex(run["buffer_hex"])
+        if len(buffer) != 6144:
+            raise ValueError(f"{cycle}: RAM dump has {len(buffer)} bytes")
+        if buffer[:SECTOR_BYTES] != encode_sector(lba, code):
+            raise ValueError(f"{cycle}: transferred sector is not the disc payload sector")
         if buffer[EXEC_OFF:EXEC_OFF + len(code)] != code:
             raise ValueError(f"{cycle}: RAM at {EXEC_ADDRESS:#x} is not the disc payload that ran")
         mark = buffer[MARK_OFF:MARK_OFF + 7]
@@ -344,7 +348,8 @@ def main():
         "payload_bytes": len(code), "exec_address": EXEC_ADDRESS,
         "geargrafx_revision": DEPENDENCIES["geargrafx"]["revision"],
         "tests": suite.results, "primary_observations": {"RUN": primary["RUN"], "HIT": primary["HIT"]},
-        "payload_variant": {"baseline_marker_trailer": 0x3C, "observed_marker_trailer": VARIANT_TRAILER,
+        "payload_variant": {"baseline_marker_trailer": 0x3C,
+                             "observed_marker_trailer": bytes.fromhex(variant_records["RUN"][0]["buffer_hex"])[MARK_OFF + 6],
                              "rom_sha256": variant_records["rom_sha256"],
                              "variant_payload_sha256": hashlib.sha256(variant_code).hexdigest()},
         "not_tested": ["partial sector read with bytes transferred > 0 (only the abort at data-in was injected)",
