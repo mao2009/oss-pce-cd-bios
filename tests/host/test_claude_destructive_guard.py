@@ -1353,7 +1353,6 @@ class X3bMutationTests(unittest.TestCase):
     a temporary copy of the hook and this test module; no repository file is changed."""
 
     MUTANTS = {
-        "rg pre rules removed": ('"rg": ("pre", "pre-glob", "hostname-bin"),', ''),
         "tar long rules removed": ('"to-command", "use-compress-program", ', ''),
         "rsync long rules removed": ('"rsync": ("rsh", "rsync-path", "remote-option")', ''),
         "tar -I rule removed": ('"tar": "IF"', '"tar": "F"'),
@@ -1377,7 +1376,6 @@ class X3bMutationTests(unittest.TestCase):
         "assignment with an expansion not denied": (r'''    if any("=" in w and ("{" in w or "}" in w or "$" in w) for w in words):''',
                                                     r'''    if False:'''),
         "tool filter removed": ('    if name not in PROGRAM_TOOLS:', '    if False:'),
-        "rg hostname-bin removed": ('"pre-glob", "hostname-bin"),', '"pre-glob"),'),
         "SSH_SK_HELPER removed from the program variables": ('"TAR_OPTIONS", "SSH_SK_HELPER",', '"TAR_OPTIONS",'),
         "RIPGREP_CONFIG_PATH removed from the program variables": ('"SSH_SK_HELPER", "RIPGREP_CONFIG_PATH",', '"SSH_SK_HELPER",'),
         "RSYNC_CONNECT_PROG removed from the program variables": ('"RIPGREP_CONFIG_PATH", "RSYNC_CONNECT_PROG")', '"RIPGREP_CONFIG_PATH")'),
@@ -1519,6 +1517,79 @@ class AllowlistMutationTests(unittest.TestCase):
                 failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
                 detected = any("AllowlistSortTests." in ln for ln in failing)
                 self.assertTrue(detected, "mutant not detected by an AllowlistSortTests test: " + name + "\n"
+                                + "\n".join(failing))
+
+
+class AllowlistRgTests(unittest.TestCase):
+    """Issue #640 X3b (structural allowlist), rg. Decision-level only; nothing is executed."""
+
+    DENY = [
+        "rg --pre=sh x y", "rg --pre sh -n x src", "rg --pre-glob=x x src", "rg --hostname-bin=sh x src",
+        "rg --hostname-bin sh x src", "rg --pr x", "rg --bogus x", "rg -nZ x", "rg -y x",
+    ]
+    ALLOW = [
+        "rg -n TODO src", "rg --pretty TODO src", "rg --hyperlink-format=default x src", "rg -e --pre=sh x",
+        "rg -- --pre=sh x", "rg -i -e foo src", "rg --no-config x", "rg -tpy foo src", "rg -A 2 foo src",
+        "rg --count x src", "rg x src",
+    ]
+
+    def test_rg_deny_list(self):
+        for cmd in self.DENY:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "DENY")
+
+    def test_rg_allow_list(self):
+        for cmd in self.ALLOW:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "ALLOW")
+
+
+class AllowlistRgMutationTests(unittest.TestCase):
+    """Issue #640 X3b (allowlist), rg: each parser rule must be detected by a named AllowlistRgTests failure."""
+
+    MUTANTS = {
+        "pre allowed as a long argument": ('"long_args": ("hyperlink-format", "glob",', '"long_args": ("pre", "hyperlink-format", "glob",'),
+        "unlisted long option not denied": (
+            '                raise Deny("program-option", name + " option is not in the allowlist: " + a)', '                pass'),
+        "cluster stops after the first flag letter": (
+            '                    j += 1\n                    continue', '                    break'),
+        "short value not consumed from the next word": (
+            '                    if j == len(a) - 1:\n                        i += 1  # the value is the next word',
+            '                    if False:\n                        i += 1  # the value is the next word'),
+        "-- does not end the options": (
+            '        if a == "--":\n            return', '        if a == "--":\n            pass'),
+        "abbreviation resolved against the allowlist only": (
+            '            hits = [o for o in spec["full_long"] if o == key] or [o for o in spec["full_long"] if o.startswith(key)]',
+            '            hits = [o for o in spec["long_flags"] + spec["long_args"] if o.startswith(key)]'),
+    }
+
+    def _run(self, hook_text):
+        with tempfile.TemporaryDirectory() as td:
+            root = os.path.realpath(td)
+            hooks = os.path.join(root, ".claude", "hooks")
+            host = os.path.join(root, "tests", "host")
+            os.makedirs(hooks)
+            os.makedirs(host)
+            write_text(os.path.join(hooks, "guard_destructive.py"), hook_text)
+            with open(THIS_FILE, encoding="utf-8") as f:
+                write_text(os.path.join(host, "test_claude_destructive_guard.py"), f.read())
+            proc = subprocess.run([sys.executable, "-m", "unittest", "-v",
+                                   "test_claude_destructive_guard.AllowlistRgTests"], cwd=host,
+                                  capture_output=True, text=True, timeout=300)
+            return proc.returncode, proc.stderr
+
+    def test_rg_allowlist_tests_detect_each_mutant(self):
+        with open(HOOK, encoding="utf-8") as f:
+            original = f.read()
+        code, out = self._run(original)
+        self.assertEqual(code, 0, "unmutated copy must pass AllowlistRgTests:\n" + out[-800:])
+        for name, (old, new) in self.MUTANTS.items():
+            with self.subTest(mutant=name):
+                self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
+                code, out = self._run(original.replace(old, new))
+                failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
+                detected = any("AllowlistRgTests." in ln for ln in failing)
+                self.assertTrue(detected, "mutant not detected by an AllowlistRgTests test: " + name + "\n"
                                 + "\n".join(failing))
 
 
