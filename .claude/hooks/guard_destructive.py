@@ -56,6 +56,7 @@ WRITE_NAMES = {"tee", "cp", "mv", "install", "rsync", "touch", "mkdir", "ln", "c
 DANGER_PY = re.compile(r"rmtree|remove|unlink|rmdir|removedirs|system|subprocess|popen|"
                        r"shutil|spawn|exec|eval|__import__|write|truncate|"
                        r"ctypes|socket|replace|rename|chmod|chown|symlink|copy|move|dump|link|"
+                       r"fileio|touch|mkdir|makedirs|mkfifo|mknod|utime|"
                        r"getattr|globals|locals|vars|builtins|__dict__", re.I)
 # python -c: open() is judged on the parsed AST (see _open_is_read_only), never by regex.
 READ_MODES = frozenset({"r", "rb", "br", "rt", "tr"})
@@ -661,6 +662,12 @@ def _open_is_read_only(code):
         elif isinstance(node, ast.Name) and node.id == "open" and id(node) not in call_funcs:
             return False
         elif isinstance(node, ast.Attribute) and node.attr == "open":
+            return False
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == "open":
+            # A definition shadows the builtin even though its name is stored as a string in the AST.
+            return False
+        elif isinstance(node, ast.arg) and node.arg == "open":
+            # An argument can shadow the builtin without creating an ast.Name Store node.
             return False
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
             # `from io import open as o` and `import builtins` reach open without a Name "open".
