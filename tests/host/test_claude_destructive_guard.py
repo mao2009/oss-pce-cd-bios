@@ -1300,6 +1300,11 @@ class X3bProgramOptionTests(unittest.TestCase):
         "ssh -o Proxy{Command=sh,} host", "tar x{I,} sh a.tar", "tar {I,}sh a.tar",
         "tar --checkpoint-action={exec,}=sh -xf a.tar", "export {RSYNC_RSH,X}=sh && rsync a b",
         "X=RSYNC_RSH; export $X=sh && rsync a b", "ssh -* host", "sort --compress*=sh x", "tar x* a.tar",
+        # found in review 7: += appends, indirect settings (printf -v, read, export without =), globs in -o values
+        "export RSYNC_RSH+=sh && rsync a b", "SSH_ASKPASS+=sh ssh host", "printf -v RSYNC_RSH sh && export RSYNC_RSH && rsync a b",
+        "read RSYNC_RSH <<< sh; export RSYNC_RSH; rsync a b", "ssh -o *roxyCommand=sh host",
+        "export $X=y", "export {A,B}=y",
+        "ssh -o Proxy*=sh host", "ssh -o ProxyCom*=sh host",
         # found in review 6: a leading = (zsh path expansion) names the same program
         "=sort --compress-program=sh x", "=tar -I sh -xf a.tar", "=rsync -e sh a b", "=ssh -o ProxyCommand=sh host",
     ]
@@ -1343,7 +1348,9 @@ class X3bMutationTests(unittest.TestCase):
         "sftp -D rule removed": ('"sftp": "SDF"', '"sftp": "SF"'),
         "tar remote-command long rules removed": ('"rsh-command", "rmt-command"),', '),'),
         "GNU and BSD name aliases removed": ('    name = PROGRAM_ALIAS.get(name, name)', '    pass'),
-        "program-naming environment variables not checked": ('    if any(v + "=" in w or', '    if False and any(v + "=" in w or'),
+        "program-naming environment variables not checked": (r'''    if any(v in w.replace("\\", "").replace('"', "").replace("'", "") for w in words for v in PROGRAM_ENV):''',
+                                                             r'''    if False:'''),
+        "ssh -o value glob not denied": (r'''                    if any(c in value for c in "*?["):''', r'''                    if False:'''),
         "expansion or escape in a tool argument not denied": (r'''        if "$" in a or "`" in a or SUBST in a or "\\" in a or "{" in a or "}" in a:''',
                                                               r'''        if False:'''),
         "brace in a tool argument not denied": (r'''or "\\" in a or "{" in a or "}" in a:''', r'''or "\\" in a:'''),
@@ -1358,8 +1365,8 @@ class X3bMutationTests(unittest.TestCase):
                                                        'name = name.rstrip(". ") or name'),
         "old-style tar cluster rule removed": (r'''    if name == "tar" and args and re.fullmatch(r"[A-Za-z]+", args[0]):''',
                                                r'''    if False:'''),
-        "environment name normalisation removed": (r'''or v + "=" in w.replace("\\", "").replace('"', "").replace("'", "")''',
-                                                   ''),
+        "environment name normalisation removed": (r'''w.replace("\\", "").replace('"', "").replace("'", "") for w in words''',
+                                                   r'''w for w in words'''),
         "ssh -F rule removed": ('"ssh": "F", ', ''),
         "ssh Include key removed": ('SSH_LAUNCH_KEYS = ("include", ', 'SSH_LAUNCH_KEYS = ('),
         "tar checkpoint action case-sensitive": ('(val if eq else nxt).lower().startswith("exec")',

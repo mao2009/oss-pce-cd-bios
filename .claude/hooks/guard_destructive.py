@@ -794,6 +794,8 @@ def program_option_rule(name, args):
                     raise Deny("program-option", name + " option names a program: " + a)
                 if ssh_o and ch == "o":
                     value = (a[j + 1:] or nxt).lower()
+                    if any(c in value for c in "*?["):
+                        raise Deny("program-option", name + " -o value with a glob is not inspected")
                     if any(k in value for k in SSH_LAUNCH_KEYS):
                         raise Deny("program-option", name + " -o names a local command: " + a)
                     break  # the rest of the cluster is the -o value
@@ -927,8 +929,8 @@ def analyze_argv(words, ctx, ps, depth):
     # A program-naming environment variable anywhere in the command (prefix, export, env -S, a shell string) is denied.
     if any("=" in w and ("{" in w or "}" in w or "$" in w) for w in words):
         raise Deny("expansion", "an assignment with an expansion is not inspected")
-    if any(v + "=" in w or v + "=" in w.replace("\\", "").replace('"', "").replace("'", "")
-           for w in words for v in PROGRAM_ENV):
+    # Any mention of a program-naming variable (assignment, +=, export, read, printf -v) is denied (fail closed).
+    if any(v in w.replace("\\", "").replace('"', "").replace("'", "") for w in words for v in PROGRAM_ENV):
         raise Deny("program-option", "a program-naming environment variable is not inspected")
     words = strip_redirections(words)
     while True:
