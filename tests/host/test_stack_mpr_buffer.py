@@ -28,7 +28,7 @@ def _row(case, timeline, refused=False, reason="none", stop_buf=None, **extra):
 
 
 TAM1 = [dict(i=1, pc=0x1E00, a=0xF8, buf=0x00, mpr1=0xF8), dict(i=2, pc=0x1E02, a=0xF8, buf=0xF8, mpr1=0xF8),
-        dict(i=3, pc=0x1E04, a=0xF8, buf=0xF8, mpr1=0xF8)]
+        dict(i=3, pc=0x1E04, a=0x00, buf=0xF8, mpr1=0xF8), dict(i=4, pc=0x1E06, a=0xF8, buf=0xF8, mpr1=0xF8)]
 
 
 class ModelTests(unittest.TestCase):
@@ -37,6 +37,12 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(S.REFUSED["A:mb_refuse-allowed"][1:], (0x02, 0xFF))
         self.assertEqual(S.REFUSED["AE:mb_refuse-allowed"][1:], (0x02, 0xFF))
         self.assertEqual(S.REFUSED["A:mb_irqf-allowed"][0]["verdict"], S.UNSAFE)
+
+    def test_a_is_cleared_before_every_tma00(self):
+        for scenario in ("tam1", "tamm", "tmam", "irq"):
+            a_values = [a for _, a, _, _ in S.COMPLETED[scenario] if a is not None]
+            self.assertIn(0x00, a_values, scenario)
+            self.assertNotEqual(a_values[-1], 0x00, scenario)
 
     def test_multi_bit_tma_is_the_or(self):
         self.assertEqual(S.COMPLETED["tmam"][0][2], 0x01 | 0x02)

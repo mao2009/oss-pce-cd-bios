@@ -19,16 +19,18 @@ verification-only patch. The patch adds a read-only accessor, `Memory::GG_Verify
 
 ## Results
 
-The expectations below were fixed before CI and checked against a local exploratory run. The fixture sets MPR3 = $01
-and MPR4 = $02, so a multi-bit TMA produces a distinct OR value.
+The expectations below were fixed before CI. A local exploratory run of an earlier revision of the probe matched
+them; this PR's CI is the first run of the final revision. Until it passes, the tables are expectations. The fixture
+sets MPR3 = $01 and MPR4 = $02, so a multi-bit TMA produces a distinct OR value, and clears A (LDA #$00) before
+every TMA #$00, so A must change to the returned value.
 
-| Scenario | Observed (A and A+D) |
+| Scenario | Expected (A and A+D) |
 |---|---|
-| TAM #$04 (A = $F8), then TMA #$00 | buffer $F8; TMA #$00 returns $F8 |
+| TAM #$04 (A = $F8), LDA #$00, TMA #$00 | buffer $F8; A $00 → $F8 |
 | TAM #$0C (two MPRs) | buffer $F8 |
-| TMA #$18 (multi-bit) | returns and stores $01 \| $02 = $03; TMA #$00 then returns $03 |
+| TMA #$18 (multi-bit) | returns and stores $01 \| $02 = $03; after LDA #$00, TMA #$00 returns $03 |
 | TAM #$00 | buffer unchanged ($02 from the preceding TMA #$10) |
-| IRQ1 pending, TAM #$04, handler runs TMA #$00 | the handler reads $F8, the value written by the TAM it interrupted |
+| IRQ1 pending, TAM #$04, handler runs LDA #$00; TMA #$00 | A $00 → $F8: the value written by the TAM it interrupted |
 
 | Forbidden TAM #$02 (A = $FF) | Buffer before the TAM → at the stop | Eight criteria |
 |---|---|---|
@@ -42,14 +44,15 @@ and MPR4 = $02, so a multi-bit TMA produces a distinct OR value.
 ## Checks
 
 The refused rows add one check to the unchanged eight criteria: the buffer at the stop must equal the buffer at the
-refused instruction's start, and must equal the expected value. A changed buffer at the stop is rejected
-(falsification).
+refused instruction's start, and must equal the expected value. On a correct run this holds by construction (the
+refused instruction never runs); it is exercised by a falsified row with a changed buffer, which is rejected. Every
+row also asserts that no instruction ran after a refusal.
 
 **Mutants**
 
 - D off and D checking the wrong bit: the TAM runs and the buffer becomes $FF. Both are rejected against the D
-  expectation.
-- Accessor replaced by a constant: rejected, because the TMA #$00 result in A no longer matches.
+  expectation, first at the refusal point (instruction 4 instead of 3).
+- Accessor replaced by a constant (probe-side; A is unchanged): rejected at the buffer checkpoints.
 
 ## Not covered
 

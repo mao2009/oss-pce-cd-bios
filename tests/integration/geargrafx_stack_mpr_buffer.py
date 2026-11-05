@@ -9,17 +9,20 @@ S5 (#647) observed MPR0-7 only. The pinned source keeps a second piece of state 
   Memory::Reset():                m_mpr_buffer = 0.
 The verification-only patch adds a read-only accessor (Memory::GG_VerifyMprBuffer). The probe records A, the buffer
 and MPR1 at every instruction start (route mb_<scenario>; MPR3 = $01 and MPR4 = $02 for distinct OR values):
-  tam1    TAM #$04 (A = $F8); TMA #$00                 single MPR
-  tamm    TAM #$0C (A = $F8); TMA #$00                 two MPRs
-  tmam    TMA #$18; TMA #$00                           multi-bit TMA: OR of MPR3 | MPR4 = $03
+  tam1    TAM #$04 (A = $F8); LDA #$00; TMA #$00       single MPR
+  tamm    TAM #$0C (A = $F8); LDA #$00; TMA #$00       two MPRs
+  tmam    TMA #$18; LDA #$00; TMA #$00                 multi-bit TMA: OR of MPR3 | MPR4 = $03
   tam0    TMA #$10; LDA #$55; TAM #$00; TMA #$00       TAM with no bit leaves the buffer
   refuse  TMA #$10; LDA #$FF; TAM #$02; TMA #$00       forbidden TAM (MPR1 -> $FF): refused by D before it runs, or
                                                        run (A, E) and refused at the next instruction
-  irq     IRQ1 pending, I = 0; TAM #$04 (A = $F8); the handler runs TMA #$00
+  irq     IRQ1 pending, I = 0; TAM #$04 (A = $F8); the handler runs LDA #$00; TMA #$00
   irqf    IRQ1 pending, I = 0; TAM #$02 (A = $FF)     IRQ-in-TAM with a forbidden TAM
 Each value below follows from the pinned source and was written before the first CI run (checked against a local
-exploratory MinGW build, supplementary). A broken observation (the accessor replaced by a constant) must be caught: the
-TMA #$00 result in A is checked against the buffer independently of the accessor.
+exploratory MinGW build of an earlier revision, supplementary). A is cleared before every TMA #$00, so the value it
+returns is checked in A independently of the accessor; a broken accessor (replaced by a constant) is caught by the
+buffer checkpoints. The added buffer check on refused rows holds by construction on a correct run (the refused
+instruction never runs); it is exercised by a falsified row, and the D mutants are caught first by the refusal
+point.
 
 Refused rows are judged on the eight criteria of geargrafx_stack_methods.py plus one added check: the buffer at the
 stop equals the buffer at the refused instruction's start, and (for D) the buffer before the TAM, so a refusal that
@@ -46,11 +49,11 @@ H, GUEST = G.HANDLER, G.GUEST
 INITIAL = 0x00          # Memory::Reset
 # Checkpoints: (instruction start, A or None, buffer, MPR1 or None).
 COMPLETED = {
-    "tam1": [(2, None, 0xF8, 0xF8), (3, 0xF8, 0xF8, 0xF8)],
-    "tamm": [(2, None, 0xF8, 0xF8), (3, 0xF8, 0xF8, 0xF8)],
-    "tmam": [(2, 0x03, 0x03, 0xF8), (3, 0x03, 0x03, 0xF8)],
+    "tam1": [(2, None, 0xF8, 0xF8), (3, 0x00, 0xF8, 0xF8), (4, 0xF8, 0xF8, 0xF8)],
+    "tamm": [(2, None, 0xF8, 0xF8), (3, 0x00, 0xF8, 0xF8), (4, 0xF8, 0xF8, 0xF8)],
+    "tmam": [(2, 0x03, 0x03, 0xF8), (3, 0x00, 0x03, 0xF8), (4, 0x03, 0x03, 0xF8)],
     "tam0": [(2, 0x02, 0x02, 0xF8), (4, 0x55, 0x02, 0xF8), (5, 0x02, 0x02, 0xF8)],
-    "irq": [(2, None, 0xF8, 0xF8), (3, 0xF8, 0xF8, 0xF8)],      # the handler's TMA #$00 reads the TAM's value
+    "irq": [(2, None, 0xF8, 0xF8), (3, 0x00, 0xF8, 0xF8), (4, 0xF8, 0xF8, 0xF8)],   # handler: TMA #$00 = TAM's value
 }
 COMPLETED_MPRS = {"tam1": {2: 0xF8}, "tamm": {2: 0xF8, 3: 0xF8}, "tmam": {3: 0x01, 4: 0x02},
                   "tam0": {4: 0x02}, "irq": {2: 0xF8}}
@@ -110,6 +113,8 @@ def check_completed(row, case):
         raise ValueError(f"{case}: buffer at the stop {row['mb']['stop_buf']:#x}")
     if row["io_reads"] or row["io_writes"]:
         raise ValueError(f"{case}: hardware page accessed")
+    if row["instructions_after_refusal"] != 0:
+        raise ValueError(f"{case}: instructions after a refusal")
     want_entry = 2 if scenario == "irq" else 0
     if row.get("handler_entry_instruction") != want_entry:
         raise ValueError(f"{case}: handler entry {row.get('handler_entry_instruction')}, want {want_entry}")
@@ -120,6 +125,8 @@ def check_refused(row, case):
     _row_ok(row, case)
     expect, before, stop = REFUSED[case]
     got, failing = M.check_armed(row, case, expect)
+    if row["instructions_after_refusal"] != 0:   # also on the UNSAFE row: nothing ran after the refusal
+        raise ValueError(f"{case}: {row['instructions_after_refusal']} instructions after the refusal")
     if row.get("refusal_reason") != expect["reason"]:
         raise ValueError(f"{case}: refusal reason {row.get('refusal_reason')!r}, want {expect['reason']!r}")
     tam_index = 3 if "refuse" in case else 1

@@ -415,9 +415,10 @@ bool route_for(const std::string& name, Route* r)
     else if (name.compare(0, 3, "mb_") == 0) {
         std::string s = name.substr(3);
         g_mb = true;
-        if (s == "tam1") { r->a = 0xF8; r->code = {0x53, 0x04, 0x43, 0x00, bra, self}; }          // TAM #$04; TMA #$00
-        else if (s == "tamm") { r->a = 0xF8; r->code = {0x53, 0x0C, 0x43, 0x00, bra, self}; }     // TAM #$0C; TMA #$00
-        else if (s == "tmam") { r->code = {0x43, 0x18, 0x43, 0x00, bra, self}; }                  // TMA #$18 (OR); TMA #$00
+        // LDA #$00 before each TMA #$00, so A must change to show what TMA #$00 returns.
+        if (s == "tam1") { r->a = 0xF8; r->code = {0x53, 0x04, 0xA9, 0x00, 0x43, 0x00, bra, self}; }   // TAM #$04
+        else if (s == "tamm") { r->a = 0xF8; r->code = {0x53, 0x0C, 0xA9, 0x00, 0x43, 0x00, bra, self}; }  // TAM #$0C
+        else if (s == "tmam") { r->code = {0x43, 0x18, 0xA9, 0x00, 0x43, 0x00, bra, self}; }   // TMA #$18 (OR)
         else if (s == "tam0") { r->code = {0x43, 0x10, 0xA9, 0x55, 0x53, 0x00, 0x43, 0x00, bra, self}; }
         else if (s == "refuse") { r->code = {0x43, 0x10, 0xA9, 0xFF, 0x53, 0x02, 0x43, 0x00, bra, self}; }
         else if (s == "irq" || s == "irqf") {   // IRQ1 pending, I = 0; the handler reads TMA #$00
@@ -425,7 +426,7 @@ bool route_for(const std::string& name, Route* r)
             r->a = forbidden ? 0xFF : 0xF8;
             r->code = {0x53, (u8)(forbidden ? 0x02 : 0x04), bra, self};
             r->irr = 0x02; r->vector_lo = 0x1FF8; r->p = 0x00;
-            g_handler_code = {0x43, 0x00, bra, self};
+            g_handler_code = {0xA9, 0x00, 0x43, 0x00, bra, self};   // LDA #$00; TMA #$00
         }
         else return false;
     }

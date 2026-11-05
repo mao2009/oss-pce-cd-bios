@@ -227,7 +227,7 @@ class ClassifierTests(unittest.TestCase):
 
 
 class PatchBoundaryTests(unittest.TestCase):
-    def test_patch_touches_only_the_four_core_files(self):
+    def test_patch_touches_only_the_listed_core_files(self):
         text = PATCH.read_text(encoding="utf-8")
         files = re.findall(r"^\+\+\+ b/(\S+)", text, re.M)
         # (#654 adds memory.h, for one read-only accessor and its comment only.)
