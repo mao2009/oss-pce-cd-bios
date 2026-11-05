@@ -200,16 +200,18 @@ def _check_precondition(path, source, mmio, sources, files, report):
                 continue
             found.add(cpath)
             if cpath not in declared:
-                report.add("CI-3.03", FAIL, where(ln), f"undeclared caller of {ln.operand.strip()} (MPR0 = $FF "
+                report.add("CI-3.03", FAIL, where(ln), f"undeclared caller of {_target(ln)} (MPR0 = $FF "
                            "precondition not established by the contract)")
                 continue
             pass_decl = files.get(cpath, {}).get("mmio_pass_labels", {})
             pass_labels = {lab for lab, reason in pass_decl.items() if reason}   # each needs a stated reason
             _, start, _ = _routine_of(csrc, ln, frozenset(pass_labels))
             tams = [m for m in range(start, k) if _touches_mpr0(csrc, cins[m])]
-            if tams and not ln.conditional and any(cins[m].conditional for m in (tams[-1], tams[-1] - 1)):
-                report.add("CI-3.03", FAIL, where(ln), "the MPR0 set-up before this unconditional call is inside a "
-                           "conditional block (not every build maps MPR0)")
+            # The reader does not track which conditional block a line is in, so any conditional MPR0 set-up or other
+            # TAM touching MPR0 on the path to the call is a FAIL, whether or not the call itself is conditional.
+            if tams and any(cins[m].conditional for m in tams + [tams[-1] - 1]):
+                report.add("CI-3.03", FAIL, where(ln), "an MPR0 set-up or TAM touching MPR0 before this call is inside "
+                           "a conditional block (the C-3 reader cannot show that every build calling here maps MPR0)")
                 continue
             between = [lab for x in _labels_between(csrc, cins[tams[-1]].number, ln.number) for lab in x.labels] \
                 if tams else []

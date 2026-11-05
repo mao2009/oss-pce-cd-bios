@@ -339,6 +339,16 @@ class NegativeTests(unittest.TestCase):
                                                        ".ifdef X\n    lda #$FF\n    tam #$01\n.endif\n")}
         self.assert_fail("CI-3.03", src)
 
+    def test_conditional_setup_before_differently_conditional_call(self):   # R1: .ifdef A set-up, .ifdef B call
+        src = {**SOURCES, "src/reset.s": RESET.replace("    lda #$FF\n    tam #$01\n",
+                                                       ".ifdef A\n    lda #$FF\n    tam #$01\n.endif\n").replace(
+            "    jsr dev_poll\n", ".ifdef B\n    jsr dev_poll\n.endif\n")}
+        self.assert_fail("CI-3.03", src)
+
+    def test_unconditional_setup_before_conditional_call_is_accepted(self):   # the reset_entry.s pattern
+        src = {**SOURCES, "src/reset.s": RESET.replace("    jsr dev_poll\n", ".ifdef B\n    jsr dev_poll\n.endif\n")}
+        self.assertNotIn(C.FAIL, by_rule(run(src), "CI-3.03"))
+
     def test_multi_mpr_tam_remaps_mpr0_before_call(self):   # M2: TAM #$05 includes MPR0
         src = {**SOURCES, "src/reset.s": RESET.replace("    jsr dev_poll\n", "    lda #$00\n    tam #$05\n    jsr dev_poll\n")}
         c = copy.deepcopy(BASE)
