@@ -94,6 +94,74 @@ Length 0 means 65536 bytes.
 
 Today the bios scope has no block transfers. The tool prints the site count.
 
+## CI-3: IRQ / MMIO contract (#661)
+
+| Rule | Check |
+|---|---|
+| CI-3.01 | ST0 / ST1 / ST2 sites are declared. They write the VDC independently of the MPRs (#365 / #429). Declared sites are BLOCKED (production allowlist UNDECIDED). |
+| CI-3.02 | Page-0 accesses ($0000-$1FFF, through MPR0): see below. |
+| CI-3.03 | `precondition` routines and their callers: see below. |
+| CI-3.04 | Indirect (pointer) accesses are declared with a count and a reason. They are NOT_STATIC, because the effective address is a run-time value. |
+| CI-3.05 | The VECTORS segment and IRQ handlers: see below. |
+| CI-3.06 | NOT_STATIC: device-originated DMA (#367), IRQ timing and IRQs newly asserted inside an instruction (#653), and real hardware (#655). |
+
+### CI-3.02: page-0 accesses
+
+Every page-0 memory operand must use an address declared for the file. These are a FAIL:
+
+- an undeclared access, or a declared address that is never used;
+- an indexed page-0 access, because its reach is not a single declared address;
+- a memory operand that cannot be resolved and is not a label of the file, such as an import or an expression
+  (fail closed).
+
+Addressing follows ca65:
+
+- An operand without `a:` and a value of $FF or less is zero page, which is WRAM at $2000, not MMIO.
+- The exception is `,y` on opcodes without a zero page,Y form (everything except LDX and STX). ca65 assembles those
+  as absolute,Y.
+- For TST, the memory operand is the second one.
+
+A TAM that maps $FF through an MPR other than MPR0 is a FAIL. Absolute accesses to pages 2-6, and to
+linker-placed RAM (BSS), are NOT_STATIC.
+
+**`window`:** the file maps MPR0 to the hardware page itself. Each window is `LDA #$FF / TAM #$01` …
+`TAM #$01` (the CI-1 `restore`). The window must:
+
+- be one straight-line run, with no label, branch, jump, call, return, CLI, PLP or RTI inside it;
+- follow an SEI earlier in the routine, with no CLI or PLP after that SEI;
+- contain every page-0 access of the file.
+
+A window file needs at least one window and one access.
+
+### CI-3.03: `precondition` routines
+
+The routine documents that its caller maps MPR0 = $FF.
+
+- The tool itself finds every JSR / JMP / BSR in a bios file to any label the routine's file exports.
+- The calling file must be listed in `callers`. A listed caller that never calls is also a FAIL.
+- The closest `TAM #$01` before the call must be `LDA #$FF / TAM #$01`, not a restore, in the same routine and on
+  one straight-line run to the call: no branch, return or label in between.
+- A non-local label in that run is accepted only if it is a declared pass-through label (`mmio_pass_labels`, with a
+  reason) and no branch, jump or call in the bios scope targets it. Such a label is reported NOT_STATIC, because an
+  entry from outside the bios scope would skip the setup.
+- A JSR / JMP / BSR whose operand is not a bare label (indirect, or an expression) is a FAIL, because callers and
+  targets cannot be found statically.
+- Callers outside the bios scope are NOT_STATIC.
+
+### CI-3.05: VECTORS and handlers
+
+- VECTORS holds exactly five `.word` entries, and nothing else: IRQ2/BRK, IRQ1, Timer and NMI must point to declared
+  handlers, and Reset to the declared reset entry.
+- A handler body runs to the next non-local label and must end in RTI or an unconditional loop, with no
+  fall-through.
+- A handler is a FAIL if it contains TAM / TMA / ST0-2, a block transfer, a call or jump to another routine, or an
+  indirect, unresolved or page-0 operand.
+
+### Limits of the reader
+
+- A constant assigned more than once is reported as unsupported, which is a FAIL.
+- Command-line `-D` overrides used by the build scripts are outside the check.
+
 ## Not decidable statically (NOT_STATIC / UNKNOWN)
 
 - Self-modifying code.
