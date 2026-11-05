@@ -679,6 +679,7 @@ def python_word_certainty(seg):
         # /dev/fd path becomes a word). It is not certain.
         return False
     state = None
+    word_start = True
     for ch in seg:
         if state == "'":
             if ch == "'":
@@ -688,10 +689,15 @@ def python_word_certainty(seg):
                 state = None
             elif ch in DQUOTED_SPECIAL:
                 return False
+        elif ch == "#" and word_start:
+            # A word-initial # starts a comment, exactly as split_segments tokenises it: the rest of the
+            # segment is not part of any word, so it cannot change the argv.
+            break
         elif ch in "'\"":
             state = ch
         elif ch in UNQUOTED_SPECIAL:
             return False
+        word_start = ch in " \t;&|()"
     return state is None
 
 
