@@ -859,6 +859,16 @@ class PythonArgvCertaintyTests(unittest.TestCase):
                 self.assertEqual(self._v(cmd), "DENY")
         self.assertEqual(self._v("nice python3 -m unittest discover -s tests/host -v"), "ALLOW")
 
+    def test_trailing_comment_does_not_make_python_argv_uncertain(self):
+        # A word-initial # starts a comment (the tokenizer strips it the same way): text after it is
+        # not a word and cannot change the argv, so it must not make a certain python command uncertain.
+        self.assertEqual(self._v("python3 -c 'print(1)' # just a comment"), "ALLOW")
+        self.assertEqual(verdict("python3 -c 'print(1)' # just a comment", "PowerShell"), "ALLOW")
+        # The comment does not hide the code either: dangerous code before it is still judged.
+        self.assertEqual(self._v("python3 -c \"import os; os.remove('x')\" # comment"), "DENY")
+        # A # inside a word is not a comment and stays uninspected (fail closed, unchanged).
+        self.assertEqual(self._v("python3 -c 'print(1)' foo#bar"), "DENY")
+
     def test_env_split_string_cannot_hide_an_uninspected_launcher(self):
         # GNU env -S splits its string *after* the shell, so scanning the shell's
         # original argv is insufficient. The hook only decides; it never executes these.
@@ -1083,6 +1093,8 @@ class PythonArgvMutationTests(unittest.TestCase):
         "certainty check removed": (
             "if not python_word_certainty(seg):",
             "if False:"),
+        "comment not treated as certain": (
+            'elif ch == "#" and word_start:', 'elif ch == "#" and False:'),
         "attached code ignored (next argument only)": (
             "codes.append(rest if rest else (args[i + 1] if i + 1 < len(args) else \"\"))",
             "codes.append(args[i + 1] if i + 1 < len(args) else \"\")"),
@@ -1091,6 +1103,7 @@ class PythonArgvMutationTests(unittest.TestCase):
             "if False:"),
     }
     DETECTING = ["test_env_split_string_cannot_hide_an_uninspected_launcher",
+                 "test_trailing_comment_does_not_make_python_argv_uncertain",
                  "test_known_bypasses_are_denied", "test_single_quoted_dollar_in_argument_is_refused",
                  "test_separate_c_forms_are_still_denied"]
 
