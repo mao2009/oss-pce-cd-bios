@@ -7,7 +7,71 @@ on:
 permissions:
   contents: read
 jobs:
-  bios-dev:
+  scope:
+    # No PR code or toolchain is executed here. Any ambiguity selects full CI.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Classify documentation-only changes and validate text
+        id: classify
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          base = "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}"
+          head = os.environ["GITHUB_SHA"]
+          docs_only = False
+          if re.fullmatch(r"[0-9a-f]{40}", base) and base != "0" * 40:
+              try:
+                  subprocess.run(["git", "merge-base", "--is-ancestor", base, head],
+                                 check=True, capture_output=True)
+                  raw = subprocess.check_output([
+                      "git", "diff", "--no-ext-diff", "--no-renames",
+                      "--name-status", "-z", base, head,
+                  ])
+                  parts = [item for item in raw.split(b"\0") if item]
+                  if parts and len(parts) % 2 == 0:
+                      docs_only = True
+                      for status, encoded_path in zip(parts[::2], parts[1::2]):
+                          path = encoded_path.decode("utf-8")
+                          allowed = (path == "README.md" or
+                                     (path.startswith("docs/") and path.endswith(".md")))
+                          if status not in (b"A", b"M") or not allowed:
+                              docs_only = False
+                              break
+                          entry = subprocess.check_output([
+                              "git", "ls-tree", "-z", head, "--", path,
+                          ])
+                          meta, sep, name = entry.partition(b"\t")
+                          if (not sep or not meta.startswith(b"100644 blob ") or
+                                  name != encoded_path + b"\0"):
+                              docs_only = False
+                              break
+              except (OSError, UnicodeError, subprocess.CalledProcessError) as error:
+                  docs_only = False
+                  print(f"Could not classify changes; using full CI: {error}")
+              if docs_only:
+                  subprocess.run(["git", "diff", "--check", base, head], check=True)
+                  for _, encoded_path in zip(parts[::2], parts[1::2]):
+                      Path(encoded_path.decode("utf-8")).read_text(encoding="utf-8")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"docs_only={str(docs_only).lower()}\n")
+          print(f"docs_only={docs_only}; full CI is the fallback")
+          PY
+  bios-dev-full:
+    needs: scope
+    if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -103,10 +167,28 @@ jobs:
           path: intermediate/
           if-no-files-found: error
           retention-days: 1
+  bios-dev:
+    # This job keeps the branch-ruleset required check name. A skipped full job
+    # counts as success only after the independent scope check has passed.
+    needs: [scope, bios-dev-full]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Enforce full CI result or validated documentation-only scope
+        run: |
+          test "${{ needs.scope.result }}" = "success"
+          if [ "${{ needs.scope.outputs.docs_only }}" = "true" ]; then
+            test "${{ needs.bios-dev-full.result }}" = "skipped"
+          else
+            test "${{ needs.bios-dev-full.result }}" = "success"
+          fi
   guard-bios-dev:
     # Publishes only what the bios-dev job handed over. It runs no build code: the trusted main tools, python3 resolved
     # before anything else, the workflow files for the placement check, the download, the guard and the upload.
-    needs: bios-dev
+    needs: bios-dev-full
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:

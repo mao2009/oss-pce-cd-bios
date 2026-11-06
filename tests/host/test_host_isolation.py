@@ -62,7 +62,10 @@ JOB_LEVEL_CONTINUE_ON_ERROR = re.compile(r"(?m)^    continue-on-error:")
 JOB_LEVEL_IF = re.compile(r"(?m)^    if:[ \t]*(.*?)[ \t]*$")
 # Job-level if: expressions allowed on the real-core job, pinned exactly. nightly.yml's build job is skipped when
 # main's SHA is unchanged (change-aware plan); no other workflow may guard the real-core job.
-ALLOWED_JOB_IF = {".github/workflows/nightly.yml": {"needs.plan.outputs.build == 'true'"}}
+ALLOWED_JOB_IF = {
+    ".github/workflows/nightly.yml": {"needs.plan.outputs.build == 'true'"},
+    ".github/workflows/ci.yml": {"needs.scope.outputs.docs_only != 'true'"},
+}
 
 
 class DetectorTests(unittest.TestCase):
@@ -144,6 +147,26 @@ class HostIsolationTests(unittest.TestCase):
                                      f"{workflow}: job running make test-real-core is optional")
                     self.assertLessEqual(set(JOB_LEVEL_IF.findall(job)), ALLOWED_JOB_IF.get(workflow, set()),
                                          f"{workflow}: job running make test-real-core is guarded by if:")
+
+
+    def test_documentation_fast_path_requires_proven_scope_and_full_result(self):
+        # Only the exact docs-only condition may exempt the full real-core gate.
+        # The required names must reject both a failed scope and a failed full job.
+        for workflow, required, full in (
+                (".github/workflows/ci.yml", "verify", "verify-full"),
+                (".github/workflows/api-source.yml", "bios-dev", "bios-dev-full")):
+            with self.subTest(workflow=workflow):
+                text = (ROOT / workflow).read_text(encoding="utf-8")
+                self.assertIn(f"  {full}:\n    needs: scope\n    if: needs.scope.outputs.docs_only != 'true'", text)
+                self.assertIn(f"  {required}:\n", text)
+                self.assertIn(f"    needs: [scope, {full}]\n    if: always()\n", text)
+                self.assertIn('test "${{ needs.scope.result }}" = "success"', text)
+                self.assertIn(f'test "${{{{ needs.{full}.result }}}}" = "success"', text)
+                self.assertIn(f'test "${{{{ needs.{full}.result }}}}" = "skipped"', text)
+                self.assertIn('status not in (b"A", b"M") or not allowed', text)
+                self.assertIn('meta.startswith(b"100644 blob ")', text)
+                self.assertIn('path == "README.md"', text)
+                self.assertIn('path.startswith("docs/") and path.endswith(".md")', text)
 
 
 if __name__ == "__main__":
