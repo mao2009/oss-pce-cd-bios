@@ -120,13 +120,13 @@ class StepEnvironmentRefused(unittest.TestCase):
         text = 'name: x\ndescription: x\nruns:\n  using: composite\n  steps:\n    - run: echo /tmp >> "$GITHUB_PATH"\n'
         self.assert_refused(text, 'GITHUB_PATH', rel=ACTION)
 
-    def test_allowlisted_step_with_extra_path_key_refused(self):
-        # The real ci.yml step is allowed GH_TOKEN only. Adding PATH to that step must be refused.
+    def test_provenance_step_with_extra_path_key_refused(self):
+        # The full-CI provenance step passes GH_TOKEN only to that command.
+        # Injecting a PATH override into the same step must still be refused.
         text = real('.github/workflows/ci.yml')
-        anchor = '          GH_TOKEN: ${{ github.token }}\n        run: |\n          python3 tools/provenance_guard.py'
+        anchor = '        run: |\\n          GH_TOKEN="${{ github.token }}" python3 tools/provenance_guard.py'
         self.assertEqual(1, text.count(anchor))
-        mutated = text.replace(anchor, '          GH_TOKEN: ${{ github.token }}\n          PATH: /tmp/evil\n'
-                                       '        run: |\n          python3 tools/provenance_guard.py')
+        mutated = text.replace(anchor, '        env:\\n          PATH: /tmp/evil\\n' + anchor)
         problems = guard.scope_key_violations(mutated, CI)
         self.assertTrue(any('PATH' in p for p in problems), problems)
 
