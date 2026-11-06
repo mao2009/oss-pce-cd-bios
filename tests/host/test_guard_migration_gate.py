@@ -373,6 +373,18 @@ class RequiredJobIndependentOfUploadTests(unittest.TestCase):
                     mutant = text[:start] + mutant_block + text[end:]
                     self.refused(mutant, rel, f"upstream job {upstream!r} of required guard job {job!r} may not set continue-on-error", form)
 
+    def test_case_variant_if_and_continue_on_error_keys_are_refused(self):
+        for job in WORKFLOWS:
+            for key in ("If: false", "IF: false", "Continue-On-Error: true", "continue_on_error: true"):
+                for form, text, rel, upstream in variants(job):
+                    with self.subTest(job=job, form=form, key=key):
+                        start, end = job_span(text, job)
+                        block = re.sub(r"(\A[^\n]*\n)", lambda m: m.group(1) + f"    {key}\n", text[start:end], count=1)
+                        self.refused(text[:start] + block + text[end:], rel, "in another form", form)
+                        ustart, uend = job_span(text, upstream)
+                        ublock = re.sub(r"(\A[^\n]*\n)", lambda m: m.group(1) + f"    {key}\n", text[ustart:uend], count=1)
+                        self.refused(text[:ustart] + ublock + text[uend:], rel, f"upstream job {upstream!r}", form)
+
     def test_trusted_checkout_values_are_case_sensitive(self):
         for job in WORKFLOWS:
             rel, _up = WORKFLOWS[job]

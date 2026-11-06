@@ -2249,6 +2249,13 @@ def _result_gate_text(upstream):
     return f'test "${{{{ needs.{upstream}.result }}}}" = "success"'
 
 
+def _odd_job_keys(body):
+    """Job keys that spell `if` or `continue-on-error` in another case or with underscores. Whether GitHub reads them as
+    the real key is not decidable here, so they are refused (re-review of the PR #697 fix)."""
+    return sorted(str(k) for k in body
+                  if str(k).casefold().replace("_", "-") in ("if", "continue-on-error") and k not in ("if", "continue-on-error"))
+
+
 def _step_run(step):
     run = step.get("run") if isinstance(step, dict) else None
     return run.strip() if isinstance(run, str) else None
@@ -2264,6 +2271,9 @@ def _required_job_problems(workflow, job, upstream, body, lines):
         problems.append(f"{tag}: needs must be exactly [{upstream!r}] (the real-core job it gates); found {body.get('needs')!r}")
     elif _job_needs(lines, job) != [upstream]:
         problems.append(f"{tag}: the YAML needs and the line reading of needs disagree (refused)")
+    if _odd_job_keys(body):
+        problems.append(f"{tag} has a job key that spells if or continue-on-error in another form "
+                        f"{_odd_job_keys(body)} (refused)")
     has_if = "if" in body
     if has_if and body.get("if") != "always()":
         problems.append(f"{tag} has a job-level `if` other than exactly always() (refused: a skipped required check "
@@ -2333,7 +2343,7 @@ def required_guard_job_violations(text, workflow, partial_fixtures=False):
             # The gate trusts needs.<upstream>.result. A job-level continue-on-error on the upstream reports 'success'
             # for a failed job, so the gate would be vacuous (independent review of the PR #697 fix, MAJOR).
             up = jobs.get(upstream)
-            if isinstance(up, dict) and "continue-on-error" in up:
+            if isinstance(up, dict) and (_odd_job_keys(up) or "continue-on-error" in up):
                 problems.append(f"{workflow}: upstream job {upstream!r} of required guard job {job!r} may not set "
                                 "continue-on-error (the result gate would read success for a failed job; refused)")
             elif not isinstance(up, dict) and not partial_fixtures:
