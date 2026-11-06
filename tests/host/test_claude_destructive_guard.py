@@ -3554,6 +3554,8 @@ class PythonOpenTests(unittest.TestCase):
         "import io; io.open('a.txt', 'w')",
         # Fullwidth identifiers are NFKC-normalised by Python: this is open('a.txt', 'w').
         "ｏｐｅｎ('a.txt', 'w')",
+        # Raw text must still be checked: a combining mark after a danger word is refused (main refuses it).
+        "print('remové')",
     ]
     ORDINARY_ALLOWED = [
         "import json; print(json.dumps({'a': 1}))",
@@ -3606,8 +3608,11 @@ class PythonOpenMutationTests(unittest.TestCase):
         "dump boundary lost (dumps over-denied)": (
             "dump\\b|", "dump|"),
         "NFKC normalisation removed": (
-            'if DANGER_PY.search(unicodedata.normalize("NFKC", code)):',
+            'if DANGER_PY.search(code) or DANGER_PY.search(unicodedata.normalize("NFKC", code)):',
             "if DANGER_PY.search(code):"),
+        "raw text not searched (normalised only)": (
+            'if DANGER_PY.search(code) or DANGER_PY.search(unicodedata.normalize("NFKC", code)):',
+            'if DANGER_PY.search(unicodedata.normalize("NFKC", code)):'),
         "new file mutation methods ignored": (
             "fileio|touch|mkdir|makedirs|mkfifo|mknod|utime|",
             ""),

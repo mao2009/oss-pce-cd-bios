@@ -1438,8 +1438,9 @@ def python_rule(args):
         if "$" in arg or "`" in arg or SUBST in arg:
             raise Deny("unexpanded", "python argument with an unexpanded variable or substitution is not inspected")
     for code in python_c_codes(args):
-        # Python NFKC-normalises identifiers, so ｏｐｅｎ(...) is open(...). Match the normalised text.
-        if DANGER_PY.search(unicodedata.normalize("NFKC", code)):
+        # Python NFKC-normalises identifiers, so ｏｐｅｎ(...) is open(...). Match the raw text (as before) and the
+        # normalised text. Normalising alone would let a word with a combining mark (remove + U+0301) through.
+        if DANGER_PY.search(code) or DANGER_PY.search(unicodedata.normalize("NFKC", code)):
             raise Deny("python-c", "python -c with a file or process operation")
 
 
