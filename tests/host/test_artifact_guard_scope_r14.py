@@ -124,9 +124,9 @@ class StepEnvironmentRefused(unittest.TestCase):
         # The full-CI provenance step passes GH_TOKEN only to that command.
         # Injecting a PATH override into the same step must still be refused.
         text = real('.github/workflows/ci.yml')
-        anchor = '        run: |\\n          GH_TOKEN="${{ github.token }}" python3 tools/provenance_guard.py'
+        anchor = '        run: |\n          GH_TOKEN="${{ github.token }}" python3 tools/provenance_guard.py'
         self.assertEqual(1, text.count(anchor))
-        mutated = text.replace(anchor, '        env:\\n          PATH: /tmp/evil\\n' + anchor)
+        mutated = text.replace(anchor, '        env:\n          PATH: /tmp/evil\n' + anchor)
         problems = guard.scope_key_violations(mutated, CI)
         self.assertTrue(any('PATH' in p for p in problems), problems)
 
