@@ -5,6 +5,12 @@ missing tool, invalid setting, failed assertion, invalid assembler input,
 timeout, or core crash. Expected negative failures are assertions that the
 invalid input was rejected, never evidence that the invalid ROM works.
 
+## Multi-sector loader integration evidence (2026-11-06)
+
+Merged [#681](https://github.com/mao2009/oss-pce-cd-bios/pull/681) and [#683](https://github.com/mao2009/oss-pce-cd-bios/pull/683) reported separate 22-case cold/warm runs against **synthetic media** on pinned Geargrafx. The 8 KiB HuCARD+CUE path and the 256 KiB DEV BIOS-buffer path are different. The latter's CAP check rejects a silent HuCARD fallback. Positive cases, prewrite refusal, interrupted reads and **ROM-mutant** readback errors are covered; a mutant is not a hardware/bus failure test. A merged PR report does **not** imply this documentation branch has rerun the suite.
+
+Current main `5a8dc5a` has DEV implementation count 14/81, 67 stubs, owner-approved DEV_CALLABLE 0, reference ABI VERIFIED 0/81 and reference JSR permitted 0/81. Historical main `f90c16b` had 9 DEV implementations and 72 stubs. None of the above is a commercial game-compatibility result.
+
 ## Host tests
 
 `python3 -m unittest discover -s tests/host -v` runs the current host

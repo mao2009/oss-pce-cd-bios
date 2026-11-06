@@ -1,6 +1,8 @@
 # CD ブートローダの最小仕様と合成ブートメディア（#550、wave26 W04）
 
-状態: **仕様案（DRAFT）。実装・ROM 配線・参照 BIOS 実行は行わない。**
+状態: **商用 System Card 互換契約は DRAFT。参照 BIOS 実行・実製品 ABI の確証はない。** 別物である DEV 専用の合成 IPL 実験（[#681](https://github.com/mao2009/oss-pce-cd-bios/pull/681) の8 KiB経路、[#683](https://github.com/mao2009/oss-pce-cd-bios/pull/683) の256 KiB経路）は 2026-11-06 に main へ統合された。本仕様の商用互換契約は依然として未検証である。
+
+main `5a8dc5a` は DEV implementation count 14/81、67 stubs であるが、商用互換契約を証明しない。歴史的 main `f90c16b` は9 DEV実装・72スタブ。詳細な承認・ABI・参照JSRの別指標は [status](status.md) を参照。
 参照 JSR ゲートは CLOSED のまま。`spec/api_contracts.json` の schema・VERIFIED 状態は変更しない。
 
 本書は次を分ける。
