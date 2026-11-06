@@ -163,13 +163,20 @@ def judge(records: dict, case: dict, body: bytes, payload_tag: int):
                 expected[a - 0x3000] = body[k] ^ case.get("visible_xor", 0)
         if buf[LOAD_LO:LOAD_HI] != bytes(expected):
             raise ValueError(f"{case['name']} {cycle}: visible load area differs from the copied prefix")
-        pay = buf[PRES:PRES + 11]
+        pay = buf[PRES:PRES + 15]
         if case["payload_ran"]:
             if pay[0] != payload_tag or pay[8] != 0x5A:
                 raise ValueError(f"{case['name']} {cycle}: payload did not run to completion: {pay.hex()}")
             # DEV: the raw value is the bank. PUBLIC: bank = raw + $80 (mpr_add), observed on the pinned core.
-            if pay[5] != (case["mprs"][0] + case.get("mpr_add", 0)) & 0xFF:
-                raise ValueError(f"{case['name']} {cycle}: MPR2 at payload entry {pay[5]:02x}")
+            # MPR2..6 as the payload observed them (pay[5] = MPR2 via TMA, pay[11..14] = MPR3..6 via TMA).
+            # Expected: raw + mpr_add, mod 256. PUBLIC: mpr_add = $80 (observed mapping). DEV: 0 (raw is the bank).
+            for name, offset, raw in (("MPR2", 5, case["mprs"][0]), ("MPR3", 11, case["mprs"][1]),
+                                      ("MPR4", 12, case["mprs"][2]), ("MPR5", 13, case["mprs"][3]),
+                                      ("MPR6", 14, case["mprs"][4])):
+                want = (raw + case.get("mpr_add", 0)) & 0xFF
+                if pay[offset] != want:
+                    raise ValueError(f"{case['name']} {cycle}: {name} at payload entry {pay[offset]:02x}, "
+                                     f"expected {want:02x}")
             for slot, addr in ((1, 0x3FFF), (2, 0x4000), (3, 0x5FFF), (4, 0x6000)):
                 k = addr - dst
                 if 0 <= k < len(body):
@@ -302,8 +309,10 @@ def run_case(probe, rom, labels_path, case, pay_code, folder: Path, disc_prefix=
     if case.get("sum_preserving"):
         # Corrupt two bytes with XOR 1 whose sum effects are +1 and -1: the 16-bit additive sum is unchanged.
         # Chosen from the body so the corruption is deterministic; the sum equality is asserted, not assumed.
-        p = next(i for i in range(0x100, len(body) - 1) if body[i] & 1 == 0 and body[i + 1] & 1 == 1
-                 and (i // SECTOR) == 2)
+        p = next((i for i in range(0x100, len(body) - 1) if body[i] & 1 == 0 and body[i + 1] & 1 == 1
+                  and (i // SECTOR) == 2), None)
+        if p is None:
+            raise ValueError(f"{case['name']}: no byte pair to corrupt with a sum-preserving change")
         body_written = bytearray(body_written)
         body_written[p] ^= 1
         body_written[p + 1] ^= 1

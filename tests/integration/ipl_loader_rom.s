@@ -471,6 +471,9 @@ verify_body:
     cmp hdrv+1
     bne @brd
     rts
+; Code 30 is reachable only in the DEV build. In the PUBLIC build hdrv is loaded from R_SRC just above
+; (verify_body), so the first comparison is always equal and this branch is not taken. R_HDR (RB+10) is never
+; written in the PUBLIC build and is not judged there.
 @bsrc:
     lda #30                  ; body sum from disc differs from the header: copied, NOT executed
     jmp fail

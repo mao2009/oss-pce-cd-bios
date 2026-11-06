@@ -12,7 +12,9 @@ The loader source `tests/integration/ipl_loader_rom.s` has two formats, selected
 | DEV (default) | none | must already be `$80..$87` (raw) | 16-bit additive body sum, must match | sum of disc bytes == header sum, readback == sum |
 | PUBLIC | `IPL_PUBLIC` | bank index `0..7`, mapped to `$80 + index` | ignored | readback == sum of disc bytes read (no header sum) |
 
-- The default build is byte-identical to the previous loader (checked by SHA-256 of the 256 KiB image).
+- The default build is byte-identical to the previous loader. This was a ONE-TIME manual comparison of the SHA-256
+  of the 256 KiB default image (before and after the change, value recorded in the PR). It is NOT an automated
+  test: the harnesses only print the current hash and do not compare it with a stored value.
 - A single ROM never auto-detects the format.
 - The DEV checksum is never disabled unconditionally: the DEV build keeps every DEV check, and the boundary
   cases `0000` / `FFFF` are tested as mismatches.
@@ -57,6 +59,10 @@ What this does NOT establish:
 
 Run with `make ipl-loader-integration` (8 KiB HuCard path) and `make dev-bios-ipl-loader-integration`
 (256 KiB BIOS path). Each case runs cold and warm.
+
+MPR verification: the test payload reads MPR2..6 with TMA after the loader has launched it and stores them in the
+result area. The judge checks every one of them against `(raw + mpr_add) mod 256` (`mpr_add` = `$80` for PUBLIC
+cases, `0` for DEV cases). A wrong mapping in any of MPR2..6 therefore fails a positive case.
 
 - Normal: `pub_n5_mpr_raw_0_4_zero_checksum_fields`, `pub_n5_header_bytes_14_15_nonzero_ignored`,
   `pub_n1_minimum_count`, `pub_n10_maximum_count_fills_3000_7fff`, `pub_mpr_raw_7_maps_to_bank_87`.
