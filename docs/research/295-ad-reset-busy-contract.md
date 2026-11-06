@@ -406,7 +406,7 @@ BLOCKED の項目は **11 件**（B1〜B11）である。初版は 10 件で、B
 | 前提条件 | アイドル（PLAYING = 0、busy なし）から reset | §3.3 の区分ごとの成立条件を T_b と T_r で確認した後に reset |
 | 観測の範囲 | 既存の観測はいずれも、busy からの reset ではない。PR #404 本文は実コアでの実行結果を記すが、本書はその値を再掲しない（ログ未読のため）。実機・第 2 エミュレータは未実施（NOT_RUN、PR #404 本文） | TRANSFER_BUSY の観測 0 件（§3.4 の BLOCKED）。契約の外の既存記録として PLAY_ACTIVE の 25 試行がある（§15。契約の集計には入れない） |
 | 既存の再生中 reset との関係 | #294 の `neg-reset-playing` は、CONTROL `$A0`（bit5 残存）での reset である。本書の `arm-B` に相当する。PLAY_ACTIVE（CONTROL `$80` での reset）の結果ではない | PLAY_ACTIVE（CONTROL `$80` での reset）を測定する。TRANSFER_BUSY は BLOCKED |
-| 区分 | §8 の cold、warm、new-process の区分は、既存の device 層観測（idle）には適用していない。契約の外の PLAY_ACTIVE 記録 25 試行は §15 を参照 | §3.3 の測定区分のうち PLAY_ACTIVE は busy reset ではない。PLAY_ACTIVE の測定の基本条件は、§3.5 の判定 I のうち (a)、(b)、(c)、(e) である（(b) は未充足のため、現時点では開始しない。BLOCKED ではない）。加えて §14.15 の A の Owner 判断待ち事項が確定するまで開始しない。busy reset（TRANSFER_BUSY）の区分は BLOCKED（§3.4） |
+| 区分 | §8 の cold、warm、new-process の区分は、既存の device 層観測（idle）には適用していない。契約の外の PLAY_ACTIVE 記録 25 試行は §15 を参照 | §3.3 の測定区分のうち PLAY_ACTIVE は busy reset ではない。PLAY_ACTIVE の測定の基本条件は、§3.5 の判定 I のうち (a)、(b)、(c)、(e) である（(b) は未充足のため、現時点では開始しない。BLOCKED ではない）。加えて §14.15 A の R15 判断3項目（適用時は対象probeの使用経路を確認）を守り、対象版・採取仕様を確定し、(b)、(e) の独立レビューを通過するまで開始しない。busy reset（TRANSFER_BUSY）の区分は BLOCKED（§3.4） |
 | 独立レビュー・CI | 独立レビュー未実施（診断 §5、PR #404 本文）。CI 未配線（PR #404 本文、§13 の 7） | 測定、独立レビュー、TRANSFER_BUSY の BLOCKED 解除条件（§3.4）の判定 |
 
 idle reset の結果を busy reset の結果として数えない。両者は別の観測として記録する。
