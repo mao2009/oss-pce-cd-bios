@@ -130,7 +130,9 @@ def render_table(slots: list[dict], overridden: set[int]) -> str:
             lines += [f'.export api_slot_{i:02X}', f'api_slot_{i:02X}:', f'    ldx #${i:02X}', '    jmp api_unimplemented']
         else:
             lines += [f'.import api_slot_{i:02X}']
-    lines += ['api_unimplemented:', '@halt:', '    bra @halt', '']
+    # Issue #692: exported so that the symbol is a global label in the object and in the -Ln label file.
+    # An export adds no bytes: the image is unchanged (SHA-256 compared before and after the change).
+    lines += ['.export api_unimplemented', 'api_unimplemented:', '@halt:', '    bra @halt', '']
     return '\n'.join(lines)
 
 REL2 = {'bra', 'bsr', 'bcc', 'bcs', 'beq', 'bne', 'bmi', 'bpl', 'bvc', 'bvs'}  # target = pc + 2 + rel8

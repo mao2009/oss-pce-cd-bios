@@ -60,6 +60,9 @@ int main(int argc, char** argv) {
     if (labels.count("reset_ready")) halts = {"reset_ready", "reset_unexpected_interrupt"};
     // Issue #501: the DEV-only internal path's media-check halt (absent from every other label file).
     if (labels.count("dev_media_halt")) halts.push_back("dev_media_halt");
+    // Issue #692: the DEV image's unimplemented-API stub (LDX #slot; JMP api_unimplemented; BRA *). Recognised only
+    // when a label file names it explicitly, so every other label file keeps its previous halt set.
+    if (labels.count("api_unimplemented")) halts.push_back("api_unimplemented");
     if (labels.count("dev_selection_halt")) halts.push_back("dev_selection_halt");
     for (const auto& needed : halts)
         if (!labels.count(needed)) return 2;

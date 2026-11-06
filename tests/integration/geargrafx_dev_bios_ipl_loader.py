@@ -38,7 +38,16 @@ def main():
         raise ValueError("BIOS image must be exactly 262,144 bytes")
     rom_sha = hashlib.sha256(rom.read_bytes()).hexdigest()
     mutant_sha = hashlib.sha256(mutant.read_bytes()).hexdigest()
-    roms = {"main": (rom, rom_symbols), "mutant": (mutant, mutant_symbols)}
+    public, public_symbols = build_ipl_loader_bios(original, out, L.SEL, args.mode, "public", ["-D", "IPL_PUBLIC"])
+    public_mutant, public_mutant_symbols = build_ipl_loader_bios(
+        original, out, L.SEL, args.mode, "public_mutant", ["-D", "IPL_PUBLIC", "-D", "IPL_MUTANT_READBACK"])
+    for image in (public, public_mutant):
+        if image.stat().st_size != 262144:
+            raise ValueError("BIOS image must be exactly 262,144 bytes")
+    public_sha = hashlib.sha256(public.read_bytes()).hexdigest()
+    public_mutant_sha = hashlib.sha256(public_mutant.read_bytes()).hexdigest()
+    roms = {"main": (rom, rom_symbols), "mutant": (mutant, mutant_symbols),
+            "public": (public, public_symbols), "public_mutant": (public_mutant, public_mutant_symbols)}
     payloads = {}
     for key, (origin, tag) in L.PAY_ORIGINS.items():
         payloads[key] = L.build_payload(out, origin, tag)
@@ -60,12 +69,15 @@ def main():
             except ValueError as error:
                 raise SystemExit(f"FAIL {case['name']}: {error}") from error
         if hashlib.sha256(rom.read_bytes()).hexdigest() != rom_sha or \
-                hashlib.sha256(mutant.read_bytes()).hexdigest() != mutant_sha:
+                hashlib.sha256(mutant.read_bytes()).hexdigest() != mutant_sha or \
+                hashlib.sha256(public.read_bytes()).hexdigest() != public_sha or \
+                hashlib.sha256(public_mutant.read_bytes()).hexdigest() != public_mutant_sha:
             raise SystemExit("FAIL: a BIOS image changed during the test")
     evidence = {
         "scope": "DEV-only 256 KiB image with the Issue #670 loader, synthetic media, Geargrafx LoadBiosFromBuffer path",
         "mode": args.mode, "bios_image_bytes": 262144, "main_rom_sha256": rom_sha,
-        "mutant_rom_sha256": mutant_sha, "ipl_sel_lba": L.SEL, "cases": results, "status": "PASS",
+        "mutant_rom_sha256": mutant_sha, "public_rom_sha256": public_sha,
+        "public_mutant_rom_sha256": public_mutant_sha, "ipl_sel_lba": L.SEL, "cases": results, "status": "PASS",
         "not_claimed": ["System Card compatibility", "BIOS ABI", "commercial media", "reference BIOS",
                         "release_eligible"],
     }
