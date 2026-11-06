@@ -383,6 +383,30 @@ class OwnershipTests(unittest.TestCase):
         cmd = "git worktree remove " + self.owned
         self.assertEqual(verdict(cmd, repo_root=self.root), "DENY")
 
+    def test_worktree_remove_always_denied_at_single_decision_point(self):
+        # Decision-only: registration never authorizes removal, even with no force flag.
+        ctx = guard.Ctx("/tmp/example-repo", "/tmp/example-repo",
+                        "/tmp/example-repo/.git", {"/tmp/example-wt"}, [])
+        for args in (["/tmp/example-wt"], ["--", "/tmp/example-wt"],
+                     ["--force", "/tmp/example-wt"], ["-f", "/tmp/example-wt"],
+                     ["/tmp/unregistered"], []):
+            with self.subTest(args=args):
+                with self.assertRaises(guard.Deny) as denial:
+                    guard.worktree_remove(args, ctx)
+                self.assertEqual(denial.exception.kind, "git-worktree-remove")
+                self.assertIn("always denied", denial.exception.reason)
+
+    def test_worktree_remove_wrapper_and_git_dash_c_forms(self):
+        for cmd in ("git worktree remove " + self.owned,
+                    "git -C " + self.root + " worktree remove " + self.owned,
+                    "git worktree remove -- " + self.owned,
+                    "git worktree remove",
+                    "git worktree remove --force " + self.owned):
+            with self.subTest(cmd=cmd):
+                decision, reason = guard.decide(payload(cmd), repo_root=self.root)
+                self.assertEqual(decision, "DENY", reason)
+                self.assertTrue(reason.startswith("git-worktree-remove"), reason)
+
     def test_unregistered_worktree_remove_denied(self):
         cmd = "git worktree remove " + os.path.join(self.root, "wt-other")
         self.assertEqual(verdict(cmd, repo_root=self.root), "DENY")
