@@ -1,9 +1,8 @@
 name: HuC6280 core harness (real Geargrafx, diagnostic not BIOS)
 on:
+  # No paths-ignore: a docs-only PR must still report guard-core-harness (a required check). A paths filter here left
+  # that check unreported, so the PR stayed pending forever (Issue #688 follow-up). The cost is one full run per PR.
   pull_request:
-    paths-ignore:
-      - 'README.md'
-      - 'docs/**/*.md'
   workflow_dispatch:
 permissions:
   contents: read
