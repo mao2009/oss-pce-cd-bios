@@ -2224,6 +2224,31 @@ def scope_key_violations(text, workflow):
     return problems
 
 
+# Guard jobs whose required check must FAIL when the real-core job before them is not SUCCESS (FAILURE, CANCELLED,
+# SKIPPED or anything unexpected). Each one runs with a job-level `if: always()` (so it is never SKIPPED by its own
+# needs:), and exactly one gate step at index 3 (right after the trusted preamble) which exits non-zero unless the
+# upstream job's result is 'success'. The gate step is the only trusted run this rule adds (Owner decision, #693).
+REQUIRED_GUARD_JOBS = frozenset({"guard-verify", "guard-bios-dev", "guard-core-harness", "guard-bcdbin-core"})
+
+
+def _result_gate_text(upstream):
+    return f'test "${{{{ needs.{upstream}.result }}}}" = "success"'
+
+
+def _job_block(text, job):
+    """The lines of one job in a workflow text (its key line and its body), or [] when the job is absent."""
+    out, inside = [], False
+    for line in text.split("\n"):
+        if line.startswith("  ") and not line.startswith("   ") and line.rstrip().endswith(":"):
+            if inside:
+                break
+            inside = line.strip()[:-1] == job
+            continue
+        if inside:
+            out.append(line)
+    return out
+
+
 def guard_placement_violations(text, workflow):
     """Two kinds of job. A build job uploads only intermediate/ artifacts and runs no guard. A guard job publishes
     only staged paths: it needs the build job that produced its intermediate artifact, and its steps are the trusted
@@ -2337,7 +2362,11 @@ def guard_placement_violations(text, workflow):
                 problems.append(f"{workflow}: guard job {job!r}: a trusted run step may only have {sorted(RUN_STEP_KEYS)} "
                                 f"(shell: bash), each once; found {names}")
             run = _run_lines(lines, s[0], s[1], dash)
-            if not run or not _allowed_guard_run(run, finals, workflow):
+            gate_here = (job in REQUIRED_GUARD_JOBS and index == 3 and len(needed) == 1
+                         and run == [_result_gate_text(needed[0])])
+            if gate_here:
+                pass   # the result gate: exact text, index 3, upstream named by needs: (checked below)
+            elif not run or not _allowed_guard_run(run, finals, workflow):
                 problems.append(f"{workflow}: guard job {job!r} may only run trusted steps; found step {body[0]!r}")
         if len(job_steps) < 3 or not _is_checkout(lines, job_steps[0], dash):
             problems.append(f"{workflow}: guard job {job!r}: the first step must be a checkout (before the trusted checkout, whose path must not be cleaned)")
@@ -2345,6 +2374,20 @@ def guard_placement_violations(text, workflow):
             problems.append(f"{workflow}: guard job {job!r}: the second step must be the trusted main checkout (ref: main into .trusted-main)")
         if len(job_steps) < 3 or not _is_py_resolve(lines, job_steps[2], dash):
             problems.append(f"{workflow}: guard job {job!r}: the third step must resolve python3 (id: pyresolve)")
+        if job in REQUIRED_GUARD_JOBS:
+            # A required guard job runs even when its upstream job failed (job-level always()), and its only added
+            # trusted step is the result gate at index 3, which names its own upstream job and nothing else.
+            if "    if: always()" not in _job_block(text, job):
+                problems.append(f"{workflow}: required guard job {job!r} must have the job-level `if: always()`")
+            if len(needed) != 1:
+                problems.append(f"{workflow}: required guard job {job!r} must need exactly one real-core job "
+                                f"(found {needed})")
+            gate_count = sum(_run_lines(lines, s[0], s[1], dash) == [_result_gate_text(needed[0])]
+                             for s in job_steps) if len(needed) == 1 else 0
+            if gate_count != 1 or len(job_steps) < 4 or len(needed) != 1 or \
+                    _run_lines(lines, job_steps[3][0], job_steps[3][1], dash) != [_result_gate_text(needed[0])]:
+                problems.append(f"{workflow}: required guard job {job!r} must have exactly one result gate step, at "
+                                f"index 4 (right after the trusted preamble): {_result_gate_text(needed[0]) if len(needed) == 1 else '?'}")
         for s in job_steps[:3]:
             keys = _key_names(_step_keys(lines, s[0], s[1], dash))
             if not set(keys) <= PREAMBLE_STEP_KEYS or len(set(keys)) != len(keys):
