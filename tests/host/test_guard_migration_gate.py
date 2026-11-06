@@ -2,7 +2,7 @@
 
 Each required guard job (guard-verify, guard-bios-dev, guard-core-harness, guard-bcdbin-core) may have exactly one of two
 complete structures, and nothing else:
-  OLD: no job-level `if: always()` and no result gate (the structure on main now).
+  OLD: no job-level `if: always()` and no result gate (original structure; derived as a fixture after migration).
   NEW: job-level `if: always()` and exactly one result gate at index 3, right after the trusted preamble:
        test "${{ needs.<upstream>.result }}" = "success"
 A mixed state (only one of the two) is refused. Any other step, order change or condition change is refused.
@@ -69,7 +69,7 @@ def problems(text, label="probe.yml"):
 
 def new_text(job):
     rel, upstream = WORKFLOWS[job]
-    return to_new(read_repo(rel), job, upstream), rel, upstream
+    return to_new(old_text(job), job, upstream), rel, upstream
 
 
 class MigrationSemanticsTests(unittest.TestCase):
@@ -95,7 +95,13 @@ class MigrationSemanticsTests(unittest.TestCase):
 class MigrationAcceptTests(unittest.TestCase):
     """Positive cases: exactly the OLD and the complete NEW structure pass for every required guard job."""
 
-    def test_old_structure_on_main_passes(self):
+    def test_old_structure_fixture_passes(self):
+        for job, (rel, _upstream) in WORKFLOWS.items():
+            with self.subTest(job=job):
+                self.assertEqual(problems(old_text(job), rel), [])
+
+    def test_real_repository_workflow_is_accepted(self):
+        # Unlike the OLD fixture, this examines the actual post-migration workflow.
         for job, (rel, _upstream) in WORKFLOWS.items():
             with self.subTest(job=job):
                 self.assertEqual(problems(read_repo(rel), rel), [])
@@ -209,8 +215,25 @@ class MigrationRefuseTests(unittest.TestCase):
 
 
 def old_text(job):
-    rel, _upstream = WORKFLOWS[job]
-    return read_repo(rel)
+    """Derive the exact OLD fixture from either valid on-disk structure.
+
+    Keep the repo workflow unchanged and test it separately. The migration tests must still
+    exercise both OLD and NEW once #693 switches the live workflow to NEW. A mixed or
+    unexpected live form must fail instead of being silently normalized.
+    """
+    rel, upstream = WORKFLOWS[job]
+    current = read_repo(rel)
+    start, end = job_span(current, job)
+    block = current[start:end]
+    gate = GATE_NAME + "\n" + gate_run(upstream) + "\n"
+    always = "    if: always()\n"
+    has_gate, has_always = gate in block, always in block
+    if has_gate or has_always:
+        assert (has_gate and has_always and block.count(gate) == 1 and block.count(always) == 1), (
+            job, "live workflow is neither complete OLD nor complete NEW")
+        block = block.replace(gate, "", 1).replace(always, "", 1)
+        return current[:start] + block + current[end:]
+    return current
 
 
 def replace_in_job(text, job, old, new):
@@ -331,7 +354,7 @@ def gate_block(upstream):
 def variants(job):
     """OLD and NEW text of one job, each with and without its upload steps. Yields (form, text, rel, upstream)."""
     rel, upstream = WORKFLOWS[job]
-    for form, text in (("OLD", read_repo(rel)), ("NEW", to_new(read_repo(rel), job, upstream))):
+    for form, text in (("OLD", old_text(job)), ("NEW", to_new(old_text(job), job, upstream))):
         yield form, text, rel, upstream
         yield form + "-no-upload", drop_uploads(text, job), rel, upstream
 
@@ -352,7 +375,7 @@ class RequiredJobIndependentOfUploadTests(unittest.TestCase):
     def test_removing_the_final_upload_does_not_hide_a_violation(self):
         for job in WORKFLOWS:
             rel, upstream = WORKFLOWS[job]
-            new = to_new(read_repo(rel), job, upstream)
+            new = to_new(old_text(job), job, upstream)
             cases = {
                 "mixed (always without gate)": (replace_in_job(new, job, gate_block(upstream), ""), "incomplete migration state"),
                 "if: false": (replace_in_job(new, job, "    if: always()\n", "    if: false\n"), "job-level `if` other than exactly always()"),
@@ -464,7 +487,7 @@ class RequiredJobIndependentOfUploadTests(unittest.TestCase):
     def test_result_gate_deleted_duplicated_moved_or_altered_is_refused(self):
         for job in WORKFLOWS:
             rel, upstream = WORKFLOWS[job]
-            new = to_new(read_repo(rel), job, upstream)
+            new = to_new(old_text(job), job, upstream)
             gate = gate_block(upstream)
             after_guard = "      - name: Trusted guard (main)"
             moved_early = replace_in_job(new, job, gate, "").replace(
@@ -494,7 +517,7 @@ class RequiredJobIndependentOfUploadTests(unittest.TestCase):
     def test_gate_moved_after_following_step_is_refused(self):
         for job in WORKFLOWS:
             rel, upstream = WORKFLOWS[job]
-            new = to_new(read_repo(rel), job, upstream)
+            new = to_new(old_text(job), job, upstream)
             gate = gate_block(upstream)
             start, end = job_span(new, job)
             block = new[start:end].replace(gate, "", 1)
@@ -528,7 +551,7 @@ class RequiredJobIndependentOfUploadTests(unittest.TestCase):
     def test_comment_and_neighbour_text_do_not_change_the_reading(self):
         for job in WORKFLOWS:
             rel, upstream = WORKFLOWS[job]
-            new = to_new(read_repo(rel), job, upstream)
+            new = to_new(old_text(job), job, upstream)
             start, end = job_span(new, job)
             # `if: always()` only in a comment inside the job, and as a real key in no job: must read as OLD+gate = mixed.
             mutant = new[:start] + new[start:end].replace("    if: always()\n", "    # if: always()\n", 1) + new[end:]
@@ -538,7 +561,7 @@ class RequiredJobIndependentOfUploadTests(unittest.TestCase):
         """The entry point `make check` and the trusted copy use: files with no upload step are checked too."""
         for job in WORKFLOWS:
             rel, upstream = WORKFLOWS[job]
-            new = to_new(read_repo(rel), job, upstream)
+            new = to_new(old_text(job), job, upstream)
             cases = {
                 "no upload, if: false": (drop_uploads(replace_in_job(new, job, "    if: always()\n", "    if: false\n"), job),
                                          "job-level `if` other than exactly always()"),
@@ -558,7 +581,7 @@ class RequiredJobIndependentOfUploadTests(unittest.TestCase):
         """Every upload-artifact step of the file removed (build job too): the no-upload branch must still check the jobs."""
         for job in WORKFLOWS:
             rel, upstream = WORKFLOWS[job]
-            text = replace_in_job(to_new(read_repo(rel), job, upstream), job, "    if: always()\n", "    if: false\n")
+            text = replace_in_job(to_new(old_text(job), job, upstream), job, "    if: always()\n", "    if: false\n")
             steps = re.split(r"(?m)^(?=      - |  [A-Za-z][\w-]*:)", text)   # split at steps and at job keys
             mutant = "".join(x for x in steps if "upload-artifact" not in x)
             self.assertNotIn("upload-artifact", mutant)

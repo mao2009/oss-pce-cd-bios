@@ -149,9 +149,9 @@ class HostIsolationTests(unittest.TestCase):
                                          f"{workflow}: job running make test-real-core is guarded by if:")
 
 
-    def test_documentation_fast_path_requires_proven_scope_and_full_result(self):
-        # Only the exact docs-only condition may exempt the full real-core gate.
-        # The required names must reject both a failed scope and a failed full job.
+    def test_documentation_fast_path_disabled_and_full_result_required(self):
+        # The docs-only fast path is disabled: the only value ever written to docs_only is false, so every change runs
+        # the full job. The required names must still reject both a failed scope and a failed full job.
         for workflow, required, full in (
                 (".github/workflows/ci.yml", "verify", "verify-full"),
                 (".github/workflows/api-source.yml", "bios-dev", "bios-dev-full")):
@@ -163,10 +163,10 @@ class HostIsolationTests(unittest.TestCase):
                 self.assertIn('test "${{ needs.scope.result }}" = "success"', text)
                 self.assertIn(f'test "${{{{ needs.{full}.result }}}}" = "success"', text)
                 self.assertIn(f'test "${{{{ needs.{full}.result }}}}" = "skipped"', text)
-                self.assertIn('status not in (b"A", b"M") or not allowed', text)
-                self.assertIn('meta.startswith(b"100644 blob ")', text)
-                self.assertIn('path == "README.md"', text)
-                self.assertIn('path.startswith("docs/") and path.endswith(".md")', text)
+                # Disabled fast path: the only value written to docs_only is false. The Markdown contract tests that read
+                # docs/*.md run only in the full job, so no change may be classified documentation-only.
+                self.assertIn('echo "docs_only=false" >> "$GITHUB_OUTPUT"', text)
+                self.assertNotIn("docs_only=true", text)
 
 
 if __name__ == "__main__":
