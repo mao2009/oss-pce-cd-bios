@@ -3342,12 +3342,13 @@ class PythonArgvCertaintyTests(unittest.TestCase):
 
     @unittest.expectedFailure
     def test_known_gap_reflection_is_denied(self):
-        # Known gap, closed by X2 (AST allowlist). Remove this marker when X2 closes it.
+        # Known gap (#630): attribute reflection reaches open() without the text "open(". Pre-existing on main.
+        # Remove this marker only when #630 closes it.
         self.assertEqual(self._v("python3 -c \"import operator, io; operator.attrgetter('open')(io)('/tmp/zz','w')\""),
                          "DENY")
 
     def test_known_gap_io_write_is_denied(self):
-        # Piece B now rejects io.FileIO writes; keep this as an ordinary passing regression.
+        # io.FileIO writes are refused by the danger word list (fileio); an ordinary passing regression.
         self.assertEqual(self._v("python3 -c \"import io; io.FileIO('/tmp/zz','w')\""), "DENY")
 
     def test_regression_corpus_of_twenty_ordinary_commands(self):
@@ -3551,6 +3552,8 @@ class PythonOpenTests(unittest.TestCase):
         "import os; os.utime('a.txt')",
         "import io; io.FileIO('a.txt', 'w')",
         "import io; io.open('a.txt', 'w')",
+        # Fullwidth identifiers are NFKC-normalised by Python: this is open('a.txt', 'w').
+        "ｏｐｅｎ('a.txt', 'w')",
     ]
     ORDINARY_ALLOWED = [
         "import json; print(json.dumps({'a': 1}))",
@@ -3602,6 +3605,9 @@ class PythonOpenMutationTests(unittest.TestCase):
             ""),
         "dump boundary lost (dumps over-denied)": (
             "dump\\b|", "dump|"),
+        "NFKC normalisation removed": (
+            'if DANGER_PY.search(unicodedata.normalize("NFKC", code)):',
+            "if DANGER_PY.search(code):"),
         "new file mutation methods ignored": (
             "fileio|touch|mkdir|makedirs|mkfifo|mknod|utime|",
             ""),

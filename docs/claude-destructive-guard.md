@@ -62,7 +62,7 @@
 - `python -c` の検査は危険語の一致（部分一致）と `open(` の検出であり、Python コード全体の AST allowlist ではない。次の回避経路が残る。いずれも `main` でも ALLOW であり、既存の未解決事項として #630 で管理し、Owner が暫定受容している。
   - 反射による書き込み。例: `python3 -c "import operator, io; operator.attrgetter('op'+'en')(io)('a.txt','w')"`。
   - `open(` を含まない形で危険語リストにない API。例: `os.fork()`、`zipfile.ZipFile(p,'w')`、`sqlite3.connect(...)`。
-  - pickle の class / match による束縛経由（`open(` を含まない形）。例: `import pickle` と `match pickle:` / `case json:` / `json.loads(b'')`。同じ形でも `open(` を含むものは拒否される。
+  - pickle の class / match による束縛経由（`open(` を含まない形）。例: `import pickle` と、`def __class_getitem__(cls, x, json=pickle): return json.loads(b'')` を持つ `class A:` を定義して `A[1]` で呼ぶ形（判定のみで ALLOW を確認）。同じ形でも `open(` を含むものは拒否される。
   - 未列挙のファイル操作・間接呼び出しには残余リスクがある。OS レベルの保護（読み取り専用マウントなど）を併用すること。
 - `.claude/worktree-owners.json` は暗号や署名で守られていない。書き込みの拒否規則だけで守られており、この規則を回避する書き方があれば所有者の記録は改ざんされうる
 - `.claude/` 配下は同じリポジトリ内のエージェントが編集できる。フック定義そのものを変更されると保護は外れる。そのため、ユーザー側の設定（`~/.claude/settings.json`）で同じフックを有効化するのは、リポジトリ所有者が行うこと
