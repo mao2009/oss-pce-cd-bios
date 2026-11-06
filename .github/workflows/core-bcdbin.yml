@@ -1,5 +1,7 @@
 name: Real Geargrafx ex_bcdbin (Issue #71, internal routine, not BIOS)
 on:
+  # No paths-ignore: a docs-only PR must still report guard-bcdbin-core (a required check). A paths filter here left
+  # that check unreported, so the PR stayed pending forever (Issue #688 follow-up). The cost is one full run per PR.
   pull_request:
   workflow_dispatch:
 permissions:
@@ -36,6 +38,7 @@ jobs:
     # resolved before anything else, the workflow files for the placement check, the download, the stage, the verify
     # and the upload. Runs only when the build job succeeded (same as ci.yml); a failed run keeps its log in the job log.
     needs: bcdbin-core
+    if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -58,6 +61,8 @@ jobs:
         id: pyresolve
         run: |
           echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"
+      - name: Require the real-core job to succeed (FAILURE, CANCELLED or SKIPPED fails this check)
+        run: test "${{ needs.bcdbin-core.result }}" = "success"
       - name: Guard placement (trusted)
         run: |
           "${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --check-placement

@@ -9,7 +9,30 @@ permissions:
   issues: read
   pull-requests: read
 jobs:
-  verify:
+  scope:
+    # No PR code or toolchain is executed here. Any ambiguity selects full CI.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Documentation-only fast path (disabled; full CI for every change)
+        id: classify
+        run: |
+          # The docs-only fast path is disabled. The host suite reads many docs/*.md files (the contract tests
+          # across docs/), and a light path cannot prove that it runs all of them. Until it can, every change runs
+          # the full CI, so every required check is produced by the full jobs. Re-enabling needs that proof.
+          echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          echo "docs-only fast path is disabled; full CI runs"
+  verify-full:
+    needs: scope
+    if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -18,10 +41,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Provenance guard on changed content (list edits need a verified maintainer approval)
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          python3 tools/provenance_guard.py
+          GH_TOKEN="${{ github.token }}" python3 tools/provenance_guard.py
           python3 -m unittest discover -s tests/host -p 'test_provenance_guard.py' -v
       - name: Prepare pinned tools from source
         run: make setup
@@ -54,10 +75,29 @@ jobs:
           path: intermediate/
           if-no-files-found: error
           retention-days: 1
+  verify:
+    # This job keeps the branch-ruleset required check name. A skipped full job
+    # counts as success only after the independent scope check has passed.
+    needs: [scope, verify-full]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Enforce full CI result or validated documentation-only scope
+        run: |
+          test "${{ needs.scope.result }}" = "success"
+          if [ "${{ needs.scope.outputs.docs_only }}" = "true" ]; then
+            test "${{ needs.verify-full.result }}" = "skipped"
+          else
+            test "${{ needs.verify-full.result }}" = "success"
+          fi
   guard-verify:
     # Publishes only what the verify job handed over. It runs no build code: the trusted main tools, python3 resolved
     # before anything else, the workflow files for the placement check, the download, the guard and the upload.
-    needs: verify
+    needs: verify-full
+    if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -80,6 +120,8 @@ jobs:
         id: pyresolve
         run: |
           echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"
+      - name: Require the real-core job to succeed (FAILURE, CANCELLED or SKIPPED fails this check)
+        run: test "${{ needs.verify-full.result }}" = "success"
       - name: Guard placement (trusted)
         run: |
           "${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --check-placement

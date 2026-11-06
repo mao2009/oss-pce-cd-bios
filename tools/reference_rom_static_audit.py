@@ -23,8 +23,9 @@ What it emits
 -------------
 A fixed-shape *projection*: counts, booleans and a closed vocabulary. It never
 emits ROM bytes, disassembly text, internal routine addresses or extracted code.
-The projection is the only artefact that may be committed; the raw decode stays
-in the local process.
+No projection is committed (Issue #324, owner ruling A). The output, including
+``--output``, is local only and must lie outside the repository, which the tool
+enforces. The raw decode stays in the local process.
 
 The projection is a *static profile*. It says what the reachable code of an
 entry does, not whether the entry may be called: it carries no permission
@@ -43,7 +44,7 @@ safety verdict itself is recorded separately in ``spec/abi1_reference_review.jso
 Usage
 -----
     python3 tools/reference_rom_static_audit.py --rom /path/to/private.pce \\
-        --slots 0x1e,0x3c,0x3d,0x3f,0x40,0x41,0x42 --output build/abi1/audit.json
+        --slots 0x1e,0x3c,0x3d,0x3f,0x40,0x41,0x42 --output ~/abi-local/audit.json   # outside the repository
 
 The output is LOCAL_ONLY until a human reviews it and copies the projection
 into ``spec/abi1_reference_review.json``.
@@ -755,19 +756,39 @@ def main(argv=None):
     if not arguments.rom:
         print("BLOCKED: --rom is required (a private image path, never committed)", file=sys.stderr)
         return 3
+    # Local analysis output carries private-image detail. It must never land in the repository (Git or artefacts).
+    if arguments.output is None:
+        print("BLOCKED: --output is required; the local result is never printed", file=sys.stderr)
+        return 3
+    try:
+        inside = arguments.output.resolve().is_relative_to(ROOT.resolve())
+    except OSError:
+        inside = True  # an unresolvable output path is refused (fail closed)
+    if inside:
+        print("BLOCKED: --output inside the repository is refused; local analysis output stays outside it",
+              file=sys.stderr)
+        return 3
     try:
         slots = [int(part, 16) for part in arguments.slots.split(",") if part.strip()]
         for slot in slots:
             if not 0 <= slot < ENTRY_COUNT:
                 raise AuditError(f"slot {slot} is outside the 81 entry table")
         result = audit_image(arguments.rom, slots)
-    except (AuditError, OSError, ValueError, subprocess.SubprocessError) as error:
-        print(f"BLOCKED: {type(error).__name__}: {error}", file=sys.stderr)
+    except Exception as error:  # every failure is refused by class name only; no traceback can leak a path
+        # Only the error class is shown. Messages can carry paths or analysis detail, so they are not printed.
+        print(f"BLOCKED: {type(error).__name__} (details withheld; run locally with a debugger if needed)",
+              file=sys.stderr)
         return 2
-    if arguments.output:
+    # The result is written only to the local output file. It is never printed, so no terminal, log or pasted
+    # output can carry per-slot detail of the private image (owner ruling).
+    try:
         arguments.output.parent.mkdir(parents=True, exist_ok=True)
         arguments.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(json.dumps(result, indent=2, sort_keys=True))
+    except OSError:
+        # The error text is withheld: it can carry the user's absolute path.
+        print("BLOCKED: the local output could not be written (details withheld)", file=sys.stderr)
+        return 2
+    print("LOCAL_ONLY: result written to the local output file; its contents are not printed", file=sys.stderr)
     return 0
 
 

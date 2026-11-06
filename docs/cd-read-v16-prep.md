@@ -6,7 +6,7 @@
 
 ## 0. 判定
 
-* **参照 ABI の実観測: 未実施。** 純正 BIOS の実行 0 件、`$E009` の JSR 0 件、Geargrafx 実行 0 件（本 PR は重い実コア実行を含まない）。
+* **参照 ABI の承認済み検証証拠: 未登録。** 承認済み検証証拠として登録された純正 BIOS の実行、`$E009` の JSR、Geargrafx 実行は 0 件（本 PR は重い実コア実行を含まない）。歴史上の実行の有無は述べない。
 * JSR gate は閉じたまま（`spec/reference_jsr_gate.json` の slot 3 記録なし、`NO_REVIEWED_GATE_RECORD`）。#188 と #189 の参照観測は **BLOCKED**。
 * 本 PR の判定器が返す項目別の PASS は合成入力に対するものだけで、純正 CD_READ の ABI 証拠ではない。全体（overall）の PASS は shipped 範囲では発生しない。CD_READ 転送層の判定は System Card callee の VERIFIED ではない。
 * `release_eligible`、`VERIFIED_PATH_ENABLED`、JSR gate、承認欄、`api_contracts.json` の schema と status は変更していない。Reference VERIFIED は 0/81 のまま。

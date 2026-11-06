@@ -2,7 +2,7 @@
 ; Project-owned HuC6280 code. NOT BIOS, NOT AD_TRANS ($11), NOT a System Card ABI, release_eligible=false.
 ; Runs four calls of the same routine: positive, negative (DMA never armed), recovery positive, bad input,
 ; then call E (invalid slot 4, after the others): the routine must write code 9 to slot 0, overwriting A.
-; Result slots: 0 = call E (after E), 8 = call B, 16 = call C, 24 = call D (see docs/research/ad-trans-routine-contract.md).
+; Result slots: 0 = call E (after E), 8 = call B, 16 = call C, 24 = call D (see 撤去済み文書).
 ; Call A's 8-byte record is copied to $2320 right after A succeeds, so A stays observable after E.
 .setcpu "huc6280"
 .import adt_dma_sector

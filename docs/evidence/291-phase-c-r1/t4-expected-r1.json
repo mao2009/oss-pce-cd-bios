@@ -1,0 +1,28 @@
+{
+  "label": "R1 T4 re-run expectations (written BEFORE any R1 launch)",
+  "written_utc": "2026-11-02T09:18:47Z",
+  "bios_sha256": "e122f0154b6b341a4d08deddd855289a7a5ca43e814aa9391737f7e7f52f70d7",
+  "cue_sha256": "a751990e25024069547721265e946052639710589a3d94c7e6afd1a675836dd2",
+  "seed": "0x00C0FFEE",
+  "exe": "test binary phase-c/build-det/bin/geargrafx.exe (same as C3 det runs)",
+  "procedure": "load_bios(synthetic, syscard), load_media(synthetic CUE), wait PC=E000, breakpoints E012/E028, continue, [controller_button player1 up press at E012], continue to E028",
+  "source_basis": {
+    "idle_pad_value": "input.cpp:47 m_gamepads = 0xFFFF (active low)",
+    "press_clears_bit": "input_inline.h:29 m_gamepads &= ~key",
+    "sel_bit": "input_inline.h:103 m_sel = bit0 of write",
+    "register_base_0x30": "input_inline.h:123 m_register = 0x30",
+    "standard_path": "input_inline.h:204-218 (standard-pad branch 211-217: m_sel ? (raw>>4)&0x0F : raw&0x0F)",
+    "up_bit": "types.h:81 GG_KEY_UP = 0x10"
+  },
+  "expected": {
+    "noinput": {
+      "SEL0_2010": "3F",
+      "SEL1_2011": "3F"
+    },
+    "up": {
+      "SEL0_2010": "3F",
+      "SEL1_2011": "3E"
+    },
+    "relation": "Up leaves SEL0 low nibble unchanged and clears bit0 of SEL1 read"
+  }
+}

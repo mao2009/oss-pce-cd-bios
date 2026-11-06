@@ -1,0 +1,511 @@
+// Bounded, observation-only Geargrafx frame tracer.
+//
+// This local-only probe links the pinned GPL Geargrafx objects through the existing
+// test build recipe.  It deliberately uses normal RunToVBlank execution rather than
+// the instruction debugger.  It does not call Memory::Read, write guest memory,
+// alter CPU registers/MPRs, inject interrupts, or perform MMIO reads. RAM, CPU
+// state, MPRs, and CD/SCSI state are sampled through state pointers at frame
+// boundaries only. RAM output is counts, offset ranges, and mapped bank ranges;
+// it never serializes RAM bytes.
+//
+// argv: rom cue|- frames event_capacity run_start_frame|0 run_hold_frames|0 observe_ram core_capacity|0
+//       warm_reset_frame|0
+// core_capacity 0 keeps the pinned core's default trace buffer (TRACE_BUFFER_SIZE); a non-zero
+// value calls the core's TraceLogger::SetCapacity before frame 1 (trace buffer only, never guest state).
+// warm_reset_frame N (2..frames) calls the pinned core's public GeargrafxCore::ResetMedia(true) once,
+// before frame N runs: the same warm reset the existing API probe uses.  It is a requested,
+// recorded guest reset (RESET line), not a tracer write to guest memory or registers.
+// Output: CAP, INPUT, EVENT (bounded ring, oldest entries overwritten), END
+// with a cumulative RAM summary that is deliberately independent of that ring.
+#include "geargrafx_core.h"
+#include "huc6280.h"
+#include "memory.h"
+#include "media.h"
+#include "cdrom.h"
+#include "scsi_controller.h"
+#include "trace_logger.h"
+#include "geargrafx_frame_tracer_ring.h"
+#include "geargrafx_frame_tracer_core_account.h"
+#include "geargrafx_frame_tracer_ram.h"
+#include "geargrafx_frame_tracer_ram_summary.h"
+#include "geargrafx_trace_cpu_region.h"
+#include <array>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <iterator>
+#include <string>
+#include <vector>
+
+namespace {
+
+constexpr unsigned kMaxFrames = 600;
+constexpr unsigned kRingSize = 256;
+constexpr long kMaxCoreCapacity = TRACE_BUFFER_SIZE;  // never ask for more than the core's own default
+
+struct CpuSnap {
+    unsigned master_clock, pc, pc_page, pc_bank, physical_pc, pc_is_wram, a, x, y, p, sp;
+    unsigned mpr[8];
+};
+
+struct CdSnap {
+    int phase;
+    unsigned signals, load_sector, load_count, irq_active, irq_enabled;
+};
+
+struct Event {
+    enum Kind { SAMPLE, CD, RAM, HANDOFF, REGION } kind;
+    unsigned frame;
+    CpuSnap cpu;
+    CdSnap cd;
+    unsigned changed, first, last, cd_event, cd_command, cd_lba, cd_status;
+    const FrameTracerRamMapping* ram;
+    unsigned event_pc, event_bank;
+    unsigned long long event_cycle;
+    const char* from_region;
+    const char* to_region;
+    bool trace_gap;
+};
+
+struct RamTracker {
+    const char* name;
+    bool present, unknown;
+    FrameTracerRamMapping mapping;
+    const u8* current;
+    std::vector<u8> previous;
+    FrameTracerRamSummary summary;
+    std::vector<unsigned> scsi_update_frames;
+};
+
+CpuSnap cpu_snap(GeargrafxCore& core, HuC6280::HuC6280_State* cpu, Memory* memory) {
+    const unsigned pc = cpu->PC->GetValue();
+    const unsigned page = pc >> 13;
+    CpuSnap snap = {(unsigned)core.GetMasterClockCycles(), pc, page, memory->GetMpr(page),
+                    memory->GetMpr(page) * 0x2000 + (pc & 0x1fff),
+                    memory->GetMpr(page) >= 0xf8 && memory->GetMpr(page) <= 0xfb,
+                    cpu->A->GetValue(), cpu->X->GetValue(), cpu->Y->GetValue(),
+                    cpu->P->GetValue(), cpu->S->GetValue(), {}};
+    for (int i = 0; i != 8; ++i)
+        snap.mpr[i] = memory->GetMpr(i);
+    return snap;
+}
+
+CdSnap cd_snap(ScsiController::Scsi_State* scsi, CdRom::CdRom_State* cdrom) {
+    return {(int)*scsi->PHASE, (unsigned)*scsi->SIGNALS, (unsigned)*scsi->LOAD_SECTOR,
+            (unsigned)*scsi->LOAD_SECTOR_COUNT, (unsigned)*cdrom->ACTIVE_IRQS,
+            (unsigned)*cdrom->ENABLED_IRQS};
+}
+
+bool same_cpu(const CpuSnap& left, const CpuSnap& right) {
+    return left.pc == right.pc && left.pc_bank == right.pc_bank && left.a == right.a && left.x == right.x && left.y == right.y &&
+           left.p == right.p && left.sp == right.sp && std::memcmp(left.mpr, right.mpr, sizeof(left.mpr)) == 0;
+}
+
+bool same_cd(const CdSnap& left, const CdSnap& right) {
+    return left.phase == right.phase && left.signals == right.signals && left.load_sector == right.load_sector &&
+           left.load_count == right.load_count && left.irq_active == right.irq_active &&
+           left.irq_enabled == right.irq_enabled;
+}
+
+// Guest-visible state read through state pointers only, compared around the tracer's own
+// TraceLogger calls.  It is never printed: only the number of checks and mismatches is emitted.
+struct GuestFingerprint {
+    CpuSnap cpu;
+    CdSnap cd;
+    int speed;
+    unsigned timer, timer_counter, timer_reload, idr, irr;
+    std::vector<u8> ram;  // present, observed RAM regions only (empty when RAM observation is off)
+};
+
+GuestFingerprint guest_fingerprint(GeargrafxCore& core, HuC6280::HuC6280_State* cpu, Memory* memory,
+                                   ScsiController::Scsi_State* scsi, CdRom::CdRom_State* cdrom,
+                                   const std::vector<RamTracker>& rams) {
+    GuestFingerprint print = {cpu_snap(core, cpu, memory), cd_snap(scsi, cdrom), (int)*cpu->SPEED,
+                              (unsigned)*cpu->TIMER, (unsigned)*cpu->TIMER_COUNTER, (unsigned)*cpu->TIMER_RELOAD,
+                              (unsigned)*cpu->IDR, (unsigned)*cpu->IRR, {}};
+    for (const RamTracker& ram : rams)
+        if (ram.present) print.ram.insert(print.ram.end(), ram.current, ram.current + ram.mapping.size);
+    return print;
+}
+
+bool same_guest(const GuestFingerprint& left, const GuestFingerprint& right) {
+    return left.cpu.master_clock == right.cpu.master_clock && same_cpu(left.cpu, right.cpu) &&
+           same_cd(left.cd, right.cd) && left.speed == right.speed && left.timer == right.timer &&
+           left.timer_counter == right.timer_counter && left.timer_reload == right.timer_reload &&
+           left.idr == right.idr && left.irr == right.irr && left.ram == right.ram;
+}
+
+void print_cpu(const CpuSnap& cpu) {
+    std::printf("\"master_clock\":%u,\"pc\":%u,\"pc_page\":%u,\"pc_bank\":%u,\"physical_pc\":%u,\"pc_is_wram\":%s,\"a\":%u,\"x\":%u,\"y\":%u,\"p\":%u,\"sp\":%u,\"mpr\":[",
+                 cpu.master_clock, cpu.pc, cpu.pc_page, cpu.pc_bank, cpu.physical_pc,
+                 cpu.pc_is_wram ? "true" : "false", cpu.a, cpu.x, cpu.y, cpu.p, cpu.sp);
+    for (int i = 0; i != 8; ++i)
+        std::printf("%s%u", i ? "," : "", cpu.mpr[i]);
+    std::printf("]");
+}
+
+void print_cd(const CdSnap& cd) {
+    std::printf("\"scsi_phase\":%d,\"scsi_signals\":%u,\"load_sector\":%u,\"load_count\":%u,"
+                "\"cd_irq_active\":%u,\"cd_irq_enabled\":%u",
+                cd.phase, cd.signals, cd.load_sector, cd.load_count, cd.irq_active, cd.irq_enabled);
+}
+
+void print_event(const Event& event) {
+    const char* kind = event.kind == Event::SAMPLE ? "sample" : event.kind == Event::CD ? "cd" :
+                        event.kind == Event::RAM ? "ram" : event.kind == Event::REGION ? "region" : "handoff";
+    std::printf("EVENT {\"kind\":\"%s\",\"frame\":%u,", kind, event.frame);
+    if (event.kind == Event::REGION) {
+        // These fields come only from the TRACE_CPU entry, which contains the
+        // resolved bank and PC at instruction time.  Never serialize opcode
+        // bytes or disassembly text from that entry.
+        // region_kind: "baseline" (first region of the run, nothing lost before it), "after_gap"
+        // (first region after a core-trace gap or discontinuity) or "transition" (between two
+        // known regions).  "unknown" is only ever a from_region.
+        const bool from_unknown = std::strcmp(event.from_region, "unknown") == 0;
+        std::printf("\"event_cycle\":%llu,\"event_pc\":%u,\"event_bank\":%u,\"from_region\":\"%s\",\"to_region\":\"%s\",\"trace_gap\":%s,"
+                    "\"region_kind\":\"%s\"",
+                    event.event_cycle, event.event_pc, event.event_bank, event.from_region,
+                    event.to_region, event.trace_gap ? "true" : "false",
+                    !from_unknown ? "transition" : event.trace_gap ? "after_gap" : "baseline");
+    } else {
+        print_cpu(event.cpu);
+    }
+    if (event.kind == Event::CD) {
+        // SCSI metadata is event-originated, but CPU/CD fields are sampled only
+        // after RunToVBlank returns; never present them as event-time state.
+        // Command payload bytes are never serialized.
+        std::printf(",\"snapshot\":\"FRAME_SNAPSHOT\",\"cd_event\":%u,\"command\":%u,\"lba\":%u,\"status\":%u,",
+                    event.cd_event, event.cd_command, event.cd_lba, event.cd_status);
+        print_cd(event.cd);
+    } else if (event.kind == Event::RAM) {
+        // Counts and mapped ranges only: never serialize guest bytes or pointers.
+        std::printf(",\"ram\":\"%s\",\"size\":%u,\"changed\":%u,\"first_offset\":%u,"
+                    "\"last_offset\":%u,\"bank_first\":%u,\"bank_last\":%u",
+                    event.ram->name, event.ram->size, event.changed, event.first, event.last,
+                    event.ram->first_bank, event.ram->last_bank);
+    }
+    std::printf("}\n");
+}
+
+void print_optional(unsigned value, bool have_value) {
+    if (have_value) std::printf("%u", value);
+    else std::printf("null");
+}
+
+void print_ram_summary(const std::vector<RamTracker>& rams) {
+    std::printf(",\"ram_deltas\":[");
+    for (unsigned index = 0; index != rams.size(); ++index) {
+        const RamTracker& ram = rams[index];
+        const bool changed = ram.summary.updates != 0;
+        std::printf("%s{\"region\":\"%s\",\"present\":", index ? "," : "", ram.name);
+        if (ram.unknown) {
+            std::printf("null,\"availability\":\"UNKNOWN\"");
+        } else if (!ram.present) {
+            std::printf("false,\"availability\":\"ABSENT\"");
+        } else {
+            std::printf("true,\"availability\":\"PRESENT\",\"size\":%u,\"bank_first\":%u,\"bank_last\":%u",
+                        ram.mapping.size, ram.mapping.first_bank, ram.mapping.last_bank);
+        }
+        std::printf(",\"updates\":%u,\"first_frame\":", ram.summary.updates);
+        print_optional(ram.summary.first_frame, changed);
+        std::printf(",\"last_frame\":");
+        print_optional(ram.summary.last_frame, changed);
+        std::printf(",\"min_offset\":");
+        print_optional(ram.summary.min_offset, changed);
+        std::printf(",\"max_offset\":");
+        print_optional(ram.summary.max_offset, changed);
+        std::printf(",\"max_changed\":%u,\"scsi_correlation\":\"%s\",\"scsi_update_frames\":[",
+                    ram.summary.max_changed, ram.summary.scsi_correlation_unknown ? "UNKNOWN" :
+                    (ram.scsi_update_frames.empty() ? "NONE_OBSERVED" : "OBSERVED"));
+        for (unsigned frame = 0; frame != ram.scsi_update_frames.size(); ++frame)
+            std::printf("%s%u", frame ? "," : "", ram.scsi_update_frames[frame]);
+        std::printf("]}");
+    }
+    std::printf("]");
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    if (argc != 10)
+        return 2;
+    char* end = nullptr;
+    long frames = std::strtol(argv[3], &end, 10);
+    if (!end || *end || frames < 1 || frames > kMaxFrames)
+        return 2;
+    end = nullptr;
+    long capacity = std::strtol(argv[4], &end, 10);
+    if (!end || *end || capacity < 1 || capacity > kRingSize)
+        return 2;
+    end = nullptr;
+    long run_start = std::strtol(argv[5], &end, 10);
+    if (!end || *end || run_start < 0 || run_start > frames)
+        return 2;
+    end = nullptr;
+    long run_hold = std::strtol(argv[6], &end, 10);
+    if (!end || *end || run_hold < 0 || run_hold > frames ||
+        ((run_start == 0) != (run_hold == 0)) || (run_start && run_start + run_hold - 1 > frames))
+        return 2;
+    end = nullptr;
+    long observe_ram = std::strtol(argv[7], &end, 10);
+    if (!end || *end || (observe_ram != 0 && observe_ram != 1))
+        return 2;
+    end = nullptr;
+    long requested_core_capacity = std::strtol(argv[8], &end, 10);
+    if (!end || *end || requested_core_capacity < 0 || requested_core_capacity > kMaxCoreCapacity)
+        return 2;
+    end = nullptr;
+    long warm_reset_frame = std::strtol(argv[9], &end, 10);
+    if (!end || *end || warm_reset_frame < 0 || warm_reset_frame == 1 || warm_reset_frame > frames)
+        return 2;
+    std::ifstream input(argv[1], std::ios::binary);
+    if (!input)
+        return 2;
+    std::vector<u8> rom((std::istreambuf_iterator<char>(input)), {});
+    const std::string cue(argv[2]);
+    const bool have_disc = cue != "-";
+
+    GeargrafxCore core;
+    core.Init(nullptr);
+    bool loaded = false;
+    if (have_disc) {
+        loaded = core.LoadBiosFromBuffer(rom.data(), rom.size(), true) && core.LoadMedia(cue.c_str());
+    } else {
+        core.GetMedia()->SetCDROMType(GG_CDROM_STANDARD);
+        loaded = core.LoadHuCardFromBuffer(rom.data(), (int)rom.size(), "frame-trace-card.pce");
+    }
+    if (!loaded)
+        return 3;
+
+    HuC6280::HuC6280_State* cpu = core.GetHuC6280()->GetState();
+    Memory* memory = core.GetMemory();
+    ScsiController::Scsi_State* scsi = core.GetScsiController()->GetState();
+    CdRom::CdRom_State* cdrom = core.GetCDROM()->GetState();
+    std::vector<u8> frame(1024 * 512 * 4);
+    std::vector<s16> audio(65536);
+    GeargrafxCore::GG_Debug_Run normal = {};  // no step_debugger: normal whole-frame execution
+    FrameTracerRing<Event, kRingSize> ring((unsigned)capacity);
+    std::vector<RamTracker> rams;
+    const auto add_ram = [&rams, observe_ram](const char* name, FrameTracerRamKind kind, unsigned size, unsigned start,
+                                              const u8* current) {
+        RamTracker ram = {name, false, false, {}, current, {}, FrameTracerEmptyRamSummary(), {}};
+        if (!observe_ram) {
+            ram.unknown = true;  // Observer A/B run: RAM is deliberately not observed.
+            rams.push_back(ram);
+            return true;
+        }
+        if (!size) {
+            rams.push_back(ram);  // Absent in this loaded configuration.
+            return true;
+        }
+        if (!current || !FrameTracerMapRam(kind, size, start, &ram.mapping))
+            return false;  // Fail closed: an unconfirmed mapping is never summarized.
+        ram.present = true;
+        ram.previous.assign(current, current + ram.mapping.size);
+        rams.push_back(ram);
+        return true;
+    };
+    if (!add_ram("wram", FRAME_TRACER_WRAM, (unsigned)memory->GetWorkingRAMSize(), 0, memory->GetWorkingRAM()) ||
+        !add_ram("cdrom_ram", FRAME_TRACER_CDROM_RAM, (unsigned)memory->GetCDROMRAMSize(), 0, memory->GetCDROMRAM()) ||
+        !add_ram("card_ram", FRAME_TRACER_CARD_RAM, (unsigned)memory->GetCardRAMSize(),
+                 (unsigned)memory->GetCardRAMStart(), memory->GetCardRAM()))
+        return 3;
+    CpuSnap previous_cpu = cpu_snap(core, cpu, memory);
+    CdSnap previous_cd = cd_snap(scsi, cdrom);
+    // guest_mutation: the tracer itself never writes guest memory or registers.  A requested warm reset
+    // is the one deliberate guest-state change, and the capability says so instead of claiming false.
+    std::printf("CAP {\"normal_frame_execution\":true,\"instruction_step\":false,\"guest_mutation\":%s,"
+                "\"mmio_reads\":false,\"scsi_event_notification\":true,\"cpu_event_notification\":true,"
+                "\"ram_observation\":%s,\"ram_delta_summary\":true,\"ram_regions\":[",
+                warm_reset_frame ? "\"requested_warm_reset\"" : "false", observe_ram ? "true" : "false");
+    bool first_region = true;
+    for (const RamTracker& ram : rams) {
+        if (!ram.present) continue;
+        std::printf("%s{\"ram\":\"%s\",\"size\":%u,\"bank_first\":%u,\"bank_last\":%u}", first_region ? "" : ",",
+                    ram.mapping.name, ram.mapping.size, ram.mapping.first_bank, ram.mapping.last_bank);
+        first_region = false;
+    }
+    std::printf("],\"ring_capacity\":%ld,\"frames\":%ld,\"disc_given\":%s,\"run_start_frame\":%ld,"
+                "\"run_hold_frames\":%ld,\"run_input_requested\":%s,\"core_capacity_requested\":%ld,"
+                "\"trace_api_guest_ram_checked\":%s,\"region_gap_carry\":true,\"warm_reset_frame\":%ld}\n",
+                capacity, frames, have_disc ? "true" : "false", run_start, run_hold, run_start ? "true" : "false",
+                requested_core_capacity, observe_ram ? "true" : "false", warm_reset_frame);
+    TraceLogger* trace = core.GetTraceLogger();
+    // The tracer's TraceLogger calls touch only the core's trace buffer.  Guest state is
+    // fingerprinted before and after them; a mismatch is counted, never hidden.
+    unsigned guest_checks = 0, guest_changes = 0;
+    const GuestFingerprint before_setup = guest_fingerprint(core, cpu, memory, scsi, cdrom, rams);
+    // Core trace buffer: the pinned core's own default capacity (TRACE_BUFFER_SIZE) unless a
+    // smaller one is requested, never the output-ring size.  Output-ring overflow does not change
+    // what the core retains, and a core overwrite is detected below as an explicit gap
+    // (dropped_trace, frame_scsi_incomplete).
+    if (requested_core_capacity && !trace->SetCapacity((u32)requested_core_capacity)) return 3;
+    const u64 core_capacity = trace->GetCapacity();
+    if (core_capacity == 0 || (requested_core_capacity && core_capacity != (u64)requested_core_capacity)) return 3;
+    trace->SetEnabledFlags(TRACE_FLAG_CPU | TRACE_FLAG_SCSI);
+    trace->SetEventFilter(TRACE_SCSI, TRACE_SCSI_FILTER_COMMANDS | TRACE_SCSI_FILTER_PHASES | TRACE_SCSI_FILTER_RESPONSES);
+    trace->Reset();
+    ++guest_checks;
+    if (!same_guest(before_setup, guest_fingerprint(core, cpu, memory, scsi, cdrom, rams))) ++guest_changes;
+    // Pre-clamp per-frame counts come from GetTotalLogged() deltas, cross-checked against the
+    // sequence counter (not zeroed by Reset), the capacity and the retained count.
+    const FrameTracerCoreSample core_start = {trace->GetTotalLogged(), trace->GetSequence(),
+                                              trace->GetCapacity(), trace->GetCount()};
+    if (!FrameTracerCoreAccount::valid_start(core_start)) return 3;
+    FrameTracerCoreAccount core_account(core_start);
+    u64 consumed_trace = 0;
+    u64 observed_trace = 0;
+    u64 dropped_trace = 0;
+    // Measurements for the single-run design: largest per-frame core entry count and SCSI count.
+    u64 max_frame_core_entries = 0;
+    unsigned max_frame_scsi_events = 0;
+    const char* previous_region = nullptr;
+    // Set by a core-trace gap or discontinuity and carried across frames until the next REGION
+    // event is emitted, so a gap is never hidden when the following frames consume no CPU entry.
+    bool trace_gap = false;
+
+    for (unsigned number = 1; number <= (unsigned)frames; ++number) {
+        const bool reset_this_frame = warm_reset_frame && number == (unsigned)warm_reset_frame;
+        if (reset_this_frame) {
+            // Public core API; the trace logger is not part of GeargrafxCore::Reset().  Reset() zeroes the
+            // master clock, resets CPU/VDC/CD/SCSI, reinitializes MPRs and rewrites WRAM/CD RAM/card RAM
+            // (fixed value or random, per core settings);
+            // preserve_ram restores only the backup RAM.  This frame's RAM deltas therefore mix reset writes
+            // with guest execution, so its SCSI correlation is UNKNOWN and no HANDOFF candidate is claimed.
+            const bool media_ready = core.GetMedia()->IsReady();
+            core.ResetMedia(true);
+            std::printf("RESET {\"frame\":%u,\"kind\":\"warm\",\"api\":\"GeargrafxCore::ResetMedia(true)\","
+                        "\"performed\":%s,\"master_clock_reset\":true,\"ram_preserved\":\"backup_ram_only\"}\n",
+                        number, media_ready ? "true" : "false");
+        }
+        // This is the pinned core's public controller API.  Apart from a requested warm reset above, no
+        // guest RAM, CPU, MPR, IRQ, CD, or SCSI state is changed by the tracer.
+        if (run_start && number == (unsigned)run_start) {
+            core.KeyPressed(GG_CONTROLLER_1, GG_KEY_RUN);
+            std::printf("INPUT {\"frame\":%u,\"action\":\"press\",\"run_pressed\":%s}\n", number,
+                        core.GetInput()->IsKeyPressed(GG_CONTROLLER_1, GG_KEY_RUN) ? "true" : "false");
+        }
+        int samples = 0;
+        core.RunToVBlank(frame.data(), audio.data(), &samples, &normal, false);
+        if (run_start && number == (unsigned)(run_start + run_hold - 1)) {
+            core.KeyReleased(GG_CONTROLLER_1, GG_KEY_RUN);
+            std::printf("INPUT {\"frame\":%u,\"action\":\"release\",\"run_pressed\":%s}\n", number,
+                        core.GetInput()->IsKeyPressed(GG_CONTROLLER_1, GG_KEY_RUN) ? "true" : "false");
+        }
+        CpuSnap now_cpu = cpu_snap(core, cpu, memory);
+        CdSnap now_cd = cd_snap(scsi, cdrom);
+        Event sample = {Event::SAMPLE, number, now_cpu, now_cd, 0, 0, 0, 0, 0, 0, 0, nullptr};
+        ring.push(sample);
+        if (!same_cd(previous_cd, now_cd))
+            ring.push({Event::CD, number, now_cpu, now_cd, 0, 0, 0, 255, 0, 0, 0, nullptr});
+        // Consume the core's read-only event notifications.  This retains phase
+        // changes that begin and end within one video frame.
+        const GuestFingerprint before_trace = guest_fingerprint(core, cpu, memory, scsi, cdrom, rams);
+        const u64 total = trace->GetTotalLogged();
+        const FrameTracerCoreFrame core_frame = core_account.account(
+            {total, trace->GetSequence(), trace->GetCapacity(), trace->GetCount()});
+        const u64 first_event = total > core_capacity ? total - core_capacity : 0;
+        // A core trace gap means this frame's SCSI notifications may be incomplete.
+        // Output-ring overflow is a separate, bounded-output concern and never reaches here.
+        bool frame_scsi_incomplete = false;
+        if (!core_frame.continuous) {
+            // The counters moved inconsistently (e.g. an unexpected Reset or capacity change), so
+            // which retained entries are new is unknown: consume none and resynchronize.
+            observed_trace = total;
+            previous_region = nullptr;
+            trace_gap = true;
+            frame_scsi_incomplete = true;
+        } else if (observed_trace < first_event) {
+            dropped_trace += first_event - observed_trace;
+            observed_trace = first_event;
+            previous_region = nullptr;
+            trace_gap = true;
+            frame_scsi_incomplete = true;
+        }
+        bool scsi_observed_this_frame = false;
+        unsigned scsi_events_this_frame = 0;
+        if (total - observed_trace > max_frame_core_entries) max_frame_core_entries = total - observed_trace;
+        for (; observed_trace < total; ++observed_trace) {
+            const GG_Trace_Entry& entry = trace->GetEntry((unsigned)(observed_trace - first_event));
+            ++consumed_trace;
+            if (entry.type == TRACE_SCSI) {
+                scsi_observed_this_frame = true;
+                ++scsi_events_this_frame;
+                if (scsi_events_this_frame > max_frame_scsi_events) max_frame_scsi_events = scsi_events_this_frame;
+                ring.push({Event::CD, number, now_cpu, now_cd, 0, 0, 0, entry.scsi.event,
+                           entry.scsi.command, entry.scsi.param, entry.scsi.status, nullptr});
+            }
+            if (entry.type == TRACE_CPU) {
+                const char* region = trace_cpu_region(entry.cpu.bank);
+                if (!previous_region || std::strcmp(previous_region, region) != 0) {
+                    ring.push({Event::REGION, number, now_cpu, now_cd, 0, 0, 0, 0, 0, 0, 0, nullptr,
+                               entry.cpu.pc, entry.cpu.bank, (unsigned long long)entry.cycle,
+                               previous_region ? previous_region : "unknown", region, trace_gap});
+                    previous_region = region;
+                    trace_gap = false;
+                }
+            }
+        }
+        ++guest_checks;
+        if (!same_guest(before_trace, guest_fingerprint(core, cpu, memory, scsi, cdrom, rams))) ++guest_changes;
+        unsigned wram_changed = 0;
+        // Correlation is frame-local and only uses notifications seen above;
+        // it is never presented as event-time RAM state.
+        for (RamTracker& ram : rams) {
+            if (!ram.present) continue;
+            const FrameTracerRamDelta delta = FrameTracerCompareRam(ram.previous.data(), ram.current, ram.mapping.size);
+            if (std::strcmp(ram.name, "wram") == 0) wram_changed = delta.changed;
+            // Only a frame that changed this RAM region and lacked complete SCSI notifications
+            // can make its correlation UNKNOWN; unchanged frames carry no correlation claim.
+            // A warm-reset frame's delta includes the reset's own RAM writes: its correlation is UNKNOWN and
+            // it is never attributed to a SCSI notification.
+            FrameTracerAccumulateRam(&ram.summary, delta, number, scsi_observed_this_frame,
+                                     (frame_scsi_incomplete || reset_this_frame) && delta.changed != 0);
+            if (delta.changed && scsi_observed_this_frame && !reset_this_frame)
+                ram.scsi_update_frames.push_back(number);
+            if (delta.changed)
+                ring.push({Event::RAM, number, now_cpu, now_cd, delta.changed, delta.first, delta.last,
+                           0, 0, 0, 0, &ram.mapping});
+            std::memcpy(ram.previous.data(), ram.current, ram.mapping.size);
+        }
+        // This is deliberately only a candidate: a mapped WRAM PC plus a recent
+        // WRAM update, never a claim of a BIOS-to-game control transfer.
+        if (!reset_this_frame && now_cpu.pc_is_wram && wram_changed &&
+            (!previous_cpu.pc_is_wram || previous_cpu.physical_pc != now_cpu.physical_pc))
+            ring.push({Event::HANDOFF, number, now_cpu, now_cd, 0, 0, 0, 0, 0, 0, 0, nullptr});
+        previous_cpu = now_cpu;
+        previous_cd = now_cd;
+    }
+    for (unsigned index = 0; index != ring.size(); ++index)
+        print_event(ring.at(index));
+    // A discontinuous frame lost an unknown number of core entries that trace_events_dropped cannot
+    // count, so it also sets overflow: an unknown loss is never presented as no loss.
+    std::printf("END {\"frames\":%ld,\"events\":%u,\"dropped\":%llu,\"trace_events_dropped\":%llu,\"overflow\":%s", frames,
+                ring.size(), ring.dropped(), (unsigned long long)dropped_trace,
+                (ring.dropped() || dropped_trace || core_account.discontinuous_frames()) ? "true" : "false");
+    // Every output-ring push, counted independently so the reader can check pushed == events + dropped.
+    std::printf(",\"pushed\":%llu", ring.pushed());
+    // Core-buffer fields.  core_capacity is the core's configured buffer size (TraceLogger::GetCapacity),
+    // not a usage measurement.  max_frame_core_entries is the legacy post-clamp (retained) maximum, kept
+    // for compatibility; the reader measures the pre-clamp value from core_trace.max_frame_logged instead.
+    // max_frame_scsi_events counts only entries actually read: the reader marks it MEASURED only when no
+    // frame had a core-trace gap or discontinuity, and otherwise reports it as a separate LOWER_BOUND.
+    std::printf(",\"core_capacity\":%llu,\"max_frame_core_entries\":%llu,\"max_frame_scsi_events\":%u",
+                (unsigned long long)core_capacity, (unsigned long long)max_frame_core_entries, max_frame_scsi_events);
+    // Pre-clamp core accounting (A1 PR-B).  total_logged and sequence_delta are read from the core at
+    // the end; the per-frame fields come from GetTotalLogged() deltas between frame samples.  consumed
+    // counts entries actually read with GetEntry(); lost counts entries overwritten before being read.
+    std::printf(",\"core_trace\":{\"total_logged\":%llu,\"sequence_delta\":%llu,\"logged_accounted\":%llu,"
+                "\"consumed\":%llu,\"lost\":%llu,\"frames_accounted\":%u,\"discontinuity_frames\":%u,"
+                "\"gap_frames\":%u,\"max_frame_logged\":%llu}",
+                (unsigned long long)trace->GetTotalLogged(),
+                (unsigned long long)(trace->GetSequence() - core_start.sequence), core_account.logged(),
+                (unsigned long long)consumed_trace, core_account.lost(), core_account.accounted_frames(),
+                core_account.discontinuous_frames(), core_account.gap_frames(), core_account.max_frame_logged());
+    std::printf(",\"trace_api_guest_checks\":%u,\"trace_api_guest_changes\":%u", guest_checks, guest_changes);
+    print_ram_summary(rams);
+    std::printf("}");
+    std::printf("\n");
+    return 0;
+}

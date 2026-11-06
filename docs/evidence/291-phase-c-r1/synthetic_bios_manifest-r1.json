@@ -1,0 +1,116 @@
+{
+  "label": "SYNTHETIC_BIOS (own bytes; not a System Card BIOS; no reference data)",
+  "bios_path": "<EVIDENCE_ROOT>/phase-c/synthetic/synthetic_bios.bin",
+  "bios_size": 262144,
+  "bios_sha256": "e122f0154b6b341a4d08deddd855289a7a5ca43e814aa9391737f7e7f52f70d7",
+  "generator_sha256": "71c15d84646deaf8a214d0fb03022c839c41c554a2027f2a27446469d614192b",
+  "entry": "E000",
+  "halt_address": "E028",
+  "reset_vector_file_offset": "0x1FFE",
+  "program": [
+    {
+      "addr": "E000",
+      "bytes": "a9f8",
+      "asm": "LDA #$F8"
+    },
+    {
+      "addr": "E002",
+      "bytes": "5302",
+      "asm": "TAM #$02"
+    },
+    {
+      "addr": "E004",
+      "bytes": "a901",
+      "asm": "LDA #$01"
+    },
+    {
+      "addr": "E006",
+      "bytes": "8d0020",
+      "asm": "STA $2000"
+    },
+    {
+      "addr": "E009",
+      "bytes": "a9ff",
+      "asm": "LDA #$FF"
+    },
+    {
+      "addr": "E00B",
+      "bytes": "5301",
+      "asm": "TAM #$01"
+    },
+    {
+      "addr": "E00D",
+      "bytes": "a900",
+      "asm": "LDA #$00"
+    },
+    {
+      "addr": "E00F",
+      "bytes": "8d0010",
+      "asm": "STA $1000"
+    },
+    {
+      "addr": "E012",
+      "bytes": "ad0010",
+      "asm": "LDA $1000"
+    },
+    {
+      "addr": "E015",
+      "bytes": "8d1020",
+      "asm": "STA $2010"
+    },
+    {
+      "addr": "E018",
+      "bytes": "a901",
+      "asm": "LDA #$01"
+    },
+    {
+      "addr": "E01A",
+      "bytes": "8d0010",
+      "asm": "STA $1000"
+    },
+    {
+      "addr": "E01D",
+      "bytes": "ad0010",
+      "asm": "LDA $1000"
+    },
+    {
+      "addr": "E020",
+      "bytes": "8d1120",
+      "asm": "STA $2011"
+    },
+    {
+      "addr": "E023",
+      "bytes": "a902",
+      "asm": "LDA #$02"
+    },
+    {
+      "addr": "E025",
+      "bytes": "8d0120",
+      "asm": "STA $2001"
+    }
+  ],
+  "expected_trace_pcs": [
+    "E000",
+    "E002",
+    "E004",
+    "E006",
+    "E009",
+    "E00B",
+    "E00D",
+    "E00F",
+    "E012",
+    "E015",
+    "E018",
+    "E01A",
+    "E01D",
+    "E020",
+    "E023",
+    "E025"
+  ],
+  "expected_trace_count": 16,
+  "expected_wram_markers": {
+    "0x0000": "01",
+    "0x0001": "02"
+  },
+  "joypad_expectation": "C-R1 (current): Up leaves WRAM 0x10 (SEL=0 read) unchanged and clears bit0 of WRAM 0x11 (SEL=1 read): no input 3F/3F, Up 3F/3E. The earlier draft (bit0 on the SEL=0 row) was superseded before the full run; see phase-c3-tests.md and phase-c3-expected.json."
+}

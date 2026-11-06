@@ -4,7 +4,7 @@ import json
 import sys
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 from xml.etree import ElementTree
 
 SITE = (Path(__file__).resolve().parents[1] / "site").resolve()
@@ -28,6 +28,14 @@ URLS = {
     (SITE / "ja" / "index.html").resolve(): (BASE + "ja/", "ja"),
 }
 LOCALES = {"en": BASE, "ja": BASE + "ja/", "x-default": BASE}
+SHARE_MESSAGES = {"en":"oss-pce-cd-bios: Open-source PC Engine CD System Card BIOS project (development only; not compatible or released).","ja":"oss-pce-cd-bios：PCエンジンCD向けオープンソースBIOSを開発中（互換BIOSとして未完成・未リリース）。"}
+SHARE_ENDPOINTS = {
+    "x": ("twitter.com", "/intent/tweet"),
+    "bluesky": ("bsky.app", "/intent/compose"),
+    "facebook": ("www.facebook.com", "/sharer/sharer.php"),
+    "line": ("social-plugins.line.me", "/lineit/share"),
+}
+
 
 
 class Page(HTMLParser):
@@ -35,6 +43,7 @@ class Page(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.ids, self.links, self.alternates = set(), [], {}
         self.link_cards = []
+        self.share_links = []
         self.meta, self.canonicals, self.jsonld = {}, [], []
         self.mains = self.h1s = self.script_count = 0
         self.lang = None
@@ -67,6 +76,10 @@ class Page(HTMLParser):
                 self.alternates[lang] = attrs.get("href")
         if tag == "a" and "link-card" in attrs.get("class", "").split():
             self.link_cards.append(attrs.get("href"))
+        if tag == "a" and "share-link" in attrs.get("class", "").split():
+            self.share_links.append({"platform": attrs.get("data-platform"), "href": attrs.get("href", ""),
+                                     "target": attrs.get("target"), "rel": attrs.get("rel", ""),
+                                     "label": attrs.get("aria-label")})
         if tag in ("a", "link") and attrs.get("href"):
             self.links.append(attrs["href"])
         if tag == "img" and attrs.get("src"):
@@ -108,6 +121,26 @@ def validate_page(page, url, language):
     ]
     if doc.link_cards != expected_cards:
         raise ValueError(f"{page}: missing, duplicated or reordered project link cards")
+    if [link["platform"] for link in doc.share_links] != list(SHARE_ENDPOINTS):
+        raise ValueError(f"{page}: social sharing platforms are missing or reordered")
+    message = SHARE_MESSAGES[language]
+    for link in doc.share_links:
+        platform = link["platform"]
+        host, path = SHARE_ENDPOINTS[platform]
+        parts = urlsplit(link["href"])
+        if (parts.scheme, parts.netloc, parts.path, parts.fragment) != ("https", host, path, ""):
+            raise ValueError(f"{page}: invalid {platform} sharing endpoint")
+        if link["target"] != "_blank" or not {"noopener", "noreferrer"} <= set(link["rel"].split()) or not link["label"]:
+            raise ValueError(f"{page}: unsafe or inaccessible {platform} sharing link")
+        expected_query = {
+            "x": {"text": message, "url": url},
+            "bluesky": {"text": message + "\n\n" + url},
+            "facebook": {"u": url},
+            "line": {"url": url, "text": message},
+        }[platform]
+        if parse_qs(parts.query) != {key: [value] for key, value in expected_query.items()}:
+            raise ValueError(f"{page}: {platform} sharing text or canonical URL mismatch")
+
     if doc.canonicals != [url] or doc.alternates != LOCALES:
         raise ValueError(f"{page}: canonical or reciprocal hreflang mismatch")
     if doc.meta.get("og:url") != url or doc.meta.get("og:type") != "website":
@@ -241,7 +274,7 @@ def main():
         if fact not in llms:
             raise ValueError("optional AI summary missing: " + fact)
     css = (SITE / "assets" / "styles.css").read_text(encoding="utf-8")
-    for rule in ("@media (max-width:", "prefers-reduced-motion", ":focus-visible"):
+    for rule in ("@media (max-width:", "prefers-reduced-motion", ":focus-visible", ".share-panel", ".share-link"):
         if rule not in css:
             raise ValueError("missing responsive/accessibility CSS: " + rule)
     ElementTree.parse(SITE / "assets" / "mark.svg")

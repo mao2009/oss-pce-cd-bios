@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Regenerate the Phase ABI-3 static triage projection from a local image and compare it (Issue #476).
+"""Regenerate the Phase ABI-3 static triage projection from a local image (Issue #476).
 
 Local only. It needs the private reference image and the pinned cc65 da65 (TOOLS_DIR). It never runs in CI,
 which has no private image. It fails closed: a missing image or a difference is an error, never a pass.
+No public projection is committed (Issue #324, owner ruling A). Comparison is possible only against a local
+baseline passed with --baseline, which must lie outside the repository. Without one the result is NOT_VERIFIED.
 Output is compared in memory; nothing derived from the image is written into the repository.
 """
 from pathlib import Path
@@ -20,8 +22,17 @@ import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 AUDITOR = ROOT / "tools" / "reference_rom_static_audit.py"
-COMMITTED = ROOT / "docs" / "evidence" / "reference-static-triage-81.json"
+# Local baseline JSON, set only through --baseline. No public projection exists in the repository.
+BASELINE = None
 SLOTS = ",".join(hex(i) for i in range(81))
+
+
+def _inside_repo(path):
+    """True when the path lies inside the repository. An unresolvable path counts as inside (fail closed)."""
+    try:
+        return path.resolve().is_relative_to(ROOT.resolve())
+    except (OSError, ValueError):  # ValueError: a path with a NUL byte
+        return True
 
 
 def describe_image(data):
@@ -34,9 +45,9 @@ def describe_image(data):
             "crc32_payload": f"{zlib.crc32(data[header:]) & 0xFFFFFFFF:08X}"}
 
 
-# Callee metrics added to the analyzer after the committed evidence was captured (#485, PR #490).
-# Named allowlist: only these keys may be absent from the committed evidence. Anything else must match exactly.
-# Remove an entry here once the committed evidence JSON is regenerated with it (then it is compared strictly).
+# Callee metrics added to the analyzer after the local baseline was captured (#485, PR #490).
+# Named allowlist: only these keys may be absent from the local baseline. Anything else must match exactly.
+# Remove an entry here once the local baseline is regenerated with it (then it is compared strictly).
 ADDED_CALLEE_FIELDS = ("states_without_guaranteed_return",)
 UNBASELINED = "UNBASELINED"
 EXIT_UNBASELINED = 3  # 0 PASS, 1 FAIL, 2 BLOCKED, 3 UNBASELINED (existing fields match, new metric unverified)
@@ -76,13 +87,13 @@ def compare_projection(fresh, committed):
             if key not in fc:
                 continue
             if not _valid_added_field(fc, key):
-                return False, f"{key} invalid in {f.get('api_id')} (type/range/scope)", []
+                return False, f"{key} invalid in one slot (type/range/scope; slot withheld)", []
             if key not in cc:
                 del fc[key]
                 unbaselined.add(key)
     # type-strict: json text distinguishes true/1 and 4.0/4, which Python == does not
     if json.dumps(fresh, sort_keys=True) != json.dumps(committed, sort_keys=True):
-        return False, "regenerated projection differs from docs/evidence/reference-static-triage-81.json", []
+        return False, "regenerated projection differs from the local baseline", []
     return True, "", sorted(unbaselined)
 
 
@@ -90,18 +101,34 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--rom", required=True, type=Path, help="local reference image (never committed)")
     parser.add_argument("--expect-sha256", help="owner-confirmed whole-file SHA-256; mismatch is an error")
+    parser.add_argument("--baseline", type=Path,
+                        help="local baseline projection JSON (outside the repository); without it the result is NOT_VERIFIED")
     args = parser.parse_args(argv)
-    if not args.rom.is_file():
-        print(f"BLOCKED: reference image not found: {args.rom}", file=sys.stderr)
+    if args.baseline is not None and _inside_repo(args.baseline):
+        print("BLOCKED: --baseline inside the repository is refused (no projection is committed)", file=sys.stderr)
         return 2
-    if args.rom.stat().st_size not in (262144, 262656):  # size gate before reading the content
-        print("BLOCKED: image size is neither 262144 nor 262656 bytes", file=sys.stderr)
+    try:
+        if not args.rom.is_file():
+            print("BLOCKED: reference image not found (path withheld)", file=sys.stderr)
+            return 2
+        size = args.rom.stat().st_size
+    except (OSError, ValueError):  # ValueError: a path with a NUL byte; no traceback, which can carry the path
+        print("BLOCKED: the reference image could not be inspected (path withheld)", file=sys.stderr)
         return 2
-    data = args.rom.read_bytes()  # the ONLY read of the original; everything below uses these bytes
+    if size not in (262144, 262656):  # size gate before reading the content
+        print("BLOCKED: image size is not a supported size (value withheld)", file=sys.stderr)
+        return 2
+    try:
+        data = args.rom.read_bytes()  # the ONLY read of the original; everything below uses these bytes
+    except OSError:
+        print("BLOCKED: the reference image could not be read (path withheld)", file=sys.stderr)
+        return 2
     ident = describe_image(data)
-    print("IDENTITY (local, not a provenance claim): " + json.dumps(ident, sort_keys=True))
+    # The identity values are never printed (owner ruling: identity of the private image is not published, and
+    # terminal or CI logs are publication too). Only the classification is shown.
+    print("IDENTITY (local, not a provenance claim): values withheld")
     if ident["header_kind"] == "UNSUPPORTED_SIZE":
-        print("BLOCKED: image size is neither 262144 nor 262656 bytes", file=sys.stderr)
+        print("BLOCKED: image size is not a supported size (value withheld)", file=sys.stderr)
         return 2
     expect = args.expect_sha256
     if expect is not None:
@@ -115,12 +142,21 @@ def main(argv=None):
         print("SHA-256 matches --expect-sha256 (owner-provided value; not canonical identity)")
     else:
         print("NOTE: no --expect-sha256; identity is UNVERIFIED (CRC32 is a database label, not provenance)")
-    tmp = tempfile.mkdtemp(prefix="abi3-triage-")  # outside the repo; 0700 on POSIX, no ACL hardening on Windows
     try:
-        rc = _analyze(tmp, data, ident)
+        tmp = tempfile.mkdtemp(prefix="abi3-triage-")  # outside the repo; 0700 on POSIX, no ACL hardening on Windows
+    except OSError:
+        print("BLOCKED: no temporary directory could be created (details withheld)", file=sys.stderr)
+        return 2
+    try:
+        try:
+            rc = _analyze(tmp, data, ident, args.baseline)
+        except Exception as error:  # no traceback: it can carry the temporary path or the image path
+            print(f"BLOCKED: internal error ({type(error).__name__}; details withheld)", file=sys.stderr)
+            rc = 2
     finally:
         left = _remove(tmp)
-    return 1 if left and rc in (0, EXIT_UNBASELINED) else rc
+    # A snapshot left behind is a failure whatever the comparison said: the private bytes must not remain.
+    return 1 if left else rc
 
 
 def _remove(tmp):
@@ -130,12 +166,12 @@ def _remove(tmp):
     except OSError:
         pass
     if Path(tmp).exists():
-        print(f"SNAPSHOT NOT DELETED: {tmp}", file=sys.stderr)
+        print("SNAPSHOT NOT DELETED: the temporary directory is left behind (path withheld)", file=sys.stderr)
         return True
     return False
 
 
-def _analyze(tmp, data, ident):
+def _analyze(tmp, data, ident, baseline_path=None):
     snap = Path(tmp) / "snapshot.bin"
     fd = os.open(snap, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
     with os.fdopen(fd, "wb") as f:
@@ -147,10 +183,26 @@ def _analyze(tmp, data, ident):
     completed = subprocess.run([sys.executable, str(AUDITOR), "--rom", str(snap), "--slots", SLOTS,
                                 "--output", str(out)], capture_output=True, text=True)
     if completed.returncode != 0 or not out.is_file():
-        print(f"FAIL: auditor exited {completed.returncode}\n{(completed.stderr or '')[-500:]}", file=sys.stderr)
+        # The auditor's stderr is not echoed: it can carry paths or analysis detail.
+        print(f"FAIL: auditor exited with code {completed.returncode} (output withheld)", file=sys.stderr)
         return 1
     fresh = json.loads(out.read_text(encoding="utf-8"))
-    committed = json.loads(COMMITTED.read_text(encoding="utf-8"))
+    baseline = baseline_path or BASELINE
+    if baseline is None:
+        print("NOT_VERIFIED: regenerated locally, but no local baseline was given (--baseline). "
+              "Nothing was compared; this is not a PASS (exit 3).", file=sys.stderr)
+        return EXIT_UNBASELINED
+    try:
+        committed = json.loads(Path(baseline).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        print("UNBASELINED: the local baseline could not be read (path withheld); not a PASS (exit 3)",
+              file=sys.stderr)
+        return EXIT_UNBASELINED
+    if not (isinstance(committed, dict) and isinstance(committed.get("apis"), list)):
+        # Not a projection at all: that is an unusable baseline (exit 3), not a comparison FAIL (exit 1).
+        print("UNBASELINED: the local baseline is not a projection (shape withheld); not a PASS (exit 3)",
+              file=sys.stderr)
+        return EXIT_UNBASELINED
     ok, msg, unbaselined = compare_projection(fresh, committed)
     if not ok:
         print("FAIL: " + msg, file=sys.stderr)
@@ -159,10 +211,10 @@ def _analyze(tmp, data, ident):
         cut = [a.get("api_id") for a in fresh.get("apis", []) if a.get("callee", {}).get("budget_exhausted") is True]
         print(f"{UNBASELINED}: {', '.join(unbaselined)} present in the analyzer but not in the committed evidence; "
               "existing fields match, new metric NOT verified (exit 3, not a PASS)"
-              + (f"; budget_exhausted (value is only a lower bound): {', '.join(map(str, cut))}" if cut else ""),
+              + (f"; {len(cut)} slot(s) exhausted the budget (value is only a lower bound; slots not printed)" if cut else ""),
               file=sys.stderr)
         return EXIT_UNBASELINED
-    print("PASS: all fields of the regenerated projection match the committed file (81 slots); "
+    print("PASS: all fields of the regenerated projection match the local baseline (81 slots); "
           "this is not canonical ROM identity")
     return 0
 

@@ -2,6 +2,12 @@
 
 **No retail CD game has been tested with an oss-pce-cd-bios image.** Main has loadable **development-only** System Card diagnostics and actual Geargrafx startup/synthetic-CD sector observations, but **not a bootable compatible BIOS**. See [status](status.md).
 
+## Current experimental evidence (2026-11-06)
+
+Main `5a8dc5a`: DEV implementation count **14/81**, **67 stubs**; owner-approved DEV_CALLABLE **0**; reference ABI VERIFIED **0/81**; reference JSR permitted **0/81**. Historical main `f90c16b` had 9 DEV implementations and 72 stubs.
+
+Merged [#681](https://github.com/mao2009/oss-pce-cd-bios/pull/681) and [#683](https://github.com/mao2009/oss-pce-cd-bios/pull/683) report **22 synthetic multi-sector IPL cases** each (cold/warm), using **different** 8 KiB HuCARD+CUE and 256 KiB DEV BIOS-buffer paths. Neither supplies a real System Card calling contract or a game-compatibility verdict. The earlier one-sector PCEX path is separate ([DEV IPL contract](dev-ipl-boot.md)).
+
 ## Evidence stages
 
 | Stage | Minimum evidence |

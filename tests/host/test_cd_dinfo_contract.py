@@ -5,12 +5,15 @@ change to those fields fails regardless of its citation. They run no emulator, r
 BIOS bytes. Passing them is not evidence of System Card behaviour.
 """
 import re
+import sys
 import unittest
 from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-DOC = ROOT / 'docs' / 'research' / 'cd-dinfo-contract.md'
+sys.path.insert(0, str(ROOT / 'tools'))
+
+import reference_jsr_gate as gate  # noqa: E402
 
 FIELDS = ['id', 'side', 'item', 'status', 'value', 'source', 'reason']
 SIDES = {'caller', 'callee', 'reference', 'name'}
@@ -155,99 +158,6 @@ def ledger_problems(rows, cells_text=()):
     return problems(rows, cells_text) + pin_problems(rows)
 
 
-class CdDinfoLedgerTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.text = DOC.read_text(encoding='utf-8')
-        cls.rows = parse_rows(cls.text)
-
-    def test_ledger_obeys_rules_and_pins(self):
-        self.assertEqual(ledger_problems(self.rows, table_cells(self.text)), [])
-
-    def test_status_counts(self):
-        self.assertEqual(Counter(r['status'] for r in self.rows), Counter(EXPECTED_COUNTS))
-
-    def test_required_fields_are_covered(self):
-        by_id = {r['id']: r for r in self.rows}
-        for kw, rid in REQUIRED_FIELD_ROWS.items():
-            self.assertIn(rid, by_id, f'row {rid} missing')
-            self.assertTrue(token_in(kw, by_id[rid]['item']), f'{rid} item must cover {kw!r}')
-
-    def test_blocked_and_release_status_stated(self):
-        self.assertIn('BLOCKED_ABI', self.text)
-        self.assertIn('release_eligible=false', self.text)
-        self.assertIn('DEV_CALLABLE にしない', self.text)
-
-    def test_caller_fact_does_not_carry_callee_format(self):
-        # F08 is a caller fact (what the caller passes). The BCD format is the callee's documented output and is
-        # only a HYPOTHESIS in F09, so the caller row must not state it as SOURCE_FACT.
-        row = {r['id']: r for r in self.rows}['F08']
-        self.assertEqual(row['side'], 'caller')
-        self.assertNotIn('BCD', row['value'])
-        self.assertNotIn('BCD', row['reason'])
-
-    def test_unknown_values_are_not_filled(self):
-        unknown = [r for r in self.rows if r['status'] == 'UNKNOWN']
-        self.assertTrue(unknown)
-        for r in unknown:
-            self.assertEqual(r['value'], 'UNKNOWN', r['id'])
-
-    def test_f08_covers_first_call_and_increment(self):
-        # The caller passes tnomin on the first call and then the decimal-add result (S2 1883-1891), not only tnomin.
-        row = {r['id']: r for r in self.rows}['F08']
-        self.assertIn('最初の呼出し', row['value'])
-        self.assertIn('以降', row['value'])
-        self.assertIn('1883–1891', row['source'])
-
-    def test_f09_cites_author_comment_and_increment(self):
-        row = {r['id']: r for r in self.rows}['F09']
-        self.assertIn('S2 1842', row['source'])
-        self.assertIn('1888–1889', row['source'])
-
-    def test_f15_cites_only_type2_spec(self):
-        # S3 1574-1577 is the type 1 (end-of-disc) spec, so it must not ground the type 2 row.
-        row = {r['id']: r for r in self.rows}['F15']
-        self.assertIn('S2 2005–2011', row['source'])
-        self.assertNotIn('1574', row['source'])
-
-    def test_s1_range_covers_ax_to_dh(self):
-        self.assertIn('329–343（`_ax`〜`_dh`）', self.text)
-        self.assertNotIn('330–343（`_al`〜`_dh`）', self.text)
-
-
-class LedgerMutationTest(unittest.TestCase):
-    """Promotions and citation swaps applied to the real ledger rows must be rejected."""
-
-    def _mutate(self, rid, **kw):
-        rows = parse_rows(DOC.read_text(encoding='utf-8'))
-        for r in rows:
-            if r['id'] == rid:
-                r.update(kw)
-        return rows
-
-    def test_callee_unknown_promoted_to_source_fact_is_rejected(self):
-        rows = self._mutate('F26', status='SOURCE_FACT', value='副作用なし', source='S3 1582–1600')
-        self.assertTrue(any(p.startswith('F26:') for p in problems(rows)))
-        self.assertTrue(ledger_problems(rows))
-
-    def test_callee_hypothesis_promoted_to_source_fact_is_rejected(self):
-        rows = self._mutate('F18', status='SOURCE_FACT', value='成功は $00', source='S3 1579')
-        self.assertTrue(any(p.startswith('F18:') for p in problems(rows)))
-
-    def test_caller_fact_cited_only_to_unlicensed_source_is_rejected(self):
-        # S4 has no licence shown, so it cannot ground a SOURCE_FACT even on the caller side.
-        rows = self._mutate('F03', source='S4 218–226')
-        self.assertTrue(any(p.startswith('F03:') for p in problems(rows)))
-
-    def test_name_only_source_is_rejected(self):
-        rows = self._mutate('F01', source='S5')
-        self.assertTrue(any(p.startswith('F01:') for p in problems(rows)))
-
-    def test_pinned_value_change_is_rejected(self):
-        rows = self._mutate('F13', value='+0 は最小トラック（2 進）')
-        self.assertTrue(any(p.startswith('F13:') for p in pin_problems(rows)))
-
-
 class RuleCheckerNegativeTest(unittest.TestCase):
     """The checker itself must reject promotion; these synthetic rows are not ledger data."""
 
@@ -281,6 +191,16 @@ class RuleCheckerNegativeTest(unittest.TestCase):
     def test_accepts_honest_callee_unknown(self):
         self.assertEqual(problems([self._row(side='callee', status='UNKNOWN', value='UNKNOWN',
                                              source='—')]), [])
+
+
+class RealGateState(unittest.TestCase):
+    """Slot 11: the release state is checked on the real gate, since the research document is withdrawn."""
+
+    def test_the_real_gate_keeps_the_slot_blocked_and_not_released(self):
+        ledger, contracts = gate.load()
+        record = gate.resolve(11, ledger, contracts)
+        self.assertEqual(record['execution'], 'BLOCKED')
+        self.assertIs(record['release_eligible'], False)
 
 
 if __name__ == '__main__':

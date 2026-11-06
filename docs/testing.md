@@ -5,6 +5,12 @@ missing tool, invalid setting, failed assertion, invalid assembler input,
 timeout, or core crash. Expected negative failures are assertions that the
 invalid input was rejected, never evidence that the invalid ROM works.
 
+## Multi-sector loader integration evidence (2026-11-06)
+
+Merged [#681](https://github.com/mao2009/oss-pce-cd-bios/pull/681) and [#683](https://github.com/mao2009/oss-pce-cd-bios/pull/683) reported separate 22-case cold/warm runs against **synthetic media** on pinned Geargrafx. The 8 KiB HuCARD+CUE path and the 256 KiB DEV BIOS-buffer path are different. The latter's CAP check rejects a silent HuCARD fallback. Positive cases, prewrite refusal, interrupted reads and **ROM-mutant** readback errors are covered; a mutant is not a hardware/bus failure test. A merged PR report does **not** imply this documentation branch has rerun the suite.
+
+Current main `5a8dc5a` has DEV implementation count 14/81, 67 stubs, owner-approved DEV_CALLABLE 0, reference ABI VERIFIED 0/81 and reference JSR permitted 0/81. Historical main `f90c16b` had 9 DEV implementations and 72 stubs. None of the above is a commercial game-compatibility result.
+
 ## Host tests
 
 `python3 -m unittest discover -s tests/host -v` runs the current host
@@ -50,7 +56,7 @@ separate, clean-clone run of the same commands.
   never stand in for emulator execution or a live scheduled Actions run.
 - Cache integrity tests cover normal incremental output reuse, same-size source
   edits, truncation/deletion, unexpected source/symlinks, corrupt/forged manifests,
-  legacy migration, interrupted extraction/retry, archive checksum failures and
+  legacy migration, interrupted extraction (leftover staging is refused, not retried), archive checksum failures and
   actual exclusive-lock blocking.
 - Nightly recovery tests exercise expiry/absence, failed/in-progress/other-branch
   workflows, download/missing-file/JSON failures, full state validation, owning
@@ -148,7 +154,7 @@ BIOS は実行せず、BIOS ABI 互換の証拠ではない。
 未監視（判定の対象外）: IRQ 受理と IRQ 源、MMIO 書込み、スタック内容（`stack_01f8_hex` と `irr`/`idr` は記録のみ）、ZP 窓外の RAM、サイクル数・タイミング。
 
 CI 用フィクスチャ `tests/fixtures/core-harness-plugin.json` の期待値（a=17, x=3, y=0）は、
-リポジトリ内 OSS 実装 slot_1E の観測値（`docs/final-report-20261016.md` §6、`api_jsr_1E`
+リポジトリ内 OSS 実装 slot_1E の DEV 側の検証（`api_jsr_1E`
 プローブの cold 観測）に基づく **回帰用の期待値** である。BIOS ABI の独立した正解ではない。
 
 実コア実行は opt-in で上記コマンド 1 つに限り、Linux 固定（pinned Geargrafx の

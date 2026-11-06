@@ -7,7 +7,29 @@ on:
 permissions:
   contents: read
 jobs:
-  bios-dev:
+  scope:
+    # No PR code or toolchain is executed here. Any ambiguity selects full CI.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Documentation-only fast path (disabled; full CI for every change)
+        id: classify
+        run: |
+          # The docs-only fast path is disabled: the host suite reads many docs/*.md files, and a light path cannot
+          # prove it runs all of them. Every change runs the full job until that proof exists.
+          echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          echo "docs-only fast path is disabled; full CI runs"
+  bios-dev-full:
+    needs: scope
+    if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -64,6 +86,8 @@ jobs:
           make dev-cdda-integration
       - name: Isolated Geargrafx trace harness (Issue #6, real core; diagnostic only)
         run: make dev-trace-integration
+      - name: Frame RAM tracer on synthetic CD (real core; DEV-only diagnostic, not BIOS, not compatibility)
+        run: make dev-frame-tracer-cd-integration
       - name: Debug and release diagnostic bytes match
         run: |
           make dev-rom MODE=release
@@ -101,10 +125,29 @@ jobs:
           path: intermediate/
           if-no-files-found: error
           retention-days: 1
+  bios-dev:
+    # This job keeps the branch-ruleset required check name. A skipped full job
+    # counts as success only after the independent scope check has passed.
+    needs: [scope, bios-dev-full]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Enforce full CI result or validated documentation-only scope
+        run: |
+          test "${{ needs.scope.result }}" = "success"
+          if [ "${{ needs.scope.outputs.docs_only }}" = "true" ]; then
+            test "${{ needs.bios-dev-full.result }}" = "skipped"
+          else
+            test "${{ needs.bios-dev-full.result }}" = "success"
+          fi
   guard-bios-dev:
     # Publishes only what the bios-dev job handed over. It runs no build code: the trusted main tools, python3 resolved
     # before anything else, the workflow files for the placement check, the download, the guard and the upload.
-    needs: bios-dev
+    needs: bios-dev-full
+    if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -127,6 +170,8 @@ jobs:
         id: pyresolve
         run: |
           echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"
+      - name: Require the real-core job to succeed (FAILURE, CANCELLED or SKIPPED fails this check)
+        run: test "${{ needs.bios-dev-full.result }}" = "success"
       - name: Guard placement (trusted)
         run: |
           "${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --check-placement

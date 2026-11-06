@@ -157,7 +157,7 @@
 | (c) 判定に使う観測点の出典が確定 | 充足（`$08` と PLAYING は `adpcm_inline.h:84` の `m_playing`。CONFIRMED） | 充足（同左。W0〜W2 は既存の状態読取り） | 未充足（`$04` / `$80` の意味は UNKNOWN） |
 | (e) 安全条件: 手順が §10 の BLOCKED 項目に触れない | 独立レビューで確認する（本書の手順は device 層の読取りと、ハーネスからの `Adpcm::Write` だけを使い、CPU からの MMIO 書込み、IRQ の操作、CD 側の操作を含まない） | 独立レビューで確認する（PLAY と同じ扱い。ただし `ResetMedia` は CD 側の状態に作用するため、次を確認対象とする。`ResetMedia` は `GeargrafxCore::Reset()`（`geargrafx_core.cpp:1205`）を呼び、その中で `m_cdrom->Reset()`、`m_scsi_controller->Reset()`、`m_cdrom_audio->Reset()` を呼ぶ（`:1237-1239`）。(a) 三つの Reset の直接の書込みは各装置の内部変数であり、Memory::Write の経路を通らない（`cdrom.cpp:113-129`、`scsi_controller.cpp:176-204`、`cdrom_audio.cpp:115-131`）。(b) `CdRom::Reset` は 128 行目で `m_memory->UpdateBackupRam(m_bram_enabled)` を呼び（`memory_inline.h:544-558`）、CPU から見える `$F7` の写像（`m_memory_map` と `m_memory_map_write`）を変える。(c) `ScsiController::Reset` は 200 行目で `UpdateIRQs()` を呼び（`scsi_controller_inline.h:92-106`）、CD 側の IRQ 状態を変える。201 行目で `m_cdrom_audio->StopAudio()` を呼ぶ。これは CD 再生の状態を STOPPED にし（`cdrom_audio_inline.h:188-195`）、LaserActive が有効なら `m_laseractive->NotifyAudioStop` を呼ぶことがある。202 行目で `m_cdrom_media->SetCurrentSector(0)` を呼ぶ。これは媒体側のセクタ位置を変える（`cdrom_image.cpp:129-135`）。(d) `CdRomAudio::Reset` は 130 行目で `InvalidateSectorCache()` を呼ぶ（キャッシュフラグのみ）。(b) と (c) は CPU 可視の写像と IRQ 状態に関わるため、B2 と B6 の範囲に当たるかは断定せず、独立レビューで確認すべき対象とする。当たると確定した場合は、warm を BLOCKED とする） | 未充足（§3.4 の BLOCKED 条件、§10 の B4 と B11） |
 | (d) §3.4 の BLOCKED 解除条件（3 条件） | 対象外 | 対象外（gate の BLOCKED は §14.6 で維持） | 未充足 |
-| 判定 | 基本条件は (a)、(b)、(c)、(e)。(a)、(c) は充足。(b) は未充足。(e) は (b) の承認の中で確認する。加えて §14.15 の A の Owner 判断待ち事項が確定するまで、測定を開始しない（NOT_RUN。BLOCKED ではない） | 動的 MPR 検出が UNPROVEN のため BLOCKED。試行 2 を開始しない。warm 系列の試行 1 は実行しない。warm 系列全体を実行しない（§14.12 の 7、§14.13、§14.15）。(e) の確認と §14.2 の前提は、この BLOCKED の解除後に行う | BLOCKED。試行を実行しない |
+| 判定 | 基本条件は (a)、(b)、(c)、(e)。(a)、(c) は充足。(b) は未充足。(e) は (b) の承認の中で確認する。§14.15 A の R15 判断3項目は条件付きで確定したが、対象 PLAY_ACTIVE probe の版・採取仕様の確定と (b)、(e) の独立レビューが未了のため、測定を開始しない（NOT_RUN。BLOCKED ではない） | 動的 MPR 検出が UNPROVEN のため BLOCKED。試行 2 を開始しない。warm 系列の試行 1 は実行しない。warm 系列全体を実行しない（§14.12 の 7、§14.13、§14.15）。(e) の確認と §14.2 の前提は、この BLOCKED の解除後に行う | BLOCKED。試行を実行しない |
 
 **判定 II: Issue #295 の ROM-Primitive 実装の開始条件（測定とは別）**
 
@@ -417,7 +417,7 @@ Issue #295 の完了条件は「既知の ADPCM controller reset と busy 状態
 
 PLAY_ACTIVE（CONTROL `$80` での reset）の観測は、Issue の「busy」とは別の区分の観測である。Issue の完了条件 1 を満たす根拠としては扱わない。`arm-B`（`$A0`）は、#294 の既存観測との対応を見るための比較用の参照であり、Issue の完了条件とは結び付けない。
 
-1. PLAY_ACTIVE の実コア測定（§8 の区分ごとの最小数、§9 の判定を併記）。開始の基本条件は §3.5 の判定 I の (a)、(b)、(c)、(e)。加えて §14.15 の A の Owner 判断待ち事項の確定まで開始しない。判定 II と III とは独立である。
+1. PLAY_ACTIVE の実コア測定（§8 の区分ごとの最小数、§9 の判定を併記）。開始の基本条件は §3.5 の判定 I の (a)、(b)、(c)、(e)。加えて §14.15 A の R15 判断（warm 専用条件の分離）を守り、対象 probe の版・採取仕様の確定と (b)、(e) の独立レビューが済むまで開始しない。判定 II と III とは独立である。
 2. TRANSFER_BUSY の BLOCKED 解除条件（§3.4 の 3 点）の判定。解除できない場合は、転送 busy 中の reset を #295 の範囲外とするか、別の子 Issue に分けるかを判定する。
 3. `arm-B`（bit5 を残す要求）を #295 の範囲に含めるか、比較用の参照として別に扱うかの判定。
 4. IRQ マスクと保留フラグの保持場所の確認（§5 の UNKNOWN の解消）。
@@ -561,7 +561,7 @@ ROM-Primitive の実装（`ad_reset_busy` の guest 実装など）は、本書�
 - 判定: 本契約の時点では、ADPCM RAM の値は未取得である（`NOT_CAPTURED`）。W1 のゼロ照合（§14.7、§14.12 の 4）は、probe 実装の独立レビューを通過し、測定の承認を受けた後にのみ実施する。
 - 区別: 上流 `b49ae82a` の結果と、測定の結果は区別する。上流ソースへの変更はないため、改変コアの区分は存在しない。`feature/issue-295-adpcm-accessor`（`de01e4d`）のパッチは採用しない検討成果として残し、削除しない。
 
-### 14.15 実測の前提（改訂 R11、作業 E。改訂 R14 で区分ごとに整理）
+### 14.15 実測の前提（改訂 R11、作業 E。R14 で区分分離、R15 で PLAY_ACTIVE の依存条件を裁定）
 
 - 現時点で、測定の開始を承認したものではない。いずれの区分も試行は NOT_RUN である。
 - 本節は §3.5、§12、§13、§14.12〜§14.14 と同じ内容を区分ごとに一意に示す。**区分 A の条件を warm（B）や TRANSFER_BUSY（C）の条件として流用せず、B・C の条件を A に適用しない。**
@@ -583,13 +583,19 @@ ROM-Primitive の実装（`ad_reset_busy` の guest 実装など）は、本書�
 - cold / new-process 用の既存 probe（`feature/issue-295-probe-full-capture` の `tests/integration/geargrafx_ad_reset_full.cpp` と `.py`）には `GetRAM` と `ResetMedia` の呼出しがなく、runner は warm runner を import せず、試行 120 秒・プロセス 600 秒の独自の上限を持つ（`TRIAL_TIMEOUT_S`、`PROCESS_TIMEOUT_S`）。
 - この probe は、既存 25 試行の取得に使った probe（§15 の 73ef6ac）と同じ系統の branch 先頭の版であり（版の一致は未確認）、既存 25 試行は §15 のとおり R4 FAIL（`adpcm.play_pending` などが `NOT_CAPTURED`）である。R4 を満たす新しい PLAY_ACTIVE probe の仕様は未確定であり、それが ADPCM RAM を採取するかは、本調査では確定できない。
 
-**Owner 判断待ち（未決定。削除しない）:**
+**Owner 判断（2026-11-06、改訂 R15。測定の許可ではない）:**
 
-1. ADPCM RAM の読取り probe の独立レビュー（R13 までの §14.15 の項目 2）を、PLAY_ACTIVE の開始条件に含めるか。調査結果は、既存 probe と §5 の採取表に基づく限り「必要とする根拠は見つかっていない」である。ただし、新しい PLAY_ACTIVE probe が ADPCM RAM を採取する設計になる場合は必要になりうるため、必要性の否定を証明できていない。含めるかどうかを Owner が決める。
-2. warm runner の `SERIES_TIMEOUT_S` の修正（R13 までの §14.15 の項目 4）を、cold / new-process の条件に含めるか。調査結果は「cold / new-process の runner とは別ファイルで、依存は見つかっていない」である。含めるかどうかを Owner が決める。
-3. §14.13 の動的 MPR 検出と `ResetMedia` の前提は warm 専用であり、PLAY_ACTIVE に適用する根拠は示されていない。適用するかどうかは Owner が決める。決定までは適用しない。
+1. **ADPCM RAM の読取り probe の独立レビュー:** PLAY_ACTIVE の probe が実際に `GetRAM()` または ADPCM RAM を採取するなら、その読取り経路・サイズ・副作用・失敗時の扱いの独立レビューを測定前に必須とする。採取しないことを、対象 probe の固定版ソースと §5 の採取仕様で確認できる場合は、warm 専用のADPCM RAM読取りレビューを PLAY_ACTIVE に一律に要求しない。**将来の probe が採取しないことは未証明**であり、固定版未確認のまま「不要」と判定しない。
+2. **warm runner の timeout 修正:** cold / new-process の probe と runner が独立し、warm runner を使わないことを対象版で確認できるなら、`SERIES_TIMEOUT_S` の修正は PLAY_ACTIVE の開始条件に含めない。PLAY_ACTIVE の runner 自体の試行120秒・プロセス600秒上限（§6.1）は別途必須であり、warm runner を import / 共有する設計に変われば改めて依存関係を判定する。
+3. **動的 MPR 検出と `ResetMedia` の条件:** §14.13 の動的 MPR 検出と §14.2 の `ResetMedia` 前提・副作用レビューは warm 専用とする。PLAY_ACTIVE の probe がこれらの経路を実際に呼ぶ場合は、§10の安全条件との整合を改めて独立レビューし、未承認なら開始しない。単に warm が BLOCKED であることを理由に PLAY_ACTIVE を BLOCKED としない。
 
-**判定:** 基本条件 (b)、(e) が未充足であり、上の Owner 判断待ちも未決定であるため、**測定を開始しない（NOT_RUN。BLOCKED ではない）**。Owner 判断待ちが未決定の間は、1 から 3 のいずれも「承認済み」「不要」「必要」のどれとも扱わない。決定後は、決定内容を契約に追記して独立レビューを受ける。
+**R15 後も未充足の開始条件（PLAY_ACTIVE）:**
+
+- §3.5 判定 I の (b)（本契約と対象 probe の独立レビュー、CRITICAL / MAJOR 0）と (e)（§10 の BLOCKED 項目に触れないことの確認）は**未充足**。本改訂は、それらの承認ではない。
+- 新しい PLAY_ACTIVE probe と runner の**対象バージョン、採取列、依存先**を確定し、§5 の P0〜P3・R4、§6.1の上限・§9の判定に適合することを測定前に検証する。既存25試行の probe との版一致は未確認で、既存ログは R4 FAIL / R2b NOT_EVALUATED のまま。固定版を確認する前に依存条件を「不要」と断定しない。
+- 本文書は**契約のみ**。新しいPLAY_ACTIVEの試行は NOT_RUN、独立レビュー未了。測定開始・ROM-Primitive実装開始・ABI昇格を一切許可しない。判定II/IIIは未充足であり、warm/TRANSFER_BUSYの状態とは独立である。
+
+**判定: PLAY_ACTIVE は NOT_RUN（未開始）。** Owner の判断3項目は条件付きで整理したが、対象版の固定と (b)、(e) の独立レビューが終わるまで測定しない。
 
 #### B. warm 系列
 
@@ -652,6 +658,7 @@ ROM-Primitive の実装（`ad_reset_busy` の guest 実装など）は、本書�
 - **改訂 R12（動的 MPR 検出の裁定反映）**: §14.13 の動的 MPR 検出を UNPROVEN とし、選択肢 (b) を採用した。既存の検出器は `step_debugger = true` と命令単位の停止に依存し、§6 と §10 B4 と両立しない。このため §14.12 の 7 は `NOT_IMPLEMENTED`、試行 2 は開始せず、warm は BLOCKED（§3.5、§14.12、§14.15）。選択肢 (a) は、命令単位の安全性を別途証明できた場合にのみ、契約を改訂して再検討する。ADPCM RAM のアクセサ（§14.14）は、warm の BLOCKED とは独立に要件として残し、測定には使わない。warm probe（HEAD 6c46562）は変更しない。現状どおり試行 2 を開始せず BLOCKED で終わることを確認する対象とする。
 - **改訂 R13（ADPCM RAM の読取りの裁定反映）**: オーナーの裁定により、ADPCM RAM の取得経路を既存の公開 `Adpcm::GetRAM()`（`src/adpcm.h:63`、`src/adpcm_inline.h:386-389`、上流 `b49ae82a`）に改めた。改訂 R11 の §14.14 の「公開アクセサがない」「測定専用コピーにアクセサを追加する」は誤りであり、削除した。§14.12 の 4 と §14.15 の 2 を、既存の `GetRAM()` に合わせた。`feature/issue-295-adpcm-accessor`（`de01e4d`）の `GetRAMConst()` パッチは採用せず、削除もしない（検討成果として残す）。本改訂では測定、実装、WSL 実行をしていない。既存 25 試行の判定（R4 FAIL、R2b NOT_EVALUATED）と生ログは変更していない。§14.15 の 2 の PLAY_ACTIVE への適用は、オーナーの判断事項として保留する。
 - **改訂 R14（開始条件の整理。契約のみ。実装と測定はしない）**: 独立レビューの MAJOR 1 件と LOW 1 件への対応。MAJOR: §14.15 を A（PLAY_ACTIVE）、B（warm）、C（TRANSFER_BUSY）に分け、§3.5、§12、§13 の開始条件の表記を揃えた。PLAY_ACTIVE の基本条件は §3.5 判定 I の (a)、(b)、(c)、(e)。ADPCM RAM の読取り probe の独立レビューと warm runner の timeout 修正を PLAY_ACTIVE の条件に含めるかは、既存 probe と §5 の採取表を調べた結果、必要とする根拠は見つかっていないが、否定の証明もできないため Owner 判断待ちとし、その間は測定を開始しない。warm 専用の動的 MPR 検出と `ResetMedia` の前提は PLAY_ACTIVE に適用していない。warm の BLOCKED と TRANSFER_BUSY の BLOCKED は維持した。ADPCM RAM 読取りの安全性レビュー、`ResetMedia` の副作用確認、timeout 修正は、warm の将来の BLOCKED 解除条件として区別した。LOW: 終了状態は 4 値、終了理由は 6 パターンと定め、§0、§6、§6.1、§7.2 の表記を統一した。改訂 R11 の記録にあった「六つの状態」も同じ表記に直した（意味は変えていない）。定数、終了条件、既存ログの判定値、既存 25 試行の判定（R4 FAIL、R2b NOT_EVALUATED）は変更していない。実コア測定、実装、CI 変更はない。
+- **改訂 R15（Owner判断3項目の条件付き確定。契約のみ、測定・実装なし）**: §14.15 A の未決3項目を条件付きで整理。ADPCM RAM読取りレビューは PLAY_ACTIVE の固定probeで実際に採取する場合に必要、warm runner の timeout 修正と動的 MPR / ResetMedia 条件は warm 専用（PLAY_ACTIVE が共有・利用する設計なら個別再評価）。対象probeの版・採取仕様・R4・120秒/600秒上限の照合を明記し、(b)、(e) の独立レビューが完了するまで PLAY_ACTIVE NOT_RUN。§3.5 と §13 を一致させた。warmとTRANSFER_BUSYはBLOCKED、既存25試行はR4 FAIL/R2b NOT_EVALUATEDを維持。測定開始・実装・ABI昇格・Draft解除・mainマージの承認ではない。
 - **warm のログ**: 改訂 R5 の下ではまだ存在しない。独立レビュー後の測定で取得する。
 
 ## 16. 独立レビューの指摘への対応（改訂 R6）

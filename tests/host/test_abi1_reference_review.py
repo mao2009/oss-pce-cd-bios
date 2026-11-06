@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 """Host tests for the Phase ABI-1 reference review ledger.
 
-The ledger is a *review* artefact. It records what a local static audit of the
-private reference BIOS established and what it did not. These tests keep it
+The ledger is a *review* artefact. It records management state only. These tests keep it
 from silently over-claiming, and they check that the published text can be
-committed without shipping reference code.
+committed without shipping reference code or private-image detail (Issue #324,
+owner ruling A: management state only).
 
 The two axes are kept apart on purpose:
 
-* the **static review** axis, which an observation of the private image can
-  reach;
+* the **static review** axis, recorded as management state only;
 * the **verification** axis (``OBSERVED``/``PARTIAL``/``VERIFIED``), which only
   a *reproducible* real core observation can reach.
 
-A static ``EXECUTION_SAFE`` verdict is never an execution permission.
+No execution permission is ever recorded: the permission is always ``BLOCKED``.
 """
 import copy
 import json
@@ -32,6 +31,11 @@ from environment import dependency_dir  # noqa: E402
 CONTRACTS = json.loads((ROOT / "spec" / "api_contracts.json").read_text(encoding="utf-8"))
 DEV_LEDGER = json.loads((ROOT / "spec" / "dev_implementations.json").read_text(encoding="utf-8"))
 
+# Detail derived from the private image. None of these may appear in the public ledger.
+PRIVATE_DETAIL_KEYS = ("callee_instructions", "hazard_counts", "return_kinds", "max_stack_bytes",
+                       "store_target_classes", "zero_page_operand_stores", "register_swap_ops",
+                       "non_returning_states", "unresolved", "budget_exhausted")
+
 
 def committed():
     return json.loads((ROOT / "spec" / "abi1_reference_review.json").read_text(encoding="utf-8"))
@@ -42,11 +46,13 @@ class CommittedLedgerTests(unittest.TestCase):
         document, contracts, dev_ledger = review.load()
         self.assertEqual(document["schema"], review.SCHEMA)
 
+    def test_committed_ledger_carries_no_private_image_detail(self):
+        review._public_keys(committed())
+
     def test_summary_counts_are_derived_from_the_ledger(self):
         document, contracts, dev_ledger = review.load()
         metrics = review.summary(document, contracts, dev_ledger)["metrics"]
-        self.assertEqual(metrics["static_review_apis"], 7)
-        self.assertEqual(metrics["prior_local_only_observations"], 1)
+        self.assertNotIn("static_review_apis", metrics)
         self.assertEqual(metrics["reproducible_real_core_observations"], 0)
         self.assertEqual(metrics["reference_abi_verified"], 0)
         self.assertEqual(metrics["dev_rom_implemented_apis"], 14)
@@ -54,10 +60,8 @@ class CommittedLedgerTests(unittest.TestCase):
 
     def test_the_two_axes_are_counted_apart(self):
         document = committed()
-        static = sum(1 for api in document["apis"] if api["static"]["status"] == "OBSERVED_STATIC")
         reproducible = sum(1 for api in document["apis"]
                            if api["observation"]["reproducible_real_core"] == "OBSERVED")
-        self.assertEqual(static, 7)
         self.assertEqual(reproducible, 0)
         # A static review of seven APIs is not a partial verification of seven APIs.
         self.assertEqual(sum(1 for api in document["apis"]
@@ -96,7 +100,7 @@ class OpcodeTableTests(unittest.TestCase):
     def test_every_operand_carrying_opcode_is_guarded(self):
         table = dependency_dir("cc65") / "src" / "da65" / "opchuc6280.c"
         if not table.is_file():
-            self.skipTest(f"pinned cc65 opcode table not available: {table}")
+            self.skipTest("pinned cc65 opcode table not available (path withheld)")
         rows = re.findall(r'\{\s*"([^"]*)"\s*,\s*(\d+)\s*,', table.read_text(encoding="utf-8"))
         self.assertGreater(len(rows), 200)
         relative = {"bra", "bcc", "bcs", "beq", "bne", "bmi", "bpl", "bvc", "bvs",
@@ -127,36 +131,43 @@ class NegativeTests(unittest.TestCase):
 
     # -- axis separation ------------------------------------------------------
     def test_a_static_review_cannot_be_counted_as_a_dynamic_observation(self):
-        # A reproducible observation cannot be claimed on the strength of a
-        # static review: the state would have to follow it, and the static
-        # profile cannot produce one.
         document = copy.deepcopy(self.document)
         document["apis"][1]["observation"]["reproducible_real_core"] = "OBSERVED"
-        self.assertRejected(document, "a reproducible observation cannot stay in NOT_RUN")
+        self.assertRejected(document, "a self-declared reproducible observation is refused")
 
     def test_a_static_review_cannot_be_counted_as_a_partial_verification(self):
         document = copy.deepcopy(self.document)
         document["apis"][2]["abi_state"] = "PARTIAL"
-        self.assertRejected(document, "needs a reproducible real core observation")
+        self.assertRejected(document, "needs an independent evidence certification")
 
     def test_a_past_local_observation_is_not_a_reproducible_measurement(self):
-        # The prior local only observation of slot $1E must not be counted as a
-        # reproducible measurement: a static profile and a past local run are
-        # not a reproducible observation.
         document = copy.deepcopy(self.document)
         document["apis"][0]["observation"]["reproducible_real_core"] = "OBSERVED"
-        self.assertRejected(document, "a reproducible observation cannot stay in NOT_RUN")
+        self.assertRejected(document, "a self-declared reproducible observation is refused")
+
+    def test_a_partial_state_is_refused_without_a_certification_method(self):
+        document = copy.deepcopy(self.document)
+        document["apis"][2]["abi_state"] = "PARTIAL"
+        self.assertRejected(document, "needs an independent evidence certification")
 
     def test_a_past_local_observation_does_not_promote_the_abi_state(self):
         document = copy.deepcopy(self.document)
         document["apis"][0]["abi_state"] = "OBSERVED"
-        self.assertRejected(document, "needs a reproducible real core observation")
+        self.assertRejected(document, "needs an independent evidence certification")
 
     def test_a_reproducible_observation_cannot_stay_not_run(self):
         document = copy.deepcopy(self.document)
         document["apis"][1]["observation"]["reproducible_real_core"] = "OBSERVED"
         document["apis"][1]["abi_state"] = "NOT_RUN"
-        self.assertRejected(document, "a reproducible observation cannot stay in NOT_RUN")
+        self.assertRejected(document, "a self-declared reproducible observation is refused")
+
+    def test_a_self_declared_evidence_sentence_alone_is_refused(self):
+        document = copy.deepcopy(self.document)
+        document["apis"][1]["observation"]["note"] = "Reproduced on a local core: PASS for every case."
+        self.assertRejected(document, "makes an evidence claim")
+
+    def test_a_not_run_slot_with_its_committed_state_stays_accepted(self):
+        review.validate(copy.deepcopy(self.document), self.contracts, self.dev_ledger)
 
     def test_verified_without_evidence_is_rejected(self):
         document = copy.deepcopy(self.document)
@@ -179,10 +190,10 @@ class NegativeTests(unittest.TestCase):
         document["apis"] = document["apis"][:-1]
         self.assertRejected(document, "not exactly the Phase ABI-1 scope")
 
-    def test_a_hand_written_aggregate_that_does_not_match_is_rejected(self):
+    def test_a_static_review_count_in_the_summary_is_refused(self):
         document = copy.deepcopy(self.document)
-        document["summary"]["static_review_apis"] = 6
-        self.assertRejected(document, "summary.static_review_apis")
+        document["summary"]["static_review_apis"] = 7
+        self.assertRejected(document, "summary keys")
 
     def test_an_aggregate_that_counts_a_prior_observation_as_reproducible_is_rejected(self):
         document = copy.deepcopy(self.document)
@@ -204,23 +215,16 @@ class NegativeTests(unittest.TestCase):
         document["summary"]["owner_approved_dev_callable"] = 1
         self.assertRejected(document, "summary.owner_approved_dev_callable")
 
-    # -- static safety versus execution permission -----------------------------
-    def test_a_static_safe_verdict_cannot_become_a_permission(self):
+    # -- execution permission --------------------------------------------------
+    def test_a_static_review_cannot_become_a_permission(self):
         document = copy.deepcopy(self.document)
         document["apis"][0]["safety"]["execution_permission"] = "ALLOWED"
         self.assertRejected(document, "execution permission of a static review is always BLOCKED")
 
-    def test_the_zero_page_verdict_cannot_become_a_permission_either(self):
-        document = copy.deepcopy(self.document)
-        document["apis"][1]["safety"]["static_verdict"] = \
-            "EXECUTION_SAFE_WITH_OBSERVABLE_ZERO_PAGE_WRITE"
-        document["apis"][1]["safety"]["execution_permission"] = "ALLOWED"
-        self.assertRejected(document, "execution permission of a static review is always BLOCKED")
-
-    def test_a_static_verdict_may_only_carry_the_static_scope(self):
+    def test_a_static_scope_cannot_be_widened(self):
         document = copy.deepcopy(self.document)
         document["apis"][0]["safety"]["scope"] = "EXECUTION_APPROVED"
-        self.assertRejected(document, "may only carry the static scope")
+        self.assertRejected(document, "safety scope")
 
     def test_the_approval_requirement_may_not_be_dropped(self):
         document = copy.deepcopy(self.document)
@@ -247,11 +251,50 @@ class NegativeTests(unittest.TestCase):
         document["method"]["execution"] = "EXECUTED"
         self.assertRejected(document, "execution")
 
-    # -- the claim ledger and the published text --------------------------------
-    def test_entry_address_must_match_the_claim_ledger(self):
+    # -- public boundary: no per-slot detail of the private image ---------------
+    def test_per_slot_static_detail_is_refused(self):
+        for key in PRIVATE_DETAIL_KEYS:
+            with self.subTest(key=key):
+                document = copy.deepcopy(self.document)
+                document["apis"][0][key] = 1
+                self.assertRejected(document, "api keys")
+
+    def test_a_static_item_prose_block_is_refused(self):
         document = copy.deepcopy(self.document)
-        document["apis"][0]["candidate_entry"] = "0xE000"
-        self.assertRejected(document, "candidate entry")
+        document["apis"][0]["static_items"] = {"stack_usage": {"status": "UNKNOWN", "value": "n/a"}}
+        self.assertRejected(document, "api keys")
+
+    def test_a_static_verdict_is_refused(self):
+        document = copy.deepcopy(self.document)
+        document["apis"][0]["safety"]["static_verdict"] = "EXECUTION_SAFE"
+        self.assertRejected(document, "safety keys")
+
+    def test_a_decoded_instruction_in_published_text_is_rejected(self):
+        for text in ("stz $42", "lda #$0a", "smb0 $42", "STZ $42"):
+            with self.subTest(text=text):
+                document = copy.deepcopy(self.document)
+                document["apis"][0]["observation"]["note"] = text
+                self.assertRejected(document, "decoded instruction")
+
+    def test_an_internal_address_in_published_text_is_rejected(self):
+        document = copy.deepcopy(self.document)
+        document["apis"][0]["observation"]["note"] = "read $CD10"
+        self.assertRejected(document, "non public address")
+
+    def test_a_forbidden_key_is_refused_at_any_depth(self):
+        for key in review.FORBIDDEN_PUBLIC_KEYS:
+            with self.subTest(key=key):
+                with self.assertRaises(review.Invalid):
+                    review._public_keys({"deep": [{"node": {key: 0}}]})
+
+    # -- claim ledger and prose ------------------------------------------------
+    def test_a_candidate_entry_is_refused_in_the_public_ledger(self):
+        # Entry addresses derived from the private image are not published (owner ruling).
+        for key, value in (("candidate_entry", "0xE000"), ("entry_evidence", "JUMP_TABLE_3BYTE_JMP")):
+            with self.subTest(key=key):
+                document = copy.deepcopy(self.document)
+                document["apis"][0][key] = value
+                self.assertRejected(document, "api keys")
 
     def test_name_must_match_the_claim_ledger(self):
         document = copy.deepcopy(self.document)
@@ -264,26 +307,6 @@ class NegativeTests(unittest.TestCase):
         document["apis"][1]["slot"] = 30
         self.assertRejected(document, "api_id does not match")
 
-    def test_missing_static_item_is_rejected(self):
-        document = copy.deepcopy(self.document)
-        del document["apis"][0]["static_items"]["stack_usage"]
-        self.assertRejected(document, "static item keys")
-
-    def test_unknown_static_item_status_is_rejected(self):
-        document = copy.deepcopy(self.document)
-        document["apis"][0]["static_items"]["stack_usage"]["status"] = "PROBABLY_FINE"
-        self.assertRejected(document, "static item stack_usage status")
-
-    def test_empty_static_item_value_is_rejected(self):
-        document = copy.deepcopy(self.document)
-        document["apis"][0]["static_items"]["mpr_change"]["value"] = "  "
-        self.assertRejected(document, "static item mpr_change value")
-
-    def test_unknown_static_verdict_is_rejected(self):
-        document = copy.deepcopy(self.document)
-        document["apis"][0]["safety"]["static_verdict"] = "PROBABLY_SAFE"
-        self.assertRejected(document, "static verdict")
-
     def test_unknown_abi_state_is_rejected(self):
         document = copy.deepcopy(self.document)
         document["apis"][0]["abi_state"] = "DEFINITELY_OBSERVED"
@@ -292,98 +315,13 @@ class NegativeTests(unittest.TestCase):
     def test_unknown_observation_vocabulary_is_rejected(self):
         document = copy.deepcopy(self.document)
         document["apis"][0]["observation"]["reproducible_real_core"] = "OBSERVED_LOCAL_ONLY"
-        self.assertRejected(document, "reproducible observation vocabulary")
-
-    def test_an_unresolved_profile_may_not_be_safe(self):
-        document = copy.deepcopy(self.document)
-        document["apis"][0]["static"]["unresolved"] = ["page_bank_unknown"]
-        self.assertRejected(document, "cannot be EXECUTION_SAFE")
-
-    def test_a_non_returning_path_may_not_be_safe(self):
-        document = copy.deepcopy(self.document)
-        document["apis"][0]["static"]["non_returning_states"] = 1
-        self.assertRejected(document, "cannot be EXECUTION_SAFE")
-
-    def test_a_runtime_mpr_switch_forces_the_blocked_verdict(self):
-        document = copy.deepcopy(self.document)
-        document["apis"][0]["static"]["hazard_counts"]["MPR_WRITE"] = 1
-        self.assertRejected(document, "forces EXECUTION_BLOCKED")
-
-    def test_a_block_transfer_forces_the_blocked_verdict(self):
-        document = copy.deepcopy(self.document)
-        document["apis"][0]["static"]["hazard_counts"]["BLOCK_TRANSFER"] = 1
-        self.assertRejected(document, "forces EXECUTION_BLOCKED")
-
-    def test_a_data_dependent_store_forces_the_blocked_verdict(self):
-        document = copy.deepcopy(self.document)
-        document["apis"][0]["static"]["hazard_counts"]["DATA_DEPENDENT_STORE"] = 1
-        self.assertRejected(document, "forces EXECUTION_BLOCKED")
-
-    def test_a_store_outside_page_one_forces_the_blocked_verdict(self):
-        document = copy.deepcopy(self.document)
-        document["apis"][0]["static"]["hazard_counts"]["OTHER_STORE"] = 1
-        self.assertRejected(document, "forces EXECUTION_BLOCKED")
+        self.assertRejected(document, "a self-declared reproducible observation is refused")
 
     def test_a_fresh_execution_claim_is_rejected(self):
         document = copy.deepcopy(self.document)
         document["apis"][1]["abi_state"] = "OBSERVED"
         document["apis"][1]["observation"]["reproducible_real_core"] = "OBSERVED_LOCAL_ONLY"
-        self.assertRejected(document, "reproducible observation vocabulary")
-
-    def test_a_prior_observation_has_to_name_its_source(self):
-        document = copy.deepcopy(self.document)
-        document["apis"][0]["observation"]["prior_evidence"] = "NONE"
-        self.assertRejected(document, "has to name its source")
-
-    def test_a_prior_observation_source_has_to_exist(self):
-        document = copy.deepcopy(self.document)
-        document["apis"][0]["observation"]["prior_evidence"] = "docs/not-a-real-file.md"
-        self.assertRejected(document, "not a repository file")
-
-    def test_a_prior_observation_source_outside_the_repository_is_rejected(self):
-        document = copy.deepcopy(self.document)
-        document["apis"][0]["observation"]["prior_evidence"] = "/etc/passwd"
-        self.assertRejected(document, "not a repository file")
-
-    def test_a_prior_observation_source_outside_the_repository_by_traversal(self):
-        document = copy.deepcopy(self.document)
-        document["apis"][0]["observation"]["prior_evidence"] = "../../../../etc/passwd"
-        self.assertRejected(document, "not a repository file")
-
-    def test_a_slot_without_an_observation_may_not_cite_prior_evidence(self):
-        document = copy.deepcopy(self.document)
-        document["apis"][1]["observation"]["prior_evidence"] = "docs/reference-bios-test-plan.md"
-        self.assertRejected(document, "must not cite prior evidence")
-
-    def test_budget_exhaustion_is_rejected(self):
-        document = copy.deepcopy(self.document)
-        document["apis"][0]["static"]["budget_exhausted"] = True
-        self.assertRejected(document, "budget")
-
-    def test_unknown_hazard_name_is_rejected(self):
-        document = copy.deepcopy(self.document)
-        document["apis"][0]["static"]["hazard_counts"]["MYSTERY"] = 1
-        self.assertRejected(document, "hazard names")
-
-    def test_decoded_instruction_in_published_text_is_rejected(self):
-        document = copy.deepcopy(self.document)
-        document["apis"][0]["static_items"]["expected_return_value"]["value"] = "stz $42"
-        self.assertRejected(document, "decoded instruction")
-
-    def test_a_lower_case_decoded_instruction_is_rejected(self):
-        document = copy.deepcopy(self.document)
-        document["apis"][0]["static_items"]["expected_return_value"]["value"] = "lda #$0a"
-        self.assertRejected(document, "decoded instruction")
-
-    def test_a_decoded_bit_opcode_in_published_text_is_rejected(self):
-        document = copy.deepcopy(self.document)
-        document["apis"][0]["static_items"]["expected_return_value"]["value"] = "smb0 $42"
-        self.assertRejected(document, "decoded instruction")
-
-    def test_internal_address_in_published_text_is_rejected(self):
-        document = copy.deepcopy(self.document)
-        document["apis"][0]["static_items"]["expected_return_value"]["value"] = "read $CD10"
-        self.assertRejected(document, "non public address")
+        self.assertRejected(document, "a self-declared reproducible observation is refused")
 
     def test_missing_execution_blocker_is_rejected(self):
         document = copy.deepcopy(self.document)
@@ -401,7 +339,7 @@ class ReferenceGateIsolationTests(unittest.TestCase):
 
     The gate is a separate, fail-closed mechanism. It must keep refusing every
     slot, and it must not read the Phase ABI-1 ledger, so that a static
-    ``EXECUTION_SAFE`` verdict can never reach it.
+    review can never reach it.
     """
 
     def test_the_reference_jsr_gate_still_refuses_every_slot(self):

@@ -1,7 +1,7 @@
 # Building the development fixture
 
 The supported bootstrap host is **Linux x86_64**, Python 3.10 or newer, GNU Make,
-GCC/G++, binutils (`ar`) and curl. Tested locally on Zorin OS 18.1 / Ubuntu 24.04,
+GCC/G++, binutils (`ar`) and curl. Tested locally on a Linux distribution,
 x86_64, GCC 13.3.0 and Python 3.12.3. CI uses `ubuntu-24.04` with the same build
 scripts. No Docker, proprietary BIOS or commercial game is needed.
 
@@ -39,7 +39,12 @@ Archive symlinks (Geargrafx agent metadata only at this pin) are omitted; they
 are unnecessary for these build targets. Setup serializes concurrent invocations,
 reuses verified downloads and sources, and safely repeats incremental builds.
 Failed checksum or build checks exit nonzero. Interrupted extraction staging is
-recreated; an existing unverified final directory is refused, never overwritten.
+not deleted: if a `<dependency>.extracting` path is left behind (a directory, file,
+or symlink), setup refuses to run and changes nothing there. Before removing or
+moving it, confirm its canonical path, its contents, who owns it, and what depends
+on it, and make sure it can be restored; deleting or quarantining it needs an
+individual approval, and nothing here removes it for you. An existing unverified
+final directory is refused, never overwritten.
 
 Reusing an extracted tree also hashes every original archive file and verifies
 its size/executable permission, rejects missing/changed files, extra source files and symlinks, and
@@ -146,6 +151,21 @@ The CD→RAM payload experiment (#122) is merged on main as of 2026-10-16 (`c20a
 - `make test` / `make test-real-core` / `make check` / CI には含まれない（PR #331 の opt-in 方針を維持）。
 - 前提: Geargrafx セットアップ済みで `TOOLS_DIR` を指定、各ルーチンのテストスクリプトが main にマージ済みであること（未マージだと欠落で失敗する。fail-closed）。
 - 実行: `TOOLS_DIR=$HOME/oss-pce-cd-bios-tools make routine-real-core`
+
+## Multi-sector DEV-only IPL diagnostic targets (merged 2026-11-06)
+
+Distinct from the existing **single-sector PCEX** experiment:
+
+```sh
+make dev-ipl-boot-integration        # existing one-sector PCEX DEV experiment
+make mpr-bank-probe                 # MPR2/MPR3 measurements (#681)
+make ipl-loader-integration         # multi-sector, 8 KiB HuCARD+CUE path (#681)
+make dev-bios-ipl-loader-integration # multi-sector, 256 KiB DEV BIOS-buffer path (#683)
+```
+
+[PR #681](https://github.com/mao2009/oss-pce-cd-bios/pull/681) reports 22 synthetic cases cold/warm for the 8 KiB probe. [PR #683](https://github.com/mao2009/oss-pce-cd-bios/pull/683) reports the same 22 scenarios through a **separate 256 KiB DEV image** loaded via pinned Geargrafx `LoadBiosFromBuffer`, with a CAP identity check against silent HuCARD fallback. These two outputs are not the ordinary 81-slot DEV ROM and are **not retail-compatible BIOS**.
+
+Current main `5a8dc5a`: DEV implementation count **14/81**, **67 stubs**; owner-approved DEV_CALLABLE **0**; reference ABI VERIFIED **0/81**; reference JSR permitted **0/81**. Historical main `f90c16b` had 9 DEV implementations and 72 stubs. The multi-sector DEV format uses a project-specific checksum and a restricted 16-bit LBA range. See [status](status.md).
 
 ## Instruction debugger and contract probes
 

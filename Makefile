@@ -1,7 +1,7 @@
 PYTHON ?= python3
 MODE ?= debug
 
-.PHONY: setup build test test-real-core host-test check clean release setup-geargrafx integration integration-test
+.PHONY: setup build test test-real-core host-test check clean release setup-geargrafx integration integration-test irq-postaccept-boundary block-transfer-matrix
 
 setup:
 	$(PYTHON) tools/setup.py all
@@ -27,6 +27,11 @@ test-real-core: build
 integration-test:
 	OSS_PCE_REQUIRE_CC65=1 $(PYTHON) -m unittest discover -s tests/integration -p 'test_*.py' -v
 
+# Issue #366: manual debugger-only synthetic IRQ acceptance -> handler boundary proof.
+# Not part of the ordinary libretro real-core gate: it needs the debugger step API.
+irq-postaccept-boundary:
+	$(PYTHON) tests/integration/geargrafx_irq_postaccept_boundary.py
+
 # Local host-only run: no build, no integration. cc65-dependent tests SKIP with a reason when cc65 is absent;
 # the required gate is `make test`.
 host-test:
@@ -42,15 +47,82 @@ integration: build
 	$(PYTHON) tests/integration/geargrafx_st_bypass.py
 	$(PYTHON) tests/integration/geargrafx_bcdbin.py
 	$(MAKE) block-write-guard
+	$(MAKE) block-transfer-matrix
+	$(MAKE) stack-access-guard
+	$(MAKE) stack-methods
+	$(MAKE) stack-methods-compare
+	$(MAKE) stack-s5
+	$(MAKE) stack-s6
+	$(MAKE) stack-irq-timing
+	$(MAKE) stack-mpr-buffer
+	$(MAKE) caller-stack-contract
+
+# Issue #654 (#473 S8): the TAM/TMA buffer (m_mpr_buffer) and TMA #$00 for single / multi-MPR TAM and TMA, TAM #$00,
+# refused TAMs (A / A+D / A+E) and IRQ-in-TAM (synthetic media, debugger build, verification-only patch with a
+# read-only accessor). Not a production mechanism. Runs in `integration`.
+.PHONY: stack-mpr-buffer
+stack-mpr-buffer:
+	$(PYTHON) tests/integration/geargrafx_stack_mpr_buffer.py
+
+# Issue #653 (#473 S7): IRQs newly asserted inside an instruction (timer / harness request bits at a chosen
+# instruction or clock point) and where they are taken: TAM, STA to the VDC, the five block transfers (synthetic
+# media, debugger build, verification-only patch). Not a production mechanism. Runs in `integration`.
+.PHONY: stack-irq-timing
+stack-irq-timing:
+	$(PYTHON) tests/integration/geargrafx_stack_irq_timing.py
+
+# Issue #648 (#473 S6): block transfers (TII/TIN/TDD/TIA/TAI) refused before TransferStart (pre-start range check)
+# and during the transfer (MPR change), judged on the eight criteria; IRQ during a transfer (synthetic media,
+# debugger build, verification-only patch). Not a production mechanism. Runs in `integration`.
+.PHONY: stack-s6
+stack-s6:
+	$(PYTHON) tests/integration/geargrafx_stack_s6.py
+
+# Issue #647 (#473 S5): decode-time TAM refusal (D) and IRQ deferral (E) on top of method A, all TAM bitmasks,
+# IRQ1/IRQ2/TIQ with I = 0/1, TMA (synthetic media, debugger build, verification-only patch). Not a production
+# mechanism. Runs in `integration`.
+.PHONY: stack-s5
+stack-s5:
+	$(PYTHON) tests/integration/geargrafx_stack_s5.py
+
+# PR #481 (Refs #473): caller-stack contract experiment on the unmodified pinned core (synthetic test-only HuCARD,
+# needs cc65 from `make setup`). Runs in `integration` as the #481 regression check of #499/#500.
+.PHONY: caller-stack-contract
+caller-stack-contract:
+	$(PYTHON) tests/integration/geargrafx_caller_stack_contract.py
+
+# Issue #500 (#473 S4): methods A, C and A+C compared under the same conditions on the eight criteria
+# (synthetic media, debugger build, verification-only patch). Not a production mechanism. Runs in `integration`.
+.PHONY: stack-methods-compare
+stack-methods-compare:
+	$(PYTHON) tests/integration/geargrafx_stack_methods_compare.py
+
+# Issue #498 (#473 S2, method A): instruction refusal before execution, judged on eight criteria, on the same
+# verification-only core patch (synthetic media, debugger build). Not a production mechanism. Runs in `integration`.
+.PHONY: stack-methods
+stack-methods:
+	$(PYTHON) tests/integration/geargrafx_stack_methods.py
+
+# Issue #499 (#473 S3, method C): stack push/pop refused before the side effect via a verification-only core
+# patch (synthetic media, debugger build). Not a production mechanism. Runs in `integration`.
+.PHONY: stack-access-guard
+stack-access-guard:
+	$(PYTHON) tests/integration/geargrafx_stack_access_guard.py
 
 # Issue #367: free-running pre-write refusal via a verification-only core patch (synthetic media). Runs in `integration`.
 .PHONY: block-write-guard
 block-write-guard:
 	$(PYTHON) tests/integration/geargrafx_block_write_guard.py
 
+# Issue #367: pinned multi-byte block transfer preflight matrix on Geargrafx b49ae82. Runs in `integration`.
+.PHONY: block-transfer-matrix
+block-transfer-matrix:
+	$(PYTHON) tests/integration/geargrafx_block_transfer_matrix.py
+
 check:
 	$(PYTHON) tools/contracts.py
 	$(PYTHON) tools/check.py
+	$(PYTHON) tools/c3_static_check.py
 
 # Issue #335: same-input rebuild must be byte-identical and its manifest must describe the ROM (fail-closed).
 rom-provenance:
@@ -120,6 +192,16 @@ dev-cdread: dev-rom
 dev-cdread-integration: dev-cdread
 	$(PYTHON) tests/integration/geargrafx_cdread.py --mode "$(MODE)"
 
+.PHONY: dev-synthetic-track-select-integration
+# Opt-in #607 follow-up: host CUE MODE1 selection + guest READ(6), not a BIOS TOC/API command.
+dev-synthetic-track-select-integration: dev-cdread
+	$(PYTHON) tests/integration/geargrafx_synthetic_track_select.py --mode "$(MODE)"
+
+.PHONY: dev-cdra-compare
+# Opt-in A/B of CD read-ahead ON vs OFF on the pinned core (exp/cd-readahead-compare). Diagnostic only, not boot.
+dev-cdra-compare: dev-cdread
+	$(PYTHON) tests/integration/geargrafx_cdra_compare.py --mode "$(MODE)"
+
 .PHONY: dev-cdload-exec dev-cdload-exec-integration
 # Opt-in Issues #14/#5 load-and-execute experiment; separate from the default DEV ROM and the other diagnostics.
 dev-cdload-exec: dev-rom
@@ -150,6 +232,10 @@ dev-cd-base-integration: dev-rom
 # Opt-in Issue #6 isolated trace harness: real-core positive + classified negatives on the CD read ROM.
 dev-trace-integration: dev-cdread
 	$(PYTHON) tests/integration/geargrafx_trace.py --mode "$(MODE)"
+.PHONY: dev-frame-tracer-cd-integration
+# Issue #603: opt-in real-core bridge of the metadata-only RAM tracer and original synthetic CD-read diagnostic.
+dev-frame-tracer-cd-integration: dev-cdread
+	$(PYTHON) tests/integration/geargrafx_frame_tracer_cd.py --mode "$(MODE)"
 .PHONY: dev-cdda dev-cdda-integration dev-cdda-scenarios-integration
 # Opt-in Issue #15 CD-DA observation diagnostic (raw SCSI $D8/$DA/$D9/$DD, not the System Card CD_PLAY API).
 dev-cdda: dev-rom
@@ -200,3 +286,39 @@ routine-real-core:
 	$(PYTHON) tests/integration/geargrafx_ma_div16u.py
 	$(PYTHON) tests/integration/geargrafx_ma_div16s.py
 	$(PYTHON) tests/integration/geargrafx_bcdbin.py
+
+.PHONY: experimental-bios-boot experimental-bios-boot-integration
+# Explicit opt-in only: 256 KiB DEV experiment with original reset/init code and project-owned synthetic CD flow.
+# NOT compatible with any System Card, NOT a BIOS ABI, and never a release artifact.
+experimental-bios-boot: dev-rom
+	@[ -n "$(EXPERIMENTAL_CUE)" ] || { echo 'BLOCKED: EXPERIMENTAL_CUE must name the exact synthetic CUE to mount' >&2; exit 1; }
+	$(PYTHON) tools/build_experimental_bios_boot.py --mode "$(MODE)" --cue "$(EXPERIMENTAL_CUE)"
+
+# Pinned Geargrafx synthetic CUE check; host selects INDEX 01, guest validates the record (not TOC/API).
+experimental-bios-boot-integration: dev-rom
+	$(PYTHON) tests/integration/geargrafx_experimental_track_contract.py --mode "$(MODE)"
+
+.PHONY: dev-ipl-boot-integration
+# Issue #668: DEV-only IPL boot from RESET (host selection record, guest PCEX validation, RAM, execute).
+# Synthetic media only; one ROM, two synthetic IPLs. NOT compatible, NOT a BIOS ABI, NOT commercial.
+dev-ipl-boot-integration: dev-rom
+	$(PYTHON) tests/integration/geargrafx_dev_ipl_boot.py --mode "$(MODE)"
+
+.PHONY: mpr-bank-probe ipl-loader-integration
+# Issue #670 Phase 1: MPR2/MPR3 bank selection and 8 KiB boundary measurement (synthetic ROM, pinned Geargrafx).
+# Not a BIOS, no commercial media, no reference BIOS. Requires `make setup` (cc65 + Geargrafx).
+mpr-bank-probe:
+	$(PYTHON) tests/integration/geargrafx_mpr_bank_probe.py --mode "$(MODE)"
+# Issue #670 Phase 2: DEV-only multi-sector IPL loader (synthetic media, 8 KiB HuCard+CUE path). NOT a BIOS, NOT compatible.
+ipl-loader-integration:
+	$(PYTHON) tests/integration/geargrafx_ipl_loader.py --mode "$(MODE)"
+# Issue #682: the same 22 loader cases inside a 256 KiB DEV image, through Geargrafx LoadBiosFromBuffer (CAP-checked).
+# Synthetic media only. NOT a System Card BIOS, NOT a BIOS ABI, release_eligible=false.
+.PHONY: dev-bios-ipl-loader-integration
+dev-bios-ipl-loader-integration: dev-rom
+	$(PYTHON) tests/integration/geargrafx_dev_bios_ipl_loader.py --mode "$(MODE)"
+# Issue #692: detect the DEV unimplemented-API stub (api_unimplemented) on the pinned core, distinct from budget.
+# Synthetic media only. NOT in CI: workflow run steps are pinned by the trusted guard allowlist (needs a main-only change).
+.PHONY: api-unimplemented-integration
+api-unimplemented-integration: dev-rom
+	$(PYTHON) tests/integration/geargrafx_api_unimplemented.py --mode "$(MODE)"

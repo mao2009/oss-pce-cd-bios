@@ -30,3 +30,5 @@ Thumbs.db
 # Locally owned game disc images (never commit or distribute)
 /rom/
 cc65_*.deb
+# Local guard configuration: extra protected roots that must not be written into the public tree
+/.claude/guard-local.json

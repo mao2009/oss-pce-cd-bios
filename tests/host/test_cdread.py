@@ -4,11 +4,15 @@ import hashlib
 from pathlib import Path
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
+from unittest.mock import patch
 from tools.environment import requires_cc65
 
+import tools.build_cdread as build_cdread_module
 from tools.build_cdread import (
     BANK_BASE, DEFAULT_COUNT, DEFAULT_LBA, EXPECTED_MPR, HALT_CONFIRM_STEPS, REQUIRED_SYMBOLS, build_cdread, code_digest,
-    parse_symbols, read_request, verify_cdread, with_request,
+    parse_symbols, read_request, verify_cdread, with_read6_request, with_request,
 )
 from tools.build_rom import build
 from tools.cdread_verify import check_success, describe_failure, result_block
@@ -51,6 +55,7 @@ class CdReadBuildTests(unittest.TestCase):
         self.assertEqual(read_request(self.payload, self.symbols), (DEFAULT_LBA, DEFAULT_COUNT))
         at = self.symbols["cd_cdb"] - BANK_BASE
         self.assertEqual(self.payload[at:at + 6], bytes((0x08, 0, 0, DEFAULT_LBA, DEFAULT_COUNT, 0)))
+        self.assertEqual(self.payload[at + 6:at + 8], b"\x00\x28")
 
     def test_with_request_roundtrip_and_limits(self):
         patched = with_request(self.payload, self.symbols, 0x1FFFFF, 255)
@@ -61,8 +66,18 @@ class CdReadBuildTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 with_request(self.payload, self.symbols, lba, count)
 
+    def test_generic_helper_request_can_select_target(self):
+        patched = with_read6_request(self.payload, self.symbols, 6, 3, 0x2800)
+        self.assertEqual(read_request(patched, self.symbols), (6, 3))
+        at = self.symbols["cd_cdb"] - BANK_BASE
+        self.assertEqual(patched[at + 6:at + 8], b"\x00\x28")
+        self.assertEqual(verify_cdread(patched, self.base, self.symbols, self.digest), hashlib.sha256(patched).hexdigest())
+        for target in (-1, 1 << 16):
+            with self.assertRaises(ValueError):
+                with_read6_request(self.payload, self.symbols, 5, 1, target)
+
     def test_every_non_request_byte_flip_in_the_code_bank_fails_closed(self):
-        request = range(self.symbols["cd_cdb"] - BANK_BASE, self.symbols["cd_cdb"] - BANK_BASE + 6)
+        request = range(self.symbols["cd_cdb"] - BANK_BASE, self.symbols["cd_cdb"] - BANK_BASE + 8)
         for offset in range(0x1000, 0x2000):
             if offset in request:
                 continue
@@ -93,6 +108,35 @@ class CdReadBuildTests(unittest.TestCase):
             missing.write_text("\n".join(l for l in labels.splitlines() if not l.endswith(" .cd_select")) + "\n")
             with self.assertRaisesRegex(ValueError, "mismatch"):
                 parse_symbols(missing)
+
+
+class CdReadCliStatusTests(unittest.TestCase):
+    def run_cli(self, root):
+        output = StringIO()
+        with patch.object(build_cdread_module, "ROOT", root), patch("sys.argv", ["build_cdread.py"]), \
+                redirect_stdout(output):
+            code = build_cdread_module.cli()
+        return code, output.getvalue()
+
+    def test_missing_dev_rom_input_is_blocked_with_exit_3(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = root / "build/debug/bios-dev/dev-only-not-compatible-syscard3.pce"
+            code, output = self.run_cli(root)
+            self.assertEqual(code, build_cdread_module.EXIT_BLOCKED)
+            self.assertIn("BLOCKED cdread build: missing dev-cdread build input", output)
+            self.assertFalse(base.exists())
+
+    def test_existing_but_invalid_dev_rom_input_is_an_oracle_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = root / "build/debug/bios-dev/dev-only-not-compatible-syscard3.pce"
+            base.parent.mkdir(parents=True)
+            base.write_bytes(b"not a development ROM")
+            code, output = self.run_cli(root)
+            self.assertEqual(code, 1)
+            self.assertTrue(output.startswith("FAIL cdread build: "), output)
+            self.assertNotIn("BLOCKED", output)
 
 
 def good_records(symbols, lba=5, count=1):

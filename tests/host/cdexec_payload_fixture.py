@@ -35,8 +35,14 @@ LISTING = (
     (b"\x60", "RTS"),
 )
 PAYLOAD_CODE = b"".join(code for code, _ in LISTING)
+# 以下の SHA-256 と EXPECTED_ENTRY は合成 fixture の設計値（純正 BIOS・純正 callee 由来ではない）。
 EXPECTED_CODE_SHA256 = "7bd3e70e73d178b492c8b3d216b53ab1faaa385cdfa4fc6c1301b0cdaa1392f6"
 EXPECTED_SECTOR_SHA256 = "530822389a169917a6ef775b5ddd972556eaf684558436e5b3b143fa5c8e9be2"
+
+# 安全な非実行参照ケース（純正参照入力を模すが、命令・アドレスは持たない）。未確定値は None（UNKNOWN）。
+# 純正 slot 05 の JSR 実行は 0 回。危険な純正 JSR は #173 の実行時遮断が証明されるまで許可しない。
+REFERENCE_JSR_ALLOWED = 0
+REFERENCE_CASE = {"entry": None, "mpr": None, "stack": None}
 
 
 class PayloadError(ValueError):
@@ -100,3 +106,19 @@ def load_payload(sector, dest=PLACE_BASE):
 def marker_present(marker_bytes):
     """$3F00..$3F01 の 2 バイトを受け取り、マーカーと一致するかを返す。"""
     return bytes(marker_bytes) == MARKER_BYTES
+
+
+def decide_reference_jsr(entry=None, mpr=None, stack=None, authorized=False, monitored=False):
+    """純正参照入力の JSR 判定。実行は一切せず、常に BLOCKED を返す（許可数は REFERENCE_JSR_ALLOWED = 0）。
+
+    未確定の entry/MPR/stack、未承認、監視不足、および #173 の遮断未証明を理由として列挙する。
+    方針スタブであり、許可領域外（RAM・I/O・MPR）の検査は行わない（ゲートではない）。
+    """
+    reasons = [name for name, value in (("UNKNOWN_ENTRY", entry), ("UNKNOWN_MPR", mpr), ("UNKNOWN_STACK", stack))
+               if value is None]
+    if not authorized:
+        reasons.append("NOT_AUTHORIZED")
+    if not monitored:
+        reasons.append("NOT_MONITORED")
+    reasons.append("GUARD_173_UNPROVEN")
+    return "BLOCKED", reasons

@@ -14,7 +14,7 @@
 | manifest | `build/debug/bios-dev/manifest.json`、SHA-256 `791beb1b1275a54ae40c8ffe17ee7cf9ab07eb468c3c6c8ff14fdfa034fb88c3` |
 | Geargrafx（pinned） | `b49ae82a012eade566d72e9d61c9d95a5caa4da3`（`tools/dependencies.json`） |
 | cc65（pinned） | `71746c829e77f74c2b601a7d16821170c2610df3` |
-| 実行環境 | Ubuntu（WSL2）、clean clone of main `c906728`、ビルドは `make dev-rom`、`TOOLS_DIR=/home/loach/oss-pce-cd-bios-tools` |
+| 実行環境 | Ubuntu（WSL2）、clean clone of main `c906728`、ビルドは `make dev-rom`、`TOOLS_DIR=<HOME>/oss-pce-cd-bios-tools` |
 | `src/ex_bcdbin.s` | SHA-256 `b38a14aa873a8552288062cb5dd1a23f71e95211cadc4c5b048c0d1b3005f858` |
 | `src/overrides/slot_3D.s` | SHA-256 `94c79485ae2f6b9b3d393241a7df095fdc15ecc3dc2f8deb2a9e9eff893446da` |
 | `spec/dev_implementations.json` | SHA-256 `6f6b3a4c7d5b47123c2b764c5af53bf807bb513c2acd6f30806a96a901c9362e` |
@@ -96,7 +96,7 @@ main はさらに `77e0c70` へ進んだ。本 PR のブランチ（`docs/eviden
 | スクリプト | `tests/integration/dev_bcdbin_full_sweep.py`（SHA-256 `1e578f2861a4c34ad017a12d2d9ace6a16a4d6f5645056e0aace2571bf2c406c`。最新再確認後は 1.2 節の値） |
 | 起動方法 | `make dev-bcdbin-sweep`（または `python3 tests/integration/dev_bcdbin_full_sweep.py [ROM パス]`） |
 | CI | `make dev-integration` から呼ばれるため、CI の `bios-dev` ジョブでも実行される（CI の実測: `bios-dev` ジョブ success、7 分 35 秒） |
-| 移植性 | リポジトリルートはスクリプト自身の位置から求める。特定の作業ディレクトリ（初版の `/home/loach/dev3d-evidence/`）への依存はない |
+| 移植性 | リポジトリルートはスクリプト自身の位置から求める。特定の作業ディレクトリ（初版の `<HOME>/dev3d-evidence/`）への依存はない |
 | 並列 | 既定で `min(8, CPU 数)` 個のプロセスで実行する（`--jobs` で変更可）。プローブは 1 実行 1 プロセスなので並列化の影響は互いに独立。各ワーカースレッドは自分専用の ROM ファイルを使う（スレッド ID でファイル名を分ける。案件番号でファイルを選ぶと、2 つのスレッドが同じファイルを書き換え、プローブが書き込み途中の画像を読むことがある）|
 | 出力 | 集計 JSON は `build/debug/bios-dev/dev-bcdbin-full-sweep.json`（ビルド成果物のため git には含めない） |
 
@@ -208,7 +208,7 @@ main が `0c2fa41` から `77e0c70` へ進み、main の `dev-integration` に M
 
 ## 8. 未了・不足
 
-- 駆動スクリプトは**本 PR でリポジトリに登録した**（`tests/integration/dev_bcdbin_full_sweep.py`、3.1 節）。初版のスクリプトは WSL の `/home/loach/dev3d-evidence/` に置かれており（SHA-256 `97074FB617B02CDB95051F9CEC3E347AD9EB1CA2BAE042C0E86D50299DBD2E79`）、その Regeneration ではなく登録版を正とする。判定項目・条件・期待値は初版と同じで、並列化と移植性（リポジトリルートの自動解決）のみが変わっている。
+- 駆動スクリプトは**本 PR でリポジトリに登録した**（`tests/integration/dev_bcdbin_full_sweep.py`、3.1 節）。初版のスクリプトは WSL の `<HOME>/dev3d-evidence/` に置かれており（SHA-256 `97074FB617B02CDB95051F9CEC3E347AD9EB1CA2BAE042C0E86D50299DBD2E79`）、その Regeneration ではなく登録版を正とする。判定項目・条件・期待値は初版と同じで、並列化と移植性（リポジトリルートの自動解決）のみが変わっている。
 - 全件の結果 JSON は登録スクリプトが `build/debug/bios-dev/dev-bcdbin-full-sweep.json` に出力する（ビルド成果物のため git には含めない）。初版のローカル JSON の SHA-256 は `4ce7b3e0bff30a4ef15177555b03bc6d29080e7e0553954c569d30e4d3f1fd45`。
 - 3.2 節の再実行は CI 上でも再現される（`make dev-integration` 経由）。初版の実行は CI ではなくローカル WSL のみであった。
 - 3.4 節で記録したとおり、**判定項目（4608 実行の判定と集計サマリ）は 2 回とも再現するが、記録のみ・非判定の
