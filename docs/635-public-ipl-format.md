@@ -14,14 +14,21 @@ The loader source `tests/integration/ipl_loader_rom.s` has two formats, selected
 
 - The default build is byte-identical to the previous loader. This was a ONE-TIME manual comparison of the SHA-256
   of the 256 KiB default image (before and after the change, value recorded in the PR). It is NOT an automated
-  test: the harnesses only print the current hash and do not compare it with a stored value.
+  test. The 256 KiB harness records the current hash in its evidence JSON; it does not compare that hash with a
+  stored value.
 - A single ROM never auto-detects the format.
 - The DEV checksum is never disabled unconditionally: the DEV build keeps every DEV check, and the boundary
   cases `0000` / `FFFF` are tested as mismatches.
 
 ## 2. MPR bank rule: observation status
 
-Working hypothesis I1 (Owner: kept as a working hypothesis, not a specification).
+Two statements are kept separate:
+
+- **Implementation rule of the PUBLIC build (established for this test scope):** a raw bank index `0..7` is stored as
+  `raw + $80` (equal to `raw OR $80` in that range). This follows the black-box observation below for one pure
+  System Card BIOS on one pinned core.
+- **Not established:** full real-hardware compatibility, behaviour of other BIOS versions, and the entry state.
+  The rule is NOT a claim of hardware compatibility.
 
 Observation method (black box, not a hardware measurement):
 
@@ -74,6 +81,23 @@ cases, `0` for DEV cases). A wrong mapping in any of MPR2..6 therefore fails a p
 
 Specification change, stated explicitly: in the **PUBLIC build**, raw `$00` for MPR2..6 is accepted (mapped to `$80`).
 The DEV build still refuses it. The old expectation (`neg_mpr2_not_ram_bank`) is a DEV-build rule, not a public rule.
+
+## 3a. The `$4000` payload check: scope and why it is skipped
+
+The judge compares the bytes the payload reads at `$4000` (before and after its own bank-switch round trip) with the
+body byte at the same logical address. That expected value exists only if the body covers `$4000`.
+
+- Skip rule: the `$4000` comparison runs only when `0 <= (0x4000 - load address) < body length`. The same guard
+  already applied to the `$3FFF`, `$5FFF`, `$6000` comparisons and the `$4000-$5FFF` window sum.
+- Cases affected: only `pub_n1_minimum_count` (one sector, body ends before `$4000`). For that case the `$4000`
+  comparisons and the byte comparisons at `$3FFF`, `$4000`, `$5FFF`, `$6000` are NOT checked. The payload-tag,
+  end-marker and MPR2..6 checks still run.
+- Gap: for that one case the round trip `pay[6] == pay[7]` is also not compared. This is a documented test gap, not
+  a loader behaviour change.
+- Applies to: PUBLIC cases and DEV cases. Every DEV case that runs the payload has `n >= 3`
+  (`pos_n5_3000_payloadA`, `pos_n5_3000_payloadB_same_rom`, `pos_n8_crosses_4000_and_6000`,
+  `pos_n3_at_3F00_covers_old_pcex_markers`), so every DEV `$4000` check still runs as before.
+- Loader code: none changed for this. The skip is test-harness logic only (`geargrafx_ipl_loader.py`, judge).
 
 ## 4. Residual risk (must be read with the change)
 
