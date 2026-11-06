@@ -32,7 +32,7 @@ def placement_refuses(rel, text):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding='utf-8', newline='')
         try:
-            guard.check_guard_placement(root)
+            guard.check_guard_placement(root, partial_fixtures=True)   # one file, not the real tree (required jobs: PR #697)
         except ValueError as error:
             return str(error)
     return None
