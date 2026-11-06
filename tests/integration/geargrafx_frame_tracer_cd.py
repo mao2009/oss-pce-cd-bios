@@ -10,6 +10,9 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import os
+import stat
+import secrets
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -110,8 +113,28 @@ def scsi_text(table):
 EVIDENCE_NAME = "frame-tracer-measurements.json"
 
 
+FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
+
+def _is_reparse_or_link(path):
+    """True for a symlink or a Windows reparse point (junction). A missing path is not a link."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    is_junction = getattr(path, "is_junction", None)
+    if callable(is_junction) and is_junction():
+        return True
+    return os.path.islink(path) or bool(getattr(st, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT)
+
+
 def write_evidence(mode, record):
-    """Write this diagnostic's own evidence file (overwritten in place; nothing else is touched)."""
+    """Write this diagnostic's own evidence file (overwritten in place; nothing else is touched).
+
+    The parent directory is opened with ``O_DIRECTORY | O_NOFOLLOW`` and the file is replaced through
+    ``dir_fd``, so a link or reparse point introduced between the check and the write cannot redirect
+    the write. ``O_NOFOLLOW`` is required; environments without it fail closed.
+    """
     output = ROOT / "build" / mode / "frame-tracer-cd"
     target = output / EVIDENCE_NAME
     chain = (ROOT / "build", ROOT / "build" / mode, output, target)
@@ -120,10 +143,76 @@ def write_evidence(mode, record):
         # Never follow a link out of build/: a symlinked folder or evidence file is refused, not written through.
         if any(path.is_symlink() for path in chain):
             raise ValueError("refusing to write frame-tracer evidence through a symbolic link")
+        if any(callable(getattr(path, "is_junction", None)) and path.is_junction() for path in chain):
+            raise ValueError("refusing to write frame-tracer evidence through a symbolic link or reparse point")
+        if any(_is_reparse_or_link(path) for path in chain):
+            raise ValueError("refusing to write frame-tracer evidence through a symbolic link or reparse point")
+
     refuse_links()  # before mkdir, so no directory is created through a linked parent
-    output.mkdir(parents=True, exist_ok=True)
+    for directory in (ROOT / "build", ROOT / "build" / mode, output):
+        directory.mkdir(parents=False, exist_ok=True)
     refuse_links()
-    target.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise ValueError("refusing to write frame-tracer evidence: O_NOFOLLOW is unavailable")
+
+    parent_fd = None
+    temp_name = None
+    try:
+        expected_parent = os.lstat(output)
+        try:
+            parent_fd = os.open(output, os.O_RDONLY | os.O_DIRECTORY | nofollow)
+        except OSError:
+            raise
+        opened_parent = os.fstat(parent_fd)
+        if (opened_parent.st_dev, opened_parent.st_ino, opened_parent.st_uid) != (
+                expected_parent.st_dev, expected_parent.st_ino, expected_parent.st_uid):
+            raise ValueError("refusing to write frame-tracer evidence: evidence directory changed")
+        if stat.S_ISLNK(opened_parent.st_mode) or bool(
+                getattr(opened_parent, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT):
+            raise ValueError("refusing to write frame-tracer evidence through a symbolic link or reparse point")
+
+        try:
+            target_st = os.stat(EVIDENCE_NAME, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            target_st = None
+        if target_st is not None and (stat.S_ISLNK(target_st.st_mode) or bool(
+                getattr(target_st, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT)):
+            raise ValueError("refusing to write frame-tracer evidence through a symbolic link or reparse point")
+
+        temp_name = f".{EVIDENCE_NAME}.{secrets.token_hex(16)}.tmp"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow
+        try:
+            fd = os.open(temp_name, flags, 0o600, dir_fd=parent_fd)
+        except OSError:
+            raise
+        try:
+            with os.fdopen(fd, "wb", closefd=True) as handle:
+                handle.write((json.dumps(record, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+                handle.flush()
+                os.fsync(handle.fileno())
+        except (OSError, ValueError):
+            try:
+                os.unlink(temp_name, dir_fd=parent_fd)
+            except OSError:
+                pass
+            temp_name = None
+            raise
+        os.replace(temp_name, EVIDENCE_NAME, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        temp_name = None
+        try:
+            os.fsync(parent_fd)
+        except OSError:
+            pass
+    finally:
+        if temp_name is not None:
+            try:
+                os.unlink(temp_name, dir_fd=parent_fd)
+            except OSError:
+                pass
+        if parent_fd is not None:
+            os.close(parent_fd)
 
 
 def status_record(status):
@@ -193,15 +282,27 @@ def main(argv=None):
     try:
         run(args.mode)
     except IntegrationBlocked as error:
-        write_evidence(args.mode, status_record("BLOCKED"))
+        try:
+            write_evidence(args.mode, status_record("BLOCKED"))
+        except (OSError, ValueError) as write_error:
+            print(f"FAIL: frame-tracer CD integration evidence path: {write_error}", file=sys.stderr)
+            return 1
         print(f"BLOCKED: frame-tracer CD integration: {error}", file=sys.stderr)
         return 3
     except (AssertionError, ValueError) as error:
-        write_evidence(args.mode, status_record("FAIL"))
+        try:
+            write_evidence(args.mode, status_record("FAIL"))
+        except (OSError, ValueError) as write_error:
+            print(f"FAIL: frame-tracer CD integration evidence path: {write_error}", file=sys.stderr)
+            return 1
         print(f"FAIL: frame-tracer CD integration oracle assertion: {error}", file=sys.stderr)
         return 1
     except Exception as error:  # unexpected diagnostic failures are failures, never blockers
-        write_evidence(args.mode, status_record("FAIL"))
+        try:
+            write_evidence(args.mode, status_record("FAIL"))
+        except (OSError, ValueError) as write_error:
+            print(f"FAIL: frame-tracer CD integration evidence path: {write_error}", file=sys.stderr)
+            return 1
         print(f"FAIL: frame-tracer CD integration unexpected {type(error).__name__}: {error}", file=sys.stderr)
         return 1
     return 0
