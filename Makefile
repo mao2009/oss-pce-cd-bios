@@ -303,3 +303,17 @@ experimental-bios-boot-integration: dev-rom
 # Synthetic media only; one ROM, two synthetic IPLs. NOT compatible, NOT a BIOS ABI, NOT commercial.
 dev-ipl-boot-integration: dev-rom
 	$(PYTHON) tests/integration/geargrafx_dev_ipl_boot.py --mode "$(MODE)"
+
+.PHONY: mpr-bank-probe ipl-loader-integration
+# Issue #670 Phase 1: MPR2/MPR3 bank selection and 8 KiB boundary measurement (synthetic ROM, pinned Geargrafx).
+# Not a BIOS, no commercial media, no reference BIOS. Requires `make setup` (cc65 + Geargrafx).
+mpr-bank-probe:
+	$(PYTHON) tests/integration/geargrafx_mpr_bank_probe.py --mode "$(MODE)"
+# Issue #670 Phase 2: DEV-only multi-sector IPL loader (synthetic media, 8 KiB HuCard+CUE path). NOT a BIOS, NOT compatible.
+ipl-loader-integration:
+	$(PYTHON) tests/integration/geargrafx_ipl_loader.py --mode "$(MODE)"
+# Issue #682: the same 22 loader cases inside a 256 KiB DEV image, through Geargrafx LoadBiosFromBuffer (CAP-checked).
+# Synthetic media only. NOT a System Card BIOS, NOT a BIOS ABI, release_eligible=false.
+.PHONY: dev-bios-ipl-loader-integration
+dev-bios-ipl-loader-integration: dev-rom
+	$(PYTHON) tests/integration/geargrafx_dev_bios_ipl_loader.py --mode "$(MODE)"
