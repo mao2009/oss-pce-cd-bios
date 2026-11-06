@@ -22,55 +22,14 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Classify documentation-only changes and validate text
+      - name: Documentation-only fast path (disabled; full CI for every change)
         id: classify
         run: |
-          python3 - <<'PY'
-          import os
-          import re
-          import subprocess
-          from pathlib import Path
-
-          base = "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}"
-          head = os.environ["GITHUB_SHA"]
-          docs_only = False
-          if re.fullmatch(r"[0-9a-f]{40}", base) and base != "0" * 40:
-              try:
-                  subprocess.run(["git", "merge-base", "--is-ancestor", base, head],
-                                 check=True, capture_output=True)
-                  raw = subprocess.check_output([
-                      "git", "diff", "--no-ext-diff", "--no-renames",
-                      "--name-status", "-z", base, head,
-                  ])
-                  parts = [item for item in raw.split(b"\0") if item]
-                  if parts and len(parts) % 2 == 0:
-                      docs_only = True
-                      for status, encoded_path in zip(parts[::2], parts[1::2]):
-                          path = encoded_path.decode("utf-8")
-                          allowed = (path == "README.md" or
-                                     (path.startswith("docs/") and path.endswith(".md")))
-                          if status not in (b"A", b"M") or not allowed:
-                              docs_only = False
-                              break
-                          entry = subprocess.check_output([
-                              "git", "ls-tree", "-z", head, "--", path,
-                          ])
-                          meta, sep, name = entry.partition(b"\t")
-                          if (not sep or not meta.startswith(b"100644 blob ") or
-                                  name != encoded_path + b"\0"):
-                              docs_only = False
-                              break
-              except (OSError, UnicodeError, subprocess.CalledProcessError) as error:
-                  docs_only = False
-                  print(f"Could not classify changes; using full CI: {error}")
-              if docs_only:
-                  subprocess.run(["git", "diff", "--check", base, head], check=True)
-                  for _, encoded_path in zip(parts[::2], parts[1::2]):
-                      Path(encoded_path.decode("utf-8")).read_text(encoding="utf-8")
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-              output.write(f"docs_only={str(docs_only).lower()}\n")
-          print(f"docs_only={docs_only}; full CI is the fallback")
-          PY
+          # The docs-only fast path is disabled. The host suite reads many docs/*.md files (the contract tests
+          # across docs/), and a light path cannot prove that it runs all of them. Until it can, every change runs
+          # the full CI, so every required check is produced by the full jobs. Re-enabling needs that proof.
+          echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          echo "docs-only fast path is disabled; full CI runs"
   verify-full:
     needs: scope
     if: needs.scope.outputs.docs_only != 'true'
