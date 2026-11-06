@@ -51,7 +51,10 @@ def implemented_slots(overrides: Path = OVERRIDES) -> set[int]:
         match = re.fullmatch(r"slot_([0-9A-F]{2})\.s", path.name)
         if not match:
             raise ValueError(f"unexpected override file name: {path.name}")
-        found.add(int(match.group(1), 16))
+        slot = int(match.group(1), 16)
+        if slot > 80:
+            raise ValueError(f"override slot out of range 0..80: {path.name}")
+        found.add(slot)
     return found
 
 

@@ -1,6 +1,7 @@
 # #692: detecting the DEV unimplemented-API stub (halt classification)
 
-Scope: measurement harness only. The DEV BIOS image is NOT changed (no change to `tools/build_rom.py`, `src/`, `spec/`).
+Scope: measurement harness only. The DEV BIOS image bytes are NOT changed. `tools/build_rom.py` gains one `.export`
+line (no bytes added; checked by SHA-256). No change to `src/` or `spec/`.
 Synthetic media, pinned Geargrafx. NOT a System Card BIOS, NOT a BIOS ABI, NOT CD_BOOT / CD_READ verified,
 `release_eligible=false`. No API becomes VERIFIED. No unimplemented API is treated as a success.
 

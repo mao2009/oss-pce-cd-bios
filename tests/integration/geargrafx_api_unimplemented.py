@@ -143,9 +143,15 @@ def main():
                     failures.append(f"{name} {v['cycle']}: {v}")
     if args.mutation != "none":
         # A mutant is a test of the harness itself: it must be detected (the case must FAIL).
-        if not failures:
-            raise SystemExit(f"MUTATION NOT DETECTED ({args.mutation}): the harness accepted a broken expectation")
-        print(f"MUTATION_DETECTED {args.mutation}: {failures[0][:160]}")
+        signature = {
+            "expect_wrong_slot": lambda v: v["state"] == "API_SLOT_MISMATCH",
+            "mark_before": lambda v: v["marker_written"] and v["state"] == API_UNIMPLEMENTED_HALT,
+            "no_label": lambda v: v["state"] == BUDGET,
+        }[args.mutation]
+        verdicts = results["slot02_unimplemented_stub"]
+        if not failures or not all(signature(v) for v in verdicts):
+            raise SystemExit(f"MUTATION NOT DETECTED as expected ({args.mutation}): {failures[:1]}")
+        print(f"MUTATION_DETECTED {args.mutation}: expected signature observed in cold and warm")
         return
     evidence = {"scope": "synthetic media, DEV 256 KiB image, pinned Geargrafx; NOT compatible, NOT BIOS ABI",
                 "bios_image_sha256": bios_sha, "stub_label_address": stub["api_unimplemented"],

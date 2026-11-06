@@ -80,9 +80,11 @@ class SpecAndLedgerData(unittest.TestCase):
         self.assertNotIn(0x02, implemented_slots())
         self.assertFalse((OVERRIDES / "slot_02.s").exists())
 
-    def test_every_implemented_slot_has_its_own_override_file(self):
+    def test_every_override_file_defines_its_own_slot_symbol(self):
+        # content binding, not a file-existence check: the file must name the symbol of its own slot
         for slot in implemented_slots():
-            self.assertTrue((OVERRIDES / f"slot_{slot:02X}.s").is_file(), f"slot {slot:02X}")
+            text = (OVERRIDES / f"slot_{slot:02X}.s").read_text(encoding="ascii", errors="replace")
+            self.assertIn(f"api_slot_{slot:02X}", text, f"slot {slot:02X}")
 
     def test_boundary_on_the_real_ledger(self):
         impl = implemented_slots()
