@@ -1,18 +1,20 @@
 # oss-pce-cd-bios
 
-A redistributable **PC Engine / TurboGrafx-CD System Card BIOS replacement** built from original and properly licensed reusable OSS code.
+An open-source project to create a **PC Engine / TurboGrafx-CD Super System Card 3.0-compatible BIOS replacement**, using original and appropriately licensed reusable OSS code.
 
-> **Status as of 2026-10-28 (main `2954e90`, after PR #527): development-only firmware, not a compatible System Card BIOS.** The 256 KiB DEV ROM has 81 candidate entries: **13 project-owned DEV implementations** on main 2954e90 (EX_GETVER ($1E), EX_BINBCD ($3C), EX_BCDBIN ($3D), EX_RND ($3E), MA_MUL8U ($3F), MA_MUL8S ($40), MA_MUL16U ($41), MA_DIV16S ($42), MA_DIV16U ($43), MA_SQRT ($44), MA_SIN ($45), MA_COS ($46), MA_MUL16S ($4F)) and **68 nonreturning stubs**. Historical snapshot (main f90c16b: 9 implementations, 72 stubs), before PR #522 and PR #527. This revision (PR #524, Issue #68, EX_SETWRT $3A) contains **14 DEV implementations and 67 nonreturning stubs**. These counts describe installed DEV routines, **not** owner-approved DEV_CALLABLE (0) or independently verified reference BIOS ABI (0/81). All slot readiness states remain NOT_READY and `release_eligible: false`. A lawful commercial CD game boot, BIOS-mediated disc boot, callable CD_RESET/CD_BASE/CD_READ and releasable firmware are not established. See [dated implementation status](docs/status.md).
+> **Status: 2026-11-06, main `5a8dc5a` — development diagnostics only.** The repository does **not** yet contain a releasable or commercial-game-compatible System Card BIOS. Current DEV implementation count: **14/81**, **67 stubs**. Owner-approved DEV_CALLABLE: **0**; reference ABI VERIFIED: **0/81**; reference JSR permitted: **0/81**; `release_eligible: false`. See [status](docs/status.md).
 
-## DEV implementation progress (historical snapshots and this revision)
+## Current development-only capabilities
 
-**DEV implementation count on historical main 2954e90: 13/81 (about 16 percent), 68 stubs; this revision: 14/81 DEV implementations and 67 stubs.** Since the historical snapshot (main f90c16b: 9/81, 72 stubs), the merged additions are PR #495 MA_MUL16S ($4F, Issue #494), MA_DIV16U ($43, [PR #480](https://github.com/mao2009/oss-pce-cd-bios/pull/480)), PR #522 MA_SIN ($45) and PR #527 MA_COS ($46) on top of MA_SQRT ($44, Issue #78). Each is a **project-defined DEV contract** tested on pinned Geargrafx, **not** a proven match to the proprietary reference System Card. This revision (PR #524, EX_SETWRT $3A) contains **14/81** DEV implementations and **67 stubs**.
+The 81 candidate slots in `spec/dev_implementations.json` contain 14 project-defined implementations: `EX_GETVER` ($1E), `EX_SETWRT` ($3A), `EX_BINBCD` ($3C), `EX_BCDBIN` ($3D), `EX_RND` ($3E), `MA_MUL8U` ($3F), `MA_MUL8S` ($40), `MA_MUL16U` ($41), `MA_DIV16S` ($42), `MA_DIV16U` ($43), `MA_SQRT` ($44), `MA_SIN` ($45), `MA_COS` ($46) and `MA_MUL16S` ($4F). The other **67** entries are nonreturning stubs. An installed DEV routine is **not** a reference-BIOS-verified ABI.
 
-- **Safety experiment merged:** [PR #481](https://github.com/mao2009/oss-pce-cd-bios/pull/481) records a synthetic HuCARD caller-stack experiment. RAM-mapped JSR was observed returning normally; when MPR1 mapped the stack to I/O, a guard detected the violation **after** JSR/guard pushes had already changed VDC state. The guard is **not** production-safe; [#473](https://github.com/mao2009/oss-pce-cd-bios/issues/473), [#459](https://github.com/mao2009/oss-pce-cd-bios/issues/459) and [#367](https://github.com/mao2009/oss-pce-cd-bios/issues/367) remain gated or unresolved. IRQ timing observations are pinned-core-only, not hardware guarantees.
-- **Evidence remains divided:** main had 9 implemented entries out of 81 at f90c16b. Owner-approved DEV_CALLABLE is **0**, reference ABI VERIFIED **0/81**, reference JSR execution permitted **0/81**, BIOS-mediated CD boots **0**. Synthetic guest READ(6) and CD-to-RAM execution are diagnostics, not BIOS CD_READ/CD_BOOT.
-- **Next engineering milestone:** after safe evidence and execution prerequisites, instrument Geargrafx boot of a lawfully obtained PC Engine CD copy of *Shin Megami Tensei* to locate **the first blocking API**. This is a **planned experiment, not an executed compatibility claim**. Keep the current reference-JSR gate closed. Historical earlier snapshots are archived in [status](docs/status.md) and Git history.
+The pinned Geargrafx core executes original HuCARD and development firmware diagnostics: reset/stack/MPR/IRQ probes, synthetic CD READ(6), RAM payload execution, and experimental IPL loading. These do **not** implement callable, independently verified `CD_BOOT`, `CD_RESET`, `CD_BASE` or `CD_READ` services.
 
+- [PR #681](https://github.com/mao2009/oss-pce-cd-bios/pull/681) (merged 2026-11-06): MPR2/MPR3 measurement and a **multi-sector synthetic IPL** loader on the 8 KiB HuCARD+CUE path. Its PR evidence reports 22 scenarios, cold/warm.
+- [PR #683](https://github.com/mao2009/oss-pce-cd-bios/pull/683) (merged 2026-11-06): the same 22 synthetic scenarios through a **separate 256 KiB DEV image** using Geargrafx `LoadBiosFromBuffer` and loader-identity checks. This demonstrates the selected DEV loader path, **not System Card compatibility**.
+- The **single-sector PCEX** experiment (Issue #668) is a different DEV contract and remains available. No lawful commercial CD game boot or verified reference ABI is demonstrated.
 
+Historical reference only: main `f90c16b` (2026-10-22) had 9 DEV implementations and 72 stubs; main `2954e90` (2026-10-28) had 13 DEV implementations and 68 stubs. These are not current counts.
 
 ## Objectives
 
@@ -68,43 +70,34 @@ For local, **optional** diagnostics, contributors can put their own lawfully obt
 - [Change-aware nightly developer ROM builds](docs/nightly.md)
 - [Contributing](CONTRIBUTING.md)
 
-## Current build
+## Build and verification
 
-On Linux x86_64 with Python 3.10+, GNU Make, GCC/G++, binutils and curl:
-
-```sh
-make setup     # checksum-verified, pinned source builds; no sudo
-make build     # build/debug/smoke-test-not-bios.pce (8192 bytes)
-make test      # host tests (no Geargrafx needed)
-make test-real-core  # real Geargrafx cold/warm/negative checks (required in CI; needs make setup)
-make check     # source, assembler and GitHub Actions static checks
-make clean
-make build MODE=release
-```
-
-`make setup` keeps external sources outside this repository and is safe to repeat.
-The default `MODE=debug` includes a listing and debug information; release mode
-produces the same test ROM with fewer debugging artifacts. `make release` refuses
-to publish a BIOS because most APIs and System Card boot remain unimplemented.
-
-On **main** the additional, development-only targets are:
+Linux x86_64 (or WSL) requires Python 3.10+, GNU Make, GCC/G++, binutils and curl. `make setup` downloads/builds checksum-pinned tools into an **external** cache.
 
 ```sh
-make dev-rom                    # 256 KiB; 9 DEV overrides ($1E, $3C, $3D, $3F, $40, $41, $42, $43, $4F) + 72 nonreturning stubs on main f90c16b; 14 DEV overrides ($1E, $3A, $3C, $3D, $3E, $3F, $40, $41, $42, $43, $44, $45, $46, $4F) + 67 nonreturning stubs in this revision (PR #524, EX_SETWRT $3A)
-make dev-test                   # host API tests plus DEV ROM real-core integration
-make dev-integration            # DEV-only API integration (including MA_DIV16U); reference ABI still unverified
-make dev-startup-integration    # separate reset/MPR/stack checkpoint
-make dev-cdread-integration     # guest READ(6), full-byte RAM/phase checks
-make dev-trace-integration      # real-core isolated trace and negative checks
-make dev-release-gate-blocked   # expected refusal; NOT a firmware release
+make setup
+make build                        # original 8 KiB HuCARD test fixture, not BIOS
+make test                         # host tests (cc65 required)
+make test-real-core               # pinned real Geargrafx core
+make check                        # source and workflow checks
+make dev-rom                      # 256 KiB DEV ROM; 14 project-defined routines
+make dev-test                     # DEV diagnostics; no reference ABI guarantee
+make dev-release-gate-blocked     # expected refusal
 ```
 
-**`EX_GETVER` was the first tested development-only BIOS API** ([#174](https://github.com/mao2009/oss-pce-cd-bios/pull/174)): the OSS implementation returns X=3/Y=0 and preserves A in the tested caller contract. The full reference ABI and behavior on other emulators or physical hardware are **not verified**; Issue [#40](https://github.com/mao2009/oss-pce-cd-bios/issues/40) remains open. The DEV ROM manifest keeps `abi: UNVERIFIED` and `release_eligible: false`.
+Opt-in development diagnostics (original **synthetic** media only):
 
-The low-level **CD sector read diagnostic works**, but callable `CD_RESET`, `CD_BASE` and **`CD_READ` are not implemented**. The self-authored CD→RAM execution experiment ([#122](https://github.com/mao2009/oss-pce-cd-bios/pull/122)) is a diagnostic, **not** BIOS-mediated CD boot. ROM byte-identity checks protect the DEV image against unintended modifications; they do not prove BIOS compatibility.
-CI tests original HuCARD and separate DEV diagnostics; Nightly is HuCARD-only.
-See [building](docs/building.md), [testing](docs/testing.md) and the
-[81-slot scaffold limits](docs/api-stub-scaffold.md).
+```sh
+make dev-cdread-integration
+make dev-cdload-exec-integration
+make dev-boot-internal-integration
+make dev-ipl-boot-integration         # one-sector PCEX (Issue #668)
+make mpr-bank-probe                   # MPR2/3 observation
+make ipl-loader-integration           # multi-sector, 8 KiB HuCARD path (#681)
+make dev-bios-ipl-loader-integration  # multi-sector, 256 KiB DEV BIOS-buffer path (#683)
+```
+
+`make release` intentionally refuses to publish a BIOS. Each test result only supports the exact commit, toolchain and scenario it was run on; this documentation change itself is not an emulator test run. See [building](docs/building.md), [testing](docs/testing.md), [DEV IPL boot](docs/dev-ipl-boot.md) and [compatibility](docs/compatibility.md).
 
 ## License
 
