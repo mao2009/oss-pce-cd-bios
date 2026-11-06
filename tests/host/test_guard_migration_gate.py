@@ -207,5 +207,86 @@ class MigrationRefuseTests(unittest.TestCase):
                     self.assertRegex(line, r"@[0-9a-f]{40}", f"{rel}: {line.strip()}")
 
 
+def old_text(job):
+    rel, _upstream = WORKFLOWS[job]
+    return read_repo(rel)
+
+
+def replace_in_job(text, job, old, new):
+    """Replace inside the given job's block only (the first occurrence elsewhere in the file must not be touched)."""
+    start, end = job_span(text, job)
+    block = text[start:end]
+    assert block.count(old) == 1, (job, old)
+    return text[:start] + block.replace(old, new, 1) + text[end:]
+
+
+def with_job_key(text, job, extra):
+    """Insert one job-level key line directly after the job's needs: line (OLD or NEW text)."""
+    start, end = job_span(text, job)
+    block = text[start:end]
+    block = re.sub(r"(\n    needs: [^\n]+\n)", lambda m: m.group(1) + extra, block, count=1)
+    return text[:start] + block + text[end:]
+
+
+class MigrationYamlRuleTests(unittest.TestCase):
+    """Job-level keys are read from the parsed YAML. Each mutant below was accepted before this fix (review of #697)."""
+
+    def test_if_false_is_refused_on_old_and_new(self):
+        for job in WORKFLOWS:
+            with self.subTest(job=job, form="OLD"):
+                found = problems(with_job_key(old_text(job), job, "    if: false\n"), job)
+                self.assertTrue(any("job-level `if` other than exactly always()" in p for p in found), found)
+            with self.subTest(job=job, form="NEW"):
+                text, rel, _upstream = new_text(job)
+                mutant = replace_in_job(text, job, "    if: always()\n", "    if: false\n")
+                found = problems(mutant, rel)
+                self.assertTrue(any("job-level `if` other than exactly always()" in p for p in found), found)
+
+    def test_always_with_extra_condition_is_refused(self):
+        for job in WORKFLOWS:
+            with self.subTest(job=job):
+                text, rel, _upstream = new_text(job)
+                mutant = replace_in_job(text, job, "    if: always()\n", "    if: always() && false\n")
+                found = problems(mutant, rel)
+                self.assertTrue(any("job-level `if` other than exactly always()" in p for p in found), found)
+
+    def test_continue_on_error_is_refused_on_old_and_new(self):
+        for job in WORKFLOWS:
+            with self.subTest(job=job, form="OLD"):
+                found = problems(with_job_key(old_text(job), job, "    continue-on-error: true\n"), job)
+                self.assertTrue(any("continue-on-error" in p for p in found), found)
+            with self.subTest(job=job, form="NEW"):
+                text, rel, _upstream = new_text(job)
+                found = problems(with_job_key(text, job, "    continue-on-error: true\n"), rel)
+                self.assertTrue(any("continue-on-error" in p for p in found), found)
+
+    def test_neighbour_job_injection_is_refused(self):
+        # The exact bypass from the review: the always() moved out of the guard job and into a neighbouring job.
+        for job in WORKFLOWS:
+            with self.subTest(job=job):
+                text, rel, _upstream = new_text(job)
+                start, end = job_span(text, job)
+                mutant = text[:start] + text[start:end].replace("    if: always()\n", "", 1) + text[end:]
+                injected = ("  zz:  # c\n    runs-on: ubuntu-24.04\n    if: always()\n"
+                            "    steps:\n      - run: echo hi\n")
+                mutant = mutant.rstrip("\n") + "\n" + injected
+                found = problems(mutant, rel)
+                self.assertTrue(any("incomplete migration state" in p for p in found), found)
+
+    def test_comment_on_job_header_is_read_correctly(self):
+        for job in WORKFLOWS:
+            with self.subTest(job=job):
+                text, rel, _upstream = new_text(job)
+                commented = text.replace(f"  {job}:\n", f"  {job}:  # a comment on the header\n", 1)
+                self.assertEqual(problems(commented, rel), [])
+
+    def test_gate_with_extra_space_is_refused(self):
+        for job in WORKFLOWS:
+            with self.subTest(job=job):
+                text, rel, upstream = new_text(job)
+                mutant = text.replace(gate_run(upstream), gate_run(upstream).replace(" = ", "  = ", 1), 1)
+                self.assertTrue(problems(mutant, rel))
+
+
 if __name__ == "__main__":
     unittest.main()

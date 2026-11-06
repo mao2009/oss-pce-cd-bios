@@ -2235,6 +2235,18 @@ def _result_gate_text(upstream):
     return f'test "${{{{ needs.{upstream}.result }}}}" = "success"'
 
 
+def _required_job_body(text, job):
+    """The parsed mapping of one job in a workflow text (YAML, strict loader), or None when it is not a mapping."""
+    try:
+        import yaml
+        doc = yaml.load(text, Loader=_strict_loader())
+    except Exception:
+        return None
+    jobs = doc.get("jobs") if isinstance(doc, dict) else None
+    body = jobs.get(job) if isinstance(jobs, dict) else None
+    return body if isinstance(body, dict) else None
+
+
 def _job_block(text, job):
     """The lines of one job in a workflow text (its key line and its body), or [] when the job is absent."""
     out, inside = [], False
@@ -2375,30 +2387,42 @@ def guard_placement_violations(text, workflow):
         if len(job_steps) < 3 or not _is_py_resolve(lines, job_steps[2], dash):
             problems.append(f"{workflow}: guard job {job!r}: the third step must resolve python3 (id: pyresolve)")
         if job in REQUIRED_GUARD_JOBS:
-            # Migration rule (Issue #688 follow-up): a required guard job has exactly one of two structures.
-            #   OLD: no job-level `if: always()` and no result gate (the structure on main before the migration).
-            #   NEW: job-level `if: always()` AND exactly one result gate at index 3, naming its own upstream.
-            # Any other combination (only one of the two, a gate elsewhere, a changed gate) is refused as incomplete.
-            has_always = "    if: always()" in _job_block(text, job)
-            has_gate = len(needed) == 1 and any(
-                _run_lines(lines, s[0], s[1], dash) == [_result_gate_text(needed[0])] for s in job_steps)
-            if not has_always and not has_gate:
-                pass   # OLD structure: accepted by this migration rule only (the strict rule will refuse it)
-            elif not (has_always and has_gate):
-                problems.append(f"{workflow}: required guard job {job!r} is in an incomplete migration state "
-                                f"(job-level if: always() present={has_always}, result gate present={has_gate}); "
-                                "only the complete OLD or NEW structure is accepted")
+            # Migration rule (Issue #688 follow-up). The job-level keys are read from the parsed YAML, not from text
+            # lines, so a comment or a neighbouring job cannot change the reading.
+            #   OLD: no job-level `if` and no `continue-on-error` (the structure on main before the migration).
+            #   NEW: job-level `if` is exactly always(), no `continue-on-error`, and exactly one result gate at index 3.
+            # Any other combination is refused: only one of the two, a gate elsewhere, a changed gate, another `if`
+            # value (a skipped required check passes on GitHub), or `continue-on-error` (a failure would not fail it).
+            body = _required_job_body(text, job)
+            if body is None:
+                problems.append(f"{workflow}: required guard job {job!r} cannot be read as a YAML job mapping (refused)")
             else:
-                if len(needed) != 1:
-                    problems.append(f"{workflow}: required guard job {job!r} must need exactly one real-core job "
-                                    f"(found {needed})")
-                gate_count = sum(_run_lines(lines, s[0], s[1], dash) == [_result_gate_text(needed[0])]
-                                 for s in job_steps) if len(needed) == 1 else 0
-                if gate_count != 1 or len(job_steps) < 4 or len(needed) != 1 or \
-                        _run_lines(lines, job_steps[3][0], job_steps[3][1], dash) != [_result_gate_text(needed[0])]:
-                    problems.append(f"{workflow}: required guard job {job!r} must have exactly one result gate step, at "
-                                    f"index 4 (right after the trusted preamble): "
-                                    f"{_result_gate_text(needed[0]) if len(needed) == 1 else '?'}")
+                has_if = "if" in body
+                if has_if and body.get("if") != "always()":
+                    problems.append(f"{workflow}: required guard job {job!r} has a job-level `if` other than exactly "
+                                    f"always() (refused: a skipped required check passes; found {body.get('if')!r})")
+                if "continue-on-error" in body:
+                    problems.append(f"{workflow}: required guard job {job!r} may not set continue-on-error (refused)")
+                has_always = has_if and body.get("if") == "always()"
+                has_gate = len(needed) == 1 and any(
+                    _run_lines(lines, s[0], s[1], dash) == [_result_gate_text(needed[0])] for s in job_steps)
+                if not has_always and not has_gate:
+                    pass   # OLD structure: accepted by this migration rule only (the strict rule will refuse it)
+                elif not (has_always and has_gate):
+                    problems.append(f"{workflow}: required guard job {job!r} is in an incomplete migration state "
+                                    f"(job-level if: always() present={has_always}, result gate present={has_gate}); "
+                                    "only the complete OLD or NEW structure is accepted")
+                else:
+                    if len(needed) != 1:
+                        problems.append(f"{workflow}: required guard job {job!r} must need exactly one real-core job "
+                                        f"(found {needed})")
+                    gate_count = sum(_run_lines(lines, s[0], s[1], dash) == [_result_gate_text(needed[0])]
+                                     for s in job_steps) if len(needed) == 1 else 0
+                    if gate_count != 1 or len(job_steps) < 4 or len(needed) != 1 or \
+                            _run_lines(lines, job_steps[3][0], job_steps[3][1], dash) != [_result_gate_text(needed[0])]:
+                        problems.append(f"{workflow}: required guard job {job!r} must have exactly one result gate step, "
+                                        f"at index 4 (right after the trusted preamble): "
+                                        f"{_result_gate_text(needed[0]) if len(needed) == 1 else '?'}")
         for s in job_steps[:3]:
             keys = _key_names(_step_keys(lines, s[0], s[1], dash))
             if not set(keys) <= PREAMBLE_STEP_KEYS or len(set(keys)) != len(keys):
