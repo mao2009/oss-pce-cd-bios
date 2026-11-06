@@ -4,6 +4,8 @@
 
 Historical main `f90c16b` had 9 DEV implementations and 72 stubs; historical main `2954e90` had 13 DEV implementations and 68 stubs. [PR #524](https://github.com/mao2009/oss-pce-cd-bios/pull/524) is **merged**, not an outstanding Draft. Synthetic disc and ABI experiments do not prove System Card or retail compatibility.
 
+Current DEV implementation count: 14/81; current stubs: 67/81; owner-approved DEV_CALLABLE: 0; reference ABI VERIFIED: 0/81; reference JSR permitted: 0/81.
+
 ## M0 — Foundation and diagnostics
 
 - [x] Reproducible original HuCARD fixture, pinned tools, host tests and real Geargrafx CI
