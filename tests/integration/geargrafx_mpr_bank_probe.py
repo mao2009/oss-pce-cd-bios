@@ -80,6 +80,11 @@ def check(d: dict) -> list:
         errs.append(f"{d['cycle']}: boundary $6000 bank81 {d['boundary']['6000_bank81']} != 22")
     if d["boundary"]["mpr3_readback"] != "81":
         errs.append(f"{d['cycle']}: MPR3 readback {d['boundary']['mpr3_readback']} != 81")
+    # Alias observations at ONE offset ($4002) only: bank $88 writes were not retained and bank $80 saw no $33.
+    if d["alias"]["bank80_view_4002"] != "00":
+        errs.append(f"{d['cycle']}: bank80 view of $4002 {d['alias']['bank80_view_4002']} != 00 (alias observed)")
+    if d["alias"]["bank88_view_4002"] != "FF":
+        errs.append(f"{d['cycle']}: bank88 view of $4002 {d['alias']['bank88_view_4002']} != FF (write retained)")
     if d["sentinel"] != "C3":
         errs.append(f"{d['cycle']}: sentinel {d['sentinel']} != C3 (program did not reach halt)")
     return errs

@@ -142,6 +142,26 @@ jobs:
         run: |
           set -euo pipefail
           make dev-ipl-boot-integration
+  # Issue #670: Phase 1 MPR/bank measurement and Phase 2 DEV-only multi-sector IPL loader (synthetic media, pinned
+  # Geargrafx, 8 KiB HuCard+CUE path). Additive job: no needs, no secrets, changes no existing job. NOT compatible,
+  # NOT a BIOS ABI, NOT commercial, release_eligible=false.
+  ipl-loader-integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare existing pinned source toolchain and Geargrafx
+        run: make setup
+      - name: Issue #670 MPR bank probe and DEV-only multi-sector IPL loader, synthetic media only
+        run: |
+          set -euo pipefail
+          make mpr-bank-probe
+          make ipl-loader-integration
   # Synthetic CUE data-track selection (INDEX 01 / pregap / audio refusal), real Geargrafx cold and warm. Additive job: no
   # needs, no secrets, changes no existing job. Original synthetic media only; NOT a BIOS TOC/API and NOT compatible.
   synthetic-track-select-integration:
