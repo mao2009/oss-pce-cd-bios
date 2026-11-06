@@ -49,7 +49,7 @@ Those results are the **merged PRs' reported tests**, not tests rerun by editing
 
 ## Current blockers
 
-1. Reference-BIOS API ABI remains unverified for all 81 candidate entries. No public DEV tests authorize proprietary reference JSR execution.
+1. None of the reference-BIOS candidate API contracts has independently verified ABI behavior. No public DEV tests authorize proprietary reference JSR execution.
 2. Production stack/MPR, IRQ, block-transfer and CD error/return contracts require additional independently reviewed, negative evidence; isolated safety observations are not a secure runtime guard.
 3. The multi-sector DEV loader uses a **project-specific 16-bit additive checksum** (not a commercial IPL standard). It restricts sector LBA to 16 bits, conservatively refuses the untested tail-at-$FFFF boundary, and tests a readback fault using a mutant ROM rather than an actual bus failure.
 4. No firmware-mediated retail boot, cross-emulator parity, save/playability test or physical hardware compatibility has been established. Neither private BIOS ROMs nor commercial CD data are public CI inputs.
