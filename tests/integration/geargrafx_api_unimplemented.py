@@ -19,8 +19,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 sys.path[:0] = [str(ROOT / "tools"), str(HERE)]
-from api_halt_classify import (API_UNIMPLEMENTED_CONFIRMED, BUDGET, classify, implemented_slots,  # noqa: E402
-                               unimplemented_slots)
+from api_halt_classify import (API_UNIMPLEMENTED_CONFIRMED, BUDGET, CD_HALT_OK, classify,  # noqa: E402
+                               implemented_slots, unimplemented_slots)
 from build_cdload_exec import parse_labels  # noqa: E402
 from build_dev_ipl_loader_bios import build_ipl_loader_bios  # noqa: E402
 from environment import executable  # noqa: E402
@@ -106,7 +106,10 @@ def main():
             verdicts = []
             for run in runs:
                 verdict = classify(run, stub_address=stub["api_unimplemented"], expected_slot=slot)
-                marker = bytes.fromhex(run["buffer_hex"])[PRES_OFFSET]
+                dump = bytes.fromhex(run["buffer_hex"])
+                if len(dump) <= PRES_OFFSET:
+                    raise ValueError(f"{name} {run['cycle']}: probe dump too short for the payload marker")
+                marker = dump[PRES_OFFSET]
                 verdicts.append({"cycle": run["cycle"], "state": verdict["state"], "reason": run["reason"],
                                  "halt_confirmed": run["halt_confirmed"], "x": run["x"], "pc": run["pc"],
                                  "marker_written": marker == MARKER})
@@ -115,7 +118,9 @@ def main():
                 if expect == "api":
                     ok = v["state"] == API_UNIMPLEMENTED_CONFIRMED and v["x"] == slot and not v["marker_written"]
                 elif expect == "impl":
-                    ok = v["state"] not in API_STATES
+                    # the implemented override returns to the payload, the marker is written, and the run
+                    # reaches cd_halt_ok; the stub is not reached.
+                    ok = v["state"] == CD_HALT_OK and v["marker_written"] and v["state"] not in API_STATES
                 else:
                     ok = v["state"] == BUDGET
                 if not ok:

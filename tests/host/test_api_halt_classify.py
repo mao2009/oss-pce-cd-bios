@@ -10,7 +10,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 from api_halt_classify import (API_NOT_CONFIRMED, API_PC_MISMATCH, API_SLOT_MISMATCH,  # noqa: E402
                                API_UNIMPLEMENTED_CONFIRMED, BUDGET, CD_HALT_FAIL, CD_HALT_OK, OTHER,
-                               STUB_LABEL, classify, implemented_slots, unimplemented_slots)
+                               OVERRIDES, STUB_LABEL, all_slots, classify, implemented_slots,
+                               unimplemented_slots)
 
 STUB = 0xE24F
 
@@ -61,12 +62,23 @@ class ClassifyTests(unittest.TestCase):
 
 
 class LedgerTests(unittest.TestCase):
-    def test_ledger_is_read_from_override_files(self):
+    def test_ledger_matches_the_override_files_and_the_spec(self):
         impl = implemented_slots()
         unimpl = unimplemented_slots()
         self.assertTrue(impl)
-        self.assertEqual(impl | unimpl, set(range(81)))
+        # the slot universe comes from spec/api_slots.json (81 entries), not from a hardcoded range
+        self.assertEqual(len(all_slots()), 81)
+        self.assertTrue(impl <= all_slots())
+        self.assertEqual(impl | unimpl, all_slots())
         self.assertFalse(impl & unimpl)
+        # one override file per implemented slot
+        self.assertEqual(len(list(OVERRIDES.glob("*.s"))), len(impl))
+
+    def test_fabricated_success_reason_without_confirmation_is_not_success(self):
+        r = classify(run("cd_halt_ok", False, STUB, 0x02), stub_address=STUB, expected_slot=0x02)
+        self.assertEqual(r["state"], OTHER)
+        r = classify(run("cd_halt_fail", False, STUB, 0x02), stub_address=STUB, expected_slot=0x02)
+        self.assertEqual(r["state"], OTHER)
 
     def test_slot_02_is_unimplemented(self):
         self.assertIn(0x02, unimplemented_slots())

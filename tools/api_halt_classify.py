@@ -32,18 +32,31 @@ OTHER = "OTHER"
 STUB_LABEL = "api_unimplemented"
 
 
+SPEC_SLOTS = ROOT / "spec" / "api_slots.json"
+
+
+def all_slots(spec: Path = SPEC_SLOTS) -> set[int]:
+    """Every slot id in the API spec (spec/api_slots.json is the source of truth for the slot set)."""
+    import json
+    return {int(entry["id"]) for entry in json.loads(spec.read_text(encoding="utf-8"))["slots"]}
+
+
 def implemented_slots(overrides: Path = OVERRIDES) -> set[int]:
-    """Slots that have an override body in src/overrides (the DEV implementation ledger, by file)."""
+    """Slots that have an override body in src/overrides (the DEV implementation ledger, by file).
+
+    Strict like build_rom.overrides(): a file that is not slot_XX.s with a two-digit hex id is an error.
+    """
     found = set()
-    for path in overrides.glob("slot_*.s"):
-        match = re.fullmatch(r"slot_([0-9A-Fa-f]{2})\.s", path.name)
-        if match:
-            found.add(int(match.group(1), 16))
+    for path in overrides.glob("*.s"):
+        match = re.fullmatch(r"slot_([0-9A-F]{2})\.s", path.name)
+        if not match:
+            raise ValueError(f"unexpected override file name: {path.name}")
+        found.add(int(match.group(1), 16))
     return found
 
 
 def unimplemented_slots(overrides: Path = OVERRIDES) -> set[int]:
-    return set(range(81)) - implemented_slots(overrides)
+    return all_slots() - implemented_slots(overrides)
 
 
 def classify(run: dict, *, stub_address: int, expected_slot: int | None = None) -> dict:
@@ -54,10 +67,11 @@ def classify(run: dict, *, stub_address: int, expected_slot: int | None = None) 
         if confirmed:
             return {"state": OTHER, "detail": "budget with halt_confirmed is inconsistent"}
         return {"state": BUDGET, "detail": "step budget ended; no halt label confirmed"}
-    if reason == "cd_halt_fail":
-        return {"state": CD_HALT_FAIL, "detail": "cd_halt_fail label"}
-    if reason == "cd_halt_ok":
-        return {"state": CD_HALT_OK, "detail": "cd_halt_ok label"}
+    if reason in ("cd_halt_fail", "cd_halt_ok"):
+        if not confirmed:
+            return {"state": OTHER, "detail": f"{reason} named without halt_confirmed (fail-closed)"}
+        state = CD_HALT_FAIL if reason == "cd_halt_fail" else CD_HALT_OK
+        return {"state": state, "detail": f"{reason} label, confirmed"}
     if reason != STUB_LABEL:
         return {"state": OTHER, "detail": f"reason {reason!r}"}
     if not confirmed:
