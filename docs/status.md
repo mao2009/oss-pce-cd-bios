@@ -4,6 +4,8 @@ This is an **evidence-scoped, dated** snapshot of [main at 5a8dc5a](https://gith
 
 **Verdict:** development-only diagnostic firmware; no release-eligible System Card BIOS, reference-ABI-verified APIs, independently established commercial-CD boot or game playability.
 
+Current DEV implementation count: 14/81; current stubs: 67/81; owner-approved DEV_CALLABLE: 0; reference ABI VERIFIED: 0/81; reference JSR permitted: 0/81.
+
 ## Distinct status metrics
 
 Derived from `spec/dev_implementations.json`, `src/overrides/slot_*.s` and `spec/reference_jsr_gate.json` at the stated main commit:
