@@ -247,14 +247,20 @@ class StaticAnalysisTests(unittest.TestCase):
             with self.subTest(state=state):
                 document = copy.deepcopy(base_review())
                 document["apis"][0]["abi_state"] = state
-                with self.assertRaisesRegex(review.Invalid, "reproducible real core"):
+                with self.assertRaisesRegex(review.Invalid, "needs an independent evidence certification"):
                     review.validate(document, contracts.load_contracts(), base_ledger())
 
     def test_static_execution_safe_is_not_permission(self):
-        # A static EXECUTION_SAFE verdict is a profile, not an execution permission.
+        # A claimed EXECUTION_SAFE static verdict is not an execution permission. The current
+        # strict schema refuses a forged static_verdict key before it can affect permission.
         document = copy.deepcopy(base_review())
         document["apis"][0]["safety"]["static_verdict"] = "EXECUTION_SAFE"
         document["apis"][0]["safety"]["execution_permission"] = "ALLOWED"
+        with self.assertRaisesRegex(review.Invalid, "safety keys"):
+            review.validate(document, contracts.load_contracts(), base_ledger())
+        # Even without that unsupported key, a direct attempt to promote the permission
+        # from BLOCKED to ALLOWED must be refused by the dedicated permission gate.
+        del document["apis"][0]["safety"]["static_verdict"]
         with self.assertRaisesRegex(review.Invalid, "execution permission"):
             review.validate(document, contracts.load_contracts(), base_ledger())
 
