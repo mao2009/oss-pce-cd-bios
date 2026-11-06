@@ -25,6 +25,16 @@ This checks both languages, section anchors, local assets, canonical URLs, recip
 
 Both language pages contain four full-card links to the source repository, dated implementation status, roadmap and contribution guide. The links use shared CSS, not runtime OGP requests or JavaScript. `tools/check_pages.py` verifies their destinations and order in both languages. They do not claim real-time progress or firmware compatibility.
 
+## Localized SNS sharing
+
+Both the English and Japanese hero areas provide static links for **X, Bluesky, Facebook and LINE**. The links open the provider's share composer in a new tab; they never publish automatically. No JavaScript, external SDK, cookies or tracking calls are added by the site.
+
+- English links share the English canonical URL (`https://mao2009.github.io/oss-pce-cd-bios/`) with an English, development-only description.
+- Japanese links share the Japanese canonical URL (`https://mao2009.github.io/oss-pce-cd-bios/ja/`) with a Japanese, development-only description.
+- X and LINE receive localized text and a URL; Bluesky receives both in its compose-text parameter; Facebook receives the localized canonical URL. A visitor decides whether to post.
+- The same shared CSS styles both pages and keeps touch targets at least 44px high. The standard keyboard focus and reduced-motion rules remain in effect.
+- `tools/check_pages.py` verifies all eight external links, encoded messages, canonical URLs, accessibility labels, and `noopener noreferrer` protections. Actual SNS composer behavior and mobile rendering require manual browser verification.
+
 ## Editorial conventions
 
 - The public figures distinguish this revision from dated historical snapshots. Historical main f90c16b (2026-10-22, after PR #495) had 9/81 DEV implementations and 72 stubs. Historical main 2954e90 (2026-10-28, after merged PR #522 and #527) had 13/81 DEV implementations and 68 stubs. This revision (PR #524, EX_SETWRT $3A) has 14/81 DEV implementations and 67 nonreturning stubs. Owner-approved DEV_CALLABLE: 0; reference ABI VERIFIED: 0/81; reference JSR permitted: 0/81; verified BIOS-mediated CD program boots: 0. These counts do not establish retail-game compatibility.
