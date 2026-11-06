@@ -1,6 +1,9 @@
 name: Real Geargrafx ex_bcdbin (Issue #71, internal routine, not BIOS)
 on:
   pull_request:
+    paths-ignore:
+      - 'README.md'
+      - 'docs/**/*.md'
   workflow_dispatch:
 permissions:
   contents: read

@@ -1,6 +1,9 @@
 name: HuC6280 core harness (real Geargrafx, diagnostic not BIOS)
 on:
   pull_request:
+    paths-ignore:
+      - 'README.md'
+      - 'docs/**/*.md'
   workflow_dispatch:
 permissions:
   contents: read
