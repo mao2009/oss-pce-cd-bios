@@ -18,6 +18,10 @@ payload_halt:
     .error "API_ENTRY (or SPIN) is required"
 .endif
 payload_entry:
+.ifdef MARK_BEFORE           ; mutant only: the marker is written before the call, so a stub halt would show it
+    lda #MARK
+    sta PRES
+.endif
     jsr API_ENTRY
     lda #MARK
     sta PRES                 ; reached only if the call returned

@@ -19,7 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 sys.path[:0] = [str(ROOT / "tools"), str(HERE)]
-from api_halt_classify import (API_UNIMPLEMENTED_CONFIRMED, BUDGET, CD_HALT_OK, classify,  # noqa: E402
+from api_halt_classify import (API_UNIMPLEMENTED_HALT, BUDGET, CD_HALT_OK, classify,  # noqa: E402
                                implemented_slots, unimplemented_slots)
 from build_cdload_exec import parse_labels  # noqa: E402
 from build_dev_ipl_loader_bios import build_ipl_loader_bios  # noqa: E402
@@ -31,7 +31,7 @@ import geargrafx_ipl_loader as L  # noqa: E402
 PAYLOAD_SRC = HERE / "ipl_api_call_payload.s"
 PRES_OFFSET = 0x2F80 - 0x2800  # payload marker offset inside the probe dump ($2800-$3FFF)
 MARKER = 0xAB
-API_STATES = {API_UNIMPLEMENTED_CONFIRMED, "API_SLOT_MISMATCH", "API_PC_MISMATCH", "API_NOT_CONFIRMED"}
+API_STATES = {API_UNIMPLEMENTED_HALT, "API_SLOT_MISMATCH", "API_PC_MISMATCH", "API_NOT_CONFIRMED"}
 
 
 def entry_of(slot: int) -> int:
@@ -53,15 +53,21 @@ def build_payload(out: Path, name: str, defines: list) -> tuple:
     return code, labels["payload_halt"]
 
 
-def run_case(probe, bios, stub, folder: Path, name: str, code: bytes, halt: int, budget: int) -> list:
+MUTATIONS = ("none", "expect_wrong_slot", "mark_before", "no_label")
+
+
+def run_case(probe, bios, stub, folder: Path, name: str, code: bytes, halt: int, budget: int,
+             with_label: bool = True) -> list:
     body = L.body_for(code, 1)
     info = L.info_sector(2, 1, 0x3000, 0x3000, L.MPRS_STD, 0, sum(body) & 0xFFFF)
     cue = L.make_disc(folder / name, L.case_disc({"n": 1, "iplblk": 2}, body, info))
     labels = folder / f"{name}.labels"
-    labels.write_text(f"cd_halt_ok {halt:04x}\n"
-                      f"cd_halt_fail {stub['cd_halt_fail']:04x}\n"
-                      f"cd_unexpected_interrupt {stub['cd_unexpected_interrupt']:04x}\n"
-                      f"api_unimplemented {stub['api_unimplemented']:04x}\n", encoding="ascii")
+    lines = (f"cd_halt_ok {halt:04x}\n"
+             f"cd_halt_fail {stub['cd_halt_fail']:04x}\n"
+             f"cd_unexpected_interrupt {stub['cd_unexpected_interrupt']:04x}\n")
+    if with_label:  # the stub is recognised as a halt only when its label is named (probe rule)
+        lines += f"api_unimplemented {stub['api_unimplemented']:04x}\n"
+    labels.write_text(lines, encoding="ascii")
     records = execute(probe, bios, str(cue), labels, budget, None)
     if len(records["RUN"]) != 2:
         raise ValueError(f"{name}: expected cold and warm runs")
@@ -71,6 +77,8 @@ def run_case(probe, bios, stub, folder: Path, name: str, code: bytes, halt: int,
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("debug", "release"), default="debug")
+    parser.add_argument("--mutation", choices=MUTATIONS, default="none",
+                        help="expectation-breaking mutant: the harness must FAIL on it (MUTATION_DETECTED)")
     args = parser.parse_args()
     original = ROOT / "build" / args.mode / "bios-dev" / "dev-only-not-compatible-syscard3.pce"
     if not original.is_file():
@@ -96,13 +104,21 @@ def main():
         ("boundary_first_implemented_no_stub", ("API_ENTRY", entry_of(first_impl)), first_impl, "impl", 20_000_000),
         ("budget_spin_not_misread", ("SPIN", None), None, "budget", 6_000_000),
     ]
+    if args.mutation != "none":
+        # mutants run only the slot-02 case: each one must make that case FAIL
+        cases = [cases[0]]
     results, failures = {}, []
     with tempfile.TemporaryDirectory(prefix="pce-api-unimpl-") as tmp:
         tmp = Path(tmp)
         for name, (kind, value), slot, expect, budget in cases:
             defines = ["-DSPIN"] if kind == "SPIN" else ["-DAPI_ENTRY=$%04X" % value]
-            code, halt = build_payload(tmp, name, defines)
-            runs = run_case(probe, bios, stub, tmp, name, code, halt, budget)
+            if args.mutation == "mark_before" and kind == "API_ENTRY":
+                defines.append("-DMARK_BEFORE")  # marker written BEFORE the call: the marker check must catch it
+            if args.mutation == "expect_wrong_slot" and name == "slot02_unimplemented_stub":
+                slot = 0x03  # a deliberately wrong expectation: the slot check must fail
+            code, halt = build_payload(tmp, name + args.mutation, defines)
+            runs = run_case(probe, bios, stub, tmp, name + args.mutation, code, halt, budget,
+                            with_label=(args.mutation != "no_label"))
             verdicts = []
             for run in runs:
                 verdict = classify(run, stub_address=stub["api_unimplemented"], expected_slot=slot)
@@ -116,7 +132,7 @@ def main():
             results[name] = verdicts
             for v in verdicts:
                 if expect == "api":
-                    ok = v["state"] == API_UNIMPLEMENTED_CONFIRMED and v["x"] == slot and not v["marker_written"]
+                    ok = v["state"] == API_UNIMPLEMENTED_HALT and v["x"] == slot and not v["marker_written"]
                 elif expect == "impl":
                     # the implemented override returns to the payload, the marker is written, and the run
                     # reaches cd_halt_ok; the stub is not reached.
@@ -125,6 +141,12 @@ def main():
                     ok = v["state"] == BUDGET
                 if not ok:
                     failures.append(f"{name} {v['cycle']}: {v}")
+    if args.mutation != "none":
+        # A mutant is a test of the harness itself: it must be detected (the case must FAIL).
+        if not failures:
+            raise SystemExit(f"MUTATION NOT DETECTED ({args.mutation}): the harness accepted a broken expectation")
+        print(f"MUTATION_DETECTED {args.mutation}: {failures[0][:160]}")
+        return
     evidence = {"scope": "synthetic media, DEV 256 KiB image, pinned Geargrafx; NOT compatible, NOT BIOS ABI",
                 "bios_image_sha256": bios_sha, "stub_label_address": stub["api_unimplemented"],
                 "implemented_slots": sorted(implemented), "boundary": {"below": below, "first_impl": first_impl},

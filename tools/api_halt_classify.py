@@ -4,7 +4,7 @@ Pure logic, no emulator. Inputs are one RUN record of the pinned probe plus the 
 The result is a STATE, never a PASS: a PASS exists only when a harness expectation matches a state.
 
 States
-- API_UNIMPLEMENTED_CONFIRMED : the stub label was reached and held (halt_confirmed) at the stub address,
+- API_UNIMPLEMENTED_HALT : the stub label was reached and held (halt_confirmed) at the stub address,
                                  and X equals the expected slot number. Not a success.
 - API_SLOT_MISMATCH           : the stub was reached, but X does not equal the expected slot (fail-closed).
 - API_PC_MISMATCH             : the stop label is not at the stub address (fail-closed).
@@ -20,7 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 OVERRIDES = ROOT / "src" / "overrides"
 
-API_UNIMPLEMENTED_CONFIRMED = "API_UNIMPLEMENTED_CONFIRMED"
+API_UNIMPLEMENTED_HALT = "API_UNIMPLEMENTED_HALT"
 API_SLOT_MISMATCH = "API_SLOT_MISMATCH"
 API_PC_MISMATCH = "API_PC_MISMATCH"
 API_NOT_CONFIRMED = "API_NOT_CONFIRMED"
@@ -81,4 +81,4 @@ def classify(run: dict, *, stub_address: int, expected_slot: int | None = None) 
     x = run.get("x")
     if expected_slot is not None and x != expected_slot:
         return {"state": API_SLOT_MISMATCH, "detail": f"x {x} != expected slot {expected_slot}"}
-    return {"state": API_UNIMPLEMENTED_CONFIRMED, "detail": f"stub held; x={x}", "slot": x}
+    return {"state": API_UNIMPLEMENTED_HALT, "detail": f"stub held; x={x}", "slot": x}

@@ -16,7 +16,7 @@ Synthetic media, pinned Geargrafx. NOT a System Card BIOS, NOT a BIOS ABI, NOT C
 
 | state | meaning |
 | --- | --- |
-| `API_UNIMPLEMENTED_CONFIRMED` | the stub label is the reason, `halt_confirmed` is true, PC is the stub address, and X equals the expected slot. This is observation of a stub halt, NOT a success. |
+| `API_UNIMPLEMENTED_HALT` | the stub label is the reason, `halt_confirmed` is true, PC is the stub address, and X equals the expected slot. This is observation of a stub halt, NOT a success. |
 | `API_SLOT_MISMATCH` | the stub was reached, but X is not the expected slot. Fail-closed. |
 | `API_PC_MISMATCH` | the stop label is not at the stub address. Fail-closed. |
 | `API_NOT_CONFIRMED` | the stub label is the reason but `halt_confirmed` is not true. Fail-closed. |
@@ -26,16 +26,44 @@ Synthetic media, pinned Geargrafx. NOT a System Card BIOS, NOT a BIOS ABI, NOT C
 A PASS exists only in the harness, when the observed state equals the expectation of that case.
 `halt_confirmed=true` alone never counts as a success.
 
+`API_UNIMPLEMENTED_HALT` is the name of an observed state: the run stopped at the stub and held there. It is NOT an
+API success, NOT a program start success, and NOT evidence that the call did what it should. The name is a
+state of the observation only. `halt_confirmed` means only that the probe saw the PC stay on the named halt label for
+the confirmation window. It says nothing about whether an API call or a program start succeeded.
+
+Existing failure states keep their meaning: `CD_HALT_FAIL` stays `cd_halt_fail`, and `CD_HALT_OK` stays `cd_halt_ok`.
+A confirmed `cd_halt_ok` is the payload's own end label, not an API success claim.
+
 ## Probe change
 
 `tests/integration/geargrafx_cdread_probe.cpp` recognises `api_unimplemented` as a halt label only when the label
 file names it. Every other label file keeps the previous halt set.
 
+## Export and build modes
+
+- `tools/build_rom.py` exports `api_unimplemented`. An export adds no bytes: the DEV base image SHA-256 is the same
+  before and after the change (`6a81ba20…`, both debug and release).
+- Debug build: the label appears in `dev.lbl`.
+- Release-equivalent build (no `-g`, `--mode release`): the label appears in the release `dev.lbl`.
+- The harness in release mode is BLOCKED, not PASS: the loader's own labels (`reset`, `cd_halt_fail`, and others) are
+  present only in debug builds (existing behaviour of the loader build, unchanged here). Absence of any required label
+  is a BLOCKED result by design.
+
+## Mutation checks (the harness must fail on broken expectations)
+
+`python3 tests/integration/geargrafx_api_unimplemented.py --mutation <name>`; each must print `MUTATION_DETECTED`.
+
+| mutation | what is broken | detected as |
+| --- | --- | --- |
+| `expect_wrong_slot` | expectation for slot 02 set to slot 03 | `API_SLOT_MISMATCH` (case FAILS) |
+| `mark_before` | marker written before the call (a stub halt would show it) | marker check FAILS |
+| `no_label` | `api_unimplemented` absent from the label file | `BUDGET`: the stub is not recognised, so the expectation FAILS |
+
 ## Tests
 
 - `make api-unimplemented-integration` (`tests/integration/geargrafx_api_unimplemented.py`): a 256 KiB DEV image,
   synthetic media, cold and warm.
-  - slot 02: `API_UNIMPLEMENTED_CONFIRMED`, X=2, the marker written after the call is NOT present (no return).
+  - slot 02: `API_UNIMPLEMENTED_HALT`, X=2, the marker written after the call is NOT present (no return).
   - boundary: the last unimplemented slot below the first implemented slot: same rule with its own X.
   - boundary: the first implemented slot: the stub is NOT reached.
   - spin without a halt label: `BUDGET`, never the stub.
