@@ -312,3 +312,8 @@ mpr-bank-probe:
 # Issue #670 Phase 2: DEV-only multi-sector IPL loader (synthetic media, 8 KiB HuCard+CUE path). NOT a BIOS, NOT compatible.
 ipl-loader-integration:
 	$(PYTHON) tests/integration/geargrafx_ipl_loader.py --mode "$(MODE)"
+# Issue #682: the same 22 loader cases inside a 256 KiB DEV image, through Geargrafx LoadBiosFromBuffer (CAP-checked).
+# Synthetic media only. NOT a System Card BIOS, NOT a BIOS ABI, release_eligible=false.
+.PHONY: dev-bios-ipl-loader-integration
+dev-bios-ipl-loader-integration: dev-rom
+	$(PYTHON) tests/integration/geargrafx_dev_bios_ipl_loader.py --mode "$(MODE)"

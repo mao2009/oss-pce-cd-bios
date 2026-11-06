@@ -162,6 +162,25 @@ jobs:
           set -euo pipefail
           make mpr-bank-probe
           make ipl-loader-integration
+  # Issue #682: the Issue #670 loader inside a 256 KiB DEV image, through Geargrafx LoadBiosFromBuffer (CAP-checked),
+  # 22 synthetic cases cold+warm. Independent job: no needs, no secrets, uploads NO artifact, changes no existing job.
+  # Synthetic media only; NOT a System Card BIOS, NOT a BIOS ABI, release_eligible=false.
+  dev-bios-ipl-loader-integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare existing pinned source toolchain and Geargrafx
+        run: make setup
+      - name: DEV 256 KiB BIOS image with the IPL loader via LoadBiosFromBuffer, synthetic media only
+        run: |
+          set -euo pipefail
+          make dev-bios-ipl-loader-integration
   # Synthetic CUE data-track selection (INDEX 01 / pregap / audio refusal), real Geargrafx cold and warm. Additive job: no
   # needs, no secrets, changes no existing job. Original synthetic media only; NOT a BIOS TOC/API and NOT compatible.
   synthetic-track-select-integration:
