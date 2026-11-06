@@ -49,6 +49,10 @@ Pinned tools, original HuCARD smoke and separate System Card startup/CD
 ROM format/ABI, callable BIOS startup/CD services, disc boot and retail-game
 compatibility remain unimplemented/unverified. [Status](status.md).
 
+## 現行の実装境界（2026-11-06）
+
+main `5a8dc5a` の DEV implementation count は 14/81、67 stubs、owner-approved DEV_CALLABLE 0、reference ABI VERIFIED 0/81、reference JSR permitted 0/81。歴史的 main `f90c16b` は9 DEV実装・72スタブ。合成媒体複数セクタIPL実験は、[#681](https://github.com/mao2009/oss-pce-cd-bios/pull/681) の8 KiB HuCARD+CUE経路と、[#683](https://github.com/mao2009/oss-pce-cd-bios/pull/683) の256 KiB DEV BIOSバッファ経路に分かれる。いずれも製品互換BIOSの実装を意味しない。[現状](status.md)参照。
+
 ## Implemented development bootstrap
 
 `tests/fixtures/smoke.s` and `smoke.cfg` define an original one-bank test program,

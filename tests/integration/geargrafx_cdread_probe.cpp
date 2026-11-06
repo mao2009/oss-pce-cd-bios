@@ -20,6 +20,9 @@
 #include <cstdio>
 #include <cstdlib>
 
+#ifdef CDRA_VFS_MARK
+extern "C" void cdra_mark(const char* name);  // defined in cdra_vfs_shim.cpp
+#endif
 static const unsigned kResultOffset = 0x300;   // work RAM offset of CPU $2300
 static const unsigned kBufferOffset = 0x800;   // CPU $2800
 static const unsigned kBufferBytes = 6144;
@@ -57,6 +60,10 @@ int main(int argc, char** argv) {
     if (labels.count("reset_ready")) halts = {"reset_ready", "reset_unexpected_interrupt"};
     // Issue #501: the DEV-only internal path's media-check halt (absent from every other label file).
     if (labels.count("dev_media_halt")) halts.push_back("dev_media_halt");
+    // Issue #692: the DEV image's unimplemented-API stub (LDX #slot; JMP api_unimplemented; BRA *). Recognised only
+    // when a label file names it explicitly, so every other label file keeps its previous halt set.
+    if (labels.count("api_unimplemented")) halts.push_back("api_unimplemented");
+    if (labels.count("dev_selection_halt")) halts.push_back("dev_selection_halt");
     for (const auto& needed : halts)
         if (!labels.count(needed)) return 2;
 
@@ -198,6 +205,9 @@ int main(int argc, char** argv) {
         hex("buffer_hex", kBufferOffset, kBufferBytes);
         std::printf("}\n");
     };
+#ifdef CDRA_VFS_MARK  // read-ahead A/B harness only: splits load-time VFS reads from guest-driven reads
+    cdra_mark("guest_start");
+#endif
     run_once(false);
     core.ResetMedia(true);
     run_once(true);

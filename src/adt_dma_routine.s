@@ -1,6 +1,6 @@
 ; Original DEVELOPMENT-ONLY reusable routine (Issue #300, parent #26). Project-owned HuC6280 code.
 ; NOT BIOS, NOT AD_TRANS ($11 / $E033), NOT a System Card ABI, release_eligible=false.
-; Internal contract (self-defined, not a System Card ABI): docs/research/ad-trans-routine-contract.md.
+; Internal contract (self-defined, not a System Card ABI): 撤去済み文書.
 ; adt_dma_sector: one READ(6) of one sector, DATA-IN bytes moved into ADPCM RAM by the ADPCM DMA ($180B).
 ; Every wait is bounded; every failure after the bus is touched disarms the DMA and resets the bus.
 ; The boot/driver that calls this routine lives in src/adt_dma_routine_boot.s.

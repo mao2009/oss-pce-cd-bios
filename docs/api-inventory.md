@@ -1,12 +1,12 @@
 # System Card 3.0 API issue inventory (preliminary)
 
-**Source inventory only; no implementations have been verified.** Each row is a *candidate callable service* to be researched, implemented and tested; function naming/behavior may be incomplete or conflict across sources. Intended target: software-only System Card 3.0-compatible BIOS, beginning with JP.
+**Candidate reference-ABI inventory; no entry has an independently VERIFIED System Card ABI.** Each row is a *candidate callable service* to be researched, implemented and tested; function naming/behavior may be incomplete or conflict across sources. Intended target: software-only System Card 3.0-compatible BIOS, beginning with JP.
 
 Sources:
 - [Zeograd System Card notes](https://www.zeograd.com/download/pce_bios.html) — incomplete and partly informed by reverse engineering; claims are not automatically provenance-approved.
 - [Stum 2025 System Card method offsets](https://www.stum.de/2025/pcenginebiosoffsets/) — jump table and revision-specific addresses; four additional named slots are the author's **unofficial labels**, not verified official API names.
 
-Calls are conventionally located at candidate CPU-visible `$E000 + 3*slot`, with MPR requirements; **verify memory mapping** in #1. The entry is not a fixed implementation address. For PSG child services, `48/NN` denotes candidate selector NN in the `PSG_BIOS` dispatcher, **not** a separate jump-table location. Status for all: `HYPOTHESIS`, `provenance_status=PENDING`, `implementation_status=NOT_STARTED`, `verification_status=NOT_RUN`.
+Calls are conventionally located at candidate CPU-visible `$E000 + 3*slot`, with MPR requirements; **verify memory mapping** in #1. The entry is not a fixed implementation address. For PSG child services, `48/NN` denotes candidate selector NN in the `PSG_BIOS` dispatcher, **not** a separate jump-table location. The **reference-ABI research** status remains hypothesis / provenance pending / independently unverified. Separately, current main `5a8dc5a` (2026-11-06) has **14/81 project-defined DEV implementations** and **67 stubs**, owner-approved DEV_CALLABLE **0**, reference ABI VERIFIED **0/81**, reference JSR permitted **0/81**. Historical main `f90c16b` had 9 DEV implementations and 72 stubs. The candidate inventory does not replace the actual `spec/dev_implementations.json` ledger; see [status](status.md).
 
 ### Known conflicts
 

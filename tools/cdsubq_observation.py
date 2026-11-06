@@ -5,7 +5,7 @@ classifies it against a (state, track, LBA) position on the self-made CD-DA medi
 tools/make_cd_image.py. Reuses the #15 probe, its checkpoints and its reply layout (tools/cdda_verify.py).
 
 Scope: the pinned Geargrafx SCSI/CD layer only. This is NOT the System Card CD_SUBQ ABI (arguments,
-return values, Q buffer layout): those stay UNKNOWN (docs/research/cd-subq-contract.md). A PASS here says
+return values, Q buffer layout): those stay UNKNOWN (撤去済み文書). A PASS here says
 the emulator's Q reply matched the medium at a known position, never that BIOS CD_SUBQ behaves the same way.
 """
 if __package__:

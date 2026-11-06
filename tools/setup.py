@@ -104,10 +104,10 @@ def fetch(name, desktop=False, debugger=False):
             save_manifest(destination, manifest)
         return destination
     staging = destination.with_name(destination.name + ".extracting")
-    if staging.exists():
-        # This is exclusively our staging area; final source directories are preserved.
-        shutil.rmtree(staging)
-    staging.mkdir()
+    if os.path.lexists(staging):
+        # A leftover from an interrupted run, a symlink, or anything else. Never delete it: the owner inspects and removes it.
+        raise ValueError(f"staging path already exists and was not removed: {staging}; inspect it and remove it manually")
+    staging.mkdir()  # fails if another process created it in the meantime
     with tarfile.open(archive) as tar:
         # Python 3.10-compatible validation. Upstream agent metadata has symlinks;
         # omit links entirely (none are used by the pinned build targets).

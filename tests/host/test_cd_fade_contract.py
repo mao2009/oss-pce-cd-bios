@@ -4,12 +4,15 @@ These check the ledger's wording rules and the pinned field verdicts only. They
 do not execute or verify the System Card CD_FADE callee.
 """
 import re
+import sys
 import unittest
 from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-DOC = ROOT / "docs" / "research" / "cd-fade-contract.md"
+sys.path.insert(0, str(ROOT / "tools"))
+
+import reference_jsr_gate as gate  # noqa: E402
 
 ALLOWED = {"SOURCE_FACT", "HYPOTHESIS", "UNKNOWN"}
 FORBIDDEN = re.compile(r"(?<![A-Za-z_])(OBSERVED|VERIFIED|PASS|DEV_CALLABLE)(?![A-Za-z_])")
@@ -27,7 +30,6 @@ PENDING_SOURCES = {f"S{i}" for i in range(1, 11)}
 # Third-party / re-implementation sources: a row resting only on these is never SOURCE_FACT.
 THIRD_PARTY_SOURCES = {"S8", "S9", "S10"}
 EXPECTED_COUNTS = {"SOURCE_FACT": 15, "HYPOTHESIS": 4, "UNKNOWN": 18}
-SOURCE_FACT_DEF = ''
 
 # Pinned verdict per field row. A verdict change must edit this table in review.
 EXPECTED = {
@@ -156,138 +158,47 @@ class LedgerRulesTest(unittest.TestCase):
         self.assertEqual(check_ledger("| F90 | x | UNKNOWN | — | y |"), [])
 
 
-class CdFadeLedgerTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.text = DOC.read_text(encoding="utf-8")
+class RestoredRuleChecks(unittest.TestCase):
+    """The fade-contract rule checks, restored after the document was withdrawn: run on synthetic input only."""
 
-    def test_ledger_field_verdicts_are_single_and_no_forbidden_words(self):
-        self.assertEqual(check_ledger(self.text), [])
+    def test_a_callee_row_marked_source_fact_is_refused(self):
+        self.assertTrue(check_source_fact({"F02": ("SOURCE_FACT", "S1 12")}))
 
-    def test_field_verdicts_match_pins_and_counts(self):
-        self.assertEqual(check_pins(self.text), [])
+    def test_a_source_fact_without_a_citation_is_refused(self):
+        self.assertTrue(check_source_fact({"F40": ("SOURCE_FACT", "—")}))
 
-    def test_release_gate_stays_closed(self):
-        s1 = section1(self.text)
-        self.assertIn("BLOCKED_ABI を維持", s1)
-        self.assertIn("`release_eligible=false`。`DEV_CALLABLE` は付けない", s1)
-        self.assertIsNone(GATE_CLAIMS.search(self.text))
+    def test_a_source_fact_citing_a_third_party_source_is_refused(self):
+        third = sorted(THIRD_PARTY_SOURCES)[0]
+        self.assertTrue(check_source_fact({"F40": ("SOURCE_FACT", f"{third} 1")}))
 
-    def test_source_fact_definition_is_unified_text(self):
-        self.assertIn(SOURCE_FACT_DEF, self.text)
-        self.assertNotIn("APPROVED（人間が裁定済み", self.text)
+    def test_a_caller_side_source_fact_with_a_primary_citation_is_accepted(self):
+        self.assertEqual(check_source_fact({"F40": ("SOURCE_FACT", "S1 12")}), [])
 
-    def test_gate_mutations_are_detected(self):
-        for old, new in [
-            ("BLOCKED_ABI を維持", "BLOCKED_ABI を解除"),
-            ("`DEV_CALLABLE` は付けない", "`DEV_CALLABLE` を付ける"),
-            ("`release_eligible=false`。", "`release_eligible=false`。release_eligible: true に変更。"),
-            ("BIOS 側の振る舞いに対する実行証拠はない", "BIOS 互換を満たす"),
-        ]:
-            with self.subTest(new=new):
-                m = self.text.replace(old, new, 1)
-                self.assertNotEqual(m, self.text)
-                self.assertTrue(GATE_CLAIMS.search(m) or "BLOCKED_ABI を維持" not in section1(m))
+    def test_a_hypothesis_or_unknown_row_is_never_checked_as_source_fact(self):
+        self.assertEqual(check_source_fact({"F02": ("HYPOTHESIS", "—"), "F40": ("UNKNOWN", "—")}), [])
 
-    def test_forbidden_words_adjacent_to_japanese_are_detected(self):
-        self.assertTrue(check_ledger("| F90 | x | UNKNOWN | 実機PASS | y |"))
-        self.assertTrue(check_ledger("| F90 | x | UNKNOWN | VERIFIEDの定義 | y |"))
+    def test_a_source_row_marked_approved_is_refused(self):
+        self.assertTrue(check_sources("| S1 | synthetic | APPROVED |"))
+
+    def test_a_source_row_without_pending_is_refused(self):
+        self.assertTrue(check_sources("| S1 | synthetic | none |"))
+
+    def test_a_pending_source_row_is_accepted(self):
+        self.assertEqual(check_sources("| S1 | synthetic | PENDING |"), [])
+
+    def test_the_pin_check_reports_a_ledger_with_no_pinned_rows(self):
+        # The pinned table belongs to the withdrawn document; an empty ledger must still be reported, never passed.
+        self.assertTrue(check_pins(""))
 
 
-class PromotionRegressionTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.text = DOC.read_text(encoding="utf-8")
+class RealGateState(unittest.TestCase):
+    """Slot 15: the release state is checked on the real gate, since the research document is withdrawn."""
 
-    def assert_promotion_rejected(self, fid, verdict):
-        mutated = promote(self.text, fid, verdict)
-        self.assertNotEqual(mutated, self.text)
-        # The single-verdict wording rule alone accepts the promotion ...
-        self.assertEqual(check_ledger(mutated), [])
-        # ... so the pinned verdicts must reject it.
-        self.assertTrue(check_pins(mutated), f"{fid} -> {verdict} was not rejected")
-
-    def test_f13_unknown_to_source_fact_is_rejected(self):
-        self.assert_promotion_rejected("F13", "SOURCE_FACT")
-
-    def test_f02_unknown_to_hypothesis_is_rejected(self):
-        self.assert_promotion_rejected("F02", "HYPOTHESIS")
-
-    def test_f18_hypothesis_to_source_fact_is_rejected(self):
-        self.assert_promotion_rejected("F18", "SOURCE_FACT")
-
-    def test_pending_source_does_not_force_downgrade(self):
-        rows = parse_fields(self.text)
-        # F01 is SOURCE_FACT while citing PENDING S1: provenance is independent.
-        self.assertEqual(rows["F01"][0], "SOURCE_FACT")
-        self.assertIn("S1", rows["F01"][1])
-        self.assertEqual(check_pins(self.text), [])
-        for fid, want in EXPECTED.items():
-            if want == "SOURCE_FACT":
-                with self.subTest(fid=fid):
-                    self.assert_promotion_rejected(fid, "HYPOTHESIS")
-
-    def test_callee_claim_is_not_source_fact(self):
-        for fid in ("F10", "F18", "F37", "F13"):
-            with self.subTest(fid=fid):
-                self.assert_promotion_rejected(fid, "SOURCE_FACT")
-                errors = check_source_fact(parse_fields(promote(self.text, fid, "SOURCE_FACT")))
-                self.assertIn(f"{fid}: callee-behavior row must not be SOURCE_FACT", errors)
-
-    def test_third_party_only_source_fact_is_rejected(self):
-        self.assertIn("F10: SOURCE_FACT cites third-party source ['S8']",
-                      check_source_fact({"F10": ("SOURCE_FACT", "S8 332")}))
-        self.assertTrue(check_source_fact({"F90": ("SOURCE_FACT", "—")}))
-
-    def test_f10_f18_unknown_and_f08_split(self):
-        rows = parse_fields(self.text)
-        self.assertEqual(rows["F10"][0], "UNKNOWN")
-        self.assertEqual(rows["F18"][0], "UNKNOWN")
-        self.assertEqual(rows["F08"][0], "HYPOTHESIS")  # (a) cited document's description
-        self.assertEqual(rows["F37"][0], "UNKNOWN")  # (b) actual BIOS behavior
-        self.assertNotIn("S8", rows["F08"][1])
-
-    def test_every_field_promotion_to_source_fact_is_rejected(self):
-        for fid, want in EXPECTED.items():
-            if want == "SOURCE_FACT":
-                continue
-            with self.subTest(fid=fid):
-                self.assert_promotion_rejected(fid, "SOURCE_FACT")
-
-    def test_every_unknown_promotion_is_rejected(self):
-        for fid, want in EXPECTED.items():
-            if want == "UNKNOWN":
-                with self.subTest(fid=fid):
-                    self.assert_promotion_rejected(fid, "HYPOTHESIS")
-
-    def test_callee_rows_are_not_source_fact(self):
-        rows = parse_fields(self.text)
-        for fid in CALLEE_ROWS:
-            self.assertIn(rows[fid][0], {"HYPOTHESIS", "UNKNOWN"}, fid)
-
-    def test_all_sources_stay_pending(self):
-        self.assertEqual(len(source_rows(self.text)), 10)
-        self.assertEqual(check_sources(self.text), [])
-
-    def test_source_approval_mutation_is_detected_for_every_source(self):
-        for sid in sorted(PENDING_SOURCES):
-            with self.subTest(sid=sid):
-                mutated = re.sub(rf"^(\| {sid} \|.*)PENDING", r"\g<1>APPROVED", self.text,
-                                 count=1, flags=re.M)
-                self.assertNotEqual(mutated, self.text)
-                self.assertTrue(check_sources(mutated))
-
-    def test_source_pending_removal_is_detected(self):
-        mutated = re.sub(r"^(\| S2 \|.*)PENDING（S1 と同じ）", r"\g<1>同上", self.text,
-                         count=1, flags=re.M)
-        self.assertNotEqual(mutated, self.text)
-        self.assertTrue(check_sources(mutated))
-
-    def test_release_gate_wording_is_negative_only(self):
-        self.assertNotRegex(self.text, r"(BLOCKED_ABI.{0,10}解除|release_eligible=true)")
-
-    def test_ledger_declares_counts(self):
-        self.assertIn("SOURCE_FACT 15、HYPOTHESIS 4、UNKNOWN 18", self.text)
+    def test_the_real_gate_keeps_the_slot_blocked_and_not_released(self):
+        ledger, contracts = gate.load()
+        record = gate.resolve(15, ledger, contracts)
+        self.assertEqual(record["execution"], "BLOCKED")
+        self.assertIs(record["release_eligible"], False)
 
 
 if __name__ == "__main__":

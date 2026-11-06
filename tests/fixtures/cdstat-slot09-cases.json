@@ -2,7 +2,6 @@
   "schema": "cdstat-slot09-cases/1",
   "issue": 230,
   "slot": 9,
-  "entry_candidate": "0xE01B",
   "candidate_name": "CD_STAT",
   "abi_status": "BLOCKED_ABI",
   "release_eligible": false,
@@ -24,7 +23,6 @@
     "invalid_mode": "UNKNOWN"
   },
   "declaration": {
-    "entry": "0xE01B",
     "rom_sha256": null,
     "approval": null
   },

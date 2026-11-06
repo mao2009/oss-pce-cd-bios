@@ -69,6 +69,11 @@
       "tier": "project",
       "verified_primary": false,
       "licence": "PROJECT_INTERNAL (repository document, not third-party)"
+    },
+    "LOCAL_BLACK_BOX_GEARGRAFX": {
+      "tier": "local-black-box",
+      "verified_primary": false,
+      "scope": "Read-only local execution using the pinned Geargrafx revision. No proprietary input path, hash, byte, trace, or game asset is recorded or published."
     }
   },
   "excluded_sources": [
@@ -82,7 +87,7 @@
     },
     {
       "path": "./rom/",
-      "reason": "private inputs; not read"
+      "reason": "private inputs; not cited as a source and no path, content, hash, or derived trace is published"
     }
   ],
   "entries": [
@@ -291,6 +296,15 @@
       "value": null,
       "sources": [],
       "note": "The reference callee must not be treated as callable. Remains BLOCKED_ABI."
+    },
+    {
+      "id": "reference_mpr_setup",
+      "status": "HYPOTHESIS",
+      "value": "Local black-box reset observation recorded MPR0=$FF, MPR1=$F8, MPR2..5=$80..$83, MPR6 varies, and MPR7=$00; this is not a callable CD_BOOT ABI contract.",
+      "sources": [
+        "LOCAL_BLACK_BOX_GEARGRAFX"
+      ],
+      "note": "Local Geargrafx-only black-box observation on the pinned revision; not hardware evidence, not an ABI proof, and no firmware or game bytes are retained in this ledger. Supersedes the earlier limited-step interpretation: $222D is the controller edge-trigger state, not CD status; $2241 is an internally incremented BIOS value, not a CD-ready flag; and $2200-range accesses under MPR1=$F8 are work-RAM accesses. A fresh RUN press was observed through the controller path. With normal-frame execution and with sufficiently long, VBlank-aligned RUN retention, the reference BIOS issued $1800/$1801 CD MMIO accesses, scheduled Selection, then reached COMMAND, READ(6), DATA_IN, STATUS, MESSAGE_IN, and BUS_FREE. These observations do not establish CD_BOOT ABI behavior, game control transfer, or commercial-game compatibility. Any later handoff cause remains UNKNOWN."
     }
   ]
 }

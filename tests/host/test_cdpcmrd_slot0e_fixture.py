@@ -20,8 +20,8 @@ FIXTURE_REL = "tests/fixtures/cdpcmrd-slot0e-cases.json"
 TEST_REL = "tests/host/test_cdpcmrd_slot0e_fixture.py"
 FIXTURE = ROOT / FIXTURE_REL
 # Canonical sha256 (sort_keys, compact, UTF-8) of the fixture data. Edits must update this in the same change.
-FIXTURE_SHA256 = "8da3f95103f7f3e85cfa95315c99115ba41a6ff612471a5f933f60e350efde56"
-SLOT_STATUS = "HYPOTHESIS (C4 unresolved, docs/research/cd-pcmrd-contract.md)"
+FIXTURE_SHA256 = "f248fd9c7ed314a176dd752f7b96e1de2ae22147066f8421e583589cfda810a9"
+SLOT_STATUS = "HYPOTHESIS (C4 unresolved)"
 POSITIVE, NEGATIVE, UNKNOWN = "POSITIVE", "NEGATIVE", "UNKNOWN"
 SUPPORTED_TRANSPORT = {"playing"}
 
@@ -164,7 +164,6 @@ class CdPcmrdSlot0eFixtureTest(unittest.TestCase):
         self.assertIs(d["release_eligible"], False)
         self.assertEqual(d["execution"], "NOT_RUN")
         self.assertEqual(d["slot_status"], SLOT_STATUS)
-        self.assertTrue((ROOT / "docs/research/cd-pcmrd-contract.md").is_file())
         self.assertEqual(d["callee_abi"]["reference_jsr"], "NOT_CALLED")
         for k in ("arguments", "returns", "registers"):
             self.assertEqual(d["callee_abi"][k], "UNKNOWN")

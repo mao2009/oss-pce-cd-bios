@@ -159,6 +159,21 @@ pre span { color: var(--cyan); }
 .footer-links { display: flex; gap: 1.15rem; flex-wrap: wrap; }
 .footer-links a { font-size: .83rem; color: var(--muted); }
 small { font-size: .78rem; }
+
+/* Language-specific static sharing links. No external scripts or SDKs. */
+.share-panel { margin-top: 1.6rem; padding-top: 1.2rem; border-top: 1px solid var(--line); }
+.share-caption { margin: 0 0 .7rem; color: var(--muted); font: 650 .8rem/1.5 var(--mono); letter-spacing: .03em; }
+.share-links { display: flex; flex-wrap: wrap; gap: .55rem; }
+.share-link {
+  display: inline-flex; align-items: center; justify-content: center; gap: .45rem;
+  min-height: 44px; padding: .55rem .9rem; border: 1px solid #365266;
+  border-radius: .7rem; background: #101e2e; color: var(--ink);
+  text-decoration: none; font-size: .88rem; font-weight: 700;
+  transition: background .16s ease, border-color .16s ease;
+}
+.share-link:hover { background: #1b3442; border-color: var(--cyan); color: white; }
+.share-arrow { color: var(--cyan); font: .8rem var(--mono); }
+
 @media (max-width: 980px) {
   .hero-grid { grid-template-columns: 1fr; }
   .hero { padding-top: 5.5rem; }

@@ -2,14 +2,14 @@
 """Synthetic, non-executing AD_RESET (slot $10, candidate $E030) controller model and judge (Issue #293).
 
 The model encodes OUR assumption of ADPCM reset behaviour. It is not a measurement of the System
-Card callee and it is not ABI evidence (docs/research/ad-reset-contract.md: ABI BLOCKED_ABI).
+Card callee and it is not ABI evidence (撤去済み文書: ABI BLOCKED_ABI).
 Nothing here launches an emulator, reads a ROM or runs a reference JSR. The best verdict is
 ``MODEL_OK``, which is never a callee PASS. Out-of-scope or unauthorized requests are ``REJECTED``
 and malformed input is ``BLOCKED``.
 """
 import sys
 
-ENTRY_CANDIDATE = 0xE030  # docs/research/ad-reset-contract.md section 2.1 H1; caller-side SOURCE_FACT only
+ENTRY_CANDIDATE = 0xE030  # 撤去済み文書 section 2.1 H1; caller-side SOURCE_FACT only
 POLL_BUDGET = 4           # synthetic wait budget chosen by this fixture; not a hardware value
 STATES = ("IDLE", "TRANSFER", "PLAYING")
 MODEL_OK, FAIL, BLOCKED, REJECTED = "MODEL_OK", "FAIL", "BLOCKED", "REJECTED"

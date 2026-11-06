@@ -1,5 +1,7 @@
 name: HuC6280 core harness (real Geargrafx, diagnostic not BIOS)
 on:
+  # No paths-ignore: a docs-only PR must still report guard-core-harness (a required check). A paths filter here left
+  # that check unreported, so the PR stayed pending forever (Issue #688 follow-up). The cost is one full run per PR.
   pull_request:
   workflow_dispatch:
 permissions:
@@ -41,6 +43,7 @@ jobs:
     # Publishes only what the core-harness job handed over. It runs no build code: the trusted main tools, python3 resolved
     # before anything else, the workflow files for the placement check, the download, the guard and the upload.
     needs: core-harness
+    if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -63,6 +66,8 @@ jobs:
         id: pyresolve
         run: |
           echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"
+      - name: Require the real-core job to succeed (FAILURE, CANCELLED or SKIPPED fails this check)
+        run: test "${{ needs.core-harness.result }}" = "success"
       - name: Guard placement (trusted)
         run: |
           "${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --check-placement
@@ -106,3 +111,97 @@ jobs:
           set -euo pipefail
           mkdir -p build/debug/dev-boot-internal
           make dev-boot-internal-integration 2>&1 | tee build/debug/dev-boot-internal/run.log
+  # Opt-in image regression: original reset code plus project-owned synthetic media only. It is not a compatible BIOS.
+  experimental-bios-boot-integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare existing pinned source toolchain and Geargrafx
+        run: make setup
+      - name: Experimental DEV-only synthetic boot flow, real Geargrafx (not compatible, no ABI claim)
+        shell: bash
+        run: |
+          set -euo pipefail
+          make experimental-bios-boot-integration
+  # Issue #668: DEV-only IPL boot from RESET (one ROM, two synthetic IPLs, real Geargrafx). Additive job: no needs,
+  # no secrets, changes no existing job. Synthetic media only; NOT compatible, NOT a BIOS ABI, NOT commercial.
+  dev-ipl-boot-integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare existing pinned source toolchain and Geargrafx
+        run: make setup
+      - name: DEV-only IPL boot from RESET, synthetic media, real Geargrafx (not compatible, no ABI claim)
+        run: |
+          set -euo pipefail
+          make dev-ipl-boot-integration
+  # Issue #670: Phase 1 MPR/bank measurement and Phase 2 DEV-only multi-sector IPL loader (synthetic media, pinned
+  # Geargrafx, 8 KiB HuCard+CUE path). Additive job: no needs, no secrets, changes no existing job. NOT compatible,
+  # NOT a BIOS ABI, NOT commercial, release_eligible=false.
+  ipl-loader-integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare existing pinned source toolchain and Geargrafx
+        run: make setup
+      - name: Issue #670 MPR bank probe and DEV-only multi-sector IPL loader, synthetic media only
+        run: |
+          set -euo pipefail
+          make mpr-bank-probe
+          make ipl-loader-integration
+  # Issue #682: the Issue #670 loader inside a 256 KiB DEV image, through Geargrafx LoadBiosFromBuffer (CAP-checked),
+  # 22 synthetic cases cold+warm. Independent job: no needs, no secrets, uploads NO artifact, changes no existing job.
+  # Synthetic media only; NOT a System Card BIOS, NOT a BIOS ABI, release_eligible=false.
+  dev-bios-ipl-loader-integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare existing pinned source toolchain and Geargrafx
+        run: make setup
+      - name: DEV 256 KiB BIOS image with the IPL loader via LoadBiosFromBuffer, synthetic media only
+        run: |
+          set -euo pipefail
+          make dev-bios-ipl-loader-integration
+  # Synthetic CUE data-track selection (INDEX 01 / pregap / audio refusal), real Geargrafx cold and warm. Additive job: no
+  # needs, no secrets, changes no existing job. Original synthetic media only; NOT a BIOS TOC/API and NOT compatible.
+  synthetic-track-select-integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare existing pinned source toolchain and Geargrafx
+        run: make setup
+      - name: DEV-only synthetic CUE data-track selection, real Geargrafx (BLOCKED, script exit 3, fails the job; not a BIOS API)
+        shell: bash
+        run: |
+          set -euo pipefail
+          make dev-synthetic-track-select-integration

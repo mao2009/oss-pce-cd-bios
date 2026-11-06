@@ -90,7 +90,7 @@ cold/warm 各 2048 命令、DEV ROM（`make dev-rom MODE=debug`）。
 | 同、`--cases` 誤期待値の負例（検証は 9ebb708 より前の origin/main） | 終了コード 非ゼロ |
 | `make test` / `make check` / `make dev-test` | 未実行（本 PR はハーネス自己検証の追加のみ。ホスト試験は上記で実行） |
 
-環境: WSL Ubuntu（user loach）、クリーンクローン `/home/loach/agent311`、TOOLS_DIR=`/home/loach/oss-pce-cd-bios-tools`（cc65 `71746c8`、Geargrafx `b49ae82`）。
+環境: WSL 環境、クリーンクローン `<HOME>/agent311`、TOOLS_DIR=`<HOME>/oss-pce-cd-bios-tools`（cc65 `71746c8`、Geargrafx `b49ae82`）。
 
 ## 範囲と限界
 - 観測器の検証は自作ルーチンに限る。System Card ABI 互換、実機挙動、純正 BIOS の結果を示さない。

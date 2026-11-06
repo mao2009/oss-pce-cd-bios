@@ -41,7 +41,7 @@ class StBoundaryRecordTests(unittest.TestCase):
     def test_armed_cases_refused_before_side_effect(self):
         for mode in ARMED:
             with self.subTest(mode=mode):
-                verdict = st.check_refused(copy.deepcopy(self.rows[mode]), mode)
+                verdict = st.check_refused_historical(copy.deepcopy(self.rows[mode]), mode)
                 self.assertEqual(verdict, st.REFUSED_VERDICT)
 
     def test_disabled_monitor_cases_land_side_effect(self):
@@ -53,7 +53,7 @@ class StBoundaryRecordTests(unittest.TestCase):
     def test_recorded_mutations_are_rejected(self):
         for mode in ARMED:
             with self.subTest(mode=mode):
-                st.mutation_test_armed(self.rows[mode], self.rows[unguarded_of(mode)], mode)
+                st.mutation_test_armed(self.rows[mode], self.rows[unguarded_of(mode)], mode, historical=True)
 
     def test_removed_opcode_check_proxy_is_rejected(self):
         # Opcode check removed while the boundary stop stays: the ST runs, so the armed row must not verify.

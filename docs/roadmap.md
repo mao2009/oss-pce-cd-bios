@@ -1,10 +1,10 @@
 # Roadmap — evidence-graded milestones (no date promises)
 
-Use the [dated implementation status](status.md) to distinguish project-owned DEV routines from independently verified reference ABI behavior. Historical main f90c16b had 9 DEV implementations and 72 stubs. Historical main 2954e90 (2026-10-28, after PR #527) had 13 DEV implementations and 68 stubs. This revision (PR #524, Issue #68, EX_SETWRT $3A) has 14 DEV implementations and 67 stubs. Owner-approved DEV_CALLABLE: 0; reference ABI VERIFIED: 0/81; reference JSR permitted: 0/81. Real Geargrafx observations do not establish commercial compatibility. Baseline: [PR #174](https://github.com/mao2009/oss-pce-cd-bios/pull/174)
-merged as `05a0ea54` on 2026-10-17; later [#175](https://github.com/mao2009/oss-pce-cd-bios/pull/175)
-updated public status wording and [#176](https://github.com/mao2009/oss-pce-cd-bios/pull/176)
-added community Pages. A completed **diagnostic**, even one executing an original
-OSS routine, is not proof of a **fully reference-compatible BIOS API** or release.
+**Current main snapshot (2026-11-06, `5a8dc5a`):** DEV implementation count **14/81**, **67 stubs**; owner-approved DEV_CALLABLE **0**, reference ABI VERIFIED **0/81**, reference JSR permitted **0/81**. These are not compatible BIOS API counts and release remains blocked. See [status](status.md).
+
+Historical main `f90c16b` had 9 DEV implementations and 72 stubs; historical main `2954e90` had 13 DEV implementations and 68 stubs. [PR #524](https://github.com/mao2009/oss-pce-cd-bios/pull/524) is **merged**, not an outstanding Draft. Synthetic disc and ABI experiments do not prove System Card or retail compatibility.
+
+Current DEV implementation count: 14/81; current stubs: 67/81; owner-approved DEV_CALLABLE: 0; reference ABI VERIFIED: 0/81; reference JSR permitted: 0/81.
 
 ## M0 — Foundation and diagnostics
 
@@ -25,6 +25,7 @@ OSS routine, is not proof of a **fully reference-compatible BIOS API** or releas
 - [x] Merge the **9th DEV-only API**: MA_MUL16S at $4F ([#495](https://github.com/mao2009/oss-pce-cd-bios/pull/495), Issue #494); DEV-only and not approved/ABI VERIFIED
 - [x] Merge the **DEV-only internal boot path** ([#502](https://github.com/mao2009/oss-pce-cd-bios/pull/502)) and its CI wiring ([#506](https://github.com/mao2009/oss-pce-cd-bios/pull/506)); synthetic CD → RAM → jump is not BIOS CD_BOOT
 - [x] Record **synthetic caller-stack safety experiment** ([#481](https://github.com/mao2009/oss-pce-cd-bios/pull/481)); MPR1=$FF violates the stack contract and causes VDC side effects before the guard can refuse; production gate remains BLOCKED (#473/#459/#367)
+- [x] Extend project-defined DEV code to 14 slots (EX_RND, MA_SQRT, MA_SIN, MA_COS, EX_SETWRT included); still no independent reference ABI verification.
 - [ ] Independently validate the **full reference-BIOS `EX_GETVER` ABI** (including relevant flags/interrupts/conditions, provenance and cross-emulator evidence); [Issue #40](https://github.com/mao2009/oss-pce-cd-bios/issues/40) remains open; `abi: UNVERIFIED`
 - [ ] Implement actual System Card initialization instead of the development reset checkpoint (#4)
 - [ ] Implement callable `CD_RESET`, `CD_BASE`, `CD_READ` only as contracts permit, with inputs/outputs, flags, RAM/MPR/stack/IRQ, errors and negative tests. Current bus/host models are **not** callable BIOS services
@@ -34,6 +35,8 @@ OSS routine, is not proof of a **fully reference-compatible BIOS API** or releas
 
 - [x] Diagnostic guest sector read (not a BIOS service)
 - [x] Merged [#122](https://github.com/mao2009/oss-pce-cd-bios/pull/122): CD→RAM payload execution/return diagnostic (**not** disc boot)
+- [x] Multi-sector **DEV-only synthetic IPL** loader and MPR2/3 measurements on the 8 KiB HuCARD+CUE path ([#681](https://github.com/mao2009/oss-pce-cd-bios/pull/681), merged 2026-11-06); 22 test cases cold/warm, not BIOS boot.
+- [x] Exercise the same 22 synthetic loader cases through the separate 256 KiB DEV image and Geargrafx `LoadBiosFromBuffer` ([#683](https://github.com/mao2009/oss-pce-cd-bios/pull/683), merged 2026-11-06); **no commercial System Card compatibility claim**.
 - [ ] Implement BIOS-mediated disc recognition, code load and execution handoff
 - [ ] Boot one original CD program **through the firmware startup/service path**
 - [ ] Cross-check key behavior in another independent emulator
