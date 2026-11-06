@@ -141,7 +141,10 @@ def _open_safe_evidence_directory(root, mode, nofollow):
     if o_directory is None:
         raise ValueError("refusing to write frame-tracer evidence: O_DIRECTORY is unavailable")
     parts = ("build", mode, "frame-tracer-cd")
-    current_fd = os.open(root, os.O_RDONLY | o_directory)
+    try:
+        current_fd = os.open(root, os.O_RDONLY | o_directory)
+    except (OSError, TypeError, NotImplementedError):
+        raise ValueError("refusing to write frame-tracer evidence: directory open is unsupported or unsafe")
     try:
         for index, part in enumerate(parts):
             path = root.joinpath(*parts[: index + 1])
@@ -151,18 +154,24 @@ def _open_safe_evidence_directory(root, mode, nofollow):
                 os.mkdir(part, 0o755, dir_fd=current_fd)
             except FileExistsError:
                 pass
-            except OSError:
+            except (OSError, TypeError, NotImplementedError):
                 raise ValueError("refusing to write frame-tracer evidence through a symbolic link or reparse point")
+            child_fd = None
             try:
                 child_fd = os.open(part, os.O_RDONLY | o_directory | nofollow, dir_fd=current_fd)
-            except (OSError, TypeError):
+            except (OSError, TypeError, NotImplementedError):
                 raise ValueError("refusing to write frame-tracer evidence through a symbolic link or reparse point")
-            st = os.fstat(child_fd)
+            try:
+                st = os.fstat(child_fd)
+            except (OSError, TypeError, NotImplementedError):
+                os.close(child_fd)
+                raise ValueError("refusing to write frame-tracer evidence: directory status is unsupported or unsafe")
             if stat.S_ISLNK(st.st_mode) or bool(getattr(st, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT):
                 os.close(child_fd)
                 raise ValueError("refusing to write frame-tracer evidence through a symbolic link or reparse point")
             os.close(current_fd)
             current_fd = child_fd
+            child_fd = None
         return current_fd
     except BaseException:
         try:
@@ -214,6 +223,8 @@ def write_evidence(mode, record):
             target_st = os.stat(EVIDENCE_NAME, dir_fd=parent_fd, follow_symlinks=False)
         except FileNotFoundError:
             target_st = None
+        except (OSError, TypeError, NotImplementedError):
+            raise ValueError("refusing to write frame-tracer evidence: target status is unsupported or unsafe")
         if target_st is not None and (stat.S_ISLNK(target_st.st_mode) or bool(
                 getattr(target_st, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT)):
             raise ValueError("refusing to write frame-tracer evidence through a symbolic link or reparse point")
@@ -222,8 +233,8 @@ def write_evidence(mode, record):
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow
         try:
             fd = os.open(temp_name, flags, 0o600, dir_fd=parent_fd)
-        except OSError:
-            raise
+        except (OSError, TypeError, NotImplementedError):
+            raise ValueError("refusing to write frame-tracer evidence: temporary file creation is unsupported or unsafe")
         try:
             with os.fdopen(fd, "wb", closefd=True) as handle:
                 handle.write((json.dumps(record, indent=2, sort_keys=True) + "\n").encode("utf-8"))
@@ -232,24 +243,30 @@ def write_evidence(mode, record):
         except (OSError, ValueError):
             try:
                 os.unlink(temp_name, dir_fd=parent_fd)
-            except OSError:
+            except (OSError, TypeError, NotImplementedError):
                 pass
             temp_name = None
             raise
-        os.replace(temp_name, EVIDENCE_NAME, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        try:
+            os.replace(temp_name, EVIDENCE_NAME, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        except (OSError, TypeError, NotImplementedError):
+            raise ValueError("refusing to write frame-tracer evidence: atomic replacement is unsupported or unsafe")
         temp_name = None
         try:
             os.fsync(parent_fd)
-        except OSError:
+        except (OSError, TypeError, NotImplementedError):
             pass
     finally:
         if temp_name is not None:
             try:
                 os.unlink(temp_name, dir_fd=parent_fd)
-            except OSError:
+            except (OSError, TypeError, NotImplementedError):
                 pass
         if parent_fd is not None:
-            os.close(parent_fd)
+            try:
+                os.close(parent_fd)
+            except OSError:
+                pass
 
 
 def status_record(status):

@@ -20,6 +20,26 @@ def evidence_file(root):
     return root / "build/debug/frame-tracer-cd" / bridge.EVIDENCE_NAME
 
 
+
+
+def _run_mutated_source(mutator, script):
+    """Run a small script against a mutated copy of the evidence module."""
+    import subprocess as _sp
+    import sys as _sys
+    with tempfile.TemporaryDirectory() as temporary:
+        temporary = Path(temporary)
+        source_path = Path(__file__).resolve().parents[2] / "tests" / "integration" / "geargrafx_frame_tracer_cd.py"
+        mutated = mutator(source_path.read_text())
+        (temporary / "geargrafx_frame_tracer_cd.py").write_text(mutated)
+        script_path = temporary / "mutant_check.py"
+        script_path.write_text(script)
+        integration_dir = str(Path(__file__).resolve().parents[1] / "integration")
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(temporary) + os.pathsep + integration_dir
+        return _sp.run([_sys.executable, str(script_path)], cwd=str(temporary), env=env,
+                       capture_output=True, text=True, timeout=60)
+
+
 class FrameTracerCdResultTests(unittest.TestCase):
     def invoke(self, error):
         stderr = StringIO()
@@ -193,6 +213,74 @@ class FrameTracerCdEvidenceSafetyTests(unittest.TestCase):
         self.assertIn("evidence path", stderr.getvalue())
         self.assertGreaterEqual(calls["count"], 2)
 
+    def test_dir_fd_unsupported_mkdir_fails_closed(self):
+        stderr = io.StringIO()
+        real_mkdir = bridge.os.mkdir
+
+        def failing_mkdir(*args, **kwargs):
+            if "dir_fd" in kwargs:
+                raise NotImplementedError("dir_fd unsupported")
+            return real_mkdir(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as temporary, \
+                mock.patch.object(bridge, "ROOT", Path(temporary)), \
+                mock.patch.object(bridge.os, "mkdir", failing_mkdir), \
+                redirect_stderr(stderr):
+            code = bridge.main([])
+        self.assertEqual(code, 1)
+        self.assertIn("evidence path", stderr.getvalue())
+
+    def test_dir_fd_unsupported_open_fails_closed(self):
+        stderr = io.StringIO()
+        real_open = bridge.os.open
+
+        def failing_open(*args, **kwargs):
+            if "dir_fd" in kwargs:
+                raise TypeError("dir_fd unsupported")
+            return real_open(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as temporary, \
+                mock.patch.object(bridge, "ROOT", Path(temporary)), \
+                mock.patch.object(bridge.os, "open", failing_open), \
+                redirect_stderr(stderr):
+            code = bridge.main([])
+        self.assertEqual(code, 1)
+        self.assertIn("evidence path", stderr.getvalue())
+
+    def test_dir_fd_unsupported_stat_fails_closed(self):
+        stderr = io.StringIO()
+        real_stat = bridge.os.stat
+
+        def failing_stat(*args, **kwargs):
+            if "dir_fd" in kwargs:
+                raise NotImplementedError("dir_fd unsupported")
+            return real_stat(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as temporary, \
+                mock.patch.object(bridge, "ROOT", Path(temporary)), \
+                mock.patch.object(bridge.os, "stat", failing_stat), \
+                redirect_stderr(stderr):
+            code = bridge.main([])
+        self.assertEqual(code, 1)
+        self.assertIn("evidence path", stderr.getvalue())
+
+    def test_dir_fd_unsupported_replace_fails_closed(self):
+        stderr = io.StringIO()
+        real_replace = bridge.os.replace
+
+        def failing_replace(*args, **kwargs):
+            if "src_dir_fd" in kwargs or "dst_dir_fd" in kwargs:
+                raise TypeError("dir_fd unsupported")
+            return real_replace(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as temporary, \
+                mock.patch.object(bridge, "ROOT", Path(temporary)), \
+                mock.patch.object(bridge.os, "replace", failing_replace), \
+                redirect_stderr(stderr):
+            code = bridge.main([])
+        self.assertEqual(code, 1)
+        self.assertIn("evidence path", stderr.getvalue())
+
     def test_junction_mock_is_refused(self):
         stderr = io.StringIO()
         real_is_symlink = Path.is_symlink
@@ -242,18 +330,31 @@ class FrameTracerCdFilesystemSafetyTests(unittest.TestCase):
             self.assertEqual(outside.read_text(), "secret")
 
 
+def _run_mutated_source(mutator, script):
+    import subprocess as _sp
+    import sys as _sys
+    with tempfile.TemporaryDirectory() as temporary:
+        temporary = Path(temporary)
+        source_path = Path(__file__).resolve().parents[2] / "tests" / "integration" / "geargrafx_frame_tracer_cd.py"
+        mutated = mutator(source_path.read_text())
+        (temporary / "geargrafx_frame_tracer_cd.py").write_text(mutated)
+        script_path = temporary / "mutant_check.py"
+        script_path.write_text(script)
+        integration_dir = str(Path(__file__).resolve().parents[1] / "integration")
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(temporary) + os.pathsep + integration_dir
+        return _sp.run([_sys.executable, str(script_path)], cwd=str(temporary), env=env,
+                       capture_output=True, text=True, timeout=60)
+
+
+
+
+
+
 class FrameTracerCdMutationTests(unittest.TestCase):
-    """Mutation-style checks: removing a safety decision must change the outcome."""
+    """Mutation checks: disabling a safety decision changes the outcome."""
 
-    def test_mutation_o_nofollow_check_removed_allows_unsafe_environment(self):
-        with tempfile.TemporaryDirectory() as temporary, \
-                mock.patch.object(bridge, "ROOT", Path(temporary)), \
-                mock.patch.object(bridge.os, "O_NOFOLLOW", None, create=True), \
-                mock.patch.object(bridge, "_open_safe_evidence_directory", lambda root, mode, nofollow: None):
-            # With the guard removed, no fail-closed error is produced by the guard itself.
-            self.assertTrue(True)
-
-    def test_mutation_symlink_check_removed_does_not_refuse(self):
+    def test_mutation_symlink_check_disabled(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             target = root / "target"
@@ -261,13 +362,24 @@ class FrameTracerCdMutationTests(unittest.TestCase):
             build = root / "build"
             build.mkdir()
             os.symlink(target, build / "debug")
+            (target / "frame-tracer-cd").mkdir()
+
+            def naive_open(root, mode, nofollow):
+                current_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+                for part in ("build", mode, "frame-tracer-cd"):
+                    try:
+                        os.mkdir(part, 0o755, dir_fd=current_fd)
+                    except FileExistsError:
+                        pass
+                    next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY, dir_fd=current_fd)
+                    os.close(current_fd)
+                    current_fd = next_fd
+                return current_fd
+
             with mock.patch.object(bridge, "ROOT", root), \
                     mock.patch.object(bridge, "_is_reparse_or_link", lambda path: False), \
                     mock.patch.object(Path, "is_symlink", lambda self: False), \
-                    mock.patch.object(bridge, "_open_safe_evidence_directory",
-                                     lambda root, mode, nofollow: os.open(root / "build" / mode / "frame-tracer-cd",
-                                                                           os.O_RDONLY | os.O_DIRECTORY)):
-                (target / "frame-tracer-cd").mkdir(exist_ok=True)
+                    mock.patch.object(bridge, "_open_safe_evidence_directory", naive_open):
                 try:
                     bridge.write_evidence("debug", {"status": "INCOMPLETE"})
                     raised = False
@@ -275,26 +387,45 @@ class FrameTracerCdMutationTests(unittest.TestCase):
                     raised = True
                 self.assertFalse(raised)
 
-    def test_mutation_write_failure_handler_removed_propagates_uncaught(self):
-        # If the try/except around write_evidence in main() were removed, the exception would escape.
-        # Here we verify the handler's presence by ensuring main() returns 1 instead of raising.
-        stderr = io.StringIO()
-        calls = {"count": 0}
-        real_replace = bridge.os.replace
+    def test_mutation_write_failure_handler_removed(self):
+        def mutator(source):
+            old = """        try:
+            write_evidence(args.mode, status_record("FAIL"))
+        except (OSError, ValueError) as write_error:
+            print(f"FAIL: frame-tracer CD integration evidence path: {write_error}", file=sys.stderr)
+            return 1
+"""
+            new = """        write_evidence(args.mode, status_record("FAIL"))
+"""
+            assert old in source
+            return source.replace(old, new)
 
-        def failing_replace(*args, **kwargs):
-            calls["count"] += 1
-            if calls["count"] == 1:
-                return real_replace(*args, **kwargs)
-            raise OSError("replace failed")
-
-        with tempfile.TemporaryDirectory() as temporary, \
-                mock.patch.object(bridge, "ROOT", Path(temporary)), \
-                mock.patch.object(bridge, "run", side_effect=ValueError("oracle")), \
-                mock.patch.object(bridge.os, "replace", failing_replace), \
-                redirect_stderr(stderr):
-            code = bridge.main([])
-        self.assertEqual(code, 1)
+        script = """import os
+from io import StringIO
+from contextlib import redirect_stderr
+import tempfile
+from pathlib import Path
+import geargrafx_frame_tracer_cd as bridge
+stderr = StringIO()
+calls = {"count": 0}
+real_replace = bridge.os.replace
+def failing_replace(*args, **kwargs):
+    calls["count"] += 1
+    if calls["count"] == 1:
+        return real_replace(*args, **kwargs)
+    raise OSError("replace failed")
+with tempfile.TemporaryDirectory() as temporary, \
+        __import__("unittest.mock", fromlist=["patch"]).patch.object(bridge, "ROOT", Path(temporary)), \
+        __import__("unittest.mock", fromlist=["patch"]).patch.object(bridge, "run", side_effect=ValueError("oracle")), \
+        __import__("unittest.mock", fromlist=["patch"]).patch.object(bridge.os, "replace", failing_replace), \
+        redirect_stderr(stderr):
+    code = bridge.main([])
+print("RETURN_CODE=" + str(code))
+print("STDERR=" + stderr.getvalue())
+"""
+        result = _run_mutated_source(mutator, script)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Traceback", result.stderr + result.stdout)
 
 
 if __name__ == "__main__":
