@@ -58,12 +58,13 @@ jobs:
                                   name != encoded_path + b"\0"):
                               docs_only = False
                               break
-                      if docs_only:
-                          subprocess.run(["git", "diff", "--check", base, head], check=True)
-                          for _, encoded_path in zip(parts[::2], parts[1::2]):
-                              Path(encoded_path.decode("utf-8")).read_text(encoding="utf-8")
               except (OSError, UnicodeError, subprocess.CalledProcessError) as error:
-                  raise SystemExit(f"Documentation scope validation failed: {error}")
+                  docs_only = False
+                  print(f"Could not classify changes; using full CI: {error}")
+              if docs_only:
+                  subprocess.run(["git", "diff", "--check", base, head], check=True)
+                  for _, encoded_path in zip(parts[::2], parts[1::2]):
+                      Path(encoded_path.decode("utf-8")).read_text(encoding="utf-8")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"docs_only={str(docs_only).lower()}\n")
           print(f"docs_only={docs_only}; full CI is the fallback")
