@@ -3594,6 +3594,28 @@ class PythonOpenTests(unittest.TestCase):
             with self.subTest(code=code):
                 self.assertFalse(guard._open_is_read_only(code))
 
+    # Regression (Owner decision, #629 review): on main, any python -c containing open( was DENY, so a dangerous
+    # API in the same snippet was denied too. A read-only open must not widen that: other calls are refused.
+    OPEN_WITH_OTHER_CALLS = [
+        "open('a'); import os; os.fork()",
+        "open('a.txt'); import zipfile; zipfile.ZipFile('o.zip','w')",
+        "print(open('a.txt').read()); import sqlite3; sqlite3.connect('x.db')",
+        "open('a.txt').read(); import tempfile; tempfile.mkstemp()",
+        "print(open('a.txt').read().split())",
+        "def print(x):\n    return x\nprint(open('a').read())",
+        "from x import print\nprint(open('a').read())",
+        "x = print; open('a'); x(1)",
+        # Rebinding a companion attribute, then calling it, reaches a write without a visible write call.
+        "import json, zipfile; json.load = zipfile.ZipFile; json.load('o.zip', 'w'); open('a.txt')",
+        "import json, os; json.load = os.fork; json.load(); print(open('a.txt').read())",
+    ]
+
+    def test_open_with_other_calls_is_refused(self):
+        for code in self.OPEN_WITH_OTHER_CALLS:
+            with self.subTest(code=code):
+                self.assertEqual(self._verdict(code), "DENY")
+                self.assertFalse(guard._open_is_read_only(code))
+
 
 class PythonOpenMutationTests(unittest.TestCase):
     """Mutants of the python -c rule run in a temporary copy of the hook and this module. Each must make a named
@@ -3615,9 +3637,15 @@ class PythonOpenMutationTests(unittest.TestCase):
             'and node.name == "open":', 'and False:'),
         "argument shadowing ignored": (
             'and node.arg == "open":', 'and False:'),
+        "other calls next to open() not refused": (
+            "    if call_funcs and not _open_companions_only(tree, call_funcs):",
+            "    if False:"),
+        "attribute rebinding next to open() allowed": (
+            "        if isinstance(node, ast.Attribute) and not isinstance(node.ctx, ast.Load):",
+            "        if False:"),
     }
     DETECTING = ["test_read_only_python_is_not_refused", "test_python_write_and_indirect_forms_are_refused",
-                 "test_shadowed_open_is_not_treated_as_the_builtin"]
+                 "test_shadowed_open_is_not_treated_as_the_builtin", "test_open_with_other_calls_is_refused"]
 
     def _run(self, hook_text):
         with tempfile.TemporaryDirectory() as td:
@@ -3643,8 +3671,9 @@ class PythonOpenMutationTests(unittest.TestCase):
             with self.subTest(mutant=name):
                 self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
                 code, out = self._run(original.replace(old, new))
-                failing = [re.match(r"(?:FAIL|ERROR): (\S+) \(", ln) for ln in out.splitlines()
-                           if ln.startswith(("FAIL:", "ERROR:"))]
+                # Only a named assertion failure (FAIL:) counts. An ERROR: (exception, import or startup failure)
+                # is not a detection.
+                failing = [re.match(r"FAIL: (\S+) \(", ln) for ln in out.splitlines() if ln.startswith("FAIL:")]
                 names = [m.group(1) for m in failing if m]
                 detected = any(n in self.DETECTING for n in names)
                 self.assertTrue(detected, "mutant not detected by a PythonOpenTests assertion: " + name)

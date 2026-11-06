@@ -1473,6 +1473,41 @@ def _open_is_read_only(code):
             for alias in node.names:
                 if alias.name in ("open", "builtins") or alias.asname in ("open", "builtins"):
                     return False
+    if call_funcs and not _open_companions_only(tree, call_funcs):
+        return False
+    return True
+
+
+# Calls allowed next to a read-only open(): print(), and the read/load methods of the file it opened.
+OPEN_COMPANION_ATTRS = frozenset({"read", "readline", "readlines", "close", "load", "loads", "dumps"})
+
+
+def _open_companions_only(tree, call_funcs):
+    """When open() is used, every other call must be print(...) or one of OPEN_COMPANION_ATTRS.
+
+    Before this rule, any python -c containing open( was denied, so other dangerous APIs in the same snippet
+    were denied too. Refusing every other call keeps that. A user-defined print is refused (it could hide a write).
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and not isinstance(node.ctx, ast.Load):
+            # `json.load = zipfile.ZipFile` rebinds a companion name; the later call has no other visible form.
+            return False
+        if isinstance(node, ast.Name) and node.id == "print" and not isinstance(node.ctx, ast.Load):
+            return False
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == "print":
+            return False
+        if isinstance(node, ast.arg) and node.arg == "print":
+            return False
+        if isinstance(node, (ast.Import, ast.ImportFrom)) and any(
+                (a.asname or a.name).split(".")[0] == "print" for a in node.names):
+            return False
+        if isinstance(node, ast.Call) and id(node.func) not in call_funcs:
+            f = node.func
+            if isinstance(f, ast.Name) and f.id == "print":
+                continue
+            if isinstance(f, ast.Attribute) and f.attr in OPEN_COMPANION_ATTRS:
+                continue
+            return False
     return True
 
 

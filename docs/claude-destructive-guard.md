@@ -28,7 +28,9 @@
 - 書き込み先が静的に決まらない場合を拒否: 書き込み先に未展開の `$NAME`、`${NAME}`、`$(...)`、バッククォート、glob（`*?[]{}`）を含む場合（例: `echo x > docs/$NAME.md`、`X=.claude; echo x > $X/f`）。書き込み系コマンド（`tee`・`cp`・`touch` など）の引数に `$` やバッククォートを含む場合も拒否する（`sed -i 's/a$/b/'` のような正規表現も拒否される。過剰な拒否である）。`echo $X` のような読み取りは許可
 - 64 KB（UTF-8 バイト数）を超えるコマンドは "too large to inspect" として拒否する。正規表現を使わず語の線形走査で判定するため、上限内の入力は処理時間が抑えられる
 - `git push` の refspec 削除（`:branch`、`+:branch`）と `--prune` を拒否
-- `python -c` で削除・プロセス起動・書き込みに該当する危険語（`rmtree`、`remove`、`unlink`、`subprocess`、`io.FileIO`、`touch`、`makedirs` など）を含むもの。例外: builtin `open(path)` と `open(path, 'r'|'rb'|'br'|'rt'|'tr')` は、Python AST で読み取り専用だと判定できた場合だけ許可する。書き込みモード、非リテラルモード、別名・シャドーイング、不正な構文は拒否する（#626 / #629）
+- `python -c` で、次の危険語（部分一致の正規表現。`rmtree`、`remove`、`unlink`、`rmdir`、`removedirs`、`system`、`subprocess`、`popen`、`shutil`、`spawn`、`exec`、`eval`、`__import__`、`write`、`truncate`、`ctypes`、`socket`、`replace`、`rename`、`chmod`、`chown`、`symlink`、`copy`、`move`、`dump`（単語境界。`dumps` は除く）、`link`、`fileio`、`touch`、`mkdir`、`makedirs`、`mkfifo`、`mknod`、`utime`、`getattr`、`globals`、`locals`、`vars`、`builtins`、`__dict__`）を含むものは拒否する。
+  - 部分一致のため、`str.replace`、`copy.deepcopy`、`vars()`、`print('touchscreen')` も拒否される。これは既知の過剰拒否であり、今回は ALLOW 範囲を拡張しない（Owner 判断、#629）。
+  - `open` を使う場合の例外: builtin `open(path)` と `open(path, 'r'|'rb'|'br'|'rt'|'tr')` だけが AST で読み取り専用と判定でき、かつ他の呼び出しが `print(...)` と `read`・`readline`・`readlines`・`close`・`load`・`loads`・`dumps` のメソッド呼び出しだけの場合に限り許可する。これ以外の呼び出しを含むもの（例: `open('a'); os.fork()`）、属性への代入・削除（例: `json.load = …`）、`print` の再定義、書き込みモード、非リテラルモード、キーワード引数、別名・シャドーイング、不正な構文は拒否する（main の挙動を維持）（#626 / #629）
 - python の引数が静的に確定しないコマンド: コマンド列に python の語が含まれ、その区間に未展開の glob・`$`・バッククォートなどが含まれる場合、python へ渡る引数を確定できないため拒否する（X1）。既知の過剰拒否（Owner 受容済み、#632 レビュー MEDIUM M2）: `rg` のようなプログラム実行経路（`--pre`）を持つツールは「プログラムを実行しないコマンド」の一覧に入れられないため、`rg python3 *.py` のように python の語がデータ引数でも、展開を含む区間は拒否される。展開を含まない形（`rg python3 README`）と、実行経路を持たないツール（`grep python3 *.py`）は許可される
 - PowerShell の `Remove-Item`/`ri`/`del`/`erase` で `-Recurse`/`-Force` の略記（`-r`、`-fo` など）を含むもの（単一ファイルの場合は rm と同じ規則）
 - `unlink`、`shred`、`rmdir`、`rd`、`dd`、`mkfs`、`truncate`、`cmd`
@@ -58,7 +60,11 @@
 - Make ターゲット（`make clean`）、`source file` や `. file` による通常ファイルの実行、`awk` の `system()`、`.git/config` に定義された alias（`-c` 以外）は検査しない
 - `.claude/` への書き込み拒否は完全ではない。既知の書き込みコマンドでは書き込み先の実体パスや経由するシンボリックリンクを検査するが、検査後の置換（TOCTOU）、ジャンクション等のプラットフォーム固有の経路、許可されたツール内部で行われる間接的な書き込みまでは保証できない。未展開の変数等を拒否しても、網羅的な保護にはならない
 - 同じく、`python`・`perl`・`node` などで組み立てたパスへの書き込みは、引数に `.claude` が現れない限り検出できない
-- `python -c` の検査は危険語の一致と `open()` に限定した AST 判定の組合せであり、Pythonコード全体のAST allowlistではない。未列挙のファイル操作・間接呼び出しには残余リスクがある（#630 で継続）
+- `python -c` の検査は危険語の一致と `open()` に限定した AST 判定の組合せであり、Python コード全体の AST allowlist ではない。次の回避経路が残る。#630 で継続し、Owner が暫定受容している（#629 のスコープ外）。
+  - 従来から存在する（`main` でも PR HEAD でも ALLOW）: 反射による書き込み。例: `python3 -c "import operator, io; operator.attrgetter('op'+'en')(io)('a.txt','w')"`。`open()` を含まない形も同様で、例: `os.fork()`・`zipfile.ZipFile(p,'w')`・`sqlite3.connect(...)` のように危険語リストにない API は ALLOW のまま。
+  - #629 で新たに増えた経路はない。`open()` を含む snippet は、`open()` 以外に呼び出しがあれば拒否する（`main` と同じ）。`open()` を読み取り専用で使う許可は、付随呼び出しが `print` と読み取り系メソッドだけの形に限られる。属性への代入・削除は拒否する。
+  - 「書き込みモードはすべて拒否できる」とは主張しない。書き込みモードの直接指定、`io.open`・`FileIO` などの明示的な形は拒否するが、反射・間接呼び出し・危険語リスト外の API は検出できない。
+  - 未列挙のファイル操作・間接呼び出しには残余リスクがある。OS レベルの保護（読み取り専用マウントなど）を併用すること。
 - `.claude/worktree-owners.json` は暗号や署名で守られていない。書き込みの拒否規則だけで守られており、この規則を回避する書き方があれば所有者の記録は改ざんされうる
 - `.claude/` 配下は同じリポジトリ内のエージェントが編集できる。フック定義そのものを変更されると保護は外れる。そのため、ユーザー側の設定（`~/.claude/settings.json`）で同じフックを有効化するのは、リポジトリ所有者が行うこと
 - 追加の対策として、OS レベルの保護を推奨する: 読み取り専用マウント、別の OS アカウントでの実行、コンテナ内での実行
