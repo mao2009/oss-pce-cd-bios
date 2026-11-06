@@ -128,12 +128,57 @@ def _is_reparse_or_link(path):
     return os.path.islink(path) or bool(getattr(st, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT)
 
 
+def _open_safe_evidence_directory(root, mode, nofollow):
+    """Open ROOT/build/<mode>/frame-tracer-cd, creating it if needed, with every path component checked.
+
+    Each component is opened with ``O_DIRECTORY | O_NOFOLLOW`` relative to its parent descriptor, so an
+    intermediate symlink or reparse point cannot be substituted between the checks and the open.  A
+    missing ``O_DIRECTORY``/``O_NOFOLLOW`` (or ``dir_fd``) support fails closed.
+    """
+    if nofollow is None:
+        raise ValueError("refusing to write frame-tracer evidence: O_NOFOLLOW is unavailable")
+    o_directory = getattr(os, "O_DIRECTORY", None)
+    if o_directory is None:
+        raise ValueError("refusing to write frame-tracer evidence: O_DIRECTORY is unavailable")
+    parts = ("build", mode, "frame-tracer-cd")
+    current_fd = os.open(root, os.O_RDONLY | o_directory)
+    try:
+        for index, part in enumerate(parts):
+            path = root.joinpath(*parts[: index + 1])
+            if _is_reparse_or_link(path):
+                raise ValueError("refusing to write frame-tracer evidence through a symbolic link or reparse point")
+            try:
+                os.mkdir(part, 0o755, dir_fd=current_fd)
+            except FileExistsError:
+                pass
+            except OSError:
+                raise ValueError("refusing to write frame-tracer evidence through a symbolic link or reparse point")
+            try:
+                child_fd = os.open(part, os.O_RDONLY | o_directory | nofollow, dir_fd=current_fd)
+            except (OSError, TypeError):
+                raise ValueError("refusing to write frame-tracer evidence through a symbolic link or reparse point")
+            st = os.fstat(child_fd)
+            if stat.S_ISLNK(st.st_mode) or bool(getattr(st, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT):
+                os.close(child_fd)
+                raise ValueError("refusing to write frame-tracer evidence through a symbolic link or reparse point")
+            os.close(current_fd)
+            current_fd = child_fd
+        return current_fd
+    except BaseException:
+        try:
+            os.close(current_fd)
+        except OSError:
+            pass
+        raise
+
+
 def write_evidence(mode, record):
     """Write this diagnostic's own evidence file (overwritten in place; nothing else is touched).
 
-    The parent directory is opened with ``O_DIRECTORY | O_NOFOLLOW`` and the file is replaced through
-    ``dir_fd``, so a link or reparse point introduced between the check and the write cannot redirect
-    the write. ``O_NOFOLLOW`` is required; environments without it fail closed.
+    Every component of ``build/<mode>/frame-tracer-cd`` is opened through its parent descriptor with
+    ``O_DIRECTORY | O_NOFOLLOW``, and the file is replaced through ``dir_fd``, so an intermediate or
+    final link/reparse point cannot redirect the write. ``O_DIRECTORY``/``O_NOFOLLOW`` are required;
+    environments without them fail closed.
     """
     output = ROOT / "build" / mode / "frame-tracer-cd"
     target = output / EVIDENCE_NAME
@@ -149,9 +194,6 @@ def write_evidence(mode, record):
             raise ValueError("refusing to write frame-tracer evidence through a symbolic link or reparse point")
 
     refuse_links()  # before mkdir, so no directory is created through a linked parent
-    for directory in (ROOT / "build", ROOT / "build" / mode, output):
-        directory.mkdir(parents=False, exist_ok=True)
-    refuse_links()
 
     nofollow = getattr(os, "O_NOFOLLOW", None)
     if nofollow is None:
@@ -160,15 +202,10 @@ def write_evidence(mode, record):
     parent_fd = None
     temp_name = None
     try:
-        expected_parent = os.lstat(output)
-        try:
-            parent_fd = os.open(output, os.O_RDONLY | os.O_DIRECTORY | nofollow)
-        except OSError:
-            raise
+        # Open (creating if necessary) every component of build/<mode>/frame-tracer-cd through its parent
+        # descriptor, so an intermediate symlink/reparse point cannot be substituted.
+        parent_fd = _open_safe_evidence_directory(ROOT, mode, nofollow)
         opened_parent = os.fstat(parent_fd)
-        if (opened_parent.st_dev, opened_parent.st_ino, opened_parent.st_uid) != (
-                expected_parent.st_dev, expected_parent.st_ino, expected_parent.st_uid):
-            raise ValueError("refusing to write frame-tracer evidence: evidence directory changed")
         if stat.S_ISLNK(opened_parent.st_mode) or bool(
                 getattr(opened_parent, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT):
             raise ValueError("refusing to write frame-tracer evidence through a symbolic link or reparse point")

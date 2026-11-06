@@ -2,6 +2,9 @@
 from contextlib import redirect_stderr
 from io import StringIO
 import json
+import os
+import io
+import contextlib
 from pathlib import Path
 import subprocess
 import sys
@@ -134,3 +137,103 @@ class FrameTracerCdResultTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FrameTracerCdEvidenceSafetyTests(unittest.TestCase):
+    """Negative tests for the hardened evidence writer (Issue #631)."""
+
+    def _invoke(self, error=None, **env):
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as temporary, \
+                mock.patch.object(bridge, "ROOT", Path(temporary)), \
+                mock.patch.object(bridge, "run", side_effect=error) if error is not None else contextlib.nullcontext(), \
+                redirect_stderr(stderr):
+            if error is None:
+                code = bridge.main([])
+            else:
+                code = bridge.main([])
+        return code, stderr.getvalue()
+
+    def test_missing_o_nofollow_fails_closed(self):
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as temporary, \
+                mock.patch.object(bridge, "ROOT", Path(temporary)), \
+                mock.patch.object(bridge.os, "O_NOFOLLOW", None, create=True), \
+                redirect_stderr(stderr):
+            code = bridge.main([])
+        self.assertEqual(code, 1)
+        self.assertIn("O_NOFOLLOW", stderr.getvalue())
+
+    def test_missing_o_directory_fails_closed(self):
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as temporary, \
+                mock.patch.object(bridge, "ROOT", Path(temporary)), \
+                mock.patch.object(bridge.os, "O_DIRECTORY", None, create=True), \
+                redirect_stderr(stderr):
+            code = bridge.main([])
+        self.assertEqual(code, 1)
+        self.assertIn("O_DIRECTORY", stderr.getvalue())
+
+    def test_write_failure_during_fail_status_is_reported_as_fail(self):
+        stderr = io.StringIO()
+        real_replace = bridge.os.replace
+
+        def failing_replace(*args, **kwargs):
+            raise OSError("replace failed")
+
+        with tempfile.TemporaryDirectory() as temporary, \
+                mock.patch.object(bridge, "ROOT", Path(temporary)), \
+                mock.patch.object(bridge, "run", side_effect=ValueError("oracle")), \
+                mock.patch.object(bridge.os, "replace", failing_replace), \
+                redirect_stderr(stderr):
+            code = bridge.main([])
+        self.assertEqual(code, 1)
+        self.assertIn("evidence path", stderr.getvalue())
+
+    def test_junction_mock_is_refused(self):
+        stderr = io.StringIO()
+        real_is_symlink = Path.is_symlink
+        real_is_junction = getattr(Path, "is_junction", None)
+
+        def fake_is_symlink(self):
+            return self.name == "build" or real_is_symlink(self)
+
+        def fake_is_junction(self):
+            return self.name == "build"
+
+        with tempfile.TemporaryDirectory() as temporary, \
+                mock.patch.object(Path, "is_symlink", fake_is_symlink), \
+                mock.patch.object(Path, "is_junction", fake_is_junction, create=True), \
+                mock.patch.object(bridge, "ROOT", Path(temporary)), \
+                mock.patch.object(bridge, "run", side_effect=AssertionError("must not run")), \
+                redirect_stderr(stderr):
+            code = bridge.main([])
+        self.assertEqual(code, 1)
+        self.assertTrue("symbolic link" in stderr.getvalue() or "reparse point" in stderr.getvalue())
+
+
+class FrameTracerCdFilesystemSafetyTests(unittest.TestCase):
+    def test_actual_symlinked_build_component_is_refused(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            outside = Path(temporary).parent / "outside-target"
+            outside.mkdir(exist_ok=True)
+            with mock.patch.object(bridge, "ROOT", root):
+                build = root / "build"
+                build.mkdir()
+                os.symlink(outside, build / "debug")
+                with self.assertRaises(ValueError):
+                    bridge.write_evidence("debug", {"status": "INCOMPLETE"})
+
+    def test_actual_symlinked_evidence_file_is_refused(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with mock.patch.object(bridge, "ROOT", root):
+                output = root / "build" / "debug" / "frame-tracer-cd"
+                output.mkdir(parents=True)
+                outside = root / "outside.txt"
+                outside.write_text("secret")
+                os.symlink(outside, output / bridge.EVIDENCE_NAME)
+                with self.assertRaises(ValueError):
+                    bridge.write_evidence("debug", {"status": "INCOMPLETE"})
+            self.assertEqual(outside.read_text(), "secret")
