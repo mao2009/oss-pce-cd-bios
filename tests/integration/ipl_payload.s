@@ -61,6 +61,15 @@ sumnc:
     sta PRES+9
     lda $05
     sta PRES+10
+    ; +11..+14: MPR3..MPR6 as loaded (TMA readback, observed by the payload; the judge checks all of MPR2..6)
+    tma #$08
+    sta PRES+11
+    tma #$10
+    sta PRES+12
+    tma #$20
+    sta PRES+13
+    tma #$40
+    sta PRES+14
     lda #$5A
     sta PRES+8               ; +8 done marker
 payload_halt:

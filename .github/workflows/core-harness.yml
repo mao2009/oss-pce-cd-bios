@@ -43,6 +43,7 @@ jobs:
     # Publishes only what the core-harness job handed over. It runs no build code: the trusted main tools, python3 resolved
     # before anything else, the workflow files for the placement check, the download, the guard and the upload.
     needs: core-harness
+    if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -65,6 +66,8 @@ jobs:
         id: pyresolve
         run: |
           echo "python=$(command -v python3)" >> "$GITHUB_OUTPUT"
+      - name: Require the real-core job to succeed (FAILURE, CANCELLED or SKIPPED fails this check)
+        run: test "${{ needs.core-harness.result }}" = "success"
       - name: Guard placement (trusted)
         run: |
           "${{ steps.pyresolve.outputs.python }}" ".trusted-main/tools/artifact_guard.py" --root "$GITHUB_WORKSPACE" --check-placement

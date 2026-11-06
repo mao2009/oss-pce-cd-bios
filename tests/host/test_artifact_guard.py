@@ -753,7 +753,7 @@ class GuardPlacementTests(unittest.TestCase):
             Path(tmp, '.github', 'workflows').mkdir(parents=True)
             Path(tmp, '.github', 'workflows', 'build.yml').write_text(
                 WF_HEADER + 'jobs:\n  build:\n    steps:\n      - run: make build\n', encoding='utf-8')
-            guard.check_guard_placement(Path(tmp))
+            guard.check_guard_placement(Path(tmp), partial_fixtures=True)   # a fixture root (required jobs: PR #697)
 
     def test_binding_name_is_the_dash_level_name_not_a_nested_one(self):
         # MAJOR-1: a name: under with: that appears first must not become the step name.
@@ -1280,7 +1280,7 @@ class UnlistedRouteTests(unittest.TestCase):
         # The stage and verify calls must name the workflow path as the placement check labels it.
         self.write(PAGES_SPLIT_GUARDED.replace(' w.yml ', ' .github/workflows/pages.yml '), name='pages.yml')
         guard.check_upload_artifacts(self.root)
-        guard.check_guard_placement(self.root)
+        guard.check_guard_placement(self.root, partial_fixtures=True)   # a Pages-only fixture root (required jobs: PR #697)
 
     def test_upper_case_workflow_extension_is_scanned(self):
         # Review-style gap: glob was case-sensitive on Linux, so extra.YML was never read.
@@ -1370,7 +1370,7 @@ class SignConditionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             Path(tmp, '.github', 'workflows').mkdir(parents=True)
             Path(tmp, self.REL).write_text(text, encoding='utf-8')
-            guard.check_guard_placement(Path(tmp))
+            guard.check_guard_placement(Path(tmp), partial_fixtures=True)   # one workflow, not the real tree (required jobs: PR #697)
 
     def test_unmutated_workflow_passes_placement_and_condition_check(self):
         self.assertEqual([], guard.attest_condition_violations(self.real(), self.REL))
