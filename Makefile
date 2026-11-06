@@ -317,3 +317,8 @@ ipl-loader-integration:
 .PHONY: dev-bios-ipl-loader-integration
 dev-bios-ipl-loader-integration: dev-rom
 	$(PYTHON) tests/integration/geargrafx_dev_bios_ipl_loader.py --mode "$(MODE)"
+# Issue #692: detect the DEV unimplemented-API stub (api_unimplemented) on the pinned core, distinct from budget.
+# Synthetic media only. NOT in CI: workflow run steps are pinned by the trusted guard allowlist (needs a main-only change).
+.PHONY: api-unimplemented-integration
+api-unimplemented-integration: dev-rom
+	$(PYTHON) tests/integration/geargrafx_api_unimplemented.py --mode "$(MODE)"
