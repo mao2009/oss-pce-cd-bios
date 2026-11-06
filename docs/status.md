@@ -1,90 +1,61 @@
-# Implementation status — 2026-10-22 main snapshot (`f90c16b`, state verified 2026-10-23)
+# Implementation status — 2026-11-06, main `5a8dc5a`
 
-This is an evidence-scoped, **dated snapshot**, not a real-time compatibility report. Source tree: [main at `f90c16b`](https://github.com/mao2009/oss-pce-cd-bios/commit/f90c16b6ca7b3cd6f0ee66935aa08d43c329628d), after #475, #477, #495 (MA_MUL16S), #502 and #506 merged. Recheck main and [Actions](https://github.com/mao2009/oss-pce-cd-bios/actions) for later changes. Historical progress is available in [git history](https://github.com/mao2009/oss-pce-cd-bios/commits/main/docs/status.md). Earlier snapshots (2026-10-20, 2026-10-21 and 2026-10-22; historical `86172e2` / `8a136ad`: 8 DEV implementations) are superseded, not retroactively changed.
+This is an **evidence-scoped, dated** snapshot of [main at 5a8dc5a](https://github.com/mao2009/oss-pce-cd-bios/commit/5a8dc5a0c0f67781ea3c6a45b88d133939a7f46b), not a promise of real-time compatibility. Recheck the [current source](https://github.com/mao2009/oss-pce-cd-bios) and [Actions](https://github.com/mao2009/oss-pce-cd-bios/actions) after this date.
 
-**Historical baseline (2026-10-28, main 2954e90 after PR #527):** 13/81 DEV implementations and 68 stubs. This revision (PR #524, Issue #68, EX_SETWRT $3A) has 14/81 DEV implementations and 67 stubs. Reference ABI VERIFIED stays 0/81, and release remains blocked. Older sections below describe historical main f90c16b (9/81 DEV, 72 stubs).
+**Verdict:** development-only diagnostic firmware; no release-eligible System Card BIOS, reference-ABI-verified APIs, independently established commercial-CD boot or game playability.
 
-## Six separate metrics
+## Distinct status metrics
 
-Measured on main f90c16b: `src/overrides/slot_*.s` contains **9** files, `spec/dev_implementations.json` has **81** slots, **9** with a non-null `implementation`, and **0** owner approvals, and main f90c16b's 72 stubs are the remaining 81 − 9 entries.
+Derived from `spec/dev_implementations.json`, `src/overrides/slot_*.s` and `spec/reference_jsr_gate.json` at the stated main commit:
 
-| Metric | Confirmed on main | Meaning / limits |
+| Metric | Status | What it proves |
 | --- | ---: | --- |
-| A. DEV ROM implemented entry points | **9/81** | OSS/project-defined code installed at nine candidate slots on main f90c16b; not approved/compatible firmware |
-| B. DEV ROM nonreturning stubs | **72/81** | Remaining candidate entries on main f90c16b do not implement callable firmware |
-| C. Recorded reference ROM static ABI-1 review | **7** | Static facts only; reference compatibility not independently proven |
-| D. Reference BIOS ABI VERIFIED | **0/81** | No API promoted to VERIFIED |
-| E. Owner-approved DEV_CALLABLE | **0** | Implementation count is not owner approval; all 81 ledger states remain NOT_READY |
-| F. Reference JSR execution permitted | **0/81** | `tools/reference_jsr_gate.py --check` remains fail-closed / BLOCKED |
+| DEV implementation count | **14/81** | Project-defined diagnostic routines, **not** verified commercial ABI |
+| Nonreturning stubs | **67/81** | Remaining candidate entries do not provide callable services |
+| Owner-approved DEV_CALLABLE | **0** | No implementation has owner approval for general callable use |
+| Reference ABI VERIFIED | **0/81** | No independently verified reference-BIOS ABI contract |
+| Reference JSR permitted | **0/81** | Gate is closed; synthetic evidence does not grant permission |
+| Commercial BIOS-mediated boots | **0 demonstrated** | No retail-title compatibility established |
+| Firmware release | **`release_eligible: false`** | Release gates intentionally refuse publication |
 
-Other results: **0 verified BIOS-mediated CD program boots; 0 retail game compatibility results; release_eligible = false**. Do not collapse DEV implementation, static review, synthetic real-core observation, reference ABI VERIFIED, owner approval, or executable production firmware into one progress percentage.
+The 14 installed development routines are `EX_GETVER` ($1E), `EX_SETWRT` ($3A), `EX_BINBCD` ($3C), `EX_BCDBIN` ($3D), `EX_RND` ($3E), `MA_MUL8U` ($3F), `MA_MUL8S` ($40), `MA_MUL16U` ($41), `MA_DIV16S` ($42), `MA_DIV16U` ($43), `MA_SQRT` ($44), `MA_SIN` ($45), `MA_COS` ($46) and `MA_MUL16S` ($4F). Every routine has **DEV-only** evidence and no promotion to reference ABI VERIFIED.
 
-## Implemented DEV ROM entries
+## Boot and media paths
 
-These nine entries are **DEV implementations** on main f90c16b. They are separate from reference ABI VERIFIED (0/81).
-
-| Slot | API | Current scope |
+| Target | Verified scope | Not established |
 | --- | --- | --- |
-| $1E | EX_GETVER | Pinned Geargrafx cold/warm caller-return and selected register/flag effects |
-| $3C | EX_BINBCD | Project-own DEV conversion routine, host and core diagnostic evidence |
-| $3D | EX_BCDBIN | Project-own DEV conversion routine, host and core diagnostic evidence |
-| $3F | MA_MUL8U | Project-own DEV math routine; not the proven System Card ABI |
-| $40 | MA_MUL8S | Project-own DEV math routine; not the proven System Card ABI |
-| $41 | MA_MUL16U | Project-own DEV math routine; not the proven System Card ABI |
-| $42 | MA_DIV16S | Project-own stack-based DEV math contract |
-| $43 | MA_DIV16U | [#480](https://github.com/mao2009/oss-pce-cd-bios/pull/480): project-own unsigned division, caller I/D flag combinations, stack and WRAM final-state checks, real-core mutants |
-| $4F | MA_MUL16S | [#495](https://github.com/mao2009/oss-pce-cd-bios/pull/495) (Issue #494): project-own signed 16x16 to 32-bit multiplication; caller P/Y/S, MPR, ZP/BSS/I/O and frame-external stack checked on pinned Geargrafx, including a write/read trace of the routine's own instructions; real-core mutants of the assembled routine. Manual `make dev-mul16s-sweep` covers 1,572,864 calls. Not the proven System Card ABI |
+| `make build` / `make test-real-core` | Original 8 KiB HuCARD smoke and real-core fixture | Firmware BIOS boot |
+| `make dev-rom` / `make dev-test` | 256 KiB DEV loader/reset and development API contract checks | Production API or ABI parity |
+| `make dev-cdread-integration` | Synthetic guest SCSI READ(6) to RAM | Callable `CD_READ` |
+| `make dev-cdload-exec-integration` / `make dev-boot-internal-integration` | Synthetic payload copy, execution and return | BIOS-mediated `CD_BOOT` / `CD_EXEC` |
+| `make dev-ipl-boot-integration` | Single-sector PCEX, synthetic media | Commercial IPL format |
+| `make ipl-loader-integration` | Multi-sector IPL, 8 KiB HuCARD+CUE path (#681) | System Card BIOS-loader path |
+| `make dev-bios-ipl-loader-integration` | Multi-sector IPL, **separate 256 KiB DEV image**, Geargrafx `LoadBiosFromBuffer` (#683) | System Card-compatible boot/ABI |
 
-On the Issue #78 PR branch, MA_SQRT ($44) is added as a tenth DEV implementation: project-own integer square root DEV contract (bit-by-bit restoring, trial = 4*root + 1), host-exhaustive 65,536-input check and real-core boundary/mutant tests on pinned Geargrafx. Not the proven System Card ABI.
+The two multi-sector paths are **not** a replacement for the existing single-sector PCEX experiment and do not convert the ordinary `make dev-rom` output into a complete production BIOS.
 
-## Recent merged evidence and safety limitations
+## Changes reflected through 2026-11-06
 
-- [#480](https://github.com/mao2009/oss-pce-cd-bios/pull/480) integrates MA_DIV16U ($43). Independent review recommended the code; the PR's pinned-core positive tests cover 25 values across all four I/D combinations plus two low-SP boundary runs (**102 total positive executions**); divide-by-zero and mutation negatives are separate. This is **DEV spec correctness**, not reference System Card ABI parity.
-- [#481](https://github.com/mao2009/oss-pce-cd-bios/pull/481) adds a **synthetic HuCARD** stack-contract experiment. With MPR1=$F8 WRAM, the fixed caller preserved A/X/Y/P/S/MPR and returned; with MPR1=$FF I/O, the JSR and guard's pushes changed VDC state before the guard detected a violation. VDC observations are value changes, **not** a complete I/O bus trace; the I/O-popped RTS target, real-hardware IRQ/TMA and NMI behavior remain unverified. A pinned-core IRQ1 probe observed dispatch on the final TII completion step. This is **not** a working production safety mechanism.
-- [#502](https://github.com/mao2009/oss-pce-cd-bios/pull/502) adds a **DEV-only internal boot path** (synthetic CD, READ(6), RAM, jump, marker). [#506](https://github.com/mao2009/oss-pce-cd-bios/pull/506) wires its regression into the `core-harness.yml` CI job. It is a DEV path, **not** the BIOS CD_BOOT / CD_READ / CD_EXEC service and not a commercial-game boot.
-- [#473](https://github.com/mao2009/oss-pce-cd-bios/issues/473) still requires production-safe block-transfer/stack handling. [#459](https://github.com/mao2009/oss-pce-cd-bios/issues/459) and [#367](https://github.com/mao2009/oss-pce-cd-bios/issues/367) remain BLOCKED. [#482](https://github.com/mao2009/oss-pce-cd-bios/issues/482) tracks an optional LOW strengthening of synthetic VDC record PC correlation.
-- Geargrafx guest SCSI READ(6) to RAM and self-authored CD-to-RAM execution have been observed in isolated diagnostics; they do **not** implement callable CD_RESET/CD_BASE/CD_READ, System Card startup/boot, or establish retail-game support. BIOS software release remains deliberately refused.
+- [PR #524](https://github.com/mao2009/oss-pce-cd-bios/pull/524) merged EX_SETWRT on 2026-10-28; the current source ledger has 14 DEV implementations.
+- [PR #610](https://github.com/mao2009/oss-pce-cd-bios/pull/610) and [PR #614](https://github.com/mao2009/oss-pce-cd-bios/pull/614) added pinned ST/MPR and 51-case multi-byte block-transfer safety diagnostics. These do not establish a safe production calling convention.
+- [PR #620](https://github.com/mao2009/oss-pce-cd-bios/pull/620) added frame-tracer measurement accounting. Capacity reported by the core differs from measured loss; missing/discontinuous entries must not be reported as exact per-frame maxima. See [frame-tracer measurements](frame-tracer-measurements.md).
+- [PR #621](https://github.com/mao2009/oss-pce-cd-bios/pull/621) and [PR #590](https://github.com/mao2009/oss-pce-cd-bios/pull/590) improved the destructive-command guard and trusted-main CI separation. Neither constitutes an OS sandbox; [limitations](claude-destructive-guard.md) remain.
+- [PR #681](https://github.com/mao2009/oss-pce-cd-bios/pull/681) merged 2026-11-06. Its evidence reports 22 synthetic loader cases, cold/warm, on **8 KiB HuCARD+CUE** plus MPR2/3 measurement.
+- [PR #683](https://github.com/mao2009/oss-pce-cd-bios/pull/683) merged 2026-11-06. Its evidence reports the same 22 synthetic cases, cold/warm, on a **256 KiB DEV** image via the Geargrafx BIOS-buffer loader. CAP validation rejects a silent HuCARD fallback.
 
-## Merged evidence PRs and source identity
+Those results are the **merged PRs' reported tests**, not tests rerun by editing this document.
 
-- [#475](https://github.com/mao2009/oss-pce-cd-bios/pull/475) (merged 2026-10-22): EX_GETVER synthetic observation schema/validation. A record digest is an **integrity check, not producer authentication**. It does not promote reference ABI status or grant reference ROM execution.
-- [#476](https://github.com/mao2009/oss-pce-cd-bios/issues/476) (OPEN, BLOCKED): Its identity values are withheld by owner ruling, and the identity has **not** been independently reconciled. Matching a database label is not cryptographic provenance and not proof of full ROM identity.
+## Current blockers
 
-## PR and issue state reconciliation (2026-10-23)
+1. Reference-BIOS API ABI remains unverified for all 81 candidate entries. No public DEV tests authorize proprietary reference JSR execution.
+2. Production stack/MPR, IRQ, block-transfer and CD error/return contracts require additional independently reviewed, negative evidence; isolated safety observations are not a secure runtime guard.
+3. The multi-sector DEV loader uses a **project-specific 16-bit additive checksum** (not a commercial IPL standard). It restricts sector LBA to 16 bits, conservatively refuses the untested tail-at-$FFFF boundary, and tests a readback fault using a mutant ROM rather than an actual bus failure.
+4. No firmware-mediated retail boot, cross-emulator parity, save/playability test or physical hardware compatibility has been established. Neither private BIOS ROMs nor commercial CD data are public CI inputs.
+5. `make release` / release gates continue to fail closed until proper provenance, production services, review and independent evidence are available.
 
-| Item | State on 2026-10-23 | Public-doc wording |
-| --- | --- | --- |
-| #475 EX_GETVER observation schema | MERGED (2026-10-22) | Merged evidence, not ABI status |
-| #495 MA_MUL16S ($4F), Issue #494 | MERGED (2026-10-22); #494 CLOSED | Counted in main f90c16b: 9/81 |
-| #502 DEV-only internal boot path, Issue #501 | MERGED (2026-10-22); #501 CLOSED | DEV path, not BIOS boot |
-| #506 CI wiring, Issue #505 | MERGED (2026-10-22); #505 CLOSED | Wired in `core-harness.yml` |
-| #476 reference ROM identity | OPEN, BLOCKED | Unresolved |
-| #473, #459, #367 safety gates | OPEN, BLOCKED | Unresolved |
-| #324 ABI evidence-axis policy | OPEN | Not approved |
-| #40 EX_GETVER API issue | OPEN | Reference ABI not verified |
-
-## Build/test distinctions
-
-| Command / artifact | What it means |
-| --- | --- |
-| `make setup`, `make build`, `make test`, `make test-real-core`, `make check` | Original 8 KiB synthetic HuCARD and host/real-core diagnostics, not a compatibility ROM |
-| `make dev-rom` | Development-only 256 KiB image. Historical main 2954e90: 13/81 DEV implementations and 68 stubs; this revision (PR #524, EX_SETWRT $3A): 14/81 DEV implementations and 67 nonreturning stubs. Historical main f90c16b: 9/81 DEV implementations and 72 stubs. These do not establish a verified reference BIOS ABI. |
-| `make dev-integration`, `make dev-test` | Project-owned DEV ABI and synthetic Geargrafx tests, including MA_DIV16U and MA_MUL16S, not reference-BIOS verification |
-| `make dev-cdread-integration`, `make dev-cdload-exec-integration` | Guest CD transport and RAM payload experiments, not BIOS-mediated boot |
-| `make dev-boot-internal-integration` | DEV-only internal boot path regression (#502), wired into CI by #506 |
-| `make release`, `make dev-release-gate-blocked` | Intentionally refuses incompatible firmware release |
-
-The current summary derives from merged source and reported tests. Each CI result is tied to the respective commit. Public-doc consistency is checked by `tests/host/test_public_docs_current.py` as part of `make test`. `rom/` is local and Git-ignored; never commit reference BIOS images, copyrighted commercial CD data, copied proprietary code, or private evidence.
-
-## Next milestones (not yet achieved)
-
-1. Complete safety/evidence prerequisites and targeted review of the simplest reference ABI contracts. Never bypass the reference-JSR execution gate or promote VERIFIED on synthetic observations alone.
-2. **Plan** lawful, local Geargrafx observations for the PC Engine CD version of *Shin Megami Tensei*. Only when safe execution criteria are fulfilled, trace boot checkpoints and the first blocking BIOS API; implement blockers as small independently reviewed Issue/PR units. **No such title boot has been demonstrated.**
-3. Implement caller-visible CD_RESET/CD_BASE/CD_READ and actual BIOS-mediated self-authored disc boot with reproducible independent tests.
-4. Cross-check against a separate emulator and physical hardware where appropriate, and only assert retail compatibility after a named tested scenario.
-
-See [roadmap](roadmap.md), [compatibility](compatibility.md), [testing](testing.md), [Pages editorial conventions](pages.md) and the [contributor rules](../CONTRIBUTING.md).
+See [roadmap](roadmap.md), [building](building.md), [testing](testing.md), [compatibility](compatibility.md), [81-slot API inventory](api-inventory.md) and [DEV IPL boot](dev-ipl-boot.md). Public numeric assertions are also checked against the source ledger by `tests/host/test_public_docs_current.py`; the test does not query live GitHub PR status.
 
 ## History
 
-- 2026-10-22 snapshot: 8/81 DEV implementations (#483 / PR #484, CLOSED / MERGED). Historical only, not current main.
+- 2026-10-22: main `f90c16b` had 9/81 DEV implementations and 72 stubs (historical).
+- 2026-10-28: main `2954e90` had 13/81 DEV implementations and 68 stubs before #524 (historical).
