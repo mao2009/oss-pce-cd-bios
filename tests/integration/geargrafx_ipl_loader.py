@@ -242,7 +242,7 @@ CASES = [
 ]
 
 
-def run_case(probe, rom, labels_path, case, pay_code, folder: Path):
+def run_case(probe, rom, labels_path, case, pay_code, folder: Path, disc_prefix="card:", expect_loader=None):
     body = body_for(pay_code, case["n"])
     body_written = bytearray(body)
     for sector, edits in case.get("body_edits", {}).items():
@@ -258,7 +258,13 @@ def run_case(probe, rom, labels_path, case, pay_code, folder: Path):
     # "card:" = the pinned probe's paired-control path: the 8 KiB ROM is loaded as a HuCard and the CUE is
     # inserted afterwards with CD hardware enabled. The System Card BIOS path (LoadBiosFromBuffer) rejects
     # an 8 KiB image, so this loader is NOT exercised as a System Card BIOS.
-    records = execute(probe, rom, f"card:{cue}", labels_path, BUDGET, inject)
+    # disc_prefix="" selects the System Card BIOS load path (Issue #682 uses a 256 KiB image on that path).
+    records = execute(probe, rom, f"{disc_prefix}{cue}", labels_path, BUDGET, inject)
+    if expect_loader is not None:
+        # the probe's own capability record must name the load path; a silent fallback would fail here
+        caps = records["CAP"]
+        if len(caps) != 1 or caps[0].get("loader") != expect_loader or caps[0].get("cdrom_media") is not True:
+            raise ValueError(f"{case['name']}: load path is {caps}, expected loader {expect_loader!r} with media")
     judge(records, case, body_written, PAY_ORIGINS[case["pay"]][1])
     return {"status": "PASS", "copied": case["copied"], "guest_code": case["code"], "reason": case["reason"],
             "body_sha256": hashlib.sha256(body_written).hexdigest()}
