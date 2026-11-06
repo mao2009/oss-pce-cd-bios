@@ -128,6 +128,11 @@ def _is_reparse_or_link(path):
     return os.path.islink(path) or bool(getattr(st, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT)
 
 
+def _validate_evidence_mode(mode):
+    if type(mode) is not str or mode not in ("debug", "release"):
+        raise ValueError("refusing to write frame-tracer evidence: invalid mode")
+
+
 def _open_safe_evidence_directory(root, mode, nofollow):
     """Open ROOT/build/<mode>/frame-tracer-cd, creating it if needed, with every path component checked.
 
@@ -135,6 +140,7 @@ def _open_safe_evidence_directory(root, mode, nofollow):
     intermediate symlink or reparse point cannot be substituted between the checks and the open.  A
     missing ``O_DIRECTORY``/``O_NOFOLLOW`` (or ``dir_fd``) support fails closed.
     """
+    _validate_evidence_mode(mode)
     if nofollow is None:
         raise ValueError("refusing to write frame-tracer evidence: O_NOFOLLOW is unavailable")
     o_directory = getattr(os, "O_DIRECTORY", None)
@@ -189,6 +195,7 @@ def write_evidence(mode, record):
     final link/reparse point cannot redirect the write. ``O_DIRECTORY``/``O_NOFOLLOW`` are required;
     environments without them fail closed.
     """
+    _validate_evidence_mode(mode)
     output = ROOT / "build" / mode / "frame-tracer-cd"
     target = output / EVIDENCE_NAME
     chain = (ROOT / "build", ROOT / "build" / mode, output, target)

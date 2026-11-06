@@ -330,31 +330,53 @@ class FrameTracerCdFilesystemSafetyTests(unittest.TestCase):
             self.assertEqual(outside.read_text(), "secret")
 
 
-def _run_mutated_source(mutator, script):
-    import subprocess as _sp
-    import sys as _sys
-    with tempfile.TemporaryDirectory() as temporary:
-        temporary = Path(temporary)
-        source_path = Path(__file__).resolve().parents[2] / "tests" / "integration" / "geargrafx_frame_tracer_cd.py"
-        mutated = mutator(source_path.read_text())
-        (temporary / "geargrafx_frame_tracer_cd.py").write_text(mutated)
-        script_path = temporary / "mutant_check.py"
-        script_path.write_text(script)
-        integration_dir = str(Path(__file__).resolve().parents[1] / "integration")
-        env = dict(os.environ)
-        env["PYTHONPATH"] = str(temporary) + os.pathsep + integration_dir
-        return _sp.run([_sys.executable, str(script_path)], cwd=str(temporary), env=env,
-                       capture_output=True, text=True, timeout=60)
-
-
-
-
-
-
 class FrameTracerCdMutationTests(unittest.TestCase):
-    """Mutation checks: disabling a safety decision changes the outcome."""
+    """Mutation checks: disabling a safety decision changes the outcome.
 
-    def test_mutation_symlink_check_disabled(self):
+    A single guard may be removed without making the write unsafe because the remaining
+    layers still protect the boundary; that is expected and is documented per test.
+    """
+
+    def test_mutation_is_reparse_or_link_disabled_keeps_symlink_refusal(self):
+        """Disabling _is_reparse_or_link alone must not bypass the symlink refusal."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "target"
+            target.mkdir()
+            build = root / "build"
+            build.mkdir()
+            os.symlink(target, build / "debug")
+            (target / "frame-tracer-cd").mkdir()
+
+            with mock.patch.object(bridge, "ROOT", root), \
+                    mock.patch.object(bridge, "_is_reparse_or_link", lambda path: False):
+                with self.assertRaises(ValueError) as context:
+                    bridge.write_evidence("debug", {"status": "INCOMPLETE"})
+            self.assertIn("symbolic link", str(context.exception).lower())
+
+    def test_mutation_path_is_symlink_disabled_keeps_reparse_refusal(self):
+        """Disabling Path.is_symlink alone must not bypass reparse-point refusal."""
+        real_is_reparse = bridge._is_reparse_or_link
+
+        def fake_is_symlink(self):
+            return False
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "target"
+            target.mkdir()
+            build = root / "build"
+            build.mkdir()
+            os.symlink(target, build / "debug")
+            (target / "frame-tracer-cd").mkdir()
+
+            with mock.patch.object(Path, "is_symlink", fake_is_symlink), \
+                    mock.patch.object(bridge, "ROOT", root):
+                with self.assertRaises(ValueError):
+                    bridge.write_evidence("debug", {"status": "INCOMPLETE"})
+
+    def test_mutation_all_guards_disabled_allows_unsafe_write(self):
+        """Disabling every layer at once removes protection; documents the layered defence."""
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             target = root / "target"
@@ -386,6 +408,43 @@ class FrameTracerCdMutationTests(unittest.TestCase):
                 except ValueError:
                     raised = True
                 self.assertFalse(raised)
+
+    def test_mutation_o_nofollow_check_removed_is_caught_by_open(self):
+        """Removing the explicit O_NOFOLLOW availability check still fails closed at open time."""
+        def mutator(source):
+            old = """    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise ValueError("refusing to write frame-tracer evidence: O_NOFOLLOW is unavailable")
+"""
+            new = """    nofollow = getattr(os, "O_NOFOLLOW", None)
+"""
+            assert old in source
+            return source.replace(old, new)
+
+        script = """import os
+from io import StringIO
+from contextlib import redirect_stderr
+import tempfile
+from pathlib import Path
+import geargrafx_frame_tracer_cd as bridge
+# Force O_NOFOLLOW to be unavailable in the mutated module's os.
+bridge.os.O_NOFOLLOW = None
+stderr = StringIO()
+with tempfile.TemporaryDirectory() as temporary, \
+        __import__("unittest.mock", fromlist=["patch"]).patch.object(bridge, "ROOT", Path(temporary)), \
+        redirect_stderr(stderr):
+    try:
+        bridge.write_evidence("debug", {"status": "INCOMPLETE"})
+        print("RAISED=False")
+    except Exception as exc:
+        print("RAISED=" + type(exc).__name__ + ":" + str(exc))
+"""
+        result = _run_mutated_source(mutator, script)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("RAISED=", result.stdout)
+        # Either ValueError from a downstream check or an AttributeError/TypeError is acceptable:
+        # the point is that the mutation does not silently succeed.
+        self.assertNotIn("RAISED=False", result.stdout)
 
     def test_mutation_write_failure_handler_removed(self):
         def mutator(source):
@@ -426,6 +485,53 @@ print("STDERR=" + stderr.getvalue())
         result = _run_mutated_source(mutator, script)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Traceback", result.stderr + result.stdout)
+
+
+class FrameTracerCdModePathBoundaryTests(unittest.TestCase):
+    """Negative tests for strict mode validation (MAJOR path boundary)."""
+
+    INVALID_MODES = ("..", ".", "../outside", "/tmp", "debug/../release", "", 123, None,
+                     [], "debug\\\\release", "C:\\\\tmp", object())
+
+    def test_write_evidence_rejects_invalid_mode_without_side_effects(self):
+        for mode in self.INVALID_MODES:
+            with self.subTest(mode=repr(mode)):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    sentinel_dir = root / "build" / "debug" / "frame-tracer-cd"
+                    sentinel_dir.mkdir(parents=True)
+                    sentinel_file = sentinel_dir / bridge.EVIDENCE_NAME
+                    sentinel_file.write_text("sentinel")
+                    sibling = sentinel_dir / "unrelated.txt"
+                    sibling.write_text("keep")
+                    before = sorted(p.name for p in sentinel_dir.iterdir())
+                    with mock.patch.object(bridge, "ROOT", root):
+                        with self.assertRaises(ValueError):
+                            bridge.write_evidence(mode, {"status": "INCOMPLETE"})
+                    self.assertEqual(sentinel_file.read_text(), "sentinel")
+                    self.assertEqual(sibling.read_text(), "keep")
+                    self.assertEqual(sorted(p.name for p in sentinel_dir.iterdir()), before)
+                    # No disallowed traversal directory was created at root/build siblings.
+                    self.assertFalse((root / "outside").exists())
+
+    def test_open_safe_evidence_directory_rejects_invalid_mode(self):
+        for mode in self.INVALID_MODES:
+            with self.subTest(mode=repr(mode)):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    with self.assertRaises(ValueError):
+                        bridge._open_safe_evidence_directory(root, mode, None)
+
+    def test_valid_modes_write_evidence(self):
+        for mode in ("debug", "release"):
+            with self.subTest(mode=mode):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    with mock.patch.object(bridge, "ROOT", root):
+                        bridge.write_evidence(mode, {"status": "INCOMPLETE"})
+                    path = root / "build" / mode / "frame-tracer-cd" / bridge.EVIDENCE_NAME
+                    self.assertTrue(path.is_file())
+                    self.assertEqual(json.loads(path.read_text())["status"], "INCOMPLETE")
 
 
 if __name__ == "__main__":
