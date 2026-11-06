@@ -4,6 +4,8 @@ An open-source project to create a **PC Engine / TurboGrafx-CD Super System Card
 
 > **Status: 2026-11-06, main `5a8dc5a` — development diagnostics only.** The repository does **not** yet contain a releasable or commercial-game-compatible System Card BIOS. Current DEV implementation count: **14/81**, **67 stubs**. Owner-approved DEV_CALLABLE: **0**; reference ABI VERIFIED: **0/81**; reference JSR permitted: **0/81**; `release_eligible: false`. See [status](docs/status.md).
 
+Current DEV implementation count: 14/81; current stubs: 67/81; owner-approved DEV_CALLABLE: 0; reference ABI VERIFIED: 0/81; reference JSR permitted: 0/81.
+
 ## Current development-only capabilities
 
 The 81 candidate slots in `spec/dev_implementations.json` contain 14 project-defined implementations: `EX_GETVER` ($1E), `EX_SETWRT` ($3A), `EX_BINBCD` ($3C), `EX_BCDBIN` ($3D), `EX_RND` ($3E), `MA_MUL8U` ($3F), `MA_MUL8S` ($40), `MA_MUL16U` ($41), `MA_DIV16S` ($42), `MA_DIV16U` ($43), `MA_SQRT` ($44), `MA_SIN` ($45), `MA_COS` ($46) and `MA_MUL16S` ($4F). The other **67** entries are nonreturning stubs. An installed DEV routine is **not** a reference-BIOS-verified ABI.
