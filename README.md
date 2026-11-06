@@ -104,3 +104,5 @@ make dev-bios-ipl-loader-integration  # multi-sector, 256 KiB DEV BIOS-buffer pa
 ## License
 
 Original source code and documentation authored for this repository are MIT-licensed; see [LICENSE](LICENSE). Properly licensed third-party components may be reused under **their own** terms, with file-level approval, attribution and required notices. The presence of MIT project code does not relicense external code; see [the reuse policy](docs/provenance.md). Not affiliated with NEC, Hudson Soft, Konami or other trademark holders.
+
+<!-- verification-only: docs-only PR to confirm the required checks (do not merge) -->
