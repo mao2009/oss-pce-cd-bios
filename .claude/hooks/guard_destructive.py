@@ -1492,6 +1492,25 @@ def _open_companions_only(tree, call_funcs):
         if isinstance(node, ast.Attribute) and not isinstance(node.ctx, ast.Load):
             # `json.load = zipfile.ZipFile` rebinds a companion name; the later call has no other visible form.
             return False
+        if isinstance(node, ast.Name) and node.id in OPEN_COMPANION_ATTRS and not isinstance(node.ctx, ast.Load):
+            # `class X: load = zipfile.ZipFile` then `X.load(...)`: a plain name store rebinds the same way.
+            return False
+        if isinstance(node, (ast.Global, ast.Nonlocal)) and OPEN_COMPANION_ATTRS & set(node.names):
+            return False
+        if isinstance(node, ast.ExceptHandler) and node.name in OPEN_COMPANION_ATTRS:
+            return False
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and (
+                node.name in OPEN_COMPANION_ATTRS):
+            return False
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.decorator_list:
+            # A decorator runs a callable without a visible call expression (`@os.startfile`).
+            return False
+        if isinstance(node, ast.ClassDef) and (node.keywords or node.decorator_list):
+            # A metaclass keyword runs a callable on class creation (`class A(metaclass=zipfile.ZipFile)`).
+            return False
+        if isinstance(node, (ast.Import, ast.ImportFrom)) and any(
+                (a.asname or a.name).split(".")[0] in OPEN_COMPANION_ATTRS for a in node.names):
+            return False
         if isinstance(node, ast.Name) and node.id == "print" and not isinstance(node.ctx, ast.Load):
             return False
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == "print":

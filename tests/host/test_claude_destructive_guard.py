@@ -3608,6 +3608,16 @@ class PythonOpenTests(unittest.TestCase):
         # Rebinding a companion attribute, then calling it, reaches a write without a visible write call.
         "import json, zipfile; json.load = zipfile.ZipFile; json.load('o.zip', 'w'); open('a.txt')",
         "import json, os; json.load = os.fork; json.load(); print(open('a.txt').read())",
+        # Class-body name bindings of companion names (Name store, not attribute store), then attribute call.
+        "open('a.txt')\nimport zipfile\nclass X:\n    load = zipfile.ZipFile\nX.load('o.zip', 'w')",
+        "print(open('a.txt').read())\nimport zipfile\nclass X:\n    close = zipfile.ZipFile\nX.close('o.zip', 'w')",
+        "open('a.txt')\nfrom zipfile import ZipFile as load\nclass X:\n    pass\nX.load('o.zip', 'w')",
+        "open('a.txt')\nimport zipfile\nclass X:\n    (load := zipfile.ZipFile)\nX.load('o.zip', 'w')",
+        "open('a.txt')\nimport zipfile\nclass X:\n    for load in [zipfile.ZipFile]:\n        pass\nX.load('o.zip', 'w')",
+        "open('a.txt')\nimport os\nclass X:\n    read = os.startfile\nX.read('x.txt')",
+        # Non-call invocation: decorator and metaclass run a callable without a call expression.
+        "open('a.txt')\nimport os\n@os.startfile\ndef f():\n    pass",
+        "open('a.txt')\nimport zipfile\nclass A(metaclass=zipfile.ZipFile):\n    pass",
     ]
 
     def test_open_with_other_calls_is_refused(self):
@@ -3642,6 +3652,12 @@ class PythonOpenMutationTests(unittest.TestCase):
             "    if False:"),
         "attribute rebinding next to open() allowed": (
             "        if isinstance(node, ast.Attribute) and not isinstance(node.ctx, ast.Load):",
+            "        if False:"),
+        "class-body name rebinding next to open() allowed": (
+            "        if isinstance(node, ast.Name) and node.id in OPEN_COMPANION_ATTRS and not isinstance(node.ctx, ast.Load):",
+            "        if False:"),
+        "metaclass keyword next to open() allowed": (
+            "        if isinstance(node, ast.ClassDef) and (node.keywords or node.decorator_list):",
             "        if False:"),
     }
     DETECTING = ["test_read_only_python_is_not_refused", "test_python_write_and_indirect_forms_are_refused",
