@@ -88,7 +88,7 @@ WRITE_NAMES = {"tee", "cp", "mv", "install", "rsync", "touch", "mkdir", "ln", "c
                "add-content", "out-file", "new-item", "cpi", "mi", "ni", "sc", "ac"}
 DANGER_PY = re.compile(r"rmtree|remove|unlink|rmdir|removedirs|system|subprocess|popen|"
                        r"shutil|spawn|exec|eval|__import__|write|truncate|"
-                       r"ctypes|socket|replace|rename|chmod|chown|symlink|copy|move|dump|link|"
+                       r"ctypes|socket|replace|rename|chmod|chown|symlink|copy|move|dump\b|link|"
                        r"fileio|touch|mkdir|makedirs|mkfifo|mknod|utime|"
                        r"getattr|globals|locals|vars|builtins|__dict__", re.I)
 # python -c: open() is judged on parsed AST (see _open_is_read_only), never by regex.

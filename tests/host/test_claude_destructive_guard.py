@@ -3322,9 +3322,8 @@ class PythonArgvCertaintyTests(unittest.TestCase):
         self.assertEqual(self._v("python3 -c \"import operator, io; operator.attrgetter('open')(io)('/tmp/zz','w')\""),
                          "DENY")
 
-    @unittest.expectedFailure
     def test_known_gap_io_write_is_denied(self):
-        # Known gap, closed by X2 (AST allowlist). Remove this marker when X2 closes it.
+        # Piece B now rejects io.FileIO writes; keep this as an ordinary passing regression.
         self.assertEqual(self._v("python3 -c \"import io; io.FileIO('/tmp/zz','w')\""), "DENY")
 
     def test_regression_corpus_of_twenty_ordinary_commands(self):
@@ -3508,6 +3507,9 @@ class PythonOpenTests(unittest.TestCase):
     Host-independent: no filesystem, no symlink. The "import json" read must still be allowed."""
 
     READ_ONLY = [
+        "import json; print(json.dumps({'a': 1}))",
+        "import json; print(json.dumps({'a': -1}))",
+        "import pickle; print(pickle.dumps({'a': 1}))",
         "import json; print(json.load(open('x.json')))",
         "print(open('a.txt').read())",
         "print(open('a.txt', 'rb').read())",
@@ -3515,6 +3517,8 @@ class PythonOpenTests(unittest.TestCase):
         "from pathlib import Path; print(Path('a.txt').read_text())",
     ]
     WRITE_OR_INDIRECT = [
+        "import json; json.dump({'a': 1}, output)",
+        "import pickle; pickle.dump({'a': 1}, output)",
         "open('a.txt', 'w').write('x')",
         "open('a.txt', chr(119)).write('x')",
         "from pathlib import Path; Path('a').open('w')",
@@ -3576,8 +3580,10 @@ class PythonOpenMutationTests(unittest.TestCase):
             "if DANGER_PY.search(code) or not _open_is_read_only(code):",
             "if DANGER_PY.search(code):"),
         "wider danger word list reduced to the old list": (
-            "replace|rename|chmod|chown|symlink|copy|move|dump|link|",
+            "replace|rename|chmod|chown|symlink|copy|move|dump\\b|link|",
             ""),
+        "dump boundary lost (dumps over-denied)": (
+            "dump\\b|", "dump|"),
         "new file mutation methods ignored": (
             "fileio|touch|mkdir|makedirs|mkfifo|mknod|utime|",
             ""),
