@@ -28,7 +28,8 @@
 - 書き込み先が静的に決まらない場合を拒否: 書き込み先に未展開の `$NAME`、`${NAME}`、`$(...)`、バッククォート、glob（`*?[]{}`）を含む場合（例: `echo x > docs/$NAME.md`、`X=.claude; echo x > $X/f`）。書き込み系コマンド（`tee`・`cp`・`touch` など）の引数に `$` やバッククォートを含む場合も拒否する（`sed -i 's/a$/b/'` のような正規表現も拒否される。過剰な拒否である）。`echo $X` のような読み取りは許可
 - 64 KB（UTF-8 バイト数）を超えるコマンドは "too large to inspect" として拒否する。正規表現を使わず語の線形走査で判定するため、上限内の入力は処理時間が抑えられる
 - `git push` の refspec 削除（`:branch`、`+:branch`）と `--prune` を拒否
-- `python -c` で削除・プロセス起動・書き込みに該当する語（`rmtree`、`remove`、`unlink`、`subprocess`、`open(` など）を含むもの
+- `python -c` で、次の危険語（部分一致の正規表現。`rmtree`、`remove`、`unlink`、`rmdir`、`removedirs`、`system`、`subprocess`、`popen`、`shutil`、`spawn`、`exec`、`eval`、`__import__`、`open(`、`write`、`truncate`、`ctypes`、`socket`、`replace`、`rename`、`chmod`、`chown`、`symlink`、`copy`、`move`、`dump`（単語境界。`dumps` は除く）、`link`、`fileio`、`touch`、`mkdir`、`makedirs`、`mkfifo`、`mknod`、`utime`、`getattr`、`globals`、`locals`、`vars`、`builtins`、`__dict__`）を含むものは拒否する。`open(` は読み取りモードや付随呼び出しの有無によらず拒否する（`main` と同じ契約）。読み取り専用 `open()` の許可は #629 で撤回し、後続 Issue で扱う。
+  - 部分一致のため、`str.replace`、`copy.deepcopy`、`vars`、`print('touchscreen')` などの正常系も拒否される。これは既知の過剰拒否（fail-closed）であり、危険語の拡張を原則維持する判断に従い、ALLOW 範囲は拡張しない（#629）。
 - python の引数が静的に確定しないコマンド: コマンド列に python の語が含まれ、その区間に未展開の glob・`$`・バッククォートなどが含まれる場合、python へ渡る引数を確定できないため拒否する（X1）。既知の過剰拒否（Owner 受容済み、#632 レビュー MEDIUM M2）: `rg` のようなプログラム実行経路（`--pre`）を持つツールは「プログラムを実行しないコマンド」の一覧に入れられないため、`rg python3 *.py` のように python の語がデータ引数でも、展開を含む区間は拒否される。展開を含まない形（`rg python3 README`）と、実行経路を持たないツール（`grep python3 *.py`）は許可される
 - PowerShell の `Remove-Item`/`ri`/`del`/`erase` で `-Recurse`/`-Force` の略記（`-r`、`-fo` など）を含むもの（単一ファイルの場合は rm と同じ規則）
 - `unlink`、`shred`、`rmdir`、`rd`、`dd`、`mkfs`、`truncate`、`cmd`
@@ -58,7 +59,11 @@
 - Make ターゲット（`make clean`）、`source file` や `. file` による通常ファイルの実行、`awk` の `system()`、`.git/config` に定義された alias（`-c` 以外）は検査しない
 - `.claude/` への書き込み拒否は完全ではない。既知の書き込みコマンドでは書き込み先の実体パスや経由するシンボリックリンクを検査するが、検査後の置換（TOCTOU）、ジャンクション等のプラットフォーム固有の経路、許可されたツール内部で行われる間接的な書き込みまでは保証できない。未展開の変数等を拒否しても、網羅的な保護にはならない
 - 同じく、`python`・`perl`・`node` などで組み立てたパスへの書き込みは、引数に `.claude` が現れない限り検出できない
-- `python -c` の検査は語の一致による近似であり、回避できる書き方がある
+- `python -c` の検査は危険語の一致（部分一致）と `open(` の検出であり、Python コード全体の AST allowlist ではない。次の回避経路が残る。いずれも `main` でも ALLOW であり、既存の未解決事項として #630 で管理し、Owner が暫定受容している。
+  - 反射による書き込み。例: `python3 -c "import operator, io; operator.attrgetter('op'+'en')(io)('a.txt','w')"`。
+  - `open(` を含まない形で危険語リストにない API。例: `os.fork()`、`zipfile.ZipFile(p,'w')`、`sqlite3.connect(...)`。
+  - pickle の class / match による束縛経由（`open(` を含まない形）。例: `import pickle` と、`def __class_getitem__(cls, x, json=pickle): return json.loads(b'')` を持つ `class A:` を定義して `A[1]` で呼ぶ形（判定のみで ALLOW を確認）。同じ形でも `open(` を含むものは拒否される。
+  - 未列挙のファイル操作・間接呼び出しには残余リスクがある。OS レベルの保護（読み取り専用マウントなど）を併用すること。
 - `.claude/worktree-owners.json` は暗号や署名で守られていない。書き込みの拒否規則だけで守られており、この規則を回避する書き方があれば所有者の記録は改ざんされうる
 - `.claude/` 配下は同じリポジトリ内のエージェントが編集できる。フック定義そのものを変更されると保護は外れる。そのため、ユーザー側の設定（`~/.claude/settings.json`）で同じフックを有効化するのは、リポジトリ所有者が行うこと
 - 追加の対策として、OS レベルの保護を推奨する: 読み取り専用マウント、別の OS アカウントでの実行、コンテナ内での実行

@@ -14,6 +14,7 @@ import re
 import shlex
 import sys
 import threading
+import unicodedata
 
 HOOK_TIMEOUT = 5.0
 # ponytail: hard size cap bounds the work; the thread timeout cannot stop C-level code.
@@ -87,7 +88,9 @@ WRITE_NAMES = {"tee", "cp", "mv", "install", "rsync", "touch", "mkdir", "ln", "c
                "add-content", "out-file", "new-item", "cpi", "mi", "ni", "sc", "ac"}
 DANGER_PY = re.compile(r"rmtree|remove|unlink|rmdir|removedirs|system|subprocess|popen|"
                        r"shutil|spawn|exec|eval|__import__|open\s*\(|write|truncate|"
-                       r"ctypes|socket", re.I)
+                       r"ctypes|socket|replace|rename|chmod|chown|symlink|copy|move|dump\b|link|"
+                       r"fileio|touch|mkdir|makedirs|mkfifo|mknod|utime|"
+                       r"getattr|globals|locals|vars|builtins|__dict__", re.I)
 # X3a (Issue #639): launcher classification by command name. Names only. Option grammars (X3b), wrapper and
 # shell grammars (X3c) and interpreter or tool forms (X3d) are decided by their own units. A name in no class is
 # UNKNOWN (UNKNOWN_CHECKED: the existing rules apply). A launcher class is FORM_DEPENDENT: its status depends on
@@ -1435,7 +1438,9 @@ def python_rule(args):
         if "$" in arg or "`" in arg or SUBST in arg:
             raise Deny("unexpanded", "python argument with an unexpanded variable or substitution is not inspected")
     for code in python_c_codes(args):
-        if DANGER_PY.search(code):
+        # Python NFKC-normalises identifiers, so ｏｐｅｎ(...) is open(...). Match the raw text (as before) and the
+        # normalised text. Normalising alone would let a word with a combining mark (remove + U+0301) through.
+        if DANGER_PY.search(code) or DANGER_PY.search(unicodedata.normalize("NFKC", code)):
             raise Deny("python-c", "python -c with a file or process operation")
 
 

@@ -3342,13 +3342,13 @@ class PythonArgvCertaintyTests(unittest.TestCase):
 
     @unittest.expectedFailure
     def test_known_gap_reflection_is_denied(self):
-        # Known gap, closed by X2 (AST allowlist). Remove this marker when X2 closes it.
+        # Known gap (#630): attribute reflection reaches open() without the text "open(". Pre-existing on main.
+        # Remove this marker only when #630 closes it.
         self.assertEqual(self._v("python3 -c \"import operator, io; operator.attrgetter('open')(io)('/tmp/zz','w')\""),
                          "DENY")
 
-    @unittest.expectedFailure
     def test_known_gap_io_write_is_denied(self):
-        # Known gap, closed by X2 (AST allowlist). Remove this marker when X2 closes it.
+        # io.FileIO writes are refused by the danger word list (fileio); an ordinary passing regression.
         self.assertEqual(self._v("python3 -c \"import io; io.FileIO('/tmp/zz','w')\""), "DENY")
 
     def test_regression_corpus_of_twenty_ordinary_commands(self):
@@ -3524,6 +3524,131 @@ class PythonArgvMutationTests(unittest.TestCase):
                 names = [m.group(1) for m in failing if m]
                 detected = any(n in self.DETECTING for n in names)
                 self.assertTrue(detected, "mutant not detected by a PythonArgvCertaintyTests assertion: " + name)
+
+
+class PythonOpenTests(unittest.TestCase):
+    """python -c: as on main, any builtin open( is refused (Owner decision, #629: the read-only open() allowance
+    was withdrawn; see the follow-up issue). The wider danger word list is refused. Ordinary json.dumps and
+    pickle.dumps stay allowed (dump\\b boundary). Host-independent."""
+
+    OPEN_FORMS = [
+        "open('x')",
+        "open('x', 'r')",
+        "open('x', 'rb')",
+        "open('x', 'w')",
+        "print(open('a.txt').read())",
+        "f=open('a');print(f)",
+        "import json; json.load(open('x'))",
+        "import json; print(json.load(open('x.json')))",
+    ]
+    WIDER_LIST = [
+        "import json; json.dump({'a': 1}, output)",
+        "import pickle; pickle.dump({'a': 1}, output)",
+        "import os; os.replace('a', 'b')",
+        "import shutil; shutil.copy('a', 'b')",
+        "from pathlib import Path; Path('a').touch()",
+        "from pathlib import Path; Path('folder').mkdir()",
+        "import os; os.makedirs('folder')",
+        "import os; os.utime('a.txt')",
+        "import io; io.FileIO('a.txt', 'w')",
+        "import io; io.open('a.txt', 'w')",
+        # Fullwidth identifiers are NFKC-normalised by Python: this is open('a.txt', 'w').
+        "ｏｐｅｎ('a.txt', 'w')",
+        # Raw text must still be checked: a combining mark after a danger word is refused (main refuses it).
+        "print('remové')",
+    ]
+    ORDINARY_ALLOWED = [
+        "import json; print(json.dumps({'a': 1}))",
+        "import pickle; print(pickle.dumps(1))",
+        "from pathlib import Path; print(Path('a.txt').read_text())",
+    ]
+    # Pickle routes from the 4th review. Each contains open(), so it is refused by the open( rule.
+    PICKLE_ROUTES_WITH_OPEN = [
+        "import pickle; open('a.txt').read(); pickle.loads(b'\\x80\\x04\\x95')",
+        "import pickle\nclass A:\n    def __class_getitem__(cls, x, json=pickle): return json.loads(b'')\n"
+        "_ = open('a.txt').read()\nA[1]",
+        "import pickle\nmatch pickle:\n    case json:\n        json.loads(b'')\n_ = open('a.txt').read()",
+    ]
+
+    def _verdict(self, code):
+        return verdict("python3 -c " + repr(code))
+
+    def test_any_open_call_is_refused(self):
+        for code in self.OPEN_FORMS:
+            with self.subTest(code=code):
+                self.assertEqual(self._verdict(code), "DENY")
+
+    def test_wider_danger_list_is_refused(self):
+        for code in self.WIDER_LIST:
+            with self.subTest(code=code):
+                self.assertEqual(self._verdict(code), "DENY")
+
+    def test_ordinary_dumps_is_not_over_refused(self):
+        for code in self.ORDINARY_ALLOWED:
+            with self.subTest(code=code):
+                self.assertEqual(self._verdict(code), "ALLOW")
+
+    def test_pickle_routes_with_open_are_refused(self):
+        for code in self.PICKLE_ROUTES_WITH_OPEN:
+            with self.subTest(code=code):
+                self.assertEqual(self._verdict(code), "DENY")
+
+
+class PythonOpenMutationTests(unittest.TestCase):
+    """Mutants of the python -c danger rule run in a temporary copy of the hook and this module. Each must make a
+    named PythonOpenTests method fail (an assertion failure, not an import or startup error). Runs on every host."""
+
+    MUTANTS = {
+        "open( token removed from danger list": (
+            "__import__|open\\s*\\(|write|truncate|",
+            "__import__|write|truncate|"),
+        "wider danger word list reduced to the old list": (
+            "replace|rename|chmod|chown|symlink|copy|move|dump\\b|link|",
+            ""),
+        "dump boundary lost (dumps over-denied)": (
+            "dump\\b|", "dump|"),
+        "NFKC normalisation removed": (
+            'if DANGER_PY.search(code) or DANGER_PY.search(unicodedata.normalize("NFKC", code)):',
+            "if DANGER_PY.search(code):"),
+        "raw text not searched (normalised only)": (
+            'if DANGER_PY.search(code) or DANGER_PY.search(unicodedata.normalize("NFKC", code)):',
+            'if DANGER_PY.search(unicodedata.normalize("NFKC", code)):'),
+        "new file mutation methods ignored": (
+            "fileio|touch|mkdir|makedirs|mkfifo|mknod|utime|",
+            ""),
+    }
+    DETECTING = ["test_any_open_call_is_refused", "test_wider_danger_list_is_refused",
+                 "test_ordinary_dumps_is_not_over_refused"]
+
+    def _run(self, hook_text):
+        with tempfile.TemporaryDirectory() as td:
+            root = os.path.realpath(td)
+            hooks = os.path.join(root, ".claude", "hooks")
+            host = os.path.join(root, "tests", "host")
+            os.makedirs(hooks)
+            os.makedirs(host)
+            write_text(os.path.join(hooks, "guard_destructive.py"), hook_text)
+            with open(THIS_FILE, encoding="utf-8") as f:
+                write_text(os.path.join(host, "test_claude_destructive_guard.py"), f.read())
+            names = ["test_claude_destructive_guard.PythonOpenTests"]
+            proc = subprocess.run([sys.executable, "-m", "unittest", "-v"] + names, cwd=host,
+                                  capture_output=True, text=True, timeout=300)
+            return proc.returncode, proc.stderr
+
+    def test_python_rule_mutants_are_detected(self):
+        with open(HOOK, encoding="utf-8") as f:
+            original = f.read()
+        code, out = self._run(original)
+        self.assertEqual(code, 0, "unmutated copy must pass PythonOpenTests:\n" + out[-800:])
+        for name, (old, new) in self.MUTANTS.items():
+            with self.subTest(mutant=name):
+                self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
+                code, out = self._run(original.replace(old, new))
+                # Only a named assertion failure (FAIL:) counts; an ERROR: is not a detection.
+                failing = [re.match(r"FAIL: (\S+) \(", ln) for ln in out.splitlines() if ln.startswith("FAIL:")]
+                names = [m.group(1) for m in failing if m]
+                detected = any(n in self.DETECTING for n in names)
+                self.assertTrue(detected, "mutant not detected by a PythonOpenTests assertion: " + name)
 
 
 CHILD = r"""
