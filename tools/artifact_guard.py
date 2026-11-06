@@ -1758,9 +1758,10 @@ def check_guard_placement(root=ROOT, partial_fixtures=False):
         except ValueError as error:   # an unsupported publishing route or an unparseable upload step
             raise ValueError(f"{label}: {error}") from error
         if steps:
-            problems += guard_placement_violations(text, label)
+            problems += guard_placement_violations(text, label, partial_fixtures)
         else:
             problems += scope_key_violations(text, label)   # a file with an upload step gets it in guard_placement_violations
+            problems += required_guard_job_violations(text, label, partial_fixtures)   # same, for a file with no upload
         problems += publish_violations(text, label)
         problems += pages_structure_violations(text, label)
         problems += yaml_integrity_violations(text, label)
@@ -1769,6 +1770,10 @@ def check_guard_placement(root=ROOT, partial_fixtures=False):
         problems += attest_condition_violations(text, label)
         problems += signing_violations(text, label)
         problems += rom_upload_violations(text, label)
+    if not partial_fixtures:   # a required workflow file that is gone (deleted or renamed) is refused, not skipped
+        present = {w.relative_to(base).as_posix() for w in files}
+        for home in sorted({f for f, _ in REQUIRED_GUARD_JOBS.values()} - present):
+            problems.append(f"{home}: the workflow holding required guard jobs is missing (refused)")
     if problems:
         raise ValueError("artifact guard placement: " + "; ".join(problems))
     print("PASS artifact guard placement: trusted preamble, staged paths, stage and verify before every upload")
@@ -2228,40 +2233,115 @@ def scope_key_violations(text, workflow):
 # SKIPPED or anything unexpected). Each one runs with a job-level `if: always()` (so it is never SKIPPED by its own
 # needs:), and exactly one gate step at index 3 (right after the trusted preamble) which exits non-zero unless the
 # upstream job's result is 'success'. The gate step is the only trusted run this rule adds (Owner decision, #693).
-REQUIRED_GUARD_JOBS = frozenset({"guard-verify", "guard-bios-dev", "guard-core-harness", "guard-bcdbin-core"})
+# Each required job maps to (its workflow file, its one upstream real-core job). The check below reads the parsed YAML
+# `jobs` mapping directly, so it does not depend on the job having an upload step (a final upload removed from the job
+# must not switch the check off; PR #697 independent review, CRITICAL).
+_WF = ".github/workflows/"
+REQUIRED_GUARD_JOBS = {
+    "guard-verify": (_WF + "ci.yml", "verify-full"),
+    "guard-bios-dev": (_WF + "api-source.yml", "bios-dev-full"),
+    "guard-core-harness": (_WF + "core-harness.yml", "core-harness"),
+    "guard-bcdbin-core": (_WF + "core-bcdbin.yml", "bcdbin-core"),
+}
 
 
 def _result_gate_text(upstream):
     return f'test "${{{{ needs.{upstream}.result }}}}" = "success"'
 
 
-def _required_job_body(text, job):
-    """The parsed mapping of one job in a workflow text (YAML, strict loader), or None when it is not a mapping."""
+def _step_run(step):
+    run = step.get("run") if isinstance(step, dict) else None
+    return run.strip() if isinstance(run, str) else None
+
+
+def _required_job_problems(workflow, job, upstream, body, lines):
+    """Structure problems of one required guard job, from its parsed YAML mapping `body` (never from upload steps)."""
+    tag = f"{workflow}: required guard job {job!r}"
+    problems = []
+    needs = body.get("needs")
+    needs = [needs] if isinstance(needs, str) else needs
+    if not (isinstance(needs, list) and needs == [upstream]):
+        problems.append(f"{tag}: needs must be exactly [{upstream!r}] (the real-core job it gates); found {body.get('needs')!r}")
+    elif _job_needs(lines, job) != [upstream]:
+        problems.append(f"{tag}: the YAML needs and the line reading of needs disagree (refused)")
+    has_if = "if" in body
+    if has_if and body.get("if") != "always()":
+        problems.append(f"{tag} has a job-level `if` other than exactly always() (refused: a skipped required check "
+                        f"passes; found {body.get('if')!r})")
+    if "continue-on-error" in body:
+        problems.append(f"{tag} may not set continue-on-error (refused)")
+    steps = body.get("steps")
+    if not (isinstance(steps, list) and len(steps) >= 3 and all(isinstance(x, dict) for x in steps)):
+        problems.append(f"{tag}: steps must be a list of at least the three trusted preamble steps (refused)")
+        return problems
+    # The trusted preamble, read from the YAML so a job that only keeps the name still fails.
+    pre = steps[:3]
+    with1 = pre[1].get("with") if isinstance(pre[1].get("with"), dict) else {}
+    if not (isinstance(pre[0].get("uses"), str) and CHECKOUT_PIN_RE.fullmatch(pre[0]["uses"])
+            and isinstance(pre[1].get("uses"), str) and CHECKOUT_PIN_RE.fullmatch(pre[1]["uses"])
+            and all((with1.get(k) is False if k == "sparse-checkout-cone-mode" else with1.get(k) == v)
+                     for k, v in TRUSTED_CHECKOUT_WANT.items())
+            and pre[2].get("id") == "pyresolve" and _step_run(pre[2]) == PY_RESOLVE_RUN
+            and all(set(x) <= PREAMBLE_STEP_KEYS for x in pre)):
+        problems.append(f"{tag}: the first three steps must be the checkout, the trusted main checkout and the python3 "
+                        "resolve (refused)")
+    gate = _result_gate_text(upstream)
+    gates = [i for i, x in enumerate(steps) if _step_run(x) == gate]
+    has_gate = bool(gates)
+    has_always = has_if and body.get("if") == "always()"
+    if not has_always and not has_gate:
+        return problems   # OLD structure: accepted by this migration rule only (the strict rule will refuse it)
+    if not (has_always and has_gate):
+        problems.append(f"{tag} is in an incomplete migration state (job-level if: always() present={has_always}, "
+                        f"result gate present={has_gate}); only the complete OLD or NEW structure is accepted")
+        return problems
+    if gates != [3] or len(steps) < 4 or not set(steps[3]) <= {"name", "run"}:
+        problems.append(f"{tag} must have exactly one result gate step, at index 3 (right after the trusted preamble; "
+                        f"name and run only): {gate}")
+    return problems
+
+
+def required_guard_job_violations(text, workflow, partial_fixtures=False):
+    """The four required guard jobs, checked from the parsed YAML `jobs` mapping whether or not the job uploads anything.
+    Refuses: an unreadable file that should hold one, a missing job (unless partial_fixtures, tests only), a required
+    job name defined in another workflow, a wrong or missing needs, a job-level `if` other than exactly always(),
+    continue-on-error, a dummy job without the trusted preamble, and any state other than the complete OLD or NEW
+    structure (NEW = if: always() plus one result gate at step index 3)."""
+    owned = [j for j, (f, _) in REQUIRED_GUARD_JOBS.items() if f == workflow]
     try:
         import yaml
         doc = yaml.load(text, Loader=_strict_loader())
-    except Exception:
-        return None
+    except Exception as error:
+        return [f"{workflow}: required guard jobs cannot be read ({type(error).__name__}); refused"] if owned else []
     jobs = doc.get("jobs") if isinstance(doc, dict) else None
-    body = jobs.get(job) if isinstance(jobs, dict) else None
-    return body if isinstance(body, dict) else None
+    if not isinstance(jobs, dict):
+        return [f"{workflow}: the `jobs` mapping is missing or not a mapping; required guard jobs {sorted(owned)} "
+                "cannot be verified (refused)"] if owned else []
+    lines, problems = text.splitlines(), []
+    for job, (home, upstream) in sorted(REQUIRED_GUARD_JOBS.items()):
+        if home != workflow:
+            if job in jobs:
+                problems.append(f"{workflow}: the required guard job name {job!r} belongs to {home}; "
+                                "it may not be defined here (refused)")
+        elif job not in jobs:
+            if not partial_fixtures:
+                problems.append(f"{workflow}: required guard job {job!r} is missing (refused)")
+        elif not isinstance(jobs[job], dict):
+            problems.append(f"{workflow}: required guard job {job!r} is not a YAML job mapping (refused)")
+        else:
+            problems += _required_job_problems(workflow, job, upstream, jobs[job], lines)
+            # The gate trusts needs.<upstream>.result. A job-level continue-on-error on the upstream reports 'success'
+            # for a failed job, so the gate would be vacuous (independent review of the PR #697 fix, MAJOR).
+            up = jobs.get(upstream)
+            if isinstance(up, dict) and "continue-on-error" in up:
+                problems.append(f"{workflow}: upstream job {upstream!r} of required guard job {job!r} may not set "
+                                "continue-on-error (the result gate would read success for a failed job; refused)")
+            elif not isinstance(up, dict) and not partial_fixtures:
+                problems.append(f"{workflow}: upstream job {upstream!r} of required guard job {job!r} is missing (refused)")
+    return problems
 
 
-def _job_block(text, job):
-    """The lines of one job in a workflow text (its key line and its body), or [] when the job is absent."""
-    out, inside = [], False
-    for line in text.split("\n"):
-        if line.startswith("  ") and not line.startswith("   ") and line.rstrip().endswith(":"):
-            if inside:
-                break
-            inside = line.strip()[:-1] == job
-            continue
-        if inside:
-            out.append(line)
-    return out
-
-
-def guard_placement_violations(text, workflow):
+def guard_placement_violations(text, workflow, partial_fixtures=False):
     """Two kinds of job. A build job uploads only intermediate/ artifacts and runs no guard. A guard job publishes
     only staged paths: it needs the build job that produced its intermediate artifact, and its steps are the trusted
     checkout, the python resolve, checkouts, downloads, the placement check, stage and verify, the uploads and the
@@ -2282,6 +2362,7 @@ def guard_placement_violations(text, workflow):
     # An unreadable file gets no scope check here: check_guard_placement refuses it in yaml_integrity_violations, and
     # scope_key_violations itself refuses it too (Issue #337 round 14). Only parsed structure is read.
     problems = [] if _yaml_unreadable(text) else scope_key_violations(text, workflow)
+    problems += required_guard_job_violations(text, workflow, partial_fixtures)   # independent of any upload step
     names = [name for name, _ in upload_steps(text)]
     for name in sorted({n for n in names if names.count(n) > 1}):
         problems.append(f"{workflow}: upload step name {name!r} is used more than once (the binding check would see one)")
@@ -2386,43 +2467,6 @@ def guard_placement_violations(text, workflow):
             problems.append(f"{workflow}: guard job {job!r}: the second step must be the trusted main checkout (ref: main into .trusted-main)")
         if len(job_steps) < 3 or not _is_py_resolve(lines, job_steps[2], dash):
             problems.append(f"{workflow}: guard job {job!r}: the third step must resolve python3 (id: pyresolve)")
-        if job in REQUIRED_GUARD_JOBS:
-            # Migration rule (Issue #688 follow-up). The job-level keys are read from the parsed YAML, not from text
-            # lines, so a comment or a neighbouring job cannot change the reading.
-            #   OLD: no job-level `if` and no `continue-on-error` (the structure on main before the migration).
-            #   NEW: job-level `if` is exactly always(), no `continue-on-error`, and exactly one result gate at index 3.
-            # Any other combination is refused: only one of the two, a gate elsewhere, a changed gate, another `if`
-            # value (a skipped required check passes on GitHub), or `continue-on-error` (a failure would not fail it).
-            body = _required_job_body(text, job)
-            if body is None:
-                problems.append(f"{workflow}: required guard job {job!r} cannot be read as a YAML job mapping (refused)")
-            else:
-                has_if = "if" in body
-                if has_if and body.get("if") != "always()":
-                    problems.append(f"{workflow}: required guard job {job!r} has a job-level `if` other than exactly "
-                                    f"always() (refused: a skipped required check passes; found {body.get('if')!r})")
-                if "continue-on-error" in body:
-                    problems.append(f"{workflow}: required guard job {job!r} may not set continue-on-error (refused)")
-                has_always = has_if and body.get("if") == "always()"
-                has_gate = len(needed) == 1 and any(
-                    _run_lines(lines, s[0], s[1], dash) == [_result_gate_text(needed[0])] for s in job_steps)
-                if not has_always and not has_gate:
-                    pass   # OLD structure: accepted by this migration rule only (the strict rule will refuse it)
-                elif not (has_always and has_gate):
-                    problems.append(f"{workflow}: required guard job {job!r} is in an incomplete migration state "
-                                    f"(job-level if: always() present={has_always}, result gate present={has_gate}); "
-                                    "only the complete OLD or NEW structure is accepted")
-                else:
-                    if len(needed) != 1:
-                        problems.append(f"{workflow}: required guard job {job!r} must need exactly one real-core job "
-                                        f"(found {needed})")
-                    gate_count = sum(_run_lines(lines, s[0], s[1], dash) == [_result_gate_text(needed[0])]
-                                     for s in job_steps) if len(needed) == 1 else 0
-                    if gate_count != 1 or len(job_steps) < 4 or len(needed) != 1 or \
-                            _run_lines(lines, job_steps[3][0], job_steps[3][1], dash) != [_result_gate_text(needed[0])]:
-                        problems.append(f"{workflow}: required guard job {job!r} must have exactly one result gate step, "
-                                        f"at index 4 (right after the trusted preamble): "
-                                        f"{_result_gate_text(needed[0]) if len(needed) == 1 else '?'}")
         for s in job_steps[:3]:
             keys = _key_names(_step_keys(lines, s[0], s[1], dash))
             if not set(keys) <= PREAMBLE_STEP_KEYS or len(set(keys)) != len(keys):

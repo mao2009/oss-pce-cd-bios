@@ -33,7 +33,7 @@ def placement(text):
     with tempfile.TemporaryDirectory() as tmp:
         Path(tmp, '.github', 'workflows').mkdir(parents=True)
         Path(tmp, REL).write_text(text, encoding='utf-8')
-        guard.check_guard_placement(Path(tmp))
+        guard.check_guard_placement(Path(tmp), partial_fixtures=True)   # one workflow, not the real tree (required jobs: PR #697)
 
 
 class SignFailClosedTests(unittest.TestCase):
