@@ -1478,8 +1478,22 @@ def _open_is_read_only(code):
     return True
 
 
-# Calls allowed next to a read-only open(): print(), and the read/load methods of the file it opened.
-OPEN_COMPANION_ATTRS = frozenset({"read", "readline", "readlines", "close", "load", "loads", "dumps"})
+# Calls allowed next to a read-only open(): print(), and read/close/dumps on any receiver. load and loads are
+# allowed only as json.load / json.loads: pickle.loads on attacker bytes runs a callable (GLOBAL opcode).
+OPEN_COMPANION_ATTRS = frozenset({"read", "readline", "readlines", "close", "dumps"})
+JSON_COMPANION_ATTRS = frozenset({"load", "loads"})
+# Names whose rebinding would change what a companion call reaches.
+OPEN_GUARDED_NAMES = OPEN_COMPANION_ATTRS | JSON_COMPANION_ATTRS | {"json", "print"}
+
+
+def _companion_call_ok(f):
+    if isinstance(f, ast.Name):
+        return f.id == "print"
+    if isinstance(f, ast.Attribute):
+        if f.attr in OPEN_COMPANION_ATTRS:
+            return True
+        return f.attr in JSON_COMPANION_ATTRS and isinstance(f.value, ast.Name) and f.value.id == "json"
+    return False
 
 
 def _open_companions_only(tree, call_funcs):
@@ -1489,18 +1503,19 @@ def _open_companions_only(tree, call_funcs):
     were denied too. Refusing every other call keeps that. A user-defined print is refused (it could hide a write).
     """
     for node in ast.walk(tree):
-        if isinstance(node, ast.Attribute) and not isinstance(node.ctx, ast.Load):
-            # `json.load = zipfile.ZipFile` rebinds a companion name; the later call has no other visible form.
+        if isinstance(node, (ast.Attribute, ast.Subscript)) and not isinstance(node.ctx, ast.Load):
+            # `json.load = zipfile.ZipFile` or `sys.modules['json'] = zipfile` rebinds what a companion call reaches.
             return False
-        if isinstance(node, ast.Name) and node.id in OPEN_COMPANION_ATTRS and not isinstance(node.ctx, ast.Load):
-            # `class X: load = zipfile.ZipFile` then `X.load(...)`: a plain name store rebinds the same way.
+        if isinstance(node, ast.Name) and node.id in OPEN_GUARDED_NAMES and not isinstance(node.ctx, ast.Load):
+            # `class X: load = zipfile.ZipFile` then `X.load(...)`, or `json = zipfile`: a plain name store.
             return False
-        if isinstance(node, (ast.Global, ast.Nonlocal)) and OPEN_COMPANION_ATTRS & set(node.names):
+        if isinstance(node, (ast.Global, ast.Nonlocal)) and OPEN_GUARDED_NAMES & set(node.names):
             return False
-        if isinstance(node, ast.ExceptHandler) and node.name in OPEN_COMPANION_ATTRS:
+        if isinstance(node, ast.ExceptHandler) and node.name in OPEN_GUARDED_NAMES:
             return False
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and (
-                node.name in OPEN_COMPANION_ATTRS):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name in OPEN_GUARDED_NAMES:
+            return False
+        if isinstance(node, ast.arg) and node.arg == "print":
             return False
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.decorator_list:
             # A decorator runs a callable without a visible call expression (`@os.startfile`).
@@ -1509,24 +1524,16 @@ def _open_companions_only(tree, call_funcs):
             # A metaclass keyword runs a callable on class creation (`class A(metaclass=zipfile.ZipFile)`).
             return False
         if isinstance(node, (ast.Import, ast.ImportFrom)) and any(
-                (a.asname or a.name).split(".")[0] in OPEN_COMPANION_ATTRS for a in node.names):
+                (a.asname or a.name).split(".")[0] in OPEN_GUARDED_NAMES
+                and not (a.name == "json" and a.asname is None) for a in node.names):
+            # Plain `import json` is needed for json.load; any other binding of a guarded name is refused.
             return False
-        if isinstance(node, ast.Name) and node.id == "print" and not isinstance(node.ctx, ast.Load):
-            return False
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == "print":
-            return False
-        if isinstance(node, ast.arg) and node.arg == "print":
-            return False
-        if isinstance(node, (ast.Import, ast.ImportFrom)) and any(
-                (a.asname or a.name).split(".")[0] == "print" for a in node.names):
-            return False
-        if isinstance(node, ast.Call) and id(node.func) not in call_funcs:
-            f = node.func
-            if isinstance(f, ast.Name) and f.id == "print":
+        if isinstance(node, ast.Call):
+            if id(node.func) in call_funcs:
                 continue
-            if isinstance(f, ast.Attribute) and f.attr in OPEN_COMPANION_ATTRS:
-                continue
-            return False
+            # Keyword arguments are callbacks too (`json.loads(s, parse_float=sqlite3.connect)`).
+            if node.keywords or not _companion_call_ok(node.func):
+                return False
     return True
 
 

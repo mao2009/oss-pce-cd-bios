@@ -3618,6 +3618,15 @@ class PythonOpenTests(unittest.TestCase):
         # Non-call invocation: decorator and metaclass run a callable without a call expression.
         "open('a.txt')\nimport os\n@os.startfile\ndef f():\n    pass",
         "open('a.txt')\nimport zipfile\nclass A(metaclass=zipfile.ZipFile):\n    pass",
+        # Review 3: pickle.loads runs a GLOBAL callable from bytes (escaped text evades DANGER_PY); keywords are callbacks.
+        r"import pickle; open('a.txt').read(); pickle.loads(b'\x63\x6f\x73\x0a\x72\x65\x6d\x6f\x76\x65\x0a(S\'a.txt\'\ntR.')",
+        "import json, sqlite3; open('a.txt').read(); json.loads('[1.5]', parse_float=sqlite3.connect)",
+        "import json, sqlite3; json.load(open('a.txt'), parse_float=sqlite3.connect)",
+        "import json, os; print(json.loads('[1]', parse_int=os.startfile)); open('a')",
+        # Subscript store and rebinding of the json name redirect json.load.
+        "import sys, zipfile; sys.modules['json'] = zipfile; import json; json.load('o.zip', 'w'); open('a.txt')",
+        "import json, zipfile; json = zipfile; json.load('o.zip', 'w'); open('a.txt')",
+        "import pickle as json; open('a.txt'); json.load('x')",
     ]
 
     def test_open_with_other_calls_is_refused(self):
@@ -3651,14 +3660,20 @@ class PythonOpenMutationTests(unittest.TestCase):
             "    if call_funcs and not _open_companions_only(tree, call_funcs):",
             "    if False:"),
         "attribute rebinding next to open() allowed": (
-            "        if isinstance(node, ast.Attribute) and not isinstance(node.ctx, ast.Load):",
+            "        if isinstance(node, (ast.Attribute, ast.Subscript)) and not isinstance(node.ctx, ast.Load):",
             "        if False:"),
         "class-body name rebinding next to open() allowed": (
-            "        if isinstance(node, ast.Name) and node.id in OPEN_COMPANION_ATTRS and not isinstance(node.ctx, ast.Load):",
+            "        if isinstance(node, ast.Name) and node.id in OPEN_GUARDED_NAMES and not isinstance(node.ctx, ast.Load):",
             "        if False:"),
         "metaclass keyword next to open() allowed": (
             "        if isinstance(node, ast.ClassDef) and (node.keywords or node.decorator_list):",
             "        if False:"),
+        "keyword callbacks next to open() allowed": (
+            "            if node.keywords or not _companion_call_ok(node.func):",
+            "            if not _companion_call_ok(node.func):"),
+        "pickle.loads allowed as a companion": (
+            "        return f.attr in JSON_COMPANION_ATTRS and isinstance(f.value, ast.Name) and f.value.id == \"json\"",
+            "        return f.attr in JSON_COMPANION_ATTRS"),
     }
     DETECTING = ["test_read_only_python_is_not_refused", "test_python_write_and_indirect_forms_are_refused",
                  "test_shadowed_open_is_not_treated_as_the_builtin", "test_open_with_other_calls_is_refused"]
