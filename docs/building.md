@@ -152,6 +152,21 @@ The CD→RAM payload experiment (#122) is merged on main as of 2026-10-16 (`c20a
 - 前提: Geargrafx セットアップ済みで `TOOLS_DIR` を指定、各ルーチンのテストスクリプトが main にマージ済みであること（未マージだと欠落で失敗する。fail-closed）。
 - 実行: `TOOLS_DIR=$HOME/oss-pce-cd-bios-tools make routine-real-core`
 
+## Multi-sector DEV-only IPL diagnostic targets (merged 2026-11-06)
+
+Distinct from the existing **single-sector PCEX** experiment:
+
+```sh
+make dev-ipl-boot-integration        # existing one-sector PCEX DEV experiment
+make mpr-bank-probe                 # MPR2/MPR3 measurements (#681)
+make ipl-loader-integration         # multi-sector, 8 KiB HuCARD+CUE path (#681)
+make dev-bios-ipl-loader-integration # multi-sector, 256 KiB DEV BIOS-buffer path (#683)
+```
+
+[PR #681](https://github.com/mao2009/oss-pce-cd-bios/pull/681) reports 22 synthetic cases cold/warm for the 8 KiB probe. [PR #683](https://github.com/mao2009/oss-pce-cd-bios/pull/683) reports the same 22 scenarios through a **separate 256 KiB DEV image** loaded via pinned Geargrafx `LoadBiosFromBuffer`, with a CAP identity check against silent HuCARD fallback. These two outputs are not the ordinary 81-slot DEV ROM and are **not retail-compatible BIOS**.
+
+Current main `5a8dc5a`: DEV implementation count **14/81**, **67 stubs**; owner-approved DEV_CALLABLE **0**; reference ABI VERIFIED **0/81**; reference JSR permitted **0/81**. Historical main `f90c16b` had 9 DEV implementations and 72 stubs. The multi-sector DEV format uses a project-specific checksum and a restricted 16-bit LBA range. See [status](status.md).
+
 ## Instruction debugger and contract probes
 
 `make setup` additionally builds a separate debugger-enabled Geargrafx tree

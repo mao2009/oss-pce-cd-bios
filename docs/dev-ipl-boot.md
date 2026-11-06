@@ -1,6 +1,6 @@
 # DEV専用IPLブート（Issue #668）
 
-**状態: EXPERIMENTAL / DEV-only / 合成媒体のみ / 互換ではない。** System Card 互換性、BIOS ABI、CD_BOOT・CD_READ の VERIFIED を主張しない。`release_eligible=false` を維持する。
+**状態: EXPERIMENTAL / DEV-only / 合成媒体のみ / 互換ではない。ここに記すのは #668 の単一セクタ PCEX 契約。** System Card 互換性、BIOS ABI、CD_BOOT・CD_READ の VERIFIED を主張しない。`release_eligible=false` を維持する。
 
 ## 経路
 
@@ -34,3 +34,10 @@ RESET -> 初期化（MPR0/1、スタック） -> ホストが選んだ選択レ�
 | 制御移行後の戻り | 固定マーカー検査（DEV 契約） | 商用の要求は未確定 |
 
 **合成 IPL が動いたことは、商用 IPL 互換の証明ではない。**
+
+
+## 別経路: 複数セクタ IPL（2026-11-06）
+
+本書の単一セクタ PCEX ルートを置換するものではない。[PR #681](https://github.com/mao2009/oss-pce-cd-bios/pull/681) は `make ipl-loader-integration` で 8 KiB HuCARD+CUE 経路を、[PR #683](https://github.com/mao2009/oss-pce-cd-bios/pull/683) は `make dev-bios-ipl-loader-integration` で **256 KiB DEV イメージ + Geargrafx LoadBiosFromBuffer** 経路を追加し、両方 2026-11-06 に main へ統合された。合成媒体22ケースの cold/warm 検証が報告されている。別ローダーの 16bit LBA、MPR2–6 と DEV 独自チェックサムを単一セクタ PCEX 仕様へ混同しないこと。
+
+main `5a8dc5a`: DEV implementation count 14/81、67 stubs、owner-approved DEV_CALLABLE 0、reference ABI VERIFIED 0/81、reference JSR permitted 0/81。歴史的 main `f90c16b` では9 DEV実装・72スタブ。どの経路も商用互換性を主張しない。詳細は [status](status.md)。
