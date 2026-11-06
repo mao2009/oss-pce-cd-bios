@@ -110,7 +110,9 @@ def build_ipl_loader_bios(original_path: Path, output: Path, sel: int, mode="deb
     if data[reset_vector & 0x1FFF] != 0x78:
         raise ValueError("loader reset must start with SEI (the probe contract)")
     manifest = {
-        "status": "DEV-ONLY-IPL-LOADER-BIOS-256KIB-not-compatible-not-a-bios-abi",
+        "status": ("PUBLIC-IPL-FORMAT-LOADER-BIOS-256KIB-synthetic-not-compatible-not-a-bios-abi"
+                   if "IPL_PUBLIC" in defines else "DEV-ONLY-IPL-LOADER-BIOS-256KIB-not-compatible-not-a-bios-abi"),
+        "ipl_format": "public" if "IPL_PUBLIC" in defines else "dev",
         "mode": mode, "variant": variant, "rom_name": rom.name,
         "rom_sha256": hashlib.sha256(data).hexdigest(), "rom_bytes": IMAGE_BYTES,
         "ipl_sel_lba": sel, "loader_source": "tests/integration/ipl_loader_rom.s (unchanged, Issue #670)",

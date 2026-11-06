@@ -148,7 +148,11 @@ def judge(records: dict, case: dict, body: bytes, payload_tag: int):
             srcsum = buf[RB + 6] | buf[RB + 7] << 8
             rdsum = buf[RB + 8] | buf[RB + 9] << 8
             hdr = buf[RB + 10] | buf[RB + 11] << 8
-            if not (srcsum == rdsum == hdr):
+            if case.get("public"):
+                # PUBLIC format: no header sum. Only the copy is verified: readback must equal the disc-side sum.
+                if not (srcsum == rdsum):
+                    raise ValueError(f"{case['name']} {cycle}: sums src={srcsum:04x} rd={rdsum:04x}")
+            elif not (srcsum == rdsum == hdr):
                 raise ValueError(f"{case['name']} {cycle}: sums src={srcsum:04x} rd={rdsum:04x} hdr={hdr:04x}")
         # visible load area: the loaded prefix must equal the body, everything else must still be the initial zeros
         dst = case["sta"]
@@ -163,7 +167,8 @@ def judge(records: dict, case: dict, body: bytes, payload_tag: int):
         if case["payload_ran"]:
             if pay[0] != payload_tag or pay[8] != 0x5A:
                 raise ValueError(f"{case['name']} {cycle}: payload did not run to completion: {pay.hex()}")
-            if pay[5] != case["mprs"][0]:
+            # DEV: the raw value is the bank. PUBLIC: bank = raw + $80 (mpr_add), observed on the pinned core.
+            if pay[5] != (case["mprs"][0] + case.get("mpr_add", 0)) & 0xFF:
                 raise ValueError(f"{case['name']} {cycle}: MPR2 at payload entry {pay[5]:02x}")
             for slot, addr in ((1, 0x3FFF), (2, 0x4000), (3, 0x5FFF), (4, 0x6000)):
                 k = addr - dst
@@ -172,7 +177,7 @@ def judge(records: dict, case: dict, body: bytes, payload_tag: int):
                         raise ValueError(f"{case['name']} {cycle}: payload byte at ${addr:04X} = {pay[slot]:02x}, "
                                          f"expected {body[k]:02x}")
             k = 0x4000 - dst
-            if pay[6] != body[k] or pay[7] != body[k]:
+            if 0 <= k < len(body) and (pay[6] != body[k] or pay[7] != body[k]):
                 raise ValueError(f"{case['name']} {cycle}: $4000 changed across bank switch: {pay[6]:02x} {pay[7]:02x}")
             # payload's own sum of $4000-$5FFF, checked only when the body covers the whole window
             if 0 <= 0x4000 - dst and 0x6000 - dst <= len(body):
@@ -239,6 +244,51 @@ CASES = [
     dict(name="fault_readback_mismatch_error31", pay="A", n=5, iplblk=2, sta=0x3000, entry=0x3000,
          mprs=MPRS_STD, openmode=0, rom="mutant", visible_xor=0x01, reason="cd_halt_fail", code=31, copied=5,
          payload_ran=False),
+    # ==== PUBLIC IPL format (Issue #635, build IPL_PUBLIC). Bank = raw + $80 (observed black-box, pinned core).
+    # No DEV header sum is required. Only the copy (readback == disc-side sum) is verified.
+    # NOTE: this ROM's expectations intentionally differ from the DEV rule "raw $00 is refused" (neg_mpr2_not_ram_bank),
+    # which stays for the DEV ROM only.
+    dict(name="pub_n5_mpr_raw_0_4_zero_checksum_fields", pay="A", n=5, iplblk=2, sta=0x3000, entry=0x3000,
+         mprs=[0, 1, 2, 3, 4], openmode=0, rom="public", public=True, mpr_add=0x80, info_edits=[(14, 0), (15, 0)],
+         reason="cd_halt_ok", code=0, copied=5, payload_ran=True),
+    dict(name="pub_n5_header_bytes_14_15_nonzero_ignored", pay="A", n=5, iplblk=2, sta=0x3000, entry=0x3000,
+         mprs=[0, 1, 2, 3, 4], openmode=0, rom="public", public=True, mpr_add=0x80, info_edits=[(14, 0x34), (15, 0x12)],
+         reason="cd_halt_ok", code=0, copied=5, payload_ran=True),
+    dict(name="pub_n1_minimum_count", pay="A", n=1, iplblk=2, sta=0x3000, entry=0x3000,
+         mprs=[0, 1, 2, 3, 4], openmode=0, rom="public", public=True, mpr_add=0x80, info_edits=[(14, 0), (15, 0)],
+         reason="cd_halt_ok", code=0, copied=1, payload_ran=True),
+    dict(name="pub_n10_maximum_count_fills_3000_7fff", pay="A", n=10, iplblk=2, sta=0x3000, entry=0x3000,
+         mprs=[0, 1, 2, 3, 4], openmode=0, rom="public", public=True, mpr_add=0x80, info_edits=[(14, 0), (15, 0)],
+         reason="cd_halt_ok", code=0, copied=10, payload_ran=True),
+    dict(name="pub_mpr_raw_7_maps_to_bank_87", pay="A", n=5, iplblk=2, sta=0x3000, entry=0x3000,
+         mprs=[7, 6, 5, 4, 3], openmode=0, rom="public", public=True, mpr_add=0x80, info_edits=[(14, 0), (15, 0)],
+         reason="cd_halt_ok", code=0, copied=5, payload_ran=True),
+    dict(name="pub_neg_mpr_raw_8_refused", pay="A", n=5, iplblk=2, sta=0x3000, entry=0x3000,
+         mprs=[0, 1, 2, 8, 4], openmode=0, rom="public", public=True, info_edits=[(14, 0), (15, 0)],
+         reason="cd_halt_fail", code=25, copied=0, payload_ran=False),
+    dict(name="pub_neg_mpr_raw_ff_refused", pay="A", n=5, iplblk=2, sta=0x3000, entry=0x3000,
+         mprs=[0, 1, 2, 3, 0xFF], openmode=0, rom="public", public=True, info_edits=[(14, 0), (15, 0)],
+         reason="cd_halt_fail", code=25, copied=0, payload_ran=False),
+    dict(name="pub_neg_mpr_raw_80_refused_dev_value", pay="A", n=5, iplblk=2, sta=0x3000, entry=0x3000,
+         mprs=[0x80, 1, 2, 3, 4], openmode=0, rom="public", public=True, info_edits=[(14, 0), (15, 0)],
+         reason="cd_halt_fail", code=25, copied=0, payload_ran=False),
+    dict(name="pub_neg_iplsta_top_overrun_8000", pay="A", n=10, iplblk=2, sta=0x3800, entry=0x3800,
+         mprs=[0, 1, 2, 3, 4], openmode=0, rom="public", public=True, info_edits=[(14, 0), (15, 0)],
+         reason="cd_halt_fail", code=23, copied=0, payload_ran=False),
+    dict(name="pub_post_sum_preserving_change_accepted_documented_limit", pay="A", n=5, iplblk=2, sta=0x3000,
+         entry=0x3000, mprs=[0, 1, 2, 3, 4], openmode=0, rom="public", public=True, mpr_add=0x80,
+         info_edits=[(14, 0), (15, 0)], sum_preserving=True, reason="cd_halt_ok", code=0, copied=5,
+         payload_ran=True),
+    dict(name="pub_fault_readback_mismatch_error31", pay="A", n=5, iplblk=2, sta=0x3000, entry=0x3000,
+         mprs=[0, 1, 2, 3, 4], openmode=0, rom="public_mutant", public=True, mpr_add=0x80,
+         info_edits=[(14, 0), (15, 0)], visible_xor=0x01, reason="cd_halt_fail", code=31, copied=5,
+         payload_ran=False),
+    # ==== DEV boundary for the DEV checksum (main ROM): 0x0000 and 0xFFFF are enforced, not special-cased.
+    dict(name="dev_neg_checksum_0000_mismatch", pay="A", n=5, iplblk=2, sta=0x3000, entry=0x3000, mprs=MPRS_STD,
+         openmode=0, info_edits=[(14, 0), (15, 0)], reason="cd_halt_fail", code=30, copied=5, payload_ran=False),
+    dict(name="dev_neg_checksum_ffff_mismatch", pay="A", n=5, iplblk=2, sta=0x3000, entry=0x3000, mprs=MPRS_STD,
+         openmode=0, info_edits=[(14, 0xFF), (15, 0xFF)], reason="cd_halt_fail", code=30, copied=5,
+         payload_ran=False),
 ]
 
 
@@ -249,6 +299,17 @@ def run_case(probe, rom, labels_path, case, pay_code, folder: Path, disc_prefix=
         for offset, value in edits:
             body_written[sector * SECTOR + offset] ^= value
     body_written = bytes(body_written)
+    if case.get("sum_preserving"):
+        # Corrupt two bytes with XOR 1 whose sum effects are +1 and -1: the 16-bit additive sum is unchanged.
+        # Chosen from the body so the corruption is deterministic; the sum equality is asserted, not assumed.
+        p = next(i for i in range(0x100, len(body) - 1) if body[i] & 1 == 0 and body[i + 1] & 1 == 1
+                 and (i // SECTOR) == 2)
+        body_written = bytearray(body_written)
+        body_written[p] ^= 1
+        body_written[p + 1] ^= 1
+        body_written = bytes(body_written)
+        if sum(body_written) & 0xFFFF != sum(body) & 0xFFFF:
+            raise ValueError(f"{case['name']}: test construction did not preserve the sum")
     cksum = sum(body) & 0xFFFF  # the header carries the checksum of the body as ORIGINALLY built
     info = info_sector(case["iplblk"], case["n"], case["sta"], case["entry"], case["mprs"], case["openmode"], cksum)
     apply_edits(info, case.get("info_edits", []))
@@ -280,7 +341,13 @@ def main():
     rom_sha = hashlib.sha256(rom.read_bytes()).hexdigest()
     mutant, mutant_labels = build_loader(out, SEL, "mutant", ["-D", "IPL_MUTANT_READBACK"])
     mutant_sha = hashlib.sha256(mutant.read_bytes()).hexdigest()
-    roms = {"main": (rom, rom_labels), "mutant": (mutant, mutant_labels)}
+    public, public_labels = build_loader(out, SEL, "public", ["-D", "IPL_PUBLIC"])
+    public_sha = hashlib.sha256(public.read_bytes()).hexdigest()
+    public_mutant, public_mutant_labels = build_loader(out, SEL, "public_mutant",
+                                                       ["-D", "IPL_PUBLIC", "-D", "IPL_MUTANT_READBACK"])
+    public_mutant_sha = hashlib.sha256(public_mutant.read_bytes()).hexdigest()
+    roms = {"main": (rom, rom_labels), "mutant": (mutant, mutant_labels),
+            "public": (public, public_labels), "public_mutant": (public_mutant, public_mutant_labels)}
     payloads = {}
     for key, (origin, tag) in PAY_ORIGINS.items():
         code, halt = build_payload(out, origin, tag)
@@ -304,6 +371,9 @@ def main():
             raise SystemExit("FAIL: loader ROM changed during the test")
         if hashlib.sha256(mutant.read_bytes()).hexdigest() != mutant_sha:
             raise SystemExit("FAIL: mutant loader ROM changed during the test")
+        if hashlib.sha256(public.read_bytes()).hexdigest() != public_sha or \
+                hashlib.sha256(public_mutant.read_bytes()).hexdigest() != public_mutant_sha:
+            raise SystemExit("FAIL: public loader ROM changed during the test")
     passed = len(results)  # every case that did not match its expectation raised above
     evidence = {"scope": "DEV-only multi-sector IPL loader, synthetic media only; NOT compatible, NOT a BIOS ABI",
                 "geargrafx_probe": "geargrafx_cdread_probe.cpp (pinned)", "mode": args.mode,
@@ -316,10 +386,15 @@ def main():
                                 "the payload window sum is checked only when the body covers $4000-$5FFF",
                                 "error 31 (readback mismatch) is reached only through the TEST-ONLY mutant ROM "
                                 "(IPL_MUTANT_READBACK: written byte XOR 1); no core-level or bus-level fault injection",
-                                "load area initial content is assumed zero (checked by every visible-area comparison)"]}
+                                "load area initial content is assumed zero (checked by every visible-area comparison)",
+                                "PUBLIC format (IPL_PUBLIC ROMs): no header sum; a sum-preserving disc change is accepted "
+                                "(case pub_post_sum_preserving_change_accepted_documented_limit)",
+                                "PUBLIC format MPR rule: bank = raw + $80 for raw 0..7, observed black-box on the pinned "
+                                "core with the pure System Card BIOS (Issue #635 run); not a hardware observation"],
+                "public_loader_rom_sha256": public_sha, "public_mutant_rom_sha256": public_mutant_sha}
     (out / "ipl-loader-evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(f"PASS DEV-only multi-sector IPL loader: {passed}/{len(CASES)} cases (cold+warm each); "
-          f"NOT compatible, NOT BIOS, release_eligible=false")
+    print(f"PASS multi-sector IPL loader, DEV and PUBLIC-format ROMs (synthetic): {passed}/{len(CASES)} cases "
+          f"(cold+warm each); NOT compatible, NOT BIOS, release_eligible=false")
 
 
 if __name__ == "__main__":

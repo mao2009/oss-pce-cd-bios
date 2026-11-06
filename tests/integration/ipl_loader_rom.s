@@ -255,13 +255,20 @@ validate_info:
     sta R_ENTRY
     lda BUF+7
     sta R_ENTRY+1
-    ; MPR2..6: each must be a RAM bank in $80-$87 (Phase 1 observation)
+    ; MPR2..6. DEV format (default): each byte must already be a RAM bank in $80-$87 (Phase 1 observation).
+    ; PUBLIC format (IPL_PUBLIC, Issue #635): each byte is a bank index 0..7; the BIOS maps it to $80+index
+    ; (observed on the pinned core with a pure System Card BIOS; see the store block below).
     ldx #0
 @mpr:
     lda BUF+8,x
+.ifdef IPL_PUBLIC
+    cmp #$08
+    bcc @mprok
+.else
     and #$F8
     cmp #$80
     beq @mprok
+.endif
     lda #25
     jmp fail
 @mprok:
@@ -278,17 +285,37 @@ validate_info:
     sta m5
     lda BUF+12
     sta m6
+.ifdef IPL_PUBLIC
+    ; PUBLIC: bank = $80 + index for index 0..7 (equal to index OR $80 in this range)
+    lda m2
+    ora #$80
+    sta m2
+    lda m3
+    ora #$80
+    sta m3
+    lda m4
+    ora #$80
+    sta m4
+    lda m5
+    ora #$80
+    sta m5
+    lda m6
+    ora #$80
+    sta m6
+.endif
     lda BUF+13               ; OPENMODE: DEV loader supports none
     beq @omok
     lda #26
     jmp fail
 @omok:
+.ifndef IPL_PUBLIC
     lda BUF+14               ; DEV extension: body checksum (16-bit sum) in reserved bytes 14..15
     sta hdrv
     sta R_HDR
     lda BUF+15
     sta hdrv+1
     sta R_HDR+1
+.endif
     rts
 
 ; ---------------------------------------------------------------------------
@@ -377,6 +404,14 @@ copy_body:
 verify_body:
     lda #6
     sta R_STAGE
+.ifdef IPL_PUBLIC
+    ; PUBLIC: no header sum exists. The reference is the sum of the disc bytes read (R_SRC). Only the copy is
+    ; verified (readback == source). A sum-preserving change on the disc is NOT detected in this format.
+    lda R_SRC
+    sta hdrv
+    lda R_SRC+1
+    sta hdrv+1
+.endif
     lda stav
     sta dst
     lda stav+1
