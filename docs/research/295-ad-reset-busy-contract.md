@@ -1,6 +1,6 @@
 # Issue #295: AD_RESET の busy 境界の観測契約（測定手順の固定）
 
-親 #25。前提 PR: #403（`ad_reset_idle` guest 実装）、#404（idle 実コア観測ドライバ）は main に統合済み。関連: [ad-reset-diagnostic.md](ad-reset-diagnostic.md)（#294、idle と play の device 層診断）、[ad-reset-contract.md](ad-reset-contract.md)（#292、ABI 台帳）、[ad-reset-fixture.md](ad-reset-fixture.md)（#293、合成 fixture）。
+親 #25。前提 PR: #403（`ad_reset_idle` guest 実装）、#404（idle 実コア観測ドライバ）は main に統合済み。関連: [ad-reset-fixture.md](ad-reset-fixture.md)（#293、合成 fixture）。#292 の ABI 台帳および #294 の診断文書は、#596 で公開リポジトリから意図的に撤去されたため、現行の `file:line` 根拠にはしない。Issue #292/#294 と統合済み PR #403/#404 の記録は参照できるが、一次ログを読んだことや BIOS の検証済み事実を意味しない。
 
 **状態: 契約のみ。実コア測定は未実施。`BLOCKED_ABI`、`release_eligible=false`、`DEV_CALLABLE` 不可。System Card 互換の VERIFIED とは主張しない。契約の承認は独立再レビューの後。**
 
@@ -163,7 +163,7 @@
 
 | Issue 本文の開始条件（原文） | 状態 | 根拠 |
 | --- | --- | --- |
-| 「Contract/Fixture/Diagnostic の根拠」が確定 | 一部充足 | idle の観測契約は `ad-reset-contract.md`、`ad-reset-fixture.md`、`ad-reset-diagnostic.md` にある（UNCONFIRMED: 本書で内容を確認していない）。busy の根拠は UNKNOWN（`$04` / `$80` の意味） |
+| 「Contract/Fixture/Diagnostic の根拠」が確定 | 一部充足 | 既存の合成 fixture は `docs/research/ad-reset-fixture.md:1-5` にある（CONFIRMED、ただし合成モデルであり callee の事実ではない）。旧 ABI 台帳・診断文書は #596 により撤去済み。Issue #292/#294 と PR #403/#404 の説明は残るが、診断ログの一次確認は未了（UNCONFIRMED）。busy の根拠は UNKNOWN（`$04` / `$80` の意味） |
 | 「必要なハード状態」が確定 | 未充足 | TRANSFER_BUSY の BLOCKED 解除条件（§3.4）が未解消 |
 | 「前提 PR」が main に統合 | 充足（CONFIRMED） | #403、#404 |
 
@@ -188,7 +188,7 @@
 3. reset の効果は `Clock` の中の `CheckReset` で初めて現れる（`adpcm_inline.h:29-38`、`:335-344`）。`WriteControl` は `m_control` を書くだけである（`adpcm_inline.h:292-307`）。したがって採取点 P2 は、`RunToVBlank` を 1 回完了した時点とし、その間に `Clock` が 1 回以上呼ばれることを S3 の Clock 呼出し回数で記録する。
 4. reset 要求はハーネスからのみ発行する。CPU 命令による `$180D` への書込みは行わない（§10 の B9）。
 5. reset の発行は 1 試行につき 1 回とする。再発行はしない。
-6. `arm-B` として、bit5 を 1 のまま残す値（`$A0`）での要求を別に測る。`arm-B` は正例の集計に入れない。`arm-B` の扱いは §11 と §13 に従う。
+6. `arm-B` として、bit5 を 1 のまま残す値（`$A0`）での要求を別に測る。`arm-B` は正例の集計に入れない。`arm-B` の測定区分と集計除外は §12、§13 の 3、および §14.6 に従う。
 
 ## 5. reset 前後で採取する範囲
 
@@ -253,7 +253,7 @@ CPU の命令単位で計数・中断はしない（命令単位のフックは�
 | `TRIAL_WALL_SECONDS` | 120 秒 | 1 試行の壁時計の上限 |
 | `PROCESS_WALL_SECONDS` | 600 秒 | 1 プロセスの壁時計の上限（warm の系列は 2 試行を含む） |
 
-参照の一致: 次の値は、この表の値と一致している。C++ probe `tests/integration/geargrafx_ad_reset_warm.cpp` の `kFrameBudget`（300）、`kObserveWait`（60）、`kTrialSeconds`（120.0）、`kProcessSeconds`（600.0）。既存の full probe（`geargrafx_ad_reset_full.cpp`）も同じ 300、60、120 を用いる。Python runner は `geargrafx_ad_reset_warm.py` の `PROCESS_TIMEOUT_S`（600）を用いる。**不一致（次段階で修正する）:** `geargrafx_ad_reset_warm.py` の `SERIES_TIMEOUT_S = 120` は、試行単位の値であり、warm の 1 プロセス（2 試行を含む）の上限として誤っている。次段階の実装で、プロセス単位の `subprocess` の上限を `PROCESS_WALL_SECONDS`（600）に合わせる。本改訂では実装を変更しない。
+**probe 参照版の区別（本契約では実装を変更しない）:** warm probe 初版 `6c46562a828277cc3f34fef3b637bef56c72d7f9` の C++ には `kFrameBudget=300`、`kObserveWait=60`、`kTrialSeconds=120.0`、`kProcessSeconds=600.0`、Python runner には `SERIES_TIMEOUT_S=120`、`PROCESS_TIMEOUT_S=600` があった。**これは旧版に限る記録**であり、当時は系列全体の timeout に試行120秒を適用する不整合があった。warm probe ブランチ `feature/issue-295-warm-probe` の確認時HEAD `1525528953c518a1966f72dc563bf8693913f6e1` では、C++ は `kFrameBudget=300`、`kObserveWait=60` を持つが `kTrialSeconds` / `kProcessSeconds` は存在せず、Python runner の `TRIAL_WALL_SECONDS=120` と `PROCESS_WALL_SECONDS=600` で壁時計上限を分離している（ソース確認のみ、実測ではない）。full probe の独立した数値と経路は §14.15 A の対象版を固定して再検証する。**本契約の実測開始許可ではない。**
 
 **試行の終了理由（6 パターン）と終了状態（4 値）:** 下表の 6 行は終了理由であり、終了状態は `COMPLETED`、`BUDGET_EXCEEDED`、`TIMEOUT`、`ABORTED` の 4 値である。
 
@@ -369,20 +369,20 @@ CPU の命令単位で計数・中断はしない（命令単位のフックは�
 
 以下は、副作用を事前に遮断できない、または安全条件が成立しないため、本契約で観測も実行もしない。
 
-**出典について:** B 番号は本文の独自の列挙である。#173 の Issue 本文には B 番号も表もない。各項の根拠は、リポジトリ内の該当する文書と行である。
+**出典について:** B 番号は本文の独自の列挙である。#173 の Issue 本文には B 番号も表もない。根拠は現行リポジトリに残る文書・行と本契約の安全方針に限定する。#596 によって撤去された研究文書を `CONFIRMED` の根拠として参照せず、IRQ ハンドラ入口など現存資料だけでは確認できない詳細は `UNCONFIRMED` / `UNKNOWN` のままとする。
 
 | ID | 項目 | 根拠（リポジトリ内の出典） | 出典の範囲 |
 | --- | --- | --- | --- |
 | B1 | busy 中の、ゲストによる ADPCM MMIO（`$1808`〜`$180E`）への書込み | `docs/173-safety-monitor-limits.md:61`（汎用の MMIO 書込みは、既知 PC の場合を除き事前に遮断できない） | ADPCM のレジスタ個別の証拠は無い（UNKNOWN）。ADPCM の書込み経路は `adpcm_inline.h:91-122` |
-| B2 | IRQ に関わるバス操作（`$1402`、`$1403` への書込み、読取りを含む）、IRQ ハンドラ入口の観測 | `docs/173-safety-monitor-limits.md:55-56`、`:61`（`$1402`、`$1403` の書込みは検出のみで完遂し、事前阻止不能）。IRQ 入口は `docs/research/366-irq-entry-status.md` | 読取りは `docs/173-safety-monitor-limits.md` の表の対象外（UNKNOWN）。保守的に BLOCKED とする |
+| B2 | IRQ に関わるバス操作（`$1402`、`$1403` への書込み、読取りを含む）、IRQ ハンドラ入口の観測 | `docs/173-safety-monitor-limits.md:55-56,61`（両レジスタの書込みは検出のみで完遂、事前阻止不能）。IRQ ハンドラ入口の詳細について現存する個別根拠は未確認（UNCONFIRMED）。 | 読取りは上記文書の表の対象外（UNKNOWN）。入口の動作も推測で安全とせず、本契約の範囲では保守的に BLOCKED とする |
 | B3 | 転送中の、デバイス起点の書込み（ブロック転送、DMA） | `docs/research/367-device-write-audit.md`（デバイス起点の RAM 書込みの源泉監査。DEV-01 は `UpdateDMA` を指す。本書の行範囲は `adpcm_inline.h:191-226`）、`docs/173-write-path-inventory.md:42`（W17 は UNKNOWN、未監査） | 監査の範囲に依る |
 | B4 | 任意の PC、先頭 opcode での実行の中断 | `docs/research/365-st-opcode-boundary.md`（ST 命令境界の副作用前遮断の判定記録。#365 の残作業は OPEN であり、その根拠として引く。フレーム内中断をしない根拠は本出典ではなく、本書の方針である） | 中断はフレーム境界の外では行わない（§6） |
-| B5 | 純正 System Card の `JSR $E030`（AD_RESET 本体）の呼出し | `docs/research/ad-reset-contract.md:3`（`$E030` は候補エントリ。`BLOCKED_ABI`） | 候補であり、呼出先の実行は未確認 |
+| B5 | 純正 System Card の AD_RESET 候補入口への JSR（呼出先 ABI 未確定） | `docs/research/ad-reset-fixture.md:3,5`（slot `$10` の候補入口と `BLOCKED_ABI` の既存記録。撤去済み ABI 台帳に由来する caller 側の仮説であり、callee の確認ではない） | 候補入口は未検証。参照 BIOS callee は NOT_RUN、実行を許可しない |
 | B6 | CD 側の MMIO のうち `$1802`、`$1804` への操作、および表に無い `$1800`、`$1801`、`$1803` への操作 | `docs/173-safety-monitor-limits.md:52`（`$1802`）、`:53`（`$1804`）は事前阻止不能。`$1800`、`$1801`、`$1803` は表に無い（UNKNOWN） | 表に無い範囲は保守的に BLOCKED とする。`ResetMedia` が呼ぶ `CdRom::Reset`、`ScsiController::Reset`、`CdRomAudio::Reset` の直接の書込みは、Memory::Write の経路を通らない（`cdrom.cpp:113-129`、`scsi_controller.cpp:176-204`、`cdrom_audio.cpp:115-131`）。ただし、これらは `UpdateBackupRam`（`cdrom.cpp:128`、`memory_inline.h:544-558`。CPU 可視の `$F7` の写像を変える）、`UpdateIRQs`（`scsi_controller.cpp:200`、`scsi_controller_inline.h:92-106`。CD 側の IRQ 状態を変える）、`StopAudio` と `SetCurrentSector`（`scsi_controller.cpp:201-202`）、`InvalidateSectorCache`（`cdrom_audio.cpp:130`）を呼ぶ。前二つは B2 と CPU 可視の写像に関わるため、B6 の範囲に当たるかは断定せず、独立レビューで確認する。当たると確定した場合は、warm を BLOCKED とする |
-| B7 | 純正 BIOS、市販 ROM、私有 ROM（`rom/`）の使用 | `docs/research/ad-reset-contract.md` の §7（System Card の BIOS バイト等を含めない。`AGENTS.md`、`docs/provenance.md` の除外） | 方針 |
-| B8 | 割込みの発生を伴う実行（IRQ の許可を CPU 側で行うこと） | `docs/173-safety-monitor-limits.md:55-56`、`docs/research/366-irq-entry-status.md` | B2 と同じ |
+| B7 | 本契約の測定に純正 BIOS、市販 ROM、私有 ROM（`rom/`）を投入すること | 本契約 §1 の禁止入力、および `AGENTS.md:8-13`（私有入力の読取り専用運用・公開禁止）、`docs/provenance.md:3,69-70`（再配布と来歴の境界） | 本契約は合成媒体のみ使用する。リポジトリ一般の合法的なローカル検証まで禁止する主張ではない |
+| B8 | 割込みの発生を伴う実行（IRQ の許可を CPU 側で行うこと） | `docs/173-safety-monitor-limits.md:55-56,61` は IRQ 関連レジスタ書込みの事前阻止不能を示す。CPU の IRQ 許可・ハンドラ入口の具体的安全性は現存資料で確認できず UNCONFIRMED | B2 の危険を根拠とした本契約の保守的な BLOCKED。CPU 側の細部は確認済みとしない |
 | B9 | CPU 命令による `$180D`（reset 要求）の書込み | B1 と同じ根拠。reset の効果は `Clock` 内の `CheckReset` で現れる（`adpcm_inline.h:29-38`） | reset 要求はハーネスからのみ行う（§4） |
-| B10 | 転送開始の CPU 命令による発行（`ad_trans`、`ad_play` の呼出し） | `docs/research/ad-reset-contract.md`（`BLOCKED_ABI`）、`docs/research/ad-trans-contract.md` | 純正 callee の ABI が未確定 |
+| B10 | 転送・再生開始の CPU 命令による発行（`ad_trans`、`ad_play` の呼出し） | `docs/research/ad-trans-contract.md:3-6` と §3 の callee 事項（AD_TRANS の ABI は HYPOTHESIS / UNKNOWN / BLOCKED）、`docs/research/ad-reset-fixture.md:3`（AD_RESET の `BLOCKED_ABI`）。`ad_play` の callee 契約はこれらからは確定しない（UNKNOWN） | caller の存在は安全な callee 実行許可を意味しない。実行せず BLOCKED とする |
 | B11 | `$0B`（DMA 経路）による転送 busy の成立、および SCSI 信号の設定 | `adpcm_inline.h:191-226`（DMA は SCSI の信号に依存）、`docs/research/367-device-write-audit.md`（DEV-01）、`docs/173-write-path-inventory.md:42`（W17） | §3.4 の 2 |
 
 BLOCKED の項目は **11 件**（B1〜B11）である。初版は 10 件で、B11 を追加した。
@@ -402,7 +402,7 @@ BLOCKED の項目は **11 件**（B1〜B11）である。初版は 10 件で、B
 
 | 項目 | idle reset（既存） | busy reset（本書の対象） |
 | --- | --- | --- |
-| 出典 | device 層: `ad-reset-diagnostic.md` §3・§5（#294、記録あり。ログ本体は本書で未読）。guest 層: PR #403（merged 2026-10-21T00:57:46Z）と PR #404（merged 2026-10-21T01:42:48Z）の本文の記述（ログ本体は未読） | 本書（新規） |
+| 出典 | device 層: 現存する Issue #294 の目的・経緯（診断文書は #596 で撤去、ログ本体未読。観測内容の詳細は UNCONFIRMED）。guest 層: PR #403（merged 2026-10-21T00:57:46Z）と PR #404（merged 2026-10-21T01:42:48Z）の本文の記述（ログ本体は未読） | 本書（新規） |
 | 前提条件 | アイドル（PLAYING = 0、busy なし）から reset | §3.3 の区分ごとの成立条件を T_b と T_r で確認した後に reset |
 | 観測の範囲 | 既存の観測はいずれも、busy からの reset ではない。PR #404 本文は実コアでの実行結果を記すが、本書はその値を再掲しない（ログ未読のため）。実機・第 2 エミュレータは未実施（NOT_RUN、PR #404 本文） | TRANSFER_BUSY の観測 0 件（§3.4 の BLOCKED）。契約の外の既存記録として PLAY_ACTIVE の 25 試行がある（§15。契約の集計には入れない） |
 | 既存の再生中 reset との関係 | #294 の `neg-reset-playing` は、CONTROL `$A0`（bit5 残存）での reset である。本書の `arm-B` に相当する。PLAY_ACTIVE（CONTROL `$80` での reset）の結果ではない | PLAY_ACTIVE（CONTROL `$80` での reset）を測定する。TRANSFER_BUSY は BLOCKED |
@@ -424,7 +424,7 @@ PLAY_ACTIVE（CONTROL `$80` での reset）の観測は、Issue の「busy」と
 5. 独立再レビュー、CI への配線の判断。
 6. 測定結果が出た後の、期待値の判定（本書とは別の文書で行う）。
 7. CI 未配線（CONFIRMED）: `Makefile` に `ad_reset` の記載はなく、`integration-test` の探索パターン `test_*.py` は `geargrafx_ad_reset*.py` に一致しない（origin/main の `git grep` で確認）。既存の観測は手動実行のみである。
-8. 参照番号の不一致（UNCONFIRMED）: PR #403 本文は device 層診断を #397 と書き、`ad-reset-diagnostic.md` は #294 と書く。正しい番号は未確認。
+8. 参照番号の不一致（UNCONFIRMED）: PR #403 本文は device 層診断を #397 と記す一方、現存する Issue #294 は AD_RESET の診断を扱う。以前 #294 に紐付けられていた診断文書は #596 で削除済みで、旧文書本文を現行 `file:line` 根拠としては参照しない。PR 記録と Issue 番号の対応は再確認が必要。
 9. 既存の上限値（CONFIRMED）: 既存コードには 256 回ポーリング（`src/ad_reset_idle.s` 21 行）、240 フレーム、300 秒の 3 値がある。本書の §6 の値とは別であり、統合するかどうかは未判定。
 10. AD_RESET 用の patch（出典の状態: UNKNOWN。前提項目の状態: BLOCKED）: `tests/integration/patches` に `ad_reset` の記載はなく、適用対象は未確認。全 patch の適用はしない。
 
@@ -586,7 +586,7 @@ ROM-Primitive の実装（`ad_reset_busy` の guest 実装など）は、本書�
 **Owner 判断（2026-11-06、改訂 R15。測定の許可ではない）:**
 
 1. **ADPCM RAM の読取り probe の独立レビュー:** PLAY_ACTIVE の probe が実際に `GetRAM()` または ADPCM RAM を採取するなら、その読取り経路・サイズ・副作用・失敗時の扱いの独立レビューを測定前に必須とする。採取しないことを、対象 probe の固定版ソースと §5 の採取仕様で確認できる場合は、warm 専用のADPCM RAM読取りレビューを PLAY_ACTIVE に一律に要求しない。**将来の probe が採取しないことは未証明**であり、固定版未確認のまま「不要」と判定しない。
-2. **warm runner の timeout 修正:** cold / new-process の probe と runner が独立し、warm runner を使わないことを対象版で確認できるなら、`SERIES_TIMEOUT_S` の修正は PLAY_ACTIVE の開始条件に含めない。PLAY_ACTIVE の runner 自体の試行120秒・プロセス600秒上限（§6.1）は別途必須であり、warm runner を import / 共有する設計に変われば改めて依存関係を判定する。
+2. **warm runner の timeout 修正:** 初版 `6c46562` の `SERIES_TIMEOUT_S=120` に関する修正は、cold / new-process の probe と runner が独立し warm runner を使わないことを対象版で確認できるなら、PLAY_ACTIVE の開始条件に含めない。確認時 warm HEAD `1525528` は別定数に再設計済みであり、旧識別子が現行の実装に存在するとは主張しない。PLAY_ACTIVE の runner 自体の試行120秒・プロセス600秒上限（§6.1）は別途必須であり、warm runner を import / 共有する設計に変われば改めて依存関係を判定する。
 3. **動的 MPR 検出と `ResetMedia` の条件:** §14.13 の動的 MPR 検出と §14.2 の `ResetMedia` 前提・副作用レビューは warm 専用とする。PLAY_ACTIVE の probe がこれらの経路を実際に呼ぶ場合は、§10の安全条件との整合を改めて独立レビューし、未承認なら開始しない。単に warm が BLOCKED であることを理由に PLAY_ACTIVE を BLOCKED としない。
 
 **R15 後も未充足の開始条件（PLAY_ACTIVE）:**
@@ -608,7 +608,7 @@ ROM-Primitive の実装（`ad_reset_busy` の guest 実装など）は、本書�
   1. §14.13 の選択肢 (a) の証明と、契約の改訂。
   2. ADPCM RAM の読取り（既存の `GetRAM()`、§14.14）の安全性についての、probe 実装の独立レビュー。
   3. `ResetMedia` の副作用（§3.5 判定 I の (e) の warm 欄の (b)(c)。B2 と B6 の範囲に当たるか）の独立レビューによる確認。
-  4. warm runner の `SERIES_TIMEOUT_S = 120` を、試行単位（`TRIAL_WALL_SECONDS`）とプロセス単位（`PROCESS_WALL_SECONDS`）に分ける修正（§6.1）。
+  4. warm runner の試行・プロセス上限の独立適用の確認。初版 `6c46562` の `SERIES_TIMEOUT_S=120` は不適切だったが、確認時HEAD `1525528` では `TRIAL_WALL_SECONDS=120` と `PROCESS_WALL_SECONDS=600` を分離している（§6.1）。対象版固定と実行経路・timeout の独立レビューは未了であり、これをもって warm の BLOCKED を解除しない。
   5. §3.5 判定 I の (b) の承認。
 - 解除後も、warm の結果を VERIFIED（System Card ABI）へ昇格させない。結果は MEASURED の範囲に限る。
 
@@ -654,11 +654,12 @@ ROM-Primitive の実装（`ad_reset_busy` の guest 実装など）は、本書�
 - **改訂 R5 の修正（独立レビュー不承認への対応）**: §3.5 を区分ごとに分けた（PLAY_ACTIVE と warm は (a)、(b)、(c)、TRANSFER_BUSY だけが BLOCKED）。§6、§12、§13 の件数と開始条件の表記を §3.5 に合わせた。§14.2 にブレークポイント一覧の確認を追加した。§14.3 の順序と §14.9 の試行 1 の定義を揃えた（試行 1 も §2.1 の手順を最後まで行い、P3 を最終状態とする）。§14.7 の W1 の確認項目を広げた。S と P、MPR の設定を probe 73ef6ac と揃えた。§15 の既存記録を 25 試行に訂正した。
 - **改訂 R6（独立レビューの裁定反映）**: 承認時（97de277）と現行の差分を行単位で記録する表を PR 本文に残した（削除はしない）。承認時の `BLOCKED` の意味に戻し、`BLOCKER` は使わない。§3.5 を三つの独立した判定（I: 測定、II: Issue の実装、III: Issue の完了）に分けた。PLAY_ACTIVE の測定条件（(a)、(b)、(c)、(e)）と TRANSFER_BUSY の BLOCKED を別の行に書いた。MAJOR の対応箇所は §16 に記した。過去の 25 試行は、遡及的に PASS にしない。新契約の下での判定も行わない。
 - **改訂 R7（独立再レビューの指摘への対応）**: 試行 2 の開始条件を §14.12 に一覧化し、W1、W2、PC 設定の不一致を系列停止と BLOCKED に定めた。COMPLETED の定義を §7.2 に置き、§14.8 をそれに揃えた。既存 25 試行の判定を上の段落に記録した（R4 FAIL、R2b NOT_EVALUATED）。§3.5 の (e) を warm でも独立レビューで確認する扱いに揃え、ResetMedia が呼ぶ CD、SCSI、CD-audio の Reset（`geargrafx_core.cpp:1237-1239`）を根拠に記した。§7.1 に IsReady 偽とブレークポイント非空を加えた。§12 の重複を削除した。本文から内部の指摘記号を除いた。直前の版は `72599ef`（改訂 R6）。過去の 25 試行は、遡及的に PASS にしない。新契約の下での判定も行わない。
-- **改訂 R11（Wave 7 裁定、契約のみ。実装と測定はしない）**: 作業 A: 予算終了の判定を §6.1 の終了理由 6 パターン（終了状態 4 値）に分け、「予算終了 → `COMPLETED`」を削除した（§5 の P3、§7.1、§7.2、§14.8、§14.9 を整合）。定数（300 フレーム、60 フレーム、120 秒、600 秒）を §6.1 に一箇所で定義し、C++ probe と Python runner の参照を記録した。現行の warm runner の `SERIES_TIMEOUT_S = 120` はプロセス上限と一致しないため、次段階の実装で修正する。作業 B: §14.13 で動的 MPR 検出の選択肢 (a)（条件付き）と (b) を定めた。作業 C: §14.14 で ADPCM RAM の測定専用アクセサの方針を定めた。作業 E: §14.15 で実測の前提を定めた。既存 25 試行の `end_state` の `COMPLETED` は旧定義（予算終了を含む）であり、新定義の `COMPLETED` ではない。この定義で再判定せず、遡及的な PASS にしない。§15 の判定（R4 FAIL、R2b NOT_EVALUATED）は変えない。
+- **改訂 R11（Wave 7 裁定、契約のみ。実装と測定はしない）**: 作業 A: 予算終了の判定を §6.1 の終了理由 6 パターン（終了状態 4 値）に分け、「予算終了 → `COMPLETED`」を削除した（§5 の P3、§7.1、§7.2、§14.8、§14.9 を整合）。定数（300 フレーム、60 フレーム、120 秒、600 秒）を §6.1 に一箇所で定義し、C++ probe と Python runner の参照を記録した。改訂 R11 当時（warm 初版 `6c46562`）の runner は `SERIES_TIMEOUT_S = 120` が系列のプロセス上限と一致せず、当時は次段階での修正事項だった。確認時HEAD `1525528` の改訂状況は §6.1 を参照する。作業 B: §14.13 で動的 MPR 検出の選択肢 (a)（条件付き）と (b) を定めた。作業 C: §14.14 で ADPCM RAM の測定専用アクセサの方針を定めた。作業 E: §14.15 で実測の前提を定めた。既存 25 試行の `end_state` の `COMPLETED` は旧定義（予算終了を含む）であり、新定義の `COMPLETED` ではない。この定義で再判定せず、遡及的な PASS にしない。§15 の判定（R4 FAIL、R2b NOT_EVALUATED）は変えない。
 - **改訂 R12（動的 MPR 検出の裁定反映）**: §14.13 の動的 MPR 検出を UNPROVEN とし、選択肢 (b) を採用した。既存の検出器は `step_debugger = true` と命令単位の停止に依存し、§6 と §10 B4 と両立しない。このため §14.12 の 7 は `NOT_IMPLEMENTED`、試行 2 は開始せず、warm は BLOCKED（§3.5、§14.12、§14.15）。選択肢 (a) は、命令単位の安全性を別途証明できた場合にのみ、契約を改訂して再検討する。ADPCM RAM のアクセサ（§14.14）は、warm の BLOCKED とは独立に要件として残し、測定には使わない。warm probe（HEAD 6c46562）は変更しない。現状どおり試行 2 を開始せず BLOCKED で終わることを確認する対象とする。
 - **改訂 R13（ADPCM RAM の読取りの裁定反映）**: オーナーの裁定により、ADPCM RAM の取得経路を既存の公開 `Adpcm::GetRAM()`（`src/adpcm.h:63`、`src/adpcm_inline.h:386-389`、上流 `b49ae82a`）に改めた。改訂 R11 の §14.14 の「公開アクセサがない」「測定専用コピーにアクセサを追加する」は誤りであり、削除した。§14.12 の 4 と §14.15 の 2 を、既存の `GetRAM()` に合わせた。`feature/issue-295-adpcm-accessor`（`de01e4d`）の `GetRAMConst()` パッチは採用せず、削除もしない（検討成果として残す）。本改訂では測定、実装、WSL 実行をしていない。既存 25 試行の判定（R4 FAIL、R2b NOT_EVALUATED）と生ログは変更していない。§14.15 の 2 の PLAY_ACTIVE への適用は、オーナーの判断事項として保留する。
 - **改訂 R14（開始条件の整理。契約のみ。実装と測定はしない）**: 独立レビューの MAJOR 1 件と LOW 1 件への対応。MAJOR: §14.15 を A（PLAY_ACTIVE）、B（warm）、C（TRANSFER_BUSY）に分け、§3.5、§12、§13 の開始条件の表記を揃えた。PLAY_ACTIVE の基本条件は §3.5 判定 I の (a)、(b)、(c)、(e)。ADPCM RAM の読取り probe の独立レビューと warm runner の timeout 修正を PLAY_ACTIVE の条件に含めるかは、既存 probe と §5 の採取表を調べた結果、必要とする根拠は見つかっていないが、否定の証明もできないため Owner 判断待ちとし、その間は測定を開始しない。warm 専用の動的 MPR 検出と `ResetMedia` の前提は PLAY_ACTIVE に適用していない。warm の BLOCKED と TRANSFER_BUSY の BLOCKED は維持した。ADPCM RAM 読取りの安全性レビュー、`ResetMedia` の副作用確認、timeout 修正は、warm の将来の BLOCKED 解除条件として区別した。LOW: 終了状態は 4 値、終了理由は 6 パターンと定め、§0、§6、§6.1、§7.2 の表記を統一した。改訂 R11 の記録にあった「六つの状態」も同じ表記に直した（意味は変えていない）。定数、終了条件、既存ログの判定値、既存 25 試行の判定（R4 FAIL、R2b NOT_EVALUATED）は変更していない。実コア測定、実装、CI 変更はない。
 - **改訂 R15（Owner判断3項目の条件付き確定。契約のみ、測定・実装なし）**: §14.15 A の未決3項目を条件付きで整理。ADPCM RAM読取りレビューは PLAY_ACTIVE の固定probeで実際に採取する場合に必要、warm runner の timeout 修正と動的 MPR / ResetMedia 条件は warm 専用（PLAY_ACTIVE が共有・利用する設計なら個別再評価）。対象probeの版・採取仕様・R4・120秒/600秒上限の照合を明記し、(b)、(e) の独立レビューが完了するまで PLAY_ACTIVE NOT_RUN。§3.5 と §13 を一致させた。warmとTRANSFER_BUSYはBLOCKED、既存25試行はR4 FAIL/R2b NOT_EVALUATEDを維持。測定開始・実装・ABI昇格・Draft解除・mainマージの承認ではない。
+- **改訂 R16（#577 最新レビューへの是正。契約のみ、測定・実装なし）**: #596で撤去された3研究文書への現行参照を削除し、既存の合成fixture、#173の監視限界、AGENTS.md / provenance、Issue/PR記録へ根拠を付け替えた。根拠不足のIRQ入口やad_playの細部はUNCONFIRMED/UNKNOWNとし、呼出側の候補をcalleeの確認としない。§6.1のwarm probe初版`6c46562`と確認時HEAD`1525528`を分け、旧timeout不整合を現行の欠陥と誤記しない。§4のarm-B参照を§12・§13-3・§14.6に訂正。R15のNOT_RUN/BLOCKED、25試行のR4 FAIL/R2b NOT_EVALUATED、公開境界を維持。独立再レビューは未了であり承認・測定・マージに進まない。
 - **warm のログ**: 改訂 R5 の下ではまだ存在しない。独立レビュー後の測定で取得する。
 
 ## 16. 独立レビューの指摘への対応（改訂 R6）
