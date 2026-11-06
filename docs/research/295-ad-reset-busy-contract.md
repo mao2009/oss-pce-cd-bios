@@ -40,7 +40,8 @@
 
 - 測定区分: PLAY_ACTIVE、TRANSFER_BUSY、UNOBSERVED_BUSY。
 - 試行の起動区分: cold、new-process、warm。
-- 終了状態: `COMPLETED`、`BUDGET_EXCEEDED`、`TIMEOUT`、`ABORTED`。
+- 終了状態: 4 値（`COMPLETED`、`BUDGET_EXCEEDED`、`TIMEOUT`、`ABORTED`）。
+- 終了理由: 6 パターン（§6.1 の表）。各理由は 4 値のいずれか 1 つの終了状態に対応する（`BUDGET_EXCEEDED` と `TIMEOUT` はそれぞれ 2 つの理由を持つ）。
 
 **規則:** 用語は各軸で一度だけ定義し、本文ではこの表に定義された語のみを使う。`BLOCKED` は前提未解消による実行不可にだけ使う。`BLOCKER` は本書では使わない（改訂 R6 で承認時の `BLOCKED` に戻した。変更の記録は PR 本文の表）。`NOT_TESTED` は使わず、`NOT_RUN` に統一する。`MEASURED`（§11）は、測定ログが得られた後にのみ使う。`BLOCKED_ABI`、`DEV_CALLABLE`、`VERIFIED`、`release_eligible` は既存の契約のゲート語であり、上の軸には属さない。本書の対象区分（PLAY_ACTIVE、TRANSFER_BUSY）の試行は、まだ行っていない。
 
@@ -156,7 +157,7 @@
 | (c) 判定に使う観測点の出典が確定 | 充足（`$08` と PLAYING は `adpcm_inline.h:84` の `m_playing`。CONFIRMED） | 充足（同左。W0〜W2 は既存の状態読取り） | 未充足（`$04` / `$80` の意味は UNKNOWN） |
 | (e) 安全条件: 手順が §10 の BLOCKED 項目に触れない | 独立レビューで確認する（本書の手順は device 層の読取りと、ハーネスからの `Adpcm::Write` だけを使い、CPU からの MMIO 書込み、IRQ の操作、CD 側の操作を含まない） | 独立レビューで確認する（PLAY と同じ扱い。ただし `ResetMedia` は CD 側の状態に作用するため、次を確認対象とする。`ResetMedia` は `GeargrafxCore::Reset()`（`geargrafx_core.cpp:1205`）を呼び、その中で `m_cdrom->Reset()`、`m_scsi_controller->Reset()`、`m_cdrom_audio->Reset()` を呼ぶ（`:1237-1239`）。(a) 三つの Reset の直接の書込みは各装置の内部変数であり、Memory::Write の経路を通らない（`cdrom.cpp:113-129`、`scsi_controller.cpp:176-204`、`cdrom_audio.cpp:115-131`）。(b) `CdRom::Reset` は 128 行目で `m_memory->UpdateBackupRam(m_bram_enabled)` を呼び（`memory_inline.h:544-558`）、CPU から見える `$F7` の写像（`m_memory_map` と `m_memory_map_write`）を変える。(c) `ScsiController::Reset` は 200 行目で `UpdateIRQs()` を呼び（`scsi_controller_inline.h:92-106`）、CD 側の IRQ 状態を変える。201 行目で `m_cdrom_audio->StopAudio()` を呼ぶ。これは CD 再生の状態を STOPPED にし（`cdrom_audio_inline.h:188-195`）、LaserActive が有効なら `m_laseractive->NotifyAudioStop` を呼ぶことがある。202 行目で `m_cdrom_media->SetCurrentSector(0)` を呼ぶ。これは媒体側のセクタ位置を変える（`cdrom_image.cpp:129-135`）。(d) `CdRomAudio::Reset` は 130 行目で `InvalidateSectorCache()` を呼ぶ（キャッシュフラグのみ）。(b) と (c) は CPU 可視の写像と IRQ 状態に関わるため、B2 と B6 の範囲に当たるかは断定せず、独立レビューで確認すべき対象とする。当たると確定した場合は、warm を BLOCKED とする） | 未充足（§3.4 の BLOCKED 条件、§10 の B4 と B11） |
 | (d) §3.4 の BLOCKED 解除条件（3 条件） | 対象外 | 対象外（gate の BLOCKED は §14.6 で維持） | 未充足 |
-| 判定 | (b) の承認後に開始できる。(a)、(c) は充足。(e) は (b) の承認の中で確認する | 動的 MPR 検出が UNPROVEN のため BLOCKED。試行 2 を開始しない。warm 系列の試行 1 は実行しない。warm 系列全体を実行しない（§14.12 の 7、§14.13、§14.15）。(e) の確認と §14.2 の前提は、この BLOCKED の解除後に行う | BLOCKED。試行を実行しない |
+| 判定 | 基本条件は (a)、(b)、(c)、(e)。(a)、(c) は充足。(b) は未充足。(e) は (b) の承認の中で確認する。加えて §14.15 の A の Owner 判断待ち事項が確定するまで、測定を開始しない（NOT_RUN。BLOCKED ではない） | 動的 MPR 検出が UNPROVEN のため BLOCKED。試行 2 を開始しない。warm 系列の試行 1 は実行しない。warm 系列全体を実行しない（§14.12 の 7、§14.13、§14.15）。(e) の確認と §14.2 の前提は、この BLOCKED の解除後に行う | BLOCKED。試行を実行しない |
 
 **判定 II: Issue #295 の ROM-Primitive 実装の開始条件（測定とは別）**
 
@@ -176,7 +177,7 @@
 | メモリ・MMIO 側作用、有界 timeout、負例をゲスト実 CPU で検証。根拠不足は BLOCKED | 未充足 | 本書の測定は未実施。ゲスト実 CPU での検証は、判定 I の測定後に別途必要 |
 | 原則 3 ファイル、差分 200〜250 行目安。独立レビュー、関連 CI、実測を区別した証拠台帳を記録 | 未充足 | 独立レビュー未実施（NOT_RUN）。CI 未配線（§13 の 7） |
 
-注: 独立レビュー（判定 I の (b)）は Issue の開始条件ではない。本書の承認手続きとして扱う（§13 の 5）。承認前は PLAY_ACTIVE も warm も測定を行わない。実測の開始条件は §14.15 に定める。現時点で測定の開始を承認したものではない。
+注: 独立レビュー（判定 I の (b)）は Issue の開始条件ではない。本書の承認手続きとして扱う（§13 の 5）。承認前は PLAY_ACTIVE も warm も測定を行わない。実測の開始条件は §14.15 に区分（A: PLAY_ACTIVE、B: warm、C: TRANSFER_BUSY）ごとに定める。現時点で測定の開始を承認したものではない。
 
 **warm の実行状態（改訂 R12）:** warm（試行 2）は、§14.13 の動的 MPR 検出が UNPROVEN であるため **BLOCKED** である。試行 2 は開始せず、warm の実行状態は BLOCKED とする。この規則は §14.12 の 7 と同一である。warm 系列の試行 1 は実行しない。PLAY 測定を別に行う場合は、その判定は §3.5 の判定 I による。
 
@@ -239,7 +240,7 @@ CPU の命令単位で計数・中断はしない（命令単位のフックは�
 - 安全性の確認方法: 本契約のハーネスは、フレーム境界と `Adpcm::Write` の直後以外では core に介入しない。CPU を途中で止める操作は行わない。これにより、命令単位の強制停止が必要な操作（§3.4 の解除条件、§10 の B4）は実施しない。
 - 外部監視によるプロセス終了（`TIMEOUT`）は、CPU 実行の強制停止ではない。実行中の CPU 状態、メモリ、ADPCM 状態を変更せず、プロセスごと終了させるだけである。終了後の状態は読まず、`TIMEOUT` と記録する。この操作は §3.4 の解除条件の対象外であり、本契約で許可する。
 
-上限に達した場合の終了状態は §6.1 の六つの状態に従う。`BUDGET_EXCEEDED` と `TIMEOUT` の試行は、正例・負例のどちらにも含めない（§3.3）。
+上限に達した場合の終了状態は §6.1 の終了状態（4 値）と終了理由（6 パターン）に従う。`BUDGET_EXCEEDED` と `TIMEOUT` の試行は、正例・負例のどちらにも含めない（§3.3）。
 
 ### 6.1 試行の終了状態（完了条件）と定数（改訂 R11、作業 A）
 
@@ -254,9 +255,9 @@ CPU の命令単位で計数・中断はしない（命令単位のフックは�
 
 参照の一致: 次の値は、この表の値と一致している。C++ probe `tests/integration/geargrafx_ad_reset_warm.cpp` の `kFrameBudget`（300）、`kObserveWait`（60）、`kTrialSeconds`（120.0）、`kProcessSeconds`（600.0）。既存の full probe（`geargrafx_ad_reset_full.cpp`）も同じ 300、60、120 を用いる。Python runner は `geargrafx_ad_reset_warm.py` の `PROCESS_TIMEOUT_S`（600）を用いる。**不一致（次段階で修正する）:** `geargrafx_ad_reset_warm.py` の `SERIES_TIMEOUT_S = 120` は、試行単位の値であり、warm の 1 プロセス（2 試行を含む）の上限として誤っている。次段階の実装で、プロセス単位の `subprocess` の上限を `PROCESS_WALL_SECONDS`（600）に合わせる。本改訂では実装を変更しない。
 
-**試行の六つの状態:**
+**試行の終了理由（6 パターン）と終了状態（4 値）:** 下表の 6 行は終了理由であり、終了状態は `COMPLETED`、`BUDGET_EXCEEDED`、`TIMEOUT`、`ABORTED` の 4 値である。
 
-| 状態 | 条件 | 区分との関係 |
+| 終了状態（終了理由） | 条件 | 区分との関係 |
 | --- | --- | --- |
 | `COMPLETED`（正常観測完了） | PLAY_ACTIVE が成立し、CONTROL `$80` の reset を発行して P2 を取得した後、`RunToVBlank` をさらに 1 回正常に完了し、P3 を取得した | 区分は PLAY_ACTIVE |
 | `BUDGET_EXCEEDED`（安全上限） | `FRAME_SAFETY_CAP`（300 フレーム）に到達し、P3 を取得する前に停止した | 区分は問わない |
@@ -290,7 +291,7 @@ CPU の命令単位で計数・中断はしない（命令単位のフックは�
 ### 7.2 失敗時の動作
 
 - 停止条件に当たった試行は、その時点で破棄する。終了状態（§3.3）と理由を一語で記録し、正例・負例に含めない。
-- 終了状態の付け方: 停止条件（§7.1）に当たった試行には、原因に対応する終了状態を付ける。待ち上限（60 フレーム）または安全上限（300 フレーム）なら `BUDGET_EXCEEDED`、試行 120 秒またはプロセス 600 秒の壁時計なら `TIMEOUT`、その他は `ABORTED`（§6.1 の六つの状態）。区分 `UNOBSERVED_BUSY` は、待ち上限による打切りの試行に付き、その終了状態は `BUDGET_EXCEEDED` である。`COMPLETED` は、§6.1 の正常観測完了（P3 の取得まで）に到達した試行だけに付ける。予算終了は `COMPLETED` ではない。
+- 終了状態の付け方: 停止条件（§7.1）に当たった試行には、原因に対応する終了状態を付ける。待ち上限（60 フレーム）または安全上限（300 フレーム）なら `BUDGET_EXCEEDED`、試行 120 秒またはプロセス 600 秒の壁時計なら `TIMEOUT`、その他は `ABORTED`（§6.1 の終了状態 4 値・終了理由 6 パターン）。区分 `UNOBSERVED_BUSY` は、待ち上限による打切りの試行に付き、その終了状態は `BUDGET_EXCEEDED` である。`COMPLETED` は、§6.1 の正常観測完了（P3 の取得まで）に到達した試行だけに付ける。予算終了は `COMPLETED` ではない。
 - 同じ実行の中で、パラメータを変えて再試行しない。
 - 次の試行は、§8 の規則に従う新しいインスタンスまたは新しいプロセスで始める。停止した試行の状態を持ち越さない。
 - 終了コードは非 0 とする。失敗を 0 で終えない。
@@ -405,7 +406,7 @@ BLOCKED の項目は **11 件**（B1〜B11）である。初版は 10 件で、B
 | 前提条件 | アイドル（PLAYING = 0、busy なし）から reset | §3.3 の区分ごとの成立条件を T_b と T_r で確認した後に reset |
 | 観測の範囲 | 既存の観測はいずれも、busy からの reset ではない。PR #404 本文は実コアでの実行結果を記すが、本書はその値を再掲しない（ログ未読のため）。実機・第 2 エミュレータは未実施（NOT_RUN、PR #404 本文） | TRANSFER_BUSY の観測 0 件（§3.4 の BLOCKED）。契約の外の既存記録として PLAY_ACTIVE の 25 試行がある（§15。契約の集計には入れない） |
 | 既存の再生中 reset との関係 | #294 の `neg-reset-playing` は、CONTROL `$A0`（bit5 残存）での reset である。本書の `arm-B` に相当する。PLAY_ACTIVE（CONTROL `$80` での reset）の結果ではない | PLAY_ACTIVE（CONTROL `$80` での reset）を測定する。TRANSFER_BUSY は BLOCKED |
-| 区分 | §8 の cold、warm、new-process の区分は、既存の device 層観測（idle）には適用していない。契約の外の PLAY_ACTIVE 記録 25 試行は §15 を参照 | §3.3 の測定区分のうち PLAY_ACTIVE は busy reset ではない。PLAY_ACTIVE の測定は、§3.5 の判定 I のうち (a)、(b)、(c)、(e) の充足後に開始できる（(b) は未充足のため、現時点では開始しない。BLOCKED ではない）。busy reset（TRANSFER_BUSY）の区分は BLOCKED（§3.4） |
+| 区分 | §8 の cold、warm、new-process の区分は、既存の device 層観測（idle）には適用していない。契約の外の PLAY_ACTIVE 記録 25 試行は §15 を参照 | §3.3 の測定区分のうち PLAY_ACTIVE は busy reset ではない。PLAY_ACTIVE の測定の基本条件は、§3.5 の判定 I のうち (a)、(b)、(c)、(e) である（(b) は未充足のため、現時点では開始しない。BLOCKED ではない）。加えて §14.15 の A の Owner 判断待ち事項が確定するまで開始しない。busy reset（TRANSFER_BUSY）の区分は BLOCKED（§3.4） |
 | 独立レビュー・CI | 独立レビュー未実施（診断 §5、PR #404 本文）。CI 未配線（PR #404 本文、§13 の 7） | 測定、独立レビュー、TRANSFER_BUSY の BLOCKED 解除条件（§3.4）の判定 |
 
 idle reset の結果を busy reset の結果として数えない。両者は別の観測として記録する。
@@ -416,7 +417,7 @@ Issue #295 の完了条件は「既知の ADPCM controller reset と busy 状態
 
 PLAY_ACTIVE（CONTROL `$80` での reset）の観測は、Issue の「busy」とは別の区分の観測である。Issue の完了条件 1 を満たす根拠としては扱わない。`arm-B`（`$A0`）は、#294 の既存観測との対応を見るための比較用の参照であり、Issue の完了条件とは結び付けない。
 
-1. PLAY_ACTIVE の実コア測定（§8 の区分ごとの最小数、§9 の判定を併記）。開始は §3.5 の判定 I の (a)、(b)、(c)、(e) の充足後。判定 II と III とは独立である。
+1. PLAY_ACTIVE の実コア測定（§8 の区分ごとの最小数、§9 の判定を併記）。開始の基本条件は §3.5 の判定 I の (a)、(b)、(c)、(e)。加えて §14.15 の A の Owner 判断待ち事項の確定まで開始しない。判定 II と III とは独立である。
 2. TRANSFER_BUSY の BLOCKED 解除条件（§3.4 の 3 点）の判定。解除できない場合は、転送 busy 中の reset を #295 の範囲外とするか、別の子 Issue に分けるかを判定する。
 3. `arm-B`（bit5 を残す要求）を #295 の範囲に含めるか、比較用の参照として別に扱うかの判定。
 4. IRQ マスクと保留フラグの保持場所の確認（§5 の UNKNOWN の解消）。
@@ -560,19 +561,64 @@ ROM-Primitive の実装（`ad_reset_busy` の guest 実装など）は、本書�
 - 判定: 本契約の時点では、ADPCM RAM の値は未取得である（`NOT_CAPTURED`）。W1 のゼロ照合（§14.7、§14.12 の 4）は、probe 実装の独立レビューを通過し、測定の承認を受けた後にのみ実施する。
 - 区別: 上流 `b49ae82a` の結果と、測定の結果は区別する。上流ソースへの変更はないため、改変コアの区分は存在しない。`feature/issue-295-adpcm-accessor`（`de01e4d`）のパッチは採用しない検討成果として残し、削除しない。
 
-### 14.15 実測の前提（改訂 R11、作業 E）
+### 14.15 実測の前提（改訂 R11、作業 E。改訂 R14 で区分ごとに整理）
 
-- 現時点で、測定の開始を承認したものではない。
-- 実測の開始条件（すべて必要）:
-  1. 本契約の独立レビューで CRITICAL と MAJOR が 0。
-  2. §14.14 の ADPCM RAM の読取り（既存の `GetRAM()`）が、probe 実装の独立レビューを通過している。ADPCM RAM の読取りは、warm の BLOCKED とは独立に独立レビューを通過する必要がある。§14.13 の動的 MPR 検出は選択肢 (b) であり `NOT_IMPLEMENTED` である。warm は BLOCKED のままである。PLAY_ACTIVE の開始条件に §14.13 をどう結び付けるかは、オーナーの判断事項として保留する（本改訂では変更しない）。
-  3. §3.5 の判定 I の (b)（独立レビューによる承認）が充足。
-4. warm runner の `SERIES_TIMEOUT_S = 120` を、試行単位（`TRIAL_WALL_SECONDS` = 120 秒）と、プロセス単位（`PROCESS_WALL_SECONDS` = 600 秒）に分けて修正する。現行の 120 秒は、2 試行を含むプロセスの上限として誤っているため、この修正は測定の開始条件である。
-- warm の測定: §14.13 の (a) が別途証明され、契約が改訂されるまで開始しない（BLOCKED）。
-- 結果の扱い: warm の結果を VERIFIED（System Card ABI）へ昇格させない。結果は MEASURED の範囲に限る。
+- 現時点で、測定の開始を承認したものではない。いずれの区分も試行は NOT_RUN である。
+- 本節は §3.5、§12、§13、§14.12〜§14.14 と同じ内容を区分ごとに一意に示す。**区分 A の条件を warm（B）や TRANSFER_BUSY（C）の条件として流用せず、B・C の条件を A に適用しない。**
+
+#### A. PLAY_ACTIVE（cold / new-process）
+
+**基本条件（すべて必要。§3.5 判定 I と同一）:**
+
+| 条件 | 状態 |
+| --- | --- |
+| (a) 前提 PR（#403、#404）が main に統合 | 充足 |
+| (b) 本契約の独立レビューによる承認（CRITICAL と MAJOR が 0） | 未充足（NOT_RUN） |
+| (c) 観測点の出典が確定（`$08` と PLAYING は `adpcm_inline.h:84` の `m_playing`） | 充足 |
+| (e) 手順が §10 の BLOCKED 項目に触れないことの、独立レビューによる確認 | 未充足（(b) の承認の中で確認する） |
+
+**調査した依存関係（改訂 R14。未マージ branch 上の既存コードの読取りであり、実測ではない）:**
+
+- ADPCM RAM（64 KiB）の読取り（§14.14）は、本書の §5 の採取表（PC、レジスタ、WRAM 8 KiB、S1、S2、IRQ 状態）に含まれない。ADPCM RAM を採取するのは warm の W1（§14.7、§14.12 の 4）だけである。
+- cold / new-process 用の既存 probe（`feature/issue-295-probe-full-capture` の `tests/integration/geargrafx_ad_reset_full.cpp` と `.py`）には `GetRAM` と `ResetMedia` の呼出しがなく、runner は warm runner を import せず、試行 120 秒・プロセス 600 秒の独自の上限を持つ（`TRIAL_TIMEOUT_S`、`PROCESS_TIMEOUT_S`）。
+- この probe は、既存 25 試行の取得に使った probe（§15 の 73ef6ac）と同じ系統の branch 先頭の版であり（版の一致は未確認）、既存 25 試行は §15 のとおり R4 FAIL（`adpcm.play_pending` などが `NOT_CAPTURED`）である。R4 を満たす新しい PLAY_ACTIVE probe の仕様は未確定であり、それが ADPCM RAM を採取するかは、本調査では確定できない。
+
+**Owner 判断待ち（未決定。削除しない）:**
+
+1. ADPCM RAM の読取り probe の独立レビュー（R13 までの §14.15 の項目 2）を、PLAY_ACTIVE の開始条件に含めるか。調査結果は、既存 probe と §5 の採取表に基づく限り「必要とする根拠は見つかっていない」である。ただし、新しい PLAY_ACTIVE probe が ADPCM RAM を採取する設計になる場合は必要になりうるため、必要性の否定を証明できていない。含めるかどうかを Owner が決める。
+2. warm runner の `SERIES_TIMEOUT_S` の修正（R13 までの §14.15 の項目 4）を、cold / new-process の条件に含めるか。調査結果は「cold / new-process の runner とは別ファイルで、依存は見つかっていない」である。含めるかどうかを Owner が決める。
+3. §14.13 の動的 MPR 検出と `ResetMedia` の前提は warm 専用であり、PLAY_ACTIVE に適用する根拠は示されていない。適用するかどうかは Owner が決める。決定までは適用しない。
+
+**判定:** 基本条件 (b)、(e) が未充足であり、上の Owner 判断待ちも未決定であるため、**測定を開始しない（NOT_RUN。BLOCKED ではない）**。Owner 判断待ちが未決定の間は、1 から 3 のいずれも「承認済み」「不要」「必要」のどれとも扱わない。決定後は、決定内容を契約に追記して独立レビューを受ける。
+
+#### B. warm 系列
+
+**状態: BLOCKED（実行しない）。**
+
+- 動的 MPR 検出は UNPROVEN（§14.13）。選択肢 (b) を維持する。
+- §14.12 の 7 は `NOT_IMPLEMENTED`。試行 2 を開始しない。
+- warm 系列の試行 1 も試行 2 も開始しない（§3.5、§14.3 の 10）。
+- 次は **将来の BLOCKED 解除条件**であり、現時点で充足していない。PLAY_ACTIVE（A）の開始条件とは区別する。
+  1. §14.13 の選択肢 (a) の証明と、契約の改訂。
+  2. ADPCM RAM の読取り（既存の `GetRAM()`、§14.14）の安全性についての、probe 実装の独立レビュー。
+  3. `ResetMedia` の副作用（§3.5 判定 I の (e) の warm 欄の (b)(c)。B2 と B6 の範囲に当たるか）の独立レビューによる確認。
+  4. warm runner の `SERIES_TIMEOUT_S = 120` を、試行単位（`TRIAL_WALL_SECONDS`）とプロセス単位（`PROCESS_WALL_SECONDS`）に分ける修正（§6.1）。
+  5. §3.5 判定 I の (b) の承認。
+- 解除後も、warm の結果を VERIFIED（System Card ABI）へ昇格させない。結果は MEASURED の範囲に限る。
+
+#### C. TRANSFER_BUSY
+
+**状態: BLOCKED（実行しない）。**
+
+- §3.4 の BLOCKED を維持する。`$04` / `$80` の意味は UNKNOWN のままであり、推測で確定しない。
+- PLAY_ACTIVE の測定結果を、TRANSFER_BUSY の結果として代用しない（§3.3）。
+- 解除条件は §3.4 の 3 条件（フレーム内の観測点の定義、`$04` / `$80` の意味の確定、独立レビューでの承認）のままである。
+
+#### 共通
+
 - 集計: CONTROL `$80`（標準）と `$A0`（arm-B）は混合しない。`$A0` は集計に含めない。
-- 維持する判定: TRANSFER_BUSY は BLOCKED のまま。既存 25 試行は R4 FAIL、R2b NOT_EVALUATED のまま（§15）。
-- 生ログ: 既存 25 試行の生ログは保存する（§15）。新しい系列は、この改訂 R11 以後の契約リビジョンで記録する。
+- 維持する判定: 既存 25 試行は R4 FAIL、R2b NOT_EVALUATED のまま（§15）。
+- 生ログ: 既存 25 試行の生ログは保存する（§15）。新しい系列は、改訂 R11 以後の契約リビジョンで記録する。
 - 固定 Geargrafx と計測用改変コアは区別する（§14.14）。
 
 ## 15. 改訂履歴
@@ -602,9 +648,10 @@ ROM-Primitive の実装（`ad_reset_busy` の guest 実装など）は、本書�
 - **改訂 R5 の修正（独立レビュー不承認への対応）**: §3.5 を区分ごとに分けた（PLAY_ACTIVE と warm は (a)、(b)、(c)、TRANSFER_BUSY だけが BLOCKED）。§6、§12、§13 の件数と開始条件の表記を §3.5 に合わせた。§14.2 にブレークポイント一覧の確認を追加した。§14.3 の順序と §14.9 の試行 1 の定義を揃えた（試行 1 も §2.1 の手順を最後まで行い、P3 を最終状態とする）。§14.7 の W1 の確認項目を広げた。S と P、MPR の設定を probe 73ef6ac と揃えた。§15 の既存記録を 25 試行に訂正した。
 - **改訂 R6（独立レビューの裁定反映）**: 承認時（97de277）と現行の差分を行単位で記録する表を PR 本文に残した（削除はしない）。承認時の `BLOCKED` の意味に戻し、`BLOCKER` は使わない。§3.5 を三つの独立した判定（I: 測定、II: Issue の実装、III: Issue の完了）に分けた。PLAY_ACTIVE の測定条件（(a)、(b)、(c)、(e)）と TRANSFER_BUSY の BLOCKED を別の行に書いた。MAJOR の対応箇所は §16 に記した。過去の 25 試行は、遡及的に PASS にしない。新契約の下での判定も行わない。
 - **改訂 R7（独立再レビューの指摘への対応）**: 試行 2 の開始条件を §14.12 に一覧化し、W1、W2、PC 設定の不一致を系列停止と BLOCKED に定めた。COMPLETED の定義を §7.2 に置き、§14.8 をそれに揃えた。既存 25 試行の判定を上の段落に記録した（R4 FAIL、R2b NOT_EVALUATED）。§3.5 の (e) を warm でも独立レビューで確認する扱いに揃え、ResetMedia が呼ぶ CD、SCSI、CD-audio の Reset（`geargrafx_core.cpp:1237-1239`）を根拠に記した。§7.1 に IsReady 偽とブレークポイント非空を加えた。§12 の重複を削除した。本文から内部の指摘記号を除いた。直前の版は `72599ef`（改訂 R6）。過去の 25 試行は、遡及的に PASS にしない。新契約の下での判定も行わない。
-- **改訂 R11（Wave 7 裁定、契約のみ。実装と測定はしない）**: 作業 A: 予算終了の判定を §6.1 の六つの状態に分け、「予算終了 → `COMPLETED`」を削除した（§5 の P3、§7.1、§7.2、§14.8、§14.9 を整合）。定数（300 フレーム、60 フレーム、120 秒、600 秒）を §6.1 に一箇所で定義し、C++ probe と Python runner の参照を記録した。現行の warm runner の `SERIES_TIMEOUT_S = 120` はプロセス上限と一致しないため、次段階の実装で修正する。作業 B: §14.13 で動的 MPR 検出の選択肢 (a)（条件付き）と (b) を定めた。作業 C: §14.14 で ADPCM RAM の測定専用アクセサの方針を定めた。作業 E: §14.15 で実測の前提を定めた。既存 25 試行の `end_state` の `COMPLETED` は旧定義（予算終了を含む）であり、新定義の `COMPLETED` ではない。この定義で再判定せず、遡及的な PASS にしない。§15 の判定（R4 FAIL、R2b NOT_EVALUATED）は変えない。
+- **改訂 R11（Wave 7 裁定、契約のみ。実装と測定はしない）**: 作業 A: 予算終了の判定を §6.1 の終了理由 6 パターン（終了状態 4 値）に分け、「予算終了 → `COMPLETED`」を削除した（§5 の P3、§7.1、§7.2、§14.8、§14.9 を整合）。定数（300 フレーム、60 フレーム、120 秒、600 秒）を §6.1 に一箇所で定義し、C++ probe と Python runner の参照を記録した。現行の warm runner の `SERIES_TIMEOUT_S = 120` はプロセス上限と一致しないため、次段階の実装で修正する。作業 B: §14.13 で動的 MPR 検出の選択肢 (a)（条件付き）と (b) を定めた。作業 C: §14.14 で ADPCM RAM の測定専用アクセサの方針を定めた。作業 E: §14.15 で実測の前提を定めた。既存 25 試行の `end_state` の `COMPLETED` は旧定義（予算終了を含む）であり、新定義の `COMPLETED` ではない。この定義で再判定せず、遡及的な PASS にしない。§15 の判定（R4 FAIL、R2b NOT_EVALUATED）は変えない。
 - **改訂 R12（動的 MPR 検出の裁定反映）**: §14.13 の動的 MPR 検出を UNPROVEN とし、選択肢 (b) を採用した。既存の検出器は `step_debugger = true` と命令単位の停止に依存し、§6 と §10 B4 と両立しない。このため §14.12 の 7 は `NOT_IMPLEMENTED`、試行 2 は開始せず、warm は BLOCKED（§3.5、§14.12、§14.15）。選択肢 (a) は、命令単位の安全性を別途証明できた場合にのみ、契約を改訂して再検討する。ADPCM RAM のアクセサ（§14.14）は、warm の BLOCKED とは独立に要件として残し、測定には使わない。warm probe（HEAD 6c46562）は変更しない。現状どおり試行 2 を開始せず BLOCKED で終わることを確認する対象とする。
 - **改訂 R13（ADPCM RAM の読取りの裁定反映）**: オーナーの裁定により、ADPCM RAM の取得経路を既存の公開 `Adpcm::GetRAM()`（`src/adpcm.h:63`、`src/adpcm_inline.h:386-389`、上流 `b49ae82a`）に改めた。改訂 R11 の §14.14 の「公開アクセサがない」「測定専用コピーにアクセサを追加する」は誤りであり、削除した。§14.12 の 4 と §14.15 の 2 を、既存の `GetRAM()` に合わせた。`feature/issue-295-adpcm-accessor`（`de01e4d`）の `GetRAMConst()` パッチは採用せず、削除もしない（検討成果として残す）。本改訂では測定、実装、WSL 実行をしていない。既存 25 試行の判定（R4 FAIL、R2b NOT_EVALUATED）と生ログは変更していない。§14.15 の 2 の PLAY_ACTIVE への適用は、オーナーの判断事項として保留する。
+- **改訂 R14（開始条件の整理。契約のみ。実装と測定はしない）**: 独立レビューの MAJOR 1 件と LOW 1 件への対応。MAJOR: §14.15 を A（PLAY_ACTIVE）、B（warm）、C（TRANSFER_BUSY）に分け、§3.5、§12、§13 の開始条件の表記を揃えた。PLAY_ACTIVE の基本条件は §3.5 判定 I の (a)、(b)、(c)、(e)。ADPCM RAM の読取り probe の独立レビューと warm runner の timeout 修正を PLAY_ACTIVE の条件に含めるかは、既存 probe と §5 の採取表を調べた結果、必要とする根拠は見つかっていないが、否定の証明もできないため Owner 判断待ちとし、その間は測定を開始しない。warm 専用の動的 MPR 検出と `ResetMedia` の前提は PLAY_ACTIVE に適用していない。warm の BLOCKED と TRANSFER_BUSY の BLOCKED は維持した。ADPCM RAM 読取りの安全性レビュー、`ResetMedia` の副作用確認、timeout 修正は、warm の将来の BLOCKED 解除条件として区別した。LOW: 終了状態は 4 値、終了理由は 6 パターンと定め、§0、§6、§6.1、§7.2 の表記を統一した。改訂 R11 の記録にあった「六つの状態」も同じ表記に直した（意味は変えていない）。定数、終了条件、既存ログの判定値、既存 25 試行の判定（R4 FAIL、R2b NOT_EVALUATED）は変更していない。実コア測定、実装、CI 変更はない。
 - **warm のログ**: 改訂 R5 の下ではまだ存在しない。独立レビュー後の測定で取得する。
 
 ## 16. 独立レビューの指摘への対応（改訂 R6）
