@@ -3526,124 +3526,77 @@ class PythonArgvMutationTests(unittest.TestCase):
 
 
 class PythonOpenTests(unittest.TestCase):
-    """python -c: open() is judged on the AST. Read-only open(path) and open(path, literal read mode) are allowed;
-    write, indirect, aliased, non-literal or unparseable forms are refused. The wider danger word list is refused.
-    Host-independent: no filesystem, no symlink. The "import json" read must still be allowed."""
+    """python -c: as on main, any builtin open( is refused (Owner decision, #629: the read-only open() allowance
+    was withdrawn; see the follow-up issue). The wider danger word list is refused. Ordinary json.dumps and
+    pickle.dumps stay allowed (dump\\b boundary). Host-independent."""
 
-    READ_ONLY = [
-        "import json; print(json.dumps({'a': 1}))",
-        "import json; print(json.dumps({'a': -1}))",
-        "import pickle; print(pickle.dumps({'a': 1}))",
-        "import json; print(json.load(open('x.json')))",
+    OPEN_FORMS = [
+        "open('x')",
+        "open('x', 'r')",
+        "open('x', 'rb')",
+        "open('x', 'w')",
         "print(open('a.txt').read())",
-        "print(open('a.txt', 'rb').read())",
-        "print(open('a.txt', 'rt').read())",
-        "from pathlib import Path; print(Path('a.txt').read_text())",
+        "f=open('a');print(f)",
+        "import json; json.load(open('x'))",
+        "import json; print(json.load(open('x.json')))",
     ]
-    WRITE_OR_INDIRECT = [
+    WIDER_LIST = [
         "import json; json.dump({'a': 1}, output)",
         "import pickle; pickle.dump({'a': 1}, output)",
-        "open('a.txt', 'w').write('x')",
-        "open('a.txt', chr(119)).write('x')",
-        "from pathlib import Path; Path('a').open('w')",
-        "open('a.txt', 'r+')",
-        "open('a.txt', mode='w')",
         "import os; os.replace('a', 'b')",
         "import shutil; shutil.copy('a', 'b')",
-        "open('/x)'[:-1], 'w').close()",
-        "print('evil', file=open('x)'[:-1], 'w'))",
-        "open('a.txt'",
-        "f = open; f('a.txt', 'w')",
-        "import io; io.open('a.txt', 'w')",
-        "from io import open as o; o('a.txt', 'w')",
-        "import builtins; builtins.open('a.txt', 'w')",
-        "getattr(__builtins__, 'open')('a.txt', 'w')",
-        "import io; io.FileIO('a.txt', 'w')",
-        "from io import FileIO as f; f('a.txt', 'w')",
-        "from pathlib import Path; Path('a.txt').touch()",
+        "from pathlib import Path; Path('a').touch()",
         "from pathlib import Path; Path('folder').mkdir()",
         "import os; os.makedirs('folder')",
-        "import os; os.mkfifo('pipe')",
-        "import os; os.mknod('node')",
         "import os; os.utime('a.txt')",
+        "import io; io.FileIO('a.txt', 'w')",
+        "import io; io.open('a.txt', 'w')",
+    ]
+    ORDINARY_ALLOWED = [
+        "import json; print(json.dumps({'a': 1}))",
+        "import pickle; print(pickle.dumps(1))",
+        "from pathlib import Path; print(Path('a.txt').read_text())",
+    ]
+    # Pickle routes from the 4th review. Each contains open(), so it is refused by the open( rule.
+    PICKLE_ROUTES_WITH_OPEN = [
+        "import pickle; open('a.txt').read(); pickle.loads(b'\\x80\\x04\\x95')",
+        "import pickle\nclass A:\n    def __class_getitem__(cls, x, json=pickle): return json.loads(b'')\n"
+        "_ = open('a.txt').read()\nA[1]",
+        "import pickle\nmatch pickle:\n    case json:\n        json.loads(b'')\n_ = open('a.txt').read()",
     ]
 
     def _verdict(self, code):
         return verdict("python3 -c " + repr(code))
 
-    def test_read_only_python_is_not_refused(self):
-        for code in self.READ_ONLY:
+    def test_any_open_call_is_refused(self):
+        for code in self.OPEN_FORMS:
+            with self.subTest(code=code):
+                self.assertEqual(self._verdict(code), "DENY")
+
+    def test_wider_danger_list_is_refused(self):
+        for code in self.WIDER_LIST:
+            with self.subTest(code=code):
+                self.assertEqual(self._verdict(code), "DENY")
+
+    def test_ordinary_dumps_is_not_over_refused(self):
+        for code in self.ORDINARY_ALLOWED:
             with self.subTest(code=code):
                 self.assertEqual(self._verdict(code), "ALLOW")
 
-    def test_python_write_and_indirect_forms_are_refused(self):
-        for code in self.WRITE_OR_INDIRECT:
+    def test_pickle_routes_with_open_are_refused(self):
+        for code in self.PICKLE_ROUTES_WITH_OPEN:
             with self.subTest(code=code):
                 self.assertEqual(self._verdict(code), "DENY")
-
-    def test_shadowed_open_is_not_treated_as_the_builtin(self):
-        # AST function/class definitions and parameter names are strings, not ast.Name stores.
-        # Check the AST predicate directly to ensure the intended rule makes the decision.
-        shadowing = [
-            "def open(path):\n    return path\nopen('x')",
-            "async def open(path):\n    return path\nopen('x')",
-            "class open:\n    pass\nopen('x')",
-            "def f(open):\n    return open('x')",
-        ]
-        for code in shadowing:
-            with self.subTest(code=code):
-                self.assertFalse(guard._open_is_read_only(code))
-
-    # Regression (Owner decision, #629 review): on main, any python -c containing open( was DENY, so a dangerous
-    # API in the same snippet was denied too. A read-only open must not widen that: other calls are refused.
-    OPEN_WITH_OTHER_CALLS = [
-        "open('a'); import os; os.fork()",
-        "open('a.txt'); import zipfile; zipfile.ZipFile('o.zip','w')",
-        "print(open('a.txt').read()); import sqlite3; sqlite3.connect('x.db')",
-        "open('a.txt').read(); import tempfile; tempfile.mkstemp()",
-        "print(open('a.txt').read().split())",
-        "def print(x):\n    return x\nprint(open('a').read())",
-        "from x import print\nprint(open('a').read())",
-        "x = print; open('a'); x(1)",
-        # Rebinding a companion attribute, then calling it, reaches a write without a visible write call.
-        "import json, zipfile; json.load = zipfile.ZipFile; json.load('o.zip', 'w'); open('a.txt')",
-        "import json, os; json.load = os.fork; json.load(); print(open('a.txt').read())",
-        # Class-body name bindings of companion names (Name store, not attribute store), then attribute call.
-        "open('a.txt')\nimport zipfile\nclass X:\n    load = zipfile.ZipFile\nX.load('o.zip', 'w')",
-        "print(open('a.txt').read())\nimport zipfile\nclass X:\n    close = zipfile.ZipFile\nX.close('o.zip', 'w')",
-        "open('a.txt')\nfrom zipfile import ZipFile as load\nclass X:\n    pass\nX.load('o.zip', 'w')",
-        "open('a.txt')\nimport zipfile\nclass X:\n    (load := zipfile.ZipFile)\nX.load('o.zip', 'w')",
-        "open('a.txt')\nimport zipfile\nclass X:\n    for load in [zipfile.ZipFile]:\n        pass\nX.load('o.zip', 'w')",
-        "open('a.txt')\nimport os\nclass X:\n    read = os.startfile\nX.read('x.txt')",
-        # Non-call invocation: decorator and metaclass run a callable without a call expression.
-        "open('a.txt')\nimport os\n@os.startfile\ndef f():\n    pass",
-        "open('a.txt')\nimport zipfile\nclass A(metaclass=zipfile.ZipFile):\n    pass",
-        # Review 3: pickle.loads runs a GLOBAL callable from bytes (escaped text evades DANGER_PY); keywords are callbacks.
-        r"import pickle; open('a.txt').read(); pickle.loads(b'\x63\x6f\x73\x0a\x72\x65\x6d\x6f\x76\x65\x0a(S\'a.txt\'\ntR.')",
-        "import json, sqlite3; open('a.txt').read(); json.loads('[1.5]', parse_float=sqlite3.connect)",
-        "import json, sqlite3; json.load(open('a.txt'), parse_float=sqlite3.connect)",
-        "import json, os; print(json.loads('[1]', parse_int=os.startfile)); open('a')",
-        # Subscript store and rebinding of the json name redirect json.load.
-        "import sys, zipfile; sys.modules['json'] = zipfile; import json; json.load('o.zip', 'w'); open('a.txt')",
-        "import json, zipfile; json = zipfile; json.load('o.zip', 'w'); open('a.txt')",
-        "import pickle as json; open('a.txt'); json.load('x')",
-    ]
-
-    def test_open_with_other_calls_is_refused(self):
-        for code in self.OPEN_WITH_OTHER_CALLS:
-            with self.subTest(code=code):
-                self.assertEqual(self._verdict(code), "DENY")
-                self.assertFalse(guard._open_is_read_only(code))
 
 
 class PythonOpenMutationTests(unittest.TestCase):
-    """Mutants of the python -c rule run in a temporary copy of the hook and this module. Each must make a named
-    PythonOpenTests method fail (an assertion failure, not an import error). Runs on every host."""
+    """Mutants of the python -c danger rule run in a temporary copy of the hook and this module. Each must make a
+    named PythonOpenTests method fail (an assertion failure, not an import or startup error). Runs on every host."""
 
     MUTANTS = {
-        "AST open judgement removed": (
-            "if DANGER_PY.search(code) or not _open_is_read_only(code):",
-            "if DANGER_PY.search(code):"),
+        "open( token removed from danger list": (
+            "__import__|open\\s*\\(|write|truncate|",
+            "__import__|write|truncate|"),
         "wider danger word list reduced to the old list": (
             "replace|rename|chmod|chown|symlink|copy|move|dump\\b|link|",
             ""),
@@ -3652,31 +3605,9 @@ class PythonOpenMutationTests(unittest.TestCase):
         "new file mutation methods ignored": (
             "fileio|touch|mkdir|makedirs|mkfifo|mknod|utime|",
             ""),
-        "function definition shadowing ignored": (
-            'and node.name == "open":', 'and False:'),
-        "argument shadowing ignored": (
-            'and node.arg == "open":', 'and False:'),
-        "other calls next to open() not refused": (
-            "    if call_funcs and not _open_companions_only(tree, call_funcs):",
-            "    if False:"),
-        "attribute rebinding next to open() allowed": (
-            "        if isinstance(node, (ast.Attribute, ast.Subscript)) and not isinstance(node.ctx, ast.Load):",
-            "        if False:"),
-        "class-body name rebinding next to open() allowed": (
-            "        if isinstance(node, ast.Name) and node.id in OPEN_GUARDED_NAMES and not isinstance(node.ctx, ast.Load):",
-            "        if False:"),
-        "metaclass keyword next to open() allowed": (
-            "        if isinstance(node, ast.ClassDef) and (node.keywords or node.decorator_list):",
-            "        if False:"),
-        "keyword callbacks next to open() allowed": (
-            "            if node.keywords or not _companion_call_ok(node.func):",
-            "            if not _companion_call_ok(node.func):"),
-        "pickle.loads allowed as a companion": (
-            "        return f.attr in JSON_COMPANION_ATTRS and isinstance(f.value, ast.Name) and f.value.id == \"json\"",
-            "        return f.attr in JSON_COMPANION_ATTRS"),
     }
-    DETECTING = ["test_read_only_python_is_not_refused", "test_python_write_and_indirect_forms_are_refused",
-                 "test_shadowed_open_is_not_treated_as_the_builtin", "test_open_with_other_calls_is_refused"]
+    DETECTING = ["test_any_open_call_is_refused", "test_wider_danger_list_is_refused",
+                 "test_ordinary_dumps_is_not_over_refused"]
 
     def _run(self, hook_text):
         with tempfile.TemporaryDirectory() as td:
@@ -3702,8 +3633,7 @@ class PythonOpenMutationTests(unittest.TestCase):
             with self.subTest(mutant=name):
                 self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
                 code, out = self._run(original.replace(old, new))
-                # Only a named assertion failure (FAIL:) counts. An ERROR: (exception, import or startup failure)
-                # is not a detection.
+                # Only a named assertion failure (FAIL:) counts; an ERROR: is not a detection.
                 failing = [re.match(r"FAIL: (\S+) \(", ln) for ln in out.splitlines() if ln.startswith("FAIL:")]
                 names = [m.group(1) for m in failing if m]
                 detected = any(n in self.DETECTING for n in names)

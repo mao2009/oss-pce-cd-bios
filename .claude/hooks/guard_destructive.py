@@ -6,7 +6,6 @@ permissionDecision "deny" (exit 0). An ALLOW prints nothing (exit 0), so the
 normal permission flow still applies. The command is only inspected, never run.
 Rules: docs/claude-destructive-guard.md.
 """
-import ast
 import fnmatch
 import json
 import os
@@ -87,12 +86,10 @@ WRITE_NAMES = {"tee", "cp", "mv", "install", "rsync", "touch", "mkdir", "ln", "c
                "copy", "move", "copy-item", "move-item", "rename-item", "set-content",
                "add-content", "out-file", "new-item", "cpi", "mi", "ni", "sc", "ac"}
 DANGER_PY = re.compile(r"rmtree|remove|unlink|rmdir|removedirs|system|subprocess|popen|"
-                       r"shutil|spawn|exec|eval|__import__|write|truncate|"
+                       r"shutil|spawn|exec|eval|__import__|open\s*\(|write|truncate|"
                        r"ctypes|socket|replace|rename|chmod|chown|symlink|copy|move|dump\b|link|"
                        r"fileio|touch|mkdir|makedirs|mkfifo|mknod|utime|"
                        r"getattr|globals|locals|vars|builtins|__dict__", re.I)
-# python -c: open() is judged on parsed AST (see _open_is_read_only), never by regex.
-READ_MODES = frozenset({"r", "rb", "br", "rt", "tr"})
 # X3a (Issue #639): launcher classification by command name. Names only. Option grammars (X3b), wrapper and
 # shell grammars (X3c) and interpreter or tool forms (X3d) are decided by their own units. A name in no class is
 # UNKNOWN (UNKNOWN_CHECKED: the existing rules apply). A launcher class is FORM_DEPENDENT: its status depends on
@@ -1434,116 +1431,13 @@ def python_c_codes(args):
     return codes
 
 
-def _open_is_read_only(code):
-    """True only if the code parses and every use of `open` is builtin open(path) or open(path, <literal read mode>).
-
-    Judged on the AST, so string literals cannot hide a call's real arguments. Any other reference to
-    `open` (attribute such as io.open or x.open, a bare name used as a value, keyword or starred
-    arguments, a non-literal or write mode) makes the code not read-only.
-    """
-    try:
-        tree = ast.parse(code)
-    except (SyntaxError, ValueError, RecursionError):
-        return False
-    call_funcs = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "open":
-            if node.keywords or len(node.args) not in (1, 2) or any(isinstance(a, ast.Starred) for a in node.args):
-                return False
-            if len(node.args) == 2:
-                mode = node.args[1]
-                if not (isinstance(mode, ast.Constant) and isinstance(mode.value, str)
-                        and mode.value in READ_MODES):
-                    return False
-            call_funcs.add(id(node.func))
-        elif isinstance(node, ast.Name) and node.id in ("builtins", "__builtins__"):
-            return False
-        elif isinstance(node, ast.Name) and node.id == "open" and id(node) not in call_funcs:
-            return False
-        elif isinstance(node, ast.Attribute) and node.attr == "open":
-            return False
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == "open":
-            # A definition shadows the builtin even though its name is stored as a string in the AST.
-            return False
-        elif isinstance(node, ast.arg) and node.arg == "open":
-            # An argument can shadow the builtin without creating an ast.Name Store node.
-            return False
-        elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            # `from io import open as o` and `import builtins` reach open without a Name "open".
-            for alias in node.names:
-                if alias.name in ("open", "builtins") or alias.asname in ("open", "builtins"):
-                    return False
-    if call_funcs and not _open_companions_only(tree, call_funcs):
-        return False
-    return True
-
-
-# Calls allowed next to a read-only open(): print(), and read/close/dumps on any receiver. load and loads are
-# allowed only as json.load / json.loads: pickle.loads on attacker bytes runs a callable (GLOBAL opcode).
-OPEN_COMPANION_ATTRS = frozenset({"read", "readline", "readlines", "close", "dumps"})
-JSON_COMPANION_ATTRS = frozenset({"load", "loads"})
-# Names whose rebinding would change what a companion call reaches.
-OPEN_GUARDED_NAMES = OPEN_COMPANION_ATTRS | JSON_COMPANION_ATTRS | {"json", "print"}
-
-
-def _companion_call_ok(f):
-    if isinstance(f, ast.Name):
-        return f.id == "print"
-    if isinstance(f, ast.Attribute):
-        if f.attr in OPEN_COMPANION_ATTRS:
-            return True
-        return f.attr in JSON_COMPANION_ATTRS and isinstance(f.value, ast.Name) and f.value.id == "json"
-    return False
-
-
-def _open_companions_only(tree, call_funcs):
-    """When open() is used, every other call must be print(...) or one of OPEN_COMPANION_ATTRS.
-
-    Before this rule, any python -c containing open( was denied, so other dangerous APIs in the same snippet
-    were denied too. Refusing every other call keeps that. A user-defined print is refused (it could hide a write).
-    """
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.Attribute, ast.Subscript)) and not isinstance(node.ctx, ast.Load):
-            # `json.load = zipfile.ZipFile` or `sys.modules['json'] = zipfile` rebinds what a companion call reaches.
-            return False
-        if isinstance(node, ast.Name) and node.id in OPEN_GUARDED_NAMES and not isinstance(node.ctx, ast.Load):
-            # `class X: load = zipfile.ZipFile` then `X.load(...)`, or `json = zipfile`: a plain name store.
-            return False
-        if isinstance(node, (ast.Global, ast.Nonlocal)) and OPEN_GUARDED_NAMES & set(node.names):
-            return False
-        if isinstance(node, ast.ExceptHandler) and node.name in OPEN_GUARDED_NAMES:
-            return False
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name in OPEN_GUARDED_NAMES:
-            return False
-        if isinstance(node, ast.arg) and node.arg == "print":
-            return False
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.decorator_list:
-            # A decorator runs a callable without a visible call expression (`@os.startfile`).
-            return False
-        if isinstance(node, ast.ClassDef) and (node.keywords or node.decorator_list):
-            # A metaclass keyword runs a callable on class creation (`class A(metaclass=zipfile.ZipFile)`).
-            return False
-        if isinstance(node, (ast.Import, ast.ImportFrom)) and any(
-                (a.asname or a.name).split(".")[0] in OPEN_GUARDED_NAMES
-                and not (a.name == "json" and a.asname is None) for a in node.names):
-            # Plain `import json` is needed for json.load; any other binding of a guarded name is refused.
-            return False
-        if isinstance(node, ast.Call):
-            if id(node.func) in call_funcs:
-                continue
-            # Keyword arguments are callbacks too (`json.loads(s, parse_float=sqlite3.connect)`).
-            if node.keywords or not _companion_call_ok(node.func):
-                return False
-    return True
-
-
 def python_rule(args):
     # A shell variable or substitution in a python argument: its value is not visible here.
     for arg in args:
         if "$" in arg or "`" in arg or SUBST in arg:
             raise Deny("unexpanded", "python argument with an unexpanded variable or substitution is not inspected")
     for code in python_c_codes(args):
-        if DANGER_PY.search(code) or not _open_is_read_only(code):
+        if DANGER_PY.search(code):
             raise Deny("python-c", "python -c with a file or process operation")
 
 
