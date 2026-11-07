@@ -189,15 +189,14 @@ class CommercialOutputTests(unittest.TestCase):
                 validate_commercial_output(str(link))
 
     def test_nested_worktree_path_rejected(self):
-        # A path inside a worktree (dir with .git) must be rejected even under /tmp/opencode.
-        import os
+        # A path inside the worktree root (repo root param) must be rejected (hermetic, no /tmp/opencode needed).
         import tempfile
-        with tempfile.TemporaryDirectory(dir="/tmp/opencode") as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             wt = Path(tmp) / "wt"
             wt.mkdir()
             (wt / ".git").touch()
             with self.assertRaises(ValueError):
-                validate_commercial_output(str(wt / "out.json"))
+                validate_commercial_output(str(wt / "out.json"), root=wt)
 
     def test_harness_never_logs_paths(self):
         src = (ROOT / "tests" / "integration" / "geargrafx_api_entry.py").read_text()
