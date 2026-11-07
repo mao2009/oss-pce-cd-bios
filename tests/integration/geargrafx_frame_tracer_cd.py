@@ -10,6 +10,9 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import os
+import stat
+import secrets
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -54,6 +57,7 @@ def trace(rom, cue, output, observe_ram):
 
 def run(mode):
     """Run the bridge; callers classify blocked tracer and probe execution separately."""
+    _validate_evidence_mode(mode)
     folder = ROOT / "build" / mode / "cdread-probe"
     rom, labels = folder / "cdread-probe-not-bios.pce", folder / "trace-labels.txt"
     if not rom.is_file() or not labels.is_file():
@@ -110,8 +114,125 @@ def scsi_text(table):
 EVIDENCE_NAME = "frame-tracer-measurements.json"
 
 
+FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
+
+def _is_reparse_or_link(path):
+    """True for a symlink or a Windows reparse point (junction). A missing path is not a link."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    except (OSError, TypeError, NotImplementedError):
+        return True
+    is_junction = getattr(path, "is_junction", None)
+    try:
+        if callable(is_junction) and is_junction():
+            return True
+    except (OSError, TypeError, NotImplementedError, RuntimeError):
+        return True
+    try:
+        if os.path.islink(path):
+            return True
+    except (OSError, TypeError, NotImplementedError):
+        return True
+    return bool(getattr(st, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _validate_evidence_mode(mode):
+    if type(mode) is not str or mode not in ("debug", "release"):
+        raise ValueError("refusing to write frame-tracer evidence: invalid mode")
+
+
+def _open_safe_evidence_directory(root, mode, nofollow):
+    """Open ROOT/build/<mode>/frame-tracer-cd, creating it if needed, with every path component checked.
+
+    Each component is opened with ``O_DIRECTORY | O_NOFOLLOW`` relative to its parent descriptor, so an
+    intermediate symlink or reparse point cannot be substituted between the checks and the open.  A
+    missing ``O_DIRECTORY``/``O_NOFOLLOW`` (or ``dir_fd``) support fails closed.
+    """
+    _validate_evidence_mode(mode)
+    if nofollow is None:
+        raise ValueError("refusing to write frame-tracer evidence: O_NOFOLLOW is unavailable")
+    o_directory = getattr(os, "O_DIRECTORY", None)
+    if o_directory is None:
+        raise ValueError("refusing to write frame-tracer evidence: O_DIRECTORY is unavailable")
+    parts = ("build", mode, "frame-tracer-cd")
+    if _is_reparse_or_link(root):
+        raise ValueError("refusing to write frame-tracer evidence through a symbolic link or reparse point")
+    try:
+        current_fd = os.open(root, os.O_RDONLY | o_directory | nofollow)
+    except (OSError, TypeError, NotImplementedError):
+        raise ValueError("refusing to write frame-tracer evidence: directory open is unsupported or unsafe")
+    try:
+        root_st = os.fstat(current_fd)
+    except (OSError, TypeError, NotImplementedError):
+        try:
+            os.close(current_fd)
+        except OSError:
+            pass
+        raise ValueError("refusing to write frame-tracer evidence: directory status is unsupported or unsafe")
+    if stat.S_ISLNK(root_st.st_mode) or bool(getattr(root_st, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT):
+        try:
+            os.close(current_fd)
+        except OSError:
+            pass
+        raise ValueError("refusing to write frame-tracer evidence through a symbolic link or reparse point")
+    try:
+        for index, part in enumerate(parts):
+            path = root.joinpath(*parts[: index + 1])
+            if _is_reparse_or_link(path):
+                raise ValueError("refusing to write frame-tracer evidence through a symbolic link or reparse point")
+            try:
+                os.mkdir(part, 0o755, dir_fd=current_fd)
+            except FileExistsError:
+                pass
+            except (OSError, TypeError, NotImplementedError):
+                raise ValueError("refusing to write frame-tracer evidence through a symbolic link or reparse point")
+            child_fd = None
+            try:
+                child_fd = os.open(part, os.O_RDONLY | o_directory | nofollow, dir_fd=current_fd)
+            except (OSError, TypeError, NotImplementedError):
+                raise ValueError("refusing to write frame-tracer evidence through a symbolic link or reparse point")
+            try:
+                st = os.fstat(child_fd)
+            except (OSError, TypeError, NotImplementedError):
+                try:
+                    os.close(child_fd)
+                except OSError:
+                    pass
+                raise ValueError("refusing to write frame-tracer evidence: directory status is unsupported or unsafe")
+            if stat.S_ISLNK(st.st_mode) or bool(getattr(st, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT):
+                try:
+                    os.close(child_fd)
+                except OSError:
+                    pass
+                raise ValueError("refusing to write frame-tracer evidence through a symbolic link or reparse point")
+            old_fd = current_fd
+            current_fd = child_fd
+            child_fd = None
+            try:
+                os.close(old_fd)
+            except OSError:
+                pass
+        return current_fd
+    except BaseException:
+        try:
+            os.close(current_fd)
+        except OSError:
+            pass
+        raise
+
+
 def write_evidence(mode, record):
-    """Write this diagnostic's own evidence file (overwritten in place; nothing else is touched)."""
+    """Write this diagnostic's own evidence file (overwritten in place; nothing else is touched).
+
+    Every component of ``build/<mode>/frame-tracer-cd`` is opened through its parent descriptor with
+    ``O_DIRECTORY | O_NOFOLLOW``, and the file is replaced through ``dir_fd``, so an intermediate or
+    final link/reparse point cannot redirect the write. ``O_DIRECTORY``/``O_NOFOLLOW`` are required;
+    environments without them fail closed.
+    """
+    _validate_evidence_mode(mode)
     output = ROOT / "build" / mode / "frame-tracer-cd"
     target = output / EVIDENCE_NAME
     chain = (ROOT / "build", ROOT / "build" / mode, output, target)
@@ -120,10 +241,118 @@ def write_evidence(mode, record):
         # Never follow a link out of build/: a symlinked folder or evidence file is refused, not written through.
         if any(path.is_symlink() for path in chain):
             raise ValueError("refusing to write frame-tracer evidence through a symbolic link")
+        if any(callable(getattr(path, "is_junction", None)) and path.is_junction() for path in chain):
+            raise ValueError("refusing to write frame-tracer evidence through a symbolic link or reparse point")
+        if any(_is_reparse_or_link(path) for path in chain):
+            raise ValueError("refusing to write frame-tracer evidence through a symbolic link or reparse point")
+
     refuse_links()  # before mkdir, so no directory is created through a linked parent
-    output.mkdir(parents=True, exist_ok=True)
-    refuse_links()
-    target.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise ValueError("refusing to write frame-tracer evidence: O_NOFOLLOW is unavailable")
+
+    parent_fd = None
+    temp_name = None
+    try:
+        # Open (creating if necessary) every component of build/<mode>/frame-tracer-cd through its parent
+        # descriptor, so an intermediate symlink/reparse point cannot be substituted.
+        parent_fd = _open_safe_evidence_directory(ROOT, mode, nofollow)
+        try:
+            opened_parent = os.fstat(parent_fd)
+        except (OSError, TypeError, NotImplementedError):
+            raise ValueError("refusing to write frame-tracer evidence: directory status is unsupported or unsafe")
+        if stat.S_ISLNK(opened_parent.st_mode) or bool(
+                getattr(opened_parent, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT):
+            raise ValueError("refusing to write frame-tracer evidence through a symbolic link or reparse point")
+
+        try:
+            target_st = os.stat(EVIDENCE_NAME, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            target_st = None
+        except (OSError, TypeError, NotImplementedError):
+            raise ValueError("refusing to write frame-tracer evidence: target status is unsupported or unsafe")
+        if target_st is not None and (stat.S_ISLNK(target_st.st_mode) or bool(
+                getattr(target_st, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT)):
+            raise ValueError("refusing to write frame-tracer evidence through a symbolic link or reparse point")
+        if target_st is not None and not stat.S_ISREG(target_st.st_mode):
+            raise ValueError("refusing to write frame-tracer evidence: target is not a regular file")
+
+        temp_name = f".{EVIDENCE_NAME}.{secrets.token_hex(16)}.tmp"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow
+        fd = None
+        created = False
+        try:
+            try:
+                fd = os.open(temp_name, flags, 0o600, dir_fd=parent_fd)
+            except (OSError, TypeError, NotImplementedError):
+                temp_name = None
+                raise ValueError("refusing to write frame-tracer evidence: temporary file creation is unsupported or unsafe")
+            created = True
+            try:
+                handle = os.fdopen(fd, "wb", closefd=True)
+            except (OSError, ValueError):
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                fd = None
+                if created:
+                    try:
+                        os.unlink(temp_name, dir_fd=parent_fd)
+                    except (OSError, TypeError, NotImplementedError):
+                        pass
+                temp_name = None
+                raise ValueError("refusing to write frame-tracer evidence: temporary file creation is unsupported or unsafe")
+            fd = None  # ownership transferred to handle
+            try:
+                with handle:
+                    handle.write((json.dumps(record, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                    opened_stat = os.fstat(handle.fileno())
+                    try:
+                        path_stat = os.stat(temp_name, dir_fd=parent_fd, follow_symlinks=False)
+                    except (OSError, TypeError, NotImplementedError):
+                        raise ValueError("refusing to write frame-tracer evidence: temporary file status is unsupported or unsafe")
+                    if (opened_stat.st_dev, opened_stat.st_ino, stat.S_IFMT(opened_stat.st_mode)) != \
+                            (path_stat.st_dev, path_stat.st_ino, stat.S_IFMT(path_stat.st_mode)):
+                        raise ValueError("refusing to write frame-tracer evidence: temporary file was replaced")
+                    try:
+                        os.replace(temp_name, EVIDENCE_NAME, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+                    except (OSError, TypeError, NotImplementedError):
+                        raise ValueError("refusing to write frame-tracer evidence: atomic replacement is unsupported or unsafe")
+                    temp_name = None
+                    try:
+                        os.fsync(parent_fd)
+                    except (OSError, TypeError, NotImplementedError):
+                        pass
+            except (OSError, ValueError):
+                if temp_name is not None:
+                    try:
+                        os.unlink(temp_name, dir_fd=parent_fd)
+                    except (OSError, TypeError, NotImplementedError):
+                        pass
+                temp_name = None
+                raise
+        except BaseException:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            raise
+    finally:
+        if temp_name is not None:
+            try:
+                os.unlink(temp_name, dir_fd=parent_fd)
+            except (OSError, TypeError, NotImplementedError):
+                pass
+        if parent_fd is not None:
+            try:
+                os.close(parent_fd)
+            except OSError:
+                pass
 
 
 def status_record(status):
@@ -193,15 +422,27 @@ def main(argv=None):
     try:
         run(args.mode)
     except IntegrationBlocked as error:
-        write_evidence(args.mode, status_record("BLOCKED"))
+        try:
+            write_evidence(args.mode, status_record("BLOCKED"))
+        except (OSError, ValueError) as write_error:
+            print(f"FAIL: frame-tracer CD integration evidence path: {write_error}", file=sys.stderr)
+            return 1
         print(f"BLOCKED: frame-tracer CD integration: {error}", file=sys.stderr)
         return 3
     except (AssertionError, ValueError) as error:
-        write_evidence(args.mode, status_record("FAIL"))
+        try:
+            write_evidence(args.mode, status_record("FAIL"))
+        except (OSError, ValueError) as write_error:
+            print(f"FAIL: frame-tracer CD integration evidence path: {write_error}", file=sys.stderr)
+            return 1
         print(f"FAIL: frame-tracer CD integration oracle assertion: {error}", file=sys.stderr)
         return 1
     except Exception as error:  # unexpected diagnostic failures are failures, never blockers
-        write_evidence(args.mode, status_record("FAIL"))
+        try:
+            write_evidence(args.mode, status_record("FAIL"))
+        except (OSError, ValueError) as write_error:
+            print(f"FAIL: frame-tracer CD integration evidence path: {write_error}", file=sys.stderr)
+            return 1
         print(f"FAIL: frame-tracer CD integration unexpected {type(error).__name__}: {error}", file=sys.stderr)
         return 1
     return 0
