@@ -99,7 +99,10 @@ def halt_fields(arrival=1000, steps=64):
 def observation(lba=5, count=1):
     """Synthetic but internally consistent cold+warm success observation for judge_success()."""
     sector = encode_sector(lba, PAYLOAD)
-    buffer = bytearray(b"\x5a" * 6144)
+    # Guest-faithful: only BUF ($2800-$2FFF) and EXEC $3000-$30FF are $5A-seeded; $3100-$3FFF unseeded.
+    buffer = bytearray(6144)
+    buffer[:SECTOR_BYTES] = b"\x5a" * SECTOR_BYTES
+    buffer[judge.EXEC_OFF:judge.EXEC_WINDOW_END_OFF] = b"\x5a" * 256
     buffer[:SECTOR_BYTES] = sector
     buffer[judge.EXEC_OFF:judge.EXEC_OFF + len(PAYLOAD)] = PAYLOAD
     buffer[judge.MARK_OFF:judge.MARK_OFF + 7] = bytes([0xA5, 0x5A, 0, 0, 0xF8, 0xFF, 0x3C])
@@ -128,8 +131,14 @@ def observation(lba=5, count=1):
 
 def failure_observation():
     result = bytes([20, 11]) + SECTOR_BYTES.to_bytes(2, "little") + bytes([0, 0, 0])
+    # The guest seeds $3000-$30FF with $5A before READ(6); a pre-copy rejection leaves it untouched.
+    buffer = bytearray(6144)
+    buffer[:SECTOR_BYTES] = b"\x5a" * SECTOR_BYTES
+    buffer[judge.EXEC_OFF:judge.EXEC_WINDOW_END_OFF] = b"\x5a" * 256
+    buffer[:SECTOR_BYTES] = encode_sector(5, PAYLOAD)
     return {"CAP": [], "HIT": [], "PHASE": [],
-            "RUN": [{"cycle": c, "reason": "cd_halt_fail", **halt_fields(), "result_hex": result.hex()}
+            "RUN": [{"cycle": c, "reason": "cd_halt_fail", **halt_fields(), "result_hex": result.hex(),
+                     "buffer_hex": buffer.hex()}
                     for c in ("cold", "warm")]}
 
 

@@ -13,6 +13,7 @@ System Card compatibility claim, and **not** a successful System Card or commerc
 | 2. data sector | `tools/build_cdload_exec.py` writes `PCEX`, entry offset, length, checksum, reserved, then the code into LBA 5 | sector bytes compared with the independent generator |
 | 3. READ(6) | Stage 0 polls `$1800`-`$1804` with the Issue #5 protocol (copied, not linked) | `cd_data_done` reached, transferred bytes = 2048 |
 | 4. RAM transfer | sector staged at `$2800`, code copied to `$3000` | RAM dump `$2800`-`$3FFF` equals sector + payload |
+| 4b. copy boundary (#668) | `BUF`/`EXEC $3000-$30FF` seeded `$5A` before READ(6); success tail `$EXEC+len..$30FF` must stay sentinel | partial copy and 1-byte overshoot rejected by judges (stage 11 = copy blocked, no payload hints = execution blocked) |
 | 5. MPR / stack | MPR set as in the Issue #5 diagnostic; payload reads MPR1 with `TMA #$02` and SP with `TSX` | MPR at halt `[ff f8 01 02 1f 03 04 00]`; payload-observed MPR1 `$F8`, SP `$FF` |
 | 6. control transfer | `jmp (EXECVEC)` into `$3000` | `payload_entry` PC `$3000` |
 | 7. marker | payload writes `$3F00`=`A5`, `$3F01`=`5A`, `$3F04`=MPR1, `$3F05`=SP, `$3F06`=`3C`, then `jmp (RETVEC)` | marker bytes in the RAM dump |
@@ -34,7 +35,8 @@ PC order must be exactly `cd_buffer_ready`, `cd_data_done`, `payload_entry`, `pa
 | READ(6) for LBA `0x1FFFFF` | `PREMATURE_STATUS_PHASE` (5), 0 bytes |
 | Drive abort at DATA-IN (`eject-in-data`) | `DATA_TIMEOUT` (4), 0 bytes (incomplete read) |
 | Step budget 1000 | `budget`, header never reached |
-| Mutated observations (RAM code byte, marker MPR, MPR at halt, payload entry PC, missing return, unconfirmed halt, sector byte, result block) | rejected by the success judge |
+| Mutated observations (RAM code byte, marker MPR, MPR at halt, payload entry PC, missing return, unconfirmed halt, sector byte, result block, copy overshoot bytes) | rejected by the success judge |
+| Partial EXEC copy before a header failure (synthetic records, `tests.host.test_pcex_boundary`) | rejected by the failure judge (`EXEC sentinel overwritten`) |
 
 ## Commands
 
@@ -53,5 +55,6 @@ cmp build/debug/cdload-exec/cdload-exec-probe-not-bios.pce build/release/cdload-
 - Real PC Engine hardware or a second emulator (NOT_TESTED).
 - A partial sector read with bytes transferred strictly between 0 and 2048 (only the abort at DATA-IN was injected).
 - A RAM copy fault (no RAM fault injection), an exec address other than `$3000`, and a payload larger than one sector.
+  Length 256+, sector overflow and load-address excess are unrepresentable in one-byte PCEX (see `tests.host.test_pcex_boundary` and #668 evidence); the 255-byte maximum is proven on the real core, but a real-core negative for the unencodable values is NOT_RUN.
 - Any compatibility, boot, or game-loading result. The default DEV ROM, the #4 startup ROM and the 81-entry API table
   are untouched and remain release-blocked.
