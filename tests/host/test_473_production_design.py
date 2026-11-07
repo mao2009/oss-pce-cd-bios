@@ -34,6 +34,17 @@ class ProductionDesign(unittest.TestCase):
                   "DEV_CALLABLE 0", "0/81", "再開は禁止"]:
             self.assertIn(s, DESIGN)
 
+    def test_per_method_post_stop_expectations(self):
+        # §5 must not demand one identical post-stop state for every method.
+        self.assertIn("同一の停止後状態を全方式に一律に要求しない", DESIGN)
+        for s in ["A 単独", "A+C", "A+D", "A+E", "転送開始前", "転送途中",
+                  "TAM 実行前", "TAM 実行後", "PC/MPR", "BLOCKED (再開禁止)", "再開は禁止"]:
+            self.assertIn(s, DESIGN)
+
+    def test_mid_transfer_partial_execution_blocked(self):
+        self.assertIn("部分実行済み", DESIGN)
+        self.assertIn("巻き戻されない", DESIGN)
+
     def test_not_claimed_implemented(self):
         self.assertIn("No implementation", DESIGN)
         self.assertIn("実装済みの安全機構は存在しない", DESIGN)

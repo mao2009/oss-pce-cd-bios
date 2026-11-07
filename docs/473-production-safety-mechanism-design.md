@@ -78,8 +78,19 @@ Positive cases:
 Verification order: S1 (allowlist) -> S2 (A + N-IRQ-TAM) -> S3 (C) -> S4 (A+C) -> S5/S6 (decode-time vs
 deferral, pre-start/mid-transfer). Each as 1 Issue = 1 Draft PR.
 
-Acceptance after refusal/stop: A/X/Y, VDC AR/R[7]/status, S, P, PC, MPR0-7, destination byte, WRAM stack
-image, IRQ pending state match pre-refusal values (with stop-point definition fixed first).
+拒否/停止後の期待状態は方式ごとに異なる。同一の停止後状態を全方式に一律に要求しない
+(根拠は #647/#648 の測定。新しい実測値は本節では作らない)。
+
+| 方式 | 基準時点 | 期待状態 | 判定 |
+|---|---|---|---|
+| A 単独 | — | IRQ-in-TAM で副作用 (hardware page への entry push) を止められない | UNSAFE |
+| A+C | 停止時点 (副作用直前) | 副作用は止まるが、残った PC/S/P/MPR/VDC/WRAM 状態は拒否前と一致しない場合がある | BLOCKED (再開禁止) |
+| A+D | TAM 実行前 (decode-time 拒否時点) | PC/MPR を含む状態が TAM 実行前と一致。A/X/Y/S/P も拒否前と一致 | 検証範囲内で SAFE_IN_SCOPE |
+| A+E | TAM 実行後 (次の命令開始時点) | TAM 実行後の PC/MPR (MPR1=$FF が適用済み) と、1命令遅延した IRQ タイミングを許容する。A/X/Y/S/P・IRQ 保留は維持 | 検証範囲内で SAFE_IN_SCOPE |
+| T (転送開始前) | 転送開始前の命令開始時点 | 何も変化していないため、PC/MPR 等は拒否前と一致し得る | SAFE_IN_SCOPE になり得る |
+| T (転送途中) | 転送途中 | 既に部分実行済み。書込済みバイトは件数・カウンタとして記録され、巻き戻されない | BLOCKED (再開禁止) |
+
+いずれの方式でも、停止後のゲスト再開は禁止する。C の停止点定義 (S0 item 4) は未確定のままである。
 
 ## 6. BLOCKED conditions (maintained)
 
