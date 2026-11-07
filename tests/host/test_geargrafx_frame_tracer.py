@@ -1101,7 +1101,8 @@ class CommercialSanitizationTests(unittest.TestCase):
             elif stage_disc_return is not None:
                 stage_kwargs["return_value"] = stage_disc_return
             job_result = run_job if run_job is not None else {"status": None, "exit_code": 0,
-                                                              "stdout": output([event()]), "elapsed_s": 0.1}
+                                                              "stdout": output([event()], cap_fields={"disc_given": True,
+                                                                "ram_observation": True}), "elapsed_s": 0.1}
             with mock.patch.object(tracer, "doctor", return_value={"status": "PASS"}) as doctor, \
                     mock.patch.object(tracer, "make_tracked_job_dir", return_value=(job, (1, 2, 3))), \
                     mock.patch.object(tracer, "compile_probe", return_value=Path("probe")), \
@@ -1300,6 +1301,68 @@ class CommercialSanitizationTests(unittest.TestCase):
         bad = dict(event("cd"), load_sector=-1)
         with self.assertRaises(ValueError):
             tracer.parse_records(output([bad]))
+
+    def _run_trace_args(self, cue, observe, stdout):
+        with tempfile.TemporaryDirectory() as tmp:
+            job = Path(tmp) / "job"
+            job.mkdir()
+            args = SimpleNamespace(frames=2, events=4, timeout=1, rom=self.PRIVATE_ROM, cue=cue,
+                                   run_start_frame=None, run_hold_frames=None, observe_ram=observe)
+            job_result = {"status": None, "exit_code": 0, "stdout": stdout, "elapsed_s": 0.1}
+            with mock.patch.object(tracer, "doctor", return_value={"status": "PASS"}), \
+                    mock.patch.object(tracer, "make_tracked_job_dir", return_value=(job, (1, 2, 3))), \
+                    mock.patch.object(tracer, "compile_probe", return_value=Path("probe")), \
+                    mock.patch.object(tracer.shutil, "copyfile"), \
+                    mock.patch.object(tracer, "stage_disc", return_value=["copied.cue"]), \
+                    mock.patch.object(tracer, "run_job", return_value=job_result), \
+                    mock.patch.object(tracer, "cleanup_tracked_job_dir", return_value=(True, "removed")):
+                log = tracer.trace(args)
+            return log
+
+    def test_cap_input_consistency(self):
+        ok_cue = output([event()], cap_fields={"disc_given": True, "ram_observation": True})
+        self.assertEqual(self._run_trace_args(self.PRIVATE_CUE, True, ok_cue)["status"], "PASS")
+        ok_nocue = output([event()], cap_fields={"disc_given": False, "ram_observation": True})
+        self.assertEqual(self._run_trace_args(None, True, ok_nocue)["status"], "PASS")
+        mismatch_cue = output([event()], cap_fields={"disc_given": False, "ram_observation": True})
+        log = self._run_trace_args(self.PRIVATE_CUE, True, mismatch_cue)
+        self.assertEqual((log["status"], log["evidence"]), ("FAIL", "NOT_RUN"))
+        self.assertNotIn("/private", self._serialized(log))
+        mismatch_nocue = output([event()], cap_fields={"disc_given": True, "ram_observation": True})
+        log = self._run_trace_args(None, True, mismatch_nocue)
+        self.assertEqual((log["status"], log["evidence"]), ("FAIL", "NOT_RUN"))
+        self.assertNotIn("/private", self._serialized(log))
+
+    def test_observation_consistency(self):
+        log = self._run_trace_args(self.PRIVATE_CUE, True,
+                                   output([event()], cap_fields={"disc_given": True, "ram_observation": False}))
+        self.assertEqual((log["status"], log["evidence"]), ("FAIL", "NOT_RUN"))
+        log = self._run_trace_args(self.PRIVATE_CUE, False,
+                                   output([event()], cap_fields={"disc_given": True, "ram_observation": True}))
+        self.assertEqual((log["status"], log["evidence"]), ("FAIL", "NOT_RUN"))
+
+    def test_invalid_cap_frames_raises_valueerror_not_keyerror(self):
+        for bad in (MISSING, None, True, "/private/rom/title.cue"):
+            with self.subTest(bad=repr(bad)[:30]):
+                with self.assertRaises(ValueError) as caught:
+                    tracer.parse_records(output([event()], cap_fields={"frames": bad,
+                                                                       "run_input_requested": True,
+                                                                       "run_start_frame": 1,
+                                                                       "run_hold_frames": 2}))
+                self.assertNotIn("/private", str(caught.exception))
+                self.assertNotIn("title.cue", str(caught.exception))
+
+    def test_unhashable_values_raise_valueerror_not_typeerror(self):
+        bad_event = dict(event(), kind=[])
+        with self.assertRaises(ValueError):
+            tracer.parse_records(output([bad_event]))
+        rows = ram_deltas()
+        rows[1] = dict(rows[1], scsi_correlation=[])
+        with self.assertRaises(ValueError):
+            tracer.parse_records(output([event()], ram_deltas=rows))
+        bad_cap = {"ram_regions": [{"ram": [], "size": 8192, "bank_first": 248, "bank_last": 251}]}
+        with self.assertRaises(ValueError):
+            tracer.parse_records(output([event()], cap_fields=bad_cap))
 
 
 if __name__ == "__main__":

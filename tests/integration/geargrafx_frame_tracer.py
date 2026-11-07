@@ -50,9 +50,9 @@ GUEST_STATE_CHECK_SCOPE = (
     "guest CPU registers, MPRs, master clock, timer, IDR/IRR, CD/SCSI state and observed RAM compared only "
     "immediately before and after the tracer's own TraceLogger API calls (setup, then once per frame); this is "
     "not an observer non-interference claim: enabling core tracing inside RunToVBlank is not covered")
-# How to read the raw END object kept in the log as "summary".
+# How to read the validated END allowlist kept in the log as "summary".
 SUMMARY_SCOPE = (
-    "raw, unlabelled END fields as emitted by the C++ tracer; only 'measurements' carries a status. "
+    "allowlist-filtered, validated END fields (unknown fields are rejected fail-closed); only 'measurements' carries a status. "
     "summary.max_frame_core_entries is the retained (post-clamp) maximum, whereas "
     "measurements.max_frame_core_entries is the pre-clamp maximum; summary.max_frame_scsi_events is exact only "
     "when measurements.max_frame_scsi_events is MEASURED, otherwise it is the scsi_events_lower_bound value")
@@ -198,13 +198,15 @@ def run_schedule(start_frame, hold_frames, frames):
 
 def validate_ram_deltas(rows, frames):
     """Validate cumulative, byte-free RAM metadata independently of event retention."""
-    if type(rows) is not list or {row.get("region") for row in rows if type(row) is dict} != set(RAM_BANK_RANGES) or len(rows) != 3:
+    if type(rows) is not list or len(rows) != 3 or \
+            any(type(row) is not dict or type(row.get("region")) is not str for row in rows) or \
+            {row.get("region") for row in rows} != set(RAM_BANK_RANGES):
         raise ValueError("invalid RAM region summary")
     for row in rows:
         if type(row) is not dict:
             raise ValueError("invalid RAM region entry")
         region, present, availability = row.get("region"), row.get("present"), row.get("availability")
-        if availability not in {"PRESENT", "ABSENT", "UNKNOWN"}:
+        if type(availability) is not str or availability not in {"PRESENT", "ABSENT", "UNKNOWN"}:
             raise ValueError("invalid RAM availability")
         if (availability == "PRESENT") != (present is True) or (availability == "ABSENT") != (present is False) or \
                 (availability == "UNKNOWN") != (present is None):
@@ -216,7 +218,7 @@ def validate_ram_deltas(rows, frames):
         # alike are published by _public_end(), so a private string in any row must not
         # survive as a public field. Missing values fail the membership/length checks.
         correlation, scsi_frames = row.get("scsi_correlation"), row.get("scsi_update_frames")
-        if correlation not in {"OBSERVED", "NONE_OBSERVED", "UNKNOWN"} or type(scsi_frames) is not list or \
+        if type(correlation) is not str or correlation not in {"OBSERVED", "NONE_OBSERVED", "UNKNOWN"} or type(scsi_frames) is not list or \
                 any(type(frame) is not int or not 1 <= frame <= frames for frame in scsi_frames) or scsi_frames != sorted(set(scsi_frames)):
             raise ValueError("invalid SCSI frame correlation")
         if correlation == "OBSERVED" and not scsi_frames:
@@ -518,7 +520,7 @@ def validate_regions_and_resets(cap, end, events, resets, has_core_trace):
     gaps_possible = core["gap_frames"] > 0 or core["discontinuity_frames"] > 0
     for index, event in enumerate(regions):
         kind, gap, from_unknown = event.get("region_kind"), event["trace_gap"], event["from_region"] == "unknown"
-        if kind not in REGION_KINDS or event["to_region"] == "unknown":
+        if type(kind) is not str or kind not in REGION_KINDS or event["to_region"] == "unknown":
             raise ValueError("invalid REGION classification")
         if kind != ("transition" if not from_unknown else "after_gap" if gap else "baseline") or \
                 (kind == "transition" and gap):
@@ -566,6 +568,9 @@ def parse_records(stdout, require_ram_observation=True):
             end = row
     if cap is None or end is None:
         raise ValueError("missing CAP or END")
+    # Required CAP frames are validated before any RUN/INPUT/EVENT code indexes cap["frames"].
+    if type(cap.get("frames")) is not int or not 1 <= cap["frames"] <= MAX_FRAMES:
+        raise ValueError("invalid frame count")
     if cap.get("normal_frame_execution") is not True or cap.get("instruction_step") is not False:
         raise ValueError("not a normal-frame trace")
     if type(cap.get("ram_observation")) is not bool:
@@ -604,7 +609,8 @@ def parse_records(stdout, require_ram_observation=True):
         raise ValueError("invalid RAM region inventory")
     if cap.get("ram_observation") is True:
         for region in regions:
-            if not isinstance(region, dict) or (region.get("size"), region.get("bank_first"), region.get("bank_last")) not in \
+            if not isinstance(region, dict) or type(region.get("ram")) is not str or \
+                    (region.get("size"), region.get("bank_first"), region.get("bank_last")) not in \
                     RAM_BANK_RANGES.get(region.get("ram"), ()):
                 raise ValueError("unconfirmed RAM region mapping")
             _reject_unknown(region, CAP_REGION_ALLOWED, "CAP ram_regions entry")
@@ -647,7 +653,7 @@ def parse_records(stdout, require_ram_observation=True):
         _reject_unknown(row, RAM_DELTA_ALLOWED, "END ram_deltas entry")
     for row in inputs:
         if type(row.get("frame")) is not int or not 1 <= row["frame"] <= cap["frames"] or \
-                row.get("action") not in {"press", "release"} or type(row.get("run_pressed")) is not bool:
+                type(row.get("action")) is not str or row.get("action") not in {"press", "release"} or type(row.get("run_pressed")) is not bool:
             raise ValueError("invalid INPUT record")
     for row in resets:
         # Type-only here; value mismatches are reported by validate_regions_and_resets
@@ -658,7 +664,7 @@ def parse_records(stdout, require_ram_observation=True):
                 not 1 <= row["frame"] <= cap["frames"]:
             raise ValueError("invalid RESET record")
     for event in events:
-        if event.get("kind") not in EVENT_KINDS or type(event.get("frame")) is not int or not 1 <= event["frame"] <= cap["frames"]:
+        if type(event.get("kind")) is not str or event.get("kind") not in EVENT_KINDS or type(event.get("frame")) is not int or not 1 <= event["frame"] <= cap["frames"]:
             raise ValueError("invalid event header")
         kind = event.get("kind")
         if kind == "region":
@@ -672,6 +678,7 @@ def parse_records(stdout, require_ram_observation=True):
         if event["kind"] == "region":
             if (not all(type(event.get(key)) is int for key in ("event_cycle", "event_pc", "event_bank")) or
                     not 0 <= event["event_pc"] <= 0xffff or not 0 <= event["event_bank"] <= 0xff or
+                    type(event.get("from_region")) is not str or type(event.get("to_region")) is not str or
                     event.get("from_region") not in CPU_REGIONS or event.get("to_region") not in CPU_REGIONS or
                     type(event.get("trace_gap")) is not bool):
                 raise ValueError("invalid event-time CPU region transition")
@@ -696,7 +703,7 @@ def parse_records(stdout, require_ram_observation=True):
             if cap.get("ram_observation") is not True:
                 raise ValueError("RAM event emitted while RAM observation is disabled")
             ram, size = event.get("ram"), event.get("size")
-            if ram not in RAM_BANK_RANGES or type(size) is not int:
+            if type(ram) is not str or ram not in RAM_BANK_RANGES or type(size) is not int:
                 raise ValueError("invalid RAM classification")
             if (size, event.get("bank_first"), event.get("bank_last")) not in RAM_BANK_RANGES[ram]:
                 raise ValueError("unconfirmed RAM bank mapping")
@@ -809,6 +816,14 @@ def trace(args):
             return log
         if cap.get("warm_reset_frame") != (warm_reset or 0):
             log.update(status="FAIL", reason="trace rejected: tracer did not apply the requested warm reset",
+                       evidence="NOT_RUN")
+            return log
+        if cap.get("disc_given") != (args.cue is not None):
+            log.update(status="FAIL", reason="trace rejected: tracer did not apply the requested disc input",
+                       evidence="NOT_RUN")
+            return log
+        if cap.get("ram_observation") != args.observe_ram:
+            log.update(status="FAIL", reason="trace rejected: tracer did not apply the requested RAM observation",
                        evidence="NOT_RUN")
             return log
         log.update(status="PASS", reason="bounded normal-frame trace completed", evidence="REAL_GEARGRAFX_CORE",
