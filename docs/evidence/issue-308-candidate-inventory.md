@@ -2,7 +2,7 @@
 
 - 対象 Issue: [#308](https://github.com/mao2009/oss-pce-cd-bios/issues/308)（Refs のみ。Closes は使わない）。親: [#105](https://github.com/mao2009/oss-pce-cd-bios/issues/105)
 - 基準: `origin/main` = `e846c24`（2026-11-07 取得）
-- 位置づけ: **証拠整理のみ**。コードのコピー・翻訳・ROM への取り込みは行っていない。全候補の disposition は PENDING のまま変更しない。System Card ABI 未確定は BLOCKED_ABI、`release_eligible=false`。
+- 位置づけ: **証拠整理のみ**。コードのコピー・翻訳・ROM への取り込みは行っていない。候補の disposition は台帳どおり (PENDING / RESTRICTED 提案 / —)。本 PR で承認済み (APPROVED) にはしない。System Card ABI 未確定は BLOCKED_ABI、`release_eligible=false`。
 - 関連正本: [oss-candidate-ledger.md](../oss-candidate-ledger.md)（ファイル単位台帳）、[reuse/oss-candidate-verification-308.md](../reuse/oss-candidate-verification-308.md)（pinned パス再検証）、[reuse-inventory.md](../reuse-inventory.md)（初期候補一覧）、[cd-oss-survey.md](../cd-oss-survey.md)（CD-ROM² 調査）。
 
 ## 1. 候補インベントリ（要約）
@@ -57,12 +57,12 @@
 | System Card ABI 確定 | BLOCKED_ABI | `release_eligible=false`。本 PR では解除しない |
 | ROM への第三者コード混入 | BLOCKED | ライセンス未確定のため 0 件のまま |
 
-## 3. ライセンス確認レベルの定義
+## 4. ライセンス確認レベルの定義
 
 | レベル | 意味 | 本 PR での扱い |
 | --- | --- | --- |
-| L0 | リポジトリ単位でのみ確認 (ルート LICENSE/COPYING) | L-09, L-10, L-11, L-12, L-14, L-15, L-16, L-17, L-18, L-19 |
-| L1 | ファイル単位のヘッダ/SPDX 表記を確認 | L-01, L-02, L-03, L-04, L-05, L-06, L-07, L-08, L-13 |
+| L0 | リポジトリ単位でのみ確認 (ルート LICENSE/COPYING) | L-10, L-11, L-12, L-14, L-15, L-16, L-18, L-19 |
+| L1 | ファイル単位のヘッダ/SPDX 表記を確認 | L-01, L-02, L-03, L-04, L-05, L-06, L-07, L-08, L-09, L-13, L-17 |
 | L2 | ファイル単位の権利者・NOTICE を確定 | 未実施 (人間の provenance 監査が必要) |
 | L3 | 取り込み可否の承認 (Owner) | 未実施 (PENDING のまま) |
 
@@ -70,7 +70,7 @@
 - blob SHA / 行番号は既存台帳・verification 文書からの転記であり、本 PR で独立再取得は行っていない (NOT_RUN)。
 - "PENDING" / "UNKNOWN" を根拠なく "APPROVED" に変更していない。
 
-## 4. 合成 vs 実測の区別
+## 5. 合成 vs 実測の区別
 
 | 区分 | 内容 | 本 PR での扱い |
 | --- | --- | --- |
@@ -80,7 +80,7 @@
 | System Card BIOS API 実行 | ABI 未確定のため BLOCKED | BLOCKED_ABI |
 | 商用ゲーム互換 | 本 PR の対象外 | NOT_RUN |
 
-## 5. 安全条件
+## 6. 安全条件
 
 - GPL-2.0 / GPL-3.0 のコードを MIT の ROM に入れない（L-10, L-11, L-17）。
 - LGPL・権利者不明のコードを入れない（L-14, L-08, L-09）。
@@ -88,15 +88,15 @@
 - 純正 BIOS・市販 ROM・個人セーブのバイトは公開・書き換えしない。
 - System Card ABI 未確定は BLOCKED_ABI、`release_eligible=false`。本 PR では解除しない。
 
-## 6. 証拠参照（URL / revision / line）
+## 7. 証拠参照（URL / revision / line）
 
 - pce-devel/huc @ `54f5c73606c1e7142e8095c727cab2767e2b3cb3`
   - `include/hucc/hucc-math.asm`（blob `0cee925a0822ff224ea1eb89eb86abcecf3613e7`）
   - `examples/asm/elmer/include/cdrom.asm`（blob `d8f304edc7078fd8c604844f1e5394831219a393`、ヘッダ 8 行「derived from Hudson's original fast CD code…」、14 行「Modifications copyright John Brandwood 2022」、16 行「Distributed under the Boost Software License, Version 1.0」）
-  - `include/hucc/pcengine.inc`（467–468 行 `cd_boot = $00:E000` 宣言、cd-oss-survey / cd-reuse-decision-309 参照）
+  - `include/hucc/pcengine.inc`（468 行 `cd_boot = $00:E000` 宣言 (467 行は `.if`)、cd-oss-survey / cd-reuse-decision-309 参照）
 - mckayemu/hugo @ `64ed226da2288738781743eeef228c069e8973a4`
   - `COPYING`（blob `ff40833852479105a93dc7d6789d2450ab19414f`、218 B、GPL-2.0 既定 + pcecd.c 例外）
-  - `pcecd.c`（blob `780eba35a171c0402741fd4f099314fc3906b6f9`、1–9 行 3 条項 BSD 系文面、著作権者行なし）
+  - `pcecd.c`（blob `780eba35a171c0402741fd4f099314fc3906b6f9`、2–11 行 3 条項 BSD 系文面、著作権者行なし）
   - `bios.c`（blob `a8c4efabbb7c01fd15ce47ae194cc282d68f5478`）、`cd.c`（blob `af675c16fefe27da1a5488550294acf06623baa4`）
 - pcsx-redux/nugget @ `c950e18a168944ec2d4e6d3c408fc224317483a7`
   - `openbios/cdrom/cdrom.c`（1–5 行 MIT、Copyright (c) 2020 PCSX-Redux authors）、`statemachine.c`（`wait = 30000` 有界待ち）、`helpers.c`
@@ -106,7 +106,7 @@
 - drhelius/Geargrafx @ `b49ae82a012eade566d72e9d61c9d95a5caa4da3`（GPL-3.0、外部試験のみ）
 - ares-emulator/ares @ `9408cb43d4948fc3ea6e152a307a34348df3fe04`（ルート LICENSE ISC、ares team 2004-2025）
 
-## 7. 未解決事項
+## 8. 未解決事項
 
 1. L-09 の `LICENSE.bsd-modified` 全文の確定（pin に NOT_FOUND）。
 2. L-08 のベース（Hudson 原コード）の権利状況。
@@ -116,13 +116,13 @@
 6. Hu-Go! `AUTHORS` の第三者コンポーネント（unzip, zlib, SDL, SDLnet）の LICENSE/NOTICE 同梱状況。
 7. HuCC `LICENSE_1_0.txt` の同梱要否。
 
-## 8. 他 PR との競合
+## 9. 他 PR との競合
 
 - #358（台帳導入）、#561（pinned パス再検証）と同一対象。本 PR はそれらを置き換えない。追加の証拠整理のみ。
 - #309（CD API 別決定表）は本 PR の台帳の disposition を変更しない。
 - 競合するファイル編集は行わない。追加ファイルとリンクのみ。
 
-## 9. マージ推奨
+## 10. マージ推奨
 
 - **Draft のまま維持**（オーナー承認待ち）。CI + 独立レビューを経て CRITICAL/MAJOR/MEDIUM を修正する。
 - 本 PR は文書のみ。`make check` / `make test` は CI に委ねる。
