@@ -1,5 +1,12 @@
 # Issue #367 recorded source sites (pinned Geargrafx b49ae82a). Locations and verdicts only, no source text.
 # Columns: id	file	line	role	target	verdict
+# Roles: device_store = written without a CPU store in the same call; cpu_store = a CPU store reaches
+# the target through Memory::Write / a hardware register write; reset_store = Memory::Reset fill;
+# host_store = host API (state load, file load) writes guest RAM; cpu_block_store = one of the five
+# block-transfer byte stores. Verdicts: NOT_MAIN_RAM = target is not the 32 KiB WRAM (m_wram);
+# RESET_ONLY / HOST_ONLY = written only at reset / by the host; CPU_ORIGINATED = reached only via a
+# CPU store (the store site itself is not device-autonomous); PER_BYTE_STEP = one byte per
+# RunInstruction step.
 DEV-01	adpcm_inline.h	173	device_store	ADPCM_RAM	NOT_MAIN_RAM
 DEV-02	huc6270.cpp	630	device_store	VRAM	NOT_MAIN_RAM
 DEV-03	huc6270.cpp	607	device_store	VDC_SAT	NOT_MAIN_RAM
@@ -7,8 +14,19 @@ DEV-04	memory.cpp	123	reset_store	WRAM	RESET_ONLY
 DEV-05	memory.cpp	125	reset_store	WRAM	RESET_ONLY
 DEV-06	memory.cpp	151	reset_store	CDROM_RAM	RESET_ONLY
 DEV-07	memory.cpp	153	reset_store	CDROM_RAM	RESET_ONLY
-UNK-01	mb128.cpp	141	unknown_store	BACKUP_RAM	UNKNOWN
-UNK-02	mb128.cpp	143	unknown_store	BACKUP_RAM	UNKNOWN
+DEV-08	memory.cpp	177	reset_store	CARD_RAM	RESET_ONLY
+DEV-09	memory.cpp	187	reset_store	ARCADE_CARD_RAM	RESET_ONLY
+DEV-10	memory.cpp	192	reset_store	BACKUP_RAM	RESET_ONLY
+DEV-11	huc6270_inline.h	244	cpu_store	VRAM	CPU_ORIGINATED
+CPU-01	mb128.cpp	143	cpu_store	MB128_RAM	CPU_ORIGINATED
+CPU-02	arcade_card_mapper_inline.h	42	cpu_store	ARCADE_CARD_RAM	CPU_ORIGINATED
+CPU-03	memory_inline.h	288	cpu_store	BACKUP_RAM	CPU_ORIGINATED
+CPU-04	memory_inline.h	293	cpu_store	WRAM	CPU_ORIGINATED
+CPU-05	memory_inline.h	293	cpu_store	CDROM_RAM	CPU_ORIGINATED
+CPU-06	memory_inline.h	293	cpu_store	CARD_RAM	CPU_ORIGINATED
+HOST-01	memory.cpp	498	host_store	WRAM	HOST_ONLY
+HOST-02	memory.cpp	506	host_store	CDROM_RAM	HOST_ONLY
+HOST-03	geargrafx_core.cpp	537	host_store	MB128_RAM	HOST_ONLY
 BLK-01	huc6280_opcodes_inline.h	528	cpu_block_store	ANY_MAPPED	PER_BYTE_STEP
 BLK-02	huc6280_opcodes_inline.h	559	cpu_block_store	ANY_MAPPED	PER_BYTE_STEP
 BLK-03	huc6280_opcodes_inline.h	589	cpu_block_store	ANY_MAPPED	PER_BYTE_STEP

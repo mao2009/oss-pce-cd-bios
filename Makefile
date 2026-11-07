@@ -48,6 +48,7 @@ integration: build
 	$(PYTHON) tests/integration/geargrafx_bcdbin.py
 	$(MAKE) block-write-guard
 	$(MAKE) block-transfer-matrix
+	$(MAKE) block-mid-refusal
 	$(MAKE) stack-access-guard
 	$(MAKE) stack-methods
 	$(MAKE) stack-methods-compare
@@ -118,6 +119,12 @@ block-write-guard:
 .PHONY: block-transfer-matrix
 block-transfer-matrix:
 	$(PYTHON) tests/integration/geargrafx_block_transfer_matrix.py
+
+# Issue #367: per-byte mid-transfer refusal (method B) and transfer-source read side effects on Geargrafx
+# b49ae82, reusing the block-write-guard verification-only patch. Runs in `integration`.
+.PHONY: block-mid-refusal
+block-mid-refusal:
+	$(PYTHON) tests/integration/geargrafx_block_midrefusal.py
 
 check:
 	$(PYTHON) tools/contracts.py
