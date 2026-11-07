@@ -15,6 +15,8 @@ sys.path.insert(0, str(ROOT / 'tools'))
 
 import reference_jsr_gate as gate  # noqa: E402
 
+DOC = ROOT / 'docs' / 'research' / 'cd-dinfo-contract.md'
+
 FIELDS = ['id', 'side', 'item', 'status', 'value', 'source', 'reason']
 SIDES = {'caller', 'callee', 'reference', 'name'}
 STATUSES = {'SOURCE_FACT', 'HYPOTHESIS', 'UNKNOWN', 'BLOCKED_ABI'}
@@ -156,6 +158,182 @@ def pin_problems(rows):
 def ledger_problems(rows, cells_text=()):
     """Rule violations plus pinned-snapshot differences. An empty list means the ledger is accepted."""
     return problems(rows, cells_text) + pin_problems(rows)
+
+
+# Public-boundary scan for the rebuilt ledger (see Issue #234 section on the withdrawal reasons).
+# It refuses private absolute paths, private-image filenames/byte dumps, raw disassembly, detailed
+# code quotes, and secondary-source reconstruction forms. Positive control is the real ledger; every
+# negative sample below is a synthetic string defined in this test only.
+PRIVATE_ABS_RE = re.compile(r'(?<![\w/])/(?:home|Users|private)/')
+PRIVATE_FILE_RE = re.compile(r'syscard3\.pce')
+BYTE_DUMP_RE = re.compile(r'[0-9A-Fa-f]{64,}')
+DISASM_MNEMONICS = ('LDA', 'LDB', 'STA', 'JSR', 'RTS', 'BNE', 'BEQ', 'TAX', 'TXA', 'PHA', 'PLA')
+SECONDARY_RE = re.compile(r'(?:stum\.de|zeograd\.com)', re.IGNORECASE)
+
+
+def boundary_problems(text):
+    """Return public-boundary violations in a ledger text. An empty list means the text is publishable."""
+    out = []
+    if PRIVATE_ABS_RE.search(text):
+        out.append('private absolute path in ledger')
+    if PRIVATE_FILE_RE.search(text):
+        out.append('private image filename in ledger')
+    if BYTE_DUMP_RE.search(text):
+        out.append('byte dump / third-party hash in ledger')
+    if SECONDARY_RE.search(text):
+        out.append('secondary-source reconstruction in ledger')
+    for lineno, line in enumerate(text.splitlines(), 1):
+        if line.strip().startswith('|') and '%' not in line:
+            pass
+        hits = [m for m in DISASM_MNEMONICS if re.search(rf'\b{m}\b', line, re.IGNORECASE)]
+        if len(hits) >= 2 and ('#' in line or '$' in line):
+            out.append(f'raw disassembly-like line {lineno}')
+            break
+    if '```' in text:
+        for block in text.split('```')[1::2]:
+            if any(re.search(rf'\b{m}\b', block, re.IGNORECASE) for m in DISASM_MNEMONICS):
+                out.append('detailed code quote in ledger')
+                break
+    return out
+
+
+class RebuiltLedgerTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.text = DOC.read_text(encoding='utf-8')
+        cls.rows = parse_rows(cls.text)
+
+    def test_ledger_obeys_rules_and_pins(self):
+        self.assertEqual(ledger_problems(self.rows, table_cells(self.text)), [])
+
+    def test_status_counts(self):
+        self.assertEqual(Counter(r['status'] for r in self.rows), Counter(EXPECTED_COUNTS))
+
+    def test_required_fields_are_covered(self):
+        by_id = {r['id']: r for r in self.rows}
+        for kw, rid in REQUIRED_FIELD_ROWS.items():
+            self.assertIn(rid, by_id, f'row {rid} missing')
+            self.assertTrue(token_in(kw, by_id[rid]['item']), f'{rid} item must cover {kw!r}')
+
+    def test_blocked_and_release_status_stated(self):
+        self.assertIn('BLOCKED_ABI', self.text)
+        self.assertIn('release_eligible=false', self.text)
+        self.assertIn('DEV_CALLABLE にしない', self.text)
+
+    def test_caller_fact_does_not_carry_callee_format(self):
+        row = {r['id']: r for r in self.rows}['F08']
+        self.assertEqual(row['side'], 'caller')
+        self.assertNotIn('BCD', row['value'])
+        self.assertNotIn('BCD', row['reason'])
+
+    def test_unknown_values_are_not_filled(self):
+        unknown = [r for r in self.rows if r['status'] == 'UNKNOWN']
+        self.assertTrue(unknown)
+        for r in unknown:
+            self.assertEqual(r['value'], 'UNKNOWN', r['id'])
+
+    def test_f08_covers_first_call_and_increment(self):
+        row = {r['id']: r for r in self.rows}['F08']
+        self.assertIn('最初の呼出し', row['value'])
+        self.assertIn('以降', row['value'])
+        self.assertIn('1883–1891', row['source'])
+
+    def test_f09_cites_author_comment_and_increment(self):
+        row = {r['id']: r for r in self.rows}['F09']
+        self.assertIn('S2 1842', row['source'])
+        self.assertIn('1888–1889', row['source'])
+
+    def test_f15_cites_only_type2_spec(self):
+        row = {r['id']: r for r in self.rows}['F15']
+        self.assertIn('S2 2005–2011', row['source'])
+        self.assertNotIn('1574', row['source'])
+
+    def test_s1_range_covers_ax_to_dh(self):
+        self.assertIn('329–343（`_ax`〜`_dh`）', self.text)
+        self.assertNotIn('330–343（`_al`〜`_dh`）', self.text)
+
+    def test_source_pin_and_query_classification_present(self):
+        self.assertIn('54f5c73606c1e7142e8095c727cab2767e2b3cb3', self.text)
+        self.assertIn('https://github.com/pce-devel/huc', self.text)
+        self.assertIn('include/hucc/pcengine.inc', self.text)
+        by_id = {r['id']: r for r in self.rows}
+        self.assertEqual(by_id['F03']['value'], '`0`')
+        self.assertEqual(by_id['F04']['value'], '`1`')
+        self.assertEqual(by_id['F05']['value'], '`2`')
+
+    def test_conflict_and_not_run_stated(self):
+        self.assertIn('CONFLICT', self.text)
+        self.assertIn('NOT_RUN', self.text)
+        self.assertIn('## 4. 出典間の食い違い', self.text)
+
+
+class LedgerMutationTest(unittest.TestCase):
+    """Promotions and citation swaps applied to the real ledger rows must be rejected."""
+
+    def _mutate(self, rid, **kw):
+        rows = parse_rows(DOC.read_text(encoding='utf-8'))
+        for r in rows:
+            if r['id'] == rid:
+                r.update(kw)
+        return rows
+
+    def test_callee_unknown_promoted_to_source_fact_is_rejected(self):
+        rows = self._mutate('F26', status='SOURCE_FACT', value='副作用なし', source='S3 1582–1600')
+        self.assertTrue(any(p.startswith('F26:') for p in problems(rows)))
+        self.assertTrue(ledger_problems(rows))
+
+    def test_callee_hypothesis_promoted_to_source_fact_is_rejected(self):
+        rows = self._mutate('F18', status='SOURCE_FACT', value='成功は $00', source='S3 1579')
+        self.assertTrue(any(p.startswith('F18:') for p in problems(rows)))
+
+    def test_caller_fact_cited_only_to_unlicensed_source_is_rejected(self):
+        rows = self._mutate('F03', source='S4 218–226')
+        self.assertTrue(any(p.startswith('F03:') for p in problems(rows)))
+
+    def test_name_only_source_is_rejected(self):
+        rows = self._mutate('F01', source='S5')
+        self.assertTrue(any(p.startswith('F01:') for p in problems(rows)))
+
+    def test_pinned_value_change_is_rejected(self):
+        rows = self._mutate('F13', value='+0 は最小トラック（2 進）')
+        self.assertTrue(any(p.startswith('F13:') for p in pin_problems(rows)))
+
+    def test_unknown_filled_with_guess_is_rejected(self):
+        rows = self._mutate('F31', value='非 0', source='S2 2014')
+        self.assertTrue(any('UNKNOWN row with a filled value' in p for p in problems(rows)))
+
+
+class PublicBoundaryTest(unittest.TestCase):
+    """The rebuilt ledger must not reintroduce withdrawal reasons; synthetic bad text must be caught."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = DOC.read_text(encoding='utf-8')
+
+    def test_real_ledger_passes_public_boundary(self):
+        self.assertEqual(boundary_problems(self.text), [])
+
+    def test_rejects_private_absolute_path(self):
+        self.assertTrue(boundary_problems('/home/synthetic/private/rom.bin'))
+
+    def test_rejects_private_image_filename(self):
+        self.assertTrue(boundary_problems('loaded syscard3.pce for inspection'))
+
+    def test_rejects_byte_dump(self):
+        self.assertTrue(boundary_problems('A0' * 32))
+
+    def test_rejects_raw_disassembly(self):
+        self.assertTrue(boundary_problems('LDA #$00; STA $20F8; RTS'))
+
+    def test_rejects_detailed_code_quote(self):
+        self.assertTrue(boundary_problems('```asm\nLDA #$00\nJSR $E999\nRTS\n```'))
+
+    def test_rejects_secondary_reconstruction(self):
+        self.assertTrue(boundary_problems('see https://www.stum.de/x lines 100–200'))
+
+    def test_rejects_observed_and_verified_in_tables(self):
+        self.assertTrue(problems([], ['OBSERVED']))
+        self.assertTrue(problems([], ['VERIFIED']))
 
 
 class RuleCheckerNegativeTest(unittest.TestCase):
