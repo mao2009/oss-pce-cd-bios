@@ -355,6 +355,35 @@ class RebuiltLedgerTest(unittest.TestCase):
         self.assertIn('NOT_RUN', self.text)
         self.assertIn('## 4. 出典間の食い違い', self.text)
 
+    def test_f11_f12_consistent(self):
+        by_id = {r['id']: r for r in self.rows}
+        f11, f12 = by_id['F11'], by_id['F12']
+        self.assertEqual((f11['status'], f12['status']), ('UNKNOWN', 'UNKNOWN'))
+        self.assertNotIn('一致しない', f12['reason'])
+        self.assertIn('決定できない', f12['reason'])
+        self.assertIn('未確定', f12['reason'])
+        section4 = self.text.split('## 4.', 1)[1].split('## 5.', 1)[0]
+        line2 = [line for line in section4.splitlines() if line.strip().startswith('- 2.')][0]
+        self.assertNotIn('CONFLICT', line2)
+        self.assertIn('UNKNOWN', line2)
+
+    def test_f17_f18_distinction(self):
+        by_id = {r['id']: r for r in self.rows}
+        f17, f18 = by_id['F17'], by_id['F18']
+        self.assertEqual((f17['side'], f17['status']), ('caller', 'SOURCE_FACT'))
+        self.assertEqual((f18['side'], f18['status']), ('callee', 'HYPOTHESIS'))
+        self.assertIn('未実測', f18['reason'])
+        self.assertIn('直接の矛盾は確認できない', f18['reason'])
+        section4 = self.text.split('## 4.', 1)[1].split('## 5.', 1)[0]
+        line1 = [line for line in section4.splitlines() if line.strip().startswith('- 1.')][0]
+        self.assertNotIn('CONFLICT', line1)
+        self.assertIn('UNKNOWN', line1)
+
+    def test_section4_has_no_unfounded_conflict(self):
+        section4 = self.text.split('## 4.', 1)[1].split('## 5.', 1)[0]
+        self.assertNotIn('CONFLICT', section4)
+        self.assertIn('UNKNOWN', section4)
+
 
 class LedgerMutationTest(unittest.TestCase):
     """Promotions and citation swaps applied to the real ledger rows must be rejected."""
