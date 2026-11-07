@@ -27,10 +27,6 @@ WIRING_ALLOWLIST = {
     ("tools/reference_bios_scenarios.py", '"CD_SUBQ", "CD_DINFO", "CD_CONTNTS", "CD_SUBRQ / CD_SUBRD",'),
     ("tests/host/test_cd_contnts_track_fixture.py",
      '"tools/reference_bios_scenarios.py": {\'"CD_SUBQ", "CD_DINFO", "CD_CONTNTS", "CD_SUBRQ / CD_SUBRD",\'},'),
-    ("tests/host/test_cd_dinfo_contract.py",
-     '"""Host checks for the Issue #234 CD_DINFO ($0B, $E021) caller-contract ledger.'),
-    ("tests/host/test_cd_dinfo_contract.py", "'F01': ('name', 'SOURCE_FACT', '`$E021`'),"),
-    ("tests/host/test_cd_dinfo_contract.py", "'F29': ('name', 'SOURCE_FACT', '`cd_dinfo`（HuC）、`CD_DINFO`（当リポジトリ）、`cdr_dinfo`（elmer の内部名）'),"),
 }
 # sha256 of the canonical JSON (sort_keys, compact separators, UTF-8). Editing the fixture requires updating it here.
 FIXTURE_SHA256 = "26b7e65e7e803d91803f87bff501b1427a692efc716fb7e775179bf94602cdf2"
@@ -238,15 +234,17 @@ class CdDinfoSlot0bFixtureTests(unittest.TestCase):
 
     def test_wiring_check_fails_on_new_reference_and_only_passes_exact_allowlisted_lines(self):
         ledger = "tests/host/test_cd_dinfo_contract.py"
-        allowed = "'F01': ('name', 'SOURCE_FACT', '`$E021`'),"
+        contracts = json.loads((ROOT / "spec" / "api_contracts.json").read_text(encoding="utf-8"))
+        entry = next(e for e in contracts["apis"] if e.get("slot") == 11)["candidate_entry"]
+        removed = "'F01': ('name', 'SOURCE_FACT', '`$" + entry[2:] + "`'),"
         # Negative cases: a new reference in any form must be reported.
         self.assertEqual(len(wiring_hits([("src/new_module.c", "    jsr CD_DINFO\n")])), 1)
         self.assertEqual(len(wiring_hits([("src/new_module.s", "    jsr $e021\n")])), 1)
         self.assertEqual(len(wiring_hits([(ledger, "'F99': ('name', 'SOURCE_FACT', '`CD_DINFO`'),")])), 1)
-        self.assertEqual(len(wiring_hits([("tests/host/other.py", allowed)])), 1)
+        self.assertEqual(len(wiring_hits([("tests/host/other.py", removed)])), 1)
         self.assertEqual(len(wiring_hits([("tools/build.py", "    call_table[11] = CD_DINFO  # wired")])), 1)
-        # Positive control: the exact allowlisted line in its own file is not reported.
-        self.assertEqual(wiring_hits([(ledger, allowed)]), [])
+        # The contract file no longer carries an allowlist entry; its former line is now refused.
+        self.assertEqual(len(wiring_hits([(ledger, removed)])), 1)
 
 
 if __name__ == "__main__":
