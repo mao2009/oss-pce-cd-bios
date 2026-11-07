@@ -1069,5 +1069,301 @@ class MeasurementEvidenceTests(unittest.TestCase):
                     self.evidence(on, off)
 
 
+class CommercialSanitizationTests(unittest.TestCase):
+    """Issue #635: opt-in commercial runs must never leak private inputs into tracer logs.
+
+    These are host-only (mocked core) tests: doctor is never invoked with caller media,
+    and staging errors are reported with generic reasons that carry no private filename,
+    absolute path, or hash.  The local commercial JSON is inspected the same way.
+    Synthetic placeholders below are not real media names.
+    """
+
+    PRIVATE_ROM = Path("/private/rom/dev.pce")
+    PRIVATE_CUE = Path("/private/rom/title.cue")
+    PRIVATE_BIN = "private-title-first-track.bin"
+
+    def _args(self, frames=2, events=4):
+        return SimpleNamespace(frames=frames, events=events, timeout=1, rom=self.PRIVATE_ROM,
+                               cue=self.PRIVATE_CUE, run_start_frame=None, run_hold_frames=None,
+                               observe_ram=True)
+
+    def _serialized(self, log):
+        return json.dumps(log, sort_keys=True)
+
+    def _run_with_job(self, stage_disc_side=None, stage_disc_return=None, run_job=None):
+        """Run tracer.trace with a real temporary job dir and mocked core; return (log, doctor_mock)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            job = Path(tmp) / "job"
+            job.mkdir()
+            stage_kwargs = {}
+            if stage_disc_side is not None:
+                stage_kwargs["side_effect"] = stage_disc_side
+            elif stage_disc_return is not None:
+                stage_kwargs["return_value"] = stage_disc_return
+            job_result = run_job if run_job is not None else {"status": None, "exit_code": 0,
+                                                              "stdout": output([event()], cap_fields={"disc_given": True,
+                                                                "ram_observation": True}), "elapsed_s": 0.1}
+            with mock.patch.object(tracer, "doctor", return_value={"status": "PASS"}) as doctor, \
+                    mock.patch.object(tracer, "make_tracked_job_dir", return_value=(job, (1, 2, 3))), \
+                    mock.patch.object(tracer, "compile_probe", return_value=Path("probe")), \
+                    mock.patch.object(tracer.shutil, "copyfile"), \
+                    mock.patch.object(tracer, "stage_disc", **stage_kwargs), \
+                    mock.patch.object(tracer, "run_job", return_value=job_result), \
+                    mock.patch.object(tracer, "cleanup_tracked_job_dir", return_value=(True, "removed")):
+                log = tracer.trace(self._args())
+            return log, doctor
+
+    def test_doctor_is_never_invoked_with_caller_media(self):
+        log, doctor = self._run_with_job(stage_disc_return=["copied.cue"])
+        self.assertEqual(log["status"], "PASS")
+        doctor.assert_called_once_with(None, None, None)
+        text = self._serialized(log)
+        for secret in ("/private", "title.cue", self.PRIVATE_BIN):
+            self.assertNotIn(secret, text)
+        self.assertNotIn("sha256", text)
+
+    def test_disc_staging_missing_file_is_sanitized(self):
+        log, _ = self._run_with_job(
+            stage_disc_side=FileNotFoundError(f"CUE data file missing: {self.PRIVATE_BIN}"))
+        self.assertEqual((log["status"], log["evidence"]), ("BLOCKED", "NOT_RUN"))
+        self.assertEqual(log["reason"], "disc staging input missing")
+        text = self._serialized(log)
+        for secret in ("/private", "title.cue", self.PRIVATE_BIN):
+            self.assertNotIn(secret, text)
+
+    def test_disc_staging_invalid_input_is_sanitized(self):
+        log, _ = self._run_with_job(
+            stage_disc_side=ValueError(f"unsafe CUE file name {self.PRIVATE_BIN!r}"))
+        self.assertEqual((log["status"], log["evidence"]), ("FAIL", "NOT_RUN"))
+        self.assertEqual(log["reason"], "invalid disc input")
+        text = self._serialized(log)
+        for secret in ("/private", "title.cue", self.PRIVATE_BIN):
+            self.assertNotIn(secret, text)
+
+    def test_unknown_cap_field_is_rejected_without_leak(self):
+        text = output([event()], cap_fields={"private_path": "/private/rom/dev.pce",
+                                             "media_name": "private-title"})
+        with self.assertRaises(ValueError) as caught:
+            tracer.parse_records(text)
+        self.assertIn("unknown fields", str(caught.exception))
+        serialized = json.dumps(str(caught.exception))
+        self.assertNotIn("/private", serialized)
+        self.assertNotIn("private-title", serialized)
+
+    def test_unknown_end_and_event_fields_are_rejected(self):
+        with self.assertRaises(ValueError):
+            tracer.parse_records(output([event()], secret_hash="0123abcd"))
+        bad_event = dict(event(), private_path="/private/rom/dev.pce",
+                         arbitrary="private-title-first-track.bin")
+        with self.assertRaises(ValueError):
+            tracer.parse_records(output([bad_event]))
+
+    def test_unknown_nested_fields_are_rejected(self):
+        bad_cap = {"ram_regions": [{"ram": "wram", "size": 8192, "bank_first": 248,
+                                    "bank_last": 251, "private_path": "/private/rom/dev.pce"}]}
+        with self.assertRaises(ValueError):
+            tracer.parse_records(output([event()], cap_fields=bad_cap))
+        deltas = ram_deltas()
+        deltas[0] = dict(deltas[0], private_title="private-title-first-track.bin")
+        with self.assertRaises(ValueError):
+            tracer.parse_records(output([event()], ram_deltas=deltas))
+
+    def test_probe_build_failure_is_sanitized(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job = Path(tmp) / "job"
+            job.mkdir()
+            with mock.patch.object(tracer, "doctor", return_value={"status": "PASS"}), \
+                    mock.patch.object(tracer, "make_tracked_job_dir", return_value=(job, (1, 2, 3))), \
+                    mock.patch.object(tracer, "compile_probe",
+                                      side_effect=RuntimeError(f"g++ failed: /private/rom/dev.pce sha256=0123abcd")), \
+                    mock.patch.object(tracer, "cleanup_tracked_job_dir", return_value=(True, "removed")):
+                log = tracer.trace(self._args())
+        self.assertEqual((log["status"], log["reason"]), ("BLOCKED", "probe build failed"))
+        text = self._serialized(log)
+        for secret in ("/private", "title.cue", self.PRIVATE_BIN, "sha256", "0123abcd"):
+            self.assertNotIn(secret, text)
+
+    def test_run_job_cannot_execute_is_sanitized(self):
+        log, _ = self._run_with_job(run_job={"status": "BLOCKED",
+                                             "reason": "cannot execute: /private/rom/dev.pce",
+                                             "exit_code": None, "stdout": "", "elapsed_s": 0.0})
+        self.assertEqual((log["status"], log["reason"]), ("BLOCKED", "cannot execute probe"))
+        text = self._serialized(log)
+        self.assertNotIn("/private", text)
+
+    def test_trace_rejected_unknown_field_is_sanitized(self):
+        stdout = output([event()], cap_fields={"private_path": "/private/rom/dev.pce"})
+        log, _ = self._run_with_job(run_job={"status": None, "exit_code": 0, "stdout": stdout, "elapsed_s": 0.1})
+        self.assertEqual((log["status"], log["reason"]), ("FAIL", "trace rejected"))
+        text = self._serialized(log)
+        self.assertNotIn("/private", text)
+
+    def test_disc_given_wrong_type_is_rejected_without_leak(self):
+        for bad in ("/private/rom/title.cue", 1, 0, None, ["/private/rom/title.cue"], {"p": "/private/rom/title.cue"}):
+            with self.subTest(value=repr(bad)[:40]):
+                with self.assertRaises(ValueError) as caught:
+                    tracer.parse_records(output([event()], cap_fields={"disc_given": bad}))
+                serialized = json.dumps(str(caught.exception))
+                self.assertNotIn("/private", serialized)
+                self.assertNotIn("title.cue", serialized)
+
+    def test_unavailable_ram_correlation_and_frames_are_validated(self):
+        cases = []
+        rows = ram_deltas()
+        rows[0] = dict(rows[0], scsi_correlation="private-title-first-track.bin")
+        cases.append(rows)
+        rows = ram_deltas()
+        rows[1] = dict(rows[1], scsi_correlation="/private/rom/title.cue")
+        cases.append(rows)
+        rows = ram_deltas()
+        rows[1] = dict(rows[1], scsi_update_frames=["/private/rom/title.cue"])
+        cases.append(rows)
+        rows = ram_deltas()
+        rows[2] = dict(rows[2], scsi_update_frames=[999])
+        cases.append(rows)
+        rows = ram_deltas()
+        rows[2] = dict(rows[2], scsi_update_frames=[2, 2])
+        cases.append(rows)
+        for index, candidate in enumerate(cases):
+            with self.subTest(index=index):
+                with self.assertRaises(ValueError) as caught:
+                    tracer.parse_records(output([event()], ram_deltas=candidate))
+                serialized = json.dumps(str(caught.exception))
+                self.assertNotIn("/private", serialized)
+                self.assertNotIn("private-title", serialized)
+
+    def _run_with_copy_failure(self, side_effect, cleanup=(True, "removed")):
+        with tempfile.TemporaryDirectory() as tmp:
+            job = Path(tmp) / "job"
+            job.mkdir()
+            with mock.patch.object(tracer, "doctor", return_value={"status": "PASS"}), \
+                    mock.patch.object(tracer, "make_tracked_job_dir", return_value=(job, (1, 2, 3))), \
+                    mock.patch.object(tracer, "compile_probe", return_value=Path("probe")), \
+                    mock.patch.object(tracer.shutil, "copyfile", side_effect=side_effect), \
+                    mock.patch.object(tracer, "cleanup_tracked_job_dir", return_value=cleanup) as cleaned:
+                log = tracer.trace(self._args())
+            return log, cleaned
+
+    def test_rom_copy_failures_are_sanitized_and_cleaned(self):
+        errors = [FileNotFoundError("/private/rom/dev.pce"),
+                  PermissionError("/private/rom/dev.pce"),
+                  OSError("write failed: /private/rom/dev.pce sha256=deadbeefcafe"),
+                  FileNotFoundError("private-title-first-track.bin missing")]
+        for error in errors:
+            with self.subTest(error=type(error).__name__):
+                log, cleaned = self._run_with_copy_failure(error)
+                self.assertEqual((log["status"], log["reason"], log["evidence"]),
+                                 ("BLOCKED", "ROM copy failed", "NOT_RUN"))
+                self.assertEqual(log["cleanup"], "REMOVED")
+                cleaned.assert_called_once()
+                text = self._serialized(log)
+                for secret in ("/private", "title.cue", self.PRIVATE_BIN, "sha256", "deadbeefcafe"):
+                    self.assertNotIn(secret, text)
+
+    def test_rom_copy_cleanup_failure_is_fail_closed(self):
+        log, _ = self._run_with_copy_failure(FileNotFoundError("/private/rom/dev.pce"),
+                                             cleanup=(False, "identity_changed"))
+        self.assertEqual((log["status"], log["reason"]), ("FAIL", "cleanup failed: identity_changed"))
+        self.assertNotIn("/private", self._serialized(log))
+
+    def test_unavailable_ram_bank_mapping_is_rejected(self):
+        rows = ram_deltas()
+        rows[1] = dict(rows[1], size="/private/rom/title.cue", bank_first="/private",
+                       bank_last="private-title-first-track.bin")
+        with self.assertRaises(ValueError):
+            tracer.parse_records(output([event()], ram_deltas=rows))
+        rows = ram_deltas()
+        rows[2] = dict(rows[2], size=8192, bank_first=248, bank_last=251)
+        with self.assertRaises(ValueError):
+            tracer.parse_records(output([event()], ram_deltas=rows))
+
+    def test_physical_pc_above_64k_is_accepted(self):
+        row = dict(event(), physical_pc=0x1f0000, pc=0xe000)
+        cap, events, end = tracer.parse_records(output([row]))
+        self.assertEqual(events[0]["physical_pc"], 0x1f0000)
+
+    def test_core_capacity_huge_is_rejected(self):
+        with self.assertRaises(ValueError):
+            tracer.parse_records(output([event()], core_capacity=200000))
+
+    def test_run_schedule_and_events_bool_are_rejected(self):
+        with self.assertRaises(ValueError):
+            tracer.parse_records(output([event()], cap_fields={"run_start_frame": True, "run_hold_frames": 2,
+                                                               "run_input_requested": True}))
+        # output() cannot take end key "events" directly (positional collision); rewrite the wire JSON.
+        text = output([event()]).replace('"events": 1', '"events": true')
+        with self.assertRaises(ValueError):
+            tracer.parse_records(text)
+
+    def test_cd_snapshot_range_is_validated(self):
+        row = dict(event("cd"), scsi_phase=-1, load_sector=5)
+        tracer.parse_records(output([row]))
+        bad = dict(event("cd"), load_sector=-1)
+        with self.assertRaises(ValueError):
+            tracer.parse_records(output([bad]))
+
+    def _run_trace_args(self, cue, observe, stdout):
+        with tempfile.TemporaryDirectory() as tmp:
+            job = Path(tmp) / "job"
+            job.mkdir()
+            args = SimpleNamespace(frames=2, events=4, timeout=1, rom=self.PRIVATE_ROM, cue=cue,
+                                   run_start_frame=None, run_hold_frames=None, observe_ram=observe)
+            job_result = {"status": None, "exit_code": 0, "stdout": stdout, "elapsed_s": 0.1}
+            with mock.patch.object(tracer, "doctor", return_value={"status": "PASS"}), \
+                    mock.patch.object(tracer, "make_tracked_job_dir", return_value=(job, (1, 2, 3))), \
+                    mock.patch.object(tracer, "compile_probe", return_value=Path("probe")), \
+                    mock.patch.object(tracer.shutil, "copyfile"), \
+                    mock.patch.object(tracer, "stage_disc", return_value=["copied.cue"]), \
+                    mock.patch.object(tracer, "run_job", return_value=job_result), \
+                    mock.patch.object(tracer, "cleanup_tracked_job_dir", return_value=(True, "removed")):
+                log = tracer.trace(args)
+            return log
+
+    def test_cap_input_consistency(self):
+        ok_cue = output([event()], cap_fields={"disc_given": True, "ram_observation": True})
+        self.assertEqual(self._run_trace_args(self.PRIVATE_CUE, True, ok_cue)["status"], "PASS")
+        ok_nocue = output([event()], cap_fields={"disc_given": False, "ram_observation": True})
+        self.assertEqual(self._run_trace_args(None, True, ok_nocue)["status"], "PASS")
+        mismatch_cue = output([event()], cap_fields={"disc_given": False, "ram_observation": True})
+        log = self._run_trace_args(self.PRIVATE_CUE, True, mismatch_cue)
+        self.assertEqual((log["status"], log["evidence"]), ("FAIL", "NOT_RUN"))
+        self.assertNotIn("/private", self._serialized(log))
+        mismatch_nocue = output([event()], cap_fields={"disc_given": True, "ram_observation": True})
+        log = self._run_trace_args(None, True, mismatch_nocue)
+        self.assertEqual((log["status"], log["evidence"]), ("FAIL", "NOT_RUN"))
+        self.assertNotIn("/private", self._serialized(log))
+
+    def test_observation_consistency(self):
+        log = self._run_trace_args(self.PRIVATE_CUE, True,
+                                   output([event()], cap_fields={"disc_given": True, "ram_observation": False}))
+        self.assertEqual((log["status"], log["evidence"]), ("FAIL", "NOT_RUN"))
+        log = self._run_trace_args(self.PRIVATE_CUE, False,
+                                   output([event()], cap_fields={"disc_given": True, "ram_observation": True}))
+        self.assertEqual((log["status"], log["evidence"]), ("FAIL", "NOT_RUN"))
+
+    def test_invalid_cap_frames_raises_valueerror_not_keyerror(self):
+        for bad in (MISSING, None, True, "/private/rom/title.cue"):
+            with self.subTest(bad=repr(bad)[:30]):
+                with self.assertRaises(ValueError) as caught:
+                    tracer.parse_records(output([event()], cap_fields={"frames": bad,
+                                                                       "run_input_requested": True,
+                                                                       "run_start_frame": 1,
+                                                                       "run_hold_frames": 2}))
+                self.assertNotIn("/private", str(caught.exception))
+                self.assertNotIn("title.cue", str(caught.exception))
+
+    def test_unhashable_values_raise_valueerror_not_typeerror(self):
+        bad_event = dict(event(), kind=[])
+        with self.assertRaises(ValueError):
+            tracer.parse_records(output([bad_event]))
+        rows = ram_deltas()
+        rows[1] = dict(rows[1], scsi_correlation=[])
+        with self.assertRaises(ValueError):
+            tracer.parse_records(output([event()], ram_deltas=rows))
+        bad_cap = {"ram_regions": [{"ram": [], "size": 8192, "bank_first": 248, "bank_last": 251}]}
+        with self.assertRaises(ValueError):
+            tracer.parse_records(output([event()], cap_fields=bad_cap))
+
+
 if __name__ == "__main__":
     unittest.main()
