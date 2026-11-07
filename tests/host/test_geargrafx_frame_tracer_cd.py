@@ -316,6 +316,38 @@ class FrameTracerCdFilesystemSafetyTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     bridge.write_evidence("debug", {"status": "INCOMPLETE"})
 
+    def test_temp_name_collision_preserves_existing_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with mock.patch.object(bridge, "ROOT", root):
+                output = root / "build" / "debug" / "frame-tracer-cd"
+                output.mkdir(parents=True)
+                colliding = output / (".%s.aaaa.tmp" % bridge.EVIDENCE_NAME)
+                colliding.write_text("keep-collision")
+                with mock.patch.object(bridge.secrets, "token_hex", lambda n: "aaaa"):
+                    with self.assertRaises(ValueError):
+                        bridge.write_evidence("debug", {"status": "INCOMPLETE"})
+                self.assertEqual(colliding.read_text(), "keep-collision")
+
+    def test_fdopen_failure_closes_descriptor(self):
+        real_fdopen = bridge.os.fdopen
+        real_close = bridge.os.close
+        closed = {"count": 0}
+
+        def failing_fdopen(fd, *args, **kwargs):
+            raise OSError("fdopen failed")
+
+        def counting_close(fd):
+            closed["count"] += 1
+            return real_close(fd)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with mock.patch.object(bridge, "ROOT", root),                     mock.patch.object(bridge.os, "fdopen", failing_fdopen),                     mock.patch.object(bridge.os, "close", counting_close):
+                with self.assertRaises(ValueError):
+                    bridge.write_evidence("debug", {"status": "INCOMPLETE"})
+        self.assertGreaterEqual(closed["count"], 1)
+
     def test_actual_symlinked_evidence_file_is_refused(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -446,6 +478,62 @@ with tempfile.TemporaryDirectory() as temporary, \
         # the point is that the mutation does not silently succeed.
         self.assertNotIn("RAISED=False", result.stdout)
 
+    def test_mutation_mode_validation_removed_from_helper_only(self):
+        def mutator(source):
+            old = """    _validate_evidence_mode(mode)
+    if nofollow is None:"""
+            new = """    if nofollow is None:"""
+            assert old in source
+            return source.replace(old, new, 1)
+
+
+        script = """import os
+from pathlib import Path
+import geargrafx_frame_tracer_cd as bridge
+nofollow = getattr(os, "O_NOFOLLOW", None)
+root = Path(__file__).resolve().parent if False else None
+import tempfile
+with tempfile.TemporaryDirectory() as temporary:
+    root = Path(temporary)
+    try:
+        bridge._open_safe_evidence_directory(root, "..", nofollow)
+        print("RAISED=False")
+    except Exception as exc:
+        print("RAISED=" + type(exc).__name__ + ":" + str(exc))
+"""
+        result = _run_mutated_source(mutator, script)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("RAISED=False", result.stdout)
+
+    def test_mutation_mode_validation_removed_allows_traversal(self):
+        def mutator(source):
+            old = "    _validate_evidence_mode(mode)\n"
+            assert old in source
+            return source.replace(old, "")
+
+        script = """import os
+from io import StringIO
+from contextlib import redirect_stderr
+import tempfile
+from pathlib import Path
+import geargrafx_frame_tracer_cd as bridge
+stderr = StringIO()
+with tempfile.TemporaryDirectory() as temporary:
+    root = Path(temporary)
+    with __import__("unittest.mock", fromlist=["patch"]).patch.object(bridge, "ROOT", root), redirect_stderr(stderr):
+        try:
+            bridge.write_evidence("..", {"status": "INCOMPLETE"})
+            print("RAISED=False")
+        except Exception as exc:
+            print("RAISED=" + type(exc).__name__ + ":" + str(exc))
+    outside = root / "frame-tracer-cd" / bridge.EVIDENCE_NAME
+    print("OUTSIDE_EXISTS=" + str(outside.exists()))
+"""
+        result = _run_mutated_source(mutator, script)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("RAISED=False", result.stdout)
+        self.assertIn("OUTSIDE_EXISTS=True", result.stdout)
+
     def test_mutation_write_failure_handler_removed(self):
         def mutator(source):
             old = """        try:
@@ -515,12 +603,15 @@ class FrameTracerCdModePathBoundaryTests(unittest.TestCase):
                     self.assertFalse((root / "outside").exists())
 
     def test_open_safe_evidence_directory_rejects_invalid_mode(self):
+        nofollow = getattr(os, "O_NOFOLLOW", None)
+        if nofollow is None:
+            self.skipTest("O_NOFOLLOW unavailable")
         for mode in self.INVALID_MODES:
             with self.subTest(mode=repr(mode)):
                 with tempfile.TemporaryDirectory() as temporary:
                     root = Path(temporary)
                     with self.assertRaises(ValueError):
-                        bridge._open_safe_evidence_directory(root, mode, None)
+                        bridge._open_safe_evidence_directory(root, mode, nofollow)
 
     def test_valid_modes_write_evidence(self):
         for mode in ("debug", "release"):
