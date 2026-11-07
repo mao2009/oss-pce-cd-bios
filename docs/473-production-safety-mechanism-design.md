@@ -30,16 +30,27 @@ slots, changing A/X/Y from `$12/$34/$07` to `$BE/$EF/$05` and clearing VDC statu
 Push-side refusal alone leaves the pop-side read side effect (O3). Transfer body still runs, destination
 receives `$5A` (O4).
 
-## 3. Method comparison (A / B / C)
+## 3. Method comparison (A / B / C / D / E / T)
 
-| Method | Definition | Feasibility | Scale | Side effects | Tests |
-|---|---|---|---|---|---|
-| A | Refuse dangerous MPR1 mapping before it is used (pre-refusal) | High; reuse step-execution harness (O11) | Low-Medium (harness-side) | IRQ-in-TAM hole (UNMEASURED, N-IRQ-TAM) | Synthetic ROM, MPR1=$FF negative |
-| B | Protect TransferStart push .. TransferEnd pop as one unit | Low standalone; pop hook needed | Medium | Pop suppression changes instruction meaning (not proposed) | Real core A/X/Y/VDC/S/P/PC/MPR |
-| C | Stop immediately before each stack access side effect | Medium; 4 functions as chokepoint | High (verification patch) | Leftover PC/S/P/MPR/VDC/WRAM state (9.2) | Real core, push/pop pre-hook |
+S0 の `A → C → A+C` は検証順序 (S0 = 検証方針のみ承認) であり、現時点の最終的な本番方式推奨ではない。
+S1〜S6 (#647/#648) の実測を踏まえた比較を以下に示す。推奨案を示す場合でも、製品採用は Owner 未承認。
+
+| Method | Definition | Verification result (pinned core, synthetic) | Limits / side effects |
+|---|---|---|---|
+| A | Refuse dangerous MPR1 mapping before it is used (pre-refusal) | **UNSAFE alone**: IRQ-in-TAM hole (#647: IRQ1/IRQ2/TIQ pending at TAM #$02, I=0 — entry pushes reach hardware page) | Does not close IRQ-in-TAM |
+| B | Protect TransferStart push .. TransferEnd pop as one unit | Not a standalone candidate (pop hook is a subset of C) | Pop suppression changes instruction meaning (not proposed) |
+| C | Stop immediately before each stack access side effect | A+C: stops side effects but the stopped state is **BLOCKED** (leftover PC/S/P/MPR/VDC/WRAM state, 9.2) — not SAFE | Guest must not be resumed after the stop |
+| D (A+D) | Decode-time TAM refusal (probe, pre-instruction) | **SAFE_IN_SCOPE** within the verified scope (#647) | PC/MPR unchanged at stop; peekability is core-specific; unpeekable opcode fails closed |
+| E (A+E) | IRQ deferral at TAM (core IRQ check) | **SAFE_IN_SCOPE** within the verified scope (#647), but PC/MPR state and IRQ timing differ from D (stop at $1E02 after TAM, MPR1=$FF applied, +1 instruction latency) | Also defers on non-peekable opcodes; IRQ starvation not measured |
+| T (A+T) | Block-transfer pre-start refusal / mid-transfer check (S6, #648) | Pre-start refusal can be **SAFE_IN_SCOPE**; mid-transfer refusal is **BLOCKED** (partial execution already done, bytes already written are counted, not undone) | Guest must not be resumed after a refusal |
+
+検証対象外は UNKNOWN/BLOCKED として維持する: 実機、デバイス起点書込み (CD/ADPCM DMA)、転送中に新規に
+アサートされた IRQ、libretro ビルド、ST0/ST1/ST2、MPR buffer (TMA #$00) の未観測部分、E による IRQ
+starvation (未測定)。NMI は pinned core 上は NOT_APPLICABLE。推測を実測と混同しない。
 
 Per S0 (owner-approved verification policy, not mechanism approval): A first, C as complement, A+C combined;
-B is not a standalone candidate. B's pop-before hook is a subset of C.
+B is not a standalone candidate. B's pop-before hook is a subset of C. 本節の D/E/T の結果は #647/#648 の
+検証対象範囲内に限る実測であり、本番方式の承認ではない。
 
 ## 4. Push/pop and I/O side effects
 
@@ -48,7 +59,10 @@ B is not a standalone candidate. B's pop-before hook is a subset of C.
   before S change). This is a required definition before testing (S0 item 4).
 - TransferStart push before guard: `m_transfer_state = 2` already set even if push is refused (9.2).
 - TransferEnd pop before guard: transfer body already executed; destination already written (O4).
-- IRQ entry push during IRQ-in-TAM: same `RunInstruction` as TAM; A alone cannot stop it (8).
+- IRQ entry push during IRQ-in-TAM: same `RunInstruction` as TAM; A alone cannot stop it (8, #647 で実測:
+  A 単独は UNSAFE)。A+D (decode-time 拒否) と A+E (IRQ 遅延) は検証対象範囲内で SAFE_IN_SCOPE だが、
+  停止時点の PC/MPR 状態と IRQ タイミングは異なる。転送開始前の拒否 (T) は SAFE_IN_SCOPE になり得るが、
+  転送途中の拒否は部分実行済みのため BLOCKED。
 
 ## 5. Synthetic ROM verification plan (design only)
 
@@ -88,5 +102,7 @@ image, IRQ pending state match pre-refusal values (with stop-point definition fi
 
 ## 8. Recommendation
 
-Design-only: proceed with verification planning (A first, C complement, A+C) under S0. Do not implement or
-enable any production guard. Keep all gates BLOCKED.
+Design-only: proceed with verification planning under S0. Do not implement or enable any production guard.
+Keep all gates BLOCKED. 本番方式の選択・製品採用は **Owner 未承認** であり、本文書はその承認を主張しない。
+停止後のゲスト再開は禁止する (再開すると転送がハードウェアページへ到達し得る — #648 `mut-tresume`)。
+実装済みの安全機構は存在しない。
