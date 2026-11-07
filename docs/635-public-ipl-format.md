@@ -7,10 +7,10 @@ Status: synthetic media only. NOT a System Card BIOS, NOT a BIOS ABI, NOT CD_BOO
 
 The loader source `tests/integration/ipl_loader_rom.s` has two formats, selected at build time only:
 
-| build | define | MPR bytes | header bytes 14..15 | body verification |
-| --- | --- | --- | --- | --- |
-| DEV (default) | none | must already be `$80..$87` (raw) | 16-bit additive body sum, must match | sum of disc bytes == header sum, readback == sum |
-| PUBLIC | `IPL_PUBLIC` | bank index `0..7`, mapped to `$80 + index` | ignored | readback == sum of disc bytes read (no header sum) |
+| build | define | MPR bytes | header bytes 14..15 | header bytes 16..31 | IPLBLN | load end | body verification |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| DEV (default) | none | must already be `$80..$87` (raw) | 16-bit additive body sum, must match | must be zero | 1..10 | `$8000` | sum of disc bytes == header sum, readback == sum |
+| PUBLIC | `IPL_PUBLIC` | bank index `0..7`, mapped to `$80 + index` | ignored | ignored (public meaning not verified) | 1..31 | `$E000` | readback == sum of disc bytes read (no header sum) |
 
 - The default build is byte-identical to the previous loader. This was a ONE-TIME manual comparison of the SHA-256
   of the 256 KiB default image (before and after the change, value recorded in the PR). It is NOT an automated
@@ -109,6 +109,31 @@ body byte at the same logical address. That expected value exists only if the bo
 - The SCSI transfer and the readback are the only integrity checks in the PUBLIC build.
 - The DEV-only sum remains weak (single-byte and most copy errors are detected; sum-preserving corruption is not).
 - The MPR rule is an observation for one BIOS and one core (section 2), not a specification.
+
+## 4a. PUBLIC expansion beyond the DEV window (synthetic evidence)
+
+The DEV window (`$3000-$7FFF`, 10 sectors) is a DEV safety limit, not a public
+specification limit. The PUBLIC build therefore allows IPLBLN 1..31 and a load
+end up to `$E000`, copying through the MPR2..6 regions (`$40/$60/$80/$A0/$C0`).
+Bytes 16..31 are ignored in PUBLIC for the same reason as bytes 14..15: their
+public meaning is not verified, and a DEV-only zero requirement must not refuse
+public media.
+
+Synthetic regression cases in `geargrafx_ipl_loader.py` (42 cases, cold+warm,
+both the 8 KiB and the 256 KiB loader paths):
+- `pub_n11_above_dev_limit`, `pub_n20_at_3000_crosses_c000`: IPLs larger than
+  the DEV 10-sector limit are copied and executed in PUBLIC.
+- `pub_n10_at_3f00_crosses_8000`: a load crossing the `$8000` region boundary
+  uses the MPR4 region and the payload runs.
+- `pub_reserved_nonzero_ignored`: bytes 16..31 non-zero are accepted in PUBLIC
+  (the DEV case `neg_reserved_byte_nonzero` still refuses them in DEV).
+- `pub_neg_iplsta_top_overrun_e000` and `pub_neg_iplbln_32_refused`: the new
+  PUBLIC limits are still enforced (load end beyond `$E000`, and 32 sectors,
+  are refused before any copy).
+
+The DEV build is unchanged by these PUBLIC-only branches (`IPL_PUBLIC` ifdefs):
+DEV cases, including `neg_iplbln_11`, `neg_iplsta_6000_overruns_7fff` and
+`neg_reserved_byte_nonzero`, still refuse with the same codes.
 
 ## 5. Not claimed
 

@@ -307,26 +307,38 @@ def classify_commercial(records):
         if cold_run["reason"] == "cd_halt_fail" and warm_run["reason"] == "cd_halt_fail":
             return "PRE_API_BLOCKER_OBSERVED", "no API entry; IPL validation halt in both cycles"
         return "UNKNOWN", "no API entry and no clear pre-API halt"
-    # Confirmed entry needs a table JSR/JMP in both cycles, same slot+method, stub halt.
-    def first_entry(calls):
-        if len(calls) != 1:
+    # Confirmed entry needs a table JSR/JMP sequence in both cycles, same
+    # slot+method sequence, stub halt. A sequence longer than one is allowed
+    # only when earlier calls are JSR (they returned, e.g. to an implemented
+    # slot) and the last call leads to the stub halt; JMP is allowed only as
+    # the last call (a JMP cannot return to make a further call).
+    def entry_sequence(calls):
+        if not calls:
             return None
-        call = calls[0]
-        method = classify_apicall(call)
-        if method == "JSR":
-            if not jsr_confirmed(call):
+        seq = []
+        for idx, call in enumerate(calls):
+            method = classify_apicall(call)
+            if method == "JSR":
+                if not jsr_confirmed(call):
+                    return None
+            elif method == "JMP":
+                if idx != len(calls) - 1:
+                    return None
+            else:
                 return None
-        elif method != "JMP":
-            return None
-        return (call["slot"], method)
-    cold_first, warm_first = first_entry(cold_calls), first_entry(warm_calls)
-    if cold_first is None or warm_first is None:
+            seq.append((call["slot"], method))
+        return tuple(seq)
+    cold_seq, warm_seq = entry_sequence(cold_calls), entry_sequence(warm_calls)
+    if cold_seq is None or warm_seq is None:
         return "UNKNOWN", "entry present without JSR/JMP evidence"
-    if cold_first != warm_first:
+    if cold_seq != warm_seq:
         return "UNKNOWN", "cold/warm entries differ"
     if cold_run["reason"] != "api_unimplemented" or warm_run["reason"] != "api_unimplemented":
         return "UNKNOWN", "entry does not lead to stub halt"
-    return "API_ENTRY_CONFIRMED", f"first table entry slot {cold_first[0]} {cold_first[1]} in both cycles"
+    if len(cold_seq) == 1:
+        return "API_ENTRY_CONFIRMED", f"first table entry slot {cold_seq[0][0]} {cold_seq[0][1]} in both cycles"
+    return ("API_ENTRY_CONFIRMED",
+            f"table entry sequence {list(cold_seq)} in both cycles, stub halt on last call")
 
 
 def auto_labels_for_rom(rom_path: Path, out_dir: Path) -> Path:
@@ -523,12 +535,18 @@ def main():
                         help="probe labels; auto-derived from the loader ROM when omitted")
     parser.add_argument("--commercial-output", type=Path,
                         help="local-only evidence JSON outside the repo (commercial mode requires this)")
+    parser.add_argument("--commercial-auto-loader", action="store_true",
+                        help="build the IPL loader ROM locally with the data-track INDEX 01 LBA derived "
+                             "stat-only from the selected CUE (mutually exclusive with --commercial-rom)")
+    parser.add_argument("--commercial-loader-format", choices=("public", "dev"), default="public",
+                        help="IPL loader format for --commercial-auto-loader (default public)")
     args = parser.parse_args()
 
     has_commercial_args = (
         args.commercial_rom is not None or args.commercial_cue is not None
         or args.commercial_labels is not None or args.commercial_output is not None
-        or args.commercial_index is not None or args.rom_dir is not None)
+        or args.commercial_index is not None or args.rom_dir is not None
+        or args.commercial_auto_loader or args.commercial_loader_format != "public")
     if has_commercial_args and not args.commercial:
         raise SystemExit("FAIL: commercial options require --commercial")
     # Synthetic runs never touch ./rom/ and never require --commercial.
@@ -541,8 +559,11 @@ def main():
 
     if args.commercial:
         # Opt-in commercial mode: DEV BIOS + auto-detected ./rom/ CUE + labels + local-only output.
-        if not args.commercial_rom or not args.commercial_output:
-            raise SystemExit("FAIL: commercial mode needs --commercial-rom and --commercial-output")
+        if args.commercial_auto_loader and args.commercial_rom is not None:
+            raise SystemExit("FAIL: --commercial-auto-loader and --commercial-rom are mutually exclusive")
+        if not args.commercial_output or (not args.commercial_rom and not args.commercial_auto_loader):
+            raise SystemExit("FAIL: commercial mode needs --commercial-rom or --commercial-auto-loader, "
+                             "and --commercial-output")
         if args.rom_dir is not None and os.environ.get("OSS_PCE_ALLOW_ROM_DIR") != "1":
             raise SystemExit("FAIL: --rom-dir is a test hook requiring OSS_PCE_ALLOW_ROM_DIR=1")
         try:
@@ -557,22 +578,45 @@ def main():
             dest = validate_commercial_output(args.commercial_output)
         except ValueError as error:
             raise SystemExit(f"FAIL commercial output rejected: {error}")
-        if args.commercial_labels is not None:
-            labels_path = args.commercial_labels
-        else:
-            try:
-                labels_path = auto_labels_for_rom(args.commercial_rom, out)
-            except ValueError as error:
-                raise SystemExit(f"FAIL commercial labels: {error}")
-        probe = compile_probe(out, "geargrafx_api_entry_probe.cpp", "geargrafx-api-entry-probe")
-        budget = 80_000_000
-        # Snapshot immediately before the probe to keep the TOCTOU window narrow.
+        # Snapshot before loader build/probe to keep the TOCTOU window narrow.
         try:
             snap = snapshot_media(cue_path, rom_dir)
         except ValueError as error:
             raise SystemExit(str(error))
+        commercial_rom = args.commercial_rom
+        if args.commercial_auto_loader:
+            # Derive the data-track INDEX 01 LBA stat-only (no BIN read, no logging
+            # of the value) and build the IPL loader locally in build/ (gitignored).
+            try:
+                sel = commercial_media.data_track_index01_lba(cue_path, rom_dir)
+            except ValueError as error:
+                raise SystemExit(str(error))
+            try:
+                verify_media_unchanged(snap)
+            except ValueError as error:
+                raise SystemExit(str(error))
+            fmt = args.commercial_loader_format
+            variant = f"comm-{fmt}"
+            defines = ["-D", "IPL_PUBLIC"] if fmt == "public" else []
+            try:
+                commercial_rom, _symbols = build_ipl_loader_bios(original, out, sel, args.mode, variant, defines)
+            except Exception:
+                raise SystemExit("FAIL commercial loader build")
+            try:
+                verify_media_unchanged(snap)
+            except ValueError as error:
+                raise SystemExit(str(error))
+        if args.commercial_labels is not None:
+            labels_path = args.commercial_labels
+        else:
+            try:
+                labels_path = auto_labels_for_rom(commercial_rom, out)
+            except ValueError as error:
+                raise SystemExit(f"FAIL commercial labels: {error}")
+        probe = compile_probe(out, "geargrafx_api_entry_probe.cpp", "geargrafx-api-entry-probe")
+        budget = 80_000_000
         try:
-            records = run_probe(probe, args.commercial_rom, cue_path, labels_path, budget, "commercial")
+            records = run_probe(probe, commercial_rom, cue_path, labels_path, budget, "commercial")
         except ValueError as error:
             raise SystemExit(f"FAIL commercial observation: {error}")
         try:

@@ -58,9 +58,9 @@ def _parse_msf(token: str) -> int:
     return (minute * 60 + second) * 75 + frame
 
 
-def parse_cue(path: Path) -> dict:
-    """Parse CUE keywords into {'catalog', 'files': [...]}, raising CueError on malformed input."""
-    text = path.read_text(encoding="ascii", errors="replace")
+def parse_cue_text(text: str) -> dict:
+    """Parse already-read CUE text (BOM stripped). See parse_cue for the contract."""
+    text = text.lstrip("\ufeff")
     catalog, files = None, []
     for number, raw in enumerate(text.splitlines(), start=1):
         line = raw.strip()
@@ -132,6 +132,11 @@ def parse_cue(path: Path) -> dict:
     if not files or not any(f["tracks"] for f in files):
         raise CueError("CUE has no tracks")
     return {"catalog": catalog, "files": files}
+
+
+def parse_cue(path: Path) -> dict:
+    """Parse CUE keywords into {'catalog', 'files': [...]}, raising CueError on malformed input."""
+    return parse_cue_text(path.read_text(encoding="ascii", errors="replace"))
 
 
 def _bcd(value: int) -> int:
