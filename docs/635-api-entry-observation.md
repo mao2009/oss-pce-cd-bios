@@ -31,8 +31,10 @@
 
 ## 商用再測定（opt-in、手動・ローカル限定）
 
-`geargrafx_api_entry.py --commercial-rom <DEV BIOS> --commercial-cue <ローカルCUE> --commercial-labels <labels> --commercial-output <リポジトリ/worktree外の明示パス>`（例: `/tmp/opencode/<file>.json`。私的親0700のみ、上書き不可）
-（入力・出力は読取専用/リポジトリ外。ログにパスや媒体識別を出さない。既存ファイルは上書きしない。保存失敗はFAIL）
+`geargrafx_api_entry.py --commercial-rom <DEV BIOS> --commercial-cue <ローカルCUE> --commercial-labels <labels> --commercial-output /tmp/opencode/issue635-private/<file>.json`（直接子のみ。専用親0700を事前に作成。上書き不可）
+（入力は読取専用。ログにパスや媒体識別を出さない。既存ファイルは上書きしない。保存失敗はFAIL。`git worktree list` 登録worktreeと祖先`.git`を確認しfail-closed。別クローン全網羅を主張しない）
+
+書込みは親fd固定（`O_DIRECTORY|O_NOFOLLOW` + fstat + `dir_fd` で `O_EXCL|0600` 作成）。親置換後もfd固定先へ書く（symlinkターゲットへ逃げない）。部分書込失敗時は部分ファイルを残しFAIL（削除しない。未完成として扱う）。親dir自体の移動（rename）に対する完全防御はしていない（残存リスクとしてはfd固定のinodeへ書く）
 
 判定は次を区別する：`API_ENTRY_CONFIRMED`（入口観測+停止確認）、`PRE_API_BLOCKER_OBSERVED`（入口0件+IPL拒否halt）、`UNKNOWN`（入口なし理由不明）、`INCOMPLETE`（切断）、`BUDGET`（予算）、`FAIL`（器異常）。「正常終了」と「最初のAPI特定」を混同しない
 

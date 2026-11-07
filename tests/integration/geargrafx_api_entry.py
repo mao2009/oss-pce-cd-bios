@@ -82,41 +82,84 @@ def assert_commercial_clean(records):
                 raise ValueError("commercial output contains raw stack values")
 
 
-def validate_commercial_output(path, root=ROOT):
+DEFAULT_PRIVATE_PARENT = Path("/tmp/opencode/issue635-private")
+
+
+def list_registered_worktrees(root):
+    """Registered worktree absolute paths via `git worktree list --porcelain` (fail-closed)."""
+    try:
+        result = subprocess.run(["git", "-C", str(root), "worktree", "list", "--porcelain"],
+                                capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ValueError("worktree enumeration failed") from error
+    if result.returncode != 0:
+        raise ValueError("worktree enumeration failed")
+    paths = []
+    for line in result.stdout.splitlines():
+        if line.startswith("worktree "):
+            wt = Path(line[len("worktree "):].strip())
+            if wt.is_absolute():
+                paths.append(Path(os.path.realpath(wt)))
+    if not paths:
+        raise ValueError("worktree enumeration failed")
+    return paths
+
+
+def _is_within(child, parent):
+    child = Path(os.path.realpath(child))
+    parent = Path(os.path.realpath(parent))
+    return child == parent or child.is_relative_to(parent)
+
+
+def _ancestor_has_git(start):
+    """True if any ancestor (including start) contains a .git entry (clone/worktree)."""
+    current = Path(os.path.abspath(start))
+    while True:
+        try:
+            os.lstat(current / ".git")
+            return True
+        except FileNotFoundError:
+            pass
+        except OSError:
+            # Unreadable ancestor: treat as Git-managed (fail-closed).
+            return True
+        if current.parent == current:
+            return False
+        current = current.parent
+
+
+def validate_commercial_output(path, root=ROOT, private_parent=None):
     """Fail-closed validation for the local-only commercial evidence path.
 
-    Requires an absolute path outside the repository and outside every known
-    worktree, whose parent exists as a private owned directory (0700, no
-    symlink, no intermediate symlink), and whose file does not yet exist
-    (no overwrite, symlink rejected). Returns the path or raises ValueError.
+    Output must be a NEW file directly under a dedicated private parent
+    (default /tmp/opencode/issue635-private, 0700 owned), outside the repo
+    and every registered worktree, with no Git ancestor. See save function
+    for the authoritative fd-pinned write.
     """
+    if not path:
+        raise ValueError("commercial output must be absolute")
     supplied = Path(path)
+    if str(supplied) in ("", "."):
+        raise ValueError("commercial output must be absolute")
     if not supplied.is_absolute():
         raise ValueError("commercial output must be absolute")
     out = Path(os.path.abspath(os.fspath(supplied)))
-    root_abs = Path(os.path.abspath(os.fspath(root)))
-    if out == root_abs or out.is_relative_to(root_abs):
+    root_abs = Path(os.path.realpath(root))
+    _ = root_abs
+    want_parent = Path(os.path.abspath(os.fspath(private_parent))) if private_parent else DEFAULT_PRIVATE_PARENT
+    if out == Path("/") or out == Path.home():
+        raise ValueError("commercial output must be a file under private parent")
+    if out.parent != want_parent:
+        raise ValueError("commercial output must be directly under private parent")
+    if out == want_parent or out.is_relative_to(root_abs):
         raise ValueError("commercial output must be outside the repository")
-    # Canonical checkout and any /tmp/opencode worktree child are also forbidden.
-    candidates = [root_abs, Path("/home/loach/src/oss-pce-cd-bios")]
-    opencode_root = Path("/tmp/opencode")
-    try:
-        if opencode_root.is_dir():
-            for child in opencode_root.iterdir():
-                try:
-                    if child.is_dir() and (child / ".git").exists():
-                        candidates.append(child)
-                except OSError:
-                    continue
-    except OSError:
-        pass
-    for cand in candidates:
-        try:
-            if out == cand or out.is_relative_to(cand):
-                raise ValueError("commercial output must be outside worktrees")
-        except ValueError as error:
-            if str(error) == "commercial output must be outside worktrees":
-                raise
+    # Registered worktrees (fail-closed on enumeration failure).
+    for wt in list_registered_worktrees(root):
+        if _is_within(out, wt):
+            raise ValueError("commercial output must be outside worktrees")
+    # Unknown clones: any Git ancestor of the private parent / output is forbidden.
+    if _ancestor_has_git(out.parent):
+        raise ValueError("commercial output must be outside worktrees")
     parent = out.parent
     try:
         st = os.lstat(parent)
@@ -137,6 +180,67 @@ def validate_commercial_output(path, root=ROOT):
         raise ValueError("commercial output already exists (no overwrite)")
     except FileNotFoundError:
         pass
+    return out
+
+
+def save_commercial_evidence(dest, text, root=ROOT, private_parent=None):
+    """Write evidence via the pinned parent directory fd (authoritative TOCTOU check).
+
+    Validates lexically, then opens the private parent with
+    O_DIRECTORY|O_NOFOLLOW, re-verifies ownership/permissions via fstat, and
+    creates the file with O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW mode 0600 through
+    dir_fd. On any mid-write failure the partial file is left in place (never
+    deleted) and ValueError is raised (never a success).
+    """
+    out = validate_commercial_output(dest, root=root, private_parent=private_parent)
+    if not hasattr(os, "O_NOFOLLOW") or os.O_NOFOLLOW is None:
+        raise ValueError("O_NOFOLLOW unavailable (BLOCKED)")
+    if not hasattr(os, "O_DIRECTORY"):
+        raise ValueError("O_DIRECTORY unavailable (BLOCKED)")
+    parent = out.parent
+    try:
+        parent_fd = os.open(str(parent), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as error:
+        raise ValueError("commercial output parent open failed") from error
+    try:
+        fst = os.fstat(parent_fd)
+        if not stat.S_ISDIR(fst.st_mode):
+            raise ValueError("commercial output parent is not a directory")
+        if fst.st_uid != os.getuid():
+            raise ValueError("commercial output parent not owned")
+        if stat.S_IMODE(fst.st_mode) & 0o077:
+            raise ValueError("commercial output parent must be private (0700)")
+
+        data = text.encode("utf-8")
+        try:
+            file_fd = os.open(out.name, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600, dir_fd=parent_fd)
+        except FileExistsError as error:
+            raise ValueError("commercial output already exists (no overwrite)") from error
+        except OSError as error:
+            raise ValueError("commercial output create failed") from error
+        try:
+            info = os.fstat(file_fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError("commercial output is not a regular file")
+            written = 0
+            while written < len(data):
+                try:
+                    n = os.write(file_fd, data[written:])
+                except OSError as error:
+                    raise ValueError("commercial output write failed") from error
+                if n == 0:
+                    raise ValueError("commercial output write failed")
+                written += n
+        finally:
+            try:
+                os.close(file_fd)
+            except OSError as error:
+                raise ValueError("commercial output close failed") from error
+    finally:
+        try:
+            os.close(parent_fd)
+        except OSError as error:
+            raise ValueError("commercial output parent close failed") from error
     return out
 
 
@@ -334,10 +438,9 @@ def main():
                     "runs": [{k: r[k] for k in ("cycle", "reason", "pc", "x", "halt_confirmed", "step")} |
                              {"apicall_truncated": r.get("apicall_truncated", False)} for r in records["RUN"]]}
         try:
-            with open(dest, "x") as handle:
-                handle.write(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
-        except OSError:
-            raise SystemExit("FAIL commercial evidence save failed")
+            save_commercial_evidence(args.commercial_output, json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+        except ValueError as error:
+            raise SystemExit(f"FAIL commercial evidence save failed: {error}")
         if verdict in ("API_ENTRY_CONFIRMED", "PRE_API_BLOCKER_OBSERVED"):
             print(f"OBSERVED commercial API-entry: {verdict} (structural only)")
             return 0

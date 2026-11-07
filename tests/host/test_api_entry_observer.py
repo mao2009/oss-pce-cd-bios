@@ -6,7 +6,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tests" / "integration"))
 from geargrafx_api_entry import (assert_commercial_clean, classify_apicall, classify_commercial,  # noqa: E402
-                                 jsr_confirmed, validate_commercial_output)
+                                 jsr_confirmed, list_registered_worktrees, save_commercial_evidence,
+                                 validate_commercial_output)
 
 
 def call(in_table=True, slot=2, delta=2, caller=0x3006, entry=None,
@@ -161,13 +162,28 @@ class CommercialOutputTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_commercial_output(str(ROOT / "out.json"))
 
-    def test_relative_path_rejected(self):
+    def test_relative_and_empty_rejected(self):
+        for bad in ("out.json", "", "/"):
+            with self.assertRaises(ValueError, msg=bad):
+                validate_commercial_output(bad)
+
+    def test_home_rejected(self):
         with self.assertRaises(ValueError):
-            validate_commercial_output("out.json")
+            validate_commercial_output(str(Path.home() / "out.json"))
+
+    def test_not_under_private_parent_rejected(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            sub = Path(tmp) / "sub"
+            sub.mkdir()
+            with self.assertRaises(ValueError):
+                validate_commercial_output(str(sub / "out.json"), private_parent=Path(tmp))
 
     def test_missing_parent_rejected(self):
-        with self.assertRaises(ValueError):
-            validate_commercial_output("/tmp/opencode/definitely-missing-parent/out.json")
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ValueError):
+                validate_commercial_output(str(Path(tmp) / "missing" / "out.json"), private_parent=Path(tmp))
 
     def test_existing_file_rejected_no_overwrite(self):
         import tempfile
@@ -175,7 +191,7 @@ class CommercialOutputTests(unittest.TestCase):
             path = Path(tmp) / "exists.json"
             path.write_text("{}")
             with self.assertRaises(ValueError):
-                validate_commercial_output(str(path))
+                validate_commercial_output(str(path), private_parent=Path(tmp))
 
     def test_symlink_file_rejected(self):
         import os
@@ -186,17 +202,50 @@ class CommercialOutputTests(unittest.TestCase):
             target.write_text("{}")
             os.symlink(str(target), str(link))
             with self.assertRaises(ValueError):
-                validate_commercial_output(str(link))
+                validate_commercial_output(str(link), private_parent=Path(tmp))
 
-    def test_nested_worktree_path_rejected(self):
-        # A path inside the worktree root (repo root param) must be rejected (hermetic, no /tmp/opencode needed).
+    def test_ancestor_symlink_rejected(self):
+        import os
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
-            wt = Path(tmp) / "wt"
-            wt.mkdir()
-            (wt / ".git").touch()
+            real = Path(tmp) / "real"
+            real.mkdir()
+            link = Path(tmp) / "link"
+            os.symlink(str(real), str(link))
             with self.assertRaises(ValueError):
-                validate_commercial_output(str(wt / "out.json"), root=wt)
+                validate_commercial_output(str(link / "out.json"), private_parent=link)
+
+    def test_ancestor_git_rejected(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            priv = Path(tmp) / "priv"
+            priv.mkdir()
+            (priv / ".git").touch()
+            with self.assertRaises(ValueError):
+                validate_commercial_output(str(priv / "out.json"), private_parent=priv)
+
+    def test_registered_worktree_rejected(self):
+        # Mock enumeration: output inside a registered worktree must be rejected.
+        from unittest import mock
+        import geargrafx_api_entry as mod
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            priv = Path(tmp) / "priv"
+            priv.mkdir()
+            wt = priv / "wt"
+            wt.mkdir()
+            with mock.patch.object(mod, "list_registered_worktrees", return_value=[wt]):
+                with self.assertRaises(ValueError):
+                    validate_commercial_output(str(wt / "out.json"), private_parent=priv)
+
+    def test_worktree_enumeration_failure_fails_closed(self):
+        from unittest import mock
+        import geargrafx_api_entry as mod
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(mod, "list_registered_worktrees", side_effect=ValueError("worktree enumeration failed")):
+                with self.assertRaises(ValueError):
+                    validate_commercial_output(str(Path(tmp) / "out.json"), private_parent=Path(tmp))
 
     def test_harness_never_logs_paths(self):
         src = (ROOT / "tests" / "integration" / "geargrafx_api_entry.py").read_text()
@@ -263,6 +312,123 @@ class InformationProtectionMutationTests(unittest.TestCase):
         # And validation itself fails closed without a private outside-repo path.
         with self.assertRaises(ValueError):
             validate_commercial_output("relative.json")
+
+
+class SaveEvidenceTests(unittest.TestCase):
+    """fd-pinned save: perms, exclusivity, TOCTOU, write/close failures."""
+
+    def test_save_success_0600_and_reread(self):
+        import json
+        import stat
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            text = json.dumps({"verdict": "SYNTHETIC", "x": 1}, indent=2)
+            dest = save_commercial_evidence(str(Path(tmp) / "out.json"), text, private_parent=Path(tmp))
+            self.assertEqual(dest.name, "out.json")
+            st = (Path(tmp) / "out.json").stat()
+            self.assertTrue(stat.S_ISREG(st.st_mode))
+            self.assertEqual(stat.S_IMODE(st.st_mode), 0o600)
+            self.assertEqual(json.loads((Path(tmp) / "out.json").read_text()), {"verdict": "SYNTHETIC", "x": 1})
+
+    def test_save_refuses_overwrite_and_symlink_target(self):
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            p = str(Path(tmp) / "out.json")
+            save_commercial_evidence(p, "first", private_parent=Path(tmp))
+            with self.assertRaises(ValueError):
+                save_commercial_evidence(p, "second", private_parent=Path(tmp))
+            self.assertEqual(Path(p).read_text(), "first")
+
+    def test_save_rejects_loose_parent(self):
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chmod(tmp, 0o755)
+            with self.assertRaises(ValueError):
+                save_commercial_evidence(str(Path(tmp) / "out.json"), "x", private_parent=Path(tmp))
+
+    def test_parent_replacement_does_not_escape_fd(self):
+        # Simulate parent replacement between fd-open and file-create: the write
+        # must stay in the pinned directory (fd), never in the symlink target.
+        import os
+        from unittest import mock
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            priv = Path(tmp) / "priv"
+            priv.mkdir()
+            evil = Path(tmp) / "evil"
+            evil.mkdir()
+            orig_open = os.open
+            swapped = []
+
+            def hooking_open(path, *a, **k):
+                if isinstance(path, str) and path.endswith("out.json"):
+                    if not swapped:
+                        swapped.append(True)
+                        os.rename(str(priv), str(Path(tmp) / "priv-orig"))
+                        os.symlink(str(evil), str(priv))
+                return orig_open(path, *a, **k)
+
+            dest = str(priv / "out.json")
+            with mock.patch("os.open", side_effect=hooking_open):
+                try:
+                    save_commercial_evidence(dest, '{"ok":true}', private_parent=priv)
+                except ValueError:
+                    pass  # fail-closed is acceptable; escape is not
+            # The symlink target must never receive the file.
+            self.assertFalse((evil / "out.json").exists(), "escaped write to symlink target")
+
+    def test_concurrent_create_fails_closed(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            p = str(Path(tmp) / "race.json")
+            save_commercial_evidence(p, "first", private_parent=Path(tmp))
+            with self.assertRaises(ValueError):
+                save_commercial_evidence(p, "second", private_parent=Path(tmp))
+
+    def test_write_failure_leaves_partial_and_fails(self):
+        import os
+        from unittest import mock
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            p = str(Path(tmp) / "partial.json")
+            real_write = os.write
+            def bad_write(fd, data):
+                if b"PARTIAL" in data:
+                    raise OSError("disk full")
+                return real_write(fd, data)
+            with mock.patch("os.write", side_effect=bad_write):
+                with self.assertRaises(ValueError):
+                    save_commercial_evidence(p, '{"v":"PARTIAL"}', private_parent=Path(tmp))
+
+    def test_close_failure_fails(self):
+        import os
+        from unittest import mock
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            p = str(Path(tmp) / "closefail.json")
+            real_close = os.close
+            first = [True]
+            def bad_close(fd):
+                if first[0]:
+                    # Allow parent_fd close but fail file close once? Both close via os.close; fail first.
+                    first[0] = False
+                    raise OSError("close failed")
+                return real_close(fd)
+            with mock.patch("os.close", side_effect=bad_close):
+                with self.assertRaises(ValueError):
+                    save_commercial_evidence(p, "{}", private_parent=Path(tmp))
+
+    def test_onofollow_unavailable_fails_closed(self):
+        import os
+        from unittest import mock
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            p = str(Path(tmp) / "out.json")
+            with mock.patch.object(os, "O_NOFOLLOW", None, create=True):
+                with self.assertRaises(ValueError):
+                    save_commercial_evidence(p, "{}", private_parent=Path(tmp))
 
 
 if __name__ == "__main__":
