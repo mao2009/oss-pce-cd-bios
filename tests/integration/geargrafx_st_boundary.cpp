@@ -11,6 +11,7 @@
 // argv: bios cue slot budget allow_start allow_end mode neg_addr   (same shape as
 // geargrafx_reference_jsr.cpp so geargrafx_reference_guard.run_mode() can drive it).
 // Modes:
+//   st1-entry / st2-entry monitor armed; ST1 / ST2 is the ENTRY instruction (no preceding instruction)
 //   stN-unknown    monitor armed; ST opcode reached through JMP at an unknown PC (entry is a JMP)
 //   st2-mpr2-unknown monitor armed; guest TAM changes MPR2, then JMP reaches ST2 in page 2
 //   st0-entry      monitor armed; ST0 is the ENTRY instruction (no preceding instruction)
@@ -71,11 +72,14 @@ int main(int argc, char** argv)
     bool armed = true;
     bool stale_after_first_boundary = false, wrong_opcode_set = false, skip_entry_check = false;
     bool mpr2_case = false;
+    bool entry_case = false;
     std::string st_kind;  // "st0", "st1", "st2" or "" (pos-write)
-    if (mode == "st0-entry" || mode == "st1-unknown" || mode == "st2-unknown" ||
+    if (mode == "st0-entry" || mode == "st1-entry" || mode == "st2-entry" ||
+        mode == "st1-unknown" || mode == "st2-unknown" ||
         mode == "st2-mpr2-unknown") {
         st_kind = mode.substr(0, 3);
         mpr2_case = mode == "st2-mpr2-unknown";
+        entry_case = (mode == "st0-entry" || mode == "st1-entry" || mode == "st2-entry");
     } else if (mode == "st0-unguarded" || mode == "st1-unguarded" || mode == "st2-unguarded") {
         st_kind = mode.substr(0, 3);
         armed = false;
@@ -84,8 +88,10 @@ int main(int argc, char** argv)
         mpr2_case = true;
         stale_after_first_boundary = mode == "st2-mpr2-no-recheck";
         wrong_opcode_set = mode == "st2-mpr2-wrong-opcode";
-    } else if (mode == "st0-entry-no-entry-check") {
-        st_kind = "st0";
+    } else if (mode == "st0-entry-no-entry-check" || mode == "st1-entry-no-entry-check" ||
+               mode == "st2-entry-no-entry-check") {
+        st_kind = mode.substr(0, 3);
+        entry_case = true;
         skip_entry_check = true;
     } else if (mode == "pos-write") {
         if (neg_addr < allow_start || neg_addr >= allow_end)
@@ -129,8 +135,12 @@ int main(int argc, char** argv)
     memory->SetMpr(0, 0x00);  // page 0 -> ROM, never the hardware page
 
     std::vector<u8> code, mpr2_code;
-    if (st_kind == "st0") {
+    if (entry_case && st_kind == "st0") {
         code = {0x03, 0x07, 0x80, 0xFE};  // ST0 #$07 at entry, BRA *
+    } else if (entry_case && st_kind == "st1") {
+        code = {0x13, 0x5A, 0x80, 0xFE};  // ST1 #$5A at entry (AR=0, R[0] low), BRA *
+    } else if (entry_case && st_kind == "st2") {
+        code = {0x23, 0xA5, 0x80, 0xFE};  // ST2 #$A5 at entry (AR=0, R[0] high), BRA *
     } else if (mpr2_case) {
         // The guest, not host setup, changes the MPR used to fetch the target.
         // $4010 is CPU page 2, and MPR2=$F8 maps it to WRAM[0x10].
@@ -173,7 +183,7 @@ int main(int argc, char** argv)
     unsigned vdc_ar_before = (u8)*vs->AR;
     unsigned vdc_r_before = vs->R[0];
     unsigned guard_before = memory->Read((u16)neg_addr);
-    unsigned st_pc_expected = mpr2_case ? kMpr2Target : (st_kind == "st0") ? kGuestBase : kJumpTarget;
+    unsigned st_pc_expected = mpr2_case ? kMpr2Target : entry_case ? kGuestBase : kJumpTarget;
 
     unsigned long executed = 0;
     bool refused = false;
