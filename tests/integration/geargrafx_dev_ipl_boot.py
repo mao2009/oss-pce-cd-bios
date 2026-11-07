@@ -64,7 +64,17 @@ def tamper_bin(cue, lba, edits):
 
 
 def assert_not_copied(records, code):
-    """No run may leave the IPL bytes at $3000 (copy destination): the rejection must happen before the copy."""
+    """No run may leave any IPL bytes at $3000: the rejection must happen before the copy.
+
+    The guest seeds $3000-$3FFF with $5A before READ(6), so a single non-sentinel byte
+    proves a partial copy.  This is stronger than a full-copy check and distinguishes
+    copy-before-rejection from execution blocking (which judge_failure checks separately).
+    """
+    T.check_exec_untouched(records)
+
+
+def assert_no_full_copy(records, code):
+    """Weak check for the step-budget cut, which may stop mid-seeding before the sentinel window is complete."""
     for run in records["RUN"]:
         buffer = bytes.fromhex(run["buffer_hex"])
         if len(buffer) != 6144:
@@ -140,6 +150,21 @@ def main():
         results["ipl_a"] = {"status": "PASS", "lba": lba, "payload_bytes": len(code_a),
                             "sector_sha256": hashlib.sha256(encode_sector(lba, code_a)).hexdigest()}
 
+        # ---- positive: max-length PCEX (255 bytes) proves the copy boundary ----
+        # Length is one byte, so 255 is the largest encodable value and 8+255=263 still fits
+        # the 2048-byte sector; EXEC+255=$30FF stays below MARK $3F00.  A longer value
+        # cannot be encoded at all (host and oracle reject it); the real core sees 255.
+        # The padding follows the payload jmp, so payload_done and the executed prefix are unchanged.
+        code_max = code_a + bytes([0xEA]) * (255 - len(code_a))
+        if len(code_max) != 255 or code_max[:len(code_a)] != code_a or code_max in rom_bytes:
+            raise ValueError("max-length payload construction is wrong")
+        records_max = run(disc("ipl-max", code_max))
+        T.judge_success(records_max, code_max, symbols, lba, 1)
+        results["ipl_max_length_255"] = {"status": "PASS", "lba": lba, "payload_bytes": len(code_max),
+                                         "sector_sha256": hashlib.sha256(encode_sector(lba, code_max)).hexdigest(),
+                                         "copy_boundary": "EXEC $3000 + 255 ends $30FE; tail to MARK $3F00 sentinel",
+                                         "sector_boundary": "8+255=263 <= 2048"}
+
         # ---- positive: IPL B on the same ROM must produce a different observed result ----
         records_b = run(disc("ipl-b", code_b))
         T.judge_marker_mismatch(records_b, code_b, symbols, lba, T.VARIANT_TRAILER)
@@ -163,18 +188,22 @@ def main():
             records = run(disc(name, code_a, **kwargs))
             T.judge_failure(records, code, stage, transferred)
             assert_not_copied(records, code_a)
-            results[name] = {"status": "PASS_EXPECTED_FAILURE", "guest_error": code, "stage": stage, "bytes": transferred}
+            results[name] = {"status": "PASS_EXPECTED_FAILURE", "guest_error": code, "stage": stage, "bytes": transferred,
+                             "copy_blocked": "EXEC sentinel untouched (no partial copy)",
+                             "execution_blocked": "no payload hints, halt_fail at stage 11"}
 
         records = run(disc("abort", code_a), inject="eject-in-data")
         T.judge_failure(records, 4, 5, 0)
         assert_not_copied(records, code_a)
-        results["drive_abort_at_data_in"] = {"status": "PASS_EXPECTED_FAILURE", "guest_error": 4, "stage": 5, "bytes": 0}
+        results["drive_abort_at_data_in"] = {"status": "PASS_EXPECTED_FAILURE", "guest_error": 4, "stage": 5, "bytes": 0,
+                                            "copy_blocked": "EXEC sentinel untouched (no partial copy)",
+                                            "execution_blocked": "no payload hints, halt_fail at stage 5"}
 
         records = run(disc("budget", code_a), budget=1000)
         if len(records["RUN"]) != 2 or any(run_["reason"] != "budget" for run_ in records["RUN"]) or any(
                 h["name"] in T.ORDER[2:] for h in records["HIT"]):
             raise ValueError("step-budget run did not stop before the IPL was entered")
-        assert_not_copied(records, code_a)
+        assert_no_full_copy(records, code_a)
         results["step_budget_exhausted"] = {"status": "PASS_EXPECTED_FAILURE", "budget": 1000,
                                             "note": "timeout by step budget, not a guest rejection"}
 
@@ -201,7 +230,11 @@ def main():
     passed = sum(1 for value in results.values() if isinstance(value, dict) and str(value.get("status", "")).startswith("PASS"))
     evidence = {"scope": "DEV-only IPL boot, synthetic media only; NOT compatible, NOT a BIOS ABI, NOT commercial",
                 "mode": mode, "results": results, "status": "PASS",
-                "limitation": "real-core LBA is 0x000109 (MID and LO bytes); the HI byte is covered only by the host encoding check"}
+                "limitation": "real-core LBA is 0x000109 (MID and LO bytes); the HI byte is covered only by the host encoding check",
+                "boundary_note": "PCEX length is one byte (1..255), so length 256+, sector overflow (8+len>2048) and "
+                                 "load-address excess are unrepresentable; host/oracle reject them and the 255-byte "
+                                 "real-core PASS proves the largest encodable copy stays inside EXEC and the sector. "
+                                 "No load-address field exists (fixed $3000), so a real-core negative for it is NOT_RUN."}
     (out / "dev-ipl-boot-evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
     print(f"PASS DEV-only IPL boot from RESET ({passed} scenarios; one ROM, two synthetic IPLs; cold+warm); "
           f"NOT compatible, NOT BIOS, NOT DEV_CALLABLE")

@@ -128,8 +128,12 @@ def observation(lba=5, count=1):
 
 def failure_observation():
     result = bytes([20, 11]) + SECTOR_BYTES.to_bytes(2, "little") + bytes([0, 0, 0])
+    # The guest seeds $3000-$3FFF with $5A before READ(6); a pre-copy rejection leaves it untouched.
+    buffer = bytearray(b"\x5a" * 6144)
+    buffer[:SECTOR_BYTES] = encode_sector(5, PAYLOAD)
     return {"CAP": [], "HIT": [], "PHASE": [],
-            "RUN": [{"cycle": c, "reason": "cd_halt_fail", **halt_fields(), "result_hex": result.hex()}
+            "RUN": [{"cycle": c, "reason": "cd_halt_fail", **halt_fields(), "result_hex": result.hex(),
+                     "buffer_hex": buffer.hex()}
                     for c in ("cold", "warm")]}
 
 

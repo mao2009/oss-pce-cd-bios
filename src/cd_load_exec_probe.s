@@ -119,6 +119,20 @@ cd_stack_ready:
     inc ptr+1
     dex
     bne @fill
+    lda #<EXEC               ; sentinel-fill the copy destination $3000-$30FF
+    sta ptr                  ; (one page: 255 code bytes plus the $30FF guard)
+    lda #>EXEC               ; so any copy (partial, overshoot, or wrong offset)
+    sta ptr+1                ; is observable as a non-$5A byte at the halt.
+    ldx #1                   ; $3100-$3FFF must not be seeded: MARK $3F00 is
+    lda #$5A                 ; payload-owned and (dev-boot path) MS_RES $3F40
+    ldy #0                   ; is written before this entry
+@fill_exec:
+    sta (ptr),y
+    iny
+    bne @fill_exec
+    inc ptr+1
+    dex
+    bne @fill_exec
     lda #<BUF
     sta ptr
     lda #>BUF
