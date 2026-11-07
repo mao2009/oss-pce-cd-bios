@@ -31,7 +31,7 @@
 
 ## 商用再測定（opt-in、手動・ローカル限定）
 
-`geargrafx_api_entry.py --commercial-rom <DEV BIOS> --commercial-cue <ローカルCUE> --commercial-labels <labels> --commercial-output /tmp/opencode/<file>.json`（直接子のみ。リポジトリ/worktree外）
+`geargrafx_api_entry.py --commercial-rom <DEV BIOS> --commercial-cue <ローカルCUE> --commercial-labels <labels> --commercial-output <リポジトリ/worktree外の明示パス>`（例: `/tmp/opencode/<file>.json`。私的親0700のみ、上書き不可）
 （入力・出力は読取専用/リポジトリ外。ログにパスや媒体識別を出さない。既存ファイルは上書きしない。保存失敗はFAIL）
 
 判定は次を区別する：`API_ENTRY_CONFIRMED`（入口観測+停止確認）、`PRE_API_BLOCKER_OBSERVED`（入口0件+IPL拒否halt）、`UNKNOWN`（入口なし理由不明）、`INCOMPLETE`（切断）、`BUDGET`（予算）、`FAIL`（器異常）。「正常終了」と「最初のAPI特定」を混同しない

@@ -85,11 +85,10 @@ def assert_commercial_clean(records):
 def validate_commercial_output(path, root=ROOT):
     """Fail-closed validation for the local-only commercial evidence path.
 
-    Requires an absolute path directly under /tmp/opencode (the private root),
-    hence outside the repository and outside every worktree. The parent must
-    exist as a private owned directory (0700, no symlink, no intermediate
-    symlink), and the file must not exist yet (no overwrite, symlink rejected).
-    Returns the path or raises ValueError.
+    Requires an absolute path outside the repository and outside every known
+    worktree, whose parent exists as a private owned directory (0700, no
+    symlink, no intermediate symlink), and whose file does not yet exist
+    (no overwrite, symlink rejected). Returns the path or raises ValueError.
     """
     supplied = Path(path)
     if not supplied.is_absolute():
@@ -98,9 +97,26 @@ def validate_commercial_output(path, root=ROOT):
     root_abs = Path(os.path.abspath(os.fspath(root)))
     if out == root_abs or out.is_relative_to(root_abs):
         raise ValueError("commercial output must be outside the repository")
-    private_root = Path("/tmp/opencode")
-    if out.parent != private_root:
-        raise ValueError("commercial output must be directly under /tmp/opencode")
+    # Canonical checkout and any /tmp/opencode worktree child are also forbidden.
+    candidates = [root_abs, Path("/home/loach/src/oss-pce-cd-bios")]
+    opencode_root = Path("/tmp/opencode")
+    try:
+        if opencode_root.is_dir():
+            for child in opencode_root.iterdir():
+                try:
+                    if child.is_dir() and (child / ".git").exists():
+                        candidates.append(child)
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    for cand in candidates:
+        try:
+            if out == cand or out.is_relative_to(cand):
+                raise ValueError("commercial output must be outside worktrees")
+        except ValueError as error:
+            if str(error) == "commercial output must be outside worktrees":
+                raise
     parent = out.parent
     try:
         st = os.lstat(parent)
@@ -108,7 +124,6 @@ def validate_commercial_output(path, root=ROOT):
         raise ValueError("commercial output parent missing")
     if not stat.S_ISDIR(st.st_mode) or stat.S_ISLNK(st.st_mode):
         raise ValueError("commercial output parent is not a directory")
-    # No intermediate symlink: the resolved parent must equal the lexical parent.
     if Path(os.path.realpath(parent)) != parent:
         raise ValueError("commercial output parent contains symlink")
     if st.st_uid != os.getuid():

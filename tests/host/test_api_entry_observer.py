@@ -170,32 +170,34 @@ class CommercialOutputTests(unittest.TestCase):
             validate_commercial_output("/tmp/opencode/definitely-missing-parent/out.json")
 
     def test_existing_file_rejected_no_overwrite(self):
-        # Existing evidence under the private root must not be overwritten.
-        path = Path("/tmp/opencode/test-api-entry-exists.json")
-        path.write_text("{}")
-        try:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "exists.json"
+            path.write_text("{}")
             with self.assertRaises(ValueError):
                 validate_commercial_output(str(path))
-        finally:
-            path.unlink(missing_ok=True)
 
     def test_symlink_file_rejected(self):
         import os
-        target = Path("/tmp/opencode/test-api-entry-target.json")
-        link = Path("/tmp/opencode/test-api-entry-link.json")
-        target.write_text("{}")
-        try:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "target.json"
+            link = Path(tmp) / "link.json"
+            target.write_text("{}")
             os.symlink(str(target), str(link))
             with self.assertRaises(ValueError):
                 validate_commercial_output(str(link))
-        finally:
-            link.unlink(missing_ok=True)
-            target.unlink(missing_ok=True)
 
     def test_nested_worktree_path_rejected(self):
-        # Only direct children of /tmp/opencode are accepted (never inside a worktree).
-        with self.assertRaises(ValueError):
-            validate_commercial_output("/tmp/opencode/some-dir/out.json")
+        # A path inside a worktree (dir with .git) must be rejected even under /tmp/opencode.
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory(dir="/tmp/opencode") as tmp:
+            wt = Path(tmp) / "wt"
+            wt.mkdir()
+            (wt / ".git").touch()
+            with self.assertRaises(ValueError):
+                validate_commercial_output(str(wt / "out.json"))
 
     def test_harness_never_logs_paths(self):
         src = (ROOT / "tests" / "integration" / "geargrafx_api_entry.py").read_text()
