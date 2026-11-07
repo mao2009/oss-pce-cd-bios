@@ -4,11 +4,16 @@ tests/fixtures/handoff-probe.s copies a 13-byte payload from bank0 to work RAM $
 there; the payload writes a marker at $2220 and JMPs back to a ROM halt label. The probe loads the synthetic ROM
 via LoadBiosFromBuffer(syscard), not a System Card image, and an empty dummy CD image (LoadMedia, 32 zero-filled MODE1/2352 sectors,
 no CD content). It records the first arrival per cycle (cold and warm) at handoff_jump, handoff_entry and
-handoff_done, and dumps work RAM offsets $200-$23F (CPU $2200-$223F). The cold cycle also compares the full
-work RAM ($2000-$3FFF) between the 'loaded', 'cold' and 'nonreturning' observations.
+handoff_done, and dumps work RAM offsets $200-$23F (CPU $2200-$223F). The full work RAM ($2000-$3FFF) is
+compared between the 'loaded', 'cold', 'nonreturning' and 'warm' observations: the cold cycle must differ from
+'loaded' only by the typed payload copy and marker, the halt must be stable, and the warm end state must equal
+the cold end state. Per cycle the judge also checks guest-driven registers (A/X), preservation of Y, MPR2-6
+and SP across jump -> entry -> done, the SEI interrupt flag, and that the sampled VDC state is unchanged.
+Power-on residues (absolute Y/P and MPR2-6 values) are deliberately not asserted: they differ between debug
+and release builds and between cold and warm cycles on the pinned core.
 A run is accepted only if the entry contract, the phase order, the RAM bytes and the marker all match the typed
-expectation. Two byte-mutated ROMs (MPR1 bank not work RAM, misaligned entry) must be rejected by the same judge,
-each for its own reason key.
+expectation. Three byte-mutated ROMs (MPR1 bank not work RAM, misaligned entry, extra copied byte) must be
+rejected by the same judge, each for its own reason key.
 Not tested: CD boot, the CD_EXEC loader, the callable ABI and any production BIOS behaviour. See LIMITATIONS.
 
 Run (after make setup, TOOLS_DIR outside the repo):  python3 tests/integration/geargrafx_handoff.py --mode debug
@@ -49,8 +54,9 @@ WORK_BASE, WORK_RAM_BYTES = 0x2000, 0x2000
 CHECKS = {
     "entry_mpr_sp_phase_order_cold_warm": "PASS",
     "marker_and_payload_64_bytes_cold_warm": "PASS",
-    "ram_side_effects_full_cold": "PASS",
-    "ram_full_warm": "NOT_RUN",
+    "full_ram_cold_typed_warm_equals_cold": "PASS",
+    "register_preservation_cold_warm": "PASS",
+    "mmio_sampled_vdc_unchanged": "PASS",
     "mmio_side_effects": "NOT_RUN",
     "cd_read_and_cd_exec": "NOT_RUN",
     "bios_callable_abi": "NOT_RUN",
@@ -58,11 +64,11 @@ CHECKS = {
 STEPS = 512                        # bounded run: cold observation after 512 instructions
 POST_HALT_STEPS = 32               # 'nonreturning' observation: the BRA loop at handoff_done must be stable
 LIMITATIONS = [
-    "RAM side effects: the cold cycle compares the full work RAM $2000-$3FFF (loaded -> cold -> nonreturning) with the typed image; warm cycle observes only $2200-$223F",
-    "MMIO side effects (VDC/VCE/PSG/timer/ADPCM/CD I/O) are NOT_RUN: the probe has no write trace; the fixture stores are only checked statically",
+    "RAM side effects: the full work RAM $2000-$3FFF is compared cold (loaded -> cold -> nonreturning, typed writes only) and warm (warm end state must equal the cold end state); there is no separate warm-loaded baseline observation, so a warm write that reproduced the cold image byte-for-byte would not be visible",
+    "MMIO side effects (VDC/VCE/PSG/timer/ADPCM/CD I/O) are NOT_RUN: the probe has no write trace and only samples VDC AR/R0 at the four end observations (checked unchanged, mmio_sampled_vdc_unchanged); the fixture stores are also checked statically",
     "interrupts: the fixture keeps SEI from reset and never CLIs, and the probe injects nothing; IRQ behaviour during the payload is unverified",
-    "registers and flags: A/X/Y/P are not asserted at handoff_entry or handoff_done",
-    "MPR: handoff_jump checks MPR0/MPR1, handoff_entry checks MPR0/MPR1/MPR7, handoff_done checks MPR7 only; MPR2-6 are unverified",
+    "registers and flags: only guest-driven values and preservation are asserted (A/X at jump/entry/done, Y and MPR2-6 preserved across the payload, SP=$FF, I flag set); absolute Y/P and absolute MPR2-6 values are power-on residues that differ between debug/release and cold/warm, so they are not asserted",
+    "MPR: handoff_jump checks MPR0/MPR1, handoff_entry checks MPR0/MPR1/MPR7, handoff_done checks MPR7; MPR2-6 are checked for preservation across the payload, not for absolute values",
     "block transfer/DMA side effects before the payload runs are not tested (#173, #361)",
     "CD: an empty dummy 32-sector MODE1/2352 image is mounted; no CD content, no CD boot, no CD_EXEC",
     "not a BIOS ABI: no callable entry contract, no API slot, no loader acceptance",
@@ -103,10 +109,11 @@ def expected_ram_writes(payload: bytes) -> dict:
 
 
 def check_ram_side_effects(records, payload):
-    """Cold cycle only: every byte outside the typed writes is unchanged from 'loaded', and the image is stable."""
+    """Cold: every byte outside the typed writes is unchanged from 'loaded', and the image is stable.
+    Warm: the end state must equal the cold end state byte-for-byte (the warm reset re-runs the same copy)."""
     rows = {r["phase"]: r for r in records["OBS"]}
     images = {}
-    for phase in ("loaded", "cold", "nonreturning"):
+    for phase in ("loaded", "cold", "nonreturning", "warm"):
         if phase not in rows or "work_ram_hex" not in rows[phase]:
             raise HandoffRejected("obs", f"full work RAM observation '{phase}' missing")
         images[phase] = bytes.fromhex(rows[phase]["work_ram_hex"])
@@ -115,6 +122,9 @@ def check_ram_side_effects(records, payload):
     if images["cold"] != images["nonreturning"]:
         offset = next(i for i in range(WORK_RAM_BYTES) if images["cold"][i] != images["nonreturning"][i])
         raise HandoffRejected("ram_unstable", f"work RAM changed after the halt at offset {offset:#x}")
+    if images["warm"] != images["cold"]:
+        offset = next(i for i in range(WORK_RAM_BYTES) if images["warm"][i] != images["cold"][i])
+        raise HandoffRejected("ram_warm", f"warm work RAM differs from cold at offset {offset:#x}")
     expected = expected_ram_writes(payload)
     for offset in range(WORK_RAM_BYTES):
         end = images["cold"][offset]
@@ -134,6 +144,56 @@ def check_handoff_contract(entry, size, sp, mpr):
         raise HandoffRejected("mpr", f"MPR0/1/7 {mpr[0]:#x}/{mpr[1]:#x}/{mpr[7]:#x} differ from the RAM handoff contract")
     if sp != 0xFF:
         raise HandoffRejected("sp", f"stack pointer {sp:#x} at handoff, expected 0xff")
+
+
+FLAG_INTERRUPT = 0x04  # P I bit; same encoding as tests/integration/geargrafx_contracts.py
+
+
+def check_register_preservation(records, payload):
+    """Per cycle, guest-driven registers and payload-untouched state across jump -> entry -> done.
+
+    A at jump/entry is the last copied payload byte (the high byte of the JMP target, taken from the typed
+    payload, not from the RAM copy being checked); X is the copy-loop exit value; A at done is the payload's
+    final LDA operand (the marker's second byte). Y, MPR2-6 and SP are not written by the fixture, so they
+    must be preserved -- their absolute values are power-on residues and are not asserted. The I flag must
+    stay set (SEI at reset, no CLI in the fixture).
+    """
+    for cycle in ("cold", "warm"):
+        rows = {r["phase"]: r for r in records["TRACE"] if r["cycle"] == cycle}
+        if any(phase not in rows or any(key not in rows[phase]
+                                        for key in ("a", "x", "y", "p", "sp", "mpr"))
+               for phase in PHASES):
+            raise HandoffRejected("obs", f"{cycle}: register observation incomplete")
+        jump, entry, done = rows["handoff_jump"], rows["handoff_entry"], rows["handoff_done"]
+        if (jump["a"], entry["a"]) != (payload[-1], payload[-1]):
+            raise HandoffRejected("regs", f"{cycle}: A at jump/entry {jump['a']:#x}/{entry['a']:#x} != last payload byte")
+        if (jump["x"], entry["x"], done["x"]) != (len(payload), len(payload), len(payload)):
+            raise HandoffRejected("regs", f"{cycle}: X across the handoff is not the copy-loop exit value")
+        if done["a"] != MARKER[1]:
+            raise HandoffRejected("regs", f"{cycle}: A at handoff_done {done['a']:#x} != final LDA operand")
+        if not (jump["y"] == entry["y"] == done["y"]):
+            raise HandoffRejected("regs", f"{cycle}: Y not preserved across the payload")
+        if not (jump["mpr"][2:7] == entry["mpr"][2:7] == done["mpr"][2:7]):
+            raise HandoffRejected("regs", f"{cycle}: MPR2-6 not preserved across the payload")
+        if (jump["sp"], entry["sp"], done["sp"]) != (0xFF, 0xFF, 0xFF):
+            raise HandoffRejected("regs", f"{cycle}: SP not $FF across the handoff")
+        if any(not (row["p"] & FLAG_INTERRUPT) for row in (jump, entry, done)):
+            raise HandoffRejected("regs", f"{cycle}: interrupt flag not set across the handoff")
+
+
+def check_mmio_sampled(records):
+    """Sampled VDC state (AR/R0) at the four end observations must be unchanged from 'loaded'.
+
+    This is a sampled-state check only, not an MMIO write trace: a write that restored the sampled
+    registers before the observation would not be visible (see LIMITATIONS)."""
+    rows = {r["phase"]: r for r in records["OBS"]}
+    sampled = {}
+    for phase in ("loaded", "cold", "nonreturning", "warm"):
+        if phase not in rows or "vdc_ar" not in rows[phase] or "vdc_r0" not in rows[phase]:
+            raise HandoffRejected("obs", f"sampled VDC observation '{phase}' missing")
+        sampled[phase] = (rows[phase]["vdc_ar"], rows[phase]["vdc_r0"])
+    if any(value != sampled["loaded"] for value in sampled.values()):
+        raise HandoffRejected("mmio_sampled", f"sampled VDC state changed: {sampled}")
 
 
 def parse_labels(path: Path) -> dict:
@@ -208,7 +268,10 @@ def judge(records, labels, payload):
     """Accept only if cold AND warm entered the RAM payload under the contract and returned.
 
     Per cycle the order is: MPR0/1 at handoff_jump, PC/SP at handoff_jump, presence and contract of
-    handoff_entry, then the phase order, then handoff_done. Raises HandoffRejected with a reason key.
+    handoff_entry, then the phase order, then handoff_done; then the 64-byte dump/marker, the full-RAM
+    side effects (cold and warm), register preservation, and the sampled VDC state. The RAM check runs
+    before register preservation so the extra-copy negative keeps its own reason key. Raises HandoffRejected
+    with a reason key.
     """
     for cycle in ("cold", "warm"):
         rows = {r["phase"]: r for r in records["TRACE"] if r["cycle"] == cycle}
@@ -245,6 +308,8 @@ def judge(records, labels, payload):
         if row["pc"] != labels["handoff_done"] or row["sp"] != 0xFF:
             raise HandoffRejected("end", f"{row['phase']}: end PC/SP mismatch")
     check_ram_side_effects(records, payload)
+    check_register_preservation(records, payload)
+    check_mmio_sampled(records)
 
 
 def guarded(run, path):
