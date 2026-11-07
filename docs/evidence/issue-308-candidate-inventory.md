@@ -57,6 +57,19 @@
 | System Card ABI 確定 | BLOCKED_ABI | `release_eligible=false`。本 PR では解除しない |
 | ROM への第三者コード混入 | BLOCKED | ライセンス未確定のため 0 件のまま |
 
+## 3. ライセンス確認レベルの定義
+
+| レベル | 意味 | 本 PR での扱い |
+| --- | --- | --- |
+| L0 | リポジトリ単位でのみ確認 (ルート LICENSE/COPYING) | L-09, L-10, L-11, L-12, L-14, L-15, L-16, L-17, L-18, L-19 |
+| L1 | ファイル単位のヘッダ/SPDX 表記を確認 | L-01, L-02, L-03, L-04, L-05, L-06, L-07, L-08, L-13 |
+| L2 | ファイル単位の権利者・NOTICE を確定 | 未実施 (人間の provenance 監査が必要) |
+| L3 | 取り込み可否の承認 (Owner) | 未実施 (PENDING のまま) |
+
+- 本 PR は L0/L1 の整理のみ。L2/L3 は NOT_RUN。
+- blob SHA / 行番号は既存台帳・verification 文書からの転記であり、本 PR で独立再取得は行っていない (NOT_RUN)。
+- "PENDING" / "UNKNOWN" を根拠なく "APPROVED" に変更していない。
+
 ## 4. 合成 vs 実測の区別
 
 | 区分 | 内容 | 本 PR での扱い |
