@@ -119,7 +119,7 @@ Bytes 16..31 are ignored in PUBLIC for the same reason as bytes 14..15: their
 public meaning is not verified, and a DEV-only zero requirement must not refuse
 public media.
 
-Synthetic regression cases in `geargrafx_ipl_loader.py` (42 cases, cold+warm,
+Synthetic regression cases in `geargrafx_ipl_loader.py` (48 cases, cold+warm,
 both the 8 KiB and the 256 KiB loader paths):
 - `pub_n11_above_dev_limit`, `pub_n20_at_3000_crosses_c000`: IPLs larger than
   the DEV 10-sector limit are copied and executed in PUBLIC.
@@ -130,6 +130,11 @@ both the 8 KiB and the 256 KiB loader paths):
 - `pub_neg_iplsta_top_overrun_e000` and `pub_neg_iplbln_32_refused`: the new
   PUBLIC limits are still enforced (load end beyond `$E000`, and 32 sectors,
   are refused before any copy).
+- `pub_neg_load_end_overflow_n26`..`n31`: IPLSTA `$3000` with 26..31 sectors
+  wraps the 16-bit load-end high byte (actual end `$10000`+). The carry from
+  the end calculation is checked and the load is refused before any copy
+  (code 23, copied 0, payload never runs). Without the carry check these
+  inputs would wrap to a small high byte and be wrongly accepted.
 
 The DEV build is unchanged by these PUBLIC-only branches (`IPL_PUBLIC` ifdefs):
 DEV cases, including `neg_iplbln_11`, `neg_iplsta_6000_overruns_7fff` and

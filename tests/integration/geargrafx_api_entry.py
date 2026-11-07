@@ -38,11 +38,11 @@ def entry_of(slot: int) -> int:
     return 0xE000 + slot * 3
 
 
-def build_payload(out: Path, name: str, defines: list) -> tuple:
+def build_payload(out: Path, name: str, defines: list, origin: int = 0x3000) -> tuple:
     out.mkdir(parents=True, exist_ok=True)
     obj, rom, lbl, cfg = out / f"{name}.o", out / f"{name}.bin", out / f"{name}.lbl", out / f"{name}.cfg"
-    cfg.write_text("MEMORY {\n    RAM: start = $3000, size = $0F00, file = %O;\n}\n"
-                   "SEGMENTS {\n    CODE: load = RAM, type = ro, start = $3000;\n}\n", encoding="ascii")
+    cfg.write_text(f"MEMORY {{\n    RAM: start = ${origin:04X}, size = $0F00, file = %O;\n}}\n"
+                   f"SEGMENTS {{\n    CODE: load = RAM, type = ro, start = ${origin:04X};\n}}\n", encoding="ascii")
     subprocess.run([executable("ca65"), str(Path(__file__).resolve().parent / "ipl_api_entry_payload.s"),
                     *defines, "-o", str(obj), "-g"], check=True)
     subprocess.run([executable("ld65"), "-C", str(cfg), "-o", str(rom), "-Ln", str(lbl), str(obj)], check=True)
@@ -446,11 +446,27 @@ def verify_media_unchanged(snap: dict) -> None:
             raise ValueError("FAIL commercial observation: media changed during probe")
 
 
-def synthetic_case(tmp: Path, probe, bios, stub, name, defines, expect_slot, expect_method, budget=20_000_000):
-    code = build_payload(tmp, name, defines)
-    body = L.body_for(code, 1)
-    info = L.info_sector(2, 1, 0x3000, 0x3000, L.MPRS_STD, 0, sum(body) & 0xFFFF)
-    cue = L.make_disc(tmp / name, L.case_disc({"n": 1, "iplblk": 2}, body, info))
+def synthetic_case(tmp: Path, probe, bios, stub, name, defines, expect_slot, expect_method, budget=20_000_000,
+                   origin=0x3000, sta=0x3000, entry=None, nsec=1, public=False):
+    if entry is None:
+        entry = origin
+    code = build_payload(tmp, name, defines, origin=origin)
+    if origin == sta:
+        body = L.body_for(code, nsec)
+    else:
+        # Code lives at (entry - sta) inside the loaded image; filler elsewhere.
+        # This exercises callers in the $8000-$DFFF PUBLIC regions (entry >= $8000,
+        # sta < $8000) without needing IPLSTA itself to be >= $8000.
+        total = nsec * L.SECTOR
+        filler = bytearray(L.pattern(i, 0x21) for i in range(total))
+        off = entry - sta
+        if off < 0 or off + len(code) > total:
+            raise ValueError(f"{name}: payload code does not fit loaded image at entry")
+        filler[off:off + len(code)] = code
+        body = bytes(filler)
+    mprs = [0, 1, 2, 3, 4] if public else L.MPRS_STD
+    info = L.info_sector(2, nsec, sta, entry, mprs, 0, sum(body) & 0xFFFF)
+    cue = L.make_disc(tmp / name, L.case_disc({"n": nsec, "iplblk": 2}, body, info))
     labels = tmp / f"{name}.labels"
     labels.write_text(f"cd_halt_ok {stub['payload_halt']:04x}\n" if "payload_halt" in stub else "", encoding="ascii")
     # payload_halt address comes from the payload label file; the loader BIOS does not contain it.
@@ -599,7 +615,8 @@ def main():
             variant = f"comm-{fmt}"
             defines = ["-D", "IPL_PUBLIC"] if fmt == "public" else []
             try:
-                commercial_rom, _symbols = build_ipl_loader_bios(original, out, sel, args.mode, variant, defines)
+                commercial_rom, _symbols = build_ipl_loader_bios(
+                    original, out, sel, args.mode, variant, defines, private_input=True)
             except Exception:
                 raise SystemExit("FAIL commercial loader build")
             try:
@@ -669,7 +686,25 @@ def main():
         for name, defines, slot, method, budget in cases:
             verdicts = synthetic_case(tmp, probe, bios, stub, name, defines, slot, method, budget)
             print(f"PASS {name} cold/warm method={method} slot={slot}")
-    print("PASS synthetic API-entry controls (JSR/JMP/DIRECT/NOCALL/SPIN distinguished)")
+        # High-region callers (PUBLIC loader, entry >= $8000): the probe must
+        # watch the whole PUBLIC load range ($3000-$DFFF), not only $3000-$7FFF.
+        # sta stays $3000 so the DEV sta-range check is not the variable under
+        # test; entry is the payload origin in the high region.
+        pub_bios, _ = build_ipl_loader_bios(original, out, L.SEL, args.mode, "public", ["-D", "IPL_PUBLIC"])
+        # nsec covers (entry - $3000) + one payload sector, rounded up.
+        high_cases = [
+            ("jsr_slot02_at_8000", [f"-DJSR_SLOT=${entry_of(0x02):04X}"], 0x02, "JSR", 0x8000, 11),
+            ("jmp_slot02_at_9000", [f"-DJMP_SLOT=${entry_of(0x02):04X}"], 0x02, "JMP", 0x9000, 13),
+            ("direct_stub_at_c000", ["-DDIRECT_STUB"], 0x02, "DIRECT", 0xC000, 19),
+            ("nocall_at_8000", ["-DNOCALL"], None, "NOCALL", 0x8000, 11),
+            ("spin_at_9000", ["-DSPIN"], None, "SPIN", 0x9000, 13),
+        ]
+        for name, defines, slot, method, origin, nsec in high_cases:
+            budget = 500_000 if method == "SPIN" else 20_000_000
+            synthetic_case(tmp, probe, pub_bios, stub, name, defines, slot, method, budget,
+                           origin=origin, sta=0x3000, entry=origin, nsec=nsec, public=True)
+            print(f"PASS {name} cold/warm method={method} slot={slot} origin=${origin:04X}")
+    print("PASS synthetic API-entry controls (JSR/JMP/DIRECT/NOCALL/SPIN distinguished, incl. $8000/$9000/$C000 callers)")
     return 0
 
 

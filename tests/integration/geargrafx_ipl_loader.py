@@ -304,6 +304,12 @@ CASES = [
     dict(name="pub_neg_iplbln_32_refused", pay="A", n=32, iplblk=2, sta=0x3000, entry=0x3000,
          mprs=[0, 1, 2, 3, 4], openmode=0, rom="public", public=True, info_edits=[(14, 0), (15, 0)],
          reason="cd_halt_fail", code=22, copied=0, payload_ran=False),
+    # 16-bit load-end overflow boundary: IPLSTA $3000 + N*2048 wraps past $FFFF for
+    # N=26..31 (e.g. N=26: actual end $10000, wrapped high byte $00). Must refuse
+    # before any copy (copied=0, payload never runs), not wrap and copy.
+    *[dict(name=f"pub_neg_load_end_overflow_n{n}", pay="A", n=n, iplblk=2, sta=0x3000, entry=0x3000,
+          mprs=[0, 1, 2, 3, 4], openmode=0, rom="public", public=True, info_edits=[(14, 0), (15, 0)],
+          reason="cd_halt_fail", code=23, copied=0, payload_ran=False) for n in range(26, 32)],
     dict(name="pub_post_sum_preserving_change_accepted_documented_limit", pay="A", n=5, iplblk=2, sta=0x3000,
          entry=0x3000, mprs=[0, 1, 2, 3, 4], openmode=0, rom="public", public=True, mpr_add=0x80,
          info_edits=[(14, 0), (15, 0)], sum_preserving=True, reason="cd_halt_ok", code=0, copied=5,

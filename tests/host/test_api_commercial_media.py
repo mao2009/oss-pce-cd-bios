@@ -658,5 +658,42 @@ class DataTrackIndex01LbaTests(unittest.TestCase):
                 self.fail("expected BLOCKED")
 
 
+class LoaderManifestPrivacyTests(unittest.TestCase):
+    """Commercial auto-loader manifests must not leak the derived SEL."""
+
+    def _manifest(self, private):
+        from build_dev_ipl_loader_bios import loader_manifest
+        return loader_manifest(12345, "debug", "comm-public", ["-D", "IPL_PUBLIC"],
+                               b"\x00" * 262144, {}, "x.pce", private_input=private)
+
+    def test_synthetic_manifest_keeps_exact_sel(self):
+        manifest = self._manifest(False)
+        self.assertEqual(manifest["ipl_sel_lba"], 12345)
+        self.assertFalse(manifest["private_media_used"])
+        self.assertNotIn("ipl_sel_lba_redacted", manifest)
+
+    def test_private_manifest_redacts_sel_and_marks_private(self):
+        manifest = self._manifest(True)
+        self.assertNotIn("ipl_sel_lba", manifest)
+        self.assertTrue(manifest["ipl_sel_lba_redacted"])
+        self.assertTrue(manifest["private_media_used"])
+        # The decimal/hex SEL value must not appear anywhere in the manifest.
+        import json
+        text = json.dumps(manifest, sort_keys=True)
+        self.assertNotIn("12345", text)
+        self.assertNotIn("3039", text.lower())  # 0x3039 hex spelling
+
+    def test_auto_loader_uses_private_mode_synthetic_does_not(self):
+        src = (ROOT / "tests" / "integration" / "geargrafx_api_entry.py").read_text()
+        self.assertIn("private_input=True", src)
+        # The two synthetic build sites must not pass private_input=True.
+        self.assertEqual(src.count("private_input=True"), 1)
+
+    def test_build_output_is_gitignored(self):
+        gitignore = (ROOT / ".gitignore").read_text()
+        self.assertIn("build/", gitignore)
+        self.assertIn("/rom/", gitignore)
+
+
 if __name__ == "__main__":
     unittest.main()

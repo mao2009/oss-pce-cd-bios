@@ -234,6 +234,7 @@ validate_info:
     lda stav+1
     clc
     adc scr
+    bcs @ovf                  ; 16-bit overflow: load end wraps past $FFFF, refuse before copy
 .ifdef IPL_PUBLIC
     cmp #$E0
 .else
@@ -241,6 +242,9 @@ validate_info:
 .endif
     beq @eq
     bcc @rok
+    lda #23
+    jmp fail
+@ovf:
     lda #23
     jmp fail
 @eq:

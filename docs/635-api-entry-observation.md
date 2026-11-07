@@ -4,7 +4,7 @@
 
 ## 目的
 
-停止時Xだけから最初の未実装APIを断定しないために、IPL payload（WRAM `$3000-$7FFF`）からBIOS領域（`$E000-$FFFF`）への最初の制御移行を直接記録する。
+停止時Xだけから最初の未実装APIを断定しないために、IPL payload（RAM `$3000-$DFFF`、PUBLIC ロード範囲）からBIOS領域（`$E000-$FFFF`）への最初の制御移行を直接記録する。
 
 - 呼出し元PC、入口PC、ジャンプテーブル位置、SP差分によるJSR/JMP区分、入口直前A/X/Y/P/S・MPR・SP、戻り先推定（`caller+2`一致でJSRを裏付け）、IDR/IRR
 - 商用ゲストのバイトをAPICALLに出力しない。APICALLはアドレス・レジスタ・差分・戻り真偽値（`stack_check`/`return_matches_caller`）のみ。戻り先の数値・スタックバイトはC++内部で判定する（MPR1=`$F8`前提。想定外はUNKNOWN）
@@ -13,6 +13,7 @@
 ## 合成対照（`make api-entry-integration`）
 
 6ケース cold+warm： `jsr_slot02`、`jsr_slot03`、`jmp_slot02`、`direct_stub`（テーブルを経ずX=`$02`でスタブへ）、`nocall`、`spin`（予算負例）。
+さらに PUBLIC ローダーで高領域の呼出し元 5 ケース（`jsr_slot02_at_8000`、`jmp_slot02_at_9000`、`direct_stub_at_c000`、`nocall_at_8000`、`spin_at_9000`、cold+warm）で、監視範囲 `$3000-$DFFF` が `$8000/$9000/$C000` からの JSR/JMP/直行を検出し、`nocall`/`spin` を誤分類しないことを確認する。
 
 - `jsr_slot02`: table `$E006`、slot2、delta2=JSR、戻り=`caller+2`、entry regs preset、halt X=2
 - `jsr_slot03`: 同様にslot3

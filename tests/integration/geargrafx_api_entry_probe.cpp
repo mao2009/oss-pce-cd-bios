@@ -1,6 +1,7 @@
 // Verification-only API-entry observer for Issue #635 (DEV-only measurement).
 // Single-steps the pinned Geargrafx core and records the first control transfers
-// from the IPL payload (WRAM $3000-$7FFF) into the BIOS region ($E000-$FFFF).
+// from the IPL payload (RAM $3000-$DFFF, the PUBLIC load range) into the BIOS
+// region ($E000-$FFFF).
 // It never writes guest RAM, never edits registers, never injects interrupts and
 // never reads MMIO: state is read via pinned-core state pointers only. Stack
 // return validation is done internally: the probe emits only a boolean match
@@ -36,7 +37,10 @@ static const long kHaltConfirmSteps = 64;
 static const unsigned kTableBase = 0xE000;
 static const unsigned kTableEnd = 0xE0F3;      // 81 slots * 3 bytes ($E000..$E0F2 inclusive)
 static const unsigned kPayloadLo = 0x3000;
-static const unsigned kPayloadHi = 0x8000;     // exclusive
+// PUBLIC IPL loads can reach $DFFF (MPR2..6 regions); watch the whole RAM
+// load range up to the BIOS table at $E000. Loader code itself lives at
+// $F000+ (BIOS region), so it is never counted as a payload caller.
+static const unsigned kPayloadHi = 0xE000;     // exclusive
 
 int main(int argc, char** argv) {
     // argv: probe rom cue labels max_steps mode (synthetic|commercial)
