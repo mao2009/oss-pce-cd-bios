@@ -277,7 +277,7 @@ class CommercialOutputTests(unittest.TestCase):
         src = (ROOT / "tests" / "integration" / "geargrafx_api_entry.py").read_text()
         # evidence writes APICALL struct + stripped RUN only (no hex keys copied).
         self.assertIn('"apicalls": records["APICALL"]', src)
-        commercial_block = src[src.index("if args.commercial_rom:"):]
+        commercial_block = src[src.index("if args.commercial:"):]
         self.assertNotIn('"buffer_hex"', commercial_block)
         self.assertNotIn('"stack_b0"', commercial_block)
         self.assertNotIn('"stack_b1"', commercial_block)

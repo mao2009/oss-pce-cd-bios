@@ -5,12 +5,16 @@ to record WRAM->BIOS transitions (caller PC, entry PC, slot, SP delta, entry reg
 return booleans). Synthetic controls prove the instrument distinguishes JSR-to-table,
 JMP-to-table, direct-stub, and no-call.
 
-Commercial mode is opt-in only: the probe runs in "commercial" mode and generates
-no RAM dumps and no stack bytes at the C++ boundary. The harness requires an
-explicit --commercial-output path outside the repository (local-only), writes
-structural JSON only, never logs input/output paths or media identifiers, and
-distinguishes API_ENTRY_CONFIRMED from PRE_API_BLOCKER_OBSERVED / UNKNOWN /
-INCOMPLETE / BUDGET / FAIL (see classify_commercial).
+Commercial mode is opt-in only (explicit --commercial): the probe runs in
+"commercial" mode and generates no RAM dumps and no stack bytes at the C++ boundary.
+The CUE is auto-detected from ./rom/ (single CUE auto-selected; multiple CUEs
+require --commercial-index, never auto-picks the first; zero CUEs is NOT_RUN; only
+*.cue files are considered, *.pce and other files are ignored). Media are used
+read-only; symlinks, traversal and invalid CUE FILE references are rejected
+fail-closed. The harness requires an explicit --commercial-output path outside
+the repository (local-only), writes structural JSON only, never logs input/output
+paths or media identifiers, and distinguishes API_ENTRY_CONFIRMED from
+PRE_API_BLOCKER_OBSERVED / UNKNOWN / INCOMPLETE / BUDGET / FAIL (see classify_commercial).
 """
 import argparse
 import json
@@ -26,6 +30,7 @@ sys.path[:0] = [str(ROOT / "tools"), str(Path(__file__).resolve().parent)]
 from build_dev_ipl_loader_bios import build_ipl_loader_bios  # noqa: E402
 from environment import DEPENDENCIES, executable  # noqa: E402
 from geargrafx_api import compile_probe  # noqa: E402
+import commercial_media  # noqa: E402
 import geargrafx_ipl_loader as L  # noqa: E402
 
 
@@ -60,7 +65,10 @@ def run_probe(probe, rom, cue, labels, budget, mode="synthetic"):
     for line in result.stdout.splitlines():
         tag, _, body = line.partition(" ")
         if tag in records:
-            records[tag].append(json.loads(body))
+            try:
+                records[tag].append(json.loads(body))
+            except ValueError:
+                raise ValueError("probe output invalid")
     if len(records["RUN"]) != 2:
         raise ValueError("probe did not complete cold and warm runs")
     if mode == "commercial":
@@ -321,6 +329,111 @@ def classify_commercial(records):
     return "API_ENTRY_CONFIRMED", f"first table entry slot {cold_first[0]} {cold_first[1]} in both cycles"
 
 
+def auto_labels_for_rom(rom_path: Path, out_dir: Path) -> Path:
+    """Build probe labels from the loader ROM's sibling .lbl (fail-closed).
+
+    rom_path must be a build_ipl_loader_bios ROM
+    (dev-ipl-loader-bios-not-compatible-<variant>.pce) with its
+    ipl-loader-bios-<variant>.lbl beside it. cd_halt_ok is a dummy reset
+    address: the commercial payload halt is unknown, and the dummy never
+    holds for 64 steps, so it cannot confirm as a halt. Only DEV BIOS
+    addresses are written (no private media data).
+    """
+    name = rom_path.name
+    prefix = "dev-ipl-loader-bios-not-compatible-"
+    if not name.startswith(prefix) or not name.endswith(".pce"):
+        raise ValueError("cannot derive loader variant for auto labels; supply --commercial-labels")
+    variant = name[len(prefix):-len(".pce")]
+    lbl_path = rom_path.parent / f"ipl-loader-bios-{variant}.lbl"
+    if not lbl_path.is_file():
+        raise ValueError("loader labels not found for auto labels; supply --commercial-labels")
+    from build_cdload_exec import parse_labels
+    stub = parse_labels(lbl_path)
+    for needed in ("api_unimplemented", "cd_halt_fail", "cd_unexpected_interrupt", "reset"):
+        if needed not in stub:
+            raise ValueError("loader labels missing required symbols for auto labels")
+    dummy = stub["reset"]
+    if dummy in (stub["cd_halt_fail"], stub["cd_unexpected_interrupt"], stub["api_unimplemented"]):
+        raise ValueError("loader labels collision for auto labels")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    labels_path = out_dir / f"commercial-labels-{variant}.labels"
+    labels_path.write_text(
+        f"cd_halt_ok {dummy:04x}\n"
+        f"cd_halt_fail {stub['cd_halt_fail']:04x}\n"
+        f"cd_unexpected_interrupt {stub['cd_unexpected_interrupt']:04x}\n"
+        f"api_unimplemented {stub['api_unimplemented']:04x}\n", encoding="ascii")
+    return labels_path
+
+
+def resolve_commercial_cue(rom_dir: Path, cue_override, index: int | None) -> Path:
+    """Resolve the commercial CUE from ./rom/ with fail-closed selection.
+
+    cue_override (explicit --commercial-cue) must match one of the detected
+    candidates; otherwise auto-detection + selection is used. All errors are
+    sanitized (no media names or paths in the message).
+    """
+    candidates = commercial_media.detect_cue_files(rom_dir)
+    if not candidates:
+        raise ValueError("NOT_RUN: no commercial CUE found in ./rom/")
+    if cue_override is not None:
+        cue_path = Path(cue_override)
+        # Reject traversal spellings fail-closed (realpath alone would allow ..).
+        if ".." in cue_path.parts:
+            raise ValueError("BLOCKED: CUE not among detected candidates")
+        if not cue_path.is_absolute():
+            cue_path = Path(rom_dir) / cue_path
+        cue_real = Path(os.path.realpath(cue_path))
+        matched = None
+        for cand in candidates:
+            if Path(os.path.realpath(cand)) == cue_real:
+                matched = cand
+                break
+        if matched is None:
+            raise ValueError("BLOCKED: CUE not among detected candidates")
+        selected = commercial_media.select_cue(candidates, index)
+        if Path(os.path.realpath(selected)) != cue_real:
+            raise ValueError("BLOCKED: --commercial-cue does not match --commercial-index")
+        cue_path = matched
+    else:
+        cue_path = commercial_media.select_cue(candidates, index)
+    commercial_media.validate_cue(cue_path, rom_dir)
+    return cue_path
+
+
+def snapshot_media(cue_path: Path, rom_dir: Path) -> dict:
+    """Snapshot validated media identity (dev/ino/size/mtime/ctime) for TOCTOU detection.
+
+    The probe re-opens the CUE by path (path-based API), so validation and use
+    cannot be atomic without an fd handoff. This snapshot is recorded before
+    the probe and verified after; any swap during the probe is detected and
+    the result is discarded as FAIL (never trusted). The narrow pre-probe
+    check-then-open window itself cannot be eliminated from Python alone.
+    """
+    validated = commercial_media.validate_cue(cue_path, rom_dir)
+    snap = {}
+    for path in [Path(cue_path), *validated]:
+        try:
+            st = os.lstat(path)
+        except OSError:
+            raise ValueError("BLOCKED: media changed before probe")
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+            raise ValueError("BLOCKED: media changed before probe")
+        snap[str(path)] = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+    return snap
+
+
+def verify_media_unchanged(snap: dict) -> None:
+    for path_str, old in snap.items():
+        try:
+            st = os.lstat(path_str)
+        except OSError:
+            raise ValueError("FAIL commercial observation: media changed during probe")
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+            raise ValueError("FAIL commercial observation: media changed during probe")
+        if (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns) != old:
+            raise ValueError("FAIL commercial observation: media changed during probe")
+
+
 def synthetic_case(tmp: Path, probe, bios, stub, name, defines, expect_slot, expect_method, budget=20_000_000):
     code = build_payload(tmp, name, defines)
     body = L.body_for(code, 1)
@@ -397,12 +510,28 @@ def synthetic_case(tmp: Path, probe, bios, stub, name, defines, expect_slot, exp
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("debug", "release"), default="debug")
+    parser.add_argument("--commercial", action="store_true",
+                        help="opt-in commercial measurement from ./rom/ (required for any --commercial-* option)")
+    parser.add_argument("--commercial-index", type=int, default=None,
+                        help="select detected CUE by sorted index when ./rom/ has multiple CUEs")
+    parser.add_argument("--rom-dir", type=Path, default=None,
+                        help="test hook: override ./rom location (hosts tests only); default auto-resolves ./rom/")
     parser.add_argument("--commercial-rom", type=Path)
-    parser.add_argument("--commercial-cue", type=Path)
-    parser.add_argument("--commercial-labels", type=Path)
+    parser.add_argument("--commercial-cue", type=Path,
+                        help="explicit CUE override, must match a detected ./rom/ candidate")
+    parser.add_argument("--commercial-labels", type=Path,
+                        help="probe labels; auto-derived from the loader ROM when omitted")
     parser.add_argument("--commercial-output", type=Path,
                         help="local-only evidence JSON outside the repo (commercial mode requires this)")
     args = parser.parse_args()
+
+    has_commercial_args = (
+        args.commercial_rom is not None or args.commercial_cue is not None
+        or args.commercial_labels is not None or args.commercial_output is not None
+        or args.commercial_index is not None or args.rom_dir is not None)
+    if has_commercial_args and not args.commercial:
+        raise SystemExit("FAIL: commercial options require --commercial")
+    # Synthetic runs never touch ./rom/ and never require --commercial.
 
     original = ROOT / "build" / args.mode / "bios-dev" / "dev-only-not-compatible-syscard3.pce"
     if not original.is_file():
@@ -410,20 +539,46 @@ def main():
     out = ROOT / "build" / args.mode / "api-entry"
     out.mkdir(parents=True, exist_ok=True)
 
-    if args.commercial_rom:
-        # Opt-in commercial mode: caller supplies DEV BIOS + local CUE + labels + local-only output.
-        if not args.commercial_cue or not args.commercial_labels or not args.commercial_output:
-            raise SystemExit("FAIL: commercial mode needs --commercial-cue, --commercial-labels and --commercial-output")
+    if args.commercial:
+        # Opt-in commercial mode: DEV BIOS + auto-detected ./rom/ CUE + labels + local-only output.
+        if not args.commercial_rom or not args.commercial_output:
+            raise SystemExit("FAIL: commercial mode needs --commercial-rom and --commercial-output")
+        if args.rom_dir is not None and os.environ.get("OSS_PCE_ALLOW_ROM_DIR") != "1":
+            raise SystemExit("FAIL: --rom-dir is a test hook requiring OSS_PCE_ALLOW_ROM_DIR=1")
+        try:
+            rom_dir = Path(os.path.abspath(args.rom_dir)) if args.rom_dir else commercial_media.resolve_rom_dir(ROOT)
+        except ValueError as error:
+            raise SystemExit(str(error))
+        try:
+            cue_path = resolve_commercial_cue(rom_dir, args.commercial_cue, args.commercial_index)
+        except ValueError as error:
+            raise SystemExit(str(error))
         try:
             dest = validate_commercial_output(args.commercial_output)
         except ValueError as error:
             raise SystemExit(f"FAIL commercial output rejected: {error}")
+        if args.commercial_labels is not None:
+            labels_path = args.commercial_labels
+        else:
+            try:
+                labels_path = auto_labels_for_rom(args.commercial_rom, out)
+            except ValueError as error:
+                raise SystemExit(f"FAIL commercial labels: {error}")
         probe = compile_probe(out, "geargrafx_api_entry_probe.cpp", "geargrafx-api-entry-probe")
         budget = 80_000_000
+        # Snapshot immediately before the probe to keep the TOCTOU window narrow.
         try:
-            records = run_probe(probe, args.commercial_rom, args.commercial_cue, args.commercial_labels, budget, "commercial")
+            snap = snapshot_media(cue_path, rom_dir)
+        except ValueError as error:
+            raise SystemExit(str(error))
+        try:
+            records = run_probe(probe, args.commercial_rom, cue_path, labels_path, budget, "commercial")
         except ValueError as error:
             raise SystemExit(f"FAIL commercial observation: {error}")
+        try:
+            verify_media_unchanged(snap)
+        except ValueError as error:
+            raise SystemExit(str(error))
         verdict, detail = classify_commercial(records)
         # Structural summary only (no paths/hashes/bytes; no stack values).
         for cycle in ("cold", "warm"):
