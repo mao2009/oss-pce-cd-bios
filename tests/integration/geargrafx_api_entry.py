@@ -1,14 +1,21 @@
 """Direct BIOS API-entry observer for Issue #635 (synthetic + opt-in commercial).
 
 Observation only: reuses the pinned-core single-step probe (geargrafx_api_entry_probe.cpp)
-to record WRAM->BIOS transitions (caller PC, entry PC, slot, SP delta, entry regs).
-Synthetic controls prove the instrument distinguishes JSR-to-table, JMP-to-table,
-direct-stub, and no-call. Commercial runs use only a project-owned DEV BIOS image
-(LoadBiosFromBuffer) and a caller-given local CUE; private inputs stay read-only
-and no guest bytes are emitted.
+to record WRAM->BIOS transitions (caller PC, entry PC, slot, SP delta, entry regs,
+return booleans). Synthetic controls prove the instrument distinguishes JSR-to-table,
+JMP-to-table, direct-stub, and no-call.
+
+Commercial mode is opt-in only: the probe runs in "commercial" mode and generates
+no RAM dumps and no stack bytes at the C++ boundary. The harness requires an
+explicit --commercial-output path outside the repository (local-only), writes
+structural JSON only, never logs input/output paths or media identifiers, and
+distinguishes API_ENTRY_CONFIRMED from PRE_API_BLOCKER_OBSERVED / UNKNOWN /
+INCOMPLETE / BUDGET / FAIL (see classify_commercial).
 """
 import argparse
 import json
+import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -40,9 +47,15 @@ def build_payload(out: Path, name: str, defines: list) -> tuple:
     return code
 
 
-def run_probe(probe, rom, cue, labels, budget):
-    result = subprocess.run([str(probe), str(rom), str(cue), str(labels), str(budget)],
-                            check=True, capture_output=True, text=True, timeout=900)
+def run_probe(probe, rom, cue, labels, budget, mode="synthetic"):
+    # Paths stay local-only: errors are sanitized to fixed codes below (no paths logged).
+    try:
+        result = subprocess.run([str(probe), str(rom), str(cue), str(labels), str(budget), mode],
+                                check=True, capture_output=True, text=True, timeout=900)
+    except subprocess.CalledProcessError:
+        raise ValueError(f"probe execution failed (mode {mode})")
+    except subprocess.TimeoutExpired:
+        raise ValueError("probe timeout")
     records = {"CAP": [], "HIT": [], "PHASE": [], "RUN": [], "APICALL": []}
     for line in result.stdout.splitlines():
         tag, _, body = line.partition(" ")
@@ -50,7 +63,66 @@ def run_probe(probe, rom, cue, labels, budget):
             records[tag].append(json.loads(body))
     if len(records["RUN"]) != 2:
         raise ValueError("probe did not complete cold and warm runs")
+    if mode == "commercial":
+        assert_commercial_clean(records)
     return records
+
+
+def assert_commercial_clean(records):
+    """Fail-closed audit of all commercial probe tags (CAP/HIT/PHASE/RUN/APICALL)."""
+    for rows in records.values():
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError("commercial output row is not an object")
+            if any(k.endswith("_hex") for k in row):
+                raise ValueError("commercial output contains RAM dump fields")
+            if {"stack_b0", "stack_b1", "stack_word"} & set(row):
+                raise ValueError("commercial output contains raw stack values")
+
+
+def validate_commercial_output(path, root=ROOT):
+    """Fail-closed validation for the local-only commercial evidence path.
+
+    Requires an absolute path directly under /tmp/opencode (the private root),
+    hence outside the repository and outside every worktree. The parent must
+    exist as a private owned directory (0700, no symlink, no intermediate
+    symlink), and the file must not exist yet (no overwrite, symlink rejected).
+    Returns the path or raises ValueError.
+    """
+    supplied = Path(path)
+    if not supplied.is_absolute():
+        raise ValueError("commercial output must be absolute")
+    out = Path(os.path.abspath(os.fspath(supplied)))
+    root_abs = Path(os.path.abspath(os.fspath(root)))
+    if out == root_abs or out.is_relative_to(root_abs):
+        raise ValueError("commercial output must be outside the repository")
+    private_root = Path("/tmp/opencode")
+    if out.parent != private_root:
+        raise ValueError("commercial output must be directly under /tmp/opencode")
+    parent = out.parent
+    try:
+        st = os.lstat(parent)
+    except OSError:
+        raise ValueError("commercial output parent missing")
+    if not stat.S_ISDIR(st.st_mode) or stat.S_ISLNK(st.st_mode):
+        raise ValueError("commercial output parent is not a directory")
+    # No intermediate symlink: the resolved parent must equal the lexical parent.
+    if Path(os.path.realpath(parent)) != parent:
+        raise ValueError("commercial output parent contains symlink")
+    if st.st_uid != os.getuid():
+        raise ValueError("commercial output parent not owned")
+    if stat.S_IMODE(st.st_mode) & 0o077:
+        raise ValueError("commercial output parent must be private (0700)")
+    try:
+        fst = os.lstat(out)
+        if stat.S_ISLNK(fst.st_mode):
+            raise ValueError("commercial output must not be symlink")
+        raise ValueError("commercial output already exists (no overwrite)")
+    except FileNotFoundError:
+        pass
+    return out
 
 
 def classify_apicall(call):
@@ -69,6 +141,65 @@ def classify_apicall(call):
     if call["sp_delta"] == 3 or call.get("entry_pc", 0) >= 0xFFF0:
         return "IRQ"
     return "OTHER_DIRECT"
+
+
+def jsr_confirmed(call):
+    """True only with table entry + SP delta 2 + internal return MATCH (MPR1 WRAM)."""
+    return (call.get("in_table") is True and call.get("sp_delta") == 2
+            and call.get("stack_check") == "MATCH"
+            and call.get("return_matches_caller") is True
+            and isinstance(call.get("mpr"), list) and len(call["mpr"]) == 8
+            and call["mpr"][1] == 0xF8)
+
+
+def classify_commercial(records):
+    """Verdict for a commercial run: distinguish confirmed entry from pre-API blocks.
+
+    Returns (verdict, detail) where verdict is one of
+    API_ENTRY_CONFIRMED / PRE_API_BLOCKER_OBSERVED / UNKNOWN / INCOMPLETE / BUDGET / FAIL.
+    Never promotes a budget or a truncated trace to a confirmation.
+    """
+    runs = records.get("RUN", [])
+    apis = records.get("APICALL", [])
+    if len(runs) != 2:
+        return "FAIL", "missing cold/warm runs"
+    if any(r.get("reason") == "budget" or r.get("halt_confirmed") is not True for r in runs):
+        return "BUDGET", "no confirmed halt (budget is not a halt)"
+    if any(r.get("apicall_truncated") is True for r in runs):
+        return "INCOMPLETE", "APICALL trace truncated"
+    by_cycle = {}
+    for cycle in ("cold", "warm"):
+        calls = [c for c in apis if c.get("cycle") == cycle]
+        cruns = [r for r in runs if r.get("cycle") == cycle]
+        if len(cruns) != 1:
+            return "FAIL", f"run count for {cycle}"
+        by_cycle[cycle] = (calls, cruns[0])
+    cold_calls, cold_run = by_cycle["cold"]
+    warm_calls, warm_run = by_cycle["warm"]
+    if not cold_calls and not warm_calls:
+        if cold_run["reason"] == "cd_halt_fail" and warm_run["reason"] == "cd_halt_fail":
+            return "PRE_API_BLOCKER_OBSERVED", "no API entry; IPL validation halt in both cycles"
+        return "UNKNOWN", "no API entry and no clear pre-API halt"
+    # Confirmed entry needs a table JSR/JMP in both cycles, same slot+method, stub halt.
+    def first_entry(calls):
+        if len(calls) != 1:
+            return None
+        call = calls[0]
+        method = classify_apicall(call)
+        if method == "JSR":
+            if not jsr_confirmed(call):
+                return None
+        elif method != "JMP":
+            return None
+        return (call["slot"], method)
+    cold_first, warm_first = first_entry(cold_calls), first_entry(warm_calls)
+    if cold_first is None or warm_first is None:
+        return "UNKNOWN", "entry present without JSR/JMP evidence"
+    if cold_first != warm_first:
+        return "UNKNOWN", "cold/warm entries differ"
+    if cold_run["reason"] != "api_unimplemented" or warm_run["reason"] != "api_unimplemented":
+        return "UNKNOWN", "entry does not lead to stub halt"
+    return "API_ENTRY_CONFIRMED", f"first table entry slot {cold_first[0]} {cold_first[1]} in both cycles"
 
 
 def synthetic_case(tmp: Path, probe, bios, stub, name, defines, expect_slot, expect_method, budget=20_000_000):
@@ -91,7 +222,7 @@ def synthetic_case(tmp: Path, probe, bios, stub, name, defines, expect_slot, exp
                       f"cd_halt_fail {stub['cd_halt_fail']:04x}\n"
                       f"cd_unexpected_interrupt {stub['cd_unexpected_interrupt']:04x}\n"
                       f"api_unimplemented {stub['api_unimplemented']:04x}\n", encoding="ascii")
-    records = run_probe(probe, bios, cue, labels, budget)
+    records = run_probe(probe, bios, cue, labels, budget, "synthetic")
     verdicts = []
     for cycle in ("cold", "warm"):
         calls = [c for c in records["APICALL"] if c["cycle"] == cycle]
@@ -131,9 +262,9 @@ def synthetic_case(tmp: Path, probe, bios, stub, name, defines, expect_slot, exp
                     fails.append(f"{v['cycle']}: method {method} != {expect_method} (delta {call['sp_delta']})")
                 if expect_method == "JSR":
                     if call["mpr"][1] != 0xF8:
-                        fails.append(f"{v['cycle']}: MPR1 != $F8, stack assumption invalid: {call['mpr']}")
-                    elif call["stack_word"] != call["caller_pc"] + 2:
-                        fails.append(f"{v['cycle']}: JSR return {hex(call['stack_word'])} != caller+2 {hex(call['caller_pc'] + 2)}")
+                        fails.append(f"{v['cycle']}: MPR1 != $F8, stack assumption invalid")
+                    elif call.get("stack_check") != "MATCH" or call.get("return_matches_caller") is not True:
+                        fails.append(f"{v['cycle']}: JSR return not confirmed by internal check")
                 # Entry regs must match preset (JMP case loads MARK into A before jumping).
                 if not (call["caller_a"] in (0xAA, 0xAB) and call["caller_x"] == 0x11 and call["caller_y"] == 0x22):
                     fails.append(f"{v['cycle']}: entry regs {call} != preset AA/AB,11,22")
@@ -150,6 +281,8 @@ def main():
     parser.add_argument("--commercial-rom", type=Path)
     parser.add_argument("--commercial-cue", type=Path)
     parser.add_argument("--commercial-labels", type=Path)
+    parser.add_argument("--commercial-output", type=Path,
+                        help="local-only evidence JSON outside the repo (commercial mode requires this)")
     args = parser.parse_args()
 
     original = ROOT / "build" / args.mode / "bios-dev" / "dev-only-not-compatible-syscard3.pce"
@@ -159,32 +292,42 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
 
     if args.commercial_rom:
-        # Opt-in commercial mode: caller supplies DEV BIOS image + local CUE + labels (halts).
-        if not args.commercial_cue or not args.commercial_labels:
-            raise SystemExit("FAIL: commercial mode needs --commercial-cue and --commercial-labels")
+        # Opt-in commercial mode: caller supplies DEV BIOS + local CUE + labels + local-only output.
+        if not args.commercial_cue or not args.commercial_labels or not args.commercial_output:
+            raise SystemExit("FAIL: commercial mode needs --commercial-cue, --commercial-labels and --commercial-output")
+        try:
+            dest = validate_commercial_output(args.commercial_output)
+        except ValueError as error:
+            raise SystemExit(f"FAIL commercial output rejected: {error}")
         probe = compile_probe(out, "geargrafx_api_entry_probe.cpp", "geargrafx-api-entry-probe")
         budget = 80_000_000
-        records = run_probe(probe, args.commercial_rom, args.commercial_cue, args.commercial_labels, budget)
-        # Fail-closed: budget (no confirmed halt) is FAIL, never PASS.
-        for run in records["RUN"]:
-            if run["reason"] == "budget" or not run["halt_confirmed"]:
-                raise SystemExit(f"FAIL commercial observation: {run['cycle']} {run['reason']} halt_confirmed={run['halt_confirmed']} (budget is not a halt)")
-        # Print structural summary only (no paths/hashes/bytes).
+        try:
+            records = run_probe(probe, args.commercial_rom, args.commercial_cue, args.commercial_labels, budget, "commercial")
+        except ValueError as error:
+            raise SystemExit(f"FAIL commercial observation: {error}")
+        verdict, detail = classify_commercial(records)
+        # Structural summary only (no paths/hashes/bytes; no stack values).
         for cycle in ("cold", "warm"):
             calls = [c for c in records["APICALL"] if c["cycle"] == cycle]
             runs = [r for r in records["RUN"] if r["cycle"] == cycle]
             trunc = runs[0].get("apicall_truncated", False) if runs else False
-            print(f"cycle={cycle} apicalls={len(calls)} truncated={trunc} runs={[(r['reason'], hex(r['pc']), r['x'], r['halt_confirmed']) for r in runs]}")
+            print(f"cycle={cycle} apicalls={len(calls)} truncated={trunc} runs={[(r['reason'], r['halt_confirmed']) for r in runs]}")
             for c in calls:
                 print(f"  caller={hex(c['caller_pc'])} entry={hex(c['entry_pc'])} table={c['in_table']} slot={c['slot']} "
-                      f"delta={c['sp_delta']} method={classify_apicall(c)} a={c['caller_a']} x={c['caller_x']} y={c['caller_y']} "
-                      f"p={c['caller_p']} sp={c['sp_before']}->{c['sp_after']} stack_word={hex(c['stack_word'])}")
-        evidence = {"status": "PASS", "apicalls": records["APICALL"],
+                      f"delta={c['sp_delta']} method={classify_apicall(c)} return={c.get('stack_check')}")
+        evidence = {"verdict": verdict, "detail": detail, "apicalls": records["APICALL"],
                     "runs": [{k: r[k] for k in ("cycle", "reason", "pc", "x", "halt_confirmed", "step")} |
                              {"apicall_truncated": r.get("apicall_truncated", False)} for r in records["RUN"]]}
-        (out / "api-entry-commercial.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
-        print("PASS commercial API-entry observation (halt confirmed, structural only)")
-        return 0
+        try:
+            with open(dest, "x") as handle:
+                handle.write(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+        except OSError:
+            raise SystemExit("FAIL commercial evidence save failed")
+        if verdict in ("API_ENTRY_CONFIRMED", "PRE_API_BLOCKER_OBSERVED"):
+            print(f"OBSERVED commercial API-entry: {verdict} (structural only)")
+            return 0
+        print(f"NOT-CONFIRMED commercial API-entry: {verdict} ({detail})")
+        return 1
 
     # Synthetic controls
     bios, _ = build_ipl_loader_bios(original, out, L.SEL, args.mode, "main")

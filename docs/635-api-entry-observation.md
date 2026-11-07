@@ -1,13 +1,14 @@
 # Issue #635: API入口の直接観測（合成対照の計測器）
 
-**状態: DEV-only計測器 / 合成媒体のみ / 観測専用ゲスト非変更。商用互換・BIOS ABI・`release_eligible=false` の主張なし。**
+**状態: DEV-only計測器 / 合成媒体のみ（商用はopt-inローカルのみ） / 観測専用ゲスト非変更。商用互換・BIOS ABI・`release_eligible=false` の主張なし。**
 
 ## 目的
 
 停止時Xだけから最初の未実装APIを断定しないために、IPL payload（WRAM `$3000-$7FFF`）からBIOS領域（`$E000-$FFFF`）への最初の制御移行を直接記録する。
 
 - 呼出し元PC、入口PC、ジャンプテーブル位置、SP差分によるJSR/JMP区分、入口直前A/X/Y/P/S・MPR・SP、戻り先推定（`caller+2`一致でJSRを裏付け）、IDR/IRR
-- 商用ゲストのバイト（オペコード・ペイロード）をAPICALLに出力しない。APICALLはアドレス・レジスタ・差分・戻り先構造値のみ。RUN/HITのRAM dump（`buffer_hex`等）はローダー判定用の既存ダンプであり、ハーネスは公開JSONに写さない（ローカル限定）。スタック2バイトはMPR1=`$F8`（WRAMスタック）前提。MPR1が異なる場合はUNKNOWNとして扱う
+- 商用ゲストのバイトをAPICALLに出力しない。APICALLはアドレス・レジスタ・差分・戻り真偽値（`stack_check`/`return_matches_caller`）のみ。戻り先の数値・スタックバイトはC++内部で判定する（MPR1=`$F8`前提。想定外はUNKNOWN）
+- RUN/HITのRAM dump（`buffer_hex`等）：合成modeのみ生成（ローダー判定用）。商用modeではC++が生成しない（fail-closed境界）。商用出力にはRAM dumpが一切現れない
 
 ## 合成対照（`make api-entry-integration`）
 
@@ -28,10 +29,12 @@
 - 入口観測はwatch比較のみで実行順序を変更しない。観測あり/なしの自動対照は本ハーネスには含まれない。二観測一致（本debugger vs Frame Tracer normal-frame）は手動で外部比較する（自動証明ではない）
 - APICALLは上限8件（cycle毎）。超過時は `apicall_truncated=true` をRUNに記録する。先頭8件を超える呼出しは未観測として扱う
 
-## 商用再測定（opt-in、手動）
+## 商用再測定（opt-in、手動・ローカル限定）
 
-`geargrafx_api_entry.py --commercial-rom <DEV BIOS> --commercial-cue <ローカルCUE> --commercial-labels <labels>`
-（入力は読取専用。出力は構造要約のみ。生トレース・媒体情報はローカル限定）
+`geargrafx_api_entry.py --commercial-rom <DEV BIOS> --commercial-cue <ローカルCUE> --commercial-labels <labels> --commercial-output /tmp/opencode/<file>.json`（直接子のみ。リポジトリ/worktree外）
+（入力・出力は読取専用/リポジトリ外。ログにパスや媒体識別を出さない。既存ファイルは上書きしない。保存失敗はFAIL）
+
+判定は次を区別する：`API_ENTRY_CONFIRMED`（入口観測+停止確認）、`PRE_API_BLOCKER_OBSERVED`（入口0件+IPL拒否halt）、`UNKNOWN`（入口なし理由不明）、`INCOMPLETE`（切断）、`BUDGET`（予算）、`FAIL`（器異常）。「正常終了」と「最初のAPI特定」を混同しない
 
 ## 既知の制限
 

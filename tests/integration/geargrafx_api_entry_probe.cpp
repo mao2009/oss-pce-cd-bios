@@ -2,10 +2,17 @@
 // Single-steps the pinned Geargrafx core and records the first control transfers
 // from the IPL payload (WRAM $3000-$7FFF) into the BIOS region ($E000-$FFFF).
 // It never writes guest RAM, never edits registers, never injects interrupts and
-// never reads MMIO: state is read via pinned-core state pointers only, and stack
-// bytes are read via GetWorkingRAM() (observation only). Commercial guest bytes
-// (opcodes, payload content) are never serialized: only addresses, register
-// values at the entry, and stack-offset deltas are emitted.
+// never reads MMIO: state is read via pinned-core state pointers only. Stack
+// return validation is done internally: the probe emits only a boolean match
+// (return_matches_caller) plus a status (MATCH/MISMATCH/UNKNOWN), never stack
+// bytes or the return address value.
+//
+// Output contract (commercial fail-closed at the C++ boundary):
+// - APICALL: structural values only (addresses, slot, SP delta, entry regs,
+//   MPR, IDR/IRR, return booleans). No guest RAM bytes in either mode.
+// - RUN/HIT dumps (result_hex/buffer_hex/buffer_head_hex): SYNTHETIC mode only.
+//   COMMERCIAL mode generates no RAM dumps at all (no hex() calls), so nothing
+//   can leak via stdout/logs even before Python filtering.
 #include "geargrafx_core.h"
 #include "huc6280.h"
 #include "memory.h"
@@ -18,6 +25,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <cstring>
 #include <cstdio>
 #include <cstdlib>
 
@@ -31,7 +39,13 @@ static const unsigned kPayloadLo = 0x3000;
 static const unsigned kPayloadHi = 0x8000;     // exclusive
 
 int main(int argc, char** argv) {
-    if (argc != 5) return 2;
+    // argv: probe rom cue labels max_steps mode (synthetic|commercial)
+    if (argc != 6) return 2;
+    std::string mode = argv[5];
+    bool commercial = false;
+    if (mode == "synthetic") commercial = false;
+    else if (mode == "commercial") commercial = true;
+    else return 2;
     std::ifstream input(argv[1], std::ios::binary);
     if (!input) return 2;
     std::vector<u8> rom((std::istreambuf_iterator<char>(input)), {});
@@ -136,21 +150,28 @@ int main(int argc, char** argv) {
                     in_table = true; slot = (pc - kTableBase) / 3;
                 }
                 unsigned sdelta = (prev_sp + 256 - cur_sp) & 0xFF;
-                // Return address at $2100+cur_sp+1/+2 (JSR pushes high then low; observation only).
-                const u8* wram = memory->GetWorkingRAM();
-                unsigned b0 = wram[0x100 + ((cur_sp + 1) & 0xFF)] & 0xFF, b1 = wram[0x100 + ((cur_sp + 2) & 0xFF)] & 0xFF;
-                // b0 is low byte at $2100+SP+1, b1 is high byte at $2100+SP+2.
-                // Return candidate: little-endian word from the two bytes.
-                // (Harness validates the byte order against synthetic JSR controls.)
-                unsigned ret = b0 | (b1 << 8);
+                // Return validation internally (no stack bytes / addresses emitted).
+                // Stack page is logical $2100 via MPR1; MPR1 must be WRAM bank $F8.
+                const char* stack_check = "UNKNOWN";
+                bool ret_match = false;
+                if (memory->GetMpr(1) == 0xF8) {
+                    const u8* wram = memory->GetWorkingRAM();
+                    unsigned b0 = wram[0x100 + ((cur_sp + 1) & 0xFF)] & 0xFF;
+                    unsigned b1 = wram[0x100 + ((cur_sp + 2) & 0xFF)] & 0xFF;
+                    unsigned ret = b0 | (b1 << 8);
+                    if (ret == (unsigned)(prev_pc + 2)) { stack_check = "MATCH"; ret_match = true; }
+                    else stack_check = "MISMATCH";
+                }
+                const char* ret_json = stack_check[0] == 'M' && std::strcmp(stack_check, "MATCH") == 0 ? "true" :
+                    std::strcmp(stack_check, "MISMATCH") == 0 ? "false" : "null";
                 std::printf("APICALL {\"cycle\":\"%s\",\"step\":%ld,\"caller_pc\":%u,\"entry_pc\":%u,"
                             "\"in_table\":%s,\"slot\":%u,\"sp_before\":%u,\"sp_after\":%u,\"sp_delta\":%u,"
                             "\"caller_a\":%u,\"caller_x\":%u,\"caller_y\":%u,\"caller_p\":%u,"
-                            "\"stack_b0\":%u,\"stack_b1\":%u,\"stack_word\":%u,\"idr\":%u,\"irr\":%u,\"mpr\":[",
+                            "\"stack_check\":\"%s\",\"return_matches_caller\":%s,\"idr\":%u,\"irr\":%u,\"mpr\":[",
                             cycle, step, prev_pc, pc, in_table ? "true" : "false", slot,
                             prev_sp, cur_sp, sdelta,
                             cpu->A->GetValue(), cpu->X->GetValue(), cpu->Y->GetValue(), cpu->P->GetValue(),
-                            b0, b1, ret, (unsigned)*cpu->IDR, (unsigned)*cpu->IRR);
+                            stack_check, ret_json, (unsigned)*cpu->IDR, (unsigned)*cpu->IRR);
                 for (int i = 0; i < 8; i++) std::printf("%s%u", i ? "," : "", memory->GetMpr(i));
                 std::printf("]}\n"); }
             }
@@ -158,7 +179,7 @@ int main(int argc, char** argv) {
                 if (pc == item.second && !seen.count(item.first)) {
                     seen.insert(item.first);
                     regs("HIT", item.first.c_str(), step);
-                    hex("buffer_head_hex", kBufferOffset, 32);
+                    if (!commercial) hex("buffer_head_hex", kBufferOffset, 32);
                     std::printf("}\n");
                 }
             if (halt_name(pc)) {
@@ -189,8 +210,7 @@ int main(int argc, char** argv) {
         regs("RUN", reason.c_str(), step);
         std::printf(",\"reason\":\"%s\",\"halt_confirmed\":%s,\"halted_after_step\":%ld,\"halt_confirmation_steps\":%ld,\"halt_confirmation_required\":%ld,\"apicall_truncated\":%s",
                     reason.c_str(), halt_confirmed ? "true" : "false", arrival, confirmed_steps, kHaltConfirmSteps, api_truncated ? "true" : "false");
-        hex("result_hex", kResultOffset, 32);
-        hex("buffer_hex", kBufferOffset, kBufferBytes);
+        if (!commercial) { hex("result_hex", kResultOffset, 32); hex("buffer_hex", kBufferOffset, kBufferBytes); }
         std::printf("}\n");
     };
     run_once(false);
