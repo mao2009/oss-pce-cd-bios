@@ -27,7 +27,7 @@
 | L-16 | cc65 runtime | cc65/cc65 @ `71746c829e77f74c2b601a7d16821170c2610df3` | `libsrc/runtime/{udiv,umul16x16r32,mulax3}.s` | ルート `LICENSE` は zlib 系。ファイル単位表示未確認 | Ullrich von Bassewitz 1998/2010/2001 | ADAPTED 候補 | PENDING |
 | L-17 | Geargrafx（試験用） | drhelius/Geargrafx @ `b49ae82a012eade566d72e9d61c9d95a5caa4da3` | `src/{scsi_controller,cdrom}.cpp` ほか | GPL-3.0 | Ignacio Sanchez 2024 | REFERENCE_ONLY（外部試験のみ） | PENDING |
 | L-18 | ares（参照） | ares-emulator/ares @ `9408cb43d4948fc3ea6e152a307a34348df3fe04` | `ares/pce/pcd/{io,scsi}.cpp` | ISC（ファイル単位未再読） | ares team | REFERENCE_ONLY | PENDING |
-| L-19 | GPL 系参照 | MAME / Mednafen / beetle-pce（pin 未記録） | MAME `pce_cd.cpp` ほか | MAME ファイル単位 BSD-3、Mednafen GPL-2.0+ | 既存記録 | REJECTED（コード） | PENDING |
+| L-19 | GPL 系参照 | MAME / Mednafen / beetle-pce（pin 未記録） | 未取得（対象ファイル未取得） | UNKNOWN（既存記録の転記で、本 PR では LICENSE/COPYING 直接確認なし。推測で確定しない） | UNKNOWN | REJECTED（コード） | PENDING |
 | L-20 | patch 系 | mathieulh/PCE_CD_BIOSES_NO_AUTOBOOT | IPS パッチ | 元 ROM 依存（著作権物の派生） | — | REJECTED（対象外） | — |
 
 採用コード（ROM・CI 成果物への取り込み）は **0 件**。
@@ -61,13 +61,18 @@
 
 | レベル | 意味 | 本 PR での扱い |
 | --- | --- | --- |
-| L0 | リポジトリ単位でのみ確認 (ルート LICENSE/COPYING) | L-10, L-11, L-12, L-14, L-15, L-16, L-18, L-19 |
+| L0 | リポジトリ単位でのみ確認 (ルート LICENSE/COPYING) | L-10, L-11, L-12, L-14, L-15, L-16, L-18 |
+| UNVERIFIED | pinned commit 未記録 / 対象ファイル未取得 / LICENSE・COPYING 直接確認なし → 検証状態 NOT_RUN | L-19 |
 | L1 | ファイル単位のヘッダ/SPDX 表記を確認 | L-01, L-02, L-03, L-04, L-05, L-06, L-07, L-08, L-09, L-13, L-17 |
 | L2 | ファイル単位の権利者・NOTICE を確定 | 未実施 (人間の provenance 監査が必要) |
 | L3 | 取り込み可否の承認 (Owner) | 未実施 (PENDING のまま) |
 
 - 本 PR は L0/L1 の整理のみ。L2/L3 は NOT_RUN。
 - blob SHA / 行番号は既存台帳・verification 文書からの転記であり、本 PR で独立再取得は行っていない (NOT_RUN)。
+- その他の候補の L0/L1 分類と検証証拠の整合を確認した: L0 の L-10/L-11/L-12/L-14/L-15/L-16/L-18 はいずれも
+  ルート LICENSE/COPYING のみでファイル単位の確定はしていない (L-18 の ISC、L-15 の MIT、L-16 の zlib 系は
+  ルート表示の転記でありファイル単位ではない)。L1 の各候補はファイル単位ヘッダ/SPDX 表記の記録がある。
+  L-19 のみ pin・ファイル・LICENSE 直接確認のいずれもなく、UNVERIFIED/NOT_RUN に分離した。
 - "PENDING" / "UNKNOWN" を根拠なく "APPROVED" に変更していない。
 
 ## 5. 合成 vs 実測の区別
