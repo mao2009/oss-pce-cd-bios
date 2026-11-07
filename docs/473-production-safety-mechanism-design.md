@@ -11,8 +11,8 @@ push/pop during block transfer after `TransferStart`. It does not implement any 
 requires explicit owner approval and a separate Issue/PR.
 
 Sources: `docs/473-stack-safety-mechanism-comparison.md`, `docs/473-caller-stack-experiment.md`,
-`docs/367-block-transfer-audit.md`, `docs/497-mpr1-stack-contract.md`, `docs/647-...`,
-`docs/648-...`. Observations: #470, #459, #367, #481, S0 (#473 comment 2026-10-22).
+`docs/367-block-transfer-audit.md`, `docs/497-mpr1-stack-contract.md`, `docs/647-decode-time-tam-refusal-irq-deferral.md`,
+`docs/648-block-transfer-prestart-midtransfer.md`. Observations: #470, #459, #367, #481, S0 (#473 comment 2026-10-22).
 
 ## 2. Evidence: TransferStart / TransferEnd
 
