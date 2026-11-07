@@ -72,15 +72,23 @@ Owner 承認なしに 24bit 対応を実装しない。
 - 上限の基準が 16bit 幅であり、実際のデータトラック長ではない (§3)。
 - 最終セクタが 16bit 上限に一致する境界 (`base + nsec - 1 == 0xFFFF`) は tail check により拒否されるが、
   これは保守的であり、受理すべきかは Owner 判断。
-- 24bit 高位バイト拒否 (§2) により 0x010000 以上は拒否されるが、0x00FFFF 以下は受理される
-  (実データトラック長がそれより短ければ実行時失敗)。
+- 24bit 高位バイト拒否 (§2) により IPLBLK の高位 8bit が非零の場合は拒否される。
+  ただし「0x00FFFF 以下なら受理される」という単純な条件ではない。受理には少なくとも次を
+  満たす必要がある:
+    - IPLBLK の高位 8bit が 0
+    - 相対 IPLBLK が 2 以上
+    - IPL_SEL + IPLBLK が 16bit 範囲内
+    - IPL_SEL + IPLBLK + nsec が現行実装の保守的な末尾チェックを通過する
+    - その他のヘッダ・ロード先・実行開始値の検証も通過する
+  相対 LBA (IPLBLK) と絶対 LBA (IPL_SEL + IPLBLK) を混同しないこと。
 
 ## 5. 本 PR の変更範囲 (最小)
 
 - 受入条件対応表の追加 (本ドキュメント)。
 - 24bit 高位バイト拒否の回帰テスト追加 (`neg_iplblk_high_byte_nonzero`)。
 - 既存テストの期待値は変更しない。
-- ローダー本体のコード変更なし (Owner 判断が必要な仕様変更は保留)。
+- ローダー本体の動作変更なし (Owner 判断が必要な仕様変更は保留)。`ipl_loader_rom.s` の
+  `IPL_MUTANT_HIGHBYTE` ガードは検証専用 mutation のためのみで、デフォルトビルドには影響しない。
 - `release_eligible=false`, `ABI VERIFIED` 未変更を維持。
 
 ## 6. 未解決 / Owner 判断待ち
@@ -91,8 +99,9 @@ Owner 承認なしに 24bit 対応を実装しない。
 
 ## 7. READ(6) エンコードと 24bit IPLBLK の表現可能性
 
-- READ(6) CDB: LBA は 21bit (3 バイト、最上位 3bit はグループ番号)。24bit IPLBLK の値が 2^21 を超える
-  場合は READ(6) 単独では表現できない。
+- READ(6) CDB: LBA は 21bit (3 バイト、最上位 3bit はグループ番号)。24bit IPLBLK フィールドを
+  READ(6) の 21bit LBA フィールドにそのまま拡張する表現は誤り。16bit 内部 LBA の拡張と、READ(6) の
+  21bit 限界を超える場合の別方式 (READ(10)/READ(12) 等) の選択を区別する。
 - 現行ローダーの内部 LBA は 16bit であり、READ(6) の 21bit 能力も未使用。
 - Geargrafx プローブ/実装が READ(10)/READ(12) をサポートするかは **UNKNOWN** (未確認)。本 PR では調査のみ。
 - 対応方式が未確定のため、24bit 全域対応は **BLOCKED (Owner 判断待ち)** とする。
@@ -117,5 +126,15 @@ Owner 承認なしに 24bit 対応を実装しない。
 - 今回未実行: NOT_RUN
 - 前提不足: BLOCKED
 
-本 PR で追加したテスト (`neg_iplblk_high_byte_nonzero`) は合成媒体のみ; 実コア検証は NOT_RUN (Geargrafx 未実行)。
-既存 35+ ケースは HISTORICAL_PASS (PR #681/#683)。
+本 PR で追加したテスト (`neg_iplblk_high_byte_nonzero`) は合成媒体のみ。修正後 HEAD での実コア
+(Geargrafx) 検証は、GitHub CI が当該 HEAD で完了するまで NOT_RUN。過去 HEAD の実行を最新 HEAD の
+PASS とはみなさない。
+
+- 過去の実行証拠 (HISTORICAL_PASS): HEAD `00a3045c3b92668ca35521ed390508fb6dd90010`、pinned
+  Geargrafx core harness workflow、run 42326947105 (2026-11-07T01:59:53Z)、37 ケース cold+warm /
+  74 runs、conclusion success。ただし当時は高位バイトケースが偽陽性だったため、この実行は
+  修正後ケースの有効性の証拠にはならない。
+- 生成エビデンス: CI ワークフローが生成する `ipl-loader-evidence.json` (build output、tracked
+  ではない)。本ドキュメントには要約のみを記録し、生成物自体は添付しない。
+- 修正後 HEAD: 上記の mutation 付き 37 ケースの再実行は GitHub CI に委ねる (本 PR では
+  ローカルで重い実コア実行を繰り返さない)。CI 完了後に PASS/FAIL を最終報告に記録する。
