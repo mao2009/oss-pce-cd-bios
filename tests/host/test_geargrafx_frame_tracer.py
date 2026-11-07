@@ -1197,6 +1197,110 @@ class CommercialSanitizationTests(unittest.TestCase):
         text = self._serialized(log)
         self.assertNotIn("/private", text)
 
+    def test_disc_given_wrong_type_is_rejected_without_leak(self):
+        for bad in ("/private/rom/title.cue", 1, 0, None, ["/private/rom/title.cue"], {"p": "/private/rom/title.cue"}):
+            with self.subTest(value=repr(bad)[:40]):
+                with self.assertRaises(ValueError) as caught:
+                    tracer.parse_records(output([event()], cap_fields={"disc_given": bad}))
+                serialized = json.dumps(str(caught.exception))
+                self.assertNotIn("/private", serialized)
+                self.assertNotIn("title.cue", serialized)
+
+    def test_unavailable_ram_correlation_and_frames_are_validated(self):
+        cases = []
+        rows = ram_deltas()
+        rows[0] = dict(rows[0], scsi_correlation="private-title-first-track.bin")
+        cases.append(rows)
+        rows = ram_deltas()
+        rows[1] = dict(rows[1], scsi_correlation="/private/rom/title.cue")
+        cases.append(rows)
+        rows = ram_deltas()
+        rows[1] = dict(rows[1], scsi_update_frames=["/private/rom/title.cue"])
+        cases.append(rows)
+        rows = ram_deltas()
+        rows[2] = dict(rows[2], scsi_update_frames=[999])
+        cases.append(rows)
+        rows = ram_deltas()
+        rows[2] = dict(rows[2], scsi_update_frames=[2, 2])
+        cases.append(rows)
+        for index, candidate in enumerate(cases):
+            with self.subTest(index=index):
+                with self.assertRaises(ValueError) as caught:
+                    tracer.parse_records(output([event()], ram_deltas=candidate))
+                serialized = json.dumps(str(caught.exception))
+                self.assertNotIn("/private", serialized)
+                self.assertNotIn("private-title", serialized)
+
+    def _run_with_copy_failure(self, side_effect, cleanup=(True, "removed")):
+        with tempfile.TemporaryDirectory() as tmp:
+            job = Path(tmp) / "job"
+            job.mkdir()
+            with mock.patch.object(tracer, "doctor", return_value={"status": "PASS"}), \
+                    mock.patch.object(tracer, "make_tracked_job_dir", return_value=(job, (1, 2, 3))), \
+                    mock.patch.object(tracer, "compile_probe", return_value=Path("probe")), \
+                    mock.patch.object(tracer.shutil, "copyfile", side_effect=side_effect), \
+                    mock.patch.object(tracer, "cleanup_tracked_job_dir", return_value=cleanup) as cleaned:
+                log = tracer.trace(self._args())
+            return log, cleaned
+
+    def test_rom_copy_failures_are_sanitized_and_cleaned(self):
+        errors = [FileNotFoundError("/private/rom/dev.pce"),
+                  PermissionError("/private/rom/dev.pce"),
+                  OSError("write failed: /private/rom/dev.pce sha256=deadbeefcafe"),
+                  FileNotFoundError("private-title-first-track.bin missing")]
+        for error in errors:
+            with self.subTest(error=type(error).__name__):
+                log, cleaned = self._run_with_copy_failure(error)
+                self.assertEqual((log["status"], log["reason"], log["evidence"]),
+                                 ("BLOCKED", "ROM copy failed", "NOT_RUN"))
+                self.assertEqual(log["cleanup"], "REMOVED")
+                cleaned.assert_called_once()
+                text = self._serialized(log)
+                for secret in ("/private", "title.cue", self.PRIVATE_BIN, "sha256", "deadbeefcafe"):
+                    self.assertNotIn(secret, text)
+
+    def test_rom_copy_cleanup_failure_is_fail_closed(self):
+        log, _ = self._run_with_copy_failure(FileNotFoundError("/private/rom/dev.pce"),
+                                             cleanup=(False, "identity_changed"))
+        self.assertEqual((log["status"], log["reason"]), ("FAIL", "cleanup failed: identity_changed"))
+        self.assertNotIn("/private", self._serialized(log))
+
+    def test_unavailable_ram_bank_mapping_is_rejected(self):
+        rows = ram_deltas()
+        rows[1] = dict(rows[1], size="/private/rom/title.cue", bank_first="/private",
+                       bank_last="private-title-first-track.bin")
+        with self.assertRaises(ValueError):
+            tracer.parse_records(output([event()], ram_deltas=rows))
+        rows = ram_deltas()
+        rows[2] = dict(rows[2], size=8192, bank_first=248, bank_last=251)
+        with self.assertRaises(ValueError):
+            tracer.parse_records(output([event()], ram_deltas=rows))
+
+    def test_physical_pc_above_64k_is_accepted(self):
+        row = dict(event(), physical_pc=0x1f0000, pc=0xe000)
+        cap, events, end = tracer.parse_records(output([row]))
+        self.assertEqual(events[0]["physical_pc"], 0x1f0000)
+
+    def test_core_capacity_huge_is_rejected(self):
+        with self.assertRaises(ValueError):
+            tracer.parse_records(output([event()], core_capacity=200000))
+
+    def test_run_schedule_and_events_bool_are_rejected(self):
+        with self.assertRaises(ValueError):
+            tracer.parse_records(output([event()], cap_fields={"run_start_frame": True, "run_hold_frames": 2,
+                                                               "run_input_requested": True}))
+        # output() cannot take end key "events" directly (positional collision); rewrite the wire JSON.
+        text = output([event()]).replace('"events": 1', '"events": true')
+        with self.assertRaises(ValueError):
+            tracer.parse_records(text)
+
+    def test_cd_snapshot_range_is_validated(self):
+        row = dict(event("cd"), scsi_phase=-1, load_sector=5)
+        tracer.parse_records(output([row]))
+        bad = dict(event("cd"), load_sector=-1)
+        with self.assertRaises(ValueError):
+            tracer.parse_records(output([bad]))
+
 
 if __name__ == "__main__":
     unittest.main()

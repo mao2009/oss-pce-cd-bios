@@ -212,8 +212,25 @@ def validate_ram_deltas(rows, frames):
         updates, max_changed = row.get("updates"), row.get("max_changed")
         if type(updates) is not int or updates < 0 or type(max_changed) is not int or max_changed < 0:
             raise ValueError("invalid RAM update count")
+        # Correlation is validated for every availability; PRESENT and unavailable rows
+        # alike are published by _public_end(), so a private string in any row must not
+        # survive as a public field. Missing values fail the membership/length checks.
+        correlation, scsi_frames = row.get("scsi_correlation"), row.get("scsi_update_frames")
+        if correlation not in {"OBSERVED", "NONE_OBSERVED", "UNKNOWN"} or type(scsi_frames) is not list or \
+                any(type(frame) is not int or not 1 <= frame <= frames for frame in scsi_frames) or scsi_frames != sorted(set(scsi_frames)):
+            raise ValueError("invalid SCSI frame correlation")
+        if correlation == "OBSERVED" and not scsi_frames:
+            raise ValueError("observed SCSI correlation lacks frames")
+        if correlation == "NONE_OBSERVED" and scsi_frames:
+            raise ValueError("empty SCSI correlation has frames")
+        if availability != "PRESENT" and (scsi_frames or correlation == "OBSERVED"):
+            raise ValueError("unavailable RAM has SCSI updates")
         range_keys = ("first_frame", "last_frame", "min_offset", "max_offset")
         if availability != "PRESENT":
+            # C++ emits size/bank_first/bank_last only for present RAM; a present value
+            # here (e.g. a private string) must not survive into the public summary.
+            if any(row.get(key) is not None for key in ("size", "bank_first", "bank_last")):
+                raise ValueError("unavailable RAM includes bank mapping")
             if updates or max_changed or any(row.get(key) is not None for key in range_keys):
                 raise ValueError("unavailable RAM has deltas")
             continue
@@ -228,14 +245,6 @@ def validate_ram_deltas(rows, frames):
                 raise ValueError("invalid RAM delta range")
         elif max_changed or any(row.get(key) is not None for key in range_keys):
             raise ValueError("empty RAM delta has range")
-        correlation, scsi_frames = row.get("scsi_correlation"), row.get("scsi_update_frames")
-        if correlation not in {"OBSERVED", "NONE_OBSERVED", "UNKNOWN"} or type(scsi_frames) is not list or \
-                any(type(frame) is not int or not 1 <= frame <= frames for frame in scsi_frames) or scsi_frames != sorted(set(scsi_frames)):
-            raise ValueError("invalid SCSI frame correlation")
-        if correlation == "OBSERVED" and not scsi_frames:
-            raise ValueError("observed SCSI correlation lacks frames")
-        if correlation == "NONE_OBSERVED" and scsi_frames:
-            raise ValueError("empty SCSI correlation has frames")
 
 
 def normalized_absolute(path):
@@ -561,6 +570,8 @@ def parse_records(stdout, require_ram_observation=True):
         raise ValueError("not a normal-frame trace")
     if type(cap.get("ram_observation")) is not bool:
         raise ValueError("invalid RAM observation capability")
+    if type(cap.get("disc_given")) is not bool:
+        raise ValueError("invalid disc_given capability")
     # The tracer never writes guest state; the only exception is a requested, recorded warm reset,
     # which must be declared as such (checked against the RESET record in validate_regions_and_resets).
     warm_requested = type(cap.get("warm_reset_frame")) is int and cap["warm_reset_frame"] > 0
@@ -579,6 +590,8 @@ def parse_records(stdout, require_ram_observation=True):
     if type(requested) is not bool:
         raise ValueError("invalid RUN capability")
     start, hold = cap.get("run_start_frame"), cap.get("run_hold_frames")
+    if type(start) is not int or type(hold) is not int or start < 0 or hold < 0:
+        raise ValueError("invalid RUN schedule fields")
     if requested:
         if run_schedule(start, hold, cap["frames"]) != tuple((row.get("frame"), row.get("action")) for row in inputs):
             raise ValueError("RUN input schedule mismatch")
@@ -597,7 +610,7 @@ def parse_records(stdout, require_ram_observation=True):
             _reject_unknown(region, CAP_REGION_ALLOWED, "CAP ram_regions entry")
     elif regions:
         raise ValueError("RAM regions emitted while RAM observation is disabled")
-    if len(events) > capacity or end.get("events") != len(events):
+    if type(end.get("events")) is not int or len(events) > capacity or end["events"] != len(events):
         raise ValueError("ring event count mismatch")
     # PR-B: a discontinuous core-trace frame lost an unknown number of entries, so it must also be
     # reported as overflow (trace_events_dropped counts only the losses that are known exactly).
@@ -627,9 +640,23 @@ def parse_records(stdout, require_ram_observation=True):
     if type(cap.get("frames")) is not int or not 1 <= cap["frames"] <= MAX_FRAMES or end.get("frames") != cap["frames"]:
         raise ValueError("invalid frame count")
     has_core_trace = validate_core_trace(cap, end)
+    if core_capacity > MAX_CORE_CAPACITY:
+        raise ValueError("invalid core trace capacity")
     validate_ram_deltas(end.get("ram_deltas"), cap["frames"])
     for row in end["ram_deltas"]:
         _reject_unknown(row, RAM_DELTA_ALLOWED, "END ram_deltas entry")
+    for row in inputs:
+        if type(row.get("frame")) is not int or not 1 <= row["frame"] <= cap["frames"] or \
+                row.get("action") not in {"press", "release"} or type(row.get("run_pressed")) is not bool:
+            raise ValueError("invalid INPUT record")
+    for row in resets:
+        # Type-only here; value mismatches are reported by validate_regions_and_resets
+        # ("does not match the requested"). Strict bool/int keeps True distinct from 1.
+        if type(row.get("frame")) is not int or type(row.get("kind")) is not str or \
+                type(row.get("api")) is not str or type(row.get("performed")) is not bool or \
+                type(row.get("master_clock_reset")) is not bool or type(row.get("ram_preserved")) is not str or \
+                not 1 <= row["frame"] <= cap["frames"]:
+            raise ValueError("invalid RESET record")
     for event in events:
         if event.get("kind") not in EVENT_KINDS or type(event.get("frame")) is not int or not 1 <= event["frame"] <= cap["frames"]:
             raise ValueError("invalid event header")
@@ -653,9 +680,16 @@ def parse_records(stdout, require_ram_observation=True):
                 # loss claim.  Later unknown transitions must disclose loss.
                 continue
             continue
-        if (type(event.get("pc")) is not int or type(event.get("physical_pc")) is not int or
-                type(event.get("pc_bank")) is not int or type(event.get("mpr")) is not list or len(event["mpr"]) != 8):
+        if (type(event.get("pc")) is not int or not 0 <= event["pc"] <= 0xffff or
+                type(event.get("physical_pc")) is not int or not 0 <= event["physical_pc"] <= 0x1fffff or
+                type(event.get("pc_bank")) is not int or not 0 <= event["pc_bank"] <= 0xff or
+                type(event.get("mpr")) is not list or len(event["mpr"]) != 8):
             raise ValueError("event lacks CPU/MPR snapshot")
+        if type(event.get("master_clock")) is not int or event["master_clock"] < 0 or \
+                type(event.get("pc_page")) is not int or not 0 <= event["pc_page"] <= 0xff or \
+                type(event.get("pc_is_wram")) is not bool or \
+                any(type(event.get(key)) is not int or not 0 <= event[key] <= 0xff for key in ("a", "x", "y", "p", "sp")):
+            raise ValueError("invalid event CPU snapshot")
         if any(type(value) is not int or not 0 <= value <= 255 for value in event["mpr"]):
             raise ValueError("invalid MPR snapshot")
         if event["kind"] == "ram":
@@ -675,6 +709,13 @@ def parse_records(stdout, require_ram_observation=True):
                 raise ValueError("SCSI metadata lacks FRAME_SNAPSHOT label")
             if not all(type(event.get(key)) is int for key in ("cd_event", "command", "lba", "status")):
                 raise ValueError("invalid CD event")
+            # C++ also emits the CD snapshot (scsi_phase etc.). Host synthetics omit it;
+            # when present it must be an int, never a private string.
+            if "scsi_phase" in event and type(event["scsi_phase"]) is not int:
+                raise ValueError("invalid CD snapshot")
+            for key in ("scsi_signals", "load_sector", "load_count", "cd_irq_active", "cd_irq_enabled"):
+                if key in event and (type(event[key]) is not int or event[key] < 0):
+                    raise ValueError("invalid CD snapshot")
     validate_regions_and_resets(cap, end, events, resets, has_core_trace)
     return cap, events, end
 
@@ -719,18 +760,28 @@ def trace(args):
             log.update(status="BLOCKED", reason="probe build failed", evidence="NOT_RUN")
             return log
         rom = job / "input.pce"
-        shutil.copyfile(args.rom, rom)
+        try:
+            shutil.copyfile(args.rom, rom)
+        except OSError:
+            # Missing/unreadable ROM or copy I/O error: never publish the OS error text
+            # (absolute paths, media names). The finally block still runs cleanup, and
+            # a failed cleanup flips this to FAIL (fail-closed).
+            log.update(status="BLOCKED", reason="ROM copy failed", evidence="NOT_RUN")
+            return log
         cue = "-"
         if args.cue is not None:
             disc = job / "disc"
-            disc.mkdir()
             try:
+                disc.mkdir()
                 staged = stage_disc(args.cue, disc)
-            except FileNotFoundError as error:
+            except FileNotFoundError:
                 log.update(status="BLOCKED", reason="disc staging input missing", evidence="NOT_RUN")
                 return log
-            except ValueError as error:
+            except ValueError:
                 log.update(status="FAIL", reason="invalid disc input", evidence="NOT_RUN")
+                return log
+            except OSError:
+                log.update(status="BLOCKED", reason="disc staging failed", evidence="NOT_RUN")
                 return log
             cue = str(disc / staged[0])
         result = run_job([str(probe), str(rom), cue, str(args.frames), str(args.events),
