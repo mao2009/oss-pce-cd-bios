@@ -392,26 +392,20 @@ def main():
             f"cd_halt_fail {hb_labels['cd_halt_fail']:04x}\n"
             f"cd_unexpected_interrupt {hb_labels['cd_unexpected_interrupt']:04x}\n", encoding="ascii")
         # With only the high-byte refusal disabled, the valid low 16 bits (iplblk=2) must be
-        # accepted and the payload must load/run, so judge() must fail solely because the
-        # expectation (code 21, copied 0) no longer holds -- not for any other reason.
+        # accepted: run the same case through run_case()/judge() with normal-execution
+        # expectations, so halt_confirmed, code 0, copied 5, payload completion and the
+        # cold+warm readback/visible-memory checks are all verified -- not a substring match.
+        # Note: this proves the mutant accepts the low 16 bits; it is NOT 24-bit LBA support.
+        mutant_case = {**highbyte_case, "name": highbyte_case["name"] + "_mutant",
+                       "reason": "cd_halt_ok", "code": 0, "copied": 5, "payload_ran": True}
         try:
-            run_case(probe, hb_mutant, hb_labels_path, highbyte_case, payloads[highbyte_case["pay"]][0], tmp)
+            run_case(probe, hb_mutant, hb_labels_path, mutant_case, payloads[mutant_case["pay"]][0], tmp)
         except ValueError as err:
-            if "guest code/copied = 21/" in str(err):
-                raise SystemExit(f"FAIL mutation: high-byte rejection still active: {err}") from err
-            # judge() checks the stop reason before the guest code: a mutant that accepts the
-            # low 16 bits loads and runs the payload, so it stops with cd_halt_ok instead of
-            # the expected cd_halt_fail. That (or code 0/5 if the reason check ever changes)
-            # is the intended acceptance; any other outcome is unexpected.
-            if "stopped with cd_halt_ok" not in str(err) and "guest code/copied = 0/5" not in str(err):
-                raise SystemExit(f"FAIL mutation: unexpected mutant outcome, not the intended "
-                                 f"acceptance of the low 16 bits: {err}") from err
-        else:
-            raise SystemExit(f"FAIL mutation: mutant unexpectedly satisfied code 21 / copied 0 "
-                             f"for {highbyte_case['name']}")
-        print(f"MUTATION CHECK high-byte (verification only): mutant accepted low 16 bits "
-              f"(cd_halt_ok / code 0, not 21/0); case={highbyte_case['name']}")
-    
+            raise SystemExit(f"FAIL mutation: mutant did not execute normally "
+                             f"(expected cd_halt_ok, code 0, copied 5, payload ran): {err}") from err
+        print(f"MUTATION CHECK high-byte (verification only): mutant executed normally "
+              f"(cd_halt_ok, code 0, copied 5, payload ran, cold+warm); case={highbyte_case['name']}")
+
         if hashlib.sha256(rom.read_bytes()).hexdigest() != rom_sha:
             raise SystemExit("FAIL: loader ROM changed during the test")
         if hashlib.sha256(mutant.read_bytes()).hexdigest() != mutant_sha:
