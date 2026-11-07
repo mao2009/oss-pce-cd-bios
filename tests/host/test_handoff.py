@@ -305,6 +305,69 @@ class FixtureStaticTests(unittest.TestCase):
                 self.assertTrue(any(needle in v for v in violations),
                                 f"{name}: violations {violations} do not mention {needle!r}")
 
+    def test_comment_and_whitespace_changes_are_accepted(self):
+        source = self._source()
+        variants = {
+            "comment_text": source.replace("; MPR0 = hardware I/O bank", "; changed comment"),
+            "indentation_and_blank_lines": source.replace("    sei", "        sei  \n"),
+            "label_on_instruction_line": source.replace("handoff_reset:\n    sei", "handoff_reset: sei"),
+            "operand_spacing": source.replace("sta $2200,x", "sta $2200, x"),
+        }
+        for name, variant in variants.items():
+            with self.subTest(variant=name):
+                self.assertEqual(fixture_static_violations(variant), [])
+
+    def _move(self, source, needle, before):
+        lines = source.splitlines()
+        index = next(i for i, line in enumerate(lines) if needle in line)
+        moved = lines.pop(index)
+        target = next(i for i, line in enumerate(lines) if before in line)
+        lines.insert(target, moved)
+        return "\n".join(lines) + "\n"
+
+    def _insert_before(self, source, needle, new_line):
+        lines = source.splitlines()
+        target = next(i for i, line in enumerate(lines) if needle in line)
+        lines.insert(target, new_line)
+        return "\n".join(lines) + "\n"
+
+    def _delete(self, source, needle):
+        lines = source.splitlines()
+        index = next(i for i, line in enumerate(lines) if needle in line)
+        del lines[index]
+        return "\n".join(lines) + "\n"
+
+    def test_order_and_placement_mutations_are_rejected_by_structure(self):
+        # Every mutation below uses only allowed mnemonics/operands, so the per-instruction allow-list alone
+        # would accept it; the normalized sequence comparison must reject it.
+        source = self._source()
+        word_lines = [line for line in source.splitlines() if ".word" in line]
+        swapped = source.splitlines()
+        word_indexes = [i for i, line in enumerate(swapped) if ".word" in line]
+        swapped[word_indexes[-1]], swapped[word_indexes[-2]] = swapped[word_indexes[-2]], swapped[word_indexes[-1]]
+        mutations = {
+            "sta_2220_before_tam_02": self._move(source, "sta $2220", "tam #$02"),
+            "extra_lda_between_f8_and_tam_02": self._insert_before(source, "tam #$02", "    lda #$FF"),
+            "tam_02_after_copy": self._move(source, "tam #$02", "jmp $2200"),
+            "sta_2200_before_tam_02": self._move(source, "sta $2200,x", "tam #$02"),
+            "copy_label_moved": self._move(source, "handoff_copy:", "ldx #$FF"),
+            "payload_label_moved": self._move(source, "handoff_payload_rom:", "handoff_done:"),
+            "word_outside_vectors": self._move(source, ".word handoff_reset", '.segment "VECTORS"'),
+            "vectors_segment_renamed": source.replace('.segment "VECTORS"', '.segment "BOOT"'),
+            "segment_name_with_space": source.replace('.segment "BOOT"', '.segment "B OOT"'),
+            "setcpu_with_space": source.replace('.setcpu "huc6280"', '.setcpu "huc 6280"'),
+            "vectors_segment_deleted": self._delete(source, '.segment "VECTORS"'),
+            "vector_order_swapped": "\n".join(swapped) + "\n",
+            "vector_count_reduced": self._delete(source, word_lines[0]),
+            "extra_inx_in_copy_loop": self._insert_before(source, "cpx #13", "    inx"),
+        }
+        for name, mutated in mutations.items():
+            with self.subTest(mutation=name):
+                violations = fixture_static_violations(mutated)
+                self.assertTrue(violations, f"{name}: mutation was not detected")
+                self.assertTrue(any("structure differs" in v or "structure length" in v for v in violations),
+                                f"{name}: violations {violations} are not structure violations")
+
 
 class HandoffReasonTests(unittest.TestCase):
     """Each negative is rejected for its own reason key; entry and MPR are checked before phase order."""

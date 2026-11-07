@@ -12,10 +12,12 @@ and SP across jump -> entry -> done, the SEI interrupt flag, and that the sample
 Power-on residues (absolute Y/P and MPR2-6 values) are deliberately not asserted: they differ between debug
 and release builds and between cold and warm cycles on the pinned core.
 Before assembly, build_handoff also runs fixture_static_violations() on the fixture source: an
-operand-level reachability check (every mnemonic and operand, TAM targets, jump/branch targets, vectors)
-that must be empty, or the build fails closed. This statically constrains every guest write in this fixture
-to STA $2200,x / $2220 / $2221 under MPR1=$F8; it is not a dynamic MMIO write trace (mmio_side_effects
-stays NOT_RUN).
+operand-level reachability check plus exact comparison of the normalized directive/label/instruction/vector
+sequence (LDA #$F8 and TAM #$02 as consecutive instructions, every STA after TAM #$02, label positions,
+segment and vector order) that must be empty, or the build fails closed. Comments and whitespace outside
+quoted directive names do not matter. This statically
+constrains every guest write in this fixture to STA $2200,x / $2220 / $2221 under MPR1=$F8; it is not a
+dynamic MMIO write trace (mmio_side_effects stays NOT_RUN).
 A run is accepted only if the entry contract, the phase order, the RAM bytes and the marker all match the typed
 expectation. Four byte-mutated ROMs (MPR1 bank not work RAM, misaligned entry, extra copied byte, marker
 store redirected to the hardware page) must be rejected by the same judge, each for its own reason key.
@@ -116,7 +118,7 @@ def expected_ram_writes(payload: bytes) -> dict:
     return writes
 
 
-# Operand-level static reachability for tests/fixtures/handoff-probe.s. The fixture has no ST0/ST1/ST2,
+# Operand- and order-level static reachability for tests/fixtures/handoff-probe.s. The fixture has no ST0/ST1/ST2,
 # STX/STY, block transfers (TII/TIN/TDD/TIA/TAI), read-modify-write, JSR/RTS/RTI, PHA/PHP/PLA/PLP, indirect
 # or zero-page addressing, or CLI. Its only memory writes are the three STA forms below, and its only MPR
 # changes are TAM #$01 (MPR0) and TAM #$02 (MPR1); MPR1=$F8 is then checked dynamically at handoff_entry,
@@ -136,11 +138,85 @@ ALLOWED_OPERANDS = {
 }
 ALLOWED_VECTORS = {"handoff_trap", "handoff_reset"}
 
+# The reviewed fixture as a normalized structure: directives, labels, instructions and vectors in order.
+# Tokens are uppercased with whitespace removed outside quoted strings, so comment text, indentation,
+# blank lines and label-on-same-line formatting do not matter, but any reordering, insertion, deletion,
+# label move, segment/vector change, or operand change does. In particular this pins LDA #$F8 and
+# TAM #$02 as consecutive instructions (the HANDOFF_BANK label between them carries no code) and every
+# STA after TAM #$02, so no RAM write can precede the MPR1=$F8 setup.
+EXPECTED_STRUCTURE = (
+    'directive:.SETCPU"huc6280"',
+    "directive:.EXPORTHANDOFF_RESET,HANDOFF_BANK,HANDOFF_JUMP,HANDOFF_DONE,HANDOFF_TRAP",
+    "directive:.EXPORTHANDOFF_PAYLOAD_ROM,HANDOFF_PAYLOAD_END_ROM",
+    'directive:.SEGMENT"BOOT"',
+    "label:HANDOFF_RESET",
+    "ins:SEI",
+    "ins:CLD",
+    "ins:LDA:#$FF",
+    "ins:TAM:#$01",
+    "ins:LDA:#$F8",
+    "label:HANDOFF_BANK",
+    "ins:TAM:#$02",
+    "ins:LDX:#$FF",
+    "ins:TXS",
+    "ins:LDX:#$00",
+    "label:HANDOFF_COPY",
+    "ins:LDA:HANDOFF_PAYLOAD_ROM,X",
+    "ins:STA:$2200,X",
+    "ins:INX",
+    "ins:CPX:#13",
+    "ins:BNE:HANDOFF_COPY",
+    "label:HANDOFF_JUMP",
+    "ins:JMP:$2200",
+    "label:HANDOFF_DONE",
+    "ins:BRA:HANDOFF_DONE",
+    "label:HANDOFF_TRAP",
+    "ins:BRA:HANDOFF_TRAP",
+    "label:HANDOFF_PAYLOAD_ROM",
+    "ins:LDA:#$A5",
+    "ins:STA:$2220",
+    "ins:LDA:#$5A",
+    "ins:STA:$2221",
+    "ins:JMP:HANDOFF_DONE",
+    "label:HANDOFF_PAYLOAD_END_ROM",
+    'directive:.SEGMENT"VECTORS"',
+    "word:HANDOFF_TRAP",
+    "word:HANDOFF_TRAP",
+    "word:HANDOFF_TRAP",
+    "word:HANDOFF_TRAP",
+    "word:HANDOFF_RESET",
+)
+
+
+def _normalized(text: str) -> str:
+    """Uppercase and remove whitespace outside quoted strings (quoted segment/cpu names must match exactly)."""
+    out, in_quotes = [], False
+    for char in text:
+        if char == '"':
+            in_quotes = not in_quotes
+            out.append(char)
+        elif in_quotes:
+            out.append(char)
+        elif not char.isspace():
+            out.append(char.upper())
+    return "".join(out)
+
 
 def fixture_static_violations(source: str) -> list:
     """Return static reachability violations for the handoff fixture source ([] means the fixture is exactly
-    the reviewed instruction/operand set). Pure text check: no assembly, no execution."""
-    violations, mnemonics = [], []
+    the reviewed instruction/operand set in the reviewed order). Pure text check: no assembly, no execution.
+
+    Two layers, both fail-closed: (1) per-instruction allow-lists (mnemonic/operand/vector/directive), and
+    (2) exact comparison of the normalized directive/label/instruction/vector sequence, which pins
+    LDA #$F8 and TAM #$02 as consecutive instructions (HANDOFF_BANK label between them, no code), every
+    STA after TAM #$02, label positions (including the payload label after the two BRA self-loops, so ROM
+    execution cannot fall through into payload data), segment placement and the five-vector order/count.
+    Comments, indentation and blank lines are ignored. Normalization is broader than ca65 in one residual
+    way (whitespace inside an unquoted identifier would normalize away); such input still fails closed at
+    assembly or at build_handoff's symbol/size/byte checks. A label on the same line as a directive or
+    .word is rejected fail-closed (the reviewed fixture puts labels on their own lines).
+    """
+    violations, mnemonics, structure = [], [], []
     for lineno, raw in enumerate(source.splitlines(), 1):
         code = raw.split(";", 1)[0].strip()
         if not code:
@@ -149,6 +225,7 @@ def fixture_static_violations(source: str) -> list:
             target = code[len(".word"):].strip()
             if target not in ALLOWED_VECTORS:
                 violations.append(f"line {lineno}: vector target {target!r} not allowed")
+            structure.append(f"word:{_normalized(target)}")
             continue
         if code.startswith("."):
             # Only behaviour-free directives are allowed; .byte/.res/.align/.org could inject bytes
@@ -156,24 +233,38 @@ def fixture_static_violations(source: str) -> list:
             directive = code.split(None, 1)[0].lower()
             if directive not in (".setcpu", ".export", ".segment"):
                 violations.append(f"line {lineno}: directive {directive!r} not allowed")
+            structure.append(f"directive:{_normalized(code)}")
             continue
-        if ":" in code:  # label alone, or label: instruction on one line
-            code = code.split(":", 1)[1].strip()
+        while ":" in code and re.match(r"[A-Za-z_][A-Za-z0-9_]*:", code):  # label alone, or label: instruction
+            label, code = code.split(":", 1)
+            structure.append(f"label:{_normalized(label)}")
+            code = code.strip()
             if not code:
-                continue
+                break
+        if not code:
+            continue
         parts = code.split(None, 1)
         mnemonic = parts[0].lower()
         operand = parts[1].strip() if len(parts) == 2 else ""
         mnemonics.append(mnemonic)
+        structure.append(f"ins:{mnemonic.upper()}" + (f":{_normalized(operand)}" if operand else ""))
         if mnemonic not in ALLOWED_MNEMONICS:
             violations.append(f"line {lineno}: mnemonic {mnemonic!r} not allowed")
         elif mnemonic in NO_OPERAND:
             if operand:
                 violations.append(f"line {lineno}: {mnemonic} takes no operand, got {operand!r}")
-        elif operand not in ALLOWED_OPERANDS[mnemonic]:
+        elif _normalized(operand) not in {_normalized(v) for v in ALLOWED_OPERANDS[mnemonic]}:
             violations.append(f"line {lineno}: {mnemonic} operand {operand!r} not allowed")
     if not mnemonics or mnemonics[0] != "sei":
         violations.append("reset entry must start with sei (interrupts masked from the first instruction)")
+    if tuple(structure) != EXPECTED_STRUCTURE:
+        for index, (expected, actual) in enumerate(zip(EXPECTED_STRUCTURE, structure)):
+            if expected != actual:
+                violations.append(f"structure differs at item {index}: expected {expected!r}, got {actual!r}")
+                break
+        else:
+            violations.append(f"structure length differs: expected {len(EXPECTED_STRUCTURE)} items, "
+                              f"got {len(structure)}")
     return violations
 
 
