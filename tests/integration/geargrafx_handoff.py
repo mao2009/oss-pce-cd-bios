@@ -11,9 +11,14 @@ the cold end state. Per cycle the judge also checks guest-driven registers (A/X)
 and SP across jump -> entry -> done, the SEI interrupt flag, and that the sampled VDC state is unchanged.
 Power-on residues (absolute Y/P and MPR2-6 values) are deliberately not asserted: they differ between debug
 and release builds and between cold and warm cycles on the pinned core.
+Before assembly, build_handoff also runs fixture_static_violations() on the fixture source: an
+operand-level reachability check (every mnemonic and operand, TAM targets, jump/branch targets, vectors)
+that must be empty, or the build fails closed. This statically constrains every guest write in this fixture
+to STA $2200,x / $2220 / $2221 under MPR1=$F8; it is not a dynamic MMIO write trace (mmio_side_effects
+stays NOT_RUN).
 A run is accepted only if the entry contract, the phase order, the RAM bytes and the marker all match the typed
-expectation. Three byte-mutated ROMs (MPR1 bank not work RAM, misaligned entry, extra copied byte) must be
-rejected by the same judge, each for its own reason key.
+expectation. Four byte-mutated ROMs (MPR1 bank not work RAM, misaligned entry, extra copied byte, marker
+store redirected to the hardware page) must be rejected by the same judge, each for its own reason key.
 Not tested: CD boot, the CD_EXEC loader, the callable ABI and any production BIOS behaviour. See LIMITATIONS.
 
 Run (after make setup, TOOLS_DIR outside the repo):  python3 tests/integration/geargrafx_handoff.py --mode debug
@@ -44,7 +49,8 @@ MARKER_OFF, MARKER = 0x20, b"\xa5\x5a"  # written at $2220-$2221
 DUMP_BYTES = 64                    # probe dumps work RAM offset $200..$23F
 PHASES = ("handoff_jump", "handoff_entry", "handoff_done")
 # Judge reasons that a negative must produce. Entry and MPR are checked before the phase order.
-EXPECTED_REJECTIONS = {"mpr1_rom_bank": "mpr", "entry_misaligned": "entry", "extra_copy_byte": "ram_side_effect"}
+EXPECTED_REJECTIONS = {"mpr1_rom_bank": "mpr", "entry_misaligned": "entry", "extra_copy_byte": "ram_side_effect",
+                      "marker_outside_ram": "payload"}
 # Independent expectation typed from the source: ca65 encoding of lda #$A5 / sta $2220 / lda #$5A /
 # sta $2221. The JMP operand is appended from the handoff_done label, so the expected bytes never come
 # from the ROM copy they are checking.
@@ -56,6 +62,8 @@ CHECKS = {
     "marker_and_payload_64_bytes_cold_warm": "PASS",
     "full_ram_cold_typed_warm_equals_cold": "PASS",
     "register_preservation_cold_warm": "PASS",
+    "fixture_static_reachability": "PASS",
+    "stack_page_unchanged": "PASS",
     "mmio_sampled_vdc_unchanged": "PASS",
     "mmio_side_effects": "NOT_RUN",
     "cd_read_and_cd_exec": "NOT_RUN",
@@ -65,8 +73,8 @@ STEPS = 512                        # bounded run: cold observation after 512 ins
 POST_HALT_STEPS = 32               # 'nonreturning' observation: the BRA loop at handoff_done must be stable
 LIMITATIONS = [
     "RAM side effects: the full work RAM $2000-$3FFF is compared cold (loaded -> cold -> nonreturning, typed writes only) and warm (warm end state must equal the cold end state); there is no separate warm-loaded baseline observation, so a warm write that reproduced the cold image byte-for-byte would not be visible",
-    "MMIO side effects (VDC/VCE/PSG/timer/ADPCM/CD I/O) are NOT_RUN: the probe has no write trace and only samples VDC AR/R0 at the four end observations (checked unchanged, mmio_sampled_vdc_unchanged); the fixture stores are also checked statically",
-    "interrupts: the fixture keeps SEI from reset and never CLIs, and the probe injects nothing; IRQ behaviour during the payload is unverified",
+    "MMIO side effects (VDC/VCE/PSG/timer/ADPCM/CD I/O) are NOT_RUN: the probe has no write trace and only samples VDC AR/R0 at the four end observations (checked unchanged, mmio_sampled_vdc_unchanged). The fixture's guest writes are statically constrained by fixture_static_violations() (run as a build gate): the only write instructions are STA $2200,x / $2220 / $2221, which under the dynamically checked MPR1=$F8 land in work RAM $2000-$3FFF; ST0/ST1/ST2, STX/STY, block transfers, indirect forms, JSR/RTS and stack ops are absent and statically rejected. That is a bounded static guarantee for this fixture under probe conditions (SEI, no injected IRQ, MPR7=0, dummy CD), not a dynamic MMIO trace",
+    "interrupts: the fixture keeps SEI from reset and never CLIs, and the probe injects nothing; the stack page $21F8-$21FF is checked unchanged at the four end observations, so an interrupt/BRK dispatch push during the run would be detected post-hoc (its bytes remain after a return), but handler execution itself is unverified. NMI has no source in this harness (its vector points at the writing-free trap)",
     "registers and flags: only guest-driven values and preservation are asserted (A/X at jump/entry/done, Y and MPR2-6 preserved across the payload, SP=$FF, I flag set); absolute Y/P and absolute MPR2-6 values are power-on residues that differ between debug/release and cold/warm, so they are not asserted",
     "MPR: handoff_jump checks MPR0/MPR1, handoff_entry checks MPR0/MPR1/MPR7, handoff_done checks MPR7; MPR2-6 are checked for preservation across the payload, not for absolute values",
     "block transfer/DMA side effects before the payload runs are not tested (#173, #361)",
@@ -106,6 +114,67 @@ def expected_ram_writes(payload: bytes) -> dict:
     writes[RAM_ENTRY - WORK_BASE + MARKER_OFF] = MARKER[0]
     writes[RAM_ENTRY - WORK_BASE + MARKER_OFF + 1] = MARKER[1]
     return writes
+
+
+# Operand-level static reachability for tests/fixtures/handoff-probe.s. The fixture has no ST0/ST1/ST2,
+# STX/STY, block transfers (TII/TIN/TDD/TIA/TAI), read-modify-write, JSR/RTS/RTI, PHA/PHP/PLA/PLP, indirect
+# or zero-page addressing, or CLI. Its only memory writes are the three STA forms below, and its only MPR
+# changes are TAM #$01 (MPR0) and TAM #$02 (MPR1); MPR1=$F8 is then checked dynamically at handoff_entry,
+# which is what makes $2200/$2220/$2221 work-RAM addresses rather than hardware-page addresses. Any other
+# mnemonic, operand, vector target, or a missing leading SEI is a violation and fails the build closed.
+ALLOWED_MNEMONICS = {"sei", "cld", "lda", "tam", "txs", "ldx", "sta", "inx", "cpx", "bne", "jmp", "bra"}
+NO_OPERAND = {"sei", "cld", "txs", "inx"}
+ALLOWED_OPERANDS = {
+    "lda": {"#$FF", "#$F8", "#$A5", "#$5A", "handoff_payload_rom,x"},
+    "ldx": {"#$FF", "#$00"},
+    "cpx": {"#13"},
+    "tam": {"#$01", "#$02"},
+    "sta": {"$2200,x", "$2220", "$2221"},
+    "jmp": {"$2200", "handoff_done"},
+    "bne": {"handoff_copy"},
+    "bra": {"handoff_done", "handoff_trap"},
+}
+ALLOWED_VECTORS = {"handoff_trap", "handoff_reset"}
+
+
+def fixture_static_violations(source: str) -> list:
+    """Return static reachability violations for the handoff fixture source ([] means the fixture is exactly
+    the reviewed instruction/operand set). Pure text check: no assembly, no execution."""
+    violations, mnemonics = [], []
+    for lineno, raw in enumerate(source.splitlines(), 1):
+        code = raw.split(";", 1)[0].strip()
+        if not code:
+            continue
+        if code.startswith(".word"):
+            target = code[len(".word"):].strip()
+            if target not in ALLOWED_VECTORS:
+                violations.append(f"line {lineno}: vector target {target!r} not allowed")
+            continue
+        if code.startswith("."):
+            # Only behaviour-free directives are allowed; .byte/.res/.align/.org could inject bytes
+            # that never appear as a checked mnemonic.
+            directive = code.split(None, 1)[0].lower()
+            if directive not in (".setcpu", ".export", ".segment"):
+                violations.append(f"line {lineno}: directive {directive!r} not allowed")
+            continue
+        if ":" in code:  # label alone, or label: instruction on one line
+            code = code.split(":", 1)[1].strip()
+            if not code:
+                continue
+        parts = code.split(None, 1)
+        mnemonic = parts[0].lower()
+        operand = parts[1].strip() if len(parts) == 2 else ""
+        mnemonics.append(mnemonic)
+        if mnemonic not in ALLOWED_MNEMONICS:
+            violations.append(f"line {lineno}: mnemonic {mnemonic!r} not allowed")
+        elif mnemonic in NO_OPERAND:
+            if operand:
+                violations.append(f"line {lineno}: {mnemonic} takes no operand, got {operand!r}")
+        elif operand not in ALLOWED_OPERANDS[mnemonic]:
+            violations.append(f"line {lineno}: {mnemonic} operand {operand!r} not allowed")
+    if not mnemonics or mnemonics[0] != "sei":
+        violations.append("reset entry must start with sei (interrupts masked from the first instruction)")
+    return violations
 
 
 def check_ram_side_effects(records, payload):
@@ -181,6 +250,24 @@ def check_register_preservation(records, payload):
             raise HandoffRejected("regs", f"{cycle}: interrupt flag not set across the handoff")
 
 
+def check_stack_unchanged(records):
+    """Stack page bytes ($21F8-$21FF, MPR1-mapped work RAM) must be unchanged at the four end observations.
+
+    The fixture has no stack instruction, so the only way these bytes change is an interrupt/BRK dispatch
+    push (SEI blocks IRQ1/IRQ2/timer, the probe injects nothing, and there is no BRK instruction; NMI has
+    no source in this harness, and its vector points at the writing-free trap). A push during the run
+    would leave its bytes behind even if a handler returned, so this detects it post-hoc. Handler
+    execution itself remains unverified (see LIMITATIONS)."""
+    rows = {r["phase"]: r for r in records["OBS"]}
+    stacks = {}
+    for phase in ("loaded", "cold", "nonreturning", "warm"):
+        if phase not in rows or "stack_01f8_hex" not in rows[phase]:
+            raise HandoffRejected("obs", f"stack observation '{phase}' missing")
+        stacks[phase] = rows[phase]["stack_01f8_hex"]
+    if any(value != stacks["loaded"] for value in stacks.values()):
+        raise HandoffRejected("stack", f"stack page changed from loaded: {stacks}")
+
+
 def check_mmio_sampled(records):
     """Sampled VDC state (AR/R0) at the four end observations must be unchanged from 'loaded'.
 
@@ -205,6 +292,9 @@ def parse_labels(path: Path) -> dict:
 
 def build_handoff(output: Path, mode: str):
     """Assemble and link the handoff ROM; return (rom path, ROM labels, payload size, trace labels path)."""
+    violations = fixture_static_violations((ROOT / "tests/fixtures/handoff-probe.s").read_text(encoding="ascii"))
+    if violations:
+        raise ValueError(f"handoff fixture static violations: {violations}")
     ca65, ld65 = executable("ca65"), executable("ld65")
     output.mkdir(parents=True, exist_ok=True)
     cfg = output / "handoff.cfg"
@@ -259,6 +349,11 @@ def mutate(rom: bytes, labels: dict, kind: str) -> bytes:
         if data[end_off] != 0xFF:  # ld65 fill: the extra write must be an unlisted RAM change, not a no-op
             raise ValueError("mutation anchor mismatch (byte after the payload is not fill)")
         data[anchor + 1] = 0x0E
+    elif kind == "marker_outside_ram":     # payload sta $2220 -> sta $0000: a marker write into the MPR0 hardware page
+        off = labels["handoff_payload_rom"] - ROM_BASE
+        if bytes(data[off:off + 5]) != PAYLOAD_PREFIX[:5]:  # lda #$A5 / sta $2220
+            raise ValueError("mutation anchor mismatch (payload marker STA)")
+        data[off + 3:off + 5] = b"\x00\x00"
     else:
         raise ValueError(f"unknown mutation {kind}")
     return bytes(data)
@@ -292,7 +387,7 @@ def judge(records, labels, payload):
         if phases != list(PHASES):
             raise HandoffRejected("phase", f"{cycle}: trace phases {phases}, expected {list(PHASES)}")
         done = rows["handoff_done"]
-        if done["pc"] != labels["handoff_done"] or done["mpr"][7] != 0:
+        if done["pc"] != labels["handoff_done"] or done["mpr"][7] != 0 or done["mpr"][:2] != [IO_BANK, WORK_BANK]:
             raise HandoffRejected("done", f"{cycle}: payload did not return to ROM handoff_done")
     observed = [row for row in records["OBS"] if row["phase"] in ("cold", "warm")]
     if [row["phase"] for row in observed] != ["cold", "warm"]:
@@ -307,9 +402,13 @@ def judge(records, labels, payload):
             raise HandoffRejected("marker", f"{row['phase']}: marker not reached at $2220")
         if row["pc"] != labels["handoff_done"] or row["sp"] != 0xFF:
             raise HandoffRejected("end", f"{row['phase']}: end PC/SP mismatch")
+    nonreturning = [row for row in records["OBS"] if row["phase"] == "nonreturning"]
+    if len(nonreturning) != 1 or nonreturning[0]["pc"] != labels["handoff_done"] or nonreturning[0]["sp"] != 0xFF:
+        raise HandoffRejected("end", "nonreturning PC/SP mismatch")
     check_ram_side_effects(records, payload)
     check_register_preservation(records, payload)
     check_mmio_sampled(records)
+    check_stack_unchanged(records)
 
 
 def guarded(run, path):
