@@ -72,9 +72,9 @@ int main(int argc, char** argv) {
         std::printf("\",\"stack_01f8_hex\":\"");
         for (int i=0;i<8;i++) std::printf("%02x", memory->GetWorkingRAM()[0x1f8+i]);
         std::printf("\"");
-        // Issue #242: full 8 KiB work RAM, only on the three end-of-run observations that the handoff judge compares.
+        // Issue #242: full 8 KiB work RAM, only on the four end-of-run observations that the handoff judge compares.
         const std::string name = phase;
-        if (std::string(prefix) == "OBS" && (name == "loaded" || name == "cold" || name == "nonreturning")) {
+        if (std::string(prefix) == "OBS" && (name == "loaded" || name == "cold" || name == "nonreturning" || name == "warm")) {
             std::printf(",\"work_ram_hex\":\"");
             for (int i=0;i<0x2000;i++) std::printf("%02x", memory->GetWorkingRAM()[i]);
             std::printf("\"");
