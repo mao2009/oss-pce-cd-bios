@@ -238,6 +238,9 @@ CASES = [
     # base LBA fits, but the last body sector (IPL_SEL + IPLBLK + N - 1) would wrap past $FFFF
     dict(name="neg_body_lba_tail_wraps_16bit", pay="A", n=3, iplblk=0xFEF5, sta=0x3000, entry=0x3000,
          mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=27, copied=0, payload_ran=False),
+    # final body sector lands exactly on 0xFFFF: exclusive end 0x10000 exceeds the 16-bit tail check
+    dict(name="neg_body_lba_final_sector_at_ffff", pay="A", n=2, iplblk=0xFEF5, sta=0x3000, entry=0x3000,
+         mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=27, copied=0, payload_ran=False),
     # 24-bit IPLBLK high byte is nonzero: the loader only supports the lower 16 bits (LBA width limit).
     dict(name="neg_iplblk_high_byte_nonzero", pay="A", n=5, iplblk=0, sta=0x3000, entry=0x3000, mprs=MPRS_STD,
          openmode=0, info_edits=[(0, 0x01)], reason="cd_halt_fail", code=21, copied=0, payload_ran=False),
