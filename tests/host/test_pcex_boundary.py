@@ -42,7 +42,12 @@ def halt_fields(arrival=1000, steps=64):
 
 def success_observation(code=PAYLOAD, lba=5, count=1):
     sector = encode_sector(lba, code)
-    buffer = bytearray(b"\x5a" * 6144)
+    # Guest-faithful dump: only BUF ($2800-$2FFF, 2048B) and EXEC $3000-$30FF (256B, 1 page)
+    # are $5A-seeded before READ(6). $3100-$3FFF is unseeded (MARK/MS_RES owned) and must
+    # be ignored by the judge; keep it 0x00 so a 4096-byte judge would fail these synthetics.
+    buffer = bytearray(6144)
+    buffer[:SECTOR_BYTES] = b"\x5a" * SECTOR_BYTES
+    buffer[judge.EXEC_OFF:judge.EXEC_WINDOW_END_OFF] = b"\x5a" * 256
     buffer[:SECTOR_BYTES] = sector
     buffer[judge.EXEC_OFF:judge.EXEC_OFF + len(code)] = code
     buffer[judge.MARK_OFF:judge.MARK_OFF + 7] = bytes([0xA5, 0x5A, 0, 0, 0xF8, 0xFF, 0x3C])
@@ -71,7 +76,10 @@ def success_observation(code=PAYLOAD, lba=5, count=1):
 
 def failure_observation(code=20, stage=11, transferred=SECTOR_BYTES, lba=5):
     """Failure observation with the EXEC window left at the $5A sentinel (no copy)."""
-    buffer = bytearray(b"\x5a" * 6144)
+    # Guest seeds only BUF ($2800-$2FFF) and EXEC $3000-$30FF; $3100-$3FFF is unseeded.
+    buffer = bytearray(6144)
+    buffer[:SECTOR_BYTES] = b"\x5a" * SECTOR_BYTES
+    buffer[judge.EXEC_OFF:judge.EXEC_WINDOW_END_OFF] = b"\x5a" * 256
     buffer[:SECTOR_BYTES] = encode_sector(lba, PAYLOAD)
     result = bytes([code, stage]) + transferred.to_bytes(2, "little") + bytes([0, 0, 0])
     return {"CAP": [], "HIT": [], "PHASE": [],
@@ -246,6 +254,20 @@ class PcexJudgeBoundaryTests(unittest.TestCase):
         del records["RUN"][0]["buffer_hex"]
         with self.assertRaises((ValueError, KeyError)):
             judge.check_exec_untouched(records)
+
+    def test_beyond_window_bytes_are_ignored_success_and_failure(self):
+        # $3100-$3FFF is unseeded by the guest; mutating it must not affect either judge.
+        # This pins the window to 256 bytes and fails a 4096-byte judge.
+        success = success_observation()
+        data = bytearray(bytes.fromhex(success["RUN"][0]["buffer_hex"]))
+        data[judge.EXEC_WINDOW_END_OFF:judge.MARK_OFF] = b"\xaa" * (judge.MARK_OFF - judge.EXEC_WINDOW_END_OFF)
+        success["RUN"][0]["buffer_hex"] = data.hex()
+        judge.judge_success(success, PAYLOAD, SYMBOLS, 5, 1)
+        failure = failure_observation()
+        data = bytearray(bytes.fromhex(failure["RUN"][1]["buffer_hex"]))
+        data[judge.EXEC_WINDOW_END_OFF:judge.MARK_OFF] = b"\xaa" * (judge.MARK_OFF - judge.EXEC_WINDOW_END_OFF)
+        failure["RUN"][1]["buffer_hex"] = data.hex()
+        judge.judge_failure(failure, 20, 11, SECTOR_BYTES)
 
 
 if __name__ == "__main__":
