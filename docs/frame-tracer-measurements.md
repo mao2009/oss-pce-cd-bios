@@ -35,7 +35,9 @@
 
 ## `summary` と `measurements`
 
-- トレースログの `summary` は、C++ が出力した END をラベルなしでそのまま保存したもの。ステータスを持つのは `measurements` だけ。
+- トレースログの `summary` は、C++ が出力した END のうち allowlist 内のフィールドだけを保存したもの。ステータスを持つのは `measurements` だけ。`capability`/`events` も allowlist 内フィールドのみ。
+- 未知フィールド（トップレベル・ネスト含む）は `parse_records()` で拒否される。私的パス・媒体名・ハッシュ・任意文字列が混入した出力は公開ログに保存されない。
+- 例外経路（job 作成・probe build・run_job・parse・cleanup）の失敗理由は固定の汎用文言で公開され、絶対パス・媒体ファイル名・ハッシュ・生の OS/コンパイラ錯誤は含まない。詳しい診断は非公開ローカル診断に限定する。
 - `summary.max_frame_core_entries` は、容量で切り詰めた後の保持数の最大値（旧フィールド）。`measurements.max_frame_core_entries` は切り詰める前の値で、旧フィールドは `retained_max` として併記している。
 - `summary.max_frame_scsi_events` が正確なのは、`measurements.max_frame_scsi_events` が MEASURED のときだけ。それ以外の場合は `scsi_events_lower_bound` の値と同じ（下限）になる。
 - `summary.core_trace` などの生の値を、そのまま測定値として引用しない。

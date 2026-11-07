@@ -397,6 +397,84 @@ REGION_KINDS = {"baseline", "after_gap", "transition"}
 WARM_RESET_API = "GeargrafxCore::ResetMedia(true)"
 REQUESTED_WARM_RESET = "requested_warm_reset"
 
+# Public-output allowlists (#635): CAP/EVENT/END/RESET/INPUT are copied into the
+# published log. Unknown fields are rejected fail-closed so a future tracer change
+# or injected key (private path, media name, hash, arbitrary string) cannot leak.
+CAP_ALLOWED = {
+    "normal_frame_execution", "instruction_step", "guest_mutation", "mmio_reads",
+    "scsi_event_notification", "cpu_event_notification", "ram_observation", "ram_delta_summary",
+    "ram_regions", "ring_capacity", "frames", "disc_given", "run_start_frame", "run_hold_frames",
+    "run_input_requested", "core_capacity_requested", "trace_api_guest_ram_checked",
+    "region_gap_carry", "warm_reset_frame",
+}
+CAP_REGION_ALLOWED = {"ram", "size", "bank_first", "bank_last"}
+INPUT_ALLOWED = {"frame", "action", "run_pressed"}
+RESET_ALLOWED = {"frame", "kind", "api", "performed", "master_clock_reset", "ram_preserved"}
+END_ALLOWED = {
+    "frames", "events", "dropped", "trace_events_dropped", "overflow", "ram_deltas", "pushed",
+    "core_capacity", "max_frame_core_entries", "max_frame_scsi_events",
+    "trace_api_guest_checks", "trace_api_guest_changes", "core_trace",
+}
+RAM_DELTA_ALLOWED = {
+    "region", "present", "availability", "size", "bank_first", "bank_last", "updates",
+    "first_frame", "last_frame", "min_offset", "max_offset", "max_changed",
+    "scsi_correlation", "scsi_update_frames",
+}
+EVENT_BASE_ALLOWED = {"kind", "frame"}
+EVENT_CPU_ALLOWED = {
+    "master_clock", "pc", "pc_page", "pc_bank", "physical_pc", "pc_is_wram", "a", "x", "y", "p", "sp", "mpr",
+}
+EVENT_CD_ALLOWED = {
+    "snapshot", "cd_event", "command", "lba", "status", "scsi_phase", "scsi_signals",
+    "load_sector", "load_count", "cd_irq_active", "cd_irq_enabled",
+}
+EVENT_RAM_ALLOWED = {"ram", "size", "changed", "first_offset", "last_offset", "bank_first", "bank_last"}
+EVENT_REGION_ALLOWED = {
+    "event_cycle", "event_pc", "event_bank", "from_region", "to_region", "trace_gap", "region_kind",
+}
+
+
+def _reject_unknown(row, allowed, record):
+    if type(row) is not dict:
+        raise ValueError(f"{record} body is not an object")
+    if set(row) - allowed:
+        raise ValueError(f"{record} contains unknown fields")
+
+
+def _public_row(row, allowed):
+    """Allowlist copy for the published log (defence in depth behind parse_records)."""
+    return {key: row[key] for key in allowed if key in row}
+
+
+def _public_cap(cap):
+    public = _public_row(cap, CAP_ALLOWED)
+    public["ram_regions"] = [_public_row(region, CAP_REGION_ALLOWED)
+                             for region in cap.get("ram_regions", []) if type(region) is dict]
+    return public
+
+
+def _public_end(end):
+    public = _public_row(end, END_ALLOWED)
+    if type(end.get("core_trace")) is dict:
+        public["core_trace"] = _public_row(end["core_trace"], CORE_TRACE_KEYS)
+    if type(end.get("ram_deltas")) is list:
+        public["ram_deltas"] = [_public_row(row, RAM_DELTA_ALLOWED)
+                                for row in end["ram_deltas"] if type(row) is dict]
+    return public
+
+
+def _public_event(event):
+    kind = event.get("kind")
+    if kind == "region":
+        allowed = EVENT_BASE_ALLOWED | EVENT_REGION_ALLOWED
+    elif kind == "cd":
+        allowed = EVENT_BASE_ALLOWED | EVENT_CPU_ALLOWED | EVENT_CD_ALLOWED
+    elif kind == "ram":
+        allowed = EVENT_BASE_ALLOWED | EVENT_CPU_ALLOWED | EVENT_RAM_ALLOWED
+    else:
+        allowed = EVENT_BASE_ALLOWED | EVENT_CPU_ALLOWED
+    return _public_row(event, allowed)
+
 
 def validate_regions_and_resets(cap, end, events, resets, has_core_trace):
     """A1 PR-C: REGION classification and the optional warm reset, checked within one run.
@@ -462,16 +540,20 @@ def parse_records(stdout, require_ram_observation=True):
         if tag == "CAP":
             if cap is not None:
                 raise ValueError("duplicate CAP")
+            _reject_unknown(row, CAP_ALLOWED, "CAP")
             cap = row
         elif tag == "INPUT":
+            _reject_unknown(row, INPUT_ALLOWED, "INPUT")
             inputs.append(row)
         elif tag == "RESET":
+            _reject_unknown(row, RESET_ALLOWED, "RESET")
             resets.append(row)
         elif tag == "EVENT":
             events.append(row)
         else:
             if end is not None:
                 raise ValueError("duplicate END")
+            _reject_unknown(row, END_ALLOWED, "END")
             end = row
     if cap is None or end is None:
         raise ValueError("missing CAP or END")
@@ -512,6 +594,7 @@ def parse_records(stdout, require_ram_observation=True):
             if not isinstance(region, dict) or (region.get("size"), region.get("bank_first"), region.get("bank_last")) not in \
                     RAM_BANK_RANGES.get(region.get("ram"), ()):
                 raise ValueError("unconfirmed RAM region mapping")
+            _reject_unknown(region, CAP_REGION_ALLOWED, "CAP ram_regions entry")
     elif regions:
         raise ValueError("RAM regions emitted while RAM observation is disabled")
     if len(events) > capacity or end.get("events") != len(events):
@@ -545,9 +628,20 @@ def parse_records(stdout, require_ram_observation=True):
         raise ValueError("invalid frame count")
     has_core_trace = validate_core_trace(cap, end)
     validate_ram_deltas(end.get("ram_deltas"), cap["frames"])
+    for row in end["ram_deltas"]:
+        _reject_unknown(row, RAM_DELTA_ALLOWED, "END ram_deltas entry")
     for event in events:
         if event.get("kind") not in EVENT_KINDS or type(event.get("frame")) is not int or not 1 <= event["frame"] <= cap["frames"]:
             raise ValueError("invalid event header")
+        kind = event.get("kind")
+        if kind == "region":
+            _reject_unknown(event, EVENT_BASE_ALLOWED | EVENT_REGION_ALLOWED, "EVENT")
+        elif kind == "cd":
+            _reject_unknown(event, EVENT_BASE_ALLOWED | EVENT_CPU_ALLOWED | EVENT_CD_ALLOWED, "EVENT")
+        elif kind == "ram":
+            _reject_unknown(event, EVENT_BASE_ALLOWED | EVENT_CPU_ALLOWED | EVENT_RAM_ALLOWED, "EVENT")
+        else:
+            _reject_unknown(event, EVENT_BASE_ALLOWED | EVENT_CPU_ALLOWED, "EVENT")
         if event["kind"] == "region":
             if (not all(type(event.get(key)) is int for key in ("event_cycle", "event_pc", "event_bank")) or
                     not 0 <= event["event_pc"] <= 0xffff or not 0 <= event["event_bank"] <= 0xff or
@@ -613,14 +707,16 @@ def trace(args):
         return log
     try:
         job, job_identity = make_tracked_job_dir()
-    except (OSError, RuntimeError) as error:
-        log.update(status="BLOCKED", reason=str(error), evidence="NOT_RUN")
+    except (OSError, RuntimeError):
+        # Never leak the OS error text (job paths) into the public log.
+        log.update(status="BLOCKED", reason="job directory creation failed", evidence="NOT_RUN")
         return log
     try:
         try:
             probe = compile_probe(job, "geargrafx_frame_tracer.cpp", "geargrafx-frame-tracer")
-        except Exception as error:  # compile_probe supplies a sanitized failure description
-            log.update(status="BLOCKED", reason=f"probe build: {error}", evidence="NOT_RUN")
+        except Exception:
+            # ProbeBuildError carries cmd/stderr with absolute build paths; keep it local-only.
+            log.update(status="BLOCKED", reason="probe build failed", evidence="NOT_RUN")
             return log
         rom = job / "input.pce"
         shutil.copyfile(args.rom, rom)
@@ -642,15 +738,19 @@ def trace(args):
                            "1" if args.observe_ram else "0", str(core_capacity or 0), str(warm_reset or 0)],
                           job, args.timeout)
         if result["status"]:
-            log.update(status=result["status"], reason=result["reason"], evidence="NOT_RUN")
+            # run_job "cannot execute: <OSError>" embeds a command path; publish a fixed code.
+            reason = result["reason"]
+            if type(reason) is str and reason.startswith("cannot execute"):
+                reason = "cannot execute probe"
+            log.update(status=result["status"], reason=reason, evidence="NOT_RUN")
             return log
         if result["exit_code"] != 0:
             log.update(status="FAIL", reason=f"probe exited {result['exit_code']}", evidence="NOT_RUN")
             return log
         try:
             cap, events, end = parse_records(result["stdout"], require_ram_observation=args.observe_ram)
-        except (ValueError, TypeError, json.JSONDecodeError) as error:
-            log.update(status="FAIL", reason=f"trace rejected: {error}", evidence="NOT_RUN")
+        except (ValueError, TypeError, json.JSONDecodeError):
+            log.update(status="FAIL", reason="trace rejected", evidence="NOT_RUN")
             return log
         if cap.get("core_capacity_requested") != (core_capacity or 0):
             log.update(status="FAIL", reason="trace rejected: tracer did not apply the requested core capacity",
@@ -661,7 +761,8 @@ def trace(args):
                        evidence="NOT_RUN")
             return log
         log.update(status="PASS", reason="bounded normal-frame trace completed", evidence="REAL_GEARGRAFX_CORE",
-                   elapsed_s=result["elapsed_s"], capability=cap, events=events, summary=end,
+                   elapsed_s=result["elapsed_s"], capability=_public_cap(cap),
+                   events=[_public_event(event) for event in events], summary=_public_end(end),
                    measurements=measurements(cap, end), guest_state_check_scope=GUEST_STATE_CHECK_SCOPE,
                    summary_scope=SUMMARY_SCOPE)
         return log
