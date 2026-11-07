@@ -1,9 +1,10 @@
-"""Host checks for the Issue #234 CD_DINFO ($0B, $E021) caller-contract ledger.
+"""Host checks for the Issue #234 slot $0B caller-contract ledger.
 
 These tests check the ledger's rules and pin every row's side, status and value to a snapshot, so any
 change to those fields fails regardless of its citation. They run no emulator, read no ROM and quote no
 BIOS bytes. Passing them is not evidence of System Card behaviour.
 """
+import json
 import re
 import sys
 import unittest
@@ -26,9 +27,10 @@ FORBIDDEN_WORDS = ('VERIFIED', 'OBSERVED', 'PASS', 'DEV_CALLABLE')
 PRIMARY_SOURCES = {'S1', 'S2', 'S3'}
 
 # Pinned snapshot of (side, status, value) for every ledger row. Changing any of them fails the ledger
-# test until this snapshot is updated in the same change.
+# test until this snapshot is updated in the same change. Candidate entry and name values are not
+# carried here; the ledger records declaration existence only and refers to the allowed ledger.
 EXPECTED = {
-    'F01': ('name', 'SOURCE_FACT', '`$E021`'),
+    'F01': ('name', 'SOURCE_FACT', '公開 caller ソースに候補宣言が存在する（入口値の再掲なし）'),
     'F02': ('caller', 'UNKNOWN', 'UNKNOWN'),
     'F03': ('caller', 'SOURCE_FACT', '`0`'),
     'F04': ('caller', 'SOURCE_FACT', '`1`'),
@@ -56,7 +58,7 @@ EXPECTED = {
     'F26': ('callee', 'UNKNOWN', 'UNKNOWN'),
     'F27': ('callee', 'UNKNOWN', 'UNKNOWN'),
     'F28': ('callee', 'UNKNOWN', 'UNKNOWN'),
-    'F29': ('name', 'SOURCE_FACT', '`cd_dinfo`（HuC）、`CD_DINFO`（当リポジトリ）、`cdr_dinfo`（elmer の内部名）'),
+    'F29': ('name', 'UNKNOWN', 'UNKNOWN'),
     'F30': ('reference', 'UNKNOWN', 'UNKNOWN'),
     'F31': ('callee', 'UNKNOWN', 'UNKNOWN'),
     'F32': ('callee', 'UNKNOWN', 'UNKNOWN'),
@@ -64,7 +66,7 @@ EXPECTED = {
 }
 
 # Status counts as the rows stand. Enforced exactly by test_status_counts.
-EXPECTED_COUNTS = {'SOURCE_FACT': 10, 'HYPOTHESIS': 6, 'UNKNOWN': 17}
+EXPECTED_COUNTS = {'SOURCE_FACT': 9, 'HYPOTHESIS': 6, 'UNKNOWN': 18}
 
 # Field coverage required by the Issue #234 acceptance list. Each keyword must appear in the item cell of
 # the named row (token match, not a substring of the whole table).
@@ -124,7 +126,7 @@ def problems(rows, cells_text=()):
             out.append(f'{rid}: callee row with status {status!r}')
     for cell in cells_text:
         for word in FORBIDDEN_WORDS:
-            if re.search(rf'\b{word}\b', cell):
+            if re.search(rf'\b{word}\b', cell, re.IGNORECASE):
                 out.append(f'forbidden word {word!r} in table cell {cell[:40]!r}')
     return out
 
@@ -162,16 +164,52 @@ def ledger_problems(rows, cells_text=()):
 
 # Public-boundary scan for the rebuilt ledger (see Issue #234 section on the withdrawal reasons).
 # It refuses private absolute paths, private-image filenames/byte dumps, raw disassembly, detailed
-# code quotes, and secondary-source reconstruction forms. Positive control is the real ledger; every
-# negative sample below is a synthetic string defined in this test only.
+# code quotes, secondary-source reconstruction, and any new candidate-entry or candidate-name carrier
+# outside the two allowed ledger files. Forbidden entry/name values are read at run time from the
+# allowed ledger (slot record), never written here as literals. Positive control is the real ledger;
+# every negative sample is built at run time from that value or from a fake value that does not match
+# the slot record. Short-pattern checks are recorded as residual-risk heuristics only: they do not
+# claim to fully detect arbitrary commercial-derived information. Known evasions not detected by
+# these heuristics (recorded as residual risk): octal, binary or other-base encodings, full-width
+# digits, and alternate internal spellings that differ by an inserted character. Hex expressions
+# containing an entry-shaped value are covered by the shape check; decimal-arithmetic reconstruction
+# is checked separately. Allowed source locators (file paths and allowed line ranges for primary
+# sources) remain pointers to public sources; they are not entry/name values.
 PRIVATE_ABS_RE = re.compile(r'(?<![\w/])/(?:home|Users|private)/')
 PRIVATE_FILE_RE = re.compile(r'syscard3\.pce')
 BYTE_DUMP_RE = re.compile(r'[0-9A-Fa-f]{64,}')
 DISASM_MNEMONICS = ('LDA', 'LDB', 'STA', 'JSR', 'RTS', 'BNE', 'BEQ', 'TAX', 'TXA', 'PHA', 'PLA')
 SECONDARY_RE = re.compile(r'(?:stum\.de|zeograd\.com)', re.IGNORECASE)
+ENTRY_SHAPE_RE = re.compile(r'\$?0?x?E0[0-9A-Fa-f]{2}\b', re.IGNORECASE)
+TITLE_NAME_RE = re.compile(r'\b[A-Za-z]{2,}_[A-Za-z0-9_]+\b')
+CLAIM_WORD_RE = re.compile(r'\b(?:OBSERVED|VERIFIED)\b', re.IGNORECASE)
+DEC_ARITH_RE = re.compile(r'(\d+)\s*\+\s*(\d+)')
 
 
-def boundary_problems(text):
+def _slot_record():
+    data = json.loads((ROOT / 'spec' / 'api_contracts.json').read_text(encoding='utf-8'))
+    return next(e for e in data['apis'] if e.get('slot') == 11)
+
+
+def _forbidden_forms():
+    rec = _slot_record()
+    entry = rec['candidate_entry']
+    bare = entry[2:] if entry.lower().startswith('0x') else entry
+    return {
+        'dollar': '$' + bare,
+        'hex': entry,
+        'bare': bare,
+        'decimal': str(int(entry, 16)),
+        'name': rec['candidate_name'],
+    }
+
+
+def _has_token(haystack_lower, token_lower):
+    pat = r'(?<![A-Za-z0-9])' + re.escape(token_lower) + r'(?![A-Za-z0-9])'
+    return re.search(pat, haystack_lower) is not None
+
+
+def boundary_problems(text, rows=None):
     """Return public-boundary violations in a ledger text. An empty list means the text is publishable."""
     out = []
     if PRIVATE_ABS_RE.search(text):
@@ -194,6 +232,57 @@ def boundary_problems(text):
             if any(re.search(rf'\b{m}\b', block, re.IGNORECASE) for m in DISASM_MNEMONICS):
                 out.append('detailed code quote in ledger')
                 break
+    forms = _forbidden_forms()
+    lowered = text.lower()
+    for label in ('dollar', 'hex', 'bare'):
+        if _has_token(lowered, forms[label].lower()):
+            out.append(f'candidate forbidden form ({label}) in ledger')
+            break
+    if _has_token(lowered, forms['name'].lower()):
+        out.append('candidate forbidden form (name) in ledger')
+    if re.search(r'(?<![0-9A-Za-z])' + re.escape(forms['decimal']) + r'(?![0-9A-Za-z])', text):
+        out.append('candidate forbidden form (decimal) in ledger')
+    squashed = lowered.replace(' ', '').replace('_', '').replace('-', '')
+    if forms['bare'].lower() in squashed and not any(_has_token(lowered, forms[l].lower()) for l in ('dollar', 'hex', 'bare')):
+        out.append('candidate forbidden form (bare-squashed) in ledger')
+    if ENTRY_SHAPE_RE.search(text):
+        out.append('candidate entry shape in ledger')
+    entry_num = int(forms['hex'], 16)
+    for m in DEC_ARITH_RE.finditer(text):
+        if int(m.group(1)) + int(m.group(2)) == entry_num:
+            out.append('candidate entry decimal arithmetic reconstruction in ledger')
+            break
+    first = text.splitlines()[0] if text.splitlines() else ''
+    if TITLE_NAME_RE.search(first):
+        out.append('candidate name shape in ledger title')
+    for lineno, line in enumerate(text.splitlines(), 1):
+        if line.strip().startswith('|'):
+            continue
+        if '使わない' in line or '禁止' in line:
+            continue
+        if CLAIM_WORD_RE.search(line):
+            out.append(f'forbidden claim word in ledger prose line {lineno}')
+            break
+    if rows is None:
+        try:
+            rows = parse_rows(text)
+        except ValueError:
+            rows = []
+    by_id = {r['id']: r for r in rows}
+    if 'F01' in by_id:
+        value = by_id['F01']['value']
+        value_lower = value.lower()
+        if any(_has_token(value_lower, t.lower()) for t in forms.values()) or ENTRY_SHAPE_RE.search(value):
+            out.append('candidate entry in F01 value')
+    if 'F29' in by_id:
+        value = by_id['F29']['value']
+        value_lower = value.lower()
+        if ' / ' in value or TITLE_NAME_RE.search(value) or any(
+                _has_token(value_lower, t.lower()) for t in forms.values()):
+            out.append('candidate name correspondence in F29 value')
+    section4_all = ' '.join(part.split('## 5.', 1)[0] for part in text.split('## 4.', 1)[1:])
+    if re.search(r'\bS4\b|cdrom\.asm', section4_all, re.IGNORECASE):
+        out.append('unlicensed source content comparison in section 4')
     return out
 
 
@@ -335,6 +424,69 @@ class PublicBoundaryTest(unittest.TestCase):
         self.assertTrue(problems([], ['OBSERVED']))
         self.assertTrue(problems([], ['VERIFIED']))
 
+    def test_rejects_candidate_entry_in_markdown(self):
+        token = _forbidden_forms()['dollar']
+        self.assertTrue(boundary_problems(f'# title\n\nvalue {token}\n'))
+
+    def test_rejects_candidate_entry_shape_with_fake_value(self):
+        self.assertTrue(boundary_problems('# title\n\nvalue $E0AB\n'))
+
+    def test_rejects_candidate_entry_in_f01_value(self):
+        token = _forbidden_forms()['dollar']
+        rows = parse_rows(self.text)
+        for r in rows:
+            if r['id'] == 'F01':
+                r['value'] = token
+        self.assertTrue(any('F01' in p for p in boundary_problems(self.text, rows)))
+
+    def test_rejects_candidate_name_in_title(self):
+        token = _forbidden_forms()['name']
+        self.assertTrue(boundary_problems(f'# {token} title\n\nbody\n'))
+
+    def test_rejects_name_shape_in_title_with_fake_value(self):
+        self.assertTrue(boundary_problems('# SYNTH_NAME title\n\nbody\n'))
+
+    def test_rejects_name_correspondence_in_f29_value(self):
+        rows = parse_rows(self.text)
+        for r in rows:
+            if r['id'] == 'F29':
+                r['value'] = 'SYNTH_A / SYNTH_B'
+        self.assertTrue(any('F29' in p for p in boundary_problems(self.text, rows)))
+
+    def test_rejects_entry_alternative_notation(self):
+        decimal = _forbidden_forms()['decimal']
+        self.assertTrue(boundary_problems(f'# title\n\ndecimal {decimal}\n'))
+        self.assertTrue(boundary_problems('# title\n\nformula $E000 + 3 * 11\n'))
+        entry_num = int(_forbidden_forms()['hex'], 16)
+        self.assertTrue(boundary_problems(f'# title\n\npieces {entry_num - 33} + 33\n'))
+
+    def test_rejects_prose_claim_word(self):
+        self.assertTrue(boundary_problems('# title\n\nObserved: returned value noted\n'))
+        self.assertTrue(boundary_problems('# title\n\nVerified by run\n'))
+
+    def test_rejects_lowercase_claim_word_in_table_cell(self):
+        self.assertTrue(problems([], ['observed']))
+        self.assertTrue(problems([], ['verified']))
+
+    def test_rejects_unlicensed_source_as_fact_basis(self):
+        rows = parse_rows(self.text)
+        for r in rows:
+            if r['id'] == 'F03':
+                r['source'] = 'S4 1–2'
+        self.assertTrue(any('F03' in p for p in problems(rows)))
+
+    def test_rejects_unlicensed_content_in_conflict_section(self):
+        bad = '# title\n\n## 4. 出典間の食い違い\n\n- S4 content comparison here\n\n## 5. rest\n'
+        self.assertTrue(boundary_problems(bad))
+
+    def test_rejects_observed_promotion_of_fact_row(self):
+        rows = parse_rows(self.text)
+        for r in rows:
+            if r['id'] == 'F03':
+                r['status'] = 'OBSERVED'
+        self.assertTrue(any('unknown status' in p for p in problems(rows)))
+        self.assertTrue(any('F03' in p for p in pin_problems(rows)))
+
 
 class RuleCheckerNegativeTest(unittest.TestCase):
     """The checker itself must reject promotion; these synthetic rows are not ledger data."""
@@ -372,7 +524,7 @@ class RuleCheckerNegativeTest(unittest.TestCase):
 
 
 class RealGateState(unittest.TestCase):
-    """Slot 11: the release state is checked on the real gate, since the research document is withdrawn."""
+    """Slot 11: the release state is checked on the real gate."""
 
     def test_the_real_gate_keeps_the_slot_blocked_and_not_released(self):
         ledger, contracts = gate.load()
