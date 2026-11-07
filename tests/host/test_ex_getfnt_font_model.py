@@ -2,6 +2,11 @@
 
 Covers only synthetic patterns defined in this file. No upstream font data
 is read or committed. Host only. No ROM and no emulator is used.
+
+Classification (do not promote host results):
+- PASS below means the host model behaves as documented.
+- MPR/SP implementation verification is NOT_RUN (no callee exists yet).
+- Pure System Card compatibility is UNKNOWN.
 """
 import re
 import unittest
@@ -166,11 +171,33 @@ def rom_to_ram_32(rom_bytes, size):
     raise ValueError("size must be 12 or 16")
 
 
+def search_glyph_id(sorted_encodings, encoding):
+    """Binary search the sorted ENCODING index.
+
+    Returns the glyph ID (position in the sorted order) on hit.
+    Raises ValueError("UNMAPPED") on miss; never falls back to another ID
+    and never returns glyph data. This is the same search both the
+    positive and the unmapped cases must go through.
+    """
+    lo, hi = 0, len(sorted_encodings) - 1
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if sorted_encodings[mid] == encoding:
+            return mid
+        if sorted_encodings[mid] < encoding:
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    raise ValueError("UNMAPPED")
+
+
 def id_to_location(glyph_id, base_bank, stride):
-    """Return (bank, offset) with no-crossing rule.
+    """Low-level bank math only: (bank, offset) with no-crossing rule.
 
     16-wide (32): 256/bank. 12-wide (24): 341/bank (8192//24).
-    Raises ValueError if id is negative.
+    This function knows no glyph count and cannot reject an ID past
+    the end of the font. Callers that need a checked location must
+    call glyph_location() instead.
     """
     if glyph_id < 0:
         raise ValueError("negative ID")
@@ -183,6 +210,28 @@ def id_to_location(glyph_id, base_bank, stride):
     bank = base_bank + glyph_id // per
     pos = glyph_id % per
     return bank, pos * stride
+
+
+def glyph_location(glyph_id, glyph_count, base_bank, stride, last_bank):
+    """Checked location: rejects ID past the font and past the allocation.
+
+    Callers must use this high-level function (not id_to_location directly)
+    whenever a glyph ID comes from search or input. Checks:
+    - glyph_id < 0 is rejected
+    - glyph_id >= glyph_count is rejected
+    - bank > last_bank is rejected
+    - offset + stride <= BANK_BYTES (glyph never crosses the bank)
+    """
+    if glyph_id < 0:
+        raise ValueError("negative ID")
+    if glyph_id >= glyph_count:
+        raise ValueError("ID past end of font")
+    bank, offset = id_to_location(glyph_id, base_bank, stride)
+    if bank > last_bank:
+        raise ValueError("bank past allocation")
+    if offset + stride > BANK_BYTES:
+        raise ValueError("glyph crosses bank")
+    return bank, offset
 
 
 def check_ram_output(buf_len, buf_addr, ram_lo, ram_hi):
@@ -260,15 +309,19 @@ class SyntheticFontModelTests(unittest.TestCase):
         )
         idx = build_index(glyphs)
         self.assertEqual(idx, [8481, 8482, 9250])
-        self.assertEqual(idx.index(8482), 1)
+        # Positive search goes through the shared search function.
+        self.assertEqual(search_glyph_id(idx, 8482), 1)
+        self.assertEqual(search_glyph_id(idx, 8481), 0)
+        self.assertEqual(search_glyph_id(idx, 9250), 2)
 
     def test_pos_id_bounds(self):
-        b0, o0 = id_to_location(0, 3, 24)
-        self.assertEqual((b0, o0), (3, 0))
-        b1, o1 = id_to_location(340, 3, 24)
-        self.assertEqual((b1, o1), (3, 340 * 24))
-        b2, o2 = id_to_location(341, 3, 24)
-        self.assertEqual((b2, o2), (4, 0))
+        # Checked path: minimum and maximum valid IDs are accepted.
+        self.assertEqual(glyph_location(0, 342, 3, 24, 10), (3, 0))
+        self.assertEqual(glyph_location(340, 342, 3, 24, 10), (3, 340 * 24))
+        self.assertEqual(glyph_location(341, 342, 3, 24, 10), (4, 0))
+        # Low-level math alone (no count) still gives the same locations.
+        self.assertEqual(id_to_location(0, 3, 24), (3, 0))
+        self.assertEqual(id_to_location(341, 3, 24), (4, 0))
 
     def test_pos_bank_boundary_24(self):
         # Naive id*24 would cross; corrected must not.
@@ -290,16 +343,6 @@ class SyntheticFontModelTests(unittest.TestCase):
         g1 = parse_synthetic_bdf(t1, 12, 12)
         g2 = parse_synthetic_bdf(t2, 12, 12)
         self.assertEqual(g1, g2)
-
-    def test_pos_mpr_sp_preserved_model(self):
-        # Model: callee must restore saved values.
-        saved = {"mpr": 7, "sp": 0xFF}
-        live = dict(saved)
-        live["mpr"] = 3
-        live["sp"] = 0xFB
-        # Restore step
-        live["mpr"], live["sp"] = saved["mpr"], saved["sp"]
-        self.assertEqual(live, saved)
 
     def test_pos_bit_order_msb_left(self):
         # Leftmost pixel only -> high bit of first byte set.
@@ -335,19 +378,20 @@ class SyntheticFontModelTests(unittest.TestCase):
             sjis_to_jis(bytes([0x00, 0x40]))
 
     def test_neg_unmapped(self):
-        # Valid SJIS form but not in a small synthetic index -> UNMAPPED.
+        # Same search function as the positive case: miss must raise UNMAPPED
+        # and must not return another ID or glyph data.
         glyphs = parse_synthetic_bdf(
             make_synthetic_bdf(self._cells12([8481]), 12, 12), 12, 12
         )
         idx = build_index(glyphs)
-        # An encoding not in the index.
         self.assertNotIn(9250, idx)
+        with self.assertRaisesRegex(ValueError, "UNMAPPED"):
+            search_glyph_id(idx, 9250)
+        # A present value still resolves through the same function.
+        self.assertEqual(search_glyph_id(idx, 8481), 0)
 
     def test_neg_bad_row_length(self):
-        text = make_synthetic_bdf(self._cells12([8481]), 12, 12)
-        text = text.replace("F010", "F0")  # shorten first bitmap row
-        # Only fails if the replaced line is actually a bitmap row; force by
-        # constructing a malformed BDF directly for determinism.
+        # Construct a malformed BDF directly for determinism (first row short).
         bad = (
             "STARTFONT 2.1\nFONT x\nSIZE 12 75 75\nFONTBOUNDINGBOX 12 12 0 -2\n"
             "STARTPROPERTIES 1\nENDPROPERTIES\nCHARS 1\n"
@@ -372,8 +416,24 @@ class SyntheticFontModelTests(unittest.TestCase):
             parse_synthetic_bdf(bad, 12, 12)
 
     def test_neg_glyph_boundary(self):
+        count = 342
+        # Negative and past-the-end IDs are rejected by the checked function.
         with self.assertRaises(ValueError):
-            id_to_location(-1, 3, 24)
+            glyph_location(-1, count, 3, 24, 10)
+        with self.assertRaises(ValueError):
+            glyph_location(count, count, 3, 24, 10)
+        with self.assertRaises(ValueError):
+            glyph_location(count + 1, count, 3, 24, 10)
+        # Minimum and maximum valid IDs are accepted.
+        self.assertEqual(glyph_location(0, count, 3, 24, 10), (3, 0))
+        self.assertEqual(glyph_location(count - 1, count, 3, 24, 10), (4, 0))
+        # Past the allocation (bank past the last allocated bank) is rejected.
+        with self.assertRaises(ValueError):
+            glyph_location(count - 1, count, 3, 24, 3)
+        # Every valid location stays inside its bank.
+        for gid in (0, 340, 341, count - 1):
+            bank, off = glyph_location(gid, count, 3, 24, 10)
+            self.assertLessEqual(off + 24, BANK_BYTES)
 
     def test_neg_ram_outside(self):
         self.assertFalse(check_ram_output(32, banks_free_bytes, 0, banks_free_bytes))
@@ -382,9 +442,9 @@ class SyntheticFontModelTests(unittest.TestCase):
         self.assertFalse(check_ram_output(31, 100, 0, 1000))
         self.assertTrue(check_ram_output(32, 100, 0, 1000))
 
-    def test_neg_mpr_unknown(self):
-        # Model: unknown/ambiguous placement (range too short) is rejected.
-        # This asserts the host-model gate, not real-core MPR behaviour.
+    def test_neg_ram_range_short(self):
+        # This is a RAM-range gate, not an MPR placement test.
+        # MPR verification remains NOT_RUN until the DEV callee exists.
         self.assertFalse(check_ram_output(32, 100, 0, 131))
 
     def test_neg_ram_wrap(self):
