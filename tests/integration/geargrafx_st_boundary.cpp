@@ -83,6 +83,7 @@ int main(int argc, char** argv)
     } else if (mode == "st0-unguarded" || mode == "st1-unguarded" || mode == "st2-unguarded") {
         st_kind = mode.substr(0, 3);
         armed = false;
+        entry_case = (mode == "st0-unguarded");
     } else if (mode == "st2-mpr2-no-recheck" || mode == "st2-mpr2-wrong-opcode") {
         st_kind = "st2";
         mpr2_case = true;
