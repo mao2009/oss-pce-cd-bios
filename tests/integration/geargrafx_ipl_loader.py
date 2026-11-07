@@ -399,14 +399,18 @@ def main():
         except ValueError as err:
             if "guest code/copied = 21/" in str(err):
                 raise SystemExit(f"FAIL mutation: high-byte rejection still active: {err}") from err
-            if "guest code/copied = 0/5" not in str(err):
+            # judge() checks the stop reason before the guest code: a mutant that accepts the
+            # low 16 bits loads and runs the payload, so it stops with cd_halt_ok instead of
+            # the expected cd_halt_fail. That (or code 0/5 if the reason check ever changes)
+            # is the intended acceptance; any other outcome is unexpected.
+            if "stopped with cd_halt_ok" not in str(err) and "guest code/copied = 0/5" not in str(err):
                 raise SystemExit(f"FAIL mutation: unexpected mutant outcome, not the intended "
                                  f"acceptance of the low 16 bits: {err}") from err
         else:
             raise SystemExit(f"FAIL mutation: mutant unexpectedly satisfied code 21 / copied 0 "
                              f"for {highbyte_case['name']}")
         print(f"MUTATION CHECK high-byte (verification only): mutant accepted low 16 bits "
-              f"(guest code/copied = 0/5, not 21/0); case={highbyte_case['name']}")
+              f"(cd_halt_ok / code 0, not 21/0); case={highbyte_case['name']}")
     
         if hashlib.sha256(rom.read_bytes()).hexdigest() != rom_sha:
             raise SystemExit("FAIL: loader ROM changed during the test")
