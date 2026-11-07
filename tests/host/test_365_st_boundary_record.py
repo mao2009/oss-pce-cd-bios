@@ -77,5 +77,33 @@ class StBoundaryRecordTests(unittest.TestCase):
                 self.assertEqual(row["after"]["mpr"][0], st.MPR0_NON_FF)
 
 
+class StEntryCoverageTest(unittest.TestCase):
+    """Entry-PC coverage for all three ST opcodes (Issue #365).
+
+    Host-only static checks: the driver must define an armed entry refusal for
+    ST0/ST1/ST2 at the guest entry PC with 0 executed instructions, and each
+    entry must have a no-entry-check RED mutation whose normalized mode is the
+    entry itself. The recorded fixture above stays untouched.
+    """
+
+    def test_armed_modes_include_entry_for_each_st(self):
+        for kind in ("st0", "st1", "st2"):
+            with self.subTest(kind=kind):
+                self.assertIn(f"{kind}-entry", st.ARMED_MODES)
+
+    def test_entry_modes_refuse_at_guest_entry_with_zero_executed(self):
+        for kind in ("st0", "st1", "st2"):
+            mode = f"{kind}-entry"
+            with self.subTest(mode=mode):
+                self.assertEqual(st.ST_EXPECTED_PC[mode], 0x3E00)
+                self.assertEqual(st.ST_EXECUTED_BEFORE_REFUSAL[mode], 0)
+
+    def test_each_entry_has_no_entry_check_mutation(self):
+        for kind in ("st0", "st1", "st2"):
+            mode = f"{kind}-entry"
+            with self.subTest(mode=mode):
+                self.assertIn(f"{kind}-entry-no-entry-check", st.MUTATIONS[mode])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -9,7 +9,7 @@ BEFORE every step, including the entry instruction. ST0 ($03) / ST1 ($13) / ST2 
 the step, and a resume attempt re-runs the same check and is refused again. The monitor is given no PC hint.
 
 Modes:
-* ``st0-entry``: ST0 is the entry instruction. Refused before any instruction runs (0 executed).
+* ``st0-entry`` / ``st1-entry`` / ``st2-entry``: the ST is the entry instruction. Refused before any instruction runs (0 executed).
 * ``st1-unknown`` / ``st2-unknown``: a JMP reaches the ST at $3E10; only the JMP executes, then refusal.
 * ``stN-unguarded`` (MUTATION): same guests, monitor disabled. The ST must execute and land in the VDC,
   and the armed classifier must reject the run.
@@ -36,12 +36,16 @@ from geargrafx_reference_guard import check_pos, run_mode, synthetic_media  # no
 
 PINNED_CORE_REVISION = "b49ae82a012eade566d72e9d61c9d95a5caa4da3"
 ST_OPCODE = {"st0": 0x03, "st1": 0x13, "st2": 0x23}
-ST_EXPECTED_PC = {"st0-entry": 0x3E00, "st1-unknown": 0x3E10, "st2-unknown": 0x3E10,
+ST_EXPECTED_PC = {"st0-entry": 0x3E00, "st1-entry": 0x3E00, "st2-entry": 0x3E00,
+                  "st1-unknown": 0x3E10, "st2-unknown": 0x3E10,
                   "st2-mpr2-unknown": 0x4010}
-ST_EXECUTED_BEFORE_REFUSAL = {"st0-entry": 0, "st1-unknown": 1, "st2-unknown": 1,
+ST_EXECUTED_BEFORE_REFUSAL = {"st0-entry": 0, "st1-entry": 0, "st2-entry": 0,
+                              "st1-unknown": 1, "st2-unknown": 1,
                               "st2-mpr2-unknown": 3}
 ARMED_MODES = tuple(ST_EXPECTED_PC)
 MUTATIONS = {"st0-entry": ("st0-entry-no-entry-check",),
+             "st1-entry": ("st1-entry-no-entry-check",),
+             "st2-entry": ("st2-entry-no-entry-check",),
              "st1-unknown": ("st1-unguarded",),
              "st2-unknown": ("st2-unguarded",),
              "st2-mpr2-unknown": ("st2-mpr2-no-recheck", "st2-mpr2-wrong-opcode")}
