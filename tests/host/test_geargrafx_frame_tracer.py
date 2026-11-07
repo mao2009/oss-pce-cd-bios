@@ -1069,5 +1069,76 @@ class MeasurementEvidenceTests(unittest.TestCase):
                     self.evidence(on, off)
 
 
+class CommercialSanitizationTests(unittest.TestCase):
+    """Issue #635: opt-in commercial runs must never leak private inputs into tracer logs.
+
+    These are host-only (mocked core) tests: doctor is never invoked with caller media,
+    and staging errors are reported with generic reasons that carry no private filename,
+    absolute path, or hash.  The local commercial JSON is inspected the same way.
+    Synthetic placeholders below are not real media names.
+    """
+
+    PRIVATE_ROM = Path("/private/rom/dev.pce")
+    PRIVATE_CUE = Path("/private/rom/title.cue")
+    PRIVATE_BIN = "private-title-first-track.bin"
+
+    def _args(self, frames=2, events=4):
+        return SimpleNamespace(frames=frames, events=events, timeout=1, rom=self.PRIVATE_ROM,
+                               cue=self.PRIVATE_CUE, run_start_frame=None, run_hold_frames=None,
+                               observe_ram=True)
+
+    def _serialized(self, log):
+        return json.dumps(log, sort_keys=True)
+
+    def _run_with_job(self, stage_disc_side=None, stage_disc_return=None, run_job=None):
+        """Run tracer.trace with a real temporary job dir and mocked core; return (log, doctor_mock)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            job = Path(tmp) / "job"
+            job.mkdir()
+            stage_kwargs = {}
+            if stage_disc_side is not None:
+                stage_kwargs["side_effect"] = stage_disc_side
+            elif stage_disc_return is not None:
+                stage_kwargs["return_value"] = stage_disc_return
+            job_result = run_job if run_job is not None else {"status": None, "exit_code": 0,
+                                                              "stdout": output([event()]), "elapsed_s": 0.1}
+            with mock.patch.object(tracer, "doctor", return_value={"status": "PASS"}) as doctor, \
+                    mock.patch.object(tracer, "make_tracked_job_dir", return_value=(job, (1, 2, 3))), \
+                    mock.patch.object(tracer, "compile_probe", return_value=Path("probe")), \
+                    mock.patch.object(tracer.shutil, "copyfile"), \
+                    mock.patch.object(tracer, "stage_disc", **stage_kwargs), \
+                    mock.patch.object(tracer, "run_job", return_value=job_result), \
+                    mock.patch.object(tracer, "cleanup_tracked_job_dir", return_value=(True, "removed")):
+                log = tracer.trace(self._args())
+            return log, doctor
+
+    def test_doctor_is_never_invoked_with_caller_media(self):
+        log, doctor = self._run_with_job(stage_disc_return=["copied.cue"])
+        self.assertEqual(log["status"], "PASS")
+        doctor.assert_called_once_with(None, None, None)
+        text = self._serialized(log)
+        for secret in ("/private", "title.cue", self.PRIVATE_BIN):
+            self.assertNotIn(secret, text)
+        self.assertNotIn("sha256", text)
+
+    def test_disc_staging_missing_file_is_sanitized(self):
+        log, _ = self._run_with_job(
+            stage_disc_side=FileNotFoundError(f"CUE data file missing: {self.PRIVATE_BIN}"))
+        self.assertEqual((log["status"], log["evidence"]), ("BLOCKED", "NOT_RUN"))
+        self.assertEqual(log["reason"], "disc staging input missing")
+        text = self._serialized(log)
+        for secret in ("/private", "title.cue", self.PRIVATE_BIN):
+            self.assertNotIn(secret, text)
+
+    def test_disc_staging_invalid_input_is_sanitized(self):
+        log, _ = self._run_with_job(
+            stage_disc_side=ValueError(f"unsafe CUE file name {self.PRIVATE_BIN!r}"))
+        self.assertEqual((log["status"], log["evidence"]), ("FAIL", "NOT_RUN"))
+        self.assertEqual(log["reason"], "invalid disc input")
+        text = self._serialized(log)
+        for secret in ("/private", "title.cue", self.PRIVATE_BIN):
+            self.assertNotIn(secret, text)
+
+
 if __name__ == "__main__":
     unittest.main()
