@@ -238,6 +238,9 @@ CASES = [
     # base LBA fits, but the last body sector (IPL_SEL + IPLBLK + N - 1) would wrap past $FFFF
     dict(name="neg_body_lba_tail_wraps_16bit", pay="A", n=3, iplblk=0xFEF5, sta=0x3000, entry=0x3000,
          mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=27, copied=0, payload_ran=False),
+    # 24-bit IPLBLK high byte is nonzero: the loader only supports the lower 16 bits (LBA width limit).
+    dict(name="neg_iplblk_high_byte_nonzero", pay="A", n=5, iplblk=0, sta=0x3000, entry=0x3000, mprs=MPRS_STD,
+         openmode=0, info_edits=[(0, 0x01)], reason="cd_halt_fail", code=21, copied=0, payload_ran=False),
     dict(name="neg_info_sector_eject_in_data", pay="A", n=5, iplblk=2, sta=0x3000, entry=0x3000, mprs=MPRS_STD,
          openmode=0, inject="eject-in-data", reason="cd_halt_fail", code=4, copied=0, payload_ran=False),
     # ---- post-copy and partial-copy: copied, NOT executed ----
@@ -399,7 +402,12 @@ def main():
                                 "PUBLIC format (IPL_PUBLIC ROMs): no header sum; a sum-preserving disc change is accepted "
                                 "(case pub_post_sum_preserving_change_accepted_documented_limit)",
                                 "PUBLIC format MPR rule: bank = raw + $80 for raw 0..7, observed black-box on the pinned "
-                                "core with the pure System Card BIOS (Issue #635 run); not a hardware observation"],
+                                "core with the pure System Card BIOS (Issue #635 run); not a hardware observation",
+                                "IPLBLK is a 24-bit field but the LBA path is 16-bit: a nonzero high byte is refused (code 21); "
+                                "full 24-bit support requires Owner-approved LBA-width and READ(6) changes",
+                                "data-track length is not available to the guest; boundary overflow is detected only when "
+                                "READ(6) fails after a partial copy (partial_read_beyond_disc_after_5_sectors); pre-copy "
+                                "rejection is not implemented and is documented in docs/670-ipl-information-data-block-acceptance.md"],
                 "public_loader_rom_sha256": public_sha, "public_mutant_rom_sha256": public_mutant_sha}
     (out / "ipl-loader-evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"PASS multi-sector IPL loader, DEV and PUBLIC-format ROMs (synthetic): {passed}/{len(CASES)} cases "
