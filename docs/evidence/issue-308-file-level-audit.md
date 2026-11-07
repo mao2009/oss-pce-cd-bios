@@ -4,7 +4,7 @@
 - 基準: `origin/main` = `8839b37f52f7bcaff47065e61ed55ef15bfa5be4`（2026-11-07）。PR #703（`9939ee5`）は `origin/main` の祖先であることを `git merge-base --is-ancestor` で確認済み。
 - 位置づけ: [oss-candidate-ledger.md](../oss-candidate-ledger.md) と [issue-308-candidate-inventory.md](issue-308-candidate-inventory.md) の**補遺**。本書で `APPROVED` にしない。`release_eligible=false`、`BLOCKED_ABI` 維持。ROM・CI 成果物への第三者コードは **0 件**。コード本文はコピーしていない。
 - 分類（本書用）: `CANDIDATE`（根拠と条件が確認済で検討可）/ `CONDITIONAL`（追加対応が必要）/ `HOLD`（未確認・疑義または組込み不可）。証拠状態: `VERIFIED_EVIDENCE` / `PARTIAL_EVIDENCE` / `UNKNOWN`。`CANDIDATE` は ROM 組込みの最終承認ではない。法的・Owner 判断が残るものは明示する。
-- 方法: 各候補は pinned SHA の raw 原文（`https://raw.githubusercontent.com/{owner}/{repo}/{SHA}/{path}`）を取得し、Git blob SHA-1 と SHA-256 を再計算した（2026-11-07）。ヘッダの行番号は本監査での直接確認値である。改変履歴は GitHub `commits?path=...&sha={SHA}` の最新 3 件（HEAD 以前）である。HuCC・cc65・NeoCD・Cult-of-GBA・ares の対象ファイルは全文検索でも `SPDX-License-Identifier` 行を確認できなかった。Geargrafx の対象ファイルも SPDX 行なし（GPL 文言のみ）。`pcecd.c`/`pcecd.h` の BSD 文面・Hu-Go! 全体も SPDX 行なし。SPDX はファイルのライセンス文言からの対応付けであり、法的評価ではない。完全な blob/SHA 一覧は台帳・検証記録を参照し、本書では追加分のみ記す。
+- 方法: 各候補は pinned SHA の raw 原文（`https://raw.githubusercontent.com/{owner}/{repo}/{SHA}/{path}`）を取得し、Git blob SHA-1 と SHA-256 を再計算した（2026-11-07）。ヘッダの行番号は本監査での直接確認値である。改変履歴は GitHub `commits?path=...&sha={SHA}` の最新 1 件（HEAD 以前）である。HuCC・cc65・NeoCD・Cult-of-GBA・ares の対象ファイルは全文検索でも `SPDX-License-Identifier` 行を確認できなかった。Geargrafx の対象ファイルも SPDX 行なし（GPL 文言のみ）。`pcecd.c`/`pcecd.h` の BSD 文面・Hu-Go! 全体も SPDX 行なし。SPDX はファイルのライセンス文言からの対応付けであり、法的評価ではない。完全な blob/SHA 一覧は台帳・検証記録を参照し、本書では追加分のみ記す。
 
 ## 1. HuCC（pce-devel/huc @ `54f5c73606c1e7142e8095c727cab2767e2b3cb3`）
 
@@ -46,7 +46,7 @@
 | --- | --- | --- | --- | --- |
 | L-16 | `libsrc/runtime/udiv.s` (1671 B, blob `4115382c…`, SHA-256 `256c162a…`) | 2 行 `Ullrich von Bassewitz, 07.08.1998`。ライセンス指定なし | 9 行 `.import popptr1`、10 行 `.importzp sreg, ptr1, ptr4`。`popptr1.s`（720 B, blob `90dca5e2…`, SHA-256 `21443db1…`、2 行 `Christian Kruger, 20-May-2018`）は 8 行 `.import incsp2`・10 行 `.importzp c_sp, ptr1` を連鎖。`libsrc/runtime/incsp2.s`（859 B, blob `395ea52c…`, SHA-256 `2cbedb25…`、2 行 `Ullrich von Bassewitz, 25.10.2000`）は `c_sp` に依存 | **CONDITIONAL / PARTIAL_EVIDENCE** |
 | L-16 | `libsrc/runtime/umul16x16r32.s` (1661 B, blob `cfcf82d9…`, SHA-256 `cac8f1dc…`) | 2 行 `Ullrich von Bassewitz, 2010-11-03` | 10 行 `.include "zeropage.inc"`。実体は `asminc/zeropage.inc`（1020 B, blob `8d508fc5…`, SHA-256 `295b902f…`、4 行 `(C) Copyright 2002-2012, Ullrich von Bassewitz`、`.globalzp c_sp, sreg, ptr1-ptr4 …`）。`ptr1`/`ptr3`/`sreg` の zeropage 割当が必要 | **CONDITIONAL / PARTIAL_EVIDENCE** |
-| L-16 | `libsrc/runtime/mulax3.s` (447 B, blob `34237960…`, SHA-256 `954d7cdb…`) | 2 行 `Ullrich von Bassewitz, 04.10.2001` | 9 行 `.importzp ptr1` のみ | **CANDIDATE / PARTIAL_EVIDENCE** |
+| L-16 | `libsrc/runtime/mulax3.s` (447 B, blob `34237960…`, SHA-256 `954d7cdb…`) | 2 行 `Ullrich von Bassewitz, 04.10.2001` | 9 行 `.importzp ptr1` のみ | **CONDITIONAL / PARTIAL_EVIDENCE** |
 
 - 改変履歴（最新 1 件）: `udiv.s` `dd411efd` 2018-05-24（popptr1  adaptation）、`umul16x16r32.s` `f8f901b0` 2022-04-17、`mulax3.s` `f8f901b0` 2022-04-17、`zeropage.inc` `74a22621` 2025-06-27、`popptr1.s` `c72126e6` 2025-07-01。`LICENSE` `aeb84925` 2015-05-05（Simplified license）。生成物: なし（source のみ。cc65 ランタイムの ROM リンクは本リポジトリ方針で対象外）。
 - ROM 条件: zlib 系の表示保持・改変表示をソースと ROM 配布物に残すかは Owner が決める。零ページ割当・呼出規約（`A:X` primary 等）と System Card ABI の差は未確認。ファイル自体に表示がないため、root 文言が `libsrc/runtime/*.s` に及ぶことを Owner が確認する。
@@ -82,7 +82,7 @@
 - 本リポジトリは MIT（`LICENSE`）。第三者の権利を本 MIT で再ライセンスしない。コピー・改変・ROM へのコンパイル・ソースとバイナリの配布は、各自の義務を満たすことが条件。
 - BSL-1.0（HuCC）/ zlib 系（cc65）/ MIT（nugget・Cult root）は、ソース再配布時の表示保持が中核条件。ROM 配布物への同梱方法は Owner が決める。
 - GPL-2.0（Hu-Go! 既定）/ GPL-3.0（Geargrafx）/ LGPL-3.0（NeoCD root）は、静的ファームウェアへの無条件組込みを承認するものではない。GPL/LGPL は本 MIT ROM と混ぜない。HOLD・REJECTED を維持する。
-- 表示なし・権利者不明（NeoCD 3 ファイル、ares 2 ファイル、pcecd.c）は、ライセンスが許すルスとみなさず `UNKNOWN`・HOLD とする。Cult 3 ファイルも表示なしのため直接コピーは不可。`REFERENCE_ONLY` としても root MIT の表示付与が条件であり、分類は `CONDITIONAL`（`PARTIAL_EVIDENCE`）とする。README・リポジトリ表記だけで確定しない。
+- 表示なし・権利者不明（NeoCD 3 ファイル、ares 2 ファイル、pcecd.c）は、ライセンスが許すとみなさず `UNKNOWN`・HOLD とする。Cult 3 ファイルも表示なしのため直接コピーは不可。`REFERENCE_ONLY` としても root MIT の表示付与が条件であり、分類は `CONDITIONAL`（`PARTIAL_EVIDENCE`）とする。README・リポジトリ表記だけで確定しない。
 - `release_eligible=false`・`BLOCKED_ABI` は解除しない。`VERIFIED`・`DEV_CALLABLE` 等への昇格は本書の範囲外。
 
 ## 7. 検証状態
@@ -91,7 +91,7 @@
 | --- | --- | --- |
 | pinned raw 再取得と blob/SHA-256 再計算（§1-§4） | PASS | 本書列挙ファイルは台帳値と一致。追加分（`zeropage.inc`、`popptr1.s`、`incsp2.s`、`pcecd.h`、`utils.h`、`core-config.inc`、`adpcm.asm`、`bios.bin`、`make.sh`、`LICENSE.md` 等）は本書に完全値で記録 |
 | ヘッダ行の直接確認（著作権・ライセンス文言） | PASS（確認範囲はヘッダ） | 本文の全行は読んでいない。SPDX 行は対象ファイルに存在せず、SPDX は文言対応であることを明記 |
-| LICENSE/COPYING/NOTICE の適用範囲確認 | PASS（範囲は §1-§4） | 全文は取得・比較していない。Hu-Go! の参照先 2 件は pin で不在を確認（HTTP 404） |
+| LICENSE/COPYING/NOTICE の適用範囲確認 | PARTIAL（範囲内 PASS／全文未確認） | §1-§4 の範囲では root 文言とファイルヘッダの対応を確認した。LICENSE/COPYING 等の全文取得・比較は行っていないため、適用範囲の全体確定は `UNKNOWN` として保留し、PASS とは記録しない。Hu-Go! の参照先 2 件は pin で不在を確認（HTTP 404） |
 | 連鎖依存（`include`・`#include`・Makefile・`.gitmodules`） | PASS（列挙範囲） | 完全なツリー列挙は行っていない。連鎖ファイル自体のライセンスは連鎖先で別途確認が要る |
 | 改変履歴の最新 1 件確認 | PASS | 履歴の全件は調査していない。pin の著者・日時を記録した |
 | 実 Geargrafx での ABI 適合 | NOT_RUN | 本書は実装の検証ではない。`BLOCKED_ABI` 解除はしない |
@@ -103,7 +103,7 @@
 1. HuCC BSL の `LICENSE_1_0.txt` 同梱: `include/hucc/` に不存在のため、配布時に `examples/asm/elmer/LICENSE_1_0.txt` の全文をどこに置くか。人間の決定待ち（現在 PENDING）。
 2. L-01 の「SDCC-compatible」: 派生の有無、SDCC の上流権利との関係を人間が確認する。明言がなければ派生扱いにしない。
 3. L-09 `pcecd.c`: 権利者と modified BSD 全文が pin から確定できない。別ソースへの照会または `REFERENCE_ONLY` 観察継続を決める。推測で確定しない。
-4. cc65 の root `LICENSE` の `libsrc/runtime/*.s` への適用: ファイル文言なしのため、人間の法的確認が要る。特に `udiv.s` 連鎖（`popptr1.s`・`incsp2`）の含有範囲を決める。
+4. cc65 の root `LICENSE` の `libsrc/runtime/*.s` への適用: ファイル文言なしのため、人間の法的確認が要る。特に `udiv.s` 連鎖（`popptr1.s`・`incsp2`）と `mulax3.s`/`umul16x16r32.s` の zeropage 割当（`ptr1` 等）の含有範囲を決める。これら3ファイルはこの未確認により `CONDITIONAL` とし、`CANDIDATE` とはしない。
 5. L-13 nugget: MIT 表示の保持は可能だが、retail BIOS の quirks 模倣に当たる部分の境界を人間が決める。直接コピーはせず設計参照に限定する。
 6. L-14・L-15・L-18 の表示なしファイル: 権利者特定の照会（履歴・上流）を行うか、REFERENCE_ONLY に留めるか。
 7. L-19 の pin 固定: MAME・Mednafen・beetle-pce の対象ファイル・commit を決め、再取得してから監査する（現在は `UNKNOWN`・`NOT_RUN`）。
