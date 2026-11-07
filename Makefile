@@ -330,7 +330,7 @@ dev-bios-ipl-loader-integration: dev-rom
 api-unimplemented-integration: dev-rom
 	$(PYTHON) tests/integration/geargrafx_api_unimplemented.py --mode "$(MODE)"
 # Issue #635: direct API-entry observation (WRAM->BIOS JSR/JMP, slot, entry regs). Synthetic controls only.
-# Commercial runs are opt-in via --commercial-* in the same script and are NOT in this target.
+# Commercial runs are opt-in via --commercial in the same script (./rom/ auto-detection, 0 -> NOT_RUN) and are NOT in this target.
 # NOT in CI: workflow run steps are pinned by the trusted guard allowlist (needs a main-only change).
 .PHONY: api-entry-integration
 api-entry-integration: dev-rom

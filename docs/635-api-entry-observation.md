@@ -31,12 +31,26 @@
 
 ## 商用再測定（opt-in、手動・ローカル限定）
 
-`geargrafx_api_entry.py --commercial-rom <DEV BIOS> --commercial-cue <ローカルCUE> --commercial-labels <labels> --commercial-output /tmp/opencode/issue635-private/<file>.json`（直接子のみ。専用親0700を事前に作成。上書き不可）
-（入力は読取専用。ログにパスや媒体識別を出さない。既存ファイルは上書きしない。保存失敗はFAIL。`git worktree list` 登録worktreeと祖先`.git`を確認しfail-closed。別クローン全網羅を主張しない）
+入力方式（Owner方針）: 商用媒体はリポジトリ直下の `./rom/` のみ（ローカル限定、gitignore 済み）。商用計測は明示的な `--commercial` を指定した場合のみ実行する。CUE 絶対パスの毎回指定は不要。`./rom/` 内の `*.cue` のみを検出対象とし（純正 BIOS・`*.pce` 等は媒体として扱わない）、1 件なら自動選択、複数件なら `--commercial-index` による利用者選択を要求し先頭を自動選択しない、0 件なら NOT_RUN とする。ディレクトリ外へのシンボリックリンク、パストラバーサル（`..` 等）、絶対参照、存在しない BIN、ディレクトリ参照を含む CUE は fail-closed で BLOCKED とする。媒体は読み取り専用に扱い、`./rom/` のファイルを変更・削除・移動しない。通常の `make check` / `make test` / CI は商用媒体なしで成立し、合成テストが維持される。
+
+`geargrafx_api_entry.py --commercial --commercial-rom <DEV/PUBLIC loader> --commercial-output /tmp/opencode/issue635-private/<file>.json`（直接子のみ。専用親0700を事前に作成。上書き不可。`--commercial-labels` 省略時は loader の `.lbl` から自動生成し、明示時はその値を使用。複数 CUE 時は `--commercial-index <N>`）
+
+例（DEV/PUBLIC それぞれで 1 回ずつ = cold+warm を含む計 4 観測。loader のビルドは既存 `build_ipl_loader_bios` を再利用し、CUE の実名・内容・パス・ハッシュはログに出さない）:
+
+```sh
+make dev-rom
+python3 tests/integration/geargrafx_api_entry.py --mode debug
+python3 tests/integration/geargrafx_api_entry.py --commercial --commercial-rom build/debug/api-entry/dev-ipl-loader-bios-not-compatible-main.pce --commercial-output /tmp/opencode/issue635-private/commercial-dev.json
+python3 tests/integration/geargrafx_api_entry.py --commercial --commercial-rom build/debug/api-entry/dev-ipl-loader-bios-not-compatible-public.pce --commercial-output /tmp/opencode/issue635-private/commercial-public.json
+```
+
+worktree から実行する場合、`./rom/`（gitignore、worktree 間共有なし）が本 worktree に無いため、main worktree の `./rom/` を read-only フォールバックとして参照する（`git rev-parse --git-common-dir` で解決。primary と同一の検証を行い、書込みはしない）。どちらも無い場合は NOT_RUN であり、「存在するから走る」自動実行はしない。
+
+残存 TOCTOU（検証→probe 間の差替）: probe はパスで再オープンする path-based API のため、Python 検証と probe の使用は原子にならない。緩和策として probe 前後で CUE/BIN の lstat（dev/ino/size/mtime/ctime）を照合し、変化があれば FAIL（結果は信頼しない）。ただし probe 前の狭い check-then-open 窓自体は Python 単独では消去できず、ローカルで `./rom/` への書込権を持つ並行プロセスが前提の残存リスクとして残る（Owner 受領済みの既知制限）。`--rom-dir` はテスト用フックであり、`OSS_PCE_ALLOW_ROM_DIR=1` なしでは fail-closed で拒否する。本番運用は `./rom/` の自動解決のみを用いる。
 
 書込みは親fd固定（`O_DIRECTORY|O_NOFOLLOW` + fstat + `dir_fd` で `O_EXCL|0600` 作成）。親置換後もfd固定先へ書く（symlinkターゲットへ逃げない）。部分書込失敗時は部分ファイルを残しFAIL（削除しない。未完成として扱う）。親dir自体の移動（rename）に対する完全防御はしていない（残存リスクとしてはfd固定のinodeへ書く）
 
-判定は次を区別する：`API_ENTRY_CONFIRMED`（入口観測+停止確認）、`PRE_API_BLOCKER_OBSERVED`（入口0件+IPL拒否halt）、`UNKNOWN`（入口なし理由不明）、`INCOMPLETE`（切断）、`BUDGET`（予算）、`FAIL`（器異常）。「正常終了」と「最初のAPI特定」を混同しない
+判定は次を区別する：`API_ENTRY_CONFIRMED`（入口観測+停止確認）、`PRE_API_BLOCKER_OBSERVED`（入口0件+IPL拒否halt）、`UNKNOWN`（入口なし理由不明）、`INCOMPLETE`（切断）、`BUDGET`（予算）、`NOT_RUN`（入力なし）、`BLOCKED`（入力/器の安全条件不成立）、`FAIL`（器異常）。「正常終了」と「最初のAPI特定」を混同しない。商用証拠 JSON は構造化要約のみ（verdict/apicalls/runs）であり、CUE/BIN の内容・名称・絶対パス・ハッシュを含まない。
 
 ## 既知の制限
 
