@@ -31,9 +31,10 @@ STEP_BUDGET = 12_000_000  # same worst-case budget as the Issue #5 harness
 BUFFER_BASE = 0x2800      # probe dumps $2800-$3FFF (6144 bytes)
 MARK_OFF = 0x3F00 - BUFFER_BASE
 EXEC_OFF = EXEC_ADDRESS - BUFFER_BASE
-SENTINEL = 0x5A           # guest seeds BUF and EXEC with $5A before READ(6) (#668 boundary)
+SENTINEL = 0x5A           # guest seeds BUF and EXEC $3000-$30FF with $5A before READ(6) (#668 boundary)
 EXEC_WINDOW_OFF = EXEC_OFF
-EXEC_WINDOW_BYTES = 0x1000  # $3000-$3FFF sentinel window (4096 bytes); any copy must overwrite it
+EXEC_WINDOW_BYTES = 0x100   # $3000-$30FF sentinel window (255 code bytes + $30FF guard)
+EXEC_WINDOW_END_OFF = EXEC_OFF + EXEC_WINDOW_BYTES  # $3100 in the RAM dump
 MAX_PCEX_LENGTH = 255     # PCEX length is one byte (1..255); see build_cdload_exec.encode_sector
 ORDER = ("cd_buffer_ready", "cd_data_done", "payload_entry", "payload_done", "cd_payload_return", "cd_halt_ok")
 HEADER_FAILURES = {20, 21, 22, 23}  # rejected at stage 11, after the full sector was transferred
@@ -92,11 +93,12 @@ def _exec_slice(buffer, cycle):
 
 
 def check_exec_untouched(records):
-    """Fail if any copy happened: the guest seeds $3000-$3FFF with $5A before READ(6).
+    """Fail if any copy happened: the guest seeds $3000-$30FF with $5A before READ(6).
 
     Every pre-copy rejection (stage 11 header checks, stage 5 read failures) must leave
-    the whole copy destination untouched.  A single non-sentinel byte proves a partial copy
+    the copy destination untouched.  A single non-sentinel byte proves a partial copy
     or overshoot, not only a full copy — this is the #668 partial-copy observation.
+    The window is one page (255 code bytes + the $30FF guard) and excludes MARK/MS_RES.
     Distinguishing this from execution blocking (no payload hints in judge_failure) keeps
     copy-before-rejection and execute-after-rejection as separate claims.
     """
@@ -115,15 +117,16 @@ def check_copy_exact(records, code):
     """Fail unless the copy wrote exactly `len(code)` bytes and nothing beyond.
 
     Code itself is checked by the callers; this helper covers the tail that proves the
-    destination boundary: bytes between EXEC+len and the payload marker ($3F00) must
-    still be the $5A sentinel.  An overshoot (e.g. a 256th byte) breaks this even when
-    the code prefix matches.  Max PCEX length 255 ends at $30FE, well below $3F00.
+    destination boundary: bytes between EXEC+len and $3100 must still be the $5A
+    sentinel.  An overshoot (e.g. a 256th byte at $30FF for a 255-byte copy) breaks
+    this even when the code prefix matches.  Max PCEX length 255 ends at $30FE, so the
+    guard byte at $30FF is the first byte past every possible copy.
     """
     if not 1 <= len(code) <= MAX_PCEX_LENGTH:
         raise ValueError(f"copy length {len(code)} is outside PCEX 1..255")
-    if EXEC_OFF + len(code) > MARK_OFF:
-        raise ValueError(f"copy of {len(code)} bytes would reach the marker: $"
-                         f"{EXEC_ADDRESS + len(code):04x} >= $3F00")
+    if EXEC_OFF + len(code) > EXEC_WINDOW_END_OFF:
+        raise ValueError(f"copy of {len(code)} bytes would leave the seeded EXEC page: $"
+                         f"{EXEC_ADDRESS + len(code):04x} >= $3100")
     if [run["cycle"] for run in records["RUN"]] != ["cold", "warm"]:
         raise ValueError("missing cold/warm runs")
     for run in records["RUN"]:
@@ -131,7 +134,7 @@ def check_copy_exact(records, code):
         buffer = bytes.fromhex(run["buffer_hex"])
         if len(buffer) != 6144:
             raise ValueError(f"{cycle}: RAM dump has {len(buffer)} bytes")
-        tail = buffer[EXEC_OFF + len(code):MARK_OFF]
+        tail = buffer[EXEC_OFF + len(code):EXEC_WINDOW_END_OFF]
         for index, byte in enumerate(tail):
             if byte != SENTINEL:
                 address = EXEC_ADDRESS + len(code) + index
@@ -316,7 +319,7 @@ def mutation_tests(suite, records):
 
         def tail_far(twin, i=index):
             data = bytearray(bytes.fromhex(twin["RUN"][i]["buffer_hex"]))
-            data[MARK_OFF - 1] ^= 0x80  # sentinel tail before the marker must be untouched
+            data[EXEC_WINDOW_END_OFF - 1] ^= 0x80  # $30FF guard byte must stay sentinel
             twin["RUN"][i]["buffer_hex"] = data.hex()
 
         mutated(f"{cycle}_code_in_ram_byte", ram_code)

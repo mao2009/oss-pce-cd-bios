@@ -197,7 +197,7 @@ class PcexJudgeBoundaryTests(unittest.TestCase):
     def test_success_far_tail_byte_is_rejected(self):
         records = success_observation()
         data = bytearray(bytes.fromhex(records["RUN"][0]["buffer_hex"]))
-        data[judge.MARK_OFF - 1] ^= 0x80
+        data[judge.EXEC_WINDOW_END_OFF - 1] ^= 0x80  # $30FF guarded byte (tail far from a short copy)
         records["RUN"][0]["buffer_hex"] = data.hex()
         with self.assertRaises(ValueError) as caught:
             judge.judge_success(records, PAYLOAD, SYMBOLS, 5, 1)
@@ -228,16 +228,7 @@ class PcexJudgeBoundaryTests(unittest.TestCase):
     def test_failure_with_far_sentinel_byte_is_rejected(self):
         records = failure_observation()
         data = bytearray(bytes.fromhex(records["RUN"][0]["buffer_hex"]))
-        data[judge.MARK_OFF - 1] ^= 0x01
-        records["RUN"][0]["buffer_hex"] = data.hex()
-        with self.assertRaises(ValueError) as caught:
-            judge.judge_failure(records, 20, 11, SECTOR_BYTES)
-        self.assertIn("copy happened", str(caught.exception))
-
-    def test_failure_with_marker_write_is_rejected_as_copy(self):
-        records = failure_observation()
-        data = bytearray(bytes.fromhex(records["RUN"][0]["buffer_hex"]))
-        data[judge.MARK_OFF] = 0xA5  # the payload's first marker byte
+        data[judge.EXEC_WINDOW_END_OFF - 1] ^= 0x01  # $30FF guarded byte
         records["RUN"][0]["buffer_hex"] = data.hex()
         with self.assertRaises(ValueError) as caught:
             judge.judge_failure(records, 20, 11, SECTOR_BYTES)

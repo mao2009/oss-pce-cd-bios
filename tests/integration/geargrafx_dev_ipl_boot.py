@@ -66,7 +66,7 @@ def tamper_bin(cue, lba, edits):
 def assert_not_copied(records, code):
     """No run may leave any IPL bytes at $3000: the rejection must happen before the copy.
 
-    The guest seeds $3000-$3FFF with $5A before READ(6), so a single non-sentinel byte
+    The guest seeds $3000-$30FF with $5A before READ(6), so a single non-sentinel byte
     proves a partial copy.  This is stronger than a full-copy check and distinguishes
     copy-before-rejection from execution blocking (which judge_failure checks separately).
     """
@@ -162,7 +162,7 @@ def main():
         T.judge_success(records_max, code_max, symbols, lba, 1)
         results["ipl_max_length_255"] = {"status": "PASS", "lba": lba, "payload_bytes": len(code_max),
                                          "sector_sha256": hashlib.sha256(encode_sector(lba, code_max)).hexdigest(),
-                                         "copy_boundary": "EXEC $3000 + 255 ends $30FE; tail to MARK $3F00 sentinel",
+                                         "copy_boundary": "EXEC $3000 + 255 ends $30FE; $30FF guard sentinel",
                                          "sector_boundary": "8+255=263 <= 2048"}
 
         # ---- positive: IPL B on the same ROM must produce a different observed result ----
