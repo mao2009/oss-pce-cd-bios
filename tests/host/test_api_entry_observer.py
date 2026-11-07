@@ -238,6 +238,26 @@ class CommercialOutputTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     validate_commercial_output(str(wt / "out.json"), private_parent=priv)
 
+    def test_list_worktrees_parses_porcelain(self):
+        from unittest import mock
+        import geargrafx_api_entry as mod
+        import subprocess
+        fake = subprocess.CompletedProcess([], 0,
+                                            stdout="worktree /tmp/wt-a\nbare\nworktree /tmp/wt-b\n")
+        with mock.patch.object(mod.subprocess, "run", return_value=fake):
+            got = mod.list_registered_worktrees(Path("/tmp/fake-root"))
+        self.assertEqual([str(p) for p in got], ["/tmp/wt-a", "/tmp/wt-b"])
+
+    def test_list_worktrees_failure_fails_closed(self):
+        from unittest import mock
+        import geargrafx_api_entry as mod
+        import subprocess
+        for bad in (subprocess.CompletedProcess([], 1, stdout=""),
+                    subprocess.CompletedProcess([], 0, stdout="")):
+            with self.subTest(bad=bad.stdout), mock.patch.object(mod.subprocess, "run", return_value=bad):
+                with self.assertRaises(ValueError):
+                    mod.list_registered_worktrees(Path("/tmp/fake-root"))
+
     def test_worktree_enumeration_failure_fails_closed(self):
         from unittest import mock
         import geargrafx_api_entry as mod
@@ -350,13 +370,14 @@ class SaveEvidenceTests(unittest.TestCase):
 
     def test_parent_replacement_does_not_escape_fd(self):
         # Simulate parent replacement between fd-open and file-create: the write
-        # must stay in the pinned directory (fd), never in the symlink target.
+        # must land in the pinned inode (priv-orig), never in the symlink target.
         import os
         from unittest import mock
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
             priv = Path(tmp) / "priv"
             priv.mkdir()
+            os.chmod(priv, 0o700)
             evil = Path(tmp) / "evil"
             evil.mkdir()
             orig_open = os.open
@@ -375,17 +396,27 @@ class SaveEvidenceTests(unittest.TestCase):
                 try:
                     save_commercial_evidence(dest, '{"ok":true}', private_parent=priv)
                 except ValueError:
-                    pass  # fail-closed is acceptable; escape is not
-            # The symlink target must never receive the file.
+                    pass  # fail-closed acceptable; escape is not
             self.assertFalse((evil / "out.json").exists(), "escaped write to symlink target")
+            pinned = Path(tmp) / "priv-orig" / "out.json"
+            self.assertTrue(pinned.exists(), "write must land in pinned dir")
+            self.assertEqual(pinned.read_text(), '{"ok":true}')
 
-    def test_concurrent_create_fails_closed(self):
+    def test_concurrent_create_one_wins(self):
+        import concurrent.futures
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
             p = str(Path(tmp) / "race.json")
-            save_commercial_evidence(p, "first", private_parent=Path(tmp))
-            with self.assertRaises(ValueError):
-                save_commercial_evidence(p, "second", private_parent=Path(tmp))
+            def attempt(text):
+                try:
+                    save_commercial_evidence(p, text, private_parent=Path(tmp))
+                    return True
+                except ValueError:
+                    return False
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+                results = list(pool.map(attempt, [f"writer-{i}" for i in range(8)]))
+            self.assertEqual(results.count(True), 1, results)
+            self.assertEqual(results.count(False), 7, results)
 
     def test_write_failure_leaves_partial_and_fails(self):
         import os
@@ -401,6 +432,8 @@ class SaveEvidenceTests(unittest.TestCase):
             with mock.patch("os.write", side_effect=bad_write):
                 with self.assertRaises(ValueError):
                     save_commercial_evidence(p, '{"v":"PARTIAL"}', private_parent=Path(tmp))
+            # Partial is left in place (never deleted) and must not be treated as success.
+            self.assertTrue(Path(p).exists())
 
     def test_close_failure_fails(self):
         import os
