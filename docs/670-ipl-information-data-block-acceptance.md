@@ -101,9 +101,13 @@ Owner 承認なしに 24bit 対応を実装しない。
 
 ## 7. READ(6) エンコードと 24bit IPLBLK の表現可能性
 
-- READ(6) CDB: LBA は 21bit (3 バイト、最上位 3bit はグループ番号)。24bit IPLBLK フィールドを
-  READ(6) の 21bit LBA フィールドにそのまま拡張する表現は誤り。16bit 内部 LBA の拡張と、READ(6) の
-  21bit 限界を超える場合の別方式 (READ(10)/READ(12) 等) の選択を区別する。
+- READ(6) CDB (6 バイト): byte 0 = opcode、byte 1 = 下位 5bit が LBA[20:16]、byte 2 = LBA[15:8]、
+  byte 3 = LBA[7:0]、byte 4 = Transfer Length、byte 5 = Control。LBA は 21bit で上限は `0x1FFFFF`。
+  byte 1 の上位 3bit は LBA に含まれない。グループ番号ではない (SCSI-2 での LUN フィールドと
+  後続仕様での予約ビットの扱いは区別し、グループコードと LUN を混同しない)。
+  24bit IPLBLK フィールドを READ(6) の 21bit LBA フィールドにそのまま拡張する表現は誤り。
+  16bit 内部 LBA の拡張と、READ(6) の 21bit 限界を超える場合の別方式 (READ(10)/READ(12) 等)
+  の選択を区別する。READ(10)/READ(12) の対応可否は未確認のため UNKNOWN。
 - 現行ローダーの内部 LBA は 16bit であり、READ(6) の 21bit 能力も未使用。
 - Geargrafx プローブ/実装が READ(10)/READ(12) をサポートするかは **UNKNOWN** (未確認)。本 PR では調査のみ。
 - 対応方式が未確定のため、24bit 全域対応は **BLOCKED (Owner 判断待ち)** とする。

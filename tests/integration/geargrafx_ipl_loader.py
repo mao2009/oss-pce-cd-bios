@@ -431,7 +431,9 @@ def main():
                                 "PUBLIC format MPR rule: bank = raw + $80 for raw 0..7, observed black-box on the pinned "
                                 "core with the pure System Card BIOS (Issue #635 run); not a hardware observation",
                                 "IPLBLK is a 24-bit field but the LBA path is 16-bit: a nonzero high byte is refused (code 21); "
-                                "full 24-bit support requires Owner-approved LBA-width and READ(6) changes",
+                                "full 24-bit support requires Owner-approved widening of the internal LBA path; "
+                                "LBAs beyond the READ(6) 21-bit limit require a different command strategy, "
+                                "whose support is currently UNKNOWN",
                                 "data-track length is not available to the guest; boundary overflow is detected only when "
                                 "READ(6) fails after a partial copy (partial_read_beyond_disc_after_5_sectors); pre-copy "
                                 "rejection is not implemented and is documented in docs/670-ipl-information-data-block-acceptance.md"],
