@@ -238,6 +238,12 @@ CASES = [
     # base LBA fits, but the last body sector (IPL_SEL + IPLBLK + N - 1) would wrap past $FFFF
     dict(name="neg_body_lba_tail_wraps_16bit", pay="A", n=3, iplblk=0xFEF5, sta=0x3000, entry=0x3000,
          mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=27, copied=0, payload_ran=False),
+    # final body sector lands exactly on 0xFFFF: exclusive end 0x10000 exceeds the 16-bit tail check
+    dict(name="neg_body_lba_final_sector_at_ffff", pay="A", n=2, iplblk=0xFEF5, sta=0x3000, entry=0x3000,
+         mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=27, copied=0, payload_ran=False),
+    # 24-bit IPLBLK high byte is nonzero: the loader only supports the lower 16 bits (LBA width limit).
+    dict(name="neg_iplblk_high_byte_nonzero", pay="A", n=5, iplblk=2, sta=0x3000, entry=0x3000, mprs=MPRS_STD,
+         openmode=0, info_edits=[(0, 0x01)], reason="cd_halt_fail", code=21, copied=0, payload_ran=False),
     dict(name="neg_info_sector_eject_in_data", pay="A", n=5, iplblk=2, sta=0x3000, entry=0x3000, mprs=MPRS_STD,
          openmode=0, inject="eject-in-data", reason="cd_halt_fail", code=4, copied=0, payload_ran=False),
     # ---- post-copy and partial-copy: copied, NOT executed ----
@@ -376,6 +382,30 @@ def main():
                 results[case["name"]] = run_case(probe, case_rom, labels, case, code, tmp)
             except ValueError as error:
                 raise SystemExit(f"FAIL {case['name']}: {error}") from error
+        # Mutation check (verification only): disable the high-byte rejection and confirm the high-byte case
+        # no longer refuses with code 21. This must not alter the production loader or the case count.
+        highbyte_case = next(c for c in CASES if c["name"] == "neg_iplblk_high_byte_nonzero")
+        hb_mutant, hb_labels = build_loader(out, SEL, "highbyte_mutant", ["-D", "IPL_MUTANT_HIGHBYTE"])
+        hb_labels_path = tmp / "highbyte_mutant.labels"
+        hb_labels_path.write_text(
+            f"cd_halt_ok {payloads[highbyte_case['pay']][1]:04x}\n"
+            f"cd_halt_fail {hb_labels['cd_halt_fail']:04x}\n"
+            f"cd_unexpected_interrupt {hb_labels['cd_unexpected_interrupt']:04x}\n", encoding="ascii")
+        # With only the high-byte refusal disabled, the valid low 16 bits (iplblk=2) must be
+        # accepted: run the same case through run_case()/judge() with normal-execution
+        # expectations, so halt_confirmed, code 0, copied 5, payload completion and the
+        # cold+warm readback/visible-memory checks are all verified -- not a substring match.
+        # Note: this proves the mutant accepts the low 16 bits; it is NOT 24-bit LBA support.
+        mutant_case = {**highbyte_case, "name": highbyte_case["name"] + "_mutant",
+                       "reason": "cd_halt_ok", "code": 0, "copied": 5, "payload_ran": True}
+        try:
+            run_case(probe, hb_mutant, hb_labels_path, mutant_case, payloads[mutant_case["pay"]][0], tmp)
+        except ValueError as err:
+            raise SystemExit(f"FAIL mutation: mutant did not execute normally "
+                             f"(expected cd_halt_ok, code 0, copied 5, payload ran): {err}") from err
+        print(f"MUTATION CHECK high-byte (verification only): mutant executed normally "
+              f"(cd_halt_ok, code 0, copied 5, payload ran, cold+warm); case={highbyte_case['name']}")
+
         if hashlib.sha256(rom.read_bytes()).hexdigest() != rom_sha:
             raise SystemExit("FAIL: loader ROM changed during the test")
         if hashlib.sha256(mutant.read_bytes()).hexdigest() != mutant_sha:
@@ -383,7 +413,7 @@ def main():
         if hashlib.sha256(public.read_bytes()).hexdigest() != public_sha or \
                 hashlib.sha256(public_mutant.read_bytes()).hexdigest() != public_mutant_sha:
             raise SystemExit("FAIL: public loader ROM changed during the test")
-    passed = len(results)  # every case that did not match its expectation raised above
+        passed = len(results)  # every case that did not match its expectation raised above
     evidence = {"scope": "DEV-only multi-sector IPL loader, synthetic media only; NOT compatible, NOT a BIOS ABI",
                 "geargrafx_probe": "geargrafx_cdread_probe.cpp (pinned)", "mode": args.mode,
                 "loader_rom_sha256": rom_sha, "loader_symbols": {k: v for k, v in rom_labels.items()
@@ -399,7 +429,14 @@ def main():
                                 "PUBLIC format (IPL_PUBLIC ROMs): no header sum; a sum-preserving disc change is accepted "
                                 "(case pub_post_sum_preserving_change_accepted_documented_limit)",
                                 "PUBLIC format MPR rule: bank = raw + $80 for raw 0..7, observed black-box on the pinned "
-                                "core with the pure System Card BIOS (Issue #635 run); not a hardware observation"],
+                                "core with the pure System Card BIOS (Issue #635 run); not a hardware observation",
+                                "IPLBLK is a 24-bit field but the LBA path is 16-bit: a nonzero high byte is refused (code 21); "
+                                "full 24-bit support requires Owner-approved widening of the internal LBA path; "
+                                "LBAs beyond the READ(6) 21-bit limit require a different command strategy, "
+                                "whose support is currently UNKNOWN",
+                                "data-track length is not available to the guest; boundary overflow is detected only when "
+                                "READ(6) fails after a partial copy (partial_read_beyond_disc_after_5_sectors); pre-copy "
+                                "rejection is not implemented and is documented in docs/670-ipl-information-data-block-acceptance.md"],
                 "public_loader_rom_sha256": public_sha, "public_mutant_rom_sha256": public_mutant_sha}
     (out / "ipl-loader-evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"PASS multi-sector IPL loader, DEV and PUBLIC-format ROMs (synthetic): {passed}/{len(CASES)} cases "

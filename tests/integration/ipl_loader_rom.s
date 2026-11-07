@@ -151,10 +151,12 @@ validate_info:
     cpx #32
     bne @res
     ; IPLBLK: 24-bit big-endian data-relative sector; DEV accepts only 16-bit values >= 2
+.ifndef IPL_MUTANT_HIGHBYTE
     lda BUF
     beq @b0
     lda #21
     jmp fail
+.endif
 @b0:
     lda BUF+1
     sta bodyl+1
