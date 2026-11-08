@@ -68,7 +68,7 @@ const unsigned long kIrqHandler = 0x3F80;          // IRQ2 handler head in WRAM
 const unsigned long kBbr3Pc = 0x3F80;              // BBR3 instruction address (page-1 WRAM)
 const unsigned long kBbr3HwTarget = 0x4002;        // taken BBR3 lands in the hardware page
 const unsigned long kBbr3SkipSt = 0x3F83;          // not-taken BBR3 falls through to ST0
-const unsigned kBbr3ZpAddr = 0x10;                 // zp byte tested by BBR3 (ROM-patched bit)
+const unsigned kBbr3ZpAddr = 0x10;                 // zp byte tested by BBR3 (host-WRAM bit)
 const unsigned kResumeAttempts = 3;
 const unsigned long kKnownPc[2] = {0x3E00, 0x3E10};  // known-PC regression list
 
