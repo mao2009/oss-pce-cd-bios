@@ -53,3 +53,89 @@
 この限定された single-step synthetic monitor は、自由実行の全命令列に対する VDC interceptor ではない。#366 の IRQ handler entry、#367 の block transfer / device-originated write、任意の reference BIOS JSR は対象外である。`tools/reference_jsr_gate.py` と `BLOCKED_ABI` / `release_eligible=false` は変更しない。
 
 #198 の結論（ST0/1/2 の WriteFromCPU 迂回は到達不能化以外に緩和策なし）は、本 PR では覆していない。
+
+---
+
+## v2 (arbitrary-PC) 拡張と BBR3 分類器
+
+作業ブランチ `mao2009/365-st-opcode-arbitrary-pc` における v2 スコープ。C++ プローブ v2 の
+15 armed ファミリ（entry / unknown-PC / データ依存分岐 / JSR-RTS 復帰 / page・bank 境界 /
+ROM page 0 / MPR 再マップ / 動的 hardware-page / 未使用 bank / IRQ survey）と 8 変異種・17 run を
+Python ドライバ `tests/integration/geargrafx_st_boundary.py` が実行・分類する。`make
+test-real-core`（required CI）から `integration` 経由で実行される。
+
+### BBR3 動的 MMIO 進入と固定 PC 判定を採用しない理由
+
+BBR3 に代表されるデータ依存分岐は、分岐の成立が VDC read buffer 値に依存するため、実際に
+着地する PC は実行のたびに（プレセットによって）変わりうる。分類器が「branch target の
+完全一致」や「停止 PC `$4002` の完全一致」を成功条件とすると、正常な fail-closed 停止を
+見逃し、偶然停止しただけのケースを PASS 誤判定しうる。さらに停止 PC の数値だけから安全性を
+推定することは禁止する（hardware page 内で止まっただけでは PASS にしない）。
+
+### 実測値（事実）
+
+pinned Geargrafx `b49ae82a012eade566d72e9d61c9d95a5caa4da3`、合成 ROM、MPR0=$00。Linux
+x86_64 上の debug single-step 実行で以下を確認（fixture
+`tests/fixtures/365-st-boundary-v2-evidence.json`、32 行 = armed 15 + mutation 17）:
+
+- 安全 run（st0-hwpage-fetch-blocked）: 停止 PC `$4000`、実行 3 命令（LDA+TAM+JMP）、
+  `fetch_via=peek`・`fetch_failed=true`・`fetch_blocked=true`、SR `0x3F→0x3F`（sentinel プリセット
+  に対する不変）。
+- TryPeek→Memory::Read 変異（unsafe-read）: 停止 PC `$4000`、実行 3、SR `0x3F→0x00`。
+  参照 PC での CPU Read 自体が SR（status clear）の副作用を先に着地させる。
+- peek-fail-step 変異（fail-open）: 停止 PC `$4002`、実行 4（unsafe PC で 1 step 発行済み）、
+  SR `0x3F→0x00`。
+
+推論との分離: `$4000`（安全 run）と `$4002`（step 発行済み mutation の hazard run）の実測値を
+もとに、分類器は「hardware page メンバーシップ + MPR マッピング整合性」のみを停止 PC 条件とし、
+いずれの固定値も要求しない。実測値と期待値は fixture に分離記録され、host テストは独立した
+不変条件（page 外停止の拒否、step 発行済みの拒否、SR hazard の拒否、SR 不変だけでの偽 PASS の
+防止、MPR 不一致の拒否）で正負例を検証する。
+
+### 分類規則
+
+1. 実行命令数: ST 本体は実行されず（armed の期待値と一致）、hwpage では unsafe PC での
+   step が発行されていない（実行 3 = prologue のみ）。予算超過・タイムアウト・プロセス異常・
+   probe 出力不足は FAIL/BLOCKED であり PASS にしない。
+2. VDC SR: 安全 run では `Memory::Read` 由来の SR 副作用が発生しない。SR 観測は probe の
+   state 構造体への host 側読取（CPU fetch ではない）であり、観測自体は副作用を起こさない。
+   AR/R/IRQ 状態も併せて比較する。
+3. 停止 PC: hwpage 進入では hardware page（CPU page 2 / bank `$FF`）内であること + MPR2 整合性
+   + TryPeek 失敗による停止 + Step 発行前停止。単に page 内で止まっただけでは FAIL。
+4. 測定 PC: `$4000` / `$4002` は実測証拠として記録し、固定期待として扱わない。
+
+TryPeek の差: 境界判定はコア内 disassembler も使う `Memory::TryPeek`（副作用なし）で行い、
+hardware page / peek 不可能な bank では false（デバイスアクセスなし）を返す。`Memory::Read`
+による fetch は hardware page PC で SR clear を先に着地させるため、peek 設計は load-bearing
+である（変異 2 件で証明）。
+
+### mutation 結果
+
+8 変異種・17 run: 全件で禁止効果が観測可能となり、armed 分類器が全 run を拒否（killed）。
+- `-unguarded`（監視 off）: ST が実行され VDC へ着地。
+- `-no-entry-check` / `-no-recheck`（MPR2 再検査のみ）/ `-wrong-opcode`（ST2 欠落のみの
+  単一 opcode リスト実証）: armed のまま ST / ST2 が実行・着地。
+- `-knownpc-only`: 既知 PC 限定では未登録 PC（`$3E20` / `$3E03` / `$1FFF` / `$0000` /
+  `$6010` / `$3F80`）で ST が実行・着地。
+- `-resume-allowed`: latch が保持されず ST が step・着地（executed 4、PC `$3E12`）。
+- `-unsafe-read` / `-peek-fail-step`: SR `0x3F→0x00` の hazard を観測。安全分類器は両方を
+  FAIL として拒否。
+
+### IRQ survey の stack 副作用
+
+IRQ2 が命令境界で受け入れられると、handler 先頭（`$3F80`）の ST0 が拒否される。観測した
+副作用: SP `$FF→$FC`（3 バイトの architectural push）、WRAM 差分は stack 書込みのみ
+（`only_stack_writes=true`）、IRQ2 vector `$FFF6`。`irq2-core-stop-survey` のみ core debugger の
+`stop_on_irq` も発火する。
+
+### 実証範囲
+
+debug single-step 実行のみ実測。release ビルドの挙動と free-run（自由実行）ゲストに対する
+一般 VDC interceptor は本記録の範囲外（未実測）である。
+
+### #173 に残る未保護経路
+
+本 single-step synthetic monitor は自由実行の全命令列に対する VDC interceptor ではない。
+IRQ handler entry（#366）、block transfer / device-originated write（#367）、任意の reference
+BIOS JSR は対象外。`tools/reference_jsr_gate.py` と `BLOCKED_ABI` / `release_eligible=false` は
+変更していない。#186/#187 の純正観測、#473/#727 の本番安全機構は未承認のままである。

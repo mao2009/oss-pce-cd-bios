@@ -105,5 +105,144 @@ class StEntryCoverageTest(unittest.TestCase):
                 self.assertIn(f"{kind}-entry-no-entry-check", st.MUTATIONS[mode])
 
 
+class StHardwarePageClassifierTests(unittest.TestCase):
+    """BBR3-class (dynamic hardware-page entry) classifier contract (Issue #365).
+
+    Invariants are independent of the recorded fixture values: the classifier must accept any
+    hardware-page stop PC and reject out-of-page stops, stepped fetches, SR hazards, SR-invariant
+    false passes, MPR mismatches, and missing fields. Fixture rows are only the starting shape.
+    """
+
+    def setUp(self):
+        self.row = None
+        record = json.loads((ROOT / "tests" / "fixtures" / "365-st-boundary-v2-evidence.json")
+                            .read_text(encoding="utf-8"))
+        self.assertEqual(record["observation_kind"], "REAL_CORE_EXECUTION")
+        self.assertEqual(record["core_revision"], st.PINNED_CORE_REVISION)
+        self.assertEqual(record["bios"], "SYNTHETIC")
+        rows = {case["case"]: case["row"] for case in record["cases"]}
+        self.row = rows["st0-hwpage-fetch-blocked"]
+
+    def test_recorded_fail_closed_passes(self):
+        self.assertEqual(st.check_hardware_page_blocked(copy.deepcopy(self.row)),
+                         st.HWPAGE_BLOCKED_VERDICT)
+
+    def test_dynamic_stop_pc_inside_page_passes(self):
+        for pc in (0x4000, 0x4002, 0x4321, 0x5FFF):
+            with self.subTest(pc=f"{pc:#x}"):
+                row = copy.deepcopy(self.row)
+                row["stop_pc"] = pc
+                row["after"]["pc"] = pc
+                self.assertEqual(st.check_hardware_page_blocked(row), st.HWPAGE_BLOCKED_VERDICT)
+
+    def test_stop_outside_hardware_page_rejected(self):
+        for pc in (0x3FFF, 0x6000, 0x3E00):
+            with self.subTest(pc=f"{pc:#x}"):
+                row = copy.deepcopy(self.row)
+                row["stop_pc"] = pc
+                row["after"]["pc"] = pc
+                with self.assertRaisesRegex(ValueError, "outside the hardware page"):
+                    st.check_hardware_page_blocked(row)
+
+    def test_stepped_fetch_rejected_even_inside_page(self):
+        row = copy.deepcopy(self.row)
+        row.update({"instructions_executed": 4, "fetch_open_stepped": True,
+                    "status": "fetch_open_stepped", "stop_pc": 0x4002})
+        with self.assertRaisesRegex(ValueError, "did not fail closed"):
+            st.check_hardware_page_blocked(row)
+
+    def test_sr_clear_hazard_rejected(self):
+        row = copy.deepcopy(self.row)
+        row["vdc_sr_after"] = 0x00
+        with self.assertRaisesRegex(ValueError, "forbidden read landed"):
+            st.check_hardware_page_blocked(row)
+
+    def test_sr_invariant_alone_does_not_pass(self):
+        row = copy.deepcopy(self.row)
+        row.update({"vdc_sr_before": 0, "vdc_sr_after": 0, "hazard_landed": True})
+        with self.assertRaisesRegex(ValueError, "fail-closed"):
+            st.check_hardware_page_blocked(row)
+
+    def test_mpr_mapping_mismatch_rejected(self):
+        row = copy.deepcopy(self.row)
+        row["after"]["mpr"][2] = 0x00
+        with self.assertRaises(ValueError):
+            st.check_hardware_page_blocked(row)
+
+    def test_missing_fetch_evidence_rejected(self):
+        row = copy.deepcopy(self.row)
+        row.pop("fetch_failed")
+        with self.assertRaisesRegex(ValueError, "non-bool"):
+            st.check_hardware_page_blocked(row)
+
+    def test_missing_hazard_flags_rejected(self):
+        for key in ("hazard_landed", "fetch_open_stepped", "refused"):
+            with self.subTest(key=key):
+                row = copy.deepcopy(self.row)
+                row.pop(key)
+                with self.assertRaisesRegex(ValueError, "non-bool"):
+                    st.check_hardware_page_blocked(row)
+
+
+class StV2FixtureTests(unittest.TestCase):
+    """Re-judgment of the v2 fixture: every recorded row drives its own live classifier."""
+
+    def setUp(self):
+        record = json.loads((ROOT / "tests" / "fixtures" / "365-st-boundary-v2-evidence.json")
+                            .read_text(encoding="utf-8"))
+        self.rows = {case["case"]: case["row"] for case in record["cases"]}
+
+    def test_all_fifteen_armed_modes_present(self):
+        self.assertEqual(set(st.ARMED_MODES), {case for case in self.rows
+                                               if case in st.ARMED_MODES})
+        self.assertEqual(len(st.ARMED_MODES), 15)
+
+    def test_armed_rows_pass_their_classifiers(self):
+        for mode in st.ARMED_MODES:
+            with self.subTest(mode=mode):
+                row = copy.deepcopy(self.rows[mode])
+                if mode == st.HWPAGE_MODE:
+                    self.assertEqual(st.check_hardware_page_blocked(row), st.HWPAGE_BLOCKED_VERDICT)
+                else:
+                    self.assertEqual(st.check_refused(row, mode), st.REFUSED_VERDICT)
+
+    def test_mutation_rows_observed_the_prohibited_effect(self):
+        for mode, mutations in st.MUTATIONS.items():
+            for mutation in mutations:
+                with self.subTest(mutation=mutation):
+                    verdict = st.check_mutation(copy.deepcopy(self.rows[mutation]), mutation)
+                    self.assertIn(verdict, (st.LANDED_VERDICT, st.HAZARD_VERDICT))
+
+    def test_armed_refusal_with_hazard_flag_rejected(self):
+        row = copy.deepcopy(self.rows["st1-unknown"])
+        row["hazard_landed"] = True
+        with self.assertRaisesRegex(ValueError, "hazard_landed"):
+            st.check_refused(row, "st1-unknown")
+
+    def test_unrelated_mpr_change_rejected(self):
+        row = copy.deepcopy(self.rows["st2-mpr2-unknown"])
+        row["after"]["mpr"][5] = 0x77
+        with self.assertRaisesRegex(ValueError, "unexpected MPR5"):
+            st.check_refused(row, "st2-mpr2-unknown")
+
+    def test_hazard_row_jsr_outcome_is_not_rejected(self):
+        row = copy.deepcopy(self.rows["st0-hwpage-fetch-blocked-unsafe-read"])
+        observation = st.to_jsr_observation(row)
+        self.assertEqual(observation["outcome"]["status"], "ok")
+        self.assertEqual(observation["outcome"]["reason"], "unsafe_fetch_side_effect_landed")
+
+    def test_unobserved_irq_never_reports_observed(self):
+        row = copy.deepcopy(self.rows["st0-entry"])
+        row.pop("irr", None)
+        row.pop("idr", None)
+        self.assertEqual(st.to_jsr_observation(row)["irq"]["status"], "UNKNOWN")
+
+    def test_missing_field_does_not_unconditionally_pass(self):
+        row = copy.deepcopy(self.rows["st1-unknown"])
+        row.pop("instructions_executed")
+        with self.assertRaises(ValueError):
+            st.check_refused(row, "st1-unknown")
+
+
 if __name__ == "__main__":
     unittest.main()
