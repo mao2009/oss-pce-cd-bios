@@ -310,6 +310,11 @@ def _check_refused(row, mode, require_fetch=True):
                              f"refused PC {row['refused_pc']:#x}")
         if row.get("ram_unchanged_during_resume") is not True:
             raise ValueError(f"{mode}: WRAM changed during the resume attempts")
+        # expected_st_pc is the probe's plan value (expectation, not a measurement): it must
+        # agree with the driver's table so a wrong guest build cannot pass.
+        if row.get("expected_st_pc") != ST_EXPECTED_PC[mode]:
+            raise ValueError(f"{mode}: expected_st_pc {row.get('expected_st_pc')!r}, "
+                             f"expected {ST_EXPECTED_PC[mode]:#x}")
         # Armed refuses run through TryPeek only and never target a $FF-mapped page.
         if row.get("fetch_unsafe_bank") is not False:
             raise ValueError(f"{mode}: refused fetch targeted the unsafe bank")
@@ -369,8 +374,15 @@ def _check_irq_survey(row, mode):
     if row["after"]["sp"] != 0xFC:
         raise ValueError(f"{mode}: SP after acceptance is {row['after']['sp']:#x} ($FC = 3 pushes)")
     frame = row.get("stack_frame_layout") or []
-    if len(frame) != 3 or frame[0] != 0x3E or frame[1] != 0x01:
+    if type(row.get("stack_cpu")) is not list or row.get("stack_cpu") != [0x21FF, 0x21FE, 0x21FD]:
+        raise ValueError(f"{mode}: stack_cpu {row.get('stack_cpu')!r}, expected "
+                         f"[$21FF, $21FE, $21FD]")
+    if len(frame) != 3 or any(type(v) is not int or not 0 <= v <= 0xFF for v in frame):
+        raise ValueError(f"{mode}: stack_frame_layout malformed: {frame!r}")
+    if frame[0] != 0x3E or frame[1] != 0x01:
         raise ValueError(f"{mode}: stack frame {frame!r} does not encode the return PC $3E01")
+    # Ram-diff values must agree with the captured frame bytes (net-diff content check).
+    frame_by_addr = {0x21FF: frame[0], 0x21FE: frame[1], 0x21FD: frame[2]}
     # Direct net-diff validation (never trust only_stack_net_diffs alone): each ram_diff entry
     # must be a well-typed value change confined to the architectural stack cells.
     if row.get("only_stack_net_diffs") is not True:
@@ -396,6 +408,9 @@ def _check_irq_survey(row, mode):
             raise ValueError(f"{mode}: ram_diff outside the stack cells: {address:#x}")
         if before == after:
             raise ValueError(f"{mode}: ram_diff entry is not a change ({address:#x})")
+        if after != frame_by_addr[address]:
+            raise ValueError(f"{mode}: ram_diff.after {after:#x} does not match the captured "
+                             f"stack frame byte {frame_by_addr[address]:#x} at {address:#x}")
     if row.get("ram_diff_count") != len(ram_diff):
         raise ValueError(f"{mode}: ram_diff_count {row.get('ram_diff_count')!r} != {len(ram_diff)}")
 
@@ -541,6 +556,17 @@ def check_unsafe_read_hazard(row, mode):
         raise ValueError(f"{mode}: hazard stop {row['stop_pc']:#x} is outside the hardware page")
     if row["after"]["pc"] != row["stop_pc"]:
         raise ValueError(f"{mode}: stop PC not held")
+    # The resume evidence: three resume attempts made through the guarded entry, all refused,
+    # with execution count, PC and RAM unchanged (the latch keeps the device untouched).
+    if row.get("resume_attempts") != RESUME_ATTEMPTS or row.get("resume_refused") != RESUME_ATTEMPTS:
+        raise ValueError(f"{mode}: resume not fully refused")
+    if row.get("executed_at_refusal") != row["instructions_executed"] or \
+            row.get("executed_after_resume") != row["instructions_executed"]:
+        raise ValueError(f"{mode}: instructions executed after the hazard stop")
+    if row.get("ram_unchanged_during_resume") is not True:
+        raise ValueError(f"{mode}: WRAM changed during the resume attempts")
+    if row.get("fetch_safe") is not False:
+        raise ValueError(f"{mode}: fetch_safe {row.get('fetch_safe')!r}, expected False")
     if row["instructions_executed"] != HWPAGE_EXPECTED_EXECUTED[base]:
         raise ValueError(f"{mode}: hazard run executed "
                          f"{row['instructions_executed']} (expected prologue "
@@ -617,6 +643,12 @@ def check_hazard_not_latched(row, mode):
     attempts = row.get("mmio_read_attempts")
     if type(attempts) is not int or attempts < 2:
         raise ValueError(f"{mode}: mmio_read_attempts {attempts!r} shows no repeated MMIO read")
+    # The latch-free run still refuses the step on every resume: count stays flat, reads repeat.
+    if row.get("resume_attempts") != RESUME_ATTEMPTS or row.get("resume_refused") != RESUME_ATTEMPTS:
+        raise ValueError(f"{mode}: resume not fully refused")
+    if row.get("executed_at_refusal") != row["instructions_executed"] or \
+            row.get("executed_after_resume") != row["instructions_executed"]:
+        raise ValueError(f"{mode}: instructions executed during resume attempts")
     return HAZARD_VERDICT
 
 

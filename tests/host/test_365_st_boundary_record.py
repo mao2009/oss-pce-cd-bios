@@ -610,7 +610,7 @@ class StUnsafeReadFetchTests(unittest.TestCase):
             ("hazard_off", {"hazard_landed": False}, "unsafe fetch"),
             ("mmio_zero", {"mmio_read_attempts": 0}, "mmio_read_attempts"),
             ("mmio_two", {"mmio_read_attempts": 2}, "mmio_read_attempts"),
-            ("executed", {"instructions_executed": 4}, "hazard run executed"),
+            ("executed", {"instructions_executed": 4}, "after the hazard stop"),
         ]
         for name, overwrite, reason in cases:
             with self.subTest(name=name):
@@ -622,6 +622,147 @@ class StUnsafeReadFetchTests(unittest.TestCase):
                         row[key] = value
                 with self.assertRaisesRegex(ValueError, reason):
                     st.check_unsafe_read_hazard(row, "st0-hwpage-fetch-blocked-unsafe-read")
+
+
+class StIrqFrameIntegrityTests(unittest.TestCase):
+    """IRQ stack-frame bytes must match the recorded net diffs (Issue #365 audit)."""
+
+    def setUp(self):
+        record = json.loads((ROOT / "tests" / "fixtures" / "365-st-boundary-v2-evidence.json")
+                            .read_text(encoding="utf-8"))
+        self.row = {case["case"]: case["row"] for case in record["cases"]}["irq2-handler-st0-survey"]
+
+    def test_stack_layout_and_frame_pass(self):
+        self.assertEqual(self.row["stack_cpu"], [0x21FF, 0x21FE, 0x21FD])
+        self.assertEqual(self.row["stack_frame_layout"], [0x3E, 0x01, 0x00])
+        self.assertEqual(st.check_refused(copy.deepcopy(self.row), "irq2-handler-st0-survey"),
+                         st.REFUSED_VERDICT)
+
+    def test_diff_after_mismatches_frame_rejected(self):
+        row = copy.deepcopy(self.row)
+        for entry in row["ram_diff"]:
+            if entry["address"] == 0x21FE:
+                entry["after"] = 0x02
+        with self.assertRaisesRegex(ValueError, "does not match the captured"):
+            st.check_refused(row, "irq2-handler-st0-survey")
+        row = copy.deepcopy(self.row)
+        for entry in row["ram_diff"]:
+            if entry["address"] == 0x21FF:
+                entry["after"] = 0x3D
+        with self.assertRaisesRegex(ValueError, "does not match the captured"):
+            st.check_refused(row, "irq2-handler-st0-survey")
+
+    def test_frame_and_cpu_tampers_rejected(self):
+        cases = [
+            ("frame_only", {"stack_frame_layout": [0x3D, 0x01, 0x00]}, "return PC"),
+            ("cpu_reorder", {"stack_cpu": [0x21FD, 0x21FE, 0x21FF]}, "stack_cpu"),
+            ("cpu_outside", {"stack_cpu": [0x2200, 0x21FE, 0x21FD]}, "stack_cpu"),
+            ("frame_short", {"stack_frame_layout": [0x3E, 0x01]}, "malformed"),
+            ("frame_bool", {"stack_frame_layout": [True, 0x01, 0x00]}, "malformed"),
+            ("frame_str", {"stack_frame_layout": ["3E", 0x01, 0x00]}, "malformed"),
+            ("frame_range", {"stack_frame_layout": [256, 0x01, 0x00]}, "malformed"),
+            ("cpu_missing", "stack_cpu", "stack_cpu"),
+            ("cpu_type", {"stack_cpu": "21FF"}, "stack_cpu"),
+        ]
+        for name, overwrite, reason in cases:
+            with self.subTest(name=name):
+                row = copy.deepcopy(self.row)
+                if isinstance(overwrite, str):
+                    row.pop(overwrite)
+                else:
+                    row.update(overwrite)
+                with self.assertRaisesRegex(ValueError, reason):
+                    st.check_refused(row, "irq2-handler-st0-survey")
+
+
+class StHazardLatchResumeTests(unittest.TestCase):
+    """Hazard runs must prove 3 refused resumes with flat state (Issue #365 audit)."""
+
+    def setUp(self):
+        record = json.loads((ROOT / "tests" / "fixtures" / "365-st-boundary-v2-evidence.json")
+                            .read_text(encoding="utf-8"))
+        self.rows = {case["case"]: case["row"] for case in record["cases"]}
+
+    def test_unsafe_read_rows_prove_resume_refusal(self):
+        for case, row in self.rows.items():
+            if case.endswith("-unsafe-read"):
+                with self.subTest(case=case):
+                    self.assertEqual(row["resume_attempts"], 3)
+                    self.assertEqual(row["resume_refused"], 3)
+                    self.assertEqual(row["executed_at_refusal"], row["instructions_executed"])
+                    self.assertEqual(row["executed_after_resume"], row["instructions_executed"])
+                    self.assertIs(row["ram_unchanged_during_resume"], True)
+                    self.assertIs(row["fetch_safe"], False)
+
+    def test_resume_tampers_rejected(self):
+        base = copy.deepcopy(self.rows["st0-hwpage-fetch-blocked-unsafe-read"])
+        cases = [
+            ("attempts_zero", {"resume_attempts": 0}, "resume not fully refused"),
+            ("attempts_two", {"resume_attempts": 2}, "resume not fully refused"),
+            ("refused_zero", {"resume_refused": 0}, "resume not fully refused"),
+            ("refused_two", {"resume_refused": 2}, "resume not fully refused"),
+            ("exec_at", {"executed_at_refusal": 99}, "after the hazard stop"),
+            ("exec_after", {"executed_after_resume": 99}, "after the hazard stop"),
+            ("mmio_zero", {"mmio_read_attempts": 0}, "mmio_read_attempts"),
+            ("mmio_two", {"mmio_read_attempts": 2}, "mmio_read_attempts"),
+            ("fetch_safe", {"fetch_safe": True}, "fetch_safe"),
+            ("ram_changed", {"ram_unchanged_during_resume": False}, "WRAM changed"),
+        ]
+        for name, overwrite, reason in cases:
+            with self.subTest(name=name):
+                row = copy.deepcopy(base)
+                row.update(overwrite)
+                with self.assertRaisesRegex(ValueError, reason):
+                    st.check_unsafe_read_hazard(row, "st0-hwpage-fetch-blocked-unsafe-read")
+
+    def test_no_latch_rows_have_flat_execution(self):
+        for case, row in self.rows.items():
+            if case.endswith("-no-hazard-latch"):
+                with self.subTest(case=case):
+                    self.assertEqual(row["resume_attempts"], 3)
+                    self.assertEqual(row["resume_refused"], 3)
+                    self.assertEqual(row["executed_at_refusal"], row["instructions_executed"])
+                    self.assertGreaterEqual(row["mmio_read_attempts"], 2)
+
+    def test_no_latch_resume_tampers_rejected(self):
+        base = copy.deepcopy(self.rows["st0-hwpage-fetch-blocked-no-hazard-latch"])
+        cases = [
+            ("attempts_zero", {"resume_attempts": 0}, "resume not fully refused"),
+            ("refused_two", {"resume_refused": 2}, "resume not fully refused"),
+            ("exec_after", {"executed_after_resume": 99}, "resume attempts"),
+            ("attempts_type", {"resume_attempts": "3"}, "missing/non-integer"),
+            ("attempts_missing", "resume_attempts", "missing/non-integer"),
+        ]
+        for name, overwrite, reason in cases:
+            with self.subTest(name=name):
+                row = copy.deepcopy(base)
+                if isinstance(overwrite, str):
+                    row.pop(overwrite)
+                else:
+                    row.update(overwrite)
+                with self.assertRaisesRegex(ValueError, reason):
+                    st.check_hazard_not_latched(row, "st0-hwpage-fetch-blocked-no-hazard-latch")
+
+
+class StExpectedPcTests(unittest.TestCase):
+    """expected_st_pc is a plan expectation (not a measurement): ST stops must match it."""
+
+    def setUp(self):
+        record = json.loads((ROOT / "tests" / "fixtures" / "365-st-boundary-v2-evidence.json")
+                            .read_text(encoding="utf-8"))
+        self.row = {case["case"]: case["row"] for case in record["cases"]}["st1-unknown"]
+
+    def test_expected_st_pc_tamper_rejected(self):
+        for bad in (0x3E11, None, "3E10", True):
+            with self.subTest(value=bad):
+                row = copy.deepcopy(self.row)
+                row["expected_st_pc"] = bad
+                with self.assertRaisesRegex(ValueError, "expected_st_pc"):
+                    st.check_refused(row, "st1-unknown")
+        row = copy.deepcopy(self.row)
+        row.pop("expected_st_pc")
+        with self.assertRaisesRegex(ValueError, "expected_st_pc"):
+            st.check_refused(row, "st1-unknown")
 
 
 if __name__ == "__main__":
