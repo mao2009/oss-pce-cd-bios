@@ -46,9 +46,9 @@ Modes (17 armed families + positive control):
 * ``irq2-handler-st0-survey`` / ``irq2-core-stop-survey``: IRQ2 accepted at an instruction boundary;
   the handler-head ST0 is refused. The two differ only in the core debugger stop_on_irq flag.
 * ``pos-write``: positive control. An allowlisted RAM store runs unrefused and lands.
-Mutation suffixes (8 kinds, 20 runs): -unguarded, -no-entry-check, -no-recheck (MPR2 recheck only),
+Mutation suffixes (9 kinds, 22 runs): -unguarded, -no-entry-check, -no-recheck (MPR2 recheck only),
 -wrong-opcode (ST2 omission only: single-opcode-list demo), -knownpc-only, -resume-allowed,
--unsafe-read, -peek-fail-step.
+-unsafe-read, -peek-fail-step, -no-hazard-latch.
 
 Scope: the check covers every instruction boundary of this single-stepped run (synthetic guests only).
 It is NOT a general VDC write interceptor for a free-running guest, and it does not reason about data.
@@ -141,11 +141,14 @@ HWPAGE_PAGE = 2  # CPU page 2 (addresses $4000-$5FFF)
 HWPAGE_BANK = 0xFF
 SR_SENTINEL_BEFORE = 0x3F
 AR_SENTINEL_BEFORE = 5
+# Reset value of the VDC read buffer on the pinned core (measured landmark; armed runs must
+# leave it untouched). Anchors the fabrication check for fabricated buffer pairs.
+READ_BUFFER_RESET = 0xFFFF
 
 ARMED_MODES = tuple(ST_EXPECTED_PC) + (HWPAGE_MODE, BBR3_TAKEN_MODE)
 IRQ_SURVEY_MODES = ("irq2-handler-st0-survey", "irq2-core-stop-survey")
 
-# Mutation kinds (8, 20 runs): each keeps the monitor armed unless its name says otherwise, and must make the
+# Mutation kinds (9, 22 runs): each keeps the monitor armed unless its name says otherwise, and must make the
 # prohibited effect observable; the armed classifier must then reject the mutated run.
 # (Known limitation: -knownpc-only on an already-known PC stays armed; it is only run on non-listed
 # PCs. -resume-allowed on the branch case proves the latch, not the PC list.)
@@ -161,16 +164,19 @@ MUTATIONS = {
     "st0-rom-page0": ("st0-rom-page0-knownpc-only",),
     "st1-unknown-far": ("st1-unknown-far-knownpc-only",),
     "st2-mpr2-unknown": ("st2-mpr2-unknown-no-recheck", "st2-mpr2-unknown-wrong-opcode"),
-    HWPAGE_MODE: (HWPAGE_MODE + "-unsafe-read", HWPAGE_MODE + "-peek-fail-step"),
-    BBR3_TAKEN_MODE: (BBR3_TAKEN_MODE + "-unsafe-read", BBR3_TAKEN_MODE + "-peek-fail-step"),
+    HWPAGE_MODE: (HWPAGE_MODE + "-unsafe-read", HWPAGE_MODE + "-peek-fail-step",
+                   HWPAGE_MODE + "-no-hazard-latch"),
+    BBR3_TAKEN_MODE: (BBR3_TAKEN_MODE + "-unsafe-read", BBR3_TAKEN_MODE + "-peek-fail-step",
+                      BBR3_TAKEN_MODE + "-no-hazard-latch"),
     "st0-bbr3-hwpage-skip": ("st0-bbr3-hwpage-skip-knownpc-only",),
     "st1-unused-bank": ("st1-unused-bank-knownpc-only",),
     "irq2-handler-st0-survey": ("irq2-handler-st0-survey-knownpc-only",),
     "irq2-core-stop-survey": ("irq2-core-stop-survey-knownpc-only",),
 }
 MUTATION_SUFFIXES = ("-no-entry-check", "-knownpc-only", "-resume-allowed",
-                     "-peek-fail-step", "-wrong-opcode", "-no-recheck", "-unguarded")
-HAZARD_SUFFIXES = ("-unsafe-read", "-peek-fail-step")
+                     "-peek-fail-step", "-wrong-opcode", "-no-recheck", "-unguarded",
+                     "-no-hazard-latch")
+HAZARD_SUFFIXES = ("-unsafe-read", "-peek-fail-step", "-no-hazard-latch")
 
 
 def _base_of(mode):
@@ -234,7 +240,7 @@ def _common(row, mode, historical=False):
         for name in ("vdc_sr_before", "vdc_sr_after", "fetch_opcode", "fetch_page", "fetch_mpr",
                      "fetch_safe", "fetch_failed", "fetch_blocked", "hazard_landed",
                      "fetch_open_stepped", "refused", "vector_read", "ram_unchanged_during_resume",
-                     "ram_diff_truncated", "instructions_executed",
+                     "ram_diff_truncated", "mmio_read_attempts", "instructions_executed",
                      "executed_at_refusal", "executed_after_resume", "resume_attempts", "resume_refused"):
             if name in ("fetch_safe", "fetch_failed", "fetch_blocked", "hazard_landed",
                         "fetch_open_stepped", "refused", "vector_read",
@@ -416,6 +422,12 @@ def check_hardware_page_blocked(row, mode=HWPAGE_MODE):
         raise ValueError(f"{mode}: VDC AR changed before the stop")
     if row["vdc_r_before"] != row["vdc_r_after"]:
         raise ValueError(f"{mode}: VDC R changed before the stop")
+    # VDC read buffer: the probe's reset value is a measured landmark of the pinned core;
+    # a forbidden fetch must neither change it nor be hidden by fabricating it.
+    if row["vdc_read_buffer_before"] != READ_BUFFER_RESET or \
+            row["vdc_read_buffer_after"] != READ_BUFFER_RESET:
+        raise ValueError(f"{mode}: VDC read buffer changed "
+                         f"({row['vdc_read_buffer_before']:#x}->{row['vdc_read_buffer_after']:#x})")
     return HWPAGE_BLOCKED_VERDICT
 
 
@@ -469,6 +481,10 @@ def check_unsafe_read_hazard(row, mode):
         raise ValueError(f"{mode}: hazard run is unarmed")
     if row.get("hazard_landed") is not True or row.get("fetch_via") != "read":
         raise ValueError(f"{mode}: hazard was not observed through the unsafe fetch")
+    # With the hazard latch the unsafe Read fires exactly once (first decision). Any resume
+    # re-read means the latch is gone, so the checker's count is what proves it.
+    if row.get("mmio_read_attempts") != 1:
+        raise ValueError(f"{mode}: mmio_read_attempts {row.get('mmio_read_attempts')!r}, expected 1")
     if base == HWPAGE_MODE:
         # At $4000 the read hits the status register: 0x3F -> 0x00 is device-observed proof.
         if row["vdc_sr_before"] != SR_SENTINEL_BEFORE or row["vdc_sr_after"] != 0x00:
@@ -508,7 +524,24 @@ def check_peek_fail_step(row, mode):
     return HAZARD_VERDICT
 
 
+def check_hazard_not_latched(row, mode):
+    """No-hazard-latch mutation: resume attempts repeat the forbidden MMIO read (extra reads)."""
+    base = _base_of(mode)
+    if base not in HWPAGE_EXPECTED_EXECUTED:
+        raise ValueError(f"{mode}: hazard-latch check unknown base {base!r}")
+    _common(row, mode)
+    if row.get("armed") is not True:
+        raise ValueError(f"{mode}: run is unarmed")
+    if row.get("hazard_landed") is not True or row.get("fetch_via") != "read":
+        raise ValueError(f"{mode}: hazard was not observed through the unsafe fetch")
+    attempts = row.get("mmio_read_attempts")
+    if type(attempts) is not int or attempts < 2:
+        raise ValueError(f"{mode}: mmio_read_attempts {attempts!r} shows no repeated MMIO read")
+    return HAZARD_VERDICT
+
+
 _CHECK_BY_SUFFIX = (
+    ("-no-hazard-latch", check_hazard_not_latched),
     ("-unsafe-read", check_unsafe_read_hazard),
     ("-peek-fail-step", check_peek_fail_step),
     ("-unguarded", check_unguarded),
@@ -575,32 +608,58 @@ def mutation_test_armed(refused_row, landed_row, mode, historical=False):
         raise ValueError(f"mutation test FAILED: {mode} {name} accepted by the armed classifier")
 
 
-def mutation_test_hardware_page(safe_row):
-    """The composite hwpage classifier must reject hazard, stepped, out-of-page and tampered rows."""
+def mutation_test_hardware_page(safe_row, mode):
+    """The composite hwpage classifier must reject hazard, stepped, out-of-page and tampered rows.
+
+    Tamper cases are judged with the *same* mode as the safe row; the safe row is confirmed
+    to pass first (so a checker that rejects everything cannot pass), and each case must fail
+    for its own reason (matched by error text).
+    """
+    if mode not in HWPAGE_EXPECTED_EXECUTED:
+        raise ValueError(f"mutation test {mode}: not a hardware-page mode")
+    expected = HWPAGE_EXPECTED_EXECUTED[mode]
+    if safe_row.get("mode") != mode:
+        raise ValueError(f"mutation test {mode}: safe row is mode {safe_row.get('mode')!r}")
+    check_hardware_page_blocked(copy.deepcopy(safe_row), mode)
     cases = [
-        ("stop_pc_outside_page", {"stop_pc": 0x3FFF}),
-        ("detected_pc_wrong", {"detected_pc": None}),
-        ("step_executed_at_unsafe_pc", {"instructions_executed": HWPAGE_EXPECTED_EXECUTED[HWPAGE_MODE] + 1,
-                                        "fetch_open_stepped": True, "status": "fetch_open_stepped"}),
-        ("sr_cleared", {"vdc_sr_after": 0x00}),
+        ("stop_pc_outside_page", {"stop_pc": 0x3FFF, "after": {"pc": 0x3FFF}, "detected_pc": 0x3FFF},
+         "outside the hardware page"),
+        ("detected_pc_wrong", {"detected_pc": None}, "detected_pc"),
+        ("step_executed_at_unsafe_pc", {"instructions_executed": expected + 1,
+                                        "fetch_open_stepped": True, "status": "fetch_open_stepped"},
+         "did not fail closed"),
+        ("sr_cleared", {"vdc_sr_after": 0x00}, "forbidden read landed"),
         ("sr_cleared_but_sr_row_invariant", {"vdc_sr_before": 0x00, "vdc_sr_after": 0x00,
-                                             "hazard_landed": True}),
-        ("mpr_mismatch", {"after": {"mpr": [0, 0xF8, 0x00, 0, 0, 0, 0, 0]}}),
-        ("fetch_via_read", {"fetch_via": "read"}),
-        ("resumed_step", {"executed_after_resume": HWPAGE_EXPECTED_EXECUTED[HWPAGE_MODE] + 1}),
-        ("missing_fetch_failed", "fetch_failed"),
+                                             "hazard_landed": True}, "fail-closed"),
+        ("mpr_mismatch", {"after": {"mpr": [0, 0xF8, 0x00, 0, 0, 0, 0, 0]}}, "remap"),
+        ("fetch_via_read", {"fetch_via": "read"}, "TryPeek"),
+        ("resumed_step", {"executed_after_resume": expected + 1}, "after the fail-closed"),
+        ("rb_after_changed", {"vdc_read_buffer_after": safe_row["vdc_read_buffer_before"] ^ 0xFF},
+         "read buffer"),
+        ("rb_before_changed", {"vdc_read_buffer_before": safe_row["vdc_read_buffer_after"] ^ 0xFF},
+         "read buffer"),
+        ("rb_uniformly_tampered", {"vdc_read_buffer_before": 0x0000, "vdc_read_buffer_after": 0x0000},
+         "read buffer"),
+        ("missing_fetch_failed", "fetch_failed", "non-bool"),
     ]
-    for name, overwrite in cases:
+    for name, overwrite, reason in cases:
         broken = copy.deepcopy(safe_row)
         if isinstance(overwrite, str):
             broken.pop(overwrite, None)
         else:
-            broken.update(overwrite)
+            for key, value in overwrite.items():
+                if key == "after" and isinstance(value, dict):
+                    broken["after"].update(value)
+                else:
+                    broken[key] = value
         try:
-            check_hardware_page_blocked(broken)
-        except ValueError:
+            check_hardware_page_blocked(broken, mode)
+        except ValueError as error:
+            if reason not in str(error):
+                raise ValueError(f"mutation test {mode} {name}: rejected for the wrong reason "
+                                 f"({error}); expected {reason!r}") from error
             continue
-        raise ValueError(f"mutation test FAILED: {HWPAGE_MODE} {name} accepted by the hwpage classifier")
+        raise ValueError(f"mutation test FAILED: {mode} {name} accepted by the hwpage classifier")
 
 
 def to_jsr_observation(row):
@@ -651,7 +710,7 @@ def main():
                     except ValueError:
                         continue
                     raise ValueError(f"mutation test FAILED: {mutation} accepted as fail-closed")
-                mutation_test_hardware_page(refused_row)
+                mutation_test_hardware_page(refused_row, mode)
             else:
                 for mutation, _verdict, landed_row in mutations:
                     try:

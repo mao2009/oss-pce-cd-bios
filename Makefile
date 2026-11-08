@@ -62,7 +62,7 @@ integration: build
 # Issue #365: ST0/ST1/ST2 single-step instruction-boundary monitor on the pinned core (v2 probe,
 # synthetic media). Seventeen armed families (entry, unknown-PC, data-dependent branch, JSR/RTS return,
 # page/bank boundaries, ROM page 0, guest-remapped MPR, fixed-JMP and BBR3 data-dependent
-# hardware-page fail-closed entries, IRQ surveys), eight mutation kinds (20 runs), and a positive
+# hardware-page fail-closed entries, IRQ surveys), nine mutation kinds (22 runs), and a positive
 # control. Fail-closed: any classifier rejection exits non-zero. Runs in `integration` (therefore `test-real-core` / required CI).
 .PHONY: st-boundary
 st-boundary:

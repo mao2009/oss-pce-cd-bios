@@ -40,7 +40,8 @@
 //   pos-write            positive control: allowlisted RAM store must run unrefused
 // Mutation suffixes: -unguarded (monitor off), -no-entry-check, -no-recheck, -wrong-opcode,
 //   -knownpc-only (regression: refuse only at two hardcoded PCs), -resume-allowed (the
-//   refusal latch does not hold the stop), -unsafe-read (Read-based fetch hazard demo).
+//   refusal latch does not hold the stop), -unsafe-read (Read-based fetch hazard demo),
+//   -peek-fail-step (peek failure fails open), -no-hazard-latch (unsafe reads repeat).
 #include "geargrafx_core.h"
 #include "huc6270.h"
 #include "huc6280.h"
@@ -167,10 +168,11 @@ int main(int argc, char** argv)
 
     // Split one mutation suffix off the mode; the remainder is the base family.
     const char* suffix_names[] = {"-no-entry-check", "-knownpc-only", "-resume-allowed", "-unsafe-read",
-                                  "-peek-fail-step", "-wrong-opcode", "-no-recheck", "-unguarded"};
+                                  "-peek-fail-step", "-wrong-opcode", "-no-recheck", "-unguarded",
+                                  "-no-hazard-latch"};
     bool unguarded = false, skip_entry_check = false, stale_after_first_boundary = false;
     bool wrong_opcode_set = false, knownpc_only = false, resume_allowed = false, unsafe_read = false;
-    bool peek_fail_step = false;
+    bool peek_fail_step = false, no_hazard_latch = false;
     std::string base = mode;
     for (const char* suffix : suffix_names) {
         if (ends_with(mode, suffix)) {
@@ -183,6 +185,12 @@ int main(int argc, char** argv)
             else if (std::string(suffix) == "-resume-allowed") resume_allowed = true;
             else if (std::string(suffix) == "-unsafe-read") unsafe_read = true;
             else if (std::string(suffix) == "-peek-fail-step") peek_fail_step = true;
+            else if (std::string(suffix) == "-no-hazard-latch") {
+                // The latch only exists on the unsafe-read hazard path; removing it implies
+                // the Read-based fetch itself (otherwise there is nothing to latch).
+                no_hazard_latch = true;
+                unsafe_read = true;
+            }
             break;
         }
     }
@@ -387,6 +395,7 @@ int main(int argc, char** argv)
     bool halted = false;
     bool core_irq_stop = false;
     unsigned handler_steps = 0;
+    unsigned mmio_read_attempts = 0;  // unsafe Read-based fetch decisions (hazard evidence)
     unsigned fetch_page = 0, fetch_mpr = 0, fetch_opcode = 0;
     bool fetch_safe = false, fetch_failed = false, fetch_via_read = false, fetch_unsafe_bank = false;
 
@@ -394,6 +403,11 @@ int main(int argc, char** argv)
     enum Decision { DECISION_ALLOW, DECISION_REFUSE_ST, DECISION_REFUSE_FETCH, DECISION_HAZARD,
                     DECISION_FETCH_OPEN_STEP };
     auto boundary_decision = [&](unsigned pc) -> Decision {
+        // Hazard latch: once an unsafe Read-based fetch landed its side effect, the stop is
+        // latched. Resume attempts then fail here without touching the device (no further
+        // Memory::Read(PC)); without the latch every resume would re-attempt the read.
+        if (hazard_landed && !no_hazard_latch)
+            return DECISION_HAZARD;
         unsigned bank = memory->GetMpr((u16)pc >> 13);
         fetch_page = (u16)pc >> 13;
         fetch_mpr = bank;
@@ -405,7 +419,10 @@ int main(int argc, char** argv)
         if (unsafe_read) {
             // MUTATION: fetch with Memory::Read. At a hardware-page PC this read itself
             // lands a device side effect (VDC status clear) before any refusal decision.
+            // Only reads issued on the unsafe bank count as hazard evidence.
             fetch_via_read = true;
+            if (bank == 0xFF)
+                ++mmio_read_attempts;
             op = memory->Read((u16)pc);
         } else {
             u8 peeked = 0;
@@ -537,13 +554,15 @@ int main(int argc, char** argv)
     // value) leaves no entry, and the entry list is truncated at 256 elements.
     std::vector<unsigned long> ram_diff_addresses;
     std::vector<unsigned> ram_diff_before, ram_diff_after;
+    // Exact: truncated only when a 257th differing byte exists; exactly 255/256 is complete.
     bool ram_diff_truncated = false;
     for (unsigned long offset = 0; offset < wram_before.size(); ++offset) {
         if (wram[offset] != wram_before[offset]) {
-            ram_diff_addresses.push_back(0x2000 + offset);
-            ram_diff_before.push_back(wram_before[offset]);
-            ram_diff_after.push_back(wram[offset]);
-            if (ram_diff_addresses.size() >= 256) {
+            if (ram_diff_addresses.size() < 256) {
+                ram_diff_addresses.push_back(0x2000 + offset);
+                ram_diff_before.push_back(wram_before[offset]);
+                ram_diff_after.push_back(wram[offset]);
+            } else {
                 ram_diff_truncated = true;
                 break;
             }
@@ -644,7 +663,8 @@ int main(int argc, char** argv)
     std::fprintf(stderr, "\"stack_cpu\":[%u,%u,%u],\"stack_frame_layout\":[%u,%u,%u],",
                  stack_cpu[0], stack_cpu[1], stack_cpu[2], stack_frame[0], stack_frame[1], stack_frame[2]);
     std::fprintf(stderr, "\"irr\":%u,\"idr\":%u,", irr, idr);
-    std::fprintf(stderr, "\"ram_unchanged_during_resume\":%s,", bool_str(ram_unchanged_during_resume));
+    std::fprintf(stderr, "\"ram_unchanged_during_resume\":%s,\"mmio_read_attempts\":%u,",
+                 bool_str(ram_unchanged_during_resume), mmio_read_attempts);
     std::fprintf(stderr, "\"detected\":%s,\"detected_pc\":%u", bool_str(detected), detected_pc);
     std::fprintf(stderr, "}");
     std::fflush(stderr);

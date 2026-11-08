@@ -61,7 +61,7 @@
 作業ブランチ `mao2009/365-st-opcode-arbitrary-pc` における v2 スコープ。C++ プローブ v2 の
 17 armed ファミリ（entry / unknown-PC / データ依存分岐 / JSR-RTS 復帰 / page・bank 境界 /
 ROM page 0 / MPR 再マップ / 固定 JMP による動的 hardware-page / BBR3 データ依存分岐 /
-未使用 bank / IRQ survey）と 8 変異種・20 run を
+未使用 bank / IRQ survey）と 9 変異種・22 run を
 Python ドライバ `tests/integration/geargrafx_st_boundary.py` が実行・分類する。`make
 test-real-core`（required CI）から `integration` 経由で実行される。
 
@@ -109,8 +109,9 @@ IRQ2 が命令境界で受け入れられると、handler 先頭（`$3F80`）の
 検証する。`irq2-core-stop-survey` のみ core debugger の `stop_on_irq` も発火する。
 
 WRAM 差分は**最終状態との net diff**（書込みイベントの監視ではない）。書戻した一時書込みや
-同値書込みは detect されず、列挙は最大 256 件で打ち切られる（`ram_diff_truncated` で
-明示）。`only_stack_net_diffs` は stack セル `$21FD-$21FF` 内の net diff のみを意味し、
+同値書込みは detect されず、列挙は最大 256 件で打ち切られる（257 件目以上の差分がある場合
+のみ `ram_diff_truncated=true` で明示。255/256 件ちょうどは false）。`only_stack_net_diffs` は
+stack セル `$21FD-$21FF` 内の net diff のみを意味し、IRQ verdict は truncated を拒否する。
 #173/#366 の generic RAM 安全性を確定する主張ではない。
 
 ### JSR 観測への hazard 除外
@@ -119,23 +120,37 @@ WRAM 差分は**最終状態との net diff**（書込みイベントの監視�
 除外する（`JSR_OBSERVATION_EXCLUDED`）。`ok`（成功）や `rejected`（事前遮断成功）への
 付け替えは hazard を安全な成功と誤認されるため行わない。hazard の正本は EVIDENCE である。
 
+### hazard ラッチ（H3 強化）
+
+unsafe Read による hazard が着地した時点で停止は latch され、resume 試行はデバイスに
+触れずに拒否される（追加の `Memory::Read(PC)` は発生しない）。実測では unsafe-read 行の
+`mmio_read_attempts`（unsafe bank への Read 判定回数）は正確に 1、latch 除去変異
+（`-no-hazard-latch`、unsafe fetch 経路 + ラッチなし）では 4（初回 + resume 3 回の
+反復）。armed 行は全て 0。SR 不変だけで hazard 反復の停止を推定していない。
+
+VDC read buffer も armed 実行で verified する（リセット値 `0xFFFF` の landmark。変化 /
+改ざんされた before/after / 欠落 / 型不一致は全て拒否）。
+
 ### mutation 結果
 
-8 変異種・20 run: 全件で禁止効果が観測可能となり、armed 分類器が全 run を拒否（killed）。
+9 変異種・22 run: 全件で禁止効果が観測可能となり、armed 分類器が全 run を拒否（killed）。
+- `-unsafe-read` / `-peek-fail-step` / `-no-hazard-latch`: unsafe fetch の危険を
+  hazard latch の有無で区別する。
 - `-unguarded`（監視 off）: ST が実行され VDC へ着地。
 - `-no-entry-check` / `-no-recheck`（MPR2 再検査のみ）/ `-wrong-opcode`（ST2 欠落のみの
   単一 opcode リスト実証）: armed のまま ST / ST2 が実行・着地。
 - `-knownpc-only`: 既知 PC 限定では未登録 PC（`$3E20` / `$3E03` / `$1FFF` / `$0000` /
   `$6010` / `$3F83` / `$3F80`）で ST が実行・着地。
 - `-resume-allowed`: latch が保持されず ST が step・着地（resume_refused=0）。
-- `-unsafe-read` / `-peek-fail-step`: `$4000` では SR `0x3F→0x00` の device hazard が、
-  `$4002` では unsafe fetch 自体（hazard 判定 + 実行数 + page 内停止）が hazard として
-  観測される。安全分類器は全変異を FAIL として拒否。
+- `-unsafe-read` / `-peek-fail-step` / `-no-hazard-latch`: `$4000` では SR `0x3F→0x00` の
+  device hazard が、`$4002` では unsafe fetch 自体（hazard 判定 + 実行数 + page 内停止）が
+  hazard として観測される。latch がない場合は resume 3 回の反復 Read（`mmio_read_attempts`=4）を
+  機械的に検出する。安全分類器は全変異を FAIL として拒否。
 
 ### 実行結果（事実）
 
 Linux x86_64 上の debug single-step で 17 armed 全 PASS・20 mutation 全 killed・pos-write PASS。
-fixture `tests/fixtures/365-st-boundary-v2-evidence.json`（37 行 = armed 17 + mutation 20）。
+fixture `tests/fixtures/365-st-boundary-v2-evidence.json`（39 行 = armed 17 + mutation 22）。
 
 ### 実証範囲
 

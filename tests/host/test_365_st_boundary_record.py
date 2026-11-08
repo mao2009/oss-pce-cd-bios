@@ -284,5 +284,108 @@ class StV2FixtureTests(unittest.TestCase):
             st.check_refused(row, "st1-unknown")
 
 
+class StBbr3MutationModeTests(unittest.TestCase):
+    """BBR3 mutation harness: mode-correct judgment with reason-specific rejections (Issue #365).
+
+    RED contract: killing these strains must fail loudly. The harness pre-verifies that the
+    safe row passes under the named mode, and each tamper must fail for its own reason.
+    """
+
+    def setUp(self):
+        record = json.loads((ROOT / "tests" / "fixtures" / "365-st-boundary-v2-evidence.json")
+                            .read_text(encoding="utf-8"))
+        self.rows = {case["case"]: case["row"] for case in record["cases"]}
+        self.taken = copy.deepcopy(self.rows["st0-bbr3-hwpage-taken"])
+
+    def test_1_taken_row_passes_with_its_mode(self):
+        self.assertEqual(st.check_hardware_page_blocked(self.taken, "st0-bbr3-hwpage-taken"),
+                         st.HWPAGE_BLOCKED_VERDICT)
+
+    def test_2_taken_row_rejected_as_fixed_jmp_mode(self):
+        with self.assertRaisesRegex(ValueError, "measured wrong mode"):
+            st.check_hardware_page_blocked(self.taken, st.HWPAGE_MODE)
+
+    def test_3_taken_stop_outside_page_rejected(self):
+        row = copy.deepcopy(self.taken)
+        row["stop_pc"] = 0x3FFF
+        row["after"]["pc"] = 0x3FFF
+        row["detected_pc"] = 0x3FFF
+        with self.assertRaisesRegex(ValueError, "outside the hardware page"):
+            st.check_hardware_page_blocked(row, "st0-bbr3-hwpage-taken")
+
+    def test_4_taken_executed_count_tamper_rejected(self):
+        row = copy.deepcopy(self.taken)
+        row["instructions_executed"] += 1
+        with self.assertRaisesRegex(ValueError, "executed 5"):
+            st.check_hardware_page_blocked(row, "st0-bbr3-hwpage-taken")
+
+    def test_5_taken_detected_pc_tamper_rejected(self):
+        row = copy.deepcopy(self.taken)
+        row["detected_pc"] += 1
+        with self.assertRaisesRegex(ValueError, "detected_pc"):
+            st.check_hardware_page_blocked(row, "st0-bbr3-hwpage-taken")
+
+    def test_6_taken_missing_fetch_evidence_rejected(self):
+        row = copy.deepcopy(self.taken)
+        row.pop("fetch_failed")
+        with self.assertRaisesRegex(ValueError, "non-bool"):
+            st.check_hardware_page_blocked(row, "st0-bbr3-hwpage-taken")
+
+    def test_7_mutation_harness_verifies_both_modes_and_rejects_cross_use(self):
+        # The harness itself must pass for both hwpage modes with their own rows.
+        st.mutation_test_hardware_page(copy.deepcopy(self.rows[st.HWPAGE_MODE]), st.HWPAGE_MODE)
+        st.mutation_test_hardware_page(copy.deepcopy(self.taken), "st0-bbr3-hwpage-taken")
+        # A checker that judges a safe row under the wrong mode cannot count as a kill.
+        with self.assertRaises(ValueError):
+            st.mutation_test_hardware_page(copy.deepcopy(self.taken), st.HWPAGE_MODE)
+
+    def test_read_buffer_tamper_variants_rejected(self):
+        # (0xFFFF, 0xFFFF) is the reset pair and must pass (see test_2 path), so it is kept out.
+        for before, after in ((0xFFFF, 0x0000), (0x0000, 0xFFFF), (0x0000, 0x0000)):
+            with self.subTest(before=hex(before), after=hex(after)):
+                row = copy.deepcopy(self.taken)
+                row["vdc_read_buffer_before"] = before
+                row["vdc_read_buffer_after"] = after
+                with self.assertRaisesRegex(ValueError, "read buffer"):
+                    st.check_hardware_page_blocked(row, "st0-bbr3-hwpage-taken")
+
+    def test_read_buffer_missing_or_wrong_type_rejected(self):
+        row = copy.deepcopy(self.taken)
+        row.pop("vdc_read_buffer_before")
+        with self.assertRaises(ValueError):
+            st.check_hardware_page_blocked(row, "st0-bbr3-hwpage-taken")
+        row = copy.deepcopy(self.taken)
+        row["vdc_read_buffer_after"] = "ffff"
+        with self.assertRaises(ValueError):
+            st.check_hardware_page_blocked(row, "st0-bbr3-hwpage-taken")
+
+
+class StHazardLatchContaminationTests(unittest.TestCase):
+    """Hazard evidence: exactly one unsafe read per unsafe-read run (latch holds)."""
+
+    def setUp(self):
+        record = json.loads((ROOT / "tests" / "fixtures" / "365-st-boundary-v2-evidence.json")
+                            .read_text(encoding="utf-8"))
+        self.rows = {case["case"]: case["row"] for case in record["cases"]}
+
+    def test_unsafe_read_rows_have_exactly_one_mmio_read(self):
+        for case, row in self.rows.items():
+            if case.endswith("-unsafe-read"):
+                with self.subTest(case=case):
+                    self.assertEqual(row["mmio_read_attempts"], 1)
+
+    def test_no_hazard_latch_rows_repeat_the_read(self):
+        for case, row in self.rows.items():
+            if case.endswith("-no-hazard-latch"):
+                with self.subTest(case=case):
+                    self.assertGreaterEqual(row["mmio_read_attempts"], 2)
+
+    def test_armed_rows_perform_no_unsafe_read(self):
+        for case, row in self.rows.items():
+            if case in st.ARMED_MODES:
+                with self.subTest(case=case):
+                    self.assertEqual(row["mmio_read_attempts"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
