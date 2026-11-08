@@ -429,6 +429,12 @@ def _check_irq_survey(row, mode):
                              f"stack frame byte {frame_by_addr[address]:#x} at {address:#x}")
     if row.get("ram_diff_count") != len(ram_diff):
         raise ValueError(f"{mode}: ram_diff_count {row.get('ram_diff_count')!r} != {len(ram_diff)}")
+    # Net-diff completeness for this synthetic environment: the stack pushes land in the
+    # two nonzero-valued cells, so $21FE and $21FF must have observable changes. (The $21FD
+    # status byte pushes 0x00 over an initial 0x00 here, so its absence is legitimate. This
+    # anchors the IRQ survey's own empty-diff coverage only; no generic IRQ-safety claim.)
+    if 0x21FE not in seen or 0x21FF not in seen:
+        raise ValueError(f"{mode}: missing required diff in the IRQ stack cells")
 
 
 def check_refused(row, mode):
@@ -656,9 +662,25 @@ def check_hazard_not_latched(row, mode):
         raise ValueError(f"{mode}: run is unarmed")
     if row.get("hazard_landed") is not True or row.get("fetch_via") != "read":
         raise ValueError(f"{mode}: hazard was not observed through the unsafe fetch")
+    # The repeated reads must be the hardware-page fetch itself, not an unrelated MMIO access.
+    if row.get("fetch_page") != HWPAGE_PAGE or row.get("fetch_mpr") != HWPAGE_BANK:
+        raise ValueError(f"{mode}: fetch page/bank {row.get('fetch_page')}/{row.get('fetch_mpr')!r}, "
+                         f"expected hardware page {HWPAGE_PAGE}/${HWPAGE_BANK:X}")
+    if row.get("fetch_unsafe_bank") is not True:
+        raise ValueError(f"{mode}: fetch did not resolve through the unsafe bank")
+    if row["after"]["mpr"][HWPAGE_PAGE] != HWPAGE_BANK:
+        raise ValueError(f"{mode}: hardware-page mapping inconsistent")
+    if not (HWPAGE_PAGE << 13) <= row["stop_pc"] < (HWPAGE_PAGE + 1) << 13:
+        raise ValueError(f"{mode}: stop {row['stop_pc']:#x} is outside the hardware page")
+    if row["after"]["pc"] != row["stop_pc"]:
+        raise ValueError(f"{mode}: stop PC not held")
+    if row["instructions_executed"] != HWPAGE_EXPECTED_EXECUTED[base]:
+        raise ValueError(f"{mode}: executed {row['instructions_executed']} (expected "
+                         f"{HWPAGE_EXPECTED_EXECUTED[base]})")
     attempts = row.get("mmio_read_attempts")
-    if type(attempts) is not int or attempts < 2:
-        raise ValueError(f"{mode}: mmio_read_attempts {attempts!r} shows no repeated MMIO read")
+    # The unlatch re-reads exactly once per resume (initial + 3 attempts).
+    if type(attempts) is not int or attempts != RESUME_ATTEMPTS + 1:
+        raise ValueError(f"{mode}: mmio_read_attempts {attempts!r}, expected {RESUME_ATTEMPTS + 1}")
     # The latch-free run still refuses the step on every resume: count stays flat, reads repeat.
     if row.get("resume_attempts") != RESUME_ATTEMPTS or row.get("resume_refused") != RESUME_ATTEMPTS:
         raise ValueError(f"{mode}: resume not fully refused")
@@ -795,7 +817,8 @@ def to_jsr_observation(row):
     has no hazard outcome, so hazard rows are excluded from the JSR view rather than being
     misreported as a boundary refusal ("ok" would claim success, "rejected" would claim a
     pre-side-effect refusal; neither is true). The EVIDENCE line is authoritative for hazards.
-    IRQ is UNKNOWN unless actually observed."""
+    IRQ is OBSERVED only for an accepted IRQ-survey IRQ (irq_accepted True in a survey mode
+    with well-typed irr/idr); otherwise UNKNOWN -- mere field presence is not observation."""
     if row.get("hazard_landed") is True or row.get("fetch_open_stepped") is True:
         return None
     mapped = copy.deepcopy(row)
@@ -803,9 +826,13 @@ def to_jsr_observation(row):
     observation = jsr_observation.from_probe_row(
         mapped, {"kind": "REAL_CORE_EXECUTION", "core_revision": PINNED_CORE_REVISION,
                  "bios": "SYNTHETIC", "real_core_claim": True})
-    if "irq_accepted" in row and "irr" in row and "idr" in row:
-        observation["irq"] = {"status": "OBSERVED", "mask": int(row["idr"]) & 0xFF,
-                              "pending": int(row["irr"]) & 0xFF}
+    survey = _base_of(row.get("mode", "")) in IRQ_SURVEY_MODES
+    accepted = (survey and row.get("irq_accepted") is True
+                and type(row.get("irr")) is int and type(row.get("idr")) is int
+                and 0 <= row["irr"] <= 0xFF and 0 <= row["idr"] <= 0xFF)
+    if accepted:
+        observation["irq"] = {"status": "OBSERVED", "mask": int(row["idr"]),
+                              "pending": int(row["irr"])}
         jsr_observation.validate_observation(observation)
     return observation
 

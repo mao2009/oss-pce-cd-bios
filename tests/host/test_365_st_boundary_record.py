@@ -864,5 +864,116 @@ class StIrqSpTests(unittest.TestCase):
                     st.check_refused(row, "irq2-handler-st0-survey")
 
 
+class StIrqObservationTruthfulnessTests(unittest.TestCase):
+    """JSR IRQ honesty: OBSERVED only for an accepted survey IRQ (Issue #365 MAJOR)."""
+
+    def setUp(self):
+        record = json.loads((ROOT / "tests" / "fixtures" / "365-st-boundary-v2-evidence.json")
+                            .read_text(encoding="utf-8"))
+        self.rows = {case["case"]: case["row"] for case in record["cases"]}
+
+    def test_plain_st_row_is_unknown(self):
+        row = copy.deepcopy(self.rows["st1-entry"])
+        self.assertIn("irr", row)
+        self.assertIn("idr", row)
+        self.assertIs(row["irq_accepted"], False)
+        self.assertEqual(st.to_jsr_observation(row)["irq"]["status"], "UNKNOWN")
+
+    def test_bbr3_row_is_unknown(self):
+        row = copy.deepcopy(self.rows["st0-bbr3-hwpage-taken"])
+        self.assertEqual(st.to_jsr_observation(row)["irq"]["status"], "UNKNOWN")
+
+    def test_survey_rows_are_observed(self):
+        for mode in ("irq2-handler-st0-survey", "irq2-core-stop-survey"):
+            with self.subTest(mode=mode):
+                observation = st.to_jsr_observation(copy.deepcopy(self.rows[mode]))
+                self.assertEqual(observation["irq"]["status"], "OBSERVED")
+                self.assertEqual(observation["irq"]["mask"], self.rows[mode]["idr"] & 0xFF)
+                self.assertEqual(observation["irq"]["pending"], self.rows[mode]["irr"] & 0xFF)
+
+    def test_acceptance_missing_or_wrong_type_is_not_observed(self):
+        for bad in (None, 0, 1, "true"):
+            with self.subTest(value=bad):
+                row = copy.deepcopy(self.rows["irq2-handler-st0-survey"])
+                row["irq_accepted"] = bad
+                self.assertNotEqual(st.to_jsr_observation(row)["irq"]["status"], "OBSERVED")
+        row = copy.deepcopy(self.rows["irq2-handler-st0-survey"])
+        row.pop("irq_accepted")
+        self.assertNotEqual(st.to_jsr_observation(row)["irq"]["status"], "OBSERVED")
+
+    def test_forged_acceptance_outside_survey_is_not_observed(self):
+        row = copy.deepcopy(self.rows["st1-entry"])
+        row["irq_accepted"] = True
+        observation = st.to_jsr_observation(row)
+        self.assertNotEqual(observation["irq"]["status"], "OBSERVED")
+
+
+class StIrqNetDiffCompletenessTests(unittest.TestCase):
+    """Empty/truncated net diffs must not pass (Issue #365 audit)."""
+
+    def setUp(self):
+        record = json.loads((ROOT / "tests" / "fixtures" / "365-st-boundary-v2-evidence.json")
+                            .read_text(encoding="utf-8"))
+        self.rows = {case["case"]: case["row"] for case in record["cases"]}
+        self.row = copy.deepcopy(self.rows["irq2-handler-st0-survey"])
+
+    def test_empty_diff_rejected(self):
+        row = copy.deepcopy(self.row)
+        row["ram_diff"] = []
+        row["ram_diff_count"] = 0
+        with self.assertRaisesRegex(ValueError, "missing required diff"):
+            st.check_refused(row, "irq2-handler-st0-survey")
+
+    def test_single_diff_rejected(self):
+        for doomed in (0x21FE, 0x21FF):
+            with self.subTest(addr=hex(doomed)):
+                row = copy.deepcopy(self.row)
+                row["ram_diff"] = [e for e in row["ram_diff"] if e["address"] != doomed]
+                row["ram_diff_count"] = len(row["ram_diff"])
+                with self.assertRaisesRegex(ValueError, "missing required diff"):
+                    st.check_refused(row, "irq2-handler-st0-survey")
+
+
+class StNoHazardLatchFetchTests(unittest.TestCase):
+    """Latch-removal evidence must anchor fetch location/MPR/stop/executed (Issue #365 audit)."""
+
+    def setUp(self):
+        record = json.loads((ROOT / "tests" / "fixtures" / "365-st-boundary-v2-evidence.json")
+                            .read_text(encoding="utf-8"))
+        self.rows = {case["case"]: case["row"] for case in record["cases"]}
+
+    def test_recorded_variants_pass(self):
+        self.assertEqual(st.check_hazard_not_latched(
+            copy.deepcopy(self.rows["st0-hwpage-fetch-blocked-no-hazard-latch"]),
+            "st0-hwpage-fetch-blocked-no-hazard-latch"), st.HAZARD_VERDICT)
+        self.assertEqual(st.check_hazard_not_latched(
+            copy.deepcopy(self.rows["st0-bbr3-hwpage-taken-no-hazard-latch"]),
+            "st0-bbr3-hwpage-taken-no-hazard-latch"), st.HAZARD_VERDICT)
+
+    def test_fetch_tampers_rejected(self):
+        base = copy.deepcopy(self.rows["st0-hwpage-fetch-blocked-no-hazard-latch"])
+        cases = [
+            ("page", {"fetch_page": 1}, "fetch page/bank"),
+            ("mpr", {"fetch_mpr": 0xF8}, "fetch page/bank"),
+            ("unsafe", {"fetch_unsafe_bank": False}, "unsafe bank"),
+            ("stop_outside", {"stop_pc": 0x3FFF}, "outside"),
+            ("stop_not_held", {"after": {"pc": 0x4001}}, "not held"),
+            ("mmio_two", {"mmio_read_attempts": 2}, "mmio_read_attempts"),
+            ("mmio_three", {"mmio_read_attempts": 3}, "mmio_read_attempts"),
+            ("mmio_five", {"mmio_read_attempts": 5}, "mmio_read_attempts"),
+            ("executed", {"instructions_executed": 99}, "executed"),
+        ]
+        for name, overwrite, reason in cases:
+            with self.subTest(name=name):
+                row = copy.deepcopy(base)
+                for key, value in overwrite.items():
+                    if key == "after":
+                        row["after"].update(value)
+                    else:
+                        row[key] = value
+                with self.assertRaisesRegex(ValueError, reason):
+                    st.check_hazard_not_latched(row, "st0-hwpage-fetch-blocked-no-hazard-latch")
+
+
 if __name__ == "__main__":
     unittest.main()
