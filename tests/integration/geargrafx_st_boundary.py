@@ -417,6 +417,8 @@ def check_hardware_page_blocked(row, mode=HWPAGE_MODE):
     if row.get("detected") is not True or row.get("detected_pc") != row["stop_pc"]:
         raise ValueError(f"{mode}: detected_pc {row.get('detected_pc')!r} does not match the "
                          f"measured stop PC {row['stop_pc']:#x}")
+    if row.get("ram_unchanged_during_resume") is not True:
+        raise ValueError(f"{mode}: WRAM changed during the resume attempts")
     # Armed runs must not perform any unsafe Read-based fetch (the probe's TryPeek path is
     # side-effect-free; a recorded attempt means the run took the Read path somewhere).
     if row.get("mmio_read_attempts") != 0:
