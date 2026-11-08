@@ -826,7 +826,7 @@ def to_jsr_observation(row):
     observation = jsr_observation.from_probe_row(
         mapped, {"kind": "REAL_CORE_EXECUTION", "core_revision": PINNED_CORE_REVISION,
                  "bios": "SYNTHETIC", "real_core_claim": True})
-    survey = _base_of(row.get("mode", "")) in IRQ_SURVEY_MODES
+    survey = isinstance(row.get("mode"), str) and _base_of(row["mode"]) in IRQ_SURVEY_MODES
     accepted = (survey and row.get("irq_accepted") is True
                 and type(row.get("irr")) is int and type(row.get("idr")) is int
                 and 0 <= row["irr"] <= 0xFF and 0 <= row["idr"] <= 0xFF)
