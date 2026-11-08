@@ -149,7 +149,7 @@ VDC read buffer も armed 実行で verified する（リセット値 `0xFFFF` �
 
 ### 実行結果（事実）
 
-Linux x86_64 上の debug single-step で 17 armed 全 PASS・20 mutation 全 killed・pos-write PASS。
+Linux x86_64 上の debug single-step で 17 armed 全 PASS・22 mutation 全 killed・pos-write PASS。
 fixture `tests/fixtures/365-st-boundary-v2-evidence.json`（39 行 = armed 17 + mutation 22）。
 
 ### 実証範囲
