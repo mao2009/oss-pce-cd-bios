@@ -186,12 +186,18 @@ def _base_of(mode):
     return mode
 
 
-def _st_kind_of(row, mode):
-    kind = row.get("st_mode") or ""
-    if kind in ST_OPCODE:
-        return kind
+def _expected_kind(mode):
+    """Expected ST kind from the **mode** (never from untrusted row data)."""
     base = _base_of(mode)
-    return base[:3] if base[:3] in ST_OPCODE else "st0"
+    # IRQ surveys refuse the handler-head ST0; the mode name carries no "st0" prefix.
+    if base.startswith("irq2-"):
+        return "st0"
+    return base[:3]
+
+
+def _st_kind_of(row, mode):
+    """Legacy alias: kept for mutation helpers; kind is always derived from the mode."""
+    return _expected_kind(mode)
 
 
 def _vdc_landed(row, kind):
@@ -293,7 +299,10 @@ def _check_refused(row, mode, require_fetch=True):
         raise ValueError(f"{mode}: monitor did not refuse (status={row.get('status')})")
     if row.get("armed") is not True or row.get("boundary_check") is not True:
         raise ValueError(f"{mode}: run is not armed")
-    kind = _st_kind_of(row, mode)
+    kind = _expected_kind(mode)
+    if row.get("st_mode") != kind:
+        raise ValueError(f"{mode}: st_mode {row.get('st_mode')!r} does not match the mode's ST "
+                         f"{kind} (opcode identity must not be trusted from row data)")
     if row.get("refused_opcode") != ST_OPCODE[kind]:
         raise ValueError(f"{mode}: refused opcode {row.get('refused_opcode')!r}, expected {ST_OPCODE[kind]:#x}")
     if row["refused_pc"] != ST_EXPECTED_PC[mode] or row["stop_pc"] != ST_EXPECTED_PC[mode]:
@@ -371,8 +380,15 @@ def _check_irq_survey(row, mode):
     if row.get("vector_read") is not True or row.get("observed_vector") != 0x3F80:
         raise ValueError(f"{mode}: IRQ vector was not measured "
                          f"(vector_read={row.get('vector_read')!r}, value={row.get('observed_vector')!r})")
-    if row["after"]["sp"] != 0xFC:
-        raise ValueError(f"{mode}: SP after acceptance is {row['after']['sp']:#x} ($FC = 3 pushes)")
+    before_sp = row["before"].get("sp") if isinstance(row["before"], dict) else None
+    after_sp = row["after"].get("sp") if isinstance(row["after"], dict) else None
+    if type(before_sp) is not int or type(after_sp) is not int:
+        raise ValueError(f"{mode}: sp before/after must be integers, got "
+                         f"{before_sp!r}/{after_sp!r}")
+    if before_sp != 0xFF:
+        raise ValueError(f"{mode}: SP before acceptance is {before_sp:#x}, expected $FF")
+    if after_sp != 0xFC:
+        raise ValueError(f"{mode}: SP after acceptance is {after_sp:#x} ($FC = 3 pushes)")
     frame = row.get("stack_frame_layout") or []
     if type(row.get("stack_cpu")) is not list or row.get("stack_cpu") != [0x21FF, 0x21FE, 0x21FD]:
         raise ValueError(f"{mode}: stack_cpu {row.get('stack_cpu')!r}, expected "

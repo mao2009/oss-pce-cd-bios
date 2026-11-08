@@ -765,5 +765,104 @@ class StExpectedPcTests(unittest.TestCase):
             st.check_refused(row, "st1-unknown")
 
 
+class StOpcodeModeConsistencyTests(unittest.TestCase):
+    """Opcode identity comes from the mode, never from row data (Issue #365 MAJOR)."""
+
+    def setUp(self):
+        record = json.loads((ROOT / "tests" / "fixtures" / "365-st-boundary-v2-evidence.json")
+                            .read_text(encoding="utf-8"))
+        self.rows = {case["case"]: case["row"] for case in record["cases"]}
+
+    def test_opcode_triple_flip_rejected(self):
+        cases = [
+            ("st1-entry", "st0", 0x03, "st_mode"),
+            ("st0-entry", "st2", 0x23, "st_mode"),
+            ("st2-entry", "st1", 0x13, "st_mode"),
+        ]
+        for mode, other_kind, other_op, reason in cases:
+            with self.subTest(mode=mode):
+                row = copy.deepcopy(self.rows[mode])
+                row["st_mode"] = other_kind
+                row["refused_opcode"] = other_op
+                row["fetch_opcode"] = other_op
+                with self.assertRaisesRegex(ValueError, reason):
+                    st.check_refused(row, mode)
+
+    def test_single_field_flips_rejected_for_their_reasons(self):
+        row = copy.deepcopy(self.rows["st1-entry"])
+        row["st_mode"] = "st0"
+        with self.assertRaisesRegex(ValueError, "st_mode"):
+            st.check_refused(row, "st1-entry")
+        row = copy.deepcopy(self.rows["st1-entry"])
+        row["refused_opcode"] = 0x03
+        with self.assertRaisesRegex(ValueError, "refused opcode"):
+            st.check_refused(row, "st1-entry")
+        row = copy.deepcopy(self.rows["st1-entry"])
+        row["fetch_opcode"] = 0x03
+        with self.assertRaisesRegex(ValueError, "fetched opcode"):
+            st.check_refused(row, "st1-entry")
+
+    def test_st_mode_missing_or_bogus_rejected(self):
+        for bad in (None, "st9", 1):
+            with self.subTest(value=bad):
+                row = copy.deepcopy(self.rows["st1-entry"])
+                row["st_mode"] = bad
+                with self.assertRaisesRegex(ValueError, "st_mode"):
+                    st.check_refused(row, "st1-entry")
+        row = copy.deepcopy(self.rows["st1-entry"])
+        row.pop("st_mode")
+        with self.assertRaisesRegex(ValueError, "st_mode"):
+            st.check_refused(row, "st1-entry")
+
+    def test_irq_survey_st_mode_is_st0(self):
+        row = copy.deepcopy(self.rows["irq2-handler-st0-survey"])
+        row["st_mode"] = "st1"
+        with self.assertRaisesRegex(ValueError, "st_mode"):
+            st.check_refused(row, "irq2-handler-st0-survey")
+
+
+class StIrqSpTests(unittest.TestCase):
+    """IRQ stack-push evidence: SP transitions $FF -> $FC (Issue #365 audit)."""
+
+    def setUp(self):
+        record = json.loads((ROOT / "tests" / "fixtures" / "365-st-boundary-v2-evidence.json")
+                            .read_text(encoding="utf-8"))
+        self.rows = {case["case"]: case["row"] for case in record["cases"]}
+
+    def test_both_surveys_transition_sp(self):
+        for mode in ("irq2-handler-st0-survey", "irq2-core-stop-survey"):
+            with self.subTest(mode=mode):
+                row = copy.deepcopy(self.rows[mode])
+                self.assertEqual(row["before"]["sp"], 0xFF)
+                self.assertEqual(row["after"]["sp"], 0xFC)
+                self.assertEqual(st.check_refused(row, mode), st.REFUSED_VERDICT)
+
+    def test_sp_tampers_rejected(self):
+        base = copy.deepcopy(self.rows["irq2-handler-st0-survey"])
+        cases = [
+            ("before_fe", {"before": {"sp": 0xFE}}, "SP before acceptance"),
+            ("before_00", {"before": {"sp": 0x00}}, "SP before acceptance"),
+            ("after_fd", {"after": {"sp": 0xFD}}, "SP after acceptance"),
+            ("after_ff", {"after": {"sp": 0xFF}}, "SP after acceptance"),
+            ("before_none", {"before": {"sp": None}}, "must be integers"),
+            ("before_true", {"before": {"sp": True}}, "must be integers"),
+            ("before_str", {"before": {"sp": "255"}}, "must be integers"),
+            ("after_none", {"after": {"sp": None}}, "must be integers"),
+        ]
+        for name, overwrite, reason in cases:
+            with self.subTest(name=name):
+                row = copy.deepcopy(base)
+                for section, value in overwrite.items():
+                    row[section].update(value)
+                with self.assertRaisesRegex(ValueError, reason):
+                    st.check_refused(row, "irq2-handler-st0-survey")
+        for section in ("before", "after"):
+            with self.subTest(name=f"{section}_missing"):
+                row = copy.deepcopy(base)
+                row[section].pop("sp")
+                with self.assertRaisesRegex(ValueError, "must be integers"):
+                    st.check_refused(row, "irq2-handler-st0-survey")
+
+
 if __name__ == "__main__":
     unittest.main()
