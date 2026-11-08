@@ -156,6 +156,31 @@ class CommercialVerdictTests(unittest.TestCase):
         verdict, _ = classify_commercial(records([call()], [call(slot=3)]))
         self.assertEqual(verdict, "UNKNOWN")
 
+    def test_multi_call_jsr_sequence_confirmed(self):
+        # Earlier JSR calls that returned (e.g. to an implemented slot), then a
+        # stub JSR: same sequence cold/warm, all JSR-confirmed, stub halt.
+        seq = [call(slot=2), call(slot=3)]
+        verdict, detail = classify_commercial(records(seq, seq))
+        self.assertEqual(verdict, "API_ENTRY_CONFIRMED")
+        self.assertIn("sequence", detail)
+
+    def test_multi_call_sequence_mismatch_is_unknown(self):
+        cold = [call(slot=2), call(slot=3)]
+        warm = [call(slot=2), call(slot=4)]
+        verdict, _ = classify_commercial(records(cold, warm))
+        self.assertEqual(verdict, "UNKNOWN")
+
+    def test_multi_call_with_bad_return_is_unknown(self):
+        bad = call(slot=2, stack_check="MISMATCH", ret_match=False)
+        seq = [bad, call(slot=3)]
+        verdict, _ = classify_commercial(records(seq, seq))
+        self.assertEqual(verdict, "UNKNOWN")
+
+    def test_multi_call_jmp_not_last_is_unknown(self):
+        seq = [call(delta=0), call(slot=3)]
+        verdict, _ = classify_commercial(records(seq, seq))
+        self.assertEqual(verdict, "UNKNOWN")
+
 
 class CommercialOutputTests(unittest.TestCase):
     def test_repo_path_rejected(self):

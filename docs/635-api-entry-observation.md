@@ -4,7 +4,7 @@
 
 ## 目的
 
-停止時Xだけから最初の未実装APIを断定しないために、IPL payload（WRAM `$3000-$7FFF`）からBIOS領域（`$E000-$FFFF`）への最初の制御移行を直接記録する。
+停止時Xだけから最初の未実装APIを断定しないために、IPL payload（RAM `$3000-$DFFF`、PUBLIC ロード範囲）からBIOS領域（`$E000-$FFFF`）への最初の制御移行を直接記録する。
 
 - 呼出し元PC、入口PC、ジャンプテーブル位置、SP差分によるJSR/JMP区分、入口直前A/X/Y/P/S・MPR・SP、戻り先推定（`caller+2`一致でJSRを裏付け）、IDR/IRR
 - 商用ゲストのバイトをAPICALLに出力しない。APICALLはアドレス・レジスタ・差分・戻り真偽値（`stack_check`/`return_matches_caller`）のみ。戻り先の数値・スタックバイトはC++内部で判定する（MPR1=`$F8`前提。想定外はUNKNOWN）
@@ -13,6 +13,7 @@
 ## 合成対照（`make api-entry-integration`）
 
 6ケース cold+warm： `jsr_slot02`、`jsr_slot03`、`jmp_slot02`、`direct_stub`（テーブルを経ずX=`$02`でスタブへ）、`nocall`、`spin`（予算負例）。
+さらに PUBLIC ローダーで高領域の呼出し元 5 ケース（`jsr_slot02_at_8000`、`jmp_slot02_at_9000`、`direct_stub_at_c000`、`nocall_at_8000`、`spin_at_9000`、cold+warm）で、監視範囲 `$3000-$DFFF` が `$8000/$9000/$C000` からの JSR/JMP/直行を検出し、`nocall`/`spin` を誤分類しないことを確認する。
 
 - `jsr_slot02`: table `$E006`、slot2、delta2=JSR、戻り=`caller+2`、entry regs preset、halt X=2
 - `jsr_slot03`: 同様にslot3
@@ -35,14 +36,23 @@
 
 `geargrafx_api_entry.py --commercial --commercial-rom <DEV/PUBLIC loader> --commercial-output /tmp/opencode/issue635-private/<file>.json`（直接子のみ。専用親0700を事前に作成。上書き不可。`--commercial-labels` 省略時は loader の `.lbl` から自動生成し、明示時はその値を使用。複数 CUE 時は `--commercial-index <N>`）
 
-例（DEV/PUBLIC それぞれで 1 回ずつ = cold+warm を含む計 4 観測。loader のビルドは既存 `build_ipl_loader_bios` を再利用し、CUE の実名・内容・パス・ハッシュはログに出さない）:
+または、ローダーを手動で用意せず `--commercial-auto-loader` で自動構築する（推奨）。選択した CUE からデータトラック INDEX 01 の絶対 LBA を **stat-only** で導出し（`commercial_media.data_track_index01_lba`: CUE テキストのみ読み、BIN は lstat のサイズのみ使用し内容を読まない。MODE1/2352 トラックが正確に 1 件でない場合は BLOCKED。導出値はログ・証拠 JSON に出さない）、`build_ipl_loader_bios` で PUBLIC（既定）または DEV ローダーを `build/`（gitignore）に構築してから probe する。`--commercial-auto-loader` と `--commercial-rom` は相互排他である:
 
 ```sh
 make dev-rom
-python3 tests/integration/geargrafx_api_entry.py --mode debug
-python3 tests/integration/geargrafx_api_entry.py --commercial --commercial-rom build/debug/api-entry/dev-ipl-loader-bios-not-compatible-main.pce --commercial-output /tmp/opencode/issue635-private/commercial-dev.json
-python3 tests/integration/geargrafx_api_entry.py --commercial --commercial-rom build/debug/api-entry/dev-ipl-loader-bios-not-compatible-public.pce --commercial-output /tmp/opencode/issue635-private/commercial-public.json
+python3 tests/integration/geargrafx_api_entry.py --commercial --commercial-auto-loader --commercial-loader-format public --commercial-output /tmp/opencode/issue635-private/commercial-public.json
+python3 tests/integration/geargrafx_api_entry.py --commercial --commercial-auto-loader --commercial-loader-format dev --commercial-output /tmp/opencode/issue635-private/commercial-dev.json
 ```
+
+合成 SEL（265）で構築したローダーを商用 CUE に使うと、情報セクタの位置が合わず IPL 検証で止まる（`PRE_API_BLOCKER_OBSERVED`）。これはローダーの SEL 不一致であり、商用 IPL 形式の証拠ではない。自動構築はこの不一致を解消する。
+
+PUBLIC ローダーの拡張（`IPL_PUBLIC` のみ。DEV ローダーは従来どおり）:
+- バイト 16..31: DEV はゼロ必須、PUBLIC は無視（公開仕様で未確定の領域を DEV 固有のゼロ要求で拒否しない。14..15 の扱いと同一の理由）
+- IPLBLN: DEV 1..10、PUBLIC 1..31
+- ロード先終端: DEV `$8000`、PUBLIC `$E000`。コピー/読戻しは MPR2..6 の領域（`$40/$60/$80/$A0/$C0`）まで対応
+- MPR バイト: DEV は `$80..$87` 生値、PUBLIC は 0..7 インデックスを `$80+index` へ写像（#691 の黒箱観測）
+
+判定は複数呼出し列にも対応する: cold/warm で同じ slot+method 列、すべての JSR が戻り一致で裏付けられ、最後の呼出しでスタブ halt する場合に `API_ENTRY_CONFIRMED` とする。JMP は最終呼出しのみ許可する（JMP は戻らない）。
 
 worktree から実行する場合、`./rom/`（gitignore、worktree 間共有なし）が本 worktree に無いため、main worktree の `./rom/` を read-only フォールバックとして参照する（`git rev-parse --git-common-dir` で解決。primary と同一の検証を行い、書込みはしない）。どちらも無い場合は NOT_RUN であり、「存在するから走る」自動実行はしない。
 

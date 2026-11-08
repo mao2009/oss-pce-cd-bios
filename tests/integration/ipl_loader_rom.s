@@ -140,6 +140,7 @@ validate_info:
     inx
     cpx #SIG_LEN
     bne @sig
+.ifndef IPL_PUBLIC
     ldx #16
 @res:
     lda BUF,x
@@ -150,6 +151,7 @@ validate_info:
     inx
     cpx #32
     bne @res
+.endif
     ; IPLBLK: 24-bit big-endian data-relative sector; DEV accepts only 16-bit values >= 2
 .ifndef IPL_MUTANT_HIGHBYTE
     lda BUF
@@ -181,13 +183,18 @@ validate_info:
     lda #27
     jmp fail
 @lbaok:
-    ; IPLBLN: number of 2048-byte sectors, 1..10 (10 sectors = $5000 bytes fit $3000-$7FFF)
+    ; IPLBLN: number of 2048-byte sectors. DEV: 1..10 (fits $3000-$7FFF).
+    ; PUBLIC: 1..31 (fits $3000-$DFFF through MPR2..6 regions; see switch_region).
     lda BUF+3
     bne @nz
     lda #22
     jmp fail
 @nz:
+.ifdef IPL_PUBLIC
+    cmp #32
+.else
     cmp #11
+.endif
     bcc @nok
     lda #22
     jmp fail
@@ -227,9 +234,17 @@ validate_info:
     lda stav+1
     clc
     adc scr
+    bcs @ovf                  ; 16-bit overflow: load end wraps past $FFFF, refuse before copy
+.ifdef IPL_PUBLIC
+    cmp #$E0
+.else
     cmp #$80
+.endif
     beq @eq
     bcc @rok
+    lda #23
+    jmp fail
+@ovf:
     lda #23
     jmp fail
 @eq:
@@ -483,7 +498,8 @@ verify_body:
     lda #31                  ; readback differs from the sum read from disc: copied, NOT executed
     jmp fail
 
-; Select the bank for the 8 KiB region in curreg ($20 = $2000-$3FFF, $40 = $4000-$5FFF, $60 = $6000-$7FFF).
+; Select the bank for the 8 KiB region in curreg. DEV: $20/$40/$60 only.
+; PUBLIC adds $80 (MPR4), $A0 (MPR5), $C0 (MPR6) for IPLs larger than $3000-$7FFF.
 switch_region:
     lda curreg
     cmp #$20
@@ -499,10 +515,34 @@ switch_region:
     rts
 @n60:
     cmp #$60
+.ifdef IPL_PUBLIC
+    bne @n80
+.else
     bne @bad
+.endif
     lda m3
     tam #$08
     rts
+.ifdef IPL_PUBLIC
+@n80:
+    cmp #$80
+    bne @na0
+    lda m4
+    tam #$10
+    rts
+@na0:
+    cmp #$A0
+    bne @nc0
+    lda m5
+    tam #$20
+    rts
+@nc0:
+    cmp #$C0
+    bne @bad
+    lda m6
+    tam #$40
+    rts
+.endif
 @bad:
     lda #29
     jmp fail

@@ -321,3 +321,128 @@ def validate_cue(cue_path: Path, rom_dir: Path) -> list[Path]:
             raise CommercialMediaError("BLOCKED: CUE FILE reference is not a regular file")
         validated.append(target_abs)
     return validated
+
+
+# Sector sizes for the CUE modes understood by cue_analysis (stat-only layout below).
+_SECTOR_BYTES = {
+    "MODE1/2048": 2048,
+    "MODE1/2352": 2352,
+    "MODE2/2336": 2336,
+    "MODE2/2352": 2352,
+    "AUDIO": 2352,
+}
+
+
+def _read_cue_text_safely(cue_path: Path) -> str:
+    """Read CUE text with O_NOFOLLOW (same limits as validate_cue). Sanitized errors only."""
+    cue_abs = Path(os.path.abspath(cue_path))
+    if not hasattr(os, "O_NOFOLLOW") or os.O_NOFOLLOW is None:
+        raise CommercialMediaError("BLOCKED: O_NOFOLLOW unavailable")
+    try:
+        fd = os.open(str(cue_abs), os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        raise CommercialMediaError("BLOCKED: CUE file unreadable")
+    try:
+        fst = os.fstat(fd)
+        if not stat.S_ISREG(fst.st_mode) or fst.st_size > _MAX_CUE_BYTES:
+            raise CommercialMediaError("BLOCKED: CUE file unreadable")
+        chunks = []
+        total = 0
+        while True:
+            data = os.read(fd, 65536)
+            if not data:
+                break
+            chunks.append(data)
+            total += len(data)
+            if total > _MAX_CUE_BYTES:
+                raise CommercialMediaError("BLOCKED: CUE file too large")
+        cue_bytes = b"".join(chunks)
+    except CommercialMediaError:
+        raise
+    except OSError:
+        raise CommercialMediaError("BLOCKED: CUE file unreadable")
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            raise CommercialMediaError("BLOCKED: CUE file unreadable")
+    try:
+        return cue_bytes.decode("utf-8").lstrip("\ufeff")
+    except UnicodeDecodeError:
+        raise CommercialMediaError("BLOCKED: CUE file unreadable")
+
+
+def data_track_index01_lba(cue_path: Path, rom_dir: Path) -> int:
+    """Return the first MODE1/2352 track's INDEX 01 absolute LBA, stat-only.
+
+    Fail-closed and sanitized: the CUE is validated with validate_cue, parsed
+    with cue_analysis.parse_cue_text, and BIN sizes are taken from lstat only.
+    No BIN content is read, no hash is computed, and no media name, path or
+    LBA value appears in any error message. Exactly one MODE1/2352 track is
+    required; zero or multiple such tracks are BLOCKED (never guessed).
+    """
+    cue_path = Path(cue_path)
+    # Full CUE/BIN safety validation first (symlinks, refs, existence).
+    validate_cue(cue_path, rom_dir)
+    cue_text = _read_cue_text_safely(cue_path)
+    try:
+        try:
+            from cue_analysis import parse_cue_text
+        except ImportError:
+            from tools.cue_analysis import parse_cue_text  # type: ignore
+        sheet = parse_cue_text(cue_text)
+    except Exception:
+        raise CommercialMediaError("BLOCKED: CUE layout cannot be derived")
+    cue_abs = Path(os.path.abspath(cue_path))
+    disc_cursor = 0
+    mode1_starts: list[int] = []
+    try:
+        for file in sheet["files"]:
+            if not file["tracks"]:
+                raise CommercialMediaError("BLOCKED: CUE layout cannot be derived")
+            sizes = {_SECTOR_BYTES.get(t["mode"]) for t in file["tracks"]}
+            if len(sizes) != 1 or None in sizes:
+                raise CommercialMediaError("BLOCKED: CUE layout cannot be derived")
+            sector_bytes = sizes.pop()
+            # BIN identity by lstat only; never read BIN contents here.
+            ref = file["name"]
+            _validate_ref_string(ref)
+            bin_abs = Path(os.path.normpath(cue_abs.parent / ref))
+            if not _is_within(Path(os.path.abspath(bin_abs)), Path(os.path.abspath(rom_dir))):
+                raise CommercialMediaError("BLOCKED: CUE layout cannot be derived")
+            _check_no_symlink_components(bin_abs, rom_dir)
+            bst = _lstat_strict(bin_abs, "FILE reference")
+            if not stat.S_ISREG(bst.st_mode):
+                raise CommercialMediaError("BLOCKED: CUE layout cannot be derived")
+            if bst.st_size % sector_bytes:
+                raise CommercialMediaError("BLOCKED: CUE layout cannot be derived")
+            file_frames = bst.st_size // sector_bytes
+            for track in file["tracks"]:
+                if 1 not in track["index"]:
+                    raise CommercialMediaError("BLOCKED: CUE layout cannot be derived")
+                if 0 in track["index"] and track["index"][0] > track["index"][1]:
+                    raise CommercialMediaError("BLOCKED: CUE layout cannot be derived")
+                if "pregap" in track and 0 in track["index"]:
+                    raise CommercialMediaError("BLOCKED: CUE layout cannot be derived")
+            starts = [min(t["index"].values()) for t in file["tracks"]]
+            if starts != sorted(starts) or starts[0] != 0:
+                raise CommercialMediaError("BLOCKED: CUE layout cannot be derived")
+            for position, track in enumerate(file["tracks"]):
+                bin_start = starts[position]
+                index01 = track["index"][1]
+                bin_end = starts[position + 1] if position + 1 < len(starts) else file_frames
+                user_frames = bin_end - index01
+                if user_frames <= 0:
+                    raise CommercialMediaError("BLOCKED: CUE layout cannot be derived")
+                pregap_frames = (index01 - bin_start) + track.get("pregap", 0)
+                start_lba = disc_cursor + pregap_frames
+                if track["mode"] == "MODE1/2352":
+                    mode1_starts.append(start_lba)
+                disc_cursor = start_lba + user_frames
+    except CommercialMediaError:
+        raise
+    except Exception:
+        raise CommercialMediaError("BLOCKED: CUE layout cannot be derived")
+    if len(mode1_starts) != 1:
+        raise CommercialMediaError("BLOCKED: CUE layout cannot be derived")
+    return mode1_starts[0]

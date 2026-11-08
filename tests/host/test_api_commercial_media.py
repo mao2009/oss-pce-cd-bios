@@ -581,5 +581,119 @@ class MutationTests(unittest.TestCase):
         self.assertIn("commercial options require --commercial", src)
 
 
+class DataTrackIndex01LbaTests(unittest.TestCase):
+    """Stat-only INDEX 01 LBA derivation (synthetic CUE/BIN sizes only, no media bytes)."""
+
+    def _rom_with_sizes(self, tmp, cue_text, sizes):
+        rom = Path(tmp) / "rom"
+        rom.mkdir()
+        for name, frames in sizes.items():
+            (rom / name).write_bytes(b"\x00" * (frames * 2352))
+        (rom / "a.cue").write_text(cue_text, encoding="utf-8")
+        return rom
+
+    def test_single_data_track_at_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rom = self._rom_with_sizes(tmp, VALID_CUE, {"track.bin": 10})
+            self.assertEqual(commercial_media.data_track_index01_lba(rom / "a.cue", rom), 0)
+
+    def test_multi_file_audio_then_data_with_stored_pregap(self):
+        # Track 01 audio 100 frames, Track 02 data INDEX 00 at 0, INDEX 01 at 25 frames:
+        # start_lba = 100 + 25 = 125. Sizes only; BIN contents are zeros.
+        cue = ('FILE "a1.bin" BINARY\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n'
+               'FILE "a2.bin" BINARY\n  TRACK 02 MODE1/2352\n    INDEX 00 00:00:00\n    INDEX 01 00:00:25\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            rom = self._rom_with_sizes(tmp, cue, {"a1.bin": 100, "a2.bin": 50})
+            self.assertEqual(commercial_media.data_track_index01_lba(rom / "a.cue", rom), 125)
+
+    def test_virtual_pregap_before_data(self):
+        # Audio 100 frames, then data track with CUE PREGAP 50 frames and INDEX 01 at frame 0
+        # of its BIN: start_lba = 100 + 50 = 150.
+        cue = ('FILE "a1.bin" BINARY\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n'
+               'FILE "a2.bin" BINARY\n  TRACK 02 MODE1/2352\n    PREGAP 00:00:50\n    INDEX 01 00:00:00\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            rom = self._rom_with_sizes(tmp, cue, {"a1.bin": 100, "a2.bin": 50})
+            self.assertEqual(commercial_media.data_track_index01_lba(rom / "a.cue", rom), 150)
+
+    def test_bom_cue_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rom = self._rom_with_sizes(tmp, "\ufeff" + VALID_CUE, {"track.bin": 10})
+            self.assertEqual(commercial_media.data_track_index01_lba(rom / "a.cue", rom), 0)
+
+    def test_multiple_mode1_tracks_blocked(self):
+        cue = ('FILE "a1.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+               'FILE "a2.bin" BINARY\n  TRACK 02 MODE1/2352\n    INDEX 01 00:00:00\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            rom = self._rom_with_sizes(tmp, cue, {"a1.bin": 10, "a2.bin": 10})
+            with self.assertRaisesRegex(ValueError, "BLOCKED"):
+                commercial_media.data_track_index01_lba(rom / "a.cue", rom)
+
+    def test_audio_only_blocked(self):
+        cue = 'FILE "a1.bin" BINARY\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            rom = self._rom_with_sizes(tmp, cue, {"a1.bin": 10})
+            with self.assertRaisesRegex(ValueError, "BLOCKED"):
+                commercial_media.data_track_index01_lba(rom / "a.cue", rom)
+
+    def test_bin_size_not_multiple_blocked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rom = Path(tmp) / "rom"
+            rom.mkdir()
+            (rom / "track.bin").write_bytes(b"\x00" * 2353)
+            (rom / "a.cue").write_text(VALID_CUE, encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "BLOCKED"):
+                commercial_media.data_track_index01_lba(rom / "a.cue", rom)
+
+    def test_error_messages_are_sanitized(self):
+        # No file names, paths or LBA values in error text.
+        cue = 'FILE "SECRET_TRACK_8Y3.bin" BINARY\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            rom = self._rom_with_sizes(tmp, cue, {"SECRET_TRACK_8Y3.bin": 10})
+            try:
+                commercial_media.data_track_index01_lba(rom / "a.cue", rom)
+            except ValueError as error:
+                self.assertNotIn("SECRET_TRACK_8Y3", str(error))
+                self.assertNotIn(str(rom), str(error))
+            else:
+                self.fail("expected BLOCKED")
+
+
+class LoaderManifestPrivacyTests(unittest.TestCase):
+    """Commercial auto-loader manifests must not leak the derived SEL."""
+
+    def _manifest(self, private):
+        from build_dev_ipl_loader_bios import loader_manifest
+        return loader_manifest(12345, "debug", "comm-public", ["-D", "IPL_PUBLIC"],
+                               b"\x00" * 262144, {}, "x.pce", private_input=private)
+
+    def test_synthetic_manifest_keeps_exact_sel(self):
+        manifest = self._manifest(False)
+        self.assertEqual(manifest["ipl_sel_lba"], 12345)
+        self.assertFalse(manifest["private_media_used"])
+        self.assertNotIn("ipl_sel_lba_redacted", manifest)
+
+    def test_private_manifest_redacts_sel_and_marks_private(self):
+        manifest = self._manifest(True)
+        self.assertNotIn("ipl_sel_lba", manifest)
+        self.assertTrue(manifest["ipl_sel_lba_redacted"])
+        self.assertTrue(manifest["private_media_used"])
+        # The decimal/hex SEL value must not appear anywhere in the manifest.
+        import json
+        text = json.dumps(manifest, sort_keys=True)
+        self.assertNotIn("12345", text)
+        self.assertNotIn("3039", text.lower())  # 0x3039 hex spelling
+
+    def test_auto_loader_uses_private_mode_synthetic_does_not(self):
+        src = (ROOT / "tests" / "integration" / "geargrafx_api_entry.py").read_text()
+        self.assertIn("private_input=True", src)
+        # The two synthetic build sites must not pass private_input=True.
+        self.assertEqual(src.count("private_input=True"), 1)
+
+    def test_build_output_is_gitignored(self):
+        gitignore = (ROOT / ".gitignore").read_text()
+        self.assertIn("build/", gitignore)
+        self.assertIn("/rom/", gitignore)
+
+
 if __name__ == "__main__":
     unittest.main()

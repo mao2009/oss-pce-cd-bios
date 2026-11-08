@@ -55,8 +55,43 @@ def parse_labels(path: Path, names) -> dict:
     return found
 
 
-def build_ipl_loader_bios(original_path: Path, output: Path, sel: int, mode="debug", variant="main", defines=()):
-    """Return (rom_path, symbols). `sel` is the 16-bit INDEX 01 LBA embedded in the loader (IPL_SEL)."""
+def loader_manifest(sel: int, mode, variant, defines, data: bytes, symbols, rom_name: str,
+                    private_input: bool = False) -> dict:
+    """Manifest for a loader ROM. Synthetic builds keep the exact SEL value;
+    private (commercial-derived) builds redact it and set private_media_used,
+    so a manifest that escaped build/ could not leak the derived LBA nor be
+    mistaken for a synthetic-media build."""
+    manifest = {
+        "status": ("PUBLIC-IPL-FORMAT-LOADER-BIOS-256KIB-synthetic-not-compatible-not-a-bios-abi"
+                   if "IPL_PUBLIC" in defines else "DEV-ONLY-IPL-LOADER-BIOS-256KIB-not-compatible-not-a-bios-abi"),
+        "ipl_format": "public" if "IPL_PUBLIC" in defines else "dev",
+        "mode": mode, "variant": variant, "rom_name": rom_name,
+        "rom_sha256": hashlib.sha256(data).hexdigest(), "rom_bytes": IMAGE_BYTES,
+        "loader_source": "tests/integration/ipl_loader_rom.s (unchanged, Issue #670)",
+        "defines": list(defines), "symbols": symbols, "pinned_cc65": DEPENDENCIES["cc65"]["revision"],
+        "pinned_geargrafx": DEPENDENCIES["geargrafx"]["revision"],
+        "assumption": "the reset word at file offset $1FFE is the power-on entry in bank 0 at $E000 for the "
+                      "Geargrafx BIOS load path; the probe's SEI check fails loudly if this does not hold",
+        "payload_embedded_in_rom": False, "system_card_abi": "NO_CLAIM", "release_eligible": False,
+        "dev_callable": False,
+    }
+    if private_input:
+        manifest["ipl_sel_lba_redacted"] = True
+        manifest["private_media_used"] = True
+    else:
+        manifest["ipl_sel_lba"] = sel
+        manifest["private_media_used"] = False
+    return manifest
+
+
+def build_ipl_loader_bios(original_path: Path, output: Path, sel: int, mode="debug", variant="main", defines=(),
+                          private_input: bool = False):
+    """Return (rom_path, symbols). `sel` is the 16-bit INDEX 01 LBA embedded in the loader (IPL_SEL).
+
+    `private_input=True` (commercial auto-loader only): the derived SEL is
+    used to build the ROM but is redacted from the manifest on disk.
+    Synthetic callers must leave it False (default), preserving the exact
+    synthetic manifest schema."""
     if mode not in ("debug", "release"):
         raise ValueError("MODE must be debug or release")
     if not 0 < sel < 0xFFF0:
@@ -109,19 +144,7 @@ def build_ipl_loader_bios(original_path: Path, output: Path, sel: int, mode="deb
         raise ValueError(f"reset vector {reset_vector:04x} is not the loader reset")
     if data[reset_vector & 0x1FFF] != 0x78:
         raise ValueError("loader reset must start with SEI (the probe contract)")
-    manifest = {
-        "status": ("PUBLIC-IPL-FORMAT-LOADER-BIOS-256KIB-synthetic-not-compatible-not-a-bios-abi"
-                   if "IPL_PUBLIC" in defines else "DEV-ONLY-IPL-LOADER-BIOS-256KIB-not-compatible-not-a-bios-abi"),
-        "ipl_format": "public" if "IPL_PUBLIC" in defines else "dev",
-        "mode": mode, "variant": variant, "rom_name": rom.name,
-        "rom_sha256": hashlib.sha256(data).hexdigest(), "rom_bytes": IMAGE_BYTES,
-        "ipl_sel_lba": sel, "loader_source": "tests/integration/ipl_loader_rom.s (unchanged, Issue #670)",
-        "defines": list(defines), "symbols": symbols, "pinned_cc65": DEPENDENCIES["cc65"]["revision"],
-        "pinned_geargrafx": DEPENDENCIES["geargrafx"]["revision"],
-        "assumption": "the reset word at file offset $1FFE is the power-on entry in bank 0 at $E000 for the "
-                      "Geargrafx BIOS load path; the probe's SEI check fails loudly if this does not hold",
-        "payload_embedded_in_rom": False, "system_card_abi": "NO_CLAIM", "release_eligible": False,
-        "dev_callable": False, "private_media_used": False,
-    }
+    manifest = loader_manifest(sel, mode, variant, defines, data, symbols, rom.name,
+                               private_input=private_input)
     (output / f"manifest-{variant}.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     return rom, symbols
