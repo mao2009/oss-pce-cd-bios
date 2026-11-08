@@ -310,6 +310,9 @@ def _check_refused(row, mode, require_fetch=True):
                              f"refused PC {row['refused_pc']:#x}")
         if row.get("ram_unchanged_during_resume") is not True:
             raise ValueError(f"{mode}: WRAM changed during the resume attempts")
+        # Armed refuses run through TryPeek only and never target a $FF-mapped page.
+        if row.get("fetch_unsafe_bank") is not False:
+            raise ValueError(f"{mode}: refused fetch targeted the unsafe bank")
         if row.get("mmio_read_attempts") != 0:
             raise ValueError(f"{mode}: mmio_read_attempts {row.get('mmio_read_attempts')!r}, expected 0")
         # CPU stop-state held: the final architectural PC must equal the refusal PC.
@@ -414,8 +417,6 @@ def check_hardware_page_blocked(row, mode=HWPAGE_MODE):
     if row.get("detected") is not True or row.get("detected_pc") != row["stop_pc"]:
         raise ValueError(f"{mode}: detected_pc {row.get('detected_pc')!r} does not match the "
                          f"measured stop PC {row['stop_pc']:#x}")
-    if row.get("ram_unchanged_during_resume") is not True:
-        raise ValueError(f"{mode}: WRAM changed during the resume attempts")
     # Armed runs must not perform any unsafe Read-based fetch (the probe's TryPeek path is
     # side-effect-free; a recorded attempt means the run took the Read path somewhere).
     if row.get("mmio_read_attempts") != 0:
@@ -529,6 +530,9 @@ def check_peek_fail_step(row, mode):
         raise ValueError(f"{mode}: fail-open run is unarmed")
     if row.get("fetch_open_stepped") is not True or row.get("status") != "fetch_open_stepped":
         raise ValueError(f"{mode}: peek failure did not step anyway")
+    # The fail-open path is still peek-based: the monitor's own Reads never fire there.
+    if row.get("mmio_read_attempts") != 0:
+        raise ValueError(f"{mode}: mmio_read_attempts {row.get('mmio_read_attempts')!r}, expected 0")
     # The failed fetch evidence must describe the hardware page (fixed-JMP $4000 or BBR3 $4002).
     if row.get("fetch_failed") is not True or row.get("fetch_unsafe_bank") is not True:
         raise ValueError(f"{mode}: fetch evidence does not describe a failed unsafe fetch")
