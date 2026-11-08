@@ -17,14 +17,17 @@ Classifier design (composite conditions, never a single stop-PC number):
 * VDC status register (SR): a safe armed run leaves SR unchanged; the Memory::Read fetch mutation
   lands a status clear (0x3F -> 0x00 with the probe's sentinel preset) BEFORE any refusal. AR/R are
   compared as well, and SR is read from the probe's state struct (host-side), never via a CPU fetch.
-* Stop PC: for fixed-guest ST refusals the PC is deterministic and exact-matched; for the dynamic
-  hardware-page entry (BBR3-class branch into MMIO: the branch outcome depends on the VDC read
-  buffer, so the landing PC varies) only hardware-page membership plus MPR-mapping consistency is
-  required. A measured stop PC (e.g. $4002 observed in one run) is recorded as evidence, never
-  treated as a fixed expectation. A stop inside the hardware page with no TryPeek failure, or with
-  a step already issued, is FAIL, not PASS.
+* Stop PC: for fixed-guest ST refusals the PC is deterministic and exact-matched; for dynamic
+  hardware-page entries (fixed-JMP entry and the BBR3 data-dependent branch below, whose outcome
+  varies with the patched zp bit) only hardware-page membership plus MPR-mapping consistency is
+  required. A measured stop PC ($4000 for the fixed-JMP entry, $4002 for the taken BBR3) is
+  recorded as evidence, never treated as a fixed expectation. A stop inside the hardware page
+  with no TryPeek failure, or with a step already issued, is FAIL, not PASS.
+* Resume: each resume attempt re-enters through the same guarded execution entry as the initial
+  run (the probe's guarded_execute, the only path that invokes the core). No-resume is proven
+  by execution count, PC, VDC AR/R/SR and RAM remaining unchanged across three attempts.
 
-Modes (15 armed families + positive control):
+Modes (17 armed families + positive control):
 * ``stN-entry``: ST is the entry instruction. Refused before any instruction runs (0 executed).
 * ``stN-unknown`` / ``stN-unknown-far``: a JMP reaches the ST at an unknown PC (monitor has no hint).
 * ``st1-branch-unknown``: a taken BNE (data-dependent branch) reaches the ST at $3E10.
@@ -33,12 +36,17 @@ Modes (15 armed families + positive control):
 * ``st0-rom-page0``: ST0 opcode at $0000 (ROM bank 0 through MPR0=$00).
 * ``st2-mpr2-unknown``: guest TAM changes MPR2, then JMP reaches ST2 in page 2.
 * ``st0-hwpage-fetch-blocked``: guest TAM maps page 2 to $FF; fetch at $4000 must fail closed.
-  This is the dynamic-MMIO-entry (BBR3-class) case: classified by composite conditions only.
+  This is the fixed-JMP dynamic-MMIO-entry case: the branch outcome is fixed here.
+* ``st0-bbr3-hwpage-taken`` / ``st0-bbr3-hwpage-skip``: a genuine BBR3 (opcode $3F, branch
+  if the zp bit is clear) data-dependent branch with two conditions on the WRAM zp byte at
+  CPU $2010 (PCE zero page base $2000). Taken it lands at $4002 (hardware page) and the fetch
+  must fail closed; skipped it falls through to ST0 at $3F83 which must be refused. The
+  branch outcome selects which classifier family applies; no fixed landing PC is required.
 * ``st1-unused-bank``: guest TAM maps page 3 to unused bank $88; ST1 fetched from that bank.
 * ``irq2-handler-st0-survey`` / ``irq2-core-stop-survey``: IRQ2 accepted at an instruction boundary;
   the handler-head ST0 is refused. The two differ only in the core debugger stop_on_irq flag.
 * ``pos-write``: positive control. An allowlisted RAM store runs unrefused and lands.
-Mutation suffixes (8 kinds, 17 runs): -unguarded, -no-entry-check, -no-recheck (MPR2 recheck only),
+Mutation suffixes (8 kinds, 20 runs): -unguarded, -no-entry-check, -no-recheck (MPR2 recheck only),
 -wrong-opcode (ST2 omission only: single-opcode-list demo), -knownpc-only, -resume-allowed,
 -unsafe-read, -peek-fail-step.
 
@@ -89,6 +97,7 @@ ST_EXPECTED_PC = {
     "st1-unknown-far": 0x3E20,
     "st2-mpr2-unknown": 0x4010,
     "st1-unused-bank": 0x6010,
+    "st0-bbr3-hwpage-skip": 0x3F83,
     "irq2-handler-st0-survey": 0x3F80,
     "irq2-core-stop-survey": 0x3F80,
 }
@@ -105,6 +114,7 @@ ST_EXECUTED_BEFORE_REFUSAL = {
     "st1-unknown-far": 1,
     "st2-mpr2-unknown": 3,
     "st1-unused-bank": 3,
+    "st0-bbr3-hwpage-skip": 4,
     "irq2-handler-st0-survey": 2,
     "irq2-core-stop-survey": 2,
 }
@@ -112,21 +122,30 @@ ST_EXECUTED_BEFORE_REFUSAL = {
 MPR_TRANSITION = {
     "st2-mpr2-unknown": (2, 0x00, 0xF8),
     "st0-hwpage-fetch-blocked": (2, 0x00, 0xFF),
+    "st0-bbr3-hwpage-taken": (2, 0x00, 0xFF),
+    "st0-bbr3-hwpage-skip": (2, 0x00, 0xFF),
     "st1-unused-bank": (3, 0x00, 0x88),
 }
+# Modes whose ST fetch must resolve through the guest-remapped page. (The BBR3-skip ST sits in
+# page 1 WRAM; its MPR2 remap is part of the prologue but holds no ST fetch.)
+TRANSITION_FETCH_MODES = ("st2-mpr2-unknown", "st1-unused-bank")
 
-# --- Dynamic hardware-page entry (BBR3-class): composite classification, no fixed PC. -------------
+# --- Dynamic hardware-page entries: composite classification, no fixed PC. -------------------
+# Two shapes land in the hardware page: the fixed-JMP entry and the BBR3 data-dependent branch
+# (whose outcome varies with the host-patched zp bit). Only page membership + MPR consistency
+# is required; measured stop PCs ($4000 / $4002) are evidence, never expectations.
 HWPAGE_MODE = "st0-hwpage-fetch-blocked"
-HWPAGE_EXPECTED_EXECUTED = 3  # LDA + TAM + JMP; the unsafe fetch itself must never step
+BBR3_TAKEN_MODE = "st0-bbr3-hwpage-taken"
+HWPAGE_EXPECTED_EXECUTED = {HWPAGE_MODE: 3, BBR3_TAKEN_MODE: 4}
 HWPAGE_PAGE = 2  # CPU page 2 (addresses $4000-$5FFF)
 HWPAGE_BANK = 0xFF
 SR_SENTINEL_BEFORE = 0x3F
 AR_SENTINEL_BEFORE = 5
 
-ARMED_MODES = tuple(ST_EXPECTED_PC) + (HWPAGE_MODE,)
+ARMED_MODES = tuple(ST_EXPECTED_PC) + (HWPAGE_MODE, BBR3_TAKEN_MODE)
 IRQ_SURVEY_MODES = ("irq2-handler-st0-survey", "irq2-core-stop-survey")
 
-# Mutation kinds (8, 17 runs): each keeps the monitor armed unless its name says otherwise, and must make the
+# Mutation kinds (8, 20 runs): each keeps the monitor armed unless its name says otherwise, and must make the
 # prohibited effect observable; the armed classifier must then reject the mutated run.
 # (Known limitation: -knownpc-only on an already-known PC stays armed; it is only run on non-listed
 # PCs. -resume-allowed on the branch case proves the latch, not the PC list.)
@@ -143,6 +162,8 @@ MUTATIONS = {
     "st1-unknown-far": ("st1-unknown-far-knownpc-only",),
     "st2-mpr2-unknown": ("st2-mpr2-unknown-no-recheck", "st2-mpr2-unknown-wrong-opcode"),
     HWPAGE_MODE: (HWPAGE_MODE + "-unsafe-read", HWPAGE_MODE + "-peek-fail-step"),
+    BBR3_TAKEN_MODE: (BBR3_TAKEN_MODE + "-unsafe-read", BBR3_TAKEN_MODE + "-peek-fail-step"),
+    "st0-bbr3-hwpage-skip": ("st0-bbr3-hwpage-skip-knownpc-only",),
     "st1-unused-bank": ("st1-unused-bank-knownpc-only",),
     "irq2-handler-st0-survey": ("irq2-handler-st0-survey-knownpc-only",),
     "irq2-core-stop-survey": ("irq2-core-stop-survey-knownpc-only",),
@@ -177,8 +198,12 @@ def _vdc_landed(row, kind):
 
 def _common(row, mode, historical=False):
     """Validate the evidence envelope. Live runs require the full probe surface (fetch/SR/RAM)."""
-    if row.get("exit", 0) != 0:
-        raise ValueError(f"{mode} probe refused to run (exit {row.get('exit')}): {row.get('stderr', '')[-300:]}")
+    # Fail-closed exit validation: only the integer 0 is accepted. A missing field, None, a
+    # bool, or a numeric string must never be treated as success.
+    exit_code = row.get("exit")
+    if type(exit_code) is not int or exit_code != 0:
+        raise ValueError(f"{mode} probe refused to run (exit {exit_code!r}): "
+                         f"{str(row.get('stderr', ''))[-300:]}")
     if row.get("mode") != mode:
         raise ValueError(f"{mode} measured wrong mode: {row.get('mode')}")
     for side in ("before", "after"):
@@ -203,12 +228,17 @@ def _common(row, mode, historical=False):
         if type(row.get(name)) is not int:
             raise ValueError(f"{mode} missing/non-integer {name}: {row.get(name)!r}")
     if not historical:
+        for name in ("vdc_read_buffer_before", "vdc_read_buffer_after"):
+            if type(row.get(name)) is not int:
+                raise ValueError(f"{mode} missing/non-integer {name}: {row.get(name)!r}")
         for name in ("vdc_sr_before", "vdc_sr_after", "fetch_opcode", "fetch_page", "fetch_mpr",
                      "fetch_safe", "fetch_failed", "fetch_blocked", "hazard_landed",
-                     "fetch_open_stepped", "refused", "instructions_executed",
+                     "fetch_open_stepped", "refused", "vector_read", "ram_unchanged_during_resume",
+                     "ram_diff_truncated", "instructions_executed",
                      "executed_at_refusal", "executed_after_resume", "resume_attempts", "resume_refused"):
             if name in ("fetch_safe", "fetch_failed", "fetch_blocked", "hazard_landed",
-                        "fetch_open_stepped", "refused"):
+                        "fetch_open_stepped", "refused", "vector_read",
+                        "ram_unchanged_during_resume", "ram_diff_truncated"):
                 if type(row.get(name)) is not bool:
                     raise ValueError(f"{mode} missing/non-bool {name}: {row.get(name)!r}")
             elif type(row.get(name)) is not int:
@@ -216,12 +246,12 @@ def _common(row, mode, historical=False):
         if type(row.get("fetch_via")) is not str or row["fetch_via"] not in ("peek", "read"):
             raise ValueError(f"{mode} fetch_via must be peek/read: {row.get('fetch_via')!r}")
         # Hazard mutations intentionally exercise the unsafe fetch path; their dedicated checkers
-        # validate the exact hazard shape. The armed hwpage run is a TryPeek failure by design.
+        # validate the exact hazard shape. The armed hwpage runs are a TryPeek failure by design.
         if mode.endswith(HAZARD_SUFFIXES):
             return
         if row["fetch_via"] != "peek":
             raise ValueError(f"{mode} live armed run fetched via {row['fetch_via']!r}, not TryPeek")
-        if _base_of(mode) != HWPAGE_MODE:
+        if _base_of(mode) not in HWPAGE_EXPECTED_EXECUTED:
             if row["fetch_failed"] is not False:
                 raise ValueError(f"{mode} fetch failed on a safe-guest run")
             if row["fetch_blocked"] is not False:
@@ -260,6 +290,14 @@ def _check_refused(row, mode, require_fetch=True):
     if row["instructions_executed"] != ST_EXECUTED_BEFORE_REFUSAL[mode]:
         raise ValueError(f"{mode}: executed {row['instructions_executed']} instructions, expected "
                          f"{ST_EXECUTED_BEFORE_REFUSAL[mode]} (the ST itself must not run)")
+    # detected_pc is the measured detection PC (never the plan expectation): it must agree with
+    # the refused PC of this run. Live runs only; historical records predate the field.
+    if require_fetch:
+        if row.get("detected") is not True or row.get("detected_pc") != row["refused_pc"]:
+            raise ValueError(f"{mode}: detected_pc {row.get('detected_pc')!r} does not match the "
+                             f"refused PC {row['refused_pc']:#x}")
+        if row.get("ram_unchanged_during_resume") is not True:
+            raise ValueError(f"{mode}: WRAM changed during the resume attempts")
     if row.get("resume_attempts") != RESUME_ATTEMPTS or row.get("resume_refused") != RESUME_ATTEMPTS:
         raise ValueError(f"{mode}: resume not fully refused ({row.get('resume_refused')}/"
                          f"{row.get('resume_attempts')})")
@@ -285,7 +323,7 @@ def _check_refused(row, mode, require_fetch=True):
     _fetch_mapping_ok(row, mode)
     if row.get("fetch_safe") is not True:
         raise ValueError(f"{mode}: opcode was not obtained through a safe peek")
-    if mode in MPR_TRANSITION:
+    if mode in TRANSITION_FETCH_MODES:
         page, _before, after = MPR_TRANSITION[mode]
         if row["fetch_page"] != page or row["fetch_mpr"] != after:
             raise ValueError(f"{mode}: ST fetch did not resolve through remapped page {page}")
@@ -295,15 +333,21 @@ def _check_refused(row, mode, require_fetch=True):
 
 
 def _check_irq_survey(row, mode):
-    """IRQ-acceptance side effects: only the architectural stack pushes may touch WRAM."""
+    """IRQ-acceptance side effects: only the architectural stack pushes may touch WRAM (net diff)."""
     if row.get("irq_accepted") is not True:
         raise ValueError(f"{mode}: IRQ2 was not accepted at an instruction boundary")
-    if row.get("observed_vector") != 0xFFF6:
-        raise ValueError(f"{mode}: observed IRQ vector {row.get('observed_vector')!r}, expected $FFF6")
+    if row.get("vector_read") is not True or row.get("observed_vector") != 0x3F80:
+        raise ValueError(f"{mode}: IRQ vector was not measured "
+                         f"(vector_read={row.get('vector_read')!r}, value={row.get('observed_vector')!r})")
     if row["after"]["sp"] != 0xFC:
         raise ValueError(f"{mode}: SP after acceptance is {row['after']['sp']:#x} ($FC = 3 pushes)")
-    if row.get("only_stack_writes") is not True:
-        raise ValueError(f"{mode}: non-stack WRAM changed during IRQ acceptance")
+    frame = row.get("stack_frame_layout") or []
+    if len(frame) != 3 or frame[0] != 0x3E or frame[1] != 0x01:
+        raise ValueError(f"{mode}: stack frame {frame!r} does not encode the return PC $3E01")
+    if row.get("only_stack_net_diffs") is not True:
+        raise ValueError(f"{mode}: non-stack WRAM net diffs during IRQ acceptance")
+    if row.get("ram_diff_truncated") is True:
+        raise ValueError(f"{mode}: WRAM net diff is truncated (stack claim unverifiable)")
 
 
 def check_refused(row, mode):
@@ -317,10 +361,11 @@ def check_refused_historical(row, mode):
 
 
 def check_hardware_page_blocked(row, mode=HWPAGE_MODE):
-    """Dynamic-MMIO-entry (BBR3-class) classifier: composite conditions, no fixed stop PC.
+    """Dynamic hardware-page-entry classifier (fixed-JMP entry and BBR3 branch): composite
+    conditions, no fixed stop PC.
 
     A measured stop PC is recorded as evidence but never required to equal any constant: the branch
-    outcome (and therefore the landing PC) depends on the VDC read buffer. PASS requires ALL of:
+    outcome (and therefore the landing PC) varies with the entry shape. PASS requires ALL of:
     TryPeek failure at the fetch, fail-closed before any step at the unsafe PC, a stop PC inside the
     hardware page consistent with the MPR mapping, unchanged VDC state (SR/AR/R), and no-resume.
     Stopping inside the hardware page alone is explicitly NOT a pass.
@@ -346,10 +391,18 @@ def check_hardware_page_blocked(row, mode=HWPAGE_MODE):
         raise ValueError(f"{mode}: stop PC {row['stop_pc']:#x} is outside the hardware page")
     if row["after"]["pc"] != row["stop_pc"]:
         raise ValueError(f"{mode}: stop PC not held")
+    # detected_pc must be the measured stop PC (where the guard actually refused), never a plan
+    # expectation.
+    if row.get("detected") is not True or row.get("detected_pc") != row["stop_pc"]:
+        raise ValueError(f"{mode}: detected_pc {row.get('detected_pc')!r} does not match the "
+                         f"measured stop PC {row['stop_pc']:#x}")
+    if row.get("ram_unchanged_during_resume") is not True:
+        raise ValueError(f"{mode}: WRAM changed during the resume attempts")
     # Executed count covers exactly the guest prologue; the unsafe fetch must never step.
-    if row["instructions_executed"] != HWPAGE_EXPECTED_EXECUTED:
+    expected_executed = HWPAGE_EXPECTED_EXECUTED[mode]
+    if row["instructions_executed"] != expected_executed:
         raise ValueError(f"{mode}: executed {row['instructions_executed']} instructions, expected "
-                         f"{HWPAGE_EXPECTED_EXECUTED} (a step at the unsafe PC must not issue)")
+                         f"{expected_executed} (a step at the unsafe PC must not issue)")
     if row.get("resume_attempts") != RESUME_ATTEMPTS or row.get("resume_refused") != RESUME_ATTEMPTS:
         raise ValueError(f"{mode}: resume not fully refused")
     if row.get("executed_at_refusal") != row["instructions_executed"] or \
@@ -407,28 +460,51 @@ def check_bypassed_mutation(row, mode):
 
 
 def check_unsafe_read_hazard(row, mode):
-    """TryPeek->Memory::Read mutation: the fetch read itself lands the SR clear (deadly demo)."""
+    """TryPeek->Memory::Read mutation: the fetch read itself is a forbidden MMIO access."""
+    base = _base_of(mode)
+    if base not in HWPAGE_EXPECTED_EXECUTED:
+        raise ValueError(f"{mode}: hazard check unknown base {base!r}")
     _common(row, mode)
     if row.get("armed") is not True:
         raise ValueError(f"{mode}: hazard run is unarmed")
     if row.get("hazard_landed") is not True or row.get("fetch_via") != "read":
         raise ValueError(f"{mode}: hazard was not observed through the unsafe fetch")
-    if row["vdc_sr_before"] != SR_SENTINEL_BEFORE or row["vdc_sr_after"] != 0x00:
-        raise ValueError(f"{mode}: SR hazard {row['vdc_sr_before']:#x}->{row['vdc_sr_after']:#x}, "
-                         f"expected {SR_SENTINEL_BEFORE:#x}->0x00")
+    if base == HWPAGE_MODE:
+        # At $4000 the read hits the status register: 0x3F -> 0x00 is device-observed proof.
+        if row["vdc_sr_before"] != SR_SENTINEL_BEFORE or row["vdc_sr_after"] != 0x00:
+            raise ValueError(f"{mode}: SR hazard {row['vdc_sr_before']:#x}->{row['vdc_sr_after']:#x}, "
+                             f"expected {SR_SENTINEL_BEFORE:#x}->0x00")
+    else:
+        # At the $4002 data port the read leaves SR untouched (measured); the hazard is proven
+        # by the probe-decision hazard flag, the prologue execution count, and a stop inside
+        # the hardware page where the unsafe fetch happened.
+        if row["instructions_executed"] != HWPAGE_EXPECTED_EXECUTED[base]:
+            raise ValueError(f"{mode}: hazard run executed "
+                             f"{row['instructions_executed']} (expected prologue "
+                             f"{HWPAGE_EXPECTED_EXECUTED[base]})")
+        if not (HWPAGE_PAGE << 13) <= row["stop_pc"] < (HWPAGE_PAGE + 1) << 13:
+            raise ValueError(f"{mode}: hazard stop {row['stop_pc']:#x} is outside the hardware page")
     return HAZARD_VERDICT
 
 
 def check_peek_fail_step(row, mode):
-    """Fail-open mutation: the peek failure steps anyway and the CPU fetch lands the hazard."""
+    """Fail-open mutation: the peek failure steps anyway (one MMIO-space step) before stopping."""
+    base = _base_of(mode)
+    if base not in HWPAGE_EXPECTED_EXECUTED:
+        raise ValueError(f"{mode}: fail-open check unknown base {base!r}")
     _common(row, mode)
     if row.get("armed") is not True:
         raise ValueError(f"{mode}: fail-open run is unarmed")
     if row.get("fetch_open_stepped") is not True or row.get("status") != "fetch_open_stepped":
         raise ValueError(f"{mode}: peek failure did not step anyway")
-    if row["vdc_sr_before"] != SR_SENTINEL_BEFORE or row["vdc_sr_after"] != 0x00:
-        raise ValueError(f"{mode}: SR not cleared by the stepped fetch "
-                         f"({row['vdc_sr_before']:#x}->{row['vdc_sr_after']:#x})")
+    if row["instructions_executed"] != HWPAGE_EXPECTED_EXECUTED[base] + 1:
+        raise ValueError(f"{mode}: violation step count wrong "
+                         f"(executed {row['instructions_executed']})")
+    if base == HWPAGE_MODE:
+        # At $4000 the CPU fetch also lands the status clear.
+        if row["vdc_sr_before"] != SR_SENTINEL_BEFORE or row["vdc_sr_after"] != 0x00:
+            raise ValueError(f"{mode}: SR not cleared by the stepped fetch "
+                             f"({row['vdc_sr_before']:#x}->{row['vdc_sr_after']:#x})")
     return HAZARD_VERDICT
 
 
@@ -466,7 +542,11 @@ def mutation_test_armed(refused_row, landed_row, mode, historical=False):
         ("missing_executed", "instructions_executed"),
     ]
     if not historical:
-        mutations.extend([("fetch_via_read", {"fetch_via": "read"})])
+        mutations.extend([
+            ("fetch_via_read", {"fetch_via": "read"}),
+            ("detected_pc_removed", {"detected_pc": None}),
+            ("detected_pc_wrong", {"detected_pc": base["refused_pc"] + 1}),
+        ])
     if all(type(base.get(key)) is int for key in ("fetch_opcode", "fetch_page", "fetch_mpr")):
         mutations.extend([
             ("fetch_opcode_missing", {"fetch_opcode": None}),
@@ -499,14 +579,15 @@ def mutation_test_hardware_page(safe_row):
     """The composite hwpage classifier must reject hazard, stepped, out-of-page and tampered rows."""
     cases = [
         ("stop_pc_outside_page", {"stop_pc": 0x3FFF}),
-        ("step_executed_at_unsafe_pc", {"instructions_executed": HWPAGE_EXPECTED_EXECUTED + 1,
+        ("detected_pc_wrong", {"detected_pc": None}),
+        ("step_executed_at_unsafe_pc", {"instructions_executed": HWPAGE_EXPECTED_EXECUTED[HWPAGE_MODE] + 1,
                                         "fetch_open_stepped": True, "status": "fetch_open_stepped"}),
         ("sr_cleared", {"vdc_sr_after": 0x00}),
         ("sr_cleared_but_sr_row_invariant", {"vdc_sr_before": 0x00, "vdc_sr_after": 0x00,
                                              "hazard_landed": True}),
         ("mpr_mismatch", {"after": {"mpr": [0, 0xF8, 0x00, 0, 0, 0, 0, 0]}}),
         ("fetch_via_read", {"fetch_via": "read"}),
-        ("resumed_step", {"executed_after_resume": HWPAGE_EXPECTED_EXECUTED + 1}),
+        ("resumed_step", {"executed_after_resume": HWPAGE_EXPECTED_EXECUTED[HWPAGE_MODE] + 1}),
         ("missing_fetch_failed", "fetch_failed"),
     ]
     for name, overwrite in cases:
@@ -523,15 +604,15 @@ def mutation_test_hardware_page(safe_row):
 
 
 def to_jsr_observation(row):
-    """Map one probe row to tools/jsr_observation.py v1 (IRQ UNKNOWN unless actually observed)."""
+    """Map one probe row to tools/jsr_observation.py v1. Returns None for hazard rows: schema v1
+    has no hazard outcome, so hazard rows are excluded from the JSR view rather than being
+    misreported as a boundary refusal ("ok" would claim success, "rejected" would claim a
+    pre-side-effect refusal; neither is true). The EVIDENCE line is authoritative for hazards.
+    IRQ is UNKNOWN unless actually observed."""
+    if row.get("hazard_landed") is True or row.get("fetch_open_stepped") is True:
+        return None
     mapped = copy.deepcopy(row)
-    # Only true pre-side-effect refusals are "rejected". Hazard rows (unsafe-read status reuses
-    # "refused") ran with a landed side effect, so the JSR view must not claim a refusal; the
-    # reason string retains the hazard shape. (The jsr schema carries no SR field: JSR alone
-    # cannot judge hwpage safety; the driver evidence above is authoritative.)
-    failed_closed = row["status"] in ("refused", "fetch_blocked") and \
-        row.get("hazard_landed") is not True and row.get("fetch_open_stepped") is not True
-    mapped["status"] = "rejected" if failed_closed else "ok"
+    mapped["status"] = "rejected" if row["status"] in ("refused", "fetch_blocked") else "ok"
     observation = jsr_observation.from_probe_row(
         mapped, {"kind": "REAL_CORE_EXECUTION", "core_revision": PINNED_CORE_REVISION,
                  "bios": "SYNTHETIC", "real_core_claim": True})
@@ -551,7 +632,7 @@ def main():
         verdicts = {}
         hwp_safe_row = None
         for mode in ARMED_MODES:
-            if mode == HWPAGE_MODE:
+            if mode in HWPAGE_EXPECTED_EXECUTED:
                 refused_row = run_mode(probe, bios, cue, mode, 0)
                 verdicts[mode] = check_hardware_page_blocked(refused_row, mode)
                 hwp_safe_row = refused_row
@@ -563,7 +644,7 @@ def main():
                 landed_row = run_mode(probe, bios, cue, mutation, 0)
                 verdicts[mutation] = check_mutation(landed_row, mutation)
                 mutations.append((mutation, verdicts[mutation], landed_row))
-            if mode == HWPAGE_MODE:
+            if mode in HWPAGE_EXPECTED_EXECUTED:
                 for mutation, _verdict, hazard_row in mutations:
                     try:
                         check_hardware_page_blocked({**hazard_row, "mode": mode}, mode)
@@ -585,7 +666,11 @@ def main():
                                                 "execution_mode": "debug-single-step", "verdict": verdict,
                                                 "measured_stop_pc": row["stop_pc"], "row": row}, sort_keys=True))
                 jsr = to_jsr_observation(row)
-                print("JSR_OBSERVATION " + json.dumps(jsr, sort_keys=True))
+                if jsr is None:
+                    print(f"JSR_OBSERVATION_EXCLUDED {case} hazard rows have no jsr-observation v1 "
+                          f"outcome (EVIDENCE is authoritative)")
+                else:
+                    print("JSR_OBSERVATION " + json.dumps(jsr, sort_keys=True))
             print(f"ARMED {mode}: status={refused_row['status']} stop={refused_row['stop_pc']:#x} "
                   f"executed={refused_row['instructions_executed']} "
                   f"resume_refused={refused_row['resume_refused']}/{refused_row['resume_attempts']} "

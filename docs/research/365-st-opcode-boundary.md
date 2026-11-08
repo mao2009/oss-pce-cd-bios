@@ -59,74 +59,83 @@
 ## v2 (arbitrary-PC) 拡張と BBR3 分類器
 
 作業ブランチ `mao2009/365-st-opcode-arbitrary-pc` における v2 スコープ。C++ プローブ v2 の
-15 armed ファミリ（entry / unknown-PC / データ依存分岐 / JSR-RTS 復帰 / page・bank 境界 /
-ROM page 0 / MPR 再マップ / 動的 hardware-page / 未使用 bank / IRQ survey）と 8 変異種・17 run を
+17 armed ファミリ（entry / unknown-PC / データ依存分岐 / JSR-RTS 復帰 / page・bank 境界 /
+ROM page 0 / MPR 再マップ / 固定 JMP による動的 hardware-page / BBR3 データ依存分岐 /
+未使用 bank / IRQ survey）と 8 変異種・20 run を
 Python ドライバ `tests/integration/geargrafx_st_boundary.py` が実行・分類する。`make
 test-real-core`（required CI）から `integration` 経由で実行される。
 
-### BBR3 動的 MMIO 進入と固定 PC 判定を採用しない理由
+### BBR3 実測（HuC6280 BBR3、2 条件）
 
-BBR3 に代表されるデータ依存分岐は、分岐の成立が VDC read buffer 値に依存するため、実際に
-着地する PC は実行のたびに（プレセットによって）変わりうる。分類器が「branch target の
-完全一致」や「停止 PC `$4002` の完全一致」を成功条件とすると、正常な fail-closed 停止を
-見逃し、偶然停止しただけのケースを PASS 誤判定しうる。さらに停止 PC の数値だけから安全性を
-推定することは禁止する（hardware page 内で止まっただけでは PASS にしない）。
+BBR3（opcode `$3F`）は bit がリセット（clear）時に分岐するデータ依存分岐である。PCE 構成の
+CPU zero page 基点は `$2000`（WRAM page 1）なので、zp テストバイトは WRAM の CPU `$2010`。
+ゲストは `LDA #$FF; TAM #$04; JMP $3F80; BBR3 $10,+$7F`（+ ST0 / BRA）で、BBR3 と ST0 の
+ゲストバイトは 2 条件で同一。ホストが WRAM の `$2010` だけを変える:
 
-### 実測値（事実）
+- **taken**（bit clear、`$2010=0x00`）: BBR3 が `$4002`（hardware page = VDC data port）へ
+  着地し、TryPeek が失敗して fail-closed する。停止 PC の実測は `$4002`。
+- **skip**（bit set、`$2010=0x08`）: BBR3 は fall through し `$3F83` の ST0 が
+  instruction boundary で拒否される。
 
-pinned Geargrafx `b49ae82a012eade566d72e9d61c9d95a5caa4da3`、合成 ROM、MPR0=$00。Linux
-x86_64 上の debug single-step 実行で以下を確認（fixture
-`tests/fixtures/365-st-boundary-v2-evidence.json`、32 行 = armed 15 + mutation 17）:
+分類器は停止 PC の固定値完全一致を成功条件にしない（hardware page メンバーシップ +
+MPR マッピング整合性のみ）。BBR3 の taken 変異（unsafe-read / peek-fail-step）は `$4002`
+での unsafe fetch として hazard 判定される。`$4002/SR` の設備実測差（事実）: `$4000` の
+CPU Read は SR を clear するが（`0x3F→0x00`）、`$4002`（data port）の Read は SR を
+触らない（`0x3F→0x3F`、read buffer も不変）。このため SR sentinel は `$4000` 変異の実測
+署名としてのみ要求され、`$4002` 変異は probe 判定 hazard + 実行数 + page 内停止で判定する
+（理由は実測として記録し、SR 不変による偽 PASS はしない）。
 
-- 安全 run（st0-hwpage-fetch-blocked）: 停止 PC `$4000`、実行 3 命令（LDA+TAM+JMP）、
-  `fetch_via=peek`・`fetch_failed=true`・`fetch_blocked=true`、SR `0x3F→0x3F`（sentinel プリセット
-  に対する不変）。
-- TryPeek→Memory::Read 変異（unsafe-read）: 停止 PC `$4000`、実行 3、SR `0x3F→0x00`。
-  参照 PC での CPU Read 自体が SR（status clear）の副作用を先に着地させる。
-- peek-fail-step 変異（fail-open）: 停止 PC `$4002`、実行 4（unsafe PC で 1 step 発行済み）、
-  SR `0x3F→0x00`。
+### 測定 PC と検出 PC
 
-推論との分離: `$4000`（安全 run）と `$4002`（step 発行済み mutation の hazard run）の実測値を
-もとに、分類器は「hardware page メンバーシップ + MPR マッピング整合性」のみを停止 PC 条件とし、
-いずれの固定値も要求しない。実測値と期待値は fixture に分離記録され、host テストは独立した
-不変条件（page 外停止の拒否、step 発行済みの拒否、SR hazard の拒否、SR 不変だけでの偽 PASS の
-防止、MPR 不一致の拒否）で正負例を検証する。
+`detected_pc` は拒否判定が発生した PC の**実測値**（ST 拒否 → `refused_pc`、fail-closed /
+hazard → 停止点）。`expected_st_pc` は独立した期待値として別フィールドにある。「停止 PC で
+止まっただけ」は fail-closed の PASS にならない（TryPeek 失敗 + step 発行前 + VDC 不変 +
+MPR 整合の中でしか PASS しない）。`$4000` / `$4002` は実測証拠として記録され、固定期待値
+として扱われない。
 
-### 分類規則
+### no-resume の実証
 
-1. 実行命令数: ST 本体は実行されず（armed の期待値と一致）、hwpage では unsafe PC での
-   step が発行されていない（実行 3 = prologue のみ）。予算超過・タイムアウト・プロセス異常・
-   probe 出力不足は FAIL/BLOCKED であり PASS にしない。
-2. VDC SR: 安全 run では `Memory::Read` 由来の SR 副作用が発生しない。SR 観測は probe の
-   state 構造体への host 側読取（CPU fetch ではない）であり、観測自体は副作用を起こさない。
-   AR/R/IRQ 状態も併せて比較する。
-3. 停止 PC: hwpage 進入では hardware page（CPU page 2 / bank `$FF`）内であること + MPR2 整合性
-   + TryPeek 失敗による停止 + Step 発行前停止。単に page 内で止まっただけでは FAIL。
-4. 測定 PC: `$4000` / `$4002` は実測証拠として記録し、固定期待として扱わない。
+初回実行と再開要求は同一の guarded execution entry（probe の `guarded_execute`）を通る。3 回の
+再開試行はコア実行処理を呼ばず、実行命令数・PC・VDC AR/R/SR・RAM 状態が全て不変である
+ことを分類器が検証する（`ram_unchanged_during_resume`）。`-resume-allowed` 変異は latch が
+保持されず ST が step・着地すること（resume_refused=0、executed 増加、PC 前進）を実証した
+もので、この変異で no-resume guard が load-bearing である。
 
-TryPeek の差: 境界判定はコア内 disassembler も使う `Memory::TryPeek`（副作用なし）で行い、
-hardware page / peek 不可能な bank では false（デバイスアクセスなし）を返す。`Memory::Read`
-による fetch は hardware page PC で SR clear を先に着地させるため、peek 設計は load-bearing
-である（変異 2 件で証明）。
+### IRQ survey の stack 副作用
+
+IRQ2 が命令境界で受け入れられると、handler 先頭（`$3F80`）の ST0 が拒否される。SP の
+`$FF→$FC`（3 バイトの architectural push）に加え、IRQ vector `$FFF6` の内容（handler
+`$3F80`）を TryPeek で実際に読取検証し、stack frame の復帰 PC `$3E01`（`[0x3E, 0x01]`）も
+検証する。`irq2-core-stop-survey` のみ core debugger の `stop_on_irq` も発火する。
+
+WRAM 差分は**最終状態との net diff**（書込みイベントの監視ではない）。書戻した一時書込みや
+同値書込みは detect されず、列挙は最大 256 件で打ち切られる（`ram_diff_truncated` で
+明示）。`only_stack_net_diffs` は stack セル `$21FD-$21FF` 内の net diff のみを意味し、
+#173/#366 の generic RAM 安全性を確定する主張ではない。
+
+### JSR 観測への hazard 除外
+
+`tools/jsr_observation.py` v1 には hazard の outcome がないため、hazard 行は JSR view から
+除外する（`JSR_OBSERVATION_EXCLUDED`）。`ok`（成功）や `rejected`（事前遮断成功）への
+付け替えは hazard を安全な成功と誤認されるため行わない。hazard の正本は EVIDENCE である。
 
 ### mutation 結果
 
-8 変異種・17 run: 全件で禁止効果が観測可能となり、armed 分類器が全 run を拒否（killed）。
+8 変異種・20 run: 全件で禁止効果が観測可能となり、armed 分類器が全 run を拒否（killed）。
 - `-unguarded`（監視 off）: ST が実行され VDC へ着地。
 - `-no-entry-check` / `-no-recheck`（MPR2 再検査のみ）/ `-wrong-opcode`（ST2 欠落のみの
   単一 opcode リスト実証）: armed のまま ST / ST2 が実行・着地。
 - `-knownpc-only`: 既知 PC 限定では未登録 PC（`$3E20` / `$3E03` / `$1FFF` / `$0000` /
-  `$6010` / `$3F80`）で ST が実行・着地。
-- `-resume-allowed`: latch が保持されず ST が step・着地（executed 4、PC `$3E12`）。
-- `-unsafe-read` / `-peek-fail-step`: SR `0x3F→0x00` の hazard を観測。安全分類器は両方を
-  FAIL として拒否。
+  `$6010` / `$3F83` / `$3F80`）で ST が実行・着地。
+- `-resume-allowed`: latch が保持されず ST が step・着地（resume_refused=0）。
+- `-unsafe-read` / `-peek-fail-step`: `$4000` では SR `0x3F→0x00` の device hazard が、
+  `$4002` では unsafe fetch 自体（hazard 判定 + 実行数 + page 内停止）が hazard として
+  観測される。安全分類器は全変異を FAIL として拒否。
 
-### IRQ survey の stack 副作用
+### 実行結果（事実）
 
-IRQ2 が命令境界で受け入れられると、handler 先頭（`$3F80`）の ST0 が拒否される。観測した
-副作用: SP `$FF→$FC`（3 バイトの architectural push）、WRAM 差分は stack 書込みのみ
-（`only_stack_writes=true`）、IRQ2 vector `$FFF6`。`irq2-core-stop-survey` のみ core debugger の
-`stop_on_irq` も発火する。
+Linux x86_64 上の debug single-step で 17 armed 全 PASS・20 mutation 全 killed・pos-write PASS。
+fixture `tests/fixtures/365-st-boundary-v2-evidence.json`（37 行 = armed 17 + mutation 20）。
 
 ### 実証範囲
 

@@ -7,8 +7,10 @@
 // side-effect-free peek (Memory::TryPeek, the same API the core disassembler uses).
 // TryPeek fails (returns false, no device access) for the hardware page (bank $FF) and
 // other unpeekable banks. ST0 ($03) / ST1 ($13) / ST2 ($23) are refused before the step,
-// an unsafe fetch fails closed (no step is issued), and a resume attempt re-runs the same
-// boundary check and is refused again. The monitor is given no PC hint: every boundary of
+// an unsafe fetch fails closed (no step is issued), and resumes re-enter through the same
+// guarded execution entry (guarded_execute) as the initial run: a resume is refused iff that
+// entry refuses to invoke the core, so execution count, PC, VDC state and RAM must all be
+// unchanged by the three resume attempts (verified by the Python classifier). The monitor is given no PC hint: every boundary of
 // the single-stepped run is checked - entry, branch, JSR/RTS return, MPR-remapped,
 // page/bank-boundary, ROM-bank, unused-bank and IRQ-handler heads alike.
 //
@@ -28,6 +30,10 @@
 //   st1-unknown-far      JMP reaches the ST at $3E20 (a second unknown PC)
 //   st2-mpr2-unknown     guest TAM sets MPR2=$F8; ST2 fetched at $4010 through page 2
 //   st0-hwpage-fetch-blocked  guest TAM sets MPR2=$FF; fetch at $4000 unsafe -> fail closed
+//   st0-bbr3-hwpage-taken     BBR3 ($3F, branch if bit clear) tests the WRAM zp byte at
+//                             CPU $2010 with bit3 clear; the taken branch lands at $4002
+//                             (hardware page) and the fetch fails closed
+//   st0-bbr3-hwpage-skip      same guest with the bit set; BBR3 falls through to ST0
 //   st1-unused-bank      guest TAM sets MPR3=$88; ST1 fetched from unused bank $88
 //   irq2-handler-st0-survey   IRQ2 accepted at an instruction boundary; handler-head ST0 refused
 //   irq2-core-stop-survey     same, plus the core debugger stop_on_irq flag (core-level IRQ stop)
@@ -59,6 +65,10 @@ const unsigned long kRomPage0Target = 0x0000;      // first byte of ROM bank 0
 const unsigned long kHwPageTarget = 0x4000;        // page 2 remapped to the hardware page
 const unsigned long kUnusedBankTarget = 0x6010;    // page 3 remapped to unused bank $88
 const unsigned long kIrqHandler = 0x3F80;          // IRQ2 handler head in WRAM
+const unsigned long kBbr3Pc = 0x3F80;              // BBR3 instruction address (page-1 WRAM)
+const unsigned long kBbr3HwTarget = 0x4002;        // taken BBR3 lands in the hardware page
+const unsigned long kBbr3SkipSt = 0x3F83;          // not-taken BBR3 falls through to ST0
+const unsigned kBbr3ZpAddr = 0x10;                 // zp byte tested by BBR3 (ROM-patched bit)
 const unsigned kResumeAttempts = 3;
 const unsigned long kKnownPc[2] = {0x3E00, 0x3E10};  // known-PC regression list
 
@@ -105,6 +115,12 @@ bool plan_for(const std::string& base, CasePlan& plan)
         plan = {"mpr2", 3, kMpr2Target, 3, false, false};
     } else if (base == "st0-hwpage-fetch-blocked") {
         plan = {"hwpage", 1, kHwPageTarget, 3, true, false};
+    } else if (base == "st0-bbr3-hwpage-taken") {
+        plan = {"bbr3-taken", 1, kBbr3HwTarget, 4, true, false};
+    } else if (base == "st0-bbr3-hwpage-skip") {
+        // No VDC sentinel here: the fall-through path never fetches the hardware page, and the
+        // landed check expects AR 0 -> 0x07 from a clean preset.
+        plan = {"bbr3-skip", 1, kBbr3SkipSt, 4, false, false};
     } else if (base == "st1-unused-bank") {
         plan = {"unused-bank", 2, kUnusedBankTarget, 3, false, false};
     } else if (base == "irq2-handler-st0-survey" || base == "irq2-core-stop-survey") {
@@ -187,7 +203,14 @@ int main(int argc, char** argv)
         return 3;
 
     // Synthetic BIOS patches (the image stays fully synthetic: zeros plus these bytes).
-    if (plan.family == "page-boundary") {
+    if (plan.family == "bbr3-taken" || plan.family == "bbr3-skip") {
+        // BBR3 (opcode $3F) branches when the bit of its zp operand is RESET. On the PCE
+        // configuration the CPU zero page starts at $2000 (WRAM page 1), so the zp byte $10
+        // is WRAM offset 0x10 (CPU $2010). The host sets that byte: 0x00 (bit clear -> branch
+        // taken into the hardware page) vs 0x08 (bit set -> fall through to ST0). The guest
+        // itself performs no MMIO access; the hardware-page fetch after the branch is what
+        // the fail-closed monitor must block, exactly as for the fixed-JMP entry.
+    } else if (plan.family == "page-boundary") {
         bios[kPageBoundaryTarget] = (u8)st_op;  // ST opcode at CPU $1FFF (ROM bank 0)
         // The operand byte would live at $2000 (WRAM); it is never fetched: the refusal
         // precedes the step, which is exactly the page-boundary property under test.
@@ -264,6 +287,16 @@ int main(int argc, char** argv)
         // The guest remaps page 2 to the hardware page; the monitor's fetch at $4000 must
         // fail closed before any device access.
         code = {0xA9, 0xFF, 0x53, 0x04, 0x4C, 0x00, 0x40};
+    } else if (plan.family == "bbr3-taken" || plan.family == "bbr3-skip") {
+        // LDA #$FF; TAM #$04 (MPR2=$FF); JMP $3F80; NOP pad. BBR3 $10,+$7F sits at $3F80
+        // (opcode $3F; branches when the zp bit is clear): taken it lands at $3F83+$7F =
+        // $4002 (the hardware page); not taken it falls through to ST0 #$07 at $3F83. Same
+        // guest bytes for both conditions; only the host-patched zp bit decides the dynamic
+        // branch outcome, so this is a genuine data-dependent branch.
+        code = {0xA9, 0xFF, 0x53, 0x04, 0x4C, (u8)(kBbr3Pc & 0xFF), (u8)(kBbr3Pc >> 8)};
+        while (kGuestBase + code.size() < kBbr3Pc)
+            code.push_back(0xEA);  // NOP padding
+        extra_code = {0x3F, (u8)kBbr3ZpAddr, 0x7F, 0x03, 0x07, 0x80, 0xFE};
     } else if (plan.family == "unused-bank") {
         // The guest remaps page 3 to unused bank $88; the ST sits in that bank's dummy page.
         code = {0xA9, 0x88, 0x53, 0x08, 0x4C, 0x10, 0x60};
@@ -281,6 +314,10 @@ int main(int argc, char** argv)
     if (plan.family == "mpr2") {
         for (size_t i = 0; i < extra_code.size(); ++i)
             wram[0x10 + i] = extra_code[i];
+    } else if (plan.family == "bbr3-taken" || plan.family == "bbr3-skip") {
+        for (size_t i = 0; i < extra_code.size(); ++i)
+            wram[0x1F80 + i] = extra_code[i];  // BBR3 program at $3F80
+        wram[0x10] = (u8)(plan.family == "bbr3-taken" ? 0x00 : 0x08);  // CPU $2010: BBR3 zp bit
     } else if (plan.family == "jsr-rts") {
         for (size_t i = 0; i < extra_code.size(); ++i)
             wram[kStubIndex + 0x10 + i] = extra_code[i];  // subroutine at $3E10
@@ -326,6 +363,7 @@ int main(int argc, char** argv)
     unsigned vdc_ar_before = (u8)*vs->AR;
     unsigned vdc_r_before = vs->R[0];
     unsigned vdc_sr_before = (u8)*vs->SR;
+    unsigned vdc_rb_before = (u16)*vs->READ_BUFFER;
     unsigned guard_before = memory->Read((u16)neg_addr);
     unsigned long st_pc_expected = plan.st_pc;
 
@@ -417,22 +455,30 @@ int main(int argc, char** argv)
             halted = true;  // BRA * self-loop
     };
 
-    while (!halted && executed < budget) {
+    // The single guarded execution entry. Every core step of the run (initial and resume
+    // alike) goes through here, and step_once() is only reachable from here: a resume attempt
+    // is refused if and only if this entry refuses to call the core. Re-calling the decision
+    // lambda alone would not prove that the runtime entry itself refused the restart.
+    auto guarded_execute = [&]() -> int {
         Decision decision = boundary_decision(st->PC->GetValue());
         if (decision == DECISION_ALLOW) {
             step_once();
-        } else if (decision == DECISION_REFUSE_ST) {
+            return 1;
+        }
+        if (decision == DECISION_REFUSE_ST) {
             if (resume_allowed) {
                 // MUTATION: the refusal latch does not hold the stop; the guest steps anyway
                 // (the prohibited ST executes) and the run continues to its natural halt.
                 step_once();
-                continue;
+                return 1;
             }
-            break;
-        } else if (decision == DECISION_REFUSE_FETCH) {
+            return 0;
+        }
+        if (decision == DECISION_REFUSE_FETCH) {
             fetch_blocked = true;  // fail closed: no step is issued on an unsafe fetch
-            break;
-        } else if (decision == DECISION_FETCH_OPEN_STEP) {
+            return 0;
+        }
+        if (decision == DECISION_FETCH_OPEN_STEP) {
             // MUTATION: the peek failure did not stop the run. The CPU's own fetch
             // (Memory::Read) at the hardware-page PC lands the device side effect before
             // the opcode executes. Bounded to this single violation step, then the run
@@ -440,23 +486,39 @@ int main(int argc, char** argv)
             // from MMIO space adds no evidence.
             step_once();
             fetch_open_stepped = true;
-            break;
-        } else {
-            hazard_landed = true;  // MUTATION: the Read-based fetch landed its side effect
-            break;
+            return 0;
         }
+        hazard_landed = true;  // MUTATION: the Read-based fetch landed its side effect
+        return 0;
+    };
+
+    while (!halted && executed < budget) {
+        if (guarded_execute() == 0)
+            break;
     }
 
+    std::vector<u8> wram_at_stop;
     if (refused || fetch_blocked || hazard_landed) {
         executed_at_refusal = executed;
-        // Resume attempts: the monitor must re-run the same boundary check and refuse again.
+        wram_at_stop.assign(wram, wram + memory->GetWorkingRAMSize());
+        // Three resume attempts through the same guarded entry the run used. A step here
+        // would increment the instruction counter or change PC/VDC/RAM; the Python
+        // classifier verifies all of those invariants on the emitted row.
         for (unsigned i = 0; i < kResumeAttempts; ++i) {
             ++resume_attempts;
-            Decision decision = boundary_decision(st->PC->GetValue());
-            if (decision != DECISION_ALLOW)
+            if (guarded_execute() == 0)
                 ++resume_refused;
         }
         executed_after_resume = executed;
+    }
+    bool ram_unchanged_during_resume = true;
+    if (!wram_at_stop.empty()) {
+        for (unsigned long offset = 0; offset < wram_at_stop.size(); ++offset) {
+            if (wram[offset] != wram_at_stop[offset]) {
+                ram_unchanged_during_resume = false;
+                break;
+            }
+        }
     }
 
     for (int i = 0; i < 8; ++i)
@@ -464,30 +526,43 @@ int main(int argc, char** argv)
     unsigned vdc_ar_after = (u8)*vs->AR;
     unsigned vdc_r_after = vs->R[0];
     unsigned vdc_sr_after = (u8)*vs->SR;
+    unsigned vdc_rb_after = (u16)*vs->READ_BUFFER;
     unsigned guard_after = memory->Read((u16)neg_addr);
     CpuSnap cpu_after = snapshot();
 
-    // WRAM difference of the run (CPU addresses through the page-1 WRAM mapping; page 2 can
-    // alias the same bytes when the guest remaps MPR2, so the diff is physical-WRAM based).
+    // Net WRAM difference of the run (final state vs. the post-fixture snapshot; CPU addresses
+    // through the page-1 WRAM mapping; page 2 can alias the same bytes when the guest remaps
+    // MPR2, so the diff is physical-WRAM based). This is a NET diff, not a write-event log:
+    // a byte that was written and restored to its original value (or written with its existing
+    // value) leaves no entry, and the entry list is truncated at 256 elements.
     std::vector<unsigned long> ram_diff_addresses;
     std::vector<unsigned> ram_diff_before, ram_diff_after;
+    bool ram_diff_truncated = false;
     for (unsigned long offset = 0; offset < wram_before.size(); ++offset) {
         if (wram[offset] != wram_before[offset]) {
             ram_diff_addresses.push_back(0x2000 + offset);
             ram_diff_before.push_back(wram_before[offset]);
             ram_diff_after.push_back(wram[offset]);
-            if (ram_diff_addresses.size() >= 256)
+            if (ram_diff_addresses.size() >= 256) {
+                ram_diff_truncated = true;
                 break;
+            }
         }
     }
     // During IRQ acceptance only the three architectural stack pushes may touch WRAM.
-    bool only_stack_writes = true;
+    bool only_stack_net_diffs = true;
     for (unsigned long cpu_addr : ram_diff_addresses) {
         if (cpu_addr != 0x21FF && cpu_addr != 0x21FE && cpu_addr != 0x21FD)
-            only_stack_writes = false;
+            only_stack_net_diffs = false;
     }
     bool mpr_changed = mpr_before != mpr_after;
     bool detected = refused || fetch_blocked || hazard_landed;
+    // detected_pc is the PC at which the detection actually happened (measured, never the plan
+    // expectation): ST refusal -> the refused PC; fail-closed/hazard -> the stop PC at which
+    // the guarded entry refused to step. expected_st_pc stays the independent expectation.
+    unsigned detected_pc = 0;
+    if (detected)
+        detected_pc = refused ? (unsigned)refused_pc : st->PC->GetValue();
 
     const char* status = fetch_blocked ? "fetch_blocked" :
                          (fetch_open_stepped ? "fetch_open_stepped" :
@@ -502,7 +577,17 @@ int main(int argc, char** argv)
     unsigned stack_frame[3] = {wram[0x1FF], wram[0x1FE], wram[0x1FD]};
     unsigned irr = *st->IRR, idr = *st->IDR;
     bool irq_accepted = plan.family == "irq-survey" && st->S->GetValue() == 0xFC;
-    unsigned observed_vector = irq_accepted ? 0xFFF6 : 0;
+    // Read the IRQ vector itself (side-effect-free TryPeek, ROM page) instead of inferring it
+    // from SP. SP=$FC alone does not prove the vector resolution; the measured bytes do.
+    unsigned observed_vector = 0;
+    bool vector_read = false;
+    if (plan.family == "irq-survey") {
+        u8 v_lo = 0, v_hi = 0;
+        if (memory->TryPeek((u16)0xFFF6, &v_lo) && memory->TryPeek((u16)0xFFF7, &v_hi)) {
+            observed_vector = (unsigned)v_lo | ((unsigned)v_hi << 8);
+            vector_read = true;
+        }
+    }
 
     std::fprintf(stderr, "{");
     std::fprintf(stderr, "\"mode\":\"%s\",\"base\":\"%s\",\"status\":\"%s\",\"reason\":\"%s\",",
@@ -537,26 +622,30 @@ int main(int argc, char** argv)
                  mpr_after[0], mpr_after[1], mpr_after[2], mpr_after[3],
                  mpr_after[4], mpr_after[5], mpr_after[6], mpr_after[7]);
     std::fprintf(stderr, "\"vdc_ar_before\":%u,\"vdc_ar_after\":%u,\"vdc_r_before\":%u,\"vdc_r_after\":%u,"
-                 "\"vdc_sr_before\":%u,\"vdc_sr_after\":%u,",
-                 vdc_ar_before, vdc_ar_after, vdc_r_before, vdc_r_after, vdc_sr_before, vdc_sr_after);
+                 "\"vdc_sr_before\":%u,\"vdc_sr_after\":%u,"
+                 "\"vdc_read_buffer_before\":%u,\"vdc_read_buffer_after\":%u,",
+                 vdc_ar_before, vdc_ar_after, vdc_r_before, vdc_r_after, vdc_sr_before, vdc_sr_after,
+                 vdc_rb_before, vdc_rb_after);
     std::fprintf(stderr, "\"ram_diff\":[");
     for (size_t i = 0; i < ram_diff_addresses.size(); ++i)
         std::fprintf(stderr, "%s{\"address\":%lu,\"before\":%u,\"after\":%u}",
                      i ? "," : "", ram_diff_addresses[i], ram_diff_before[i], ram_diff_after[i]);
-    std::fprintf(stderr, "],\"ram_diff_count\":%zu,\"only_stack_writes\":%s,",
-                 ram_diff_addresses.size(), bool_str(only_stack_writes));
+    std::fprintf(stderr, "],\"ram_diff_count\":%zu,\"ram_diff_truncated\":%s,"
+                 "\"only_stack_net_diffs\":%s,",
+                 ram_diff_addresses.size(), bool_str(ram_diff_truncated),
+                 bool_str(only_stack_net_diffs));
     std::fprintf(stderr, "\"returned\":false,\"return_pc\":null,\"mpr_changed\":%s,", bool_str(mpr_changed));
     std::fprintf(stderr, "\"guard_target\":%lu,\"guard_before\":%u,\"guard_after\":%u,",
                  neg_addr, guard_before, guard_after);
     std::fprintf(stderr, "\"core_irq_stop\":%s,\"handler_steps\":%u,\"irq_accepted\":%s,",
                  bool_str(core_irq_stop), handler_steps, bool_str(irq_accepted));
-    std::fprintf(stderr, "\"observed_vector\":%u,\"sp_before\":%u,\"sp_after\":%u,",
-                 observed_vector, cpu_before.sp, cpu_after.sp);
+    std::fprintf(stderr, "\"observed_vector\":%u,\"vector_read\":%s,\"sp_before\":%u,\"sp_after\":%u,",
+                 observed_vector, bool_str(vector_read), cpu_before.sp, cpu_after.sp);
     std::fprintf(stderr, "\"stack_cpu\":[%u,%u,%u],\"stack_frame_layout\":[%u,%u,%u],",
                  stack_cpu[0], stack_cpu[1], stack_cpu[2], stack_frame[0], stack_frame[1], stack_frame[2]);
     std::fprintf(stderr, "\"irr\":%u,\"idr\":%u,", irr, idr);
-    std::fprintf(stderr, "\"detected\":%s,\"detected_pc\":%u", bool_str(detected),
-                 detected ? (unsigned)st_pc_expected : 0);
+    std::fprintf(stderr, "\"ram_unchanged_during_resume\":%s,", bool_str(ram_unchanged_during_resume));
+    std::fprintf(stderr, "\"detected\":%s,\"detected_pc\":%u", bool_str(detected), detected_pc);
     std::fprintf(stderr, "}");
     std::fflush(stderr);
     return 0;
