@@ -131,6 +131,10 @@ unsafe Read による hazard が着地した時点で停止は latch され、re
 VDC read buffer も armed 実行で verified する（リセット値 `0xFFFF` の landmark。変化 /
 改ざんされた before/after / 欠落 / 型不一致は全て拒否）。
 
+`mmio_read_attempts` は probe 内の unsafe Read-based fetch 判定回数であり、全 MMIO アクセスの
+監視結果ではない（CPU 自体の fetch はこの観測対象外）。armed live-run は `== 0` を必須とし、
+hwpage / ST の両分類器が要求する。
+
 ### mutation 結果
 
 9 変異種・22 run: 全件で禁止効果が観測可能となり、armed 分類器が全 run を拒否（killed）。

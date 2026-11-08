@@ -387,5 +387,132 @@ class StHazardLatchContaminationTests(unittest.TestCase):
                     self.assertEqual(row["mmio_read_attempts"], 0)
 
 
+class StMmioAndPcIntegrityTests(unittest.TestCase):
+    """MMIO-read counts and architectural-PC integrity (Issue #365 audit).
+
+    The armed classifiers must require mmio_read_attempts == 0 on every live run and the
+    architectural PC held across after/stop/refused/detected. Every listed tamper value must
+    fail for its own reason, for each classifier family.
+    """
+
+    def setUp(self):
+        record = json.loads((ROOT / "tests" / "fixtures" / "365-st-boundary-v2-evidence.json")
+                            .read_text(encoding="utf-8"))
+        self.rows = {case["case"]: case["row"] for case in record["cases"]}
+
+    def test_mmio_count_zero_on_armed_rows(self):
+        for mode in st.ARMED_MODES:
+            with self.subTest(mode=mode):
+                self.assertEqual(self.rows[mode]["mmio_read_attempts"], 0)
+
+    def test_mmio_nonzero_rejected_by_both_families(self):
+        for bad in (1, 4, -1):
+            with self.subTest(value=bad):
+                row = copy.deepcopy(self.rows["st1-unknown"])
+                row["mmio_read_attempts"] = bad
+                with self.assertRaisesRegex(ValueError, "mmio_read_attempts"):
+                    st.check_refused(row, "st1-unknown")
+                row = copy.deepcopy(self.rows[st.HWPAGE_MODE])
+                row["mmio_read_attempts"] = bad
+                with self.assertRaisesRegex(ValueError, "mmio_read_attempts"):
+                    st.check_hardware_page_blocked(row)
+
+    def test_mmio_type_or_missing_rejected(self):
+        for bad in (None, True, "0"):
+            with self.subTest(value=bad):
+                row = copy.deepcopy(self.rows[st.HWPAGE_MODE])
+                row["mmio_read_attempts"] = bad
+                with self.assertRaises(ValueError):
+                    st.check_hardware_page_blocked(row)
+        row = copy.deepcopy(self.rows[st.HWPAGE_MODE])
+        row.pop("mmio_read_attempts")
+        with self.assertRaisesRegex(ValueError, "non-integer"):
+            st.check_hardware_page_blocked(row)
+
+    def test_st_pc_held_everywhere(self):
+        for mode, skip in ((m, False) for m in st.ARMED_MODES if m not in st.HWPAGE_EXPECTED_EXECUTED):
+            with self.subTest(mode=mode):
+                row = self.rows[mode]
+                self.assertEqual(row["after"]["pc"], row["stop_pc"])
+                self.assertEqual(row["stop_pc"], row["refused_pc"])
+                self.assertEqual(row["detected_pc"], row["refused_pc"])
+
+    def test_pc_tamper_each_field_rejected(self):
+        base = copy.deepcopy(self.rows["st1-unknown"])
+        n = base["stop_pc"]
+        cases = [
+            ("after_pc_only", {"after": {"pc": (n + 1) & 0xFFFF}}, "not held"),
+            ("stop_pc_only", {"stop_pc": (n + 1) & 0xFFFF}, "refused at"),
+            ("refused_pc_only", {"refused_pc": (n + 1) & 0xFFFF}, "refused at"),
+            ("detected_pc_only", {"detected_pc": (n + 1) & 0xFFFF}, "detected_pc"),
+            ("after_pc_range", {"after": {"pc": 0x1FFFF}}, "after.pc"),
+        ]
+        for name, overwrite, reason in cases:
+            with self.subTest(name=name):
+                row = copy.deepcopy(base)
+                for key, value in overwrite.items():
+                    if key == "after":
+                        row["after"].update(value)
+                    else:
+                        row[key] = value
+                with self.assertRaisesRegex(ValueError, reason):
+                    st.check_refused(row, "st1-unknown")
+
+    def test_pc_missing_rejected(self):
+        for section in ("after", "before"):
+            with self.subTest(section=section):
+                row = copy.deepcopy(self.rows["st1-unknown"])
+                row[section].pop("pc")
+                with self.assertRaisesRegex(ValueError, f"{section}.pc"):
+                    st.check_refused(row, "st1-unknown")
+
+
+class StPeekFailEvidenceTests(unittest.TestCase):
+    """Peek-fail-step: the step into MMIO must be proven by its own fetch evidence."""
+
+    def setUp(self):
+        record = json.loads((ROOT / "tests" / "fixtures" / "365-st-boundary-v2-evidence.json")
+                            .read_text(encoding="utf-8"))
+        self.rows = {case["case"]: case["row"] for case in record["cases"]}
+        self.row = copy.deepcopy(self.rows["st0-hwpage-fetch-blocked-peek-fail-step"])
+
+    def test_recorded_fail_open_passes(self):
+        self.assertEqual(st.check_peek_fail_step(self.row, "st0-hwpage-fetch-blocked-peek-fail-step"),
+                         st.HAZARD_VERDICT)
+
+    def test_bbr3_recorded_fail_open_passes(self):
+        row = copy.deepcopy(self.rows["st0-bbr3-hwpage-taken-peek-fail-step"])
+        self.assertEqual(st.check_peek_fail_step(row, "st0-bbr3-hwpage-taken-peek-fail-step"),
+                         st.HAZARD_VERDICT)
+
+    def test_each_fetch_field_tamper_rejected(self):
+        tampers = [
+            ("fetch_failed", {"fetch_failed": False}, "failed unsafe fetch"),
+            ("fetch_unsafe_bank", {"fetch_unsafe_bank": False}, "failed unsafe fetch"),
+            ("fetch_page", {"fetch_page": 1}, "fetch page/bank"),
+            ("fetch_mpr", {"fetch_mpr": 0xF8}, "fetch page/bank"),
+        ]
+        for name, overwrite, reason in tampers:
+            with self.subTest(field=name):
+                row = copy.deepcopy(self.row)
+                row.update(overwrite)
+                with self.assertRaisesRegex(ValueError, reason):
+                    st.check_peek_fail_step(row, "st0-hwpage-fetch-blocked-peek-fail-step")
+
+    def test_stop_and_held_executed_rejected(self):
+        row = copy.deepcopy(self.row)
+        row["stop_pc"] = 0x3FFF
+        with self.assertRaisesRegex(ValueError, "outside the hardware page"):
+            st.check_peek_fail_step(row, "st0-hwpage-fetch-blocked-peek-fail-step")
+        row = copy.deepcopy(self.row)
+        row["after"]["pc"] = row["stop_pc"] + 1
+        with self.assertRaisesRegex(ValueError, "not held"):
+            st.check_peek_fail_step(row, "st0-hwpage-fetch-blocked-peek-fail-step")
+        row = copy.deepcopy(self.row)
+        row["instructions_executed"] -= 1
+        with self.assertRaisesRegex(ValueError, "violation step"):
+            st.check_peek_fail_step(row, "st0-hwpage-fetch-blocked-peek-fail-step")
+
+
 if __name__ == "__main__":
     unittest.main()

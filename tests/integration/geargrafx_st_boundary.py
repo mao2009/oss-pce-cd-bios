@@ -233,6 +233,12 @@ def _common(row, mode, historical=False):
                  "instructions_executed", "refused_pc"):
         if type(row.get(name)) is not int:
             raise ValueError(f"{mode} missing/non-integer {name}: {row.get(name)!r}")
+    for side in ("before", "after"):
+        section = row.get(side, {})
+        if not historical:
+            pc = section.get("pc")
+            if type(pc) is not int or not 0 <= pc <= 0xFFFF:
+                raise ValueError(f"{mode} {side}.pc missing/non-16-bit: {pc!r}")
     if not historical:
         for name in ("vdc_read_buffer_before", "vdc_read_buffer_after"):
             if type(row.get(name)) is not int:
@@ -304,6 +310,12 @@ def _check_refused(row, mode, require_fetch=True):
                              f"refused PC {row['refused_pc']:#x}")
         if row.get("ram_unchanged_during_resume") is not True:
             raise ValueError(f"{mode}: WRAM changed during the resume attempts")
+        if row.get("mmio_read_attempts") != 0:
+            raise ValueError(f"{mode}: mmio_read_attempts {row.get('mmio_read_attempts')!r}, expected 0")
+        # CPU stop-state held: the final architectural PC must equal the refusal PC.
+        if row["after"]["pc"] != row["stop_pc"] or row["stop_pc"] != row["refused_pc"]:
+            raise ValueError(f"{mode}: after.pc {row['after']['pc']!r} / stop {row['stop_pc']!r} / "
+                             f"refused {row['refused_pc']!r} not held")
     if row.get("resume_attempts") != RESUME_ATTEMPTS or row.get("resume_refused") != RESUME_ATTEMPTS:
         raise ValueError(f"{mode}: resume not fully refused ({row.get('resume_refused')}/"
                          f"{row.get('resume_attempts')})")
@@ -404,6 +416,10 @@ def check_hardware_page_blocked(row, mode=HWPAGE_MODE):
                          f"measured stop PC {row['stop_pc']:#x}")
     if row.get("ram_unchanged_during_resume") is not True:
         raise ValueError(f"{mode}: WRAM changed during the resume attempts")
+    # Armed runs must not perform any unsafe Read-based fetch (the probe's TryPeek path is
+    # side-effect-free; a recorded attempt means the run took the Read path somewhere).
+    if row.get("mmio_read_attempts") != 0:
+        raise ValueError(f"{mode}: mmio_read_attempts {row.get('mmio_read_attempts')!r}, expected 0")
     # Executed count covers exactly the guest prologue; the unsafe fetch must never step.
     expected_executed = HWPAGE_EXPECTED_EXECUTED[mode]
     if row["instructions_executed"] != expected_executed:
@@ -513,6 +529,14 @@ def check_peek_fail_step(row, mode):
         raise ValueError(f"{mode}: fail-open run is unarmed")
     if row.get("fetch_open_stepped") is not True or row.get("status") != "fetch_open_stepped":
         raise ValueError(f"{mode}: peek failure did not step anyway")
+    # The failed fetch evidence must describe the hardware page (fixed-JMP $4000 or BBR3 $4002).
+    if row.get("fetch_failed") is not True or row.get("fetch_unsafe_bank") is not True:
+        raise ValueError(f"{mode}: fetch evidence does not describe a failed unsafe fetch")
+    if row.get("fetch_via") != "peek":
+        raise ValueError(f"{mode}: fail-open fetch was not a peek failure")
+    if row.get("fetch_page") != HWPAGE_PAGE or row.get("fetch_mpr") != HWPAGE_BANK:
+        raise ValueError(f"{mode}: fetch page/bank {row.get('fetch_page')}/{row.get('fetch_mpr')!r}, "
+                         f"expected hardware page {HWPAGE_PAGE}/${HWPAGE_BANK:X}")
     if row["instructions_executed"] != HWPAGE_EXPECTED_EXECUTED[base] + 1:
         raise ValueError(f"{mode}: violation step count wrong "
                          f"(executed {row['instructions_executed']})")
@@ -521,6 +545,11 @@ def check_peek_fail_step(row, mode):
         if row["vdc_sr_before"] != SR_SENTINEL_BEFORE or row["vdc_sr_after"] != 0x00:
             raise ValueError(f"{mode}: SR not cleared by the stepped fetch "
                              f"({row['vdc_sr_before']:#x}->{row['vdc_sr_after']:#x})")
+    # After the violation step the PC must sit inside the hardware page, held.
+    if not (HWPAGE_PAGE << 13) <= row["stop_pc"] < (HWPAGE_PAGE + 1) << 13:
+        raise ValueError(f"{mode}: stop PC {row['stop_pc']:#x} is outside the hardware page")
+    if row["after"]["pc"] != row["stop_pc"]:
+        raise ValueError(f"{mode}: stop PC not held")
     return HAZARD_VERDICT
 
 
