@@ -357,6 +357,12 @@ def _check_irq_survey(row, mode):
     """IRQ-acceptance side effects: only the architectural stack pushes may touch WRAM (net diff)."""
     if row.get("irq_accepted") is not True:
         raise ValueError(f"{mode}: IRQ2 was not accepted at an instruction boundary")
+    # core_irq_stop reports the pinned core debugger's own stop notification (not a generic
+    # IRQ-safety claim): the handler survey runs with stop_on_irq off, the core-stop survey
+    # with it on.
+    want_stop = (mode == "irq2-core-stop-survey")
+    if row.get("core_irq_stop") is not want_stop:
+        raise ValueError(f"{mode}: core_irq_stop {row.get('core_irq_stop')!r}, expected {want_stop}")
     if row.get("vector_read") is not True or row.get("observed_vector") != 0x3F80:
         raise ValueError(f"{mode}: IRQ vector was not measured "
                          f"(vector_read={row.get('vector_read')!r}, value={row.get('observed_vector')!r})")
@@ -365,10 +371,33 @@ def _check_irq_survey(row, mode):
     frame = row.get("stack_frame_layout") or []
     if len(frame) != 3 or frame[0] != 0x3E or frame[1] != 0x01:
         raise ValueError(f"{mode}: stack frame {frame!r} does not encode the return PC $3E01")
+    # Direct net-diff validation (never trust only_stack_net_diffs alone): each ram_diff entry
+    # must be a well-typed value change confined to the architectural stack cells.
     if row.get("only_stack_net_diffs") is not True:
-        raise ValueError(f"{mode}: non-stack WRAM net diffs during IRQ acceptance")
-    if row.get("ram_diff_truncated") is True:
-        raise ValueError(f"{mode}: WRAM net diff is truncated (stack claim unverifiable)")
+        raise ValueError(f"{mode}: only_stack_net_diffs is not True")
+    if row.get("ram_diff_truncated") is not False:
+        raise ValueError(f"{mode}: ram_diff_truncated is not False")
+    ram_diff = row.get("ram_diff")
+    if type(ram_diff) is not list:
+        raise ValueError(f"{mode}: ram_diff is not a list: {ram_diff!r}")
+    seen = set()
+    for entry in ram_diff:
+        address = entry.get("address") if isinstance(entry, dict) else None
+        before = entry.get("before") if isinstance(entry, dict) else None
+        after = entry.get("after") if isinstance(entry, dict) else None
+        for name, value, limit in (("address", address, 0xFFFF), ("before", before, 0xFF),
+                                   ("after", after, 0xFF)):
+            if type(value) is not int or not 0 <= value <= limit:
+                raise ValueError(f"{mode}: ram_diff.{name} malformed: {value!r}")
+        if address in seen:
+            raise ValueError(f"{mode}: ram_diff duplicate address {address:#x}")
+        seen.add(address)
+        if address not in (0x21FD, 0x21FE, 0x21FF):
+            raise ValueError(f"{mode}: ram_diff outside the stack cells: {address:#x}")
+        if before == after:
+            raise ValueError(f"{mode}: ram_diff entry is not a change ({address:#x})")
+    if row.get("ram_diff_count") != len(ram_diff):
+        raise ValueError(f"{mode}: ram_diff_count {row.get('ram_diff_count')!r} != {len(ram_diff)}")
 
 
 def check_refused(row, mode):
@@ -500,6 +529,22 @@ def check_unsafe_read_hazard(row, mode):
         raise ValueError(f"{mode}: hazard run is unarmed")
     if row.get("hazard_landed") is not True or row.get("fetch_via") != "read":
         raise ValueError(f"{mode}: hazard was not observed through the unsafe fetch")
+    # Fetch-location / mapping integrity: the hazard read must be the hardware-page fetch.
+    if row.get("fetch_page") != HWPAGE_PAGE or row.get("fetch_mpr") != HWPAGE_BANK:
+        raise ValueError(f"{mode}: fetch page/bank {row.get('fetch_page')}/{row.get('fetch_mpr')!r}, "
+                         f"expected hardware page {HWPAGE_PAGE}/${HWPAGE_BANK:X}")
+    if row.get("fetch_unsafe_bank") is not True:
+        raise ValueError(f"{mode}: fetch did not resolve through the unsafe bank")
+    if row["after"]["mpr"][HWPAGE_PAGE] != HWPAGE_BANK:
+        raise ValueError(f"{mode}: hardware-page mapping inconsistent")
+    if not (HWPAGE_PAGE << 13) <= row["stop_pc"] < (HWPAGE_PAGE + 1) << 13:
+        raise ValueError(f"{mode}: hazard stop {row['stop_pc']:#x} is outside the hardware page")
+    if row["after"]["pc"] != row["stop_pc"]:
+        raise ValueError(f"{mode}: stop PC not held")
+    if row["instructions_executed"] != HWPAGE_EXPECTED_EXECUTED[base]:
+        raise ValueError(f"{mode}: hazard run executed "
+                         f"{row['instructions_executed']} (expected prologue "
+                         f"{HWPAGE_EXPECTED_EXECUTED[base]})")
     # With the hazard latch the unsafe Read fires exactly once (first decision). Any resume
     # re-read means the latch is gone, so the checker's count is what proves it.
     if row.get("mmio_read_attempts") != 1:

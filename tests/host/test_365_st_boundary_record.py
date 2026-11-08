@@ -514,5 +514,115 @@ class StPeekFailEvidenceTests(unittest.TestCase):
             st.check_peek_fail_step(row, "st0-hwpage-fetch-blocked-peek-fail-step")
 
 
+class StIrqCoreStopAndDiffTests(unittest.TestCase):
+    """IRQ core-stop distinction and net-diff integrity (Issue #365 audit).
+
+    core_irq_stop is the pinned core debugger's own stop notification, never a generic
+    IRQ-safety claim. ram_diff entries are validated directly (shape, range, uniqueness,
+    stack cells, real changes, count consistency).
+    """
+
+    def setUp(self):
+        record = json.loads((ROOT / "tests" / "fixtures" / "365-st-boundary-v2-evidence.json")
+                            .read_text(encoding="utf-8"))
+        self.rows = {case["case"]: case["row"] for case in record["cases"]}
+
+    def test_core_stop_flags_distinguished(self):
+        self.assertIs(self.rows["irq2-handler-st0-survey"]["core_irq_stop"], False)
+        self.assertIs(self.rows["irq2-core-stop-survey"]["core_irq_stop"], True)
+
+    def test_core_stop_flips_and_types_rejected(self):
+        cases = [
+            ("core-stop true->false", "irq2-core-stop-survey", {"core_irq_stop": False}),
+            ("handler false->true", "irq2-handler-st0-survey", {"core_irq_stop": True}),
+            ("core-stop None", "irq2-core-stop-survey", {"core_irq_stop": None}),
+            ("core-stop 0", "irq2-core-stop-survey", {"core_irq_stop": 0}),
+            ("core-stop 1", "irq2-core-stop-survey", {"core_irq_stop": 1}),
+            ("core-stop 'true'", "irq2-core-stop-survey", {"core_irq_stop": "true"}),
+        ]
+        for name, mode, overwrite in cases:
+            with self.subTest(name=name):
+                row = copy.deepcopy(self.rows[mode])
+                row.update(overwrite)
+                with self.assertRaisesRegex(ValueError, "core_irq_stop"):
+                    st.check_refused(row, mode)
+        row = copy.deepcopy(self.rows["irq2-core-stop-survey"])
+        row.pop("core_irq_stop")
+        with self.assertRaisesRegex(ValueError, "core_irq_stop"):
+            st.check_refused(row, "irq2-core-stop-survey")
+
+    def test_ram_diff_tampers_rejected(self):
+        base = copy.deepcopy(self.rows["irq2-handler-st0-survey"])
+        stack_entry = base["ram_diff"][0]
+        cases = [
+            ("foreign_2200", lambda r: r["ram_diff"].append(
+                {"address": 0x2200, "before": 0, "after": 1}), "outside the stack cells"),
+            ("stack_21FC", lambda r: r["ram_diff"].append(
+                {"address": 0x21FC, "before": 0, "after": 1}), "outside the stack cells"),
+            ("count_mismatch", lambda r: r.__setitem__("ram_diff_count", 99), "ram_diff_count"),
+            ("duplicate", lambda r: r["ram_diff"].append(dict(stack_entry)), "duplicate"),
+            ("byte_range", lambda r: r["ram_diff"][0].__setitem__("after", 256), "ram_diff.after"),
+            ("bool_as_int", lambda r: r["ram_diff"][0].__setitem__("before", True), "ram_diff.before"),
+            ("string_as_int", lambda r: r["ram_diff"][0].__setitem__("address", "8702"),
+             "ram_diff.address"),
+            ("no_change", lambda r: r["ram_diff"][0].__setitem__(
+                "before", r["ram_diff"][0]["after"]), "not a change"),
+            ("truncated_true", lambda r: r.__setitem__("ram_diff_truncated", True),
+             "ram_diff_truncated"),
+            ("flag_false", lambda r: r.__setitem__("only_stack_net_diffs", False),
+             "only_stack_net_diffs"),
+            ("missing_diff", lambda r: r.pop("ram_diff"), "not a list"),
+        ]
+        for name, mutate, reason in cases:
+            with self.subTest(name=name):
+                row = copy.deepcopy(base)
+                mutate(row)
+                with self.assertRaisesRegex(ValueError, reason):
+                    st.check_refused(row, "irq2-handler-st0-survey")
+
+
+class StUnsafeReadFetchTests(unittest.TestCase):
+    """Unsafe-read fetch location and MPR integrity (Issue #365 audit)."""
+
+    def setUp(self):
+        record = json.loads((ROOT / "tests" / "fixtures" / "365-st-boundary-v2-evidence.json")
+                            .read_text(encoding="utf-8"))
+        self.rows = {case["case"]: case["row"] for case in record["cases"]}
+        self.row = copy.deepcopy(self.rows["st0-hwpage-fetch-blocked-unsafe-read"])
+
+    def test_recorded_hazard_passes(self):
+        self.assertEqual(st.check_unsafe_read_hazard(
+            self.row, "st0-hwpage-fetch-blocked-unsafe-read"), st.HAZARD_VERDICT)
+
+    def test_bbr3_recorded_hazard_passes(self):
+        row = copy.deepcopy(self.rows["st0-bbr3-hwpage-taken-unsafe-read"])
+        self.assertEqual(st.check_unsafe_read_hazard(
+            row, "st0-bbr3-hwpage-taken-unsafe-read"), st.HAZARD_VERDICT)
+
+    def test_fetch_tampers_rejected(self):
+        cases = [
+            ("page", {"fetch_page": 1}, "fetch page/bank"),
+            ("mpr", {"fetch_mpr": 0xF8}, "fetch page/bank"),
+            ("unsafe_bank", {"fetch_unsafe_bank": False}, "unsafe bank"),
+            ("stop_outside", {"stop_pc": 0x3FFF, "after": {"pc": 0x3FFF}}, "outside"),
+            ("pc_not_held", {"after": {"pc": 0x4001}}, "not held"),
+            ("via_peek", {"fetch_via": "peek"}, "unsafe fetch"),
+            ("hazard_off", {"hazard_landed": False}, "unsafe fetch"),
+            ("mmio_zero", {"mmio_read_attempts": 0}, "mmio_read_attempts"),
+            ("mmio_two", {"mmio_read_attempts": 2}, "mmio_read_attempts"),
+            ("executed", {"instructions_executed": 4}, "hazard run executed"),
+        ]
+        for name, overwrite, reason in cases:
+            with self.subTest(name=name):
+                row = copy.deepcopy(self.row)
+                for key, value in overwrite.items():
+                    if key == "after":
+                        row["after"].update(value)
+                    else:
+                        row[key] = value
+                with self.assertRaisesRegex(ValueError, reason):
+                    st.check_unsafe_read_hazard(row, "st0-hwpage-fetch-blocked-unsafe-read")
+
+
 if __name__ == "__main__":
     unittest.main()
