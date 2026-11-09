@@ -141,6 +141,9 @@ def judge(records: dict, case: dict, body: bytes, payload_tag: int):
             raise ValueError(f"{case['name']} {cycle}: stopped with {run['reason']} "
                              f"(halt_confirmed={run.get('halt_confirmed')}), expected {case['reason']}")
         code, copied = buf[RB], buf[RB + 2]
+        if "stage" in case and buf[RB + 1] != case["stage"]:
+            raise ValueError(f"{case['name']} {cycle}: stopped in stage {buf[RB + 1]}, expected {case['stage']} "
+                             f"(4 = final-sector pre-read, before any load-area write)")
         if (code, copied) != (case["code"], case["copied"]):
             raise ValueError(f"{case['name']} {cycle}: guest code/copied = {code}/{copied}, "
                              f"expected {case['code']}/{case['copied']}")
@@ -257,23 +260,30 @@ CASES = [
     dict(name="pos_last_body_sector_is_last_disc_frame", pay="A", n=5, iplblk=30, sta=0x3000, entry=0x3000,
          mprs=MPRS_STD, openmode=0, reason="cd_halt_ok", code=0, copied=5, payload_ran=True),
     dict(name="neg_last_body_sector_one_past_disc_end", pay="A", n=5, iplblk=31, sta=0x3000, entry=0x3000,
-         mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=0, payload_ran=False),
+         mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=0, stage=4, payload_ran=False),
     # formerly partial_read_beyond_disc_after_5_sectors (copied 5 AFTER the fact); now refused before any copy
     dict(name="neg_body_tail_beyond_disc_refused_before_copy", pay="A", n=10, iplblk=30, sta=0x3000, entry=0x3000,
-         mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=0, payload_ran=False),
+         mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=0, stage=4, payload_ran=False),
     dict(name="neg_single_sector_at_first_frame_past_end", pay="A", n=1, iplblk=35, sta=0x3000, entry=0x3000,
-         mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=0, payload_ran=False),
+         mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=0, stage=4, payload_ran=False),
     dict(name="neg_body_entirely_beyond_disc", pay="A", n=3, iplblk=100, sta=0x3000, entry=0x3000,
-         mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=0, payload_ran=False),
+         mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=0, stage=4, payload_ran=False),
     # IPLBLK middle byte nonzero (0x000100): passes the 16-bit LBA checks, then fails the media probe
     dict(name="neg_iplblk_0100_passes_lba_checks_fails_media_probe", pay="A", n=1, iplblk=0x100, sta=0x3000,
-         entry=0x3000, mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=0, payload_ran=False),
+         entry=0x3000, mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=0, stage=4, payload_ran=False),
     # 16-bit LBA ceiling: bodyl+N must stay <= $FFFF. bodyl=$FFFE,N=1 passes the width checks (then media probe);
     # bodyl=$FFFF,N=1 is refused by width (code 27) although its single sector is the last representable LBA.
     dict(name="neg_lba_fffe_n1_passes_width_fails_media_probe", pay="A", n=1, iplblk=0xFEF5, sta=0x3000,
-         entry=0x3000, mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=0, payload_ran=False),
+         entry=0x3000, mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=0, stage=4, payload_ran=False),
     dict(name="neg_lba_ffff_n1_width_refused", pay="A", n=1, iplblk=0xFEF6, sta=0x3000, entry=0x3000,
          mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=27, copied=0, payload_ran=False),
+    # PUBLIC ROM (up to 31 sectors): the same probe; N=20 so the final sector is 19 past the first body sector
+    dict(name="pub_pos_n20_final_sector_is_last_disc_frame", pay="A", n=20, iplblk=15, sta=0x3000, entry=0x3000,
+         mprs=[0, 1, 2, 3, 4], openmode=0, rom="public", public=True, mpr_add=0x80, info_edits=[(14, 0), (15, 0)],
+         reason="cd_halt_ok", code=0, copied=20, payload_ran=True),
+    dict(name="pub_neg_n20_tail_beyond_disc_refused_before_copy", pay="A", n=20, iplblk=16, sta=0x3000, entry=0x3000,
+         mprs=[0, 1, 2, 3, 4], openmode=0, rom="public", public=True, info_edits=[(14, 0), (15, 0)],
+         reason="cd_halt_fail", code=5, copied=0, stage=4, payload_ran=False),
     dict(name="neg_iplblk_high_byte_80", pay="A", n=5, iplblk=2, sta=0x3000, entry=0x3000, mprs=MPRS_STD,
          openmode=0, info_edits=[(0, 0x80)], reason="cd_halt_fail", code=21, copied=0, payload_ran=False),
     dict(name="neg_iplblk_high_byte_ff", pay="A", n=5, iplblk=2, sta=0x3000, entry=0x3000, mprs=MPRS_STD,

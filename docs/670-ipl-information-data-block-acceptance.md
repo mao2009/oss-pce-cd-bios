@@ -54,6 +54,7 @@ Owner 承認なしに 24bit 対応を実装しない。
   合成媒体は連続した 1 データトラックなので (b) を再現できず、(b) は実コア未検証である。
 - 旧 `partial_read_beyond_disc_after_5_sectors` (コピー 5 セクタ後に検出) は
   `neg_body_tail_beyond_disc_refused_before_copy` (copied=0) に置き換えた。READ(6) 失敗時の guest code は同じ 5。
+- 先読みの拒否ケースは guest の停止ステージ (R_STAGE=4) も検査し、先頭セクタ読出し (ステージ 5) による拒否と区別する。PUBLIC 形式にも N=20 の受理/拒否ケースがある。
 - 先読みにより起動ごとに READ(6) が 1 回増える (性能への影響は未計測)。
 
 ### 3.2 BLOCKED: データトラック長に基づく拒否 (Owner 判断待ち)
@@ -112,7 +113,7 @@ Owner 承認なしに 24bit 対応を実装しない。
 
 - 受入条件対応表の追加 (本ドキュメント)。
 - 24bit 高位バイト拒否の回帰テスト追加 (`neg_iplblk_high_byte_nonzero`)。
-- 既存テストの期待値は変更しない。
+- (初回 PR 時点の記述) 既存テストの期待値は変更しない。後続更新で `partial_read_beyond_disc_after_5_sectors` は置き換え済み (§3.1)。
 - (後続更新) 最終 body セクタの先読み (§3.1) をテスト用ローダーに追加。公開仕様・24bit 対応・他コマンド方式は変更なし。
 - (初回 PR 時点の記述) ローダー本体の動作変更なし (Owner 判断が必要な仕様変更は保留)。`ipl_loader_rom.s` の
   `IPL_MUTANT_HIGHBYTE` ガードは検証専用 mutation のためのみで、デフォルトビルドには影響しない。
@@ -174,6 +175,6 @@ PASS とはみなさない。
 
 - 実行環境: WSL2 Ubuntu、pinned Geargrafx b49ae82a、cc65 pinned。合成媒体のみ。
 - RED: ケース追加後、変更前ローダーで `neg_last_body_sector_one_past_disc_end` が `guest code/copied = 5/4, expected 5/0` で失敗。
-- GREEN: 変更後、`geargrafx_ipl_loader.py` 57/57 (8 KiB HuCARD+CUE 経路、cold+warm)、
-  `make dev-bios-ipl-loader-integration` 57/57 (256 KiB DEV BIOS バッファ経路)。ローカル実行。CI の結果は PR を参照。
+- GREEN: 変更後、`geargrafx_ipl_loader.py` 59/59 (8 KiB HuCARD+CUE 経路、cold+warm)、
+  `make dev-bios-ipl-loader-integration` 59/59 (256 KiB DEV BIOS バッファ経路)。ローカル実行。CI の結果は PR を参照。
 - 商用メディア、実機、System Card BIOS 互換、CD_BOOT/CD_READ ABI は一切検証していない。
