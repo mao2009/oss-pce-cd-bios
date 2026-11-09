@@ -139,7 +139,8 @@ def check_armed(row, mode):
     if operands[0] != expected_op:
         raise ValueError(f"{mode}: operand byte 0 {operands[0]:#x} != refused opcode")
     _int_fields(row, ("stop_pc", "executed_at_refusal", "vdc_ar_before", "vdc_ar_after",
-                      "vdc_sr_before", "vdc_sr_after"))
+                      "vdc_sr_before", "vdc_sr_after", "vdc_r_before", "vdc_r_after",
+                      "vdc_read_buffer_before", "vdc_read_buffer_after"))
     if row.get("vdc_ar_before") != row.get("vdc_ar_after"):
         raise ValueError(f"{mode}: VDC AR changed {row.get('vdc_ar_before'):#x} -> "
                          f"{row.get('vdc_ar_after'):#x}: side effect before stop")
@@ -147,6 +148,10 @@ def check_armed(row, mode):
         raise ValueError(f"{mode}: VDC SR changed: side effect before stop")
     if row.get("vdc_r_before") != row.get("vdc_r_after"):
         raise ValueError(f"{mode}: VDC R0 changed: side effect before stop")
+    if row.get("vdc_read_buffer_before") != row.get("vdc_read_buffer_after"):
+        raise ValueError(f"{mode}: VDC READ_BUFFER changed "
+                         f"{row.get('vdc_read_buffer_before'):#x} -> "
+                         f"{row.get('vdc_read_buffer_after'):#x}: side effect before stop")
     if row.get("executed_at_refusal") != BLOCK_EXECUTED_BEFORE_REFUSAL[mode]:
         raise ValueError(f"{mode}: executed_at_refusal mismatch")
     # No transfer bytes may have moved: WRAM net diff must be empty (except the
@@ -263,6 +268,9 @@ def check_hwpage_armed(row, mode):
         raise ValueError(f"{mode}: VDC AR sentinel disturbed")
     if row.get("vdc_sr_before") != 0x3F or row.get("vdc_sr_after") != 0x3F:
         raise ValueError(f"{mode}: VDC SR changed without any step")
+    _int_fields(row, ("vdc_read_buffer_before", "vdc_read_buffer_after"))
+    if row.get("vdc_read_buffer_before") != row.get("vdc_read_buffer_after"):
+        raise ValueError(f"{mode}: VDC READ_BUFFER changed without any step")
     if row.get("ram_diff") != []:
         raise ValueError(f"{mode}: RAM changed without any step")
     mpr_after = row.get("after", {}).get("mpr")
@@ -288,6 +296,9 @@ def mutation_test_armed(refused_row, landed_row, mode, check=check_armed):
             ("executed", {"instructions_executed": 4}, [], "wrong count accepted"),
             ("vdc-changed", {"vdc_sr_before": 0x3F, "vdc_sr_after": 0x00}, [],
              "landed: VDC side effect accepted"),
+            ("vdc-read-buffer-changed", {"vdc_read_buffer_before": 0xBEEF,
+                                         "vdc_read_buffer_after": 0x1234}, [],
+             "landed: VDC read-buffer side effect accepted"),
             ("ram-diff", {"ram_diff": [{"address": 0x3E90, "before": 0xCC, "after": 0x60}]},
              [], "landed: transfer bytes accepted"),
             ("resume-not-refused", {"resume_refused": RESUME_ATTEMPTS - 1}, [],
@@ -302,6 +313,9 @@ def mutation_test_armed(refused_row, landed_row, mode, check=check_armed):
         ("wrong-pc", {"refused_pc": 0x1234}, [], "landed: PC mismatch accepted"),
         ("vdc-changed", {"vdc_sr_before": 0x3F, "vdc_sr_after": 0x00}, [],
          "landed: VDC side effect accepted"),
+        ("vdc-read-buffer-changed", {"vdc_read_buffer_before": 0xBEEF,
+                                     "vdc_read_buffer_after": 0x1234}, [],
+         "landed: VDC read-buffer side effect accepted"),
         ("ram-diff", {"ram_diff": [{"address": 0x3E90, "before": 0xCC, "after": 0x13}]},
          [], "landed: transfer bytes accepted"),
         ("resume-not-refused", {"resume_refused": RESUME_ATTEMPTS - 1}, [],
@@ -336,6 +350,9 @@ def check_hwpage_unguarded_still_blocked(row, mode):
         raise ValueError(f"{mode}: VDC AR changed without any step")
     if row.get("vdc_sr_before") != row.get("vdc_sr_after"):
         raise ValueError(f"{mode}: VDC SR changed without any step")
+    _int_fields(row, ("vdc_read_buffer_before", "vdc_read_buffer_after"))
+    if row.get("vdc_read_buffer_before") != row.get("vdc_read_buffer_after"):
+        raise ValueError(f"{mode}: VDC READ_BUFFER changed without any step")
     if row.get("ram_diff") != []:
         raise ValueError(f"{mode}: RAM changed without any step")
     return HWPAGE_BLOCKED_VERDICT

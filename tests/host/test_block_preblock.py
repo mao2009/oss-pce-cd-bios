@@ -38,6 +38,7 @@ def _armed_row(mode="tii-entry"):
         "vdc_ar_before": 0, "vdc_ar_after": 0,
         "vdc_sr_before": 0, "vdc_sr_after": 0,
         "vdc_r_before": 0, "vdc_r_after": 0,
+        "vdc_read_buffer_before": 0xBEEF, "vdc_read_buffer_after": 0xBEEF,
         "ram_diff": [], "only_stack_net_diffs": True,
         "before": {"mpr": list(mpr), "sp": 0xFF},
         "after": {"mpr": list(mpr), "sp": 0xFF},
@@ -73,6 +74,7 @@ class ArmedTest(unittest.TestCase):
                     "executed_at_refusal": 3, "fetch_safe": False, "fetch_failed": True,
                     "vdc_ar_before": 5, "vdc_ar_after": 5,
                     "vdc_sr_before": 0x3F, "vdc_sr_after": 0x3F,
+                    "vdc_read_buffer_before": 0xBEEF, "vdc_read_buffer_after": 0xBEEF,
                     "after": {"mpr": [0x00, 0xF8, 0xFF, 0, 0, 0, 0, 0], "sp": 0xFF}})
         self.assertEqual(B.check_hwpage_armed(row, "tii-hwpage-fetch-blocked"),
                          B.HWPAGE_BLOCKED_VERDICT)
@@ -85,6 +87,8 @@ class ArmedTest(unittest.TestCase):
                          "operand_bytes": [0xEA, 0, 0, 0, 0, 0, 0]},
             "wrong-pc": {"refused_pc": 0x1234, "stop_pc": 0x1234},
             "vdc": {"vdc_sr_before": 0x3F, "vdc_sr_after": 0x00},
+            "vdc-read-buffer": {"vdc_read_buffer_before": 0xBEEF,
+                                "vdc_read_buffer_after": 0x1234},
             "ram": {"ram_diff": [{"address": 0x3E90, "before": 0xCC, "after": 0x60}]},
             "resume": {"resume_refused": 2},
             "operand": {"operand_complete": False},
@@ -99,10 +103,19 @@ class ArmedTest(unittest.TestCase):
                     B.check_armed(row, "tdd-unknown")
 
     def test_missing_evidence_blocked(self):
-        for key in ("operand_bytes", "stop_pc", "resume_refused"):
+        for key in ("operand_bytes", "stop_pc", "resume_refused",
+                    "vdc_read_buffer_before", "vdc_read_buffer_after"):
             row = _armed_row("tii-entry")
             del row[key]
             with self.subTest(missing=key):
+                with self.assertRaises((ValueError, KeyError, TypeError)):
+                    B.check_armed(row, "tii-entry")
+
+    def test_read_buffer_wrong_type_blocked(self):
+        for bad in (None, "0xBEEF", 0.5, True, [0xBEEF]):
+            row = _armed_row("tii-entry")
+            row["vdc_read_buffer_after"] = bad
+            with self.subTest(bad=bad):
                 with self.assertRaises((ValueError, KeyError, TypeError)):
                     B.check_armed(row, "tii-entry")
 
@@ -157,6 +170,7 @@ class UnarmedTest(unittest.TestCase):
                     "instructions_executed": 3, "fetch_safe": False, "fetch_failed": True,
                     "vdc_ar_before": 5, "vdc_ar_after": 5,
                     "vdc_sr_before": 0x3F, "vdc_sr_after": 0x3F,
+                    "vdc_read_buffer_before": 0xBEEF, "vdc_read_buffer_after": 0xBEEF,
                     "after": {"mpr": [0x00, 0xF8, 0xFF, 0, 0, 0, 0, 0], "sp": 0xFF}})
         self.assertEqual(B.check_hwpage_unguarded_still_blocked(row, "tii-hwpage-fetch-blocked"),
                          B.HWPAGE_BLOCKED_VERDICT)

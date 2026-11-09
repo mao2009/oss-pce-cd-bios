@@ -244,5 +244,171 @@ class BlockTest(unittest.TestCase):
         self.assertEqual(v, V.BLOCKED)
 
 
+def _blockpre_row(armed=True, hwpage=False):
+    base = _row()
+    base.update({"vdc_read_buffer_before": 0xBEEF, "vdc_read_buffer_after": 0xBEEF})
+    if hwpage:
+        base.update({"stop_pc": 0x4000, "instructions_executed": 3, "status": "fetch_blocked"})
+    elif not armed:
+        base.update({"instructions_executed": 1, "vdc_sr_after": 0x00, "status": "landed"})
+    return base
+
+
+def _blockpre_cases():
+    cases = {}
+    for mode in V.BLOCKPRE_ARMED:
+        hw = mode in V.BLOCKPRE_HWPAGE_ARMED
+        verdict = ("hardware_page_fetch_failed_closed_before_step" if hw
+                   else "refused_at_instruction_boundary_before_side_effect")
+        cases[mode] = _item(mode, verdict, _blockpre_row(armed=True, hwpage=hw))
+    for mut in V.BLOCKPRE_MUTATIONS:
+        if mut in V.BLOCKPRE_ALWAYS_BLOCKED:
+            verdict = "hardware_page_fetch_failed_closed_before_step"
+            row = _blockpre_row(armed=True, hwpage=True)
+        else:
+            verdict = "side_effect_landed_monitor_disabled"
+            row = _blockpre_row(armed=False)
+        cases[mut] = _item(mut, verdict, row)
+    return cases
+
+
+class BlockprePinnedTest(unittest.TestCase):
+    def test_full_set_passes(self):
+        v, reasons, halt = V._check_blockpre_cases(
+            _blockpre_cases(), probe_ok=True, summary_ok=True)
+        self.assertEqual(v, V.PASS, reasons)
+        self.assertEqual(len(halt), 21)
+
+    def test_delete_one_armed_at_a_time_blocked(self):
+        for mode in sorted(V.BLOCKPRE_ARMED):
+            with self.subTest(missing=mode):
+                c = _blockpre_cases()
+                del c[mode]
+                v, reasons, _ = V._check_blockpre_cases(
+                    c, probe_ok=True, summary_ok=True)
+                self.assertEqual(v, V.BLOCKED, reasons)
+                self.assertTrue(any("MISSING" in r for r in reasons))
+
+    def test_delete_one_mutation_at_a_time_blocked(self):
+        for mut in sorted(V.BLOCKPRE_MUTATIONS):
+            with self.subTest(missing=mut):
+                c = _blockpre_cases()
+                del c[mut]
+                v, reasons, _ = V._check_blockpre_cases(
+                    c, probe_ok=True, summary_ok=True)
+                self.assertEqual(v, V.BLOCKED, reasons)
+
+    def test_unknown_case_never_accepted(self):
+        c = _blockpre_cases()
+        c["evil-unguarded"] = _item(
+            "evil-unguarded", "side_effect_landed_monitor_disabled",
+            _blockpre_row(armed=False))
+        v, reasons, _ = V._check_blockpre_cases(
+            c, probe_ok=True, summary_ok=True)
+        self.assertEqual(v, V.BLOCKED, reasons)
+
+    def test_substring_spoof_not_accepted(self):
+        c = _blockpre_cases()
+        # Replace a real mutation with a lookalike that only matches by substring.
+        victim = sorted(V.BLOCKPRE_MUTATIONS)[0]
+        del c[victim]
+        c["spoof-no-entry-check"] = _item(
+            "spoof-no-entry-check", "side_effect_landed_monitor_disabled",
+            _blockpre_row(armed=False))
+        v, _, _ = V._check_blockpre_cases(c, probe_ok=True, summary_ok=True)
+        self.assertEqual(v, V.BLOCKED)
+
+    def test_duplicate_case_blocked(self):
+        import json
+        line = "EVIDENCE " + json.dumps(
+            _item("tii-entry", "REFUSED", _row()))
+        cases, detail = V._parse_evidence(line + "\n" + line + "\n")
+        self.assertIsNone(cases)
+        self.assertTrue(detail.startswith("DUPLICATE_CASE:"))
+
+    def test_missing_pos_control_blocked(self):
+        v, _, _ = V._check_blockpre_cases(
+            _blockpre_cases(), probe_ok=True, summary_ok=False)
+        self.assertEqual(v, V.BLOCKED)
+        v, _, _ = V._check_blockpre_cases(
+            _blockpre_cases(), probe_ok=False, summary_ok=True)
+        self.assertEqual(v, V.BLOCKED)
+
+    def test_partial_never_verified(self):
+        c = _blockpre_cases()
+        del c[sorted(V.BLOCKPRE_ARMED)[0]]
+        v, _, _ = V._check_blockpre_cases(c, probe_ok=True, summary_ok=True)
+        self.assertNotEqual(v, V.PASS)
+
+    def test_read_buffer_change_fails(self):
+        c = _blockpre_cases()
+        mode = sorted(V.BLOCKPRE_ARMED - V.BLOCKPRE_HWPAGE_ARMED)[0]
+        c[mode] = _item(mode, "refused_at_instruction_boundary_before_side_effect",
+                        dict(_blockpre_row(), vdc_read_buffer_after=0x1234))
+        v, _, _ = V._check_blockpre_cases(c, probe_ok=True, summary_ok=True)
+        self.assertEqual(v, V.FAIL)
+
+    def test_read_buffer_missing_blocked(self):
+        c = _blockpre_cases()
+        mode = sorted(V.BLOCKPRE_ARMED - V.BLOCKPRE_HWPAGE_ARMED)[0]
+        row = _blockpre_row()
+        del row["vdc_read_buffer_after"]
+        c[mode] = _item(mode, "refused_at_instruction_boundary_before_side_effect", row)
+        v, _, _ = V._check_blockpre_cases(c, probe_ok=True, summary_ok=True)
+        self.assertEqual(v, V.BLOCKED)
+
+    def test_read_buffer_wrong_type_blocked(self):
+        c = _blockpre_cases()
+        mode = sorted(V.BLOCKPRE_ARMED - V.BLOCKPRE_HWPAGE_ARMED)[0]
+        row = _blockpre_row()
+        row["vdc_read_buffer_after"] = "0xBEEF"
+        c[mode] = _item(mode, "refused_at_instruction_boundary_before_side_effect", row)
+        v, _, _ = V._check_blockpre_cases(c, probe_ok=True, summary_ok=True)
+        self.assertEqual(v, V.BLOCKED)
+
+
+class BlockpreEvidenceSeparationTest(unittest.TestCase):
+    """MEDIUM-2: synthetic fixtures vs REAL_CORE observations stay separated.
+
+    Blockpre EVIDENCE must be REAL_CORE_EXECUTION with pinned provenance;
+    HOST_FIXTURE rows are never accepted here, and blockpre evidence is never
+    a unified PASS (no trusted-harness binding: execution stays BLOCKED,
+    scope stays synthetic single-step only).
+    """
+
+    def test_host_fixture_never_accepted_as_real_core(self):
+        c = _blockpre_cases()
+        mode = sorted(V.BLOCKPRE_ARMED - V.BLOCKPRE_HWPAGE_ARMED)[0]
+        bad = _item(mode, "refused_at_instruction_boundary_before_side_effect",
+                    _blockpre_row())
+        bad["observation_kind"] = "HOST_FIXTURE"
+        c[mode] = bad
+        v, reasons, _ = V._check_blockpre_cases(c, probe_ok=True, summary_ok=True)
+        self.assertEqual(v, V.BLOCKED, reasons)
+
+    def test_provenance_mismatch_is_fail_closed(self):
+        c = _blockpre_cases()
+        mode = sorted(V.BLOCKPRE_ARMED - V.BLOCKPRE_HWPAGE_ARMED)[0]
+        bad = _item(mode, "refused_at_instruction_boundary_before_side_effect",
+                    _blockpre_row())
+        bad["core_revision"] = "deadbeef"
+        c[mode] = bad
+        v, _, _ = V._check_blockpre_cases(c, probe_ok=True, summary_ok=True)
+        self.assertEqual(v, V.FAIL)
+
+    def test_only_full_pass_maps_to_verified(self):
+        # verify() maps PASS -> VERIFIED_PREBLOCK, everything else stays
+        # BLOCKED/FAIL with execution BLOCKED. Partial never PASSes above,
+        # so it can never become VERIFIED_PREBLOCK.
+        full = _blockpre_cases()
+        v, _, _ = V._check_blockpre_cases(full, probe_ok=True, summary_ok=True)
+        self.assertEqual(v, V.PASS)
+        for drop in (sorted(V.BLOCKPRE_ARMED)[0], sorted(V.BLOCKPRE_MUTATIONS)[0]):
+            c = _blockpre_cases()
+            del c[drop]
+            v, _, _ = V._check_blockpre_cases(c, probe_ok=True, summary_ok=True)
+            self.assertNotEqual(v, V.PASS)
+
+
 if __name__ == "__main__":
     unittest.main()

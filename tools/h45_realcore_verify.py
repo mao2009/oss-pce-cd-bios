@@ -62,6 +62,8 @@ def _parse_evidence(stdout):
         case = item.get("case")
         if not isinstance(case, str):
             return None, "EVIDENCE_CASE_MISSING"
+        if case in cases:
+            return None, f"DUPLICATE_CASE:{case}"
         cases[case] = item
     if not cases:
         return None, "NO_EVIDENCE_LINES"
@@ -75,6 +77,108 @@ def _is_refused_verdict(verdict):
     if "landed" in low or "unsafe" in low:
         return False
     return "refus" in low or "fail_closed" in low or "failed_closed" in low
+
+
+# Pinned #742 blockpre contract (mirrors
+# tests/integration/geargrafx_block_preblock.py ARMED_MODES + MUTATIONS).
+# Armed 7, mutation 14, positive control via probe exit + summary (not EVIDENCE).
+BLOCKPRE_ARMED = frozenset({
+    "tii-entry", "tdd-unknown", "tin-unknown-far", "tia-wrap-forbidden",
+    "tai-mpr2-unknown", "tii-hwpage-fetch-blocked", "block-irq-handler",
+})
+BLOCKPRE_MUTATIONS = frozenset({
+    "tii-entry-unguarded", "tii-entry-no-entry-check", "tii-entry-resume-allowed",
+    "tdd-unknown-unguarded", "tdd-unknown-resume-allowed",
+    "tin-unknown-far-unguarded", "tin-unknown-far-knownpc-only",
+    "tia-wrap-forbidden-unguarded", "tia-wrap-forbidden-knownpc-only",
+    "tai-mpr2-unknown-unguarded", "tai-mpr2-unknown-no-recheck",
+    "tai-mpr2-unknown-wrong-opcode",
+    "tii-hwpage-fetch-blocked-unguarded",
+    "block-irq-handler-unguarded",
+})
+BLOCKPRE_ALWAYS_BLOCKED = frozenset({"tii-hwpage-fetch-blocked-unguarded"})
+BLOCKPRE_HWPAGE_ARMED = frozenset({"tii-hwpage-fetch-blocked"})
+BLOCKPRE_EXPECTED_EVIDENCE = BLOCKPRE_ARMED | BLOCKPRE_MUTATIONS
+
+
+def _check_blockpre_cases(cases, probe_ok=False, summary_ok=False):
+    """Validate pinned #742 blockpre transcript. Returns (verdict, reasons, halt).
+
+    Exact-case contract (no substring classification): EVIDENCE must contain
+    exactly the 7 armed + 14 mutation cases, no more, no fewer. Missing ->
+    BLOCKED, duplicate is rejected in _parse_evidence, unknown -> BLOCKED
+    (never auto-accepted). Positive control is via probe exit + summary
+    (pos-write has no EVIDENCE line); without both it is BLOCKED. Partial
+    verification never returns PASS, so verify() can never map it to
+    VERIFIED_PREBLOCK. ST probe behavior is untouched (see _check_st_cases).
+    """
+    reasons = []
+    if set(cases) != BLOCKPRE_EXPECTED_EVIDENCE:
+        missing = sorted(BLOCKPRE_EXPECTED_EVIDENCE - set(cases))
+        extra = sorted(set(cases) - BLOCKPRE_EXPECTED_EVIDENCE)
+        detail = []
+        if missing:
+            detail.append("MISSING:" + ",".join(missing))
+        if extra:
+            detail.append("UNKNOWN:" + ",".join(extra))
+        return BLOCKED, [f"BLOCKPRE_CASE_SET_MISMATCH:{';'.join(detail)}"], {}
+    armed_ok = mut_ok = 0
+    halt = {}
+    for case in sorted(cases):
+        item = cases[case]
+        row = item.get("row") if isinstance(item.get("row"), dict) else None
+        if item.get("core_revision") != PINNED or item.get("bios") != "SYNTHETIC":
+            return FAIL, [f"PROVENANCE_MISMATCH:{case}"], {}
+        if item.get("observation_kind") != "REAL_CORE_EXECUTION":
+            return BLOCKED, [f"OBSERVATION_KIND:{case}"], {}
+        if row is None:
+            return BLOCKED, [f"ROW_MISSING:{case}"], {}
+        verdict = item.get("verdict")
+        if case in BLOCKPRE_ALWAYS_BLOCKED:
+            if verdict != "hardware_page_fetch_failed_closed_before_step":
+                return FAIL, [f"HWPAGE_EXPECTED_BLOCKED:{case}:{verdict}"], {}
+            mut_ok += 1
+        elif case in BLOCKPRE_ARMED:
+            if case in BLOCKPRE_HWPAGE_ARMED:
+                if verdict != "hardware_page_fetch_failed_closed_before_step":
+                    return FAIL, [f"ARMED_HWPAGE_NOT_BLOCKED:{case}:{verdict}"], {}
+            else:
+                if not _is_refused_verdict(verdict):
+                    if isinstance(verdict, str) and "landed" in verdict.lower():
+                        return FAIL, [f"ARMED_SIDE_EFFECT:{case}"], {}
+                    return BLOCKED, [f"ARMED_VERDICT_UNKNOWN:{case}:{verdict}"], {}
+            if row.get("vdc_sr_before") != row.get("vdc_sr_after"):
+                return FAIL, [f"ARMED_VDC_CHANGED:{case}"], {}
+            rb_before, rb_after = row.get("vdc_read_buffer_before"), row.get("vdc_read_buffer_after")
+            if type(rb_before) is not int or type(rb_after) is not int:
+                return BLOCKED, [f"ARMED_READ_BUFFER_MISSING:{case}"], {}
+            if rb_before != rb_after:
+                return FAIL, [f"ARMED_READ_BUFFER_CHANGED:{case}"], {}
+            if not isinstance(row.get("stop_pc"), int):
+                return BLOCKED, [f"ARMED_STOP_PC_MISSING:{case}"], {}
+            armed_ok += 1
+        elif case in BLOCKPRE_MUTATIONS:
+            if _is_refused_verdict(verdict):
+                return FAIL, [f"MUTATION_REFUSED:{case}"], {}
+            if not (isinstance(verdict, str) and "landed" in verdict.lower()):
+                return BLOCKED, [f"MUTATION_INCONCLUSIVE:{case}:{verdict}"], {}
+            mut_ok += 1
+        else:
+            return BLOCKED, [f"UNKNOWN_CASE:{case}"], {}
+        halt[case] = {"stop_pc": row.get("stop_pc"),
+                      "executed": row.get("instructions_executed"),
+                      "sr_before": row.get("vdc_sr_before"),
+                      "sr_after": row.get("vdc_sr_after"),
+                      "status": row.get("status")}
+    if armed_ok != len(BLOCKPRE_ARMED):
+        return BLOCKED, [f"ARMED_COUNT_{armed_ok}_EXPECTED_{len(BLOCKPRE_ARMED)}"], {}
+    if mut_ok != len(BLOCKPRE_MUTATIONS):
+        return BLOCKED, [f"MUT_COUNT_{mut_ok}_EXPECTED_{len(BLOCKPRE_MUTATIONS)}"], {}
+    if not (probe_ok and summary_ok):
+        return BLOCKED, ["NO_POS_CONTROL"], {}
+    reasons.append("POS_CONTROL_BY_PROBE_EXIT")
+    reasons = reasons + [f"ARMED_{armed_ok}_MUT_{mut_ok}_POS_1"]
+    return PASS, reasons, halt
 
 
 def _check_st_cases(cases, probe_ok=False, summary_ok=False, always_blocked=()):
@@ -291,9 +395,8 @@ def verify(probe, timeout, output_dir):
                     "run_id": run_id, "probe": probe}
         summary_ok = ("positive control:" in proc.stdout
                       and "PASS issue-742" in proc.stdout)
-        verdict, reasons, halt = _check_st_cases(
-            cases, probe_ok=True, summary_ok=summary_ok,
-            always_blocked=("tii-hwpage-fetch-blocked-unguarded",))
+        verdict, reasons, halt = _check_blockpre_cases(
+            cases, probe_ok=True, summary_ok=summary_ok)
         scope = "SYNTHETIC_SINGLE_STEP_ONLY_NO_GATE_CHANGE"
     elif probe == "st":
         cases, detail = _parse_evidence(proc.stdout)
