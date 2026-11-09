@@ -9,7 +9,7 @@ Existing multi-sector loader (PR #681, #683) is reused; no reimplementation.
 | # | 受入条件 (Issue #670) | 既存実装 | テスト | 状態 |
 |---|---|---|---|---|
 | 1 | 情報ブロック位置: データトラック相対セクタ 1、署名オフセット 32 を確認 | `ipl_loader_rom.s` `validate_info` SIG_LEN=23 at BUF+32 | neg_signature_byte (code 20) | PASS (synthetic) |
-| 2 | $00-$02 24bit big-endian ブロック番号でコードセクタ決定 | BUF[0] must be 0; BUF[1]/BUF[2] -> bodyl (16-bit LBA) | neg_iplblk_high_byte_nonzero (code 21, 追加), neg_iplblk_zero/one (code 21) | PARTIAL: 24bit field accepted only when high byte is 0 |
+| 2 | $00-$02 24bit big-endian ブロック番号でコードセクタ決定 | BUF[0..2] -> 24bit body base (bodyh/bodyl); IPLBLK<2 は code 21 | neg_iplblk_high_byte_01_in_range_probe_refused (code 5/stage 4)、neg_iplblk_high_byte_80/ff_over_range_refused (code 27)、neg_iplblk_zero/one (code 21) | PASS (synthetic): 21bit 範囲内は受理 (Issue #744)。範囲外は code 27 |
 | 3 | $03 セクタ数で複数セクタ READ(6) | nsec 1..10; copy_body loops nsec | pos_* / neg_iplbln_zero/11 | PASS (synthetic) |
 | 4 | $04-$05 ロード先、$06-$07 実行開始値の範囲・整合性検査 | IPLSTA $3000-$7FFF and fit; entry in [IPLSTA, IPLSTA+N*2048) | neg_iplsta_*, neg_entry_* (code 23/24) | PASS (synthetic) |
 | 5 | $08-$0C MPR2-6 設定、MPR0/1 は DEV 初期値維持 | m2..m6 from BUF+8..12; MPR0=$FF, MPR1=$F8 at reset | neg_mpr2_not_ram_bank (code 25), MPR verification in judge | PASS (synthetic) |
@@ -19,21 +19,22 @@ Existing multi-sector loader (PR #681, #683) is reused; no reimplementation.
 | 9 | 既存統合テスト (dev-cdload-exec, dev-boot-internal, experimental-bios-boot, dev-ipl-boot) の期待値維持 | 未変更 | CI | PASS (not touched) |
 | 10 | DEV 専用; CD_BOOT/CD_READ ABI を VERIFIED にしない; release_eligible=false | 不変 | status/docs | PASS |
 
-## 2. 24bit IPLBLK / 21bit READ(6) / 16bit 内部 LBA の分離
+## 2. 24bit IPLBLK / 21bit READ(6) / 24bit 内部計算 (Issue #744 で拡張)
 
 3 つの幅を混同してはならない。
 
 1. 公開 IPL 情報ブロックの IPLBLK フィールド幅: **24bit** (big-endian, $00-$02)。
 2. SCSI READ(6) の標準 LBA フィールド幅: **21bit** (6 バイト CDB の LBA は 21bit)。
-3. 現行ローダーの内部 LBA 実装幅: **16bit** (`bodyl` 2 バイト、`IPL_SEL` 16bit に加算)。
+3. ローダーの内部 LBA 計算幅 (Issue #744, Owner decision B): **24bit** (`bodyh/bodyl` 3 バイト、
+   `IPL_SEL` 16bit に加算)。READ(6) 発行時に 21bit 範囲 (`body + nsec <= $200000`) を強制する。
 
 したがって 24bit IPLBLK の全域を READ(6) だけで表現できるとは限らない。READ(6) の
 21bit を超える値は別コマンド (READ(10)/READ(12) 等) または媒体境界の再定義が必要であり、
 現行 Geargrafx プローブ/ローダーがそれらをサポートするかは **UNKNOWN** (未確認)。
-Owner 承認なしに 24bit 対応を実装しない。
+21bit 超は code 27 でコピー前に拒否する (Owner decision B の範囲内)。
 
-現行実装の扱い:
-- `BUF[0] (high byte) != 0` を拒否 (code 21)。24bit のうち上位 8bit は 0 でなければならない。
+Issue #744 以前の扱い (履歴):
+- `BUF[0] (high byte) != 0` を拒否 (code 21)。24bit のうち上位 8bit は 0 でなければならなかった。
 - これは 24bit フィールドを部分的にしか扱えない状態であり、データトラックが 65536 セクタを超える
   媒体では IPLBLK の上位バイトが非零になり拒否される。
 - 24bit 全域への対応は、現行ローダーの 16bit 内部 LBA の拡張に加え、READ(6) の 21bit 限界を超える場合の
@@ -93,19 +94,20 @@ Owner 承認なしに 24bit 対応を実装しない。
   `neg_last_body_sector_one_past_disc_end`, `neg_single_sector_at_first_frame_past_end`, `neg_body_entirely_beyond_disc`,
   `neg_iplblk_0100_passes_lba_checks_fails_media_probe` (いずれも code 5 / copied=0)。
 - 24bit 上位バイト: `neg_iplblk_high_byte_nonzero` (0x01), `_80`, `_ff` (code 21)。
-- 16bit を超える受理 (絶対 LBA > 0xFFFF) と 65536 フレーム超の合成媒体は未テスト (BIN が約 150 MB になる)。
+- 16bit を超える受理 (絶対 LBA > 0xFFFF): 小ディスク suite では媒体先読み拒否まで (受理ロードは
+  65536 フレーム超の合成媒体を要するため別途 Issue #744 で実コア確認; BIN 約 155 MB、§9.2)。
 
 不足点:
-- 上限の基準が 16bit 幅と媒体先読みであり、実際のデータトラック長ではない (§3)。
-- 最終セクタが 16bit 上限に一致する境界 (`base + nsec - 1 == 0xFFFF`) は tail check により拒否されるが、
-  これは保守的であり、受理すべきかは Owner 判断。
-- 24bit 高位バイト拒否 (§2) により IPLBLK の高位 8bit が非零の場合は拒否される。
-  ただし「0x00FFFF 以下なら受理される」という単純な条件ではない。受理には少なくとも次を
+- 上限の基準が 21bit 幅と媒体先読みであり、実際のデータトラック長ではない (§3)。
+- 最終セクタが 21bit 上限に一致する境界 (`base + nsec - 1 == 0x1FFFFF`, end `== 0x200000`) は受理される。
+  end `> 0x200000` および 24bit 桁溢れは code 27 で拒否 (Issue #744)。
+- 24bit 高位バイト (§2): Issue #744 (Owner decision B) により、IPLBLK 高位 8bit が非零でも
+  絶対 body が 21bit READ(6) 範囲内なら受理される。範囲外は code 27 でコピー前に拒否。
+  ただし「0x1FFFFF 以下なら受理される」という単純な条件ではない。受理には少なくとも次を
   満たす必要がある:
-    - IPLBLK の高位 8bit が 0
     - 相対 IPLBLK が 2 以上
-    - IPL_SEL + IPLBLK が 16bit 範囲内
-    - IPL_SEL + IPLBLK + nsec が現行実装の保守的な末尾チェックを通過する
+    - IPL_SEL + IPLBLK (24bit 加算、桁溢れなし) の body base が範囲内
+    - IPL_SEL + IPLBLK + nsec (exclusive end) が $200000 以下、24bit 桁溢れなし
     - その他のヘッダ・ロード先・実行開始値の検証も通過する
   相対 LBA (IPLBLK) と絶対 LBA (IPL_SEL + IPLBLK) を混同しないこと。
 
@@ -113,16 +115,24 @@ Owner 承認なしに 24bit 対応を実装しない。
 
 - 受入条件対応表の追加 (本ドキュメント)。
 - 24bit 高位バイト拒否の回帰テスト追加 (`neg_iplblk_high_byte_nonzero`)。
+  Issue #744 (Owner decision B) により高位バイトは範囲チェック対象となり、同ケースは
+  範囲内受理→媒体先読み拒否へ移行 (`neg_iplblk_high_byte_01_in_range_probe_refused`)。
+  範囲外 (`0x80`/`0xFF`) は code 27 のまま拒否 (改名のみ)。
 - (初回 PR 時点の記述) 既存テストの期待値は変更しない。後続更新で `partial_read_beyond_disc_after_5_sectors` は置き換え済み (§3.1)。
+  ただし #744 の幅拡張に伴い、16bit 上限を前提とした 7 ケースの期待値・名称を更新 (契約変更のため。正当化は #744 PR)。
 - (後続更新) 最終 body セクタの先読み (§3.1) をテスト用ローダーに追加。公開仕様・24bit 対応・他コマンド方式は変更なし。
+  #744 で先読み・コピーの両アドレス計算を 24bit 化、READ(6) CDB byte 1 を `(LBA>>16)&$1F` 化。
+  `IPL_SEL` 自体は 16bit host-derived INDEX 01 のまま。
 - (初回 PR 時点の記述) ローダー本体の動作変更なし (Owner 判断が必要な仕様変更は保留)。`ipl_loader_rom.s` の
-  `IPL_MUTANT_HIGHBYTE` ガードは検証専用 mutation のためのみで、デフォルトビルドには影響しない。
+  `IPL_MUTANT_HIGHBYTE` ガードは #744 で削除 (検証専用 mutation の役目を終えたため。デフォルトビルドへの影響なし)。
 - `release_eligible=false`, `ABI VERIFIED` 未変更を維持。
 
 ## 6. 未解決 / Owner 判断待ち
 
 - データトラック長に基づく事前拒否 (§3.2) の方式選択 (推奨 A)。先読み (§3.1) を受入条件として受理するか。
-- 24bit LBA 幅への拡張 (§2)。
+- 24bit LBA 幅への拡張 (§2): Issue #744 (Owner decision B) で対応済み。内部 LBA は 24bit 計算、
+  READ(6) は 21bit 範囲 (`body + nsec <= $200000`) を強制し、超過は code 27 でコピー前に拒否。
+  21bit 超の別コマンド方式 (READ(10)/READ(12) 等) は対象外のまま UNKNOWN。
 - 受入条件の明示改訂 (Owner)。
 
 ## 7. READ(6) エンコードと 24bit IPLBLK の表現可能性
@@ -178,3 +188,35 @@ PASS とはみなさない。
 - GREEN: 変更後、`geargrafx_ipl_loader.py` 59/59 (8 KiB HuCARD+CUE 経路、cold+warm)、
   `make dev-bios-ipl-loader-integration` 59/59 (256 KiB DEV BIOS バッファ経路)。ローカル実行。CI の結果は PR を参照。
 - 商用メディア、実機、System Card BIOS 互換、CD_BOOT/CD_READ ABI は一切検証していない。
+
+### 9.2 Issue #744 (21bit LBA, Owner decision B) の実行証拠
+
+- 実行環境: 上記 9.1 と同一 (pinned Geargrafx b49ae82a、cc65 pinned、合成媒体のみ)。
+- Host RED->GREEN: `tests/host/test_744_ipl_21bit_lba.py` 24 件。変更前 ROM では ROM-audit
+  (`LDA zp / AND #$1F / STA $2F11` パターン) が失敗=RED、変更後に全件 GREEN。
+  境界表 (abs `0x00FFFF/0x010000/0x010001/0x1FFFFE/0x1FFFFF` 受理、`0x200000/0xFFFFFF` 拒否、
+  INDEX01 carry、rel/abs 混同、last overflow、per-sector carry、nsec=0、16bit/21bit wrap、
+  CDB top-5bit、非零高位バイト受理、範囲外コピー前拒否) は `tools/ipl_lba21_model.py` で判定。
+- Real-core RED: 変更前 ROM で新ケース 2 件が失敗=RED (`neg_abs_010108...`: stage 3 vs 期待 4;
+  `neg_abs_1fffff_n1...`: `R_CDB 0800010a` vs 期待 `081fffff`)。
+- Real-core GREEN (small disc, 300 frames): `geargrafx_ipl_loader.py` **63/63**
+  (8 KiB HuCARD+CUE 経路、cold+warm 各 2 run)。`geargrafx_dev_bios_ipl_loader.py` (256 KiB DEV BIOS、
+  LoadBiosFromBuffer 経路) も **63/63**。R_CDB ピン (最終 READ(6) の 6 バイト) 付き。
+- Real-core GREEN (big disc, 66000 frames / 約 155 MB BIN、SEL=0x109 のまま):
+  `big_pos_base_10000_n5` (abs base 0x10000、payload 実行・MPR/entry 検証済み、約 5.2M steps)、
+  `big_pos_cross_ffff_n2` (0xFFFF->0x10000 per-sector carry、約 2.7M steps)、
+  `big_neg_past_end_66005` (code 5/stage 4/copied 0、payload 不実行)。いずれも cold+warm。
+  当初 BUDGET 60M の範囲内 (実測最大約 5.2M steps のため BIG_BUDGET 120M は未使用に等しい)。
+- Mutation (実コア、各 1-2 focused case): drop-high-byte / 16bit-truncation /
+  carry-removal / byte1-OR-$E0 / boundary-weakened / body-only-revert / pre-read-only-revert /
+  carry-gate-bypass の 8 件すべて検出 (期待不一致で FAIL)。byte1 マスク除去 (`and #$1F` 削除) は
+  範囲ゲート下で等価なため実コアでは区別不能 (pinned core が `buf[1]&0x1F` でマスクするため):
+  host ROM-audit が静的に強制する。詳細は #744 PR 報告を参照。
+- 最大 abs LBA: 受理確認は 0x1FFFFF (単一セクタ、媒体先読み拒否まで。小ディスク上)。
+  実ロード成功の最大は big-disc の 0x10004。0x200000 以上は code 27 でコピー前に拒否。
+- 残存 UNKNOWN/BLOCKED: READ(10)/READ(12) 対応 (pinned core は opcode 0x08 のみ。対象外のまま)、
+  byte1 上位 3bit の実機挙動 (core はマスク。実機未測定)、データトラック長ベースの拒否 (§3.2、
+  従来どおり BLOCKED)、商用メディア・実機・System Card 互換・CD_BOOT/CD_READ ABI (一切検証せず)。
+- 安全ゲート不変性: 全拒否 (code 21/22/27) は最初の load-area 書込み前に発生 (R_COPIED=0 検証済み);
+  post-copy/partial-copy ケースは従来どおり copied>0 で実行阻止 (code 30/31)。payload 不実行は
+  judge が全 run で payload 結果領域ゼロにより確認 (big-disc の拒否ケース含む)。

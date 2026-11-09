@@ -66,9 +66,11 @@ rdv    = $1A             ; 2 bytes: readback sum
 hdrv   = $1C             ; 2 bytes: DEV body checksum from the header
 nsec   = $1E
 stav   = $1F             ; 2 bytes: IPLSTA
-bodyl  = $21             ; 2 bytes: LBA of body sector 0 (IPL_SEL + IPLBLK)
-lbalo  = $23
+bodyl  = $21             ; 2 bytes: low 16 bits of the 24-bit body base LBA (IPL_SEL + IPLBLK)
+bodyh  = $27             ; 1 byte: high 8 bits of the 24-bit body base LBA
+lbalo  = $23             ; 3 bytes (lbalo/lbamid/lbahi): working 24-bit LBA for one READ(6)
 lbamid = $24
+lbahi  = $03
 idx    = $25
 scr    = $26
 byt    = $28
@@ -118,6 +120,8 @@ reset:
     sta lbalo
     lda #>(IPL_SEL+1)
     sta lbamid
+    lda #0                     ; IPL_SEL is 16-bit, so the high byte is 0
+    sta lbahi
     jsr read_sector
     jsr validate_info
     jsr probe_last
@@ -153,33 +157,39 @@ validate_info:
     cpx #32
     bne @res
 .endif
-    ; IPLBLK: 24-bit big-endian data-relative sector; DEV accepts only 16-bit values >= 2
-.ifndef IPL_MUTANT_HIGHBYTE
+    ; IPLBLK: 24-bit big-endian data-relative sector. DEV/PUBLIC accept values >= 2
+    ; whose body stays inside the 21-bit READ(6) range (Issue #744, Owner decision B).
     lda BUF
-    beq @b0
-    lda #21
-    jmp fail
-.endif
-@b0:
+    sta bodyh
     lda BUF+1
     sta bodyl+1
     lda BUF+2
     sta bodyl
-    lda bodyl+1
-    bne @blkok
+    ora bodyl+1
+    ora bodyh
+    beq @blkbad                ; IPLBLK == 0
+    lda bodyh
+    ora bodyl+1
+    bne @blkok                 ; IPLBLK >= $100 is definitely >= 2
     lda bodyl
     cmp #2
     bcs @blkok
+@blkbad:
     lda #21
     jmp fail
 @blkok:
-    lda bodyl                ; body LBA base = IPL_SEL + IPLBLK (16-bit, carry = out of range)
+    ; body LBA base = IPL_SEL + IPLBLK (24-bit; carry out of 24 bits is over range).
+    ; IPL_SEL is a 16-bit host-derived INDEX 01 LBA, so its high byte is 0 here.
+    lda bodyl
     clc
     adc #<IPL_SEL
     sta bodyl
     lda bodyl+1
     adc #>IPL_SEL
     sta bodyl+1
+    lda bodyh
+    adc #0
+    sta bodyh
     bcc @lbaok
     lda #27
     jmp fail
@@ -202,13 +212,27 @@ validate_info:
 @nok:
     sta nsec
     sta R_NSEC
-    ; the last body LBA (bodyl + nsec - 1) must not wrap past $FFFF: require bodyl + nsec <= $FFFF
-    clc
+    ; the last body LBA (body + nsec - 1) must be <= $1FFFFF: require the exclusive
+    ; end (body + nsec) <= $200000 with no 24-bit wraparound
     lda bodyl
+    clc
     adc nsec
+    sta lbalo
     lda bodyl+1
     adc #0
-    bcc @tailok
+    sta lbamid
+    lda bodyh
+    adc #0
+    sta lbahi
+    bcs @tailbad               ; 24-bit wraparound: end past $FFFFFF
+    lda lbahi
+    cmp #$20
+    bcc @tailok                ; end < $200000
+    bne @tailbad               ; end > $200000
+    lda lbamid                 ; end == $200000 only when mid == 0 and lo == 0
+    ora lbalo
+    beq @tailok
+@tailbad:
     lda #27
     jmp fail
 @tailok:
@@ -337,20 +361,24 @@ validate_info:
     rts
 
 ; ---------------------------------------------------------------------------
-; Media-end pre-check (Issue #670): READ(6) the FINAL body sector (bodyl + nsec - 1) into BUF, the staging buffer,
+; Media-end pre-check (Issue #670): READ(6) the FINAL body sector (body + nsec - 1) into BUF, the staging buffer,
 ; before the first load-area write. A failure halts through read_sector with R_COPIED = 0. This is a runtime
 ; reachability probe only: the guest cannot read the TOC or the data-track length, so it does not prove that the
 ; sector lies inside the data track (e.g. a following audio track), nor that the sectors in between are readable.
+; Issue #744: the address is the full 24-bit body base plus nsec minus 1 (no 16-bit truncation).
 probe_last:
     lda #4
     sta R_STAGE
-    lda bodyl                ; bodyl + nsec - 1: validate_info guarantees bodyl + nsec <= $FFFF, so no carry out
-    clc
+    lda bodyl                ; body + nsec - 1: validate_info guarantees body + nsec <= $200000
+    clc                      ; with nsec >= 1, so no borrow out of 24 bits
     adc nsec
     sta lbalo
     lda bodyl+1
     adc #0
     sta lbamid
+    lda bodyh
+    adc #0
+    sta lbahi
     lda lbalo
     sec
     sbc #1
@@ -358,6 +386,9 @@ probe_last:
     lda lbamid
     sbc #0
     sta lbamid
+    lda lbahi
+    sbc #0
+    sta lbahi
     jsr read_sector
     rts
 
@@ -384,6 +415,9 @@ copy_body:
     lda bodyl+1
     adc #0
     sta lbamid
+    lda bodyh
+    adc #0
+    sta lbahi
     jsr read_sector
     lda #<BUF
     sta src
@@ -624,9 +658,10 @@ read_sector:
     sta remain
     lda #>SECTOR
     sta remain+1
-    lda #$08                 ; READ(6)
+    lda #$08                 ; READ(6): LBA is 21 bits; byte 1 carries LBA[20:16], never LUN/high bits
     sta R_CDB
-    lda #0
+    lda lbahi
+    and #$1F
     sta R_CDB+1
     lda lbamid
     sta R_CDB+2
