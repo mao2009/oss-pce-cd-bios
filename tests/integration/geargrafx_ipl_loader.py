@@ -250,8 +250,34 @@ CASES = [
     dict(name="neg_body_sector2_corrupt_on_disc", pay="A", n=5, iplblk=2, sta=0x3000, entry=0x3000,
          mprs=MPRS_STD, openmode=0, body_edits={2: [(100, 0x40)]}, reason="cd_halt_fail", code=30, copied=5,
          payload_ran=False),
-    dict(name="partial_read_beyond_disc_after_5_sectors", pay="A", n=10, iplblk=30, sta=0x3000, entry=0x3000,
-         mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=5, payload_ran=False),
+    # ---- media-end boundary (Issue #670): the FINAL body sector is read into the staging buffer BEFORE the first
+    # load-area write. Synthetic disc: frames 0..SECTORS-1 exist, SEL=265, so the last existing body LBA is 299
+    # (IPLBLK = 34 for N=1). This is a runtime READ(6) reachability probe, NOT a data-track-length check: the guest
+    # cannot read the TOC or the track length, so it cannot tell "end of the data track" from "readable data".
+    dict(name="pos_last_body_sector_is_last_disc_frame", pay="A", n=5, iplblk=30, sta=0x3000, entry=0x3000,
+         mprs=MPRS_STD, openmode=0, reason="cd_halt_ok", code=0, copied=5, payload_ran=True),
+    dict(name="neg_last_body_sector_one_past_disc_end", pay="A", n=5, iplblk=31, sta=0x3000, entry=0x3000,
+         mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=0, payload_ran=False),
+    # formerly partial_read_beyond_disc_after_5_sectors (copied 5 AFTER the fact); now refused before any copy
+    dict(name="neg_body_tail_beyond_disc_refused_before_copy", pay="A", n=10, iplblk=30, sta=0x3000, entry=0x3000,
+         mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=0, payload_ran=False),
+    dict(name="neg_single_sector_at_first_frame_past_end", pay="A", n=1, iplblk=35, sta=0x3000, entry=0x3000,
+         mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=0, payload_ran=False),
+    dict(name="neg_body_entirely_beyond_disc", pay="A", n=3, iplblk=100, sta=0x3000, entry=0x3000,
+         mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=0, payload_ran=False),
+    # IPLBLK middle byte nonzero (0x000100): passes the 16-bit LBA checks, then fails the media probe
+    dict(name="neg_iplblk_0100_passes_lba_checks_fails_media_probe", pay="A", n=1, iplblk=0x100, sta=0x3000,
+         entry=0x3000, mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=0, payload_ran=False),
+    # 16-bit LBA ceiling: bodyl+N must stay <= $FFFF. bodyl=$FFFE,N=1 passes the width checks (then media probe);
+    # bodyl=$FFFF,N=1 is refused by width (code 27) although its single sector is the last representable LBA.
+    dict(name="neg_lba_fffe_n1_passes_width_fails_media_probe", pay="A", n=1, iplblk=0xFEF5, sta=0x3000,
+         entry=0x3000, mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=0, payload_ran=False),
+    dict(name="neg_lba_ffff_n1_width_refused", pay="A", n=1, iplblk=0xFEF6, sta=0x3000, entry=0x3000,
+         mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=27, copied=0, payload_ran=False),
+    dict(name="neg_iplblk_high_byte_80", pay="A", n=5, iplblk=2, sta=0x3000, entry=0x3000, mprs=MPRS_STD,
+         openmode=0, info_edits=[(0, 0x80)], reason="cd_halt_fail", code=21, copied=0, payload_ran=False),
+    dict(name="neg_iplblk_high_byte_ff", pay="A", n=5, iplblk=2, sta=0x3000, entry=0x3000, mprs=MPRS_STD,
+         openmode=0, info_edits=[(0, 0xFF)], reason="cd_halt_fail", code=21, copied=0, payload_ran=False),
     # error 31 fault injection: a TEST-ONLY mutant ROM writes each byte XOR 1, so the readback sum differs
     # from the disc-side sum. The guest must halt with 31 after the full copy and never jump to the entry.
     dict(name="fault_readback_mismatch_error31", pay="A", n=5, iplblk=2, sta=0x3000, entry=0x3000,
@@ -456,9 +482,15 @@ def main():
                                 "full 24-bit support requires Owner-approved widening of the internal LBA path; "
                                 "LBAs beyond the READ(6) 21-bit limit require a different command strategy, "
                                 "whose support is currently UNKNOWN",
-                                "data-track length is not available to the guest; boundary overflow is detected only when "
-                                "READ(6) fails after a partial copy (partial_read_beyond_disc_after_5_sectors); pre-copy "
-                                "rejection is not implemented and is documented in docs/670-ipl-information-data-block-acceptance.md"],
+                                "data-track length is not available to the guest. Before any load-area write the loader "
+                                "READ(6)s the FINAL body sector into the staging buffer (probe_last): media-end overruns are "
+                                "refused with copied=0. This is a reachability probe, NOT a track-boundary check: a following "
+                                "audio track, or an unreadable sector in the middle of the body, is not detected before copy "
+                                "(a mid-body failure remains a post-partial-copy halt; unreachable with contiguous synthetic "
+                                "media). Track-length-based rejection is BLOCKED on Owner decision, see "
+                                "docs/670-ipl-information-data-block-acceptance.md",
+                                "synthetic disc has 300 frames: the 16-bit LBA ceiling is exercised only through width "
+                                "checks (code 27) and media-probe refusals; no accepted load above LBA 299 is tested"],
                 "public_loader_rom_sha256": public_sha, "public_mutant_rom_sha256": public_mutant_sha}
     (out / "ipl-loader-evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"PASS multi-sector IPL loader, DEV and PUBLIC-format ROMs (synthetic): {passed}/{len(CASES)} cases "

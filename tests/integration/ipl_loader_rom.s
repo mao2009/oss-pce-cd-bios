@@ -120,6 +120,7 @@ reset:
     sta lbamid
     jsr read_sector
     jsr validate_info
+    jsr probe_last
     jsr copy_body
     jsr verify_body
     jsr launch
@@ -333,6 +334,31 @@ validate_info:
     sta hdrv+1
     sta R_HDR+1
 .endif
+    rts
+
+; ---------------------------------------------------------------------------
+; Media-end pre-check (Issue #670): READ(6) the FINAL body sector (bodyl + nsec - 1) into BUF, the staging buffer,
+; before the first load-area write. A failure halts through read_sector with R_COPIED = 0. This is a runtime
+; reachability probe only: the guest cannot read the TOC or the data-track length, so it does not prove that the
+; sector lies inside the data track (e.g. a following audio track), nor that the sectors in between are readable.
+probe_last:
+    lda #4
+    sta R_STAGE
+    lda bodyl                ; bodyl + nsec - 1: validate_info guarantees bodyl + nsec <= $FFFF, so no carry out
+    clc
+    adc nsec
+    sta lbalo
+    lda bodyl+1
+    adc #0
+    sta lbamid
+    lda lbalo
+    sec
+    sbc #1
+    sta lbalo
+    lda lbamid
+    sbc #0
+    sta lbamid
+    jsr read_sector
     rts
 
 ; ---------------------------------------------------------------------------
