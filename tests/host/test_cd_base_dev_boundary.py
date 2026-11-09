@@ -61,6 +61,50 @@ class BoundaryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             B.plan_fixture(0x1000000)
 
+    def test_unknown_mode_blocked_even_with_callee(self):
+        r = B.judge({"mode": "UNKNOWN_X", "block": 1, "callee_observed": True})
+        self.assertEqual(r["verdict"], "BLOCKED")
+        self.assertEqual(r["reason"], "UNKNOWN_MODE")
+
+    def test_invalid_block_blocked_even_with_callee(self):
+        r = B.judge({"mode": "ABS_LBA", "block": -1, "callee_observed": True})
+        self.assertEqual(r["verdict"], "BLOCKED")
+        self.assertEqual(r["reason"], "INVALID_BLOCK")
+
+    def test_no_callee_truthy_non_true_blocked(self):
+        for v in (1, "yes", [True]):
+            r = B.judge({"mode": "ABS_LBA", "block": 1, "callee_observed": v})
+            self.assertEqual(r["verdict"], "BLOCKED", v)
+            self.assertEqual(r["reason"], "NO_CALLEE", v)
+
+    def test_callee_true_returns_observed_not_verified(self):
+        r = B.judge({"mode": "ABS_LBA", "block": 1, "callee_observed": True})
+        self.assertEqual(r["verdict"], "OBSERVED")
+
+    def test_judge_never_emits_verified(self):
+        cases = [
+            {"mode": "ABS_LBA", "block": 1, "callee_observed": True},
+            {"mode": "INDEX01_REL", "block": 0, "callee_observed": True},
+            {"mode": "ABS_LBA", "block": 1},
+            {"mode": "UNKNOWN_X", "block": 1, "callee_observed": True},
+            {"mode": "ABS_LBA", "block": -1, "callee_observed": True},
+            "not a dict",
+        ]
+        for c in cases:
+            self.assertNotEqual(B.judge(c).get("verdict"), "VERIFIED", c)
+
+    def test_plan_release_not_eligible(self):
+        self.assertFalse(B.plan_fixture(150)["release_eligible"])
+        self.assertFalse(B.plan_fixture(0)["release_eligible"])
+
+    def test_side_effects_truthy_non_true_unknown(self):
+        for v in (1, "yes", None):
+            m = B.side_effect_matrix(v)
+            self.assertTrue(all(x == "UNKNOWN" for x in m.values()), v)
+
+    def test_index01_150_fixture_label(self):
+        self.assertEqual(B.plan_fixture(150)["fixture"], "INDEX01=150")
+
 
 if __name__ == "__main__":
     unittest.main()
