@@ -155,6 +155,12 @@ def _check_mpr_transition(row, mode, expected_before, expected_after):
 def check_armed(row, mode):
     """Validate a refused whole-instruction preblock run."""
     _require_ok_exit(row, mode)
+    # Strict integer evidence first: later comparisons format these with #x,
+    # so a missing/wrong-typed field must fail here with a clear ValueError
+    # instead of a TypeError from the format machinery.
+    _int_fields(row, ("refused_opcode", "fetch_opcode", "refused_pc", "stop_pc",
+                       "instructions_executed", "executed_at_refusal",
+                       "executed_after_resume", "resume_attempts", "resume_refused"))
     if row.get("status") != "refused" or row.get("reason") != "block_opcode_at_instruction_boundary":
         raise ValueError(f"{mode}: not a block refusal: {row.get('status')}/{row.get('reason')}")
     if row.get("mode") != mode:
@@ -215,6 +221,14 @@ def check_armed(row, mode):
             raise ValueError(f"{mode}: handler stepped despite refusal")
     elif row.get("ram_diff") != []:
         raise ValueError(f"{mode}: RAM diff {row.get('ram_diff')}: transfer bytes moved")
+    if mode != "block-irq-handler":
+        # No handler ran outside the IRQ family: the step counter must read
+        # exactly 0 (missing/wrong-type is missing evidence, never a pass).
+        steps = row.get("handler_steps")
+        if type(steps) is not int:
+            raise ValueError(f"{mode}: handler_steps missing/non-integer: {steps!r}")
+        if steps != 0:
+            raise ValueError(f"{mode}: handler stepped despite refusal")
     # MPR: unchanged except the guest-driven TAM the family plan requires.
     # Full 8-byte before/after validation: only the expected MPR2 change is
     # allowed; any other MPR change is a side effect before the stop.
@@ -247,6 +261,7 @@ def check_unguarded_landed(row, mode):
     _require_ok_exit(row, mode)
     if row.get("refused") is not False or row.get("status") == "refused":
         raise ValueError(f"{mode}: bypassed run was refused: monitor still armed")
+    _int_fields(row, ("instructions_executed",))
     diffs = row.get("ram_diff")
     if not isinstance(diffs, list) or not diffs:
         # A forbidden-destination wrap lands on the VDC instead of RAM.
@@ -283,6 +298,7 @@ def check_resume_allowed_landed(row, mode):
     _require_ok_exit(row, mode)
     if row.get("refused") is not True:
         raise ValueError(f"{mode}: resume-allowed never refused at first")
+    _int_fields(row, ("refused_pc", "stop_pc", "resume_refused", "instructions_executed"))
     if row.get("refused_pc") != BLOCK_EXPECTED_PC[mode]:
         raise ValueError(f"{mode}: refusal PC mismatch")
     if row.get("resume_refused") != 0:
@@ -385,6 +401,14 @@ def check_hwpage_unguarded_still_blocked(row, mode):
     _require_ok_exit(row, mode)
     if row.get("status") != "fetch_blocked" or row.get("fetch_blocked") is not True:
         raise ValueError(f"{mode}: hwpage fetch was not failed-closed: {row.get('status')}")
+    if row.get("fetch_failed") is not True or row.get("fetch_safe") is not False:
+        raise ValueError(f"{mode}: fetch failure not observed")
+    _int_fields(row, ("stop_pc", "instructions_executed"))
+    if row.get("stop_pc") != 0x4000:
+        raise ValueError(f"{mode}: stop PC ${row.get('stop_pc'):04X}, expected $4000")
+    if row.get("instructions_executed") != 3:
+        raise ValueError(f"{mode}: executed {row.get('instructions_executed')}, expected 3")
+    _int_fields(row, ("vdc_ar_before", "vdc_ar_after", "vdc_sr_before", "vdc_sr_after"))
     if row.get("vdc_ar_before") != row.get("vdc_ar_after"):
         raise ValueError(f"{mode}: VDC AR changed without any step")
     if row.get("vdc_sr_before") != row.get("vdc_sr_after"):
@@ -394,6 +418,9 @@ def check_hwpage_unguarded_still_blocked(row, mode):
         raise ValueError(f"{mode}: VDC READ_BUFFER changed without any step")
     if row.get("ram_diff") != []:
         raise ValueError(f"{mode}: RAM changed without any step")
+    _check_mpr_transition(row, mode, MPR_INITIAL, MPR_AFTER_TIA_WRAP)
+    if row.get("resume_attempts") != RESUME_ATTEMPTS or row.get("resume_refused") != RESUME_ATTEMPTS:
+        raise ValueError(f"{mode}: resume not refused")
     return HWPAGE_BLOCKED_VERDICT
 
 

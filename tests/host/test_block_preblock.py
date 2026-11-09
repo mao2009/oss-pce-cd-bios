@@ -301,5 +301,129 @@ class MprTransitionTest(unittest.TestCase):
             B.check_armed(row, "block-irq-handler")
 
 
+class IntValidationTest(unittest.TestCase):
+    """P1/P2/P4: missing/wrong-typed integers fail with a clear ValueError."""
+
+    def test_armed_int_fields_strict(self):
+        for name in ("refused_opcode", "fetch_opcode", "refused_pc", "stop_pc",
+                     "instructions_executed", "executed_at_refusal",
+                     "executed_after_resume", "resume_attempts", "resume_refused"):
+            for bad in (None, "0", 0.0, True, False, [0]):
+                with self.subTest(field=name, bad=bad):
+                    row = _armed_row("tdd-unknown")
+                    row[name] = bad
+                    with self.assertRaises(ValueError) as ctx:
+                        B.check_armed(row, "tdd-unknown")
+                    self.assertIn("missing/non-integer", str(ctx.exception))
+
+    def test_unguarded_executed_strict(self):
+        for bad in (None, "1", 1.0, True, False):
+            with self.subTest(bad=bad):
+                row = _armed_row("tii-entry")
+                row.update({"armed": False, "refused": False, "status": "ok", "reason": "",
+                            "stop_pc": B.BLOCK_EXPECTED_PC["tii-entry"] + 7,
+                            "instructions_executed": bad,
+                            "ram_diff": [{"address": 0x3E90 + i, "before": 0xCC, "after": v}
+                                         for i, v in enumerate(B.PATTERN)]})
+                with self.assertRaises(ValueError):
+                    B.check_unguarded_landed(row, "tii-entry")
+
+    def test_resume_allowed_int_fields_strict(self):
+        for name in ("refused_pc", "stop_pc", "resume_refused"):
+            for bad in (None, "0", True):
+                with self.subTest(field=name, bad=bad):
+                    row = _armed_row("tdd-unknown")
+                    row.update({"armed": False, "refused": True, "status": "ok", "reason": "",
+                                "stop_pc": 0x3E17, "resume_refused": 0,
+                                "instructions_executed": B.BLOCK_EXECUTED_BEFORE_REFUSAL["tdd-unknown"] + 2,
+                                "ram_diff": [{"address": 0x3E90, "before": 0xCC, "after": 0x60}],
+                                "ram_unchanged_during_resume": False})
+                    row[name] = bad
+                    with self.assertRaises(ValueError):
+                        B.check_resume_allowed_landed(row, "tdd-unknown")
+
+    def test_str_refused_pc_message_is_clear(self):
+        row = _armed_row("tdd-unknown")
+        row["refused_pc"] = "0x3E10"
+        with self.assertRaises(ValueError) as ctx:
+            B.check_armed(row, "tdd-unknown")
+        self.assertIn("missing/non-integer", str(ctx.exception))
+
+    def test_non_handler_steps_nonzero_rejected(self):
+        row = _armed_row("tdd-unknown")
+        row["handler_steps"] = 2
+        with self.assertRaises(ValueError):
+            B.check_armed(row, "tdd-unknown")
+
+    def test_non_handler_steps_missing_rejected(self):
+        row = _armed_row("tdd-unknown")
+        del row["handler_steps"]
+        with self.assertRaises(ValueError):
+            B.check_armed(row, "tdd-unknown")
+
+
+class HwpageUnguardedStrictTest(unittest.TestCase):
+    """P3: the unguarded hwpage fetch is pinned like the armed one."""
+
+    def _unguarded_hwpage(self):
+        row = _armed_row("tii-entry")
+        row.update({"mode": "tii-hwpage-fetch-blocked", "status": "fetch_blocked",
+                    "refused": False, "fetch_blocked": True, "stop_pc": 0x4000,
+                    "instructions_executed": 3, "fetch_safe": False, "fetch_failed": True,
+                    "vdc_ar_before": 5, "vdc_ar_after": 5,
+                    "vdc_sr_before": 0x3F, "vdc_sr_after": 0x3F,
+                    "vdc_read_buffer_before": 0xBEEF, "vdc_read_buffer_after": 0xBEEF,
+                    "resume_attempts": 3, "resume_refused": 3,
+                    "after": {"mpr": list(B.MPR_AFTER_TIA_WRAP), "sp": 0xFF}})
+        return row
+
+    def test_valid_still_blocked(self):
+        self.assertEqual(B.check_hwpage_unguarded_still_blocked(
+            self._unguarded_hwpage(), "tii-hwpage-fetch-blocked"), B.HWPAGE_BLOCKED_VERDICT)
+
+    def test_wrong_stop_pc_rejected(self):
+        row = self._unguarded_hwpage()
+        row["stop_pc"] = 0x4002
+        with self.assertRaises(ValueError):
+            B.check_hwpage_unguarded_still_blocked(row, "tii-hwpage-fetch-blocked")
+
+    def test_wrong_executed_rejected(self):
+        row = self._unguarded_hwpage()
+        row["instructions_executed"] = 4
+        with self.assertRaises(ValueError):
+            B.check_hwpage_unguarded_still_blocked(row, "tii-hwpage-fetch-blocked")
+
+    def test_stop_pc_missing_rejected(self):
+        row = self._unguarded_hwpage()
+        del row["stop_pc"]
+        with self.assertRaises(ValueError):
+            B.check_hwpage_unguarded_still_blocked(row, "tii-hwpage-fetch-blocked")
+
+    def test_mpr_change_rejected(self):
+        row = self._unguarded_hwpage()
+        row["after"] = {"mpr": [0] * 8, "sp": 0xFF}
+        with self.assertRaises(ValueError):
+            B.check_hwpage_unguarded_still_blocked(row, "tii-hwpage-fetch-blocked")
+
+    def test_vdc_pair_missing_rejected(self):
+        row = self._unguarded_hwpage()
+        del row["vdc_ar_before"]
+        del row["vdc_ar_after"]
+        with self.assertRaises(ValueError):
+            B.check_hwpage_unguarded_still_blocked(row, "tii-hwpage-fetch-blocked")
+
+    def test_resume_not_refused_rejected(self):
+        row = self._unguarded_hwpage()
+        row["resume_refused"] = 0
+        with self.assertRaises(ValueError):
+            B.check_hwpage_unguarded_still_blocked(row, "tii-hwpage-fetch-blocked")
+
+    def test_fetch_flags_rejected(self):
+        row = self._unguarded_hwpage()
+        row["fetch_safe"] = True
+        with self.assertRaises(ValueError):
+            B.check_hwpage_unguarded_still_blocked(row, "tii-hwpage-fetch-blocked")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -97,6 +97,9 @@ BLOCKPRE_MUTATIONS = frozenset({
     "block-irq-handler-unguarded",
 })
 BLOCKPRE_ALWAYS_BLOCKED = frozenset({"tii-hwpage-fetch-blocked-unguarded"})
+BLOCKPRE_ALWAYS_BLOCKED_BASE = {
+    "tii-hwpage-fetch-blocked-unguarded": "tii-hwpage-fetch-blocked",
+}
 BLOCKPRE_HWPAGE_ARMED = frozenset({"tii-hwpage-fetch-blocked"})
 BLOCKPRE_EXPECTED_EVIDENCE = BLOCKPRE_ARMED | BLOCKPRE_MUTATIONS
 
@@ -296,6 +299,51 @@ def _blockpre_check_irq(row, case):
             return "FAIL", f"ARMED_HANDLER_STEPPED:{case}"
     elif accepted is True:
         return "FAIL", f"ARMED_UNEXPECTED_IRQ:{case}"
+    # Handler-step consistency for non-handler families: no handler ran, so
+    # the counter must read exactly 0 (missing/wrong-type -> BLOCKED).
+    steps = row.get("handler_steps")
+    if type(steps) is not int:
+        return "BLOCKED", f"ARMED_HANDLER_STEPS_MISSING:{case}"
+    if steps != 0:
+        return "FAIL", f"ARMED_HANDLER_STEPPED:{case}"
+    return None, None
+
+
+def _blockpre_check_hwpage_row(row, base):
+    """Fail-closed fetch row re-check (hwpage armed or always-blocked mutation).
+
+    Pins come from the base mode (a "-unguarded" mutation id carries no pins
+    of its own); reason labels name the base family. Missing/wrong-type
+    evidence -> BLOCKED; observed side effect or inconsistency -> FAIL.
+    """
+    expected_pc = BLOCKPRE_EXPECTED_PC[base]
+    bad = _blockpre_bad_int(row, "stop_pc", base)
+    if bad is not None:
+        return "BLOCKED", bad
+    if row["stop_pc"] != expected_pc:
+        return "FAIL", f"ARMED_STOP_PC_MISMATCH:{base}"
+    bad = _blockpre_bad_int(row, "instructions_executed", base)
+    if bad is not None:
+        return "BLOCKED", bad
+    if row["instructions_executed"] != BLOCKPRE_EXPECTED_EXECUTED[base]:
+        return "FAIL", f"ARMED_EXECUTED_MISMATCH:{base}"
+    for name, sentinel in (("vdc_ar_before", 5), ("vdc_ar_after", 5),
+                           ("vdc_sr_before", 0x3F), ("vdc_sr_after", 0x3F)):
+        bad = _blockpre_bad_int(row, name, base)
+        if bad is not None:
+            return "BLOCKED", bad
+        if row[name] != sentinel:
+            return "FAIL", f"ARMED_HWPAGE_VDC_CHANGED:{base}:{name}"
+    rb_before, rb_after = row.get("vdc_read_buffer_before"), row.get("vdc_read_buffer_after")
+    if type(rb_before) is not int or type(rb_after) is not int:
+        return "BLOCKED", f"ARMED_READ_BUFFER_MISSING:{base}"
+    if rb_before != rb_after:
+        return "FAIL", f"ARMED_READ_BUFFER_CHANGED:{base}"
+    for helper in (_blockpre_check_ram, _blockpre_check_mpr,
+                   _blockpre_check_resume, _blockpre_check_irq):
+        status, reason = helper(row, base)
+        if status is not None:
+            return status, reason
     return None, None
 
 
@@ -343,39 +391,18 @@ def _check_blockpre_cases(cases, probe_ok=False, summary_ok=False):
         if case in BLOCKPRE_ALWAYS_BLOCKED:
             if verdict != "hardware_page_fetch_failed_closed_before_step":
                 return FAIL, [f"HWPAGE_EXPECTED_BLOCKED:{case}:{verdict}"], {}
+            status, reason = _blockpre_check_hwpage_row(
+                row, BLOCKPRE_ALWAYS_BLOCKED_BASE[case])
+            if status is not None:
+                return status, [reason], {}
             mut_ok += 1
         elif case in BLOCKPRE_ARMED:
             if case in BLOCKPRE_HWPAGE_ARMED:
                 if verdict != "hardware_page_fetch_failed_closed_before_step":
                     return FAIL, [f"ARMED_HWPAGE_NOT_BLOCKED:{case}:{verdict}"], {}
-                expected_pc = BLOCKPRE_EXPECTED_PC[case]
-                bad = _blockpre_bad_int(row, "stop_pc", case)
-                if bad is not None:
-                    return BLOCKED, [bad], {}
-                if row["stop_pc"] != expected_pc:
-                    return FAIL, [f"ARMED_STOP_PC_MISMATCH:{case}"], {}
-                bad = _blockpre_bad_int(row, "instructions_executed", case)
-                if bad is not None:
-                    return BLOCKED, [bad], {}
-                if row["instructions_executed"] != BLOCKPRE_EXPECTED_EXECUTED[case]:
-                    return FAIL, [f"ARMED_EXECUTED_MISMATCH:{case}"], {}
-                for name, sentinel in (("vdc_ar_before", 5), ("vdc_ar_after", 5),
-                                       ("vdc_sr_before", 0x3F), ("vdc_sr_after", 0x3F)):
-                    bad = _blockpre_bad_int(row, name, case)
-                    if bad is not None:
-                        return BLOCKED, [bad], {}
-                    if row[name] != sentinel:
-                        return FAIL, [f"ARMED_HWPAGE_VDC_CHANGED:{case}:{name}"], {}
-                rb_before, rb_after = row.get("vdc_read_buffer_before"), row.get("vdc_read_buffer_after")
-                if type(rb_before) is not int or type(rb_after) is not int:
-                    return BLOCKED, [f"ARMED_READ_BUFFER_MISSING:{case}"], {}
-                if rb_before != rb_after:
-                    return FAIL, [f"ARMED_READ_BUFFER_CHANGED:{case}"], {}
-                for helper in (_blockpre_check_ram, _blockpre_check_mpr,
-                               _blockpre_check_resume, _blockpre_check_irq):
-                    status, reason = helper(row, case)
-                    if status is not None:
-                        return status, [reason], {}
+                status, reason = _blockpre_check_hwpage_row(row, case)
+                if status is not None:
+                    return status, [reason], {}
             else:
                 if not _is_refused_verdict(verdict):
                     if isinstance(verdict, str) and "landed" in verdict.lower():
@@ -404,8 +431,17 @@ def _check_blockpre_cases(cases, probe_ok=False, summary_ok=False):
                     status, reason = helper(row, case)
                     if status is not None:
                         return status, [reason], {}
-            if row.get("vdc_sr_before") != row.get("vdc_sr_after"):
-                return FAIL, [f"ARMED_VDC_CHANGED:{case}"], {}
+            for name in ("vdc_ar_before", "vdc_ar_after", "vdc_sr_before",
+                         "vdc_sr_after", "vdc_r_before", "vdc_r_after"):
+                bad = _blockpre_bad_int(row, name, case)
+                if bad is not None:
+                    return BLOCKED, [bad], {}
+            if row["vdc_ar_before"] != row["vdc_ar_after"]:
+                return FAIL, [f"ARMED_VDC_CHANGED:{case}:ar"], {}
+            if row["vdc_sr_before"] != row["vdc_sr_after"]:
+                return FAIL, [f"ARMED_VDC_CHANGED:{case}:sr"], {}
+            if row["vdc_r_before"] != row["vdc_r_after"]:
+                return FAIL, [f"ARMED_VDC_CHANGED:{case}:r"], {}
             rb_before, rb_after = row.get("vdc_read_buffer_before"), row.get("vdc_read_buffer_after")
             if type(rb_before) is not int or type(rb_after) is not int:
                 return BLOCKED, [f"ARMED_READ_BUFFER_MISSING:{case}"], {}
@@ -530,19 +566,27 @@ def _check_st_cases(cases, probe_ok=False, summary_ok=False):
         verdict = item.get("verdict")
         if case in ST_HWPAGE_ARMED:
             # Fail-closed fetch does not depend on the monitor: no step is
-            # issued at an unpeekable PC. Expect the blocked verdict.
+            # issued at an unpeekable PC. Expect the blocked verdict, plus the
+            # raw-row invariants (unchanged VDC SR, recorded stop PC); a
+            # side-effecting row with the right verdict string must not PASS.
             if verdict != "hardware_page_fetch_failed_closed_before_step":
                 return FAIL, [f"HWPAGE_EXPECTED_BLOCKED:{case}:{verdict}"], {}
+            for name in ("vdc_sr_before", "vdc_sr_after", "stop_pc"):
+                if type(row.get(name)) is not int:
+                    return BLOCKED, [f"ARMED_FIELD_MISSING:{case}:{name}"], {}
+            if row["vdc_sr_before"] != row["vdc_sr_after"]:
+                return FAIL, [f"ARMED_VDC_CHANGED:{case}"], {}
             armed_ok += 1
         elif case in ST_ARMED:
             if not _is_refused_verdict(verdict):
                 if isinstance(verdict, str) and "landed" in verdict.lower():
                     return FAIL, [f"ARMED_SIDE_EFFECT:{case}"], {}
                 return BLOCKED, [f"ARMED_VERDICT_UNKNOWN:{case}:{verdict}"], {}
-            if row.get("vdc_sr_before") != row.get("vdc_sr_after"):
+            for name in ("vdc_sr_before", "vdc_sr_after", "stop_pc"):
+                if type(row.get(name)) is not int:
+                    return BLOCKED, [f"ARMED_FIELD_MISSING:{case}:{name}"], {}
+            if row["vdc_sr_before"] != row["vdc_sr_after"]:
                 return FAIL, [f"ARMED_VDC_CHANGED:{case}"], {}
-            if not isinstance(row.get("stop_pc"), int):
-                return BLOCKED, [f"ARMED_STOP_PC_MISSING:{case}"], {}
             armed_ok += 1
         elif case in ST_MUTATIONS:
             # Sensitivity: mutation must make the effect observable (not refused).
@@ -640,24 +684,39 @@ def _check_block_cases(cases):
         verdict = item.get("verdict")
         variant = case.split("-")[1] if "-" in case else ""
         # Independent raw-row re-checks (not the probe classifier).
-        if row.get("stop_pc") != row.get("expected_end_pc"):
-            return FAIL, [f"STOP_PC_MISMATCH:{case}"], {}
-        if not isinstance(row.get("stop_pc"), int):
+        # Missing/wrong-type evidence -> BLOCKED (cannot verify); an observed
+        # side effect or inconsistency -> FAIL.
+        stop_pc, expected_end = row.get("stop_pc"), row.get("expected_end_pc")
+        if type(stop_pc) is not int or type(expected_end) is not int:
             return BLOCKED, [f"STOP_PC_MISSING:{case}"], {}
+        if stop_pc != expected_end:
+            return FAIL, [f"STOP_PC_MISMATCH:{case}"], {}
         before = row.get("before") if isinstance(row.get("before"), dict) else {}
         after = row.get("after") if isinstance(row.get("after"), dict) else {}
-        if before.get("mpr") != after.get("mpr"):
+        before_mpr, after_mpr = before.get("mpr"), after.get("mpr")
+        if not isinstance(before_mpr, list) or not isinstance(after_mpr, list):
+            return BLOCKED, [f"MPR_MISSING:{case}"], {}
+        if before_mpr != after_mpr:
             return FAIL, [f"MPR_CHANGED:{case}"], {}
-        if row.get("sp") != [4, 4]:
+        sp = row.get("sp")
+        if not isinstance(sp, list):
+            return BLOCKED, [f"STACK_MISSING:{case}"], {}
+        if sp != [4, 4]:
             return FAIL, [f"STACK_UNBALANCED:{case}"], {}
-        if [row.get("a_after"), row.get("x_after"), row.get("y_after")] != [0x12, 0x34, 0x07]:
+        axy = [row.get("a_after"), row.get("x_after"), row.get("y_after")]
+        if any(type(value) is not int for value in axy):
+            return BLOCKED, [f"AXY_MISSING:{case}"], {}
+        if axy != [0x12, 0x34, 0x07]:
             return FAIL, [f"AXY_NOT_RESTORED:{case}"], {}
         if case.endswith("-armed"):
             if verdict in BLOCK_ARMED_VERDICTS:
                 if BLOCK_ARMED_VERDICTS[verdict] != variant:
                     return BLOCKED, [f"ARMED_VARIANT_MISMATCH:{case}"], {}
                 if verdict == "per_byte_refusal_continues_and_restores":
-                    if row.get("guard_refusals", 0) < 1:
+                    refusals = row.get("guard_refusals", 0)
+                    if type(refusals) is not int:
+                        return BLOCKED, [f"ARMED_REFUSAL_COUNT_MISSING:{case}"], {}
+                    if refusals < 1:
                         return BLOCKED, [f"ARMED_NO_REFUSAL:{case}"], {}
                 armed += 1
             elif verdict in BLOCK_LIMIT_VERDICTS:

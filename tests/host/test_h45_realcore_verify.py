@@ -541,6 +541,14 @@ class BlockpreIndependentJudgmentTest(unittest.TestCase):
                 lambda r, i: r.update(after={"mpr": [9, 9, 9, 9, 9, 9, 9, 9]}), V.FAIL),
             "count_vs_list_mismatch": (lambda r, i: r.update(ram_diff_count=5), V.FAIL),
             "unexpected_irq": (lambda r, i: r.update(irq_accepted=True), V.FAIL),
+            # VDC triple strictness: changed -> FAIL, missing/wrong-type -> BLOCKED
+            "vdc_ar_changed": (lambda r, i: r.update(vdc_ar_after=5), V.FAIL),
+            "vdc_sr_changed": (lambda r, i: r.update(vdc_sr_after=0x00), V.FAIL),
+            "vdc_r_changed": (lambda r, i: r.update(vdc_r_after=1), V.FAIL),
+            "vdc_sr_missing": (lambda r, i: r.pop("vdc_sr_before", None), V.BLOCKED),
+            "vdc_ar_missing": (lambda r, i: r.pop("vdc_ar_after", None), V.BLOCKED),
+            "vdc_r_missing": (lambda r, i: r.pop("vdc_r_before", None), V.BLOCKED),
+            "vdc_sr_wrong_type": (lambda r, i: r.update(vdc_sr_after="0x3F"), V.BLOCKED),
             # missing or wrong-typed evidence -> BLOCKED (never PASS)
             "operand_bytes_missing": (lambda r, i: r.pop("operand_bytes", None), V.BLOCKED),
             "operand_bytes_wrong_type": (lambda r, i: r.update(operand_bytes="73"), V.BLOCKED),
@@ -599,6 +607,194 @@ class BlockpreIndependentJudgmentTest(unittest.TestCase):
         self.assertEqual(record["execution"], "BLOCKED")
         self.assertFalse(record["execution_permitted"])
         self.assertFalse(record["release_eligible"])
+
+
+class BlockpreAlwaysBlockedTest(unittest.TestCase):
+    """H2: the always-blocked hwpage mutation row is re-judged, not trusted.
+
+    The "-unguarded" hardware-page fetch must still fail closed: a row with
+    the right verdict string but side-effecting/missing fields must never PASS.
+    """
+
+    def _cases(self):
+        return _blockpre_cases()
+
+    def _check(self, cases):
+        return V._check_blockpre_cases(cases, probe_ok=True, summary_ok=True)
+
+    def test_valid_always_blocked_passes(self):
+        v, _, _ = self._check(self._cases())
+        self.assertEqual(v, V.PASS)
+
+    def test_ram_side_effect_fails(self):
+        c = self._cases()
+        mut = "tii-hwpage-fetch-blocked-unguarded"
+        c[mut]["row"]["ram_diff"] = [{"address": 0x3E90, "before": 0xCC, "after": 0x60}]
+        c[mut]["row"]["ram_diff_count"] = 1
+        v, _, _ = self._check(c)
+        self.assertEqual(v, V.FAIL)
+
+    def test_mpr_change_fails(self):
+        c = self._cases()
+        mut = "tii-hwpage-fetch-blocked-unguarded"
+        c[mut]["row"]["after"] = {"mpr": [0] * 8}
+        v, _, _ = self._check(c)
+        self.assertEqual(v, V.FAIL)
+
+    def test_stop_pc_missing_blocked(self):
+        c = self._cases()
+        mut = "tii-hwpage-fetch-blocked-unguarded"
+        del c[mut]["row"]["stop_pc"]
+        v, _, _ = self._check(c)
+        self.assertEqual(v, V.BLOCKED)
+
+    def test_resume_not_refused_fails(self):
+        c = self._cases()
+        mut = "tii-hwpage-fetch-blocked-unguarded"
+        c[mut]["row"]["resume_refused"] = 0
+        v, _, _ = self._check(c)
+        self.assertEqual(v, V.FAIL)
+
+    def test_wrong_verdict_fails(self):
+        c = self._cases()
+        mut = "tii-hwpage-fetch-blocked-unguarded"
+        c[mut]["verdict"] = "side_effect_landed_monitor_disabled"
+        v, _, _ = self._check(c)
+        self.assertEqual(v, V.FAIL)
+
+
+class StHwpageRowTest(unittest.TestCase):
+    """H3/H6: ST hwpage rows are re-judged (VDC SR + stop PC), not verdict-only."""
+
+    def _check(self, cases):
+        return V._check_st_cases(cases, probe_ok=True, summary_ok=True)
+
+    def test_hwpage_vdc_changed_fails(self):
+        for mode in sorted(V.ST_HWPAGE_ARMED):
+            with self.subTest(mode=mode):
+                c = _st_full_cases()
+                c[mode]["row"]["vdc_sr_after"] = 0x00
+                v, _, _ = self._check(c)
+                self.assertEqual(v, V.FAIL)
+
+    def test_hwpage_stop_pc_missing_blocked(self):
+        for mode in sorted(V.ST_HWPAGE_ARMED):
+            with self.subTest(mode=mode):
+                c = _st_full_cases()
+                del c[mode]["row"]["stop_pc"]
+                v, _, _ = self._check(c)
+                self.assertEqual(v, V.BLOCKED)
+
+    def test_hwpage_wrong_verdict_still_fails(self):
+        for mode in sorted(V.ST_HWPAGE_ARMED):
+            with self.subTest(mode=mode):
+                c = _st_full_cases()
+                c[mode]["verdict"] = "refused_at_instruction_boundary_before_side_effect"
+                v, _, _ = self._check(c)
+                self.assertEqual(v, V.FAIL)
+
+
+class StStrictFieldTest(unittest.TestCase):
+    """H4/H5: ST armed rows reject missing/wrong-typed VDC SR and bool stop PC."""
+
+    def _check(self, cases):
+        return V._check_st_cases(cases, probe_ok=True, summary_ok=True)
+
+    def test_both_sr_missing_blocked(self):
+        c = _st_full_cases()
+        del c["st0-entry"]["row"]["vdc_sr_before"]
+        del c["st0-entry"]["row"]["vdc_sr_after"]
+        v, _, _ = self._check(c)
+        self.assertEqual(v, V.BLOCKED)
+
+    def test_single_sr_missing_blocked(self):
+        c = _st_full_cases()
+        del c["st1-entry"]["row"]["vdc_sr_after"]
+        v, _, _ = self._check(c)
+        self.assertEqual(v, V.BLOCKED)
+
+    def test_sr_wrong_type_blocked(self):
+        c = _st_full_cases()
+        c["st2-entry"]["row"]["vdc_sr_after"] = "0x3F"
+        v, _, _ = self._check(c)
+        self.assertEqual(v, V.BLOCKED)
+
+    def test_stop_pc_bool_blocked(self):
+        for bad in (True, False):
+            with self.subTest(bad=bad):
+                c = _st_full_cases()
+                c["st1-entry"]["row"]["stop_pc"] = bad
+                v, _, _ = self._check(c)
+                self.assertEqual(v, V.BLOCKED)
+
+    def test_stop_pc_missing_blocked(self):
+        c = _st_full_cases()
+        del c["st0-jsr-rts"]["row"]["stop_pc"]
+        v, _, _ = self._check(c)
+        self.assertEqual(v, V.BLOCKED)
+
+    def test_handler_steps_nonzero_fails(self):
+        c = _blockpre_cases()
+        c["tdd-unknown"]["row"]["handler_steps"] = 99
+        v, _, _ = V._check_blockpre_cases(c, probe_ok=True, summary_ok=True)
+        self.assertEqual(v, V.FAIL)
+
+    def test_handler_steps_missing_blocked(self):
+        c = _blockpre_cases()
+        del c["tdd-unknown"]["row"]["handler_steps"]
+        v, _, _ = V._check_blockpre_cases(c, probe_ok=True, summary_ok=True)
+        self.assertEqual(v, V.BLOCKED)
+
+
+class BlockStrictFieldTest(unittest.TestCase):
+    """V5: mid-refusal re-checks fail closed on wrong-typed/missing evidence."""
+
+    def _check(self, cases):
+        return V._check_block_cases(cases)
+
+    def _one_armed(self, **kw):
+        row = _brow("tii-cross-armed", "per_byte_refusal_continues_and_restores")
+        row["row"].update(kw)
+        return {"tii-cross-armed": row,
+                "tii-cross-unguarded": _brow(
+                    "tii-cross-unguarded", "forbidden_bytes_land_without_hook",
+                    guard_refusals=0)}
+
+    def test_guard_refusals_wrong_type_blocked(self):
+        for bad in ("1", None, 1.0, True, [1]):
+            with self.subTest(bad=bad):
+                v, _, _ = self._check(self._one_armed(guard_refusals=bad))
+                self.assertEqual(v, V.BLOCKED)
+
+    def test_sp_missing_blocked(self):
+        c = self._one_armed()
+        del c["tii-cross-armed"]["row"]["sp"]
+        v, _, _ = self._check(c)
+        self.assertEqual(v, V.BLOCKED)
+
+    def test_sp_changed_fails(self):
+        v, _, _ = self._check(self._one_armed(sp=[4, 0]))
+        self.assertEqual(v, V.FAIL)
+
+    def test_mpr_missing_blocked(self):
+        v, _, _ = self._check(self._one_armed(before={}, after={}))
+        self.assertEqual(v, V.BLOCKED)
+
+    def test_stop_pc_expected_missing_blocked(self):
+        c = self._one_armed()
+        del c["tii-cross-armed"]["row"]["expected_end_pc"]
+        v, _, _ = self._check(c)
+        self.assertEqual(v, V.BLOCKED)
+
+    def test_axy_missing_blocked(self):
+        c = self._one_armed()
+        del c["tii-cross-armed"]["row"]["a_after"]
+        v, _, _ = self._check(c)
+        self.assertEqual(v, V.BLOCKED)
+
+    def test_axy_changed_fails(self):
+        v, _, _ = self._check(self._one_armed(a_after=0x00))
+        self.assertEqual(v, V.FAIL)
 
 
 if __name__ == "__main__":
