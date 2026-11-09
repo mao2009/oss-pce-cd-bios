@@ -28,6 +28,7 @@ PASS, FAIL, BLOCKED = "PASS", "FAIL", "BLOCKED"
 EXIT_BLOCKED = 3
 DENY_KEYS = ("same_value_write", "temp_write_restore", "gg_testing", "libretro",
              "block_move_outside_allowlist", "device_dma_touches_ram")
+_BUILD_DICT_KEYS = frozenset(("gg_testing", "GG_TESTING", "libretro", "LIBRETRO"))
 PREREQ_KEYS = ("merged_738", "merged_739", "independent_review_complete", "ci_confirmed")
 TRUSTED_APPROVED_RANGE = [0x1E00, 0x4000]
 DANGEROUS_OPCODES = frozenset({0x03, 0x13, 0x23, 0x20})
@@ -139,6 +140,15 @@ def _build_blocked(build):
     if build in ("libretro", "GG_TESTING"):
         return True
     if isinstance(build, dict):
+        # Fail-closed dict contract (cf. block_device_predeny preflight build
+        # keys in #739): only known keys with strict bool values are
+        # interpretable; unknown keys or non-bool values prove nothing and
+        # BLOCK. Only all-explicit-False (or empty) proceeds.
+        for k, v in build.items():
+            if k not in _BUILD_DICT_KEYS:
+                return True
+            if type(v) is not bool:
+                return True
         return any(build.get(k) for k in ("gg_testing", "GG_TESTING", "libretro", "LIBRETRO"))
     return build != "debugger"
 
@@ -284,6 +294,12 @@ def judge_unified(case):
 
 def _b_build(build):
     if isinstance(build, dict):
+        # Same interpretation as _build_blocked(): uninterpretable dicts
+        # (unknown keys / non-bool values) map to a testing build so the
+        # B preflight (#739) refuses even if the unified gate were bypassed.
+        for k, v in build.items():
+            if k not in _BUILD_DICT_KEYS or type(v) is not bool:
+                return {"gg_testing": True}
         return build
     if build == "debugger":
         return {}

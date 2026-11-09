@@ -220,6 +220,74 @@ class UnifiedTest(unittest.TestCase):
         c["snapshot"]["build"] = "libretro"
         self.assertNotEqual(U.judge_unified(c)[0], U.PASS)
 
+    def test_build_unknown_dict_key_blocked_each_position(self):
+        # #741: _build_blocked() ignored unknown dict keys, so
+        # block_request {"UNRECOGNIZED": True} wrongly PASSed (the B
+        # preflight in #739 only screens known keys). Fail closed.
+        self._inject()
+        for pos in ("snapshot", "block_request", "irq"):
+            for build in ({"UNRECOGNIZED": True}, {"UNRECOGNIZED": False}):
+                c = U.clean_case()
+                tgt = {"snapshot": c["snapshot"], "block_request": c["block_request"],
+                       "irq": c["irq"]}[pos]
+                tgt["build"] = dict(build)
+                with self.subTest(pos=pos, build=build):
+                    v, r, _ = U.judge_unified(c)
+                    self.assertEqual(v, U.BLOCKED, r)
+                    self.assertIn("TESTING_BUILD", r)
+
+    def test_build_non_bool_value_blocked_each_position(self):
+        # Known keys with non-strict-bool values prove nothing (falsy
+        # 0/""/None previously slipped through the truthiness check).
+        self._inject()
+        for pos in ("snapshot", "block_request", "irq"):
+            for build in ({"gg_testing": 0}, {"gg_testing": ""},
+                          {"gg_testing": None}, {"LIBRETRO": 0}):
+                c = U.clean_case()
+                tgt = {"snapshot": c["snapshot"], "block_request": c["block_request"],
+                       "irq": c["irq"]}[pos]
+                tgt["build"] = dict(build)
+                with self.subTest(pos=pos, build=build):
+                    v, r, _ = U.judge_unified(c)
+                    self.assertEqual(v, U.BLOCKED, r)
+                    self.assertIn("TESTING_BUILD", r)
+
+    def test_build_wrong_type_blocked_each_position(self):
+        self._inject()
+        for pos in ("snapshot", "block_request", "irq"):
+            for build in (None, 0, True, ["debugger"], 5.0):
+                c = U.clean_case()
+                tgt = {"snapshot": c["snapshot"], "block_request": c["block_request"],
+                       "irq": c["irq"]}[pos]
+                tgt["build"] = build
+                with self.subTest(pos=pos, build=build):
+                    self.assertNotEqual(U.judge_unified(c)[0], U.PASS)
+
+    def test_build_known_true_and_gg_testing_blocked(self):
+        self._inject()
+        for pos in ("snapshot", "block_request", "irq"):
+            for build in ({"gg_testing": True}, {"GG_TESTING": True},
+                          {"libretro": True}, {"LIBRETRO": True}, "GG_TESTING"):
+                c = U.clean_case()
+                tgt = {"snapshot": c["snapshot"], "block_request": c["block_request"],
+                       "irq": c["irq"]}[pos]
+                tgt["build"] = build
+                with self.subTest(pos=pos, build=build):
+                    self.assertNotEqual(U.judge_unified(c)[0], U.PASS)
+
+    def test_build_all_false_dict_passes_synthetic(self):
+        # Empty / all-explicit-False dicts are debugger-equivalent for the
+        # block position (converted via _b_build) and stay PASS synthetically.
+        self._inject()
+        for build in ({}, {"gg_testing": False},
+                      {"gg_testing": False, "GG_TESTING": False,
+                       "libretro": False, "LIBRETRO": False}):
+            c = U.clean_case()
+            c["block_request"]["build"] = dict(build)
+            with self.subTest(build=build):
+                v, r, _ = U.judge_unified(c)
+                self.assertEqual(v, U.PASS, r)
+
     def test_snapshot_gate_violation_not_pass(self):
         self._inject()
         for key, val in (("jsr_count", 1), ("execution", "ALLOWED"), ("release_eligible", True)):
