@@ -38,8 +38,12 @@ class PositiveTest(unittest.TestCase):
         self.assertEqual(r["jsr_count"], 0)
 
     def test_all_five_ops_positive(self):
+        # Sources stay inside page 1 (bank 0x00) so the source-bank gate has a
+        # classified in-allowlist read to approve; the old default src=0x2000
+        # straddled the page 0/1 boundary for TDD (0x2000-7 into bank $F8) and
+        # encoded the unchecked-source bug fixed here.
         for op in P.OPS:
-            self.assertEqual(pf(op=op)["verdict"], PERMIT, op)
+            self.assertEqual(pf(op=op, src=0x2010)["verdict"], PERMIT, op)
 
     def test_pinned_revision(self):
         deps = json.loads((ROOT / "tools" / "dependencies.json").read_text(encoding="utf-8"))
@@ -132,7 +136,10 @@ class MutationSuiteTest(unittest.TestCase):
         self.assertTrue(outside)
 
     def test_m03_tdd_as_tii(self):
-        self.assertEqual(pf(op="TDD", dst=0x3FFE, length=4)["verdict"], PERMIT)
+        # Use an in-page source: the old default src=0x2000 straddled into page 0
+        # (bank $F8, outside {0,1}) and only landed because the source bank was
+        # unchecked. The direction semantics under test are unchanged.
+        self.assertEqual(pf(op="TDD", src=0x2010, dst=0x3FFE, length=4)["verdict"], PERMIT)
         self.assertNotEqual(P.destination_set("TDD", 0x3FFE, 4), {(0x3FFE + i) & 0xFFFF for i in range(4)})
 
     def test_m04_len0_as_zero(self):
@@ -449,6 +456,145 @@ class MutationExtraTest(unittest.TestCase):
                 self.assertEqual(r["gate"], P.BLOCKED)
                 self.assertEqual(r["execution"], P.BLOCKED)
                 self.assertEqual(r["jsr_count"], 0)
+
+
+class SourceBankTest(unittest.TestCase):
+    """MEDIUM-1: every source-set address resolves through MPR (Issue #739)."""
+
+    def test_red_hw_source_refused(self):
+        r = P.preflight("TII", 0xE000, 0x2100, 1, [0, 0xF8, 0, 0, 0, 0, 0, 0xFF],
+                        (0x2100, 0x2200), {0xF8})
+        self.assertEqual(r["verdict"], REFUSED)
+        self.assertEqual(r["reason"], "src_bank_not_allowed")
+        self.assertEqual(r["first_refused"], 0xE000)
+        self.assertEqual(r["gate"], P.BLOCKED)
+        self.assertEqual(r["execution"], P.BLOCKED)
+
+    def test_hw_source_refused_all_ops(self):
+        mpr = [0, 0xF8, 0, 0, 0, 0, 0, 0xFF]
+        for op in P.OPS:
+            with self.subTest(op=op):
+                r = P.preflight(op, 0xE000, 0x2100, 1, list(mpr), (0x2100, 0x2200), {0xF8})
+                self.assertEqual(r["verdict"], REFUSED, op)
+                self.assertEqual(r["reason"], "src_bank_not_allowed", op)
+                self.assertEqual(r["gate"], P.BLOCKED, op)
+                self.assertEqual(r["execution"], P.BLOCKED, op)
+
+    def test_unclassified_source_bank_refused_all_ops(self):
+        # Page 0 maps to $F8, outside the {0x00, 0x01} allowlist: a
+        # non-hardware but unclassified device-source read. Side effects of
+        # such reads cannot be statically proven, so deny-by-default refuses.
+        for op in P.OPS:
+            with self.subTest(op=op):
+                r = pf(op=op, src=0x1000, length=1)
+                self.assertEqual(r["verdict"], REFUSED, op)
+                self.assertEqual(r["reason"], "src_bank_not_allowed", op)
+                self.assertEqual(r["first_refused"], 0x1000, op)
+
+    def test_source_boundary_crossing_refused(self):
+        # TII src 0x1FFC len 8 straddles page 0 ($F8) / page 1 ($00).
+        r = pf(op="TII", src=0x1FFC, dst=0x2110, length=8)
+        self.assertEqual(r["verdict"], REFUSED)
+        self.assertEqual(r["reason"], "src_bank_not_allowed")
+        # TDD reading down across the same boundary.
+        r = pf(op="TDD", src=0x2003, dst=0x2110, length=8)
+        self.assertEqual(r["verdict"], REFUSED)
+        self.assertEqual(r["reason"], "src_bank_not_allowed")
+
+    def test_source_wrap_refused(self):
+        mpr = [0, 0xF8, 0, 0, 0, 0, 0, 0xFF]
+        win = (0x2100, 0x2200)
+        # TII reading up across 0xFFFF wraps to 0x0000; 0xFFFF is page-7 $FF.
+        # dst=0x2110 keeps TDD-style descending destinations inside the window.
+        r = P.preflight("TII", 0xFFFF, 0x2110, 2, list(mpr), win, {0xF8})
+        self.assertEqual(r["verdict"], REFUSED)
+        self.assertEqual(r["reason"], "src_bank_not_allowed")
+        self.assertIn(r["first_refused"], {0xFFFF, 0x0000})
+        # TDD reading down across 0x0000 wraps to 0xFFFF (page-7 $FF).
+        r = P.preflight("TDD", 0x0001, 0x2110, 4, list(mpr), win, {0xF8})
+        self.assertEqual(r["verdict"], REFUSED)
+        self.assertEqual(r["reason"], "src_bank_not_allowed")
+        # TIN/TIA/TAI wrap the same way through their own source sets.
+        self.assertEqual(
+            P.preflight("TIN", 0xFFFF, 0x2110, 2, list(mpr), win, {0xF8})["verdict"], REFUSED)
+        self.assertEqual(
+            P.preflight("TIA", 0xFFFF, 0x2110, 2, list(mpr), win, {0xF8})["verdict"], REFUSED)
+        self.assertEqual(
+            P.preflight("TAI", 0xFFFF, 0x2110, 4, list(mpr), win, {0xF8})["verdict"], REFUSED)
+
+    def test_in_allowlist_source_still_permits_all_ops(self):
+        for op in P.OPS:
+            with self.subTest(op=op):
+                r = pf(op=op, src=0x2010, dst=0x2110, length=8)
+                self.assertEqual(r["verdict"], PERMIT, op)
+                self.assertEqual(r["gate"], P.BLOCKED, op)
+                self.assertEqual(r["execution"], P.BLOCKED, op)
+
+    def test_same_value_and_temp_restore_still_ban_hw_source(self):
+        mpr = [0, 0xF8, 0, 0, 0, 0, 0, 0xFF]
+        self.assertEqual(
+            P.preflight("TII", 0xE000, 0x2100, 1, list(mpr), (0x2100, 0x2200),
+                        {0xF8}, same_value=True)["reason"], "same_value_write")
+        self.assertEqual(
+            P.preflight("TII", 0xE000, 0x2100, 1, list(mpr), (0x2100, 0x2200),
+                        {0xF8}, temp_restore=True)["reason"], "temp_write_restore")
+
+
+class AmbiguousTargetTest(unittest.TestCase):
+    """MEDIUM-2: ANY_MAPPED may include WRAM, so it never proves NOT_MAIN_RAM."""
+
+    def test_red_device_store_any_mapped_blocked(self):
+        r = P.device_audit([dev("DEV-X", "device_store", "ANY_MAPPED", "NOT_MAIN_RAM")])
+        self.assertEqual(r["verdict"], "BLOCKED_AUDIT")
+        self.assertEqual(r["gate"], P.BLOCKED)
+        self.assertEqual(r["execution"], P.BLOCKED)
+        self.assertEqual(r["bad_ids"], ["DEV-X"])
+        self.assertNotIn(r["verdict"], ("PASS", "ALLOWED", "VERIFIED"))
+
+    def test_device_store_any_mapped_case_insensitive_blocked(self):
+        r = P.device_audit([dev("X", " Device_Store ", "any_mapped", "not_main_ram")])
+        self.assertEqual(r["verdict"], "BLOCKED_AUDIT")
+        self.assertEqual(r["bad_ids"], ["X"])
+
+    def test_cpu_block_store_any_mapped_contract_kept(self):
+        rows = [dev("BLK-0%d" % i, "cpu_block_store", "ANY_MAPPED", "PER_BYTE_STEP")
+                for i in range(1, 6)]
+        r = P.device_audit(rows)
+        self.assertEqual(r["verdict"], "DRAINED_NO_UNKNOWN")
+        self.assertEqual(r["gate"], P.BLOCKED)
+        self.assertEqual(r["execution"], P.BLOCKED)
+
+    def test_per_role_targets(self):
+        # Concrete device targets still drain.
+        self.assertEqual(
+            P.device_audit([dev("D", "device_store", "VRAM", "NOT_MAIN_RAM")])["verdict"],
+            "DRAINED_NO_UNKNOWN")
+        # CPU/reset/host contracts on concrete targets (incl. WRAM) still drain.
+        self.assertEqual(
+            P.device_audit([dev("C", "cpu_store", "WRAM", "CPU_ORIGINATED")])["bad_ids"], [])
+        self.assertEqual(
+            P.device_audit([dev("R", "reset_store", "WRAM", "RESET_ONLY")])["verdict"],
+            "DRAINED_NO_UNKNOWN")
+        self.assertEqual(
+            P.device_audit([dev("H", "host_store", "WRAM", "HOST_ONLY")])["verdict"],
+            "DRAINED_NO_UNKNOWN")
+        # cpu_block_store is only meaningful for the ambiguous whole-map target.
+        self.assertEqual(
+            P.device_audit([dev("B", "cpu_block_store", "VRAM", "PER_BYTE_STEP")])["verdict"],
+            "BLOCKED_AUDIT")
+
+    def test_fixture_still_drains(self):
+        text = (ROOT / "tests" / "fixtures" / "367_device_write_sites.tsv").read_text(encoding="utf-8")
+        rows = []
+        for raw in text.splitlines():
+            if not raw.strip() or raw.startswith("#"):
+                continue
+            c = raw.split("\t")
+            rows.append({"id": c[0], "role": c[3], "target": c[4], "verdict": c[5]})
+        r = P.device_audit(rows)
+        self.assertEqual(r["verdict"], "DRAINED_NO_UNKNOWN")
+        self.assertEqual(r["gate"], P.BLOCKED)
+        self.assertEqual(r["execution"], P.BLOCKED)
 
 
 if __name__ == "__main__":

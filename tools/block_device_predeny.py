@@ -7,9 +7,15 @@ hardware claim. Production allowlist is UNDECIDED, so even a fully in-window
 transfer is PERMITTED_STATIC_ONLY with gate BLOCKED, mid-instruction halt is
 BLOCKED_NOT_SAFE_TO_RESUME (per-byte refusal is not a safe stop, docs/367). Unknown
 op, malformed MPR snapshot, MPR0-6 $FF, empty allowlist, GG_TESTING/libretro
-build, same-value write, temp-write-restore, source-read side-effect, FORBIDDEN_MMIO
+build, same-value write, temp-write-restore, source-read side-effect, source bank
+not allowed (each source-set address resolved through MPR; $FF or unclassified
+bank refused since device-source side effects cannot be statically proven),
+FORBIDDEN_MMIO
 intersection (the same set enforced by tools/h45_preblock_gate.py), UNKNOWN
-device verdict, unrecognized/missing/mistyped target, missing/empty/duplicate id,
+device verdict, unrecognized/missing/mistyped target, per-role target violation
+(device_store must name a concrete non-WRAM target; ANY_MAPPED may include
+WRAM so it never substantiates NOT_MAIN_RAM; only cpu_block_store may claim
+ANY_MAPPED), missing/empty/duplicate id,
 or device/unknown store to WRAM all refuse before any store. Never
 PASS, never ALLOWED; callers must require gate==BLOCKED and execution==BLOCKED.
 REFUSED_PREEXEC is a pre-execution refusal only: it does not claim that a
@@ -24,6 +30,30 @@ MAX_BYTES = 0x10000
 FORBIDDEN_MMIO = frozenset({0x1802, 0x1804, 0x1402, 0x1403})
 DEVICE_READ_SIDE_EFFECT_ADDRS = frozenset({0x2104, 0x4104})
 DEVICE_WRITER_ROLES = frozenset({"device_store", "unknown_store"})
+# Per-role target allowlist (fixture tests/fixtures/367_device_write_sites.tsv,
+# column 5). ANY_MAPPED is address-ambiguous: it may include WRAM, so it can
+# never substantiate a NOT_MAIN_RAM claim. Only the per-byte-stepped CPU
+# block-store contract may claim ANY_MAPPED. Concrete device roles must name a
+# concrete non-WRAM target; unknown_store has no allowed target (it never pairs).
+ROLE_ALLOWED_TARGETS = {
+    "device_store": frozenset({
+        "ADPCM_RAM", "VRAM", "VDC_SAT", "CDROM_RAM", "CARD_RAM",
+        "ARCADE_CARD_RAM", "BACKUP_RAM", "MB128_RAM",
+    }),
+    "cpu_store": frozenset({
+        "ADPCM_RAM", "VRAM", "VDC_SAT", "WRAM", "CDROM_RAM", "CARD_RAM",
+        "ARCADE_CARD_RAM", "BACKUP_RAM", "MB128_RAM",
+    }),
+    "reset_store": frozenset({
+        "ADPCM_RAM", "VRAM", "VDC_SAT", "WRAM", "CDROM_RAM", "CARD_RAM",
+        "ARCADE_CARD_RAM", "BACKUP_RAM", "MB128_RAM",
+    }),
+    "host_store": frozenset({
+        "ADPCM_RAM", "VRAM", "VDC_SAT", "WRAM", "CDROM_RAM", "CARD_RAM",
+        "ARCADE_CARD_RAM", "BACKUP_RAM", "MB128_RAM",
+    }),
+    "cpu_block_store": frozenset({"ANY_MAPPED"}),
+}
 # Fixture-derived target vocabulary (tests/fixtures/367_device_write_sites.tsv,
 # column 5). Audit input is self-reported, so any other target -- including a
 # literal "UNKNOWN" -- is unrecognized input and refuses to drain.
@@ -153,6 +183,9 @@ def preflight(op, src, dst, length, mpr, window, allowed_banks, build=None, same
     bad = sorted(a for a in dset if mpr[(a >> 13) & 7] not in allowed_banks or mpr[(a >> 13) & 7] == HARDWARE_BANK)
     if bad:
         return _refused(op, "dst_bank_not_allowed", bad[0])
+    bad_src = sorted(a for a in sset if mpr[(a >> 13) & 7] not in allowed_banks or mpr[(a >> 13) & 7] == HARDWARE_BANK)
+    if bad_src:
+        return _refused(op, "src_bank_not_allowed", bad_src[0])
     stores = 1 if op == "TIN" else _count(length)
     return {"op": op, "verdict": "PERMITTED_STATIC_ONLY", "gate": BLOCKED, "execution": BLOCKED,
             "jsr_count": 0, "reason": "in_window_static_only", "first_refused": None,
@@ -202,6 +235,7 @@ def device_audit(rows):
         verdict = verdict_raw.strip().upper()
         if (not target or target == "UNKNOWN" or target not in KNOWN_TARGETS
                 or verdict == "UNKNOWN" or (role, verdict) not in ALLOWED_DEVICE_PAIRS
+                or target not in ROLE_ALLOWED_TARGETS.get(role, frozenset())
                 or (role in DEVICE_WRITER_ROLES and target == "WRAM")):
             if ident not in bad:
                 bad.append(ident)
