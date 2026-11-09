@@ -9,7 +9,8 @@ BLOCKED_NOT_SAFE_TO_RESUME (per-byte refusal is not a safe stop, docs/367). Unkn
 op, malformed MPR snapshot, MPR0-6 $FF, empty allowlist, GG_TESTING/libretro
 build, same-value write, temp-write-restore, source-read side-effect, FORBIDDEN_MMIO
 intersection (the same set enforced by tools/h45_preblock_gate.py), UNKNOWN
-device verdict or device/unknown store to WRAM all refuse before any store. Never
+device verdict, unrecognized/missing/mistyped target, missing/empty/duplicate id,
+or device/unknown store to WRAM all refuse before any store. Never
 PASS, never ALLOWED; callers must require gate==BLOCKED and execution==BLOCKED.
 REFUSED_PREEXEC is a pre-execution refusal only: it does not claim that a
 post-detection observation would have been a pre-block, and no verdict here is a
@@ -23,6 +24,13 @@ MAX_BYTES = 0x10000
 FORBIDDEN_MMIO = frozenset({0x1802, 0x1804, 0x1402, 0x1403})
 DEVICE_READ_SIDE_EFFECT_ADDRS = frozenset({0x2104, 0x4104})
 DEVICE_WRITER_ROLES = frozenset({"device_store", "unknown_store"})
+# Fixture-derived target vocabulary (tests/fixtures/367_device_write_sites.tsv,
+# column 5). Audit input is self-reported, so any other target -- including a
+# literal "UNKNOWN" -- is unrecognized input and refuses to drain.
+KNOWN_TARGETS = frozenset({
+    "ADPCM_RAM", "VRAM", "VDC_SAT", "WRAM", "CDROM_RAM", "CARD_RAM",
+    "ARCADE_CARD_RAM", "BACKUP_RAM", "MB128_RAM", "ANY_MAPPED",
+})
 ALLOWED_DEVICE_PAIRS = frozenset({
     ("device_store", "NOT_MAIN_RAM"),
     ("cpu_store", "CPU_ORIGINATED"),
@@ -165,15 +173,35 @@ def device_audit(rows):
         block_audit["bad_ids"] = ["<no rows audited>"]
         return block_audit
     bad = []
+    seen_ids = set()
     for i, r in enumerate(rows):
         if not isinstance(r, dict):
-            bad.append(f"<row {i}>")
+            label = f"<row {i}>"
+            if label not in bad:
+                bad.append(label)
             continue
         ident = r.get("id")
-        role = str(r.get("role", "")).strip().lower()
-        target = str(r.get("target", "")).strip().upper()
-        verdict = str(r.get("verdict", "")).strip().upper()
-        if (verdict == "UNKNOWN" or (role, verdict) not in ALLOWED_DEVICE_PAIRS
+        if not isinstance(ident, str) or not ident.strip():
+            label = f"<row {i}>"
+            if label not in bad:
+                bad.append(label)
+            continue
+        ident = ident.strip()
+        if ident in seen_ids:
+            if ident not in bad:
+                bad.append(ident)
+            continue
+        seen_ids.add(ident)
+        role_raw, target_raw, verdict_raw = r.get("role"), r.get("target"), r.get("verdict")
+        if not all(isinstance(v, str) for v in (role_raw, target_raw, verdict_raw)):
+            if ident not in bad:
+                bad.append(ident)
+            continue
+        role = role_raw.strip().lower()
+        target = target_raw.strip().upper()
+        verdict = verdict_raw.strip().upper()
+        if (not target or target == "UNKNOWN" or target not in KNOWN_TARGETS
+                or verdict == "UNKNOWN" or (role, verdict) not in ALLOWED_DEVICE_PAIRS
                 or (role in DEVICE_WRITER_ROLES and target == "WRAM")):
             if ident not in bad:
                 bad.append(ident)

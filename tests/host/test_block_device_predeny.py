@@ -291,6 +291,77 @@ class DeviceAuditHardeningTest(unittest.TestCase):
                 dev("B", "device_store", "WRAM", "NOT_MAIN_RAM")]
         self.assertEqual(P.device_audit(rows)["bad_ids"], ["A", "B"])
 
+    def test_unknown_target_blocked(self):
+        for tgt in ("UNKNOWN", "unknown", " Unknown ", "MYSTERY", "FOO"):
+            with self.subTest(target=tgt):
+                r = P.device_audit([dev("X", "device_store", tgt, "NOT_MAIN_RAM")])
+                self.assertEqual(r["verdict"], "BLOCKED_AUDIT", tgt)
+                self.assertEqual(r["gate"], P.BLOCKED, tgt)
+                self.assertEqual(r["execution"], P.BLOCKED, tgt)
+                self.assertEqual(r["bad_ids"], ["X"], tgt)
+                self.assertNotIn(r["verdict"], ("PASS", "ALLOWED", "VERIFIED"), tgt)
+
+    def test_missing_empty_target_blocked(self):
+        rows_missing = [{"id": "X", "role": "device_store", "verdict": "NOT_MAIN_RAM"}]
+        self.assertEqual(P.device_audit(rows_missing)["verdict"], "BLOCKED_AUDIT")
+        for tgt in ("", "   "):
+            with self.subTest(target=tgt):
+                r = P.device_audit([dev("X", "device_store", tgt, "NOT_MAIN_RAM")])
+                self.assertEqual(r["verdict"], "BLOCKED_AUDIT", tgt)
+                self.assertEqual(r["gate"], P.BLOCKED, tgt)
+
+    def test_wrongtype_target_role_verdict_blocked(self):
+        for tgt in (None, 123, 1.5, True, ["VRAM"], {"t": "VRAM"}):
+            with self.subTest(target=tgt):
+                row = {"id": "X", "file": "x.cpp", "line": "1", "role": "device_store",
+                       "target": tgt, "verdict": "NOT_MAIN_RAM"}
+                r = P.device_audit([row])
+                self.assertEqual(r["verdict"], "BLOCKED_AUDIT", tgt)
+                self.assertEqual(r["gate"], P.BLOCKED, tgt)
+        for role, verdict in ((123, "NOT_MAIN_RAM"), ("device_store", 123), (None, None)):
+            with self.subTest(role=role, verdict=verdict):
+                row = {"id": "X", "file": "x.cpp", "line": "1", "role": role,
+                       "target": "VRAM", "verdict": verdict}
+                self.assertEqual(P.device_audit([row])["verdict"], "BLOCKED_AUDIT")
+
+    def test_missing_empty_wrongtype_id_blocked(self):
+        base = {"role": "device_store", "target": "VRAM", "verdict": "NOT_MAIN_RAM"}
+        variants = [dict(base), dict(base, id=None), dict(base, id=""),
+                    dict(base, id="   "), dict(base, id=123), dict(base, id=["X"])]
+        for i, row in enumerate(variants):
+            with self.subTest(row=row):
+                r = P.device_audit([row])
+                self.assertEqual(r["verdict"], "BLOCKED_AUDIT", row)
+                self.assertEqual(r["gate"], P.BLOCKED, row)
+                self.assertEqual(r["execution"], P.BLOCKED, row)
+                self.assertTrue(r["bad_ids"], row)
+
+    def test_duplicate_ids_blocked_even_when_rows_look_clean(self):
+        rows = [dev("DUP", "device_store", "VRAM", "NOT_MAIN_RAM"),
+                dev("DUP", "cpu_store", "WRAM", "CPU_ORIGINATED")]
+        r = P.device_audit(rows)
+        self.assertEqual(r["verdict"], "BLOCKED_AUDIT")
+        self.assertEqual(r["gate"], P.BLOCKED)
+        self.assertEqual(r["execution"], P.BLOCKED)
+        self.assertIn("DUP", r["bad_ids"])
+        self.assertNotIn(r["verdict"], ("PASS", "ALLOWED", "VERIFIED"))
+
+    def test_not_main_ram_to_wram_is_self_contradictory(self):
+        r = P.device_audit([dev("X", "device_store", "WRAM", "NOT_MAIN_RAM")])
+        self.assertEqual(r["verdict"], "BLOCKED_AUDIT")
+        self.assertEqual(r["bad_ids"], ["X"])
+
+    def test_target_allowlist_covers_fixture(self):
+        text = (ROOT / "tests" / "fixtures" / "367_device_write_sites.tsv").read_text(encoding="utf-8")
+        targets = set()
+        for raw in text.splitlines():
+            if not raw.strip() or raw.startswith("#"):
+                continue
+            targets.add(raw.split("\t")[4].strip().upper())
+        self.assertTrue(targets)
+        self.assertEqual(targets - set(P.KNOWN_TARGETS), set())
+        self.assertNotIn("UNKNOWN", set(P.KNOWN_TARGETS))
+
 
 class MutationExtraTest(unittest.TestCase):
     def test_m16_drop_forbidden_mmio_would_permit(self):
