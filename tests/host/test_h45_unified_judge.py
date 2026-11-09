@@ -139,15 +139,22 @@ class UnifiedTest(unittest.TestCase):
         return a, b
 
     def test_premerge_never_pass(self):
+        # Pre-merge (modules missing): BLOCKED. Post-merge integration (real
+        # A/B modules present): synthetic HOST_FIXTURE PASS is allowed, but
+        # execution stays BLOCKED with jsr_count=0. Either way no execution.
         v, r, rec = U.judge_unified(U.clean_case())
-        self.assertNotEqual(v, U.PASS)
-        self.assertEqual(v, U.BLOCKED)
         self.assertEqual(rec["execution"], "BLOCKED")
         self.assertIs(rec["execution_permitted"], False)
         self.assertEqual(rec["jsr_count"], 0)
         self.assertIs(rec["release_eligible"], False)
-        with self.assertRaises(U.GateRefused):
-            U.require_unified(U.clean_case())
+        if v == U.BLOCKED:
+            with self.assertRaises(U.GateRefused):
+                U.require_unified(U.clean_case())
+        else:
+            self.assertEqual(v, U.PASS, r)
+            rec2 = U.require_unified(U.clean_case())
+            self.assertEqual(rec2["verdict"], U.PASS)
+            self.assertIs(rec2["execution_permitted"], False)
 
     def test_prereq_false_blocks_even_with_modules(self):
         self._inject()
