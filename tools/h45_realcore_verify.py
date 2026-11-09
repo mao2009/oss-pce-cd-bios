@@ -34,6 +34,7 @@ PROBES = {
     "st": "tests/integration/geargrafx_st_boundary.py",
     "mmio": "tests/integration/geargrafx_mmio1804_preblock.py",
     "block": "tests/integration/geargrafx_block_midrefusal.py",
+    "blockpre": "tests/integration/geargrafx_block_preblock.py",
 }
 
 PASS, FAIL, BLOCKED = "PASS", "FAIL", "BLOCKED"
@@ -76,8 +77,8 @@ def _is_refused_verdict(verdict):
     return "refus" in low or "fail_closed" in low or "failed_closed" in low
 
 
-def _check_st_cases(cases, probe_ok=False, summary_ok=False):
-    """Validate st_boundary transcript. Returns (verdict, reasons, summary).
+def _check_st_cases(cases, probe_ok=False, summary_ok=False, always_blocked=()):
+    """Validate st/blockpre boundary transcripts. Returns (verdict, reasons, summary).
 
     Armed-vs-control contract (probe classifiers are authoritative for counts):
     armed runs must carry a refused-family verdict with VDC SR unchanged and a
@@ -107,7 +108,13 @@ def _check_st_cases(cases, probe_ok=False, summary_ok=False):
         is_mut = any(s in case for s in ("-unguarded", "-no-entry-check", "-no-recheck",
                                          "-wrong-opcode", "-knownpc-only", "-resume-allowed",
                                          "-unsafe-read", "-peek-fail-step", "-no-hazard-latch"))
-        if is_mut:
+        if case in always_blocked:
+            # Fail-closed fetch does not depend on the monitor: even unguarded,
+            # no step is issued at an unpeekable PC. Expect the blocked verdict.
+            if verdict != "hardware_page_fetch_failed_closed_before_step":
+                return FAIL, [f"HWPAGE_EXPECTED_BLOCKED:{case}:{verdict}"], {}
+            mut_ok += 1
+        elif is_mut:
             # Sensitivity: mutation must make the effect observable (not refused).
             if _is_refused_verdict(verdict):
                 return FAIL, [f"MUTATION_REFUSED:{case}"], {}
@@ -277,6 +284,17 @@ def verify(probe, timeout, output_dir):
         verdict, reasons, halt = _check_mmio_summary(proc.stdout)
         scope = "SYNTHETIC_KNOWN_PC_ONLY_NO_GATE_CHANGE"
         cases = {}
+    elif probe == "blockpre":
+        cases, detail = _parse_evidence(proc.stdout)
+        if cases is None:
+            return {"verdict": BLOCKED, "reasons": [detail],
+                    "run_id": run_id, "probe": probe}
+        summary_ok = ("positive control:" in proc.stdout
+                      and "PASS issue-742" in proc.stdout)
+        verdict, reasons, halt = _check_st_cases(
+            cases, probe_ok=True, summary_ok=summary_ok,
+            always_blocked=("tii-hwpage-fetch-blocked-unguarded",))
+        scope = "SYNTHETIC_SINGLE_STEP_ONLY_NO_GATE_CHANGE"
     elif probe == "st":
         cases, detail = _parse_evidence(proc.stdout)
         if cases is None:

@@ -1,0 +1,404 @@
+#!/usr/bin/env python3
+"""Issue #742: whole-instruction preblock for TII/TDD/TIN/TAI/TIA on the pinned real core.
+
+Pinned real Geargrafx instruction-debugger core (local GPL-3.0 link, b49ae82a012eade566d72e9d61c9d95a5caa4da3;
+no core code copied here), fully synthetic BIOS/CD, MPR0 fixed to $00 (never $FF).
+
+The probe (geargrafx_block_preblock.cpp) single-steps one instruction at a time and resolves the opcode at
+the current PC BEFORE every step (including the entry instruction) through the core's side-effect-free
+peek (Memory::TryPeek). Any block-transfer opcode ($73/$C3/$D3/$E3/$F3) is refused before its first
+step: no source byte is read and no destination byte is written. The 7 opcode+operand bytes are
+captured side-effect-free as refusal evidence. A resume attempt re-runs the same boundary check and
+is refused again. The monitor is given no PC hint: every boundary of the single-stepped run is checked.
+
+Classifier design (composite conditions, never a single stop-PC number):
+* Executed-instruction count: the transfer itself must not start (exact setup counts per family).
+* VDC AR/R/SR: an armed run leaves them unchanged (sentinels preset for VDC-touching families).
+* Stop PC: the refused PC is exact-matched against the independent family expectation.
+* RAM: no net WRAM diff except the 3 architectural stack pushes for the IRQ-handler family.
+* MPR: unchanged except the guest-driven TAM the family plan requires (recorded, never trusted).
+* Operands: 7 bytes captured, complete, opcode matches the refused opcode.
+* Resume: 3/3 refused, no counter/PC/VDC/RAM change across attempts.
+
+Modes (7 armed families + positive control):
+* ``tii-entry``: TII at entry, 0 executed before refusal.
+* ``tdd-unknown``: JMP reaches TDD at unknown $3E10.
+* ``tin-unknown-far``: JMP reaches TIN at unknown $3E20.
+* ``tia-wrap-forbidden``: guest maps MPR2=$FF; TIA dest alternates into the VDC page.
+* ``tai-mpr2-unknown``: guest TAM sets MPR2=$F8; TAI at $4010 through page 2.
+* ``tii-hwpage-fetch-blocked``: guest TAM sets MPR2=$FF; fetch at $4000 fails closed.
+* ``block-irq-handler``: IRQ2 accepted at an instruction boundary; handler-head TII refused.
+* ``pos-write``: positive control, allowlisted RAM store lands unflagged.
+Mutation suffixes: -unguarded, -no-entry-check, -no-recheck, -wrong-opcode (TAI omitted),
+-knownpc-only, -resume-allowed.
+
+Run: python3 tests/integration/geargrafx_block_preblock.py  (wired into `make block-preblock`)
+"""
+import copy
+import json
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(ROOT / "tools"))
+from geargrafx_api import compile_probe  # noqa: E402
+from geargrafx_reference_guard import check_pos, run_mode, synthetic_media  # noqa: E402
+
+PINNED_CORE_REVISION = "b49ae82a012eade566d72e9d61c9d95a5caa4da3"
+POS_CONTROL = 0x3E50
+RESUME_ATTEMPTS = 3
+REFUSED_VERDICT = "refused_at_instruction_boundary_before_side_effect"
+HWPAGE_BLOCKED_VERDICT = "hardware_page_fetch_failed_closed_before_step"
+LANDED_VERDICT = "side_effect_landed_monitor_disabled"
+
+BLOCK_OPCODE = {"tii": 0x73, "tdd": 0xC3, "tin": 0xD3, "tai": 0xF3, "tia": 0xE3}
+# Linear fixture fill: F(addr) = (0x20 + (addr - 0x3E40)) & 0xFF over $3E40-$3E9F,
+# dst $3E90-$3E93 preset to $CC. F(80..83) = 60..63, F(7D..7F) = 5D..5F.
+PATTERN = [0x60, 0x61, 0x62, 0x63]
+DST_PRESET = 0xCC
+
+BLOCK_EXPECTED_PC = {
+    "tii-entry": 0x3E00,
+    "tdd-unknown": 0x3E10,
+    "tin-unknown-far": 0x3E20,
+    "tia-wrap-forbidden": 0x3E04,
+    "tai-mpr2-unknown": 0x4010,
+    "tii-hwpage-fetch-blocked": 0x4000,
+    "block-irq-handler": 0x3F80,
+}
+BLOCK_EXECUTED_BEFORE_REFUSAL = {
+    "tii-entry": 0,
+    "tdd-unknown": 1,
+    "tin-unknown-far": 1,
+    "tia-wrap-forbidden": 2,
+    "tai-mpr2-unknown": 3,
+    "tii-hwpage-fetch-blocked": 3,
+    "block-irq-handler": 2,
+}
+BLOCK_OP = {
+    "tii-entry": 0x73,
+    "tdd-unknown": 0xC3,
+    "tin-unknown-far": 0xD3,
+    "tia-wrap-forbidden": 0xE3,
+    "tai-mpr2-unknown": 0xF3,
+    "tii-hwpage-fetch-blocked": 0x73,
+    "block-irq-handler": 0x73,
+}
+HWPAGE_MODES = ("tii-hwpage-fetch-blocked",)
+ARMED_MODES = tuple(BLOCK_EXPECTED_PC)
+MUTATIONS = {
+    "tii-entry": ("-unguarded", "-no-entry-check", "-resume-allowed"),
+    "tdd-unknown": ("-unguarded", "-resume-allowed"),
+    "tin-unknown-far": ("-unguarded", "-knownpc-only"),
+    "tia-wrap-forbidden": ("-unguarded", "-knownpc-only"),
+    "tai-mpr2-unknown": ("-unguarded", "-no-recheck", "-wrong-opcode"),
+    "tii-hwpage-fetch-blocked": ("-unguarded",),
+    "block-irq-handler": ("-unguarded",),
+}
+
+
+def _int_fields(row, names):
+    for name in names:
+        value = row.get(name)
+        if type(value) is not int:
+            raise ValueError(f"{row.get('mode')}: {name} missing/non-integer: {value!r}")
+
+
+def check_armed(row, mode):
+    """Validate a refused whole-instruction preblock run."""
+    if row.get("exit", 0) != 0:
+        raise ValueError(f"{mode}: probe refused to run (exit {row.get('exit')})")
+    if row.get("status") != "refused" or row.get("reason") != "block_opcode_at_instruction_boundary":
+        raise ValueError(f"{mode}: not a block refusal: {row.get('status')}/{row.get('reason')}")
+    if row.get("mode") != mode:
+        raise ValueError(f"{mode}: measured wrong mode {row.get('mode')!r}")
+    if row.get("armed") is not True:
+        raise ValueError(f"{mode}: not an armed run")
+    expected_op = BLOCK_OP[mode]
+    if row.get("refused_opcode") != expected_op or row.get("fetch_opcode") != expected_op:
+        raise ValueError(f"{mode}: refused opcode {row.get('refused_opcode'):#x} "
+                         f"(fetch {row.get('fetch_opcode'):#x}), expected {expected_op:#x}")
+    if row.get("refused_pc") != BLOCK_EXPECTED_PC[mode]:
+        raise ValueError(f"{mode}: refused PC {row.get('refused_pc'):#x}, "
+                         f"expected {BLOCK_EXPECTED_PC[mode]:#x}")
+    if row.get("stop_pc") != BLOCK_EXPECTED_PC[mode]:
+        raise ValueError(f"{mode}: stop PC {row.get('stop_pc'):#x} is not the refused PC")
+    if row.get("instructions_executed") != BLOCK_EXECUTED_BEFORE_REFUSAL[mode]:
+        raise ValueError(f"{mode}: executed {row.get('instructions_executed')}, "
+                         f"expected {BLOCK_EXECUTED_BEFORE_REFUSAL[mode]}")
+    if row.get("fetch_safe") is not True or row.get("fetch_failed") is not False:
+        raise ValueError(f"{mode}: fetch was not a safe peek")
+    operands = row.get("operand_bytes")
+    if not isinstance(operands, list) or len(operands) != 7:
+        raise ValueError(f"{mode}: operand evidence missing/incomplete: {operands!r}")
+    if row.get("operand_complete") is not True:
+        raise ValueError(f"{mode}: operand capture incomplete: missing evidence, not PASS")
+    if operands[0] != expected_op:
+        raise ValueError(f"{mode}: operand byte 0 {operands[0]:#x} != refused opcode")
+    _int_fields(row, ("stop_pc", "executed_at_refusal", "vdc_ar_before", "vdc_ar_after",
+                      "vdc_sr_before", "vdc_sr_after"))
+    if row.get("vdc_ar_before") != row.get("vdc_ar_after"):
+        raise ValueError(f"{mode}: VDC AR changed {row.get('vdc_ar_before'):#x} -> "
+                         f"{row.get('vdc_ar_after'):#x}: side effect before stop")
+    if row.get("vdc_sr_before") != row.get("vdc_sr_after"):
+        raise ValueError(f"{mode}: VDC SR changed: side effect before stop")
+    if row.get("vdc_r_before") != row.get("vdc_r_after"):
+        raise ValueError(f"{mode}: VDC R0 changed: side effect before stop")
+    if row.get("executed_at_refusal") != BLOCK_EXECUTED_BEFORE_REFUSAL[mode]:
+        raise ValueError(f"{mode}: executed_at_refusal mismatch")
+    # No transfer bytes may have moved: WRAM net diff must be empty (except the
+    # 3 architectural stack pushes for the IRQ-handler family).
+    if mode == "block-irq-handler":
+        diffs = row.get("ram_diff")
+        if not isinstance(diffs, list):
+            raise ValueError(f"{mode}: ram_diff missing")
+        for entry in diffs:
+            if not isinstance(entry, dict) or entry.get("address") not in (0x21FF, 0x21FE, 0x21FD):
+                raise ValueError(f"{mode}: non-stack RAM diff: transfer bytes moved")
+        if row.get("only_stack_net_diffs") is not True:
+            raise ValueError(f"{mode}: stack-only flag not set")
+        if row.get("irq_accepted") is not True or row.get("observed_vector") != 0x3F80:
+            raise ValueError(f"{mode}: IRQ acceptance not observed")
+        if row.get("handler_steps") != 0:
+            raise ValueError(f"{mode}: handler stepped despite refusal")
+    elif row.get("ram_diff") != []:
+        raise ValueError(f"{mode}: RAM diff {row.get('ram_diff')}: transfer bytes moved")
+    # MPR: unchanged except the guest-driven TAM the family plan requires.
+    mpr_before, mpr_after = row.get("before", {}).get("mpr"), row.get("after", {}).get("mpr")
+    if mode == "tia-wrap-forbidden":
+        if not isinstance(mpr_after, list) or mpr_after[2] != 0xFF:
+            raise ValueError(f"{mode}: MPR2 is not $FF after guest TAM: {mpr_after}")
+    elif mode == "tai-mpr2-unknown":
+        if not isinstance(mpr_after, list) or mpr_after[2] != 0xF8:
+            raise ValueError(f"{mode}: MPR2 is not $F8 after guest TAM: {mpr_after}")
+    elif mpr_before != mpr_after:
+        raise ValueError(f"{mode}: MPR changed {mpr_before} -> {mpr_after}")
+    # Resume refusals through the same guarded entry.
+    if row.get("resume_attempts") != RESUME_ATTEMPTS or row.get("resume_refused") != RESUME_ATTEMPTS:
+        raise ValueError(f"{mode}: resume {row.get('resume_refused')}/{row.get('resume_attempts')}")
+    if row.get("executed_after_resume") != row.get("executed_at_refusal"):
+        raise ValueError(f"{mode}: execution advanced across resume")
+    if row.get("ram_unchanged_during_resume") is not True:
+        raise ValueError(f"{mode}: RAM changed across resume")
+    return REFUSED_VERDICT
+
+
+def check_unguarded_landed(row, mode):
+    """Validate the sensitivity control: bypassed/unmonitored, the transfer lands.
+
+    Pure -unguarded runs have armed=false; bypass mutations (-no-entry-check,
+    -no-recheck, -wrong-opcode, -knownpc-only, -resume-allowed) run with the
+    monitor armed but a check removed. Either way the transfer must land and
+    the run must not be refused: that is the sensitivity proof.
+    """
+    if row.get("exit", 0) != 0:
+        raise ValueError(f"{mode}: probe refused to run")
+    if row.get("refused") is not False or row.get("status") == "refused":
+        raise ValueError(f"{mode}: bypassed run was refused: monitor still armed")
+    diffs = row.get("ram_diff")
+    if not isinstance(diffs, list) or not diffs:
+        # A forbidden-destination wrap lands on the VDC instead of RAM.
+        if mode == "tia-wrap-forbidden":
+            if row.get("vdc_ar_before") == row.get("vdc_ar_after"):
+                raise ValueError(f"{mode}: unguarded wrap left no VDC trace")
+            return LANDED_VERDICT
+        raise ValueError(f"{mode}: unguarded run left no RAM trace")
+    landed = {(d["address"], d["after"]) for d in diffs
+              if isinstance(d, dict) and "address" in d and "after" in d}
+    if mode in ("tii-entry", "block-irq-handler"):
+        for i, value in enumerate(PATTERN):
+            if (0x3E90 + i, value) not in landed:
+                raise ValueError(f"{mode}: dest byte ${0x3E90 + i:04X} != pattern: {landed}")
+    elif mode == "tdd-unknown":
+        for addr, value in ((0x3E90, 0x60), (0x3E8F, 0x5F), (0x3E8E, 0x5E), (0x3E8D, 0x5D)):
+            if (addr, value) not in landed:
+                raise ValueError(f"{mode}: TDD dest ${addr:04X} != {value:#x}: {landed}")
+    elif mode == "tin-unknown-far":
+        if (0x3E90, 0x63) not in landed:
+            raise ValueError(f"{mode}: TIN fixed dest did not land last byte: {landed}")
+    elif mode == "tai-mpr2-unknown":
+        for addr, value in ((0x3E90, 0x60), (0x3E91, 0x61), (0x3E92, 0x60), (0x3E93, 0x61)):
+            if (addr, value) not in landed:
+                raise ValueError(f"{mode}: TAI dest ${addr:04X} != {value:#x}: {landed}")
+    if row.get("instructions_executed", 0) <= BLOCK_EXECUTED_BEFORE_REFUSAL[mode]:
+        raise ValueError(f"{mode}: unguarded run stopped at the boundary anyway")
+    return LANDED_VERDICT
+
+
+def check_resume_allowed_landed(row, mode):
+    """Refusal flag raised at first, but the latch does not hold the stop: the
+    initial run steps through and the transfer lands anyway."""
+    if row.get("exit", 0) != 0:
+        raise ValueError(f"{mode}: probe refused to run")
+    if row.get("refused") is not True:
+        raise ValueError(f"{mode}: resume-allowed never refused at first")
+    if row.get("refused_pc") != BLOCK_EXPECTED_PC[mode]:
+        raise ValueError(f"{mode}: refusal PC mismatch")
+    if row.get("resume_refused") != 0:
+        raise ValueError(f"{mode}: resume unexpectedly refused")
+    if row.get("stop_pc") != BLOCK_EXPECTED_PC[mode] + 7:
+        raise ValueError(f"{mode}: unexpected halt PC ${row.get('stop_pc'):04X}")
+    diffs = row.get("ram_diff")
+    if not isinstance(diffs, list) or not diffs:
+        raise ValueError(f"{mode}: resumed run left no transfer trace")
+    return LANDED_VERDICT
+
+
+def check_hwpage_armed(row, mode):
+    """Validate the fail-closed fetch: no step issued at the unpeekable PC."""
+    if row.get("exit", 0) != 0:
+        raise ValueError(f"{mode}: probe refused to run")
+    if row.get("status") != "fetch_blocked" or row.get("fetch_blocked") is not True:
+        raise ValueError(f"{mode}: fetch was not failed-closed: {row.get('status')}")
+    if row.get("fetch_failed") is not True or row.get("fetch_safe") is not False:
+        raise ValueError(f"{mode}: fetch failure not observed")
+    if row.get("stop_pc") != 0x4000:
+        raise ValueError(f"{mode}: stop PC ${row.get('stop_pc'):04X}, expected $4000")
+    if row.get("instructions_executed") != 3:
+        raise ValueError(f"{mode}: executed {row.get('instructions_executed')}, expected 3")
+    if row.get("vdc_ar_before") != 5 or row.get("vdc_ar_after") != 5:
+        raise ValueError(f"{mode}: VDC AR sentinel disturbed")
+    if row.get("vdc_sr_before") != 0x3F or row.get("vdc_sr_after") != 0x3F:
+        raise ValueError(f"{mode}: VDC SR changed without any step")
+    if row.get("ram_diff") != []:
+        raise ValueError(f"{mode}: RAM changed without any step")
+    mpr_after = row.get("after", {}).get("mpr")
+    if not isinstance(mpr_after, list) or mpr_after[2] != 0xFF:
+        raise ValueError(f"{mode}: MPR2 is not $FF: {mpr_after}")
+    if row.get("resume_attempts") != RESUME_ATTEMPTS or row.get("resume_refused") != RESUME_ATTEMPTS:
+        raise ValueError(f"{mode}: resume not refused")
+    return HWPAGE_BLOCKED_VERDICT
+
+
+def mutation_test_armed(refused_row, landed_row, mode, check=check_armed):
+    # Mode-aware MPR falsification: the wrap family requires MPR2==$FF and the
+    # mpr2 family MPR2==$F8, so a blanket [0xFF]*8 would stay consistent there.
+    if mode == "tia-wrap-forbidden":
+        bad_mpr = [0x00, 0xF8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+    elif mode in ("tai-mpr2-unknown", "tii-hwpage-fetch-blocked"):
+        bad_mpr = [0x00] * 8
+    else:
+        bad_mpr = [0xFF] * 8
+    if check is check_hwpage_armed:
+        mutations = [
+            ("stop-pc", {"stop_pc": 0x4002}, [], "wrong stop accepted"),
+            ("executed", {"instructions_executed": 4}, [], "wrong count accepted"),
+            ("vdc-changed", {"vdc_sr_before": 0x3F, "vdc_sr_after": 0x00}, [],
+             "landed: VDC side effect accepted"),
+            ("ram-diff", {"ram_diff": [{"address": 0x3E90, "before": 0xCC, "after": 0x60}]},
+             [], "landed: transfer bytes accepted"),
+            ("resume-not-refused", {"resume_refused": RESUME_ATTEMPTS - 1}, [],
+             "landed: failed resume accepted"),
+            ("mpr-changed", {"after": {"mpr": bad_mpr, "a": 0, "x": 0, "y": 0,
+                                       "p": 4, "sp": 0xFF, "pc": 0x4000}}, [],
+             "landed: MPR change accepted"),
+        ]
+    else:
+        mutations = [
+        ("wrong-opcode", {"refused_opcode": 0xEA}, [], " landed: opcode mismatch accepted"),
+        ("wrong-pc", {"refused_pc": 0x1234}, [], "landed: PC mismatch accepted"),
+        ("vdc-changed", {"vdc_sr_before": 0x3F, "vdc_sr_after": 0x00}, [],
+         "landed: VDC side effect accepted"),
+        ("ram-diff", {"ram_diff": [{"address": 0x3E90, "before": 0xCC, "after": 0x13}]},
+         [], "landed: transfer bytes accepted"),
+        ("resume-not-refused", {"resume_refused": RESUME_ATTEMPTS - 1}, [],
+         "landed: failed resume accepted"),
+        ("operand-incomplete", {"operand_complete": False}, [],
+         "landed: missing operand evidence accepted"),
+        ("mpr-changed", {"after": {"mpr": bad_mpr, "a": 0, "x": 0, "y": 0,
+                                   "p": 4, "sp": 0xFF, "pc": 0x3E00}}, [],
+         "landed: MPR change accepted"),
+    ]
+    for name, overwrite, remove, reason in mutations:
+        broken = copy.deepcopy(refused_row)
+        for key in remove:
+            broken.pop(key, None)
+        broken.update(overwrite)
+        try:
+            check(broken, mode)
+        except ValueError:
+            continue  # expected: falsified observation rejected
+        raise ValueError(f"mutation test FAILED: {mode} {name} was accepted but must "
+                         f"be rejected ({reason})")
+
+
+def check_hwpage_unguarded_still_blocked(row, mode):
+    """The fail-closed fetch does not depend on the monitor: even unguarded, no
+    step is issued at an unpeekable hardware-page PC and no VDC side effect lands."""
+    if row.get("exit", 0) != 0:
+        raise ValueError(f"{mode}: probe refused to run")
+    if row.get("status") != "fetch_blocked" or row.get("fetch_blocked") is not True:
+        raise ValueError(f"{mode}: hwpage fetch was not failed-closed: {row.get('status')}")
+    if row.get("vdc_ar_before") != row.get("vdc_ar_after"):
+        raise ValueError(f"{mode}: VDC AR changed without any step")
+    if row.get("vdc_sr_before") != row.get("vdc_sr_after"):
+        raise ValueError(f"{mode}: VDC SR changed without any step")
+    if row.get("ram_diff") != []:
+        raise ValueError(f"{mode}: RAM changed without any step")
+    return HWPAGE_BLOCKED_VERDICT
+
+
+def main():
+    with tempfile.TemporaryDirectory(prefix="pce-block-preblock-") as tmp:
+        directory = Path(tmp)
+        bios, cue = synthetic_media(directory)
+        probe = compile_probe(directory, source_name="geargrafx_block_preblock.cpp",
+                              target_name="block-preblock-probe")
+        verdicts = {}
+        for mode in ARMED_MODES:
+            refused_row = run_mode(probe, bios, cue, mode, 0)
+            if mode in HWPAGE_MODES:
+                verdicts[mode] = check_hwpage_armed(refused_row, mode)
+            else:
+                verdicts[mode] = check_armed(refused_row, mode)
+            mutations = []
+            for mutation in MUTATIONS[mode]:
+                landed_row = run_mode(probe, bios, cue, mode + mutation, 0)
+                if mutation == "-resume-allowed":
+                    verdicts[mode + mutation] = check_resume_allowed_landed(landed_row, mode)
+                elif mode in HWPAGE_MODES:
+                    verdicts[mode + mutation] = check_hwpage_unguarded_still_blocked(landed_row, mode)
+                else:
+                    verdicts[mode + mutation] = check_unguarded_landed(landed_row, mode)
+                mutations.append((mode + mutation, verdicts[mode + mutation], landed_row))
+            for mutation, _verdict, hazard_row in mutations:
+                try:
+                    check_armed({**hazard_row, "mode": mode}, mode)
+                except ValueError:
+                    continue
+                raise ValueError(f"mutation test FAILED: {mutation} accepted as refused")
+            mutation_test_armed(refused_row, mutations[0][2], mode,
+                                check_hwpage_armed if mode in HWPAGE_MODES else check_armed)
+            for case, verdict, row in [(mode, verdicts[mode], refused_row), *mutations]:
+                print("EVIDENCE " + json.dumps({"case": case, "observation_kind": "REAL_CORE_EXECUTION",
+                                                "core_revision": PINNED_CORE_REVISION, "bios": "SYNTHETIC",
+                                                "execution_mode": "debug-single-step", "verdict": verdict,
+                                                "measured_stop_pc": row["stop_pc"], "row": row}, sort_keys=True))
+            print(f"ARMED {mode}: status={refused_row['status']} stop={refused_row['stop_pc']:#x} "
+                  f"executed={refused_row['instructions_executed']} "
+                  f"resume_refused={refused_row['resume_refused']}/{refused_row['resume_attempts']} "
+                  f"-> {verdicts[mode]}")
+            for mutation, verdict, row in mutations:
+                print(f"MUTATION {mutation}: status={row['status']} stop={row['stop_pc']:#x} "
+                      f"executed={row['instructions_executed']} -> {verdict}")
+        check_pos(run_mode(probe, bios, cue, "pos-write", POS_CONTROL), POS_CONTROL)
+        print("PASS issue-742 block whole-instruction preblock (synthetic ROM, pinned core):")
+        print(f"  armed: {len(ARMED_MODES)} modes refused before the first transfer byte, "
+              f"resume refused {RESUME_ATTEMPTS}/{RESUME_ATTEMPTS}")
+        print("  mutation: unguarded/no-entry-check/no-recheck/wrong-opcode/knownpc-only/"
+              "resume-allowed runs made the transfer observable, armed classifier rejected all")
+        print(f"  positive control: allowlisted ${POS_CONTROL:04X} store ran unrefused and landed")
+        print("LIMIT: opcode-granularity preblock on synthetic guests; TIA/TIN/TDD/TAI/TII covered "
+              "real-core, length-0/64K never executed (host-BLOCKED); no gate change.")
+        return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (ValueError, OSError, subprocess.TimeoutExpired) as error:
+        print(f"FAIL issue-742 block preblock: {error}", file=sys.stderr)
+        raise SystemExit(1) from error

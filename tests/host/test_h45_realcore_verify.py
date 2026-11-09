@@ -115,6 +115,28 @@ class CheckTest(unittest.TestCase):
         v, _, _ = V._check_st_cases(c, probe_ok=True, summary_ok=False)
         self.assertEqual(v, V.BLOCKED)
 
+    def test_hwpage_unguarded_expected_blocked(self):
+        c = self._cases()
+        c["tii-hwpage-fetch-blocked-unguarded"] = _item(
+            "tii-hwpage-fetch-blocked-unguarded",
+            "hardware_page_fetch_failed_closed_before_step",
+            _row(stop_pc=0x4000))
+        v, _, _ = V._check_st_cases(
+            c, probe_ok=True, summary_ok=True,
+            always_blocked=("tii-hwpage-fetch-blocked-unguarded",))
+        self.assertEqual(v, V.PASS)
+
+    def test_hwpage_unguarded_landed_is_fail(self):
+        c = self._cases()
+        c["tii-hwpage-fetch-blocked-unguarded"] = _item(
+            "tii-hwpage-fetch-blocked-unguarded",
+            "side_effect_landed_monitor_disabled",
+            _row(stop_pc=0x4002, vdc_sr_after=0x00))
+        v, _, _ = V._check_st_cases(
+            c, probe_ok=True, summary_ok=True,
+            always_blocked=("tii-hwpage-fetch-blocked-unguarded",))
+        self.assertEqual(v, V.FAIL)
+
 
 MMIO_PASS_SUMMARY = (
     "PASS issue-173 $1804 preblock: RED=blocked_side_effect_before_stop (write breakpoint only, side "
