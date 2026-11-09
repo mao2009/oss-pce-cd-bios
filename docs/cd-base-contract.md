@@ -141,3 +141,5 @@ ROM に `CD_BASE` を入れると、ABI を推測した成功値を返すこと�
 ## 変更履歴
 
 - 2026-10-29（#573）: 出典の「Hu-Go `bios.c`」のセレクタ名の行を、HYPOTHESIS から UNKNOWN へ下げた。Hu-Go! は HLE であり、ライセンス未確定のため参照のみとする。CD_BASE の名前の HYPOTHESIS の根拠は HuCC（`pcengine.inc`）の行に残す。PR #571 の方針と整合。
+- 2026-11-09（#735）: host 限定境界 `tools/cd_base_dev_boundary.py` を追加（fail-closed judge、候補 mode の事前検証、副作用マトリクス）。DEV ROM 配線なし、slot_02 状態 `NOT_READY`、`release_eligible=false` 維持。$02=CD_BASE は仮説のまま。
+- 2026-11-09（#736）: 上記境界の false-OBSERVED を修正。自己申告 `callee_observed=True` だけでは judge は OBSERVED を出さず `BLOCKED/NO_TRUSTED_OBSERVATION` に留まる（診断申告は `callee_claim` に分離）。副作用マトリクスは申告値にかかわらず全項目 UNKNOWN（項目ごとの独立観測記録なし）。slot 02 / CD_BOOT / CD_READ の ABI は未検証のまま。
