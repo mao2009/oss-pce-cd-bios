@@ -115,6 +115,107 @@ class CheckTest(unittest.TestCase):
         v, _, _ = V._check_st_cases(c, probe_ok=True, summary_ok=False)
         self.assertEqual(v, V.BLOCKED)
 
+
+MMIO_PASS_SUMMARY = (
+    "PASS issue-173 $1804 preblock: RED=blocked_side_effect_before_stop (write breakpoint only, side "
+    "effect landed), GREEN=preblocked_before_side_effect (stop_pc=0x3e02, "
+    "instructions_executed=1, $1804 stayed 0x00); allowlisted $3E50 control store landed; no gate change "
+    "(slot $01 BLOCKED)\n"
+    "LIMIT: the execute breakpoint needs the store's PC (known guest code): "
+    "prevention for known code, not a general MMIO write interceptor; "
+    "ST0/ST1/ST2, $1802 IRQ enable, MPR and alias paths stay unguaranteed."
+)
+
+
+class MmioTest(unittest.TestCase):
+    def test_valid_summary_passes(self):
+        v, reasons, halt = V._check_mmio_summary(MMIO_PASS_SUMMARY)
+        self.assertEqual(v, V.PASS)
+        self.assertIn("MMIO_KNOWN_PC_ONLY", reasons)
+        self.assertEqual(halt["stop_pc"], 0x3E02)
+
+    def test_missing_pass_line_blocked(self):
+        v, _, _ = V._check_mmio_summary("no pass here")
+        self.assertEqual(v, V.BLOCKED)
+
+    def test_wrong_stop_pc_blocked(self):
+        v, _, _ = V._check_mmio_summary(MMIO_PASS_SUMMARY.replace("stop_pc=0x3e02", "stop_pc=0x3e05"))
+        self.assertEqual(v, V.BLOCKED)
+
+    def test_green_mismatch_blocked(self):
+        v, _, _ = V._check_mmio_summary(MMIO_PASS_SUMMARY.replace(
+            "GREEN=preblocked_before_side_effect", "GREEN=something_else"))
+        self.assertEqual(v, V.BLOCKED)
+
+    def test_limit_missing_blocked(self):
+        v, _, _ = V._check_mmio_summary(MMIO_PASS_SUMMARY.replace("LIMIT:", "NOTE:"))
+        self.assertEqual(v, V.BLOCKED)
+
+
+def _brow(case, verdict, **kw):
+    row = {"mode": case, "status": "ok", "stop_pc": 0x3F00, "expected_end_pc": 0x3F00,
+           "before": {"mpr": [0, 1, 2, 3, 4, 5, 6, 7]},
+           "after": {"mpr": [0, 1, 2, 3, 4, 5, 6, 7]},
+           "sp": [4, 4], "p": [4, 4], "a_after": 0x12, "x_after": 0x34, "y_after": 0x07,
+           "stack_wram": [0x34, 0x12, 0x07], "vdc_read_buffer": [0xBEEF, 0xBEEF],
+           "op": case.split("-")[0], "block_op": 0, "opcode": 0x73, "guard_refusals": 1,
+           "guard_calls": 3}
+    row.update(kw)
+    return {"case": case, "observation_kind": "REAL_CORE_EXECUTION",
+            "core_revision": V.PINNED, "bios": "SYNTHETIC",
+            "hook": "VERIFICATION_ONLY_PATCH", "verdict": verdict, "row": row}
+
+
+class BlockTest(unittest.TestCase):
+    def _cases(self):
+        return {
+            "tii-cross-armed": _brow("tii-cross-armed", "per_byte_refusal_continues_and_restores"),
+            "tii-cross-unguarded": _brow("tii-cross-unguarded", "forbidden_bytes_land_without_hook",
+                                        guard_refusals=0),
+            "tii-srcread-armed": _brow("tii-srcread-armed", "source_read_side_effect_lands_on_allowed_transfer",
+                                      guard_refusals=0),
+            "tii-srcread-unguarded": _brow("tii-srcread-unguarded", "source_read_side_effect_lands_without_hook",
+                                          guard_refusals=0),
+            "tii-srcreadff-armed": _brow("tii-srcreadff-armed", "refusal_skips_source_read"),
+            "tii-srcreadff-unguarded": _brow("tii-srcreadff-unguarded",
+                                            "forbidden_source_read_and_write_land_without_hook",
+                                            guard_refusals=0),
+        }
+
+    def test_block_stays_blocked_with_facts(self):
+        v, reasons, halt = V._check_block_cases(self._cases())
+        self.assertEqual(v, V.BLOCKED)
+        self.assertIn("MID_INSTRUCTION_STOP_BLOCKED_NOT_SAFE_TO_RESUME", reasons)
+        self.assertIn("SRCREAD_LIMIT_DOCUMENTED", reasons)
+        self.assertEqual(len(halt), 6)
+
+    def test_mpr_change_fails(self):
+        c = self._cases()
+        item = c["tii-cross-armed"]
+        row = dict(item["row"], after={"mpr": [9, 1, 2, 3, 4, 5, 6, 7]})
+        c["tii-cross-armed"] = dict(item, row=row)
+        v, _, _ = V._check_block_cases(c)
+        self.assertEqual(v, V.FAIL)
+
+    def test_stop_pc_mismatch_fails(self):
+        c = self._cases()
+        item = c["tii-cross-armed"]
+        row = dict(item["row"], stop_pc=0x1234)
+        c["tii-cross-armed"] = dict(item, row=row)
+        v, _, _ = V._check_block_cases(c)
+        self.assertEqual(v, V.FAIL)
+
+    def test_unknown_verdict_blocked(self):
+        c = self._cases()
+        c["tii-cross-armed"] = _brow("tii-cross-armed", "something_new")
+        v, _, _ = V._check_block_cases(c)
+        self.assertEqual(v, V.BLOCKED)
+
+    def test_no_armed_blocked(self):
+        c = {k: v for k, v in self._cases().items() if not k.endswith("-armed")}
+        v, _, _ = V._check_block_cases(c)
+        self.assertEqual(v, V.BLOCKED)
+
     def test_missing_armed_blocked(self):
         c = {k: v for k, v in self._cases().items() if k != "st0-entry"}
         v, _, _ = V._check_st_cases(c)
