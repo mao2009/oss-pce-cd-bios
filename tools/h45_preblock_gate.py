@@ -227,6 +227,14 @@ def judge_allowlist(snapshot):
             return BLOCKED, "HOST_FIXTURE must not claim real-core evidence"
         if prov.get("core_revision") is not None:
             return BLOCKED, "HOST_FIXTURE must not carry a core revision"
+        if prov.get("bios") != "SYNTHETIC":
+            return BLOCKED, "HOST_FIXTURE bios must be SYNTHETIC"
+        if prov.get("run_id") is not None:
+            return BLOCKED, "HOST_FIXTURE provenance must not carry a run_id"
+        if snapshot.get("run_id") is not None:
+            return BLOCKED, "HOST_FIXTURE snapshot must not carry a run_id"
+        if snapshot.get("halt_registers") is not None:
+            return BLOCKED, "HOST_FIXTURE must not carry halt registers"
     jsr_count = snapshot.get("jsr_count")
     if not _is_int(jsr_count):
         return BLOCKED, f"jsr_count not an int: {jsr_count!r}"

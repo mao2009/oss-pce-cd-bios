@@ -308,6 +308,67 @@ class AllowlistTest(unittest.TestCase):
         with self.assertRaises(G.GateRefused):
             G.require_preblock(snapshot)
 
+    def test_host_fixture_provenance_bios_and_origin_fields(self):
+        # provenance.bios must be exactly "SYNTHETIC": wrong types / missing BLOCKED.
+        for bios in ("REAL", "real", "", None, 123, True, ["SYNTHETIC"]):
+            with self.subTest(bios=bios):
+                snapshot = G.clean_snapshot()
+                snapshot["provenance"] = {**snapshot["provenance"], "bios": bios}
+                self.assertEqual(G.judge_allowlist(snapshot)[0], G.BLOCKED)
+                with self.assertRaises(G.GateRefused):
+                    G.require_preblock(snapshot)
+        with self.subTest(missing="bios"):
+            snapshot = G.clean_snapshot()
+            del snapshot["provenance"]["bios"]
+            self.assertEqual(G.judge_allowlist(snapshot)[0], G.BLOCKED)
+            with self.assertRaises(G.GateRefused):
+                G.require_preblock(snapshot)
+        # run_id None-only (provenance + snapshot) and halt_registers None-only.
+        for name, change in (
+            ("prov_run_id_str", {"provenance": {"run_id": "r1"}}),
+            ("prov_run_id_int", {"provenance": {"run_id": 0}}),
+            ("prov_run_id_false", {"provenance": {"run_id": False}}),
+            ("snap_run_id_str", {"run_id": "r1"}),
+            ("snap_run_id_int", {"run_id": 0}),
+            ("snap_run_id_false", {"run_id": False}),
+            ("snap_run_id_empty", {"run_id": {}}),
+            ("halt_dict", {"halt_registers": {"PC": 0x3E00}}),
+            ("halt_str", {"halt_registers": "none"}),
+            ("halt_false", {"halt_registers": False}),
+            ("halt_zero", {"halt_registers": 0}),
+        ):
+            with self.subTest(name=name):
+                snapshot = G.clean_snapshot()
+                if "provenance" in change:
+                    snapshot["provenance"] = {**snapshot["provenance"], **change["provenance"]}
+                else:
+                    snapshot.update(change)
+                self.assertEqual(G.judge_allowlist(snapshot)[0], G.BLOCKED)
+                with self.assertRaises(G.GateRefused):
+                    G.require_preblock(snapshot)
+        # Forged real-core artefacts on a HOST_FIXTURE row stay BLOCKED.
+        snapshot = G.clean_snapshot()
+        snapshot["provenance"] = {**snapshot["provenance"], "core_revision": G.PINNED_CORE_REVISION,
+                                  "real_core_claim": True, "run_id": "forged"}
+        snapshot["run_id"] = "forged"
+        snapshot["halt_registers"] = {"PC": 0x3E00}
+        self.assertEqual(G.judge_allowlist(snapshot)[0], G.BLOCKED)
+        with self.assertRaises(G.GateRefused):
+            G.require_preblock(snapshot)
+        # Unknown provenance kinds stay BLOCKED.
+        for kind in ("MYSTERY", "", None, 123):
+            with self.subTest(kind=kind):
+                snapshot = G.clean_snapshot()
+                snapshot["provenance"] = {**snapshot["provenance"], "kind": kind}
+                self.assertEqual(G.judge_allowlist(snapshot)[0], G.BLOCKED)
+                with self.assertRaises(G.GateRefused):
+                    G.require_preblock(snapshot)
+        # Normal synthetic HOST_FIXTURE row still PASSes (no execution granted).
+        snapshot = G.clean_snapshot()
+        self.assertEqual(G.judge_allowlist(snapshot)[0], G.PASS)
+        record = G.require_preblock(snapshot)
+        self.assertEqual((record["execution"], record["execution_permitted"]), ("BLOCKED", False))
+
     def test_red1_forged_real_core_without_harness_evidence_blocked(self):
         snapshot = G.clean_snapshot()
         snapshot["provenance"] = {"kind": "REAL_CORE_EXECUTION", "core_revision": G.PINNED_CORE_REVISION,
