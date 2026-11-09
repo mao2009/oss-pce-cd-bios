@@ -212,6 +212,17 @@ def judge_unified(case):
         return BLOCKED, ["IRQ_STATUS_NOT_OBSERVED"], _record(BLOCKED, ["IRQ_STATUS_NOT_OBSERVED"])
     if type(snap.get("irq_pending")) is not bool or type(snap.get("p_i")) is not bool:
         return BLOCKED, ["IRQ_PENDING_PI_MISSING"], _record(BLOCKED, ["IRQ_PENDING_PI_MISSING"])
+    # Snapshot and irq.row are separate observations (no proof of same
+    # observation time): require strict bools on both sides and consistency.
+    # Contradictory evidence cannot PASS.
+    irq_row = irq.get("row")
+    if not isinstance(irq_row, dict):
+        return BLOCKED, ["IRQ_ROW_MISSING"], _record(BLOCKED, ["IRQ_ROW_MISSING"])
+    row_pending, row_pi = irq_row.get("pending"), irq_row.get("p_i")
+    if type(row_pending) is not bool or type(row_pi) is not bool:
+        return BLOCKED, ["IRQ_ROW_PENDING_PI_MISSING"], _record(BLOCKED, ["IRQ_ROW_PENDING_PI_MISSING"])
+    if row_pending is not snap.get("irq_pending") or row_pi is not snap.get("p_i"):
+        return BLOCKED, ["IRQ_EVIDENCE_MISMATCH"], _record(BLOCKED, ["IRQ_EVIDENCE_MISMATCH"])
     if snap.get("irq_pending") is True and snap.get("p_i") is False:
         return FAIL, ["IRQ_WOULD_BE_TAKEN"], _record(FAIL, ["IRQ_WOULD_BE_TAKEN"])
     if any(v == 0xFF for v in sm[:7]) or sm[1] != 0xF8:
@@ -225,11 +236,17 @@ def judge_unified(case):
         return BLOCKED, [f"IRQ_ERROR:{e}"], _record(BLOCKED, [f"IRQ_ERROR:{e}"])
     if iv != PASS:
         return iv, [f"E2_IRQ_{iv}:{idet}"], _record(iv, [f"E2_IRQ_{iv}:{idet}"])
+    # Deny observations must be explicit bools: missing/None/non-bool proves
+    # nothing and cannot default to safe False. Only explicit False proceeds;
+    # explicit True is still refused by preflight below.
+    sv, tr = block.get("same_value"), block.get("temp_restore")
+    if type(sv) is not bool or type(tr) is not bool:
+        return BLOCKED, ["BLOCK_DENY_OBSERVATION_MISSING"], _record(BLOCKED, ["BLOCK_DENY_OBSERVATION_MISSING"])
     try:
         bp = b.preflight(block["op"], block["src"], block["dst"], block["length"], block["mpr"],
                          block["window"], block["allowed_banks"],
-                         build=_b_build(block.get("build")), same_value=block.get("same_value", False),
-                         temp_restore=block.get("temp_restore", False))
+                         build=_b_build(block.get("build")), same_value=sv,
+                         temp_restore=tr)
         ba = b.device_audit(dev)
     except Exception as e:
         return BLOCKED, [f"B_ERROR:{e}"], _record(BLOCKED, [f"B_ERROR:{e}"])
@@ -241,8 +258,8 @@ def judge_unified(case):
         return BLOCKED, ["B_AUDIT_GATE_NOT_BLOCKED"], _record(BLOCKED, ["B_AUDIT_GATE_NOT_BLOCKED"])
     if ba.get("verdict") != "DRAINED_NO_UNKNOWN":
         return BLOCKED, [f"B_AUDIT_{ba.get('verdict')}"], _record(BLOCKED, [f"B_AUDIT_{ba.get('verdict')}"])
-    recomputed = {"same_value_write": bool(block.get("same_value")),
-                  "temp_write_restore": bool(block.get("temp_restore")),
+    recomputed = {"same_value_write": sv,
+                  "temp_write_restore": tr,
                   "gg_testing": False, "libretro": False,
                   "block_move_outside_allowlist": False, "device_dma_touches_ram": False}
     if snap.get("build") == "GG_TESTING":

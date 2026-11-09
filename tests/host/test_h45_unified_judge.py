@@ -302,7 +302,71 @@ class UnifiedTest(unittest.TestCase):
         c = U.clean_case()
         c["snapshot"]["irq_pending"] = True
         c["snapshot"]["p_i"] = False
+        c["irq"]["row"]["pending"] = True
+        c["irq"]["row"]["p_i"] = False
         self.assertEqual(U.judge_unified(c)[0], U.FAIL)
+
+    def test_irq_snapshot_row_mismatch_blocked(self):
+        self._inject()
+        c = U.clean_case()
+        c["snapshot"]["irq_pending"] = True
+        c["snapshot"]["p_i"] = True
+        c["irq"]["row"]["pending"] = False
+        c["irq"]["row"]["p_i"] = True
+        v, r, _ = U.judge_unified(c)
+        self.assertEqual(v, U.BLOCKED, r)
+        self.assertIn("IRQ_EVIDENCE_MISMATCH", r)
+        c = U.clean_case()
+        c["snapshot"]["irq_pending"] = False
+        c["snapshot"]["p_i"] = True
+        c["irq"]["row"]["pending"] = False
+        c["irq"]["row"]["p_i"] = False
+        v, r, _ = U.judge_unified(c)
+        self.assertEqual(v, U.BLOCKED, r)
+        self.assertIn("IRQ_EVIDENCE_MISMATCH", r)
+
+    def test_irq_row_missing_or_unobserved_blocked(self):
+        self._inject()
+        c = U.clean_case()
+        c["irq"]["row"] = None
+        v, r, _ = U.judge_unified(c)
+        self.assertEqual(v, U.BLOCKED, r)
+        self.assertIn("IRQ_ROW_MISSING", r)
+        for key, val in (("pending", None), ("pending", 0), ("p_i", None), ("p_i", 1)):
+            c = U.clean_case()
+            c["irq"]["row"][key] = val
+            with self.subTest(k=key, v=val):
+                v, r, _ = U.judge_unified(c)
+                self.assertEqual(v, U.BLOCKED, r)
+                self.assertIn("IRQ_ROW_PENDING_PI_MISSING", r)
+
+    def test_block_deny_observation_missing_blocked(self):
+        self._inject()
+        for key in ("same_value", "temp_restore"):
+            c = U.clean_case()
+            del c["block_request"][key]
+            with self.subTest(missing=key):
+                v, r, _ = U.judge_unified(c)
+                self.assertEqual(v, U.BLOCKED, r)
+                self.assertIn("BLOCK_DENY_OBSERVATION_MISSING", r)
+        for key, val in (("same_value", None), ("same_value", 0), ("same_value", "false"),
+                         ("temp_restore", None), ("temp_restore", 0), ("temp_restore", "false")):
+            c = U.clean_case()
+            c["block_request"][key] = val
+            with self.subTest(k=key, v=val):
+                v, r, _ = U.judge_unified(c)
+                self.assertEqual(v, U.BLOCKED, r)
+                self.assertIn("BLOCK_DENY_OBSERVATION_MISSING", r)
+
+    def test_block_deny_explicit_false_passes_true_rejected(self):
+        self._inject()
+        v, r, _ = U.judge_unified(U.clean_case())
+        self.assertEqual(v, U.PASS, r)
+        for key in ("same_value", "temp_restore"):
+            c = U.clean_case()
+            c["block_request"][key] = True
+            with self.subTest(k=key):
+                self.assertNotEqual(U.judge_unified(c)[0], U.PASS)
 
     def test_prereq_true_without_evidence_still_blocked(self):
         self._inject()
