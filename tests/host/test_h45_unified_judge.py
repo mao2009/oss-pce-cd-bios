@@ -311,6 +311,46 @@ class UnifiedTest(unittest.TestCase):
         v, r, _ = U.judge_unified(c)
         self.assertEqual(v, U.BLOCKED, r)
 
+    def test_prereq_truthy_non_true_blocked(self):
+        self._inject()
+        for forged in (1, "yes", 1.0, [True], None):
+            c = U.clean_case()
+            c["prereq"] = {k: forged for k in U.PREREQ_KEYS}
+            with self.subTest(forged=forged):
+                self.assertEqual(U.judge_unified(c)[0], U.BLOCKED)
+
+    def test_prereq_not_dict_blocked(self):
+        self._inject()
+        for forged in (True, [True], "merged", None, 0):
+            c = U.clean_case()
+            c["prereq"] = forged
+            with self.subTest(forged=forged):
+                self.assertEqual(U.judge_unified(c)[0], U.BLOCKED)
+
+    def test_forged_prereq_real_core_blocked(self):
+        self._inject()
+        c = U.clean_case()
+        self.assertTrue(all(v is True for v in c["prereq"].values()))
+        c["snapshot"]["provenance"] = {"kind": "REAL_CORE_EXECUTION",
+                                       "core_revision": U.PINNED, "bios": "SYNTHETIC",
+                                       "real_core_claim": True, "run_id": "forged-run"}
+        c["snapshot"]["run_id"] = "forged-run"
+        c["snapshot"]["halt_registers"] = {"PC": 0x3E00, "A": 0, "X": 0,
+                                          "Y": 0, "P": 0, "S": 0x21FF}
+        v, r, _ = U.judge_unified(c)
+        self.assertEqual(v, U.BLOCKED, r)
+        self.assertIn("REAL_CORE_REQUIRES_HARNESS", r)
+
+    def test_pass_record_marks_prereq_unauthenticated(self):
+        self._inject()
+        v, r, rec = U.judge_unified(U.clean_case())
+        self.assertEqual(v, U.PASS, r)
+        self.assertIn("PREREQ_UNAUTHENTICATED_ASSERTION_NOT_PROOF", r)
+        self.assertIn("PREREQ_UNAUTHENTICATED_ASSERTION_NOT_PROOF", rec["reasons"])
+        self.assertIs(rec["execution_permitted"], False)
+        self.assertEqual(rec["jsr_count"], 0)
+        self.assertIs(rec["release_eligible"], False)
+
     def test_mutations_never_pass(self):
         self._inject()
         base = U.clean_case()

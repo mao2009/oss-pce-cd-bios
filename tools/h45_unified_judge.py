@@ -6,7 +6,10 @@ Combines Agent A E1-E3 (h45_preblock_gate.judge_allowlist/irq) and Agent B E4-E5
 stdlib over caller-supplied dicts; reads no BIOS/ROM/emulator, runs no core, never
 executes a genuine callee. Before #738/#739 fixes complete the unified verdict is
 structurally BLOCKED (modules missing + prereq false); even on PASS execution stays
-BLOCKED with jsr_count=0 and release_eligible=false. Single-module PASS is never
+BLOCKED with jsr_count=0 and release_eligible=false. The `prereq` dict is an
+unauthenticated caller assertion, never proof of merges, reviews, CI, or safety:
+a forged all-True prereq still BLOCKEDs on evidence, and PASS records carry
+PREREQ_UNAUTHENTICATED_ASSERTION_NOT_PROOF. Single-module PASS is never
 overall PASS. Self-declared deny_flags are never trusted: deny conditions are
 recomputed from block_request/device_rows/build and cross-checked. Missing /
 inconsistent / unimplemented evidence is BLOCKED, never PASS; proven side-effect is
@@ -65,8 +68,13 @@ def _pinned_ok(a, b):
 
 def _prereq_ok(prereq):
     # Caller assertion only: True is necessary but proves nothing by itself.
-    # Even with all True the verdict stays synthetic HOST_FIXTURE and BLOCKED
-    # for execution; REAL_CORE never passes here (no trusted harness).
+    # These flags claim merges/reviews/CI that this module cannot verify: there
+    # is no signature, no run-id, no harness binding. A forged all-True prereq
+    # must still BLOCK on evidence checks, and even a fully passing case stays
+    # synthetic HOST_FIXTURE with execution BLOCKED. REAL_CORE never passes here
+    # (no trusted harness). The PASS record always carries
+    # PREREQ_UNAUTHENTICATED_ASSERTION_NOT_PROOF so no consumer mistakes the
+    # verdict for integration or safety proof.
     if not isinstance(prereq, dict):
         return False
     return all(prereq.get(k) is True for k in PREREQ_KEYS)
@@ -251,7 +259,10 @@ def judge_unified(case):
             return BLOCKED, [f"DENY_FLAG_MISMATCH_{k}"], _record(BLOCKED, [f"DENY_FLAG_MISMATCH_{k}"])
     if bp.get("reason") in ("dst_outside_window", "dst_bank_not_allowed", "ff_mpr", "src_read_side_effect"):
         return BLOCKED, ["BLOCK_MOVE_DENIED"], _record(BLOCKED, ["BLOCK_MOVE_DENIED"])
-    return PASS, ["UNIFIED_SYNTHETIC_PASS_EXECUTION_BLOCKED"], _record(PASS, ["UNIFIED_SYNTHETIC_PASS_EXECUTION_BLOCKED"])
+    return PASS, ["UNIFIED_SYNTHETIC_PASS_EXECUTION_BLOCKED",
+                 "PREREQ_UNAUTHENTICATED_ASSERTION_NOT_PROOF"], _record(
+                     PASS, ["UNIFIED_SYNTHETIC_PASS_EXECUTION_BLOCKED",
+                            "PREREQ_UNAUTHENTICATED_ASSERTION_NOT_PROOF"])
 
 
 def _b_build(build):
