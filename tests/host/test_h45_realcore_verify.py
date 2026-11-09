@@ -662,6 +662,22 @@ class BlockpreAlwaysBlockedTest(unittest.TestCase):
         v, _, _ = self._check(c)
         self.assertEqual(v, V.FAIL)
 
+    def test_fetch_flag_missing_blocked(self):
+        for name in ("fetch_safe", "fetch_failed"):
+            with self.subTest(name=name):
+                c = self._cases()
+                mut = "tii-hwpage-fetch-blocked-unguarded"
+                del c[mut]["row"][name]
+                v, _, _ = self._check(c)
+                self.assertEqual(v, V.BLOCKED)
+
+    def test_fetch_flag_wrong_type_blocked(self):
+        c = self._cases()
+        mut = "tii-hwpage-fetch-blocked-unguarded"
+        c[mut]["row"]["fetch_safe"] = 1
+        v, _, _ = self._check(c)
+        self.assertEqual(v, V.BLOCKED)
+
 
 class StHwpageRowTest(unittest.TestCase):
     """H3/H6: ST hwpage rows are re-judged (VDC SR + stop PC), not verdict-only."""

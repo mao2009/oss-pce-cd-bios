@@ -339,6 +339,9 @@ def _blockpre_check_hwpage_row(row, base):
         return "BLOCKED", f"ARMED_READ_BUFFER_MISSING:{base}"
     if rb_before != rb_after:
         return "FAIL", f"ARMED_READ_BUFFER_CHANGED:{base}"
+    for name in ("fetch_safe", "fetch_failed"):
+        if type(row.get(name)) is not bool:
+            return "BLOCKED", f"ARMED_FETCH_FLAG_MISSING:{base}:{name}"
     for helper in (_blockpre_check_ram, _blockpre_check_mpr,
                    _blockpre_check_resume, _blockpre_check_irq):
         status, reason = helper(row, base)
