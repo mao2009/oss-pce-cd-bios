@@ -975,5 +975,297 @@ class StNoHazardLatchFetchTests(unittest.TestCase):
                     st.check_hazard_not_latched(row, "st0-hwpage-fetch-blocked-no-hazard-latch")
 
 
+class StNoHazardLatchVdcTests(unittest.TestCase):
+    """Latch-free hazard rows must carry the measured VDC signature (Issue #365 11th review).
+
+    The fixed-JMP $4000 status read clears SR ($3F -> $00); the BBR3 $4002 data-port read
+    leaves SR untouched ($3F -> $3F). The BBR3 invariance is an integrity anchor only, never
+    device-side proof of the hazard. AR/R and the VDC read buffer must hold in both shapes.
+    Each tampered pair must be rejected for its own reason.
+    """
+
+    FIXED = "st0-hwpage-fetch-blocked-no-hazard-latch"
+    BBR3 = "st0-bbr3-hwpage-taken-no-hazard-latch"
+
+    def setUp(self):
+        record = json.loads((ROOT / "tests" / "fixtures" / "365-st-boundary-v2-evidence.json")
+                            .read_text(encoding="utf-8"))
+        self.rows = {case["case"]: case["row"] for case in record["cases"]}
+
+    def test_normal_fixed_jmp_and_bbr3_latch_free_pass(self):
+        for mode in (self.FIXED, self.BBR3):
+            with self.subTest(mode=mode):
+                self.assertEqual(st.check_hazard_not_latched(copy.deepcopy(self.rows[mode]), mode),
+                                 st.HAZARD_VERDICT)
+
+    def test_fixed_jmp_requires_sr_clear(self):
+        self.assertEqual(self.rows[self.FIXED]["vdc_sr_before"], 0x3F)
+        self.assertEqual(self.rows[self.FIXED]["vdc_sr_after"], 0x00)
+        for name, overwrite in (("sr_after_invariant", {"vdc_sr_after": 0x3F}),
+                                ("sr_before_zero", {"vdc_sr_before": 0x00})):
+            with self.subTest(name=name):
+                row = copy.deepcopy(self.rows[self.FIXED])
+                row.update(overwrite)
+                with self.assertRaisesRegex(ValueError, "SR"):
+                    st.check_hazard_not_latched(row, self.FIXED)
+
+    def test_bbr3_requires_sr_invariance(self):
+        self.assertEqual(self.rows[self.BBR3]["vdc_sr_before"], 0x3F)
+        self.assertEqual(self.rows[self.BBR3]["vdc_sr_after"], 0x3F)
+        for name, overwrite in (("sr_after_clear", {"vdc_sr_after": 0x00}),
+                                ("sr_before_zero", {"vdc_sr_before": 0x00})):
+            with self.subTest(name=name):
+                row = copy.deepcopy(self.rows[self.BBR3])
+                row.update(overwrite)
+                with self.assertRaisesRegex(ValueError, "SR"):
+                    st.check_hazard_not_latched(row, self.BBR3)
+
+    def test_ar_r_and_read_buffer_tampers_rejected(self):
+        for mode in (self.FIXED, self.BBR3):
+            for name, overwrite, reason in (
+                    ("ar", {"vdc_ar_after": 0x06}, "VDC AR"),
+                    ("r", {"vdc_r_after": 0x01}, "VDC R"),
+                    ("read_buffer_before", {"vdc_read_buffer_before": 0x0000}, "read buffer"),
+                    ("read_buffer_after", {"vdc_read_buffer_after": 0x0000}, "read buffer")):
+                with self.subTest(mode=mode, name=name):
+                    row = copy.deepcopy(self.rows[mode])
+                    row.update(overwrite)
+                    with self.assertRaisesRegex(ValueError, reason):
+                        st.check_hazard_not_latched(row, mode)
+
+
+class StNoHazardLatchContradictionTests(unittest.TestCase):
+    """Latch-free hazard evidence must not mix contradictory verdicts (Issue #365 11th review).
+
+    The probe's hazard contract is: status 'refused', refused/fetch_blocked/fetch_open_stepped/
+    fetch_safe/fetch_failed all false, fetch_via 'read', hazard_landed true and flat resume
+    state. Any other combination is rejected for its own reason, and the three-field composite
+    tamper (status ok + fetch_safe + fetch_blocked) must never pass.
+    """
+
+    FIXED = "st0-hwpage-fetch-blocked-no-hazard-latch"
+    BBR3 = "st0-bbr3-hwpage-taken-no-hazard-latch"
+
+    def setUp(self):
+        record = json.loads((ROOT / "tests" / "fixtures" / "365-st-boundary-v2-evidence.json")
+                            .read_text(encoding="utf-8"))
+        self.rows = {case["case"]: case["row"] for case in record["cases"]}
+
+    def test_recorded_variants_pass(self):
+        for mode in (self.FIXED, self.BBR3):
+            with self.subTest(mode=mode):
+                self.assertEqual(st.check_hazard_not_latched(copy.deepcopy(self.rows[mode]), mode),
+                                 st.HAZARD_VERDICT)
+
+    def test_single_field_contradictions_rejected(self):
+        cases = [
+            ("status", {"status": "ok"}, "status"),
+            ("refused", {"refused": True}, "refused"),
+            ("fetch_blocked", {"fetch_blocked": True}, "fetch_blocked"),
+            ("fetch_open_stepped", {"fetch_open_stepped": True}, "fetch_open_stepped"),
+            ("fetch_safe", {"fetch_safe": True}, "fetch_safe"),
+            ("fetch_failed", {"fetch_failed": True}, "fetch_failed"),
+            ("fetch_via", {"fetch_via": "peek"}, "hazard was not observed"),
+            ("hazard_landed", {"hazard_landed": False}, "hazard was not observed"),
+            ("ram_unchanged", {"ram_unchanged_during_resume": False}, "WRAM changed"),
+            ("resume_attempts", {"resume_attempts": 2}, "resume not fully refused"),
+            ("resume_refused", {"resume_refused": 2}, "resume not fully refused"),
+            ("mmio_read_attempts", {"mmio_read_attempts": 1}, "mmio_read_attempts"),
+            ("executed_at_refusal", {"executed_at_refusal": 99}, "resume attempts"),
+            ("executed_after_resume", {"executed_after_resume": 99}, "resume attempts"),
+            ("fetch_page", {"fetch_page": 1}, "fetch page/bank"),
+            ("fetch_mpr", {"fetch_mpr": 0xF8}, "fetch page/bank"),
+            ("fetch_unsafe_bank", {"fetch_unsafe_bank": False}, "unsafe bank"),
+            ("stop_outside", {"stop_pc": 0x3FFF}, "outside"),
+        ]
+        for mode in (self.FIXED, self.BBR3):
+            for name, overwrite, reason in cases:
+                with self.subTest(mode=mode, name=name):
+                    row = copy.deepcopy(self.rows[mode])
+                    row.update(overwrite)
+                    with self.assertRaisesRegex(ValueError, reason):
+                        st.check_hazard_not_latched(row, mode)
+
+    def test_detected_pc_tamper_rejected(self):
+        for mode in (self.FIXED, self.BBR3):
+            with self.subTest(mode=mode):
+                row = copy.deepcopy(self.rows[mode])
+                row["detected_pc"] = (row["stop_pc"] + 1) & 0xFFFF
+                with self.assertRaisesRegex(ValueError, "detected_pc"):
+                    st.check_hazard_not_latched(row, mode)
+
+    def test_executed_count_tamper_rejected(self):
+        for mode in (self.FIXED, self.BBR3):
+            with self.subTest(mode=mode):
+                row = copy.deepcopy(self.rows[mode])
+                row["instructions_executed"] += 1
+                with self.assertRaisesRegex(ValueError, "executed"):
+                    st.check_hazard_not_latched(row, mode)
+
+    def test_stop_not_held_rejected(self):
+        for mode in (self.FIXED, self.BBR3):
+            with self.subTest(mode=mode):
+                row = copy.deepcopy(self.rows[mode])
+                row["after"]["pc"] = (row["stop_pc"] + 1) & 0xFFFF
+                with self.assertRaisesRegex(ValueError, "not held"):
+                    st.check_hazard_not_latched(row, mode)
+
+    def test_composite_status_fetch_tamper_rejected(self):
+        for mode in (self.FIXED, self.BBR3):
+            with self.subTest(mode=mode):
+                row = copy.deepcopy(self.rows[mode])
+                row["status"] = "ok"
+                row["fetch_safe"] = True
+                row["fetch_blocked"] = True
+                with self.assertRaisesRegex(
+                        ValueError,
+                        "status|refused|fetch_blocked|fetch_open_stepped|fetch_safe|fetch_failed"):
+                    st.check_hazard_not_latched(row, mode)
+
+
+class StIrqMutationObservationTests(unittest.TestCase):
+    """IRQ OBSERVED requires verified vector/SP/frame/net-diff evidence, not just acceptance.
+
+    The same evidence contract applies to armed surveys and to survey mutations that executed
+    the handler ST. Unverified or contradictory mutation evidence can never be OBSERVED.
+    """
+
+    SURVEYS = ("irq2-handler-st0-survey", "irq2-core-stop-survey")
+    MUTATIONS = ("irq2-handler-st0-survey-knownpc-only", "irq2-core-stop-survey-knownpc-only")
+
+    def setUp(self):
+        record = json.loads((ROOT / "tests" / "fixtures" / "365-st-boundary-v2-evidence.json")
+                            .read_text(encoding="utf-8"))
+        self.rows = {case["case"]: case["row"] for case in record["cases"]}
+
+    def test_normal_surveys_observed(self):
+        for mode in self.SURVEYS:
+            with self.subTest(mode=mode):
+                observation = st.to_jsr_observation(copy.deepcopy(self.rows[mode]))
+                self.assertEqual(observation["irq"]["status"], "OBSERVED")
+
+    def test_verified_survey_mutations_observed(self):
+        for mode in self.MUTATIONS:
+            with self.subTest(mode=mode):
+                observation = st.to_jsr_observation(copy.deepcopy(self.rows[mode]))
+                self.assertEqual(observation["irq"]["status"], "OBSERVED")
+
+    def test_unverified_mutation_evidence_not_observed(self):
+        cases = [
+            ("vector_read", lambda r: r.__setitem__("vector_read", False)),
+            ("observed_vector", lambda r: r.__setitem__("observed_vector", 0)),
+            ("sp_before", lambda r: r["before"].__setitem__("sp", 0xFE)),
+            ("sp_after", lambda r: r["after"].__setitem__("sp", 0xFD)),
+            ("frame", lambda r: r.__setitem__("stack_frame_layout", [0x3D, 0x01, 0x00])),
+            ("stack_cpu", lambda r: r.__setitem__("stack_cpu", [0x21FD, 0x21FE, 0x21FF])),
+            ("ram_diff_missing", lambda r: r.pop("ram_diff")),
+            ("ram_diff_empty", lambda r: (r.__setitem__("ram_diff", []),
+                                          r.__setitem__("ram_diff_count", 0))),
+            ("ram_diff_foreign", lambda r: r["ram_diff"].append(
+                {"address": 0x2200, "before": 0, "after": 1})),
+        ]
+        for mode in self.MUTATIONS:
+            for name, mutate in cases:
+                with self.subTest(mode=mode, name=name):
+                    row = copy.deepcopy(self.rows[mode])
+                    mutate(row)
+                    observation = st.to_jsr_observation(row)
+                    self.assertIsNotNone(observation)
+                    self.assertEqual(observation["irq"]["status"], "UNKNOWN")
+
+    def test_unaccepted_irq_is_unknown(self):
+        for mode in self.MUTATIONS:
+            with self.subTest(mode=mode):
+                row = copy.deepcopy(self.rows[mode])
+                row["irq_accepted"] = False
+                self.assertEqual(st.to_jsr_observation(row)["irq"]["status"], "UNKNOWN")
+
+    def test_plain_st_and_hazard_views(self):
+        self.assertEqual(st.to_jsr_observation(
+            copy.deepcopy(self.rows["st1-entry"]))["irq"]["status"], "UNKNOWN")
+        self.assertIsNone(st.to_jsr_observation(
+            copy.deepcopy(self.rows["st0-hwpage-fetch-blocked-no-hazard-latch"])))
+
+
+class StCrossCuttingContradictionTests(unittest.TestCase):
+    """Contradictory hazard/refusal flags must be rejected by every classifier family."""
+
+    def setUp(self):
+        record = json.loads((ROOT / "tests" / "fixtures" / "365-st-boundary-v2-evidence.json")
+                            .read_text(encoding="utf-8"))
+        self.rows = {case["case"]: case["row"] for case in record["cases"]}
+
+    def test_unguarded_hazard_flags_rejected(self):
+        for flag in ("hazard_landed", "fetch_open_stepped"):
+            with self.subTest(flag=flag):
+                row = copy.deepcopy(self.rows["st1-unknown-unguarded"])
+                row[flag] = True
+                with self.assertRaisesRegex(ValueError, flag):
+                    st.check_unguarded(row, "st1-unknown-unguarded")
+
+    def test_bypassed_mutation_hazard_flags_rejected(self):
+        for flag in ("hazard_landed", "fetch_open_stepped"):
+            with self.subTest(flag=flag):
+                row = copy.deepcopy(self.rows["st0-entry-no-entry-check"])
+                row[flag] = True
+                with self.assertRaisesRegex(ValueError, flag):
+                    st.check_bypassed_mutation(row, "st0-entry-no-entry-check")
+
+    def test_bypassed_mutation_st_mode_mismatch_rejected(self):
+        row = copy.deepcopy(self.rows["st0-entry-no-entry-check"])
+        row["st_mode"] = "st1"
+        with self.assertRaisesRegex(ValueError, "st_mode"):
+            st.check_bypassed_mutation(row, "st0-entry-no-entry-check")
+
+    def test_unsafe_read_contradictions_rejected(self):
+        mode = "st0-hwpage-fetch-blocked-unsafe-read"
+        for name, overwrite, reason in (
+                ("status", {"status": "ok"}, "status"),
+                ("refused", {"refused": True}, "refused"),
+                ("fetch_blocked", {"fetch_blocked": True}, "fetch_blocked"),
+                ("fetch_open_stepped", {"fetch_open_stepped": True}, "fetch_open_stepped"),
+                ("fetch_failed", {"fetch_failed": True}, "fetch_failed")):
+            with self.subTest(name=name):
+                row = copy.deepcopy(self.rows[mode])
+                row.update(overwrite)
+                with self.assertRaisesRegex(ValueError, reason):
+                    st.check_unsafe_read_hazard(row, mode)
+
+    def test_unsafe_read_bbr3_sr_tamper_rejected(self):
+        mode = "st0-bbr3-hwpage-taken-unsafe-read"
+        for name, overwrite in (("sr_after_clear", {"vdc_sr_after": 0x00}),
+                                ("sr_before_zero", {"vdc_sr_before": 0x00})):
+            with self.subTest(name=name):
+                row = copy.deepcopy(self.rows[mode])
+                row.update(overwrite)
+                with self.assertRaisesRegex(ValueError, "SR"):
+                    st.check_unsafe_read_hazard(row, mode)
+
+    def test_peek_fail_contradictions_rejected(self):
+        mode = "st0-hwpage-fetch-blocked-peek-fail-step"
+        for name, overwrite, reason in (
+                ("hazard", {"hazard_landed": True}, "hazard_landed"),
+                ("refused", {"refused": True}, "refused"),
+                ("fetch_blocked", {"fetch_blocked": True}, "fetch_blocked"),
+                ("fetch_safe", {"fetch_safe": True}, "fetch_safe")):
+            with self.subTest(name=name):
+                row = copy.deepcopy(self.rows[mode])
+                row.update(overwrite)
+                with self.assertRaisesRegex(ValueError, reason):
+                    st.check_peek_fail_step(row, mode)
+
+    def test_refused_read_buffer_tamper_rejected(self):
+        row = copy.deepcopy(self.rows["st1-unknown"])
+        row["vdc_read_buffer_after"] = 0x0000
+        with self.assertRaisesRegex(ValueError, "read buffer"):
+            st.check_refused(row, "st1-unknown")
+
+    def test_unknown_mode_rejected(self):
+        row = copy.deepcopy(self.rows["st1-unknown"])
+        row["mode"] = "st1-not-a-mode"
+        with self.assertRaisesRegex(ValueError, "unknown mode"):
+            st.check_refused(row, "st1-not-a-mode")
+
+
 if __name__ == "__main__":
     unittest.main()

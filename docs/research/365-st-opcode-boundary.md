@@ -108,6 +108,11 @@ IRQ2 が命令境界で受け入れられると、handler 先頭（`$3F80`）の
 `$3F80`）を TryPeek で実際に読取検証し、stack frame の復帰 PC `$3E01`（`[0x3E, 0x01]`）も
 検証する。`irq2-core-stop-survey` のみ core debugger の `stop_on_irq` も発火する。
 
+JSR view の `OBSERVED` は、この vector・SP・stack frame・net diff・`irr`/`idr` の全 evidence が
+検証を通った場合に限る。`-knownpc-only` など handler ST を実行した変異では、さらに
+`handler_steps >= 1` かつ `stop_pc >= $3F80`（handler 到達）を要求する。検証に失敗した行は
+`UNKNOWN` のままで、field の存在だけでは `OBSERVED` にしない。
+
 WRAM 差分は**最終状態との net diff**（書込みイベントの監視ではない）。書戻した一時書込みや
 同値書込みは detect されず、列挙は最大 256 件で打ち切られる（257 件目以上の差分がある場合
 のみ `ram_diff_truncated=true` で明示。255/256 件ちょうどは false）。`only_stack_net_diffs` は
@@ -127,6 +132,10 @@ unsafe Read による hazard が着地した時点で停止は latch され、re
 `mmio_read_attempts`（unsafe bank への Read 判定回数）は正確に 1、latch 除去変異
 （`-no-hazard-latch`、unsafe fetch 経路 + ラッチなし）では 4（初回 + resume 3 回の
 反復）。armed 行は全て 0。SR 不変だけで hazard 反復の停止を推定していない。
+
+VDC SR は分類器が shape ごとに検証する: `$4000`（status）は `0x3F→0x00` の clear、`$4002`
+（BBR3 data port）は `0x3F→0x3F` の不変を要求する。後者は device-side hazard の証明ではなく
+整合性アンカーであり、hazard の証明は hazard flag・実行数・page 内停止・反復 Read 数が担う。
 
 VDC read buffer も armed 実行で verified する（リセット値 `0xFFFF` の landmark。変化 /
 改ざんされた before/after / 欠落 / 型不一致は全て拒否）。
