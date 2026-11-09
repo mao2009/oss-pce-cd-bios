@@ -75,7 +75,10 @@ CALLER_METHODS = ("JSR", "JMP", "DIRECT", "NONE")
 CALLER_VERDICTS = ("API_ENTRY_CONFIRMED", "PRE_API_BLOCKER_OBSERVED", "UNKNOWN", "INCOMPLETE",
                    "BUDGET", "NOT_RUN", "BLOCKED", "FAIL")
 PINNED_CORE_REVISION = "b49ae82a012eade566d72e9d61c9d95a5caa4da3"
-REASON_RE = re.compile(r"[A-Z0-9_]{1,60}")   # reason is a code, never free text
+REASON_CODES = frozenset({  # reason is an allowlisted code, never free text
+    "GATE_REFUSES_SLOT_02", "NONE_RUN", "CALLER_SIDE_ENTRY_ONLY", "STAT_ONLY", "HOST_ARITHMETIC_ONLY",
+    "SYNTHETIC_ONLY", "NO_LOCAL_MEDIA", "FORMAT_UNSUPPORTED", "OWNER_OPT_IN_REQUIRED", "X",
+})
 TOOL_RE = re.compile(r"[a-z0-9_]{0,40}")
 O2_KEYS = frozenset({"index01_nonzero", "index00_differs_from_zero", "data_tracks_after_first"})
 O5_KEYS = frozenset({"verdict", "first_table_slot", "method", "in_table", "return_matches_caller"})
@@ -124,8 +127,11 @@ def _check_value(name, status, value, req):
         req(isinstance(value, dict) and set(value) == O2_KEYS and all(type(x) is bool for x in value.values()),
             "O2 value: three booleans only")
     elif name == "O3_candidate_classes":
-        req(isinstance(value, list) and all(isinstance(g, list) and g and all(n in C.CANDIDATE_NAMES for n in g)
-                                            for g in value), "O3 value: lists of candidate names only")
+        req(isinstance(value, list) and value and all(isinstance(g, list) and g and all(
+            type(n) is str and n in C.CANDIDATE_NAMES for n in g) for g in value),
+            "O3 value: non-empty list of non-empty candidate-name lists")
+        flat = [n for g in value for n in g]
+        req(len(flat) == len(set(flat)), "O3 groups must be disjoint")
     elif name == "O4_instrument_validity":
         req(type(value) is bool, "O4 value is a boolean")
     elif name == "O5_caller_first_api":
@@ -166,8 +172,7 @@ def validate_record(rec):
     cls = rec["evidence_class"]
     req(cls in EVIDENCE_CLASSES, "evidence_class")
     req(rec["status"] in STATUSES, "status")
-    req(isinstance(rec["reason"], str) and REASON_RE.fullmatch(rec["reason"]) and _no_overclaim(rec["reason"]),
-        "reason must be an upper-case code without over-claim words")
+    req(isinstance(rec["reason"], str) and rec["reason"] in REASON_CODES, "reason must be an allowlisted code")
     req(isinstance(rec["tool"], str) and TOOL_RE.fullmatch(rec["tool"]) and _no_overclaim(rec["tool"]), "tool")
     req(type(rec["jsr_count"]) is int and rec["jsr_count"] == 0,
         "jsr_count must be 0: no genuine JSR is recordable while the gate refuses slot $02")

@@ -187,6 +187,35 @@ class RecordValidationTests(unittest.TestCase):
             with self.assertRaises(ValueError, msg=key):
                 O.validate_record(rec)
 
+    def test_bool_and_newline_edge_cases(self):
+        rec = caller_record()
+        rec["jsr_count"] = False
+        with self.assertRaises(ValueError):
+            O.validate_record(rec)
+        with self.assertRaises(ValueError):
+            caller_record(first_table_slot=True)
+        for field, bad in (("tool", "geargrafx_api_entry\n"), ("core_revision", PINNED + "\n"),
+                           ("reason", "X\n"), ("slot", "$02\n")):
+            rec = caller_record()
+            rec[field] = bad
+            with self.assertRaises(ValueError, msg=field):
+                O.validate_record(rec)
+
+    def test_o3_partition_shape(self):
+        for bad in ([], [[]], [["ABS_LBA"], ["ABS_LBA"]], [["NOPE"]], "ABS_LBA", [[1]]):
+            with self.assertRaises(ValueError, msg=bad):
+                O.new_record("HOST_ARITHMETIC", "MEASURED", "X",
+                             {"O3_candidate_classes": {"status": "MEASURED", "value": bad}})
+
+    def test_reason_must_be_allowlisted_code(self):
+        for bad in ("BIOS_COMPAT", "SYSTEM_CARD_COMPLIANT_PASS", "gate_refuses_slot_02"):
+            with self.assertRaises(ValueError, msg=bad):
+                O.new_record("HOST_ARITHMETIC", "NOT_RUN", bad)
+
+    def test_caller_entry_may_carry_pinned_revision(self):
+        rec = O.new_record("COMMERCIAL_CALLER_ENTRY", "NOT_RUN", "NONE_RUN", core_revision=PINNED)
+        self.assertEqual(rec["core_revision"], PINNED)
+
     def test_free_text_fields_rejected(self):
         for field, bad in (("reason", "C:\\Users\\x\\rom\\g.bin 0123456789abcdef"), ("reason", "lower case"),
                            ("reason", "X" * 61), ("tool", "/home/u/rom/g.bin"), ("tool", "Tool Name"),

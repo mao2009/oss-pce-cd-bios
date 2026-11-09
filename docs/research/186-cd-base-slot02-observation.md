@@ -51,7 +51,7 @@ O5 は「ゲームが slot `$02` を最初に呼んだか」を示しうるが�
   固定（例: 呼出側記録に O8 は載らない）。
 - `status`: `NOT_RUN / SKIP / BLOCKED / UNKNOWN / SOURCE_CONFIRMED / MEASURED`。記録全体の `MEASURED` は
   いずれかの項目が MEASURED のときに限る。値を持てるのは MEASURED / SOURCE_CONFIRMED のみ。
-- `reason` は大文字コード（`[A-Z0-9_]{1,60}`、自由文不可）、`tool` は `[a-z0-9_]{0,40}`、`core_revision` は
+- `reason` は許可リスト（`REASON_CODES`）のコードのみ（自由文不可）、`tool` は `[a-z0-9_]{0,40}`、`core_revision` は
   null か pinned の完全な 40 桁（SYNTHETIC_REAL_CORE は必須）。
 - 項目値は観測ごとに厳密な型: O1 ブール、O2 ブール 3 つ、O3 候補名のリストのリスト、O4 ブール、O6 ブール、
   O5 `{verdict(#635 の 8 値), first_table_slot(0..80|null), method(JSR/JMP/DIRECT/NONE), in_table,
