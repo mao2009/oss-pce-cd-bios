@@ -23,7 +23,7 @@ VECTORS = {"IRQ2": 0xFFF6, "IRQ1": 0xFFF8, "TIQ": 0xFFFA}
 FORBIDDEN_MMIO = frozenset({0x1802, 0x1804, 0x1402, 0x1403})
 ALLOWED_MPR1 = frozenset({0xF8})
 CPU_STACK_PAGE = (0x2100, 0x21FF)
-IRQ_STACK_WINDOW = (0x2000, 0x4000)
+IRQ_STACK_WINDOW = (0x2100, 0x2200)
 APPROVED_PC_LOW = 0x1E00
 APPROVED_PC_HIGH = 0x4000
 BUDGET_MIN = 4
@@ -124,7 +124,7 @@ def judge_irq_first_instruction(row, vector, expected_handler, build="debugger")
         return BLOCKED, f"unknown vector {vector!r}"
     if not isinstance(row, dict):
         return BLOCKED, "no valid observation: row is not a dict"
-    if row.get("exit", 0) != 0 or row.get("status") != "ok" or row.get("mode") != "irq-entry":
+    if _int(row, "exit") != 0 or row.get("status") != "ok" or row.get("mode") != "irq-entry":
         return BLOCKED, f"no valid observation (exit={row.get('exit')}, status={row.get('status')})"
     if row.get("vector") != vector:
         return BLOCKED, f"observation is for {row.get('vector')!r}, expected {vector!r}"
@@ -134,6 +134,8 @@ def judge_irq_first_instruction(row, vector, expected_handler, build="debugger")
     vec_lo, vec_hi = _int(row, "vector_lo"), _int(row, "vector_hi")
     if None in (stop_pc, executed, vec_lo, vec_hi):
         return BLOCKED, "stop_pc / handler_instructions / vector bytes not observed"
+    if not _is_byte(vec_lo) or not _is_byte(vec_hi):
+        return BLOCKED, "vector bytes not bytes 0..255: invalid evidence, not PASS"
     if row.get("execbp_hit") is not True:
         return FAIL, "execute breakpoint at the handler was not raised"
     resolved = (vec_hi << 8) | vec_lo
@@ -155,18 +157,19 @@ def judge_irq_first_instruction(row, vector, expected_handler, build="debugger")
         return FAIL, f"{vector}: {len(writes)} stack writes, expected 3"
     for address in writes:
         if not IRQ_STACK_WINDOW[0] <= address < IRQ_STACK_WINDOW[1]:
-            return FAIL, f"{vector}: stack write {address:#06x} outside page 1"
+            return FAIL, f"{vector}: stack write {address:#06x} outside $2100-$21FF"
     pending = row.get("pending", None)
     p_i = row.get("p_i", None)
     if type(pending) is not bool or type(p_i) is not bool:
         return BLOCKED, "IRQ pending/I not observed: missing evidence, not PASS"
     if pending is True and p_i is False:
         return FAIL, f"{vector}: IRQ pending with I=0 would be taken, not first-insn stopped"
-    if "halt_equal" in row:
-        if row["halt_equal"] is False:
-            return FAIL, f"{vector}: halt state not equal after stop"
-        if row["halt_equal"] is not True:
-            return BLOCKED, f"{vector}: halt equality not observed: missing evidence, not PASS"
+    if "halt_equal" not in row:
+        return BLOCKED, f"{vector}: halt equality not observed: missing evidence, not PASS"
+    if row["halt_equal"] is False:
+        return FAIL, f"{vector}: halt state not equal after stop"
+    if row["halt_equal"] is not True:
+        return BLOCKED, f"{vector}: halt equality not observed: missing evidence, not PASS"
     return PASS, f"{vector} stopped at handler {expected_handler:#06x} with 0 instructions"
 
 
@@ -257,6 +260,8 @@ def judge_allowlist(snapshot):
         return verdict, detail
     if snapshot.get("first_opcode") in ST_OPCODES:
         return BLOCKED, f"{ST_LABELS[snapshot['first_opcode']]} denied before side effect"
+    if type(snapshot.get("first_opcode")) is int and snapshot.get("first_opcode") == 0x20:
+        return BLOCKED, "JSR $20 denied before side effect: genuine callee entry, not PASS"
     seq = snapshot.get("instruction_sequence")
     if type(seq) is not list:
         return BLOCKED, "instruction sequence missing: missing evidence, not PASS"

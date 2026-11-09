@@ -87,6 +87,50 @@ class IrqFirstInstructionTest(unittest.TestCase):
                 row.pop(key)
                 self.assertEqual(G.judge_irq_first_instruction(row, "IRQ2", 0x3F80)[0], G.BLOCKED)
 
+    def test_stack_window_limited_to_cpu_page(self):
+        for writes in (
+            [0x2200, 0x2201, 0x2202],
+            [0x20FF, 0x21FE, 0x21FD],
+            [0x21FF, 0x21FE, 0x2200],
+        ):
+            with self.subTest(writes=[hex(a) for a in writes]):
+                row = G.clean_irq_row()
+                row["stack_writes"] = writes
+                self.assertNotEqual(
+                    G.judge_irq_first_instruction(row, "IRQ2", 0x3F80)[0], G.PASS)
+        for writes, expected in (
+            ([0x2100, 0x21FF, 0x21FE], G.PASS),
+            ([0x20FF, 0x21FE, 0x21FD], G.FAIL),
+            ([0x21FF, 0x21FE, 0x2200], G.FAIL),
+        ):
+            with self.subTest(boundary=[hex(a) for a in writes]):
+                row = G.clean_irq_row()
+                row["stack_writes"] = writes
+                self.assertEqual(
+                    G.judge_irq_first_instruction(row, "IRQ2", 0x3F80)[0], expected)
+
+    def test_missing_exit_and_halt_equal_are_blocked(self):
+        for field in ("exit", "halt_equal"):
+            with self.subTest(missing=field):
+                row = G.clean_irq_row()
+                del row[field]
+                self.assertEqual(
+                    G.judge_irq_first_instruction(row, "IRQ2", 0x3F80)[0], G.BLOCKED)
+
+    def test_vector_byte_range_is_blocked(self):
+        for field, value in (
+            ("vector_lo", -1),
+            ("vector_lo", 256),
+            ("vector_hi", -1),
+            ("vector_hi", 256),
+            ("vector_lo", True),
+        ):
+            with self.subTest(field=field, value=value):
+                row = G.clean_irq_row()
+                row[field] = value
+                self.assertEqual(
+                    G.judge_irq_first_instruction(row, "IRQ2", 0x3F80)[0], G.BLOCKED)
+
     def test_mutations_never_pass(self):
         base = G.clean_irq_row()
         mutations = [
@@ -251,6 +295,18 @@ class AllowlistTest(unittest.TestCase):
         snapshot["executed"] = 2
         snapshot["instruction_sequence"] = [0xEA, 0x20]
         self.assertEqual(G.judge_allowlist(snapshot)[0], G.FAIL)
+
+    def test_jsr_current_opcode_blocked(self):
+        snapshot = G.clean_snapshot()
+        snapshot["first_opcode"] = 0x20
+        snapshot["executed"] = 0
+        snapshot["instruction_sequence"] = []
+        self.assertNotEqual(G.judge_allowlist(snapshot)[0], G.PASS)
+        snapshot = G.clean_snapshot()
+        snapshot["first_opcode"] = 0x20
+        snapshot["executed"] = 1
+        snapshot["instruction_sequence"] = [0x20]
+        self.assertNotEqual(G.judge_allowlist(snapshot)[0], G.PASS)
 
     def test_mutation_suite_no_false_pass(self):
         base = G.clean_snapshot()
