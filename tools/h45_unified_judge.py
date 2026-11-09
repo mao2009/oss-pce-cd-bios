@@ -102,6 +102,13 @@ def _authenticity_ok(snap):
         return False, "REAL_CORE_REQUIRES_HARNESS"
     if kind != "HOST_FIXTURE":
         return False, "PROVENANCE_UNKNOWN"
+    # HOST_FIXTURE must be synthetic-only and claim no real-core evidence.
+    # Both checks are strict: missing yields None (blocked by != / is-not),
+    # and non-bool claim values (0/1/None/"false") are blocked by identity.
+    if prov.get("bios") != "SYNTHETIC":
+        return False, "HOST_BIOS_UNTRUSTED"
+    if prov.get("real_core_claim") is not False:
+        return False, "HOST_WITH_REAL_CORE_CLAIM"
     # HOST_FIXTURE must not carry harness artefacts.
     if snap.get("run_id") is not None or prov.get("run_id") is not None:
         return False, "HOST_WITH_RUN_ID"

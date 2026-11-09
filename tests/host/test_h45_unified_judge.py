@@ -314,6 +314,31 @@ class UnifiedTest(unittest.TestCase):
         c["snapshot"]["run_id"] = "host-carries-harness-id"
         self.assertEqual(U.judge_unified(c)[0], U.BLOCKED)
 
+    def test_host_bios_must_be_synthetic(self):
+        self._inject()
+        c = U.clean_case()
+        del c["snapshot"]["provenance"]["bios"]
+        v, r, _ = U.judge_unified(c)
+        self.assertEqual(v, U.BLOCKED, r)
+        for bios in ("REAL", "real", "", None, 123, True, ["SYNTHETIC"]):
+            with self.subTest(bios=bios):
+                self._inject()
+                c = U.clean_case()
+                c["snapshot"]["provenance"]["bios"] = bios
+                v, r, _ = U.judge_unified(c)
+                self.assertEqual(v, U.BLOCKED, r)
+                self.assertNotEqual(v, U.PASS)
+
+    def test_host_real_core_claim_must_be_false(self):
+        for claim in (True, None, 0, 1, "false", []):
+            with self.subTest(claim=claim):
+                self._inject()
+                c = U.clean_case()
+                c["snapshot"]["provenance"]["real_core_claim"] = claim
+                v, r, _ = U.judge_unified(c)
+                self.assertEqual(v, U.BLOCKED, r)
+                self.assertNotEqual(v, U.PASS)
+
     def test_host_to_real_core_mutation_blocked(self):
         self._inject()
         c = U.clean_case()
