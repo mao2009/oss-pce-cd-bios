@@ -26,6 +26,8 @@ EXIT_BLOCKED = 3
 DENY_KEYS = ("same_value_write", "temp_write_restore", "gg_testing", "libretro",
              "block_move_outside_allowlist", "device_dma_touches_ram")
 PREREQ_KEYS = ("merged_738", "merged_739", "independent_review_complete", "ci_confirmed")
+TRUSTED_APPROVED_RANGE = [0x1E00, 0x4000]
+DANGEROUS_OPCODES = frozenset({0x03, 0x13, 0x23, 0x20})
 
 
 class GateRefused(ValueError):
@@ -62,9 +64,63 @@ def _pinned_ok(a, b):
 
 
 def _prereq_ok(prereq):
+    # Caller assertion only: True is necessary but proves nothing by itself.
+    # Even with all True the verdict stays synthetic HOST_FIXTURE and BLOCKED
+    # for execution; REAL_CORE never passes here (no trusted harness).
     if not isinstance(prereq, dict):
         return False
     return all(prereq.get(k) is True for k in PREREQ_KEYS)
+
+
+def _authenticity_ok(snap):
+    """Unified-level evidence-authenticity gate, independent of A/B modules.
+
+    Blocks forged REAL_CORE claims (run-id/halt presence proves nothing without a
+    trusted harness), HOST rows carrying harness artefacts, widened allowlist
+    ranges, and instruction sequences hiding 2nd+ dangerous opcodes. Returns
+    (ok, reason); ok False means BLOCKED/FAIL at unified level even if a
+    submodule would PASS on its own inputs.
+    """
+    if not isinstance(snap, dict):
+        return False, "SNAPSHOT_NOT_DICT"
+    prov = snap.get("provenance")
+    if not isinstance(prov, dict):
+        return False, "PROVENANCE_MISSING"
+    kind = prov.get("kind")
+    if kind == "REAL_CORE_EXECUTION":
+        # No trusted harness exists in this repo: any REAL_CORE claim is
+        # unproven, including fully forged run-id/halt pairs. BLOCKED.
+        return False, "REAL_CORE_REQUIRES_HARNESS"
+    if kind != "HOST_FIXTURE":
+        return False, "PROVENANCE_UNKNOWN"
+    # HOST_FIXTURE must not carry harness artefacts.
+    if snap.get("run_id") is not None or prov.get("run_id") is not None:
+        return False, "HOST_WITH_RUN_ID"
+    if prov.get("core_revision") is not None:
+        return False, "HOST_WITH_CORE_REVISION"
+    if snap.get("halt_registers") is not None:
+        return False, "HOST_WITH_HALT_REGISTERS"
+    # Approved range is pinned; snapshot-supplied widening is rejected.
+    if snap.get("approved_range") != TRUSTED_APPROVED_RANGE:
+        return False, "APPROVED_RANGE_UNTRUSTED"
+    # Instruction sequence must exist, match executed count/first opcode,
+    # and contain no dangerous opcode (incl. 2nd+ ST/JSR).
+    seq = snap.get("instruction_sequence")
+    executed = snap.get("executed")
+    if type(seq) is not list:
+        return False, "SEQUENCE_MISSING"
+    if type(executed) is not int or executed < 0:
+        return False, "EXECUTED_NOT_INT"
+    if len(seq) != executed:
+        return False, "SEQUENCE_COUNT_MISMATCH"
+    if any(type(o) is not int or not 0 <= o <= 0xFF for o in seq):
+        return False, "SEQUENCE_NON_BYTE"
+    if seq and seq[0] != snap.get("first_opcode"):
+        return False, "SEQUENCE_FIRST_MISMATCH"
+    for opcode in seq:
+        if opcode in DANGEROUS_OPCODES:
+            return False, "SEQUENCE_DANGEROUS_OPCODE"
+    return True, "AUTH_OK"
 
 
 def _mpr_ok(mpr):
@@ -85,7 +141,8 @@ def clean_case():
     mpr = [0x00, 0xF8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
     snap = {
         "provenance": {"kind": "HOST_FIXTURE", "core_revision": None, "bios": "SYNTHETIC",
-                       "real_core_claim": False},
+                       "real_core_claim": False, "run_id": None},
+        "run_id": None, "halt_registers": None, "instruction_sequence": [],
         "jsr_count": 0, "execution": "BLOCKED", "release_eligible": False, "build": "debugger",
         "first_opcode": 0xEA, "first_opcode_screened": True, "peek_ok": True,
         "executed_before_refusal": 0, "vdc_changed": False, "halt_equal": True,
@@ -138,6 +195,17 @@ def judge_unified(case):
         return BLOCKED, ["MALFORMED_MPR"], _record(BLOCKED, ["MALFORMED_MPR"])
     if list(sm) != list(bm):
         return BLOCKED, ["MPR_INCONSISTENT"], _record(BLOCKED, ["MPR_INCONSISTENT"])
+    ok, reason = _authenticity_ok(snap)
+    if not ok:
+        v = FAIL if reason == "SEQUENCE_DANGEROUS_OPCODE" else BLOCKED
+        return v, [reason], _record(v, [reason])
+    irq_status = snap.get("irq_status")
+    if irq_status != "OBSERVED":
+        return BLOCKED, ["IRQ_STATUS_NOT_OBSERVED"], _record(BLOCKED, ["IRQ_STATUS_NOT_OBSERVED"])
+    if type(snap.get("irq_pending")) is not bool or type(snap.get("p_i")) is not bool:
+        return BLOCKED, ["IRQ_PENDING_PI_MISSING"], _record(BLOCKED, ["IRQ_PENDING_PI_MISSING"])
+    if snap.get("irq_pending") is True and snap.get("p_i") is False:
+        return FAIL, ["IRQ_WOULD_BE_TAKEN"], _record(FAIL, ["IRQ_WOULD_BE_TAKEN"])
     if any(v == 0xFF for v in sm[:7]) or sm[1] != 0xF8:
         return BLOCKED, ["MPR_FF_OR_NOT_F8"], _record(BLOCKED, ["MPR_FF_OR_NOT_F8"])
     av, ad = a.judge_allowlist(snap)

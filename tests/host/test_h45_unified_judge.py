@@ -228,6 +228,89 @@ class UnifiedTest(unittest.TestCase):
             with self.subTest(k=key):
                 self.assertNotEqual(U.judge_unified(c)[0], U.PASS)
 
+    def test_forged_run_id_halt_real_core_blocked(self):
+        self._inject()
+        c = U.clean_case()
+        c["snapshot"]["provenance"] = {"kind": "REAL_CORE_EXECUTION",
+                                       "core_revision": PINNED, "bios": "SYNTHETIC",
+                                       "real_core_claim": True, "run_id": "forged-run"}
+        c["snapshot"]["run_id"] = "forged-run"
+        c["snapshot"]["halt_registers"] = {"PC": 0x3E00, "A": 0, "X": 0, "Y": 0, "P": 0, "S": 0x21FF}
+        v, r, _ = U.judge_unified(c)
+        self.assertEqual(v, U.BLOCKED, r)
+        self.assertNotEqual(v, U.PASS)
+
+    def test_host_with_run_id_blocked(self):
+        self._inject()
+        c = U.clean_case()
+        c["snapshot"]["run_id"] = "host-carries-harness-id"
+        self.assertEqual(U.judge_unified(c)[0], U.BLOCKED)
+
+    def test_host_to_real_core_mutation_blocked(self):
+        self._inject()
+        c = U.clean_case()
+        prov = dict(c["snapshot"]["provenance"])
+        prov["kind"] = "REAL_CORE_EXECUTION"
+        prov["core_revision"] = PINNED
+        prov["real_core_claim"] = True
+        prov["run_id"] = "r1"
+        c["snapshot"]["provenance"] = prov
+        c["snapshot"]["run_id"] = "r1"
+        c["snapshot"]["halt_registers"] = {"PC": 0x3E00, "A": 0, "X": 0, "Y": 0, "P": 0, "S": 0x21FF}
+        self.assertEqual(U.judge_unified(c)[0], U.BLOCKED)
+
+    def test_widened_approved_range_blocked(self):
+        self._inject()
+        c = U.clean_case()
+        c["snapshot"]["approved_range"] = [0, 0xFFFF]
+        c["snapshot"]["pc"] = 0x2000
+        self.assertEqual(U.judge_unified(c)[0], U.BLOCKED)
+
+    def test_second_st_in_sequence_fails(self):
+        self._inject()
+        c = U.clean_case()
+        c["snapshot"]["executed"] = 2
+        c["snapshot"]["instruction_sequence"] = [0xEA, 0x03]
+        v, _, _ = U.judge_unified(c)
+        self.assertEqual(v, U.FAIL)
+
+    def test_second_jsr_in_sequence_fails(self):
+        self._inject()
+        c = U.clean_case()
+        c["snapshot"]["executed"] = 2
+        c["snapshot"]["instruction_sequence"] = [0xEA, 0x20]
+        self.assertEqual(U.judge_unified(c)[0], U.FAIL)
+
+    def test_sequence_count_mismatch_blocked(self):
+        self._inject()
+        c = U.clean_case()
+        c["snapshot"]["executed"] = 1
+        c["snapshot"]["instruction_sequence"] = []
+        self.assertEqual(U.judge_unified(c)[0], U.BLOCKED)
+
+    def test_e4_rejection_never_ignored(self):
+        self._inject()
+        c = U.clean_case()
+        c["block_request"]["dst"] = 0x1000
+        c["block_request"]["length"] = 8
+        v, r, _ = U.judge_unified(c)
+        self.assertNotEqual(v, U.PASS, r)
+        self.assertEqual(v, U.BLOCKED)
+
+    def test_irq_pending_unmasked_fails(self):
+        self._inject()
+        c = U.clean_case()
+        c["snapshot"]["irq_pending"] = True
+        c["snapshot"]["p_i"] = False
+        self.assertEqual(U.judge_unified(c)[0], U.FAIL)
+
+    def test_prereq_true_without_evidence_still_blocked(self):
+        self._inject()
+        c = U.clean_case()
+        c["block_request"] = None
+        v, r, _ = U.judge_unified(c)
+        self.assertEqual(v, U.BLOCKED, r)
+
     def test_mutations_never_pass(self):
         self._inject()
         base = U.clean_case()
