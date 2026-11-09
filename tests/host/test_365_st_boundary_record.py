@@ -47,7 +47,8 @@ class StBoundaryRecordTests(unittest.TestCase):
     def test_disabled_monitor_cases_land_side_effect(self):
         for mode in ARMED:
             with self.subTest(mode=unguarded_of(mode)):
-                verdict = st.check_unguarded(copy.deepcopy(self.rows[unguarded_of(mode)]), unguarded_of(mode))
+                verdict = st.check_unguarded_historical(
+                    copy.deepcopy(self.rows[unguarded_of(mode)]), unguarded_of(mode))
                 self.assertEqual(verdict, st.LANDED_VERDICT)
 
     def test_recorded_mutations_are_rejected(self):
@@ -1265,6 +1266,75 @@ class StCrossCuttingContradictionTests(unittest.TestCase):
         row["mode"] = "st1-not-a-mode"
         with self.assertRaisesRegex(ValueError, "unknown mode"):
             st.check_refused(row, "st1-not-a-mode")
+
+
+class StHistoricalLiveSeparationTests(unittest.TestCase):
+    """Live evidence must never be downgraded to historical by omitting a fetch field (Issue #365 R12).
+
+    The public live classifiers validate the full live schema. Only the explicitly named
+    historical entry points accept the pre-fetch-map fixture, and only for that fixture.
+    Removing any mandatory live field is a hard failure with a reason-specific message.
+    """
+
+    def setUp(self):
+        record = json.loads((ROOT / "tests" / "fixtures" / "365-st-boundary-v2-evidence.json")
+                            .read_text(encoding="utf-8"))
+        self.rows = {case["case"]: case["row"] for case in record["cases"]}
+        old = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        self.old = {case["case"]: case["row"] for case in old["cases"]}
+
+    def test_live_field_removed_is_rejected(self):
+        targets = [
+            ("st0-entry-no-entry-check", st.check_bypassed_mutation),
+            ("st1-unknown-unguarded", st.check_unguarded),
+        ]
+        removals = [
+            ("fetch_opcode", "missing/non-integer fetch_opcode"),
+            ("fetch_page", "missing/non-integer fetch_page"),
+            ("fetch_mpr", "missing/non-integer fetch_mpr"),
+            ("fetch_via", "fetch_via must be peek/read"),
+            ("fetch_safe", "missing/non-bool fetch_safe"),
+            ("mmio_read_attempts", "missing/non-integer mmio_read_attempts"),
+            ("resume_attempts", "missing/non-integer resume_attempts"),
+        ]
+        for mode, checker in targets:
+            for field, reason in removals:
+                with self.subTest(mode=mode, field=field):
+                    row = copy.deepcopy(self.rows[mode])
+                    row.pop(field)
+                    with self.assertRaisesRegex(ValueError, reason):
+                        checker(row, mode)
+
+    def test_fetch_opcode_removed_is_rejected_through_mutation_dispatch(self):
+        row = copy.deepcopy(self.rows["st0-entry-no-entry-check"])
+        row.pop("fetch_opcode")
+        with self.assertRaisesRegex(ValueError, "missing/non-integer fetch_opcode"):
+            st.check_mutation(row, "st0-entry-no-entry-check")
+        row = copy.deepcopy(self.rows["st1-unknown-unguarded"])
+        row.pop("fetch_opcode")
+        with self.assertRaisesRegex(ValueError, "missing/non-integer fetch_opcode"):
+            st.check_mutation(row, "st1-unknown-unguarded")
+
+    def test_live_mutations_pass(self):
+        for mode in ("st0-entry-no-entry-check", "st2-mpr2-unknown-no-recheck",
+                     "st1-unknown-unguarded"):
+            with self.subTest(mode=mode):
+                self.assertEqual(st.check_mutation(copy.deepcopy(self.rows[mode]), mode),
+                                 st.LANDED_VERDICT)
+
+    def test_historical_fixture_still_passes(self):
+        for mode in ARMED:
+            with self.subTest(mode=unguarded_of(mode)):
+                verdict = st.check_unguarded_historical(
+                    copy.deepcopy(self.old[unguarded_of(mode)]), unguarded_of(mode))
+                self.assertEqual(verdict, st.LANDED_VERDICT)
+
+    def test_historical_evidence_rejected_by_live_checker(self):
+        for mode in ARMED:
+            with self.subTest(mode=unguarded_of(mode)):
+                with self.assertRaisesRegex(ValueError, "before.pc missing/non-16-bit"):
+                    st.check_unguarded(copy.deepcopy(self.old[unguarded_of(mode)]),
+                                       unguarded_of(mode))
 
 
 if __name__ == "__main__":

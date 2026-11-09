@@ -553,9 +553,9 @@ def check_hardware_page_blocked(row, mode=HWPAGE_MODE):
     return HWPAGE_BLOCKED_VERDICT
 
 
-def check_unguarded(row, mode):
+def _check_unguarded(row, mode, historical):
     """Mutation run (monitor disabled): the ST must execute and its VDC side effect must land."""
-    _common(row, mode, historical="fetch_opcode" not in row)
+    _common(row, mode, historical=historical)
     if row.get("armed") is not False or row.get("refused") is not False:
         raise ValueError(f"{mode}: unguarded run reports armed/refused")
     if row.get("status") != "ok":
@@ -573,12 +573,22 @@ def check_unguarded(row, mode):
     return LANDED_VERDICT
 
 
-def check_bypassed_mutation(row, mode):
+def check_unguarded(row, mode):
+    """Live mutation run (monitor disabled): full live schema is mandatory."""
+    return _check_unguarded(row, mode, historical=False)
+
+
+def check_unguarded_historical(row, mode):
+    """Historical mutation run (pre-fetch-map record); reserved for the immutable old fixture."""
+    return _check_unguarded(row, mode, historical=True)
+
+
+def _check_bypassed_mutation(row, mode, historical):
     """A real monitor mutation must execute the ST and therefore cannot pass as refusal."""
     base = _base_of(mode)
     if base not in ARMED_MODES:
         raise ValueError(f"{mode}: unknown mutation base {base!r}")
-    _common(row, mode, historical="fetch_opcode" not in row)
+    _common(row, mode, historical=historical)
     for flag in ("hazard_landed", "fetch_open_stepped", "fetch_blocked"):
         if row.get(flag) is not None and row[flag] is not False:
             raise ValueError(f"{mode}: {flag}={row[flag]!r} on a bypass mutation")
@@ -605,6 +615,16 @@ def check_bypassed_mutation(row, mode):
     if mode.endswith("-knownpc-only") and row["stop_pc"] == ST_EXPECTED_PC[base]:
         raise ValueError(f"{mode}: known-pc run stopped at its own ST PC")
     return LANDED_VERDICT
+
+
+def check_bypassed_mutation(row, mode):
+    """Live monitor mutation: full live schema is mandatory."""
+    return _check_bypassed_mutation(row, mode, historical=False)
+
+
+def check_bypassed_mutation_historical(row, mode):
+    """Historical monitor mutation (pre-fetch-map record); reserved for the immutable old fixture."""
+    return _check_bypassed_mutation(row, mode, historical=True)
 
 
 def _check_fetch_location(row, mode):
