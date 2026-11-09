@@ -48,13 +48,15 @@ def decide(sel, b0, b1, b2, nsec, dev=True):
     iplblk = (b0 << 16) | (b1 << 8) | b2
     if iplblk < 2:
         return {"ok": False, "code": CODE_IPLBLK_RANGE}
-    limit = 10 if dev else 31
-    if nsec == 0 or nsec > limit:
-        return {"ok": False, "code": CODE_COUNT_RANGE}
     body = sel + iplblk
     if body > MAX_IPLBLK:
         # 24-bit wraparound: the base does not fit the computed field width.
+        # Checked before the sector count, mirroring the guest's base-add
+        # carry-out refusal (code 27 precedes code 22 on double faults).
         return {"ok": False, "code": CODE_LBA_RANGE}
+    limit = 10 if dev else 31
+    if nsec == 0 or nsec > limit:
+        return {"ok": False, "code": CODE_COUNT_RANGE}
     end = body + nsec  # exclusive end; last body LBA is end - 1
     if end > END_EXCLUSIVE_LIMIT:
         return {"ok": False, "code": CODE_LBA_RANGE}

@@ -101,6 +101,12 @@ class RefuseBoundaryTests(unittest.TestCase):
         result = accept(SEL, 0xFFFFFF, 1)
         self.assertEqual(result, {"ok": False, "code": CODE_LBA_RANGE})
 
+    def test_double_fault_takes_guest_precedence(self):
+        # Base carry-out (code 27) precedes the count check (code 22),
+        # mirroring the guest: SEL + 0xFFFFFF carries and nsec == 0.
+        result = accept(SEL, 0xFFFFFF, 0)
+        self.assertEqual(result, {"ok": False, "code": CODE_LBA_RANGE})
+
     def test_refusal_emits_no_sector_lbas(self):
         result = accept(SEL, 0xFFFFFF, 5)
         self.assertFalse(result["ok"])
