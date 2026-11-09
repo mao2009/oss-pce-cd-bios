@@ -119,7 +119,7 @@ Bytes 16..31 are ignored in PUBLIC for the same reason as bytes 14..15: their
 public meaning is not verified, and a DEV-only zero requirement must not refuse
 public media.
 
-Synthetic regression cases in `geargrafx_ipl_loader.py` (48 cases, cold+warm,
+Synthetic regression cases in `geargrafx_ipl_loader.py` (57 cases, cold+warm,
 both the 8 KiB and the 256 KiB loader paths):
 - `pub_n11_above_dev_limit`, `pub_n20_at_3000_crosses_c000`: IPLs larger than
   the DEV 10-sector limit are copied and executed in PUBLIC.

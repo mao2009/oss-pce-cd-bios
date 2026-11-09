@@ -15,7 +15,7 @@ Existing multi-sector loader (PR #681, #683) is reused; no reimplementation.
 | 5 | $08-$0C MPR2-6 設定、MPR0/1 は DEV 初期値維持 | m2..m6 from BUF+8..12; MPR0=$FF, MPR1=$F8 at reset | neg_mpr2_not_ram_bank (code 25), MPR verification in judge | PASS (synthetic) |
 | 6 | $0D OPENMODE: DEV では解釈しない（0 以外は拒否） | BUF+13 must be 0 | neg_openmode_nonzero (code 26) | PASS (synthetic) |
 | 7 | 実行は単純な制御移行に限る; JSR/JMP・レジスタ条件は未確定 | `jmp` to IPLJMP; no JSR gate; release_eligible=false | payload runs and returns via halt | PASS (DEV scope) |
-| 8 | 負例: 情報ブロック範囲外、セクタ数 0、データトラック境界超過、ロード先範囲外、実行開始値範囲外 → コピー/実行前に拒否 | neg_* above | see above | PARTIAL: データトラック境界超過は事前拒否不可 (§3) |
+| 8 | 負例: 情報ブロック範囲外、セクタ数 0、データトラック境界超過、ロード先範囲外、実行開始値範囲外 → コピー/実行前に拒否 | neg_* above | see above | PARTIAL: 媒体終端超過は最終セクタ先読みでコピー前に拒否 (§3.1、READ(6) 到達性のみ)。データトラック長に基づく拒否は BLOCKED (§3.2) |
 | 9 | 既存統合テスト (dev-cdload-exec, dev-boot-internal, experimental-bios-boot, dev-ipl-boot) の期待値維持 | 未変更 | CI | PASS (not touched) |
 | 10 | DEV 専用; CD_BOOT/CD_READ ABI を VERIFIED にしない; release_eligible=false | 不変 | status/docs | PASS |
 
@@ -41,17 +41,33 @@ Owner 承認なしに 24bit 対応を実装しない。
   拡張できるものではない。READ(10)/READ(12) の対応可否は実装・実測で確認できていないため UNKNOWN。
   Owner 判断の仕様変更であり、本 PR では保留 (BLOCKED)。
 
-## 3. データトラック境界超過の事前拒否 (BLOCKED on missing info)
+## 3. データトラック境界超過の事前拒否
 
-- 受入条件は「データトラック境界超過をコピーと実行の前に拒否」を要求する。
-- 現行テスト `partial_read_beyond_disc_after_5_sectors` は 5 セクタコピー後に READ(6) 失敗を検出し、実行のみ阻止する (code 5, copied 5)。先行拒否の証拠ではない。
-- ゲスト (HuC6280) は SCSI/CD-ROM2 の TOC やトラック長を読み取る API を持たない (CD_BOOT/CD_READ 未検証)。データトラックのセクタ数はホストのみが知る。
-- したがって「コピー前に境界超過を拒否」は現行アーキテクチャでは実装不可能。推測で境界チェックを実装しない。
-- 必要な情報と実装案:
-  1. ホストがデータトラックのセクタ数を IPL 情報ブロックに追加フィールドとして埋め込む (例: $0E-$0F または予約領域)。ただし公開仕様の $0E-$1F は reserved (0 必須) であり、意味を付与するには Owner 承認が必要。
-  2. またはホストが選択レコード (Issue #668) にトラック長を含め、ゲストが READ 前に比較する。これも #668 の契約変更。
-  3. または READ(6) の失敗を「コピー前」ではなく「部分コピー後」の安全停止として受入条件を改訂する (Owner 判断)。
-- 現状の安全停止 (部分コピー報告、実行阻止) は成果として維持する。
+### 3.1 実装済み: 最終 body セクタの先読み (media-end reachability probe)
+
+- ローダー (`ipl_loader_rom.s` `probe_last`) は、検証 (`validate_info`) 通過後かつロード領域への最初の書込み前に、
+  最終 body セクタ (`bodyl + nsec - 1`) を READ(6) でステージングバッファ (BUF) に読む。失敗すれば `copied=0` で停止し、
+  ロード領域は書き換えられない。実行時に得られる情報は READ(6) の成否のみで、ホスト側情報 (CUE のトラック長) は使わない。
+- これは **到達性プローブ** であり、データトラック長の検査ではない。ゲストは TOC/トラック長を読めないため、
+  (a) 最終セクタがデータトラックの外 (後続オーディオトラック等) でも読めてしまう場合は検出できない、
+  (b) 先頭と最終の間の途中セクタの失敗は検出できない (途中失敗は従来どおり部分コピー後の安全停止、copied>0)。
+  合成媒体は連続した 1 データトラックなので (b) を再現できず、(b) は実コア未検証である。
+- 旧 `partial_read_beyond_disc_after_5_sectors` (コピー 5 セクタ後に検出) は
+  `neg_body_tail_beyond_disc_refused_before_copy` (copied=0) に置き換えた。READ(6) 失敗時の guest code は同じ 5。
+- 先読みにより起動ごとに READ(6) が 1 回増える (性能への影響は未計測)。
+
+### 3.2 BLOCKED: データトラック長に基づく拒否 (Owner 判断待ち)
+
+- 受入条件の厳密な読み (「データトラック境界超過」) には、データトラックのセクタ数が必要。
+- ゲスト (HuC6280) は SCSI/CD-ROM2 の TOC やトラック長を読み取る API を持たない (CD_BOOT/CD_READ 未検証)。
+  READ CAPACITY / READ TOC を Geargrafx で使えるかは UNKNOWN。実行時に得られない情報に依存する案は採らない。
+- 選択肢:
+  1. (A) 現行の先読みを受入条件の実装として受理し、条件を「媒体終端/読取不能な最終セクタをコピー前に拒否」へ改訂する。
+  2. (B) ホストがトラック長を情報ブロック予約領域 ($0E-$1F) に埋め込む。公開仕様では reserved (0 必須) のため意味付与に Owner 承認が必要。
+  3. (C) #668 の選択レコードにトラック長を含める (#668 契約変更)。
+  4. (D) 全セクタを先に読み切ってから commit するステージング方式 (RAM 不足の可能性があり実現性は未検証)。
+- 推奨: (A)。実行時情報だけで成立し、公開仕様も #668 契約も変えない。(B)/(C) はホスト情報を信頼する別問題で、
+  トラック長の出所 (CUE 解析) の整合性検証が前提になる。
 
 ## 4. LBA 上限境界の検証 (混同の整理)
 
@@ -68,10 +84,18 @@ Owner 承認なしに 24bit 対応を実装しない。
 - ラップ拒否: `bodyl + nsec <= 0xFFFF` (exclusive end が 16bit を超えない)。最終セクタが `0xFFFF` に
   ちょうど一致する場合 (`base + nsec == 0x10000`) も保守的に拒否される。
 - 確認テスト: `neg_body_lba_overflows_16bit` (IPLBLK=0xFFFF), `neg_body_lba_tail_wraps_16bit`
-  (IPLBLK=0xFEF5, n=3)。
+  (IPLBLK=0xFEF5, n=3), `neg_body_lba_final_sector_at_ffff` (0xFEF5, n=2), `neg_lba_ffff_n1_width_refused`
+  (0xFEF6, n=1, 絶対 LBA 0xFFFF で拒否)。
+- 幅検査を通る上限は `bodyl + nsec <= 0xFFFF`。`neg_lba_fffe_n1_passes_width_fails_media_probe` (絶対 LBA 0xFFFE, n=1) は
+  幅検査 (code 27) を通過し、媒体先読みで code 5 / copied=0 で拒否されることを示す (合成媒体は 300 フレームのため)。
+- 媒体終端の境界 (合成ディスク最終フレーム = 絶対 LBA 299): `pos_last_body_sector_is_last_disc_frame` (受理),
+  `neg_last_body_sector_one_past_disc_end`, `neg_single_sector_at_first_frame_past_end`, `neg_body_entirely_beyond_disc`,
+  `neg_iplblk_0100_passes_lba_checks_fails_media_probe` (いずれも code 5 / copied=0)。
+- 24bit 上位バイト: `neg_iplblk_high_byte_nonzero` (0x01), `_80`, `_ff` (code 21)。
+- 16bit を超える受理 (絶対 LBA > 0xFFFF) と 65536 フレーム超の合成媒体は未テスト (BIN が約 150 MB になる)。
 
 不足点:
-- 上限の基準が 16bit 幅であり、実際のデータトラック長ではない (§3)。
+- 上限の基準が 16bit 幅と媒体先読みであり、実際のデータトラック長ではない (§3)。
 - 最終セクタが 16bit 上限に一致する境界 (`base + nsec - 1 == 0xFFFF`) は tail check により拒否されるが、
   これは保守的であり、受理すべきかは Owner 判断。
 - 24bit 高位バイト拒否 (§2) により IPLBLK の高位 8bit が非零の場合は拒否される。
@@ -89,13 +113,14 @@ Owner 承認なしに 24bit 対応を実装しない。
 - 受入条件対応表の追加 (本ドキュメント)。
 - 24bit 高位バイト拒否の回帰テスト追加 (`neg_iplblk_high_byte_nonzero`)。
 - 既存テストの期待値は変更しない。
-- ローダー本体の動作変更なし (Owner 判断が必要な仕様変更は保留)。`ipl_loader_rom.s` の
+- (後続更新) 最終 body セクタの先読み (§3.1) をテスト用ローダーに追加。公開仕様・24bit 対応・他コマンド方式は変更なし。
+- (初回 PR 時点の記述) ローダー本体の動作変更なし (Owner 判断が必要な仕様変更は保留)。`ipl_loader_rom.s` の
   `IPL_MUTANT_HIGHBYTE` ガードは検証専用 mutation のためのみで、デフォルトビルドには影響しない。
 - `release_eligible=false`, `ABI VERIFIED` 未変更を維持。
 
 ## 6. 未解決 / Owner 判断待ち
 
-- データトラック境界の事前拒否 (§3) の実装方式。
+- データトラック長に基づく事前拒否 (§3.2) の方式選択 (推奨 A)。先読み (§3.1) を受入条件として受理するか。
 - 24bit LBA 幅への拡張 (§2)。
 - 受入条件の明示改訂 (Owner)。
 
@@ -144,3 +169,11 @@ PASS とはみなさない。
   ではない)。本ドキュメントには要約のみを記録し、生成物自体は添付しない。
 - 修正後 HEAD: 上記の mutation 付き 37 ケースの再実行は GitHub CI に委ねる (本 PR では
   ローカルで重い実コア実行を繰り返さない)。CI 完了後に PASS/FAIL を最終報告に記録する。
+
+### 9.1 本更新 (最終 body セクタ先読み) の実行証拠
+
+- 実行環境: WSL2 Ubuntu、pinned Geargrafx b49ae82a、cc65 pinned。合成媒体のみ。
+- RED: ケース追加後、変更前ローダーで `neg_last_body_sector_one_past_disc_end` が `guest code/copied = 5/4, expected 5/0` で失敗。
+- GREEN: 変更後、`geargrafx_ipl_loader.py` 57/57 (8 KiB HuCARD+CUE 経路、cold+warm)、
+  `make dev-bios-ipl-loader-integration` 57/57 (256 KiB DEV BIOS バッファ経路)。ローカル実行。CI の結果は PR を参照。
+- 商用メディア、実機、System Card BIOS 互換、CD_BOOT/CD_READ ABI は一切検証していない。
