@@ -153,9 +153,16 @@ def preflight(op, src, dst, length, mpr, window, allowed_banks, build=None, same
 
 
 def device_audit(rows):
+    # Self-attested rows can never prove real-core safety: every return keeps
+    # gate/execution BLOCKED and jsr_count 0, and the vocabulary never contains
+    # PASS/ALLOWED/VERIFIED. An empty audit is BLOCKED, never vacuously clean:
+    # "no rows audited" proves nothing.
     block_audit = {"verdict": "BLOCKED_AUDIT", "gate": BLOCKED, "execution": BLOCKED, "jsr_count": 0}
     if not isinstance(rows, (list, tuple)):
         block_audit["bad_ids"] = ["<malformed rows>"]
+        return block_audit
+    if len(rows) == 0:
+        block_audit["bad_ids"] = ["<no rows audited>"]
         return block_audit
     bad = []
     for i, r in enumerate(rows):

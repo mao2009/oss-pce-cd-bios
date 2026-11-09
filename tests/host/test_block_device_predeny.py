@@ -351,6 +351,34 @@ class MutationExtraTest(unittest.TestCase):
             self.assertEqual(r["execution"], P.BLOCKED)
             self.assertEqual(r["jsr_count"], 0)
 
+    def test_m25_empty_audit_is_blocked_not_vacuously_clean(self):
+        for empty in ([], ()):
+            r = P.device_audit(empty)
+            with self.subTest(rows=empty):
+                self.assertEqual(r["verdict"], "BLOCKED_AUDIT")
+                self.assertEqual(r["gate"], P.BLOCKED)
+                self.assertTrue(r["bad_ids"])
+
+    def test_m26_forged_clean_rows_never_prove_safety(self):
+        forged = [dev("F-%d" % i, "device_store", "VRAM", "NOT_MAIN_RAM") for i in range(50)]
+        forged += [dev("C-%d" % i, "cpu_store", "WRAM", "CPU_ORIGINATED") for i in range(50)]
+        r = P.device_audit(forged)
+        self.assertEqual(r["verdict"], "DRAINED_NO_UNKNOWN")
+        self.assertEqual(r["gate"], P.BLOCKED)
+        self.assertEqual(r["execution"], P.BLOCKED)
+        self.assertEqual(r["jsr_count"], 0)
+        self.assertNotIn(r["verdict"], ("PASS", "ALLOWED", "VERIFIED"))
+
+    def test_m27_audit_result_shape_stable(self):
+        for rows in ([dev("D", "device_store", "VRAM", "NOT_MAIN_RAM")], [], None, "x",
+                     [dev("U", "unknown_store", "ANY", "UNKNOWN")]):
+            r = P.device_audit(rows)
+            with self.subTest(rows=rows):
+                self.assertEqual(set(r), {"verdict", "gate", "execution", "jsr_count", "bad_ids"})
+                self.assertEqual(r["gate"], P.BLOCKED)
+                self.assertEqual(r["execution"], P.BLOCKED)
+                self.assertEqual(r["jsr_count"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
