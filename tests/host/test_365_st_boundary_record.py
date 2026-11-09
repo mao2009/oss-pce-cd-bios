@@ -1336,6 +1336,98 @@ class StHistoricalLiveSeparationTests(unittest.TestCase):
                     st.check_unguarded(copy.deepcopy(self.old[unguarded_of(mode)]),
                                        unguarded_of(mode))
 
+    def test_historical_api_is_not_a_blanket_bypass(self):
+        # The explicit historical entry points still enforce the non-fetch envelope.
+        row = copy.deepcopy(self.old["st1-unguarded"])
+        row["vdc_r_after"] = 0x00
+        with self.assertRaisesRegex(ValueError, "did not land"):
+            st.check_unguarded_historical(row, "st1-unguarded")
+        row = copy.deepcopy(self.old["st1-unguarded"])
+        row["status"] = "refused"
+        with self.assertRaisesRegex(ValueError, "self-loop"):
+            st.check_unguarded_historical(row, "st1-unguarded")
+        row = copy.deepcopy(self.old["st1-unguarded"])
+        row["armed"] = True
+        with self.assertRaisesRegex(ValueError, "armed/refused"):
+            st.check_unguarded_historical(row, "st1-unguarded")
+
+
+class StMutationFetchIntegrityTests(unittest.TestCase):
+    """Live mutation fetch integrity (Issue #365 R13 MEDIUM).
+
+    A landed mutation runs on past the ST and halts in the self-loop, so the recorded fetch_*
+    fields describe the LAST instruction (the halt branch at stop_pc), not the ST. The stop PC
+    is anchored on the measured final architectural PC (``after.pc``) and the page MPR is
+    anchored on the measured ``after`` map. The terminal instruction is the PC-unchanging halt
+    branch, which can never be an ST step (an ST step advances the PC), so an ST opcode there is
+    internally inconsistent. There is no oracle for the loop byte's value, so only byte-ness and
+    the not-an-ST-shape property are asserted (never the plan's ``expected_st_pc`` as if it were
+    measured, and never a comparison to ``refused_opcode``, which records an earlier event).
+    """
+
+    def setUp(self):
+        record = json.loads((ROOT / "tests" / "fixtures" / "365-st-boundary-v2-evidence.json")
+                            .read_text(encoding="utf-8"))
+        self.rows = {case["case"]: case["row"] for case in record["cases"]}
+
+    def test_fetch_tampers_rejected(self):
+        for mode, checker in (
+                ("st1-unknown-unguarded", st.check_unguarded),
+                ("st0-entry-no-entry-check", st.check_bypassed_mutation),
+                ("st2-mpr2-unknown-no-recheck", st.check_bypassed_mutation)):
+            for name, mutate, reason in (
+                    ("st_opcode", lambda r: r.__setitem__("fetch_opcode", 0x03),
+                     "terminal fetch claims an ST opcode"),
+                    ("other_st", lambda r: r.__setitem__("fetch_opcode", 0x23),
+                     "terminal fetch claims an ST opcode"),
+                    ("mode_st", lambda r: r.__setitem__(
+                        "fetch_opcode", st.ST_OPCODE[st._expected_kind(mode)]),
+                     "terminal fetch claims an ST opcode"),
+                    ("opcode_range", lambda r: r.__setitem__("fetch_opcode", 0x100),
+                     "is not a byte"),
+                    ("page", lambda r: r.__setitem__("fetch_page", r["fetch_page"] ^ 1),
+                     "fetch page"),
+                    ("mpr", lambda r: r.__setitem__("fetch_mpr", r["fetch_mpr"] ^ 0xF8),
+                     "fetch MPR"),
+                    ("stop", lambda r: r.__setitem__(
+                        "stop_pc", (r["stop_pc"] + 0x20) & 0xFFFF),
+                     "not the measured final PC")):
+                with self.subTest(mode=mode, name=name):
+                    row = copy.deepcopy(self.rows[mode])
+                    mutate(row)
+                    with self.assertRaisesRegex(ValueError, reason):
+                        checker(row, mode)
+
+    def test_fetch_tamper_rejected_through_dispatch(self):
+        row = copy.deepcopy(self.rows["st1-unknown-unguarded"])
+        row["fetch_page"] ^= 1
+        with self.assertRaisesRegex(ValueError, "fetch page"):
+            st.check_mutation(row, "st1-unknown-unguarded")
+        row = copy.deepcopy(self.rows["st0-entry-no-entry-check"])
+        row["fetch_opcode"] = 0x23
+        with self.assertRaisesRegex(ValueError, "terminal fetch claims an ST opcode"):
+            st.check_mutation(row, "st0-entry-no-entry-check")
+
+    def test_recorded_live_mutations_pass(self):
+        for mode in ("st1-unknown-unguarded", "st0-entry-no-entry-check",
+                     "st2-mpr2-unknown-no-recheck", "st2-unknown-unguarded",
+                     "st1-unknown-far-knownpc-only", "st0-jsr-rts-knownpc-only",
+                     "st1-branch-unknown-resume-allowed"):
+            with self.subTest(mode=mode):
+                self.assertEqual(st.check_mutation(copy.deepcopy(self.rows[mode]), mode),
+                                 st.LANDED_VERDICT)
+
+    def test_non_st_byte_change_is_not_an_inconsistency(self):
+        # No oracle distinguishes a non-ST loop byte from a tampered one; only byte-ness and the
+        # not-an-ST shape are measured properties. This documents the contract boundary.
+        for mode, checker in (
+                ("st1-unknown-unguarded", st.check_unguarded),
+                ("st0-entry-no-entry-check", st.check_bypassed_mutation)):
+            with self.subTest(mode=mode):
+                row = copy.deepcopy(self.rows[mode])
+                row["fetch_opcode"] = 0x42
+                self.assertEqual(checker(row, mode), st.LANDED_VERDICT)
+
 
 if __name__ == "__main__":
     unittest.main()

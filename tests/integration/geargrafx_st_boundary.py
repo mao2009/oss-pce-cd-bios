@@ -276,16 +276,45 @@ def _common(row, mode, historical=False):
                 raise ValueError(f"{mode} fetch_blocked set on a safe-guest run")
 
 
-def _fetch_mapping_ok(row, mode):
-    fetch = {"fetch_opcode": row["fetch_opcode"], "fetch_page": row["fetch_page"],
-             "fetch_mpr": row["fetch_mpr"]}
-    if fetch["fetch_page"] != row["refused_pc"] >> 13:
-        raise ValueError(f"{mode}: fetch page {fetch['fetch_page']}, expected CPU page "
-                         f"{row['refused_pc'] >> 13}")
-    if fetch["fetch_mpr"] != row["after"]["mpr"][fetch["fetch_page"]]:
+def _fetch_page_mpr_ok(row, mode, anchor_pc):
+    """The recorded fetch's page and MPR must describe the anchor PC's mapping (measured)."""
+    if row["fetch_page"] != anchor_pc >> 13:
+        raise ValueError(f"{mode}: fetch page {row['fetch_page']}, expected CPU page "
+                         f"{anchor_pc >> 13}")
+    if row["fetch_mpr"] != row["after"]["mpr"][row["fetch_page"]]:
         raise ValueError(f"{mode}: fetch MPR does not match the page's active MPR")
-    if fetch["fetch_opcode"] != row["refused_opcode"]:
+
+
+def _fetch_mapping_ok(row, mode):
+    """Armed refusal fetch: the guard peeked the ST at the refused PC."""
+    _fetch_page_mpr_ok(row, mode, row["refused_pc"])
+    if row["fetch_opcode"] != row["refused_opcode"]:
         raise ValueError(f"{mode}: fetched opcode does not match the refused ST opcode")
+
+
+def _fetch_terminal_ok(row, mode):
+    """Live landed-mutation terminal fetch, anchored on the measured stop PC.
+
+    A landed mutation runs on past the prohibited ST and halts in the self-loop, so the
+    recorded fetch_* fields describe the LAST instruction (the halt branch at stop_pc), not the
+    ST. The stop PC and the page's active MPR are the measured anchors for the page/MPR identity.
+    The terminating instruction is the PC-unchanging halt branch: an ST step always advances the
+    PC, so the final fetch can never be an ST opcode. There is no oracle for the loop byte's
+    value, so only byte-ness and the not-an-ST-shape property are asserted here (never the plan's
+    ``expected_st_pc`` and never a comparison to ``refused_opcode``, which is an earlier event).
+
+    The stop PC itself must be the measured final architectural PC (``after.pc``), otherwise the
+    page anchor below would be taken from an unverified value.
+    """
+    if row["after"]["pc"] != row["stop_pc"]:
+        raise ValueError(f"{mode}: stop PC {row['stop_pc']:#x} is not the measured final PC "
+                         f"{row['after']['pc']!r}")
+    _fetch_page_mpr_ok(row, mode, row["stop_pc"])
+    if type(row["fetch_opcode"]) is not int or not 0 <= row["fetch_opcode"] <= 0xFF:
+        raise ValueError(f"{mode}: fetch opcode {row['fetch_opcode']!r} is not a byte")
+    if row["fetch_opcode"] in ST_OPCODE.values():
+        raise ValueError(f"{mode}: terminal fetch claims an ST opcode but the terminating "
+                         f"instruction is the halt branch (the ST executed earlier)")
 
 
 def _check_refused(row, mode, require_fetch=True):
@@ -568,6 +597,8 @@ def _check_unguarded(row, mode, historical):
             raise ValueError(f"{mode}: {flag}={row[flag]!r} on a monitor-disabled run")
     if "fetch_safe" in row and row["fetch_safe"] is not True:
         raise ValueError(f"{mode}: unguarded run did not fetch through a safe peek")
+    if not historical:
+        _fetch_terminal_ok(row, mode)
     if not _vdc_landed(row, _st_kind_of(row, mode)):
         raise ValueError(f"{mode}: VDC side effect did not land with the monitor disabled")
     return LANDED_VERDICT
@@ -589,6 +620,8 @@ def _check_bypassed_mutation(row, mode, historical):
     if base not in ARMED_MODES:
         raise ValueError(f"{mode}: unknown mutation base {base!r}")
     _common(row, mode, historical=historical)
+    if not historical:
+        _fetch_terminal_ok(row, mode)
     for flag in ("hazard_landed", "fetch_open_stepped", "fetch_blocked"):
         if row.get(flag) is not None and row[flag] is not False:
             raise ValueError(f"{mode}: {flag}={row[flag]!r} on a bypass mutation")
