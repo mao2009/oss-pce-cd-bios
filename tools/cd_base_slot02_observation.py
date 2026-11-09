@@ -13,6 +13,7 @@ host arithmetic is not either. A record that claims a genuine-callee measurement
 while the #228 gate refuses slot $02 (tools/reference_jsr_gate.py).
 """
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -30,7 +31,7 @@ EVIDENCE_CLASSES = (
     "COMMERCIAL_CALLER_ENTRY",  # #635: commercial IPL's own JSR/JMP into table, synthetic stub
     "GENUINE_CALLEE",           # genuine System Card callee executed (gate-blocked today)
 )
-STATUSES = ("NOT_RUN", "SKIP", "BLOCKED", "UNKNOWN", "MEASURED")
+STATUSES = ("NOT_RUN", "SKIP", "BLOCKED", "UNKNOWN", "SOURCE_CONFIRMED", "MEASURED")
 # VERIFIED / DEV_CALLABLE are deliberately not representable.
 
 # tier: where an observable can come from. REAL_JSR means the genuine callee must execute.
@@ -60,28 +61,95 @@ CLASS_TIERS = {
     "GENUINE_CALLEE": ("REAL_JSR",),
 }
 
-# Keys that would leak private/proprietary material; rejected anywhere in a record.
-FORBIDDEN_KEY_TOKENS = frozenset({"path", "hash", "sha", "md5", "crc", "bytes", "hex", "title", "name",
-                                  "sector", "payload", "dump", "audio", "save", "cue", "bin", "rom",
-                                  "firmware", "pc", "lba", "address", "file"})
-FORBIDDEN_VALUE_WORDS = ("VERIFIED", "DEV_CALLABLE", "COMPATIBLE")
+# Defence in depth: key names that would leak private/proprietary material. The structural
+# whitelist below already fixes every allowed key; this scan also rejects camelCase/concatenated
+# spellings and non-string keys, anywhere in the record.
+FORBIDDEN_KEY_SUBSTRINGS = ("path", "hash", "sha", "md5", "crc", "bytes", "hex", "title", "name", "sector",
+                            "payload", "dump", "audio", "save", "cue", "firmware", "address", "file", "rom",
+                            "lba", "pc", "bin")
+FORBIDDEN_VALUE_WORDS = ("VERIFIED", "DEVCALLABLE", "COMPATIBLE")
 TOP_KEYS = frozenset({"schema", "evidence_class", "slot", "tool", "core_revision", "jsr_count",
                       "status", "reason", "items"})
 ITEM_KEYS = frozenset({"status", "value"})
 CALLER_METHODS = ("JSR", "JMP", "DIRECT", "NONE")
 CALLER_VERDICTS = ("API_ENTRY_CONFIRMED", "PRE_API_BLOCKER_OBSERVED", "UNKNOWN", "INCOMPLETE",
                    "BUDGET", "NOT_RUN", "BLOCKED", "FAIL")
-PINNED_CORE_REVISION_PREFIX = "b49ae82a"
+PINNED_CORE_REVISION = "b49ae82a012eade566d72e9d61c9d95a5caa4da3"
+REASON_RE = re.compile(r"[A-Z0-9_]{1,60}")   # reason is a code, never free text
+TOOL_RE = re.compile(r"[a-z0-9_]{0,40}")
+O2_KEYS = frozenset({"index01_nonzero", "index00_differs_from_zero", "data_tracks_after_first"})
+O5_KEYS = frozenset({"verdict", "first_table_slot", "method", "in_table", "return_matches_caller"})
+VALUE_STATUSES = ("MEASURED", "SOURCE_CONFIRMED")
+# Keys that are part of the fixed schema (value-object keys) and spelled with a forbidden fragment
+# only coincidentally ('from' contains 'rom').
+SCHEMA_KEYS = O2_KEYS | O5_KEYS | TOP_KEYS | ITEM_KEYS
 
 
-def _walk(obj, path="record"):
+def _walk(obj):
     if isinstance(obj, dict):
         for k, v in obj.items():
-            yield path, k, v
-            yield from _walk(v, f"{path}.{k}")
+            yield k, v
+            yield from _walk(v)
     elif isinstance(obj, list):
-        for i, v in enumerate(obj):
-            yield from _walk(v, f"{path}[{i}]")
+        for v in obj:
+            yield from _walk(v)
+
+
+def check_no_leak_keys(obj):
+    """Raise ValueError for any non-string key, or any key outside the fixed schema vocabulary
+    that contains a forbidden spelling (case- and underscore-insensitive)."""
+    for key, _ in _walk(obj):
+        if type(key) is not str:
+            raise ValueError(f"non-string key {key!r}")
+        if key in OBSERVABLES or key in SCHEMA_KEYS:
+            continue
+        low = key.lower().replace("_", "")
+        if any(frag in low for frag in FORBIDDEN_KEY_SUBSTRINGS):
+            raise ValueError(f"forbidden key {key!r}")
+
+
+def _no_overclaim(text):
+    squashed = re.sub(r"[^A-Za-z]", "", text).upper()
+    return not any(w in squashed for w in FORBIDDEN_VALUE_WORDS)
+
+
+def _check_value(name, status, value, req):
+    if status not in VALUE_STATUSES:
+        req(value is None, "non-valued item must have a null value")
+        return
+    req(value is not None, "valued item needs a value")
+    if name == "O1_table_slot_address":
+        req(type(value) is bool, "O1 value is a boolean (entry matches $E006)")
+    elif name == "O2_media_structure":
+        req(isinstance(value, dict) and set(value) == O2_KEYS and all(type(x) is bool for x in value.values()),
+            "O2 value: three booleans only")
+    elif name == "O3_candidate_classes":
+        req(isinstance(value, list) and all(isinstance(g, list) and g and all(n in C.CANDIDATE_NAMES for n in g)
+                                            for g in value), "O3 value: lists of candidate names only")
+    elif name == "O4_instrument_validity":
+        req(type(value) is bool, "O4 value is a boolean")
+    elif name == "O5_caller_first_api":
+        req(isinstance(value, dict) and set(value) == O5_KEYS, "O5 value keys")
+        slot = value["first_table_slot"]
+        req(value["verdict"] in CALLER_VERDICTS and value["method"] in CALLER_METHODS, "O5 verdict/method")
+        req(slot is None or (type(slot) is int and 0 <= slot <= 80), "O5 first_table_slot")
+        req(type(value["in_table"]) is bool, "O5 in_table")
+        ret = value["return_matches_caller"]
+        req(ret is None or type(ret) is bool, "O5 return flag")
+        if value["method"] == "NONE":
+            req(slot is None and not value["in_table"] and ret is None and value["verdict"] != "API_ENTRY_CONFIRMED",
+                "O5 NONE method is inconsistent with an entry")
+        if value["verdict"] == "API_ENTRY_CONFIRMED":
+            req(value["method"] != "NONE", "O5 confirmed entry needs a method")
+        if not value["in_table"]:
+            req(value["method"] in ("DIRECT", "NONE") and slot is None,
+                "O5 non-table entry is DIRECT/NONE without a slot")
+        if value["method"] in ("JSR", "JMP"):
+            req(value["in_table"] and slot is not None, "O5 JSR/JMP is a table entry with a slot")
+    elif name == "O6_caller_sets_regs":
+        req(type(value) is bool, "O6 public value is a boolean only")
+    else:
+        req(False, f"{name} cannot carry a value")  # REAL_JSR items: never valued
 
 
 def validate_record(rec):
@@ -90,25 +158,21 @@ def validate_record(rec):
         if not ok:
             raise ValueError(msg)
 
-    req(isinstance(rec, dict) and set(rec) == TOP_KEYS, "record keys")
+    req(isinstance(rec, dict), "record must be an object")
+    check_no_leak_keys(rec)
+    req(set(rec) == TOP_KEYS, "record keys")
     req(rec["schema"] == SCHEMA, "schema")
     req(rec["slot"] == SLOT, "slot must be $02")
     cls = rec["evidence_class"]
     req(cls in EVIDENCE_CLASSES, "evidence_class")
     req(rec["status"] in STATUSES, "status")
-    req(isinstance(rec["reason"], str) and len(rec["reason"]) <= 200, "reason")
-    req(type(rec["jsr_count"]) is int and rec["jsr_count"] >= 0, "jsr_count")
+    req(isinstance(rec["reason"], str) and REASON_RE.fullmatch(rec["reason"]) and _no_overclaim(rec["reason"]),
+        "reason must be an upper-case code without over-claim words")
+    req(isinstance(rec["tool"], str) and TOOL_RE.fullmatch(rec["tool"]) and _no_overclaim(rec["tool"]), "tool")
+    req(type(rec["jsr_count"]) is int and rec["jsr_count"] == 0,
+        "jsr_count must be 0: no genuine JSR is recordable while the gate refuses slot $02")
     items = rec["items"]
     req(isinstance(items, dict), "items")
-
-    for where, key, value in _walk(rec):
-        if key not in OBSERVABLES:
-            req(not (set(key.lower().split("_")) & FORBIDDEN_KEY_TOKENS), f"forbidden key {key!r}")
-        if isinstance(value, str):
-            req(not any(w in value.upper().replace(" ", "_") for w in FORBIDDEN_VALUE_WORDS),
-                "forbidden status word in value")
-            req(len(value) <= 200, "string too long")
-    req(not any(w in rec["reason"].upper() for w in FORBIDDEN_VALUE_WORDS), "forbidden word in reason")
 
     for name, item in items.items():
         req(name in OBSERVABLES, f"unknown observable {name!r}")
@@ -116,38 +180,20 @@ def validate_record(rec):
         req(item["status"] in STATUSES, "item status")
         tier = OBSERVABLES[name]["tier"]
         req(tier in CLASS_TIERS[cls], f"{name} (tier {tier}) cannot be carried by evidence class {cls}")
-        if item["status"] == "MEASURED":
-            req(item["value"] is not None, "MEASURED item needs a value")
-        else:
-            req(item["value"] is None, "non-MEASURED item must have a null value")
-        if name == "O5_caller_first_api" and item["status"] == "MEASURED":
-            v = item["value"]
-            req(isinstance(v, dict) and set(v) == {"verdict", "slot", "method", "in_table", "return_matches_caller"},
-                "O5 value keys")
-            req(v["verdict"] in CALLER_VERDICTS and v["method"] in CALLER_METHODS, "O5 verdict/method")
-            req(v["slot"] is None or (type(v["slot"]) is int and 0 <= v["slot"] <= 80), "O5 slot")
-            req(type(v["in_table"]) is bool and (v["return_matches_caller"] is None
-                                                or type(v["return_matches_caller"]) is bool), "O5 flags")
-        if name == "O6_caller_sets_regs" and item["status"] == "MEASURED":
-            req(type(item["value"]) is bool, "O6 public value is a boolean only")
-        if name == "O2_media_structure" and item["status"] == "MEASURED":
-            v = item["value"]
-            req(isinstance(v, dict) and set(v) == {"index01_nonzero", "index00_differs_from_zero",
-                                                   "data_tracks_after_first"}, "O2 value keys")
-            req(all(type(x) is bool for x in v.values()), "O2 booleans only")
+        if tier == "REAL_JSR":
+            req(item["status"] not in VALUE_STATUSES, "genuine-callee measurement refused: slot $02 gate is BLOCKED")
+        _check_value(name, item["status"], item["value"], req)
 
+    measured = [i for i in items.values() if i["status"] == "MEASURED"]
+    req(bool(measured) == (rec["status"] == "MEASURED"), "record status MEASURED iff some item is MEASURED")
     if cls == "GENUINE_CALLEE":
-        # Fail-closed: the gate refuses slot $02, so no genuine-callee run can be recorded.
-        req(rec["status"] != "MEASURED" and all(i["status"] != "MEASURED" for i in items.values()),
-            "genuine-callee measurement refused: slot $02 gate is BLOCKED")
-        req(rec["jsr_count"] == 0, "genuine-callee jsr_count must be 0 while the gate refuses slot $02")
+        req(rec["status"] != "MEASURED", "genuine-callee measurement refused: slot $02 gate is BLOCKED")
+    if cls in ("SYNTHETIC_REAL_CORE", "COMMERCIAL_CALLER_ENTRY"):
+        req(rec["core_revision"] in (None, PINNED_CORE_REVISION) and
+            (cls != "SYNTHETIC_REAL_CORE" or rec["core_revision"] == PINNED_CORE_REVISION),
+            "core_revision must be the exact pinned revision (required for synthetic real-core)")
     else:
-        req(rec["jsr_count"] == 0, "non-genuine classes cannot contain a genuine JSR")
-    if cls == "SYNTHETIC_REAL_CORE":
-        req(isinstance(rec["core_revision"], str) and rec["core_revision"].startswith(PINNED_CORE_REVISION_PREFIX),
-            "real-core record must carry the pinned core revision")
-    else:
-        req(rec["core_revision"] is None or cls == "COMMERCIAL_CALLER_ENTRY", "core_revision only for real-core classes")
+        req(rec["core_revision"] is None, "core_revision only for real-core classes")
     return rec
 
 
@@ -201,9 +247,9 @@ def candidate_partition(index00, index01):
     return sorted(sorted(g) for g in groups.values())
 
 
-def main(argv=None):
+def main():
     print(json.dumps({"slot": SLOT, "table_entry": TABLE_ENTRY, "observables": OBSERVABLES,
-                      "genuine_callee": blocked_genuine_record("gate refuses slot $02 (#173/#228)")}, indent=2))
+                      "genuine_callee": blocked_genuine_record("GATE_REFUSES_SLOT_02")}, indent=2))
     return 0
 
 

@@ -49,13 +49,19 @@ O5 は「ゲームが slot `$02` を最初に呼んだか」を示しうるが�
 - `evidence_class`: `HOST_ARITHMETIC` / `SYNTHETIC_REAL_CORE`（pinned `b49ae82a` 必須） /
   `COMMERCIAL_STAT_ONLY` / `COMMERCIAL_CALLER_ENTRY` / `GENUINE_CALLEE`。各クラスが載せられる層は
   固定（例: 呼出側記録に O8 は載らない）。
-- `status`: `NOT_RUN / SKIP / BLOCKED / UNKNOWN / MEASURED`。
-- O5 値: `{verdict(#635 の 8 値), slot(0..80|null), method(JSR/JMP/DIRECT/NONE), in_table, return_matches_caller}`。
-  呼出し元 PC・入口 PC の数値・スタックバイトは含めない。
-- O2 値: `{index01_nonzero, index00_differs_from_zero, data_tracks_after_first}`（ブール値のみ）。
-- 拒否: パス/ハッシュ/タイトル/セクタ/ペイロード/PC/アドレス/LBA 値などのキー、VERIFIED/
-  DEV_CALLABLE/COMPATIBLE の語、`jsr_count != 0`、未知キー、層とクラスの不一致、
-  `GENUINE_CALLEE` の MEASURED（ゲートが slot `$02` を拒否する間は BLOCKED 記録のみ作成可）。
+- `status`: `NOT_RUN / SKIP / BLOCKED / UNKNOWN / SOURCE_CONFIRMED / MEASURED`。記録全体の `MEASURED` は
+  いずれかの項目が MEASURED のときに限る。値を持てるのは MEASURED / SOURCE_CONFIRMED のみ。
+- `reason` は大文字コード（`[A-Z0-9_]{1,60}`、自由文不可）、`tool` は `[a-z0-9_]{0,40}`、`core_revision` は
+  null か pinned の完全な 40 桁（SYNTHETIC_REAL_CORE は必須）。
+- 項目値は観測ごとに厳密な型: O1 ブール、O2 ブール 3 つ、O3 候補名のリストのリスト、O4 ブール、O6 ブール、
+  O5 `{verdict(#635 の 8 値), first_table_slot(0..80|null), method(JSR/JMP/DIRECT/NONE), in_table,
+  return_matches_caller}`（整合性検査あり。例: JSR/JMP は表内かつ slot あり、DIRECT は表外で slot なし）。
+  `first_table_slot` は商用 IPL の最初の呼出し slot であり、記録の対象 slot（`$02`）とは別。
+  呼出し元 PC・入口 PC の数値・スタックバイトは含めない。O7-O12 は値を持てない。
+- 拒否: パス/ハッシュ/タイトル/セクタ/ペイロード/PC/アドレス/LBA 値などのキー（camelCase・非文字列キー含む
+  全階層）、VERIFIED/DEV_CALLABLE/COMPATIBLE の語（記号区切りの回避も検出。ただし語彙は列挙のため限定的な
+  補助検査であり、主防御は上記の厳密な型・正規表現）、`jsr_count != 0`、未知キー、層とクラスの不一致、
+  `GENUINE_CALLEE` の MEASURED/SOURCE_CONFIRMED（ゲートが slot `$02` を拒否する間は BLOCKED 記録のみ作成可）。
 - #635 の商用証拠 JSON（verdict/apicalls/runs）は O5 へ機械的に写像できる（verdict 値は同一語彙）。
 
 ## 4. 状態区分（証拠に基づく）
