@@ -57,6 +57,16 @@ integration: build
 	$(MAKE) stack-irq-timing
 	$(MAKE) stack-mpr-buffer
 	$(MAKE) caller-stack-contract
+	$(MAKE) st-boundary
+
+# Issue #365: ST0/ST1/ST2 single-step instruction-boundary monitor on the pinned core (v2 probe,
+# synthetic media). Seventeen armed families (entry, unknown-PC, data-dependent branch, JSR/RTS return,
+# page/bank boundaries, ROM page 0, guest-remapped MPR, fixed-JMP and BBR3 data-dependent
+# hardware-page fail-closed entries, IRQ surveys), nine mutation kinds (22 runs), and a positive
+# control. Fail-closed: any classifier rejection exits non-zero. Runs in `integration` (therefore `test-real-core` / required CI).
+.PHONY: st-boundary
+st-boundary:
+	$(PYTHON) tests/integration/geargrafx_st_boundary.py
 
 # Issue #654 (#473 S8): the TAM/TMA buffer (m_mpr_buffer) and TMA #$00 for single / multi-MPR TAM and TMA, TAM #$00,
 # refused TAMs (A / A+D / A+E) and IRQ-in-TAM (synthetic media, debugger build, verification-only patch with a
