@@ -2,9 +2,12 @@
 """DEV CD_BASE boundary (Issue #735, host-only).
 
 Fail-closed boundary between host arithmetic and any callee claim.
-Solid: slot hypothesis noted, LBA arithmetic checked via cd_base_model,
-judge never emits VERIFIED, unknown callee facts stay BLOCKED/UNKNOWN.
-No BIOS wiring, no SCSI/MPR/RAM side-effect invention.
+Solid: slot hypothesis noted ($02=CD_BASE stays HYPOTHESIS), LBA arithmetic
+checked via cd_base_model, judge never emits OBSERVED/VERIFIED from host-only
+input, unknown callee facts stay BLOCKED/UNKNOWN. A self-reported
+callee_observed bool is diagnostic self-assertion only, never measured
+evidence. No BIOS wiring, no SCSI/MPR/RAM side-effect invention.
+Slot 02 / CD_BOOT / CD_READ ABIs stay unverified.
 """
 import sys
 from pathlib import Path
@@ -36,7 +39,13 @@ def plan_fixture(index01_lba):
 
 
 def judge(request):
-    """Return fail-closed verdict; never success on unknown."""
+    """Return fail-closed verdict; never success on unknown.
+
+    Host-only: no trusted observation channel exists here, so the verdict
+    stays BLOCKED even when the caller self-asserts callee_observed=True.
+    The bool is recorded as diagnostic self-assertion (callee_claim), never
+    as measured evidence.
+    """
     if not isinstance(request, dict):
         return {"verdict": "BLOCKED", "reason": "BAD_REQUEST"}
     mode = request.get("mode")
@@ -47,12 +56,19 @@ def judge(request):
     except ValueError as e:
         return {"verdict": "BLOCKED", "reason": "INVALID_BLOCK", "detail": str(e)}
     callee = request.get("callee_observed", False)
-    if callee is not True:
-        return {"verdict": "BLOCKED", "reason": "NO_CALLEE", "mode": mode}
-    return {"verdict": "OBSERVED", "mode": mode}
+    if callee is True:
+        return {"verdict": "BLOCKED", "reason": "NO_TRUSTED_OBSERVATION",
+                "mode": mode, "callee_claim": "asserted"}
+    return {"verdict": "BLOCKED", "reason": "NO_CALLEE", "mode": mode}
 
 
 def side_effect_matrix(callee_observed=False):
+    """Per-field side-effect status; host-only, always UNKNOWN.
+
+    A self-reported callee_observed bool never proves authenticity and
+    never marks any field OBSERVED. Each field needs its own independent
+    observation record from a trusted harness (none exists host-only),
+    so every field stays UNKNOWN regardless of the self-assertion value.
+    """
     fields = ("A", "X", "Y", "P", "SP", "MPR0-7", "RAM_$20F8-$20FF", "RAM_$2000-$3FFF")
-    status = "OBSERVED" if callee_observed is True else "UNKNOWN"
-    return {f: status for f in fields}
+    return {f: "UNKNOWN" for f in fields}

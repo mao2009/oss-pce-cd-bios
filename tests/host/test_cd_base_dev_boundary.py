@@ -46,9 +46,9 @@ class BoundaryTests(unittest.TestCase):
         m = B.side_effect_matrix(False)
         self.assertTrue(all(v == "UNKNOWN" for v in m.values()))
 
-    def test_side_effects_observed_with_callee(self):
+    def test_side_effects_stay_unknown_even_with_callee_claim(self):
         m = B.side_effect_matrix(True)
-        self.assertTrue(all(v == "OBSERVED" for v in m.values()))
+        self.assertTrue(all(v == "UNKNOWN" for v in m.values()))
 
     def test_release_not_eligible(self):
         self.assertFalse(B.RELEASE_ELIGIBLE)
@@ -77,11 +77,14 @@ class BoundaryTests(unittest.TestCase):
             self.assertEqual(r["verdict"], "BLOCKED", v)
             self.assertEqual(r["reason"], "NO_CALLEE", v)
 
-    def test_callee_true_returns_observed_not_verified(self):
+    def test_callee_true_stays_blocked_not_observed(self):
         r = B.judge({"mode": "ABS_LBA", "block": 1, "callee_observed": True})
-        self.assertEqual(r["verdict"], "OBSERVED")
+        self.assertEqual(r["verdict"], "BLOCKED")
+        self.assertEqual(r["reason"], "NO_TRUSTED_OBSERVATION")
+        self.assertNotEqual(r["verdict"], "OBSERVED")
+        self.assertNotEqual(r.get("verdict"), "VERIFIED")
 
-    def test_judge_never_emits_verified(self):
+    def test_judge_never_emits_verified_or_observed(self):
         cases = [
             {"mode": "ABS_LBA", "block": 1, "callee_observed": True},
             {"mode": "INDEX01_REL", "block": 0, "callee_observed": True},
@@ -92,6 +95,7 @@ class BoundaryTests(unittest.TestCase):
         ]
         for c in cases:
             self.assertNotEqual(B.judge(c).get("verdict"), "VERIFIED", c)
+            self.assertNotEqual(B.judge(c).get("verdict"), "OBSERVED", c)
 
     def test_plan_release_not_eligible(self):
         self.assertFalse(B.plan_fixture(150)["release_eligible"])
