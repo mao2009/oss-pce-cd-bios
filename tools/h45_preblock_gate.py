@@ -8,8 +8,10 @@ gate: tools/reference_jsr_gate.py stays BLOCKED, release_eligible stays false, j
 A PASS here means only that one synthetic pre-block check land saw no deny condition; it is not
 ALLOWED and grants no execution. Missing/unknown evidence is BLOCKED, never PASS.
 
-Pinned Geargrafx b49ae82a012eade566d72e9d61c9d95a5caa4da3 is the only accepted real-core
-provenance, and only with bios=SYNTHETIC. GPL verification patches are never in product.
+Pinned Geargrafx b49ae82a012eade566d72e9d61c9d95a5caa4da3 identifies the core used by
+real-core probes, but this gate has no mechanical binding to a trusted harness:
+REAL_CORE_EXECUTION provenance is BLOCKED here, never PASS. GPL verification patches
+are never in product.
 
   python3 tools/h45_preblock_gate.py --check   # self-check, exits 3 (BLOCKED convention)
 """
@@ -37,20 +39,6 @@ EXIT_BLOCKED = 3
 
 PASS, FAIL, BLOCKED = "PASS", "FAIL", "BLOCKED"
 DANGEROUS_OPCODES = ST_OPCODES | {0x20}
-HALT_REGISTER_KEYS = ("PC", "A", "X", "Y", "P", "S")
-
-
-def _halt_registers_ok(halt, pc):
-    if type(halt) is not dict:
-        return False
-    for key in HALT_REGISTER_KEYS:
-        if key not in halt or not _is_int(halt[key]):
-            return False
-    if halt["PC"] != pc:
-        return False
-    if not CPU_STACK_PAGE[0] <= halt["S"] <= CPU_STACK_PAGE[1]:
-        return False
-    return True
 
 
 class GateRefused(ValueError):
@@ -158,6 +146,17 @@ def judge_irq_first_instruction(row, vector, expected_handler, build="debugger")
     for address in writes:
         if not IRQ_STACK_WINDOW[0] <= address < IRQ_STACK_WINDOW[1]:
             return FAIL, f"{vector}: stack write {address:#06x} outside $2100-$21FF"
+    # Confirmed HandleIRQ order (docs/366-irq-postaccept-boundary.md): StackPush16
+    # then StackPush8, each push writing then decrementing S, so a genuine 3-byte
+    # entry frame is strictly descending contiguous in push-chronological order
+    # (probe: SP $FF->$FC, frame CPU $21FF/$21FE/$21FD). This row carries no SP
+    # before/after evidence, so no SP values are invented here; only the sequence
+    # shape is checked, and it is never generalized to other push sources.
+    if len(set(writes)) != 3:
+        return FAIL, f"{vector}: stack writes are not 3 distinct bytes"
+    for first, second in zip(writes, writes[1:]):
+        if second != first - 1:
+            return FAIL, f"{vector}: stack writes not a contiguous descending push sequence"
     pending = row.get("pending", None)
     p_i = row.get("p_i", None)
     if type(pending) is not bool or type(p_i) is not bool:
@@ -174,7 +173,7 @@ def judge_irq_first_instruction(row, vector, expected_handler, build="debugger")
 
 
 def judge_stack_mpr(mpr, mpr1_init_value, mpr1_init_index, alias_detected, irq_asserted,
-                    irq_pending, stack_writes, mpr1_changed=False):
+                    irq_pending, stack_writes, mpr1_changed=None):
     """E3: stack/MPR pre-block. Only $F8, MPR0-6 != $FF, no alias, IRQ observed, stack in page."""
     if type(mpr) is not list or len(mpr) != 8 or not all(_is_byte(v) for v in mpr):
         return BLOCKED, f"mpr must be 8 bytes: {mpr!r}"
@@ -221,17 +220,8 @@ def judge_allowlist(snapshot):
     if not isinstance(prov, dict) or prov.get("kind") not in PROVENANCE_KINDS:
         return BLOCKED, "provenance kind missing/unknown"
     if prov["kind"] == "REAL_CORE_EXECUTION":
-        if prov.get("core_revision") != PINNED_CORE_REVISION:
-            return BLOCKED, "real-core revision must be the pinned revision"
-        if prov.get("bios") != "SYNTHETIC":
-            return BLOCKED, "real-core observation must use a synthetic BIOS"
-        if prov.get("real_core_claim") is not True:
-            return BLOCKED, "real_core_claim must be true for REAL_CORE_EXECUTION"
-        run_id = snapshot.get("run_id")
-        if type(run_id) is not str or not run_id or run_id != prov.get("run_id"):
-            return BLOCKED, "harness run-id missing or mismatched: missing evidence, not PASS"
-        if not _halt_registers_ok(snapshot.get("halt_registers"), snapshot.get("pc")):
-            return BLOCKED, "halt registers missing or inconsistent with snapshot PC/stack: missing evidence, not PASS"
+        return BLOCKED, ("REAL_CORE_EXECUTION has no trusted-harness binding in this gate: "
+                         "self-reported revision/run-id/registers never PASS")
     else:
         if prov.get("real_core_claim") is not False:
             return BLOCKED, "HOST_FIXTURE must not claim real-core evidence"
@@ -286,10 +276,12 @@ def judge_allowlist(snapshot):
     for address in mmio:
         if address in FORBIDDEN_MMIO:
             return BLOCKED, f"forbidden MMIO store ${address:04X}"
+    if "mpr1_changed" not in snapshot:
+        return BLOCKED, "mpr1_changed missing: missing evidence, not PASS"
     verdict, detail = judge_stack_mpr(
         snapshot.get("mpr"), snapshot.get("mpr1_init_value"), snapshot.get("mpr1_init_index"),
         snapshot.get("alias_detected"), snapshot.get("irq_asserted"), snapshot.get("irq_pending"),
-        snapshot.get("stack_writes"), snapshot.get("mpr1_changed", False))
+        snapshot.get("stack_writes"), snapshot.get("mpr1_changed"))
     if verdict != PASS:
         return verdict, detail
     pc = snapshot.get("pc")

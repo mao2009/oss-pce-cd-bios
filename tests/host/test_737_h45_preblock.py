@@ -87,6 +87,23 @@ class IrqFirstInstructionTest(unittest.TestCase):
                 row.pop(key)
                 self.assertEqual(G.judge_irq_first_instruction(row, "IRQ2", 0x3F80)[0], G.BLOCKED)
 
+    def test_stack_push_order_and_distinctness(self):
+        for writes in (
+            [0x2100, 0x2100, 0x2100],
+            [0x21FF, 0x21FD, 0x21FE],
+            [0x21FF, 0x21FE, 0x21FE],
+        ):
+            with self.subTest(writes=[hex(a) for a in writes]):
+                row = G.clean_irq_row()
+                row["stack_writes"] = writes
+                self.assertEqual(
+                    G.judge_irq_first_instruction(row, "IRQ2", 0x3F80)[0], G.FAIL)
+        for vector in ("IRQ2", "IRQ1", "TIQ"):
+            with self.subTest(vector=vector):
+                row = G.clean_irq_row(vector, 0x3F80)
+                self.assertEqual(
+                    G.judge_irq_first_instruction(row, vector, 0x3F80)[0], G.PASS)
+
     def test_stack_window_limited_to_cpu_page(self):
         for writes in (
             [0x2200, 0x2201, 0x2202],
@@ -99,7 +116,8 @@ class IrqFirstInstructionTest(unittest.TestCase):
                 self.assertNotEqual(
                     G.judge_irq_first_instruction(row, "IRQ2", 0x3F80)[0], G.PASS)
         for writes, expected in (
-            ([0x2100, 0x21FF, 0x21FE], G.PASS),
+            ([0x2102, 0x2101, 0x2100], G.PASS),
+            ([0x2100, 0x21FF, 0x21FE], G.FAIL),
             ([0x20FF, 0x21FE, 0x21FD], G.FAIL),
             ([0x21FF, 0x21FE, 0x2200], G.FAIL),
         ):
@@ -155,42 +173,51 @@ class IrqFirstInstructionTest(unittest.TestCase):
 
 class StackMprTest(unittest.TestCase):
     def test_clean_passes(self):
-        verdict, _ = G.judge_stack_mpr([0, 0xF8, 0, 0, 0, 0, 0, 0], 0xF8, 0, False, False, False, [])
+        verdict, _ = G.judge_stack_mpr([0, 0xF8, 0, 0, 0, 0, 0, 0], 0xF8, 0, False, False, False, [], False)
         self.assertEqual(verdict, G.PASS)
 
     def test_ff_and_non_f8_fail(self):
-        verdict, _ = G.judge_stack_mpr([0xFF, 0xF8, 0, 0, 0, 0, 0, 0], 0xF8, 0, False, False, False, [])
+        verdict, _ = G.judge_stack_mpr([0xFF, 0xF8, 0, 0, 0, 0, 0, 0], 0xF8, 0, False, False, False, [], False)
         self.assertEqual(verdict, G.FAIL)
-        verdict, _ = G.judge_stack_mpr([0, 0xFF, 0, 0, 0, 0, 0, 0], 0xF8, 0, False, False, False, [])
+        verdict, _ = G.judge_stack_mpr([0, 0xFF, 0, 0, 0, 0, 0, 0], 0xF8, 0, False, False, False, [], False)
         self.assertEqual(verdict, G.FAIL)
-        verdict, _ = G.judge_stack_mpr([0, 0x00, 0, 0, 0, 0, 0, 0], 0xF8, 0, False, False, False, [])
+        verdict, _ = G.judge_stack_mpr([0, 0x00, 0, 0, 0, 0, 0, 0], 0xF8, 0, False, False, False, [], False)
         self.assertEqual(verdict, G.FAIL)
 
     def test_init_index_wrong_and_alias_blocked(self):
-        verdict, _ = G.judge_stack_mpr([0, 0xF8, 0, 0, 0, 0, 0, 0], 0xF8, 7, False, False, False, [])
+        verdict, _ = G.judge_stack_mpr([0, 0xF8, 0, 0, 0, 0, 0, 0], 0xF8, 7, False, False, False, [], False)
         self.assertEqual(verdict, G.FAIL)
-        verdict, _ = G.judge_stack_mpr([0, 0xF8, 0, 0, 0, 0, 0, 0], 0xF8, 0, True, False, False, [])
+        verdict, _ = G.judge_stack_mpr([0, 0xF8, 0, 0, 0, 0, 0, 0], 0xF8, 0, True, False, False, [], False)
         self.assertEqual(verdict, G.FAIL)
-        verdict, _ = G.judge_stack_mpr([0, 0xF8, 0, 0, 0, 0, 0, 0], 0xF8, 0, None, False, False, [])
+        verdict, _ = G.judge_stack_mpr([0, 0xF8, 0, 0, 0, 0, 0, 0], 0xF8, 0, None, False, False, [], False)
         self.assertEqual(verdict, G.BLOCKED)
 
     def test_irq_tam_hole_is_blocked(self):
         verdict, _ = G.judge_stack_mpr([0, 0xF8, 0, 0, 0, 0, 0, 0], 0xF8, 0, False, True, False, [], mpr1_changed=True)
         self.assertEqual(verdict, G.BLOCKED)
-        verdict, _ = G.judge_stack_mpr([0, 0xF8, 0, 0, 0, 0, 0, 0], 0xF8, 0, False, None, False, [])
+        verdict, _ = G.judge_stack_mpr([0, 0xF8, 0, 0, 0, 0, 0, 0], 0xF8, 0, False, None, False, [], False)
         self.assertEqual(verdict, G.BLOCKED)
 
     def test_stack_outside_fails(self):
-        verdict, _ = G.judge_stack_mpr([0, 0xF8, 0, 0, 0, 0, 0, 0], 0xF8, 0, False, False, False, [0x0100])
+        verdict, _ = G.judge_stack_mpr([0, 0xF8, 0, 0, 0, 0, 0, 0], 0xF8, 0, False, False, False, [0x0100], False)
         self.assertEqual(verdict, G.FAIL)
+
+    def test_omitted_mpr1_changed_is_blocked(self):
+        verdict, _ = G.judge_stack_mpr([0, 0xF8, 0, 0, 0, 0, 0, 0], 0xF8, 0, False, False, False, [])
+        self.assertEqual(verdict, G.BLOCKED)
+        for value in (None, 0, 1, "false", []):
+            with self.subTest(value=value):
+                verdict, _ = G.judge_stack_mpr(
+                    [0, 0xF8, 0, 0, 0, 0, 0, 0], 0xF8, 0, False, False, False, [], value)
+                self.assertEqual(verdict, G.BLOCKED)
 
     def test_mutations_never_pass(self):
         cases = [
-            ("widen_allowlist_f7", ([0, 0xF7, 0, 0, 0, 0, 0, 0], 0xF8, 0, False, False, False, [])),
-            ("drop_alias_scan", ([0, 0xFF, 0, 0, 0, 0, 0, 0], 0xF8, 0, False, False, False, [])),
-            ("off_by_one", ([0, 0xF9, 0, 0, 0, 0, 0, 0], 0xF8, 0, False, False, False, [])),
-            ("mid_flight_setmpr", ([0, 0xF8, 0, 0, 0, 0, 0, 0], 0xF8, 1, False, False, False, [])),
-            ("tam_to_ff", ([0, 0xFF, 0, 0, 0, 0, 0, 0], 0xF8, 0, False, False, False, [])),
+            ("widen_allowlist_f7", ([0, 0xF7, 0, 0, 0, 0, 0, 0], 0xF8, 0, False, False, False, [], False)),
+            ("drop_alias_scan", ([0, 0xFF, 0, 0, 0, 0, 0, 0], 0xF8, 0, False, False, False, [], False)),
+            ("off_by_one", ([0, 0xF9, 0, 0, 0, 0, 0, 0], 0xF8, 0, False, False, False, [], False)),
+            ("mid_flight_setmpr", ([0, 0xF8, 0, 0, 0, 0, 0, 0], 0xF8, 1, False, False, False, [], False)),
+            ("tam_to_ff", ([0, 0xFF, 0, 0, 0, 0, 0, 0], 0xF8, 0, False, False, False, [], False)),
         ]
         for name, args in cases:
             with self.subTest(name=name):
@@ -260,19 +287,26 @@ class AllowlistTest(unittest.TestCase):
                 snapshot["deny_flags"][key] = True
                 self.assertEqual(G.judge_allowlist(snapshot)[0], G.BLOCKED)
 
-    def test_real_core_provenance_must_be_pinned(self):
+    def test_real_core_provenance_blocked_without_harness_binding(self):
+        for revision in ("deadbeef", G.PINNED_CORE_REVISION):
+            with self.subTest(revision=revision):
+                snapshot = G.clean_snapshot()
+                snapshot["provenance"] = {"kind": "REAL_CORE_EXECUTION", "core_revision": revision,
+                                          "bios": "SYNTHETIC", "real_core_claim": True, "run_id": "r1"}
+                snapshot["run_id"] = "r1"
+                snapshot["halt_registers"] = {"PC": 0x3E00, "A": 0, "X": 0, "Y": 0, "P": 0, "S": 0x21FF}
+                self.assertEqual(G.judge_allowlist(snapshot)[0], G.BLOCKED)
+
+    def test_forged_real_core_is_blocked_and_refused(self):
         snapshot = G.clean_snapshot()
-        snapshot["provenance"] = {"kind": "REAL_CORE_EXECUTION", "core_revision": "deadbeef",
-                                  "bios": "SYNTHETIC", "real_core_claim": True, "run_id": "r1"}
-        snapshot["run_id"] = "r1"
+        snapshot["provenance"] = {"kind": "REAL_CORE_EXECUTION",
+                                  "core_revision": G.PINNED_CORE_REVISION,
+                                  "bios": "SYNTHETIC", "real_core_claim": True, "run_id": "forged"}
+        snapshot["run_id"] = "forged"
         snapshot["halt_registers"] = {"PC": 0x3E00, "A": 0, "X": 0, "Y": 0, "P": 0, "S": 0x21FF}
-        self.assertEqual(G.judge_allowlist(snapshot)[0], G.BLOCKED)
-        snapshot = G.clean_snapshot()
-        snapshot["provenance"] = {"kind": "REAL_CORE_EXECUTION", "core_revision": G.PINNED_CORE_REVISION,
-                                  "bios": "SYNTHETIC", "real_core_claim": True, "run_id": "r1"}
-        snapshot["run_id"] = "r1"
-        snapshot["halt_registers"] = {"PC": 0x3E00, "A": 0, "X": 0, "Y": 0, "P": 0, "S": 0x21FF}
-        self.assertEqual(G.judge_allowlist(snapshot)[0], G.PASS)
+        self.assertNotEqual(G.judge_allowlist(snapshot)[0], G.PASS)
+        with self.assertRaises(G.GateRefused):
+            G.require_preblock(snapshot)
 
     def test_red1_forged_real_core_without_harness_evidence_blocked(self):
         snapshot = G.clean_snapshot()
@@ -295,6 +329,16 @@ class AllowlistTest(unittest.TestCase):
         snapshot["executed"] = 2
         snapshot["instruction_sequence"] = [0xEA, 0x20]
         self.assertEqual(G.judge_allowlist(snapshot)[0], G.FAIL)
+
+    def test_mpr1_changed_missing_or_invalid_blocked(self):
+        snapshot = G.clean_snapshot()
+        del snapshot["mpr1_changed"]
+        self.assertEqual(G.judge_allowlist(snapshot)[0], G.BLOCKED)
+        for value in (None, 0, 1, "false", []):
+            with self.subTest(value=value):
+                snapshot = G.clean_snapshot()
+                snapshot["mpr1_changed"] = value
+                self.assertEqual(G.judge_allowlist(snapshot)[0], G.BLOCKED)
 
     def test_jsr_current_opcode_blocked(self):
         snapshot = G.clean_snapshot()
