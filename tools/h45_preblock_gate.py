@@ -36,6 +36,21 @@ LIBRETRO_REASON = ("libretro build: no execute breakpoint and no PC/trace API "
 EXIT_BLOCKED = 3
 
 PASS, FAIL, BLOCKED = "PASS", "FAIL", "BLOCKED"
+DANGEROUS_OPCODES = ST_OPCODES | {0x20}
+HALT_REGISTER_KEYS = ("PC", "A", "X", "Y", "P", "S")
+
+
+def _halt_registers_ok(halt, pc):
+    if type(halt) is not dict:
+        return False
+    for key in HALT_REGISTER_KEYS:
+        if key not in halt or not _is_int(halt[key]):
+            return False
+    if halt["PC"] != pc:
+        return False
+    if not CPU_STACK_PAGE[0] <= halt["S"] <= CPU_STACK_PAGE[1]:
+        return False
+    return True
 
 
 class GateRefused(ValueError):
@@ -209,6 +224,11 @@ def judge_allowlist(snapshot):
             return BLOCKED, "real-core observation must use a synthetic BIOS"
         if prov.get("real_core_claim") is not True:
             return BLOCKED, "real_core_claim must be true for REAL_CORE_EXECUTION"
+        run_id = snapshot.get("run_id")
+        if type(run_id) is not str or not run_id or run_id != prov.get("run_id"):
+            return BLOCKED, "harness run-id missing or mismatched: missing evidence, not PASS"
+        if not _halt_registers_ok(snapshot.get("halt_registers"), snapshot.get("pc")):
+            return BLOCKED, "halt registers missing or inconsistent with snapshot PC/stack: missing evidence, not PASS"
     else:
         if prov.get("real_core_claim") is not False:
             return BLOCKED, "HOST_FIXTURE must not claim real-core evidence"
@@ -237,6 +257,22 @@ def judge_allowlist(snapshot):
         return verdict, detail
     if snapshot.get("first_opcode") in ST_OPCODES:
         return BLOCKED, f"{ST_LABELS[snapshot['first_opcode']]} denied before side effect"
+    seq = snapshot.get("instruction_sequence")
+    if type(seq) is not list:
+        return BLOCKED, "instruction sequence missing: missing evidence, not PASS"
+    executed_field = snapshot.get("executed")
+    if not _is_int(executed_field):
+        return BLOCKED, "executed not a non-negative int"
+    if len(seq) != executed_field:
+        return BLOCKED, "instruction sequence length != executed: count mismatch, not PASS"
+    for opcode in seq:
+        if not _is_byte(opcode):
+            return BLOCKED, "instruction sequence contains a non-byte"
+    if seq and seq[0] != snapshot.get("first_opcode"):
+        return BLOCKED, "instruction sequence first element != first_opcode"
+    for opcode in seq:
+        if opcode in DANGEROUS_OPCODES:
+            return FAIL, f"dangerous opcode {opcode:#04x} in executed sequence (incl. 2nd+ insn)"
     mmio = snapshot.get("mmio_stores")
     if type(mmio) is not list:
         return BLOCKED, "mmio_stores not observed"
@@ -255,10 +291,8 @@ def judge_allowlist(snapshot):
     approved = snapshot.get("approved_range")
     if not _is_addr(pc):
         return BLOCKED, f"pc not an address: {pc!r}"
-    if (type(approved) is not list or len(approved) != 2
-            or not all(_is_addr(x) for x in approved)
-            or not approved[0] < approved[1]):
-        return BLOCKED, f"approved_range malformed: {approved!r}"
+    if approved != [APPROVED_PC_LOW, APPROVED_PC_HIGH]:
+        return BLOCKED, "approved range must equal the trusted definition [0x1E00,0x4000)"
     if not approved[0] <= pc < approved[1]:
         return FAIL, f"pc {pc:#06x} outside approved range ${approved[0]:04X}..${approved[1]:04X}"
     if snapshot.get("irq_status") != "OBSERVED":
@@ -315,7 +349,9 @@ def clean_snapshot():
     rom = "a" * 64
     return {
         "provenance": {"kind": "HOST_FIXTURE", "core_revision": None, "bios": "SYNTHETIC",
-                       "real_core_claim": False},
+                       "real_core_claim": False, "run_id": None},
+        "run_id": None, "halt_registers": None,
+        "instruction_sequence": [],
         "jsr_count": 0, "execution": "BLOCKED", "release_eligible": False, "build": "debugger",
         "first_opcode": 0xEA, "first_opcode_screened": True, "peek_ok": True,
         "executed_before_refusal": 0, "vdc_changed": False, "halt_equal": True,

@@ -219,12 +219,38 @@ class AllowlistTest(unittest.TestCase):
     def test_real_core_provenance_must_be_pinned(self):
         snapshot = G.clean_snapshot()
         snapshot["provenance"] = {"kind": "REAL_CORE_EXECUTION", "core_revision": "deadbeef",
-                                  "bios": "SYNTHETIC", "real_core_claim": True}
+                                  "bios": "SYNTHETIC", "real_core_claim": True, "run_id": "r1"}
+        snapshot["run_id"] = "r1"
+        snapshot["halt_registers"] = {"PC": 0x3E00, "A": 0, "X": 0, "Y": 0, "P": 0, "S": 0x21FF}
         self.assertEqual(G.judge_allowlist(snapshot)[0], G.BLOCKED)
         snapshot = G.clean_snapshot()
         snapshot["provenance"] = {"kind": "REAL_CORE_EXECUTION", "core_revision": G.PINNED_CORE_REVISION,
-                                  "bios": "SYNTHETIC", "real_core_claim": True}
+                                  "bios": "SYNTHETIC", "real_core_claim": True, "run_id": "r1"}
+        snapshot["run_id"] = "r1"
+        snapshot["halt_registers"] = {"PC": 0x3E00, "A": 0, "X": 0, "Y": 0, "P": 0, "S": 0x21FF}
         self.assertEqual(G.judge_allowlist(snapshot)[0], G.PASS)
+
+    def test_red1_forged_real_core_without_harness_evidence_blocked(self):
+        snapshot = G.clean_snapshot()
+        snapshot["provenance"] = {"kind": "REAL_CORE_EXECUTION", "core_revision": G.PINNED_CORE_REVISION,
+                                  "bios": "SYNTHETIC", "real_core_claim": True, "run_id": "forged"}
+        self.assertEqual(G.judge_allowlist(snapshot)[0], G.BLOCKED)
+
+    def test_red2_widened_range_blocked(self):
+        snapshot = G.clean_snapshot()
+        snapshot["approved_range"] = [0, 0xFFFF]
+        snapshot["pc"] = 0x0000
+        self.assertEqual(G.judge_allowlist(snapshot)[0], G.BLOCKED)
+
+    def test_red3_second_st_and_jsr_blocked(self):
+        snapshot = G.clean_snapshot()
+        snapshot["executed"] = 2
+        snapshot["instruction_sequence"] = [0xEA, 0x03]
+        self.assertEqual(G.judge_allowlist(snapshot)[0], G.FAIL)
+        snapshot = G.clean_snapshot()
+        snapshot["executed"] = 2
+        snapshot["instruction_sequence"] = [0xEA, 0x20]
+        self.assertEqual(G.judge_allowlist(snapshot)[0], G.FAIL)
 
     def test_mutation_suite_no_false_pass(self):
         base = G.clean_snapshot()
